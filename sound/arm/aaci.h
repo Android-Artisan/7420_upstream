@@ -202,12 +202,15 @@
 struct aaci_runtime {
 	void			__iomem *base;
 	void			__iomem *fifo;
+	spinlock_t		lock;
 
 	struct ac97_pcm		*pcm;
 	int			pcm_open;
 
 	u32			cr;
 	struct snd_pcm_substream	*substream;
+
+	unsigned int		period;	/* byte size of a "period" */
 
 	/*
 	 * PIO support
@@ -218,6 +221,7 @@ struct aaci_runtime {
 	int			bytes;
 	unsigned int		period;
 	unsigned int		fifosz;
+	unsigned int		fifo_bytes;
 };
 
 struct aaci {
@@ -225,6 +229,9 @@ struct aaci {
 	struct snd_card		*card;
 	void			__iomem *base;
 	unsigned int		fifosize;
+	unsigned int		fifo_depth;
+	unsigned int		users;
+	struct mutex		irq_lock;
 
 	/* AC'97 */
 	struct mutex		ac97_sem;

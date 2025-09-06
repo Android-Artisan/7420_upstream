@@ -28,6 +28,7 @@
 #include <linux/interrupt.h>
 #include <linux/irq.h>
 #include <linux/slab.h>
+#include <linux/irqchip.h>
 #include <linux/random.h>
 #include <linux/smp.h>
 #include <linux/init.h>
@@ -152,6 +153,48 @@ void set_irq_flags(unsigned int irq, unsigned int iflags)
 	if (!(iflags & IRQF_NOAUTOEN))
 		desc->status &= ~IRQ_NOAUTOEN;
 	spin_unlock_irqrestore(&desc->lock, flags);
+#include <linux/export.h>
+
+#include <asm/hardware/cache-l2x0.h>
+#include <asm/hardware/cache-uniphier.h>
+#include <asm/outercache.h>
+#include <asm/exception.h>
+#include <asm/mach/arch.h>
+#include <asm/mach/irq.h>
+#include <asm/mach/time.h>
+
+unsigned long irq_err_count;
+
+int arch_show_interrupts(struct seq_file *p, int prec)
+{
+#ifdef CONFIG_FIQ
+	show_fiq_list(p, prec);
+#endif
+#ifdef CONFIG_SMP
+	show_ipi_list(p, prec);
+#endif
+	seq_printf(p, "%*s: %10lu\n", prec, "Err", irq_err_count);
+	return 0;
+}
+
+/*
+ * handle_IRQ handles all hardware IRQ's.  Decoded IRQs should
+ * not come via this function.  Instead, they should provide their
+ * own 'handler'.  Used by platform code implementing C-based 1st
+ * level decoding.
+ */
+void handle_IRQ(unsigned int irq, struct pt_regs *regs)
+{
+	__handle_domain_irq(NULL, irq, false, regs);
+}
+
+/*
+ * asm_do_IRQ is the interface to be used from assembly code.
+ */
+asmlinkage void __exception_irq_entry
+asm_do_IRQ(unsigned int irq, struct pt_regs *regs)
+{
+	handle_IRQ(irq, regs);
 }
 
 void __init init_IRQ(void)
@@ -206,5 +249,40 @@ void migrate_irqs(void)
 			route_irq(desc, i, newcpu);
 		}
 	}
+	int ret;
+
+	if (IS_ENABLED(CONFIG_OF) && !machine_desc->init_irq)
+		irqchip_init();
+	else
+		machine_desc->init_irq();
+
+	if (IS_ENABLED(CONFIG_OF) && IS_ENABLED(CONFIG_CACHE_L2X0) &&
+	    (machine_desc->l2c_aux_mask || machine_desc->l2c_aux_val)) {
+		if (!outer_cache.write_sec)
+			outer_cache.write_sec = machine_desc->l2c_write_sec;
+		ret = l2x0_of_init(machine_desc->l2c_aux_val,
+				   machine_desc->l2c_aux_mask);
+		if (ret)
+			pr_err("L2C: failed to init: %d\n", ret);
+	}
+
+	uniphier_cache_init();
 }
-#endif /* CONFIG_HOTPLUG_CPU */
+
+#ifdef CONFIG_MULTI_IRQ_HANDLER
+void __init set_handle_irq(void (*handle_irq)(struct pt_regs *))
+{
+	if (handle_arch_irq)
+		return;
+
+	handle_arch_irq = handle_irq;
+}
+#endif
+
+#ifdef CONFIG_SPARSE_IRQ
+int __init arch_probe_nr_irqs(void)
+{
+	nr_irqs = machine_desc->nr_irqs ? machine_desc->nr_irqs : NR_IRQS;
+	return nr_irqs;
+}
+#endif

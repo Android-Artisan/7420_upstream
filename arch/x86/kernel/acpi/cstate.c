@@ -13,6 +13,8 @@
 
 #include <acpi/processor.h>
 #include <asm/acpi.h>
+#include <asm/mwait.h>
+#include <asm/special_insns.h>
 
 /*
  * Initialize bm_flags based on the CPU cache properties
@@ -40,6 +42,22 @@ void acpi_processor_power_init_bm_check(struct acpi_processor_flags *flags,
 		 */
 		flags->bm_check = 1;
 	}
+		 * Today all MP CPUs that support C3 share cache.
+		 * And caches should not be flushed by software while
+		 * entering C3 type state.
+		 */
+		flags->bm_check = 1;
+	}
+
+	/*
+	 * On all recent Intel platforms, ARB_DISABLE is a nop.
+	 * So, set bm_control to zero to indicate that ARB_DISABLE
+	 * is not required while entering C3 type state on
+	 * P4, Core and beyond CPUs
+	 */
+	if (c->x86_vendor == X86_VENDOR_INTEL &&
+	    (c->x86 > 0xf || (c->x86 == 6 && c->x86_model >= 0x0f)))
+			flags->bm_control = 0;
 }
 EXPORT_SYMBOL(acpi_processor_power_init_bm_check);
 
@@ -74,6 +92,16 @@ int acpi_processor_ffh_cstate_probe(unsigned int cpu,
 
 	cpumask_t saved_mask;
 	int retval;
+static struct cstate_entry __percpu *cpu_cstate_entry;	/* per CPU ptr */
+
+static short mwait_supported[ACPI_PROCESSOR_MAX_POWER];
+
+#define NATIVE_CSTATE_BEYOND_HALT	(2)
+
+static long acpi_processor_ffh_cstate_probe_cpu(void *_cx)
+{
+	struct acpi_processor_cx *cx = _cx;
+	long retval;
 	unsigned int eax, ebx, ecx, edx;
 	unsigned int edx_part;
 	unsigned int cstate_type; /* C-state type and not ACPI C-state type */
@@ -99,11 +127,19 @@ int acpi_processor_ffh_cstate_probe(unsigned int cpu,
 
 	/* Check whether this particular cx_type (in CST) is supported or not */
 	cstate_type = (cx->address >> MWAIT_SUBSTATE_SIZE) + 1;
+	cpuid(CPUID_MWAIT_LEAF, &eax, &ebx, &ecx, &edx);
+
+	/* Check whether this particular cx_type (in CST) is supported or not */
+	cstate_type = ((cx->address >> MWAIT_SUBSTATE_SIZE) &
+			MWAIT_CSTATE_MASK) + 1;
 	edx_part = edx >> (cstate_type * MWAIT_SUBSTATE_SIZE);
 	num_cstate_subtype = edx_part & MWAIT_SUBSTATE_MASK;
 
 	retval = 0;
 	if (num_cstate_subtype < (cx->address & MWAIT_SUBSTATE_MASK)) {
+	/* If the HW does not support any sub-states in this C-state */
+	if (num_cstate_subtype == 0) {
+		pr_warn(FW_BUG "ACPI MWAIT C-state 0x%x not supported by HW (0x%x)\n", cx->address, edx_part);
 		retval = -1;
 		goto out;
 	}
@@ -129,6 +165,54 @@ int acpi_processor_ffh_cstate_probe(unsigned int cpu,
 
 out:
 	set_cpus_allowed_ptr(current, &saved_mask);
+
+	if (!mwait_supported[cstate_type]) {
+		mwait_supported[cstate_type] = 1;
+		printk(KERN_DEBUG
+			"Monitor-Mwait will be used to enter C-%d "
+			"state\n", cx->type);
+	}
+	snprintf(cx->desc,
+			ACPI_CX_DESC_LEN, "ACPI FFH INTEL MWAIT 0x%x",
+			cx->address);
+out:
+	return retval;
+}
+
+int acpi_processor_ffh_cstate_probe(unsigned int cpu,
+		struct acpi_processor_cx *cx, struct acpi_power_register *reg)
+{
+	struct cstate_entry *percpu_entry;
+	struct cpuinfo_x86 *c = &cpu_data(cpu);
+	long retval;
+
+	if (!cpu_cstate_entry || c->cpuid_level < CPUID_MWAIT_LEAF)
+		return -1;
+
+	if (reg->bit_offset != NATIVE_CSTATE_BEYOND_HALT)
+		return -1;
+
+	percpu_entry = per_cpu_ptr(cpu_cstate_entry, cpu);
+	percpu_entry->states[cx->index].eax = 0;
+	percpu_entry->states[cx->index].ecx = 0;
+
+	/* Make sure we are running on right CPU */
+
+	retval = work_on_cpu(cpu, acpi_processor_ffh_cstate_probe_cpu, cx);
+	if (retval == 0) {
+		/* Use the hint in CST */
+		percpu_entry->states[cx->index].eax = cx->address;
+		percpu_entry->states[cx->index].ecx = MWAIT_ECX_INTERRUPT_BREAK;
+	}
+
+	/*
+	 * For _CST FFH on Intel, if GAS.access_size bit 1 is cleared,
+	 * then we should skip checking BM_STS for this C-state.
+	 * ref: "Intel Processor Vendor-Specific ACPI Interface Specification"
+	 */
+	if ((c->x86_vendor == X86_VENDOR_INTEL) && !(reg->access_size & 0x2))
+		cx->bm_sts_skip = 1;
+
 	return retval;
 }
 EXPORT_SYMBOL_GPL(acpi_processor_ffh_cstate_probe);

@@ -58,6 +58,17 @@ skip:
 
 	return 0;
 }
+#include <linux/cpumask.h>
+#include <linux/hardirq.h>
+#include <linux/interrupt.h>
+#include <linux/kernel_stat.h>
+#include <linux/module.h>
+#include <linux/sched.h>
+#include <linux/seq_file.h>
+#include <linux/slab.h>
+#include <as-layout.h>
+#include <kern_util.h>
+#include <os.h>
 
 /*
  * This list is accessed under irq_lock, except in sigio_handler,
@@ -73,6 +84,7 @@ static struct irq_fd **last_irq_ptr = &active_fds;
 extern void free_irqs(void);
 
 void sigio_handler(int sig, struct uml_pt_regs *regs)
+void sigio_handler(int sig, struct siginfo *unused_si, struct uml_pt_regs *regs)
 {
 	struct irq_fd *irq_fd;
 	int n;
@@ -300,6 +312,7 @@ void deactivate_fd(int fd, int irqnum)
 
 	ignore_sigio_fd(fd);
 }
+EXPORT_SYMBOL(deactivate_fd);
 
 /*
  * Called just before shutdown in order to provide a clean exec
@@ -333,10 +346,18 @@ unsigned int do_IRQ(int irq, struct uml_pt_regs *regs)
 	struct pt_regs *old_regs = set_irq_regs((struct pt_regs *)regs);
 	irq_enter();
 	__do_IRQ(irq);
+	generic_handle_irq(irq);
 	irq_exit();
 	set_irq_regs(old_regs);
 	return 1;
 }
+
+void um_free_irq(unsigned int irq, void *dev)
+{
+	free_irq_by_irq_and_dev(irq, dev);
+	free_irq(irq, dev);
+}
+EXPORT_SYMBOL(um_free_irq);
 
 int um_request_irq(unsigned int irq, int fd, int type,
 		   irq_handler_t handler,
@@ -362,6 +383,10 @@ EXPORT_SYMBOL(reactivate_fd);
  * (shutdown || disable) && end
  */
 static void dummy(unsigned int irq)
+ * irq_chip must define at least enable/disable and ack when
+ * the edge handler is used.
+ */
+static void dummy(struct irq_data *d)
 {
 }
 
@@ -383,6 +408,22 @@ static struct hw_interrupt_type SIGVTALRM_irq_type = {
 	.enable = dummy,
 	.ack = dummy,
 	.end = dummy
+static struct irq_chip normal_irq_type = {
+	.name = "SIGIO",
+	.irq_disable = dummy,
+	.irq_enable = dummy,
+	.irq_ack = dummy,
+	.irq_mask = dummy,
+	.irq_unmask = dummy,
+};
+
+static struct irq_chip SIGVTALRM_irq_type = {
+	.name = "SIGVTALRM",
+	.irq_disable = dummy,
+	.irq_enable = dummy,
+	.irq_ack = dummy,
+	.irq_mask = dummy,
+	.irq_unmask = dummy,
 };
 
 void __init init_IRQ(void)
@@ -401,6 +442,10 @@ void __init init_IRQ(void)
 		irq_desc[i].chip = &normal_irq_type;
 		enable_irq(i);
 	}
+	irq_set_chip_and_handler(TIMER_IRQ, &SIGVTALRM_irq_type, handle_edge_irq);
+
+	for (i = 1; i < NR_IRQS; i++)
+		irq_set_chip_and_handler(i, &normal_irq_type, handle_edge_irq);
 }
 
 /*

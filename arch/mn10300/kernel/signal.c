@@ -23,6 +23,7 @@
 #include <linux/tty.h>
 #include <linux/personality.h>
 #include <linux/suspend.h>
+#include <linux/tracehook.h>
 #include <asm/cacheflush.h>
 #include <asm/ucontext.h>
 #include <asm/uaccess.h>
@@ -102,6 +103,9 @@ static int restore_sigcontext(struct pt_regs *regs,
 {
 	unsigned int err = 0;
 
+	/* Always make any pending restarted system calls return -EINTR */
+	current->restart_block.fn = do_no_restart_syscall;
+
 	if (is_using_fpu(current))
 		fpu_kill_state(current);
 
@@ -157,6 +161,11 @@ asmlinkage long sys_sigreturn(void)
 	sigset_t set;
 	long d0;
 
+	struct sigframe __user *frame;
+	sigset_t set;
+	long d0;
+
+	frame = (struct sigframe __user *) current_frame()->sp;
 	if (verify_area(VERIFY_READ, frame, sizeof(*frame)))
 		goto badframe;
 	if (__get_user(set.sig[0], &frame->sc.oldmask))
@@ -174,6 +183,9 @@ asmlinkage long sys_sigreturn(void)
 	spin_unlock_irq(&current->sighand->siglock);
 
 	if (restore_sigcontext(__frame, &frame->sc, &d0))
+	set_current_blocked(&set);
+
+	if (restore_sigcontext(current_frame(), &frame->sc, &d0))
 		goto badframe;
 
 	return d0;
@@ -193,6 +205,11 @@ asmlinkage long sys_rt_sigreturn(void)
 	sigset_t set;
 	unsigned long d0;
 
+	struct rt_sigframe __user *frame;
+	sigset_t set;
+	long d0;
+
+	frame = (struct rt_sigframe __user *) current_frame()->sp;
 	if (verify_area(VERIFY_READ, frame, sizeof(*frame)))
 		goto badframe;
 	if (__copy_from_user(&set, &frame->uc.uc_sigmask, sizeof(set)))
@@ -208,6 +225,12 @@ asmlinkage long sys_rt_sigreturn(void)
 		goto badframe;
 
 	if (do_sigaltstack(&frame->uc.uc_stack, NULL, __frame->sp) == -EFAULT)
+	set_current_blocked(&set);
+
+	if (restore_sigcontext(current_frame(), &frame->uc.uc_mcontext, &d0))
+		goto badframe;
+
+	if (restore_altstack(&frame->uc.uc_stack))
 		goto badframe;
 
 	return d0;
@@ -267,6 +290,11 @@ static inline void __user *get_sigframe(struct k_sigaction *ka,
 		if (!on_sig_stack(sp))
 			sp = current->sas_ss_sp + current->sas_ss_size;
 	}
+static inline void __user *get_sigframe(struct ksignal *ksig,
+					struct pt_regs *regs,
+					size_t frame_size)
+{
+	unsigned long sp = sigsp(regs->sp, ksig);
 
 	return (void __user *) ((sp - frame_size) & ~7UL);
 }
@@ -297,11 +325,29 @@ static int setup_frame(int sig, struct k_sigaction *ka, sigset_t *set,
 
 	if (setup_sigcontext(&frame->sc, &frame->fpuctx, regs, set->sig[0]))
 		goto give_sigsegv;
+static int setup_frame(struct ksignal *ksig, sigset_t *set,
+		       struct pt_regs *regs)
+{
+	struct sigframe __user *frame;
+	int sig = ksig->sig;
+
+	frame = get_sigframe(ksig, regs, sizeof(*frame));
+
+	if (!access_ok(VERIFY_WRITE, frame, sizeof(*frame)))
+		return -EFAULT;
+
+	if (__put_user(sig, &frame->sig) < 0 ||
+	    __put_user(&frame->sc, &frame->psc) < 0)
+		return -EFAULT;
+
+	if (setup_sigcontext(&frame->sc, &frame->fpuctx, regs, set->sig[0]))
+		return -EFAULT;
 
 	if (_NSIG_WORDS > 1) {
 		if (__copy_to_user(frame->extramask, &set->sig[1],
 				   sizeof(frame->extramask)))
 			goto give_sigsegv;
+			return -EFAULT;
 	}
 
 	/* set up to return from userspace.  If provided, use a stub already in
@@ -313,6 +359,13 @@ static int setup_frame(int sig, struct k_sigaction *ka, sigset_t *set,
 		if (__put_user((void (*)(void))frame->retcode,
 			       &frame->pretcode))
 			goto give_sigsegv;
+	if (ksig->ka.sa.sa_flags & SA_RESTORER) {
+		if (__put_user(ksig->ka.sa.sa_restorer, &frame->pretcode))
+			return -EFAULT;
+	} else {
+		if (__put_user((void (*)(void))frame->retcode,
+			       &frame->pretcode))
+			return -EFAULT;
 		/* this is mov $,d0; syscall 0 */
 		if (__put_user(0x2c, (char *)(frame->retcode + 0)) ||
 		    __put_user(__NR_sigreturn, (char *)(frame->retcode + 1)) ||
@@ -320,6 +373,7 @@ static int setup_frame(int sig, struct k_sigaction *ka, sigset_t *set,
 		    __put_user(0xf0, (char *)(frame->retcode + 3)) ||
 		    __put_user(0xe0, (char *)(frame->retcode + 4)))
 			goto give_sigsegv;
+			return -EFAULT;
 		flush_icache_range((unsigned long) frame->retcode,
 				   (unsigned long) frame->retcode + 5);
 	}
@@ -335,6 +389,10 @@ static int setup_frame(int sig, struct k_sigaction *ka, sigset_t *set,
 	/* the tracer may want to single-step inside the handler */
 	if (test_thread_flag(TIF_SINGLESTEP))
 		ptrace_notify(SIGTRAP);
+
+	regs->pc = (unsigned long) ksig->ka.sa.sa_handler;
+	regs->d0 = sig;
+	regs->d1 = (unsigned long) &frame->sc;
 
 #if DEBUG_SIG
 	printk(KERN_DEBUG "SIG deliver %d (%s:%d): sp=%p pc=%lx ra=%p\n",
@@ -374,6 +432,22 @@ static int setup_rt_frame(int sig, struct k_sigaction *ka, siginfo_t *info,
 	    __put_user(&frame->uc, &frame->puc) ||
 	    copy_siginfo_to_user(&frame->info, info))
 		goto give_sigsegv;
+static int setup_rt_frame(struct ksignal *ksig, sigset_t *set,
+			  struct pt_regs *regs)
+{
+	struct rt_sigframe __user *frame;
+	int sig = ksig->sig;
+
+	frame = get_sigframe(ksig, regs, sizeof(*frame));
+
+	if (!access_ok(VERIFY_WRITE, frame, sizeof(*frame)))
+		return -EFAULT;
+
+	if (__put_user(sig, &frame->sig) ||
+	    __put_user(&frame->info, &frame->pinfo) ||
+	    __put_user(&frame->uc, &frame->puc) ||
+	    copy_siginfo_to_user(&frame->info, &ksig->info))
+		return -EFAULT;
 
 	/* create the ucontext.  */
 	if (__put_user(0, &frame->uc.uc_flags) ||
@@ -391,6 +465,18 @@ static int setup_rt_frame(int sig, struct k_sigaction *ka, siginfo_t *info,
 	if (ka->sa.sa_flags & SA_RESTORER) {
 		if (__put_user(ka->sa.sa_restorer, &frame->pretcode))
 			goto give_sigsegv;
+	    __save_altstack(&frame->uc.uc_stack, regs->sp) ||
+	    setup_sigcontext(&frame->uc.uc_mcontext,
+			     &frame->fpuctx, regs, set->sig[0]) ||
+	    __copy_to_user(&frame->uc.uc_sigmask, set, sizeof(*set)))
+		return -EFAULT;
+
+	/* set up to return from userspace.  If provided, use a stub already in
+	 * userspace */
+	if (ksig->ka.sa.sa_flags & SA_RESTORER) {
+		if (__put_user(ksig->ka.sa.sa_restorer, &frame->pretcode))
+			return -EFAULT;
+
 	} else {
 		if (__put_user((void(*)(void))frame->retcode,
 			       &frame->pretcode) ||
@@ -402,6 +488,7 @@ static int setup_rt_frame(int sig, struct k_sigaction *ka, siginfo_t *info,
 		    __put_user(0xf0, (char *)(frame->retcode + 3)) ||
 		    __put_user(0xe0, (char *)(frame->retcode + 4)))
 			goto give_sigsegv;
+			return -EFAULT;
 
 		flush_icache_range((u_long) frame->retcode,
 				   (u_long) frame->retcode + 5);
@@ -419,6 +506,10 @@ static int setup_rt_frame(int sig, struct k_sigaction *ka, siginfo_t *info,
 	if (test_thread_flag(TIF_SINGLESTEP))
 		ptrace_notify(SIGTRAP);
 
+	regs->pc = (unsigned long) ksig->ka.sa.sa_handler;
+	regs->d0 = sig;
+	regs->d1 = (long) &frame->info;
+
 #if DEBUG_SIG
 	printk(KERN_DEBUG "SIG deliver %d (%s:%d): sp=%p pc=%lx ra=%p\n",
 	       sig, current->comm, current->pid, frame, regs->pc,
@@ -432,6 +523,12 @@ give_sigsegv:
 	return -EFAULT;
 }
 
+static inline void stepback(struct pt_regs *regs)
+{
+	regs->pc -= 2;
+	regs->orig_d0 = -1;
+}
+
 /*
  * handle the actual delivery of a signal to userspace
  */
@@ -439,6 +536,9 @@ static int handle_signal(int sig,
 			 siginfo_t *info, struct k_sigaction *ka,
 			 sigset_t *oldset, struct pt_regs *regs)
 {
+static int handle_signal(struct ksignal *ksig, struct pt_regs *regs)
+{
+	sigset_t *oldset = sigmask_to_save();
 	int ret;
 
 	/* Are we from a system call? */
@@ -452,6 +552,7 @@ static int handle_signal(int sig,
 
 		case -ERESTARTSYS:
 			if (!(ka->sa.sa_flags & SA_RESTART)) {
+			if (!(ksig->ka.sa.sa_flags & SA_RESTART)) {
 				regs->d0 = -EINTR;
 				break;
 			}
@@ -460,6 +561,7 @@ static int handle_signal(int sig,
 		case -ERESTARTNOINTR:
 			regs->d0 = regs->orig_d0;
 			regs->pc -= 2;
+			stepback(regs);
 		}
 	}
 
@@ -480,6 +582,13 @@ static int handle_signal(int sig,
 	}
 
 	return ret;
+	if (ksig->ka.sa.sa_flags & SA_SIGINFO)
+		ret = setup_rt_frame(ksig, oldset, regs);
+	else
+		ret = setup_frame(ksig, oldset, regs);
+
+	signal_setup_done(ret, ksig, test_thread_flag(TIF_SINGLESTEP));
+	return 0;
 }
 
 /*
@@ -513,6 +622,10 @@ static void do_signal(struct pt_regs *regs)
 				clear_thread_flag(TIF_RESTORE_SIGMASK);
 		}
 
+	struct ksignal ksig;
+
+	if (get_signal(&ksig)) {
+		handle_signal(&ksig, regs);
 		return;
 	}
 
@@ -525,11 +638,13 @@ static void do_signal(struct pt_regs *regs)
 		case -ERESTARTNOINTR:
 			regs->d0 = regs->orig_d0;
 			regs->pc -= 2;
+			stepback(regs);
 			break;
 
 		case -ERESTART_RESTARTBLOCK:
 			regs->d0 = __NR_restart_syscall;
 			regs->pc -= 2;
+			stepback(regs);
 			break;
 		}
 	}
@@ -540,6 +655,7 @@ static void do_signal(struct pt_regs *regs)
 		clear_thread_flag(TIF_RESTORE_SIGMASK);
 		sigprocmask(SIG_SETMASK, &current->saved_sigmask, NULL);
 	}
+	restore_saved_sigmask();
 }
 
 /*
@@ -561,4 +677,11 @@ asmlinkage void do_notify_resume(struct pt_regs *regs, u32 thread_info_flags)
 	/* deal with pending signal delivery */
 	if (thread_info_flags & (_TIF_SIGPENDING | _TIF_RESTORE_SIGMASK))
 		do_signal(regs);
+	if (thread_info_flags & _TIF_SIGPENDING)
+		do_signal(regs);
+
+	if (thread_info_flags & _TIF_NOTIFY_RESUME) {
+		clear_thread_flag(TIF_NOTIFY_RESUME);
+		tracehook_notify_resume(current_frame());
+	}
 }

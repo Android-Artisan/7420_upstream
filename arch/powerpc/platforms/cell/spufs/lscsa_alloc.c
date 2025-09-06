@@ -22,6 +22,7 @@
 
 #include <linux/kernel.h>
 #include <linux/mm.h>
+#include <linux/slab.h>
 #include <linux/vmalloc.h>
 
 #include <asm/spu.h>
@@ -31,6 +32,7 @@
 #include "spufs.h"
 
 static int spu_alloc_lscsa_std(struct spu_state *csa)
+int spu_alloc_lscsa(struct spu_state *csa)
 {
 	struct spu_lscsa *lscsa;
 	unsigned char *p;
@@ -39,6 +41,9 @@ static int spu_alloc_lscsa_std(struct spu_state *csa)
 	if (!lscsa)
 		return -ENOMEM;
 	memset(lscsa, 0, sizeof(struct spu_lscsa));
+	lscsa = vzalloc(sizeof(struct spu_lscsa));
+	if (!lscsa)
+		return -ENOMEM;
 	csa->lscsa = lscsa;
 
 	/* Set LS pages reserved to allow for user-space mapping. */
@@ -49,6 +54,7 @@ static int spu_alloc_lscsa_std(struct spu_state *csa)
 }
 
 static void spu_free_lscsa_std(struct spu_state *csa)
+void spu_free_lscsa(struct spu_state *csa)
 {
 	/* Clear reserved bit before vfree. */
 	unsigned char *p;

@@ -19,6 +19,13 @@
 
 extern void die_if_kernel(char *, struct pt_regs *, long);
 extern const int frame_extra_sizes[]; /* in m68k/kernel/signal.c */
+#include <linux/uaccess.h>
+
+#include <asm/setup.h>
+#include <asm/traps.h>
+#include <asm/pgalloc.h>
+
+extern void die_if_kernel(char *, struct pt_regs *, long);
 
 int send_fault_sig(struct pt_regs *regs)
 {
@@ -30,6 +37,8 @@ int send_fault_sig(struct pt_regs *regs)
 #ifdef DEBUG
 	printk("send_fault_sig: %p,%d,%d\n", siginfo.si_addr, siginfo.si_signo, siginfo.si_code);
 #endif
+	pr_debug("send_fault_sig: %p,%d,%d\n", siginfo.si_addr,
+		 siginfo.si_signo, siginfo.si_code);
 
 	if (user_mode(regs)) {
 		force_sig_info(siginfo.si_signo,
@@ -50,6 +59,8 @@ int send_fault_sig(struct pt_regs *regs)
 			tregs->sr = regs->sr;
 			return -1;
 		}
+		if (handle_kernel_fault(regs))
+			return -1;
 
 		//if (siginfo.si_signo == SIGBUS)
 		//	force_sig_info(siginfo.si_signo,
@@ -64,6 +75,10 @@ int send_fault_sig(struct pt_regs *regs)
 		else
 			printk(KERN_ALERT "Unable to handle kernel access");
 		printk(" at virtual address %p\n", siginfo.si_addr);
+			pr_alert("Unable to handle kernel NULL pointer dereference");
+		else
+			pr_alert("Unable to handle kernel access");
+		pr_cont(" at virtual address %p\n", siginfo.si_addr);
 		die_if_kernel("Oops", regs, 0 /*error_code*/);
 		do_exit(SIGKILL);
 	}
@@ -94,6 +109,11 @@ int do_page_fault(struct pt_regs *regs, unsigned long address,
 		regs->sr, regs->pc, address, error_code,
 		current->mm->pgd);
 #endif
+	int fault;
+	unsigned int flags = FAULT_FLAG_ALLOW_RETRY | FAULT_FLAG_KILLABLE;
+
+	pr_debug("do page fault:\nregs->sr=%#x, regs->pc=%#lx, address=%#lx, %ld, %p\n",
+		regs->sr, regs->pc, address, error_code, mm ? mm->pgd : NULL);
 
 	/*
 	 * If we're in an interrupt or have no user
@@ -102,6 +122,12 @@ int do_page_fault(struct pt_regs *regs, unsigned long address,
 	if (in_atomic() || !mm)
 		goto no_context;
 
+	if (faulthandler_disabled() || !mm)
+		goto no_context;
+
+	if (user_mode(regs))
+		flags |= FAULT_FLAG_USER;
+retry:
 	down_read(&mm->mmap_sem);
 
 	vma = find_vma(mm, address);
@@ -133,6 +159,7 @@ good_area:
 	printk("do_page_fault: good_area\n");
 #endif
 	write = 0;
+	pr_debug("do_page_fault: good_area\n");
 	switch (error_code & 3) {
 		default:	/* 3: write, present */
 			/* fall through */
@@ -140,6 +167,7 @@ good_area:
 			if (!(vma->vm_flags & VM_WRITE))
 				goto acc_err;
 			write++;
+			flags |= FAULT_FLAG_WRITE;
 			break;
 		case 1:		/* read, present */
 			goto acc_err;
@@ -162,6 +190,17 @@ good_area:
 	if (unlikely(fault & VM_FAULT_ERROR)) {
 		if (fault & VM_FAULT_OOM)
 			goto out_of_memory;
+	fault = handle_mm_fault(mm, vma, address, flags);
+	pr_debug("handle_mm_fault returns %d\n", fault);
+
+	if ((fault & VM_FAULT_RETRY) && fatal_signal_pending(current))
+		return 0;
+
+	if (unlikely(fault & VM_FAULT_ERROR)) {
+		if (fault & VM_FAULT_OOM)
+			goto out_of_memory;
+		else if (fault & VM_FAULT_SIGSEGV)
+			goto map_err;
 		else if (fault & VM_FAULT_SIGBUS)
 			goto bus_err;
 		BUG();
@@ -170,6 +209,32 @@ good_area:
 		current->maj_flt++;
 	else
 		current->min_flt++;
+
+	/*
+	 * Major/minor page fault accounting is only done on the
+	 * initial attempt. If we go through a retry, it is extremely
+	 * likely that the page will be found in page cache at that point.
+	 */
+	if (flags & FAULT_FLAG_ALLOW_RETRY) {
+		if (fault & VM_FAULT_MAJOR)
+			current->maj_flt++;
+		else
+			current->min_flt++;
+		if (fault & VM_FAULT_RETRY) {
+			/* Clear FAULT_FLAG_ALLOW_RETRY to avoid any risk
+			 * of starvation. */
+			flags &= ~FAULT_FLAG_ALLOW_RETRY;
+			flags |= FAULT_FLAG_TRIED;
+
+			/*
+			 * No need to up_read(&mm->mmap_sem) as we would
+			 * have already released it in __lock_page_or_retry
+			 * in mm/filemap.c.
+			 */
+
+			goto retry;
+		}
+	}
 
 	up_read(&mm->mmap_sem);
 	return 0;
@@ -189,6 +254,10 @@ out_of_memory:
 	printk("VM: killing process %s\n", current->comm);
 	if (user_mode(regs))
 		do_group_exit(SIGKILL);
+	if (!user_mode(regs))
+		goto no_context;
+	pagefault_out_of_memory();
+	return 0;
 
 no_context:
 	current->thread.signo = SIGBUS;

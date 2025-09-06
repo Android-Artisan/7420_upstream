@@ -4,6 +4,9 @@
  *  zcrypt 2.1.0
  *
  *  Copyright (C)  2001, 2006 IBM Corporation
+ *  zcrypt 2.1.0
+ *
+ *  Copyright IBM Corp. 2001, 2006
  *  Author(s): Robert Burroughs
  *	       Eric Rossman (edrossma@us.ibm.com)
  *
@@ -294,6 +297,7 @@ static inline int zcrypt_type6_crt_key(struct ica_rsa_modexpo_crt *crt,
 	memset(key, 0, sizeof(*key));
 
 	short_len = crt->inputdatalength / 2;
+	short_len = (crt->inputdatalength + 1) / 2;
 	long_len = short_len + 8;
 	pad_len = -(3*long_len + 2*short_len) & 7;
 	key_len = 3*long_len + 2*short_len + pad_len + crt->inputdatalength;

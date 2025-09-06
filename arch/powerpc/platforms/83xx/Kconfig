@@ -1,6 +1,7 @@
 menuconfig PPC_83xx
 	bool "83xx-based boards"
 	depends on 6xx && PPC_MULTIPLATFORM
+	depends on 6xx
 	select PPC_UDBG_16550
 	select PPC_PCI_CHOICE
 	select FSL_PCI if PCI
@@ -8,6 +9,14 @@ menuconfig PPC_83xx
 	select IPIC
 
 if PPC_83xx
+
+config MPC830x_RDB
+	bool "Freescale MPC830x RDB and derivatives"
+	select DEFAULT_UIMAGE
+	select PPC_MPC831x
+	select FSL_GTM
+	help
+	  This option enables support for the MPC8308 RDB and MPC8308 P1M boards.
 
 config MPC831x_RDB
 	bool "Freescale MPC831x RDB"
@@ -85,6 +94,11 @@ config MPC837x_RDB
 	select PPC_MPC837x
 	help
 	  This option enables support for the MPC837x RDB Board.
+	bool "Freescale MPC837x RDB/WLAN"
+	select DEFAULT_UIMAGE
+	select PPC_MPC837x
+	help
+	  This option enables support for the MPC837x RDB and WLAN Boards.
 
 config SBC834x
 	bool "Wind River SBC834x"
@@ -107,6 +121,20 @@ endif
 # used for usb
 config PPC_MPC831x
 	bool
+config KMETER1
+	bool "Keymile KMETER1"
+	select DEFAULT_UIMAGE
+	select QUICC_ENGINE
+	help
+	  This enables support for the Keymile KMETER1 board.
+
+
+endif
+
+# used for usb & gpio
+config PPC_MPC831x
+	bool
+	select ARCH_WANT_OPTIONAL_GPIOLIB
 
 # used for math-emu
 config PPC_MPC832x
@@ -119,3 +147,12 @@ config PPC_MPC834x
 # used for usb
 config PPC_MPC837x
 	bool
+# used for usb & gpio
+config PPC_MPC834x
+	bool
+	select ARCH_WANT_OPTIONAL_GPIOLIB
+
+# used for usb & gpio
+config PPC_MPC837x
+	bool
+	select ARCH_WANT_OPTIONAL_GPIOLIB

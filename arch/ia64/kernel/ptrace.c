@@ -16,12 +16,16 @@
 #include <linux/errno.h>
 #include <linux/ptrace.h>
 #include <linux/smp_lock.h>
+#include <linux/mm.h>
+#include <linux/errno.h>
+#include <linux/ptrace.h>
 #include <linux/user.h>
 #include <linux/security.h>
 #include <linux/audit.h>
 #include <linux/signal.h>
 #include <linux/regset.h>
 #include <linux/elf.h>
+#include <linux/tracehook.h>
 
 #include <asm/pgtable.h>
 #include <asm/processor.h>
@@ -604,6 +608,7 @@ void ia64_ptrace_stop(void)
 	if (test_and_set_tsk_thread_flag(current, TIF_RESTORE_RSE))
 		return;
 	tsk_set_notify_resume(current);
+	set_notify_resume(current);
 	unw_init_running(do_sync_rbs, ia64_sync_user_rbs);
 }
 
@@ -645,6 +650,11 @@ ptrace_attach_sync_user_rbs (struct task_struct *child)
 		if (child->state == TASK_STOPPED &&
 		    !test_and_set_tsk_thread_flag(child, TIF_RESTORE_RSE)) {
 			tsk_set_notify_resume(child);
+	if (child->sighand) {
+		spin_lock_irq(&child->sighand->siglock);
+		if (child->state == TASK_STOPPED &&
+		    !test_and_set_tsk_thread_flag(child, TIF_RESTORE_RSE)) {
+			set_notify_resume(child);
 
 			child->state = TASK_TRACED;
 			stopped = 1;
@@ -665,6 +675,7 @@ ptrace_attach_sync_user_rbs (struct task_struct *child)
 	 */
 	read_lock(&tasklist_lock);
 	if (child->signal) {
+	if (child->sighand) {
 		spin_lock_irq(&child->sighand->siglock);
 		if (child->state == TASK_TRACED &&
 		    (child->signal->flags & SIGNAL_STOP_STOPPED)) {
@@ -1180,6 +1191,8 @@ ptrace_disable (struct task_struct *child)
 
 long
 arch_ptrace (struct task_struct *child, long request, long addr, long data)
+arch_ptrace (struct task_struct *child, long request,
+	     unsigned long addr, unsigned long data)
 {
 	switch (request) {
 	case PTRACE_PEEKTEXT:
@@ -1256,6 +1269,9 @@ syscall_trace (void)
 /* "asmlinkage" so the input arguments are preserved... */
 
 asmlinkage void
+/* "asmlinkage" so the input arguments are preserved... */
+
+asmlinkage long
 syscall_trace_enter (long arg0, long arg1, long arg2, long arg3,
 		     long arg4, long arg5, long arg6, long arg7,
 		     struct pt_regs regs)
@@ -1263,6 +1279,9 @@ syscall_trace_enter (long arg0, long arg1, long arg2, long arg3,
 	if (test_thread_flag(TIF_SYSCALL_TRACE) 
 	    && (current->ptrace & PT_PTRACED))
 		syscall_trace();
+	if (test_thread_flag(TIF_SYSCALL_TRACE))
+		if (tracehook_report_syscall_entry(&regs))
+			return -ENOSYS;
 
 	/* copy user rbs to kernel rbs */
 	if (test_thread_flag(TIF_RESTORE_RSE))
@@ -1283,6 +1302,10 @@ syscall_trace_enter (long arg0, long arg1, long arg2, long arg3,
 		audit_syscall_entry(arch, syscall, arg0, arg1, arg2, arg3);
 	}
 
+
+	audit_syscall_entry(regs.r15, arg0, arg1, arg2, arg3);
+
+	return 0;
 }
 
 /* "asmlinkage" so the input arguments are preserved... */
@@ -1305,6 +1328,13 @@ syscall_trace_leave (long arg0, long arg1, long arg2, long arg3,
 	    || test_thread_flag(TIF_SINGLESTEP))
 	    && (current->ptrace & PT_PTRACED))
 		syscall_trace();
+	int step;
+
+	audit_syscall_exit(&regs);
+
+	step = test_thread_flag(TIF_SINGLESTEP);
+	if (step || test_thread_flag(TIF_SYSCALL_TRACE))
+		tracehook_report_syscall_exit(&regs, step);
 
 	/* copy user rbs to kernel rbs */
 	if (test_thread_flag(TIF_RESTORE_RSE))
@@ -1941,6 +1971,7 @@ gpregs_writeback(struct task_struct *target,
 	if (test_and_set_tsk_thread_flag(target, TIF_RESTORE_RSE))
 		return 0;
 	tsk_set_notify_resume(target);
+	set_notify_resume(target);
 	return do_regset_call(do_gpregs_writeback, target, regset, 0, 0,
 		NULL, NULL);
 }
@@ -2198,4 +2229,83 @@ const struct user_regset_view *task_user_regset_view(struct task_struct *tsk)
 		return &user_ia32_view;
 #endif
 	return &user_ia64_view;
+}
+	return &user_ia64_view;
+}
+
+struct syscall_get_set_args {
+	unsigned int i;
+	unsigned int n;
+	unsigned long *args;
+	struct pt_regs *regs;
+	int rw;
+};
+
+static void syscall_get_set_args_cb(struct unw_frame_info *info, void *data)
+{
+	struct syscall_get_set_args *args = data;
+	struct pt_regs *pt = args->regs;
+	unsigned long *krbs, cfm, ndirty, nlocals, nouts;
+	int i, count;
+
+	if (unw_unwind_to_user(info) < 0)
+		return;
+
+	/*
+	 * We get here via a few paths:
+	 * - break instruction: cfm is shared with caller.
+	 *   syscall args are in out= regs, locals are non-empty.
+	 * - epsinstruction: cfm is set by br.call
+	 *   locals don't exist.
+	 *
+	 * For both cases argguments are reachable in cfm.sof - cfm.sol.
+	 * CFM: [ ... | sor: 17..14 | sol : 13..7 | sof : 6..0 ]
+	 */
+	cfm = pt->cr_ifs;
+	nlocals = (cfm >> 7) & 0x7f; /* aka sol */
+	nouts = (cfm & 0x7f) - nlocals; /* aka sof - sol */
+	krbs = (unsigned long *)info->task + IA64_RBS_OFFSET/8;
+	ndirty = ia64_rse_num_regs(krbs, krbs + (pt->loadrs >> 19));
+
+	count = 0;
+	if (in_syscall(pt))
+		count = min_t(int, args->n, nouts);
+
+	/* Iterate over outs. */
+	for (i = 0; i < count; i++) {
+		int j = ndirty + nlocals + i + args->i;
+		if (args->rw)
+			*ia64_rse_skip_regs(krbs, j) = args->args[i];
+		else
+			args->args[i] = *ia64_rse_skip_regs(krbs, j);
+	}
+
+	if (!args->rw) {
+		while (i < args->n) {
+			args->args[i] = 0;
+			i++;
+		}
+	}
+}
+
+void ia64_syscall_get_set_arguments(struct task_struct *task,
+	struct pt_regs *regs, unsigned int i, unsigned int n,
+	unsigned long *args, int rw)
+{
+	struct syscall_get_set_args data = {
+		.i = i,
+		.n = n,
+		.args = args,
+		.regs = regs,
+		.rw = rw,
+	};
+
+	if (task == current)
+		unw_init_running(syscall_get_set_args_cb, &data);
+	else {
+		struct unw_frame_info ufi;
+		memset(&ufi, 0, sizeof(ufi));
+		unw_init_from_blocked_task(&ufi, task);
+		syscall_get_set_args_cb(&ufi, &data);
+	}
 }

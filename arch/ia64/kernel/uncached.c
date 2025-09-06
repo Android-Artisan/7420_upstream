@@ -26,6 +26,13 @@
 #include <asm/system.h>
 #include <asm/pgtable.h>
 #include <asm/atomic.h>
+#include <linux/efi.h>
+#include <linux/genalloc.h>
+#include <linux/gfp.h>
+#include <asm/page.h>
+#include <asm/pal.h>
+#include <asm/pgtable.h>
+#include <linux/atomic.h>
 #include <asm/tlbflush.h>
 #include <asm/sn/arch.h>
 
@@ -99,6 +106,8 @@ static int uncached_add_chunk(struct uncached_pool *uc_pool, int nid)
 	/* attempt to allocate a granule's worth of cached memory pages */
 
 	page = alloc_pages_node(nid, GFP_KERNEL | __GFP_ZERO | GFP_THISNODE,
+	page = __alloc_pages_node(nid,
+				GFP_KERNEL | __GFP_ZERO | __GFP_THISNODE,
 				IA64_GRANULE_SHIFT-PAGE_SHIFT);
 	if (!page) {
 		mutex_unlock(&uc_pool->add_chunk_mutex);
@@ -251,6 +260,7 @@ EXPORT_SYMBOL(uncached_free_page);
  */
 static int __init uncached_build_memmap(unsigned long uc_start,
 					unsigned long uc_end, void *arg)
+static int __init uncached_build_memmap(u64 uc_start, u64 uc_end, void *arg)
 {
 	int nid = paddr_to_nid(uc_start - __IA64_UNCACHED_OFFSET);
 	struct gen_pool *pool = uncached_pools[nid].pool;

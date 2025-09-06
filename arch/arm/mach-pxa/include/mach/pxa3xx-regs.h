@@ -13,6 +13,8 @@
 #ifndef __ASM_ARCH_PXA3XX_REGS_H
 #define __ASM_ARCH_PXA3XX_REGS_H
 
+#include <mach/hardware.h>
+
 /*
  * Oscillator Configuration Register (OSCC)
  */
@@ -37,6 +39,7 @@
 
 /*
  * Slave Power Managment Unit
+ * Slave Power Management Unit
  */
 #define ASCR		__REG(0x40f40000)	/* Application Subsystem Power Status/Configuration */
 #define ARSR		__REG(0x40f40004)	/* Application Subsystem Reset Status */
@@ -131,6 +134,31 @@
 #define CKENB		__REG(0x41340010)	/* B Clock Enable Register */
 #define AC97_DIV	__REG(0x41340014)	/* AC97 clock divisor value register */
 
+#define CKENC		__REG(0x41340024)	/* C Clock Enable Register */
+#define AC97_DIV	__REG(0x41340014)	/* AC97 clock divisor value register */
+
+#define ACCR_XPDIS		(1 << 31)	/* Core PLL Output Disable */
+#define ACCR_SPDIS		(1 << 30)	/* System PLL Output Disable */
+#define ACCR_D0CS		(1 << 26)	/* D0 Mode Clock Select */
+#define ACCR_PCCE		(1 << 11)	/* Power Mode Change Clock Enable */
+#define ACCR_DDR_D0CS		(1 << 7)	/* DDR SDRAM clock frequency in D0CS (PXA31x only) */
+
+#define ACCR_SMCFS_MASK		(0x7 << 23)	/* Static Memory Controller Frequency Select */
+#define ACCR_SFLFS_MASK		(0x3 << 18)	/* Frequency Select for Internal Memory Controller */
+#define ACCR_XSPCLK_MASK	(0x3 << 16)	/* Core Frequency during Frequency Change */
+#define ACCR_HSS_MASK		(0x3 << 14)	/* System Bus-Clock Frequency Select */
+#define ACCR_DMCFS_MASK		(0x3 << 12)	/* Dynamic Memory Controller Clock Frequency Select */
+#define ACCR_XN_MASK		(0x7 << 8)	/* Core PLL Turbo-Mode-to-Run-Mode Ratio */
+#define ACCR_XL_MASK		(0x1f)		/* Core PLL Run-Mode-to-Oscillator Ratio */
+
+#define ACCR_SMCFS(x)		(((x) & 0x7) << 23)
+#define ACCR_SFLFS(x)		(((x) & 0x3) << 18)
+#define ACCR_XSPCLK(x)		(((x) & 0x3) << 16)
+#define ACCR_HSS(x)		(((x) & 0x3) << 14)
+#define ACCR_DMCFS(x)		(((x) & 0x3) << 12)
+#define ACCR_XN(x)		(((x) & 0x7) << 8)
+#define ACCR_XL(x)		((x) & 0x1f)
+
 /*
  * Clock Enable Bit
  */
@@ -179,5 +207,11 @@
 /* Note: GCU clock enable bit differs on PXA300/PXA310 and PXA320 */
 #define PXA300_CKEN_GRAPHICS	42	/* Graphics controller clock enable */
 #define PXA320_CKEN_GRAPHICS	7	/* Graphics controller clock enable */
+#define CKEN_MMC3	5	/* < MMC3 Clock Enable */
+#define CKEN_MVED	43	/* < MVED clock enable */
+
+/* Note: GCU clock enable bit differs on PXA300/PXA310 and PXA320 */
+#define CKEN_PXA300_GCU		42	/* Graphics controller clock enable */
+#define CKEN_PXA320_GCU		7	/* Graphics controller clock enable */
 
 #endif /* __ASM_ARCH_PXA3XX_REGS_H */

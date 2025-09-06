@@ -34,6 +34,12 @@
  *
  * Or submit a bug report through the following website:
  *    http://www.sf.net/projects/lksctp
+ * along with GNU CC; see the file COPYING.  If not, see
+ * <http://www.gnu.org/licenses/>.
+ *
+ * Please send any bug reports or fixes you make to the
+ * email address(es):
+ *    lksctp developers <linux-sctp@vger.kernel.org>
  *
  * Written or modified by:
  *    La Monte H.P. Yarroll <piggy@acm.org>
@@ -46,6 +52,14 @@
 #include <net/sctp/sctp.h>
 #include <net/sctp/sm.h>
 #include <linux/interrupt.h>
+ */
+
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
+#include <net/sctp/sctp.h>
+#include <net/sctp/sm.h>
+#include <linux/interrupt.h>
+#include <linux/slab.h>
 
 /* Initialize an SCTP inqueue.  */
 void sctp_inq_init(struct sctp_inq *queue)
@@ -101,6 +115,8 @@ void sctp_inq_push(struct sctp_inq *q, struct sctp_chunk *chunk)
 	 * on the BH related data structures.
 	 */
 	list_add_tail(&chunk->list, &q->in_chunk_list);
+	if (chunk->asoc)
+		chunk->asoc->stats.ipackets++;
 	q->immediate.func(&q->immediate);
 }
 
@@ -161,6 +177,9 @@ struct sctp_chunk *sctp_inq_pop(struct sctp_inq *queue)
 				sctp_chunk_free(chunk);
 				chunk = queue->in_progress = NULL;
 			}
+			/* Force chunk->skb->data to chunk->chunk_end.  */
+			skb_pull(chunk->skb, chunk->chunk_end - chunk->skb->data);
+			/* We are guaranteed to pull a SCTP header. */
 		}
 	}
 
@@ -214,6 +233,15 @@ struct sctp_chunk *sctp_inq_pop(struct sctp_inq *queue)
 		chunk = queue->in_progress = NULL;
 
 		return NULL;
+	if (chunk->chunk_end + sizeof(sctp_chunkhdr_t) <
+	if (chunk->chunk_end + sizeof(sctp_chunkhdr_t) <=
+	    skb_tail_pointer(chunk->skb)) {
+		/* This is not a singleton */
+		chunk->singleton = 0;
+	} else if (chunk->chunk_end > skb_tail_pointer(chunk->skb)) {
+		/* Discard inside state machine. */
+		chunk->pdiscard = 1;
+		chunk->chunk_end = skb_tail_pointer(chunk->skb);
 	} else {
 		/* We are at the end of the packet, so mark the chunk
 		 * in case we need to send a SACK.
@@ -225,6 +253,10 @@ struct sctp_chunk *sctp_inq_pop(struct sctp_inq *queue)
 			  " length %d, skb->len %d\n",chunk,
 			  sctp_cname(SCTP_ST_CHUNK(chunk->chunk_hdr->type)),
 			  ntohs(chunk->chunk_hdr->length), chunk->skb->len);
+	pr_debug("+++sctp_inq_pop+++ chunk:%p[%s], length:%d, skb->len:%d\n",
+		 chunk, sctp_cname(SCTP_ST_CHUNK(chunk->chunk_hdr->type)),
+		 ntohs(chunk->chunk_hdr->length), chunk->skb->len);
+
 	return chunk;
 }
 

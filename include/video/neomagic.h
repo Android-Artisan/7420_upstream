@@ -131,6 +131,7 @@ struct neofb_par {
 	unsigned char Sequencer[5];	/* Video Sequencer */
 	unsigned char Graphics[9];	/* Video Graphics */
 	unsigned char Attribute[21];	/* Video Atribute */
+	unsigned char Attribute[21];	/* Video Attribute */
 
 	unsigned char GeneralLockReg;
 	unsigned char ExtCRTDispAddr;
@@ -164,6 +165,7 @@ struct neofb_par {
 #ifdef CONFIG_MTRR
 	int mtrr;
 #endif
+	int wc_cookie;
 	u8 __iomem *mmio_vbase;
 	u8 cursorOff;
 	u8 *cursorPad;		/* Must die !! */

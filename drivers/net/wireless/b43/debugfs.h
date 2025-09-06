@@ -12,6 +12,8 @@ enum b43_dyndbg {		/* Dynamic debugging features */
 	B43_DBG_PWORK_STOP,
 	B43_DBG_LO,
 	B43_DBG_FIRMWARE,
+	B43_DBG_KEYS,
+	B43_DBG_VERBOSESTATS,
 	__B43_NR_DYNDBG,
 };
 
@@ -25,6 +27,10 @@ struct b43_txstatus_log {
 	struct b43_txstatus *log;
 	int end;
 	spinlock_t lock;
+	/* This structure is protected by wl->mutex */
+
+	struct b43_txstatus *log;
+	int end;
 };
 
 struct b43_dfs_file {
@@ -67,11 +73,13 @@ struct b43_dfsentry {
 
 	/* Enabled/Disabled list for the dynamic debugging features. */
 	u32 dyn_debug[__B43_NR_DYNDBG];
+	bool dyn_debug[__B43_NR_DYNDBG];
 	/* Dentries for the dynamic debugging entries. */
 	struct dentry *dyn_debug_dentries[__B43_NR_DYNDBG];
 };
 
 int b43_debug(struct b43_wldev *dev, enum b43_dyndbg feature);
+bool b43_debug(struct b43_wldev *dev, enum b43_dyndbg feature);
 
 void b43_debugfs_init(void);
 void b43_debugfs_exit(void);
@@ -85,6 +93,9 @@ void b43_debugfs_log_txstat(struct b43_wldev *dev,
 static inline int b43_debug(struct b43_wldev *dev, enum b43_dyndbg feature)
 {
 	return 0;
+static inline bool b43_debug(struct b43_wldev *dev, enum b43_dyndbg feature)
+{
+	return false;
 }
 
 static inline void b43_debugfs_init(void)

@@ -78,6 +78,9 @@ attribute_container_register(struct attribute_container *cont)
 	klist_init(&cont->containers,internal_container_klist_get,
 		   internal_container_klist_put);
 		
+	klist_init(&cont->containers, internal_container_klist_get,
+		   internal_container_klist_put);
+
 	mutex_lock(&attribute_container_mutex);
 	list_add_tail(&cont->node, &attribute_container_list);
 	mutex_unlock(&attribute_container_mutex);
@@ -95,6 +98,7 @@ int
 attribute_container_unregister(struct attribute_container *cont)
 {
 	int retval = -EBUSY;
+
 	mutex_lock(&attribute_container_mutex);
 	spin_lock(&cont->containers.k_lock);
 	if (!list_empty(&cont->containers.k_list))
@@ -106,6 +110,7 @@ attribute_container_unregister(struct attribute_container *cont)
 	mutex_unlock(&attribute_container_mutex);
 	return retval;
 		
+
 }
 EXPORT_SYMBOL_GPL(attribute_container_unregister);
 
@@ -113,6 +118,7 @@ EXPORT_SYMBOL_GPL(attribute_container_unregister);
 static void attribute_container_release(struct device *classdev)
 {
 	struct internal_container *ic 
+	struct internal_container *ic
 		= container_of(classdev, struct internal_container, classdev);
 	struct device *dev = classdev->parent;
 
@@ -159,6 +165,7 @@ attribute_container_add_device(struct device *dev,
 		ic = kzalloc(sizeof(*ic), GFP_KERNEL);
 		if (!ic) {
 			dev_printk(KERN_ERR, dev, "failed to allocate class container\n");
+			dev_err(dev, "failed to allocate class container\n");
 			continue;
 		}
 
@@ -168,6 +175,7 @@ attribute_container_add_device(struct device *dev,
 		ic->classdev.class = cont->class;
 		cont->class->dev_release = attribute_container_release;
 		strcpy(ic->classdev.bus_id, dev->bus_id);
+		dev_set_name(&ic->classdev, "%s", dev_name(dev));
 		if (fn)
 			fn(cont, dev, &ic->classdev);
 		else
@@ -187,6 +195,8 @@ attribute_container_add_device(struct device *dev,
 			({ klist_iter_exit(iter) ; NULL; }); \
 	}) ) != NULL; )
 			
+	})) != NULL;)
+
 
 /**
  * attribute_container_remove_device - make device eligible for removal.
@@ -249,6 +259,7 @@ attribute_container_remove_device(struct device *dev,
  */
 void
 attribute_container_device_trigger(struct device *dev, 
+attribute_container_device_trigger(struct device *dev,
 				   int (*fn)(struct attribute_container *,
 					     struct device *,
 					     struct device *))
@@ -328,6 +339,7 @@ attribute_container_add_attrs(struct device *classdev)
 		return sysfs_create_group(&classdev->kobj, cont->grp);
 
 	for (i = 0; attrs[i]; i++) {
+		sysfs_attr_init(&attrs[i]->attr);
 		error = device_create_file(classdev, attrs[i]);
 		if (error)
 			return error;
@@ -349,6 +361,7 @@ int
 attribute_container_add_class_device(struct device *classdev)
 {
 	int error = device_add(classdev);
+
 	if (error)
 		return error;
 	return attribute_container_add_attrs(classdev);

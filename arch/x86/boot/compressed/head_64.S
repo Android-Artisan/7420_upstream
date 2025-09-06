@@ -28,6 +28,12 @@
 #include <asm/segment.h>
 #include <asm/pgtable.h>
 #include <asm/page.h>
+	.code32
+	.text
+
+#include <linux/init.h>
+#include <linux/linkage.h>
+#include <asm/segment.h>
 #include <asm/boot.h>
 #include <asm/msr.h>
 #include <asm/processor-flags.h>
@@ -46,12 +52,43 @@ startup_32:
 
 	cli
 	movl	$(__KERNEL_DS), %eax
+#include <asm/bootparam.h>
+
+/*
+ * Locally defined symbols should be marked hidden:
+ */
+	.hidden _bss
+	.hidden _ebss
+	.hidden _got
+	.hidden _egot
+
+	__HEAD
+	.code32
+ENTRY(startup_32)
+	/*
+	 * 32bit entry is 0 and it is ABI so immutable!
+	 * If we come here directly from a bootloader,
+	 * kernel(text+data+bss+brk) ramdisk, zero_page, command line
+	 * all need to be under the 4G limit.
+	 */
+	cld
+	/*
+	 * Test KEEP_SEGMENTS flag to see if the bootloader is asking
+	 * us to not reload segments
+	 */
+	testb $KEEP_SEGMENTS, BP_loadflags(%esi)
+	jnz 1f
+
+	cli
+	movl	$(__BOOT_DS), %eax
 	movl	%eax, %ds
 	movl	%eax, %es
 	movl	%eax, %ss
 1:
 
 /* Calculate the delta between where we were compiled to run
+/*
+ * Calculate the delta between where we were compiled to run
  * at and where we were actually loaded at.  This can only be done
  * with a short local call on x86.  Nothing  else will tell us what
  * address we are running at.  The reserved chunk of the real-mode
@@ -59,6 +96,7 @@ startup_32:
  * for this calculation. Only 4 bytes are needed.
  */
 	leal	(0x1e4+4)(%esi), %esp
+	leal	(BP_scratch+4)(%esi), %esp
 	call	1f
 1:	popl	%ebp
 	subl	$1b, %ebp
@@ -76,6 +114,11 @@ startup_32:
  * and where the code will actually run at.
  */
 /* %ebp contains the address we are loaded at by the boot loader and %ebx
+/*
+ * Compute the delta between where we were compiled to run at
+ * and where the code will actually run at.
+ *
+ * %ebp contains the address we are loaded at by the boot loader and %ebx
  * contains the address where we should move the kernel image temporarily
  * for safe in-place decompression.
  */
@@ -98,6 +141,19 @@ startup_32:
 	/* Add 32K + 18 bytes of extra slack and align on a 4K boundary */
 	addl	$(32768 + 18 + 4095), %ebx
 	andl	$~4095, %ebx
+	movl	BP_kernel_alignment(%esi), %eax
+	decl	%eax
+	addl	%eax, %ebx
+	notl	%eax
+	andl	%eax, %ebx
+	cmpl	$LOAD_PHYSICAL_ADDR, %ebx
+	jae	1f
+#endif
+	movl	$LOAD_PHYSICAL_ADDR, %ebx
+1:
+
+	/* Target address to relocate to for decompression */
+	addl	$z_extract_offset, %ebx
 
 /*
  * Prepare for entering 64 bit mode
@@ -111,12 +167,15 @@ startup_32:
 	/* Enable PAE mode */
 	xorl	%eax, %eax
 	orl	$(X86_CR4_PAE), %eax
+	movl	%cr4, %eax
+	orl	$X86_CR4_PAE, %eax
 	movl	%eax, %cr4
 
  /*
   * Build early 4G boot pagetable
   */
 	/* Initialize Page tables to 0*/
+	/* Initialize Page tables to 0 */
 	leal	pgtable(%ebx), %edi
 	xorl	%eax, %eax
 	movl	$((4096*6)/4), %ecx
@@ -158,6 +217,14 @@ startup_32:
 	wrmsr
 
 	/* Setup for the jump to 64bit mode
+	/* After gdt is loaded */
+	xorl	%eax, %eax
+	lldt	%ax
+	movl    $__BOOT_TSS, %eax
+	ltr	%ax
+
+	/*
+	 * Setup for the jump to 64bit mode
 	 *
 	 * When the jump is performend we will be in long mode but
 	 * in 32bit compatibility mode with EFER.LME = 1, CS.L = 0, CS.D = 1
@@ -168,6 +235,13 @@ startup_32:
 	 */
 	pushl	$__KERNEL_CS
 	leal	startup_64(%ebp), %eax
+#ifdef CONFIG_EFI_MIXED
+	movl	efi32_config(%ebp), %ebx
+	cmp	$0, %ebx
+	jz	1f
+	leal	handover_entry(%ebp), %eax
+1:
+#endif
 	pushl	%eax
 
 	/* Enter paged protected Mode, activating Long Mode */
@@ -198,6 +272,109 @@ ENTRY(startup_64)
 	 * an identity mapped page table being provied that maps our
 	 * entire text+data+bss and hopefully all of memory.
 	 */
+ENDPROC(startup_32)
+
+#ifdef CONFIG_EFI_MIXED
+	.org 0x190
+ENTRY(efi32_stub_entry)
+	add	$0x4, %esp		/* Discard return address */
+	popl	%ecx
+	popl	%edx
+	popl	%esi
+
+	leal	(BP_scratch+4)(%esi), %esp
+	call	1f
+1:	pop	%ebp
+	subl	$1b, %ebp
+
+	movl	%ecx, efi32_config(%ebp)
+	movl	%edx, efi32_config+8(%ebp)
+	sgdtl	efi32_boot_gdt(%ebp)
+
+	leal	efi32_config(%ebp), %eax
+	movl	%eax, efi_config(%ebp)
+
+	/* Disable paging */
+	movl	%cr0, %eax
+	btrl	$X86_CR0_PG_BIT, %eax
+	movl	%eax, %cr0
+
+	jmp	startup_32
+ENDPROC(efi32_stub_entry)
+#endif
+
+	.code64
+	.org 0x200
+ENTRY(startup_64)
+	/*
+	 * 64bit entry is 0x200 and it is ABI so immutable!
+	 * We come here either from startup_32 or directly from a
+	 * 64bit bootloader.
+	 * If we come here from a bootloader, kernel(text+data+bss+brk),
+	 * ramdisk, zero_page, command line could be above 4G.
+	 * We depend on an identity mapped page table being provided
+	 * that maps our entire kernel(text+data+bss+brk), zero page
+	 * and command line.
+	 */
+#ifdef CONFIG_EFI_STUB
+	/*
+	 * The entry point for the PE/COFF executable is efi_pe_entry, so
+	 * only legacy boot loaders will execute this jmp.
+	 */
+	jmp	preferred_addr
+
+ENTRY(efi_pe_entry)
+	movq	%rcx, efi64_config(%rip)	/* Handle */
+	movq	%rdx, efi64_config+8(%rip) /* EFI System table pointer */
+
+	leaq	efi64_config(%rip), %rax
+	movq	%rax, efi_config(%rip)
+
+	call	1f
+1:	popq	%rbp
+	subq	$1b, %rbp
+
+	/*
+	 * Relocate efi_config->call().
+	 */
+	addq	%rbp, efi64_config+88(%rip)
+
+	movq	%rax, %rdi
+	call	make_boot_params
+	cmpq	$0,%rax
+	je	fail
+	mov	%rax, %rsi
+	leaq	startup_32(%rip), %rax
+	movl	%eax, BP_code32_start(%rsi)
+	jmp	2f		/* Skip the relocation */
+
+handover_entry:
+	call	1f
+1:	popq	%rbp
+	subq	$1b, %rbp
+
+	/*
+	 * Relocate efi_config->call().
+	 */
+	movq	efi_config(%rip), %rax
+	addq	%rbp, 88(%rax)
+2:
+	movq	efi_config(%rip), %rdi
+	call	efi_main
+	movq	%rax,%rsi
+	cmpq	$0,%rax
+	jne	2f
+fail:
+	/* EFI init failed, so hang. */
+	hlt
+	jmp	fail
+2:
+	movl	BP_code32_start(%esi), %eax
+	leaq	preferred_addr(%rax), %rax
+	jmp	*%rax
+
+preferred_addr:
+#endif
 
 	/* Setup data segments. */
 	xorl	%eax, %eax
@@ -211,12 +388,19 @@ ENTRY(startup_64)
 	ltr	%ax
 
 	/* Compute the decompressed kernel start address.  It is where
+
+	/*
+	 * Compute the decompressed kernel start address.  It is where
 	 * we were loaded at aligned to a 2M boundary. %rbp contains the
 	 * decompressed kernel start address.
 	 *
 	 * If it is a relocatable kernel then decompress and run the kernel
 	 * from load address aligned to 2MB addr, otherwise decompress and
 	 * run the kernel from CONFIG_PHYSICAL_START
+	 * run the kernel from LOAD_PHYSICAL_ADDR
+	 *
+	 * We cannot rely on the calculation done in 32-bit mode, since we
+	 * may have been invoked via the 64-bit entry point.
 	 */
 
 	/* Start with the delta to where the kernel will run at. */
@@ -254,6 +438,40 @@ ENTRY(startup_64)
 	movq	%rax, 0(%r9)
 	subq	$8, %rcx
 	jnz	1b
+	movl	BP_kernel_alignment(%rsi), %eax
+	decl	%eax
+	addq	%rax, %rbp
+	notq	%rax
+	andq	%rax, %rbp
+	cmpq	$LOAD_PHYSICAL_ADDR, %rbp
+	jae	1f
+#endif
+	movq	$LOAD_PHYSICAL_ADDR, %rbp
+1:
+
+	/* Target address to relocate to for decompression */
+	leaq	z_extract_offset(%rbp), %rbx
+
+	/* Set up the stack */
+	leaq	boot_stack_end(%rbx), %rsp
+
+	/* Zero EFLAGS */
+	pushq	$0
+	popfq
+
+/*
+ * Copy the compressed kernel to the end of our buffer
+ * where decompression in place becomes safe.
+ */
+	pushq	%rsi
+	leaq	(_bss-8)(%rip), %rsi
+	leaq	(_bss-8)(%rbx), %rdi
+	movq	$_bss /* - $startup_32 */, %rcx
+	shrq	$3, %rcx
+	std
+	rep	movsq
+	cld
+	popq	%rsi
 
 /*
  * Jump to the relocated address.
@@ -300,6 +518,75 @@ relocated:
  * Jump to the decompressed kernel.
  */
 	jmp	*%rbp
+#ifdef CONFIG_EFI_STUB
+	.org 0x390
+ENTRY(efi64_stub_entry)
+	movq	%rdi, efi64_config(%rip)	/* Handle */
+	movq	%rsi, efi64_config+8(%rip) /* EFI System table pointer */
+
+	leaq	efi64_config(%rip), %rax
+	movq	%rax, efi_config(%rip)
+
+	movq	%rdx, %rsi
+	jmp	handover_entry
+ENDPROC(efi64_stub_entry)
+#endif
+
+	.text
+relocated:
+
+/*
+ * Clear BSS (stack is currently empty)
+ */
+	xorl	%eax, %eax
+	leaq    _bss(%rip), %rdi
+	leaq    _ebss(%rip), %rcx
+	subq	%rdi, %rcx
+	shrq	$3, %rcx
+	rep	stosq
+
+/*
+ * Adjust our own GOT
+ */
+	leaq	_got(%rip), %rdx
+	leaq	_egot(%rip), %rcx
+1:
+	cmpq	%rcx, %rdx
+	jae	2f
+	addq	%rbx, (%rdx)
+	addq	$8, %rdx
+	jmp	1b
+2:
+	
+/*
+ * Do the decompression, and jump to the new kernel..
+ */
+	pushq	%rsi			/* Save the real mode argument */
+	movq	$z_run_size, %r9	/* size of kernel with .bss and .brk */
+	pushq	%r9
+	movq	%rsi, %rdi		/* real mode address */
+	leaq	boot_heap(%rip), %rsi	/* malloc area for uncompression */
+	leaq	input_data(%rip), %rdx  /* input_data */
+	movl	$z_input_len, %ecx	/* input_len */
+	movq	%rbp, %r8		/* output target address */
+	movq	$z_output_len, %r9	/* decompressed length, end of relocs */
+	call	decompress_kernel	/* returns kernel location in %rax */
+	popq	%r9
+	popq	%rsi
+
+/*
+ * Jump to the decompressed kernel.
+ */
+	jmp	*%rax
+
+	.code32
+no_longmode:
+	/* This isn't an x86-64 CPU so hang */
+1:
+	hlt
+	jmp     1b
+
+#include "../../kernel/verify_cpu.S"
 
 	.data
 gdt:
@@ -316,8 +603,40 @@ gdt_end:
 .bss
 /* Stack and heap for uncompression */
 .balign 4
+#ifdef CONFIG_EFI_STUB
+efi_config:
+	.quad	0
+
+#ifdef CONFIG_EFI_MIXED
+	.global efi32_config
+efi32_config:
+	.fill	11,8,0
+	.quad	efi64_thunk
+	.byte	0
+#endif
+
+	.global efi64_config
+efi64_config:
+	.fill	11,8,0
+	.quad	efi_call
+	.byte	1
+#endif /* CONFIG_EFI_STUB */
+
+/*
+ * Stack and heap for uncompression
+ */
+	.bss
+	.balign 4
 boot_heap:
 	.fill BOOT_HEAP_SIZE, 1, 0
 boot_stack:
 	.fill BOOT_STACK_SIZE, 1, 0
 boot_stack_end:
+
+/*
+ * Space for page tables (not in .bss so not zeroed)
+ */
+	.section ".pgtable","a",@nobits
+	.balign 4096
+pgtable:
+	.fill 6*4096, 1, 0

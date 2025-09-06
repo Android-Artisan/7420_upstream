@@ -26,6 +26,9 @@
  * along with this program; see the file COPYING.
  * If not, write to the Free Software Foundation,
  * 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+ * Copyright 2007-2010 Analog Devices Inc.
+ *
+ * Licensed under the Clear BSD license or the GPL-2 (or later)
  */
 
 #ifndef _DEF_BF549_H
@@ -149,6 +152,11 @@
 #define                        SPI2_RDBR  0xffc02410   /* SPI2 Receive Data Buffer Register */
 #define                        SPI2_BAUD  0xffc02414   /* SPI2 Baud Rate Register */
 #define                      SPI2_SHADOW  0xffc02418   /* SPI2 Receive Data Buffer Shadow Register */
+/* Include defBF54x_base.h for the set of #defines that are common to all ADSP-BF54x processors */
+#include "defBF54x_base.h"
+
+/* The BF549 is like the BF544, but has MXVR */
+#include "defBF547.h"
 
 /* MXVR Registers */
 

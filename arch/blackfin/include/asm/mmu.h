@@ -3,6 +3,16 @@
 
 /* Copyright (C) 2002, David McCullough <davidm@snapgear.com> */
 
+/*
+ * Copyright 2004-2009 Analog Devices Inc.
+ *                2002 David McCullough <davidm@snapgear.com>
+ *
+ * Licensed under the GPL-2.
+ */
+
+#ifndef __MMU_H
+#define __MMU_H
+
 struct sram_list_struct {
 	struct sram_list_struct *next;
 	void *addr;

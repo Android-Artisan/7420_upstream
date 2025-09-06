@@ -1,6 +1,4 @@
-  ===========================================================================
                       The UDP-Lite protocol (RFC 3828)
-  ===========================================================================
 
 
   UDP-Lite is a Standards-Track IETF transport protocol whose characteristic
@@ -19,6 +17,16 @@
 
    o The Wireshark UDP-Lite WiKi (with capture files):
        http://wiki.wireshark.org/Lightweight_User_Datagram_Protocol
+   o The UDP-Lite Homepage:
+	http://web.archive.org/web/*/http://www.erg.abdn.ac.uk/users/gerrit/udp-lite/ 
+       From here you can also download some example application source code.
+
+   o The UDP-Lite HOWTO on
+       http://web.archive.org/web/*/http://www.erg.abdn.ac.uk/users/gerrit/udp-lite/
+	files/UDP-Lite-HOWTO.txt
+
+   o The Wireshark UDP-Lite WiKi (with capture files):
+       https://wiki.wireshark.org/Lightweight_User_Datagram_Protocol
 
    o The Protocol Spec, RFC 3828, http://www.ietf.org/rfc/rfc3828.txt
 
@@ -32,6 +40,7 @@
 
   has source code for several v4/v6 client-server and network testing examples.
 
+  (now called wireshark) has UDP-Litev4/v6 support by default. 
   Porting applications to UDP-Lite is straightforward: only socket level and
   IPPROTO need to be changed; senders additionally set the checksum coverage
   length (default = header length = 8). Details are in the next section.

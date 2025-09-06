@@ -1,5 +1,4 @@
 		Summary of CDROM ioctl calls.
-		============================
 
 		Edward A. Falk <efalk@google.com>
 

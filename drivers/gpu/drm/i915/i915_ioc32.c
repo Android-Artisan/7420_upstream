@@ -132,11 +132,25 @@ typedef struct drm_i915_getparam32 {
 	int param;
 	u32 value;
 } drm_i915_getparam32_t;
+#include <drm/drmP.h>
+#include <drm/i915_drm.h>
+#include "i915_drv.h"
+
+struct drm_i915_getparam32 {
+	s32 param;
+	/*
+	 * We screwed up the generic ioctl struct here and used a variable-sized
+	 * pointer. Use u32 in the compat struct to match the 32bit pointer
+	 * userspace expects.
+	 */
+	u32 value;
+};
 
 static int compat_i915_getparam(struct file *file, unsigned int cmd,
 				unsigned long arg)
 {
 	drm_i915_getparam32_t req32;
+	struct drm_i915_getparam32 req32;
 	drm_i915_getparam_t __user *request;
 
 	if (copy_from_user(&req32, (void __user *)arg, sizeof(req32)))
@@ -188,6 +202,12 @@ drm_ioctl_compat_t *i915_compat_ioctls[] = {
 	[DRM_I915_GETPARAM] = compat_i915_getparam,
 	[DRM_I915_IRQ_EMIT] = compat_i915_irq_emit,
 	[DRM_I915_ALLOC] = compat_i915_alloc
+	return drm_ioctl(file, DRM_IOCTL_I915_GETPARAM,
+			 (unsigned long)request);
+}
+
+static drm_ioctl_compat_t *i915_compat_ioctls[] = {
+	[DRM_I915_GETPARAM] = compat_i915_getparam,
 };
 
 /**
@@ -217,6 +237,16 @@ long i915_compat_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	else
 		ret = drm_ioctl(filp->f_path.dentry->d_inode, filp, cmd, arg);
 	unlock_kernel();
+	if (nr < DRM_COMMAND_BASE || nr >= DRM_COMMAND_END)
+		return drm_compat_ioctl(filp, cmd, arg);
+
+	if (nr < DRM_COMMAND_BASE + ARRAY_SIZE(i915_compat_ioctls))
+		fn = i915_compat_ioctls[nr - DRM_COMMAND_BASE];
+
+	if (fn != NULL)
+		ret = (*fn) (filp, cmd, arg);
+	else
+		ret = drm_ioctl(filp, cmd, arg);
 
 	return ret;
 }

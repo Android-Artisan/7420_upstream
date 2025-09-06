@@ -26,6 +26,7 @@ config MPC86XADS
 config MPC885ADS
 	bool "MPC885ADS"
 	select CPM1
+	select OF_DYNAMIC
 	help
 	  Freescale Semiconductor MPC885 Application Development System (ADS).
 	  Also known as DUET.
@@ -48,6 +49,12 @@ config PPC_ADDER875
 	help
 	  This enables support for the Analogue & Micro Adder 875
 	  board.
+
+config TQM8XX
+	bool "TQM8XX"
+	select CPM1
+	help
+	  support for the mpc8xx based boards from TQM.
 
 endchoice
 

@@ -24,6 +24,21 @@ int hfs_find_init(struct hfs_btree *tree, struct hfs_find_data *fd)
 	fd->key = ptr + tree->max_key_len + 2;
 	dprint(DBG_BNODE_REFS, "find_init: %d (%p)\n", tree->cnid, __builtin_return_address(0));
 	down(&tree->tree_lock);
+	hfs_dbg(BNODE_REFS, "find_init: %d (%p)\n",
+		tree->cnid, __builtin_return_address(0));
+	switch (tree->cnid) {
+	case HFS_CAT_CNID:
+		mutex_lock_nested(&tree->tree_lock, CATALOG_BTREE_MUTEX);
+		break;
+	case HFS_EXT_CNID:
+		mutex_lock_nested(&tree->tree_lock, EXTENTS_BTREE_MUTEX);
+		break;
+	case HFS_ATTR_CNID:
+		mutex_lock_nested(&tree->tree_lock, ATTR_BTREE_MUTEX);
+		break;
+	default:
+		return -EINVAL;
+	}
 	return 0;
 }
 
@@ -33,6 +48,9 @@ void hfs_find_exit(struct hfs_find_data *fd)
 	kfree(fd->search_key);
 	dprint(DBG_BNODE_REFS, "find_exit: %d (%p)\n", fd->tree->cnid, __builtin_return_address(0));
 	up(&fd->tree->tree_lock);
+	hfs_dbg(BNODE_REFS, "find_exit: %d (%p)\n",
+		fd->tree->cnid, __builtin_return_address(0));
+	mutex_unlock(&fd->tree->tree_lock);
 	fd->tree = NULL;
 }
 
@@ -137,6 +155,8 @@ int hfs_brec_find(struct hfs_find_data *fd)
 invalid:
 	printk(KERN_ERR "hfs: inconsistency in B*Tree (%d,%d,%d,%u,%u)\n",
 		height, bnode->height, bnode->type, nidx, parent);
+	pr_err("inconsistency in B*Tree (%d,%d,%d,%u,%u)\n",
+	       height, bnode->height, bnode->type, nidx, parent);
 	res = -EIO;
 release:
 	hfs_bnode_put(bnode);

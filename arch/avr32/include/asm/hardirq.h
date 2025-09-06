@@ -31,4 +31,7 @@ void ack_bad_irq(unsigned int irq);
 # error HARDIRQ_BITS is too low!
 #endif
 
+#ifndef __ASSEMBLY__
+#include <asm-generic/hardirq.h>
+#endif /* __ASSEMBLY__ */
 #endif /* __ASM_AVR32_HARDIRQ_H */

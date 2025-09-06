@@ -17,6 +17,8 @@
 #include "nodelist.h"
 
 static int jffs2_user_getxattr(struct inode *inode, const char *name,
+static int jffs2_user_getxattr(const struct xattr_handler *handler,
+			       struct dentry *dentry, const char *name,
 			       void *buffer, size_t size)
 {
 	if (!strcmp(name, ""))
@@ -34,6 +36,24 @@ static int jffs2_user_setxattr(struct inode *inode, const char *name, const void
 
 static size_t jffs2_user_listxattr(struct inode *inode, char *list, size_t list_size,
 				   const char *name, size_t name_len)
+	return do_jffs2_getxattr(d_inode(dentry), JFFS2_XPREFIX_USER,
+				 name, buffer, size);
+}
+
+static int jffs2_user_setxattr(const struct xattr_handler *handler,
+			       struct dentry *dentry, const char *name,
+			       const void *buffer, size_t size, int flags)
+{
+	if (!strcmp(name, ""))
+		return -EINVAL;
+	return do_jffs2_setxattr(d_inode(dentry), JFFS2_XPREFIX_USER,
+				 name, buffer, size, flags);
+}
+
+static size_t jffs2_user_listxattr(const struct xattr_handler *handler,
+				   struct dentry *dentry, char *list,
+				   size_t list_size, const char *name,
+				   size_t name_len)
 {
 	size_t retlen = XATTR_USER_PREFIX_LEN + name_len + 1;
 
@@ -46,6 +66,7 @@ static size_t jffs2_user_listxattr(struct inode *inode, char *list, size_t list_
 }
 
 struct xattr_handler jffs2_user_xattr_handler = {
+const struct xattr_handler jffs2_user_xattr_handler = {
 	.prefix = XATTR_USER_PREFIX,
 	.list = jffs2_user_listxattr,
 	.set = jffs2_user_setxattr,

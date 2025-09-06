@@ -23,12 +23,21 @@ void foo(void)
         DEFINE(TASK_EUID, offsetof(struct task_struct, euid));
         DEFINE(TASK_GID, offsetof(struct task_struct, gid));
         DEFINE(TASK_EGID, offsetof(struct task_struct, egid));
+        DEFINE(TASK_CRED, offsetof(struct task_struct, cred));
         DEFINE(TASK_REAL_PARENT, offsetof(struct task_struct, real_parent));
         DEFINE(TASK_GROUP_LEADER, offsetof(struct task_struct, group_leader));
         DEFINE(TASK_TGID, offsetof(struct task_struct, tgid));
         BLANK();
 
+        DEFINE(CRED_UID,  offsetof(struct cred, uid));
+        DEFINE(CRED_EUID, offsetof(struct cred, euid));
+        DEFINE(CRED_GID,  offsetof(struct cred, gid));
+        DEFINE(CRED_EGID, offsetof(struct cred, egid));
+        BLANK();
+
+	DEFINE(SP_OFF, offsetof(struct pt_regs, ps));
 	DEFINE(SIZEOF_PT_REGS, sizeof(struct pt_regs));
+	DEFINE(SWITCH_STACK_SIZE, sizeof(struct switch_stack));
 	DEFINE(PT_PTRACED, PT_PTRACED);
 	DEFINE(CLONE_VM, CLONE_VM);
 	DEFINE(CLONE_UNTRACED, CLONE_UNTRACED);

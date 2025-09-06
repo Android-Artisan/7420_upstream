@@ -19,6 +19,7 @@
  * Copyright (C) IBM Corporation, 2004
  *
  * Author: Max Asböck <amax@us.ibm.com>
+ * Author: Max AsbÃ¶ck <amax@us.ibm.com>
  *
  * This driver is based on code originally written by Pete Reynolds
  * and others.
@@ -52,6 +53,7 @@
 
 #include <linux/pci.h>
 #include <linux/init.h>
+#include <linux/slab.h>
 #include "ibmasm.h"
 #include "lowlevel.h"
 #include "remote.h"
@@ -62,6 +64,7 @@ MODULE_PARM_DESC(ibmasm_debug, " Set debug mode on or off");
 
 
 static int __devinit ibmasm_init_one(struct pci_dev *pdev, const struct pci_device_id *id)
+static int ibmasm_init_one(struct pci_dev *pdev, const struct pci_device_id *id)
 {
 	int result;
 	struct service_processor *sp;
@@ -106,6 +109,7 @@ static int __devinit ibmasm_init_one(struct pci_dev *pdev, const struct pci_devi
 	sp->irq = pdev->irq;
 	sp->base_address = ioremap(pci_resource_start(pdev, 0),
 					pci_resource_len(pdev, 0));
+	sp->base_address = pci_ioremap_bar(pdev, 0);
 	if (!sp->base_address) {
 		dev_err(sp->dev, "Failed to ioremap pci memory\n");
 		result =  -ENODEV;
@@ -123,7 +127,7 @@ static int __devinit ibmasm_init_one(struct pci_dev *pdev, const struct pci_devi
 	result = ibmasm_init_remote_input_dev(sp);
 	if (result) {
 		dev_err(sp->dev, "Failed to initialize remote queue\n");
-		goto error_send_message;
+		goto error_init_remote;
 	}
 
 	result = ibmasm_send_driver_vpd(sp);
@@ -143,8 +147,9 @@ static int __devinit ibmasm_init_one(struct pci_dev *pdev, const struct pci_devi
 	return 0;
 
 error_send_message:
-	disable_sp_interrupts(sp->base_address);
 	ibmasm_free_remote_input_dev(sp);
+error_init_remote:
+	disable_sp_interrupts(sp->base_address);
 	free_irq(sp->irq, (void *)sp);
 error_request_irq:
 	iounmap(sp->base_address);
@@ -166,6 +171,9 @@ error_resources:
 static void __devexit ibmasm_remove_one(struct pci_dev *pdev)
 {
 	struct service_processor *sp = (struct service_processor *)pci_get_drvdata(pdev);
+static void ibmasm_remove_one(struct pci_dev *pdev)
+{
+	struct service_processor *sp = pci_get_drvdata(pdev);
 
 	dbg("Unregistering UART\n");
 	ibmasm_unregister_uart(sp);
@@ -199,6 +207,7 @@ static struct pci_driver ibmasm_driver = {
 	.id_table	= ibmasm_pci_table,
 	.probe		= ibmasm_init_one,
 	.remove		= __devexit_p(ibmasm_remove_one),
+	.remove		= ibmasm_remove_one,
 };
 
 static void __exit ibmasm_exit (void)
@@ -223,6 +232,17 @@ static int __init ibmasm_init(void)
 		ibmasmfs_unregister();
 		return result;
 	}
+	int result = pci_register_driver(&ibmasm_driver);
+	if (result)
+		return result;
+
+	result = ibmasmfs_register();
+	if (result) {
+		pci_unregister_driver(&ibmasm_driver);
+		err("Failed to register ibmasmfs file system");
+		return result;
+	}
+
 	ibmasm_register_panic_notifier();
 	info(DRIVER_DESC " version " DRIVER_VERSION " loaded");
 	return 0;

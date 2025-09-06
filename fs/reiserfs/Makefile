@@ -11,6 +11,14 @@ reiserfs-objs := bitmap.o do_balan.o namei.o inode.o file.o dir.o fix_node.o \
 
 ifeq ($(CONFIG_REISERFS_FS_XATTR),y)
 reiserfs-objs += xattr.o xattr_user.o xattr_trusted.o
+		 item_ops.o ioctl.o xattr.o lock.o
+
+ifeq ($(CONFIG_REISERFS_PROC_INFO),y)
+reiserfs-objs += procfs.o
+endif
+
+ifeq ($(CONFIG_REISERFS_FS_XATTR),y)
+reiserfs-objs += xattr_user.o xattr_trusted.o
 endif
 
 ifeq ($(CONFIG_REISERFS_FS_SECURITY),y)
@@ -30,6 +38,7 @@ endif
 ifeq ($(CONFIG_PPC32),y)
 EXTRA_CFLAGS := $(call cc-ifversion, -lt, 0400, -O1)
 endif
+ccflags-$(CONFIG_PPC32) := $(call cc-ifversion, -lt, 0400, -O1)
 
 TAGS:
 	etags *.c

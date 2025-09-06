@@ -30,6 +30,8 @@
 #undef CONFIG_VIDEO_400_HACK
 
 /* This code uses an extended set of video mode numbers. These include:
+/*
+ * This code uses an extended set of video mode numbers. These include:
  * Aliases for standard modes
  *      NORMAL_VGA (-1)
  *      EXTENDED_VGA (-2)
@@ -74,6 +76,8 @@ void store_screen(void);
 #else
 #define DO_STORE() ((void)0)
 #endif /* CONFIG_VIDEO_RETAIN */
+void store_screen(void);
+#define DO_STORE() store_screen()
 
 /*
  * Mode table structures
@@ -97,6 +101,7 @@ struct card_info {
 };
 
 #define __videocard struct card_info __attribute__((section(".videocards")))
+#define __videocard struct card_info __attribute__((used,section(".videocards")))
 extern struct card_info video_cards[], video_cards_end[];
 
 int mode_defined(u16 mode);	/* video.c */

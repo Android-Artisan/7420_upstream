@@ -6,6 +6,7 @@
  *	easy to get working.
  *
  *	(c) 2006 Red Hat  <alan@redhat.com>
+ *	(c) 2006 Red Hat
  */
 
 #include <linux/kernel.h>
@@ -39,6 +40,7 @@ static int marvell_pata_active(struct pci_dev *pdev)
 	/* We don't yet know how to do this for other devices */
 	if (pdev->device != 0x6145)
 		return 1;	
+		return 1;
 
 	barp = pci_iomap(pdev, 5, 0x10);
 	if (barp == NULL)
@@ -59,6 +61,7 @@ static int marvell_pata_active(struct pci_dev *pdev)
 
 /**
  *	marvell_pre_reset	-	check for 40/80 pin
+ *	marvell_pre_reset	-	probe begin
  *	@link: link
  *	@deadline: deadline jiffies for the operation
  *
@@ -83,6 +86,8 @@ static int marvell_cable_detect(struct ata_port *ap)
 	switch(ap->port_no)
 	{
 	case 0:
+		if (!ap->ioaddr.bmdma_addr)
+			return ATA_CBL_PATA_UNK;
 		if (ioread8(ap->ioaddr.bmdma_addr + 1) & 1)
 			return ATA_CBL_PATA40;
 		return ATA_CBL_PATA80;
@@ -128,6 +133,8 @@ static int marvell_init_one (struct pci_dev *pdev, const struct pci_device_id *i
 
 		.pio_mask	= 0x1f,
 		.mwdma_mask	= 0x07,
+		.pio_mask	= ATA_PIO4,
+		.mwdma_mask	= ATA_MWDMA2,
 		.udma_mask 	= ATA_UDMA5,
 
 		.port_ops	= &marvell_ops,
@@ -138,6 +145,8 @@ static int marvell_init_one (struct pci_dev *pdev, const struct pci_device_id *i
 
 		.pio_mask	= 0x1f,
 		.mwdma_mask	= 0x07,
+		.pio_mask	= ATA_PIO4,
+		.mwdma_mask	= ATA_MWDMA2,
 		.udma_mask 	= ATA_UDMA6,
 
 		.port_ops	= &marvell_ops,
@@ -148,12 +157,14 @@ static int marvell_init_one (struct pci_dev *pdev, const struct pci_device_id *i
 		ppi[1] = &ata_dummy_port_info;
 
 #if defined(CONFIG_AHCI) || defined(CONFIG_AHCI_MODULE)
+#if defined(CONFIG_SATA_AHCI) || defined(CONFIG_SATA_AHCI_MODULE)
 	if (!marvell_pata_active(pdev)) {
 		printk(KERN_INFO DRV_NAME ": PATA port not active, deferring to AHCI driver.\n");
 		return -ENODEV;
 	}
 #endif
 	return ata_pci_sff_init_one(pdev, ppi, &marvell_sht, NULL);
+	return ata_pci_bmdma_init_one(pdev, ppi, &marvell_sht, NULL, 0);
 }
 
 static const struct pci_device_id marvell_pci_tbl[] = {
@@ -161,6 +172,9 @@ static const struct pci_device_id marvell_pci_tbl[] = {
 	{ PCI_DEVICE(0x11AB, 0x6121), },
 	{ PCI_DEVICE(0x11AB, 0x6123), },
 	{ PCI_DEVICE(0x11AB, 0x6145), },
+	{ PCI_DEVICE(0x1B4B, 0x91A0), },
+	{ PCI_DEVICE(0x1B4B, 0x91A4), },
+
 	{ }	/* terminate list */
 };
 
@@ -170,6 +184,7 @@ static struct pci_driver marvell_pci_driver = {
 	.probe			= marvell_init_one,
 	.remove			= ata_pci_remove_one,
 #ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 	.suspend		= ata_pci_device_suspend,
 	.resume			= ata_pci_device_resume,
 #endif
@@ -187,6 +202,7 @@ static void __exit marvell_exit(void)
 
 module_init(marvell_init);
 module_exit(marvell_exit);
+module_pci_driver(marvell_pci_driver);
 
 MODULE_AUTHOR("Alan Cox");
 MODULE_DESCRIPTION("SCSI low-level driver for Marvell ATA in legacy mode");

@@ -15,6 +15,8 @@
 #define DFBR0		(0x020)	/* DMA Channel 0 Frame Branch Register */
 #define DFBR1		(0x024)	/* DMA Channel 1 Frame Branch Register */
 #define LCSR		(0x038)	/* LCD Controller Status Register */
+#define LCSR		(0x038)	/* LCD Controller Status Register 0 */
+#define LCSR1		(0x034)	/* LCD Controller Status Register 1 */
 #define LIIDR		(0x03C)	/* LCD Controller Interrupt ID Register */
 #define TMEDRGBR	(0x040)	/* TMED RGB Seed Register */
 #define TMEDCR		(0x044)	/* TMED Control Register */
@@ -33,6 +35,23 @@
 #define LCCR3_19BPP_P	(1 << 29)
 #define LCCR3_24BPP	((1 << 29) | (1 << 24))
 #define LCCR3_25BPP	((1 << 29) | (2 << 24))
+#define FBR0		(0x020)	/* DMA Channel 0 Frame Branch Register */
+#define FBR1		(0x024)	/* DMA Channel 1 Frame Branch Register */
+#define FBR2		(0x028) /* DMA Channel 2 Frame Branch Register */
+#define FBR3		(0x02C) /* DMA Channel 2 Frame Branch Register */
+#define FBR4		(0x030) /* DMA Channel 2 Frame Branch Register */
+#define FBR5		(0x110) /* DMA Channel 2 Frame Branch Register */
+#define FBR6		(0x114) /* DMA Channel 2 Frame Branch Register */
+
+#define OVL1C1		(0x050)	/* Overlay 1 Control Register 1 */
+#define OVL1C2		(0x060)	/* Overlay 1 Control Register 2 */
+#define OVL2C1		(0x070)	/* Overlay 2 Control Register 1 */
+#define OVL2C2		(0x080)	/* Overlay 2 Control Register 2 */
+
+#define CMDCR		(0x100)	/* Command Control Register */
+#define PRSR		(0x104)	/* Panel Read Status Register */
+
+#define LCCR3_BPP(x)	((((x) & 0x7) << 24) | (((x) & 0x8) ? (1 << 29) : 0))
 
 #define LCCR3_PDFOR_0	(0 << 30)
 #define LCCR3_PDFOR_1	(1 << 30)
@@ -55,6 +74,16 @@
 #define FDADR6		(0x260) /* DMA Channel 6 Frame Descriptor Address Register */
 #define FSADR6		(0x264) /* DMA Channel 6 Frame Source Address Register */
 #define FIDR6		(0x268) /* DMA Channel 6 Frame ID Register */
+#define LCCR4_PAL_FOR_3	(3 << 15)
+#define LCCR4_PAL_FOR_MASK	(3 << 15)
+
+#define FDADR0		(0x200)	/* DMA Channel 0 Frame Descriptor Address Register */
+#define FDADR1		(0x210)	/* DMA Channel 1 Frame Descriptor Address Register */
+#define FDADR2		(0x220)	/* DMA Channel 2 Frame Descriptor Address Register */
+#define FDADR3		(0x230)	/* DMA Channel 3 Frame Descriptor Address Register */
+#define FDADR4		(0x240)	/* DMA Channel 4 Frame Descriptor Address Register */
+#define FDADR5		(0x250)	/* DMA Channel 5 Frame Descriptor Address Register */
+#define FDADR6		(0x260) /* DMA Channel 6 Frame Descriptor Address Register */
 
 #define LCCR0_ENB	(1 << 0)	/* LCD Controller enable */
 #define LCCR0_CMS	(1 << 1)	/* Color/Monochrome Display Select */
@@ -159,6 +188,22 @@
 
 #define LDCMD_PAL	(1 << 26)	/* instructs DMA to load palette buffer */
 
+#define LCSR1_IU(x)	(1 << ((x) + 23)) /* Input FIFO underrun */
+#define LCSR1_BS(x)	(1 << ((x) + 15)) /* Branch Status */
+#define LCSR1_EOF(x)	(1 << ((x) + 7))  /* End of Frame Status */
+#define LCSR1_SOF(x)	(1 << ((x) - 1))  /* Start of Frame Status */
+
+#define LDCMD_PAL	(1 << 26)	/* instructs DMA to load palette buffer */
+
+/* overlay control registers */
+#define OVLxC1_PPL(x)	((((x) - 1) & 0x3ff) << 0)	/* Pixels Per Line */
+#define OVLxC1_LPO(x)	((((x) - 1) & 0x3ff) << 10)	/* Number of Lines */
+#define OVLxC1_BPP(x)	(((x) & 0xf) << 20)	/* Bits Per Pixel */
+#define OVLxC1_OEN	(1 << 31)		/* Enable bit for Overlay */
+#define OVLxC2_XPOS(x)	(((x) & 0x3ff) << 0)	/* Horizontal Position */
+#define OVLxC2_YPOS(x)	(((x) & 0x3ff) << 10)	/* Vertical Position */
+#define OVL2C2_PFOR(x)	(((x) & 0x7) << 20)	/* Pixel Format */
+
 /* smartpanel related */
 #define PRSR_DATA(x)	((x) & 0xff)	/* Panel Data */
 #define PRSR_A0		(1 << 8)	/* Read Data Source */
@@ -177,4 +222,11 @@
 
 #define SMART_CMD(x)	(SMART_CMD_WRITE_COMMAND | ((x) & 0xff))
 #define SMART_DAT(x)	(SMART_CMD_WRITE_DATA | ((x) & 0xff))
+
+/* SMART_DELAY() is introduced for software controlled delay primitive which
+ * can be inserted between command sequences, unused command 0x6 is used here
+ * and delay ranges from 0ms ~ 255ms
+ */
+#define SMART_CMD_DELAY		(0x6 << 9)
+#define SMART_DELAY(ms)		(SMART_CMD_DELAY | ((ms) & 0xff))
 #endif /* __ASM_ARCH_REGS_LCD_H */

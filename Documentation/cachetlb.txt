@@ -6,6 +6,7 @@
 This document describes the cache/tlb flushing interfaces called
 by the Linux VM subsystem.  It enumerates over each interface,
 describes it's intended purpose, and what side effect is expected
+describes its intended purpose, and what side effect is expected
 after the interface is invoked.
 
 The side effects described below are stated for a uniprocessor
@@ -17,6 +18,7 @@ thinking SMP cache/tlb flushing must be so inefficient, this is in
 fact an area where many optimizations are possible.  For example,
 if it can be proven that a user address space has never executed
 on a cpu (see vma->cpu_vm_mask), one need not perform a flush
+on a cpu (see mm_cpumask()), one need not perform a flush
 for this address space on that cpu.
 
 First, the TLB flushing interfaces, since they are the simplest.  The
@@ -58,6 +60,7 @@ changes occur:
 	modifications for the address space 'vma->vm_mm' in the range
 	'start' to 'end-1' will be visible to the cpu.  That is, after
 	running, here will be no entries in the TLB for 'mm' for
+	running, there will be no entries in the TLB for 'mm' for
 	virtual addresses in the range 'start' to 'end-1'.
 
 	The "vma" is the backing store being used for the region.
@@ -94,6 +97,12 @@ changes occur:
 	tell the architecture specific code that a translation
 	described by "pte" now exists at virtual address "address"
 	for address space "vma->vm_mm", in the software page tables.
+			 unsigned long address, pte_t *ptep)
+
+	At the end of every page fault, this routine is invoked to
+	tell the architecture specific code that a translation
+	now exists at virtual address "address" for address space
+	"vma->vm_mm", in the software page tables.
 
 	A port may use this information in any way it so chooses.
 	For example, it could use this event to pre-load TLB
@@ -232,6 +241,7 @@ The biggest problem is that of virtual aliasing in the data cache
 of a processor.
 
 Is your port susceptible to virtual aliasing in it's D-cache?
+Is your port susceptible to virtual aliasing in its D-cache?
 Well, if your D-cache is virtually indexed, is larger in size than
 PAGE_SIZE, and does not prevent multiple cache lines for the same
 physical address from existing at once, you have this problem.
@@ -250,6 +260,7 @@ Next, you have to solve the D-cache aliasing issue for all
 other cases.  Please keep in mind that fact that, for a given page
 mapped into some user address space, there is always at least one more
 mapping, that of the kernel in it's linear mapping starting at
+mapping, that of the kernel in its linear mapping starting at
 PAGE_OFFSET.  So immediately, once the first user maps a given
 physical page into its address space, by implication the D-cache
 aliasing problem has the potential to exist since the kernel already
@@ -321,6 +332,10 @@ maps this page at its virtual address.
 	an empty list, just mark the architecture private page flag bit.
 	Later, in update_mmu_cache(), a check is made of this flag bit,
 	and if set the flush is done and the flag bit is cleared.
+	page->mapping->i_mmap is an empty tree, just mark the architecture
+	private page flag bit.  Later, in update_mmu_cache(), a check is
+	made of this flag bit, and if set the flush is done and the flag
+	bit is cleared.
 
 	IMPORTANT NOTE: It is often important, if you defer the flush,
 			that the actual flush occurs on the same CPU
@@ -377,3 +392,29 @@ maps this page at its virtual address.
 	All the functionality of flush_icache_page can be implemented in
 	flush_dcache_page and update_mmu_cache. In 2.7 the hope is to
 	remove this interface completely.
+	flush_dcache_page and update_mmu_cache. In the future, the hope
+	is to remove this interface completely.
+
+The final category of APIs is for I/O to deliberately aliased address
+ranges inside the kernel.  Such aliases are set up by use of the
+vmap/vmalloc API.  Since kernel I/O goes via physical pages, the I/O
+subsystem assumes that the user mapping and kernel offset mapping are
+the only aliases.  This isn't true for vmap aliases, so anything in
+the kernel trying to do I/O to vmap areas must manually manage
+coherency.  It must do this by flushing the vmap range before doing
+I/O and invalidating it after the I/O returns.
+
+  void flush_kernel_vmap_range(void *vaddr, int size)
+       flushes the kernel cache for a given virtual address range in
+       the vmap area.  This is to make sure that any data the kernel
+       modified in the vmap range is made visible to the physical
+       page.  The design is to make this area safe to perform I/O on.
+       Note that this API does *not* also flush the offset map alias
+       of the area.
+
+  void invalidate_kernel_vmap_range(void *vaddr, int size) invalidates
+       the cache for a given virtual address range in the vmap area
+       which prevents the processor from making the cache stale by
+       speculatively reading data while the I/O was occurring to the
+       physical pages.  This is only necessary for data reads into the
+       vmap area.

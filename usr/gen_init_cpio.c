@@ -22,6 +22,7 @@
 
 static unsigned int offset;
 static unsigned int ino = 721;
+static time_t default_mtime;
 
 struct file_handler {
 	const char *type;
@@ -104,6 +105,9 @@ static int cpio_mkslink(const char *name, const char *target,
 	char s[256];
 	time_t mtime = time(NULL);
 
+
+	if (name[0] == '/')
+		name++;
 	sprintf(s,"%s%08X%08X%08lX%08lX%08X%08lX"
 	       "%08X%08X%08X%08X%08X%08X%08X",
 		"070701",		/* magic */
@@ -113,6 +117,7 @@ static int cpio_mkslink(const char *name, const char *target,
 		(long) gid,		/* gid */
 		1,			/* nlink */
 		(long) mtime,		/* mtime */
+		(long) default_mtime,	/* mtime */
 		(unsigned)strlen(target)+1, /* filesize */
 		3,			/* major */
 		1,			/* minor */
@@ -152,6 +157,9 @@ static int cpio_mkgeneric(const char *name, unsigned int mode,
 	char s[256];
 	time_t mtime = time(NULL);
 
+
+	if (name[0] == '/')
+		name++;
 	sprintf(s,"%s%08X%08X%08lX%08lX%08X%08lX"
 	       "%08X%08X%08X%08X%08X%08X%08X",
 		"070701",		/* magic */
@@ -161,6 +169,7 @@ static int cpio_mkgeneric(const char *name, unsigned int mode,
 		(long) gid,		/* gid */
 		2,			/* nlink */
 		(long) mtime,		/* mtime */
+		(long) default_mtime,	/* mtime */
 		0,			/* filesize */
 		3,			/* major */
 		1,			/* minor */
@@ -245,6 +254,8 @@ static int cpio_mknod(const char *name, unsigned int mode,
 	else
 		mode |= S_IFCHR;
 
+	if (name[0] == '/')
+		name++;
 	sprintf(s,"%s%08X%08X%08lX%08lX%08X%08lX"
 	       "%08X%08X%08X%08X%08X%08X%08X",
 		"070701",		/* magic */
@@ -254,6 +265,7 @@ static int cpio_mknod(const char *name, unsigned int mode,
 		(long) gid,		/* gid */
 		1,			/* nlink */
 		(long) mtime,		/* mtime */
+		(long) default_mtime,	/* mtime */
 		0,			/* filesize */
 		3,			/* major */
 		1,			/* minor */
@@ -309,9 +321,19 @@ static int cpio_mkfile(const char *name, const char *location,
 		goto error;
 	}
 
+	unsigned int i;
+
+	mode |= S_IFREG;
+
 	file = open (location, O_RDONLY);
 	if (file < 0) {
 		fprintf (stderr, "File %s could not be opened for reading\n", location);
+		goto error;
+	}
+
+	retval = fstat(file, &buf);
+	if (retval) {
+		fprintf(stderr, "File %s could not be stat()'ed\n", location);
 		goto error;
 	}
 
@@ -332,6 +354,8 @@ static int cpio_mkfile(const char *name, const char *location,
 		/* data goes on last link */
 		if (i == nlinks) size = buf.st_size;
 
+		if (name[0] == '/')
+			name++;
 		namesize = strlen(name) + 1;
 		sprintf(s,"%s%08X%08X%08lX%08lX%08X%08lX"
 		       "%08lX%08X%08X%08X%08X%08X%08X",
@@ -355,6 +379,10 @@ static int cpio_mkfile(const char *name, const char *location,
 
 		if (size) {
 			fwrite(filebuf, size, 1, stdout);
+			if (fwrite(filebuf, size, 1, stdout) != 1) {
+				fprintf(stderr, "writing filebuf failed\n");
+				goto error;
+			}
 			offset += size;
 			push_pad();
 		}
@@ -368,6 +396,23 @@ error:
 	if (filebuf) free(filebuf);
 	if (file >= 0) close(file);
 	return rc;
+}
+
+static char *cpio_replace_env(char *new_location)
+{
+	char expanded[PATH_MAX + 1];
+	char *start, *end, *var;
+
+	while ((start = strstr(new_location, "${")) &&
+	       (end = strchr(start + 2, '}'))) {
+		*start = *end = 0;
+		var = getenv(start + 2);
+		snprintf(expanded, sizeof expanded, "%s%s%s",
+			 new_location, var ? var : "", end + 1);
+		strcpy(new_location, expanded);
+	}
+
+	return new_location;
 }
 
 static int cpio_mkfile_line(const char *line)
@@ -416,6 +461,8 @@ static int cpio_mkfile_line(const char *line)
 		dname = name;
 	}
 	rc = cpio_mkfile(dname, location, mode, uid, gid, nlinks);
+	rc = cpio_mkfile(dname, cpio_replace_env(location),
+	                 mode, uid, gid, nlinks);
  fail:
 	if (dname_len) free(dname);
 	return rc;
@@ -425,6 +472,10 @@ void usage(const char *prog)
 {
 	fprintf(stderr, "Usage:\n"
 		"\t%s <cpio_list>\n"
+static void usage(const char *prog)
+{
+	fprintf(stderr, "Usage:\n"
+		"\t%s [-t <timestamp>] <cpio_list>\n"
 		"\n"
 		"<cpio_list> is a file containing newline separated entries that\n"
 		"describe the files to be included in the initramfs archive:\n"
@@ -439,6 +490,7 @@ void usage(const char *prog)
 		"\n"
 		"<name>       name of the file/dir/nod/etc in the archive\n"
 		"<location>   location of the file in the current filesystem\n"
+		"             expands shell variables quoted with ${}\n"
 		"<target>     link target\n"
 		"<mode>       mode/permissions of the file\n"
 		"<uid>        user id (0=root)\n"
@@ -455,6 +507,11 @@ void usage(const char *prog)
 		"dir /root 0700 0 0\n"
 		"dir /sbin 0755 0 0\n"
 		"file /sbin/kinit /usr/src/klibc/kinit/kinit 0755 0 0\n",
+		"file /sbin/kinit /usr/src/klibc/kinit/kinit 0755 0 0\n"
+		"\n"
+		"<timestamp> is time in seconds since Epoch that will be used\n"
+		"as mtime for symlinks, special files and directories. The default\n"
+		"is to use the current time for these entries.\n",
 		prog);
 }
 
@@ -503,6 +560,42 @@ int main (int argc, char *argv[])
 	else if (! (cpio_list = fopen(argv[1], "r"))) {
 		fprintf(stderr, "ERROR: unable to open '%s': %s\n\n",
 			argv[1], strerror(errno));
+	const char *filename;
+
+	default_mtime = time(NULL);
+	while (1) {
+		int opt = getopt(argc, argv, "t:h");
+		char *invalid;
+
+		if (opt == -1)
+			break;
+		switch (opt) {
+		case 't':
+			default_mtime = strtol(optarg, &invalid, 10);
+			if (!*optarg || *invalid) {
+				fprintf(stderr, "Invalid timestamp: %s\n",
+						optarg);
+				usage(argv[0]);
+				exit(1);
+			}
+			break;
+		case 'h':
+		case '?':
+			usage(argv[0]);
+			exit(opt == 'h' ? 0 : 1);
+		}
+	}
+
+	if (argc - optind != 1) {
+		usage(argv[0]);
+		exit(1);
+	}
+	filename = argv[optind];
+	if (!strcmp(filename, "-"))
+		cpio_list = stdin;
+	else if (!(cpio_list = fopen(filename, "r"))) {
+		fprintf(stderr, "ERROR: unable to open '%s': %s\n\n",
+			filename, strerror(errno));
 		usage(argv[0]);
 		exit(1);
 	}

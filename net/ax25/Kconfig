@@ -8,6 +8,7 @@ menuconfig HAMRADIO
 	help
 	  If you want to connect your Linux box to an amateur radio, answer Y
 	  here. You want to read <http://www.tapr.org/tapr/html/pkthome.html>
+	  here. You want to read <http://www.tapr.org/>
 	  and more specifically about AX.25 on Linux
 	  <http://www.linux-ax25.org/>.
 
@@ -43,6 +44,7 @@ config AX25
 	  kernel source. More information about digital amateur radio in
 	  general is on the WWW at
 	  <http://www.tapr.org/tapr/html/pkthome.html>.
+	  <http://www.tapr.org/>.
 
 	  To compile this driver as a module, choose M here: the
 	  module will be called ax25.
@@ -90,6 +92,7 @@ config NETROM
 	  file <file:Documentation/networking/ax25.txt>. More information about
 	  digital amateur radio in general is on the WWW at
 	  <http://www.tapr.org/tapr/html/pkthome.html>.
+	  <http://www.tapr.org/>.
 
 	  To compile this driver as a module, choose M here: the
 	  module will be called netrom.
@@ -109,6 +112,7 @@ config ROSE
 	  file <file:Documentation/networking/ax25.txt>. More information about
 	  digital amateur radio in general is on the WWW at
 	  <http://www.tapr.org/tapr/html/pkthome.html>.
+	  <http://www.tapr.org/>.
 
 	  To compile this driver as a module, choose M here: the
 	  module will be called rose.

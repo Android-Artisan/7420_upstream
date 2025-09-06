@@ -21,6 +21,18 @@
 #include <linux/leds.h>
 #include <mach/hardware.h>
 #include <asm/io.h>
+#include <linux/platform_device.h>
+#include <linux/leds.h>
+#include <linux/module.h>
+#include <linux/io.h>
+#include <mach/hardware.h>
+
+#define FSG_LED_WLAN_BIT	0
+#define FSG_LED_WAN_BIT		1
+#define FSG_LED_SATA_BIT	2
+#define FSG_LED_USB_BIT		4
+#define FSG_LED_RING_BIT	5
+#define FSG_LED_SYNC_BIT	7
 
 static short __iomem *latch_address;
 static unsigned short latch_value;
@@ -103,26 +115,34 @@ static void fsg_led_ring_set(struct led_classdev *led_cdev,
 static struct led_classdev fsg_wlan_led = {
 	.name			= "fsg:blue:wlan",
 	.brightness_set		= fsg_led_wlan_set,
+static struct led_classdev fsg_wlan_led = {
+	.name			= "fsg:blue:wlan",
+	.brightness_set		= fsg_led_wlan_set,
+	.flags			= LED_CORE_SUSPENDRESUME,
 };
 
 static struct led_classdev fsg_wan_led = {
 	.name			= "fsg:blue:wan",
 	.brightness_set		= fsg_led_wan_set,
+	.flags			= LED_CORE_SUSPENDRESUME,
 };
 
 static struct led_classdev fsg_sata_led = {
 	.name			= "fsg:blue:sata",
 	.brightness_set		= fsg_led_sata_set,
+	.flags			= LED_CORE_SUSPENDRESUME,
 };
 
 static struct led_classdev fsg_usb_led = {
 	.name			= "fsg:blue:usb",
 	.brightness_set		= fsg_led_usb_set,
+	.flags			= LED_CORE_SUSPENDRESUME,
 };
 
 static struct led_classdev fsg_sync_led = {
 	.name			= "fsg:blue:sync",
 	.brightness_set		= fsg_led_sync_set,
+	.flags			= LED_CORE_SUSPENDRESUME,
 };
 
 static struct led_classdev fsg_ring_led = {
@@ -157,6 +177,10 @@ static int fsg_led_resume(struct platform_device *dev)
 #endif
 
 
+	.flags			= LED_CORE_SUSPENDRESUME,
+};
+
+
 static int fsg_led_probe(struct platform_device *pdev)
 {
 	int ret;
@@ -167,6 +191,10 @@ static int fsg_led_probe(struct platform_device *pdev)
 		ret = -ENOMEM;
 		goto failremap;
 	}
+	latch_address = (unsigned short *) devm_ioremap(&pdev->dev,
+						IXP4XX_EXP_BUS_BASE(2), 512);
+	if (!latch_address)
+		return -ENOMEM;
 
 	latch_value = 0xffff;
 	*latch_address = latch_value;
@@ -210,6 +238,29 @@ static int fsg_led_probe(struct platform_device *pdev)
  failwlan:
 	iounmap(latch_address);
  failremap:
+	ret = devm_led_classdev_register(&pdev->dev, &fsg_wlan_led);
+	if (ret < 0)
+		return ret;
+
+	ret = devm_led_classdev_register(&pdev->dev, &fsg_wan_led);
+	if (ret < 0)
+		return ret;
+
+	ret = devm_led_classdev_register(&pdev->dev, &fsg_sata_led);
+	if (ret < 0)
+		return ret;
+
+	ret = devm_led_classdev_register(&pdev->dev, &fsg_usb_led);
+	if (ret < 0)
+		return ret;
+
+	ret = devm_led_classdev_register(&pdev->dev, &fsg_sync_led);
+	if (ret < 0)
+		return ret;
+
+	ret = devm_led_classdev_register(&pdev->dev, &fsg_ring_led);
+	if (ret < 0)
+		return ret;
 
 	return ret;
 }
@@ -236,6 +287,8 @@ static struct platform_driver fsg_led_driver = {
 	.suspend	= fsg_led_suspend,
 	.resume		= fsg_led_resume,
 #endif
+static struct platform_driver fsg_led_driver = {
+	.probe		= fsg_led_probe,
 	.driver		= {
 		.name		= "fsg-led",
 	},
@@ -255,6 +308,7 @@ static void __exit fsg_led_exit(void)
 
 module_init(fsg_led_init);
 module_exit(fsg_led_exit);
+module_platform_driver(fsg_led_driver);
 
 MODULE_AUTHOR("Rod Whitby <rod@whitby.id.au>");
 MODULE_DESCRIPTION("Freecom FSG-3 LED driver");

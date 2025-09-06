@@ -3,6 +3,7 @@
  *
  * Author: MontaVista Software, Inc.
  *         source@mvista.com
+ *	   source@mvista.com
  *
  * Copyright 2001-2002 MontaVista Software Inc.
  *
@@ -48,6 +49,8 @@
 #include <linux/ioport.h>
 #include <linux/platform_device.h>
 #include <linux/delay.h>
+#include <linux/gpio.h>
+#include <linux/leds.h>
 #include <asm/io.h>
 #include <asm/reboot.h>
 #include <asm/txx9/generic.h>
@@ -218,6 +221,11 @@ static void __init rbtx4927_mem_setup(void)
 	if (!strstr(argptr, "console="))
 		strcat(argptr, " console=ttyS0,38400");
 #endif
+	/* TX4927-SIO DTR on (PIO[15]) */
+	gpio_request(15, "sio-dtr");
+	gpio_direction_output(15, 1);
+
+	tx4927_sio_init(0, 0);
 }
 
 static void __init rbtx4927_clock_init(void)
@@ -304,11 +312,49 @@ static void __init rbtx4927_ne_init(void)
 	platform_device_register_simple("ne", -1, res, ARRAY_SIZE(res));
 }
 
+static void __init rbtx4927_mtd_init(void)
+{
+	int i;
+
+	for (i = 0; i < 2; i++)
+		tx4927_mtd_init(i);
+}
+
+static void __init rbtx4927_gpioled_init(void)
+{
+	static struct gpio_led leds[] = {
+		{ .name = "gpioled:green:0", .gpio = 0, .active_low = 1, },
+		{ .name = "gpioled:green:1", .gpio = 1, .active_low = 1, },
+	};
+	static struct gpio_led_platform_data pdata = {
+		.num_leds = ARRAY_SIZE(leds),
+		.leds = leds,
+	};
+	struct platform_device *pdev = platform_device_alloc("leds-gpio", 0);
+
+	if (!pdev)
+		return;
+	pdev->dev.platform_data = &pdata;
+	if (platform_device_add(pdev))
+		platform_device_put(pdev);
+}
+
 static void __init rbtx4927_device_init(void)
 {
 	toshiba_rbtx4927_rtc_init();
 	rbtx4927_ne_init();
 	tx4927_wdt_init();
+	rbtx4927_mtd_init();
+	if (TX4927_REV_PCODE() == 0x4927) {
+		tx4927_dmac_init(2);
+		tx4927_aclc_init(0, 1);
+	} else {
+		tx4938_dmac_init(0, 2);
+		tx4938_aclc_init();
+	}
+	platform_device_register_simple("txx9aclc-generic", -1, NULL, 0);
+	txx9_iocled_init(RBTX4927_LED_ADDR - IO_BASE, -1, 3, 1, "green", NULL);
+	rbtx4927_gpioled_init();
 }
 
 struct txx9_board_vec rbtx4927_vec __initdata = {

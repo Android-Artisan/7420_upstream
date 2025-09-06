@@ -294,3 +294,4 @@ static void __exit guillemot_exit(void)
 
 module_init(guillemot_init);
 module_exit(guillemot_exit);
+module_gameport_driver(guillemot_drv);

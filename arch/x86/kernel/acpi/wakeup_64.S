@@ -3,6 +3,8 @@
 #include <asm/segment.h>
 #include <asm/pgtable.h>
 #include <asm/page.h>
+#include <asm/pgtable_types.h>
+#include <asm/page_types.h>
 #include <asm/msr.h>
 #include <asm/asm-offsets.h>
 
@@ -34,6 +36,7 @@ wakeup_long64:
 
 	movq	saved_rip, %rax
 	jmp	*%rax
+ENDPROC(wakeup_long64)
 
 bogus_64_magic:
 	jmp	bogus_64_magic
@@ -44,6 +47,7 @@ bogus_64_magic:
 	.type	do_suspend_lowlevel,@function
 do_suspend_lowlevel:
 .LFB5:
+ENTRY(do_suspend_lowlevel)
 	subq	$8, %rsp
 	xorl	%eax, %eax
 	call	save_processor_state
@@ -68,6 +72,7 @@ do_suspend_lowlevel:
 	popq	pt_regs_flags(%rax)
 
 	movq	$.L97, saved_rip(%rip)
+	movq	$.Lresume_point, saved_rip(%rip)
 
 	movq	%rsp, saved_rsp
 	movq	%rbp, saved_rbp
@@ -86,6 +91,12 @@ do_suspend_lowlevel:
 	movl	$24, %eax
 	movw	%ax, %ds
 
+	call	x86_acpi_enter_sleep_state
+	/* in case something went wrong, restore the machine status and go on */
+	jmp	.Lresume_point
+
+	.align 4
+.Lresume_point:
 	/* We don't restore %rax, it must be 0 anyway */
 	movq	$saved_context, %rax
 	movq	saved_context_cr4(%rax), %rbx
@@ -123,6 +134,9 @@ do_suspend_lowlevel:
 	
 .data
 ALIGN
+ENDPROC(do_suspend_lowlevel)
+
+.data
 ENTRY(saved_rbp)	.quad	0
 ENTRY(saved_rsi)	.quad	0
 ENTRY(saved_rdi)	.quad	0

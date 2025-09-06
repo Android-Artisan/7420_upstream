@@ -8,6 +8,8 @@
  *
  *	(c) Copyright 1996 Alan Cox <alan@redhat.com>, All Rights Reserved.
  *				http://www.redhat.com
+ *	(c) Copyright 1996 Alan Cox <alan@lxorguk.ukuu.org.uk>,
+ *						All Rights Reserved.
  *
  *	This program is free software; you can redistribute it and/or
  *	modify it under the terms of the GNU General Public License
@@ -19,6 +21,7 @@
  *	"AS-IS" and at no charge.
  *
  *	(c) Copyright 1995    Alan Cox <alan@redhat.com>
+ *	(c) Copyright 1995    Alan Cox <alan@lxorguk.ukuu.org.uk>
  *
  *	14-Dec-2001 Matt Domsch <Matt_Domsch@dell.com>
  *	    Added nowayout module option to override CONFIG_WATCHDOG_NOWAYOUT
@@ -27,6 +30,8 @@
  *	    Clean up ioctls, clean up init + exit, add expect close support,
  *	    add wdt_start and wdt_stop as parameters.
  */
+
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/module.h>
 #include <linux/moduleparam.h>
@@ -44,6 +49,8 @@
 
 #define DRV_NAME "advantechwdt"
 #define PFX DRV_NAME ": "
+
+#define DRV_NAME "advantechwdt"
 #define WATCHDOG_NAME "Advantech WDT"
 #define WATCHDOG_TIMEOUT 60		/* 60 sec default timeout */
 
@@ -79,6 +86,8 @@ MODULE_PARM_DESC(timeout,
 
 static int nowayout = WATCHDOG_NOWAYOUT;
 module_param(nowayout, int, 0);
+static bool nowayout = WATCHDOG_NOWAYOUT;
+module_param(nowayout, bool, 0);
 MODULE_PARM_DESC(nowayout,
 	"Watchdog cannot be stopped once started (default="
 		__MODULE_STRING(WATCHDOG_NOWAYOUT) ")");
@@ -139,6 +148,10 @@ static long advwdt_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	int __user *p = argp;
 	static struct watchdog_info ident = {
 		.options = WDIOF_KEEPALIVEPING | WDIOF_SETTIMEOUT | WDIOF_MAGICCLOSE,
+	static const struct watchdog_info ident = {
+		.options = WDIOF_KEEPALIVEPING |
+			   WDIOF_SETTIMEOUT |
+			   WDIOF_MAGICCLOSE,
 		.firmware_version = 1,
 		.identity = WATCHDOG_NAME,
 	};
@@ -207,6 +220,7 @@ static int advwdt_close(struct inode *inode, struct file *file)
 	} else {
 		printk(KERN_CRIT PFX
 				"Unexpected close, not stopping watchdog!\n");
+		pr_crit("Unexpected close, not stopping watchdog!\n");
 		advwdt_ping();
 	}
 	clear_bit(0, &advwdt_is_open);
@@ -238,6 +252,7 @@ static struct miscdevice advwdt_miscdev = {
  */
 
 static int __devinit advwdt_probe(struct platform_device *dev)
+static int __init advwdt_probe(struct platform_device *dev)
 {
 	int ret;
 
@@ -246,6 +261,8 @@ static int __devinit advwdt_probe(struct platform_device *dev)
 			printk(KERN_ERR PFX
 				"I/O address 0x%04x already in use\n",
 								wdt_stop);
+			pr_err("I/O address 0x%04x already in use\n",
+			       wdt_stop);
 			ret = -EIO;
 			goto out;
 		}
@@ -255,6 +272,7 @@ static int __devinit advwdt_probe(struct platform_device *dev)
 		printk(KERN_ERR PFX
 				"I/O address 0x%04x already in use\n",
 								wdt_start);
+		pr_err("I/O address 0x%04x already in use\n", wdt_start);
 		ret = -EIO;
 		goto unreg_stop;
 	}
@@ -264,6 +282,11 @@ static int __devinit advwdt_probe(struct platform_device *dev)
 		advwdt_set_heartbeat(WATCHDOG_TIMEOUT);
 		printk(KERN_INFO PFX
 			"timeout value must be 1<=x<=63, using %d\n", timeout);
+	/* Check that the heartbeat value is within it's range ;
+	 * if not reset to the default */
+	if (advwdt_set_heartbeat(timeout)) {
+		advwdt_set_heartbeat(WATCHDOG_TIMEOUT);
+		pr_info("timeout value must be 1<=x<=63, using %d\n", timeout);
 	}
 
 	ret = misc_register(&advwdt_miscdev);
@@ -274,6 +297,11 @@ static int __devinit advwdt_probe(struct platform_device *dev)
 		goto unreg_regions;
 	}
 	printk(KERN_INFO PFX "initialized. timeout=%d sec (nowayout=%d)\n",
+		pr_err("cannot register miscdev on minor=%d (err=%d)\n",
+		       WATCHDOG_MINOR, ret);
+		goto unreg_regions;
+	}
+	pr_info("initialized. timeout=%d sec (nowayout=%d)\n",
 		timeout, nowayout);
 out:
 	return ret;
@@ -286,6 +314,7 @@ unreg_stop:
 }
 
 static int __devexit advwdt_remove(struct platform_device *dev)
+static int advwdt_remove(struct platform_device *dev)
 {
 	misc_deregister(&advwdt_miscdev);
 	release_region(wdt_start, 1);
@@ -307,6 +336,9 @@ static struct platform_driver advwdt_driver = {
 	.shutdown	= advwdt_shutdown,
 	.driver		= {
 		.owner	= THIS_MODULE,
+	.remove		= advwdt_remove,
+	.shutdown	= advwdt_shutdown,
+	.driver		= {
 		.name	= DRV_NAME,
 	},
 };
@@ -333,6 +365,21 @@ static int __init advwdt_init(void)
 
 unreg_platform_driver:
 	platform_driver_unregister(&advwdt_driver);
+	pr_info("WDT driver for Advantech single board computer initialising\n");
+
+	advwdt_platform_device = platform_device_register_simple(DRV_NAME,
+								-1, NULL, 0);
+	if (IS_ERR(advwdt_platform_device))
+		return PTR_ERR(advwdt_platform_device);
+
+	err = platform_driver_probe(&advwdt_driver, advwdt_probe);
+	if (err)
+		goto unreg_platform_device;
+
+	return 0;
+
+unreg_platform_device:
+	platform_device_unregister(advwdt_platform_device);
 	return err;
 }
 
@@ -341,6 +388,7 @@ static void __exit advwdt_exit(void)
 	platform_device_unregister(advwdt_platform_device);
 	platform_driver_unregister(&advwdt_driver);
 	printk(KERN_INFO PFX "Watchdog Module Unloaded.\n");
+	pr_info("Watchdog Module Unloaded\n");
 }
 
 module_init(advwdt_init);

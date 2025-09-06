@@ -33,6 +33,21 @@ int ieee754dp_tint(ieee754dp x)
 	COMPXDP;
 
 	CLEARCX;
+ *  51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA.
+ */
+
+#include "ieee754dp.h"
+
+int ieee754dp_tint(union ieee754dp x)
+{
+	u64 residue;
+	int round;
+	int sticky;
+	int odd;
+
+	COMPXDP;
+
+	ieee754_clearcx();
 
 	EXPLODEXDP;
 	FLUSHXDP;
@@ -45,6 +60,12 @@ int ieee754dp_tint(ieee754dp x)
 		return ieee754si_xcpt(ieee754si_indef(), "dp_tint", x);
 	case IEEE754_CLASS_ZERO:
 		return 0;
+		ieee754_setcx(IEEE754_INVALID_OPERATION);
+		return ieee754si_indef();
+
+	case IEEE754_CLASS_ZERO:
+		return 0;
+
 	case IEEE754_CLASS_DNORM:
 	case IEEE754_CLASS_NORM:
 		break;
@@ -64,6 +85,13 @@ int ieee754dp_tint(ieee754dp x)
 		int sticky;
 		int odd;
 
+		ieee754_setcx(IEEE754_INVALID_OPERATION);
+		return ieee754si_indef();
+	}
+	/* oh gawd */
+	if (xe > DP_FBITS) {
+		xm <<= xe - DP_FBITS;
+	} else if (xe < DP_FBITS) {
 		if (xe < -1) {
 			residue = xm;
 			round = 0;
@@ -75,6 +103,11 @@ int ieee754dp_tint(ieee754dp x)
 			round = (residue >> 63) != 0;
 			sticky = (residue << 1) != 0;
 			xm >>= DP_MBITS - xe;
+		} else {
+			residue = xm << (64 - DP_FBITS + xe);
+			round = (residue >> 63) != 0;
+			sticky = (residue << 1) != 0;
+			xm >>= DP_FBITS - xe;
 		}
 		/* Note: At this point upper 32 bits of xm are guaranteed
 		   to be zero */
@@ -91,6 +124,17 @@ int ieee754dp_tint(ieee754dp x)
 				xm++;
 			break;
 		case IEEE754_RD:	/* toward -Infinity */
+		case FPU_CSR_RN:
+			if (round && (sticky || odd))
+				xm++;
+			break;
+		case FPU_CSR_RZ:
+			break;
+		case FPU_CSR_RU:	/* toward +Infinity */
+			if ((round || sticky) && !xs)
+				xm++;
+			break;
+		case FPU_CSR_RD:	/* toward -Infinity */
 			if ((round || sticky) && xs)
 				xm++;
 			break;
@@ -103,6 +147,11 @@ int ieee754dp_tint(ieee754dp x)
 		}
 		if (round || sticky)
 			SETCX(IEEE754_INEXACT);
+			ieee754_setcx(IEEE754_INVALID_OPERATION);
+			return ieee754si_indef();
+		}
+		if (round || sticky)
+			ieee754_setcx(IEEE754_INEXACT);
 	}
 	if (xs)
 		return -xm;

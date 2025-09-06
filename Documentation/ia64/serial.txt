@@ -33,7 +33,6 @@ SERIAL DEVICE NAMING
                                   pre-2.6.10      pre-2.6.10
                     MMIO         (EFI console    (EFI console
                    address        on builtin)     on MP port)    2.6.10
-                  ==========      ==========      ==========     ======
       builtin     0xff5e0000        ttyS0           ttyS1         ttyS0
       MP UPS      0xf8031000        ttyS1           ttyS2         ttyS1
       MP Console  0xf8030000        ttyS2           ttyS0         ttyS2
@@ -134,6 +133,7 @@ TROUBLESHOOTING SERIAL CONSOLE PROBLEMS
 
 
 [1] http://www.dig64.org/specifications/DIG64_PCDPv20.pdf
+[1] http://www.dig64.org/specifications/agreement 
     The table was originally defined as the "HCDP" for "Headless
     Console/Debug Port."  The current version is the "PCDP" for
     "Primary Console and Debug Port Devices."

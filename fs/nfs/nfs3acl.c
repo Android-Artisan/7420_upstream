@@ -1,4 +1,5 @@
 #include <linux/fs.h>
+#include <linux/gfp.h>
 #include <linux/nfs.h>
 #include <linux/nfs3.h>
 #include <linux/nfs_fs.h>
@@ -185,6 +186,13 @@ struct posix_acl *nfs3_proc_getacl(struct inode *inode, int type)
 {
 	struct nfs_server *server = NFS_SERVER(inode);
 	struct nfs_fattr fattr;
+#include "nfs3_fs.h"
+
+#define NFSDBG_FACILITY	NFSDBG_PROC
+
+struct posix_acl *nfs3_get_acl(struct inode *inode, int type)
+{
+	struct nfs_server *server = NFS_SERVER(inode);
 	struct page *pages[NFSACL_MAXPAGES] = { };
 	struct nfs3_getaclargs args = {
 		.fh = NFS_FH(inode),
@@ -193,6 +201,7 @@ struct posix_acl *nfs3_proc_getacl(struct inode *inode, int type)
 	};
 	struct nfs3_getaclres res = {
 		.fattr =	&fattr,
+		NULL,
 	};
 	struct rpc_message msg = {
 		.rpc_argp	= &args,
@@ -229,6 +238,10 @@ struct posix_acl *nfs3_proc_getacl(struct inode *inode, int type)
 
 	dprintk("NFS call getacl\n");
 	msg.rpc_proc = &server->client_acl->cl_procinfo[ACLPROC3_GETACL];
+	res.fattr = nfs_alloc_fattr();
+	if (res.fattr == NULL)
+		return ERR_PTR(-ENOMEM);
+
 	status = rpc_call_sync(server->client_acl, &msg, 0);
 	dprintk("NFS reply getacl: %d\n", status);
 
@@ -239,6 +252,7 @@ struct posix_acl *nfs3_proc_getacl(struct inode *inode, int type)
 	switch (status) {
 		case 0:
 			status = nfs_refresh_inode(inode, &fattr);
+			status = nfs_refresh_inode(inode, res.fattr);
 			break;
 		case -EPFNOSUPPORT:
 		case -EPROTONOSUPPORT:
@@ -256,6 +270,8 @@ struct posix_acl *nfs3_proc_getacl(struct inode *inode, int type)
 
 	if (res.acl_access != NULL) {
 		if (posix_acl_equiv_mode(res.acl_access, NULL) == 0) {
+		if ((posix_acl_equiv_mode(res.acl_access, NULL) == 0) ||
+		    res.acl_access->a_count == 0) {
 			posix_acl_release(res.acl_access);
 			res.acl_access = NULL;
 		}
@@ -273,6 +289,24 @@ struct posix_acl *nfs3_proc_getacl(struct inode *inode, int type)
 		case ACL_TYPE_DEFAULT:
 			acl = res.acl_default;
 			res.acl_default = NULL;
+
+	if (res.mask & NFS_ACL)
+		set_cached_acl(inode, ACL_TYPE_ACCESS, res.acl_access);
+	else
+		forget_cached_acl(inode, ACL_TYPE_ACCESS);
+
+	if (res.mask & NFS_DFACL)
+		set_cached_acl(inode, ACL_TYPE_DEFAULT, res.acl_default);
+	else
+		forget_cached_acl(inode, ACL_TYPE_DEFAULT);
+
+	nfs_free_fattr(res.fattr);
+	if (type == ACL_TYPE_ACCESS) {
+		posix_acl_release(res.acl_default);
+		return res.acl_access;
+	} else {
+		posix_acl_release(res.acl_access);
+		return res.acl_default;
 	}
 
 getout:
@@ -292,6 +326,16 @@ static int nfs3_proc_setacls(struct inode *inode, struct posix_acl *acl,
 	struct nfs_server *server = NFS_SERVER(inode);
 	struct nfs_fattr fattr;
 	struct page *pages[NFSACL_MAXPAGES] = { };
+	nfs_free_fattr(res.fattr);
+	return ERR_PTR(status);
+}
+
+static int __nfs3_proc_setacls(struct inode *inode, struct posix_acl *acl,
+		struct posix_acl *dfacl)
+{
+	struct nfs_server *server = NFS_SERVER(inode);
+	struct nfs_fattr *fattr;
+	struct page *pages[NFSACL_MAXPAGES];
 	struct nfs3_setaclargs args = {
 		.inode = inode,
 		.mask = NFS_ACL,
@@ -303,6 +347,10 @@ static int nfs3_proc_setacls(struct inode *inode, struct posix_acl *acl,
 		.rpc_resp	= &fattr,
 	};
 	int status, count;
+	int status = 0;
+
+	if (acl == NULL && (!S_ISDIR(inode->i_mode) || dfacl == NULL))
+		goto out;
 
 	status = -EOPNOTSUPP;
 	if (!nfs_server_capable(inode, NFS_CAP_ACLS))
@@ -310,6 +358,8 @@ static int nfs3_proc_setacls(struct inode *inode, struct posix_acl *acl,
 
 	/* We are doing this here, because XDR marshalling can only
 	   return -ENOMEM. */
+	/* We are doing this here because XDR marshalling does not
+	 * return any results, it BUGs. */
 	status = -ENOSPC;
 	if (acl != NULL && acl->a_count > NFS_ACL_MAX_ENTRIES)
 		goto out;
@@ -322,6 +372,30 @@ static int nfs3_proc_setacls(struct inode *inode, struct posix_acl *acl,
 
 	dprintk("NFS call setacl\n");
 	msg.rpc_proc = &server->client_acl->cl_procinfo[ACLPROC3_SETACL];
+		args.len = nfsacl_size(acl, dfacl);
+	} else
+		args.len = nfsacl_size(acl, NULL);
+
+	if (args.len > NFS_ACL_INLINE_BUFSIZE) {
+		unsigned int npages = 1 + ((args.len - 1) >> PAGE_SHIFT);
+
+		status = -ENOMEM;
+		do {
+			args.pages[args.npages] = alloc_page(GFP_KERNEL);
+			if (args.pages[args.npages] == NULL)
+				goto out_freepages;
+			args.npages++;
+		} while (args.npages < npages);
+	}
+
+	dprintk("NFS call setacl\n");
+	status = -ENOMEM;
+	fattr = nfs_alloc_fattr();
+	if (fattr == NULL)
+		goto out_freepages;
+
+	msg.rpc_proc = &server->client_acl->cl_procinfo[ACLPROC3_SETACL];
+	msg.rpc_resp = fattr;
 	status = rpc_call_sync(server->client_acl, &msg, 0);
 	nfs_access_zap_cache(inode);
 	nfs_zap_acl_cache(inode);
@@ -335,6 +409,11 @@ static int nfs3_proc_setacls(struct inode *inode, struct posix_acl *acl,
 		case 0:
 			status = nfs_refresh_inode(inode, &fattr);
 			nfs3_cache_acls(inode, acl, dfacl);
+	switch (status) {
+		case 0:
+			status = nfs_refresh_inode(inode, fattr);
+			set_cached_acl(inode, ACL_TYPE_ACCESS, acl);
+			set_cached_acl(inode, ACL_TYPE_DEFAULT, dfacl);
 			break;
 		case -EPFNOSUPPORT:
 		case -EPROTONOSUPPORT:
@@ -344,13 +423,29 @@ static int nfs3_proc_setacls(struct inode *inode, struct posix_acl *acl,
 		case -ENOTSUPP:
 			status = -EOPNOTSUPP;
 	}
+	nfs_free_fattr(fattr);
+out_freepages:
+	while (args.npages != 0) {
+		args.npages--;
+		__free_page(args.pages[args.npages]);
+	}
 out:
 	return status;
 }
 
 int nfs3_proc_setacl(struct inode *inode, int type, struct posix_acl *acl)
+int nfs3_proc_setacls(struct inode *inode, struct posix_acl *acl,
+		struct posix_acl *dfacl)
 {
-	struct posix_acl *alloc = NULL, *dfacl = NULL;
+	int ret;
+	ret = __nfs3_proc_setacls(inode, acl, dfacl);
+	return (ret == -EOPNOTSUPP) ? 0 : ret;
+
+}
+
+int nfs3_set_acl(struct inode *inode, struct posix_acl *acl, int type)
+{
+	struct posix_acl *orig = acl, *dfacl = NULL, *alloc;
 	int status;
 
 	if (S_ISDIR(inode->i_mode)) {
@@ -375,18 +470,41 @@ int nfs3_proc_setacl(struct inode *inode, int type, struct posix_acl *acl)
 		}
 	} else if (type != ACL_TYPE_ACCESS)
 			return -EINVAL;
+		case ACL_TYPE_ACCESS:
+			alloc = get_acl(inode, ACL_TYPE_DEFAULT);
+			if (IS_ERR(alloc))
+				goto fail;
+			dfacl = alloc;
+			break;
+
+		case ACL_TYPE_DEFAULT:
+			alloc = get_acl(inode, ACL_TYPE_ACCESS);
+			if (IS_ERR(alloc))
+				goto fail;
+			dfacl = acl;
+			acl = alloc;
+			break;
+		}
+	}
 
 	if (acl == NULL) {
-		alloc = acl = posix_acl_from_mode(inode->i_mode, GFP_KERNEL);
+		alloc = posix_acl_from_mode(inode->i_mode, GFP_KERNEL);
 		if (IS_ERR(alloc))
 			goto fail;
+		acl = alloc;
 	}
 	status = nfs3_proc_setacls(inode, acl, dfacl);
-	posix_acl_release(alloc);
+	status = __nfs3_proc_setacls(inode, acl, dfacl);
+out:
+	if (acl != orig)
+		posix_acl_release(acl);
+	if (dfacl != orig)
+		posix_acl_release(dfacl);
 	return status;
 
 fail:
-	return PTR_ERR(alloc);
+	status = PTR_ERR(alloc);
+	goto out;
 }
 
 int nfs3_proc_set_default_acl(struct inode *dir, struct inode *inode,
@@ -416,4 +534,51 @@ out_release_acl:
 out_release_dfacl:
 	posix_acl_release(dfacl);
 	return error;
+const struct xattr_handler *nfs3_xattr_handlers[] = {
+	&posix_acl_access_xattr_handler,
+	&posix_acl_default_xattr_handler,
+	NULL,
+};
+
+static int
+nfs3_list_one_acl(struct inode *inode, int type, const char *name, void *data,
+		size_t size, ssize_t *result)
+{
+	struct posix_acl *acl;
+	char *p = data + *result;
+
+	acl = get_acl(inode, type);
+	if (IS_ERR_OR_NULL(acl))
+		return 0;
+
+	posix_acl_release(acl);
+
+	*result += strlen(name);
+	*result += 1;
+	if (!size)
+		return 0;
+	if (*result > size)
+		return -ERANGE;
+
+	strcpy(p, name);
+	return 0;
+}
+
+ssize_t
+nfs3_listxattr(struct dentry *dentry, char *data, size_t size)
+{
+	struct inode *inode = d_inode(dentry);
+	ssize_t result = 0;
+	int error;
+
+	error = nfs3_list_one_acl(inode, ACL_TYPE_ACCESS,
+			POSIX_ACL_XATTR_ACCESS, data, size, &result);
+	if (error)
+		return error;
+
+	error = nfs3_list_one_acl(inode, ACL_TYPE_DEFAULT,
+			POSIX_ACL_XATTR_DEFAULT, data, size, &result);
+	if (error)
+		return error;
+	return result;
 }

@@ -14,6 +14,10 @@
 #include <asm/types.h>
 #include <asm/cache.h>
 #include <asm/ptrace.h>
+#include <linux/linkage.h>
+#include <asm/page.h>
+#include <asm/types.h>
+#include <asm/hw_breakpoint.h>
 
 /*
  * Default implementation of macro that returns current
@@ -58,6 +62,7 @@ extern struct sh_cpuinfo cpu_data[];
  * space during mmap's.
  */
 #define TASK_UNMAPPED_BASE	(TASK_SIZE / 3)
+#define TASK_UNMAPPED_BASE	PAGE_ALIGN(TASK_SIZE / 3)
 
 /*
  * Bit of SR register
@@ -72,6 +77,16 @@ extern struct sh_cpuinfo cpu_data[];
 #define SR_DSP		0x00001000
 #define SR_IMASK	0x000000f0
 #define SR_FD		0x00008000
+#define SR_MD		0x40000000
+
+#define SR_USER_MASK	0x00000303	// M, Q, S, T bits
+/*
+ * DSP structure and data
+ */
+struct sh_dsp_struct {
+	unsigned long dsp_regs[14];
+	long status;
+};
 
 /*
  * FPU structure and data
@@ -100,6 +115,9 @@ struct sh_fpu_soft_struct {
 union sh_fpu_union {
 	struct sh_fpu_hard_struct hard;
 	struct sh_fpu_soft_struct soft;
+union thread_xstate {
+	struct sh_fpu_hard_struct hardfpu;
+	struct sh_fpu_soft_struct softfpu;
 };
 
 struct thread_struct {
@@ -134,6 +152,40 @@ extern int ubc_usercnt;
 /* Forward declaration, a strange C thing */
 struct task_struct;
 struct mm_struct;
+	/* Various thread flags, see SH_THREAD_xxx */
+	unsigned long flags;
+
+	/* Save middle states of ptrace breakpoints */
+	struct perf_event *ptrace_bps[HBP_NUM];
+
+#ifdef CONFIG_SH_DSP
+	/* Dsp status information */
+	struct sh_dsp_struct dsp_status;
+#endif
+
+	/* Extended processor state */
+	union thread_xstate *xstate;
+
+	/*
+	 * fpu_counter contains the number of consecutive context switches
+	 * that the FPU is used. If this is over a threshold, the lazy fpu
+	 * saving becomes unlazy to save the trap. This is an unsigned char
+	 * so that after 256 times the counter wraps and the behavior turns
+	 * lazy again; this to deal with bursty apps that only use FPU for
+	 * a short time
+	 */
+	unsigned char fpu_counter;
+};
+
+#define INIT_THREAD  {						\
+	.sp = sizeof(init_stack) + (long) &init_stack,		\
+	.flags = 0,						\
+}
+
+/* Forward declaration, a strange C thing */
+struct task_struct;
+
+extern void start_thread(struct pt_regs *regs, unsigned long new_pc, unsigned long new_sp);
 
 /* Free all resources held by a thread. */
 extern void release_thread(struct task_struct *);
@@ -191,6 +243,15 @@ static __inline__ void enable_fpu(void)
 
 void show_trace(struct task_struct *tsk, unsigned long *sp,
 		struct pt_regs *regs);
+
+#ifdef CONFIG_DUMP_CODE
+void show_code(struct pt_regs *regs);
+#else
+static inline void show_code(struct pt_regs *regs)
+{
+}
+#endif
+
 extern unsigned long get_wchan(struct task_struct *p);
 
 #define KSTK_EIP(tsk)  (task_pt_regs(tsk)->pc)
@@ -210,6 +271,21 @@ static inline void prefetch(void *x)
 }
 
 #define prefetchw(x)	prefetch(x)
+#if defined(CONFIG_CPU_SH2A) || defined(CONFIG_CPU_SH4)
+
+#define PREFETCH_STRIDE		L1_CACHE_BYTES
+#define ARCH_HAS_PREFETCH
+#define ARCH_HAS_PREFETCHW
+
+static inline void prefetch(const void *x)
+{
+	__builtin_prefetch(x, 0, 3);
+}
+
+static inline void prefetchw(const void *x)
+{
+	__builtin_prefetch(x, 1, 3);
+}
 #endif
 
 #endif /* __KERNEL__ */

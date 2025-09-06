@@ -43,6 +43,20 @@ void jfs_set_inode_flags(struct inode *inode)
 		inode->i_flags |= S_DIRSYNC;
 	if (flags & JFS_SYNC_FL)
 		inode->i_flags |= S_SYNC;
+	unsigned int new_fl = 0;
+
+	if (flags & JFS_IMMUTABLE_FL)
+		new_fl |= S_IMMUTABLE;
+	if (flags & JFS_APPEND_FL)
+		new_fl |= S_APPEND;
+	if (flags & JFS_NOATIME_FL)
+		new_fl |= S_NOATIME;
+	if (flags & JFS_DIRSYNC_FL)
+		new_fl |= S_DIRSYNC;
+	if (flags & JFS_SYNC_FL)
+		new_fl |= S_SYNC;
+	inode_set_flags(inode, new_fl, S_IMMUTABLE | S_APPEND | S_NOATIME |
+			S_DIRSYNC | S_SYNC);
 }
 
 void jfs_get_inode_flags(struct jfs_inode_info *jfs_ip)
@@ -80,6 +94,8 @@ struct inode *ialloc(struct inode *parent, umode_t mode)
 	if (!inode) {
 		jfs_warn("ialloc: new_inode returned NULL!");
 		return ERR_PTR(-ENOMEM);
+		rc = -ENOMEM;
+		goto fail;
 	}
 
 	jfs_inode = JFS_IP(inode);
@@ -101,6 +117,15 @@ struct inode *ialloc(struct inode *parent, umode_t mode)
 	} else
 		inode->i_gid = current->fsgid;
 
+		goto fail_put;
+	}
+
+	if (insert_inode_locked(inode) < 0) {
+		rc = -EINVAL;
+		goto fail_put;
+	}
+
+	inode_init_owner(inode, parent, mode);
 	/*
 	 * New inodes need to save sane values on disk when
 	 * uid & gid mount options are used
@@ -120,6 +145,13 @@ struct inode *ialloc(struct inode *parent, umode_t mode)
 	}
 
 	inode->i_mode = mode;
+	rc = dquot_initialize(inode);
+	if (rc)
+		goto fail_drop;
+	rc = dquot_alloc_inode(inode);
+	if (rc)
+		goto fail_drop;
+
 	/* inherit flags from parent */
 	jfs_inode->mode2 = JFS_IP(parent)->mode2 & JFS_FL_INHERIT;
 
@@ -133,6 +165,7 @@ struct inode *ialloc(struct inode *parent, umode_t mode)
 			jfs_inode->mode2 &= ~(JFS_IMMUTABLE_FL|JFS_APPEND_FL);
 	}
 	jfs_inode->mode2 |= mode;
+	jfs_inode->mode2 |= inode->i_mode;
 
 	inode->i_blocks = 0;
 	inode->i_mtime = inode->i_atime = inode->i_ctime = CURRENT_TIME;
@@ -158,4 +191,14 @@ struct inode *ialloc(struct inode *parent, umode_t mode)
 	jfs_info("ialloc returns inode = 0x%p\n", inode);
 
 	return inode;
+
+fail_drop:
+	dquot_drop(inode);
+	inode->i_flags |= S_NOQUOTA;
+	clear_nlink(inode);
+	unlock_new_inode(inode);
+fail_put:
+	iput(inode);
+fail:
+	return ERR_PTR(rc);
 }

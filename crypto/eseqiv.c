@@ -16,6 +16,7 @@
  */
 
 #include <crypto/internal/skcipher.h>
+#include <crypto/rng.h>
 #include <crypto/scatterwalk.h>
 #include <linux/err.h>
 #include <linux/init.h>
@@ -83,6 +84,7 @@ static int eseqiv_givencrypt(struct skcipher_givcrypt_request *req)
 	struct eseqiv_request_ctx *reqctx = skcipher_givcrypt_reqctx(req);
 	struct ablkcipher_request *subreq;
 	crypto_completion_t complete;
+	crypto_completion_t compl;
 	void *data;
 	struct scatterlist *osrc, *odst;
 	struct scatterlist *dst;
@@ -101,6 +103,7 @@ static int eseqiv_givencrypt(struct skcipher_givcrypt_request *req)
 
 	giv = req->giv;
 	complete = req->creq.base.complete;
+	compl = req->creq.base.complete;
 	data = req->creq.base.data;
 
 	osrc = req->creq.src;
@@ -120,17 +123,24 @@ static int eseqiv_givencrypt(struct skcipher_givcrypt_request *req)
 	}
 
 	ablkcipher_request_set_callback(subreq, req->creq.base.flags, complete,
+		compl = eseqiv_complete;
+		data = req;
+	}
+
+	ablkcipher_request_set_callback(subreq, req->creq.base.flags, compl,
 					data);
 
 	sg_init_table(reqctx->src, 2);
 	sg_set_buf(reqctx->src, giv, ivsize);
 	eseqiv_chain(reqctx->src, osrc, vsrc == giv + ivsize);
+	scatterwalk_crypto_chain(reqctx->src, osrc, vsrc == giv + ivsize, 2);
 
 	dst = reqctx->src;
 	if (osrc != odst) {
 		sg_init_table(reqctx->dst, 2);
 		sg_set_buf(reqctx->dst, giv, ivsize);
 		eseqiv_chain(reqctx->dst, odst, vdst == giv + ivsize);
+		scatterwalk_crypto_chain(reqctx->dst, odst, vdst == giv + ivsize, 2);
 
 		dst = reqctx->dst;
 	}
@@ -154,6 +164,8 @@ static int eseqiv_givencrypt(struct skcipher_givcrypt_request *req)
 		goto out;
 
 	eseqiv_complete2(req);
+	if (giv != req->giv)
+		eseqiv_complete2(req);
 
 out:
 	return err;
@@ -183,6 +195,7 @@ static int eseqiv_init(struct crypto_tfm *tfm)
 	struct eseqiv_ctx *ctx = crypto_ablkcipher_ctx(geniv);
 	unsigned long alignmask;
 	unsigned int reqsize;
+	int err;
 
 	spin_lock_init(&ctx->lock);
 
@@ -207,6 +220,15 @@ static int eseqiv_init(struct crypto_tfm *tfm)
 				      sizeof(struct ablkcipher_request);
 
 	return skcipher_geniv_init(tfm);
+	err = 0;
+	if (!crypto_get_default_rng()) {
+		crypto_ablkcipher_crt(geniv)->givencrypt = eseqiv_givencrypt;
+		err = crypto_rng_get_bytes(crypto_default_rng, ctx->salt,
+					   crypto_ablkcipher_ivsize(geniv));
+		crypto_put_default_rng();
+	}
+
+	return err ?: skcipher_geniv_init(tfm);
 }
 
 static struct crypto_template eseqiv_tmpl;
@@ -249,6 +271,7 @@ static struct crypto_template eseqiv_tmpl = {
 };
 
 int __init eseqiv_module_init(void)
+static int __init eseqiv_module_init(void)
 {
 	return crypto_register_template(&eseqiv_tmpl);
 }
@@ -257,3 +280,14 @@ void __exit eseqiv_module_exit(void)
 {
 	crypto_unregister_template(&eseqiv_tmpl);
 }
+static void __exit eseqiv_module_exit(void)
+{
+	crypto_unregister_template(&eseqiv_tmpl);
+}
+
+module_init(eseqiv_module_init);
+module_exit(eseqiv_module_exit);
+
+MODULE_LICENSE("GPL");
+MODULE_DESCRIPTION("Encrypted Sequence Number IV Generator");
+MODULE_ALIAS_CRYPTO("eseqiv");

@@ -5,6 +5,7 @@
  * Copyright (C) 1998  Eddie C. Dost  (ecd@skynet.be)
  * Copyright (C) 2001,2002  Andi Kleen, SuSE Labs 
  * Copyright (C) 2003       Pavel Machek (pavel@suse.cz)
+ * Copyright (C) 2003       Pavel Machek (pavel@ucw.cz)
  *
  * These routines maintain argument size conversion between 32bit and 64bit
  * ioctls.
@@ -24,6 +25,7 @@
 #include <linux/if_bridge.h>
 #include <linux/slab.h>
 #include <linux/raid/md.h>
+#include <linux/raid/md_u.h>
 #include <linux/kd.h>
 #include <linux/route.h>
 #include <linux/in6.h>
@@ -35,6 +37,11 @@
 #include <linux/file.h>
 #include <linux/ppp_defs.h>
 #include <linux/if_ppp.h>
+#include <linux/falloc.h>
+#include <linux/fs.h>
+#include <linux/file.h>
+#include <linux/ppp_defs.h>
+#include <linux/ppp-ioctl.h>
 #include <linux/if_pppox.h>
 #include <linux/mtio.h>
 #include <linux/auto_fs.h>
@@ -46,6 +53,9 @@
 #include <linux/netdevice.h>
 #include <linux/raw.h>
 #include <linux/smb_fs.h>
+#include <linux/videodev2.h>
+#include <linux/netdevice.h>
+#include <linux/raw.h>
 #include <linux/blkdev.h>
 #include <linux/elevator.h>
 #include <linux/rtc.h>
@@ -62,12 +72,18 @@
 
 #include <net/bluetooth/bluetooth.h>
 #include <net/bluetooth/hci.h>
+#include <linux/gfp.h>
+
+#include <net/bluetooth/bluetooth.h>
+#include <net/bluetooth/hci_sock.h>
 #include <net/bluetooth/rfcomm.h>
 
 #include <linux/capi.h>
 #include <linux/gigaset_dev.h>
 
 #ifdef CONFIG_BLOCK
+#include <linux/cdrom.h>
+#include <linux/fd.h>
 #include <scsi/scsi.h>
 #include <scsi/scsi_ioctl.h>
 #include <scsi/sg.h>
@@ -105,10 +121,16 @@
 
 #include <linux/hiddev.h>
 
+
+#include <linux/hiddev.h>
+
+#define __DVB_CORE__
 #include <linux/dvb/audio.h>
 #include <linux/dvb/dmx.h>
 #include <linux/dvb/frontend.h>
 #include <linux/dvb/video.h>
+
+#include <linux/sort.h>
 
 #ifdef CONFIG_SPARC
 #include <asm/fbio.h>
@@ -147,6 +169,17 @@ static int rw_long(unsigned int fd, unsigned int cmd, unsigned long arg)
 	err = sys_ioctl(fd, cmd, (unsigned long)&val);
 	set_fs (old_fs);
 	if (!err && put_user(val, argptr))
+static int w_long(unsigned int fd, unsigned int cmd,
+		compat_ulong_t __user *argp)
+{
+	mm_segment_t old_fs = get_fs();
+	int err;
+	unsigned long val;
+
+	set_fs (KERNEL_DS);
+	err = sys_ioctl(fd, cmd, (unsigned long)&val);
+	set_fs (old_fs);
+	if (!err && put_user(val, argp))
 		return -EFAULT;
 	return err;
 }
@@ -161,6 +194,8 @@ struct compat_video_event {
 };
 
 static int do_video_get_event(unsigned int fd, unsigned int cmd, unsigned long arg)
+static int do_video_get_event(unsigned int fd, unsigned int cmd,
+		struct compat_video_event __user *up)
 {
 	struct video_event kevent;
 	mm_segment_t old_fs = get_fs();
@@ -194,6 +229,9 @@ struct compat_video_still_picture {
 static int do_video_stillpicture(unsigned int fd, unsigned int cmd, unsigned long arg)
 {
 	struct compat_video_still_picture __user *up;
+static int do_video_stillpicture(unsigned int fd, unsigned int cmd,
+	struct compat_video_still_picture __user *up)
+{
 	struct video_still_picture __user *up_native;
 	compat_uptr_t fp;
 	int32_t size;
@@ -226,6 +264,9 @@ struct compat_video_spu_palette {
 static int do_video_set_spu_palette(unsigned int fd, unsigned int cmd, unsigned long arg)
 {
 	struct compat_video_spu_palette __user *up;
+static int do_video_set_spu_palette(unsigned int fd, unsigned int cmd,
+		struct compat_video_spu_palette __user *up)
+{
 	struct video_spu_palette __user *up_native;
 	compat_uptr_t palp;
 	int length, err;
@@ -233,6 +274,10 @@ static int do_video_set_spu_palette(unsigned int fd, unsigned int cmd, unsigned 
 	up = (struct compat_video_spu_palette __user *) arg;
 	err  = get_user(palp, &up->palette);
 	err |= get_user(length, &up->length);
+	err  = get_user(palp, &up->palette);
+	err |= get_user(length, &up->length);
+	if (err)
+		return -EFAULT;
 
 	up_native = compat_alloc_user_space(sizeof(struct video_spu_palette));
 	err  = put_user(compat_ptr(palp), &up_native->palette);
@@ -718,12 +763,23 @@ static int sg_ioctl_trans(unsigned int fd, unsigned int cmd, unsigned long arg)
 {
 	sg_io_hdr_t __user *sgio;
 	sg_io_hdr32_t __user *sgio32;
+static int sg_ioctl_trans(unsigned int fd, unsigned int cmd,
+			sg_io_hdr32_t __user *sgio32)
+{
+	sg_io_hdr_t __user *sgio;
 	u16 iovec_count;
 	u32 data;
 	void __user *dxferp;
 	int err;
 
 	sgio32 = compat_ptr(arg);
+	int interface_id;
+
+	if (get_user(interface_id, &sgio32->interface_id))
+		return -EFAULT;
+	if (interface_id != 'S')
+		return sys_ioctl(fd, cmd, (unsigned long)sgio32);
+
 	if (get_user(iovec_count, &sgio32->iovec_count))
 		return -EFAULT;
 
@@ -824,6 +880,11 @@ static int sg_grt_trans(unsigned int fd, unsigned int cmd, unsigned long arg)
 	int err, i;
 	sg_req_info_t __user *r;
 	struct compat_sg_req_info __user *o = (void __user *)arg;
+static int sg_grt_trans(unsigned int fd, unsigned int cmd, struct
+			compat_sg_req_info __user *o)
+{
+	int err, i;
+	sg_req_info_t __user *r;
 	r = compat_alloc_user_space(sizeof(sg_req_info_t)*SG_MAX_QUEUE);
 	err = sys_ioctl(fd,cmd,(unsigned long)r);
 	if (err < 0)
@@ -854,6 +915,9 @@ struct sock_fprog32 {
 static int ppp_sock_fprog_ioctl_trans(unsigned int fd, unsigned int cmd, unsigned long arg)
 {
 	struct sock_fprog32 __user *u_fprog32 = compat_ptr(arg);
+static int ppp_sock_fprog_ioctl_trans(unsigned int fd, unsigned int cmd,
+			struct sock_fprog32 __user *u_fprog32)
+{
 	struct sock_fprog __user *u_fprog64 = compat_alloc_user_space(sizeof(struct sock_fprog));
 	void __user *fptr64;
 	u32 fptr32;
@@ -894,6 +958,10 @@ static int ppp_gidle(unsigned int fd, unsigned int cmd, unsigned long arg)
 {
 	struct ppp_idle __user *idle;
 	struct ppp_idle32 __user *idle32;
+static int ppp_gidle(unsigned int fd, unsigned int cmd,
+		struct ppp_idle32 __user *idle32)
+{
+	struct ppp_idle __user *idle;
 	__kernel_time_t xmit, recv;
 	int err;
 
@@ -916,6 +984,10 @@ static int ppp_scompress(unsigned int fd, unsigned int cmd, unsigned long arg)
 {
 	struct ppp_option_data __user *odata;
 	struct ppp_option_data32 __user *odata32;
+static int ppp_scompress(unsigned int fd, unsigned int cmd,
+	struct ppp_option_data32 __user *odata32)
+{
+	struct ppp_option_data __user *odata;
 	__u32 data;
 	void __user *datap;
 
@@ -983,6 +1055,7 @@ struct mtpos32 {
 #define MTIOCPOS32	_IOR('m', 3, struct mtpos32)
 
 static int mt_ioctl_trans(unsigned int fd, unsigned int cmd, unsigned long arg)
+static int mt_ioctl_trans(unsigned int fd, unsigned int cmd, void __user *argp)
 {
 	mm_segment_t old_fs = get_fs();
 	struct mtget get;
@@ -1011,6 +1084,10 @@ static int mt_ioctl_trans(unsigned int fd, unsigned int cmd, unsigned long arg)
 				       (int)fd, (unsigned int)cmd, (unsigned int)arg);
 		} while(0);
 		return -EINVAL;
+	default:	/* MTIOCGET32 */
+		kcmd = MTIOCGET;
+		karg = &get;
+		break;
 	}
 	set_fs (KERNEL_DS);
 	err = sys_ioctl (fd, kcmd, (unsigned long)karg);
@@ -1024,6 +1101,11 @@ static int mt_ioctl_trans(unsigned int fd, unsigned int cmd, unsigned long arg)
 		break;
 	case MTIOCGET32:
 		umget32 = compat_ptr(arg);
+		upos32 = argp;
+		err = __put_user(pos.mt_blkno, &upos32->mt_blkno);
+		break;
+	case MTIOCGET32:
+		umget32 = argp;
 		err = __put_user(get.mt_type, &umget32->mt_type);
 		err |= __put_user(get.mt_resid, &umget32->mt_resid);
 		err |= __put_user(get.mt_dsreg, &umget32->mt_dsreg);
@@ -1389,11 +1471,18 @@ static int ioc_settimeout(unsigned int fd, unsigned int cmd, unsigned long arg)
 /* Bluetooth ioctls */
 #define HCIUARTSETPROTO	_IOW('U', 200, int)
 #define HCIUARTGETPROTO	_IOR('U', 201, int)
+/* Bluetooth ioctls */
+#define HCIUARTSETPROTO		_IOW('U', 200, int)
+#define HCIUARTGETPROTO		_IOR('U', 201, int)
+#define HCIUARTGETDEVICE	_IOR('U', 202, int)
+#define HCIUARTSETFLAGS		_IOW('U', 203, int)
+#define HCIUARTGETFLAGS		_IOR('U', 204, int)
 
 #define BNEPCONNADD	_IOW('B', 200, int)
 #define BNEPCONNDEL	_IOW('B', 201, int)
 #define BNEPGETCONNLIST	_IOR('B', 210, int)
 #define BNEPGETCONNINFO	_IOR('B', 211, int)
+#define BNEPGETSUPPFEAT	_IOR('B', 212, int)
 
 #define CMTPCONNADD	_IOW('C', 200, int)
 #define CMTPCONNDEL	_IOW('C', 201, int)
@@ -1539,6 +1628,10 @@ static int serial_struct_ioctl(unsigned fd, unsigned cmd, unsigned long arg)
         typedef struct serial_struct SS;
         typedef struct serial_struct32 SS32;
         struct serial_struct32 __user *ss32 = compat_ptr(arg);
+static int serial_struct_ioctl(unsigned fd, unsigned cmd,
+			struct serial_struct32 __user *ss32)
+{
+        typedef struct serial_struct32 SS32;
         int err;
         struct serial_struct ss;
         mm_segment_t oldseg = get_fs();
@@ -1697,6 +1790,9 @@ struct i2c_rdwr_aligned {
 static int do_i2c_rdwr_ioctl(unsigned int fd, unsigned int cmd, unsigned long arg)
 {
 	struct i2c_rdwr_ioctl_data32	__user *udata = compat_ptr(arg);
+static int do_i2c_rdwr_ioctl(unsigned int fd, unsigned int cmd,
+			struct i2c_rdwr_ioctl_data32    __user *udata)
+{
 	struct i2c_rdwr_aligned		__user *tdata;
 	struct i2c_msg			__user *tmsgs;
 	struct i2c_msg32		__user *umsgs;
@@ -1706,6 +1802,12 @@ static int do_i2c_rdwr_ioctl(unsigned int fd, unsigned int cmd, unsigned long ar
 	if (get_user(nmsgs, &udata->nmsgs))
 		return -EFAULT;
 	if (nmsgs > I2C_RDRW_IOCTL_MAX_MSGS)
+	u32				nmsgs;
+	int				i;
+
+	if (get_user(nmsgs, &udata->nmsgs))
+		return -EFAULT;
+	if (nmsgs > I2C_RDWR_IOCTL_MAX_MSGS)
 		return -EINVAL;
 
 	if (get_user(datap, &udata->msgs))
@@ -1734,6 +1836,10 @@ static int do_i2c_smbus_ioctl(unsigned int fd, unsigned int cmd, unsigned long a
 {
 	struct i2c_smbus_ioctl_data	__user *tdata;
 	struct i2c_smbus_ioctl_data32	__user *udata;
+static int do_i2c_smbus_ioctl(unsigned int fd, unsigned int cmd,
+			struct i2c_smbus_ioctl_data32   __user *udata)
+{
+	struct i2c_smbus_ioctl_data	__user *tdata;
 	compat_caddr_t			datap;
 
 	tdata = compat_alloc_user_space(sizeof(*tdata));
@@ -1778,6 +1884,7 @@ static int old_bridge_ioctl(unsigned int fd, unsigned int cmd, unsigned long arg
 #define RTC_EPOCH_SET32		_IOW('p', 0x0e, compat_ulong_t)
 
 static int rtc_ioctl(unsigned fd, unsigned cmd, unsigned long arg)
+static int rtc_ioctl(unsigned fd, unsigned cmd, void __user *argp)
 {
 	mm_segment_t oldfs = get_fs();
 	compat_ulong_t val32;
@@ -1841,6 +1948,58 @@ struct ioctl_trans {
 #define ULONG_IOCTL(cmd) \
 	{ (cmd), (ioctl_trans_handler_t)sys_ioctl },
 
+		return put_user(val32, (unsigned int __user *)argp);
+	case RTC_IRQP_SET32:
+		return sys_ioctl(fd, RTC_IRQP_SET, (unsigned long)argp);
+	case RTC_EPOCH_SET32:
+		return sys_ioctl(fd, RTC_EPOCH_SET, (unsigned long)argp);
+	}
+
+	return -ENOIOCTLCMD;
+}
+
+/* on ia32 l_start is on a 32-bit boundary */
+#if defined(CONFIG_IA64) || defined(CONFIG_X86_64)
+struct space_resv_32 {
+	__s16		l_type;
+	__s16		l_whence;
+	__s64		l_start	__attribute__((packed));
+			/* len == 0 means until end of file */
+	__s64		l_len __attribute__((packed));
+	__s32		l_sysid;
+	__u32		l_pid;
+	__s32		l_pad[4];	/* reserve area */
+};
+
+#define FS_IOC_RESVSP_32		_IOW ('X', 40, struct space_resv_32)
+#define FS_IOC_RESVSP64_32	_IOW ('X', 42, struct space_resv_32)
+
+/* just account for different alignment */
+static int compat_ioctl_preallocate(struct file *file,
+			struct space_resv_32    __user *p32)
+{
+	struct space_resv	__user *p = compat_alloc_user_space(sizeof(*p));
+
+	if (copy_in_user(&p->l_type,	&p32->l_type,	sizeof(s16)) ||
+	    copy_in_user(&p->l_whence,	&p32->l_whence, sizeof(s16)) ||
+	    copy_in_user(&p->l_start,	&p32->l_start,	sizeof(s64)) ||
+	    copy_in_user(&p->l_len,	&p32->l_len,	sizeof(s64)) ||
+	    copy_in_user(&p->l_sysid,	&p32->l_sysid,	sizeof(s32)) ||
+	    copy_in_user(&p->l_pid,	&p32->l_pid,	sizeof(u32)) ||
+	    copy_in_user(&p->l_pad,	&p32->l_pad,	4*sizeof(u32)))
+		return -EFAULT;
+
+	return ioctl_preallocate(file, p);
+}
+#endif
+
+/*
+ * simple reversible transform to make our table more evenly
+ * distributed after sorting.
+ */
+#define XFORM(i) (((i) ^ ((i) << 27) ^ ((i) << 17)) & 0xffffffff)
+
+#define COMPATIBLE_IOCTL(cmd) XFORM((u32)cmd),
 /* ioctl should not be warned about even if it's not implemented.
    Valid reasons to use this:
    - It is implemented with ->compat_ioctl on some device, but programs
@@ -1851,6 +2010,7 @@ struct ioctl_trans {
 #define IGNORE_IOCTL(cmd) COMPATIBLE_IOCTL(cmd)
 
 static struct ioctl_trans ioctl_start[] = {
+static unsigned int ioctl_pointer[] = {
 /* compatible ioctls first */
 COMPATIBLE_IOCTL(0x4B50)   /* KDGHWCLK - not in the kernel, but don't complain */
 COMPATIBLE_IOCTL(0x4B51)   /* KDSHWCLK - not in the kernel, but don't complain */
@@ -1873,6 +2033,13 @@ COMPATIBLE_IOCTL(TIOCSBRK)
 COMPATIBLE_IOCTL(TIOCCBRK)
 ULONG_IOCTL(TIOCMIWAIT)
 COMPATIBLE_IOCTL(TIOCGICOUNT)
+COMPATIBLE_IOCTL(TIOCGDEV)
+COMPATIBLE_IOCTL(TIOCCBRK)
+COMPATIBLE_IOCTL(TIOCGSID)
+COMPATIBLE_IOCTL(TIOCGICOUNT)
+COMPATIBLE_IOCTL(TIOCGPKT)
+COMPATIBLE_IOCTL(TIOCGPTLCK)
+COMPATIBLE_IOCTL(TIOCGEXCL)
 /* Little t */
 COMPATIBLE_IOCTL(TIOCGETD)
 COMPATIBLE_IOCTL(TIOCSETD)
@@ -1897,6 +2064,16 @@ ULONG_IOCTL(TIOCSCTTY)
 COMPATIBLE_IOCTL(TIOCGPTN)
 COMPATIBLE_IOCTL(TIOCSPTLCK)
 COMPATIBLE_IOCTL(TIOCSERGETLSR)
+COMPATIBLE_IOCTL(TIOCGPTN)
+COMPATIBLE_IOCTL(TIOCSPTLCK)
+COMPATIBLE_IOCTL(TIOCSERGETLSR)
+COMPATIBLE_IOCTL(TIOCSIG)
+#ifdef TIOCSRS485
+COMPATIBLE_IOCTL(TIOCSRS485)
+#endif
+#ifdef TIOCGRS485
+COMPATIBLE_IOCTL(TIOCGRS485)
+#endif
 #ifdef TCGETS2
 COMPATIBLE_IOCTL(TCGETS2)
 COMPATIBLE_IOCTL(TCSETS2)
@@ -1948,6 +2125,19 @@ COMPATIBLE_IOCTL(KDGETMODE)
 ULONG_IOCTL(KDSKBMODE)
 COMPATIBLE_IOCTL(KDGKBMODE)
 ULONG_IOCTL(KDSKBMETA)
+COMPATIBLE_IOCTL(FS_IOC_FIEMAP)
+/* 0x00 */
+COMPATIBLE_IOCTL(FIBMAP)
+COMPATIBLE_IOCTL(FIGETBSZ)
+/* 'X' - originally XFS but some now in the VFS */
+COMPATIBLE_IOCTL(FIFREEZE)
+COMPATIBLE_IOCTL(FITHAW)
+COMPATIBLE_IOCTL(FITRIM)
+COMPATIBLE_IOCTL(KDGETKEYCODE)
+COMPATIBLE_IOCTL(KDSETKEYCODE)
+COMPATIBLE_IOCTL(KDGKBTYPE)
+COMPATIBLE_IOCTL(KDGETMODE)
+COMPATIBLE_IOCTL(KDGKBMODE)
 COMPATIBLE_IOCTL(KDGKBMETA)
 COMPATIBLE_IOCTL(KDGKBENT)
 COMPATIBLE_IOCTL(KDSKBENT)
@@ -1966,6 +2156,11 @@ COMPATIBLE_IOCTL(GIO_UNISCRNMAP)
 COMPATIBLE_IOCTL(PIO_UNISCRNMAP)
 COMPATIBLE_IOCTL(PIO_FONTRESET)
 COMPATIBLE_IOCTL(PIO_UNIMAPCLR)
+COMPATIBLE_IOCTL(KDGKBDIACRUC)
+COMPATIBLE_IOCTL(KDSKBDIACRUC)
+COMPATIBLE_IOCTL(KDKBDREP)
+COMPATIBLE_IOCTL(KDGKBLED)
+COMPATIBLE_IOCTL(KDGETLED)
 #ifdef CONFIG_BLOCK
 /* Big S */
 COMPATIBLE_IOCTL(SCSI_IOCTL_GET_IDLUN)
@@ -1996,6 +2191,9 @@ COMPATIBLE_IOCTL(VT_RESIZEX)
 COMPATIBLE_IOCTL(VT_LOCKSWITCH)
 COMPATIBLE_IOCTL(VT_UNLOCKSWITCH)
 COMPATIBLE_IOCTL(VT_GETHIFONTMASK)
+/* Big V (don't complain on serial console) */
+IGNORE_IOCTL(VT_OPENQRY)
+IGNORE_IOCTL(VT_GETMODE)
 /* Little p (/dev/rtc, /dev/envctrl, etc.) */
 COMPATIBLE_IOCTL(RTC_AIE_ON)
 COMPATIBLE_IOCTL(RTC_AIE_OFF)
@@ -2048,6 +2246,12 @@ COMPATIBLE_IOCTL(SIOCSIFVLAN)
 COMPATIBLE_IOCTL(SIOCBRADDBR)
 COMPATIBLE_IOCTL(SIOCBRDELBR)
 #ifdef CONFIG_BLOCK
+#ifdef CONFIG_BLOCK
+/* md calls this on random blockdevs */
+IGNORE_IOCTL(RAID_VERSION)
+/* qemu/qemu-img might call these two on plain files for probing */
+IGNORE_IOCTL(CDROM_DRIVE_STATUS)
+IGNORE_IOCTL(FDGETPRM32)
 /* SG stuff */
 COMPATIBLE_IOCTL(SG_SET_TIMEOUT)
 COMPATIBLE_IOCTL(SG_GET_TIMEOUT)
@@ -2108,6 +2312,7 @@ COMPATIBLE_IOCTL(PPPOEIOCSFWD)
 COMPATIBLE_IOCTL(PPPOEIOCDFWD)
 /* LP */
 COMPATIBLE_IOCTL(LPGETSTATUS)
+COMPATIBLE_IOCTL(PPPIOCGL2TPSTATS)
 /* ppdev */
 COMPATIBLE_IOCTL(PPSETMODE)
 COMPATIBLE_IOCTL(PPRSTATUS)
@@ -2318,6 +2523,9 @@ COMPATIBLE_IOCTL(ATMTCP_CREATE)
 COMPATIBLE_IOCTL(ATMTCP_REMOVE)
 COMPATIBLE_IOCTL(ATMMPC_CTRL)
 COMPATIBLE_IOCTL(ATMMPC_DATA)
+/* Raw devices */
+COMPATIBLE_IOCTL(RAW_SETBIND)
+COMPATIBLE_IOCTL(RAW_GETBIND)
 /* Watchdog */
 COMPATIBLE_IOCTL(WDIOC_GETSUPPORT)
 COMPATIBLE_IOCTL(WDIOC_GETSTATUS)
@@ -2353,6 +2561,8 @@ COMPATIBLE_IOCTL(HCISETLINKPOL)
 COMPATIBLE_IOCTL(HCISETLINKMODE)
 COMPATIBLE_IOCTL(HCISETACLMTU)
 COMPATIBLE_IOCTL(HCISETSCOMTU)
+COMPATIBLE_IOCTL(HCIBLOCKADDR)
+COMPATIBLE_IOCTL(HCIUNBLOCKADDR)
 COMPATIBLE_IOCTL(HCIINQUIRY)
 COMPATIBLE_IOCTL(HCIUARTSETPROTO)
 COMPATIBLE_IOCTL(HCIUARTGETPROTO)
@@ -2365,6 +2575,7 @@ COMPATIBLE_IOCTL(BNEPCONNADD)
 COMPATIBLE_IOCTL(BNEPCONNDEL)
 COMPATIBLE_IOCTL(BNEPGETCONNLIST)
 COMPATIBLE_IOCTL(BNEPGETCONNINFO)
+COMPATIBLE_IOCTL(BNEPGETSUPPFEAT)
 COMPATIBLE_IOCTL(CMTPCONNADD)
 COMPATIBLE_IOCTL(CMTPCONNDEL)
 COMPATIBLE_IOCTL(CMTPGETCONNLIST)
@@ -2427,6 +2638,7 @@ COMPATIBLE_IOCTL(MEMSETBADBLOCK)
 ULONG_IOCTL(NBD_SET_SOCK)
 ULONG_IOCTL(NBD_SET_BLKSIZE)
 ULONG_IOCTL(NBD_SET_SIZE)
+/* NBD */
 COMPATIBLE_IOCTL(NBD_DO_IT)
 COMPATIBLE_IOCTL(NBD_CLEAR_SOCK)
 COMPATIBLE_IOCTL(NBD_CLEAR_QUE)
@@ -2654,6 +2866,7 @@ COMPATIBLE_IOCTL(TIOCSLTC)
 #ifdef TIOCSTART
 /*
  * For these two we have defintions in ioctls.h and/or termios.h on
+ * For these two we have definitions in ioctls.h and/or termios.h on
  * some architectures but no actual implemention.  Some applications
  * like bash call them if they are defined in the headers, so we provide
  * entries here to avoid syslog message spew.
@@ -2779,6 +2992,129 @@ asmlinkage long compat_sys_ioctl(unsigned int fd, unsigned int cmd,
 
 	/* RED-PEN how should LSM module know it's handling 32bit? */
 	error = security_file_ioctl(filp, cmd, arg);
+/*
+ * Convert common ioctl arguments based on their command number
+ *
+ * Please do not add any code in here. Instead, implement
+ * a compat_ioctl operation in the place that handleѕ the
+ * ioctl for the native case.
+ */
+static long do_ioctl_trans(int fd, unsigned int cmd,
+		 unsigned long arg, struct file *file)
+{
+	void __user *argp = compat_ptr(arg);
+
+	switch (cmd) {
+	case PPPIOCGIDLE32:
+		return ppp_gidle(fd, cmd, argp);
+	case PPPIOCSCOMPRESS32:
+		return ppp_scompress(fd, cmd, argp);
+	case PPPIOCSPASS32:
+	case PPPIOCSACTIVE32:
+		return ppp_sock_fprog_ioctl_trans(fd, cmd, argp);
+#ifdef CONFIG_BLOCK
+	case SG_IO:
+		return sg_ioctl_trans(fd, cmd, argp);
+	case SG_GET_REQUEST_TABLE:
+		return sg_grt_trans(fd, cmd, argp);
+	case MTIOCGET32:
+	case MTIOCPOS32:
+		return mt_ioctl_trans(fd, cmd, argp);
+#endif
+	/* Serial */
+	case TIOCGSERIAL:
+	case TIOCSSERIAL:
+		return serial_struct_ioctl(fd, cmd, argp);
+	/* i2c */
+	case I2C_FUNCS:
+		return w_long(fd, cmd, argp);
+	case I2C_RDWR:
+		return do_i2c_rdwr_ioctl(fd, cmd, argp);
+	case I2C_SMBUS:
+		return do_i2c_smbus_ioctl(fd, cmd, argp);
+	/* Not implemented in the native kernel */
+	case RTC_IRQP_READ32:
+	case RTC_IRQP_SET32:
+	case RTC_EPOCH_READ32:
+	case RTC_EPOCH_SET32:
+		return rtc_ioctl(fd, cmd, argp);
+
+	/* dvb */
+	case VIDEO_GET_EVENT:
+		return do_video_get_event(fd, cmd, argp);
+	case VIDEO_STILLPICTURE:
+		return do_video_stillpicture(fd, cmd, argp);
+	case VIDEO_SET_SPU_PALETTE:
+		return do_video_set_spu_palette(fd, cmd, argp);
+	}
+
+	/*
+	 * These take an integer instead of a pointer as 'arg',
+	 * so we must not do a compat_ptr() translation.
+	 */
+	switch (cmd) {
+	/* Big T */
+	case TCSBRKP:
+	case TIOCMIWAIT:
+	case TIOCSCTTY:
+	/* RAID */
+	case HOT_REMOVE_DISK:
+	case HOT_ADD_DISK:
+	case SET_DISK_FAULTY:
+	case SET_BITMAP_FILE:
+	/* Big K */
+	case KDSIGACCEPT:
+	case KIOCSOUND:
+	case KDMKTONE:
+	case KDSETMODE:
+	case KDSKBMODE:
+	case KDSKBMETA:
+	case KDSKBLED:
+	case KDSETLED:
+	/* NBD */
+	case NBD_SET_SOCK:
+	case NBD_SET_BLKSIZE:
+	case NBD_SET_SIZE:
+	case NBD_SET_SIZE_BLOCKS:
+		return do_vfs_ioctl(file, fd, cmd, arg);
+	}
+
+	return -ENOIOCTLCMD;
+}
+
+static int compat_ioctl_check_table(unsigned int xcmd)
+{
+	int i;
+	const int max = ARRAY_SIZE(ioctl_pointer) - 1;
+
+	BUILD_BUG_ON(max >= (1 << 16));
+
+	/* guess initial offset into table, assuming a
+	   normalized distribution */
+	i = ((xcmd >> 16) * max) >> 16;
+
+	/* do linear search up first, until greater or equal */
+	while (ioctl_pointer[i] < xcmd && i < max)
+		i++;
+
+	/* then do linear search down */
+	while (ioctl_pointer[i] > xcmd && i > 0)
+		i--;
+
+	return ioctl_pointer[i] == xcmd;
+}
+
+COMPAT_SYSCALL_DEFINE3(ioctl, unsigned int, fd, unsigned int, cmd,
+		       compat_ulong_t, arg32)
+{
+	unsigned long arg = arg32;
+	struct fd f = fdget(fd);
+	int error = -EBADF;
+	if (!f.file)
+		goto out;
+
+	/* RED-PEN how should LSM module know it's handling 32bit? */
+	error = security_file_ioctl(f.file, cmd, arg);
 	if (error)
 		goto out_fput;
 
@@ -2799,18 +3135,37 @@ asmlinkage long compat_sys_ioctl(unsigned int fd, unsigned int cmd,
 	case FIGETBSZ:
 	case FIONREAD:
 		if (S_ISREG(filp->f_path.dentry->d_inode->i_mode))
+#if defined(CONFIG_IA64) || defined(CONFIG_X86_64)
+	case FS_IOC_RESVSP_32:
+	case FS_IOC_RESVSP64_32:
+		error = compat_ioctl_preallocate(f.file, compat_ptr(arg));
+		goto out_fput;
+#else
+	case FS_IOC_RESVSP:
+	case FS_IOC_RESVSP64:
+		error = ioctl_preallocate(f.file, compat_ptr(arg));
+		goto out_fput;
+#endif
+
+	case FIBMAP:
+	case FIGETBSZ:
+	case FIONREAD:
+		if (S_ISREG(file_inode(f.file)->i_mode))
 			break;
 		/*FALL THROUGH*/
 
 	default:
 		if (filp->f_op && filp->f_op->compat_ioctl) {
 			error = filp->f_op->compat_ioctl(filp, cmd, arg);
+		if (f.file->f_op->compat_ioctl) {
+			error = f.file->f_op->compat_ioctl(f.file, cmd, arg);
 			if (error != -ENOIOCTLCMD)
 				goto out_fput;
 		}
 
 		if (!filp->f_op ||
 		    (!filp->f_op->ioctl && !filp->f_op->unlocked_ioctl))
+		if (!f.file->f_op->unlocked_ioctl)
 			goto do_ioctl;
 		break;
 	}
@@ -2833,6 +3188,12 @@ asmlinkage long compat_sys_ioctl(unsigned int fd, unsigned int cmd,
 			compat_ioctl_error(filp, fd, cmd, arg);
 		error = -EINVAL;
 	}
+	if (compat_ioctl_check_table(XFORM(cmd)))
+		goto found_handler;
+
+	error = do_ioctl_trans(fd, cmd, arg, f.file);
+	if (error == -ENOIOCTLCMD)
+		error = -ENOTTY;
 
 	goto out_fput;
 
@@ -2848,6 +3209,11 @@ asmlinkage long compat_sys_ioctl(unsigned int fd, unsigned int cmd,
 	error = do_vfs_ioctl(filp, fd, cmd, arg);
  out_fput:
 	fput_light(filp, fput_needed);
+	arg = (unsigned long)compat_ptr(arg);
+ do_ioctl:
+	error = do_vfs_ioctl(f.file, fd, cmd, arg);
+ out_fput:
+	fdput(f);
  out:
 	return error;
 }
@@ -2867,6 +3233,16 @@ static void ioctl32_insert_translation(struct ioctl_trans *trans)
 		trans->next = NULL;
 		t->next = trans;
 	}
+static int __init init_sys32_ioctl_cmp(const void *p, const void *q)
+{
+	unsigned int a, b;
+	a = *(unsigned int *)p;
+	b = *(unsigned int *)q;
+	if (a > b)
+		return 1;
+	if (a < b)
+		return -1;
+	return 0;
 }
 
 static int __init init_sys32_ioctl(void)
@@ -2881,6 +3257,8 @@ static int __init init_sys32_ioctl(void)
 
 		ioctl32_insert_translation(&ioctl_start[i]);
 	}
+	sort(ioctl_pointer, ARRAY_SIZE(ioctl_pointer), sizeof(*ioctl_pointer),
+		init_sys32_ioctl_cmp, NULL);
 	return 0;
 }
 __initcall(init_sys32_ioctl);

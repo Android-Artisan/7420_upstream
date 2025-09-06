@@ -111,7 +111,6 @@ struct mace_ethernet {
 	volatile unsigned long phy_regs;
 	volatile unsigned long phy_trans_go;
 	volatile unsigned long backoff_seed;
-	/*===================================*/
 	volatile unsigned long imq_reserved[4];
 	volatile unsigned long mac_addr;
 	volatile unsigned long mac_addr2;
@@ -122,7 +121,6 @@ struct mace_ethernet {
 	volatile unsigned long tx_pkt1_ptr[3];
 	volatile unsigned long tx_pkt2_hdr;
 	volatile unsigned long tx_pkt2_ptr[3];
-	/*===================================*/
 	volatile unsigned long rx_fifo;
 };
 

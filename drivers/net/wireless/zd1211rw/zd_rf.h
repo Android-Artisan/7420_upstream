@@ -16,6 +16,7 @@
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+ * along with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
 #ifndef _ZD_RF_H
@@ -56,6 +57,7 @@ struct zd_rf {
 	u8 update_channel_int:1;
 
 	/* whether CR47 should be patched from the EEPROM, if the appropriate
+	/* whether ZD_CR47 should be patched from the EEPROM, if the appropriate
 	 * flag is set in the POD. The vendor driver suggests that this should
 	 * be done for all RF's, but a bug in their code prevents but their
 	 * HW_OverWritePhyRegFromE2P() routine from ever taking effect. */

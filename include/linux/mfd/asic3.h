@@ -16,6 +16,13 @@
 
 #include <linux/types.h>
 
+struct led_classdev;
+struct asic3_led {
+	const char	*name;
+	const char	*default_trigger;
+	struct led_classdev *cdev;
+};
+
 struct asic3_platform_data {
 	u16 *gpio_config;
 	unsigned int gpio_config_num;
@@ -23,12 +30,23 @@ struct asic3_platform_data {
 	unsigned int irq_base;
 
 	unsigned int gpio_base;
+
+	unsigned int clock_rate;
+
+	struct asic3_led *leds;
 };
 
 #define ASIC3_NUM_GPIO_BANKS	4
 #define ASIC3_GPIOS_PER_BANK	16
 #define ASIC3_NUM_GPIOS		64
 #define ASIC3_NR_IRQS		ASIC3_NUM_GPIOS + 6
+
+#define ASIC3_IRQ_LED0		64
+#define ASIC3_IRQ_LED1		65
+#define ASIC3_IRQ_LED2		66
+#define ASIC3_IRQ_SPI		67
+#define ASIC3_IRQ_SMBUS		68
+#define ASIC3_IRQ_OWM		69
 
 #define ASIC3_TO_GPIO(gpio) (NR_BUILTIN_GPIO + (gpio))
 
@@ -107,6 +125,9 @@ struct asic3_platform_data {
 #define ASIC3_GPIOC0_LED0		ASIC3_CONFIG_GPIO(32, 1, 1, 0)
 #define ASIC3_GPIOC1_LED1		ASIC3_CONFIG_GPIO(33, 1, 1, 0)
 #define ASIC3_GPIOC2_LED2		ASIC3_CONFIG_GPIO(34, 1, 1, 0)
+#define ASIC3_GPIOC0_LED0		ASIC3_CONFIG_GPIO(32, 1, 0, 0)
+#define ASIC3_GPIOC1_LED1		ASIC3_CONFIG_GPIO(33, 1, 0, 0)
+#define ASIC3_GPIOC2_LED2		ASIC3_CONFIG_GPIO(34, 1, 0, 0)
 #define ASIC3_GPIOC3_SPI_RXD		ASIC3_CONFIG_GPIO(35, 1, 0, 0)
 #define ASIC3_GPIOC4_CF_nCD		ASIC3_CONFIG_GPIO(36, 1, 0, 0)
 #define ASIC3_GPIOC4_SPI_TXD		ASIC3_CONFIG_GPIO(36, 1, 1, 0)
@@ -122,6 +143,7 @@ struct asic3_platform_data {
 #define ASIC3_GPIOC13_nPWAIT		ASIC3_CONFIG_GPIO(45, 1, 1, 0)
 #define ASIC3_GPIOC14_nPIOIS16		ASIC3_CONFIG_GPIO(46, 1, 1, 0)
 #define ASIC3_GPIOC15_nPIOR		ASIC3_CONFIG_GPIO(47, 1, 0, 0)
+#define ASIC3_GPIOD4_CF_nCD		ASIC3_CONFIG_GPIO(52, 1, 0, 0)
 #define ASIC3_GPIOD11_nCIOIS16		ASIC3_CONFIG_GPIO(59, 1, 0, 0)
 #define ASIC3_GPIOD12_nCWAIT		ASIC3_CONFIG_GPIO(60, 1, 0, 0)
 #define ASIC3_GPIOD15_nPIOW		ASIC3_CONFIG_GPIO(63, 1, 0, 0)
@@ -145,6 +167,7 @@ struct asic3_platform_data {
 #define PWM_TIMEBASE_VALUE(x)    ((x)&0xf)   /* Low 4 bits sets time base */
 #define PWM_TIMEBASE_ENABLE     (1 << 4)   /* Enable clock */
 
+#define ASIC3_NUM_LEDS                  3
 #define ASIC3_LED_0_Base                0x0700
 #define ASIC3_LED_1_Base                0x0800
 #define ASIC3_LED_2_Base 		      0x0900
@@ -229,6 +252,8 @@ struct asic3_platform_data {
 /* Basic control of the SD ASIC */
 #define ASIC3_SDHWCTRL_Base	0x0E00
 #define ASIC3_SDHWCTRL_SDConf    0x00
+#define ASIC3_SDHWCTRL_BASE     0x0E00
+#define ASIC3_SDHWCTRL_SDCONF     0x00
 
 #define ASIC3_SDHWCTRL_SUSPEND    (1 << 0)  /* 1=suspend all SD operations */
 #define ASIC3_SDHWCTRL_CLKSEL     (1 << 1)  /* 1=SDICK, 0=HCLK */
@@ -246,6 +271,10 @@ struct asic3_platform_data {
 
 #define ASIC3_EXTCF_Select         0x00
 #define ASIC3_EXTCF_Reset          0x04
+#define ASIC3_EXTCF_BASE        0x1100
+
+#define ASIC3_EXTCF_SELECT        0x00
+#define ASIC3_EXTCF_RESET         0x04
 
 #define ASIC3_EXTCF_SMOD0	         (1 << 0)  /* slot number of mode 0 */
 #define ASIC3_EXTCF_SMOD1	         (1 << 1)  /* slot number of mode 1 */
@@ -495,8 +524,18 @@ struct asic3_platform_data {
 #define ASIC3_SDIO_CTRL_ErrorCtrl            0x78
 #define ASIC3_SDIO_CTRL_LEDCtrl              0x7C
 #define ASIC3_SDIO_CTRL_SoftwareReset        0x1C0
+#define ASIC3_SD_CONFIG_BASE	0x0400 /* Assumes 32 bit addressing */
+#define ASIC3_SD_CONFIG_SIZE	0x0200 /* Assumes 32 bit addressing */
+#define ASIC3_SD_CTRL_BASE	0x1000
+#define ASIC3_SDIO_CTRL_BASE	0x1200
 
 #define ASIC3_MAP_SIZE_32BIT	0x2000
 #define ASIC3_MAP_SIZE_16BIT	0x1000
+
+/* Functions needed by leds-asic3 */
+
+struct asic3;
+extern void asic3_write_register(struct asic3 *asic, unsigned int reg, u32 val);
+extern u32 asic3_read_register(struct asic3 *asic, unsigned int reg);
 
 #endif /* __ASIC3_H__ */

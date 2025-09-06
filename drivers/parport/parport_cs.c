@@ -1,4 +1,3 @@
-/*======================================================================
 
     A driver for PCMCIA parallel port adapters
 
@@ -32,7 +31,6 @@
     the provisions above, a recipient may use your version of this
     file under either the MPL or the GPL.
     
-======================================================================*/
 
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -43,6 +41,7 @@
 #include <linux/timer.h>
 #include <linux/ioport.h>
 #include <linux/major.h>
+#include <linux/interrupt.h>
 
 #include <linux/parport.h>
 #include <linux/parport_pc.h>
@@ -54,7 +53,6 @@
 #include <pcmcia/cisreg.h>
 #include <pcmcia/ciscode.h>
 
-/*====================================================================*/
 
 /* Module parameters */
 
@@ -75,7 +73,6 @@ static char *version =
 #define DEBUG(n, args...)
 #endif
 
-/*====================================================================*/
 
 #define FORCE_EPP_MODE	0x08
 
@@ -90,19 +87,18 @@ static void parport_detach(struct pcmcia_device *p_dev);
 static int parport_config(struct pcmcia_device *link);
 static void parport_cs_release(struct pcmcia_device *);
 
-/*======================================================================
 
     parport_attach() creates an "instance" of the driver, allocating
     local data structures for one device.  The device is registered
     with Card Services.
 
-======================================================================*/
 
 static int parport_probe(struct pcmcia_device *link)
 {
     parport_info_t *info;
 
     DEBUG(0, "parport_attach()\n");
+    dev_dbg(&link->dev, "parport_attach()\n");
 
     /* Create new parport device */
     info = kzalloc(sizeof(*info), GFP_KERNEL);
@@ -116,38 +112,47 @@ static int parport_probe(struct pcmcia_device *link)
     link->irq.IRQInfo1 = IRQ_LEVEL_ID;
     link->conf.Attributes = CONF_ENABLE_IRQ;
     link->conf.IntType = INT_MEMORY_AND_IO;
+    link->config_flags |= CONF_ENABLE_IRQ | CONF_AUTO_SET_IO;
 
     return parport_config(link);
 } /* parport_attach */
 
-/*======================================================================
 
     This deletes a driver "instance".  The device is de-registered
     with Card Services.  If it has been released, all local data
     structures are freed.  Otherwise, the structures will be freed
     when the device is released.
 
-======================================================================*/
 
 static void parport_detach(struct pcmcia_device *link)
 {
     DEBUG(0, "parport_detach(0x%p)\n", link);
+static void parport_detach(struct pcmcia_device *link)
+{
+    dev_dbg(&link->dev, "parport_detach\n");
 
     parport_cs_release(link);
 
     kfree(link->priv);
 } /* parport_detach */
 
-/*======================================================================
 
     parport_config() is scheduled to run after a CARD_INSERTION event
     is received, to configure the PCMCIA socket, and to make the
     parport device available to the system.
 
-======================================================================*/
 
 #define CS_CHECK(fn, ret) \
 do { last_fn = (fn); if ((last_ret = (ret)) != 0) goto cs_failed; } while (0)
+static int parport_config_check(struct pcmcia_device *p_dev, void *priv_data)
+{
+	p_dev->resource[0]->flags &= ~IO_DATA_PATH_WIDTH;
+	p_dev->resource[0]->flags |= IO_DATA_PATH_WIDTH_8;
+	p_dev->resource[1]->flags &= ~IO_DATA_PATH_WIDTH;
+	p_dev->resource[1]->flags |= IO_DATA_PATH_WIDTH_8;
+
+	return pcmcia_request_io(p_dev);
+}
 
 static int parport_config(struct pcmcia_device *link)
 {
@@ -205,6 +210,33 @@ static int parport_config(struct pcmcia_device *link)
 	printk(KERN_NOTICE "parport_cs: parport_pc_probe_port() at "
 	       "0x%3x, irq %u failed\n", link->io.BasePort1,
 	       link->irq.AssignedIRQ);
+    struct parport *p;
+    int ret;
+
+    dev_dbg(&link->dev, "parport_config\n");
+
+    if (epp_mode)
+	    link->config_index |= FORCE_EPP_MODE;
+
+    ret = pcmcia_loop_config(link, parport_config_check, NULL);
+    if (ret)
+	    goto failed;
+
+    if (!link->irq)
+	    goto failed;
+    ret = pcmcia_enable_device(link);
+    if (ret)
+	    goto failed;
+
+    p = parport_pc_probe_port(link->resource[0]->start,
+			      link->resource[1]->start,
+			      link->irq, PARPORT_DMA_NONE,
+			      &link->dev, IRQF_SHARED);
+    if (p == NULL) {
+	printk(KERN_NOTICE "parport_cs: parport_pc_probe_port() at "
+	       "0x%3x, irq %u failed\n",
+	       (unsigned int) link->resource[0]->start,
+	       link->irq);
 	goto failed;
     }
 
@@ -222,24 +254,27 @@ static int parport_config(struct pcmcia_device *link)
 
 cs_failed:
     cs_error(link, last_fn, last_ret);
+    info->port = p;
+
+    return 0;
+
 failed:
     parport_cs_release(link);
     return -ENODEV;
 } /* parport_config */
 
-/*======================================================================
 
     After a card is removed, parport_cs_release() will unregister the
     device, and release the PCMCIA configuration.  If the device is
     still open, this will be postponed until it is closed.
     
-======================================================================*/
 
 static void parport_cs_release(struct pcmcia_device *link)
 {
 	parport_info_t *info = link->priv;
 
 	DEBUG(0, "parport_release(0x%p)\n", link);
+	dev_dbg(&link->dev, "parport_release\n");
 
 	if (info->ndev) {
 		struct parport *p = info->port;
@@ -252,6 +287,7 @@ static void parport_cs_release(struct pcmcia_device *link)
 
 
 static struct pcmcia_device_id parport_ids[] = {
+static const struct pcmcia_device_id parport_ids[] = {
 	PCMCIA_DEVICE_FUNC_ID(3),
 	PCMCIA_MFC_DEVICE_PROD_ID12(1,"Elan","Serial+Parallel Port: SP230",0x3beb8cf2,0xdb9e58bc),
 	PCMCIA_DEVICE_MANF_CARD(0x0137, 0x0003),
@@ -264,6 +300,7 @@ static struct pcmcia_driver parport_cs_driver = {
 	.drv		= {
 		.name	= "parport_cs",
 	},
+	.name		= "parport_cs",
 	.probe		= parport_probe,
 	.remove		= parport_detach,
 	.id_table	= parport_ids,
@@ -281,3 +318,4 @@ static void __exit exit_parport_cs(void)
 
 module_init(init_parport_cs);
 module_exit(exit_parport_cs);
+module_pcmcia_driver(parport_cs_driver);

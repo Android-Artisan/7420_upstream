@@ -22,6 +22,7 @@
 #include <linux/smp.h>
 #include <linux/workqueue.h>
 #include <linux/mm.h>
+#include <linux/slab.h>
 
 #include <asm/delay.h>
 #include <asm/machvec.h>
@@ -159,6 +160,8 @@ mca_handler_bh(unsigned long paddr, void *iip, unsigned long ipsr)
 	printk(KERN_ERR "OS_MCA: process [cpu %d, pid: %d, uid: %d, "
 		"iip: %p, psr: 0x%lx,paddr: 0x%lx](%s) encounters MCA.\n",
 		raw_smp_processor_id(), current->pid, current->uid,
+	       raw_smp_processor_id(), current->pid,
+		from_kuid(&init_user_ns, current_uid()),
 		iip, ipsr, paddr, current->comm);
 
 	spin_lock(&mca_bh_lock);
@@ -342,13 +345,14 @@ init_record_index_pools(void)
 
 	/* - 2 - */
 	sect_min_size = sal_log_sect_min_sizes[0];
-	for (i = 1; i < sizeof sal_log_sect_min_sizes/sizeof(size_t); i++)
+	for (i = 1; i < ARRAY_SIZE(sal_log_sect_min_sizes); i++)
 		if (sect_min_size > sal_log_sect_min_sizes[i])
 			sect_min_size = sal_log_sect_min_sizes[i];
 
 	/* - 3 - */
 	slidx_pool.max_idx = (rec_max_size/sect_min_size) * 2 + 1;
 	slidx_pool.buffer = (slidx_list_t *)
+	slidx_pool.buffer =
 		kmalloc(slidx_pool.max_idx * sizeof(slidx_list_t), GFP_KERNEL);
 
 	return slidx_pool.buffer ? 0 : -ENOMEM;
@@ -760,7 +764,6 @@ mca_try_to_recover(void *rec, struct ia64_sal_os_state *sos)
 }
 
 /*
- * =============================================================================
  */
 
 int __init mca_external_handler_init(void)

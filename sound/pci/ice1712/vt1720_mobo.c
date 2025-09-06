@@ -26,6 +26,9 @@
 #include <linux/interrupt.h>
 #include <linux/init.h>
 #include <linux/slab.h>
+#include <linux/delay.h>
+#include <linux/interrupt.h>
+#include <linux/init.h>
 #include <sound/core.h>
 
 #include "ice1712.h"
@@ -34,6 +37,7 @@
 
 
 static int __devinit k8x800_init(struct snd_ice1712 *ice)
+static int k8x800_init(struct snd_ice1712 *ice)
 {
 	ice->vt1720 = 1;
 
@@ -48,6 +52,7 @@ static int __devinit k8x800_init(struct snd_ice1712 *ice)
 }
 
 static int __devinit k8x800_add_controls(struct snd_ice1712 *ice)
+static int k8x800_add_controls(struct snd_ice1712 *ice)
 {
 	/* FIXME: needs some quirks for VT1616? */
 	return 0;
@@ -56,6 +61,7 @@ static int __devinit k8x800_add_controls(struct snd_ice1712 *ice)
 /* EEPROM image */
 
 static unsigned char k8x800_eeprom[] __devinitdata = {
+static unsigned char k8x800_eeprom[] = {
 	[ICE_EEP2_SYSCONF]     = 0x01,	/* clock 256, 1ADC, 2DACs */
 	[ICE_EEP2_ACLINK]      = 0x02,	/* ACLINK, packed */
 	[ICE_EEP2_I2S]         = 0x00,	/* - */
@@ -72,6 +78,7 @@ static unsigned char k8x800_eeprom[] __devinitdata = {
 };
 
 static unsigned char sn25p_eeprom[] __devinitdata = {
+static unsigned char sn25p_eeprom[] = {
 	[ICE_EEP2_SYSCONF]     = 0x01,	/* clock 256, 1ADC, 2DACs */
 	[ICE_EEP2_ACLINK]      = 0x02,	/* ACLINK, packed */
 	[ICE_EEP2_I2S]         = 0x00,	/* - */
@@ -90,6 +97,7 @@ static unsigned char sn25p_eeprom[] __devinitdata = {
 
 /* entry point */
 struct snd_ice1712_card_info snd_vt1720_mobo_cards[] __devinitdata = {
+struct snd_ice1712_card_info snd_vt1720_mobo_cards[] = {
 	{
 		.subvendor = VT1720_SUBDEVICE_K8X800,
 		.name = "Albatron K8X800 Pro II",

@@ -6,6 +6,7 @@ CFLAGS_sysinfo.o += -Iinclude/math-emu -Iarch/s390/math-emu -w
 
 obj-y += s390mach.o sysinfo.o s390_rdev.o
 obj-y += cio/ block/ char/ crypto/ net/ scsi/ kvm/
+obj-y += cio/ block/ char/ crypto/ net/ scsi/ virtio/
 
 drivers-y += drivers/s390/built-in.o
 

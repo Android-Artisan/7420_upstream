@@ -2,6 +2,7 @@
  *  Video for Linux Two header file
  *
  *  Copyright (C) 1999-2007 the contributors
+ *  Copyright (C) 1999-2012 the contributors
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -1437,5 +1438,7 @@ struct v4l2_chip_ident {
 #endif
 
 #define BASE_VIDIOC_PRIVATE	192		/* 192-255 are private */
+#include <linux/time.h>     /* need struct timeval */
+#include <uapi/linux/videodev2.h>
 
 #endif /* __LINUX_VIDEODEV2_H */

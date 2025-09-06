@@ -170,6 +170,11 @@ struct scc_calibrate {
 };
 
 #ifdef __KERNEL__
+#ifndef	_SCC_H
+#define	_SCC_H
+
+#include <uapi/linux/scc.h>
+
 
 enum {TX_OFF, TX_ON};	/* command for scc_key_trx() */
 

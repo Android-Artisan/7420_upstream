@@ -18,6 +18,7 @@
 #include <linux/ptrace.h>
 #include <linux/user.h>
 #include <linux/signal.h>
+#include <linux/tracehook.h>
 
 #include <asm/uaccess.h>
 #include <asm/page.h>
@@ -36,6 +37,9 @@
 
 /* sets the trace bits. */
 #define TRACE_BITS 0x8000
+#define TRACE_BITS 0xC000
+#define T1_BIT 0x8000
+#define T0_BIT 0x4000
 
 /* Find the stack offset for a register, relative to thread.esp0. */
 #define PT_REG(reg)	((long)&((struct pt_regs *)0)->reg)
@@ -45,6 +49,7 @@
    saved.  Notice that usp has no stack-slot and needs to be treated
    specially (see get_reg/put_reg below). */
 static int regoff[] = {
+static const int regoff[] = {
 	[0]	= PT_REG(d1),
 	[1]	= PT_REG(d2),
 	[2]	= PT_REG(d3),
@@ -79,6 +84,14 @@ static inline long get_reg(struct task_struct *task, int regno)
 		addr = (unsigned long *)(task->thread.esp0 + regoff[regno]);
 	else
 		return 0;
+	/* Need to take stkadj into account. */
+	if (regno == PT_SR || regno == PT_PC) {
+		long stkadj = *(long *)(task->thread.esp0 + PT_REG(stkadj));
+		addr = (unsigned long *) ((unsigned long)addr + stkadj);
+		/* The sr is actually a 16 bit register.  */
+		if (regno == PT_SR)
+			return *(unsigned short *)addr;
+	}
 	return *addr;
 }
 
@@ -96,6 +109,16 @@ static inline int put_reg(struct task_struct *task, int regno,
 		addr = (unsigned long *)(task->thread.esp0 + regoff[regno]);
 	else
 		return -1;
+	/* Need to take stkadj into account. */
+	if (regno == PT_SR || regno == PT_PC) {
+		long stkadj = *(long *)(task->thread.esp0 + PT_REG(stkadj));
+		addr = (unsigned long *) ((unsigned long)addr + stkadj);
+		/* The sr is actually a 16 bit register.  */
+		if (regno == PT_SR) {
+			*(unsigned short *)addr = data;
+			return 0;
+		}
+	}
 	*addr = data;
 	return 0;
 }
@@ -106,6 +129,7 @@ static inline int put_reg(struct task_struct *task, int regno,
 static inline void singlestep_disable(struct task_struct *child)
 {
 	unsigned long tmp = get_reg(child, PT_SR) & ~(TRACE_BITS << 16);
+	unsigned long tmp = get_reg(child, PT_SR) & ~TRACE_BITS;
 	put_reg(child, PT_SR, tmp);
 	clear_tsk_thread_flag(child, TIF_DELAYED_TRACE);
 }
@@ -130,6 +154,35 @@ long arch_ptrace(struct task_struct *child, long request, long addr, long data)
 		ret = generic_ptrace_peekdata(child, addr, data);
 		break;
 
+void user_enable_single_step(struct task_struct *child)
+{
+	unsigned long tmp = get_reg(child, PT_SR) & ~TRACE_BITS;
+	put_reg(child, PT_SR, tmp | T1_BIT);
+	set_tsk_thread_flag(child, TIF_DELAYED_TRACE);
+}
+
+#ifdef CONFIG_MMU
+void user_enable_block_step(struct task_struct *child)
+{
+	unsigned long tmp = get_reg(child, PT_SR) & ~TRACE_BITS;
+	put_reg(child, PT_SR, tmp | T0_BIT);
+}
+#endif
+
+void user_disable_single_step(struct task_struct *child)
+{
+	singlestep_disable(child);
+}
+
+long arch_ptrace(struct task_struct *child, long request,
+		 unsigned long addr, unsigned long data)
+{
+	unsigned long tmp;
+	int i, ret = 0;
+	int regno = addr >> 2; /* temporary hack. */
+	unsigned long __user *datap = (unsigned long __user *) data;
+
+	switch (request) {
 	/* read the word at location addr in the USER area. */
 	case PTRACE_PEEKUSR:
 		if (addr & 3)
@@ -181,6 +234,52 @@ long arch_ptrace(struct task_struct *child, long request, long addr, long data)
 				       ((data & 0x0000ffff) >> 1);
 			}
 			child->thread.fp[addr - 21] = data;
+
+		if (regno >= 0 && regno < 19) {
+			tmp = get_reg(child, regno);
+		} else if (regno >= 21 && regno < 49) {
+			tmp = child->thread.fp[regno - 21];
+			/* Convert internal fpu reg representation
+			 * into long double format
+			 */
+			if (FPU_IS_EMU && (regno < 45) && !(regno % 3))
+				tmp = ((tmp & 0xffff0000) << 15) |
+				      ((tmp & 0x0000ffff) << 16);
+#ifndef CONFIG_MMU
+		} else if (regno == 49) {
+			tmp = child->mm->start_code;
+		} else if (regno == 50) {
+			tmp = child->mm->start_data;
+		} else if (regno == 51) {
+			tmp = child->mm->end_code;
+#endif
+		} else
+			goto out_eio;
+		ret = put_user(tmp, datap);
+		break;
+
+	case PTRACE_POKEUSR:
+	/* write the word at location addr in the USER area */
+		if (addr & 3)
+			goto out_eio;
+
+		if (regno == PT_SR) {
+			data &= SR_MASK;
+			data |= get_reg(child, PT_SR) & ~SR_MASK;
+		}
+		if (regno >= 0 && regno < 19) {
+			if (put_reg(child, regno, data))
+				goto out_eio;
+		} else if (regno >= 21 && regno < 48) {
+			/* Convert long double format
+			 * into internal fpu reg representation
+			 */
+			if (FPU_IS_EMU && (regno < 45) && !(regno % 3)) {
+				data <<= 15;
+				data = (data & 0xffff0000) |
+				       ((data & 0x0000ffff) >> 1);
+			}
+			child->thread.fp[regno - 21] = data;
 		} else
 			goto out_eio;
 		break;
@@ -235,12 +334,20 @@ long arch_ptrace(struct task_struct *child, long request, long addr, long data)
 			if (ret)
 				break;
 			data += sizeof(long);
+	case PTRACE_GETREGS:	/* Get all gp regs from the child. */
+		for (i = 0; i < 19; i++) {
+			tmp = get_reg(child, i);
+			ret = put_user(tmp, datap);
+			if (ret)
+				break;
+			datap++;
 		}
 		break;
 
 	case PTRACE_SETREGS:	/* Set all gp regs in the child. */
 		for (i = 0; i < 19; i++) {
 			ret = get_user(tmp, (unsigned long *)data);
+			ret = get_user(tmp, datap);
 			if (ret)
 				break;
 			if (i == PT_SR) {
@@ -250,19 +357,29 @@ long arch_ptrace(struct task_struct *child, long request, long addr, long data)
 			}
 			put_reg(child, i, tmp);
 			data += sizeof(long);
+				tmp |= get_reg(child, PT_SR) & ~SR_MASK;
+			}
+			put_reg(child, i, tmp);
+			datap++;
 		}
 		break;
 
 	case PTRACE_GETFPREGS:	/* Get the child FPU state. */
 		if (copy_to_user((void *)data, &child->thread.fp,
+		if (copy_to_user(datap, &child->thread.fp,
 				 sizeof(struct user_m68kfp_struct)))
 			ret = -EFAULT;
 		break;
 
 	case PTRACE_SETFPREGS:	/* Set the child FPU state. */
 		if (copy_from_user(&child->thread.fp, (void *)data,
+		if (copy_from_user(&child->thread.fp, datap,
 				   sizeof(struct user_m68kfp_struct)))
 			ret = -EFAULT;
+		break;
+
+	case PTRACE_GET_THREAD_AREA:
+		ret = put_user(task_thread_info(child)->tp_value, datap);
 		break;
 
 	default:
@@ -289,3 +406,20 @@ asmlinkage void syscall_trace(void)
 		current->exit_code = 0;
 	}
 }
+
+#if defined(CONFIG_COLDFIRE) || !defined(CONFIG_MMU)
+asmlinkage int syscall_trace_enter(void)
+{
+	int ret = 0;
+
+	if (test_thread_flag(TIF_SYSCALL_TRACE))
+		ret = tracehook_report_syscall_entry(task_pt_regs(current));
+	return ret;
+}
+
+asmlinkage void syscall_trace_leave(void)
+{
+	if (test_thread_flag(TIF_SYSCALL_TRACE))
+		tracehook_report_syscall_exit(task_pt_regs(current), 0);
+}
+#endif /* CONFIG_COLDFIRE */

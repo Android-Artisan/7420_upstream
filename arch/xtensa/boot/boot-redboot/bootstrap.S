@@ -1,4 +1,5 @@
 #include <asm/variant/core.h>
+#include <variant/core.h>
 #include <asm/regs.h>
 #include <asm/asmmacro.h>
 #include <asm/cacheasm.h>
@@ -62,6 +63,17 @@ _start:
 
 	movi	a4, 0x00040000
 	wsr	a4, PS
+	wsr	a4, ps
+	rsync
+
+	rsr	a5, windowbase
+	ssl	a5
+	sll	a4, a4
+	wsr	a4, windowstart
+	rsync
+
+	movi	a4, 0x00040000
+	wsr	a4, ps
 	rsync
 
 	/* copy the loader to its address
@@ -237,6 +249,7 @@ _reloc:
 	# a2  Boot parameter list
 	# a3  initrd_start (virtual load address)
 	# a4  initrd_end   (virtual load address)
+	# a2  Boot parameter list
 
 	movi	a0, _image_start
 	jx	a0

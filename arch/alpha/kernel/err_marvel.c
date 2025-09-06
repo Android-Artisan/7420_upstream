@@ -110,6 +110,7 @@ marvel_print_err_cyc(u64 err_cyc)
 
 	printk("%s        Packet In Error: %s\n"
 	       "%s        Error in %s, cycle %ld%s%s\n",
+	       "%s        Error in %s, cycle %lld%s%s\n",
 	       err_print_prefix, 
 	       packet_desc[EXTRACT(err_cyc, IO7__ERR_CYC__PACKET)],
 	       err_print_prefix,
@@ -130,6 +131,7 @@ marvel_print_po7_crrct_sym(u64 crrct_sym)
 
 	printk("%s      Correctable Error Symptoms:\n"
 	       "%s        Syndrome: 0x%lx\n",
+	       "%s        Syndrome: 0x%llx\n",
 	       err_print_prefix,
 	       err_print_prefix, EXTRACT(crrct_sym, IO7__PO7_CRRCT_SYM__SYN));
 	marvel_print_err_cyc(EXTRACT(crrct_sym, IO7__PO7_CRRCT_SYM__ERR_CYC));
@@ -187,6 +189,7 @@ marvel_print_po7_uncrr_sym(u64 uncrr_sym, u64 valid_mask)
 
 	if (EXTRACT(valid_mask, IO7__PO7_UNCRR_SYM__SYN))
 		printk("%s        Syndrome: 0x%lx\n",
+		printk("%s        Syndrome: 0x%llx\n",
 		       err_print_prefix, 
 		       EXTRACT(uncrr_sym, IO7__PO7_UNCRR_SYM__SYN));
 
@@ -308,12 +311,14 @@ marvel_print_po7_ugbge_sym(u64 ugbge_sym)
 		break;
 	default:
 		sprintf(opcode_str, "0x%lx\n", 
+		sprintf(opcode_str, "0x%llx\n",
 			EXTRACT(ugbge_sym, IO7__PO7_UGBGE_SYM__UPH_OPCODE));
 		break;
 	}
 
 	printk("%s      Up Hose Garbage Symptom:\n"
 	       "%s        Source Port: %ld - Dest PID: %ld - OpCode: %s\n", 
+	       "%s        Source Port: %lld - Dest PID: %lld - OpCode: %s\n",
 	       err_print_prefix,
 	       err_print_prefix, 
 	       EXTRACT(ugbge_sym, IO7__PO7_UGBGE_SYM__UPH_SRC_PORT),
@@ -322,6 +327,7 @@ marvel_print_po7_ugbge_sym(u64 ugbge_sym)
 
 	if (0xC5 != EXTRACT(ugbge_sym, IO7__PO7_UGBGE_SYM__UPH_OPCODE))
 		printk("%s        Packet Offset 0x%08lx\n",
+		printk("%s        Packet Offset 0x%08llx\n",
 		       err_print_prefix,
 		       EXTRACT(ugbge_sym, IO7__PO7_UGBGE_SYM__UPH_PKT_OFF));
 }
@@ -482,6 +488,8 @@ marvel_print_po7_err_sum(struct ev7_pal_io_subpacket *io)
 	printk("%s    Failing Packet:\n"
 	       "%s      Cycle 1: %016lx\n"
 	       "%s      Cycle 2: %016lx\n",
+	       "%s      Cycle 1: %016llx\n"
+	       "%s      Cycle 2: %016llx\n",
 	       err_print_prefix,
 	       err_print_prefix, io->po7_err_pkt0,
 	       err_print_prefix, io->po7_err_pkt1);
@@ -518,6 +526,9 @@ marvel_print_pox_tlb_err(u64 tlb_err)
 	printk("%s      TLB Error on index 0x%lx:\n"
 	       "%s        - %s\n"
 	       "%s        - Addr: 0x%016lx\n",
+	printk("%s      TLB Error on index 0x%llx:\n"
+	       "%s        - %s\n"
+	       "%s        - Addr: 0x%016llx\n",
 	       err_print_prefix,
 	       EXTRACT(tlb_err, IO7__POX_TLBERR__ERR_TLB_PTR),
 	       err_print_prefix,
@@ -553,6 +564,7 @@ marvel_print_pox_spl_cmplt(u64 spl_cmplt)
 
 	printk("%s      Split Completion Error:\n"	
 	       "%s         Source (Bus:Dev:Func): %ld:%ld:%ld\n",
+	       "%s         Source (Bus:Dev:Func): %lld:%lld:%lld\n",
 	       err_print_prefix,
 	       err_print_prefix,
 	       EXTRACT(spl_cmplt, IO7__POX_SPLCMPLT__SOURCE_BUS),
@@ -580,6 +592,7 @@ marvel_print_pox_spl_cmplt(u64 spl_cmplt)
 		break;
 	default:
 		sprintf(message, "%08lx\n", 
+		sprintf(message, "%08llx\n",
 			EXTRACT(spl_cmplt, IO7__POX_SPLCMPLT__MESSAGE));
 		break;
 	}
@@ -605,6 +618,23 @@ marvel_print_pox_trans_sum(u64 trans_sum)
 			     "Dual Address Cycle",
 			     "Memory Read Line / Memory Read Block",
 			     "Memory Write and Invalidate / Memory Write Block"
+	static const char * const pcix_cmd[] = {
+		"Interrupt Acknowledge",
+		"Special Cycle",
+		"I/O Read",
+		"I/O Write",
+		"Reserved",
+		"Reserved / Device ID Message",
+		"Memory Read",
+		"Memory Write",
+		"Reserved / Alias to Memory Read Block",
+		"Reserved / Alias to Memory Write Block",
+		"Configuration Read",
+		"Configuration Write",
+		"Memory Read Multiple / Split Completion",
+		"Dual Address Cycle",
+		"Memory Read Line / Memory Read Block",
+		"Memory Write and Invalidate / Memory Write Block"
 	};
 
 #define IO7__POX_TRANSUM__PCI_ADDR__S		(0)
@@ -623,6 +653,9 @@ marvel_print_pox_trans_sum(u64 trans_sum)
 	       "%s        Command: 0x%lx - %s\n"
 	       "%s        Address: 0x%016lx%s\n"
 	       "%s        PCI-X Master Slot: 0x%lx\n",
+	       "%s        Command: 0x%llx - %s\n"
+	       "%s        Address: 0x%016llx%s\n"
+	       "%s        PCI-X Master Slot: 0x%llx\n",
 	       err_print_prefix, 
 	       err_print_prefix, 
 	       EXTRACT(trans_sum, IO7__POX_TRANSUM__PCIX_CMD),
@@ -970,6 +1003,12 @@ marvel_process_io_error(struct ev7_lf_subpackets *lf_subpackets, int print)
 		       "%s    PO7_UGBGE_SYM: %016lx\n"
 		       "%s    PO7_ERR_PKT0:  %016lx\n"
 		       "%s    PO7_ERR_PKT1:  %016lx\n",
+		       "%s    PO7_ERROR_SUM: %016llx\n"
+		       "%s    PO7_UNCRR_SYM: %016llx\n"
+		       "%s    PO7_CRRCT_SYM: %016llx\n"
+		       "%s    PO7_UGBGE_SYM: %016llx\n"
+		       "%s    PO7_ERR_PKT0:  %016llx\n"
+		       "%s    PO7_ERR_PKT1:  %016llx\n",
 		       err_print_prefix,
 		       err_print_prefix, io->po7_error_sum,
 		       err_print_prefix, io->po7_uncrr_sym,
@@ -988,11 +1027,13 @@ marvel_process_io_error(struct ev7_lf_subpackets *lf_subpackets, int print)
 			continue;
 
 		printk("%s  PID %u PORT %d POx_ERR_SUM: %016lx\n", 
+		printk("%s  PID %u PORT %d POx_ERR_SUM: %016llx\n",
 		       err_print_prefix, 
 		       lf_subpackets->io_pid, i, io->ports[i].pox_err_sum);
 		marvel_print_pox_err(io->ports[i].pox_err_sum, &io->ports[i]);
 
 		printk("%s  [ POx_FIRST_ERR: %016lx ]\n", 
+		printk("%s  [ POx_FIRST_ERR: %016llx ]\n",
 		       err_print_prefix, io->ports[i].pox_first_err);
 		marvel_print_pox_err(io->ports[i].pox_first_err, 
 				     &io->ports[i]);
@@ -1027,6 +1068,7 @@ marvel_process_logout_frame(struct ev7_lf_subpackets *lf_subpackets, int print)
 	 *
 	 * Dismiss if:
 	 *	C_STAT		= 0x14 		(Error Reponse)
+	 *	C_STAT		= 0x14 		(Error Response)
 	 *	C_STS<3>	= 0    		(C_ADDR valid)
 	 *	C_ADDR<42>	= 1    		(I/O)
 	 *	C_ADDR<31:22>	= 111110xxb	(PCI Config space)
@@ -1043,6 +1085,7 @@ marvel_process_logout_frame(struct ev7_lf_subpackets *lf_subpackets, int print)
 
 void
 marvel_machine_check(u64 vector, u64 la_ptr)
+marvel_machine_check(unsigned long vector, unsigned long la_ptr)
 {
 	struct el_subpacket *el_ptr = (struct el_subpacket *)la_ptr;
 	int (*process_frame)(struct ev7_lf_subpackets *, int) = NULL;

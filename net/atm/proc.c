@@ -27,16 +27,25 @@
 #include <asm/uaccess.h>
 #include <asm/atomic.h>
 #include <asm/param.h> /* for HZ */
+#include <linux/slab.h>
+#include <net/net_namespace.h>
+#include <net/atmclip.h>
+#include <linux/uaccess.h>
+#include <linux/param.h> /* for HZ */
+#include <linux/atomic.h>
 #include "resources.h"
 #include "common.h" /* atm_proc_init prototype */
 #include "signaling.h" /* to get sigd - ugly too */
 
 static ssize_t proc_dev_atm_read(struct file *file,char __user *buf,size_t count,
     loff_t *pos);
+static ssize_t proc_dev_atm_read(struct file *file, char __user *buf,
+				 size_t count, loff_t *pos);
 
 static const struct file_operations proc_atm_dev_ops = {
 	.owner =	THIS_MODULE,
 	.read =		proc_dev_atm_read,
+	.llseek =	noop_llseek,
 };
 
 static void add_stats(struct seq_file *seq, const char *aal,
@@ -46,6 +55,9 @@ static void add_stats(struct seq_file *seq, const char *aal,
 	    atomic_read(&stats->tx),atomic_read(&stats->tx_err),
 	    atomic_read(&stats->rx),atomic_read(&stats->rx_err),
 	    atomic_read(&stats->rx_drop));
+		   atomic_read(&stats->tx), atomic_read(&stats->tx_err),
+		   atomic_read(&stats->rx), atomic_read(&stats->rx_err),
+		   atomic_read(&stats->rx_drop));
 }
 
 static void atm_dev_info(struct seq_file *seq, const struct atm_dev *dev)
@@ -153,6 +165,9 @@ static void pvc_info(struct seq_file *seq, struct atm_vcc *vcc)
 {
 	static const char *class_name[] = { "off","UBR","CBR","VBR","ABR" };
 	static const char *aal_name[] = {
+	static const char *const class_name[] = {
+		"off", "UBR", "CBR", "VBR", "ABR"};
+	static const char *const aal_name[] = {
 		"---",	"1",	"2",	"3/4",	/*  0- 3 */
 		"???",	"5",	"???",	"???",	/*  4- 7 */
 		"???",	"???",	"???",	"???",	/*  8-11 */
@@ -164,6 +179,12 @@ static void pvc_info(struct seq_file *seq, struct atm_vcc *vcc)
 	    aal_name[vcc->qos.aal],vcc->qos.rxtp.min_pcr,
 	    class_name[vcc->qos.rxtp.traffic_class],vcc->qos.txtp.min_pcr,
 	    class_name[vcc->qos.txtp.traffic_class]);
+		   vcc->dev->number, vcc->vpi, vcc->vci,
+		   vcc->qos.aal >= ARRAY_SIZE(aal_name) ? "err" :
+		   aal_name[vcc->qos.aal], vcc->qos.rxtp.min_pcr,
+		   class_name[vcc->qos.rxtp.traffic_class],
+		   vcc->qos.txtp.min_pcr,
+		   class_name[vcc->qos.txtp.traffic_class]);
 	if (test_bit(ATM_VF_IS_CLIP, &vcc->flags)) {
 		struct clip_vcc *clip_vcc = CLIP_VCC(vcc);
 		struct net_device *dev;
@@ -179,6 +200,7 @@ static void pvc_info(struct seq_file *seq, struct atm_vcc *vcc)
 static const char *vcc_state(struct atm_vcc *vcc)
 {
 	static const char *map[] = { ATM_VS2TXT_MAP };
+	static const char *const map[] = { ATM_VS2TXT_MAP };
 
 	return map[ATM_VF2VS(vcc->flags)];
 }
@@ -188,6 +210,7 @@ static void vcc_info(struct seq_file *seq, struct atm_vcc *vcc)
 	struct sock *sk = sk_atm(vcc);
 
 	seq_printf(seq, "%p ", vcc);
+	seq_printf(seq, "%pK ", vcc);
 	if (!vcc->dev)
 		seq_printf(seq, "Unassigned    ");
 	else
@@ -207,6 +230,20 @@ static void vcc_info(struct seq_file *seq, struct atm_vcc *vcc)
 		  atomic_read(&sk->sk_wmem_alloc), sk->sk_sndbuf,
 		  atomic_read(&sk->sk_rmem_alloc), sk->sk_rcvbuf,
 		  atomic_read(&sk->sk_refcnt));
+	case AF_ATMPVC:
+		seq_printf(seq, "PVC");
+		break;
+	case AF_ATMSVC:
+		seq_printf(seq, "SVC");
+		break;
+	default:
+		seq_printf(seq, "%3d", sk->sk_family);
+	}
+	seq_printf(seq, " %04lx  %5d %7d/%7d %7d/%7d [%d]\n",
+		   vcc->flags, sk->sk_err,
+		   sk_wmem_alloc_get(sk), sk->sk_sndbuf,
+		   sk_rmem_alloc_get(sk), sk->sk_rcvbuf,
+		   atomic_read(&sk->sk_refcnt));
 }
 
 static void svc_info(struct seq_file *seq, struct atm_vcc *vcc)
@@ -214,6 +251,7 @@ static void svc_info(struct seq_file *seq, struct atm_vcc *vcc)
 	if (!vcc->dev)
 		seq_printf(seq, sizeof(void *) == 4 ?
 			   "N/A@%p%10s" : "N/A@%p%2s", vcc, "");
+			   "N/A@%pK%10s" : "N/A@%pK%2s", vcc, "");
 	else
 		seq_printf(seq, "%3d %3d %5d         ",
 			   vcc->dev->number, vcc->vpi, vcc->vci);
@@ -236,6 +274,7 @@ static int atm_dev_seq_show(struct seq_file *seq, void *v)
 		"AAL(TX,err,RX,err,drop) ...               [refcnt]\n";
 
 	if (v == SEQ_START_TOKEN)
+	if (v == &atm_devs)
 		seq_puts(seq, atm_dev_banner);
 	else {
 		struct atm_dev *dev = list_entry(v, struct atm_dev, dev_list);
@@ -336,6 +375,7 @@ static const struct file_operations vcc_seq_fops = {
 static int svc_seq_show(struct seq_file *seq, void *v)
 {
 	static char atm_svc_banner[] =
+	static const char atm_svc_banner[] =
 		"Itf VPI VCI           State      Remote\n";
 
 	if (v == SEQ_START_TOKEN)
@@ -387,6 +427,22 @@ static ssize_t proc_dev_atm_read(struct file *file, char __user *buf,
 	}
 	if (length >= 0) {
 		if (copy_to_user(buf,(char *) page,length)) length = -EFAULT;
+	if (count == 0)
+		return 0;
+	page = get_zeroed_page(GFP_KERNEL);
+	if (!page)
+		return -ENOMEM;
+	dev = PDE_DATA(file_inode(file));
+	if (!dev->ops->proc_read)
+		length = -EINVAL;
+	else {
+		length = dev->ops->proc_read(dev, pos, (char *)page);
+		if (length > count)
+			length = -EINVAL;
+	}
+	if (length >= 0) {
+		if (copy_to_user(buf, (char *)page, length))
+			length = -EFAULT;
 		(*pos)++;
 	}
 	free_page(page);
@@ -416,12 +472,16 @@ int atm_proc_dev_register(struct atm_dev *dev)
 	if (!dev->proc_name)
 		goto err_out;
 	sprintf(dev->proc_name,"%s:%d",dev->type, dev->number);
+	dev->proc_name = kasprintf(GFP_KERNEL, "%s:%d", dev->type, dev->number);
+	if (!dev->proc_name)
+		goto err_out;
 
 	dev->proc_entry = proc_create_data(dev->proc_name, 0, atm_proc_root,
 					   &proc_atm_dev_ops, dev);
 	if (!dev->proc_entry)
 		goto err_free_name;
 	return 0;
+
 err_free_name:
 	kfree(dev->proc_name);
 err_out:
@@ -459,6 +519,7 @@ static void atm_proc_dirs_remove(void)
 			remove_proc_entry(e->name, atm_proc_root);
 	}
 	proc_net_remove(&init_net, "atm");
+	remove_proc_entry("atm", init_net.proc_net);
 }
 
 int __init atm_proc_init(void)

@@ -20,6 +20,8 @@
 #include <asm/timer-regs.h>
 #include <asm/proc/cache.h>
 #include <asm/unit/timex.h>
+#include <proc/cache.h>
+#include <unit/timex.h>
 #include "mn10300-serial.h"
 
 #define	SCxCTR	0x00
@@ -40,6 +42,7 @@
 	.balign	L1_CACHE_BYTES
 ENTRY(mn10300_serial_vdma_interrupt)
 	or	EPSW_IE,psw			# permit overriding by
+#	or	EPSW_IE,psw			# permit overriding by
 						# debugging interrupts
 	movm	[d2,d3,a2,a3,exreg0],(sp)
 
@@ -120,6 +123,8 @@ ENTRY(mn10300_serial_vdma_tx_handler)
 
 	btst	0x01,(__tx_break,a3)	# handle transmit break request
 	bne	mnsc_vdma_tx_break
+	btst	0xFF,(__tx_flags,a3)	# handle transmit flags
+	bne	mnsc_vdma_tx_flags
 
 	movbu	(SCxSTR,e2),d2		# don't try and transmit a char if the
 					# buffer is not empty
@@ -131,6 +136,7 @@ ENTRY(mn10300_serial_vdma_tx_handler)
 	bne	mnsc_vdma_tx_xchar
 
 	mov	(__tx_info_buffer,a3),a2 # get the uart_info struct for Tx
+	mov	(__uart_state,a3),a2	# see if the TTY Tx queue has anything in it
 	mov	(__xmit_tail,a2),d3
 	mov	(__xmit_head,a2),d2
 	cmp	d3,d2
@@ -165,6 +171,7 @@ mnsc_vdma_tx_noint:
 
 mnsc_vdma_tx_empty:
 	mov	+(GxICR_LEVEL_1|GxICR_DETECT),d2
+	mov	+(NUM2GxICR_LEVEL(CONFIG_MN10300_SERIAL_IRQ_LEVEL)|GxICR_DETECT),d2
 	movhu	d2,(e3)			# disable the interrupt
 	movhu	(e3),d2			# flush
 
@@ -176,6 +183,14 @@ mnsc_vdma_tx_break:
 	or	SC01CTR_BKE,d2
 	movhu	d2,(SCxCTR,e2)
 	mov	+(GxICR_LEVEL_1|GxICR_DETECT),d2
+mnsc_vdma_tx_flags:
+	btst	MNSCx_TX_STOP,(__tx_flags,a3)
+	bne	mnsc_vdma_tx_stop
+	movhu	(SCxCTR,e2),d2		# turn on break mode
+	or	SC01CTR_BKE,d2
+	movhu	d2,(SCxCTR,e2)
+mnsc_vdma_tx_stop:
+	mov	+(NUM2GxICR_LEVEL(CONFIG_MN10300_SERIAL_IRQ_LEVEL)|GxICR_DETECT),d2
 	movhu	d2,(e3)			# disable transmit interrupts on this
 					# channel
 	movhu	(e3),d2			# flush

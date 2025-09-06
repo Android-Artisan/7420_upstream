@@ -22,6 +22,7 @@ static struct workqueue_struct *afs_lock_manager;
 static DEFINE_MUTEX(afs_lock_manager_mutex);
 
 static struct file_lock_operations afs_lock_ops = {
+static const struct file_lock_operations afs_lock_ops = {
 	.fl_copy_lock		= afs_fl_copy_lock,
 	.fl_release_private	= afs_fl_release_private,
 };
@@ -254,6 +255,8 @@ static void afs_defer_unlock(struct afs_vnode *vnode, struct key *key)
 static int afs_do_setlk(struct file *file, struct file_lock *fl)
 {
 	struct afs_vnode *vnode = AFS_FS_I(file->f_mapping->host);
+	struct inode *inode = file_inode(file);
+	struct afs_vnode *vnode = AFS_FS_I(inode);
 	afs_lock_type_t type;
 	struct key *key = file->private_data;
 	int ret;
@@ -275,6 +278,7 @@ static int afs_do_setlk(struct file *file, struct file_lock *fl)
 	type = (fl->fl_type == F_RDLCK) ? AFS_LOCK_READ : AFS_LOCK_WRITE;
 
 	lock_kernel();
+	spin_lock(&inode->i_lock);
 
 	/* make sure we've got a callback on this file and that our view of the
 	 * data version is up to date */
@@ -422,6 +426,7 @@ given_lock:
 
 error:
 	unlock_kernel();
+	spin_unlock(&inode->i_lock);
 	_leave(" = %d", ret);
 	return ret;
 
@@ -517,6 +522,7 @@ error:
 int afs_lock(struct file *file, int cmd, struct file_lock *fl)
 {
 	struct afs_vnode *vnode = AFS_FS_I(file->f_dentry->d_inode);
+	struct afs_vnode *vnode = AFS_FS_I(file_inode(file));
 
 	_enter("{%x:%u},%d,{t=%x,fl=%x,r=%Ld:%Ld}",
 	       vnode->fid.vid, vnode->fid.vnode, cmd,
@@ -540,6 +546,7 @@ int afs_lock(struct file *file, int cmd, struct file_lock *fl)
 int afs_flock(struct file *file, int cmd, struct file_lock *fl)
 {
 	struct afs_vnode *vnode = AFS_FS_I(file->f_dentry->d_inode);
+	struct afs_vnode *vnode = AFS_FS_I(file_inode(file));
 
 	_enter("{%x:%u},%d,{t=%x,fl=%x}",
 	       vnode->fid.vid, vnode->fid.vnode, cmd,

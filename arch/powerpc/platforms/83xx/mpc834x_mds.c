@@ -27,6 +27,7 @@
 
 #include <asm/system.h>
 #include <asm/atomic.h>
+#include <linux/atomic.h>
 #include <asm/time.h>
 #include <asm/io.h>
 #include <asm/machdep.h>
@@ -54,6 +55,7 @@ static int mpc834xemds_usb_cfg(void)
 
 		of_address_to_resource(np, 0, &res);
 		bcsr_regs = ioremap(res.start, res.end - res.start + 1);
+		bcsr_regs = ioremap(res.start, resource_size(&res));
 		of_node_put(np);
 	}
 	if (!bcsr_regs)
@@ -88,6 +90,10 @@ static void __init mpc834x_mds_setup_arch(void)
 	for_each_compatible_node(np, "pci", "fsl,mpc8349-pci")
 		mpc83xx_add_bridge(np);
 #endif
+	if (ppc_md.progress)
+		ppc_md.progress("mpc834x_mds_setup_arch()", 0);
+
+	mpc83xx_setup_pci();
 
 	mpc834xemds_usb_cfg();
 }
@@ -121,6 +127,7 @@ static int __init mpc834x_declare_of_platform_devices(void)
 	return 0;
 }
 machine_device_initcall(mpc834x_mds, mpc834x_declare_of_platform_devices);
+machine_device_initcall(mpc834x_mds, mpc83xx_declare_of_platform_devices);
 
 /*
  * Called very early, MMU is off, device-tree isn't unflattened
@@ -137,6 +144,7 @@ define_machine(mpc834x_mds) {
 	.probe			= mpc834x_mds_probe,
 	.setup_arch		= mpc834x_mds_setup_arch,
 	.init_IRQ		= mpc834x_mds_init_IRQ,
+	.init_IRQ		= mpc83xx_ipic_init_IRQ,
 	.get_irq		= ipic_get_irq,
 	.restart		= mpc83xx_restart,
 	.time_init		= mpc83xx_time_init,

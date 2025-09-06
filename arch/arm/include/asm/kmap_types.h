@@ -20,5 +20,6 @@ enum km_type {
 	KM_SOFTIRQ1,
 	KM_TYPE_NR
 };
+#define KM_TYPE_NR 16
 
 #endif

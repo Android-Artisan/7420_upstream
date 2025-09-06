@@ -13,6 +13,7 @@
 unsigned char buf[MAX_SIZE];
 
 int loadhex(FILE *inf, unsigned char *buf)
+static int loadhex(FILE *inf, unsigned char *buf)
 {
 	int l=0, c, i;
 

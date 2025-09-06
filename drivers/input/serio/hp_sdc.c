@@ -106,6 +106,7 @@ EXPORT_SYMBOL(hp_sdc_enqueue_transaction);
 EXPORT_SYMBOL(hp_sdc_dequeue_transaction);
 
 static unsigned int hp_sdc_disabled;
+static bool hp_sdc_disabled;
 module_param_named(no_hpsdc, hp_sdc_disabled, bool, 0);
 MODULE_PARM_DESC(no_hpsdc, "Do not enable HP SDC driver.");
 
@@ -324,6 +325,7 @@ static void hp_sdc_tasklet(unsigned long foo)
 			 */
 			printk(KERN_WARNING PREFIX "read timeout (%ius)!\n",
 			       tv.tv_usec - hp_sdc.rtv.tv_usec);
+			       (int)(tv.tv_usec - hp_sdc.rtv.tv_usec));
 			curr->idx += hp_sdc.rqty;
 			hp_sdc.rqty = 0;
 			tmp = curr->seq[curr->actidx];
@@ -796,6 +798,7 @@ int hp_sdc_release_cooked_irq(hp_sdc_irqhook *callback)
 /************************* Keepalive timer task *********************/
 
 void hp_sdc_kicker (unsigned long data)
+static void hp_sdc_kicker(unsigned long data)
 {
 	tasklet_schedule(&hp_sdc.task);
 	/* Re-insert the periodic task. */
@@ -819,6 +822,7 @@ static const struct parisc_device_id hp_sdc_tbl[] = {
 MODULE_DEVICE_TABLE(parisc, hp_sdc_tbl);
 
 static int __init hp_sdc_init_hppa(struct parisc_device *d);
+static struct delayed_work moduleloader_work;
 
 static struct parisc_driver hp_sdc_driver = {
 	.name =		"hp_sdc",
@@ -879,6 +883,7 @@ static int __init hp_sdc_init(void)
 
 	errstr = "IRQ not available for";
 	if (request_irq(hp_sdc.irq, &hp_sdc_isr, IRQF_SHARED|IRQF_SAMPLE_RANDOM,
+	if (request_irq(hp_sdc.irq, &hp_sdc_isr, IRQF_SHARED,
 			"HP SDC", &hp_sdc))
 		goto err1;
 
@@ -887,8 +892,8 @@ static int __init hp_sdc_init(void)
 			"HP SDC NMI", &hp_sdc))
 		goto err2;
 
-	printk(KERN_INFO PREFIX "HP SDC at 0x%p, IRQ %d (NMI IRQ %d)\n",
-	       (void *)hp_sdc.base_io, hp_sdc.irq, hp_sdc.nmi);
+	pr_info(PREFIX "HP SDC at 0x%08lx, IRQ %d (NMI IRQ %d)\n",
+	       hp_sdc.base_io, hp_sdc.irq, hp_sdc.nmi);
 
 	hp_sdc_status_in8();
 	hp_sdc_data_in8();
@@ -905,6 +910,7 @@ static int __init hp_sdc_init(void)
 	ts_sync[2] = ts_sync[3]	= ts_sync[4] = ts_sync[5] = 0;
 	t_sync.act.semaphore = &s_sync;
 	init_MUTEX_LOCKED(&s_sync);
+	sema_init(&s_sync, 0);
 	hp_sdc_enqueue_transaction(&t_sync);
 	down(&s_sync); /* Wait for t_sync to complete */
 
@@ -932,6 +938,15 @@ static int __init hp_sdc_init(void)
 
 static int __init hp_sdc_init_hppa(struct parisc_device *d)
 {
+static void request_module_delayed(struct work_struct *work)
+{
+	request_module("hp_sdc_mlc");
+}
+
+static int __init hp_sdc_init_hppa(struct parisc_device *d)
+{
+	int ret;
+
 	if (!d)
 		return 1;
 	if (hp_sdc.dev != NULL)
@@ -945,12 +960,26 @@ static int __init hp_sdc_init_hppa(struct parisc_device *d)
 	hp_sdc.status_io	= d->hpa.start + 0x801;
 
 	return hp_sdc_init();
+	INIT_DELAYED_WORK(&moduleloader_work, request_module_delayed);
+
+	ret = hp_sdc_init();
+	/* after successful initialization give SDC some time to settle
+	 * and then load the hp_sdc_mlc upper layer driver */
+	if (!ret)
+		schedule_delayed_work(&moduleloader_work,
+			msecs_to_jiffies(2000));
+
+	return ret;
 }
 
 #endif /* __hppa__ */
 
 static void hp_sdc_exit(void)
 {
+	/* do nothing if we don't have a SDC */
+	if (!hp_sdc.dev)
+		return;
+
 	write_lock_irq(&hp_sdc.lock);
 
 	/* Turn off all maskable "sub-function" irq's. */
@@ -965,10 +994,12 @@ static void hp_sdc_exit(void)
 	write_unlock_irq(&hp_sdc.lock);
 
 	del_timer(&hp_sdc.kicker);
+	del_timer_sync(&hp_sdc.kicker);
 
 	tasklet_kill(&hp_sdc.task);
 
 #if defined(__hppa__)
+	cancel_delayed_work_sync(&moduleloader_work);
 	if (unregister_parisc_driver(&hp_sdc_driver))
 		printk(KERN_WARNING PREFIX "Error unregistering HP SDC");
 #endif
@@ -1018,6 +1049,7 @@ static int __init hp_sdc_register(void)
 	}
 
 	init_MUTEX_LOCKED(&tq_init_sem);
+	sema_init(&tq_init_sem, 0);
 
 	tq_init.actidx		= 0;
 	tq_init.idx		= 1;

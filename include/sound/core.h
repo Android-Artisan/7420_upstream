@@ -23,6 +23,7 @@
  */
 
 #include <linux/module.h>
+#include <linux/device.h>
 #include <linux/sched.h>		/* wake_up() */
 #include <linux/mutex.h>		/* struct mutex */
 #include <linux/rwsem.h>		/* struct rw_semaphore */
@@ -32,6 +33,12 @@
 /* number of supported soundcards */
 #ifdef CONFIG_SND_DYNAMIC_MINORS
 #define SNDRV_CARDS 32
+#include <linux/stringify.h>
+#include <linux/printk.h>
+
+/* number of supported soundcards */
+#ifdef CONFIG_SND_DYNAMIC_MINORS
+#define SNDRV_CARDS CONFIG_SND_MAX_CARDS
 #else
 #define SNDRV_CARDS 8		/* don't change - minor numbers */
 #endif
@@ -74,6 +81,35 @@ typedef int __bitwise snd_device_cmd_t;
 #define	SNDRV_DEV_CMD_PRE	((__force snd_device_cmd_t) 0)
 #define	SNDRV_DEV_CMD_NORMAL	((__force snd_device_cmd_t) 1)	
 #define	SNDRV_DEV_CMD_POST	((__force snd_device_cmd_t) 2)
+struct pci_dev;
+struct module;
+struct completion;
+
+/* device allocation stuff */
+
+/* type of the object used in snd_device_*()
+ * this also defines the calling order
+ */
+enum snd_device_type {
+	SNDRV_DEV_LOWLEVEL,
+	SNDRV_DEV_CONTROL,
+	SNDRV_DEV_INFO,
+	SNDRV_DEV_BUS,
+	SNDRV_DEV_CODEC,
+	SNDRV_DEV_PCM,
+	SNDRV_DEV_COMPRESS,
+	SNDRV_DEV_RAWMIDI,
+	SNDRV_DEV_TIMER,
+	SNDRV_DEV_SEQUENCER,
+	SNDRV_DEV_HWDEP,
+	SNDRV_DEV_JACK,
+};
+
+enum snd_device_state {
+	SNDRV_DEV_BUILD,
+	SNDRV_DEV_REGISTERED,
+	SNDRV_DEV_DISCONNECTED,
+};
 
 struct snd_device;
 
@@ -88,6 +124,8 @@ struct snd_device {
 	struct snd_card *card;		/* card which holds this device */
 	snd_device_state_t state;	/* state of the device */
 	snd_device_type_t type;		/* device type */
+	enum snd_device_state state;	/* state of the device */
+	enum snd_device_type type;	/* device type */
 	void *device_data;		/* device structure */
 	struct snd_device_ops *ops;	/* operations */
 };
@@ -115,6 +153,7 @@ struct snd_card {
 	char longname[80];		/* name of this soundcard */
 	char mixername[80];		/* mixer name */
 	char components[80];		/* card components delimited with
+	char components[128];		/* card components delimited with
 								space */
 	struct module *module;		/* top-level module */
 
@@ -123,6 +162,7 @@ struct snd_card {
 								private data */
 	struct list_head devices;	/* devices */
 
+	struct device ctl_dev;		/* control device */
 	unsigned int last_numid;	/* last used numeric ID */
 	struct rw_semaphore controls_rwsem;	/* controls list lock */
 	rwlock_t ctl_files_rwlock;	/* ctl_files list lock */
@@ -130,12 +170,15 @@ struct snd_card {
 	int user_ctl_count;		/* count of all user controls */
 	struct list_head controls;	/* all controls for this card */
 	struct list_head ctl_files;	/* active control files */
+	struct mutex user_ctl_lock;	/* protects user controls against
+					   concurrent access */
 
 	struct snd_info_entry *proc_root;	/* root for soundcard specific files */
 	struct snd_info_entry *proc_id;	/* the card id */
 	struct proc_dir_entry *proc_root_link;	/* number link to real id */
 
 	struct snd_monitor_file *files; /* all files associated to this card */
+	struct list_head files_list;	/* all files associated to this card */
 	struct snd_shutdown_f_ops *s_f_ops; /* file operations in the shutdown
 								state */
 	spinlock_t files_lock;		/* lock the files for this card */
@@ -146,6 +189,11 @@ struct snd_card {
 #ifndef CONFIG_SYSFS_DEPRECATED
 	struct device *card_dev;	/* cardX object for sysfs */
 #endif
+	struct completion *release_completion;
+	struct device *dev;		/* device assigned to this card */
+	struct device card_dev;		/* cardX object for sysfs */
+	const struct attribute_group *dev_groups[4]; /* assigned sysfs attr */
+	bool registered;		/* card_dev is registered? */
 
 #ifdef CONFIG_PM
 	unsigned int power_state;	/* power state */
@@ -158,6 +206,8 @@ struct snd_card {
 	int mixer_oss_change_count;
 #endif
 };
+
+#define dev_to_snd_card(p)	container_of(p, struct snd_card, card_dev)
 
 #ifdef CONFIG_PM
 static inline void snd_power_lock(struct snd_card *card)
@@ -190,6 +240,7 @@ int snd_power_wait(struct snd_card *card, unsigned int power_state);
 #define snd_power_unlock(card)		do { (void)(card); } while (0)
 static inline int snd_power_wait(struct snd_card *card, unsigned int state) { return 0; }
 #define snd_power_get_state(card)	SNDRV_CTL_POWER_D0
+#define snd_power_get_state(card)	({ (void)(card); SNDRV_CTL_POWER_D0; })
 #define snd_power_change_state(card, state)	do { (void)(card); } while (0)
 
 #endif /* CONFIG_PM */
@@ -201,6 +252,7 @@ struct snd_minor {
 	const struct file_operations *f_ops;	/* file operations */
 	void *private_data;		/* private data for f_ops->open */
 	struct device *dev;		/* device for sysfs */
+	struct snd_card *card_ptr;	/* assigned card instance */
 };
 
 /* return a device pointer linked to each sound device as a parent */
@@ -211,6 +263,7 @@ static inline struct device *snd_card_get_device_link(struct snd_card *card)
 #else
 	return card ? card->card_dev : NULL;
 #endif
+	return card ? &card->card_dev : NULL;
 }
 
 /* sound.c */
@@ -264,6 +317,17 @@ int snd_add_device_sysfs_file(int type, struct snd_card *card, int dev,
 int snd_register_oss_device(int type, struct snd_card *card, int dev,
 			    const struct file_operations *f_ops, void *private_data,
 			    const char *name);
+void snd_device_initialize(struct device *dev, struct snd_card *card);
+
+int snd_register_device(int type, struct snd_card *card, int dev,
+			const struct file_operations *f_ops,
+			void *private_data, struct device *device);
+int snd_unregister_device(struct device *dev);
+void *snd_lookup_minor_data(unsigned int minor, int type);
+
+#ifdef CONFIG_SND_OSSEMUL
+int snd_register_oss_device(int type, struct snd_card *card, int dev,
+			    const struct file_operations *f_ops, void *private_data);
 int snd_unregister_oss_device(int type, struct snd_card *card, int dev);
 void *snd_lookup_oss_minor_data(unsigned int minor, int type);
 #endif
@@ -279,6 +343,8 @@ int snd_minor_info_oss_done(void);
 #else
 static inline int snd_minor_info_oss_init(void) { return 0; }
 static inline int snd_minor_info_oss_done(void) { return 0; }
+#else
+static inline int snd_minor_info_oss_init(void) { return 0; }
 #endif
 
 /* memory.c */
@@ -323,6 +389,35 @@ int snd_device_disconnect(struct snd_card *card, void *device_data);
 int snd_device_disconnect_all(struct snd_card *card);
 int snd_device_free(struct snd_card *card, void *device_data);
 int snd_device_free_all(struct snd_card *card, snd_device_cmd_t cmd);
+int snd_card_new(struct device *parent, int idx, const char *xid,
+		 struct module *module, int extra_size,
+		 struct snd_card **card_ret);
+
+int snd_card_disconnect(struct snd_card *card);
+int snd_card_free(struct snd_card *card);
+int snd_card_free_when_closed(struct snd_card *card);
+void snd_card_set_id(struct snd_card *card, const char *id);
+int snd_card_register(struct snd_card *card);
+int snd_card_info_init(void);
+int snd_card_add_dev_attr(struct snd_card *card,
+			  const struct attribute_group *group);
+int snd_component_add(struct snd_card *card, const char *component);
+int snd_card_file_add(struct snd_card *card, struct file *file);
+int snd_card_file_remove(struct snd_card *card, struct file *file);
+#define snd_card_unref(card)	put_device(&(card)->card_dev)
+
+#define snd_card_set_dev(card, devptr) ((card)->dev = (devptr))
+
+/* device.c */
+
+int snd_device_new(struct snd_card *card, enum snd_device_type type,
+		   void *device_data, struct snd_device_ops *ops);
+int snd_device_register(struct snd_card *card, void *device_data);
+int snd_device_register_all(struct snd_card *card);
+void snd_device_disconnect(struct snd_card *card, void *device_data);
+void snd_device_disconnect_all(struct snd_card *card);
+void snd_device_free(struct snd_card *card, void *device_data);
+void snd_device_free_all(struct snd_card *card);
 
 /* isadma.c */
 
@@ -350,6 +445,24 @@ void snd_verbose_printd(const char *file, int line, const char *format, ...)
 /* --- */
 
 #ifdef CONFIG_SND_VERBOSE_PRINTK
+/* --- */
+
+/* sound printk debug levels */
+enum {
+	SND_PR_ALWAYS,
+	SND_PR_DEBUG,
+	SND_PR_VERBOSE,
+};
+
+#if defined(CONFIG_SND_DEBUG) || defined(CONFIG_SND_VERBOSE_PRINTK)
+__printf(4, 5)
+void __snd_printk(unsigned int level, const char *file, int line,
+		  const char *format, ...);
+#else
+#define __snd_printk(level, file, line, format, args...) \
+	printk(format, ##args)
+#endif
+
 /**
  * snd_printk - printk wrapper
  * @fmt: format string
@@ -369,6 +482,13 @@ void snd_verbose_printd(const char *file, int line, const char *format, ...)
 #define __ASTRING__(x) #x
 
 #ifdef CONFIG_SND_VERBOSE_PRINTK
+ * Works like printk() but prints the file and the line of the caller
+ * when configured with CONFIG_SND_VERBOSE_PRINTK.
+ */
+#define snd_printk(fmt, args...) \
+	__snd_printk(0, __FILE__, __LINE__, fmt, ##args)
+
+#ifdef CONFIG_SND_DEBUG
 /**
  * snd_printd - debug printk
  * @fmt: format string
@@ -409,6 +529,47 @@ void snd_verbose_printd(const char *file, int line, const char *format, ...)
 #define snd_printd(fmt, args...)	/* nothing */
 #define snd_assert(expr, args...)	(void)(expr)
 #define snd_BUG()			/* nothing */
+	__snd_printk(1, __FILE__, __LINE__, fmt, ##args)
+#define _snd_printd(level, fmt, args...) \
+	__snd_printk(level, __FILE__, __LINE__, fmt, ##args)
+
+/**
+ * snd_BUG - give a BUG warning message and stack trace
+ *
+ * Calls WARN() if CONFIG_SND_DEBUG is set.
+ * Ignored when CONFIG_SND_DEBUG is not set.
+ */
+#define snd_BUG()		WARN(1, "BUG?\n")
+
+/**
+ * Suppress high rates of output when CONFIG_SND_DEBUG is enabled.
+ */
+#define snd_printd_ratelimit() printk_ratelimit()
+
+/**
+ * snd_BUG_ON - debugging check macro
+ * @cond: condition to evaluate
+ *
+ * Has the same behavior as WARN_ON when CONFIG_SND_DEBUG is set,
+ * otherwise just evaluates the conditional and returns the value.
+ */
+#define snd_BUG_ON(cond)	WARN_ON((cond))
+
+#else /* !CONFIG_SND_DEBUG */
+
+__printf(1, 2)
+static inline void snd_printd(const char *format, ...) {}
+__printf(2, 3)
+static inline void _snd_printd(int level, const char *format, ...) {}
+
+#define snd_BUG()			do { } while (0)
+
+#define snd_BUG_ON(condition) ({ \
+	int __ret_warn_on = !!(condition); \
+	unlikely(__ret_warn_on); \
+})
+
+static inline bool snd_printd_ratelimit(void) { return false; }
 
 #endif /* CONFIG_SND_DEBUG */
 
@@ -423,6 +584,11 @@ void snd_verbose_printd(const char *file, int line, const char *format, ...)
 #define snd_printdd(format, args...) snd_printk(format, ##args)
 #else
 #define snd_printdd(format, args...) /* nothing */
+#define snd_printdd(format, args...) \
+	__snd_printk(2, __FILE__, __LINE__, format, ##args)
+#else
+__printf(1, 2)
+static inline void snd_printdd(const char *format, ...) {}
 #endif
 
 
@@ -441,6 +607,7 @@ void snd_verbose_printd(const char *file, int line, const char *format, ...)
 struct snd_pci_quirk {
 	unsigned short subvendor;	/* PCI subvendor ID */
 	unsigned short subdevice;	/* PCI subdevice ID */
+	unsigned short subdevice_mask;	/* bitmask to match */
 	int value;			/* value */
 #ifdef CONFIG_SND_DEBUG_VERBOSE
 	const char *name;		/* name of the device (optional) */
@@ -449,6 +616,10 @@ struct snd_pci_quirk {
 
 #define _SND_PCI_QUIRK_ID(vend,dev) \
 	.subvendor = (vend), .subdevice = (dev)
+#define _SND_PCI_QUIRK_ID_MASK(vend, mask, dev)	\
+	.subvendor = (vend), .subdevice = (dev), .subdevice_mask = (mask)
+#define _SND_PCI_QUIRK_ID(vend, dev) \
+	_SND_PCI_QUIRK_ID_MASK(vend, 0xffff, dev)
 #define SND_PCI_QUIRK_ID(vend,dev) {_SND_PCI_QUIRK_ID(vend, dev)}
 #ifdef CONFIG_SND_DEBUG_VERBOSE
 #define SND_PCI_QUIRK(vend,dev,xname,val) \
@@ -461,5 +632,50 @@ struct snd_pci_quirk {
 const struct snd_pci_quirk *
 snd_pci_quirk_lookup(struct pci_dev *pci, const struct snd_pci_quirk *list);
 
+#define SND_PCI_QUIRK_VENDOR(vend, xname, val)			\
+	{_SND_PCI_QUIRK_ID_MASK(vend, 0, 0), .value = (val), .name = (xname)}
+#define SND_PCI_QUIRK_MASK(vend, mask, dev, xname, val)			\
+	{_SND_PCI_QUIRK_ID_MASK(vend, mask, dev),			\
+			.value = (val), .name = (xname)}
+#define snd_pci_quirk_name(q)	((q)->name)
+#else
+#define SND_PCI_QUIRK(vend,dev,xname,val) \
+	{_SND_PCI_QUIRK_ID(vend, dev), .value = (val)}
+#define SND_PCI_QUIRK_MASK(vend, mask, dev, xname, val)			\
+	{_SND_PCI_QUIRK_ID_MASK(vend, mask, dev), .value = (val)}
+#define SND_PCI_QUIRK_VENDOR(vend, xname, val)			\
+	{_SND_PCI_QUIRK_ID_MASK(vend, 0, 0), .value = (val)}
+#define snd_pci_quirk_name(q)	""
+#endif
+
+#ifdef CONFIG_PCI
+const struct snd_pci_quirk *
+snd_pci_quirk_lookup(struct pci_dev *pci, const struct snd_pci_quirk *list);
+
+const struct snd_pci_quirk *
+snd_pci_quirk_lookup_id(u16 vendor, u16 device,
+			const struct snd_pci_quirk *list);
+#else
+static inline const struct snd_pci_quirk *
+snd_pci_quirk_lookup(struct pci_dev *pci, const struct snd_pci_quirk *list)
+{
+	return NULL;
+}
+
+static inline const struct snd_pci_quirk *
+snd_pci_quirk_lookup_id(u16 vendor, u16 device,
+			const struct snd_pci_quirk *list)
+{
+	return NULL;
+}
+#endif
+
+/* async signal helpers */
+struct snd_fasync;
+
+int snd_fasync_helper(int fd, struct file *file, int on,
+		      struct snd_fasync **fasyncp);
+void snd_kill_fasync(struct snd_fasync *fasync, int signal, int poll);
+void snd_fasync_free(struct snd_fasync *fasync);
 
 #endif /* __SOUND_CORE_H */

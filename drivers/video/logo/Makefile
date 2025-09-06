@@ -53,6 +53,24 @@ $(obj)/%_clut224.c: $(src)/%_clut224.ppm FORCE
 	$(call if_changed,logo)
 
 $(obj)/%_gray256.c: $(src)/%_gray256.pgm FORCE
+pnmtologo := scripts/pnmtologo
+
+# Create commands like "pnmtologo -t mono -n logo_mac_mono -o ..."
+quiet_cmd_logo = LOGO    $@
+	cmd_logo = $(pnmtologo) \
+			-t $(patsubst $*_%,%,$(notdir $(basename $<))) \
+			-n $(notdir $(basename $<)) -o $@ $<
+
+$(obj)/%_mono.c: $(src)/%_mono.pbm $(pnmtologo) FORCE
+	$(call if_changed,logo)
+
+$(obj)/%_vga16.c: $(src)/%_vga16.ppm $(pnmtologo) FORCE
+	$(call if_changed,logo)
+
+$(obj)/%_clut224.c: $(src)/%_clut224.ppm $(pnmtologo) FORCE
+	$(call if_changed,logo)
+
+$(obj)/%_gray256.c: $(src)/%_gray256.pgm $(pnmtologo) FORCE
 	$(call if_changed,logo)
 
 # Files generated that shall be removed upon make clean

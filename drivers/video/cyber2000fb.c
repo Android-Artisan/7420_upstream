@@ -245,7 +245,6 @@ static int cyber2000fb_sync(struct fb_info *info)
 }
 
 /*
- * ===========================================================================
  */
 
 static inline u32 convert_bitfield(u_int val, struct fb_bitfield *bf)

@@ -20,6 +20,7 @@ SECTIONS
    _etext = .;
   }
   
+
   .stab 0 : { *(.stab) }
   .stabstr 0 : { *(.stabstr) }
   .stab.excl 0 : { *(.stab.excl) }

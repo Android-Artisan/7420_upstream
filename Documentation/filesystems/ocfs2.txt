@@ -1,5 +1,4 @@
 OCFS2 filesystem
-==================
 OCFS2 is a general purpose extent based shared disk cluster file
 system with many similarities to ext3. It supports 64 bit inode
 numbers, and has automatically extending metadata groups which may
@@ -10,6 +9,8 @@ get "mount.ocfs2" and "ocfs2_hb_ctl".
 
 Project web page:    http://oss.oracle.com/projects/ocfs2
 Tools web page:      http://oss.oracle.com/projects/ocfs2-tools
+Project web page:    http://ocfs2.wiki.kernel.org
+Tools git tree:      https://github.com/markfasheh/ocfs2-tools
 OCFS2 mailing lists: http://oss.oracle.com/projects/ocfs2/mailman/
 
 All code copyright 2005 Oracle except when otherwise noted.
@@ -24,9 +25,14 @@ Mark Fasheh   <mark.fasheh@oracle.com>
 Kurt Hackel   <kurt.hackel@oracle.com>
 Sunil Mushran <sunil.mushran@oracle.com>
 Manish Singh  <manish.singh@oracle.com>
+Mark Fasheh   <mfasheh@suse.com>
+Kurt Hackel   <kurt.hackel@oracle.com>
+Tao Ma        <tao.ma@oracle.com>
+Sunil Mushran <sunil.mushran@oracle.com>
+Manish Singh  <manish.singh@oracle.com>
+Tiger Yang    <tiger.yang@oracle.com>
 
 Caveats
-=======
 Features which OCFS2 does not support yet:
 	- extended attributes
 	- quotas
@@ -35,9 +41,10 @@ Features which OCFS2 does not support yet:
 	- Directory change notification (F_NOTIFY)
 	- Distributed Caching (F_SETLEASE/F_GETLEASE/break_lease)
 	- POSIX ACLs
+	- Directory change notification (F_NOTIFY)
+	- Distributed Caching (F_SETLEASE/F_GETLEASE/break_lease)
 
 Mount options
-=============
 
 OCFS2 supports the following mount options:
 (*) == default
@@ -52,6 +59,15 @@ nointr			Do not allow signals to interrupt cluster
 atime_quantum=60(*)	OCFS2 will not update atime unless this number
 			of seconds has passed since the last update.
 			Set to zero to always update atime.
+noatime			Do not update access time.
+relatime(*)		Update atime if the previous atime is older than
+			mtime or ctime
+strictatime		Always update atime, but the minimum update interval
+			is specified by atime_quantum.
+atime_quantum=60(*)	OCFS2 will not update atime unless this number
+			of seconds has passed since the last update.
+			Set to zero to always update atime. This option need
+			work with strictatime.
 data=ordered	(*)	All data are forced directly out to the main file
 			system prior to its metadata being committed to the
 			journal.
@@ -76,3 +92,30 @@ localalloc=8(*)		Allows custom localalloc size in MB. If the value is too
 			large, the fs will silently revert it to the default.
 			Localalloc is not enabled for local mounts.
 localflocks		This disables cluster aware flock.
+localflocks		This disables cluster aware flock.
+inode64			Indicates that Ocfs2 is allowed to create inodes at
+			any location in the filesystem, including those which
+			will result in inode numbers occupying more than 32
+			bits of significance.
+user_xattr	(*)	Enables Extended User Attributes.
+nouser_xattr		Disables Extended User Attributes.
+acl			Enables POSIX Access Control Lists support.
+noacl		(*)	Disables POSIX Access Control Lists support.
+resv_level=2	(*)	Set how aggressive allocation reservations will be.
+			Valid values are between 0 (reservations off) to 8
+			(maximum space for reservations).
+dir_resv_level=	(*)	By default, directory reservations will scale with file
+			reservations - users should rarely need to change this
+			value. If allocation reservations are turned off, this
+			option will have no effect.
+coherency=full  (*)	Disallow concurrent O_DIRECT writes, cluster inode
+			lock will be taken to force other nodes drop cache,
+			therefore full cluster coherency is guaranteed even
+			for O_DIRECT writes.
+coherency=buffered	Allow concurrent O_DIRECT writes without EX lock among
+			nodes, which gains high performance at risk of getting
+			stale data on other nodes.
+journal_async_commit	Commit block can be written to disk without waiting
+			for descriptor blocks. If enabled older kernels cannot
+			mount the device. This will enable 'journal_checksum'
+			internally.

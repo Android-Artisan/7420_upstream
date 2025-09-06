@@ -7,6 +7,8 @@
  *	2 of the License, or (at your option) any later version.
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/types.h>
@@ -41,6 +43,8 @@ MODULE_PARM_DESC(timeout,
 
 static int nowayout = WATCHDOG_NOWAYOUT;
 module_param(nowayout, int, 0);
+static bool nowayout = WATCHDOG_NOWAYOUT;
+module_param(nowayout, bool, 0);
 MODULE_PARM_DESC(nowayout,
 		"Watchdog cannot be stopped once started (default="
 				__MODULE_STRING(WATCHDOG_NOWAYOUT) ")");
@@ -61,6 +65,7 @@ static void ali_start(void)
 	pci_read_config_dword(ali_pci, 0xCC, &val);
 	val &= ~0x3F;	/* Mask count */
 	val |= (1<<25) | ali_timeout_bits;
+	val |= (1 << 25) | ali_timeout_bits;
 	pci_write_config_dword(ali_pci, 0xCC, val);
 
 	spin_unlock(&ali_lock);
@@ -81,6 +86,8 @@ static void ali_stop(void)
 	pci_read_config_dword(ali_pci, 0xCC, &val);
 	val &= ~0x3F;	/* Mask count to zero (disabled) */
 	val &= ~(1<<25);/* and for safety mask the reset enable */
+	val &= ~0x3F;		/* Mask count to zero (disabled) */
+	val &= ~(1 << 25);	/* and for safety mask the reset enable */
 	pci_write_config_dword(ali_pci, 0xCC, val);
 
 	spin_unlock(&ali_lock);
@@ -90,6 +97,7 @@ static void ali_stop(void)
  *	ali_keepalive	-	send a keepalive to the watchdog
  *
  *      Send a keepalive to the timer (actually we restart the timer).
+ *	Send a keepalive to the timer (actually we restart the timer).
  */
 
 static void ali_keepalive(void)
@@ -114,6 +122,11 @@ static int ali_settimer(int t)
 		ali_timeout_bits = (t/60)|(1<<7);
 	else if (t < 18000)
 		ali_timeout_bits = (t/300)|(1<<6)|(1<<7);
+		ali_timeout_bits = t|(1 << 6);
+	else if (t < 3600)
+		ali_timeout_bits = (t / 60)|(1 << 7);
+	else if (t < 18000)
+		ali_timeout_bits = (t / 300)|(1 << 6)|(1 << 7);
 	else
 		return -EINVAL;
 
@@ -139,6 +152,7 @@ static int ali_settimer(int t)
 
 static ssize_t ali_write(struct file *file, const char __user *data,
 			      size_t len, loff_t *ppos)
+						size_t len, loff_t *ppos)
 {
 	/* See if we got the magic character 'V' and reload the timer */
 	if (len) {
@@ -181,6 +195,7 @@ static long ali_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	void __user *argp = (void __user *)arg;
 	int __user *p = argp;
 	static struct watchdog_info ident = {
+	static const struct watchdog_info ident = {
 		.options =		WDIOF_KEEPALIVEPING |
 					WDIOF_SETTIMEOUT |
 					WDIOF_MAGICCLOSE,
@@ -270,6 +285,7 @@ static int ali_release(struct inode *inode, struct file *file)
 	else {
 		printk(KERN_CRIT PFX
 				"Unexpected close, not stopping watchdog!\n");
+		pr_crit("Unexpected close, not stopping watchdog!\n");
 		ali_keepalive();
 	}
 	clear_bit(0, &ali_is_open);
@@ -302,6 +318,7 @@ static int ali_notify_sys(struct notifier_block *this,
  */
 
 static struct pci_device_id ali_pci_tbl[] = {
+static const struct pci_device_id ali_pci_tbl[] __used = {
 	{ PCI_VENDOR_ID_AL, 0x1533, PCI_ANY_ID, PCI_ANY_ID,},
 	{ PCI_VENDOR_ID_AL, 0x1535, PCI_ANY_ID, PCI_ANY_ID,},
 	{ 0, },
@@ -351,6 +368,9 @@ static int __init ali_find_watchdog(void)
 	wdog &= ~((1<<27)|(1<<26)|(1<<25)|(1<<24));
 	/* No monitor bits */
 	wdog &= ~((1<<16)|(1<<13)|(1<<12)|(1<<11)|(1<<10)|(1<<9));
+	wdog &= ~((1 << 27)|(1 << 26)|(1 << 25)|(1 << 24));
+	/* No monitor bits */
+	wdog &= ~((1 << 16)|(1 << 13)|(1 << 12)|(1 << 11)|(1 << 10)|(1 << 9));
 
 	pci_write_config_dword(pdev, 0xCC, wdog);
 
@@ -368,6 +388,12 @@ static const struct file_operations ali_fops = {
 	.unlocked_ioctl =	ali_ioctl,
 	.open 		=	ali_open,
 	.release 	=	ali_release,
+	.owner		=	THIS_MODULE,
+	.llseek		=	no_llseek,
+	.write		=	ali_write,
+	.unlocked_ioctl =	ali_ioctl,
+	.open		=	ali_open,
+	.release	=	ali_release,
 };
 
 static struct miscdevice ali_miscdev = {
@@ -402,6 +428,8 @@ static int __init watchdog_init(void)
 		printk(KERN_INFO PFX
 		     "timeout value must be 0 < timeout < 18000, using %d\n",
 							timeout);
+		pr_info("timeout value must be 0 < timeout < 18000, using %d\n",
+			timeout);
 	}
 
 	/* Calculate the watchdog's timeout */
@@ -411,6 +439,7 @@ static int __init watchdog_init(void)
 	if (ret != 0) {
 		printk(KERN_ERR PFX
 			"cannot register reboot notifier (err=%d)\n", ret);
+		pr_err("cannot register reboot notifier (err=%d)\n", ret);
 		goto out;
 	}
 
@@ -423,6 +452,12 @@ static int __init watchdog_init(void)
 	}
 
 	printk(KERN_INFO PFX "initialized. timeout=%d sec (nowayout=%d)\n",
+		pr_err("cannot register miscdev on minor=%d (err=%d)\n",
+		       WATCHDOG_MINOR, ret);
+		goto unreg_reboot;
+	}
+
+	pr_info("initialized. timeout=%d sec (nowayout=%d)\n",
 		timeout, nowayout);
 
 out:

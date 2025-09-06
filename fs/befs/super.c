@@ -8,6 +8,7 @@
  */
 
 #include <linux/fs.h>
+#include <asm/page.h> /* for PAGE_SIZE */
 
 #include "befs.h"
 #include "super.h"
@@ -30,6 +31,13 @@ befs_load_sb(struct super_block *sb, befs_super_block * disk_sb)
 	    befs_sb->byte_order = BEFS_BYTESEX_LE;
 	else if (be32_to_cpu(disk_sb->fs_byte_order) == BEFS_BYTEORDER_NATIVE)
 	    befs_sb->byte_order = BEFS_BYTESEX_BE;	
+	struct befs_sb_info *befs_sb = BEFS_SB(sb);
+
+	/* Check the byte order of the filesystem */
+	if (disk_sb->fs_byte_order == BEFS_BYTEORDER_NATIVE_LE)
+	    befs_sb->byte_order = BEFS_BYTESEX_LE;
+	else if (disk_sb->fs_byte_order == BEFS_BYTEORDER_NATIVE_BE)
+	    befs_sb->byte_order = BEFS_BYTESEX_BE;
 
 	befs_sb->magic1 = fs32_to_cpu(sb, disk_sb->magic1);
 	befs_sb->magic2 = fs32_to_cpu(sb, disk_sb->magic2);
@@ -59,6 +67,7 @@ int
 befs_check_sb(struct super_block *sb)
 {
 	befs_sb_info *befs_sb = BEFS_SB(sb);
+	struct befs_sb_info *befs_sb = BEFS_SB(sb);
 
 	/* Check magic headers of super block */
 	if ((befs_sb->magic1 != BEFS_SUPER_MAGIC1)

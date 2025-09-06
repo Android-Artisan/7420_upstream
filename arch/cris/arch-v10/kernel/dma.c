@@ -8,6 +8,8 @@
 
 #include <asm/dma.h>
 #include <asm/arch/svinto.h>
+#include <arch/svinto.h>
+#include <arch/system.h>
 
 /* Macro to access ETRAX 100 registers */
 #define SETS(var, reg, field, val) var = (var & ~IO_MASK_(reg##_, field##_)) | \
@@ -25,6 +27,7 @@ int cris_request_dma(unsigned int dmanr, const char * device_id,
 	int fail = -EINVAL;
 
 	if ((dmanr < 0) || (dmanr >= MAX_DMA_CHANNELS)) {
+	if (dmanr >= MAX_DMA_CHANNELS) {
 		printk(KERN_CRIT "cris_request_dma: invalid DMA channel %u\n", dmanr);
 		return -EINVAL;
 	}
@@ -214,6 +217,7 @@ void cris_free_dma(unsigned int dmanr, const char * device_id)
 {
 	unsigned long flags;
 	if ((dmanr < 0) || (dmanr >= MAX_DMA_CHANNELS)) {
+	if (dmanr >= MAX_DMA_CHANNELS) {
 		printk(KERN_CRIT "cris_free_dma: invalid DMA channel %u\n", dmanr);
 		return;
 	}

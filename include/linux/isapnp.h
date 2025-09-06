@@ -47,6 +47,10 @@
 #define DEVICE_COUNT_COMPATIBLE 4
 
 #define ISAPNP_ANY_ID		0xffff
+#include <linux/mod_devicetable.h>
+
+#define DEVICE_COUNT_COMPATIBLE 4
+
 #define ISAPNP_CARD_DEVS	8
 
 #define ISAPNP_CARD_ID(_va, _vb, _vc, _device) \

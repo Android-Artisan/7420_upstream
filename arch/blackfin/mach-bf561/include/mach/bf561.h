@@ -25,6 +25,11 @@
  * along with this program; if not, see the file COPYING, or write
  * to the Free Software Foundation, Inc.,
  * 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+ * SYSTEM MMR REGISTER AND MEMORY MAP FOR ADSP-BF561
+ *
+ * Copyright 2005-2008 Analog Devices Inc.
+ *
+ * Licensed under the GPL-2 or later.
  */
 
 #ifndef __MACH_BF561_H__
@@ -218,6 +223,11 @@
 #ifndef CPU
 #define CPU "UNKNOWN"
 #define CPUID 0x0
+#define CPUID 0x27bb
+#endif
+
+#ifndef CPU
+#error "Unknown CPU type - This kernel doesn't seem to be configured properly"
 #endif
 
 #endif				/* __MACH_BF561_H__  */

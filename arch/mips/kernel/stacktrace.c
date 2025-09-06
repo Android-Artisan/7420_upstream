@@ -8,6 +8,7 @@
 #include <linux/sched.h>
 #include <linux/stacktrace.h>
 #include <linux/module.h>
+#include <linux/export.h>
 #include <asm/stacktrace.h>
 
 /*
@@ -15,6 +16,7 @@
  */
 static void save_raw_context_stack(struct stack_trace *trace,
 	unsigned long reg29)
+	unsigned long reg29, int savesched)
 {
 	unsigned long *sp = (unsigned long *)reg29;
 	unsigned long addr;
@@ -22,6 +24,8 @@ static void save_raw_context_stack(struct stack_trace *trace,
 	while (!kstack_end(sp)) {
 		addr = *sp++;
 		if (__kernel_text_address(addr)) {
+		if (__kernel_text_address(addr) &&
+		    (savesched || !in_sched_functions(addr))) {
 			if (trace->skip > 0)
 				trace->skip--;
 			else
@@ -33,6 +37,8 @@ static void save_raw_context_stack(struct stack_trace *trace,
 }
 
 static void save_context_stack(struct stack_trace *trace, struct pt_regs *regs)
+static void save_context_stack(struct stack_trace *trace,
+	struct task_struct *tsk, struct pt_regs *regs, int savesched)
 {
 	unsigned long sp = regs->regs[29];
 #ifdef CONFIG_KALLSYMS
@@ -58,6 +64,25 @@ static void save_context_stack(struct stack_trace *trace, struct pt_regs *regs)
 	} while (pc);
 #else
 	save_raw_context_stack(trace, sp);
+			(unsigned long)task_stack_page(tsk);
+		if (stack_page && sp >= stack_page &&
+		    sp <= stack_page + THREAD_SIZE - 32)
+			save_raw_context_stack(trace, sp, savesched);
+		return;
+	}
+	do {
+		if (savesched || !in_sched_functions(pc)) {
+			if (trace->skip > 0)
+				trace->skip--;
+			else
+				trace->entries[trace->nr_entries++] = pc;
+			if (trace->nr_entries >= trace->max_entries)
+				break;
+		}
+		pc = unwind_stack(tsk, &sp, pc, &ra);
+	} while (pc);
+#else
+	save_raw_context_stack(trace, sp, savesched);
 #endif
 }
 
@@ -65,6 +90,12 @@ static void save_context_stack(struct stack_trace *trace, struct pt_regs *regs)
  * Save stack-backtrace addresses into a stack_trace buffer.
  */
 void save_stack_trace(struct stack_trace *trace)
+{
+	save_stack_trace_tsk(current, trace);
+}
+EXPORT_SYMBOL_GPL(save_stack_trace);
+
+void save_stack_trace_tsk(struct task_struct *tsk, struct stack_trace *trace)
 {
 	struct pt_regs dummyregs;
 	struct pt_regs *regs = &dummyregs;
@@ -75,3 +106,12 @@ void save_stack_trace(struct stack_trace *trace)
 	save_context_stack(trace, regs);
 }
 EXPORT_SYMBOL_GPL(save_stack_trace);
+	if (tsk != current) {
+		regs->regs[29] = tsk->thread.reg29;
+		regs->regs[31] = 0;
+		regs->cp0_epc = tsk->thread.reg31;
+	} else
+		prepare_frametrace(regs);
+	save_context_stack(trace, tsk, regs, tsk == current);
+}
+EXPORT_SYMBOL_GPL(save_stack_trace_tsk);

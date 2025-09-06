@@ -19,6 +19,8 @@
  *	boundary.
  *
  *	Modified for SMP safety and SMP locking by Alan Cox <alan@redhat.com>
+ *	Modified for SMP safety and SMP locking by Alan Cox
+ *					<alan@lxorguk.ukuu.org.uk>
  *
  *	Performance
  *
@@ -35,6 +37,8 @@
  *	Synchronous mode without DMA is unlikely to pass about 2400 baud.
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/mm.h>
@@ -46,6 +50,7 @@
 #include <linux/hdlc.h>
 #include <linux/ioport.h>
 #include <linux/init.h>
+#include <linux/gfp.h>
 #include <asm/dma.h>
 #include <asm/io.h>
 #define RT_LOCK
@@ -364,6 +369,7 @@ static void z8530_rx(struct z8530_channel *c)
 				if(stat&Rx_OVR)
 				{
 					printk(KERN_WARNING "%s: overrun\n", c->dev->name);
+					pr_warn("%s: overrun\n", c->dev->name);
 					c->rx_overrun++;
 				}
 				if(stat&CRC_ERR)
@@ -463,11 +469,13 @@ static void z8530_status(struct z8530_channel *chan)
 	{
 		if (status & chan->dcdcheck) {
 			printk(KERN_INFO "%s: DCD raised\n", chan->dev->name);
+			pr_info("%s: DCD raised\n", chan->dev->name);
 			write_zsreg(chan, R3, chan->regs[3] | RxENABLE);
 			if (chan->netdevice)
 				netif_carrier_on(chan->netdevice);
 		} else {
 			printk(KERN_INFO "%s: DCD lost\n", chan->dev->name);
+			pr_info("%s: DCD lost\n", chan->dev->name);
 			write_zsreg(chan, R3, chan->regs[3] & ~RxENABLE);
 			z8530_flush_fifo(chan);
 			if (chan->netdevice)
@@ -542,6 +550,12 @@ static void z8530_dma_tx(struct z8530_channel *chan)
 	}
 	/* This shouldnt occur in DMA mode */
 	printk(KERN_ERR "DMA tx - bogus event!\n");
+		pr_warn("Hey who turned the DMA off?\n");
+		z8530_tx(chan);
+		return;
+	}
+	/* This shouldn't occur in DMA mode */
+	pr_err("DMA tx - bogus event!\n");
 	z8530_tx(chan);
 }
 
@@ -584,11 +598,13 @@ static void z8530_dma_status(struct z8530_channel *chan)
 	{
 		if (status & chan->dcdcheck) {
 			printk(KERN_INFO "%s: DCD raised\n", chan->dev->name);
+			pr_info("%s: DCD raised\n", chan->dev->name);
 			write_zsreg(chan, R3, chan->regs[3] | RxENABLE);
 			if (chan->netdevice)
 				netif_carrier_on(chan->netdevice);
 		} else {
 			printk(KERN_INFO "%s:DCD lost\n", chan->dev->name);
+			pr_info("%s: DCD lost\n", chan->dev->name);
 			write_zsreg(chan, R3, chan->regs[3] & ~RxENABLE);
 			z8530_flush_fifo(chan);
 			if (chan->netdevice)
@@ -602,6 +618,7 @@ static void z8530_dma_status(struct z8530_channel *chan)
 
 struct z8530_irqhandler z8530_dma_sync=
 {
+static struct z8530_irqhandler z8530_dma_sync = {
 	z8530_dma_rx,
 	z8530_dma_tx,
 	z8530_dma_status
@@ -611,6 +628,7 @@ EXPORT_SYMBOL(z8530_dma_sync);
 
 struct z8530_irqhandler z8530_txdma_sync=
 {
+static struct z8530_irqhandler z8530_txdma_sync = {
 	z8530_rx,
 	z8530_dma_tx,
 	z8530_dma_status
@@ -711,6 +729,7 @@ irqreturn_t z8530_interrupt(int irq, void *dev_id)
 {
 	struct z8530_dev *dev=dev_id;
 	u8 intr;
+	u8 uninitialized_var(intr);
 	static volatile int locker=0;
 	int work=0;
 	struct z8530_irqhandler *irqs;
@@ -718,6 +737,7 @@ irqreturn_t z8530_interrupt(int irq, void *dev_id)
 	if(locker)
 	{
 		printk(KERN_ERR "IRQ re-enter\n");
+		pr_err("IRQ re-enter\n");
 		return IRQ_NONE;
 	}
 	locker=1;
@@ -764,6 +784,8 @@ irqreturn_t z8530_interrupt(int irq, void *dev_id)
 	spin_unlock(&dev->lock);
 	if(work==5000)
 		printk(KERN_ERR "%s: interrupt jammed - abort(0x%X)!\n", dev->name, intr);
+		pr_err("%s: interrupt jammed - abort(0x%X)!\n",
+		       dev->name, intr);
 	/* Ok all done */
 	locker=0;
 	return IRQ_HANDLED;
@@ -772,6 +794,7 @@ irqreturn_t z8530_interrupt(int irq, void *dev_id)
 EXPORT_SYMBOL(z8530_interrupt);
 
 static char reg_init[16]=
+static const u8 reg_init[16]=
 {
 	0,0,0,0,
 	0,0,0,0,
@@ -1047,6 +1070,7 @@ EXPORT_SYMBOL(z8530_sync_dma_close);
  *	@c: The Z8530 channel to configure in sync DMA mode.
  *
  *	Set up a Z85x30 device for synchronous DMA tranmission. One
+ *	Set up a Z85x30 device for synchronous DMA transmission. One
  *	ISA DMA channel must be available for this to work. The receive
  *	side is run in PIO mode, but then it has the bigger FIFO.
  */
@@ -1212,6 +1236,7 @@ EXPORT_SYMBOL(z8530_sync_txdma_close);
  */
  
 static char *z8530_type_name[]={
+static const char *z8530_type_name[]={
 	"Z8530",
 	"Z85C30",
 	"Z85230"
@@ -1225,12 +1250,14 @@ static char *z8530_type_name[]={
  *
  *	Describe a Z8530 in a standard format. We must pass the I/O as
  *	the port offset isnt predictable. The main reason for this function
+ *	the port offset isn't predictable. The main reason for this function
  *	is to try and get a common format of report.
  */
 
 void z8530_describe(struct z8530_dev *dev, char *mapping, unsigned long io)
 {
 	printk(KERN_INFO "%s: %s found at %s 0x%lX, IRQ %d.\n",
+	pr_info("%s: %s found at %s 0x%lX, IRQ %d\n",
 		dev->name, 
 		z8530_type_name[dev->type],
 		mapping,
@@ -1594,6 +1621,7 @@ static void z8530_rx_done(struct z8530_channel *c)
 		
 		/*
 		 *	Complete this DMA. Neccessary to find the length
+		 *	Complete this DMA. Necessary to find the length
 		 */		
 		 
 		flags=claim_dma_lock();
@@ -1628,6 +1656,7 @@ static void z8530_rx_done(struct z8530_channel *c)
 			   after the flip is done */
 			printk(KERN_WARNING "%s: DMA flip overrun!\n",
 			       c->netdevice->name);
+			netdev_warn(c->netdevice, "DMA flip overrun!\n");
 
 		release_dma_lock(flags);
 
@@ -1644,6 +1673,7 @@ static void z8530_rx_done(struct z8530_channel *c)
 			c->netdevice->stats.rx_dropped++;
 			printk(KERN_WARNING "%s: Memory squeeze.\n",
 			       c->netdevice->name);
+			netdev_warn(c->netdevice, "Memory squeeze\n");
 		} else {
 			skb_put(skb, ct);
 			skb_copy_to_linear_data(skb, rxb, ct);
@@ -1663,6 +1693,7 @@ static void z8530_rx_done(struct z8530_channel *c)
 		 *	buffer and then mess around copying and allocating
 		 *	things. For the current case it doesn't matter but
 		 *	if you build a system where the sync irq isnt blocked
+		 *	if you build a system where the sync irq isn't blocked
 		 *	by the kernel IRQ disable then you need only block the
 		 *	sync IRQ for the RT_LOCK area.
 		 *
@@ -1685,6 +1716,7 @@ static void z8530_rx_done(struct z8530_channel *c)
 		if (c->skb2 == NULL)
 			printk(KERN_WARNING "%s: memory squeeze.\n",
 			       c->netdevice->name);
+			netdev_warn(c->netdevice, "memory squeeze\n");
 		else
 			skb_put(c->skb2, c->mtu);
 		c->netdevice->stats.rx_packets++;
@@ -1699,6 +1731,7 @@ static void z8530_rx_done(struct z8530_channel *c)
 	} else {
 		c->netdevice->stats.rx_dropped++;
 		printk(KERN_ERR "%s: Lost a frame\n", c->netdevice->name);
+		netdev_err(c->netdevice, "Lost a frame\n");
 	}
 }
 
@@ -1734,6 +1767,7 @@ static inline int spans_boundary(struct sk_buff *skb)
  */
 
 int z8530_queue_xmit(struct z8530_channel *c, struct sk_buff *skb)
+netdev_tx_t z8530_queue_xmit(struct z8530_channel *c, struct sk_buff *skb)
 {
 	unsigned long flags;
 	
@@ -1742,6 +1776,8 @@ int z8530_queue_xmit(struct z8530_channel *c, struct sk_buff *skb)
 	{
 		return 1;
 	}
+		return NETDEV_TX_BUSY;
+
 	
 	/* PC SPECIFIC - DMA limits */
 	
@@ -1774,6 +1810,7 @@ int z8530_queue_xmit(struct z8530_channel *c, struct sk_buff *skb)
 	spin_unlock_irqrestore(c->lock, flags);
 	
 	return 0;
+	return NETDEV_TX_OK;
 }
 
 EXPORT_SYMBOL(z8530_queue_xmit);
@@ -1782,6 +1819,8 @@ EXPORT_SYMBOL(z8530_queue_xmit);
  *	Module support
  */
 static char banner[] __initdata = KERN_INFO "Generic Z85C30/Z85230 interface driver v0.02\n";
+static const char banner[] __initconst =
+	KERN_INFO "Generic Z85C30/Z85230 interface driver v0.02\n";
 
 static int __init z85230_init_driver(void)
 {

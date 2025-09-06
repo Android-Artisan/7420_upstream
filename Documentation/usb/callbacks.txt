@@ -1,5 +1,4 @@
 What callbacks will usbcore do?
-===============================
 
 Usbcore will call into a driver through callbacks defined in the driver
 structure and through the completion handler of URBs a driver submits.
@@ -41,7 +40,6 @@ reason. Sysfs is preferred these days. The PM callbacks are covered
 separately in Documentation/usb/power-management.txt.
 
 Calling conventions
-===================
 
 All callbacks are mutually exclusive. There's no need for locking
 against other USB callbacks. All callbacks are called from a task
@@ -50,7 +48,6 @@ small fixed upper limit in time. In particular you must not call out to
 user space and await results.
 
 Hotplugging callbacks
-=====================
 
 These callbacks are intended to associate and disassociate a driver with
 an interface. A driver's bond to an interface is exclusive.
@@ -66,6 +63,7 @@ otherwise -ENODEV or -ENXIO. Other error codes should be used only if a
 genuine error occurred during initialisation which prevented a driver
 from accepting a device that would else have been accepted.
 You are strongly encouraged to use usbcore'sfacility,
+You are strongly encouraged to use usbcore's facility,
 usb_set_intfdata(), to associate a data structure with an interface, so
 that you know which internal state and identity you associate with a
 particular interface. The device will not be suspended and you may do IO
@@ -88,7 +86,6 @@ time after the physical disconnection. Thus your driver must be prepared
 to deal with failing IO even prior to the callback.
 
 Device level callbacks
-======================
 
 pre_reset
 ---------
@@ -98,6 +95,11 @@ int (*pre_reset)(struct usb_interface *intf);
 Another driver or user space is triggering a reset on the device which
 contains the interface passed as an argument. Cease IO and save any
 device state you need to restore.
+A driver or user space is triggering a reset on the device which
+contains the interface passed as an argument. Cease IO, wait for all
+outstanding URBs to complete, and save any device state you need to
+restore.  No more URBs may be submitted until the post_reset method
+is called.
 
 If you need to allocate memory here, use GFP_NOIO or GFP_ATOMIC, if you
 are in atomic context.
@@ -114,7 +116,6 @@ If you need to allocate memory here, use GFP_NOIO or GFP_ATOMIC, if you
 are in atomic context.
 
 Call sequences
-==============
 
 No callbacks other than probe will be invoked for an interface
 that isn't bound to your driver.

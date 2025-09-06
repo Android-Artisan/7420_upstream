@@ -6,6 +6,7 @@
  * Based on pata_pcmcia:
  *
  *   Copyright 2005-2006 Red Hat Inc <alan@redhat.com>, all rights reserved.
+ *   Copyright 2005-2006 Red Hat Inc, all rights reserved.
  *
  * This file is subject to the terms and conditions of the GNU General Public
  * License.  See the file "COPYING" in the main directory of this archive
@@ -42,6 +43,12 @@ static int pata_platform_set_mode(struct ata_link *link, struct ata_device **unu
 			dev->flags |= ATA_DFLAG_PIO;
 			ata_dev_printk(dev, KERN_INFO, "configured for PIO\n");
 		}
+	ata_for_each_dev(dev, link, ENABLED) {
+		/* We don't really care */
+		dev->pio_mode = dev->xfer_mode = XFER_PIO_0;
+		dev->xfer_shift = ATA_SHIFT_PIO;
+		dev->flags |= ATA_DFLAG_PIO;
+		ata_dev_info(dev, "configured for PIO\n");
 	}
 	return 0;
 }
@@ -82,6 +89,7 @@ static void pata_platform_setup_port(struct ata_ioports *ioaddr,
  *	@irq_res: Resource representing IRQ and its flags
  *	@ioport_shift: I/O port shift
  *	@__pio_mask: PIO mask
+ *	@sht: scsi_host_template to use when registering
  *
  *	Register a platform bus IDE interface. Such interfaces are PIO and we
  *	assume do not support IRQ sharing.
@@ -107,6 +115,10 @@ int __devinit __pata_platform_probe(struct device *dev,
 				    struct resource *irq_res,
 				    unsigned int ioport_shift,
 				    int __pio_mask)
+int __pata_platform_probe(struct device *dev, struct resource *io_res,
+			  struct resource *ctl_res, struct resource *irq_res,
+			  unsigned int ioport_shift, int __pio_mask,
+			  struct scsi_host_template *sht)
 {
 	struct ata_host *host;
 	struct ata_port *ap;
@@ -126,6 +138,7 @@ int __devinit __pata_platform_probe(struct device *dev,
 	if (irq_res && irq_res->start > 0) {
 		irq = irq_res->start;
 		irq_flags = irq_res->flags;
+		irq_flags = irq_res->flags & IRQF_TRIGGER_MASK;
 	}
 
 	/*
@@ -161,6 +174,14 @@ int __devinit __pata_platform_probe(struct device *dev,
 				io_res->end - io_res->start + 1);
 		ap->ioaddr.ctl_addr = devm_ioport_map(dev, ctl_res->start,
 				ctl_res->end - ctl_res->start + 1);
+				resource_size(io_res));
+		ap->ioaddr.ctl_addr = devm_ioremap(dev, ctl_res->start,
+				resource_size(ctl_res));
+	} else {
+		ap->ioaddr.cmd_addr = devm_ioport_map(dev, io_res->start,
+				resource_size(io_res));
+		ap->ioaddr.ctl_addr = devm_ioport_map(dev, ctl_res->start,
+				resource_size(ctl_res));
 	}
 	if (!ap->ioaddr.cmd_addr || !ap->ioaddr.ctl_addr) {
 		dev_err(dev, "failed to map IO/CTL base\n");
@@ -199,11 +220,17 @@ int __devexit __pata_platform_remove(struct device *dev)
 EXPORT_SYMBOL_GPL(__pata_platform_remove);
 
 static int __devinit pata_platform_probe(struct platform_device *pdev)
+				 irq_flags, sht);
+}
+EXPORT_SYMBOL_GPL(__pata_platform_probe);
+
+static int pata_platform_probe(struct platform_device *pdev)
 {
 	struct resource *io_res;
 	struct resource *ctl_res;
 	struct resource *irq_res;
 	struct pata_platform_info *pp_info = pdev->dev.platform_data;
+	struct pata_platform_info *pp_info = dev_get_platdata(&pdev->dev);
 
 	/*
 	 * Simple resource validation ..
@@ -248,6 +275,10 @@ static int __devinit pata_platform_probe(struct platform_device *pdev)
 static int __devexit pata_platform_remove(struct platform_device *pdev)
 {
 	return __pata_platform_remove(&pdev->dev);
+
+	return __pata_platform_probe(&pdev->dev, io_res, ctl_res, irq_res,
+				     pp_info ? pp_info->ioport_shift : 0,
+				     pio_mask, &pata_platform_sht);
 }
 
 static struct platform_driver pata_platform_driver = {
@@ -270,6 +301,13 @@ static void __exit pata_platform_exit(void)
 }
 module_init(pata_platform_init);
 module_exit(pata_platform_exit);
+	.remove		= ata_platform_remove_one,
+	.driver = {
+		.name		= DRV_NAME,
+	},
+};
+
+module_platform_driver(pata_platform_driver);
 
 module_param(pio_mask, int, 0);
 

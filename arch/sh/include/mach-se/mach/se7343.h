@@ -8,6 +8,7 @@
  *
  * SH-Mobile SolutionEngine 7343 support
  */
+#include <linux/sh_intc.h>
 
 /* Box specific addresses.  */
 
@@ -114,6 +115,26 @@
 #define PORT_PVDR  	0xA4050164
 #define PORT_PWDR  	0xA4050166
 #define PORT_PYDR  	0xA4050168
+#define PORT_PADR	0xA4050120
+#define PORT_PBDR	0xA4050122
+#define PORT_PCDR	0xA4050124
+#define PORT_PDDR	0xA4050126
+#define PORT_PEDR	0xA4050128
+#define PORT_PFDR	0xA405012A
+#define PORT_PGDR	0xA405012C
+#define PORT_PHDR	0xA405012E
+#define PORT_PJDR	0xA4050130
+#define PORT_PKDR	0xA4050132
+#define PORT_PLDR	0xA4050134
+#define PORT_PMDR	0xA4050136
+#define PORT_PNDR	0xA4050138
+#define PORT_PQDR	0xA405013A
+#define PORT_PRDR	0xA405013C
+#define PORT_PTDR	0xA4050160
+#define PORT_PUDR	0xA4050162
+#define PORT_PVDR	0xA4050164
+#define PORT_PWDR	0xA4050166
+#define PORT_PYDR	0xA4050168
 
 #define FPGA_IN		0xb1400000
 #define FPGA_OUT	0xb1400002
@@ -125,6 +146,10 @@
 #define IRQ1_IRQ        33
 #define IRQ4_IRQ        36
 #define IRQ5_IRQ        37
+#define IRQ0_IRQ        evt2irq(0x600)
+#define IRQ1_IRQ        evt2irq(0x620)
+#define IRQ4_IRQ        evt2irq(0x680)
+#define IRQ5_IRQ        evt2irq(0x6a0)
 
 #define SE7343_FPGA_IRQ_MRSHPC0	0
 #define SE7343_FPGA_IRQ_MRSHPC1	1
@@ -144,6 +169,16 @@
 #define USB_IRQ		(SE7343_FPGA_IRQ_BASE + SE7343_FPGA_IRQ_USB)
 
 /* arch/sh/boards/se/7343/irq.c */
+#define SE7343_FPGA_IRQ_UARTA	10
+#define SE7343_FPGA_IRQ_UARTB	11
+
+#define SE7343_FPGA_IRQ_NR	12
+
+struct irq_domain;
+
+/* arch/sh/boards/se/7343/irq.c */
+extern struct irq_domain *se7343_irq_domain;
+
 void init_7343se_IRQ(void);
 
 #endif  /* __ASM_SH_HITACHI_SE7343_H */

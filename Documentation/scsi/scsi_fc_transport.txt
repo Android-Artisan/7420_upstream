@@ -1,31 +1,33 @@
                              SCSI FC Tansport
-                 =============================================
 
 Date:  4/12/2007
 Kernel Revisions for features:
   rports : <<TBS>>
   vports : 2.6.22 (? TBD)
+Date:  11/18/2008
+Kernel Revisions for features:
+  rports : <<TBS>>
+  vports : 2.6.22
+  bsg support : 2.6.30 (?TBD?)
 
 
 Introduction
-============
 This file documents the features and components of the SCSI FC Transport.
 It also provides documents the API between the transport and FC LLDDs.
 The FC transport can be found at:
   drivers/scsi/scsi_transport_fc.c
   include/scsi/scsi_transport_fc.h
   include/scsi/scsi_netlink_fc.h
+  include/scsi/scsi_bsg_fc.h
 
 This file is found at Documentation/scsi/scsi_fc_transport.txt
 
 
 FC Remote Ports (rports)
-========================================================================
 << To Be Supplied >>
 
 
 FC Virtual Ports (vports)
-========================================================================
 
 Overview:
 -------------------------------
@@ -69,6 +71,7 @@ Overview:
     if vports are to be associated with virtual machines, a XEN mgmt
     utility would be responsible for creating wwpn/wwnn's for the vport,
     using it's own naming authority and OUI. (Note: it already does this
+    using its own naming authority and OUI. (Note: it already does this
     for virtual MAC addresses).
 
 
@@ -80,6 +83,7 @@ Device Trees and Vport Objects:
   transport creates the vport object and places it under the scsi_host
   object corresponding to the physical adapter.  The LLDD will allocate
   a new scsi_host for the vport and link it's object under the vport.
+  a new scsi_host for the vport and link its object under the vport.
   The remainder of the tree under the vports scsi_host is the same
   as the non-NPIV case. The transport is written currently to easily
   allow the parent of the vport to be something other than the scsi_host.
@@ -192,6 +196,7 @@ Vport States:
       independent of the adapter's link state.
     - Instantiation of the vport on the FC link via ELS traffic, etc.
       This is equivalent to a "link up" and successfull link initialization.
+      This is equivalent to a "link up" and successful link initialization.
   Further information can be found in the interfaces section below for
   Vport Creation.
 
@@ -290,6 +295,7 @@ Vport support by LLDD:
 
   The LLDD indicates support for vports by supplying a vport_create()
   function in the transport template.  The presense of this function will
+  function in the transport template.  The presence of this function will
   cause the creation of the new attributes on the fc_host.  As part of
   the physical port completing its initialization relative to the
   transport, it should set the max_npiv_vports attribute to indicate the
@@ -321,6 +327,7 @@ Vport Creation:
       independent of the adapter's link state.
     - Instantiation of the vport on the FC link via ELS traffic, etc.
       This is equivalent to a "link up" and successfull link initialization.
+      This is equivalent to a "link up" and successful link initialization.
 
   The LLDD's vport_create() function will not synchronously wait for both
   parts to be fully completed before returning. It must validate that the
@@ -377,6 +384,7 @@ Vport Disable/Enable:
 
     where:
       vport:    Is vport to to be enabled or disabled
+      vport:    Is vport to be enabled or disabled
       disable:  If "true", the vport is to be disabled.
                 If "false", the vport is to be enabled.
 
@@ -436,8 +444,50 @@ Other:
     was updated to remove all vports for the fc_host as well.
 
 
+Transport supplied functions
+----------------------------
+
+The following functions are supplied by the FC-transport for use by LLDs.
+
+   fc_vport_create - create a vport
+   fc_vport_terminate - detach and remove a vport
+
+Details:
+
+/**
+ * fc_vport_create - Admin App or LLDD requests creation of a vport
+ * @shost:     scsi host the virtual port is connected to.
+ * @ids:       The world wide names, FC4 port roles, etc for
+ *              the virtual port.
+ *
+ * Notes:
+ *     This routine assumes no locks are held on entry.
+ */
+struct fc_vport *
+fc_vport_create(struct Scsi_Host *shost, struct fc_vport_identifiers *ids)
+
+/**
+ * fc_vport_terminate - Admin App or LLDD requests termination of a vport
+ * @vport:      fc_vport to be terminated
+ *
+ * Calls the LLDD vport_delete() function, then deallocates and removes
+ * the vport from the shost and object tree.
+ *
+ * Notes:
+ *      This routine assumes no locks are held on entry.
+ */
+int
+fc_vport_terminate(struct fc_vport *vport)
+
+
+FC BSG support (CT & ELS passthru, and more)
+<< To Be Supplied >>
+
+
+
+
+
 Credits
-=======
 The following people have contributed to this document:
 
 

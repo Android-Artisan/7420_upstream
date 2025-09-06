@@ -38,6 +38,12 @@
 #include <linux/mutex.h>
 #include <linux/of_device.h>
 #include <linux/of_platform.h>
+#include <linux/poll.h>
+#include <linux/mutex.h>
+#include <linux/of_device.h>
+#include <linux/of_irq.h>
+#include <linux/of_platform.h>
+#include <linux/slab.h>
 
 #include <asm/byteorder.h>
 #include <asm/io.h>
@@ -75,6 +81,7 @@ struct smu_device {
 	spinlock_t		lock;
 	struct device_node	*of_node;
 	struct of_device	*of_dev;
+	struct platform_device	*of_dev;
 	int			doorbell;	/* doorbell gpio */
 	u32 __iomem		*db_buf;	/* doorbell buffer */
 	struct device_node	*db_node;
@@ -96,6 +103,7 @@ struct smu_device {
  * I don't think there will ever be more than one SMU, so
  * for now, just hard code that
  */
+static DEFINE_MUTEX(smu_mutex);
 static struct smu_device	*smu;
 static DEFINE_MUTEX(smu_part_access);
 static int smu_irq_inited;
@@ -126,6 +134,7 @@ static void smu_start_cmd(void)
 		((u8 *)cmd->data_buf)[2], ((u8 *)cmd->data_buf)[3],
 		((u8 *)cmd->data_buf)[4], ((u8 *)cmd->data_buf)[5],
 		((u8 *)cmd->data_buf)[6], ((u8 *)cmd->data_buf)[7]);
+	DPRINTK("SMU: data buffer: %8ph\n", cmd->data_buf);
 
 	/* Fill the SMU command buffer */
 	smu->cmd_buf->cmd = cmd->cmd;
@@ -503,6 +512,7 @@ int __init smu_init (void)
 	 */
 	smu->cmd_buf_abs = (u32)smu_cmdbuf_abs;
 	smu->cmd_buf = (struct smu_cmd_buf *)abs_to_virt(smu_cmdbuf_abs);
+	smu->cmd_buf = __va(smu_cmdbuf_abs);
 
 	smu->db_node = of_find_node_by_name(NULL, "smu-doorbell");
 	if (smu->db_node == NULL) {
@@ -567,6 +577,11 @@ fail_db_node:
 	of_node_put(smu->db_node);
 fail_bootmem:
 	free_bootmem((unsigned long)smu, sizeof(struct smu_device));
+	of_node_put(smu->msg_node);
+fail_db_node:
+	of_node_put(smu->db_node);
+fail_bootmem:
+	free_bootmem(__pa(smu), sizeof(struct smu_device));
 	smu = NULL;
 fail_np:
 	of_node_put(np);
@@ -646,6 +661,7 @@ static DECLARE_WORK(smu_expose_childs_work, smu_expose_childs);
 
 static int smu_platform_probe(struct of_device* dev,
 			      const struct of_device_id *match)
+static int smu_platform_probe(struct platform_device* dev)
 {
 	if (!smu)
 		return -ENODEV;
@@ -661,6 +677,7 @@ static int smu_platform_probe(struct of_device* dev,
 }
 
 static struct of_device_id smu_platform_match[] =
+static const struct of_device_id smu_platform_match[] =
 {
 	{
 		.type		= "smu",
@@ -672,6 +689,12 @@ static struct of_platform_driver smu_of_platform_driver =
 {
 	.name 		= "smu",
 	.match_table	= smu_platform_match,
+static struct platform_driver smu_of_platform_driver =
+{
+	.driver = {
+		.name = "smu",
+		.of_match_table = smu_platform_match,
+	},
 	.probe		= smu_platform_probe,
 };
 
@@ -686,12 +709,14 @@ static int __init smu_init_sysfs(void)
 	 * new chipsets, but that will come back and bite us
 	 */
 	of_register_platform_driver(&smu_of_platform_driver);
+	platform_driver_register(&smu_of_platform_driver);
 	return 0;
 }
 
 device_initcall(smu_init_sysfs);
 
 struct of_device *smu_get_ofdev(void)
+struct platform_device *smu_get_ofdev(void)
 {
 	if (!smu)
 		return NULL;
@@ -1000,6 +1025,7 @@ static struct smu_sdbp_header *smu_create_sdb_partition(int id)
 		goto failure;
 	}
 	if (prom_add_property(smu->of_node, prop)) {
+	if (of_add_property(smu->of_node, prop)) {
 		printk(KERN_DEBUG "SMU: Failed creating sdb-partition-%02x "
 		       "property !\n", id);
 		goto failure;
@@ -1092,11 +1118,13 @@ static int smu_open(struct inode *inode, struct file *file)
 	init_waitqueue_head(&pp->wait);
 
 	lock_kernel();
+	mutex_lock(&smu_mutex);
 	spin_lock_irqsave(&smu_clist_lock, flags);
 	list_add(&pp->list, &smu_clist);
 	spin_unlock_irqrestore(&smu_clist_lock, flags);
 	file->private_data = pp;
 	unlock_kernel();
+	mutex_unlock(&smu_mutex);
 
 	return 0;
 }
@@ -1184,6 +1212,10 @@ static ssize_t smu_read_command(struct file *file, struct smu_private *pp,
 	if (pp->cmd.status == 1) {
 		if (file->f_flags & O_NONBLOCK)
 			return -EAGAIN;
+		if (file->f_flags & O_NONBLOCK) {
+			spin_unlock_irqrestore(&pp->lock, flags);
+			return -EAGAIN;
+		}
 		add_wait_queue(&pp->wait, &wait);
 		for (;;) {
 			set_current_state(TASK_INTERRUPTIBLE);
@@ -1261,6 +1293,8 @@ static unsigned int smu_fpoll(struct file *file, poll_table *wait)
 			mask |= POLLIN;
 		spin_unlock_irqrestore(&pp->lock, flags);
 	} if (pp->mode == smu_file_events) {
+	}
+	if (pp->mode == smu_file_events) {
 		/* Not yet implemented */
 	}
 	return mask;

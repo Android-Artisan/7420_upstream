@@ -5,6 +5,9 @@ typedef struct vmidi_devc {
  	   int opened;
 	   spinlock_t lock;
 	
+	   int opened;
+	   spinlock_t lock;
+
 	/* MIDI fields */
 	   int my_mididev;
 	   int pair_mididev;

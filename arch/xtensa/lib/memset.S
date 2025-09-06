@@ -12,6 +12,7 @@
  */
 
 #include <asm/variant/core.h>
+#include <variant/core.h>
 
 /*
  * void *memset(void *dst, int c, size_t length)

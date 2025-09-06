@@ -1,5 +1,10 @@
 /* Host AP driver Info Frame processing (part of hostap.o module) */
 
+#include <linux/if_arp.h>
+#include <linux/sched.h>
+#include <linux/slab.h>
+#include <linux/export.h>
+#include <linux/etherdevice.h>
 #include "hostap_wlan.h"
 #include "hostap.h"
 #include "hostap_ap.h"
@@ -202,6 +207,8 @@ static void prism2_host_roaming(local_info_t *local)
 		PDEBUG(DEBUG_EXTRA, "%s: Preferred AP BSSID "
 		       "%s\n",
 		       dev->name, print_mac(mac, local->preferred_ap));
+		PDEBUG(DEBUG_EXTRA, "%s: Preferred AP BSSID %pM\n",
+		       dev->name, local->preferred_ap);
 		for (i = 0; i < local->last_scan_results_count; i++) {
 			entry = &local->last_scan_results[i];
 			if (memcmp(local->preferred_ap, entry->bssid, 6) == 0)
@@ -221,6 +228,13 @@ static void prism2_host_roaming(local_info_t *local)
 	PDEBUG(DEBUG_EXTRA, "%s: JoinRequest: BSSID=%s"
 	       " channel=%d\n",
 	       dev->name, print_mac(mac, req.bssid), le16_to_cpu(req.channel));
+	memcpy(req.bssid, selected->bssid, ETH_ALEN);
+	req.channel = selected->chid;
+	spin_unlock_irqrestore(&local->lock, flags);
+
+	PDEBUG(DEBUG_EXTRA, "%s: JoinRequest: BSSID=%pM"
+	       " channel=%d\n",
+	       dev->name, req.bssid, le16_to_cpu(req.channel));
 	if (local->func->set_rid(dev, HFA384X_RID_JOINREQUEST, &req,
 				 sizeof(req))) {
 		printk(KERN_DEBUG "%s: JoinRequest failed\n", dev->name);
@@ -429,6 +443,9 @@ static void handle_info_queue_linkstatus(local_info_t *local)
 		       "%s\n",
 		       local->dev->name,
 		       print_mac(mac, (unsigned char *) local->bssid));
+		PDEBUG(DEBUG_EXTRA, "%s: LinkStatus: BSSID=%pM\n",
+		       local->dev->name,
+		       (unsigned char *) local->bssid);
 		if (local->wds_type & HOSTAP_WDS_AP_CLIENT)
 			hostap_add_sta(local->ap, local->bssid);
 	}
@@ -442,6 +459,7 @@ static void handle_info_queue_linkstatus(local_info_t *local)
 		netif_carrier_off(local->dev);
 		netif_carrier_off(local->ddev);
 		memset(wrqu.ap_addr.sa_data, 0, ETH_ALEN);
+		eth_zero_addr(wrqu.ap_addr.sa_data);
 	}
 	wrqu.ap_addr.sa_family = ARPHRD_ETHER;
 
@@ -465,6 +483,7 @@ static void handle_info_queue_scanresults(local_info_t *local)
 	if (local->host_roaming == 2 && local->iw_mode == IW_MODE_INFRA &&
 	    memcmp(local->preferred_ap, "\x00\x00\x00\x00\x00\x00",
 		   ETH_ALEN) != 0) {
+	    !is_zero_ether_addr(local->preferred_ap)) {
 		/*
 		 * Firmware seems to be getting into odd state in host_roaming
 		 * mode 2 when hostscan is used without join command, so try

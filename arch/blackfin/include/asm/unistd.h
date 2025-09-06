@@ -412,6 +412,16 @@
 
 #ifdef __KERNEL__
 #define __ARCH_WANT_IPC_PARSE_VERSION
+/*
+ * Copyright 2004-2009 Analog Devices Inc.
+ *
+ * Licensed under the GPL-2 or later.
+ */
+#ifndef __ASM_BFIN_UNISTD_H
+#define __ASM_BFIN_UNISTD_H
+
+#include <uapi/asm/unistd.h>
+
 #define __ARCH_WANT_STAT64
 #define __ARCH_WANT_SYS_ALARM
 #define __ARCH_WANT_SYS_GETHOSTNAME
@@ -434,5 +444,6 @@
 #define cond_syscall(x) asm(".weak\t_" #x "\n\t.set\t_" #x ",_sys_ni_syscall");
 
 #endif	/* __KERNEL__ */
+#define __ARCH_WANT_SYS_VFORK
 
 #endif				/* __ASM_BFIN_UNISTD_H */

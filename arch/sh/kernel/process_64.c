@@ -25,6 +25,11 @@
 #include <linux/module.h>
 #include <linux/proc_fs.h>
 #include <linux/io.h>
+#include <linux/slab.h>
+#include <linux/init.h>
+#include <linux/module.h>
+#include <linux/io.h>
+#include <asm/syscalls.h>
 #include <asm/uaccess.h>
 #include <asm/pgtable.h>
 #include <asm/mmu_context.h>
@@ -116,10 +121,17 @@ void (*pm_power_off)(void) = machine_power_off;
 EXPORT_SYMBOL(pm_power_off);
 
 void show_regs(struct pt_regs * regs)
+#include <asm/switch_to.h>
+
+struct task_struct *last_task_used_math = NULL;
+struct pt_regs fake_swapper_regs = { 0, };
+
+void show_regs(struct pt_regs *regs)
 {
 	unsigned long long ah, al, bh, bl, ch, cl;
 
 	printk("\n");
+	show_regs_print_info(KERN_DEFAULT);
 
 	ah = (regs->pc) >> 32;
 	al = (regs->pc) & 0xffffffff;
@@ -439,6 +451,7 @@ void flush_thread(void)
 {
 
 	/* Called by fs/exec.c (flush_old_exec) to remove traces of a
+	/* Called by fs/exec.c (setup_new_exec) to remove traces of a
 	 * previously running executable. */
 #ifdef CONFIG_SH_FPU
 	if (last_task_used_math == current) {
@@ -475,12 +488,14 @@ int dump_fpu(struct pt_regs *regs, elf_fpregset_t *fpu)
 		if (current == last_task_used_math) {
 			enable_fpu();
 			save_fpu(tsk, regs);
+			save_fpu(tsk);
 			disable_fpu();
 			last_task_used_math = 0;
 			regs->sr |= SR_FD;
 		}
 
 		memcpy(fpu, &tsk->thread.fpu.hard, sizeof(*fpu));
+		memcpy(fpu, &tsk->thread.xstate->hardfpu, sizeof(*fpu));
 	}
 
 	return fpvalid;
@@ -505,6 +520,24 @@ int copy_thread(int nr, unsigned long clone_flags, unsigned long usp,
 		disable_fpu();
 		last_task_used_math = NULL;
 		regs->sr |= SR_FD;
+EXPORT_SYMBOL(dump_fpu);
+
+asmlinkage void ret_from_fork(void);
+asmlinkage void ret_from_kernel_thread(void);
+
+int copy_thread(unsigned long clone_flags, unsigned long usp,
+		unsigned long arg, struct task_struct *p)
+{
+	struct pt_regs *childregs;
+
+#ifdef CONFIG_SH_FPU
+	/* can't happen for a kernel thread */
+	if (last_task_used_math == current) {
+		enable_fpu();
+		save_fpu(current);
+		disable_fpu();
+		last_task_used_math = NULL;
+		current_pt_regs()->sr |= SR_FD;
 	}
 #endif
 	/* Copy from sh version */
@@ -518,6 +551,28 @@ int copy_thread(int nr, unsigned long clone_flags, unsigned long usp,
 	} else {
 		childregs->regs[15] = (unsigned long)task_stack_page(p) + THREAD_SIZE;
 	}
+	p->thread.sp = (unsigned long) childregs;
+
+	if (unlikely(p->flags & PF_KTHREAD)) {
+		memset(childregs, 0, sizeof(struct pt_regs));
+		childregs->regs[2] = (unsigned long)arg;
+		childregs->regs[3] = (unsigned long)usp;
+		childregs->sr = (1 << 30); /* not user_mode */
+		childregs->sr |= SR_FD; /* Invalidate FPU flag */
+		p->thread.pc = (unsigned long) ret_from_kernel_thread;
+		return 0;
+	}
+	*childregs = *current_pt_regs();
+
+	/*
+	 * Sign extend the edited stack.
+	 * Note that thread.pc and thread.pc will stay
+	 * 32-bit wide and context switch must take care
+	 * of NEFF sign extension.
+	 */
+	if (usp)
+		childregs->regs[15] = neff_sign_extend(usp);
+	p->thread.uregs = childregs;
 
 	childregs->regs[9] = 0; /* Set return value for child */
 	childregs->sr |= SR_FD; /* Invalidate FPU flag */
@@ -613,6 +668,11 @@ out:
 extern void interruptible_sleep_on(wait_queue_head_t *q);
 
 #define mid_sched	((unsigned long) interruptible_sleep_on)
+
+	p->thread.pc = (unsigned long) ret_from_fork;
+
+	return 0;
+}
 
 #ifdef CONFIG_FRAME_POINTER
 static int in_sh64_switch_to(unsigned long pc)

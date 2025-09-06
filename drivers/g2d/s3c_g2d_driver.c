@@ -134,7 +134,6 @@ static int s3c_g2d_init_regs(s3c_g2d_params *params)
 				(params->bpp_src == G2D_XRGB32) ? S3C_G2D_COLOR_XRGB_8888 :	
 				(params->bpp_src == G2D_RGBX32) ? S3C_G2D_COLOR_RGBX_8888 : S3C_G2D_COLOR_RGB_565;
 				
-	/*set register for soruce image ===============================*/
 	__raw_writel(params->src_base_addr,  s3c_g2d_base + S3C_G2D_SRC_BASE_ADDR);
 	__raw_writel(params->src_full_width, s3c_g2d_base + S3C_G2D_HORI_RES_REG);
 	__raw_writel(params->src_full_height, s3c_g2d_base + S3C_G2D_VERT_RES_REG);
@@ -146,25 +145,21 @@ static int s3c_g2d_init_regs(s3c_g2d_params *params)
 	else
 		__raw_writel(0, s3c_g2d_base + 0x350);
 	
-	/*set register for destination image =============================*/
 	__raw_writel(params->dst_base_addr,  s3c_g2d_base + S3C_G2D_DST_BASE_ADDR);
 	__raw_writel(params->dst_full_width, s3c_g2d_base + S3C_G2D_SC_HORI_REG);
 	__raw_writel(params->dst_full_height, s3c_g2d_base + S3C_G2D_SC_VERT_REG);
 	__raw_writel(((params->dst_full_height<<16)|(params->dst_full_width)), s3c_g2d_base+S3C_G2D_SC_HORI_REG);
 	__raw_writel(bpp_mode_dst, s3c_g2d_base + S3C_G2D_DST_COLOR_MODE);
 
-	/*set register for clipping window===============================*/
 	__raw_writel(params->cw_x1, s3c_g2d_base + S3C_G2D_CW_LT_X_REG);
 	__raw_writel(params->cw_y1, s3c_g2d_base + S3C_G2D_CW_LT_Y_REG);
 	__raw_writel(params->cw_x2, s3c_g2d_base + S3C_G2D_CW_RB_X_REG);
 	__raw_writel(params->cw_y2, s3c_g2d_base + S3C_G2D_CW_RB_Y_REG);
 
-	/*set register for color=======================================*/
 	__raw_writel(params->color_val[G2D_WHITE], s3c_g2d_base + S3C_G2D_FG_COLOR_REG); // set color to both font and foreground color
 	__raw_writel(params->color_val[G2D_BLACK], s3c_g2d_base + S3C_G2D_BG_COLOR_REG);
 	__raw_writel(params->color_val[G2D_BLUE], s3c_g2d_base + S3C_G2D_BS_COLOR_REG); // Set blue color to blue screen color
 
-	/*set register for ROP & Alpha==================================*/
 	alpha_reg = __raw_readl(s3c_g2d_base + S3C_G2D_ROP_REG);
 	alpha_reg = alpha_reg & 0xffffc000;
 	if(params->alpha_mode == TRUE)
@@ -198,7 +193,6 @@ static int s3c_g2d_init_regs(s3c_g2d_params *params)
 	}
 	__raw_writel(alpha_reg, s3c_g2d_base + S3C_G2D_ROP_REG);
 
-	/*set register for color key====================================*/
 	if(params->color_key_mode == TRUE){
 		tmp_reg = __raw_readl(s3c_g2d_base + S3C_G2D_ROP_REG);
 		tmp_reg |= S3C_G2D_ROP_REG_T_TRANSP_MODE ;
@@ -206,7 +200,6 @@ static int s3c_g2d_init_regs(s3c_g2d_params *params)
 		__raw_writel(params->color_key_val, s3c_g2d_base + S3C_G2D_BS_COLOR_REG); 	
 	}
 
-	/*set register for rotation=====================================*/
 	/*/ New Mathew K J 27 Feb 2009 
 	s3c_g2d_check_fifo(8);
 	//__raw_writel(S3C_G2D_ROTATRE_REG_R0_0 + (S3C_G2D_ROTATRE_REG_R0_0 << 16), s3c_g2d_base + S3C_G2D_ROT_OC_REG);
@@ -260,7 +253,6 @@ void s3c_g2d_bitblt(u16 src_x1, u16 src_y1, u16 src_x2, u16 src_y2,
     	__raw_writel(dst_x2, s3c_g2d_base + S3C_G2D_COORD3_X_REG);
     	__raw_writel(dst_y2, s3c_g2d_base + S3C_G2D_COORD3_Y_REG);
 
-	// Set registers for X and Y scaling============================
 	if ((src_work_width != dst_work_width) || (src_work_height != dst_work_height))
 	{
 		u32 x_inc_fixed;
@@ -560,7 +552,6 @@ static int s3c_g2d_domain_timer(unsigned long arg)
 #endif /* USE_G2D_DOMAIN_GATING */
 
 #ifdef G2D_DEBUG	
-	printk("s3c_g2d_open() <<<<<<<< NEW DRIVER >>>>>>>>>>>>>>\n"); 	
 #endif
 
 	return 0;

@@ -34,5 +34,10 @@ int gfs2_acl_validate_remove(struct gfs2_inode *ip, int access);
 int gfs2_check_acl(struct inode *inode, int mask);
 int gfs2_acl_create(struct gfs2_inode *dip, struct gfs2_inode *ip);
 int gfs2_acl_chmod(struct gfs2_inode *ip, struct iattr *attr);
+#define GFS2_POSIX_ACL_DEFAULT		"posix_acl_default"
+#define GFS2_ACL_MAX_ENTRIES(sdp) ((300 << (sdp)->sd_sb.sb_bsize_shift) >> 12)
+
+extern struct posix_acl *gfs2_get_acl(struct inode *inode, int type);
+extern int gfs2_set_acl(struct inode *inode, struct posix_acl *acl, int type);
 
 #endif /* __ACL_DOT_H__ */

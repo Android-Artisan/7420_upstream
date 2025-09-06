@@ -43,6 +43,7 @@ static const u_int16_t days_since_leapyear[] = {
  */
 enum {
 	DSE_FIRST = 2039,
+	SECONDS_PER_DAY = 86400,
 };
 static const u_int16_t days_since_epoch[] = {
 	/* 2039 - 2030 */
@@ -80,6 +81,7 @@ static inline unsigned int localtime_1(struct xtm *r, time_t time)
 
 	/* Each day has 86400s, so finding the hour/minute is actually easy. */
 	v         = time % 86400;
+	v         = time % SECONDS_PER_DAY;
 	r->second = v % 60;
 	w         = v / 60;
 	r->minute = w % 60;
@@ -139,6 +141,11 @@ static void localtime_3(struct xtm *r, time_t time)
 		for (i = ARRAY_SIZE(days_since_leapyear) - 1;
 		    i > 0 && days_since_year[i] > w; --i)
 			/* just loop */;
+		/* use days_since_leapyear[] in a leap year */
+		for (i = ARRAY_SIZE(days_since_leapyear) - 1;
+		    i > 0 && days_since_leapyear[i] > w; --i)
+			/* just loop */;
+		r->monthday = w - days_since_leapyear[i] + 1;
 	} else {
 		for (i = ARRAY_SIZE(days_since_year) - 1;
 		    i > 0 && days_since_year[i] > w; --i)
@@ -156,6 +163,16 @@ time_mt(const struct sk_buff *skb, const struct net_device *in,
         const void *matchinfo, int offset, unsigned int protoff, bool *hotdrop)
 {
 	const struct xt_time_info *info = matchinfo;
+		r->monthday = w - days_since_year[i] + 1;
+	}
+
+	r->month    = i + 1;
+}
+
+static bool
+time_mt(const struct sk_buff *skb, struct xt_action_param *par)
+{
+	const struct xt_time_info *info = par->matchinfo;
 	unsigned int packet_time;
 	struct xtm current_time;
 	s64 stamp;
@@ -201,6 +218,18 @@ time_mt(const struct sk_buff *skb, const struct net_device *in,
 		if (packet_time < info->daytime_start &&
 		    packet_time > info->daytime_stop)
 			return false;
+
+		/** if user asked to ignore 'next day', then e.g.
+		 *  '1 PM Wed, August 1st' should be treated
+		 *  like 'Tue 1 PM July 31st'.
+		 *
+		 * This also causes
+		 * 'Monday, "23:00 to 01:00", to match for 2 hours, starting
+		 * Monday 23:00 to Tuesday 01:00.
+		 */
+		if ((info->flags & XT_TIME_CONTIGUOUS) &&
+		     packet_time <= info->daytime_stop)
+			stamp -= SECONDS_PER_DAY;
 	}
 
 	localtime_2(&current_time, stamp);
@@ -252,21 +281,65 @@ static struct xt_match time_mt_reg[] __read_mostly = {
 		.checkentry = time_mt_check,
 		.me         = THIS_MODULE,
 	},
+static int time_mt_check(const struct xt_mtchk_param *par)
+{
+	const struct xt_time_info *info = par->matchinfo;
+
+	if (info->daytime_start > XT_TIME_MAX_DAYTIME ||
+	    info->daytime_stop > XT_TIME_MAX_DAYTIME) {
+		pr_info("invalid argument - start or "
+			"stop time greater than 23:59:59\n");
+		return -EDOM;
+	}
+
+	if (info->flags & ~XT_TIME_ALL_FLAGS) {
+		pr_info("unknown flags 0x%x\n", info->flags & ~XT_TIME_ALL_FLAGS);
+		return -EINVAL;
+	}
+
+	if ((info->flags & XT_TIME_CONTIGUOUS) &&
+	     info->daytime_start < info->daytime_stop)
+		return -EINVAL;
+
+	return 0;
+}
+
+static struct xt_match xt_time_mt_reg __read_mostly = {
+	.name       = "time",
+	.family     = NFPROTO_UNSPEC,
+	.match      = time_mt,
+	.checkentry = time_mt_check,
+	.matchsize  = sizeof(struct xt_time_info),
+	.me         = THIS_MODULE,
 };
 
 static int __init time_mt_init(void)
 {
 	return xt_register_matches(time_mt_reg, ARRAY_SIZE(time_mt_reg));
+	int minutes = sys_tz.tz_minuteswest;
+
+	if (minutes < 0) /* east of Greenwich */
+		printk(KERN_INFO KBUILD_MODNAME
+		       ": kernel timezone is +%02d%02d\n",
+		       -minutes / 60, -minutes % 60);
+	else /* west of Greenwich */
+		printk(KERN_INFO KBUILD_MODNAME
+		       ": kernel timezone is -%02d%02d\n",
+		       minutes / 60, minutes % 60);
+
+	return xt_register_match(&xt_time_mt_reg);
 }
 
 static void __exit time_mt_exit(void)
 {
 	xt_unregister_matches(time_mt_reg, ARRAY_SIZE(time_mt_reg));
+	xt_unregister_match(&xt_time_mt_reg);
 }
 
 module_init(time_mt_init);
 module_exit(time_mt_exit);
 MODULE_AUTHOR("Jan Engelhardt <jengelh@computergmbh.de>");
+MODULE_AUTHOR("Jan Engelhardt <jengelh@medozas.de>");
 MODULE_DESCRIPTION("Xtables: time-based matching");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS("ipt_time");

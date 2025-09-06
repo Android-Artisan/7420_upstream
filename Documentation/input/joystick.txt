@@ -117,6 +117,7 @@ your needs:
 program in the utilities package. You run it by typing:
 
 	jstest /dev/js0
+	jstest /dev/input/js0
 
   And it should show a line with the joystick values, which update as you
 move the stick, and press its buttons. The axes should all be zero when the
@@ -137,6 +138,7 @@ some analog joysticks, that either do not use linear resistors, or if you
 want better precision, you can use the jscal program
 
 	jscal -c /dev/js0
+	jscal -c /dev/input/js0
 
  included in the joystick package to set better correction coefficients than
 what the driver would choose itself.
@@ -146,6 +148,7 @@ calibration using the jstest command, and if you do, you then can save the
 correction coefficients into a file
 
 	jscal -p /dev/js0 > /etc/joystick.cal
+	jscal -p /dev/input/js0 > /etc/joystick.cal
 
   And add a line to your rc script executing that file
 
@@ -331,6 +334,7 @@ the USB documentation for how to setup an USB mouse.
 module. This includes, but is not limited to:
 
 * ThrustMaster Millenium 3D Inceptor
+* ThrustMaster Millennium 3D Interceptor
 * ThrustMaster 3D Rage Pad
 * ThrustMaster Fusion Digital Game Pad
 
@@ -403,6 +407,7 @@ for the port of the SoundFusion is supported by the cs461x.c module.
   The Live! has a special PCI gameport, which, although it doesn't provide
 any "Enhanced" stuff like 4DWave and friends, is quite a bit faster than
 it's ISA counterparts. It also requires special support, hence the
+its ISA counterparts. It also requires special support, hence the
 emu10k1-gp.c module for it instead of the normal ns558.c one.
 
 3.15 SoundBlaster 64 and 128 - ES1370 and ES1371, ESS Solo1 and S3 SonicVibes
@@ -557,6 +562,7 @@ interface, and "old" for the "0.x" interface. You run it by typing:
 5. FAQ
 ~~~~~~
 Q: Running 'jstest /dev/js0' results in "File not found" error. What's the
+Q: Running 'jstest /dev/input/js0' results in "File not found" error. What's the
    cause?
 A: The device files don't exist. Create them (see section 2.2).
 

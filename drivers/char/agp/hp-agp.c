@@ -15,6 +15,7 @@
 #include <linux/init.h>
 #include <linux/agp_backend.h>
 #include <linux/log2.h>
+#include <linux/slab.h>
 
 #include <asm/acpi-ext.h>
 
@@ -108,6 +109,7 @@ static int __init hp_zx1_ioc_shared(void)
 	hp->gatt_entries = hp->gart_size / hp->io_page_size;
 
 	hp->io_pdir = gart_to_virt(readq(hp->ioc_regs+HP_ZX1_PDIR_BASE));
+	hp->io_pdir = phys_to_virt(readq(hp->ioc_regs+HP_ZX1_PDIR_BASE));
 	hp->gatt = &hp->io_pdir[HP_ZX1_IOVA_TO_PDIR(hp->gart_base)];
 
 	if (hp->gatt[0] != HP_ZX1_SBA_IOMMU_COOKIE) {
@@ -247,6 +249,7 @@ hp_zx1_configure (void)
 
 	if (hp->io_pdir_owner) {
 		writel(virt_to_gart(hp->io_pdir), hp->ioc_regs+HP_ZX1_PDIR_BASE);
+		writel(virt_to_phys(hp->io_pdir), hp->ioc_regs+HP_ZX1_PDIR_BASE);
 		readl(hp->ioc_regs+HP_ZX1_PDIR_BASE);
 		writel(hp->io_tlb_ps, hp->ioc_regs+HP_ZX1_TCNFG);
 		readl(hp->ioc_regs+HP_ZX1_TCNFG);
@@ -336,6 +339,8 @@ hp_zx1_insert_memory (struct agp_memory *mem, off_t pg_start, int type)
 	int io_pg_count;
 
 	if (type != 0 || mem->type != 0) {
+	if (type != mem->type ||
+		agp_bridge->driver->agp_type_to_mask_type(agp_bridge, type)) {
 		return -EINVAL;
 	}
 
@@ -368,6 +373,11 @@ hp_zx1_insert_memory (struct agp_memory *mem, off_t pg_start, int type)
 			hp->gatt[j] =
 				agp_bridge->driver->mask_memory(agp_bridge,
 					paddr, type);
+		paddr = page_to_phys(mem->pages[i]);
+		for (k = 0;
+		     k < hp->io_pages_per_kpage;
+		     k++, j++, paddr += hp->io_page_size) {
+			hp->gatt[j] = HP_ZX1_PDIR_VALID_BIT | paddr;
 		}
 	}
 
@@ -382,6 +392,8 @@ hp_zx1_remove_memory (struct agp_memory *mem, off_t pg_start, int type)
 	int i, io_pg_start, io_pg_count;
 
 	if (type != 0 || mem->type != 0) {
+	if (type != mem->type ||
+		agp_bridge->driver->agp_type_to_mask_type(agp_bridge, type)) {
 		return -EINVAL;
 	}
 
@@ -398,6 +410,7 @@ hp_zx1_remove_memory (struct agp_memory *mem, off_t pg_start, int type)
 static unsigned long
 hp_zx1_mask_memory (struct agp_bridge_data *bridge,
 	unsigned long addr, int type)
+hp_zx1_mask_memory (struct agp_bridge_data *bridge, dma_addr_t addr, int type)
 {
 	return HP_ZX1_PDIR_VALID_BIT | addr;
 }
@@ -436,6 +449,9 @@ const struct agp_bridge_driver hp_zx1_driver = {
 	.free_by_type		= agp_generic_free_by_type,
 	.agp_alloc_page		= agp_generic_alloc_page,
 	.agp_destroy_page	= agp_generic_destroy_page,
+	.agp_alloc_pages	= agp_generic_alloc_pages,
+	.agp_destroy_page	= agp_generic_destroy_page,
+	.agp_destroy_pages	= agp_generic_destroy_pages,
 	.agp_type_to_mask_type  = agp_generic_type_to_mask_type,
 	.cant_use_aperture	= true,
 };
@@ -496,6 +512,10 @@ zx1_gart_probe (acpi_handle obj, u32 depth, void *context, void **ret)
 			info = buffer.pointer;
 			info->hardware_id.value[sizeof(info->hardware_id)-1] = '\0';
 			match = (strcmp(info->hardware_id.value, "HWP0001") == 0);
+		status = acpi_get_object_info(handle, &info);
+		if (ACPI_SUCCESS(status) && (info->valid & ACPI_VALID_HID)) {
+			/* TBD check _CID also */
+			match = (strcmp(info->hardware_id.string, "HWP0001") == 0);
 			kfree(info);
 			if (match) {
 				status = hp_acpi_csr_space(handle, &sba_hpa, &length);
@@ -518,6 +538,15 @@ zx1_gart_probe (acpi_handle obj, u32 depth, void *context, void **ret)
 
 	printk(KERN_INFO PFX "Detected HP ZX1 %s AGP chipset (ioc=%lx, lba=%lx)\n",
 		(char *) context, sba_hpa + HP_ZX1_IOC_OFFSET, lba_hpa);
+	if (ACPI_FAILURE(status))
+		return AE_OK;	/* found no enclosing IOC */
+
+	if (hp_zx1_setup(sba_hpa + HP_ZX1_IOC_OFFSET, lba_hpa))
+		return AE_OK;
+
+	printk(KERN_INFO PFX "Detected HP ZX1 %s AGP chipset "
+		"(ioc=%llx, lba=%llx)\n", (char *)context,
+		sba_hpa + HP_ZX1_IOC_OFFSET, lba_hpa);
 
 	hp_zx1_gart_found = 1;
 	return AE_CTRL_TERMINATE; /* we only support one bridge; quit looking */

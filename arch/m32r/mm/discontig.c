@@ -32,6 +32,9 @@ typedef struct {
 } mem_prof_t;
 static mem_prof_t mem_prof[MAX_NUMNODES];
 
+extern unsigned long memory_start;
+extern unsigned long memory_end;
+
 static void __init mem_prof_init(void)
 {
 	unsigned long start_pfn, holes, free_pfn;
@@ -43,6 +46,7 @@ static void __init mem_prof_init(void)
 	mp = &mem_prof[0];
 	mp->start_pfn = PFN_UP(CONFIG_MEMORY_START);
 	mp->pages = PFN_DOWN(CONFIG_MEMORY_SIZE);
+	mp->pages = PFN_DOWN(memory_end - memory_start);
 	mp->holes = 0;
 	mp->free_pfn = PFN_UP(__pa(_end));
 
@@ -114,6 +118,9 @@ unsigned long __init setup_memory(void)
 				"(0x%08lx > 0x%08lx)\ndisabling initrd\n",
 				INITRD_START + INITRD_SIZE,
 				PFN_PHYS(max_low_pfn));
+				"(0x%08lx > 0x%08llx)\ndisabling initrd\n",
+				INITRD_START + INITRD_SIZE,
+			        (unsigned long long)PFN_PHYS(max_low_pfn));
 
 			initrd_start = 0;
 		}
@@ -131,6 +138,10 @@ unsigned long __init zone_sizes_init(void)
 	unsigned long zones_size[MAX_NR_ZONES], zholes_size[MAX_NR_ZONES];
 	unsigned long low, start_pfn;
 	unsigned long holes = 0;
+void __init zone_sizes_init(void)
+{
+	unsigned long zones_size[MAX_NR_ZONES], zholes_size[MAX_NR_ZONES];
+	unsigned long low, start_pfn;
 	int nid, i;
 	mem_prof_t *mp;
 
@@ -146,6 +157,8 @@ unsigned long __init zone_sizes_init(void)
 		zholes_size[ZONE_DMA] = mp->holes;
 		holes += zholes_size[ZONE_DMA];
 
+
+		node_set_state(nid, N_NORMAL_MEMORY);
 		free_area_init_node(nid, zones_size, start_pfn, zholes_size);
 	}
 
@@ -159,4 +172,7 @@ unsigned long __init zone_sizes_init(void)
 	NODE_DATA(1)->node_zones->pages_high = 0;
 
 	return holes;
+	NODE_DATA(1)->node_zones->watermark[WMARK_MIN] = 0;
+	NODE_DATA(1)->node_zones->watermark[WMARK_LOW] = 0;
+	NODE_DATA(1)->node_zones->watermark[WMARK_HIGH] = 0;
 }

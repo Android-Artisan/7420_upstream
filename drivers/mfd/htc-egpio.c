@@ -15,6 +15,7 @@
 #include <linux/io.h>
 #include <linux/spinlock.h>
 #include <linux/platform_device.h>
+#include <linux/slab.h>
 #include <linux/module.h>
 #include <linux/mfd/htc-egpio.h>
 
@@ -70,6 +71,7 @@ static inline void ack_irqs(struct egpio_info *ei)
 }
 
 static void egpio_ack(unsigned int irq)
+static void egpio_ack(struct irq_data *data)
 {
 }
 
@@ -99,6 +101,30 @@ static struct irq_chip egpio_muxed_chip = {
 static void egpio_handler(unsigned int irq, struct irq_desc *desc)
 {
 	struct egpio_info *ei = get_irq_data(irq);
+static void egpio_mask(struct irq_data *data)
+{
+	struct egpio_info *ei = irq_data_get_irq_chip_data(data);
+	ei->irqs_enabled &= ~(1 << (data->irq - ei->irq_start));
+	pr_debug("EGPIO mask %d %04x\n", data->irq, ei->irqs_enabled);
+}
+
+static void egpio_unmask(struct irq_data *data)
+{
+	struct egpio_info *ei = irq_data_get_irq_chip_data(data);
+	ei->irqs_enabled |= 1 << (data->irq - ei->irq_start);
+	pr_debug("EGPIO unmask %d %04x\n", data->irq, ei->irqs_enabled);
+}
+
+static struct irq_chip egpio_muxed_chip = {
+	.name		= "htc-egpio",
+	.irq_ack	= egpio_ack,
+	.irq_mask	= egpio_mask,
+	.irq_unmask	= egpio_unmask,
+};
+
+static void egpio_handler(struct irq_desc *desc)
+{
+	struct egpio_info *ei = irq_desc_get_handler_data(desc);
 	int irqpin;
 
 	/* Read current pins. */
@@ -114,6 +140,10 @@ static void egpio_handler(unsigned int irq, struct irq_desc *desc)
 		irq = ei->irq_start + irqpin;
 		desc = &irq_desc[irq];
 		desc->handle_irq(irq, desc);
+	for_each_set_bit(irqpin, &readval, ei->nirqs) {
+		/* Run irq handler */
+		pr_debug("got IRQ %d\n", irqpin);
+		generic_handle_irq(ei->irq_start + irqpin);
 	}
 }
 
@@ -262,6 +292,7 @@ static void egpio_write_cache(struct egpio_info *ei)
 static int __init egpio_probe(struct platform_device *pdev)
 {
 	struct htc_egpio_platform_data *pdata = pdev->dev.platform_data;
+	struct htc_egpio_platform_data *pdata = dev_get_platdata(&pdev->dev);
 	struct resource   *res;
 	struct egpio_info *ei;
 	struct gpio_chip  *chip;
@@ -271,6 +302,7 @@ static int __init egpio_probe(struct platform_device *pdev)
 
 	/* Initialize ei data structure. */
 	ei = kzalloc(sizeof(*ei), GFP_KERNEL);
+	ei = devm_kzalloc(&pdev->dev, sizeof(*ei), GFP_KERNEL);
 	if (!ei)
 		return -ENOMEM;
 
@@ -290,6 +322,11 @@ static int __init egpio_probe(struct platform_device *pdev)
 	if (!ei->base_addr)
 		goto fail;
 	pr_debug("EGPIO phys=%08x virt=%p\n", res->start, ei->base_addr);
+	ei->base_addr = devm_ioremap_nocache(&pdev->dev, res->start,
+					     resource_size(res));
+	if (!ei->base_addr)
+		goto fail;
+	pr_debug("EGPIO phys=%08x virt=%p\n", (u32)res->start, ei->base_addr);
 
 	if ((pdata->bus_width != 16) && (pdata->bus_width != 32))
 		goto fail;
@@ -308,6 +345,10 @@ static int __init egpio_probe(struct platform_device *pdev)
 	ei->nchips = pdata->num_chips;
 	ei->chip = kzalloc(sizeof(struct egpio_chip) * ei->nchips, GFP_KERNEL);
 	if (!ei) {
+	ei->chip = devm_kzalloc(&pdev->dev,
+				sizeof(struct egpio_chip) * ei->nchips,
+				GFP_KERNEL);
+	if (!ei->chip) {
 		ret = -ENOMEM;
 		goto fail;
 	}
@@ -352,6 +393,14 @@ static int __init egpio_probe(struct platform_device *pdev)
 		set_irq_type(ei->chained_irq, IRQ_TYPE_EDGE_RISING);
 		set_irq_data(ei->chained_irq, ei);
 		set_irq_chained_handler(ei->chained_irq, egpio_handler);
+			irq_set_chip_and_handler(irq, &egpio_muxed_chip,
+						 handle_simple_irq);
+			irq_set_chip_data(irq, ei);
+			irq_clear_status_flags(irq, IRQ_NOREQUEST | IRQ_NOPROBE);
+		}
+		irq_set_irq_type(ei->chained_irq, IRQ_TYPE_EDGE_RISING);
+		irq_set_chained_handler_and_data(ei->chained_irq,
+						 egpio_handler, ei);
 		ack_irqs(ei);
 
 		device_init_wakeup(&pdev->dev, 1);
@@ -383,6 +432,12 @@ static int __exit egpio_remove(struct platform_device *pdev)
 	iounmap(ei->base_addr);
 	kfree(ei->chip);
 	kfree(ei);
+			irq_set_chip_and_handler(irq, NULL, NULL);
+			irq_set_status_flags(irq, IRQ_NOREQUEST | IRQ_NOPROBE);
+		}
+		irq_set_chained_handler(ei->chained_irq, NULL);
+		device_init_wakeup(&pdev->dev, 0);
+	}
 
 	return 0;
 }

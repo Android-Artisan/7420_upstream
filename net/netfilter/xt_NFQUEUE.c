@@ -16,6 +16,8 @@
 #include <linux/netfilter/x_tables.h>
 #include <linux/netfilter/xt_NFQUEUE.h>
 
+#include <net/netfilter/nf_queue.h>
+
 MODULE_AUTHOR("Harald Welte <laforge@netfilter.org>");
 MODULE_DESCRIPTION("Xtables: packet forwarding to netlink");
 MODULE_LICENSE("GPL");
@@ -29,6 +31,12 @@ nfqueue_tg(struct sk_buff *skb, const struct net_device *in,
            const struct xt_target *target, const void *targinfo)
 {
 	const struct xt_NFQ_info *tinfo = targinfo;
+static u32 jhash_initval __read_mostly;
+
+static unsigned int
+nfqueue_tg(struct sk_buff *skb, const struct xt_action_param *par)
+{
+	const struct xt_NFQ_info *tinfo = par->targinfo;
 
 	return NF_QUEUE_NR(tinfo->queuenum);
 }
@@ -37,6 +45,84 @@ static struct xt_target nfqueue_tg_reg[] __read_mostly = {
 	{
 		.name		= "NFQUEUE",
 		.family		= AF_INET,
+static unsigned int
+nfqueue_tg_v1(struct sk_buff *skb, const struct xt_action_param *par)
+{
+	const struct xt_NFQ_info_v1 *info = par->targinfo;
+	u32 queue = info->queuenum;
+
+	if (info->queues_total > 1) {
+		queue = nfqueue_hash(skb, queue, info->queues_total,
+				     par->family, jhash_initval);
+	}
+	return NF_QUEUE_NR(queue);
+}
+
+static unsigned int
+nfqueue_tg_v2(struct sk_buff *skb, const struct xt_action_param *par)
+{
+	const struct xt_NFQ_info_v2 *info = par->targinfo;
+	unsigned int ret = nfqueue_tg_v1(skb, par);
+
+	if (info->bypass)
+		ret |= NF_VERDICT_FLAG_QUEUE_BYPASS;
+	return ret;
+}
+
+static int nfqueue_tg_check(const struct xt_tgchk_param *par)
+{
+	const struct xt_NFQ_info_v3 *info = par->targinfo;
+	u32 maxid;
+
+	init_hashrandom(&jhash_initval);
+
+	if (info->queues_total == 0) {
+		pr_err("NFQUEUE: number of total queues is 0\n");
+		return -EINVAL;
+	}
+	maxid = info->queues_total - 1 + info->queuenum;
+	if (maxid > 0xffff) {
+		pr_err("NFQUEUE: number of queues (%u) out of range (got %u)\n",
+		       info->queues_total, maxid);
+		return -ERANGE;
+	}
+	if (par->target->revision == 2 && info->flags > 1)
+		return -EINVAL;
+	if (par->target->revision == 3 && info->flags & ~NFQ_FLAG_MASK)
+		return -EINVAL;
+
+	return 0;
+}
+
+static unsigned int
+nfqueue_tg_v3(struct sk_buff *skb, const struct xt_action_param *par)
+{
+	const struct xt_NFQ_info_v3 *info = par->targinfo;
+	u32 queue = info->queuenum;
+	int ret;
+
+	if (info->queues_total > 1) {
+		if (info->flags & NFQ_FLAG_CPU_FANOUT) {
+			int cpu = smp_processor_id();
+
+			queue = info->queuenum + cpu % info->queues_total;
+		} else {
+			queue = nfqueue_hash(skb, queue, info->queues_total,
+					     par->family, jhash_initval);
+		}
+	}
+
+	ret = NF_QUEUE_NR(queue);
+	if (info->flags & NFQ_FLAG_BYPASS)
+		ret |= NF_VERDICT_FLAG_QUEUE_BYPASS;
+
+	return ret;
+}
+
+static struct xt_target nfqueue_tg_reg[] __read_mostly = {
+	{
+		.name		= "NFQUEUE",
+		.family		= NFPROTO_UNSPEC,
 		.target		= nfqueue_tg,
 		.targetsize	= sizeof(struct xt_NFQ_info),
 		.me		= THIS_MODULE,
@@ -46,6 +132,11 @@ static struct xt_target nfqueue_tg_reg[] __read_mostly = {
 		.family		= AF_INET6,
 		.target		= nfqueue_tg,
 		.targetsize	= sizeof(struct xt_NFQ_info),
+		.revision	= 1,
+		.family		= NFPROTO_UNSPEC,
+		.checkentry	= nfqueue_tg_check,
+		.target		= nfqueue_tg_v1,
+		.targetsize	= sizeof(struct xt_NFQ_info_v1),
 		.me		= THIS_MODULE,
 	},
 	{
@@ -53,6 +144,20 @@ static struct xt_target nfqueue_tg_reg[] __read_mostly = {
 		.family		= NF_ARP,
 		.target		= nfqueue_tg,
 		.targetsize	= sizeof(struct xt_NFQ_info),
+		.revision	= 2,
+		.family		= NFPROTO_UNSPEC,
+		.checkentry	= nfqueue_tg_check,
+		.target		= nfqueue_tg_v2,
+		.targetsize	= sizeof(struct xt_NFQ_info_v2),
+		.me		= THIS_MODULE,
+	},
+	{
+		.name		= "NFQUEUE",
+		.revision	= 3,
+		.family		= NFPROTO_UNSPEC,
+		.checkentry	= nfqueue_tg_check,
+		.target		= nfqueue_tg_v3,
+		.targetsize	= sizeof(struct xt_NFQ_info_v3),
 		.me		= THIS_MODULE,
 	},
 };

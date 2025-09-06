@@ -26,6 +26,14 @@
 #undef __mips
 #endif
 #define __mips 4
+#include <asm/branch.h>
+#include <asm/cacheflush.h>
+#include <asm/fpu_emulator.h>
+#include <asm/inst.h>
+#include <asm/mipsregs.h>
+#include <asm/uaccess.h>
+
+#include "ieee754.h"
 
 /*
  * Emulate the arbritrary instruction ir at xcp->cp0_epc.  Required when
@@ -34,6 +42,7 @@
  *
  * According to the spec:
  * 1) it shouldnt be a branch :-)
+ * 1) it shouldn't be a branch :-)
  * 2) it can be a COP instruction :-(
  * 3) if we are tring to run a protected memory space we must take
  *    special care on memory access instructions :-(
@@ -66,6 +75,18 @@ int mips_dsemul(struct pt_regs *regs, mips_instruction ir, unsigned long cpc)
 	printk("dsemul %lx %lx\n", regs->cp0_epc, cpc);
 
 #endif
+	struct emuframe __user *fr;
+	int err;
+
+	if ((get_isa16_mode(regs->cp0_epc) && ((ir >> 16) == MM_NOP16)) ||
+		(ir == 0)) {
+		/* NOP is easy */
+		regs->cp0_epc = cpc;
+		clear_delay_slot(regs);
+		return 0;
+	}
+
+	pr_debug("dsemul %lx %lx\n", regs->cp0_epc, cpc);
 
 	/*
 	 * The strategy is to push the instruction onto the user stack
@@ -95,6 +116,16 @@ int mips_dsemul(struct pt_regs *regs, mips_instruction ir, unsigned long cpc)
 
 	err = __put_user(ir, &fr->emul);
 	err |= __put_user((mips_instruction)BADINST, &fr->badinst);
+	if (get_isa16_mode(regs->cp0_epc)) {
+		err = __put_user(ir >> 16, (u16 __user *)(&fr->emul));
+		err |= __put_user(ir & 0xffff, (u16 __user *)((long)(&fr->emul) + 2));
+		err |= __put_user(BREAK_MATH >> 16, (u16 __user *)(&fr->badinst));
+		err |= __put_user(BREAK_MATH & 0xffff, (u16 __user *)((long)(&fr->badinst) + 2));
+	} else {
+		err = __put_user(ir, &fr->emul);
+		err |= __put_user((mips_instruction)BREAK_MATH, &fr->badinst);
+	}
+
 	err |= __put_user((mips_instruction)BD_COOKIE, &fr->cookie);
 	err |= __put_user(cpc, &fr->epc);
 
@@ -108,6 +139,16 @@ int mips_dsemul(struct pt_regs *regs, mips_instruction ir, unsigned long cpc)
 	flush_cache_sigtramp((unsigned long)&fr->badinst);
 
 	return SIGILL;		/* force out of emulation loop */
+		MIPS_FPU_EMU_INC_STATS(errors);
+		return SIGBUS;
+	}
+
+	regs->cp0_epc = ((unsigned long) &fr->emul) |
+		get_isa16_mode(regs->cp0_epc);
+
+	flush_cache_sigtramp((unsigned long)&fr->emul);
+
+	return 0;
 }
 
 int do_dsemulret(struct pt_regs *xcp)
@@ -119,6 +160,10 @@ int do_dsemulret(struct pt_regs *xcp)
 
 	fr = (struct emuframe __user *)
 		(xcp->cp0_epc - sizeof(mips_instruction));
+	u16 instr[2];
+
+	fr = (struct emuframe __user *)
+		(msk_isa16_mode(xcp->cp0_epc) - sizeof(mips_instruction));
 
 	/*
 	 * If we can't even access the area, something is very wrong, but we'll
@@ -138,6 +183,20 @@ int do_dsemulret(struct pt_regs *xcp)
 
 	if (unlikely(err || (insn != BADINST) || (cookie != BD_COOKIE))) {
 		fpuemustats.errors++;
+	 *  - Is the instruction pointed to by the EPC an BREAK_MATH?
+	 *  - Is the following memory word the BD_COOKIE?
+	 */
+	if (get_isa16_mode(xcp->cp0_epc)) {
+		err = __get_user(instr[0], (u16 __user *)(&fr->badinst));
+		err |= __get_user(instr[1], (u16 __user *)((long)(&fr->badinst) + 2));
+		insn = (instr[0] << 16) | instr[1];
+	} else {
+		err = __get_user(insn, &fr->badinst);
+	}
+	err |= __get_user(cookie, &fr->cookie);
+
+	if (unlikely(err || (insn != BREAK_MATH) || (cookie != BD_COOKIE))) {
+		MIPS_FPU_EMU_INC_STATS(errors);
 		return 0;
 	}
 
@@ -154,6 +213,8 @@ int do_dsemulret(struct pt_regs *xcp)
 #ifdef DSEMUL_TRACE
 	printk("dsemulret\n");
 #endif
+	pr_debug("dsemulret\n");
+
 	if (__get_user(epc, &fr->epc)) {		/* Saved EPC */
 		/* This is not a good situation to be in */
 		force_sig(SIGBUS, current);
@@ -164,5 +225,6 @@ int do_dsemulret(struct pt_regs *xcp)
 	/* Set EPC to return to post-branch instruction */
 	xcp->cp0_epc = epc;
 
+	MIPS_FPU_EMU_INC_STATS(ds_emul);
 	return 1;
 }

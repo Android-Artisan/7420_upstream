@@ -39,6 +39,8 @@
 #include <linux/init.h>
 #include <linux/acpi.h>
 #include <asm/io.h>
+#include <linux/acpi.h>
+#include <linux/io.h>
 
 /* base address register in PCI config space */
 #define SIS96x_BAR 0x04
@@ -133,6 +135,7 @@ static int sis96x_transaction(int size)
 
 	/* If the SMBus is still busy, we give up */
 	if (timeout >= MAX_TIMEOUT) {
+	if (timeout > MAX_TIMEOUT) {
 		dev_dbg(&sis96x_adapter.dev, "SMBus Timeout! (0x%02x)\n", temp);
 		result = -ETIMEDOUT;
 	}
@@ -247,6 +250,7 @@ static struct i2c_adapter sis96x_adapter = {
 };
 
 static struct pci_device_id sis96x_ids[] = {
+static const struct pci_device_id sis96x_ids[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_SI, PCI_DEVICE_ID_SI_SMBUS) },
 	{ 0, }
 };
@@ -254,6 +258,7 @@ static struct pci_device_id sis96x_ids[] = {
 MODULE_DEVICE_TABLE (pci, sis96x_ids);
 
 static int __devinit sis96x_probe(struct pci_dev *dev,
+static int sis96x_probe(struct pci_dev *dev,
 				const struct pci_device_id *id)
 {
 	u16 ww = 0;
@@ -282,6 +287,7 @@ static int __devinit sis96x_probe(struct pci_dev *dev,
 	retval = acpi_check_resource_conflict(&dev->resource[SIS96x_BAR]);
 	if (retval)
 		return retval;
+		return -ENODEV;
 
 	/* Everything is happy, let's grab the memory and set things up. */
 	if (!request_region(sis96x_smbus_base, SMB_IOSIZE,
@@ -310,6 +316,7 @@ static int __devinit sis96x_probe(struct pci_dev *dev,
 }
 
 static void __devexit sis96x_remove(struct pci_dev *dev)
+static void sis96x_remove(struct pci_dev *dev)
 {
 	if (sis96x_smbus_base) {
 		i2c_del_adapter(&sis96x_adapter);
@@ -334,6 +341,10 @@ static void __exit i2c_sis96x_exit(void)
 {
 	pci_unregister_driver(&sis96x_driver);
 }
+	.remove		= sis96x_remove,
+};
+
+module_pci_driver(sis96x_driver);
 
 MODULE_AUTHOR("Mark M. Hoffman <mhoffman@lightlink.com>");
 MODULE_DESCRIPTION("SiS96x SMBus driver");

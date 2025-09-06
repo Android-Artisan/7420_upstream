@@ -1,6 +1,4 @@
-			     ====================
 			     DEBUGGING FR-V LINUX
-			     ====================
 
 
 The kernel contains a GDB stub that talks GDB remote protocol across a serial
@@ -24,9 +22,7 @@ incur any exceptions or interrupts whilst it is active. In particular, note
 that the clock will lose time since it is implemented in software.
 
 
-==================
 KERNEL PREPARATION
-==================
 
 Firstly, a debuggable kernel must be built. To do this, unpack the kernel tree
 and copy the configuration that you wish to use to .config. Then reconfigure
@@ -63,9 +59,7 @@ interrupt it or wait for an exception to occur before doing anything with
 the kernel.
 
 
-=========================
 KERNEL DEBUGGING WITH GDB
-=========================
 
 Set the serial port on the computer that's going to run GDB to the appropriate
 baud rate. Assuming the board's debug port is connected to ttyS0/COM1 on the
@@ -103,9 +97,7 @@ This should show the appropriate lines from the source too. The kernel can
 then be debugged almost as if it's any other program.
 
 
-===============================
 INTERRUPTING THE RUNNING KERNEL
-===============================
 
 The kernel can be interrupted whilst it is running, causing a jump back to the
 GDB stub and the debugger:

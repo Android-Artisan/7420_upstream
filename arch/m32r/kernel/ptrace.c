@@ -79,6 +79,7 @@ static int ptrace_read_user(struct task_struct *tsk, unsigned long off,
 #endif
 
 	if ((off & 3) || (off < 0) || (off > sizeof(struct user) - 3))
+	if ((off & 3) || off > sizeof(struct user) - 3)
 		return -EIO;
 
 	off >>= 2;
@@ -142,6 +143,7 @@ static int ptrace_write_user(struct task_struct *tsk, unsigned long off,
 
 	if ((off & 3) || off < 0 ||
 	    off > sizeof(struct user) - 3)
+	if ((off & 3) || off > sizeof(struct user) - 3)
 		return -EIO;
 
 	off >>= 2;
@@ -582,6 +584,35 @@ init_debug_traps(struct task_struct *child)
 	}
 }
 
+void user_enable_single_step(struct task_struct *child)
+{
+	unsigned long next_pc;
+	unsigned long pc, insn;
+
+	clear_tsk_thread_flag(child, TIF_SYSCALL_TRACE);
+
+	/* Compute next pc.  */
+	pc = get_stack_long(child, PT_BPC);
+
+	if (access_process_vm(child, pc&~3, &insn, sizeof(insn), 0)
+	    != sizeof(insn))
+		return;
+
+	compute_next_pc(insn, pc, &next_pc, child);
+	if (next_pc & 0x80000000)
+		return;
+
+	if (embed_debug_trap(child, next_pc))
+		return;
+
+	invalidate_cache();
+}
+
+void user_disable_single_step(struct task_struct *child)
+{
+	unregister_all_debug_traps(child);
+	invalidate_cache();
+}
 
 /*
  * Called by kernel/ptrace.c when detaching..
@@ -597,6 +628,11 @@ long
 arch_ptrace(struct task_struct *child, long request, long addr, long data)
 {
 	int ret;
+arch_ptrace(struct task_struct *child, long request,
+	    unsigned long addr, unsigned long data)
+{
+	int ret;
+	unsigned long __user *datap = (unsigned long __user *) data;
 
 	switch (request) {
 	/*
@@ -613,6 +649,7 @@ arch_ptrace(struct task_struct *child, long request, long addr, long data)
 	case PTRACE_PEEKUSR:
 		ret = ptrace_read_user(child, addr,
 				       (unsigned long __user *)data);
+		ret = ptrace_read_user(child, addr, datap);
 		break;
 
 	/*
@@ -710,6 +747,12 @@ arch_ptrace(struct task_struct *child, long request, long addr, long data)
 
 	case PTRACE_SETREGS:
 		ret = ptrace_setregs(child, (void __user *)data);
+	case PTRACE_GETREGS:
+		ret = ptrace_getregs(child, datap);
+		break;
+
+	case PTRACE_SETREGS:
+		ret = ptrace_setregs(child, datap);
 		break;
 
 	default:

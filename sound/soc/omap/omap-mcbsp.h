@@ -4,6 +4,8 @@
  * Copyright (C) 2008 Nokia Corporation
  *
  * Contact: Jarkko Nikula <jarkko.nikula@nokia.com>
+ * Contact: Jarkko Nikula <jarkko.nikula@bitmer.com>
+ *          Peter Ujfalusi <peter.ujfalusi@ti.com>
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -45,5 +47,6 @@ enum omap_mcbsp_div {
 #define NUM_LINKS	1
 
 extern struct snd_soc_dai omap_mcbsp_dai[NUM_LINKS];
+int omap_mcbsp_st_add_controls(struct snd_soc_pcm_runtime *rtd, int port_id);
 
 #endif

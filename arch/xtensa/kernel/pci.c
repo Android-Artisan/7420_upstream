@@ -89,6 +89,25 @@ pcibios_align_resource(void *data, struct resource *res, resource_size_t size,
 			res->start = start;
 		}
 	}
+resource_size_t
+pcibios_align_resource(void *data, const struct resource *res,
+		       resource_size_t size, resource_size_t align)
+{
+	struct pci_dev *dev = data;
+	resource_size_t start = res->start;
+
+	if (res->flags & IORESOURCE_IO) {
+		if (size > 0x100) {
+			pr_err("PCI: I/O Region %s/%d too large (%u bytes)\n",
+					pci_name(dev), dev->resource - res,
+					size);
+		}
+
+		if (start & 0x300)
+			start = (start + 0x3ff) & ~0x3ff;
+	}
+
+	return start;
 }
 
 int
@@ -140,6 +159,48 @@ static int __init pcibios_init(void)
 	struct pci_controller *pci_ctrl;
 	struct pci_bus *bus;
 	int next_busno = 0, i;
+static void __init pci_controller_apertures(struct pci_controller *pci_ctrl,
+					    struct list_head *resources)
+{
+	struct resource *res;
+	unsigned long io_offset;
+	int i;
+
+	io_offset = (unsigned long)pci_ctrl->io_space.base;
+	res = &pci_ctrl->io_resource;
+	if (!res->flags) {
+		if (io_offset)
+			printk (KERN_ERR "I/O resource not set for host"
+				" bridge %d\n", pci_ctrl->index);
+		res->start = 0;
+		res->end = IO_SPACE_LIMIT;
+		res->flags = IORESOURCE_IO;
+	}
+	res->start += io_offset;
+	res->end += io_offset;
+	pci_add_resource_offset(resources, res, io_offset);
+
+	for (i = 0; i < 3; i++) {
+		res = &pci_ctrl->mem_resources[i];
+		if (!res->flags) {
+			if (i > 0)
+				continue;
+			printk(KERN_ERR "Memory resource not set for "
+			       "host bridge %d\n", pci_ctrl->index);
+			res->start = 0;
+			res->end = ~0U;
+			res->flags = IORESOURCE_MEM;
+		}
+		pci_add_resource(resources, res);
+	}
+}
+
+static int __init pcibios_init(void)
+{
+	struct pci_controller *pci_ctrl;
+	struct list_head resources;
+	struct pci_bus *bus;
+	int next_busno = 0, ret;
 
 	printk("PCI: Probing PCI hardware\n");
 
@@ -161,12 +222,31 @@ static int __init pcibios_init(void)
 				bus->resource[i+1] =&pci_ctrl->mem_resources[i];
 		pci_ctrl->bus = bus;
 		pci_ctrl->last_busno = bus->subordinate;
+		INIT_LIST_HEAD(&resources);
+		pci_controller_apertures(pci_ctrl, &resources);
+		bus = pci_scan_root_bus(NULL, pci_ctrl->first_busno,
+					pci_ctrl->ops, pci_ctrl, &resources);
+		if (!bus)
+			continue;
+
+		pci_ctrl->bus = bus;
+		pci_ctrl->last_busno = bus->busn_res.end;
 		if (next_busno <= pci_ctrl->last_busno)
 			next_busno = pci_ctrl->last_busno+1;
 	}
 	pci_bus_count = next_busno;
 
 	return platform_pcibios_fixup();
+	ret = platform_pcibios_fixup();
+	if (ret)
+		return ret;
+
+	for (pci_ctrl = pci_ctrl_head; pci_ctrl; pci_ctrl = pci_ctrl->next) {
+		if (pci_ctrl->bus)
+			pci_bus_add_devices(pci_ctrl->bus);
+	}
+
+	return 0;
 }
 
 subsys_initcall(pcibios_init);
@@ -234,6 +314,17 @@ void __init
 pcibios_update_irq(struct pci_dev *dev, int irq)
 {
 	pci_write_config_byte(dev, PCI_INTERRUPT_LINE, irq);
+void pcibios_fixup_bus(struct pci_bus *bus)
+{
+	if (bus->parent) {
+		/* This is a subordinate bridge */
+		pci_read_bridge_bases(bus);
+	}
+}
+
+void pcibios_set_master(struct pci_dev *dev)
+{
+	/* No special bus mastering setup handling */
 }
 
 int pcibios_enable_device(struct pci_dev *dev, int mask)
@@ -360,6 +451,7 @@ __pci_mmap_set_pgprot(struct pci_dev *dev, struct vm_area_struct *vma,
 
 	/* Set to write-through */
 	prot &= ~_PAGE_NO_CACHE;
+	prot = (prot & _PAGE_CA_MASK) | _PAGE_CA_WT;
 #if 0
 	if (!write_combine)
 		prot |= _PAGE_WRITETHRU;

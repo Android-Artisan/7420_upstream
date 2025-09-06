@@ -62,7 +62,6 @@ extern int hd64465_io_debug;
 extern void * p3_ioremap(unsigned long phys_addr, unsigned long size, unsigned long flags);
 extern void p3_iounmap(void *addr);
 
-/*============================================================*/
 
 #define HS_IO_MAP_SIZE 	(64*1024)
 
@@ -113,7 +112,6 @@ static hs_socket_t hs_sockets[HS_MAX_SOCKETS];
 #define IER_ON	    0x3f    	/* interrupts on */
 #define IER_OFF     0x00    	/* interrupts off */
 
-/*============================================================*/
 
 #if HD64465_DEBUG > 10
 
@@ -132,7 +130,6 @@ static void cis_hex_dump(const unsigned char *x, int len)
 }
 
 #endif
-/*============================================================*/
 
 /*
  * This code helps create the illusion that the IREQ line from
@@ -260,7 +257,6 @@ static void hs_unmap_irq(hs_socket_t *sp, unsigned int irq)
 	irq_desc[irq].chip = hs_mapped_irq[irq].old_handler;
 }
 
-/*============================================================*/
 
 
 /*
@@ -319,7 +315,6 @@ static int hs_set_voltages(hs_socket_t *sp, int Vcc, int Vpp)
 }
 
 
-/*============================================================*/
 
 /*
  * Drive the RESET line to the card.
@@ -336,7 +331,6 @@ static void hs_reset_socket(hs_socket_t *sp, int on)
 	hs_out(sp, v, GCR);
 }
 
-/*============================================================*/
 
 static int hs_init(struct pcmcia_socket *s)
 {
@@ -347,7 +341,6 @@ static int hs_init(struct pcmcia_socket *s)
 	return 0;
 }
 
-/*============================================================*/
 
 
 static int hs_get_status(struct pcmcia_socket *s, u_int *value)
@@ -412,7 +405,6 @@ static int hs_get_status(struct pcmcia_socket *s, u_int *value)
 	return 0;
 }
 
-/*============================================================*/
 
 static int hs_set_socket(struct pcmcia_socket *s, socket_state_t *state)
 {
@@ -526,7 +518,6 @@ static int hs_set_socket(struct pcmcia_socket *s, socket_state_t *state)
 	return 0;
 }
 
-/*============================================================*/
 
 static int hs_set_io_map(struct pcmcia_socket *s, struct pccard_io_map *io)
 {
@@ -599,7 +590,6 @@ static int hs_set_io_map(struct pcmcia_socket *s, struct pccard_io_map *io)
 	return 0;
 }
 
-/*============================================================*/
 
 static int hs_set_mem_map(struct pcmcia_socket *s, struct pccard_mem_map *mem)
 {
@@ -637,7 +627,6 @@ static int hs_set_mem_map(struct pcmcia_socket *s, struct pccard_mem_map *mem)
 
 /* TODO: do we need to use the MMU to access Common memory ??? */
 
-/*============================================================*/
 
 /*
  * This function is registered with the HD64465 glue code to do a
@@ -662,7 +651,6 @@ static int hs_irq_demux(int irq, void *dev)
 	return irq;
 }
 
-/*============================================================*/
 
 /*
  * Interrupt handling routine.
@@ -728,7 +716,6 @@ static irqreturn_t hs_interrupt(int irq, void *dev)
 	return IRQ_HANDLED;
 }
 
-/*============================================================*/
 
 static struct pccard_operations hs_operations = {
 	.init			= hs_init,
@@ -930,5 +917,4 @@ static void __exit exit_hs(void)
 module_init(init_hs);
 module_exit(exit_hs);
 
-/*============================================================*/
 /*END*/

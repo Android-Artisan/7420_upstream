@@ -27,6 +27,14 @@
 #define in_blk    12  /* input byte array address parameter*/
 #define out_blk   8  /* output byte array address parameter*/
 #define tfm       4  /* Twofish context structure */
+#include <linux/linkage.h>
+#include <asm/asm-offsets.h>
+
+/* return address at 0 */
+
+#define in_blk    12  /* input byte array address parameter*/
+#define out_blk   8  /* output byte array address parameter*/
+#define ctx       4  /* Twofish context structure */
 
 #define a_offset	0
 #define b_offset	4
@@ -224,6 +232,7 @@
 .global twofish_dec_blk
 
 twofish_enc_blk:
+ENTRY(twofish_enc_blk)
 	push	%ebp			/* save registers according to calling convention*/
 	push    %ebx
 	push    %esi
@@ -232,6 +241,9 @@ twofish_enc_blk:
 	mov	tfm + 16(%esp),	%ebp	/* abuse the base pointer: set new base bointer to the crypto tfm */
 	add	$crypto_tfm_ctx_offset, %ebp	/* ctx adress */
 	mov     in_blk+16(%esp),%edi	/* input adress in edi */
+	mov	ctx + 16(%esp),	%ebp	/* abuse the base pointer: set new base
+					 * pointer to the ctx address */
+	mov     in_blk+16(%esp),%edi	/* input address in edi */
 
 	mov	(%edi),		%eax
 	mov	b_offset(%edi),	%ebx
@@ -279,6 +291,9 @@ twofish_enc_blk:
 	ret
 
 twofish_dec_blk:
+ENDPROC(twofish_enc_blk)
+
+ENTRY(twofish_dec_blk)
 	push	%ebp			/* save registers according to calling convention*/
 	push    %ebx
 	push    %esi
@@ -288,6 +303,9 @@ twofish_dec_blk:
 	mov	tfm + 16(%esp),	%ebp	/* abuse the base pointer: set new base bointer to the crypto tfm */
 	add	$crypto_tfm_ctx_offset, %ebp	/* ctx adress */
 	mov     in_blk+16(%esp),%edi	/* input adress in edi */
+	mov	ctx + 16(%esp),	%ebp	/* abuse the base pointer: set new base
+					 * pointer to the ctx address */
+	mov     in_blk+16(%esp),%edi	/* input address in edi */
 
 	mov	(%edi),		%eax
 	mov	b_offset(%edi),	%ebx
@@ -333,3 +351,4 @@ twofish_dec_blk:
 	pop	%ebp
 	mov	$1,	%eax
 	ret
+ENDPROC(twofish_dec_blk)

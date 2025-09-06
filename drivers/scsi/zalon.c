@@ -139,6 +139,11 @@ zalon_probe(struct parisc_device *dev)
 	if (request_irq(dev->irq, ncr53c8xx_intr, IRQF_SHARED, "zalon", host)) {
 		printk(KERN_ERR "%s: irq problem with %d, detaching\n ",
 			dev->dev.bus_id, dev->irq);
+		return -ENODEV;
+
+	if (request_irq(dev->irq, ncr53c8xx_intr, IRQF_SHARED, "zalon", host)) {
+	  dev_printk(KERN_ERR, &dev->dev, "irq problem with %d, detaching\n ",
+		     dev->irq);
 		goto fail;
 	}
 
@@ -183,6 +188,7 @@ static struct parisc_driver zalon_driver = {
 	.id_table =	zalon_tbl,
 	.probe =	zalon_probe,
 	.remove =	__devexit_p(zalon_remove),
+	.remove =	zalon_remove,
 };
 
 static int __init zalon7xx_init(void)

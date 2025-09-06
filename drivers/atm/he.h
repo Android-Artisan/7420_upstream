@@ -233,6 +233,37 @@ struct he_group {
 	u32 rpbs_size, rpbs_qsize;
 	struct he_rbp rbps_ba;
 
+/*
+ * figure 2.9 receive buffer pools
+ *
+ * since a virtual address might be more than 32 bits, we store an index
+ * in the virt member of he_rbp.  NOTE: the lower six bits in the  rbrq
+ * addr member are used for buffer status further limiting us to 26 bits.
+ */
+
+struct he_rbp {
+	volatile u32 phys;
+	volatile u32 idx;	/* virt */
+};
+
+#define RBP_IDX_OFFSET 6
+
+/*
+ * the he dma engine will try to hold an extra 16 buffers in its local
+ * caches.  and add a couple buffers for safety.
+ */
+
+#define RBPL_TABLE_SIZE (CONFIG_RBPL_SIZE + 16 + 2)
+
+struct he_buff {
+	struct list_head entry;
+	dma_addr_t mapping;
+	unsigned long len;
+	u8 data[];
+};
+
+#ifdef notyet
+struct he_group {
 	u32 rpbl_size, rpbl_qsize;
 	struct he_rpb_entry *rbpl_ba;
 };
@@ -286,6 +317,7 @@ struct he_dev {
 
 	struct tasklet_struct tasklet;
 	struct pci_pool *tpd_pool;
+	struct dma_pool *tpd_pool;
 	struct list_head outstanding_tpds;
 
 	dma_addr_t tpdrq_phys;
@@ -308,6 +340,15 @@ struct he_dev {
 	struct he_rbp *rbps_base, *rbps_tail;
 	struct he_virt *rbps_virt;
 	int rbps_peak;
+
+	struct he_buff **rbpl_virt;
+	unsigned long *rbpl_table;
+	unsigned long rbpl_hint;
+	struct dma_pool *rbpl_pool;
+	dma_addr_t rbpl_phys;
+	struct he_rbp *rbpl_base, *rbpl_tail;
+	struct list_head rbpl_outstanding;
+	int rbpl_peak;
 
 	dma_addr_t tbrq_phys;
 	struct he_tbrq *tbrq_base, *tbrq_head;
@@ -335,6 +376,8 @@ struct he_vcc
 	struct he_iovec *iov_tail;
 	int pdu_len;
 
+	struct list_head buffers;
+	int pdu_len;
 	int rc_index;
 
 	wait_queue_head_t rx_waitq;

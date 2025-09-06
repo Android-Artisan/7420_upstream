@@ -97,6 +97,13 @@
 extern void *gmu_grubase(void *h);
 #define GRUBASE(h)		gmu_grubase(h)
 #endif
+#define GRUBASE(h)		((void *)((unsigned long)(h) & ~(GRU_SIZE - 1)))
+
+/* Test a valid handle address to determine the type */
+#define TYPE_IS(hn, h)		((h) >= GRU_##hn##_BASE && (h) <	\
+		GRU_##hn##_BASE + GRU_NUM_##hn * GRU_HANDLE_STRIDE &&   \
+		(((h) & (GRU_HANDLE_STRIDE - 1)) == 0))
+
 
 /* General addressing macros. */
 static inline void *get_gseg_base_address(void *base, int ctxnum)
@@ -164,6 +171,16 @@ static inline void *gru_chiplet_vaddr(void *vaddr, int pnode, int chiplet)
 {
 	return vaddr + GRU_SIZE * (2 * pnode  + chiplet);
 }
+
+static inline struct gru_control_block_extended *gru_tfh_to_cbe(
+					struct gru_tlb_fault_handle *tfh)
+{
+	unsigned long cbe;
+
+	cbe = (unsigned long)tfh - GRU_TFH_BASE + GRU_CBE_BASE;
+	return (struct gru_control_block_extended*)cbe;
+}
+
 
 
 
@@ -243,6 +260,17 @@ enum gru_tgh_state {
 	TGHSTATE_RESTART_CTX,
 };
 
+enum gru_tgh_cause {
+	TGHCAUSE_RR_ECC,
+	TGHCAUSE_TLB_ECC,
+	TGHCAUSE_LRU_ECC,
+	TGHCAUSE_PS_ECC,
+	TGHCAUSE_MUL_ERR,
+	TGHCAUSE_DATA_ERR,
+	TGHCAUSE_SW_FORCE
+};
+
+
 /*
  * TFH - TLB Global Handle
  * 	Used for TLB dropins into the GRU TLB.
@@ -265,6 +293,15 @@ struct gru_tlb_fault_handle {
 	unsigned int fill4:1;
 
 	unsigned int indexway:12;
+	unsigned int fill2:2;
+	unsigned int state:3;
+	unsigned int fill3:1;
+
+	unsigned int cause:6;
+	unsigned int cb_int:1;
+	unsigned int fill4:1;
+
+	unsigned int indexway:12;	/* DW 0 - high 32 */
 	unsigned int fill5:4;
 
 	unsigned int ctxnum:4;
@@ -447,6 +484,12 @@ struct gru_control_block_extended {
 	unsigned int cbrexecstatus:8;
 };
 
+/* CBE fields for active BCOPY instructions */
+#define cbe_baddr0	idef1upd
+#define cbe_baddr1	idef3upd
+#define cbe_src_cl	idef6cpy
+#define cbe_nelemcur	idef5upd
+
 enum gru_cbr_state {
 	CBRSTATE_INACTIVE,
 	CBRSTATE_IDLE,
@@ -477,6 +520,7 @@ enum gru_cbr_state {
 #define CBR_EXS_TLBHW				(1 << CBR_EXS_TLBHW_BIT)
 #define CBR_EXS_EXCEPTION			(1 << CBR_EXS_EXCEPTION_BIT)
 
+/* CBE cbrexecstatus bits  - defined in gru_instructions.h*/
 /* CBE ecause bits  - defined in gru_instructions.h */
 
 /*
@@ -495,6 +539,7 @@ enum gru_cbr_state {
  * 	...
  */
 #define GRU_PAGESIZE(sh)	((((sh) > 20 ? (sh) + 2: (sh)) >> 1) - 6)
+#define GRU_PAGESIZE(sh)	((((sh) > 20 ? (sh) + 2 : (sh)) >> 1) - 6)
 #define GRU_SIZEAVAIL(sh)	(1UL << GRU_PAGESIZE(sh))
 
 /* minimum TLB purge count to ensure a full purge */
@@ -659,5 +704,19 @@ static inline void tfh_exception(struct gru_tlb_fault_handle *tfh)
 	tfh->opc = TFHOP_EXCEPTION;
 	start_instruction(tfh);
 }
+int cch_allocate(struct gru_context_configuration_handle *cch);
+int cch_start(struct gru_context_configuration_handle *cch);
+int cch_interrupt(struct gru_context_configuration_handle *cch);
+int cch_deallocate(struct gru_context_configuration_handle *cch);
+int cch_interrupt_sync(struct gru_context_configuration_handle *cch);
+int tgh_invalidate(struct gru_tlb_global_handle *tgh, unsigned long vaddr,
+	unsigned long vaddrmask, int asid, int pagesize, int global, int n,
+	unsigned short ctxbitmap);
+int tfh_write_only(struct gru_tlb_fault_handle *tfh, unsigned long paddr,
+	int gaa, unsigned long vaddr, int asid, int dirty, int pagesize);
+void tfh_write_restart(struct gru_tlb_fault_handle *tfh, unsigned long paddr,
+	int gaa, unsigned long vaddr, int asid, int dirty, int pagesize);
+void tfh_user_polling_mode(struct gru_tlb_fault_handle *tfh);
+void tfh_exception(struct gru_tlb_fault_handle *tfh);
 
 #endif /* __GRUHANDLES_H__ */

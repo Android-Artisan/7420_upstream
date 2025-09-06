@@ -1,5 +1,6 @@
 /* $Id: fault.c,v 1.5 2000/01/26 16:20:29 jsm Exp $
  *
+/*
  * This file is subject to the terms and conditions of the GNU General Public
  * License.  See the file "COPYING" in the main directory of this archive
  * for more details.
@@ -24,6 +25,10 @@
 			 /*  dumped to the console via printk)          */
 
 
+#include <linux/uaccess.h>
+
+#include <asm/traps.h>
+
 /* Various important other fields */
 #define bit22set(x)		(x & 0x00000200)
 #define bits23_25set(x)		(x & 0x000001c0)
@@ -34,6 +39,8 @@
 
 
 DEFINE_PER_CPU(struct exception_data, exception_data);
+
+int show_unhandled_signals = 1;
 
 /*
  * parisc_acctyp(unsigned int inst) --
@@ -139,6 +146,68 @@ parisc_acctyp(unsigned long code, unsigned int inst)
 			}
 #endif
 
+int fixup_exception(struct pt_regs *regs)
+{
+	const struct exception_table_entry *fix;
+
+	/* If we only stored 32bit addresses in the exception table we can drop
+	 * out if we faulted on a 64bit address. */
+	if ((sizeof(regs->iaoq[0]) > sizeof(fix->insn))
+		&& (regs->iaoq[0] >> 32))
+			return 0;
+
+	fix = search_exception_tables(regs->iaoq[0]);
+	if (fix) {
+		struct exception_data *d;
+		d = this_cpu_ptr(&exception_data);
+		d->fault_ip = regs->iaoq[0];
+		d->fault_gp = regs->gr[27];
+		d->fault_space = regs->isr;
+		d->fault_addr = regs->ior;
+
+		regs->iaoq[0] = ((fix->fixup) & ~3);
+		/*
+		 * NOTE: In some cases the faulting instruction
+		 * may be in the delay slot of a branch. We
+		 * don't want to take the branch, so we don't
+		 * increment iaoq[1], instead we set it to be
+		 * iaoq[0]+4, and clear the B bit in the PSW
+		 */
+		regs->iaoq[1] = regs->iaoq[0] + 4;
+		regs->gr[0] &= ~PSW_B; /* IPSW in gr[0] */
+
+		return 1;
+	}
+
+	return 0;
+}
+
+/*
+ * Print out info about fatal segfaults, if the show_unhandled_signals
+ * sysctl is set:
+ */
+static inline void
+show_signal_msg(struct pt_regs *regs, unsigned long code,
+		unsigned long address, struct task_struct *tsk,
+		struct vm_area_struct *vma)
+{
+	if (!unhandled_signal(tsk, SIGSEGV))
+		return;
+
+	if (!printk_ratelimit())
+		return;
+
+	pr_warn("\n");
+	pr_warn("do_page_fault() command='%s' type=%lu address=0x%08lx",
+	    tsk->comm, code, address);
+	print_vma_addr(KERN_CONT " in ", regs->iaoq[0]);
+	if (vma)
+		pr_warn(" vm_start = 0x%08lx, vm_end = 0x%08lx\n",
+				vma->vm_start, vma->vm_end);
+
+	show_regs(regs);
+}
+
 void do_page_fault(struct pt_regs *regs, unsigned long code,
 			      unsigned long address)
 {
@@ -152,6 +221,28 @@ void do_page_fault(struct pt_regs *regs, unsigned long code,
 	if (in_atomic() || !mm)
 		goto no_context;
 
+	struct task_struct *tsk;
+	struct mm_struct *mm;
+	unsigned long acc_type;
+	int fault;
+	unsigned int flags;
+
+	if (faulthandler_disabled())
+		goto no_context;
+
+	tsk = current;
+	mm = tsk->mm;
+	if (!mm)
+		goto no_context;
+
+	flags = FAULT_FLAG_ALLOW_RETRY | FAULT_FLAG_KILLABLE;
+	if (user_mode(regs))
+		flags |= FAULT_FLAG_USER;
+
+	acc_type = parisc_acctyp(code, regs->iir);
+	if (acc_type & VM_WRITE)
+		flags |= FAULT_FLAG_WRITE;
+retry:
 	down_read(&mm->mmap_sem);
 	vma = find_vma_prev(mm, address, &prev_vma);
 	if (!vma || address < vma->vm_start)
@@ -175,6 +266,11 @@ good_area:
 	 */
 
 	fault = handle_mm_fault(mm, vma, address, (acc_type & VM_WRITE) != 0);
+	fault = handle_mm_fault(mm, vma, address, flags);
+
+	if ((fault & VM_FAULT_RETRY) && fatal_signal_pending(current))
+		return;
+
 	if (unlikely(fault & VM_FAULT_ERROR)) {
 		/*
 		 * We hit a shared mapping outside of the file, or some
@@ -183,6 +279,8 @@ good_area:
 		 */
 		if (fault & VM_FAULT_OOM)
 			goto out_of_memory;
+		else if (fault & VM_FAULT_SIGSEGV)
+			goto bad_area;
 		else if (fault & VM_FAULT_SIGBUS)
 			goto bad_area;
 		BUG();
@@ -191,6 +289,23 @@ good_area:
 		current->maj_flt++;
 	else
 		current->min_flt++;
+	if (flags & FAULT_FLAG_ALLOW_RETRY) {
+		if (fault & VM_FAULT_MAJOR)
+			current->maj_flt++;
+		else
+			current->min_flt++;
+		if (fault & VM_FAULT_RETRY) {
+			flags &= ~FAULT_FLAG_ALLOW_RETRY;
+
+			/*
+			 * No need to up_read(&mm->mmap_sem) as we would
+			 * have already released it in __lock_page_or_retry
+			 * in mm/filemap.c.
+			 */
+
+			goto retry;
+		}
+	}
 	up_read(&mm->mmap_sem);
 	return;
 
@@ -224,6 +339,42 @@ bad_area:
 		si.si_code = SEGV_MAPERR;
 		si.si_addr = (void __user *) address;
 		force_sig_info(SIGSEGV, &si, current);
+		show_signal_msg(regs, code, address, tsk, vma);
+
+		switch (code) {
+		case 15:	/* Data TLB miss fault/Data page fault */
+			/* send SIGSEGV when outside of vma */
+			if (!vma ||
+			    address < vma->vm_start || address >= vma->vm_end) {
+				si.si_signo = SIGSEGV;
+				si.si_code = SEGV_MAPERR;
+				break;
+			}
+
+			/* send SIGSEGV for wrong permissions */
+			if ((vma->vm_flags & acc_type) != acc_type) {
+				si.si_signo = SIGSEGV;
+				si.si_code = SEGV_ACCERR;
+				break;
+			}
+
+			/* probably address is outside of mapped file */
+			/* fall through */
+		case 17:	/* NA data TLB miss / page fault */
+		case 18:	/* Unaligned access - PCXS only */
+			si.si_signo = SIGBUS;
+			si.si_code = (code == 18) ? BUS_ADRALN : BUS_ADRERR;
+			break;
+		case 16:	/* Non-access instruction TLB miss fault */
+		case 26:	/* PCXL: Data memory access rights trap */
+		default:
+			si.si_signo = SIGSEGV;
+			si.si_code = (code == 26) ? SEGV_ACCERR : SEGV_MAPERR;
+			break;
+		}
+		si.si_errno = 0;
+		si.si_addr = (void __user *) address;
+		force_sig_info(si.si_signo, &si, current);
 		return;
 	}
 
@@ -255,6 +406,8 @@ no_context:
 
 			return;
 		}
+	if (!user_mode(regs) && fixup_exception(regs)) {
+		return;
 	}
 
 	parisc_terminate("Bad Address (null pointer deref?)", regs, code, address);
@@ -265,4 +418,7 @@ no_context:
 	if (user_mode(regs))
 		do_group_exit(SIGKILL);
 	goto no_context;
+	if (!user_mode(regs))
+		goto no_context;
+	pagefault_out_of_memory();
 }

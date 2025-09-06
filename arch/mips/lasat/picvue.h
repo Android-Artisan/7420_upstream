@@ -43,3 +43,16 @@ void pvc_move(u8 cmd);
 void pvc_clear(void);
 void pvc_home(void);
 
+#define	 DISP_OFF	0
+#define	 DISP_ON	(1 << 2)
+#define	 CUR_ON		(1 << 1)
+#define	 CUR_BLINK	(1 << 0)
+
+void pvc_move(u8 cmd);
+#define	 DISPLAY	(1 << 3)
+#define	 CURSOR		0
+#define	 RIGHT		(1 << 2)
+#define	 LEFT		0
+
+void pvc_clear(void);
+void pvc_home(void);

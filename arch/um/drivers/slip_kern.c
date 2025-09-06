@@ -7,6 +7,7 @@
 #include <linux/init.h>
 #include <linux/netdevice.h>
 #include "net_kern.h"
+#include <net_kern.h>
 #include "slip.h"
 
 struct slip_init {
@@ -20,6 +21,7 @@ static void slip_init(struct net_device *dev, void *data)
 	struct slip_init *init = data;
 
 	private = dev->priv;
+	private = netdev_priv(dev);
 	spri = (struct slip_data *) private->user;
 
 	memset(spri->name, 0, sizeof(spri->name));

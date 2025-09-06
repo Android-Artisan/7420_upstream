@@ -10,7 +10,6 @@ Modified by Paul Jackson <pj@sgi.com>
 Modified by Christoph Lameter <clameter@sgi.com>
 
 CONTENTS:
-=========
 
 1. Control Groups
   1.1 What are cgroups ?
@@ -28,7 +27,6 @@ CONTENTS:
 4. Questions
 
 1. Control Groups
-=================
 
 1.1 What are cgroups ?
 ----------------------
@@ -319,7 +317,6 @@ and then start a subshell 'sh' in that cgroup:
   cat /proc/self/cgroup
 
 2. Usage Examples and Syntax
-============================
 
 2.1 Basic Usage
 ---------------
@@ -395,7 +392,6 @@ You can attach the current shell task by echoing 0:
 # echo 0 > tasks
 
 3. Kernel API
-=============
 
 3.1 Overview
 ------------
@@ -535,7 +531,6 @@ the default hierarchy (which never has sub-cgroups) and a hierarchy
 that is being created/destroyed (and hence has no sub-cgroups).
 
 4. Questions
-============
 
 Q: what's up with this '/bin/echo' ?
 A: bash's builtin 'echo' command does not check calls to write() against

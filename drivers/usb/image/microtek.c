@@ -70,6 +70,7 @@
  *	20000514 Rewrote mts_scsi_queuecommand to use URBs (john)
  *	20000514 Version 0.0.8j
  *      20000514 Fix reporting of non-existant devices to SCSI layer (john)
+ *      20000514 Fix reporting of non-existent devices to SCSI layer (john)
  *	20000514 Added MTS_DEBUG_INT (john)
  *	20000514 Changed "usb-microtek" to "microtek" for consistency (john)
  *	20000514 Stupid bug fixes (john)
@@ -132,6 +133,7 @@
 #include <linux/proc_fs.h>
 
 #include <asm/atomic.h>
+#include <linux/atomic.h>
 #include <linux/blkdev.h>
 #include "../../scsi/scsi.h"
 #include <scsi/scsi_host.h>
@@ -156,6 +158,7 @@ static int mts_usb_probe(struct usb_interface *intf,
 static void mts_usb_disconnect(struct usb_interface *intf);
 
 static struct usb_device_id mts_usb_ids [];
+static const struct usb_device_id mts_usb_ids[];
 
 static struct usb_driver mts_usb_driver = {
 	.name =		"microtekX6",
@@ -303,6 +306,7 @@ static inline void mts_show_command(struct scsi_cmnd *srb)
 	MTS_DEBUG( "  %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n",
 	       srb->cmnd[0], srb->cmnd[1], srb->cmnd[2], srb->cmnd[3], srb->cmnd[4], srb->cmnd[5],
 	       srb->cmnd[6], srb->cmnd[7], srb->cmnd[8], srb->cmnd[9]);
+	MTS_DEBUG( "  %10ph\n", srb->cmnd);
 }
 
 #else
@@ -351,6 +355,7 @@ static int mts_scsi_host_reset(struct scsi_cmnd *srb)
 {
 	struct mts_desc* desc = (struct mts_desc*)(srb->device->host->hostdata[0]);
 	int result, rc;
+	int result;
 
 	MTS_DEBUG_GOT_HERE();
 	mts_debug_dump(desc);
@@ -361,11 +366,17 @@ static int mts_scsi_host_reset(struct scsi_cmnd *srb)
 	result = usb_reset_device(desc->usb_dev);
 	if (rc)
 		usb_unlock_device(desc->usb_dev);
+	result = usb_lock_device_for_reset(desc->usb_dev, desc->usb_intf);
+	if (result == 0) {
+		result = usb_reset_device(desc->usb_dev);
+		usb_unlock_device(desc->usb_dev);
+	}
 	return result ? FAILED : SUCCESS;
 }
 
 static int
 mts_scsi_queuecommand(struct scsi_cmnd *srb, mts_scsi_cmnd_callback callback);
+mts_scsi_queuecommand(struct Scsi_Host *shost, struct scsi_cmnd *srb);
 
 static void mts_transfer_cleanup( struct urb *transfer );
 static void mts_do_sg(struct urb * transfer);
@@ -575,6 +586,14 @@ mts_build_transfer_context(struct scsi_cmnd *srb, struct mts_desc* desc)
 				   (int)desc->ep_response);
 	} else {
 		MTS_DEBUG("transfering to desc->ep_out == %d\n",
+		MTS_DEBUG( "transferring from desc->ep_image == %d\n",
+			   (int)desc->ep_image );
+	} else if ( MTS_DIRECTION_IS_IN(srb->cmnd[0]) ) {
+			pipe = usb_rcvbulkpipe(desc->usb_dev,desc->ep_response);
+			MTS_DEBUG( "transferring from desc->ep_response == %d\n",
+				   (int)desc->ep_response);
+	} else {
+		MTS_DEBUG("transferring to desc->ep_out == %d\n",
 			  (int)desc->ep_out);
 		pipe = usb_sndbulkpipe(desc->usb_dev,desc->ep_out);
 	}
@@ -584,6 +603,7 @@ mts_build_transfer_context(struct scsi_cmnd *srb, struct mts_desc* desc)
 
 static int
 mts_scsi_queuecommand(struct scsi_cmnd *srb, mts_scsi_cmnd_callback callback)
+mts_scsi_queuecommand_lck(struct scsi_cmnd *srb, mts_scsi_cmnd_callback callback)
 {
 	struct mts_desc* desc = (struct mts_desc*)(srb->device->host->hostdata[0]);
 	int err = 0;
@@ -636,6 +656,8 @@ out:
 	return err;
 }
 
+static DEF_SCSI_QCMD(mts_scsi_queuecommand)
+
 static struct scsi_host_template mts_scsi_host_template = {
 	.module			= THIS_MODULE,
 	.name			= "microtekX6",
@@ -685,6 +707,10 @@ static const struct vendor_product mts_supported_products[] =
    the entries of mts_supported_products[]. */
 
 static struct usb_device_id mts_usb_ids [] =
+/* The entries of microtek_table must correspond, line-by-line to
+   the entries of mts_supported_products[]. */
+
+static const struct usb_device_id mts_usb_ids[] =
 {
 	{ USB_DEVICE(0x4ce, 0x0300) },
 	{ USB_DEVICE(0x5da, 0x0094) },
@@ -773,6 +799,10 @@ static int mts_usb_probe(struct usb_interface *intf,
 
 	}
 
+	if (ep_in_current != &ep_in_set[2]) {
+		MTS_WARNING("couldn't find two input bulk endpoints. Bailing out.\n");
+		return -ENODEV;
+	}
 
 	if ( ep_out == -1 ) {
 		MTS_WARNING( "couldn't find an output bulk endpoint. Bailing out.\n" );
@@ -867,6 +897,7 @@ static void __exit microtek_drv_exit(void)
 
 module_init(microtek_drv_init);
 module_exit(microtek_drv_exit);
+module_usb_driver(mts_usb_driver);
 
 MODULE_AUTHOR( DRIVER_AUTHOR );
 MODULE_DESCRIPTION( DRIVER_DESC );

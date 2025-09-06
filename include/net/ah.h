@@ -38,6 +38,17 @@ out:
 	return err;
 }
 
+#include <linux/skbuff.h>
+
+struct crypto_ahash;
+
+struct ah_data {
+	int			icv_full_len;
+	int			icv_trunc_len;
+
+	struct crypto_ahash	*ahash;
+};
+
 struct ip_auth_hdr;
 
 static inline struct ip_auth_hdr *ip_auth_hdr(const struct sk_buff *skb)

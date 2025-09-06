@@ -80,6 +80,15 @@ struct msg_msg {
 	long  m_type;          
 	int m_ts;           /* message text size */
 	struct msg_msgseg* next;
+#include <linux/list.h>
+#include <uapi/linux/msg.h>
+
+/* one msg_msg structure for each message */
+struct msg_msg {
+	struct list_head m_list;
+	long m_type;
+	size_t m_ts;		/* message text size */
+	struct msg_msgseg *next;
 	void *security;
 	/* the actual message follows immediately */
 };
@@ -108,5 +117,9 @@ extern long do_msgrcv(int msqid, long *pmtype, void __user *mtext,
 			size_t msgsz, long msgtyp, int msgflg);
 
 #endif /* __KERNEL__ */
+extern long do_msgrcv(int msqid, void __user *buf, size_t bufsz, long msgtyp,
+		      int msgflg,
+		      long (*msg_fill)(void __user *, struct msg_msg *,
+				       size_t));
 
 #endif /* _LINUX_MSG_H */

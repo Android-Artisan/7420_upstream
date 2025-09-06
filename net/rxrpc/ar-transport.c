@@ -12,9 +12,15 @@
 #include <linux/module.h>
 #include <linux/net.h>
 #include <linux/skbuff.h>
+#include <linux/slab.h>
 #include <net/sock.h>
 #include <net/af_rxrpc.h>
 #include "ar-internal.h"
+
+/*
+ * Time after last use at which transport record is cleaned up.
+ */
+unsigned rxrpc_transport_expiry = 3600 * 24;
 
 static void rxrpc_transport_reaper(struct work_struct *work);
 
@@ -82,6 +88,10 @@ struct rxrpc_transport *rxrpc_get_transport(struct rxrpc_local *local,
 	       NIPQUAD(local->srx.transport.sin.sin_addr),
 	       ntohs(local->srx.transport.sin.sin_port),
 	       NIPQUAD(peer->srx.transport.sin.sin_addr),
+	_enter("{%pI4+%hu},{%pI4+%hu},",
+	       &local->srx.transport.sin.sin_addr,
+	       ntohs(local->srx.transport.sin.sin_port),
+	       &peer->srx.transport.sin.sin_addr,
 	       ntohs(peer->srx.transport.sin.sin_port));
 
 	/* search the transport list first */
@@ -110,6 +120,7 @@ struct rxrpc_transport *rxrpc_get_transport(struct rxrpc_local *local,
 	/* we can now add the new candidate to the list */
 	trans = candidate;
 	candidate = NULL;
+	usage = atomic_read(&trans->usage);
 
 	rxrpc_get_local(trans->local);
 	atomic_inc(&trans->peer->usage);
@@ -125,6 +136,7 @@ success:
 	     trans->peer->debug_id);
 
 	_leave(" = %p {u=%d}", trans, atomic_read(&trans->usage));
+	_leave(" = %p {u=%d}", trans, usage);
 	return trans;
 
 	/* we found the transport in the list immediately */
@@ -153,6 +165,10 @@ struct rxrpc_transport *rxrpc_find_transport(struct rxrpc_local *local,
 	       NIPQUAD(local->srx.transport.sin.sin_addr),
 	       ntohs(local->srx.transport.sin.sin_port),
 	       NIPQUAD(peer->srx.transport.sin.sin_addr),
+	_enter("{%pI4+%hu},{%pI4+%hu},",
+	       &local->srx.transport.sin.sin_addr,
+	       ntohs(local->srx.transport.sin.sin_port),
+	       &peer->srx.transport.sin.sin_addr,
 	       ntohs(peer->srx.transport.sin.sin_port));
 
 	/* search the transport list */
@@ -184,6 +200,7 @@ void rxrpc_put_transport(struct rxrpc_transport *trans)
 	ASSERTCMP(atomic_read(&trans->usage), >, 0);
 
 	trans->put_time = get_seconds();
+	trans->put_time = ktime_get_seconds();
 	if (unlikely(atomic_dec_and_test(&trans->usage))) {
 		_debug("zombie");
 		/* let the reaper determine the timeout to avoid a race with
@@ -221,6 +238,7 @@ static void rxrpc_transport_reaper(struct work_struct *work)
 	_enter("");
 
 	now = get_seconds();
+	now = ktime_get_seconds();
 	earliest = ULONG_MAX;
 
 	/* extract all the transports that have been dead too long */
@@ -234,6 +252,7 @@ static void rxrpc_transport_reaper(struct work_struct *work)
 			continue;
 
 		reap_time = trans->put_time + rxrpc_transport_timeout;
+		reap_time = trans->put_time + rxrpc_transport_expiry;
 		if (reap_time <= now)
 			list_move_tail(&trans->link, &graveyard);
 		else if (reap_time < earliest)
@@ -270,6 +289,7 @@ void __exit rxrpc_destroy_all_transports(void)
 	_enter("");
 
 	rxrpc_transport_timeout = 0;
+	rxrpc_transport_expiry = 0;
 	cancel_delayed_work(&rxrpc_transport_reap);
 	rxrpc_queue_delayed_work(&rxrpc_transport_reap, 0);
 

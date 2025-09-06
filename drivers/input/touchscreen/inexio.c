@@ -205,3 +205,4 @@ static void __exit inexio_exit(void)
 
 module_init(inexio_init);
 module_exit(inexio_exit);
+module_serio_driver(inexio_drv);

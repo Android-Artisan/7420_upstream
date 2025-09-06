@@ -27,6 +27,7 @@ SECTIONS
   _sinittext = .;
   .init.text : {
 	*(.text.head)
+	HEAD_TEXT
 #ifndef CONFIG_DEBUG_INFO
 	INIT_TEXT
 	EXIT_TEXT
@@ -79,6 +80,13 @@ SECTIONS
   . = ALIGN(L1_CACHE_BYTES);
   .data.cacheline_aligned : { *(.data.cacheline_aligned) }
 
+
+  INIT_DATA_SECTION(8)
+  PERCPU_SECTION(L1_CACHE_BYTES)
+
+  . = ALIGN(PAGE_SIZE);
+  __init_end = .;
+
   .trap : {
 	/* trap table management - read entry-table.S before modifying */
 	. = ALIGN(8192);
@@ -98,6 +106,10 @@ SECTIONS
 	*(.text.entry)
 	*(.text.break)
 	*(.text.tlbmiss)
+	*(.text..start)
+	*(.text..entry)
+	*(.text..break)
+	*(.text..tlbmiss)
 	TEXT_TEXT
 	SCHED_TEXT
 	LOCK_TEXT
@@ -131,6 +143,12 @@ SECTIONS
 
   _sdata = .;
   .data : {			/* Data */
+  EXCEPTION_TABLE(8)
+
+  _sdata = .;
+  .data : {			/* Data */
+	INIT_TASK_DATA(THREAD_SIZE)
+	CACHELINE_ALIGNED_DATA(L1_CACHE_BYTES)
 	DATA_DATA
 	*(.data.*)
 	EXIT_DATA
@@ -153,6 +171,7 @@ SECTIONS
   .sbss		: { *(.sbss .sbss.*) }
   .bss		: { *(.bss .bss.*) }
   .bss.stack	: { *(.bss) }
+  .bss..stack	: { *(.bss) }
 
   __bss_stop = .;
   _end = . ;
@@ -177,6 +196,12 @@ SECTIONS
   .debug_ranges		0 : { *(.debug_ranges) }
 
   .comment 0 : { *(.comment) }
+  STABS_DEBUG
+  DWARF_DEBUG
+
+  .comment 0 : { *(.comment) }
+
+  DISCARDS
 }
 
 __kernel_image_size_no_bss = __bss_start - __kernel_image_start;

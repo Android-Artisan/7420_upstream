@@ -59,14 +59,12 @@
 static char *version =
 "cs89x0.c:v1.02 11/26/96 Russell Nelson <nelson@crynwr.com>\n";
 
-/* ======================= configure the driver here ======================= */
 
 /* use 0 for production, 1 for verification, >2 for debug */
 #ifndef NET_DEBUG
 #define NET_DEBUG 0
 #endif
 
-/* ======================= end of configuration ======================= */
 
 
 /* Always include 'config.h' first in case the user wants to turn on

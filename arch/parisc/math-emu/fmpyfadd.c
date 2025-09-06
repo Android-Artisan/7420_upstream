@@ -532,6 +532,7 @@ dbl_fmpyfadd(
 		if (Dbl_iszero_hidden(resultp1)) {
 			/* Handle normalization */
 		/* A straight foward algorithm would now shift the
+		/* A straightforward algorithm would now shift the
 		 * result and extension left until the hidden bit
 		 * becomes one.  Not all of the extension bits need
 		 * participate in the shift.  Only the two most 
@@ -1192,6 +1193,7 @@ unsigned int *status;
 		if (Dbl_iszero_hidden(resultp1)) {
 			/* Handle normalization */
 		/* A straight foward algorithm would now shift the
+		/* A straightforward algorithm would now shift the
 		 * result and extension left until the hidden bit
 		 * becomes one.  Not all of the extension bits need
 		 * participate in the shift.  Only the two most 
@@ -1842,6 +1844,7 @@ unsigned int *status;
 		if (Sgl_iszero_hidden(resultp1)) {
 			/* Handle normalization */
 		/* A straight foward algorithm would now shift the
+		/* A straightforward algorithm would now shift the
 		 * result and extension left until the hidden bit
 		 * becomes one.  Not all of the extension bits need
 		 * participate in the shift.  Only the two most 
@@ -2484,6 +2487,7 @@ unsigned int *status;
 		if (Sgl_iszero_hidden(resultp1)) {
 			/* Handle normalization */
 		/* A straight foward algorithm would now shift the
+		/* A straightforward algorithm would now shift the
 		 * result and extension left until the hidden bit
 		 * becomes one.  Not all of the extension bits need
 		 * participate in the shift.  Only the two most 

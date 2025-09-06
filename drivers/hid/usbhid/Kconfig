@@ -3,11 +3,17 @@ comment "USB Input Devices"
 
 config USB_HID
 	tristate "USB Human Interface Device (full HID) support"
+menu "USB HID support"
+	depends on USB
+
+config USB_HID
+	tristate "USB HID transport layer"
 	default y
 	depends on USB && INPUT
 	select HID
 	---help---
 	  Say Y here if you want full HID support to connect USB keyboards,
+	  Say Y here if you want to connect USB keyboards,
 	  mice, joysticks, graphic tablets, or any other HID based devices
 	  to your computer via USB, as well as Uninterruptible Power Supply
 	  (UPS) and monitor control devices.
@@ -50,6 +56,8 @@ config HID_FF
 config HID_PID
 	bool "PID device support"
 	depends on HID_FF
+config HID_PID
+	bool "PID device support"
 	help
 	  Say Y here if you have a PID-compliant device and wish to enable force
 	  feedback for it. Microsoft Sidewinder Force Feedback 2 is one of such
@@ -121,6 +129,7 @@ config USB_HIDDEV
 
 menu "USB HID Boot Protocol drivers"
 	depends on USB!=n && USB_HID!=y
+	depends on USB!=n && USB_HID!=y && EXPERT
 
 config USB_KBD
 	tristate "USB HIDBP Keyboard (simple Boot) support"
@@ -157,3 +166,4 @@ config USB_MOUSE
 endmenu
 
 
+endmenu

@@ -7,6 +7,8 @@
 struct siginfo;
 
 #ifdef __KERNEL__
+#include <uapi/asm/signal.h>
+
 /* Digital Unix defines 64 signals.  Most things should be clean enough
    to redefine this at will, if care is taken to make libc match.  */
 
@@ -169,4 +171,6 @@ struct sigstack {
 
 #endif
 
+#define __ARCH_HAS_KA_RESTORER
+#include <asm/sigcontext.h>
 #endif

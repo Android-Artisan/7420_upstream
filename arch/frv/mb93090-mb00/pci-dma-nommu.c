@@ -11,6 +11,7 @@
 
 #include <linux/types.h>
 #include <linux/slab.h>
+#include <linux/export.h>
 #include <linux/dma-mapping.h>
 #include <linux/list.h>
 #include <linux/pci.h>
@@ -118,6 +119,10 @@ dma_addr_t dma_map_single(struct device *dev, void *ptr, size_t size,
 {
 	if (direction == DMA_NONE)
                 BUG();
+dma_addr_t dma_map_single(struct device *dev, void *ptr, size_t size,
+			  enum dma_data_direction direction)
+{
+	BUG_ON(direction == DMA_NONE);
 
 	frv_cache_wback_inv((unsigned long) ptr, (unsigned long) ptr + size);
 
@@ -153,8 +158,30 @@ int dma_map_sg(struct device *dev, struct scatterlist *sg, int nents,
 
 	if (direction == DMA_NONE)
                 BUG();
+int dma_map_sg(struct device *dev, struct scatterlist *sglist, int nents,
+	       enum dma_data_direction direction)
+{
+	int i;
+	struct scatterlist *sg;
+
+	for_each_sg(sglist, sg, nents, i) {
+		frv_cache_wback_inv(sg_dma_address(sg),
+				    sg_dma_address(sg) + sg_dma_len(sg));
+	}
+
+	BUG_ON(direction == DMA_NONE);
 
 	return nents;
 }
 
 EXPORT_SYMBOL(dma_map_sg);
+
+dma_addr_t dma_map_page(struct device *dev, struct page *page, unsigned long offset,
+			size_t size, enum dma_data_direction direction)
+{
+	BUG_ON(direction == DMA_NONE);
+	flush_dcache_page(page);
+	return (dma_addr_t) page_to_phys(page) + offset;
+}
+
+EXPORT_SYMBOL(dma_map_page);

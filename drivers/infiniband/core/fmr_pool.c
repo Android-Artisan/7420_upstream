@@ -33,6 +33,7 @@
 
 #include <linux/errno.h>
 #include <linux/spinlock.h>
+#include <linux/export.h>
 #include <linux/slab.h>
 #include <linux/jhash.h>
 #include <linux/kthread.h>
@@ -125,6 +126,7 @@ static inline struct ib_pool_fmr *ib_fmr_cache_lookup(struct ib_fmr_pool *pool,
 	bucket = pool->cache_bucket + ib_fmr_hash(*page_list);
 
 	hlist_for_each_entry(fmr, pos, bucket, cache_node)
+	hlist_for_each_entry(fmr, bucket, cache_node)
 		if (io_virtual_address == fmr->io_virtual_address &&
 		    page_list_len      == fmr->page_list_len      &&
 		    !memcmp(page_list, fmr->page_list,

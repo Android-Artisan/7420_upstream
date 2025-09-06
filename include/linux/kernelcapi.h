@@ -44,6 +44,9 @@ typedef struct kcapi_carddef {
 
 
 #ifdef __KERNEL__
+#ifndef __KERNELCAPI_H__
+#define __KERNELCAPI_H__
+
 
 #include <linux/list.h>
 #include <linux/skbuff.h>
@@ -51,6 +54,8 @@ typedef struct kcapi_carddef {
 
 #define	KCI_CONTRUP	0	/* arg: struct capi_profile */
 #define	KCI_CONTRDOWN	1	/* arg: NULL */
+#include <linux/notifier.h>
+#include <uapi/linux/kernelcapi.h>
 
 struct capi20_appl {
 	u16 applid;
@@ -89,6 +94,13 @@ void capi20_set_callback(struct capi20_appl *ap,
 			 void (*callback) (unsigned int cmd, __u32 contr, void *data));
 
 
+int capi20_manufacturer(unsigned long cmd, void __user *data);
+
+#define CAPICTR_UP			0
+#define CAPICTR_DOWN			1
+
+int register_capictr_notifier(struct notifier_block *nb);
+int unregister_capictr_notifier(struct notifier_block *nb);
 
 #define CAPI_NOERROR                      0x0000
 

@@ -88,6 +88,7 @@ static unsigned char *pnpbios_parse_allocated_resource_data(struct pnp_dev *dev,
 		return NULL;
 
 	dev_dbg(&dev->dev, "parse allocated resources\n");
+	pnp_dbg(&dev->dev, "parse allocated resources\n");
 
 	pnp_init_resources(dev);
 
@@ -192,6 +193,7 @@ static unsigned char *pnpbios_parse_allocated_resource_data(struct pnp_dev *dev,
 			break;
 
 		default:	/* an unkown tag */
+		default:	/* an unknown tag */
 len_err:
 			dev_err(&dev->dev, "unknown tag %#x length %d\n",
 				tag, len);
@@ -325,6 +327,7 @@ pnpbios_parse_resource_option_data(unsigned char *p, unsigned char *end,
 		return NULL;
 
 	dev_dbg(&dev->dev, "parse resource options\n");
+	pnp_dbg(&dev->dev, "parse resource options\n");
 	option_flags = 0;
 	while ((char *)p < (char *)end) {
 
@@ -406,6 +409,7 @@ pnpbios_parse_resource_option_data(unsigned char *p, unsigned char *end,
 			return p + 2;
 
 		default:	/* an unkown tag */
+		default:	/* an unknown tag */
 len_err:
 			dev_err(&dev->dev, "unknown tag %#x length %d\n",
 				tag, len);
@@ -476,6 +480,7 @@ static unsigned char *pnpbios_parse_compatible_ids(unsigned char *p,
 			break;
 
 		default:	/* an unkown tag */
+		default:	/* an unknown tag */
 len_err:
 			dev_err(&dev->dev, "unknown tag %#x length %d\n",
 				tag, len);
@@ -507,6 +512,7 @@ static void pnpbios_encode_mem(struct pnp_dev *dev, unsigned char *p,
 	if (pnp_resource_enabled(res)) {
 		base = res->start;
 		len = res->end - res->start + 1;
+		len = resource_size(res);
 	} else {
 		base = 0;
 		len = 0;
@@ -520,6 +526,7 @@ static void pnpbios_encode_mem(struct pnp_dev *dev, unsigned char *p,
 	p[11] = ((len >> 8) >> 8) & 0xff;
 
 	dev_dbg(&dev->dev, "  encode mem %#lx-%#lx\n", base, base + len - 1);
+	pnp_dbg(&dev->dev, "  encode mem %#lx-%#lx\n", base, base + len - 1);
 }
 
 static void pnpbios_encode_mem32(struct pnp_dev *dev, unsigned char *p,
@@ -531,6 +538,7 @@ static void pnpbios_encode_mem32(struct pnp_dev *dev, unsigned char *p,
 	if (pnp_resource_enabled(res)) {
 		base = res->start;
 		len = res->end - res->start + 1;
+		len = resource_size(res);
 	} else {
 		base = 0;
 		len = 0;
@@ -550,6 +558,7 @@ static void pnpbios_encode_mem32(struct pnp_dev *dev, unsigned char *p,
 	p[19] = (len >> 24) & 0xff;
 
 	dev_dbg(&dev->dev, "  encode mem32 %#lx-%#lx\n", base, base + len - 1);
+	pnp_dbg(&dev->dev, "  encode mem32 %#lx-%#lx\n", base, base + len - 1);
 }
 
 static void pnpbios_encode_fixed_mem32(struct pnp_dev *dev, unsigned char *p,
@@ -561,6 +570,7 @@ static void pnpbios_encode_fixed_mem32(struct pnp_dev *dev, unsigned char *p,
 	if (pnp_resource_enabled(res)) {
 		base = res->start;
 		len = res->end - res->start + 1;
+		len = resource_size(res);
 	} else {
 		base = 0;
 		len = 0;
@@ -576,6 +586,7 @@ static void pnpbios_encode_fixed_mem32(struct pnp_dev *dev, unsigned char *p,
 	p[11] = (len >> 24) & 0xff;
 
 	dev_dbg(&dev->dev, "  encode fixed_mem32 %#lx-%#lx\n", base,
+	pnp_dbg(&dev->dev, "  encode fixed_mem32 %#lx-%#lx\n", base,
 		base + len - 1);
 }
 
@@ -593,6 +604,7 @@ static void pnpbios_encode_irq(struct pnp_dev *dev, unsigned char *p,
 	p[2] = (map >> 8) & 0xff;
 
 	dev_dbg(&dev->dev, "  encode irq mask %#lx\n", map);
+	pnp_dbg(&dev->dev, "  encode irq mask %#lx\n", map);
 }
 
 static void pnpbios_encode_dma(struct pnp_dev *dev, unsigned char *p,
@@ -608,6 +620,7 @@ static void pnpbios_encode_dma(struct pnp_dev *dev, unsigned char *p,
 	p[1] = map & 0xff;
 
 	dev_dbg(&dev->dev, "  encode dma mask %#lx\n", map);
+	pnp_dbg(&dev->dev, "  encode dma mask %#lx\n", map);
 }
 
 static void pnpbios_encode_port(struct pnp_dev *dev, unsigned char *p,
@@ -619,6 +632,7 @@ static void pnpbios_encode_port(struct pnp_dev *dev, unsigned char *p,
 	if (pnp_resource_enabled(res)) {
 		base = res->start;
 		len = res->end - res->start + 1;
+		len = resource_size(res);
 	} else {
 		base = 0;
 		len = 0;
@@ -631,6 +645,7 @@ static void pnpbios_encode_port(struct pnp_dev *dev, unsigned char *p,
 	p[7] = len & 0xff;
 
 	dev_dbg(&dev->dev, "  encode io %#lx-%#lx\n", base, base + len - 1);
+	pnp_dbg(&dev->dev, "  encode io %#lx-%#lx\n", base, base + len - 1);
 }
 
 static void pnpbios_encode_fixed_port(struct pnp_dev *dev, unsigned char *p,
@@ -642,6 +657,11 @@ static void pnpbios_encode_fixed_port(struct pnp_dev *dev, unsigned char *p,
 	if (pnp_resource_enabled(res)) {
 		base = res->start;
 		len = res->end - res->start + 1;
+	unsigned long len = resource_size(res);
+
+	if (pnp_resource_enabled(res)) {
+		base = res->start;
+		len = resource_size(res);
 	} else {
 		base = 0;
 		len = 0;
@@ -652,6 +672,7 @@ static void pnpbios_encode_fixed_port(struct pnp_dev *dev, unsigned char *p,
 	p[3] = len & 0xff;
 
 	dev_dbg(&dev->dev, "  encode fixed_io %#lx-%#lx\n", base,
+	pnp_dbg(&dev->dev, "  encode fixed_io %#lx-%#lx\n", base,
 		base + len - 1);
 }
 
@@ -745,6 +766,7 @@ static unsigned char *pnpbios_encode_allocated_resource_data(struct pnp_dev
 			break;
 
 		default:	/* an unkown tag */
+		default:	/* an unknown tag */
 len_err:
 			dev_err(&dev->dev, "unknown tag %#x length %d\n",
 				tag, len);

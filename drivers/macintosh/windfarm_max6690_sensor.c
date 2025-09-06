@@ -17,6 +17,7 @@
 #include "windfarm.h"
 
 #define VERSION "0.2"
+#define VERSION "1.0"
 
 /* This currently only exports the external temperature sensor,
    since that's all the control loops need. */
@@ -27,6 +28,7 @@
 
 struct wf_6690_sensor {
 	struct i2c_client	i2c;
+	struct i2c_client	*i2c;
 	struct wf_sensor	sens;
 };
 
@@ -54,6 +56,11 @@ static int wf_max6690_get(struct wf_sensor *sr, s32 *value)
 
 	/* chip gets initialized by firmware */
 	data = i2c_smbus_read_byte_data(&max->i2c, MAX6690_EXTERNAL_TEMP);
+	if (max->i2c == NULL)
+		return -ENODEV;
+
+	/* chip gets initialized by firmware */
+	data = i2c_smbus_read_byte_data(max->i2c, MAX6690_EXTERNAL_TEMP);
 	if (data < 0)
 		return data;
 	*value = data << 16;
@@ -91,6 +98,24 @@ static void wf_max6690_create(struct i2c_adapter *adapter, u8 addr,
 	}
 
 	if (!strcmp(loc, "BACKSIDE"))
+static int wf_max6690_probe(struct i2c_client *client,
+			    const struct i2c_device_id *id)
+{
+	const char *name, *loc;
+	struct wf_6690_sensor *max;
+	int rc;
+
+	loc = of_get_property(client->dev.of_node, "hwsensor-location", NULL);
+	if (!loc) {
+		dev_warn(&client->dev, "Missing hwsensor-location property!\n");
+		return -ENXIO;
+	}
+
+	/*
+	 * We only expose the external temperature register for
+	 * now as this is all we need for our control loops
+	 */
+	if (!strcmp(loc, "BACKSIDE") || !strcmp(loc, "SYS CTRLR AMBIENT"))
 		name = "backside-temp";
 	else if (!strcmp(loc, "NB Ambient"))
 		name = "north-bridge-temp";
@@ -159,6 +184,31 @@ static int wf_max6690_detach(struct i2c_client *client)
 	struct wf_6690_sensor *max = i2c_to_6690(client);
 
 	max->i2c.adapter = NULL;
+		return -ENXIO;
+
+	max = kzalloc(sizeof(struct wf_6690_sensor), GFP_KERNEL);
+	if (max == NULL) {
+		printk(KERN_ERR "windfarm: Couldn't create MAX6690 sensor: "
+		       "no memory\n");
+		return -ENOMEM;
+	}
+
+	max->i2c = client;
+	max->sens.name = name;
+	max->sens.ops = &wf_max6690_ops;
+	i2c_set_clientdata(client, max);
+
+	rc = wf_register_sensor(&max->sens);
+	if (rc)
+		kfree(max);
+	return rc;
+}
+
+static int wf_max6690_remove(struct i2c_client *client)
+{
+	struct wf_6690_sensor *max = i2c_get_clientdata(client);
+
+	max->i2c = NULL;
 	wf_unregister_sensor(&max->sens);
 
 	return 0;
@@ -181,6 +231,22 @@ static void __exit wf_max6690_sensor_exit(void)
 
 module_init(wf_max6690_sensor_init);
 module_exit(wf_max6690_sensor_exit);
+static const struct i2c_device_id wf_max6690_id[] = {
+	{ "MAC,max6690", 0 },
+	{ }
+};
+MODULE_DEVICE_TABLE(i2c, wf_max6690_id);
+
+static struct i2c_driver wf_max6690_driver = {
+	.driver = {
+		.name		= "wf_max6690",
+	},
+	.probe		= wf_max6690_probe,
+	.remove		= wf_max6690_remove,
+	.id_table	= wf_max6690_id,
+};
+
+module_i2c_driver(wf_max6690_driver);
 
 MODULE_AUTHOR("Paul Mackerras <paulus@samba.org>");
 MODULE_DESCRIPTION("MAX6690 sensor objects for PowerMac thermal control");

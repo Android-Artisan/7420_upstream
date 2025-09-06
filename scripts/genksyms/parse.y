@@ -25,6 +25,8 @@
 
 #include <assert.h>
 #include <malloc.h>
+#include <stdlib.h>
+#include <string.h>
 #include "genksyms.h"
 
 static int is_typedef;
@@ -48,6 +50,25 @@ remove_list(struct string_list **pb, struct string_list **pe)
   struct string_list *b = *pb, *e = *pe;
   *pb = e;
   free_list(b, e);
+}
+
+/* Record definition of a struct/union/enum */
+static void record_compound(struct string_list **keyw,
+		       struct string_list **ident,
+		       struct string_list **body,
+		       enum symbol_type type)
+{
+	struct string_list *b = *body, *i = *ident, *r;
+
+	if (i->in_source_file) {
+		remove_node(keyw);
+		(*ident)->tag = type;
+		remove_list(body, ident);
+		return;
+	}
+	r = copy_node(i); r->tag = type;
+	r->next = (*keyw)->next; *body = r; (*keyw)->next = NULL;
+	add_symbol(i->string, type, b, is_extern);
 }
 
 %}
@@ -83,6 +104,7 @@ remove_list(struct string_list **pb, struct string_list **pe)
 
 %token ASM_PHRASE
 %token ATTRIBUTE_PHRASE
+%token TYPEOF_PHRASE
 %token BRACE_PHRASE
 %token BRACKET_PHRASE
 %token EXPRESSION_PHRASE
@@ -202,6 +224,8 @@ type_specifier:
 	| cvar_qualifier
 	| TYPEOF_KEYW '(' decl_specifier_seq '*' ')'
 	| TYPEOF_KEYW '(' decl_specifier_seq ')'
+	| TYPEOF_KEYW '(' parameter_declaration ')'
+	| TYPEOF_PHRASE
 
 	/* References to s/u/e's defined elsewhere.  Rearrange things
 	   so that it is easier to expand the definition fully later.  */
@@ -237,6 +261,17 @@ type_specifier:
 
 	/* Anonymous s/u/e definitions.  Nothing needs doing.  */
 	| ENUM_KEYW BRACE_PHRASE			{ $$ = $2; }
+		{ record_compound($1, $2, $3, SYM_STRUCT); $$ = $3; }
+	| UNION_KEYW IDENT class_body
+		{ record_compound($1, $2, $3, SYM_UNION); $$ = $3; }
+	| ENUM_KEYW IDENT enum_body
+		{ record_compound($1, $2, $3, SYM_ENUM); $$ = $3; }
+	/*
+	 * Anonymous enum definition. Tell add_symbol() to restart its counter.
+	 */
+	| ENUM_KEYW enum_body
+		{ add_symbol(NULL, SYM_ENUM, NULL, 0); $$ = $2; }
+	/* Anonymous s/u definitions.  Nothing needs doing.  */
 	| STRUCT_KEYW class_body			{ $$ = $2; }
 	| UNION_KEYW class_body				{ $$ = $2; }
 	;
@@ -294,6 +329,15 @@ direct_declarator:
 		    $$ = $1;
 		  }
 		}
+	| TYPE
+		{ if (current_name != NULL) {
+		    error_with_pos("unexpected second declaration name");
+		    YYERROR;
+		  } else {
+		    current_name = (*$1)->string;
+		    $$ = $1;
+		  }
+		}
 	| direct_declarator '(' parameter_declaration_clause ')'
 		{ $$ = $4; }
 	| direct_declarator '(' error ')'
@@ -301,8 +345,6 @@ direct_declarator:
 	| direct_declarator BRACKET_PHRASE
 		{ $$ = $2; }
 	| '(' declarator ')'
-		{ $$ = $3; }
-	| '(' error ')'
 		{ $$ = $3; }
 	;
 
@@ -448,6 +490,28 @@ attribute_opt:
 	/* empty */					{ $$ = NULL; }
 	| attribute_opt ATTRIBUTE_PHRASE
 	;
+
+enum_body:
+	'{' enumerator_list '}'				{ $$ = $3; }
+	| '{' enumerator_list ',' '}'			{ $$ = $4; }
+	 ;
+
+enumerator_list:
+	enumerator
+	| enumerator_list ',' enumerator
+
+enumerator:
+	IDENT
+		{
+			const char *name = (*$1)->string;
+			add_symbol(name, SYM_ENUM_CONST, NULL, 0);
+		}
+	| IDENT '=' EXPRESSION_PHRASE
+		{
+			const char *name = (*$1)->string;
+			struct string_list *expr = copy_list_range(*$3, *$2);
+			add_symbol(name, SYM_ENUM_CONST, expr, 0);
+		}
 
 asm_definition:
 	ASM_PHRASE ';'					{ $$ = $2; }

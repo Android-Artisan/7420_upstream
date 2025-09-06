@@ -5,6 +5,7 @@ SECTIONS
         __stext = . ;
 	__text = .;
 	       *(.text.startup)
+	       *(.text..startup)
 	       *(.text)
         __etext = . ;
         }
@@ -29,4 +30,6 @@ SECTIONS
         __ebss = . ;
         __end = . ;
         }
+        }
+        _end = . ;
 }

@@ -1,5 +1,4 @@
 		Simtec Electronics EB2410ITX (BAST)
-		===================================
 
 	http://www.simtec.co.uk/products/EB2410ITX/
 
@@ -56,3 +55,4 @@ Maintainers
 
 
 (c) 2004 Ben Dooks, Simtec Electronics
+Copyright 2004 Ben Dooks, Simtec Electronics

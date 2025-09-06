@@ -4,6 +4,7 @@
  *		kernel's AX.25 protocol layers.
  *
  * Authors:	Andreas Könsgen <ajk@iehk.rwth-aachen.de>
+ * Authors:	Andreas Könsgen <ajk@comnets.uni-bremen.de>
  *              Ralf Baechle DL5RB <ralf@linux-mips.org>
  *
  * Quite a lot of stuff "stolen" by Joerg Reuter from slip.c, written by
@@ -24,6 +25,7 @@
 #include <linux/errno.h>
 #include <linux/netdevice.h>
 #include <linux/timer.h>
+#include <linux/slab.h>
 #include <net/ax25.h>
 #include <linux/etherdevice.h>
 #include <linux/skbuff.h>
@@ -35,6 +37,8 @@
 #include <linux/tcp.h>
 #include <linux/semaphore.h>
 #include <asm/atomic.h>
+#include <linux/compat.h>
+#include <linux/atomic.h>
 
 #define SIXPACK_VERSION    "Revision: 0.3.0"
 
@@ -67,9 +71,9 @@
 #define SIXP_DAMA_OFF		0
 
 /* default level 2 parameters */
-#define SIXP_TXDELAY			(HZ/4)	/* in 1 s */
+#define SIXP_TXDELAY			25	/* 250 ms */
 #define SIXP_PERSIST			50	/* in 256ths */
-#define SIXP_SLOTTIME			(HZ/10)	/* in 1 s */
+#define SIXP_SLOTTIME			10	/* 100 ms */
 #define SIXP_INIT_RESYNC_TIMEOUT	(3*HZ/2) /* in 1 s */
 #define SIXP_RESYNC_TIMEOUT		5*HZ	/* in 1 s */
 
@@ -246,6 +250,13 @@ static int sp_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	struct sixpack *sp = netdev_priv(dev);
 
+static netdev_tx_t sp_xmit(struct sk_buff *skb, struct net_device *dev)
+{
+	struct sixpack *sp = netdev_priv(dev);
+
+	if (skb->protocol == htons(ETH_P_IP))
+		return ax25_ip_xmit(skb);
+
 	spin_lock_bh(&sp->lock);
 	/* We were not busy, so we are now... :-) */
 	netif_stop_queue(dev);
@@ -256,6 +267,7 @@ static int sp_xmit(struct sk_buff *skb, struct net_device *dev)
 	dev_kfree_skb(skb);
 
 	return 0;
+	return NETDEV_TX_OK;
 }
 
 static int sp_open_dev(struct net_device *dev)
@@ -320,6 +332,11 @@ static int sp_rebuild_header(struct sk_buff *skb)
 static const struct header_ops sp_header_ops = {
 	.create		= sp_header,
 	.rebuild	= sp_rebuild_header,
+static const struct net_device_ops sp_netdev_ops = {
+	.ndo_open		= sp_open_dev,
+	.ndo_stop		= sp_close,
+	.ndo_start_xmit		= sp_xmit,
+	.ndo_set_mac_address    = sp_set_mac_address,
 };
 
 static void sp_setup(struct net_device *dev)
@@ -334,6 +351,11 @@ static void sp_setup(struct net_device *dev)
 	dev->set_mac_address    = sp_set_mac_address;
 	dev->hard_header_len	= AX25_MAX_HEADER_LEN;
 	dev->header_ops 	= &sp_header_ops;
+	dev->netdev_ops		= &sp_netdev_ops;
+	dev->destructor		= free_netdev;
+	dev->mtu		= SIXP_MTU;
+	dev->hard_header_len	= AX25_MAX_HEADER_LEN;
+	dev->header_ops 	= &ax25_header_ops;
 
 	dev->addr_len		= AX25_ADDR_LEN;
 	dev->type		= ARPHRD_AX25;
@@ -595,6 +617,8 @@ static int sixpack_open(struct tty_struct *tty)
 		return -EOPNOTSUPP;
 
 	dev = alloc_netdev(sizeof(struct sixpack), "sp%d", sp_setup);
+	dev = alloc_netdev(sizeof(struct sixpack), "sp%d", NET_NAME_UNKNOWN,
+			   sp_setup);
 	if (!dev) {
 		err = -ENOMEM;
 		goto out;
@@ -606,6 +630,7 @@ static int sixpack_open(struct tty_struct *tty)
 	spin_lock_init(&sp->lock);
 	atomic_set(&sp->refcnt, 1);
 	init_MUTEX_LOCKED(&sp->dead_sem);
+	sema_init(&sp->dead_sem, 0);
 
 	/* !!! length of the buffers. MTU is IP MTU, not PACLEN!  */
 
@@ -661,6 +686,8 @@ static int sixpack_open(struct tty_struct *tty)
 
 	/* Now we're ready to register. */
 	if (register_netdev(dev))
+	err = register_netdev(dev);
+	if (err)
 		goto out_free;
 
 	tnc_init(sp);
@@ -673,6 +700,7 @@ out_free:
 
 	if (dev)
 		free_netdev(dev);
+	free_netdev(dev);
 
 out:
 	return err;
@@ -693,6 +721,11 @@ static void sixpack_close(struct tty_struct *tty)
 	sp = tty->disc_data;
 	tty->disc_data = NULL;
 	write_unlock(&disc_data_lock);
+	write_lock_bh(&disc_data_lock);
+	write_lock_irq(&disc_data_lock);
+	sp = tty->disc_data;
+	tty->disc_data = NULL;
+	write_unlock_irq(&disc_data_lock);
 	if (!sp)
 		return;
 
@@ -707,6 +740,16 @@ static void sixpack_close(struct tty_struct *tty)
 
 	del_timer(&sp->tx_t);
 	del_timer(&sp->resync_t);
+	/* We must stop the queue to avoid potentially scribbling
+	 * on the free buffers. The sp->dead_sem is not sufficient
+	 * to protect us from sp->xbuff access.
+	 */
+	netif_stop_queue(sp->dev);
+
+	unregister_netdev(sp->dev);
+
+	del_timer_sync(&sp->tx_t);
+	del_timer_sync(&sp->resync_t);
 
 	/* Free all 6pack frame buffers. */
 	kfree(sp->rbuff);
@@ -719,10 +762,12 @@ static int sixpack_ioctl(struct tty_struct *tty, struct file *file,
 {
 	struct sixpack *sp = sp_get(tty);
 	struct net_device *dev = sp->dev;
+	struct net_device *dev;
 	unsigned int tmp, err;
 
 	if (!sp)
 		return -ENXIO;
+	dev = sp->dev;
 
 	switch(cmd) {
 	case SIOCGIFNAME:
@@ -775,6 +820,23 @@ static int sixpack_ioctl(struct tty_struct *tty, struct file *file,
 	return err;
 }
 
+#ifdef CONFIG_COMPAT
+static long sixpack_compat_ioctl(struct tty_struct * tty, struct file * file,
+				unsigned int cmd, unsigned long arg)
+{
+	switch (cmd) {
+	case SIOCGIFNAME:
+	case SIOCGIFENCAP:
+	case SIOCSIFENCAP:
+	case SIOCSIFHWADDR:
+		return sixpack_ioctl(tty, file, cmd,
+				(unsigned long)compat_ptr(arg));
+	}
+
+	return -ENOIOCTLCMD;
+}
+#endif
+
 static struct tty_ldisc_ops sp_ldisc = {
 	.owner		= THIS_MODULE,
 	.magic		= TTY_LDISC_MAGIC,
@@ -782,6 +844,9 @@ static struct tty_ldisc_ops sp_ldisc = {
 	.open		= sixpack_open,
 	.close		= sixpack_close,
 	.ioctl		= sixpack_ioctl,
+#ifdef CONFIG_COMPAT
+	.compat_ioctl	= sixpack_compat_ioctl,
+#endif
 	.receive_buf	= sixpack_receive_buf,
 	.write_wakeup	= sixpack_write_wakeup,
 };
@@ -791,6 +856,9 @@ static struct tty_ldisc_ops sp_ldisc = {
 static char msg_banner[]  __initdata = KERN_INFO \
 	"AX.25: 6pack driver, " SIXPACK_VERSION "\n";
 static char msg_regfail[] __initdata = KERN_ERR  \
+static const char msg_banner[]  __initconst = KERN_INFO \
+	"AX.25: 6pack driver, " SIXPACK_VERSION "\n";
+static const char msg_regfail[] __initconst = KERN_ERR  \
 	"6pack: can't register line discipline (err = %d)\n";
 
 static int __init sixpack_init_driver(void)
@@ -807,6 +875,7 @@ static int __init sixpack_init_driver(void)
 }
 
 static const char msg_unregfail[] __exitdata = KERN_ERR \
+static const char msg_unregfail[] = KERN_ERR \
 	"6pack: can't unregister line discipline (err = %d)\n";
 
 static void __exit sixpack_exit_driver(void)
@@ -864,6 +933,12 @@ static void decode_data(struct sixpack *sp, unsigned char inbyte)
 	if (sp->rx_count != 3) {
 		sp->raw_buf[sp->rx_count++] = inbyte;
 
+		return;
+	}
+
+	if (sp->rx_count_cooked + 2 >= sizeof(sp->cooked_buf)) {
+		pr_err("6pack: cooked buffer overrun, data loss\n");
+		sp->rx_count = 0;
 		return;
 	}
 

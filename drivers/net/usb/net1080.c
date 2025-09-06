@@ -15,6 +15,7 @@
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * along with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
 // #define	DEBUG			// error path messages, extra info
@@ -29,6 +30,7 @@
 #include <linux/mii.h>
 #include <linux/usb.h>
 #include <linux/usb/usbnet.h>
+#include <linux/slab.h>
 
 #include <asm/unaligned.h>
 
@@ -64,12 +66,14 @@ struct nc_header {		// packed:
 	// __le16	vendorId;	// from usb-if
 	// __le16	productId;
 } __attribute__((__packed__));
+} __packed;
 
 #define	PAD_BYTE	((unsigned char)0xAC)
 
 struct nc_trailer {
 	__le16	packet_id;
 } __attribute__((__packed__));
+} __packed;
 
 // packets may use FLAG_FRAMING_NC and optional pad
 #define FRAMED_SIZE(mtu) (sizeof (struct nc_header) \
@@ -115,6 +119,11 @@ nc_vendor_read(struct usbnet *dev, u8 req, u8 regnum, u16 *retval_ptr)
 		0, regnum,
 		retval_ptr, sizeof *retval_ptr,
 		USB_CTRL_GET_TIMEOUT);
+	int status = usbnet_read_cmd(dev, req,
+				     USB_DIR_IN | USB_TYPE_VENDOR |
+				     USB_RECIP_DEVICE,
+				     0, regnum, retval_ptr,
+				     sizeof *retval_ptr);
 	if (status > 0)
 		status = 0;
 	if (!status)
@@ -139,6 +148,9 @@ nc_vendor_write(struct usbnet *dev, u8 req, u8 regnum, u16 value)
 		value, regnum,
 		NULL, 0,			// data is in setup packet
 		USB_CTRL_SET_TIMEOUT);
+	usbnet_write_cmd(dev, req,
+			 USB_DIR_OUT | USB_TYPE_VENDOR | USB_RECIP_DEVICE,
+			 value, regnum, NULL, 0);
 }
 
 static inline void
@@ -160,6 +172,10 @@ static void nc_dump_registers(struct usbnet *dev)
 	}
 
 	dbg("%s registers:", dev->net->name);
+	if (!vp)
+		return;
+
+	netdev_dbg(dev->net, "registers:\n");
 	for (reg = 0; reg < 0x20; reg++) {
 		int retval;
 
@@ -176,6 +192,10 @@ static void nc_dump_registers(struct usbnet *dev)
 		else
 			dbg("%s reg [0x%x] = 0x%x",
 				dev->net->name, reg, *vp);
+			netdev_dbg(dev->net, "reg [0x%x] ==> error %d\n",
+				   reg, retval);
+		else
+			netdev_dbg(dev->net, "reg [0x%x] = 0x%x\n", reg, *vp);
 	}
 	kfree(vp);
 }
@@ -222,6 +242,23 @@ static inline void nc_dump_usbctl(struct usbnet *dev, u16 usbctl)
 		(usbctl & USBCTL_DISCONN_THIS) ? " DIS" : "",
 		usbctl & ~USBCTL_WRITABLE_MASK
 		);
+	netif_dbg(dev, link, dev->net,
+		  "net1080 %s-%s usbctl 0x%x:%s%s%s%s%s; this%s%s; other%s%s; r/o 0x%x\n",
+		  dev->udev->bus->bus_name, dev->udev->devpath,
+		  usbctl,
+		  (usbctl & USBCTL_ENABLE_LANG) ? " lang" : "",
+		  (usbctl & USBCTL_ENABLE_MFGR) ? " mfgr" : "",
+		  (usbctl & USBCTL_ENABLE_PROD) ? " prod" : "",
+		  (usbctl & USBCTL_ENABLE_SERIAL) ? " serial" : "",
+		  (usbctl & USBCTL_ENABLE_DEFAULTS) ? " defaults" : "",
+
+		  (usbctl & USBCTL_FLUSH_THIS) ? " FLUSH" : "",
+		  (usbctl & USBCTL_DISCONN_THIS) ? " DIS" : "",
+
+		  (usbctl & USBCTL_FLUSH_OTHER) ? " FLUSH" : "",
+		  (usbctl & USBCTL_DISCONN_OTHER) ? " DIS" : "",
+
+		  usbctl & ~USBCTL_WRITABLE_MASK);
 }
 
 /*-------------------------------------------------------------------------*/
@@ -272,6 +309,26 @@ static inline void nc_dump_status(struct usbnet *dev, u16 status)
 
 		status & STATUS_UNSPEC_MASK
 		);
+	netif_dbg(dev, link, dev->net,
+		  "net1080 %s-%s status 0x%x: this (%c) PKT=%d%s%s%s; other PKT=%d%s%s%s; unspec 0x%x\n",
+		  dev->udev->bus->bus_name, dev->udev->devpath,
+		  status,
+
+		  // XXX the packet counts don't seem right
+		  // (1 at reset, not 0); maybe UNSPEC too
+
+		  (status & STATUS_PORT_A) ? 'A' : 'B',
+		  STATUS_PACKETS_THIS(status),
+		  (status & STATUS_CONN_THIS) ? " CON" : "",
+		  (status & STATUS_SUSPEND_THIS) ? " SUS" : "",
+		  (status & STATUS_MAILBOX_THIS) ? " MBOX" : "",
+
+		  STATUS_PACKETS_OTHER(status),
+		  (status & STATUS_CONN_OTHER) ? " CON" : "",
+		  (status & STATUS_SUSPEND_OTHER) ? " SUS" : "",
+		  (status & STATUS_MAILBOX_OTHER) ? " MBOX" : "",
+
+		  status & STATUS_UNSPEC_MASK);
 }
 
 /*-------------------------------------------------------------------------*/
@@ -290,6 +347,9 @@ static inline void nc_dump_ttl(struct usbnet *dev, u16 ttl)
 		devdbg(dev, "net1080 %s-%s ttl 0x%x this = %d, other = %d",
 			dev->udev->bus->bus_name, dev->udev->devpath,
 			ttl, TTL_THIS(ttl), TTL_OTHER(ttl));
+	netif_dbg(dev, link, dev->net, "net1080 %s-%s ttl 0x%x this = %d, other = %d\n",
+		  dev->udev->bus->bus_name, dev->udev->devpath,
+		  ttl, TTL_THIS(ttl), TTL_OTHER(ttl));
 }
 
 /*-------------------------------------------------------------------------*/
@@ -318,6 +378,24 @@ static int net1080_reset(struct usbnet *dev)
 		goto done;
 	}
 	usbctl = *vp;
+	u16		vp;
+	int		retval;
+
+	// nc_dump_registers(dev);
+
+	if ((retval = nc_register_read(dev, REG_STATUS, &vp)) < 0) {
+		netdev_dbg(dev->net, "can't read %s-%s status: %d\n",
+			   dev->udev->bus->bus_name, dev->udev->devpath, retval);
+		goto done;
+	}
+	status = vp;
+	nc_dump_status(dev, status);
+
+	if ((retval = nc_register_read(dev, REG_USBCTL, &vp)) < 0) {
+		netdev_dbg(dev->net, "can't read USBCTL, %d\n", retval);
+		goto done;
+	}
+	usbctl = vp;
 	nc_dump_usbctl(dev, usbctl);
 
 	nc_register_write(dev, REG_USBCTL,
@@ -328,6 +406,11 @@ static int net1080_reset(struct usbnet *dev)
 		goto done;
 	}
 	ttl = *vp;
+	if ((retval = nc_register_read(dev, REG_TTL, &vp)) < 0) {
+		netdev_dbg(dev->net, "can't read TTL, %d\n", retval);
+		goto done;
+	}
+	ttl = vp;
 	// nc_dump_ttl(dev, ttl);
 
 	nc_register_write(dev, REG_TTL,
@@ -343,6 +426,14 @@ static int net1080_reset(struct usbnet *dev)
 
 done:
 	kfree(vp);
+	netdev_dbg(dev->net, "assigned TTL, %d ms\n", NC_READ_TTL_MS);
+
+	netif_info(dev, link, dev->net, "port %c, peer %sconnected\n",
+		   (status & STATUS_PORT_A) ? 'A' : 'B',
+		   (status & STATUS_CONN_OTHER) ? "" : "dis");
+	retval = 0;
+
+done:
 	return retval;
 }
 
@@ -359,6 +450,12 @@ static int net1080_check_connect(struct usbnet *dev)
 	kfree(vp);
 	if (retval != 0) {
 		dbg("%s net1080_check_conn read - %d", dev->net->name, retval);
+	u16			vp;
+
+	retval = nc_register_read(dev, REG_STATUS, &vp);
+	status = vp;
+	if (retval != 0) {
+		netdev_dbg(dev->net, "net1080_check_conn read - %d\n", retval);
 		return retval;
 	}
 	if ((status & STATUS_CONN_OTHER) != STATUS_CONN_OTHER)
@@ -419,6 +516,22 @@ static void nc_ensure_sync(struct usbnet *dev)
 			devdbg(dev, "flush net1080; too many framing errors");
 		dev->frame_errors = 0;
 	}
+static void nc_ensure_sync(struct usbnet *dev)
+{
+	if (++dev->frame_errors <= 5)
+		return;
+
+	if (usbnet_write_cmd_async(dev, REQUEST_REGISTER,
+					USB_DIR_OUT | USB_TYPE_VENDOR |
+					USB_RECIP_DEVICE,
+					USBCTL_FLUSH_THIS |
+					USBCTL_FLUSH_OTHER,
+					REG_USBCTL, NULL, 0))
+		return;
+
+	netif_dbg(dev, rx_err, dev->net,
+		  "flush net1080; too many framing errors\n");
+	dev->frame_errors = 0;
 }
 
 static int net1080_rx_fixup(struct usbnet *dev, struct sk_buff *skb)
@@ -434,6 +547,15 @@ static int net1080_rx_fixup(struct usbnet *dev, struct sk_buff *skb)
 			net->hard_header_len, dev->hard_mtu, net->mtu);
 #endif
 		dev->stats.rx_frame_errors++;
+	/* This check is no longer done by usbnet */
+	if (skb->len < dev->net->hard_header_len)
+		return 0;
+
+	if (!(skb->len & 0x01)) {
+		netdev_dbg(dev->net, "rx framesize %d range %d..%d mtu %d\n",
+			   skb->len, dev->net->hard_header_len, dev->hard_mtu,
+			   dev->net->mtu);
+		dev->net->stats.rx_frame_errors++;
 		nc_ensure_sync(dev);
 		return 0;
 	}
@@ -449,11 +571,19 @@ static int net1080_rx_fixup(struct usbnet *dev, struct sk_buff *skb)
 	} else if (hdr_len < MIN_HEADER) {
 		dev->stats.rx_frame_errors++;
 		dbg("header too short, %d", hdr_len);
+		dev->net->stats.rx_frame_errors++;
+		netdev_dbg(dev->net, "packet too big, %d\n", packet_len);
+		nc_ensure_sync(dev);
+		return 0;
+	} else if (hdr_len < MIN_HEADER) {
+		dev->net->stats.rx_frame_errors++;
+		netdev_dbg(dev->net, "header too short, %d\n", hdr_len);
 		nc_ensure_sync(dev);
 		return 0;
 	} else if (hdr_len > MIN_HEADER) {
 		// out of band data for us?
 		dbg("header OOB, %d bytes", hdr_len - MIN_HEADER);
+		netdev_dbg(dev->net, "header OOB, %d bytes\n", hdr_len - MIN_HEADER);
 		nc_ensure_sync(dev);
 		// switch (vendor/product ids) { ... }
 	}
@@ -467,6 +597,8 @@ static int net1080_rx_fixup(struct usbnet *dev, struct sk_buff *skb)
 		if (skb->data [packet_len] != PAD_BYTE) {
 			dev->stats.rx_frame_errors++;
 			dbg("bad pad");
+			dev->net->stats.rx_frame_errors++;
+			netdev_dbg(dev->net, "bad pad\n");
 			return 0;
 		}
 		skb_trim(skb, skb->len - 1);
@@ -475,6 +607,9 @@ static int net1080_rx_fixup(struct usbnet *dev, struct sk_buff *skb)
 		dev->stats.rx_frame_errors++;
 		dbg("bad packet len %d (expected %d)",
 			skb->len, packet_len);
+		dev->net->stats.rx_frame_errors++;
+		netdev_dbg(dev->net, "bad packet len %d (expected %d)\n",
+			   skb->len, packet_len);
 		nc_ensure_sync(dev);
 		return 0;
 	}
@@ -488,6 +623,15 @@ static int net1080_rx_fixup(struct usbnet *dev, struct sk_buff *skb)
 #if 0
 	devdbg(dev, "frame <rx h %d p %d id %d", header->hdr_len,
 		header->packet_len, header->packet_id);
+		dev->net->stats.rx_fifo_errors++;
+		netdev_dbg(dev->net, "(2+ dropped) rx packet_id mismatch 0x%x 0x%x\n",
+			   le16_to_cpu(header->packet_id),
+			   le16_to_cpu(trailer->packet_id));
+		return 0;
+	}
+#if 0
+	netdev_dbg(dev->net, "frame <rx h %d p %d id %d\n", header->hdr_len,
+		   header->packet_len, header->packet_id);
 #endif
 	dev->frame_errors = 0;
 	return 1;
@@ -550,6 +694,9 @@ encapsulate:
 	devdbg(dev, "frame >tx h %d p %d id %d",
 		header->hdr_len, header->packet_len,
 		header->packet_id);
+	netdev_dbg(dev->net, "frame >tx h %d p %d id %d\n",
+		   header->hdr_len, header->packet_len,
+		   header->packet_id);
 #endif
 	return skb;
 }
@@ -569,6 +716,7 @@ static int net1080_bind(struct usbnet *dev, struct usb_interface *intf)
 static const struct driver_info	net1080_info = {
 	.description =	"NetChip TurboCONNECT",
 	.flags =	FLAG_FRAMING_NC,
+	.flags =	FLAG_POINTTOPOINT | FLAG_FRAMING_NC,
 	.bind =		net1080_bind,
 	.reset =	net1080_reset,
 	.check_connect = net1080_check_connect,
@@ -608,6 +756,10 @@ static void __exit net1080_exit(void)
  	usb_deregister(&net1080_driver);
 }
 module_exit(net1080_exit);
+	.disable_hub_initiated_lpm = 1,
+};
+
+module_usb_driver(net1080_driver);
 
 MODULE_AUTHOR("David Brownell");
 MODULE_DESCRIPTION("NetChip 1080 based USB Host-to-Host Links");

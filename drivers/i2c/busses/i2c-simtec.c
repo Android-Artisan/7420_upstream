@@ -23,6 +23,10 @@
 #include <linux/init.h>
 #include <linux/delay.h>
 #include <linux/platform_device.h>
+#include <linux/delay.h>
+#include <linux/platform_device.h>
+#include <linux/slab.h>
+#include <linux/io.h>
 
 #include <linux/i2c.h>
 #include <linux/i2c-algo-bit.h>
@@ -82,6 +86,8 @@ static int simtec_i2c_probe(struct platform_device *dev)
 		dev_err(&dev->dev, "cannot allocate private data\n");
 		return -ENOMEM;
 	}
+	if (pd == NULL)
+		return -ENOMEM;
 
 	platform_set_drvdata(dev, pd);
 
@@ -93,6 +99,7 @@ static int simtec_i2c_probe(struct platform_device *dev)
 	}
 
 	size = (res->end-res->start)+1;
+	size = resource_size(res);
 
 	pd->ioarea = request_mem_region(res->start, size, dev->name);
 	if (pd->ioarea == NULL) {
@@ -166,6 +173,11 @@ static struct platform_driver simtec_i2c_driver = {
 	.driver		= {
 		.name		= "simtec-i2c",
 		.owner		= THIS_MODULE,
+/* device driver */
+
+static struct platform_driver simtec_i2c_driver = {
+	.driver		= {
+		.name		= "simtec-i2c",
 	},
 	.probe		= simtec_i2c_probe,
 	.remove		= simtec_i2c_remove,
@@ -183,7 +195,9 @@ static void __exit i2c_adap_simtec_exit(void)
 
 module_init(i2c_adap_simtec_init);
 module_exit(i2c_adap_simtec_exit);
+module_platform_driver(simtec_i2c_driver);
 
 MODULE_DESCRIPTION("Simtec Generic I2C Bus driver");
 MODULE_AUTHOR("Ben Dooks <ben@simtec.co.uk>");
 MODULE_LICENSE("GPL");
+MODULE_ALIAS("platform:simtec-i2c");

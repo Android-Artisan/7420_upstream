@@ -21,6 +21,9 @@
 #include <asm/gdb-stub.h>
 #include <asm/exceptions.h>
 #include <asm/unit/clock.h>
+#include <asm/gdb-stub.h>
+#include <asm/exceptions.h>
+#include <unit/clock.h>
 #include "mn10300-serial.h"
 
 #if defined(CONFIG_GDBSTUB_ON_TTYSM0)
@@ -61,6 +64,12 @@ void __init gdbstub_io_init(void)
 	set_intr_level(gdbstub_port->rx_irq, GxICR_LEVEL_0);
 	set_intr_level(gdbstub_port->tx_irq, GxICR_LEVEL_0);
 	set_intr_stub(EXCEP_IRQ_LEVEL0, gdbstub_io_rx_handler);
+	set_intr_level(gdbstub_port->rx_irq,
+		NUM2GxICR_LEVEL(CONFIG_DEBUGGER_IRQ_LEVEL));
+	set_intr_level(gdbstub_port->tx_irq,
+		NUM2GxICR_LEVEL(CONFIG_DEBUGGER_IRQ_LEVEL));
+	set_intr_stub(NUM2EXCEP_IRQ_LEVEL(CONFIG_DEBUGGER_IRQ_LEVEL),
+		gdbstub_io_rx_handler);
 
 	*gdbstub_port->rx_icr |= GxICR_ENABLE;
 	tmp = *gdbstub_port->rx_icr;
@@ -90,6 +99,8 @@ void __init gdbstub_io_init(void)
 		:
 		: "i"(~EPSW_IM), "i"(EPSW_IE|EPSW_IM_1)
 		);
+	arch_local_change_intr_mask_level(
+		NUM2EPSW_IM(CONFIG_DEBUGGER_IRQ_LEVEL + 1));
 }
 
 /*
@@ -184,6 +195,9 @@ int gdbstub_io_rx_char(unsigned char *_ch, int nonblock)
 {
 	unsigned ix;
 	u8 ch, st;
+#if defined(CONFIG_MN10300_WD_TIMER)
+	int cpu;
+#endif
 
 	*_ch = 0xff;
 
@@ -203,6 +217,9 @@ try_again:
 #ifdef CONFIG_MN10300_WD_TIMER
 		watchdog_alert_counter = 0;
 #endif /* CONFIG_MN10300_WD_TIMER */
+	for (cpu = 0; cpu < NR_CPUS; cpu++)
+		watchdog_alert_counter[cpu] = 0;
+#endif
 		goto try_again;
 	}
 

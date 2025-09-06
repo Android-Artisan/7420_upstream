@@ -26,6 +26,9 @@
  * along with this program; see the file COPYING.
  * If not, write to the Free Software Foundation,
  * 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+ * Copyright 2007-2010 Analog Devices Inc.
+ *
+ * Licensed under the Clear BSD license or the GPL-2 (or later)
  */
 
 #ifndef _DEF_BF527_H
@@ -40,6 +43,9 @@
 #include "defBF52x_base.h"
 
 /* The following are the #defines needed by ADSP-BF527 that are not in the common header */
+/* BF527 is BF525 + EMAC */
+#include "defBF525.h"
+
 /* 10/100 Ethernet Controller	(0xFFC03000 - 0xFFC031FF) */
 
 #define EMAC_OPMODE             0xFFC03000       /* Operating Mode Register                              */

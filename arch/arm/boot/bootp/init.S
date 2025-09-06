@@ -16,7 +16,7 @@
  *  size immediately following the kernel, we could build this into
  *  a binary blob, and concatenate the zImage using the cat command.
  */
-		.section .start,#alloc,#execinstr
+		.section .start, "ax"
 		.type	_start, #function
 		.globl	_start
 
@@ -50,6 +50,7 @@ _start:		add	lr, pc, #-0x8		@ lr = current load addr
  * find the end of the tag list, and then add an INITRD tag on the end.
  * If there is already an INITRD tag, then we ignore it; the last INITRD
  * tag takes precidence.
+ * tag takes precedence.
  */
 taglist:	ldr	r10, [r9, #0]		@ tag length
 		teq	r10, #0			@ last tag (zero length)?
@@ -72,6 +73,8 @@ move:		ldmia	r4!, {r7 - r10}		@ move 32-bytes at a time
 		mov	pc, lr
 
 		.size	_start, . - _start
+
+		.align
 
 		.type	data,#object
 data:		.word	initrd_start		@ source initrd address

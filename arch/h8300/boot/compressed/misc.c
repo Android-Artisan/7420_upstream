@@ -80,6 +80,8 @@ static void error(char *m);
 int puts(const char *);
 
 extern int _text;		/* Defined in vmlinux.lds.S */
+#define memzero(s, n)     memset((s), (0), (n))
+
 extern int _end;
 static unsigned long free_mem_ptr;
 static unsigned long free_mem_end_ptr;
@@ -116,7 +118,6 @@ void* memcpy(void* __dest, __const void* __src,
 	return __dest;
 }
 
-/* ===========================================================================
  * Fill the input buffer. This is called only when the buffer is empty
  * and at least one byte is really needed.
  */
@@ -132,7 +133,6 @@ static int fill_inbuf(void)
 	return inbuf[0];
 }
 
-/* ===========================================================================
  * Write the output window window[0..outcnt-1] and update crc and bytes_out.
  * (Used for the decompressed data only.)
  */
@@ -152,6 +152,32 @@ static void flush_window(void)
     bytes_out += (ulg)outcnt;
     output_ptr += (ulg)outcnt;
     outcnt = 0;
+extern char input_data[];
+extern int input_len;
+extern char output[];
+
+#define HEAP_SIZE             0x10000
+
+#include "../../../../lib/decompress_inflate.c"
+
+void *memset(void *s, int c, size_t n)
+{
+	int i;
+	char *ss = (char *)s;
+
+	for (i = 0; i < n; i++)
+		ss[i] = c;
+	return s;
+}
+
+void *memcpy(void *dest, const void *src, size_t n)
+{
+	int i;
+	char *d = (char *)dest, *s = (char *)src;
+
+	for (i = 0; i < n; i++)
+		d[i] = s[i];
+	return dest;
 }
 
 static void error(char *x)
@@ -178,4 +204,14 @@ void decompress_kernel(void)
 	puts("Uncompressing Linux... ");
 	gunzip();
 	puts("Ok, booting the kernel.\n");
+	while (1)
+		;	/* Halt */
+}
+
+void decompress_kernel(void)
+{
+	free_mem_ptr = (unsigned long)&_end;
+	free_mem_end_ptr = free_mem_ptr + HEAP_SIZE;
+
+	__decompress(input_data, input_len, NULL, NULL, output, 0, NULL, error);
 }

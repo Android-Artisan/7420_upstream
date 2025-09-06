@@ -22,6 +22,8 @@
 #include <linux/vmalloc.h>
 
 #include <asm/system.h>
+#include <linux/gfp.h>
+
 #include <asm/uaccess.h>
 #include <asm/pgtable.h>
 #include <asm/pgalloc.h>
@@ -32,6 +34,8 @@
 #include <asm/tlb.h>
 
 DEFINE_PER_CPU(struct mmu_gather, mmu_gathers);
+#include <asm/setup.h>
+#include <asm/sections.h>
 
 extern void die_if_kernel(char *,struct pt_regs *,long);
 
@@ -199,6 +203,21 @@ callback_init(void * kernel_end)
 		unsigned long vaddr = VMALLOC_START;
 		unsigned long i, j;
 
+		unsigned long nr_pages = 0;
+		unsigned long vaddr;
+		unsigned long i, j;
+
+		/* calculate needed size */
+		for (i = 0; i < crb->map_entries; ++i)
+			nr_pages += crb->map[i].count;
+
+		/* register the vm area */
+		console_remap_vm.flags = VM_ALLOC;
+		console_remap_vm.size = nr_pages << PAGE_SHIFT;
+		vm_area_register_early(&console_remap_vm, PAGE_SIZE);
+
+		vaddr = (unsigned long)console_remap_vm.addr;
+
 		/* Set up the third level PTEs and update the virtual
 		   addresses of the CRB entries.  */
 		for (i = 0; i < crb->map_entries; ++i) {
@@ -329,6 +348,13 @@ free_reserved_mem(void *start, void *end)
 		free_page((long)__start);
 		totalram_pages++;
 	}
+void __init
+mem_init(void)
+{
+	set_max_mapnr(max_low_pfn);
+	high_memory = (void *) __va(max_low_pfn * PAGE_SIZE);
+	free_all_bootmem();
+	mem_init_print_info(NULL);
 }
 
 void
@@ -339,6 +365,7 @@ free_initmem(void)
 	free_reserved_mem(&__init_begin, &__init_end);
 	printk ("Freeing unused kernel memory: %ldk freed\n",
 		(&__init_end - &__init_begin) >> 10);
+	free_initmem_default(-1);
 }
 
 #ifdef CONFIG_BLK_DEV_INITRD
@@ -347,5 +374,6 @@ free_initrd_mem(unsigned long start, unsigned long end)
 {
 	free_reserved_mem((void *)start, (void *)end);
 	printk ("Freeing initrd memory: %ldk freed\n", (end - start) >> 10);
+	free_reserved_area((void *)start, (void *)end, -1, "initrd");
 }
 #endif

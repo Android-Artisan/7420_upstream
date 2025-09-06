@@ -26,6 +26,7 @@
  *     along with this program; if not, write to the Free Software
  *     Foundation, Inc., 59 Temple Place, Suite 330, Boston,
  *     MA 02111-1307 USA
+ *     along with this program; if not, see <http://www.gnu.org/licenses/>.
  *
  ********************************************************************/
 
@@ -33,6 +34,7 @@
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
 #include <linux/init.h>
+#include <linux/slab.h>
 
 #include <net/irda/irda.h>
 #include <net/irda/irmod.h>
@@ -71,6 +73,8 @@ static int __init ircomm_init(void)
 	ircomm = hashbin_new(HB_LOCK);
 	if (ircomm == NULL) {
 		IRDA_ERROR("%s(), can't allocate hashbin!\n", __func__);
+		net_err_ratelimited("%s(), can't allocate hashbin!\n",
+				    __func__);
 		return -ENOMEM;
 	}
 
@@ -85,6 +89,7 @@ static int __init ircomm_init(void)
 #endif /* CONFIG_PROC_FS */
 
 	IRDA_MESSAGE("IrCOMM protocol (Dag Brattli)\n");
+	net_info_ratelimited("IrCOMM protocol (Dag Brattli)\n");
 
 	return 0;
 }
@@ -117,6 +122,12 @@ struct ircomm_cb *ircomm_open(notify_t *notify, __u8 service_type, int line)
 	IRDA_ASSERT(ircomm != NULL, return NULL;);
 
 	self = kzalloc(sizeof(struct ircomm_cb), GFP_ATOMIC);
+	pr_debug("%s(), service_type=0x%02x\n", __func__ ,
+		 service_type);
+
+	IRDA_ASSERT(ircomm != NULL, return NULL;);
+
+	self = kzalloc(sizeof(struct ircomm_cb), GFP_KERNEL);
 	if (self == NULL)
 		return NULL;
 
@@ -262,6 +273,7 @@ void ircomm_connect_indication(struct ircomm_cb *self, struct sk_buff *skb,
 						info->max_header_size, skb);
 	else {
 		IRDA_DEBUG(0, "%s(), missing handler\n", __func__ );
+		pr_debug("%s(), missing handler\n", __func__);
 	}
 }
 
@@ -305,6 +317,7 @@ void ircomm_connect_confirm(struct ircomm_cb *self, struct sk_buff *skb,
 					     info->max_header_size, skb);
 	else {
 		IRDA_DEBUG(0, "%s(), missing handler\n", __func__ );
+		pr_debug("%s(), missing handler\n", __func__);
 	}
 }
 
@@ -347,6 +360,7 @@ void ircomm_data_indication(struct ircomm_cb *self, struct sk_buff *skb)
 		self->notify.data_indication(self->notify.instance, self, skb);
 	else {
 		IRDA_DEBUG(0, "%s(), missing handler\n", __func__ );
+		pr_debug("%s(), missing handler\n", __func__);
 	}
 }
 
@@ -373,6 +387,8 @@ void ircomm_process_data(struct ircomm_cb *self, struct sk_buff *skb)
 	if (unlikely(skb->len < (clen + 1))) {
 		IRDA_DEBUG(2, "%s() throwing away illegal frame\n",
 			   __func__ );
+		pr_debug("%s() throwing away illegal frame\n",
+			 __func__);
 		return;
 	}
 
@@ -392,6 +408,8 @@ void ircomm_process_data(struct ircomm_cb *self, struct sk_buff *skb)
 	else {
 		IRDA_DEBUG(4, "%s(), data was control info only!\n",
 			   __func__ );
+		pr_debug("%s(), data was control info only!\n",
+			 __func__);
 	}
 }
 
@@ -449,6 +467,7 @@ static void ircomm_control_indication(struct ircomm_cb *self,
 		dev_kfree_skb(ctrl_skb);
 	} else {
 		IRDA_DEBUG(0, "%s(), missing handler\n", __func__ );
+		pr_debug("%s(), missing handler\n", __func__);
 	}
 }
 
@@ -493,6 +512,7 @@ void ircomm_disconnect_indication(struct ircomm_cb *self, struct sk_buff *skb,
 						   info->reason, skb);
 	} else {
 		IRDA_DEBUG(0, "%s(), missing handler\n", __func__ );
+		pr_debug("%s(), missing handler\n", __func__);
 	}
 }
 

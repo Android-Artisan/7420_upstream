@@ -254,6 +254,23 @@ long spufs_create(struct nameidata *nd, unsigned int flags,
 /* ELF coredump callbacks for writing SPU ELF notes */
 extern int spufs_coredump_extra_notes_size(void);
 extern int spufs_coredump_extra_notes_write(struct file *file, loff_t *foffset);
+	umode_t mode;
+	size_t size;
+};
+
+extern const struct spufs_tree_descr spufs_dir_contents[];
+extern const struct spufs_tree_descr spufs_dir_nosched_contents[];
+extern const struct spufs_tree_descr spufs_dir_debug_contents[];
+
+/* system call implementation */
+extern struct spufs_calls spufs_calls;
+struct coredump_params;
+long spufs_run_spu(struct spu_context *ctx, u32 *npc, u32 *status);
+long spufs_create(struct path *nd, struct dentry *dentry, unsigned int flags,
+			umode_t mode, struct file *filp);
+/* ELF coredump callbacks for writing SPU ELF notes */
+extern int spufs_coredump_extra_notes_size(void);
+extern int spufs_coredump_extra_notes_write(struct coredump_params *cprm);
 
 extern const struct file_operations spufs_context_fops;
 
@@ -316,6 +333,7 @@ extern char *isolated_loader;
  *	then spu_acquire(ctx) when awoken.
  *
  * 	Returns with state_mutex re-acquired when successfull or
+ * 	Returns with state_mutex re-acquired when successful or
  * 	with -ERESTARTSYS and the state_mutex dropped when interrupted.
  */
 
@@ -360,6 +378,7 @@ struct spufs_coredump_reader {
 	size_t size;
 };
 extern struct spufs_coredump_reader spufs_coredump_read[];
+extern const struct spufs_coredump_reader spufs_coredump_read[];
 extern int spufs_coredump_num_notes;
 
 extern int spu_init_csa(struct spu_state *csa);

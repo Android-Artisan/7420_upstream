@@ -27,6 +27,7 @@
 #include <linux/fs.h>
 #include <linux/module.h>
 #include <linux/namei.h>
+#include <linux/slab.h>
 
 #include <linux/configfs.h>
 #include "configfs_internal.h"
@@ -63,7 +64,7 @@ static void fill_item_path(struct config_item * item, char * buffer, int length)
 
 		/* back up enough to print this bus id with '/' */
 		length -= cur;
-		strncpy(buffer + length,config_item_name(p),cur);
+		memcpy(buffer + length, config_item_name(p), cur);
 		*(buffer + --length) = '/';
 	}
 }
@@ -82,14 +83,13 @@ static int create_link(struct config_item *parent_item,
 	ret = -ENOMEM;
 	sl = kmalloc(sizeof(struct configfs_symlink), GFP_KERNEL);
 	if (sl) {
-		sl->sl_target = config_item_get(item);
 		spin_lock(&configfs_dirent_lock);
 		if (target_sd->s_type & CONFIGFS_USET_DROPPING) {
 			spin_unlock(&configfs_dirent_lock);
-			config_item_put(item);
 			kfree(sl);
 			return -ENOENT;
 		}
+		sl->sl_target = config_item_get(item);
 		list_add(&sl->sl_list, &target_sd->s_links);
 		spin_unlock(&configfs_dirent_lock);
 		ret = configfs_create_link(sl, parent_item->ci_dentry,
@@ -123,6 +123,23 @@ static int get_target(const char *symname, struct nameidata *nd,
 			}
 		} else
 			ret = -EPERM;
+static int get_target(const char *symname, struct path *path,
+		      struct config_item **target, struct super_block *sb)
+{
+	int ret;
+
+	ret = kern_path(symname, LOOKUP_FOLLOW|LOOKUP_DIRECTORY, path);
+	if (!ret) {
+		if (path->dentry->d_sb == sb) {
+			*target = configfs_get_config_item(path->dentry);
+			if (!*target) {
+				ret = -ENOENT;
+				path_put(path);
+			}
+		} else {
+			ret = -EPERM;
+			path_put(path);
+		}
 	}
 
 	return ret;
@@ -142,6 +159,12 @@ int configfs_symlink(struct inode *dir, struct dentry *dentry, const char *symna
 	if (dentry->d_parent == configfs_sb->s_root)
 		goto out;
 
+	struct path path;
+	struct configfs_dirent *sd;
+	struct config_item *parent_item;
+	struct config_item *target_item = NULL;
+	struct config_item_type *type;
+
 	sd = dentry->d_parent->d_fsdata;
 	/*
 	 * Fake invisibility if dir belongs to a group/default groups hierarchy
@@ -160,10 +183,42 @@ int configfs_symlink(struct inode *dir, struct dentry *dentry, const char *symna
 		goto out_put;
 
 	ret = get_target(symname, &nd, &target_item);
+	/*
+	 * This is really sick.  What they wanted was a hybrid of
+	 * link(2) and symlink(2) - they wanted the target resolved
+	 * at syscall time (as link(2) would've done), be a directory
+	 * (which link(2) would've refused to do) *AND* be a deep
+	 * fucking magic, making the target busy from rmdir POV.
+	 * symlink(2) is nothing of that sort, and the locking it
+	 * gets matches the normal symlink(2) semantics.  Without
+	 * attempts to resolve the target (which might very well
+	 * not even exist yet) done prior to locking the parent
+	 * directory.  This perversion, OTOH, needs to resolve
+	 * the target, which would lead to obvious deadlocks if
+	 * attempted with any directories locked.
+	 *
+	 * Unfortunately, that garbage is userland ABI and we should've
+	 * said "no" back in 2005.  Too late now, so we get to
+	 * play very ugly games with locking.
+	 *
+	 * Try *ANYTHING* of that sort in new code, and you will
+	 * really regret it.  Just ask yourself - what could a BOFH
+	 * do to me and do I want to find it out first-hand?
+	 *
+	 *  AV, a thoroughly annoyed bastard.
+	 */
+	inode_unlock(dir);
+	ret = get_target(symname, &path, &target_item, dentry->d_sb);
+	inode_lock(dir);
 	if (ret)
 		goto out_put;
 
-	ret = type->ct_item_ops->allow_link(parent_item, target_item);
+	if (dentry->d_inode || d_unhashed(dentry))
+		ret = -EEXIST;
+	else
+		ret = inode_permission(dir, MAY_WRITE | MAY_EXEC);
+	if (!ret)
+		ret = type->ct_item_ops->allow_link(parent_item, target_item);
 	if (!ret) {
 		mutex_lock(&configfs_symlink_mutex);
 		ret = create_link(parent_item, target_item, dentry);
@@ -175,6 +230,7 @@ int configfs_symlink(struct inode *dir, struct dentry *dentry, const char *symna
 
 	config_item_put(target_item);
 	path_put(&nd.path);
+	path_put(&path);
 
 out_put:
 	config_item_put(parent_item);
@@ -306,12 +362,28 @@ static void configfs_put_link(struct dentry *dentry, struct nameidata *nd,
 		unsigned long page = (unsigned long)cookie;
 		free_page(page);
 	}
+static const char *configfs_follow_link(struct dentry *dentry, void **cookie)
+{
+	unsigned long page = get_zeroed_page(GFP_KERNEL);
+	int error;
+
+	if (!page)
+		return ERR_PTR(-ENOMEM);
+
+	error = configfs_getlink(dentry, (char *)page);
+	if (!error) {
+		return *cookie = (void *)page;
+	}
+
+	free_page(page);
+	return ERR_PTR(error);
 }
 
 const struct inode_operations configfs_symlink_inode_operations = {
 	.follow_link = configfs_follow_link,
 	.readlink = generic_readlink,
 	.put_link = configfs_put_link,
+	.put_link = free_page_put_link,
 	.setattr = configfs_setattr,
 };
 

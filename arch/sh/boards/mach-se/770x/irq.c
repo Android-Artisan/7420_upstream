@@ -103,6 +103,13 @@ void __init init_se_IRQ(void)
 	ctrl_outw(0, BCR_ILCRE);
 	ctrl_outw(0, BCR_ILCRF);
 	ctrl_outw(0, BCR_ILCRG);
+	__raw_writew(0, BCR_ILCRA);
+	__raw_writew(0, BCR_ILCRB);
+	__raw_writew(0, BCR_ILCRC);
+	__raw_writew(0, BCR_ILCRD);
+	__raw_writew(0, BCR_ILCRE);
+	__raw_writew(0, BCR_ILCRF);
+	__raw_writew(0, BCR_ILCRG);
 
 	register_ipr_controller(&ipr_irq_desc);
 }

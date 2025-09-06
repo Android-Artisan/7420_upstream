@@ -46,6 +46,11 @@
 #include <linux/sched.h>
 #include <linux/errno.h>
 #include <linux/slab.h>
+#include <linux/gfp.h>
+#include <linux/errno.h>
+#include <linux/export.h>
+
+#include <linux/usb/quirks.h>
 
 #include <scsi/scsi.h>
 #include <scsi/scsi_eh.h>
@@ -56,6 +61,9 @@
 #include "protocol.h"
 #include "scsiglue.h"
 #include "debug.h"
+
+#include <linux/blkdev.h>
+#include "../../scsi/sd.h"
 
 
 /***********************************************************************
@@ -137,6 +145,7 @@ static int usb_stor_msg_common(struct us_data *us, int timeout)
 	us->current_urb->actual_length = 0;
 	us->current_urb->error_count = 0;
 	us->current_urb->status = 0;
+	us->current_urb->transfer_flags = 0;
 
 	/* we assume that if transfer_buffer isn't us->iobuf then it
 	 * hasn't been mapped for DMA.  Yes, this is clunky, but it's
@@ -147,6 +156,9 @@ static int usb_stor_msg_common(struct us_data *us, int timeout)
 		us->current_urb->transfer_flags |= URB_NO_TRANSFER_DMA_MAP;
 	us->current_urb->transfer_dma = us->iobuf_dma;
 	us->current_urb->setup_dma = us->cr_dma;
+	if (us->current_urb->transfer_buffer == us->iobuf)
+		us->current_urb->transfer_flags |= URB_NO_TRANSFER_DMA_MAP;
+	us->current_urb->transfer_dma = us->iobuf_dma;
 
 	/* submit the URB */
 	status = usb_submit_urb(us->current_urb, GFP_NOIO);
@@ -165,6 +177,7 @@ static int usb_stor_msg_common(struct us_data *us, int timeout)
 		/* cancel the URB, if it hasn't been cancelled already */
 		if (test_and_clear_bit(US_FLIDX_URB_ACTIVE, &us->dflags)) {
 			US_DEBUGP("-- cancelling URB\n");
+			usb_stor_dbg(us, "-- cancelling URB\n");
 			usb_unlink_urb(us->current_urb);
 		}
 	}
@@ -178,6 +191,8 @@ static int usb_stor_msg_common(struct us_data *us, int timeout)
 	if (timeleft <= 0) {
 		US_DEBUGP("%s -- cancelling URB\n",
 			  timeleft == 0 ? "Timeout" : "Signal");
+		usb_stor_dbg(us, "%s -- cancelling URB\n",
+			     timeleft == 0 ? "Timeout" : "Signal");
 		usb_kill_urb(us->current_urb);
 	}
 
@@ -198,6 +213,8 @@ int usb_stor_control_msg(struct us_data *us, unsigned int pipe,
 	US_DEBUGP("%s: rq=%02x rqtype=%02x value=%04x index=%02x len=%u\n",
 			__func__, request, requesttype,
 			value, index, size);
+	usb_stor_dbg(us, "rq=%02x rqtype=%02x value=%04x index=%02x len=%u\n",
+		     request, requesttype, value, index, size);
 
 	/* fill in the devrequest structure */
 	us->cr->bRequestType = requesttype;
@@ -217,6 +234,7 @@ int usb_stor_control_msg(struct us_data *us, unsigned int pipe,
 		status = us->current_urb->actual_length;
 	return status;
 }
+EXPORT_SYMBOL_GPL(usb_stor_control_msg);
 
 /* This is a version of usb_clear_halt() that allows early termination and
  * doesn't read the status from the device -- this is because some devices
@@ -251,6 +269,13 @@ int usb_stor_clear_halt(struct us_data *us, unsigned int pipe)
 	US_DEBUGP("%s: result = %d\n", __func__, result);
 	return result;
 }
+	if (result >= 0)
+		usb_reset_endpoint(us->pusb_dev, endp);
+
+	usb_stor_dbg(us, "result = %d\n", result);
+	return result;
+}
+EXPORT_SYMBOL_GPL(usb_stor_clear_halt);
 
 
 /*
@@ -265,6 +290,8 @@ static int interpret_urb_result(struct us_data *us, unsigned int pipe,
 {
 	US_DEBUGP("Status code %d; transferred %u/%u\n",
 			result, partial, length);
+	usb_stor_dbg(us, "Status code %d; transferred %u/%u\n",
+		     result, partial, length);
 	switch (result) {
 
 	/* no error code; did we send all the data? */
@@ -275,6 +302,11 @@ static int interpret_urb_result(struct us_data *us, unsigned int pipe,
 		}
 
 		US_DEBUGP("-- transfer complete\n");
+			usb_stor_dbg(us, "-- short transfer\n");
+			return USB_STOR_XFER_SHORT;
+		}
+
+		usb_stor_dbg(us, "-- transfer complete\n");
 		return USB_STOR_XFER_GOOD;
 
 	/* stalled */
@@ -283,11 +315,14 @@ static int interpret_urb_result(struct us_data *us, unsigned int pipe,
 		 * a failed command */
 		if (usb_pipecontrol(pipe)) {
 			US_DEBUGP("-- stall on control pipe\n");
+			usb_stor_dbg(us, "-- stall on control pipe\n");
 			return USB_STOR_XFER_STALLED;
 		}
 
 		/* for other sorts of endpoint, clear the stall */
 		US_DEBUGP("clearing endpoint halt for pipe 0x%x\n", pipe);
+		usb_stor_dbg(us, "clearing endpoint halt for pipe 0x%x\n",
+			     pipe);
 		if (usb_stor_clear_halt(us, pipe) < 0)
 			return USB_STOR_XFER_ERROR;
 		return USB_STOR_XFER_STALLED;
@@ -295,26 +330,31 @@ static int interpret_urb_result(struct us_data *us, unsigned int pipe,
 	/* babble - the device tried to send more than we wanted to read */
 	case -EOVERFLOW:
 		US_DEBUGP("-- babble\n");
+		usb_stor_dbg(us, "-- babble\n");
 		return USB_STOR_XFER_LONG;
 
 	/* the transfer was cancelled by abort, disconnect, or timeout */
 	case -ECONNRESET:
 		US_DEBUGP("-- transfer cancelled\n");
+		usb_stor_dbg(us, "-- transfer cancelled\n");
 		return USB_STOR_XFER_ERROR;
 
 	/* short scatter-gather read transfer */
 	case -EREMOTEIO:
 		US_DEBUGP("-- short read transfer\n");
+		usb_stor_dbg(us, "-- short read transfer\n");
 		return USB_STOR_XFER_SHORT;
 
 	/* abort or disconnect in progress */
 	case -EIO:
 		US_DEBUGP("-- abort or disconnect in progress\n");
+		usb_stor_dbg(us, "-- abort or disconnect in progress\n");
 		return USB_STOR_XFER_ERROR;
 
 	/* the catch-all error case */
 	default:
 		US_DEBUGP("-- unknown error\n");
+		usb_stor_dbg(us, "-- unknown error\n");
 		return USB_STOR_XFER_ERROR;
 	}
 }
@@ -332,6 +372,8 @@ int usb_stor_ctrl_transfer(struct us_data *us, unsigned int pipe,
 	US_DEBUGP("%s: rq=%02x rqtype=%02x value=%04x index=%02x len=%u\n",
 			__func__, request, requesttype,
 			value, index, size);
+	usb_stor_dbg(us, "rq=%02x rqtype=%02x value=%04x index=%02x len=%u\n",
+		     request, requesttype, value, index, size);
 
 	/* fill in the devrequest structure */
 	us->cr->bRequestType = requesttype;
@@ -349,6 +391,7 @@ int usb_stor_ctrl_transfer(struct us_data *us, unsigned int pipe,
 	return interpret_urb_result(us, pipe, size, result,
 			us->current_urb->actual_length);
 }
+EXPORT_SYMBOL_GPL(usb_stor_ctrl_transfer);
 
 /*
  * Receive one interrupt buffer, without timeouts, but allowing early
@@ -365,6 +408,7 @@ static int usb_stor_intr_transfer(struct us_data *us, void *buf,
 	unsigned int maxp;
 
 	US_DEBUGP("%s: xfer %u bytes\n", __func__, length);
+	usb_stor_dbg(us, "xfer %u bytes\n", length);
 
 	/* calculate the max packet size */
 	maxp = usb_maxpacket(us->pusb_dev, pipe, usb_pipeout(pipe));
@@ -392,6 +436,7 @@ int usb_stor_bulk_transfer_buf(struct us_data *us, unsigned int pipe,
 	int result;
 
 	US_DEBUGP("%s: xfer %u bytes\n", __func__, length);
+	usb_stor_dbg(us, "xfer %u bytes\n", length);
 
 	/* fill and submit the URB */
 	usb_fill_bulk_urb(us->current_urb, us->pusb_dev, pipe, buf, length,
@@ -404,6 +449,7 @@ int usb_stor_bulk_transfer_buf(struct us_data *us, unsigned int pipe,
 	return interpret_urb_result(us, pipe, length, result, 
 			us->current_urb->actual_length);
 }
+EXPORT_SYMBOL_GPL(usb_stor_bulk_transfer_buf);
 
 /*
  * Transfer a scatter-gather list via bulk transfer
@@ -428,6 +474,11 @@ static int usb_stor_bulk_transfer_sglist(struct us_data *us, unsigned int pipe,
 			sg, num_sg, length, GFP_NOIO);
 	if (result) {
 		US_DEBUGP("usb_sg_init returned %d\n", result);
+	usb_stor_dbg(us, "xfer %u bytes, %d entries\n", length, num_sg);
+	result = usb_sg_init(&us->current_sg, us->pusb_dev, pipe, 0,
+			sg, num_sg, length, GFP_NOIO);
+	if (result) {
+		usb_stor_dbg(us, "usb_sg_init returned %d\n", result);
 		return USB_STOR_XFER_ERROR;
 	}
 
@@ -441,6 +492,7 @@ static int usb_stor_bulk_transfer_sglist(struct us_data *us, unsigned int pipe,
 		/* cancel the request, if it hasn't been cancelled already */
 		if (test_and_clear_bit(US_FLIDX_SG_ACTIVE, &us->dflags)) {
 			US_DEBUGP("-- cancelling sg request\n");
+			usb_stor_dbg(us, "-- cancelling sg request\n");
 			usb_sg_cancel(&us->current_sg);
 		}
 	}
@@ -471,6 +523,7 @@ int usb_stor_bulk_srb(struct us_data* us, unsigned int pipe,
 	scsi_set_resid(srb, scsi_bufflen(srb) - partial);
 	return result;
 }
+EXPORT_SYMBOL_GPL(usb_stor_bulk_srb);
 
 /*
  * Transfer an entire SCSI command's worth of data payload over the bulk
@@ -506,10 +559,85 @@ int usb_stor_bulk_transfer_sg(struct us_data* us, unsigned int pipe,
 		*residual = length_left;
 	return result;
 }
+EXPORT_SYMBOL_GPL(usb_stor_bulk_transfer_sg);
 
 /***********************************************************************
  * Transport routines
  ***********************************************************************/
+
+/* There are so many devices that report the capacity incorrectly,
+ * this routine was written to counteract some of the resulting
+ * problems.
+ */
+static void last_sector_hacks(struct us_data *us, struct scsi_cmnd *srb)
+{
+	struct gendisk *disk;
+	struct scsi_disk *sdkp;
+	u32 sector;
+
+	/* To Report "Medium Error: Record Not Found */
+	static unsigned char record_not_found[18] = {
+		[0]	= 0x70,			/* current error */
+		[2]	= MEDIUM_ERROR,		/* = 0x03 */
+		[7]	= 0x0a,			/* additional length */
+		[12]	= 0x14			/* Record Not Found */
+	};
+
+	/* If last-sector problems can't occur, whether because the
+	 * capacity was already decremented or because the device is
+	 * known to report the correct capacity, then we don't need
+	 * to do anything.
+	 */
+	if (!us->use_last_sector_hacks)
+		return;
+
+	/* Was this command a READ(10) or a WRITE(10)? */
+	if (srb->cmnd[0] != READ_10 && srb->cmnd[0] != WRITE_10)
+		goto done;
+
+	/* Did this command access the last sector? */
+	sector = (srb->cmnd[2] << 24) | (srb->cmnd[3] << 16) |
+			(srb->cmnd[4] << 8) | (srb->cmnd[5]);
+	disk = srb->request->rq_disk;
+	if (!disk)
+		goto done;
+	sdkp = scsi_disk(disk);
+	if (!sdkp)
+		goto done;
+	if (sector + 1 != sdkp->capacity)
+		goto done;
+
+	if (srb->result == SAM_STAT_GOOD && scsi_get_resid(srb) == 0) {
+
+		/* The command succeeded.  We know this device doesn't
+		 * have the last-sector bug, so stop checking it.
+		 */
+		us->use_last_sector_hacks = 0;
+
+	} else {
+		/* The command failed.  Allow up to 3 retries in case this
+		 * is some normal sort of failure.  After that, assume the
+		 * capacity is wrong and we're trying to access the sector
+		 * beyond the end.  Replace the result code and sense data
+		 * with values that will cause the SCSI core to fail the
+		 * command immediately, instead of going into an infinite
+		 * (or even just a very long) retry loop.
+		 */
+		if (++us->last_sector_retries < 3)
+			return;
+		srb->result = SAM_STAT_CHECK_CONDITION;
+		memcpy(srb->sense_buffer, record_not_found,
+				sizeof(record_not_found));
+	}
+
+ done:
+	/* Don't reset the retry counter for TEST UNIT READY commands,
+	 * because they get issued after device resets which might be
+	 * caused by a failed last-sector access.
+	 */
+	if (srb->cmnd[0] != TEST_UNIT_READY)
+		us->last_sector_retries = 0;
+}
 
 /* Invoke the transport and basic error-handling/recovery methods
  *
@@ -530,6 +658,7 @@ void usb_stor_invoke_transport(struct scsi_cmnd *srb, struct us_data *us)
 	 */
 	if (test_bit(US_FLIDX_TIMED_OUT, &us->dflags)) {
 		US_DEBUGP("-- command was aborted\n");
+		usb_stor_dbg(us, "-- command was aborted\n");
 		srb->result = DID_ABORT << 16;
 		goto Handle_Errors;
 	}
@@ -537,6 +666,7 @@ void usb_stor_invoke_transport(struct scsi_cmnd *srb, struct us_data *us)
 	/* if there is a transport error, reset and don't auto-sense */
 	if (result == USB_STOR_TRANSPORT_ERROR) {
 		US_DEBUGP("-- transport indicates error, resetting\n");
+		usb_stor_dbg(us, "-- transport indicates error, resetting\n");
 		srb->result = DID_ERROR << 16;
 		goto Handle_Errors;
 	}
@@ -544,6 +674,7 @@ void usb_stor_invoke_transport(struct scsi_cmnd *srb, struct us_data *us)
 	/* if the transport provided its own sense data, don't auto-sense */
 	if (result == USB_STOR_TRANSPORT_NO_SENSE) {
 		srb->result = SAM_STAT_CHECK_CONDITION;
+		last_sector_hacks(us, srb);
 		return;
 	}
 
@@ -565,6 +696,9 @@ void usb_stor_invoke_transport(struct scsi_cmnd *srb, struct us_data *us)
 	if ((us->protocol == US_PR_CB || us->protocol == US_PR_DPCM_USB) &&
 			srb->sc_data_direction != DMA_FROM_DEVICE) {
 		US_DEBUGP("-- CB transport device requiring auto-sense\n");
+	if ((us->protocol == USB_PR_CB || us->protocol == USB_PR_DPCM_USB) &&
+			srb->sc_data_direction != DMA_FROM_DEVICE) {
+		usb_stor_dbg(us, "-- CB transport device requiring auto-sense\n");
 		need_auto_sense = 1;
 	}
 
@@ -575,7 +709,23 @@ void usb_stor_invoke_transport(struct scsi_cmnd *srb, struct us_data *us)
 	 */
 	if (result == USB_STOR_TRANSPORT_FAILED) {
 		US_DEBUGP("-- transport indicates command failure\n");
+		usb_stor_dbg(us, "-- transport indicates command failure\n");
 		need_auto_sense = 1;
+	}
+
+	/*
+	 * Determine if this device is SAT by seeing if the
+	 * command executed successfully.  Otherwise we'll have
+	 * to wait for at least one CHECK_CONDITION to determine
+	 * SANE_SENSE support
+	 */
+	if (unlikely((srb->cmnd[0] == ATA_16 || srb->cmnd[0] == ATA_12) &&
+	    result == USB_STOR_TRANSPORT_GOOD &&
+	    !(us->fflags & US_FL_SANE_SENSE) &&
+	    !(us->fflags & US_FL_BAD_SENSE) &&
+	    !(srb->cmnd[2] & 0x20))) {
+		usb_stor_dbg(us, "-- SAT supported, increasing auto-sense\n");
+		us->fflags |= US_FL_SANE_SENSE;
 	}
 
 	/*
@@ -589,6 +739,7 @@ void usb_stor_invoke_transport(struct scsi_cmnd *srb, struct us_data *us)
 	      (srb->cmnd[0] == LOG_SENSE) ||
 	      (srb->cmnd[0] == MODE_SENSE_10))) {
 		US_DEBUGP("-- unexpectedly short transfer\n");
+		usb_stor_dbg(us, "-- unexpectedly short transfer\n");
 	}
 
 	/* Now, if we need to do the auto-sense, let's do it */
@@ -603,6 +754,22 @@ void usb_stor_invoke_transport(struct scsi_cmnd *srb, struct us_data *us)
 		/* FIXME: we must do the protocol translation here */
 		if (us->subclass == US_SC_RBC || us->subclass == US_SC_SCSI ||
 				us->subclass == US_SC_CYP_ATACB)
+		int sense_size = US_SENSE_SIZE;
+		struct scsi_sense_hdr sshdr;
+		const u8 *scdd;
+		u8 fm_ili;
+
+		/* device supports and needs bigger sense buffer */
+		if (us->fflags & US_FL_SANE_SENSE)
+			sense_size = ~0;
+Retry_Sense:
+		usb_stor_dbg(us, "Issuing auto-REQUEST_SENSE\n");
+
+		scsi_eh_prep_cmnd(srb, &ses, NULL, 0, sense_size);
+
+		/* FIXME: we must do the protocol translation here */
+		if (us->subclass == USB_SC_RBC || us->subclass == USB_SC_SCSI ||
+				us->subclass == USB_SC_CYP_ATACB)
 			srb->cmd_len = 6;
 		else
 			srb->cmd_len = 12;
@@ -621,6 +788,34 @@ void usb_stor_invoke_transport(struct scsi_cmnd *srb, struct us_data *us)
 		}
 		if (temp_result != USB_STOR_TRANSPORT_GOOD) {
 			US_DEBUGP("-- auto-sense failure\n");
+			usb_stor_dbg(us, "-- auto-sense aborted\n");
+			srb->result = DID_ABORT << 16;
+
+			/* If SANE_SENSE caused this problem, disable it */
+			if (sense_size != US_SENSE_SIZE) {
+				us->fflags &= ~US_FL_SANE_SENSE;
+				us->fflags |= US_FL_BAD_SENSE;
+			}
+			goto Handle_Errors;
+		}
+
+		/* Some devices claim to support larger sense but fail when
+		 * trying to request it. When a transport failure happens
+		 * using US_FS_SANE_SENSE, we always retry with a standard
+		 * (small) sense request. This fixes some USB GSM modems
+		 */
+		if (temp_result == USB_STOR_TRANSPORT_FAILED &&
+				sense_size != US_SENSE_SIZE) {
+			usb_stor_dbg(us, "-- auto-sense failure, retry small sense\n");
+			sense_size = US_SENSE_SIZE;
+			us->fflags &= ~US_FL_SANE_SENSE;
+			us->fflags |= US_FL_BAD_SENSE;
+			goto Retry_Sense;
+		}
+
+		/* Other failures */
+		if (temp_result != USB_STOR_TRANSPORT_GOOD) {
+			usb_stor_dbg(us, "-- auto-sense failure\n");
 
 			/* we skip the reset if this happens to be a
 			 * multi-target device, since failure of an
@@ -643,6 +838,36 @@ void usb_stor_invoke_transport(struct scsi_cmnd *srb, struct us_data *us)
 			  srb->sense_buffer[2] & 0xf,
 			  srb->sense_buffer[12], 
 			  srb->sense_buffer[13]);
+		/* If the sense data returned is larger than 18-bytes then we
+		 * assume this device supports requesting more in the future.
+		 * The response code must be 70h through 73h inclusive.
+		 */
+		if (srb->sense_buffer[7] > (US_SENSE_SIZE - 8) &&
+		    !(us->fflags & US_FL_SANE_SENSE) &&
+		    !(us->fflags & US_FL_BAD_SENSE) &&
+		    (srb->sense_buffer[0] & 0x7C) == 0x70) {
+			usb_stor_dbg(us, "-- SANE_SENSE support enabled\n");
+			us->fflags |= US_FL_SANE_SENSE;
+
+			/* Indicate to the user that we truncated their sense
+			 * because we didn't know it supported larger sense.
+			 */
+			usb_stor_dbg(us, "-- Sense data truncated to %i from %i\n",
+				     US_SENSE_SIZE,
+				     srb->sense_buffer[7] + 8);
+			srb->sense_buffer[7] = (US_SENSE_SIZE - 8);
+		}
+
+		scsi_normalize_sense(srb->sense_buffer, SCSI_SENSE_BUFFERSIZE,
+				     &sshdr);
+
+		usb_stor_dbg(us, "-- Result from auto-sense is %d\n",
+			     temp_result);
+		usb_stor_dbg(us, "-- code: 0x%x, key: 0x%x, ASC: 0x%x, ASCQ: 0x%x\n",
+			     sshdr.response_code, sshdr.sense_key,
+			     sshdr.asc, sshdr.ascq);
+#ifdef CONFIG_USB_STORAGE_DEBUG
+		usb_stor_show_sense(us, sshdr.sense_key, sshdr.asc, sshdr.ascq);
 #endif
 
 		/* set the result so the higher layers expect this data */
@@ -659,6 +884,76 @@ void usb_stor_invoke_transport(struct scsi_cmnd *srb, struct us_data *us)
 				srb->sense_buffer[13] == 0) {
 			srb->result = SAM_STAT_GOOD;
 			srb->sense_buffer[0] = 0x0;
+		scdd = scsi_sense_desc_find(srb->sense_buffer,
+					    SCSI_SENSE_BUFFERSIZE, 4);
+		fm_ili = (scdd ? scdd[3] : srb->sense_buffer[2]) & 0xA0;
+
+		/* We often get empty sense data.  This could indicate that
+		 * everything worked or that there was an unspecified
+		 * problem.  We have to decide which.
+		 */
+		if (sshdr.sense_key == 0 && sshdr.asc == 0 && sshdr.ascq == 0 &&
+		    fm_ili == 0) {
+			/* If things are really okay, then let's show that.
+			 * Zero out the sense buffer so the higher layers
+			 * won't realize we did an unsolicited auto-sense.
+			 */
+			if (result == USB_STOR_TRANSPORT_GOOD) {
+				srb->result = SAM_STAT_GOOD;
+				srb->sense_buffer[0] = 0x0;
+			}
+
+			/*
+			 * ATA-passthru commands use sense data to report
+			 * the command completion status, and often devices
+			 * return Check Condition status when nothing is
+			 * wrong.
+			 */
+			else if (srb->cmnd[0] == ATA_16 ||
+					srb->cmnd[0] == ATA_12) {
+				/* leave the data alone */
+			}
+
+			/* If there was a problem, report an unspecified
+			 * hardware error to prevent the higher layers from
+			 * entering an infinite retry loop.
+			 */
+			else {
+				srb->result = DID_ERROR << 16;
+				if ((sshdr.response_code & 0x72) == 0x72)
+					srb->sense_buffer[1] = HARDWARE_ERROR;
+				else
+					srb->sense_buffer[2] = HARDWARE_ERROR;
+			}
+		}
+	}
+
+	/*
+	 * Some devices don't work or return incorrect data the first
+	 * time they get a READ(10) command, or for the first READ(10)
+	 * after a media change.  If the INITIAL_READ10 flag is set,
+	 * keep track of whether READ(10) commands succeed.  If the
+	 * previous one succeeded and this one failed, set the REDO_READ10
+	 * flag to force a retry.
+	 */
+	if (unlikely((us->fflags & US_FL_INITIAL_READ10) &&
+			srb->cmnd[0] == READ_10)) {
+		if (srb->result == SAM_STAT_GOOD) {
+			set_bit(US_FLIDX_READ10_WORKED, &us->dflags);
+		} else if (test_bit(US_FLIDX_READ10_WORKED, &us->dflags)) {
+			clear_bit(US_FLIDX_READ10_WORKED, &us->dflags);
+			set_bit(US_FLIDX_REDO_READ10, &us->dflags);
+		}
+
+		/*
+		 * Next, if the REDO_READ10 flag is set, return a result
+		 * code that will cause the SCSI core to retry the READ(10)
+		 * command immediately.
+		 */
+		if (test_bit(US_FLIDX_REDO_READ10, &us->dflags)) {
+			clear_bit(US_FLIDX_REDO_READ10, &us->dflags);
+			srb->result = DID_IMM_RETRY << 16;
+			srb->sense_buffer[0] = 0;
 		}
 	}
 
@@ -667,6 +962,11 @@ void usb_stor_invoke_transport(struct scsi_cmnd *srb, struct us_data *us)
 			scsi_bufflen(srb) - scsi_get_resid(srb) < srb->underflow)
 		srb->result = (DID_ERROR << 16) | (SUGGEST_RETRY << 24);
 
+	if ((srb->result == SAM_STAT_GOOD || srb->sense_buffer[2] == 0) &&
+			scsi_bufflen(srb) - scsi_get_resid(srb) < srb->underflow)
+		srb->result = DID_ERROR << 16;
+
+	last_sector_hacks(us, srb);
 	return;
 
 	/* Error and abort processing: try to resynchronize with the device
@@ -694,6 +994,7 @@ void usb_stor_invoke_transport(struct scsi_cmnd *srb, struct us_data *us)
 		us->transport_reset(us);
 	}
 	clear_bit(US_FLIDX_RESETTING, &us->dflags);
+	last_sector_hacks(us, srb);
 }
 
 /* Stop the current URB transfer */
@@ -707,12 +1008,14 @@ void usb_stor_stop_transport(struct us_data *us)
 	 * it won't be cancelled more than once. */
 	if (test_and_clear_bit(US_FLIDX_URB_ACTIVE, &us->dflags)) {
 		US_DEBUGP("-- cancelling URB\n");
+		usb_stor_dbg(us, "-- cancelling URB\n");
 		usb_unlink_urb(us->current_urb);
 	}
 
 	/* If we are waiting for a scatter-gather operation, cancel it. */
 	if (test_and_clear_bit(US_FLIDX_SG_ACTIVE, &us->dflags)) {
 		US_DEBUGP("-- cancelling sg request\n");
+		usb_stor_dbg(us, "-- cancelling sg request\n");
 		usb_sg_cancel(&us->current_sg);
 	}
 }
@@ -722,6 +1025,10 @@ void usb_stor_stop_transport(struct us_data *us)
  */
 
 int usb_stor_CBI_transport(struct scsi_cmnd *srb, struct us_data *us)
+ * Control/Bulk and Control/Bulk/Interrupt transport
+ */
+
+int usb_stor_CB_transport(struct scsi_cmnd *srb, struct us_data *us)
 {
 	unsigned int transfer_length = scsi_bufflen(srb);
 	unsigned int pipe = 0;
@@ -729,13 +1036,20 @@ int usb_stor_CBI_transport(struct scsi_cmnd *srb, struct us_data *us)
 
 	/* COMMAND STAGE */
 	/* let's send the command via the control pipe */
+	/*
+	 * Command is sometime (f.e. after scsi_eh_prep_cmnd) on the stack.
+	 * Stack may be vmallocated.  So no DMA for us.  Make a copy.
+	 */
+	memcpy(us->iobuf, srb->cmnd, srb->cmd_len);
 	result = usb_stor_ctrl_transfer(us, us->send_ctrl_pipe,
 				      US_CBI_ADSC, 
 				      USB_TYPE_CLASS | USB_RECIP_INTERFACE, 0, 
-				      us->ifnum, srb->cmnd, srb->cmd_len);
+				      us->ifnum, us->iobuf, srb->cmd_len);
 
 	/* check the return code for the command */
 	US_DEBUGP("Call to usb_stor_ctrl_transfer() returned %d\n", result);
+	usb_stor_dbg(us, "Call to usb_stor_ctrl_transfer() returned %d\n",
+		     result);
 
 	/* if we stalled the command, it means command failed */
 	if (result == USB_STOR_XFER_STALLED) {
@@ -754,6 +1068,7 @@ int usb_stor_CBI_transport(struct scsi_cmnd *srb, struct us_data *us)
 				us->recv_bulk_pipe : us->send_bulk_pipe;
 		result = usb_stor_bulk_srb(us, pipe, srb);
 		US_DEBUGP("CBI data stage result is 0x%x\n", result);
+		usb_stor_dbg(us, "CBI data stage result is 0x%x\n", result);
 
 		/* if we stalled the data transfer it means command failed */
 		if (result == USB_STOR_XFER_STALLED)
@@ -766,6 +1081,16 @@ int usb_stor_CBI_transport(struct scsi_cmnd *srb, struct us_data *us)
 	result = usb_stor_intr_transfer(us, us->iobuf, 2);
 	US_DEBUGP("Got interrupt data (0x%x, 0x%x)\n", 
 			us->iobuf[0], us->iobuf[1]);
+
+	/* NOTE: CB does not have a status stage.  Silly, I know.  So
+	 * we have to catch this at a higher level.
+	 */
+	if (us->protocol != USB_PR_CBI)
+		return USB_STOR_TRANSPORT_GOOD;
+
+	result = usb_stor_intr_transfer(us, us->iobuf, 2);
+	usb_stor_dbg(us, "Got interrupt data (0x%x, 0x%x)\n",
+		     us->iobuf[0], us->iobuf[1]);
 	if (result != USB_STOR_XFER_GOOD)
 		return USB_STOR_TRANSPORT_ERROR;
 
@@ -777,6 +1102,7 @@ int usb_stor_CBI_transport(struct scsi_cmnd *srb, struct us_data *us)
 	 * commands, but that can't be helped.
 	 */
 	if (us->subclass == US_SC_UFI) {
+	if (us->subclass == USB_SC_UFI) {
 		if (srb->cmnd[0] == REQUEST_SENSE ||
 		    srb->cmnd[0] == INQUIRY)
 			return USB_STOR_TRANSPORT_GOOD;
@@ -794,6 +1120,8 @@ int usb_stor_CBI_transport(struct scsi_cmnd *srb, struct us_data *us)
 	if (us->iobuf[0]) {
 		US_DEBUGP("CBI IRQ data showed reserved bType 0x%x\n",
 				us->iobuf[0]);
+		usb_stor_dbg(us, "CBI IRQ data showed reserved bType 0x%x\n",
+			     us->iobuf[0]);
 		goto Failed;
 
 	}
@@ -865,6 +1193,7 @@ int usb_stor_CB_transport(struct scsi_cmnd *srb, struct us_data *us)
 	 */
 	return USB_STOR_TRANSPORT_GOOD;
 }
+EXPORT_SYMBOL_GPL(usb_stor_CB_transport);
 
 /*
  * Bulk only transport
@@ -889,6 +1218,25 @@ int usb_stor_Bulk_max_lun(struct us_data *us)
 	/* if we have a successful request, return the result */
 	if (result > 0)
 		return us->iobuf[0];
+				 0, us->ifnum, us->iobuf, 1, 10*HZ);
+
+	usb_stor_dbg(us, "GetMaxLUN command result is %d, data is %d\n",
+		     result, us->iobuf[0]);
+
+	/*
+	 * If we have a successful request, return the result if valid. The
+	 * CBW LUN field is 4 bits wide, so the value reported by the device
+	 * should fit into that.
+	 */
+	if (result > 0) {
+		if (us->iobuf[0] < 16) {
+			return us->iobuf[0];
+		} else {
+			dev_info(&us->pusb_intf->dev,
+				 "Max LUN %d is not valid, using 0 instead",
+				 us->iobuf[0]);
+		}
+	}
 
 	/*
 	 * Some devices don't like GetMaxLUN.  They may STALL the control
@@ -921,6 +1269,8 @@ int usb_stor_Bulk_transport(struct scsi_cmnd *srb, struct us_data *us)
 	bcb->Signature = cpu_to_le32(US_BULK_CB_SIGN);
 	bcb->DataTransferLength = cpu_to_le32(transfer_length);
 	bcb->Flags = srb->sc_data_direction == DMA_FROM_DEVICE ? 1 << 7 : 0;
+	bcb->Flags = srb->sc_data_direction == DMA_FROM_DEVICE ?
+		US_BULK_FLAG_IN : 0;
 	bcb->Tag = ++us->tag;
 	bcb->Lun = srb->device->lun;
 	if (us->fflags & US_FL_SCM_MULT_TARG)
@@ -940,6 +1290,14 @@ int usb_stor_Bulk_transport(struct scsi_cmnd *srb, struct us_data *us)
 	result = usb_stor_bulk_transfer_buf(us, us->send_bulk_pipe,
 				bcb, cbwlen, NULL);
 	US_DEBUGP("Bulk command transfer result=%d\n", result);
+	usb_stor_dbg(us, "Bulk Command S 0x%x T 0x%x L %d F %d Trg %d LUN %d CL %d\n",
+		     le32_to_cpu(bcb->Signature), bcb->Tag,
+		     le32_to_cpu(bcb->DataTransferLength), bcb->Flags,
+		     (bcb->Lun >> 4), (bcb->Lun & 0x0F),
+		     bcb->Length);
+	result = usb_stor_bulk_transfer_buf(us, us->send_bulk_pipe,
+				bcb, cbwlen, NULL);
+	usb_stor_dbg(us, "Bulk command transfer result=%d\n", result);
 	if (result != USB_STOR_XFER_GOOD)
 		return USB_STOR_TRANSPORT_ERROR;
 
@@ -951,12 +1309,14 @@ int usb_stor_Bulk_transport(struct scsi_cmnd *srb, struct us_data *us)
 	 * more than that, probably because of clock rate inaccuracies. */
 	if (unlikely(us->fflags & US_FL_GO_SLOW))
 		udelay(125);
+		usleep_range(125, 150);
 
 	if (transfer_length) {
 		unsigned int pipe = srb->sc_data_direction == DMA_FROM_DEVICE ? 
 				us->recv_bulk_pipe : us->send_bulk_pipe;
 		result = usb_stor_bulk_srb(us, pipe, srb);
 		US_DEBUGP("Bulk data transfer result 0x%x\n", result);
+		usb_stor_dbg(us, "Bulk data transfer result 0x%x\n", result);
 		if (result == USB_STOR_XFER_ERROR)
 			return USB_STOR_TRANSPORT_ERROR;
 
@@ -968,6 +1328,31 @@ int usb_stor_Bulk_transport(struct scsi_cmnd *srb, struct us_data *us)
 		 */
 		if (result == USB_STOR_XFER_LONG)
 			fake_sense = 1;
+
+		/*
+		 * Sometimes a device will mistakenly skip the data phase
+		 * and go directly to the status phase without sending a
+		 * zero-length packet.  If we get a 13-byte response here,
+		 * check whether it really is a CSW.
+		 */
+		if (result == USB_STOR_XFER_SHORT &&
+				srb->sc_data_direction == DMA_FROM_DEVICE &&
+				transfer_length - scsi_get_resid(srb) ==
+					US_BULK_CS_WRAP_LEN) {
+			struct scatterlist *sg = NULL;
+			unsigned int offset = 0;
+
+			if (usb_stor_access_xfer_buf((unsigned char *) bcs,
+					US_BULK_CS_WRAP_LEN, srb, &sg,
+					&offset, FROM_XFER_BUF) ==
+						US_BULK_CS_WRAP_LEN &&
+					bcs->Signature ==
+						cpu_to_le32(US_BULK_CS_SIGN)) {
+				usb_stor_dbg(us, "Device skipped data phase\n");
+				scsi_set_resid(srb, transfer_length);
+				goto skipped_data_phase;
+			}
+		}
 	}
 
 	/* See flow chart on pg 15 of the Bulk Only Transport spec for
@@ -976,6 +1361,7 @@ int usb_stor_Bulk_transport(struct scsi_cmnd *srb, struct us_data *us)
 
 	/* get CSW for device status */
 	US_DEBUGP("Attempting to get CSW...\n");
+	usb_stor_dbg(us, "Attempting to get CSW...\n");
 	result = usb_stor_bulk_transfer_buf(us, us->recv_bulk_pipe,
 				bcs, US_BULK_CS_WRAP_LEN, &cswlen);
 
@@ -985,6 +1371,7 @@ int usb_stor_Bulk_transport(struct scsi_cmnd *srb, struct us_data *us)
 	 */
 	if (result == USB_STOR_XFER_SHORT && cswlen == 0) {
 		US_DEBUGP("Received 0-length CSW; retrying...\n");
+		usb_stor_dbg(us, "Received 0-length CSW; retrying...\n");
 		result = usb_stor_bulk_transfer_buf(us, us->recv_bulk_pipe,
 				bcs, US_BULK_CS_WRAP_LEN, &cswlen);
 	}
@@ -994,6 +1381,7 @@ int usb_stor_Bulk_transport(struct scsi_cmnd *srb, struct us_data *us)
 
 		/* get the status again */
 		US_DEBUGP("Attempting to get CSW (2nd try)...\n");
+		usb_stor_dbg(us, "Attempting to get CSW (2nd try)...\n");
 		result = usb_stor_bulk_transfer_buf(us, us->recv_bulk_pipe,
 				bcs, US_BULK_CS_WRAP_LEN, NULL);
 	}
@@ -1011,6 +1399,19 @@ int usb_stor_Bulk_transport(struct scsi_cmnd *srb, struct us_data *us)
 	if (!(bcs->Tag == us->tag || (us->fflags & US_FL_BULK_IGNORE_TAG)) ||
 		bcs->Status > US_BULK_STAT_PHASE) {
 		US_DEBUGP("Bulk logical error\n");
+	usb_stor_dbg(us, "Bulk status result = %d\n", result);
+	if (result != USB_STOR_XFER_GOOD)
+		return USB_STOR_TRANSPORT_ERROR;
+
+ skipped_data_phase:
+	/* check bulk status */
+	residue = le32_to_cpu(bcs->Residue);
+	usb_stor_dbg(us, "Bulk Status S 0x%x T 0x%x R %u Stat 0x%x\n",
+		     le32_to_cpu(bcs->Signature), bcs->Tag,
+		     residue, bcs->Status);
+	if (!(bcs->Tag == us->tag || (us->fflags & US_FL_BULK_IGNORE_TAG)) ||
+		bcs->Status > US_BULK_STAT_PHASE) {
+		usb_stor_dbg(us, "Bulk logical error\n");
 		return USB_STOR_TRANSPORT_ERROR;
 	}
 
@@ -1027,6 +1428,12 @@ int usb_stor_Bulk_transport(struct scsi_cmnd *srb, struct us_data *us)
 		US_DEBUGP("Signature mismatch: got %08X, expecting %08X\n",
 			  le32_to_cpu(bcs->Signature),
 			  le32_to_cpu(us->bcs_signature));
+			usb_stor_dbg(us, "Learnt BCS signature 0x%08X\n",
+				     le32_to_cpu(us->bcs_signature));
+	} else if (bcs->Signature != us->bcs_signature) {
+		usb_stor_dbg(us, "Signature mismatch: got %08X, expecting %08X\n",
+			     le32_to_cpu(bcs->Signature),
+			     le32_to_cpu(us->bcs_signature));
 		return USB_STOR_TRANSPORT_ERROR;
 	}
 
@@ -1081,6 +1488,7 @@ int usb_stor_Bulk_transport(struct scsi_cmnd *srb, struct us_data *us)
 	/* we should never get here, but if we do, we're in trouble */
 	return USB_STOR_TRANSPORT_ERROR;
 }
+EXPORT_SYMBOL_GPL(usb_stor_Bulk_transport);
 
 /***********************************************************************
  * Reset routines
@@ -1103,6 +1511,7 @@ static int usb_stor_reset_common(struct us_data *us,
 
 	if (test_bit(US_FLIDX_DISCONNECTING, &us->dflags)) {
 		US_DEBUGP("No reset during disconnect\n");
+		usb_stor_dbg(us, "No reset during disconnect\n");
 		return -EIO;
 	}
 
@@ -1111,6 +1520,7 @@ static int usb_stor_reset_common(struct us_data *us,
 			5*HZ);
 	if (result < 0) {
 		US_DEBUGP("Soft reset failed: %d\n", result);
+		usb_stor_dbg(us, "Soft reset failed: %d\n", result);
 		return result;
 	}
 
@@ -1128,6 +1538,14 @@ static int usb_stor_reset_common(struct us_data *us,
 	result = usb_stor_clear_halt(us, us->recv_bulk_pipe);
 
 	US_DEBUGP("Soft reset: clearing bulk-out endpoint halt\n");
+		usb_stor_dbg(us, "Reset interrupted by disconnect\n");
+		return -EIO;
+	}
+
+	usb_stor_dbg(us, "Soft reset: clearing bulk-in endpoint halt\n");
+	result = usb_stor_clear_halt(us, us->recv_bulk_pipe);
+
+	usb_stor_dbg(us, "Soft reset: clearing bulk-out endpoint halt\n");
 	result2 = usb_stor_clear_halt(us, us->send_bulk_pipe);
 
 	/* return a result code based on the result of the clear-halts */
@@ -1137,6 +1555,9 @@ static int usb_stor_reset_common(struct us_data *us,
 		US_DEBUGP("Soft reset failed\n");
 	else
 		US_DEBUGP("Soft reset done\n");
+		usb_stor_dbg(us, "Soft reset failed\n");
+	else
+		usb_stor_dbg(us, "Soft reset done\n");
 	return result;
 }
 
@@ -1155,6 +1576,7 @@ int usb_stor_CB_reset(struct us_data *us)
 				 USB_TYPE_CLASS | USB_RECIP_INTERFACE,
 				 0, us->ifnum, us->iobuf, CB_RESET_CMD_SIZE);
 }
+EXPORT_SYMBOL_GPL(usb_stor_CB_reset);
 
 /* This issues a Bulk-only Reset to the device in question, including
  * clearing the subsequent endpoint halts that may occur.
@@ -1167,6 +1589,7 @@ int usb_stor_Bulk_reset(struct us_data *us)
 				 USB_TYPE_CLASS | USB_RECIP_INTERFACE,
 				 0, us->ifnum, NULL, 0);
 }
+EXPORT_SYMBOL_GPL(usb_stor_Bulk_reset);
 
 /* Issue a USB port reset to the device.  The caller must not hold
  * us->dev_mutex.
@@ -1179,6 +1602,16 @@ int usb_stor_port_reset(struct us_data *us)
 		usb_lock_device_for_reset(us->pusb_dev, us->pusb_intf);
 	if (result < 0)
 		US_DEBUGP("unable to lock device for reset: %d\n", result);
+	int result;
+
+	/*for these devices we must use the class specific method */
+	if (us->pusb_dev->quirks & USB_QUIRK_RESET)
+		return -EPERM;
+
+	result = usb_lock_device_for_reset(us->pusb_dev, us->pusb_intf);
+	if (result < 0)
+		usb_stor_dbg(us, "unable to lock device for reset: %d\n",
+			     result);
 	else {
 		/* Were we disconnected while waiting for the lock? */
 		if (test_bit(US_FLIDX_DISCONNECTING, &us->dflags)) {
@@ -1191,6 +1624,13 @@ int usb_stor_port_reset(struct us_data *us)
 		}
 		if (rc_lock)
 			usb_unlock_device(us->pusb_dev);
+			usb_stor_dbg(us, "No reset during disconnect\n");
+		} else {
+			result = usb_reset_device(us->pusb_dev);
+			usb_stor_dbg(us, "usb_reset_device returns %d\n",
+				     result);
+		}
+		usb_unlock_device(us->pusb_dev);
 	}
 	return result;
 }

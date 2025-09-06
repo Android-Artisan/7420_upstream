@@ -30,6 +30,10 @@ config IOSCHED_DEADLINE
 	  workloads, better. In the case of a single process performing I/O to
 	  a disk at any one time, its behaviour is almost identical to the
 	  anticipatory I/O scheduler and so is a good choice.
+	  The deadline I/O scheduler is simple and compact. It will provide
+	  CSCAN service with FIFO expiration of requests, switching to
+	  a new point in the service tree and doing a batch of IO from there
+	  in case of expiry.
 
 config IOSCHED_CFQ
 	tristate "CFQ I/O scheduler"
@@ -39,6 +43,18 @@ config IOSCHED_CFQ
 	  among all processes in the system. It should provide a fair
 	  working environment, suitable for desktop systems.
 	  This is the default I/O scheduler.
+
+	  and low latency working environment, suitable for both desktop
+	  and server systems.
+
+	  This is the default I/O scheduler.
+
+config CFQ_GROUP_IOSCHED
+	bool "CFQ Group Scheduling support"
+	depends on IOSCHED_CFQ && BLK_CGROUP
+	default n
+	---help---
+	  Enable group IO scheduling in CFQ.
 
 choice
 	prompt "Default I/O scheduler"

@@ -44,6 +44,7 @@
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
+#include <linux/sched.h>
 #include <linux/string.h>
 #include <linux/workqueue.h>
 #include <linux/fs.h>
@@ -69,6 +70,7 @@ static const char paranoia_str[] = KERN_ERR
 static const char bc_drvname[] = "baycom_epp";
 static const char bc_drvinfo[] = KERN_INFO "baycom_epp: (C) 1998-2000 Thomas Sailer, HB9JNX/AE4WA\n"
 KERN_INFO "baycom_epp: version 0.7 compiled " __TIME__ " " __DATE__ "\n";
+"baycom_epp: version 0.7\n";
 
 /* --------------------------------------------------------------------- */
 
@@ -424,6 +426,7 @@ static void encode_hdlc(struct baycom_state *bc)
 	bc->hdlctx.bufcnt = wp - bc->hdlctx.buf;
 	dev_kfree_skb(skb);
 	bc->stats.tx_packets++;
+	bc->dev->stats.tx_packets++;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -450,6 +453,7 @@ static int transmit(struct baycom_state *bc, int cnt, unsigned char stat)
 				return 0;
 			bc->hdlctx.slotcnt = bc->ch_params.slottime;
 			if ((random32() % 256) > bc->ch_params.ppersist)
+			if ((prandom_u32() % 256) > bc->ch_params.ppersist)
 				return 0;
 		}
 	}
@@ -548,6 +552,7 @@ static void do_rxpacket(struct net_device *dev)
 	if (!(skb = dev_alloc_skb(pktlen))) {
 		printk("%s: memory squeeze, dropping packet\n", dev->name);
 		bc->stats.rx_dropped++;
+		dev->stats.rx_dropped++;
 		return;
 	}
 	cp = skb_put(skb, pktlen);
@@ -557,6 +562,7 @@ static void do_rxpacket(struct net_device *dev)
 	netif_rx(skb);
 	dev->last_rx = jiffies;
 	bc->stats.rx_packets++;
+	dev->stats.rx_packets++;
 }
 
 static int receive(struct net_device *dev, int cnt)
@@ -599,6 +605,8 @@ static int receive(struct net_device *dev, int cnt)
 
 					/* not flag received */
 					else if (!(bitstream & (0x1fe << j)) != (0x0fc << j)) {
+					/* flag received */
+					else if ((bitstream & (0x1fe << j)) == (0x0fc << j)) {
 						if (state)
 							do_rxpacket(dev);
 						bc->hdlcrx.bufcnt = 0;
@@ -607,6 +615,8 @@ static int receive(struct net_device *dev, int cnt)
 						numbits = 7-j;
 						}
 					}
+					}
+				}
 
 				/* stuffed bit */
 				else if (unlikely((bitstream & (0x1f8 << j)) == (0xf8 << j))) {
@@ -640,6 +650,7 @@ static int receive(struct net_device *dev, int cnt)
 ({                                                                \
 	if (cpu_has_tsc)                                          \
 		rdtscl(x);                                        \
+		x = (unsigned int)rdtsc();		  \
 })
 #else /* __i386__ */
 #define GETTICK(x)
@@ -766,10 +777,9 @@ static void epp_bh(struct work_struct *work)
 
 /* ---------------------------------------------------------------------- */
 /*
- * ===================== network driver interface =========================
  */
 
-static int baycom_send_packet(struct sk_buff *skb, struct net_device *dev)
+static netdev_tx_t baycom_send_packet(struct sk_buff *skb, struct net_device *dev)
 {
 	struct baycom_state *bc = netdev_priv(dev);
 
@@ -788,6 +798,24 @@ static int baycom_send_packet(struct sk_buff *skb, struct net_device *dev)
 	netif_stop_queue(dev);
 	bc->skb = skb;
 	return 0;
+	if (skb->protocol == htons(ETH_P_IP))
+		return ax25_ip_xmit(skb);
+
+	if (skb->data[0] != 0) {
+		do_kiss_params(bc, skb->data, skb->len);
+		dev_kfree_skb(skb);
+		return NETDEV_TX_OK;
+	}
+	if (bc->skb)
+		return NETDEV_TX_LOCKED;
+	/* strip KISS byte */
+	if (skb->len >= HDLCDRV_MAXFLEN+1 || skb->len < 3) {
+		dev_kfree_skb(skb);
+		return NETDEV_TX_OK;
+	}
+	netif_stop_queue(dev);
+	bc->skb = skb;
+	return NETDEV_TX_OK;
 }
 
 /* --------------------------------------------------------------------- */
@@ -1070,6 +1098,10 @@ static int baycom_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 		hi.data.cs.tx_errors = bc->stats.tx_errors;
 		hi.data.cs.rx_packets = bc->stats.rx_packets;
 		hi.data.cs.rx_errors = bc->stats.rx_errors;
+		hi.data.cs.tx_packets = dev->stats.tx_packets;
+		hi.data.cs.tx_errors = dev->stats.tx_errors;
+		hi.data.cs.rx_packets = dev->stats.rx_packets;
+		hi.data.cs.rx_errors = dev->stats.rx_errors;
 		break;		
 
 	case HDLCDRVCTL_OLDGETSTAT:
@@ -1117,6 +1149,14 @@ static int baycom_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 
 /* --------------------------------------------------------------------- */
 
+static const struct net_device_ops baycom_netdev_ops = {
+	.ndo_open	     = epp_open,
+	.ndo_stop	     = epp_close,
+	.ndo_do_ioctl	     = baycom_ioctl,
+	.ndo_start_xmit      = baycom_send_packet,
+	.ndo_set_mac_address = baycom_set_mac_address,
+};
+
 /*
  * Check for a network adaptor of this type, and return '0' if one exists.
  * If dev->base_addr == 0, probe all likely locations.
@@ -1155,6 +1195,8 @@ static void baycom_probe(struct net_device *dev)
 	
 	dev->header_ops = &ax25_header_ops;
 	dev->set_mac_address = baycom_set_mac_address;
+	dev->netdev_ops = &baycom_netdev_ops;
+	dev->header_ops = &ax25_header_ops;
 	
 	dev->type = ARPHRD_AX25;           /* AF_AX25 device */
 	dev->hard_header_len = AX25_MAX_HEADER_LEN + AX25_BPQ_HEADER_LEN;
@@ -1174,6 +1216,7 @@ static void baycom_probe(struct net_device *dev)
  * command line settable parameters
  */
 static const char *mode[NR_PORTS] = { "", };
+static char *mode[NR_PORTS] = { "", };
 static int iobase[NR_PORTS] = { 0x378, };
 
 module_param_array(mode, charp, NULL, 0);
@@ -1218,6 +1261,7 @@ static int __init init_baycomepp(void)
 		
 		dev = alloc_netdev(sizeof(struct baycom_state), "bce%d",
 				   baycom_epp_dev_setup);
+				   NET_NAME_UNKNOWN, baycom_epp_dev_setup);
 
 		if (!dev) {
 			printk(KERN_WARNING "bce%d : out of memory\n", i);

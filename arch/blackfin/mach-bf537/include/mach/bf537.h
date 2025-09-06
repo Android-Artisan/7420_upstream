@@ -25,6 +25,11 @@
  * along with this program; if not, see the file COPYING, or write
  * to the Free Software Foundation, Inc.,
  * 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+ * System MMR Register and memory map for ADSP-BF537
+ *
+ * Copyright 2005-2008 Analog Devices Inc.
+ *
+ * Licensed under the GPL-2 or later.
  */
 
 #ifndef __MACH_BF537_H__
@@ -136,6 +141,19 @@
 #ifndef CPU
 #define	CPU "UNKNOWN"
 #define CPUID 0x0
+#define CPUID 0x27c8
+#endif
+#ifdef CONFIG_BF536
+#define CPU "BF536"
+#define CPUID 0x27c8
+#endif
+#ifdef CONFIG_BF534
+#define CPU "BF534"
+#define CPUID 0x27c6
+#endif
+
+#ifndef CPU
+#error "Unknown CPU type - This kernel doesn't seem to be configured properly"
 #endif
 
 #endif				/* __MACH_BF537_H__  */

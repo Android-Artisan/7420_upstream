@@ -39,6 +39,34 @@
 #include <asm/mach/flash.h>
 #include <mach/gtwx5715.h>
 
+/* GPIO 5,6,7 and 12 are hard wired to the Kendin KS8995M Switch
+   and operate as an SPI type interface.  The details of the interface
+   are available on Kendin/Micrel's web site. */
+
+#define GTWX5715_KSSPI_SELECT	5
+#define GTWX5715_KSSPI_TXD	6
+#define GTWX5715_KSSPI_CLOCK	7
+#define GTWX5715_KSSPI_RXD	12
+
+/* The "reset" button is wired to GPIO 3.
+   The GPIO is brought "low" when the button is pushed. */
+
+#define GTWX5715_BUTTON_GPIO	3
+
+/* Board Label      Front Label
+   LED1             Power
+   LED2             Wireless-G
+   LED3             not populated but could be
+   LED4             Internet
+   LED5 - LED8      Controlled by KS8995M Switch
+   LED9             DMZ */
+
+#define GTWX5715_LED1_GPIO	2
+#define GTWX5715_LED2_GPIO	9
+#define GTWX5715_LED3_GPIO	8
+#define GTWX5715_LED4_GPIO	1
+#define GTWX5715_LED9_GPIO	4
+
 /*
  * Xscale UART registers are 32 bits wide with only the least
  * significant 8 bits having any meaning.  From a configuration
@@ -146,6 +174,16 @@ MACHINE_START(GTWX5715, "Gemtek GTWX5715 (Linksys WRV54G)")
 	.timer		= &ixp4xx_timer,
 	.boot_params	= 0x0100,
 	.init_machine	= gtwx5715_init,
+	.map_io		= ixp4xx_map_io,
+	.init_early	= ixp4xx_init_early,
+	.init_irq	= ixp4xx_init_irq,
+	.init_time	= ixp4xx_timer_init,
+	.atag_offset	= 0x100,
+	.init_machine	= gtwx5715_init,
+#if defined(CONFIG_PCI)
+	.dma_zone_size	= SZ_64M,
+#endif
+	.restart	= ixp4xx_restart,
 MACHINE_END
 
 

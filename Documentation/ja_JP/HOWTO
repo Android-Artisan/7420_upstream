@@ -12,13 +12,19 @@ fork. So if you have any comments or updates for this file, please try
 to update the original English file first.
 
 Last Updated: 2008/08/21
-==================================
 これは、
 linux-2.6.27/Documentation/HOWTO
 の和訳です。
 
 翻訳団体： JF プロジェクト < http://www.linux.or.jp/JF/ >
 翻訳日： 2008/8/5
+Last Updated: 2013/07/19
+これは、
+linux-3.10/Documentation/HOWTO
+の和訳です。
+
+翻訳団体： JF プロジェクト < http://linuxjf.sourceforge.jp/ >
+翻訳日： 2013/7/19
 翻訳者： Tsugikazu Shibata <tshibata at ab dot jp dot nec dot com>
 校正者： 松倉さん <nbh--mats at nifty dot com>
          小林 雅典さん (Masanori Kobayasi) <zap03216 at nifty dot ne dot jp>
@@ -28,7 +34,6 @@ linux-2.6.27/Documentation/HOWTO
          河内さん (Takayoshi Kochi) <t-kochi at bq dot jp dot nec dot com>
          岩本さん (iwamoto) <iwamoto.kn at ncos dot nec dot co dot jp>
          内田さん (Satoshi Uchida) <s-uchida at ap dot jp dot nec dot com>
-==================================
 
 Linux カーネル開発のやり方
 -------------------------------
@@ -112,6 +117,8 @@ Linux カーネルソースツリーは幅広い範囲のドキュメントを�
 変更を引き起こす場合、その変更を説明するマニュアルページのパッチや情報
 をマニュアルページのメンテナ mtk.manpages@gmail.com に送ることを勧めま
 す。
+をマニュアルページのメンテナ mtk.manpages@gmail.com に送り、CC を
+linux-api@ver.kernel.org に送ることを勧めます。
 
 以下はカーネルソースツリーに含まれている読んでおくべきファイルの一覧で
 す-
@@ -150,6 +157,7 @@ Linux カーネルソースツリーは幅広い範囲のドキュメントを�
 
 	"The Perfect Patch"
 		http://www.zip.com.au/~akpm/linux/patches/stuff/tpp.txt
+		http://www.ozlabs.org/~akpm/stuff/tpp.txt
 	"Linux kernel patch submission format"
 		http://linux.yyz.us/patch-format.html
 
@@ -224,6 +232,7 @@ web サイトには、コードの構成、サブシステム、現在存在す�
 ニティに参加して何かすることをさがしている場合には、Linux kernel
 Janitor's プロジェクトにいけば良いでしょう -
 	http://janitor.kernelnewbies.org/
+	http://kernelnewbies.org/KernelJanitors
 ここはそのようなスタートをするのにうってつけの場所です。ここには、
 Linux カーネルソースツリーの中に含まれる、きれいにし、修正しなければな
 らない、単純な問題のリストが記述されています。このプロジェクトに関わる
@@ -246,6 +255,7 @@ Linux カーネルソースツリーの中に含まれる、きれいにし、�
 できます。この最新の素晴しいカーネルコードのリポジトリは以下で見つかり
 ます-
 	http://sosdg.org/~qiyong/lxr/
+	http://lxr.linux.no/+trees
 
 開発プロセス
 -----------------------
@@ -264,6 +274,17 @@ Linux カーネルの開発プロセスは現在幾つかの異なるメイン�
 
 2.6.x カーネルは Linus Torvalds によってメンテナンスされ、kernel.org
 の pub/linux/kernel/v2.6/ ディレクトリに存在します。この開発プロセスは
+  - メインの 3.x カーネルツリー
+  - 3.x.y -stable カーネルツリー
+  - 3.x -git カーネルパッチ
+  - サブシステム毎のカーネルツリーとパッチ
+  - 統合テストのための 3.x -next カーネルツリー
+
+3.x カーネルツリー
+-----------------
+
+3.x カーネルは Linus Torvalds によってメンテナンスされ、kernel.org
+の pub/linux/kernel/v3.x/ ディレクトリに存在します。この開発プロセスは
 以下のとおり-
 
   - 新しいカーネルがリリースされた直後に、2週間の特別期間が設けられ、
@@ -271,6 +292,9 @@ Linux カーネルの開発プロセスは現在幾つかの異なるメイン�
     このような差分は通常 -mm カーネルに数週間含まれてきたパッチです。
     大きな変更は git(カーネルのソース管理ツール、詳細は
     http://git.or.cz/  参照) を使って送るのが好ましいやり方ですが、パッ
+    このような差分は通常 -next カーネルに数週間含まれてきたパッチです。
+    大きな変更は git(カーネルのソース管理ツール、詳細は
+    http://git-scm.com/ 参照) を使って送るのが好ましいやり方ですが、パッ
     チファイルの形式のまま送るのでも十分です。
 
   - 2週間後、-rc1 カーネルがリリースされ、この後にはカーネル全体の安定
@@ -307,6 +331,11 @@ Andrew Morton が Linux-kernel メーリングリストにカーネルリリー�
 
 バージョン番号が4つの数字に分かれているカーネルは -stable カーネルです。
 これには、2.6.x カーネルで見つかったセキュリティ問題や重大な後戻りに対
+3.x.y -stable カーネルツリー
+---------------------------
+
+バージョン番号が3つの数字に分かれているカーネルは -stable カーネルです。
+これには、3.x カーネルで見つかったセキュリティ問題や重大な後戻りに対
 する比較的小さい重要な修正が含まれます。
 
 これは、開発/実験的バージョンのテストに協力することに興味が無く、
@@ -316,6 +345,10 @@ Andrew Morton が Linux-kernel メーリングリストにカーネルリリー�
 最新の安定版カーネルです。
 
 2.6.x.y は "stable" チーム <stable@kernel.org> でメンテされており、必
+もし、3.x.y カーネルが存在しない場合には、番号が一番大きい 3.x が
+最新の安定版カーネルです。
+
+3.x.y は "stable" チーム <stable@vger.kernel.org> でメンテされており、必
 要に応じてリリースされます。通常のリリース期間は 2週間毎ですが、差し迫っ
 た問題がなければもう少し長くなることもあります。セキュリティ関連の問題
 の場合はこれに対してだいたいの場合、すぐにリリースがされます。
@@ -325,6 +358,7 @@ Andrew Morton が Linux-kernel メーリングリストにカーネルリリー�
 リースプロセスがどう動くかが記述されています。
 
 2.6.x -git パッチ
+3.x -git パッチ
 ------------------
 
 git リポジトリで管理されているLinus のカーネルツリーの毎日のスナップ
@@ -413,6 +447,44 @@ linux-kernel メーリングリストで収集された多数のパッチと同�
 
   その他のカーネルツリーは http://git.kernel.org/ と MAINTAINERS ファ
   イルに一覧表があります。
+サブシステム毎のカーネルツリーとパッチ
+-------------------------------------------
+
+それぞれのカーネルサブシステムのメンテナ達は --- そして多くのカーネル
+サブシステムの開発者達も --- 各自の最新の開発状況をソースリポジトリに
+公開しています。そのため、自分とは異なる領域のカーネルで何が起きている
+かを他の人が見られるようになっています。開発が早く進んでいる領域では、
+開発者は自身の投稿がどのサブシステムカーネルツリーを元にしているか質問
+されるので、その投稿とすでに進行中の他の作業との衝突が避けられます。
+
+大部分のこれらのリポジトリは git ツリーです。しかしその他の SCM や
+quilt シリーズとして公開されているパッチキューも使われています。これら
+のサブシステムリポジトリのアドレスは MAINTAINERS ファイルにリストされ
+ています。これらの多くは http://git.kernel.org/ で参照することができま
+す。
+
+提案されたパッチがこのようなサブシステムツリーにコミットされる前に、メー
+リングリストで事前にレビューにかけられます（以下の対応するセクションを
+参照）。いくつかのカーネルサブシステムでは、このレビューは patchwork
+というツールによって追跡されます。Patchwork は web インターフェイスに
+よってパッチ投稿の表示、パッチへのコメント付けや改訂などができ、そして
+メンテナはパッチに対して、レビュー中、受付済み、拒否というようなマーク
+をつけることができます。大部分のこれらの patchwork のサイトは
+http://patchwork.kernel.org/ でリストされています。
+
+統合テストのための 3.x -next カーネルツリー
+---------------------------------------------
+
+サブシステムツリーの更新内容がメインラインの 3.x ツリーにマージされ
+る前に、それらは統合テストされる必要があります。この目的のため、実質的
+に全サブシステムツリーからほぼ毎日プルされてできる特別なテスト用のリ
+ポジトリが存在します-
+       http://git.kernel.org/?p=linux/kernel/git/next/linux-next.git
+       http://linux.f-seidel.de/linux-next/pmwiki/
+
+このやり方によって、-next カーネルは次のマージ機会でどんなものがメイン
+ラインカーネルにマージされるか、おおまかなの展望を提供します。-next 
+カーネルの実行テストを行う冒険好きなテスターは大いに歓迎されます
 
 バグレポート
 -------------
@@ -488,6 +560,7 @@ MAINTAINERS ファイルにリストがありますので参照してくださ�
 す。
 
 もしパッチをメールに付ける場合は、Documentaion/SubmittingPatches に提
+もしパッチをメールに付ける場合は、Documentation/SubmittingPatches に提
 示されているように、それは プレーンな可読テキストにすることを忘れない
 ようにしましょう。カーネル開発者は 添付や圧縮したパッチを扱いたがりま
 せん-
@@ -665,6 +738,7 @@ Linux カーネルコミュニティは、一度に大量のコードの塊を�
 ントの ChangeLog セクションを見てください-
   "The Perfect Patch"
       http://www.zip.com.au/~akpm/linux/patches/stuff/tpp.txt
+      http://www.ozlabs.org/~akpm/stuff/tpp.txt
 
 これらのどれもが、時にはとても困難です。これらの慣例を完璧に実施するに
 は数年かかるかもしれません。これは継続的な改善のプロセスであり、そのた
@@ -677,6 +751,9 @@ Paolo Ciarrocchi に感謝、彼は彼の書いた "Development Process"
 ンをこのテキストの原型にすることを許可してくれました。
 Rundy Dunlap と Gerrit Huizenga はメーリングリストでやるべきこととやっ
 てはいけないことのリストを提供してくれました。
+(http://lwn.net/Articles/94386/) セクションをこのテキストの原型にする
+ことを許可してくれました。Rundy Dunlap と Gerrit Huizenga はメーリング
+リストでやるべきこととやってはいけないことのリストを提供してくれました。
 以下の人々のレビュー、コメント、貢献に感謝。
 Pat Mochel, Hanna Linder, Randy Dunlap, Kay Sievers,
 Vojtech Pavlik, Jan Kara, Josh Boyer, Kees Cook, Andrew Morton, Andi

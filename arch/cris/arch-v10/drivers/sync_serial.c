@@ -33,6 +33,21 @@
 #include <asm/arch/io_interface_mux.h>
 
 /* The receiver is a bit tricky beacuse of the continuous stream of data.*/
+#include <linux/interrupt.h>
+#include <linux/poll.h>
+#include <linux/init.h>
+#include <linux/mutex.h>
+#include <linux/timer.h>
+#include <linux/wait.h>
+#include <asm/irq.h>
+#include <asm/dma.h>
+#include <asm/io.h>
+#include <arch/svinto.h>
+#include <asm/uaccess.h>
+#include <asm/sync_serial.h>
+#include <arch/io_interface_mux.h>
+
+/* The receiver is a bit tricky because of the continuous stream of data.*/
 /*                                                                       */
 /* Three DMA descriptors are linked together. Each DMA descriptor is     */
 /* responsible for port->bufchunk of a common buffer.                    */
@@ -150,6 +165,7 @@ struct sync_port {
 };
 
 
+static DEFINE_MUTEX(sync_serial_mutex);
 static int etrax_sync_serial_init(void);
 static void initialize_port(int portnbr);
 static inline int sync_data_avail(struct sync_port *port);
@@ -159,6 +175,7 @@ static int sync_serial_release(struct inode *inode, struct file *file);
 static unsigned int sync_serial_poll(struct file *filp, poll_table *wait);
 
 static int sync_serial_ioctl(struct inode *inode, struct file *file,
+static long sync_serial_ioctl(struct file *file,
 	unsigned int cmd, unsigned long arg);
 static ssize_t sync_serial_write(struct file *file, const char *buf,
 	size_t count, loff_t *ppos);
@@ -252,6 +269,15 @@ static struct file_operations sync_serial_fops = {
 	.ioctl   = sync_serial_ioctl,
 	.open    = sync_serial_open,
 	.release = sync_serial_release
+static const struct file_operations sync_serial_fops = {
+	.owner		= THIS_MODULE,
+	.write		= sync_serial_write,
+	.read		= sync_serial_read,
+	.poll		= sync_serial_poll,
+	.unlocked_ioctl	= sync_serial_ioctl,
+	.open		= sync_serial_open,
+	.release	= sync_serial_release,
+	.llseek		= noop_llseek,
 };
 
 static int __init etrax_sync_serial_init(void)
@@ -447,6 +473,7 @@ static int sync_serial_open(struct inode *inode, struct file *file)
 	int err = -EBUSY;
 
 	lock_kernel();
+	mutex_lock(&sync_serial_mutex);
 	DEBUG(printk(KERN_DEBUG "Open sync serial port %d\n", dev));
 
 	if (dev < 0 || dev >= NUMBER_OF_PORTS || !ports[dev].enabled) {
@@ -581,6 +608,7 @@ static int sync_serial_open(struct inode *inode, struct file *file)
 				if (request_irq(8,
 						manual_interrupt,
 						IRQF_SHARED | IRQF_DISABLED,
+						IRQF_SHARED,
 						"synchronous serial manual irq",
 						&ports[0])) {
 					printk(KERN_CRIT "Can't alloc "
@@ -591,6 +619,7 @@ static int sync_serial_open(struct inode *inode, struct file *file)
 				if (request_irq(8,
 						manual_interrupt,
 						IRQF_SHARED | IRQF_DISABLED,
+						IRQF_SHARED,
 						"synchronous serial manual irq",
 						&ports[1])) {
 					printk(KERN_CRIT "Can't alloc "
@@ -629,6 +658,11 @@ static int sync_serial_open(struct inode *inode, struct file *file)
 out:
 	unlock_kernel();
 	return ret;
+	err = 0;
+	
+out:
+	mutex_unlock(&sync_serial_mutex);
+	return err;
 }
 
 static int sync_serial_release(struct inode *inode, struct file *file)
@@ -655,6 +689,7 @@ static int sync_serial_release(struct inode *inode, struct file *file)
 static unsigned int sync_serial_poll(struct file *file, poll_table *wait)
 {
 	int dev = MINOR(file->f_dentry->d_inode->i_rdev);
+	int dev = MINOR(file_inode(file)->i_rdev);
 	unsigned int mask = 0;
 	struct sync_port *port;
 	DEBUGPOLL(static unsigned int prev_mask = 0);
@@ -680,12 +715,14 @@ static unsigned int sync_serial_poll(struct file *file, poll_table *wait)
 }
 
 static int sync_serial_ioctl(struct inode *inode, struct file *file,
+static int sync_serial_ioctl_unlocked(struct file *file,
 		  unsigned int cmd, unsigned long arg)
 {
 	int return_val = 0;
 	unsigned long flags;
 
 	int dev = MINOR(file->f_dentry->d_inode->i_rdev);
+	int dev = MINOR(file_inode(file)->i_rdev);
 	struct sync_port *port;
 
 	if (dev < 0 || dev >= NUMBER_OF_PORTS || !ports[dev].enabled) {
@@ -957,11 +994,24 @@ static int sync_serial_ioctl(struct inode *inode, struct file *file,
 	return return_val;
 }
 
+static long sync_serial_ioctl(struct file *file,
+			      unsigned int cmd, unsigned long arg)
+{
+	long ret;
+
+	mutex_lock(&sync_serial_mutex);
+	ret = sync_serial_ioctl_unlocked(file, cmd, arg);
+	mutex_unlock(&sync_serial_mutex);
+
+	return ret;
+}
+
 
 static ssize_t sync_serial_write(struct file *file, const char *buf,
 	size_t count, loff_t *ppos)
 {
 	int dev = MINOR(file->f_dentry->d_inode->i_rdev);
+	int dev = MINOR(file_inode(file)->i_rdev);
 	DECLARE_WAITQUEUE(wait, current);
 	struct sync_port *port;
 	unsigned long flags;
@@ -1086,6 +1136,7 @@ static ssize_t sync_serial_read(struct file *file, char *buf,
 				size_t count, loff_t *ppos)
 {
 	int dev = MINOR(file->f_dentry->d_inode->i_rdev);
+	int dev = MINOR(file_inode(file)->i_rdev);
 	int avail;
 	struct sync_port *port;
 	unsigned char *start;
@@ -1125,6 +1176,8 @@ static ssize_t sync_serial_read(struct file *file, char *buf,
 			return -EAGAIN;
 
 		interruptible_sleep_on(&port->in_wait_q);
+		wait_event_interruptible(port->in_wait_q,
+					 !(start == end && !port->full));
 		if (signal_pending(current))
 			return -EINTR;
 

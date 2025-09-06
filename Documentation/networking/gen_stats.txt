@@ -1,5 +1,4 @@
 Generic networking statistics for netlink users
-======================================================================
 
 Statistic counters are grouped into structs:
 

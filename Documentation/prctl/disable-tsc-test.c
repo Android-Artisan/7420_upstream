@@ -30,6 +30,8 @@ const char *tsc_names[] =
 };
 
 uint64_t rdtsc() {
+static uint64_t rdtsc(void)
+{
 uint32_t lo, hi;
 /* We cannot use "=A", since this would use %rax on x86_64 */
 __asm__ __volatile__ ("rdtsc" : "=a" (lo), "=d" (hi));
@@ -37,6 +39,7 @@ return (uint64_t)hi << 32 | lo;
 }
 
 void sigsegv_cb(int sig)
+static void sigsegv_cb(int sig)
 {
 	int tsc_val = 0;
 

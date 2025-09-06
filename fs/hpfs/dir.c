@@ -6,6 +6,7 @@
  *  directory VFS functions
  */
 
+#include <linux/slab.h>
 #include "hpfs_fn.h"
 
 static int hpfs_dir_release(struct inode *inode, struct file *filp)
@@ -14,6 +15,10 @@ static int hpfs_dir_release(struct inode *inode, struct file *filp)
 	hpfs_del_pos(inode, &filp->f_pos);
 	/*hpfs_write_if_changed(inode);*/
 	unlock_kernel();
+	hpfs_lock(inode->i_sb);
+	hpfs_del_pos(inode, &filp->f_pos);
+	/*hpfs_write_if_changed(inode);*/
+	hpfs_unlock(inode->i_sb);
 	return 0;
 }
 
@@ -33,6 +38,19 @@ static loff_t hpfs_dir_lseek(struct file *filp, loff_t off, int whence)
 	/*printk("dir lseek\n");*/
 	if (new_off == 0 || new_off == 1 || new_off == 11 || new_off == 12 || new_off == 13) goto ok;
 	mutex_lock(&i->i_mutex);
+	struct inode *i = file_inode(filp);
+	struct hpfs_inode_info *hpfs_inode = hpfs_i(i);
+	struct super_block *s = i->i_sb;
+
+	/* Somebody else will have to figure out what to do here */
+	if (whence == SEEK_DATA || whence == SEEK_HOLE)
+		return -EINVAL;
+
+	mutex_lock(&i->i_mutex);
+	hpfs_lock(s);
+
+	/*pr_info("dir lseek\n");*/
+	if (new_off == 0 || new_off == 1 || new_off == 11 || new_off == 12 || new_off == 13) goto ok;
 	pos = ((loff_t) hpfs_de_as_down_as_possible(s, hpfs_inode->i_dno) << 4) + 1;
 	while (pos != new_off) {
 		if (map_pos_dirent(i, &pos, &qbh)) hpfs_brelse4(&qbh);
@@ -53,6 +71,22 @@ fail:
 static int hpfs_readdir(struct file *filp, void *dirent, filldir_t filldir)
 {
 	struct inode *inode = filp->f_path.dentry->d_inode;
+	hpfs_add_pos(i, &filp->f_pos);
+ok:
+	filp->f_pos = new_off;
+	hpfs_unlock(s);
+	mutex_unlock(&i->i_mutex);
+	return new_off;
+fail:
+	/*pr_warn("illegal lseek: %016llx\n", new_off);*/
+	hpfs_unlock(s);
+	mutex_unlock(&i->i_mutex);
+	return -ESPIPE;
+}
+
+static int hpfs_readdir(struct file *file, struct dir_context *ctx)
+{
+	struct inode *inode = file_inode(file);
 	struct hpfs_inode_info *hpfs_inode = hpfs_i(inode);
 	struct quad_buffer_head qbh;
 	struct hpfs_dirent *de;
@@ -63,6 +97,12 @@ static int hpfs_readdir(struct file *filp, void *dirent, filldir_t filldir)
 	int ret = 0;
 
 	lock_kernel();
+	loff_t next_pos;
+	unsigned char *tempname;
+	int c1, c2 = 0;
+	int ret = 0;
+
+	hpfs_lock(inode->i_sb);
 
 	if (hpfs_sb(inode->i_sb)->sb_chk) {
 		if (hpfs_chk_sectors(inode->i_sb, inode->i_ino, 1, "dir_fnode")) {
@@ -83,6 +123,7 @@ static int hpfs_readdir(struct file *filp, void *dirent, filldir_t filldir)
 			goto out;
 		}
 		if (!fno->dirflag) {
+		if (!fnode_is_dir(fno)) {
 			e = 1;
 			hpfs_error(inode->i_sb, "not a directory, fnode %08lx",
 					(unsigned long)inode->i_ino);
@@ -90,6 +131,9 @@ static int hpfs_readdir(struct file *filp, void *dirent, filldir_t filldir)
 		if (hpfs_inode->i_dno != fno->u.external[0].disk_secno) {
 			e = 1;
 			hpfs_error(inode->i_sb, "corrupted inode: i_dno == %08x, fnode -> dnode == %08x", hpfs_inode->i_dno, fno->u.external[0].disk_secno);
+		if (hpfs_inode->i_dno != le32_to_cpu(fno->u.external[0].disk_secno)) {
+			e = 1;
+			hpfs_error(inode->i_sb, "corrupted inode: i_dno == %08x, fnode -> dnode == %08x", hpfs_inode->i_dno, le32_to_cpu(fno->u.external[0].disk_secno));
 		}
 		brelse(bh);
 		if (e) {
@@ -103,6 +147,11 @@ static int hpfs_readdir(struct file *filp, void *dirent, filldir_t filldir)
 		goto out;
 	}
 	if (filp->f_pos == 13) {
+	if (ctx->pos == 12) { /* diff -r requires this (note, that diff -r */
+		ctx->pos = 13; /* also fails on msdos filesystem in 2.0) */
+		goto out;
+	}
+	if (ctx->pos == 13) {
 		ret = -ENOENT;
 		goto out;
 	}
@@ -140,6 +189,34 @@ static int hpfs_readdir(struct file *filp, void *dirent, filldir_t filldir)
 		}
 		old_pos = filp->f_pos;
 		if (!(de = map_pos_dirent(inode, &filp->f_pos, &qbh))) {
+			if (hpfs_stop_cycles(inode->i_sb, ctx->pos, &c1, &c2, "hpfs_readdir")) {
+				ret = -EFSERROR;
+				goto out;
+			}
+		if (ctx->pos == 12)
+			goto out;
+		if (ctx->pos == 3 || ctx->pos == 4 || ctx->pos == 5) {
+			pr_err("pos==%d\n", (int)ctx->pos);
+			goto out;
+		}
+		if (ctx->pos == 0) {
+			if (!dir_emit_dot(file, ctx))
+				goto out;
+			ctx->pos = 11;
+		}
+		if (ctx->pos == 11) {
+			if (!dir_emit(ctx, "..", 2, hpfs_inode->i_parent_dir, DT_DIR))
+				goto out;
+			ctx->pos = 1;
+		}
+		if (ctx->pos == 1) {
+			ctx->pos = ((loff_t) hpfs_de_as_down_as_possible(inode->i_sb, hpfs_inode->i_dno) << 4) + 1;
+			hpfs_add_pos(inode, &file->f_pos);
+			file->f_version = inode->i_version;
+		}
+		next_pos = ctx->pos;
+		if (!(de = map_pos_dirent(inode, &next_pos, &qbh))) {
+			ctx->pos = next_pos;
 			ret = -EIOERROR;
 			goto out;
 		}
@@ -166,6 +243,26 @@ static int hpfs_readdir(struct file *filp, void *dirent, filldir_t filldir)
 	}
 out:
 	unlock_kernel();
+					hpfs_error(inode->i_sb, "hpfs_readdir: bad ^A^A entry; pos = %08lx", (unsigned long)ctx->pos);
+				if (de->last && (de->namelen != 1 || de ->name[0] != 255))
+					hpfs_error(inode->i_sb, "hpfs_readdir: bad \\377 entry; pos = %08lx", (unsigned long)ctx->pos);
+			}
+			hpfs_brelse4(&qbh);
+			ctx->pos = next_pos;
+			goto again;
+		}
+		tempname = hpfs_translate_name(inode->i_sb, de->name, de->namelen, lc, de->not_8x3);
+		if (!dir_emit(ctx, tempname, de->namelen, le32_to_cpu(de->fnode), DT_UNKNOWN)) {
+			if (tempname != de->name) kfree(tempname);
+			hpfs_brelse4(&qbh);
+			goto out;
+		}
+		ctx->pos = next_pos;
+		if (tempname != de->name) kfree(tempname);
+		hpfs_brelse4(&qbh);
+	}
+out:
+	hpfs_unlock(inode->i_sb);
 	return ret;
 }
 
@@ -187,6 +284,9 @@ out:
 struct dentry *hpfs_lookup(struct inode *dir, struct dentry *dentry, struct nameidata *nd)
 {
 	const char *name = dentry->d_name.name;
+struct dentry *hpfs_lookup(struct inode *dir, struct dentry *dentry, unsigned int flags)
+{
+	const unsigned char *name = dentry->d_name.name;
 	unsigned len = dentry->d_name.len;
 	struct quad_buffer_head qbh;
 	struct hpfs_dirent *de;
@@ -199,6 +299,10 @@ struct dentry *hpfs_lookup(struct inode *dir, struct dentry *dentry, struct name
 	if ((err = hpfs_chk_name((char *)name, &len))) {
 		if (err == -ENAMETOOLONG) {
 			unlock_kernel();
+	hpfs_lock(dir->i_sb);
+	if ((err = hpfs_chk_name(name, &len))) {
+		if (err == -ENAMETOOLONG) {
+			hpfs_unlock(dir->i_sb);
 			return ERR_PTR(-ENAMETOOLONG);
 		}
 		goto end_add;
@@ -209,6 +313,7 @@ struct dentry *hpfs_lookup(struct inode *dir, struct dentry *dentry, struct name
 	 */
 
 	de = map_dirent(dir, hpfs_i(dir)->i_dno, (char *) name, len, NULL, &qbh);
+	de = map_dirent(dir, hpfs_i(dir)->i_dno, name, len, NULL, &qbh);
 
 	/*
 	 * This is not really a bailout, just means file not found.
@@ -221,6 +326,7 @@ struct dentry *hpfs_lookup(struct inode *dir, struct dentry *dentry, struct name
 	 */
 
 	ino = de->fnode;
+	ino = le32_to_cpu(de->fnode);
 
 	/*
 	 * Go find or make an inode.
@@ -236,6 +342,7 @@ struct dentry *hpfs_lookup(struct inode *dir, struct dentry *dentry, struct name
 		if (de->directory)
 			hpfs_read_inode(result);
 		else if (de->ea_size && hpfs_sb(dir->i_sb)->sb_eas)
+		else if (le32_to_cpu(de->ea_size) && hpfs_sb(dir->i_sb)->sb_eas)
 			hpfs_read_inode(result);
 		else {
 			result->i_mode |= S_IFREG;
@@ -243,6 +350,7 @@ struct dentry *hpfs_lookup(struct inode *dir, struct dentry *dentry, struct name
 			result->i_op = &hpfs_file_iops;
 			result->i_fop = &hpfs_file_ops;
 			result->i_nlink = 1;
+			set_nlink(result, 1);
 		}
 		unlock_new_inode(result);
 	}
@@ -270,11 +378,20 @@ struct dentry *hpfs_lookup(struct inode *dir, struct dentry *dentry, struct name
 		result->i_atime.tv_sec = local_to_gmt(dir->i_sb, de->read_date);
 		result->i_atime.tv_nsec = 0;
 		hpfs_result->i_ea_size = de->ea_size;
+		if (!(result->i_ctime.tv_sec = local_to_gmt(dir->i_sb, le32_to_cpu(de->creation_date))))
+			result->i_ctime.tv_sec = 1;
+		result->i_ctime.tv_nsec = 0;
+		result->i_mtime.tv_sec = local_to_gmt(dir->i_sb, le32_to_cpu(de->write_date));
+		result->i_mtime.tv_nsec = 0;
+		result->i_atime.tv_sec = local_to_gmt(dir->i_sb, le32_to_cpu(de->read_date));
+		result->i_atime.tv_nsec = 0;
+		hpfs_result->i_ea_size = le32_to_cpu(de->ea_size);
 		if (!hpfs_result->i_ea_mode && de->read_only)
 			result->i_mode &= ~0222;
 		if (!de->directory) {
 			if (result->i_size == -1) {
 				result->i_size = de->file_size;
+				result->i_size = le32_to_cpu(de->file_size);
 				result->i_data.a_ops = &hpfs_aops;
 				hpfs_i(result)->mmu_private = result->i_size;
 			/*
@@ -298,6 +415,7 @@ struct dentry *hpfs_lookup(struct inode *dir, struct dentry *dentry, struct name
 	end_add:
 	hpfs_set_dentry_operations(dentry);
 	unlock_kernel();
+	hpfs_unlock(dir->i_sb);
 	d_add(dentry, result);
 	return NULL;
 
@@ -311,6 +429,7 @@ struct dentry *hpfs_lookup(struct inode *dir, struct dentry *dentry, struct name
 	/*bail:*/
 
 	unlock_kernel();
+	hpfs_unlock(dir->i_sb);
 	return ERR_PTR(-ENOENT);
 }
 
@@ -321,4 +440,8 @@ const struct file_operations hpfs_dir_ops =
 	.readdir	= hpfs_readdir,
 	.release	= hpfs_dir_release,
 	.fsync		= hpfs_file_fsync,
+	.iterate	= hpfs_readdir,
+	.release	= hpfs_dir_release,
+	.fsync		= hpfs_file_fsync,
+	.unlocked_ioctl	= hpfs_ioctl,
 };

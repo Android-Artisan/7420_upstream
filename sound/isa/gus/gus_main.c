@@ -24,6 +24,7 @@
 #include <linux/delay.h>
 #include <linux/slab.h>
 #include <linux/ioport.h>
+#include <linux/module.h>
 #include <sound/core.h>
 #include <sound/gus.h>
 #include <sound/control.h>
@@ -181,6 +182,7 @@ int snd_gus_create(struct snd_card *card,
 		return -EBUSY;
 	}
 	if (irq >= 0 && request_irq(irq, snd_gus_interrupt, IRQF_DISABLED, "GUS GF1", (void *) gus)) {
+	if (irq >= 0 && request_irq(irq, snd_gus_interrupt, 0, "GUS GF1", (void *) gus)) {
 		snd_printk(KERN_ERR "gus: can't grab irq %d\n", irq);
 		snd_gus_free(gus);
 		return -EBUSY;
@@ -279,6 +281,11 @@ static int snd_gus_init_dma_irq(struct snd_gus_card * gus, int latches)
 	snd_assert(gus != NULL, return -EINVAL);
 	card = gus->card;
 	snd_assert(card != NULL, return -EINVAL);
+	if (snd_BUG_ON(!gus))
+		return -EINVAL;
+	card = gus->card;
+	if (snd_BUG_ON(!card))
+		return -EINVAL;
 
 	gus->mix_cntrl_reg &= 0xf8;
 	gus->mix_cntrl_reg |= 0x01;	/* disable MIC, LINE IN, enable LINE OUT */

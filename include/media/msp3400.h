@@ -22,7 +22,6 @@
 #define _MSP3400_H_
 
 /* msp3400 routing
-   ===============
 
    The msp3400 has a complicated routing scheme with many possible
    combinations. The details are all in the datasheets but I will try
@@ -43,7 +42,6 @@
    uses the I2S input.
 
    Outputs
-   =======
 
    Most DSP outputs are also the outputs of the msp3400. However, the SCART
    outputs of the msp3400 can select which input to use: either the SCART1 or
@@ -51,16 +49,17 @@
    bypassing the DSP.
 
    Summary
-   =======
 
    So to specify a complete routing scheme for the msp3400 you will have to
    specify in the 'input' field of the v4l2_routing struct:
+   specify in the 'input' arg of the s_routing function:
 
    1) which tuner input to use
    2) which SCART input to use
    3) which DSP input to use for each DSP output
 
    And in the 'output' field of the v4l2_routing struct you specify:
+   And in the 'output' arg of the s_routing function you specify:
 
    1) which SCART input to use for each SCART output
 

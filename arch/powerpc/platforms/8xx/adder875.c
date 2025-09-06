@@ -93,6 +93,7 @@ static int __init adder875_probe(void)
 }
 
 static __initdata struct of_device_id of_bus_ids[] = {
+static const struct of_device_id of_bus_ids[] __initconst = {
 	{ .compatible = "simple-bus", },
 	{},
 };

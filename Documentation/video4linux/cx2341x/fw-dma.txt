@@ -2,7 +2,6 @@ This page describes the structures and procedures used by the cx2341x DMA
 engine.
 
 Introduction
-============
 
 The cx2341x PCI interface is busmaster capable. This means it has a DMA
 engine to efficiently transfer large volumes of data between the card and main
@@ -43,7 +42,6 @@ NOTE! It is possible that the Encoder and DMA Complete interrupts get raised
 simultaneously. (End of the last, start of the next, etc.)
 
 Mailbox #10
-===========
 
 The Flags, Command, Return Value and Timeout fields are ignored.
 
@@ -57,7 +55,6 @@ available, that the type field will have other values that correspond to YUV
 and PCM data.
 
 Scatter-Gather Array
-====================
 
 The scatter-gather array is a contiguously allocated block of memory that
 tells the card the source and destination of each data-block to transfer.
@@ -84,7 +81,6 @@ Array Element:
 - 18-bit byte count
 
 DMA Transfer Status
-===================
 
 Register 0x0004 holds the DMA Transfer Status:
 

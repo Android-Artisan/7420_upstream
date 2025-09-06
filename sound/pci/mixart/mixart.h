@@ -86,6 +86,7 @@ struct mixart_mgr {
 	wait_queue_head_t msg_sleep;
 
 	/* messages stored for tasklet */
+	/* messages fifo */
 	u32 msg_fifo[MSG_FIFO_SIZE];
 	int msg_fifo_readptr;
 	int msg_fifo_writeptr;
@@ -94,6 +95,8 @@ struct mixart_mgr {
 	spinlock_t lock;              /* interrupt spinlock */
 	spinlock_t msg_lock;          /* mailbox spinlock */
 	struct mutex msg_mutex;   /* mutex for blocking_requests */
+	struct mutex lock;              /* interrupt lock */
+	struct mutex msg_lock;		/* mailbox lock */
 
 	struct mutex setup_mutex; /* mutex used in hw_params, open and close */
 

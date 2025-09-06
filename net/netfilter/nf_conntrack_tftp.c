@@ -1,5 +1,6 @@
 /* (C) 2001-2002 Magnus Boden <mb@ozaba.mine.nu>
  *
+ * (C) 2006-2012 Patrick McHardy <kaber@trash.net>
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
  * published by the Free Software Foundation.
@@ -22,6 +23,7 @@ MODULE_AUTHOR("Magnus Boden <mb@ozaba.mine.nu>");
 MODULE_DESCRIPTION("TFTP connection tracking helper");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS("ip_conntrack_tftp");
+MODULE_ALIAS_NFCT_HELPER("tftp");
 
 #define MAX_PORTS 8
 static unsigned short ports[MAX_PORTS];
@@ -61,6 +63,10 @@ static int tftp_help(struct sk_buff *skb,
 		exp = nf_ct_expect_alloc(ct);
 		if (exp == NULL)
 			return NF_DROP;
+		if (exp == NULL) {
+			nf_ct_helper_log(skb, ct, "cannot alloc expectation");
+			return NF_DROP;
+		}
 		tuple = &ct->tuplehash[IP_CT_DIR_REPLY].tuple;
 		nf_ct_expect_init(exp, NF_CT_EXPECT_CLASS_DEFAULT,
 				  nf_ct_l3num(ct),
@@ -75,6 +81,10 @@ static int tftp_help(struct sk_buff *skb,
 			ret = nf_nat_tftp(skb, ctinfo, exp);
 		else if (nf_ct_expect_related(exp) != 0)
 			ret = NF_DROP;
+		else if (nf_ct_expect_related(exp) != 0) {
+			nf_ct_helper_log(skb, ct, "cannot add expectation");
+			ret = NF_DROP;
+		}
 		nf_ct_expect_put(exp);
 		break;
 	case TFTP_OPCODE_DATA:
@@ -139,6 +149,15 @@ static int __init nf_conntrack_tftp_init(void)
 			if (ret) {
 				printk("nf_ct_tftp: failed to register helper "
 				       "for pf: %u port: %u\n",
+			if (ports[i] == TFTP_PORT)
+				sprintf(tftp[i][j].name, "tftp");
+			else
+				sprintf(tftp[i][j].name, "tftp-%u", i);
+
+			ret = nf_conntrack_helper_register(&tftp[i][j]);
+			if (ret) {
+				printk(KERN_ERR "nf_ct_tftp: failed to register"
+				       " helper for pf: %u port: %u\n",
 					tftp[i][j].tuple.src.l3num, ports[i]);
 				nf_conntrack_tftp_fini();
 				return ret;

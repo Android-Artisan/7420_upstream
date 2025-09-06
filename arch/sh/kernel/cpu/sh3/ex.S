@@ -27,6 +27,7 @@
 #endif
 
 #if !defined(CONFIG_KGDB_NMI)
+#if !defined(CONFIG_KGDB)
 #define kgdb_handle_exception		exception_error
 #endif
 
@@ -52,6 +53,8 @@ ENTRY(nmi_slot)
 	.long	kgdb_handle_exception	/* 1C0 */	! Allow trap to debugger
 ENTRY(user_break_point_trap)
 	.long	break_point_trap	/* 1E0 */
+	.long	nmi_trap_handler	/* 1C0 */	! Allow trap to debugger
+	.long	breakpoint_trap_handler	/* 1E0 */
 
 	/*
 	 * Pad the remainder of the table out, exceptions residing in far

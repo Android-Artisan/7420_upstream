@@ -1,5 +1,4 @@
 ALS-007/ALS-100/ALS-200 based sound cards
-=========================================
 
 Support for sound cards based around the Avance Logic
 ALS-007/ALS-100/ALS-200 chip is included.  These chips are a single
@@ -58,9 +57,11 @@ The resulting sound driver will provide the following capabilities:
 
 Jonathan Woithe
 jwoithe@physics.adelaide.edu.au
+jwoithe@just42.net
 30 March 1998
 
 Modified 2000-02-26 by Dave Forrest, drf5n@virginia.edu to add ALS100/ALS200
 Modified 2000-04-10 by Paul Laufer, pelaufer@csupomona.edu to add ISAPnP info.
 Modified 2000-11-19 by Jonathan Woithe, jwoithe@physics.adelaide.edu.au
+Modified 2000-11-19 by Jonathan Woithe, jwoithe@just42.net
  - updated information for kernel 2.4.x.

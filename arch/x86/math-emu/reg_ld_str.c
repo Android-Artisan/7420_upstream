@@ -330,7 +330,6 @@ int FPU_load_bcd(u_char __user *s)
 	}
 }
 
-/*===========================================================================*/
 
 /* Put a long double into user memory */
 int FPU_store_extended(FPU_REG *st0_ptr, u_char st0_tag,
@@ -956,7 +955,6 @@ int FPU_store_bcd(FPU_REG *st0_ptr, u_char st0_tag, u_char __user *d)
 	return 1;
 }
 
-/*===========================================================================*/
 
 /* r gets mangled such that sig is int, sign: 
    it is NOT normalized */
@@ -1021,7 +1019,6 @@ int FPU_round_to_int(FPU_REG *r, u_char tag)
 
 }
 
-/*===========================================================================*/
 
 u_char __user *fldenv(fpu_addr_modes addr_modes, u_char __user *s)
 {
@@ -1216,4 +1213,3 @@ void fsave(fpu_addr_modes addr_modes, u_char __user *data_address)
 	finit();
 }
 
-/*===========================================================================*/

@@ -65,6 +65,7 @@ struct geode_aes_op {
 	int len;
 
 	u8 key[AES_KEY_LENGTH];
+	u8 key[AES_KEYSIZE_128];
 	u8 *iv;
 
 	union {

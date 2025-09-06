@@ -42,6 +42,8 @@
 #include <linux/parport.h>
 #include <linux/spinlock.h>
 #include <linux/delay.h>
+#include <linux/slab.h>
+#include <linux/module.h>
 #include <sound/core.h>
 #include <sound/initval.h>
 #include <sound/rawmidi.h>
@@ -54,6 +56,7 @@
 static int index[SNDRV_CARDS]  = SNDRV_DEFAULT_IDX;
 static char *id[SNDRV_CARDS]   = SNDRV_DEFAULT_STR;
 static int enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE_PNP;
+static bool enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE_PNP;
 
 static struct platform_device *platform_devices[SNDRV_CARDS]; 
 static int device_count;
@@ -97,6 +100,9 @@ static int portman_free(struct portman *pm)
 static int __devinit portman_create(struct snd_card *card, 
 				    struct pardevice *pardev, 
 				    struct portman **rchip)
+static int portman_create(struct snd_card *card,
+			  struct pardevice *pardev,
+			  struct portman **rchip)
 {
 	struct portman *pm;
 
@@ -560,6 +566,7 @@ static struct snd_rawmidi_ops snd_portman_midi_input = {
 
 /* Create and initialize the rawmidi component */
 static int __devinit snd_portman_rawmidi_create(struct snd_card *card)
+static int snd_portman_rawmidi_create(struct snd_card *card)
 {
 	struct portman *pm = card->private_data;
 	struct snd_rawmidi *rmidi;
@@ -647,6 +654,7 @@ static void snd_portman_interrupt(void *userdata)
 }
 
 static int __devinit snd_portman_probe_port(struct parport *p)
+static int snd_portman_probe_port(struct parport *p)
 {
 	struct pardevice *pardev;
 	int res;
@@ -671,6 +679,7 @@ static int __devinit snd_portman_probe_port(struct parport *p)
 }
 
 static void __devinit snd_portman_attach(struct parport *p)
+static void snd_portman_attach(struct parport *p)
 {
 	struct platform_device *device;
 
@@ -727,6 +736,7 @@ static void snd_portman_card_private_free(struct snd_card *card)
 }
 
 static int __devinit snd_portman_probe(struct platform_device *pdev)
+static int snd_portman_probe(struct platform_device *pdev)
 {
 	struct pardevice *pardev;
 	struct parport *p;
@@ -750,6 +760,11 @@ static int __devinit snd_portman_probe(struct platform_device *pdev)
 	if (card == NULL) {
 		snd_printd("Cannot create card\n");
 		return -ENOMEM;
+	err = snd_card_new(&pdev->dev, index[dev], id[dev], THIS_MODULE,
+			   0, &card);
+	if (err < 0) {
+		snd_printd("Cannot create card\n");
+		return err;
 	}
 	strcpy(card->driver, DRIVER_NAME);
 	strcpy(card->shortname, CARD_NAME);
@@ -813,6 +828,7 @@ __err:
 }
 
 static int __devexit snd_portman_remove(struct platform_device *pdev)
+static int snd_portman_remove(struct platform_device *pdev)
 {
 	struct snd_card *card = platform_get_drvdata(pdev);
 
@@ -828,6 +844,9 @@ static struct platform_driver snd_portman_driver = {
 	.remove = __devexit_p(snd_portman_remove),
 	.driver = {
 		.name = PLATFORM_DRIVER
+	.remove = snd_portman_remove,
+	.driver = {
+		.name = PLATFORM_DRIVER,
 	}
 };
 

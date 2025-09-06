@@ -39,6 +39,7 @@
 #define CFAG12864BFB_NAME "cfag12864bfb"
 
 static struct fb_fix_screeninfo cfag12864bfb_fix __initdata = {
+static struct fb_fix_screeninfo cfag12864bfb_fix = {
 	.id = "cfag12864b",
 	.type = FB_TYPE_PACKED_PIXELS,
 	.visual = FB_VISUAL_MONO10,
@@ -50,6 +51,7 @@ static struct fb_fix_screeninfo cfag12864bfb_fix __initdata = {
 };
 
 static struct fb_var_screeninfo cfag12864bfb_var __initdata = {
+static struct fb_var_screeninfo cfag12864bfb_var = {
 	.xres = CFAG12864B_WIDTH,
 	.yres = CFAG12864B_HEIGHT,
 	.xres_virtual = CFAG12864B_WIDTH,
@@ -82,6 +84,7 @@ static struct fb_ops cfag12864bfb_ops = {
 };
 
 static int __init cfag12864bfb_probe(struct platform_device *device)
+static int cfag12864bfb_probe(struct platform_device *device)
 {
 	int ret = -EINVAL;
  	struct fb_info *info = framebuffer_alloc(0, &device->dev);
@@ -105,6 +108,7 @@ static int __init cfag12864bfb_probe(struct platform_device *device)
 
 	printk(KERN_INFO "fb%d: %s frame buffer device\n", info->node,
 		info->fix.id);
+	fb_info(info, "%s frame buffer device\n", info->fix.id);
 
 	return 0;
 

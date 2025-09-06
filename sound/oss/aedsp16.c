@@ -166,6 +166,7 @@
    Started Fri Mar 17 16:13:18 MET 1995
 
    v0.1 (ALPHA, was an user-level program called AudioExcelDSP16.c)
+   v0.1 (ALPHA, was a user-level program called AudioExcelDSP16.c)
    - Initial code.
    v0.2 (ALPHA)
    - Cleanups.
@@ -335,6 +336,9 @@
  */
 #define CARDNAMELEN 15		/* Size of the card's name in chars     */
 #define CARDVERLEN  2		/* Size of the card's version in chars  */
+#define CARDNAMELEN	15	/* Size of the card's name in chars     */
+#define CARDVERLEN	10	/* Size of the card's version in chars	*/
+#define CARDVERDIGITS	2	/* Number of digits in the version	*/
 
 #if defined(CONFIG_SC6600)
 /*
@@ -419,6 +423,7 @@
 static int      soft_cfg __initdata = 0;	/* bitmapped config */
 static int      soft_cfg_mss __initdata = 0;	/* bitmapped mss config */
 static int      ver[CARDVERLEN] __initdata = {0, 0};	/* DSP Ver:
+static int      ver[CARDVERDIGITS] __initdata = {0, 0};	/* DSP Ver:
 						   hi->ver[0] lo->ver[1] */
 
 #if defined(CONFIG_SC6600)
@@ -966,6 +971,7 @@ static int __init aedsp16_dsp_version(int port)
 	 */
 		ver[len++] = ret;
 	  } while (len < CARDVERLEN);
+	  } while (len < CARDVERDIGITS);
 	sprintf(DSPVersion, "%d.%d", ver[0], ver[1]);
 
 	DBG(("success.\n"));

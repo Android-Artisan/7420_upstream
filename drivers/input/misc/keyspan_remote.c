@@ -158,6 +158,7 @@ static int keyspan_load_tester(struct usb_keyspan* dev, int bits_needed)
 	 */
 	if (dev->data.pos >= dev->data.len) {
 		dev_dbg(&dev->udev->dev,
+		dev_dbg(&dev->interface->dev,
 			"%s - Error ran out of data. pos: %d, len: %d\n",
 			__func__, dev->data.pos, dev->data.len);
 		return -1;
@@ -268,6 +269,9 @@ static void keyspan_check_data(struct usb_keyspan *remote)
 				remote->data.bits_left -= 6;
 			} else {
 				err("%s - Unknown sequence found in system data.\n", __func__);
+				dev_err(&remote->interface->dev,
+					"%s - Unknown sequence found in system data.\n",
+					__func__);
 				remote->stage = 0;
 				return;
 			}
@@ -287,6 +291,9 @@ static void keyspan_check_data(struct usb_keyspan *remote)
 				remote->data.bits_left -= 6;
 			} else {
 				err("%s - Unknown sequence found in button data.\n", __func__);
+				dev_err(&remote->interface->dev,
+					"%s - Unknown sequence found in button data.\n",
+					__func__);
 				remote->stage = 0;
 				return;
 			}
@@ -303,6 +310,9 @@ static void keyspan_check_data(struct usb_keyspan *remote)
 			remote->data.bits_left -= 6;
 		} else {
 			err("%s - Error in message, invalid toggle.\n", __func__);
+			dev_err(&remote->interface->dev,
+				"%s - Error in message, invalid toggle.\n",
+				__func__);
 			remote->stage = 0;
 			return;
 		}
@@ -316,6 +326,11 @@ static void keyspan_check_data(struct usb_keyspan *remote)
 		}
 
 		dev_dbg(&remote->udev->dev,
+			dev_err(&remote->interface->dev,
+				"Bad message received, no stop bit found.\n");
+		}
+
+		dev_dbg(&remote->interface->dev,
 			"%s found valid message: system: %d, button: %d, toggle: %d\n",
 			__func__, message.system, message.button, message.toggle);
 
@@ -338,7 +353,8 @@ static int keyspan_setup(struct usb_device* dev)
 	int retval = 0;
 
 	retval = usb_control_msg(dev, usb_sndctrlpipe(dev, 0),
-				 0x11, 0x40, 0x5601, 0x0, NULL, 0, 0);
+				 0x11, 0x40, 0x5601, 0x0, NULL, 0,
+				 USB_CTRL_SET_TIMEOUT);
 	if (retval) {
 		dev_dbg(&dev->dev, "%s - failed to set bit rate due to error: %d\n",
 			__func__, retval);
@@ -346,7 +362,8 @@ static int keyspan_setup(struct usb_device* dev)
 	}
 
 	retval = usb_control_msg(dev, usb_sndctrlpipe(dev, 0),
-				 0x44, 0x40, 0x0, 0x0, NULL, 0, 0);
+				 0x44, 0x40, 0x0, 0x0, NULL, 0,
+				 USB_CTRL_SET_TIMEOUT);
 	if (retval) {
 		dev_dbg(&dev->dev, "%s - failed to set resume sensitivity due to error: %d\n",
 			__func__, retval);
@@ -354,7 +371,8 @@ static int keyspan_setup(struct usb_device* dev)
 	}
 
 	retval = usb_control_msg(dev, usb_sndctrlpipe(dev, 0),
-				 0x22, 0x40, 0x0, 0x0, NULL, 0, 0);
+				 0x22, 0x40, 0x0, 0x0, NULL, 0,
+				 USB_CTRL_SET_TIMEOUT);
 	if (retval) {
 		dev_dbg(&dev->dev, "%s - failed to turn receive on due to error: %d\n",
 			__func__, retval);
@@ -398,6 +416,9 @@ resubmit:
 	retval = usb_submit_urb(urb, GFP_ATOMIC);
 	if (retval)
 		err ("%s - usb_submit_urb failed with result: %d", __func__, retval);
+		dev_err(&dev->interface->dev,
+			"%s - usb_submit_urb failed with result: %d\n",
+			__func__, retval);
 }
 
 static int keyspan_open(struct input_dev *dev)
@@ -465,6 +486,7 @@ static int keyspan_probe(struct usb_interface *interface, const struct usb_devic
 	remote->toggle = -1;	/* Set to -1 so we will always not match the toggle from the first remote message. */
 
 	remote->in_buffer = usb_buffer_alloc(udev, RECV_SIZE, GFP_ATOMIC, &remote->in_dma);
+	remote->in_buffer = usb_alloc_coherent(udev, RECV_SIZE, GFP_ATOMIC, &remote->in_dma);
 	if (!remote->in_buffer) {
 		error = -ENOMEM;
 		goto fail1;
@@ -544,6 +566,7 @@ static int keyspan_probe(struct usb_interface *interface, const struct usb_devic
 
  fail3:	usb_free_urb(remote->irq_urb);
  fail2:	usb_buffer_free(udev, RECV_SIZE, remote->in_buffer, remote->in_dma);
+ fail2:	usb_free_coherent(udev, RECV_SIZE, remote->in_buffer, remote->in_dma);
  fail1:	kfree(remote);
 	input_free_device(input_dev);
 
@@ -565,6 +588,7 @@ static void keyspan_disconnect(struct usb_interface *interface)
 		usb_kill_urb(remote->irq_urb);
 		usb_free_urb(remote->irq_urb);
 		usb_buffer_free(remote->udev, RECV_SIZE, remote->in_buffer, remote->in_dma);
+		usb_free_coherent(remote->udev, RECV_SIZE, remote->in_buffer, remote->in_dma);
 		kfree(remote);
 	}
 }
@@ -600,6 +624,7 @@ static void __exit usb_keyspan_exit(void)
 
 module_init(usb_keyspan_init);
 module_exit(usb_keyspan_exit);
+module_usb_driver(keyspan_driver);
 
 MODULE_DEVICE_TABLE(usb, keyspan_table);
 MODULE_AUTHOR(DRIVER_AUTHOR);

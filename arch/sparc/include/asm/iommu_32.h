@@ -100,6 +100,7 @@ struct iommu_regs {
 
 struct iommu_struct {
 	struct iommu_regs *regs;
+	struct iommu_regs __iomem *regs;
 	iopte_t *page_table;
 	/* For convenience */
 	unsigned long start; /* First managed virtual address */
@@ -116,6 +117,14 @@ static inline void iommu_invalidate(struct iommu_regs *regs)
 static inline void iommu_invalidate_page(struct iommu_regs *regs, unsigned long ba)
 {
 	regs->pageflush = (ba & PAGE_MASK);
+static inline void iommu_invalidate(struct iommu_regs __iomem *regs)
+{
+	sbus_writel(0, &regs->tlbflush);
+}
+
+static inline void iommu_invalidate_page(struct iommu_regs __iomem *regs, unsigned long ba)
+{
+	sbus_writel(ba & PAGE_MASK, &regs->pageflush);
 }
 
 #endif /* !(_SPARC_IOMMU_H) */

@@ -5,6 +5,9 @@
  * Copyright (C) 1997, 1998 Ralf Baechle (ralf@gnu.org)
  */
 #include <linux/ds1286.h>
+ * Copyright (C) 1996 David S. Miller (davem@davemloft.net)
+ * Copyright (C) 1997, 1998 Ralf Baechle (ralf@gnu.org)
+ */
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/kdev_t.h>
@@ -69,6 +72,7 @@ void __init plat_mem_setup(void)
 
 	if ((ctype && *ctype == 'd') || (cserial && *cserial == 's')) {
 		static char options[8];
+		static char options[8] __initdata;
 		char *baud = ArcGetEnvironmentVariable("dbaud");
 		if (baud)
 			strcpy(options, baud);

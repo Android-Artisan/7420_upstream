@@ -33,10 +33,22 @@
 #include <linux/ethtool.h>
 #include <linux/mii.h>
 
+static u32 mii_get_an(struct mii_if_info *mii, u16 addr)
+{
+	int advert;
+
+	advert = mii->mdio_read(mii->dev, mii->phy_id, addr);
+
+	return mii_lpa_to_ethtool_lpa_t(advert);
+}
+
 /**
  * mii_ethtool_gset - get settings that are specified in @ecmd
  * @mii: MII interface
  * @ecmd: requested ethtool_cmd
+ *
+ * The @ecmd parameter is expected to have been cleared before calling
+ * mii_ethtool_gset().
  *
  * Returns 0 for success, negative on error.
  */
@@ -45,6 +57,8 @@ int mii_ethtool_gset(struct mii_if_info *mii, struct ethtool_cmd *ecmd)
 	struct net_device *dev = mii->dev;
 	u32 advert, bmcr, lpa, nego;
 	u32 advert2 = 0, bmcr2 = 0, lpa2 = 0;
+	u16 bmcr, bmsr, ctrl1000 = 0, stat1000 = 0;
+	u32 nego;
 
 	ecmd->supported =
 	    (SUPPORTED_10baseT_Half | SUPPORTED_10baseT_Full |
@@ -86,6 +100,15 @@ int mii_ethtool_gset(struct mii_if_info *mii, struct ethtool_cmd *ecmd)
 	if (mii->supports_gmii) {
 		bmcr2 = mii->mdio_read(dev, mii->phy_id, MII_CTRL1000);
 		lpa2 = mii->mdio_read(dev, mii->phy_id, MII_STAT1000);
+	ecmd->mdio_support = ETH_MDIO_SUPPORTS_C22;
+
+	ecmd->advertising = ADVERTISED_TP | ADVERTISED_MII;
+
+	bmcr = mii->mdio_read(dev, mii->phy_id, MII_BMCR);
+	bmsr = mii->mdio_read(dev, mii->phy_id, MII_BMSR);
+	if (mii->supports_gmii) {
+ 		ctrl1000 = mii->mdio_read(dev, mii->phy_id, MII_CTRL1000);
+		stat1000 = mii->mdio_read(dev, mii->phy_id, MII_STAT1000);
 	}
 	if (bmcr & BMCR_ANENABLE) {
 		ecmd->advertising |= ADVERTISED_Autoneg;
@@ -106,6 +129,32 @@ int mii_ethtool_gset(struct mii_if_info *mii, struct ethtool_cmd *ecmd)
 		} else {
 			ecmd->duplex = DUPLEX_HALF;
 			mii->full_duplex = 0;
+		ecmd->advertising |= mii_get_an(mii, MII_ADVERTISE);
+		if (mii->supports_gmii)
+			ecmd->advertising |=
+					mii_ctrl1000_to_ethtool_adv_t(ctrl1000);
+
+		if (bmsr & BMSR_ANEGCOMPLETE) {
+			ecmd->lp_advertising = mii_get_an(mii, MII_LPA);
+			ecmd->lp_advertising |=
+					mii_stat1000_to_ethtool_lpa_t(stat1000);
+		} else {
+			ecmd->lp_advertising = 0;
+		}
+
+		nego = ecmd->advertising & ecmd->lp_advertising;
+
+		if (nego & (ADVERTISED_1000baseT_Full |
+			    ADVERTISED_1000baseT_Half)) {
+			ethtool_cmd_speed_set(ecmd, SPEED_1000);
+			ecmd->duplex = !!(nego & ADVERTISED_1000baseT_Full);
+		} else if (nego & (ADVERTISED_100baseT_Full |
+				   ADVERTISED_100baseT_Half)) {
+			ethtool_cmd_speed_set(ecmd, SPEED_100);
+			ecmd->duplex = !!(nego & ADVERTISED_100baseT_Full);
+		} else {
+			ethtool_cmd_speed_set(ecmd, SPEED_10);
+			ecmd->duplex = !!(nego & ADVERTISED_10baseT_Full);
 		}
 	} else {
 		ecmd->autoneg = AUTONEG_DISABLE;
@@ -115,6 +164,17 @@ int mii_ethtool_gset(struct mii_if_info *mii, struct ethtool_cmd *ecmd)
 			       (bmcr & BMCR_SPEED100) ? SPEED_100 : SPEED_10);
 		ecmd->duplex = (bmcr & BMCR_FULLDPLX) ? DUPLEX_FULL : DUPLEX_HALF;
 	}
+
+		ethtool_cmd_speed_set(ecmd,
+				      ((bmcr & BMCR_SPEED1000 &&
+					(bmcr & BMCR_SPEED100) == 0) ?
+				       SPEED_1000 :
+				       ((bmcr & BMCR_SPEED100) ?
+					SPEED_100 : SPEED_10)));
+		ecmd->duplex = (bmcr & BMCR_FULLDPLX) ? DUPLEX_FULL : DUPLEX_HALF;
+	}
+
+	mii->full_duplex = ecmd->duplex;
 
 	/* ignore maxtxpkt, maxrxpkt for now */
 
@@ -135,6 +195,11 @@ int mii_ethtool_sset(struct mii_if_info *mii, struct ethtool_cmd *ecmd)
 	if (ecmd->speed != SPEED_10 &&
 	    ecmd->speed != SPEED_100 &&
 	    ecmd->speed != SPEED_1000)
+	u32 speed = ethtool_cmd_speed(ecmd);
+
+	if (speed != SPEED_10 &&
+	    speed != SPEED_100 &&
+	    speed != SPEED_1000)
 		return -EINVAL;
 	if (ecmd->duplex != DUPLEX_HALF && ecmd->duplex != DUPLEX_FULL)
 		return -EINVAL;
@@ -147,6 +212,7 @@ int mii_ethtool_sset(struct mii_if_info *mii, struct ethtool_cmd *ecmd)
 	if (ecmd->autoneg != AUTONEG_DISABLE && ecmd->autoneg != AUTONEG_ENABLE)
 		return -EINVAL;
 	if ((ecmd->speed == SPEED_1000) && (!mii->supports_gmii))
+	if ((speed == SPEED_1000) && (!mii->supports_gmii))
 		return -EINVAL;
 
 	/* ignore supported, maxtxpkt, maxrxpkt */
@@ -184,6 +250,11 @@ int mii_ethtool_sset(struct mii_if_info *mii, struct ethtool_cmd *ecmd)
 			if (ecmd->advertising & ADVERTISED_1000baseT_Full)
 				tmp2 |= ADVERTISE_1000FULL;
 		}
+		tmp |= ethtool_adv_to_mii_adv_t(ecmd->advertising);
+
+		if (mii->supports_gmii)
+			tmp2 |=
+			      ethtool_adv_to_mii_ctrl1000_t(ecmd->advertising);
 		if (advert != tmp) {
 			mii->mdio_write(dev, mii->phy_id, MII_ADVERTISE, tmp);
 			mii->advertising = tmp;
@@ -207,6 +278,9 @@ int mii_ethtool_sset(struct mii_if_info *mii, struct ethtool_cmd *ecmd)
 		if (ecmd->speed == SPEED_1000)
 			tmp |= BMCR_SPEED1000;
 		else if (ecmd->speed == SPEED_100)
+		if (speed == SPEED_1000)
+			tmp |= BMCR_SPEED1000;
+		else if (speed == SPEED_100)
 			tmp |= BMCR_SPEED100;
 		if (ecmd->duplex == DUPLEX_FULL) {
 			tmp |= BMCR_FULLDPLX;
@@ -298,6 +372,7 @@ void mii_check_link (struct mii_if_info *mii)
 
 /**
  * mii_check_media - check the MII interface for a duplex change
+ * mii_check_media - check the MII interface for a carrier/speed/duplex change
  * @mii: the MII interface
  * @ok_to_print: OK to print link up/down messages
  * @init_media: OK to save duplex mode in @mii
@@ -332,6 +407,7 @@ unsigned int mii_check_media (struct mii_if_info *mii,
 		netif_carrier_off(mii->dev);
 		if (ok_to_print)
 			printk(KERN_INFO "%s: link down\n", mii->dev->name);
+			netdev_info(mii->dev, "link down\n");
 		return 0; /* duplex did not change */
 	}
 
@@ -339,6 +415,12 @@ unsigned int mii_check_media (struct mii_if_info *mii,
 	 * we have carrier, see who's on the other end
 	 */
 	netif_carrier_on(mii->dev);
+
+	if (mii->force_media) {
+		if (ok_to_print)
+			netdev_info(mii->dev, "link up\n");
+		return 0; /* duplex did not change */
+	}
 
 	/* get MII advertise and LPA values */
 	if ((!init_media) && (mii->advertising))
@@ -364,6 +446,12 @@ unsigned int mii_check_media (struct mii_if_info *mii,
 		       media & (ADVERTISE_100FULL | ADVERTISE_100HALF) ? "100" : "10",
 		       duplex ? "full" : "half",
 		       lpa);
+		netdev_info(mii->dev, "link up, %uMbps, %s-duplex, lpa 0x%04X\n",
+			    lpa2 & (LPA_1000FULL | LPA_1000HALF) ? 1000 :
+			    media & (ADVERTISE_100FULL | ADVERTISE_100HALF) ?
+			    100 : 10,
+			    duplex ? "full" : "half",
+			    lpa);
 
 	if ((init_media) || (mii->full_duplex != duplex)) {
 		mii->full_duplex = duplex;

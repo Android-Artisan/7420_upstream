@@ -17,6 +17,7 @@
 #include <net/netfilter/nf_conntrack_extend.h>
 
 static struct nf_ct_ext_type *nf_ct_ext_types[NF_CT_EXT_NUM];
+static struct nf_ct_ext_type __rcu *nf_ct_ext_types[NF_CT_EXT_NUM];
 static DEFINE_MUTEX(nf_ct_ext_type_mutex);
 
 void __nf_ct_ext_destroy(struct nf_conn *ct)
@@ -26,6 +27,10 @@ void __nf_ct_ext_destroy(struct nf_conn *ct)
 
 	for (i = 0; i < NF_CT_EXT_NUM; i++) {
 		if (!nf_ct_ext_exist(ct, i))
+	struct nf_ct_ext *ext = ct->ext;
+
+	for (i = 0; i < NF_CT_EXT_NUM; i++) {
+		if (!__nf_ct_ext_exist(ext, i))
 			continue;
 
 		rcu_read_lock();
@@ -47,10 +52,20 @@ nf_ct_ext_create(struct nf_ct_ext **ext, enum nf_ct_ext_id id, gfp_t gfp)
 {
 	unsigned int off, len;
 	struct nf_ct_ext_type *t;
+nf_ct_ext_create(struct nf_ct_ext **ext, enum nf_ct_ext_id id,
+		 size_t var_alloc_len, gfp_t gfp)
+{
+	unsigned int off, len;
+	struct nf_ct_ext_type *t;
+	size_t alloc_size;
 
 	rcu_read_lock();
 	t = rcu_dereference(nf_ct_ext_types[id]);
-	BUG_ON(t == NULL);
+	if (!t) {
+		rcu_read_unlock();
+		return NULL;
+	}
+
 	off = ALIGN(sizeof(struct nf_ct_ext), t->align);
 	len = off + t->len;
 	rcu_read_unlock();
@@ -60,6 +75,14 @@ nf_ct_ext_create(struct nf_ct_ext **ext, enum nf_ct_ext_id id, gfp_t gfp)
 		return NULL;
 
 	INIT_RCU_HEAD(&(*ext)->rcu);
+	len = off + t->len + var_alloc_len;
+	alloc_size = t->alloc_size + var_alloc_len;
+	rcu_read_unlock();
+
+	*ext = kzalloc(alloc_size, gfp);
+	if (!*ext)
+		return NULL;
+
 	(*ext)->offset[id] = off;
 	(*ext)->len = len;
 
@@ -75,6 +98,10 @@ static void __nf_ct_ext_free_rcu(struct rcu_head *head)
 void *__nf_ct_ext_add(struct nf_conn *ct, enum nf_ct_ext_id id, gfp_t gfp)
 {
 	struct nf_ct_ext *new;
+void *__nf_ct_ext_add_length(struct nf_conn *ct, enum nf_ct_ext_id id,
+			     size_t var_alloc_len, gfp_t gfp)
+{
+	struct nf_ct_ext *old, *new;
 	int i, newlen, newoff;
 	struct nf_ct_ext_type *t;
 
@@ -85,11 +112,19 @@ void *__nf_ct_ext_add(struct nf_conn *ct, enum nf_ct_ext_id id, gfp_t gfp)
 		return nf_ct_ext_create(&ct->ext, id, gfp);
 
 	if (nf_ct_ext_exist(ct, id))
+	old = ct->ext;
+	if (!old)
+		return nf_ct_ext_create(&ct->ext, id, var_alloc_len, gfp);
+
+	if (__nf_ct_ext_exist(old, id))
 		return NULL;
 
 	rcu_read_lock();
 	t = rcu_dereference(nf_ct_ext_types[id]);
-	BUG_ON(t == NULL);
+	if (!t) {
+		rcu_read_unlock();
+		return NULL;
+	}
 
 	newoff = ALIGN(ct->ext->len, t->align);
 	newlen = newoff + t->len;
@@ -102,6 +137,17 @@ void *__nf_ct_ext_add(struct nf_conn *ct, enum nf_ct_ext_id id, gfp_t gfp)
 	if (new != ct->ext) {
 		for (i = 0; i < NF_CT_EXT_NUM; i++) {
 			if (!nf_ct_ext_exist(ct, i))
+	newoff = ALIGN(old->len, t->align);
+	newlen = newoff + t->len + var_alloc_len;
+	rcu_read_unlock();
+
+	new = __krealloc(old, newlen, gfp);
+	if (!new)
+		return NULL;
+
+	if (new != old) {
+		for (i = 0; i < NF_CT_EXT_NUM; i++) {
+			if (!__nf_ct_ext_exist(old, i))
 				continue;
 
 			rcu_read_lock();
@@ -112,6 +158,10 @@ void *__nf_ct_ext_add(struct nf_conn *ct, enum nf_ct_ext_id id, gfp_t gfp)
 			rcu_read_unlock();
 		}
 		call_rcu(&ct->ext->rcu, __nf_ct_ext_free_rcu);
+					(void *)old + old->offset[i]);
+			rcu_read_unlock();
+		}
+		kfree_rcu(old, rcu);
 		ct->ext = new;
 	}
 
@@ -121,6 +171,7 @@ void *__nf_ct_ext_add(struct nf_conn *ct, enum nf_ct_ext_id id, gfp_t gfp)
 	return (void *)new + newoff;
 }
 EXPORT_SYMBOL(__nf_ct_ext_add);
+EXPORT_SYMBOL(__nf_ct_ext_add_length);
 
 static void update_alloc_size(struct nf_ct_ext_type *type)
 {
@@ -146,6 +197,16 @@ static void update_alloc_size(struct nf_ct_ext_type *type)
 				 + t1->len;
 		for (j = 0; j < NF_CT_EXT_NUM; j++) {
 			t2 = nf_ct_ext_types[j];
+		t1 = rcu_dereference_protected(nf_ct_ext_types[i],
+				lockdep_is_held(&nf_ct_ext_type_mutex));
+		if (!t1)
+			continue;
+
+		t1->alloc_size = ALIGN(sizeof(struct nf_ct_ext), t1->align) +
+				 t1->len;
+		for (j = 0; j < NF_CT_EXT_NUM; j++) {
+			t2 = rcu_dereference_protected(nf_ct_ext_types[j],
+				lockdep_is_held(&nf_ct_ext_type_mutex));
 			if (t2 == NULL || t2 == t1 ||
 			    (t2->flags & NF_CT_EXT_F_PREALLOC) == 0)
 				continue;
@@ -184,6 +245,10 @@ void nf_ct_extend_unregister(struct nf_ct_ext_type *type)
 {
 	mutex_lock(&nf_ct_ext_type_mutex);
 	rcu_assign_pointer(nf_ct_ext_types[type->id], NULL);
+	update_alloc_size(type);
+	mutex_unlock(&nf_ct_ext_type_mutex);
+	synchronize_rcu();
+	RCU_INIT_POINTER(nf_ct_ext_types[type->id], NULL);
 	update_alloc_size(type);
 	mutex_unlock(&nf_ct_ext_type_mutex);
 	synchronize_rcu();

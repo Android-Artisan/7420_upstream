@@ -1,7 +1,6 @@
 [This file is cloned from VesaFB/aty128fb]
 
 What is gxfb?
-=================
 
 This is a graphics framebuffer driver for AMD Geode GX2 based processors.
 
@@ -20,7 +19,6 @@ Disadvantages:
 
 
 How to use it?
-==============
 
 Switching modes is done using  gxfb.mode_option=<resolution>... boot
 parameter or using `fbset' program.
@@ -36,7 +34,6 @@ XF68_FBDev should generally work fine, but it is non-accelerated.
 
 
 Configuration
-=============
 
 You can pass kernel command line options to gxfb with gxfb.<option>.
 For example, gxfb.mode_option=800x600@75.

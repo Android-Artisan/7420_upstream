@@ -12,6 +12,7 @@
 #include <linux/netfilter_ipv4/ip_tables.h>
 #include <linux/netdevice.h>
 #include <linux/skbuff.h>
+#include <linux/slab.h>
 #include <net/sock.h>
 #include <net/route.h>
 #include <linux/ip.h>
@@ -123,6 +124,16 @@ ipt_local_hook(unsigned int hook,
 		   const struct net_device *in,
 		   const struct net_device *out,
 		   int (*okfn)(struct sk_buff *))
+static const struct xt_table packet_mangler = {
+	.name		= "mangle",
+	.valid_hooks	= MANGLE_VALID_HOOKS,
+	.me		= THIS_MODULE,
+	.af		= NFPROTO_IPV4,
+	.priority	= NF_IP_PRI_MANGLE,
+};
+
+static unsigned int
+ipt_mangle_out(struct sk_buff *skb, const struct nf_hook_state *state)
 {
 	unsigned int ret;
 	const struct iphdr *iph;
@@ -138,6 +149,12 @@ ipt_local_hook(unsigned int hook,
 			       "packet.\n");
 		return NF_ACCEPT;
 	}
+	int err;
+
+	/* root is playing with raw sockets. */
+	if (skb->len < sizeof(struct iphdr) ||
+	    ip_hdrlen(skb) < sizeof(struct iphdr))
+		return NF_ACCEPT;
 
 	/* Save things which could affect route */
 	mark = skb->mark;
@@ -150,6 +167,9 @@ ipt_local_hook(unsigned int hook,
 			   nf_local_out_net(in, out)->ipv4.iptable_mangle);
 	/* Reroute for ANY change. */
 	if (ret != NF_DROP && ret != NF_STOLEN && ret != NF_QUEUE) {
+	ret = ipt_do_table(skb, state, state->net->ipv4.iptable_mangle);
+	/* Reroute for ANY change. */
+	if (ret != NF_DROP && ret != NF_STOLEN) {
 		iph = ip_hdr(skb);
 
 		if (iph->saddr != saddr ||
@@ -158,6 +178,11 @@ ipt_local_hook(unsigned int hook,
 		    iph->tos != tos)
 			if (ip_route_me_harder(skb, RTN_UNSPEC))
 				ret = NF_DROP;
+		    iph->tos != tos) {
+			err = ip_route_me_harder(state->net, skb, RTN_UNSPEC);
+			if (err < 0)
+				ret = NF_DROP_ERR(err);
+		}
 	}
 
 	return ret;
@@ -209,11 +234,40 @@ static int __net_init iptable_mangle_net_init(struct net *net)
 	if (IS_ERR(net->ipv4.iptable_mangle))
 		return PTR_ERR(net->ipv4.iptable_mangle);
 	return 0;
+/* The work comes in here from netfilter.c. */
+static unsigned int
+iptable_mangle_hook(void *priv,
+		     struct sk_buff *skb,
+		     const struct nf_hook_state *state)
+{
+	if (state->hook == NF_INET_LOCAL_OUT)
+		return ipt_mangle_out(skb, state);
+	if (state->hook == NF_INET_POST_ROUTING)
+		return ipt_do_table(skb, state,
+				    state->net->ipv4.iptable_mangle);
+	/* PREROUTING/INPUT/FORWARD: */
+	return ipt_do_table(skb, state, state->net->ipv4.iptable_mangle);
+}
+
+static struct nf_hook_ops *mangle_ops __read_mostly;
+
+static int __net_init iptable_mangle_net_init(struct net *net)
+{
+	struct ipt_replace *repl;
+
+	repl = ipt_alloc_initial_table(&packet_mangler);
+	if (repl == NULL)
+		return -ENOMEM;
+	net->ipv4.iptable_mangle =
+		ipt_register_table(net, &packet_mangler, repl);
+	kfree(repl);
+	return PTR_ERR_OR_ZERO(net->ipv4.iptable_mangle);
 }
 
 static void __net_exit iptable_mangle_net_exit(struct net *net)
 {
 	ipt_unregister_table(net->ipv4.iptable_mangle);
+	ipt_unregister_table(net, net->ipv4.iptable_mangle);
 }
 
 static struct pernet_operations iptable_mangle_net_ops = {
@@ -239,11 +293,19 @@ static int __init iptable_mangle_init(void)
  cleanup_table:
 	unregister_pernet_subsys(&iptable_mangle_net_ops);
 	return ret;
+	mangle_ops = xt_hook_link(&packet_mangler, iptable_mangle_hook);
+	if (IS_ERR(mangle_ops)) {
+		ret = PTR_ERR(mangle_ops);
+		unregister_pernet_subsys(&iptable_mangle_net_ops);
+	}
+
+	return ret;
 }
 
 static void __exit iptable_mangle_fini(void)
 {
 	nf_unregister_hooks(ipt_ops, ARRAY_SIZE(ipt_ops));
+	xt_hook_unlink(&packet_mangler, mangle_ops);
 	unregister_pernet_subsys(&iptable_mangle_net_ops);
 }
 

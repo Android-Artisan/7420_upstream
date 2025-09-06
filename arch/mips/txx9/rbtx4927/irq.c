@@ -3,6 +3,7 @@
  *
  * Author: MontaVista Software, Inc.
  *         source@mvista.com
+ *	   source@mvista.com
  *
  * Copyright 2001-2002 MontaVista Software Inc.
  *
@@ -111,6 +112,7 @@
 #include <linux/init.h>
 #include <linux/types.h>
 #include <linux/interrupt.h>
+#include <linux/irq.h>
 #include <asm/io.h>
 #include <asm/mipsregs.h>
 #include <asm/txx9/generic.h>
@@ -137,6 +139,37 @@ static int toshiba_rbtx4927_irq_nested(int sw_irq)
 		sw_irq = RBTX4927_IRQ_IOC + fls(level3) - 1;
 	return sw_irq;
 }
+
+	if (unlikely(!level3))
+		return -1;
+	return RBTX4927_IRQ_IOC + __fls8(level3);
+}
+
+static void toshiba_rbtx4927_irq_ioc_enable(struct irq_data *d)
+{
+	unsigned char v;
+
+	v = readb(rbtx4927_imask_addr);
+	v |= (1 << (d->irq - RBTX4927_IRQ_IOC));
+	writeb(v, rbtx4927_imask_addr);
+}
+
+static void toshiba_rbtx4927_irq_ioc_disable(struct irq_data *d)
+{
+	unsigned char v;
+
+	v = readb(rbtx4927_imask_addr);
+	v &= ~(1 << (d->irq - RBTX4927_IRQ_IOC));
+	writeb(v, rbtx4927_imask_addr);
+	mmiowb();
+}
+
+#define TOSHIBA_RBTX4927_IOC_NAME "RBTX4927-IOC"
+static struct irq_chip toshiba_rbtx4927_irq_ioc_type = {
+	.name = TOSHIBA_RBTX4927_IOC_NAME,
+	.irq_mask = toshiba_rbtx4927_irq_ioc_disable,
+	.irq_unmask = toshiba_rbtx4927_irq_ioc_enable,
+};
 
 static void __init toshiba_rbtx4927_irq_ioc_init(void)
 {
@@ -169,6 +202,18 @@ static void toshiba_rbtx4927_irq_ioc_disable(unsigned int irq)
 }
 
 
+	/* mask all IOC interrupts */
+	writeb(0, rbtx4927_imask_addr);
+	/* clear SoftInt interrupts */
+	writeb(0, rbtx4927_softint_addr);
+
+	for (i = RBTX4927_IRQ_IOC;
+	     i < RBTX4927_IRQ_IOC + RBTX4927_NR_IRQ_IOC; i++)
+		irq_set_chip_and_handler(i, &toshiba_rbtx4927_irq_ioc_type,
+					 handle_level_irq);
+	irq_set_chained_handler(RBTX4927_IRQ_IOCINT, handle_simple_irq);
+}
+
 static int rbtx4927_irq_dispatch(int pending)
 {
 	int irq;
@@ -195,4 +240,5 @@ void __init rbtx4927_irq_setup(void)
 	toshiba_rbtx4927_irq_ioc_init();
 	/* Onboard 10M Ether: High Active */
 	set_irq_type(RBTX4927_RTL_8019_IRQ, IRQF_TRIGGER_HIGH);
+	irq_set_irq_type(RBTX4927_RTL_8019_IRQ, IRQF_TRIGGER_HIGH);
 }

@@ -3,3 +3,4 @@
 #
 obj-y := setup.o irq.o
 obj-$(CONFIG_HEARTBEAT)	+= led.o
+obj-y := setup.o irq.o panic.o

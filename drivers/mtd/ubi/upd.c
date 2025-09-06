@@ -41,6 +41,7 @@
 #include <linux/err.h>
 #include <linux/uaccess.h>
 #include <asm/div64.h>
+#include <linux/math64.h>
 #include "ubi.h"
 
 /**
@@ -72,6 +73,13 @@ static int set_update_marker(struct ubi_device *ubi, struct ubi_volume *vol)
 	err = ubi_change_vtbl_record(ubi, vol->vol_id, &vtbl_rec);
 	mutex_unlock(&ubi->volumes_mutex);
 	vol->upd_marker = 1;
+	vtbl_rec = ubi->vtbl[vol->vol_id];
+	vtbl_rec.upd_marker = 1;
+
+	mutex_lock(&ubi->device_mutex);
+	err = ubi_change_vtbl_record(ubi, vol->vol_id, &vtbl_rec);
+	vol->upd_marker = 1;
+	mutex_unlock(&ubi->device_mutex);
 	return err;
 }
 
@@ -96,6 +104,7 @@ static int clear_update_marker(struct ubi_device *ubi, struct ubi_volume *vol,
 
 	memcpy(&vtbl_rec, &ubi->vtbl[vol->vol_id],
 	       sizeof(struct ubi_vtbl_record));
+	vtbl_rec = ubi->vtbl[vol->vol_id];
 	ubi_assert(vol->upd_marker && vtbl_rec.upd_marker);
 	vtbl_rec.upd_marker = 0;
 
@@ -104,6 +113,9 @@ static int clear_update_marker(struct ubi_device *ubi, struct ubi_volume *vol,
 		vol->used_bytes = tmp = bytes;
 		vol->last_eb_bytes = do_div(tmp, vol->usable_leb_size);
 		vol->used_ebs = tmp;
+		vol->used_bytes = bytes;
+		vol->used_ebs = div_u64_rem(bytes, vol->usable_leb_size,
+					    &vol->last_eb_bytes);
 		if (vol->last_eb_bytes)
 			vol->used_ebs += 1;
 		else
@@ -114,6 +126,10 @@ static int clear_update_marker(struct ubi_device *ubi, struct ubi_volume *vol,
 	err = ubi_change_vtbl_record(ubi, vol->vol_id, &vtbl_rec);
 	mutex_unlock(&ubi->volumes_mutex);
 	vol->upd_marker = 0;
+	mutex_lock(&ubi->device_mutex);
+	err = ubi_change_vtbl_record(ubi, vol->vol_id, &vtbl_rec);
+	vol->upd_marker = 0;
+	mutex_unlock(&ubi->device_mutex);
 	return err;
 }
 
@@ -136,6 +152,10 @@ int ubi_start_update(struct ubi_device *ubi, struct ubi_volume *vol,
 	dbg_gen("start update of volume %d, %llu bytes", vol->vol_id, bytes);
 	ubi_assert(!vol->updating && !vol->changing_leb);
 	vol->updating = 1;
+
+	vol->upd_buf = vmalloc(ubi->leb_size);
+	if (!vol->upd_buf)
+		return -ENOMEM;
 
 	err = set_update_marker(ubi, vol);
 	if (err)
@@ -164,6 +184,25 @@ int ubi_start_update(struct ubi_device *ubi, struct ubi_volume *vol,
 	tmp = bytes;
 	vol->upd_ebs = !!do_div(tmp, vol->usable_leb_size);
 	vol->upd_ebs += tmp;
+		err = ubi_wl_flush(ubi, UBI_ALL, UBI_ALL);
+		if (err)
+			return err;
+	err = ubi_wl_flush(ubi, UBI_ALL, UBI_ALL);
+	if (err)
+		return err;
+
+	if (bytes == 0) {
+		err = clear_update_marker(ubi, vol, 0);
+		if (err)
+			return err;
+
+		vfree(vol->upd_buf);
+		vol->updating = 0;
+		return 0;
+	}
+
+	vol->upd_ebs = div_u64(bytes + vol->usable_leb_size - 1,
+			       vol->usable_leb_size);
 	vol->upd_bytes = bytes;
 	vol->upd_received = 0;
 	return 0;
@@ -188,6 +227,7 @@ int ubi_start_leb_change(struct ubi_device *ubi, struct ubi_volume *vol,
 	if (req->bytes == 0)
 		return ubi_eba_atomic_leb_change(ubi, vol, req->lnum, NULL, 0,
 						 req->dtype);
+		return ubi_eba_atomic_leb_change(ubi, vol, req->lnum, NULL, 0);
 
 	vol->upd_bytes = req->bytes;
 	vol->upd_received = 0;
@@ -195,7 +235,7 @@ int ubi_start_leb_change(struct ubi_device *ubi, struct ubi_volume *vol,
 	vol->ch_lnum = req->lnum;
 	vol->ch_dtype = req->dtype;
 
-	vol->upd_buf = vmalloc(req->bytes);
+	vol->upd_buf = vmalloc(ALIGN((int)req->bytes, ubi->min_io_size));
 	if (!vol->upd_buf)
 		return -ENOMEM;
 
@@ -248,6 +288,7 @@ static int write_leb(struct ubi_device *ubi, struct ubi_volume *vol, int lnum,
 
 		err = ubi_eba_write_leb(ubi, vol, lnum, buf, 0, len,
 					UBI_UNKNOWN);
+		err = ubi_eba_write_leb(ubi, vol, lnum, buf, 0, len);
 	} else {
 		/*
 		 * When writing static volume, and this is the last logical
@@ -261,6 +302,7 @@ static int write_leb(struct ubi_device *ubi, struct ubi_volume *vol, int lnum,
 		memset(buf + len, 0, vol->usable_leb_size - len);
 		err = ubi_eba_write_leb_st(ubi, vol, lnum, buf, len,
 					   UBI_UNKNOWN, used_ebs);
+		err = ubi_eba_write_leb_st(ubi, vol, lnum, buf, len, used_ebs);
 	}
 
 	return err;
@@ -295,6 +337,7 @@ int ubi_more_update_data(struct ubi_device *ubi, struct ubi_volume *vol,
 	offs = do_div(tmp, vol->usable_leb_size);
 	lnum = tmp;
 
+	lnum = div_u64_rem(vol->upd_received,  vol->usable_leb_size, &offs);
 	if (vol->upd_received + count > vol->upd_bytes)
 		to_write = count = vol->upd_bytes - vol->upd_received;
 
@@ -369,6 +412,9 @@ int ubi_more_update_data(struct ubi_device *ubi, struct ubi_volume *vol,
 
 	ubi_assert(vol->upd_received <= vol->upd_bytes);
 	if (vol->upd_received == vol->upd_bytes) {
+		err = ubi_wl_flush(ubi, UBI_ALL, UBI_ALL);
+		if (err)
+			return err;
 		/* The update is finished, clear the update marker */
 		err = clear_update_marker(ubi, vol, vol->upd_bytes);
 		if (err)
@@ -379,6 +425,9 @@ int ubi_more_update_data(struct ubi_device *ubi, struct ubi_volume *vol,
 			err = to_write;
 			vfree(vol->upd_buf);
 		}
+		vol->updating = 0;
+		err = to_write;
+		vfree(vol->upd_buf);
 	}
 
 	return err;
@@ -426,6 +475,7 @@ int ubi_more_leb_change_data(struct ubi_device *ubi, struct ubi_volume *vol,
 		len = ubi_calc_data_len(ubi, vol->upd_buf, len);
 		err = ubi_eba_atomic_leb_change(ubi, vol, vol->ch_lnum,
 						vol->upd_buf, len, UBI_UNKNOWN);
+						vol->upd_buf, len);
 		if (err)
 			return err;
 	}

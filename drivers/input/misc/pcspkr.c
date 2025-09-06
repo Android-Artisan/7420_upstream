@@ -17,6 +17,10 @@
 #include <linux/init.h>
 #include <linux/input.h>
 #include <linux/platform_device.h>
+#include <linux/i8253.h>
+#include <linux/input.h>
+#include <linux/platform_device.h>
+#include <linux/timex.h>
 #include <asm/io.h>
 
 MODULE_AUTHOR("Vojtech Pavlik <vojtech@ucw.cz>");
@@ -54,22 +58,29 @@ static int pcspkr_event(struct input_dev *dev, unsigned int type, unsigned int c
 	if (count) {
 		/* enable counter 2 */
 		outb_p(inb_p(0x61) | 3, 0x61);
+	raw_spin_lock_irqsave(&i8253_lock, flags);
+
+	if (count) {
 		/* set command for counter 2, 2 byte write */
 		outb_p(0xB6, 0x43);
 		/* select desired HZ */
 		outb_p(count & 0xff, 0x42);
 		outb((count >> 8) & 0xff, 0x42);
+		/* enable counter 2 */
+		outb_p(inb_p(0x61) | 3, 0x61);
 	} else {
 		/* disable counter 2 */
 		outb(inb_p(0x61) & 0xFC, 0x61);
 	}
 
 	spin_unlock_irqrestore(&i8253_lock, flags);
+	raw_spin_unlock_irqrestore(&i8253_lock, flags);
 
 	return 0;
 }
 
 static int __devinit pcspkr_probe(struct platform_device *dev)
+static int pcspkr_probe(struct platform_device *dev)
 {
 	struct input_dev *pcspkr_dev;
 	int err;
@@ -102,6 +113,7 @@ static int __devinit pcspkr_probe(struct platform_device *dev)
 }
 
 static int __devexit pcspkr_remove(struct platform_device *dev)
+static int pcspkr_remove(struct platform_device *dev)
 {
 	struct input_dev *pcspkr_dev = platform_get_drvdata(dev);
 
@@ -114,6 +126,7 @@ static int __devexit pcspkr_remove(struct platform_device *dev)
 }
 
 static int pcspkr_suspend(struct platform_device *dev, pm_message_t state)
+static int pcspkr_suspend(struct device *dev)
 {
 	pcspkr_event(NULL, EV_SND, SND_BELL, 0);
 
@@ -150,3 +163,18 @@ static void __exit pcspkr_exit(void)
 
 module_init(pcspkr_init);
 module_exit(pcspkr_exit);
+static const struct dev_pm_ops pcspkr_pm_ops = {
+	.suspend = pcspkr_suspend,
+};
+
+static struct platform_driver pcspkr_platform_driver = {
+	.driver		= {
+		.name	= "pcspkr",
+		.pm	= &pcspkr_pm_ops,
+	},
+	.probe		= pcspkr_probe,
+	.remove		= pcspkr_remove,
+	.shutdown	= pcspkr_shutdown,
+};
+module_platform_driver(pcspkr_platform_driver);
+

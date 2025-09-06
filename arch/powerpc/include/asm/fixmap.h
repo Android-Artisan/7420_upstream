@@ -24,6 +24,8 @@ extern unsigned long FIXADDR_TOP;
 #include <asm/kmap_types.h>
 #endif
 
+#define FIXADDR_TOP	((unsigned long)(-PAGE_SIZE))
+
 /*
  * Here we define all the compile-time 'special' virtual
  * addresses. The point is to have a constant address at
@@ -44,6 +46,9 @@ extern unsigned long FIXADDR_TOP;
  */
 enum fixed_addresses {
 	FIX_HOLE,
+	/* reserve the top 128K for early debugging purposes */
+	FIX_EARLY_DEBUG_TOP = FIX_HOLE,
+	FIX_EARLY_DEBUG_BASE = FIX_EARLY_DEBUG_TOP+((128*1024)/PAGE_SIZE)-1,
 #ifdef CONFIG_HIGHMEM
 	FIX_KMAP_BEGIN,	/* reserved pte's for temporary kernel mappings */
 	FIX_KMAP_END = FIX_KMAP_BEGIN+(KM_TYPE_NR*NR_CPUS)-1,
@@ -101,6 +106,12 @@ static inline unsigned long virt_to_fix(const unsigned long vaddr)
 	BUG_ON(vaddr >= FIXADDR_TOP || vaddr < FIXADDR_START);
 	return __virt_to_fix(vaddr);
 }
+#define __FIXADDR_SIZE	(__end_of_fixed_addresses << PAGE_SHIFT)
+#define FIXADDR_START		(FIXADDR_TOP - __FIXADDR_SIZE)
+
+#define FIXMAP_PAGE_NOCACHE PAGE_KERNEL_NCG
+
+#include <asm-generic/fixmap.h>
 
 #endif /* !__ASSEMBLY__ */
 #endif

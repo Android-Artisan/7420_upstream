@@ -17,6 +17,7 @@ joystick.
 By default, the device is opened in blocking mode.
 
 	int fd = open ("/dev/js0", O_RDONLY);
+	int fd = open ("/dev/input/js0", O_RDONLY);
 
 
 2. Event Reading
@@ -24,6 +25,7 @@ By default, the device is opened in blocking mode.
 
 	struct js_event e;
 	read (fd, &e, sizeof(struct js_event));
+	read (fd, &e, sizeof(e));
 
 where js_event is defined as
 
@@ -36,6 +38,8 @@ where js_event is defined as
 
 If the read is successful, it will return sizeof(struct js_event), unless
 you wanted to read more than one event per read as described in section 3.1.
+If the read is successful, it will return sizeof(e), unless you wanted to read
+more than one event per read as described in section 3.1.
 
 
 2.1 js_event.type
@@ -102,6 +106,9 @@ may work well if you handle JS_EVENT_INIT events separately,
 	        	buttons_state |= (1 << js_event.number);
 	   	else
 	      		buttons_state &= ~(1 << js_event.number);
+			buttons_state |= (1 << js_event.number);
+		else
+			buttons_state &= ~(1 << js_event.number);
 	}
 
 is much safer since it can't lose sync with the driver. As you would
@@ -152,6 +159,14 @@ For example,
 	      		/* error */
 	   	}
 	   	/* do something interesting with processed events */
+		while (read (fd, &e, sizeof(e)) > 0) {
+			process_event (e);
+		}
+		/* EAGAIN is returned when the queue is empty */
+		if (errno != EAGAIN) {
+			/* error */
+		}
+		/* do something interesting with processed events */
 	}
 
 One reason for emptying the queue is that if it gets full you'll start
@@ -182,6 +197,7 @@ replace the read above with something like
 
 	struct js_event mybuffer[0xff];
 	int i = read (fd, mybuffer, sizeof(struct mybuffer));
+	int i = read (fd, mybuffer, sizeof(mybuffer));
 
 In this case, read would return -1 if the queue was empty, or some
 other value in which the number of events read would be i /
@@ -272,6 +288,9 @@ The driver offers backward compatibility, though. Here's a quick summary:
 	      		/* error */
 	   	}
 	   	usleep (1000);
+			/* error */
+		}
+		usleep (1000);
 	}
 
 As you can figure out from the example, the read returns immediately,

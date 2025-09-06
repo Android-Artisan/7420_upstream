@@ -158,6 +158,7 @@ static unsigned int cs5530_qc_issue(struct ata_queued_cmd *qc)
 	}
 
 	return ata_sff_qc_issue(qc);
+	return ata_bmdma_qc_issue(qc);
 }
 
 static struct scsi_host_template cs5530_sht = {
@@ -169,6 +170,7 @@ static struct ata_port_operations cs5530_port_ops = {
 	.inherits	= &ata_bmdma_port_ops,
 
 	.qc_prep 	= ata_sff_dumb_qc_prep,
+	.qc_prep 	= ata_bmdma_dumb_qc_prep,
 	.qc_issue	= cs5530_qc_issue,
 
 	.cable_detect	= ata_cable_40wire,
@@ -282,6 +284,8 @@ fail_put:
 		pci_dev_put(master_0);
 	if (cs5530_0)
 		pci_dev_put(cs5530_0);
+	pci_dev_put(master_0);
+	pci_dev_put(cs5530_0);
 	return -ENODEV;
 }
 
@@ -302,12 +306,16 @@ static int cs5530_init_one(struct pci_dev *pdev, const struct pci_device_id *id)
 		.pio_mask = 0x1f,
 		.mwdma_mask = 0x07,
 		.udma_mask = 0x07,
+		.pio_mask = ATA_PIO4,
+		.mwdma_mask = ATA_MWDMA2,
+		.udma_mask = ATA_UDMA2,
 		.port_ops = &cs5530_port_ops
 	};
 	/* The docking connector doesn't do UDMA, and it seems not MWDMA */
 	static const struct ata_port_info info_palmax_secondary = {
 		.flags = ATA_FLAG_SLAVE_POSS,
 		.pio_mask = 0x1f,
+		.pio_mask = ATA_PIO4,
 		.port_ops = &cs5530_port_ops
 	};
 	const struct ata_port_info *ppi[] = { &info, NULL };
@@ -332,6 +340,13 @@ static int cs5530_init_one(struct pci_dev *pdev, const struct pci_device_id *id)
 static int cs5530_reinit_one(struct pci_dev *pdev)
 {
 	struct ata_host *host = dev_get_drvdata(&pdev->dev);
+	return ata_pci_bmdma_init_one(pdev, ppi, &cs5530_sht, NULL, 0);
+}
+
+#ifdef CONFIG_PM_SLEEP
+static int cs5530_reinit_one(struct pci_dev *pdev)
+{
+	struct ata_host *host = pci_get_drvdata(pdev);
 	int rc;
 
 	rc = ata_pci_device_do_resume(pdev);
@@ -346,6 +361,7 @@ static int cs5530_reinit_one(struct pci_dev *pdev)
 	return 0;
 }
 #endif /* CONFIG_PM */
+#endif /* CONFIG_PM_SLEEP */
 
 static const struct pci_device_id cs5530[] = {
 	{ PCI_VDEVICE(CYRIX, PCI_DEVICE_ID_CYRIX_5530_IDE), },
@@ -359,6 +375,7 @@ static struct pci_driver cs5530_pci_driver = {
 	.probe 		= cs5530_init_one,
 	.remove		= ata_pci_remove_one,
 #ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 	.suspend	= ata_pci_device_suspend,
 	.resume		= cs5530_reinit_one,
 #endif
@@ -373,6 +390,7 @@ static void __exit cs5530_exit(void)
 {
 	pci_unregister_driver(&cs5530_pci_driver);
 }
+module_pci_driver(cs5530_pci_driver);
 
 MODULE_AUTHOR("Alan Cox");
 MODULE_DESCRIPTION("low-level driver for the Cyrix/NS/AMD 5530");

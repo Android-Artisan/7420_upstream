@@ -26,6 +26,8 @@
  * Vojtech Pavlik, Simunkova 1594, Prague 8, 182 00 Czech Republic
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/slab.h>
 #include <linux/module.h>
 #include <linux/input.h>
@@ -40,6 +42,8 @@ static void evbug_event(struct input_handle *handle, unsigned int type, unsigned
 {
 	printk(KERN_DEBUG "evbug.c: Event. Dev: %s, Type: %d, Code: %d, Value: %d\n",
 		handle->dev->dev.bus_id, type, code, value);
+	printk(KERN_DEBUG pr_fmt("Event. Dev: %s, Type: %d, Code: %d, Value: %d\n"),
+	       dev_name(&handle->dev->dev), type, code, value);
 }
 
 static int evbug_connect(struct input_handler *handler, struct input_dev *dev,
@@ -68,6 +72,10 @@ static int evbug_connect(struct input_handler *handler, struct input_dev *dev,
 		dev->dev.bus_id,
 		dev->name ?: "unknown",
 		dev->phys ?: "unknown");
+	printk(KERN_DEBUG pr_fmt("Connected device: %s (%s at %s)\n"),
+	       dev_name(&dev->dev),
+	       dev->name ?: "unknown",
+	       dev->phys ?: "unknown");
 
 	return 0;
 
@@ -82,6 +90,8 @@ static void evbug_disconnect(struct input_handle *handle)
 {
 	printk(KERN_DEBUG "evbug.c: Disconnected device: %s\n",
 		handle->dev->dev.bus_id);
+	printk(KERN_DEBUG pr_fmt("Disconnected device: %s\n"),
+	       dev_name(&handle->dev->dev));
 
 	input_close_device(handle);
 	input_unregister_handle(handle);

@@ -1,11 +1,13 @@
 /******************************************************************************
  *
  * Name: aclinux.h - OS specific defines, etc.
+ * Name: aclinux.h - OS specific defines, etc. for Linux
  *
  *****************************************************************************/
 
 /*
  * Copyright (C) 2000 - 2008, Intel Corp.
+ * Copyright (C) 2000 - 2015, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -44,6 +46,18 @@
 #ifndef __ACLINUX_H__
 #define __ACLINUX_H__
 
+#ifdef __KERNEL__
+
+/* ACPICA external files should not include ACPICA headers directly. */
+
+#if !defined(BUILDING_ACPICA) && !defined(_LINUX_ACPI_H)
+#error "Please don't include <acpi/acpi.h> directly, include <linux/acpi.h> instead."
+#endif
+
+#endif
+
+/* Common (in-kernel/user-space) ACPICA configuration */
+
 #define ACPI_USE_SYSTEM_CLIBRARY
 #define ACPI_USE_DO_WHILE_0
 
@@ -71,6 +85,121 @@
 
 /* Full namespace pathname length limit - arbitrary */
 #define ACPI_PATHNAME_MAX              256
+#define ACPI_USE_SYSTEM_INTTYPES
+
+/* Kernel specific ACPICA configuration */
+
+#ifdef CONFIG_ACPI_REDUCED_HARDWARE_ONLY
+#define ACPI_REDUCED_HARDWARE 1
+#endif
+
+#ifdef CONFIG_ACPI_DEBUGGER
+#define ACPI_DEBUGGER
+#endif
+
+#include <linux/string.h>
+#include <linux/kernel.h>
+#include <linux/ctype.h>
+#include <linux/sched.h>
+#include <linux/atomic.h>
+#include <linux/math64.h>
+#include <linux/slab.h>
+#include <linux/spinlock_types.h>
+#ifdef EXPORT_ACPI_INTERFACES
+#include <linux/export.h>
+#endif
+#ifdef CONFIG_ACPI
+#include <asm/acenv.h>
+#endif
+
+#ifndef CONFIG_ACPI
+
+/* External globals for __KERNEL__, stubs is needed */
+
+#define ACPI_GLOBAL(t,a)
+#define ACPI_INIT_GLOBAL(t,a,b)
+
+/* Generating stubs for configurable ACPICA macros */
+
+#define ACPI_NO_MEM_ALLOCATIONS
+
+/* Generating stubs for configurable ACPICA functions */
+
+#define ACPI_NO_ERROR_MESSAGES
+#undef ACPI_DEBUG_OUTPUT
+
+/* External interface for __KERNEL__, stub is needed */
+
+#define ACPI_EXTERNAL_RETURN_STATUS(prototype) \
+	static ACPI_INLINE prototype {return(AE_NOT_CONFIGURED);}
+#define ACPI_EXTERNAL_RETURN_OK(prototype) \
+	static ACPI_INLINE prototype {return(AE_OK);}
+#define ACPI_EXTERNAL_RETURN_VOID(prototype) \
+	static ACPI_INLINE prototype {return;}
+#define ACPI_EXTERNAL_RETURN_UINT32(prototype) \
+	static ACPI_INLINE prototype {return(0);}
+#define ACPI_EXTERNAL_RETURN_PTR(prototype) \
+	static ACPI_INLINE prototype {return(NULL);}
+
+#endif				/* CONFIG_ACPI */
+
+/* Host-dependent types and defines for in-kernel ACPICA */
+
+#define ACPI_MACHINE_WIDTH          BITS_PER_LONG
+#define ACPI_EXPORT_SYMBOL(symbol)  EXPORT_SYMBOL(symbol);
+#define strtoul                     simple_strtoul
+
+#define acpi_cache_t                        struct kmem_cache
+#define acpi_spinlock                       spinlock_t *
+#define acpi_raw_spinlock		raw_spinlock_t *
+#define acpi_cpu_flags                      unsigned long
+
+/* Use native linux version of acpi_os_allocate_zeroed */
+
+#define USE_NATIVE_ALLOCATE_ZEROED
+
+/*
+ * Overrides for in-kernel ACPICA
+ */
+#define ACPI_USE_ALTERNATE_PROTOTYPE_acpi_os_initialize
+#define ACPI_USE_ALTERNATE_PROTOTYPE_acpi_os_terminate
+#define ACPI_USE_ALTERNATE_PROTOTYPE_acpi_os_allocate
+#define ACPI_USE_ALTERNATE_PROTOTYPE_acpi_os_allocate_zeroed
+#define ACPI_USE_ALTERNATE_PROTOTYPE_acpi_os_free
+#define ACPI_USE_ALTERNATE_PROTOTYPE_acpi_os_acquire_object
+#define ACPI_USE_ALTERNATE_PROTOTYPE_acpi_os_get_thread_id
+#define ACPI_USE_ALTERNATE_PROTOTYPE_acpi_os_create_lock
+
+#define acpi_os_create_raw_lock(__handle)			\
+({								\
+	 raw_spinlock_t *lock = ACPI_ALLOCATE(sizeof(*lock));	\
+								\
+	 if (lock) {						\
+		*(__handle) = lock;				\
+		raw_spin_lock_init(*(__handle));		\
+	 }							\
+	 lock ? AE_OK : AE_NO_MEMORY;				\
+ })
+
+#define acpi_os_delete_raw_lock(__handle)	kfree(__handle)
+
+
+/*
+ * OSL interfaces used by debugger/disassembler
+ */
+#define ACPI_USE_ALTERNATE_PROTOTYPE_acpi_os_readable
+#define ACPI_USE_ALTERNATE_PROTOTYPE_acpi_os_writable
+
+/*
+ * OSL interfaces used by utilities
+ */
+#define ACPI_USE_ALTERNATE_PROTOTYPE_acpi_os_redirect_output
+#define ACPI_USE_ALTERNATE_PROTOTYPE_acpi_os_get_table_by_name
+#define ACPI_USE_ALTERNATE_PROTOTYPE_acpi_os_get_table_by_index
+#define ACPI_USE_ALTERNATE_PROTOTYPE_acpi_os_get_table_by_address
+#define ACPI_USE_ALTERNATE_PROTOTYPE_acpi_os_open_directory
+#define ACPI_USE_ALTERNATE_PROTOTYPE_acpi_os_get_next_filename
+#define ACPI_USE_ALTERNATE_PROTOTYPE_acpi_os_close_directory
 
 #else				/* !__KERNEL__ */
 
@@ -81,6 +210,19 @@
 #include <unistd.h>
 
 #if defined(__ia64__) || defined(__x86_64__)
+/* Define/disable kernel-specific declarators */
+
+#ifndef __init
+#define __init
+#endif
+
+/* Host-dependent types and defines for user-space ACPICA */
+
+#define ACPI_FLUSH_CPU_CACHE()
+#define ACPI_CAST_PTHREAD_T(pthread) ((acpi_thread_id) (pthread))
+
+#if defined(__ia64__)    || defined(__x86_64__) ||\
+	defined(__aarch64__) || defined(__PPC64__)
 #define ACPI_MACHINE_WIDTH          64
 #define COMPILER_DEPENDENT_INT64    long
 #define COMPILER_DEPENDENT_UINT64   unsigned long
@@ -136,5 +278,6 @@ static inline void *acpi_os_acquire_object(acpi_cache_t * cache)
 #define ACPI_ALLOCATE(a)	acpi_os_allocate(a)
 #define ACPI_ALLOCATE_ZEROED(a)	acpi_os_allocate_zeroed(a)
 #define ACPI_FREE(a)		kfree(a)
+#include <acpi/platform/acgcc.h>
 
 #endif				/* __ACLINUX_H__ */

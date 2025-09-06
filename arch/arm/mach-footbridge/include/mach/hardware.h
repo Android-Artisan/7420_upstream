@@ -55,6 +55,35 @@
 #define XBUS_LED_RED		(1 << 2)
 #define XBUS_LED_TOGGLE		(1 << 8)
 
+#ifdef CONFIG_MMU
+#define MMU_IO(a, b)	(a)
+#else
+#define MMU_IO(a, b)	(b)
+#endif
+
+#define XBUS_SIZE		0x00100000
+#define XBUS_BASE		MMU_IO(0xff800000, 0x40000000)
+
+#define ARMCSR_SIZE		0x00100000
+#define ARMCSR_BASE		MMU_IO(0xfe000000, 0x42000000)
+
+#define WFLUSH_SIZE		0x00100000
+#define WFLUSH_BASE		MMU_IO(0xfd000000, 0x78000000)
+
+#define PCIIACK_SIZE		0x00100000
+#define PCIIACK_BASE		MMU_IO(0xfc000000, 0x79000000)
+
+#define PCICFG1_SIZE		0x01000000
+#define PCICFG1_BASE		MMU_IO(0xfb000000, 0x7a000000)
+
+#define PCICFG0_SIZE		0x01000000
+#define PCICFG0_BASE		MMU_IO(0xfa000000, 0x7b000000)
+
+#define PCIMEM_SIZE		0x01000000
+#define PCIMEM_BASE		MMU_IO(0xf0000000, 0x80000000)
+
+#define XBUS_CS2		0x40012000
+
 #define XBUS_SWITCH		((volatile unsigned char *)(XBUS_BASE + 0x12000))
 #define XBUS_SWITCH_SWITCH	((*XBUS_SWITCH) & 15)
 #define XBUS_SWITCH_J17_13	((*XBUS_SWITCH) & (1 << 4))
@@ -101,5 +130,12 @@ extern void cpld_modify(int mask, int set);
 
 #define PCIBIOS_MIN_IO		0x1000
 #define PCIBIOS_MIN_MEM 	0x81000000
+
+extern raw_spinlock_t nw_gpio_lock;
+extern void nw_gpio_modify_op(unsigned int mask, unsigned int set);
+extern void nw_gpio_modify_io(unsigned int mask, unsigned int in);
+extern unsigned int nw_gpio_read(void);
+extern void nw_cpld_modify(unsigned int mask, unsigned int set);
+#endif
 
 #endif

@@ -16,6 +16,7 @@
 #include <linux/wait.h>
 #include <asm/io.h>
 #include <asm/microdev.h>
+#include <mach/microdev.h>
 
 	/*
 	 *	we need to have a 'safe' address to re-direct all I/O requests
@@ -55,6 +56,7 @@
  * map I/O ports to memory-mapped addresses
  */
 static unsigned long microdev_isa_port2addr(unsigned long offset)
+void __iomem *microdev_ioport_map(unsigned long offset, unsigned int len)
 {
 	unsigned long result;
 
@@ -364,4 +366,5 @@ void microdev_outsl(unsigned long port, const void *buffer, unsigned long count)
 
 	while (count--)
 		*port_addr = *buf++;
+	return (void __iomem *)result;
 }

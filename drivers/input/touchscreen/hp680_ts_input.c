@@ -6,6 +6,7 @@
 #include <asm/delay.h>
 #include <asm/adc.h>
 #include <asm/hp6xx.h>
+#include <mach/hp6xx.h>
 
 #define MODNAME "hp680_ts_input"
 
@@ -33,6 +34,11 @@ static void do_softint(struct work_struct *work)
 		scpdr |= SCPDR_TS_SCAN_ENABLE;
 		scpdr &= ~SCPDR_TS_SCAN_Y;
 		ctrl_outb(scpdr, SCPDR);
+	if (__raw_readb(PHDR) & PHDR_TS_PEN_DOWN) {
+		scpdr = __raw_readb(SCPDR);
+		scpdr |= SCPDR_TS_SCAN_ENABLE;
+		scpdr &= ~SCPDR_TS_SCAN_Y;
+		__raw_writeb(scpdr, SCPDR);
 		udelay(30);
 
 		absy = adc_single(ADC_CHANNEL_TS_Y);
@@ -41,6 +47,10 @@ static void do_softint(struct work_struct *work)
 		scpdr |= SCPDR_TS_SCAN_Y;
 		scpdr &= ~SCPDR_TS_SCAN_X;
 		ctrl_outb(scpdr, SCPDR);
+		scpdr = __raw_readb(SCPDR);
+		scpdr |= SCPDR_TS_SCAN_Y;
+		scpdr &= ~SCPDR_TS_SCAN_X;
+		__raw_writeb(scpdr, SCPDR);
 		udelay(30);
 
 		absx = adc_single(ADC_CHANNEL_TS_X);
@@ -51,6 +61,12 @@ static void do_softint(struct work_struct *work)
 		ctrl_outb(scpdr, SCPDR);
 		udelay(100);
 		touched = ctrl_inb(PHDR) & PHDR_TS_PEN_DOWN;
+		scpdr = __raw_readb(SCPDR);
+		scpdr |= SCPDR_TS_SCAN_X;
+		scpdr &= ~SCPDR_TS_SCAN_ENABLE;
+		__raw_writeb(scpdr, SCPDR);
+		udelay(100);
+		touched = __raw_readb(PHDR) & PHDR_TS_PEN_DOWN;
 	}
 
 	if (touched) {
@@ -94,6 +110,7 @@ static int __init hp680_ts_init(void)
 
 	if (request_irq(HP680_TS_IRQ, hp680_ts_interrupt,
 			IRQF_DISABLED, MODNAME, 0) < 0) {
+			0, MODNAME, NULL) < 0) {
 		printk(KERN_ERR "hp680_touchscreen.c: Can't allocate irq %d\n",
 		       HP680_TS_IRQ);
 		err = -EBUSY;
@@ -109,6 +126,7 @@ static int __init hp680_ts_init(void)
  fail2:	free_irq(HP680_TS_IRQ, NULL);
 	cancel_delayed_work(&work);
 	flush_scheduled_work();
+	cancel_delayed_work_sync(&work);
  fail1:	input_free_device(hp680_ts_dev);
 	return err;
 }
@@ -118,6 +136,7 @@ static void __exit hp680_ts_exit(void)
 	free_irq(HP680_TS_IRQ, NULL);
 	cancel_delayed_work(&work);
 	flush_scheduled_work();
+	cancel_delayed_work_sync(&work);
 	input_unregister_device(hp680_ts_dev);
 }
 

@@ -319,6 +319,7 @@ cumanascsi_2_set_proc_info(struct Scsi_Host *host, char *buffer, int length)
 	int ret = length;
 
 	if (length >= 11 && strcmp(buffer, "CUMANASCSI2") == 0) {
+	if (length >= 11 && strncmp(buffer, "CUMANASCSI2", 11) == 0) {
 		buffer += 11;
 		length -= 11;
 
@@ -376,11 +377,26 @@ int cumanascsi_2_proc_info (struct Scsi_Host *host, char *buffer, char **start, 
 		pos = length;
 
 	return pos;
+static int cumanascsi_2_show_info(struct seq_file *m, struct Scsi_Host *host)
+{
+	struct cumanascsi2_info *info;
+	info = (struct cumanascsi2_info *)host->hostdata;
+
+	seq_printf(m, "Cumana SCSI II driver v%s\n", VERSION);
+	fas216_print_host(&info->info, m);
+	seq_printf(m, "Term    : o%s\n",
+			info->terms ? "n" : "ff");
+
+	fas216_print_stats(&info->info, m);
+	fas216_print_devices(&info->info, m);
+	return 0;
 }
 
 static struct scsi_host_template cumanascsi2_template = {
 	.module				= THIS_MODULE,
 	.proc_info			= cumanascsi_2_proc_info,
+	.show_info			= cumanascsi_2_show_info,
+	.write_info			= cumanascsi_2_set_proc_info,
 	.name				= "Cumana SCSI II",
 	.info				= cumanascsi_2_info,
 	.queuecommand			= fas216_queue_command,
@@ -392,12 +408,16 @@ static struct scsi_host_template cumanascsi2_template = {
 	.this_id			= 7,
 	.sg_tablesize			= SG_ALL,
 	.cmd_per_lun			= 1,
+	.sg_tablesize			= SCSI_MAX_SG_CHAIN_SEGMENTS,
+	.dma_boundary			= IOMD_DMA_BOUNDARY,
 	.use_clustering			= DISABLE_CLUSTERING,
 	.proc_name			= "cumanascsi2",
 };
 
 static int __devinit
 cumanascsi2_probe(struct expansion_card *ec, const struct ecard_id *id)
+static int cumanascsi2_probe(struct expansion_card *ec,
+			     const struct ecard_id *id)
 {
 	struct Scsi_Host *host;
 	struct cumanascsi2_info *info;
@@ -456,6 +476,7 @@ cumanascsi2_probe(struct expansion_card *ec, const struct ecard_id *id)
 
 	ret = request_irq(ec->irq, cumanascsi_2_intr,
 			  IRQF_DISABLED, "cumanascsi2", info);
+			  0, "cumanascsi2", info);
 	if (ret) {
 		printk("scsi%d: IRQ%d not free: %d\n",
 		       host->host_no, ec->irq, ret);
@@ -479,7 +500,7 @@ cumanascsi2_probe(struct expansion_card *ec, const struct ecard_id *id)
 
 	if (info->info.scsi.dma != NO_DMA)
 		free_dma(info->info.scsi.dma);
-	free_irq(ec->irq, host);
+	free_irq(ec->irq, info);
 
  out_release:
 	fas216_release(host);
@@ -495,6 +516,7 @@ cumanascsi2_probe(struct expansion_card *ec, const struct ecard_id *id)
 }
 
 static void __devexit cumanascsi2_remove(struct expansion_card *ec)
+static void cumanascsi2_remove(struct expansion_card *ec)
 {
 	struct Scsi_Host *host = ecard_get_drvdata(ec);
 	struct cumanascsi2_info *info = (struct cumanascsi2_info *)host->hostdata;
@@ -519,6 +541,7 @@ static const struct ecard_id cumanascsi2_cids[] = {
 static struct ecard_driver cumanascsi2_driver = {
 	.probe		= cumanascsi2_probe,
 	.remove		= __devexit_p(cumanascsi2_remove),
+	.remove		= cumanascsi2_remove,
 	.id_table	= cumanascsi2_cids,
 	.drv = {
 		.name		= "cumanascsi2",

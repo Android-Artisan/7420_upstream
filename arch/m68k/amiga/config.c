@@ -15,6 +15,7 @@
 #include <linux/types.h>
 #include <linux/kernel.h>
 #include <linux/mm.h>
+#include <linux/seq_file.h>
 #include <linux/tty.h>
 #include <linux/console.h>
 #include <linux/rtc.h>
@@ -28,6 +29,12 @@
 #include <asm/bootinfo.h>
 #include <asm/setup.h>
 #include <asm/system.h>
+#include <linux/keyboard.h>
+
+#include <asm/bootinfo.h>
+#include <asm/bootinfo-amiga.h>
+#include <asm/byteorder.h>
+#include <asm/setup.h>
 #include <asm/pgtable.h>
 #include <asm/amigahw.h>
 #include <asm/amigaints.h>
@@ -99,6 +106,9 @@ static int a3000_hwclk(int, struct rtc_time *);
 static int a2000_hwclk(int, struct rtc_time *);
 static int amiga_set_clock_mmss(unsigned long);
 static unsigned int amiga_get_ss(void);
+static void amiga_get_hardware_list(struct seq_file *m);
+/* amiga specific timer functions */
+static u32 amiga_gettimeoffset(void);
 extern void amiga_mksound(unsigned int count, unsigned int ticks);
 static void amiga_reset(void);
 extern void amiga_init_sound(void);
@@ -175,6 +185,34 @@ int amiga_parse_bootinfo(const struct bi_record *record)
 
 	case BI_AMIGA_PSFREQ:
 		amiga_psfreq = *(const unsigned char *)data;
+int __init amiga_parse_bootinfo(const struct bi_record *record)
+{
+	int unknown = 0;
+	const void *data = record->data;
+
+	switch (be16_to_cpu(record->tag)) {
+	case BI_AMIGA_MODEL:
+		amiga_model = be32_to_cpup(data);
+		break;
+
+	case BI_AMIGA_ECLOCK:
+		amiga_eclock = be32_to_cpup(data);
+		break;
+
+	case BI_AMIGA_CHIPSET:
+		amiga_chipset = be32_to_cpup(data);
+		break;
+
+	case BI_AMIGA_CHIP_SIZE:
+		amiga_chip_size = be32_to_cpup(data);
+		break;
+
+	case BI_AMIGA_VBLANK:
+		amiga_vblank = *(const __u8 *)data;
+		break;
+
+	case BI_AMIGA_PSFREQ:
+		amiga_psfreq = *(const __u8 *)data;
 		break;
 
 	case BI_AMIGA_AUTOCON:
@@ -189,6 +227,24 @@ int amiga_parse_bootinfo(const struct bi_record *record)
 			dev->resource.end = dev->resource.start + cd->cd_BoardSize - 1;
 		} else
 			printk("amiga_parse_bootinfo: too many AutoConfig devices\n");
+			const struct ConfigDev *cd = data;
+			struct zorro_dev_init *dev = &zorro_autocon_init[zorro_num_autocon++];
+			dev->rom = cd->cd_Rom;
+			dev->slotaddr = be16_to_cpu(cd->cd_SlotAddr);
+			dev->slotsize = be16_to_cpu(cd->cd_SlotSize);
+			dev->boardaddr = be32_to_cpu(cd->cd_BoardAddr);
+			dev->boardsize = be32_to_cpu(cd->cd_BoardSize);
+
+			/* CS-LAB Warp 1260 workaround */
+			if (be16_to_cpu(dev->rom.er_Manufacturer) == ZORRO_MANUF(ZORRO_PROD_CSLAB_WARP_1260) &&
+			    dev->rom.er_Product == ZORRO_PROD(ZORRO_PROD_CSLAB_WARP_1260)) {
+
+				/* turn off all interrupts */
+				pr_info("Warp 1260 card detected: applying interrupt storm workaround\n");
+				*(uint32_t *)(dev->boardaddr + 0x1000) = 0xfff;
+			}
+		} else
+			pr_warn("amiga_parse_bootinfo: too many AutoConfig devices\n");
 #endif /* CONFIG_ZORRO */
 		break;
 
@@ -217,6 +273,9 @@ static void __init amiga_identify(void)
 	printk("Amiga hardware found: ");
 	if (amiga_model >= AMI_500 && amiga_model <= AMI_DRACO) {
 		printk("[%s] ", amiga_models[amiga_model-AMI_500]);
+	pr_info("Amiga hardware found: ");
+	if (amiga_model >= AMI_500 && amiga_model <= AMI_DRACO) {
+		pr_cont("[%s] ", amiga_models[amiga_model-AMI_500]);
 		strcat(amiga_model_name, amiga_models[amiga_model-AMI_500]);
 	}
 
@@ -328,6 +387,7 @@ static void __init amiga_identify(void)
 #define AMIGAHW_ANNOUNCE(name, str)		\
 	if (AMIGAHW_PRESENT(name))		\
 		printk(str)
+		pr_cont(str)
 
 	AMIGAHW_ANNOUNCE(AMI_VIDEO, "VIDEO ");
 	AMIGAHW_ANNOUNCE(AMI_BLITTER, "BLITTER ");
@@ -361,9 +421,19 @@ static void __init amiga_identify(void)
 	if (AMIGAHW_PRESENT(ZORRO))
 		printk("ZORRO%s ", AMIGAHW_PRESENT(ZORRO3) ? "3" : "");
 	printk("\n");
+		pr_cont("ZORRO%s ", AMIGAHW_PRESENT(ZORRO3) ? "3" : "");
+	pr_cont("\n");
 
 #undef AMIGAHW_ANNOUNCE
 }
+
+
+static unsigned long amiga_random_get_entropy(void)
+{
+	/* VPOSR/VHPOSR provide at least 17 bits of data changing at 1.79 MHz */
+	return *(unsigned long *)&amiga_custom.vposr;
+}
+
 
     /*
      *  Setup the Amiga configuration info
@@ -394,6 +464,7 @@ void __init config_amiga(void)
 		rtc_resource.name = "A2000 RTC";
 		request_resource(&iomem_resource, &rtc_resource);
 	}
+	arch_gettimeoffset   = amiga_gettimeoffset;
 
 	/*
 	 * default MAX_DMA=0xffffffff on all machines. If we don't do so, the SCSI
@@ -413,6 +484,8 @@ void __init config_amiga(void)
 	mach_heartbeat = amiga_heartbeat;
 #endif
 
+	mach_random_get_entropy = amiga_random_get_entropy;
+
 	/* Fill in the clock value (based on the 700 kHz E-Clock) */
 	amiga_colorclock = 5*amiga_eclock;	/* 3.5 MHz */
 
@@ -431,6 +504,7 @@ void __init config_amiga(void)
 				if (i == 0) {
 					/* don't cut off the branch we're sitting on */
 					printk("Warning: kernel runs in Zorro II memory\n");
+					pr_warn("Warning: kernel runs in Zorro II memory\n");
 					continue;
 				}
 				disabled_z2mem += m68k_memory[i].size;
@@ -443,6 +517,8 @@ void __init config_amiga(void)
 		if (disabled_z2mem)
 		printk("%dK of Zorro II memory will not be used as system memory\n",
 		disabled_z2mem>>10);
+			pr_info("%dK of Zorro II memory will not be used as system memory\n",
+				disabled_z2mem>>10);
 	}
 
 	/* request all RAM */
@@ -482,6 +558,10 @@ static void __init amiga_sched_init(irq_handler_t timer_routine)
 
 	if (request_resource(&mb_resources._ciab, &sched_res))
 		printk("Cannot allocate ciab.ta{lo,hi}\n");
+	jiffy_ticks = DIV_ROUND_CLOSEST(amiga_eclock, HZ);
+
+	if (request_resource(&mb_resources._ciab, &sched_res))
+		pr_warn("Cannot allocate ciab.ta{lo,hi}\n");
 	ciab.cra &= 0xC0;   /* turn off timer A, continuous mode, from Eclk */
 	ciab.talo = jiffy_ticks % 256;
 	ciab.tahi = jiffy_ticks / 256;
@@ -492,6 +572,8 @@ static void __init amiga_sched_init(irq_handler_t timer_routine)
 	 * SCSI code. We'll have to take a look at this later
 	 */
 	request_irq(IRQ_AMIGA_CIAB_TA, timer_routine, 0, "timer", NULL);
+	if (request_irq(IRQ_AMIGA_CIAB_TA, timer_routine, 0, "timer", NULL))
+		pr_err("Couldn't register timer interrupt\n");
 	/* start timer */
 	ciab.cra |= 0x11;
 }
@@ -503,6 +585,10 @@ static unsigned long amiga_gettimeoffset(void)
 {
 	unsigned short hi, lo, hi2;
 	unsigned long ticks, offset = 0;
+static u32 amiga_gettimeoffset(void)
+{
+	unsigned short hi, lo, hi2;
+	u32 ticks, offset = 0;
 
 	/* read CIA B timer A current value */
 	hi  = ciab.tahi;
@@ -682,6 +768,10 @@ static unsigned int amiga_get_ss(void)
 
 static NORET_TYPE void amiga_reset(void)
     ATTRIB_NORET;
+	return (ticks + offset) * 1000;
+}
+
+static void amiga_reset(void)  __noreturn;
 
 static void amiga_reset(void)
 {
@@ -790,6 +880,19 @@ static int __init amiga_savekmsg_setup(char *arg)
 	}
 
 	savekmsg = amiga_chip_alloc_res(SAVEKMSG_MAXMEM, &debug_res);
+	bool registered;
+
+	if (!MACH_IS_AMIGA || strcmp(arg, "mem"))
+		return 0;
+
+	if (amiga_chip_size < SAVEKMSG_MAXMEM) {
+		pr_err("Not enough chipram for debugging\n");
+		return -ENOMEM;
+	}
+
+	/* Just steal the block, the chipram allocator isn't functional yet */
+	amiga_chip_size -= SAVEKMSG_MAXMEM;
+	savekmsg = ZTWO_VADDR(CHIP_PHYSADDR + amiga_chip_size);
 	savekmsg->magic1 = SAVEKMSG_MAGIC1;
 	savekmsg->magic2 = SAVEKMSG_MAGIC2;
 	savekmsg->magicptr = ZTWO_PADDR(savekmsg);
@@ -799,6 +902,10 @@ static int __init amiga_savekmsg_setup(char *arg)
 	register_console(&amiga_console_driver);
 
 done:
+	registered = !!amiga_console_driver.write;
+	amiga_console_driver.write = amiga_mem_console_write;
+	if (!registered)
+		register_console(&amiga_console_driver);
 	return 0;
 }
 
@@ -885,6 +992,16 @@ static int __init amiga_debug_setup(char *arg)
 		amiga_console_driver.write = amiga_serial_console_write;
 		register_console(&amiga_console_driver);
 	}
+	bool registered;
+
+	if (!MACH_IS_AMIGA || strcmp(arg, "ser"))
+		return 0;
+
+	/* no initialization required (?) */
+	registered = !!amiga_console_driver.write;
+	amiga_console_driver.write = amiga_serial_console_write;
+	if (!registered)
+		register_console(&amiga_console_driver);
 	return 0;
 }
 
@@ -917,6 +1034,11 @@ static int amiga_get_hardware_list(char *buffer)
 	if (AMIGAHW_PRESENT(CHIP_RAM))
 		len += sprintf(buffer+len, "Chip RAM:\t%ldK\n", amiga_chip_size>>10);
 	len += sprintf(buffer+len, "PS Freq:\t%dHz\nEClock Freq:\t%ldHz\n",
+static void amiga_get_hardware_list(struct seq_file *m)
+{
+	if (AMIGAHW_PRESENT(CHIP_RAM))
+		seq_printf(m, "Chip RAM:\t%ldK\n", amiga_chip_size>>10);
+	seq_printf(m, "PS Freq:\t%dHz\nEClock Freq:\t%ldHz\n",
 			amiga_psfreq, amiga_eclock);
 	if (AMIGAHW_PRESENT(AMI_VIDEO)) {
 		char *type;
@@ -935,6 +1057,7 @@ static int amiga_get_hardware_list(char *buffer)
 			break;
 		}
 		len += sprintf(buffer+len, "Graphics:\t%s\n", type);
+		seq_printf(m, "Graphics:\t%s\n", type);
 	}
 
 #define AMIGAHW_ANNOUNCE(name, str)			\
@@ -942,6 +1065,9 @@ static int amiga_get_hardware_list(char *buffer)
 		len += sprintf (buffer+len, "\t%s\n", str)
 
 	len += sprintf (buffer + len, "Detected hardware:\n");
+		seq_printf (m, "\t%s\n", str)
+
+	seq_printf (m, "Detected hardware:\n");
 
 	AMIGAHW_ANNOUNCE(AMI_VIDEO, "Amiga Video");
 	AMIGAHW_ANNOUNCE(AMI_BLITTER, "Blitter");
@@ -975,6 +1101,7 @@ static int amiga_get_hardware_list(char *buffer)
 #ifdef CONFIG_ZORRO
 	if (AMIGAHW_PRESENT(ZORRO))
 		len += sprintf(buffer+len, "\tZorro II%s AutoConfig: %d Expansion "
+		seq_printf(m, "\tZorro II%s AutoConfig: %d Expansion "
 				"Device%s\n",
 				AMIGAHW_PRESENT(ZORRO3) ? "I" : "",
 				zorro_num_autocon, zorro_num_autocon == 1 ? "" : "s");
@@ -984,3 +1111,12 @@ static int amiga_get_hardware_list(char *buffer)
 
 	return len;
 }
+}
+
+/*
+ * The Amiga keyboard driver needs key_maps, but we cannot export it in
+ * drivers/char/defkeymap.c, as it is autogenerated
+ */
+#ifdef CONFIG_HW_CONSOLE
+EXPORT_SYMBOL_GPL(key_maps);
+#endif

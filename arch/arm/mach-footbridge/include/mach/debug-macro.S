@@ -28,6 +28,7 @@
 #include <asm/hardware/debug-8250.S>
 
 #else
+#include <mach/hardware.h>
 	/* For EBSA285 debugging */
 		.equ	dc21285_high, ARMCSR_BASE & 0xff000000
 		.equ	dc21285_low,  ARMCSR_BASE & 0x00ffffff
@@ -40,6 +41,14 @@
 		.if	dc21285_low
 		orrne	\rx, \rx, #dc21285_low
 		.endif
+		.macro	addruart, rp, rv, tmp
+		.if	dc21285_low
+		mov	\rp, #dc21285_low
+		.else
+		mov	\rp, #0
+		.endif
+		orr	\rv, \rp, #dc21285_high
+		orr	\rp, \rp, #0x42000000
 		.endm
 
 		.macro	senduart,rd,rx

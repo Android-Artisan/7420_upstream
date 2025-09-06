@@ -39,6 +39,7 @@
 #include "super.h"
 #include "sysfile.h"
 #include "uptodate.h"
+#include "ocfs2_trace.h"
 
 #include "buffer_head_io.h"
 #include "suballoc.h"
@@ -56,11 +57,14 @@ static u16 ocfs2_calc_new_backup_super(struct inode *inode,
 				       int new_clusters,
 				       u32 first_new_cluster,
 				       u16 cl_cpg,
+				       u16 cl_cpg,
+				       u16 old_bg_clusters,
 				       int set)
 {
 	int i;
 	u16 backups = 0;
 	u32 cluster;
+	u32 cluster, lgd_cluster;
 	u64 blkno, gd_blkno, lgd_blkno = le64_to_cpu(gd->bg_blkno);
 
 	for (i = 0; i < OCFS2_MAX_BACKUP_SUPERBLOCKS; i++) {
@@ -72,6 +76,12 @@ static u16 ocfs2_calc_new_backup_super(struct inode *inode,
 			continue;
 		else if (gd_blkno > lgd_blkno)
 			break;
+
+		/* check if already done backup super */
+		lgd_cluster = ocfs2_blocks_to_clusters(inode->i_sb, lgd_blkno);
+		lgd_cluster += old_bg_clusters;
+		if (lgd_cluster >= cluster)
+			continue;
 
 		if (set)
 			ocfs2_set_bit(cluster % cl_cpg,
@@ -108,6 +118,13 @@ static int ocfs2_update_last_group_and_inode(handle_t *handle,
 
 	ret = ocfs2_journal_access(handle, bm_inode, group_bh,
 				   OCFS2_JOURNAL_ACCESS_WRITE);
+	u16 old_bg_clusters;
+
+	trace_ocfs2_update_last_group_and_inode(new_clusters,
+						first_new_cluster);
+
+	ret = ocfs2_journal_access_gd(handle, INODE_CACHE(bm_inode),
+				      group_bh, OCFS2_JOURNAL_ACCESS_WRITE);
 	if (ret < 0) {
 		mlog_errno(ret);
 		goto out;
@@ -115,6 +132,7 @@ static int ocfs2_update_last_group_and_inode(handle_t *handle,
 
 	group = (struct ocfs2_group_desc *)group_bh->b_data;
 
+	old_bg_clusters = le16_to_cpu(group->bg_bits) / cl_bpc;
 	/* update the group first. */
 	num_bits = new_clusters * cl_bpc;
 	le16_add_cpu(&group->bg_bits, num_bits);
@@ -143,6 +161,15 @@ static int ocfs2_update_last_group_and_inode(handle_t *handle,
 	/* update the inode accordingly. */
 	ret = ocfs2_journal_access(handle, bm_inode, bm_bh,
 				   OCFS2_JOURNAL_ACCESS_WRITE);
+						     cl_cpg, old_bg_clusters, 1);
+		le16_add_cpu(&group->bg_free_bits_count, -1 * backups);
+	}
+
+	ocfs2_journal_dirty(handle, group_bh);
+
+	/* update the inode accordingly. */
+	ret = ocfs2_journal_access_di(handle, INODE_CACHE(bm_inode), bm_bh,
+				      OCFS2_JOURNAL_ACCESS_WRITE);
 	if (ret < 0) {
 		mlog_errno(ret);
 		goto out_rollback;
@@ -163,6 +190,7 @@ static int ocfs2_update_last_group_and_inode(handle_t *handle,
 	spin_lock(&OCFS2_I(bm_inode)->ip_lock);
 	OCFS2_I(bm_inode)->ip_clusters = le32_to_cpu(fe->i_clusters);
 	le64_add_cpu(&fe->i_size, new_clusters << osb->s_clustersize_bits);
+	le64_add_cpu(&fe->i_size, (u64)new_clusters << osb->s_clustersize_bits);
 	spin_unlock(&OCFS2_I(bm_inode)->ip_lock);
 	i_size_write(bm_inode, le64_to_cpu(fe->i_size));
 
@@ -175,12 +203,15 @@ out_rollback:
 					    new_clusters,
 					    first_new_cluster,
 					    cl_cpg, 0);
+					    cl_cpg, old_bg_clusters, 0);
 		le16_add_cpu(&group->bg_free_bits_count, backups);
 		le16_add_cpu(&group->bg_bits, -1 * num_bits);
 		le16_add_cpu(&group->bg_free_bits_count, -1 * num_bits);
 	}
 out:
 	mlog_exit(ret);
+	if (ret)
+		mlog_errno(ret);
 	return ret;
 }
 
@@ -201,6 +232,7 @@ static int update_backups(struct inode * inode, u32 clusters, char *data)
 			break;
 
 		ret = ocfs2_read_block(osb, blkno, &backup, 0, NULL);
+		ret = ocfs2_read_blocks_sync(osb, blkno, 1, &backup);
 		if (ret < 0) {
 			mlog_errno(ret);
 			break;
@@ -238,6 +270,8 @@ static void ocfs2_update_super_and_backups(struct inode *inode,
 	 */
 	ret = ocfs2_read_block(osb, OCFS2_SUPER_BLOCK_BLKNO,
 			       &super_bh, 0, NULL);
+	ret = ocfs2_read_blocks_sync(osb, OCFS2_SUPER_BLOCK_BLKNO, 1,
+				     &super_bh);
 	if (ret < 0) {
 		mlog_errno(ret);
 		goto out;
@@ -316,6 +350,13 @@ int ocfs2_group_extend(struct inode * inode, int new_clusters)
 
 	if (le16_to_cpu(fe->id2.i_chain.cl_cpg) !=
 				 ocfs2_group_bitmap_size(osb->sb) * 8) {
+	/* main_bm_bh is validated by inode read inside ocfs2_inode_lock(),
+	 * so any corruption is a code bug. */
+	BUG_ON(!OCFS2_IS_VALID_DINODE(fe));
+
+	if (le16_to_cpu(fe->id2.i_chain.cl_cpg) !=
+		ocfs2_group_bitmap_size(osb->sb, 0,
+					osb->s_feature_incompat) * 8) {
 		mlog(ML_ERROR, "The disk is too old and small. "
 		     "Force to do offline resize.");
 		ret = -EINVAL;
@@ -334,6 +375,8 @@ int ocfs2_group_extend(struct inode * inode, int new_clusters)
 
 	ret = ocfs2_read_block(osb, lgd_blkno, &group_bh, OCFS2_BH_CACHED,
 			       main_bm_inode);
+	ret = ocfs2_read_group_descriptor(main_bm_inode, fe, lgd_blkno,
+					  &group_bh);
 	if (ret < 0) {
 		mlog_errno(ret);
 		goto out_unlock;
@@ -347,6 +390,8 @@ int ocfs2_group_extend(struct inode * inode, int new_clusters)
 		goto out_unlock;
 	}
 
+	group = (struct ocfs2_group_desc *)group_bh->b_data;
+
 	cl_bpc = le16_to_cpu(fe->id2.i_chain.cl_bpc);
 	if (le16_to_cpu(group->bg_bits) / cl_bpc + new_clusters >
 		le16_to_cpu(fe->id2.i_chain.cl_cpg)) {
@@ -355,6 +400,8 @@ int ocfs2_group_extend(struct inode * inode, int new_clusters)
 	}
 
 	mlog(0, "extend the last group at %llu, new clusters = %d\n",
+
+	trace_ocfs2_group_extend(
 	     (unsigned long long)le64_to_cpu(group->bg_blkno), new_clusters);
 
 	handle = ocfs2_start_trans(osb, OCFS2_GROUP_EXTEND_CREDITS);
@@ -434,6 +481,16 @@ static int ocfs2_check_new_group(struct inode *inode,
 		     le16_to_cpu(gd->bg_bits),
 		     8 * le16_to_cpu(gd->bg_size));
 	else if (le16_to_cpu(gd->bg_chain) != input->chain)
+	struct ocfs2_group_desc *gd =
+		(struct ocfs2_group_desc *)group_bh->b_data;
+	u16 cl_bpc = le16_to_cpu(di->id2.i_chain.cl_bpc);
+
+	ret = ocfs2_check_group_descriptor(inode->i_sb, di, group_bh);
+	if (ret)
+		goto out;
+
+	ret = -EINVAL;
+	if (le16_to_cpu(gd->bg_chain) != input->chain)
 		mlog(ML_ERROR, "Group descriptor # %llu has bad chain %u "
 		     "while input has %u set.\n",
 		     (unsigned long long)le64_to_cpu(gd->bg_blkno),
@@ -452,6 +509,7 @@ static int ocfs2_check_new_group(struct inode *inode,
 	else
 		ret = 0;
 
+out:
 	return ret;
 }
 
@@ -509,6 +567,7 @@ int ocfs2_group_add(struct inode *inode, struct ocfs2_new_group_input *input)
 	u16 cl_bpc;
 
 	mlog_entry_void();
+	u64 bg_ptr;
 
 	if (ocfs2_is_hard_readonly(osb) || ocfs2_is_soft_readonly(osb))
 		return -EROFS;
@@ -534,6 +593,8 @@ int ocfs2_group_add(struct inode *inode, struct ocfs2_new_group_input *input)
 
 	if (le16_to_cpu(fe->id2.i_chain.cl_cpg) !=
 				 ocfs2_group_bitmap_size(osb->sb) * 8) {
+		ocfs2_group_bitmap_size(osb->sb, 0,
+					osb->s_feature_incompat) * 8) {
 		mlog(ML_ERROR, "The disk is too old and small."
 		     " Force to do offline resize.");
 		ret = -EINVAL;
@@ -541,6 +602,7 @@ int ocfs2_group_add(struct inode *inode, struct ocfs2_new_group_input *input)
 	}
 
 	ret = ocfs2_read_block(osb, input->group, &group_bh, 0, NULL);
+	ret = ocfs2_read_blocks_sync(osb, input->group, 1, &group_bh);
 	if (ret < 0) {
 		mlog(ML_ERROR, "Can't read the group descriptor # %llu "
 		     "from the device.", (unsigned long long)input->group);
@@ -548,6 +610,7 @@ int ocfs2_group_add(struct inode *inode, struct ocfs2_new_group_input *input)
 	}
 
 	ocfs2_set_new_buffer_uptodate(inode, group_bh);
+	ocfs2_set_new_buffer_uptodate(INODE_CACHE(inode), group_bh);
 
 	ret = ocfs2_verify_group_and_input(main_bm_inode, fe, input, group_bh);
 	if (ret) {
@@ -557,12 +620,18 @@ int ocfs2_group_add(struct inode *inode, struct ocfs2_new_group_input *input)
 
 	mlog(0, "Add a new group  %llu in chain = %u, length = %u\n",
 	     (unsigned long long)input->group, input->chain, input->clusters);
+		goto out_free_group_bh;
+	}
+
+	trace_ocfs2_group_add((unsigned long long)input->group,
+			       input->chain, input->clusters, input->frees);
 
 	handle = ocfs2_start_trans(osb, OCFS2_GROUP_ADD_CREDITS);
 	if (IS_ERR(handle)) {
 		mlog_errno(PTR_ERR(handle));
 		ret = -EINVAL;
 		goto out_unlock;
+		goto out_free_group_bh;
 	}
 
 	cl_bpc = le16_to_cpu(fe->id2.i_chain.cl_bpc);
@@ -571,6 +640,8 @@ int ocfs2_group_add(struct inode *inode, struct ocfs2_new_group_input *input)
 
 	ret = ocfs2_journal_access(handle, main_bm_inode, group_bh,
 				   OCFS2_JOURNAL_ACCESS_WRITE);
+	ret = ocfs2_journal_access_gd(handle, INODE_CACHE(main_bm_inode),
+				      group_bh, OCFS2_JOURNAL_ACCESS_WRITE);
 	if (ret < 0) {
 		mlog_errno(ret);
 		goto out_commit;
@@ -588,6 +659,14 @@ int ocfs2_group_add(struct inode *inode, struct ocfs2_new_group_input *input)
 	ret = ocfs2_journal_access(handle, main_bm_inode, main_bm_bh,
 				   OCFS2_JOURNAL_ACCESS_WRITE);
 	if (ret < 0) {
+	bg_ptr = le64_to_cpu(group->bg_next_group);
+	group->bg_next_group = cr->c_blkno;
+	ocfs2_journal_dirty(handle, group_bh);
+
+	ret = ocfs2_journal_access_di(handle, INODE_CACHE(main_bm_inode),
+				      main_bm_bh, OCFS2_JOURNAL_ACCESS_WRITE);
+	if (ret < 0) {
+		group->bg_next_group = cpu_to_le64(bg_ptr);
 		mlog_errno(ret);
 		goto out_commit;
 	}
@@ -611,6 +690,7 @@ int ocfs2_group_add(struct inode *inode, struct ocfs2_new_group_input *input)
 	spin_lock(&OCFS2_I(main_bm_inode)->ip_lock);
 	OCFS2_I(main_bm_inode)->ip_clusters = le32_to_cpu(fe->i_clusters);
 	le64_add_cpu(&fe->i_size, input->clusters << osb->s_clustersize_bits);
+	le64_add_cpu(&fe->i_size, (u64)input->clusters << osb->s_clustersize_bits);
 	spin_unlock(&OCFS2_I(main_bm_inode)->ip_lock);
 	i_size_write(main_bm_inode, le64_to_cpu(fe->i_size));
 
@@ -620,6 +700,13 @@ out_commit:
 	ocfs2_commit_trans(osb, handle);
 out_unlock:
 	brelse(group_bh);
+
+out_free_group_bh:
+	if (ret < 0)
+		ocfs2_remove_from_cache(INODE_CACHE(inode), group_bh);
+	brelse(group_bh);
+
+out_unlock:
 	brelse(main_bm_bh);
 
 	ocfs2_inode_unlock(main_bm_inode, 1);

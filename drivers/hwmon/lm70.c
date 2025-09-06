@@ -24,6 +24,8 @@
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
@@ -33,6 +35,10 @@
 #include <linux/hwmon.h>
 #include <linux/mutex.h>
 #include <linux/spi/spi.h>
+#include <linux/mod_devicetable.h>
+#include <linux/spi/spi.h>
+#include <linux/slab.h>
+#include <linux/of_device.h>
 
 
 #define DRVNAME		"lm70"
@@ -40,6 +46,15 @@
 struct lm70 {
 	struct device *hwmon_dev;
 	struct mutex lock;
+#define LM70_CHIP_LM70		0	/* original NS LM70 */
+#define LM70_CHIP_TMP121	1	/* TI TMP121/TMP123 */
+#define LM70_CHIP_LM71		2	/* NS LM71 */
+#define LM70_CHIP_LM74		3	/* NS LM74 */
+
+struct lm70 {
+	struct spi_device *spi;
+	struct mutex lock;
+	unsigned int chip;
 };
 
 /* sysfs hook function */
@@ -51,6 +66,11 @@ static ssize_t lm70_sense_temp(struct device *dev,
 	u8 rxbuf[2];
 	s16 raw=0;
 	struct lm70 *p_lm70 = dev_get_drvdata(&spi->dev);
+	struct lm70 *p_lm70 = dev_get_drvdata(dev);
+	struct spi_device *spi = p_lm70->spi;
+	int status, val = 0;
+	u8 rxbuf[2];
+	s16 raw = 0;
 
 	if (mutex_lock_interruptible(&p_lm70->lock))
 		return -ERESTARTSYS;
@@ -71,6 +91,15 @@ static ssize_t lm70_sense_temp(struct device *dev,
 	dev_dbg(dev, "raw=0x%x\n", raw);
 
 	/*
+		pr_warn("spi_write_then_read failed with status %d\n", status);
+		goto out;
+	}
+	raw = (rxbuf[0] << 8) + rxbuf[1];
+	dev_dbg(dev, "rxbuf[0] : 0x%02x rxbuf[1] : 0x%02x raw=0x%04x\n",
+		rxbuf[0], rxbuf[1], raw);
+
+	/*
+	 * LM70:
 	 * The "raw" temperature read into rxbuf[] is a 16-bit signed 2's
 	 * complement value. Only the MSB 11 bits (1 sign + 10 temperature
 	 * bits) are meaningful; the LSB 5 bits are to be discarded.
@@ -82,6 +111,30 @@ static ssize_t lm70_sense_temp(struct device *dev,
 	 * So it's equivalent to multiplying by 0.25 * 1000 = 250.
 	 */
 	val = ((int)raw/32) * 250;
+	 *
+	 * LM74 and TMP121/TMP123:
+	 * 13 bits of 2's complement data, discard LSB 3 bits,
+	 * resolution 0.0625 degrees celsius.
+	 *
+	 * LM71:
+	 * 14 bits of 2's complement data, discard LSB 2 bits,
+	 * resolution 0.0312 degrees celsius.
+	 */
+	switch (p_lm70->chip) {
+	case LM70_CHIP_LM70:
+		val = ((int)raw / 32) * 250;
+		break;
+
+	case LM70_CHIP_TMP121:
+	case LM70_CHIP_LM74:
+		val = ((int)raw / 8) * 625 / 10;
+		break;
+
+	case LM70_CHIP_LM71:
+		val = ((int)raw / 4) * 3125 / 100;
+		break;
+	}
+
 	status = sprintf(buf, "%d\n", val); /* millidegrees Celsius */
 out:
 	mutex_unlock(&p_lm70->lock);
@@ -110,6 +163,58 @@ static int __devinit lm70_probe(struct spi_device *spi)
 		return -EINVAL;
 
 	p_lm70 = kzalloc(sizeof *p_lm70, GFP_KERNEL);
+static struct attribute *lm70_attrs[] = {
+	&dev_attr_temp1_input.attr,
+	NULL
+};
+
+ATTRIBUTE_GROUPS(lm70);
+
+/*----------------------------------------------------------------------*/
+
+#ifdef CONFIG_OF
+static const struct of_device_id lm70_of_ids[] = {
+	{
+		.compatible = "ti,lm70",
+		.data = (void *) LM70_CHIP_LM70,
+	},
+	{
+		.compatible = "ti,tmp121",
+		.data = (void *) LM70_CHIP_TMP121,
+	},
+	{
+		.compatible = "ti,lm71",
+		.data = (void *) LM70_CHIP_LM71,
+	},
+	{
+		.compatible = "ti,lm74",
+		.data = (void *) LM70_CHIP_LM74,
+	},
+	{},
+};
+MODULE_DEVICE_TABLE(of, lm70_of_ids);
+#endif
+
+static int lm70_probe(struct spi_device *spi)
+{
+	const struct of_device_id *match;
+	struct device *hwmon_dev;
+	struct lm70 *p_lm70;
+	int chip;
+
+	match = of_match_device(lm70_of_ids, &spi->dev);
+	if (match)
+		chip = (int)(uintptr_t)match->data;
+	else
+		chip = spi_get_device_id(spi)->driver_data;
+
+	/* signaling is SPI_MODE_0 */
+	if (spi->mode & (SPI_CPOL | SPI_CPHA))
+		return -EINVAL;
+
+	/* NOTE:  we assume 8-bit words, and convert to 16 bits manually */
+
+	p_lm70 = devm_kzalloc(&spi->dev, sizeof(*p_lm70), GFP_KERNEL);
 	if (!p_lm70)
 		return -ENOMEM;
 
@@ -153,6 +258,23 @@ static int __devexit lm70_remove(struct spi_device *spi)
 
 	return 0;
 }
+	p_lm70->chip = chip;
+	p_lm70->spi = spi;
+
+	hwmon_dev = devm_hwmon_device_register_with_groups(&spi->dev,
+							   spi->modalias,
+							   p_lm70, lm70_groups);
+	return PTR_ERR_OR_ZERO(hwmon_dev);
+}
+
+static const struct spi_device_id lm70_ids[] = {
+	{ "lm70",   LM70_CHIP_LM70 },
+	{ "tmp121", LM70_CHIP_TMP121 },
+	{ "lm71",   LM70_CHIP_LM71 },
+	{ "lm74",   LM70_CHIP_LM74 },
+	{ },
+};
+MODULE_DEVICE_TABLE(spi, lm70_ids);
 
 static struct spi_driver lm70_driver = {
 	.driver = {
@@ -178,4 +300,14 @@ module_exit(cleanup_lm70);
 
 MODULE_AUTHOR("Kaiwan N Billimoria");
 MODULE_DESCRIPTION("National Semiconductor LM70 Linux driver");
+		.of_match_table	= of_match_ptr(lm70_of_ids),
+	},
+	.id_table = lm70_ids,
+	.probe	= lm70_probe,
+};
+
+module_spi_driver(lm70_driver);
+
+MODULE_AUTHOR("Kaiwan N Billimoria");
+MODULE_DESCRIPTION("NS LM70 and compatibles Linux driver");
 MODULE_LICENSE("GPL");

@@ -40,6 +40,7 @@ huge_pte_alloc(struct mm_struct *mm, unsigned long addr, unsigned long sz)
 		pmd = pmd_alloc(mm, pud, taddr);
 		if (pmd)
 			pte = pte_alloc_map(mm, pmd, taddr);
+			pte = pte_alloc_map(mm, NULL, pmd, taddr);
 	}
 	return pte;
 }
@@ -150,6 +151,7 @@ unsigned long hugetlb_get_unmapped_area(struct file *file, unsigned long addr, u
 		unsigned long pgoff, unsigned long flags)
 {
 	struct vm_area_struct *vmm;
+	struct vm_unmapped_area_info info;
 
 	if (len > RGN_MAP_LIMIT)
 		return -ENOMEM;
@@ -176,6 +178,14 @@ unsigned long hugetlb_get_unmapped_area(struct file *file, unsigned long addr, u
 			return addr;
 		addr = ALIGN(vmm->vm_end, HPAGE_SIZE);
 	}
+
+	info.flags = 0;
+	info.length = len;
+	info.low_limit = addr;
+	info.high_limit = HPAGE_REGION_BASE + RGN_MAP_LIMIT;
+	info.align_mask = PAGE_MASK & (HPAGE_SIZE - 1);
+	info.align_offset = 0;
+	return vm_unmapped_area(&info);
 }
 
 static int __init hugetlb_setup_sz(char *str)

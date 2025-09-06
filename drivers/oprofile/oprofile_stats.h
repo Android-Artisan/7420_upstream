@@ -12,6 +12,8 @@
 
 #include <asm/atomic.h>
  
+#include <linux/atomic.h>
+
 struct oprofile_stat_struct {
 	atomic_t sample_lost_no_mm;
 	atomic_t sample_lost_no_mapping;
@@ -29,5 +31,17 @@ struct dentry;
  
 /* create the stats/ dir */
 void oprofile_create_stats_files(struct super_block * sb, struct dentry * root);
+	atomic_t multiplex_counter;
+};
+
+extern struct oprofile_stat_struct oprofile_stats;
+
+/* reset all stats to zero */
+void oprofile_reset_stats(void);
+
+struct dentry;
+
+/* create the stats/ dir */
+void oprofile_create_stats_files(struct dentry *root);
 
 #endif /* OPROFILE_STATS_H */

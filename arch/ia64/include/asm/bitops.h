@@ -16,6 +16,7 @@
 #include <linux/compiler.h>
 #include <linux/types.h>
 #include <asm/intrinsics.h>
+#include <asm/barrier.h>
 
 /**
  * set_bit - Atomically set a bit in memory
@@ -79,6 +80,7 @@ __set_bit (int nr, volatile void *addr)
  * clear_bit() is atomic and may not be reordered.  However, it does
  * not contain a memory barrier, so if it is used for locking purposes,
  * you should call smp_mb__before_clear_bit() and/or smp_mb__after_clear_bit()
+ * you should call smp_mb__before_atomic() and/or smp_mb__after_atomic()
  * in order to ensure changes are visible on other processors.
  */
 static __inline__ void
@@ -128,6 +130,7 @@ clear_bit_unlock (int nr, volatile void *addr)
  *
  * Similarly to clear_bit_unlock, the implementation uses a store
  * with release semantics. See also __raw_spin_unlock().
+ * with release semantics. See also arch_spin_unlock().
  */
 static __inline__ void
 __clear_bit_unlock(int nr, void *addr)
@@ -287,6 +290,7 @@ __test_and_clear_bit(int nr, volatile void * addr)
 	__u32 *p = (__u32 *) addr + (nr >> 5);
 	__u32 m = 1 << (nr & 31);
 	int oldbitset = *p & m;
+	int oldbitset = (*p & m) != 0;
 
 	*p &= ~m;
 	return oldbitset;
@@ -432,6 +436,7 @@ __fls (unsigned long x)
  * bit number + 1.  ffs(0) is defined to return zero.
  */
 #define ffs(x)	__builtin_ffs(x)
+#include <asm-generic/bitops/builtin-ffs.h>
 
 /*
  * hweightN: returns the hamming weight (i.e. the number
@@ -439,6 +444,7 @@ __fls (unsigned long x)
  */
 static __inline__ unsigned long
 hweight64 (unsigned long x)
+static __inline__ unsigned long __arch_hweight64(unsigned long x)
 {
 	unsigned long result;
 	result = ia64_popcnt(x);
@@ -448,6 +454,11 @@ hweight64 (unsigned long x)
 #define hweight32(x)	(unsigned int) hweight64((x) & 0xfffffffful)
 #define hweight16(x)	(unsigned int) hweight64((x) & 0xfffful)
 #define hweight8(x)	(unsigned int) hweight64((x) & 0xfful)
+#define __arch_hweight32(x) ((unsigned int) __arch_hweight64((x) & 0xfffffffful))
+#define __arch_hweight16(x) ((unsigned int) __arch_hweight64((x) & 0xfffful))
+#define __arch_hweight8(x)  ((unsigned int) __arch_hweight64((x) & 0xfful))
+
+#include <asm-generic/bitops/const_hweight.h>
 
 #endif /* __KERNEL__ */
 
@@ -461,6 +472,10 @@ hweight64 (unsigned long x)
 #define ext2_clear_bit_atomic(l,n,a)	test_and_clear_bit(n,a)
 
 #include <asm-generic/bitops/minix.h>
+#include <asm-generic/bitops/le.h>
+
+#include <asm-generic/bitops/ext2-atomic-setbit.h>
+
 #include <asm-generic/bitops/sched.h>
 
 #endif /* __KERNEL__ */

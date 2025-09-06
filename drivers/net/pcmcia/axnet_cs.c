@@ -1,4 +1,3 @@
-/*======================================================================
 
     A PCMCIA ethernet driver for Asix AX88190-based cards
 
@@ -22,7 +21,6 @@
     incorporated herein by reference.
     Donald Becker may be reached at becker@scyld.com
 
-======================================================================*/
 
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -65,7 +63,6 @@
 #define IS_AX88190	0x0001
 #define IS_AX88790	0x0002
 
-/*====================================================================*/
 
 /* Module parameters */
 
@@ -84,7 +81,6 @@ static char *version =
 #define DEBUG(n, args...)
 #endif
 
-/*====================================================================*/
 
 static int axnet_config(struct pcmcia_device *link);
 static void axnet_release(struct pcmcia_device *link);
@@ -114,7 +110,6 @@ static int ax_open(struct net_device *dev);
 static int ax_close(struct net_device *dev);
 static irqreturn_t ax_interrupt(int irq, void *dev_id);
 
-/*====================================================================*/
 
 typedef struct axnet_dev_t {
 	struct pcmcia_device	*p_dev;
@@ -134,13 +129,11 @@ static inline axnet_dev_t *PRIV(struct net_device *dev)
 	return p;
 }
 
-/*======================================================================
 
     axnet_attach() creates an "instance" of the driver, allocating
     local data structures for one device.  The device is registered
     with Card Services.
 
-======================================================================*/
 
 static int axnet_probe(struct pcmcia_device *link)
 {
@@ -171,14 +164,12 @@ static int axnet_probe(struct pcmcia_device *link)
     return axnet_config(link);
 } /* axnet_attach */
 
-/*======================================================================
 
     This deletes a driver "instance".  The device is de-registered
     with Card Services.  If it has been released, all local data
     structures are freed.  Otherwise, the structures will be freed
     when the device is released.
 
-======================================================================*/
 
 static void axnet_detach(struct pcmcia_device *link)
 {
@@ -194,11 +185,9 @@ static void axnet_detach(struct pcmcia_device *link)
     free_netdev(dev);
 } /* axnet_detach */
 
-/*======================================================================
 
     This probes for a card's hardware address by reading the PROM.
 
-======================================================================*/
 
 static int get_prom(struct pcmcia_device *link)
 {
@@ -243,13 +232,11 @@ static int get_prom(struct pcmcia_device *link)
     return 1;
 } /* get_prom */
 
-/*======================================================================
 
     axnet_config() is scheduled to run after a CARD_INSERTION event
     is received, to configure the PCMCIA socket, and to make the
     ethernet device available to the system.
 
-======================================================================*/
 
 #define CS_CHECK(fn, ret) \
 do { last_fn = (fn); if ((last_ret = (ret)) != 0) goto cs_failed; } while (0)
@@ -423,13 +410,11 @@ failed:
     return -ENODEV;
 } /* axnet_config */
 
-/*======================================================================
 
     After a card is removed, axnet_release() will unregister the net
     device, and release the PCMCIA configuration.  If the device is
     still open, this will be postponed until it is closed.
 
-======================================================================*/
 
 static void axnet_release(struct pcmcia_device *link)
 {
@@ -460,11 +445,9 @@ static int axnet_resume(struct pcmcia_device *link)
 }
 
 
-/*======================================================================
 
     MII interface support
 
-======================================================================*/
 
 #define MDIO_SHIFT_CLK		0x01
 #define MDIO_DATA_WRITE0	0x00
@@ -518,7 +501,6 @@ static void mdio_write(unsigned int addr, int phy_id, int loc, int value)
     }
 }
 
-/*====================================================================*/
 
 static int axnet_open(struct net_device *dev)
 {
@@ -549,7 +531,6 @@ static int axnet_open(struct net_device *dev)
     return ax_open(dev);
 } /* axnet_open */
 
-/*====================================================================*/
 
 static int axnet_close(struct net_device *dev)
 {
@@ -568,12 +549,10 @@ static int axnet_close(struct net_device *dev)
     return 0;
 } /* axnet_close */
 
-/*======================================================================
 
     Hard reset the card.  This used to pause for the same period that
     a 8390 reset command required, but that shouldn't be necessary.
 
-======================================================================*/
 
 static void axnet_reset_8390(struct net_device *dev)
 {
@@ -599,7 +578,6 @@ static void axnet_reset_8390(struct net_device *dev)
     
 } /* axnet_reset_8390 */
 
-/*====================================================================*/
 
 static irqreturn_t ei_irq_wrapper(int irq, void *dev_id)
 {
@@ -677,7 +655,6 @@ static const struct ethtool_ops netdev_ethtool_ops = {
 	.get_drvinfo		= netdev_get_drvinfo,
 };
 
-/*====================================================================*/
 
 static int axnet_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
 {
@@ -699,7 +676,6 @@ static int axnet_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
     return -EOPNOTSUPP;
 }
 
-/*====================================================================*/
 
 static void get_8390_hdr(struct net_device *dev,
 			 struct e8390_pkt_hdr *hdr,
@@ -718,7 +694,6 @@ static void get_8390_hdr(struct net_device *dev,
 
 }
 
-/*====================================================================*/
 
 static void block_input(struct net_device *dev, int count,
 			struct sk_buff *skb, int ring_offset)
@@ -741,7 +716,6 @@ static void block_input(struct net_device *dev, int count,
 
 }
 
-/*====================================================================*/
 
 static void block_output(struct net_device *dev, int count,
 			 const u_char *buf, const int start_page)
@@ -820,7 +794,6 @@ static void __exit exit_axnet_cs(void)
 module_init(init_axnet_cs);
 module_exit(exit_axnet_cs);
 
-/*====================================================================*/
 
 /* 8390.c: A general NS8390 ethernet driver core for linux. */
 /*

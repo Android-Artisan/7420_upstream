@@ -22,6 +22,9 @@
 #include <linux/spinlock.h>
 #include <linux/mm.h>
 #include <linux/slab.h>
+#include <linux/smp.h>
+#include <linux/spinlock.h>
+#include <linux/mm.h>
 #include <linux/kernel_stat.h>
 
 #include <asm/errno.h>
@@ -73,6 +76,10 @@ static struct irq_chip bcm1480_irq_type = {
 int bcm1480_irq_owner[BCM1480_NR_IRQS];
 
 DEFINE_SPINLOCK(bcm1480_imr_lock);
+/* Store the CPU id (not the logical number) */
+int bcm1480_irq_owner[BCM1480_NR_IRQS];
+
+static DEFINE_RAW_SPINLOCK(bcm1480_imr_lock);
 
 void bcm1480_mask_irq(int cpu, int irq)
 {
@@ -80,6 +87,7 @@ void bcm1480_mask_irq(int cpu, int irq)
 	u64 cur_ints;
 
 	spin_lock_irqsave(&bcm1480_imr_lock, flags);
+	raw_spin_lock_irqsave(&bcm1480_imr_lock, flags);
 	hl_spacing = 0;
 	if ((irq >= BCM1480_NR_IRQS_HALF) && (irq <= BCM1480_NR_IRQS)) {
 		hl_spacing = BCM1480_IMR_HL_SPACING;
@@ -89,6 +97,7 @@ void bcm1480_mask_irq(int cpu, int irq)
 	cur_ints |= (((u64) 1) << irq);
 	____raw_writeq(cur_ints, IOADDR(A_BCM1480_IMR_MAPPER(cpu) + R_BCM1480_IMR_INTERRUPT_MASK_H + hl_spacing));
 	spin_unlock_irqrestore(&bcm1480_imr_lock, flags);
+	raw_spin_unlock_irqrestore(&bcm1480_imr_lock, flags);
 }
 
 void bcm1480_unmask_irq(int cpu, int irq)
@@ -97,6 +106,7 @@ void bcm1480_unmask_irq(int cpu, int irq)
 	u64 cur_ints;
 
 	spin_lock_irqsave(&bcm1480_imr_lock, flags);
+	raw_spin_lock_irqsave(&bcm1480_imr_lock, flags);
 	hl_spacing = 0;
 	if ((irq >= BCM1480_NR_IRQS_HALF) && (irq <= BCM1480_NR_IRQS)) {
 		hl_spacing = BCM1480_IMR_HL_SPACING;
@@ -122,6 +132,19 @@ static void bcm1480_set_affinity(unsigned int irq, cpumask_t mask)
 		return;
 	}
 	i = first_cpu(mask);
+	raw_spin_unlock_irqrestore(&bcm1480_imr_lock, flags);
+}
+
+#ifdef CONFIG_SMP
+static int bcm1480_set_affinity(struct irq_data *d, const struct cpumask *mask,
+				bool force)
+{
+	unsigned int irq_dirty, irq = d->irq;
+	int i = 0, old_cpu, cpu, int_on, k;
+	u64 cur_ints;
+	unsigned long flags;
+
+	i = cpumask_first_and(mask, cpu_online_mask);
 
 	/* Convert logical CPU to physical CPU */
 	cpu = cpu_logical_map(i);
@@ -129,6 +152,7 @@ static void bcm1480_set_affinity(unsigned int irq, cpumask_t mask)
 	/* Protect against other affinity changers and IMR manipulation */
 	spin_lock_irqsave(&desc->lock, flags);
 	spin_lock(&bcm1480_imr_lock);
+	raw_spin_lock_irqsave(&bcm1480_imr_lock, flags);
 
 	/* Swizzle each CPU's IMR (but leave the IP selection alone) */
 	old_cpu = bcm1480_irq_owner[irq];
@@ -155,6 +179,9 @@ static void bcm1480_set_affinity(unsigned int irq, cpumask_t mask)
 	}
 	spin_unlock(&bcm1480_imr_lock);
 	spin_unlock_irqrestore(&desc->lock, flags);
+	raw_spin_unlock_irqrestore(&bcm1480_imr_lock, flags);
+
+	return 0;
 }
 #endif
 
@@ -168,6 +195,17 @@ static void disable_bcm1480_irq(unsigned int irq)
 
 static void enable_bcm1480_irq(unsigned int irq)
 {
+static void disable_bcm1480_irq(struct irq_data *d)
+{
+	unsigned int irq = d->irq;
+
+	bcm1480_mask_irq(bcm1480_irq_owner[irq], irq);
+}
+
+static void enable_bcm1480_irq(struct irq_data *d)
+{
+	unsigned int irq = d->irq;
+
 	bcm1480_unmask_irq(bcm1480_irq_owner[irq], irq);
 }
 
@@ -176,6 +214,10 @@ static void ack_bcm1480_irq(unsigned int irq)
 {
 	u64 pending;
 	unsigned int irq_dirty;
+static void ack_bcm1480_irq(struct irq_data *d)
+{
+	unsigned int irq_dirty, irq = d->irq;
+	u64 pending;
 	int k;
 
 	/*
@@ -230,6 +272,15 @@ static void end_bcm1480_irq(unsigned int irq)
 	}
 }
 
+static struct irq_chip bcm1480_irq_type = {
+	.name = "BCM1480-IMR",
+	.irq_mask_ack = ack_bcm1480_irq,
+	.irq_mask = disable_bcm1480_irq,
+	.irq_unmask = enable_bcm1480_irq,
+#ifdef CONFIG_SMP
+	.irq_set_affinity = bcm1480_set_affinity
+#endif
+};
 
 void __init init_bcm1480_irqs(void)
 {
@@ -237,6 +288,8 @@ void __init init_bcm1480_irqs(void)
 
 	for (i = 0; i < BCM1480_NR_IRQS; i++) {
 		set_irq_chip(i, &bcm1480_irq_type);
+		irq_set_chip_and_handler(i, &bcm1480_irq_type,
+					 handle_level_irq);
 		bcm1480_irq_owner[i] = 0;
 	}
 }
@@ -259,6 +312,7 @@ void __init init_bcm1480_irqs(void)
  * ignored, EXCEPT the mailbox interrupt.  That one is
  * set to IP[2] so it is handled.  This is needed so we
  * can do cross-cpu function calls, as requred by SMP
+ * can do cross-cpu function calls, as required by SMP
  */
 
 #define IMR_IP2_VAL	K_BCM1480_INT_MAP_I0
@@ -307,6 +361,10 @@ void __init arch_init_irq(void)
 
 
 	/* Clear the mailboxes.  The firmware may leave them dirty */
+	}
+
+
+	/* Clear the mailboxes.	 The firmware may leave them dirty */
 	for (cpu = 0; cpu < 4; cpu++) {
 		__raw_writeq(0xffffffffffffffffULL,
 			     IOADDR(A_BCM1480_IMR_REGISTER(cpu, R_BCM1480_IMR_MAILBOX_0_CLR_CPU)));
@@ -328,6 +386,7 @@ void __init arch_init_irq(void)
 	/*
 	 * Note that the timer interrupts are also mapped, but this is
 	 * done in bcm1480_time_init().  Also, the profiling driver
+	 * done in bcm1480_time_init().	 Also, the profiling driver
 	 * does its own management of IP7.
 	 */
 
@@ -346,6 +405,7 @@ static inline void dispatch_ip2(void)
 	/*
 	 * Default...we've hit an IP[2] interrupt, which means we've got to
 	 * check the 1480 interrupt registers to figure out what to do.  Need
+	 * check the 1480 interrupt registers to figure out what to do.	 Need
 	 * to detect which CPU we're on, now that smp_affinity is supported.
 	 */
 	base = A_BCM1480_IMR_MAPPER(cpu);
@@ -379,6 +439,8 @@ asmlinkage void plat_irq_dispatch(void)
 		sbprof_cpu_intr();
 	else
 #endif
+
+	pending = read_c0_cause() & read_c0_status();
 
 	if (pending & CAUSEF_IP4)
 		do_IRQ(K_BCM1480_INT_TIMER_0 + cpu);

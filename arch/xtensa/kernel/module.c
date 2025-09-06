@@ -88,6 +88,7 @@ int apply_relocate_add(Elf32_Shdr *sechdrs,
 {
 	unsigned int i;
         Elf32_Rela *rela = (void *)sechdrs[relsec].sh_addr;
+	Elf32_Rela *rela = (void *)sechdrs[relsec].sh_addr;
 	Elf32_Sym *sym;
 	unsigned char *location;
 	uint32_t value;

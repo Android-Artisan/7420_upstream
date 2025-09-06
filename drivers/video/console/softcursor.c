@@ -37,6 +37,7 @@ int soft_cursor(struct fb_info *info, struct fb_cursor *cursor)
 	if (dsize + sizeof(struct fb_image) != ops->cursor_size) {
 		if (ops->cursor_src != NULL)
 			kfree(ops->cursor_src);
+		kfree(ops->cursor_src);
 		ops->cursor_size = dsize + sizeof(struct fb_image);
 
 		ops->cursor_src = kmalloc(ops->cursor_size, GFP_ATOMIC);

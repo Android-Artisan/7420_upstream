@@ -56,6 +56,11 @@ start   jmp     <$40
         move    x0,P:(r1)+
 _copy   movep   #>4,X:<<M_HCR
         movep   #>$c00,X:<<M_IPR
+        do      #upload_end-upload,_copy
+        movem    P:(r0)+,x0
+        movem    x0,P:(r1)+
+_copy   movep   #4,X:<<M_HCR
+        movep   #$c00,X:<<M_IPR
         and     #<$fe,mr
         jmp     upload
 
@@ -64,6 +69,8 @@ real
 upload
         movep   #>1,X:<<M_PBC
         movep   #>0,X:<<M_BCR
+        movep   #1,X:<<M_PBC
+        movep   #0,X:<<M_BCR
 
 next    jclr    #0,X:<<M_HSR,*
         movep   X:<<M_HRX,A
@@ -93,6 +100,18 @@ load_Y  do      y0,_load
         jclr    #0,X:<<M_HSR,*
         movep   X:<<M_HRX,Y:(r0)+
 _load   jmp     next
+load_P  do      y0,_load_P
+        jclr    #0,X:<<M_HSR,*
+        movep   X:<<M_HRX,P:(r0)+
+_load_P jmp     next
+load_X  do      y0,_load_X
+        jclr    #0,X:<<M_HSR,*
+        movep   X:<<M_HRX,X:(r0)+
+_load_X jmp     next
+load_Y  do      y0,_load_Y
+        jclr    #0,X:<<M_HSR,*
+        movep   X:<<M_HRX,Y:(r0)+
+_load_Y jmp     next
 
 upload_end
         end

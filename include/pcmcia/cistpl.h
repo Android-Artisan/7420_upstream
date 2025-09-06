@@ -15,6 +15,8 @@
 #ifndef _LINUX_CISTPL_H
 #define _LINUX_CISTPL_H
 
+typedef unsigned char cisdata_t;
+
 #define CISTPL_NULL		0x00
 #define CISTPL_DEVICE		0x01
 #define CISTPL_LONGLINK_CB	0x02
@@ -165,11 +167,9 @@ typedef struct cistpl_funce_t {
     u_char	data[0];
 } cistpl_funce_t;
 
-/*======================================================================
 
     Modem Function Extension Tuples
 
-======================================================================*/
 
 #define CISTPL_FUNCE_SERIAL_IF		0x00
 #define CISTPL_FUNCE_SERIAL_CAP		0x01
@@ -274,11 +274,9 @@ typedef struct cistpl_voice_serv_t {
     u_char	max_data_1;
 } cistpl_voice_serv_t;
 
-/*======================================================================
 
     LAN Function Extension Tuples
 
-======================================================================*/
 
 #define CISTPL_FUNCE_LAN_TECH		0x01
 #define CISTPL_FUNCE_LAN_SPEED		0x02
@@ -328,11 +326,9 @@ typedef struct cistpl_lan_connector_t {
     u_char	code;
 } cistpl_lan_connector_t;
 
-/*======================================================================
 
     IDE Function Extension Tuples
 
-======================================================================*/
 
 #define CISTPL_IDE_INTERFACE		0x01
 
@@ -363,11 +359,9 @@ typedef struct cistpl_ide_feature_t {
 #define CISTPL_FUNCE_IDE_MASTER		0x02
 #define CISTPL_FUNCE_IDE_SLAVE		0x03
 
-/*======================================================================
 
     Configuration Table Entries
 
-======================================================================*/
 
 #define CISTPL_BAR_SPACE	0x07
 #define CISTPL_BAR_SPACE_IO	0x10
@@ -612,5 +606,7 @@ int pccard_validate_cis(struct pcmcia_socket *s, unsigned int function, unsigned
 
 #define pcmcia_validate_cis(p_dev, info) \
 		pccard_validate_cis(p_dev->socket, p_dev->func, info)
+
+#define CISTPL_MAX_CIS_SIZE	0x200
 
 #endif /* LINUX_CISTPL_H */

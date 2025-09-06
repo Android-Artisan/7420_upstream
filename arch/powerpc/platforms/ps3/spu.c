@@ -21,6 +21,9 @@
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/mmzone.h>
+#include <linux/slab.h>
+#include <linux/mmzone.h>
+#include <linux/export.h>
 #include <linux/io.h>
 #include <linux/mm.h>
 
@@ -142,6 +145,7 @@ static void _dump_areas(unsigned int spe_id, unsigned long priv2,
 }
 
 inline u64 ps3_get_spe_id(void *arg)
+u64 ps3_get_spe_id(void *arg)
 {
 	return spu_pdata(arg)->spe_id;
 }
@@ -153,6 +157,10 @@ static unsigned long get_vas_id(void)
 
 	lv1_get_logical_ppe_id(&id);
 	lv1_get_virtual_address_space_id_of_ppe(id, &id);
+	u64 id;
+
+	lv1_get_logical_ppe_id(&id);
+	lv1_get_virtual_address_space_id_of_ppe(&id);
 
 	return id;
 }
@@ -168,6 +176,18 @@ static int __init construct_spu(struct spu *spu)
 		&spu->local_store_phys, &unused,
 		&spu_pdata(spu)->shadow_addr,
 		&spu_pdata(spu)->spe_id);
+	u64 unused;
+	u64 problem_phys;
+	u64 local_store_phys;
+
+	result = lv1_construct_logical_spe(PAGE_SHIFT, PAGE_SHIFT, PAGE_SHIFT,
+		PAGE_SHIFT, PAGE_SHIFT, get_vas_id(), SPE_TYPE_LOGICAL,
+		&spu_pdata(spu)->priv2_addr, &problem_phys,
+		&local_store_phys, &unused,
+		&spu_pdata(spu)->shadow_addr,
+		&spu_pdata(spu)->spe_id);
+	spu->problem_phys = problem_phys;
+	spu->local_store_phys = local_store_phys;
 
 	if (result) {
 		pr_debug("%s:%d: lv1_construct_logical_spe failed: %s\n",
@@ -193,6 +213,7 @@ static void spu_unmap(struct spu *spu)
  * PTE page protection bits set as read-only (PP=3).  This implementation
  * uses the low level __ioremap() to bypass the page protection settings
  * inforced by ioremap_flags() to get the needed PTE bits set for the
+ * inforced by ioremap_prot() to get the needed PTE bits set for the
  * shadow regs.
  */
 
@@ -210,6 +231,7 @@ static int __init setup_areas(struct spu *spu)
 	}
 
 	spu->local_store = (__force void *)ioremap_flags(spu->local_store_phys,
+	spu->local_store = (__force void *)ioremap_prot(spu->local_store_phys,
 		LS_SIZE, _PAGE_NO_CACHE);
 
 	if (!spu->local_store) {

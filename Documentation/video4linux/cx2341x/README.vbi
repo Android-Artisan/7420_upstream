@@ -1,6 +1,5 @@
 
 Format of embedded V4L2_MPEG_STREAM_VBI_FMT_IVTV VBI data
-=========================================================
 
 This document describes the V4L2_MPEG_STREAM_VBI_FMT_IVTV format of the VBI data
 embedded in an MPEG-2 program stream. This format is in part dictated by some

@@ -13,6 +13,10 @@
 
 #include <linux/module.h>
 #include <linux/kernel.h>
+#include <linux/hardirq.h>
+#include <linux/module.h>
+#include <linux/kernel.h>
+#include <linux/slab.h>
 #include <linux/init.h>
 #include <linux/delay.h>
 
@@ -81,6 +85,7 @@ static int sirdev_tx_complete_fsm(struct sir_dev *dev)
 
 		default:
 			IRDA_ERROR("%s - undefined state\n", __func__);
+			net_err_ratelimited("%s - undefined state\n", __func__);
 			return -EINVAL;
 		}
 		fsm->substate = next_state;
@@ -112,6 +117,11 @@ static void sirdev_config_fsm(struct work_struct *work)
 	do {
 		IRDA_DEBUG(3, "%s - state=0x%04x / substate=0x%04x\n",
 			__func__, fsm->state, fsm->substate);
+	pr_debug("%s(), <%ld>\n", __func__, jiffies);
+
+	do {
+		pr_debug("%s - state=0x%04x / substate=0x%04x\n",
+			 __func__, fsm->state, fsm->substate);
 
 		next_state = fsm->state;
 		delay = 0;
@@ -221,6 +231,7 @@ static void sirdev_config_fsm(struct work_struct *work)
 
 		case SIRDEV_STATE_DONGLE_SPEED:
 			if (dev->dongle_drv->reset) {
+			if (dev->dongle_drv->set_speed) {
 				ret = dev->dongle_drv->set_speed(dev, fsm->param);
 				if (ret < 0) {
 					fsm->result = ret;
@@ -250,11 +261,14 @@ static void sirdev_config_fsm(struct work_struct *work)
 
 		default:
 			IRDA_ERROR("%s - undefined state\n", __func__);
+			net_err_ratelimited("%s - undefined state\n", __func__);
 			fsm->result = -EINVAL;
 			/* fall thru */
 
 		case SIRDEV_STATE_ERROR:
 			IRDA_ERROR("%s - error: %d\n", __func__, fsm->result);
+			net_err_ratelimited("%s - error: %d\n",
+					    __func__, fsm->result);
 
 #if 0	/* don't enable this before we have netdev->tx_timeout to recover */
 			netif_stop_queue(dev->netdev);
@@ -290,6 +304,12 @@ int sirdev_schedule_request(struct sir_dev *dev, int initial_state, unsigned par
 	if (down_trylock(&fsm->sem)) {
 		if (in_interrupt()  ||  in_atomic()  ||  irqs_disabled()) {
 			IRDA_DEBUG(1, "%s(), state machine busy!\n", __func__);
+	pr_debug("%s - state=0x%04x / param=%u\n", __func__,
+		 initial_state, param);
+
+	if (down_trylock(&fsm->sem)) {
+		if (in_interrupt()  ||  in_atomic()  ||  irqs_disabled()) {
+			pr_debug("%s(), state machine busy!\n", __func__);
 			return -EWOULDBLOCK;
 		} else
 			down(&fsm->sem);
@@ -298,6 +318,7 @@ int sirdev_schedule_request(struct sir_dev *dev, int initial_state, unsigned par
 	if (fsm->state == SIRDEV_STATE_DEAD) {
 		/* race with sirdev_close should never happen */
 		IRDA_ERROR("%s(), instance staled!\n", __func__);
+		net_err_ratelimited("%s(), instance staled!\n", __func__);
 		up(&fsm->sem);
 		return -ESTALE;		/* or better EPIPE? */
 	}
@@ -336,6 +357,7 @@ static int sirdev_is_receiving(struct sir_dev *dev)
 		return 0;
 
 	return (dev->rx_buff.state != OUTSIDE_FRAME);
+	return dev->rx_buff.state != OUTSIDE_FRAME;
 }
 
 int sirdev_set_dongle(struct sir_dev *dev, IRDA_DONGLE type)
@@ -343,6 +365,7 @@ int sirdev_set_dongle(struct sir_dev *dev, IRDA_DONGLE type)
 	int err;
 
 	IRDA_DEBUG(3, "%s : requesting dongle %d.\n", __func__, type);
+	pr_debug("%s : requesting dongle %d.\n", __func__, type);
 
 	err = sirdev_schedule_dongle_open(dev, type);
 	if (unlikely(err))
@@ -378,6 +401,7 @@ int sirdev_raw_write(struct sir_dev *dev, const char *buf, int len)
 	ret = dev->drv->do_write(dev, dev->tx_buff.data, dev->tx_buff.len);
 	if (ret > 0) {
 		IRDA_DEBUG(3, "%s(), raw-tx started\n", __func__);
+		pr_debug("%s(), raw-tx started\n", __func__);
 
 		dev->tx_buff.data += ret;
 		dev->tx_buff.len -= ret;
@@ -439,6 +463,8 @@ void sirdev_write_complete(struct sir_dev *dev)
 
 	IRDA_DEBUG(3, "%s() - dev->tx_buff.len = %d\n",
 		   __func__, dev->tx_buff.len);
+	pr_debug("%s() - dev->tx_buff.len = %d\n",
+		 __func__, dev->tx_buff.len);
 
 	if (likely(dev->tx_buff.len > 0))  {
 		/* Write data left in transmit buffer */
@@ -457,6 +483,13 @@ void sirdev_write_complete(struct sir_dev *dev)
 				dev_kfree_skb_any(skb);
 				dev->stats.tx_errors++;		      
 				dev->stats.tx_dropped++;		      
+			net_err_ratelimited("%s: drv->do_write failed (%d)\n",
+					    __func__, actual);
+			if ((skb=dev->tx_skb) != NULL) {
+				dev->tx_skb = NULL;
+				dev_kfree_skb_any(skb);
+				dev->netdev->stats.tx_errors++;
+				dev->netdev->stats.tx_dropped++;
 			}
 			dev->tx_buff.len = 0;
 		}
@@ -473,6 +506,7 @@ void sirdev_write_complete(struct sir_dev *dev)
 		 */
 
 		IRDA_DEBUG(3, "%s(), raw-tx done\n", __func__);
+		pr_debug("%s(), raw-tx done\n", __func__);
 		dev->raw_tx = 0;
 		goto done;	/* no post-frame handling in raw mode */
 	}
@@ -495,11 +529,18 @@ void sirdev_write_complete(struct sir_dev *dev)
 		dev->tx_skb = NULL;
 		dev->stats.tx_packets++;		      
 		dev->stats.tx_bytes += skb->len;
+	pr_debug("%s(), finished with frame!\n", __func__);
+		
+	if ((skb=dev->tx_skb) != NULL) {
+		dev->tx_skb = NULL;
+		dev->netdev->stats.tx_packets++;
+		dev->netdev->stats.tx_bytes += skb->len;
 		dev_kfree_skb_any(skb);
 	}
 
 	if (unlikely(dev->new_speed > 0)) {
 		IRDA_DEBUG(5, "%s(), Changing speed!\n", __func__);
+		pr_debug("%s(), Changing speed!\n", __func__);
 		err = sirdev_schedule_speed(dev, dev->new_speed);
 		if (unlikely(err)) {
 			/* should never happen
@@ -507,6 +548,8 @@ void sirdev_write_complete(struct sir_dev *dev)
 			 */
 			IRDA_ERROR("%s - schedule speed change failed: %d\n",
 				   __func__, err);
+			net_err_ratelimited("%s - schedule speed change failed: %d\n",
+					    __func__, err);
 			netif_wake_queue(dev->netdev);
 		}
 		/* else: success
@@ -534,12 +577,15 @@ int sirdev_receive(struct sir_dev *dev, const unsigned char *cp, size_t count)
 {
 	if (!dev || !dev->netdev) {
 		IRDA_WARNING("%s(), not ready yet!\n", __func__);
+		net_warn_ratelimited("%s(), not ready yet!\n", __func__);
 		return -1;
 	}
 
 	if (!dev->irlap) {
 		IRDA_WARNING("%s - too early: %p / %zd!\n",
 			     __func__, cp, count);
+		net_warn_ratelimited("%s - too early: %p / %zd!\n",
+				     __func__, cp, count);
 		return -1;
 	}
 
@@ -550,6 +596,8 @@ int sirdev_receive(struct sir_dev *dev, const unsigned char *cp, size_t count)
 		irda_device_set_media_busy(dev->netdev, TRUE);
 		dev->stats.rx_dropped++;
 		IRDA_DEBUG(0, "%s; rx-drop: %zd\n", __func__, count);
+		dev->netdev->stats.rx_dropped++;
+		pr_debug("%s; rx-drop: %zd\n", __func__, count);
 		return 0;
 	}
 
@@ -558,6 +606,7 @@ int sirdev_receive(struct sir_dev *dev, const unsigned char *cp, size_t count)
 		while (count--)
 			/* Unwrap and destuff one byte */
 			async_unwrap_char(dev->netdev, &dev->stats, 
+			async_unwrap_char(dev->netdev, &dev->netdev->stats,
 					  &dev->rx_buff, *cp++);
 	} else {
 		while (count--) {
@@ -592,6 +641,10 @@ static struct net_device_stats *sirdev_get_stats(struct net_device *ndev)
 static int sirdev_hard_xmit(struct sk_buff *skb, struct net_device *ndev)
 {
 	struct sir_dev *dev = ndev->priv;
+static netdev_tx_t sirdev_hard_xmit(struct sk_buff *skb,
+					  struct net_device *ndev)
+{
+	struct sir_dev *dev = netdev_priv(ndev);
 	unsigned long flags;
 	int actual = 0;
 	int err;
@@ -602,6 +655,11 @@ static int sirdev_hard_xmit(struct sk_buff *skb, struct net_device *ndev)
 	netif_stop_queue(ndev);
 
 	IRDA_DEBUG(3, "%s(), skb->len = %d\n", __func__, skb->len);
+	IRDA_ASSERT(dev != NULL, return NETDEV_TX_OK;);
+
+	netif_stop_queue(ndev);
+
+	pr_debug("%s(), skb->len = %d\n", __func__, skb->len);
 
 	speed = irda_get_next_speed(skb);
 	if ((speed != dev->speed) && (speed != -1)) {
@@ -615,6 +673,7 @@ static int sirdev_hard_xmit(struct sk_buff *skb, struct net_device *ndev)
 				 * fsm completes and wakes the queue.
 				 */
 				 return 1;
+				 return NETDEV_TX_BUSY;
 			}
 			else if (unlikely(err)) {
 				/* other fatal error - forget the speed change and
@@ -629,6 +688,7 @@ static int sirdev_hard_xmit(struct sk_buff *skb, struct net_device *ndev)
 
 			dev_kfree_skb_any(skb);
 			return 0;
+			return NETDEV_TX_OK;
 		} else
 			dev->new_speed = speed;
 	}
@@ -639,6 +699,7 @@ static int sirdev_hard_xmit(struct sk_buff *skb, struct net_device *ndev)
 	/* Check problems */
 	if(spin_is_locked(&dev->tx_lock)) {
 		IRDA_DEBUG(3, "%s(), write not completed\n", __func__);
+		pr_debug("%s(), write not completed\n", __func__);
 	}
 
 	/* serialize with write completion */
@@ -655,6 +716,7 @@ static int sirdev_hard_xmit(struct sk_buff *skb, struct net_device *ndev)
 	atomic_set(&dev->enable_rx, 0);
 	if (unlikely(sirdev_is_receiving(dev)))
 		dev->stats.collisions++;
+		dev->netdev->stats.collisions++;
 
 	actual = dev->drv->do_write(dev, dev->tx_buff.data, dev->tx_buff.len);
 
@@ -671,11 +733,17 @@ static int sirdev_hard_xmit(struct sk_buff *skb, struct net_device *ndev)
 		dev_kfree_skb_any(skb);
 		dev->stats.tx_errors++;		      
 		dev->stats.tx_dropped++;		      
+		net_err_ratelimited("%s: drv->do_write failed (%d)\n",
+				    __func__, actual);
+		dev_kfree_skb_any(skb);
+		dev->netdev->stats.tx_errors++;
+		dev->netdev->stats.tx_dropped++;
 		netif_wake_queue(ndev);
 	}
 	spin_unlock_irqrestore(&dev->tx_lock, flags);
 
 	return 0;
+	return NETDEV_TX_OK;
 }
 
 /* called from network layer with rtnl hold */
@@ -684,11 +752,13 @@ static int sirdev_ioctl(struct net_device *ndev, struct ifreq *rq, int cmd)
 {
 	struct if_irda_req *irq = (struct if_irda_req *) rq;
 	struct sir_dev *dev = ndev->priv;
+	struct sir_dev *dev = netdev_priv(ndev);
 	int ret = 0;
 
 	IRDA_ASSERT(dev != NULL, return -1;);
 
 	IRDA_DEBUG(3, "%s(), %s, (cmd=0x%X)\n", __func__, ndev->name, cmd);
+	pr_debug("%s(), %s, (cmd=0x%X)\n", __func__, ndev->name, cmd);
 	
 	switch (cmd) {
 	case SIOCSBANDWIDTH: /* Set bandwidth */
@@ -761,6 +831,8 @@ static int sirdev_alloc_buffers(struct sir_dev *dev)
 
 	/* Bootstrap ZeroCopy Rx */
 	dev->rx_buff.skb = __dev_alloc_skb(dev->rx_buff.truesize, GFP_KERNEL);
+	dev->rx_buff.skb = __netdev_alloc_skb(dev->netdev, dev->rx_buff.truesize,
+					      GFP_KERNEL);
 	if (dev->rx_buff.skb == NULL)
 		return -ENOMEM;
 	skb_reserve(dev->rx_buff.skb, 1);
@@ -788,6 +860,7 @@ static void sirdev_free_buffers(struct sir_dev *dev)
 {
 	if (dev->rx_buff.skb)
 		kfree_skb(dev->rx_buff.skb);
+	kfree_skb(dev->rx_buff.skb);
 	kfree(dev->tx_buff.head);
 	dev->rx_buff.head = dev->tx_buff.head = NULL;
 	dev->rx_buff.skb = NULL;
@@ -796,6 +869,7 @@ static void sirdev_free_buffers(struct sir_dev *dev)
 static int sirdev_open(struct net_device *ndev)
 {
 	struct sir_dev *dev = ndev->priv;
+	struct sir_dev *dev = netdev_priv(ndev);
 	const struct sir_driver *drv = dev->drv;
 
 	if (!drv)
@@ -824,6 +898,7 @@ static int sirdev_open(struct net_device *ndev)
 	netif_wake_queue(ndev);
 
 	IRDA_DEBUG(2, "%s - done, speed = %d\n", __func__, dev->speed);
+	pr_debug("%s - done, speed = %d\n", __func__, dev->speed);
 
 	return 0;
 
@@ -844,6 +919,10 @@ static int sirdev_close(struct net_device *ndev)
 	const struct sir_driver *drv;
 
 //	IRDA_DEBUG(0, "%s\n", __func__);
+	struct sir_dev *dev = netdev_priv(ndev);
+	const struct sir_driver *drv;
+
+/* pr_debug("%s\n", __func__); */
 
 	netif_stop_queue(ndev);
 
@@ -872,6 +951,12 @@ out:
 	return 0;
 }
 
+static const struct net_device_ops sirdev_ops = {
+	.ndo_start_xmit	= sirdev_hard_xmit,
+	.ndo_open	= sirdev_open,
+	.ndo_stop	= sirdev_close,
+	.ndo_do_ioctl	= sirdev_ioctl,
+};
 /* ----------------------------------------------------------------------------- */
 
 struct sir_dev * sirdev_get_instance(const struct sir_driver *drv, const char *name)
@@ -880,6 +965,7 @@ struct sir_dev * sirdev_get_instance(const struct sir_driver *drv, const char *n
 	struct sir_dev *dev;
 
 	IRDA_DEBUG(0, "%s - %s\n", __func__, name);
+	pr_debug("%s - %s\n", __func__, name);
 
 	/* instead of adding tests to protect against drv->do_write==NULL
 	 * at several places we refuse to create a sir_dev instance for
@@ -897,6 +983,11 @@ struct sir_dev * sirdev_get_instance(const struct sir_driver *drv, const char *n
 		goto out;
 	}
 	dev = ndev->priv;
+		net_err_ratelimited("%s - Can't allocate memory for IrDA control block!\n",
+				    __func__);
+		goto out;
+	}
+	dev = netdev_priv(ndev);
 
 	irda_init_max_qos_capabilies(&dev->qos);
 	dev->qos.baud_rate.bits = IR_9600|IR_19200|IR_38400|IR_57600|IR_115200;
@@ -910,6 +1001,7 @@ struct sir_dev * sirdev_get_instance(const struct sir_driver *drv, const char *n
 
 	spin_lock_init(&dev->tx_lock);
 	init_MUTEX(&dev->fsm.sem);
+	sema_init(&dev->fsm.sem, 1);
 
 	dev->drv = drv;
 	dev->netdev = ndev;
@@ -923,6 +1015,11 @@ struct sir_dev * sirdev_get_instance(const struct sir_driver *drv, const char *n
 
 	if (register_netdev(ndev)) {
 		IRDA_ERROR("%s(), register_netdev() failed!\n", __func__);
+	ndev->netdev_ops = &sirdev_ops;
+
+	if (register_netdev(ndev)) {
+		net_err_ratelimited("%s(), register_netdev() failed!\n",
+				    __func__);
 		goto out_freenetdev;
 	}
 
@@ -940,6 +1037,7 @@ int sirdev_put_instance(struct sir_dev *dev)
 	int err = 0;
 
 	IRDA_DEBUG(0, "%s\n", __func__);
+	pr_debug("%s\n", __func__);
 
 	atomic_set(&dev->enable_rx, 0);
 
@@ -950,6 +1048,7 @@ int sirdev_put_instance(struct sir_dev *dev)
 		err = sirdev_schedule_dongle_close(dev);
 	if (err)
 		IRDA_ERROR("%s - error %d\n", __func__, err);
+		net_err_ratelimited("%s - error %d\n", __func__, err);
 
 	sirdev_close(dev->netdev);
 

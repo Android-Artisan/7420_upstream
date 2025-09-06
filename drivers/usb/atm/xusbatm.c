@@ -21,6 +21,7 @@
 
 #include <linux/module.h>
 #include <linux/etherdevice.h>		/* for random_ether_addr() */
+#include <linux/etherdevice.h>		/* for eth_random_addr() */
 
 #include "usbatm.h"
 
@@ -50,12 +51,14 @@ static struct usb_device_id xusbatm_usb_ids[XUSBATM_DRIVERS_MAX + 1];
 static struct usb_driver xusbatm_usb_driver;
 
 static struct usb_interface *xusbatm_find_intf (struct usb_device *usb_dev, int altsetting, u8 ep)
+static struct usb_interface *xusbatm_find_intf(struct usb_device *usb_dev, int altsetting, u8 ep)
 {
 	struct usb_host_interface *alt;
 	struct usb_interface *intf;
 	int i, j;
 
 	for(i = 0; i < usb_dev->actconfig->desc.bNumInterfaces; i++)
+	for (i = 0; i < usb_dev->actconfig->desc.bNumInterfaces; i++)
 		if ((intf = usb_dev->actconfig->interface[i]) && (alt = usb_altnum_to_altsetting(intf, altsetting)))
 			for (j = 0; j < alt->desc.bNumEndpoints; j++)
 				if (alt->endpoint[j].desc.bEndpointAddress == ep)
@@ -64,6 +67,7 @@ static struct usb_interface *xusbatm_find_intf (struct usb_device *usb_dev, int 
 }
 
 static int xusbatm_capture_intf (struct usbatm_data *usbatm, struct usb_device *usb_dev,
+static int xusbatm_capture_intf(struct usbatm_data *usbatm, struct usb_device *usb_dev,
 		struct usb_interface *intf, int altsetting, int claim)
 {
 	int ifnum = intf->altsetting->desc.bInterfaceNumber;
@@ -74,6 +78,8 @@ static int xusbatm_capture_intf (struct usbatm_data *usbatm, struct usb_device *
 		return ret;
 	}
 	if ((ret = usb_set_interface(usb_dev, ifnum, altsetting))) {
+	ret = usb_set_interface(usb_dev, ifnum, altsetting);
+	if (ret) {
 		usb_err(usbatm, "%s: altsetting %2d for interface %2d failed (%d)!\n", __func__, altsetting, ifnum, ret);
 		return ret;
 	}
@@ -81,6 +87,7 @@ static int xusbatm_capture_intf (struct usbatm_data *usbatm, struct usb_device *
 }
 
 static void xusbatm_release_intf (struct usb_device *usb_dev, struct usb_interface *intf, int claimed)
+static void xusbatm_release_intf(struct usb_device *usb_dev, struct usb_interface *intf, int claimed)
 {
 	if (claimed) {
 		usb_set_intfdata(intf, NULL);
@@ -129,6 +136,8 @@ static int xusbatm_bind(struct usbatm_data *usbatm,
 			tx_intf->altsetting->desc.bInterfaceNumber);
 
 	if ((ret = xusbatm_capture_intf(usbatm, usb_dev, rx_intf, rx_alt, rx_intf != intf)))
+	ret = xusbatm_capture_intf(usbatm, usb_dev, rx_intf, rx_alt, rx_intf != intf);
+	if (ret)
 		return ret;
 
 	if ((tx_intf != rx_intf) && (ret = xusbatm_capture_intf(usbatm, usb_dev, tx_intf, tx_alt, tx_intf != intf))) {
@@ -148,6 +157,7 @@ static void xusbatm_unbind(struct usbatm_data *usbatm,
 	usb_dbg(usbatm, "%s entered\n", __func__);
 
 	for(i = 0; i < usb_dev->actconfig->desc.bNumInterfaces; i++) {
+	for (i = 0; i < usb_dev->actconfig->desc.bNumInterfaces; i++) {
 		struct usb_interface *cur_intf = usb_dev->actconfig->interface[i];
 
 		if (cur_intf && (usb_get_intfdata(cur_intf) == usbatm)) {
@@ -164,6 +174,7 @@ static int xusbatm_atm_start(struct usbatm_data *usbatm,
 
 	/* use random MAC as we've no way to get it from the device */
 	random_ether_addr(atm_dev->esi);
+	eth_random_addr(atm_dev->esi);
 
 	return 0;
 }
@@ -194,6 +205,7 @@ static int __init xusbatm_init(void)
 	    num_vendor != num_rx_endpoint ||
 	    num_vendor != num_tx_endpoint) {
 		warn("malformed module parameters");
+		printk(KERN_WARNING "xusbatm: malformed module parameters\n");
 		return -EINVAL;
 	}
 

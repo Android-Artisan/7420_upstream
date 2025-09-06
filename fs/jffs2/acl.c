@@ -9,6 +9,8 @@
  *
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/kernel.h>
 #include <linux/slab.h>
 #include <linux/fs.h>
@@ -40,10 +42,12 @@ static int jffs2_acl_count(size_t size)
 	size -= sizeof(struct jffs2_acl_header);
 	s = size - 4 * sizeof(struct jffs2_acl_entry_short);
 	if (s < 0) {
+	if (size < 4 * sizeof(struct jffs2_acl_entry_short)) {
 		if (size % sizeof(struct jffs2_acl_entry_short))
 			return -1;
 		return size / sizeof(struct jffs2_acl_entry_short);
 	} else {
+		s = size - 4 * sizeof(struct jffs2_acl_entry_short);
 		if (s % sizeof(struct jffs2_acl_entry))
 			return -1;
 		return s / sizeof(struct jffs2_acl_entry) + 4;
@@ -96,11 +100,24 @@ static struct posix_acl *jffs2_acl_from_medium(void *value, size_t size)
 				break;
 
 			case ACL_USER:
+				break;
+
+			case ACL_USER:
+				value += sizeof(struct jffs2_acl_entry);
+				if (value > end)
+					goto fail;
+				acl->a_entries[i].e_uid =
+					make_kuid(&init_user_ns,
+						  je32_to_cpu(entry->e_id));
+				break;
 			case ACL_GROUP:
 				value += sizeof(struct jffs2_acl_entry);
 				if (value > end)
 					goto fail;
 				acl->a_entries[i].e_id = je32_to_cpu(entry->e_id);
+				acl->a_entries[i].e_gid =
+					make_kgid(&init_user_ns,
+						  je32_to_cpu(entry->e_id));
 				break;
 
 			default:
@@ -136,6 +153,19 @@ static void *jffs2_acl_to_medium(const struct posix_acl *acl, size_t *size)
 			case ACL_USER:
 			case ACL_GROUP:
 				entry->e_id = cpu_to_je32(acl->a_entries[i].e_id);
+		const struct posix_acl_entry *acl_e = &acl->a_entries[i];
+		entry = e;
+		entry->e_tag = cpu_to_je16(acl_e->e_tag);
+		entry->e_perm = cpu_to_je16(acl_e->e_perm);
+		switch(acl_e->e_tag) {
+			case ACL_USER:
+				entry->e_id = cpu_to_je32(
+					from_kuid(&init_user_ns, acl_e->e_uid));
+				e += sizeof(struct jffs2_acl_entry);
+				break;
+			case ACL_GROUP:
+				entry->e_id = cpu_to_je32(
+					from_kgid(&init_user_ns, acl_e->e_gid));
 				e += sizeof(struct jffs2_acl_entry);
 				break;
 
@@ -179,6 +209,8 @@ static void jffs2_iset_acl(struct inode *inode, struct posix_acl **i_acl, struct
 static struct posix_acl *jffs2_get_acl(struct inode *inode, int type)
 {
 	struct jffs2_inode_info *f = JFFS2_INODE_INFO(inode);
+struct posix_acl *jffs2_get_acl(struct inode *inode, int type)
+{
 	struct posix_acl *acl;
 	char *value = NULL;
 	int rc, xprefix;
@@ -198,6 +230,13 @@ static struct posix_acl *jffs2_get_acl(struct inode *inode, int type)
 		break;
 	default:
 		return ERR_PTR(-EINVAL);
+		xprefix = JFFS2_XPREFIX_ACL_ACCESS;
+		break;
+	case ACL_TYPE_DEFAULT:
+		xprefix = JFFS2_XPREFIX_ACL_DEFAULT;
+		break;
+	default:
+		BUG();
 	}
 	rc = do_jffs2_getxattr(inode, xprefix, "", NULL, 0);
 	if (rc > 0) {
@@ -225,6 +264,9 @@ static struct posix_acl *jffs2_get_acl(struct inode *inode, int type)
 			break;
 		}
 	}
+	kfree(value);
+	if (!IS_ERR(acl))
+		set_cached_acl(inode, type, acl);
 	return acl;
 }
 
@@ -255,25 +297,35 @@ static int jffs2_set_acl(struct inode *inode, int type, struct posix_acl *acl)
 	if (S_ISLNK(inode->i_mode))
 		return -EOPNOTSUPP;
 
+int jffs2_set_acl(struct inode *inode, struct posix_acl *acl, int type)
+{
+	int rc, xprefix;
+
 	switch (type) {
 	case ACL_TYPE_ACCESS:
 		xprefix = JFFS2_XPREFIX_ACL_ACCESS;
 		if (acl) {
 			mode_t mode = inode->i_mode;
+			umode_t mode = inode->i_mode;
 			rc = posix_acl_equiv_mode(acl, &mode);
 			if (rc < 0)
+			umode_t mode;
+
+			rc = posix_acl_update_mode(inode, &mode, &acl);
+			if (rc)
 				return rc;
 			if (inode->i_mode != mode) {
 				struct iattr attr;
 
 				attr.ia_valid = ATTR_MODE;
 				attr.ia_mode = mode;
+				attr.ia_valid = ATTR_MODE | ATTR_CTIME;
+				attr.ia_mode = mode;
+				attr.ia_ctime = CURRENT_TIME_SEC;
 				rc = jffs2_do_setattr(inode, &attr);
 				if (rc < 0)
 					return rc;
 			}
-			if (rc == 0)
-				acl = NULL;
 		}
 		break;
 	case ACL_TYPE_DEFAULT:
@@ -353,6 +405,29 @@ int jffs2_init_acl_pre(struct inode *dir_i, struct inode *inode, int *i_mode)
 			jffs2_iset_acl(inode, &f->i_acl_access, clone);
 
 		posix_acl_release(clone);
+	if (!rc)
+		set_cached_acl(inode, type, acl);
+	return rc;
+}
+
+int jffs2_init_acl_pre(struct inode *dir_i, struct inode *inode, umode_t *i_mode)
+{
+	struct posix_acl *default_acl, *acl;
+	int rc;
+
+	cache_no_acl(inode);
+
+	rc = posix_acl_create(dir_i, i_mode, &default_acl, &acl);
+	if (rc)
+		return rc;
+
+	if (default_acl) {
+		set_cached_acl(inode, ACL_TYPE_DEFAULT, default_acl);
+		posix_acl_release(default_acl);
+	}
+	if (acl) {
+		set_cached_acl(inode, ACL_TYPE_ACCESS, acl);
+		posix_acl_release(acl);
 	}
 	return 0;
 }
@@ -364,12 +439,18 @@ int jffs2_init_acl_post(struct inode *inode)
 
 	if (f->i_acl_default) {
 		rc = __jffs2_set_acl(inode, JFFS2_XPREFIX_ACL_DEFAULT, f->i_acl_default);
+	int rc;
+
+	if (inode->i_default_acl) {
+		rc = __jffs2_set_acl(inode, JFFS2_XPREFIX_ACL_DEFAULT, inode->i_default_acl);
 		if (rc)
 			return rc;
 	}
 
 	if (f->i_acl_access) {
 		rc = __jffs2_set_acl(inode, JFFS2_XPREFIX_ACL_ACCESS, f->i_acl_access);
+	if (inode->i_acl) {
+		rc = __jffs2_set_acl(inode, JFFS2_XPREFIX_ACL_ACCESS, inode->i_acl);
 		if (rc)
 			return rc;
 	}

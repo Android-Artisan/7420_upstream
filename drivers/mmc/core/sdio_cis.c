@@ -14,6 +14,7 @@
  */
 
 #include <linux/kernel.h>
+#include <linux/slab.h>
 
 #include <linux/mmc/host.h>
 #include <linux/mmc/card.h>
@@ -23,12 +24,19 @@
 #include "sdio_cis.h"
 #include "sdio_ops.h"
 
+#define SDIO_READ_CIS_TIMEOUT_MS  (10 * 1000) /* 10s */
+
 static int cistpl_vers_1(struct mmc_card *card, struct sdio_func *func,
 			 const unsigned char *buf, unsigned size)
 {
 	unsigned i, nr_strings;
 	char **buffer, *string;
 
+	if (size < 2)
+		return 0;
+
+	/* Find all null-terminated (including zero length) strings in
+	   the TPLLV1_INFO field. Trailing garbage is ignored. */
 	buf += 2;
 	size -= 2;
 
@@ -44,6 +52,8 @@ static int cistpl_vers_1(struct mmc_card *card, struct sdio_func *func,
 		printk(KERN_WARNING "SDIO: ignoring broken CISTPL_VERS_1\n");
 		return 0;
 	}
+	if (nr_strings == 0)
+		return 0;
 
 	size = i;
 
@@ -102,6 +112,56 @@ static int cistpl_funce_common(struct mmc_card *card,
 			       const unsigned char *buf, unsigned size)
 {
 	if (size < 0x04 || buf[0] != 0)
+
+typedef int (tpl_parse_t)(struct mmc_card *, struct sdio_func *,
+			   const unsigned char *, unsigned);
+
+struct cis_tpl {
+	unsigned char code;
+	unsigned char min_size;
+	tpl_parse_t *parse;
+};
+
+static int cis_tpl_parse(struct mmc_card *card, struct sdio_func *func,
+			 const char *tpl_descr,
+			 const struct cis_tpl *tpl, int tpl_count,
+			 unsigned char code,
+			 const unsigned char *buf, unsigned size)
+{
+	int i, ret;
+
+	/* look for a matching code in the table */
+	for (i = 0; i < tpl_count; i++, tpl++) {
+		if (tpl->code == code)
+			break;
+	}
+	if (i < tpl_count) {
+		if (size >= tpl->min_size) {
+			if (tpl->parse)
+				ret = tpl->parse(card, func, buf, size);
+			else
+				ret = -EILSEQ;	/* known tuple, not parsed */
+		} else {
+			/* invalid tuple */
+			ret = -EINVAL;
+		}
+		if (ret && ret != -EILSEQ && ret != -ENOENT) {
+			pr_err("%s: bad %s tuple 0x%02x (%u bytes)\n",
+			       mmc_hostname(card->host), tpl_descr, code, size);
+		}
+	} else {
+		/* unknown tuple */
+		ret = -ENOENT;
+	}
+
+	return ret;
+}
+
+static int cistpl_funce_common(struct mmc_card *card, struct sdio_func *func,
+			       const unsigned char *buf, unsigned size)
+{
+	/* Only valid for the common CIS (function 0) */
+	if (func)
 		return -EINVAL;
 
 	/* TPLFE_FN0_BLK_SIZE */
@@ -115,6 +175,7 @@ static int cistpl_funce_common(struct mmc_card *card,
 }
 
 static int cistpl_funce_func(struct sdio_func *func,
+static int cistpl_funce_func(struct mmc_card *card, struct sdio_func *func,
 			     const unsigned char *buf, unsigned size)
 {
 	unsigned vsn;
@@ -124,6 +185,18 @@ static int cistpl_funce_func(struct sdio_func *func,
 	min_size = (vsn == SDIO_SDIO_REV_1_00) ? 28 : 42;
 
 	if (size < min_size || buf[0] != 1)
+	/* Only valid for the individual function's CIS (1-7) */
+	if (!func)
+		return -EINVAL;
+
+	/*
+	 * This tuple has a different length depending on the SDIO spec
+	 * version.
+	 */
+	vsn = func->card->cccr.sdio_vsn;
+	min_size = (vsn == SDIO_SDIO_REV_1_00) ? 28 : 42;
+
+	if (size < min_size)
 		return -EINVAL;
 
 	/* TPLFE_MAX_BLK_SIZE */
@@ -172,6 +245,32 @@ struct cis_tpl {
 	tpl_parse_t *parse;
 };
 
+/*
+ * Known TPLFE_TYPEs table for CISTPL_FUNCE tuples.
+ *
+ * Note that, unlike PCMCIA, CISTPL_FUNCE tuples are not parsed depending
+ * on the TPLFID_FUNCTION value of the previous CISTPL_FUNCID as on SDIO
+ * TPLFID_FUNCTION is always hardcoded to 0x0C.
+ */
+static const struct cis_tpl cis_tpl_funce_list[] = {
+	{	0x00,	4,	cistpl_funce_common		},
+	{	0x01,	0,	cistpl_funce_func		},
+	{	0x04,	1+1+6,	/* CISTPL_FUNCE_LAN_NODE_ID */	},
+};
+
+static int cistpl_funce(struct mmc_card *card, struct sdio_func *func,
+			const unsigned char *buf, unsigned size)
+{
+	if (size < 1)
+		return -EINVAL;
+
+	return cis_tpl_parse(card, func, "CISTPL_FUNCE",
+			     cis_tpl_funce_list,
+			     ARRAY_SIZE(cis_tpl_funce_list),
+			     buf[0], buf, size);
+}
+
+/* Known TPL_CODEs table for CIS tuples */
 static const struct cis_tpl cis_tpl_list[] = {
 	{	0x15,	3,	cistpl_vers_1		},
 	{	0x20,	4,	cistpl_manfid		},
@@ -214,6 +313,8 @@ static int sdio_read_cis(struct mmc_card *card, struct sdio_func *func)
 
 	do {
 		unsigned char tpl_code, tpl_link;
+		unsigned long timeout = jiffies +
+			msecs_to_jiffies(SDIO_READ_CIS_TIMEOUT_MS);
 
 		ret = mmc_io_rw_direct(card, 0, 0, ptr++, 0, &tpl_code);
 		if (ret)
@@ -223,8 +324,16 @@ static int sdio_read_cis(struct mmc_card *card, struct sdio_func *func)
 		if (tpl_code == 0xff)
 			break;
 
+		/* null entries have no link field or data */
+		if (tpl_code == 0x00)
+			continue;
+
 		ret = mmc_io_rw_direct(card, 0, 0, ptr++, 0, &tpl_link);
 		if (ret)
+			break;
+
+		/* a size of 0xff also means we're done */
+		if (tpl_link == 0xff)
 			break;
 
 		this = kmalloc(sizeof(*this) + tpl_link, GFP_KERNEL);
@@ -247,6 +356,15 @@ static int sdio_read_cis(struct mmc_card *card, struct sdio_func *func)
 				break;
 		if (i >= ARRAY_SIZE(cis_tpl_list)) {
 			/* this tuple is unknown to the core */
+		/* Try to parse the CIS tuple */
+		ret = cis_tpl_parse(card, func, "CIS",
+				    cis_tpl_list, ARRAY_SIZE(cis_tpl_list),
+				    tpl_code, this->data, tpl_link);
+		if (ret == -EILSEQ || ret == -ENOENT) {
+			/*
+			 * The tuple is unknown or known but not parsed.
+			 * Queue the tuple for the function driver.
+			 */
 			this->next = NULL;
 			this->code = tpl_code;
 			this->size = tpl_link;
@@ -267,6 +385,25 @@ static int sdio_read_cis(struct mmc_card *card, struct sdio_func *func)
 				ret = tpl->parse(card, func,
 						 this->data, tpl_link);
 			}
+
+			if (ret == -ENOENT) {
+				if (time_after(jiffies, timeout))
+					break;
+				/* warn about unknown tuples */
+				pr_warn_ratelimited("%s: queuing unknown"
+				       " CIS tuple 0x%02x (%u bytes)\n",
+				       mmc_hostname(card->host),
+				       tpl_code, tpl_link);
+			}
+
+			/* keep on analyzing tuples */
+			ret = 0;
+		} else {
+			/*
+			 * We don't need the tuple anymore if it was
+			 * successfully parsed by the SDIO core or if it is
+			 * not going to be queued for a driver.
+			 */
 			kfree(this);
 		}
 
@@ -312,12 +449,6 @@ int sdio_read_func_cis(struct sdio_func *func)
 		return ret;
 
 	/*
-	 * Since we've linked to tuples in the card structure,
-	 * we must make sure we have a reference to it.
-	 */
-	get_device(&func->card->dev);
-
-	/*
 	 * Vendor/device id is optional for function CIS, so
 	 * copy it from the card structure as needed.
 	 */
@@ -342,11 +473,5 @@ void sdio_free_func_cis(struct sdio_func *func)
 	}
 
 	func->tuples = NULL;
-
-	/*
-	 * We have now removed the link to the tuples in the
-	 * card structure, so remove the reference.
-	 */
-	put_device(&func->card->dev);
 }
 

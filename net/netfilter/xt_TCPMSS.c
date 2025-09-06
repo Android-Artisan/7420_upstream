@@ -2,6 +2,7 @@
  * This is a module which is used for setting the MSS option in TCP packets.
  *
  * Copyright (C) 2000 Marc Boucher <marc@mbsi.ca>
+ * Copyright (C) 2007 Patrick McHardy <kaber@trash.net>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -11,6 +12,11 @@
 #include <linux/module.h>
 #include <linux/skbuff.h>
 #include <linux/ip.h>
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+#include <linux/module.h>
+#include <linux/skbuff.h>
+#include <linux/ip.h>
+#include <linux/gfp.h>
 #include <linux/ipv6.h>
 #include <linux/tcp.h>
 #include <net/dst.h>
@@ -50,6 +56,49 @@ tcpmss_mangle_packet(struct sk_buff *skb,
 {
 	struct tcphdr *tcph;
 	unsigned int tcplen, i;
+static u_int32_t tcpmss_reverse_mtu(struct net *net,
+				    const struct sk_buff *skb,
+				    unsigned int family)
+{
+	struct flowi fl;
+	const struct nf_afinfo *ai;
+	struct rtable *rt = NULL;
+	u_int32_t mtu     = ~0U;
+
+	if (family == PF_INET) {
+		struct flowi4 *fl4 = &fl.u.ip4;
+		memset(fl4, 0, sizeof(*fl4));
+		fl4->daddr = ip_hdr(skb)->saddr;
+	} else {
+		struct flowi6 *fl6 = &fl.u.ip6;
+
+		memset(fl6, 0, sizeof(*fl6));
+		fl6->daddr = ipv6_hdr(skb)->saddr;
+	}
+	rcu_read_lock();
+	ai = nf_get_afinfo(family);
+	if (ai != NULL)
+		ai->route(net, (struct dst_entry **)&rt, &fl, false);
+	rcu_read_unlock();
+
+	if (rt != NULL) {
+		mtu = dst_mtu(&rt->dst);
+		dst_release(&rt->dst);
+	}
+	return mtu;
+}
+
+static int
+tcpmss_mangle_packet(struct sk_buff *skb,
+		     const struct xt_action_param *par,
+		     unsigned int family,
+		     unsigned int tcphoff,
+		     unsigned int minlen)
+{
+	const struct xt_tcpmss_info *info = par->targinfo;
+	struct tcphdr *tcph;
+	int len, tcp_hdrlen;
+	unsigned int i;
 	__be16 oldval;
 	u16 newmss;
 	u8 *opt;
@@ -87,6 +136,38 @@ tcpmss_mangle_packet(struct sk_buff *skb,
 			return -1;
 		}
 		newmss = min(dst_mtu(skb->dst), in_mtu) - minlen;
+	/* This is a fragment, no TCP header is available */
+	if (par->fragoff != 0)
+		return 0;
+
+	if (!skb_make_writable(skb, skb->len))
+		return -1;
+
+	len = skb->len - tcphoff;
+	if (len < (int)sizeof(struct tcphdr))
+		return -1;
+
+	tcph = (struct tcphdr *)(skb_network_header(skb) + tcphoff);
+	tcp_hdrlen = tcph->doff * 4;
+
+	if (len < tcp_hdrlen || tcp_hdrlen < sizeof(struct tcphdr))
+		return -1;
+
+	if (info->mss == XT_TCPMSS_CLAMP_PMTU) {
+		struct net *net = par->net;
+		unsigned int in_mtu = tcpmss_reverse_mtu(net, skb, family);
+
+		if (dst_mtu(skb_dst(skb)) <= minlen) {
+			net_err_ratelimited("unknown or invalid path-MTU (%u)\n",
+					    dst_mtu(skb_dst(skb)));
+			return -1;
+		}
+		if (in_mtu <= minlen) {
+			net_err_ratelimited("unknown or invalid path-MTU (%u)\n",
+					    in_mtu);
+			return -1;
+		}
+		newmss = min(dst_mtu(skb_dst(skb)), in_mtu) - minlen;
 	} else
 		newmss = info->mss;
 
@@ -94,6 +175,8 @@ tcpmss_mangle_packet(struct sk_buff *skb,
 	for (i = sizeof(struct tcphdr); i < tcph->doff*4; i += optlen(opt, i)) {
 		if (opt[i] == TCPOPT_MSS && tcph->doff*4 - i >= TCPOLEN_MSS &&
 		    opt[i+1] == TCPOLEN_MSS) {
+	for (i = sizeof(struct tcphdr); i <= tcp_hdrlen - TCPOLEN_MSS; i += optlen(opt, i)) {
+		if (opt[i] == TCPOPT_MSS && opt[i+1] == TCPOLEN_MSS) {
 			u_int16_t oldmss;
 
 			oldmss = (opt[i+2] << 8) | opt[i+3];
@@ -111,9 +194,21 @@ tcpmss_mangle_packet(struct sk_buff *skb,
 			inet_proto_csum_replace2(&tcph->check, skb,
 						 htons(oldmss), htons(newmss),
 						 0);
+						 false);
 			return 0;
 		}
 	}
+
+	/* There is data after the header so the option can't be added
+	 * without moving it, and doing so may make the SYN packet
+	 * itself too large. Accept the packet unmodified instead.
+	 */
+	if (len > tcp_hdrlen)
+		return 0;
+
+	/* tcph->doff has 4 bits, do not wrap it to 0 */
+	if (tcp_hdrlen >= 15 * 4)
+		return 0;
 
 	/*
 	 * MSS Option not found ?! add it..
@@ -133,12 +228,30 @@ tcpmss_mangle_packet(struct sk_buff *skb,
 
 	inet_proto_csum_replace2(&tcph->check, skb,
 				 htons(tcplen), htons(tcplen + TCPOLEN_MSS), 1);
+	/*
+	 * IPv4: RFC 1122 states "If an MSS option is not received at
+	 * connection setup, TCP MUST assume a default send MSS of 536".
+	 * IPv6: RFC 2460 states IPv6 has a minimum MTU of 1280 and a minimum
+	 * length IPv6 header of 60, ergo the default MSS value is 1220
+	 * Since no MSS was provided, we must use the default values
+	 */
+	if (par->family == NFPROTO_IPV4)
+		newmss = min(newmss, (u16)536);
+	else
+		newmss = min(newmss, (u16)1220);
+
+	opt = (u_int8_t *)tcph + sizeof(struct tcphdr);
+	memmove(opt + TCPOLEN_MSS, opt, len - sizeof(struct tcphdr));
+
+	inet_proto_csum_replace2(&tcph->check, skb,
+				 htons(len), htons(len + TCPOLEN_MSS), true);
 	opt[0] = TCPOPT_MSS;
 	opt[1] = TCPOLEN_MSS;
 	opt[2] = (newmss & 0xff00) >> 8;
 	opt[3] = newmss & 0x00ff;
 
 	inet_proto_csum_replace4(&tcph->check, skb, 0, *((__be32 *)opt), 0);
+	inet_proto_csum_replace4(&tcph->check, skb, 0, *((__be32 *)opt), false);
 
 	oldval = ((__be16 *)tcph)[6];
 	tcph->doff += TCPOLEN_MSS/4;
@@ -177,6 +290,12 @@ static unsigned int
 tcpmss_tg4(struct sk_buff *skb, const struct net_device *in,
            const struct net_device *out, unsigned int hooknum,
            const struct xt_target *target, const void *targinfo)
+				 oldval, ((__be16 *)tcph)[6], false);
+	return TCPOLEN_MSS;
+}
+
+static unsigned int
+tcpmss_tg4(struct sk_buff *skb, const struct xt_action_param *par)
 {
 	struct iphdr *iph = ip_hdr(skb);
 	__be16 newlen;
@@ -184,6 +303,8 @@ tcpmss_tg4(struct sk_buff *skb, const struct net_device *in,
 
 	ret = tcpmss_mangle_packet(skb, targinfo,
 				   tcpmss_reverse_mtu(skb, PF_INET),
+	ret = tcpmss_mangle_packet(skb, par,
+				   PF_INET,
 				   iph->ihl * 4,
 				   sizeof(*iph) + sizeof(struct tcphdr));
 	if (ret < 0)
@@ -205,6 +326,13 @@ tcpmss_tg6(struct sk_buff *skb, const struct net_device *in,
 {
 	struct ipv6hdr *ipv6h = ipv6_hdr(skb);
 	u8 nexthdr;
+#if IS_ENABLED(CONFIG_IP6_NF_IPTABLES)
+static unsigned int
+tcpmss_tg6(struct sk_buff *skb, const struct xt_action_param *par)
+{
+	struct ipv6hdr *ipv6h = ipv6_hdr(skb);
+	u8 nexthdr;
+	__be16 frag_off;
 	int tcphoff;
 	int ret;
 
@@ -214,6 +342,11 @@ tcpmss_tg6(struct sk_buff *skb, const struct net_device *in,
 		return NF_DROP;
 	ret = tcpmss_mangle_packet(skb, targinfo,
 				   tcpmss_reverse_mtu(skb, PF_INET6),
+	tcphoff = ipv6_skip_exthdr(skb, sizeof(*ipv6h), &nexthdr, &frag_off);
+	if (tcphoff < 0)
+		return NF_DROP;
+	ret = tcpmss_mangle_packet(skb, par,
+				   PF_INET6,
 				   tcphoff,
 				   sizeof(*ipv6h) + sizeof(struct tcphdr));
 	if (ret < 0)
@@ -235,6 +368,7 @@ static inline bool find_syn_match(const struct xt_entry_match *m)
 
 	if (strcmp(m->u.kernel.match->name, "tcp") == 0 &&
 	    tcpinfo->flg_cmp & TH_SYN &&
+	    tcpinfo->flg_cmp & TCPHDR_SYN &&
 	    !(tcpinfo->invflags & XT_TCP_INV_FLAGS))
 		return true;
 
@@ -284,12 +418,60 @@ tcpmss_tg6_check(const char *tablename, const void *entry,
 		return true;
 	printk("xt_TCPMSS: Only works on TCP SYN packets\n");
 	return false;
+static int tcpmss_tg4_check(const struct xt_tgchk_param *par)
+{
+	const struct xt_tcpmss_info *info = par->targinfo;
+	const struct ipt_entry *e = par->entryinfo;
+	const struct xt_entry_match *ematch;
+
+	if (info->mss == XT_TCPMSS_CLAMP_PMTU &&
+	    (par->hook_mask & ~((1 << NF_INET_FORWARD) |
+			   (1 << NF_INET_LOCAL_OUT) |
+			   (1 << NF_INET_POST_ROUTING))) != 0) {
+		pr_info("path-MTU clamping only supported in "
+			"FORWARD, OUTPUT and POSTROUTING hooks\n");
+		return -EINVAL;
+	}
+	if (par->nft_compat)
+		return 0;
+
+	xt_ematch_foreach(ematch, e)
+		if (find_syn_match(ematch))
+			return 0;
+	pr_info("Only works on TCP SYN packets\n");
+	return -EINVAL;
+}
+
+#if IS_ENABLED(CONFIG_IP6_NF_IPTABLES)
+static int tcpmss_tg6_check(const struct xt_tgchk_param *par)
+{
+	const struct xt_tcpmss_info *info = par->targinfo;
+	const struct ip6t_entry *e = par->entryinfo;
+	const struct xt_entry_match *ematch;
+
+	if (info->mss == XT_TCPMSS_CLAMP_PMTU &&
+	    (par->hook_mask & ~((1 << NF_INET_FORWARD) |
+			   (1 << NF_INET_LOCAL_OUT) |
+			   (1 << NF_INET_POST_ROUTING))) != 0) {
+		pr_info("path-MTU clamping only supported in "
+			"FORWARD, OUTPUT and POSTROUTING hooks\n");
+		return -EINVAL;
+	}
+	if (par->nft_compat)
+		return 0;
+
+	xt_ematch_foreach(ematch, e)
+		if (find_syn_match(ematch))
+			return 0;
+	pr_info("Only works on TCP SYN packets\n");
+	return -EINVAL;
 }
 #endif
 
 static struct xt_target tcpmss_tg_reg[] __read_mostly = {
 	{
 		.family		= AF_INET,
+		.family		= NFPROTO_IPV4,
 		.name		= "TCPMSS",
 		.checkentry	= tcpmss_tg4_check,
 		.target		= tcpmss_tg4,
@@ -300,6 +482,9 @@ static struct xt_target tcpmss_tg_reg[] __read_mostly = {
 #if defined(CONFIG_IP6_NF_IPTABLES) || defined(CONFIG_IP6_NF_IPTABLES_MODULE)
 	{
 		.family		= AF_INET6,
+#if IS_ENABLED(CONFIG_IP6_NF_IPTABLES)
+	{
+		.family		= NFPROTO_IPV6,
 		.name		= "TCPMSS",
 		.checkentry	= tcpmss_tg6_check,
 		.target		= tcpmss_tg6,

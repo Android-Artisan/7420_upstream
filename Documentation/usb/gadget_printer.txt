@@ -7,7 +7,6 @@
 
 
 GENERAL
-=======
 
 This driver may be used if you are writing printer firmware using Linux as
 the embedded OS. This driver has nothing to do with using a printer with
@@ -30,7 +29,6 @@ user space firmware can read or write this status byte using a device file
 
 
 HOWTO USE THIS DRIVER
-=====================
 
 To load the USB device controller driver and the printer gadget driver. The
 following example uses the Netchip 2280 USB device controller driver:
@@ -75,7 +73,6 @@ qlen - The number of 8k buffers to use per endpoint. The default is 10, you
 
 
 USING THE EXAMPLE CODE
-======================
 
 This example code talks to stdout, instead of a print engine.
 
@@ -140,7 +137,6 @@ To set error status to ERROR:
 
 
 EXAMPLE CODE
-============
 
 
 #include <stdio.h>

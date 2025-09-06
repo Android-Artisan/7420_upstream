@@ -40,6 +40,7 @@
 #include <linux/signal.h>
 #include <linux/ioctl.h>
 #include <linux/skbuff.h>
+#include <asm/unaligned.h>
 
 #include <net/bluetooth/bluetooth.h>
 #include <net/bluetooth/hci_core.h>
@@ -56,6 +57,7 @@
 struct h4_struct {
 	unsigned long rx_state;
 	unsigned long rx_count;
+struct h4_struct {
 	struct sk_buff *rx_skb;
 	struct sk_buff_head txq;
 };
@@ -75,6 +77,7 @@ static int h4_open(struct hci_uart *hu)
 	BT_DBG("hu %p", hu);
 
 	h4 = kzalloc(sizeof(*h4), GFP_ATOMIC);
+	h4 = kzalloc(sizeof(*h4), GFP_KERNEL);
 	if (!h4)
 		return -ENOMEM;
 
@@ -109,6 +112,7 @@ static int h4_close(struct hci_uart *hu)
 
 	if (h4->rx_skb)
 		kfree_skb(h4->rx_skb);
+	kfree_skb(h4->rx_skb);
 
 	hu->priv = NULL;
 	kfree(h4);
@@ -257,6 +261,27 @@ static int h4_recv(struct hci_uart *hu, void *data, int count)
 
 		h4->rx_skb->dev = (void *) hu->hdev;
 		bt_cb(h4->rx_skb)->pkt_type = type;
+static const struct h4_recv_pkt h4_recv_pkts[] = {
+	{ H4_RECV_ACL,   .recv = hci_recv_frame },
+	{ H4_RECV_SCO,   .recv = hci_recv_frame },
+	{ H4_RECV_EVENT, .recv = hci_recv_frame },
+};
+
+/* Recv data */
+static int h4_recv(struct hci_uart *hu, const void *data, int count)
+{
+	struct h4_struct *h4 = hu->priv;
+
+	if (!test_bit(HCI_UART_REGISTERED, &hu->flags))
+		return -EUNATCH;
+
+	h4->rx_skb = h4_recv_buf(hu->hdev, h4->rx_skb, data, count,
+				 h4_recv_pkts, ARRAY_SIZE(h4_recv_pkts));
+	if (IS_ERR(h4->rx_skb)) {
+		int err = PTR_ERR(h4->rx_skb);
+		BT_ERR("%s: Frame reassembly failed (%d)", hu->hdev->name, err);
+		h4->rx_skb = NULL;
+		return err;
 	}
 
 	return count;
@@ -270,6 +295,9 @@ static struct sk_buff *h4_dequeue(struct hci_uart *hu)
 
 static struct hci_uart_proto h4p = {
 	.id		= HCI_UART_H4,
+static const struct hci_uart_proto h4p = {
+	.id		= HCI_UART_H4,
+	.name		= "H4",
 	.open		= h4_open,
 	.close		= h4_close,
 	.recv		= h4_recv,
@@ -294,3 +322,113 @@ int h4_deinit(void)
 {
 	return hci_uart_unregister_proto(&h4p);
 }
+int __init h4_init(void)
+{
+	return hci_uart_register_proto(&h4p);
+}
+
+int __exit h4_deinit(void)
+{
+	return hci_uart_unregister_proto(&h4p);
+}
+
+struct sk_buff *h4_recv_buf(struct hci_dev *hdev, struct sk_buff *skb,
+			    const unsigned char *buffer, int count,
+			    const struct h4_recv_pkt *pkts, int pkts_count)
+{
+	while (count) {
+		int i, len;
+
+		if (!skb) {
+			for (i = 0; i < pkts_count; i++) {
+				if (buffer[0] != (&pkts[i])->type)
+					continue;
+
+				skb = bt_skb_alloc((&pkts[i])->maxlen,
+						   GFP_ATOMIC);
+				if (!skb)
+					return ERR_PTR(-ENOMEM);
+
+				bt_cb(skb)->pkt_type = (&pkts[i])->type;
+				bt_cb(skb)->expect = (&pkts[i])->hlen;
+				break;
+			}
+
+			/* Check for invalid packet type */
+			if (!skb)
+				return ERR_PTR(-EILSEQ);
+
+			count -= 1;
+			buffer += 1;
+		}
+
+		len = min_t(uint, bt_cb(skb)->expect - skb->len, count);
+		memcpy(skb_put(skb, len), buffer, len);
+
+		count -= len;
+		buffer += len;
+
+		/* Check for partial packet */
+		if (skb->len < bt_cb(skb)->expect)
+			continue;
+
+		for (i = 0; i < pkts_count; i++) {
+			if (bt_cb(skb)->pkt_type == (&pkts[i])->type)
+				break;
+		}
+
+		if (i >= pkts_count) {
+			kfree_skb(skb);
+			return ERR_PTR(-EILSEQ);
+		}
+
+		if (skb->len == (&pkts[i])->hlen) {
+			u16 dlen;
+
+			switch ((&pkts[i])->lsize) {
+			case 0:
+				/* No variable data length */
+				dlen = 0;
+				break;
+			case 1:
+				/* Single octet variable length */
+				dlen = skb->data[(&pkts[i])->loff];
+				bt_cb(skb)->expect += dlen;
+
+				if (skb_tailroom(skb) < dlen) {
+					kfree_skb(skb);
+					return ERR_PTR(-EMSGSIZE);
+				}
+				break;
+			case 2:
+				/* Double octet variable length */
+				dlen = get_unaligned_le16(skb->data +
+							  (&pkts[i])->loff);
+				bt_cb(skb)->expect += dlen;
+
+				if (skb_tailroom(skb) < dlen) {
+					kfree_skb(skb);
+					return ERR_PTR(-EMSGSIZE);
+				}
+				break;
+			default:
+				/* Unsupported variable length */
+				kfree_skb(skb);
+				return ERR_PTR(-EILSEQ);
+			}
+
+			if (!dlen) {
+				/* No more data, complete frame */
+				(&pkts[i])->recv(hdev, skb);
+				skb = NULL;
+			}
+		} else {
+			/* Complete frame */
+			(&pkts[i])->recv(hdev, skb);
+			skb = NULL;
+		}
+	}
+
+	return skb;
+}
+EXPORT_SYMBOL_GPL(h4_recv_buf);

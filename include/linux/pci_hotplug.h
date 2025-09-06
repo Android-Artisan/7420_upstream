@@ -77,6 +77,10 @@ struct hotplug_slot_attribute {
 /**
  * struct hotplug_slot_ops -the callbacks that the hotplug pci core can use
  * @owner: The module owner of this structure
+/**
+ * struct hotplug_slot_ops -the callbacks that the hotplug pci core can use
+ * @owner: The module owner of this structure
+ * @mod_name: The module name (KBUILD_MODNAME) of this structure
  * @enable_slot: Called when the user wants to enable a specific pci slot
  * @disable_slot: Called when the user wants to disable a specific pci slot
  * @set_attention_status: Called to set the specific slot's attention LED to
@@ -86,6 +90,8 @@ struct hotplug_slot_attribute {
  * @get_power_status: Called to get the current power status of a slot.
  * 	If this field is NULL, the value passed in the struct hotplug_slot_info
  * 	will be used when this value is requested by a user.
+ *	If this field is NULL, the value passed in the struct hotplug_slot_info
+ *	will be used when this value is requested by a user.
  * @get_attention_status: Called to get the current attention status of a slot.
  *	If this field is NULL, the value passed in the struct hotplug_slot_info
  *	will be used when this value is requested by a user.
@@ -101,6 +107,9 @@ struct hotplug_slot_attribute {
  * @get_cur_bus_speed: Called to get the current bus speed for a slot.
  *	If this field is NULL, the value passed in the struct hotplug_slot_info
  *	will be used when this value is requested by a user.
+ * @reset_slot: Optional interface to allow override of a bus reset for the
+ *	slot for cases where a secondary bus reset can result in spurious
+ *	hotplug events or where a slot can be reset independent of the bus.
  *
  * The table of function pointers that is passed to the hotplug pci core by a
  * hotplug pci driver.  These functions are called by the hotplug pci core when
@@ -109,6 +118,7 @@ struct hotplug_slot_attribute {
  */
 struct hotplug_slot_ops {
 	struct module *owner;
+	const char *mod_name;
 	int (*enable_slot)		(struct hotplug_slot *slot);
 	int (*disable_slot)		(struct hotplug_slot *slot);
 	int (*set_attention_status)	(struct hotplug_slot *slot, u8 value);
@@ -119,6 +129,7 @@ struct hotplug_slot_ops {
 	int (*get_adapter_status)	(struct hotplug_slot *slot, u8 *value);
 	int (*get_max_bus_speed)	(struct hotplug_slot *slot, enum pci_bus_speed *value);
 	int (*get_cur_bus_speed)	(struct hotplug_slot *slot, enum pci_bus_speed *value);
+	int (*reset_slot)		(struct hotplug_slot *slot, int probe);
 };
 
 /**
@@ -128,6 +139,10 @@ struct hotplug_slot_ops {
  * @latch_status: if the latch (if any) is open or closed (1/0)
  * @adapter_present: if there is a pci board present in the slot or not (1/0)
  * @address: (domain << 16 | bus << 8 | dev)
+ * @power_status: if power is enabled or not (1/0)
+ * @attention_status: if the attention light is enabled or not (1/0)
+ * @latch_status: if the latch (if any) is open or closed (1/0)
+ * @adapter_status: if there is a pci board present in the slot or not (1/0)
  *
  * Used to notify the hotplug pci core of the status of a specific slot.
  */
@@ -169,6 +184,22 @@ extern int pci_hp_register(struct hotplug_slot *, struct pci_bus *, int nr);
 extern int pci_hp_deregister(struct hotplug_slot *slot);
 extern int __must_check pci_hp_change_slot_info	(struct hotplug_slot *slot,
 						 struct hotplug_slot_info *info);
+
+static inline const char *hotplug_slot_name(const struct hotplug_slot *slot)
+{
+	return pci_slot_name(slot->pci_slot);
+}
+
+int __pci_hp_register(struct hotplug_slot *slot, struct pci_bus *pbus, int nr,
+		      const char *name, struct module *owner,
+		      const char *mod_name);
+int pci_hp_deregister(struct hotplug_slot *slot);
+int __must_check pci_hp_change_slot_info(struct hotplug_slot *slot,
+					 struct hotplug_slot_info *info);
+
+/* use a define to avoid include chaining to get THIS_MODULE & friends */
+#define pci_hp_register(slot, pbus, devnr, name) \
+	__pci_hp_register(slot, pbus, devnr, name, THIS_MODULE, KBUILD_MODNAME)
 
 /* PCI Setting Record (Type 0) */
 struct hpp_type0 {
@@ -228,3 +259,16 @@ int acpi_root_bridge(acpi_handle handle);
 #endif
 #endif
 
+#include <linux/acpi.h>
+int pci_get_hp_params(struct pci_dev *dev, struct hotplug_params *hpp);
+int acpi_get_hp_hw_control_from_firmware(struct pci_dev *dev, u32 flags);
+int acpi_pci_check_ejectable(struct pci_bus *pbus, acpi_handle handle);
+int acpi_pci_detect_ejectable(acpi_handle handle);
+#else
+static inline int pci_get_hp_params(struct pci_dev *dev,
+				    struct hotplug_params *hpp)
+{
+	return -ENODEV;
+}
+#endif
+#endif

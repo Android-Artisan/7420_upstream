@@ -1,5 +1,7 @@
 #ifndef PRISM54USB_H
 #define PRISM54USB_H
+#ifndef P54USB_H
+#define P54USB_H
 
 /*
  * Defines for USB based mac80211 Prism54 driver
@@ -17,6 +19,7 @@
 /* for isl3886 register definitions used on ver 1 devices */
 #include "p54pci.h"
 #include "net2280.h"
+#include <linux/usb/net2280.h>
 
 /* pci */
 #define NET2280_BASE		0x10000000
@@ -71,6 +74,12 @@ struct net2280_tx_hdr {
 	__le16 follower;	/* ? */
 	u8 padding[8];
 } __attribute__((packed));
+} __packed;
+
+struct lm87_tx_hdr {
+	__le32 device_addr;
+	__le32 chksum;
+} __packed;
 
 /* Some flags for the isl hardware registers controlling DMA inside the
  * chip */
@@ -88,6 +97,17 @@ enum net2280_op_type {
 	NET2280_DEV_CFG_U16	= 0x0883
 };
 
+struct net2280_reg_write {
+	__le16 port;
+	__le32 addr;
+	__le32 val;
+} __packed;
+
+struct net2280_reg_read {
+	__le16 port;
+	__le32 addr;
+} __packed;
+
 #define P54U_FW_BLOCK 2048
 
 #define X2_SIGNATURE "x2  "
@@ -99,6 +119,7 @@ struct x2_header {
 	__le32 fw_length;
 	__le32 crc;
 } __attribute__((packed));
+} __packed;
 
 /* pipes 3 and 4 are not used by the driver */
 #define P54U_PIPE_NUMBER 9
@@ -131,3 +152,29 @@ struct p54u_priv {
 };
 
 #endif /* PRISM54USB_H */
+enum p54u_hw_type {
+	P54U_INVALID_HW,
+	P54U_NET2280,
+	P54U_3887,
+
+	/* keep last */
+	__NUM_P54U_HWTYPES,
+};
+
+struct p54u_priv {
+	struct p54_common common;
+	struct usb_device *udev;
+	struct usb_interface *intf;
+	int (*upload_fw)(struct ieee80211_hw *dev);
+
+	enum p54u_hw_type hw_type;
+	spinlock_t lock;
+	struct sk_buff_head rx_queue;
+	struct usb_anchor submitted;
+	const struct firmware *fw;
+
+	/* asynchronous firmware callback */
+	struct completion fw_wait_load;
+};
+
+#endif /* P54USB_H */

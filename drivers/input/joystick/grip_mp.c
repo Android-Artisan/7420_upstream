@@ -700,3 +700,4 @@ static void __exit grip_exit(void)
 
 module_init(grip_init);
 module_exit(grip_exit);
+module_gameport_driver(grip_drv);

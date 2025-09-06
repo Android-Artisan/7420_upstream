@@ -1,5 +1,4 @@
 Using the initial RAM disk (initrd)
-===================================
 
 Written 1996,2000 by Werner Almesberger <werner.almesberger@epfl.ch> and
                      Hans Lermen <lermen@fgan.de>
@@ -364,3 +363,5 @@ Resources
     http://sources.redhat.com/newlib/
 [3] Brouwer, Andries; "util-linux: Miscellaneous utilities for Linux"
     ftp://ftp.win.tue.nl/pub/linux-local/utils/util-linux/
+[3] util-linux: Miscellaneous utilities for Linux
+    http://www.kernel.org/pub/linux/utils/util-linux/

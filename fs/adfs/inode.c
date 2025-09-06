@@ -18,6 +18,8 @@
 #include <linux/module.h>
 #include <linux/buffer_head.h>
 
+#include <linux/buffer_head.h>
+#include <linux/writeback.h>
 #include "adfs.h"
 
 /*
@@ -61,6 +63,14 @@ static int adfs_readpage(struct file *file, struct page *page)
 	return block_read_full_page(page, adfs_get_block);
 }
 
+static void adfs_write_failed(struct address_space *mapping, loff_t to)
+{
+	struct inode *inode = mapping->host;
+
+	if (to > inode->i_size)
+		truncate_pagecache(inode, inode->i_size);
+}
+
 static int adfs_write_begin(struct file *file, struct address_space *mapping,
 			loff_t pos, unsigned len, unsigned flags,
 			struct page **pagep, void **fsdata)
@@ -69,6 +79,16 @@ static int adfs_write_begin(struct file *file, struct address_space *mapping,
 	return cont_write_begin(file, mapping, pos, len, flags, pagep, fsdata,
 				adfs_get_block,
 				&ADFS_I(mapping->host)->mmu_private);
+	int ret;
+
+	*pagep = NULL;
+	ret = cont_write_begin(file, mapping, pos, len, flags, pagep, fsdata,
+				adfs_get_block,
+				&ADFS_I(mapping->host)->mmu_private);
+	if (unlikely(ret))
+		adfs_write_failed(mapping, pos + len);
+
+	return ret;
 }
 
 static sector_t _adfs_bmap(struct address_space *mapping, sector_t block)
@@ -105,6 +125,7 @@ static umode_t
 adfs_atts2mode(struct super_block *sb, struct inode *inode)
 {
 	unsigned int filetype, attr = ADFS_I(inode)->attr;
+	unsigned int attr = ADFS_I(inode)->attr;
 	umode_t mode, rmask;
 	struct adfs_sb_info *asb = ADFS_SB(sb);
 
@@ -116,6 +137,7 @@ adfs_atts2mode(struct super_block *sb, struct inode *inode)
 	filetype = adfs_filetype(inode);
 
 	switch (filetype) {
+	switch (ADFS_I(inode)->filetype) {
 	case 0xfc0:	/* LinkFS */
 		return S_IFLNK|S_IRWXUGO;
 
@@ -182,11 +204,19 @@ adfs_mode2atts(struct super_block *sb, struct inode *inode)
 /*
  * Convert an ADFS time to Unix time.  ADFS has a 40-bit centi-second time
  * referenced to 1 Jan 1900 (til 2248)
+ * referenced to 1 Jan 1900 (til 2248) so we need to discard 2208988800 seconds
+ * of time to convert from RISC OS epoch to Unix epoch.
  */
 static void
 adfs_adfs2unix_time(struct timespec *tv, struct inode *inode)
 {
 	unsigned int high, low;
+	/* 01 Jan 1970 00:00:00 (Unix epoch) as nanoseconds since
+	 * 01 Jan 1900 00:00:00 (RISC OS epoch)
+	 */
+	static const s64 nsec_unix_epoch_diff_risc_os_epoch =
+							2208988800000000000LL;
+	s64 nsec;
 
 	if (ADFS_I(inode)->stamped == 0)
 		goto cur_time;
@@ -215,6 +245,26 @@ adfs_adfs2unix_time(struct timespec *tv, struct inode *inode)
 
  cur_time:
 	*tv = CURRENT_TIME_SEC;
+	high = ADFS_I(inode)->loadaddr & 0xFF; /* top 8 bits of timestamp */
+	low  = ADFS_I(inode)->execaddr;    /* bottom 32 bits of timestamp */
+
+	/* convert 40-bit centi-seconds to 32-bit seconds
+	 * going via nanoseconds to retain precision
+	 */
+	nsec = (((s64) high << 32) | (s64) low) * 10000000; /* cs to ns */
+
+	/* Files dated pre  01 Jan 1970 00:00:00. */
+	if (nsec < nsec_unix_epoch_diff_risc_os_epoch)
+		goto too_early;
+
+	/* convert from RISC OS to Unix epoch */
+	nsec -= nsec_unix_epoch_diff_risc_os_epoch;
+
+	*tv = ns_to_timespec(nsec);
+	return;
+
+ cur_time:
+	*tv = CURRENT_TIME;
 	return;
 
  too_early:
@@ -273,6 +323,7 @@ adfs_iget(struct super_block *sb, struct object_info *obj)
 	inode->i_ino	 = obj->file_id;
 	inode->i_size	 = obj->size;
 	inode->i_nlink	 = 2;
+	set_nlink(inode, 2);
 	inode->i_blocks	 = (inode->i_size + sb->s_blocksize - 1) >>
 			    sb->s_blocksize_bits;
 
@@ -287,6 +338,8 @@ adfs_iget(struct super_block *sb, struct object_info *obj)
 	ADFS_I(inode)->execaddr  = obj->execaddr;
 	ADFS_I(inode)->attr      = obj->attr;
 	ADFS_I(inode)->stamped	  = ((obj->loadaddr & 0xfff00000) == 0xfff00000);
+	ADFS_I(inode)->filetype  = obj->filetype;
+	ADFS_I(inode)->stamped   = ((obj->loadaddr & 0xfff00000) == 0xfff00000);
 
 	inode->i_mode	 = adfs_atts2mode(sb, inode);
 	adfs_adfs2unix_time(&inode->i_mtime, inode);
@@ -318,6 +371,7 @@ int
 adfs_notify_change(struct dentry *dentry, struct iattr *attr)
 {
 	struct inode *inode = dentry->d_inode;
+	struct inode *inode = d_inode(dentry);
 	struct super_block *sb = inode->i_sb;
 	unsigned int ia_valid = attr->ia_valid;
 	int error;
@@ -332,6 +386,8 @@ adfs_notify_change(struct dentry *dentry, struct iattr *attr)
 	 */
 	if ((ia_valid & ATTR_UID && attr->ia_uid != ADFS_SB(sb)->s_uid) ||
 	    (ia_valid & ATTR_GID && attr->ia_gid != ADFS_SB(sb)->s_gid))
+	if ((ia_valid & ATTR_UID && !uid_eq(attr->ia_uid, ADFS_SB(sb)->s_uid)) ||
+	    (ia_valid & ATTR_GID && !gid_eq(attr->ia_gid, ADFS_SB(sb)->s_gid)))
 		error = -EPERM;
 
 	if (error)
@@ -342,6 +398,9 @@ adfs_notify_change(struct dentry *dentry, struct iattr *attr)
 
 	if (error)
 		goto out;
+	/* XXX: this is missing some actual on-disk truncation.. */
+	if (ia_valid & ATTR_SIZE)
+		truncate_setsize(inode, attr->ia_size);
 
 	if (ia_valid & ATTR_MTIME) {
 		inode->i_mtime = attr->ia_mtime;
@@ -377,6 +436,7 @@ out:
  * adfs_notify_change()
  */
 int adfs_write_inode(struct inode *inode, int unused)
+int adfs_write_inode(struct inode *inode, struct writeback_control *wbc)
 {
 	struct super_block *sb = inode->i_sb;
 	struct object_info obj;
@@ -396,3 +456,6 @@ int adfs_write_inode(struct inode *inode, int unused)
 	return ret;
 }
 MODULE_LICENSE("GPL");
+	ret = adfs_dir_update(sb, &obj, wbc->sync_mode == WB_SYNC_ALL);
+	return ret;
+}

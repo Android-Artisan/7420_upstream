@@ -12,6 +12,7 @@
 #include <linux/platform_device.h>
 #include <linux/err.h>
 #include <linux/init.h>
+#include <linux/module.h>
 #include <linux/mc146818rtc.h>
 
 #include <asm/prom.h>
@@ -65,6 +66,7 @@ static int  __init add_rtc(void)
 		return PTR_ERR(pd);
 
 	return 0;
+	return PTR_ERR_OR_ZERO(pd);
 }
 fs_initcall(add_rtc);
 

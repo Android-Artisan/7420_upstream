@@ -9,6 +9,8 @@
 #include <asm/irq.h>
 #include "irq_kern.h"
 #include "os.h"
+#include <irq_kern.h>
+#include <os.h>
 
 struct xterm_wait {
 	struct completion ready;
@@ -52,6 +54,7 @@ int xterm_fd(int socket, int *pid_out)
 	err = um_request_irq(XTERM_IRQ, socket, IRQ_READ, xterm_interrupt,
 			     IRQF_DISABLED | IRQF_SHARED | IRQF_SAMPLE_RANDOM,
 			     "xterm", data);
+			     IRQF_SHARED, "xterm", data);
 	if (err) {
 		printk(KERN_ERR "xterm_fd : failed to get IRQ for xterm, "
 		       "err = %d\n",  err);
@@ -66,6 +69,7 @@ int xterm_fd(int socket, int *pid_out)
 	wait_for_completion(&data->ready);
 
 	free_irq(XTERM_IRQ, data);
+	um_free_irq(XTERM_IRQ, data);
 
 	ret = data->new_fd;
 	*pid_out = data->pid;

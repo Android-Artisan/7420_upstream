@@ -5,6 +5,7 @@
  * Author       Stephan von Krawczynski
  * Copyright    by Stephan von Krawczynski <skraw@ithnet.com>
  * 
+ *
  * This software may be used and distributed according to the terms
  * of the GNU General Public License, incorporated herein by reference.
  *
@@ -19,6 +20,7 @@
 static const char *mic_revision = "$Revision: 1.12.2.4 $";
 
 #define byteout(addr,val) outb(val,addr)
+#define byteout(addr, val) outb(val, addr)
 #define bytein(addr) inb(addr)
 
 #define MIC_ISAC	2
@@ -40,6 +42,7 @@ readreg(unsigned int ale, unsigned int adr, u_char off)
 
 static inline void
 readfifo(unsigned int ale, unsigned int adr, u_char off, u_char * data, int size)
+readfifo(unsigned int ale, unsigned int adr, u_char off, u_char *data, int size)
 {
 	byteout(ale, off);
 	insb(adr, data, size);
@@ -55,6 +58,7 @@ writereg(unsigned int ale, unsigned int adr, u_char off, u_char data)
 
 static inline void
 writefifo(unsigned int ale, unsigned int adr, u_char off, u_char * data, int size)
+writefifo(unsigned int ale, unsigned int adr, u_char off, u_char *data, int size)
 {
 	byteout(ale, off);
 	outsb(adr, data, size);
@@ -76,12 +80,14 @@ WriteISAC(struct IsdnCardState *cs, u_char offset, u_char value)
 
 static void
 ReadISACfifo(struct IsdnCardState *cs, u_char * data, int size)
+ReadISACfifo(struct IsdnCardState *cs, u_char *data, int size)
 {
 	readfifo(cs->hw.mic.adr, cs->hw.mic.isac, 0, data, size);
 }
 
 static void
 WriteISACfifo(struct IsdnCardState *cs, u_char * data, int size)
+WriteISACfifo(struct IsdnCardState *cs, u_char *data, int size)
 {
 	writefifo(cs->hw.mic.adr, cs->hw.mic.isac, 0, data, size);
 }
@@ -114,6 +120,16 @@ WriteHSCX(struct IsdnCardState *cs, int hscx, u_char offset, u_char value)
 
 #define WRITEHSCXFIFO(cs, nr, ptr, cnt) writefifo(cs->hw.mic.adr, \
 		cs->hw.mic.hscx, (nr ? 0x40 : 0), ptr, cnt)
+#define READHSCX(cs, nr, reg) readreg(cs->hw.mic.adr,			\
+				      cs->hw.mic.hscx, reg + (nr ? 0x40 : 0))
+#define WRITEHSCX(cs, nr, reg, data) writereg(cs->hw.mic.adr,		\
+					      cs->hw.mic.hscx, reg + (nr ? 0x40 : 0), data)
+
+#define READHSCXFIFO(cs, nr, ptr, cnt) readfifo(cs->hw.mic.adr,		\
+						cs->hw.mic.hscx, (nr ? 0x40 : 0), ptr, cnt)
+
+#define WRITEHSCXFIFO(cs, nr, ptr, cnt) writefifo(cs->hw.mic.adr,	\
+						  cs->hw.mic.hscx, (nr ? 0x40 : 0), ptr, cnt)
 
 #include "hscx_irq.c"
 
@@ -131,6 +147,11 @@ mic_interrupt(int intno, void *dev_id)
 		hscx_int_main(cs, val);
 	val = readreg(cs->hw.mic.adr, cs->hw.mic.isac, ISAC_ISTA);
       Start_ISAC:
+Start_HSCX:
+	if (val)
+		hscx_int_main(cs, val);
+	val = readreg(cs->hw.mic.adr, cs->hw.mic.isac, ISAC_ISTA);
+Start_ISAC:
 	if (val)
 		isac_interrupt(cs, val);
 	val = readreg(cs->hw.mic.adr, cs->hw.mic.hscx, HSCX_ISTA + 0x40);
@@ -189,6 +210,24 @@ mic_card_msg(struct IsdnCardState *cs, int mt, void *arg)
 
 int __devinit
 setup_mic(struct IsdnCard *card)
+	case CARD_RESET:
+		return (0);
+	case CARD_RELEASE:
+		release_io_mic(cs);
+		return (0);
+	case CARD_INIT:
+		spin_lock_irqsave(&cs->lock, flags);
+		inithscx(cs); /* /RTSA := ISAC RST */
+		inithscxisac(cs, 3);
+		spin_unlock_irqrestore(&cs->lock, flags);
+		return (0);
+	case CARD_TEST:
+		return (0);
+	}
+	return (0);
+}
+
+int setup_mic(struct IsdnCard *card)
 {
 	int bytecnt;
 	struct IsdnCardState *cs = card->cs;
@@ -215,6 +254,7 @@ setup_mic(struct IsdnCard *card)
 	}
 	printk(KERN_INFO "mic: defined at 0x%x IRQ %d\n",
 		cs->hw.mic.cfg_reg, cs->irq);
+	       cs->hw.mic.cfg_reg, cs->irq);
 	setup_isac(cs);
 	cs->readisac = &ReadISAC;
 	cs->writeisac = &WriteISAC;
@@ -229,6 +269,7 @@ setup_mic(struct IsdnCard *card)
 	if (HscxVersion(cs, "mic:")) {
 		printk(KERN_WARNING
 		    "mic: wrong HSCX versions check IO address\n");
+		       "mic: wrong HSCX versions check IO address\n");
 		release_io_mic(cs);
 		return (0);
 	}

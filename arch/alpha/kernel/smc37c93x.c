@@ -102,6 +102,7 @@ static unsigned long __init SMCConfigState(unsigned long baseAddr)
 		if (devId == VALID_DEVICE_ID) {
 			outb(DEVICE_REV, indexPort);
 			devRev = inb(dataPort);
+			/* unsigned char devRev = */ inb(dataPort);
 			break;
 		}
 		else

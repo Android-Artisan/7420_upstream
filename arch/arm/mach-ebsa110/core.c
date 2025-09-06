@@ -18,11 +18,16 @@
 #include <mach/hardware.h>
 #include <asm/irq.h>
 #include <asm/io.h>
+#include <linux/io.h>
+
+#include <mach/hardware.h>
+#include <asm/irq.h>
 #include <asm/setup.h>
 #include <asm/mach-types.h>
 #include <asm/pgtable.h>
 #include <asm/page.h>
 #include <asm/system.h>
+#include <asm/system_misc.h>
 
 #include <asm/mach/arch.h>
 #include <asm/mach/irq.h>
@@ -49,6 +54,22 @@ static struct irq_chip ebsa110_irq_chip = {
 	.ack	= ebsa110_mask_irq,
 	.mask	= ebsa110_mask_irq,
 	.unmask = ebsa110_unmask_irq,
+#include "core.h"
+
+static void ebsa110_mask_irq(struct irq_data *d)
+{
+	__raw_writeb(1 << d->irq, IRQ_MCLR);
+}
+
+static void ebsa110_unmask_irq(struct irq_data *d)
+{
+	__raw_writeb(1 << d->irq, IRQ_MSET);
+}
+
+static struct irq_chip ebsa110_irq_chip = {
+	.irq_ack	= ebsa110_mask_irq,
+	.irq_mask	= ebsa110_mask_irq,
+	.irq_unmask	= ebsa110_unmask_irq,
 };
  
 static void __init ebsa110_init_irq(void)
@@ -69,6 +90,9 @@ static void __init ebsa110_init_irq(void)
 		set_irq_chip(irq, &ebsa110_irq_chip);
 		set_irq_handler(irq, handle_level_irq);
 		set_irq_flags(irq, IRQF_VALID | IRQF_PROBE);
+		irq_set_chip_and_handler(irq, &ebsa110_irq_chip,
+					 handle_level_irq);
+		irq_clear_status_flags(irq, IRQ_NOREQUEST | IRQ_NOPROBE);
 	}
 }
 
@@ -95,6 +119,24 @@ static struct map_desc ebsa110_io_desc[] __initdata = {
 		.virtual	= PIT_BASE,
 		.pfn		= __phys_to_pfn(TRICK0_PHYS),
 		.length		= PGDIR_SIZE,
+		.virtual	= (unsigned long)IRQ_STAT,
+		.pfn		= __phys_to_pfn(TRICK4_PHYS),
+		.length		= TRICK4_SIZE,
+		.type		= MT_DEVICE
+	}, {	/* IRQ_MASK/IRQ_MSET */
+		.virtual	= (unsigned long)IRQ_MASK,
+		.pfn		= __phys_to_pfn(TRICK3_PHYS),
+		.length		= TRICK3_SIZE,
+		.type		= MT_DEVICE
+	}, {	/* SOFT_BASE */
+		.virtual	= (unsigned long)SOFT_BASE,
+		.pfn		= __phys_to_pfn(TRICK1_PHYS),
+		.length		= TRICK1_SIZE,
+		.type		= MT_DEVICE
+	}, {	/* PIT_BASE */
+		.virtual	= (unsigned long)PIT_BASE,
+		.pfn		= __phys_to_pfn(TRICK0_PHYS),
+		.length		= TRICK0_SIZE,
 		.type		= MT_DEVICE
 	},
 
@@ -119,6 +161,20 @@ static void __init ebsa110_map_io(void)
 	iotable_init(ebsa110_io_desc, ARRAY_SIZE(ebsa110_io_desc));
 }
 
+static void __iomem *ebsa110_ioremap_caller(phys_addr_t cookie, size_t size,
+					    unsigned int flags, void *caller)
+{
+	return (void __iomem *)cookie;
+}
+
+static void ebsa110_iounmap(volatile void __iomem *io_addr)
+{}
+
+static void __init ebsa110_init_early(void)
+{
+	arch_ioremap_caller = ebsa110_ioremap_caller;
+	arch_iounmap = ebsa110_iounmap;
+}
 
 #define PIT_CTRL		(PIT_BASE + 0x0d)
 #define PIT_T2			(PIT_BASE + 0x09)
@@ -148,6 +204,7 @@ static void __init ebsa110_map_io(void)
  * This actually works out to be convenient.
  */
 static unsigned long ebsa110_gettimeoffset(void)
+static u32 ebsa110_gettimeoffset(void)
 {
 	unsigned long offset, count;
 
@@ -171,6 +228,7 @@ static unsigned long ebsa110_gettimeoffset(void)
 	offset = offset * (1000000 / HZ) / COUNT;
 
 	return offset;
+	return offset * 1000;
 }
 
 static irqreturn_t
@@ -196,6 +254,7 @@ ebsa110_timer_interrupt(int irq, void *dev_id)
 static struct irqaction ebsa110_timer_irq = {
 	.name		= "EBSA110 Timer Tick",
 	.flags		= IRQF_DISABLED | IRQF_TIMER | IRQF_IRQPOLL,
+	.flags		= IRQF_TIMER | IRQF_IRQPOLL,
 	.handler	= ebsa110_timer_interrupt,
 };
 
@@ -204,6 +263,10 @@ static struct irqaction ebsa110_timer_irq = {
  */
 static void __init ebsa110_timer_init(void)
 {
+void __init ebsa110_timer_init(void)
+{
+	arch_gettimeoffset = ebsa110_gettimeoffset;
+
 	/*
 	 * Timer 1, mode 2, LSB/MSB
 	 */
@@ -273,6 +336,33 @@ static struct platform_device *ebsa110_devices[] = {
 
 static int __init ebsa110_init(void)
 {
+/*
+ * EBSA110 idling methodology:
+ *
+ * We can not execute the "wait for interrupt" instruction since that
+ * will stop our MCLK signal (which provides the clock for the glue
+ * logic, and therefore the timer interrupt).
+ *
+ * Instead, we spin, polling the IRQ_STAT register for the occurrence
+ * of any interrupt with core clock down to the memory clock.
+ */
+static void ebsa110_idle(void)
+{
+	const char *irq_stat = (char *)0xff000000;
+
+	/* disable clock switching */
+	asm volatile ("mcr p15, 0, ip, c15, c2, 2" : : : "cc");
+
+	/* wait for an interrupt to occur */
+	while (!*irq_stat);
+
+	/* enable clock switching */
+	asm volatile ("mcr p15, 0, ip, c15, c1, 2" : : : "cc");
+}
+
+static int __init ebsa110_init(void)
+{
+	arm_pm_idle = ebsa110_idle;
 	return platform_add_devices(ebsa110_devices, ARRAY_SIZE(ebsa110_devices));
 }
 
@@ -289,4 +379,19 @@ MACHINE_START(EBSA110, "EBSA110")
 	.map_io		= ebsa110_map_io,
 	.init_irq	= ebsa110_init_irq,
 	.timer		= &ebsa110_timer,
+static void ebsa110_restart(enum reboot_mode mode, const char *cmd)
+{
+	soft_restart(0x80000000);
+}
+
+MACHINE_START(EBSA110, "EBSA110")
+	/* Maintainer: Russell King */
+	.atag_offset	= 0x400,
+	.reserve_lp0	= 1,
+	.reserve_lp2	= 1,
+	.map_io		= ebsa110_map_io,
+	.init_early	= ebsa110_init_early,
+	.init_irq	= ebsa110_init_irq,
+	.init_time	= ebsa110_timer_init,
+	.restart	= ebsa110_restart,
 MACHINE_END

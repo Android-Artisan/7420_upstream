@@ -785,7 +785,6 @@ static void i830EmitState(struct drm_device * dev)
 	}
 }
 
-/* ================================================================
  * Performance monitoring functions
  */
 

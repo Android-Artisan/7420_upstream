@@ -135,6 +135,7 @@ EXPORT(_stext)
 	/*
 	 * Give us a fighting chance of running if execution beings at the
 	 * kernel load address.  This is needed because this platform does
+	 * kernel load address.	 This is needed because this platform does
 	 * not have a ELF loader yet.
 	 */
 FEXPORT(__kernel_entry)
@@ -173,6 +174,22 @@ NESTED(kernel_entry, 16, sp)			# kernel entry point
 	mtc0	t0, CP0_STATUS
 #endif /* CONFIG_MIPS_MT_SMTC */
 
+#ifdef CONFIG_MIPS_RAW_APPENDED_DTB
+	PTR_LA		t0, __appended_dtb
+
+#ifdef CONFIG_CPU_BIG_ENDIAN
+	li		t1, 0xd00dfeed
+#else
+	li		t1, 0xedfe0dd0
+#endif
+	lw		t2, (t0)
+	bne		t1, t2, not_found
+	 nop
+
+	move		a1, t0
+	PTR_LI		a0, -2
+not_found:
+#endif
 	PTR_LA		t0, __bss_start		# clear .bss
 	LONG_S		zero, (t0)
 	PTR_LA		t1, __bss_stop - LONGSIZE
@@ -190,6 +207,10 @@ NESTED(kernel_entry, 16, sp)			# kernel entry point
 	PTR_LA		$28, init_thread_union
 	PTR_LI		sp, _THREAD_SIZE - 32
 	PTR_ADDU	sp, $28
+	/* Set the SP after an empty pt_regs.  */
+	PTR_LI		sp, _THREAD_SIZE - 32 - PT_SIZE
+	PTR_ADDU	sp, $28
+	back_to_back_c0_hazard
 	set_saved_sp	sp, t0, t1
 	PTR_SUBU	sp, 4 * SZREG		# init stack pointer
 
@@ -228,3 +249,14 @@ NESTED(smp_bootstrap, 16, sp)
 #endif /* CONFIG_SMP */
 
 	__FINIT
+#ifdef CONFIG_SMP
+/*
+ * SMP slave cpus entry point.	Board specific code for bootstrap calls this
+ * function after setting up the stack and gp registers.
+ */
+NESTED(smp_bootstrap, 16, sp)
+	smp_slave_setup
+	setup_c0_status_sec
+	j	start_secondary
+	END(smp_bootstrap)
+#endif /* CONFIG_SMP */

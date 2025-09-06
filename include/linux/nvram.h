@@ -13,6 +13,8 @@
 #define NVRAM_OFFSET(x)   ((x)-NVRAM_FIRST_BYTE)
 
 #ifdef __KERNEL__
+#include <uapi/linux/nvram.h>
+
 /* __foo is foo without grabbing the rtc_lock - get it yourself */
 extern unsigned char __nvram_read_byte(int i);
 extern unsigned char nvram_read_byte(int i);

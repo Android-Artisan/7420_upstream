@@ -17,6 +17,12 @@ KBUILD_CFLAGS           += $(call cc-option,-mno-fdpic)
 KBUILD_AFLAGS           += $(call cc-option,-mno-fdpic)
 CFLAGS_MODULE    += -mlong-calls
 KALLSYMS         += --symbol-prefix=_
+ifeq ($(CONFIG_ROMKERNEL),y)
+KBUILD_CFLAGS           += -mlong-calls
+endif
+KBUILD_AFLAGS           += $(call cc-option,-mno-fdpic)
+KBUILD_CFLAGS_MODULE    += -mlong-calls
+LDFLAGS                 += -m elf32bfin
 
 KBUILD_DEFCONFIG := BF537-STAMP_defconfig
 
@@ -60,6 +66,69 @@ cpu-$(CONFIG_BF547) := bf547
 cpu-$(CONFIG_BF548) := bf548
 cpu-$(CONFIG_BF549) := bf549
 cpu-$(CONFIG_BF561) := bf561
+machine-$(CONFIG_BF512)  := bf518
+machine-$(CONFIG_BF514)  := bf518
+machine-$(CONFIG_BF516)  := bf518
+machine-$(CONFIG_BF518)  := bf518
+machine-$(CONFIG_BF522)  := bf527
+machine-$(CONFIG_BF523)  := bf527
+machine-$(CONFIG_BF524)  := bf527
+machine-$(CONFIG_BF525)  := bf527
+machine-$(CONFIG_BF526)  := bf527
+machine-$(CONFIG_BF527)  := bf527
+machine-$(CONFIG_BF531)  := bf533
+machine-$(CONFIG_BF532)  := bf533
+machine-$(CONFIG_BF533)  := bf533
+machine-$(CONFIG_BF534)  := bf537
+machine-$(CONFIG_BF536)  := bf537
+machine-$(CONFIG_BF537)  := bf537
+machine-$(CONFIG_BF538)  := bf538
+machine-$(CONFIG_BF539)  := bf538
+machine-$(CONFIG_BF542)  := bf548
+machine-$(CONFIG_BF542M) := bf548
+machine-$(CONFIG_BF544)  := bf548
+machine-$(CONFIG_BF544M) := bf548
+machine-$(CONFIG_BF547)  := bf548
+machine-$(CONFIG_BF547M) := bf548
+machine-$(CONFIG_BF548)  := bf548
+machine-$(CONFIG_BF548M) := bf548
+machine-$(CONFIG_BF549)  := bf548
+machine-$(CONFIG_BF549M) := bf548
+machine-$(CONFIG_BF561)  := bf561
+machine-$(CONFIG_BF609)  := bf609
+MACHINE := $(machine-y)
+export MACHINE
+
+cpu-$(CONFIG_BF512)  := bf512
+cpu-$(CONFIG_BF514)  := bf514
+cpu-$(CONFIG_BF516)  := bf516
+cpu-$(CONFIG_BF518)  := bf518
+cpu-$(CONFIG_BF522)  := bf522
+cpu-$(CONFIG_BF523)  := bf523
+cpu-$(CONFIG_BF524)  := bf524
+cpu-$(CONFIG_BF525)  := bf525
+cpu-$(CONFIG_BF526)  := bf526
+cpu-$(CONFIG_BF527)  := bf527
+cpu-$(CONFIG_BF531)  := bf531
+cpu-$(CONFIG_BF532)  := bf532
+cpu-$(CONFIG_BF533)  := bf533
+cpu-$(CONFIG_BF534)  := bf534
+cpu-$(CONFIG_BF536)  := bf536
+cpu-$(CONFIG_BF537)  := bf537
+cpu-$(CONFIG_BF538)  := bf538
+cpu-$(CONFIG_BF539)  := bf539
+cpu-$(CONFIG_BF542)  := bf542
+cpu-$(CONFIG_BF542M) := bf542m
+cpu-$(CONFIG_BF544)  := bf544
+cpu-$(CONFIG_BF544M) := bf544m
+cpu-$(CONFIG_BF547)  := bf547
+cpu-$(CONFIG_BF547M) := bf547m
+cpu-$(CONFIG_BF548)  := bf548
+cpu-$(CONFIG_BF548M) := bf548m
+cpu-$(CONFIG_BF549)  := bf549
+cpu-$(CONFIG_BF549M) := bf549m
+cpu-$(CONFIG_BF561)  := bf561
+cpu-$(CONFIG_BF609)  := bf609
 
 rev-$(CONFIG_BF_REV_0_0)  := 0.0
 rev-$(CONFIG_BF_REV_0_1)  := 0.1
@@ -79,6 +148,19 @@ CHECKFLAGS_SILICON = $(shell echo "" | $(CPP) $(KBUILD_CFLAGS) -dD - 2>/dev/null
 CHECKFLAGS += -D__SILICON_REVISION__=$(CHECKFLAGS_SILICON) -Dl1_text=__used__
 
 head-y   := arch/$(ARCH)/mach-$(MACHINE)/head.o arch/$(ARCH)/kernel/init_task.o
+rev-$(CONFIG_BF_REV_0_6)  := 0.6
+rev-$(CONFIG_BF_REV_NONE) := none
+rev-$(CONFIG_BF_REV_ANY)  := any
+
+CPU_REV := $(cpu-y)-$(rev-y)
+export CPU_REV
+
+KBUILD_CFLAGS += -mcpu=$(CPU_REV)
+KBUILD_AFLAGS += -mcpu=$(CPU_REV)
+
+# - we utilize the silicon rev from the toolchain, so move it over to the checkflags
+CHECKFLAGS_SILICON = $(shell echo "" | $(CPP) $(KBUILD_CFLAGS) -dD - 2>/dev/null | awk '$$2 == "__SILICON_REVISION__" { print $$3 }')
+CHECKFLAGS += -D__SILICON_REVISION__=$(CHECKFLAGS_SILICON) -D__bfin__
 
 core-y   += arch/$(ARCH)/kernel/ arch/$(ARCH)/mm/ arch/$(ARCH)/mach-common/
 
@@ -97,6 +179,10 @@ endif
 libs-y   += arch/$(ARCH)/lib/
 
 drivers-$(CONFIG_OPROFILE) += arch/$(ARCH)/oprofile/
+
+drivers-$(CONFIG_OPROFILE) += arch/$(ARCH)/oprofile/
+
+libs-y   += arch/$(ARCH)/lib/
 
 machdirs	:= $(patsubst %,arch/blackfin/mach-%/, $(machine-y))
 
@@ -119,6 +205,11 @@ PHONY += $(BOOT_TARGETS) install
 KBUILD_IMAGE := $(boot)/vmImage
 
 all: vmImage
+BOOT_TARGETS = uImage uImage.bin uImage.bz2 uImage.gz uImage.lzma uImage.lzo uImage.xip
+PHONY += $(BOOT_TARGETS) install
+KBUILD_IMAGE := $(boot)/uImage
+
+all: uImage
 
 $(BOOT_TARGETS): vmlinux
 	$(Q)$(MAKE) $(build)=$(boot) $(boot)/$@
@@ -131,5 +222,15 @@ define archhelp
   echo  '  install         - Install kernel using'
   echo  '                     (your) ~/bin/$(CROSS_COMPILE)installkernel or'
   echo  '                     (distribution) PATH: $(CROSS_COMPILE)installkernel or'
+  echo  '* vmImage         - Alias to selected kernel format (vmImage.gz by default)'
+  echo  '  vmImage.bin     - Uncompressed Kernel-only image for U-Boot (arch/$(ARCH)/boot/vmImage.bin)'
+  echo  '  vmImage.bz2     - Kernel-only image for U-Boot (arch/$(ARCH)/boot/vmImage.bz2)'
+  echo  '* vmImage.gz      - Kernel-only image for U-Boot (arch/$(ARCH)/boot/vmImage.gz)'
+  echo  '  vmImage.lzma    - Kernel-only image for U-Boot (arch/$(ARCH)/boot/vmImage.lzma)'
+  echo  '  vmImage.lzo     - Kernel-only image for U-Boot (arch/$(ARCH)/boot/vmImage.lzo)'
+  echo  '  vmImage.xip     - XIP Kernel-only image for U-Boot (arch/$(ARCH)/boot/vmImage.xip)'
+  echo  '  install         - Install kernel using'
+  echo  '                     (your) ~/bin/$(INSTALLKERNEL) or'
+  echo  '                     (distribution) PATH: $(INSTALLKERNEL) or'
   echo  '                     install to $$(INSTALL_PATH)'
 endef

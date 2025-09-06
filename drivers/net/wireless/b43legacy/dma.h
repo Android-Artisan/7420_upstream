@@ -6,6 +6,7 @@
 #include <linux/workqueue.h>
 #include <linux/linkage.h>
 #include <asm/atomic.h>
+#include <linux/atomic.h>
 
 #include "b43legacy.h"
 
@@ -73,6 +74,7 @@ struct b43legacy_dmadesc32 {
 	__le32 control;
 	__le32 address;
 } __attribute__((__packed__));
+} __packed;
 #define B43legacy_DMA32_DCTL_BYTECNT		0x00001FFF
 #define B43legacy_DMA32_DCTL_ADDREXT_MASK	0x00030000
 #define B43legacy_DMA32_DCTL_ADDREXT_SHIFT	16
@@ -226,6 +228,12 @@ enum b43legacy_dmatype {
 struct b43legacy_dmaring {
 	/* Lowlevel DMA ops. */
 	const struct b43legacy_dma_ops *ops;
+enum b43legacy_dmatype {
+	B43legacy_DMA_30BIT = 30,
+	B43legacy_DMA_32BIT = 32,
+};
+
+struct b43legacy_dmaring {
 	/* Kernel virtual base address of the ring memory. */
 	void *descbase;
 	/* Meta data about all descriptors. */
@@ -261,6 +269,9 @@ struct b43legacy_dmaring {
 	bool stopped;
 	/* Lock, only used for TX. */
 	spinlock_t lock;
+	/* The QOS priority assigned to this ring. Only used for TX rings.
+	 * This is the mac80211 "queue" value. */
+	u8 queue_prio;
 	struct b43legacy_wldev *dev;
 #ifdef CONFIG_B43LEGACY_DEBUG
 	/* Maximum number of used slots. */

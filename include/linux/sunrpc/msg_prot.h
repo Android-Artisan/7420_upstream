@@ -145,12 +145,29 @@ typedef __be32	rpc_fraghdr;
 #define RPCBIND_NETID_TCP	"tcp"
 #define RPCBIND_NETID_UDP6	"udp6"
 #define RPCBIND_NETID_TCP6	"tcp6"
+#define RPC_MAX_REPHEADER_WITH_AUTH \
+	(RPC_REPHDRSIZE + (2 + RPC_MAX_AUTH_SIZE/4))
+
+/*
+ * Well-known netids. See:
+ *
+ *   http://www.iana.org/assignments/rpc-netids/rpc-netids.xhtml
+ */
+#define RPCBIND_NETID_UDP	"udp"
+#define RPCBIND_NETID_TCP	"tcp"
+#define RPCBIND_NETID_RDMA	"rdma"
+#define RPCBIND_NETID_SCTP	"sctp"
+#define RPCBIND_NETID_UDP6	"udp6"
+#define RPCBIND_NETID_TCP6	"tcp6"
+#define RPCBIND_NETID_RDMA6	"rdma6"
+#define RPCBIND_NETID_SCTP6	"sctp6"
+#define RPCBIND_NETID_LOCAL	"local"
 
 /*
  * Note that RFC 1833 does not put any size restrictions on the
- * netid string, but all currently defined netid's fit in 4 bytes.
+ * netid string, but all currently defined netid's fit in 5 bytes.
  */
-#define RPCBIND_MAXNETIDLEN	(4u)
+#define RPCBIND_MAXNETIDLEN	(5u)
 
 /*
  * Universal addresses are introduced in RFC 1833 and further spelled
@@ -190,6 +207,22 @@ typedef __be32	rpc_fraghdr;
  * [RFC2373] are also acceptable.
  */
 #define RPCBIND_MAXUADDRLEN	(56u)
+
+#include <linux/inet.h>
+
+/* Maximum size of the port number part of a universal address */
+#define RPCBIND_MAXUADDRPLEN	sizeof(".255.255")
+
+/* Maximum size of an IPv4 universal address */
+#define RPCBIND_MAXUADDR4LEN	\
+		(INET_ADDRSTRLEN + RPCBIND_MAXUADDRPLEN)
+
+/* Maximum size of an IPv6 universal address */
+#define RPCBIND_MAXUADDR6LEN	\
+		(INET6_ADDRSTRLEN + RPCBIND_MAXUADDRPLEN)
+
+/* Assume INET6_ADDRSTRLEN will always be larger than INET_ADDRSTRLEN... */
+#define RPCBIND_MAXUADDRLEN	RPCBIND_MAXUADDR6LEN
 
 #endif /* __KERNEL__ */
 #endif /* _LINUX_SUNRPC_MSGPROT_H_ */

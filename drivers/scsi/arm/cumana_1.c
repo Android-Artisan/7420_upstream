@@ -15,6 +15,7 @@
 #include <asm/system.h>
 
 #include "../scsi.h"
+
 #include <scsi/scsi_host.h>
 
 #include <scsi/scsicam.h>
@@ -24,6 +25,8 @@
 
 #define CUMANASCSI_PUBLIC_RELEASE 1
 
+#define PSEUDO_DMA
+
 #define priv(host)			((struct NCR5380_hostdata *)(host)->hostdata)
 #define NCR5380_local_declare()		struct Scsi_Host *_instance
 #define NCR5380_setup(instance)		_instance = instance
@@ -32,6 +35,7 @@
 #define NCR5380_intr			cumanascsi_intr
 #define NCR5380_queue_command		cumanascsi_queue_command
 #define NCR5380_proc_info		cumanascsi_proc_info
+#define NCR5380_info			cumanascsi_info
 
 #define NCR5380_implementation_fields	\
 	unsigned ctrl;			\
@@ -228,6 +232,8 @@ static struct scsi_host_template cumanascsi_template = {
 
 static int __devinit
 cumanascsi1_probe(struct expansion_card *ec, const struct ecard_id *id)
+static int cumanascsi1_probe(struct expansion_card *ec,
+			     const struct ecard_id *id)
 {
 	struct Scsi_Host *host;
 	int ret;
@@ -265,6 +271,7 @@ cumanascsi1_probe(struct expansion_card *ec, const struct ecard_id *id)
 	}
 
 	ret = request_irq(host->irq, cumanascsi_intr, IRQF_DISABLED,
+	ret = request_irq(host->irq, cumanascsi_intr, 0,
 			  "CumanaSCSI-1", host);
 	if (ret) {
 		printk("scsi%d: IRQ%d not free: %d\n",
@@ -300,6 +307,7 @@ cumanascsi1_probe(struct expansion_card *ec, const struct ecard_id *id)
 }
 
 static void __devexit cumanascsi1_remove(struct expansion_card *ec)
+static void cumanascsi1_remove(struct expansion_card *ec)
 {
 	struct Scsi_Host *host = ecard_get_drvdata(ec);
 
@@ -322,6 +330,7 @@ static const struct ecard_id cumanascsi1_cids[] = {
 static struct ecard_driver cumanascsi1_driver = {
 	.probe		= cumanascsi1_probe,
 	.remove		= __devexit_p(cumanascsi1_remove),
+	.remove		= cumanascsi1_remove,
 	.id_table	= cumanascsi1_cids,
 	.drv = {
 		.name		= "cumanascsi1",

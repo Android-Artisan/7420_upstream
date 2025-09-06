@@ -276,8 +276,8 @@ struct smu_cpu_power_sensor {
 	struct list_head	link;
 	struct wf_sensor	*volts;
 	struct wf_sensor	*amps;
-	int			fake_volts : 1;
-	int			quadratic : 1;
+	unsigned int		fake_volts : 1;
+	unsigned int		quadratic : 1;
 	struct wf_sensor	sens;
 };
 #define to_smu_cpu_power(c) container_of(c, struct smu_cpu_power_sensor, sens)
@@ -366,6 +366,9 @@ smu_cpu_power_create(struct wf_sensor *volts, struct wf_sensor *amps)
 	if ((machine_is_compatible("PowerMac8,1") ||
 	     machine_is_compatible("PowerMac8,2") ||
 	     machine_is_compatible("PowerMac9,1")) &&
+	if ((of_machine_is_compatible("PowerMac8,1") ||
+	     of_machine_is_compatible("PowerMac8,2") ||
+	     of_machine_is_compatible("PowerMac9,1")) &&
 	    cpuvcp_version >= 2) {
 		pow->quadratic = 1;
 		DBG("windfarm: CPU Power using quadratic transform\n");

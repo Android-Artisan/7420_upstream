@@ -9,6 +9,9 @@
  *  Copyright (C) 2007-2008 Hewlett-Packard Development Company, L.P.
  *  	Alex Chiang <achiang@hp.com>
  *
+ *  Copyright (C) 2013 Huawei Tech. Co., Ltd.
+ *	Jiang Liu <jiang.liu@huawei.com>
+ *
  *  This program is free software; you can redistribute it and/or modify it
  *  under the terms and conditions of the GNU General Public License,
  *  version 2, as published by the Free Software Foundation.
@@ -33,6 +36,15 @@
 #include <acpi/acpi_drivers.h>
 
 static int debug;
+#include <linux/slab.h>
+#include <linux/types.h>
+#include <linux/list.h>
+#include <linux/pci.h>
+#include <linux/acpi.h>
+#include <linux/dmi.h>
+#include <linux/pci-acpi.h>
+
+static bool debug;
 static int check_sta_before_sun;
 
 #define DRIVER_VERSION 	"0.1"
@@ -61,6 +73,17 @@ ACPI_MODULE_NAME("pci_slot");
 
 struct acpi_pci_slot {
 	acpi_handle root_handle;	/* handle of the root bridge */
+#define err(format, arg...) pr_err("%s: " format , MY_NAME , ## arg)
+#define info(format, arg...) pr_info("%s: " format , MY_NAME , ## arg)
+#define dbg(format, arg...)					\
+	do {							\
+		if (debug)					\
+			pr_debug("%s: " format,	MY_NAME , ## arg); \
+	} while (0)
+
+#define SLOT_NAME_SIZE 21		/* Inspired by #define in acpiphp.h */
+
+struct acpi_pci_slot {
 	struct pci_slot *pci_slot;	/* corresponding pci_slot */
 	struct list_head list;		/* node in the list of slots */
 };
@@ -80,6 +103,14 @@ check_slot(acpi_handle handle, unsigned long *sun)
 {
 	int device = -1;
 	unsigned long adr, sta;
+static LIST_HEAD(slot_list);
+static DEFINE_MUTEX(slot_list_lock);
+
+static int
+check_slot(acpi_handle handle, unsigned long long *sun)
+{
+	int device = -1;
+	unsigned long long adr, sta;
 	acpi_status status;
 	struct acpi_buffer buffer = { ACPI_ALLOCATE_BUFFER, NULL };
 
@@ -127,6 +158,8 @@ struct callback_args {
  *
  * The number of calls to pci_destroy_slot from unregister_slot is
  * symmetrical.
+/*
+ * Check whether handle has an associated slot and create PCI slot if it has.
  */
 static acpi_status
 register_slot(acpi_handle handle, u32 lvl, void *context, void **rv)
@@ -138,10 +171,25 @@ register_slot(acpi_handle handle, u32 lvl, void *context, void **rv)
 	struct pci_slot *pci_slot;
 	struct callback_args *parent_context = context;
 	struct pci_bus *pci_bus = parent_context->pci_bus;
+	unsigned long long sun;
+	char name[SLOT_NAME_SIZE];
+	struct acpi_pci_slot *slot;
+	struct pci_slot *pci_slot;
+	struct pci_bus *pci_bus = context;
 
 	device = check_slot(handle, &sun);
 	if (device < 0)
 		return AE_OK;
+
+	/*
+	 * There may be multiple PCI functions associated with the same slot.
+	 * Check whether PCI slot has already been created for this PCI device.
+	 */
+	list_for_each_entry(slot, &slot_list, list) {
+		pci_slot = slot->pci_slot;
+		if (pci_slot->bus == pci_bus && pci_slot->number == device)
+			return AE_OK;
+	}
 
 	slot = kmalloc(sizeof(*slot), GFP_KERNEL);
 	if (!slot) {
@@ -151,6 +199,8 @@ register_slot(acpi_handle handle, u32 lvl, void *context, void **rv)
 
 	snprintf(name, sizeof(name), "%u", (u32)sun);
 	pci_slot = pci_create_slot(pci_bus, device, name);
+	snprintf(name, sizeof(name), "%llu", sun);
+	pci_slot = pci_create_slot(pci_bus, device, name, NULL);
 	if (IS_ERR(pci_slot)) {
 		err("pci_create_slot returned %ld\n", PTR_ERR(pci_slot));
 		kfree(slot);
@@ -163,6 +213,10 @@ register_slot(acpi_handle handle, u32 lvl, void *context, void **rv)
 	mutex_lock(&slot_list_lock);
 	list_add(&slot->list, &slot_list);
 	mutex_unlock(&slot_list_lock);
+	slot->pci_slot = pci_slot;
+	list_add(&slot->list, &slot_list);
+
+	get_device(&pci_bus->dev);
 
 	dbg("pci_slot: %p, pci_bus: %x, device: %d, name: %s\n",
 		pci_slot, pci_bus->number, device, name);
@@ -308,6 +362,19 @@ acpi_pci_slot_add(acpi_handle handle)
  */
 static void
 acpi_pci_slot_remove(acpi_handle handle)
+void acpi_pci_slot_enumerate(struct pci_bus *bus)
+{
+	acpi_handle handle = ACPI_HANDLE(bus->bridge);
+
+	if (handle) {
+		mutex_lock(&slot_list_lock);
+		acpi_walk_namespace(ACPI_TYPE_DEVICE, handle, 1,
+				    register_slot, NULL, bus, NULL);
+		mutex_unlock(&slot_list_lock);
+	}
+}
+
+void acpi_pci_slot_remove(struct pci_bus *bus)
 {
 	struct acpi_pci_slot *slot, *tmp;
 
@@ -316,6 +383,10 @@ acpi_pci_slot_remove(acpi_handle handle)
 		if (slot->root_handle == handle) {
 			list_del(&slot->list);
 			pci_destroy_slot(slot->pci_slot);
+		if (slot->pci_slot->bus == bus) {
+			list_del(&slot->list);
+			pci_destroy_slot(slot->pci_slot);
+			put_device(&bus->dev);
 			kfree(slot);
 		}
 	}
@@ -363,3 +434,7 @@ acpi_pci_slot_exit(void)
 
 module_init(acpi_pci_slot_init);
 module_exit(acpi_pci_slot_exit);
+void __init acpi_pci_slot_init(void)
+{
+	dmi_check_system(acpi_pci_slot_dmi_table);
+}

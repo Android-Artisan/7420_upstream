@@ -26,6 +26,9 @@
  * along with this program; see the file COPYING.
  * If not, write to the Free Software Foundation,
  * 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+ * Copyright 2007-2010 Analog Devices Inc.
+ *
+ * Licensed under the GPL-2 or later.
  */
 
 #ifndef _CDEF_BF54X_H
@@ -100,6 +103,9 @@ static __inline__ void bfin_write_VR_CTL(unsigned int val)
 	bfin_write32(SIC_IWR2, iwr2);
 	local_irq_restore(flags);
 }
+#define bfin_read_PLL_DIV()		bfin_read16(PLL_DIV)
+#define bfin_write_PLL_DIV(val)		bfin_write16(PLL_DIV, val)
+#define bfin_read_VR_CTL()		bfin_read16(VR_CTL)
 #define bfin_read_PLL_STAT()		bfin_read16(PLL_STAT)
 #define bfin_write_PLL_STAT(val)	bfin_write16(PLL_STAT, val)
 #define bfin_read_PLL_LOCKCNT()		bfin_read16(PLL_LOCKCNT)
@@ -119,6 +125,8 @@ static __inline__ void bfin_write_VR_CTL(unsigned int val)
 
 /* SIC Registers */
 
+#define bfin_read_SIC_RVECT()		bfin_read32(SIC_RVECT)
+#define bfin_write_SIC_RVECT(val)	bfin_write32(SIC_RVECT, val)
 #define bfin_read_SIC_IMASK0()		bfin_read32(SIC_IMASK0)
 #define bfin_write_SIC_IMASK0(val)	bfin_write32(SIC_IMASK0, val)
 #define bfin_read_SIC_IMASK1()		bfin_read32(SIC_IMASK1)
@@ -384,6 +392,10 @@ static __inline__ void bfin_write_VR_CTL(unsigned int val)
 #define bfin_write_DMAC0_TCPER(val)	bfin_write16(DMAC0_TCPER, val)
 #define bfin_read_DMAC0_TCCNT()		bfin_read16(DMAC0_TCCNT)
 #define bfin_write_DMAC0_TCCNT(val)	bfin_write16(DMAC0_TCCNT, val)
+#define bfin_read_DMAC0_TC_PER()		bfin_read16(DMAC0_TC_PER)
+#define bfin_write_DMAC0_TC_PER(val)	bfin_write16(DMAC0_TC_PER, val)
+#define bfin_read_DMAC0_TC_CNT()		bfin_read16(DMAC0_TC_CNT)
+#define bfin_write_DMAC0_TC_CNT(val)	bfin_write16(DMAC0_TC_CNT, val)
 
 /* DMA Channel 0 Registers */
 
@@ -1238,6 +1250,10 @@ static __inline__ void bfin_write_VR_CTL(unsigned int val)
 #define bfin_write_DMAC1_TCPER(val)		bfin_write16(DMAC1_TCPER, val)
 #define bfin_read_DMAC1_TCCNT()			bfin_read16(DMAC1_TCCNT)
 #define bfin_write_DMAC1_TCCNT(val)		bfin_write16(DMAC1_TCCNT, val)
+#define bfin_read_DMAC1_TC_PER()			bfin_read16(DMAC1_TC_PER)
+#define bfin_write_DMAC1_TC_PER(val)		bfin_write16(DMAC1_TC_PER, val)
+#define bfin_read_DMAC1_TC_CNT()			bfin_read16(DMAC1_TC_CNT)
+#define bfin_write_DMAC1_TC_CNT(val)		bfin_write16(DMAC1_TC_CNT, val)
 
 /* DMA Channel 12 Registers */
 
@@ -2745,6 +2761,8 @@ static __inline__ void bfin_write_VR_CTL(unsigned int val)
 #define bfin_write_PINT2_IRQ		bfin_write_PINT2_REQUEST
 #define bfin_read_PINT3_IRQ		bfin_read_PINT3_REQUEST
 #define bfin_write_PINT3_IRQ		bfin_write_PINT3_REQUEST
+
+/* Handshake MDMA is not defined in the shared file because it is not available on the ADSP-BF542 bfin_read_()rocessor */
 
 #endif /* _CDEF_BF54X_H */
 

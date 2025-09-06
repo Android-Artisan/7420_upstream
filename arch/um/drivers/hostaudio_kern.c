@@ -11,6 +11,15 @@
 #include "asm/uaccess.h"
 #include "init.h"
 #include "os.h"
+#include <linux/fs.h>
+#include <linux/module.h>
+#include <linux/slab.h>
+#include <linux/sound.h>
+#include <linux/soundcard.h>
+#include <linux/mutex.h>
+#include <asm/uaccess.h>
+#include <init.h>
+#include <os.h>
 
 struct hostaudio_state {
 	int fd;
@@ -39,6 +48,11 @@ static char *mixer = HOSTAUDIO_DEV_MIXER;
 "    This is used to specify the host mixer device to the hostaudio driver.\n"\
 "    The default is \"" HOSTAUDIO_DEV_MIXER "\".\n\n"
 
+module_param(dsp, charp, 0644);
+MODULE_PARM_DESC(dsp, DSP_HELP);
+module_param(mixer, charp, 0644);
+MODULE_PARM_DESC(mixer, MIXER_HELP);
+
 #ifndef MODULE
 static int set_dsp(char *name, int *add)
 {
@@ -65,6 +79,10 @@ module_param(mixer, charp, 0644);
 MODULE_PARM_DESC(mixer, MIXER_HELP);
 
 #endif
+
+#endif
+
+static DEFINE_MUTEX(hostaudio_mutex);
 
 /* /dev/dsp file operations */
 
@@ -137,6 +155,7 @@ static unsigned int hostaudio_poll(struct file *file,
 }
 
 static int hostaudio_ioctl(struct inode *inode, struct file *file,
+static long hostaudio_ioctl(struct file *file,
 			   unsigned int cmd, unsigned long arg)
 {
 	struct hostaudio_state *state = file->private_data;
@@ -187,6 +206,9 @@ static int hostaudio_open(struct inode *inode, struct file *file)
 
 #ifdef DEBUG
 	printk(KERN_DEBUG "hostaudio: open called (host: %s)\n", dsp);
+	kernel_param_lock(THIS_MODULE);
+	printk(KERN_DEBUG "hostaudio: open called (host: %s)\n", dsp);
+	kernel_param_unlock(THIS_MODULE);
 #endif
 
 	state = kmalloc(sizeof(struct hostaudio_state), GFP_KERNEL);
@@ -199,6 +221,12 @@ static int hostaudio_open(struct inode *inode, struct file *file)
 		w = 1;
 
 	ret = os_open_file(dsp, of_set_rw(OPENFLAGS(), r, w), 0);
+	kernel_param_lock(THIS_MODULE);
+	mutex_lock(&hostaudio_mutex);
+	ret = os_open_file(dsp, of_set_rw(OPENFLAGS(), r, w), 0);
+	mutex_unlock(&hostaudio_mutex);
+	kernel_param_unlock(THIS_MODULE);
+
 	if (ret < 0) {
 		kfree(state);
 		return ret;
@@ -224,6 +252,7 @@ static int hostaudio_release(struct inode *inode, struct file *file)
 /* /dev/mixer file operations */
 
 static int hostmixer_ioctl_mixdev(struct inode *inode, struct file *file,
+static long hostmixer_ioctl_mixdev(struct file *file,
 				  unsigned int cmd, unsigned long arg)
 {
 	struct hostmixer_state *state = file->private_data;
@@ -259,6 +288,17 @@ static int hostmixer_open_mixdev(struct inode *inode, struct file *file)
 	if (ret < 0) {
 		printk(KERN_ERR "hostaudio_open_mixdev failed to open '%s', "
 		       "err = %d\n", dsp, -ret);
+	kernel_param_lock(THIS_MODULE);
+	mutex_lock(&hostaudio_mutex);
+	ret = os_open_file(mixer, of_set_rw(OPENFLAGS(), r, w), 0);
+	mutex_unlock(&hostaudio_mutex);
+	kernel_param_unlock(THIS_MODULE);
+
+	if (ret < 0) {
+		kernel_param_lock(THIS_MODULE);
+		printk(KERN_ERR "hostaudio_open_mixdev failed to open '%s', "
+		       "err = %d\n", dsp, -ret);
+		kernel_param_unlock(THIS_MODULE);
 		kfree(state);
 		return ret;
 	}
@@ -290,6 +330,7 @@ static const struct file_operations hostaudio_fops = {
 	.write          = hostaudio_write,
 	.poll           = hostaudio_poll,
 	.ioctl          = hostaudio_ioctl,
+	.unlocked_ioctl	= hostaudio_ioctl,
 	.mmap           = NULL,
 	.open           = hostaudio_open,
 	.release        = hostaudio_release,
@@ -299,6 +340,7 @@ static const struct file_operations hostmixer_fops = {
 	.owner          = THIS_MODULE,
 	.llseek         = no_llseek,
 	.ioctl          = hostmixer_ioctl_mixdev,
+	.unlocked_ioctl	= hostmixer_ioctl_mixdev,
 	.open           = hostmixer_open_mixdev,
 	.release        = hostmixer_release,
 };
@@ -316,6 +358,10 @@ static int __init hostaudio_init_module(void)
 {
 	printk(KERN_INFO "UML Audio Relay (host dsp = %s, host mixer = %s)\n",
 	       dsp, mixer);
+	kernel_param_lock(THIS_MODULE);
+	printk(KERN_INFO "UML Audio Relay (host dsp = %s, host mixer = %s)\n",
+	       dsp, mixer);
+	kernel_param_unlock(THIS_MODULE);
 
 	module_data.dev_audio = register_sound_dsp(&hostaudio_fops, -1);
 	if (module_data.dev_audio < 0) {

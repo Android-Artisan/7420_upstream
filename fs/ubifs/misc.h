@@ -39,6 +39,29 @@ static inline int ubifs_zn_dirty(const struct ubifs_znode *znode)
 }
 
 /**
+ * ubifs_zn_obsolete - check if znode is obsolete.
+ * @znode: znode to check
+ *
+ * This helper function returns %1 if @znode is obsolete and %0 otherwise.
+ */
+static inline int ubifs_zn_obsolete(const struct ubifs_znode *znode)
+{
+	return !!test_bit(OBSOLETE_ZNODE, &znode->flags);
+}
+
+/**
+ * ubifs_zn_cow - check if znode has to be copied on write.
+ * @znode: znode to check
+ *
+ * This helper function returns %1 if @znode is has COW flag set and %0
+ * otherwise.
+ */
+static inline int ubifs_zn_cow(const struct ubifs_znode *znode)
+{
+	return !!test_bit(COW_ZNODE, &znode->flags);
+}
+
+/**
  * ubifs_wake_up_bgt - wake up background thread.
  * @c: UBIFS file-system description object
  */
@@ -216,6 +239,8 @@ static inline int ubifs_encode_dev(union ubifs_dev_desc *dev, dev_t rdev)
 		dev->huge = cpu_to_le64(huge_encode_dev(rdev));
 		return sizeof(dev->huge);
 	}
+	dev->new = cpu_to_le32(new_encode_dev(rdev));
+	return sizeof(dev->new);
 }
 
 /**
@@ -308,6 +333,50 @@ static inline int ubifs_tnc_lookup(struct ubifs_info *c,
 				   const union ubifs_key *key, void *node)
 {
 	return ubifs_tnc_locate(c, key, node, NULL, NULL);
+}
+
+/**
+ * ubifs_get_lprops - get reference to LEB properties.
+ * @c: the UBIFS file-system description object
+ *
+ * This function locks lprops. Lprops have to be unlocked by
+ * 'ubifs_release_lprops()'.
+ */
+static inline void ubifs_get_lprops(struct ubifs_info *c)
+{
+	mutex_lock(&c->lp_mutex);
+}
+
+/**
+ * ubifs_release_lprops - release lprops lock.
+ * @c: the UBIFS file-system description object
+ *
+ * This function has to be called after each 'ubifs_get_lprops()' call to
+ * unlock lprops.
+ */
+static inline void ubifs_release_lprops(struct ubifs_info *c)
+{
+	ubifs_assert(mutex_is_locked(&c->lp_mutex));
+	ubifs_assert(c->lst.empty_lebs >= 0 &&
+		     c->lst.empty_lebs <= c->main_lebs);
+	mutex_unlock(&c->lp_mutex);
+}
+
+/**
+ * ubifs_next_log_lnum - switch to the next log LEB.
+ * @c: UBIFS file-system description object
+ * @lnum: current log LEB
+ *
+ * This helper function returns the log LEB number which goes next after LEB
+ * 'lnum'.
+ */
+static inline int ubifs_next_log_lnum(const struct ubifs_info *c, int lnum)
+{
+	lnum += 1;
+	if (lnum > c->log_last)
+		lnum = UBIFS_LOG_LNUM;
+
+	return lnum;
 }
 
 #endif /* __UBIFS_MISC_H__ */

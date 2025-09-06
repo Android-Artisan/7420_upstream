@@ -12,4 +12,12 @@ struct dev_archdata {
 #endif
 };
 
+#ifdef CONFIG_INTEL_IOMMU
+	void *iommu; /* hook for IOMMU specific extension */
+#endif
+};
+
+struct pdev_archdata {
+};
+
 #endif /* _ASM_IA64_DEVICE_H */

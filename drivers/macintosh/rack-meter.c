@@ -18,12 +18,15 @@
 
 #include <linux/types.h>
 #include <linux/kernel.h>
+#include <linux/slab.h>
 #include <linux/device.h>
 #include <linux/interrupt.h>
 #include <linux/module.h>
 #include <linux/pci.h>
 #include <linux/dma-mapping.h>
 #include <linux/kernel_stat.h>
+#include <linux/of_address.h>
+#include <linux/of_irq.h>
 
 #include <asm/io.h>
 #include <asm/prom.h>
@@ -87,6 +90,13 @@ static inline cputime64_t get_cpu_idle_time(unsigned int cpu)
 
 	if (rackmeter_ignore_nice)
 		retval = cputime64_add(retval, kstat_cpu(cpu).cpustat.nice);
+	u64 retval;
+
+	retval = kcpustat_cpu(cpu).cpustat[CPUTIME_IDLE] +
+		 kcpustat_cpu(cpu).cpustat[CPUTIME_IOWAIT];
+
+	if (rackmeter_ignore_nice)
+		retval += kcpustat_cpu(cpu).cpustat[CPUTIME_NICE];
 
 	return retval;
 }
@@ -204,6 +214,31 @@ static void rackmeter_setup_dbdma(struct rackmeter *rm)
 	st_le32(&cmd->phy_addr, rm->dma_buf_p +
 		offsetof(struct rackmeter_dma, buf2));
 	st_le32(&cmd->cmd_dep, rm->dma_buf_p);
+	cmd->req_count = cpu_to_le16(4);
+	cmd->command = cpu_to_le16(STORE_WORD | INTR_ALWAYS | KEY_SYSTEM);
+	cmd->phy_addr = cpu_to_le32(rm->dma_buf_p +
+		offsetof(struct rackmeter_dma, mark));
+	cmd->cmd_dep = cpu_to_le32(0x02000000);
+	cmd++;
+
+	cmd->req_count = cpu_to_le16(SAMPLE_COUNT * 4);
+	cmd->command = cpu_to_le16(OUTPUT_MORE);
+	cmd->phy_addr = cpu_to_le32(rm->dma_buf_p +
+		offsetof(struct rackmeter_dma, buf1));
+	cmd++;
+
+	cmd->req_count = cpu_to_le16(4);
+	cmd->command = cpu_to_le16(STORE_WORD | INTR_ALWAYS | KEY_SYSTEM);
+	cmd->phy_addr = cpu_to_le32(rm->dma_buf_p +
+		offsetof(struct rackmeter_dma, mark));
+	cmd->cmd_dep = cpu_to_le32(0x01000000);
+	cmd++;
+
+	cmd->req_count = cpu_to_le16(SAMPLE_COUNT * 4);
+	cmd->command = cpu_to_le16(OUTPUT_MORE | BR_ALWAYS);
+	cmd->phy_addr = cpu_to_le32(rm->dma_buf_p +
+		offsetof(struct rackmeter_dma, buf2));
+	cmd->cmd_dep = cpu_to_le32(rm->dma_buf_p);
 
 	rackmeter_do_pause(rm, 0);
 }
@@ -226,6 +261,11 @@ static void rackmeter_do_timer(struct work_struct *work)
 	total_idle_ticks = get_cpu_idle_time(cpu);
 	idle_ticks = (unsigned int) cputime64_sub(total_idle_ticks,
 				rcpu->prev_idle);
+	total_ticks = (unsigned int) (cur_jiffies - rcpu->prev_wall);
+	rcpu->prev_wall = cur_jiffies;
+
+	total_idle_ticks = get_cpu_idle_time(cpu);
+	idle_ticks = (unsigned int) (total_idle_ticks - rcpu->prev_idle);
 	rcpu->prev_idle = total_idle_ticks;
 
 	/* We do a very dumb calculation to update the LEDs for now,
@@ -255,6 +295,7 @@ static void rackmeter_do_timer(struct work_struct *work)
 }
 
 static void __devinit rackmeter_init_cpu_sniffer(struct rackmeter *rm)
+static void rackmeter_init_cpu_sniffer(struct rackmeter *rm)
 {
 	unsigned int cpu;
 
@@ -275,6 +316,7 @@ static void __devinit rackmeter_init_cpu_sniffer(struct rackmeter *rm)
 		if (cpu > 1)
 			continue;
 		rcpu = &rm->cpu[cpu];;
+		rcpu = &rm->cpu[cpu];
 		rcpu->prev_idle = get_cpu_idle_time(cpu);
 		rcpu->prev_wall = jiffies64_to_cputime64(get_jiffies_64());
 		schedule_delayed_work_on(cpu, &rm->cpu[cpu].sniffer,
@@ -286,6 +328,10 @@ static void __devexit rackmeter_stop_cpu_sniffer(struct rackmeter *rm)
 {
 	cancel_rearming_delayed_work(&rm->cpu[0].sniffer);
 	cancel_rearming_delayed_work(&rm->cpu[1].sniffer);
+static void rackmeter_stop_cpu_sniffer(struct rackmeter *rm)
+{
+	cancel_delayed_work_sync(&rm->cpu[0].sniffer);
+	cancel_delayed_work_sync(&rm->cpu[1].sniffer);
 }
 
 static int rackmeter_setup(struct rackmeter *rm)
@@ -365,6 +411,8 @@ static irqreturn_t rackmeter_irq(int irq, void *arg)
 
 static int __devinit rackmeter_probe(struct macio_dev* mdev,
 				     const struct of_device_id *match)
+static int rackmeter_probe(struct macio_dev* mdev,
+			   const struct of_device_id *match)
 {
 	struct device_node *i2s = NULL, *np = NULL;
 	struct rackmeter *rm = NULL;
@@ -375,6 +423,7 @@ static int __devinit rackmeter_probe(struct macio_dev* mdev,
 
 	/* Get i2s-a node */
 	while ((i2s = of_get_next_child(mdev->ofdev.node, i2s)) != NULL)
+	while ((i2s = of_get_next_child(mdev->ofdev.dev.of_node, i2s)) != NULL)
 	       if (strcmp(i2s->name, "i2s-a") == 0)
 		       break;
 	if (i2s == NULL) {
@@ -431,6 +480,7 @@ static int __devinit rackmeter_probe(struct macio_dev* mdev,
 		printk(KERN_ERR
 		       "rackmeter: found match but lacks resources: %s",
 		       mdev->ofdev.node->full_name);
+		       mdev->ofdev.dev.of_node->full_name);
 		rc = -ENXIO;
 		goto bail_free;
 	}
@@ -523,6 +573,7 @@ static int __devinit rackmeter_probe(struct macio_dev* mdev,
 }
 
 static int __devexit rackmeter_remove(struct macio_dev* mdev)
+static int rackmeter_remove(struct macio_dev* mdev)
 {
 	struct rackmeter *rm = dev_get_drvdata(&mdev->ofdev.dev);
 
@@ -586,6 +637,12 @@ static struct macio_driver rackmeter_drv = {
 	.name = "rackmeter",
 	.owner = THIS_MODULE,
 	.match_table = rackmeter_match,
+static struct macio_driver rackmeter_driver = {
+	.driver = {
+		.name = "rackmeter",
+		.owner = THIS_MODULE,
+		.of_match_table = rackmeter_match,
+	},
 	.probe = rackmeter_probe,
 	.remove = rackmeter_remove,
 	.shutdown = rackmeter_shutdown,
@@ -597,6 +654,7 @@ static int __init rackmeter_init(void)
 	pr_debug("rackmeter_init()\n");
 
 	return macio_register_driver(&rackmeter_drv);
+	return macio_register_driver(&rackmeter_driver);
 }
 
 static void __exit rackmeter_exit(void)
@@ -604,6 +662,7 @@ static void __exit rackmeter_exit(void)
 	pr_debug("rackmeter_exit()\n");
 
 	macio_unregister_driver(&rackmeter_drv);
+	macio_unregister_driver(&rackmeter_driver);
 }
 
 module_init(rackmeter_init);

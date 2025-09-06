@@ -1,6 +1,5 @@
 
                 Adding a new board to LinuxSH
-               ================================
 
                Paul Mundt <lethal@linux-sh.org>
 
@@ -10,7 +9,6 @@ also attempts to outline some of the noticeable changes between the 2.4
 and the 2.5/2.6 SH backend.
 
 1. New Directory Structure
-==========================
 
 The first thing to note is the new directory structure. Under 2.4, most
 of the board-specific code (with the exception of stboards) ended up
@@ -50,6 +48,7 @@ Next, for companion chips:
                 |-- hd64461
                 |   `-- cchip-specific files
                 `-- hd64465
+                `-- hd64461
                     `-- cchip-specific files
 
 ... and so on. Headers for the companion chips are treated the same way as
@@ -85,7 +84,6 @@ It should be noted that CPU subtypes are _not_ abstracted. Thus, these still
 need to be dealt with by the CPU family specific code.
 
 2. Adding a New Board
-=====================
 
 The first thing to determine is whether the board you are adding will be
 isolated, or whether it will be part of a family of boards that can mostly
@@ -202,7 +200,6 @@ sufficient.
    the machine specific io functions (if there are enough to warrant it).
 
 3. Hooking into the Build System
-================================
 
 Now that we have the corresponding directories setup, and all of the
 board-specific code is in place, it's time to look at how to get the

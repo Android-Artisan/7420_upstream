@@ -4,10 +4,12 @@
 #include <linux/cdrom.h>
 #include <linux/compat.h>
 #include <linux/elevator.h>
-#include <linux/fd.h>
 #include <linux/hdreg.h>
 #include <linux/syscalls.h>
 #include <linux/smp_lock.h>
+#include <linux/pr.h>
+#include <linux/slab.h>
+#include <linux/syscalls.h>
 #include <linux/types.h>
 #include <linux/uaccess.h>
 
@@ -19,6 +21,11 @@ static int compat_put_ushort(unsigned long arg, unsigned short val)
 static int compat_put_int(unsigned long arg, int val)
 {
 	return put_user(val, (compat_int_t __user *)compat_ptr(arg));
+}
+
+static int compat_put_uint(unsigned long arg, unsigned int val)
+{
+	return put_user(val, (compat_uint_t __user *)compat_ptr(arg));
 }
 
 static int compat_put_long(unsigned long arg, long val)
@@ -54,6 +61,7 @@ static int compat_hdio_getgeo(struct gendisk *disk, struct block_device *bdev,
 	if (!disk->fops->getgeo)
 		return -ENOTTY;
 
+	memset(&geo, 0, sizeof(geo));
 	/*
 	 * We need to set the startsect first, the driver may
 	 * want to override it.
@@ -65,6 +73,7 @@ static int compat_hdio_getgeo(struct gendisk *disk, struct block_device *bdev,
 
 	ret = copy_to_user(ugeo, &geo, 4);
 	ret |= __put_user(geo.start, &ugeo->start);
+	ret |= put_user(geo.start, &ugeo->start);
 	if (ret)
 		ret = -EFAULT;
 
@@ -73,6 +82,8 @@ static int compat_hdio_getgeo(struct gendisk *disk, struct block_device *bdev,
 
 static int compat_hdio_ioctl(struct inode *inode, struct file *file,
 		struct gendisk *disk, unsigned int cmd, unsigned long arg)
+static int compat_hdio_ioctl(struct block_device *bdev, fmode_t mode,
+		unsigned int cmd, unsigned long arg)
 {
 	mm_segment_t old_fs = get_fs();
 	unsigned long kval;
@@ -81,6 +92,7 @@ static int compat_hdio_ioctl(struct inode *inode, struct file *file,
 
 	set_fs(KERNEL_DS);
 	error = blkdev_driver_ioctl(inode, file, disk,
+	error = __blkdev_driver_ioctl(bdev, mode,
 				cmd, (unsigned long)(&kval));
 	set_fs(old_fs);
 
@@ -113,6 +125,8 @@ struct compat_cdrom_generic_command {
 
 static int compat_cdrom_read_audio(struct inode *inode, struct file *file,
 		struct gendisk *disk, unsigned int cmd, unsigned long arg)
+static int compat_cdrom_read_audio(struct block_device *bdev, fmode_t mode,
+		unsigned int cmd, unsigned long arg)
 {
 	struct cdrom_read_audio __user *cdread_audio;
 	struct compat_cdrom_read_audio __user *cdread_audio32;
@@ -140,6 +154,12 @@ static int compat_cdrom_read_audio(struct inode *inode, struct file *file,
 
 static int compat_cdrom_generic_command(struct inode *inode, struct file *file,
 		struct gendisk *disk, unsigned int cmd, unsigned long arg)
+	return __blkdev_driver_ioctl(bdev, mode, cmd,
+			(unsigned long)cdread_audio);
+}
+
+static int compat_cdrom_generic_command(struct block_device *bdev, fmode_t mode,
+		unsigned int cmd, unsigned long arg)
 {
 	struct cdrom_generic_command __user *cgc;
 	struct compat_cdrom_generic_command __user *cgc32;
@@ -168,6 +188,7 @@ static int compat_cdrom_generic_command(struct inode *inode, struct file *file,
 		return -EFAULT;
 
 	return blkdev_driver_ioctl(inode, file, disk, cmd, (unsigned long)cgc);
+	return __blkdev_driver_ioctl(bdev, mode, cmd, (unsigned long)cgc);
 }
 
 struct compat_blkpg_ioctl_arg {
@@ -178,6 +199,7 @@ struct compat_blkpg_ioctl_arg {
 };
 
 static int compat_blkpg_ioctl(struct inode *inode, struct file *file,
+static int compat_blkpg_ioctl(struct block_device *bdev, fmode_t mode,
 		unsigned int cmd, struct compat_blkpg_ioctl_arg __user *ua32)
 {
 	struct blkpg_ioctl_arg __user *a = compat_alloc_user_space(sizeof(*a));
@@ -197,6 +219,7 @@ static int compat_blkpg_ioctl(struct inode *inode, struct file *file,
 		return err;
 
 	return blkdev_ioctl(inode, file, cmd, (unsigned long)a);
+	return blkdev_ioctl(bdev, mode, cmd, (unsigned long)a);
 }
 
 #define BLKBSZGET_32		_IOR(0x12, 112, int)
@@ -310,6 +333,8 @@ static struct {
 
 static int compat_fd_ioctl(struct inode *inode, struct file *file,
 		struct gendisk *disk, unsigned int cmd, unsigned long arg)
+static int compat_fd_ioctl(struct block_device *bdev, fmode_t mode,
+		unsigned int cmd, unsigned long arg)
 {
 	mm_segment_t old_fs = get_fs();
 	void *karg = NULL;
@@ -414,6 +439,7 @@ static int compat_fd_ioctl(struct inode *inode, struct file *file,
 	}
 	set_fs(KERNEL_DS);
 	err = blkdev_driver_ioctl(inode, file, disk, kcmd, (unsigned long)karg);
+	err = __blkdev_driver_ioctl(bdev, mode, kcmd, (unsigned long)karg);
 	set_fs(old_fs);
 	if (err)
 		goto out;
@@ -584,6 +610,9 @@ static int compat_blkdev_driver_ioctl(struct inode *inode, struct file *file,
 {
 	int ret;
 
+static int compat_blkdev_driver_ioctl(struct block_device *bdev, fmode_t mode,
+			unsigned cmd, unsigned long arg)
+{
 	switch (cmd) {
 	case HDIO_GET_UNMASKINTR:
 	case HDIO_GET_MULTCOUNT:
@@ -597,6 +626,7 @@ static int compat_blkdev_driver_ioctl(struct inode *inode, struct file *file,
 	case HDIO_GET_ADDRESS:
 	case HDIO_GET_BUSSTATE:
 		return compat_hdio_ioctl(inode, file, disk, cmd, arg);
+		return compat_hdio_ioctl(bdev, mode, cmd, arg);
 	case FDSETPRM32:
 	case FDDEFPRM32:
 	case FDGETPRM32:
@@ -611,6 +641,11 @@ static int compat_blkdev_driver_ioctl(struct inode *inode, struct file *file,
 		return compat_cdrom_read_audio(inode, file, disk, cmd, arg);
 	case CDROM_SEND_PACKET:
 		return compat_cdrom_generic_command(inode, file, disk, cmd, arg);
+		return compat_fd_ioctl(bdev, mode, cmd, arg);
+	case CDROMREADAUDIO:
+		return compat_cdrom_read_audio(bdev, mode, cmd, arg);
+	case CDROM_SEND_PACKET:
+		return compat_cdrom_generic_command(bdev, mode, cmd, arg);
 
 	/*
 	 * No handler required for the ones below, we just need to
@@ -626,23 +661,6 @@ static int compat_blkdev_driver_ioctl(struct inode *inode, struct file *file,
 	case HDIO_DRIVE_CMD:
 	/* 0x330 is reserved -- it used to be HDIO_GETGEO_BIG */
 	case 0x330:
-	/* 0x02 -- Floppy ioctls */
-	case FDMSGON:
-	case FDMSGOFF:
-	case FDSETEMSGTRESH:
-	case FDFLUSH:
-	case FDWERRORCLR:
-	case FDSETMAXERRS:
-	case FDGETMAXERRS:
-	case FDGETDRVTYP:
-	case FDEJECT:
-	case FDCLRPRM:
-	case FDFMTBEG:
-	case FDFMTEND:
-	case FDRESET:
-	case FDTWADDLE:
-	case FDFMTTRK:
-	case FDRAWCMD:
 	/* CDROM stuff */
 	case CDROMPAUSE:
 	case CDROMRESUME:
@@ -771,6 +789,7 @@ static int compat_blkdev_locked_ioctl(struct inode *inode, struct file *file,
 		return blk_trace_ioctl(bdev, cmd, compat_ptr(arg));
 	}
 	return -ENOIOCTLCMD;
+	return __blkdev_driver_ioctl(bdev, mode, cmd, arg);
 }
 
 /* Most of the generic ioctls are handled in the normal fallback path.
@@ -782,12 +801,40 @@ long compat_blkdev_ioctl(struct file *file, unsigned cmd, unsigned long arg)
 	struct inode *inode = file->f_mapping->host;
 	struct block_device *bdev = inode->i_bdev;
 	struct gendisk *disk = bdev->bd_disk;
+	fmode_t mode = file->f_mode;
+	struct backing_dev_info *bdi;
+	loff_t size;
+	unsigned int max_sectors;
+
+	/*
+	 * O_NDELAY can be altered using fcntl(.., F_SETFL, ..), so we have
+	 * to updated it before every ioctl.
+	 */
+	if (file->f_flags & O_NDELAY)
+		mode |= FMODE_NDELAY;
+	else
+		mode &= ~FMODE_NDELAY;
 
 	switch (cmd) {
 	case HDIO_GETGEO:
 		return compat_hdio_getgeo(disk, bdev, compat_ptr(arg));
 	case BLKFLSBUF:
 	case BLKROSET:
+	case BLKPBSZGET:
+		return compat_put_uint(arg, bdev_physical_block_size(bdev));
+	case BLKIOMIN:
+		return compat_put_uint(arg, bdev_io_min(bdev));
+	case BLKIOOPT:
+		return compat_put_uint(arg, bdev_io_opt(bdev));
+	case BLKALIGNOFF:
+		return compat_put_int(arg, bdev_alignment_offset(bdev));
+	case BLKDISCARDZEROES:
+		return compat_put_uint(arg, bdev_discard_zeroes_data(bdev));
+	case BLKFLSBUF:
+	case BLKROSET:
+	case BLKDISCARD:
+	case BLKSECDISCARD:
+	case BLKZEROOUT:
 	/*
 	 * the ones below are implemented in blkdev_locked_ioctl,
 	 * but we call blkdev_ioctl, which gets the lock for us
@@ -813,4 +860,68 @@ long compat_blkdev_ioctl(struct file *file, unsigned cmd, unsigned long arg)
 		return ret;
 
 	return compat_blkdev_driver_ioctl(inode, file, disk, cmd, arg);
+		return blkdev_ioctl(bdev, mode, cmd,
+				(unsigned long)compat_ptr(arg));
+	case BLKBSZSET_32:
+		return blkdev_ioctl(bdev, mode, BLKBSZSET,
+				(unsigned long)compat_ptr(arg));
+	case BLKPG:
+		return compat_blkpg_ioctl(bdev, mode, cmd, compat_ptr(arg));
+	case BLKRAGET:
+	case BLKFRAGET:
+		if (!arg)
+			return -EINVAL;
+		bdi = blk_get_backing_dev_info(bdev);
+		return compat_put_long(arg,
+				       (bdi->ra_pages * PAGE_CACHE_SIZE) / 512);
+	case BLKROGET: /* compatible */
+		return compat_put_int(arg, bdev_read_only(bdev) != 0);
+	case BLKBSZGET_32: /* get the logical block size (cf. BLKSSZGET) */
+		return compat_put_int(arg, block_size(bdev));
+	case BLKSSZGET: /* get block device hardware sector size */
+		return compat_put_int(arg, bdev_logical_block_size(bdev));
+	case BLKSECTGET:
+		max_sectors = min_t(unsigned int, USHRT_MAX,
+				    queue_max_sectors(bdev_get_queue(bdev)));
+		return compat_put_ushort(arg, max_sectors);
+	case BLKROTATIONAL:
+		return compat_put_ushort(arg,
+					 !blk_queue_nonrot(bdev_get_queue(bdev)));
+	case BLKRASET: /* compatible, but no compat_ptr (!) */
+	case BLKFRASET:
+		if (!capable(CAP_SYS_ADMIN))
+			return -EACCES;
+		bdi = blk_get_backing_dev_info(bdev);
+		bdi->ra_pages = (arg * 512) / PAGE_CACHE_SIZE;
+		return 0;
+	case BLKGETSIZE:
+		size = i_size_read(bdev->bd_inode);
+		if ((size >> 9) > ~(compat_ulong_t)0)
+			return -EFBIG;
+		return compat_put_ulong(arg, size >> 9);
+
+	case BLKGETSIZE64_32:
+		return compat_put_u64(arg, i_size_read(bdev->bd_inode));
+
+	case BLKTRACESETUP32:
+	case BLKTRACESTART: /* compatible */
+	case BLKTRACESTOP:  /* compatible */
+	case BLKTRACETEARDOWN: /* compatible */
+		ret = blk_trace_ioctl(bdev, cmd, compat_ptr(arg));
+		return ret;
+	case IOC_PR_REGISTER:
+	case IOC_PR_RESERVE:
+	case IOC_PR_RELEASE:
+	case IOC_PR_PREEMPT:
+	case IOC_PR_PREEMPT_ABORT:
+	case IOC_PR_CLEAR:
+		return blkdev_ioctl(bdev, mode, cmd,
+				(unsigned long)compat_ptr(arg));
+	default:
+		if (disk->fops->compat_ioctl)
+			ret = disk->fops->compat_ioctl(bdev, mode, cmd, arg);
+		if (ret == -ENOIOCTLCMD)
+			ret = compat_blkdev_driver_ioctl(bdev, mode, cmd, arg);
+		return ret;
+	}
 }

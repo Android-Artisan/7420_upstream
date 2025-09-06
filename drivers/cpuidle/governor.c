@@ -22,6 +22,7 @@ struct cpuidle_governor *cpuidle_curr_governor;
  * @str: the name
  *
  * Must be called with cpuidle_lock aquired.
+ * Must be called with cpuidle_lock acquired.
  */
 static struct cpuidle_governor * __cpuidle_find_governor(const char *str)
 {
@@ -29,6 +30,7 @@ static struct cpuidle_governor * __cpuidle_find_governor(const char *str)
 
 	list_for_each_entry(gov, &cpuidle_governors, governor_list)
 		if (!strnicmp(str, gov->name, CPUIDLE_NAME_LEN))
+		if (!strncasecmp(str, gov->name, CPUIDLE_NAME_LEN))
 			return gov;
 
 	return NULL;
@@ -40,6 +42,7 @@ static struct cpuidle_governor * __cpuidle_find_governor(const char *str)
  *
  * NOTE: "gov" can be NULL to specify disabled
  * Must be called with cpuidle_lock aquired.
+ * Must be called with cpuidle_lock acquired.
  */
 int cpuidle_switch_governor(struct cpuidle_governor *gov)
 {
@@ -80,6 +83,9 @@ int cpuidle_register_governor(struct cpuidle_governor *gov)
 
 	if (!gov || !gov->select)
 		return -EINVAL;
+
+	if (cpuidle_disabled())
+		return -ENODEV;
 
 	mutex_lock(&cpuidle_lock);
 	if (__cpuidle_find_governor(gov->name) == NULL) {

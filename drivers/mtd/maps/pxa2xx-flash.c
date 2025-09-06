@@ -13,6 +13,8 @@
 #include <linux/types.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
+#include <linux/slab.h>
+#include <linux/kernel.h>
 #include <linux/platform_device.h>
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/map.h>
@@ -33,6 +35,26 @@ static void pxa2xx_map_inval_cache(struct map_info *map, unsigned long from,
 struct pxa2xx_flash_info {
 	struct mtd_partition	*parts;
 	int			nr_parts;
+
+#include <asm/mach/flash.h>
+
+#define CACHELINESIZE	32
+
+static void pxa2xx_map_inval_cache(struct map_info *map, unsigned long from,
+				      ssize_t len)
+{
+	unsigned long start = (unsigned long)map->cached + from;
+	unsigned long end = start + len;
+
+	start &= ~(CACHELINESIZE - 1);
+	while (start < end) {
+		/* invalidate D cache line */
+		asm volatile ("mcr p15, 0, %0, c7, c6, 1" : : "r" (start));
+		start += CACHELINESIZE;
+	}
+}
+
+struct pxa2xx_flash_info {
 	struct mtd_info		*mtd;
 	struct map_info		map;
 };
@@ -49,6 +71,13 @@ static int __init pxa2xx_flash_probe(struct device *dev)
 	struct mtd_partition *parts;
 	struct resource *res;
 	int ret = 0;
+static const char * const probes[] = { "RedBoot", "cmdlinepart", NULL };
+
+static int pxa2xx_flash_probe(struct platform_device *pdev)
+{
+	struct flash_platform_data *flash = dev_get_platdata(&pdev->dev);
+	struct pxa2xx_flash_info *info;
+	struct resource *res;
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (!res)
@@ -65,15 +94,26 @@ static int __init pxa2xx_flash_probe(struct device *dev)
 	info->map.size = res->end - res->start + 1;
 	info->parts = flash->parts;
 	info->nr_parts = flash->nr_parts;
+	info = kzalloc(sizeof(struct pxa2xx_flash_info), GFP_KERNEL);
+	if (!info)
+		return -ENOMEM;
+
+	info->map.name = flash->name;
+	info->map.bankwidth = flash->width;
+	info->map.phys = res->start;
+	info->map.size = resource_size(res);
 
 	info->map.virt = ioremap(info->map.phys, info->map.size);
 	if (!info->map.virt) {
 		printk(KERN_WARNING "Failed to ioremap %s\n",
 		       info->map.name);
+		kfree(info);
 		return -ENOMEM;
 	}
 	info->map.cached =
 		ioremap_cached(info->map.phys, info->map.size);
+	info->map.cached = memremap(info->map.phys, info->map.size,
+			MEMREMAP_WB);
 	if (!info->map.cached)
 		printk(KERN_WARNING "Failed to ioremap cached %s\n",
 		       info->map.name);
@@ -92,6 +132,7 @@ static int __init pxa2xx_flash_probe(struct device *dev)
 		iounmap((void *)info->map.virt);
 		if (info->map.cached)
 			iounmap(info->map.cached);
+		kfree(info);
 		return -EIO;
 	}
 	info->mtd->owner = THIS_MODULE;
@@ -130,12 +171,27 @@ static int __exit pxa2xx_flash_remove(struct device *dev)
 	else
 #endif
 		del_mtd_device(info->mtd);
+	info->mtd->dev.parent = &pdev->dev;
+
+	mtd_device_parse_register(info->mtd, probes, NULL, flash->parts,
+				  flash->nr_parts);
+
+	platform_set_drvdata(pdev, info);
+	return 0;
+}
+
+static int pxa2xx_flash_remove(struct platform_device *dev)
+{
+	struct pxa2xx_flash_info *info = platform_get_drvdata(dev);
+
+	mtd_device_unregister(info->mtd);
 
 	map_destroy(info->mtd);
 	iounmap(info->map.virt);
 	if (info->map.cached)
 		iounmap(info->map.cached);
 	kfree(info->parts);
+		memunmap(info->map.cached);
 	kfree(info);
 	return 0;
 }
@@ -197,4 +253,28 @@ module_exit(cleanup_pxa2xx_flash);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Nicolas Pitre <nico@cam.org>");
+static void pxa2xx_flash_shutdown(struct platform_device *dev)
+{
+	struct pxa2xx_flash_info *info = platform_get_drvdata(dev);
+
+	if (info && mtd_suspend(info->mtd) == 0)
+		mtd_resume(info->mtd);
+}
+#else
+#define pxa2xx_flash_shutdown NULL
+#endif
+
+static struct platform_driver pxa2xx_flash_driver = {
+	.driver = {
+		.name		= "pxa2xx-flash",
+	},
+	.probe		= pxa2xx_flash_probe,
+	.remove		= pxa2xx_flash_remove,
+	.shutdown	= pxa2xx_flash_shutdown,
+};
+
+module_platform_driver(pxa2xx_flash_driver);
+
+MODULE_LICENSE("GPL");
+MODULE_AUTHOR("Nicolas Pitre <nico@fluxnic.net>");
 MODULE_DESCRIPTION("MTD map driver for Intel XScale PXA2xx");

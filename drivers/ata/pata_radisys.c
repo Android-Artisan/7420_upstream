@@ -2,6 +2,7 @@
  *    pata_radisys.c - Intel PATA/SATA controllers
  *
  *	(C) 2006 Red Hat <alan@redhat.com>
+ *	(C) 2006 Red Hat <alan@lxorguk.ukuu.org.uk>
  *
  *    Some parts based on ata_piix.c by Jeff Garzik and others.
  *
@@ -143,6 +144,9 @@ static void radisys_set_dmamode (struct ata_port *ap, struct ata_device *adev)
 			udma_mode &= ~ (1 << adev->devno);
 		else /* UDMA 4 */
 			udma_mode |= (1 << adev->devno);
+			udma_mode &= ~(2 << (adev->devno * 4));
+		else /* UDMA 4 */
+			udma_mode |= (2 << (adev->devno * 4));
 
 		pci_write_config_byte(dev, 0x4A, udma_mode);
 
@@ -181,6 +185,7 @@ static unsigned int radisys_qc_issue(struct ata_queued_cmd *qc)
 		}
 	}
 	return ata_sff_qc_issue(qc);
+	return ata_bmdma_qc_issue(qc);
 }
 
 
@@ -220,6 +225,11 @@ static int radisys_init_one (struct pci_dev *pdev, const struct pci_device_id *e
 		.pio_mask	= 0x1f,	/* pio0-4 */
 		.mwdma_mask	= 0x07, /* mwdma1-2 */
 		.udma_mask	= 0x14, /* UDMA33/66 only */
+	static const struct ata_port_info info = {
+		.flags		= ATA_FLAG_SLAVE_POSS,
+		.pio_mask	= ATA_PIO4,
+		.mwdma_mask	= ATA_MWDMA12_ONLY,
+		.udma_mask	= ATA_UDMA24_ONLY,
 		.port_ops	= &radisys_pata_ops,
 	};
 	const struct ata_port_info *ppi[] = { &info, NULL };
@@ -229,6 +239,9 @@ static int radisys_init_one (struct pci_dev *pdev, const struct pci_device_id *e
 			   "version " DRV_VERSION "\n");
 
 	return ata_pci_sff_init_one(pdev, ppi, &radisys_sht, NULL);
+	ata_print_version_once(&pdev->dev, DRV_VERSION);
+
+	return ata_pci_bmdma_init_one(pdev, ppi, &radisys_sht, NULL, 0);
 }
 
 static const struct pci_device_id radisys_pci_tbl[] = {
@@ -243,6 +256,7 @@ static struct pci_driver radisys_pci_driver = {
 	.probe			= radisys_init_one,
 	.remove			= ata_pci_remove_one,
 #ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 	.suspend		= ata_pci_device_suspend,
 	.resume			= ata_pci_device_resume,
 #endif
@@ -260,6 +274,7 @@ static void __exit radisys_exit(void)
 
 module_init(radisys_init);
 module_exit(radisys_exit);
+module_pci_driver(radisys_pci_driver);
 
 MODULE_AUTHOR("Alan Cox");
 MODULE_DESCRIPTION("SCSI low-level driver for Radisys R82600 controllers");

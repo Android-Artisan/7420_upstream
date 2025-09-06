@@ -5,6 +5,8 @@
 
 #include <linux/pci.h>
 #include <linux/init.h>
+#include <linux/vgaarb.h>
+#include <linux/screen_info.h>
 
 #include <asm/machvec.h>
 
@@ -25,6 +27,13 @@
  */
 
 static void __devinit pci_fixup_video(struct pci_dev *pdev)
+ * See pci_map_rom() for use of this flag. Before marking the device
+ * with IORESOURCE_ROM_SHADOW check if a vga_default_device is already set
+ * by either arch cde or vga-arbitration, if so only apply the fixup to this
+ * already determined primary video card.
+ */
+
+static void pci_fixup_video(struct pci_dev *pdev)
 {
 	struct pci_dev *bridge;
 	struct pci_bus *bus;
@@ -37,6 +46,11 @@ static void __devinit pci_fixup_video(struct pci_dev *pdev)
 
 	if ((pdev->class >> 8) != PCI_CLASS_DISPLAY_VGA)
 		return;
+
+	if ((strcmp(ia64_platform_name, "dig") != 0)
+	    && (strcmp(ia64_platform_name, "hpzx1")  != 0))
+		return;
+	/* Maybe, this machine supports legacy memory map. */
 
 	/* Is VGA routed to us? */
 	bus = pdev->bus;
@@ -53,6 +67,7 @@ static void __devinit pci_fixup_video(struct pci_dev *pdev)
 		if (bridge
 		    &&((bridge->hdr_type == PCI_HEADER_TYPE_BRIDGE)
 		       ||(bridge->hdr_type == PCI_HEADER_TYPE_CARDBUS))) {
+		if (bridge && (pci_is_bridge(bridge))) {
 			pci_read_config_word(bridge, PCI_BRIDGE_CONTROL,
 						&config);
 			if (!(config & PCI_BRIDGE_CTL_VGA))
@@ -67,3 +82,13 @@ static void __devinit pci_fixup_video(struct pci_dev *pdev)
 	}
 }
 DECLARE_PCI_FIXUP_HEADER(PCI_ANY_ID, PCI_ANY_ID, pci_fixup_video);
+	if (!vga_default_device() || pdev == vga_default_device()) {
+		pci_read_config_word(pdev, PCI_COMMAND, &config);
+		if (config & (PCI_COMMAND_IO | PCI_COMMAND_MEMORY)) {
+			pdev->resource[PCI_ROM_RESOURCE].flags |= IORESOURCE_ROM_SHADOW;
+			dev_printk(KERN_DEBUG, &pdev->dev, "Video device with shadowed ROM\n");
+		}
+	}
+}
+DECLARE_PCI_FIXUP_CLASS_FINAL(PCI_ANY_ID, PCI_ANY_ID,
+				PCI_CLASS_DISPLAY_VGA, 8, pci_fixup_video);

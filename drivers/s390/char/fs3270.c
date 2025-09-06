@@ -6,6 +6,12 @@
  *    Original 3270 Code for 2.4 written by Richard Hitt (UTS Global)
  *    Rewritten for 2.5/2.6 by Martin Schwidefsky <schwidefsky@de.ibm.com>
  *	-- Copyright (C) 2003 IBM Deutschland Entwicklung GmbH, IBM Corporation
+ * IBM/3270 Driver - fullscreen driver.
+ *
+ * Author(s):
+ *   Original 3270 Code for 2.4 written by Richard Hitt (UTS Global)
+ *   Rewritten for 2.5/2.6 by Martin Schwidefsky <schwidefsky@de.ibm.com>
+ *     Copyright IBM Corp. 2003, 2009
  */
 
 #include <linux/bootmem.h>
@@ -16,6 +22,13 @@
 #include <linux/types.h>
 #include <linux/smp_lock.h>
 
+#include <linux/compat.h>
+#include <linux/module.h>
+#include <linux/list.h>
+#include <linux/slab.h>
+#include <linux/types.h>
+
+#include <asm/compat.h>
 #include <asm/ccwdev.h>
 #include <asm/cio.h>
 #include <asm/ebcdic.h>
@@ -38,6 +51,8 @@ struct fs3270 {
 	struct idal_buffer *rdbuf;	/* full-screen-deactivate buffer */
 	size_t rdbuf_size;		/* size of data returned by RDBUF */
 };
+
+static DEFINE_MUTEX(fs3270_mutex);
 
 static void
 fs3270_wake_up(struct raw3270_request *rq, void *data)
@@ -76,6 +91,7 @@ fs3270_do_io(struct raw3270_view *view, struct raw3270_request *rq)
 		rc = raw3270_start(view, rq);
 		if (rc == 0) {
 			/* Started sucessfully. Now wait for completion. */
+			/* Started successfully. Now wait for completion. */
 			wait_event(fp->wait, raw3270_request_final(rq));
 		}
 	} while (rc == -EACCES);
@@ -321,6 +337,7 @@ fs3270_write(struct file *filp, const char __user *data, size_t count, loff_t *o
 static long
 fs3270_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
+	char __user *argp;
 	struct fs3270 *fp;
 	struct raw3270_iocb iocb;
 	int rc;
@@ -330,6 +347,12 @@ fs3270_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		return -ENODEV;
 	rc = 0;
 	lock_kernel();
+	if (is_compat_task())
+		argp = compat_ptr(arg);
+	else
+		argp = (char __user *)arg;
+	rc = 0;
+	mutex_lock(&fs3270_mutex);
 	switch (cmd) {
 	case TUBICMD:
 		fp->read_command = arg;
@@ -342,6 +365,10 @@ fs3270_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		break;
 	case TUBGETO:
 		rc = put_user(fp->write_command,(char __user *) arg);
+		rc = put_user(fp->read_command, argp);
+		break;
+	case TUBGETO:
+		rc = put_user(fp->write_command, argp);
 		break;
 	case TUBGETMOD:
 		iocb.model = fp->view.model;
@@ -356,6 +383,11 @@ fs3270_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		break;
 	}
 	unlock_kernel();
+		if (copy_to_user(argp, &iocb, sizeof(struct raw3270_iocb)))
+			rc = -EFAULT;
+		break;
+	}
+	mutex_unlock(&fs3270_mutex);
 	return rc;
 }
 
@@ -399,6 +431,11 @@ fs3270_free_view(struct raw3270_view *view)
 static void
 fs3270_release(struct raw3270_view *view)
 {
+	struct fs3270 *fp;
+
+	fp = (struct fs3270 *) view;
+	if (fp->fs_pid)
+		kill_pid(fp->fs_pid, SIGHUP, 1);
 }
 
 /* View to a 3270 device. Can be console, tty or fullscreen. */
@@ -437,6 +474,22 @@ fs3270_open(struct inode *inode, struct file *filp)
 		minor = tty->index + RAW3270_FIRSTMINOR;
 		mutex_unlock(&tty_mutex);
 	}
+	int minor, rc = 0;
+
+	if (imajor(file_inode(filp)) != IBM_FS3270_MAJOR)
+		return -ENODEV;
+	minor = iminor(file_inode(filp));
+	/* Check for minor 0 multiplexer. */
+	if (minor == 0) {
+		struct tty_struct *tty = get_current_tty();
+		if (!tty || tty->driver->major != IBM_TTY3270_MAJOR) {
+			tty_kref_put(tty);
+			return -ENODEV;
+		}
+		minor = tty->index;
+		tty_kref_put(tty);
+	}
+	mutex_lock(&fs3270_mutex);
 	/* Check if some other program is already using fullscreen mode. */
 	fp = (struct fs3270 *) raw3270_find_view(&fs3270_fn, minor);
 	if (!IS_ERR(fp)) {
@@ -453,7 +506,8 @@ fs3270_open(struct inode *inode, struct file *filp)
 
 	init_waitqueue_head(&fp->wait);
 	fp->fs_pid = get_pid(task_pid(current));
-	rc = raw3270_add_view(&fp->view, &fs3270_fn, minor);
+	rc = raw3270_add_view(&fp->view, &fs3270_fn, minor,
+			      RAW3270_VIEW_LOCK_BH);
 	if (rc) {
 		fs3270_free_view(&fp->view);
 		goto out;
@@ -465,6 +519,7 @@ fs3270_open(struct inode *inode, struct file *filp)
 		raw3270_put_view(&fp->view);
 		raw3270_del_view(&fp->view);
 		rc = PTR_ERR(fp);
+		rc = PTR_ERR(ib);
 		goto out;
 	}
 	fp->rdbuf = ib;
@@ -479,6 +534,11 @@ fs3270_open(struct inode *inode, struct file *filp)
 out:
 	unlock_kernel();
 	return 0;
+	nonseekable_open(inode, filp);
+	filp->private_data = fp;
+out:
+	mutex_unlock(&fs3270_mutex);
+	return rc;
 }
 
 /*
@@ -510,6 +570,28 @@ static const struct file_operations fs3270_fops = {
 	.compat_ioctl	 = fs3270_ioctl,	/* ioctl */
 	.open	 	= fs3270_open,		/* open */
 	.release 	= fs3270_close,		/* release */
+	.open		 = fs3270_open,		/* open */
+	.release	 = fs3270_close,	/* release */
+	.llseek		= no_llseek,
+};
+
+static void fs3270_create_cb(int minor)
+{
+	__register_chrdev(IBM_FS3270_MAJOR, minor, 1, "tub", &fs3270_fops);
+	device_create(class3270, NULL, MKDEV(IBM_FS3270_MAJOR, minor),
+		      NULL, "3270/tub%d", minor);
+}
+
+static void fs3270_destroy_cb(int minor)
+{
+	device_destroy(class3270, MKDEV(IBM_FS3270_MAJOR, minor));
+	__unregister_chrdev(IBM_FS3270_MAJOR, minor, 1, "tub");
+}
+
+static struct raw3270_notifier fs3270_notifier =
+{
+	.create = fs3270_create_cb,
+	.destroy = fs3270_destroy_cb,
 };
 
 /*
@@ -523,6 +605,12 @@ fs3270_init(void)
 	rc = register_chrdev(IBM_FS3270_MAJOR, "fs3270", &fs3270_fops);
 	if (rc)
 		return rc;
+	rc = __register_chrdev(IBM_FS3270_MAJOR, 0, 1, "fs3270", &fs3270_fops);
+	if (rc)
+		return rc;
+	device_create(class3270, NULL, MKDEV(IBM_FS3270_MAJOR, 0),
+		      NULL, "3270/tub");
+	raw3270_register_notifier(&fs3270_notifier);
 	return 0;
 }
 
@@ -530,6 +618,9 @@ static void __exit
 fs3270_exit(void)
 {
 	unregister_chrdev(IBM_FS3270_MAJOR, "fs3270");
+	raw3270_unregister_notifier(&fs3270_notifier);
+	device_destroy(class3270, MKDEV(IBM_FS3270_MAJOR, 0));
+	__unregister_chrdev(IBM_FS3270_MAJOR, 0, 1, "fs3270");
 }
 
 MODULE_LICENSE("GPL");

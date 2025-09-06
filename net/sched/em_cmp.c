@@ -14,6 +14,7 @@
 #include <linux/kernel.h>
 #include <linux/skbuff.h>
 #include <linux/tc_ematch/tc_em_cmp.h>
+#include <asm/unaligned.h>
 #include <net/pkt_cls.h>
 
 static inline int cmp_needs_transformation(struct tcf_em_cmp *cmp)
@@ -58,6 +59,29 @@ static int em_cmp_match(struct sk_buff *skb, struct tcf_ematch *em,
 
 		default:
 			return 0;
+	case TCF_EM_ALIGN_U8:
+		val = *ptr;
+		break;
+
+	case TCF_EM_ALIGN_U16:
+		val = get_unaligned_be16(ptr);
+
+		if (cmp_needs_transformation(cmp))
+			val = be16_to_cpu(val);
+		break;
+
+	case TCF_EM_ALIGN_U32:
+		/* Worth checking boundries? The branching seems
+		 * to get worse. Visit again.
+		 */
+		val = get_unaligned_be32(ptr);
+
+		if (cmp_needs_transformation(cmp))
+			val = be32_to_cpu(val);
+		break;
+
+	default:
+		return 0;
 	}
 
 	if (cmp->mask)
@@ -70,6 +94,12 @@ static int em_cmp_match(struct sk_buff *skb, struct tcf_ematch *em,
 			return val < cmp->val;
 		case TCF_EM_OPND_GT:
 			return val > cmp->val;
+	case TCF_EM_OPND_EQ:
+		return val == cmp->val;
+	case TCF_EM_OPND_LT:
+		return val < cmp->val;
+	case TCF_EM_OPND_GT:
+		return val > cmp->val;
 	}
 
 	return 0;

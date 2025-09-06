@@ -47,6 +47,7 @@ static int m48t86_rtc_read_time(struct device *dev, struct rtc_time *tm)
 	unsigned char reg;
 	struct platform_device *pdev = to_platform_device(dev);
 	struct m48t86_ops *ops = pdev->dev.platform_data;
+	struct m48t86_ops *ops = dev_get_platdata(&pdev->dev);
 
 	reg = ops->readbyte(M48T86_REG_B);
 
@@ -70,6 +71,14 @@ static int m48t86_rtc_read_time(struct device *dev, struct rtc_time *tm)
 		tm->tm_mon	= BCD2BIN(ops->readbyte(M48T86_REG_MONTH)) - 1;
 		tm->tm_year	= BCD2BIN(ops->readbyte(M48T86_REG_YEAR)) + 100;
 		tm->tm_wday	= BCD2BIN(ops->readbyte(M48T86_REG_DOW));
+		tm->tm_sec	= bcd2bin(ops->readbyte(M48T86_REG_SEC));
+		tm->tm_min	= bcd2bin(ops->readbyte(M48T86_REG_MIN));
+		tm->tm_hour	= bcd2bin(ops->readbyte(M48T86_REG_HOUR) & 0x3F);
+		tm->tm_mday	= bcd2bin(ops->readbyte(M48T86_REG_DOM));
+		/* tm_mon is 0-11 */
+		tm->tm_mon	= bcd2bin(ops->readbyte(M48T86_REG_MONTH)) - 1;
+		tm->tm_year	= bcd2bin(ops->readbyte(M48T86_REG_YEAR)) + 100;
+		tm->tm_wday	= bcd2bin(ops->readbyte(M48T86_REG_DOW));
 	}
 
 	/* correct the hour if the clock is in 12h mode */
@@ -78,6 +87,7 @@ static int m48t86_rtc_read_time(struct device *dev, struct rtc_time *tm)
 			tm->tm_hour += 12;
 
 	return 0;
+	return rtc_valid_tm(tm);
 }
 
 static int m48t86_rtc_set_time(struct device *dev, struct rtc_time *tm)
@@ -85,6 +95,7 @@ static int m48t86_rtc_set_time(struct device *dev, struct rtc_time *tm)
 	unsigned char reg;
 	struct platform_device *pdev = to_platform_device(dev);
 	struct m48t86_ops *ops = pdev->dev.platform_data;
+	struct m48t86_ops *ops = dev_get_platdata(&pdev->dev);
 
 	reg = ops->readbyte(M48T86_REG_B);
 
@@ -110,6 +121,13 @@ static int m48t86_rtc_set_time(struct device *dev, struct rtc_time *tm)
 		ops->writebyte(BIN2BCD(tm->tm_mon + 1), M48T86_REG_MONTH);
 		ops->writebyte(BIN2BCD(tm->tm_year % 100), M48T86_REG_YEAR);
 		ops->writebyte(BIN2BCD(tm->tm_wday), M48T86_REG_DOW);
+		ops->writebyte(bin2bcd(tm->tm_sec), M48T86_REG_SEC);
+		ops->writebyte(bin2bcd(tm->tm_min), M48T86_REG_MIN);
+		ops->writebyte(bin2bcd(tm->tm_hour), M48T86_REG_HOUR);
+		ops->writebyte(bin2bcd(tm->tm_mday), M48T86_REG_DOM);
+		ops->writebyte(bin2bcd(tm->tm_mon + 1), M48T86_REG_MONTH);
+		ops->writebyte(bin2bcd(tm->tm_year % 100), M48T86_REG_YEAR);
+		ops->writebyte(bin2bcd(tm->tm_wday), M48T86_REG_DOW);
 	}
 
 	/* update ended */
@@ -124,6 +142,7 @@ static int m48t86_rtc_proc(struct device *dev, struct seq_file *seq)
 	unsigned char reg;
 	struct platform_device *pdev = to_platform_device(dev);
 	struct m48t86_ops *ops = pdev->dev.platform_data;
+	struct m48t86_ops *ops = dev_get_platdata(&pdev->dev);
 
 	reg = ops->readbyte(M48T86_REG_B);
 
@@ -150,6 +169,14 @@ static int __devinit m48t86_rtc_probe(struct platform_device *dev)
 	struct m48t86_ops *ops = dev->dev.platform_data;
 	struct rtc_device *rtc = rtc_device_register("m48t86",
 				&dev->dev, &m48t86_rtc_ops, THIS_MODULE);
+static int m48t86_rtc_probe(struct platform_device *dev)
+{
+	unsigned char reg;
+	struct m48t86_ops *ops = dev_get_platdata(&dev->dev);
+	struct rtc_device *rtc;
+
+	rtc = devm_rtc_device_register(&dev->dev, "m48t86",
+				&m48t86_rtc_ops, THIS_MODULE);
 
 	if (IS_ERR(rtc))
 		return PTR_ERR(rtc);
@@ -194,6 +221,14 @@ static void __exit m48t86_rtc_exit(void)
 {
 	platform_driver_unregister(&m48t86_rtc_platform_driver);
 }
+static struct platform_driver m48t86_rtc_platform_driver = {
+	.driver		= {
+		.name	= "rtc-m48t86",
+	},
+	.probe		= m48t86_rtc_probe,
+};
+
+module_platform_driver(m48t86_rtc_platform_driver);
 
 MODULE_AUTHOR("Alessandro Zummo <a.zummo@towertech.it>");
 MODULE_DESCRIPTION("M48T86 RTC driver");

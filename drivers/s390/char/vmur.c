@@ -3,6 +3,7 @@
  * (z/VM virtual punch, reader, printer)
  *
  * Copyright IBM Corp. 2001, 2007
+ * Copyright IBM Corp. 2001, 2009
  * Authors: Malcolm Beattie <beattiem@uk.ibm.com>
  *	    Michael Holzheu <holzheu@de.ibm.com>
  *	    Frank Munzert <munzert@de.ibm.com>
@@ -10,6 +11,12 @@
 
 #include <linux/cdev.h>
 #include <linux/smp_lock.h>
+#define KMSG_COMPONENT "vmur"
+#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
+
+#include <linux/cdev.h>
+#include <linux/slab.h>
+#include <linux/module.h>
 
 #include <asm/uaccess.h>
 #include <asm/cio.h>
@@ -63,11 +70,20 @@ static int ur_set_offline(struct ccw_device *cdev);
 static struct ccw_driver ur_driver = {
 	.name		= "vmur",
 	.owner		= THIS_MODULE,
+static int ur_pm_suspend(struct ccw_device *cdev);
+
+static struct ccw_driver ur_driver = {
+	.driver = {
+		.name	= "vmur",
+		.owner	= THIS_MODULE,
+	},
 	.ids		= ur_ids,
 	.probe		= ur_probe,
 	.remove		= ur_remove,
 	.set_online	= ur_set_online,
 	.set_offline	= ur_set_offline,
+	.freeze		= ur_pm_suspend,
+	.int_class	= IRQIO_VMR,
 };
 
 static DEFINE_MUTEX(vmur_mutex);
@@ -83,6 +99,12 @@ static DEFINE_MUTEX(vmur_mutex);
  * - ur_probe gets a urd reference, ur_remove drops the reference
  *   (cdev->dev.driver_data)
  * - ur_open gets a urd reference, ur_relase drops the reference
+ * ur device using dev_get_drvdata(&cdev->dev) pointer.
+ *
+ * urd references:
+ * - ur_probe gets a urd reference, ur_remove drops the reference
+ *   dev_get_drvdata(&cdev->dev)
+ * - ur_open gets a urd reference, ur_release drops the reference
  *   (urf->urd)
  *
  * cdev references:
@@ -90,6 +112,7 @@ static DEFINE_MUTEX(vmur_mutex);
  * - urdev_free drops the cdev reference (urd->cdev)
  *
  * Setting and clearing of cdev->dev.driver_data is protected by the ccwdev lock
+ * Setting and clearing of dev_get_drvdata(&cdev->dev) is protected by the ccwdev lock
  */
 static struct urdev *urdev_alloc(struct ccw_device *cdev)
 {
@@ -129,6 +152,7 @@ static struct urdev *urdev_get_from_cdev(struct ccw_device *cdev)
 
 	spin_lock_irqsave(get_ccwdev_lock(cdev), flags);
 	urd = cdev->dev.driver_data;
+	urd = dev_get_drvdata(&cdev->dev);
 	if (urd)
 		urdev_get(urd);
 	spin_unlock_irqrestore(get_ccwdev_lock(cdev), flags);
@@ -154,6 +178,28 @@ static void urdev_put(struct urdev *urd)
 {
 	if (atomic_dec_and_test(&urd->ref_count))
 		urdev_free(urd);
+}
+
+/*
+ * State and contents of ur devices can be changed by class D users issuing
+ * CP commands such as PURGE or TRANSFER, while the Linux guest is suspended.
+ * Also the Linux guest might be logged off, which causes all active spool
+ * files to be closed.
+ * So we cannot guarantee that spool files are still the same when the Linux
+ * guest is resumed. In order to avoid unpredictable results at resume time
+ * we simply refuse to suspend if a ur device node is open.
+ */
+static int ur_pm_suspend(struct ccw_device *cdev)
+{
+	struct urdev *urd = dev_get_drvdata(&cdev->dev);
+
+	TRACE("ur_pm_suspend: cdev=%p\n", cdev);
+	if (urd->open_flag) {
+		pr_err("Unit record device %s is busy, %s refusing to "
+		       "suspend.\n", dev_name(&cdev->dev), ur_banner);
+		return -EBUSY;
+	}
+	return 0;
 }
 
 /*
@@ -286,6 +332,7 @@ static void ur_int_handler(struct ccw_device *cdev, unsigned long intparm,
 		return;
 	}
 	urd = cdev->dev.driver_data;
+	urd = dev_get_drvdata(&cdev->dev);
 	BUG_ON(!urd);
 	/* On special conditions irb is an error pointer */
 	if (IS_ERR(irb))
@@ -676,6 +723,7 @@ static int ur_open(struct inode *inode, struct file *file)
 	 * to find in the driver tree.
 	 */
 	devno = MINOR(file->f_dentry->d_inode->i_rdev);
+	devno = MINOR(file_inode(file)->i_rdev);
 
 	urd = urdev_get_from_devno(devno);
 	if (!urd) {
@@ -832,6 +880,7 @@ static int ur_probe(struct ccw_device *cdev)
 	}
 	spin_lock_irq(get_ccwdev_lock(cdev));
 	cdev->dev.driver_data = urd;
+	dev_set_drvdata(&cdev->dev, urd);
 	spin_unlock_irq(get_ccwdev_lock(cdev));
 
 	mutex_unlock(&vmur_mutex);
@@ -878,6 +927,7 @@ static int ur_set_online(struct ccw_device *cdev)
 	}
 
 	cdev_init(urd->char_device, &ur_fops);
+	urd->char_device->ops = &ur_fops;
 	urd->char_device->dev = MKDEV(major, minor);
 	urd->char_device->owner = ur_fops.owner;
 
@@ -891,6 +941,11 @@ static int ur_set_online(struct ccw_device *cdev)
 			sprintf(node_id, "vmpun-%s", cdev->dev.bus_id);
 	} else if (urd->cdev->id.cu_type == PRINTER_DEVTYPE) {
 		sprintf(node_id, "vmprt-%s", cdev->dev.bus_id);
+			sprintf(node_id, "vmrdr-%s", dev_name(&cdev->dev));
+		if (urd->class == DEV_CLASS_UR_O)
+			sprintf(node_id, "vmpun-%s", dev_name(&cdev->dev));
+	} else if (urd->cdev->id.cu_type == PRINTER_DEVTYPE) {
+		sprintf(node_id, "vmprt-%s", dev_name(&cdev->dev));
 	} else {
 		rc = -EOPNOTSUPP;
 		goto fail_free_cdev;
@@ -899,6 +954,8 @@ static int ur_set_online(struct ccw_device *cdev)
 	urd->device = device_create_drvdata(vmur_class, NULL,
 					    urd->char_device->dev, NULL,
 					    "%s", node_id);
+	urd->device = device_create(vmur_class, &cdev->dev,
+				    urd->char_device->dev, NULL, "%s", node_id);
 	if (IS_ERR(urd->device)) {
 		rc = PTR_ERR(urd->device);
 		TRACE("ur_set_online: device_create rc=%d\n", rc);
@@ -974,6 +1031,8 @@ static void ur_remove(struct ccw_device *cdev)
 	spin_lock_irqsave(get_ccwdev_lock(cdev), flags);
 	urdev_put(cdev->dev.driver_data);
 	cdev->dev.driver_data = NULL;
+	urdev_put(dev_get_drvdata(&cdev->dev));
+	dev_set_drvdata(&cdev->dev, NULL);
 	spin_unlock_irqrestore(get_ccwdev_lock(cdev), flags);
 
 	mutex_unlock(&vmur_mutex);
@@ -989,6 +1048,8 @@ static int __init ur_init(void)
 
 	if (!MACHINE_IS_VM) {
 		PRINT_ERR("%s is only available under z/VM.\n", ur_banner);
+		pr_err("The %s cannot be loaded without z/VM\n",
+		       ur_banner);
 		return -ENODEV;
 	}
 
@@ -1008,6 +1069,20 @@ static int __init ur_init(void)
 	rc = alloc_chrdev_region(&dev, 0, NUM_MINORS, "vmur");
 	if (rc) {
 		PRINT_ERR("alloc_chrdev_region failed: err = %d\n", rc);
+	vmur_class = class_create(THIS_MODULE, "vmur");
+	if (IS_ERR(vmur_class)) {
+		rc = PTR_ERR(vmur_class);
+		goto fail_free_dbf;
+	}
+
+	rc = ccw_driver_register(&ur_driver);
+	if (rc)
+		goto fail_class_destroy;
+
+	rc = alloc_chrdev_region(&dev, 0, NUM_MINORS, "vmur");
+	if (rc) {
+		pr_err("Kernel function alloc_chrdev_region failed with "
+		       "error code %d\n", rc);
 		goto fail_unregister_driver;
 	}
 	ur_first_dev_maj_min = MKDEV(MAJOR(dev), 0);
@@ -1024,6 +1099,13 @@ fail_unregister_region:
 	unregister_chrdev_region(ur_first_dev_maj_min, NUM_MINORS);
 fail_unregister_driver:
 	ccw_driver_unregister(&ur_driver);
+	pr_info("%s loaded.\n", ur_banner);
+	return 0;
+
+fail_unregister_driver:
+	ccw_driver_unregister(&ur_driver);
+fail_class_destroy:
+	class_destroy(vmur_class);
 fail_free_dbf:
 	debug_unregister(vmur_dbf);
 	return rc;
@@ -1036,6 +1118,11 @@ static void __exit ur_exit(void)
 	ccw_driver_unregister(&ur_driver);
 	debug_unregister(vmur_dbf);
 	PRINT_INFO("%s unloaded.\n", ur_banner);
+	unregister_chrdev_region(ur_first_dev_maj_min, NUM_MINORS);
+	ccw_driver_unregister(&ur_driver);
+	class_destroy(vmur_class);
+	debug_unregister(vmur_dbf);
+	pr_info("%s unloaded.\n", ur_banner);
 }
 
 module_init(ur_init);

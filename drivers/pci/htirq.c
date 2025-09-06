@@ -11,6 +11,8 @@
 #include <linux/spinlock.h>
 #include <linux/slab.h>
 #include <linux/gfp.h>
+#include <linux/export.h>
+#include <linux/slab.h>
 #include <linux/htirq.h>
 
 /* Global ht irq lock.
@@ -37,6 +39,11 @@ void write_ht_irq_msg(unsigned int irq, struct ht_irq_msg *msg)
 {
 	struct ht_irq_cfg *cfg = get_irq_data(irq);
 	unsigned long flags;
+void write_ht_irq_msg(unsigned int irq, struct ht_irq_msg *msg)
+{
+	struct ht_irq_cfg *cfg = irq_get_handler_data(irq);
+	unsigned long flags;
+
 	spin_lock_irqsave(&ht_irq_lock, flags);
 	if (cfg->msg.address_lo != msg->address_lo) {
 		pci_write_config_byte(cfg->dev, cfg->pos + 2, cfg->idx);
@@ -80,6 +87,27 @@ void unmask_ht_irq(unsigned int irq)
 	msg = cfg->msg;
 	msg.address_lo &= ~1;
 	write_ht_irq_msg(irq, &msg);
+	struct ht_irq_cfg *cfg = irq_get_handler_data(irq);
+
+	*msg = cfg->msg;
+}
+
+void mask_ht_irq(struct irq_data *data)
+{
+	struct ht_irq_cfg *cfg = irq_data_get_irq_handler_data(data);
+	struct ht_irq_msg msg = cfg->msg;
+
+	msg.address_lo |= 1;
+	write_ht_irq_msg(data->irq, &msg);
+}
+
+void unmask_ht_irq(struct irq_data *data)
+{
+	struct ht_irq_cfg *cfg = irq_data_get_irq_handler_data(data);
+	struct ht_irq_msg msg = cfg->msg;
+
+	msg.address_lo &= ~1;
+	write_ht_irq_msg(data->irq, &msg);
 }
 
 /**
@@ -98,6 +126,9 @@ int __ht_create_irq(struct pci_dev *dev, int idx, ht_irq_update_t *update)
 	int max_irq;
 	int pos;
 	int irq;
+	int max_irq, pos, irq;
+	unsigned long flags;
+	u32 data;
 
 	pos = pci_find_ht_capability(dev, HT_CAPTYPE_IRQ);
 	if (!pos)
@@ -139,6 +170,16 @@ int __ht_create_irq(struct pci_dev *dev, int idx, ht_irq_update_t *update)
 
 	return irq;
 }
+	if (idx > max_irq)
+		return -EINVAL;
+
+	irq = arch_setup_ht_irq(idx, pos, dev, update);
+	if (irq > 0)
+		dev_dbg(&dev->dev, "irq %d for HT\n", irq);
+
+	return irq;
+}
+EXPORT_SYMBOL(__ht_create_irq);
 
 /**
  * ht_create_irq - create an irq and attach it to a device.
@@ -157,6 +198,11 @@ int ht_create_irq(struct pci_dev *dev, int idx)
 
 /**
  * ht_destroy_irq - destroy an irq created with ht_create_irq
+EXPORT_SYMBOL(ht_create_irq);
+
+/**
+ * ht_destroy_irq - destroy an irq created with ht_create_irq
+ * @irq: irq to be destroyed
  *
  * This reverses ht_create_irq removing the specified irq from
  * existence.  The irq should be free before this happens.
@@ -175,4 +221,6 @@ void ht_destroy_irq(unsigned int irq)
 
 EXPORT_SYMBOL(__ht_create_irq);
 EXPORT_SYMBOL(ht_create_irq);
+	arch_teardown_ht_irq(irq);
+}
 EXPORT_SYMBOL(ht_destroy_irq);

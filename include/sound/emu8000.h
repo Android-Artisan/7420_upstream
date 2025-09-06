@@ -23,6 +23,8 @@
 
 #include "emux_synth.h"
 #include "seq_kernel.h"
+#include <sound/emux_synth.h>
+#include <sound/seq_kernel.h>
 
 /*
  * Hardware parameters.

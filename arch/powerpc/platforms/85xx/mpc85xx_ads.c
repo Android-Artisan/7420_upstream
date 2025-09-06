@@ -35,6 +35,8 @@
 #include <sysdev/cpm2_pic.h>
 #endif
 
+#include "mpc85xx.h"
+
 #ifdef CONFIG_PCI
 static int mpc85xx_exclude_device(struct pci_controller *hose,
 				   u_char bus, u_char devfn)
@@ -102,6 +104,14 @@ static void __init mpc85xx_ads_pic_init(void)
 	of_node_put(np);
 	set_irq_chained_handler(irq, cpm2_cascade);
 #endif
+static void __init mpc85xx_ads_pic_init(void)
+{
+	struct mpic *mpic = mpic_alloc(NULL, 0, MPIC_BIG_ENDIAN,
+			0, 256, " OpenPIC  ");
+	BUG_ON(mpic == NULL);
+	mpic_init(mpic);
+
+	mpc85xx_cpm2_pic_init();
 }
 
 /*
@@ -202,6 +212,10 @@ static void __init mpc85xx_ads_setup_arch(void)
 
 	ppc_md.pci_exclude_device = mpc85xx_exclude_device;
 #endif
+	ppc_md.pci_exclude_device = mpc85xx_exclude_device;
+#endif
+
+	fsl_pci_assign_primary();
 }
 
 static void mpc85xx_ads_show_cpuinfo(struct seq_file *m)
@@ -241,6 +255,9 @@ static int __init declare_of_platform_devices(void)
 	return 0;
 }
 machine_device_initcall(mpc85xx_ads, declare_of_platform_devices);
+}
+
+machine_arch_initcall(mpc85xx_ads, mpc85xx_common_publish_devices);
 
 /*
  * Called very early, device-tree isn't unflattened

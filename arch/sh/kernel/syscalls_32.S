@@ -59,6 +59,7 @@ ENTRY(sys_call_table)
 	.long sys_rmdir		/* 40 */
 	.long sys_dup
 	.long sys_pipe
+	.long sys_sh_pipe
 	.long sys_times
 	.long sys_ni_syscall	/* old prof syscall holder */
 	.long sys_brk		/* 45 */
@@ -106,6 +107,7 @@ ENTRY(sys_call_table)
 	.long sys_swapon
 	.long sys_reboot
 	.long old_readdir
+	.long sys_old_readdir
 	.long old_mmap		/* 90 */
 	.long sys_munmap
 	.long sys_truncate
@@ -140,6 +142,7 @@ ENTRY(sys_call_table)
 	.long sys_setdomainname
 	.long sys_newuname
 	.long sys_ni_syscall	/* sys_modify_ldt */
+	.long sys_cacheflush	/* x86: sys_modify_ldt */
 	.long sys_adjtimex
 	.long sys_mprotect		/* 125 */
 	.long sys_sigprocmask
@@ -186,6 +189,7 @@ ENTRY(sys_call_table)
 	.long sys_ni_syscall	/* old "query_module" */
 	.long sys_poll
 	.long sys_nfsservctl
+	.long sys_ni_syscall	/* was nfsservctl */
 	.long sys_setresgid16	/* 170 */
 	.long sys_getresgid16
 	.long sys_prctl
@@ -206,6 +210,8 @@ ENTRY(sys_call_table)
 	.long sys_sendfile
 	.long sys_ni_syscall	/* streams1 */
 	.long sys_ni_syscall	/* streams2 */
+	.long sys_ni_syscall	/* getpmsg */
+	.long sys_ni_syscall	/* putpmsg */
 	.long sys_vfork            /* 190 */
 	.long sys_getrlimit
 	.long sys_mmap2
@@ -261,6 +267,8 @@ ENTRY(sys_call_table)
 	.long sys_sched_getaffinity
 	.long sys_ni_syscall
 	.long sys_ni_syscall
+	.long sys_ni_syscall	/* reserved for set_thread_area */
+	.long sys_ni_syscall	/* reserved for get_thread_area */
 	.long sys_io_setup	/* 245 */
 	.long sys_io_destroy
 	.long sys_io_getevents
@@ -349,3 +357,40 @@ ENTRY(sys_call_table)
 	.long sys_dup3			/* 330 */
 	.long sys_pipe2
 	.long sys_inotify_init1
+	.long sys_preadv
+	.long sys_pwritev
+	.long sys_rt_tgsigqueueinfo	/* 335 */
+	.long sys_perf_event_open
+	.long sys_fanotify_init
+	.long sys_fanotify_mark
+	.long sys_prlimit64
+	/* Broken-out socket family */
+	.long sys_socket		/* 340 */
+	.long sys_bind
+	.long sys_connect
+	.long sys_listen
+	.long sys_accept
+	.long sys_getsockname	/* 345 */
+	.long sys_getpeername
+	.long sys_socketpair
+	.long sys_send
+	.long sys_sendto
+	.long sys_recv			/* 350 */
+	.long sys_recvfrom
+	.long sys_shutdown
+	.long sys_setsockopt
+	.long sys_getsockopt
+	.long sys_sendmsg		/* 355 */
+	.long sys_recvmsg
+	.long sys_recvmmsg
+	.long sys_accept4
+	.long sys_name_to_handle_at
+	.long sys_open_by_handle_at	/* 360 */
+	.long sys_clock_adjtime
+	.long sys_syncfs
+	.long sys_sendmmsg
+	.long sys_setns
+	.long sys_process_vm_readv	/* 365 */
+	.long sys_process_vm_writev
+	.long sys_kcmp
+	.long sys_finit_module

@@ -9,6 +9,7 @@
  * published by the Free Software Foundation.
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 #include <linux/module.h>
 #include <linux/types.h>
 #include <linux/udp.h>
@@ -64,6 +65,7 @@ ports_match_v1(const struct xt_multiport_v1 *minfo,
 			/* range port matching */
 			e = minfo->ports[++i];
 			duprintf("src or dst matches with %d-%d?\n", s, e);
+			pr_debug("src or dst matches with %d-%d?\n", s, e);
 
 			if (minfo->flags == XT_MULTIPORT_SOURCE
 			    && src >= s && src <= e)
@@ -78,6 +80,7 @@ ports_match_v1(const struct xt_multiport_v1 *minfo,
 		} else {
 			/* exact port matching */
 			duprintf("src or dst matches with %d?\n", s);
+			pr_debug("src or dst matches with %d?\n", s);
 
 			if (minfo->flags == XT_MULTIPORT_SOURCE
 			    && src == s)
@@ -108,6 +111,16 @@ multiport_mt_v0(const struct sk_buff *skb, const struct net_device *in,
 		return false;
 
 	pptr = skb_header_pointer(skb, protoff, sizeof(_ports), _ports);
+multiport_mt(const struct sk_buff *skb, struct xt_action_param *par)
+{
+	const __be16 *pptr;
+	__be16 _ports[2];
+	const struct xt_multiport_v1 *multiinfo = par->matchinfo;
+
+	if (par->fragoff != 0)
+		return false;
+
+	pptr = skb_header_pointer(skb, par->thoff, sizeof(_ports), _ports);
 	if (pptr == NULL) {
 		/* We've been asked to examine this packet, and we
 		 * can't.  Hence, no choice but to drop.
@@ -141,6 +154,8 @@ multiport_mt(const struct sk_buff *skb, const struct net_device *in,
 		 */
 		duprintf("xt_multiport: Dropping evil offset=0 tinygram.\n");
 		*hotdrop = true;
+		pr_debug("Dropping evil offset=0 tinygram.\n");
+		par->hotdrop = true;
 		return false;
 	}
 
@@ -211,6 +226,22 @@ multiport_mt6_check(const char *tablename, const void *info,
 
 	return check(ip->proto, ip->invflags, multiinfo->flags,
 		     multiinfo->count);
+static int multiport_mt_check(const struct xt_mtchk_param *par)
+{
+	const struct ipt_ip *ip = par->entryinfo;
+	const struct xt_multiport_v1 *multiinfo = par->matchinfo;
+
+	return check(ip->proto, ip->invflags, multiinfo->flags,
+		     multiinfo->count) ? 0 : -EINVAL;
+}
+
+static int multiport_mt6_check(const struct xt_mtchk_param *par)
+{
+	const struct ip6t_ip6 *ip = par->entryinfo;
+	const struct xt_multiport_v1 *multiinfo = par->matchinfo;
+
+	return check(ip->proto, ip->invflags, multiinfo->flags,
+		     multiinfo->count) ? 0 : -EINVAL;
 }
 
 static struct xt_match multiport_mt_reg[] __read_mostly = {
@@ -226,6 +257,7 @@ static struct xt_match multiport_mt_reg[] __read_mostly = {
 	{
 		.name		= "multiport",
 		.family		= AF_INET,
+		.family		= NFPROTO_IPV4,
 		.revision	= 1,
 		.checkentry	= multiport_mt_check,
 		.match		= multiport_mt,
@@ -244,6 +276,7 @@ static struct xt_match multiport_mt_reg[] __read_mostly = {
 	{
 		.name		= "multiport",
 		.family		= AF_INET6,
+		.family		= NFPROTO_IPV6,
 		.revision	= 1,
 		.checkentry	= multiport_mt6_check,
 		.match		= multiport_mt,

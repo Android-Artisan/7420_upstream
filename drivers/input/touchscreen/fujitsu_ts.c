@@ -187,3 +187,4 @@ static void __exit fujitsu_exit(void)
 
 module_init(fujitsu_init);
 module_exit(fujitsu_exit);
+module_serio_driver(fujitsu_drv);

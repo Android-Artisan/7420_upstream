@@ -11,6 +11,7 @@
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/platform_device.h>
+#include <linux/slab.h>
 #include <linux/rtc.h>
 #include <linux/io.h>
 
@@ -135,6 +136,7 @@ static int at32_rtc_setalarm(struct device *dev, struct rtc_wkalrm *alrm)
 
 static int at32_rtc_ioctl(struct device *dev, unsigned int cmd,
 			unsigned long arg)
+static int at32_rtc_alarm_irq_enable(struct device *dev, unsigned int enabled)
 {
 	struct rtc_at32ap700x *rtc = dev_get_drvdata(dev);
 	int ret = 0;
@@ -146,6 +148,10 @@ static int at32_rtc_ioctl(struct device *dev, unsigned int cmd,
 		if (rtc_readl(rtc, VAL) > rtc->alarm_time) {
 			ret = -EINVAL;
 			break;
+	if (enabled) {
+		if (rtc_readl(rtc, VAL) > rtc->alarm_time) {
+			ret = -EINVAL;
+			goto out;
 		}
 		rtc_writel(rtc, CTRL, rtc_readl(rtc, CTRL)
 				| RTC_BIT(CTRL_TOPEN));
@@ -153,6 +159,7 @@ static int at32_rtc_ioctl(struct device *dev, unsigned int cmd,
 		rtc_writel(rtc, IER, RTC_BIT(IER_TOPI));
 		break;
 	case RTC_AIE_OFF:
+	} else {
 		rtc_writel(rtc, CTRL, rtc_readl(rtc, CTRL)
 				& ~RTC_BIT(CTRL_TOPEN));
 		rtc_writel(rtc, IDR, RTC_BIT(IDR_TOPI));
@@ -163,6 +170,8 @@ static int at32_rtc_ioctl(struct device *dev, unsigned int cmd,
 		break;
 	}
 
+	}
+out:
 	spin_unlock_irq(&rtc->lock);
 
 	return ret;
@@ -199,6 +208,7 @@ static struct rtc_class_ops at32_rtc_ops = {
 	.set_time	= at32_rtc_settime,
 	.read_alarm	= at32_rtc_readalarm,
 	.set_alarm	= at32_rtc_setalarm,
+	.alarm_irq_enable = at32_rtc_alarm_irq_enable,
 };
 
 static int __init at32_rtc_probe(struct platform_device *pdev)
@@ -213,6 +223,13 @@ static int __init at32_rtc_probe(struct platform_device *pdev)
 		dev_dbg(&pdev->dev, "out of memory\n");
 		return -ENOMEM;
 	}
+	int irq;
+	int ret;
+
+	rtc = devm_kzalloc(&pdev->dev, sizeof(struct rtc_at32ap700x),
+			   GFP_KERNEL);
+	if (!rtc)
+		return -ENOMEM;
 
 	regs = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (!regs) {
@@ -234,6 +251,20 @@ static int __init at32_rtc_probe(struct platform_device *pdev)
 		ret = -ENOMEM;
 		dev_dbg(&pdev->dev, "could not map I/O memory\n");
 		goto out;
+		return -ENXIO;
+	}
+
+	irq = platform_get_irq(pdev, 0);
+	if (irq <= 0) {
+		dev_dbg(&pdev->dev, "could not get irq\n");
+		return -ENXIO;
+	}
+
+	rtc->irq = irq;
+	rtc->regs = devm_ioremap(&pdev->dev, regs->start, resource_size(regs));
+	if (!rtc->regs) {
+		dev_dbg(&pdev->dev, "could not map I/O memory\n");
+		return -ENOMEM;
 	}
 	spin_lock_init(&rtc->lock);
 
@@ -265,6 +296,22 @@ static int __init at32_rtc_probe(struct platform_device *pdev)
 	}
 
 	platform_set_drvdata(pdev, rtc);
+	ret = devm_request_irq(&pdev->dev, irq, at32_rtc_interrupt, IRQF_SHARED,
+				"rtc", rtc);
+	if (ret) {
+		dev_dbg(&pdev->dev, "could not request irq %d\n", irq);
+		return ret;
+	}
+
+	platform_set_drvdata(pdev, rtc);
+
+	rtc->rtc = devm_rtc_device_register(&pdev->dev, pdev->name,
+				&at32_rtc_ops, THIS_MODULE);
+	if (IS_ERR(rtc->rtc)) {
+		dev_dbg(&pdev->dev, "could not register rtc device\n");
+		return PTR_ERR(rtc->rtc);
+	}
+
 	device_init_wakeup(&pdev->dev, 1);
 
 	dev_info(&pdev->dev, "Atmel RTC for AT32AP700x at %08lx irq %ld\n",
@@ -293,6 +340,8 @@ static int __exit at32_rtc_remove(struct platform_device *pdev)
 	kfree(rtc);
 	platform_set_drvdata(pdev, NULL);
 
+	device_init_wakeup(&pdev->dev, 0);
+
 	return 0;
 }
 
@@ -319,5 +368,11 @@ static void __exit at32_rtc_exit(void)
 module_exit(at32_rtc_exit);
 
 MODULE_AUTHOR("Hans-Christian Egtvedt <hcegtvedt@atmel.com>");
+	},
+};
+
+module_platform_driver_probe(at32_rtc_driver, at32_rtc_probe);
+
+MODULE_AUTHOR("Hans-Christian Egtvedt <egtvedt@samfundet.no>");
 MODULE_DESCRIPTION("Real time clock for AVR32 AT32AP700x");
 MODULE_LICENSE("GPL");

@@ -5,6 +5,7 @@
  * Author       Karsten Keil
  * Copyright    by Karsten Keil      <keil@isdn4linux.de>
  * 
+ *
  * This software may be used and distributed according to the terms
  * of the GNU General Public License, incorporated herein by reference.
  *
@@ -30,6 +31,8 @@ hfcs_interrupt(int intno, void *dev_id)
 	spin_lock_irqsave(&cs->lock, flags);
 	if ((HFCD_ANYINT | HFCD_BUSY_NBUSY) & 
 		(stat = cs->BC_Read_Reg(cs, HFCD_DATA, HFCD_STAT))) {
+	if ((HFCD_ANYINT | HFCD_BUSY_NBUSY) &
+	    (stat = cs->BC_Read_Reg(cs, HFCD_DATA, HFCD_STAT))) {
 		val = cs->BC_Read_Reg(cs, HFCD_DATA, HFCD_INT_S1);
 		if (cs->debug & L1_DEB_ISAC)
 			debugl1(cs, "HFCS: stat(%02x) s1(%02x)", stat, val);
@@ -159,6 +162,57 @@ static struct isapnp_device_id hfc_ids[] __devinitdata = {
 	  (unsigned long) "Tornado Tipa C" },
 	{ ISAPNP_VENDOR('K', 'Y', 'E'), ISAPNP_FUNCTION(0x0001),
 	  ISAPNP_VENDOR('K', 'Y', 'E'), ISAPNP_FUNCTION(0x0001), 
+	case CARD_RESET:
+		spin_lock_irqsave(&cs->lock, flags);
+		reset_hfcs(cs);
+		spin_unlock_irqrestore(&cs->lock, flags);
+		return (0);
+	case CARD_RELEASE:
+		release_io_hfcs(cs);
+		return (0);
+	case CARD_INIT:
+		delay = (75 * HZ) / 100 + 1;
+		mod_timer(&cs->hw.hfcD.timer, jiffies + delay);
+		spin_lock_irqsave(&cs->lock, flags);
+		reset_hfcs(cs);
+		init2bds0(cs);
+		spin_unlock_irqrestore(&cs->lock, flags);
+		delay = (80 * HZ) / 1000 + 1;
+		msleep(80);
+		spin_lock_irqsave(&cs->lock, flags);
+		cs->hw.hfcD.ctmt |= HFCD_TIM800;
+		cs->BC_Write_Reg(cs, HFCD_DATA, HFCD_CTMT, cs->hw.hfcD.ctmt);
+		cs->BC_Write_Reg(cs, HFCD_DATA, HFCD_MST_MODE, cs->hw.hfcD.mst_m);
+		spin_unlock_irqrestore(&cs->lock, flags);
+		return (0);
+	case CARD_TEST:
+		return (0);
+	}
+	return (0);
+}
+
+#ifdef __ISAPNP__
+static struct isapnp_device_id hfc_ids[] = {
+	{ ISAPNP_VENDOR('A', 'N', 'X'), ISAPNP_FUNCTION(0x1114),
+	  ISAPNP_VENDOR('A', 'N', 'X'), ISAPNP_FUNCTION(0x1114),
+	  (unsigned long) "Acer P10" },
+	{ ISAPNP_VENDOR('B', 'I', 'L'), ISAPNP_FUNCTION(0x0002),
+	  ISAPNP_VENDOR('B', 'I', 'L'), ISAPNP_FUNCTION(0x0002),
+	  (unsigned long) "Billion 2" },
+	{ ISAPNP_VENDOR('B', 'I', 'L'), ISAPNP_FUNCTION(0x0001),
+	  ISAPNP_VENDOR('B', 'I', 'L'), ISAPNP_FUNCTION(0x0001),
+	  (unsigned long) "Billion 1" },
+	{ ISAPNP_VENDOR('T', 'A', 'G'), ISAPNP_FUNCTION(0x7410),
+	  ISAPNP_VENDOR('T', 'A', 'G'), ISAPNP_FUNCTION(0x7410),
+	  (unsigned long) "IStar PnP" },
+	{ ISAPNP_VENDOR('T', 'A', 'G'), ISAPNP_FUNCTION(0x2610),
+	  ISAPNP_VENDOR('T', 'A', 'G'), ISAPNP_FUNCTION(0x2610),
+	  (unsigned long) "Teles 16.3c" },
+	{ ISAPNP_VENDOR('S', 'F', 'M'), ISAPNP_FUNCTION(0x0001),
+	  ISAPNP_VENDOR('S', 'F', 'M'), ISAPNP_FUNCTION(0x0001),
+	  (unsigned long) "Tornado Tipa C" },
+	{ ISAPNP_VENDOR('K', 'Y', 'E'), ISAPNP_FUNCTION(0x0001),
+	  ISAPNP_VENDOR('K', 'Y', 'E'), ISAPNP_FUNCTION(0x0001),
 	  (unsigned long) "Genius Speed Surfer" },
 	{ 0, }
 };
@@ -169,6 +223,11 @@ static struct pnp_card *pnp_c __devinitdata = NULL;
 
 int __devinit
 setup_hfcs(struct IsdnCard *card)
+static struct isapnp_device_id *ipid = &hfc_ids[0];
+static struct pnp_card *pnp_c = NULL;
+#endif
+
+int setup_hfcs(struct IsdnCard *card)
 {
 	struct IsdnCardState *cs = card->cs;
 	char tmp[64];
@@ -195,6 +254,22 @@ setup_hfcs(struct IsdnCard *card)
 						printk(KERN_WARNING "%s: pnp_activate_dev ret(%d)\n",
 							__func__, err);
 						return(0);
+		while (ipid->card_vendor) {
+			if ((pnp_c = pnp_find_card(ipid->card_vendor,
+						   ipid->card_device, pnp_c))) {
+				pnp_d = NULL;
+				if ((pnp_d = pnp_find_dev(pnp_c,
+							  ipid->vendor, ipid->function, pnp_d))) {
+					int err;
+
+					printk(KERN_INFO "HiSax: %s detected\n",
+					       (char *)ipid->driver_data);
+					pnp_disable_dev(pnp_d);
+					err = pnp_activate_dev(pnp_d);
+					if (err < 0) {
+						printk(KERN_WARNING "%s: pnp_activate_dev ret(%d)\n",
+						       __func__, err);
+						return (0);
 					}
 					card->para[1] = pnp_port_start(pnp_d, 0);
 					card->para[0] = pnp_irq(pnp_d, 0);
@@ -203,6 +278,9 @@ setup_hfcs(struct IsdnCard *card)
 							card->para[0], card->para[1]);
 						pnp_disable_dev(pnp_d);
 						return(0);
+						       card->para[0], card->para[1]);
+						pnp_disable_dev(pnp_d);
+						return (0);
 					}
 					break;
 				} else {
@@ -215,6 +293,10 @@ setup_hfcs(struct IsdnCard *card)
 		if (!ipid->card_vendor) {
 			printk(KERN_INFO "HFC PnP: no ISAPnP card found\n");
 			return(0);
+		}
+		if (!ipid->card_vendor) {
+			printk(KERN_INFO "HFC PnP: no ISAPnP card found\n");
+			return (0);
 		}
 	}
 #endif
@@ -232,6 +314,7 @@ setup_hfcs(struct IsdnCard *card)
 		cs->hw.hfcD.bfifosize = 1024 + 512;
 	} else if (cs->typ == ISDN_CTYPE_ACERP10) {
 		cs->hw.hfcD.bfifosize = 7*1024 + 512;
+		cs->hw.hfcD.bfifosize = 7 * 1024 + 512;
 	} else
 		return (0);
 	if (!request_region(cs->hw.hfcD.addr, 2, "HFCS isdn")) {

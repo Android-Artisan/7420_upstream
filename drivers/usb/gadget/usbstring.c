@@ -13,6 +13,11 @@
 #include <linux/string.h>
 #include <linux/device.h>
 #include <linux/init.h>
+#include <linux/module.h>
+#include <linux/list.h>
+#include <linux/string.h>
+#include <linux/device.h>
+#include <linux/nls.h>
 
 #include <linux/usb/ch9.h>
 #include <linux/usb/gadget.h>
@@ -89,6 +94,7 @@ fail:
  * @table: of c strings encoded using UTF-8
  * @id: string id, from low byte of wValue in get string descriptor
  * @buf: at least 256 bytes
+ * @buf: at least 256 bytes, must be 16-bit aligned
  *
  * Finds the UTF-8 string matching the ID, and converts it into a
  * string descriptor in utf16-le.
@@ -127,6 +133,9 @@ usb_gadget_get_string (struct usb_gadget_strings *table, int id, u8 *buf)
 	len = min ((size_t) 126, strlen (s->s));
 	memset (buf + 2, 0, 2 * len);	/* zero all the bytes */
 	len = utf8_to_utf16le(s->s, (__le16 *)&buf[2], len);
+	len = min((size_t)USB_MAX_STRING_LEN, strlen(s->s));
+	len = utf8s_to_utf16s(s->s, len, UTF16_LITTLE_ENDIAN,
+			(wchar_t *) &buf[2], USB_MAX_STRING_LEN);
 	if (len < 0)
 		return -EINVAL;
 	buf [0] = (len + 1) * 2;
@@ -134,3 +143,4 @@ usb_gadget_get_string (struct usb_gadget_strings *table, int id, u8 *buf)
 	return buf [0];
 }
 
+EXPORT_SYMBOL_GPL(usb_gadget_get_string);

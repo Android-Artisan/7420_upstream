@@ -9,6 +9,7 @@
 #include <linux/stat.h>
 #include <linux/time.h>
 #include <linux/kernel.h>
+#include <linux/gfp.h>
 #include <linux/mm.h>
 #include <linux/shm.h>
 #include <linux/errno.h>
@@ -21,6 +22,12 @@
 #include "ncplib_kernel.h"
 #include <asm/uaccess.h>
 #include <asm/system.h>
+#include <linux/fcntl.h>
+#include <linux/memcontrol.h>
+
+#include <asm/uaccess.h>
+
+#include "ncp_fs.h"
 
 /*
  * Fill in the supplied page for mmap
@@ -33,6 +40,7 @@ static int ncp_file_mmap_fault(struct vm_area_struct *area,
 	struct file *file = area->vm_file;
 	struct dentry *dentry = file->f_path.dentry;
 	struct inode *inode = dentry->d_inode;
+	struct inode *inode = file_inode(area->vm_file);
 	char *pg_addr;
 	unsigned int already_read;
 	unsigned int count;
@@ -96,6 +104,14 @@ static int ncp_file_mmap_fault(struct vm_area_struct *area,
 }
 
 static struct vm_operations_struct ncp_file_mmap =
+	 * -- nyc
+	 */
+	count_vm_event(PGMAJFAULT);
+	mem_cgroup_count_vm_event(area->vm_mm, PGMAJFAULT);
+	return VM_FAULT_MAJOR;
+}
+
+static const struct vm_operations_struct ncp_file_mmap =
 {
 	.fault = ncp_file_mmap_fault,
 };
@@ -107,6 +123,9 @@ int ncp_mmap(struct file *file, struct vm_area_struct *vma)
 	struct inode *inode = file->f_path.dentry->d_inode;
 	
 	DPRINTK("ncp_mmap: called\n");
+	struct inode *inode = file_inode(file);
+	
+	ncp_dbg(1, "called\n");
 
 	if (!ncp_conn_valid(NCP_SERVER(inode)))
 		return -EIO;
@@ -117,6 +136,7 @@ int ncp_mmap(struct file *file, struct vm_area_struct *vma)
 	/* we do not support files bigger than 4GB... We eventually 
 	   supports just 4GB... */
 	if (((vma->vm_end - vma->vm_start) >> PAGE_SHIFT) + vma->vm_pgoff 
+	if (vma_pages(vma) + vma->vm_pgoff
 	   > (1U << (32 - PAGE_SHIFT)))
 		return -EFBIG;
 

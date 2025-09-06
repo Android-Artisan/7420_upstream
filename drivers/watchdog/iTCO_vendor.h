@@ -3,6 +3,9 @@
 extern void iTCO_vendor_pre_start(unsigned long, unsigned int);
 extern void iTCO_vendor_pre_stop(unsigned long);
 extern void iTCO_vendor_pre_keepalive(unsigned long, unsigned int);
+extern void iTCO_vendor_pre_start(struct resource *, unsigned int);
+extern void iTCO_vendor_pre_stop(struct resource *);
+extern void iTCO_vendor_pre_keepalive(struct resource *, unsigned int);
 extern void iTCO_vendor_pre_set_heartbeat(unsigned int);
 extern int iTCO_vendor_check_noreboot_on(void);
 #else

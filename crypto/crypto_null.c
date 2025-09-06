@@ -1,4 +1,5 @@
 /* 
+/*
  * Cryptographic API.
  *
  * Null algorithms, aka Much Ado About Nothing.
@@ -6,6 +7,7 @@
  * These are needed for IPsec, and may be useful in general for
  * testing & debugging.
  * 
+ *
  * The null cipher is compliant with RFC2410.
  *
  * Copyright (c) 2002 James Morris <jmorris@intercode.com.au>
@@ -17,6 +19,8 @@
  *
  */
 
+#include <crypto/null.h>
+#include <crypto/internal/hash.h>
 #include <crypto/internal/skcipher.h>
 #include <linux/init.h>
 #include <linux/module.h>
@@ -27,6 +31,9 @@
 #define NULL_BLOCK_SIZE		1
 #define NULL_DIGEST_SIZE	0
 #define NULL_IV_SIZE		0
+static DEFINE_MUTEX(crypto_default_null_skcipher_lock);
+static struct crypto_blkcipher *crypto_default_null_skcipher;
+static int crypto_default_null_skcipher_refcnt;
 
 static int null_compress(struct crypto_tfm *tfm, const u8 *src,
 			 unsigned int slen, u8 *dst, unsigned int *dlen)
@@ -47,6 +54,31 @@ static void null_update(struct crypto_tfm *tfm, const u8 *data,
 
 static void null_final(struct crypto_tfm *tfm, u8 *out)
 { }
+static int null_init(struct shash_desc *desc)
+{
+	return 0;
+}
+
+static int null_update(struct shash_desc *desc, const u8 *data,
+		       unsigned int len)
+{
+	return 0;
+}
+
+static int null_final(struct shash_desc *desc, u8 *out)
+{
+	return 0;
+}
+
+static int null_digest(struct shash_desc *desc, const u8 *data,
+		       unsigned int len, u8 *out)
+{
+	return 0;
+}
+
+static int null_hash_setkey(struct crypto_shash *tfm, const u8 *key,
+			    unsigned int keylen)
+{ return 0; }
 
 static int null_setkey(struct crypto_tfm *tfm, const u8 *key,
 		       unsigned int keylen)
@@ -105,6 +137,23 @@ static struct crypto_alg digest_null = {
 };
 
 static struct crypto_alg cipher_null = {
+static struct shash_alg digest_null = {
+	.digestsize		=	NULL_DIGEST_SIZE,
+	.setkey   		=	null_hash_setkey,
+	.init   		=	null_init,
+	.update 		=	null_update,
+	.finup 			=	null_digest,
+	.digest 		=	null_digest,
+	.final  		=	null_final,
+	.base			=	{
+		.cra_name		=	"digest_null",
+		.cra_flags		=	CRYPTO_ALG_TYPE_SHASH,
+		.cra_blocksize		=	NULL_BLOCK_SIZE,
+		.cra_module		=	THIS_MODULE,
+	}
+};
+
+static struct crypto_alg null_algs[3] = { {
 	.cra_name		=	"cipher_null",
 	.cra_flags		=	CRYPTO_ALG_TYPE_CIPHER,
 	.cra_blocksize		=	NULL_BLOCK_SIZE,
@@ -120,6 +169,7 @@ static struct crypto_alg cipher_null = {
 };
 
 static struct crypto_alg skcipher_null = {
+}, {
 	.cra_name		=	"ecb(cipher_null)",
 	.cra_driver_name	=	"ecb-cipher_null",
 	.cra_priority		=	100,
@@ -141,6 +191,55 @@ static struct crypto_alg skcipher_null = {
 MODULE_ALIAS("compress_null");
 MODULE_ALIAS("digest_null");
 MODULE_ALIAS("cipher_null");
+}, {
+	.cra_name		=	"compress_null",
+	.cra_flags		=	CRYPTO_ALG_TYPE_COMPRESS,
+	.cra_blocksize		=	NULL_BLOCK_SIZE,
+	.cra_ctxsize		=	0,
+	.cra_module		=	THIS_MODULE,
+	.cra_u			=	{ .compress = {
+	.coa_compress		=	null_compress,
+	.coa_decompress		=	null_compress } }
+} };
+
+MODULE_ALIAS_CRYPTO("compress_null");
+MODULE_ALIAS_CRYPTO("digest_null");
+MODULE_ALIAS_CRYPTO("cipher_null");
+
+struct crypto_blkcipher *crypto_get_default_null_skcipher(void)
+{
+	struct crypto_blkcipher *tfm;
+
+	mutex_lock(&crypto_default_null_skcipher_lock);
+	tfm = crypto_default_null_skcipher;
+
+	if (!tfm) {
+		tfm = crypto_alloc_blkcipher("ecb(cipher_null)", 0, 0);
+		if (IS_ERR(tfm))
+			goto unlock;
+
+		crypto_default_null_skcipher = tfm;
+	}
+
+	crypto_default_null_skcipher_refcnt++;
+
+unlock:
+	mutex_unlock(&crypto_default_null_skcipher_lock);
+
+	return tfm;
+}
+EXPORT_SYMBOL_GPL(crypto_get_default_null_skcipher);
+
+void crypto_put_default_null_skcipher(void)
+{
+	mutex_lock(&crypto_default_null_skcipher_lock);
+	if (!--crypto_default_null_skcipher_refcnt) {
+		crypto_free_blkcipher(crypto_default_null_skcipher);
+		crypto_default_null_skcipher = NULL;
+	}
+	mutex_unlock(&crypto_default_null_skcipher_lock);
+}
+EXPORT_SYMBOL_GPL(crypto_put_default_null_skcipher);
 
 static int __init crypto_null_mod_init(void)
 {
@@ -172,6 +271,21 @@ out_unregister_skcipher:
 out_unregister_cipher:
 	crypto_unregister_alg(&cipher_null);
 	goto out;
+
+	ret = crypto_register_algs(null_algs, ARRAY_SIZE(null_algs));
+	if (ret < 0)
+		goto out;
+
+	ret = crypto_register_shash(&digest_null);
+	if (ret < 0)
+		goto out_unregister_algs;
+
+	return 0;
+
+out_unregister_algs:
+	crypto_unregister_algs(null_algs, ARRAY_SIZE(null_algs));
+out:
+	return ret;
 }
 
 static void __exit crypto_null_mod_fini(void)
@@ -180,6 +294,8 @@ static void __exit crypto_null_mod_fini(void)
 	crypto_unregister_alg(&digest_null);
 	crypto_unregister_alg(&skcipher_null);
 	crypto_unregister_alg(&cipher_null);
+	crypto_unregister_shash(&digest_null);
+	crypto_unregister_algs(null_algs, ARRAY_SIZE(null_algs));
 }
 
 module_init(crypto_null_mod_init);

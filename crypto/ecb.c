@@ -56,6 +56,7 @@ static int crypto_ecb_crypt(struct blkcipher_desc *desc,
 		do {
 			fn(crypto_cipher_tfm(tfm), wdst, wsrc);
 	
+
 			wsrc += bsize;
 			wdst += bsize;
 		} while ((nbytes -= bsize) >= bsize);
@@ -185,3 +186,4 @@ module_exit(crypto_ecb_module_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("ECB block cipher algorithm");
+MODULE_ALIAS_CRYPTO("ecb");

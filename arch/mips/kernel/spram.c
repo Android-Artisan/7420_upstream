@@ -17,6 +17,8 @@
 #include <asm/fpu.h>
 #include <asm/mipsregs.h>
 #include <asm/system.h>
+#include <asm/fpu.h>
+#include <asm/mipsregs.h>
 #include <asm/r4kcache.h>
 #include <asm/hazards.h>
 
@@ -40,6 +42,7 @@
  * Different semantics to the set_c0_* function built by __BUILD_SET_C0
  */
 static __cpuinit unsigned int bis_c0_errctl(unsigned int set)
+static unsigned int bis_c0_errctl(unsigned int set)
 {
 	unsigned int res;
 	res = read_c0_errctl();
@@ -48,6 +51,7 @@ static __cpuinit unsigned int bis_c0_errctl(unsigned int set)
 }
 
 static __cpuinit void ispram_store_tag(unsigned int offset, unsigned int data)
+static void ispram_store_tag(unsigned int offset, unsigned int data)
 {
 	unsigned int errctl;
 
@@ -67,6 +71,7 @@ static __cpuinit void ispram_store_tag(unsigned int offset, unsigned int data)
 
 
 static __cpuinit unsigned int ispram_load_tag(unsigned int offset)
+static unsigned int ispram_load_tag(unsigned int offset)
 {
 	unsigned int data;
 	unsigned int errctl;
@@ -85,6 +90,7 @@ static __cpuinit unsigned int ispram_load_tag(unsigned int offset)
 }
 
 static __cpuinit void dspram_store_tag(unsigned int offset, unsigned int data)
+static void dspram_store_tag(unsigned int offset, unsigned int data)
 {
 	unsigned int errctl;
 
@@ -101,6 +107,7 @@ static __cpuinit void dspram_store_tag(unsigned int offset, unsigned int data)
 
 
 static __cpuinit unsigned int dspram_load_tag(unsigned int offset)
+static unsigned int dspram_load_tag(unsigned int offset)
 {
 	unsigned int data;
 	unsigned int errctl;
@@ -118,6 +125,7 @@ static __cpuinit unsigned int dspram_load_tag(unsigned int offset)
 }
 
 static __cpuinit void probe_spram(char *type,
+static void probe_spram(char *type,
 	    unsigned int base,
 	    unsigned int (*read)(unsigned int),
 	    void (*write)(unsigned int, unsigned int))
@@ -208,6 +216,21 @@ __cpuinit void spram_config(void)
 	case CPU_24K:
 	case CPU_34K:
 	case CPU_74K:
+void spram_config(void)
+{
+	unsigned int config0;
+
+	switch (current_cpu_type()) {
+	case CPU_24K:
+	case CPU_34K:
+	case CPU_74K:
+	case CPU_1004K:
+	case CPU_1074K:
+	case CPU_INTERAPTIV:
+	case CPU_PROAPTIV:
+	case CPU_P5600:
+	case CPU_QEMU_GENERIC:
+	case CPU_I6400:
 		config0 = read_c0_config();
 		/* FIXME: addresses are Malta specific */
 		if (config0 & (1<<24)) {

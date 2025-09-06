@@ -151,7 +151,6 @@ void debug_rt_mutex_print_deadlock(struct rt_mutex_waiter *waiter)
 
 	TRACE_OFF_NOLOCK();
 
-	printk("\n============================================\n");
 	printk(  "[ BUG: circular locking deadlock detected! ]\n");
 	printk(  "--------------------------------------------\n");
 	printk("%s/%d is deadlocking current task %s/%d\n\n",

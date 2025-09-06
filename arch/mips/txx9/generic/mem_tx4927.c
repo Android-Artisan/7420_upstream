@@ -5,6 +5,10 @@
  *
  * Author: MontaVista Software, Inc.
  *         source@mvista.com
+ * common tx4927 memory interface
+ *
+ * Author: MontaVista Software, Inc.
+ *	   source@mvista.com
  *
  * Copyright 2001-2002 MontaVista Software Inc.
  *

@@ -2,6 +2,7 @@
  * definition for store system information stsi
  *
  * Copyright IBM Corp. 2001,2008
+ * Copyright IBM Corp. 2001, 2008
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License (version 2 only)
@@ -16,6 +17,17 @@
 
 struct sysinfo_1_1_1 {
 	char reserved_0[32];
+#include <asm/bitsperlong.h>
+#include <linux/uuid.h>
+
+struct sysinfo_1_1_1 {
+	unsigned char p:1;
+	unsigned char :6;
+	unsigned char t:1;
+	unsigned char :8;
+	unsigned char ccr;
+	unsigned char cai;
+	char reserved_0[28];
 	char manufacturer[16];
 	char type[4];
 	char reserved_1[12];
@@ -28,6 +40,14 @@ struct sysinfo_1_1_1 {
 	char model_cap_rating[4];
 	char model_perm_cap_rating[4];
 	char model_temp_cap_rating[4];
+	unsigned int model_cap_rating;
+	unsigned int model_perm_cap_rating;
+	unsigned int model_temp_cap_rating;
+	unsigned char typepct[5];
+	unsigned char reserved_2[3];
+	unsigned int ncr;
+	unsigned int npr;
+	unsigned int ntr;
 };
 
 struct sysinfo_1_2_1 {
@@ -44,6 +64,9 @@ struct sysinfo_1_2_2 {
 	unsigned short acc_offset;
 	char reserved_1[24];
 	unsigned int secondary_capability;
+	char reserved_1[20];
+	unsigned int nominal_cap;
+	unsigned int secondary_cap;
 	unsigned int capability;
 	unsigned short cpus_total;
 	unsigned short cpus_configured;
@@ -77,6 +100,11 @@ struct sysinfo_2_2_2 {
 	char name[8];
 	unsigned int caf;
 	char reserved_2[16];
+	char reserved_2[8];
+	unsigned char mt_installed;
+	unsigned char mt_general;
+	unsigned char mt_psmtid;
+	char reserved_3[5];
 	unsigned short cpus_dedicated;
 	unsigned short cpus_shared;
 };
@@ -88,6 +116,8 @@ struct sysinfo_2_2_2 {
 struct sysinfo_3_2_2 {
 	char reserved_0[31];
 	unsigned char count;
+	unsigned char :4;
+	unsigned char count:4;
 	struct {
 		char reserved_0[4];
 		unsigned short cpus_total;
@@ -117,5 +147,63 @@ static inline int stsi(void *sysinfo, int fc, int sel1, int sel2)
 		: "cc", "memory");
 	return r0;
 }
+		char reserved_1[3];
+		char ext_name_encoding;
+		unsigned int reserved_2;
+		uuid_be uuid;
+	} vm[8];
+	char reserved_3[1504];
+	char ext_names[8][256];
+};
+
+extern int topology_max_mnest;
+
+#define TOPOLOGY_CORE_BITS	64
+#define TOPOLOGY_NR_MAG		6
+
+struct topology_core {
+	unsigned char nl;
+	unsigned char reserved0[3];
+	unsigned char :6;
+	unsigned char pp:2;
+	unsigned char reserved1;
+	unsigned short origin;
+	unsigned long mask[TOPOLOGY_CORE_BITS / BITS_PER_LONG];
+};
+
+struct topology_container {
+	unsigned char nl;
+	unsigned char reserved[6];
+	unsigned char id;
+};
+
+union topology_entry {
+	unsigned char nl;
+	struct topology_core cpu;
+	struct topology_container container;
+};
+
+struct sysinfo_15_1_x {
+	unsigned char reserved0[2];
+	unsigned short length;
+	unsigned char mag[TOPOLOGY_NR_MAG];
+	unsigned char reserved1;
+	unsigned char mnest;
+	unsigned char reserved2[4];
+	union topology_entry tle[0];
+};
+
+int stsi(void *sysinfo, int fc, int sel1, int sel2);
+
+/*
+ * Service level reporting interface.
+ */
+struct service_level {
+	struct list_head list;
+	void (*seq_print)(struct seq_file *, struct service_level *);
+};
+
+int register_service_level(struct service_level *);
+int unregister_service_level(struct service_level *);
 
 #endif /* __ASM_S390_SYSINFO_H */

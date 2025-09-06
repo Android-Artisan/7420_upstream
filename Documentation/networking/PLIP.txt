@@ -14,7 +14,6 @@ This device interface allows a point-to-point connection between two
 parallel ports to appear as a IP network interface.
 
 What is PLIP?
-=============
 
 PLIP is Parallel Line IP, that is, the transportation of IP packages
 over a parallel port. In the case of a PC, the obvious choice is the
@@ -24,7 +23,6 @@ cable]. [The protocol used to pack IP packages, is a simple one
 initiated by Crynwr.]
 
 Advantages of PLIP
-==================
 
 It's cheap, it's available everywhere, and it's easy.
 
@@ -41,7 +39,6 @@ cables, everything else is software configuration [which in principle
 could be made very easy.]
 
 Disadvantages of PLIP
-=====================
 
 Doesn't work over a modem, like SLIP and PPP. Limited range, 15 m.
 Can only be used to connect three (?) Linux boxes. Doesn't connect to
@@ -49,7 +46,6 @@ an existing Ethernet. Isn't standard (not even de facto standard, like
 SLIP).
 
 Performance
-===========
 
 PLIP easily outperforms Ethernet cards....(ups, I was dreaming, but
 it *is* getting late. EOB)
@@ -62,7 +58,6 @@ that uses the parallel port subsystem of the kernel in order to properly
 share parallel ports between PLIP and other services.
 
 IRQs and trigger timeouts
-=========================
 
 When a parallel port used for a PLIP driver has an IRQ configured to it, the
 PLIP driver is signaled whenever data is sent to it via the cable, such that
@@ -120,7 +115,6 @@ ports.  This allows byte-wide transfers and avoids reconstructing
 nibbles into bytes, leading to much faster transfers.
 
 Parallel Transfer Mode 0 Cable
-==============================
 
 The cable for the first transfer mode is a standard
 printer "null" cable which transfers data four bits at a time using
@@ -152,7 +146,6 @@ If the cable you are using has a metallic shield it should be
 connected to the metallic DB-25 shell at one end only.
 
 Parallel Transfer Mode 1
-========================
 
 The second data transfer method relies on both machines having
 bi-directional parallel ports, rather than output-only ``printer''
@@ -185,7 +178,6 @@ Once again, if the cable you are using has a metallic shield it should
 be connected to the metallic DB-25 shell at one end only.
 
 PLIP Mode 0 transfer protocol
-=============================
 
 The PLIP driver is compatible with the "Crynwr" parallel port transfer
 standard in Mode 0.  That standard specifies the following protocol:

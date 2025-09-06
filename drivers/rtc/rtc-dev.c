@@ -13,6 +13,11 @@
 
 #include <linux/module.h>
 #include <linux/rtc.h>
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
+#include <linux/module.h>
+#include <linux/rtc.h>
+#include <linux/sched.h>
 #include "rtc-core.h"
 
 static dev_t rtc_devt;
@@ -62,6 +67,7 @@ static void rtc_uie_task(struct work_struct *work)
 
 	local_irq_disable();
 	spin_lock(&rtc->irq_lock);
+	spin_lock_irq(&rtc->irq_lock);
 	if (rtc->stop_uie_polling || err) {
 		rtc->uie_task_active = 0;
 	} else if (rtc->oldsecs != tm.tm_sec) {
@@ -78,6 +84,9 @@ static void rtc_uie_task(struct work_struct *work)
 	if (num)
 		rtc_update_irq(rtc, num, RTC_UF | RTC_IRQF);
 	local_irq_enable();
+	spin_unlock_irq(&rtc->irq_lock);
+	if (num)
+		rtc_handle_legacy_irq(rtc, num, RTC_UF);
 }
 static void rtc_uie_timer(unsigned long data)
 {
@@ -96,6 +105,10 @@ static void clear_uie(struct rtc_device *rtc)
 {
 	spin_lock_irq(&rtc->irq_lock);
 	if (rtc->irq_active) {
+static int clear_uie(struct rtc_device *rtc)
+{
+	spin_lock_irq(&rtc->irq_lock);
+	if (rtc->uie_irq_active) {
 		rtc->stop_uie_polling = 1;
 		if (rtc->uie_timer_active) {
 			spin_unlock_irq(&rtc->irq_lock);
@@ -111,6 +124,10 @@ static void clear_uie(struct rtc_device *rtc)
 		rtc->irq_active = 0;
 	}
 	spin_unlock_irq(&rtc->irq_lock);
+		rtc->uie_irq_active = 0;
+	}
+	spin_unlock_irq(&rtc->irq_lock);
+	return 0;
 }
 
 static int set_uie(struct rtc_device *rtc)
@@ -124,6 +141,8 @@ static int set_uie(struct rtc_device *rtc)
 	spin_lock_irq(&rtc->irq_lock);
 	if (!rtc->irq_active) {
 		rtc->irq_active = 1;
+	if (!rtc->uie_irq_active) {
+		rtc->uie_irq_active = 1;
 		rtc->stop_uie_polling = 0;
 		rtc->oldsecs = tm.tm_sec;
 		rtc->uie_task_active = 1;
@@ -134,6 +153,16 @@ static int set_uie(struct rtc_device *rtc)
 	spin_unlock_irq(&rtc->irq_lock);
 	return 0;
 }
+
+int rtc_dev_update_irq_enable_emul(struct rtc_device *rtc, unsigned int enabled)
+{
+	if (enabled)
+		return set_uie(rtc);
+	else
+		return clear_uie(rtc);
+}
+EXPORT_SYMBOL(rtc_dev_update_irq_enable_emul);
+
 #endif /* CONFIG_RTC_INTF_DEV_UIE_EMUL */
 
 static ssize_t
@@ -256,6 +285,7 @@ static long rtc_dev_ioctl(struct file *file,
 	 * or if that particular ioctl was not implemented
 	 * (-ENOIOCTLCMD), we will try to emulate here.
 	 *
+	/*
 	 * Drivers *SHOULD NOT* provide ioctl implementations
 	 * for these requests.  Instead, provide methods to
 	 * support the following code, so that the RTC's main
@@ -305,11 +335,13 @@ static long rtc_dev_ioctl(struct file *file,
 		 */
 		{
 			unsigned long now, then;
+			time64_t now, then;
 
 			err = rtc_read_time(rtc, &tm);
 			if (err < 0)
 				return err;
 			rtc_tm_to_time(&tm, &now);
+			now = rtc_tm_to_time64(&tm);
 
 			alarm.time.tm_mday = tm.tm_mday;
 			alarm.time.tm_mon = tm.tm_mon;
@@ -322,6 +354,11 @@ static long rtc_dev_ioctl(struct file *file,
 			/* alarm may need to wrap into tomorrow */
 			if (then < now) {
 				rtc_time_to_tm(now + 24 * 60 * 60, &tm);
+			then = rtc_tm_to_time64(&alarm.time);
+
+			/* alarm may need to wrap into tomorrow */
+			if (then < now) {
+				rtc_time64_to_tm(now + 24 * 60 * 60, &tm);
 				alarm.time.tm_mday = tm.tm_mday;
 				alarm.time.tm_mon = tm.tm_mon;
 				alarm.time.tm_year = tm.tm_year;
@@ -356,6 +393,22 @@ static long rtc_dev_ioctl(struct file *file,
 	case RTC_PIE_OFF:
 		err = rtc_irq_set_state(rtc, NULL, 0);
 		break;
+
+	case RTC_AIE_ON:
+		mutex_unlock(&rtc->ops_lock);
+		return rtc_alarm_irq_enable(rtc, 1);
+
+	case RTC_AIE_OFF:
+		mutex_unlock(&rtc->ops_lock);
+		return rtc_alarm_irq_enable(rtc, 0);
+
+	case RTC_UIE_ON:
+		mutex_unlock(&rtc->ops_lock);
+		return rtc_update_irq_enable(rtc, 1);
+
+	case RTC_UIE_OFF:
+		mutex_unlock(&rtc->ops_lock);
+		return rtc_update_irq_enable(rtc, 0);
 
 	case RTC_IRQP_SET:
 		err = rtc_irq_set_freq(rtc, NULL, arg);
@@ -414,6 +467,14 @@ static long rtc_dev_ioctl(struct file *file,
 #endif
 	default:
 		err = -ENOTTY;
+	default:
+		/* Finally try the driver's ioctl interface */
+		if (ops->ioctl) {
+			err = ops->ioctl(rtc->dev.parent, cmd, arg);
+			if (err == -ENOIOCTLCMD)
+				err = -ENOTTY;
+		} else
+			err = -ENOTTY;
 		break;
 	}
 
@@ -435,6 +496,18 @@ static int rtc_dev_release(struct inode *inode, struct file *file)
 #ifdef CONFIG_RTC_INTF_DEV_UIE_EMUL
 	clear_uie(rtc);
 #endif
+	/* We shut down the repeating IRQs that userspace enabled,
+	 * since nothing is listening to them.
+	 *  - Update (UIE) ... currently only managed through ioctls
+	 *  - Periodic (PIE) ... also used through rtc_*() interface calls
+	 *
+	 * Leave the alarm alone; it may be set to trigger a system wakeup
+	 * later, or be used by kernel code, and is a one-shot event anyway.
+	 */
+
+	/* Keep ioctl until all drivers are converted */
+	rtc_dev_ioctl(file, RTC_UIE_OFF, 0);
+	rtc_update_irq_enable(rtc, 0);
 	rtc_irq_set_state(rtc, NULL, 0);
 
 	if (rtc->ops->release)
@@ -467,6 +540,7 @@ void rtc_dev_prepare(struct rtc_device *rtc)
 
 	if (rtc->id >= RTC_DEV_MAX) {
 		pr_debug("%s: too many RTC devices\n", rtc->name);
+		dev_dbg(&rtc->dev, "%s: too many RTC devices\n", rtc->name);
 		return;
 	}
 
@@ -479,6 +553,7 @@ void rtc_dev_prepare(struct rtc_device *rtc)
 
 	cdev_init(&rtc->char_dev, &rtc_dev_fops);
 	rtc->char_dev.owner = rtc->owner;
+	rtc->char_dev.kobj.parent = &rtc->dev.kobj;
 }
 
 void rtc_dev_add_device(struct rtc_device *rtc)
@@ -488,6 +563,10 @@ void rtc_dev_add_device(struct rtc_device *rtc)
 			rtc->name, MAJOR(rtc_devt), rtc->id);
 	else
 		pr_debug("%s: dev (%d:%d)\n", rtc->name,
+		dev_warn(&rtc->dev, "%s: failed to add char device %d:%d\n",
+			rtc->name, MAJOR(rtc_devt), rtc->id);
+	else
+		dev_dbg(&rtc->dev, "%s: dev (%d:%d)\n", rtc->name,
 			MAJOR(rtc_devt), rtc->id);
 }
 
@@ -505,6 +584,7 @@ void __init rtc_dev_init(void)
 	if (err < 0)
 		printk(KERN_ERR "%s: failed to allocate char dev region\n",
 			__FILE__);
+		pr_err("failed to allocate char dev region\n");
 }
 
 void __exit rtc_dev_exit(void)

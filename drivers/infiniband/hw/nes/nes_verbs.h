@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2006 - 2008 NetEffect, Inc. All rights reserved.
+ * Copyright (c) 2006 - 2011 Intel Corporation.  All rights reserved.
  * Copyright (c) 2005 Open Grid Computing, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -40,6 +41,10 @@ struct nes_device;
 #define NES_MAX_USER_DB_REGIONS  4096
 #define NES_MAX_USER_WQ_REGIONS  4096
 
+#define NES_TERM_SENT            0x01
+#define NES_TERM_RCVD            0x02
+#define NES_TERM_DONE            0x04
+
 struct nes_ucontext {
 	struct ib_ucontext ibucontext;
 	struct nes_device  *nesdev;
@@ -75,6 +80,10 @@ struct nes_mr {
 	u16               pbls_used;
 	u8                mode;
 	u8                pbl_4k;
+	__le64            *pages;
+	dma_addr_t        paddr;
+	u32               max_pages;
+	u32		  npages;
 };
 
 struct nes_hw_pb {
@@ -112,10 +121,16 @@ struct nes_cq {
 	spinlock_t       lock;
 	u8               virtual_cq;
 	u8               pad[3];
+	u32		 mcrqf;
 };
 
 struct nes_wq {
 	spinlock_t lock;
+};
+
+struct disconn_work {
+	struct work_struct    work;
+	struct nes_qp         *nesqp;
 };
 
 struct iw_cm_id;
@@ -138,6 +153,12 @@ struct nes_qp {
 	struct nes_hw_qp      hwqp;
 	struct work_struct    work;
 	struct work_struct    ae_work;
+	void                  *ietf_frame;
+	u8                    ietf_frame_size;
+	dma_addr_t            ietf_frame_pbase;
+	struct ib_mr          *lsmm_mr;
+	struct nes_hw_qp      hwqp;
+	struct work_struct    work;
 	enum ib_qp_state      ibqp_state;
 	u32                   iwarp_state;
 	u32                   hte_index;
@@ -148,6 +169,7 @@ struct nes_qp {
 	u32                   mmap_sq_db_index;
 	u32                   mmap_rq_db_index;
 	spinlock_t            lock;
+	spinlock_t            pau_lock;
 	struct nes_qp_context *nesqp_context;
 	dma_addr_t            nesqp_context_pbase;
 	void	              *pbl_vbase;
@@ -165,5 +187,29 @@ struct nes_qp {
 	u8                    hw_tcp_state;
 	u8                    disconn_pending;
 	u8                    destroyed;
+	struct timer_list     terminate_timer;
+	enum ib_event_type    terminate_eventtype;
+	struct sk_buff_head   pau_list;
+	u32                   pau_rcv_nxt;
+	u16                   active_conn:1;
+	u16                   skip_lsmm:1;
+	u16                   user_mode:1;
+	u16                   hte_added:1;
+	u16                   flush_issued:1;
+	u16                   destroyed:1;
+	u16                   sig_all:1;
+	u16                   pau_mode:1;
+	u16                   rsvd:8;
+	u16                   private_data_len;
+	u16                   term_sq_flush_code;
+	u16                   term_rq_flush_code;
+	u8                    hw_iwarp_state;
+	u8                    hw_tcp_state;
+	u8                    term_flags;
+	u8                    sq_kmapped;
+	u8                    pau_busy;
+	u8                    pau_pending;
+	u8                    pau_state;
+	__u64                 nesuqp_addr;
 };
 #endif			/* NES_VERBS_H */

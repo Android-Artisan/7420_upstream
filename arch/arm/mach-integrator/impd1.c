@@ -28,6 +28,17 @@
 #include <asm/sizes.h>
 
 #include "clock.h"
+#include <linux/amba/mmci.h>
+#include <linux/amba/pl061.h>
+#include <linux/io.h>
+#include <linux/platform_data/clk-integrator.h>
+#include <linux/slab.h>
+#include <linux/irqchip/arm-vic.h>
+#include <linux/gpio/machine.h>
+
+#include <asm/sizes.h>
+#include "lm.h"
+#include "impd1.h"
 
 static int module_id;
 
@@ -77,6 +88,9 @@ static void impd1_setvco(struct clk *clk, struct icst525_vco vco)
 #endif
 }
 
+	void __iomem	*vic_base;
+};
+
 void impd1_tweak_control(struct device *dev, u32 mask, u32 val)
 {
 	struct impd1_module *impd1 = dev_get_drvdata(dev);
@@ -88,6 +102,13 @@ void impd1_tweak_control(struct device *dev, u32 mask, u32 val)
 }
 
 EXPORT_SYMBOL(impd1_tweak_control);
+
+/*
+ * MMC support
+ */
+static struct mmci_platform_data mmc_data = {
+	.ocr_mask	= MMC_VDD_32_33|MMC_VDD_33_34,
+};
 
 /*
  * CLCD support
@@ -121,6 +142,7 @@ static struct clcd_panel vga = {
 	.height		= -1,
 	.tim2		= TIM2_BCD | TIM2_IPC,
 	.cntl		= CNTL_LCDTFT | CNTL_LCDVCOMP(1),
+	.caps		= CLCD_CAP_5551,
 	.connector	= IMPD1_CTRL_DISP_VGA,
 	.bpp		= 16,
 	.grayscale	= 0,
@@ -149,6 +171,7 @@ static struct clcd_panel svga = {
 	.tim2		= TIM2_BCD,
 	.cntl		= CNTL_LCDTFT | CNTL_LCDVCOMP(1),
 	.connector	= IMPD1_CTRL_DISP_VGA,
+	.caps		= CLCD_CAP_5551,
 	.bpp		= 16,
 	.grayscale	= 0,
 };
@@ -175,6 +198,7 @@ static struct clcd_panel prospector = {
 	.height		= -1,
 	.tim2		= TIM2_BCD,
 	.cntl		= CNTL_LCDTFT | CNTL_LCDVCOMP(1),
+	.caps		= CLCD_CAP_5551,
 	.fixedtimings	= 1,
 	.connector	= IMPD1_CTRL_DISP_LCD,
 	.bpp		= 16,
@@ -206,6 +230,7 @@ static struct clcd_panel ltm10c209 = {
 	.height		= -1,
 	.tim2		= TIM2_BCD,
 	.cntl		= CNTL_LCDTFT | CNTL_LCDVCOMP(1),
+	.caps		= CLCD_CAP_5551,
 	.fixedtimings	= 1,
 	.connector	= IMPD1_CTRL_DISP_LCD,
 	.bpp		= 16,
@@ -279,6 +304,7 @@ static void impd1fb_clcd_remove(struct clcd_fb *fb)
 
 static struct clcd_board impd1_clcd_data = {
 	.name		= "IM-PD/1",
+	.caps		= CLCD_CAP_5551 | CLCD_CAP_888,
 	.check		= clcdfb_check,
 	.decode		= clcdfb_decode,
 	.disable	= impd1fb_clcd_disable,
@@ -327,6 +353,7 @@ static struct impd1_device impd1_devs[] = {
 		.offset	= 0x00700000,
 		.irq	= { 7, 8 },
 		.id	= 0x00041181,
+		.platform_data = &mmc_data,
 	}, {
 		.offset	= 0x00800000,
 		.irq	= { 9 },
@@ -348,6 +375,21 @@ static int impd1_probe(struct lm_device *dev)
 {
 	struct impd1_module *impd1;
 	int i, ret;
+/*
+ * Valid IRQs: 0 thru 9 and 11, 10 unused.
+ */
+#define IMPD1_VALID_IRQS 0x00000bffU
+
+/*
+ * As this module is bool, it is OK to have this as __init_refok() - no
+ * probe calls will be done after the initial system bootup, as devices
+ * are discovered as part of the machine startup.
+ */
+static int __init_refok impd1_probe(struct lm_device *dev)
+{
+	struct impd1_module *impd1;
+	int irq_base;
+	int i;
 
 	if (dev->id != module_id)
 		return -EINVAL;
@@ -381,6 +423,39 @@ static int impd1_probe(struct lm_device *dev)
 
 		clk_register(&impd1->vcos[i]);
 	}
+	if (!devm_request_mem_region(&dev->dev, dev->resource.start,
+				     SZ_4K, "LM registers"))
+		return -EBUSY;
+
+	impd1 = devm_kzalloc(&dev->dev, sizeof(struct impd1_module),
+			     GFP_KERNEL);
+	if (!impd1)
+		return -ENOMEM;
+
+	impd1->base = devm_ioremap(&dev->dev, dev->resource.start, SZ_4K);
+	if (!impd1->base)
+		return -ENOMEM;
+
+	integrator_impd1_clk_init(impd1->base, dev->id);
+
+	if (!devm_request_mem_region(&dev->dev,
+				     dev->resource.start + 0x03000000,
+				     SZ_4K, "VIC"))
+		return -EBUSY;
+
+	impd1->vic_base = devm_ioremap(&dev->dev,
+				       dev->resource.start + 0x03000000,
+				       SZ_4K);
+	if (!impd1->vic_base)
+		return -ENOMEM;
+
+	irq_base = vic_init_cascaded(impd1->vic_base, dev->irq,
+				     IMPD1_VALID_IRQS, 0);
+
+	lm_set_drvdata(dev, impd1);
+
+	dev_info(&dev->dev, "IM-PD1 found at 0x%08lx\n",
+		 (unsigned long)dev->resource.start);
 
 	for (i = 0; i < ARRAY_SIZE(impd1_devs); i++) {
 		struct impd1_device *idev = impd1_devs + i;
@@ -407,6 +482,66 @@ static int impd1_probe(struct lm_device *dev)
 		if (ret) {
 			dev_err(&d->dev, "unable to register device: %d\n", ret);
 			kfree(d);
+		char devname[32];
+		int irq1 = idev->irq[0];
+		int irq2 = idev->irq[1];
+
+		/* Translate IRQs to IM-PD1 local numberspace */
+		if (irq1)
+			irq1 += irq_base;
+		if (irq2)
+			irq2 += irq_base;
+
+		pc_base = dev->resource.start + idev->offset;
+		snprintf(devname, 32, "lm%x:%5.5lx", dev->id, idev->offset >> 12);
+
+		/* Add GPIO descriptor lookup table for the PL061 block */
+		if (idev->offset == 0x00400000) {
+			struct gpiod_lookup_table *lookup;
+			char *chipname;
+			char *mmciname;
+
+			lookup = devm_kzalloc(&dev->dev,
+					      sizeof(*lookup) + 3 * sizeof(struct gpiod_lookup),
+					      GFP_KERNEL);
+			chipname = devm_kstrdup(&dev->dev, devname, GFP_KERNEL);
+			mmciname = devm_kasprintf(&dev->dev, GFP_KERNEL,
+						  "lm%x:00700", dev->id);
+			if (!lookup || !chipname || !mmciname)
+				return -ENOMEM;
+
+			lookup->dev_id = mmciname;
+			/*
+			 * Offsets on GPIO block 1:
+			 * 3 = MMC WP (write protect)
+			 * 4 = MMC CD (card detect)
+			 *
+			 * Offsets on GPIO block 2:
+			 * 0 = Up key
+			 * 1 = Down key
+			 * 2 = Left key
+			 * 3 = Right key
+			 * 4 = Key lower left
+			 * 5 = Key lower right
+			 */
+			/* We need the two MMCI GPIO entries */
+			lookup->table[0].chip_label = chipname;
+			lookup->table[0].chip_hwnum = 3;
+			lookup->table[0].con_id = "wp";
+			lookup->table[1].chip_label = chipname;
+			lookup->table[1].chip_hwnum = 4;
+			lookup->table[1].con_id = "cd";
+			lookup->table[1].flags = GPIO_ACTIVE_LOW;
+			gpiod_add_lookup_table(lookup);
+		}
+
+		d = amba_ahb_device_add_res(&dev->dev, devname, pc_base, SZ_4K,
+					    irq1, irq2,
+					    idev->platform_data, idev->id,
+					    &dev->resource);
+		if (IS_ERR(d)) {
+			dev_err(&dev->dev, "unable to register device: %ld\n", PTR_ERR(d));
+			continue;
 		}
 	}
 
@@ -442,11 +577,20 @@ static void impd1_remove(struct lm_device *dev)
 	iounmap(impd1->base);
 	kfree(impd1);
 	release_mem_region(dev->resource.start, SZ_4K);
+	device_for_each_child(&dev->dev, NULL, impd1_remove_one);
+	integrator_impd1_clk_exit(dev->id);
+
+	lm_set_drvdata(dev, NULL);
 }
 
 static struct lm_driver impd1_driver = {
 	.drv = {
 		.name	= "impd1",
+		/*
+		 * As we're dropping the probe() function, suppress driver
+		 * binding from sysfs.
+		 */
+		.suppress_bind_attrs = true,
 	},
 	.probe		= impd1_probe,
 	.remove		= impd1_remove,

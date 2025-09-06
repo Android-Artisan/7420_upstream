@@ -25,6 +25,7 @@
  *     along with this program; if not, write to the Free Software 
  *     Foundation, Inc., 59 Temple Place, Suite 330, Boston, 
  *     MA 02111-1307 USA
+ *     along with this program; if not, see <http://www.gnu.org/licenses/>.
  *     
  ********************************************************************/
 
@@ -62,6 +63,7 @@
  */
 struct ircomm_tty_cb {
 	irda_queue_t queue;            /* Must be first */
+	struct tty_port port;
 	magic_t magic;
 
 	int state;                /* Connect state */
@@ -110,6 +112,10 @@ struct ircomm_tty_cb {
 
 	/* Protect concurent access to :
 	 *	o self->open_count
+	struct timer_list watchdog_timer;
+	struct work_struct  tqueue;
+
+	/* Protect concurent access to :
 	 *	o self->ctrl_skb
 	 *	o self->tx_skb
 	 * Maybe other things may gain to be protected as well...
@@ -127,6 +133,13 @@ extern int ircomm_tty_ioctl(struct tty_struct *tty, struct file *file,
 			    unsigned int cmd, unsigned long arg);
 extern void ircomm_tty_set_termios(struct tty_struct *tty, 
 				   struct ktermios *old_termios);
+int ircomm_tty_tiocmget(struct tty_struct *tty);
+int ircomm_tty_tiocmset(struct tty_struct *tty, unsigned int set,
+			unsigned int clear);
+int ircomm_tty_ioctl(struct tty_struct *tty, unsigned int cmd,
+		     unsigned long arg);
+void ircomm_tty_set_termios(struct tty_struct *tty,
+			    struct ktermios *old_termios);
 
 #endif
 

@@ -4,6 +4,7 @@
  * for more details.
  *
  * Copyright (c) 2004-2008 Silicon Graphics, Inc.  All Rights Reserved.
+ * Copyright (c) 2004-2009 Silicon Graphics, Inc.  All Rights Reserved.
  */
 
 /*
@@ -44,6 +45,7 @@
  */
 
 #include <linux/module.h>
+#include <linux/slab.h>
 #include <linux/sysctl.h>
 #include <linux/device.h>
 #include <linux/delay.h>
@@ -51,6 +53,10 @@
 #include <linux/kdebug.h>
 #include <linux/kthread.h>
 #include "xpc.h"
+
+#ifdef CONFIG_X86_64
+#include <asm/traps.h>
+#endif
 
 /* define two XPC debug device structures to be used with dev_dbg() et al */
 
@@ -60,11 +66,13 @@ struct device_driver xpc_dbg_name = {
 
 struct device xpc_part_dbg_subname = {
 	.bus_id = {0},		/* set to "part" at xpc_init() time */
+	.init_name = "",	/* set to "part" at xpc_init() time */
 	.driver = &xpc_dbg_name
 };
 
 struct device xpc_chan_dbg_subname = {
 	.bus_id = {0},		/* set to "chan" at xpc_init() time */
+	.init_name = "",	/* set to "chan" at xpc_init() time */
 	.driver = &xpc_dbg_name
 };
 
@@ -90,6 +98,8 @@ static int xpc_disengage_max_timelimit = 120;
 static ctl_table xpc_sys_xpc_hb_dir[] = {
 	{
 	 .ctl_name = CTL_UNNUMBERED,
+static struct ctl_table xpc_sys_xpc_hb_dir[] = {
+	{
 	 .procname = "hb_interval",
 	 .data = &xpc_hb_interval,
 	 .maxlen = sizeof(int),
@@ -100,12 +110,17 @@ static ctl_table xpc_sys_xpc_hb_dir[] = {
 	 .extra2 = &xpc_hb_max_interval},
 	{
 	 .ctl_name = CTL_UNNUMBERED,
+	 .proc_handler = proc_dointvec_minmax,
+	 .extra1 = &xpc_hb_min_interval,
+	 .extra2 = &xpc_hb_max_interval},
+	{
 	 .procname = "hb_check_interval",
 	 .data = &xpc_hb_check_interval,
 	 .maxlen = sizeof(int),
 	 .mode = 0644,
 	 .proc_handler = &proc_dointvec_minmax,
 	 .strategy = &sysctl_intvec,
+	 .proc_handler = proc_dointvec_minmax,
 	 .extra1 = &xpc_hb_check_min_interval,
 	 .extra2 = &xpc_hb_check_max_interval},
 	{}
@@ -113,6 +128,8 @@ static ctl_table xpc_sys_xpc_hb_dir[] = {
 static ctl_table xpc_sys_xpc_dir[] = {
 	{
 	 .ctl_name = CTL_UNNUMBERED,
+static struct ctl_table xpc_sys_xpc_dir[] = {
+	{
 	 .procname = "hb",
 	 .mode = 0555,
 	 .child = xpc_sys_xpc_hb_dir},
@@ -124,6 +141,7 @@ static ctl_table xpc_sys_xpc_dir[] = {
 	 .mode = 0644,
 	 .proc_handler = &proc_dointvec_minmax,
 	 .strategy = &sysctl_intvec,
+	 .proc_handler = proc_dointvec_minmax,
 	 .extra1 = &xpc_disengage_min_timelimit,
 	 .extra2 = &xpc_disengage_max_timelimit},
 	{}
@@ -131,6 +149,8 @@ static ctl_table xpc_sys_xpc_dir[] = {
 static ctl_table xpc_sys_dir[] = {
 	{
 	 .ctl_name = CTL_UNNUMBERED,
+static struct ctl_table xpc_sys_dir[] = {
+	{
 	 .procname = "xpc",
 	 .mode = 0555,
 	 .child = xpc_sys_xpc_dir},
@@ -225,6 +245,7 @@ enum xp_retval (*xpc_send_payload) (struct xpc_channel *ch, u32 flags,
 				    u8 notify_type, xpc_notify_func func,
 				    void *key);
 void (*xpc_received_payload) (struct xpc_channel *ch, void *payload);
+struct xpc_arch_operations xpc_arch_ops;
 
 /*
  * Timer function to enforce the timelimit on the partition disengage.
@@ -240,6 +261,7 @@ xpc_timeout_partition_disengage(unsigned long data)
 
 	DBUG_ON(part->disengage_timeout != 0);
 	DBUG_ON(xpc_partition_engaged(XPC_PARTID(part)));
+	DBUG_ON(xpc_arch_ops.partition_engaged(XPC_PARTID(part)));
 }
 
 /*
@@ -251,6 +273,7 @@ static void
 xpc_hb_beater(unsigned long dummy)
 {
 	xpc_increment_heartbeat();
+	xpc_arch_ops.increment_heartbeat();
 
 	if (time_is_before_eq_jiffies(xpc_hb_check_timeout))
 		wake_up_interruptible(&xpc_activate_IRQ_wq);
@@ -263,6 +286,7 @@ static void
 xpc_start_hb_beater(void)
 {
 	xpc_heartbeat_init();
+	xpc_arch_ops.heartbeat_init();
 	init_timer(&xpc_hb_timer);
 	xpc_hb_timer.function = xpc_hb_beater;
 	xpc_hb_beater(0);
@@ -273,6 +297,7 @@ xpc_stop_hb_beater(void)
 {
 	del_timer_sync(&xpc_hb_timer);
 	xpc_heartbeat_exit();
+	xpc_arch_ops.heartbeat_exit();
 }
 
 /*
@@ -302,6 +327,7 @@ xpc_check_remote_hb(void)
 		}
 
 		ret = xpc_get_remote_heartbeat(part);
+		ret = xpc_arch_ops.get_remote_heartbeat(part);
 		if (ret != xpSuccess)
 			XPC_DEACTIVATE_PARTITION(part, ret);
 	}
@@ -319,6 +345,7 @@ xpc_hb_checker(void *ignore)
 	/* this thread was marked active by xpc_hb_init() */
 
 	set_cpus_allowed_ptr(current, &cpumask_of_cpu(XPC_HB_CHECK_CPU));
+	set_cpus_allowed_ptr(current, cpumask_of(XPC_HB_CHECK_CPU));
 
 	/* set our heartbeating to other partitions into motion */
 	xpc_hb_check_timeout = jiffies + (xpc_hb_check_interval * HZ);
@@ -353,6 +380,7 @@ xpc_hb_checker(void *ignore)
 			dev_dbg(xpc_part, "processing activate IRQs "
 				"received\n");
 			xpc_process_activate_IRQ_rcvd();
+			xpc_arch_ops.process_activate_IRQ_rcvd();
 		}
 
 		/* wait for IRQ or timeout */
@@ -528,6 +556,7 @@ xpc_setup_ch_structures(struct xpc_partition *part)
 	}
 
 	ret = xpc_setup_ch_structures_sn(part);
+	ret = xpc_arch_ops.setup_ch_structures(part);
 	if (ret != xpSuccess)
 		goto out_2;
 
@@ -572,6 +601,7 @@ xpc_teardown_ch_structures(struct xpc_partition *part)
 	/* now we can begin tearing down the infrastructure */
 
 	xpc_teardown_ch_structures_sn(part);
+	xpc_arch_ops.teardown_ch_structures(part);
 
 	kfree(part->remote_openclose_args_base);
 	part->remote_openclose_args = NULL;
@@ -620,11 +650,13 @@ xpc_activating(void *__partid)
 	dev_dbg(xpc_part, "activating partition %d\n", partid);
 
 	xpc_allow_hb(partid);
+	xpc_arch_ops.allow_hb(partid);
 
 	if (xpc_setup_ch_structures(part) == xpSuccess) {
 		(void)xpc_part_ref(part);	/* this will always succeed */
 
 		if (xpc_make_first_contact(part) == xpSuccess) {
+		if (xpc_arch_ops.make_first_contact(part) == xpSuccess) {
 			xpc_mark_partition_active(part);
 			xpc_channel_mgr(part);
 			/* won't return until partition is deactivating */
@@ -635,11 +667,13 @@ xpc_activating(void *__partid)
 	}
 
 	xpc_disallow_hb(partid);
+	xpc_arch_ops.disallow_hb(partid);
 	xpc_mark_partition_inactive(part);
 
 	if (part->reason == xpReactivating) {
 		/* interrupting ourselves results in activating partition */
 		xpc_request_partition_reactivation(part);
+		xpc_arch_ops.request_partition_reactivation(part);
 	}
 
 	return 0;
@@ -716,6 +750,13 @@ xpc_kthread_waitmsgs(struct xpc_partition *part, struct xpc_channel *ch)
 		/* deliver messages to their intended recipients */
 
 		while (xpc_n_of_deliverable_payloads(ch) > 0 &&
+	int (*n_of_deliverable_payloads) (struct xpc_channel *) =
+		xpc_arch_ops.n_of_deliverable_payloads;
+
+	do {
+		/* deliver messages to their intended recipients */
+
+		while (n_of_deliverable_payloads(ch) > 0 &&
 		       !(ch->flags & XPC_C_DISCONNECTING)) {
 			xpc_deliver_payload(ch);
 		}
@@ -732,6 +773,7 @@ xpc_kthread_waitmsgs(struct xpc_partition *part, struct xpc_channel *ch)
 
 		(void)wait_event_interruptible_exclusive(ch->idle_wq,
 				(xpc_n_of_deliverable_payloads(ch) > 0 ||
+				(n_of_deliverable_payloads(ch) > 0 ||
 				 (ch->flags & XPC_C_DISCONNECTING)));
 
 		atomic_dec(&ch->kthreads_idle);
@@ -748,6 +790,8 @@ xpc_kthread_start(void *args)
 	struct xpc_channel *ch;
 	int n_needed;
 	unsigned long irq_flags;
+	int (*n_of_deliverable_payloads) (struct xpc_channel *) =
+		xpc_arch_ops.n_of_deliverable_payloads;
 
 	dev_dbg(xpc_chan, "kthread starting, partid=%d, channel=%d\n",
 		partid, ch_number);
@@ -777,6 +821,7 @@ xpc_kthread_start(void *args)
 			 * need one less than total #of messages to deliver.
 			 */
 			n_needed = xpc_n_of_deliverable_payloads(ch) - 1;
+			n_needed = n_of_deliverable_payloads(ch) - 1;
 			if (n_needed > 0 && !(ch->flags & XPC_C_DISCONNECTING))
 				xpc_activate_kthreads(ch, n_needed);
 
@@ -805,6 +850,7 @@ xpc_kthread_start(void *args)
 	if (atomic_dec_return(&ch->kthreads_assigned) == 0 &&
 	    atomic_dec_return(&part->nchannels_engaged) == 0) {
 		xpc_indicate_partition_disengaged(part);
+		xpc_arch_ops.indicate_partition_disengaged(part);
 	}
 
 	xpc_msgqueue_deref(ch);
@@ -836,6 +882,8 @@ xpc_create_kthreads(struct xpc_channel *ch, int needed,
 	u64 args = XPC_PACK_ARGS(ch->partid, ch->number);
 	struct xpc_partition *part = &xpc_partitions[ch->partid];
 	struct task_struct *kthread;
+	void (*indicate_partition_disengaged) (struct xpc_partition *) =
+		xpc_arch_ops.indicate_partition_disengaged;
 
 	while (needed-- > 0) {
 
@@ -858,6 +906,7 @@ xpc_create_kthreads(struct xpc_channel *ch, int needed,
 		} else if (atomic_inc_return(&ch->kthreads_assigned) == 1 &&
 			   atomic_inc_return(&part->nchannels_engaged) == 1) {
 				xpc_indicate_partition_engaged(part);
+			xpc_arch_ops.indicate_partition_engaged(part);
 		}
 		(void)xpc_part_ref(part);
 		xpc_msgqueue_ref(ch);
@@ -880,6 +929,7 @@ xpc_create_kthreads(struct xpc_channel *ch, int needed,
 			if (atomic_dec_return(&ch->kthreads_assigned) == 0 &&
 			    atomic_dec_return(&part->nchannels_engaged) == 0) {
 				xpc_indicate_partition_disengaged(part);
+				indicate_partition_disengaged(part);
 			}
 			xpc_msgqueue_deref(ch);
 			xpc_part_deref(part);
@@ -993,11 +1043,13 @@ xpc_setup_partitions(void)
 	}
 
 	return xpc_setup_partitions_sn();
+	return xpc_arch_ops.setup_partitions();
 }
 
 static void
 xpc_teardown_partitions(void)
 {
+	xpc_arch_ops.teardown_partitions();
 	kfree(xpc_partitions);
 }
 
@@ -1054,6 +1106,7 @@ xpc_do_exit(enum xp_retval reason)
 		}
 
 		if (xpc_any_partition_engaged()) {
+		if (xpc_arch_ops.any_partition_engaged()) {
 			if (time_is_before_jiffies(printmsg_time)) {
 				dev_info(xpc_part, "waiting for remote "
 					 "partitions to deactivate, timeout in "
@@ -1086,6 +1139,7 @@ xpc_do_exit(enum xp_retval reason)
 
 	DBUG_ON(xpc_any_partition_engaged());
 	DBUG_ON(xpc_any_hbs_allowed() != 0);
+	DBUG_ON(xpc_arch_ops.any_partition_engaged());
 
 	xpc_teardown_rsvd_page();
 
@@ -1105,6 +1159,7 @@ xpc_do_exit(enum xp_retval reason)
 	if (is_shub())
 		xpc_exit_sn2();
 	else
+	else if (is_uv())
 		xpc_exit_uv();
 }
 
@@ -1134,6 +1189,9 @@ xpc_system_reboot(struct notifier_block *nb, unsigned long event, void *unused)
 	return NOTIFY_DONE;
 }
 
+/* Used to only allow one cpu to complete disconnect */
+static unsigned int xpc_die_disconnecting;
+
 /*
  * Notify other partitions to deactivate from us by first disengaging from all
  * references to our memory.
@@ -1151,6 +1209,13 @@ xpc_die_deactivate(void)
 	xpc_exiting = 1;
 
 	xpc_disallow_all_hbs();	/*indicate we're deactivated */
+	if (cmpxchg(&xpc_die_disconnecting, 0, 1))
+		return;
+
+	/* keep xpc_hb_checker thread from doing anything (just in case) */
+	xpc_exiting = 1;
+
+	xpc_arch_ops.disallow_all_hbs();   /*indicate we're deactivated */
 
 	for (partid = 0; partid < xp_max_npartitions; partid++) {
 		part = &xpc_partitions[partid];
@@ -1159,6 +1224,10 @@ xpc_die_deactivate(void)
 		    part->act_state != XPC_P_AS_INACTIVE) {
 			xpc_request_partition_deactivation(part);
 			xpc_indicate_partition_disengaged(part);
+		if (xpc_arch_ops.partition_engaged(partid) ||
+		    part->act_state != XPC_P_AS_INACTIVE) {
+			xpc_arch_ops.request_partition_deactivation(part);
+			xpc_arch_ops.indicate_partition_disengaged(part);
 		}
 	}
 
@@ -1176,6 +1245,7 @@ xpc_die_deactivate(void)
 
 	while (1) {
 		any_engaged = xpc_any_partition_engaged();
+		any_engaged = xpc_arch_ops.any_partition_engaged();
 		if (!any_engaged) {
 			dev_info(xpc_part, "all partitions have deactivated\n");
 			break;
@@ -1185,6 +1255,7 @@ xpc_die_deactivate(void)
 			for (partid = 0; partid < xp_max_npartitions;
 			     partid++) {
 				if (xpc_partition_engaged(partid)) {
+				if (xpc_arch_ops.partition_engaged(partid)) {
 					dev_info(xpc_part, "deactivate from "
 						 "remote partition %d timed "
 						 "out\n", partid);
@@ -1215,6 +1286,7 @@ xpc_die_deactivate(void)
  */
 static int
 xpc_system_die(struct notifier_block *nb, unsigned long event, void *unused)
+xpc_system_die(struct notifier_block *nb, unsigned long event, void *_die_args)
 {
 #ifdef CONFIG_IA64		/* !!! temporary kludge */
 	switch (event) {
@@ -1232,6 +1304,7 @@ xpc_system_die(struct notifier_block *nb, unsigned long event, void *unused)
 	case DIE_MCA_MONARCH_ENTER:
 	case DIE_INIT_MONARCH_ENTER:
 		xpc_offline_heartbeat();
+		xpc_arch_ops.offline_heartbeat();
 		break;
 
 	case DIE_KDEBUG_LEAVE:
@@ -1247,6 +1320,31 @@ xpc_system_die(struct notifier_block *nb, unsigned long event, void *unused)
 	}
 #else
 	xpc_die_deactivate();
+		xpc_arch_ops.online_heartbeat();
+		break;
+	}
+#else
+	struct die_args *die_args = _die_args;
+
+	switch (event) {
+	case DIE_TRAP:
+		if (die_args->trapnr == X86_TRAP_DF)
+			xpc_die_deactivate();
+
+		if (((die_args->trapnr == X86_TRAP_MF) ||
+		     (die_args->trapnr == X86_TRAP_XF)) &&
+		    !user_mode(die_args->regs))
+			xpc_die_deactivate();
+
+		break;
+	case DIE_INT3:
+	case DIE_DEBUG:
+		break;
+	case DIE_OOPS:
+	case DIE_GPF:
+	default:
+		xpc_die_deactivate();
+	}
 #endif
 
 	return NOTIFY_DONE;
@@ -1260,6 +1358,8 @@ xpc_init(void)
 
 	snprintf(xpc_part->bus_id, BUS_ID_SIZE, "part");
 	snprintf(xpc_chan->bus_id, BUS_ID_SIZE, "chan");
+	dev_set_name(xpc_part, "part");
+	dev_set_name(xpc_chan, "chan");
 
 	if (is_shub()) {
 		/*
@@ -1364,6 +1464,7 @@ out_1:
 	if (is_shub())
 		xpc_exit_sn2();
 	else
+	else if (is_uv())
 		xpc_exit_uv();
 	return ret;
 }

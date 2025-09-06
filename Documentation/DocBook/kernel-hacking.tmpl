@@ -353,6 +353,7 @@ asmlinkage long sys_mycall(int arg)
 
   <programlisting>
 if (signal_pending()) 
+if (signal_pending(current))
         return -ERESTARTSYS;
   </programlisting>
 
@@ -410,6 +411,7 @@ cond_resched(); /* Will sleep */
   <para>
    You should always compile your kernel
    <symbol>CONFIG_DEBUG_SPINLOCK_SLEEP</symbol> on, and it will warn
+   <symbol>CONFIG_DEBUG_ATOMIC_SLEEP</symbol> on, and it will warn
    you if you break these rules.  If you <emphasis>do</emphasis> break
    the rules, you will eventually lock up your box.
   </para>
@@ -451,6 +453,8 @@ printk(KERN_INFO "i = %u\n", i);
    <programlisting>
 __u32 ipaddress;
 printk(KERN_INFO "my ip: %d.%d.%d.%d\n", NIPQUAD(ipaddress));
+__be32 ipaddress;
+printk(KERN_INFO "my ip: %pI4\n", &amp;ipaddress);
    </programlisting>
 
    <para>
@@ -672,6 +676,7 @@ printk(KERN_INFO "my ip: %d.%d.%d.%d\n", NIPQUAD(ipaddress));
   <sect1 id="routines-local-irqs">
    <title><function>local_irq_save()</function>/<function>local_irq_restore()</function>
     <filename class="headerfile">include/asm/system.h</filename>
+    <filename class="headerfile">include/linux/irqflags.h</filename>
    </title>
 
    <para>
@@ -946,6 +951,7 @@ printk(KERN_INFO "my ip: %d.%d.%d.%d\n", NIPQUAD(ipaddress));
   <sect1 id="sym-exportsymbols">
    <title><function>EXPORT_SYMBOL()</function>
     <filename class="headerfile">include/linux/module.h</filename></title>
+    <filename class="headerfile">include/linux/export.h</filename></title>
 
    <para>
     This is the classic method of exporting a symbol: dynamically
@@ -956,6 +962,7 @@ printk(KERN_INFO "my ip: %d.%d.%d.%d\n", NIPQUAD(ipaddress));
   <sect1 id="sym-exportsymbols-gpl">
    <title><function>EXPORT_SYMBOL_GPL()</function>
     <filename class="headerfile">include/linux/module.h</filename></title>
+    <filename class="headerfile">include/linux/export.h</filename></title>
 
    <para>
     Similar to <function>EXPORT_SYMBOL()</function> except that the
@@ -964,6 +971,8 @@ printk(KERN_INFO "my ip: %d.%d.%d.%d\n", NIPQUAD(ipaddress));
     <function>MODULE_LICENSE()</function> that specifies a GPL
     compatible license.  It implies that the function is considered
     an internal implementation issue, and not really an interface.
+    Some maintainers and developers may however
+    require EXPORT_SYMBOL_GPL() when adding any new APIs or functionality.
    </para>
   </sect1>
  </chapter>
@@ -1106,6 +1115,7 @@ static struct block_device_operations opt_fops = {
     <listitem>
      <para>
       Function names as strings (__FUNCTION__).
+      Function names as strings (__func__).
      </para>
     </listitem>
     <listitem>
@@ -1240,6 +1250,7 @@ static struct block_device_operations opt_fops = {
 
   <para>
    <filename>include/asm-x86/delay_32.h:</filename>
+   <filename>arch/x86/include/asm/delay.h:</filename>
   </para>
   <programlisting>
 #define ndelay(n) (__builtin_constant_p(n) ? \
@@ -1266,6 +1277,7 @@ static struct block_device_operations opt_fops = {
 
   <para>
    <filename>include/asm-x86/uaccess_32.h:</filename>
+   <filename>arch/x86/include/asm/uaccess_32.h:</filename>
   </para>
 
   <programlisting>
@@ -1290,6 +1302,7 @@ static struct block_device_operations opt_fops = {
  */
 C_LABEL(cputypvar):
         .asciz "compatability"
+        .asciz "compatibility"
 
 /* Tested on SS-5, SS-10. Probably someone at Sun applied a spell-checker. */
         .align 4

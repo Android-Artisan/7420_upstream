@@ -31,6 +31,8 @@
  * IN THE SOFTWARE.
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/unistd.h>
 #include <linux/errno.h>
 #include <linux/types.h>
@@ -46,6 +48,11 @@
 #include <linux/mutex.h>
 #include <xen/xenbus.h>
 #include "xenbus_comms.h"
+#include <asm/xen/hypervisor.h>
+#include <xen/xenbus.h>
+#include <xen/xen.h>
+#include "xenbus_comms.h"
+#include "xenbus_probe.h"
 
 struct xs_stored_msg {
 	struct list_head list;
@@ -76,6 +83,14 @@ struct xs_handle {
 	/*
 	 * Mutex ordering: transaction_mutex -> watch_mutex -> request_mutex.
 	 * response_mutex is never taken simultaneously with the other three.
+	 *
+	 * transaction_mutex must be held before incrementing
+	 * transaction_count. The mutex is held when a suspend is in
+	 * progress to prevent new transactions starting.
+	 *
+	 * When decrementing transaction_count to zero the wait queue
+	 * should be woken up, the suspend code waits for count to
+	 * reach zero.
 	 */
 
 	/* One request at a time. */
@@ -86,6 +101,9 @@ struct xs_handle {
 
 	/* Protect transactions against save/restore. */
 	struct rw_semaphore transaction_mutex;
+	struct mutex transaction_mutex;
+	atomic_t transaction_count;
+	wait_queue_head_t transaction_wq;
 
 	/* Protect watch (de)register against save/restore. */
 	struct rw_semaphore watch_mutex;
@@ -120,12 +138,37 @@ static int get_error(const char *errorstring)
 			printk(KERN_WARNING
 			       "XENBUS xen store gave: unknown error %s",
 			       errorstring);
+			pr_warn("xen store gave: unknown error %s\n",
+				errorstring);
 			return EINVAL;
 		}
 	}
 	return xsd_errors[i].errnum;
 }
 
+static bool xenbus_ok(void)
+{
+	switch (xen_store_domain_type) {
+	case XS_LOCAL:
+		switch (system_state) {
+		case SYSTEM_POWER_OFF:
+		case SYSTEM_RESTART:
+		case SYSTEM_HALT:
+			return false;
+		default:
+			break;
+		}
+		return true;
+	case XS_PV:
+	case XS_HVM:
+		/* FIXME: Could check that the remote domain is alive,
+		 * but it is normally initial domain. */
+		return true;
+	default:
+		break;
+	}
+	return false;
+}
 static void *read_reply(enum xsd_sockmsg_type *type, unsigned int *len)
 {
 	struct xs_stored_msg *msg;
@@ -138,6 +181,20 @@ static void *read_reply(enum xsd_sockmsg_type *type, unsigned int *len)
 		/* XXX FIXME: Avoid synchronous wait for response here. */
 		wait_event(xs_state.reply_waitq,
 			   !list_empty(&xs_state.reply_list));
+		if (xenbus_ok())
+			/* XXX FIXME: Avoid synchronous wait for response here. */
+			wait_event_timeout(xs_state.reply_waitq,
+					   !list_empty(&xs_state.reply_list),
+					   msecs_to_jiffies(500));
+		else {
+			/*
+			 * If we are in the process of being shut-down there is
+			 * no point of trying to contact XenBus - it is either
+			 * killed (xenstored application) or the other domain
+			 * has been killed or is unreachable.
+			 */
+			return ERR_PTR(-EIO);
+		}
 		spin_lock(&xs_state.reply_lock);
 	}
 
@@ -157,6 +214,31 @@ static void *read_reply(enum xsd_sockmsg_type *type, unsigned int *len)
 	return body;
 }
 
+static void transaction_start(void)
+{
+	mutex_lock(&xs_state.transaction_mutex);
+	atomic_inc(&xs_state.transaction_count);
+	mutex_unlock(&xs_state.transaction_mutex);
+}
+
+static void transaction_end(void)
+{
+	if (atomic_dec_and_test(&xs_state.transaction_count))
+		wake_up(&xs_state.transaction_wq);
+}
+
+static void transaction_suspend(void)
+{
+	mutex_lock(&xs_state.transaction_mutex);
+	wait_event(xs_state.transaction_wq,
+		   atomic_read(&xs_state.transaction_count) == 0);
+}
+
+static void transaction_resume(void)
+{
+	mutex_unlock(&xs_state.transaction_mutex);
+}
+
 void *xenbus_dev_request_and_reply(struct xsd_sockmsg *msg)
 {
 	void *ret;
@@ -165,6 +247,7 @@ void *xenbus_dev_request_and_reply(struct xsd_sockmsg *msg)
 
 	if (req_msg.type == XS_TRANSACTION_START)
 		down_read(&xs_state.transaction_mutex);
+		transaction_start();
 
 	mutex_lock(&xs_state.request_mutex);
 
@@ -184,6 +267,17 @@ void *xenbus_dev_request_and_reply(struct xsd_sockmsg *msg)
 
 	return ret;
 }
+	if (IS_ERR(ret))
+		return ret;
+
+	if ((msg->type == XS_TRANSACTION_END) ||
+	    ((req_msg.type == XS_TRANSACTION_START) &&
+	     (msg->type == XS_ERROR)))
+		transaction_end();
+
+	return ret;
+}
+EXPORT_SYMBOL(xenbus_dev_request_and_reply);
 
 /* Send message to xs, get kmalloc'ed reply.  ERR_PTR() on error. */
 static void *xs_talkv(struct xenbus_transaction t,
@@ -238,6 +332,8 @@ static void *xs_talkv(struct xenbus_transaction t,
 			printk(KERN_WARNING
 			       "XENBUS unexpected type [%d], expected [%d]\n",
 			       msg.type, type);
+		pr_warn_ratelimited("unexpected type [%d], expected [%d]\n",
+				    msg.type, type);
 		kfree(ret);
 		return ERR_PTR(-EINVAL);
 	}
@@ -436,6 +532,11 @@ int xenbus_transaction_start(struct xenbus_transaction *t)
 	id_str = xs_single(XBT_NIL, XS_TRANSACTION_START, "", NULL);
 	if (IS_ERR(id_str)) {
 		up_read(&xs_state.transaction_mutex);
+	transaction_start();
+
+	id_str = xs_single(XBT_NIL, XS_TRANSACTION_START, "", NULL);
+	if (IS_ERR(id_str)) {
+		transaction_end();
 		return PTR_ERR(id_str);
 	}
 
@@ -461,6 +562,7 @@ int xenbus_transaction_end(struct xenbus_transaction t, int abort)
 	err = xs_error(xs_single(t, XS_TRANSACTION_END, abortstr, NULL));
 
 	up_read(&xs_state.transaction_mutex);
+	transaction_end();
 
 	return err;
 }
@@ -510,6 +612,18 @@ int xenbus_printf(struct xenbus_transaction t,
 	ret = xenbus_write(t, dir, node, printf_buffer);
 
 	kfree(printf_buffer);
+	char *buf;
+
+	va_start(ap, fmt);
+	buf = kvasprintf(GFP_NOIO | __GFP_HIGH, fmt, ap);
+	va_end(ap);
+
+	if (!buf)
+		return -ENOMEM;
+
+	ret = xenbus_write(t, dir, node, buf);
+
+	kfree(buf);
 
 	return ret;
 }
@@ -583,6 +697,45 @@ static struct xenbus_watch *find_watch(const char *token)
 
 	return NULL;
 }
+/*
+ * Certain older XenBus toolstack cannot handle reading values that are
+ * not populated. Some Xen 3.4 installation are incapable of doing this
+ * so if we are running on anything older than 4 do not attempt to read
+ * control/platform-feature-xs_reset_watches.
+ */
+static bool xen_strict_xenbus_quirk(void)
+{
+#ifdef CONFIG_X86
+	uint32_t eax, ebx, ecx, edx, base;
+
+	base = xen_cpuid_base();
+	cpuid(base + 1, &eax, &ebx, &ecx, &edx);
+
+	if ((eax >> 16) < 4)
+		return true;
+#endif
+	return false;
+
+}
+static void xs_reset_watches(void)
+{
+	int err, supported = 0;
+
+	if (!xen_hvm_domain() || xen_initial_domain())
+		return;
+
+	if (xen_strict_xenbus_quirk())
+		return;
+
+	err = xenbus_scanf(XBT_NIL, "control",
+			"platform-feature-xs_reset_watches", "%d", &supported);
+	if (err != 1 || !supported)
+		return;
+
+	err = xs_error(xs_single(XBT_NIL, XS_RESET_WATCHES, "", NULL));
+	if (err && err != -EEXIST)
+		pr_warn("xs_reset_watches failed: %d\n", err);
+}
 
 /* Register callback to watch this node. */
 int register_xenbus_watch(struct xenbus_watch *watch)
@@ -592,6 +745,8 @@ int register_xenbus_watch(struct xenbus_watch *watch)
 	int err;
 
 	sprintf(token, "%lX", (long)watch);
+
+	watch->nr_pending = 0;
 
 	down_read(&xs_state.watch_mutex);
 
@@ -604,6 +759,7 @@ int register_xenbus_watch(struct xenbus_watch *watch)
 
 	/* Ignore errors due to multiple registration. */
 	if ((err != 0) && (err != -EEXIST)) {
+	if (err) {
 		spin_lock(&watches_lock);
 		list_del(&watch->list);
 		spin_unlock(&watches_lock);
@@ -635,6 +791,7 @@ void unregister_xenbus_watch(struct xenbus_watch *watch)
 		printk(KERN_WARNING
 		       "XENBUS Failed to release watch %s: %i\n",
 		       watch->node, err);
+		pr_warn("Failed to release watch %s: %i\n", watch->node, err);
 
 	up_read(&xs_state.watch_mutex);
 
@@ -645,12 +802,15 @@ void unregister_xenbus_watch(struct xenbus_watch *watch)
 
 	/* Cancel pending watch events. */
 	spin_lock(&watch_events_lock);
-	list_for_each_entry_safe(msg, tmp, &watch_events, list) {
-		if (msg->u.watch.handle != watch)
-			continue;
-		list_del(&msg->list);
-		kfree(msg->u.watch.vec);
-		kfree(msg);
+	if (watch->nr_pending) {
+		list_for_each_entry_safe(msg, tmp, &watch_events, list) {
+			if (msg->u.watch.handle != watch)
+				continue;
+			list_del(&msg->list);
+			kfree(msg->u.watch.vec);
+			kfree(msg);
+		}
+		watch->nr_pending = 0;
 	}
 	spin_unlock(&watch_events_lock);
 
@@ -662,6 +822,7 @@ EXPORT_SYMBOL_GPL(unregister_xenbus_watch);
 void xs_suspend(void)
 {
 	down_write(&xs_state.transaction_mutex);
+	transaction_suspend();
 	down_write(&xs_state.watch_mutex);
 	mutex_lock(&xs_state.request_mutex);
 	mutex_lock(&xs_state.response_mutex);
@@ -675,6 +836,11 @@ void xs_resume(void)
 	mutex_unlock(&xs_state.response_mutex);
 	mutex_unlock(&xs_state.request_mutex);
 	up_write(&xs_state.transaction_mutex);
+	xb_init_comms();
+
+	mutex_unlock(&xs_state.response_mutex);
+	mutex_unlock(&xs_state.request_mutex);
+	transaction_resume();
 
 	/* No need for watches_lock: the watch_mutex is sufficient. */
 	list_for_each_entry(watch, &watches, list) {
@@ -691,11 +857,11 @@ void xs_suspend_cancel(void)
 	mutex_unlock(&xs_state.request_mutex);
 	up_write(&xs_state.watch_mutex);
 	up_write(&xs_state.transaction_mutex);
+	mutex_unlock(&xs_state.transaction_mutex);
 }
 
 static int xenwatch_thread(void *unused)
 {
-	struct list_head *ent;
 	struct xs_stored_msg *msg;
 
 	for (;;) {
@@ -708,13 +874,15 @@ static int xenwatch_thread(void *unused)
 		mutex_lock(&xenwatch_mutex);
 
 		spin_lock(&watch_events_lock);
-		ent = watch_events.next;
-		if (ent != &watch_events)
-			list_del(ent);
+		msg = list_first_entry_or_null(&watch_events,
+				struct xs_stored_msg, list);
+		if (msg) {
+			list_del(&msg->list);
+			msg->u.watch.handle->nr_pending--;
+		}
 		spin_unlock(&watch_events_lock);
 
-		if (ent != &watch_events) {
-			msg = list_entry(ent, struct xs_stored_msg, list);
+		if (msg) {
 			msg->u.watch.handle->callback(
 				msg->u.watch.handle,
 				(const char **)msg->u.watch.vec,
@@ -763,6 +931,12 @@ static int process_msg(void)
 		goto out;
 	}
 
+	if (msg->hdr.len > XENSTORE_PAYLOAD_MAX) {
+		kfree(msg);
+		err = -EINVAL;
+		goto out;
+	}
+
 	body = kmalloc(msg->hdr.len + 1, GFP_NOIO | __GFP_HIGH);
 	if (body == NULL) {
 		kfree(msg);
@@ -790,9 +964,15 @@ static int process_msg(void)
 		spin_lock(&watches_lock);
 		msg->u.watch.handle = find_watch(
 			msg->u.watch.vec[XS_WATCH_TOKEN]);
-		if (msg->u.watch.handle != NULL) {
+		if (msg->u.watch.handle != NULL &&
+				(!msg->u.watch.handle->will_handle ||
+				 msg->u.watch.handle->will_handle(
+					 msg->u.watch.handle,
+					 (const char **)msg->u.watch.vec,
+					 msg->u.watch.vec_size))) {
 			spin_lock(&watch_events_lock);
 			list_add_tail(&msg->list, &watch_events);
+			msg->u.watch.handle->nr_pending++;
 			wake_up(&watch_events_waitq);
 			spin_unlock(&watch_events_lock);
 		} else {
@@ -822,6 +1002,7 @@ static int xenbus_thread(void *unused)
 		if (err)
 			printk(KERN_WARNING "XENBUS error %d while reading "
 			       "message\n", err);
+			pr_warn("error %d while reading message\n", err);
 		if (kthread_should_stop())
 			break;
 	}
@@ -842,6 +1023,10 @@ int xs_init(void)
 	mutex_init(&xs_state.response_mutex);
 	init_rwsem(&xs_state.transaction_mutex);
 	init_rwsem(&xs_state.watch_mutex);
+	mutex_init(&xs_state.transaction_mutex);
+	init_rwsem(&xs_state.watch_mutex);
+	atomic_set(&xs_state.transaction_count, 0);
+	init_waitqueue_head(&xs_state.transaction_wq);
 
 	/* Initialize the shared memory rings to talk to xenstored */
 	err = xb_init_comms();
@@ -856,6 +1041,9 @@ int xs_init(void)
 	task = kthread_run(xenbus_thread, NULL, "xenbus");
 	if (IS_ERR(task))
 		return PTR_ERR(task);
+
+	/* shutdown watches for kexec boot */
+	xs_reset_watches();
 
 	return 0;
 }

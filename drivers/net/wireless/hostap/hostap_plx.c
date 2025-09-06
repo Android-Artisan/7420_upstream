@@ -12,6 +12,10 @@
 #include <linux/if.h>
 #include <linux/skbuff.h>
 #include <linux/netdevice.h>
+#include <linux/if.h>
+#include <linux/skbuff.h>
+#include <linux/netdevice.h>
+#include <linux/slab.h>
 #include <linux/workqueue.h>
 #include <linux/wireless.h>
 #include <net/iw_handler.h>
@@ -61,6 +65,7 @@ struct hostap_plx_priv {
 #define PLXDEV(vendor,dev,str) { vendor, dev, PCI_ANY_ID, PCI_ANY_ID }
 
 static struct pci_device_id prism2_plx_id_table[] __devinitdata = {
+static const struct pci_device_id prism2_plx_id_table[] = {
 	PLXDEV(0x10b7, 0x7770, "3Com AirConnect PCI 777A"),
 	PLXDEV(0x111a, 0x1023, "Siemens SpeedStream SS1023"),
 	PLXDEV(0x126c, 0x8030, "Nortel emobility"),
@@ -436,6 +441,7 @@ static int prism2_plx_probe(struct pci_dev *pdev,
 	unsigned int pccard_attr_len;
 	void __iomem *attr_mem = NULL;
 	unsigned int cor_offset, cor_index;
+	unsigned int cor_offset = 0, cor_index = 0;
 	u32 reg;
 	local_info_t *local = NULL;
 	struct net_device *dev = NULL;
@@ -630,3 +636,4 @@ static void __exit exit_prism2_plx(void)
 
 module_init(init_prism2_plx);
 module_exit(exit_prism2_plx);
+module_pci_driver(prism2_plx_driver);

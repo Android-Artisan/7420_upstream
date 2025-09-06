@@ -40,6 +40,9 @@
 #include <linux/capability.h>
 #include <linux/rcupdate.h>
 #include <linux/completion.h>
+#include <linux/tracehook.h>
+#include <linux/slab.h>
+#include <linux/cpu.h>
 
 #include <asm/errno.h>
 #include <asm/intrinsics.h>
@@ -312,6 +315,7 @@ typedef struct pfm_context {
 	unsigned long		th_pmds[PFM_NUM_PMD_REGS];	/* PMD thread save state */
 
 	u64			ctx_saved_psr_up;	/* only contains psr.up value */
+	unsigned long		ctx_saved_psr_up;	/* only contains psr.up value */
 
 	unsigned long		ctx_last_activation;	/* context last activation number for last_cpu */
 	unsigned int		ctx_last_cpu;		/* CPU id of current or last CPU used (SMP only) */
@@ -522,6 +526,8 @@ EXPORT_SYMBOL(pfm_sysctl);
 static ctl_table pfm_ctl_table[]={
 	{
 		.ctl_name	= CTL_UNNUMBERED,
+static struct ctl_table pfm_ctl_table[] = {
+	{
 		.procname	= "debug",
 		.data		= &pfm_sysctl.debug,
 		.maxlen		= sizeof(int),
@@ -530,6 +536,9 @@ static ctl_table pfm_ctl_table[]={
 	},
 	{
 		.ctl_name	= CTL_UNNUMBERED,
+		.proc_handler	= proc_dointvec,
+	},
+	{
 		.procname	= "debug_ovfl",
 		.data		= &pfm_sysctl.debug_ovfl,
 		.maxlen		= sizeof(int),
@@ -538,6 +547,9 @@ static ctl_table pfm_ctl_table[]={
 	},
 	{
 		.ctl_name	= CTL_UNNUMBERED,
+		.proc_handler	= proc_dointvec,
+	},
+	{
 		.procname	= "fastctxsw",
 		.data		= &pfm_sysctl.fastctxsw,
 		.maxlen		= sizeof(int),
@@ -546,6 +558,9 @@ static ctl_table pfm_ctl_table[]={
 	},
 	{
 		.ctl_name	= CTL_UNNUMBERED,
+		.proc_handler	= proc_dointvec,
+	},
+	{
 		.procname	= "expert_mode",
 		.data		= &pfm_sysctl.expert_mode,
 		.maxlen		= sizeof(int),
@@ -557,6 +572,12 @@ static ctl_table pfm_ctl_table[]={
 static ctl_table pfm_sysctl_dir[] = {
 	{
 		.ctl_name	= CTL_UNNUMBERED,
+		.proc_handler	= proc_dointvec,
+	},
+	{}
+};
+static struct ctl_table pfm_sysctl_dir[] = {
+	{
 		.procname	= "perfmon",
 		.mode		= 0555,
 		.child		= pfm_ctl_table,
@@ -566,6 +587,8 @@ static ctl_table pfm_sysctl_dir[] = {
 static ctl_table pfm_sysctl_root[] = {
 	{
 		.ctl_name	= CTL_KERN,
+static struct ctl_table pfm_sysctl_root[] = {
+	{
 		.procname	= "kernel",
 		.mode		= 0555,
 		.child		= pfm_sysctl_dir,
@@ -627,6 +650,14 @@ pfmfs_get_sb(struct file_system_type *fs_type, int flags, const char *dev_name, 
 	     struct vfsmount *mnt)
 {
 	return get_sb_pseudo(fs_type, "pfm:", NULL, PFMFS_MAGIC, mnt);
+/* forward declaration */
+static const struct dentry_operations pfmfs_dentry_operations;
+
+static struct dentry *
+pfmfs_mount(struct file_system_type *fs_type, int flags, const char *dev_name, void *data)
+{
+	return mount_pseudo(fs_type, "pfm:", NULL, &pfmfs_dentry_operations,
+			PFMFS_MAGIC);
 }
 
 static struct file_system_type pfm_fs_type = {
@@ -634,6 +665,10 @@ static struct file_system_type pfm_fs_type = {
 	.get_sb   = pfmfs_get_sb,
 	.kill_sb  = kill_anon_super,
 };
+	.mount    = pfmfs_mount,
+	.kill_sb  = kill_anon_super,
+};
+MODULE_ALIAS_FS("pfmfs");
 
 DEFINE_PER_CPU(unsigned long, pfm_syst_info);
 DEFINE_PER_CPU(struct task_struct *, pmu_owner);
@@ -838,6 +873,9 @@ pfm_rvmalloc(unsigned long size)
 	if (mem) {
 		//printk("perfmon: CPU%d pfm_rvmalloc(%ld)=%p\n", smp_processor_id(), size, mem);
 		memset(mem, 0, size);
+	mem  = vzalloc(size);
+	if (mem) {
+		//printk("perfmon: CPU%d pfm_rvmalloc(%ld)=%p\n", smp_processor_id(), size, mem);
 		addr = (unsigned long)mem;
 		while (size > 0) {
 			pfm_reserve_page(addr);
@@ -1389,6 +1427,9 @@ pfm_reserve_session(struct task_struct *task, int is_syswide, unsigned int cpu)
 	 * disable default_idle() to go to PAL_HALT
 	 */
 	update_pal_halt_status(0);
+	 * Force idle() into poll mode
+	 */
+	cpu_idle_poll_ctrl(true);
 
 	UNLOCK_PFS(flags);
 
@@ -1450,6 +1491,8 @@ pfm_unreserve_session(pfm_context_t *ctx, int is_syswide, unsigned int cpu)
 	 */
 	if (pfm_sessions.pfs_task_sessions == 0 && pfm_sessions.pfs_sys_sessions == 0)
 		update_pal_halt_status(1);
+	/* Undo forced polling. Last session reenables pal_halt */
+	cpu_idle_poll_ctrl(false);
 
 	UNLOCK_PFS(flags);
 
@@ -1464,6 +1507,9 @@ pfm_unreserve_session(pfm_context_t *ctx, int is_syswide, unsigned int cpu)
 static int
 pfm_remove_smpl_mapping(struct task_struct *task, void *vaddr, unsigned long size)
 {
+pfm_remove_smpl_mapping(void *vaddr, unsigned long size)
+{
+	struct task_struct *task = current;
 	int r;
 
 	/* sanity checks */
@@ -1484,6 +1530,8 @@ pfm_remove_smpl_mapping(struct task_struct *task, void *vaddr, unsigned long siz
 	r = pfm_do_munmap(task->mm, (unsigned long)vaddr, size, 0);
 
 	up_write(&task->mm->mmap_sem);
+	r = vm_munmap((unsigned long)vaddr, size);
+
 	if (r !=0) {
 		printk(KERN_ERR "perfmon: [%d] unable to unmap sampling buffer @%p size=%lu\n", task_pid_nr(task), vaddr, size);
 	}
@@ -1548,6 +1596,7 @@ pfm_exit_smpl_buffer(pfm_buffer_fmt_t *fmt)
  * d_name - pfm: will go nicely and kill the special-casing in procfs.
  */
 static struct vfsmount *pfmfs_mnt;
+static struct vfsmount *pfmfs_mnt __read_mostly;
 
 static int __init
 init_pfm_fs(void)
@@ -1578,6 +1627,7 @@ pfm_read(struct file *filp, char __user *buf, size_t size, loff_t *ppos)
 	}
 
 	ctx = (pfm_context_t *)filp->private_data;
+	ctx = filp->private_data;
 	if (ctx == NULL) {
 		printk(KERN_ERR "perfmon: pfm_read: NULL ctx [%d]\n", task_pid_nr(current));
 		return -EINVAL;
@@ -1678,6 +1728,7 @@ pfm_poll(struct file *filp, poll_table * wait)
 	}
 
 	ctx = (pfm_context_t *)filp->private_data;
+	ctx = filp->private_data;
 	if (ctx == NULL) {
 		printk(KERN_ERR "perfmon: pfm_poll: NULL ctx [%d]\n", task_pid_nr(current));
 		return 0;
@@ -1702,6 +1753,8 @@ pfm_poll(struct file *filp, poll_table * wait)
 
 static int
 pfm_ioctl(struct inode *inode, struct file *file, unsigned int cmd, unsigned long arg)
+static long
+pfm_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
 	DPRINT(("pfm_ioctl called\n"));
 	return -EINVAL;
@@ -1738,6 +1791,7 @@ pfm_fasync(int fd, struct file *filp, int on)
 	}
 
 	ctx = (pfm_context_t *)filp->private_data;
+	ctx = filp->private_data;
 	if (ctx == NULL) {
 		printk(KERN_ERR "perfmon: pfm_fasync NULL ctx [%d]\n", task_pid_nr(current));
 		return -EBADF;
@@ -1846,6 +1900,7 @@ pfm_flush(struct file *filp, fl_owner_t id)
 	}
 
 	ctx = (pfm_context_t *)filp->private_data;
+	ctx = filp->private_data;
 	if (ctx == NULL) {
 		printk(KERN_ERR "perfmon: pfm_flush: NULL ctx [%d]\n", task_pid_nr(current));
 		return -EBADF;
@@ -1950,6 +2005,7 @@ pfm_flush(struct file *filp, fl_owner_t id)
 	 *
 	 */
 	if (smpl_buf_vaddr) pfm_remove_smpl_mapping(current, smpl_buf_vaddr, smpl_buf_size);
+	if (smpl_buf_vaddr) pfm_remove_smpl_mapping(smpl_buf_vaddr, smpl_buf_size);
 
 	return 0;
 }
@@ -1989,6 +2045,7 @@ pfm_close(struct inode *inode, struct file *filp)
 	}
 	
 	ctx = (pfm_context_t *)filp->private_data;
+	ctx = filp->private_data;
 	if (ctx == NULL) {
 		printk(KERN_ERR "perfmon: pfm_close: NULL ctx [%d]\n", task_pid_nr(current));
 		return -EBADF;
@@ -2202,6 +2259,26 @@ pfmfs_delete_dentry(struct dentry *dentry)
 
 static struct dentry_operations pfmfs_dentry_operations = {
 	.d_delete = pfmfs_delete_dentry,
+static const struct file_operations pfm_file_ops = {
+	.llseek		= no_llseek,
+	.read		= pfm_read,
+	.write		= pfm_write,
+	.poll		= pfm_poll,
+	.unlocked_ioctl = pfm_ioctl,
+	.fasync		= pfm_fasync,
+	.release	= pfm_close,
+	.flush		= pfm_flush
+};
+
+static char *pfmfs_dname(struct dentry *dentry, char *buffer, int buflen)
+{
+	return dynamic_dname(dentry, buffer, buflen, "pfm:[%lu]",
+			     d_inode(dentry)->i_ino);
+}
+
+static const struct dentry_operations pfmfs_dentry_operations = {
+	.d_delete = always_delete_dentry,
+	.d_dname = pfmfs_dname,
 };
 
 
@@ -2213,6 +2290,8 @@ pfm_alloc_file(pfm_context_t *ctx)
 	struct dentry *dentry;
 	char name[32];
 	struct qstr this;
+	struct path path;
+	struct qstr this = { .name = "" };
 
 	/*
 	 * allocate a new inode
@@ -2231,6 +2310,8 @@ pfm_alloc_file(pfm_context_t *ctx)
 	this.name = name;
 	this.len  = strlen(name);
 	this.hash = inode->i_ino;
+	inode->i_uid  = current_fsuid();
+	inode->i_gid  = current_fsgid();
 
 	/*
 	 * allocate a new dcache entry
@@ -2248,6 +2329,19 @@ pfm_alloc_file(pfm_context_t *ctx)
 	if (!file) {
 		dput(dentry);
 		return ERR_PTR(-ENFILE);
+	path.dentry = d_alloc(pfmfs_mnt->mnt_root, &this);
+	if (!path.dentry) {
+		iput(inode);
+		return ERR_PTR(-ENOMEM);
+	}
+	path.mnt = mntget(pfmfs_mnt);
+
+	d_add(path.dentry, inode);
+
+	file = alloc_file(&path, FMODE_READ, &pfm_file_ops);
+	if (IS_ERR(file)) {
+		path_put(&path);
+		return file;
 	}
 
 	file->f_flags = O_RDONLY;
@@ -2303,6 +2397,7 @@ pfm_smpl_buffer_alloc(struct task_struct *task, struct file *filp, pfm_context_t
 	 * 	return -ENOMEM;
 	 */
 	if (size > task->signal->rlim[RLIMIT_MEMLOCK].rlim_cur)
+	if (size > task_rlimit(task, RLIMIT_MEMLOCK))
 		return -ENOMEM;
 
 	/*
@@ -2324,6 +2419,7 @@ pfm_smpl_buffer_alloc(struct task_struct *task, struct file *filp, pfm_context_t
 		DPRINT(("Cannot allocate vma\n"));
 		goto error_kmem;
 	}
+	INIT_LIST_HEAD(&vma->anon_vma_chain);
 
 	/*
 	 * partially initialize the vma for the sampling buffer
@@ -2331,6 +2427,8 @@ pfm_smpl_buffer_alloc(struct task_struct *task, struct file *filp, pfm_context_t
 	vma->vm_mm	     = mm;
 	vma->vm_file	     = filp;
 	vma->vm_flags	     = VM_READ| VM_MAYREAD |VM_RESERVED;
+	vma->vm_file	     = get_file(filp);
+	vma->vm_flags	     = VM_READ|VM_MAYREAD|VM_DONTEXPAND|VM_DONTDUMP;
 	vma->vm_page_prot    = PAGE_READONLY; /* XXX may need to change */
 
 	/*
@@ -2352,6 +2450,8 @@ pfm_smpl_buffer_alloc(struct task_struct *task, struct file *filp, pfm_context_t
 	/* find some free area in address space, must have mmap sem held */
 	vma->vm_start = pfm_get_unmapped_area(NULL, 0, size, 0, MAP_PRIVATE|MAP_ANONYMOUS, 0);
 	if (vma->vm_start == 0UL) {
+	vma->vm_start = get_unmapped_area(NULL, 0, size, 0, MAP_PRIVATE|MAP_ANONYMOUS);
+	if (IS_ERR_VALUE(vma->vm_start)) {
 		DPRINT(("Cannot find unmapped area for size %ld\n", size));
 		up_write(&task->mm->mmap_sem);
 		goto error;
@@ -2419,6 +2519,33 @@ pfm_bad_permissions(struct task_struct *task)
 	    || (current->gid != task->egid)
 	    || (current->gid != task->sgid)
 	    || (current->gid != task->gid)) && !capable(CAP_SYS_PTRACE);
+	const struct cred *tcred;
+	kuid_t uid = current_uid();
+	kgid_t gid = current_gid();
+	int ret;
+
+	rcu_read_lock();
+	tcred = __task_cred(task);
+
+	/* inspired by ptrace_attach() */
+	DPRINT(("cur: uid=%d gid=%d task: euid=%d suid=%d uid=%d egid=%d sgid=%d\n",
+		from_kuid(&init_user_ns, uid),
+		from_kgid(&init_user_ns, gid),
+		from_kuid(&init_user_ns, tcred->euid),
+		from_kuid(&init_user_ns, tcred->suid),
+		from_kuid(&init_user_ns, tcred->uid),
+		from_kgid(&init_user_ns, tcred->egid),
+		from_kgid(&init_user_ns, tcred->sgid)));
+
+	ret = ((!uid_eq(uid, tcred->euid))
+	       || (!uid_eq(uid, tcred->suid))
+	       || (!uid_eq(uid, tcred->uid))
+	       || (!gid_eq(gid, tcred->egid))
+	       || (!gid_eq(gid, tcred->sgid))
+	       || (!gid_eq(gid, tcred->gid))) && !capable(CAP_SYS_PTRACE);
+
+	rcu_read_unlock();
+	return ret;
 }
 
 static int
@@ -2687,6 +2814,7 @@ pfm_context_create(pfm_context_t *ctx, void *arg, int count, struct pt_regs *reg
 	ret = -ENOMEM;
 
 	fd = get_unused_fd();
+	fd = get_unused_fd_flags(0);
 	if (fd < 0)
 		return fd;
 
@@ -2712,6 +2840,7 @@ pfm_context_create(pfm_context_t *ctx, void *arg, int count, struct pt_regs *reg
 	}
 
 	DPRINT(("ctx=%p flags=0x%x system=%d notify_block=%d excl_idle=%d no_msg=%d ctx_fd=%d \n",
+	DPRINT(("ctx=%p flags=0x%x system=%d notify_block=%d excl_idle=%d no_msg=%d ctx_fd=%d\n",
 		ctx,
 		ctx_flags,
 		ctx->ctx_fl_system,
@@ -3517,6 +3646,7 @@ pfm_use_debug_registers(struct task_struct *task)
  * able to use the debug registers for debugging purposes via
  * ptrace(). Therefore we know it was not using them for
  * perfmormance monitoring, so we only decrement the number
+ * performance monitoring, so we only decrement the number
  * of "ptraced" debug register users to keep the count up to date
  */
 int
@@ -3676,6 +3806,7 @@ pfm_restart(pfm_context_t *ctx, void *arg, int count, struct pt_regs *regs)
 	 */
 	if (CTX_OVFL_NOBLOCK(ctx) == 0 && state == PFM_CTX_MASKED) {
 		DPRINT(("unblocking [%d] \n", task_pid_nr(task)));
+		DPRINT(("unblocking [%d]\n", task_pid_nr(task)));
 		complete(&ctx->ctx_restart_done);
 	} else {
 		DPRINT(("[%d] armed exit trap\n", task_pid_nr(task)));
@@ -3685,6 +3816,7 @@ pfm_restart(pfm_context_t *ctx, void *arg, int count, struct pt_regs *regs)
 		PFM_SET_WORK_PENDING(task, 1);
 
 		tsk_set_notify_resume(task);
+		set_notify_resume(task);
 
 		/*
 		 * XXX: send reschedule if task runs on another CPU
@@ -4796,6 +4928,7 @@ asmlinkage long
 sys_perfmonctl (int fd, int cmd, void __user *arg, int count)
 {
 	struct file *file = NULL;
+	struct fd f = {NULL, 0};
 	pfm_context_t *ctx = NULL;
 	unsigned long flags = 0UL;
 	void *args_k = NULL;
@@ -4898,11 +5031,18 @@ restart_args:
 		goto error_args;
 	}
 	if (unlikely(PFM_IS_FILE(file) == 0)) {
+	f = fdget(fd);
+	if (unlikely(f.file == NULL)) {
+		DPRINT(("invalid fd %d\n", fd));
+		goto error_args;
+	}
+	if (unlikely(PFM_IS_FILE(f.file) == 0)) {
 		DPRINT(("fd %d not related to perfmon\n", fd));
 		goto error_args;
 	}
 
 	ctx = (pfm_context_t *)file->private_data;
+	ctx = f.file->private_data;
 	if (unlikely(ctx == NULL)) {
 		DPRINT(("no context for fd %d\n", fd));
 		goto error_args;
@@ -4934,6 +5074,8 @@ abort_locked:
 error_args:
 	if (file)
 		fput(file);
+	if (f.file)
+		fdput(f);
 
 	kfree(args_k);
 
@@ -5210,6 +5352,8 @@ pfm_end_notify_user(pfm_context_t *ctx)
  */
 static void
 pfm_overflow_handler(struct task_struct *task, pfm_context_t *ctx, u64 pmc0, struct pt_regs *regs)
+static void pfm_overflow_handler(struct task_struct *task, pfm_context_t *ctx,
+				unsigned long pmc0, struct pt_regs *regs)
 {
 	pfm_ovfl_arg_t *ovfl_arg;
 	unsigned long mask;
@@ -5415,6 +5559,7 @@ pfm_overflow_handler(struct task_struct *task, pfm_context_t *ctx, u64 pmc0, str
 			 * previous task, therefore we must work with task and not current.
 			 */
 			tsk_set_notify_resume(task);
+			set_notify_resume(task);
 		}
 		/*
 		 * defer until state is changed (shorten spin window). the context is locked
@@ -5591,6 +5736,7 @@ pfm_interrupt_handler(int irq, void *arg)
 	}
 
 	put_cpu_no_resched();
+	put_cpu();
 	return IRQ_HANDLED;
 }
 
@@ -5599,6 +5745,7 @@ pfm_interrupt_handler(int irq, void *arg)
  */
 
 #define PFM_PROC_SHOW_HEADER	((void *)NR_CPUS+1)
+#define PFM_PROC_SHOW_HEADER	((void *)(long)nr_cpu_ids+1)
 
 static void *
 pfm_proc_start(struct seq_file *m, loff_t *pos)
@@ -5608,6 +5755,7 @@ pfm_proc_start(struct seq_file *m, loff_t *pos)
 	}
 
 	while (*pos <= NR_CPUS) {
+	while (*pos <= nr_cpu_ids) {
 		if (cpu_online(*pos - 1)) {
 			return (void *)*pos;
 		}
@@ -5685,6 +5833,8 @@ pfm_proc_show_header(struct seq_file *m)
 			entry->fmt_uuid[14],
 			entry->fmt_uuid[15],
 			entry->fmt_name);
+		seq_printf(m, "format                    : %16phD %s\n",
+			   entry->fmt_uuid, entry->fmt_name);
 	}
 	spin_unlock(&pfm_buffer_fmt_lock);
 

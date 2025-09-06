@@ -71,6 +71,11 @@ enum llc_sockopts {
 #define LLC_SAP_GLOBAL	0xFF		/* Global SAP. 			*/
 
 #ifdef __KERNEL__
+#ifndef __LINUX_LLC_H
+#define __LINUX_LLC_H
+
+#include <uapi/linux/llc.h>
+
 #define LLC_SAP_DYN_START	0xC0
 #define LLC_SAP_DYN_STOP	0xDE
 #define LLC_SAP_DYN_TRIES	4

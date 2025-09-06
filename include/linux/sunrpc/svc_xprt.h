@@ -12,6 +12,12 @@
 
 struct svc_xprt_ops {
 	struct svc_xprt	*(*xpo_create)(struct svc_serv *,
+
+struct module;
+
+struct svc_xprt_ops {
+	struct svc_xprt	*(*xpo_create)(struct svc_serv *,
+				       struct net *net,
 				       struct sockaddr *, int,
 				       int);
 	struct svc_xprt	*(*xpo_accept)(struct svc_xprt *);
@@ -22,6 +28,8 @@ struct svc_xprt_ops {
 	void		(*xpo_release_rqst)(struct svc_rqst *);
 	void		(*xpo_detach)(struct svc_xprt *);
 	void		(*xpo_free)(struct svc_xprt *);
+	int		(*xpo_secure_port)(struct svc_rqst *);
+	void		(*xpo_adjust_wspace)(struct svc_xprt *);
 };
 
 struct svc_xprt_class {
@@ -30,6 +38,17 @@ struct svc_xprt_class {
 	struct svc_xprt_ops	*xcl_ops;
 	struct list_head	xcl_list;
 	u32			xcl_max_payload;
+	int			xcl_ident;
+};
+
+/*
+ * This is embedded in an object that wants a callback before deleting
+ * an xprt; intended for use by NFSv4.1, which needs to know when a
+ * client's tcp connection (and hence possibly a backchannel) goes away.
+ */
+struct svc_xpt_user {
+	struct list_head list;
+	void (*callback)(struct svc_xpt_user *);
 };
 
 struct svc_xprt {
@@ -53,6 +72,10 @@ struct svc_xprt {
 #define XPT_CACHE_AUTH	12		/* cache auth info */
 
 	struct svc_pool		*xpt_pool;	/* current pool iff queued */
+#define XPT_LISTENER	10		/* listening endpoint */
+#define XPT_CACHE_AUTH	11		/* cache auth info */
+#define XPT_LOCAL	12		/* connection from loopback interface */
+
 	struct svc_serv		*xpt_server;	/* service for transport */
 	atomic_t    	    	xpt_reserved;	/* space on outq that is rsvd */
 	struct mutex		xpt_mutex;	/* to serialize sending data */
@@ -82,6 +105,55 @@ int	svc_port_is_privileged(struct sockaddr *sin);
 int	svc_print_xprts(char *buf, int maxlen);
 struct	svc_xprt *svc_find_xprt(struct svc_serv *, char *, int, int);
 int	svc_xprt_names(struct svc_serv *serv, char *buf, int buflen);
+	struct rpc_wait_queue	xpt_bc_pending;	/* backchannel wait queue */
+	struct list_head	xpt_users;	/* callbacks on free */
+
+	struct net		*xpt_net;
+	struct rpc_xprt		*xpt_bc_xprt;	/* NFSv4.1 backchannel */
+};
+
+static inline void unregister_xpt_user(struct svc_xprt *xpt, struct svc_xpt_user *u)
+{
+	spin_lock(&xpt->xpt_lock);
+	list_del_init(&u->list);
+	spin_unlock(&xpt->xpt_lock);
+}
+
+static inline int register_xpt_user(struct svc_xprt *xpt, struct svc_xpt_user *u)
+{
+	spin_lock(&xpt->xpt_lock);
+	if (test_bit(XPT_CLOSE, &xpt->xpt_flags)) {
+		/*
+		 * The connection is about to be deleted soon (or,
+		 * worse, may already be deleted--in which case we've
+		 * already notified the xpt_users).
+		 */
+		spin_unlock(&xpt->xpt_lock);
+		return -ENOTCONN;
+	}
+	list_add(&u->list, &xpt->xpt_users);
+	spin_unlock(&xpt->xpt_lock);
+	return 0;
+}
+
+int	svc_reg_xprt_class(struct svc_xprt_class *);
+void	svc_unreg_xprt_class(struct svc_xprt_class *);
+void	svc_xprt_init(struct net *, struct svc_xprt_class *, struct svc_xprt *,
+		      struct svc_serv *);
+int	svc_create_xprt(struct svc_serv *, const char *, struct net *,
+			const int, const unsigned short, int);
+void	svc_xprt_do_enqueue(struct svc_xprt *xprt);
+void	svc_xprt_enqueue(struct svc_xprt *xprt);
+void	svc_xprt_put(struct svc_xprt *xprt);
+void	svc_xprt_copy_addrs(struct svc_rqst *rqstp, struct svc_xprt *xprt);
+void	svc_close_xprt(struct svc_xprt *xprt);
+int	svc_port_is_privileged(struct sockaddr *sin);
+int	svc_print_xprts(char *buf, int maxlen);
+struct	svc_xprt *svc_find_xprt(struct svc_serv *serv, const char *xcl_name,
+			struct net *net, const sa_family_t af,
+			const unsigned short port);
+int	svc_xprt_names(struct svc_serv *serv, char *buf, const int buflen);
+void	svc_add_new_perm_xprt(struct svc_serv *serv, struct svc_xprt *xprt);
 
 static inline void svc_xprt_get(struct svc_xprt *xprt)
 {
@@ -89,12 +161,16 @@ static inline void svc_xprt_get(struct svc_xprt *xprt)
 }
 static inline void svc_xprt_set_local(struct svc_xprt *xprt,
 				      struct sockaddr *sa, int salen)
+				      const struct sockaddr *sa,
+				      const size_t salen)
 {
 	memcpy(&xprt->xpt_local, sa, salen);
 	xprt->xpt_locallen = salen;
 }
 static inline void svc_xprt_set_remote(struct svc_xprt *xprt,
 				       struct sockaddr *sa, int salen)
+				       const struct sockaddr *sa,
+				       const size_t salen)
 {
 	memcpy(&xprt->xpt_remote, sa, salen);
 	xprt->xpt_remotelen = salen;
@@ -114,6 +190,22 @@ static inline unsigned short svc_addr_port(struct sockaddr *sa)
 }
 
 static inline size_t svc_addr_len(struct sockaddr *sa)
+static inline unsigned short svc_addr_port(const struct sockaddr *sa)
+{
+	const struct sockaddr_in *sin = (const struct sockaddr_in *)sa;
+	const struct sockaddr_in6 *sin6 = (const struct sockaddr_in6 *)sa;
+
+	switch (sa->sa_family) {
+	case AF_INET:
+		return ntohs(sin->sin_port);
+	case AF_INET6:
+		return ntohs(sin6->sin6_port);
+	}
+
+	return 0;
+}
+
+static inline size_t svc_addr_len(const struct sockaddr *sa)
 {
 	switch (sa->sa_family) {
 	case AF_INET:
@@ -148,12 +240,42 @@ static inline char *__svc_print_addr(struct sockaddr *addr,
 		snprintf(buf, len, "%x:%x:%x:%x:%x:%x:%x:%x, port=%u",
 			NIP6(((struct sockaddr_in6 *) addr)->sin6_addr),
 			ntohs(((struct sockaddr_in6 *) addr)->sin6_port));
+	BUG();
+}
+
+static inline unsigned short svc_xprt_local_port(const struct svc_xprt *xprt)
+{
+	return svc_addr_port((const struct sockaddr *)&xprt->xpt_local);
+}
+
+static inline unsigned short svc_xprt_remote_port(const struct svc_xprt *xprt)
+{
+	return svc_addr_port((const struct sockaddr *)&xprt->xpt_remote);
+}
+
+static inline char *__svc_print_addr(const struct sockaddr *addr,
+				     char *buf, const size_t len)
+{
+	const struct sockaddr_in *sin = (const struct sockaddr_in *)addr;
+	const struct sockaddr_in6 *sin6 = (const struct sockaddr_in6 *)addr;
+
+	switch (addr->sa_family) {
+	case AF_INET:
+		snprintf(buf, len, "%pI4, port=%u", &sin->sin_addr,
+			ntohs(sin->sin_port));
+		break;
+
+	case AF_INET6:
+		snprintf(buf, len, "%pI6, port=%u",
+			 &sin6->sin6_addr,
+			ntohs(sin6->sin6_port));
 		break;
 
 	default:
 		snprintf(buf, len, "unknown address type: %d", addr->sa_family);
 		break;
 	}
+
 	return buf;
 }
 #endif /* SUNRPC_SVC_XPRT_H */

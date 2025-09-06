@@ -3,6 +3,7 @@
  *
  *  The state machine for an Open IPMI BT sub-driver under ipmi_si.c, part
  *  of the driver architecture at http://sourceforge.net/project/openipmi
+ *  of the driver architecture at http://sourceforge.net/projects/openipmi 
  *
  *  Author:	Rocky Craig <first.last@hp.com>
  *
@@ -98,6 +99,9 @@ struct si_sm_data {
 	unsigned char	write_data[IPMI_MAX_MSG_LENGTH];
 	int		write_count;
 	unsigned char	read_data[IPMI_MAX_MSG_LENGTH];
+	unsigned char	write_data[IPMI_MAX_MSG_LENGTH + 2]; /* +2 for memcpy */
+	int		write_count;
+	unsigned char	read_data[IPMI_MAX_MSG_LENGTH + 2]; /* +2 for memcpy */
 	int		read_count;
 	int		truncated;
 	long		timeout;	/* microseconds countdown */
@@ -202,6 +206,7 @@ static unsigned int bt_init_data(struct si_sm_data *bt, struct si_sm_io *io)
 	bt->state = BT_STATE_IDLE;	/* start here */
 	bt->complete = BT_STATE_IDLE;	/* end here */
 	bt->BT_CAP_req2rsp = BT_NORMAL_TIMEOUT * 1000000;
+	bt->BT_CAP_req2rsp = BT_NORMAL_TIMEOUT * USEC_PER_SEC;
 	bt->BT_CAP_retries = BT_NORMAL_RETRY_LIMIT;
 	/* BT_CAP_outreqs == zero is a flag to read BT Capabilities */
 	return 3; /* We claim 3 bytes of space; ought to check SPMI table */
@@ -353,6 +358,7 @@ static inline void write_all_bytes(struct si_sm_data *bt)
 static inline int read_all_bytes(struct si_sm_data *bt)
 {
 	unsigned char i;
+	unsigned int i;
 
 	/*
 	 * length is "framing info", minimum = 4: NetFn, Seq, Cmd, cCode.
@@ -522,11 +528,12 @@ static enum si_sm_result bt_event(struct si_sm_data *bt, long time)
 		if (status & BT_H_BUSY)		/* clear a leftover H_BUSY */
 			BT_CONTROL(BT_H_BUSY);
 
+		bt->timeout = bt->BT_CAP_req2rsp;
+
 		/* Read BT capabilities if it hasn't been done yet */
 		if (!bt->BT_CAP_outreqs)
 			BT_STATE_CHANGE(BT_STATE_CAPABILITIES_BEGIN,
 					SI_SM_CALL_WITHOUT_DELAY);
-		bt->timeout = bt->BT_CAP_req2rsp;
 		BT_SI_SM_RETURN(SI_SM_IDLE);
 
 	case BT_STATE_XACTION_START:
@@ -561,6 +568,7 @@ static enum si_sm_result bt_event(struct si_sm_data *bt, long time)
 
 		/*
 		 * Uncached, ordered writes should just proceeed serially but
+		 * Uncached, ordered writes should just proceed serially but
 		 * some BMCs don't clear B2H_ATN with one hit.  Fast-path a
 		 * workaround without too much penalty to the general case.
 		 */
@@ -614,6 +622,7 @@ static enum si_sm_result bt_event(struct si_sm_data *bt, long time)
 		HOST2BMC(3);		/* Cmd == Soft reset */
 		BT_CONTROL(BT_H2B_ATN);
 		bt->timeout = BT_RESET_DELAY * 1000000;
+		bt->timeout = BT_RESET_DELAY * USEC_PER_SEC;
 		BT_STATE_CHANGE(BT_STATE_RESET3,
 				SI_SM_CALL_WITH_DELAY);
 
@@ -652,6 +661,7 @@ static enum si_sm_result bt_event(struct si_sm_data *bt, long time)
 		if ((i == 8) && !BT_CAP[2]) {
 			bt->BT_CAP_outreqs = BT_CAP[3];
 			bt->BT_CAP_req2rsp = BT_CAP[6] * 1000000;
+			bt->BT_CAP_req2rsp = BT_CAP[6] * USEC_PER_SEC;
 			bt->BT_CAP_retries = BT_CAP[7];
 		} else
 			printk(KERN_WARNING "IPMI BT: using default values\n");
@@ -659,6 +669,7 @@ static enum si_sm_result bt_event(struct si_sm_data *bt, long time)
 			bt->BT_CAP_outreqs = 1;
 		printk(KERN_WARNING "IPMI BT: req2rsp=%ld secs retries=%d\n",
 			bt->BT_CAP_req2rsp / 1000000L, bt->BT_CAP_retries);
+			bt->BT_CAP_req2rsp / USEC_PER_SEC, bt->BT_CAP_retries);
 		bt->timeout = bt->BT_CAP_req2rsp;
 		return SI_SM_CALL_WITHOUT_DELAY;
 
@@ -695,6 +706,7 @@ static int bt_size(void)
 }
 
 struct si_sm_handlers bt_smi_handlers = {
+const struct si_sm_handlers bt_smi_handlers = {
 	.init_data		= bt_init_data,
 	.start_transaction	= bt_start_transaction,
 	.get_result		= bt_get_result,

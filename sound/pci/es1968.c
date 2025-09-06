@@ -95,6 +95,7 @@
  */
 
 #include <asm/io.h>
+#include <linux/io.h>
 #include <linux/delay.h>
 #include <linux/interrupt.h>
 #include <linux/init.h>
@@ -104,12 +105,19 @@
 #include <linux/gameport.h>
 #include <linux/moduleparam.h>
 #include <linux/mutex.h>
+#include <linux/module.h>
+#include <linux/mutex.h>
+#include <linux/input.h>
 
 #include <sound/core.h>
 #include <sound/pcm.h>
 #include <sound/mpu401.h>
 #include <sound/ac97_codec.h>
 #include <sound/initval.h>
+
+#ifdef CONFIG_SND_ES1968_RADIO
+#include <media/tea575x.h>
+#endif
 
 #define CARD_NAME "ESS Maestro1/2"
 #define DRIVER_NAME "ES1968"
@@ -128,6 +136,7 @@ MODULE_SUPPORTED_DEVICE("{{ESS,Maestro 2e},"
 static int index[SNDRV_CARDS] = SNDRV_DEFAULT_IDX;	/* Index 1-MAX */
 static char *id[SNDRV_CARDS] = SNDRV_DEFAULT_STR;	/* ID for this card */
 static int enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE_PNP;	/* Enable this card */
+static bool enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE_PNP;	/* Enable this card */
 static int total_bufsize[SNDRV_CARDS] = {[0 ... (SNDRV_CARDS - 1)] = 1024 };
 static int pcm_substreams_p[SNDRV_CARDS] = {[0 ... (SNDRV_CARDS - 1)] = 4 };
 static int pcm_substreams_c[SNDRV_CARDS] = {[0 ... (SNDRV_CARDS - 1)] = 1 };
@@ -137,6 +146,9 @@ static int enable_mpu[SNDRV_CARDS] = {[0 ... (SNDRV_CARDS - 1)] = 2};
 #ifdef SUPPORT_JOYSTICK
 static int joystick[SNDRV_CARDS];
 #endif
+static bool joystick[SNDRV_CARDS];
+#endif
+static int radio_nr[SNDRV_CARDS] = {[0 ... (SNDRV_CARDS - 1)] = -1};
 
 module_param_array(index, int, NULL, 0444);
 MODULE_PARM_DESC(index, "Index value for " CARD_NAME " soundcard.");
@@ -160,6 +172,9 @@ MODULE_PARM_DESC(enable_mpu, "Enable MPU401.  (0 = off, 1 = on, 2 = auto)");
 module_param_array(joystick, bool, NULL, 0444);
 MODULE_PARM_DESC(joystick, "Enable joystick.");
 #endif
+module_param_array(radio_nr, int, NULL, 0444);
+MODULE_PARM_DESC(radio_nr, "Radio device numbers");
+
 
 
 #define NR_APUS			64
@@ -220,6 +235,7 @@ MODULE_PARM_DESC(joystick, "Enable joystick.");
 #define RINGB_SING_BIT_DUAL	0x0040
 
 /* ****Port Adresses**** */
+/* ****Port Addresses**** */
 
 /*   Write & Read */
 #define ESM_INDEX		0x02
@@ -483,6 +499,7 @@ struct esschan {
 	struct list_head list;
 
 #ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 	u16 wc_map[4];
 #endif
 };
@@ -525,6 +542,9 @@ struct es1968 {
 	spinlock_t reg_lock;
 	spinlock_t ac97_lock;
 	struct tasklet_struct hwvol_tq;
+	struct snd_rawmidi *rmidi;
+
+	spinlock_t reg_lock;
 	unsigned int in_suspend;
 
 	/* Maestro Stuff */
@@ -541,17 +561,34 @@ struct es1968 {
 	spinlock_t substream_lock;
 
 #ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 	u16 apu_map[NR_APUS][NR_APU_REGS];
 #endif
 
 #ifdef SUPPORT_JOYSTICK
 	struct gameport *gameport;
 #endif
+
+#ifdef CONFIG_SND_ES1968_INPUT
+	struct input_dev *input_dev;
+	char phys[64];			/* physical device path */
+#else
+	struct snd_kcontrol *master_switch; /* for h/w volume control */
+	struct snd_kcontrol *master_volume;
+#endif
+	struct work_struct hwvol_work;
+
+#ifdef CONFIG_SND_ES1968_RADIO
+	struct v4l2_device v4l2_dev;
+	struct snd_tea575x tea;
+	unsigned int tea575x_tuner;
+#endif
 };
 
 static irqreturn_t snd_es1968_interrupt(int irq, void *dev_id);
 
 static struct pci_device_id snd_es1968_ids[] = {
+static const struct pci_device_id snd_es1968_ids[] = {
 	/* Maestro 1 */
         { 0x1285, 0x0100, PCI_ANY_ID, PCI_ANY_ID, PCI_CLASS_MULTIMEDIA_AUDIO << 8, 0xffff00, TYPE_MAESTRO },
 	/* Maestro 2 */
@@ -614,6 +651,7 @@ static int snd_es1968_ac97_wait(struct es1968 *chip)
 		cond_resched();
 	}
 	snd_printd("es1968: ac97 timeout\n");
+	dev_dbg(chip->card->dev, "ac97 timeout\n");
 	return 1; /* timeout */
 }
 
@@ -626,6 +664,7 @@ static int snd_es1968_ac97_wait_poll(struct es1968 *chip)
 			return 0;
 	}
 	snd_printd("es1968: ac97 timeout\n");
+	dev_dbg(chip->card->dev, "ac97 timeout\n");
 	return 1; /* timeout */
 }
 
@@ -654,6 +693,9 @@ static unsigned short snd_es1968_ac97_read(struct snd_ac97 *ac97, unsigned short
 	snd_es1968_ac97_wait(chip);
 
 	spin_lock_irqsave(&chip->ac97_lock, flags);
+
+	snd_es1968_ac97_wait(chip);
+
 	outb(reg | 0x80, chip->io_port + ESM_AC97_INDEX);
 	/*msleep(1);*/
 
@@ -675,6 +717,7 @@ static void apu_index_set(struct es1968 *chip, u16 index)
 		if (__maestro_read(chip, IDR1_CRAM_POINTER) == index)
 			return;
 	snd_printd("es1968: APU register select failed. (Timeout)\n");
+	dev_dbg(chip->card->dev, "APU register select failed. (Timeout)\n");
 }
 
 /* no spinlock */
@@ -687,6 +730,7 @@ static void apu_data_set(struct es1968 *chip, u16 data)
 		__maestro_write(chip, IDR0_DATA_PORT, data);
 	}
 	snd_printd("es1968: APU register set probably failed (Timeout)!\n");
+	dev_dbg(chip->card->dev, "APU register set probably failed (Timeout)!\n");
 }
 
 /* no spinlock */
@@ -694,6 +738,9 @@ static void __apu_set_register(struct es1968 *chip, u16 channel, u8 reg, u16 dat
 {
 	snd_assert(channel < NR_APUS, return);
 #ifdef CONFIG_PM
+	if (snd_BUG_ON(channel >= NR_APUS))
+		return;
+#ifdef CONFIG_PM_SLEEP
 	chip->apu_map[channel][reg] = data;
 #endif
 	reg |= (channel << 4);
@@ -712,6 +759,8 @@ static void apu_set_register(struct es1968 *chip, u16 channel, u8 reg, u16 data)
 static u16 __apu_get_register(struct es1968 *chip, u16 channel, u8 reg)
 {
 	snd_assert(channel < NR_APUS, return 0);
+	if (snd_BUG_ON(channel >= NR_APUS))
+		return 0;
 	reg |= (channel << 4);
 	apu_index_set(chip, reg);
 	return __maestro_read(chip, IDR0_DATA_PORT);
@@ -980,6 +1029,7 @@ static void snd_es1968_program_wavecache(struct es1968 *chip, struct esschan *es
 	wave_set_register(chip, es->apu[channel] << 3, tmpval);
 
 #ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 	es->wc_map[channel] = tmpval;
 #endif
 }
@@ -1408,6 +1458,7 @@ static void snd_es1968_free_dmabuf(struct es1968 *chip)
 	if (! chip->dma.area)
 		return;
 	snd_dma_reserve_buf(&chip->dma, snd_dma_pci_buf_id(chip->pci));
+	snd_dma_free_pages(&chip->dma);
 	while ((p = chip->buf_list.next) != &chip->buf_list) {
 		struct esm_memory *chunk = list_entry(p, struct esm_memory, list);
 		list_del(p);
@@ -1416,6 +1467,7 @@ static void snd_es1968_free_dmabuf(struct es1968 *chip)
 }
 
 static int __devinit
+static int
 snd_es1968_init_dmabuf(struct es1968 *chip)
 {
 	int err;
@@ -1437,6 +1489,19 @@ snd_es1968_init_dmabuf(struct es1968 *chip)
 			snd_printk(KERN_ERR "es1968: DMA buffer beyond 256MB.\n");
 			return -ENOMEM;
 		}
+	err = snd_dma_alloc_pages_fallback(SNDRV_DMA_TYPE_DEV,
+					   snd_dma_pci_data(chip->pci),
+					   chip->total_bufsize, &chip->dma);
+	if (err < 0 || ! chip->dma.area) {
+		dev_err(chip->card->dev,
+			"can't allocate dma pages for size %d\n",
+			   chip->total_bufsize);
+		return -ENOMEM;
+	}
+	if ((chip->dma.addr + chip->dma.bytes - 1) & ~((1 << 28) - 1)) {
+		snd_dma_free_pages(&chip->dma);
+		dev_err(chip->card->dev, "DMA buffer beyond 256MB.\n");
+		return -ENOMEM;
 	}
 
 	INIT_LIST_HEAD(&chip->buf_list);
@@ -1477,6 +1542,8 @@ static int snd_es1968_hw_params(struct snd_pcm_substream *substream,
 	chan->memory = snd_es1968_new_memory(chip, size);
 	if (chan->memory == NULL) {
 		// snd_printd("cannot allocate dma buffer: size = %d\n", size);
+		dev_dbg(chip->card->dev,
+			"cannot allocate dma buffer: size = %d\n", size);
 		return -ENOMEM;
 	}
 	snd_pcm_set_runtime_buffer(substream, &chan->memory->buf);
@@ -1691,11 +1758,14 @@ static struct snd_pcm_ops snd_es1968_capture_ops = {
 #define CLOCK_MEASURE_BUFSIZE	16768	/* enough large for a single shot */
 
 static void __devinit es1968_measure_clock(struct es1968 *chip)
+static void es1968_measure_clock(struct es1968 *chip)
 {
 	int i, apu;
 	unsigned int pa, offset, t;
 	struct esm_memory *memory;
 	struct timeval start_time, stop_time;
+	ktime_t start_time, stop_time;
+	ktime_t diff;
 
 	if (chip->clock == 0)
 		chip->clock = 48000; /* default clock value */
@@ -1707,6 +1777,13 @@ static void __devinit es1968_measure_clock(struct es1968 *chip)
 	}
 	if ((memory = snd_es1968_new_memory(chip, CLOCK_MEASURE_BUFSIZE)) == NULL) {
 		snd_printk(KERN_ERR "cannot allocate dma buffer - using default clock %d\n", chip->clock);
+		dev_err(chip->card->dev, "Hmm, cannot find empty APU pair!?\n");
+		return;
+	}
+	if ((memory = snd_es1968_new_memory(chip, CLOCK_MEASURE_BUFSIZE)) == NULL) {
+		dev_warn(chip->card->dev,
+			 "cannot allocate dma buffer - using default clock %d\n",
+			 chip->clock);
 		snd_es1968_free_apu_pair(chip, apu);
 		return;
 	}
@@ -1745,11 +1822,13 @@ static void __devinit es1968_measure_clock(struct es1968 *chip)
 	__apu_set_register(chip, apu, 5, pa & 0xffff);
 	snd_es1968_trigger_apu(chip, apu, ESM_APU_16BITLINEAR);
 	do_gettimeofday(&start_time);
+	start_time = ktime_get();
 	spin_unlock_irq(&chip->reg_lock);
 	msleep(50);
 	spin_lock_irq(&chip->reg_lock);
 	offset = __apu_get_register(chip, apu, 5);
 	do_gettimeofday(&stop_time);
+	stop_time = ktime_get();
 	snd_es1968_trigger_apu(chip, apu, 0); /* stop */
 	snd_es1968_bob_dec(chip);
 	chip->in_measurement = 0;
@@ -1768,6 +1847,10 @@ static void __devinit es1968_measure_clock(struct es1968 *chip)
 		t += stop_time.tv_usec - start_time.tv_usec;
 	if (t == 0) {
 		snd_printk(KERN_ERR "?? calculation error..\n");
+	diff = ktime_sub(stop_time, start_time);
+	t = ktime_to_us(diff);
+	if (t == 0) {
+		dev_err(chip->card->dev, "?? calculation error..\n");
 	} else {
 		offset *= 1000;
 		offset = (offset / t) * 1000 + ((offset % t) * 1000) / t;
@@ -1776,6 +1859,7 @@ static void __devinit es1968_measure_clock(struct es1968 *chip)
 				chip->clock = (chip->clock * offset) / 48000;
 		}
 		printk(KERN_INFO "es1968: clocking to %d\n", chip->clock);
+		dev_info(chip->card->dev, "clocking to %d\n", chip->clock);
 	}
 	snd_es1968_free_memory(chip, memory);
 	snd_es1968_free_apu_pair(chip, apu);
@@ -1793,6 +1877,7 @@ static void snd_es1968_pcm_free(struct snd_pcm *pcm)
 }
 
 static int __devinit
+static int
 snd_es1968_pcm(struct es1968 *chip, int device)
 {
 	struct snd_pcm *pcm;
@@ -1879,6 +1964,14 @@ static void es1968_update_hw_volume(unsigned long private_data)
 	struct es1968 *chip = (struct es1968 *) private_data;
 	int x, val;
 	unsigned long flags;
+/* The hardware volume works by incrementing / decrementing 2 counters
+   (without wrap around) in response to volume button presses and then
+   generating an interrupt. The pair of counters is stored in bits 1-3 and 5-7
+   of a byte wide register. The meaning of bits 0 and 4 is unknown. */
+static void es1968_update_hw_volume(struct work_struct *work)
+{
+	struct es1968 *chip = container_of(work, struct es1968, hwvol_work);
+	int x, val;
 
 	/* Figure out which volume control button was pushed,
 	   based on differences from the default register
@@ -1899,6 +1992,11 @@ static void es1968_update_hw_volume(unsigned long private_data)
 	/* FIXME: we can't call snd_ac97_* functions since here is in tasklet. */
 	spin_lock_irqsave(&chip->ac97_lock, flags);
 	val = chip->ac97->regs[AC97_MASTER];
+#ifndef CONFIG_SND_ES1968_INPUT
+	if (! chip->master_switch || ! chip->master_volume)
+		return;
+
+	val = snd_ac97_read(chip->ac97, AC97_MASTER);
 	switch (x) {
 	case 0x88:
 		/* mute */
@@ -1935,6 +2033,40 @@ static void es1968_update_hw_volume(unsigned long private_data)
 		break;
 	}
 	spin_unlock_irqrestore(&chip->ac97_lock, flags);
+		break;
+	}
+	if (snd_ac97_update(chip->ac97, AC97_MASTER, val))
+		snd_ctl_notify(chip->card, SNDRV_CTL_EVENT_MASK_VALUE,
+			       &chip->master_volume->id);
+#else
+	if (!chip->input_dev)
+		return;
+
+	val = 0;
+	switch (x) {
+	case 0x88:
+		/* The counters have not changed, yet we've received a HV
+		   interrupt. According to tests run by various people this
+		   happens when pressing the mute button. */
+		val = KEY_MUTE;
+		break;
+	case 0xaa:
+		/* counters increased by 1 -> volume up */
+		val = KEY_VOLUMEUP;
+		break;
+	case 0x66:
+		/* counters decreased by 1 -> volume down */
+		val = KEY_VOLUMEDOWN;
+		break;
+	}
+
+	if (val) {
+		input_report_key(chip->input_dev, val, 1);
+		input_sync(chip->input_dev);
+		input_report_key(chip->input_dev, val, 0);
+		input_sync(chip->input_dev);
+	}
+#endif
 }
 
 /*
@@ -1952,6 +2084,7 @@ static irqreturn_t snd_es1968_interrupt(int irq, void *dev_id)
 
 	if (event & ESM_HWVOL_IRQ)
 		tasklet_hi_schedule(&chip->hwvol_tq); /* we'll do this later */
+		schedule_work(&chip->hwvol_work);
 
 	/* else ack 'em all, i imagine */
 	outb(0xFF, chip->io_port + 0x1A);
@@ -1987,11 +2120,15 @@ static irqreturn_t snd_es1968_interrupt(int irq, void *dev_id)
  */
 
 static int __devinit
+static int
 snd_es1968_mixer(struct es1968 *chip)
 {
 	struct snd_ac97_bus *pbus;
 	struct snd_ac97_template ac97;
 	struct snd_ctl_elem_id elem_id;
+#ifndef CONFIG_SND_ES1968_INPUT
+	struct snd_ctl_elem_id elem_id;
+#endif
 	int err;
 	static struct snd_ac97_bus_ops ops = {
 		.write = snd_es1968_ac97_write,
@@ -2007,6 +2144,7 @@ snd_es1968_mixer(struct es1968 *chip)
 	if ((err = snd_ac97_mixer(pbus, &ac97, &chip->ac97)) < 0)
 		return err;
 
+#ifndef CONFIG_SND_ES1968_INPUT
 	/* attach master switch / volumes for h/w volume control */
 	memset(&elem_id, 0, sizeof(elem_id));
 	elem_id.iface = SNDRV_CTL_ELEM_IFACE_MIXER;
@@ -2016,6 +2154,7 @@ snd_es1968_mixer(struct es1968 *chip)
 	elem_id.iface = SNDRV_CTL_ELEM_IFACE_MIXER;
 	strcpy(elem_id.name, "Master Playback Volume");
 	chip->master_volume = snd_ctl_find_id(chip->card, &elem_id);
+#endif
 
 	return 0;
 }
@@ -2076,6 +2215,7 @@ static void snd_es1968_ac97_reset(struct es1968 *chip)
 
 #if 0				/* the loop here needs to be much better if we want it.. */
 	snd_printk(KERN_INFO "trying software reset\n");
+	dev_info(chip->card->dev, "trying software reset\n");
 	/* try and do a software reset */
 	outb(0x80 | 0x7c, ioaddr + 0x30);
 	for (w = 0;; w++) {
@@ -2258,6 +2398,7 @@ static void snd_es1968_chip_init(struct es1968 *chip)
 
 	/* it appears some maestros (dell 7500) only work if these are set,
 	   regardless of wether we use the assp or not. */
+	   regardless of whether we use the assp or not. */
 
 	outb(0, iobase + ASSP_CONTROL_B);
 	outb(3, iobase + ASSP_CONTROL_A);	/* M: Reserved bits... */
@@ -2349,12 +2490,24 @@ static void snd_es1968_start_irq(struct es1968 *chip)
 static int es1968_suspend(struct pci_dev *pci, pm_message_t state)
 {
 	struct snd_card *card = pci_get_drvdata(pci);
+	outb(w, chip->io_port + 0x1A);
+	outw(w, chip->io_port + ESM_PORT_HOST_IRQ);
+}
+
+#ifdef CONFIG_PM_SLEEP
+/*
+ * PM support
+ */
+static int es1968_suspend(struct device *dev)
+{
+	struct snd_card *card = dev_get_drvdata(dev);
 	struct es1968 *chip = card->private_data;
 
 	if (! chip->do_pm)
 		return 0;
 
 	chip->in_suspend = 1;
+	cancel_work_sync(&chip->hwvol_work);
 	snd_power_change_state(card, SNDRV_CTL_POWER_D3hot);
 	snd_pcm_suspend_all(chip->pcm);
 	snd_ac97_suspend(chip->ac97);
@@ -2369,6 +2522,12 @@ static int es1968_suspend(struct pci_dev *pci, pm_message_t state)
 static int es1968_resume(struct pci_dev *pci)
 {
 	struct snd_card *card = pci_get_drvdata(pci);
+	return 0;
+}
+
+static int es1968_resume(struct device *dev)
+{
+	struct snd_card *card = dev_get_drvdata(dev);
 	struct es1968 *chip = card->private_data;
 	struct esschan *es;
 
@@ -2423,6 +2582,16 @@ static int es1968_resume(struct pci_dev *pci)
 #ifdef SUPPORT_JOYSTICK
 #define JOYSTICK_ADDR	0x200
 static int __devinit snd_es1968_create_gameport(struct es1968 *chip, int dev)
+
+static SIMPLE_DEV_PM_OPS(es1968_pm, es1968_suspend, es1968_resume);
+#define ES1968_PM_OPS	&es1968_pm
+#else
+#define ES1968_PM_OPS	NULL
+#endif /* CONFIG_PM_SLEEP */
+
+#ifdef SUPPORT_JOYSTICK
+#define JOYSTICK_ADDR	0x200
+static int snd_es1968_create_gameport(struct es1968 *chip, int dev)
 {
 	struct gameport *gp;
 	struct resource *r;
@@ -2438,6 +2607,8 @@ static int __devinit snd_es1968_create_gameport(struct es1968 *chip, int dev)
 	chip->gameport = gp = gameport_allocate_port();
 	if (!gp) {
 		printk(KERN_ERR "es1968: cannot allocate memory for gameport\n");
+		dev_err(chip->card->dev,
+			"cannot allocate memory for gameport\n");
 		release_and_free_resource(r);
 		return -ENOMEM;
 	}
@@ -2474,6 +2645,127 @@ static inline void snd_es1968_free_gameport(struct es1968 *chip) { }
 
 static int snd_es1968_free(struct es1968 *chip)
 {
+#ifdef CONFIG_SND_ES1968_INPUT
+static int snd_es1968_input_register(struct es1968 *chip)
+{
+	struct input_dev *input_dev;
+	int err;
+
+	input_dev = input_allocate_device();
+	if (!input_dev)
+		return -ENOMEM;
+
+	snprintf(chip->phys, sizeof(chip->phys), "pci-%s/input0",
+		 pci_name(chip->pci));
+
+	input_dev->name = chip->card->driver;
+	input_dev->phys = chip->phys;
+	input_dev->id.bustype = BUS_PCI;
+	input_dev->id.vendor  = chip->pci->vendor;
+	input_dev->id.product = chip->pci->device;
+	input_dev->dev.parent = &chip->pci->dev;
+
+	__set_bit(EV_KEY, input_dev->evbit);
+	__set_bit(KEY_MUTE, input_dev->keybit);
+	__set_bit(KEY_VOLUMEDOWN, input_dev->keybit);
+	__set_bit(KEY_VOLUMEUP, input_dev->keybit);
+
+	err = input_register_device(input_dev);
+	if (err) {
+		input_free_device(input_dev);
+		return err;
+	}
+
+	chip->input_dev = input_dev;
+	return 0;
+}
+#endif /* CONFIG_SND_ES1968_INPUT */
+
+#ifdef CONFIG_SND_ES1968_RADIO
+#define GPIO_DATA	0x60
+#define IO_MASK		4      /* mask      register offset from GPIO_DATA
+				bits 1=unmask write to given bit */
+#define IO_DIR		8      /* direction register offset from GPIO_DATA
+				bits 0/1=read/write direction */
+
+/* GPIO to TEA575x maps */
+struct snd_es1968_tea575x_gpio {
+	u8 data, clk, wren, most;
+	char *name;
+};
+
+static struct snd_es1968_tea575x_gpio snd_es1968_tea575x_gpios[] = {
+	{ .data = 6, .clk = 7, .wren = 8, .most = 9, .name = "SF64-PCE2" },
+	{ .data = 7, .clk = 8, .wren = 6, .most = 10, .name = "M56VAP" },
+};
+
+#define get_tea575x_gpio(chip) \
+	(&snd_es1968_tea575x_gpios[(chip)->tea575x_tuner])
+
+
+static void snd_es1968_tea575x_set_pins(struct snd_tea575x *tea, u8 pins)
+{
+	struct es1968 *chip = tea->private_data;
+	struct snd_es1968_tea575x_gpio gpio = *get_tea575x_gpio(chip);
+	u16 val = 0;
+
+	val |= (pins & TEA575X_DATA) ? (1 << gpio.data) : 0;
+	val |= (pins & TEA575X_CLK)  ? (1 << gpio.clk)  : 0;
+	val |= (pins & TEA575X_WREN) ? (1 << gpio.wren) : 0;
+
+	outw(val, chip->io_port + GPIO_DATA);
+}
+
+static u8 snd_es1968_tea575x_get_pins(struct snd_tea575x *tea)
+{
+	struct es1968 *chip = tea->private_data;
+	struct snd_es1968_tea575x_gpio gpio = *get_tea575x_gpio(chip);
+	u16 val = inw(chip->io_port + GPIO_DATA);
+	u8 ret = 0;
+
+	if (val & (1 << gpio.data))
+		ret |= TEA575X_DATA;
+	if (val & (1 << gpio.most))
+		ret |= TEA575X_MOST;
+
+	return ret;
+}
+
+static void snd_es1968_tea575x_set_direction(struct snd_tea575x *tea, bool output)
+{
+	struct es1968 *chip = tea->private_data;
+	unsigned long io = chip->io_port + GPIO_DATA;
+	u16 odir = inw(io + IO_DIR);
+	struct snd_es1968_tea575x_gpio gpio = *get_tea575x_gpio(chip);
+
+	if (output) {
+		outw(~((1 << gpio.data) | (1 << gpio.clk) | (1 << gpio.wren)),
+			io + IO_MASK);
+		outw(odir | (1 << gpio.data) | (1 << gpio.clk) | (1 << gpio.wren),
+			io + IO_DIR);
+	} else {
+		outw(~((1 << gpio.clk) | (1 << gpio.wren) | (1 << gpio.data) | (1 << gpio.most)),
+			io + IO_MASK);
+		outw((odir & ~((1 << gpio.data) | (1 << gpio.most)))
+			| (1 << gpio.clk) | (1 << gpio.wren), io + IO_DIR);
+	}
+}
+
+static struct snd_tea575x_ops snd_es1968_tea_ops = {
+	.set_pins = snd_es1968_tea575x_set_pins,
+	.get_pins = snd_es1968_tea575x_get_pins,
+	.set_direction = snd_es1968_tea575x_set_direction,
+};
+#endif
+
+static int snd_es1968_free(struct es1968 *chip)
+{
+	cancel_work_sync(&chip->hwvol_work);
+#ifdef CONFIG_SND_ES1968_INPUT
+	if (chip->input_dev)
+		input_unregister_device(chip->input_dev);
+#endif
+
 	if (chip->io_port) {
 		if (chip->irq >= 0)
 			synchronize_irq(chip->irq);
@@ -2486,6 +2778,14 @@ static int snd_es1968_free(struct es1968 *chip)
 	snd_es1968_free_gameport(chip);
 	chip->master_switch = NULL;
 	chip->master_volume = NULL;
+#ifdef CONFIG_SND_ES1968_RADIO
+	snd_tea575x_exit(&chip->tea);
+	v4l2_device_unregister(&chip->v4l2_dev);
+#endif
+
+	if (chip->irq >= 0)
+		free_irq(chip->irq, chip);
+	snd_es1968_free_gameport(chip);
 	pci_release_regions(chip->pci);
 	pci_disable_device(chip->pci);
 	kfree(chip);
@@ -2504,6 +2804,7 @@ struct ess_device_list {
 };
 
 static struct ess_device_list pm_whitelist[] __devinitdata = {
+static struct ess_device_list pm_whitelist[] = {
 	{ TYPE_MAESTRO2E, 0x0e11 },	/* Compaq Armada */
 	{ TYPE_MAESTRO2E, 0x1028 },
 	{ TYPE_MAESTRO2E, 0x103c },
@@ -2524,6 +2825,23 @@ static int __devinit snd_es1968_create(struct snd_card *card,
 				       int chip_type,
 				       int do_pm,
 				       struct es1968 **chip_ret)
+	{ TYPE_MAESTRO2E, 0x125d },	/* a PCI card, e.g. Terratec DMX */
+	{ TYPE_MAESTRO2, 0x125d },	/* a PCI card, e.g. SF64-PCE2 */
+};
+
+static struct ess_device_list mpu_blacklist[] = {
+	{ TYPE_MAESTRO2, 0x125d },
+};
+
+static int snd_es1968_create(struct snd_card *card,
+			     struct pci_dev *pci,
+			     int total_bufsize,
+			     int play_streams,
+			     int capt_streams,
+			     int chip_type,
+			     int do_pm,
+			     int radio_nr,
+			     struct es1968 **chip_ret)
 {
 	static struct snd_device_ops ops = {
 		.dev_free =	snd_es1968_dev_free,
@@ -2540,6 +2858,10 @@ static int __devinit snd_es1968_create(struct snd_card *card,
 	if (pci_set_dma_mask(pci, DMA_28BIT_MASK) < 0 ||
 	    pci_set_consistent_dma_mask(pci, DMA_28BIT_MASK) < 0) {
 		snd_printk(KERN_ERR "architecture does not support 28bit PCI busmaster DMA\n");
+	if (dma_set_mask(&pci->dev, DMA_BIT_MASK(28)) < 0 ||
+	    dma_set_coherent_mask(&pci->dev, DMA_BIT_MASK(28)) < 0) {
+		dev_err(card->dev,
+			"architecture does not support 28bit PCI busmaster DMA\n");
 		pci_disable_device(pci);
 		return -ENXIO;
 	}
@@ -2559,6 +2881,8 @@ static int __devinit snd_es1968_create(struct snd_card *card,
 	spin_lock_init(&chip->ac97_lock);
 	mutex_init(&chip->memory_mutex);
 	tasklet_init(&chip->hwvol_tq, es1968_update_hw_volume, (unsigned long)chip);
+	mutex_init(&chip->memory_mutex);
+	INIT_WORK(&chip->hwvol_work, es1968_update_hw_volume);
 	chip->card = card;
 	chip->pci = pci;
 	chip->irq = -1;
@@ -2575,6 +2899,8 @@ static int __devinit snd_es1968_create(struct snd_card *card,
 	if (request_irq(pci->irq, snd_es1968_interrupt, IRQF_SHARED,
 			"ESS Maestro", chip)) {
 		snd_printk(KERN_ERR "unable to grab IRQ %d\n", pci->irq);
+			KBUILD_MODNAME, chip)) {
+		dev_err(card->dev, "unable to grab IRQ %d\n", pci->irq);
 		snd_es1968_free(chip);
 		return -EBUSY;
 	}
@@ -2605,6 +2931,7 @@ static int __devinit snd_es1968_create(struct snd_card *card,
 		if (do_pm > 1) {
 			/* not matched; disabling pm */
 			printk(KERN_INFO "es1968: not attempting power management.\n");
+			dev_info(card->dev, "not attempting power management.\n");
 			do_pm = 0;
 		}
 	}
@@ -2618,6 +2945,32 @@ static int __devinit snd_es1968_create(struct snd_card *card,
 	}
 
 	snd_card_set_dev(card, &pci->dev);
+#ifdef CONFIG_SND_ES1968_RADIO
+	/* don't play with GPIOs on laptops */
+	if (chip->pci->subsystem_vendor != 0x125d)
+		goto no_radio;
+	err = v4l2_device_register(&pci->dev, &chip->v4l2_dev);
+	if (err < 0) {
+		snd_es1968_free(chip);
+		return err;
+	}
+	chip->tea.v4l2_dev = &chip->v4l2_dev;
+	chip->tea.private_data = chip;
+	chip->tea.radio_nr = radio_nr;
+	chip->tea.ops = &snd_es1968_tea_ops;
+	sprintf(chip->tea.bus_info, "PCI:%s", pci_name(pci));
+	for (i = 0; i < ARRAY_SIZE(snd_es1968_tea575x_gpios); i++) {
+		chip->tea575x_tuner = i;
+		if (!snd_tea575x_init(&chip->tea, THIS_MODULE)) {
+			dev_info(card->dev, "detected TEA575x radio type %s\n",
+				   get_tea575x_gpio(chip)->name);
+			strlcpy(chip->tea.card, get_tea575x_gpio(chip)->name,
+				sizeof(chip->tea.card));
+			break;
+		}
+	}
+no_radio:
+#endif
 
 	*chip_ret = chip;
 
@@ -2629,6 +2982,8 @@ static int __devinit snd_es1968_create(struct snd_card *card,
  */
 static int __devinit snd_es1968_probe(struct pci_dev *pci,
 				      const struct pci_device_id *pci_id)
+static int snd_es1968_probe(struct pci_dev *pci,
+			    const struct pci_device_id *pci_id)
 {
 	static int dev;
 	struct snd_card *card;
@@ -2646,6 +3001,10 @@ static int __devinit snd_es1968_probe(struct pci_dev *pci,
 	card = snd_card_new(index[dev], id[dev], THIS_MODULE, 0);
 	if (!card)
 		return -ENOMEM;
+	err = snd_card_new(&pci->dev, index[dev], id[dev], THIS_MODULE,
+			   0, &card);
+	if (err < 0)
+		return err;
                 
 	if (total_bufsize[dev] < 128)
 		total_bufsize[dev] = 128;
@@ -2657,6 +3016,7 @@ static int __devinit snd_es1968_probe(struct pci_dev *pci,
 				     pcm_substreams_c[dev],
 				     pci_id->driver_data,
 				     use_pm[dev],
+				     radio_nr[dev],
 				     &chip)) < 0) {
 		snd_card_free(card);
 		return err;
@@ -2706,10 +3066,21 @@ static int __devinit snd_es1968_probe(struct pci_dev *pci,
 					       MPU401_INFO_INTEGRATED,
 					       chip->irq, 0, &chip->rmidi)) < 0) {
 			printk(KERN_WARNING "es1968: skipping MPU-401 MIDI support..\n");
+					       MPU401_INFO_INTEGRATED |
+					       MPU401_INFO_IRQ_HOOK,
+					       -1, &chip->rmidi)) < 0) {
+			dev_warn(card->dev, "skipping MPU-401 MIDI support..\n");
 		}
 	}
 
 	snd_es1968_create_gameport(chip, dev);
+
+#ifdef CONFIG_SND_ES1968_INPUT
+	err = snd_es1968_input_register(chip);
+	if (err)
+		dev_warn(card->dev,
+			 "Input device registration failed with error %i", err);
+#endif
 
 	snd_es1968_start_irq(chip);
 
@@ -2758,3 +3129,19 @@ static void __exit alsa_card_es1968_exit(void)
 
 module_init(alsa_card_es1968_init)
 module_exit(alsa_card_es1968_exit)
+static void snd_es1968_remove(struct pci_dev *pci)
+{
+	snd_card_free(pci_get_drvdata(pci));
+}
+
+static struct pci_driver es1968_driver = {
+	.name = KBUILD_MODNAME,
+	.id_table = snd_es1968_ids,
+	.probe = snd_es1968_probe,
+	.remove = snd_es1968_remove,
+	.driver = {
+		.pm = ES1968_PM_OPS,
+	},
+};
+
+module_pci_driver(es1968_driver);

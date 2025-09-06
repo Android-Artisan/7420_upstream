@@ -37,6 +37,7 @@
 #include <asm/assembler.h>
 #include <asm/asm-offsets.h>
 #include <asm/elf.h>
+#include <asm/hwcap.h>
 #include <asm/pgtable-hwdef.h>
 #include <asm/pgtable.h>
 #include <asm/ptrace.h>
@@ -57,12 +58,16 @@ ENTRY(cpu_arm720_proc_fin)
 		stmfd	sp!, {lr}
 		mov	ip, #PSR_F_BIT | PSR_I_BIT | SVC_MODE
 		msr	cpsr_c, ip
+		ret	lr
+
+ENTRY(cpu_arm720_proc_fin)
 		mrc	p15, 0, r0, c1, c0, 0
 		bic	r0, r0, #0x1000			@ ...i............
 		bic	r0, r0, #0x000e			@ ............wca.
 		mcr	p15, 0, r0, c1, c0, 0		@ disable caches
 		mcr	p15, 0, r1, c7, c7, 0		@ invalidate cache
 		ldmfd	sp!, {pc}
+		ret	lr
 
 /*
  * Function: arm720_proc_do_idle(void)
@@ -71,6 +76,10 @@ ENTRY(cpu_arm720_proc_fin)
  */
 ENTRY(cpu_arm720_do_idle)
 		mov	pc, lr
+ * Purpose : put the processor in proper idle mode
+ */
+ENTRY(cpu_arm720_do_idle)
+		ret	lr
 
 /*
  * Function: arm720_switch_mm(unsigned long pgd_phys)
@@ -86,6 +95,7 @@ ENTRY(cpu_arm720_switch_mm)
 		mcr	p15, 0, r1, c8, c7, 0		@ flush TLB (v4)
 #endif
 		mov	pc, lr
+		ret	lr
 
 /*
  * Function: arm720_set_pte_ext(pte_t *ptep, pte_t pte, unsigned int ext)
@@ -116,12 +126,19 @@ ENTRY(cpu_arm720_set_pte_ext)
 		str	r2, [r0]			@ hardware version
 #endif
 		mov	pc, lr
+	.align	5
+ENTRY(cpu_arm720_set_pte_ext)
+#ifdef CONFIG_MMU
+	armv3_set_pte_ext wc_disable=0
+#endif
+	ret	lr
 
 /*
  * Function: arm720_reset
  * Params  : r0 = address to jump to
  * Notes   : This sets up everything for a reset
  */
+		.pushsection	.idmap.text, "ax"
 ENTRY(cpu_arm720_reset)
 		mov	ip, #0
 		mcr	p15, 0, ip, c7, c7, 0		@ invalidate cache
@@ -135,6 +152,9 @@ ENTRY(cpu_arm720_reset)
 		mov	pc, r0
 
 	__INIT
+		ret	r0
+ENDPROC(cpu_arm720_reset)
+		.popsection
 
 	.type	__arm710_setup, #function
 __arm710_setup:
@@ -149,6 +169,7 @@ __arm710_setup:
 	ldr	r5, arm710_cr1_set
 	orr	r0, r0, r5
 	mov	pc, lr				@ __ret (head.S)
+	ret	lr				@ __ret (head.S)
 	.size	__arm710_setup, . - __arm710_setup
 
 	/*
@@ -177,6 +198,7 @@ __arm720_setup:
 	bic	r0, r0, r5
 	orr	r0, r0, r6
 	mov	pc, lr				@ __ret (head.S)
+	ret	lr				@ __ret (head.S)
 	.size	__arm720_setup, . - __arm720_setup
 
 	/*
@@ -227,6 +249,15 @@ cpu_arm710_name:
 cpu_arm720_name:
 		.asciz	"ARM720T"
 		.size	cpu_arm720_name, . - cpu_arm720_name
+	@ define struct processor (see <asm/proc-fns.h> and proc-macros.S)
+	define_processor_functions arm720, dabort=v4t_late_abort, pabort=legacy_pabort
+
+		.section ".rodata"
+
+	string	cpu_arch_name, "armv4t"
+	string	cpu_elf_name, "v4"
+	string	cpu_arm710_name, "ARM710T"
+	string	cpu_arm720_name, "ARM720T"
 
 		.align
 
@@ -240,6 +271,14 @@ cpu_arm720_name:
 __arm710_proc_info:
 		.long	0x41807100				@ cpu_val
 		.long	0xffffff00				@ cpu_mask
+		.section ".proc.info.init", #alloc
+		.section ".proc.info.init", "a"
+
+.macro arm720_proc_info name:req, cpu_val:req, cpu_mask:req, cpu_name:req, cpu_flush:req
+		.type	__\name\()_proc_info,#object
+__\name\()_proc_info:
+		.long	\cpu_val
+		.long	\cpu_mask
 		.long   PMD_TYPE_SECT | \
 			PMD_SECT_BUFFERABLE | \
 			PMD_SECT_CACHEABLE | \
@@ -255,6 +294,11 @@ __arm710_proc_info:
 		.long	cpu_elf_name				@ elf_name
 		.long	HWCAP_SWP | HWCAP_HALF | HWCAP_THUMB	@ elf_hwcap
 		.long	cpu_arm710_name				@ name
+		initfn	\cpu_flush, __\name\()_proc_info	@ cpu_flush
+		.long	cpu_arch_name				@ arch_name
+		.long	cpu_elf_name				@ elf_name
+		.long	HWCAP_SWP | HWCAP_HALF | HWCAP_THUMB	@ elf_hwcap
+		.long	\cpu_name
 		.long	arm720_processor_functions
 		.long	v4_tlb_fns
 		.long	v4wt_user_fns
@@ -285,3 +329,8 @@ __arm720_proc_info:
 		.long	v4wt_user_fns
 		.long	v4_cache_fns
 		.size	__arm720_proc_info, . - __arm720_proc_info
+		.size	__\name\()_proc_info, . - __\name\()_proc_info
+.endm
+
+	arm720_proc_info arm710, 0x41807100, 0xffffff00, cpu_arm710_name, __arm710_setup
+	arm720_proc_info arm720, 0x41807200, 0xffffff00, cpu_arm720_name, __arm720_setup

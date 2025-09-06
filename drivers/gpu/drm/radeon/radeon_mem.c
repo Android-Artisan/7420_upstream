@@ -32,6 +32,12 @@
 #include "drmP.h"
 #include "drm.h"
 #include "radeon_drm.h"
+ *
+ * ------------------------ This file is DEPRECATED! -------------------------
+ */
+
+#include <drm/drmP.h>
+#include <drm/radeon_drm.h>
 #include "radeon_drv.h"
 
 /* Very simple allocator for GART memory, working on a static range
@@ -45,6 +51,8 @@ static struct mem_block *split_block(struct mem_block *p, int start, int size,
 	if (start > p->start) {
 		struct mem_block *newblock =
 		    drm_alloc(sizeof(*newblock), DRM_MEM_BUFS);
+		struct mem_block *newblock = kmalloc(sizeof(*newblock),
+						     GFP_KERNEL);
 		if (!newblock)
 			goto out;
 		newblock->start = start;
@@ -62,6 +70,8 @@ static struct mem_block *split_block(struct mem_block *p, int start, int size,
 	if (size < p->size) {
 		struct mem_block *newblock =
 		    drm_alloc(sizeof(*newblock), DRM_MEM_BUFS);
+		struct mem_block *newblock = kmalloc(sizeof(*newblock),
+						     GFP_KERNEL);
 		if (!newblock)
 			goto out;
 		newblock->start = start + size;
@@ -119,6 +129,7 @@ static void free_block(struct mem_block *p)
 		p->next = q->next;
 		p->next->prev = p;
 		drm_free(q, sizeof(*q), DRM_MEM_BUFS);
+		kfree(q);
 	}
 
 	if (p->prev->file_priv == NULL) {
@@ -127,6 +138,7 @@ static void free_block(struct mem_block *p)
 		q->next = p->next;
 		q->next->prev = q;
 		drm_free(p, sizeof(*q), DRM_MEM_BUFS);
+		kfree(p);
 	}
 }
 
@@ -135,6 +147,7 @@ static void free_block(struct mem_block *p)
 static int init_heap(struct mem_block **heap, int start, int size)
 {
 	struct mem_block *blocks = drm_alloc(sizeof(*blocks), DRM_MEM_BUFS);
+	struct mem_block *blocks = kmalloc(sizeof(*blocks), GFP_KERNEL);
 
 	if (!blocks)
 		return -ENOMEM;
@@ -142,6 +155,9 @@ static int init_heap(struct mem_block **heap, int start, int size)
 	*heap = drm_alloc(sizeof(**heap), DRM_MEM_BUFS);
 	if (!*heap) {
 		drm_free(blocks, sizeof(*blocks), DRM_MEM_BUFS);
+	*heap = kzalloc(sizeof(**heap), GFP_KERNEL);
+	if (!*heap) {
+		kfree(blocks);
 		return -ENOMEM;
 	}
 
@@ -180,6 +196,7 @@ void radeon_mem_release(struct drm_file *file_priv, struct mem_block *heap)
 			p->next = q->next;
 			p->next->prev = p;
 			drm_free(q, sizeof(*q), DRM_MEM_DRIVER);
+			kfree(q);
 		}
 	}
 }
@@ -200,6 +217,10 @@ void radeon_mem_takedown(struct mem_block **heap)
 	}
 
 	drm_free(*heap, sizeof(**heap), DRM_MEM_DRIVER);
+		kfree(q);
+	}
+
+	kfree(*heap);
 	*heap = NULL;
 }
 
@@ -244,6 +265,7 @@ int radeon_mem_alloc(struct drm_device *dev, void *data, struct drm_file *file_p
 		return -ENOMEM;
 
 	if (DRM_COPY_TO_USER(alloc->region_offset, &block->start,
+	if (copy_to_user(alloc->region_offset, &block->start,
 			     sizeof(int))) {
 		DRM_ERROR("copy_to_user\n");
 		return -EFAULT;

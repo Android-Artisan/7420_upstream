@@ -4,6 +4,7 @@
  * Copyright    by Karsten Keil      <keil@isdn4linux.de>
  *              by Kai Germaschewski <kai.germaschewski@gmx.de>
  * 
+ *
  * This software may be used and distributed according to the terms
  * of the GNU General Public License, incorporated herein by reference.
  *
@@ -23,6 +24,7 @@
 #include <linux/kernel_stat.h>
 #include <linux/workqueue.h>
 #include <linux/interrupt.h>
+#include <linux/slab.h>
 #define HISAX_STATUS_BUFSIZE 4096
 
 /*
@@ -62,6 +64,8 @@
  *   26 AVM A1 PCMCIA (Fritz)   p0=irq p1=iobase
  *   27 AVM PnP/PCI 		p0=irq p1=iobase (PCI no parameter)
  *   28 Sedlbauer Speed Fax+ 	p0=irq p1=iobase (from isapnp setup)
+ *   27 AVM PnP/PCI		p0=irq p1=iobase (PCI no parameter)
+ *   28 Sedlbauer Speed Fax+	p0=irq p1=iobase (from isapnp setup)
  *   29 Siemens I-Surf          p0=irq p1=iobase p2=memory (from isapnp setup)
  *   30 ACER P10                p0=irq p1=iobase (from isapnp setup)
  *   31 HST Saphir              p0=irq  p1=iobase
@@ -88,17 +92,20 @@ const char *CardType[] = {
 	"Eicon.Diehl Diva", "ISDNLink",	"TeleInt", "Teles 16.3c",
 	"Sedlbauer Speed Card", "USR Sportster", "ith mic Linux",
 	"Elsa PCI", "Compaq ISA", "NETjet-S", "Teles PCI", 
+	"Elsa PCI", "Compaq ISA", "NETjet-S", "Teles PCI",
 	"Sedlbauer Speed Star (PCMCIA)", "AMD 7930", "NICCY", "S0Box",
 	"AVM A1 (PCMCIA)", "AVM Fritz PnP/PCI", "Sedlbauer Speed Fax +",
 	"Siemens I-Surf", "Acer P10", "HST Saphir", "Telekom A4T",
 	"Scitel Quadro", "Gazel", "HFC 2BDS0 PCI", "Winbond 6692",
 	"HFC 2BDS0 SX", "NETspider-U", "HFC-2BDS0-SP PCMCIA",
 	"Hotplug", "Formula-n enter:now PCI a/b", 
+	"Hotplug", "Formula-n enter:now PCI a/b",
 };
 
 #ifdef CONFIG_HISAX_ELSA
 #define DEFAULT_CARD ISDN_CTYPE_ELSA
 #define DEFAULT_CFG {0,0,0,0}
+#define DEFAULT_CFG {0, 0, 0, 0}
 #endif
 
 #ifdef CONFIG_HISAX_AVM_A1
@@ -106,6 +113,7 @@ const char *CardType[] = {
 #undef DEFAULT_CFG
 #define DEFAULT_CARD ISDN_CTYPE_A1
 #define DEFAULT_CFG {10,0x340,0,0}
+#define DEFAULT_CFG {10, 0x340, 0, 0}
 #endif
 
 #ifdef CONFIG_HISAX_AVM_A1_PCMCIA
@@ -113,6 +121,7 @@ const char *CardType[] = {
 #undef DEFAULT_CFG
 #define DEFAULT_CARD ISDN_CTYPE_A1_PCMCIA
 #define DEFAULT_CFG {11,0x170,0,0}
+#define DEFAULT_CFG {11, 0x170, 0, 0}
 #endif
 
 #ifdef CONFIG_HISAX_FRITZPCI
@@ -120,6 +129,7 @@ const char *CardType[] = {
 #undef DEFAULT_CFG
 #define DEFAULT_CARD ISDN_CTYPE_FRITZPCI
 #define DEFAULT_CFG {0,0,0,0}
+#define DEFAULT_CFG {0, 0, 0, 0}
 #endif
 
 #ifdef CONFIG_HISAX_16_3
@@ -127,6 +137,7 @@ const char *CardType[] = {
 #undef DEFAULT_CFG
 #define DEFAULT_CARD ISDN_CTYPE_16_3
 #define DEFAULT_CFG {15,0x180,0,0}
+#define DEFAULT_CFG {15, 0x180, 0, 0}
 #endif
 
 #ifdef CONFIG_HISAX_S0BOX
@@ -134,6 +145,7 @@ const char *CardType[] = {
 #undef DEFAULT_CFG
 #define DEFAULT_CARD ISDN_CTYPE_S0BOX
 #define DEFAULT_CFG {7,0x378,0,0}
+#define DEFAULT_CFG {7, 0x378, 0, 0}
 #endif
 
 #ifdef CONFIG_HISAX_16_0
@@ -141,6 +153,7 @@ const char *CardType[] = {
 #undef DEFAULT_CFG
 #define DEFAULT_CARD ISDN_CTYPE_16_0
 #define DEFAULT_CFG {15,0xd0000,0xd80,0}
+#define DEFAULT_CFG {15, 0xd0000, 0xd80, 0}
 #endif
 
 #ifdef CONFIG_HISAX_TELESPCI
@@ -148,6 +161,7 @@ const char *CardType[] = {
 #undef DEFAULT_CFG
 #define DEFAULT_CARD ISDN_CTYPE_TELESPCI
 #define DEFAULT_CFG {0,0,0,0}
+#define DEFAULT_CFG {0, 0, 0, 0}
 #endif
 
 #ifdef CONFIG_HISAX_IX1MICROR2
@@ -155,6 +169,7 @@ const char *CardType[] = {
 #undef DEFAULT_CFG
 #define DEFAULT_CARD ISDN_CTYPE_IX1MICROR2
 #define DEFAULT_CFG {5,0x390,0,0}
+#define DEFAULT_CFG {5, 0x390, 0, 0}
 #endif
 
 #ifdef CONFIG_HISAX_DIEHLDIVA
@@ -162,6 +177,7 @@ const char *CardType[] = {
 #undef DEFAULT_CFG
 #define DEFAULT_CARD ISDN_CTYPE_DIEHLDIVA
 #define DEFAULT_CFG {0,0x0,0,0}
+#define DEFAULT_CFG {0, 0x0, 0, 0}
 #endif
 
 #ifdef CONFIG_HISAX_ASUSCOM
@@ -169,6 +185,7 @@ const char *CardType[] = {
 #undef DEFAULT_CFG
 #define DEFAULT_CARD ISDN_CTYPE_ASUSCOM
 #define DEFAULT_CFG {5,0x200,0,0}
+#define DEFAULT_CFG {5, 0x200, 0, 0}
 #endif
 
 #ifdef CONFIG_HISAX_TELEINT
@@ -176,6 +193,7 @@ const char *CardType[] = {
 #undef DEFAULT_CFG
 #define DEFAULT_CARD ISDN_CTYPE_TELEINT
 #define DEFAULT_CFG {5,0x300,0,0}
+#define DEFAULT_CFG {5, 0x300, 0, 0}
 #endif
 
 #ifdef CONFIG_HISAX_SEDLBAUER
@@ -183,6 +201,7 @@ const char *CardType[] = {
 #undef DEFAULT_CFG
 #define DEFAULT_CARD ISDN_CTYPE_SEDLBAUER
 #define DEFAULT_CFG {11,0x270,0,0}
+#define DEFAULT_CFG {11, 0x270, 0, 0}
 #endif
 
 #ifdef CONFIG_HISAX_SPORTSTER
@@ -190,6 +209,7 @@ const char *CardType[] = {
 #undef DEFAULT_CFG
 #define DEFAULT_CARD ISDN_CTYPE_SPORTSTER
 #define DEFAULT_CFG {7,0x268,0,0}
+#define DEFAULT_CFG {7, 0x268, 0, 0}
 #endif
 
 #ifdef CONFIG_HISAX_MIC
@@ -197,6 +217,7 @@ const char *CardType[] = {
 #undef DEFAULT_CFG
 #define DEFAULT_CARD ISDN_CTYPE_MIC
 #define DEFAULT_CFG {12,0x3e0,0,0}
+#define DEFAULT_CFG {12, 0x3e0, 0, 0}
 #endif
 
 #ifdef CONFIG_HISAX_NETJET
@@ -204,6 +225,7 @@ const char *CardType[] = {
 #undef DEFAULT_CFG
 #define DEFAULT_CARD ISDN_CTYPE_NETJET_S
 #define DEFAULT_CFG {0,0,0,0}
+#define DEFAULT_CFG {0, 0, 0, 0}
 #endif
 
 #ifdef CONFIG_HISAX_HFCS
@@ -211,6 +233,7 @@ const char *CardType[] = {
 #undef DEFAULT_CFG
 #define DEFAULT_CARD ISDN_CTYPE_TELES3C
 #define DEFAULT_CFG {5,0x500,0,0}
+#define DEFAULT_CFG {5, 0x500, 0, 0}
 #endif
 
 #ifdef CONFIG_HISAX_HFC_PCI
@@ -218,6 +241,7 @@ const char *CardType[] = {
 #undef DEFAULT_CFG
 #define DEFAULT_CARD ISDN_CTYPE_HFC_PCI
 #define DEFAULT_CFG {0,0,0,0}
+#define DEFAULT_CFG {0, 0, 0, 0}
 #endif
 
 #ifdef CONFIG_HISAX_HFC_SX
@@ -225,6 +249,7 @@ const char *CardType[] = {
 #undef DEFAULT_CFG
 #define DEFAULT_CARD ISDN_CTYPE_HFC_SX
 #define DEFAULT_CFG {5,0x2E0,0,0}
+#define DEFAULT_CFG {5, 0x2E0, 0, 0}
 #endif
 
 #ifdef CONFIG_HISAX_NICCY
@@ -232,6 +257,7 @@ const char *CardType[] = {
 #undef DEFAULT_CFG
 #define DEFAULT_CARD ISDN_CTYPE_NICCY
 #define DEFAULT_CFG {0,0x0,0,0}
+#define DEFAULT_CFG {0, 0x0, 0, 0}
 #endif
 
 #ifdef CONFIG_HISAX_ISURF
@@ -239,6 +265,7 @@ const char *CardType[] = {
 #undef DEFAULT_CFG
 #define DEFAULT_CARD ISDN_CTYPE_ISURF
 #define DEFAULT_CFG {5,0x100,0xc8000,0}
+#define DEFAULT_CFG {5, 0x100, 0xc8000, 0}
 #endif
 
 #ifdef CONFIG_HISAX_HSTSAPHIR
@@ -246,6 +273,7 @@ const char *CardType[] = {
 #undef DEFAULT_CFG
 #define DEFAULT_CARD ISDN_CTYPE_HSTSAPHIR
 #define DEFAULT_CFG {5,0x250,0,0}
+#define DEFAULT_CFG {5, 0x250, 0, 0}
 #endif
 
 #ifdef CONFIG_HISAX_BKM_A4T
@@ -253,6 +281,7 @@ const char *CardType[] = {
 #undef DEFAULT_CFG
 #define DEFAULT_CARD ISDN_CTYPE_BKM_A4T
 #define DEFAULT_CFG {0,0x0,0,0}
+#define DEFAULT_CFG {0, 0x0, 0, 0}
 #endif
 
 #ifdef CONFIG_HISAX_SCT_QUADRO
@@ -260,6 +289,7 @@ const char *CardType[] = {
 #undef DEFAULT_CFG
 #define DEFAULT_CARD ISDN_CTYPE_SCT_QUADRO
 #define DEFAULT_CFG {1,0x0,0,0}
+#define DEFAULT_CFG {1, 0x0, 0, 0}
 #endif
 
 #ifdef CONFIG_HISAX_GAZEL
@@ -267,6 +297,7 @@ const char *CardType[] = {
 #undef DEFAULT_CFG
 #define DEFAULT_CARD ISDN_CTYPE_GAZEL
 #define DEFAULT_CFG {15,0x180,0,0}
+#define DEFAULT_CFG {15, 0x180, 0, 0}
 #endif
 
 #ifdef CONFIG_HISAX_W6692
@@ -274,6 +305,7 @@ const char *CardType[] = {
 #undef DEFAULT_CFG
 #define DEFAULT_CARD ISDN_CTYPE_W6692
 #define DEFAULT_CFG {0,0,0,0}
+#define DEFAULT_CFG {0, 0, 0, 0}
 #endif
 
 #ifdef CONFIG_HISAX_NETJET_U
@@ -281,6 +313,7 @@ const char *CardType[] = {
 #undef DEFAULT_CFG
 #define DEFAULT_CARD ISDN_CTYPE_NETJET_U
 #define DEFAULT_CFG {0,0,0,0}
+#define DEFAULT_CFG {0, 0, 0, 0}
 #endif
 
 #ifdef CONFIG_HISAX_1TR6
@@ -314,12 +347,22 @@ const char *CardType[] = {
 	DEFAULT_CFG, \
 	NULL, \
 }
+#define DEFAULT_CFG {0, 0, 0, 0}
+#endif
+
+#define FIRST_CARD {				\
+		DEFAULT_CARD,			\
+			DEFAULT_PROTO,		\
+			DEFAULT_CFG,		\
+			NULL,			\
+			}
 
 struct IsdnCard cards[HISAX_MAX_CARDS] = {
 	FIRST_CARD,
 };
 
 #define HISAX_IDSIZE (HISAX_MAX_CARDS*8)
+#define HISAX_IDSIZE (HISAX_MAX_CARDS * 8)
 static char HiSaxID[HISAX_IDSIZE] = { 0, };
 
 static char *HiSax_id = HiSaxID;
@@ -342,6 +385,11 @@ static int io1[HISAX_MAX_CARDS] __devinitdata = { 0, };
 #endif
 static int irq[HISAX_MAX_CARDS] __devinitdata = { 0, };
 static int mem[HISAX_MAX_CARDS] __devinitdata = { 0, };
+static int io0[HISAX_MAX_CARDS] = { 0, };
+static int io1[HISAX_MAX_CARDS] = { 0, };
+#endif
+static int irq[HISAX_MAX_CARDS] = { 0, };
+static int mem[HISAX_MAX_CARDS] = { 0, };
 static char *id = HiSaxID;
 
 MODULE_DESCRIPTION("ISDN4Linux: Driver for passive ISDN cards");
@@ -406,6 +454,7 @@ static void __init HiSaxVersion(void)
 
 #ifndef MODULE
 #define MAX_ARG	(HISAX_MAX_CARDS*5)
+#define MAX_ARG	(HISAX_MAX_CARDS * 5)
 static int __init HiSax_setup(char *line)
 {
 	int i, j, argc;
@@ -447,6 +496,7 @@ static int __init HiSax_setup(char *line)
 		i++;
 	}
   	if (str && *str) {
+	if (str && *str) {
 		if (strlen(str) < HISAX_IDSIZE)
 			strcpy(HiSaxID, str);
 		else
@@ -818,6 +868,28 @@ static int init_card(struct IsdnCardState *cs)
 	printk(KERN_INFO "%s: IRQ %d count %d\n", CardType[cs->typ],
 	       cs->irq, irq_cnt);
 	if (request_irq(cs->irq, cs->irq_func, cs->irq_flags, "HiSax", cs)) {
+static irqreturn_t card_irq(int intno, void *dev_id)
+{
+	struct IsdnCardState *cs = dev_id;
+	irqreturn_t ret = cs->irq_func(intno, cs);
+
+	if (ret == IRQ_HANDLED)
+		cs->irq_cnt++;
+	return ret;
+}
+
+static int init_card(struct IsdnCardState *cs)
+{
+	int	irq_cnt, cnt = 3, ret;
+
+	if (!cs->irq) {
+		ret = cs->cardmsg(cs, CARD_INIT, NULL);
+		return (ret);
+	}
+	irq_cnt = cs->irq_cnt = 0;
+	printk(KERN_INFO "%s: IRQ %d count %d\n", CardType[cs->typ],
+	       cs->irq, irq_cnt);
+	if (request_irq(cs->irq, card_irq, cs->irq_flags, "HiSax", cs)) {
 		printk(KERN_WARNING "HiSax: couldn't get interrupt %d\n",
 		       cs->irq);
 		return 1;
@@ -829,6 +901,8 @@ static int init_card(struct IsdnCardState *cs)
 		printk(KERN_INFO "%s: IRQ %d count %d\n",
 		       CardType[cs->typ], cs->irq, kstat_irqs(cs->irq));
 		if (kstat_irqs(cs->irq) == irq_cnt) {
+		       CardType[cs->typ], cs->irq, cs->irq_cnt);
+		if (cs->irq_cnt == irq_cnt) {
 			printk(KERN_WARNING
 			       "%s: IRQ(%d) getting no interrupts during init %d\n",
 			       CardType[cs->typ], cs->irq, 4 - cnt);
@@ -848,6 +922,7 @@ static int init_card(struct IsdnCardState *cs)
 }
 
 static int __devinit hisax_cs_setup_card(struct IsdnCard *card)
+static int hisax_cs_setup_card(struct IsdnCard *card)
 {
 	int ret;
 
@@ -1143,6 +1218,12 @@ static int hisax_cs_setup(int cardnr, struct IsdnCard *card,
 		default:
 			ret = init_card(cs);
 			break;
+	case ISDN_CTYPE_DYNAMIC:
+		ret = 0;
+		break;
+	default:
+		ret = init_card(cs);
+		break;
 	}
 	if (ret) {
 		closecard(cardnr);
@@ -1172,6 +1253,8 @@ outf_cs:
 static int __ref checkcard(int cardnr, char *id, int *busy_flag,
 			   struct module *lockowner,
 			   hisax_setup_func_t card_setup)
+static int checkcard(int cardnr, char *id, int *busy_flag,
+		     struct module *lockowner, hisax_setup_func_t card_setup)
 {
 	int ret;
 	struct IsdnCard *card = cards + cardnr;
@@ -1202,6 +1285,10 @@ static int __ref checkcard(int cardnr, char *id, int *busy_flag,
 	kfree(cs);
 	card->cs = NULL;
  out:
+outf_cs:
+	kfree(cs);
+	card->cs = NULL;
+out:
 	return ret;
 }
 
@@ -1214,6 +1301,7 @@ static void HiSax_shiftcards(int idx)
 }
 
 static int HiSax_inithardware(int *busy_flag)
+static int __init HiSax_inithardware(int *busy_flag)
 {
 	int foundcards = 0;
 	int i = 0;
@@ -1253,6 +1341,8 @@ static int HiSax_inithardware(int *busy_flag)
 				printk(KERN_WARNING
 			       		"HiSax: Card %s not installed !\n",
 			       		CardType[cards[i].typ]);
+				       "HiSax: Card %s not installed !\n",
+				       CardType[cards[i].typ]);
 			}
 			HiSax_shiftcards(i);
 			nrcards--;
@@ -1525,6 +1615,15 @@ static int __init HiSax_init(void)
  out_callc:
 	CallcFree();
  out:
+out_tei:
+	TeiFree();
+out_isdnl2:
+	Isdnl2Free();
+out_isdnl3:
+	Isdnl3Free();
+out_callc:
+	CallcFree();
+out:
 	return retval;
 }
 
@@ -1563,6 +1662,8 @@ error:
 }
 
 EXPORT_SYMBOL(hisax_init_pcmcia);
+EXPORT_SYMBOL(hisax_init_pcmcia);
+
 EXPORT_SYMBOL(HiSax_closecard);
 
 #include "hisax_if.h"
@@ -1579,6 +1680,11 @@ static int hisax_bc_setstack(struct PStack *st, struct BCState *bcs);
 static void hisax_bc_close(struct BCState *bcs);
 static void hisax_bh(struct work_struct *work);
 static void EChannel_proc_rcv(struct hisax_d_if *d_if);
+
+static int hisax_setup_card_dynamic(struct IsdnCard *card)
+{
+	return 2;
+}
 
 int hisax_register(struct hisax_d_if *hisax_d_if, struct hisax_b_if *b_if[],
 		   char *name, int protocol)
@@ -1600,6 +1706,8 @@ int hisax_register(struct hisax_d_if *hisax_d_if, struct hisax_b_if *b_if[],
 	sprintf(id, "%s%d", name, i);
 	nrcards++;
 	retval = checkcard(i, id, NULL, hisax_d_if->owner, hisax_cs_setup_card);
+	retval = checkcard(i, id, NULL, hisax_d_if->owner,
+			   hisax_setup_card_dynamic);
 	if (retval == 0) { // yuck
 		cards[i].typ = 0;
 		nrcards--;
@@ -1623,6 +1731,7 @@ int hisax_register(struct hisax_d_if *hisax_d_if, struct hisax_b_if *b_if[],
 	skb_queue_head_init(&hisax_d_if->erq);
 	clear_bit(0, &hisax_d_if->ph_state);
 	
+
 	return 0;
 }
 
@@ -1660,6 +1769,7 @@ static void hisax_bh(struct work_struct *work)
 		for (st = cs->stlist; st; st = st->next)
 			st->l1.l1l2(st, pr, NULL);
 		
+
 	}
 }
 
@@ -1750,6 +1860,7 @@ static void hisax_b_l1l2(struct hisax_if *ifc, int pr, void *arg)
 	case PH_DATA | CONFIRM:
 		bcs->tx_cnt -= (long)arg;
 		if (test_bit(FLG_LLI_L1WAKEUP,&bcs->st->lli.flag)) {
+		if (test_bit(FLG_LLI_L1WAKEUP, &bcs->st->lli.flag)) {
 			u_long	flags;
 			spin_lock_irqsave(&bcs->aclock, flags);
 			bcs->ackcnt += (long)arg;
@@ -1966,6 +2077,70 @@ static struct pci_device_id hisax_pci_tbl[] __devinitdata = {
 	{PCI_VENDOR_ID_DIGI,     PCI_DEVICE_ID_DIGI_DF_M_E,      PCI_ANY_ID, PCI_ANY_ID},
 	{PCI_VENDOR_ID_DIGI,     PCI_DEVICE_ID_DIGI_DF_M_IOM2_A, PCI_ANY_ID, PCI_ANY_ID},
 	{PCI_VENDOR_ID_DIGI,     PCI_DEVICE_ID_DIGI_DF_M_A,      PCI_ANY_ID, PCI_ANY_ID},
+static struct pci_device_id hisax_pci_tbl[] __used = {
+#ifdef CONFIG_HISAX_FRITZPCI
+	{PCI_VDEVICE(AVM,      PCI_DEVICE_ID_AVM_A1)			},
+#endif
+#ifdef CONFIG_HISAX_DIEHLDIVA
+	{PCI_VDEVICE(EICON,    PCI_DEVICE_ID_EICON_DIVA20)		},
+	{PCI_VDEVICE(EICON,    PCI_DEVICE_ID_EICON_DIVA20_U)	},
+	{PCI_VDEVICE(EICON,    PCI_DEVICE_ID_EICON_DIVA201)		},
+/*##########################################################################*/
+	{PCI_VDEVICE(EICON,    PCI_DEVICE_ID_EICON_DIVA202)		},
+/*##########################################################################*/
+#endif
+#ifdef CONFIG_HISAX_ELSA
+	{PCI_VDEVICE(ELSA,     PCI_DEVICE_ID_ELSA_MICROLINK)	},
+	{PCI_VDEVICE(ELSA,     PCI_DEVICE_ID_ELSA_QS3000)		},
+#endif
+#ifdef CONFIG_HISAX_GAZEL
+	{PCI_VDEVICE(PLX,      PCI_DEVICE_ID_PLX_R685)			},
+	{PCI_VDEVICE(PLX,      PCI_DEVICE_ID_PLX_R753)			},
+	{PCI_VDEVICE(PLX,      PCI_DEVICE_ID_PLX_DJINN_ITOO)	},
+	{PCI_VDEVICE(PLX,      PCI_DEVICE_ID_PLX_OLITEC)		},
+#endif
+#ifdef CONFIG_HISAX_SCT_QUADRO
+	{PCI_VDEVICE(PLX,      PCI_DEVICE_ID_PLX_9050)			},
+#endif
+#ifdef CONFIG_HISAX_NICCY
+	{PCI_VDEVICE(SATSAGEM, PCI_DEVICE_ID_SATSAGEM_NICCY)	},
+#endif
+#ifdef CONFIG_HISAX_SEDLBAUER
+	{PCI_VDEVICE(TIGERJET, PCI_DEVICE_ID_TIGERJET_100)		},
+#endif
+#if defined(CONFIG_HISAX_NETJET) || defined(CONFIG_HISAX_NETJET_U)
+	{PCI_VDEVICE(TIGERJET, PCI_DEVICE_ID_TIGERJET_300)		},
+#endif
+#if defined(CONFIG_HISAX_TELESPCI) || defined(CONFIG_HISAX_SCT_QUADRO)
+	{PCI_VDEVICE(ZORAN,    PCI_DEVICE_ID_ZORAN_36120)		},
+#endif
+#ifdef CONFIG_HISAX_W6692
+	{PCI_VDEVICE(DYNALINK, PCI_DEVICE_ID_DYNALINK_IS64PH)	},
+	{PCI_VDEVICE(WINBOND2, PCI_DEVICE_ID_WINBOND2_6692)		},
+#endif
+#ifdef CONFIG_HISAX_HFC_PCI
+	{PCI_VDEVICE(CCD,      PCI_DEVICE_ID_CCD_2BD0)			},
+	{PCI_VDEVICE(CCD,      PCI_DEVICE_ID_CCD_B000)			},
+	{PCI_VDEVICE(CCD,      PCI_DEVICE_ID_CCD_B006)			},
+	{PCI_VDEVICE(CCD,      PCI_DEVICE_ID_CCD_B007)			},
+	{PCI_VDEVICE(CCD,      PCI_DEVICE_ID_CCD_B008)			},
+	{PCI_VDEVICE(CCD,      PCI_DEVICE_ID_CCD_B009)			},
+	{PCI_VDEVICE(CCD,      PCI_DEVICE_ID_CCD_B00A)			},
+	{PCI_VDEVICE(CCD,      PCI_DEVICE_ID_CCD_B00B)			},
+	{PCI_VDEVICE(CCD,      PCI_DEVICE_ID_CCD_B00C)			},
+	{PCI_VDEVICE(CCD,      PCI_DEVICE_ID_CCD_B100)			},
+	{PCI_VDEVICE(CCD,      PCI_DEVICE_ID_CCD_B700)			},
+	{PCI_VDEVICE(CCD,      PCI_DEVICE_ID_CCD_B701)			},
+	{PCI_VDEVICE(ABOCOM,   PCI_DEVICE_ID_ABOCOM_2BD1)		},
+	{PCI_VDEVICE(ASUSTEK,  PCI_DEVICE_ID_ASUSTEK_0675)		},
+	{PCI_VDEVICE(BERKOM,   PCI_DEVICE_ID_BERKOM_T_CONCEPT)	},
+	{PCI_VDEVICE(BERKOM,   PCI_DEVICE_ID_BERKOM_A1T)		},
+	{PCI_VDEVICE(ANIGMA,   PCI_DEVICE_ID_ANIGMA_MC145575)	},
+	{PCI_VDEVICE(ZOLTRIX,  PCI_DEVICE_ID_ZOLTRIX_2BD0)		},
+	{PCI_VDEVICE(DIGI,     PCI_DEVICE_ID_DIGI_DF_M_IOM2_E)	},
+	{PCI_VDEVICE(DIGI,     PCI_DEVICE_ID_DIGI_DF_M_E)		},
+	{PCI_VDEVICE(DIGI,     PCI_DEVICE_ID_DIGI_DF_M_IOM2_A)	},
+	{PCI_VDEVICE(DIGI,     PCI_DEVICE_ID_DIGI_DF_M_A)		},
 #endif
 	{ }				/* Terminating entry */
 };

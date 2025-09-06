@@ -534,7 +534,6 @@ PC130E/PC270E (8-bit cards)
 
 
 STANDARD MICROSYSTEMS CORPORATION (SMC) ARCNET(R)-PC130E/PC270E
-===============================================================
 
 This description has been written by Juergen Seifert <seifert@htwm.de>
 using information from the following Original SMC Manual 
@@ -733,7 +732,6 @@ PC500/PC550 Longboard (16-bit cards)
 
 
 STANDARD MICROSYSTEMS CORPORATION (SMC) ARCNET-PC500/PC550 Long Board
-=====================================================================
 
 Note: There is another Version of the PC500 called Short Version, which 
       is different in hard- and software! The most important differences
@@ -1261,7 +1259,6 @@ DIP Switches:
 
 
 CNET TECHNOLOGY INC. (CNet) ARCNET 120A SERIES
-==============================================
 
 This description has been written by Juergen Seifert <seifert@htwm.de>
 using information from the following Original CNet Manual 
@@ -1481,7 +1478,6 @@ parameters. These two jumpers are normally left open.
   - from Juergen Seifert <seifert@htwm.de>
 
 CNET TECHNOLOGY INC. (CNet) ARCNET 160A SERIES
-==============================================
 
 This description has been written by Juergen Seifert <seifert@htwm.de>
 using information from the following Original CNet Manual 
@@ -2379,7 +2375,6 @@ Below that "MADE IN CANADA"
   - from Juergen Seifert <seifert@htwm.de>
   
 NONAME 8-BIT ARCNET
-===================
 
 I have named this ARCnet card "NONAME", since there is no name of any
 manufacturer on the Installation manual nor on the shipping box. The only
@@ -2573,7 +2568,6 @@ On means jumper installed, Off means jumper not installed
 
 
 NONAME 16-BIT ARCNET
-====================
 
 The manual of my 8-Bit NONAME ARCnet Card contains another description
 of a 16-Bit Coax / Twisted Pair Card. This description is incomplete,

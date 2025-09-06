@@ -15,6 +15,9 @@
     along with this program; if not, write to the Free Software
     Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 */
+
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/module.h>
 #include <linux/moduleloader.h>
 #include <linux/elf.h>
@@ -33,6 +36,11 @@
 #else
 #define DEBUGP(fmt , ...)
 #endif
+#include <linux/ftrace.h>
+#include <linux/cache.h>
+#include <linux/bug.h>
+#include <linux/sort.h>
+#include <asm/setup.h>
 
 /* Count how many different relocations (different symbol, different
    addend) */
@@ -53,6 +61,9 @@ static unsigned int count_relocs(const Elf32_Rela *rela, unsigned int num)
 			r_addend = rela[i].r_addend;
 		}
 
+#ifdef CONFIG_DYNAMIC_FTRACE
+	_count_relocs++;	/* add one for ftrace_caller */
+#endif
 	return _count_relocs;
 }
 
@@ -120,6 +131,8 @@ static unsigned long get_plt_size(const Elf32_Ehdr *hdr,
 		if (sechdrs[i].sh_type == SHT_RELA) {
 			DEBUGP("Found relocations in section %u\n", i);
 			DEBUGP("Ptr: %p.  Number: %u\n",
+			pr_debug("Found relocations in section %u\n", i);
+			pr_debug("Ptr: %p.  Number: %u\n",
 			       (void *)hdr + sechdrs[i].sh_offset,
 			       sechdrs[i].sh_size / sizeof(Elf32_Rela));
 
@@ -159,6 +172,7 @@ int module_frob_arch_sections(Elf32_Ehdr *hdr,
 	}
 	if (!me->arch.core_plt_section || !me->arch.init_plt_section) {
 		printk("Module doesn't contain .plt or .init.plt sections.\n");
+		pr_err("Module doesn't contain .plt or .init.plt sections.\n");
 		return -ENOEXEC;
 	}
 
@@ -185,6 +199,10 @@ static inline int entry_matches(struct ppc_plt_entry *entry, Elf32_Addr val)
 {
 	if (entry->jump[0] == 0x3d600000 + ((val + 0x8000) >> 16)
 	    && entry->jump[1] == 0x396b0000 + (val & 0xffff))
+static inline int entry_matches(struct ppc_plt_entry *entry, Elf32_Addr val)
+{
+	if (entry->jump[0] == 0x3d800000 + ((val + 0x8000) >> 16)
+	    && entry->jump[1] == 0x398c0000 + (val & 0xffff))
 		return 1;
 	return 0;
 }
@@ -198,6 +216,7 @@ static uint32_t do_plt_call(void *location,
 	struct ppc_plt_entry *entry;
 
 	DEBUGP("Doing plt for call to 0x%x at 0x%x\n", val, (unsigned int)location);
+	pr_debug("Doing plt for call to 0x%x at 0x%x\n", val, (unsigned int)location);
 	/* Init, or core PLT? */
 	if (location >= mod->module_core
 	    && location < mod->module_core + mod->core_size)
@@ -218,6 +237,12 @@ static uint32_t do_plt_call(void *location,
 	entry->jump[3] = 0x4e800420;			/* bctr */
 
 	DEBUGP("Initialized plt for 0x%x at %p\n", val, entry);
+	entry->jump[0] = 0x3d800000+((val+0x8000)>>16); /* lis r12,sym@ha */
+	entry->jump[1] = 0x398c0000 + (val&0xffff);     /* addi r12,r12,sym@l*/
+	entry->jump[2] = 0x7d8903a6;                    /* mtctr r12 */
+	entry->jump[3] = 0x4e800420;			/* bctr */
+
+	pr_debug("Initialized plt for 0x%x at %p\n", val, entry);
 	return (uint32_t)entry;
 }
 
@@ -234,6 +259,7 @@ int apply_relocate_add(Elf32_Shdr *sechdrs,
 	uint32_t value;
 
 	DEBUGP("Applying ADD relocate section %u to %u\n", relsec,
+	pr_debug("Applying ADD relocate section %u to %u\n", relsec,
 	       sechdrs[relsec].sh_info);
 	for (i = 0; i < sechdrs[relsec].sh_size / sizeof(*rela); i++) {
 		/* This is where to make the change */
@@ -280,6 +306,9 @@ int apply_relocate_add(Elf32_Shdr *sechdrs,
 			DEBUGP("REL24 value = %08X. location = %08X\n",
 			       value, (uint32_t)location);
 			DEBUGP("Location before: %08X.\n",
+			pr_debug("REL24 value = %08X. location = %08X\n",
+			       value, (uint32_t)location);
+			pr_debug("Location before: %08X.\n",
 			       *(uint32_t *)location);
 			*(uint32_t *)location
 				= (*(uint32_t *)location & ~0x03fffffc)
@@ -288,6 +317,9 @@ int apply_relocate_add(Elf32_Shdr *sechdrs,
 			DEBUGP("Location after: %08X.\n",
 			       *(uint32_t *)location);
 			DEBUGP("ie. jump to %08X+%08X = %08X\n",
+			pr_debug("Location after: %08X.\n",
+			       *(uint32_t *)location);
+			pr_debug("ie. jump to %08X+%08X = %08X\n",
 			       *(uint32_t *)location & 0x03fffffc,
 			       (uint32_t)location,
 			       (*(uint32_t *)location & 0x03fffffc)
@@ -301,10 +333,17 @@ int apply_relocate_add(Elf32_Shdr *sechdrs,
 
 		default:
 			printk("%s: unknown ADD relocation: %u\n",
+			pr_err("%s: unknown ADD relocation: %u\n",
 			       module->name,
 			       ELF32_R_TYPE(rela[i].r_info));
 			return -ENOEXEC;
 		}
 	}
+#ifdef CONFIG_DYNAMIC_FTRACE
+	module->arch.tramp =
+		do_plt_call(module->module_core,
+			    (unsigned long)ftrace_caller,
+			    sechdrs, module);
+#endif
 	return 0;
 }

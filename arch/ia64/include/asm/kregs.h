@@ -33,6 +33,7 @@
 
 #define IA64_TR_ALLOC_BASE	2 	/* itr&dtr: Base of dynamic TR resource*/
 #define IA64_TR_ALLOC_MAX	32 	/* Max number for dynamic use*/
+#define IA64_TR_ALLOC_MAX	64 	/* Max number for dynamic use*/
 
 /* Processor status register bits: */
 #define IA64_PSR_BE_BIT		1

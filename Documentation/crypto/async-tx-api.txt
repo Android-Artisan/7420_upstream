@@ -16,6 +16,9 @@
 4 DRIVER DEVELOPER NOTES
 4.1 Conformance points
 4.2 "My application needs finer control of hardware channels"
+4 DMAENGINE DRIVER DEVELOPER NOTES
+4.1 Conformance points
+4.2 "My application needs exclusive control of hardware channels"
 
 5 SOURCE
 
@@ -68,6 +71,23 @@ xor          - xor a series of source buffers and write the result to a
 xor_zero_sum - xor a series of source buffers and set a flag if the
 	       result is zero.  The implementation attempts to prevent
 	       writes to memory
+async_<operation>(<op specific parameters>, struct async_submit ctl *submit)
+
+3.2 Supported operations:
+memcpy  - memory copy between a source and a destination buffer
+memset  - fill a destination buffer with a byte value
+xor     - xor a series of source buffers and write the result to a
+	  destination buffer
+xor_val - xor a series of source buffers and set a flag if the
+	  result is zero.  The implementation attempts to prevent
+	  writes to memory
+pq	- generate the p+q (raid6 syndrome) from a series of source buffers
+pq_val  - validate that a p and or q buffer are in sync with a given series of
+	  sources
+datap	- (raid6_datap_recov) recover a raid6 data block and the p block
+	  from the given sources
+2data	- (raid6_2data_recov) recover 2 raid6 data blocks from the given
+	  sources
 
 3.3 Descriptor management:
 The return value is non-NULL and points to a 'descriptor' when the operation
@@ -82,6 +102,8 @@ following methods:
 1/ setting the ASYNC_TX_ACK flag if no child operations are to be submitted
 2/ setting the ASYNC_TX_DEP_ACK flag to acknowledge the parent
    descriptor of a new operation.
+2/ submitting an unacknowledged descriptor as a dependency to another
+   async_tx call will implicitly set the acknowledged state.
 3/ calling async_tx_ack() on the descriptor.
 
 3.4 When does the operation execute?
@@ -143,6 +165,42 @@ int run_xor_copy_xor(struct page **xor_srcs,
 		       tx, complete_xor_copy_xor, NULL);
 
 	async_tx_issue_pending_all();
+void callback(void *param)
+{
+	struct completion *cmp = param;
+
+	complete(cmp);
+}
+
+void run_xor_copy_xor(struct page **xor_srcs,
+		      int xor_src_cnt,
+		      struct page *xor_dest,
+		      size_t xor_len,
+		      struct page *copy_src,
+		      struct page *copy_dest,
+		      size_t copy_len)
+{
+	struct dma_async_tx_descriptor *tx;
+	addr_conv_t addr_conv[xor_src_cnt];
+	struct async_submit_ctl submit;
+	addr_conv_t addr_conv[NDISKS];
+	struct completion cmp;
+
+	init_async_submit(&submit, ASYNC_TX_XOR_DROP_DST, NULL, NULL, NULL,
+			  addr_conv);
+	tx = async_xor(xor_dest, xor_srcs, 0, xor_src_cnt, xor_len, &submit)
+
+	submit->depend_tx = tx;
+	tx = async_memcpy(copy_dest, copy_src, 0, 0, copy_len, &submit);
+
+	init_completion(&cmp);
+	init_async_submit(&submit, ASYNC_TX_XOR_DROP_DST | ASYNC_TX_ACK, tx,
+			  callback, &cmp, addr_conv);
+	tx = async_xor(xor_dest, xor_srcs, 0, xor_src_cnt, xor_len, &submit);
+
+	async_tx_issue_pending_all();
+
+	wait_for_completion(&cmp);
 }
 
 See include/linux/async_tx.h for more information on the flags.  See the
@@ -150,6 +208,7 @@ ops_run_* and ops_complete_* routines in drivers/md/raid5.c for more
 implementation examples.
 
 4 DRIVER DEVELOPMENT NOTES
+
 4.1 Conformance points:
 There are a few conformance points required in dmaengine drivers to
 accommodate assumptions made by applications using the async_tx API:
@@ -210,6 +269,49 @@ my_dma_client_callback(struct dma_client *client,
 
 5 SOURCE
 include/linux/dmaengine.h: core header file for DMA drivers and clients
+4.2 "My application needs exclusive control of hardware channels"
+Primarily this requirement arises from cases where a DMA engine driver
+is being used to support device-to-memory operations.  A channel that is
+performing these operations cannot, for many platform specific reasons,
+be shared.  For these cases the dma_request_channel() interface is
+provided.
+
+The interface is:
+struct dma_chan *dma_request_channel(dma_cap_mask_t mask,
+				     dma_filter_fn filter_fn,
+				     void *filter_param);
+
+Where dma_filter_fn is defined as:
+typedef bool (*dma_filter_fn)(struct dma_chan *chan, void *filter_param);
+
+When the optional 'filter_fn' parameter is set to NULL
+dma_request_channel simply returns the first channel that satisfies the
+capability mask.  Otherwise, when the mask parameter is insufficient for
+specifying the necessary channel, the filter_fn routine can be used to
+disposition the available channels in the system. The filter_fn routine
+is called once for each free channel in the system.  Upon seeing a
+suitable channel filter_fn returns DMA_ACK which flags that channel to
+be the return value from dma_request_channel.  A channel allocated via
+this interface is exclusive to the caller, until dma_release_channel()
+is called.
+
+The DMA_PRIVATE capability flag is used to tag dma devices that should
+not be used by the general-purpose allocator.  It can be set at
+initialization time if it is known that a channel will always be
+private.  Alternatively, it is set when dma_request_channel() finds an
+unused "public" channel.
+
+A couple caveats to note when implementing a driver and consumer:
+1/ Once a channel has been privately allocated it will no longer be
+   considered by the general-purpose allocator even after a call to
+   dma_release_channel().
+2/ Since capabilities are specified at the device level a dma_device
+   with multiple channels will either have all channels public, or all
+   channels private.
+
+5 SOURCE
+
+include/linux/dmaengine.h: core header file for DMA drivers and api users
 drivers/dma/dmaengine.c: offload engine channel management routines
 drivers/dma/: location for offload engine drivers
 include/linux/async_tx.h: core header file for the async_tx api

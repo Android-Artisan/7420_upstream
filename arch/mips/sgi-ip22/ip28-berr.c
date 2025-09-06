@@ -145,6 +145,14 @@ static void save_and_clear_buserr(void)
 	hpc3.ethtx.addr  = (unsigned long)&hpc3c0->ethregs.tx_cbptr;
 	hpc3.ethtx.ctrl  = hpc3c0->ethregs.tx_ctrl; /* HPC3_ETXCTRL_ACTIVE ? */
 	hpc3.ethtx.cbp   = hpc3c0->ethregs.tx_cbptr;
+	hpc3.ethrx.addr	 = (unsigned long)&hpc3c0->ethregs.rx_cbptr;
+	hpc3.ethrx.ctrl	 = hpc3c0->ethregs.rx_ctrl; /* HPC3_ERXCTRL_ACTIVE ? */
+	hpc3.ethrx.cbp	 = hpc3c0->ethregs.rx_cbptr;
+	hpc3.ethrx.ndptr = hpc3c0->ethregs.rx_ndptr;
+
+	hpc3.ethtx.addr	 = (unsigned long)&hpc3c0->ethregs.tx_cbptr;
+	hpc3.ethtx.ctrl	 = hpc3c0->ethregs.tx_ctrl; /* HPC3_ETXCTRL_ACTIVE ? */
+	hpc3.ethtx.cbp	 = hpc3c0->ethregs.tx_cbptr;
 	hpc3.ethtx.ndptr = hpc3c0->ethregs.tx_ndptr;
 
 	for (i = 0; i < 8; ++i) {
@@ -202,6 +210,11 @@ static void print_cache_tags(void)
 
 	i = ((1 << scw) - 1) & ~((1 << scb) - 1);
 	printk(KERN_ERR "S: 0: %08x %08x, 1: %08x %08x  (PA[%u:%u] %05x)\n",
+	scb = i & (1 << 13) ? 7:6;	/* scblksize = 2^[7..6] */
+	scw = ((i >> 16) & 7) + 19 - 1; /* scwaysize = 2^[24..19] / 2 */
+
+	i = ((1 << scw) - 1) & ~((1 << scb) - 1);
+	printk(KERN_ERR "S: 0: %08x %08x, 1: %08x %08x	(PA[%u:%u] %05x)\n",
 		cache_tags.tags[0][0].hi, cache_tags.tags[0][0].lo,
 		cache_tags.tags[0][1].hi, cache_tags.tags[0][1].lo,
 		scw-1, scb, i & (unsigned)cache_tags.err_addr);
@@ -340,6 +353,7 @@ static int check_microtlb(u32 hi, u32 lo, unsigned long vaddr)
 				a = (a & 0x3f) << 6; /* PFN */
 				a += vaddr & ((1 << pgsz) - 1);
 				return (cpu_err_addr == a);
+				return cpu_err_addr == a;
 			}
 		}
 	}
@@ -353,6 +367,7 @@ static int check_vdma_memaddr(void)
 
 		if (!(sgimc->dma_ctrl & 0x100)) /* Xlate-bit clear ? */
 			return (cpu_err_addr == a);
+			return cpu_err_addr == a;
 
 		if (check_microtlb(sgimc->dtlb_hi0, sgimc->dtlb_lo0, a) ||
 		    check_microtlb(sgimc->dtlb_hi1, sgimc->dtlb_lo1, a) ||
@@ -369,6 +384,7 @@ static int check_vdma_gioaddr(void)
 		u32 a = sgimc->gio_dma_trans;
 		a = (sgimc->gmaddronly & ~a) | (sgimc->gio_dma_sbits & a);
 		return (gio_err_addr == a);
+		return gio_err_addr == a;
 	}
 	return 0;
 }
@@ -454,6 +470,7 @@ mips_be_fatal:
 void ip22_be_interrupt(int irq)
 {
 	const struct pt_regs *regs = get_irq_regs();
+	struct pt_regs *regs = get_irq_regs();
 
 	count_be_interrupt++;
 

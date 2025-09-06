@@ -30,6 +30,12 @@ sub print_depends_on {
 		foreach my $sym (sort numerically @{$list}) {
 			my ($symbol, $no) = split /\s+/, $sym;
 			printf("\t\t%-25s\t%-25d\n", $symbol, $no);
+	for my $mod (sort keys %$href) {
+		my $list = $href->{$mod};
+		print "\t$mod:\n";
+		foreach my $sym (sort numerically @{$list}) {
+			my ($symbol, $no) = split /\s+/, $sym;
+			printf("\t\t%-25s\n", $symbol);
 		}
 		print "\n";
 	}
@@ -53,6 +59,16 @@ sub collectcfiles {
         @file = grep {s/\.ko/.mod.c/} @file;
 	chomp @file;
         return @file;
+    my @file;
+    while (<.tmp_versions/*.mod>) {
+	open my $fh, '<', $_ or die "cannot open $_: $!\n";
+	push (@file,
+	      grep s/\.ko/.mod.c/,	# change the suffix
+	      grep m/.+\.ko/,		# find the .ko path
+	      <$fh>);			# lines in opened file
+    }
+    chomp @file;
+    return @file;
 }
 
 my (%SYMBOL, %MODULE, %opt, @allcfiles);
@@ -81,16 +97,28 @@ if (defined $opt{'o'}) {
 	}
 	select OUTPUT_HANDLE;
 }
+open (my $module_symvers, '<', $opt{'k'})
+    or die "Sorry, cannot open $opt{'k'}: $!\n";
+
+if (defined $opt{'o'}) {
+    open (my $out, '>', $opt{'o'})
+	or die "Sorry, cannot open $opt{'o'} $!\n";
+
+    select $out;
+}
+
 #
 # collect all the symbols and their attributes from the
 # Module.symvers file
 #
 while ( <MODULE_SYMVERS> ) {
+while ( <$module_symvers> ) {
 	chomp;
 	my (undef, $symbol, $module, $gpl) = split;
 	$SYMBOL { $symbol } =  [ $module , "0" , $symbol, $gpl];
 }
 close(MODULE_SYMVERS);
+close($module_symvers);
 
 #
 # collect the usage count of each symbol.
@@ -102,6 +130,18 @@ foreach my $thismod (@allcfiles) {
 	}
 	my $state=0;
 	while ( <MODULE_MODULE> ) {
+my $modversion_warnings = 0;
+
+foreach my $thismod (@allcfiles) {
+	my $module;
+
+	unless (open ($module, '<', $thismod)) {
+		warn "Sorry, cannot open $thismod: $!\n";
+		next;
+	}
+
+	my $state=0;
+	while ( <$module> ) {
 		chomp;
 		if ($state == 0) {
 			$state = 1 if ($_ =~ /static const struct modversion_info/);
@@ -125,6 +165,10 @@ foreach my $thismod (@allcfiles) {
 		print "WARNING:$thismod is not built with CONFIG_MODVERSION enabled\n";
 	}
 	close(MODULE_MODULE);
+		warn "WARNING:$thismod is not built with CONFIG_MODVERSIONS enabled\n";
+		$modversion_warnings++;
+	}
+	close($module);
 }
 
 print "\tThis file reports the exported symbols usage patterns by in-tree\n",
@@ -158,6 +202,12 @@ it uses.  Each listed symbol reports the number of modules using it\n");
 
 print "~"x80 , "\n";
 while (my ($thismod, $list) = each %MODULE) {
+print "\nNOTE: Got $modversion_warnings CONFIG_MODVERSIONS warnings\n\n"
+    if $modversion_warnings;
+
+print "~"x80 , "\n";
+for my $thismod (sort keys %MODULE) {
+	my $list = $MODULE{$thismod};
 	my %depends;
 	$thismod =~ s/\.mod\.c/.ko/;
 	print "\t\t\t$thismod\n";

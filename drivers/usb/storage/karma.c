@@ -18,6 +18,9 @@
  * 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
+#include <linux/module.h>
+#include <linux/slab.h>
+
 #include <scsi/scsi.h>
 #include <scsi/scsi_cmnd.h>
 #include <scsi/scsi_device.h>
@@ -26,6 +29,13 @@
 #include "transport.h"
 #include "debug.h"
 #include "karma.h"
+#include "scsiglue.h"
+
+#define DRV_NAME "ums-karma"
+
+MODULE_DESCRIPTION("Driver for Rio Karma");
+MODULE_AUTHOR("Bob Copeland <me@bobcopeland.com>, Keith Bennett <keith@mcs.st-and.ac.uk>");
+MODULE_LICENSE("GPL");
 
 #define RIO_PREFIX "RIOP\x00"
 #define RIO_PREFIX_LEN 5
@@ -42,6 +52,48 @@ struct karma_data {
 	int in_storage;
 	char *recv;
 };
+
+static int rio_karma_init(struct us_data *us);
+
+
+/*
+ * The table of devices
+ */
+#define UNUSUAL_DEV(id_vendor, id_product, bcdDeviceMin, bcdDeviceMax, \
+		    vendorName, productName, useProtocol, useTransport, \
+		    initFunction, flags) \
+{ USB_DEVICE_VER(id_vendor, id_product, bcdDeviceMin, bcdDeviceMax), \
+  .driver_info = (flags) }
+
+static struct usb_device_id karma_usb_ids[] = {
+#	include "unusual_karma.h"
+	{ }		/* Terminating entry */
+};
+MODULE_DEVICE_TABLE(usb, karma_usb_ids);
+
+#undef UNUSUAL_DEV
+
+/*
+ * The flags table
+ */
+#define UNUSUAL_DEV(idVendor, idProduct, bcdDeviceMin, bcdDeviceMax, \
+		    vendor_name, product_name, use_protocol, use_transport, \
+		    init_function, Flags) \
+{ \
+	.vendorName = vendor_name,	\
+	.productName = product_name,	\
+	.useProtocol = use_protocol,	\
+	.useTransport = use_transport,	\
+	.initFunction = init_function,	\
+}
+
+static struct us_unusual_dev karma_unusual_dev_list[] = {
+#	include "unusual_karma.h"
+	{ }		/* Terminating entry */
+};
+
+#undef UNUSUAL_DEV
+
 
 /*
  * Send commands to Rio Karma.
@@ -61,6 +113,7 @@ static int rio_karma_send_command(char cmd, struct us_data *us)
 	struct karma_data *data = (struct karma_data *) us->extra;
 
 	US_DEBUGP("karma: sending command %04x\n", cmd);
+	usb_stor_dbg(us, "sending command %04x\n", cmd);
 	memset(us->iobuf, 0, RIO_SEND_LEN);
 	memcpy(us->iobuf, RIO_PREFIX, RIO_PREFIX_LEN);
 	us->iobuf[5] = cmd;
@@ -97,6 +150,10 @@ static int rio_karma_send_command(char cmd, struct us_data *us)
 	return 0;
 err:
 	US_DEBUGP("karma: command %04x failed\n", cmd);
+	usb_stor_dbg(us, "sent command %04x\n", cmd);
+	return 0;
+err:
+	usb_stor_dbg(us, "command %04x failed\n", cmd);
 	return USB_STOR_TRANSPORT_FAILED;
 }
 
@@ -105,6 +162,7 @@ err:
  * Everything else is propagated to the normal bulk layer.
  */
 int rio_karma_transport(struct scsi_cmnd *srb, struct us_data *us)
+static int rio_karma_transport(struct scsi_cmnd *srb, struct us_data *us)
 {
 	int ret;
 	struct karma_data *data = (struct karma_data *) us->extra;
@@ -134,22 +192,62 @@ static void rio_karma_destructor(void *extra)
 }
 
 int rio_karma_init(struct us_data *us)
+static int rio_karma_init(struct us_data *us)
 {
-	int ret = 0;
 	struct karma_data *data = kzalloc(sizeof(struct karma_data), GFP_NOIO);
 	if (!data)
-		goto out;
+		return -ENOMEM;
 
 	data->recv = kmalloc(RIO_RECV_LEN, GFP_NOIO);
 	if (!data->recv) {
 		kfree(data);
-		goto out;
+		return -ENOMEM;
 	}
 
 	us->extra = data;
 	us->extra_destructor = rio_karma_destructor;
-	ret = rio_karma_send_command(RIO_ENTER_STORAGE, us);
-	data->in_storage = (ret == 0);
-out:
-	return ret;
+	if (rio_karma_send_command(RIO_ENTER_STORAGE, us))
+		return -EIO;
+
+	data->in_storage = 1;
+
+	return 0;
 }
+
+static struct scsi_host_template karma_host_template;
+
+static int karma_probe(struct usb_interface *intf,
+			 const struct usb_device_id *id)
+{
+	struct us_data *us;
+	int result;
+
+	result = usb_stor_probe1(&us, intf, id,
+			(id - karma_usb_ids) + karma_unusual_dev_list,
+			&karma_host_template);
+	if (result)
+		return result;
+
+	us->transport_name = "Rio Karma/Bulk";
+	us->transport = rio_karma_transport;
+	us->transport_reset = usb_stor_Bulk_reset;
+
+	result = usb_stor_probe2(us);
+	return result;
+}
+
+static struct usb_driver karma_driver = {
+	.name =		DRV_NAME,
+	.probe =	karma_probe,
+	.disconnect =	usb_stor_disconnect,
+	.suspend =	usb_stor_suspend,
+	.resume =	usb_stor_resume,
+	.reset_resume =	usb_stor_reset_resume,
+	.pre_reset =	usb_stor_pre_reset,
+	.post_reset =	usb_stor_post_reset,
+	.id_table =	karma_usb_ids,
+	.soft_unbind =	1,
+	.no_dynamic_id = 1,
+};
+
+module_usb_stor_driver(karma_driver, karma_host_template, DRV_NAME);

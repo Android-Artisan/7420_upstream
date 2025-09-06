@@ -21,6 +21,7 @@
 /* #define USE_VAR48KRATE */
 
 #include <asm/io.h>
+#include <linux/io.h>
 #include <linux/delay.h>
 #include <linux/interrupt.h>
 #include <linux/init.h>
@@ -28,6 +29,7 @@
 #include <linux/slab.h>
 #include <linux/gameport.h>
 #include <linux/moduleparam.h>
+#include <linux/module.h>
 #include <linux/mutex.h>
 #include <sound/core.h>
 #include <sound/info.h>
@@ -58,6 +60,10 @@ static int enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE_PNP;	/* Enable switches */
 static long mpu_port[SNDRV_CARDS];
 static long fm_port[SNDRV_CARDS] = {[0 ... (SNDRV_CARDS-1)]=1};
 static int soft_ac3[SNDRV_CARDS] = {[0 ... (SNDRV_CARDS-1)]=1};
+static bool enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE_PNP;	/* Enable switches */
+static long mpu_port[SNDRV_CARDS];
+static long fm_port[SNDRV_CARDS] = {[0 ... (SNDRV_CARDS-1)]=1};
+static bool soft_ac3[SNDRV_CARDS] = {[0 ... (SNDRV_CARDS-1)]=1};
 #ifdef SUPPORT_JOYSTICK
 static int joystick_port[SNDRV_CARDS];
 #endif
@@ -74,6 +80,7 @@ module_param_array(fm_port, long, NULL, 0444);
 MODULE_PARM_DESC(fm_port, "FM port.");
 module_param_array(soft_ac3, bool, NULL, 0444);
 MODULE_PARM_DESC(soft_ac3, "Sofware-conversion of raw SPDIF packets (model 033 only).");
+MODULE_PARM_DESC(soft_ac3, "Software-conversion of raw SPDIF packets (model 033 only).");
 #ifdef SUPPORT_JOYSTICK
 module_param_array(joystick_port, int, NULL, 0444);
 MODULE_PARM_DESC(joystick_port, "Joystick port address.");
@@ -315,7 +322,6 @@ MODULE_PARM_DESC(joystick_port, "Joystick port address.");
 #define CM_MICGAINZ		0x01	/* mic boost */
 #define CM_MICGAINZ_SHIFT	0
 
-#define CM_REG_MIXER3		0x24
 #define CM_REG_AUX_VOL		0x26
 #define CM_VAUXL_MASK		0xf0
 #define CM_VAUXR_MASK		0x0f
@@ -505,6 +511,7 @@ struct cmipci {
 	spinlock_t reg_lock;
 
 #ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 	unsigned int saved_regs[0x20];
 	unsigned char saved_mixers[0x20];
 #endif
@@ -658,6 +665,8 @@ out:
 /*
  * Program pll register bits, I assume that the 8 registers 0xf8 upto 0xff
  * are mapped onto the 8 ADC/DAC sampling frequency which can be choosen
+ * Program pll register bits, I assume that the 8 registers 0xf8 up to 0xff
+ * are mapped onto the 8 ADC/DAC sampling frequency which can be chosen
  * at the register CM_REG_FUNCTRL1 (0x04).
  * Problem: other ways are also possible (any information about that?)
  */
@@ -667,6 +676,7 @@ static void snd_cmipci_set_pll(struct cmipci *cm, unsigned int rate, unsigned in
 	/*
 	 * Guess that this programs at reg. 0x04 the pos 15:13/12:10
 	 * for DSFC/ASFC (000 upto 111).
+	 * for DSFC/ASFC (000 up to 111).
 	 */
 
 	/* FIXME: Init (Do we've to set an other register first before programming?) */
@@ -797,6 +807,7 @@ static int snd_cmipci_pcm_prepare(struct cmipci *cm, struct cmipci_pcm *rec,
 		rec->fmt |= 0x01;
 	if (rec->is_dac && set_dac_channels(cm, rec, runtime->channels) < 0) {
 		snd_printd("cannot set dac channels\n");
+		dev_dbg(cm->card->dev, "cannot set dac channels\n");
 		return -EINVAL;
 	}
 
@@ -828,6 +839,7 @@ static int snd_cmipci_pcm_prepare(struct cmipci *cm, struct cmipci_pcm *rec,
 		cm->ctrl |= val;
 	snd_cmipci_write(cm, CM_REG_FUNCTRL0, cm->ctrl);
 	//snd_printd("cmipci: functrl0 = %08x\n", cm->ctrl);
+	/* dev_dbg(cm->card->dev, "functrl0 = %08x\n", cm->ctrl); */
 
 	/* set sample rate */
 	freq = 0;
@@ -851,6 +863,7 @@ static int snd_cmipci_pcm_prepare(struct cmipci *cm, struct cmipci_pcm *rec,
 	}
 	snd_cmipci_write(cm, CM_REG_FUNCTRL1, val);
 	//snd_printd("cmipci: functrl1 = %08x\n", val);
+	dev_dbg(cm->card->dev, "functrl1 = %08x\n", val);
 
 	/* set format */
 	val = snd_cmipci_read(cm, CM_REG_CHFORMAT);
@@ -867,6 +880,7 @@ static int snd_cmipci_pcm_prepare(struct cmipci *cm, struct cmipci_pcm *rec,
 	}
 	snd_cmipci_write(cm, CM_REG_CHFORMAT, val);
 	//snd_printd("cmipci: chformat = %08x\n", val);
+	dev_dbg(cm->card->dev, "chformat = %08x\n", val);
 
 	if (!rec->is_dac && cm->chip_version) {
 		if (runtime->rate > 44100)
@@ -905,6 +919,7 @@ static int snd_cmipci_pcm_trigger(struct cmipci *cm, struct cmipci_pcm *rec,
 		/* enable channel */
 		snd_cmipci_write(cm, CM_REG_FUNCTRL0, cm->ctrl);
 		//snd_printd("cmipci: functrl0 = %08x\n", cm->ctrl);
+		dev_dbg(cm->card->dev, "functrl0 = %08x\n", cm->ctrl);
 		break;
 	case SNDRV_PCM_TRIGGER_STOP:
 		rec->running = 0;
@@ -942,12 +957,23 @@ static snd_pcm_uframes_t snd_cmipci_pcm_pointer(struct cmipci *cm, struct cmipci
 {
 	size_t ptr;
 	unsigned int reg;
+	unsigned int reg, rem, tries;
+
 	if (!rec->running)
 		return 0;
 #if 1 // this seems better..
 	reg = rec->ch ? CM_REG_CH1_FRAME2 : CM_REG_CH0_FRAME2;
 	ptr = rec->dma_size - (snd_cmipci_read_w(cm, reg) + 1);
 	ptr >>= rec->shift;
+	for (tries = 0; tries < 3; tries++) {
+		rem = snd_cmipci_read_w(cm, reg);
+		if (rem < rec->dma_size)
+			goto ok;
+	} 
+	dev_err(cm->card->dev, "invalid PCM pointer: %#x\n", rem);
+	return SNDRV_PCM_POS_XRUN;
+ok:
+	ptr = (rec->dma_size - (rem + 1)) >> rec->shift;
 #else
 	reg = rec->ch ? CM_REG_CH1_FRAME1 : CM_REG_CH0_FRAME1;
 	ptr = snd_cmipci_read(cm, reg) - rec->offset;
@@ -1038,6 +1064,7 @@ static int snd_cmipci_spdif_default_put(struct snd_kcontrol *kcontrol,
 }
 
 static struct snd_kcontrol_new snd_cmipci_spdif_default __devinitdata =
+static struct snd_kcontrol_new snd_cmipci_spdif_default =
 {
 	.iface =	SNDRV_CTL_ELEM_IFACE_PCM,
 	.name =		SNDRV_CTL_NAME_IEC958("",PLAYBACK,DEFAULT),
@@ -1065,6 +1092,7 @@ static int snd_cmipci_spdif_mask_get(struct snd_kcontrol *kcontrol,
 }
 
 static struct snd_kcontrol_new snd_cmipci_spdif_mask __devinitdata =
+static struct snd_kcontrol_new snd_cmipci_spdif_mask =
 {
 	.access =	SNDRV_CTL_ELEM_ACCESS_READ,
 	.iface =	SNDRV_CTL_ELEM_IFACE_PCM,
@@ -1112,6 +1140,7 @@ static int snd_cmipci_spdif_stream_put(struct snd_kcontrol *kcontrol,
 }
 
 static struct snd_kcontrol_new snd_cmipci_spdif_stream __devinitdata =
+static struct snd_kcontrol_new snd_cmipci_spdif_stream =
 {
 	.access =	SNDRV_CTL_ELEM_ACCESS_READWRITE | SNDRV_CTL_ELEM_ACCESS_INACTIVE,
 	.iface =	SNDRV_CTL_ELEM_IFACE_PCM,
@@ -1890,6 +1919,7 @@ static struct snd_pcm_ops snd_cmipci_capture_spdif_ops = {
  */
 
 static int __devinit snd_cmipci_pcm_new(struct cmipci *cm, int device)
+static int snd_cmipci_pcm_new(struct cmipci *cm, int device)
 {
 	struct snd_pcm *pcm;
 	int err;
@@ -1913,6 +1943,7 @@ static int __devinit snd_cmipci_pcm_new(struct cmipci *cm, int device)
 }
 
 static int __devinit snd_cmipci_pcm2_new(struct cmipci *cm, int device)
+static int snd_cmipci_pcm2_new(struct cmipci *cm, int device)
 {
 	struct snd_pcm *pcm;
 	int err;
@@ -1935,6 +1966,7 @@ static int __devinit snd_cmipci_pcm2_new(struct cmipci *cm, int device)
 }
 
 static int __devinit snd_cmipci_pcm_spdif_new(struct cmipci *cm, int device)
+static int snd_cmipci_pcm_spdif_new(struct cmipci *cm, int device)
 {
 	struct snd_pcm *pcm;
 	int err;
@@ -1953,6 +1985,12 @@ static int __devinit snd_cmipci_pcm_spdif_new(struct cmipci *cm, int device)
 
 	snd_pcm_lib_preallocate_pages_for_all(pcm, SNDRV_DMA_TYPE_DEV,
 					      snd_dma_pci_data(cm->pci), 64*1024, 128*1024);
+
+	err = snd_pcm_add_chmap_ctls(pcm, SNDRV_PCM_STREAM_PLAYBACK,
+				     snd_pcm_alt_chmaps, cm->max_channels, 0,
+				     NULL);
+	if (err < 0)
+		return err;
 
 	return 0;
 }
@@ -2049,6 +2087,7 @@ static int snd_cmipci_get_volume(struct snd_kcontrol *kcontrol,
 		if (reg.invert)
 			val = reg.mask - val;
 		 ucontrol->value.integer.value[1] = val;
+		ucontrol->value.integer.value[1] = val;
 	}
 	spin_unlock_irq(&cm->reg_lock);
 	return 0;
@@ -2277,6 +2316,7 @@ static int snd_cmipci_put_native_mixer_sensitive(struct snd_kcontrol *kcontrol,
 
 
 static struct snd_kcontrol_new snd_cmipci_mixers[] __devinitdata = {
+static struct snd_kcontrol_new snd_cmipci_mixers[] = {
 	CMIPCI_SB_VOL_STEREO("Master Playback Volume", SB_DSP4_MASTER_DEV, 3, 31),
 	CMIPCI_MIXER_SW_MONO("3D Control - Switch", CM_REG_MIXER1, CM_X3DEN_SHIFT, 0),
 	CMIPCI_SB_VOL_STEREO("PCM Playback Volume", SB_DSP4_PCM_DEV, 3, 31),
@@ -2303,6 +2343,7 @@ static struct snd_kcontrol_new snd_cmipci_mixers[] __devinitdata = {
 	CMIPCI_SB_SW_MONO("Mic Playback Switch", 0),
 	CMIPCI_DOUBLE("Mic Capture Switch", SB_DSP4_INPUT_LEFT, SB_DSP4_INPUT_RIGHT, 0, 0, 1, 0, 0),
 	CMIPCI_SB_VOL_MONO("PC Speaker Playback Volume", SB_DSP4_SPEAKER_DEV, 6, 3),
+	CMIPCI_SB_VOL_MONO("Beep Playback Volume", SB_DSP4_SPEAKER_DEV, 6, 3),
 	CMIPCI_MIXER_VOL_STEREO("Aux Playback Volume", CM_REG_AUX_VOL, 4, 0, 15),
 	CMIPCI_MIXER_SW_STEREO("Aux Playback Switch", CM_REG_MIXER2, CM_VAUXLM_SHIFT, CM_VAUXRM_SHIFT, 0),
 	CMIPCI_MIXER_SW_STEREO("Aux Capture Switch", CM_REG_MIXER2, CM_RAUXLEN_SHIFT, CM_RAUXREN_SHIFT, 0),
@@ -2311,6 +2352,7 @@ static struct snd_kcontrol_new snd_cmipci_mixers[] __devinitdata = {
 	CMIPCI_SB_VOL_MONO("Phone Playback Volume", CM_REG_EXTENT_IND, 5, 7),
 	CMIPCI_DOUBLE("Phone Playback Switch", CM_REG_EXTENT_IND, CM_REG_EXTENT_IND, 4, 4, 1, 0, 0),
 	CMIPCI_DOUBLE("PC Speaker Playback Switch", CM_REG_EXTENT_IND, CM_REG_EXTENT_IND, 3, 3, 1, 0, 0),
+	CMIPCI_DOUBLE("Beep Playback Switch", CM_REG_EXTENT_IND, CM_REG_EXTENT_IND, 3, 3, 1, 0, 0),
 	CMIPCI_DOUBLE("Mic Boost Capture Switch", CM_REG_EXTENT_IND, CM_REG_EXTENT_IND, 0, 0, 1, 0, 0),
 };
 
@@ -2358,6 +2400,8 @@ static int snd_cmipci_uswitch_get(struct snd_kcontrol *kcontrol,
 	struct cmipci_switch_args *args;
 	args = (struct cmipci_switch_args *)kcontrol->private_value;
 	snd_assert(args != NULL, return -EINVAL);
+	if (snd_BUG_ON(!args))
+		return -EINVAL;
 	return _snd_cmipci_uswitch_get(kcontrol, ucontrol, args);
 }
 
@@ -2402,6 +2446,8 @@ static int snd_cmipci_uswitch_put(struct snd_kcontrol *kcontrol,
 	struct cmipci_switch_args *args;
 	args = (struct cmipci_switch_args *)kcontrol->private_value;
 	snd_assert(args != NULL, return -EINVAL);
+	if (snd_BUG_ON(!args))
+		return -EINVAL;
 	return _snd_cmipci_uswitch_put(kcontrol, ucontrol, args);
 }
 
@@ -2505,6 +2551,12 @@ static int snd_cmipci_line_in_mode_info(struct snd_kcontrol *kcontrol,
 		uinfo->value.enumerated.item = uinfo->value.enumerated.items - 1;
 	strcpy(uinfo->value.enumerated.name, texts[uinfo->value.enumerated.item]);
 	return 0;
+	static const char *const texts[3] = {
+		"Line-In", "Rear Output", "Bass Output"
+	};
+
+	return snd_ctl_enum_info(uinfo, 1,
+				 cm->chip_version >= 39 ? 3 : 2, texts);
 }
 
 static inline unsigned int get_line_in_mode(struct cmipci *cm)
@@ -2562,6 +2614,9 @@ static int snd_cmipci_mic_in_mode_info(struct snd_kcontrol *kcontrol,
 		uinfo->value.enumerated.item = uinfo->value.enumerated.items - 1;
 	strcpy(uinfo->value.enumerated.name, texts[uinfo->value.enumerated.item]);
 	return 0;
+	static const char *const texts[2] = { "Mic-In", "Center/LFE Output" };
+
+	return snd_ctl_enum_info(uinfo, 1, 2, texts);
 }
 
 static int snd_cmipci_mic_in_mode_get(struct snd_kcontrol *kcontrol,
@@ -2593,6 +2648,7 @@ static int snd_cmipci_mic_in_mode_put(struct snd_kcontrol *kcontrol,
 
 /* both for CM8338/8738 */
 static struct snd_kcontrol_new snd_cmipci_mixer_switches[] __devinitdata = {
+static struct snd_kcontrol_new snd_cmipci_mixer_switches[] = {
 	DEFINE_MIXER_SWITCH("Four Channel Mode", fourch),
 	{
 		.name = "Line-In Mode",
@@ -2609,6 +2665,11 @@ DEFINE_MIXER_SWITCH("Exchange DAC", exchange_dac);
 
 /* only for CM8738 */
 static struct snd_kcontrol_new snd_cmipci_8738_mixer_switches[] __devinitdata = {
+static struct snd_kcontrol_new snd_cmipci_nomulti_switch =
+DEFINE_MIXER_SWITCH("Exchange DAC", exchange_dac);
+
+/* only for CM8738 */
+static struct snd_kcontrol_new snd_cmipci_8738_mixer_switches[] = {
 #if 0 /* controlled in pcm device */
 	DEFINE_MIXER_SWITCH("IEC958 In Record", spdif_in),
 	DEFINE_MIXER_SWITCH("IEC958 Out", spdif_out),
@@ -2631,6 +2692,7 @@ static struct snd_kcontrol_new snd_cmipci_8738_mixer_switches[] __devinitdata = 
 
 /* only for model 033/037 */
 static struct snd_kcontrol_new snd_cmipci_old_mixer_switches[] __devinitdata = {
+static struct snd_kcontrol_new snd_cmipci_old_mixer_switches[] = {
 	DEFINE_MIXER_SWITCH("IEC958 Mix Analog", spdif_dac_out),
 	DEFINE_MIXER_SWITCH("IEC958 In Phase Inverse", spdi_phase),
 	DEFINE_MIXER_SWITCH("IEC958 In Select", spdif_in_sel1),
@@ -2638,6 +2700,7 @@ static struct snd_kcontrol_new snd_cmipci_old_mixer_switches[] __devinitdata = {
 
 /* only for model 039 or later */
 static struct snd_kcontrol_new snd_cmipci_extra_mixer_switches[] __devinitdata = {
+static struct snd_kcontrol_new snd_cmipci_extra_mixer_switches[] = {
 	DEFINE_MIXER_SWITCH("IEC958 In Select", spdif_in_sel2),
 	DEFINE_MIXER_SWITCH("IEC958 In Phase Inverse", spdi_phase2),
 	{
@@ -2655,6 +2718,11 @@ DEFINE_CARD_SWITCH("Modem", modem);
 
 
 static int __devinit snd_cmipci_mixer_new(struct cmipci *cm, int pcm_spdif_device)
+static struct snd_kcontrol_new snd_cmipci_modem_switch =
+DEFINE_CARD_SWITCH("Modem", modem);
+
+
+static int snd_cmipci_mixer_new(struct cmipci *cm, int pcm_spdif_device)
 {
 	struct snd_card *card;
 	struct snd_kcontrol_new *sw;
@@ -2663,6 +2731,8 @@ static int __devinit snd_cmipci_mixer_new(struct cmipci *cm, int pcm_spdif_devic
 	int err;
 
 	snd_assert(cm != NULL && cm->card != NULL, return -EINVAL);
+	if (snd_BUG_ON(!cm || !cm->card))
+		return -EINVAL;
 
 	card = cm->card;
 
@@ -2782,6 +2852,7 @@ static void snd_cmipci_proc_read(struct snd_info_entry *entry,
 }
 
 static void __devinit snd_cmipci_proc_init(struct cmipci *cm)
+static void snd_cmipci_proc_init(struct cmipci *cm)
 {
 	struct snd_info_entry *entry;
 
@@ -2799,6 +2870,13 @@ static struct pci_device_id snd_cmipci_ids[] = {
 	{PCI_VENDOR_ID_CMEDIA, PCI_DEVICE_ID_CMEDIA_CM8738, PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0},
 	{PCI_VENDOR_ID_CMEDIA, PCI_DEVICE_ID_CMEDIA_CM8738B, PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0},
 	{PCI_VENDOR_ID_AL, PCI_DEVICE_ID_CMEDIA_CM8738, PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0},
+
+static const struct pci_device_id snd_cmipci_ids[] = {
+	{PCI_VDEVICE(CMEDIA, PCI_DEVICE_ID_CMEDIA_CM8338A), 0},
+	{PCI_VDEVICE(CMEDIA, PCI_DEVICE_ID_CMEDIA_CM8338B), 0},
+	{PCI_VDEVICE(CMEDIA, PCI_DEVICE_ID_CMEDIA_CM8738), 0},
+	{PCI_VDEVICE(CMEDIA, PCI_DEVICE_ID_CMEDIA_CM8738B), 0},
+	{PCI_VDEVICE(AL, PCI_DEVICE_ID_CMEDIA_CM8738), 0},
 	{0,},
 };
 
@@ -2808,6 +2886,7 @@ static struct pci_device_id snd_cmipci_ids[] = {
  * driver name is modified according to the chip model
  */
 static void __devinit query_chip(struct cmipci *cm)
+static void query_chip(struct cmipci *cm)
 {
 	unsigned int detect;
 
@@ -2857,6 +2936,7 @@ static void __devinit query_chip(struct cmipci *cm)
 
 #ifdef SUPPORT_JOYSTICK
 static int __devinit snd_cmipci_create_gameport(struct cmipci *cm, int dev)
+static int snd_cmipci_create_gameport(struct cmipci *cm, int dev)
 {
 	static int ports[] = { 0x201, 0x200, 0 }; /* FIXME: majority is 0x201? */
 	struct gameport *gp;
@@ -2880,12 +2960,14 @@ static int __devinit snd_cmipci_create_gameport(struct cmipci *cm, int dev)
 
 	if (!r) {
 		printk(KERN_WARNING "cmipci: cannot reserve joystick ports\n");
+		dev_warn(cm->card->dev, "cannot reserve joystick ports\n");
 		return -EBUSY;
 	}
 
 	cm->gameport = gp = gameport_allocate_port();
 	if (!gp) {
 		printk(KERN_ERR "cmipci: cannot allocate memory for gameport\n");
+		dev_err(cm->card->dev, "cannot allocate memory for gameport\n");
 		release_and_free_resource(r);
 		return -ENOMEM;
 	}
@@ -2950,6 +3032,7 @@ static int snd_cmipci_dev_free(struct snd_device *device)
 }
 
 static int __devinit snd_cmipci_create_fm(struct cmipci *cm, long fm_port)
+static int snd_cmipci_create_fm(struct cmipci *cm, long fm_port)
 {
 	long iosynth;
 	unsigned int val;
@@ -2987,11 +3070,15 @@ static int __devinit snd_cmipci_create_fm(struct cmipci *cm, long fm_port)
 				    OPL3_HW_OPL3, 0, &opl3) < 0) {
 			printk(KERN_ERR "cmipci: no OPL device at %#lx, "
 			       "skipping...\n", iosynth);
+			dev_err(cm->card->dev,
+				"no OPL device at %#lx, skipping...\n",
+				iosynth);
 			goto disable_fm;
 		}
 	}
 	if ((err = snd_opl3_hwdep_new(opl3, 0, 1, NULL)) < 0) {
 		printk(KERN_ERR "cmipci: cannot create OPL3 hwdep\n");
+		dev_err(cm->card->dev, "cannot create OPL3 hwdep\n");
 		return err;
 	}
 	return 0;
@@ -3004,6 +3091,8 @@ static int __devinit snd_cmipci_create_fm(struct cmipci *cm, long fm_port)
 
 static int __devinit snd_cmipci_create(struct snd_card *card, struct pci_dev *pci,
 				       int dev, struct cmipci **rcmipci)
+static int snd_cmipci_create(struct snd_card *card, struct pci_dev *pci,
+			     int dev, struct cmipci **rcmipci)
 {
 	struct cmipci *cm;
 	int err;
@@ -3016,6 +3105,11 @@ static int __devinit snd_cmipci_create(struct snd_card *card, struct pci_dev *pc
 	char modelstr[16];
 	int pcm_index, pcm_spdif_index;
 	static struct pci_device_id intel_82437vx[] = {
+	long iomidi = 0;
+	int integrated_midi = 0;
+	char modelstr[16];
+	int pcm_index, pcm_spdif_index;
+	static const struct pci_device_id intel_82437vx[] = {
 		{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_82437VX) },
 		{ },
 	};
@@ -3051,6 +3145,8 @@ static int __devinit snd_cmipci_create(struct snd_card *card, struct pci_dev *pc
 	if (request_irq(pci->irq, snd_cmipci_interrupt,
 			IRQF_SHARED, card->driver, cm)) {
 		snd_printk(KERN_ERR "unable to grab IRQ %d\n", pci->irq);
+			IRQF_SHARED, KBUILD_MODNAME, cm)) {
+		dev_err(card->dev, "unable to grab IRQ %d\n", pci->irq);
 		snd_cmipci_free(cm);
 		return -EBUSY;
 	}
@@ -3184,6 +3280,9 @@ static int __devinit snd_cmipci_create(struct snd_card *card, struct pci_dev *pc
 			if (inb(iomidi + 1) == 0xff) {
 				snd_printk(KERN_ERR "cannot enable MPU-401 port"
 					   " at %#lx\n", iomidi);
+				dev_err(cm->card->dev,
+					"cannot enable MPU-401 port at %#lx\n",
+					iomidi);
 				snd_cmipci_clear_bit(cm, CM_REG_FUNCTRL1,
 						     CM_UART_EN);
 				iomidi = 0;
@@ -3227,6 +3326,11 @@ static int __devinit snd_cmipci_create(struct snd_card *card, struct pci_dev *pc
 						MPU401_INFO_INTEGRATED : 0),
 					       cm->irq, 0, &cm->rmidi)) < 0) {
 			printk(KERN_ERR "cmipci: no UART401 device at 0x%lx\n", iomidi);
+						MPU401_INFO_INTEGRATED : 0) |
+					       MPU401_INFO_IRQ_HOOK,
+					       -1, &cm->rmidi)) < 0) {
+			dev_err(cm->card->dev,
+				"no UART401 device at 0x%lx\n", iomidi);
 		}
 	}
 
@@ -3256,6 +3360,8 @@ MODULE_DEVICE_TABLE(pci, snd_cmipci_ids);
 
 static int __devinit snd_cmipci_probe(struct pci_dev *pci,
 				      const struct pci_device_id *pci_id)
+static int snd_cmipci_probe(struct pci_dev *pci,
+			    const struct pci_device_id *pci_id)
 {
 	static int dev;
 	struct snd_card *card;
@@ -3272,6 +3378,10 @@ static int __devinit snd_cmipci_probe(struct pci_dev *pci,
 	card = snd_card_new(index[dev], id[dev], THIS_MODULE, 0);
 	if (card == NULL)
 		return -ENOMEM;
+	err = snd_card_new(&pci->dev, index[dev], id[dev], THIS_MODULE,
+			   0, &card);
+	if (err < 0)
+		return err;
 	
 	switch (pci->device) {
 	case PCI_DEVICE_ID_CMEDIA_CM8738:
@@ -3311,12 +3421,19 @@ static void __devexit snd_cmipci_remove(struct pci_dev *pci)
 
 
 #ifdef CONFIG_PM
+static void snd_cmipci_remove(struct pci_dev *pci)
+{
+	snd_card_free(pci_get_drvdata(pci));
+}
+
+
+#ifdef CONFIG_PM_SLEEP
 /*
  * power management
  */
 static unsigned char saved_regs[] = {
 	CM_REG_FUNCTRL1, CM_REG_CHFORMAT, CM_REG_LEGACY_CTRL, CM_REG_MISC_CTRL,
-	CM_REG_MIXER0, CM_REG_MIXER1, CM_REG_MIXER2, CM_REG_MIXER3, CM_REG_PLL,
+	CM_REG_MIXER0, CM_REG_MIXER1, CM_REG_MIXER2, CM_REG_AUX_VOL, CM_REG_PLL,
 	CM_REG_CH0_FRAME1, CM_REG_CH0_FRAME2,
 	CM_REG_CH1_FRAME1, CM_REG_CH1_FRAME2, CM_REG_EXT_MISC,
 	CM_REG_INT_STATUS, CM_REG_INT_HLDCLR, CM_REG_FUNCTRL0,
@@ -3336,6 +3453,9 @@ static unsigned char saved_mixers[] = {
 static int snd_cmipci_suspend(struct pci_dev *pci, pm_message_t state)
 {
 	struct snd_card *card = pci_get_drvdata(pci);
+static int snd_cmipci_suspend(struct device *dev)
+{
+	struct snd_card *card = dev_get_drvdata(dev);
 	struct cmipci *cm = card->private_data;
 	int i;
 
@@ -3375,6 +3495,15 @@ static int snd_cmipci_resume(struct pci_dev *pci)
 		return -EIO;
 	}
 	pci_set_master(pci);
+
+	return 0;
+}
+
+static int snd_cmipci_resume(struct device *dev)
+{
+	struct snd_card *card = dev_get_drvdata(dev);
+	struct cmipci *cm = card->private_data;
+	int i;
 
 	/* reset / initialize to a sane state */
 	snd_cmipci_write(cm, CM_REG_INT_HLDCLR, 0);
@@ -3416,3 +3545,21 @@ static void __exit alsa_card_cmipci_exit(void)
 
 module_init(alsa_card_cmipci_init)
 module_exit(alsa_card_cmipci_exit)
+
+static SIMPLE_DEV_PM_OPS(snd_cmipci_pm, snd_cmipci_suspend, snd_cmipci_resume);
+#define SND_CMIPCI_PM_OPS	&snd_cmipci_pm
+#else
+#define SND_CMIPCI_PM_OPS	NULL
+#endif /* CONFIG_PM_SLEEP */
+
+static struct pci_driver cmipci_driver = {
+	.name = KBUILD_MODNAME,
+	.id_table = snd_cmipci_ids,
+	.probe = snd_cmipci_probe,
+	.remove = snd_cmipci_remove,
+	.driver = {
+		.pm = SND_CMIPCI_PM_OPS,
+	},
+};
+	
+module_pci_driver(cmipci_driver);

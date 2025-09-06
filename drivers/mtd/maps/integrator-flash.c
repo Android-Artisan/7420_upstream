@@ -1,4 +1,3 @@
-/*======================================================================
 
     drivers/mtd/maps/integrator-flash.c: ARM Integrator flash map driver
 
@@ -22,7 +21,6 @@
    This is access code for flashes using ARM's flash partitioning
    standards.
 
-======================================================================*/
 
 #include <linux/module.h>
 #include <linux/types.h>

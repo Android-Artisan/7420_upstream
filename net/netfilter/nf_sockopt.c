@@ -29,6 +29,7 @@ int nf_register_sockopt(struct nf_sockopt_ops *reg)
 	if (mutex_lock_interruptible(&nf_sockopt_mutex) != 0)
 		return -EINTR;
 
+	mutex_lock(&nf_sockopt_mutex);
 	list_for_each_entry(ops, &nf_sockopts, list) {
 		if (ops->pf == reg->pf
 		    && (overlap(ops->set_optmin, ops->set_optmax,
@@ -61,6 +62,7 @@ void nf_unregister_sockopt(struct nf_sockopt_ops *reg)
 EXPORT_SYMBOL(nf_unregister_sockopt);
 
 static struct nf_sockopt_ops *nf_sockopt_find(struct sock *sk, int pf,
+static struct nf_sockopt_ops *nf_sockopt_find(struct sock *sk, u_int8_t pf,
 		int val, int get)
 {
 	struct nf_sockopt_ops *ops;
@@ -71,6 +73,7 @@ static struct nf_sockopt_ops *nf_sockopt_find(struct sock *sk, int pf,
 	if (mutex_lock_interruptible(&nf_sockopt_mutex) != 0)
 		return ERR_PTR(-EINTR);
 
+	mutex_lock(&nf_sockopt_mutex);
 	list_for_each_entry(ops, &nf_sockopts, list) {
 		if (ops->pf == pf) {
 			if (!try_module_get(ops->owner))
@@ -97,6 +100,7 @@ out:
 
 /* Call get/setsockopt() */
 static int nf_sockopt(struct sock *sk, int pf, int val,
+static int nf_sockopt(struct sock *sk, u_int8_t pf, int val,
 		      char __user *opt, int *len, int get)
 {
 	struct nf_sockopt_ops *ops;
@@ -117,12 +121,16 @@ static int nf_sockopt(struct sock *sk, int pf, int val,
 
 int nf_setsockopt(struct sock *sk, int pf, int val, char __user *opt,
 		  int len)
+int nf_setsockopt(struct sock *sk, u_int8_t pf, int val, char __user *opt,
+		  unsigned int len)
 {
 	return nf_sockopt(sk, pf, val, opt, &len, 0);
 }
 EXPORT_SYMBOL(nf_setsockopt);
 
 int nf_getsockopt(struct sock *sk, int pf, int val, char __user *opt, int *len)
+int nf_getsockopt(struct sock *sk, u_int8_t pf, int val, char __user *opt,
+		  int *len)
 {
 	return nf_sockopt(sk, pf, val, opt, len, 1);
 }
@@ -130,6 +138,7 @@ EXPORT_SYMBOL(nf_getsockopt);
 
 #ifdef CONFIG_COMPAT
 static int compat_nf_sockopt(struct sock *sk, int pf, int val,
+static int compat_nf_sockopt(struct sock *sk, u_int8_t pf, int val,
 			     char __user *opt, int *len, int get)
 {
 	struct nf_sockopt_ops *ops;
@@ -157,12 +166,15 @@ static int compat_nf_sockopt(struct sock *sk, int pf, int val,
 
 int compat_nf_setsockopt(struct sock *sk, int pf,
 		int val, char __user *opt, int len)
+int compat_nf_setsockopt(struct sock *sk, u_int8_t pf,
+		int val, char __user *opt, unsigned int len)
 {
 	return compat_nf_sockopt(sk, pf, val, opt, &len, 0);
 }
 EXPORT_SYMBOL(compat_nf_setsockopt);
 
 int compat_nf_getsockopt(struct sock *sk, int pf,
+int compat_nf_getsockopt(struct sock *sk, u_int8_t pf,
 		int val, char __user *opt, int *len)
 {
 	return compat_nf_sockopt(sk, pf, val, opt, len, 1);

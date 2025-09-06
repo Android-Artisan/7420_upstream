@@ -26,6 +26,7 @@
  *  held within platform.h
  */
 #define IRQ_VIC_START		0
+#define IRQ_VIC_START		32
 #define IRQ_WDOGINT		(IRQ_VIC_START + INT_WDOGINT)
 #define IRQ_SOFTINT		(IRQ_VIC_START + INT_SOFTINT)
 #define IRQ_COMMRx		(IRQ_VIC_START + INT_COMMRx)
@@ -167,6 +168,10 @@
  * Secondary interrupt controller
  */
 #define IRQ_SIC_START		32
+/*
+ * Secondary interrupt controller
+ */
+#define IRQ_SIC_START		64
 #define IRQ_SIC_MMCI0B 		(IRQ_SIC_START + SIC_INT_MMCI0B)
 #define IRQ_SIC_MMCI1B 		(IRQ_SIC_START + SIC_INT_MMCI1B)
 #define IRQ_SIC_KMI0		(IRQ_SIC_START + SIC_INT_KMI0)
@@ -209,3 +214,15 @@
 #define SIC_IRQMASK_PCI3	SIC_INTMASK_PCI3
 
 #define NR_IRQS			64
+#define IRQ_SIC_END		95
+
+#define IRQ_GPIO0_START		(IRQ_SIC_END + 1)
+#define IRQ_GPIO0_END		(IRQ_GPIO0_START + 31)
+#define IRQ_GPIO1_START		(IRQ_GPIO0_END + 1)
+#define IRQ_GPIO1_END		(IRQ_GPIO1_START + 31)
+#define IRQ_GPIO2_START		(IRQ_GPIO1_END + 1)
+#define IRQ_GPIO2_END		(IRQ_GPIO2_START + 31)
+#define IRQ_GPIO3_START		(IRQ_GPIO2_END + 1)
+#define IRQ_GPIO3_END		(IRQ_GPIO3_START + 31)
+
+#define NR_IRQS			(IRQ_GPIO3_END + 1)

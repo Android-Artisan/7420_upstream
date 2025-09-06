@@ -33,6 +33,8 @@
 
 #include <linux/mlx4/qp.h>
 #include <linux/mlx4/srq.h>
+#include <linux/slab.h>
+#include <linux/vmalloc.h>
 
 #include "mlx4_ib.h"
 #include "user.h"
@@ -59,6 +61,7 @@ static void mlx4_ib_srq_event(struct mlx4_srq *srq, enum mlx4_event type)
 			break;
 		default:
 			printk(KERN_WARNING "mlx4_ib: Unexpected event type %d "
+			pr_warn("Unexpected event type %d "
 			       "on SRQ %06x\n", type, srq->srqn);
 			return;
 		}
@@ -74,6 +77,9 @@ struct ib_srq *mlx4_ib_create_srq(struct ib_pd *pd,
 	struct mlx4_ib_dev *dev = to_mdev(pd->device);
 	struct mlx4_ib_srq *srq;
 	struct mlx4_wqe_srq_next_seg *next;
+	struct mlx4_wqe_data_seg *scatter;
+	u32 cqn;
+	u16 xrcdn;
 	int desc_size;
 	int buf_size;
 	int err;
@@ -131,12 +137,15 @@ struct ib_srq *mlx4_ib_create_srq(struct ib_pd *pd,
 			goto err_mtt;
 	} else {
 		err = mlx4_db_alloc(dev->dev, &srq->db, 0);
+		err = mlx4_db_alloc(dev->dev, &srq->db, 0, GFP_KERNEL);
 		if (err)
 			goto err_srq;
 
 		*srq->db.db = 0;
 
 		if (mlx4_buf_alloc(dev->dev, buf_size, PAGE_SIZE * 2, &srq->buf)) {
+		if (mlx4_buf_alloc(dev->dev, buf_size, PAGE_SIZE * 2, &srq->buf,
+				   GFP_KERNEL)) {
 			err = -ENOMEM;
 			goto err_db;
 		}
@@ -149,6 +158,11 @@ struct ib_srq *mlx4_ib_create_srq(struct ib_pd *pd,
 			next = get_wqe(srq, i);
 			next->next_wqe_index =
 				cpu_to_be16((i + 1) & (srq->msrq.max - 1));
+
+			for (scatter = (void *) (next + 1);
+			     (void *) scatter < (void *) next + desc_size;
+			     ++scatter)
+				scatter->lkey = cpu_to_be32(MLX4_INVALID_LKEY);
 		}
 
 		err = mlx4_mtt_init(dev->dev, srq->buf.npages, srq->buf.page_shift,
@@ -157,6 +171,7 @@ struct ib_srq *mlx4_ib_create_srq(struct ib_pd *pd,
 			goto err_buf;
 
 		err = mlx4_buf_write_mtt(dev->dev, &srq->mtt, &srq->buf);
+		err = mlx4_buf_write_mtt(dev->dev, &srq->mtt, &srq->buf, GFP_KERNEL);
 		if (err)
 			goto err_mtt;
 
@@ -168,11 +183,27 @@ struct ib_srq *mlx4_ib_create_srq(struct ib_pd *pd,
 	}
 
 	err = mlx4_srq_alloc(dev->dev, to_mpd(pd)->pdn, &srq->mtt,
+			srq->wrid = __vmalloc(srq->msrq.max * sizeof(u64),
+					      GFP_KERNEL, PAGE_KERNEL);
+			if (!srq->wrid) {
+				err = -ENOMEM;
+				goto err_mtt;
+			}
+		}
+	}
+
+	cqn = (init_attr->srq_type == IB_SRQT_XRC) ?
+		to_mcq(init_attr->ext.xrc.cq)->mcq.cqn : 0;
+	xrcdn = (init_attr->srq_type == IB_SRQT_XRC) ?
+		to_mxrcd(init_attr->ext.xrc.xrcd)->xrcdn :
+		(u16) dev->dev->caps.reserved_xrcds;
+	err = mlx4_srq_alloc(dev->dev, to_mpd(pd)->pdn, cqn, xrcdn, &srq->mtt,
 			     srq->db.dma, &srq->msrq);
 	if (err)
 		goto err_wrid;
 
 	srq->msrq.event = mlx4_ib_srq_event;
+	srq->ibsrq.ext.xrc.srq_num = srq->msrq.srqn;
 
 	if (pd->uobject)
 		if (ib_copy_to_udata(udata, &srq->msrq.srqn, sizeof (__u32))) {
@@ -189,6 +220,7 @@ err_wrid:
 		mlx4_ib_db_unmap_user(to_mucontext(pd->uobject->context), &srq->db);
 	else
 		kfree(srq->wrid);
+		kvfree(srq->wrid);
 
 err_mtt:
 	mlx4_mtt_cleanup(dev->dev, &srq->mtt);
@@ -266,6 +298,7 @@ int mlx4_ib_destroy_srq(struct ib_srq *srq)
 		ib_umem_release(msrq->umem);
 	} else {
 		kfree(msrq->wrid);
+		kvfree(msrq->wrid);
 		mlx4_buf_free(dev->dev, msrq->msrq.max << msrq->msrq.wqe_shift,
 			      &msrq->buf);
 		mlx4_db_free(dev->dev, &msrq->db);
@@ -302,6 +335,15 @@ int mlx4_ib_post_srq_recv(struct ib_srq *ibsrq, struct ib_recv_wr *wr,
 	int i;
 
 	spin_lock_irqsave(&srq->lock, flags);
+	struct mlx4_ib_dev *mdev = to_mdev(ibsrq->device);
+
+	spin_lock_irqsave(&srq->lock, flags);
+	if (mdev->dev->persist->state & MLX4_DEVICE_STATE_INTERNAL_ERROR) {
+		err = -EIO;
+		*bad_wr = wr;
+		nreq = 0;
+		goto out;
+	}
 
 	for (nreq = 0; wr; ++nreq, wr = wr->next) {
 		if (unlikely(wr->num_sge > srq->msrq.max_gs)) {
@@ -346,6 +388,7 @@ int mlx4_ib_post_srq_recv(struct ib_srq *ibsrq, struct ib_recv_wr *wr,
 
 		*srq->db.db = cpu_to_be32(srq->wqe_ctr);
 	}
+out:
 
 	spin_unlock_irqrestore(&srq->lock, flags);
 

@@ -43,6 +43,12 @@ static ctl_table nfs_cb_sysctls[] = {
 #endif
 	{
 		.ctl_name	= CTL_UNNUMBERED,
+#include <linux/nfs_fs.h>
+
+static struct ctl_table_header *nfs_callback_sysctl_table;
+
+static struct ctl_table nfs_cb_sysctls[] = {
+	{
 		.procname	= "nfs_mountpoint_timeout",
 		.data		= &nfs_mountpoint_expiry_timeout,
 		.maxlen		= sizeof(nfs_mountpoint_expiry_timeout),
@@ -52,6 +58,9 @@ static ctl_table nfs_cb_sysctls[] = {
 	},
 	{
 		.ctl_name	= CTL_UNNUMBERED,
+		.proc_handler	= proc_dointvec_jiffies,
+	},
+	{
 		.procname	= "nfs_congestion_kb",
 		.data		= &nfs_congestion_kb,
 		.maxlen		= sizeof(nfs_congestion_kb),
@@ -64,6 +73,13 @@ static ctl_table nfs_cb_sysctls[] = {
 static ctl_table nfs_cb_sysctl_dir[] = {
 	{
 		.ctl_name = CTL_UNNUMBERED,
+		.proc_handler	= proc_dointvec,
+	},
+	{ }
+};
+
+static struct ctl_table nfs_cb_sysctl_dir[] = {
+	{
 		.procname = "nfs",
 		.mode = 0555,
 		.child = nfs_cb_sysctls,
@@ -74,11 +90,17 @@ static ctl_table nfs_cb_sysctl_dir[] = {
 static ctl_table nfs_cb_sysctl_root[] = {
 	{
 		.ctl_name = CTL_FS,
+	{ }
+};
+
+static struct ctl_table nfs_cb_sysctl_root[] = {
+	{
 		.procname = "fs",
 		.mode = 0555,
 		.child = nfs_cb_sysctl_dir,
 	},
 	{ .ctl_name = 0 }
+	{ }
 };
 
 int nfs_register_sysctl(void)

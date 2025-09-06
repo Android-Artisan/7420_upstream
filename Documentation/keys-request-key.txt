@@ -1,6 +1,4 @@
-			      ===================
 			      KEY REQUEST SERVICE
-			      ===================
 
 The key request service is part of the key retention service (refer to
 Documentation/keys.txt).  This document explains more fully how the requesting
@@ -67,9 +65,7 @@ own upcall mechanisms.  If they do, then those should be substituted for the
 forking and execution of /sbin/request-key.
 
 
-===========
 THE PROCESS
-===========
 
 A request proceeds in the following manner:
 
@@ -127,9 +123,7 @@ This is because process A's keyrings can't simply be attached to
 of them, and (b) it requires the same UID/GID/Groups all the way through.
 
 
-======================
 NEGATIVE INSTANTIATION
-======================
 
 Rather than instantiating a key, it is possible for the possessor of an
 authorisation key to negatively instantiate a key that's under construction.
@@ -144,9 +138,7 @@ signal, the key under construction will be automatically negatively
 instantiated for a short amount of time.
 
 
-====================
 THE SEARCH ALGORITHM
-====================
 
 A search of any particular keyring proceeds in the following fashion:
 

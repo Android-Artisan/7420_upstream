@@ -21,6 +21,8 @@
 
 #include <linux/init.h>
 #include <linux/moduleparam.h>
+#include <linux/module.h>
+#include <linux/device.h>
 #include <sound/core.h>
 #include <sound/initval.h>
 
@@ -32,6 +34,7 @@
 #include "seq_timer.h"
 #include "seq_system.h"
 #include "seq_info.h"
+#include <sound/minors.h>
 #include <sound/seq_device.h>
 
 #if defined(CONFIG_SND_SEQ_DUMMY_MODULE)
@@ -44,6 +47,9 @@ int seq_default_timer_sclass = SNDRV_TIMER_SCLASS_NONE;
 int seq_default_timer_card = -1;
 int seq_default_timer_device =
 #ifdef CONFIG_SND_SEQ_RTCTIMER_DEFAULT
+#ifdef CONFIG_SND_SEQ_HRTIMER_DEFAULT
+	SNDRV_TIMER_GLOBAL_HRTIMER
+#elif defined(CONFIG_SND_SEQ_RTCTIMER_DEFAULT)
 	SNDRV_TIMER_GLOBAL_RTC
 #else
 	SNDRV_TIMER_GLOBAL_SYSTEM
@@ -70,6 +76,9 @@ module_param(seq_default_timer_subdevice, int, 0644);
 MODULE_PARM_DESC(seq_default_timer_subdevice, "The default timer subdevice number.");
 module_param(seq_default_timer_resolution, int, 0644);
 MODULE_PARM_DESC(seq_default_timer_resolution, "The default timer resolution in Hz.");
+
+MODULE_ALIAS_CHARDEV(CONFIG_SND_MAJOR, SNDRV_MINOR_SEQUENCER);
+MODULE_ALIAS("devname:snd/seq");
 
 /*
  *  INIT PART
@@ -105,6 +114,8 @@ static int __init alsa_seq_init(void)
 
  error:
 	snd_seq_autoload_unlock();
+	snd_seq_autoload_init();
+ error:
 	return err;
 }
 
@@ -124,6 +135,8 @@ static void __exit alsa_seq_exit(void)
 
 	/* release event memory */
 	snd_sequencer_memory_done();
+
+	snd_seq_autoload_exit();
 }
 
 module_init(alsa_seq_init)

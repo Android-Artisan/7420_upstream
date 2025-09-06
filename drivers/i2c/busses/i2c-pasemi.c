@@ -25,6 +25,8 @@
 #include <linux/i2c.h>
 #include <linux/delay.h>
 #include <asm/io.h>
+#include <linux/slab.h>
+#include <linux/io.h>
 
 static struct pci_driver pasemi_smb_driver;
 
@@ -88,6 +90,7 @@ static void pasemi_smb_clear(struct pasemi_smbus *smbus)
 }
 
 static unsigned int pasemi_smb_waitready(struct pasemi_smbus *smbus)
+static int pasemi_smb_waitready(struct pasemi_smbus *smbus)
 {
 	int timeout = 10;
 	unsigned int status;
@@ -148,6 +151,12 @@ static int pasemi_i2c_xfer_msg(struct i2c_adapter *adapter,
 
 		TXFIFO_WR(smbus, msg->buf[msg->len-1] |
 			  (stop ? MTXFIFO_STOP : 0));
+
+		if (stop) {
+			err = pasemi_smb_waitready(smbus);
+			if (err)
+				goto reset_out;
+		}
 	}
 
 	return 0;
@@ -340,6 +349,7 @@ static const struct i2c_algorithm smbus_algorithm = {
 };
 
 static int __devinit pasemi_smb_probe(struct pci_dev *dev,
+static int pasemi_smb_probe(struct pci_dev *dev,
 				      const struct pci_device_id *id)
 {
 	struct pasemi_smbus *smbus;
@@ -392,6 +402,7 @@ static int __devinit pasemi_smb_probe(struct pci_dev *dev,
 }
 
 static void __devexit pasemi_smb_remove(struct pci_dev *dev)
+static void pasemi_smb_remove(struct pci_dev *dev)
 {
 	struct pasemi_smbus *smbus = pci_get_drvdata(dev);
 
@@ -401,6 +412,7 @@ static void __devexit pasemi_smb_remove(struct pci_dev *dev)
 }
 
 static struct pci_device_id pasemi_smb_ids[] = {
+static const struct pci_device_id pasemi_smb_ids[] = {
 	{ PCI_DEVICE(0x1959, 0xa003) },
 	{ 0, }
 };
@@ -423,6 +435,10 @@ static void __exit pasemi_smb_exit(void)
 {
 	pci_unregister_driver(&pasemi_smb_driver);
 }
+	.remove		= pasemi_smb_remove,
+};
+
+module_pci_driver(pasemi_smb_driver);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR ("Olof Johansson <olof@lixom.net>");

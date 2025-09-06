@@ -32,6 +32,7 @@
 static int mpu;
 
 static int joystick;
+static bool joystick;
 
 static unsigned char trix_read(int addr)
 {
@@ -488,6 +489,7 @@ static int __init init_trix(void)
 static void __exit cleanup_trix(void)
 {
 	if (fw_load && trix_boot)
+	if (fw_load)
 		vfree(trix_boot);
 	if (sb)
 		unload_trix_sb(&cfg2);

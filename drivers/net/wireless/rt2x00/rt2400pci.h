@@ -1,5 +1,6 @@
 /*
 	Copyright (C) 2004 - 2008 rt2x00 SourceForge Project
+	Copyright (C) 2004 - 2009 Ivo van Doorn <IvDoorn@gmail.com>
 	<http://rt2x00.serialmonkey.com>
 
 	This program is free software; you can redistribute it and/or modify
@@ -16,6 +17,7 @@
 	along with this program; if not, write to the
 	Free Software Foundation, Inc.,
 	59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+	along with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
 /*
@@ -36,6 +38,7 @@
 /*
  * Signal information.
  * Defaul offset is required for RSSI <-> dBm conversion.
+ * Default offset is required for RSSI <-> dBm conversion.
  */
 #define DEFAULT_RSSI_OFFSET		100
 
@@ -48,6 +51,10 @@
 #define EEPROM_SIZE			0x0100
 #define BBP_SIZE			0x0020
 #define RF_SIZE				0x0010
+#define BBP_BASE			0x0000
+#define BBP_SIZE			0x0020
+#define RF_BASE				0x0004
+#define RF_SIZE				0x000c
 
 /*
  * Number of TX queues.
@@ -63,6 +70,7 @@
  * CSR0: ASIC revision number.
  */
 #define CSR0				0x0000
+#define CSR0_REVISION			FIELD32(0x0000ffff)
 
 /*
  * CSR1: System control register.
@@ -667,6 +675,26 @@
 #define GPIOCSR_BIT5			FIELD32(0x00000020)
 #define GPIOCSR_BIT6			FIELD32(0x00000040)
 #define GPIOCSR_BIT7			FIELD32(0x00000080)
+ *	GPIOCSR_VALx: Actual GPIO pin x value
+ *	GPIOCSR_DIRx: GPIO direction: 0 = output; 1 = input
+ */
+#define GPIOCSR				0x0120
+#define GPIOCSR_VAL0			FIELD32(0x00000001)
+#define GPIOCSR_VAL1			FIELD32(0x00000002)
+#define GPIOCSR_VAL2			FIELD32(0x00000004)
+#define GPIOCSR_VAL3			FIELD32(0x00000008)
+#define GPIOCSR_VAL4			FIELD32(0x00000010)
+#define GPIOCSR_VAL5			FIELD32(0x00000020)
+#define GPIOCSR_VAL6			FIELD32(0x00000040)
+#define GPIOCSR_VAL7			FIELD32(0x00000080)
+#define GPIOCSR_DIR0			FIELD32(0x00000100)
+#define GPIOCSR_DIR1			FIELD32(0x00000200)
+#define GPIOCSR_DIR2			FIELD32(0x00000400)
+#define GPIOCSR_DIR3			FIELD32(0x00000800)
+#define GPIOCSR_DIR4			FIELD32(0x00001000)
+#define GPIOCSR_DIR5			FIELD32(0x00002000)
+#define GPIOCSR_DIR6			FIELD32(0x00004000)
+#define GPIOCSR_DIR7			FIELD32(0x00008000)
 
 /*
  * BBPPCSR: BBP Pin control register.
@@ -808,6 +836,8 @@
  */
 #define TXD_DESC_SIZE			( 8 * sizeof(__le32) )
 #define RXD_DESC_SIZE			( 8 * sizeof(__le32) )
+#define TXD_DESC_SIZE			(8 * sizeof(__le32))
+#define RXD_DESC_SIZE			(8 * sizeof(__le32))
 
 /*
  * TX descriptor format for TX, PRIO, ATIM and Beacon Ring.
@@ -927,6 +957,7 @@
 
 /*
  * Macro's for converting txpower from EEPROM to mac80211 value
+ * Macros for converting txpower from EEPROM to mac80211 value
  * and from mac80211 value to register value.
  * NOTE: Logics in rt2400pci for txpower are reversed
  * compared to the other rt2x00 drivers. A higher txpower
@@ -952,5 +983,13 @@
 	(((__txpower) >= MAX_TXPOWER) ? MIN_TXPOWER :	\
 	(MAX_TXPOWER - ((__txpower) - MIN_TXPOWER)));	\
 })
+#define __CLAMP_TX(__txpower) \
+	clamp_t(char, (__txpower), MIN_TXPOWER, MAX_TXPOWER)
+
+#define TXPOWER_FROM_DEV(__txpower) \
+	((__CLAMP_TX(__txpower) - MAX_TXPOWER) + MIN_TXPOWER)
+
+#define TXPOWER_TO_DEV(__txpower) \
+	(MAX_TXPOWER - (__CLAMP_TX(__txpower) - MIN_TXPOWER))
 
 #endif /* RT2400PCI_H */

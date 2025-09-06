@@ -9,6 +9,9 @@
 #include <asm/system.h>
 #include <asm/iommu.h>
 #include <linux/irq.h>
+#include <asm/iommu.h>
+#include <linux/irq.h>
+#include <linux/sched.h>
 #include <linux/interrupt.h>
 
 void do_after_copyback(void)

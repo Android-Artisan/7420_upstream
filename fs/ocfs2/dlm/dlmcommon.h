@@ -38,6 +38,7 @@
 #define DLM_THREAD_MS                  200   // flush at least every 200 ms
 
 #define DLM_HASH_SIZE_DEFAULT	(1 << 14)
+#define DLM_HASH_SIZE_DEFAULT	(1 << 17)
 #if DLM_HASH_SIZE_DEFAULT < PAGE_SIZE
 # define DLM_HASH_PAGES		1
 #else
@@ -62,6 +63,14 @@ struct dlm_lock_name {
 
 struct dlm_master_list_entry {
 	struct list_head list;
+	DLM_MLE_BLOCK = 0,
+	DLM_MLE_MASTER = 1,
+	DLM_MLE_MIGRATION = 2,
+	DLM_MLE_NUM_TYPES = 3,
+};
+
+struct dlm_master_list_entry {
+	struct hlist_node master_hash_node;
 	struct list_head hb_events;
 	struct dlm_ctxt *dlm;
 	spinlock_t spinlock;
@@ -82,12 +91,18 @@ struct dlm_master_list_entry {
 		struct dlm_lock_resource *res;
 		struct dlm_lock_name name;
 	} u;
+	struct dlm_lock_resource *mleres;
+	unsigned char mname[DLM_LOCKID_NAME_MAX];
+	unsigned int mnamelen;
+	unsigned int mnamehash;
 };
 
 enum dlm_ast_type {
 	DLM_AST = 0,
 	DLM_BAST,
 	DLM_ASTUNLOCK
+	DLM_BAST = 1,
+	DLM_ASTUNLOCK = 2,
 };
 
 
@@ -126,6 +141,9 @@ enum dlm_ctxt_state {
 	DLM_CTXT_JOINED,
 	DLM_CTXT_IN_SHUTDOWN,
 	DLM_CTXT_LEAVING,
+	DLM_CTXT_JOINED = 1,
+	DLM_CTXT_IN_SHUTDOWN = 2,
+	DLM_CTXT_LEAVING = 3,
 };
 
 struct dlm_ctxt
@@ -140,6 +158,7 @@ struct dlm_ctxt
 	unsigned int purge_count;
 	spinlock_t spinlock;
 	spinlock_t ast_lock;
+	spinlock_t track_lock;
 	char *name;
 	u8 node_num;
 	u32 key;
@@ -157,6 +176,18 @@ struct dlm_ctxt
 	atomic_t local_resources;
 	atomic_t remote_resources;
 	atomic_t unknown_resources;
+	unsigned long exit_domain_map[BITS_TO_LONGS(O2NM_MAX_NODES)];
+	unsigned long recovery_map[BITS_TO_LONGS(O2NM_MAX_NODES)];
+	struct dlm_recovery_ctxt reco;
+	spinlock_t master_lock;
+	struct hlist_head **master_hash;
+	struct list_head mle_hb_events;
+
+	/* these give a really vague idea of the system load */
+	atomic_t mle_tot_count[DLM_MLE_NUM_TYPES];
+	atomic_t mle_cur_count[DLM_MLE_NUM_TYPES];
+	atomic_t res_tot_count;
+	atomic_t res_cur_count;
 
 	struct dlm_debug_ctxt *dlm_debug_ctxt;
 	struct dentry *dlm_debugfs_subroot;
@@ -192,6 +223,13 @@ struct dlm_ctxt
 static inline struct hlist_head *dlm_lockres_hash(struct dlm_ctxt *dlm, unsigned i)
 {
 	return dlm->lockres_hash[(i / DLM_BUCKETS_PER_PAGE) % DLM_HASH_PAGES] + (i % DLM_BUCKETS_PER_PAGE);
+}
+
+static inline struct hlist_head *dlm_master_hash(struct dlm_ctxt *dlm,
+						 unsigned i)
+{
+	return dlm->master_hash[(i / DLM_BUCKETS_PER_PAGE) % DLM_HASH_PAGES] +
+			(i % DLM_BUCKETS_PER_PAGE);
 }
 
 /* these keventd work queue items are for less-frequently
@@ -316,6 +354,8 @@ struct dlm_lock_resource
 	 * put on a list for the dlm thread to run. */
 	unsigned long    last_used;
 
+	struct dlm_ctxt *dlm;
+
 	unsigned migration_pending:1;
 	atomic_t asts_reserved;
 	spinlock_t spinlock;
@@ -324,6 +364,7 @@ struct dlm_lock_resource
 	u16 state;
 	char lvb[DLM_LVB_LEN];
 	unsigned int inflight_locks;
+	unsigned int inflight_assert_workers;
 	unsigned long refmap[BITS_TO_LONGS(O2NM_MAX_NODES)];
 };
 
@@ -383,6 +424,8 @@ enum dlm_lockres_list {
 	DLM_GRANTED_LIST = 0,
 	DLM_CONVERTING_LIST,
 	DLM_BLOCKED_LIST
+	DLM_CONVERTING_LIST = 1,
+	DLM_BLOCKED_LIST = 2,
 };
 
 static inline int dlm_lvb_is_empty(char *lvb)
@@ -392,6 +435,18 @@ static inline int dlm_lvb_is_empty(char *lvb)
 		if (lvb[i])
 			return 0;
 	return 1;
+}
+
+static inline char *dlm_list_in_text(enum dlm_lockres_list idx)
+{
+	if (idx == DLM_GRANTED_LIST)
+		return "granted";
+	else if (idx == DLM_CONVERTING_LIST)
+		return "converting";
+	else if (idx == DLM_BLOCKED_LIST)
+		return "blocked";
+	else
+		return "unknown";
 }
 
 static inline struct list_head *
@@ -439,6 +494,28 @@ enum {
 	DLM_RECO_DATA_DONE_MSG,	 /* 516 */
 	DLM_BEGIN_RECO_MSG,	 /* 517 */
 	DLM_FINALIZE_RECO_MSG	 /* 518 */
+	DLM_MASTER_REQUEST_MSG		= 500,
+	DLM_UNUSED_MSG1			= 501,
+	DLM_ASSERT_MASTER_MSG		= 502,
+	DLM_CREATE_LOCK_MSG		= 503,
+	DLM_CONVERT_LOCK_MSG		= 504,
+	DLM_PROXY_AST_MSG		= 505,
+	DLM_UNLOCK_LOCK_MSG		= 506,
+	DLM_DEREF_LOCKRES_MSG		= 507,
+	DLM_MIGRATE_REQUEST_MSG		= 508,
+	DLM_MIG_LOCKRES_MSG		= 509,
+	DLM_QUERY_JOIN_MSG		= 510,
+	DLM_ASSERT_JOINED_MSG		= 511,
+	DLM_CANCEL_JOIN_MSG		= 512,
+	DLM_EXIT_DOMAIN_MSG		= 513,
+	DLM_MASTER_REQUERY_MSG		= 514,
+	DLM_LOCK_REQUEST_MSG		= 515,
+	DLM_RECO_DATA_DONE_MSG		= 516,
+	DLM_BEGIN_RECO_MSG		= 517,
+	DLM_FINALIZE_RECO_MSG		= 518,
+	DLM_QUERY_REGION		= 519,
+	DLM_QUERY_NODEINFO		= 520,
+	DLM_BEGIN_EXIT_DOMAIN_MSG	= 521,
 };
 
 struct dlm_reco_node_data
@@ -456,6 +533,11 @@ enum {
 	DLM_RECO_NODE_DATA_RECEIVING,
 	DLM_RECO_NODE_DATA_DONE,
 	DLM_RECO_NODE_DATA_FINALIZE_SENT,
+	DLM_RECO_NODE_DATA_REQUESTING = 1,
+	DLM_RECO_NODE_DATA_REQUESTED = 2,
+	DLM_RECO_NODE_DATA_RECEIVING = 3,
+	DLM_RECO_NODE_DATA_DONE = 4,
+	DLM_RECO_NODE_DATA_FINALIZE_SENT = 5,
 };
 
 
@@ -464,6 +546,9 @@ enum {
 	DLM_MASTER_RESP_YES,
 	DLM_MASTER_RESP_MAYBE,
 	DLM_MASTER_RESP_ERROR
+	DLM_MASTER_RESP_YES = 1,
+	DLM_MASTER_RESP_MAYBE = 2,
+	DLM_MASTER_RESP_ERROR = 3,
 };
 
 
@@ -643,6 +728,9 @@ enum dlm_query_join_response_code {
 	JOIN_OK,
 	JOIN_OK_NO_MAP,
 	JOIN_PROTOCOL_MISMATCH,
+	JOIN_OK = 1,
+	JOIN_OK_NO_MAP = 2,
+	JOIN_PROTOCOL_MISMATCH = 3,
 };
 
 struct dlm_query_join_packet {
@@ -657,6 +745,7 @@ struct dlm_query_join_packet {
 
 union dlm_query_join_response {
 	u32 intval;
+	__be32 intval;
 	struct dlm_query_join_packet packet;
 };
 
@@ -689,10 +778,6 @@ struct dlm_begin_reco
 	__be32 pad2;
 };
 
-
-#define BITS_PER_BYTE 8
-#define BITS_TO_BYTES(bits) (((bits)+BITS_PER_BYTE-1)/BITS_PER_BYTE)
-
 struct dlm_query_join_request
 {
 	u8 node_idx;
@@ -718,6 +803,31 @@ struct dlm_cancel_join
 	u8 pad1[2];
 	u8 name_len;
 	u8 domain[O2NM_MAX_NAME_LEN];
+};
+
+struct dlm_query_region {
+	u8 qr_node;
+	u8 qr_numregions;
+	u8 qr_namelen;
+	u8 pad1;
+	u8 qr_domain[O2NM_MAX_NAME_LEN];
+	u8 qr_regions[O2HB_MAX_REGION_NAME_LEN * O2NM_MAX_REGIONS];
+};
+
+struct dlm_node_info {
+	u8 ni_nodenum;
+	u8 pad1;
+	__be16 ni_ipv4_port;
+	__be32 ni_ipv4_address;
+};
+
+struct dlm_query_nodeinfo {
+	u8 qn_nodenum;
+	u8 qn_numnodes;
+	u8 qn_namelen;
+	u8 pad1;
+	u8 qn_domain[O2NM_MAX_NAME_LEN];
+	struct dlm_node_info qn_nodes[O2NM_MAX_NODES];
 };
 
 struct dlm_exit_domain
@@ -813,6 +923,8 @@ void dlm_kick_recovery_thread(struct dlm_ctxt *dlm);
 int dlm_is_node_dead(struct dlm_ctxt *dlm, u8 node);
 int dlm_wait_for_node_death(struct dlm_ctxt *dlm, u8 node, int timeout);
 int dlm_wait_for_node_recovery(struct dlm_ctxt *dlm, u8 node, int timeout);
+void dlm_wait_for_node_death(struct dlm_ctxt *dlm, u8 node, int timeout);
+void dlm_wait_for_node_recovery(struct dlm_ctxt *dlm, u8 node, int timeout);
 
 void dlm_put(struct dlm_ctxt *dlm);
 struct dlm_ctxt *dlm_grab(struct dlm_ctxt *dlm);
@@ -832,6 +944,8 @@ void dlm_lockres_put(struct dlm_lock_resource *res);
 void __dlm_unhash_lockres(struct dlm_lock_resource *res);
 void __dlm_insert_lockres(struct dlm_ctxt *dlm,
 			  struct dlm_lock_resource *res);
+void __dlm_unhash_lockres(struct dlm_ctxt *dlm, struct dlm_lock_resource *res);
+void __dlm_insert_lockres(struct dlm_ctxt *dlm, struct dlm_lock_resource *res);
 struct dlm_lock_resource * __dlm_lookup_lockres_full(struct dlm_ctxt *dlm,
 						     const char *name,
 						     unsigned int len,
@@ -848,6 +962,7 @@ int dlm_is_host_down(int errno);
 void dlm_change_lockres_owner(struct dlm_ctxt *dlm,
 			      struct dlm_lock_resource *res,
 			      u8 owner);
+
 struct dlm_lock_resource * dlm_get_lock_resource(struct dlm_ctxt *dlm,
 						 const char *lockid,
 						 int namelen,
@@ -899,6 +1014,23 @@ void __dlm_lockres_grab_inflight_ref(struct dlm_ctxt *dlm,
 
 void dlm_queue_ast(struct dlm_ctxt *dlm, struct dlm_lock *lock);
 void dlm_queue_bast(struct dlm_ctxt *dlm, struct dlm_lock *lock);
+void dlm_lockres_set_refmap_bit(struct dlm_ctxt *dlm,
+				struct dlm_lock_resource *res, int bit);
+void dlm_lockres_clear_refmap_bit(struct dlm_ctxt *dlm,
+				  struct dlm_lock_resource *res, int bit);
+
+void dlm_lockres_drop_inflight_ref(struct dlm_ctxt *dlm,
+				   struct dlm_lock_resource *res);
+void dlm_lockres_grab_inflight_ref(struct dlm_ctxt *dlm,
+				   struct dlm_lock_resource *res);
+
+void __dlm_lockres_grab_inflight_worker(struct dlm_ctxt *dlm,
+		struct dlm_lock_resource *res);
+
+void dlm_queue_ast(struct dlm_ctxt *dlm, struct dlm_lock *lock);
+void dlm_queue_bast(struct dlm_ctxt *dlm, struct dlm_lock *lock);
+void __dlm_queue_ast(struct dlm_ctxt *dlm, struct dlm_lock *lock);
+void __dlm_queue_bast(struct dlm_ctxt *dlm, struct dlm_lock *lock);
 void dlm_do_local_ast(struct dlm_ctxt *dlm,
 		      struct dlm_lock_resource *res,
 		      struct dlm_lock *lock);
@@ -1005,6 +1137,9 @@ static inline void __dlm_wait_on_lockres(struct dlm_lock_resource *res)
 					  DLM_LOCK_RES_MIGRATING));
 }
 
+void __dlm_unlink_mle(struct dlm_ctxt *dlm, struct dlm_master_list_entry *mle);
+void __dlm_insert_mle(struct dlm_ctxt *dlm, struct dlm_master_list_entry *mle);
+
 /* create/destroy slab caches */
 int dlm_init_master_caches(void);
 void dlm_destroy_master_caches(void);
@@ -1020,6 +1155,7 @@ int dlm_drop_lockres_ref(struct dlm_ctxt *dlm,
 			 struct dlm_lock_resource *res);
 void dlm_clean_master_list(struct dlm_ctxt *dlm,
 			   u8 dead_node);
+void dlm_force_free_mles(struct dlm_ctxt *dlm);
 int dlm_lock_basts_flushed(struct dlm_ctxt *dlm, struct dlm_lock *lock);
 int __dlm_lockres_has_locks(struct dlm_lock_resource *res);
 int __dlm_lockres_unused(struct dlm_lock_resource *res);
@@ -1064,6 +1200,9 @@ static inline int dlm_lock_on_list(struct list_head *head,
 
 	list_for_each(iter, head) {
 		tmplock = list_entry(iter, struct dlm_lock, list);
+	struct dlm_lock *tmplock;
+
+	list_for_each_entry(tmplock, head, list) {
 		if (tmplock == lock)
 			return 1;
 	}
@@ -1108,5 +1247,23 @@ static inline int dlm_node_iter_next(struct dlm_node_iter *iter)
 }
 
 
+static inline void dlm_set_lockres_owner(struct dlm_ctxt *dlm,
+					 struct dlm_lock_resource *res,
+					 u8 owner)
+{
+	assert_spin_locked(&res->spinlock);
+
+	res->owner = owner;
+}
+
+static inline void dlm_change_lockres_owner(struct dlm_ctxt *dlm,
+					    struct dlm_lock_resource *res,
+					    u8 owner)
+{
+	assert_spin_locked(&res->spinlock);
+
+	if (owner != res->owner)
+		dlm_set_lockres_owner(dlm, res, owner);
+}
 
 #endif /* DLMCOMMON_H */

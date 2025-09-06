@@ -1,5 +1,4 @@
 OSD firmware API description
-============================
 
 Note: this API is part of the decoder firmware, so it's cx23415 only.
 

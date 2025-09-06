@@ -37,13 +37,11 @@ interface. The ASCII interface is meant for administration. The
 ioctl() interface is meant for C programs (i.e. the X server). The
 interfaces are described below, with sample commands and C code.
 
-===============================================================================
 Reading MTRRs from the shell:
 
 % cat /proc/mtrr
 reg00: base=0x00000000 (   0MB), size= 128MB: write-back, count=1
 reg01: base=0x08000000 ( 128MB), size=  64MB: write-back, count=1
-===============================================================================
 Creating MTRRs from the C-shell:
 # echo "base=0xf8000000 size=0x400000 type=write-combining" >! /proc/mtrr
 or if you use bash:
@@ -76,7 +74,6 @@ A patch is being written for XFree86 which will make this automatic:
 in other words the X server will manipulate /proc/mtrr using the
 ioctl() interface, so users won't have to do anything. If you use a
 commercial X server, lobby your vendor to add support for MTRRs.
-===============================================================================
 Creating overlapping MTRRs:
 
 %echo "base=0xfb000000 size=0x1000000 type=write-combining" >/proc/mtrr
@@ -93,12 +90,10 @@ registers.
 
 NOTE: You can only create type=uncachable region, if the first
 region that you created is type=write-combining.
-===============================================================================
 Removing MTRRs from the C-shell:
 % echo "disable=2" >! /proc/mtrr
 or using bash:
 % echo "disable=2" >| /proc/mtrr
-===============================================================================
 Reading MTRRs from a C program using ioctl()'s:
 
 /*  mtrr-show.c
@@ -194,7 +189,6 @@ int main ()
     fprintf (stderr, "Error doing ioctl(2) on /dev/mtrr\t%s\n", ERRSTRING);
     exit (3);
 }   /*  End Function main  */
-===============================================================================
 Creating MTRRs from a C programme using ioctl()'s:
 
 /*  mtrr-add.c
@@ -302,4 +296,3 @@ int main (int argc, char **argv)
     fputs ("I've just closed /proc/mtrr so now the new entry should be gone\n",
 	   stderr);
 }   /*  End Function main  */
-===============================================================================

@@ -4,12 +4,16 @@
  * thin interrupt support for qdio
  *
  * Copyright 2000-2008 IBM Corp.
+ * Copyright IBM Corp. 2000, 2009
  * Author(s): Utz Bacher <utz.bacher@de.ibm.com>
  *	      Cornelia Huck <cornelia.huck@de.ibm.com>
  *	      Jan Glauber <jang@linux.vnet.ibm.com>
  */
 #include <linux/io.h>
 #include <asm/atomic.h>
+#include <linux/slab.h>
+#include <linux/kernel_stat.h>
+#include <linux/atomic.h>
 #include <asm/debug.h>
 #include <asm/qdio.h>
 #include <asm/airq.h>
@@ -58,6 +62,22 @@ static inline unsigned long do_clear_global_summary(void)
 		: "+d" (__fn), "=d" (__tmp), "=d" (__time));
 	return __time;
 }
+
+/* list of thin interrupt input queues */
+static LIST_HEAD(tiq_list);
+static DEFINE_MUTEX(tiq_list_lock);
+
+/* Adapter interrupt definitions */
+static void tiqdio_thinint_handler(struct airq_struct *airq);
+
+static struct airq_struct tiqdio_airq = {
+	.handler = tiqdio_thinint_handler,
+	.isc = QDIO_AIRQ_ISC,
+};
+
+static struct indicator_t *q_indicators;
+
+u64 last_ai_time;
 
 /* returns addr for the device state change indicator */
 static u32 *get_indicator(void)
@@ -140,6 +160,32 @@ static inline int tiqdio_inbound_q_done(struct qdio_q *q)
 }
 
 static inline int shared_ind(struct qdio_irq *irq_ptr)
+	mutex_lock(&tiq_list_lock);
+	list_add_rcu(&irq_ptr->input_qs[0]->entry, &tiq_list);
+	mutex_unlock(&tiq_list_lock);
+}
+
+void tiqdio_remove_input_queues(struct qdio_irq *irq_ptr)
+{
+	struct qdio_q *q;
+
+	q = irq_ptr->input_qs[0];
+	if (!q)
+		return;
+
+	mutex_lock(&tiq_list_lock);
+	list_del_rcu(&q->entry);
+	mutex_unlock(&tiq_list_lock);
+	synchronize_rcu();
+	INIT_LIST_HEAD(&q->entry);
+}
+
+static inline int has_multiple_inq_on_dsci(struct qdio_irq *irq_ptr)
+{
+	return irq_ptr->nr_input_qs > 1;
+}
+
+static inline int references_shared_dsci(struct qdio_irq *irq_ptr)
 {
 	return irq_ptr->dsci == &q_indicators[TIQDIO_SHARED_IND].ind;
 }
@@ -228,6 +274,71 @@ again:
 		xchg(tiqdio_alsi, 0);
 		qdio_perf_stat_inc(&perf_stats.tasklet_thinint_loop);
 		goto again;
+static inline int shared_ind(struct qdio_irq *irq_ptr)
+{
+	return references_shared_dsci(irq_ptr) ||
+		has_multiple_inq_on_dsci(irq_ptr);
+}
+
+void clear_nonshared_ind(struct qdio_irq *irq_ptr)
+{
+	if (!is_thinint_irq(irq_ptr))
+		return;
+	if (shared_ind(irq_ptr))
+		return;
+	xchg(irq_ptr->dsci, 0);
+}
+
+int test_nonshared_ind(struct qdio_irq *irq_ptr)
+{
+	if (!is_thinint_irq(irq_ptr))
+		return 0;
+	if (shared_ind(irq_ptr))
+		return 0;
+	if (*irq_ptr->dsci)
+		return 1;
+	else
+		return 0;
+}
+
+static inline u32 clear_shared_ind(void)
+{
+	if (!atomic_read(&q_indicators[TIQDIO_SHARED_IND].count))
+		return 0;
+	return xchg(&q_indicators[TIQDIO_SHARED_IND].ind, 0);
+}
+
+static inline void tiqdio_call_inq_handlers(struct qdio_irq *irq)
+{
+	struct qdio_q *q;
+	int i;
+
+	if (!references_shared_dsci(irq) &&
+	    has_multiple_inq_on_dsci(irq))
+		xchg(irq->dsci, 0);
+
+	for_each_input_queue(irq, q, i) {
+		if (q->u.in.queue_start_poll) {
+			/* skip if polling is enabled or already in work */
+			if (test_and_set_bit(QDIO_QUEUE_IRQS_DISABLED,
+					     &q->u.in.queue_irq_state)) {
+				qperf_inc(q, int_discarded);
+				continue;
+			}
+
+			/* avoid dsci clear here, done after processing */
+			q->u.in.queue_start_poll(q->irq_ptr->cdev, q->nr,
+						 q->irq_ptr->int_parm);
+		} else {
+			if (!shared_ind(q->irq_ptr))
+				xchg(q->irq_ptr->dsci, 0);
+
+			/*
+			 * Call inbound processing but not directly
+			 * since that could starve other thinint queues.
+			 */
+			tasklet_schedule(&q->tasklet);
+		}
 	}
 }
 
@@ -253,6 +364,37 @@ static void tiqdio_thinint_handler(void *ind, void *drv_data)
 	 */
 	xchg((u8 *)ind, 0);
 	tasklet_hi_schedule(&tiqdio_tasklet);
+ * @alsi: pointer to adapter local summary indicator
+ * @data: NULL
+ */
+static void tiqdio_thinint_handler(struct airq_struct *airq)
+{
+	u32 si_used = clear_shared_ind();
+	struct qdio_q *q;
+
+	last_ai_time = S390_lowcore.int_clock;
+	inc_irq_stat(IRQIO_QAI);
+
+	/* protect tiq_list entries, only changed in activate or shutdown */
+	rcu_read_lock();
+
+	/* check for work on all inbound thinint queues */
+	list_for_each_entry_rcu(q, &tiq_list, entry) {
+		struct qdio_irq *irq;
+
+		/* only process queues from changed sets */
+		irq = q->irq_ptr;
+		if (unlikely(references_shared_dsci(irq))) {
+			if (!si_used)
+				continue;
+		} else if (!*irq->dsci)
+			continue;
+
+		tiqdio_call_inq_handlers(irq);
+
+		qperf_inc(q, adapter_int);
+	}
+	rcu_read_unlock();
 }
 
 static int set_subchannel_ind(struct qdio_irq *irq_ptr, int reset)
@@ -308,6 +450,31 @@ static int set_subchannel_ind(struct qdio_irq *irq_ptr, int reset)
 	QDIO_DBF_HEX2(0, setup, &scssc_area->subchannel_indicator_addr,
 		      sizeof(unsigned long));
 	return 0;
+	struct chsc_scssc_area *scssc = (void *)irq_ptr->chsc_page;
+	u64 summary_indicator_addr, subchannel_indicator_addr;
+	int rc;
+
+	if (reset) {
+		summary_indicator_addr = 0;
+		subchannel_indicator_addr = 0;
+	} else {
+		summary_indicator_addr = virt_to_phys(tiqdio_airq.lsi_ptr);
+		subchannel_indicator_addr = virt_to_phys(irq_ptr->dsci);
+	}
+
+	rc = chsc_sadc(irq_ptr->schid, scssc, summary_indicator_addr,
+		       subchannel_indicator_addr);
+	if (rc) {
+		DBF_ERROR("%4x SSI r:%4x", irq_ptr->schid.sch_no,
+			  scssc->response.code);
+		goto out;
+	}
+
+	DBF_EVENT("setscind");
+	DBF_HEX(&summary_indicator_addr, sizeof(summary_indicator_addr));
+	DBF_HEX(&subchannel_indicator_addr, sizeof(subchannel_indicator_addr));
+out:
+	return rc;
 }
 
 /* allocate non-shared indicators and shared indicator */
@@ -338,12 +505,20 @@ int __init tiqdio_register_thinints(void)
 		tiqdio_alsi = NULL;
 		isc_unregister(QDIO_AIRQ_ISC);
 		return -ENOMEM;
+	int rc;
+
+	rc = register_adapter_interrupt(&tiqdio_airq);
+	if (rc) {
+		DBF_EVENT("RTI:%x", rc);
+		return rc;
 	}
 	return 0;
 }
 
 int qdio_establish_thinint(struct qdio_irq *irq_ptr)
 {
+	int rc;
+
 	if (!is_thinint_irq(irq_ptr))
 		return 0;
 
@@ -355,12 +530,15 @@ int qdio_establish_thinint(struct qdio_irq *irq_ptr)
 	return set_subchannel_ind(irq_ptr, 0);
 }
 
-void qdio_setup_thinint(struct qdio_irq *irq_ptr)
-{
-	if (!is_thinint_irq(irq_ptr))
-		return;
 	irq_ptr->dsci = get_indicator();
 	QDIO_DBF_HEX1(0, setup, &irq_ptr->dsci, sizeof(void *));
+	DBF_HEX(&irq_ptr->dsci, sizeof(void *));
+
+	rc = set_subchannel_ind(irq_ptr, 0);
+	if (rc)
+		put_indicator(irq_ptr->dsci);
+
+	return rc;
 }
 
 void qdio_shutdown_thinint(struct qdio_irq *irq_ptr)
@@ -371,6 +549,8 @@ void qdio_shutdown_thinint(struct qdio_irq *irq_ptr)
 	/* reset adapter interrupt indicators */
 	put_indicator(irq_ptr->dsci);
 	set_subchannel_ind(irq_ptr, 1);
+	set_subchannel_ind(irq_ptr, 1);
+	put_indicator(irq_ptr->dsci);
 }
 
 void __exit tiqdio_unregister_thinints(void)
@@ -381,4 +561,6 @@ void __exit tiqdio_unregister_thinints(void)
 		s390_unregister_adapter_interrupt(tiqdio_alsi, QDIO_AIRQ_ISC);
 		isc_unregister(QDIO_AIRQ_ISC);
 	}
+	WARN_ON(!list_empty(&tiq_list));
+	unregister_adapter_interrupt(&tiqdio_airq);
 }

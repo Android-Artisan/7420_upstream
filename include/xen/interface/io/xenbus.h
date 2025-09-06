@@ -29,6 +29,14 @@ enum xenbus_state
 					 event. */
 	XenbusStateClosed       = 6
 
+	XenbusStateClosed       = 6,
+
+	/*
+	* Reconfiguring: The device is being reconfigured.
+	*/
+	XenbusStateReconfiguring = 7,
+
+	XenbusStateReconfigured  = 8
 };
 
 #endif /* _XEN_PUBLIC_IO_XENBUS_H */

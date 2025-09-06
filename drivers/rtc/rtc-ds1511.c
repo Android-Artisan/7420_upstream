@@ -3,6 +3,7 @@
  *
  * Copyright (C) 2006 Atsushi Nemoto <anemo@mba.ocn.ne.jp>
  * Copyright (C) 2007 Andrew Sharp <andy.sharp@onstor.com>
+ * Copyright (C) 2007 Andrew Sharp <andy.sharp@lsi.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -17,11 +18,13 @@
 #include <linux/bcd.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
+#include <linux/gfp.h>
 #include <linux/delay.h>
 #include <linux/interrupt.h>
 #include <linux/rtc.h>
 #include <linux/platform_device.h>
 #include <linux/io.h>
+#include <linux/module.h>
 
 #define DRV_VERSION "0.6"
 
@@ -63,6 +66,7 @@ enum ds1511reg {
 #define DS1511_WDE	0x02
 #define DS1511_WDS	0x01
 #define DS1511_RAM_MAX	0xff
+#define DS1511_RAM_MAX	0x100
 
 #define RTC_CMD		DS1511_CONTROL_B
 #define RTC_CMD1	DS1511_CONTROL_A
@@ -95,6 +99,7 @@ struct rtc_plat_data {
 	int alrm_min;
 	int alrm_hour;
 	int alrm_mday;
+	spinlock_t lock;
 };
 
 static DEFINE_SPINLOCK(ds1511_lock);
@@ -103,30 +108,35 @@ static __iomem char *ds1511_base;
 static u32 reg_spacing = 1;
 
  static noinline void
+static noinline void
 rtc_write(uint8_t val, uint32_t reg)
 {
 	writeb(val, ds1511_base + (reg * reg_spacing));
 }
 
  static inline void
+static inline void
 rtc_write_alarm(uint8_t val, enum ds1511reg reg)
 {
 	rtc_write((val | 0x80), reg);
 }
 
  static noinline uint8_t
+static noinline uint8_t
 rtc_read(enum ds1511reg reg)
 {
 	return readb(ds1511_base + (reg * reg_spacing));
 }
 
  static inline void
+static inline void
 rtc_disable_update(void)
 {
 	rtc_write((rtc_read(RTC_CMD) & ~RTC_TE), RTC_CMD);
 }
 
  static void
+static void
 rtc_enable_update(void)
 {
 	rtc_write((rtc_read(RTC_CMD) | RTC_TE), RTC_CMD);
@@ -144,6 +154,7 @@ rtc_enable_update(void)
  * will reboot the system
  */
  void
+void
 ds1511_wdog_set(unsigned long deciseconds)
 {
 	/*
@@ -162,6 +173,15 @@ ds1511_wdog_set(unsigned long deciseconds)
 }
 
  void
+	rtc_write(bin2bcd(deciseconds % 100), DS1511_WD_MSEC);
+	rtc_write(bin2bcd(deciseconds / 100), DS1511_WD_SEC);
+	/*
+	 * set wdog enable and wdog 'steering' bit to issue a reset
+	 */
+	rtc_write(rtc_read(RTC_CMD) | DS1511_WDE | DS1511_WDS, RTC_CMD);
+}
+
+void
 ds1511_wdog_disable(void)
 {
 	/*
@@ -196,6 +216,12 @@ static int ds1511_rtc_set_time(struct device *dev, struct rtc_time *rtc_tm)
 	if (rtc_tm->tm_year < 1970) {
 		return -EINVAL;
 	}
+	if (rtc_tm->tm_year < 1900)
+		rtc_tm->tm_year += 1900;
+
+	if (rtc_tm->tm_year < 1970)
+		return -EINVAL;
+
 	yrs = rtc_tm->tm_year % 100;
 	cen = rtc_tm->tm_year / 100;
 	mon = rtc_tm->tm_mon + 1;   /* tm_mon starts at zero */
@@ -216,6 +242,14 @@ static int ds1511_rtc_set_time(struct device *dev, struct rtc_time *rtc_tm)
 	if ((hrs >= 24) || (min >= 60) || (sec >= 60)) {
 		return -EINVAL;
 	}
+	if ((mon > 12) || (day == 0))
+		return -EINVAL;
+
+	if (day > rtc_month_days(rtc_tm->tm_mon, rtc_tm->tm_year))
+		return -EINVAL;
+
+	if ((hrs >= 24) || (min >= 60) || (sec >= 60))
+		return -EINVAL;
 
 	/*
 	 * each register is a different number of valid bits
@@ -227,6 +261,13 @@ static int ds1511_rtc_set_time(struct device *dev, struct rtc_time *rtc_tm)
 	mon = BIN2BCD(mon) & 0x1f;
 	yrs = BIN2BCD(yrs) & 0xff;
 	cen = BIN2BCD(cen) & 0xff;
+	sec = bin2bcd(sec) & 0x7f;
+	min = bin2bcd(min) & 0x7f;
+	hrs = bin2bcd(hrs) & 0x3f;
+	day = bin2bcd(day) & 0x3f;
+	mon = bin2bcd(mon) & 0x1f;
+	yrs = bin2bcd(yrs) & 0xff;
+	cen = bin2bcd(cen) & 0xff;
 
 	spin_lock_irqsave(&ds1511_lock, flags);
 	rtc_disable_update();
@@ -272,6 +313,14 @@ static int ds1511_rtc_read_time(struct device *dev, struct rtc_time *rtc_tm)
 	rtc_tm->tm_mon = BCD2BIN(rtc_tm->tm_mon);
 	rtc_tm->tm_year = BCD2BIN(rtc_tm->tm_year);
 	century = BCD2BIN(century) * 100;
+	rtc_tm->tm_sec = bcd2bin(rtc_tm->tm_sec);
+	rtc_tm->tm_min = bcd2bin(rtc_tm->tm_min);
+	rtc_tm->tm_hour = bcd2bin(rtc_tm->tm_hour);
+	rtc_tm->tm_mday = bcd2bin(rtc_tm->tm_mday);
+	rtc_tm->tm_wday = bcd2bin(rtc_tm->tm_wday);
+	rtc_tm->tm_mon = bcd2bin(rtc_tm->tm_mon);
+	rtc_tm->tm_year = bcd2bin(rtc_tm->tm_year);
+	century = bcd2bin(century) * 100;
 
 	/*
 	 * Account for differences between how the RTC uses the values
@@ -298,6 +347,7 @@ static int ds1511_rtc_read_time(struct device *dev, struct rtc_time *rtc_tm)
  * permutations, but the kernel doesn't.
  */
  static void
+static void
 ds1511_rtc_update_alarm(struct rtc_plat_data *pdata)
 {
 	unsigned long flags;
@@ -321,6 +371,25 @@ ds1511_rtc_update_alarm(struct rtc_plat_data *pdata)
 }
 
  static int
+	spin_lock_irqsave(&pdata->lock, flags);
+	rtc_write(pdata->alrm_mday < 0 || (pdata->irqen & RTC_UF) ?
+	       0x80 : bin2bcd(pdata->alrm_mday) & 0x3f,
+	       RTC_ALARM_DATE);
+	rtc_write(pdata->alrm_hour < 0 || (pdata->irqen & RTC_UF) ?
+	       0x80 : bin2bcd(pdata->alrm_hour) & 0x3f,
+	       RTC_ALARM_HOUR);
+	rtc_write(pdata->alrm_min < 0 || (pdata->irqen & RTC_UF) ?
+	       0x80 : bin2bcd(pdata->alrm_min) & 0x7f,
+	       RTC_ALARM_MIN);
+	rtc_write(pdata->alrm_sec < 0 || (pdata->irqen & RTC_UF) ?
+	       0x80 : bin2bcd(pdata->alrm_sec) & 0x7f,
+	       RTC_ALARM_SEC);
+	rtc_write(rtc_read(RTC_CMD) | (pdata->irqen ? RTC_TIE : 0), RTC_CMD);
+	rtc_read(RTC_CMD1);	/* clear interrupts */
+	spin_unlock_irqrestore(&pdata->lock, flags);
+}
+
+static int
 ds1511_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alrm)
 {
 	struct platform_device *pdev = to_platform_device(dev);
@@ -329,6 +398,9 @@ ds1511_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alrm)
 	if (pdata->irq < 0) {
 		return -EINVAL;
 	}
+	if (pdata->irq <= 0)
+		return -EINVAL;
+
 	pdata->alrm_mday = alrm->time.tm_mday;
 	pdata->alrm_hour = alrm->time.tm_hour;
 	pdata->alrm_min = alrm->time.tm_min;
@@ -336,11 +408,15 @@ ds1511_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alrm)
 	if (alrm->enabled) {
 		pdata->irqen |= RTC_AF;
 	}
+	if (alrm->enabled)
+		pdata->irqen |= RTC_AF;
+
 	ds1511_rtc_update_alarm(pdata);
 	return 0;
 }
 
  static int
+static int
 ds1511_rtc_read_alarm(struct device *dev, struct rtc_wkalrm *alrm)
 {
 	struct platform_device *pdev = to_platform_device(dev);
@@ -349,6 +425,9 @@ ds1511_rtc_read_alarm(struct device *dev, struct rtc_wkalrm *alrm)
 	if (pdata->irq < 0) {
 		return -EINVAL;
 	}
+	if (pdata->irq <= 0)
+		return -EINVAL;
+
 	alrm->time.tm_mday = pdata->alrm_mday < 0 ? 0 : pdata->alrm_mday;
 	alrm->time.tm_hour = pdata->alrm_hour < 0 ? 0 : pdata->alrm_hour;
 	alrm->time.tm_min = pdata->alrm_min < 0 ? 0 : pdata->alrm_min;
@@ -358,6 +437,7 @@ ds1511_rtc_read_alarm(struct device *dev, struct rtc_wkalrm *alrm)
 }
 
  static irqreturn_t
+static irqreturn_t
 ds1511_interrupt(int irq, void *dev_id)
 {
 	struct platform_device *pdev = dev_id;
@@ -381,6 +461,25 @@ ds1511_interrupt(int irq, void *dev_id)
 
  static void
 ds1511_rtc_release(struct device *dev)
+	unsigned long events = 0;
+
+	spin_lock(&pdata->lock);
+	/*
+	 * read and clear interrupt
+	 */
+	if (rtc_read(RTC_CMD1) & DS1511_IRQF) {
+		events = RTC_IRQF;
+		if (rtc_read(RTC_ALARM_SEC) & 0x80)
+			events |= RTC_UF;
+		else
+			events |= RTC_AF;
+		rtc_update_irq(pdata->rtc, 1, events);
+	}
+	spin_unlock(&pdata->lock);
+	return events ? IRQ_HANDLED : IRQ_NONE;
+}
+
+static int ds1511_rtc_alarm_irq_enable(struct device *dev, unsigned int enabled)
 {
 	struct platform_device *pdev = to_platform_device(dev);
 	struct rtc_plat_data *pdata = platform_get_drvdata(pdev);
@@ -420,6 +519,13 @@ ds1511_rtc_ioctl(struct device *dev, unsigned int cmd, unsigned long arg)
 	default:
 		return -ENOIOCTLCMD;
 	}
+	if (pdata->irq <= 0)
+		return -EINVAL;
+	if (enabled)
+		pdata->irqen |= RTC_AF;
+	else
+		pdata->irqen &= ~RTC_AF;
+	ds1511_rtc_update_alarm(pdata);
 	return 0;
 }
 
@@ -487,6 +593,38 @@ ds1511_nvram_write(struct kobject *kobj, struct bin_attribute *bin_attr,
 	if (count > 1) {
 		rtc_write((rtc_read(RTC_CMD) & ~DS1511_BME), RTC_CMD);
 	}
+	.read_time		= ds1511_rtc_read_time,
+	.set_time		= ds1511_rtc_set_time,
+	.read_alarm		= ds1511_rtc_read_alarm,
+	.set_alarm		= ds1511_rtc_set_alarm,
+	.alarm_irq_enable	= ds1511_rtc_alarm_irq_enable,
+};
+
+static ssize_t
+ds1511_nvram_read(struct file *filp, struct kobject *kobj,
+		  struct bin_attribute *ba,
+		  char *buf, loff_t pos, size_t size)
+{
+	ssize_t count;
+
+	rtc_write(pos, DS1511_RAMADDR_LSB);
+	for (count = 0; count < size; count++)
+		*buf++ = rtc_read(DS1511_RAMDATA);
+
+	return count;
+}
+
+static ssize_t
+ds1511_nvram_write(struct file *filp, struct kobject *kobj,
+		   struct bin_attribute *bin_attr,
+		   char *buf, loff_t pos, size_t size)
+{
+	ssize_t count;
+
+	rtc_write(pos, DS1511_RAMADDR_LSB);
+	for (count = 0; count < size; count++)
+		rtc_write(*buf++, DS1511_RAMDATA);
+
 	return count;
 }
 
@@ -495,6 +633,7 @@ static struct bin_attribute ds1511_nvram_attr = {
 		.name = "nvram",
 		.mode = S_IRUGO | S_IWUGO,
 		.owner = THIS_MODULE,
+		.mode = S_IRUGO | S_IWUSR,
 	},
 	.size = DS1511_RAM_MAX,
 	.read = ds1511_nvram_read,
@@ -530,6 +669,20 @@ ds1511_rtc_probe(struct platform_device *pdev)
 		ret = -ENOMEM;
 		goto out;
 	}
+static int ds1511_rtc_probe(struct platform_device *pdev)
+{
+	struct resource *res;
+	struct rtc_plat_data *pdata;
+	int ret = 0;
+
+	pdata = devm_kzalloc(&pdev->dev, sizeof(*pdata), GFP_KERNEL);
+	if (!pdata)
+		return -ENOMEM;
+
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	ds1511_base = devm_ioremap_resource(&pdev->dev, res);
+	if (IS_ERR(ds1511_base))
+		return PTR_ERR(ds1511_base);
 	pdata->ioaddr = ds1511_base;
 	pdata->irq = platform_get_irq(pdev, 0);
 
@@ -537,6 +690,7 @@ ds1511_rtc_probe(struct platform_device *pdev)
 	 * turn on the clock and the crystal, etc.
 	 */
 	rtc_write(0, RTC_CMD);
+	rtc_write(DS1511_BME, RTC_CMD);
 	rtc_write(0, RTC_CMD1);
 	/*
 	 * clear the wdog counter
@@ -554,6 +708,16 @@ ds1511_rtc_probe(struct platform_device *pdev)
 	if (rtc_read(RTC_CMD1) & DS1511_BLF1) {
 		dev_warn(&pdev->dev, "voltage-low detected.\n");
 	}
+	if (rtc_read(RTC_CMD1) & DS1511_BLF1)
+		dev_warn(&pdev->dev, "voltage-low detected.\n");
+
+	spin_lock_init(&pdata->lock);
+	platform_set_drvdata(pdev, pdata);
+
+	pdata->rtc = devm_rtc_device_register(&pdev->dev, pdev->name,
+					      &ds1511_rtc_ops, THIS_MODULE);
+	if (IS_ERR(pdata->rtc))
+		return PTR_ERR(pdata->rtc);
 
 	/*
 	 * if the platform has an interrupt in mind for this device,
@@ -603,6 +767,25 @@ ds1511_rtc_probe(struct platform_device *pdev)
 
  static int __devexit
 ds1511_rtc_remove(struct platform_device *pdev)
+	if (pdata->irq > 0) {
+		rtc_read(RTC_CMD1);
+		if (devm_request_irq(&pdev->dev, pdata->irq, ds1511_interrupt,
+			IRQF_SHARED, pdev->name, pdev) < 0) {
+
+			dev_warn(&pdev->dev, "interrupt not available.\n");
+			pdata->irq = 0;
+		}
+	}
+
+	ret = sysfs_create_bin_file(&pdev->dev.kobj, &ds1511_nvram_attr);
+	if (ret)
+		dev_err(&pdev->dev, "Unable to create sysfs entry: %s\n",
+			ds1511_nvram_attr.attr.name);
+
+	return 0;
+}
+
+static int ds1511_rtc_remove(struct platform_device *pdev)
 {
 	struct rtc_plat_data *pdata = platform_get_drvdata(pdev);
 
@@ -610,6 +793,7 @@ ds1511_rtc_remove(struct platform_device *pdev)
 	rtc_device_unregister(pdata->rtc);
 	pdata->rtc = NULL;
 	if (pdata->irq >= 0) {
+	if (pdata->irq > 0) {
 		/*
 		 * disable the alarm interrupt
 		 */
@@ -621,6 +805,7 @@ ds1511_rtc_remove(struct platform_device *pdev)
 	ds1511_base = NULL;
 	release_mem_region(pdata->baseaddr, pdata->size);
 	kfree(pdata);
+	}
 	return 0;
 }
 
@@ -652,6 +837,15 @@ module_init(ds1511_rtc_init);
 module_exit(ds1511_rtc_exit);
 
 MODULE_AUTHOR("Andrew Sharp <andy.sharp@onstor.com>");
+	.remove		= ds1511_rtc_remove,
+	.driver		= {
+		.name	= "ds1511",
+	},
+};
+
+module_platform_driver(ds1511_rtc_driver);
+
+MODULE_AUTHOR("Andrew Sharp <andy.sharp@lsi.com>");
 MODULE_DESCRIPTION("Dallas DS1511 RTC driver");
 MODULE_LICENSE("GPL");
 MODULE_VERSION(DRV_VERSION);

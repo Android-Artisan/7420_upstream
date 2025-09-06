@@ -640,3 +640,11 @@ void __init init_cpu_to_node(void)
 #endif
 
 
+#include <linux/bootmem.h>
+
+#include "numa_internal.h"
+
+void __init initmem_init(void)
+{
+	x86_numa_init();
+}

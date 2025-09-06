@@ -24,12 +24,15 @@
 #include <linux/io.h>
 #include <linux/module.h>
 #include <linux/types.h>
+#include <linux/slab.h>
 #include <linux/sched.h>
 #include <linux/errno.h>
 #include <linux/ioport.h>
 #include <linux/interrupt.h>
 #include <linux/phy.h>
 #include <linux/platform_device.h>
+#include <linux/of_address.h>
+#include <linux/of_mdio.h>
 #include <linux/of_platform.h>
 
 #define DELAY 1
@@ -39,6 +42,7 @@ static void __iomem *gpio_regs;
 struct gpio_priv {
 	int mdc_pin;
 	int mdio_pin;
+	int mdio_irqs[PHY_MAX_ADDR];
 };
 
 #define MDC_PIN(bus)	(((struct gpio_priv *)bus->priv)->mdc_pin)
@@ -219,6 +223,10 @@ static int __devinit gpio_mdio_probe(struct of_device *ofdev,
 {
 	struct device *dev = &ofdev->dev;
 	struct device_node *phy_dn, *np = ofdev->node;
+static int gpio_mdio_probe(struct platform_device *ofdev)
+{
+	struct device *dev = &ofdev->dev;
+	struct device_node *np = ofdev->dev.of_node;
 	struct mii_bus *new_bus;
 	struct gpio_priv *priv;
 	const unsigned int *prop;
@@ -231,6 +239,7 @@ static int __devinit gpio_mdio_probe(struct of_device *ofdev,
 		goto out;
 
 	new_bus = kzalloc(sizeof(struct mii_bus), GFP_KERNEL);
+	new_bus = mdiobus_alloc();
 
 	if (!new_bus)
 		goto out_free_priv;
@@ -265,6 +274,7 @@ static int __devinit gpio_mdio_probe(struct of_device *ofdev,
 			continue;
 		new_bus->irq[*regp] = irq_create_mapping(NULL, *ip);
 	}
+	new_bus->irq = priv->mdio_irqs;
 
 	prop = of_get_property(np, "mdc-pin", NULL);
 	priv->mdc_pin = *prop;
@@ -276,6 +286,10 @@ static int __devinit gpio_mdio_probe(struct of_device *ofdev,
 	dev_set_drvdata(dev, new_bus);
 
 	err = mdiobus_register(new_bus);
+	new_bus->parent = dev;
+	dev_set_drvdata(dev, new_bus);
+
+	err = of_mdiobus_register(new_bus, np);
 
 	if (err != 0) {
 		printk(KERN_ERR "%s: Cannot register as MDIO bus, err %d\n",
@@ -297,6 +311,7 @@ out:
 
 
 static int gpio_mdio_remove(struct of_device *dev)
+static int gpio_mdio_remove(struct platform_device *dev)
 {
 	struct mii_bus *bus = dev_get_drvdata(&dev->dev);
 
@@ -307,11 +322,13 @@ static int gpio_mdio_remove(struct of_device *dev)
 	kfree(bus->priv);
 	bus->priv = NULL;
 	kfree(bus);
+	mdiobus_free(bus);
 
 	return 0;
 }
 
 static struct of_device_id gpio_mdio_match[] =
+static const struct of_device_id gpio_mdio_match[] =
 {
 	{
 		.compatible      = "gpio-mdio",
@@ -327,6 +344,13 @@ static struct of_platform_driver gpio_mdio_driver =
 	.remove		= gpio_mdio_remove,
 	.driver		= {
 		.name	= "gpio-mdio-bitbang",
+static struct platform_driver gpio_mdio_driver =
+{
+	.probe		= gpio_mdio_probe,
+	.remove		= gpio_mdio_remove,
+	.driver = {
+		.name = "gpio-mdio-bitbang",
+		.of_match_table = gpio_mdio_match,
 	},
 };
 
@@ -347,12 +371,14 @@ int gpio_mdio_init(void)
 		return -ENODEV;
 
 	return of_register_platform_driver(&gpio_mdio_driver);
+	return platform_driver_register(&gpio_mdio_driver);
 }
 module_init(gpio_mdio_init);
 
 void gpio_mdio_exit(void)
 {
 	of_unregister_platform_driver(&gpio_mdio_driver);
+	platform_driver_unregister(&gpio_mdio_driver);
 	if (gpio_regs)
 		iounmap(gpio_regs);
 }

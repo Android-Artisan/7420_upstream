@@ -55,6 +55,16 @@ struct consw {
 	void	(*con_invert_region)(struct vc_data *, u16 *, int);
 	u16    *(*con_screen_pos)(struct vc_data *, int);
 	unsigned long (*con_getxy)(struct vc_data *, unsigned long, int *, int *);
+	/*
+	 * Prepare the console for the debugger.  This includes, but is not
+	 * limited to, unblanking the console, loading an appropriate
+	 * palette, and allowing debugger generated output.
+	 */
+	int	(*con_debug_enter)(struct vc_data *);
+	/*
+	 * Restore the console to its pre-debug state as closely as possible.
+	 */
+	int	(*con_debug_leave)(struct vc_data *);
 };
 
 extern const struct consw *conswitchp;
@@ -69,6 +79,23 @@ int register_con_driver(const struct consw *csw, int first, int last);
 int unregister_con_driver(const struct consw *csw);
 int take_over_console(const struct consw *sw, int first, int last, int deflt);
 void give_up_console(const struct consw *sw);
+int do_unregister_con_driver(const struct consw *csw);
+int do_take_over_console(const struct consw *sw, int first, int last, int deflt);
+void give_up_console(const struct consw *sw);
+#ifdef CONFIG_HW_CONSOLE
+int con_debug_enter(struct vc_data *vc);
+int con_debug_leave(void);
+#else
+static inline int con_debug_enter(struct vc_data *vc)
+{
+	return 0;
+}
+static inline int con_debug_leave(void)
+{
+	return 0;
+}
+#endif
+
 /* scroll */
 #define SM_UP       (1)
 #define SM_DOWN     (2)
@@ -92,6 +119,7 @@ void give_up_console(const struct consw *sw);
 #define CON_BOOT	(8)
 #define CON_ANYTIME	(16) /* Safe to call when cpu is offline */
 #define CON_BRL		(32) /* Used for a braille device */
+#define CON_EXTENDED	(64) /* Use the extended output format a la /dev/kmsg */
 
 struct console {
 	char	name[16];
@@ -101,6 +129,7 @@ struct console {
 	void	(*unblank)(void);
 	int	(*setup)(struct console *, char *);
 	int	(*early_setup)(void);
+	int	(*match)(struct console *, char *name, int idx, char *options);
 	short	flags;
 	short	index;
 	int	cflag;
@@ -118,8 +147,25 @@ extern struct console *console_drivers;
 extern void acquire_console_sem(void);
 extern int try_acquire_console_sem(void);
 extern void release_console_sem(void);
+/*
+ * for_each_console() allows you to iterate on each console
+ */
+#define for_each_console(con) \
+	for (con = console_drivers; con != NULL; con = con->next)
+
+extern int console_set_on_cmdline;
+extern struct console *early_console;
+
+extern int add_preferred_console(char *name, int idx, char *options);
+extern void register_console(struct console *);
+extern int unregister_console(struct console *);
+extern struct console *console_drivers;
+extern void console_lock(void);
+extern int console_trylock(void);
+extern void console_unlock(void);
 extern void console_conditional_schedule(void);
 extern void console_unblank(void);
+extern void console_flush_on_panic(void);
 extern struct tty_driver *console_device(int *);
 extern void console_stop(struct console *);
 extern void console_start(struct console *);
@@ -129,6 +175,13 @@ extern int braille_register_console(struct console *, int index,
 extern int braille_unregister_console(struct console *);
 
 extern int console_suspend_enabled;
+#ifdef CONFIG_TTY
+extern void console_sysfs_notify(void);
+#else
+static inline void console_sysfs_notify(void)
+{ }
+#endif
+extern bool console_suspend_enabled;
 
 /* Suspend and resume console messages over PM events */
 extern void suspend_console(void);
@@ -139,6 +192,8 @@ void prom_con_init(void);
 
 void vcs_make_sysfs(struct tty_struct *tty);
 void vcs_remove_sysfs(struct tty_struct *tty);
+void vcs_make_sysfs(int index);
+void vcs_remove_sysfs(int index);
 
 /* Some debug stub to catch some of the obvious races in the VT code */
 #if 1
@@ -152,5 +207,9 @@ void vcs_remove_sysfs(struct tty_struct *tty);
 #define VESA_VSYNC_SUSPEND      1
 #define VESA_HSYNC_SUSPEND      2
 #define VESA_POWERDOWN          3
+
+#ifdef CONFIG_VGA_CONSOLE
+extern bool vgacon_text_force(void);
+#endif
 
 #endif /* _LINUX_CONSOLE_H */

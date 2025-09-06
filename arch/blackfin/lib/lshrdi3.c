@@ -42,6 +42,12 @@ typedef union {
 	struct DIstruct s;
 	DItype ll;
 } DIunion;
+ * Copyright 2004-2009 Analog Devices Inc.
+ *
+ * Licensed under the GPL-2 or later.
+ */
+
+#include "gcclib.h"
 
 #ifdef CONFIG_ARITHMETIC_OPS_L1
 DItype __lshrdi3(DItype u, word_type b)__attribute__((l1_text));

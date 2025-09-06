@@ -1,5 +1,4 @@
 Kernel driver sis5595
-=====================
 
 Supported chips:
   * Silicon Integrated Systems Corp. SiS5595 Southbridge Hardware Monitor

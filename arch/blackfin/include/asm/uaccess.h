@@ -1,4 +1,8 @@
 /* Changes made by Lineo Inc.    May 2001
+/*
+ * Copyright 2004-2009 Analog Devices Inc.
+ *
+ * Licensed under the GPL-2 or later.
  *
  * Based on: include/asm-m68knommu/uaccess.h
  */
@@ -17,6 +21,7 @@
 #ifdef CONFIG_ACCESS_CHECK
 # include <asm/bfin-global.h>
 #endif
+#include <asm/sections.h>
 
 #define get_ds()        (KERNEL_DS)
 #define get_fs()        (current_thread_info()->addr_limit)
@@ -27,6 +32,7 @@ static inline void set_fs(mm_segment_t fs)
 }
 
 #define segment_eq(a,b) ((a) == (b))
+#define segment_eq(a, b) ((a) == (b))
 
 #define VERIFY_READ	0
 #define VERIFY_WRITE	1
@@ -65,6 +71,8 @@ extern int _access_ok(unsigned long addr, unsigned long size)__attribute__((l1_t
 extern int _access_ok(unsigned long addr, unsigned long size);
 #endif
 #endif
+extern int _access_ok(unsigned long addr, unsigned long size);
+#endif
 
 /*
  * The exception table consists of pairs of addresses: the first is the
@@ -96,6 +104,11 @@ extern unsigned long search_exception_table(unsigned long);
 		int _err = 0;					\
 		typeof(*(p)) _x = (x);				\
 		typeof(*(p)) *_p = (p);				\
+#define put_user(x, p)						\
+	({							\
+		int _err = 0;					\
+		typeof(*(p)) _x = (x);				\
+		typeof(*(p)) __user *_p = (p);			\
 		if (!access_ok(VERIFY_WRITE, _p, sizeof(*(_p)))) {\
 			_err = -EFAULT;				\
 		}						\
@@ -116,6 +129,10 @@ extern unsigned long search_exception_table(unsigned long);
 			_xh = ((long *)&_x)[1];			\
 			__put_user_asm(_xl, ((long *)_p)+0, );	\
 			__put_user_asm(_xh, ((long *)_p)+1, );	\
+			_xl = ((__force long *)&_x)[0];		\
+			_xh = ((__force long *)&_x)[1];		\
+			__put_user_asm(_xl, ((__force long __user *)_p)+0, );\
+			__put_user_asm(_xh, ((__force long __user *)_p)+1, );\
 		} break;					\
 		default:					\
 			_err = __put_user_bad();		\
@@ -126,6 +143,7 @@ extern unsigned long search_exception_table(unsigned long);
 	})
 
 #define __put_user(x,p) put_user(x,p)
+#define __put_user(x, p) put_user(x, p)
 static inline int bad_user_access_length(void)
 {
 	panic("bad_user_access_length");
@@ -197,6 +215,49 @@ static inline int bad_user_access_length(void)
 			 : "a" (__ptr(p)));			\
 		(x) = (__typeof__(*(p))) _tmp;			\
 	}
+#define __ptr(x) ((unsigned long __force *)(x))
+
+#define __put_user_asm(x, p, bhw)			\
+	__asm__ (#bhw"[%1] = %0;\n\t"			\
+		 : /* no outputs */			\
+		 :"d" (x), "a" (__ptr(p)) : "memory")
+
+#define get_user(x, ptr)					\
+({								\
+	int _err = 0;						\
+	unsigned long _val = 0;					\
+	const typeof(*(ptr)) __user *_p = (ptr);		\
+	const size_t ptr_size = sizeof(*(_p));			\
+	if (likely(access_ok(VERIFY_READ, _p, ptr_size))) {	\
+		BUILD_BUG_ON(ptr_size >= 8);			\
+		switch (ptr_size) {				\
+		case 1:						\
+			__get_user_asm(_val, _p, B, (Z));	\
+			break;					\
+		case 2:						\
+			__get_user_asm(_val, _p, W, (Z));	\
+			break;					\
+		case 4:						\
+			__get_user_asm(_val, _p,  , );		\
+			break;					\
+		}						\
+	} else							\
+		_err = -EFAULT;					\
+	x = (__force typeof(*(ptr)))_val;			\
+	_err;							\
+})
+
+#define __get_user(x, p) get_user(x, p)
+
+#define __get_user_bad() (bad_user_access_length(), (-EFAULT))
+
+#define __get_user_asm(x, ptr, bhw, option)	\
+({						\
+	__asm__ __volatile__ (			\
+		"%0 =" #bhw "[%1]" #option ";"	\
+		: "=d" (x)			\
+		: "a" (__ptr(ptr)));		\
+})
 
 #define __copy_from_user(to, from, n) copy_from_user(to, from, n)
 #define __copy_to_user(to, from, n) copy_to_user(to, from, n)
@@ -214,9 +275,21 @@ static inline long copy_from_user(void *to,
 {
 	if (access_ok(VERIFY_READ, from, n))
 		memcpy(to, from, n);
-	else
-		return n;
-	return 0;
+#define copy_to_user_ret(to, from, n, retval) ({ if (copy_to_user(to, from, n))\
+				                 return retval; })
+
+#define copy_from_user_ret(to, from, n, retval) ({ if (copy_from_user(to, from, n))\
+                                                   return retval; })
+
+static inline unsigned long __must_check
+copy_from_user(void *to, const void __user *from, unsigned long n)
+{
+	if (likely(access_ok(VERIFY_READ, from, n))) {
+		memcpy(to, (const void __force *)from, n);
+		return 0;
+	}
+	memset(to, 0, n);
+	return n;
 }
 
 static inline long copy_to_user(void *to,
@@ -226,6 +299,14 @@ static inline long copy_to_user(void *to,
 		memcpy(to, from, n);
 	else
 		return n;
+static inline unsigned long __must_check
+copy_to_user(void __user *to, const void *from, unsigned long n)
+{
+	if (access_ok(VERIFY_WRITE, to, n))
+		memcpy((void __force *)to, from, n);
+	else
+		return n;
+	SSYNC();
 	return 0;
 }
 
@@ -235,11 +316,14 @@ static inline long copy_to_user(void *to,
 
 static inline long strncpy_from_user(char *dst,
                                      const char *src, long count)
+static inline long __must_check
+strncpy_from_user(char *dst, const char __user *src, long count)
 {
 	char *tmp;
 	if (!access_ok(VERIFY_READ, src, 1))
 		return -EFAULT;
 	strncpy(dst, src, count);
+	strncpy(dst, (const char __force *)src, count);
 	for (tmp = dst; *tmp && count > 0; tmp++, count--) ;
 	return (tmp - dst);
 }
@@ -255,6 +339,29 @@ static inline long strnlen_user(const char *src, long n)
 }
 
 #define strlen_user(str) strnlen_user(str, 32767)
+ * Get the size of a string in user space.
+ *   src: The string to measure
+ *     n: The maximum valid length
+ *
+ * Get the size of a NUL-terminated string in user space.
+ *
+ * Returns the size of the string INCLUDING the terminating NUL.
+ * On exception, returns 0.
+ * If the string is too long, returns a value greater than n.
+ */
+static inline long __must_check strnlen_user(const char __user *src, long n)
+{
+	if (!access_ok(VERIFY_READ, src, 1))
+		return 0;
+	return strnlen((const char __force *)src, n) + 1;
+}
+
+static inline long __must_check strlen_user(const char __user *src)
+{
+	if (!access_ok(VERIFY_READ, src, 1))
+		return 0;
+	return strlen((const char __force *)src) + 1;
+}
 
 /*
  * Zero Userspace
@@ -263,9 +370,37 @@ static inline long strnlen_user(const char *src, long n)
 static inline unsigned long __clear_user(void *to, unsigned long n)
 {
 	memset(to, 0, n);
+static inline unsigned long __must_check
+__clear_user(void __user *to, unsigned long n)
+{
+	if (!access_ok(VERIFY_WRITE, to, n))
+		return n;
+	memset((void __force *)to, 0, n);
 	return 0;
 }
 
 #define clear_user(to, n) __clear_user(to, n)
+
+/* How to interpret these return values:
+ *	CORE:      can be accessed by core load or dma memcpy
+ *	CORE_ONLY: can only be accessed by core load
+ *	DMA:       can only be accessed by dma memcpy
+ *	IDMA:      can only be accessed by interprocessor dma memcpy (BF561)
+ *	ITEST:     can be accessed by isram memcpy or dma memcpy
+ */
+enum {
+	BFIN_MEM_ACCESS_CORE = 0,
+	BFIN_MEM_ACCESS_CORE_ONLY,
+	BFIN_MEM_ACCESS_DMA,
+	BFIN_MEM_ACCESS_IDMA,
+	BFIN_MEM_ACCESS_ITEST,
+};
+/**
+ *	bfin_mem_access_type() - what kind of memory access is required
+ *	@addr:   the address to check
+ *	@size:   number of bytes needed
+ *	@return: <0 is error, >=0 is BFIN_MEM_ACCESS_xxx enum (see above)
+ */
+int bfin_mem_access_type(unsigned long addr, unsigned long size);
 
 #endif				/* _BLACKFIN_UACCESS_H */

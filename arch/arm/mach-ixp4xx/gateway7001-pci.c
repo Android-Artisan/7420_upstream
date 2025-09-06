@@ -31,11 +31,15 @@ void __init gateway7001_pci_preinit(void)
 {
 	set_irq_type(IRQ_IXP4XX_GPIO10, IRQ_TYPE_LEVEL_LOW);
 	set_irq_type(IRQ_IXP4XX_GPIO11, IRQ_TYPE_LEVEL_LOW);
+	irq_set_irq_type(IRQ_IXP4XX_GPIO10, IRQ_TYPE_LEVEL_LOW);
+	irq_set_irq_type(IRQ_IXP4XX_GPIO11, IRQ_TYPE_LEVEL_LOW);
 
 	ixp4xx_pci_preinit();
 }
 
 static int __init gateway7001_map_irq(struct pci_dev *dev, u8 slot, u8 pin)
+static int __init gateway7001_map_irq(const struct pci_dev *dev, u8 slot,
+	u8 pin)
 {
 	if (slot == 1)
 		return IRQ_IXP4XX_GPIO11;
@@ -50,6 +54,9 @@ struct hw_pci gateway7001_pci __initdata = {
 	.swizzle =        pci_std_swizzle,
 	.setup =          ixp4xx_setup,
 	.scan =           ixp4xx_scan_bus,
+	.ops		= &ixp4xx_ops,
+	.preinit =        gateway7001_pci_preinit,
+	.setup =          ixp4xx_setup,
 	.map_irq =        gateway7001_map_irq,
 };
 

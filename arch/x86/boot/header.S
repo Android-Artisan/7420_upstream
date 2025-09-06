@@ -31,6 +31,18 @@ SYSSIZE		= DEF_SYSSIZE		/* system size: # of 16-byte clicks */
 					/* to be loaded */
 ROOT_DEV	= 0			/* ROOT_DEV is now written by "build" */
 SWAP_DEV	= 0			/* SWAP_DEV is now written by "build" */
+#include <generated/utsrelease.h>
+#include <asm/boot.h>
+#include <asm/e820.h>
+#include <asm/page_types.h>
+#include <asm/setup.h>
+#include <asm/bootparam.h>
+#include "boot.h"
+#include "voffset.h"
+#include "zoffset.h"
+
+BOOTSEG		= 0x07C0		/* original address of boot-sector */
+SYSSEG		= 0x1000		/* historical load address >> 4 */
 
 #ifndef SVGA_MODE
 #define SVGA_MODE ASK_VGA
@@ -49,6 +61,11 @@ SWAP_DEV	= 0			/* SWAP_DEV is now written by "build" */
 
 	.global bootsect_start
 bootsect_start:
+#ifdef CONFIG_EFI_STUB
+	# "MZ", MS-DOS header
+	.byte 0x4d
+	.byte 0x5a
+#endif
 
 	# Normalize the start address
 	ljmp	$BOOTSEG, $start2
@@ -91,6 +108,194 @@ bugger_off_msg:
 	.ascii	"Remove disk and press any key to reboot . . .\r\n"
 	.byte	0
 
+#ifdef CONFIG_EFI_STUB
+	.org	0x3c
+	#
+	# Offset to the PE header.
+	#
+	.long	pe_header
+#endif /* CONFIG_EFI_STUB */
+
+	.section ".bsdata", "a"
+bugger_off_msg:
+	.ascii	"Use a boot loader.\r\n"
+	.ascii	"\n"
+	.ascii	"Remove disk and press any key to reboot...\r\n"
+	.byte	0
+
+#ifdef CONFIG_EFI_STUB
+pe_header:
+	.ascii	"PE"
+	.word 	0
+
+coff_header:
+#ifdef CONFIG_X86_32
+	.word	0x14c				# i386
+#else
+	.word	0x8664				# x86-64
+#endif
+	.word	4				# nr_sections
+	.long	0 				# TimeDateStamp
+	.long	0				# PointerToSymbolTable
+	.long	1				# NumberOfSymbols
+	.word	section_table - optional_header	# SizeOfOptionalHeader
+#ifdef CONFIG_X86_32
+	.word	0x306				# Characteristics.
+						# IMAGE_FILE_32BIT_MACHINE |
+						# IMAGE_FILE_DEBUG_STRIPPED |
+						# IMAGE_FILE_EXECUTABLE_IMAGE |
+						# IMAGE_FILE_LINE_NUMS_STRIPPED
+#else
+	.word	0x206				# Characteristics
+						# IMAGE_FILE_DEBUG_STRIPPED |
+						# IMAGE_FILE_EXECUTABLE_IMAGE |
+						# IMAGE_FILE_LINE_NUMS_STRIPPED
+#endif
+
+optional_header:
+#ifdef CONFIG_X86_32
+	.word	0x10b				# PE32 format
+#else
+	.word	0x20b 				# PE32+ format
+#endif
+	.byte	0x02				# MajorLinkerVersion
+	.byte	0x14				# MinorLinkerVersion
+
+	# Filled in by build.c
+	.long	0				# SizeOfCode
+
+	.long	0				# SizeOfInitializedData
+	.long	0				# SizeOfUninitializedData
+
+	# Filled in by build.c
+	.long	0x0000				# AddressOfEntryPoint
+
+	.long	0x0200				# BaseOfCode
+#ifdef CONFIG_X86_32
+	.long	0				# data
+#endif
+
+extra_header_fields:
+#ifdef CONFIG_X86_32
+	.long	0				# ImageBase
+#else
+	.quad	0				# ImageBase
+#endif
+	.long	0x20				# SectionAlignment
+	.long	0x20				# FileAlignment
+	.word	0				# MajorOperatingSystemVersion
+	.word	0				# MinorOperatingSystemVersion
+	.word	0				# MajorImageVersion
+	.word	0				# MinorImageVersion
+	.word	0				# MajorSubsystemVersion
+	.word	0				# MinorSubsystemVersion
+	.long	0				# Win32VersionValue
+
+	#
+	# The size of the bzImage is written in tools/build.c
+	#
+	.long	0				# SizeOfImage
+
+	.long	0x200				# SizeOfHeaders
+	.long	0				# CheckSum
+	.word	0xa				# Subsystem (EFI application)
+	.word	0				# DllCharacteristics
+#ifdef CONFIG_X86_32
+	.long	0				# SizeOfStackReserve
+	.long	0				# SizeOfStackCommit
+	.long	0				# SizeOfHeapReserve
+	.long	0				# SizeOfHeapCommit
+#else
+	.quad	0				# SizeOfStackReserve
+	.quad	0				# SizeOfStackCommit
+	.quad	0				# SizeOfHeapReserve
+	.quad	0				# SizeOfHeapCommit
+#endif
+	.long	0				# LoaderFlags
+	.long	0x6				# NumberOfRvaAndSizes
+
+	.quad	0				# ExportTable
+	.quad	0				# ImportTable
+	.quad	0				# ResourceTable
+	.quad	0				# ExceptionTable
+	.quad	0				# CertificationTable
+	.quad	0				# BaseRelocationTable
+
+	# Section table
+section_table:
+	#
+	# The offset & size fields are filled in by build.c.
+	#
+	.ascii	".setup"
+	.byte	0
+	.byte	0
+	.long	0
+	.long	0x0				# startup_{32,64}
+	.long	0				# Size of initialized data
+						# on disk
+	.long	0x0				# startup_{32,64}
+	.long	0				# PointerToRelocations
+	.long	0				# PointerToLineNumbers
+	.word	0				# NumberOfRelocations
+	.word	0				# NumberOfLineNumbers
+	.long	0x60500020			# Characteristics (section flags)
+
+	#
+	# The EFI application loader requires a relocation section
+	# because EFI applications must be relocatable. The .reloc
+	# offset & size fields are filled in by build.c.
+	#
+	.ascii	".reloc"
+	.byte	0
+	.byte	0
+	.long	0
+	.long	0
+	.long	0				# SizeOfRawData
+	.long	0				# PointerToRawData
+	.long	0				# PointerToRelocations
+	.long	0				# PointerToLineNumbers
+	.word	0				# NumberOfRelocations
+	.word	0				# NumberOfLineNumbers
+	.long	0x42100040			# Characteristics (section flags)
+
+	#
+	# The offset & size fields are filled in by build.c.
+	#
+	.ascii	".text"
+	.byte	0
+	.byte	0
+	.byte	0
+	.long	0
+	.long	0x0				# startup_{32,64}
+	.long	0				# Size of initialized data
+						# on disk
+	.long	0x0				# startup_{32,64}
+	.long	0				# PointerToRelocations
+	.long	0				# PointerToLineNumbers
+	.word	0				# NumberOfRelocations
+	.word	0				# NumberOfLineNumbers
+	.long	0x60500020			# Characteristics (section flags)
+
+	#
+	# The offset & size fields are filled in by build.c.
+	#
+	.ascii	".bss"
+	.byte	0
+	.byte	0
+	.byte	0
+	.byte	0
+	.long	0
+	.long	0x0
+	.long	0				# Size of initialized data
+						# on disk
+	.long	0x0
+	.long	0				# PointerToRelocations
+	.long	0				# PointerToLineNumbers
+	.word	0				# NumberOfRelocations
+	.word	0				# NumberOfLineNumbers
+	.long	0xc8000080			# Characteristics (section flags)
+
+#endif /* CONFIG_EFI_STUB */
 
 	# Kernel attributes; used by setup.  This is part 1 of the
 	# header, from the old boot sector.
@@ -104,6 +309,17 @@ syssize:	.long SYSSIZE
 ram_size:	.word RAMDISK
 vid_mode:	.word SVGA_MODE
 root_dev:	.word ROOT_DEV
+	.globl	sentinel
+sentinel:	.byte 0xff, 0xff        /* Used to detect broken loaders */
+
+	.globl	hdr
+hdr:
+setup_sects:	.byte 0			/* Filled in by build.c */
+root_flags:	.word ROOT_RDONLY
+syssize:	.long 0			/* Filled in by build.c */
+ram_size:	.word 0			/* Obsolete */
+vid_mode:	.word SVGA_MODE
+root_dev:	.word 0			/* Filled in by build.c */
 boot_flag:	.word 0xAA55
 
 	# offset 512, entry point
@@ -125,6 +341,12 @@ _start:
 		.globl realmode_swtch
 realmode_swtch:	.word	0, 0		# default_switch, SETUPSEG
 start_sys_seg:	.word	SYSSEG
+		.word	0x020d		# header version number (>= 0x0105)
+					# or else old loadlin-1.5 will fail)
+		.globl realmode_swtch
+realmode_swtch:	.word	0, 0		# default_switch, SETUPSEG
+start_sys_seg:	.word	SYSSEG		# obsolete and meaningless, but just
+					# in case something decided to "use" it
 		.word	kernel_version-512 # pointing to kernel version string
 					# above section of header is compatible
 					# with loadlin-1.5 (header v1.5). Don't
@@ -133,6 +355,9 @@ start_sys_seg:	.word	SYSSEG
 type_of_loader:	.byte	0		# = 0, old one (LILO, Loadlin,
 					#      Bootlin, SYSLX, bootsect...)
 					# See Documentation/i386/boot.txt for
+type_of_loader:	.byte	0		# 0 means ancient bootloader, newer
+					# bootloaders know to change this.
+					# See Documentation/x86/boot.txt for
 					# assigned ids
 
 # flags, unused bits must be zero (RFU) bit within loadflags
@@ -148,6 +373,7 @@ CAN_USE_HEAP	= 0x80			# If set, the loader also has set
 #else
 		.byte	LOADED_HIGH
 #endif
+		.byte	LOADED_HIGH	# The kernel is to be loaded high
 
 setup_move_size: .word  0x8000		# size to move, when setup is not
 					# loaded at 0x90000. We will move setup
@@ -163,6 +389,7 @@ code32_start:				# here loaders can put a different
 #else
 		.long	0x100000	# 0x100000 = default for big kernel
 #endif
+		.long	0x100000	# 0x100000 = default for big kernel
 
 ramdisk_image:	.long	0		# address of loaded ramdisk image
 					# Here the loader puts the 32-bit
@@ -181,6 +408,11 @@ heap_end_ptr:	.word	_end+STACK_SIZE-512
 					# for local heap purposes.
 
 pad1:		.word	0
+ext_loader_ver:
+		.byte	0		# Extended boot loader version
+ext_loader_type:
+		.byte	0		# Extended boot loader type
+
 cmd_line_ptr:	.long	0		# (Header version 0x0202 or later)
 					# If nonzero, a 32-bit pointer
 					# to the kernel command line.
@@ -197,6 +429,7 @@ cmd_line_ptr:	.long	0		# (Header version 0x0202 or later)
 					# low memory 0x10000 or higher.
 
 ramdisk_max:	.long 0x7fffffff
+initrd_addr_max: .long 0x7fffffff
 					# (Header version 0x0203 or later)
 					# The highest safe address for
 					# the contents of an initrd
@@ -214,6 +447,43 @@ relocatable_kernel:    .byte 0
 #endif
 pad2:			.byte 0
 pad3:			.word 0
+min_alignment:		.byte MIN_KERNEL_ALIGN_LG2	# minimum alignment
+
+xloadflags:
+#ifdef CONFIG_X86_64
+# define XLF0 XLF_KERNEL_64			/* 64-bit kernel */
+#else
+# define XLF0 0
+#endif
+
+#if defined(CONFIG_RELOCATABLE) && defined(CONFIG_X86_64)
+   /* kernel/boot_param/ramdisk could be loaded above 4g */
+# define XLF1 XLF_CAN_BE_LOADED_ABOVE_4G
+#else
+# define XLF1 0
+#endif
+
+#ifdef CONFIG_EFI_STUB
+# ifdef CONFIG_EFI_MIXED
+#  define XLF23 (XLF_EFI_HANDOVER_32|XLF_EFI_HANDOVER_64)
+# else
+#  ifdef CONFIG_X86_64
+#   define XLF23 XLF_EFI_HANDOVER_64		/* 64-bit EFI handover ok */
+#  else
+#   define XLF23 XLF_EFI_HANDOVER_32		/* 32-bit EFI handover ok */
+#  endif
+# endif
+#else
+# define XLF23 0
+#endif
+
+#if defined(CONFIG_X86_64) && defined(CONFIG_EFI) && defined(CONFIG_KEXEC_CORE)
+# define XLF4 XLF_EFI_KEXEC
+#else
+# define XLF4 0
+#endif
+
+			.word XLF0 | XLF1 | XLF23 | XLF4
 
 cmdline_size:   .long   COMMAND_LINE_SIZE-1     #length of the command line,
                                                 #added with boot protocol
@@ -226,6 +496,8 @@ hardware_subarch_data:	.quad 0
 
 payload_offset:		.long input_data
 payload_length:		.long input_data_end-input_data
+payload_offset:		.long ZO_input_data
+payload_length:		.long ZO_z_input_len
 
 setup_data:		.quad 0			# 64-bit physical pointer to
 						# single linked list of
@@ -242,6 +514,22 @@ start_of_setup:
 	int	$0x13
 #endif
 
+pref_address:		.quad LOAD_PHYSICAL_ADDR	# preferred load addr
+
+#define ZO_INIT_SIZE	(ZO__end - ZO_startup_32 + ZO_z_extract_offset)
+#define VO_INIT_SIZE	(VO__end - VO__text)
+#if ZO_INIT_SIZE > VO_INIT_SIZE
+#define INIT_SIZE ZO_INIT_SIZE
+#else
+#define INIT_SIZE VO_INIT_SIZE
+#endif
+init_size:		.long INIT_SIZE		# kernel initialization size
+handover_offset:	.long 0			# Filled in by build.c
+
+# End of setup header #####################################################
+
+	.section ".entrytext", "ax"
+start_of_setup:
 # Force %es = %ds
 	movw	%ds, %ax
 	movw	%ax, %es

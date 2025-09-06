@@ -4,6 +4,7 @@
  * (The IMM is the embedded controller in the ZIP Plus drive.)
  * 
  * My unoffical company acronym list is 21 pages long:
+ * My unofficial company acronym list is 21 pages long:
  *      FLA:    Four letter acronym with built in facility for
  *              future expansion to five letters.
  */
@@ -15,6 +16,7 @@
 #include <linux/parport.h>
 #include <linux/workqueue.h>
 #include <linux/delay.h>
+#include <linux/slab.h>
 #include <asm/io.h>
 
 #include <scsi/scsi.h>
@@ -159,6 +161,26 @@ static int imm_proc_info(struct Scsi_Host *host, char *buffer, char **start,
 	if (len > length)
 		len = length;
 	return len;
+static int imm_write_info(struct Scsi_Host *host, char *buffer, int length)
+{
+	imm_struct *dev = imm_dev(host);
+
+	if ((length > 5) && (strncmp(buffer, "mode=", 5) == 0)) {
+		dev->mode = simple_strtoul(buffer + 5, NULL, 0);
+		return length;
+	}
+	printk("imm /proc: invalid variable\n");
+	return -EINVAL;
+}
+
+static int imm_show_info(struct seq_file *m, struct Scsi_Host *host)
+{
+	imm_struct *dev = imm_dev(host);
+
+	seq_printf(m, "Version : %s\n", IMM_VERSION);
+	seq_printf(m, "Parport : %s\n", dev->dev->port->name);
+	seq_printf(m, "Mode    : %s\n", IMM_MODE_STRING[dev->mode]);
+	return 0;
 }
 
 #if IMM_DEBUG > 0
@@ -205,7 +227,6 @@ static unsigned char imm_wait(imm_struct *dev)
 	 * STR register (LPT base+1) to SCSI mapping:
 	 *
 	 * STR      imm     imm
-	 * ===================================
 	 * 0x80     S_REQ   S_REQ
 	 * 0x40     !S_BSY  (????)
 	 * 0x20     !S_CD   !S_CD
@@ -213,7 +234,6 @@ static unsigned char imm_wait(imm_struct *dev)
 	 * 0x08     (????)  !S_BSY
 	 *
 	 * imm      imm     meaning
-	 * ==================================
 	 * 0xf0     0xb8    Bit mask
 	 * 0xc0     0x88    ZIP wants more data
 	 * 0xd0     0x98    ZIP wants to send more data
@@ -926,6 +946,7 @@ static int imm_engine(imm_struct *dev, struct scsi_cmnd *cmd)
 }
 
 static int imm_queuecommand(struct scsi_cmnd *cmd,
+static int imm_queuecommand_lck(struct scsi_cmnd *cmd,
 		void (*done)(struct scsi_cmnd *))
 {
 	imm_struct *dev = imm_dev(cmd->device->host);
@@ -947,6 +968,8 @@ static int imm_queuecommand(struct scsi_cmnd *cmd,
 
 	return 0;
 }
+
+static DEF_SCSI_QCMD(imm_queuecommand)
 
 /*
  * Apparently the disk->capacity attribute is off by 1 sector 
@@ -1116,6 +1139,8 @@ static struct scsi_host_template imm_template = {
 	.module			= THIS_MODULE,
 	.proc_name		= "imm",
 	.proc_info		= imm_proc_info,
+	.show_info		= imm_show_info,
+	.write_info		= imm_write_info,
 	.name			= "Iomega VPI2 (imm) interface",
 	.queuecommand		= imm_queuecommand,
 	.eh_abort_handler	= imm_abort,

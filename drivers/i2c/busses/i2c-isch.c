@@ -28,6 +28,7 @@
 
 #include <linux/module.h>
 #include <linux/pci.h>
+#include <linux/platform_device.h>
 #include <linux/kernel.h>
 #include <linux/delay.h>
 #include <linux/stddef.h>
@@ -40,6 +41,7 @@
 /* SCH SMBus address offsets */
 #define SMBHSTCNT	(0 + sch_smba)
 #define SMBHSTSTS	(1 + sch_smba)
+#define SMBHSTCLK	(2 + sch_smba)
 #define SMBHSTADD	(4 + sch_smba) /* TSA */
 #define SMBHSTCMD	(5 + sch_smba)
 #define SMBHSTDAT0	(6 + sch_smba)
@@ -54,6 +56,8 @@
 
 /* Other settings */
 #define MAX_TIMEOUT	500
+/* Other settings */
+#define MAX_RETRIES	5000
 
 /* I2C constants */
 #define SCH_QUICK		0x00
@@ -65,6 +69,10 @@
 static unsigned short sch_smba;
 static struct pci_driver sch_driver;
 static struct i2c_adapter sch_adapter;
+static struct i2c_adapter sch_adapter;
+static int backbone_speed = 33000; /* backbone speed in kHz */
+module_param(backbone_speed, int, S_IRUSR | S_IWUSR);
+MODULE_PARM_DESC(backbone_speed, "Backbone speed in kHz, (default = 33000)");
 
 /*
  * Start the i2c transaction -- the i2c_access will prepare the transaction
@@ -76,6 +84,7 @@ static int sch_transaction(void)
 	int temp;
 	int result = 0;
 	int timeout = 0;
+	int retries = 0;
 
 	dev_dbg(&sch_adapter.dev, "Transaction (pre): CNT=%02x, CMD=%02x, "
 		"ADD=%02x, DAT0=%02x, DAT1=%02x\n", inb(SMBHSTCNT),
@@ -113,10 +122,15 @@ static int sch_transaction(void)
 
 	/* If the SMBus is still busy, we give up */
 	if (timeout >= MAX_TIMEOUT) {
+		usleep_range(100, 200);
+		temp = inb(SMBHSTSTS) & 0x0f;
+	} while ((temp & 0x08) && (retries++ < MAX_RETRIES));
+
+	/* If the SMBus is still busy, we give up */
+	if (retries > MAX_RETRIES) {
 		dev_err(&sch_adapter.dev, "SMBus Timeout!\n");
 		result = -ETIMEDOUT;
-	}
-	if (temp & 0x04) {
+	} else if (temp & 0x04) {
 		result = -EIO;
 		dev_dbg(&sch_adapter.dev, "Bus collision! SMBus may be "
 			"locked until next hard reset. (sorry!)\n");
@@ -149,6 +163,7 @@ static int sch_transaction(void)
  * adap is i2c_adapter pointer, addr is the i2c device bus address, read_write
  * (0 for read and 1 for write), size is i2c transaction type and data is the
  * union of transaction for data to be transfered or data read from bus.
+ * union of transaction for data to be transferred or data read from bus.
  * return 0 for success and others for failure.
  */
 static s32 sch_access(struct i2c_adapter *adap, u16 addr,
@@ -163,6 +178,19 @@ static s32 sch_access(struct i2c_adapter *adap, u16 addr,
 		dev_dbg(&sch_adapter.dev, "SMBus busy (%02x)\n", temp);
 		return -EAGAIN;
 	}
+	temp = inw(SMBHSTCLK);
+	if (!temp) {
+		/*
+		 * We can't determine if we have 33 or 25 MHz clock for
+		 * SMBus, so expect 33 MHz and calculate a bus clock of
+		 * 100 kHz. If we actually run at 25 MHz the bus will be
+		 * run ~75 kHz instead which should do no harm.
+		 */
+		dev_notice(&sch_adapter.dev,
+			"Clock divider unitialized. Setting defaults\n");
+		outw(backbone_speed / (4 * 100), SMBHSTCLK);
+	}
+
 	dev_dbg(&sch_adapter.dev, "access size: %d %s\n", size,
 		(read_write)?"READ":"WRITE");
 	switch (size) {
@@ -283,10 +311,24 @@ static int __devinit sch_probe(struct pci_dev *dev,
 	if (acpi_check_region(sch_smba, SMBIOSIZE, sch_driver.name))
 		return -EBUSY;
 	if (!request_region(sch_smba, SMBIOSIZE, sch_driver.name)) {
+static int smbus_sch_probe(struct platform_device *dev)
+{
+	struct resource *res;
+	int retval;
+
+	res = platform_get_resource(dev, IORESOURCE_IO, 0);
+	if (!res)
+		return -EBUSY;
+
+	if (!devm_request_region(&dev->dev, res->start, resource_size(res),
+				 dev->name)) {
 		dev_err(&dev->dev, "SMBus region 0x%x already in use!\n",
 			sch_smba);
 		return -EBUSY;
 	}
+
+	sch_smba = res->start;
+
 	dev_dbg(&dev->dev, "SMBA = 0x%X\n", sch_smba);
 
 	/* set up the sysfs linkage to our parent device */
@@ -330,6 +372,25 @@ static void __exit i2c_sch_exit(void)
 {
 	pci_unregister_driver(&sch_driver);
 }
+static int smbus_sch_remove(struct platform_device *pdev)
+{
+	if (sch_smba) {
+		i2c_del_adapter(&sch_adapter);
+		sch_smba = 0;
+	}
+
+	return 0;
+}
+
+static struct platform_driver smbus_sch_driver = {
+	.driver = {
+		.name = "isch_smbus",
+	},
+	.probe		= smbus_sch_probe,
+	.remove		= smbus_sch_remove,
+};
+
+module_platform_driver(smbus_sch_driver);
 
 MODULE_AUTHOR("Jacob Pan <jacob.jun.pan@intel.com>");
 MODULE_DESCRIPTION("Intel SCH SMBus driver");
@@ -337,3 +398,4 @@ MODULE_LICENSE("GPL");
 
 module_init(i2c_sch_init);
 module_exit(i2c_sch_exit);
+MODULE_ALIAS("platform:isch_smbus");

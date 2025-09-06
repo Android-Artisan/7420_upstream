@@ -38,9 +38,7 @@ struct xfs_da_state_blk;
 struct xfs_inode;
 struct xfs_trans;
 
-/*========================================================================
  * Attribute structure when equal to XFS_LBSIZE(mp) bytes.
- *========================================================================*/
 
 /*
  * This is the structure of the leaf nodes in the Btree.
@@ -213,9 +211,7 @@ typedef struct xfs_attr_inactive_list {
 } xfs_attr_inactive_list_t;
 
 
-/*========================================================================
  * Function prototypes for the kernel.
- *========================================================================*/
 
 /*
  * Internal routines when attribute fork size < XFS_LITINO(mp).

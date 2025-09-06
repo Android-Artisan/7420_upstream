@@ -14,6 +14,12 @@
 
 static size_t
 ext2_xattr_trusted_list(struct inode *inode, char *list, size_t list_size,
+#include "ext2.h"
+#include "xattr.h"
+
+static size_t
+ext2_xattr_trusted_list(const struct xattr_handler *handler,
+			struct dentry *dentry, char *list, size_t list_size,
 			const char *name, size_t name_len)
 {
 	const int prefix_len = XATTR_TRUSTED_PREFIX_LEN;
@@ -32,16 +38,21 @@ ext2_xattr_trusted_list(struct inode *inode, char *list, size_t list_size,
 
 static int
 ext2_xattr_trusted_get(struct inode *inode, const char *name,
+ext2_xattr_trusted_get(const struct xattr_handler *handler,
+		       struct dentry *dentry, const char *name,
 		       void *buffer, size_t size)
 {
 	if (strcmp(name, "") == 0)
 		return -EINVAL;
 	return ext2_xattr_get(inode, EXT2_XATTR_INDEX_TRUSTED, name,
+	return ext2_xattr_get(d_inode(dentry), EXT2_XATTR_INDEX_TRUSTED, name,
 			      buffer, size);
 }
 
 static int
 ext2_xattr_trusted_set(struct inode *inode, const char *name,
+ext2_xattr_trusted_set(const struct xattr_handler *handler,
+		       struct dentry *dentry, const char *name,
 		       const void *value, size_t size, int flags)
 {
 	if (strcmp(name, "") == 0)
@@ -51,6 +62,11 @@ ext2_xattr_trusted_set(struct inode *inode, const char *name,
 }
 
 struct xattr_handler ext2_xattr_trusted_handler = {
+	return ext2_xattr_set(d_inode(dentry), EXT2_XATTR_INDEX_TRUSTED, name,
+			      value, size, flags);
+}
+
+const struct xattr_handler ext2_xattr_trusted_handler = {
 	.prefix	= XATTR_TRUSTED_PREFIX,
 	.list	= ext2_xattr_trusted_list,
 	.get	= ext2_xattr_trusted_get,

@@ -35,6 +35,7 @@ static DESCRIPTOR MAdapter;
 
 /* --------------------------------------------------------------------------
     MAINT driver connector section
+   MAINT driver connector section
    -------------------------------------------------------------------------- */
 static void no_printf(unsigned char *x, ...)
 {
@@ -85,6 +86,17 @@ void diva_xdi_didd_register_adapter(int card)
 		if (req.didd_add_adapter.e.Rc != 0xff) {
 			DBG_ERR(("DIDD register A(%d) failed !", card))
 		}
+			/* workaround for different Name in structure */
+			strlcpy(IoAdapters[card - 1]->Name,
+				IoAdapters[card - 1]->Properties.Name,
+				sizeof(IoAdapters[card - 1]->Name));
+		req.didd_remove_adapter.e.Req = 0;
+		req.didd_add_adapter.e.Rc = IDI_SYNC_REQ_DIDD_ADD_ADAPTER;
+		req.didd_add_adapter.info.descriptor = (void *) &d;
+		DAdapter.request((ENTITY *)&req);
+		if (req.didd_add_adapter.e.Rc != 0xff) {
+			DBG_ERR(("DIDD register A(%d) failed !", card))
+				}
 		IoAdapters[card - 1]->os_trap_nfy_Fnc = NULL;
 	}
 }
@@ -104,6 +116,11 @@ void diva_xdi_didd_remove_adapter(int card)
 	req.didd_remove_adapter.info.p_request =
 	    (IDI_CALL) Requests[card - 1];
 	DAdapter.request((ENTITY *) & req);
+		req.didd_remove_adapter.e.Req = 0;
+	req.didd_remove_adapter.e.Rc = IDI_SYNC_REQ_DIDD_REMOVE_ADAPTER;
+	req.didd_remove_adapter.info.p_request =
+		(IDI_CALL) Requests[card - 1];
+	DAdapter.request((ENTITY *)&req);
 	memset(&(a->IdTable), 0x00, 256);
 }
 
@@ -117,6 +134,9 @@ static void start_dbg(void)
 		 DIVA_BUILD, diva_xdi_common_code_build, __DATE__,
 		 __TIME__))
 }
+	DBG_LOG(("DIVA ISDNXDI BUILD (%s[%s])",
+		 DIVA_BUILD, diva_xdi_common_code_build))
+		}
 
 /*
  * stop debug
@@ -132,6 +152,7 @@ static void stop_dbg(void)
  * didd callback function
  */
 static void *didd_callback(void *context, DESCRIPTOR * adapter,
+static void *didd_callback(void *context, DESCRIPTOR *adapter,
 			   int removal)
 {
 	if (adapter->type == IDI_DADAPTER) {
@@ -155,6 +176,7 @@ static void *didd_callback(void *context, DESCRIPTOR * adapter,
  * connect to didd
  */
 static int DIVA_INIT_FUNCTION connect_didd(void)
+static int __init connect_didd(void)
 {
 	int x = 0;
 	int dadapter = 0;
@@ -173,6 +195,10 @@ static int DIVA_INIT_FUNCTION connect_didd(void)
 			req.didd_notify.info.callback = (void *)didd_callback;
 			req.didd_notify.info.context = NULL;
 			DAdapter.request((ENTITY *) & req);
+				IDI_SYNC_REQ_DIDD_REGISTER_ADAPTER_NOTIFY;
+			req.didd_notify.info.callback = (void *)didd_callback;
+			req.didd_notify.info.context = NULL;
+			DAdapter.request((ENTITY *)&req);
 			if (req.didd_notify.e.Rc != 0xff) {
 				stop_dbg();
 				return (0);
@@ -205,12 +231,14 @@ static void disconnect_didd(void)
 	req.didd_notify.e.Rc = IDI_SYNC_REQ_DIDD_REMOVE_ADAPTER_NOTIFY;
 	req.didd_notify.info.handle = notify_handle;
 	DAdapter.request((ENTITY *) & req);
+	DAdapter.request((ENTITY *)&req);
 }
 
 /*
  * init
  */
 int DIVA_INIT_FUNCTION divasfunc_init(int dbgmask)
+int __init divasfunc_init(int dbgmask)
 {
 	char *version;
 
@@ -219,6 +247,10 @@ int DIVA_INIT_FUNCTION divasfunc_init(int dbgmask)
 	if (!connect_didd()) {
 		DBG_ERR(("divasfunc: failed to connect to DIDD."))
 		return (0);
+
+	if (!connect_didd()) {
+		DBG_ERR(("divasfunc: failed to connect to DIDD."))
+			return (0);
 	}
 
 	version = diva_xdi_common_code_build;

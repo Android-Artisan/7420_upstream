@@ -22,6 +22,7 @@
 #include <linux/slab.h>
 #include <linux/errno.h>
 #include <linux/string.h>
+#include <linux/module.h>
 #include <sound/core.h>
 #include <sound/seq_kernel.h>
 #include <sound/seq_midi_event.h>
@@ -508,6 +509,10 @@ static int extra_decode_xrpn(struct snd_midi_event *dev, unsigned char *buf,
 	bytes[1] = (ev->data.control.param & 0x3f80) >> 7;
 	bytes[2] = ev->data.control.value & 0x007f;
 	bytes[3] = (ev->data.control.value & 0x3f80) >> 7;
+	bytes[0] = (ev->data.control.param & 0x3f80) >> 7;
+	bytes[1] = ev->data.control.param & 0x007f;
+	bytes[2] = (ev->data.control.value & 0x3f80) >> 7;
+	bytes[3] = ev->data.control.value & 0x007f;
 	if (cmd != dev->lastcmd && !dev->nostat) {
 		if (count < 9)
 			return -ENOMEM;

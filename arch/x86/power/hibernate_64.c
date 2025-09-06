@@ -10,6 +10,15 @@
 
 #include <linux/smp.h>
 #include <linux/suspend.h>
+ * Copyright (c) 2002 Pavel Machek <pavel@ucw.cz>
+ * Copyright (c) 2001 Patrick Mochel <mochel@osdl.org>
+ */
+
+#include <linux/gfp.h>
+#include <linux/smp.h>
+#include <linux/suspend.h>
+
+#include <asm/init.h>
 #include <asm/proto.h>
 #include <asm/page.h>
 #include <asm/pgtable.h>
@@ -20,12 +29,18 @@ extern const void __nosave_begin, __nosave_end;
 
 /* Defined in hibernate_asm_64.S */
 extern int restore_image(void);
+#include <asm/sections.h>
+#include <asm/suspend.h>
+
+/* Defined in hibernate_asm_64.S */
+extern asmlinkage __visible int restore_image(void);
 
 /*
  * Address to jump to in the last phase of restore in order to get to the image
  * kernel's text (this value is passed in the image header).
  */
 unsigned long restore_jump_address;
+unsigned long restore_jump_address __visible;
 
 /*
  * Value of the cr3 register from before the hibernation (this value is passed
@@ -66,12 +81,29 @@ static int res_phys_pud_init(pud_t *pud, unsigned long address, unsigned long en
 		}
 	}
 	return 0;
+unsigned long restore_cr3 __visible;
+
+pgd_t *temp_level4_pgt __visible;
+
+void *relocated_restore_code __visible;
+
+static void *alloc_pgt_page(void *context)
+{
+	return (void *)get_safe_page(GFP_ATOMIC);
 }
 
 static int set_up_temporary_mappings(void)
 {
 	unsigned long start, end, next;
 	int error;
+	struct x86_mapping_info info = {
+		.alloc_pgt_page	= alloc_pgt_page,
+		.pmd_flag	= __PAGE_KERNEL_LARGE_EXEC,
+		.kernel_mapping = true,
+	};
+	unsigned long mstart, mend;
+	int result;
+	int i;
 
 	temp_level4_pgt = (pgd_t *)get_safe_page(GFP_ATOMIC);
 	if (!temp_level4_pgt)
@@ -97,10 +129,21 @@ static int set_up_temporary_mappings(void)
 		set_pgd(temp_level4_pgt + pgd_index(start),
 			mk_kernel_pgd(__pa(pud)));
 	}
+	for (i = 0; i < nr_pfn_mapped; i++) {
+		mstart = pfn_mapped[i].start << PAGE_SHIFT;
+		mend   = pfn_mapped[i].end << PAGE_SHIFT;
+
+		result = kernel_ident_mapping_init(&info, temp_level4_pgt,
+						   mstart, mend);
+
+		if (result)
+			return result;
+	}
+
 	return 0;
 }
 
-int swsusp_arch_resume(void)
+asmlinkage int swsusp_arch_resume(void)
 {
 	int error;
 

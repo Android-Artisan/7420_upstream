@@ -167,6 +167,15 @@ netdev_read(int fd, unsigned char *buf, unsigned int len)
 	return ia64_ssc(fd, __pa(buf), len, 0, SSC_NETDEV_RECV);
 }
 
+static const struct net_device_ops simeth_netdev_ops = {
+	.ndo_open		= simeth_open,
+	.ndo_stop		= simeth_close,
+	.ndo_start_xmit		= simeth_tx,
+	.ndo_get_stats		= simeth_get_stats,
+	.ndo_set_rx_mode	= set_multicast_list, /* not yet used */
+
+};
+
 /*
  * Function shared with module code, so cannot be in init section
  *
@@ -185,6 +194,7 @@ simeth_probe1(void)
 	struct simeth_local *local;
 	struct net_device *dev;
 	int fd, i, err, rc;
+	int fd, err, rc;
 
 	/*
 	 * XXX Fix me
@@ -214,6 +224,10 @@ simeth_probe1(void)
 	dev->hard_start_xmit	= simeth_tx;
 	dev->get_stats		= simeth_get_stats;
 	dev->set_multicast_list = set_multicast_list; /* no yet used */
+	local = netdev_priv(dev);
+	local->simfd = fd; /* keep track of underlying file descriptor */
+
+	dev->netdev_ops = &simeth_netdev_ops;
 
 	err = register_netdev(dev);
 	if (err) {
@@ -237,6 +251,12 @@ simeth_probe1(void)
 		printk(" %2.2x", dev->dev_addr[i]);
 	}
 	printk(", IRQ %d\n", dev->irq);
+	if ((rc = hpsim_get_irq(NETWORK_INTR)) < 0)
+		panic("%s: out of interrupt vectors!\n", __func__);
+	dev->irq = rc;
+
+	printk(KERN_INFO "%s: hosteth=%s simfd=%d, HwAddr=%pm, IRQ %d\n",
+	       dev->name, simeth_device, local->simfd, dev->dev_addr, dev->irq);
 
 	return 0;
 }
@@ -282,6 +302,7 @@ static int
 simeth_device_event(struct notifier_block *this,unsigned long event, void *ptr)
 {
 	struct net_device *dev = ptr;
+	struct net_device *dev = netdev_notifier_info_to_dev(ptr);
 	struct simeth_local *local;
 	struct in_device *in_dev;
 	struct in_ifaddr **ifap = NULL;
@@ -326,6 +347,7 @@ simeth_device_event(struct notifier_block *this,unsigned long event, void *ptr)
 	 */
 
 	local = dev->priv;
+	local = netdev_priv(dev);
 	/* now do it for real */
 	r = event == NETDEV_UP ?
 		netdev_attach(local->simfd, dev->irq, ntohl(ifa->ifa_local)):
@@ -381,6 +403,7 @@ static int
 simeth_tx(struct sk_buff *skb, struct net_device *dev)
 {
 	struct simeth_local *local = dev->priv;
+	struct simeth_local *local = netdev_priv(dev);
 
 #if 0
 	/* ensure we have at least ETH_ZLEN bytes (min frame size) */
@@ -408,6 +431,7 @@ simeth_tx(struct sk_buff *skb, struct net_device *dev)
 
 	dev_kfree_skb(skb);
 	return 0;
+	return NETDEV_TX_OK;
 }
 
 static inline struct sk_buff *
@@ -444,6 +468,7 @@ simeth_rx(struct net_device *dev)
 	int			rcv_count = SIMETH_RECV_MAX;
 
 	local = dev->priv;
+	local = netdev_priv(dev);
 	/*
 	 * the loop concept has been borrowed from other drivers
 	 * looks to me like it's a throttling thing to avoid pushing to many
@@ -508,6 +533,7 @@ static struct net_device_stats *
 simeth_get_stats(struct net_device *dev)
 {
 	struct simeth_local *local = dev->priv;
+	struct simeth_local *local = netdev_priv(dev);
 
 	return &local->stats;
 }

@@ -35,6 +35,8 @@
  *					response
  */
 
+#define pr_fmt(fmt) "X25: " fmt
+
 #include <linux/module.h>
 #include <linux/capability.h>
 #include <linux/errno.h>
@@ -46,6 +48,7 @@
 #include <linux/netdevice.h>
 #include <linux/if_arp.h>
 #include <linux/skbuff.h>
+#include <linux/slab.h>
 #include <net/sock.h>
 #include <net/tcp_states.h>
 #include <asm/uaccess.h>
@@ -54,6 +57,7 @@
 #include <linux/notifier.h>
 #include <linux/init.h>
 #include <linux/compat.h>
+#include <linux/ctype.h>
 
 #include <net/x25.h>
 #include <net/compat.h>
@@ -79,6 +83,41 @@ struct compat_x25_subscrip_struct {
 	compat_uint_t extended;
 };
 #endif
+
+
+int x25_parse_address_block(struct sk_buff *skb,
+		struct x25_address *called_addr,
+		struct x25_address *calling_addr)
+{
+	unsigned char len;
+	int needed;
+	int rc;
+
+	if (!pskb_may_pull(skb, 1)) {
+		/* packet has no address block */
+		rc = 0;
+		goto empty;
+	}
+
+	len = *skb->data;
+	needed = 1 + ((len >> 4) + (len & 0x0f) + 1) / 2;
+
+	if (!pskb_may_pull(skb, needed)) {
+		/* packet is too short to hold the addresses it claims
+		   to hold */
+		rc = -1;
+		goto empty;
+	}
+
+	return x25_addr_ntoa(skb->data, called_addr, calling_addr);
+
+empty:
+	*called_addr->x25_addr = 0;
+	*calling_addr->x25_addr = 0;
+
+	return rc;
+}
+
 
 int x25_addr_ntoa(unsigned char *p, struct x25_address *called_addr,
 		  struct x25_address *calling_addr)
@@ -176,6 +215,10 @@ static void x25_kill_by_device(struct net_device *dev)
 	write_lock_bh(&x25_list_lock);
 
 	sk_for_each(s, node, &x25_list)
+
+	write_lock_bh(&x25_list_lock);
+
+	sk_for_each(s, &x25_list)
 		if (x25_sk(s)->neighbour && x25_sk(s)->neighbour->dev == dev)
 			x25_disconnect(s, ENETUNREACH, 0, 0);
 
@@ -189,6 +232,7 @@ static int x25_device_event(struct notifier_block *this, unsigned long event,
 			    void *ptr)
 {
 	struct net_device *dev = ptr;
+	struct net_device *dev = netdev_notifier_info_to_dev(ptr);
 	struct x25_neigh *nb;
 
 	if (!net_eq(dev_net(dev), &init_net))
@@ -196,6 +240,7 @@ static int x25_device_event(struct notifier_block *this, unsigned long event,
 
 	if (dev->type == ARPHRD_X25
 #if defined(CONFIG_LLC) || defined(CONFIG_LLC_MODULE)
+#if IS_ENABLED(CONFIG_LLC)
 	 || dev->type == ARPHRD_ETHER
 #endif
 	 ) {
@@ -215,6 +260,21 @@ static int x25_device_event(struct notifier_block *this, unsigned long event,
 				x25_route_device_down(dev);
 				x25_link_device_down(dev);
 				break;
+		case NETDEV_UP:
+			x25_link_device_up(dev);
+			break;
+		case NETDEV_GOING_DOWN:
+			nb = x25_get_neigh(dev);
+			if (nb) {
+				x25_terminate_link(nb);
+				x25_neigh_put(nb);
+			}
+			break;
+		case NETDEV_DOWN:
+			x25_kill_by_device(dev);
+			x25_route_device_down(dev);
+			x25_link_device_down(dev);
+			break;
 		}
 	}
 
@@ -249,9 +309,10 @@ static struct sock *x25_find_listener(struct x25_address *addr,
 	next_best = NULL;
 
 	sk_for_each(s, node, &x25_list)
+	sk_for_each(s, &x25_list)
 		if ((!strcmp(addr->x25_addr,
 			x25_sk(s)->source_addr.x25_addr) ||
-				!strcmp(addr->x25_addr,
+				!strcmp(x25_sk(s)->source_addr.x25_addr,
 					null_x25_address.x25_addr)) &&
 					s->sk_state == TCP_LISTEN) {
 			/*
@@ -259,6 +320,8 @@ static struct sock *x25_find_listener(struct x25_address *addr,
 			 * call user data vs this sockets call user data
 			 */
 			if(skb->len > 0 && x25_sk(s)->cudmatchlength > 0) {
+			if (x25_sk(s)->cudmatchlength > 0 &&
+				skb->len >= x25_sk(s)->cudmatchlength) {
 				if((memcmp(x25_sk(s)->calluserdata.cuddata,
 					skb->data,
 					x25_sk(s)->cudmatchlength)) == 0) {
@@ -288,6 +351,8 @@ static struct sock *__x25_find_socket(unsigned int lci, struct x25_neigh *nb)
 	struct hlist_node *node;
 
 	sk_for_each(s, node, &x25_list)
+
+	sk_for_each(s, &x25_list)
 		if (x25_sk(s)->lci == lci && x25_sk(s)->neighbour == nb) {
 			sock_hold(s);
 			goto found;
@@ -315,17 +380,15 @@ static unsigned int x25_new_lci(struct x25_neigh *nb)
 	unsigned int lci = 1;
 	struct sock *sk;
 
-	read_lock_bh(&x25_list_lock);
-
-	while ((sk = __x25_find_socket(lci, nb)) != NULL) {
+	while ((sk = x25_find_socket(lci, nb)) != NULL) {
 		sock_put(sk);
 		if (++lci == 4096) {
 			lci = 0;
 			break;
 		}
+		cond_resched();
 	}
 
-	read_unlock_bh(&x25_list_lock);
 	return lci;
 }
 
@@ -333,6 +396,7 @@ static unsigned int x25_new_lci(struct x25_neigh *nb)
  *	Deferred destroy.
  */
 void x25_destroy_socket(struct sock *);
+static void __x25_destroy_socket(struct sock *);
 
 /*
  *	handler for deferred kills.
@@ -340,6 +404,7 @@ void x25_destroy_socket(struct sock *);
 static void x25_destroy_timer(unsigned long data)
 {
 	x25_destroy_socket((struct sock *)data);
+	x25_destroy_socket_from_timer((struct sock *)data);
 }
 
 /*
@@ -355,6 +420,10 @@ void x25_destroy_socket(struct sock *sk)
 
 	sock_hold(sk);
 	lock_sock(sk);
+static void __x25_destroy_socket(struct sock *sk)
+{
+	struct sk_buff *skb;
+
 	x25_stop_heartbeat(sk);
 	x25_stop_timer(sk);
 
@@ -366,6 +435,7 @@ void x25_destroy_socket(struct sock *sk)
 			/*
 			 * Queue the unaccepted socket for death
 			 */
+			skb->sk->sk_state = TCP_LISTEN;
 			sock_set_flag(skb->sk, SOCK_DEAD);
 			x25_start_heartbeat(skb->sk);
 			x25_sk(skb->sk)->state = X25_STATE_0;
@@ -376,6 +446,7 @@ void x25_destroy_socket(struct sock *sk)
 
 	if (atomic_read(&sk->sk_wmem_alloc) ||
 	    atomic_read(&sk->sk_rmem_alloc)) {
+	if (sk_has_allocations(sk)) {
 		/* Defer: outstanding buffers */
 		sk->sk_timer.expires  = jiffies + 10 * HZ;
 		sk->sk_timer.function = x25_destroy_timer;
@@ -387,6 +458,14 @@ void x25_destroy_socket(struct sock *sk)
 	}
 
 	release_sock(sk);
+}
+
+void x25_destroy_socket_from_timer(struct sock *sk)
+{
+	sock_hold(sk);
+	bh_lock_sock(sk);
+	__x25_destroy_socket(sk);
+	bh_unlock_sock(sk);
 	sock_put(sk);
 }
 
@@ -397,6 +476,7 @@ void x25_destroy_socket(struct sock *sk)
 
 static int x25_setsockopt(struct socket *sock, int level, int optname,
 			  char __user *optval, int optlen)
+			  char __user *optval, unsigned int optlen)
 {
 	int opt;
 	struct sock *sk = sock->sk;
@@ -414,6 +494,10 @@ static int x25_setsockopt(struct socket *sock, int level, int optname,
 		goto out;
 
 	x25_sk(sk)->qbitincl = !!opt;
+	if (opt)
+		set_bit(X25_Q_BIT_FLAG, &x25_sk(sk)->flags);
+	else
+		clear_bit(X25_Q_BIT_FLAG, &x25_sk(sk)->flags);
 	rc = 0;
 out:
 	return rc;
@@ -432,17 +516,18 @@ static int x25_getsockopt(struct socket *sock, int level, int optname,
 	if (get_user(len, optlen))
 		goto out;
 
-	len = min_t(unsigned int, len, sizeof(int));
-
 	rc = -EINVAL;
 	if (len < 0)
 		goto out;
+
+	len = min_t(unsigned int, len, sizeof(int));
 
 	rc = -EFAULT;
 	if (put_user(len, optlen))
 		goto out;
 
 	val = x25_sk(sk)->qbitincl;
+	val = test_bit(X25_Q_BIT_FLAG, &x25_sk(sk)->flags);
 	rc = copy_to_user(optval, &val, len) ? -EFAULT : 0;
 out:
 	return rc;
@@ -453,12 +538,20 @@ static int x25_listen(struct socket *sock, int backlog)
 	struct sock *sk = sock->sk;
 	int rc = -EOPNOTSUPP;
 
+	lock_sock(sk);
+	if (sock->state != SS_UNCONNECTED) {
+		rc = -EINVAL;
+		release_sock(sk);
+		return rc;
+	}
+
 	if (sk->sk_state != TCP_LISTEN) {
 		memset(&x25_sk(sk)->dest_addr, 0, X25_ADDR_LEN);
 		sk->sk_max_ack_backlog = backlog;
 		sk->sk_state           = TCP_LISTEN;
 		rc = 0;
 	}
+	release_sock(sk);
 
 	return rc;
 }
@@ -473,6 +566,10 @@ static struct sock *x25_alloc_socket(struct net *net)
 {
 	struct x25_sock *x25;
 	struct sock *sk = sk_alloc(net, AF_X25, GFP_ATOMIC, &x25_proto);
+static struct sock *x25_alloc_socket(struct net *net, int kern)
+{
+	struct x25_sock *x25;
+	struct sock *sk = sk_alloc(net, AF_X25, GFP_ATOMIC, &x25_proto, kern);
 
 	if (!sk)
 		goto out;
@@ -502,6 +599,26 @@ static int x25_create(struct net *net, struct socket *sock, int protocol)
 
 	rc = -ENOMEM;
 	if ((sk = x25_alloc_socket(net)) == NULL)
+static int x25_create(struct net *net, struct socket *sock, int protocol,
+		      int kern)
+{
+	struct sock *sk;
+	struct x25_sock *x25;
+	int rc = -EAFNOSUPPORT;
+
+	if (!net_eq(net, &init_net))
+		goto out;
+
+	rc = -ESOCKTNOSUPPORT;
+	if (sock->type != SOCK_SEQPACKET)
+		goto out;
+
+	rc = -EINVAL;
+	if (protocol)
+		goto out;
+
+	rc = -ENOMEM;
+	if ((sk = x25_alloc_socket(net, kern)) == NULL)
 		goto out;
 
 	x25 = x25_sk(sk);
@@ -521,6 +638,7 @@ static int x25_create(struct net *net, struct socket *sock, int protocol)
 	x25->state = X25_STATE_0;
 	x25->cudmatchlength = 0;
 	x25->accptapprv = X25_DENY_ACCPT_APPRV;		/* normally no cud  */
+	set_bit(X25_ACCPT_APPRV_FLAG, &x25->flags);	/* normally no cud  */
 							/* on call accept   */
 
 	x25->facilities.winsize_in  = X25_DEFAULT_WINDOW_SIZE;
@@ -528,6 +646,8 @@ static int x25_create(struct net *net, struct socket *sock, int protocol)
 	x25->facilities.pacsize_in  = X25_DEFAULT_PACKET_SIZE;
 	x25->facilities.pacsize_out = X25_DEFAULT_PACKET_SIZE;
 	x25->facilities.throughput  = X25_DEFAULT_THROUGHPUT;
+	x25->facilities.throughput  = 0;	/* by default don't negotiate
+						   throughput */
 	x25->facilities.reverse     = X25_DEFAULT_REVERSE;
 	x25->dte_facilities.calling_len = 0;
 	x25->dte_facilities.called_len = 0;
@@ -550,6 +670,7 @@ static struct sock *x25_make_new(struct sock *osk)
 		goto out;
 
 	if ((sk = x25_alloc_socket(sock_net(osk))) == NULL)
+	if ((sk = x25_alloc_socket(sock_net(osk), 0)) == NULL)
 		goto out;
 
 	x25 = x25_sk(sk);
@@ -574,6 +695,12 @@ static struct sock *x25_make_new(struct sock *osk)
 	x25->cudmatchlength = ox25->cudmatchlength;
 	x25->accptapprv = ox25->accptapprv;
 
+	x25->flags	= ox25->flags;
+	x25->facilities = ox25->facilities;
+	x25->dte_facilities = ox25->dte_facilities;
+	x25->cudmatchlength = ox25->cudmatchlength;
+
+	clear_bit(X25_INTERRUPT_FLAG, &x25->flags);
 	x25_init_timers(sk);
 out:
 	return sk;
@@ -589,12 +716,19 @@ static int x25_release(struct socket *sock)
 
 	x25 = x25_sk(sk);
 
+		return 0;
+
+	x25 = x25_sk(sk);
+
+	sock_hold(sk);
+	lock_sock(sk);
 	switch (x25->state) {
 
 		case X25_STATE_0:
 		case X25_STATE_2:
 			x25_disconnect(sk, 0, 0, 0);
 			x25_destroy_socket(sk);
+			__x25_destroy_socket(sk);
 			goto out;
 
 		case X25_STATE_1:
@@ -614,6 +748,8 @@ static int x25_release(struct socket *sock)
 
 	sock_orphan(sk);
 out:
+	release_sock(sk);
+	sock_put(sk);
 	return 0;
 }
 
@@ -633,6 +769,39 @@ static int x25_bind(struct socket *sock, struct sockaddr *uaddr, int addr_len)
 	SOCK_DEBUG(sk, "x25_bind: socket is bound\n");
 
 	return 0;
+	int len, i, rc = 0;
+
+	if (addr_len != sizeof(struct sockaddr_x25) ||
+	    addr->sx25_family != AF_X25 ||
+	    strnlen(addr->sx25_addr.x25_addr, X25_ADDR_LEN) == X25_ADDR_LEN) {
+		rc = -EINVAL;
+		goto out;
+	}
+
+	/* check for the null_x25_address */
+	if (strcmp(addr->sx25_addr.x25_addr, null_x25_address.x25_addr)) {
+
+		len = strlen(addr->sx25_addr.x25_addr);
+		for (i = 0; i < len; i++) {
+			if (!isdigit(addr->sx25_addr.x25_addr[i])) {
+				rc = -EINVAL;
+				goto out;
+			}
+		}
+	}
+
+	lock_sock(sk);
+	if (sock_flag(sk, SOCK_ZAPPED)) {
+		x25_sk(sk)->source_addr = addr->sx25_addr;
+		x25_insert_socket(sk);
+		sock_reset_flag(sk, SOCK_ZAPPED);
+	} else {
+		rc = -EINVAL;
+	}
+	release_sock(sk);
+	SOCK_DEBUG(sk, "x25_bind: socket is bound\n");
+out:
+	return rc;
 }
 
 static int x25_wait_for_connection_establishment(struct sock *sk)
@@ -641,6 +810,7 @@ static int x25_wait_for_connection_establishment(struct sock *sk)
 	int rc;
 
 	add_wait_queue_exclusive(sk->sk_sleep, &wait);
+	add_wait_queue_exclusive(sk_sleep(sk), &wait);
 	for (;;) {
 		__set_current_state(TASK_INTERRUPTIBLE);
 		rc = -ERESTARTSYS;
@@ -661,6 +831,7 @@ static int x25_wait_for_connection_establishment(struct sock *sk)
 	}
 	__set_current_state(TASK_RUNNING);
 	remove_wait_queue(sk->sk_sleep, &wait);
+	remove_wait_queue(sk_sleep(sk), &wait);
 	return rc;
 }
 
@@ -689,12 +860,17 @@ static int x25_connect(struct socket *sock, struct sockaddr *uaddr,
 	if (sk->sk_state == TCP_ESTABLISHED)
 		goto out;
 
+	rc = -EALREADY;	/* Do nothing if call is already in progress */
+	if (sk->sk_state == TCP_SYN_SENT)
+		goto out;
+
 	sk->sk_state   = TCP_CLOSE;
 	sock->state = SS_UNCONNECTED;
 
 	rc = -EINVAL;
 	if (addr_len != sizeof(struct sockaddr_x25) ||
-	    addr->sx25_family != AF_X25)
+	    addr->sx25_family != AF_X25 ||
+	    strnlen(addr->sx25_addr.x25_addr, X25_ADDR_LEN) == X25_ADDR_LEN)
 		goto out;
 
 	rc = -ENETUNREACH;
@@ -735,7 +911,7 @@ static int x25_connect(struct socket *sock, struct sockaddr *uaddr,
 	/* Now the loop */
 	rc = -EINPROGRESS;
 	if (sk->sk_state != TCP_ESTABLISHED && (flags & O_NONBLOCK))
-		goto out_put_neigh;
+		goto out;
 
 	rc = x25_wait_for_connection_establishment(sk);
 	if (rc)
@@ -744,8 +920,13 @@ static int x25_connect(struct socket *sock, struct sockaddr *uaddr,
 	sock->state = SS_CONNECTED;
 	rc = 0;
 out_put_neigh:
-	if (rc)
+	if (rc && x25->neighbour) {
+		read_lock_bh(&x25_list_lock);
 		x25_neigh_put(x25->neighbour);
+		x25->neighbour = NULL;
+		read_unlock_bh(&x25_list_lock);
+		x25->state = X25_STATE_0;
+	}
 out_put_route:
 	x25_route_put(rt);
 out:
@@ -759,6 +940,7 @@ static int x25_wait_for_data(struct sock *sk, long timeout)
 	int rc = 0;
 
 	add_wait_queue_exclusive(sk->sk_sleep, &wait);
+	add_wait_queue_exclusive(sk_sleep(sk), &wait);
 	for (;;) {
 		__set_current_state(TASK_INTERRUPTIBLE);
 		if (sk->sk_shutdown & RCV_SHUTDOWN)
@@ -779,6 +961,7 @@ static int x25_wait_for_data(struct sock *sk, long timeout)
 	}
 	__set_current_state(TASK_RUNNING);
 	remove_wait_queue(sk->sk_sleep, &wait);
+	remove_wait_queue(sk_sleep(sk), &wait);
 	return rc;
 }
 
@@ -790,6 +973,7 @@ static int x25_accept(struct socket *sock, struct socket *newsock, int flags)
 	int rc = -EINVAL;
 
 	if (!sk || sk->sk_state != TCP_LISTEN)
+	if (!sk)
 		goto out;
 
 	rc = -EOPNOTSUPP;
@@ -797,6 +981,10 @@ static int x25_accept(struct socket *sock, struct socket *newsock, int flags)
 		goto out;
 
 	lock_sock(sk);
+	rc = -EINVAL;
+	if (sk->sk_state != TCP_LISTEN)
+		goto out2;
+
 	rc = x25_wait_for_data(sk, sk->sk_rcvtimeo);
 	if (rc)
 		goto out2;
@@ -829,6 +1017,13 @@ static int x25_getname(struct socket *sock, struct sockaddr *uaddr,
 	if (peer) {
 		if (sk->sk_state != TCP_ESTABLISHED)
 			return -ENOTCONN;
+	int rc = 0;
+
+	if (peer) {
+		if (sk->sk_state != TCP_ESTABLISHED) {
+			rc = -ENOTCONN;
+			goto out;
+		}
 		sx25->sx25_addr = x25->dest_addr;
 	} else
 		sx25->sx25_addr = x25->source_addr;
@@ -837,6 +1032,8 @@ static int x25_getname(struct socket *sock, struct sockaddr *uaddr,
 	*uaddr_len = sizeof(*sx25);
 
 	return 0;
+out:
+	return rc;
 }
 
 int x25_rx_call_request(struct sk_buff *skb, struct x25_neigh *nb,
@@ -860,6 +1057,12 @@ int x25_rx_call_request(struct sk_buff *skb, struct x25_neigh *nb,
 	 *	and remove them.
 	 */
 	addr_len = x25_addr_ntoa(skb->data, &source_addr, &dest_addr);
+	 *
+	 *	Address block is mandatory in call request packets
+	 */
+	addr_len = x25_parse_address_block(skb, &source_addr, &dest_addr);
+	if (addr_len <= 0)
+		goto out_clear_request;
 	skb_pull(skb, addr_len);
 
 	/*
@@ -869,6 +1072,30 @@ int x25_rx_call_request(struct sk_buff *skb, struct x25_neigh *nb,
 	 */
 	len = skb->data[0] + 1;
 	skb_pull(skb,len);
+
+	/*
+	 *
+	 *	Facilities length is mandatory in call request packets
+	 */
+	if (!pskb_may_pull(skb, 1))
+		goto out_clear_request;
+	len = skb->data[0] + 1;
+	if (!pskb_may_pull(skb, len))
+		goto out_clear_request;
+	skb_pull(skb,len);
+
+	/*
+	 *	Ensure that the amount of call user data is valid.
+	 */
+	if (skb->len > X25_MAX_CUD_LEN)
+		goto out_clear_request;
+
+	/*
+	 *	Get all the call user data so it can be used in
+	 *	x25_find_listener and skb_copy_from_linear_data up ahead.
+	 */
+	if (!pskb_may_pull(skb, skb->len))
+		goto out_clear_request;
 
 	/*
 	 *	Find a listener for the particular address/cud pair.
@@ -932,6 +1159,7 @@ int x25_rx_call_request(struct sk_buff *skb, struct x25_neigh *nb,
 	makex25->lci           = lci;
 	makex25->dest_addr     = dest_addr;
 	makex25->source_addr   = source_addr;
+	x25_neigh_hold(nb);
 	makex25->neighbour     = nb;
 	makex25->facilities    = facilities;
 	makex25->dte_facilities= dte_facilities;
@@ -944,6 +1172,8 @@ int x25_rx_call_request(struct sk_buff *skb, struct x25_neigh *nb,
 
 	/* Normally all calls are accepted immediatly */
 	if(makex25->accptapprv & X25_DENY_ACCPT_APPRV) {
+	/* Normally all calls are accepted immediately */
+	if (test_bit(X25_ACCPT_APPRV_FLAG, &makex25->flags)) {
 		x25_write_internal(make, X25_CALL_ACCEPTED);
 		makex25->state = X25_STATE_3;
 	}
@@ -955,6 +1185,8 @@ int x25_rx_call_request(struct sk_buff *skb, struct x25_neigh *nb,
 		skb_copy_from_linear_data(skb, makex25->calluserdata.cuddata, skb->len);
 		makex25->calluserdata.cudlength = skb->len;
 	}
+	skb_copy_from_linear_data(skb, makex25->calluserdata.cuddata, skb->len);
+	makex25->calluserdata.cudlength = skb->len;
 
 	sk->sk_ack_backlog++;
 
@@ -966,6 +1198,7 @@ int x25_rx_call_request(struct sk_buff *skb, struct x25_neigh *nb,
 
 	if (!sock_flag(sk, SOCK_DEAD))
 		sk->sk_data_ready(sk, skb->len);
+		sk->sk_data_ready(sk);
 	rc = 1;
 	sock_put(sk);
 out:
@@ -984,6 +1217,11 @@ static int x25_sendmsg(struct kiocb *iocb, struct socket *sock,
 	struct sock *sk = sock->sk;
 	struct x25_sock *x25 = x25_sk(sk);
 	struct sockaddr_x25 *usx25 = (struct sockaddr_x25 *)msg->msg_name;
+static int x25_sendmsg(struct socket *sock, struct msghdr *msg, size_t len)
+{
+	struct sock *sk = sock->sk;
+	struct x25_sock *x25 = x25_sk(sk);
+	DECLARE_SOCKADDR(struct sockaddr_x25 *, usx25, msg->msg_name);
 	struct sockaddr_x25 sx25;
 	struct sk_buff *skb;
 	unsigned char *asmptr;
@@ -991,6 +1229,7 @@ static int x25_sendmsg(struct kiocb *iocb, struct socket *sock,
 	size_t size;
 	int qbit = 0, rc = -EINVAL;
 
+	lock_sock(sk);
 	if (msg->msg_flags & ~(MSG_DONTWAIT|MSG_OOB|MSG_EOR|MSG_CMSG_COMPAT))
 		goto out;
 
@@ -1037,6 +1276,12 @@ static int x25_sendmsg(struct kiocb *iocb, struct socket *sock,
 		sx25.sx25_addr   = x25->dest_addr;
 	}
 
+	/* Sanity check the packet size */
+	if (len > 65535) {
+		rc = -EMSGSIZE;
+		goto out;
+	}
+
 	SOCK_DEBUG(sk, "x25_sendmsg: sendto: Addresses built.\n");
 
 	/* Build a packet */
@@ -1048,6 +1293,9 @@ static int x25_sendmsg(struct kiocb *iocb, struct socket *sock,
 	size = len + X25_MAX_L2_LEN + X25_EXT_MIN_LEN;
 
 	skb = sock_alloc_send_skb(sk, size, noblock, &rc);
+	release_sock(sk);
+	skb = sock_alloc_send_skb(sk, size, noblock, &rc);
+	lock_sock(sk);
 	if (!skb)
 		goto out;
 	X25_SKB_CB(skb)->flags = msg->msg_flags;
@@ -1063,6 +1311,7 @@ static int x25_sendmsg(struct kiocb *iocb, struct socket *sock,
 	skb_put(skb, len);
 
 	rc = memcpy_fromiovec(skb_transport_header(skb), msg->msg_iov, len);
+	rc = memcpy_from_msg(skb_transport_header(skb), msg, len);
 	if (rc)
 		goto out_kfree_skb;
 
@@ -1071,6 +1320,10 @@ static int x25_sendmsg(struct kiocb *iocb, struct socket *sock,
 	 *	byte of the user data is the logical value of the Q Bit.
 	 */
 	if (x25->qbitincl) {
+	if (test_bit(X25_Q_BIT_FLAG, &x25->flags)) {
+		if (!pskb_may_pull(skb, 1))
+			goto out_kfree_skb;
+
 		qbit = skb->data[0];
 		skb_pull(skb, 1);
 	}
@@ -1148,6 +1401,18 @@ static int x25_sendmsg(struct kiocb *iocb, struct socket *sock,
 	release_sock(sk);
 	rc = len;
 out:
+		rc = x25_output(sk, skb);
+		len = rc;
+		if (rc < 0)
+			kfree_skb(skb);
+		else if (test_bit(X25_Q_BIT_FLAG, &x25->flags))
+			len++;
+	}
+
+	x25_kick(sk);
+	rc = len;
+out:
+	release_sock(sk);
 	return rc;
 out_kfree_skb:
 	kfree_skb(skb);
@@ -1157,6 +1422,7 @@ out_kfree_skb:
 
 static int x25_recvmsg(struct kiocb *iocb, struct socket *sock,
 		       struct msghdr *msg, size_t size,
+static int x25_recvmsg(struct socket *sock, struct msghdr *msg, size_t size,
 		       int flags)
 {
 	struct sock *sk = sock->sk;
@@ -1164,9 +1430,20 @@ static int x25_recvmsg(struct kiocb *iocb, struct socket *sock,
 	struct sockaddr_x25 *sx25 = (struct sockaddr_x25 *)msg->msg_name;
 	size_t copied;
 	int qbit;
+	DECLARE_SOCKADDR(struct sockaddr_x25 *, sx25, msg->msg_name);
+	size_t copied;
+	int qbit, header_len;
 	struct sk_buff *skb;
 	unsigned char *asmptr;
 	int rc = -ENOTCONN;
+
+	lock_sock(sk);
+
+	if (x25->neighbour == NULL)
+		goto out;
+
+	header_len = x25->neighbour->extended ?
+		X25_EXT_MIN_LEN : X25_STD_MIN_LEN;
 
 	/*
 	 * This works for seqpacket too. The receiver has ordered the queue for
@@ -1183,12 +1460,16 @@ static int x25_recvmsg(struct kiocb *iocb, struct socket *sock,
 
 		skb = skb_dequeue(&x25->interrupt_in_queue);
 
+		if (!pskb_may_pull(skb, X25_STD_MIN_LEN))
+			goto out_free_dgram;
+
 		skb_pull(skb, X25_STD_MIN_LEN);
 
 		/*
 		 *	No Q bit information on Interrupt data.
 		 */
 		if (x25->qbitincl) {
+		if (test_bit(X25_Q_BIT_FLAG, &x25->flags)) {
 			asmptr  = skb_push(skb, 1);
 			*asmptr = 0x00;
 		}
@@ -1207,6 +1488,21 @@ static int x25_recvmsg(struct kiocb *iocb, struct socket *sock,
 				X25_EXT_MIN_LEN : X25_STD_MIN_LEN);
 
 		if (x25->qbitincl) {
+		release_sock(sk);
+		skb = skb_recv_datagram(sk, flags & ~MSG_DONTWAIT,
+					flags & MSG_DONTWAIT, &rc);
+		lock_sock(sk);
+		if (!skb)
+			goto out;
+
+		if (!pskb_may_pull(skb, header_len))
+			goto out_free_dgram;
+
+		qbit = (skb->data[0] & X25_Q_BIT) == X25_Q_BIT;
+
+		skb_pull(skb, header_len);
+
+		if (test_bit(X25_Q_BIT_FLAG, &x25->flags)) {
 			asmptr  = skb_push(skb, 1);
 			*asmptr = qbit;
 		}
@@ -1224,6 +1520,7 @@ static int x25_recvmsg(struct kiocb *iocb, struct socket *sock,
 	msg->msg_flags |= MSG_EOR;
 
 	rc = skb_copy_datagram_iovec(skb, 0, msg->msg_iov, copied);
+	rc = skb_copy_datagram_msg(skb, 0, msg, copied);
 	if (rc)
 		goto out_free_dgram;
 
@@ -1237,10 +1534,15 @@ static int x25_recvmsg(struct kiocb *iocb, struct socket *sock,
 	lock_sock(sk);
 	x25_check_rbuf(sk);
 	release_sock(sk);
+		msg->msg_namelen = sizeof(*sx25);
+	}
+
+	x25_check_rbuf(sk);
 	rc = copied;
 out_free_dgram:
 	skb_free_datagram(sk, skb);
 out:
+	release_sock(sk);
 	return rc;
 }
 
@@ -1453,12 +1755,261 @@ static int x25_ioctl(struct socket *sock, unsigned int cmd, unsigned long arg)
 		default:
 			rc = -ENOIOCTLCMD;
 			break;
+	case TIOCOUTQ: {
+		int amount;
+
+		amount = sk->sk_sndbuf - sk_wmem_alloc_get(sk);
+		if (amount < 0)
+			amount = 0;
+		rc = put_user(amount, (unsigned int __user *)argp);
+		break;
+	}
+
+	case TIOCINQ: {
+		struct sk_buff *skb;
+		int amount = 0;
+		/*
+		 * These two are safe on a single CPU system as
+		 * only user tasks fiddle here
+		 */
+		lock_sock(sk);
+		if ((skb = skb_peek(&sk->sk_receive_queue)) != NULL)
+			amount = skb->len;
+		release_sock(sk);
+		rc = put_user(amount, (unsigned int __user *)argp);
+		break;
+	}
+
+	case SIOCGSTAMP:
+		rc = -EINVAL;
+		if (sk)
+			rc = sock_get_timestamp(sk,
+						(struct timeval __user *)argp);
+		break;
+	case SIOCGSTAMPNS:
+		rc = -EINVAL;
+		if (sk)
+			rc = sock_get_timestampns(sk,
+					(struct timespec __user *)argp);
+		break;
+	case SIOCGIFADDR:
+	case SIOCSIFADDR:
+	case SIOCGIFDSTADDR:
+	case SIOCSIFDSTADDR:
+	case SIOCGIFBRDADDR:
+	case SIOCSIFBRDADDR:
+	case SIOCGIFNETMASK:
+	case SIOCSIFNETMASK:
+	case SIOCGIFMETRIC:
+	case SIOCSIFMETRIC:
+		rc = -EINVAL;
+		break;
+	case SIOCADDRT:
+	case SIOCDELRT:
+		rc = -EPERM;
+		if (!capable(CAP_NET_ADMIN))
+			break;
+		rc = x25_route_ioctl(cmd, argp);
+		break;
+	case SIOCX25GSUBSCRIP:
+		rc = x25_subscr_ioctl(cmd, argp);
+		break;
+	case SIOCX25SSUBSCRIP:
+		rc = -EPERM;
+		if (!capable(CAP_NET_ADMIN))
+			break;
+		rc = x25_subscr_ioctl(cmd, argp);
+		break;
+	case SIOCX25GFACILITIES: {
+		lock_sock(sk);
+		rc = copy_to_user(argp, &x25->facilities,
+				  sizeof(x25->facilities))
+			? -EFAULT : 0;
+		release_sock(sk);
+		break;
+	}
+
+	case SIOCX25SFACILITIES: {
+		struct x25_facilities facilities;
+		rc = -EFAULT;
+		if (copy_from_user(&facilities, argp, sizeof(facilities)))
+			break;
+		rc = -EINVAL;
+		lock_sock(sk);
+		if (sk->sk_state != TCP_LISTEN &&
+		    sk->sk_state != TCP_CLOSE)
+			goto out_fac_release;
+		if (facilities.pacsize_in < X25_PS16 ||
+		    facilities.pacsize_in > X25_PS4096)
+			goto out_fac_release;
+		if (facilities.pacsize_out < X25_PS16 ||
+		    facilities.pacsize_out > X25_PS4096)
+			goto out_fac_release;
+		if (facilities.winsize_in < 1 ||
+		    facilities.winsize_in > 127)
+			goto out_fac_release;
+		if (facilities.throughput) {
+			int out = facilities.throughput & 0xf0;
+			int in  = facilities.throughput & 0x0f;
+			if (!out)
+				facilities.throughput |=
+					X25_DEFAULT_THROUGHPUT << 4;
+			else if (out < 0x30 || out > 0xD0)
+				goto out_fac_release;
+			if (!in)
+				facilities.throughput |=
+					X25_DEFAULT_THROUGHPUT;
+			else if (in < 0x03 || in > 0x0D)
+				goto out_fac_release;
+		}
+		if (facilities.reverse &&
+		    (facilities.reverse & 0x81) != 0x81)
+			goto out_fac_release;
+		x25->facilities = facilities;
+		rc = 0;
+out_fac_release:
+		release_sock(sk);
+		break;
+	}
+
+	case SIOCX25GDTEFACILITIES: {
+		lock_sock(sk);
+		rc = copy_to_user(argp, &x25->dte_facilities,
+				  sizeof(x25->dte_facilities));
+		release_sock(sk);
+		if (rc)
+			rc = -EFAULT;
+		break;
+	}
+
+	case SIOCX25SDTEFACILITIES: {
+		struct x25_dte_facilities dtefacs;
+		rc = -EFAULT;
+		if (copy_from_user(&dtefacs, argp, sizeof(dtefacs)))
+			break;
+		rc = -EINVAL;
+		lock_sock(sk);
+		if (sk->sk_state != TCP_LISTEN &&
+		    sk->sk_state != TCP_CLOSE)
+			goto out_dtefac_release;
+		if (dtefacs.calling_len > X25_MAX_AE_LEN)
+			goto out_dtefac_release;
+		if (dtefacs.calling_ae == NULL)
+			goto out_dtefac_release;
+		if (dtefacs.called_len > X25_MAX_AE_LEN)
+			goto out_dtefac_release;
+		if (dtefacs.called_ae == NULL)
+			goto out_dtefac_release;
+		x25->dte_facilities = dtefacs;
+		rc = 0;
+out_dtefac_release:
+		release_sock(sk);
+		break;
+	}
+
+	case SIOCX25GCALLUSERDATA: {
+		lock_sock(sk);
+		rc = copy_to_user(argp, &x25->calluserdata,
+				  sizeof(x25->calluserdata))
+			? -EFAULT : 0;
+		release_sock(sk);
+		break;
+	}
+
+	case SIOCX25SCALLUSERDATA: {
+		struct x25_calluserdata calluserdata;
+
+		rc = -EFAULT;
+		if (copy_from_user(&calluserdata, argp, sizeof(calluserdata)))
+			break;
+		rc = -EINVAL;
+		if (calluserdata.cudlength > X25_MAX_CUD_LEN)
+			break;
+		lock_sock(sk);
+		x25->calluserdata = calluserdata;
+		release_sock(sk);
+		rc = 0;
+		break;
+	}
+
+	case SIOCX25GCAUSEDIAG: {
+		lock_sock(sk);
+		rc = copy_to_user(argp, &x25->causediag, sizeof(x25->causediag))
+			? -EFAULT : 0;
+		release_sock(sk);
+		break;
+	}
+
+	case SIOCX25SCAUSEDIAG: {
+		struct x25_causediag causediag;
+		rc = -EFAULT;
+		if (copy_from_user(&causediag, argp, sizeof(causediag)))
+			break;
+		lock_sock(sk);
+		x25->causediag = causediag;
+		release_sock(sk);
+		rc = 0;
+		break;
+
+	}
+
+	case SIOCX25SCUDMATCHLEN: {
+		struct x25_subaddr sub_addr;
+		rc = -EINVAL;
+		lock_sock(sk);
+		if(sk->sk_state != TCP_CLOSE)
+			goto out_cud_release;
+		rc = -EFAULT;
+		if (copy_from_user(&sub_addr, argp,
+				   sizeof(sub_addr)))
+			goto out_cud_release;
+		rc = -EINVAL;
+		if (sub_addr.cudmatchlength > X25_MAX_CUD_LEN)
+			goto out_cud_release;
+		x25->cudmatchlength = sub_addr.cudmatchlength;
+		rc = 0;
+out_cud_release:
+		release_sock(sk);
+		break;
+	}
+
+	case SIOCX25CALLACCPTAPPRV: {
+		rc = -EINVAL;
+		lock_sock(sk);
+		if (sk->sk_state == TCP_CLOSE) {
+			clear_bit(X25_ACCPT_APPRV_FLAG, &x25->flags);
+			rc = 0;
+		}
+		release_sock(sk);
+		break;
+	}
+
+	case SIOCX25SENDCALLACCPT:  {
+		rc = -EINVAL;
+		lock_sock(sk);
+		if (sk->sk_state != TCP_ESTABLISHED)
+			goto out_sendcallaccpt_release;
+		/* must call accptapprv above */
+		if (test_bit(X25_ACCPT_APPRV_FLAG, &x25->flags))
+			goto out_sendcallaccpt_release;
+		x25_write_internal(sk, X25_CALL_ACCEPTED);
+		x25->state = X25_STATE_3;
+		rc = 0;
+out_sendcallaccpt_release:
+		release_sock(sk);
+		break;
+	}
+
+	default:
+		rc = -ENOIOCTLCMD;
+		break;
 	}
 
 	return rc;
 }
 
 static struct net_proto_family x25_family_ops = {
+static const struct net_proto_family x25_family_ops = {
 	.family =	AF_X25,
 	.create =	x25_create,
 	.owner	=	THIS_MODULE,
@@ -1491,6 +2042,10 @@ static int compat_x25_subscr_ioctl(unsigned int cmd,
 	if (cmd == SIOCX25GSUBSCRIP) {
 		x25_subscr.extended = nb->extended;
 		x25_subscr.global_facil_mask = nb->global_facil_mask;
+		read_lock_bh(&x25_neigh_list_lock);
+		x25_subscr.extended = nb->extended;
+		x25_subscr.global_facil_mask = nb->global_facil_mask;
+		read_unlock_bh(&x25_neigh_list_lock);
 		rc = copy_to_user(x25_subscr32, &x25_subscr,
 				sizeof(*x25_subscr32)) ? -EFAULT : 0;
 	} else {
@@ -1499,6 +2054,10 @@ static int compat_x25_subscr_ioctl(unsigned int cmd,
 			rc = 0;
 			nb->extended = x25_subscr.extended;
 			nb->global_facil_mask = x25_subscr.global_facil_mask;
+			write_lock_bh(&x25_neigh_list_lock);
+			nb->extended = x25_subscr.extended;
+			nb->global_facil_mask = x25_subscr.global_facil_mask;
+			write_unlock_bh(&x25_neigh_list_lock);
 		}
 	}
 	x25_neigh_put(nb);
@@ -1569,6 +2128,7 @@ static int compat_x25_ioctl(struct socket *sock, unsigned int cmd,
 	case SIOCX25GCALLUSERDATA:
 	case SIOCX25SCALLUSERDATA:
 	case SIOCX25GCAUSEDIAG:
+	case SIOCX25SCAUSEDIAG:
 	case SIOCX25SCUDMATCHLEN:
 	case SIOCX25CALLACCPTAPPRV:
 	case SIOCX25SENDCALLACCPT:
@@ -1583,6 +2143,7 @@ static int compat_x25_ioctl(struct socket *sock, unsigned int cmd,
 #endif
 
 static const struct proto_ops SOCKOPS_WRAPPED(x25_proto_ops) = {
+static const struct proto_ops x25_proto_ops = {
 	.family =	AF_X25,
 	.owner =	THIS_MODULE,
 	.release =	x25_release,
@@ -1610,6 +2171,8 @@ SOCKOPS_WRAP(x25_proto, AF_X25);
 
 static struct packet_type x25_packet_type = {
 	.type =	__constant_htons(ETH_P_X25),
+static struct packet_type x25_packet_type __read_mostly = {
+	.type =	cpu_to_be16(ETH_P_X25),
 	.func =	x25_lapb_receive_frame,
 };
 
@@ -1625,9 +2188,18 @@ void x25_kill_by_neigh(struct x25_neigh *nb)
 	write_lock_bh(&x25_list_lock);
 
 	sk_for_each(s, node, &x25_list)
-		if (x25_sk(s)->neighbour == nb)
-			x25_disconnect(s, ENETUNREACH, 0, 0);
 
+	write_lock_bh(&x25_list_lock);
+
+	sk_for_each(s, &x25_list) {
+		if (x25_sk(s)->neighbour == nb) {
+			write_unlock_bh(&x25_list_lock);
+			lock_sock(s);
+			x25_disconnect(s, ENETUNREACH, 0, 0);
+			release_sock(s);
+			write_lock_bh(&x25_list_lock);
+		}
+	}
 	write_unlock_bh(&x25_list_lock);
 
 	/* Remove any related forwards */
@@ -1636,9 +2208,10 @@ void x25_kill_by_neigh(struct x25_neigh *nb)
 
 static int __init x25_init(void)
 {
-	int rc = proto_register(&x25_proto, 0);
+	int rc;
 
-	if (rc != 0)
+	rc = proto_register(&x25_proto, 0);
+	if (rc)
 		goto out;
 
 	sock_register(&x25_family_ops);
@@ -1655,6 +2228,38 @@ static int __init x25_init(void)
 	x25_proc_init();
 out:
 	return rc;
+	rc = sock_register(&x25_family_ops);
+	if (rc)
+		goto out_proto;
+
+	dev_add_pack(&x25_packet_type);
+
+	rc = register_netdevice_notifier(&x25_dev_notifier);
+	if (rc)
+		goto out_sock;
+
+	rc = x25_register_sysctl();
+	if (rc)
+		goto out_dev;
+
+	rc = x25_proc_init();
+	if (rc)
+		goto out_sysctl;
+
+	pr_info("Linux Version 0.2\n");
+
+out:
+	return rc;
+out_sysctl:
+	x25_unregister_sysctl();
+out_dev:
+	unregister_netdevice_notifier(&x25_dev_notifier);
+out_sock:
+	dev_remove_pack(&x25_packet_type);
+	sock_unregister(AF_X25);
+out_proto:
+	proto_unregister(&x25_proto);
+	goto out;
 }
 module_init(x25_init);
 
@@ -1667,6 +2272,7 @@ static void __exit x25_exit(void)
 #ifdef CONFIG_SYSCTL
 	x25_unregister_sysctl();
 #endif
+	x25_unregister_sysctl();
 
 	unregister_netdevice_notifier(&x25_dev_notifier);
 

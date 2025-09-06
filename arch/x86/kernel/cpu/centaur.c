@@ -239,6 +239,16 @@ static void __cpuinit winchip2_protect_mcr(void)
 }
 #endif /* CONFIG_X86_OOSTORE */
 
+#include <linux/bitops.h>
+#include <linux/kernel.h>
+
+#include <asm/cpufeature.h>
+#include <asm/e820.h>
+#include <asm/mtrr.h>
+#include <asm/msr.h>
+
+#include "cpu.h"
+
 #define ACE_PRESENT	(1 << 6)
 #define ACE_ENABLED	(1 << 7)
 #define ACE_FCR		(1 << 28)	/* MSR_VIA_FCR */
@@ -248,6 +258,7 @@ static void __cpuinit winchip2_protect_mcr(void)
 #define RNG_ENABLE	(1 << 6)	/* MSR_VIA_RNG */
 
 static void __cpuinit init_c3(struct cpuinfo_x86 *c)
+static void init_c3(struct cpuinfo_x86 *c)
 {
 	u32  lo, hi;
 
@@ -274,11 +285,14 @@ static void __cpuinit init_c3(struct cpuinfo_x86 *c)
 		/* store Centaur Extended Feature Flags as
 		 * word 5 of the CPU capability bit array
 		 */
-		c->x86_capability[5] = cpuid_edx(0xC0000001);
+		c->x86_capability[CPUID_C000_0001_EDX] = cpuid_edx(0xC0000001);
 	}
 
 	/* Cyrix III family needs CX8 & PGE explicitly enabled. */
 	if (c->x86_model >= 6 && c->x86_model <= 9) {
+#ifdef CONFIG_X86_32
+	/* Cyrix III family needs CX8 & PGE explicitly enabled. */
+	if (c->x86_model >= 6 && c->x86_model <= 13) {
 		rdmsr(MSR_VIA_FCR, lo, hi);
 		lo |= (1<<1 | 1<<7);
 		wrmsr(MSR_VIA_FCR, lo, hi);
@@ -291,6 +305,13 @@ static void __cpuinit init_c3(struct cpuinfo_x86 *c)
 
 	get_model_name(c);
 	display_cacheinfo(c);
+#endif
+	if (c->x86 == 0x6 && c->x86_model >= 0xf) {
+		c->x86_cache_alignment = c->x86_clflush_size * 2;
+		set_cpu_cap(c, X86_FEATURE_REP_GOOD);
+	}
+
+	cpu_detect_cache_sizes(c);
 }
 
 enum {
@@ -317,6 +338,10 @@ enum {
 static void __cpuinit early_init_centaur(struct cpuinfo_x86 *c)
 {
 	switch (c->x86) {
+static void early_init_centaur(struct cpuinfo_x86 *c)
+{
+	switch (c->x86) {
+#ifdef CONFIG_X86_32
 	case 5:
 		/* Emulate MTRRs using Centaur's MCR. */
 		set_cpu_cap(c, X86_FEATURE_CENTAUR_MCR);
@@ -327,6 +352,20 @@ static void __cpuinit early_init_centaur(struct cpuinfo_x86 *c)
 static void __cpuinit init_centaur(struct cpuinfo_x86 *c)
 {
 
+#endif
+	case 6:
+		if (c->x86_model >= 0xf)
+			set_cpu_cap(c, X86_FEATURE_CONSTANT_TSC);
+		break;
+	}
+#ifdef CONFIG_X86_64
+	set_cpu_cap(c, X86_FEATURE_SYSENTER32);
+#endif
+}
+
+static void init_centaur(struct cpuinfo_x86 *c)
+{
+#ifdef CONFIG_X86_32
 	char *name;
 	u32  fcr_set = 0;
 	u32  fcr_clr = 0;
@@ -340,6 +379,10 @@ static void __cpuinit init_centaur(struct cpuinfo_x86 *c)
 	clear_cpu_cap(c, 0*32+31);
 
 	switch (c->x86) {
+#endif
+	early_init_centaur(c);
+	switch (c->x86) {
+#ifdef CONFIG_X86_32
 	case 5:
 		switch (c->x86_model) {
 		case 4:
@@ -364,7 +407,7 @@ static void __cpuinit init_centaur(struct cpuinfo_x86 *c)
 #endif
 			break;
 		case 8:
-			switch (c->x86_mask) {
+			switch (c->x86_stepping) {
 			default:
 			name = "2";
 				break;
@@ -444,6 +487,7 @@ static void __cpuinit init_centaur(struct cpuinfo_x86 *c)
 		sprintf(c->x86_model_id, "WinChip %s", name);
 		break;
 
+#endif
 	case 6:
 		init_c3(c);
 		break;
@@ -451,6 +495,13 @@ static void __cpuinit init_centaur(struct cpuinfo_x86 *c)
 }
 
 static unsigned int __cpuinit
+#ifdef CONFIG_X86_64
+	set_cpu_cap(c, X86_FEATURE_LFENCE_RDTSC);
+#endif
+}
+
+#ifdef CONFIG_X86_32
+static unsigned int
 centaur_size_cache(struct cpuinfo_x86 *c, unsigned int size)
 {
 	/* VIA C3 CPUs (670-68F) need further shifting. */
@@ -463,13 +514,18 @@ centaur_size_cache(struct cpuinfo_x86 *c, unsigned int size)
 	 *  - Note, it seems this may only be in engineering samples.
 	 */
 	if ((c->x86 == 6) && (c->x86_model == 9) &&
-				(c->x86_mask == 1) && (size == 65))
+				(c->x86_stepping == 1) && (size == 65))
 		size -= 1;
 
 	return size;
 }
 
 static struct cpu_dev centaur_cpu_dev __cpuinitdata = {
+	return size;
+}
+#endif
+
+static const struct cpu_dev centaur_cpu_dev = {
 	.c_vendor	= "Centaur",
 	.c_ident	= { "CentaurHauls" },
 	.c_early_init	= early_init_centaur,
@@ -478,3 +534,10 @@ static struct cpu_dev centaur_cpu_dev __cpuinitdata = {
 };
 
 cpu_vendor_dev_register(X86_VENDOR_CENTAUR, &centaur_cpu_dev);
+#ifdef CONFIG_X86_32
+	.legacy_cache_size = centaur_size_cache,
+#endif
+	.c_x86_vendor	= X86_VENDOR_CENTAUR,
+};
+
+cpu_dev_register(centaur_cpu_dev);

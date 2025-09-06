@@ -3,6 +3,7 @@
  * PowerPC implementations where the MMU substantially follows the
  * architecture specification.  This includes the 6xx, 7xx, 7xxx,
  * 8260, and POWER3 implementations but excludes the 8xx and 4xx.
+ * and 8260 implementations but excludes the 8xx and 4xx.
  *  -- paulus
  *
  *  Derived from arch/ppc/mm/init.c:
@@ -27,6 +28,7 @@
 #include <linux/init.h>
 #include <linux/highmem.h>
 #include <linux/lmb.h>
+#include <linux/memblock.h>
 
 #include <asm/prom.h>
 #include <asm/mmu.h>
@@ -52,7 +54,7 @@ struct batrange {		/* stores address ranges mapped by BATs */
 phys_addr_t v_mapped_by_bats(unsigned long va)
 {
 	int b;
-	for (b = 0; b < 4; ++b)
+	for (b = 0; b < ARRAY_SIZE(bat_addrs); ++b)
 		if (va >= bat_addrs[b].start && va < bat_addrs[b].limit)
 			return bat_addrs[b].phys + (va - bat_addrs[b].start);
 	return 0;
@@ -64,7 +66,7 @@ phys_addr_t v_mapped_by_bats(unsigned long va)
 unsigned long p_mapped_by_bats(phys_addr_t pa)
 {
 	int b;
-	for (b = 0; b < 4; ++b)
+	for (b = 0; b < ARRAY_SIZE(bat_addrs); ++b)
 		if (pa >= bat_addrs[b].phys
 	    	    && pa < (bat_addrs[b].limit-bat_addrs[b].start)
 		              +bat_addrs[b].phys)
@@ -77,6 +79,8 @@ unsigned long __init mmu_mapin_ram(void)
 #ifdef CONFIG_POWER4
 	return 0;
 #else
+unsigned long __init mmu_mapin_ram(unsigned long top)
+{
 	unsigned long tot, bl, done;
 	unsigned long max_size = (256<<20);
 
@@ -90,6 +94,7 @@ unsigned long __init mmu_mapin_ram(void)
 	/* Make sure we don't map a block larger than the
 	   smallest alignment of the physical address. */
 	tot = total_lowmem;
+	tot = top;
 	for (bl = 128<<10; bl < max_size; bl <<= 1) {
 		if (bl * 2 > tot)
 			break;
@@ -97,6 +102,8 @@ unsigned long __init mmu_mapin_ram(void)
 
 	setbat(2, KERNELBASE, 0, bl, _PAGE_RAM);
 	done = (unsigned long)bat_addrs[2].limit - KERNELBASE + 1;
+	setbat(2, PAGE_OFFSET, 0, bl, PAGE_KERNEL_X);
+	done = (unsigned long)bat_addrs[2].limit - PAGE_OFFSET + 1;
 	if ((done < tot) && !bat_addrs[3].limit) {
 		/* use BAT3 to cover a bit more */
 		tot -= done;
@@ -109,6 +116,11 @@ unsigned long __init mmu_mapin_ram(void)
 
 	return done;
 #endif
+		setbat(3, PAGE_OFFSET+done, done, bl, PAGE_KERNEL_X);
+		done = (unsigned long)bat_addrs[3].limit - PAGE_OFFSET + 1;
+	}
+
+	return done;
 }
 
 /*
@@ -118,6 +130,7 @@ unsigned long __init mmu_mapin_ram(void)
  */
 void __init setbat(int index, unsigned long virt, phys_addr_t phys,
 		   unsigned int size, int flags)
+		   unsigned int size, pgprot_t prot)
 {
 	unsigned int bl;
 	int wimgxpp;
@@ -126,6 +139,11 @@ void __init setbat(int index, unsigned long virt, phys_addr_t phys,
 	if (((flags & _PAGE_NO_CACHE) == 0) &&
 	    cpu_has_feature(CPU_FTR_NEED_COHERENT))
 		flags |= _PAGE_COHERENT;
+	unsigned long flags = pgprot_val(prot);
+
+	if ((flags & _PAGE_NO_CACHE) ||
+	    (cpu_has_feature(CPU_FTR_NEED_COHERENT) == 0))
+		flags &= ~_PAGE_COHERENT;
 
 	bl = (size >> 17) - 1;
 	if (PVR_VER(mfspr(SPRN_PVR)) != 1) {
@@ -139,6 +157,7 @@ void __init setbat(int index, unsigned long virt, phys_addr_t phys,
 #ifndef CONFIG_KGDB /* want user access for breakpoints */
 		if (flags & _PAGE_USER)
 #endif
+		if (flags & _PAGE_USER)
 			bat[1].batu |= 1; 	/* Vp = 1 */
 		if (flags & _PAGE_GUARDED) {
 			/* G bit must be zero in IBATs */
@@ -193,6 +212,7 @@ void __init MMU_init_hw(void)
 	extern unsigned int flush_hash_patch_A[], flush_hash_patch_B[];
 
 	if (!cpu_has_feature(CPU_FTR_HPTE_TABLE)) {
+	if (!mmu_has_feature(MMU_FTR_HPTE_TABLE)) {
 		/*
 		 * Put a blr (procedure return) instruction at the
 		 * start of hash_page, since we can still get DSI
@@ -232,6 +252,8 @@ void __init MMU_init_hw(void)
 	Hash = __va(lmb_alloc_base(Hash_size, Hash_size,
 				   __initial_memory_limit_addr));
 	cacheable_memzero(Hash, Hash_size);
+	Hash = __va(memblock_alloc(Hash_size, Hash_size));
+	memset(Hash, 0, Hash_size);
 	_SDR1 = __pa(Hash) | SDR1_LOW_BITS;
 
 	Hash_end = (struct hash_pte *) ((unsigned long)Hash + Hash_size);
@@ -277,4 +299,19 @@ void __init MMU_init_hw(void)
 			   (unsigned long) &flush_hash_patch_B[1]);
 
 	if ( ppc_md.progress ) ppc_md.progress("hash:done", 0x205);
+}
+
+void setup_initial_memory_limit(phys_addr_t first_memblock_base,
+				phys_addr_t first_memblock_size)
+{
+	/* We don't currently support the first MEMBLOCK not mapping 0
+	 * physical on those processors
+	 */
+	BUG_ON(first_memblock_base != 0);
+
+	/* 601 can only access 16MB at the moment */
+	if (PVR_VER(mfspr(SPRN_PVR)) == 1)
+		memblock_set_current_limit(min_t(u64, first_memblock_size, 0x01000000));
+	else /* Anything else has 256M mapped */
+		memblock_set_current_limit(min_t(u64, first_memblock_size, 0x10000000));
 }

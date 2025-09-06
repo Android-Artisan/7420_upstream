@@ -1,5 +1,6 @@
 /* $Id: flash.c,v 1.25 2001/12/21 04:56:16 davem Exp $
  * flash.c: Allow mmap access to the OBP Flash, for OBP updates.
+/* flash.c: Allow mmap access to the OBP Flash, for OBP updates.
  *
  * Copyright (C) 1997  Eddie C. Dost  (ecd@skynet.be)
  */
@@ -24,6 +25,20 @@
 #include <asm/ebus.h>
 #include <asm/upa.h>
 
+#include <linux/fcntl.h>
+#include <linux/poll.h>
+#include <linux/mutex.h>
+#include <linux/spinlock.h>
+#include <linux/mm.h>
+#include <linux/of.h>
+#include <linux/of_device.h>
+
+#include <asm/uaccess.h>
+#include <asm/pgtable.h>
+#include <asm/io.h>
+#include <asm/upa.h>
+
+static DEFINE_MUTEX(flash_mutex);
 static DEFINE_SPINLOCK(flash_lock);
 static struct {
 	unsigned long read_base;	/* Physical read address */
@@ -83,6 +98,7 @@ static long long
 flash_llseek(struct file *file, long long offset, int origin)
 {
 	lock_kernel();
+	mutex_lock(&flash_mutex);
 	switch (origin) {
 		case 0:
 			file->f_pos = offset;
@@ -100,6 +116,10 @@ flash_llseek(struct file *file, long long offset, int origin)
 			return -EINVAL;
 	}
 	unlock_kernel();
+			mutex_unlock(&flash_mutex);
+			return -EINVAL;
+	}
+	mutex_unlock(&flash_mutex);
 	return file->f_pos;
 }
 
@@ -110,6 +130,9 @@ flash_read(struct file * file, char __user * buf,
 	unsigned long p = file->f_pos;
 	int i;
 	
+	loff_t p = *ppos;
+	int i;
+
 	if (count > flash.read_size - p)
 		count = flash.read_size - p;
 
@@ -121,6 +144,7 @@ flash_read(struct file * file, char __user * buf,
 	}
 
 	file->f_pos += count;
+	*ppos += count;
 	return count;
 }
 
@@ -134,6 +158,13 @@ flash_open(struct inode *inode, struct file *file)
 	}
 
 	unlock_kernel();
+	mutex_lock(&flash_mutex);
+	if (test_and_set_bit(0, (void *)&flash.busy) != 0) {
+		mutex_unlock(&flash_mutex);
+		return -EBUSY;
+	}
+
+	mutex_unlock(&flash_mutex);
 	return 0;
 }
 
@@ -245,6 +276,40 @@ static int __init flash_init(void)
 		printk(KERN_ERR "flash: unable to get misc minor\n");
 		return err;
 	}
+static int flash_probe(struct platform_device *op)
+{
+	struct device_node *dp = op->dev.of_node;
+	struct device_node *parent;
+
+	parent = dp->parent;
+
+	if (strcmp(parent->name, "sbus") &&
+	    strcmp(parent->name, "sbi") &&
+	    strcmp(parent->name, "ebus"))
+		return -ENODEV;
+
+	flash.read_base = op->resource[0].start;
+	flash.read_size = resource_size(&op->resource[0]);
+	if (op->resource[1].flags) {
+		flash.write_base = op->resource[1].start;
+		flash.write_size = resource_size(&op->resource[1]);
+	} else {
+		flash.write_base = op->resource[0].start;
+		flash.write_size = resource_size(&op->resource[0]);
+	}
+	flash.busy = 0;
+
+	printk(KERN_INFO "%s: OBP Flash, RD %lx[%lx] WR %lx[%lx]\n",
+	       op->dev.of_node->full_name,
+	       flash.read_base, flash.read_size,
+	       flash.write_base, flash.write_size);
+
+	return misc_register(&flash_dev);
+}
+
+static int flash_remove(struct platform_device *op)
+{
+	misc_deregister(&flash_dev);
 
 	return 0;
 }
@@ -256,4 +321,23 @@ static void __exit flash_cleanup(void)
 
 module_init(flash_init);
 module_exit(flash_cleanup);
+static const struct of_device_id flash_match[] = {
+	{
+		.name = "flashprom",
+	},
+	{},
+};
+MODULE_DEVICE_TABLE(of, flash_match);
+
+static struct platform_driver flash_driver = {
+	.driver = {
+		.name = "flash",
+		.of_match_table = flash_match,
+	},
+	.probe		= flash_probe,
+	.remove		= flash_remove,
+};
+
+module_platform_driver(flash_driver);
+
 MODULE_LICENSE("GPL");

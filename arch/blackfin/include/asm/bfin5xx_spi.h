@@ -17,6 +17,13 @@
 * March 10, 2006  bfin5xx_spi.h Created. (Luke Yang)
 
 ************************************************************/
+/*
+ * Blackfin On-Chip SPI Driver
+ *
+ * Copyright 2004-2008 Analog Devices Inc.
+ *
+ * Licensed under the GPL-2 or later.
+ */
 
 #ifndef _SPI_CHANNEL_H_
 #define _SPI_CHANNEL_H_
@@ -32,6 +39,7 @@
 #define SPI_BAUD_OFF            0x14
 #define SPI_SHAW_OFF            0x18
 
+#define MIN_SPI_BAUD_VAL	2
 
 #define BIT_CTL_ENABLE      0x4000
 #define BIT_CTL_OPENDRAIN   0x2000
@@ -41,6 +49,14 @@
 #define BIT_CTL_BITORDER    0x0200
 #define BIT_CTL_WORDSIZE    0x0100
 #define BIT_CTL_MISOENABLE  0x0020
+#define BIT_CTL_CPOL        0x0800
+#define BIT_CTL_CPHA        0x0400
+#define BIT_CTL_LSBF        0x0200
+#define BIT_CTL_WORDSIZE    0x0100
+#define BIT_CTL_EMISO       0x0020
+#define BIT_CTL_PSSE        0x0010
+#define BIT_CTL_GM          0x0008
+#define BIT_CTL_SZ          0x0004
 #define BIT_CTL_RXMOD       0x0000
 #define BIT_CTL_TXMOD       0x0001
 #define BIT_CTL_TIMOD_DMA_TX 0x0003
@@ -115,12 +131,35 @@
 #define CMD_SPI_SET_BAUDRATE  2
 #define CMD_SPI_GET_SYSTEMCLOCK   25
 #define CMD_SPI_SET_WRITECONTINUOUS     26
+/*
+ * All Blackfin system MMRs are padded to 32bits even if the register
+ * itself is only 16bits.  So use a helper macro to streamline this.
+ */
+#define __BFP(m) u16 m; u16 __pad_##m
+
+/*
+ * bfin spi registers layout
+ */
+struct bfin_spi_regs {
+	__BFP(ctl);
+	__BFP(flg);
+	__BFP(stat);
+	__BFP(tdbr);
+	__BFP(rdbr);
+	__BFP(baud);
+	__BFP(shadow);
+};
+
+#undef __BFP
+
+#define MAX_CTRL_CS          8  /* cs in spi controller */
 
 /* device.platform_data for SSP controller devices */
 struct bfin5xx_spi_master {
 	u16 num_chipselect;
 	u8 enable_dma;
 	u16 pin_req[4];
+	u16 pin_req[7];
 };
 
 /* spi_board_info.controller_data for SPI slave devices,
@@ -132,6 +171,10 @@ struct bfin5xx_spi_chip {
 	u8 bits_per_word;
 	u8 cs_change_per_word;
 	u16 cs_chg_udelay; /* Some devices require 16-bit delays */
+	u16 cs_chg_udelay; /* Some devices require 16-bit delays */
+	/* Value to send if no TX value is supplied, usually 0x0 or 0xFFFF */
+	u16 idle_tx_val;
+	u8 pio_interrupt; /* Enable spi data irq */
 };
 
 #endif /* _SPI_CHANNEL_H_ */

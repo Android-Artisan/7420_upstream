@@ -60,6 +60,7 @@ static int soundbus_uevent(struct device *dev, struct kobj_uevent_env *env)
 {
 	struct soundbus_dev * soundbus_dev;
 	struct of_device * of;
+	struct platform_device * of;
 	const char *compat;
 	int retval = 0;
 	int cplen, seen = 0;
@@ -79,6 +80,11 @@ static int soundbus_uevent(struct device *dev, struct kobj_uevent_env *env)
 		return retval;
 
 	retval = add_uevent_var(env, "OF_TYPE=%s", of->node->type);
+	retval = add_uevent_var(env, "OF_NAME=%s", of->dev.of_node->name);
+	if (retval)
+		return retval;
+
+	retval = add_uevent_var(env, "OF_TYPE=%s", of->dev.of_node->type);
 	if (retval)
 		return retval;
 
@@ -87,6 +93,7 @@ static int soundbus_uevent(struct device *dev, struct kobj_uevent_env *env)
 	 * up using a number of environment variables instead. */
 
 	compat = of_get_property(of->node, "compatible", &cplen);
+	compat = of_get_property(of->dev.of_node, "compatible", &cplen);
 	while (compat && cplen > 0) {
 		int tmp = env->buflen;
 		retval = add_uevent_var(env, "OF_COMPATIBLE_%d=%s", seen, compat);
@@ -150,6 +157,8 @@ static int soundbus_device_resume(struct device * dev)
 
 #endif /* CONFIG_PM */
 
+/* soundbus_dev_attrs is declared in sysfs.c */
+ATTRIBUTE_GROUPS(soundbus_dev);
 static struct bus_type soundbus_bus_type = {
 	.name		= "aoa-soundbus",
 	.probe		= soundbus_probe,
@@ -161,6 +170,7 @@ static struct bus_type soundbus_bus_type = {
 	.resume		= soundbus_device_resume,
 #endif
 	.dev_attrs	= soundbus_dev_attrs,
+	.dev_groups	= soundbus_dev_groups,
 };
 
 int soundbus_add_one(struct soundbus_dev *dev)
@@ -170,6 +180,7 @@ int soundbus_add_one(struct soundbus_dev *dev)
 	/* sanity checks */
 	if (!dev->attach_codec ||
 	    !dev->ofdev.node ||
+	    !dev->ofdev.dev.of_node ||
 	    dev->pcmname ||
 	    dev->pcmid != -1) {
 		printk(KERN_ERR "soundbus: adding device failed sanity check!\n");
@@ -177,6 +188,7 @@ int soundbus_add_one(struct soundbus_dev *dev)
 	}
 
 	snprintf(dev->ofdev.dev.bus_id, BUS_ID_SIZE, "soundbus:%x", ++devcount);
+	dev_set_name(&dev->ofdev.dev, "soundbus:%x", ++devcount);
 	dev->ofdev.dev.bus = &soundbus_bus_type;
 	return of_device_register(&dev->ofdev);
 }

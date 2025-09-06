@@ -9,6 +9,7 @@
  */
 
 #include <linux/module.h>
+#include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/fb.h>
 #include <linux/vt_kern.h>
@@ -22,11 +23,13 @@
  */
 
 static inline void cw_update_attr(u8 *dst, u8 *src, int attribute,
+static void cw_update_attr(u8 *dst, u8 *src, int attribute,
 				  struct vc_data *vc)
 {
 	int i, j, offset = (vc->vc_font.height < 10) ? 1 : 2;
 	int width = (vc->vc_font.height + 7) >> 3;
 	u8 c, t = 0, msk = ~(0xff >> offset);
+	u8 c, msk = ~(0xff >> offset);
 
 	for (i = 0; i < vc->vc_font.width; i++) {
 		for (j = 0; j < width; j++) {
@@ -183,9 +186,11 @@ static void cw_clear_margins(struct vc_data *vc, struct fb_info *info,
 	int bgshift = (vc->vc_hi_font_mask) ? 13 : 12;
 
 	region.color = attr_bgcol_ec(bgshift,vc,info);
+
+	region.color = 0;
 	region.rop = ROP_COPY;
 
-	if (rw && !bottom_only) {
+	if ((int) rw > 0 && !bottom_only) {
 		region.dx = 0;
 		region.dy = info->var.yoffset + rs;
 		region.height = rw;
@@ -193,7 +198,7 @@ static void cw_clear_margins(struct vc_data *vc, struct fb_info *info,
 		info->fbops->fb_fillrect(info, &region);
 	}
 
-	if (bh) {
+	if ((int) bh > 0) {
 		region.dx = info->var.xoffset;
 		region.dy = info->var.yoffset;
                 region.height = info->var.yres;
@@ -203,7 +208,7 @@ static void cw_clear_margins(struct vc_data *vc, struct fb_info *info,
 }
 
 static void cw_cursor(struct vc_data *vc, struct fb_info *info, int mode,
-		      int softback_lines, int fg, int bg)
+		      int fg, int bg)
 {
 	struct fb_cursor cursor;
 	struct fbcon_ops *ops = info->fbcon_par;
@@ -219,15 +224,6 @@ static void cw_cursor(struct vc_data *vc, struct fb_info *info, int mode,
 		return;
 
 	cursor.set = 0;
-
-	if (softback_lines) {
-		if (y + softback_lines >= vc->vc_rows) {
-			mode = CM_ERASE;
-			ops->cursor_flash = 0;
-			return;
-		} else
-			y += softback_lines;
-	}
 
  	c = scr_readw((u16 *) vc->vc_pos);
 	attribute = get_attribute(info, c);

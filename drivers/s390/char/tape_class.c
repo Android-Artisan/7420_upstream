@@ -1,17 +1,25 @@
 /*
  * (C) Copyright IBM Corp. 2004
  * tape_class.c
+ * Copyright IBM Corp. 2004
  *
  * Tape class device support
  *
  * Author: Stefan Bader <shbader@de.ibm.com>
  * Based on simple class device code by Greg K-H
  */
+
+#define KMSG_COMPONENT "tape"
+#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
+
+#include <linux/slab.h>
+
 #include "tape_class.h"
 
 MODULE_AUTHOR("Stefan Bader <shbader@de.ibm.com>");
 MODULE_DESCRIPTION(
 	"(C) Copyright IBM Corp. 2004   All Rights Reserved.\n"
+	"Copyright IBM Corp. 2004   All Rights Reserved.\n"
 	"tape_class.c"
 );
 MODULE_LICENSE("GPL");
@@ -73,6 +81,10 @@ struct tape_class_device *register_tape_dev(
 						  tcd->char_device->dev,
 						  NULL, "%s", tcd->device_name);
 	rc = IS_ERR(tcd->class_device) ? PTR_ERR(tcd->class_device) : 0;
+	tcd->class_device = device_create(tape_class, device,
+					  tcd->char_device->dev, NULL,
+					  "%s", tcd->device_name);
+	rc = PTR_RET(tcd->class_device);
 	if (rc)
 		goto fail_with_cdev;
 	rc = sysfs_create_link(

@@ -64,6 +64,10 @@ static const char* generic_NCR5380_info(struct Scsi_Host *);
 #define STRVAL(x) __STRVAL(x)
 
 #ifndef CONFIG_SCSI_G_NCR5380_MEM
+#define __STRVAL(x) #x
+#define STRVAL(x) __STRVAL(x)
+
+#ifndef SCSI_G_NCR5380_MEM
 
 #define NCR5380_map_config port
 #define NCR5380_map_type int
@@ -92,6 +96,7 @@ static const char* generic_NCR5380_info(struct Scsi_Host *);
 
 #else 
 /* therefore CONFIG_SCSI_G_NCR5380_MEM */
+/* therefore SCSI_G_NCR5380_MEM */
 
 #define NCR5380_map_config memory
 #define NCR5380_map_type unsigned long
@@ -115,6 +120,7 @@ static const char* generic_NCR5380_info(struct Scsi_Host *);
 
 #define NCR5380_setup(instance) \
     iomem = (((struct NCR5380_hostdata *)(instance)->hostdata).iomem)
+    iomem = (((struct NCR5380_hostdata *)(instance)->hostdata)->iomem)
 
 #endif
 
@@ -125,6 +131,8 @@ static const char* generic_NCR5380_info(struct Scsi_Host *);
 #define NCR5380_pread generic_NCR5380_pread
 #define NCR5380_pwrite generic_NCR5380_pwrite
 #define NCR5380_proc_info notyet_generic_proc_info
+#define NCR5380_info generic_NCR5380_info
+#define NCR5380_show_info generic_NCR5380_show_info
 
 #define BOARD_NCR5380	0
 #define BOARD_NCR53C400	1

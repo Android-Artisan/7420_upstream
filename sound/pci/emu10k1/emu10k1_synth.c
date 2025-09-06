@@ -20,6 +20,7 @@
 
 #include "emu10k1_synth_local.h"
 #include <linux/init.h>
+#include <linux/module.h>
 
 MODULE_AUTHOR("Takashi Iwai");
 MODULE_DESCRIPTION("Routines for control of EMU10K1 WaveTable synth");
@@ -30,6 +31,9 @@ MODULE_LICENSE("GPL");
  */
 static int snd_emu10k1_synth_new_device(struct snd_seq_device *dev)
 {
+static int snd_emu10k1_synth_probe(struct device *_dev)
+{
+	struct snd_seq_device *dev = to_seq_dev(_dev);
 	struct snd_emux *emux;
 	struct snd_emu10k1 *hw;
 	struct snd_emu10k1_synth_arg *arg;
@@ -80,6 +84,9 @@ static int snd_emu10k1_synth_new_device(struct snd_seq_device *dev)
 
 static int snd_emu10k1_synth_delete_device(struct snd_seq_device *dev)
 {
+static int snd_emu10k1_synth_remove(struct device *_dev)
+{
+	struct snd_seq_device *dev = to_seq_dev(_dev);
 	struct snd_emux *emux;
 	struct snd_emu10k1 *hw;
 	unsigned long flags;
@@ -121,3 +128,14 @@ static void __exit alsa_emu10k1_synth_exit(void)
 
 module_init(alsa_emu10k1_synth_init)
 module_exit(alsa_emu10k1_synth_exit)
+static struct snd_seq_driver emu10k1_synth_driver = {
+	.driver = {
+		.name = KBUILD_MODNAME,
+		.probe = snd_emu10k1_synth_probe,
+		.remove = snd_emu10k1_synth_remove,
+	},
+	.id = SNDRV_SEQ_DEV_ID_EMU10K1_SYNTH,
+	.argsize = sizeof(struct snd_emu10k1_synth_arg),
+};
+
+module_snd_seq_driver(emu10k1_synth_driver);

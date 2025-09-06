@@ -48,5 +48,11 @@ static inline char * b43_rfkill_led_name(struct b43_wldev *dev)
 }
 
 #endif /* CONFIG_B43_RFKILL */
+struct ieee80211_hw;
+struct b43_wldev;
+
+void b43_rfkill_poll(struct ieee80211_hw *hw);
+
+bool b43_is_hw_radio_enabled(struct b43_wldev *dev);
 
 #endif /* B43_RFKILL_H_ */

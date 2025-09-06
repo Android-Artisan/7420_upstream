@@ -69,6 +69,14 @@
 #define R_SH_FUNCDESC		204
 #define R_SH_FUNCDESC_VALUE	205
 #endif
+#define R_SH_GOT20		201
+#define R_SH_GOTOFF20		202
+#define R_SH_GOTFUNCDESC	203
+#define R_SH_GOTFUNCDESC20	204
+#define R_SH_GOTOFFFUNCDESC	205
+#define R_SH_GOTOFFFUNCDESC20	206
+#define R_SH_FUNCDESC		207
+#define R_SH_FUNCDESC_VALUE	208
 
 /* SHmedia relocs */
 #define R_SH_IMM_LOW16		246
@@ -109,6 +117,12 @@ typedef struct user_fpu_struct elf_fpregset_t;
 #define elf_check_const_displacement(x)	((x)->e_flags & EF_SH_PIC)
 
 #define USE_ELF_CORE_DUMP
+/*
+ * Enable dump using regset.
+ * This covers all of general/DSP/FPU regs.
+ */
+#define CORE_DUMP_USE_REGSET
+
 #define ELF_FDPIC_CORE_EFLAGS	EF_SH_FDPIC
 #define ELF_EXEC_PAGESIZE	PAGE_SIZE
 
@@ -196,6 +210,8 @@ extern int dump_task_fpu (struct task_struct *, elf_fpregset_t *);
 
 #define ELF_CORE_COPY_TASK_REGS(tsk, elf_regs) dump_task_regs(tsk, elf_regs)
 #define ELF_CORE_COPY_FPREGS(tsk, elf_fpregs) dump_task_fpu(tsk, elf_fpregs)
+#define SET_PERSONALITY(ex) \
+	set_personality(PER_LINUX_32BIT | (current->personality & (~PER_MASK)))
 
 #ifdef CONFIG_VSYSCALL
 /* vDSO has arch_setup_additional_pages */
@@ -203,6 +219,7 @@ extern int dump_task_fpu (struct task_struct *, elf_fpregset_t *);
 struct linux_binprm;
 extern int arch_setup_additional_pages(struct linux_binprm *bprm,
 				       int executable_stack);
+				       int uses_interp);
 
 extern unsigned int vdso_enabled;
 extern void __kernel_vsyscall;
@@ -215,12 +232,18 @@ extern void __kernel_vsyscall;
 		NEW_AUX_ENT(AT_SYSINFO_EHDR, VDSO_BASE);
 #else
 #define VSYSCALL_AUX_ENT
+		NEW_AUX_ENT(AT_SYSINFO_EHDR, VDSO_BASE);	\
+	else							\
+		NEW_AUX_ENT(AT_IGNORE, 0)
+#else
+#define VSYSCALL_AUX_ENT	NEW_AUX_ENT(AT_IGNORE, 0)
 #endif /* CONFIG_VSYSCALL */
 
 #ifdef CONFIG_SH_FPU
 #define FPU_AUX_ENT	NEW_AUX_ENT(AT_FPUCW, FPSCR_INIT)
 #else
 #define FPU_AUX_ENT
+#define FPU_AUX_ENT	NEW_AUX_ENT(AT_IGNORE, 0)
 #endif
 
 extern int l1i_cache_shape, l1d_cache_shape, l2_cache_shape;

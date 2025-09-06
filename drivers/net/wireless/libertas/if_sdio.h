@@ -42,4 +42,15 @@
 
 #define IF_SDIO_EVENT           0x80fc
 
+#define IF_SDIO_FW_STATUS	0x40
+#define   IF_SDIO_FIRMWARE_OK	0xfedc
+
+#define IF_SDIO_RX_LEN		0x42
+#define IF_SDIO_RX_UNIT		0x43
+
+#define IF_SDIO_EVENT           0x80fc
+
+#define IF_SDIO_BLOCK_SIZE	256
+#define CONFIGURATION_REG               0x03
+#define HOST_POWER_UP                   (0x1U << 1)
 #endif

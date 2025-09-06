@@ -53,6 +53,10 @@ struct atmel_lcdfb_info {
 	bool			lcdcon_is_backlight;
 	u8			saved_lcdcon;
 
+struct atmel_lcdfb_pdata {
+	unsigned int		guard_time;
+	bool			lcdcon_is_backlight;
+	bool			lcdcon_pol_negative;
 	u8			default_bpp;
 	u8			lcd_wiring_mode;
 	unsigned int		default_lcdcon2;
@@ -60,6 +64,10 @@ struct atmel_lcdfb_info {
 	void (*atmel_lcdfb_power_control)(int on);
 	struct fb_monspecs	*default_monspecs;
 	u32			pseudo_palette[16];
+	void (*atmel_lcdfb_power_control)(struct atmel_lcdfb_pdata *pdata, int on);
+	struct fb_monspecs	*default_monspecs;
+
+	struct list_head	pwr_gpios;
 };
 
 #define ATMEL_LCDC_DMABADDR1	0x00

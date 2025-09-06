@@ -278,6 +278,7 @@ static int gf2k_connect(struct gameport *gameport, struct gameport_driver *drv)
 
 #ifdef RESET_WORKS
 	if ((gf2k->id != (GB(19,2,0) | GB(15,3,2) | GB(12,3,5))) ||
+	if ((gf2k->id != (GB(19,2,0) | GB(15,3,2) | GB(12,3,5))) &&
 	    (gf2k->id != (GB(31,2,0) | GB(27,3,2) | GB(24,3,5)))) {
 		err = -ENODEV;
 		goto fail2;
@@ -323,6 +324,8 @@ static int gf2k_connect(struct gameport *gameport, struct gameport_driver *drv)
 		input_dev->absmin[ABS_HAT0X + i] = -1;
 		input_dev->absmax[ABS_HAT0X + i] = 1;
 	}
+	for (i = 0; i < gf2k_hats[gf2k->id]; i++)
+		input_set_abs_params(input_dev, ABS_HAT0X + i, -1, 1, 0, 0);
 
 	for (i = 0; i < gf2k_joys[gf2k->id]; i++)
 		set_bit(gf2k_btn_joy[i], input_dev->keybit);
@@ -339,6 +342,14 @@ static int gf2k_connect(struct gameport *gameport, struct gameport_driver *drv)
 		input_dev->absmin[gf2k_abs[i]] = 32;
 		input_dev->absfuzz[gf2k_abs[i]] = 8;
 		input_dev->absflat[gf2k_abs[i]] = (i < 2) ? 24 : 0;
+		int max = i < 2 ?
+			input_abs_get_val(input_dev, gf2k_abs[i]) * 2 :
+			input_abs_get_val(input_dev, gf2k_abs[0]) +
+				input_abs_get_val(input_dev, gf2k_abs[1]);
+		int flat = i < 2 ? 24 : 0;
+
+		input_set_abs_params(input_dev, gf2k_abs[i],
+				     32, max - 32, 8, flat);
 	}
 
 	err = input_register_device(gf2k->dev);
@@ -386,3 +397,4 @@ static void __exit gf2k_exit(void)
 
 module_init(gf2k_init);
 module_exit(gf2k_exit);
+module_gameport_driver(gf2k_drv);

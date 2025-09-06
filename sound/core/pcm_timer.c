@@ -20,6 +20,7 @@
  */
 
 #include <linux/time.h>
+#include <linux/gcd.h>
 #include <sound/core.h>
 #include <sound/pcm.h>
 #include <sound/timer.h>
@@ -52,11 +53,15 @@ void snd_pcm_timer_resolution_change(struct snd_pcm_substream *substream)
         mult = 1000000000;
 	rate = runtime->rate;
 	snd_assert(rate != 0, return);
+	if (snd_BUG_ON(!rate))
+		return;
 	l = gcd(mult, rate);
 	mult /= l;
 	rate /= l;
 	fsize = runtime->period_size;
 	snd_assert(fsize != 0, return);
+	if (snd_BUG_ON(!fsize))
+		return;
 	l = gcd(rate, fsize);
 	rate /= l;
 	fsize /= l;
@@ -67,6 +72,9 @@ void snd_pcm_timer_resolution_change(struct snd_pcm_substream *substream)
 	}
 	if (rate == 0) {
 		snd_printk(KERN_ERR "pcm timer resolution out of range (rate = %u, period_size = %lu)\n", runtime->rate, runtime->period_size);
+		pcm_err(substream->pcm,
+			"pcm timer resolution out of range (rate = %u, period_size = %lu)\n",
+			runtime->rate, runtime->period_size);
 		runtime->timer_resolution = -1;
 		return;
 	}
@@ -90,6 +98,10 @@ static int snd_pcm_timer_start(struct snd_timer * timer)
 	spin_lock_irqsave(&substream->timer_lock, flags);
 	substream->timer_running = 1;
 	spin_unlock_irqrestore(&substream->timer_lock, flags);
+	struct snd_pcm_substream *substream;
+	
+	substream = snd_timer_chip(timer);
+	substream->timer_running = 1;
 	return 0;
 }
 
@@ -102,6 +114,10 @@ static int snd_pcm_timer_stop(struct snd_timer * timer)
 	spin_lock_irqsave(&substream->timer_lock, flags);
 	substream->timer_running = 0;
 	spin_unlock_irqrestore(&substream->timer_lock, flags);
+	struct snd_pcm_substream *substream;
+	
+	substream = snd_timer_chip(timer);
+	substream->timer_running = 0;
 	return 0;
 }
 

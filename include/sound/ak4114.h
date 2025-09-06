@@ -102,6 +102,13 @@
 #define AK4114_OPS02		(1<<2)	/* Output Though Data Selector for TX0 pin */
 #define AK4114_OPS01		(1<<1)	/* Output Though Data Selector for TX0 pin */
 #define AK4114_OPS00		(1<<0)	/* Output Though Data Selector for TX0 pin */
+#define AK4114_OPS12		(1<<6)	/* Output Data Selector for TX1 pin */
+#define AK4114_OPS11		(1<<5)	/* Output Data Selector for TX1 pin */
+#define AK4114_OPS10		(1<<4)	/* Output Data Selector for TX1 pin */
+#define AK4114_TX0E		(1<<3)	/* TX0 Output Enable (1 = enable) */
+#define AK4114_OPS02		(1<<2)	/* Output Data Selector for TX0 pin */
+#define AK4114_OPS01		(1<<1)	/* Output Data Selector for TX0 pin */
+#define AK4114_OPS00		(1<<0)	/* Output Data Selector for TX0 pin */
 
 /* AK4114_REG_IO1 */
 #define AK4114_EFH1		(1<<7)	/* Interrupt 0 pin Hold */
@@ -171,6 +178,10 @@ struct ak4114 {
 	unsigned int init: 1;
 	spinlock_t lock;
 	unsigned char regmap[7];
+	atomic_t wq_processing;
+	struct mutex reinit_mutex;
+	spinlock_t lock;
+	unsigned char regmap[6];
 	unsigned char txcsb[5];
 	struct snd_kcontrol *kctls[AK4114_CONTROLS];
 	struct snd_pcm_substream *playback_substream;
@@ -190,6 +201,7 @@ struct ak4114 {
 int snd_ak4114_create(struct snd_card *card,
 		      ak4114_read_t *read, ak4114_write_t *write,
 		      const unsigned char pgm[7], const unsigned char txcsb[5],
+		      const unsigned char pgm[6], const unsigned char txcsb[5],
 		      void *private_data, struct ak4114 **r_ak4114);
 void snd_ak4114_reg_write(struct ak4114 *ak4114, unsigned char reg, unsigned char mask, unsigned char val);
 void snd_ak4114_reinit(struct ak4114 *ak4114);
@@ -198,6 +210,14 @@ int snd_ak4114_build(struct ak4114 *ak4114,
                      struct snd_pcm_substream *capture_substream);
 int snd_ak4114_external_rate(struct ak4114 *ak4114);
 int snd_ak4114_check_rate_and_errors(struct ak4114 *ak4114, unsigned int flags);
+
+#ifdef CONFIG_PM
+void snd_ak4114_suspend(struct ak4114 *chip);
+void snd_ak4114_resume(struct ak4114 *chip);
+#else
+static inline void snd_ak4114_suspend(struct ak4114 *chip) {}
+static inline void snd_ak4114_resume(struct ak4114 *chip) {}
+#endif
 
 #endif /* __SOUND_AK4114_H */
 

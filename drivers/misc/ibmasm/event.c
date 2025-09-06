@@ -22,6 +22,12 @@
  *
  */
 
+ * Author: Max Asböck <amax@us.ibm.com>
+ *
+ */
+
+#include <linux/sched.h>
+#include <linux/slab.h>
 #include "ibmasm.h"
 #include "lowlevel.h"
 
@@ -51,6 +57,7 @@ static void wake_up_event_readers(struct service_processor *sp)
  * event readers.
  * There is no reader marker in the buffer, therefore readers are
  * responsible for keeping up with the writer, or they will loose events.
+ * responsible for keeping up with the writer, or they will lose events.
  */
 void ibmasm_receive_event(struct service_processor *sp, void *data, unsigned int data_size)
 {

@@ -250,7 +250,6 @@ typedef struct ad_system {
 #pragma pack()
 #endif
 
-// ================= AD Exported structures to the main bonding code ==================
 #define BOND_AD_INFO(bond)   ((bond)->ad_info)
 #define SLAVE_AD_INFO(slave) ((slave)->ad_info)
 
@@ -272,7 +271,6 @@ struct ad_slave_info {
 	u16 id;
 };
 
-// ================= AD Exported functions to the main bonding code ==================
 void bond_3ad_initialize(struct bonding *bond, u16 tick_resolution, int lacp_fast);
 int  bond_3ad_bind_slave(struct slave *slave);
 void bond_3ad_unbind_slave(struct slave *slave);

@@ -31,6 +31,8 @@
 #include <linux/kernel.h>
 #include <linux/pci.h>
 #include <linux/init.h>
+#include <linux/slab.h>
+#include <linux/pci.h>
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/map.h>
 #include <linux/mtd/partitions.h>
@@ -95,6 +97,19 @@ static int __devinit vr_nor_init_partitions(struct vr_nor_mtd *p)
 }
 
 static void __devexit vr_nor_destroy_mtd_setup(struct vr_nor_mtd *p)
+static void vr_nor_destroy_partitions(struct vr_nor_mtd *p)
+{
+	mtd_device_unregister(p->info);
+}
+
+static int vr_nor_init_partitions(struct vr_nor_mtd *p)
+{
+	/* register the flash bank */
+	/* partition the flash bank */
+	return mtd_device_parse_register(p->info, NULL, NULL, NULL, 0);
+}
+
+static void vr_nor_destroy_mtd_setup(struct vr_nor_mtd *p)
 {
 	map_destroy(p->info);
 }
@@ -104,6 +119,11 @@ static int __devinit vr_nor_mtd_setup(struct vr_nor_mtd *p)
 	static const char *probe_types[] =
 	    { "cfi_probe", "jedec_probe", NULL };
 	const char **type;
+static int vr_nor_mtd_setup(struct vr_nor_mtd *p)
+{
+	static const char * const probe_types[] =
+	    { "cfi_probe", "jedec_probe", NULL };
+	const char * const *type;
 
 	for (type = probe_types; !p->info && *type; type++)
 		p->info = do_map_probe(*type, &p->map);
@@ -111,11 +131,13 @@ static int __devinit vr_nor_mtd_setup(struct vr_nor_mtd *p)
 		return -ENODEV;
 
 	p->info->owner = THIS_MODULE;
+	p->info->dev.parent = &p->dev->dev;
 
 	return 0;
 }
 
 static void __devexit vr_nor_destroy_maps(struct vr_nor_mtd *p)
+static void vr_nor_destroy_maps(struct vr_nor_mtd *p)
 {
 	unsigned int exp_timing_cs0;
 
@@ -136,6 +158,7 @@ static void __devexit vr_nor_destroy_maps(struct vr_nor_mtd *p)
  * Returns 0 on success, nonzero otherwise.
  */
 static int __devinit vr_nor_init_maps(struct vr_nor_mtd *p)
+static int vr_nor_init_maps(struct vr_nor_mtd *p)
 {
 	unsigned long csr_phys, csr_len;
 	unsigned long win_phys, win_len;
@@ -200,6 +223,10 @@ static void __devexit vr_nor_pci_remove(struct pci_dev *dev)
 	struct vr_nor_mtd *p = pci_get_drvdata(dev);
 
 	pci_set_drvdata(dev, NULL);
+static void vr_nor_pci_remove(struct pci_dev *dev)
+{
+	struct vr_nor_mtd *p = pci_get_drvdata(dev);
+
 	vr_nor_destroy_partitions(p);
 	vr_nor_destroy_mtd_setup(p);
 	vr_nor_destroy_maps(p);
@@ -210,6 +237,7 @@ static void __devexit vr_nor_pci_remove(struct pci_dev *dev)
 
 static int __devinit
 vr_nor_pci_probe(struct pci_dev *dev, const struct pci_device_id *id)
+static int vr_nor_pci_probe(struct pci_dev *dev, const struct pci_device_id *id)
 {
 	struct vr_nor_mtd *p = NULL;
 	unsigned int exp_timing_cs0;
@@ -291,6 +319,11 @@ static void __exit vr_nor_mtd_exit(void)
 
 module_init(vr_nor_mtd_init);
 module_exit(vr_nor_mtd_exit);
+	.remove = vr_nor_pci_remove,
+	.id_table = vr_nor_pci_ids,
+};
+
+module_pci_driver(vr_nor_pci_driver);
 
 MODULE_AUTHOR("Andy Lowe");
 MODULE_DESCRIPTION("MTD map driver for NOR flash on Intel Vermilion Range");

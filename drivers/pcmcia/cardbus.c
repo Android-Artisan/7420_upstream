@@ -36,7 +36,6 @@
 #include <pcmcia/cistpl.h>
 #include "cs_internal.h"
 
-/*====================================================================*/
 
 /* Offsets in the Expansion ROM Image Header */
 #define ROM_SIGNATURE		0x0000	/* 2 bytes */
@@ -52,14 +51,12 @@
 #define PCDATA_CODE_TYPE	0x0014
 #define PCDATA_INDICATOR	0x0015
 
-/*=====================================================================
 
     Expansion ROM's have a special layout, and pointers specify an
     image number and an offset within that image.  xlate_rom_addr()
     converts an image/offset address to an absolute offset from the
     ROM's base address.
     
-=====================================================================*/
 
 static u_int xlate_rom_addr(void __iomem *b, u_int addr)
 {
@@ -80,13 +77,11 @@ static u_int xlate_rom_addr(void __iomem *b, u_int addr)
 	return 0;
 }
 
-/*=====================================================================
 
     These are similar to setup_cis_mem and release_cis_mem for 16-bit
     cards.  The "result" that is used externally is the cb_cis_virt
     pointer in the struct pcmcia_socket structure.
     
-=====================================================================*/
 
 static void cb_release_cis_mem(struct pcmcia_socket * s)
 {
@@ -120,12 +115,10 @@ static int cb_setup_cis_mem(struct pcmcia_socket * s, struct resource *res)
 	return 0;
 }
 
-/*=====================================================================
 
     This is used by the CIS processing code to read CIS information
     from a CardBus device.
     
-=====================================================================*/
 
 int read_cb_mem(struct pcmcia_socket * s, int space, u_int addr, u_int len, void *ptr)
 {
@@ -176,13 +169,11 @@ fail:
 	return -1;
 }
 
-/*=====================================================================
 
     cb_alloc() and cb_free() allocate and free the kernel data
     structures for a Cardbus device, and handle the lowest level PCI
     device setup issues.
     
-=====================================================================*/
 
 /*
  * Since there is only one interrupt available to CardBus
@@ -190,12 +181,25 @@ fail:
  * be using this IRQ.
  */
 static void cardbus_assign_irqs(struct pci_bus *bus, int irq)
+#include <linux/kernel.h>
+#include <linux/module.h>
+#include <linux/pci.h>
+
+#include <pcmcia/ss.h>
+
+
+static void cardbus_config_irq_and_cls(struct pci_bus *bus, int irq)
 {
 	struct pci_dev *dev;
 
 	list_for_each_entry(dev, &bus->devices, bus_list) {
 		u8 irq_pin;
 
+		/*
+		 * Since there is only one interrupt available to
+		 * CardBus devices, all devices downstream of this
+		 * device must be using this IRQ.
+		 */
 		pci_read_config_byte(dev, PCI_INTERRUPT_PIN, &irq_pin);
 		if (irq_pin) {
 			dev->irq = irq;
@@ -208,6 +212,26 @@ static void cardbus_assign_irqs(struct pci_bus *bus, int irq)
 }
 
 int __ref cb_alloc(struct pcmcia_socket * s)
+		/*
+		 * Some controllers transfer very slowly with 0 CLS.
+		 * Configure it.  This may fail as CLS configuration
+		 * is mandatory only for MWI.
+		 */
+		pci_set_cacheline_size(dev);
+
+		if (dev->subordinate)
+			cardbus_config_irq_and_cls(dev->subordinate, irq);
+	}
+}
+
+/**
+ * cb_alloc() - add CardBus device
+ * @s:		the pcmcia_socket where the CardBus device is located
+ *
+ * cb_alloc() allocates the kernel data structures for a Cardbus device
+ * and handles the lowest level PCI device setup issues.
+ */
+int __ref cb_alloc(struct pcmcia_socket *s)
 {
 	struct pci_bus *bus = s->cb_dev->subordinate;
 	struct pci_dev *dev;
@@ -221,6 +245,15 @@ int __ref cb_alloc(struct pcmcia_socket * s)
 		list_for_each_entry(dev, &bus->devices, bus_list)
 			if (dev->hdr_type == PCI_HEADER_TYPE_BRIDGE ||
 			    dev->hdr_type == PCI_HEADER_TYPE_CARDBUS)
+	pci_lock_rescan_remove();
+
+	s->functions = pci_scan_slot(bus, PCI_DEVFN(0, 0));
+	pci_fixup_cardbus(bus);
+
+	max = bus->busn_res.start;
+	for (pass = 0; pass < 2; pass++)
+		list_for_each_entry(dev, &bus->devices, bus_list)
+			if (pci_is_bridge(dev))
 				max = pci_scan_bridge(bus, dev, max, pass);
 
 	/*
@@ -229,6 +262,7 @@ int __ref cb_alloc(struct pcmcia_socket * s)
 	pci_bus_size_bridges(bus);
 	pci_bus_assign_resources(bus);
 	cardbus_assign_irqs(bus, s->pci_irq);
+	cardbus_config_irq_and_cls(bus, s->pci_irq);
 
 	/* socket specific tune function */
 	if (s->tune_bridge)
@@ -249,4 +283,35 @@ void cb_free(struct pcmcia_socket * s)
 
 	if (bridge)
 		pci_remove_behind_bridge(bridge);
+	pci_bus_add_devices(bus);
+
+	pci_unlock_rescan_remove();
+	return 0;
+}
+
+/**
+ * cb_free() - remove CardBus device
+ * @s:		the pcmcia_socket where the CardBus device was located
+ *
+ * cb_free() handles the lowest level PCI device cleanup.
+ */
+void cb_free(struct pcmcia_socket *s)
+{
+	struct pci_dev *bridge, *dev, *tmp;
+	struct pci_bus *bus;
+
+	bridge = s->cb_dev;
+	if (!bridge)
+		return;
+
+	bus = bridge->subordinate;
+	if (!bus)
+		return;
+
+	pci_lock_rescan_remove();
+
+	list_for_each_entry_safe(dev, tmp, &bus->devices, bus_list)
+		pci_stop_and_remove_bus_device(dev);
+
+	pci_unlock_rescan_remove();
 }

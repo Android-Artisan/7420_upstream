@@ -53,16 +53,19 @@ typedef struct sym_quehead {
 } while (0)
 
 static __inline struct sym_quehead *sym_que_first(struct sym_quehead *head)
+static inline struct sym_quehead *sym_que_first(struct sym_quehead *head)
 {
 	return (head->flink == head) ? 0 : head->flink;
 }
 
 static __inline struct sym_quehead *sym_que_last(struct sym_quehead *head)
+static inline struct sym_quehead *sym_que_last(struct sym_quehead *head)
 {
 	return (head->blink == head) ? 0 : head->blink;
 }
 
 static __inline void __sym_que_add(struct sym_quehead * new,
+static inline void __sym_que_add(struct sym_quehead * new,
 	struct sym_quehead * blink,
 	struct sym_quehead * flink)
 {
@@ -73,6 +76,7 @@ static __inline void __sym_que_add(struct sym_quehead * new,
 }
 
 static __inline void __sym_que_del(struct sym_quehead * blink,
+static inline void __sym_que_del(struct sym_quehead * blink,
 	struct sym_quehead * flink)
 {
 	flink->blink = blink;
@@ -80,11 +84,13 @@ static __inline void __sym_que_del(struct sym_quehead * blink,
 }
 
 static __inline int sym_que_empty(struct sym_quehead *head)
+static inline int sym_que_empty(struct sym_quehead *head)
 {
 	return head->flink == head;
 }
 
 static __inline void sym_que_splice(struct sym_quehead *list,
+static inline void sym_que_splice(struct sym_quehead *list,
 	struct sym_quehead *head)
 {
 	struct sym_quehead *first = list->flink;
@@ -102,6 +108,7 @@ static __inline void sym_que_splice(struct sym_quehead *list,
 }
 
 static __inline void sym_que_move(struct sym_quehead *orig,
+static inline void sym_que_move(struct sym_quehead *orig,
 	struct sym_quehead *dest)
 {
 	struct sym_quehead *first, *last;
@@ -130,6 +137,7 @@ static __inline void sym_que_move(struct sym_quehead *orig,
 #define sym_insque_head(new, head)	__sym_que_add(new, head, (head)->flink)
 
 static __inline struct sym_quehead *sym_remque_head(struct sym_quehead *head)
+static inline struct sym_quehead *sym_remque_head(struct sym_quehead *head)
 {
 	struct sym_quehead *elem = head->flink;
 
@@ -143,6 +151,7 @@ static __inline struct sym_quehead *sym_remque_head(struct sym_quehead *head)
 #define sym_insque_tail(new, head)	__sym_que_add(new, (head)->blink, head)
 
 static __inline struct sym_quehead *sym_remque_tail(struct sym_quehead *head)
+static inline struct sym_quehead *sym_remque_tail(struct sym_quehead *head)
 {
 	struct sym_quehead *elem = head->blink;
 

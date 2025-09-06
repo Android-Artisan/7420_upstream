@@ -10,6 +10,10 @@
 #define L1_CACHE_SHIFT 5
 #define L1_CACHE_BYTES 32
 #define L1_CACHE_ALIGN(x) ((((x)+(L1_CACHE_BYTES-1))&~(L1_CACHE_BYTES-1)))
+#define ARCH_SLAB_MINALIGN	__alignof__(unsigned long long)
+
+#define L1_CACHE_SHIFT 5
+#define L1_CACHE_BYTES 32
 
 #ifdef CONFIG_SPARC32
 #define SMP_CACHE_BYTES_SHIFT 5
@@ -134,5 +138,6 @@ static inline void flush_ei_user(unsigned int addr)
 			     "memory");
 }
 #endif /* CONFIG_SPARC32 */
+#define __read_mostly __attribute__((__section__(".data..read_mostly")))
 
 #endif /* !(_SPARC_CACHE_H) */

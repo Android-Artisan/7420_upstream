@@ -48,6 +48,21 @@ int eeh_send_failure_event (struct device_node *dn,
 
 /* Main recovery function */
 struct pci_dn * handle_eeh_events (struct eeh_event *);
+/*
+ * structure holding pci controller data that describes a
+ * change in the isolation status of a PCI slot.  A pointer
+ * to this struct is passed as the data pointer in a notify
+ * callback.
+ */
+struct eeh_event {
+	struct list_head	list;	/* to form event queue	*/
+	struct eeh_pe		*pe;	/* EEH PE		*/
+};
+
+int eeh_event_init(void);
+int eeh_send_failure_event(struct eeh_pe *pe);
+void eeh_remove_event(struct eeh_pe *pe, bool force);
+void eeh_handle_event(struct eeh_pe *pe);
 
 #endif /* __KERNEL__ */
 #endif /* ASM_POWERPC_EEH_EVENT_H */

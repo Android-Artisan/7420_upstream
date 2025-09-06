@@ -17,6 +17,7 @@
 #include <linux/irq.h>
 #include <linux/types.h>
 #include <linux/bootmem.h>
+#include <linux/slab.h>
 
 #include <asm/io.h>
 #include <asm/prom.h>
@@ -29,6 +30,11 @@ static DEFINE_SPINLOCK(pci_pic_lock);
 struct pq2ads_pci_pic {
 	struct device_node *node;
 	struct irq_host *host;
+static DEFINE_RAW_SPINLOCK(pci_pic_lock);
+
+struct pq2ads_pci_pic {
+	struct device_node *node;
+	struct irq_domain *host;
 
 	struct {
 		u32 stat;
@@ -46,6 +52,14 @@ static void pq2ads_pci_mask_irq(unsigned int virq)
 	if (irq != -1) {
 		unsigned long flags;
 		spin_lock_irqsave(&pci_pic_lock, flags);
+static void pq2ads_pci_mask_irq(struct irq_data *d)
+{
+	struct pq2ads_pci_pic *priv = irq_data_get_irq_chip_data(d);
+	int irq = NUM_IRQS - irqd_to_hwirq(d) - 1;
+
+	if (irq != -1) {
+		unsigned long flags;
+		raw_spin_lock_irqsave(&pci_pic_lock, flags);
 
 		setbits32(&priv->regs->mask, 1 << irq);
 		mb();
@@ -58,6 +72,14 @@ static void pq2ads_pci_unmask_irq(unsigned int virq)
 {
 	struct pq2ads_pci_pic *priv = get_irq_chip_data(virq);
 	int irq = NUM_IRQS - virq_to_hw(virq) - 1;
+		raw_spin_unlock_irqrestore(&pci_pic_lock, flags);
+	}
+}
+
+static void pq2ads_pci_unmask_irq(struct irq_data *d)
+{
+	struct pq2ads_pci_pic *priv = irq_data_get_irq_chip_data(d);
+	int irq = NUM_IRQS - irqd_to_hwirq(d) - 1;
 
 	if (irq != -1) {
 		unsigned long flags;
@@ -65,6 +87,9 @@ static void pq2ads_pci_unmask_irq(unsigned int virq)
 		spin_lock_irqsave(&pci_pic_lock, flags);
 		clrbits32(&priv->regs->mask, 1 << irq);
 		spin_unlock_irqrestore(&pci_pic_lock, flags);
+		raw_spin_lock_irqsave(&pci_pic_lock, flags);
+		clrbits32(&priv->regs->mask, 1 << irq);
+		raw_spin_unlock_irqrestore(&pci_pic_lock, flags);
 	}
 }
 
@@ -83,6 +108,18 @@ static struct irq_chip pq2ads_pci_ic = {
 static void pq2ads_pci_irq_demux(unsigned int irq, struct irq_desc *desc)
 {
 	struct pq2ads_pci_pic *priv = desc->handler_data;
+	.name = "PQ2 ADS PCI",
+	.irq_mask = pq2ads_pci_mask_irq,
+	.irq_mask_ack = pq2ads_pci_mask_irq,
+	.irq_ack = pq2ads_pci_mask_irq,
+	.irq_unmask = pq2ads_pci_unmask_irq,
+	.irq_enable = pq2ads_pci_unmask_irq,
+	.irq_disable = pq2ads_pci_mask_irq
+};
+
+static void pq2ads_pci_irq_demux(struct irq_desc *desc)
+{
+	struct pq2ads_pci_pic *priv = irq_desc_get_handler_data(desc);
 	u32 stat, mask, pend;
 	int bit;
 
@@ -123,12 +160,24 @@ static void pci_host_unmap(struct irq_host *h, unsigned int virq)
 static struct irq_host_ops pci_pic_host_ops = {
 	.map = pci_pic_host_map,
 	.unmap = pci_host_unmap,
+static int pci_pic_host_map(struct irq_domain *h, unsigned int virq,
+			    irq_hw_number_t hw)
+{
+	irq_set_status_flags(virq, IRQ_LEVEL);
+	irq_set_chip_data(virq, h->host_data);
+	irq_set_chip_and_handler(virq, &pq2ads_pci_ic, handle_level_irq);
+	return 0;
+}
+
+static const struct irq_domain_ops pci_pic_host_ops = {
+	.map = pci_pic_host_map,
 };
 
 int __init pq2ads_pci_init_irq(void)
 {
 	struct pq2ads_pci_pic *priv;
 	struct irq_host *host;
+	struct irq_domain *host;
 	struct device_node *np;
 	int ret = -ENODEV;
 	int irq;
@@ -148,6 +197,7 @@ int __init pq2ads_pci_init_irq(void)
 	}
 
 	priv = alloc_bootmem(sizeof(struct pq2ads_pci_pic));
+	priv = kzalloc(sizeof(*priv), GFP_KERNEL);
 	if (!priv) {
 		of_node_put(np);
 		ret = -ENOMEM;
@@ -159,6 +209,7 @@ int __init pq2ads_pci_init_irq(void)
 	if (!priv->regs) {
 		printk(KERN_ERR "Cannot map PCI PIC registers.\n");
 		goto out_free_bootmem;
+		goto out_free_kmalloc;
 	}
 
 	/* mask all PCI interrupts */
@@ -167,6 +218,7 @@ int __init pq2ads_pci_init_irq(void)
 
 	host = irq_alloc_host(np, IRQ_HOST_MAP_LINEAR, NUM_IRQS,
 	                      &pci_pic_host_ops, NUM_IRQS);
+	host = irq_domain_add_linear(np, NUM_IRQS, &pci_pic_host_ops, priv);
 	if (!host) {
 		ret = -ENOMEM;
 		goto out_unmap_regs;
@@ -178,6 +230,9 @@ int __init pq2ads_pci_init_irq(void)
 	host->host_data = priv;
 	set_irq_data(irq, priv);
 	set_irq_chained_handler(irq, pq2ads_pci_irq_demux);
+	priv->host = host;
+	irq_set_handler_data(irq, priv);
+	irq_set_chained_handler(irq, pq2ads_pci_irq_demux);
 
 	of_node_put(np);
 	return 0;
@@ -187,6 +242,8 @@ out_unmap_regs:
 out_free_bootmem:
 	free_bootmem((unsigned long)priv,
 	             sizeof(sizeof(struct pq2ads_pci_pic)));
+out_free_kmalloc:
+	kfree(priv);
 	of_node_put(np);
 out_unmap_irq:
 	irq_dispose_mapping(irq);

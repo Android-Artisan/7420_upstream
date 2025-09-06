@@ -26,6 +26,9 @@
  * along with this program; see the file COPYING.
  * If not, write to the Free Software Foundation,
  * 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+ * Copyright 2007-2010 Analog Devices Inc.
+ *
+ * Licensed under the GPL-2 or later.
  */
 
 #ifndef _CDEF_BF549_H
@@ -201,6 +204,11 @@
 #define bfin_write_SPI2_BAUD(val)	bfin_write16(SPI2_BAUD, val)
 #define bfin_read_SPI2_SHADOW()		bfin_read16(SPI2_SHADOW)
 #define bfin_write_SPI2_SHADOW(val)	bfin_write16(SPI2_SHADOW, val)
+/* include cdefBF54x_base.h for the set of #defines that are common to all ADSP-BF54x bfin_read_()rocessors */
+#include "cdefBF54x_base.h"
+
+/* The BF549 is like the BF544, but has MXVR */
+#include "cdefBF547.h"
 
 /* MXVR Registers */
 

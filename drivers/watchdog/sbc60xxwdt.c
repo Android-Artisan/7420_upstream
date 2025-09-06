@@ -2,6 +2,7 @@
  *	60xx Single Board Computer Watchdog Timer driver for Linux 2.2.x
  *
  *      Based on acquirewdt.c by Alan Cox.
+ *	Based on acquirewdt.c by Alan Cox.
  *
  *	This program is free software; you can redistribute it and/or
  *	modify it under the terms of the GNU General Public License
@@ -47,6 +48,8 @@
  *      getting scheduled within that time frame.
  *
  */
+
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/module.h>
 #include <linux/moduleparam.h>
@@ -107,6 +110,8 @@ MODULE_PARM_DESC(timeout,
 
 static int nowayout = WATCHDOG_NOWAYOUT;
 module_param(nowayout, int, 0);
+static bool nowayout = WATCHDOG_NOWAYOUT;
+module_param(nowayout, bool, 0);
 MODULE_PARM_DESC(nowayout,
 	"Watchdog cannot be stopped once started (default="
 				__MODULE_STRING(WATCHDOG_NOWAYOUT) ")");
@@ -134,6 +139,7 @@ static void wdt_timer_ping(unsigned long data)
 	} else
 		printk(KERN_WARNING PFX
 			"Heartbeat lost! Will not ping the watchdog\n");
+		pr_warn("Heartbeat lost! Will not ping the watchdog\n");
 }
 
 /*
@@ -147,14 +153,16 @@ static void wdt_startup(void)
 	/* Start the timer */
 	mod_timer(&timer, jiffies + WDT_INTERVAL);
 	printk(KERN_INFO PFX "Watchdog timer is now enabled.\n");
+	pr_info("Watchdog timer is now enabled\n");
 }
 
 static void wdt_turnoff(void)
 {
 	/* Stop the timer */
-	del_timer(&timer);
+	del_timer_sync(&timer);
 	inb_p(wdt_stop);
 	printk(KERN_INFO PFX "Watchdog timer is now disabled...\n");
+	pr_info("Watchdog timer is now disabled...\n");
 }
 
 static void wdt_keepalive(void)
@@ -219,6 +227,7 @@ static int fop_close(struct inode *inode, struct file *file)
 		del_timer(&timer);
 		printk(KERN_CRIT PFX
 		  "device file closed unexpectedly. Will not stop the WDT!\n");
+		pr_crit("device file closed unexpectedly. Will not stop the WDT!\n");
 	}
 	clear_bit(0, &wdt_is_open);
 	wdt_expect_close = 0;
@@ -343,6 +352,12 @@ static int __init sbc60xxwdt_init(void)
 	if (!request_region(wdt_start, 1, "SBC 60XX WDT")) {
 		printk(KERN_ERR PFX "I/O address 0x%04x already in use\n",
 			wdt_start);
+		pr_info("timeout value must be 1 <= x <= 3600, using %d\n",
+			timeout);
+	}
+
+	if (!request_region(wdt_start, 1, "SBC 60XX WDT")) {
+		pr_err("I/O address 0x%04x already in use\n", wdt_start);
 		rc = -EIO;
 		goto err_out;
 	}
@@ -353,6 +368,7 @@ static int __init sbc60xxwdt_init(void)
 			printk(KERN_ERR PFX
 				"I/O address 0x%04x already in use\n",
 							wdt_stop);
+			pr_err("I/O address 0x%04x already in use\n", wdt_stop);
 			rc = -EIO;
 			goto err_out_region1;
 		}
@@ -362,6 +378,7 @@ static int __init sbc60xxwdt_init(void)
 	if (rc) {
 		printk(KERN_ERR PFX
 			"cannot register reboot notifier (err=%d)\n", rc);
+		pr_err("cannot register reboot notifier (err=%d)\n", rc);
 		goto err_out_region2;
 	}
 
@@ -373,6 +390,11 @@ static int __init sbc60xxwdt_init(void)
 		goto err_out_reboot;
 	}
 	printk(KERN_INFO PFX "WDT driver for 60XX single board computer initialised. timeout=%d sec (nowayout=%d)\n",
+		pr_err("cannot register miscdev on minor=%d (err=%d)\n",
+		       wdt_miscdev.minor, rc);
+		goto err_out_reboot;
+	}
+	pr_info("WDT driver for 60XX single board computer initialised. timeout=%d sec (nowayout=%d)\n",
 		timeout, nowayout);
 
 	return 0;

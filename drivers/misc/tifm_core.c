@@ -12,6 +12,10 @@
 #include <linux/tifm.h>
 #include <linux/init.h>
 #include <linux/idr.h>
+#include <linux/slab.h>
+#include <linux/init.h>
+#include <linux/idr.h>
+#include <linux/module.h>
 
 #define DRIVER_NAME "tifm_core"
 #define DRIVER_VERSION "0.8"
@@ -152,6 +156,17 @@ static struct device_attribute tifm_dev_attrs[] = {
 static struct bus_type tifm_bus_type = {
 	.name      = "tifm",
 	.dev_attrs = tifm_dev_attrs,
+static DEVICE_ATTR_RO(type);
+
+static struct attribute *tifm_dev_attrs[] = {
+	&dev_attr_type.attr,
+	NULL,
+};
+ATTRIBUTE_GROUPS(tifm_dev);
+
+static struct bus_type tifm_bus_type = {
+	.name      = "tifm",
+	.dev_groups = tifm_dev_groups,
 	.match     = tifm_bus_match,
 	.uevent    = tifm_uevent,
 	.probe     = tifm_device_probe,
@@ -204,6 +219,17 @@ int tifm_add_adapter(struct tifm_adapter *fm)
 		return rc;
 
 	snprintf(fm->dev.bus_id, BUS_ID_SIZE, "tifm%u", fm->id);
+	idr_preload(GFP_KERNEL);
+	spin_lock(&tifm_adapter_lock);
+	rc = idr_alloc(&tifm_adapter_idr, fm, 0, 0, GFP_NOWAIT);
+	if (rc >= 0)
+		fm->id = rc;
+	spin_unlock(&tifm_adapter_lock);
+	idr_preload_end();
+	if (rc < 0)
+		return rc;
+
+	dev_set_name(&fm->dev, "tifm%u", fm->id);
 	rc = device_add(&fm->dev);
 	if (rc) {
 		spin_lock(&tifm_adapter_lock);
@@ -269,6 +295,8 @@ struct tifm_dev *tifm_alloc_device(struct tifm_adapter *fm, unsigned int id,
 		snprintf(sock->dev.bus_id, BUS_ID_SIZE,
 			 "tifm_%s%u:%u", tifm_media_type_name(type, 2),
 			 fm->id, id);
+		dev_set_name(&sock->dev, "tifm_%s%u:%u",
+			     tifm_media_type_name(type, 2), fm->id, id);
 		printk(KERN_INFO DRIVER_NAME
 		       ": %s card detected in socket %u:%u\n",
 		       tifm_media_type_name(type, 0), fm->id, id);
@@ -330,6 +358,7 @@ static int __init tifm_init(void)
 	int rc;
 
 	workqueue = create_freezeable_workqueue("tifm");
+	workqueue = create_freezable_workqueue("tifm");
 	if (!workqueue)
 		return -ENOMEM;
 

@@ -72,6 +72,30 @@ static struct hw_interrupt_type m32104ut_irq_type =
 	.disable = disable_m32104ut_irq,
 	.ack = mask_and_ack_m32104ut,
 	.end = end_m32104ut_irq
+static void mask_m32104ut_irq(struct irq_data *data)
+{
+	disable_m32104ut_irq(data->irq);
+}
+
+static void unmask_m32104ut_irq(struct irq_data *data)
+{
+	enable_m32104ut_irq(data->irq);
+}
+
+static void shutdown_m32104ut_irq(struct irq_data *data)
+{
+	unsigned int irq = data->irq;
+	unsigned long port = irq2port(irq);
+
+	outl(M32R_ICUCR_ILEVEL7, port);
+}
+
+static struct irq_chip m32104ut_irq_type =
+{
+	.name		= "M32104UT-IRQ",
+	.irq_shutdown	= shutdown_m32104ut_irq,
+	.irq_unmask	= unmask_m32104ut_irq,
+	.irq_mask	= mask_m32104ut_irq,
 };
 
 void __init init_IRQ(void)
@@ -90,6 +114,10 @@ void __init init_IRQ(void)
 	irq_desc[M32R_IRQ_INT0].action = 0;
 	irq_desc[M32R_IRQ_INT0].depth = 1;
 	icu_data[M32R_IRQ_INT0].icucr = M32R_ICUCR_IEN | M32R_ICUCR_ISMOD11; /* "H" level sense */
+	irq_set_chip_and_handler(M32R_IRQ_INT0, &m32104ut_irq_type,
+				 handle_level_irq);
+	/* "H" level sense */
+	cu_data[M32R_IRQ_INT0].icucr = M32R_ICUCR_IEN | M32R_ICUCR_ISMOD11;
 	disable_m32104ut_irq(M32R_IRQ_INT0);
 #endif  /* CONFIG_SMC91X */
 
@@ -98,6 +126,8 @@ void __init init_IRQ(void)
 	irq_desc[M32R_IRQ_MFT2].chip = &m32104ut_irq_type;
 	irq_desc[M32R_IRQ_MFT2].action = 0;
 	irq_desc[M32R_IRQ_MFT2].depth = 1;
+	irq_set_chip_and_handler(M32R_IRQ_MFT2, &m32104ut_irq_type,
+				 handle_level_irq);
 	icu_data[M32R_IRQ_MFT2].icucr = M32R_ICUCR_IEN;
 	disable_m32104ut_irq(M32R_IRQ_MFT2);
 
@@ -107,6 +137,8 @@ void __init init_IRQ(void)
 	irq_desc[M32R_IRQ_SIO0_R].chip = &m32104ut_irq_type;
 	irq_desc[M32R_IRQ_SIO0_R].action = 0;
 	irq_desc[M32R_IRQ_SIO0_R].depth = 1;
+	irq_set_chip_and_handler(M32R_IRQ_SIO0_R, &m32104ut_irq_type,
+				 handle_level_irq);
 	icu_data[M32R_IRQ_SIO0_R].icucr = M32R_ICUCR_IEN;
 	disable_m32104ut_irq(M32R_IRQ_SIO0_R);
 
@@ -115,6 +147,8 @@ void __init init_IRQ(void)
 	irq_desc[M32R_IRQ_SIO0_S].chip = &m32104ut_irq_type;
 	irq_desc[M32R_IRQ_SIO0_S].action = 0;
 	irq_desc[M32R_IRQ_SIO0_S].depth = 1;
+	irq_set_chip_and_handler(M32R_IRQ_SIO0_S, &m32104ut_irq_type,
+				 handle_level_irq);
 	icu_data[M32R_IRQ_SIO0_S].icucr = M32R_ICUCR_IEN;
 	disable_m32104ut_irq(M32R_IRQ_SIO0_S);
 #endif /* CONFIG_SERIAL_M32R_SIO */

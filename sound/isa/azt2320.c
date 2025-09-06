@@ -30,6 +30,7 @@
 */
 
 #include <asm/io.h>
+#include <linux/io.h>
 #include <linux/delay.h>
 #include <linux/init.h>
 #include <linux/time.h>
@@ -39,6 +40,10 @@
 #include <sound/core.h>
 #include <sound/initval.h>
 #include <sound/cs4231.h>
+#include <linux/module.h>
+#include <sound/core.h>
+#include <sound/initval.h>
+#include <sound/wss.h>
 #include <sound/mpu401.h>
 #include <sound/opl3.h>
 
@@ -56,6 +61,7 @@ MODULE_SUPPORTED_DEVICE("{{Aztech Systems,PRO16V},"
 static int index[SNDRV_CARDS] = SNDRV_DEFAULT_IDX;	/* Index 0-MAX */
 static char *id[SNDRV_CARDS] = SNDRV_DEFAULT_STR;	/* ID for this card */
 static int enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE_ISAPNP; /* Enable this card */
+static bool enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE_ISAPNP; /* Enable this card */
 static long port[SNDRV_CARDS] = SNDRV_DEFAULT_PORT;	/* PnP setup */
 static long wss_port[SNDRV_CARDS] = SNDRV_DEFAULT_PORT;	/* PnP setup */
 static long mpu_port[SNDRV_CARDS] = SNDRV_DEFAULT_PORT;	/* PnP setup */
@@ -77,6 +83,7 @@ struct snd_card_azt2320 {
 	struct pnp_dev *dev;
 	struct pnp_dev *devmpu;
 	struct snd_cs4231 *chip;
+	struct snd_wss *chip;
 };
 
 static struct pnp_card_device_id snd_azt2320_pnpids[] = {
@@ -102,6 +109,9 @@ MODULE_DEVICE_TABLE(pnp_card, snd_azt2320_pnpids);
 static int __devinit snd_card_azt2320_pnp(int dev, struct snd_card_azt2320 *acard,
 					  struct pnp_card_link *card,
 					  const struct pnp_card_device_id *id)
+static int snd_card_azt2320_pnp(int dev, struct snd_card_azt2320 *acard,
+				struct pnp_card_link *card,
+				const struct pnp_card_device_id *id)
 {
 	struct pnp_dev *pdev;
 	int err;
@@ -148,6 +158,7 @@ static int __devinit snd_card_azt2320_pnp(int dev, struct snd_card_azt2320 *acar
 
 /* same of snd_sbdsp_command by Jaroslav Kysela */
 static int __devinit snd_card_azt2320_command(unsigned long port, unsigned char val)
+static int snd_card_azt2320_command(unsigned long port, unsigned char val)
 {
 	int i;
 	unsigned long limit;
@@ -162,6 +173,7 @@ static int __devinit snd_card_azt2320_command(unsigned long port, unsigned char 
 }
 
 static int __devinit snd_card_azt2320_enable_wss(unsigned long port)
+static int snd_card_azt2320_enable_wss(unsigned long port)
 {
 	int error;
 
@@ -177,6 +189,9 @@ static int __devinit snd_card_azt2320_enable_wss(unsigned long port)
 static int __devinit snd_card_azt2320_probe(int dev,
 					    struct pnp_card_link *pcard,
 					    const struct pnp_card_device_id *pid)
+static int snd_card_azt2320_probe(int dev,
+				  struct pnp_card_link *pcard,
+				  const struct pnp_card_device_id *pid)
 {
 	int error;
 	struct snd_card *card;
@@ -188,6 +203,15 @@ static int __devinit snd_card_azt2320_probe(int dev,
 				 sizeof(struct snd_card_azt2320))) == NULL)
 		return -ENOMEM;
 	acard = (struct snd_card_azt2320 *)card->private_data;
+	struct snd_wss *chip;
+	struct snd_opl3 *opl3;
+
+	error = snd_card_new(&pcard->card->dev,
+			     index[dev], id[dev], THIS_MODULE,
+			     sizeof(struct snd_card_azt2320), &card);
+	if (error < 0)
+		return error;
+	acard = card->private_data;
 
 	if ((error = snd_card_azt2320_pnp(dev, acard, pcard, pid))) {
 		snd_card_free(card);
@@ -205,6 +229,11 @@ static int __devinit snd_card_azt2320_probe(int dev,
 				       dma1[dev],
 				       dma2[dev],
 				       CS4231_HW_DETECT, 0, &chip)) < 0) {
+	error = snd_wss_create(card, wss_port[dev], -1,
+			       irq[dev],
+			       dma1[dev], dma2[dev],
+			       WSS_HW_DETECT, 0, &chip);
+	if (error < 0) {
 		snd_card_free(card);
 		return error;
 	}
@@ -223,6 +252,18 @@ static int __devinit snd_card_azt2320_probe(int dev,
 		return error;
 	}
 	if ((error = snd_cs4231_timer(chip, 0, NULL)) < 0) {
+	error = snd_wss_pcm(chip, 0);
+	if (error < 0) {
+		snd_card_free(card);
+		return error;
+	}
+	error = snd_wss_mixer(chip);
+	if (error < 0) {
+		snd_card_free(card);
+		return error;
+	}
+	error = snd_wss_timer(chip, 0);
+	if (error < 0) {
 		snd_card_free(card);
 		return error;
 	}
@@ -232,6 +273,7 @@ static int __devinit snd_card_azt2320_probe(int dev,
 				mpu_port[dev], 0,
 				mpu_irq[dev], IRQF_DISABLED,
 				NULL) < 0)
+				mpu_irq[dev], NULL) < 0)
 			snd_printk(KERN_ERR PFX "no MPU-401 device at 0x%lx\n", mpu_port[dev]);
 	}
 
@@ -265,6 +307,10 @@ static unsigned int __devinitdata azt2320_devices;
 
 static int __devinit snd_azt2320_pnp_detect(struct pnp_card_link *card,
 					    const struct pnp_card_device_id *id)
+static unsigned int azt2320_devices;
+
+static int snd_azt2320_pnp_detect(struct pnp_card_link *card,
+				  const struct pnp_card_device_id *id)
 {
 	static int dev;
 	int res;
@@ -283,6 +329,7 @@ static int __devinit snd_azt2320_pnp_detect(struct pnp_card_link *card,
 }
 
 static void __devexit snd_azt2320_pnp_remove(struct pnp_card_link * pcard)
+static void snd_azt2320_pnp_remove(struct pnp_card_link *pcard)
 {
 	snd_card_free(pnp_get_card_drvdata(pcard));
 	pnp_set_card_drvdata(pcard, NULL);
@@ -294,6 +341,7 @@ static int snd_azt2320_pnp_suspend(struct pnp_card_link *pcard, pm_message_t sta
 	struct snd_card *card = pnp_get_card_drvdata(pcard);
 	struct snd_card_azt2320 *acard = card->private_data;
 	struct snd_cs4231 *chip = acard->chip;
+	struct snd_wss *chip = acard->chip;
 
 	snd_power_change_state(card, SNDRV_CTL_POWER_D3hot);
 	chip->suspend(chip);
@@ -305,6 +353,7 @@ static int snd_azt2320_pnp_resume(struct pnp_card_link *pcard)
 	struct snd_card *card = pnp_get_card_drvdata(pcard);
 	struct snd_card_azt2320 *acard = card->private_data;
 	struct snd_cs4231 *chip = acard->chip;
+	struct snd_wss *chip = acard->chip;
 
 	chip->resume(chip);
 	snd_power_change_state(card, SNDRV_CTL_POWER_D0);
@@ -318,6 +367,7 @@ static struct pnp_card_driver azt2320_pnpc_driver = {
 	.id_table       = snd_azt2320_pnpids,
 	.probe          = snd_azt2320_pnp_detect,
 	.remove         = __devexit_p(snd_azt2320_pnp_remove),
+	.remove         = snd_azt2320_pnp_remove,
 #ifdef CONFIG_PM
 	.suspend	= snd_azt2320_pnp_suspend,
 	.resume		= snd_azt2320_pnp_resume,

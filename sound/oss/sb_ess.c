@@ -169,6 +169,7 @@
  * the latter case the recording volumes are 0.
  * Now recording levels of inputs can be controlled, by changing the playback
  * levels. Futhermore several devices can be recorded together (which is not
+ * levels. Furthermore several devices can be recorded together (which is not
  * possible with the ES1688).
  * Besides the separate recording level control for each input, the common
  * recording level can also be controlled by RECLEV as described above.
@@ -605,6 +606,7 @@ static void ess_audio_output_block_audio2
 
 	devc->irq_mode_16 = IMODE_OUTPUT;
 		devc->intr_active_16 = 1;
+	devc->intr_active_16 = 1;
 }
 
 static void ess_audio_output_block
@@ -783,6 +785,7 @@ printk(KERN_INFO "FKS: ess_handle_channel %s irq_mode=%d\n", channel, irq_mode);
 
 		default:;
 			/* printk(KERN_WARN "ESS: Unexpected interrupt\n"); */
+			/* printk(KERN_WARNING "ESS: Unexpected interrupt\n"); */
 	}
 }
 
@@ -1105,6 +1108,7 @@ int ess_init(sb_devc * devc, struct address_info *hw_config)
 			printk (KERN_ERR "Invalid esstype=%d specified\n", devc->sbmo.esstype);
 			return 0;
 		};
+		}
 		if (submodel != -1) {
 			devc->submodel = submodel;
 			sprintf (modelname, "ES%d", devc->sbmo.esstype);
@@ -1113,6 +1117,10 @@ int ess_init(sb_devc * devc, struct address_info *hw_config)
 		if (chip == NULL && (ess_minor & 0x0f) < 8) {
 			chip = "ES688";
 		};
+		}
+		if (chip == NULL && (ess_minor & 0x0f) < 8) {
+			chip = "ES688";
+		}
 #ifdef FKS_TEST
 FKS_test (devc);
 #endif
@@ -1123,6 +1131,7 @@ FKS_test (devc);
 		if (chip == NULL && devc->sbmo.esstype == ESSTYPE_LIKE20) {
 			chip = "ES1688";
 		};
+		}
 
 		if (chip == NULL) {
 			int type;
@@ -1152,6 +1161,8 @@ FKS_test (devc);
 				}
 			};
 		};
+			}
+		}
 #if 0
 		/*
 		 * this one failed:
@@ -1198,6 +1209,17 @@ FKS_test (devc);
                  : ""
                  )
                );
+		}
+		if (chip == NULL) {
+			chip = "ES1688";
+		}
+
+		printk(KERN_INFO "ESS chip %s %s%s\n", chip,
+		       (devc->sbmo.esstype == ESSTYPE_DETECT ||
+			devc->sbmo.esstype == ESSTYPE_LIKE20) ?
+				"detected" : "specified",
+			devc->sbmo.esstype == ESSTYPE_LIKE20 ?
+				" (kernel 2.0 compatible)" : "");
 
 		sprintf(name,"ESS %s AudioDrive (rev %d)", chip, ess_minor & 0x0f);
 	} else {
@@ -1294,6 +1316,7 @@ printk(KERN_INFO "ess_set_dma_hw: dma8=%d,dma16=%d,dup=%d\n"
 				printk(KERN_ERR "ESS1887: Invalid DMA16 %d\n", dma);
 				return 0;
 			};
+			}
 			ess_chgmixer (devc, 0x78, 0x20, dma16_bits);
 			ess_chgmixer (devc, 0x7d, 0x07, dma_bits);
 		}
@@ -1545,6 +1568,7 @@ static int ess_has_rec_mixer (int submodel)
 	default:
 		return 0;
 	};
+	}
 };
 
 #ifdef FKS_LOGGING
@@ -1585,6 +1609,7 @@ printk(KERN_INFO "FKS: write mixer %x: %x\n", port, value);
 		outb(((unsigned char) (value & 0xff)), MIXER_DATA);
 		udelay(20);
 	};
+	}
 	spin_unlock_irqrestore(&devc->lock, flags);
 }
 
@@ -1763,6 +1788,7 @@ int ess_mixer_reset (sb_devc * devc)
 			ess_chgmixer(devc, 0x1c, 0x07, 0x07);
 			break;
 		};
+		}
 		/*
 		 * Call set_recmask for proper initialization
 		 */

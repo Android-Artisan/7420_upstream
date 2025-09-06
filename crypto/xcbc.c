@@ -28,15 +28,35 @@
 #include <linux/rtnetlink.h>
 #include <linux/slab.h>
 #include <linux/scatterlist.h>
+#include <crypto/internal/hash.h>
+#include <linux/err.h>
+#include <linux/kernel.h>
+#include <linux/module.h>
 
 static u_int32_t ks[12] = {0x01010101, 0x01010101, 0x01010101, 0x01010101,
 			   0x02020202, 0x02020202, 0x02020202, 0x02020202,
 			   0x03030303, 0x03030303, 0x03030303, 0x03030303};
+
 /*
  * +------------------------
  * | <parent tfm>
  * +------------------------
  * | crypto_xcbc_ctx
+ * | xcbc_tfm_ctx
+ * +------------------------
+ * | consts (block size * 2)
+ * +------------------------
+ */
+struct xcbc_tfm_ctx {
+	struct crypto_cipher *child;
+	u8 ctx[];
+};
+
+/*
+ * +------------------------
+ * | <shash desc>
+ * +------------------------
+ * | xcbc_desc_ctx
  * +------------------------
  * | odds (block size)
  * +------------------------
@@ -104,6 +124,42 @@ static int crypto_xcbc_digest_init(struct hash_desc *pdesc)
 	ctx->len = 0;
 	memset(ctx->odds, 0, bs);
 	memset(ctx->prev, 0, bs);
+ */
+struct xcbc_desc_ctx {
+	unsigned int len;
+	u8 ctx[];
+};
+
+static int crypto_xcbc_digest_setkey(struct crypto_shash *parent,
+				     const u8 *inkey, unsigned int keylen)
+{
+	unsigned long alignmask = crypto_shash_alignmask(parent);
+	struct xcbc_tfm_ctx *ctx = crypto_shash_ctx(parent);
+	int bs = crypto_shash_blocksize(parent);
+	u8 *consts = PTR_ALIGN(&ctx->ctx[0], alignmask + 1);
+	int err = 0;
+	u8 key1[bs];
+
+	if ((err = crypto_cipher_setkey(ctx->child, inkey, keylen)))
+		return err;
+
+	crypto_cipher_encrypt_one(ctx->child, consts, (u8 *)ks + bs);
+	crypto_cipher_encrypt_one(ctx->child, consts + bs, (u8 *)ks + bs * 2);
+	crypto_cipher_encrypt_one(ctx->child, key1, (u8 *)ks);
+
+	return crypto_cipher_setkey(ctx->child, key1, bs);
+
+}
+
+static int crypto_xcbc_digest_init(struct shash_desc *pdesc)
+{
+	unsigned long alignmask = crypto_shash_alignmask(pdesc->tfm);
+	struct xcbc_desc_ctx *ctx = shash_desc_ctx(pdesc);
+	int bs = crypto_shash_blocksize(pdesc->tfm);
+	u8 *prev = PTR_ALIGN(&ctx->ctx[0], alignmask + 1) + bs;
+
+	ctx->len = 0;
+	memset(prev, 0, bs);
 
 	return 0;
 }
@@ -184,6 +240,48 @@ static int crypto_xcbc_digest_update2(struct hash_desc *pdesc,
 		if (!nbytes)
 			break;
 		sg = scatterwalk_sg_next(sg);
+static int crypto_xcbc_digest_update(struct shash_desc *pdesc, const u8 *p,
+				     unsigned int len)
+{
+	struct crypto_shash *parent = pdesc->tfm;
+	unsigned long alignmask = crypto_shash_alignmask(parent);
+	struct xcbc_tfm_ctx *tctx = crypto_shash_ctx(parent);
+	struct xcbc_desc_ctx *ctx = shash_desc_ctx(pdesc);
+	struct crypto_cipher *tfm = tctx->child;
+	int bs = crypto_shash_blocksize(parent);
+	u8 *odds = PTR_ALIGN(&ctx->ctx[0], alignmask + 1);
+	u8 *prev = odds + bs;
+
+	/* checking the data can fill the block */
+	if ((ctx->len + len) <= bs) {
+		memcpy(odds + ctx->len, p, len);
+		ctx->len += len;
+		return 0;
+	}
+
+	/* filling odds with new data and encrypting it */
+	memcpy(odds + ctx->len, p, bs - ctx->len);
+	len -= bs - ctx->len;
+	p += bs - ctx->len;
+
+	crypto_xor(prev, odds, bs);
+	crypto_cipher_encrypt_one(tfm, prev, prev);
+
+	/* clearing the length */
+	ctx->len = 0;
+
+	/* encrypting the rest of data */
+	while (len > bs) {
+		crypto_xor(prev, p, bs);
+		crypto_cipher_encrypt_one(tfm, prev, prev);
+		p += bs;
+		len -= bs;
+	}
+
+	/* keeping the surplus of blocksize */
+	if (len) {
+		memcpy(odds, p, len);
+		ctx->len = len;
 	}
 
 	return 0;
@@ -224,6 +322,23 @@ static int crypto_xcbc_digest_final(struct hash_desc *pdesc, u8 *out)
 		u8 key3[bs];
 		unsigned int rlen;
 		u8 *p = ctx->odds + ctx->len;
+static int crypto_xcbc_digest_final(struct shash_desc *pdesc, u8 *out)
+{
+	struct crypto_shash *parent = pdesc->tfm;
+	unsigned long alignmask = crypto_shash_alignmask(parent);
+	struct xcbc_tfm_ctx *tctx = crypto_shash_ctx(parent);
+	struct xcbc_desc_ctx *ctx = shash_desc_ctx(pdesc);
+	struct crypto_cipher *tfm = tctx->child;
+	int bs = crypto_shash_blocksize(parent);
+	u8 *consts = PTR_ALIGN(&tctx->ctx[0], alignmask + 1);
+	u8 *odds = PTR_ALIGN(&ctx->ctx[0], alignmask + 1);
+	u8 *prev = odds + bs;
+	unsigned int offset = 0;
+
+	if (ctx->len != bs) {
+		unsigned int rlen;
+		u8 *p = odds + ctx->len;
+
 		*p = 0x80;
 		p++;
 
@@ -259,6 +374,17 @@ static int crypto_xcbc_digest(struct hash_desc *pdesc,
 	return crypto_xcbc_digest_final(pdesc, out);
 }
 
+		offset += bs;
+	}
+
+	crypto_xor(prev, odds, bs);
+	crypto_xor(prev, consts + offset, bs);
+
+	crypto_cipher_encrypt_one(tfm, out, prev);
+
+	return 0;
+}
+
 static int xcbc_init_tfm(struct crypto_tfm *tfm)
 {
 	struct crypto_cipher *cipher;
@@ -266,6 +392,7 @@ static int xcbc_init_tfm(struct crypto_tfm *tfm)
 	struct crypto_spawn *spawn = crypto_instance_ctx(inst);
 	struct crypto_xcbc_ctx *ctx = crypto_hash_ctx_aligned(__crypto_hash_cast(tfm));
 	int bs = crypto_hash_blocksize(__crypto_hash_cast(tfm));
+	struct xcbc_tfm_ctx *ctx = crypto_tfm_ctx(tfm);
 
 	cipher = crypto_spawn_cipher(spawn);
 	if (IS_ERR(cipher))
@@ -283,6 +410,7 @@ static int xcbc_init_tfm(struct crypto_tfm *tfm)
 	ctx->odds = (u8*)(ctx+1);
 	ctx->prev = ctx->odds + bs;
 	ctx->key = ctx->prev + bs;
+	ctx->child = cipher;
 
 	return 0;
 };
@@ -302,11 +430,26 @@ static struct crypto_instance *xcbc_alloc(struct rtattr **tb)
 	err = crypto_check_attr_type(tb, CRYPTO_ALG_TYPE_HASH);
 	if (err)
 		return ERR_PTR(err);
+	struct xcbc_tfm_ctx *ctx = crypto_tfm_ctx(tfm);
+	crypto_free_cipher(ctx->child);
+}
+
+static int xcbc_create(struct crypto_template *tmpl, struct rtattr **tb)
+{
+	struct shash_instance *inst;
+	struct crypto_alg *alg;
+	unsigned long alignmask;
+	int err;
+
+	err = crypto_check_attr_type(tb, CRYPTO_ALG_TYPE_SHASH);
+	if (err)
+		return err;
 
 	alg = crypto_get_attr_alg(tb, CRYPTO_ALG_TYPE_CIPHER,
 				  CRYPTO_ALG_TYPE_MASK);
 	if (IS_ERR(alg))
 		return ERR_CAST(alg);
+		return PTR_ERR(alg);
 
 	switch(alg->cra_blocksize) {
 	case 16:
@@ -347,12 +490,60 @@ static void xcbc_free(struct crypto_instance *inst)
 {
 	crypto_drop_spawn(crypto_instance_ctx(inst));
 	kfree(inst);
+		goto out_put_alg;
+	}
+
+	inst = shash_alloc_instance("xcbc", alg);
+	err = PTR_ERR(inst);
+	if (IS_ERR(inst))
+		goto out_put_alg;
+
+	err = crypto_init_spawn(shash_instance_ctx(inst), alg,
+				shash_crypto_instance(inst),
+				CRYPTO_ALG_TYPE_MASK);
+	if (err)
+		goto out_free_inst;
+
+	alignmask = alg->cra_alignmask | 3;
+	inst->alg.base.cra_alignmask = alignmask;
+	inst->alg.base.cra_priority = alg->cra_priority;
+	inst->alg.base.cra_blocksize = alg->cra_blocksize;
+
+	inst->alg.digestsize = alg->cra_blocksize;
+	inst->alg.descsize = ALIGN(sizeof(struct xcbc_desc_ctx),
+				   crypto_tfm_ctx_alignment()) +
+			     (alignmask &
+			      ~(crypto_tfm_ctx_alignment() - 1)) +
+			     alg->cra_blocksize * 2;
+
+	inst->alg.base.cra_ctxsize = ALIGN(sizeof(struct xcbc_tfm_ctx),
+					   alignmask + 1) +
+				     alg->cra_blocksize * 2;
+	inst->alg.base.cra_init = xcbc_init_tfm;
+	inst->alg.base.cra_exit = xcbc_exit_tfm;
+
+	inst->alg.init = crypto_xcbc_digest_init;
+	inst->alg.update = crypto_xcbc_digest_update;
+	inst->alg.final = crypto_xcbc_digest_final;
+	inst->alg.setkey = crypto_xcbc_digest_setkey;
+
+	err = shash_register_instance(tmpl, inst);
+	if (err) {
+out_free_inst:
+		shash_free_instance(shash_crypto_instance(inst));
+	}
+
+out_put_alg:
+	crypto_mod_put(alg);
+	return err;
 }
 
 static struct crypto_template crypto_xcbc_tmpl = {
 	.name = "xcbc",
 	.alloc = xcbc_alloc,
 	.free = xcbc_free,
+	.create = xcbc_create,
+	.free = shash_free_instance,
 	.module = THIS_MODULE,
 };
 
@@ -371,3 +562,4 @@ module_exit(crypto_xcbc_module_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("XCBC keyed hash algorithm");
+MODULE_ALIAS_CRYPTO("xcbc");

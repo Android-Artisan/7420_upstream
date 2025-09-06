@@ -6,6 +6,8 @@ config INFINIBAND_NES
 	---help---
 	  This is a low-level driver for NetEffect RDMA enabled
 	  Network Interface Cards (RNIC).
+	  This is the RDMA Network Interface Card (RNIC) driver for
+	  NetEffect Ethernet Cluster Server Adapters.
 
 config INFINIBAND_NES_DEBUG
 	bool "Verbose debugging output"
@@ -15,3 +17,5 @@ config INFINIBAND_NES_DEBUG
 	  This option causes the NetEffect RNIC driver to produce debug
 	  messages.  Select this if you are developing the driver
 	  or trying to diagnose a problem.
+	  This option enables debug messages from the NetEffect RNIC
+	  driver.  Select this if you are diagnosing a problem.

@@ -25,6 +25,9 @@
  */
 
 
+ *  51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA.
+ */
+
 #include "ieee754dp.h"
 
 static const unsigned table[] = {
@@ -39,11 +42,16 @@ ieee754dp ieee754dp_sqrt(ieee754dp x)
 {
 	struct _ieee754_csr oldcsr;
 	ieee754dp y, z, t;
+union ieee754dp ieee754dp_sqrt(union ieee754dp x)
+{
+	struct _ieee754_csr oldcsr;
+	union ieee754dp y, z, t;
 	unsigned scalx, yh;
 	COMPXDP;
 
 	EXPLODEXDP;
 	CLEARCX;
+	ieee754_clearcx();
 	FLUSHXDP;
 
 	/* x == INF or NAN? */
@@ -73,6 +81,35 @@ ieee754dp ieee754dp_sqrt(ieee754dp x)
 			/* sqrt(-x) = Nan */
 			SETCX(IEEE754_INVALID_OPERATION);
 			return ieee754dp_nanxcpt(ieee754dp_indef(), "sqrt");
+	case IEEE754_CLASS_SNAN:
+		return ieee754dp_nanxcpt(x);
+
+	case IEEE754_CLASS_QNAN:
+		/* sqrt(Nan) = Nan */
+		return x;
+
+	case IEEE754_CLASS_ZERO:
+		/* sqrt(0) = 0 */
+		return x;
+
+	case IEEE754_CLASS_INF:
+		if (xs) {
+			/* sqrt(-Inf) = Nan */
+			ieee754_setcx(IEEE754_INVALID_OPERATION);
+			return ieee754dp_indef();
+		}
+		/* sqrt(+Inf) = Inf */
+		return x;
+
+	case IEEE754_CLASS_DNORM:
+		DPDNORMX;
+		/* fall through */
+
+	case IEEE754_CLASS_NORM:
+		if (xs) {
+			/* sqrt(-x) = Nan */
+			ieee754_setcx(IEEE754_INVALID_OPERATION);
+			return ieee754dp_indef();
 		}
 		break;
 	}
@@ -82,6 +119,7 @@ ieee754dp ieee754dp_sqrt(ieee754dp x)
 	ieee754_csr.mx &= ~IEEE754_INEXACT;
 	ieee754_csr.sx &= ~IEEE754_INEXACT;
 	ieee754_csr.rm = IEEE754_RN;
+	ieee754_csr.rm = FPU_CSR_RN;
 
 	/* adjust exponent to prevent overflow */
 	scalx = 0;
@@ -89,6 +127,7 @@ ieee754dp ieee754dp_sqrt(ieee754dp x)
 		xe -= 512;	/* x = x / 2**512 */
 		scalx += 256;
 	} else if (xe < -512) {	/* x < 2**-512? */
+	} else if (xe < -512) { /* x < 2**-512? */
 		xe += 512;	/* x = x * 2**512 */
 		scalx -= 256;
 	}
@@ -118,12 +157,22 @@ ieee754dp ieee754dp_sqrt(ieee754dp x)
 	/* t=z/(t+x) ;  pt[n0]+=0x00100000; y+=t; */
 	t = ieee754dp_div(z, ieee754dp_add(t, x));
 	t.parts.bexp += 0x001;
+	/* t=y*y; z=t;	pt[n0]+=0x00100000; t+=z; z=(x-z)*y; */
+	z = t = ieee754dp_mul(y, y);
+	t.bexp += 0x001;
+	t = ieee754dp_add(t, z);
+	z = ieee754dp_mul(ieee754dp_sub(x, z), y);
+
+	/* t=z/(t+x) ;	pt[n0]+=0x00100000; y+=t; */
+	t = ieee754dp_div(z, ieee754dp_add(t, x));
+	t.bexp += 0x001;
 	y = ieee754dp_add(y, t);
 
 	/* twiddle last bit to force y correctly rounded */
 
 	/* set RZ, clear INEX flag */
 	ieee754_csr.rm = IEEE754_RZ;
+	ieee754_csr.rm = FPU_CSR_RZ;
 	ieee754_csr.sx &= ~IEEE754_INEXACT;
 
 	/* t=x/y; ...chopped quotient, possibly inexact */
@@ -144,6 +193,10 @@ ieee754dp ieee754dp_sqrt(ieee754dp x)
 			y.bits += 1;
 			/* drop through */
 		case IEEE754_RN:
+		case FPU_CSR_RU:
+			y.bits += 1;
+			/* drop through */
+		case FPU_CSR_RN:
 			t.bits += 1;
 			break;
 		}
@@ -157,6 +210,7 @@ ieee754dp ieee754dp_sqrt(ieee754dp x)
 
 	/* py[n0]=py[n0]+scalx; ...scale back y */
 	y.parts.bexp += scalx;
+	y.bexp += scalx;
 
 	/* restore rounding mode, possibly set inexact */
 	ieee754_csr = oldcsr;

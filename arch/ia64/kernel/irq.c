@@ -23,6 +23,8 @@
 #include <linux/interrupt.h>
 #include <linux/kernel_stat.h>
 
+#include <asm/mca.h>
+
 /*
  * 'what should we do if we get a hw irq event on an illegal vector'.
  * each architecture has to answer this themselves.
@@ -41,6 +43,7 @@ ia64_vector __ia64_irq_to_vector(int irq)
 unsigned int __ia64_local_vector_to_irq (ia64_vector vec)
 {
 	return __get_cpu_var(vector_irq)[vec];
+	return __this_cpu_read(vector_irq[vec]);
 }
 #endif
 
@@ -94,6 +97,9 @@ skip:
 		spin_unlock_irqrestore(&irq_desc[i].lock, flags);
 	} else if (i == NR_IRQS)
 		seq_printf(p, "ERR: %10u\n", atomic_read(&irq_err_count));
+int arch_show_interrupts(struct seq_file *p, int prec)
+{
+	seq_printf(p, "ERR: %10u\n", atomic_read(&irq_err_count));
 	return 0;
 }
 
@@ -108,6 +114,9 @@ void set_irq_affinity_info (unsigned int irq, int hwid, int redir)
 
 	if (irq < NR_IRQS) {
 		irq_desc[irq].affinity = mask;
+	if (irq < NR_IRQS) {
+		cpumask_copy(irq_get_affinity_mask(irq),
+			     cpumask_of(cpu_logical_id(hwid)));
 		irq_redir[irq] = (char) (redir & 0xff);
 	}
 }
@@ -117,6 +126,11 @@ bool is_affinity_mask_valid(cpumask_t cpumask)
 	if (ia64_platform_is("sn2")) {
 		/* Only allow one CPU to be specified in the smp_affinity mask */
 		if (cpus_weight(cpumask) != 1)
+bool is_affinity_mask_valid(const struct cpumask *cpumask)
+{
+	if (ia64_platform_is("sn2")) {
+		/* Only allow one CPU to be specified in the smp_affinity mask */
+		if (cpumask_weight(cpumask) != 1)
 			return false;
 	}
 	return true;
@@ -124,11 +138,18 @@ bool is_affinity_mask_valid(cpumask_t cpumask)
 
 #endif /* CONFIG_SMP */
 
+int __init arch_early_irq_init(void)
+{
+	ia64_mca_irq_init();
+	return 0;
+}
+
 #ifdef CONFIG_HOTPLUG_CPU
 unsigned int vectors_in_migration[NR_IRQS];
 
 /*
  * Since cpu_online_map is already updated, we just need to check for
+ * Since cpu_online_mask is already updated, we just need to check for
  * affinity that has zeros
  */
 static void migrate_irqs(void)
@@ -141,6 +162,14 @@ static void migrate_irqs(void)
 		desc = irq_desc + irq;
 
 		if (desc->status == IRQ_DISABLED)
+	int 		irq, new_cpu;
+
+	for (irq=0; irq < NR_IRQS; irq++) {
+		struct irq_desc *desc = irq_to_desc(irq);
+		struct irq_data *data = irq_desc_get_irq_data(desc);
+		struct irq_chip *chip = irq_data_get_irq_chip(data);
+
+		if (irqd_irq_disabled(data))
 			continue;
 
 		/*
@@ -154,6 +183,11 @@ static void migrate_irqs(void)
 
 		cpus_and(mask, irq_desc[irq].affinity, cpu_online_map);
 		if (any_online_cpu(mask) == NR_CPUS) {
+		if (irqd_is_per_cpu(data))
+			continue;
+
+		if (cpumask_any_and(irq_data_get_affinity_mask(data),
+				    cpu_online_mask) >= nr_cpu_ids) {
 			/*
 			 * Save it for phase 2 processing
 			 */
@@ -161,6 +195,7 @@ static void migrate_irqs(void)
 
 			new_cpu = any_online_cpu(cpu_online_map);
 			mask = cpumask_of_cpu(new_cpu);
+			new_cpu = cpumask_any(cpu_online_mask);
 
 			/*
 			 * Al three are essential, currently WARN_ON.. maybe panic?
@@ -174,6 +209,16 @@ static void migrate_irqs(void)
 				WARN_ON((!(desc->chip) || !(desc->chip->disable) ||
 						!(desc->chip->enable) ||
 						!(desc->chip->set_affinity)));
+			if (chip && chip->irq_disable &&
+				chip->irq_enable && chip->irq_set_affinity) {
+				chip->irq_disable(data);
+				chip->irq_set_affinity(data,
+						       cpumask_of(new_cpu), false);
+				chip->irq_enable(data);
+			} else {
+				WARN_ON((!chip || !chip->irq_disable ||
+					 !chip->irq_enable ||
+					 !chip->irq_set_affinity));
 			}
 		}
 	}
@@ -193,6 +238,7 @@ void fixup_irqs(void)
 	 */
 	if (smp_processor_id() == time_keeper_id) {
 		time_keeper_id = first_cpu(cpu_online_map);
+		time_keeper_id = cpumask_first(cpu_online_mask);
 		printk ("CPU %d is now promoted to time-keeper master\n", time_keeper_id);
 	}
 

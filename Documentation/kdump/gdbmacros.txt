@@ -21,7 +21,6 @@ define bttnobp
 	while ($next_t != $init_t)
 		set $next_t=(struct task_struct *)$next_t
 		printf "\npid %d; comm %s:\n", $next_t.pid, $next_t.comm
-		printf "===================\n"
 		set var $stackp = $next_t.thread.esp
 		set var $stack_top = ($stackp & ~4095) + 4096
 
@@ -35,7 +34,6 @@ define bttnobp
 		while ($next_th != $next_t)
 			set $next_th=(struct task_struct *)$next_th
 			printf "\npid %d; comm %s:\n", $next_t.pid, $next_t.comm
-			printf "===================\n"
 			set var $stackp = $next_t.thread.esp
 			set var $stack_top = ($stackp & ~4095) + 4096
 
@@ -62,7 +60,6 @@ define btt
 	while ($next_t != $init_t)
 		set $next_t=(struct task_struct *)$next_t
 		printf "\npid %d; comm %s:\n", $next_t.pid, $next_t.comm
-		printf "===================\n"
 		set var $stackp = $next_t.thread.esp
 		set var $stack_top = ($stackp & ~4095) + 4096
 		set var $stack_bot = ($stackp & ~4095)
@@ -78,7 +75,6 @@ define btt
 		while ($next_th != $next_t)
 			set $next_th=(struct task_struct *)$next_th
 			printf "\npid %d; comm %s:\n", $next_t.pid, $next_t.comm
-			printf "===================\n"
 			set var $stackp = $next_t.thread.esp
 			set var $stack_top = ($stackp & ~4095) + 4096
 			set var $stack_bot = ($stackp & ~4095)
@@ -125,7 +121,6 @@ define btpid
 	end
 
 	printf "\npid %d; comm %s:\n", $pid_task.pid, $pid_task.comm
-	printf "===================\n"
 	set var $stackp = $pid_task.thread.esp
 	set var $stack_top = ($stackp & ~4095) + 4096
 	set var $stack_bot = ($stackp & ~4095)

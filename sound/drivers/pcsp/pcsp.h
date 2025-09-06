@@ -17,6 +17,8 @@
 #include <asm/8253pit.h>
 static DEFINE_SPINLOCK(i8253_lock);
 #endif
+#include <linux/i8253.h>
+#include <linux/timex.h>
 
 #define PCSP_SOUND_VERSION 0x400	/* read 4.00 */
 #define PCSP_DEBUG 0
@@ -62,6 +64,8 @@ struct snd_pcsp {
 	unsigned short port, irq, dma;
 	spinlock_t substream_lock;
 	struct snd_pcm_substream *playback_substream;
+	unsigned int fmt_size;
+	unsigned int is_signed;
 	size_t playback_ptr;
 	size_t period_ptr;
 	atomic_t timer_active;
@@ -80,5 +84,9 @@ extern enum hrtimer_restart pcsp_do_timer(struct hrtimer *handle);
 
 extern int snd_pcsp_new_pcm(struct snd_pcsp *chip);
 extern int snd_pcsp_new_mixer(struct snd_pcsp *chip);
+extern void pcsp_sync_stop(struct snd_pcsp *chip);
+
+extern int snd_pcsp_new_pcm(struct snd_pcsp *chip);
+extern int snd_pcsp_new_mixer(struct snd_pcsp *chip, int nopcm);
 
 #endif

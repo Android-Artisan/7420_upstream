@@ -61,6 +61,12 @@ static struct resource heartbeat_resources[] = {
 	},
 };
 
+static struct resource heartbeat_resource = {
+	.start	= PA_LED,
+	.end	= PA_LED,
+	.flags	= IORESOURCE_MEM | IORESOURCE_MEM_32BIT,
+};
+
 static struct platform_device heartbeat_device = {
 	.name		= "heartbeat",
 	.id		= -1,
@@ -69,6 +75,8 @@ static struct platform_device heartbeat_device = {
 	},
 	.num_resources	= ARRAY_SIZE(heartbeat_resources),
 	.resource	= heartbeat_resources,
+	.num_resources	= 1,
+	.resource	= &heartbeat_resource,
 };
 
 static struct platform_device *se7206_devices[] __initdata = {
@@ -81,6 +89,12 @@ static int __init se7206_devices_setup(void)
 	return platform_add_devices(se7206_devices, ARRAY_SIZE(se7206_devices));
 }
 __initcall(se7206_devices_setup);
+device_initcall(se7206_devices_setup);
+
+static int se7206_mode_pins(void)
+{
+	return MODE_PIN1 | MODE_PIN2;
+}
 
 /*
  * The Machine Vector
@@ -105,4 +119,6 @@ static struct sh_machine_vector mv_se __initmv = {
 	.mv_outsw		= se7206_outsw,
 
 	.mv_init_irq		= init_se7206_IRQ,
+	.mv_init_irq		= init_se7206_IRQ,
+	.mv_mode_pins		= se7206_mode_pins,
 };

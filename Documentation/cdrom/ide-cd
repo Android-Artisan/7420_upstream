@@ -147,6 +147,7 @@ To play an audio CD, you should first unmount and remove any data
 CDROM.  Any of the CDROM player programs should then work (workman,
 workbone, cdplayer, etc.).  Lacking anything else, you could use the
 cdtester program in Documentation/cdrom/sbpcd.
+workbone, cdplayer, etc.).
 
 On a few drives, you can read digital audio directly using a program
 such as cdda2wav.  The only types of drive which I've heard support
@@ -196,6 +197,7 @@ TEST
 
 
 5. Common problems
+4. Common problems
 ------------------
 
 This section discusses some common problems encountered when trying to
@@ -373,6 +375,7 @@ f. Data corruption.
 
 
 6. cdchange.c
+5. cdchange.c
 -------------
 
 /*

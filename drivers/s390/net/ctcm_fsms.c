@@ -13,6 +13,9 @@
 #undef DEBUGDATA
 #undef DEBUGCCW
 
+#define KMSG_COMPONENT "ctcm"
+#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
+
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
@@ -183,6 +186,7 @@ static void ctcmpc_chx_send_sweep(fsm_instance *fsm, int event, void *arg);
 
 /**
  * Check return code of a preceeding ccw_device call, halt_IO etc...
+ * Check return code of a preceding ccw_device call, halt_IO etc...
  *
  * ch	:	The channel, the error belongs to.
  * Returns the error code (!= 0) to inspect.
@@ -205,6 +209,22 @@ void ctcm_ccw_check_rc(struct channel *ch, int rc, char *msg)
 	default:
 		ctcm_pr_emerg("%s (%s): Unknown error in do_IO %04x\n",
 			     ch->id, msg, rc);
+		"%s(%s): %s: %04x\n",
+		CTCM_FUNTAIL, ch->id, msg, rc);
+	switch (rc) {
+	case -EBUSY:
+		pr_info("%s: The communication peer is busy\n",
+			ch->id);
+		fsm_event(ch->fsm, CTC_EVENT_IO_EBUSY, ch);
+		break;
+	case -ENODEV:
+		pr_err("%s: The specified target device is not valid\n",
+		       ch->id);
+		fsm_event(ch->fsm, CTC_EVENT_IO_ENODEV, ch);
+		break;
+	default:
+		pr_err("An I/O operation resulted in error %04x\n",
+		       rc);
 		fsm_event(ch->fsm, CTC_EVENT_IO_UNKNOWN, ch);
 	}
 }
@@ -257,6 +277,11 @@ static void chx_txdone(fsm_instance *fi, int event, void *arg)
 	duration =
 	    (done_stamp.tv_sec - ch->prof.send_stamp.tv_sec) * 1000000 +
 	    (done_stamp.tv_nsec - ch->prof.send_stamp.tv_nsec) / 1000;
+	unsigned long done_stamp = jiffies;
+
+	CTCM_PR_DEBUG("%s(%s): %s\n", __func__, ch->id, dev->name);
+
+	duration = done_stamp - ch->prof.send_stamp;
 	if (duration > ch->prof.tx_time)
 		ch->prof.tx_time = duration;
 
@@ -307,6 +332,7 @@ static void chx_txdone(fsm_instance *fi, int event, void *arg)
 		ch->ccw[1].count = ch->trans_skb->len;
 		fsm_addtimer(&ch->timer, CTCM_TIME_5_SEC, CTC_EVENT_TIMER, ch);
 		ch->prof.send_stamp = current_kernel_time(); /* xtime */
+		ch->prof.send_stamp = jiffies;
 		rc = ccw_device_start(ch->cdev, &ch->ccw[0],
 						(unsigned long)ch, 0xff, 0);
 		ch->prof.doios_multi++;
@@ -409,6 +435,8 @@ static void chx_rx(fsm_instance *fi, int event, void *arg)
 	block_len -= 2;
 	if (block_len > 0) {
 		*((__u16 *)skb->data) = block_len;
+	if (block_len > 2) {
+		*((__u16 *)skb->data) = block_len - 2;
 		ctcm_unpack_skb(ch, skb);
 	}
  again:
@@ -453,6 +481,7 @@ static void chx_firstio(fsm_instance *fi, int event, void *arg)
 	    (ch->protocol == CTCM_PROTO_OS390)) {
 		/* OS/390 resp. z/OS */
 		if (CHANNEL_DIRECTION(ch->flags) == READ) {
+		if (CHANNEL_DIRECTION(ch->flags) == CTCM_READ) {
 			*((__u16 *)ch->trans_skb->data) = CTCM_INITIAL_BLOCKLEN;
 			fsm_addtimer(&ch->timer, CTCM_TIME_5_SEC,
 				     CTC_EVENT_TIMER, ch);
@@ -471,6 +500,7 @@ static void chx_firstio(fsm_instance *fi, int event, void *arg)
 	 * frame until it has some data to send.
 	 */
 	if ((CHANNEL_DIRECTION(ch->flags) == WRITE) ||
+	if ((CHANNEL_DIRECTION(ch->flags) == CTCM_WRITE) ||
 	    (ch->protocol != CTCM_PROTO_S390))
 		fsm_addtimer(&ch->timer, CTCM_TIME_5_SEC, CTC_EVENT_TIMER, ch);
 
@@ -478,6 +508,7 @@ static void chx_firstio(fsm_instance *fi, int event, void *arg)
 	ch->ccw[1].count = 2;	/* Transfer only length */
 
 	fsm_newstate(fi, (CHANNEL_DIRECTION(ch->flags) == READ)
+	fsm_newstate(fi, (CHANNEL_DIRECTION(ch->flags) == CTCM_READ)
 		     ? CTC_STATE_RXINIT : CTC_STATE_TXINIT);
 	rc = ccw_device_start(ch->cdev, &ch->ccw[0],
 					(unsigned long)ch, 0xff, 0);
@@ -494,6 +525,7 @@ static void chx_firstio(fsm_instance *fi, int event, void *arg)
 	 * final state.
 	 */
 	if ((CHANNEL_DIRECTION(ch->flags) == READ) &&
+	if ((CHANNEL_DIRECTION(ch->flags) == CTCM_READ) &&
 	    (ch->protocol == CTCM_PROTO_S390)) {
 		struct net_device *dev = ch->netdev;
 		struct ctcm_priv *priv = dev->ml_priv;
@@ -600,6 +632,8 @@ static void ctcm_chx_start(fsm_instance *fi, int event, void *arg)
 	CTCM_DBF_TEXT_(SETUP, CTC_DBF_INFO, "%s(%s): %s",
 			CTCM_FUNTAIL, ch->id,
 			(CHANNEL_DIRECTION(ch->flags) == READ) ? "RX" : "TX");
+		CTCM_FUNTAIL, ch->id,
+		(CHANNEL_DIRECTION(ch->flags) == CTCM_READ) ? "RX" : "TX");
 
 	if (ch->trans_skb != NULL) {
 		clear_normalized_cda(&ch->ccw[1]);
@@ -607,6 +641,7 @@ static void ctcm_chx_start(fsm_instance *fi, int event, void *arg)
 		ch->trans_skb = NULL;
 	}
 	if (CHANNEL_DIRECTION(ch->flags) == READ) {
+	if (CHANNEL_DIRECTION(ch->flags) == CTCM_READ) {
 		ch->ccw[1].cmd_code = CCW_CMD_READ;
 		ch->ccw[1].flags = CCW_FLAG_SLI;
 		ch->ccw[1].count = 0;
@@ -621,6 +656,8 @@ static void ctcm_chx_start(fsm_instance *fi, int event, void *arg)
 			"until first transfer",
 			CTCM_FUNTAIL, ch->id,
 			(CHANNEL_DIRECTION(ch->flags) == READ) ? "RX" : "TX");
+			(CHANNEL_DIRECTION(ch->flags) == CTCM_READ) ?
+				"RX" : "TX");
 	}
 	ch->ccw[0].cmd_code = CCW_CMD_PREPARE;
 	ch->ccw[0].flags = CCW_FLAG_SLI | CCW_FLAG_CC;
@@ -719,6 +756,7 @@ static void ctcm_chx_cleanup(fsm_instance *fi, int state,
 	ch->th_seg = 0x00;
 	ch->th_seq_num = 0x00;
 	if (CHANNEL_DIRECTION(ch->flags) == READ) {
+	if (CHANNEL_DIRECTION(ch->flags) == CTCM_READ) {
 		skb_queue_purge(&ch->io_queue);
 		fsm_event(priv->fsm, DEV_EVENT_RXDOWN, dev);
 	} else {
@@ -798,6 +836,8 @@ static void ctcm_chx_setuperr(fsm_instance *fi, int event, void *arg)
 		fsm_deltimer(&ch->timer);
 		fsm_addtimer(&ch->timer, CTCM_TIME_5_SEC, CTC_EVENT_TIMER, ch);
 		if (!IS_MPC(ch) && (CHANNEL_DIRECTION(ch->flags) == READ)) {
+		if (!IS_MPC(ch) &&
+		    (CHANNEL_DIRECTION(ch->flags) == CTCM_READ)) {
 			int rc = ccw_device_halt(ch->cdev, (unsigned long)ch);
 			if (rc != 0)
 				ctcm_ccw_check_rc(ch, rc,
@@ -813,6 +853,10 @@ static void ctcm_chx_setuperr(fsm_instance *fi, int event, void *arg)
 		fsm_getstate_str(fi));
 
 	if (CHANNEL_DIRECTION(ch->flags) == READ) {
+		(CHANNEL_DIRECTION(ch->flags) == CTCM_READ) ? "RX" : "TX",
+		fsm_getstate_str(fi));
+
+	if (CHANNEL_DIRECTION(ch->flags) == CTCM_READ) {
 		fsm_newstate(fi, CTC_STATE_RXERR);
 		fsm_event(priv->fsm, DEV_EVENT_RXDOWN, dev);
 	} else {
@@ -888,6 +932,15 @@ static void ctcm_chx_rxiniterr(fsm_instance *fi, int event, void *arg)
 		}
 	} else
 		ctcm_pr_warn("%s: Error during RX init handshake\n", dev->name);
+	} else {
+		CTCM_DBF_TEXT_(ERROR, CTC_DBF_ERROR,
+			"%s(%s): %s in %s", CTCM_FUNTAIL, ch->id,
+			ctc_ch_event_names[event], fsm_getstate_str(fi));
+
+		dev_warn(&dev->dev,
+			"Initialization failed with RX/TX init handshake "
+			"error %s\n", ctc_ch_event_names[event]);
+	}
 }
 
 /**
@@ -937,6 +990,7 @@ static void ctcm_chx_rxdisc(fsm_instance *fi, int event, void *arg)
 
 	fsm_newstate(fi, CTC_STATE_DTERM);
 	ch2 = priv->channel[WRITE];
+	ch2 = priv->channel[CTCM_WRITE];
 	fsm_newstate(ch2->fsm, CTC_STATE_DTERM);
 
 	ccw_device_halt(ch->cdev, (unsigned long)ch);
@@ -970,6 +1024,9 @@ static void ctcm_chx_txiniterr(fsm_instance *fi, int event, void *arg)
 			ctc_ch_event_names[event], fsm_getstate_str(fi));
 
 		ctcm_pr_warn("%s: Error during TX init handshake\n", dev->name);
+		dev_warn(&dev->dev,
+			"Initialization failed with RX/TX init handshake "
+			"error %s\n", ctc_ch_event_names[event]);
 	}
 }
 
@@ -1064,12 +1121,14 @@ static void ctcm_chx_iofatal(fsm_instance *fi, int event, void *arg)
 	CTCM_DBF_TEXT_(ERROR, CTC_DBF_ERROR,
 		"%s: %s: %s unrecoverable channel error",
 			CTCM_FUNTAIL, ch->id, rd == READ ? "RX" : "TX");
+			CTCM_FUNTAIL, ch->id, rd == CTCM_READ ? "RX" : "TX");
 
 	if (IS_MPC(ch)) {
 		priv->stats.tx_dropped++;
 		priv->stats.tx_errors++;
 	}
 	if (rd == READ) {
+	if (rd == CTCM_READ) {
 		fsm_newstate(fi, CTC_STATE_RXERR);
 		fsm_event(priv->fsm, DEV_EVENT_RXDOWN, dev);
 	} else {
@@ -1219,6 +1278,7 @@ static void ctcmpc_chx_txdone(fsm_instance *fi, int event, void *arg)
 	struct th_header *header;
 	struct pdu	*p_header;
 	struct timespec done_stamp = current_kernel_time(); /* xtime */
+	unsigned long done_stamp = jiffies;
 
 	CTCM_PR_DEBUG("Enter %s: %s cp:%i\n",
 			__func__, dev->name, smp_processor_id());
@@ -1226,6 +1286,7 @@ static void ctcmpc_chx_txdone(fsm_instance *fi, int event, void *arg)
 	duration =
 		(done_stamp.tv_sec - ch->prof.send_stamp.tv_sec) * 1000000 +
 		(done_stamp.tv_nsec - ch->prof.send_stamp.tv_nsec) / 1000;
+	duration = done_stamp - ch->prof.send_stamp;
 	if (duration > ch->prof.tx_time)
 		ch->prof.tx_time = duration;
 
@@ -1328,6 +1389,12 @@ static void ctcmpc_chx_txdone(fsm_instance *fi, int event, void *arg)
 
 	spin_unlock(&ch->collect_lock);
 	clear_normalized_cda(&ch->ccw[1]);
+
+	CTCM_PR_DBGDATA("ccwcda=0x%p data=0x%p\n",
+			(void *)(unsigned long)ch->ccw[1].cda,
+			ch->trans_skb->data);
+	ch->ccw[1].count = ch->max_bufsize;
+
 	if (set_normalized_cda(&ch->ccw[1], ch->trans_skb->data)) {
 		dev_kfree_skb_any(ch->trans_skb);
 		ch->trans_skb = NULL;
@@ -1340,6 +1407,14 @@ static void ctcmpc_chx_txdone(fsm_instance *fi, int event, void *arg)
 	ch->ccw[1].count = ch->trans_skb->len;
 	fsm_addtimer(&ch->timer, CTCM_TIME_5_SEC, CTC_EVENT_TIMER, ch);
 	ch->prof.send_stamp = current_kernel_time(); /* xtime */
+
+	CTCM_PR_DBGDATA("ccwcda=0x%p data=0x%p\n",
+			(void *)(unsigned long)ch->ccw[1].cda,
+			ch->trans_skb->data);
+
+	ch->ccw[1].count = ch->trans_skb->len;
+	fsm_addtimer(&ch->timer, CTCM_TIME_5_SEC, CTC_EVENT_TIMER, ch);
+	ch->prof.send_stamp = jiffies;
 	if (do_debug_ccw)
 		ctcmpc_dumpit((char *)&ch->ccw[0], sizeof(struct ccw1) * 3);
 	rc = ccw_device_start(ch->cdev, &ch->ccw[0],
@@ -1493,6 +1568,7 @@ static void ctcmpc_chx_firstio(fsm_instance *fi, int event, void *arg)
 	case CTC_STATE_STARTRETRY:
 	case CTC_STATE_SETUPWAIT:
 		if (CHANNEL_DIRECTION(ch->flags) == READ) {
+		if (CHANNEL_DIRECTION(ch->flags) == CTCM_READ) {
 			ctcmpc_chx_rxidle(fi, event, arg);
 		} else {
 			fsm_newstate(fi, CTC_STATE_TXIDLE);
@@ -1504,6 +1580,9 @@ static void ctcmpc_chx_firstio(fsm_instance *fi, int event, void *arg)
 	};
 
 	fsm_newstate(fi, (CHANNEL_DIRECTION(ch->flags) == READ)
+	}
+
+	fsm_newstate(fi, (CHANNEL_DIRECTION(ch->flags) == CTCM_READ)
 		     ? CTC_STATE_RXINIT : CTC_STATE_TXINIT);
 
 done:
@@ -1744,6 +1823,8 @@ static void ctcmpc_chx_send_sweep(fsm_instance *fsm, int event, void *arg)
 	struct mpc_group *grp = priv->mpcg;
 	struct channel *wch = priv->channel[WRITE];
 	struct channel *rch = priv->channel[READ];
+	struct channel *wch = priv->channel[CTCM_WRITE];
+	struct channel *rch = priv->channel[CTCM_READ];
 	struct sk_buff *skb;
 	struct th_sweep *header;
 	int rc = 0;
@@ -1806,6 +1887,7 @@ static void ctcmpc_chx_send_sweep(fsm_instance *fsm, int event, void *arg)
 
 	spin_lock_irqsave(get_ccwdev_lock(wch->cdev), saveflags);
 	wch->prof.send_stamp = current_kernel_time(); /* xtime */
+	wch->prof.send_stamp = jiffies;
 	rc = ccw_device_start(wch->cdev, &wch->ccw[3],
 					(unsigned long) wch, 0xff, 0);
 	spin_unlock_irqrestore(get_ccwdev_lock(wch->cdev), saveflags);
@@ -2060,6 +2142,7 @@ static void dev_action_start(fsm_instance *fi, int event, void *arg)
 	if (IS_MPC(priv))
 		priv->mpcg->channels_terminating = 0;
 	for (direction = READ; direction <= WRITE; direction++) {
+	for (direction = CTCM_READ; direction <= CTCM_WRITE; direction++) {
 		struct channel *ch = priv->channel[direction];
 		fsm_event(ch->fsm, CTC_EVENT_START, ch);
 	}
@@ -2082,6 +2165,7 @@ static void dev_action_stop(fsm_instance *fi, int event, void *arg)
 
 	fsm_newstate(fi, DEV_STATE_STOPWAIT_RXTX);
 	for (direction = READ; direction <= WRITE; direction++) {
+	for (direction = CTCM_READ; direction <= CTCM_WRITE; direction++) {
 		struct channel *ch = priv->channel[direction];
 		fsm_event(ch->fsm, CTC_EVENT_STOP, ch);
 		ch->th_seq_num = 0x00;
@@ -2109,6 +2193,11 @@ static void dev_action_restart(fsm_instance *fi, int event, void *arg)
 		ctcm_pr_info("%s: Restarting\n", dev->name);
 		restart_timer = CTCM_TIME_5_SEC;
 	}
+		restart_timer = CTCM_TIME_1_SEC;
+	} else {
+		restart_timer = CTCM_TIME_5_SEC;
+	}
+	dev_info(&dev->dev, "Restarting device\n");
 
 	dev_action_stop(fi, event, arg);
 	fsm_event(priv->fsm, DEV_EVENT_STOP, dev);
@@ -2152,6 +2241,8 @@ static void dev_action_chup(fsm_instance *fi, int event, void *arg)
 			fsm_newstate(fi, DEV_STATE_RUNNING);
 			ctcm_pr_info("%s: connected with remote side\n",
 				    dev->name);
+			dev_info(&dev->dev,
+				"Connected with remote side\n");
 			ctcm_clear_busy(dev);
 		}
 		break;
@@ -2160,6 +2251,8 @@ static void dev_action_chup(fsm_instance *fi, int event, void *arg)
 			fsm_newstate(fi, DEV_STATE_RUNNING);
 			ctcm_pr_info("%s: connected with remote side\n",
 				    dev->name);
+			dev_info(&dev->dev,
+				"Connected with remote side\n");
 			ctcm_clear_busy(dev);
 		}
 		break;
@@ -2180,6 +2273,11 @@ static void dev_action_chup(fsm_instance *fi, int event, void *arg)
 		else
 			mpc_channel_action(priv->channel[WRITE],
 				WRITE, MPC_CHANNEL_ADD);
+			mpc_channel_action(priv->channel[CTCM_READ],
+				CTCM_READ, MPC_CHANNEL_ADD);
+		else
+			mpc_channel_action(priv->channel[CTCM_WRITE],
+				CTCM_WRITE, MPC_CHANNEL_ADD);
 	}
 }
 
@@ -2236,6 +2334,11 @@ static void dev_action_chdown(fsm_instance *fi, int event, void *arg)
 		else
 			mpc_channel_action(priv->channel[WRITE],
 				WRITE, MPC_CHANNEL_REMOVE);
+			mpc_channel_action(priv->channel[CTCM_READ],
+				CTCM_READ, MPC_CHANNEL_REMOVE);
+		else
+			mpc_channel_action(priv->channel[CTCM_WRITE],
+				CTCM_WRITE, MPC_CHANNEL_REMOVE);
 	}
 }
 

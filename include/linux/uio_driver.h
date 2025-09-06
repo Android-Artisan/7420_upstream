@@ -4,6 +4,7 @@
  * Copyright(C) 2005, Benedikt Spranger <b.spranger@linutronix.de>
  * Copyright(C) 2005, Thomas Gleixner <tglx@linutronix.de>
  * Copyright(C) 2006, Hans J. Koch <hjk@linutronix.de>
+ * Copyright(C) 2006, Hans J. Koch <hjk@hansjkoch.de>
  * Copyright(C) 2006, Greg Kroah-Hartman <greg@kroah.com>
  *
  * Userspace IO driver.
@@ -18,11 +19,20 @@
 #include <linux/fs.h>
 #include <linux/interrupt.h>
 
+#include <linux/fs.h>
+#include <linux/interrupt.h>
+
+struct module;
 struct uio_map;
 
 /**
  * struct uio_mem - description of a UIO memory region
  * @addr:		address of the device's memory
+ * @name:		name of the memory region for identification
+ * @addr:		address of the device's memory (phys_addr is used since
+ * 			addr can be logical, virtual, or physical & phys_addr_t
+ * 			should always be large enough to handle any of the
+ * 			address types)
  * @size:		size of IO
  * @memtype:		type of memory addr points to
  * @internal_addr:	ioremap-ped version of addr, for driver internal use
@@ -31,6 +41,9 @@ struct uio_map;
 struct uio_mem {
 	unsigned long		addr;
 	unsigned long		size;
+	const char		*name;
+	phys_addr_t		addr;
+	resource_size_t		size;
 	int			memtype;
 	void __iomem		*internal_addr;
 	struct uio_map		*map;
@@ -39,6 +52,37 @@ struct uio_mem {
 #define MAX_UIO_MAPS	5
 
 struct uio_device;
+struct uio_portio;
+
+/**
+ * struct uio_port - description of a UIO port region
+ * @name:		name of the port region for identification
+ * @start:		start of port region
+ * @size:		size of port region
+ * @porttype:		type of port (see UIO_PORT_* below)
+ * @portio:		for use by the UIO core only.
+ */
+struct uio_port {
+	const char		*name;
+	unsigned long		start;
+	unsigned long		size;
+	int			porttype;
+	struct uio_portio	*portio;
+};
+
+#define MAX_UIO_PORT_REGIONS	5
+
+struct uio_device {
+        struct module           *owner;
+        struct device           *dev;
+        int                     minor;
+        atomic_t                event;
+        struct fasync_struct    *async_queue;
+        wait_queue_head_t       wait;
+        struct uio_info         *info;
+        struct kobject          *map_dir;
+        struct kobject          *portio_dir;
+};
 
 /**
  * struct uio_info - UIO device capabilities
@@ -46,6 +90,7 @@ struct uio_device;
  * @name:		device name
  * @version:		device driver version
  * @mem:		list of mappable memory regions, size==0 for end of list
+ * @port:		list of port regions, size==0 for end of list
  * @irq:		interrupt number or UIO_IRQ_CUSTOM
  * @irq_flags:		flags for request_irq()
  * @priv:		optional private data
@@ -60,6 +105,10 @@ struct uio_info {
 	char			*name;
 	char			*version;
 	struct uio_mem		mem[MAX_UIO_MAPS];
+	const char		*name;
+	const char		*version;
+	struct uio_mem		mem[MAX_UIO_MAPS];
+	struct uio_port		port[MAX_UIO_PORT_REGIONS];
 	long			irq;
 	unsigned long		irq_flags;
 	void			*priv;
@@ -79,17 +128,29 @@ static inline int __must_check
 {
 	return __uio_register_device(THIS_MODULE, parent, info);
 }
+
+/* use a define to avoid include chaining to get THIS_MODULE */
+#define uio_register_device(parent, info) \
+	__uio_register_device(THIS_MODULE, parent, info)
+
 extern void uio_unregister_device(struct uio_info *info);
 extern void uio_event_notify(struct uio_info *info);
 
 /* defines for uio_info->irq */
 #define UIO_IRQ_CUSTOM	-1
 #define UIO_IRQ_NONE	-2
+#define UIO_IRQ_NONE	0
 
 /* defines for uio_mem->memtype */
 #define UIO_MEM_NONE	0
 #define UIO_MEM_PHYS	1
 #define UIO_MEM_LOGICAL	2
 #define UIO_MEM_VIRTUAL 3
+
+/* defines for uio_port->porttype */
+#define UIO_PORT_NONE	0
+#define UIO_PORT_X86	1
+#define UIO_PORT_GPIO	2
+#define UIO_PORT_OTHER	3
 
 #endif /* _LINUX_UIO_DRIVER_H_ */

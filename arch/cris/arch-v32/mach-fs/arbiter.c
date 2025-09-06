@@ -185,6 +185,7 @@ static void crisv32_arbiter_init(void)
 	crisv32_arbiter_config(INT_REGION, 0);
 
 	if (request_irq(MEMARB_INTR_VECT, crisv32_arbiter_irq, IRQF_DISABLED,
+	if (request_irq(MEMARB_INTR_VECT, crisv32_arbiter_irq, 0,
 			"arbiter", NULL))
 		printk(KERN_ERR "Couldn't allocate arbiter IRQ\n");
 
@@ -333,6 +334,7 @@ int crisv32_arbiter_unwatch(int id)
 		intr_mask.bp0 = regk_marb_no;
 	else if (id == 1)
 		intr_mask.bp2 = regk_marb_no;
+		intr_mask.bp1 = regk_marb_no;
 	else if (id == 2)
 		intr_mask.bp2 = regk_marb_no;
 	else if (id == 3)
@@ -396,6 +398,7 @@ static irqreturn_t crisv32_arbiter_irq(int irq, void *dev_id)
 	REG_WR(marb, regi_marb, rw_ack_intr, ack_intr);
 
 	printk(KERN_INFO "IRQ occured at %lX\n", get_irq_regs()->erp);
+	printk(KERN_INFO "IRQ occurred at %lX\n", get_irq_regs()->erp);
 
 	if (watch->cb)
 		watch->cb();

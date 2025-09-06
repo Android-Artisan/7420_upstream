@@ -31,6 +31,11 @@
 #define KPROBE_BREAKPOINT_INSTRUCTION	0xe7f001f8
 
 #define regs_return_value(regs)		((regs)->ARM_r0)
+#include <linux/notifier.h>
+
+#define __ARCH_WANT_KPROBES_INSN_SLOT
+#define MAX_INSN_SIZE			2
+
 #define flush_insn_slot(p)		do { } while (0)
 #define kretprobe_blacklist_size	0
 
@@ -44,6 +49,10 @@ struct arch_specific_insn {
 	kprobe_opcode_t		*insn;
 	kprobe_insn_handler_t	*insn_handler;
 };
+struct kprobe;
+#include <asm/probes.h>
+
+#define	arch_specific_insn	arch_probes_insn
 
 struct prev_kprobe {
 	struct kprobe *kp;
@@ -75,5 +84,38 @@ enum kprobe_insn {
 enum kprobe_insn arm_kprobe_decode_insn(kprobe_opcode_t,
 					struct arch_specific_insn *);
 void __init arm_kprobe_decode_init(void);
+
+/* optinsn template addresses */
+extern __visible kprobe_opcode_t optprobe_template_entry;
+extern __visible kprobe_opcode_t optprobe_template_val;
+extern __visible kprobe_opcode_t optprobe_template_call;
+extern __visible kprobe_opcode_t optprobe_template_end;
+extern __visible kprobe_opcode_t optprobe_template_sub_sp;
+extern __visible kprobe_opcode_t optprobe_template_add_sp;
+extern __visible kprobe_opcode_t optprobe_template_restore_begin;
+extern __visible kprobe_opcode_t optprobe_template_restore_orig_insn;
+extern __visible kprobe_opcode_t optprobe_template_restore_end;
+
+#define MAX_OPTIMIZED_LENGTH	4
+#define MAX_OPTINSN_SIZE				\
+	((unsigned long)&optprobe_template_end -	\
+	 (unsigned long)&optprobe_template_entry)
+#define RELATIVEJUMP_SIZE	4
+
+struct arch_optimized_insn {
+	/*
+	 * copy of the original instructions.
+	 * Different from x86, ARM kprobe_opcode_t is u32.
+	 */
+#define MAX_COPIED_INSN	DIV_ROUND_UP(RELATIVEJUMP_SIZE, sizeof(kprobe_opcode_t))
+	kprobe_opcode_t copied_insn[MAX_COPIED_INSN];
+	/* detour code buffer */
+	kprobe_opcode_t *insn;
+	/*
+	 * We always copy one instruction on ARM,
+	 * so size will always be 4, and unlike x86, there is no
+	 * need for a size field.
+	 */
+};
 
 #endif /* _ARM_KPROBES_H */

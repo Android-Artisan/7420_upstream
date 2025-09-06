@@ -15,6 +15,7 @@
 #include <linux/io.h>
 #include <asm/adc.h>
 #include <asm/hp6xx.h>
+#include <mach/hp6xx.h>
 
 /* percentage values */
 #define APM_CRITICAL			10
@@ -54,6 +55,7 @@ static void hp6x0_apm_get_power_status(struct apm_power_info *info)
 			 APM_AC_ONLINE : APM_AC_OFFLINE;
 
 	pgdr = ctrl_inb(PGDR);
+	pgdr = __raw_readb(PGDR);
 	if (pgdr & PGDR_MAIN_BATTERY_OUT) {
 		info->battery_status	= APM_BATTERY_STATUS_NOT_PRESENT;
 		info->battery_flag	= 0x80;
@@ -87,6 +89,7 @@ static int __init hp6x0_apm_init(void)
 
 	ret = request_irq(HP680_BTN_IRQ, hp6x0_apm_interrupt,
 			  IRQF_DISABLED, MODNAME, NULL);
+			  0, MODNAME, NULL);
 	if (unlikely(ret < 0)) {
 		printk(KERN_ERR MODNAME ": IRQ %d request failed\n",
 		       HP680_BTN_IRQ);

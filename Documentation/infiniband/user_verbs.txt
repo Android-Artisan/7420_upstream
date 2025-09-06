@@ -6,6 +6,7 @@ USERSPACE VERBS ACCESS
 
   To use the verbs, the libibverbs library, available from
   <http://openib.org/>, is required.  libibverbs contains a
+  http://www.openfabrics.org/, is required.  libibverbs contains a
   device-independent API for using the ib_uverbs interface.
   libibverbs also requires appropriate device-dependent kernel and
   userspace driver for your InfiniBand hardware.  For example, to use
@@ -59,6 +60,7 @@ Memory pinning
   udev, a rule like
 
     KERNEL="uverbs*", NAME="infiniband/%k"
+    KERNEL=="uverbs*", NAME="infiniband/%k"
 
   can be used.  This will create device nodes named
 

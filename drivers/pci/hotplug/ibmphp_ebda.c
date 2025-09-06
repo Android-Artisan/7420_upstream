@@ -127,6 +127,8 @@ static void __init print_bus_info (void)
 	
 	list_for_each (ptr1, &bus_info_head) {
 		ptr = list_entry (ptr1, struct bus_info, bus_info_list);
+
+	list_for_each_entry(ptr, &bus_info_head, bus_info_list) {
 		debug ("%s - slot_min = %x\n", __func__, ptr->slot_min);
 		debug ("%s - slot_max = %x\n", __func__, ptr->slot_max);
 		debug ("%s - slot_count = %x\n", __func__, ptr->slot_count);
@@ -134,6 +136,7 @@ static void __init print_bus_info (void)
 		debug ("%s - current_speed = %x\n", __func__, ptr->current_speed);
 		debug ("%s - controller_id = %x\n", __func__, ptr->controller_id);
 		
+
 		debug ("%s - slots_at_33_conv = %x\n", __func__, ptr->slots_at_33_conv);
 		debug ("%s - slots_at_66_conv = %x\n", __func__, ptr->slots_at_66_conv);
 		debug ("%s - slots_at_66_pcix = %x\n", __func__, ptr->slots_at_66_pcix);
@@ -150,6 +153,8 @@ static void print_lo_info (void)
 	debug ("print_lo_info ----\n");	
 	list_for_each (ptr1, &rio_lo_head) {
 		ptr = list_entry (ptr1, struct rio_detail, rio_detail_list);
+	debug ("print_lo_info ----\n");
+	list_for_each_entry(ptr, &rio_lo_head, rio_detail_list) {
 		debug ("%s - rio_node_id = %x\n", __func__, ptr->rio_node_id);
 		debug ("%s - rio_type = %x\n", __func__, ptr->rio_type);
 		debug ("%s - owner_id = %x\n", __func__, ptr->owner_id);
@@ -167,6 +172,8 @@ static void print_vg_info (void)
 	debug ("%s ---\n", __func__);
 	list_for_each (ptr1, &rio_vg_head) {
 		ptr = list_entry (ptr1, struct rio_detail, rio_detail_list);
+	debug ("%s ---\n", __func__);
+	list_for_each_entry(ptr, &rio_vg_head, rio_detail_list) {
 		debug ("%s - rio_node_id = %x\n", __func__, ptr->rio_node_id);
 		debug ("%s - rio_type = %x\n", __func__, ptr->rio_type);
 		debug ("%s - owner_id = %x\n", __func__, ptr->owner_id);
@@ -185,6 +192,9 @@ static void __init print_ebda_pci_rsrc (void)
 	list_for_each (ptr1, &ibmphp_ebda_pci_rsrc_head) {
 		ptr = list_entry (ptr1, struct ebda_pci_rsrc, ebda_pci_rsrc_list);
 		debug ("%s - rsrc type: %x bus#: %x dev_func: %x start addr: %x end addr: %x\n", 
+
+	list_for_each_entry(ptr, &ibmphp_ebda_pci_rsrc_head, ebda_pci_rsrc_list) {
+		debug ("%s - rsrc type: %x bus#: %x dev_func: %x start addr: %x end addr: %x\n",
 			__func__, ptr->rsrc_type ,ptr->bus_num, ptr->dev_fun,ptr->start_addr, ptr->end_addr);
 	}
 }
@@ -196,6 +206,8 @@ static void __init print_ibm_slot (void)
 
 	list_for_each (ptr1, &ibmphp_slot_head) {
 		ptr = list_entry (ptr1, struct slot, ibm_slot_list);
+
+	list_for_each_entry(ptr, &ibmphp_slot_head, ibm_slot_list) {
 		debug ("%s - slot_number: %x\n", __func__, ptr->number);
 	}
 }
@@ -207,6 +219,8 @@ static void __init print_opt_vg (void)
 	debug ("%s ---\n", __func__);
 	list_for_each (ptr1, &opt_vg_head) {
 		ptr = list_entry (ptr1, struct opt_rio, opt_rio_list);
+	debug ("%s ---\n", __func__);
+	list_for_each_entry(ptr, &opt_vg_head, opt_rio_list) {
 		debug ("%s - rio_type %x\n", __func__, ptr->rio_type);
 		debug ("%s - chassis_num: %x\n", __func__, ptr->chassis_num);
 		debug ("%s - first_slot_num: %x\n", __func__, ptr->first_slot_num);
@@ -224,6 +238,9 @@ static void __init print_ebda_hpc (void)
 
 		hpc_ptr = list_entry (ptr1, struct controller, ebda_hpc_list); 
 
+	u16 index;
+
+	list_for_each_entry(hpc_ptr, &ebda_hpc_head, ebda_hpc_list) {
 		for (index = 0; index < hpc_ptr->slot_count; index++) {
 			debug ("%s - physical slot#: %x\n", __func__, hpc_ptr->slots[index].slot_num);
 			debug ("%s - pci bus# of the slot: %x\n", __func__, hpc_ptr->slots[index].slot_bus_num);
@@ -234,6 +251,8 @@ static void __init print_ebda_hpc (void)
 		for (index = 0; index < hpc_ptr->bus_count; index++) {
 			debug ("%s - bus# of each bus controlled by this ctlr: %x\n", __func__, hpc_ptr->buses[index].bus_num);
 		}
+		for (index = 0; index < hpc_ptr->bus_count; index++)
+			debug ("%s - bus# of each bus controlled by this ctlr: %x\n", __func__, hpc_ptr->buses[index].bus_num);
 
 		debug ("%s - type of hpc: %x\n", __func__, hpc_ptr->ctlr_type);
 		switch (hpc_ptr->ctlr_type) {
@@ -262,6 +281,7 @@ static void __init print_ebda_hpc (void)
 int __init ibmphp_access_ebda (void)
 {
 	u8 format, num_ctlrs, rio_complete, hs_complete;
+	u8 format, num_ctlrs, rio_complete, hs_complete, ebda_sz;
 	u16 ebda_seg, num_entries, next_offset, offset, blk_id, sub_addr, re, rc_id, re_id, base;
 	int rc = 0;
 
@@ -277,12 +297,29 @@ int __init ibmphp_access_ebda (void)
 	debug ("returned ebda segment: %x\n", ebda_seg);
 	
 	io_mem = ioremap (ebda_seg<<4, 65000);
+
+	io_mem = ioremap(ebda_seg<<4, 1);
+	if (!io_mem)
+		return -ENOMEM;
+	ebda_sz = readb(io_mem);
+	iounmap(io_mem);
+	debug("ebda size: %d(KiB)\n", ebda_sz);
+	if (ebda_sz == 0)
+		return -ENOMEM;
+
+	io_mem = ioremap(ebda_seg<<4, (ebda_sz * 1024));
 	if (!io_mem )
 		return -ENOMEM;
 	next_offset = 0x180;
 
 	for (;;) {
 		offset = next_offset;
+
+		/* Make sure what we read is still in the mapped section */
+		if (WARN(offset > (ebda_sz * 1024 - 4),
+			 "ibmphp_ebda: next read is beyond ebda_sz\n"))
+			break;
+
 		next_offset = readw (io_mem + offset);	/* offset of next blk */
 
 		offset += 2;
@@ -312,6 +349,7 @@ int __init ibmphp_access_ebda (void)
 
 			sub_addr += 2;
 			rc_id = readw (io_mem + sub_addr); 	/* sub blk id */
+			rc_id = readw (io_mem + sub_addr);	/* sub blk id */
 
 			sub_addr += 2;
 			if (rc_id != 0x5243)
@@ -332,6 +370,7 @@ int __init ibmphp_access_ebda (void)
 			debug ("hot blk format: %x\n", format);
 			debug ("num of controller: %x\n", num_ctlrs);
 			debug ("offset of hpc data structure enteries: %x\n ", sub_addr);
+			debug ("offset of hpc data structure entries: %x\n ", sub_addr);
 
 			sub_addr = base + re;	/* re sub blk */
 			/* FIXME: rc is never used/checked */
@@ -361,6 +400,7 @@ int __init ibmphp_access_ebda (void)
 			debug ("format: %x\n", format);
 			debug ("num of rsrc: %x\n", num_entries);
 			debug ("offset of rsrc data structure enteries: %x\n ", sub_addr);
+			debug ("offset of rsrc data structure entries: %x\n ", sub_addr);
 
 			hs_complete = 1;
 		} else {
@@ -371,11 +411,16 @@ int __init ibmphp_access_ebda (void)
 			rio_table_ptr = kzalloc(sizeof(struct rio_table_hdr), GFP_KERNEL);
 			if (!rio_table_ptr)
 				return -ENOMEM; 
+			if (!rio_table_ptr) {
+				rc = -ENOMEM;
+				goto out;
+			}
 			rio_table_ptr->ver_num = readb (io_mem + offset);
 			rio_table_ptr->scal_count = readb (io_mem + offset + 1);
 			rio_table_ptr->riodev_count = readb (io_mem + offset + 2);
 			rio_table_ptr->offset = offset +3 ;
 			
+
 			debug("info about rio table hdr ---\n");
 			debug("ver_num: %x\nscal_count: %x\nriodev_count: %x\noffset of rio table: %x\n ",
 				rio_table_ptr->ver_num, rio_table_ptr->scal_count,
@@ -445,6 +490,12 @@ static int __init ebda_rio_table (void)
 		else if (rio_detail_ptr->rio_type == 6 || rio_detail_ptr->rio_type == 7) 
 			list_add (&rio_detail_ptr->rio_detail_list, &rio_lo_head);
 		else 
+		if (rio_detail_ptr->rio_type == 4 || rio_detail_ptr->rio_type == 5)
+			list_add (&rio_detail_ptr->rio_detail_list, &rio_vg_head);
+		//create linked list of expansion box
+		else if (rio_detail_ptr->rio_type == 6 || rio_detail_ptr->rio_type == 7)
+			list_add (&rio_detail_ptr->rio_detail_list, &rio_lo_head);
+		else
 			// not in my concern
 			kfree (rio_detail_ptr);
 		offset += 15;
@@ -456,6 +507,7 @@ static int __init ebda_rio_table (void)
 
 /*
  * reorganizing linked list of chassis	 
+ * reorganizing linked list of chassis
  */
 static struct opt_rio *search_opt_vg (u8 chassis_num)
 {
@@ -466,6 +518,10 @@ static struct opt_rio *search_opt_vg (u8 chassis_num)
 		if (ptr->chassis_num == chassis_num)
 			return ptr;
 	}		
+	list_for_each_entry(ptr, &opt_vg_head, opt_rio_list) {
+		if (ptr->chassis_num == chassis_num)
+			return ptr;
+	}
 	return NULL;
 }
 
@@ -477,6 +533,8 @@ static int __init combine_wpg_for_chassis (void)
 	
 	list_for_each (list_head_ptr, &rio_vg_head) {
 		rio_detail_ptr = list_entry (list_head_ptr, struct rio_detail, rio_detail_list);
+
+	list_for_each_entry(rio_detail_ptr, &rio_vg_head, rio_detail_list) {
 		opt_rio_ptr = search_opt_vg (rio_detail_ptr->chassis_num);
 		if (!opt_rio_ptr) {
 			opt_rio_ptr = kzalloc(sizeof(struct opt_rio), GFP_KERNEL);
@@ -498,6 +556,17 @@ static int __init combine_wpg_for_chassis (void)
 
 /*
  * reorgnizing linked list of expansion box	 
+		} else {
+			opt_rio_ptr->first_slot_num = min (opt_rio_ptr->first_slot_num, rio_detail_ptr->first_slot_num);
+			opt_rio_ptr->middle_num = max (opt_rio_ptr->middle_num, rio_detail_ptr->first_slot_num);
+		}
+	}
+	print_opt_vg ();
+	return 0;
+}
+
+/*
+ * reorganizing linked list of expansion box
  */
 static struct opt_rio_lo *search_opt_lo (u8 chassis_num)
 {
@@ -508,6 +577,10 @@ static struct opt_rio_lo *search_opt_lo (u8 chassis_num)
 		if (ptr->chassis_num == chassis_num)
 			return ptr;
 	}		
+	list_for_each_entry(ptr, &opt_lo_head, opt_rio_lo_list) {
+		if (ptr->chassis_num == chassis_num)
+			return ptr;
+	}
 	return NULL;
 }
 
@@ -519,6 +592,8 @@ static int combine_wpg_for_expansion (void)
 	
 	list_for_each (list_head_ptr, &rio_lo_head) {
 		rio_detail_ptr = list_entry (list_head_ptr, struct rio_detail, rio_detail_list);
+
+	list_for_each_entry(rio_detail_ptr, &rio_lo_head, rio_detail_list) {
 		opt_rio_lo_ptr = search_opt_lo (rio_detail_ptr->chassis_num);
 		if (!opt_rio_lo_ptr) {
 			opt_rio_lo_ptr = kzalloc(sizeof(struct opt_rio_lo), GFP_KERNEL);
@@ -545,6 +620,22 @@ static int combine_wpg_for_expansion (void)
  * through the list of all chassis to find out the range
  * Arguments: slot_num, 1st slot number of the chassis we think we are on, 
  * var (0 = chassis, 1 = expansion box) 
+
+			list_add (&opt_rio_lo_ptr->opt_rio_lo_list, &opt_lo_head);
+		} else {
+			opt_rio_lo_ptr->first_slot_num = min (opt_rio_lo_ptr->first_slot_num, rio_detail_ptr->first_slot_num);
+			opt_rio_lo_ptr->middle_num = max (opt_rio_lo_ptr->middle_num, rio_detail_ptr->first_slot_num);
+			opt_rio_lo_ptr->pack_count = 2;
+		}
+	}
+	return 0;
+}
+
+
+/* Since we don't know the max slot number per each chassis, hence go
+ * through the list of all chassis to find out the range
+ * Arguments: slot_num, 1st slot number of the chassis we think we are on,
+ * var (0 = chassis, 1 = expansion box)
  */
 static int first_slot_num (u8 slot_num, u8 first_slot, u8 var)
 {
@@ -557,6 +648,11 @@ static int first_slot_num (u8 slot_num, u8 first_slot, u8 var)
 		list_for_each (ptr, &opt_vg_head) {
 			opt_vg_ptr = list_entry (ptr, struct opt_rio, opt_rio_list);
 			if ((first_slot < opt_vg_ptr->first_slot_num) && (slot_num >= opt_vg_ptr->first_slot_num)) { 
+	int rc = 0;
+
+	if (!var) {
+		list_for_each_entry(opt_vg_ptr, &opt_vg_head, opt_rio_list) {
+			if ((first_slot < opt_vg_ptr->first_slot_num) && (slot_num >= opt_vg_ptr->first_slot_num)) {
 				rc = -ENODEV;
 				break;
 			}
@@ -564,6 +660,7 @@ static int first_slot_num (u8 slot_num, u8 first_slot, u8 var)
 	} else {
 		list_for_each (ptr, &opt_lo_head) {
 			opt_lo_ptr = list_entry (ptr, struct opt_rio_lo, opt_rio_lo_list);
+		list_for_each_entry(opt_lo_ptr, &opt_lo_head, opt_rio_lo_list) {
 			if ((first_slot < opt_lo_ptr->first_slot_num) && (slot_num >= opt_lo_ptr->first_slot_num)) {
 				rc = -ENODEV;
 				break;
@@ -582,6 +679,13 @@ static struct opt_rio_lo * find_rxe_num (u8 slot_num)
 		opt_lo_ptr = list_entry (ptr, struct opt_rio_lo, opt_rio_lo_list);
 		//check to see if this slot_num belongs to expansion box
 		if ((slot_num >= opt_lo_ptr->first_slot_num) && (!first_slot_num (slot_num, opt_lo_ptr->first_slot_num, 1))) 
+static struct opt_rio_lo *find_rxe_num (u8 slot_num)
+{
+	struct opt_rio_lo *opt_lo_ptr;
+
+	list_for_each_entry(opt_lo_ptr, &opt_lo_head, opt_rio_lo_list) {
+		//check to see if this slot_num belongs to expansion box
+		if ((slot_num >= opt_lo_ptr->first_slot_num) && (!first_slot_num (slot_num, opt_lo_ptr->first_slot_num, 1)))
 			return opt_lo_ptr;
 	}
 	return NULL;
@@ -596,6 +700,13 @@ static struct opt_rio * find_chassis_num (u8 slot_num)
 		opt_vg_ptr = list_entry (ptr, struct opt_rio, opt_rio_list);
 		//check to see if this slot_num belongs to chassis 
 		if ((slot_num >= opt_vg_ptr->first_slot_num) && (!first_slot_num (slot_num, opt_vg_ptr->first_slot_num, 0))) 
+static struct opt_rio *find_chassis_num (u8 slot_num)
+{
+	struct opt_rio *opt_vg_ptr;
+
+	list_for_each_entry(opt_vg_ptr, &opt_vg_head, opt_rio_list) {
+		//check to see if this slot_num belongs to chassis
+		if ((slot_num >= opt_vg_ptr->first_slot_num) && (!first_slot_num (slot_num, opt_vg_ptr->first_slot_num, 0)))
 			return opt_vg_ptr;
 	}
 	return NULL;
@@ -625,6 +736,25 @@ static char *create_file_name (struct slot * slot_cur)
 	struct opt_rio *opt_vg_ptr = NULL;
 	struct opt_rio_lo *opt_lo_ptr = NULL;
 	static char str[30];
+	struct slot *slot_cur;
+
+	list_for_each_entry(slot_cur, &ibmphp_slot_head, ibm_slot_list) {
+		if (slot_cur->ctrl) {
+			if ((slot_cur->ctrl->ctlr_type != 4) && (slot_cur->ctrl->ending_slot_num > first_slot) && (slot_num > slot_cur->ctrl->ending_slot_num))
+				first_slot = slot_cur->ctrl->ending_slot_num;
+		}
+	}
+	return first_slot + 1;
+
+}
+
+#define SLOT_NAME_SIZE 30
+
+static char *create_file_name (struct slot *slot_cur)
+{
+	struct opt_rio *opt_vg_ptr = NULL;
+	struct opt_rio_lo *opt_lo_ptr = NULL;
+	static char str[SLOT_NAME_SIZE];
 	int which = 0; /* rxe = 1, chassis = 0 */
 	u8 number = 1; /* either chassis or rxe # */
 	u8 first_slot = 1;
@@ -640,6 +770,11 @@ static char *create_file_name (struct slot * slot_cur)
 
 	memset (str, 0, sizeof(str));
 	
+
+	slot_num = slot_cur->number;
+
+	memset (str, 0, sizeof(str));
+
 	if (rio_table_ptr) {
 		if (rio_table_ptr->ver_num == 3) {
 			opt_vg_ptr = find_chassis_num (slot_num);
@@ -674,6 +809,7 @@ static char *create_file_name (struct slot * slot_cur)
 			return NULL;
 		}
 	} 
+	}
 	if (!flag) {
 		if (slot_cur->ctrl->ctlr_type == 4) {
 			first_slot = calculate_first_slot (slot_num);
@@ -768,6 +904,7 @@ static int __init ebda_rsrc_controller (void)
 	int rc;
 	struct slot *tmp_slot;
 	struct list_head *list;
+	char name[SLOT_NAME_SIZE];
 
 	addr = hpc_list_ptr->phys_addr;
 	for (ctlr = 0; ctlr < hpc_list_ptr->num_ctlrs; ctlr++) {
@@ -799,6 +936,7 @@ static int __init ebda_rsrc_controller (void)
 		hpc_ptr->slot_count = slot_num;
 		hpc_ptr->bus_count = bus_num;
 		debug ("now enter ctlr data struture ---\n");
+		debug ("now enter ctlr data structure ---\n");
 		debug ("ctlr id: %x\n", ctlr_id);
 		debug ("ctlr_relative_id: %x\n", hpc_ptr->ctlr_relative_id);
 		debug ("count of slots controlled by this ctlr: %x\n", slot_num);
@@ -813,6 +951,7 @@ static int __init ebda_rsrc_controller (void)
 			slot_ptr->slot_cap = readb (io_mem + addr_slot + 3*slot_num);
 
 			// create bus_info lined list --- if only one slot per bus: slot_min = slot_max 
+			// create bus_info lined list --- if only one slot per bus: slot_min = slot_max
 
 			bus_info_ptr2 = ibmphp_find_same_bus_num (slot_ptr->slot_bus_num);
 			if (!bus_info_ptr2) {
@@ -831,6 +970,9 @@ static int __init ebda_rsrc_controller (void)
 				
 				bus_info_ptr1->controller_id = hpc_ptr->ctlr_id;
 				
+
+				bus_info_ptr1->controller_id = hpc_ptr->ctlr_id;
+
 				list_add_tail (&bus_info_ptr1->bus_info_list, &bus_info_head);
 
 			} else {
@@ -866,6 +1008,7 @@ static int __init ebda_rsrc_controller (void)
 				bus_info_ptr2->slots_at_66_pcix = bus_ptr->slots_at_66_pcix;
 				bus_info_ptr2->slots_at_100_pcix = bus_ptr->slots_at_100_pcix;
 				bus_info_ptr2->slots_at_133_pcix = bus_ptr->slots_at_133_pcix; 
+				bus_info_ptr2->slots_at_133_pcix = bus_ptr->slots_at_133_pcix;
 			}
 			bus_ptr++;
 		}
@@ -879,6 +1022,7 @@ static int __init ebda_rsrc_controller (void)
 				hpc_ptr->irq = readb (io_mem + addr + 2);
 				addr += 3;
 				debug ("ctrl bus = %x, ctlr devfun = %x, irq = %x\n", 
+				debug ("ctrl bus = %x, ctlr devfun = %x, irq = %x\n",
 					hpc_ptr->u.pci_ctlr.bus,
 					hpc_ptr->u.pci_ctlr.dev_fun, hpc_ptr->irq);
 				break;
@@ -953,6 +1097,7 @@ static int __init ebda_rsrc_controller (void)
 			else if ((hpc_ptr->slots[index].slot_cap & EBDA_SLOT_66_MAX) == EBDA_SLOT_66_MAX)
 				tmp_slot->supported_speed =  1;
 				
+
 			if ((hpc_ptr->slots[index].slot_cap & EBDA_SLOT_PCIX_CAP) == EBDA_SLOT_PCIX_CAP)
 				tmp_slot->supported_bus_mode = 1;
 			else
@@ -1003,6 +1148,10 @@ static int __init ebda_rsrc_controller (void)
 		snprintf (tmp_slot->hotplug_slot->name, 30, "%s", create_file_name (tmp_slot));
 		pci_hp_register(tmp_slot->hotplug_slot,
 			pci_find_bus(0, tmp_slot->bus), tmp_slot->device);
+	list_for_each_entry(tmp_slot, &ibmphp_slot_head, ibm_slot_list) {
+		snprintf(name, SLOT_NAME_SIZE, "%s", create_file_name(tmp_slot));
+		pci_hp_register(tmp_slot->hotplug_slot,
+			pci_find_bus(0, tmp_slot->bus), tmp_slot->device, name);
 	}
 
 	print_ebda_hpc ();
@@ -1025,6 +1174,7 @@ error_no_hpc:
 }
 
 /* 
+/*
  * map info (bus, devfun, start addr, end addr..) of i/o, memory,
  * pfm from the physical addr to a list of resource.
  */
@@ -1082,6 +1232,7 @@ static int __init ebda_rsrc_rsrc (void)
 
 			debug ("rsrc from mem or pfm ---\n");
 			debug ("rsrc type: %x bus#: %x dev_func: %x start addr: %x end addr: %x\n", 
+			debug ("rsrc type: %x bus#: %x dev_func: %x start addr: %x end addr: %x\n",
 				rsrc_ptr->rsrc_type, rsrc_ptr->bus_num, rsrc_ptr->dev_fun, rsrc_ptr->start_addr, rsrc_ptr->end_addr);
 
 			list_add (&rsrc_ptr->ebda_pci_rsrc_list, &ibmphp_ebda_pci_rsrc_head);
@@ -1105,6 +1256,8 @@ struct slot *ibmphp_get_slot_from_physical_num (u8 physical_num)
 
 	list_for_each (list, &ibmphp_slot_head) {
 		slot = list_entry (list, struct slot, ibm_slot_list);
+
+	list_for_each_entry(slot, &ibmphp_slot_head, ibm_slot_list) {
 		if (slot->number == physical_num)
 			return slot;
 	}
@@ -1125,6 +1278,9 @@ struct bus_info *ibmphp_find_same_bus_num (u32 num)
 	list_for_each (ptr1, &bus_info_head) {
 		ptr = list_entry (ptr1, struct bus_info, bus_info_list); 
 		if (ptr->busno == num) 
+
+	list_for_each_entry(ptr, &bus_info_head, bus_info_list) {
+		if (ptr->busno == num)
 			 return ptr;
 	}
 	return NULL;
@@ -1141,6 +1297,9 @@ int ibmphp_get_bus_index (u8 num)
 	list_for_each (ptr1, &bus_info_head) {
 		ptr = list_entry (ptr1, struct bus_info, bus_info_list);
 		if (ptr->busno == num)  
+
+	list_for_each_entry(ptr, &bus_info_head, bus_info_list) {
+		if (ptr->busno == num)
 			return ptr->index;
 	}
 	return -ENODEV;
@@ -1199,6 +1358,7 @@ static struct pci_device_id id_table[] = {
 		.class		= ((PCI_CLASS_SYSTEM_PCI_HOTPLUG << 8) | 0x00),
 	}, {}
 };		
+};
 
 MODULE_DEVICE_TABLE(pci, id_table);
 
@@ -1217,6 +1377,9 @@ int ibmphp_register_pci (void)
 
 	list_for_each (tmp, &ebda_hpc_head) {
 		ctrl = list_entry (tmp, struct controller, ebda_hpc_list);
+	int rc = 0;
+
+	list_for_each_entry(ctrl, &ebda_hpc_head, ebda_hpc_list) {
 		if (ctrl->ctlr_type == 1) {
 			rc = pci_register_driver(&ibmphp_driver);
 			break;
@@ -1233,6 +1396,13 @@ static int ibmphp_probe (struct pci_dev * dev, const struct pci_device_id *ids)
 	
 	list_for_each (tmp, &ebda_hpc_head) {
 		ctrl = list_entry (tmp, struct controller, ebda_hpc_list);
+static int ibmphp_probe (struct pci_dev *dev, const struct pci_device_id *ids)
+{
+	struct controller *ctrl;
+
+	debug ("inside ibmphp_probe\n");
+
+	list_for_each_entry(ctrl, &ebda_hpc_head, ebda_hpc_list) {
 		if (ctrl->ctlr_type == 1) {
 			if ((dev->devfn == ctrl->u.pci_ctlr.dev_fun) && (dev->bus->number == ctrl->u.pci_ctlr.bus)) {
 				ctrl->ctrl_dev = dev;

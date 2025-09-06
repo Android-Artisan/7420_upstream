@@ -32,6 +32,7 @@ enum raid_level {
 	RAID_LEVEL_0,
 	RAID_LEVEL_1,
 	RAID_LEVEL_10,
+	RAID_LEVEL_1E,
 	RAID_LEVEL_3,
 	RAID_LEVEL_4,
 	RAID_LEVEL_5,
@@ -76,7 +77,3 @@ DEFINE_RAID_ATTRIBUTE(enum raid_state, state)
 	
 struct raid_template *raid_class_attach(struct raid_function_template *);
 void raid_class_release(struct raid_template *);
-
-int __must_check raid_component_add(struct raid_template *, struct device *,
-				    struct device *);
-

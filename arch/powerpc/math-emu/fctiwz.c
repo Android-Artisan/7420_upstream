@@ -4,11 +4,15 @@
 
 #include "soft-fp.h"
 #include "double.h"
+#include <asm/sfp-machine.h>
+#include <math-emu/soft-fp.h>
+#include <math-emu/double.h>
 
 int
 fctiwz(u32 *frD, void *frB)
 {
 	FP_DECL_D(B);
+	FP_DECL_EX;
 	u32 fpscr;
 	unsigned int r;
 
@@ -17,6 +21,7 @@ fctiwz(u32 *frD, void *frB)
 	__FPU_FPSCR |= FP_RND_ZERO;
 
 	__FP_UNPACK_D(B, frB);
+	FP_UNPACK_DP(B, frB);
 	FP_TO_INT_D(r, B, 32, 1);
 	frD[1] = r;
 

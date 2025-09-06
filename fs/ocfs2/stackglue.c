@@ -7,6 +7,7 @@
  * cluster stacks.
  *
  * Copyright (C) 2007 Oracle.  All rights reserved.
+ * Copyright (C) 2007, 2009 Oracle.  All rights reserved.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public
@@ -37,6 +38,7 @@
 #define OCFS2_MAX_HB_CTL_PATH		256
 
 static struct ocfs2_locking_protocol *lproto;
+static struct ocfs2_protocol_version locking_max_version;
 static DEFINE_SPINLOCK(ocfs2_stack_lock);
 static LIST_HEAD(ocfs2_stack_list);
 static char cluster_stack_name[OCFS2_STACK_LABEL_LEN + 1];
@@ -177,6 +179,7 @@ int ocfs2_stack_glue_register(struct ocfs2_stack_plugin *plugin)
 	if (!ocfs2_stack_lookup(plugin->sp_name)) {
 		plugin->sp_count = 0;
 		plugin->sp_proto = lproto;
+		plugin->sp_max_proto = locking_max_version;
 		list_add(&plugin->sp_list, &ocfs2_stack_list);
 		printk(KERN_INFO "ocfs2: Registered cluster interface %s\n",
 		       plugin->sp_name);
@@ -251,6 +254,44 @@ int ocfs2_dlm_lock(struct ocfs2_cluster_connection *conn,
 
 	return active_stack->sp_ops->dlm_lock(conn, mode, lksb, flags,
 					      name, namelen, astarg);
+void ocfs2_stack_glue_set_max_proto_version(struct ocfs2_protocol_version *max_proto)
+{
+	struct ocfs2_stack_plugin *p;
+
+	spin_lock(&ocfs2_stack_lock);
+	if (memcmp(max_proto, &locking_max_version,
+		   sizeof(struct ocfs2_protocol_version))) {
+		BUG_ON(locking_max_version.pv_major != 0);
+
+		locking_max_version = *max_proto;
+		list_for_each_entry(p, &ocfs2_stack_list, sp_list) {
+			p->sp_max_proto = locking_max_version;
+		}
+	}
+	spin_unlock(&ocfs2_stack_lock);
+}
+EXPORT_SYMBOL_GPL(ocfs2_stack_glue_set_max_proto_version);
+
+
+/*
+ * The ocfs2_dlm_lock() and ocfs2_dlm_unlock() functions take no argument
+ * for the ast and bast functions.  They will pass the lksb to the ast
+ * and bast.  The caller can wrap the lksb with their own structure to
+ * get more information.
+ */
+int ocfs2_dlm_lock(struct ocfs2_cluster_connection *conn,
+		   int mode,
+		   struct ocfs2_dlm_lksb *lksb,
+		   u32 flags,
+		   void *name,
+		   unsigned int namelen)
+{
+	if (!lksb->lksb_conn)
+		lksb->lksb_conn = conn;
+	else
+		BUG_ON(lksb->lksb_conn != conn);
+	return active_stack->sp_ops->dlm_lock(conn, mode, lksb, flags,
+					      name, namelen);
 }
 EXPORT_SYMBOL_GPL(ocfs2_dlm_lock);
 
@@ -266,6 +307,16 @@ int ocfs2_dlm_unlock(struct ocfs2_cluster_connection *conn,
 EXPORT_SYMBOL_GPL(ocfs2_dlm_unlock);
 
 int ocfs2_dlm_lock_status(union ocfs2_dlm_lksb *lksb)
+		     struct ocfs2_dlm_lksb *lksb,
+		     u32 flags)
+{
+	BUG_ON(lksb->lksb_conn == NULL);
+
+	return active_stack->sp_ops->dlm_unlock(conn, lksb, flags);
+}
+EXPORT_SYMBOL_GPL(ocfs2_dlm_unlock);
+
+int ocfs2_dlm_lock_status(struct ocfs2_dlm_lksb *lksb)
 {
 	return active_stack->sp_ops->lock_status(lksb);
 }
@@ -277,12 +328,20 @@ EXPORT_SYMBOL_GPL(ocfs2_dlm_lock_status);
  * ordering is nigh impossible.
  */
 void *ocfs2_dlm_lvb(union ocfs2_dlm_lksb *lksb)
+int ocfs2_dlm_lvb_valid(struct ocfs2_dlm_lksb *lksb)
+{
+	return active_stack->sp_ops->lvb_valid(lksb);
+}
+EXPORT_SYMBOL_GPL(ocfs2_dlm_lvb_valid);
+
+void *ocfs2_dlm_lvb(struct ocfs2_dlm_lksb *lksb)
 {
 	return active_stack->sp_ops->lock_lvb(lksb);
 }
 EXPORT_SYMBOL_GPL(ocfs2_dlm_lvb);
 
 void ocfs2_dlm_dump_lksb(union ocfs2_dlm_lksb *lksb)
+void ocfs2_dlm_dump_lksb(struct ocfs2_dlm_lksb *lksb)
 {
 	active_stack->sp_ops->dump_lksb(lksb);
 }
@@ -291,6 +350,32 @@ EXPORT_SYMBOL_GPL(ocfs2_dlm_dump_lksb);
 int ocfs2_cluster_connect(const char *stack_name,
 			  const char *group,
 			  int grouplen,
+int ocfs2_stack_supports_plocks(void)
+{
+	return active_stack && active_stack->sp_ops->plock;
+}
+EXPORT_SYMBOL_GPL(ocfs2_stack_supports_plocks);
+
+/*
+ * ocfs2_plock() can only be safely called if
+ * ocfs2_stack_supports_plocks() returned true
+ */
+int ocfs2_plock(struct ocfs2_cluster_connection *conn, u64 ino,
+		struct file *file, int cmd, struct file_lock *fl)
+{
+	WARN_ON_ONCE(active_stack->sp_ops->plock == NULL);
+	if (active_stack->sp_ops->plock)
+		return active_stack->sp_ops->plock(conn, ino, file, cmd, fl);
+	return -EOPNOTSUPP;
+}
+EXPORT_SYMBOL_GPL(ocfs2_plock);
+
+int ocfs2_cluster_connect(const char *stack_name,
+			  const char *cluster_name,
+			  int cluster_name_len,
+			  const char *group,
+			  int grouplen,
+			  struct ocfs2_locking_protocol *lproto,
 			  void (*recovery_handler)(int node_num,
 						   void *recovery_data),
 			  void *recovery_data,
@@ -308,6 +393,12 @@ int ocfs2_cluster_connect(const char *stack_name,
 		goto out;
 	}
 
+	if (memcmp(&lproto->lp_max_version, &locking_max_version,
+		   sizeof(struct ocfs2_protocol_version))) {
+		rc = -EINVAL;
+		goto out;
+	}
+
 	new_conn = kzalloc(sizeof(struct ocfs2_cluster_connection),
 			   GFP_KERNEL);
 	if (!new_conn) {
@@ -320,6 +411,16 @@ int ocfs2_cluster_connect(const char *stack_name,
 	new_conn->cc_recovery_handler = recovery_handler;
 	new_conn->cc_recovery_data = recovery_data;
 
+	strlcpy(new_conn->cc_name, group, GROUP_NAME_MAX + 1);
+	new_conn->cc_namelen = grouplen;
+	if (cluster_name_len)
+		strlcpy(new_conn->cc_cluster_name, cluster_name,
+			CLUSTER_NAME_MAX + 1);
+	new_conn->cc_cluster_name_len = cluster_name_len;
+	new_conn->cc_recovery_handler = recovery_handler;
+	new_conn->cc_recovery_data = recovery_data;
+
+	new_conn->cc_proto = lproto;
 	/* Start the new connection at our maximum compatibility level */
 	new_conn->cc_version = lproto->lp_max_version;
 
@@ -344,6 +445,25 @@ out:
 	return rc;
 }
 EXPORT_SYMBOL_GPL(ocfs2_cluster_connect);
+
+/* The caller will ensure all nodes have the same cluster stack */
+int ocfs2_cluster_connect_agnostic(const char *group,
+				   int grouplen,
+				   struct ocfs2_locking_protocol *lproto,
+				   void (*recovery_handler)(int node_num,
+							    void *recovery_data),
+				   void *recovery_data,
+				   struct ocfs2_cluster_connection **conn)
+{
+	char *stack_name = NULL;
+
+	if (cluster_stack_name[0])
+		stack_name = cluster_stack_name;
+	return ocfs2_cluster_connect(stack_name, NULL, 0, group, grouplen,
+				     lproto, recovery_handler, recovery_data,
+				     conn);
+}
+EXPORT_SYMBOL_GPL(ocfs2_cluster_connect_agnostic);
 
 /* If hangup_pending is 0, the stack driver will be dropped */
 int ocfs2_cluster_disconnect(struct ocfs2_cluster_connection *conn,
@@ -417,6 +537,10 @@ EXPORT_SYMBOL_GPL(ocfs2_cluster_hangup);
 int ocfs2_cluster_this_node(unsigned int *node)
 {
 	return active_stack->sp_ops->this_node(node);
+int ocfs2_cluster_this_node(struct ocfs2_cluster_connection *conn,
+			    unsigned int *node)
+{
+	return active_stack->sp_ops->this_node(conn, node);
 }
 EXPORT_SYMBOL_GPL(ocfs2_cluster_this_node);
 
@@ -436,6 +560,10 @@ static ssize_t ocfs2_max_locking_protocol_show(struct kobject *kobj,
 		ret = snprintf(buf, PAGE_SIZE, "%u.%u\n",
 			       lproto->lp_max_version.pv_major,
 			       lproto->lp_max_version.pv_minor);
+	if (locking_max_version.pv_major)
+		ret = snprintf(buf, PAGE_SIZE, "%u.%u\n",
+			       locking_max_version.pv_major,
+			       locking_max_version.pv_minor);
 	spin_unlock(&ocfs2_stack_lock);
 
 	return ret;
@@ -443,6 +571,7 @@ static ssize_t ocfs2_max_locking_protocol_show(struct kobject *kobj,
 
 static struct kobj_attribute ocfs2_attr_max_locking_protocol =
 	__ATTR(max_locking_protocol, S_IFREG | S_IRUGO,
+	__ATTR(max_locking_protocol, S_IRUGO,
 	       ocfs2_max_locking_protocol_show, NULL);
 
 static ssize_t ocfs2_loaded_cluster_plugins_show(struct kobject *kobj,
@@ -475,6 +604,7 @@ static ssize_t ocfs2_loaded_cluster_plugins_show(struct kobject *kobj,
 
 static struct kobj_attribute ocfs2_attr_loaded_cluster_plugins =
 	__ATTR(loaded_cluster_plugins, S_IFREG | S_IRUGO,
+	__ATTR(loaded_cluster_plugins, S_IRUGO,
 	       ocfs2_loaded_cluster_plugins_show, NULL);
 
 static ssize_t ocfs2_active_cluster_plugin_show(struct kobject *kobj,
@@ -497,6 +627,7 @@ static ssize_t ocfs2_active_cluster_plugin_show(struct kobject *kobj,
 
 static struct kobj_attribute ocfs2_attr_active_cluster_plugin =
 	__ATTR(active_cluster_plugin, S_IFREG | S_IRUGO,
+	__ATTR(active_cluster_plugin, S_IRUGO,
 	       ocfs2_active_cluster_plugin_show, NULL);
 
 static ssize_t ocfs2_cluster_stack_show(struct kobject *kobj,
@@ -549,11 +680,29 @@ static struct kobj_attribute ocfs2_attr_cluster_stack =
 	       ocfs2_cluster_stack_show,
 	       ocfs2_cluster_stack_store);
 
+	__ATTR(cluster_stack, S_IRUGO | S_IWUSR,
+	       ocfs2_cluster_stack_show,
+	       ocfs2_cluster_stack_store);
+
+
+
+static ssize_t ocfs2_dlm_recover_show(struct kobject *kobj,
+					struct kobj_attribute *attr,
+					char *buf)
+{
+	return snprintf(buf, PAGE_SIZE, "1\n");
+}
+
+static struct kobj_attribute ocfs2_attr_dlm_recover_support =
+	__ATTR(dlm_recover_callback_support, S_IRUGO,
+	       ocfs2_dlm_recover_show, NULL);
+
 static struct attribute *ocfs2_attrs[] = {
 	&ocfs2_attr_max_locking_protocol.attr,
 	&ocfs2_attr_loaded_cluster_plugins.attr,
 	&ocfs2_attr_active_cluster_plugin.attr,
 	&ocfs2_attr_cluster_stack.attr,
+	&ocfs2_attr_dlm_recover_support.attr,
 	NULL,
 };
 
@@ -600,6 +749,8 @@ error:
 static ctl_table ocfs2_nm_table[] = {
 	{
 		.ctl_name	= 1,
+static struct ctl_table ocfs2_nm_table[] = {
+	{
 		.procname	= "hb_ctl_path",
 		.data		= ocfs2_hb_ctl_path,
 		.maxlen		= OCFS2_MAX_HB_CTL_PATH,
@@ -613,6 +764,13 @@ static ctl_table ocfs2_nm_table[] = {
 static ctl_table ocfs2_mod_table[] = {
 	{
 		.ctl_name	= FS_OCFS2_NM,
+		.proc_handler	= proc_dostring,
+	},
+	{ }
+};
+
+static struct ctl_table ocfs2_mod_table[] = {
+	{
 		.procname	= "nm",
 		.data		= NULL,
 		.maxlen		= 0,
@@ -625,6 +783,11 @@ static ctl_table ocfs2_mod_table[] = {
 static ctl_table ocfs2_kern_table[] = {
 	{
 		.ctl_name	= FS_OCFS2,
+	{ }
+};
+
+static struct ctl_table ocfs2_kern_table[] = {
+	{
 		.procname	= "ocfs2",
 		.data		= NULL,
 		.maxlen		= 0,
@@ -637,6 +800,11 @@ static ctl_table ocfs2_kern_table[] = {
 static ctl_table ocfs2_root_table[] = {
 	{
 		.ctl_name	= CTL_FS,
+	{ }
+};
+
+static struct ctl_table ocfs2_root_table[] = {
+	{
 		.procname	= "fs",
 		.data		= NULL,
 		.maxlen		= 0,
@@ -647,6 +815,10 @@ static ctl_table ocfs2_root_table[] = {
 };
 
 static struct ctl_table_header *ocfs2_table_header = NULL;
+	{ }
+};
+
+static struct ctl_table_header *ocfs2_table_header;
 
 
 /*
@@ -655,6 +827,8 @@ static struct ctl_table_header *ocfs2_table_header = NULL;
 
 static int __init ocfs2_stack_glue_init(void)
 {
+	int ret;
+
 	strcpy(cluster_stack_name, OCFS2_STACK_PLUGIN_O2CB);
 
 	ocfs2_table_header = register_sysctl_table(ocfs2_root_table);
@@ -664,12 +838,20 @@ static int __init ocfs2_stack_glue_init(void)
 		return -ENOMEM; /* or something. */
 	}
 
-	return ocfs2_sysfs_init();
+	ret = ocfs2_sysfs_init();
+	if (ret)
+		unregister_sysctl_table(ocfs2_table_header);
+
+	return ret;
 }
 
 static void __exit ocfs2_stack_glue_exit(void)
 {
 	lproto = NULL;
+	memset(&locking_max_version, 0,
+	       sizeof(struct ocfs2_protocol_version));
+	locking_max_version.pv_major = 0;
+	locking_max_version.pv_minor = 0;
 	ocfs2_sysfs_exit();
 	if (ocfs2_table_header)
 		unregister_sysctl_table(ocfs2_table_header);

@@ -25,6 +25,10 @@
 #include <asm/ps3fb.h>
 #include <asm/ps3.h>
 
+#include <asm/ps3av.h>
+#include <asm/ps3.h>
+#include <asm/ps3gpu.h>
+
 #include "vuart.h"
 
 static const struct video_fmt {
@@ -663,6 +667,10 @@ u32 ps3av_cmd_set_av_audio_param(void *p, u32 port,
 static const u8 ps3av_mode_cs_info[] = {
 	0x00, 0x09, 0x00, 0x02, 0x01, 0x00, 0x00, 0x00
 };
+u8 ps3av_mode_cs_info[] = {
+	0x00, 0x09, 0x00, 0x02, 0x01, 0x00, 0x00, 0x00
+};
+EXPORT_SYMBOL_GPL(ps3av_mode_cs_info);
 
 #define CS_44	0x00
 #define CS_48	0x02
@@ -678,6 +686,7 @@ void ps3av_cmd_set_audio_mode(struct ps3av_pkt_audio_mode *audio, u32 avport,
 			      u32 source)
 {
 	int spdif_through, spdif_bitstream;
+	int spdif_through;
 	int i;
 
 	if (!(ch | fs | format | word_bits | source)) {
@@ -787,6 +796,17 @@ void ps3av_cmd_set_audio_mode(struct ps3av_pkt_audio_mode *audio, u32 avport,
 			audio->audio_format = PS3AV_CMD_AUDIO_FORMAT_BITSTREAM;
 			audio->audio_cs_info[0] |= CS_BIT;
 		}
+	/* non-audio bit */
+	spdif_through = audio->audio_cs_info[0] & 0x02;
+
+	/* pass through setting */
+	if (spdif_through &&
+	    (avport == PS3AV_CMD_AVPORT_SPDIF_0 ||
+	     avport == PS3AV_CMD_AVPORT_SPDIF_1 ||
+	     avport == PS3AV_CMD_AVPORT_HDMI_0 ||
+	     avport == PS3AV_CMD_AVPORT_HDMI_1)) {
+		audio->audio_word_bits = PS3AV_CMD_AUDIO_WORD_BITS_16;
+		audio->audio_format = PS3AV_CMD_AUDIO_FORMAT_BITSTREAM;
 	}
 }
 
@@ -864,6 +884,7 @@ int ps3av_cmd_avb_param(struct ps3av_pkt_avb_param *avb, u32 send_len)
 	int res;
 
 	ps3av_flip_ctl(0);	/* flip off */
+	mutex_lock(&ps3_gpu_mutex);
 
 	/* avb packet */
 	res = ps3av_do_pkt(PS3AV_CID_AVB_PARAM, send_len, sizeof(*avb),
@@ -878,6 +899,7 @@ int ps3av_cmd_avb_param(struct ps3av_pkt_avb_param *avb, u32 send_len)
 
       out:
 	ps3av_flip_ctl(1);	/* flip on */
+	mutex_unlock(&ps3_gpu_mutex);
 	return res;
 }
 

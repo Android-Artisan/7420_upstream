@@ -21,6 +21,20 @@
 #include <net/ax88796.h>
 #include <asm/machvec.h>
 #include <asm/r7780rp.h>
+#include <linux/io.h>
+#include <linux/platform_device.h>
+#include <linux/ata_platform.h>
+#include <linux/types.h>
+#include <linux/mtd/physmap.h>
+#include <linux/i2c.h>
+#include <linux/irq.h>
+#include <linux/interrupt.h>
+#include <linux/usb/r8a66597.h>
+#include <linux/usb/m66592.h>
+#include <linux/clkdev.h>
+#include <net/ax88796.h>
+#include <asm/machvec.h>
+#include <mach/highlander.h>
 #include <asm/clock.h>
 #include <asm/heartbeat.h>
 #include <asm/io.h>
@@ -29,6 +43,13 @@
 static struct resource r8a66597_usb_host_resources[] = {
 	[0] = {
 		.name	= "r8a66597_hcd",
+static struct r8a66597_platdata r8a66597_data = {
+	.xtal = R8A66597_PLATDATA_XTAL_12MHZ,
+	.vif = 1,
+};
+
+static struct resource r8a66597_usb_host_resources[] = {
+	[0] = {
 		.start	= 0xA4200000,
 		.end	= 0xA42000FF,
 		.flags	= IORESOURCE_MEM,
@@ -38,6 +59,9 @@ static struct resource r8a66597_usb_host_resources[] = {
 		.start	= IRQ_EXT1,		/* irq number */
 		.end	= IRQ_EXT1,
 		.flags	= IORESOURCE_IRQ,
+		.start	= IRQ_EXT1,		/* irq number */
+		.end	= IRQ_EXT1,
+		.flags	= IORESOURCE_IRQ | IRQF_TRIGGER_LOW,
 	},
 };
 
@@ -47,9 +71,15 @@ static struct platform_device r8a66597_usb_host_device = {
 	.dev = {
 		.dma_mask		= NULL,		/* don't use dma */
 		.coherent_dma_mask	= 0xffffffff,
+		.platform_data		= &r8a66597_data,
 	},
 	.num_resources	= ARRAY_SIZE(r8a66597_usb_host_resources),
 	.resource	= r8a66597_usb_host_resources,
+};
+
+static struct m66592_platdata usbf_platdata = {
+	.xtal = M66592_PLATDATA_XTAL_24MHZ,
+	.vif = 1,
 };
 
 static struct resource m66592_usb_peripheral_resources[] = {
@@ -73,6 +103,7 @@ static struct platform_device m66592_usb_peripheral_device = {
 	.dev = {
 		.dma_mask		= NULL,		/* don't use dma */
 		.coherent_dma_mask	= 0xffffffff,
+		.platform_data		= &usbf_platdata,
 	},
 	.num_resources	= ARRAY_SIZE(m66592_usb_peripheral_resources),
 	.resource	= m66592_usb_peripheral_resources,
@@ -177,6 +208,53 @@ static struct platform_device ax88796_device = {
 	.resource       = ax88796_resources,
 };
 
+static struct mtd_partition nor_flash_partitions[] = {
+	{
+		.name		= "loader",
+		.offset		= 0x00000000,
+		.size		= 512 * 1024,
+	},
+	{
+		.name		= "bootenv",
+		.offset		= MTDPART_OFS_APPEND,
+		.size		= 512 * 1024,
+	},
+	{
+		.name		= "kernel",
+		.offset		= MTDPART_OFS_APPEND,
+		.size		= 4 * 1024 * 1024,
+	},
+	{
+		.name		= "data",
+		.offset		= MTDPART_OFS_APPEND,
+		.size		= MTDPART_SIZ_FULL,
+	},
+};
+
+static struct physmap_flash_data nor_flash_data = {
+	.width		= 4,
+	.parts		= nor_flash_partitions,
+	.nr_parts	= ARRAY_SIZE(nor_flash_partitions),
+};
+
+/* This config is flash board for mass production. */
+static struct resource nor_flash_resources[] = {
+	[0]	= {
+		.start	= PA_NORFLASH_ADDR,
+		.end	= PA_NORFLASH_ADDR + PA_NORFLASH_SIZE - 1,
+		.flags	= IORESOURCE_MEM,
+	}
+};
+
+static struct platform_device nor_flash_device = {
+	.name		= "physmap-flash",
+	.dev		= {
+		.platform_data	= &nor_flash_data,
+	},
+	.num_resources	= ARRAY_SIZE(nor_flash_resources),
+	.resource	= nor_flash_resources,
+};
+
 static struct resource smbus_resources[] = {
 	[0] = {
 		.start	= PA_SMCR,
@@ -208,6 +286,7 @@ static struct platform_device *r7780rp_devices[] __initdata = {
 	&m66592_usb_peripheral_device,
 	&heartbeat_device,
 	&smbus_device,
+	&nor_flash_device,
 #ifndef CONFIG_SH_R7780RP
 	&ax88796_device,
 #endif
@@ -249,6 +328,10 @@ device_initcall(r7780rp_devices_setup);
 static void ivdr_clk_enable(struct clk *clk)
 {
 	ctrl_outw(ctrl_inw(PA_IVDRCTL) | (1 << IVDR_CK_ON), PA_IVDRCTL);
+static int ivdr_clk_enable(struct clk *clk)
+{
+	__raw_writew(__raw_readw(PA_IVDRCTL) | (1 << IVDR_CK_ON), PA_IVDRCTL);
+	return 0;
 }
 
 static void ivdr_clk_disable(struct clk *clk)
@@ -257,6 +340,10 @@ static void ivdr_clk_disable(struct clk *clk)
 }
 
 static struct clk_ops ivdr_clk_ops = {
+	__raw_writew(__raw_readw(PA_IVDRCTL) & ~(1 << IVDR_CK_ON), PA_IVDRCTL);
+}
+
+static struct sh_clk_ops ivdr_clk_ops = {
 	.enable		= ivdr_clk_enable,
 	.disable	= ivdr_clk_disable,
 };
@@ -274,6 +361,15 @@ static void r7780rp_power_off(void)
 {
 	if (mach_is_r7780mp() || mach_is_r7785rp())
 		ctrl_outw(0x0001, PA_POFF);
+static struct clk_lookup lookups[] = {
+	/* main clocks */
+	CLKDEV_CON_ID("ivdr_clk", &ivdr_clk),
+};
+
+static void r7780rp_power_off(void)
+{
+	if (mach_is_r7780mp() || mach_is_r7785rp())
+		__raw_writew(0x0001, PA_POFF);
 }
 
 /*
@@ -282,6 +378,7 @@ static void r7780rp_power_off(void)
 static void __init highlander_setup(char **cmdline_p)
 {
 	u16 ver = ctrl_inw(PA_VERREG);
+	u16 ver = __raw_readw(PA_VERREG);
 	int i;
 
 	printk(KERN_INFO "Renesas Solutions Highlander %s support.\n",
@@ -293,6 +390,8 @@ static void __init highlander_setup(char **cmdline_p)
 			 "FPGA version: %d (revision %d)\n",
 			 (ver >> 12) & 0xf, (ver >> 8) & 0xf,
 			 (ver >>  4) & 0xf, ver & 0xf);
+
+	highlander_plat_pinmux_setup();
 
 	/*
 	 * Enable the important clocks right away..
@@ -310,6 +409,14 @@ static void __init highlander_setup(char **cmdline_p)
 		ctrl_outw(0x0001, PA_SDPOW);	/* SD Power ON */
 
 	ctrl_outw(ctrl_inw(PA_IVDRCTL) | 0x01, PA_IVDRCTL);	/* Si13112 */
+	clkdev_add_table(lookups, ARRAY_SIZE(lookups));
+
+	__raw_writew(0x0000, PA_OBLED);	/* Clear LED. */
+
+	if (mach_is_r7780rp())
+		__raw_writew(0x0001, PA_SDPOW);	/* SD Power ON */
+
+	__raw_writew(__raw_readw(PA_IVDRCTL) | 0x01, PA_IVDRCTL);	/* Si13112 */
 
 	pm_power_off = r7780rp_power_off;
 }
@@ -319,6 +426,7 @@ static unsigned char irl2irq[HL_NR_IRL];
 static int highlander_irq_demux(int irq)
 {
 	if (irq >= HL_NR_IRL || !irl2irq[irq])
+	if (irq >= HL_NR_IRL || irq < 0 || !irl2irq[irq])
 		return irq;
 
 	return irl2irq[irq];

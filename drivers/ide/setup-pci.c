@@ -2,12 +2,14 @@
  *  Copyright (C) 1998-2000  Andre Hedrick <andre@linux-ide.org>
  *  Copyright (C) 1995-1998  Mark Lord
  *  Copyright (C)      2007  Bartlomiej Zolnierkiewicz
+ *  Copyright (C) 2007-2009  Bartlomiej Zolnierkiewicz
  *
  *  May be copied or modified under the terms of the GNU General Public License
  */
 
 #include <linux/types.h>
 #include <linux/kernel.h>
+#include <linux/export.h>
 #include <linux/pci.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
@@ -131,6 +133,7 @@ int ide_pci_check_simplex(ide_hwif_t *hwif, const struct ide_port_info *d)
 	 * the DMA end.  This has to be become dynamic to handle hot-plug.
 	 */
 	dma_stat = hwif->tp_ops->read_sff_dma_status(hwif);
+	dma_stat = hwif->dma_ops->dma_sff_read_status(hwif);
 	if ((dma_stat & 0x80) && hwif->mate && hwif->mate->dma_base) {
 		printk(KERN_INFO "%s %s: simplex device: DMA disabled\n",
 			d->name, pci_name(dev));
@@ -209,6 +212,7 @@ static int ide_pci_enable(struct pci_dev *dev, const struct ide_port_info *d)
 	 * (or let lower level driver set the DMA mask)
 	 */
 	ret = pci_set_dma_mask(dev, DMA_32BIT_MASK);
+	ret = dma_set_mask(&dev->dev, DMA_BIT_MASK(32));
 	if (ret < 0) {
 		printk(KERN_ERR "%s %s: can't set DMA mask\n",
 			d->name, pci_name(dev));
@@ -307,6 +311,11 @@ static int ide_pci_check_iomem(struct pci_dev *dev, const struct ide_port_info *
  *	@port: port number
  *	@irq: PCI IRQ
  *	@hw: hw_regs_t instance corresponding to this port
+ *	ide_hw_configure	-	configure a struct ide_hw instance
+ *	@dev: PCI device holding interface
+ *	@d: IDE port info
+ *	@port: port number
+ *	@hw: struct ide_hw instance corresponding to this port
  *
  *	Perform the initial set up for the hardware interface structure. This
  *	is done per interface port rather than per PCI device. There may be
@@ -317,6 +326,7 @@ static int ide_pci_check_iomem(struct pci_dev *dev, const struct ide_port_info *
 
 static int ide_hw_configure(struct pci_dev *dev, const struct ide_port_info *d,
 			    unsigned int port, int irq, hw_regs_t *hw)
+			    unsigned int port, struct ide_hw *hw)
 {
 	unsigned long ctl = 0, base = 0;
 
@@ -347,6 +357,7 @@ static int ide_hw_configure(struct pci_dev *dev, const struct ide_port_info *d,
 	hw->irq = irq;
 	hw->dev = &dev->dev;
 	hw->chipset = d->chipset ? d->chipset : ide_pci;
+	hw->dev = &dev->dev;
 	ide_std_init_ports(hw, base, ctl | 2);
 
 	return 0;
@@ -376,6 +387,9 @@ int ide_hwif_setup_dma(ide_hwif_t *hwif, const struct ide_port_info *d)
 			return -1;
 
 		hwif->dma_base = base;
+
+		if (hwif->dma_ops == NULL)
+			hwif->dma_ops = &sff_dma_ops;
 
 		if (ide_pci_check_simplex(hwif, d) < 0)
 			return -1;
@@ -450,6 +464,8 @@ out:
  *	@pciirq: IRQ line
  *	@hw: hw_regs_t instances corresponding to this PCI IDE device
  *	@hws: hw_regs_t pointers table to update
+ *	@hw: struct ide_hw instances corresponding to this PCI IDE device
+ *	@hws: struct ide_hw pointers table to update
  *
  *	Scan the interfaces attached to this device and do any
  *	necessary per port setup. Attach the devices and ask the
@@ -462,6 +478,7 @@ out:
 
 void ide_pci_setup_ports(struct pci_dev *dev, const struct ide_port_info *d,
 			 int pciirq, hw_regs_t *hw, hw_regs_t **hws)
+			 struct ide_hw *hw, struct ide_hw **hws)
 {
 	int channels = (d->host_flags & IDE_HFLAG_SINGLE) ? 1 : 2, port;
 	u8 tmp;
@@ -472,6 +489,7 @@ void ide_pci_setup_ports(struct pci_dev *dev, const struct ide_port_info *d,
 
 	for (port = 0; port < channels; ++port) {
 		const ide_pci_enablebit_t *e = &(d->enablebits[port]);
+		const struct ide_pci_enablebit *e = &d->enablebits[port];
 
 		if (e->reg && (pci_read_config_byte(dev, e->reg, &tmp) ||
 		    (tmp & e->mask) != e->val)) {
@@ -481,6 +499,7 @@ void ide_pci_setup_ports(struct pci_dev *dev, const struct ide_port_info *d,
 		}
 
 		if (ide_hw_configure(dev, d, port, pciirq, hw + port))
+		if (ide_hw_configure(dev, d, port, hw + port))
 			continue;
 
 		*(hws + port) = hw + port;
@@ -525,6 +544,11 @@ static int do_ide_setup_pci_device(struct pci_dev *dev,
 			printk(KERN_INFO "%s %s: not 100%% native mode: will "
 				"probe irqs later\n", d->name, pci_name(dev));
 		pciirq = ret;
+	if (ide_pci_is_in_compatibility_mode(dev)) {
+		if (noisy)
+			printk(KERN_INFO "%s %s: not 100%% native mode: will "
+				"probe irqs later\n", d->name, pci_name(dev));
+		pciirq = 0;
 	} else if (!pciirq && noisy) {
 		printk(KERN_WARNING "%s %s: bad irq (%d): will probe later\n",
 			d->name, pci_name(dev), pciirq);
@@ -587,6 +611,10 @@ int ide_pci_init_two(struct pci_dev *dev1, struct pci_dev *dev2,
 	hw_regs_t hw[4], *hws[] = { NULL, NULL, NULL, NULL };
 
 	for (i = 0; i < 2; i++) {
+	int ret, i, n_ports = dev2 ? 4 : 2;
+	struct ide_hw hw[4], *hws[] = { NULL, NULL, NULL, NULL };
+
+	for (i = 0; i < n_ports / 2; i++) {
 		ret = ide_setup_pci_controller(pdev[i], d, !i);
 		if (ret < 0)
 			goto out;
@@ -595,6 +623,10 @@ int ide_pci_init_two(struct pci_dev *dev1, struct pci_dev *dev2,
 	}
 
 	host = ide_host_alloc(d, hws);
+		ide_pci_setup_ports(pdev[i], d, &hw[i*2], &hws[i*2]);
+	}
+
+	host = ide_host_alloc(d, hws, n_ports);
 	if (host == NULL) {
 		ret = -ENOMEM;
 		goto out;
@@ -609,6 +641,17 @@ int ide_pci_init_two(struct pci_dev *dev1, struct pci_dev *dev2,
 	pci_set_drvdata(pdev[1], host);
 
 	for (i = 0; i < 2; i++) {
+	if (dev2)
+		host->dev[1] = &dev2->dev;
+
+	host->host_priv = priv;
+	host->irq_flags = IRQF_SHARED;
+
+	pci_set_drvdata(pdev[0], host);
+	if (dev2)
+		pci_set_drvdata(pdev[1], host);
+
+	for (i = 0; i < n_ports / 2; i++) {
 		ret = do_ide_setup_pci_device(pdev[i], d, !i);
 
 		/*
@@ -620,6 +663,11 @@ int ide_pci_init_two(struct pci_dev *dev1, struct pci_dev *dev2,
 
 		/* fixup IRQ */
 		hw[i*2 + 1].irq = hw[i*2].irq = ret;
+		if (ide_pci_is_in_compatibility_mode(pdev[i])) {
+			hw[i*2].irq = pci_get_legacy_ide_irq(pdev[i], 0);
+			hw[i*2 + 1].irq = pci_get_legacy_ide_irq(pdev[i], 1);
+		} else
+			hw[i*2 + 1].irq = hw[i*2].irq = ret;
 	}
 
 	ret = ide_host_register(host, d, hws);
@@ -629,6 +677,13 @@ out:
 	return ret;
 }
 EXPORT_SYMBOL_GPL(ide_pci_init_two);
+
+int ide_pci_init_one(struct pci_dev *dev, const struct ide_port_info *d,
+		     void *priv)
+{
+	return ide_pci_init_two(dev, NULL, d, priv);
+}
+EXPORT_SYMBOL_GPL(ide_pci_init_one);
 
 void ide_pci_remove(struct pci_dev *dev)
 {
@@ -659,3 +714,36 @@ void ide_pci_remove(struct pci_dev *dev)
 	pci_disable_device(dev);
 }
 EXPORT_SYMBOL_GPL(ide_pci_remove);
+
+#ifdef CONFIG_PM
+int ide_pci_suspend(struct pci_dev *dev, pm_message_t state)
+{
+	pci_save_state(dev);
+	pci_disable_device(dev);
+	pci_set_power_state(dev, pci_choose_state(dev, state));
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(ide_pci_suspend);
+
+int ide_pci_resume(struct pci_dev *dev)
+{
+	struct ide_host *host = pci_get_drvdata(dev);
+	int rc;
+
+	pci_set_power_state(dev, PCI_D0);
+
+	rc = pci_enable_device(dev);
+	if (rc)
+		return rc;
+
+	pci_restore_state(dev);
+	pci_set_master(dev);
+
+	if (host->init_chipset)
+		host->init_chipset(dev);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(ide_pci_resume);
+#endif

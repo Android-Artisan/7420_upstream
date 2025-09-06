@@ -32,6 +32,12 @@
  *
  * Or submit a bug report through the following website:
  *    http://www.sf.net/projects/lksctp
+ * along with GNU CC; see the file COPYING.  If not, see
+ * <http://www.gnu.org/licenses/>.
+ *
+ * Please send any bug reports or fixes you make to the
+ * email address(es):
+ *    lksctp developers <linux-sctp@vger.kernel.org>
  *
  * Written or modified by:
  *    La Monte H.P. Yarroll <piggy@acm.org>
@@ -53,6 +59,8 @@ int sctp_debug_flag = 1;	/* Initially enable DEBUG */
 
 /* These are printable forms of Chunk ID's from section 3.1.  */
 static const char *sctp_cid_tbl[SCTP_NUM_BASE_CHUNK_TYPES] = {
+/* These are printable forms of Chunk ID's from section 3.1.  */
+static const char *const sctp_cid_tbl[SCTP_NUM_BASE_CHUNK_TYPES] = {
 	"DATA",
 	"INIT",
 	"INIT_ACK",
@@ -86,6 +94,9 @@ const char *sctp_cname(const sctp_subtype_t cid)
 	case SCTP_CID_FWD_TSN:
 		return "FWD_TSN";
 
+	case SCTP_CID_AUTH:
+		return "AUTH";
+
 	default:
 		break;
 	}
@@ -96,6 +107,7 @@ const char *sctp_cname(const sctp_subtype_t cid)
 /* These are printable forms of the states.  */
 const char *sctp_state_tbl[SCTP_STATE_NUM_STATES] = {
 	"STATE_EMPTY",
+const char *const sctp_state_tbl[SCTP_STATE_NUM_STATES] = {
 	"STATE_CLOSED",
 	"STATE_COOKIE_WAIT",
 	"STATE_COOKIE_ECHOED",
@@ -108,6 +120,7 @@ const char *sctp_state_tbl[SCTP_STATE_NUM_STATES] = {
 
 /* Events that could change the state of an association.  */
 const char *sctp_evttype_tbl[] = {
+const char *const sctp_evttype_tbl[] = {
 	"EVENT_T_unknown",
 	"EVENT_T_CHUNK",
 	"EVENT_T_TIMEOUT",
@@ -117,6 +130,7 @@ const char *sctp_evttype_tbl[] = {
 
 /* Return value of a state function */
 const char *sctp_status_tbl[] = {
+const char *const sctp_status_tbl[] = {
 	"DISPOSITION_DISCARD",
 	"DISPOSITION_CONSUME",
 	"DISPOSITION_NOMEM",
@@ -130,11 +144,13 @@ const char *sctp_status_tbl[] = {
 
 /* Printable forms of primitives */
 static const char *sctp_primitive_tbl[SCTP_NUM_PRIMITIVE_TYPES] = {
+static const char *const sctp_primitive_tbl[SCTP_NUM_PRIMITIVE_TYPES] = {
 	"PRIMITIVE_ASSOCIATE",
 	"PRIMITIVE_SHUTDOWN",
 	"PRIMITIVE_ABORT",
 	"PRIMITIVE_SEND",
 	"PRIMITIVE_REQUESTHEARTBEAT",
+	"PRIMITIVE_ASCONF",
 };
 
 /* Lookup primitive debug name. */
@@ -146,6 +162,7 @@ const char *sctp_pname(const sctp_subtype_t id)
 }
 
 static const char *sctp_other_tbl[] = {
+static const char *const sctp_other_tbl[] = {
 	"NO_PENDING_TSN",
 	"ICMP_PROTO_UNREACH",
 };
@@ -159,6 +176,7 @@ const char *sctp_oname(const sctp_subtype_t id)
 }
 
 static const char *sctp_timer_tbl[] = {
+static const char *const sctp_timer_tbl[] = {
 	"TIMEOUT_NONE",
 	"TIMEOUT_T1_COOKIE",
 	"TIMEOUT_T1_INIT",
@@ -174,7 +192,7 @@ static const char *sctp_timer_tbl[] = {
 /* Lookup timer debug name. */
 const char *sctp_tname(const sctp_subtype_t id)
 {
-	if (id.timeout <= SCTP_EVENT_TIMEOUT_MAX)
+	if (id.timeout < ARRAY_SIZE(sctp_timer_tbl))
 		return sctp_timer_tbl[id.timeout];
 	return "unknown_timer";
 }

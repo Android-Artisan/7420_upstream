@@ -2,6 +2,7 @@
  * include/linux/firmware-map.h:
  *  Copyright (C) 2008 SUSE LINUX Products GmbH
  *  by Bernhard Walle <bwalle@suse.de>
+ *  by Bernhard Walle <bernhard.walle@gmx.de>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License v2.0 as published by
@@ -33,12 +34,25 @@ int firmware_map_add_early(resource_size_t start, resource_size_t end,
 
 static inline int firmware_map_add(resource_size_t start, resource_size_t end,
 				   const char *type)
+int firmware_map_add_early(u64 start, u64 end, const char *type);
+int firmware_map_add_hotplug(u64 start, u64 end, const char *type);
+int firmware_map_remove(u64 start, u64 end, const char *type);
+
+#else /* CONFIG_FIRMWARE_MEMMAP */
+
+static inline int firmware_map_add_early(u64 start, u64 end, const char *type)
 {
 	return 0;
 }
 
 static inline int firmware_map_add_early(resource_size_t start,
 					 resource_size_t end, const char *type)
+static inline int firmware_map_add_hotplug(u64 start, u64 end, const char *type)
+{
+	return 0;
+}
+
+static inline int firmware_map_remove(u64 start, u64 end, const char *type)
 {
 	return 0;
 }

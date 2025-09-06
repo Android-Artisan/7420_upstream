@@ -68,7 +68,7 @@ typedef struct {
 	unsigned char ClockControl:1;	/* RW: Clock control: 0=normal, 1=stop 3780i clocks */
 	unsigned char SoftReset:1;	/* RW: Soft reset 0=normal, 1=soft reset active */
 	unsigned char ConfigMode:1;	/* RW: Configuration mode, 0=normal, 1=config mode */
-	unsigned char Reserved:5;	/* 0: Reserved */
+	unsigned short Reserved:13;	/* 0: Reserved */
 } DSP_ISA_SLAVE_CONTROL;
 
 
@@ -123,6 +123,7 @@ typedef struct {
 	unsigned char Dma:3;	/* RW: DMA channel selection */
 	unsigned char NumTransfers:2;	/* RW: Maximum # of transfers once being granted the ISA bus */
 	unsigned char ReRequest:2;	/* RW: Minumum delay between releasing the ISA bus and requesting it again */
+	unsigned char ReRequest:2;	/* RW: Minimum delay between releasing the ISA bus and requesting it again */
 	unsigned char MEMCS16:1;	/* RW: ISA signal MEMCS16: 0=disabled, 1=enabled */
 } DSP_BUSMASTER_CFG_1;
 

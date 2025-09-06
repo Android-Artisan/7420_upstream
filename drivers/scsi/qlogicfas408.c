@@ -24,6 +24,7 @@
    Dave Hinds' PCMCIA package.
    
    Cleaned up 26/10/2002 by Alan Cox <alan@redhat.com> as part of the 2.5
+   Cleaned up 26/10/2002 by Alan Cox <alan@lxorguk.ukuu.org.uk> as part of the 2.5
    SCSI driver cleanup and audit. This driver still needs work on the
    following
    	-	Non terminating hardware waits
@@ -440,6 +441,7 @@ irqreturn_t qlogicfas408_ihandl(int irq, void *dev_id)
  */
 
 int qlogicfas408_queuecommand(struct scsi_cmnd *cmd,
+static int qlogicfas408_queuecommand_lck(struct scsi_cmnd *cmd,
 			      void (*done) (struct scsi_cmnd *))
 {
 	struct qlogicfas408_priv *priv = get_priv_by_cmd(cmd);
@@ -458,6 +460,8 @@ int qlogicfas408_queuecommand(struct scsi_cmnd *cmd,
 	ql_icmd(cmd);
 	return 0;
 }
+
+DEF_SCSI_QCMD(qlogicfas408_queuecommand)
 
 /* 
  *	Return bios parameters 

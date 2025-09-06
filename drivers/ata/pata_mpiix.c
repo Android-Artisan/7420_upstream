@@ -2,6 +2,7 @@
  * pata_mpiix.c 	- Intel MPIIX PATA for new ATA layer
  *			  (C) 2005-2006 Red Hat Inc
  *			  Alan Cox <alan@redhat.com>
+ *			  Alan Cox <alan@lxorguk.ukuu.org.uk>
  *
  * The MPIIX is different enough to the PIIX4 and friends that we give it
  * a separate driver. The old ide/pci code handles this by just not tuning
@@ -16,6 +17,7 @@
  * unloaded (as it has many other functions).
  *
  * The driver conciously keeps this logic internally to avoid pushing quirky
+ * The driver consciously keeps this logic internally to avoid pushing quirky
  * PATA history into the clean libata layer.
  *
  * Thinkpad specific note: If you boot an MPIIX using a thinkpad with a PCMCIA
@@ -36,6 +38,7 @@
 
 #define DRV_NAME "pata_mpiix"
 #define DRV_VERSION "0.7.6"
+#define DRV_VERSION "0.7.7"
 
 enum {
 	IDETIM = 0x6C,		/* IDE control register */
@@ -146,6 +149,7 @@ static struct ata_port_operations mpiix_port_ops = {
 	.cable_detect	= ata_cable_40wire,
 	.set_piomode	= mpiix_set_piomode,
 	.prereset	= mpiix_pre_reset,
+	.sff_data_xfer	= ata_sff_data_xfer32,
 };
 
 static int mpiix_init_one(struct pci_dev *dev, const struct pci_device_id *id)
@@ -160,6 +164,7 @@ static int mpiix_init_one(struct pci_dev *dev, const struct pci_device_id *id)
 
 	if (!printed_version++)
 		dev_printk(KERN_DEBUG, &dev->dev, "version " DRV_VERSION "\n");
+	ata_print_version_once(&dev->dev, DRV_VERSION);
 
 	host = ata_host_alloc(&dev->dev, 1);
 	if (!host)
@@ -200,6 +205,7 @@ static int mpiix_init_one(struct pci_dev *dev, const struct pci_device_id *id)
 
 	ap->ops = &mpiix_port_ops;
 	ap->pio_mask = 0x1F;
+	ap->pio_mask = ATA_PIO4;
 	ap->flags |= ATA_FLAG_SLAVE_POSS;
 
 	ap->ioaddr.cmd_addr = cmd_addr;
@@ -226,6 +232,7 @@ static struct pci_driver mpiix_pci_driver = {
 	.probe 		= mpiix_init_one,
 	.remove		= ata_pci_remove_one,
 #ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 	.suspend	= ata_pci_device_suspend,
 	.resume		= ata_pci_device_resume,
 #endif
@@ -240,6 +247,7 @@ static void __exit mpiix_exit(void)
 {
 	pci_unregister_driver(&mpiix_pci_driver);
 }
+module_pci_driver(mpiix_pci_driver);
 
 MODULE_AUTHOR("Alan Cox");
 MODULE_DESCRIPTION("low-level driver for Intel MPIIX");

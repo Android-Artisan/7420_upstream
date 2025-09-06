@@ -25,10 +25,33 @@
  *
  */
 
+ * Module options:
+ *
+ * debug:
+ *	NOTE: only one poll value must be given for all cards
+ *	See hfc_pci.h for debug flags.
+ *
+ * poll:
+ *	NOTE: only one poll value must be given for all cards
+ *	Give the number of samples for each fifo process.
+ *	By default 128 is used. Decrease to reduce delay, increase to
+ *	reduce cpu load. If unsure, don't mess with it!
+ *	A value of 128 will use controller's interrupt. Other values will
+ *	use kernel timer, because the controller will not allow lower values
+ *	than 128.
+ *	Also note that the value depends on the kernel timer frequency.
+ *	If kernel uses a frequency of 1000 Hz, steps of 8 samples are possible.
+ *	If the kernel uses 100 Hz, steps of 80 samples are possible.
+ *	If the kernel uses 300 Hz, steps of about 26 samples are possible.
+ *
+ */
+
+#include <linux/interrupt.h>
 #include <linux/module.h>
 #include <linux/pci.h>
 #include <linux/delay.h>
 #include <linux/mISDNhw.h>
+#include <linux/slab.h>
 
 #include "hfc_pci.h"
 
@@ -44,6 +67,16 @@ module_param(debug, uint, 0);
 
 static LIST_HEAD(HFClist);
 DEFINE_RWLOCK(HFClock);
+static int HFC_cnt;
+static uint debug;
+static uint poll, tics;
+static struct timer_list hfc_tl;
+static unsigned long hfc_jiffies;
+
+MODULE_AUTHOR("Karsten Keil");
+MODULE_LICENSE("GPL");
+module_param(debug, uint, S_IRUGO | S_IWUSR);
+module_param(poll, uint, S_IRUGO | S_IWUSR);
 
 enum {
 	HFC_CCD_2BD0,
@@ -93,6 +126,11 @@ struct hfcPCI_hw {
 	void			*fifos; /* FIFO memory */
 	int			last_bfifo_cnt[2];
 	    /* marker saving last b-fifo frame count */
+	unsigned char __iomem	*pci_io; /* start of PCI IO memory */
+	dma_addr_t		dmahandle;
+	void			*fifos; /* FIFO memory */
+	int			last_bfifo_cnt[2];
+	/* marker saving last b-fifo frame count */
 	struct timer_list	timer;
 };
 
@@ -154,6 +192,7 @@ release_io_hfcpci(struct hfc_pci *hc)
 	del_timer(&hc->hw.timer);
 	pci_free_consistent(hc->pdev, 0x8000, hc->hw.fifos, hc->hw.dmahandle);
 	iounmap((void *)hc->hw.pci_io);
+	iounmap(hc->hw.pci_io);
 }
 
 /*
@@ -197,6 +236,7 @@ reset_hfcpci(struct hfc_pci *hc)
 	/* enable memory ports + busmaster */
 	pci_write_config_word(hc->pdev, PCI_COMMAND,
 	    PCI_ENA_MEMIO + PCI_ENA_MASTER);
+			      PCI_ENA_MEMIO + PCI_ENA_MASTER);
 	val = Read_hfc(hc, HFCPCI_STATUS);
 	printk(KERN_DEBUG "HFC-PCI status(%x) before reset\n", val);
 	hc->hw.cirm = HFCPCI_RESET;	/* Reset On */
@@ -240,6 +280,11 @@ reset_hfcpci(struct hfc_pci *hc)
 
 	/* Clear already pending ints */
 	if (Read_hfc(hc, HFCPCI_INT_S1));
+		HFCPCI_INTS_L1STATE | HFCPCI_INTS_TIMER;
+	Write_hfc(hc, HFCPCI_INT_M1, hc->hw.int_m1);
+
+	/* Clear already pending ints */
+	val = Read_hfc(hc, HFCPCI_INT_S1);
 
 	/* set NT/TE mode */
 	hfcpci_setmode(hc);
@@ -254,6 +299,7 @@ reset_hfcpci(struct hfc_pci *hc)
 	 * STIO1 is used as output for data, B1+B2 from ST->IOM+HFC
 	 * STIO2 is used as data input, B1+B2 from IOM->ST
 	 * ST B-channel send disabled -> continous 1s
+	 * ST B-channel send disabled -> continuous 1s
 	 * The IOM slots are always enabled
 	 */
 	if (test_bit(HFC_CFG_PCM, &hc->cfg)) {
@@ -303,6 +349,10 @@ Sel_BCS(struct hfc_pci *hc, int channel)
 		return &hc->bch[0];
 	else if (test_bit(FLG_ACTIVE, &hc->bch[1].Flags) &&
 		(hc->bch[1].nr & channel))
+	    (hc->bch[0].nr & channel))
+		return &hc->bch[0];
+	else if (test_bit(FLG_ACTIVE, &hc->bch[1].Flags) &&
+		 (hc->bch[1].nr & channel))
 		return &hc->bch[1];
 	else
 		return NULL;
@@ -333,6 +383,7 @@ hfcpci_clear_fifo_rx(struct hfc_pci *hc, int fifo)
 	bzr->za[MAX_B_FRAMES].z1 = cpu_to_le16(B_FIFO_SIZE + B_SUB_VAL - 1);
 	bzr->za[MAX_B_FRAMES].z2 = cpu_to_le16(
 	    le16_to_cpu(bzr->za[MAX_B_FRAMES].z1));
+		le16_to_cpu(bzr->za[MAX_B_FRAMES].z1));
 	if (fifo_state)
 		hc->hw.fifo_en |= fifo_state;
 	Write_hfc(hc, HFCPCI_FIFO_EN, hc->hw.fifo_en);
@@ -368,6 +419,15 @@ static void hfcpci_clear_fifo_tx(struct hfc_pci *hc, int fifo)
 	bzt->za[MAX_B_FRAMES].z1 = cpu_to_le16(B_FIFO_SIZE + B_SUB_VAL - 1);
 	bzt->za[MAX_B_FRAMES].z2 = cpu_to_le16(
 	    le16_to_cpu(bzt->za[MAX_B_FRAMES].z1 - 1));
+		       "z1(%x) z2(%x) state(%x)\n",
+		       fifo, bzt->f1, bzt->f2,
+		       le16_to_cpu(bzt->za[MAX_B_FRAMES].z1),
+		       le16_to_cpu(bzt->za[MAX_B_FRAMES].z2),
+		       fifo_state);
+	bzt->f2 = MAX_B_FRAMES;
+	bzt->f1 = bzt->f2;	/* init F pointers to remain constant */
+	bzt->za[MAX_B_FRAMES].z1 = cpu_to_le16(B_FIFO_SIZE + B_SUB_VAL - 1);
+	bzt->za[MAX_B_FRAMES].z2 = cpu_to_le16(B_FIFO_SIZE + B_SUB_VAL - 2);
 	if (fifo_state)
 		hc->hw.fifo_en |= fifo_state;
 	Write_hfc(hc, HFCPCI_FIFO_EN, hc->hw.fifo_en);
@@ -377,6 +437,10 @@ static void hfcpci_clear_fifo_tx(struct hfc_pci *hc, int fifo)
 		    fifo, bzt->f1, bzt->f2,
 		    le16_to_cpu(bzt->za[MAX_B_FRAMES].z1),
 		    le16_to_cpu(bzt->za[MAX_B_FRAMES].z2));
+		       "hfcpci_clear_fifo_tx%d f1(%x) f2(%x) z1(%x) z2(%x)\n",
+		       fifo, bzt->f1, bzt->f2,
+		       le16_to_cpu(bzt->za[MAX_B_FRAMES].z1),
+		       le16_to_cpu(bzt->za[MAX_B_FRAMES].z2));
 }
 
 /*
@@ -388,6 +452,10 @@ hfcpci_empty_bfifo(struct bchannel *bch, struct bzfifo *bz,
 {
 	u_char		*ptr, *ptr1, new_f2;
 	int		total, maxlen, new_z2;
+		   u_char *bdata, int count)
+{
+	u_char		*ptr, *ptr1, new_f2;
+	int		maxlen, new_z2;
 	struct zt	*zp;
 
 	if ((bch->debug & DEBUG_HW_BCHANNEL) && !(bch->debug & DEBUG_HW_BFIFO))
@@ -402,6 +470,7 @@ hfcpci_empty_bfifo(struct bchannel *bch, struct bzfifo *bz,
 		if (bch->debug & DEBUG_HW)
 			printk(KERN_DEBUG "hfcpci_empty_fifo: incoming packet "
 			    "invalid length %d or crc\n", count);
+			       "invalid length %d or crc\n", count);
 #ifdef ERROR_STATISTIC
 		bch->err_inv++;
 #endif
@@ -425,6 +494,10 @@ hfcpci_empty_bfifo(struct bchannel *bch, struct bzfifo *bz,
 
 		ptr1 = bdata + (le16_to_cpu(zp->z2) - B_SUB_VAL);
 		    /* start of data */
+				le16_to_cpu(zp->z2);	/* maximum */
+
+		ptr1 = bdata + (le16_to_cpu(zp->z2) - B_SUB_VAL);
+		/* start of data */
 		memcpy(ptr, ptr1, maxlen);	/* copy data */
 		count -= maxlen;
 
@@ -436,6 +509,7 @@ hfcpci_empty_bfifo(struct bchannel *bch, struct bzfifo *bz,
 		bz->za[new_f2].z2 = cpu_to_le16(new_z2);
 		bz->f2 = new_f2;	/* next buffer */
 		recv_Bchannel(bch);
+		recv_Bchannel(bch, MISDN_ID_ANY, false);
 	}
 }
 
@@ -467,6 +541,11 @@ receive_dmsg(struct hfc_pci *hc)
 				le16_to_cpu(zp->z1),
 				le16_to_cpu(zp->z2),
 				rcnt);
+			       "hfcpci recd f1(%d) f2(%d) z1(%x) z2(%x) cnt(%d)\n",
+			       df->f1, df->f2,
+			       le16_to_cpu(zp->z1),
+			       le16_to_cpu(zp->z2),
+			       rcnt);
 
 		if ((rcnt > MAX_DFRAME_LEN + 3) || (rcnt < 4) ||
 		    (df->data[le16_to_cpu(zp->z1)])) {
@@ -476,6 +555,10 @@ receive_dmsg(struct hfc_pci *hc)
 				    "%d or crc %d\n",
 				    rcnt,
 				    df->data[le16_to_cpu(zp->z1)]);
+				       "empty_fifo hfcpci packet inv. len "
+				       "%d or crc %d\n",
+				       rcnt,
+				       df->data[le16_to_cpu(zp->z1)]);
 #ifdef ERROR_STATISTIC
 			cs->err_rx++;
 #endif
@@ -483,11 +566,16 @@ receive_dmsg(struct hfc_pci *hc)
 			    (MAX_D_FRAMES + 1);	/* next buffer */
 			df->za[df->f2 & D_FREG_MASK].z2 =
 			    cpu_to_le16((zp->z2 + rcnt) & (D_FIFO_SIZE - 1));
+				(MAX_D_FRAMES + 1);	/* next buffer */
+			df->za[df->f2 & D_FREG_MASK].z2 =
+				cpu_to_le16((le16_to_cpu(zp->z2) + rcnt) &
+					    (D_FIFO_SIZE - 1));
 		} else {
 			dch->rx_skb = mI_alloc_skb(rcnt - 3, GFP_ATOMIC);
 			if (!dch->rx_skb) {
 				printk(KERN_WARNING
 				    "HFC-PCI: D receive out of memory\n");
+				       "HFC-PCI: D receive out of memory\n");
 				break;
 			}
 			total = rcnt;
@@ -502,6 +590,10 @@ receive_dmsg(struct hfc_pci *hc)
 
 			ptr1 = df->data + le16_to_cpu(zp->z2);
 			    /* start of data */
+			/* maximum */
+
+			ptr1 = df->data + le16_to_cpu(zp->z2);
+			/* start of data */
 			memcpy(ptr, ptr1, maxlen);	/* copy data */
 			rcnt -= maxlen;
 
@@ -514,6 +606,9 @@ receive_dmsg(struct hfc_pci *hc)
 			    (MAX_D_FRAMES + 1);	/* next buffer */
 			df->za[df->f2 & D_FREG_MASK].z2 = cpu_to_le16((
 			    le16_to_cpu(zp->z2) + total) & (D_FIFO_SIZE - 1));
+				(MAX_D_FRAMES + 1);	/* next buffer */
+			df->za[df->f2 & D_FREG_MASK].z2 = cpu_to_le16((
+									      le16_to_cpu(zp->z2) + total) & (D_FIFO_SIZE - 1));
 			recv_Dchannel(dch);
 		}
 	}
@@ -571,12 +666,75 @@ hfcpci_empty_fifo_trans(struct bchannel *bch, struct bzfifo *bz, u_char *bdata)
 
 	*z2r = cpu_to_le16(new_z2);		/* new position */
 	return 1;
+ * check for transparent receive data and read max one 'poll' size if avail
+ */
+static void
+hfcpci_empty_fifo_trans(struct bchannel *bch, struct bzfifo *rxbz,
+			struct bzfifo *txbz, u_char *bdata)
+{
+	__le16	*z1r, *z2r, *z1t, *z2t;
+	int	new_z2, fcnt_rx, fcnt_tx, maxlen;
+	u_char	*ptr, *ptr1;
+
+	z1r = &rxbz->za[MAX_B_FRAMES].z1;	/* pointer to z reg */
+	z2r = z1r + 1;
+	z1t = &txbz->za[MAX_B_FRAMES].z1;
+	z2t = z1t + 1;
+
+	fcnt_rx = le16_to_cpu(*z1r) - le16_to_cpu(*z2r);
+	if (!fcnt_rx)
+		return;	/* no data avail */
+
+	if (fcnt_rx <= 0)
+		fcnt_rx += B_FIFO_SIZE;	/* bytes actually buffered */
+	new_z2 = le16_to_cpu(*z2r) + fcnt_rx;	/* new position in fifo */
+	if (new_z2 >= (B_FIFO_SIZE + B_SUB_VAL))
+		new_z2 -= B_FIFO_SIZE;	/* buffer wrap */
+
+	fcnt_tx = le16_to_cpu(*z2t) - le16_to_cpu(*z1t);
+	if (fcnt_tx <= 0)
+		fcnt_tx += B_FIFO_SIZE;
+	/* fcnt_tx contains available bytes in tx-fifo */
+	fcnt_tx = B_FIFO_SIZE - fcnt_tx;
+	/* remaining bytes to send (bytes in tx-fifo) */
+
+	if (test_bit(FLG_RX_OFF, &bch->Flags)) {
+		bch->dropcnt += fcnt_rx;
+		*z2r = cpu_to_le16(new_z2);
+		return;
+	}
+	maxlen = bchannel_get_rxbuf(bch, fcnt_rx);
+	if (maxlen < 0) {
+		pr_warning("B%d: No bufferspace for %d bytes\n",
+			   bch->nr, fcnt_rx);
+	} else {
+		ptr = skb_put(bch->rx_skb, fcnt_rx);
+		if (le16_to_cpu(*z2r) + fcnt_rx <= B_FIFO_SIZE + B_SUB_VAL)
+			maxlen = fcnt_rx;	/* complete transfer */
+		else
+			maxlen = B_FIFO_SIZE + B_SUB_VAL - le16_to_cpu(*z2r);
+		/* maximum */
+
+		ptr1 = bdata + (le16_to_cpu(*z2r) - B_SUB_VAL);
+		/* start of data */
+		memcpy(ptr, ptr1, maxlen);	/* copy data */
+		fcnt_rx -= maxlen;
+
+		if (fcnt_rx) {	/* rest remaining */
+			ptr += maxlen;
+			ptr1 = bdata;	/* start of buffer */
+			memcpy(ptr, ptr1, fcnt_rx);	/* rest */
+		}
+		recv_Bchannel(bch, fcnt_tx, false); /* bch, id, !force */
+	}
+	*z2r = cpu_to_le16(new_z2);		/* new position */
 }
 
 /*
  * B-channel main receive routine
  */
 void
+static void
 main_rec_hfcpci(struct bchannel *bch)
 {
 	struct hfc_pci	*hc = bch->hw;
@@ -593,6 +751,19 @@ main_rec_hfcpci(struct bchannel *bch)
 		real_fifo = 1;
 	} else {
 		bz = &((union fifo_area *)(hc->hw.fifos))->b_chans.rxbz_b1;
+	int		receive = 0, count = 5;
+	struct bzfifo	*txbz, *rxbz;
+	u_char		*bdata;
+	struct zt	*zp;
+
+	if ((bch->nr & 2) && (!hc->hw.bswapped)) {
+		rxbz = &((union fifo_area *)(hc->hw.fifos))->b_chans.rxbz_b2;
+		txbz = &((union fifo_area *)(hc->hw.fifos))->b_chans.txbz_b2;
+		bdata = ((union fifo_area *)(hc->hw.fifos))->b_chans.rxdat_b2;
+		real_fifo = 1;
+	} else {
+		rxbz = &((union fifo_area *)(hc->hw.fifos))->b_chans.rxbz_b1;
+		txbz = &((union fifo_area *)(hc->hw.fifos))->b_chans.txbz_b1;
 		bdata = ((union fifo_area *)(hc->hw.fifos))->b_chans.rxdat_b1;
 		real_fifo = 0;
 	}
@@ -603,6 +774,11 @@ Begin:
 			printk(KERN_DEBUG "hfcpci rec ch(%x) f1(%d) f2(%d)\n",
 			    bch->nr, bz->f1, bz->f2);
 		zp = &bz->za[bz->f2];
+	if (rxbz->f1 != rxbz->f2) {
+		if (bch->debug & DEBUG_HW_BCHANNEL)
+			printk(KERN_DEBUG "hfcpci rec ch(%x) f1(%d) f2(%d)\n",
+			       bch->nr, rxbz->f1, rxbz->f2);
+		zp = &rxbz->za[rxbz->f2];
 
 		rcnt = le16_to_cpu(zp->z1) - le16_to_cpu(zp->z2);
 		if (rcnt < 0)
@@ -615,6 +791,11 @@ Begin:
 			    le16_to_cpu(zp->z2), rcnt);
 		hfcpci_empty_bfifo(bch, bz, bdata, rcnt);
 		rcnt = bz->f1 - bz->f2;
+			       "hfcpci rec ch(%x) z1(%x) z2(%x) cnt(%d)\n",
+			       bch->nr, le16_to_cpu(zp->z1),
+			       le16_to_cpu(zp->z2), rcnt);
+		hfcpci_empty_bfifo(bch, rxbz, bdata, rcnt);
+		rcnt = rxbz->f1 - rxbz->f2;
 		if (rcnt < 0)
 			rcnt += MAX_B_FRAMES + 1;
 		if (hc->hw.last_bfifo_cnt[real_fifo] > rcnt + 1) {
@@ -629,6 +810,10 @@ Begin:
 	} else if (test_bit(FLG_TRANSPARENT, &bch->Flags))
 		receive = hfcpci_empty_fifo_trans(bch, bz, bdata);
 	else
+	} else if (test_bit(FLG_TRANSPARENT, &bch->Flags)) {
+		hfcpci_empty_fifo_trans(bch, rxbz, txbz, bdata);
+		return;
+	} else
 		receive = 0;
 	if (count && receive)
 		goto Begin;
@@ -661,6 +846,8 @@ hfcpci_fill_dfifo(struct hfc_pci *hc)
 		printk(KERN_DEBUG "%s:f1(%d) f2(%d) z1(f1)(%x)\n", __func__,
 		    df->f1, df->f2,
 		    le16_to_cpu(df->za[df->f1 & D_FREG_MASK].z1));
+		       df->f1, df->f2,
+		       le16_to_cpu(df->za[df->f1 & D_FREG_MASK].z1));
 	fcnt = df->f1 - df->f2;	/* frame count actually buffered */
 	if (fcnt < 0)
 		fcnt += (MAX_D_FRAMES + 1);	/* if wrap around */
@@ -668,6 +855,7 @@ hfcpci_fill_dfifo(struct hfc_pci *hc)
 		if (dch->debug & DEBUG_HW_DCHANNEL)
 			printk(KERN_DEBUG
 			    "hfcpci_fill_Dfifo more as 14 frames\n");
+			       "hfcpci_fill_Dfifo more as 14 frames\n");
 #ifdef ERROR_STATISTIC
 		cs->err_tx++;
 #endif
@@ -676,12 +864,14 @@ hfcpci_fill_dfifo(struct hfc_pci *hc)
 	/* now determine free bytes in FIFO buffer */
 	maxlen = le16_to_cpu(df->za[df->f2 & D_FREG_MASK].z2) -
 	    le16_to_cpu(df->za[df->f1 & D_FREG_MASK].z1) - 1;
+		le16_to_cpu(df->za[df->f1 & D_FREG_MASK].z1) - 1;
 	if (maxlen <= 0)
 		maxlen += D_FIFO_SIZE;	/* count now contains available bytes */
 
 	if (dch->debug & DEBUG_HW_DCHANNEL)
 		printk(KERN_DEBUG "hfcpci_fill_Dfifo count(%d/%d)\n",
 			count, maxlen);
+		       count, maxlen);
 	if (count > maxlen) {
 		if (dch->debug & DEBUG_HW_DCHANNEL)
 			printk(KERN_DEBUG "hfcpci_fill_Dfifo no fifo mem\n");
@@ -689,11 +879,13 @@ hfcpci_fill_dfifo(struct hfc_pci *hc)
 	}
 	new_z1 = (le16_to_cpu(df->za[df->f1 & D_FREG_MASK].z1) + count) &
 	    (D_FIFO_SIZE - 1);
+		(D_FIFO_SIZE - 1);
 	new_f1 = ((df->f1 + 1) & D_FREG_MASK) | (D_FREG_MASK + 1);
 	src = dch->tx_skb->data + dch->tx_idx;	/* source pointer */
 	dst = df->data + le16_to_cpu(df->za[df->f1 & D_FREG_MASK].z1);
 	maxlen = D_FIFO_SIZE - le16_to_cpu(df->za[df->f1 & D_FREG_MASK].z1);
 	    /* end fifo */
+	/* end fifo */
 	if (maxlen > count)
 		maxlen = count;	/* limit size */
 	memcpy(dst, src, maxlen);	/* first copy */
@@ -708,6 +900,9 @@ hfcpci_fill_dfifo(struct hfc_pci *hc)
 	    /* for next buffer */
 	df->za[df->f1 & D_FREG_MASK].z1 = cpu_to_le16(new_z1);
 	    /* new pos actual buffer */
+	/* for next buffer */
+	df->za[df->f1 & D_FREG_MASK].z1 = cpu_to_le16(new_z1);
+	/* new pos actual buffer */
 	df->f1 = new_f1;	/* next frame */
 	dch->tx_idx = dch->tx_skb->len;
 }
@@ -719,6 +914,7 @@ static void
 hfcpci_fill_fifo(struct bchannel *bch)
 {
 	struct hfc_pci 	*hc = bch->hw;
+	struct hfc_pci	*hc = bch->hw;
 	int		maxlen, fcnt;
 	int		count, new_z1;
 	struct bzfifo	*bz;
@@ -731,6 +927,18 @@ hfcpci_fill_fifo(struct bchannel *bch)
 	if ((!bch->tx_skb) || bch->tx_skb->len <= 0)
 		return;
 	count = bch->tx_skb->len - bch->tx_idx;
+	__le16 *z1t, *z2t;
+
+	if ((bch->debug & DEBUG_HW_BCHANNEL) && !(bch->debug & DEBUG_HW_BFIFO))
+		printk(KERN_DEBUG "%s\n", __func__);
+	if ((!bch->tx_skb) || bch->tx_skb->len == 0) {
+		if (!test_bit(FLG_FILLEMPTY, &bch->Flags) &&
+		    !test_bit(FLG_TRANSPARENT, &bch->Flags))
+			return;
+		count = HFCPCI_FILLEMPTY;
+	} else {
+		count = bch->tx_skb->len - bch->tx_idx;
+	}
 	if ((bch->nr & 2) && (!hc->hw.bswapped)) {
 		bz = &((union fifo_area *)(hc->hw.fifos))->b_chans.txbz_b2;
 		bdata = ((union fifo_area *)(hc->hw.fifos))->b_chans.txdat_b2;
@@ -757,6 +965,46 @@ next_t_frame:
 		/* maximum fill shall be HFCPCI_BTRANS_MAX */
 		if (count > HFCPCI_BTRANS_MAX - fcnt)
 			count = HFCPCI_BTRANS_MAX - fcnt;
+			       "cnt(%d) z1(%x) z2(%x)\n", bch->nr, count,
+			       le16_to_cpu(*z1t), le16_to_cpu(*z2t));
+		fcnt = le16_to_cpu(*z2t) - le16_to_cpu(*z1t);
+		if (fcnt <= 0)
+			fcnt += B_FIFO_SIZE;
+		if (test_bit(FLG_FILLEMPTY, &bch->Flags)) {
+			/* fcnt contains available bytes in fifo */
+			if (count > fcnt)
+				count = fcnt;
+			new_z1 = le16_to_cpu(*z1t) + count;
+			/* new buffer Position */
+			if (new_z1 >= (B_FIFO_SIZE + B_SUB_VAL))
+				new_z1 -= B_FIFO_SIZE;	/* buffer wrap */
+			dst = bdata + (le16_to_cpu(*z1t) - B_SUB_VAL);
+			maxlen = (B_FIFO_SIZE + B_SUB_VAL) - le16_to_cpu(*z1t);
+			/* end of fifo */
+			if (bch->debug & DEBUG_HW_BFIFO)
+				printk(KERN_DEBUG "hfcpci_FFt fillempty "
+				       "fcnt(%d) maxl(%d) nz1(%x) dst(%p)\n",
+				       fcnt, maxlen, new_z1, dst);
+			if (maxlen > count)
+				maxlen = count;		/* limit size */
+			memset(dst, bch->fill[0], maxlen); /* first copy */
+			count -= maxlen;		/* remaining bytes */
+			if (count) {
+				dst = bdata;		/* start of buffer */
+				memset(dst, bch->fill[0], count);
+			}
+			*z1t = cpu_to_le16(new_z1);	/* now send data */
+			return;
+		}
+		/* fcnt contains available bytes in fifo */
+		fcnt = B_FIFO_SIZE - fcnt;
+		/* remaining bytes to send (bytes in fifo) */
+
+	next_t_frame:
+		count = bch->tx_skb->len - bch->tx_idx;
+		/* maximum fill shall be poll*2 */
+		if (count > (poll << 1) - fcnt)
+			count = (poll << 1) - fcnt;
 		if (count <= 0)
 			return;
 		/* data is suitable for fifo */
@@ -773,6 +1021,18 @@ next_t_frame:
 			printk(KERN_DEBUG "hfcpci_FFt fcnt(%d) "
 			    "maxl(%d) nz1(%x) dst(%p)\n",
 			    fcnt, maxlen, new_z1, dst);
+		/* new buffer Position */
+		if (new_z1 >= (B_FIFO_SIZE + B_SUB_VAL))
+			new_z1 -= B_FIFO_SIZE;	/* buffer wrap */
+		src = bch->tx_skb->data + bch->tx_idx;
+		/* source pointer */
+		dst = bdata + (le16_to_cpu(*z1t) - B_SUB_VAL);
+		maxlen = (B_FIFO_SIZE + B_SUB_VAL) - le16_to_cpu(*z1t);
+		/* end of fifo */
+		if (bch->debug & DEBUG_HW_BFIFO)
+			printk(KERN_DEBUG "hfcpci_FFt fcnt(%d) "
+			       "maxl(%d) nz1(%x) dst(%p)\n",
+			       fcnt, maxlen, new_z1, dst);
 		fcnt += count;
 		bch->tx_idx += count;
 		if (maxlen > count)
@@ -800,6 +1060,9 @@ next_t_frame:
 		    "%s: ch(%x) f1(%d) f2(%d) z1(f1)(%x)\n",
 		    __func__, bch->nr, bz->f1, bz->f2,
 		    bz->za[bz->f1].z1);
+		       "%s: ch(%x) f1(%d) f2(%d) z1(f1)(%x)\n",
+		       __func__, bch->nr, bz->f1, bz->f2,
+		       bz->za[bz->f1].z1);
 	fcnt = bz->f1 - bz->f2;	/* frame count actually buffered */
 	if (fcnt < 0)
 		fcnt += (MAX_B_FRAMES + 1);	/* if wrap around */
@@ -807,17 +1070,20 @@ next_t_frame:
 		if (bch->debug & DEBUG_HW_BCHANNEL)
 			printk(KERN_DEBUG
 			    "hfcpci_fill_Bfifo more as 14 frames\n");
+			       "hfcpci_fill_Bfifo more as 14 frames\n");
 		return;
 	}
 	/* now determine free bytes in FIFO buffer */
 	maxlen = le16_to_cpu(bz->za[bz->f2].z2) -
 	    le16_to_cpu(bz->za[bz->f1].z1) - 1;
+		le16_to_cpu(bz->za[bz->f1].z1) - 1;
 	if (maxlen <= 0)
 		maxlen += B_FIFO_SIZE;	/* count now contains available bytes */
 
 	if (bch->debug & DEBUG_HW_BCHANNEL)
 		printk(KERN_DEBUG "hfcpci_fill_fifo ch(%x) count(%d/%d)\n",
 			bch->nr, count, maxlen);
+		       bch->nr, count, maxlen);
 
 	if (maxlen < count) {
 		if (bch->debug & DEBUG_HW_BCHANNEL)
@@ -826,6 +1092,7 @@ next_t_frame:
 	}
 	new_z1 = le16_to_cpu(bz->za[bz->f1].z1) + count;
 	    /* new buffer Position */
+	/* new buffer Position */
 	if (new_z1 >= (B_FIFO_SIZE + B_SUB_VAL))
 		new_z1 -= B_FIFO_SIZE;	/* buffer wrap */
 
@@ -834,6 +1101,7 @@ next_t_frame:
 	dst = bdata + (le16_to_cpu(bz->za[bz->f1].z1) - B_SUB_VAL);
 	maxlen = (B_FIFO_SIZE + B_SUB_VAL) - le16_to_cpu(bz->za[bz->f1].z1);
 	    /* end fifo */
+	/* end fifo */
 	if (maxlen > count)
 		maxlen = count;	/* limit size */
 	memcpy(dst, src, maxlen);	/* first copy */
@@ -862,6 +1130,7 @@ ph_state_te(struct dchannel *dch)
 	if (dch->debug)
 		printk(KERN_DEBUG "%s: TE newstate %x\n",
 			__func__, dch->state);
+		       __func__, dch->state);
 	switch (dch->state) {
 	case 0:
 		l1_event(dch->l1, HW_RESET_IND);
@@ -900,6 +1169,7 @@ handle_nt_timer3(struct dchannel *dch) {
 	Write_hfc(hc, HFCPCI_MST_MODE, hc->hw.mst_m);
 	_queue_data(&dch->dev.D, PH_ACTIVATE_IND,
 	    MISDN_ID_ANY, 0, NULL, GFP_ATOMIC);
+		    MISDN_ID_ANY, 0, NULL, GFP_ATOMIC);
 }
 
 static void
@@ -910,6 +1180,7 @@ ph_state_nt(struct dchannel *dch)
 	if (dch->debug)
 		printk(KERN_DEBUG "%s: NT newstate %x\n",
 			__func__, dch->state);
+		       __func__, dch->state);
 	switch (dch->state) {
 	case 2:
 		if (hc->hw.nt_timer < 0) {
@@ -920,6 +1191,7 @@ ph_state_nt(struct dchannel *dch)
 			Write_hfc(hc, HFCPCI_INT_M1, hc->hw.int_m1);
 			/* Clear already pending ints */
 			if (Read_hfc(hc, HFCPCI_INT_S1));
+			(void) Read_hfc(hc, HFCPCI_INT_S1);
 			Write_hfc(hc, HFCPCI_STATES, 4 | HFCPCI_LOAD_STATE);
 			udelay(10);
 			Write_hfc(hc, HFCPCI_STATES, 4);
@@ -932,6 +1204,7 @@ ph_state_nt(struct dchannel *dch)
 			hc->hw.ctmt |= HFCPCI_TIM3_125;
 			Write_hfc(hc, HFCPCI_CTMT, hc->hw.ctmt |
 				HFCPCI_CLTIMER);
+				  HFCPCI_CLTIMER);
 			test_and_clear_bit(FLG_HFC_TIMER_T3, &dch->Flags);
 			test_and_set_bit(FLG_HFC_TIMER_T1, &dch->Flags);
 			/* allow G2 -> G3 transition */
@@ -952,6 +1225,7 @@ ph_state_nt(struct dchannel *dch)
 		test_and_clear_bit(FLG_L2_ACTIVATED, &dch->Flags);
 		_queue_data(&dch->dev.D, PH_DEACTIVATE_IND,
 		    MISDN_ID_ANY, 0, NULL, GFP_ATOMIC);
+			    MISDN_ID_ANY, 0, NULL, GFP_ATOMIC);
 		break;
 	case 4:
 		hc->hw.nt_timer = 0;
@@ -964,6 +1238,7 @@ ph_state_nt(struct dchannel *dch)
 		if (!test_and_set_bit(FLG_HFC_TIMER_T3, &dch->Flags)) {
 			if (!test_and_clear_bit(FLG_L2_ACTIVATED,
 			    &dch->Flags)) {
+						&dch->Flags)) {
 				handle_nt_timer3(dch);
 				break;
 			}
@@ -975,6 +1250,7 @@ ph_state_nt(struct dchannel *dch)
 			hc->hw.ctmt |= HFCPCI_TIM3_125;
 			Write_hfc(hc, HFCPCI_CTMT, hc->hw.ctmt |
 				HFCPCI_CLTIMER);
+				  HFCPCI_CLTIMER);
 		}
 		break;
 	}
@@ -1020,6 +1296,7 @@ hfc_l1callback(struct dchannel *dch, u_int cmd)
 		Write_hfc(hc, HFCPCI_MST_MODE, hc->hw.mst_m);
 		Write_hfc(hc, HFCPCI_STATES, HFCPCI_ACTIVATE |
 		   HFCPCI_DO_ACTION);
+			  HFCPCI_DO_ACTION);
 		l1_event(dch->l1, HW_POWERUP_IND);
 		break;
 	case HW_DEACT_REQ:
@@ -1046,16 +1323,19 @@ hfc_l1callback(struct dchannel *dch, u_int cmd)
 		test_and_set_bit(FLG_ACTIVE, &dch->Flags);
 		_queue_data(&dch->dev.D, cmd, MISDN_ID_ANY, 0, NULL,
 			GFP_ATOMIC);
+			    GFP_ATOMIC);
 		break;
 	case PH_DEACTIVATE_IND:
 		test_and_clear_bit(FLG_ACTIVE, &dch->Flags);
 		_queue_data(&dch->dev.D, cmd, MISDN_ID_ANY, 0, NULL,
 			GFP_ATOMIC);
+			    GFP_ATOMIC);
 		break;
 	default:
 		if (dch->debug & DEBUG_HW)
 			printk(KERN_DEBUG "%s: unknown command %x\n",
 			    __func__, cmd);
+			       __func__, cmd);
 		return -1;
 	}
 	return 0;
@@ -1109,6 +1389,7 @@ hfcpci_int(int intno, void *dev_id)
 		if (hc->dch.debug & DEBUG_HW_DCHANNEL)
 			printk(KERN_DEBUG
 			    "HFC-PCI: stat(%02x) s1(%02x)\n", stat, val);
+			       "HFC-PCI: stat(%02x) s1(%02x)\n", stat, val);
 	} else {
 		/* shared */
 		spin_unlock(&hc->lock);
@@ -1124,6 +1405,7 @@ hfcpci_int(int intno, void *dev_id)
 		if (hc->dch.debug & DEBUG_HW_DCHANNEL)
 			printk(KERN_DEBUG "ph_state chg %d->%d\n",
 				hc->dch.state, exval);
+			       hc->dch.state, exval);
 		hc->dch.state = exval;
 		schedule_event(&hc->dch, FLG_PHCHANGE);
 		val &= ~0x40;
@@ -1137,6 +1419,7 @@ hfcpci_int(int intno, void *dev_id)
 		Write_hfc(hc, HFCPCI_CTMT, hc->hw.ctmt | HFCPCI_CLTIMER);
 	}
 	if (val & 0x08) {
+	if (val & 0x08) {	/* B1 rx */
 		bch = Sel_BCS(hc, hc->hw.bswapped ? 2 : 1);
 		if (bch)
 			main_rec_hfcpci(bch);
@@ -1144,6 +1427,7 @@ hfcpci_int(int intno, void *dev_id)
 			printk(KERN_DEBUG "hfcpci spurious 0x08 IRQ\n");
 	}
 	if (val & 0x10) {
+	if (val & 0x10) {	/* B2 rx */
 		bch = Sel_BCS(hc, 2);
 		if (bch)
 			main_rec_hfcpci(bch);
@@ -1151,6 +1435,7 @@ hfcpci_int(int intno, void *dev_id)
 			printk(KERN_DEBUG "hfcpci spurious 0x10 IRQ\n");
 	}
 	if (val & 0x01) {
+	if (val & 0x01) {	/* B1 tx */
 		bch = Sel_BCS(hc, hc->hw.bswapped ? 2 : 1);
 		if (bch)
 			tx_birq(bch);
@@ -1158,6 +1443,7 @@ hfcpci_int(int intno, void *dev_id)
 			printk(KERN_DEBUG "hfcpci spurious 0x01 IRQ\n");
 	}
 	if (val & 0x02) {
+	if (val & 0x02) {	/* B2 tx */
 		bch = Sel_BCS(hc, 2);
 		if (bch)
 			tx_birq(bch);
@@ -1167,6 +1453,9 @@ hfcpci_int(int intno, void *dev_id)
 	if (val & 0x20)
 		receive_dmsg(hc);
 	if (val & 0x04) {	/* dframe transmitted */
+	if (val & 0x20)		/* D rx */
+		receive_dmsg(hc);
+	if (val & 0x04) {	/* D tx */
 		if (test_and_clear_bit(FLG_BUSY_TIMER, &hc->dch.Flags))
 			del_timer(&hc->dch.timer);
 		tx_dirq(&hc->dch);
@@ -1212,6 +1501,22 @@ mode_hfcpci(struct bchannel *bch, int bc, int protocol)
 	    (protocol > ISDN_P_NONE))
 		printk(KERN_WARNING "%s: no pcm channel id but HFC_CFG_PCM\n",
 		    __func__);
+		       "HFCPCI bchannel protocol %x-->%x ch %x-->%x\n",
+		       bch->state, protocol, bch->nr, bc);
+
+	fifo2 = bc;
+	pcm_mode = (bc >> 24) & 0xff;
+	if (pcm_mode) { /* PCM SLOT USE */
+		if (!test_bit(HFC_CFG_PCM, &hc->cfg))
+			printk(KERN_WARNING
+			       "%s: pcm channel id without HFC_CFG_PCM\n",
+			       __func__);
+		rx_slot = (bc >> 8) & 0xff;
+		tx_slot = (bc >> 16) & 0xff;
+		bc = bc & 0xff;
+	} else if (test_bit(HFC_CFG_PCM, &hc->cfg) && (protocol > ISDN_P_NONE))
+		printk(KERN_WARNING "%s: no pcm channel id but HFC_CFG_PCM\n",
+		       __func__);
 	if (hc->chanlimit > 1) {
 		hc->hw.bswapped = 0;	/* B1 and B2 normal mode */
 		hc->hw.sctrl_e &= ~0x80;
@@ -1252,6 +1557,12 @@ mode_hfcpci(struct bchannel *bch, int bc, int protocol)
 			hc->hw.fifo_en &= ~HFCPCI_FIFOEN_B1;
 			hc->hw.int_m1 &= ~(HFCPCI_INTS_B1TRANS +
 				HFCPCI_INTS_B1REC);
+			hc->hw.int_m1 &= ~(HFCPCI_INTS_B2TRANS |
+					   HFCPCI_INTS_B2REC);
+		} else {
+			hc->hw.fifo_en &= ~HFCPCI_FIFOEN_B1;
+			hc->hw.int_m1 &= ~(HFCPCI_INTS_B1TRANS |
+					   HFCPCI_INTS_B1REC);
 		}
 #ifdef REVERSE_BITORDER
 		if (bch->nr & 2)
@@ -1269,6 +1580,8 @@ mode_hfcpci(struct bchannel *bch, int bc, int protocol)
 		bch->nr = bc;
 		hfcpci_clear_fifo_rx(hc, (fifo2 & 2)?1:0);
 		hfcpci_clear_fifo_tx(hc, (fifo2 & 2)?1:0);
+		hfcpci_clear_fifo_rx(hc, (fifo2 & 2) ? 1 : 0);
+		hfcpci_clear_fifo_tx(hc, (fifo2 & 2) ? 1 : 0);
 		if (bc & 2) {
 			hc->hw.sctrl |= SCTRL_B2_ENA;
 			hc->hw.sctrl_r |= SCTRL_B2_ENA;
@@ -1286,12 +1599,18 @@ mode_hfcpci(struct bchannel *bch, int bc, int protocol)
 			hc->hw.fifo_en |= HFCPCI_FIFOEN_B2;
 			hc->hw.int_m1 |= (HFCPCI_INTS_B2TRANS +
 			    HFCPCI_INTS_B2REC);
+			if (!tics)
+				hc->hw.int_m1 |= (HFCPCI_INTS_B2TRANS |
+						  HFCPCI_INTS_B2REC);
 			hc->hw.ctmt |= 2;
 			hc->hw.conn &= ~0x18;
 		} else {
 			hc->hw.fifo_en |= HFCPCI_FIFOEN_B1;
 			hc->hw.int_m1 |= (HFCPCI_INTS_B1TRANS +
 			    HFCPCI_INTS_B1REC);
+			if (!tics)
+				hc->hw.int_m1 |= (HFCPCI_INTS_B1TRANS |
+						  HFCPCI_INTS_B1REC);
 			hc->hw.ctmt |= 1;
 			hc->hw.conn &= ~0x03;
 		}
@@ -1302,6 +1621,8 @@ mode_hfcpci(struct bchannel *bch, int bc, int protocol)
 		bch->nr = bc;
 		hfcpci_clear_fifo_rx(hc, (fifo2 & 2)?1:0);
 		hfcpci_clear_fifo_tx(hc, (fifo2 & 2)?1:0);
+		hfcpci_clear_fifo_rx(hc, (fifo2 & 2) ? 1 : 0);
+		hfcpci_clear_fifo_tx(hc, (fifo2 & 2) ? 1 : 0);
 		if (bc & 2) {
 			hc->hw.sctrl |= SCTRL_B2_ENA;
 			hc->hw.sctrl_r |= SCTRL_B2_ENA;
@@ -1314,6 +1635,8 @@ mode_hfcpci(struct bchannel *bch, int bc, int protocol)
 			hc->hw.fifo_en |= HFCPCI_FIFOEN_B2;
 			hc->hw.int_m1 |= (HFCPCI_INTS_B2TRANS +
 			    HFCPCI_INTS_B2REC);
+			hc->hw.int_m1 |= (HFCPCI_INTS_B2TRANS |
+					  HFCPCI_INTS_B2REC);
 			hc->hw.ctmt &= ~2;
 			hc->hw.conn &= ~0x18;
 		} else {
@@ -1321,6 +1644,8 @@ mode_hfcpci(struct bchannel *bch, int bc, int protocol)
 			hc->hw.fifo_en |= HFCPCI_FIFOEN_B1;
 			hc->hw.int_m1 |= (HFCPCI_INTS_B1TRANS +
 			    HFCPCI_INTS_B1REC);
+			hc->hw.int_m1 |= (HFCPCI_INTS_B1TRANS |
+					  HFCPCI_INTS_B1REC);
 			hc->hw.ctmt &= ~1;
 			hc->hw.conn &= ~0x03;
 		}
@@ -1333,6 +1658,7 @@ mode_hfcpci(struct bchannel *bch, int bc, int protocol)
 	if (test_bit(HFC_CFG_PCM, &hc->cfg)) {
 		if ((protocol == ISDN_P_NONE) ||
 			(protocol == -1)) {	/* init case */
+		    (protocol == -1)) {	/* init case */
 			rx_slot = 0;
 			tx_slot = 0;
 		} else {
@@ -1351,6 +1677,9 @@ mode_hfcpci(struct bchannel *bch, int bc, int protocol)
 				__func__, tx_slot);
 			printk(KERN_DEBUG "%s: Write_hfc: B2_RSL 0x%x\n",
 				__func__, rx_slot);
+			       __func__, tx_slot);
+			printk(KERN_DEBUG "%s: Write_hfc: B2_RSL 0x%x\n",
+			       __func__, rx_slot);
 			Write_hfc(hc, HFCPCI_B2_SSL, tx_slot);
 			Write_hfc(hc, HFCPCI_B2_RSL, rx_slot);
 		} else {
@@ -1360,6 +1689,9 @@ mode_hfcpci(struct bchannel *bch, int bc, int protocol)
 				__func__, tx_slot);
 			printk(KERN_DEBUG "%s: Write_hfc: B1_RSL 0x%x\n",
 				__func__, rx_slot);
+			       __func__, tx_slot);
+			printk(KERN_DEBUG "%s: Write_hfc: B1_RSL 0x%x\n",
+			       __func__, rx_slot);
 			Write_hfc(hc, HFCPCI_B1_SSL, tx_slot);
 			Write_hfc(hc, HFCPCI_B1_RSL, rx_slot);
 		}
@@ -1390,6 +1722,12 @@ set_hfcpci_rxtest(struct bchannel *bch, int protocol, int chan)
 		printk(KERN_DEBUG
 		    "HFCPCI rxtest wrong channel parameter %x/%x\n",
 		    bch->nr, chan);
+		       "HFCPCI bchannel test rx protocol %x-->%x ch %x-->%x\n",
+		       bch->state, protocol, bch->nr, chan);
+	if (bch->nr != chan) {
+		printk(KERN_DEBUG
+		       "HFCPCI rxtest wrong channel parameter %x/%x\n",
+		       bch->nr, chan);
 		return -EINVAL;
 	}
 	switch (protocol) {
@@ -1400,6 +1738,12 @@ set_hfcpci_rxtest(struct bchannel *bch, int protocol, int chan)
 			hc->hw.sctrl_r |= SCTRL_B2_ENA;
 			hc->hw.fifo_en |= HFCPCI_FIFOEN_B2RX;
 			hc->hw.int_m1 |= HFCPCI_INTS_B2REC;
+		hfcpci_clear_fifo_rx(hc, (chan & 2) ? 1 : 0);
+		if (chan & 2) {
+			hc->hw.sctrl_r |= SCTRL_B2_ENA;
+			hc->hw.fifo_en |= HFCPCI_FIFOEN_B2RX;
+			if (!tics)
+				hc->hw.int_m1 |= HFCPCI_INTS_B2REC;
 			hc->hw.ctmt |= 2;
 			hc->hw.conn &= ~0x18;
 #ifdef REVERSE_BITORDER
@@ -1409,6 +1753,8 @@ set_hfcpci_rxtest(struct bchannel *bch, int protocol, int chan)
 			hc->hw.sctrl_r |= SCTRL_B1_ENA;
 			hc->hw.fifo_en |= HFCPCI_FIFOEN_B1RX;
 			hc->hw.int_m1 |= HFCPCI_INTS_B1REC;
+			if (!tics)
+				hc->hw.int_m1 |= HFCPCI_INTS_B1REC;
 			hc->hw.ctmt |= 1;
 			hc->hw.conn &= ~0x03;
 #ifdef REVERSE_BITORDER
@@ -1419,6 +1765,7 @@ set_hfcpci_rxtest(struct bchannel *bch, int protocol, int chan)
 	case (ISDN_P_B_HDLC):
 		bch->state = protocol;
 		hfcpci_clear_fifo_rx(hc, (chan & 2)?1:0);
+		hfcpci_clear_fifo_rx(hc, (chan & 2) ? 1 : 0);
 		if (chan & 2) {
 			hc->hw.sctrl_r |= SCTRL_B2_ENA;
 			hc->hw.last_bfifo_cnt[1] = 0;
@@ -1473,6 +1820,8 @@ deactivate_bchannel(struct bchannel *bch)
 	mode_hfcpci(bch, bch->nr, ISDN_P_NONE);
 	test_and_clear_bit(FLG_ACTIVE, &bch->Flags);
 	test_and_clear_bit(FLG_TX_BUSY, &bch->Flags);
+	mISDN_clear_bchannel(bch);
+	mode_hfcpci(bch, bch->nr, ISDN_P_NONE);
 	spin_unlock_irqrestore(&hc->lock, flags);
 }
 
@@ -1494,6 +1843,7 @@ channel_bctrl(struct bchannel *bch, struct mISDN_ctrl_req *cq)
 		break;
 	}
 	return ret;
+	return mISDN_ctrl_bchannel(bch, cq);
 }
 static int
 hfc_bctrl(struct mISDNchannel *ch, u_int cmd, void *arg)
@@ -1526,6 +1876,7 @@ hfc_bctrl(struct mISDNchannel *ch, u_int cmd, void *arg)
 		test_and_clear_bit(FLG_OPEN, &bch->Flags);
 		if (test_bit(FLG_ACTIVE, &bch->Flags))
 			deactivate_bchannel(bch);
+		deactivate_bchannel(bch);
 		ch->protocol = ISDN_P_NONE;
 		ch->peer = NULL;
 		module_put(THIS_MODULE);
@@ -1537,6 +1888,7 @@ hfc_bctrl(struct mISDNchannel *ch, u_int cmd, void *arg)
 	default:
 		printk(KERN_WARNING "%s: unknown prim(%x)\n",
 			__func__, cmd);
+		       __func__, cmd);
 	}
 	return ret;
 }
@@ -1579,11 +1931,13 @@ hfcpci_l2l1D(struct mISDNchannel *ch, struct sk_buff *skb)
 				spin_unlock_irqrestore(&hc->lock, flags);
 				_queue_data(&dch->dev.D, PH_ACTIVATE_IND,
 				    MISDN_ID_ANY, 0, NULL, GFP_ATOMIC);
+					    MISDN_ID_ANY, 0, NULL, GFP_ATOMIC);
 				break;
 			}
 			test_and_set_bit(FLG_L2_ACTIVATED, &dch->Flags);
 			Write_hfc(hc, HFCPCI_STATES, HFCPCI_ACTIVATE |
 			    HFCPCI_DO_ACTION | 1);
+				  HFCPCI_DO_ACTION | 1);
 		} else
 			ret = l1_event(dch->l1, hh->prim);
 		spin_unlock_irqrestore(&hc->lock, flags);
@@ -1592,16 +1946,19 @@ hfcpci_l2l1D(struct mISDNchannel *ch, struct sk_buff *skb)
 		test_and_clear_bit(FLG_L2_ACTIVATED, &dch->Flags);
 		spin_lock_irqsave(&hc->lock, flags);
 		if (hc->hw.protocol == ISDN_P_NT_S0) {
+			struct sk_buff_head free_queue;
+
+			__skb_queue_head_init(&free_queue);
 			/* prepare deactivation */
 			Write_hfc(hc, HFCPCI_STATES, 0x40);
-			skb_queue_purge(&dch->squeue);
+			skb_queue_splice_init(&dch->squeue, &free_queue);
 			if (dch->tx_skb) {
-				dev_kfree_skb(dch->tx_skb);
+				__skb_queue_tail(&free_queue, dch->tx_skb);
 				dch->tx_skb = NULL;
 			}
 			dch->tx_idx = 0;
 			if (dch->rx_skb) {
-				dev_kfree_skb(dch->rx_skb);
+				__skb_queue_tail(&free_queue, dch->rx_skb);
 				dch->rx_skb = NULL;
 			}
 			test_and_clear_bit(FLG_TX_BUSY, &dch->Flags);
@@ -1614,10 +1971,12 @@ hfcpci_l2l1D(struct mISDNchannel *ch, struct sk_buff *skb)
 			hc->hw.mst_m &= ~HFCPCI_MASTER;
 			Write_hfc(hc, HFCPCI_MST_MODE, hc->hw.mst_m);
 			ret = 0;
+			spin_unlock_irqrestore(&hc->lock, flags);
+			__skb_queue_purge(&free_queue);
 		} else {
 			ret = l1_event(dch->l1, hh->prim);
+			spin_unlock_irqrestore(&hc->lock, flags);
 		}
-		spin_unlock_irqrestore(&hc->lock, flags);
 		break;
 	}
 	if (!ret)
@@ -1637,6 +1996,7 @@ hfcpci_l2l1B(struct mISDNchannel *ch, struct sk_buff *skb)
 	struct mISDNhead	*hh = mISDN_HEAD_P(skb);
 	unsigned int		id;
 	u_long			flags;
+	unsigned long		flags;
 
 	switch (hh->prim) {
 	case PH_DATA_REQ:
@@ -1651,6 +2011,10 @@ hfcpci_l2l1B(struct mISDNchannel *ch, struct sk_buff *skb)
 				queue_ch_frame(ch, PH_DATA_CNF, id, NULL);
 		} else
 			spin_unlock_irqrestore(&hc->lock, flags);
+			hfcpci_fill_fifo(bch);
+			ret = 0;
+		}
+		spin_unlock_irqrestore(&hc->lock, flags);
 		return ret;
 	case PH_ACTIVATE_REQ:
 		spin_lock_irqsave(&hc->lock, flags);
@@ -1662,11 +2026,13 @@ hfcpci_l2l1B(struct mISDNchannel *ch, struct sk_buff *skb)
 		if (!ret)
 			_queue_data(ch, PH_ACTIVATE_IND, MISDN_ID_ANY, 0,
 				NULL, GFP_KERNEL);
+				    NULL, GFP_KERNEL);
 		break;
 	case PH_DEACTIVATE_REQ:
 		deactivate_bchannel(bch);
 		_queue_data(ch, PH_DEACTIVATE_IND, MISDN_ID_ANY, 0,
 			NULL, GFP_KERNEL);
+			    NULL, GFP_KERNEL);
 		ret = 0;
 		break;
 	}
@@ -1680,6 +2046,7 @@ hfcpci_l2l1B(struct mISDNchannel *ch, struct sk_buff *skb)
  */
 
 void
+static void
 inithfcpci(struct hfc_pci *hc)
 {
 	printk(KERN_DEBUG "inithfcpci: entered\n");
@@ -1707,6 +2074,7 @@ init_card(struct hfc_pci *hc)
 	if (request_irq(hc->irq, hfcpci_int, IRQF_SHARED, "HFC PCI", hc)) {
 		printk(KERN_WARNING
 		    "mISDN: couldn't get interrupt %d\n", hc->irq);
+		       "mISDN: couldn't get interrupt %d\n", hc->irq);
 		return -EIO;
 	}
 	spin_lock_irqsave(&hc->lock, flags);
@@ -1716,6 +2084,7 @@ init_card(struct hfc_pci *hc)
 		/*
 		 * Finally enable IRQ output
 		 * this is only allowed, if an IRQ routine is allready
+		 * this is only allowed, if an IRQ routine is already
 		 * established for this HFC, so don't do that earlier
 		 */
 		enable_hwirq(hc);
@@ -1725,6 +2094,10 @@ init_card(struct hfc_pci *hc)
 		schedule_timeout((80*HZ)/1000);
 		printk(KERN_INFO "HFC PCI: IRQ %d count %d\n",
 			hc->irq, hc->irqcnt);
+		set_current_state(TASK_UNINTERRUPTIBLE);
+		schedule_timeout((80 * HZ) / 1000);
+		printk(KERN_INFO "HFC PCI: IRQ %d count %d\n",
+		       hc->irq, hc->irqcnt);
 		/* now switch timer interrupt off */
 		spin_lock_irqsave(&hc->lock, flags);
 		hc->hw.int_m1 &= ~HFCPCI_INTS_TIMER;
@@ -1739,6 +2112,11 @@ init_card(struct hfc_pci *hc)
 				spin_unlock_irqrestore(&hc->lock, flags);
 				return -EIO;
 			} else {
+			       "HFC PCI: IRQ(%d) getting no interrupts "
+			       "during init %d\n", hc->irq, 4 - cnt);
+			if (cnt == 1)
+				break;
+			else {
 				reset_hfcpci(hc);
 				cnt--;
 			}
@@ -1764,6 +2142,7 @@ channel_ctrl(struct hfc_pci *hc, struct mISDN_ctrl_req *cq)
 	case MISDN_CTRL_GETOP:
 		cq->op = MISDN_CTRL_LOOP | MISDN_CTRL_CONNECT |
 		    MISDN_CTRL_DISCONNECT;
+			 MISDN_CTRL_DISCONNECT | MISDN_CTRL_L1_TIMER3;
 		break;
 	case MISDN_CTRL_LOOP:
 		/* channel 0 disabled loop */
@@ -1778,6 +2157,7 @@ channel_ctrl(struct hfc_pci *hc, struct mISDN_ctrl_req *cq)
 				slot = 0x80;
 			printk(KERN_DEBUG "%s: Write_hfc: B1_SSL/RSL 0x%x\n",
 			    __func__, slot);
+			       __func__, slot);
 			Write_hfc(hc, HFCPCI_B1_SSL, slot);
 			Write_hfc(hc, HFCPCI_B1_RSL, slot);
 			hc->hw.conn = (hc->hw.conn & ~7) | 6;
@@ -1790,6 +2170,7 @@ channel_ctrl(struct hfc_pci *hc, struct mISDN_ctrl_req *cq)
 				slot = 0x81;
 			printk(KERN_DEBUG "%s: Write_hfc: B2_SSL/RSL 0x%x\n",
 			    __func__, slot);
+			       __func__, slot);
 			Write_hfc(hc, HFCPCI_B2_SSL, slot);
 			Write_hfc(hc, HFCPCI_B2_RSL, slot);
 			hc->hw.conn = (hc->hw.conn & ~0x38) | 0x30;
@@ -1820,6 +2201,7 @@ channel_ctrl(struct hfc_pci *hc, struct mISDN_ctrl_req *cq)
 			slot = 0x80;
 		printk(KERN_DEBUG "%s: Write_hfc: B1_SSL/RSL 0x%x\n",
 		    __func__, slot);
+		       __func__, slot);
 		Write_hfc(hc, HFCPCI_B1_SSL, slot);
 		Write_hfc(hc, HFCPCI_B2_RSL, slot);
 		if (test_bit(HFC_CFG_SW_DD_DU, &hc->cfg))
@@ -1828,6 +2210,7 @@ channel_ctrl(struct hfc_pci *hc, struct mISDN_ctrl_req *cq)
 			slot = 0x81;
 		printk(KERN_DEBUG "%s: Write_hfc: B2_SSL/RSL 0x%x\n",
 		    __func__, slot);
+		       __func__, slot);
 		Write_hfc(hc, HFCPCI_B2_SSL, slot);
 		Write_hfc(hc, HFCPCI_B1_RSL, slot);
 		hc->hw.conn = (hc->hw.conn & ~0x3f) | 0x36;
@@ -1843,6 +2226,12 @@ channel_ctrl(struct hfc_pci *hc, struct mISDN_ctrl_req *cq)
 	default:
 		printk(KERN_WARNING "%s: unknown Op %x\n",
 		    __func__, cq->op);
+	case MISDN_CTRL_L1_TIMER3:
+		ret = l1_event(hc->dch.l1, HW_TIMER3_VALUE | (cq->p1 & 0xff));
+		break;
+	default:
+		printk(KERN_WARNING "%s: unknown Op %x\n",
+		       __func__, cq->op);
 		ret = -EINVAL;
 		break;
 	}
@@ -1852,6 +2241,7 @@ channel_ctrl(struct hfc_pci *hc, struct mISDN_ctrl_req *cq)
 static int
 open_dchannel(struct hfc_pci *hc, struct mISDNchannel *ch,
     struct channel_req *rq)
+	      struct channel_req *rq)
 {
 	int err = 0;
 
@@ -1860,6 +2250,13 @@ open_dchannel(struct hfc_pci *hc, struct mISDNchannel *ch,
 		    hc->dch.dev.id, __builtin_return_address(0));
 	if (rq->protocol == ISDN_P_NONE)
 		return -EINVAL;
+		       hc->dch.dev.id, __builtin_return_address(0));
+	if (rq->protocol == ISDN_P_NONE)
+		return -EINVAL;
+	if (rq->adr.channel == 1) {
+		/* TODO: E-Channel */
+		return -EINVAL;
+	}
 	if (!hc->initdone) {
 		if (rq->protocol == ISDN_P_TE_S0) {
 			err = create_l1(&hc->dch, hfc_l1callback);
@@ -1875,6 +2272,11 @@ open_dchannel(struct hfc_pci *hc, struct mISDNchannel *ch,
 		if (rq->protocol != ch->protocol) {
 			if (hc->hw.protocol == ISDN_P_TE_S0)
 				l1_event(hc->dch.l1, CLOSE_CHANNEL);
+			if (rq->protocol == ISDN_P_TE_S0) {
+				err = create_l1(&hc->dch, hfc_l1callback);
+				if (err)
+					return err;
+			}
 			hc->hw.protocol = rq->protocol;
 			ch->protocol = rq->protocol;
 			hfcpci_setmode(hc);
@@ -1885,6 +2287,7 @@ open_dchannel(struct hfc_pci *hc, struct mISDNchannel *ch,
 	    ((ch->protocol == ISDN_P_TE_S0) && (hc->dch.state == 7))) {
 		_queue_data(ch, PH_ACTIVATE_IND, MISDN_ID_ANY,
 		    0, NULL, GFP_KERNEL);
+			    0, NULL, GFP_KERNEL);
 	}
 	rq->ch = ch;
 	if (!try_module_get(THIS_MODULE))
@@ -1898,6 +2301,7 @@ open_bchannel(struct hfc_pci *hc, struct channel_req *rq)
 	struct bchannel		*bch;
 
 	if (rq->adr.channel > 2)
+	if (rq->adr.channel == 0 || rq->adr.channel > 2)
 		return -EINVAL;
 	if (rq->protocol == ISDN_P_NONE)
 		return -EINVAL;
@@ -1930,6 +2334,12 @@ hfc_dctrl(struct mISDNchannel *ch, u_int cmd, void *arg)
 	case OPEN_CHANNEL:
 		rq = arg;
 		if (rq->adr.channel == 0)
+		       __func__, cmd, arg);
+	switch (cmd) {
+	case OPEN_CHANNEL:
+		rq = arg;
+		if ((rq->protocol == ISDN_P_TE_S0) ||
+		    (rq->protocol == ISDN_P_NT_S0))
 			err = open_dchannel(hc, ch, rq);
 		else
 			err = open_bchannel(hc, rq);
@@ -1939,6 +2349,8 @@ hfc_dctrl(struct mISDNchannel *ch, u_int cmd, void *arg)
 			printk(KERN_DEBUG "%s: dev(%d) close from %p\n",
 			    __func__, hc->dch.dev.id,
 			    __builtin_return_address(0));
+			       __func__, hc->dch.dev.id,
+			       __builtin_return_address(0));
 		module_put(THIS_MODULE);
 		break;
 	case CONTROL_CHANNEL:
@@ -1948,6 +2360,7 @@ hfc_dctrl(struct mISDNchannel *ch, u_int cmd, void *arg)
 		if (dch->debug & DEBUG_HW)
 			printk(KERN_DEBUG "%s: unknown command %x\n",
 			    __func__, cmd);
+			       __func__, cmd);
 		return -EINVAL;
 	}
 	return err;
@@ -1967,6 +2380,8 @@ setup_hw(struct hfc_pci *hc)
 		return 1;
 	}
 	hc->hw.pci_io = (char *)(ulong)hc->pdev->resource[1].start;
+	hc->hw.pci_io =
+		(char __iomem *)(unsigned long)hc->pdev->resource[1].start;
 
 	if (!hc->hw.pci_io) {
 		printk(KERN_WARNING "HFC-PCI: No IO-Mem for PCI card found\n");
@@ -1980,6 +2395,7 @@ setup_hw(struct hfc_pci *hc)
 	if (!buffer) {
 		printk(KERN_WARNING
 		    "HFC-PCI: Error allocating memory for FIFO!\n");
+		       "HFC-PCI: Error allocating memory for FIFO!\n");
 		return 1;
 	}
 	hc->hw.fifos = buffer;
@@ -1989,6 +2405,9 @@ setup_hw(struct hfc_pci *hc)
 		"HFC-PCI: defined at mem %#lx fifo %#lx(%#lx) IRQ %d HZ %d\n",
 		(u_long) hc->hw.pci_io, (u_long) hc->hw.fifos,
 		(u_long) hc->hw.dmahandle, hc->irq, HZ);
+	       "HFC-PCI: defined at mem %#lx fifo %#lx(%#lx) IRQ %d HZ %d\n",
+	       (u_long) hc->hw.pci_io, (u_long) hc->hw.fifos,
+	       (u_long) hc->hw.dmahandle, hc->irq, HZ);
 	/* enable memory mapped ports, disable busmaster */
 	pci_write_config_word(hc->pdev, PCI_COMMAND, PCI_ENA_MEMIO);
 	hc->hw.int_m2 = 0;
@@ -2044,6 +2463,8 @@ setup_card(struct hfc_pci *card)
 	if (HFC_cnt >= MAX_CARDS)
 		return -EINVAL; /* maybe better value */
 
+	char		name[MISDN_MAX_IDLEN];
+
 	card->dch.debug = debug;
 	spin_lock_init(&card->lock);
 	mISDN_initdchannel(&card->dch, MAX_DFRAME_LEN_L1, ph_state);
@@ -2051,6 +2472,7 @@ setup_card(struct hfc_pci *card)
 	card->dch.dev.Dprotocols = (1 << ISDN_P_TE_S0) | (1 << ISDN_P_NT_S0);
 	card->dch.dev.Bprotocols = (1 << (ISDN_P_B_RAW & ISDN_P_B_MASK)) |
 	    (1 << (ISDN_P_B_HDLC & ISDN_P_B_MASK));
+		(1 << (ISDN_P_B_HDLC & ISDN_P_B_MASK));
 	card->dch.dev.D.send = hfcpci_l2l1D;
 	card->dch.dev.D.ctrl = hfc_dctrl;
 	card->dch.dev.nrbchan = 2;
@@ -2059,6 +2481,7 @@ setup_card(struct hfc_pci *card)
 		set_channelmap(i + 1, card->dch.dev.channelmap);
 		card->bch[i].debug = debug;
 		mISDN_initbchannel(&card->bch[i], MAX_DATA_MEM);
+		mISDN_initbchannel(&card->bch[i], MAX_DATA_MEM, poll >> 1);
 		card->bch[i].hw = card;
 		card->bch[i].ch.send = hfcpci_l2l1B;
 		card->bch[i].ch.ctrl = hfc_bctrl;
@@ -2076,6 +2499,10 @@ setup_card(struct hfc_pci *card)
 	write_lock_irqsave(&HFClock, flags);
 	list_add_tail(&card->list, &HFClist);
 	write_unlock_irqrestore(&HFClock, flags);
+	err = mISDN_register_device(&card->dch.dev, &card->pdev->dev, name);
+	if (err)
+		goto error;
+	HFC_cnt++;
 	printk(KERN_INFO "HFC %d cards installed\n", HFC_cnt);
 	return 0;
 error:
@@ -2121,6 +2548,13 @@ static const struct _hfc_map hfc_map[] =
 	    "Digi International DataFire Micro V IOM2 (North America)"},
 	{HFC_DIGI_DF_M_A, 0,
 	    "Digi International DataFire Micro V (North America)"},
+	 "Digi International DataFire Micro V IOM2 (Europe)"},
+	{HFC_DIGI_DF_M_E, 0,
+	 "Digi International DataFire Micro V (Europe)"},
+	{HFC_DIGI_DF_M_IOM2_A, 0,
+	 "Digi International DataFire Micro V IOM2 (North America)"},
+	{HFC_DIGI_DF_M_A, 0,
+	 "Digi International DataFire Micro V (North America)"},
 	{HFC_SITECOM_DC105V2, 0, "Sitecom Connectivity DC-105 ISDN TA"},
 	{},
 };
@@ -2177,6 +2611,56 @@ static struct pci_device_id hfc_ids[] =
 };
 
 static int __devinit
+	{ PCI_VDEVICE(CCD, PCI_DEVICE_ID_CCD_2BD0),
+	  (unsigned long) &hfc_map[0] },
+	{ PCI_VDEVICE(CCD, PCI_DEVICE_ID_CCD_B000),
+	  (unsigned long) &hfc_map[1] },
+	{ PCI_VDEVICE(CCD, PCI_DEVICE_ID_CCD_B006),
+	  (unsigned long) &hfc_map[2] },
+	{ PCI_VDEVICE(CCD, PCI_DEVICE_ID_CCD_B007),
+	  (unsigned long) &hfc_map[3] },
+	{ PCI_VDEVICE(CCD, PCI_DEVICE_ID_CCD_B008),
+	  (unsigned long) &hfc_map[4] },
+	{ PCI_VDEVICE(CCD, PCI_DEVICE_ID_CCD_B009),
+	  (unsigned long) &hfc_map[5] },
+	{ PCI_VDEVICE(CCD, PCI_DEVICE_ID_CCD_B00A),
+	  (unsigned long) &hfc_map[6] },
+	{ PCI_VDEVICE(CCD, PCI_DEVICE_ID_CCD_B00B),
+	  (unsigned long) &hfc_map[7] },
+	{ PCI_VDEVICE(CCD, PCI_DEVICE_ID_CCD_B00C),
+	  (unsigned long) &hfc_map[8] },
+	{ PCI_VDEVICE(CCD, PCI_DEVICE_ID_CCD_B100),
+	  (unsigned long) &hfc_map[9] },
+	{ PCI_VDEVICE(CCD, PCI_DEVICE_ID_CCD_B700),
+	  (unsigned long) &hfc_map[10] },
+	{ PCI_VDEVICE(CCD, PCI_DEVICE_ID_CCD_B701),
+	  (unsigned long) &hfc_map[11] },
+	{ PCI_VDEVICE(ABOCOM, PCI_DEVICE_ID_ABOCOM_2BD1),
+	  (unsigned long) &hfc_map[12] },
+	{ PCI_VDEVICE(ASUSTEK, PCI_DEVICE_ID_ASUSTEK_0675),
+	  (unsigned long) &hfc_map[13] },
+	{ PCI_VDEVICE(BERKOM, PCI_DEVICE_ID_BERKOM_T_CONCEPT),
+	  (unsigned long) &hfc_map[14] },
+	{ PCI_VDEVICE(BERKOM, PCI_DEVICE_ID_BERKOM_A1T),
+	  (unsigned long) &hfc_map[15] },
+	{ PCI_VDEVICE(ANIGMA, PCI_DEVICE_ID_ANIGMA_MC145575),
+	  (unsigned long) &hfc_map[16] },
+	{ PCI_VDEVICE(ZOLTRIX, PCI_DEVICE_ID_ZOLTRIX_2BD0),
+	  (unsigned long) &hfc_map[17] },
+	{ PCI_VDEVICE(DIGI, PCI_DEVICE_ID_DIGI_DF_M_IOM2_E),
+	  (unsigned long) &hfc_map[18] },
+	{ PCI_VDEVICE(DIGI, PCI_DEVICE_ID_DIGI_DF_M_E),
+	  (unsigned long) &hfc_map[19] },
+	{ PCI_VDEVICE(DIGI, PCI_DEVICE_ID_DIGI_DF_M_IOM2_A),
+	  (unsigned long) &hfc_map[20] },
+	{ PCI_VDEVICE(DIGI, PCI_DEVICE_ID_DIGI_DF_M_A),
+	  (unsigned long) &hfc_map[21] },
+	{ PCI_VDEVICE(SITECOM, PCI_DEVICE_ID_SITECOM_DC105V2),
+	  (unsigned long) &hfc_map[22] },
+	{},
+};
+
+static int
 hfc_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 {
 	int		err = -ENOMEM;
@@ -2221,6 +2705,17 @@ hfc_remove_pci(struct pci_dev *pdev)
 		if (debug)
 			printk(KERN_WARNING "%s: drvdata allready removed\n",
 			    __func__);
+static void
+hfc_remove_pci(struct pci_dev *pdev)
+{
+	struct hfc_pci	*card = pci_get_drvdata(pdev);
+
+	if (card)
+		release_card(card);
+	else
+		if (debug)
+			printk(KERN_DEBUG "%s: drvdata already removed\n",
+			       __func__);
 }
 
 
@@ -2231,12 +2726,89 @@ static struct pci_driver hfc_driver = {
 	.id_table = hfc_ids,
 };
 
+	.remove = hfc_remove_pci,
+	.id_table = hfc_ids,
+};
+
+static int
+_hfcpci_softirq(struct device *dev, void *arg)
+{
+	struct hfc_pci  *hc = dev_get_drvdata(dev);
+	struct bchannel *bch;
+	if (hc == NULL)
+		return 0;
+
+	if (hc->hw.int_m2 & HFCPCI_IRQ_ENABLE) {
+		spin_lock(&hc->lock);
+		bch = Sel_BCS(hc, hc->hw.bswapped ? 2 : 1);
+		if (bch && bch->state == ISDN_P_B_RAW) { /* B1 rx&tx */
+			main_rec_hfcpci(bch);
+			tx_birq(bch);
+		}
+		bch = Sel_BCS(hc, hc->hw.bswapped ? 1 : 2);
+		if (bch && bch->state == ISDN_P_B_RAW) { /* B2 rx&tx */
+			main_rec_hfcpci(bch);
+			tx_birq(bch);
+		}
+		spin_unlock(&hc->lock);
+	}
+	return 0;
+}
+
+static void
+hfcpci_softirq(void *arg)
+{
+	WARN_ON_ONCE(driver_for_each_device(&hfc_driver.driver, NULL, arg,
+				      _hfcpci_softirq) != 0);
+
+	/* if next event would be in the past ... */
+	if ((s32)(hfc_jiffies + tics - jiffies) <= 0)
+		hfc_jiffies = jiffies + 1;
+	else
+		hfc_jiffies += tics;
+	hfc_tl.expires = hfc_jiffies;
+	add_timer(&hfc_tl);
+}
+
 static int __init
 HFC_init(void)
 {
 	int		err;
 
 	err = pci_register_driver(&hfc_driver);
+	if (!poll)
+		poll = HFCPCI_BTRANS_THRESHOLD;
+
+	if (poll != HFCPCI_BTRANS_THRESHOLD) {
+		tics = (poll * HZ) / 8000;
+		if (tics < 1)
+			tics = 1;
+		poll = (tics * 8000) / HZ;
+		if (poll > 256 || poll < 8) {
+			printk(KERN_ERR "%s: Wrong poll value %d not in range "
+			       "of 8..256.\n", __func__, poll);
+			err = -EINVAL;
+			return err;
+		}
+	}
+	if (poll != HFCPCI_BTRANS_THRESHOLD) {
+		printk(KERN_INFO "%s: Using alternative poll value of %d\n",
+		       __func__, poll);
+		hfc_tl.function = (void *)hfcpci_softirq;
+		hfc_tl.data = 0;
+		init_timer(&hfc_tl);
+		hfc_tl.expires = jiffies + tics;
+		hfc_jiffies = hfc_tl.expires;
+		add_timer(&hfc_tl);
+	} else
+		tics = 0; /* indicate the use of controller's timer */
+
+	err = pci_register_driver(&hfc_driver);
+	if (err) {
+		if (timer_pending(&hfc_tl))
+			del_timer(&hfc_tl);
+	}
+
 	return err;
 }
 
@@ -2248,8 +2820,13 @@ HFC_cleanup(void)
 	list_for_each_entry_safe(card, next, &HFClist, list) {
 		release_card(card);
 	}
+	if (timer_pending(&hfc_tl))
+		del_timer_sync(&hfc_tl);
+
 	pci_unregister_driver(&hfc_driver);
 }
 
 module_init(HFC_init);
 module_exit(HFC_cleanup);
+
+MODULE_DEVICE_TABLE(pci, hfc_ids);

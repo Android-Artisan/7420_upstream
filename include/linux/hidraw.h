@@ -6,6 +6,9 @@
  */
 
 /*
+ *  Copyright (c) 2007 Jiri Kosina
+ */
+/*
  * This program is free software; you can redistribute it and/or modify it
  * under the terms and conditions of the GNU General Public License,
  * version 2, as published by the Free Software Foundation.
@@ -42,6 +45,11 @@ struct hidraw_devinfo {
 
 /* kernel-only API declarations */
 #ifdef __KERNEL__
+#ifndef _HIDRAW_H
+#define _HIDRAW_H
+
+#include <uapi/linux/hidraw.h>
+
 
 struct hidraw {
 	unsigned int minor;
@@ -50,6 +58,7 @@ struct hidraw {
 	wait_queue_head_t wait;
 	struct hid_device *hid;
 	struct device *dev;
+	spinlock_t list_lock;
 	struct list_head list;
 };
 
@@ -72,12 +81,14 @@ struct hidraw_list {
 int hidraw_init(void);
 void hidraw_exit(void);
 void hidraw_report_event(struct hid_device *, u8 *, int);
+int hidraw_report_event(struct hid_device *, u8 *, int);
 int hidraw_connect(struct hid_device *);
 void hidraw_disconnect(struct hid_device *);
 #else
 static inline int hidraw_init(void) { return 0; }
 static inline void hidraw_exit(void) { }
 static inline void hidraw_report_event(struct hid_device *hid, u8 *data, int len) { }
+static inline int hidraw_report_event(struct hid_device *hid, u8 *data, int len) { return 0; }
 static inline int hidraw_connect(struct hid_device *hid) { return -1; }
 static inline void hidraw_disconnect(struct hid_device *hid) { }
 #endif

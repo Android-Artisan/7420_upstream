@@ -8,6 +8,11 @@ menu "PCMCIA character devices"
 config SYNCLINK_CS
 	tristate "SyncLink PC Card support"
 	depends on PCMCIA
+	depends on PCMCIA!=n
+
+config SYNCLINK_CS
+	tristate "SyncLink PC Card support"
+	depends on PCMCIA && TTY
 	help
 	  Enable support for the SyncLink PC Card serial adapter, running
 	  asynchronous and HDLC communications up to 512Kbps. The port is
@@ -16,6 +21,7 @@ config SYNCLINK_CS
 	  This driver may be built as a module ( = code which can be
 	  inserted in and removed from the running kernel whenever you want).
 	  The module will be called synclinkmp.  If you want to do that, say M
+	  The module will be called synclink_cs.  If you want to do that, say M
 	  here.
 
 config CARDMAN_4000
@@ -29,6 +35,7 @@ config CARDMAN_4000
 	  This kernel driver requires additional userspace support, either
 	  by the vendor-provided PC/SC ifd_handler (http://www.omnikey.com/),
 	  or via the cm4000 backend of OpenCT (http://www.opensc.com/).
+	  or via the cm4000 backend of OpenCT (http://www.opensc-project.org/opensc).
 
 config CARDMAN_4040
 	tristate "Omnikey CardMan 4040 support"
@@ -46,6 +53,11 @@ config CARDMAN_4040
 config IPWIRELESS
 	tristate "IPWireless 3G UMTS PCMCIA card support"
 	depends on PCMCIA && NETDEVICES
+	  (http://www.opensc-project.org/opensc).
+
+config IPWIRELESS
+	tristate "IPWireless 3G UMTS PCMCIA card support"
+	depends on PCMCIA && NETDEVICES && TTY
 	select PPP
 	help
 	  This is a driver for 3G UMTS PCMCIA card from IPWireless company. In

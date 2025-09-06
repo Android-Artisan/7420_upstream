@@ -5,6 +5,11 @@
    Modifications By: Tom Couch <linuxraid@amcc.com>
 
    Copyright (C) 2004-2008 Applied Micro Circuits Corporation.
+   Written By: Adam Radford <linuxraid@lsi.com>
+   Modifications By: Tom Couch <linuxraid@lsi.com>
+
+   Copyright (C) 2004-2009 Applied Micro Circuits Corporation.
+   Copyright (C) 2010 LSI Corporation.
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -44,6 +49,10 @@
 
    For more information, goto:
    http://www.amcc.com
+   linuxraid@lsi.com
+
+   For more information, goto:
+   http://www.lsi.com
 */
 
 #ifndef _3W_9XXX_H
@@ -61,6 +70,7 @@ static twa_message_type twa_aen_table[] = {
 	{0x0001, "Controller reset occurred"},
 	{0x0002, "Degraded unit detected"},
 	{0x0003, "Controller error occured"},
+	{0x0003, "Controller error occurred"},
 	{0x0004, "Background rebuild failed"},
 	{0x0005, "Background rebuild done"},
 	{0x0006, "Incomplete unit detected"},

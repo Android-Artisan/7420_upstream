@@ -45,6 +45,8 @@ static int xfrm6_beet_output(struct xfrm_state *x, struct sk_buff *skb)
 	int optlen, hdr_len;
 
 	iphv4 = ip_hdr(skb);
+	int optlen, hdr_len;
+
 	hdr_len = 0;
 	optlen = XFRM_MODE_SKB_CB(skb)->optlen;
 	if (unlikely(optlen))
@@ -76,6 +78,8 @@ static int xfrm6_beet_output(struct xfrm_state *x, struct sk_buff *skb)
 
 	ipv6_addr_copy(&top_iph->saddr, (struct in6_addr *)&x->props.saddr);
 	ipv6_addr_copy(&top_iph->daddr, (struct in6_addr *)&x->id.daddr);
+	top_iph->saddr = *(struct in6_addr *)&x->props.saddr;
+	top_iph->daddr = *(struct in6_addr *)&x->id.daddr;
 	return 0;
 }
 
@@ -96,6 +100,7 @@ static int xfrm6_beet_input(struct xfrm_state *x, struct sk_buff *skb)
 	old_mac = skb_mac_header(skb);
 	skb_set_mac_header(skb, -skb->mac_len);
 	memmove(skb_mac_header(skb), old_mac, skb->mac_len);
+	skb_mac_header_rebuild(skb);
 
 	xfrm6_beet_make_header(skb);
 
@@ -103,6 +108,8 @@ static int xfrm6_beet_input(struct xfrm_state *x, struct sk_buff *skb)
 	ip6h->payload_len = htons(skb->len - size);
 	ipv6_addr_copy(&ip6h->daddr, (struct in6_addr *) &x->sel.daddr.a6);
 	ipv6_addr_copy(&ip6h->saddr, (struct in6_addr *) &x->sel.saddr.a6);
+	ip6h->daddr = x->sel.daddr.in6;
+	ip6h->saddr = x->sel.saddr.in6;
 	err = 0;
 out:
 	return err;

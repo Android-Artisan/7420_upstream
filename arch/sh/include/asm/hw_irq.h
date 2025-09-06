@@ -3,6 +3,8 @@
 
 #include <linux/init.h>
 #include <asm/atomic.h>
+#include <linux/sh_intc.h>
+#include <linux/atomic.h>
 
 extern atomic_t irq_err_count;
 
@@ -114,6 +116,9 @@ void __init plat_irq_setup(void);
 #ifdef CONFIG_CPU_SH3
 void __init plat_irq_setup_sh3(void);
 #endif
+void __init plat_irq_setup(void);
+void __init plat_irq_setup_sh3(void);
+void __init plat_irq_setup_pins(int mode);
 
 enum { IRQ_MODE_IRQ, IRQ_MODE_IRQ7654, IRQ_MODE_IRQ3210,
        IRQ_MODE_IRL7654_MASK, IRQ_MODE_IRL3210_MASK,

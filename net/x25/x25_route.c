@@ -19,6 +19,7 @@
 
 #include <linux/if_arp.h>
 #include <linux/init.h>
+#include <linux/slab.h>
 #include <net/x25.h>
 
 LIST_HEAD(x25_route_list);
@@ -66,6 +67,7 @@ out:
 /**
  * __x25_remove_route - remove route from x25_route_list
  * @rt - route to remove
+ * @rt: route to remove
  *
  * Remove route from x25_route_list. If it was there.
  * Caller must hold x25_route_list_lock.
@@ -138,6 +140,13 @@ struct net_device *x25_dev_get(char *devname)
 #endif
 					)))
 		dev_put(dev);
+#if IS_ENABLED(CONFIG_LLC)
+					&& dev->type != ARPHRD_ETHER
+#endif
+					))){
+		dev_put(dev);
+		dev = NULL;
+	}
 
 	return dev;
 }
@@ -191,6 +200,7 @@ int x25_route_ioctl(unsigned int cmd, void __user *arg)
 
 	rc = -EINVAL;
 	if (rt.sigdigits < 0 || rt.sigdigits > 15)
+	if (rt.sigdigits > 15)
 		goto out;
 
 	dev = x25_dev_get(rt.device);

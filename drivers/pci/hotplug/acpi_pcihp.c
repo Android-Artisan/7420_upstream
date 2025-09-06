@@ -34,6 +34,9 @@
 #include <acpi/acpi.h>
 #include <acpi/acpi_bus.h>
 #include <acpi/actypes.h>
+#include <linux/acpi.h>
+#include <linux/pci-acpi.h>
+#include <linux/slab.h>
 
 #define MY_NAME	"acpi_pcihp"
 
@@ -295,6 +298,9 @@ free_and_return:
 }
 
 
+#define	METHOD_NAME_OSHP	"OSHP"
+
+static bool debug_acpi;
 
 /* acpi_run_oshp - get control of hotplug from the firmware
  *
@@ -390,6 +396,13 @@ int acpi_get_hp_hw_control_from_firmware(struct pci_dev *dev, u32 flags)
 	flags &= (OSC_PCI_EXPRESS_NATIVE_HP_CONTROL |
 		  OSC_SHPC_NATIVE_HP_CONTROL |
 		  OSC_PCI_EXPRESS_CAP_STRUCTURE_CONTROL);
+int acpi_get_hp_hw_control_from_firmware(struct pci_dev *pdev, u32 flags)
+{
+	acpi_status status;
+	acpi_handle chandle, handle;
+	struct acpi_buffer string = { ACPI_ALLOCATE_BUFFER, NULL };
+
+	flags &= OSC_PCI_SHPC_NATIVE_HP_CONTROL;
 	if (!flags) {
 		err("Invalid flags %u specified!\n", flags);
 		return -EINVAL;
@@ -403,6 +416,7 @@ int acpi_get_hp_hw_control_from_firmware(struct pci_dev *dev, u32 flags)
 	 * bridge preferentially (according to PCI fw spec). Later for
 	 * OSHP within the scope of the hotplug controller and its parents,
 	 * upto the host bridge under which this controller exists.
+	 * up to the host bridge under which this controller exists.
 	 */
 	handle = acpi_find_root_bridge_handle(pdev);
 	if (handle) {
@@ -412,6 +426,11 @@ int acpi_get_hp_hw_control_from_firmware(struct pci_dev *dev, u32 flags)
 		status = pci_osc_control_set(handle, flags);
 		if (ACPI_SUCCESS(status))
 			goto got_one;
+		status = acpi_pci_osc_control_set(handle, &flags, flags);
+		if (ACPI_SUCCESS(status))
+			goto got_one;
+		if (status == AE_SUPPORT)
+			goto no_control;
 		kfree(string.pointer);
 		string = (struct acpi_buffer){ ACPI_ALLOCATE_BUFFER, NULL };
 	}
@@ -419,6 +438,8 @@ int acpi_get_hp_hw_control_from_firmware(struct pci_dev *dev, u32 flags)
 	pdev = dev;
 	handle = DEVICE_ACPI_HANDLE(&dev->dev);
 	while (!handle) {
+	handle = ACPI_HANDLE(&pdev->dev);
+	if (!handle) {
 		/*
 		 * This hotplug controller was not listed in the ACPI name
 		 * space at all. Try to get acpi handle of parent pci bus.
@@ -436,6 +457,12 @@ int acpi_get_hp_hw_control_from_firmware(struct pci_dev *dev, u32 flags)
 		else
 			handle = DEVICE_ACPI_HANDLE(&(parent->self->dev));
 		pdev = parent->self;
+		struct pci_bus *pbus;
+		for (pbus = pdev->bus; pbus; pbus = pbus->parent) {
+			handle = acpi_pci_get_bridge_handle(pbus);
+			if (handle)
+				break;
+		}
 	}
 
 	while (handle) {
@@ -446,6 +473,7 @@ int acpi_get_hp_hw_control_from_firmware(struct pci_dev *dev, u32 flags)
 		if (ACPI_SUCCESS(status))
 			goto got_one;
 		if (acpi_root_bridge(handle))
+		if (acpi_is_root_bridge(handle))
 			break;
 		chandle = handle;
 		status = acpi_get_parent(chandle, &handle);
@@ -461,6 +489,14 @@ int acpi_get_hp_hw_control_from_firmware(struct pci_dev *dev, u32 flags)
 got_one:
 	dbg("Gained control for hotplug HW for pci %s (%s)\n", pci_name(dev),
 			(char *)string.pointer);
+no_control:
+	dbg("Cannot get control of hotplug hardware for pci %s\n",
+	    pci_name(pdev));
+	kfree(string.pointer);
+	return -ENODEV;
+got_one:
+	dbg("Gained control for hotplug HW for pci %s (%s)\n",
+	    pci_name(pdev), (char *)string.pointer);
 	kfree(string.pointer);
 	return 0;
 }
@@ -500,6 +536,71 @@ int acpi_root_bridge(acpi_handle handle)
 	return 0;
 }
 EXPORT_SYMBOL_GPL(acpi_root_bridge);
+static int pcihp_is_ejectable(acpi_handle handle)
+{
+	acpi_status status;
+	unsigned long long removable;
+	if (!acpi_has_method(handle, "_ADR"))
+		return 0;
+	if (acpi_has_method(handle, "_EJ0"))
+		return 1;
+	status = acpi_evaluate_integer(handle, "_RMV", NULL, &removable);
+	if (ACPI_SUCCESS(status) && removable)
+		return 1;
+	return 0;
+}
+
+/**
+ * acpi_pcihp_check_ejectable - check if handle is ejectable ACPI PCI slot
+ * @pbus: the PCI bus of the PCI slot corresponding to 'handle'
+ * @handle: ACPI handle to check
+ *
+ * Return 1 if handle is ejectable PCI slot, 0 otherwise.
+ */
+int acpi_pci_check_ejectable(struct pci_bus *pbus, acpi_handle handle)
+{
+	acpi_handle bridge_handle, parent_handle;
+
+	bridge_handle = acpi_pci_get_bridge_handle(pbus);
+	if (!bridge_handle)
+		return 0;
+	if ((ACPI_FAILURE(acpi_get_parent(handle, &parent_handle))))
+		return 0;
+	if (bridge_handle != parent_handle)
+		return 0;
+	return pcihp_is_ejectable(handle);
+}
+EXPORT_SYMBOL_GPL(acpi_pci_check_ejectable);
+
+static acpi_status
+check_hotplug(acpi_handle handle, u32 lvl, void *context, void **rv)
+{
+	int *found = (int *)context;
+	if (pcihp_is_ejectable(handle)) {
+		*found = 1;
+		return AE_CTRL_TERMINATE;
+	}
+	return AE_OK;
+}
+
+/**
+ * acpi_pci_detect_ejectable - check if the PCI bus has ejectable slots
+ * @handle - handle of the PCI bus to scan
+ *
+ * Returns 1 if the PCI bus has ACPI based ejectable slots, 0 otherwise.
+ */
+int acpi_pci_detect_ejectable(acpi_handle handle)
+{
+	int found = 0;
+
+	if (!handle)
+		return found;
+
+	acpi_walk_namespace(ACPI_TYPE_DEVICE, handle, 1,
+			    check_hotplug, NULL, (void *)&found, NULL);
+	return found;
+}
+EXPORT_SYMBOL_GPL(acpi_pci_detect_ejectable);
 
 module_param(debug_acpi, bool, 0644);
 MODULE_PARM_DESC(debug_acpi, "Debugging mode for ACPI enabled or not");

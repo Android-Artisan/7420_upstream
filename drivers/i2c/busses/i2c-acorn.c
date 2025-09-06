@@ -20,6 +20,13 @@
 #include <asm/io.h>
 #include <asm/hardware/ioc.h>
 #include <asm/system.h>
+#include <linux/module.h>
+#include <linux/i2c.h>
+#include <linux/i2c-algo-bit.h>
+#include <linux/io.h>
+
+#include <mach/hardware.h>
+#include <asm/hardware/ioc.h>
 
 #define FORCE_ONES	0xdc
 #define SCL		0x02
@@ -84,6 +91,12 @@ static struct i2c_algo_bit_data ioc_data = {
 
 static struct i2c_adapter ioc_ops = {
 	.id			= I2C_HW_B_IOC,
+	.timeout	= HZ,
+};
+
+static struct i2c_adapter ioc_ops = {
+	.nr			= 0,
+	.name			= "ioc",
 	.algo_data		= &ioc_data,
 };
 
@@ -92,6 +105,7 @@ static int __init i2c_ioc_init(void)
 	force_ones = FORCE_ONES | SCL | SDA;
 
 	return i2c_bit_add_bus(&ioc_ops);
+	return i2c_bit_add_numbered_bus(&ioc_ops);
 }
 
 module_init(i2c_ioc_init);

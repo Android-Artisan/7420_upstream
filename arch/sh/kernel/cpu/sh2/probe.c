@@ -14,6 +14,7 @@
 #include <asm/cache.h>
 
 int __init detect_cpu_and_cache_system(void)
+void cpu_probe(void)
 {
 #if defined(CONFIG_CPU_SUBTYPE_SH7619)
 	boot_cpu_data.type			= CPU_SH7619;
@@ -33,3 +34,5 @@ int __init detect_cpu_and_cache_system(void)
 	return 0;
 }
 
+	boot_cpu_data.family = CPU_FAMILY_SH2;
+}

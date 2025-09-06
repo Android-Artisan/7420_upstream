@@ -98,6 +98,7 @@
 #include <linux/delay.h>
 #include <linux/dma-mapping.h>
 #include <linux/errno.h>
+#include <linux/gfp.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/ioport.h>
@@ -128,11 +129,9 @@
 
 #define NAME53C8XX		"ncr53c8xx"
 
-/*==========================================================
 **
 **	Debugging tags
 **
-**==========================================================
 */
 
 #define DEBUG_ALLOC    (0x0001)
@@ -172,7 +171,6 @@ static inline struct list_head *ncr_list_pop(struct list_head *head)
 	return NULL;
 }
 
-/*==========================================================
 **
 **	Simple power of two buddy-like allocator.
 **
@@ -187,7 +185,6 @@ static inline struct list_head *ncr_list_pop(struct list_head *head)
 **	per pcidev to support dynamic dma mapping. (I would 
 **	have preferred a real bus abstraction, btw).
 **
-**==========================================================
 */
 
 #define MEMO_SHIFT	4	/* 16 bytes minimum memory chunk */
@@ -552,7 +549,6 @@ static int __map_scsi_sg_data(struct device *dev, struct scsi_cmnd *cmd)
 #define unmap_scsi_data(np, cmd)	__unmap_scsi_data(np->dev, cmd)
 #define map_scsi_sg_data(np, cmd)	__map_scsi_sg_data(np->dev, cmd)
 
-/*==========================================================
 **
 **	Driver setup.
 **
@@ -560,7 +556,6 @@ static int __map_scsi_sg_data(struct device *dev, struct scsi_cmnd *cmd)
 **	options. It can be overridden at boot-up by the boot 
 **	command line.
 **
-**==========================================================
 */
 static struct ncr_driver_setup
 	driver_setup			= SCSI_NCR_DRIVER_SETUP;
@@ -576,11 +571,9 @@ static struct ncr_driver_setup
 #define bootverbose (np->verbose)
 
 
-/*===================================================================
 **
 **	Driver setup from the boot command line
 **
-**===================================================================
 */
 
 #ifdef MODULE
@@ -784,11 +777,9 @@ static int __init sym53c8xx__setup(char *str)
 }
 #endif /* !MODULE */
 
-/*===================================================================
 **
 **	Get device queue depth from boot command line.
 **
-**===================================================================
 */
 #define DEF_DEPTH	(driver_setup.default_tags)
 #define ALL_TARGETS	-2
@@ -841,7 +832,6 @@ static int device_queue_depth(int unit, int target, int lun)
 }
 
 
-/*==========================================================
 **
 **	The CCB done queue uses an array of CCB virtual 
 **	addresses. Empty entries are flagged using the bogus 
@@ -855,7 +845,6 @@ static int device_queue_depth(int unit, int target, int lun)
 **	BTW, I will make things differently as soon as I will 
 **	have a better idea, but this is simple and should work.
 **
-**==========================================================
 */
  
 #define SCSI_NCR_CCB_DONE_SUPPORT
@@ -877,11 +866,9 @@ static int device_queue_depth(int unit, int target, int lun)
 
 #endif /* SCSI_NCR_CCB_DONE_SUPPORT */
 
-/*==========================================================
 **
 **	Configuration and Debugging
 **
-**==========================================================
 */
 
 /*
@@ -1015,11 +1002,9 @@ typedef u32 tagmap_t;
 #define initverbose (driver_setup.verbose)
 #define bootverbose (np->verbose)
 
-/*==========================================================
 **
 **	Command control block states.
 **
-**==========================================================
 */
 
 #define HS_IDLE		(0)
@@ -1053,11 +1038,9 @@ typedef u32 tagmap_t;
 */
 #define HS_SKIPMASK	(0x20)
 
-/*==========================================================
 **
 **	Software Interrupt Codes
 **
-**==========================================================
 */
 
 #define	SIR_BAD_STATUS		(1)
@@ -1080,24 +1063,20 @@ typedef u32 tagmap_t;
 #define	SIR_INTFLY		(18)
 #define	SIR_MAX			(18)
 
-/*==========================================================
 **
 **	Extended error codes.
 **	xerr_status field of struct ccb.
 **
-**==========================================================
 */
 
 #define	XE_OK		(0)
 #define	XE_EXTRA_DATA	(1)	/* unexpected data phase */
 #define	XE_BAD_PHASE	(2)	/* illegal phase (4/5)   */
 
-/*==========================================================
 **
 **	Negotiation status.
 **	nego_status field	of struct ccb.
 **
-**==========================================================
 */
 
 #define NS_NOCHANGE	(0)
@@ -1105,20 +1084,16 @@ typedef u32 tagmap_t;
 #define NS_WIDE		(2)
 #define NS_PPR		(4)
 
-/*==========================================================
 **
 **	Misc.
 **
-**==========================================================
 */
 
 #define CCB_MAGIC	(0xf2691ad2)
 
-/*==========================================================
 **
 **	Declaration of structs.
 **
-**==========================================================
 */
 
 static struct scsi_transport_template *ncr53c8xx_transport_template = NULL;
@@ -1153,11 +1128,9 @@ struct	usrcmd {
 #define	UF_NODISC	(0x02)
 #define	UF_NOSCAN	(0x04)
 
-/*========================================================================
 **
 **	Declaration of structs:		target control block
 **
-**========================================================================
 */
 struct tcb {
 	/*----------------------------------------------------------------
@@ -1246,11 +1219,9 @@ struct tcb {
 	struct scsi_target *starget;
 };
 
-/*========================================================================
 **
 **	Declaration of structs:		lun control block
 **
-**========================================================================
 */
 struct lcb {
 	/*----------------------------------------------------------------
@@ -1326,11 +1297,9 @@ struct lcb {
 	struct ccb *	held_ccb;	/* CCB held for QUEUE FULL	*/
 };
 
-/*========================================================================
 **
 **      Declaration of structs:     the launch script.
 **
-**========================================================================
 **
 **	It is part of the CCB and is called by the scripts processor to 
 **	start or restart the data structure (nexus).
@@ -1349,11 +1318,9 @@ struct launch {
 	ncrcmd		p_phys;		/* 'phys' header bus address	*/
 };
 
-/*========================================================================
 **
 **      Declaration of structs:     global HEADER.
 **
-**========================================================================
 **
 **	This substructure is copied from the ccb to a global address after 
 **	selection (or reselection) and copied back before disconnect.
@@ -1467,11 +1434,9 @@ struct head {
 #define  wide_status   phys.wide_st
 #endif
 
-/*==========================================================
 **
 **      Declaration of structs:     Data structure block
 **
-**==========================================================
 **
 **	During execution of a ccb by the script processor,
 **	the DSA (data structure address) register points
@@ -1503,11 +1468,9 @@ struct dsb {
 };
 
 
-/*========================================================================
 **
 **      Declaration of structs:     Command control block.
 **
-**========================================================================
 */
 struct ccb {
 	/*----------------------------------------------------------------
@@ -1588,11 +1551,9 @@ struct ccb {
 #define CCB_PHYS(cp,lbl)	(cp->p_ccb + offsetof(struct ccb, lbl))
 
 
-/*========================================================================
 **
 **      Declaration of structs:     NCR device descriptor
 **
-**========================================================================
 */
 struct ncb {
 	/*----------------------------------------------------------------
@@ -1616,6 +1577,7 @@ struct ncb {
 
 	/*----------------------------------------------------------------
 	**	Chip and controller indentification.
+	**	Chip and controller identification.
 	**----------------------------------------------------------------
 	*/
 	int		unit;		/* Unit number			*/
@@ -1761,7 +1723,6 @@ struct ncb {
 #define NCB_SCRIPT_PHYS(np,lbl)	 (np->p_script  + offsetof (struct script, lbl))
 #define NCB_SCRIPTH_PHYS(np,lbl) (np->p_scripth + offsetof (struct scripth,lbl))
 
-/*==========================================================
 **
 **
 **      Script for NCR-Processor.
@@ -1771,7 +1732,6 @@ struct ncb {
 **	bind to physical addresses.
 **
 **
-**==========================================================
 **
 **	We have to know the offsets of all labels before
 **	we reach them (for forward jumps).
@@ -1907,13 +1867,11 @@ struct scripth {
 	ncrcmd	snoopend	[  2];
 };
 
-/*==========================================================
 **
 **
 **      Function headers.
 **
 **
-**==========================================================
 */
 
 static	void	ncr_alloc_ccb	(struct ncb *np, u_char tn, u_char ln);
@@ -1967,7 +1925,6 @@ static inline char *ncr_name (struct ncb *np)
 }
 
 
-/*==========================================================
 **
 **
 **      Scripts for NCR-Processor.
@@ -1975,7 +1932,6 @@ static inline char *ncr_name (struct ncb *np)
 **      Use ncr_script_bind for binding to physical addresses.
 **
 **
-**==========================================================
 **
 **	NADDR generates a reference to a field of the controller data.
 **	PADDR generates a reference to another part of the script.
@@ -2679,6 +2635,7 @@ static	struct script script0 __initdata = {
 	/*
 	**	Read IDENTIFY + SIMPLE + TAG using a single MOVE.
 	**	Agressive optimization, is'nt it?
+	**	Aggressive optimization, is'nt it?
 	**	No need to test the SIMPLE TAG message, since the 
 	**	driver only supports conformant devices for tags. ;-)
 	*/
@@ -2724,12 +2681,10 @@ static	struct script script0 __initdata = {
 **	#define MAX_SCATTERL parameter,
 **	it is filled in at runtime.
 **
-**  ##===========< i=0; i<MAX_SCATTERL >=========
 **  ||	SCR_CALL ^ IFFALSE (WHEN (SCR_DATA_IN)),
 **  ||		PADDR (dispatch),
 **  ||	SCR_MOVE_TBL ^ SCR_DATA_IN,
 **  ||		offsetof (struct dsb, data[ i]),
-**  ##==========================================
 **
 **---------------------------------------------------------
 */
@@ -2745,12 +2700,10 @@ static	struct script script0 __initdata = {
 **	#define MAX_SCATTERL parameter,
 **	it is filled in at runtime.
 **
-**  ##===========< i=0; i<MAX_SCATTERL >=========
 **  ||	SCR_CALL ^ IFFALSE (WHEN (SCR_DATA_OUT)),
 **  ||		PADDR (dispatch),
 **  ||	SCR_MOVE_TBL ^ SCR_DATA_OUT,
 **  ||		offsetof (struct dsb, data[ i]),
-**  ##==========================================
 **
 **---------------------------------------------------------
 */
@@ -2776,10 +2729,8 @@ static	struct scripth scripth0 __initdata = {
 **
 **-----------------------------------------------------------
 **
-**  ##===========< I=0; i<MAX_START >===========
 **  ||	SCR_CALL,
 **  ||		PADDR (idle),
-**  ##==========================================
 **
 **-----------------------------------------------------------
 */
@@ -2799,13 +2750,11 @@ static	struct scripth scripth0 __initdata = {
 **
 **-----------------------------------------------------------
 **
-**  ##===========< I=0; i<MAX_DONE >===========
 **  ||	SCR_COPY (sizeof(struct ccb *),
 **  ||		NADDR (header.cp),
 **  ||		NADDR (ccb_done[i]),
 **  ||	SCR_CALL,
 **  ||		PADDR (done_end),
-**  ##==========================================
 **
 **-----------------------------------------------------------
 */
@@ -3146,7 +3095,6 @@ static	struct scripth scripth0 __initdata = {
 **  ||		PADDR (dispatch),
 **  ||	SCR_MOVE_TBL ^ SCR_DATA_IN,
 **  ||		offsetof (struct dsb, data[ i]),
-**  ##===================================================
 **
 **---------------------------------------------------------
 */
@@ -3166,7 +3114,6 @@ static	struct scripth scripth0 __initdata = {
 **  ||		PADDR (dispatch),
 **  ||	SCR_MOVE_TBL ^ SCR_DATA_OUT,
 **  ||		offsetof (struct dsb, data[ i]),
-**  ##===================================================
 **
 **---------------------------------------------------------
 */
@@ -3433,13 +3380,11 @@ static	struct scripth scripth0 __initdata = {
 }/*--------------------------------------------------------*/
 };
 
-/*==========================================================
 **
 **
 **	Fill in #define dependent parts of the script
 **
 **
-**==========================================================
 */
 
 void __init ncr_script_fill (struct script * scr, struct scripth * scrh)
@@ -3511,13 +3456,11 @@ void __init ncr_script_fill (struct script * scr, struct scripth * scrh)
 	BUG_ON((u_long) p != (u_long)&scr->data_out + sizeof (scr->data_out));
 }
 
-/*==========================================================
 **
 **
 **	Copy and rebind a script.
 **
 **
-**==========================================================
 */
 
 static void __init 
@@ -3684,13 +3627,11 @@ static void ncr_print_msg(struct ccb *cp, char *label, u_char *msg)
 	printk("\n");
 }
 
-/*==========================================================
 **
 **	NCR chip clock divisor table.
 **	Divisors are multiplied by 10,000,000 in order to make 
 **	calculations more simple.
 **
-**==========================================================
 */
 
 #define _5M 5000000
@@ -3698,7 +3639,6 @@ static u_long div_10M[] =
 	{2*_5M, 3*_5M, 4*_5M, 6*_5M, 8*_5M, 12*_5M, 16*_5M};
 
 
-/*===============================================================
 **
 **	Prepare io register values used by ncr_init() according 
 **	to selected and supported features.
@@ -3708,7 +3648,6 @@ static u_long div_10M[] =
 **	We use log base 2 (burst length) as internal code, with 
 **	value 0 meaning "burst disabled".
 **
-**===============================================================
 */
 
 /*
@@ -4006,7 +3945,6 @@ static void __init ncr_prepare_setting(struct ncb *np)
 			ncr_name(np), np->paddr2);
 }
 
-/*==========================================================
 **
 **
 **	Done SCSI commands list management.
@@ -4023,7 +3961,6 @@ static void __init ncr_prepare_setting(struct ncb *np)
 **	that shall not reenter the driver under any circumstances,
 **	AFAIK.
 **
-**==========================================================
 */
 static inline void ncr_queue_done_cmd(struct ncb *np, struct scsi_cmnd *cmd)
 {
@@ -4043,7 +3980,6 @@ static inline void ncr_flush_done_cmds(struct scsi_cmnd *lcmd)
 	}
 }
 
-/*==========================================================
 **
 **
 **	Prepare the next negotiation message if needed.
@@ -4053,7 +3989,6 @@ static inline void ncr_flush_done_cmds(struct scsi_cmnd *lcmd)
 **	Returns the size of the message in bytes.
 **
 **
-**==========================================================
 */
 
 
@@ -4107,14 +4042,12 @@ static int ncr_prepare_nego(struct ncb *np, struct ccb *cp, u_char *msgptr)
 
 
 
-/*==========================================================
 **
 **
 **	Start execution of a SCSI command.
 **	This is called from the generic SCSI driver.
 **
 **
-**==========================================================
 */
 static int ncr_queue_command (struct ncb *np, struct scsi_cmnd *cmd)
 {
@@ -4172,6 +4105,8 @@ static int ncr_queue_command (struct ncb *np, struct scsi_cmnd *cmd)
 	*/
 	if (np->settle_time && cmd->timeout_per_command >= HZ) {
 		u_long tlimit = jiffies + cmd->timeout_per_command - HZ;
+	if (np->settle_time && cmd->request->timeout >= HZ) {
+		u_long tlimit = jiffies + cmd->request->timeout - HZ;
 		if (time_after(np->settle_time, tlimit))
 			np->settle_time = tlimit;
 	}
@@ -4415,14 +4350,12 @@ static int ncr_queue_command (struct ncb *np, struct scsi_cmnd *cmd)
 }
 
 
-/*==========================================================
 **
 **
 **	Insert a CCB into the start queue and wake up the 
 **	SCRIPTS processor.
 **
 **
-**==========================================================
 */
 
 static void ncr_start_next_ccb(struct ncb *np, struct lcb *lp, int maxn)
@@ -4550,14 +4483,12 @@ static void ncr_start_reset(struct ncb *np)
  	}
 }
  
-/*==========================================================
 **
 **
 **	Reset the SCSI BUS.
 **	This is called from the generic SCSI driver.
 **
 **
-**==========================================================
 */
 static int ncr_reset_bus (struct ncb *np, struct scsi_cmnd *cmd, int sync_reset)
 {
@@ -4619,14 +4550,12 @@ static int ncr_reset_bus (struct ncb *np, struct scsi_cmnd *cmd, int sync_reset)
 }
 
 #if 0 /* unused and broken.. */
-/*==========================================================
 **
 **
 **	Abort an SCSI command.
 **	This is called from the generic SCSI driver.
 **
 **
-**==========================================================
 */
 static int ncr_abort_command (struct ncb *np, struct scsi_cmnd *cmd)
 {
@@ -4803,14 +4732,12 @@ static void ncr_detach(struct ncb *np)
 	printk("%s: host resources successfully released\n", inst_name);
 }
 
-/*==========================================================
 **
 **
 **	Complete execution of a SCSI command.
 **	Signal completion to the generic SCSI driver.
 **
 **
-**==========================================================
 */
 
 void ncr_complete (struct ncb *np, struct ccb *cp)
@@ -5076,13 +5003,11 @@ void ncr_complete (struct ncb *np, struct ccb *cp)
 	ncr_queue_done_cmd(np, cmd);
 }
 
-/*==========================================================
 **
 **
 **	Signal all (or one) control block done.
 **
 **
-**==========================================================
 */
 
 /*
@@ -5193,13 +5118,11 @@ static void ncr_chip_reset(struct ncb *np, int delay)
 }
 
 
-/*==========================================================
 **
 **
 **	Start NCR chip.
 **
 **
-**==========================================================
 */
 
 void ncr_init (struct ncb *np, int reset, char * msg, u_long code)
@@ -5357,12 +5280,10 @@ void ncr_init (struct ncb *np, int reset, char * msg, u_long code)
 		OUTL_DSP (NCB_SCRIPT_PHYS (np, start));
 }
 
-/*==========================================================
 **
 **	Prepare the negotiation values for wide and
 **	synchronous transfers.
 **
-**==========================================================
 */
 
 static void ncr_negotiate (struct ncb* np, struct tcb* tp)
@@ -5413,14 +5334,12 @@ static void ncr_negotiate (struct ncb* np, struct tcb* tp)
 	tp->widedone=0;
 }
 
-/*==========================================================
 **
 **	Get clock factor and sync divisor for a given 
 **	synchronous factor period.
 **	Returns the clock factor (in sxfer) and scntl3 
 **	synchronous divisor field.
 **
-**==========================================================
 */
 
 static void ncr_getsync(struct ncb *np, u_char sfac, u_char *fakp, u_char *scntl3p)
@@ -5445,6 +5364,7 @@ static void ncr_getsync(struct ncb *np, u_char sfac, u_char *fakp, u_char *scntl
 	*/
 	kpc = per * clk;
 	while (--div >= 0)
+	while (--div > 0)
 		if (kpc >= (div_10M[div] << 2)) break;
 
 	/*
@@ -5484,12 +5404,10 @@ static void ncr_getsync(struct ncb *np, u_char sfac, u_char *fakp, u_char *scntl
 }
 
 
-/*==========================================================
 **
 **	Set actual values, sync status and patch all ccbs of 
 **	a target according to new sync/wide agreement.
 **
-**==========================================================
 */
 
 static void ncr_set_sync_wide_status (struct ncb *np, u_char target)
@@ -5520,11 +5438,9 @@ static void ncr_set_sync_wide_status (struct ncb *np, u_char target)
 	}
 }
 
-/*==========================================================
 **
 **	Switch sync mode for current job and it's target
 **
-**==========================================================
 */
 
 static void ncr_setsync (struct ncb *np, struct ccb *cp, u_char scntl3, u_char sxfer)
@@ -5574,14 +5490,12 @@ static void ncr_setsync (struct ncb *np, struct ccb *cp, u_char scntl3, u_char s
 	ncr_set_sync_wide_status(np, target);
 }
 
-/*==========================================================
 **
 **	Switch wide mode for current job and it's target
 **	SCSI specs say: a SCSI device that accepts a WDTR 
 **	message shall reset the synchronous agreement to 
 **	asynchronous mode.
 **
-**==========================================================
 */
 
 static void ncr_setwide (struct ncb *np, struct ccb *cp, u_char wide, u_char ack)
@@ -5622,11 +5536,9 @@ static void ncr_setwide (struct ncb *np, struct ccb *cp, u_char wide, u_char ack
 	ncr_set_sync_wide_status(np, target);
 }
 
-/*==========================================================
 **
 **	Switch tagged mode for a target.
 **
-**==========================================================
 */
 
 static void ncr_setup_tags (struct ncb *np, struct scsi_device *sdev)
@@ -5718,13 +5630,11 @@ static void ncr_setup_tags (struct ncb *np, struct scsi_device *sdev)
 	}
 }
 
-/*==========================================================
 **
 **
 **	ncr timeout handler.
 **
 **
-**==========================================================
 **
 **	Misused to keep the driver running when
 **	interrupts are not configured correctly.
@@ -5790,7 +5700,6 @@ static void ncr_timeout (struct ncb *np)
 #endif /* SCSI_NCR_BROKEN_INTR */
 }
 
-/*==========================================================
 **
 **	log message for real hard errors
 **
@@ -5817,7 +5726,6 @@ static void ncr_timeout (struct ncb *np)
 **	First 16 register of the chip:
 **		r0..rf
 **
-**==========================================================
 */
 
 static void ncr_log_hard_error(struct ncb *np, u16 sist, u_char dstat)
@@ -5868,11 +5776,9 @@ static void ncr_log_hard_error(struct ncb *np, u16 sist, u_char dstat)
 	printk (".\n");
 }
 
-/*============================================================
 **
 **	ncr chip exception handler.
 **
-**============================================================
 **
 **	In normal cases, interrupt conditions occur one at a 
 **	time. The ncr is able to stack in some extra registers 
@@ -5897,7 +5803,6 @@ static void ncr_log_hard_error(struct ncb *np, u16 sist, u_char dstat)
 **	This handler try to deal as cleverly as possible with all
 **	the above.
 **
-**============================================================
 */
 
 void ncr_exception (struct ncb *np)
@@ -5942,7 +5847,6 @@ void ncr_exception (struct ncb *np)
 			(unsigned)INL(nc_dsp),
 			(unsigned)INL(nc_dbc));
 
-	/*========================================================
 	**	First, interrupts we want to service cleanly.
 	**
 	**	Phase mismatch is the most frequent interrupt, and 
@@ -5952,7 +5856,6 @@ void ncr_exception (struct ncb *np)
 	**	but we must handle them cleanly anyway.
 	**	We try to deal with PAR and SBMC combined with 
 	**	some other interrupt(s).
-	**=========================================================
 	*/
 
 	if (!(sist  & (STO|GEN|HTH|SGE|UDC|RST)) &&
@@ -5982,7 +5885,6 @@ void ncr_exception (struct ncb *np)
 		return;
 	}
 
-	/*========================================================
 	**	Now, interrupts that need some fixing up.
 	**	Order and multiple interrupts is so less important.
 	**
@@ -5994,7 +5896,6 @@ void ncr_exception (struct ncb *np)
 	**	we ignore them. In any case we do enough fix-up 
 	**	in the service routine.
 	**	We just exclude some fatal dma errors.
-	**=========================================================
 	*/
 
 	if (sist & RST) {
@@ -6013,7 +5914,6 @@ void ncr_exception (struct ncb *np)
 		return;
 	}
 
-	/*=========================================================
 	**	Now, interrupts we are not able to recover cleanly.
 	**	(At least for the moment).
 	**
@@ -6023,7 +5923,6 @@ void ncr_exception (struct ncb *np)
 	**	For MDPE, BF, ABORT, IID, SGE and HTH we reset the 
 	**	BUS and the chip.
 	**	We are more soft for UDC.
-	**=========================================================
 	*/
 
 	if (time_after(jiffies, np->regtime)) {
@@ -6059,19 +5958,15 @@ void ncr_exception (struct ncb *np)
 		return;
 	}
 
-	/*=========================================================
 	**	We just miss the cause of the interrupt. :(
 	**	Print a message. The timeout will do the real work.
-	**=========================================================
 	*/
 	printk ("%s: unknown interrupt\n", ncr_name(np));
 }
 
-/*==========================================================
 **
 **	ncr chip exception handler for selection timeout
 **
-**==========================================================
 **
 **	There seems to be a bug in the 53c810.
 **	Although a STO-Interrupt is pending,
@@ -6111,11 +6006,9 @@ void ncr_int_sto (struct ncb *np)
 	return;
 }
 
-/*==========================================================
 **
 **	ncr chip exception handler for SCSI bus mode change
 **
-**==========================================================
 **
 **	spi2-r12 11.2.3 says a transceiver mode change must 
 **	generate a reset event and a device that detects a reset 
@@ -6150,11 +6043,9 @@ static int ncr_int_sbmc (struct ncb *np)
 	return 0;
 }
 
-/*==========================================================
 **
 **	ncr chip exception handler for SCSI parity error.
 **
-**==========================================================
 **
 **
 **----------------------------------------------------------
@@ -6226,13 +6117,11 @@ reset_all:
 	return 1;
 }
 
-/*==========================================================
 **
 **
 **	ncr chip exception handler for phase errors.
 **
 **
-**==========================================================
 **
 **	We have to construct a new transfer descriptor,
 **	to transfer the rest of the current block.
@@ -6496,6 +6385,7 @@ static void ncr_int_ma (struct ncb *np)
 	**	bloat for such a should_not_happen situation).
 	**	In all other situation, we reset the BUS.
 	**	Are these assumptions reasonnable ? (Wait and see ...)
+	**	Are these assumptions reasonable ? (Wait and see ...)
 	*/
 unexpected_phase:
 	dsp -= 8;
@@ -6634,6 +6524,7 @@ static void ncr_sir_to_redo(struct ncb *np, int num, struct ccb *cp)
 		*/
 		cp->sensecmd[0]		= 0x03;
 		cp->sensecmd[1]		= cmd->device->lun << 5;
+		cp->sensecmd[1]		= (cmd->device->lun & 0x7) << 5;
 		cp->sensecmd[4]		= sizeof(cp->sense_buf);
 
 		/*
@@ -6680,13 +6571,11 @@ out:
 }
 
 
-/*==========================================================
 **
 **
 **      ncr chip exception handler for programmed interrupts.
 **
 **
-**==========================================================
 */
 
 void ncr_int_sir (struct ncb *np)
@@ -7131,13 +7020,11 @@ out:
 	OUTONB_STD ();
 }
 
-/*==========================================================
 **
 **
 **	Acquire a control block
 **
 **
-**==========================================================
 */
 
 static struct ccb *ncr_get_ccb(struct ncb *np, struct scsi_cmnd *cmd)
@@ -7242,13 +7129,11 @@ static struct ccb *ncr_get_ccb(struct ncb *np, struct scsi_cmnd *cmd)
 	return cp;
 }
 
-/*==========================================================
 **
 **
 **	Release one control block
 **
 **
-**==========================================================
 */
 
 static void ncr_free_ccb (struct ncb *np, struct ccb *cp)
@@ -7383,13 +7268,11 @@ static void ncr_alloc_ccb(struct ncb *np, u_char tn, u_char ln)
 	list_add(&cp->link_ccbq, &lp->free_ccbq);
 }
 
-/*==========================================================
 **
 **
 **      Allocation of resources for Targets/Luns/Tags.
 **
 **
-**==========================================================
 */
 
 
@@ -7615,13 +7498,11 @@ fail:
 	return lp;
 }
 
-/*==========================================================
 **
 **
 **	Build Scatter Gather Block
 **
 **
-**==========================================================
 **
 **	The transfer area may be scattered among
 **	several non adjacent physical pages.
@@ -7676,7 +7557,6 @@ static int ncr_scatter(struct ncb *np, struct ccb *cp, struct scsi_cmnd *cmd)
 	return segment;
 }
 
-/*==========================================================
 **
 **
 **	Test the bus snoop logic :-(
@@ -7684,7 +7564,6 @@ static int ncr_scatter(struct ncb *np, struct ccb *cp, struct scsi_cmnd *cmd)
 **	Has to be called with interrupts disabled.
 **
 **
-**==========================================================
 */
 
 static int __init ncr_regtest (struct ncb* np)
@@ -7791,13 +7670,11 @@ static int __init ncr_snooptest (struct ncb* np)
 	return (err);
 }
 
-/*==========================================================
 **
 **	Determine the ncr's clock frequency.
 **	This is essential for the negotiation
 **	of the synchronous transfer rate.
 **
-**==========================================================
 **
 **	Note: we have to return the correct value.
 **	THERE IS NO SAFE DEFAULT VALUE.
@@ -7958,7 +7835,6 @@ static void __init ncr_getclock (struct ncb *np, int mult)
 	np->clock_khz	= f1;
 }
 
-/*===================== LINUX ENTRY POINTS SECTION ==========================*/
 
 static int ncr53c8xx_slave_alloc(struct scsi_device *device)
 {
@@ -8001,6 +7877,7 @@ static int ncr53c8xx_slave_configure(struct scsi_device *device)
 				(device->tagged_supported ?
 				 MSG_SIMPLE_TAG : 0),
 				depth_to_use);
+	scsi_change_queue_depth(device, depth_to_use);
 
 	/*
 	**	Since the queue depth is not tunable under Linux,
@@ -8029,6 +7906,7 @@ static int ncr53c8xx_slave_configure(struct scsi_device *device)
 }
 
 static int ncr53c8xx_queue_command (struct scsi_cmnd *cmd, void (* done)(struct scsi_cmnd *))
+static int ncr53c8xx_queue_command_lck (struct scsi_cmnd *cmd, void (*done)(struct scsi_cmnd *))
 {
      struct ncb *np = ((struct host_data *) cmd->device->host->hostdata)->ncb;
      unsigned long flags;
@@ -8066,6 +7944,8 @@ printk("ncr53c8xx : command successfully queued\n");
 
      return sts;
 }
+
+static DEF_SCSI_QCMD(ncr53c8xx_queue_command)
 
 irqreturn_t ncr53c8xx_intr(int irq, void *dev_id)
 {
@@ -8145,6 +8025,7 @@ static int ncr53c8xx_abort(struct scsi_cmnd *cmd)
 	struct scsi_cmnd *done_list;
 
 	printk("ncr53c8xx_abort: command pid %lu\n", cmd->serial_number);
+	printk("ncr53c8xx_abort\n");
 
 	NCR_LOCK_NCB(np, flags);
 
@@ -8262,11 +8143,9 @@ static struct device_attribute *ncr53c8xx_host_attrs[] = {
 	NULL
 };
 
-/*==========================================================
 **
 **	Boot command line.
 **
-**==========================================================
 */
 #ifdef	MODULE
 char *ncr53c8xx;	/* command line passed by insmod */

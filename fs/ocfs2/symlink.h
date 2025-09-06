@@ -28,6 +28,7 @@
 
 extern const struct inode_operations ocfs2_symlink_inode_operations;
 extern const struct inode_operations ocfs2_fast_symlink_inode_operations;
+extern const struct address_space_operations ocfs2_fast_symlink_aops;
 
 /*
  * Test whether an inode is a fast symlink.

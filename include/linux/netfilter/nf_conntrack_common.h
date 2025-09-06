@@ -147,6 +147,10 @@ enum ip_conntrack_expect_events {
 #ifdef __KERNEL__
 struct ip_conntrack_stat
 {
+
+#include <uapi/linux/netfilter/nf_conntrack_common.h>
+
+struct ip_conntrack_stat {
 	unsigned int searched;
 	unsigned int found;
 	unsigned int new;
@@ -168,5 +172,10 @@ struct ip_conntrack_stat
 extern void need_conntrack(void);
 
 #endif /* __KERNEL__ */
+	unsigned int search_restart;
+};
+
+/* call to create an explicit dependency on nf_conntrack. */
+void need_conntrack(void);
 
 #endif /* _NF_CONNTRACK_COMMON_H */

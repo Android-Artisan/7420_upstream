@@ -34,6 +34,11 @@ struct apm_bios_info {
 };
 
 #ifdef __KERNEL__
+#ifndef _LINUX_APM_H
+#define _LINUX_APM_H
+
+#include <uapi/linux/apm_bios.h>
+
 
 #define APM_CS		(GDT_ENTRY_APMBIOS_BASE * 8)
 #define APM_CS_16	(APM_CS + 8)

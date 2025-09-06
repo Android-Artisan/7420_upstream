@@ -1,4 +1,3 @@
-/*======================================================================
 
     A driver for Adaptec AHA152X-compatible PCMCIA SCSI cards.
 
@@ -32,7 +31,6 @@
     the provisions above, a recipient may use your version of this
     file under either the MPL or the GPL.
     
-======================================================================*/
 
 #include <linux/module.h>
 #include <linux/init.h>
@@ -63,8 +61,10 @@ static char *version =
 #else
 #define DEBUG(n, args...)
 #endif
+#include <pcmcia/cistpl.h>
+#include <pcmcia/ds.h>
 
-/*====================================================================*/
+
 
 /* Parameters that can be set with 'insmod' */
 
@@ -85,7 +85,6 @@ module_param(ext_trans, int, 0);
 
 MODULE_LICENSE("Dual MPL/GPL");
 
-/*====================================================================*/
 
 typedef struct scsi_info_t {
 	struct pcmcia_device	*p_dev;
@@ -104,6 +103,7 @@ static int aha152x_probe(struct pcmcia_device *link)
     scsi_info_t *info;
 
     DEBUG(0, "aha152x_attach()\n");
+    dev_dbg(&link->dev, "aha152x_attach()\n");
 
     /* Create new SCSI device */
     info = kzalloc(sizeof(*info), GFP_KERNEL);
@@ -119,15 +119,17 @@ static int aha152x_probe(struct pcmcia_device *link)
     link->conf.Attributes = CONF_ENABLE_IRQ;
     link->conf.IntType = INT_MEMORY_AND_IO;
     link->conf.Present = PRESENT_OPTION;
+    link->config_flags |= CONF_ENABLE_IRQ | CONF_AUTO_SET_IO;
+    link->config_regs = PRESENT_OPTION;
 
     return aha152x_config_cs(link);
 } /* aha152x_attach */
 
-/*====================================================================*/
 
 static void aha152x_detach(struct pcmcia_device *link)
 {
     DEBUG(0, "aha152x_detach(0x%p)\n", link);
+    dev_dbg(&link->dev, "aha152x_detach\n");
 
     aha152x_release_cs(link);
 
@@ -135,10 +137,28 @@ static void aha152x_detach(struct pcmcia_device *link)
     kfree(link->priv);
 } /* aha152x_detach */
 
-/*====================================================================*/
 
 #define CS_CHECK(fn, ret) \
 do { last_fn = (fn); if ((last_ret = (ret)) != 0) goto cs_failed; } while (0)
+static int aha152x_config_check(struct pcmcia_device *p_dev, void *priv_data)
+{
+	p_dev->io_lines = 10;
+
+	/* For New Media T&J, look for a SCSI window */
+	if ((p_dev->resource[0]->end < 0x20) &&
+		(p_dev->resource[1]->end >= 0x20))
+		p_dev->resource[0]->start = p_dev->resource[1]->start;
+
+	if (p_dev->resource[0]->start >= 0xffff)
+		return -EINVAL;
+
+	p_dev->resource[1]->start = p_dev->resource[1]->end = 0;
+	p_dev->resource[0]->end = 0x20;
+	p_dev->resource[0]->flags &= ~IO_DATA_PATH_WIDTH;
+	p_dev->resource[0]->flags |= IO_DATA_PATH_WIDTH_AUTO;
+
+	return pcmcia_request_io(p_dev);
+}
 
 static int aha152x_config_cs(struct pcmcia_device *link)
 {
@@ -180,12 +200,29 @@ static int aha152x_config_cs(struct pcmcia_device *link)
     
     CS_CHECK(RequestIRQ, pcmcia_request_irq(link, &link->irq));
     CS_CHECK(RequestConfiguration, pcmcia_request_configuration(link, &link->conf));
+    int ret;
+    struct Scsi_Host *host;
+
+    dev_dbg(&link->dev, "aha152x_config\n");
+
+    ret = pcmcia_loop_config(link, aha152x_config_check, NULL);
+    if (ret)
+	    goto failed;
+
+    if (!link->irq)
+	    goto failed;
+
+    ret = pcmcia_enable_device(link);
+    if (ret)
+	    goto failed;
     
     /* Set configuration options for the aha152x driver */
     memset(&s, 0, sizeof(s));
     s.conf        = "PCMCIA setup";
     s.io_port     = link->io.BasePort1;
     s.irq         = link->irq.AssignedIRQ;
+    s.io_port     = link->resource[0]->start;
+    s.irq         = link->irq;
     s.scsiid      = host_id;
     s.reconnect   = reconnect;
     s.parity      = parity;
@@ -202,12 +239,16 @@ static int aha152x_config_cs(struct pcmcia_device *link)
 
     sprintf(info->node.dev_name, "scsi%d", host->host_no);
     link->dev_node = &info->node;
+	goto failed;
+    }
+
     info->host = host;
 
     return 0;
 
 cs_failed:
     cs_error(link, last_fn, last_ret);
+failed:
     aha152x_release_cs(link);
     return -ENODEV;
 }
@@ -230,6 +271,7 @@ static int aha152x_resume(struct pcmcia_device *link)
 }
 
 static struct pcmcia_device_id aha152x_ids[] = {
+static const struct pcmcia_device_id aha152x_ids[] = {
 	PCMCIA_DEVICE_PROD_ID123("New Media", "SCSI", "Bus Toaster", 0xcdf7e4cc, 0x35f26476, 0xa8851d6e),
 	PCMCIA_DEVICE_PROD_ID123("NOTEWORTHY", "SCSI", "Bus Toaster", 0xad89c6e8, 0x35f26476, 0xa8851d6e),
 	PCMCIA_DEVICE_PROD_ID12("Adaptec, Inc.", "APA-1460 SCSI Host Adapter", 0x24ba9738, 0x3a3c3d20),
@@ -244,6 +286,7 @@ static struct pcmcia_driver aha152x_cs_driver = {
 	.drv		= {
 		.name	= "aha152x_cs",
 	},
+	.name		= "aha152x_cs",
 	.probe		= aha152x_probe,
 	.remove		= aha152x_detach,
 	.id_table       = aha152x_ids,

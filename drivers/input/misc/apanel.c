@@ -58,6 +58,7 @@ static enum apanel_chip device_chip[APANEL_DEV_MAX];
 struct apanel {
 	struct input_polled_dev *ipdev;
 	struct i2c_client client;
+	struct i2c_client *client;
 	unsigned short keymap[MAX_PANEL_KEYS];
 	u16    nkeys;
 	u16    led_bits;
@@ -76,6 +77,7 @@ static struct i2c_client_address_data addr_data = {
 	.probe		= &ignore,
 	.ignore		= &ignore,
 };
+static int apanel_probe(struct i2c_client *, const struct i2c_device_id *);
 
 static void report_key(struct input_dev *input, unsigned keycode)
 {
@@ -104,11 +106,13 @@ static void apanel_poll(struct input_polled_dev *ipdev)
 	int i;
 
 	data = i2c_smbus_read_word_data(&ap->client, cmd);
+	data = i2c_smbus_read_word_data(ap->client, cmd);
 	if (data < 0)
 		return;	/* ignore errors (due to ACPI??) */
 
 	/* write back to clear latch */
 	i2c_smbus_write_word_data(&ap->client, cmd, 0);
+	i2c_smbus_write_word_data(ap->client, cmd, 0);
 
 	if (!data)
 		return;
@@ -125,6 +129,7 @@ static void led_update(struct work_struct *work)
 	struct apanel *ap = container_of(work, struct apanel, led_work);
 
 	i2c_smbus_write_word_data(&ap->client, 0x10, ap->led_bits);
+	i2c_smbus_write_word_data(ap->client, 0x10, ap->led_bits);
 }
 
 static void mail_led_set(struct led_classdev *led,
@@ -141,6 +146,7 @@ static void mail_led_set(struct led_classdev *led,
 }
 
 static int apanel_detach_client(struct i2c_client *client)
+static int apanel_remove(struct i2c_client *client)
 {
 	struct apanel *ap = i2c_get_clientdata(client);
 
@@ -171,6 +177,17 @@ static void apanel_shutdown(struct i2c_client *client)
 	apanel_detach_client(client);
 }
 
+static void apanel_shutdown(struct i2c_client *client)
+{
+	apanel_remove(client);
+}
+
+static const struct i2c_device_id apanel_id[] = {
+	{ "fujitsu_apanel", 0 },
+	{ }
+};
+MODULE_DEVICE_TABLE(i2c, apanel_id);
+
 static struct i2c_driver apanel_driver = {
 	.driver = {
 		.name = APANEL,
@@ -185,6 +202,13 @@ static struct apanel apanel = {
 		.driver = &apanel_driver,
 		.name   = APANEL,
 	},
+	.probe		= &apanel_probe,
+	.remove		= &apanel_remove,
+	.shutdown	= &apanel_shutdown,
+	.id_table	= apanel_id,
+};
+
+static struct apanel apanel = {
 	.keymap = {
 		[0] = KEY_MAIL,
 		[1] = KEY_WWW,
@@ -205,6 +229,8 @@ static struct apanel apanel = {
 
 /* NB: Only one panel on the i2c. */
 static int apanel_probe(struct i2c_adapter *bus, int address, int kind)
+static int apanel_probe(struct i2c_client *client,
+			const struct i2c_device_id *id)
 {
 	struct apanel *ap;
 	struct input_polled_dev *ipdev;
@@ -234,6 +260,13 @@ static int apanel_probe(struct i2c_adapter *bus, int address, int kind)
 	err = i2c_smbus_write_word_data(&ap->client, cmd, 0);
 	if (err) {
 		dev_warn(&ap->client.dev, APANEL ": smbus write error %d\n",
+	ap->client = client;
+
+	i2c_set_clientdata(client, ap);
+
+	err = i2c_smbus_write_word_data(client, cmd, 0);
+	if (err) {
+		dev_warn(&client->dev, APANEL ": smbus write error %d\n",
 			 err);
 		goto out3;
 	}
@@ -247,6 +280,7 @@ static int apanel_probe(struct i2c_adapter *bus, int address, int kind)
 	idev->phys = "apanel/input0";
 	idev->id.bustype = BUS_HOST;
 	idev->dev.parent = &ap->client.dev;
+	idev->dev.parent = &client->dev;
 
 	set_bit(EV_KEY, idev->evbit);
 
@@ -265,6 +299,7 @@ static int apanel_probe(struct i2c_adapter *bus, int address, int kind)
 	INIT_WORK(&ap->led_work, led_update);
 	if (device_chip[APANEL_DEV_LED] != CHIP_NONE) {
 		err = led_classdev_register(&ap->client.dev, &ap->mail_led);
+		err = led_classdev_register(&client->dev, &ap->mail_led);
 		if (err)
 			goto out4;
 	}
@@ -301,6 +336,7 @@ static int __init apanel_init(void)
 	void __iomem *bios;
 	const void __iomem *p;
 	u8 devno;
+	unsigned char i2c_addr;
 	int found = 0;
 
 	bios = ioremap(0xF0000, 0x10000); /* Can't fail */
@@ -314,6 +350,7 @@ static int __init apanel_init(void)
 	/* just use the first address */
 	p += 8;
 	normal_i2c[0] = readb(p+3) >> 1;
+	i2c_addr = readb(p + 3) >> 1;
 
 	for ( ; (devno = readb(p)) & 0x7f; p += 4) {
 		unsigned char method, slave, chip;
@@ -323,6 +360,7 @@ static int __init apanel_init(void)
 		slave = readb(p + 3) >> 1;
 
 		if (slave != normal_i2c[0]) {
+		if (slave != i2c_addr) {
 			pr_notice(APANEL ": only one SMBus slave "
 				  "address supported, skiping device...\n");
 			continue;

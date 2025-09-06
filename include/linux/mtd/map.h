@@ -1,3 +1,21 @@
+/*
+ * Copyright © 2000-2010 David Woodhouse <dwmw2@infradead.org> et al.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+ *
+ */
 
 /* Overhauled routines for dealing with different mmap regions of flash */
 
@@ -13,6 +31,12 @@
 #include <asm/unaligned.h>
 #include <asm/system.h>
 #include <asm/io.h>
+#include <linux/bug.h>
+#include <linux/kernel.h>
+#include <linux/io.h>
+
+#include <asm/unaligned.h>
+#include <asm/barrier.h>
 
 #ifdef CONFIG_MTD_MAP_BANK_WIDTH_1
 #define map_bankwidth(map) 1
@@ -60,6 +84,7 @@
  * to zero, and ensure we'll never miss the end of an comparison (bjd) */
 
 #define map_calc_words(map) ((map_bankwidth(map) + (sizeof(unsigned long)-1))/ sizeof(unsigned long))
+#define map_calc_words(map) ((map_bankwidth(map) + (sizeof(unsigned long)-1)) / sizeof(unsigned long))
 
 #ifdef CONFIG_MTD_MAP_BANK_WIDTH_8
 # ifdef map_bankwidth
@@ -104,18 +129,13 @@
 #endif
 
 #ifdef CONFIG_MTD_MAP_BANK_WIDTH_32
-# ifdef map_bankwidth
-#  undef map_bankwidth
-#  define map_bankwidth(map) ((map)->bankwidth)
-#  undef map_bankwidth_is_large
-#  define map_bankwidth_is_large(map) (map_bankwidth(map) > BITS_PER_LONG/8)
-#  undef map_words
-#  define map_words(map) map_calc_words(map)
-# else
-#  define map_bankwidth(map) 32
-#  define map_bankwidth_is_large(map) (1)
-#  define map_words(map) map_calc_words(map)
-# endif
+/* always use indirect access for 256-bit to preserve kernel stack */
+# undef map_bankwidth
+# define map_bankwidth(map) ((map)->bankwidth)
+# undef map_bankwidth_is_large
+# define map_bankwidth_is_large(map) (map_bankwidth(map) > BITS_PER_LONG/8)
+# undef map_words
+# define map_words(map) map_calc_words(map)
 #define map_bankwidth_is_32(map) (map_bankwidth(map) == 32)
 #undef MAX_MAP_BANKWIDTH
 #define MAX_MAP_BANKWIDTH 32
@@ -164,6 +184,7 @@ static inline int map_bankwidth_supported(int w)
 }
 
 #define MAX_MAP_LONGS ( ((MAX_MAP_BANKWIDTH*8) + BITS_PER_LONG - 1) / BITS_PER_LONG )
+#define MAX_MAP_LONGS (((MAX_MAP_BANKWIDTH * 8) + BITS_PER_LONG - 1) / BITS_PER_LONG)
 
 typedef union {
 	unsigned long x[MAX_MAP_LONGS];
@@ -196,6 +217,7 @@ struct map_info {
 	void __iomem *virt;
 	void *cached;
 
+	int swap; /* this mapping's byte-swapping requirement */
 	int bankwidth; /* in octets. This isn't necessarily the width
 		       of actual bus cycles -- it's the repeat interval
 		      in bytes, before you are talking to the first chip again.
@@ -225,6 +247,10 @@ struct map_info {
 
 	unsigned long map_priv_1;
 	unsigned long map_priv_2;
+	unsigned long pfow_base;
+	unsigned long map_priv_1;
+	unsigned long map_priv_2;
+	struct device_node *device_node;
 	void *fldrv_priv;
 	struct mtd_chip_driver *fldrv;
 };
@@ -248,7 +274,22 @@ void map_destroy(struct mtd_info *mtd);
 
 #define INVALIDATE_CACHED_RANGE(map, from, size) \
 	do { if(map->inval_cache) map->inval_cache(map, from, size); } while(0)
+#define ENABLE_VPP(map) do { if (map->set_vpp) map->set_vpp(map, 1); } while (0)
+#define DISABLE_VPP(map) do { if (map->set_vpp) map->set_vpp(map, 0); } while (0)
 
+#define INVALIDATE_CACHED_RANGE(map, from, size) \
+	do { if (map->inval_cache) map->inval_cache(map, from, size); } while (0)
+
+#define map_word_equal(map, val1, val2)					\
+({									\
+	int i, ret = 1;							\
+	for (i = 0; i < map_words(map); i++)				\
+		if ((val1).x[i] != (val2).x[i]) {			\
+			ret = 0;					\
+			break;						\
+		}							\
+	ret;								\
+})
 
 static inline int map_word_equal(struct map_info *map, map_word val1, map_word val2)
 {
@@ -257,17 +298,51 @@ static inline int map_word_equal(struct map_info *map, map_word val1, map_word v
 		if (val1.x[i] != val2.x[i])
 			return 0;
 	}
-	return 1;
-}
+#define map_word_and(map, val1, val2)					\
+({									\
+	map_word r;							\
+	int i;								\
+	for (i = 0; i < map_words(map); i++)				\
+		r.x[i] = (val1).x[i] & (val2).x[i];			\
+	r;								\
+})
 
-static inline map_word map_word_and(struct map_info *map, map_word val1, map_word val2)
-{
-	map_word r;
-	int i;
+#define map_word_clr(map, val1, val2)					\
+({									\
+	map_word r;							\
+	int i;								\
+	for (i = 0; i < map_words(map); i++)				\
+		r.x[i] = (val1).x[i] & ~(val2).x[i];			\
+	r;								\
+})
+
+#define map_word_or(map, val1, val2)					\
+({									\
+	map_word r;							\
+	int i;								\
+	for (i = 0; i < map_words(map); i++)				\
+		r.x[i] = (val1).x[i] | (val2).x[i];			\
+	r;								\
+})
+
+#define map_word_andequal(map, val1, val2, val3)			\
+({									\
+	int i, ret = 1;							\
+	for (i = 0; i < map_words(map); i++) {				\
+		if (((val1).x[i] & (val2).x[i]) != (val3).x[i]) {	\
+			ret = 0;					\
+			break;						\
+		}							\
+	}								\
+	ret;								\
+})
 
 	for (i=0; i<map_words(map); i++) {
 		r.x[i] = val1.x[i] & val2.x[i];
 	}
+	for (i = 0; i < map_words(map); i++)
+		r.x[i] = val1.x[i] & val2.x[i];
+
 	return r;
 }
 
@@ -279,6 +354,9 @@ static inline map_word map_word_clr(struct map_info *map, map_word val1, map_wor
 	for (i=0; i<map_words(map); i++) {
 		r.x[i] = val1.x[i] & ~val2.x[i];
 	}
+	for (i = 0; i < map_words(map); i++)
+		r.x[i] = val1.x[i] & ~val2.x[i];
+
 	return r;
 }
 
@@ -294,6 +372,23 @@ static inline map_word map_word_or(struct map_info *map, map_word val1, map_word
 }
 
 #define map_word_andequal(m, a, b, z) map_word_equal(m, z, map_word_and(m, a, b))
+	for (i = 0; i < map_words(map); i++)
+		r.x[i] = val1.x[i] | val2.x[i];
+
+	return r;
+}
+
+static inline int map_word_andequal(struct map_info *map, map_word val1, map_word val2, map_word val3)
+{
+	int i;
+
+	for (i = 0; i < map_words(map); i++) {
+		if ((val1.x[i] & val2.x[i]) != val3.x[i])
+			return 0;
+	}
+
+	return 1;
+}
 
 static inline int map_word_bitsset(struct map_info *map, map_word val1, map_word val2)
 {
@@ -303,8 +398,24 @@ static inline int map_word_bitsset(struct map_info *map, map_word val1, map_word
 		if (val1.x[i] & val2.x[i])
 			return 1;
 	}
+	for (i = 0; i < map_words(map); i++) {
+		if (val1.x[i] & val2.x[i])
+			return 1;
+	}
+
 	return 0;
 }
+#define map_word_bitsset(map, val1, val2)				\
+({									\
+	int i, ret = 0;							\
+	for (i = 0; i < map_words(map); i++) {				\
+		if ((val1).x[i] & (val2).x[i]) {			\
+			ret = 1;					\
+			break;						\
+		}							\
+	}								\
+	ret;								\
+})
 
 static inline map_word map_word_load(struct map_info *map, const void *ptr)
 {
@@ -322,6 +433,8 @@ static inline map_word map_word_load(struct map_info *map, const void *ptr)
 #endif
 	else if (map_bankwidth_is_large(map))
 		memcpy(r.x, ptr, map->bankwidth);
+	else
+		BUG();
 
 	return r;
 }
@@ -343,6 +456,19 @@ static inline map_word map_word_load_partial(struct map_info *map, map_word orig
 #endif
 			orig.x[0] &= ~(0xff << bitpos);
 			orig.x[0] |= buf[i-start] << bitpos;
+
+		memcpy(dest+start, buf, len);
+	} else {
+		for (i = start; i < start+len; i++) {
+			int bitpos;
+
+#ifdef __LITTLE_ENDIAN
+			bitpos = i * 8;
+#else /* __BIG_ENDIAN */
+			bitpos = (map_bankwidth(map) - 1 - i) * 8;
+#endif
+			orig.x[0] &= ~(0xff << bitpos);
+			orig.x[0] |= (unsigned long)buf[i-start] << bitpos;
 		}
 	}
 	return orig;
@@ -364,6 +490,10 @@ static inline map_word map_word_ff(struct map_info *map)
 		r.x[0] = (1 << bw) - 1;
 	} else {
 		for (i=0; i<map_words(map); i++)
+
+		r.x[0] = (1UL << bw) - 1;
+	} else {
+		for (i = 0; i < map_words(map); i++)
 			r.x[i] = ~0UL;
 	}
 	return r;
@@ -385,6 +515,9 @@ static inline map_word inline_map_read(struct map_info *map, unsigned long ofs)
 #endif
 	else if (map_bankwidth_is_large(map))
 		memcpy_fromio(r.x, map->virt+ofs, map->bankwidth);
+		memcpy_fromio(r.x, map->virt + ofs, map->bankwidth);
+	else
+		BUG();
 
 	return r;
 }
@@ -403,6 +536,8 @@ static inline void inline_map_write(struct map_info *map, const map_word datum, 
 #endif
 	else if (map_bankwidth_is_large(map))
 		memcpy_toio(map->virt+ofs, datum.x, map->bankwidth);
+	else
+		BUG();
 	mb();
 }
 

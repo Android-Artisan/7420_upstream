@@ -16,6 +16,7 @@
 #include <asm/irq.h>
 #include <asm/io.h>
 #include <asm/lboxre2.h>
+#include <mach/lboxre2.h>
 
 /*
  * Initialize IRQ setting

@@ -1,5 +1,8 @@
 #ifndef _IOP13XX_TIME_H_
 #define _IOP13XX_TIME_H_
+
+#include <mach/irqs.h>
+
 #define IRQ_IOP_TIMER0 IRQ_IOP13XX_TIMER0
 
 #define IOP_TMR_EN	    0x02
@@ -42,6 +45,8 @@ static inline unsigned long iop13xx_core_freq(void)
 	default:
 		printk("%s: warning unknown frequency, defaulting to 800Mhz\n",
 			__FUNCTION__);
+		printk("%s: warning unknown frequency, defaulting to 800MHz\n",
+			__func__);
 	}
 
 	return 800000000;
@@ -61,9 +66,17 @@ static inline unsigned long iop13xx_xsi_bus_ratio(void)
 	default:
 		printk("%s: warning unknown ratio, defaulting to 2\n",
 			__FUNCTION__);
+			__func__);
 	}
 
 	return 2;
+}
+
+static inline u32 read_tmr0(void)
+{
+	u32 val;
+	asm volatile("mrc p6, 0, %0, c0, c9, 0" : "=r" (val));
+	return val;
 }
 
 static inline void write_tmr0(u32 val)
@@ -83,11 +96,21 @@ static inline u32 read_tcr0(void)
 	return val;
 }
 
+static inline void write_tcr0(u32 val)
+{
+	asm volatile("mcr p6, 0, %0, c2, c9, 0" : : "r" (val));
+}
+
 static inline u32 read_tcr1(void)
 {
 	u32 val;
 	asm volatile("mrc p6, 0, %0, c3, c9, 0" : "=r" (val));
 	return val;
+}
+
+static inline void write_tcr1(u32 val)
+{
+	asm volatile("mcr p6, 0, %0, c3, c9, 0" : : "r" (val));
 }
 
 static inline void write_trr0(u32 val)

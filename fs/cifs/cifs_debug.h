@@ -37,6 +37,23 @@ void dump_smb(struct smb_hdr *, int);
 #define CIFS_RC  	0x02
 #define CIFS_TIMER	0x04
 
+void cifs_dump_detail(void *);
+void cifs_dump_mids(struct TCP_Server_Info *);
+extern bool traceSMB;		/* flag which enables the function below */
+void dump_smb(void *, int);
+#define CIFS_INFO	0x01
+#define CIFS_RC		0x02
+#define CIFS_TIMER	0x04
+
+#define VFS 1
+#define FYI 2
+extern int cifsFYI;
+#ifdef CONFIG_CIFS_DEBUG2
+#define NOISY 4
+#else
+#define NOISY 0
+#endif
+
 /*
  *	debug ON
  *	--------
@@ -61,6 +78,22 @@ extern int cifsERROR;
 #define cifserror(format,arg...) if (cifsERROR) printk(KERN_ERR " CIFS VFS: " format "\n" "" , ## arg)
 
 #define cERROR(button, prspec) if (button) cifserror prspec
+#ifdef CONFIG_CIFS_DEBUG
+
+__printf(1, 2) void cifs_vfs_err(const char *fmt, ...);
+
+/* information message: e.g., configuration, major event */
+#define cifs_dbg(type, fmt, ...)					\
+do {									\
+	if (type == FYI && cifsFYI & CIFS_INFO) {			\
+		pr_debug_ratelimited("%s: "				\
+			    fmt, __FILE__, ##__VA_ARGS__);		\
+	} else if (type == VFS) {					\
+		cifs_vfs_err(fmt, ##__VA_ARGS__);			\
+	} else if (type == NOISY && type != 0) {			\
+		pr_debug_ratelimited(fmt, ##__VA_ARGS__);		\
+	}								\
+} while (0)
 
 /*
  *	debug OFF
@@ -72,5 +105,11 @@ extern int cifsERROR;
 #define cFYI(button, prspec)
 #define cifserror(format, arg...)
 #endif		/* _CIFS_DEBUG */
+#define cifs_dbg(type, fmt, ...)					\
+do {									\
+	if (0)								\
+		pr_debug(fmt, ##__VA_ARGS__);				\
+} while (0)
+#endif
 
 #endif				/* _H_CIFS_DEBUG */

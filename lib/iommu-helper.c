@@ -39,6 +39,9 @@ static inline void set_bit_area(unsigned long *map, unsigned long i,
 		i++;
 	}
 }
+#include <linux/export.h>
+#include <linux/bitmap.h>
+#include <linux/bug.h>
 
 int iommu_is_span_boundary(unsigned int index, unsigned int nr,
 			   unsigned long shift,
@@ -59,6 +62,12 @@ unsigned long iommu_area_alloc(unsigned long *map, unsigned long size,
 again:
 	index = find_next_zero_area(map, size, start, nr, align_mask);
 	if (index != -1) {
+
+	/* We don't want the last of the limit */
+	size -= 1;
+again:
+	index = bitmap_find_next_zero_area(map, size, start, nr, align_mask);
+	if (index < size) {
 		if (iommu_is_span_boundary(index, nr, shift, boundary_size)) {
 			/* we could do more effectively */
 			start = index + 1;
@@ -80,3 +89,9 @@ void iommu_area_free(unsigned long *map, unsigned long start, unsigned int nr)
 	}
 }
 EXPORT_SYMBOL(iommu_area_free);
+		bitmap_set(map, index, nr);
+		return index;
+	}
+	return -1;
+}
+EXPORT_SYMBOL(iommu_area_alloc);

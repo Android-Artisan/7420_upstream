@@ -21,6 +21,7 @@
  *
  * - Bits 10 and 11 are low bits of the PPN that are reserved on >= 4K pages.
  *   Bit 10 is used for _PAGE_ACCESSED, bit 11 remains unused.
+ *   Bit 10 is used for _PAGE_ACCESSED, and bit 11 is used for _PAGE_SPECIAL.
  *
  * - On 29 bit platforms, bits 31 to 29 are used for the space attributes
  *   and timing control which (together with bit 0) are moved into the
@@ -52,6 +53,7 @@
 #define _PAGE_PROTNONE	0x200		/* software: if not present  */
 #define _PAGE_ACCESSED	0x400		/* software: page referenced */
 #define _PAGE_FILE	_PAGE_WT	/* software: pagecache or swap? */
+#define _PAGE_SPECIAL	0x800		/* software: special page */
 
 #define _PAGE_SZ_MASK	(_PAGE_SZ0 | _PAGE_SZ1)
 #define _PAGE_PR_MASK	(_PAGE_RW | _PAGE_USER)
@@ -72,6 +74,15 @@
 
 /* Wrapper for extended mode pgprot twiddling */
 #define _PAGE_EXT(x)		((unsigned long long)(x) << 32)
+
+#define _PAGE_EXT_WIRED		0x4000	/* software: Wire TLB entry */
+
+/* Wrapper for extended mode pgprot twiddling */
+#define _PAGE_EXT(x)		((unsigned long long)(x) << 32)
+
+#ifdef CONFIG_X2TLB
+#define _PAGE_PCC_MASK	0x00000000	/* No legacy PTEA support */
+#else
 
 /* software: moves to PTEA.TC (Timing Control) */
 #define _PAGE_PCC_AREA5	0x00000000	/* use BSC registers for area5 */
@@ -100,6 +111,28 @@
 #endif
 
 #define _PAGE_FLAGS_HARDWARE_MASK	(PHYS_ADDR_MASK & ~(_PAGE_CLEAR_FLAGS))
+#define _PAGE_PCC_MASK	0xe0000001
+
+/* copy the ptea attributes */
+static inline unsigned long copy_ptea_attributes(unsigned long x)
+{
+	return	((x >> 28) & 0xe) | (x & 0x1);
+}
+#endif
+
+/* Mask which drops unused bits from the PTEL value */
+#if defined(CONFIG_CPU_SH3)
+#define _PAGE_CLEAR_FLAGS	(_PAGE_PROTNONE | _PAGE_ACCESSED| \
+				  _PAGE_SZ1	| _PAGE_HW_SHARED)
+#elif defined(CONFIG_X2TLB)
+/* Get rid of the legacy PR/SZ bits when using extended mode */
+#define _PAGE_CLEAR_FLAGS	(_PAGE_PROTNONE | _PAGE_ACCESSED | \
+				 _PAGE_PR_MASK | _PAGE_SZ_MASK)
+#else
+#define _PAGE_CLEAR_FLAGS	(_PAGE_PROTNONE | _PAGE_ACCESSED)
+#endif
+
+#define _PAGE_FLAGS_HARDWARE_MASK	(phys_addr_mask() & ~(_PAGE_CLEAR_FLAGS))
 
 /* Hardware flags, page size encoding */
 #if !defined(CONFIG_MMU)
@@ -132,12 +165,14 @@
 # elif defined(CONFIG_HUGETLB_PAGE_SIZE_64MB)
 #  define _PAGE_SZHUGE	(_PAGE_EXT_ESZ2 | _PAGE_EXT_ESZ3)
 # endif
+# define _PAGE_WIRED	(_PAGE_EXT(_PAGE_EXT_WIRED))
 #else
 # if defined(CONFIG_HUGETLB_PAGE_SIZE_64K)
 #  define _PAGE_SZHUGE	(_PAGE_SZ1)
 # elif defined(CONFIG_HUGETLB_PAGE_SIZE_1MB)
 #  define _PAGE_SZHUGE	(_PAGE_SZ0 | _PAGE_SZ1)
 # endif
+# define _PAGE_WIRED	(0)
 #endif
 
 /*
@@ -150,6 +185,12 @@
 
 #define _PAGE_CHG_MASK \
 	(PTE_MASK | _PAGE_ACCESSED | _PAGE_CACHABLE | _PAGE_DIRTY)
+/*
+ * Mask of bits that are to be preserved across pgprot changes.
+ */
+#define _PAGE_CHG_MASK \
+	(PTE_MASK | _PAGE_ACCESSED | _PAGE_CACHABLE | \
+	 _PAGE_DIRTY | _PAGE_SPECIAL)
 
 #ifndef __ASSEMBLY__
 
@@ -221,6 +262,7 @@
 					   _PAGE_EXT_KERN_EXEC) \
 				 (slot ? _PAGE_PCC_AREA5 : _PAGE_PCC_AREA6) | \
 				 (type))
+			__pgprot(0)
 
 #elif defined(CONFIG_MMU) /* SH-X TLB */
 #define PAGE_NONE	__pgprot(_PAGE_PROTNONE | _PAGE_CACHABLE | \
@@ -332,6 +374,11 @@ static inline void set_pte(pte_t *ptep, pte_t pte)
 
 #ifdef CONFIG_X2TLB
 #define pte_write(pte)		((pte).pte_high & _PAGE_EXT_USER_WRITE)
+#define pte_special(pte)	((pte).pte_low & _PAGE_SPECIAL)
+
+#ifdef CONFIG_X2TLB
+#define pte_write(pte) \
+	((pte).pte_high & (_PAGE_EXT_USER_WRITE | _PAGE_EXT_KERN_WRITE))
 #else
 #define pte_write(pte)		((pte).pte_low & _PAGE_RW)
 #endif
@@ -346,6 +393,7 @@ static inline pte_t pte_##fn(pte_t pte) { pte.pte_##h op; return pte; }
  * kernel permissions), we attempt to couple them a bit more sanely here.
  */
 PTE_BIT_FUNC(high, wrprotect, &= ~_PAGE_EXT_USER_WRITE);
+PTE_BIT_FUNC(high, wrprotect, &= ~(_PAGE_EXT_USER_WRITE | _PAGE_EXT_KERN_WRITE));
 PTE_BIT_FUNC(high, mkwrite, |= _PAGE_EXT_USER_WRITE | _PAGE_EXT_KERN_WRITE);
 PTE_BIT_FUNC(high, mkhuge, |= _PAGE_SZHUGE);
 #else
@@ -360,6 +408,7 @@ PTE_BIT_FUNC(low, mkold, &= ~_PAGE_ACCESSED);
 PTE_BIT_FUNC(low, mkyoung, |= _PAGE_ACCESSED);
 
 static inline pte_t pte_mkspecial(pte_t pte) { return pte; }
+PTE_BIT_FUNC(low, mkspecial, |= _PAGE_SPECIAL);
 
 /*
  * Macro and implementation to make a page protection as uncachable.
@@ -395,6 +444,8 @@ static inline pte_t pte_modify(pte_t pte, pgprot_t newprot)
 /* to find an entry in a page-table-directory. */
 #define pgd_index(address)	(((address) >> PGDIR_SHIFT) & (PTRS_PER_PGD-1))
 #define pgd_offset(mm, address)	((mm)->pgd+pgd_index(address))
+#define pgd_offset(mm, address)	((mm)->pgd + pgd_index(address))
+#define __pgd_offset(address)	pgd_index(address)
 
 /* to find an entry in a kernel page-table-directory */
 #define pgd_offset_k(address)	pgd_offset(&init_mm, address)
@@ -408,6 +459,17 @@ static inline pte_t pte_modify(pte_t pte, pgprot_t newprot)
 
 #define pte_unmap(pte)		do { } while (0)
 #define pte_unmap_nested(pte)	do { } while (0)
+#define __pud_offset(address)	(((address) >> PUD_SHIFT) & (PTRS_PER_PUD-1))
+#define __pmd_offset(address)	(((address) >> PMD_SHIFT) & (PTRS_PER_PMD-1))
+
+/* Find an entry in the third-level page table.. */
+#define pte_index(address)	((address >> PAGE_SHIFT) & (PTRS_PER_PTE - 1))
+#define __pte_offset(address)	pte_index(address)
+
+#define pte_offset_kernel(dir, address) \
+	((pte_t *) pmd_page_vaddr(*(dir)) + pte_index(address))
+#define pte_offset_map(dir, address)		pte_offset_kernel(dir, address)
+#define pte_unmap(pte)		do { } while (0)
 
 #ifdef CONFIG_X2TLB
 #define pte_ERROR(e) \
@@ -437,6 +499,7 @@ static inline pte_t pte_modify(pte_t pte, pgprot_t newprot)
  * PAE. This keeps the logic quite simple, and allows for a full 32
  * PTE_FILE_MAX_BITS, as opposed to the 29-bits we're constrained with
  * in the pte_low case.
+ * PAE. This keeps the logic quite simple.
  *
  * As is evident by the Alpha code, if we ever get a 64-bit unsigned
  * long (swp_entry_t) to match up with the 64-bit PTEs, this all becomes

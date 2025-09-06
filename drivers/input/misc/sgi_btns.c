@@ -22,6 +22,7 @@
 #include <linux/ioport.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
+#include <linux/slab.h>
 
 #ifdef CONFIG_SGI_IP22
 #include <asm/sgi/ioc.h>
@@ -91,6 +92,7 @@ static void handle_buttons(struct input_polled_dev *dev)
 }
 
 static int __devinit sgi_buttons_probe(struct platform_device *pdev)
+static int sgi_buttons_probe(struct platform_device *pdev)
 {
 	struct buttons_dev *bdev;
 	struct input_polled_dev *poll_dev;
@@ -128,6 +130,7 @@ static int __devinit sgi_buttons_probe(struct platform_device *pdev)
 
 	bdev->poll_dev = poll_dev;
 	dev_set_drvdata(&pdev->dev, bdev);
+	platform_set_drvdata(pdev, bdev);
 
 	error = input_register_polled_device(poll_dev);
 	if (error)
@@ -146,6 +149,12 @@ static int __devexit sgi_buttons_remove(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct buttons_dev *bdev = dev_get_drvdata(dev);
+	return error;
+}
+
+static int sgi_buttons_remove(struct platform_device *pdev)
+{
+	struct buttons_dev *bdev = platform_get_drvdata(pdev);
 
 	input_unregister_polled_device(bdev->poll_dev);
 	input_free_polled_device(bdev->poll_dev);
@@ -176,3 +185,11 @@ static void __exit sgi_buttons_exit(void)
 
 module_init(sgi_buttons_init);
 module_exit(sgi_buttons_exit);
+	.remove	= sgi_buttons_remove,
+	.driver	= {
+		.name	= "sgibtns",
+	},
+};
+module_platform_driver(sgi_buttons_driver);
+
+MODULE_LICENSE("GPL");

@@ -22,6 +22,23 @@ foreach $file (@ARGV)
 
     LINE: while ( <FILE> )
     {
+use strict;
+
+$| = 1;
+
+my $debugging;
+
+foreach my $file (@ARGV) {
+    next if $file =~ "include/linux/version\.h";
+    # Open this file.
+    open( my $f, '<', $file )
+      or die "Can't open $file: $!\n";
+
+    # Initialize variables.
+    my ($fInComment, $fInString, $fUseVersion);
+    my $iLinuxVersion = 0;
+
+    while (<$f>) {
 	# Strip comments.
 	$fInComment && (s+^.*?\*/+ +o ? ($fInComment = 0) : next);
 	m+/\*+o && (s+/\*.*?\*/+ +go, (s+/\*.*$+ +o && ($fInComment = 1)));
@@ -45,6 +62,8 @@ foreach $file (@ARGV)
 	    $fUseVersion = 1;
 	    last LINE if $iLinuxVersion;
 	}
+            last if $iLinuxVersion;
+        }
     }
 
     # Report used version IDs without include?
@@ -68,4 +87,5 @@ foreach $file (@ARGV)
     }
 
     close(FILE);
+    close($f);
 }

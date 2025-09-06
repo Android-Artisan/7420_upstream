@@ -31,6 +31,7 @@ ENTRY(pxa_cpu_standby)
 1:	mcr	p14, 0, r2, c7, c0, 0	@ put the system into Standby
 	str	r1, [r0]		@ make sure PSSR_PH/STS are clear
 	mov	pc, lr
+	ret	lr
 
 #endif
 
@@ -110,6 +111,7 @@ ENTRY(pm_enter_standby_start)
 	str	r0, [r1, #PXA3_DMCIER]
 
 	mov	pc, lr
+	ret	lr
 ENTRY(pm_enter_standby_end)
 
 #endif

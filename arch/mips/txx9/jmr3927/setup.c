@@ -95,6 +95,7 @@ static void __init jmr3927_mem_setup(void)
 			  TX39_CONF_WBON | TX39_CONF_CWFON);
 		conf |= mips_ic_disable ? 0 : TX39_CONF_ICE;
 		conf |= mips_dc_disable ? 0 : TX39_CONF_DCE;
+		conf &= ~(TX39_CONF_WBON | TX39_CONF_CWFON);
 		conf |= mips_config_wbon ? TX39_CONF_WBON : 0;
 		conf |= mips_config_cwfon ? TX39_CONF_CWFON : 0;
 
@@ -204,6 +205,25 @@ static void __init jmr3927_device_init(void)
 	__swizzle_addr_b = jmr3927_swizzle_addr_b;
 	jmr3927_rtc_init();
 	tx3927_wdt_init();
+static void __init jmr3927_mtd_init(void)
+{
+	int i;
+
+	for (i = 0; i < 2; i++)
+		tx3927_mtd_init(i);
+}
+
+static void __init jmr3927_device_init(void)
+{
+	unsigned long iocled_base = JMR3927_IOC_LED_ADDR - IO_BASE;
+#ifdef __LITTLE_ENDIAN
+	iocled_base |= 1;
+#endif
+	__swizzle_addr_b = jmr3927_swizzle_addr_b;
+	jmr3927_rtc_init();
+	tx3927_wdt_init();
+	jmr3927_mtd_init();
+	txx9_iocled_init(iocled_base, -1, 8, 1, "green", NULL);
 }
 
 struct txx9_board_vec jmr3927_vec __initdata = {

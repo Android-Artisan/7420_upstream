@@ -17,12 +17,18 @@
 
 static struct pmu_battery_dev {
 	struct power_supply bat;
+#include <linux/slab.h>
+
+static struct pmu_battery_dev {
+	struct power_supply *bat;
+	struct power_supply_desc bat_desc;
 	struct pmu_battery_info *pbi;
 	char name[16];
 	int propval;
 } *pbats[PMU_MAX_BATTERIES];
 
 #define to_pmu_battery_dev(x) container_of(x, struct pmu_battery_dev, bat)
+#define to_pmu_battery_dev(x) power_supply_get_drvdata(x)
 
 /*********************************************************************
  *		Power
@@ -49,12 +55,15 @@ static enum power_supply_property pmu_ac_props[] = {
 };
 
 static struct power_supply pmu_ac = {
+static const struct power_supply_desc pmu_ac_desc = {
 	.name = "pmu-ac",
 	.type = POWER_SUPPLY_TYPE_MAINS,
 	.properties = pmu_ac_props,
 	.num_properties = ARRAY_SIZE(pmu_ac_props),
 	.get_property = pmu_get_ac_prop,
 };
+
+static struct power_supply *pmu_ac;
 
 /*********************************************************************
  *		Battery properties
@@ -89,6 +98,8 @@ static int pmu_bat_get_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_STATUS:
 		if (pbi->flags & PMU_BATT_CHARGING)
 			val->intval = POWER_SUPPLY_STATUS_CHARGING;
+		else if (pmu_power_flags & PMU_PWR_AC_PRESENT)
+			val->intval = POWER_SUPPLY_STATUS_FULL;
 		else
 			val->intval = POWER_SUPPLY_STATUS_DISCHARGING;
 		break;
@@ -140,6 +151,7 @@ static struct platform_device *bat_pdev;
 static int __init pmu_bat_init(void)
 {
 	int ret;
+	int ret = 0;
 	int i;
 
 	bat_pdev = platform_device_register_simple("pmu-battery",
@@ -154,6 +166,14 @@ static int __init pmu_bat_init(void)
 		goto ac_register_failed;
 
 	for (i = 0; i < pmu_battery_count; i++) {
+	pmu_ac = power_supply_register(&bat_pdev->dev, &pmu_ac_desc, NULL);
+	if (IS_ERR(pmu_ac)) {
+		ret = PTR_ERR(pmu_ac);
+		goto ac_register_failed;
+	}
+
+	for (i = 0; i < pmu_battery_count; i++) {
+		struct power_supply_config psy_cfg = {};
 		struct pmu_battery_dev *pbat = kzalloc(sizeof(*pbat),
 						       GFP_KERNEL);
 		if (!pbat)
@@ -168,6 +188,18 @@ static int __init pmu_bat_init(void)
 
 		ret = power_supply_register(&bat_pdev->dev, &pbat->bat);
 		if (ret) {
+		pbat->bat_desc.name = pbat->name;
+		pbat->bat_desc.properties = pmu_bat_props;
+		pbat->bat_desc.num_properties = ARRAY_SIZE(pmu_bat_props);
+		pbat->bat_desc.get_property = pmu_bat_get_property;
+		pbat->pbi = &pmu_batteries[i];
+		psy_cfg.drv_data = pbat;
+
+		pbat->bat = power_supply_register(&bat_pdev->dev,
+						  &pbat->bat_desc,
+						  &psy_cfg);
+		if (IS_ERR(pbat->bat)) {
+			ret = PTR_ERR(pbat->bat);
 			kfree(pbat);
 			goto battery_register_failed;
 		}
@@ -184,6 +216,10 @@ battery_register_failed:
 		kfree(pbats[i]);
 	}
 	power_supply_unregister(&pmu_ac);
+		power_supply_unregister(pbats[i]->bat);
+		kfree(pbats[i]);
+	}
+	power_supply_unregister(pmu_ac);
 ac_register_failed:
 	platform_device_unregister(bat_pdev);
 pdev_register_failed:
@@ -202,6 +238,10 @@ static void __exit pmu_bat_exit(void)
 		kfree(pbats[i]);
 	}
 	power_supply_unregister(&pmu_ac);
+		power_supply_unregister(pbats[i]->bat);
+		kfree(pbats[i]);
+	}
+	power_supply_unregister(pmu_ac);
 	platform_device_unregister(bat_pdev);
 }
 

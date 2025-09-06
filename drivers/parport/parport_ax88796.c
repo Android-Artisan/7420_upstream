@@ -15,6 +15,7 @@
 #include <linux/interrupt.h>
 #include <linux/errno.h>
 #include <linux/platform_device.h>
+#include <linux/slab.h>
 
 #include <asm/io.h>
 #include <asm/irq.h>
@@ -293,6 +294,7 @@ static int parport_ax88796_probe(struct platform_device *pdev)
 	}
 
 	size = (res->end - res->start) + 1;
+	size = resource_size(res);
 	spacing = size / 3;
 
 	dd->io = request_mem_region(res->start, size, pdev->name);
@@ -431,6 +433,7 @@ static void __exit parport_ax88796_exit(void)
 
 module_init(parport_ax88796_init)
 module_exit(parport_ax88796_exit)
+module_platform_driver(axdrv);
 
 MODULE_AUTHOR("Ben Dooks <ben@simtec.co.uk>");
 MODULE_DESCRIPTION("AX88796 Parport parallel port driver");

@@ -35,6 +35,7 @@
 #include <linux/delay.h>
 #include <linux/sched.h>	/* signal_pending(), struct timer_list */
 #include <linux/mutex.h>
+#include <linux/workqueue.h>
 
 #if !defined(MODULE)
 	#define MY_NAME	"shpchp"
@@ -52,12 +53,35 @@ extern struct workqueue_struct *shpchp_wq;
 		if (shpchp_debug)					\
 			printk("%s: " format, MY_NAME , ## arg);	\
 	} while (0)
+extern bool shpchp_poll_mode;
+extern int shpchp_poll_time;
+extern bool shpchp_debug;
+
+#define dbg(format, arg...)						\
+do {									\
+	if (shpchp_debug)						\
+		printk(KERN_DEBUG "%s: " format, MY_NAME , ## arg);	\
+} while (0)
 #define err(format, arg...)						\
 	printk(KERN_ERR "%s: " format, MY_NAME , ## arg)
 #define info(format, arg...)						\
 	printk(KERN_INFO "%s: " format, MY_NAME , ## arg)
 #define warn(format, arg...)						\
 	printk(KERN_WARNING "%s: " format, MY_NAME , ## arg)
+
+#define ctrl_dbg(ctrl, format, arg...)					\
+	do {								\
+		if (shpchp_debug)					\
+			dev_printk(KERN_DEBUG, &ctrl->pci_dev->dev,	\
+					format, ## arg);		\
+	} while (0)
+#define ctrl_err(ctrl, format, arg...)					\
+	dev_err(&ctrl->pci_dev->dev, format, ## arg)
+#define ctrl_info(ctrl, format, arg...)					\
+	dev_info(&ctrl->pci_dev->dev, format, ## arg)
+#define ctrl_warn(ctrl, format, arg...)					\
+	dev_warn(&ctrl->pci_dev->dev, format, ## arg)
+
 
 #define SLOT_NAME_SIZE 10
 struct slot {
@@ -78,6 +102,10 @@ struct slot {
 	char name[SLOT_NAME_SIZE];
 	struct delayed_work work;	/* work for button event */
 	struct mutex lock;
+	struct delayed_work work;	/* work for button event */
+	struct mutex lock;
+	struct workqueue_struct *wq;
+	u8 hp_slot;
 };
 
 struct event_info {
@@ -110,6 +138,7 @@ struct controller {
 #define PCI_DEVICE_ID_AMD_POGO_7458	0x7458
 
 /* AMD PCIX bridge registers */
+/* AMD PCI-X bridge registers */
 #define PCIX_MEM_BASE_LIMIT_OFFSET	0x1C
 #define PCIX_MISCII_OFFSET		0x48
 #define PCIX_MISC_BRIDGE_ERRORS_OFFSET	0x80
@@ -186,6 +215,33 @@ static inline int get_hp_hw_control_from_firmware(struct pci_dev *dev)
 }
 #else
 #define get_hp_params_from_firmware(dev, hpp) (-ENODEV)
+int __must_check shpchp_create_ctrl_files(struct controller *ctrl);
+void shpchp_remove_ctrl_files(struct controller *ctrl);
+int shpchp_sysfs_enable_slot(struct slot *slot);
+int shpchp_sysfs_disable_slot(struct slot *slot);
+u8 shpchp_handle_attention_button(u8 hp_slot, struct controller *ctrl);
+u8 shpchp_handle_switch_change(u8 hp_slot, struct controller *ctrl);
+u8 shpchp_handle_presence_change(u8 hp_slot, struct controller *ctrl);
+u8 shpchp_handle_power_fault(u8 hp_slot, struct controller *ctrl);
+int shpchp_configure_device(struct slot *p_slot);
+int shpchp_unconfigure_device(struct slot *p_slot);
+void cleanup_slots(struct controller *ctrl);
+void shpchp_queue_pushbutton_work(struct work_struct *work);
+int shpc_init(struct controller *ctrl, struct pci_dev *pdev);
+
+static inline const char *slot_name(struct slot *slot)
+{
+	return hotplug_slot_name(slot->hotplug_slot);
+}
+
+#ifdef CONFIG_ACPI
+#include <linux/pci-acpi.h>
+static inline int get_hp_hw_control_from_firmware(struct pci_dev *dev)
+{
+	u32 flags = OSC_PCI_SHPC_NATIVE_HP_CONTROL;
+	return acpi_get_hp_hw_control_from_firmware(dev, flags);
+}
+#else
 #define get_hp_hw_control_from_firmware(dev) (0)
 #endif
 
@@ -214,6 +270,13 @@ enum ctrl_offsets {
 	SEC_BUS_CONFIG	 = offsetof(struct ctrl_reg, sec_bus_config),
 	MSI_CTRL	 = offsetof(struct ctrl_reg, msi_ctrl),
 	PROG_INTERFACE 	 = offsetof(struct ctrl_reg, prog_interface),
+	BASE_OFFSET	 = offsetof(struct ctrl_reg, base_offset),
+	SLOT_AVAIL1	 = offsetof(struct ctrl_reg, slot_avail1),
+	SLOT_AVAIL2	 = offsetof(struct ctrl_reg, slot_avail2),
+	SLOT_CONFIG	 = offsetof(struct ctrl_reg, slot_config),
+	SEC_BUS_CONFIG	 = offsetof(struct ctrl_reg, sec_bus_config),
+	MSI_CTRL	 = offsetof(struct ctrl_reg, msi_ctrl),
+	PROG_INTERFACE	 = offsetof(struct ctrl_reg, prog_interface),
 	CMD		 = offsetof(struct ctrl_reg, cmd),
 	CMD_STATUS	 = offsetof(struct ctrl_reg, cmd_status),
 	INTR_LOC	 = offsetof(struct ctrl_reg, intr_loc),
@@ -237,6 +300,7 @@ static inline struct slot *shpchp_find_slot(struct controller *ctrl, u8 device)
 	}
 
 	err("%s: slot (device=0x%x) not found\n", __func__, device);
+	ctrl_err(ctrl, "Slot (device=0x%02x) not found\n", device);
 	return NULL;
 }
 
@@ -271,6 +335,9 @@ static inline void amd_pogo_errata_restore_misc_reg(struct slot *p_slot)
 	perr_set = pcix_bridge_errors_reg & PERR_OBSERVED_MASK;
 	if (perr_set) {
 		dbg ("%s  W1C: Bridge_Errors[ PERR_OBSERVED = %08X]\n",__func__ , perr_set);
+		ctrl_dbg(p_slot->ctrl,
+			 "Bridge_Errors[ PERR_OBSERVED = %08X] (W1C)\n",
+			 perr_set);
 
 		pci_write_config_dword(p_slot->ctrl->pci_dev, PCIX_MISC_BRIDGE_ERRORS_OFFSET, perr_set);
 	}
@@ -280,11 +347,13 @@ static inline void amd_pogo_errata_restore_misc_reg(struct slot *p_slot)
 	rse_set = pcix_mem_base_reg & RSE_MASK;
 	if (rse_set) {
 		dbg ("%s  W1C: Memory_Base_Limit[ RSE ]\n",__func__ );
+		ctrl_dbg(p_slot->ctrl, "Memory_Base_Limit[ RSE ] (W1C)\n");
 
 		pci_write_config_dword(p_slot->ctrl->pci_dev, PCIX_MEM_BASE_LIMIT_OFFSET, rse_set);
 	}
 	/* restore MiscII register */
 	pci_read_config_dword( p_slot->ctrl->pci_dev, PCIX_MISCII_OFFSET, &pcix_misc2_temp );
+	pci_read_config_dword(p_slot->ctrl->pci_dev, PCIX_MISCII_OFFSET, &pcix_misc2_temp );
 
 	if (p_slot->ctrl->pcix_misc2_reg & SERRFATALENABLE_MASK)
 		pcix_misc2_temp |= SERRFATALENABLE_MASK;

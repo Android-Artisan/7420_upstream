@@ -16,6 +16,7 @@
 /* Tcp Hybla structure. */
 struct hybla {
 	u8    hybla_en;
+	bool  hybla_en;
 	u32   snd_cwnd_cents; /* Keeps increment values when it is <1, <<7 */
 	u32   rho;	      /* Rho parameter, integer part  */
 	u32   rho2;	      /* Rho * Rho, integer part */
@@ -26,6 +27,10 @@ struct hybla {
 
 /* Hybla reference round trip time (default= 1/40 sec = 25 ms),
    expressed in jiffies */
+	u32   minrtt_us;      /* Minimum smoothed round trip time value seen */
+};
+
+/* Hybla reference round trip time (default= 1/40 sec = 25 ms), in ms */
 static int rtt0 = 25;
 module_param(rtt0, int, 0644);
 MODULE_PARM_DESC(rtt0, "reference rout trip time (ms)");
@@ -40,6 +45,12 @@ static inline void hybla_recalc_param (struct sock *sk)
 	ca->rho = ca->rho_3ls >> 3;
 	ca->rho2_7ls = (ca->rho_3ls * ca->rho_3ls) << 1;
 	ca->rho2 = ca->rho2_7ls >>7;
+	ca->rho_3ls = max_t(u32,
+			    tcp_sk(sk)->srtt_us / (rtt0 * USEC_PER_MSEC),
+			    8U);
+	ca->rho = ca->rho_3ls >> 3;
+	ca->rho2_7ls = (ca->rho_3ls * ca->rho_3ls) << 1;
+	ca->rho2 = ca->rho2_7ls >> 7;
 }
 
 static void hybla_init(struct sock *sk)
@@ -53,6 +64,7 @@ static void hybla_init(struct sock *sk)
 	ca->rho2_7ls = 0;
 	ca->snd_cwnd_cents = 0;
 	ca->hybla_en = 1;
+	ca->hybla_en = true;
 	tp->snd_cwnd = 2;
 	tp->snd_cwnd_clamp = 65535;
 
@@ -61,12 +73,14 @@ static void hybla_init(struct sock *sk)
 
 	/* set minimum rtt as this is the 1st ever seen */
 	ca->minrtt = tp->srtt;
+	ca->minrtt_us = tp->srtt_us;
 	tp->snd_cwnd = ca->rho;
 }
 
 static void hybla_state(struct sock *sk, u8 ca_state)
 {
 	struct hybla *ca = inet_csk_ca(sk);
+
 	ca->hybla_en = (ca_state == TCP_CA_Open);
 }
 
@@ -86,6 +100,7 @@ static inline u32 hybla_fraction(u32 odds)
  *     o remember increments <1
  */
 static void hybla_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
+static void hybla_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct hybla *ca = inet_csk_ca(sk);
@@ -103,6 +118,16 @@ static void hybla_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 
 	if (!ca->hybla_en) {
 		tcp_reno_cong_avoid(sk, ack, in_flight);
+	if (tp->srtt_us < ca->minrtt_us) {
+		hybla_recalc_param(sk);
+		ca->minrtt_us = tp->srtt_us;
+	}
+
+	if (!tcp_is_cwnd_limited(sk))
+		return;
+
+	if (!ca->hybla_en) {
+		tcp_reno_cong_avoid(sk, ack, acked);
 		return;
 	}
 
@@ -112,6 +137,7 @@ static void hybla_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 	rho_fractions = ca->rho_3ls - (ca->rho << 3);
 
 	if (tp->snd_cwnd < tp->snd_ssthresh) {
+	if (tcp_in_slow_start(tp)) {
 		/*
 		 * slow start
 		 *      INC = 2^RHO - 1
@@ -128,6 +154,8 @@ static void hybla_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 		is_slowstart = 1;
 		increment = ((1 << ca->rho) * hybla_fraction(rho_fractions))
 			- 128;
+		increment = ((1 << min(ca->rho, 16U)) *
+			hybla_fraction(rho_fractions)) - 128;
 	} else {
 		/*
 		 * congestion avoidance
@@ -166,6 +194,9 @@ static struct tcp_congestion_ops tcp_hybla = {
 	.init		= hybla_init,
 	.ssthresh	= tcp_reno_ssthresh,
 	.min_cwnd	= tcp_reno_min_cwnd,
+static struct tcp_congestion_ops tcp_hybla __read_mostly = {
+	.init		= hybla_init,
+	.ssthresh	= tcp_reno_ssthresh,
 	.cong_avoid	= hybla_cong_avoid,
 	.set_state	= hybla_state,
 

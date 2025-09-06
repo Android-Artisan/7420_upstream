@@ -18,6 +18,7 @@
 #include <linux/ioport.h>
 #include <linux/timex.h>
 #include <linux/slab.h>
+#include <linux/smp.h>
 #include <linux/random.h>
 #include <linux/kernel.h>
 #include <linux/kernel_stat.h>
@@ -31,6 +32,8 @@
 
 #include <asm/processor.h>
 #include <asm/pci/bridge.h>
+
+#include <asm/processor.h>
 #include <asm/sn/addrs.h>
 #include <asm/sn/agent.h>
 #include <asm/sn/arch.h>
@@ -42,6 +45,7 @@
  * every controller has a 'controller-template', that is used
  * by the main code to do the right thing. Each driver-visible
  * interrupt source is transparently wired to the apropriate
+ * interrupt source is transparently wired to the appropriate
  * controller. Thus drivers need not be aware of the
  * interrupt-controller.
  *
@@ -117,6 +121,7 @@ static int ms1bit(unsigned long x)
 
 /*
  * This code is unnecessarily complex, because we do IRQF_DISABLED
+ * This code is unnecessarily complex, because we do
  * intr enabling. Basically, once we grab the set of intrs we need
  * to service, we must mask _all_ these interrupts; firstly, to make
  * sure the same intr does not intr again, causing recursion that
@@ -155,6 +160,20 @@ static void ip27_do_irq_mask0(void)
 	} else if (pend0 & (1UL << CPU_CALL_B_IRQ)) {
 		LOCAL_HUB_CLR_INTR(CPU_CALL_B_IRQ);
 		smp_call_function_interrupt();
+		scheduler_ipi();
+	} else if (pend0 & (1UL << CPU_RESCHED_B_IRQ)) {
+		LOCAL_HUB_CLR_INTR(CPU_RESCHED_B_IRQ);
+		scheduler_ipi();
+	} else if (pend0 & (1UL << CPU_CALL_A_IRQ)) {
+		LOCAL_HUB_CLR_INTR(CPU_CALL_A_IRQ);
+		irq_enter();
+		generic_smp_call_function_interrupt();
+		irq_exit();
+	} else if (pend0 & (1UL << CPU_CALL_B_IRQ)) {
+		LOCAL_HUB_CLR_INTR(CPU_CALL_B_IRQ);
+		irq_enter();
+		generic_smp_call_function_interrupt();
+		irq_exit();
 	} else
 #endif
 	{

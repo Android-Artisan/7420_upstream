@@ -4,6 +4,9 @@
 	     Maintained by Torben Mathiasen <device@lanana.org>
 
 		      Last revised: 29 November 2006
+	     Maintained by Alan Cox <device@lanana.org>
+
+		      Last revised: 6th April 2009
 
 This list is the Linux Device List, the official registry of allocated
 device numbers and /dev directory nodes for the Linux operating
@@ -67,6 +70,11 @@ up to date.  Due to the number of registrations I have to maintain it
 in "batch mode", so there is likely additional registrations that
 haven't been listed yet.
 
+Fourth, remember that Linux now has extensive support for dynamic allocation
+of device numbering and can use sysfs and udev to handle the naming needs.
+There are still some exceptions in the serial and boot device area. Before
+asking for a device number make sure you actually need one.
+
 Finally, sometimes I have to play "namespace police."  Please don't be
 offended.  I often get submissions for /dev names that would be bound
 to cause conflicts down the road.  I am trying to avoid getting in a
@@ -96,12 +104,16 @@ Your cooperation is appreciated.
 		 11 = /dev/kmsg		Writes to this come out as printk's
 		 12 = /dev/oldmem	Used by crashdump kernels to access
 					the memory of the kernel that crashed.
+		 11 = /dev/kmsg		Writes to this come out as printk's, reads
+					export the buffered printk records.
+		 12 = /dev/oldmem	OBSOLETE - replaced by /proc/vmcore
 
   1 block	RAM disk
 		  0 = /dev/ram0		First RAM disk
 		  1 = /dev/ram1		Second RAM disk
 		    ...
 		250 = /dev/initrd	Initial RAM disk {2.6}
+		250 = /dev/initrd	Initial RAM disk
 
 		Older kernels had /dev/ramdisk (1, 1) here.
 		/dev/initrd refers to a RAM disk which was preloaded
@@ -234,6 +246,7 @@ Your cooperation is appreciated.
 		  0 = /dev/tty		Current TTY device
 		  1 = /dev/console	System console
 		  2 = /dev/ptmx		PTY master multiplex
+		  3 = /dev/ttyprintk	User messages via printk TTY device
 		 64 = /dev/cua0		Callout device for ttyS0
 		    ...
 		255 = /dev/cua191	Callout device for ttyS191
@@ -341,6 +354,7 @@ Your cooperation is appreciated.
 		 15 = /dev/touchscreen/mk712	MK712 touchscreen
 		128 = /dev/beep		Fancy beep device
 		129 = /dev/modreq	Kernel module load request {2.6}
+		129 =
 		130 = /dev/watchdog	Watchdog timer port
 		131 = /dev/temperature	Machine internal temperature
 		132 = /dev/hwtrap	Hardware fault trap
@@ -354,6 +368,14 @@ Your cooperation is appreciated.
 		143 = /dev/pciconf	PCI configuration space
 		144 = /dev/nvram	Non-volatile configuration RAM
 		145 = /dev/hfmodem	Soundcard shortwave modem control {2.6}
+		137 = /dev/vhci		Bluetooth virtual HCI driver
+		139 = /dev/openprom	SPARC OpenBoot PROM
+		140 = /dev/relay8	Berkshire Products Octal relay card
+		141 = /dev/relay16	Berkshire Products ISO-16 relay card
+		142 =
+		143 = /dev/pciconf	PCI configuration space
+		144 = /dev/nvram	Non-volatile configuration RAM
+		145 = /dev/hfmodem	Soundcard shortwave modem control
 		146 = /dev/graphics	Linux/SGI graphics device
 		147 = /dev/opengl	Linux/SGI OpenGL pipe
 		148 = /dev/gfx		Linux/SGI graphics effects device
@@ -374,6 +396,7 @@ Your cooperation is appreciated.
 		163 = /dev/lik		Logitech Internet Keyboard
 		164 = /dev/ipmo		Intel Intelligent Platform Management
 		165 = /dev/vmmon	VMWare virtual machine monitor
+		165 = /dev/vmmon	VMware virtual machine monitor
 		166 = /dev/i2o/ctl	I2O configuration manager
 		167 = /dev/specialix_sxctl Specialix serial control
 		168 = /dev/tcldrv	Technology Concepts serial control
@@ -403,11 +426,14 @@ Your cooperation is appreciated.
 		193 = /dev/d7s		SPARC 7-segment display
 		194 = /dev/zkshim	Zero-Knowledge network shim control
 		195 = /dev/elographics/e2201	Elographics touchscreen E271-2201
+		196 = /dev/vfio/vfio	VFIO userspace driver interface
+		197 = /dev/pxa3xx-gcu	PXA3xx graphics controller unit driver
 		198 = /dev/sexec	Signed executable interface
 		199 = /dev/scanners/cuecat :CueCat barcode scanner
 		200 = /dev/net/tun	TAP/TUN network device
 		201 = /dev/button/gulpb	Transmeta GULP-B buttons
 		202 = /dev/emd/ctl	Enhanced Metadisk RAID (EMD) control
+		203 = /dev/cuse		Cuse (character device in user-space)
 		204 = /dev/video/em8300		EM8300 DVD decoder control
 		205 = /dev/video/em8300_mv	EM8300 DVD decoder video
 		206 = /dev/video/em8300_ma	EM8300 DVD decoder audio
@@ -435,6 +461,16 @@ Your cooperation is appreciated.
 		228 = /dev/hpet		HPET driver
 		229 = /dev/fuse		Fuse (virtual filesystem in user-space)
 		230 = /dev/midishare	MidiShare driver
+		231 = /dev/snapshot	System memory snapshot device
+		232 = /dev/kvm		Kernel-based virtual machine (hardware virtualization extensions)
+		233 = /dev/kmview	View-OS A process with a view
+		234 = /dev/btrfs-control	Btrfs control device
+		235 = /dev/autofs	Autofs control device
+		236 = /dev/mapper/control	Device-Mapper control device
+		237 = /dev/loop-control Loopback control device
+		238 = /dev/vhost-net	Host kernel accelerator for virtio net
+		239 = /dev/uhid		User-space I/O driver support for HID subsystem
+
 		240-254			Reserved for local use
 		255			Reserved for MISC_DYNAMIC_MINOR
 
@@ -470,6 +506,7 @@ Your cooperation is appreciated.
 		  0 = /dev/dos_cd0	First MSCDEX CD-ROM
 		  1 = /dev/dos_cd1	Second MSCDEX CD-ROM
 		    ...
+ 12 block
 
  13 char	Input core
 		  0 = /dev/input/js0	First joystick
@@ -491,6 +528,8 @@ Your cooperation is appreciated.
 
 		Partitions are handled in the same way as IDE disks
 		(see major number 3).
+ 13 block	Previously used for the XT disk (/dev/xdN)
+		Deleted in kernel v3.9.
 
  14 char	Open Sound System (OSS)
 		  0 = /dev/mixer	Mixer control
@@ -499,6 +538,7 @@ Your cooperation is appreciated.
 		  3 = /dev/dsp		Digital audio
 		  4 = /dev/audio	Sun-compatible digital audio
 		  6 = /dev/sndstat	Sound card status information {2.6}
+		  6 =
 		  7 = /dev/audioctl	SPARC audio control device
 		  8 = /dev/sequencer2	Sequencer -- alternate device
 		 16 = /dev/mixer1	Second soundcard mixer control
@@ -518,6 +558,7 @@ Your cooperation is appreciated.
 
 		Partitions are handled in the same way as IDE disks
 		(see major number 3).
+ 14 block
 
  15 char	Joystick
 		  0 = /dev/js0		First analog joystick
@@ -536,6 +577,7 @@ Your cooperation is appreciated.
 		  0 = /dev/gscd		GoldStar CD-ROM
 
  17 char	Chase serial card
+ 17 char	OBSOLETE (was Chase serial card)
 		  0 = /dev/ttyH0	First Chase port
 		  1 = /dev/ttyH1	Second Chase port
 		    ...
@@ -543,6 +585,7 @@ Your cooperation is appreciated.
 		  0 = /dev/optcd	Optics Storage CD-ROM
 
  18 char	Chase serial card - alternate devices
+ 18 char	OBSOLETE (was Chase serial card - alternate devices)
 		  0 = /dev/cuh0		Callout device for ttyH0
 		  1 = /dev/cuh1		Callout device for ttyH1
 		    ...
@@ -646,6 +689,7 @@ Your cooperation is appreciated.
 
  26 char	Quanta WinVision frame grabber {2.6}
 		  0 = /dev/wvisfgrab	Quanta WinVision frame grabber
+ 26 char
 
  26 block	Second Matsushita (Panasonic/SoundBlaster) CD-ROM
 		  0 = /dev/sbpcd4	Panasonic CD-ROM controller 1 unit 0
@@ -849,6 +893,7 @@ Your cooperation is appreciated.
 
 		Partitions are handled in the same way as IDE disks
 		(see major number 3).
+ 36 block	OBSOLETE (was MCA ESDI hard disk)
 
  37 char	IDE tape
 		  0 = /dev/ht0		First IDE tape
@@ -873,6 +918,7 @@ Your cooperation is appreciated.
 		accessible as a standard networking "eth" device.
 
  38 block	Reserved for Linux/AP+
+ 38 block	OBSOLETE (was Linux/AP+)
 
  39 char	ML-16P experimental I/O board
 		  0 = /dev/ml16pa-a0	First card, first analog channel
@@ -905,6 +951,11 @@ Your cooperation is appreciated.
 		the parallel port IDE disk driver at major number 45.
 		Partitions are handled in the same way as IDE disks
 		(see major number 3).
+ 39 block
+
+ 40 char
+
+ 40 block
 
  41 char	Yet Another Micro Monitor
 		  0 = /dev/yamm		Yet Another Micro Monitor
@@ -915,6 +966,7 @@ Your cooperation is appreciated.
 		This device is obsolete and will be removed in a
 		future version of Linux.  It has been replaced with
 		the parallel port ATAPI CD-ROM driver at major number 46.
+ 41 block
 
  42 char	Demo/sample use
 
@@ -1511,9 +1563,16 @@ Your cooperation is appreciated.
 		192 = /dev/vtx0		Teletext device
 		    ...
 		223 = /dev/vtx31	Teletext device
+		128 = /dev/swradio0	Software Defined Radio device
+		    ...
+		191 = /dev/swradio63	Software Defined Radio device
 		224 = /dev/vbi0		Vertical blank interrupt
 		    ...
 		255 = /dev/vbi31	Vertical blank interrupt
+
+		Minor numbers are allocated dynamically unless
+		CONFIG_VIDEO_FIXED_MINOR_RANGES (default n)
+		configuration option is set.
 
  81 block	I2O hard disk
 		  0 = /dev/i2o/hdq	17th I2O hard disk, whole disk
@@ -1532,6 +1591,7 @@ Your cooperation is appreciated.
 
 		The driver and documentation may be obtained from
 		http://www.proximity.com.au/~brian/winradio/
+		http://www.winradio.com/
 
  82 block	I2O hard disk
 		  0 = /dev/i2o/hdag	33rd I2O hard disk, whole disk
@@ -1688,6 +1748,7 @@ Your cooperation is appreciated.
 		128 = /dev/isccctl0	First Smart Capture Card control
 		129 = /dev/isccctl1	Second Smart Capture Card control
 		    ...
+ 93 char
 
  93 block	NAND Flash Translation Layer filesystem
 		  0 = /dev/nftla	First NFTL layer
@@ -1699,6 +1760,7 @@ Your cooperation is appreciated.
 		  0 = /dev/dcxx0	First capture card
 		  1 = /dev/dcxx1	Second capture card
 		    ...
+ 94 char
 
  94 block	IBM S/390 DASD block storage
     		  0 = /dev/dasda First DASD device, major
@@ -1747,6 +1809,7 @@ Your cooperation is appreciated.
 		    ...
 
 		See http://stm.lbl.gov/comedi or http://www.llp.fu-berlin.de/.
+		See http://stm.lbl.gov/comedi.
 
  98 block	User-mode virtual block device
 		  0 = /dev/ubda		First user-mode block device
@@ -1796,6 +1859,7 @@ Your cooperation is appreciated.
 		  1 = /dev/tlk1		Second Teletext decoder
 		  2 = /dev/tlk2		Third Teletext decoder
 		  3 = /dev/tlk3		Fourth Teletext decoder
+102 char
 
 102 block	Compressed block device
 		  0 = /dev/cbd/a	First compressed block device, whole device
@@ -1920,6 +1984,7 @@ Your cooperation is appreciated.
 		  0 = /dev/av0		First A/V card
 		  1 = /dev/av1		Second A/V card
 		    ...
+111 char
 
 111 block	Compaq Next Generation Drive Array, eighth controller
 		  0 = /dev/cciss/c7d0	First logical drive, whole disk
@@ -2015,6 +2080,7 @@ Your cooperation is appreciated.
                 machine.
 
                 http://www.kernel.org/pub/linux/kernel/people/jmerkey/nwfs
+                http://cgfa.telepac.pt/ftp2/kernel.org/linux/kernel/people/jmerkey/nwfs/
 
                 0 = /dev/nwfs/v0    First NetWare (NWFS) Logical Volume
                 1 = /dev/nwfs/v1    Second NetWare (NWFS) Logical Volume
@@ -2081,6 +2147,8 @@ Your cooperation is appreciated.
 119 char	VMware virtual network control
 		  0 = /dev/vmnet0	1st virtual network
 		  1 = /dev/vmnet1	2nd virtual network
+		  0 = /dev/vnet0	1st virtual network
+		  1 = /dev/vnet1	2nd virtual network
 		    ...
 
 120-127 char	LOCAL/EXPERIMENTAL USE
@@ -2451,6 +2519,10 @@ Your cooperation is appreciated.
 		    ...
 
 163 char	UNASSIGNED (was Radio Tech BIM-XXX-RS232 radio modem - see 51)
+                 max minor number of raw device is set by kernel config
+                 MAX_RAW_DEVS or raw module parameter 'max_raw_devs'
+
+163 char
 
 164 char	Chase Research AT/PCI-Fast serial card
 		  0 = /dev/ttyCH0	AT/PCI-Fast board 0, port 0
@@ -2542,6 +2614,18 @@ Your cooperation is appreciated.
 		  1 = /dev/clanvi1	Second cLAN adapter
 		    ...
 
+179 block       MMC block devices
+		  0 = /dev/mmcblk0      First SD/MMC card
+		  1 = /dev/mmcblk0p1    First partition on first MMC card
+		  8 = /dev/mmcblk1      Second SD/MMC card
+		    ...
+
+		The start of next SD/MMC card can be configured with
+		CONFIG_MMC_BLOCK_MINORS, or overridden at boot/modprobe
+		time using the mmcblk.perdev_minors option. That would
+		bump the offset between each card to be the configured
+		value instead of the default 8.
+
 179 char	CCube DVXChip-based PCI products
 		  0 = /dev/dvxirq0	First DVX device
 		  1 = /dev/dvxirq1	Second DVX device
@@ -2560,6 +2644,9 @@ Your cooperation is appreciated.
 		 96 = /dev/usb/hiddev0	1st USB HID device
 		    ...
 		111 = /dev/usb/hiddev15	16th USB HID device
+		112 = /dev/usb/auer0	1st auerswald ISDN device
+		    ...
+		127 = /dev/usb/auer15	16th auerswald ISDN device
 		128 = /dev/usb/brlvgr0	First Braille Voyager device
 		    ...
 		131 = /dev/usb/brlvgr3	Fourth Braille Voyager device
@@ -2574,6 +2661,12 @@ Your cooperation is appreciated.
 		240 = /dev/usb/dabusb0	First daubusb device
 		    ...
 		243 = /dev/usb/dabusb3	Fourth dabusb device
+		176 = /dev/usb/usbtmc1	First USB TMC device
+		   ...
+		191 = /dev/usb/usbtmc16	16th USB TMC device
+		192 = /dev/usb/yurex1	First USB Yurex device
+		   ...
+		209 = /dev/usb/yurex16	16th USB Yurex device
 
 180 block	USB block devices
 		  0 = /dev/uba		First USB block device
@@ -2610,6 +2703,8 @@ Your cooperation is appreciated.
 		    ...
 
 		See http://www.inter-mezzo.org/ for more information.
+		See http://web.archive.org/web/20080115195241/
+		http://inter-mezzo.org/index.html
 
 186 char	Object-based storage control device
 		  0 = /dev/obd0		First obd control device
@@ -2807,6 +2902,20 @@ Your cooperation is appreciated.
 		    ...
 		 190 = /dev/ttyUL3		Xilinx uartlite - port 3
 		 191 = /dev/xvc0		Xen virtual console - port 0
+		 192 = /dev/ttyPZ0		pmac_zilog - port 0
+		    ...
+		 195 = /dev/ttyPZ3		pmac_zilog - port 3
+		 196 = /dev/ttyTX0		TX39/49 serial port 0
+		    ...
+		 204 = /dev/ttyTX7		TX39/49 serial port 7
+		 205 = /dev/ttySC0		SC26xx serial port 0
+		 206 = /dev/ttySC1		SC26xx serial port 1
+		 207 = /dev/ttySC2		SC26xx serial port 2
+		 208 = /dev/ttySC3		SC26xx serial port 3
+		 209 = /dev/ttyMAX0		MAX3100 serial port 0
+		 210 = /dev/ttyMAX1		MAX3100 serial port 1
+		 211 = /dev/ttyMAX2		MAX3100 serial port 2
+		 212 = /dev/ttyMAX3		MAX3100 serial port 3
 
 205 char	Low-density serial ports (alternate device)
 		  0 = /dev/culu0		Callout device for ttyLU0
@@ -3141,6 +3250,20 @@ Your cooperation is appreciated.
 		  0 = /dev/blockrom0	First ROM card's translation layer interface
 		  1 = /dev/blockrom1	Second ROM card's translation layer interface
 		  ...
+
+259 block	Block Extended Major
+		  Used dynamically to hold additional partition minor
+		  numbers and allow large numbers of partitions per device
+
+259 char	FPGA configuration interfaces
+		  0 = /dev/icap0	First Xilinx internal configuration
+		  1 = /dev/icap1	Second Xilinx internal configuration
+
+260 char	OSD (Object-based-device) SCSI Device
+		  0 = /dev/osd0		First OSD Device
+		  1 = /dev/osd1		Second OSD Device
+		  ...
+		  255 = /dev/osd255	256th OSD Device
 
  ****	ADDITIONAL /dev DIRECTORY ENTRIES
 

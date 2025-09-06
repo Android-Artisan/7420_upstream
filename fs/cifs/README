@@ -16,7 +16,6 @@ For questions or bug reports please contact:
     sfrench@samba.org (sfrench@us.ibm.com) 
 
 Build instructions:
-==================
 For Linux 2.4:
 1) Get the kernel source (e.g.from http://www.kernel.org)
 and download the cifs vfs source (see the project page
@@ -49,7 +48,6 @@ and change directory into the top of the kernel directory tree
 
 
 Installation instructions:
-=========================
 If you have built the CIFS vfs as module (successfully) simply
 type "make modules_install" (or if you prefer, manually copy the file to
 the modules directory e.g. /lib/modules/2.4.10-4GB/kernel/fs/cifs/cifs.o).
@@ -80,7 +78,6 @@ on kernel/fs/cifs/cifs.ko the list of configuration changes that can be made
 at module initialization time (by running insmod cifs.ko) can be seen.
 
 Allowing User Mounts
-====================
 To permit users to mount and unmount over directories they own is possible
 with the cifs vfs.  A way to enable such mounting is to mark the mount.cifs
 utility as suid (e.g. "chmod +s /sbin/mount.cifs). To enable users to 
@@ -106,7 +103,6 @@ There is a corresponding manual page for cifs mounting in the Samba 3.0 and
 later source tree in docs/manpages/mount.cifs.8 
 
 Allowing User Unmounts
-======================
 To permit users to ummount directories that they have user mounted (see above),
 the utility umount.cifs may be used.  It may be invoked directly, or if 
 umount.cifs is placed in /sbin, umount can invoke the cifs umount helper
@@ -126,7 +122,6 @@ this can become unwieldy when potential mount targets include many
 or  unpredictable UNC names.
 
 Samba Considerations 
-==================== 
 To get the maximum benefit from the CIFS VFS, we recommend using a server that 
 supports the SNIA CIFS Unix Extensions standard (e.g.  Samba 2.2.5 or later or 
 Samba 3.0) but the CIFS vfs works fine with a wide variety of CIFS servers.  
@@ -187,7 +182,6 @@ be invisbile to Windows clients and typically will not affect local
 applications running on the same server as Samba.  
 
 Use instructions:
-================
 Once the CIFS VFS support is built into the kernel or installed as a module 
 (cifs.o), you can use mount syntax like the following to access Samba or Windows 
 servers: 
@@ -232,7 +226,6 @@ the user name can be taken from the USER environment variable).
 If no password is provided, mount.cifs will prompt for password entry
 
 Restrictions
-============
 Servers must support either "pure-TCP" (port 445 TCP/IP CIFS connections) or RFC 
 1001/1002 support for "Netbios-Over-TCP/IP." This is not likely to be a 
 problem as most servers support this.
@@ -250,7 +243,6 @@ configured for Unix Extensions (and the client has not disabled
   
 
 CIFS VFS Mount Options
-======================
 A partial list of the supported mount options follows:
   user		The user name to use when trying to establish
 		the CIFS session.
@@ -516,7 +508,6 @@ With most 2.6 kernel versions of modutils, the version of the cifs kernel
 module can be displayed via modinfo.
 
 Misc /proc/fs/cifs Flags and Debug Info
-=======================================
 Informational pseudo-files:
 DebugData		Displays information about active CIFS sessions
 			and shares, as well as the cifs.ko version.

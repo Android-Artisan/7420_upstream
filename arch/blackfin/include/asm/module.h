@@ -6,6 +6,16 @@
 #define Elf_Shdr        Elf32_Shdr
 #define Elf_Sym         Elf32_Sym
 #define Elf_Ehdr        Elf32_Ehdr
+/*
+ * Copyright 2004-2008 Analog Devices Inc.
+ *
+ * Licensed under the GPL-2 or later.
+ */
+
+#ifndef _ASM_BFIN_MODULE_H
+#define _ASM_BFIN_MODULE_H
+
+#include <asm-generic/module.h>
 
 struct mod_arch_specific {
 	Elf_Shdr	*text_l1;

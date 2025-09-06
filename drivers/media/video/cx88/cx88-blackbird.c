@@ -503,7 +503,6 @@ static int blackbird_load_firmware(struct cx8802_dev *dev)
 
 /**
  Settings used by the windows tv app for PVR2000:
-=================================================================================================================
 Profile | Codec | Resolution | CBR/VBR | Video Qlty   | V. Bitrate | Frmrate | Audio Codec | A. Bitrate | A. Mode
 -----------------------------------------------------------------------------------------------------------------
 MPEG-1  | MPEG1 | 352x288PAL | (CBR)   | 1000:Optimal | 2000 Kbps  | 25fps   | MPG1 Layer2 | 224kbps    | Stereo
@@ -511,7 +510,6 @@ MPEG-2  | MPEG2 | 720x576PAL | VBR     | 600 :Good    | 4000 Kbps  | 25fps   | M
 VCD     | MPEG1 | 352x288PAL | (CBR)   | 1000:Optimal | 1150 Kbps  | 25fps   | MPG1 Layer2 | 224kbps    | Stereo
 DVD     | MPEG2 | 720x576PAL | VBR     | 600 :Good    | 6000 Kbps  | 25fps   | MPG1 Layer2 | 224kbps    | Stereo
 DB* DVD | MPEG2 | 720x576PAL | CBR     | 600 :Good    | 6000 Kbps  | 25fps   | MPG1 Layer2 | 224kbps    | Stereo
-=================================================================================================================
 *DB: "DirectBurn"
 */
 
@@ -917,11 +915,9 @@ static int vidioc_log_status (struct file *file, void *priv)
 	char name[32 + 2];
 
 	snprintf(name, sizeof(name), "%s/2", core->name);
-	printk("%s/2: ============  START LOG STATUS  ============\n",
 		core->name);
 	cx88_call_i2c_clients(core, VIDIOC_LOG_STATUS, NULL);
 	cx2341x_log_status(&dev->params, name);
-	printk("%s/2: =============  END LOG STATUS  =============\n",
 		core->name);
 	return 0;
 }

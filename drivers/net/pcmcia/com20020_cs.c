@@ -98,7 +98,6 @@ static inline void regdump(struct net_device *dev) { }
 #endif
 
 
-/*====================================================================*/
 
 /* Parameters that can be set with 'insmod' */
 
@@ -116,27 +115,23 @@ module_param(clockm, int, 0);
 
 MODULE_LICENSE("GPL");
 
-/*====================================================================*/
 
 static int com20020_config(struct pcmcia_device *link);
 static void com20020_release(struct pcmcia_device *link);
 
 static void com20020_detach(struct pcmcia_device *p_dev);
 
-/*====================================================================*/
 
 typedef struct com20020_dev_t {
     struct net_device       *dev;
     dev_node_t          node;
 } com20020_dev_t;
 
-/*======================================================================
 
     com20020_attach() creates an "instance" of the driver, allocating
     local data structures for one device.  The device is registered
     with Card Services.
 
-======================================================================*/
 
 static int com20020_probe(struct pcmcia_device *p_dev)
 {
@@ -184,14 +179,12 @@ fail_alloc_info:
     return -ENOMEM;
 } /* com20020_attach */
 
-/*======================================================================
 
     This deletes a driver "instance".  The device is de-registered
     with Card Services.  If it has been released, all local data
     structures are freed.  Otherwise, the structures will be freed
     when the device is released.
 
-======================================================================*/
 
 static void com20020_detach(struct pcmcia_device *link)
 {
@@ -233,13 +226,11 @@ static void com20020_detach(struct pcmcia_device *link)
 
 } /* com20020_detach */
 
-/*======================================================================
 
     com20020_config() is scheduled to run after a CARD_INSERTION event
     is received, to configure the PCMCIA socket, and to make the
     device available to the system.
 
-======================================================================*/
 
 #define CS_CHECK(fn, ret) \
 do { last_fn = (fn); if ((last_ret = (ret)) != 0) goto cs_failed; } while (0)
@@ -332,13 +323,11 @@ failed:
     return -ENODEV;
 } /* com20020_config */
 
-/*======================================================================
 
     After a card is removed, com20020_release() will unregister the net
     device, and release the PCMCIA configuration.  If the device is
     still open, this will be postponed until it is closed.
 
-======================================================================*/
 
 static void com20020_release(struct pcmcia_device *link)
 {

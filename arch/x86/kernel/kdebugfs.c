@@ -13,6 +13,12 @@
 #include <linux/io.h>
 #include <linux/mm.h>
 #include <linux/module.h>
+#include <linux/module.h>
+#include <linux/slab.h>
+#include <linux/init.h>
+#include <linux/stat.h>
+#include <linux/io.h>
+#include <linux/mm.h>
 
 #include <asm/setup.h>
 
@@ -29,6 +35,8 @@ struct setup_data_node {
 static ssize_t
 setup_data_read(struct file *file, char __user *user_buf, size_t count,
 		loff_t *ppos)
+static ssize_t setup_data_read(struct file *file, char __user *user_buf,
+			       size_t count, loff_t *ppos)
 {
 	struct setup_data_node *node = file->private_data;
 	unsigned long remain;
@@ -39,11 +47,13 @@ setup_data_read(struct file *file, char __user *user_buf, size_t count,
 
 	if (pos < 0)
 		return -EINVAL;
+
 	if (pos >= node->len)
 		return 0;
 
 	if (count > node->len - pos)
 		count = node->len - pos;
+
 	pa = node->paddr + sizeof(struct setup_data) + pos;
 	pg = pfn_to_page((pa + count - 1) >> PAGE_SHIFT);
 	if (PageHighMem(pg)) {
@@ -53,6 +63,8 @@ setup_data_read(struct file *file, char __user *user_buf, size_t count,
 	} else {
 		p = __va(pa);
 	}
+	} else
+		p = __va(pa);
 
 	remain = copy_to_user(user_buf, p, count);
 
@@ -76,6 +88,10 @@ static int setup_data_open(struct inode *inode, struct file *file)
 static const struct file_operations fops_setup_data = {
 	.read =		setup_data_read,
 	.open =		setup_data_open,
+static const struct file_operations fops_setup_data = {
+	.read		= setup_data_read,
+	.open		= simple_open,
+	.llseek		= default_llseek,
 };
 
 static int __init
@@ -102,6 +118,20 @@ create_setup_data_node(struct dentry *parent, int no,
 		error = -ENOMEM;
 		goto err_type;
 	}
+
+	sprintf(buf, "%d", no);
+	d = debugfs_create_dir(buf, parent);
+	if (!d)
+		return -ENOMEM;
+
+	type = debugfs_create_x32("type", S_IRUGO, d, &node->type);
+	if (!type)
+		goto err_dir;
+
+	data = debugfs_create_file("data", S_IRUGO, d, node, &fops_setup_data);
+	if (!data)
+		goto err_type;
+
 	return 0;
 
 err_type:
@@ -110,6 +140,7 @@ err_dir:
 	debugfs_remove(d);
 err_return:
 	return error;
+	return -ENOMEM;
 }
 
 static int __init create_setup_data_nodes(struct dentry *parent)
@@ -126,6 +157,15 @@ static int __init create_setup_data_nodes(struct dentry *parent)
 		error = -ENOMEM;
 		goto err_return;
 	}
+	int error;
+	struct dentry *d;
+	struct page *pg;
+	u64 pa_data;
+	int no = 0;
+
+	d = debugfs_create_dir("setup_data", parent);
+	if (!d)
+		return -ENOMEM;
 
 	pa_data = boot_params.hdr.setup_data;
 
@@ -135,6 +175,7 @@ static int __init create_setup_data_nodes(struct dentry *parent)
 			error = -ENOMEM;
 			goto err_dir;
 		}
+
 		pg = pfn_to_page((pa_data+sizeof(*data)-1) >> PAGE_SHIFT);
 		if (PageHighMem(pg)) {
 			data = ioremap_cache(pa_data, sizeof(*data));
@@ -146,6 +187,8 @@ static int __init create_setup_data_nodes(struct dentry *parent)
 		} else {
 			data = __va(pa_data);
 		}
+		} else
+			data = __va(pa_data);
 
 		node->paddr = pa_data;
 		node->type = data->type;
@@ -159,6 +202,7 @@ static int __init create_setup_data_nodes(struct dentry *parent)
 			goto err_dir;
 		no++;
 	}
+
 	return 0;
 
 err_dir:
@@ -197,6 +241,26 @@ static int __init boot_params_kdebugfs_init(void)
 	error = create_setup_data_nodes(dbp);
 	if (error)
 		goto err_data;
+	int error = -ENOMEM;
+
+	dbp = debugfs_create_dir("boot_params", NULL);
+	if (!dbp)
+		return -ENOMEM;
+
+	version = debugfs_create_x16("version", S_IRUGO, dbp,
+				     &boot_params.hdr.version);
+	if (!version)
+		goto err_dir;
+
+	data = debugfs_create_blob("data", S_IRUGO, dbp,
+				   &boot_params_blob);
+	if (!data)
+		goto err_version;
+
+	error = create_setup_data_nodes(dbp);
+	if (error)
+		goto err_data;
+
 	return 0;
 
 err_data:
@@ -209,6 +273,9 @@ err_return:
 	return error;
 }
 #endif
+	return error;
+}
+#endif /* CONFIG_DEBUG_BOOT_PARAMS */
 
 static int __init arch_kdebugfs_init(void)
 {

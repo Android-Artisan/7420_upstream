@@ -43,6 +43,12 @@ static int init_hw(struct echoaudio *chip, u16 device_id, u16 subdevice_id)
 
 	if ((err = init_dsp_comm_page(chip))) {
 		DE_INIT(("init_hw - could not initialize DSP comm page\n"));
+	if (snd_BUG_ON((subdevice_id & 0xfff0) != INDIGO_IO))
+		return -ENODEV;
+
+	if ((err = init_dsp_comm_page(chip))) {
+		dev_err(chip->card->dev,
+			"init_hw - could not initialize DSP comm page\n");
 		return err;
 	}
 
@@ -53,6 +59,11 @@ static int init_hw(struct echoaudio *chip, u16 device_id, u16 subdevice_id)
 	/* Since this card has no ASIC, mark it as loaded so everything
 	   works OK */
 	chip->asic_loaded = TRUE;
+	chip->bad_board = true;
+	chip->dsp_code_to_load = FW_INDIGO_IO_DSP;
+	/* Since this card has no ASIC, mark it as loaded so everything
+	   works OK */
+	chip->asic_loaded = true;
 	chip->input_clock_types = ECHO_CLOCK_BIT_INTERNAL;
 
 	if ((err = load_firmware(chip)) < 0)
@@ -75,7 +86,16 @@ static int init_hw(struct echoaudio *chip, u16 device_id, u16 subdevice_id)
 	err = update_vmixer_level(chip);
 
 	DE_INIT(("init_hw done\n"));
+	chip->bad_board = false;
+
 	return err;
+}
+
+
+
+static int set_mixer_defaults(struct echoaudio *chip)
+{
+	return init_line_levels(chip);
 }
 
 
@@ -116,6 +136,9 @@ static int set_vmixer_gain(struct echoaudio *chip, u16 output, u16 pipe,
 
 	snd_assert(pipe < num_pipes_out(chip) &&
 		   output < num_busses_out(chip), return -EINVAL);
+	if (snd_BUG_ON(pipe >= num_pipes_out(chip) ||
+		       output >= num_busses_out(chip)))
+		return -EINVAL;
 
 	if (wait_handshake(chip))
 		return -EIO;
@@ -125,6 +148,8 @@ static int set_vmixer_gain(struct echoaudio *chip, u16 output, u16 pipe,
 	chip->comm_page->vmixer[index] = gain;
 
 	DE_ACT(("set_vmixer_gain: pipe %d, out %d = %d\n", pipe, output, gain));
+	dev_dbg(chip->card->dev,
+		"set_vmixer_gain: pipe %d, out %d = %d\n", pipe, output, gain);
 	return 0;
 }
 

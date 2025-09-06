@@ -2,6 +2,7 @@
  * arch/arm/plat-iop/setup.c
  *
  * Author: Nicolas Pitre <nico@cam.org>
+ * Author: Nicolas Pitre <nico@fluxnic.net>
  * Copyright (C) 2001 MontaVista Software, Inc.
  * Copyright (C) 2004 Intel Corporation.
  *
@@ -17,6 +18,8 @@
 
 /*
  * Standard IO mapping for all IOP3xx based systems
+ * Standard IO mapping for all IOP3xx based systems.  Note that
+ * the IOP3xx OCCDR must be mapped uncached and unbuffered.
  */
 static struct map_desc iop3xx_std_desc[] __initdata = {
 	 {	/* mem mapped registers */
@@ -29,6 +32,7 @@ static struct map_desc iop3xx_std_desc[] __initdata = {
 		.pfn		= __phys_to_pfn(IOP3XX_PCI_LOWER_IO_PA),
 		.length		= IOP3XX_PCI_IO_WINDOW_SIZE,
 		.type		= MT_DEVICE,
+		.type		= MT_UNCACHED,
 	 },
 };
 

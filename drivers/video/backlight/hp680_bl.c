@@ -20,6 +20,7 @@
 
 #include <cpu/dac.h>
 #include <asm/hp6xx.h>
+#include <mach/hp6xx.h>
 #include <asm/hd64461.h>
 
 #define HP680_MAX_INTENSITY 255
@@ -27,6 +28,7 @@
 
 static int hp680bl_suspended;
 static int current_intensity = 0;
+static int current_intensity;
 static DEFINE_SPINLOCK(bl_lock);
 
 static void hp680bl_send_intensity(struct backlight_device *bd)
@@ -68,6 +70,10 @@ static void hp680bl_send_intensity(struct backlight_device *bd)
 static int hp680bl_suspend(struct platform_device *pdev, pm_message_t state)
 {
 	struct backlight_device *bd = platform_get_drvdata(pdev);
+#ifdef CONFIG_PM_SLEEP
+static int hp680bl_suspend(struct device *dev)
+{
+	struct backlight_device *bd = dev_get_drvdata(dev);
 
 	hp680bl_suspended = 1;
 	hp680bl_send_intensity(bd);
@@ -77,6 +83,9 @@ static int hp680bl_suspend(struct platform_device *pdev, pm_message_t state)
 static int hp680bl_resume(struct platform_device *pdev)
 {
 	struct backlight_device *bd = platform_get_drvdata(pdev);
+static int hp680bl_resume(struct device *dev)
+{
+	struct backlight_device *bd = dev_get_drvdata(dev);
 
 	hp680bl_suspended = 0;
 	hp680bl_send_intensity(bd);
@@ -86,6 +95,10 @@ static int hp680bl_resume(struct platform_device *pdev)
 #define hp680bl_suspend	NULL
 #define hp680bl_resume	NULL
 #endif
+
+#endif
+
+static SIMPLE_DEV_PM_OPS(hp680bl_pm_ops, hp680bl_suspend, hp680bl_resume);
 
 static int hp680bl_set_intensity(struct backlight_device *bd)
 {
@@ -99,6 +112,7 @@ static int hp680bl_get_intensity(struct backlight_device *bd)
 }
 
 static struct backlight_ops hp680bl_ops = {
+static const struct backlight_ops hp680bl_ops = {
 	.get_brightness = hp680bl_get_intensity,
 	.update_status  = hp680bl_set_intensity,
 };
@@ -109,6 +123,16 @@ static int __init hp680bl_probe(struct platform_device *pdev)
 
 	bd = backlight_device_register ("hp680-bl", &pdev->dev, NULL,
 		    &hp680bl_ops);
+static int hp680bl_probe(struct platform_device *pdev)
+{
+	struct backlight_properties props;
+	struct backlight_device *bd;
+
+	memset(&props, 0, sizeof(struct backlight_properties));
+	props.type = BACKLIGHT_RAW;
+	props.max_brightness = HP680_MAX_INTENSITY;
+	bd = devm_backlight_device_register(&pdev->dev, "hp680-bl", &pdev->dev,
+					NULL, &hp680bl_ops, &props);
 	if (IS_ERR(bd))
 		return PTR_ERR(bd);
 
@@ -141,6 +165,9 @@ static struct platform_driver hp680bl_driver = {
 	.resume		= hp680bl_resume,
 	.driver		= {
 		.name	= "hp680-bl",
+	.driver		= {
+		.name	= "hp680-bl",
+		.pm	= &hp680bl_pm_ops,
 	},
 };
 
@@ -164,12 +191,22 @@ static int __init hp680bl_init(void)
 		}
 	}
 	return ret;
+	if (ret)
+		return ret;
+	hp680bl_device = platform_device_register_simple("hp680-bl", -1,
+							NULL, 0);
+	if (IS_ERR(hp680bl_device)) {
+		platform_driver_unregister(&hp680bl_driver);
+		return PTR_ERR(hp680bl_device);
+	}
+	return 0;
 }
 
 static void __exit hp680bl_exit(void)
 {
 	platform_device_unregister(hp680bl_device);
  	platform_driver_unregister(&hp680bl_driver);
+	platform_driver_unregister(&hp680bl_driver);
 }
 
 module_init(hp680bl_init);

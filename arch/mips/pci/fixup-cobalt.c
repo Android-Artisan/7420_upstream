@@ -95,6 +95,7 @@ static void qube_raq_galileo_fixup(struct pci_dev *dev)
 	 *
 	 * On all machines prior to Q2, we had the STOP line disconnected
 	 * from Galileo to VIA on PCI.  The new Galileo does not function
+	 * from Galileo to VIA on PCI.	The new Galileo does not function
 	 * correctly unless we have it connected.
 	 *
 	 * Therefore we must set the disconnect/retry cycle values to
@@ -102,6 +103,7 @@ static void qube_raq_galileo_fixup(struct pci_dev *dev)
 	 */
 
  	printk(KERN_INFO "Galileo: revision %u\n", dev->revision);
+	printk(KERN_INFO "Galileo: revision %u\n", dev->revision);
 
 #if 0
 	if (dev->revision >= 0x10) {
@@ -173,6 +175,30 @@ static char irq_tab_raq2[] __initdata = {
   [COBALT_PCICONF_VIA]     = 0,
   [COBALT_PCICONF_PCISLOT] = PCISLOT_IRQ,
   [COBALT_PCICONF_ETH1]    = ETH1_IRQ
+  [COBALT_PCICONF_CPU]	   = 0,
+  [COBALT_PCICONF_ETH0]	   = QUBE1_ETH0_IRQ,
+  [COBALT_PCICONF_RAQSCSI] = SCSI_IRQ,
+  [COBALT_PCICONF_VIA]	   = 0,
+  [COBALT_PCICONF_PCISLOT] = PCISLOT_IRQ,
+  [COBALT_PCICONF_ETH1]	   = 0
+};
+
+static char irq_tab_cobalt[] __initdata = {
+  [COBALT_PCICONF_CPU]	   = 0,
+  [COBALT_PCICONF_ETH0]	   = ETH0_IRQ,
+  [COBALT_PCICONF_RAQSCSI] = SCSI_IRQ,
+  [COBALT_PCICONF_VIA]	   = 0,
+  [COBALT_PCICONF_PCISLOT] = PCISLOT_IRQ,
+  [COBALT_PCICONF_ETH1]	   = ETH1_IRQ
+};
+
+static char irq_tab_raq2[] __initdata = {
+  [COBALT_PCICONF_CPU]	   = 0,
+  [COBALT_PCICONF_ETH0]	   = ETH0_IRQ,
+  [COBALT_PCICONF_RAQSCSI] = RAQ2_SCSI_IRQ,
+  [COBALT_PCICONF_VIA]	   = 0,
+  [COBALT_PCICONF_PCISLOT] = PCISLOT_IRQ,
+  [COBALT_PCICONF_ETH1]	   = ETH1_IRQ
 };
 
 int __init pcibios_map_irq(const struct pci_dev *dev, u8 slot, u8 pin)

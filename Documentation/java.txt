@@ -57,7 +57,6 @@ other program after you have done the following:
    Both the javawrapper shellscript and the javaclassname program
    were supplied by Colin J. Watson <cjw44@cam.ac.uk>.
 
-====================== Cut here ===================
 #!/bin/bash
 # /usr/local/bin/javawrapper - the wrapper for binfmt_misc/java
 
@@ -144,10 +143,8 @@ fi
 
 shift
 /usr/bin/java $FQCLASS "$@"
-====================== Cut here ===================
 
 
-====================== Cut here ===================
 /* javaclassname.c
  *
  * Extracts the class name from a Java class file; intended for use in a Java
@@ -188,6 +185,9 @@ shift
 #define CP_METHODREF 10
 #define CP_INTERFACEMETHODREF 11
 #define CP_NAMEANDTYPE 12
+#define CP_METHODHANDLE 15
+#define CP_METHODTYPE 16
+#define CP_INVOKEDYNAMIC 18
 
 /* Define some commonly used error messages */
 
@@ -244,12 +244,19 @@ void skip_constant(FILE *classfile, u_int16_t *cur)
 	case CP_STRING:
 		seekerr = fseek(classfile, 2, SEEK_CUR);
 		break;
+	case CP_METHODTYPE:
+		seekerr = fseek(classfile, 2, SEEK_CUR);
+		break;
+	case CP_METHODHANDLE:
+		seekerr = fseek(classfile, 3, SEEK_CUR);
+		break;
 	case CP_INTEGER:
 	case CP_FLOAT:
 	case CP_FIELDREF:
 	case CP_METHODREF:
 	case CP_INTERFACEMETHODREF:
 	case CP_NAMEANDTYPE:
+	case CP_INVOKEDYNAMIC:
 		seekerr = fseek(classfile, 4, SEEK_CUR);
 		break;
 	case CP_LONG:
@@ -342,15 +349,12 @@ int main(int argc, char **argv)
 	fclose(classfile);
 	return 0;
 }
-====================== Cut here ===================
 
 
-====================== Cut here ===================
 #!/bin/bash
 # /usr/local/java/bin/jarwrapper - the wrapper for binfmt_misc/jar
 
 java -jar $1
-====================== Cut here ===================
 
 
 Now simply chmod +x the .class, .jar and/or .html files you want to execute.

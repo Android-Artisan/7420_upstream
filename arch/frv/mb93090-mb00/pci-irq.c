@@ -20,7 +20,6 @@
 
 /*
  *	DEVICE	DEVNO	INT#A	INT#B	INT#C	INT#D
- *	=======	=======	=======	=======	=======	=======
  *	MB86943	0	fpga.10	-	-	-
  *	RTL8029	16	fpga.12	-	-	-
  *	SLOT 1	19	fpga.6	fpga.5	fpga.4	fpga.3
@@ -30,6 +29,7 @@
  */
 
 static const uint8_t __initdata pci_bus0_irq_routing[32][4] = {
+static const uint8_t __initconst pci_bus0_irq_routing[32][4] = {
 	[0 ] = { IRQ_FPGA_MB86943_PCI_INTA },
 	[16] = { IRQ_FPGA_RTL8029_INTA },
 	[17] = { IRQ_FPGA_PCI_INTC, IRQ_FPGA_PCI_INTD, IRQ_FPGA_PCI_INTA, IRQ_FPGA_PCI_INTB },

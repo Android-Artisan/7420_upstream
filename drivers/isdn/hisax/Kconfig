@@ -17,6 +17,7 @@ config ISDN_DRV_HISAX
 	  card, below.
 
 if ISDN_DRV_HISAX!=n
+if ISDN_DRV_HISAX
 
 comment "D-channel protocol features"
 
@@ -110,6 +111,7 @@ config HISAX_16_3
 config HISAX_TELESPCI
 	bool "Teles PCI"
 	depends on PCI && PCI_LEGACY && (BROKEN || !(SPARC || PPC || PARISC || M68K || (MIPS && !CPU_LITTLE_ENDIAN) || FRV))
+	depends on PCI && (BROKEN || !(SPARC || PPC || PARISC || M68K || (MIPS && !CPU_LITTLE_ENDIAN) || FRV || (XTENSA && !CPU_LITTLE_ENDIAN)))
 	help
 	  This enables HiSax support for the Teles PCI.
 	  See <file:Documentation/isdn/README.HiSax> on how to configure it.
@@ -238,6 +240,8 @@ config HISAX_MIC
 config HISAX_NETJET
 	bool "NETjet card"
 	depends on PCI && PCI_LEGACY && (BROKEN || !(SPARC || PPC || PARISC || M68K || (MIPS && !CPU_LITTLE_ENDIAN) || FRV))
+	depends on PCI && (BROKEN || !(PPC || PARISC || M68K || (MIPS && !CPU_LITTLE_ENDIAN) || FRV || (XTENSA && !CPU_LITTLE_ENDIAN) || MICROBLAZE))
+	depends on VIRT_TO_BUS
 	help
 	  This enables HiSax support for the NetJet from Traverse
 	  Technologies.
@@ -249,6 +253,8 @@ config HISAX_NETJET
 config HISAX_NETJET_U
 	bool "NETspider U card"
 	depends on PCI && PCI_LEGACY && (BROKEN || !(SPARC || PPC || PARISC || M68K || (MIPS && !CPU_LITTLE_ENDIAN) || FRV))
+	depends on PCI && (BROKEN || !(PPC || PARISC || M68K || (MIPS && !CPU_LITTLE_ENDIAN) || FRV || (XTENSA && !CPU_LITTLE_ENDIAN) || MICROBLAZE))
+	depends on VIRT_TO_BUS
 	help
 	  This enables HiSax support for the Netspider U interface ISDN card
 	  from Traverse Technologies.
@@ -288,6 +294,7 @@ config HISAX_HSTSAPHIR
 config HISAX_BKM_A4T
 	bool "Telekom A4T card"
 	depends on PCI && PCI_LEGACY
+	depends on PCI
 	help
 	  This enables HiSax support for the Telekom A4T card.
 
@@ -298,6 +305,7 @@ config HISAX_BKM_A4T
 config HISAX_SCT_QUADRO
 	bool "Scitel Quadro card"
 	depends on PCI && PCI_LEGACY
+	depends on PCI
 	help
 	  This enables HiSax support for the Scitel Quadro card.
 
@@ -317,6 +325,7 @@ config HISAX_GAZEL
 config HISAX_HFC_PCI
 	bool "HFC PCI-Bus cards"
 	depends on PCI && PCI_LEGACY && (BROKEN || !(SPARC || PPC || PARISC || M68K || (MIPS && !CPU_LITTLE_ENDIAN) || FRV))
+	depends on PCI && (BROKEN || !(SPARC || PPC || PARISC || M68K || (MIPS && !CPU_LITTLE_ENDIAN) || FRV || (XTENSA && !CPU_LITTLE_ENDIAN)))
 	help
 	  This enables HiSax support for the HFC-S PCI 2BDS0 based cards.
 
@@ -326,6 +335,7 @@ config HISAX_HFC_PCI
 config HISAX_W6692
 	bool "Winbond W6692 based cards"
 	depends on PCI && PCI_LEGACY
+	depends on PCI
 	help
 	  This enables HiSax support for Winbond W6692 based PCI ISDN cards.
 
@@ -342,6 +352,7 @@ config HISAX_HFC_SX
 config HISAX_ENTERNOW_PCI
 	bool "Formula-n enter:now PCI card"
 	depends on HISAX_NETJET && PCI && PCI_LEGACY && (BROKEN || !(SPARC || PPC || PARISC || M68K || (MIPS && !CPU_LITTLE_ENDIAN) || FRV))
+	depends on HISAX_NETJET && PCI && (BROKEN || !(SPARC || PPC || PARISC || M68K || (MIPS && !CPU_LITTLE_ENDIAN) || FRV || (XTENSA && !CPU_LITTLE_ENDIAN)))
 	help
 	  This enables HiSax support for the Formula-n enter:now PCI
 	  ISDN card.
@@ -391,6 +402,9 @@ comment "HiSax sub driver modules"
 config HISAX_ST5481
 	tristate "ST5481 USB ISDN modem (EXPERIMENTAL)"
 	depends on USB && EXPERIMENTAL
+	tristate "ST5481 USB ISDN modem"
+	depends on USB
+	select ISDN_HDLC
 	select CRC_CCITT
 	select BITREVERSE
 	help
@@ -400,18 +414,23 @@ config HISAX_ST5481
 config HISAX_HFCUSB
 	tristate "HFC USB based ISDN modems (EXPERIMENTAL)"
 	depends on USB && EXPERIMENTAL
+	tristate "HFC USB based ISDN modems"
+	depends on USB
 	help
 	  This enables the driver for HFC USB based ISDN modems.
 
 config HISAX_HFC4S8S
 	tristate "HFC-4S/8S based ISDN cards (EXPERIMENTAL)"
 	depends on EXPERIMENTAL
+	tristate "HFC-4S/8S based ISDN cards"
 	help
 	  This enables the driver for HFC-4S/8S based ISDN cards.
 
 config HISAX_FRITZ_PCIPNP
 	tristate "AVM Fritz!Card PCI/PCIv2/PnP support (EXPERIMENTAL)"
 	depends on PCI && PCI_LEGACY && EXPERIMENTAL
+	tristate "AVM Fritz!Card PCI/PCIv2/PnP support"
+	depends on PCI
 	help
 	  This enables the driver for the AVM Fritz!Card PCI,
 	  Fritz!Card PCI v2 and Fritz!Card PnP.

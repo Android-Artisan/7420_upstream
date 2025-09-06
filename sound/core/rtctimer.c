@@ -23,11 +23,13 @@
 #include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/moduleparam.h>
+#include <linux/module.h>
 #include <linux/log2.h>
 #include <sound/core.h>
 #include <sound/timer.h>
 
 #if defined(CONFIG_RTC) || defined(CONFIG_RTC_MODULE)
+#if IS_ENABLED(CONFIG_RTC)
 
 #include <linux/mc146818rtc.h>
 
@@ -92,6 +94,8 @@ rtctimer_start(struct snd_timer *timer)
 {
 	rtc_task_t *rtc = timer->private_data;
 	snd_assert(rtc != NULL, return -EINVAL);
+	if (snd_BUG_ON(!rtc))
+		return -EINVAL;
 	rtc_control(rtc, RTC_IRQP_SET, rtctimer_freq);
 	rtc_control(rtc, RTC_PIE_ON, 0);
 	return 0;
@@ -102,6 +106,8 @@ rtctimer_stop(struct snd_timer *timer)
 {
 	rtc_task_t *rtc = timer->private_data;
 	snd_assert(rtc != NULL, return -EINVAL);
+	if (snd_BUG_ON(!rtc))
+		return -EINVAL;
 	rtc_control(rtc, RTC_PIE_OFF, 0);
 	return 0;
 }
@@ -117,6 +123,7 @@ static void rtctimer_tasklet(unsigned long data)
 static void rtctimer_interrupt(void *private_data)
 {
 	tasklet_hi_schedule(private_data);
+	tasklet_schedule(private_data);
 }
 
 
@@ -132,6 +139,7 @@ static int __init rtctimer_init(void)
 	    !is_power_of_2(rtctimer_freq)) {
 		snd_printk(KERN_ERR "rtctimer: invalid frequency %d\n",
 			   rtctimer_freq);
+		pr_err("ALSA: rtctimer: invalid frequency %d\n", rtctimer_freq);
 		return -EINVAL;
 	}
 
@@ -184,3 +192,4 @@ MODULE_LICENSE("GPL");
 MODULE_ALIAS("snd-timer-" __stringify(SNDRV_TIMER_GLOBAL_RTC));
 
 #endif /* CONFIG_RTC || CONFIG_RTC_MODULE */
+#endif /* IS_ENABLED(CONFIG_RTC) */

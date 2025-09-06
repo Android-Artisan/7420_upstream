@@ -27,5 +27,18 @@
 /* macro to get at IO space when running virtually */
 #define IO_ADDRESS(x)		(((x) & 0x0fffffff) + 0xf0000000)
 #define __io_address(n)		__io(IO_ADDRESS(n))
+#ifdef CONFIG_MMU
+/*
+ * Statically mapped addresses:
+ *
+ * 10xx xxxx -> fbxx xxxx
+ * 1exx xxxx -> fdxx xxxx
+ * 1fxx xxxx -> fexx xxxx
+ */
+#define IO_ADDRESS(x)		(((x) & 0x03ffffff) + 0xfb000000)
+#else
+#define IO_ADDRESS(x)		(x)
+#endif
+#define __io_address(n)		IOMEM(IO_ADDRESS(n))
 
 #endif

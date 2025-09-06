@@ -44,3 +44,57 @@ config INITRAMFS_ROOT_GID
 	  owned by group root in the initial ramdisk image.
 
 	  If you are not sure, leave it set to "0".
+
+config RD_GZIP
+	bool "Support initial ramdisks compressed using gzip"
+	depends on BLK_DEV_INITRD
+	default y
+	select DECOMPRESS_GZIP
+	help
+	  Support loading of a gzip encoded initial ramdisk or cpio buffer.
+	  If unsure, say Y.
+
+config RD_BZIP2
+	bool "Support initial ramdisks compressed using bzip2"
+	default y
+	depends on BLK_DEV_INITRD
+	select DECOMPRESS_BZIP2
+	help
+	  Support loading of a bzip2 encoded initial ramdisk or cpio buffer
+	  If unsure, say N.
+
+config RD_LZMA
+	bool "Support initial ramdisks compressed using LZMA"
+	default y
+	depends on BLK_DEV_INITRD
+	select DECOMPRESS_LZMA
+	help
+	  Support loading of a LZMA encoded initial ramdisk or cpio buffer
+	  If unsure, say N.
+
+config RD_XZ
+	bool "Support initial ramdisks compressed using XZ"
+	depends on BLK_DEV_INITRD
+	default y
+	select DECOMPRESS_XZ
+	help
+	  Support loading of a XZ encoded initial ramdisk or cpio buffer.
+	  If unsure, say N.
+
+config RD_LZO
+	bool "Support initial ramdisks compressed using LZO"
+	default y
+	depends on BLK_DEV_INITRD
+	select DECOMPRESS_LZO
+	help
+	  Support loading of a LZO encoded initial ramdisk or cpio buffer
+	  If unsure, say N.
+
+config RD_LZ4
+	bool "Support initial ramdisks compressed using LZ4"
+	default y
+	depends on BLK_DEV_INITRD
+	select DECOMPRESS_LZ4
+	help
+	  Support loading of a LZ4 encoded initial ramdisk or cpio buffer
+	  If unsure, say N.

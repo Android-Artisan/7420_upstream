@@ -28,6 +28,11 @@ void ignore_sigwinch_sig(void)
 {
 	signal(SIGWINCH, SIG_IGN);
 }
+#include <endian.h>
+#include <byteswap.h>
+
+#include "ubd.h"
+#include <os.h>
 
 int start_io_thread(unsigned long sp, int *fd_out)
 {

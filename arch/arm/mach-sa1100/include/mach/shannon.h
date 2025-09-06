@@ -31,6 +31,12 @@
 #define SHANNON_IRQ_GPIO_RDY_0		IRQ_GPIO26
 #define SHANNON_GPIO_RDY_1		GPIO_GPIO (27)	/* in */
 #define SHANNON_IRQ_GPIO_RDY_1		IRQ_GPIO27
+#define SHANNON_GPIO_DISP_EN		22		/* out */
+/* XXX GPIO 23 unaccounted for */
+#define SHANNON_GPIO_EJECT_0		24		/* in */
+#define SHANNON_GPIO_EJECT_1		25		/* in */
+#define SHANNON_GPIO_RDY_0		26		/* in */
+#define SHANNON_GPIO_RDY_1		27		/* in */
 
 /* MCP UCB codec GPIO pins... */
 

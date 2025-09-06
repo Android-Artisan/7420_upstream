@@ -310,6 +310,9 @@ struct snd_seq_event_bounce {
 };
 
 #ifdef __KERNEL__
+#include <linux/ioctl.h>
+#include <sound/asound.h>
+#include <uapi/sound/asequencer.h>
 
 /* helper macro */
 #define snd_seq_event_bounce_ext_data(ev) ((void*)((char *)(ev)->data.ext.ptr + sizeof(struct snd_seq_event_bounce)))

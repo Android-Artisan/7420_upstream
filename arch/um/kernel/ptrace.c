@@ -22,6 +22,30 @@ static inline void set_singlestepping(struct task_struct *child, int on)
 
 #ifdef SUBARCH_SET_SINGLESTEPPING
 	SUBARCH_SET_SINGLESTEPPING(child, on);
+#include <linux/audit.h>
+#include <linux/ptrace.h>
+#include <linux/sched.h>
+#include <linux/tracehook.h>
+#include <asm/uaccess.h>
+#include <asm/ptrace-abi.h>
+
+void user_enable_single_step(struct task_struct *child)
+{
+	child->ptrace |= PT_DTRACE;
+	child->thread.singlestep_syscall = 0;
+
+#ifdef SUBARCH_SET_SINGLESTEPPING
+	SUBARCH_SET_SINGLESTEPPING(child, 1);
+#endif
+}
+
+void user_disable_single_step(struct task_struct *child)
+{
+	child->ptrace &= ~PT_DTRACE;
+	child->thread.singlestep_syscall = 0;
+
+#ifdef SUBARCH_SET_SINGLESTEPPING
+	SUBARCH_SET_SINGLESTEPPING(child, 0);
 #endif
 }
 
@@ -31,6 +55,7 @@ static inline void set_singlestepping(struct task_struct *child, int on)
 void ptrace_disable(struct task_struct *child)
 {
 	set_singlestepping(child,0);
+	user_disable_single_step(child);
 }
 
 extern int peek_user(struct task_struct * child, long addr, long data);
@@ -48,6 +73,14 @@ long arch_ptrace(struct task_struct *child, long request, long addr, long data)
 		ret = generic_ptrace_peekdata(child, addr, data);
 		break;
 
+long arch_ptrace(struct task_struct *child, long request,
+		 unsigned long addr, unsigned long data)
+{
+	int i, ret;
+	unsigned long __user *p = (void __user *)data;
+	void __user *vp = p;
+
+	switch (request) {
 	/* read the word at location addr in the USER area. */
 	case PTRACE_PEEKUSR:
 		ret = peek_user(child, addr, data);
@@ -110,6 +143,10 @@ long arch_ptrace(struct task_struct *child, long request, long addr, long data)
 		ret = 0;
 		break;
 	}
+	case PTRACE_SYSEMU:
+	case PTRACE_SYSEMU_SINGLESTEP:
+		ret = -EIO;
+		break;
 
 #ifdef PTRACE_GETREGS
 	case PTRACE_GETREGS: { /* Get all gp regs from the child. */
@@ -215,6 +252,14 @@ long arch_ptrace(struct task_struct *child, long request, long addr, long data)
 		ret = arch_prctl(child, data, (void *) addr);
 		break;
 #endif
+	case PTRACE_GET_THREAD_AREA:
+		ret = ptrace_get_thread_area(child, addr, vp);
+		break;
+
+	case PTRACE_SET_THREAD_AREA:
+		ret = ptrace_set_thread_area(child, addr, vp);
+		break;
+
 	default:
 		ret = ptrace_request(child, request, addr, data);
 		if (ret == -EIO)
@@ -265,6 +310,29 @@ void syscall_trace(struct uml_pt_regs *regs, int entryexit)
 	/* Fake a debug trap */
 	if (is_singlestep)
 		send_sigtrap(current, regs, 0);
+int syscall_trace_enter(struct pt_regs *regs)
+{
+	audit_syscall_entry(UPT_SYSCALL_NR(&regs->regs),
+			    UPT_SYSCALL_ARG1(&regs->regs),
+			    UPT_SYSCALL_ARG2(&regs->regs),
+			    UPT_SYSCALL_ARG3(&regs->regs),
+			    UPT_SYSCALL_ARG4(&regs->regs));
+
+	if (!test_thread_flag(TIF_SYSCALL_TRACE))
+		return 0;
+
+	return tracehook_report_syscall_entry(regs);
+}
+
+void syscall_trace_leave(struct pt_regs *regs)
+{
+	int ptraced = current->ptrace;
+
+	audit_syscall_exit(regs);
+
+	/* Fake a debug trap */
+	if (ptraced & PT_DTRACE)
+		send_sigtrap(current, &regs->regs, 0);
 
 	if (!test_thread_flag(TIF_SYSCALL_TRACE))
 		return;
@@ -291,4 +359,8 @@ void syscall_trace(struct uml_pt_regs *regs, int entryexit)
 		send_sig(current->exit_code, current, 1);
 		current->exit_code = 0;
 	}
+	tracehook_report_syscall_exit(regs, 0);
+	/* force do_signal() --> is_syscall() */
+	if (ptraced & PT_PTRACED)
+		set_thread_flag(TIF_SIGPENDING);
 }

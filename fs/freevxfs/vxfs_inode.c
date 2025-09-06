@@ -35,6 +35,7 @@
 #include <linux/pagemap.h>
 #include <linux/kernel.h>
 #include <linux/slab.h>
+#include <linux/namei.h>
 
 #include "vxfs.h"
 #include "vxfs_inode.h"
@@ -191,6 +192,10 @@ static __inline__ mode_t
 vxfs_transmod(struct vxfs_inode_info *vip)
 {
 	mode_t			ret = vip->vii_mode & ~VXFS_TYPE_MASK;
+static __inline__ umode_t
+vxfs_transmod(struct vxfs_inode_info *vip)
+{
+	umode_t			ret = vip->vii_mode & ~VXFS_TYPE_MASK;
 
 	if (VXFS_ISFIFO(vip))
 		ret |= S_IFIFO;
@@ -228,6 +233,10 @@ vxfs_iinit(struct inode *ip, struct vxfs_inode_info *vip)
 	ip->i_gid = (gid_t)vip->vii_gid;
 
 	ip->i_nlink = vip->vii_nlink;
+	i_uid_write(ip, (uid_t)vip->vii_uid);
+	i_gid_write(ip, (gid_t)vip->vii_gid);
+
+	set_nlink(ip, vip->vii_nlink);
 	ip->i_size = vip->vii_size;
 
 	ip->i_atime.tv_sec = vip->vii_atime;
@@ -260,6 +269,7 @@ vxfs_get_fake_inode(struct super_block *sbp, struct vxfs_inode_info *vip)
 	struct inode			*ip = NULL;
 
 	if ((ip = new_inode(sbp))) {
+		ip->i_ino = get_next_ino();
 		vxfs_iinit(ip, vip);
 		ip->i_mapping->a_ops = &vxfs_aops;
 	}
@@ -272,6 +282,7 @@ vxfs_get_fake_inode(struct super_block *sbp, struct vxfs_inode_info *vip)
  *
  * Description:
  *  vxfs_put_fake_inode frees all data asssociated with @ip.
+ *  vxfs_put_fake_inode frees all data associated with @ip.
  */
 void
 vxfs_put_fake_inode(struct inode *ip)
@@ -327,6 +338,12 @@ vxfs_iget(struct super_block *sbp, ino_t ino)
 			ip->i_mapping->a_ops = &vxfs_aops;
 		} else
 			ip->i_op = &vxfs_immed_symlink_iops;
+		} else {
+			ip->i_op = &simple_symlink_inode_operations;
+			ip->i_link = vip->vii_immed.vi_immed;
+			nd_terminate_link(ip->i_link, ip->i_size,
+					  sizeof(vip->vii_immed.vi_immed) - 1);
+		}
 	} else
 		init_special_inode(ip, ip->i_mode, old_decode_dev(vip->vii_rdev));
 
@@ -346,4 +363,24 @@ void
 vxfs_clear_inode(struct inode *ip)
 {
 	kmem_cache_free(vxfs_inode_cachep, ip->i_private);
+static void vxfs_i_callback(struct rcu_head *head)
+{
+	struct inode *inode = container_of(head, struct inode, i_rcu);
+	kmem_cache_free(vxfs_inode_cachep, inode->i_private);
+}
+
+/**
+ * vxfs_evict_inode - remove inode from main memory
+ * @ip:		inode to discard.
+ *
+ * Description:
+ *  vxfs_evict_inode() is called on the final iput and frees the private
+ *  inode area.
+ */
+void
+vxfs_evict_inode(struct inode *ip)
+{
+	truncate_inode_pages_final(&ip->i_data);
+	clear_inode(ip);
+	call_rcu(&ip->i_rcu, vxfs_i_callback);
 }

@@ -25,6 +25,7 @@
  *     along with this program; if not, write to the Free Software
  *     Foundation, Inc., 59 Temple Place, Suite 330, Boston,
  *     MA 02111-1307 USA
+ *     along with this program; if not, see <http://www.gnu.org/licenses/>.
  *
  ********************************************************************/
 
@@ -50,6 +51,7 @@ static int ircomm_state_conn(struct ircomm_cb *self, IRCOMM_EVENT event,
 			     struct sk_buff *skb, struct ircomm_info *info);
 
 char *ircomm_state[] = {
+const char *const ircomm_state[] = {
 	"IRCOMM_IDLE",
 	"IRCOMM_WAITI",
 	"IRCOMM_WAITR",
@@ -58,6 +60,7 @@ char *ircomm_state[] = {
 
 #ifdef CONFIG_IRDA_DEBUG
 static char *ircomm_event[] = {
+static const char *const ircomm_event[] __maybe_unused = {
 	"IRCOMM_CONNECT_REQUEST",
 	"IRCOMM_CONNECT_RESPONSE",
 	"IRCOMM_TTP_CONNECT_INDICATION",
@@ -110,6 +113,8 @@ static int ircomm_state_idle(struct ircomm_cb *self, IRCOMM_EVENT event,
 	default:
 		IRDA_DEBUG(4, "%s(), unknown event: %s\n", __func__ ,
 			   ircomm_event[event]);
+		pr_debug("%s(), unknown event: %s\n", __func__ ,
+			 ircomm_event[event]);
 		ret = -EINVAL;
 	}
 	return ret;
@@ -140,6 +145,8 @@ static int ircomm_state_waiti(struct ircomm_cb *self, IRCOMM_EVENT event,
 	default:
 		IRDA_DEBUG(0, "%s(), unknown event: %s\n", __func__ ,
 			   ircomm_event[event]);
+		pr_debug("%s(), unknown event: %s\n", __func__ ,
+			 ircomm_event[event]);
 		ret = -EINVAL;
 	}
 	return ret;
@@ -173,6 +180,8 @@ static int ircomm_state_waitr(struct ircomm_cb *self, IRCOMM_EVENT event,
 	default:
 		IRDA_DEBUG(0, "%s(), unknown event = %s\n", __func__ ,
 			   ircomm_event[event]);
+		pr_debug("%s(), unknown event = %s\n", __func__ ,
+			 ircomm_event[event]);
 		ret = -EINVAL;
 	}
 	return ret;
@@ -215,6 +224,8 @@ static int ircomm_state_conn(struct ircomm_cb *self, IRCOMM_EVENT event,
 	default:
 		IRDA_DEBUG(0, "%s(), unknown event = %s\n", __func__ ,
 			   ircomm_event[event]);
+		pr_debug("%s(), unknown event = %s\n", __func__ ,
+			 ircomm_event[event]);
 		ret = -EINVAL;
 	}
 	return ret;
@@ -231,6 +242,8 @@ int ircomm_do_event(struct ircomm_cb *self, IRCOMM_EVENT event,
 {
 	IRDA_DEBUG(4, "%s: state=%s, event=%s\n", __func__ ,
 		   ircomm_state[self->state], ircomm_event[event]);
+	pr_debug("%s: state=%s, event=%s\n", __func__ ,
+		 ircomm_state[self->state], ircomm_event[event]);
 
 	return (*state[self->state])(self, event, skb, info);
 }
@@ -247,4 +260,6 @@ void ircomm_next_state(struct ircomm_cb *self, IRCOMM_STATE state)
 
 	IRDA_DEBUG(4, "%s: next state=%s, service type=%d\n", __func__ ,
 		   ircomm_state[self->state], self->service_type);
+	pr_debug("%s: next state=%s, service type=%d\n", __func__ ,
+		 ircomm_state[self->state], self->service_type);
 }

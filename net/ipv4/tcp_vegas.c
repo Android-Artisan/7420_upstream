@@ -56,6 +56,17 @@ module_param(gamma, int, 0644);
 MODULE_PARM_DESC(gamma, "limit on increase (scale by 2)");
 
 
+static int alpha = 2;
+static int beta  = 4;
+static int gamma = 1;
+
+module_param(alpha, int, 0644);
+MODULE_PARM_DESC(alpha, "lower bound of packets in network");
+module_param(beta, int, 0644);
+MODULE_PARM_DESC(beta, "upper bound of packets in network");
+module_param(gamma, int, 0644);
+MODULE_PARM_DESC(gamma, "limit on increase (scale by 2)");
+
 /* There are several situations when we must "re-start" Vegas:
  *
  *  o when a connection is established
@@ -163,6 +174,12 @@ void tcp_vegas_cwnd_event(struct sock *sk, enum tcp_ca_event event)
 EXPORT_SYMBOL_GPL(tcp_vegas_cwnd_event);
 
 static void tcp_vegas_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
+static inline u32 tcp_vegas_ssthresh(struct tcp_sock *tp)
+{
+	return  min(tp->snd_ssthresh, tp->snd_cwnd);
+}
+
+static void tcp_vegas_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct vegas *vegas = inet_csk_ca(sk);
@@ -208,6 +225,12 @@ static void tcp_vegas_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 		old_wnd = (vegas->beg_snd_nxt - vegas->beg_snd_una) /
 			tp->mss_cache;
 		old_snd_cwnd = vegas->beg_snd_cwnd;
+		tcp_reno_cong_avoid(sk, ack, acked);
+		return;
+	}
+
+	if (after(ack, vegas->beg_snd_nxt)) {
+		/* Do the Vegas once-per-RTT cwnd adjustment. */
 
 		/* Save the extent of the current window so we can use this
 		 * at the end of the next RTT.
@@ -215,6 +238,7 @@ static void tcp_vegas_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 		vegas->beg_snd_una  = vegas->beg_snd_nxt;
 		vegas->beg_snd_nxt  = tp->snd_nxt;
 		vegas->beg_snd_cwnd = tp->snd_cwnd;
+		vegas->beg_snd_nxt  = tp->snd_nxt;
 
 		/* We do the Vegas calculations only if we got enough RTT
 		 * samples that we can be reasonably sure that we got
@@ -230,6 +254,7 @@ static void tcp_vegas_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 			 * calculation, so we'll behave like Reno.
 			 */
 			tcp_reno_cong_avoid(sk, ack, in_flight);
+			tcp_reno_cong_avoid(sk, ack, acked);
 		} else {
 			u32 rtt, diff;
 			u64 target_cwnd;
@@ -257,6 +282,8 @@ static void tcp_vegas_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 			 */
 			target_cwnd = ((u64)old_wnd * vegas->baseRTT);
 			target_cwnd <<= V_PARAM_SHIFT;
+			 */
+			target_cwnd = (u64)tp->snd_cwnd * vegas->baseRTT;
 			do_div(target_cwnd, rtt);
 
 			/* Calculate the difference between the window we had,
@@ -274,6 +301,13 @@ static void tcp_vegas_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 				 * and switch to congestion avoidance.
 				 */
 				tp->snd_ssthresh = 2;
+			 */
+			diff = tp->snd_cwnd * (rtt-vegas->baseRTT) / vegas->baseRTT;
+
+			if (diff > gamma && tcp_in_slow_start(tp)) {
+				/* Going too fast. Time to slow down
+				 * and switch to congestion avoidance.
+				 */
 
 				/* Set cwnd to match the actual rate
 				 * exactly:
@@ -292,6 +326,14 @@ static void tcp_vegas_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 			} else {
 				/* Congestion avoidance. */
 				u32 next_snd_cwnd;
+				tp->snd_cwnd = min(tp->snd_cwnd, (u32)target_cwnd+1);
+				tp->snd_ssthresh = tcp_vegas_ssthresh(tp);
+
+			} else if (tcp_in_slow_start(tp)) {
+				/* Slow start.  */
+				tcp_slow_start(tp, acked);
+			} else {
+				/* Congestion avoidance. */
 
 				/* Figure out where we would like cwnd
 				 * to be.
@@ -301,11 +343,15 @@ static void tcp_vegas_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 					 * we slow down.
 					 */
 					next_snd_cwnd = old_snd_cwnd - 1;
+					tp->snd_cwnd--;
+					tp->snd_ssthresh
+						= tcp_vegas_ssthresh(tp);
 				} else if (diff < alpha) {
 					/* We don't have enough extra packets
 					 * in the network, so speed up.
 					 */
 					next_snd_cwnd = old_snd_cwnd + 1;
+					tp->snd_cwnd++;
 				} else {
 					/* Sending just as fast as we
 					 * should be.
@@ -320,12 +366,15 @@ static void tcp_vegas_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 					tp->snd_cwnd++;
 				else if (next_snd_cwnd < tp->snd_cwnd)
 					tp->snd_cwnd--;
+				}
 			}
 
 			if (tp->snd_cwnd < 2)
 				tp->snd_cwnd = 2;
 			else if (tp->snd_cwnd > tp->snd_cwnd_clamp)
 				tp->snd_cwnd = tp->snd_cwnd_clamp;
+
+			tp->snd_ssthresh = tcp_current_ssthresh(sk);
 		}
 
 		/* Wipe the slate clean for the next RTT. */
@@ -361,6 +410,33 @@ static struct tcp_congestion_ops tcp_vegas = {
 	.ssthresh	= tcp_reno_ssthresh,
 	.cong_avoid	= tcp_vegas_cong_avoid,
 	.min_cwnd	= tcp_reno_min_cwnd,
+	else if (tcp_in_slow_start(tp))
+		tcp_slow_start(tp, acked);
+}
+
+/* Extract info for Tcp socket info provided via netlink. */
+size_t tcp_vegas_get_info(struct sock *sk, u32 ext, int *attr,
+			  union tcp_cc_info *info)
+{
+	const struct vegas *ca = inet_csk_ca(sk);
+
+	if (ext & (1 << (INET_DIAG_VEGASINFO - 1))) {
+		info->vegas.tcpv_enabled = ca->doing_vegas_now,
+		info->vegas.tcpv_rttcnt = ca->cntRTT,
+		info->vegas.tcpv_rtt = ca->baseRTT,
+		info->vegas.tcpv_minrtt = ca->minRTT,
+
+		*attr = INET_DIAG_VEGASINFO;
+		return sizeof(struct tcpvegas_info);
+	}
+	return 0;
+}
+EXPORT_SYMBOL_GPL(tcp_vegas_get_info);
+
+static struct tcp_congestion_ops tcp_vegas __read_mostly = {
+	.init		= tcp_vegas_init,
+	.ssthresh	= tcp_reno_ssthresh,
+	.cong_avoid	= tcp_vegas_cong_avoid,
 	.pkts_acked	= tcp_vegas_pkts_acked,
 	.set_state	= tcp_vegas_state,
 	.cwnd_event	= tcp_vegas_cwnd_event,

@@ -9,6 +9,7 @@
  * 2 of the License, or (at your option) any later version.
  */
 
+#include <linux/irqdomain.h>
 #include <linux/threads.h>
 #include <linux/list.h>
 #include <linux/radix-tree.h>
@@ -22,6 +23,9 @@
 /* Define a way to iterate across irqs. */
 #define for_each_irq(i) \
 	for ((i) = 0; (i) < NR_IRQS; ++(i))
+
+#include <linux/atomic.h>
+
 
 extern atomic_t ppc_n_lost_interrupts;
 
@@ -319,6 +323,14 @@ extern unsigned int irq_of_parse_and_map(struct device_node *dev, int index);
  */
 extern void irq_early_init(void);
 
+/* Total number of virq in the platform */
+#define NR_IRQS		CONFIG_NR_IRQS
+
+/* Same thing, used by the generic IRQ code */
+#define NR_IRQS_LEGACY		NUM_ISA_INTERRUPTS
+
+extern irq_hw_number_t virq_to_hw(unsigned int virq);
+
 static __inline__ int irq_canonicalize(int irq)
 {
 	return irq;
@@ -361,6 +373,11 @@ extern int call_handle_irq(int irq, void *p1,
 #endif /* CONFIG_IRQSTACKS */
 
 extern void do_IRQ(struct pt_regs *regs);
+extern void call_do_irq(struct pt_regs *regs, struct thread_info *tp);
+extern void do_IRQ(struct pt_regs *regs);
+extern void __do_irq(struct pt_regs *regs);
+
+int irq_choose_cpu(const struct cpumask *mask);
 
 #endif /* _ASM_IRQ_H */
 #endif /* __KERNEL__ */

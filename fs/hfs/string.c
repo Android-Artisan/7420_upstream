@@ -16,7 +16,6 @@
 #include "hfs_fs.h"
 #include <linux/dcache.h>
 
-/*================ File-local variables ================*/
 
 /*
  * unsigned char caseorder[]
@@ -46,12 +45,12 @@ static unsigned char caseorder[256] = {
 	0xF0,0xF1,0xF2,0xF3,0xF4,0xF5,0xF6,0xF7,0xF8,0xF9,0xFA,0xFB,0xFC,0xFD,0xFE,0xFF
 };
 
-/*================ Global functions ================*/
 
 /*
  * Hash a string to an integer in a case-independent way
  */
 int hfs_hash_dentry(struct dentry *dentry, struct qstr *this)
+int hfs_hash_dentry(const struct dentry *dentry, struct qstr *this)
 {
 	const unsigned char *name = this->name;
 	unsigned int hash, len = this->len;
@@ -107,6 +106,20 @@ int hfs_compare_dentry(struct dentry *dentry, struct qstr *s1, struct qstr *s2)
 
 	n1 = s1->name;
 	n2 = s2->name;
+int hfs_compare_dentry(const struct dentry *parent, const struct dentry *dentry,
+		unsigned int len, const char *str, const struct qstr *name)
+{
+	const unsigned char *n1, *n2;
+
+	if (len >= HFS_NAMELEN) {
+		if (name->len < HFS_NAMELEN)
+			return 1;
+		len = HFS_NAMELEN;
+	} else if (len != name->len)
+		return 1;
+
+	n1 = str;
+	n2 = name->name;
 	while (len--) {
 		if (caseorder[*n1++] != caseorder[*n2++])
 			return 1;

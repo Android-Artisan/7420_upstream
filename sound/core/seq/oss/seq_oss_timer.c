@@ -23,6 +23,7 @@
 #include "seq_oss_timer.h"
 #include "seq_oss_event.h"
 #include <sound/seq_oss_legacy.h>
+#include <linux/slab.h>
 
 /*
  */
@@ -257,6 +258,12 @@ snd_seq_oss_timer_ioctl(struct seq_oss_timer *timer, unsigned int cmd, int __use
 		return snd_seq_oss_timer_continue(timer);
 	case SNDCTL_TMR_TEMPO:
 		debug_printk(("timer tempo\n"));
+		return snd_seq_oss_timer_start(timer);
+	case SNDCTL_TMR_STOP:
+		return snd_seq_oss_timer_stop(timer);
+	case SNDCTL_TMR_CONTINUE:
+		return snd_seq_oss_timer_continue(timer);
+	case SNDCTL_TMR_TEMPO:
 		if (get_user(value, arg))
 			return -EFAULT;
 		return snd_seq_oss_timer_tempo(timer, value);

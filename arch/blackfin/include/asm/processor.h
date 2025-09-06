@@ -1,3 +1,9 @@
+/*
+ * Copyright 2004-2009 Analog Devices Inc.
+ *
+ * Licensed under the GPL-2 or later.
+ */
+
 #ifndef __ASM_BFIN_PROCESSOR_H
 #define __ASM_BFIN_PROCESSOR_H
 
@@ -10,6 +16,8 @@
 #include <asm/blackfin.h>
 #include <asm/segment.h>
 #include <linux/compiler.h>
+#include <asm/ptrace.h>
+#include <mach/blackfin.h>
 
 static inline unsigned long rdusp(void)
 {
@@ -22,6 +30,14 @@ static inline unsigned long rdusp(void)
 static inline void wrusp(unsigned long usp)
 {
 	__asm__ __volatile__("usp = %0;\n\t"::"da"(usp));
+}
+
+static inline unsigned long __get_SP(void)
+{
+	unsigned long sp;
+
+	__asm__ __volatile__("%0 = sp;\n\t" : "=da"(sp));
+	return sp;
 }
 
 /*
@@ -70,6 +86,8 @@ do {									\
 		sizeof(*L1_SCRATCH_TASK_INFO));				\
 	wrusp(_usp);							\
 } while(0)
+extern void start_thread(struct pt_regs *regs, unsigned long new_ip,
+					       unsigned long new_sp);
 
 /* Forward declaration, a strange C thing */
 struct task_struct;
@@ -107,6 +125,8 @@ unsigned long get_wchan(struct task_struct *p);
 #define	KSTK_ESP(tsk)	((tsk) == current ? rdusp() : (tsk)->thread.usp)
 
 #define cpu_relax()    	barrier()
+#define cpu_relax()    	smp_mb()
+#define cpu_relax_lowlatency() cpu_relax()
 
 /* Get the Silicon Revision of the chip */
 static inline uint32_t __pure bfin_revid(void)
@@ -134,6 +154,34 @@ static inline uint32_t __pure bfin_revid(void)
 	return revid;
 }
 
+	/* Always use CHIPID, to work around ANOMALY_05000234 */
+	uint32_t revid = (bfin_read_CHIPID() & CHIPID_VERSION) >> 28;
+
+#ifdef _BOOTROM_GET_DXE_ADDRESS_TWI
+	/*
+	 * ANOMALY_05000364
+	 * Incorrect Revision Number in DSPID Register
+	 */
+	if (ANOMALY_05000364 &&
+	    bfin_read16(_BOOTROM_GET_DXE_ADDRESS_TWI) == 0x2796)
+		revid = 1;
+#endif
+
+	return revid;
+}
+
+static inline uint16_t __pure bfin_cpuid(void)
+{
+	return (bfin_read_CHIPID() & CHIPID_FAMILY) >> 12;
+}
+
+static inline uint32_t __pure bfin_dspid(void)
+{
+	return bfin_read_DSPID();
+}
+
+#define blackfin_core_id() (bfin_dspid() & 0xff)
+
 static inline uint32_t __pure bfin_compiled_revid(void)
 {
 #if defined(CONFIG_BF_REV_0_0)
@@ -148,6 +196,8 @@ static inline uint32_t __pure bfin_compiled_revid(void)
 	return 4;
 #elif defined(CONFIG_BF_REV_0_5)
 	return 5;
+#elif defined(CONFIG_BF_REV_0_6)
+	return 6;
 #elif defined(CONFIG_BF_REV_ANY)
 	return 0xffff;
 #else

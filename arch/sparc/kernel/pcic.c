@@ -27,15 +27,18 @@
 #include <linux/time.h>
 #include <linux/timex.h>
 #include <linux/interrupt.h>
+#include <linux/export.h>
 
 #include <asm/irq.h>
 #include <asm/oplib.h>
 #include <asm/prom.h>
 #include <asm/pcic.h>
+#include <asm/timex.h>
 #include <asm/timer.h>
 #include <asm/uaccess.h>
 #include <asm/irq_regs.h>
 
+#include "kernel.h"
 #include "irq.h"
 
 /*
@@ -167,6 +170,12 @@ volatile int pcic_trapped;
 
 static void pci_do_gettimeofday(struct timeval *tv);
 static int pci_do_settimeofday(struct timespec *tv);
+static volatile int pcic_speculative;
+static volatile int pcic_trapped;
+
+/* forward */
+unsigned int pcic_build_device_irq(struct platform_device *op,
+                                   unsigned int real_irq);
 
 #define CONFIG_CMD(bus, device_fn, where) (0x80000000 | (((unsigned int)bus) << 16) | (((unsigned int)device_fn) << 8) | (where & ~3))
 
@@ -288,6 +297,7 @@ int __init pcic_probe(void)
 	struct linux_pbm_info* pbm;
 	char namebuf[64];
 	int node;
+	phandle node;
 	int err;
 
 	if (pcic0_up) {
@@ -329,6 +339,7 @@ int __init pcic_probe(void)
 	pcic->pcic_res_cfg_addr.name = "pcic_cfg_addr";
 	if ((pcic->pcic_config_space_addr =
 	    ioremap(regs[2].phys_addr, regs[2].reg_size * 2)) == 0) {
+	    ioremap(regs[2].phys_addr, regs[2].reg_size * 2)) == NULL) {
 		prom_printf("PCIC: Error, cannot map "
 			    "PCI Configuration Space Address.\n");
 		prom_halt();
@@ -341,6 +352,7 @@ int __init pcic_probe(void)
 	pcic->pcic_res_cfg_data.name = "pcic_cfg_data";
 	if ((pcic->pcic_config_space_data =
 	    ioremap(regs[3].phys_addr, regs[3].reg_size * 2)) == 0) {
+	    ioremap(regs[3].phys_addr, regs[3].reg_size * 2)) == NULL) {
 		prom_printf("PCIC: Error, cannot map "
 			    "PCI Configuration Space Data.\n");
 		prom_halt();
@@ -354,6 +366,7 @@ int __init pcic_probe(void)
 	{
 		extern volatile int t_nmi[1];
 		extern int pcic_nmi_trap_patch[1];
+		extern int pcic_nmi_trap_patch[4];
 
 		t_nmi[0] = pcic_nmi_trap_patch[0];
 		t_nmi[1] = pcic_nmi_trap_patch[1];
@@ -390,12 +403,16 @@ static void __init pcic_pbm_scan_bus(struct linux_pcic *pcic)
 	struct linux_pbm_info *pbm = &pcic->pbm;
 
 	pbm->pci_bus = pci_scan_bus(pbm->pci_first_busno, &pcic_ops, pbm);
+	if (!pbm->pci_bus)
+		return;
+
 #if 0 /* deadwood transplanted from sparc64 */
 	pci_fill_in_pbm_cookies(pbm->pci_bus, pbm, pbm->prom_node);
 	pci_record_assignments(pbm, pbm->pci_bus);
 	pci_assign_unassigned(pbm, pbm->pci_bus);
 	pci_fixup_irq(pbm, pbm->pci_bus);
 #endif
+	pci_bus_add_devices(pbm->pci_bus);
 }
 
 /*
@@ -445,6 +462,11 @@ static int __init pdev_to_pnode(struct linux_pbm_info *pbm,
 	struct linux_prom_pci_registers regs[PROMREG_MAX];
 	int err;
 	int node = prom_getchild(pbm->prom_node);
+static int pdev_to_pnode(struct linux_pbm_info *pbm, struct pci_dev *pdev)
+{
+	struct linux_prom_pci_registers regs[PROMREG_MAX];
+	int err;
+	phandle node = prom_getchild(pbm->prom_node);
 
 	while(node) {
 		err = prom_getproperty(node, "reg", 
@@ -531,6 +553,7 @@ static void
 pcic_fill_irq(struct linux_pcic *pcic, struct pci_dev *dev, int node)
 {
 	struct pcic_ca2irq *p;
+	unsigned int real_irq;
 	int i, ivec;
 	char namebuf[64];
 
@@ -541,6 +564,7 @@ pcic_fill_irq(struct linux_pcic *pcic, struct pci_dev *dev, int node)
 	}
 
 	if ((p = pcic->pcic_imap) == 0) {
+	if ((p = pcic->pcic_imap) == NULL) {
 		dev->irq = 0;
 		return;
 	}
@@ -563,6 +587,10 @@ pcic_fill_irq(struct linux_pcic *pcic, struct pci_dev *dev, int node)
 	} else if (i >= 4 && i < 8) {
 		ivec = readw(pcic->pcic_regs+PCI_INT_SELECT_HI);
 		dev->irq = ivec >> ((i-4) << 2) & 0xF;
+		real_irq = ivec >> (i << 2) & 0xF;
+	} else if (i >= 4 && i < 8) {
+		ivec = readw(pcic->pcic_regs+PCI_INT_SELECT_HI);
+		real_irq = ivec >> ((i-4) << 2) & 0xF;
 	} else {					/* Corrupted map */
 		printk("PCIC: BAD PIN %d\n", i); for (;;) {}
 	}
@@ -573,12 +601,17 @@ pcic_fill_irq(struct linux_pcic *pcic, struct pci_dev *dev, int node)
 	 * half of PCIC. This happens on JS-E with PROM 3.11, for instance.
 	 */
 	if (dev->irq == 0 || p->force) {
+	/* real_irq means PROM did not bother to program the upper
+	 * half of PCIC. This happens on JS-E with PROM 3.11, for instance.
+	 */
+	if (real_irq == 0 || p->force) {
 		if (p->irq == 0 || p->irq >= 15) {	/* Corrupted map */
 			printk("PCIC: BAD IRQ %d\n", p->irq); for (;;) {}
 		}
 		printk("PCIC: setting irq %d at pin %d for device %02x:%02x\n",
 		    p->irq, p->pin, dev->bus->number, dev->devfn);
 		dev->irq = p->irq;
+		real_irq = p->irq;
 
 		i = p->pin;
 		if (i >= 4) {
@@ -595,12 +628,15 @@ pcic_fill_irq(struct linux_pcic *pcic, struct pci_dev *dev, int node)
  	}
 
 	return;
+	}
+	dev->irq = pcic_build_device_irq(NULL, real_irq);
 }
 
 /*
  * Normally called from {do_}pci_scan_bus...
  */
 void __devinit pcibios_fixup_bus(struct pci_bus *bus)
+void pcibios_fixup_bus(struct pci_bus *bus)
 {
 	struct pci_dev *dev;
 	int i, has_io, has_mem;
@@ -722,6 +758,28 @@ static irqreturn_t pcic_timer_handler (int irq, void *h)
 
 #define USECS_PER_JIFFY  10000  /* We have 100HZ "standard" timer for sparc */
 #define TICK_TIMER_LIMIT ((100*1000000/4)/100)
+/* CPU frequency is 100 MHz, timer increments every 4 CPU clocks */
+#define USECS_PER_JIFFY  (1000000 / HZ)
+#define TICK_TIMER_LIMIT ((100 * 1000000 / 4) / HZ)
+
+static unsigned int pcic_cycles_offset(void)
+{
+	u32 value, count;
+
+	value = readl(pcic0.pcic_regs + PCI_SYS_COUNTER);
+	count = value & ~PCI_SYS_COUNTER_OVERFLOW;
+
+	if (value & PCI_SYS_COUNTER_OVERFLOW)
+		count += TICK_TIMER_LIMIT;
+	/*
+	 * We divide all by HZ
+	 * to have microsecond resolution and to avoid overflow
+	 */
+	count = ((count / HZ) * USECS_PER_JIFFY) / (TICK_TIMER_LIMIT / HZ);
+
+	/* Coordinate with the sparc_config.clock_rate setting */
+	return count * 2;
+}
 
 void __init pci_time_init(void)
 {
@@ -737,6 +795,18 @@ void __init pci_time_init(void)
 	((unsigned int *)do_gettimeofday)[1] = 0x01000000;
 	BTFIXUPSET_CALL(bus_do_settimeofday, pci_do_settimeofday, BTFIXUPCALL_NORM);
 	btfixup();
+	int err;
+
+#ifndef CONFIG_SMP
+	/*
+	 * The clock_rate is in SBUS dimension.
+	 * We take into account this in pcic_cycles_offset()
+	 */
+	sparc_config.clock_rate = SBUS_CLOCK_RATE / HZ;
+	sparc_config.features |= FEAT_L10_CLOCKEVENT;
+#endif
+	sparc_config.features |= FEAT_L10_CLOCKSOURCE;
+	sparc_config.get_cycles_offset = pcic_cycles_offset;
 
 	writel (TICK_TIMER_LIMIT, pcic->pcic_regs+PCI_SYS_LIMIT);
 	/* PROM should set appropriate irq */
@@ -747,6 +817,10 @@ void __init pci_time_init(void)
 	irq = request_irq(timer_irq, pcic_timer_handler,
 			  (IRQF_DISABLED | SA_STATIC_ALLOC), "timer", NULL);
 	if (irq) {
+	irq = pcic_build_device_irq(NULL, timer_irq);
+	err = request_irq(irq, timer_interrupt,
+			  IRQF_TIMER, "timer", NULL);
+	if (err) {
 		prom_printf("time_init: unable to attach IRQ%d\n", timer_irq);
 		prom_halt();
 	}
@@ -849,6 +923,10 @@ char * __devinit pcibios_setup(char *str)
 void pcibios_align_resource(void *data, struct resource *res,
 			    resource_size_t size, resource_size_t align)
 {
+resource_size_t pcibios_align_resource(void *data, const struct resource *res,
+				resource_size_t size, resource_size_t align)
+{
+	return res->start;
 }
 
 int pcibios_enable_device(struct pci_dev *pdev, int mask)
@@ -863,6 +941,7 @@ void pcic_nmi(unsigned int pend, struct pt_regs *regs)
 {
 
 	pend = flip_dword(pend);
+	pend = swab32(pend);
 
 	if (!pcic_speculative || (pend & PCI_SYS_INT_PENDING_PIO) == 0) {
 		/*
@@ -889,6 +968,11 @@ static void pcic_disable_irq(unsigned int irq_nr)
 	unsigned long mask, flags;
 
 	mask = get_irqmask(irq_nr);
+static void pcic_mask_irq(struct irq_data *data)
+{
+	unsigned long mask, flags;
+
+	mask = (unsigned long)data->chip_data;
 	local_irq_save(flags);
 	writel(mask, pcic0.pcic_regs+PCI_SYS_INT_TARGET_MASK_SET);
 	local_irq_restore(flags);
@@ -899,6 +983,11 @@ static void pcic_enable_irq(unsigned int irq_nr)
 	unsigned long mask, flags;
 
 	mask = get_irqmask(irq_nr);
+static void pcic_unmask_irq(struct irq_data *data)
+{
+	unsigned long mask, flags;
+
+	mask = (unsigned long)data->chip_data;
 	local_irq_save(flags);
 	writel(mask, pcic0.pcic_regs+PCI_SYS_INT_TARGET_MASK_CLEAR);
 	local_irq_restore(flags);
@@ -908,6 +997,44 @@ static void pcic_clear_profile_irq(int cpu)
 {
 	printk("PCIC: unimplemented code: FILE=%s LINE=%d", __FILE__, __LINE__);
 }
+
+static unsigned int pcic_startup_irq(struct irq_data *data)
+{
+	irq_link(data->irq);
+	pcic_unmask_irq(data);
+	return 0;
+}
+
+static struct irq_chip pcic_irq = {
+	.name		= "pcic",
+	.irq_startup	= pcic_startup_irq,
+	.irq_mask	= pcic_mask_irq,
+	.irq_unmask	= pcic_unmask_irq,
+};
+
+unsigned int pcic_build_device_irq(struct platform_device *op,
+                                   unsigned int real_irq)
+{
+	unsigned int irq;
+	unsigned long mask;
+
+	irq = 0;
+	mask = get_irqmask(real_irq);
+	if (mask == 0)
+		goto out;
+
+	irq = irq_alloc(real_irq, real_irq);
+	if (irq == 0)
+		goto out;
+
+	irq_set_chip_and_handler_name(irq, &pcic_irq,
+	                              handle_level_irq, "PCIC");
+	irq_set_chip_data(irq, (void *)mask);
+
+out:
+	return irq;
+}
+
 
 static void pcic_load_profile_irq(int cpu, unsigned int limit)
 {
@@ -1021,6 +1148,11 @@ void insl(unsigned long addr, void *dst, unsigned long count)
 		dst += 4;
 		/* addr += 4; */
 	}
+void __init sun4m_pci_init_IRQ(void)
+{
+	sparc_config.build_device_irq = pcic_build_device_irq;
+	sparc_config.clear_clock_irq  = pcic_clear_clock_irq;
+	sparc_config.load_profile_irq = pcic_load_profile_irq;
 }
 
 subsys_initcall(pcic_init);

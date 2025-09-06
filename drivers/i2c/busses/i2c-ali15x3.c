@@ -68,6 +68,8 @@
 #include <linux/init.h>
 #include <linux/acpi.h>
 #include <asm/io.h>
+#include <linux/acpi.h>
+#include <linux/io.h>
 
 /* ALI15X3 SMBus address offsets */
 #define SMBHSTSTS	(0 + ali15x3_smba)
@@ -307,6 +309,7 @@ static int ali15x3_transaction(struct i2c_adapter *adap)
 
 	/* If the SMBus is still busy, we give up */
 	if (timeout >= MAX_TIMEOUT) {
+	if (timeout > MAX_TIMEOUT) {
 		result = -ETIMEDOUT;
 		dev_err(&adap->dev, "SMBus Timeout!\n");
 	}
@@ -319,6 +322,7 @@ static int ali15x3_transaction(struct i2c_adapter *adap)
 	/*
 	  Unfortunately the ALI SMB controller maps "no response" and "bus
 	  collision" into a single bit. No reponse is the usual case so don't
+	  collision" into a single bit. No response is the usual case so don't
 	  do a printk.
 	  This means that bus collisions go unreported.
 	*/
@@ -479,6 +483,7 @@ static struct i2c_adapter ali15x3_adapter = {
 };
 
 static struct pci_device_id ali15x3_ids[] = {
+static const struct pci_device_id ali15x3_ids[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_AL, PCI_DEVICE_ID_AL_M7101) },
 	{ 0, }
 };
@@ -486,7 +491,10 @@ static struct pci_device_id ali15x3_ids[] = {
 MODULE_DEVICE_TABLE (pci, ali15x3_ids);
 
 static int __devinit ali15x3_probe(struct pci_dev *dev, const struct pci_device_id *id)
+static int ali15x3_probe(struct pci_dev *dev, const struct pci_device_id *id)
 {
+	int ret;
+
 	if (ali15x3_setup(dev)) {
 		dev_err(&dev->dev,
 			"ALI15X3 not detected, module not inserted.\n");
@@ -498,10 +506,19 @@ static int __devinit ali15x3_probe(struct pci_dev *dev, const struct pci_device_
 
 	snprintf(ali15x3_adapter.name, sizeof(ali15x3_adapter.name),
 		"SMBus ALI15X3 adapter at %04x", ali15x3_smba);
-	return i2c_add_adapter(&ali15x3_adapter);
+	ret = i2c_add_adapter(&ali15x3_adapter);
+	if (ret)
+		goto release_region;
+
+	return 0;
+
+release_region:
+	release_region(ali15x3_smba, ALI15X3_SMB_IOSIZE);
+	return ret;
 }
 
 static void __devexit ali15x3_remove(struct pci_dev *dev)
+static void ali15x3_remove(struct pci_dev *dev)
 {
 	i2c_del_adapter(&ali15x3_adapter);
 	release_region(ali15x3_smba, ALI15X3_SMB_IOSIZE);
@@ -523,6 +540,10 @@ static void __exit i2c_ali15x3_exit(void)
 {
 	pci_unregister_driver(&ali15x3_driver);
 }
+	.remove		= ali15x3_remove,
+};
+
+module_pci_driver(ali15x3_driver);
 
 MODULE_AUTHOR ("Frodo Looijaard <frodol@dds.nl>, "
 		"Philip Edelbrock <phil@netroedge.com>, "

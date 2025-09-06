@@ -25,6 +25,16 @@ const struct file_operations sysv_dir_operations = {
 	.read		= generic_read_dir,
 	.readdir	= sysv_readdir,
 	.fsync		= sysv_sync_file,
+#include <linux/swap.h>
+#include "sysv.h"
+
+static int sysv_readdir(struct file *, struct dir_context *);
+
+const struct file_operations sysv_dir_operations = {
+	.llseek		= generic_file_llseek,
+	.read		= generic_read_dir,
+	.iterate	= sysv_readdir,
+	.fsync		= generic_file_fsync,
 };
 
 static inline void dir_put_page(struct page *page)
@@ -79,6 +89,21 @@ static int sysv_readdir(struct file * filp, void * dirent, filldir_t filldir)
 	pos = (pos + SYSV_DIRSIZE-1) & ~(SYSV_DIRSIZE-1);
 	if (pos >= inode->i_size)
 		goto done;
+static int sysv_readdir(struct file *file, struct dir_context *ctx)
+{
+	unsigned long pos = ctx->pos;
+	struct inode *inode = file_inode(file);
+	struct super_block *sb = inode->i_sb;
+	unsigned long npages = dir_pages(inode);
+	unsigned offset;
+	unsigned long n;
+
+	ctx->pos = pos = (pos + SYSV_DIRSIZE-1) & ~(SYSV_DIRSIZE-1);
+	if (pos >= inode->i_size)
+		return 0;
+
+	offset = pos & ~PAGE_CACHE_MASK;
+	n = pos >> PAGE_CACHE_SHIFT;
 
 	for ( ; n < npages; n++, offset = 0) {
 		char *kaddr, *limit;
@@ -93,6 +118,8 @@ static int sysv_readdir(struct file * filp, void * dirent, filldir_t filldir)
 		for ( ;(char*)de <= limit; de++) {
 			char *name = de->name;
 			int over;
+		for ( ;(char*)de <= limit; de++, ctx->pos += sizeof(*de)) {
+			char *name = de->name;
 
 			if (!de->inode)
 				continue;
@@ -106,6 +133,11 @@ static int sysv_readdir(struct file * filp, void * dirent, filldir_t filldir)
 			if (over) {
 				dir_put_page(page);
 				goto done;
+			if (!dir_emit(ctx, name, strnlen(name,SYSV_NAMELEN),
+					fs16_to_cpu(SYSV_SB(sb), de->inode),
+					DT_UNKNOWN)) {
+				dir_put_page(page);
+				return 0;
 			}
 		}
 		dir_put_page(page);
@@ -141,6 +173,7 @@ struct sysv_dir_entry *sysv_find_entry(struct dentry *dentry, struct page **res_
 	const char * name = dentry->d_name.name;
 	int namelen = dentry->d_name.len;
 	struct inode * dir = dentry->d_parent->d_inode;
+	struct inode * dir = d_inode(dentry->d_parent);
 	unsigned long start, n;
 	unsigned long npages = dir_pages(dir);
 	struct page *page = NULL;
@@ -169,6 +202,8 @@ struct sysv_dir_entry *sysv_find_entry(struct dentry *dentry, struct page **res_
 			}
 		}
 		dir_put_page(page);
+			dir_put_page(page);
+		}
 
 		if (++n >= npages)
 			n = 0;
@@ -185,6 +220,7 @@ found:
 int sysv_add_link(struct dentry *dentry, struct inode *inode)
 {
 	struct inode *dir = dentry->d_parent->d_inode;
+	struct inode *dir = d_inode(dentry->d_parent);
 	const char * name = dentry->d_name.name;
 	int namelen = dentry->d_name.len;
 	struct page *page = NULL;
@@ -223,6 +259,7 @@ got_it:
 	lock_page(page);
 	err = __sysv_write_begin(NULL, page->mapping, pos, SYSV_DIRSIZE,
 				AOP_FLAG_UNINTERRUPTIBLE, &page, NULL);
+	err = sysv_prepare_chunk(page, pos, SYSV_DIRSIZE);
 	if (err)
 		goto out_unlock;
 	memcpy (de->name, name, namelen);
@@ -244,6 +281,7 @@ int sysv_delete_entry(struct sysv_dir_entry *de, struct page *page)
 {
 	struct address_space *mapping = page->mapping;
 	struct inode *inode = (struct inode*)mapping->host;
+	struct inode *inode = page->mapping->host;
 	char *kaddr = (char*)page_address(page);
 	loff_t pos = page_offset(page) + (char *)de - kaddr;
 	int err;
@@ -251,6 +289,7 @@ int sysv_delete_entry(struct sysv_dir_entry *de, struct page *page)
 	lock_page(page);
 	err = __sysv_write_begin(NULL, mapping, pos, SYSV_DIRSIZE,
 				AOP_FLAG_UNINTERRUPTIBLE, &page, NULL);
+	err = sysv_prepare_chunk(page, pos, SYSV_DIRSIZE);
 	BUG_ON(err);
 	de->inode = 0;
 	err = dir_commit_chunk(page, pos, SYSV_DIRSIZE);
@@ -264,6 +303,7 @@ int sysv_make_empty(struct inode *inode, struct inode *dir)
 {
 	struct address_space *mapping = inode->i_mapping;
 	struct page *page = grab_cache_page(mapping, 0);
+	struct page *page = grab_cache_page(inode->i_mapping, 0);
 	struct sysv_dir_entry * de;
 	char *base;
 	int err;
@@ -272,6 +312,7 @@ int sysv_make_empty(struct inode *inode, struct inode *dir)
 		return -ENOMEM;
 	err = __sysv_write_begin(NULL, mapping, 0, 2 * SYSV_DIRSIZE,
 				AOP_FLAG_UNINTERRUPTIBLE, &page, NULL);
+	err = sysv_prepare_chunk(page, 0, 2 * SYSV_DIRSIZE);
 	if (err) {
 		unlock_page(page);
 		goto fail;
@@ -346,6 +387,7 @@ void sysv_set_link(struct sysv_dir_entry *de, struct page *page,
 {
 	struct address_space *mapping = page->mapping;
 	struct inode *dir = mapping->host;
+	struct inode *dir = page->mapping->host;
 	loff_t pos = page_offset(page) +
 			(char *)de-(char*)page_address(page);
 	int err;
@@ -353,6 +395,7 @@ void sysv_set_link(struct sysv_dir_entry *de, struct page *page,
 	lock_page(page);
 	err = __sysv_write_begin(NULL, mapping, pos, SYSV_DIRSIZE,
 				AOP_FLAG_UNINTERRUPTIBLE, &page, NULL);
+	err = sysv_prepare_chunk(page, pos, SYSV_DIRSIZE);
 	BUG_ON(err);
 	de->inode = cpu_to_fs16(SYSV_SB(inode->i_sb), inode->i_ino);
 	err = dir_commit_chunk(page, pos, SYSV_DIRSIZE);

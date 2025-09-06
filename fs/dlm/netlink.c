@@ -9,11 +9,13 @@
 #include <net/genetlink.h>
 #include <linux/dlm.h>
 #include <linux/dlm_netlink.h>
+#include <linux/gfp.h>
 
 #include "dlm_internal.h"
 
 static uint32_t dlm_nl_seqnum;
 static uint32_t listener_nlpid;
+static uint32_t listener_nlportid;
 
 static struct genl_family family = {
 	.id		= GENL_ID_GENERATE,
@@ -27,6 +29,7 @@ static int prepare_data(u8 cmd, struct sk_buff **skbp, size_t size)
 	void *data;
 
 	skb = genlmsg_new(size, GFP_KERNEL);
+	skb = genlmsg_new(size, GFP_NOFS);
 	if (!skb)
 		return -ENOMEM;
 
@@ -64,6 +67,10 @@ static int send_data(struct sk_buff *skb)
 	}
 
 	return genlmsg_unicast(skb, listener_nlpid);
+
+	genlmsg_end(skb, data);
+
+	return genlmsg_unicast(&init_net, skb, listener_nlportid);
 }
 
 static int user_cmd(struct sk_buff *skb, struct genl_info *info)
@@ -76,6 +83,16 @@ static int user_cmd(struct sk_buff *skb, struct genl_info *info)
 static struct genl_ops dlm_nl_ops = {
 	.cmd		= DLM_CMD_HELLO,
 	.doit		= user_cmd,
+	listener_nlportid = info->snd_portid;
+	printk("user_cmd nlpid %u\n", listener_nlportid);
+	return 0;
+}
+
+static struct genl_ops dlm_nl_ops[] = {
+	{
+		.cmd	= DLM_CMD_HELLO,
+		.doit	= user_cmd,
+	},
 };
 
 int __init dlm_netlink_init(void)
@@ -93,6 +110,7 @@ int __init dlm_netlink_init(void)
  err:
 	genl_unregister_family(&family);
 	return rv;
+	return genl_register_family_with_ops(&family, dlm_nl_ops);
 }
 
 void dlm_netlink_exit(void)
@@ -129,6 +147,8 @@ void dlm_timeout_warn(struct dlm_lkb *lkb)
 {
 	struct dlm_lock_data *data;
 	struct sk_buff *send_skb;
+	struct sk_buff *uninitialized_var(send_skb);
+	struct dlm_lock_data *data;
 	size_t size;
 	int rv;
 

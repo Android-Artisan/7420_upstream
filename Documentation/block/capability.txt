@@ -1,5 +1,4 @@
 Generic Block Device Capability
-===============================================================================
 This file documents the sysfs file block/<disk>/capability
 
 capability is a hex word indicating which capabilities a specific disk

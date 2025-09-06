@@ -72,12 +72,14 @@ extern atomic_t rdma_stat_sq_prod;
  */
 struct svc_rdma_op_ctxt {
 	struct svc_rdma_op_ctxt *read_hdr;
+	struct svc_rdma_fastreg_mr *frmr;
 	int hdr_count;
 	struct xdr_buf arg;
 	struct list_head dto_q;
 	enum ib_wr_opcode wr_op;
 	enum ib_wc_status wc_status;
 	u32 byte_len;
+	u32 position;
 	struct svcxprt_rdma *xprt;
 	unsigned long flags;
 	enum dma_data_direction direction;
@@ -103,6 +105,14 @@ struct svc_rdma_chunk_sge {
 	int start;		/* sge no for this chunk */
 	int count;		/* sge count for this chunk */
 };
+struct svc_rdma_fastreg_mr {
+	struct ib_mr *mr;
+	struct scatterlist *sg;
+	int sg_nents;
+	unsigned long access_flags;
+	enum dma_data_direction direction;
+	struct list_head frmr_list;
+};
 struct svc_rdma_req_map {
 	unsigned long count;
 	union {
@@ -113,12 +123,21 @@ struct svc_rdma_req_map {
 
 #define RDMACTXT_F_LAST_CTXT	2
 
+		unsigned long lkey[RPCSVC_MAXPAGES];
+	};
+};
+#define RDMACTXT_F_LAST_CTXT	2
+
+#define	SVCRDMA_DEVCAP_FAST_REG		1	/* fast mr registration */
+#define	SVCRDMA_DEVCAP_READ_W_INV	2	/* read w/ invalidate */
+
 struct svcxprt_rdma {
 	struct svc_xprt      sc_xprt;		/* SVC transport structure */
 	struct rdma_cm_id    *sc_cm_id;		/* RDMA connection id */
 	struct list_head     sc_accept_q;	/* Conn. waiting accept */
 	int		     sc_ord;		/* RDMA read limit */
 	int                  sc_max_sge;
+	int                  sc_max_sge_rd;	/* max sge for read target */
 
 	int                  sc_sq_depth;	/* Depth of SQ */
 	atomic_t             sc_sq_count;	/* Number of SQ WR on queue */
@@ -136,6 +155,15 @@ struct svcxprt_rdma {
 	struct ib_cq         *sc_rq_cq;
 	struct ib_cq         *sc_sq_cq;
 	struct ib_mr         *sc_phys_mr;	/* MR for server memory */
+	int		     (*sc_reader)(struct svcxprt_rdma *,
+					  struct svc_rqst *,
+					  struct svc_rdma_op_ctxt *,
+					  int *, u32 *, u32, u32, u64, bool);
+	u32		     sc_dev_caps;	/* distilled device caps */
+	u32		     sc_dma_lkey;	/* local dma key */
+	unsigned int	     sc_frmr_pg_list_len;
+	struct list_head     sc_frmr_q;
+	spinlock_t	     sc_frmr_q_lock;
 
 	spinlock_t	     sc_lock;		/* transport lock */
 
@@ -171,6 +199,20 @@ extern void svc_rdma_xdr_encode_write_list(struct rpcrdma_msg *, int);
 extern void svc_rdma_xdr_encode_reply_array(struct rpcrdma_write_array *, int);
 extern void svc_rdma_xdr_encode_array_chunk(struct rpcrdma_write_array *, int,
 					    u32, u64, u32);
+#define RPCRDMA_MAX_REQUESTS    32
+#define RPCRDMA_MAX_REQ_SIZE    4096
+
+#define RPCSVC_MAXPAYLOAD_RDMA	RPCSVC_MAXPAYLOAD
+
+/* svc_rdma_marshal.c */
+extern int svc_rdma_xdr_decode_req(struct rpcrdma_msg **, struct svc_rqst *);
+extern int svc_rdma_xdr_encode_error(struct svcxprt_rdma *,
+				     struct rpcrdma_msg *,
+				     enum rpcrdma_errcode, __be32 *);
+extern void svc_rdma_xdr_encode_write_list(struct rpcrdma_msg *, int);
+extern void svc_rdma_xdr_encode_reply_array(struct rpcrdma_write_array *, int);
+extern void svc_rdma_xdr_encode_array_chunk(struct rpcrdma_write_array *, int,
+					    __be32, __be64, u32);
 extern void svc_rdma_xdr_encode_reply_header(struct svcxprt_rdma *,
 					     struct rpcrdma_msg *,
 					     struct rpcrdma_msg *,
@@ -182,6 +224,17 @@ extern int svc_rdma_recvfrom(struct svc_rqst *);
 
 /* svc_rdma_sendto.c */
 extern int svc_rdma_sendto(struct svc_rqst *);
+extern int rdma_read_chunk_lcl(struct svcxprt_rdma *, struct svc_rqst *,
+			       struct svc_rdma_op_ctxt *, int *, u32 *,
+			       u32, u32, u64, bool);
+extern int rdma_read_chunk_frmr(struct svcxprt_rdma *, struct svc_rqst *,
+				struct svc_rdma_op_ctxt *, int *, u32 *,
+				u32, u32, u64, bool);
+
+/* svc_rdma_sendto.c */
+extern int svc_rdma_sendto(struct svc_rqst *);
+extern struct rpcrdma_read_chunk *
+	svc_rdma_get_read_chunk(struct rpcrdma_msg *);
 
 /* svc_rdma_transport.c */
 extern int svc_rdma_send(struct svcxprt_rdma *, struct ib_send_wr *);
@@ -198,6 +251,21 @@ extern void svc_sq_reap(struct svcxprt_rdma *);
 extern void svc_rq_reap(struct svcxprt_rdma *);
 extern struct svc_xprt_class svc_rdma_class;
 extern void svc_rdma_prep_reply_hdr(struct svc_rqst *);
+
+extern void svc_rdma_unmap_dma(struct svc_rdma_op_ctxt *ctxt);
+extern struct svc_rdma_req_map *svc_rdma_get_req_map(void);
+extern void svc_rdma_put_req_map(struct svc_rdma_req_map *);
+extern struct svc_rdma_fastreg_mr *svc_rdma_get_frmr(struct svcxprt_rdma *);
+extern void svc_rdma_put_frmr(struct svcxprt_rdma *,
+			      struct svc_rdma_fastreg_mr *);
+extern void svc_sq_reap(struct svcxprt_rdma *);
+extern void svc_rq_reap(struct svcxprt_rdma *);
+extern void svc_rdma_prep_reply_hdr(struct svc_rqst *);
+
+extern struct svc_xprt_class svc_rdma_class;
+#ifdef CONFIG_SUNRPC_BACKCHANNEL
+extern struct svc_xprt_class svc_rdma_bc_class;
+#endif
 
 /* svc_rdma.c */
 extern int svc_rdma_init(void);

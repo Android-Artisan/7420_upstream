@@ -49,6 +49,7 @@
 
 /* device ID table */
 static struct usb_device_id idmouse_table[] = {
+static const struct usb_device_id idmouse_table[] = {
 	{USB_DEVICE(ID_SIEMENS, ID_IDMOUSE)}, /* Siemens ID Mouse (Professional) */
 	{USB_DEVICE(ID_SIEMENS, ID_CHERRY )}, /* Cherry FingerTIP ID Board       */
 	{}                                    /* terminating null entry          */
@@ -96,6 +97,8 @@ static int idmouse_probe(struct usb_interface *interface,
 				const struct usb_device_id *id);
 
 static void idmouse_disconnect(struct usb_interface *interface);
+static int idmouse_suspend(struct usb_interface *intf, pm_message_t message);
+static int idmouse_resume(struct usb_interface *intf);
 
 /* file operation pointers */
 static const struct file_operations idmouse_fops = {
@@ -103,6 +106,7 @@ static const struct file_operations idmouse_fops = {
 	.read = idmouse_read,
 	.open = idmouse_open,
 	.release = idmouse_release,
+	.llseek = default_llseek,
 };
 
 /* class driver information */
@@ -118,6 +122,11 @@ static struct usb_driver idmouse_driver = {
 	.probe = idmouse_probe,
 	.disconnect = idmouse_disconnect,
 	.id_table = idmouse_table,
+	.suspend = idmouse_suspend,
+	.resume = idmouse_resume,
+	.reset_resume = idmouse_resume,
+	.id_table = idmouse_table,
+	.supports_autosuspend = 1,
 };
 
 static int idmouse_create_image(struct usb_idmouse *dev)
@@ -177,10 +186,6 @@ static int idmouse_create_image(struct usb_idmouse *dev)
 		bytes_read += bulk_read;
 	}
 
-	/* reset the device */
-reset:
-	ftip_command(dev, FTIP_RELEASE, 0, 0);
-
 	/* check for valid image */
 	/* right border should be black (0x00) */
 	for (bytes_read = sizeof(HEADER)-1 + WIDTH-1; bytes_read < IMGSIZE; bytes_read += WIDTH)
@@ -192,9 +197,29 @@ reset:
 		if (dev->bulk_in_buffer[bytes_read] != 0xFF)
 			return -EAGAIN;
 
+	/* reset the device */
+reset:
+	ftip_command(dev, FTIP_RELEASE, 0, 0);
+
 	/* should be IMGSIZE == 65040 */
 	dbg("read %d bytes fingerprint data", bytes_read);
 	return result;
+}
+
+	dev_dbg(&dev->interface->dev, "read %d bytes fingerprint data\n",
+		bytes_read);
+	return result;
+}
+
+/* PM operations are nops as this driver does IO only during open() */
+static int idmouse_suspend(struct usb_interface *intf, pm_message_t message)
+{
+	return 0;
+}
+
+static int idmouse_resume(struct usb_interface *intf)
+{
+	return 0;
 }
 
 static inline void idmouse_delete(struct usb_idmouse *dev)
@@ -238,6 +263,13 @@ static int idmouse_open(struct inode *inode, struct file *file)
 		result = idmouse_create_image (dev);
 		if (result)
 			goto error;
+		result = usb_autopm_get_interface(interface);
+		if (result)
+			goto error;
+		result = idmouse_create_image (dev);
+		if (result)
+			goto error;
+		usb_autopm_put_interface(interface);
 
 		/* increment our usage count for the driver */
 		++dev->open;
@@ -320,8 +352,11 @@ static int idmouse_probe(struct usb_interface *interface,
 	int result;
 
 	/* check if we have gotten the data or the hid interface */
-	iface_desc = &interface->altsetting[0];
+	iface_desc = interface->cur_altsetting;
 	if (iface_desc->desc.bInterfaceClass != 0x0A)
+		return -ENODEV;
+
+	if (iface_desc->desc.bNumEndpoints < 1)
 		return -ENODEV;
 
 	/* allocate memory for our device state and initialize it */
@@ -338,6 +373,7 @@ static int idmouse_probe(struct usb_interface *interface,
 	if (!dev->bulk_in_endpointAddr && usb_endpoint_is_bulk_in(endpoint)) {
 		/* we found a bulk in endpoint */
 		dev->orig_bi_size = le16_to_cpu(endpoint->wMaxPacketSize);
+		dev->orig_bi_size = usb_endpoint_maxp(endpoint);
 		dev->bulk_in_size = 0x200; /* works _much_ faster */
 		dev->bulk_in_endpointAddr = endpoint->bEndpointAddress;
 		dev->bulk_in_buffer =
@@ -345,6 +381,7 @@ static int idmouse_probe(struct usb_interface *interface,
 
 		if (!dev->bulk_in_buffer) {
 			err("Unable to allocate input buffer.");
+			dev_err(&interface->dev, "Unable to allocate input buffer.\n");
 			idmouse_delete(dev);
 			return -ENOMEM;
 		}
@@ -352,6 +389,7 @@ static int idmouse_probe(struct usb_interface *interface,
 
 	if (!(dev->bulk_in_endpointAddr)) {
 		err("Unable to find bulk-in endpoint.");
+		dev_err(&interface->dev, "Unable to find bulk-in endpoint.\n");
 		idmouse_delete(dev);
 		return -ENODEV;
 	}
@@ -364,6 +402,7 @@ static int idmouse_probe(struct usb_interface *interface,
 	if (result) {
 		/* something prevented us from registering this device */
 		err("Unble to allocate minor number.");
+		dev_err(&interface->dev, "Unable to allocate minor number.\n");
 		usb_set_intfdata(interface, NULL);
 		idmouse_delete(dev);
 		return result;
@@ -428,6 +467,10 @@ static void __exit usb_idmouse_exit(void)
 
 module_init(usb_idmouse_init);
 module_exit(usb_idmouse_exit);
+	dev_info(&interface->dev, "disconnected\n");
+}
+
+module_usb_driver(idmouse_driver);
 
 MODULE_AUTHOR(DRIVER_AUTHOR);
 MODULE_DESCRIPTION(DRIVER_DESC);

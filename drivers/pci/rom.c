@@ -7,6 +7,7 @@
  * PCI ROM access routines
  */
 #include <linux/kernel.h>
+#include <linux/export.h>
 #include <linux/pci.h>
 #include <linux/slab.h>
 
@@ -22,6 +23,7 @@
  * to MMIO registers or other card memory.
  */
 static int pci_enable_rom(struct pci_dev *pdev)
+int pci_enable_rom(struct pci_dev *pdev)
 {
 	struct resource *res = pdev->resource + PCI_ROM_RESOURCE;
 	struct pci_bus_region region;
@@ -31,12 +33,19 @@ static int pci_enable_rom(struct pci_dev *pdev)
 		return -1;
 
 	pcibios_resource_to_bus(pdev, &region, res);
+	/*
+	 * Ideally pci_update_resource() would update the ROM BAR address,
+	 * and we would only set the enable bit here.  But apparently some
+	 * devices have buggy ROM BARs that read as zero when disabled.
+	 */
+	pcibios_resource_to_bus(pdev->bus, &region, res);
 	pci_read_config_dword(pdev, pdev->rom_base_reg, &rom_addr);
 	rom_addr &= ~PCI_ROM_ADDRESS_MASK;
 	rom_addr |= region.start | PCI_ROM_ADDRESS_ENABLE;
 	pci_write_config_dword(pdev, pdev->rom_base_reg, rom_addr);
 	return 0;
 }
+EXPORT_SYMBOL_GPL(pci_enable_rom);
 
 /**
  * pci_disable_rom - disable ROM decoding for a PCI device
@@ -46,6 +55,7 @@ static int pci_enable_rom(struct pci_dev *pdev)
  * ROM BAR.
  */
 static void pci_disable_rom(struct pci_dev *pdev)
+void pci_disable_rom(struct pci_dev *pdev)
 {
 	u32 rom_addr;
 	pci_read_config_dword(pdev, pdev->rom_base_reg, &rom_addr);
@@ -55,6 +65,11 @@ static void pci_disable_rom(struct pci_dev *pdev)
 
 /**
  * pci_get_rom_size - obtain the actual size of the ROM image
+EXPORT_SYMBOL_GPL(pci_disable_rom);
+
+/**
+ * pci_get_rom_size - obtain the actual size of the ROM image
+ * @pdev: target PCI device
  * @rom: kernel virtual pointer to image of ROM
  * @size: size of PCI window
  *  return: size of actual ROM image
@@ -67,6 +82,11 @@ size_t pci_get_rom_size(void __iomem *rom, size_t size)
 {
 	void __iomem *image;
 	int last_image;
+size_t pci_get_rom_size(struct pci_dev *pdev, void __iomem *rom, size_t size)
+{
+	void __iomem *image;
+	int last_image;
+	unsigned length;
 
 	image = rom;
 	do {
@@ -74,6 +94,10 @@ size_t pci_get_rom_size(void __iomem *rom, size_t size)
 		/* Standard PCI ROMs start out with these bytes 55 AA */
 		if (readb(image) != 0x55)
 			break;
+		if (readb(image) != 0x55) {
+			dev_err(&pdev->dev, "Invalid ROM contents\n");
+			break;
+		}
 		if (readb(image + 1) != 0xAA)
 			break;
 		/* get the PCI data structure and check its signature */
@@ -90,6 +114,9 @@ size_t pci_get_rom_size(void __iomem *rom, size_t size)
 		/* this length is reliable */
 		image += readw(pds + 16) * 512;
 	} while (!last_image);
+		length = readw(pds + 16);
+		image += length * 512;
+	} while (length && !last_image);
 
 	/* never return a size larger than the PCI resource window */
 	/* there are known ROMs that get the size wrong */
@@ -101,6 +128,8 @@ size_t pci_get_rom_size(void __iomem *rom, size_t size)
  * @pdev: pointer to pci device struct
  * @size: pointer to receive size of pci window over ROM
  * @return: kernel virtual pointer to image of ROM
+ *
+ * Return: kernel virtual pointer to image of ROM
  *
  * Map a PCI ROM into kernel space. If ROM is boot video ROM,
  * the shadow BIOS copy will be returned instead of the
@@ -131,6 +160,7 @@ void __iomem *pci_map_rom(struct pci_dev *pdev, size_t *size)
 			/* assign the ROM an address if it doesn't have one */
 			if (res->parent == NULL &&
 			    pci_assign_resource(pdev,PCI_ROM_RESOURCE))
+			    pci_assign_resource(pdev, PCI_ROM_RESOURCE))
 				return NULL;
 			start = pci_resource_start(pdev, PCI_ROM_RESOURCE);
 			*size = pci_resource_len(pdev, PCI_ROM_RESOURCE);
@@ -198,6 +228,10 @@ void __iomem *pci_map_rom_copy(struct pci_dev *pdev, size_t *size)
 	return (void __iomem *)(unsigned long)res->start;
 }
 #endif  /*  0  */
+	*size = pci_get_rom_size(pdev, rom, *size);
+	return rom;
+}
+EXPORT_SYMBOL(pci_map_rom);
 
 /**
  * pci_unmap_rom - unmap the ROM from kernel space
@@ -240,6 +274,7 @@ void pci_remove_rom(struct pci_dev *pdev)
 		pci_disable_rom(pdev);
 }
 #endif  /*  0  */
+EXPORT_SYMBOL(pci_unmap_rom);
 
 /**
  * pci_cleanup_rom - free the ROM copy created by pci_map_rom_copy
@@ -252,6 +287,10 @@ void pci_cleanup_rom(struct pci_dev *pdev)
 	struct resource *res = &pdev->resource[PCI_ROM_RESOURCE];
 	if (res->flags & IORESOURCE_ROM_COPY) {
 		kfree((void*)(unsigned long)res->start);
+
+	if (res->flags & IORESOURCE_ROM_COPY) {
+		kfree((void *)(unsigned long)res->start);
+		res->flags |= IORESOURCE_UNSET;
 		res->flags &= ~IORESOURCE_ROM_COPY;
 		res->start = 0;
 		res->end = 0;
@@ -260,3 +299,19 @@ void pci_cleanup_rom(struct pci_dev *pdev)
 
 EXPORT_SYMBOL(pci_map_rom);
 EXPORT_SYMBOL(pci_unmap_rom);
+/**
+ * pci_platform_rom - provides a pointer to any ROM image provided by the
+ * platform
+ * @pdev: pointer to pci device struct
+ * @size: pointer to receive size of pci window over ROM
+ */
+void __iomem *pci_platform_rom(struct pci_dev *pdev, size_t *size)
+{
+	if (pdev->rom && pdev->romlen) {
+		*size = pdev->romlen;
+		return phys_to_virt((phys_addr_t)pdev->rom);
+	}
+
+	return NULL;
+}
+EXPORT_SYMBOL(pci_platform_rom);

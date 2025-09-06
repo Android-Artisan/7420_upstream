@@ -261,6 +261,11 @@ static void crisv32_arbiter_init(void)
 
 	if (request_irq(MEMARB_BAR_INTR_VECT, crisv32_bar_arbiter_irq,
 			IRQF_DISABLED, "arbiter", NULL))
+			0, "arbiter", NULL))
+		printk(KERN_ERR "Couldn't allocate arbiter IRQ\n");
+
+	if (request_irq(MEMARB_BAR_INTR_VECT, crisv32_bar_arbiter_irq,
+			0, "arbiter", NULL))
 		printk(KERN_ERR "Couldn't allocate arbiter IRQ\n");
 
 #ifndef CONFIG_ETRAX_KGDB
@@ -569,6 +574,7 @@ crisv32_foo_arbiter_irq(int irq, void *dev_id)
 	REG_WR(marb_foo, regi_marb_foo, rw_ack_intr, ack_intr);
 
 	printk(KERN_DEBUG "IRQ occured at %X\n", (unsigned)get_irq_regs());
+	printk(KERN_DEBUG "IRQ occurred at %X\n", (unsigned)get_irq_regs());
 
 	if (watch->cb)
 		watch->cb();
@@ -625,6 +631,7 @@ crisv32_bar_arbiter_irq(int irq, void *dev_id)
 	REG_WR(marb_bar, regi_marb_bar, rw_ack_intr, ack_intr);
 
 	printk(KERN_DEBUG "IRQ occured at %X\n", (unsigned)get_irq_regs()->erp);
+	printk(KERN_DEBUG "IRQ occurred at %X\n", (unsigned)get_irq_regs()->erp);
 
 	if (watch->cb)
 		watch->cb();

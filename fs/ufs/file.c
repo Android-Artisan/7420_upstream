@@ -63,5 +63,10 @@ const struct file_operations ufs_file_operations = {
 	.mmap		= generic_file_mmap,
 	.open           = generic_file_open,
 	.fsync		= ufs_sync_file,
+	.read_iter	= generic_file_read_iter,
+	.write_iter	= generic_file_write_iter,
+	.mmap		= generic_file_mmap,
+	.open           = generic_file_open,
+	.fsync		= generic_file_fsync,
 	.splice_read	= generic_file_splice_read,
 };

@@ -31,6 +31,9 @@
 #include <pcmcia/cs_types.h>
 #include <pcmcia/ss.h>
 #include <pcmcia/cs.h>
+#include <asm/addrspace.h>
+
+#include <pcmcia/ss.h>
 
 /* XXX: should be moved into asm/irq.h */
 #define PCC0_IRQ 24
@@ -88,7 +91,6 @@ static pcc_socket_t socket[M32R_MAX_PCC] = {
 	{ 0, }, /* ... */
 };
 
-/*====================================================================*/
 
 static unsigned int pcc_get(u_short, unsigned int);
 static void pcc_set(u_short, unsigned int , unsigned int );
@@ -252,7 +254,6 @@ void pcc_iowrite(int sock, unsigned long port, void *buf, size_t size, size_t nm
     pcc_iorw(sock, port, buf, size, nmemb, 1, flag);
 }
 
-/*====================================================================*/
 
 #define IS_REGISTERED		0x2000
 #define IS_ALIVE		0x8000
@@ -268,7 +269,6 @@ static pcc_t pcc[] = {
 
 static irqreturn_t pcc_interrupt(int, void *);
 
-/*====================================================================*/
 
 static struct timer_list poll_timer;
 
@@ -283,14 +283,12 @@ static void pcc_set(u_short sock, unsigned int reg, unsigned int data)
   	outl(data, socket[sock].base + reg);
 }
 
-/*======================================================================
 
 	See if a card is present, powered up, in IO mode, and already
 	bound to a (non PC Card) Linux driver.  We leave these alone.
 
 	We make an exception for cards that seem to be serial devices.
 
-======================================================================*/
 
 static int __init is_alive(u_short sock)
 {
@@ -350,7 +348,6 @@ static void add_pcc_socket(ulong base, int irq, ulong mapaddr,
 }
 
 
-/*====================================================================*/
 
 static irqreturn_t pcc_interrupt(int irq, void *dev)
 {
@@ -359,6 +356,7 @@ static irqreturn_t pcc_interrupt(int irq, void *dev)
 	int handled = 0;
 
 	debug(4, "m32r: pcc_interrupt(%d)\n", irq);
+	pr_debug("m32r_pcc: pcc_interrupt(%d)\n", irq);
 
 	for (j = 0; j < 20; j++) {
 		active = 0;
@@ -370,12 +368,15 @@ static irqreturn_t pcc_interrupt(int irq, void *dev)
 			irc = pcc_get(i, PCIRC);
 			irc >>=16;
 			debug(2, "m32r-pcc:interrupt: socket %d pcirc 0x%02x ", i, irc);
+			pr_debug("m32r_pcc: interrupt: socket %d pcirc 0x%02x ",
+				i, irc);
 			if (!irc)
 				continue;
 
 			events = (irc) ? SS_DETECT : 0;
 			events |= (pcc_get(i,PCCR) & PCCR_PCEN) ? SS_READY : 0;
 			debug(2, " event 0x%02x\n", events);
+			pr_debug("m32r_pcc: event 0x%02x\n", events);
 
 			if (events)
 				pcmcia_parse_events(&socket[i].socket, events);
@@ -389,6 +390,7 @@ static irqreturn_t pcc_interrupt(int irq, void *dev)
 		printk(KERN_NOTICE "m32r-pcc: infinite loop in interrupt handler\n");
 
 	debug(4, "m32r-pcc: interrupt done\n");
+	pr_debug("m32r_pcc: interrupt done\n");
 
 	return IRQ_RETVAL(handled);
 } /* pcc_interrupt */
@@ -401,7 +403,6 @@ static void pcc_interrupt_wrapper(u_long data)
 	add_timer(&poll_timer);
 }
 
-/*====================================================================*/
 
 static int _pcc_get_status(u_short sock, u_int *value)
 {
@@ -423,16 +424,17 @@ static int _pcc_get_status(u_short sock, u_int *value)
 	*value |= (status & PCCSIGCR_VEN) ? SS_POWERON : 0;
 
 	debug(3, "m32r-pcc: GetStatus(%d) = %#4.4x\n", sock, *value);
+	pr_debug("m32r_pcc: GetStatus(%d) = %#4.4x\n", sock, *value);
 	return 0;
 } /* _get_status */
 
-/*====================================================================*/
 
 static int _pcc_set_socket(u_short sock, socket_state_t *state)
 {
 	u_long reg = 0;
 
 	debug(3, "m32r-pcc: SetSocket(%d, flags %#3.3x, Vcc %d, Vpp %d, "
+	pr_debug("m32r_pcc: SetSocket(%d, flags %#3.3x, Vcc %d, Vpp %d, "
 		  "io_irq %d, csc_mask %#2.2x)", sock, state->flags,
 		  state->Vcc, state->Vpp, state->io_irq, state->csc_mask);
 
@@ -453,6 +455,11 @@ static int _pcc_set_socket(u_short sock, socket_state_t *state)
 	}
 	if (state->flags & SS_OUTPUT_ENA){
 		debug(3, ":OUTPUT_ENA\n");
+		pr_debug("m32r_pcc: :RESET\n");
+		reg |= PCCSIGCR_CRST;
+	}
+	if (state->flags & SS_OUTPUT_ENA){
+		pr_debug("m32r_pcc: :OUTPUT_ENA\n");
 		/* bit clear */
 	} else {
 		reg |= PCCSIGCR_SEN;
@@ -482,10 +489,29 @@ static int _pcc_set_socket(u_short sock, socket_state_t *state)
 	}
 	debug(3, "\n");
 #endif
+	if(state->flags & SS_IOCARD){
+		pr_debug("m32r_pcc: :IOCARD");
+	}
+	if (state->flags & SS_PWR_AUTO) {
+		pr_debug("m32r_pcc: :PWR_AUTO");
+	}
+	if (state->csc_mask & SS_DETECT)
+		pr_debug("m32r_pcc: :csc-SS_DETECT");
+	if (state->flags & SS_IOCARD) {
+		if (state->csc_mask & SS_STSCHG)
+			pr_debug("m32r_pcc: :STSCHG");
+	} else {
+		if (state->csc_mask & SS_BATDEAD)
+			pr_debug("m32r_pcc: :BATDEAD");
+		if (state->csc_mask & SS_BATWARN)
+			pr_debug("m32r_pcc: :BATWARN");
+		if (state->csc_mask & SS_READY)
+			pr_debug("m32r_pcc: :READY");
+	}
+	pr_debug("m32r_pcc: \n");
 	return 0;
 } /* _set_socket */
 
-/*====================================================================*/
 
 static int _pcc_set_io_map(u_short sock, struct pccard_io_map *io)
 {
@@ -494,12 +520,15 @@ static int _pcc_set_io_map(u_short sock, struct pccard_io_map *io)
 	debug(3, "m32r-pcc: SetIOMap(%d, %d, %#2.2x, %d ns, "
 		  "%#x-%#x)\n", sock, io->map, io->flags,
 		  io->speed, io->start, io->stop);
+	pr_debug("m32r_pcc: SetIOMap(%d, %d, %#2.2x, %d ns, "
+		  "%#llx-%#llx)\n", sock, io->map, io->flags,
+		  io->speed, (unsigned long long)io->start,
+		  (unsigned long long)io->stop);
 	map = io->map;
 
 	return 0;
 } /* _set_io_map */
 
-/*====================================================================*/
 
 static int _pcc_set_mem_map(u_short sock, struct pccard_mem_map *mem)
 {
@@ -517,6 +546,10 @@ static int _pcc_set_mem_map(u_short sock, struct pccard_mem_map *mem)
 	debug(3, "m32r-pcc: SetMemMap(%d, %d, %#2.2x, %d ns, "
 		 "%#lx,  %#x)\n", sock, map, mem->flags,
 		 mem->speed, mem->static_start, mem->card_start);
+	pr_debug("m32r_pcc: SetMemMap(%d, %d, %#2.2x, %d ns, "
+		 "%#llx,  %#x)\n", sock, map, mem->flags,
+		 mem->speed, (unsigned long long)mem->static_start,
+		 mem->card_start);
 
 	/*
 	 * sanity check
@@ -578,12 +611,10 @@ static int _pcc_set_mem_map(u_short sock, struct pccard_mem_map *mem)
 } /* _set_mem_map */
 
 #if 0 /* driver model ordering issue */
-/*======================================================================
 
 	Routines for accessing socket information and register dumps via
 	/proc/bus/pccard/...
 
-======================================================================*/
 
 static ssize_t show_info(struct class_device *class_dev, char *buf)
 {
@@ -605,7 +636,6 @@ static CLASS_DEVICE_ATTR(info, S_IRUGO, show_info, NULL);
 static CLASS_DEVICE_ATTR(exca, S_IRUGO, show_exca, NULL);
 #endif
 
-/*====================================================================*/
 
 /* this is horribly ugly... proper locking needs to be done here at
  * some time... */
@@ -661,6 +691,7 @@ static int pcc_set_mem_map(struct pcmcia_socket *s, struct pccard_mem_map *mem)
 static int pcc_init(struct pcmcia_socket *s)
 {
 	debug(4, "m32r-pcc: init call\n");
+	pr_debug("m32r_pcc: init call\n");
 	return 0;
 }
 
@@ -672,13 +703,16 @@ static struct pccard_operations pcc_operations = {
 	.set_mem_map		= pcc_set_mem_map,
 };
 
-/*====================================================================*/
 
 static struct device_driver pcc_driver = {
 	.name = "pcc",
 	.bus = &platform_bus_type,
 	.suspend = pcmcia_socket_dev_suspend,
 	.resume = pcmcia_socket_dev_resume,
+static struct platform_driver pcc_driver = {
+	.driver = {
+		.name		= "pcc",
+	},
 };
 
 static struct platform_device pcc_device = {
@@ -686,19 +720,20 @@ static struct platform_device pcc_device = {
 	.id = 0,
 };
 
-/*====================================================================*/
 
 static int __init init_m32r_pcc(void)
 {
 	int i, ret;
 
 	ret = driver_register(&pcc_driver);
+	ret = platform_driver_register(&pcc_driver);
 	if (ret)
 		return ret;
 
 	ret = platform_device_register(&pcc_device);
 	if (ret){
 		driver_unregister(&pcc_driver);
+		platform_driver_unregister(&pcc_driver);
 		return ret;
 	}
 
@@ -716,6 +751,7 @@ static int __init init_m32r_pcc(void)
 		printk("socket is not found.\n");
 		platform_device_unregister(&pcc_device);
 		driver_unregister(&pcc_driver);
+		platform_driver_unregister(&pcc_driver);
 		return -ENODEV;
 	}
 
@@ -764,9 +800,9 @@ static void __exit exit_m32r_pcc(void)
 		del_timer_sync(&poll_timer);
 
 	driver_unregister(&pcc_driver);
+	platform_driver_unregister(&pcc_driver);
 } /* exit_m32r_pcc */
 
 module_init(init_m32r_pcc);
 module_exit(exit_m32r_pcc);
 MODULE_LICENSE("Dual MPL/GPL");
-/*====================================================================*/

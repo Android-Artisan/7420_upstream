@@ -57,6 +57,8 @@
 #include <linux/ioport.h>	/* for request_region */
 #include <linux/delay.h>	/* for loops_per_jiffy */
 #include <linux/smp_lock.h>	/* cycle_kernel_lock() */
+#include <linux/sched.h>
+#include <linux/mutex.h>
 #include <asm/io.h>		/* for inb_p, outb_p, inb, outb, etc. */
 #include <asm/uaccess.h>	/* for get_user, etc. */
 #include <linux/wait.h>		/* for wait_queue */
@@ -72,6 +74,7 @@
 #define TRACE_RET ((void) 0)
 #endif				/* TRACING */
 
+static DEFINE_MUTEX(dtlk_mutex);
 static void dtlk_timer_tick(unsigned long data);
 
 static int dtlk_major;
@@ -94,6 +97,8 @@ static int dtlk_open(struct inode *, struct file *);
 static int dtlk_release(struct inode *, struct file *);
 static int dtlk_ioctl(struct inode *inode, struct file *file,
 		      unsigned int cmd, unsigned long arg);
+static long dtlk_ioctl(struct file *file,
+		       unsigned int cmd, unsigned long arg);
 
 static const struct file_operations dtlk_fops =
 {
@@ -104,6 +109,10 @@ static const struct file_operations dtlk_fops =
 	.ioctl		= dtlk_ioctl,
 	.open		= dtlk_open,
 	.release	= dtlk_release,
+	.unlocked_ioctl	= dtlk_ioctl,
+	.open		= dtlk_open,
+	.release	= dtlk_release,
+	.llseek		= no_llseek,
 };
 
 /* local prototypes */
@@ -123,6 +132,7 @@ static ssize_t dtlk_read(struct file *file, char __user *buf,
 			 size_t count, loff_t * ppos)
 {
 	unsigned int minor = iminor(file->f_path.dentry->d_inode);
+	unsigned int minor = iminor(file_inode(file));
 	char ch;
 	int i = 0, retries;
 
@@ -175,6 +185,7 @@ static ssize_t dtlk_write(struct file *file, const char __user *buf,
 #endif
 
 	if (iminor(file->f_path.dentry->d_inode) != DTLK_MINOR)
+	if (iminor(file_inode(file)) != DTLK_MINOR)
 		return -EINVAL;
 
 	while (1) {
@@ -266,6 +277,9 @@ static int dtlk_ioctl(struct inode *inode,
 		      struct file *file,
 		      unsigned int cmd,
 		      unsigned long arg)
+static long dtlk_ioctl(struct file *file,
+		       unsigned int cmd,
+		       unsigned long arg)
 {
 	char __user *argp = (char __user *)arg;
 	struct dtlk_settings *sp;
@@ -276,6 +290,9 @@ static int dtlk_ioctl(struct inode *inode,
 
 	case DTLK_INTERROGATE:
 		sp = dtlk_interrogate();
+		mutex_lock(&dtlk_mutex);
+		sp = dtlk_interrogate();
+		mutex_unlock(&dtlk_mutex);
 		if (copy_to_user(argp, sp, sizeof(struct dtlk_settings)))
 			return -EINVAL;
 		return 0;
@@ -572,6 +589,7 @@ static char dtlk_read_tts(void)
 	} while ((portval & TTS_READABLE) == 0 &&
 		 retries++ < DTLK_MAX_RETRIES);
 	if (retries == DTLK_MAX_RETRIES)
+	if (retries > DTLK_MAX_RETRIES)
 		printk(KERN_ERR "dtlk_read_tts() timeout\n");
 
 	ch = inb_p(dtlk_port_tts);	/* input from TTS port */
@@ -584,6 +602,7 @@ static char dtlk_read_tts(void)
 	} while ((portval & TTS_READABLE) != 0 &&
 		 retries++ < DTLK_MAX_RETRIES);
 	if (retries == DTLK_MAX_RETRIES)
+	if (retries > DTLK_MAX_RETRIES)
 		printk(KERN_ERR "dtlk_read_tts() timeout\n");
 
 	TRACE_RET;
@@ -641,6 +660,7 @@ static char dtlk_write_tts(char ch)
 		       retries++ < DTLK_MAX_RETRIES)	/* DT ready? */
 			;
 	if (retries == DTLK_MAX_RETRIES)
+	if (retries > DTLK_MAX_RETRIES)
 		printk(KERN_ERR "dtlk_write_tts() timeout\n");
 
 	outb_p(ch, dtlk_port_tts);	/* output to TTS port */

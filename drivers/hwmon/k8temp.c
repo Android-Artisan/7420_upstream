@@ -31,6 +31,7 @@
 #include <linux/hwmon-sysfs.h>
 #include <linux/err.h>
 #include <linux/mutex.h>
+#include <asm/processor.h>
 
 #define TEMP_FROM_REG(val)	(((((val) >> 16) & 0xff) - 49) * 1000)
 #define REG_TEMP	0xe4
@@ -47,6 +48,10 @@ struct k8temp_data {
 	/* registers values */
 	u8 sensorsp;		/* sensor presence bits - SEL_CORE & SEL_PLACE */
 	u32 temp[2][2];		/* core, place */
+	u8 sensorsp;		/* sensor presence bits - SEL_CORE, SEL_PLACE */
+	u32 temp[2][2];		/* core, place */
+	u8 swap_core_select;    /* meaning of SEL_CORE is inverted */
+	u32 temp_offset;
 };
 
 static struct k8temp_data *k8temp_update_device(struct device *dev)
@@ -61,6 +66,7 @@ static struct k8temp_data *k8temp_update_device(struct device *dev)
 	    || time_after(jiffies, data->last_updated + HZ)) {
 		pci_read_config_byte(pdev, REG_TEMP, &tmp);
 		tmp &= ~(SEL_PLACE | SEL_CORE);		/* Select sensor 0, core0 */
+		tmp &= ~(SEL_PLACE | SEL_CORE);	/* Select sensor 0, core0 */
 		pci_write_config_byte(pdev, REG_TEMP, tmp);
 		pci_read_config_dword(pdev, REG_TEMP, &data->temp[0][0]);
 
@@ -80,6 +86,7 @@ static struct k8temp_data *k8temp_update_device(struct device *dev)
 
 			if (data->sensorsp & SEL_PLACE) {
 				tmp |= SEL_PLACE;	/* Select sensor 1, core1 */
+				tmp |= SEL_PLACE; /* Select sensor 1, core1 */
 				pci_write_config_byte(pdev, REG_TEMP, tmp);
 				pci_read_config_dword(pdev, REG_TEMP,
 						      &data->temp[1][1]);
@@ -118,6 +125,15 @@ static ssize_t show_temp(struct device *dev,
 
 	return sprintf(buf, "%d\n",
 		       TEMP_FROM_REG(data->temp[core][place]));
+	int temp;
+	struct k8temp_data *data = k8temp_update_device(dev);
+
+	if (data->swap_core_select && (data->sensorsp & SEL_CORE))
+		core = core ? 0 : 1;
+
+	temp = TEMP_FROM_REG(data->temp[core][place]) + data->temp_offset;
+
+	return sprintf(buf, "%d\n", temp);
 }
 
 /* core, place */
@@ -129,6 +145,7 @@ static SENSOR_DEVICE_ATTR_2(temp4_input, S_IRUGO, show_temp, NULL, 1, 1);
 static DEVICE_ATTR(name, S_IRUGO, show_name, NULL);
 
 static struct pci_device_id k8temp_ids[] = {
+static const struct pci_device_id k8temp_ids[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_AMD, PCI_DEVICE_ID_AMD_K8_NB_MISC) },
 	{ 0 },
 };
@@ -136,6 +153,38 @@ static struct pci_device_id k8temp_ids[] = {
 MODULE_DEVICE_TABLE(pci, k8temp_ids);
 
 static int __devinit k8temp_probe(struct pci_dev *pdev,
+static int is_rev_g_desktop(u8 model)
+{
+	u32 brandidx;
+
+	if (model < 0x69)
+		return 0;
+
+	if (model == 0xc1 || model == 0x6c || model == 0x7c)
+		return 0;
+
+	/*
+	 * Differentiate between AM2 and ASB1.
+	 * See "Constructing the processor Name String" in "Revision
+	 * Guide for AMD NPT Family 0Fh Processors" (33610).
+	 */
+	brandidx = cpuid_ebx(0x80000001);
+	brandidx = (brandidx >> 9) & 0x1f;
+
+	/* Single core */
+	if ((model == 0x6f || model == 0x7f) &&
+	    (brandidx == 0x7 || brandidx == 0x9 || brandidx == 0xc))
+		return 0;
+
+	/* Dual core */
+	if (model == 0x6b &&
+	    (brandidx == 0xb || brandidx == 0xc))
+		return 0;
+
+	return 1;
+}
+
+static int k8temp_probe(struct pci_dev *pdev,
 				  const struct pci_device_id *id)
 {
 	int err;
@@ -157,6 +206,41 @@ static int __devinit k8temp_probe(struct pci_dev *pdev,
 
 	pci_read_config_byte(pdev, REG_TEMP, &scfg);
 	scfg &= ~(SEL_PLACE | SEL_CORE);		/* Select sensor 0, core0 */
+	u8 model, stepping;
+	struct k8temp_data *data;
+
+	data = devm_kzalloc(&pdev->dev, sizeof(struct k8temp_data), GFP_KERNEL);
+	if (!data)
+		return -ENOMEM;
+
+	model = boot_cpu_data.x86_model;
+	stepping = boot_cpu_data.x86_stepping;
+
+	/* feature available since SH-C0, exclude older revisions */
+	if ((model == 4 && stepping == 0) ||
+	    (model == 5 && stepping <= 1))
+		return -ENODEV;
+
+	/*
+	 * AMD NPT family 0fh, i.e. RevF and RevG:
+	 * meaning of SEL_CORE bit is inverted
+	 */
+	if (model >= 0x40) {
+		data->swap_core_select = 1;
+		dev_warn(&pdev->dev,
+			 "Temperature readouts might be wrong - check erratum #141\n");
+	}
+
+	/*
+	 * RevG desktop CPUs (i.e. no socket S1G1 or ASB1 parts) need
+	 * additional offset, otherwise reported temperature is below
+	 * ambient temperature
+	 */
+	if (is_rev_g_desktop(model))
+		data->temp_offset = 21000;
+
+	pci_read_config_byte(pdev, REG_TEMP, &scfg);
+	scfg &= ~(SEL_PLACE | SEL_CORE);	/* Select sensor 0, core0 */
 	pci_write_config_byte(pdev, REG_TEMP, scfg);
 	pci_read_config_byte(pdev, REG_TEMP, &scfg);
 
@@ -164,6 +248,7 @@ static int __devinit k8temp_probe(struct pci_dev *pdev,
 		dev_err(&pdev->dev, "Configuration bit(s) stuck at 1!\n");
 		err = -ENODEV;
 		goto exit_free;
+		return -ENODEV;
 	}
 
 	scfg |= (SEL_PLACE | SEL_CORE);
@@ -178,6 +263,7 @@ static int __devinit k8temp_probe(struct pci_dev *pdev,
 		pci_read_config_dword(pdev, REG_TEMP, &temp);
 		scfg |= SEL_CORE;	/* prepare for next selection */
 		if (!((temp >> 16) & 0xff))	/* if temp is 0 -49C is not likely */
+		if (!((temp >> 16) & 0xff)) /* if temp is 0 -49C is unlikely */
 			data->sensorsp &= ~SEL_PLACE;
 	}
 
@@ -186,12 +272,14 @@ static int __devinit k8temp_probe(struct pci_dev *pdev,
 		pci_write_config_byte(pdev, REG_TEMP, scfg);
 		pci_read_config_dword(pdev, REG_TEMP, &temp);
 		if (!((temp >> 16) & 0xff))	/* if temp is 0 -49C is not likely */
+		if (!((temp >> 16) & 0xff)) /* if temp is 0 -49C is unlikely */
 			data->sensorsp &= ~SEL_CORE;
 	}
 
 	data->name = "k8temp";
 	mutex_init(&data->update_lock);
 	dev_set_drvdata(&pdev->dev, data);
+	pci_set_drvdata(pdev, data);
 
 	/* Register sysfs hooks */
 	err = device_create_file(&pdev->dev,
@@ -214,11 +302,13 @@ static int __devinit k8temp_probe(struct pci_dev *pdev,
 		if (err)
 			goto exit_remove;
 		if (data->sensorsp & SEL_PLACE)
+		if (data->sensorsp & SEL_PLACE) {
 			err = device_create_file(&pdev->dev,
 					   &sensor_dev_attr_temp4_input.
 					   dev_attr);
 			if (err)
 				goto exit_remove;
+		}
 	}
 
 	err = device_create_file(&pdev->dev, &dev_attr_name);
@@ -254,6 +344,12 @@ exit:
 static void __devexit k8temp_remove(struct pci_dev *pdev)
 {
 	struct k8temp_data *data = dev_get_drvdata(&pdev->dev);
+	return err;
+}
+
+static void k8temp_remove(struct pci_dev *pdev)
+{
+	struct k8temp_data *data = pci_get_drvdata(pdev);
 
 	hwmon_device_unregister(data->hwmon_dev);
 	device_remove_file(&pdev->dev,
@@ -285,6 +381,10 @@ static void __exit k8temp_exit(void)
 {
 	pci_unregister_driver(&k8temp_driver);
 }
+	.remove = k8temp_remove,
+};
+
+module_pci_driver(k8temp_driver);
 
 MODULE_AUTHOR("Rudolf Marek <r.marek@assembler.cz>");
 MODULE_DESCRIPTION("AMD K8 core temperature monitor");

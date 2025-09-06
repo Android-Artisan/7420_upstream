@@ -10,6 +10,7 @@
 #  include <config.h>
 #endif
 
+#include <stdlib.h>
 #include "lkc.h"
 #include "images.c"
 
@@ -30,6 +31,10 @@ enum {
 	SINGLE_VIEW, SPLIT_VIEW, FULL_VIEW
 };
 
+enum {
+	OPT_NORMAL, OPT_ALL, OPT_PROMPT
+};
+
 static gint view_mode = FULL_VIEW;
 static gboolean show_name = TRUE;
 static gboolean show_range = TRUE;
@@ -37,6 +42,8 @@ static gboolean show_value = TRUE;
 static gboolean show_all = FALSE;
 static gboolean show_debug = FALSE;
 static gboolean resizeable = FALSE;
+static gboolean resizeable = FALSE;
+static int opt_mode = OPT_NORMAL;
 
 GtkWidget *main_wnd = NULL;
 GtkWidget *tree1_w = NULL;	// left  frame
@@ -106,6 +113,7 @@ const char *dbg_print_stype(int val)
 }
 
 const char *dbg_print_flags(int val)
+const char *dbg_sym_flags(int val)
 {
 	static char buf[256];
 
@@ -269,6 +277,7 @@ void init_main_window(const gchar * glade_file)
 	sprintf(title, _("Linux Kernel v%s Configuration"),
 		getenv("KERNELVERSION"));
 	gtk_window_set_title(GTK_WINDOW(main_wnd), title);
+	gtk_window_set_title(GTK_WINDOW(main_wnd), rootmenu.prompt->text);
 
 	gtk_widget_show(main_wnd);
 }
@@ -313,6 +322,7 @@ void init_left_tree(void)
 	gtk_tree_view_set_model(view, model1);
 	gtk_tree_view_set_headers_visible(view, TRUE);
 	gtk_tree_view_set_rules_hint(view, FALSE);
+	gtk_tree_view_set_rules_hint(view, TRUE);
 
 	column = gtk_tree_view_column_new();
 	gtk_tree_view_append_column(view, column);
@@ -358,6 +368,7 @@ void init_right_tree(void)
 	gtk_tree_view_set_model(view, model2);
 	gtk_tree_view_set_headers_visible(view, TRUE);
 	gtk_tree_view_set_rules_hint(view, FALSE);
+	gtk_tree_view_set_rules_hint(view, TRUE);
 
 	column = gtk_tree_view_column_new();
 	gtk_tree_view_append_column(view, column);
@@ -469,6 +480,9 @@ static void text_insert_help(struct menu *menu)
 		name = g_strdup_printf(menu->sym->name);
 	else
 		name = g_strdup("");
+	struct gstr help = str_new();
+
+	menu_get_ext_help(menu, &help);
 
 	buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(text_w));
 	gtk_text_buffer_get_bounds(buffer, &start, &end);
@@ -486,6 +500,11 @@ static void text_insert_help(struct menu *menu)
 	gtk_text_buffer_get_end_iter(buffer, &end);
 	gtk_text_buffer_insert_with_tags(buffer, &end, help, -1, tag2,
 					 NULL);
+	gtk_text_buffer_insert_at_cursor(buffer, "\n\n", 2);
+	gtk_text_buffer_get_end_iter(buffer, &end);
+	gtk_text_buffer_insert_with_tags(buffer, &end, str_get(&help), -1, tag2,
+					 NULL);
+	str_free(&help);
 }
 
 
@@ -716,6 +735,11 @@ on_show_all_options1_activate(GtkMenuItem * menuitem, gpointer user_data)
 
 	gtk_tree_store_clear(tree2);
 	display_tree(&rootmenu);	// instead of update_tree to speed-up
+on_set_option_mode1_activate(GtkMenuItem *menuitem, gpointer user_data)
+{
+	opt_mode = OPT_NORMAL;
+	gtk_tree_store_clear(tree2);
+	display_tree(&rootmenu);	/* instead of update_tree to speed-up */
 }
 
 
@@ -724,6 +748,20 @@ on_show_debug_info1_activate(GtkMenuItem * menuitem, gpointer user_data)
 {
 	show_debug = GTK_CHECK_MENU_ITEM(menuitem)->active;
 	update_tree(&rootmenu, NULL);
+on_set_option_mode2_activate(GtkMenuItem *menuitem, gpointer user_data)
+{
+	opt_mode = OPT_ALL;
+	gtk_tree_store_clear(tree2);
+	display_tree(&rootmenu);	/* instead of update_tree to speed-up */
+}
+
+
+void
+on_set_option_mode3_activate(GtkMenuItem *menuitem, gpointer user_data)
+{
+	opt_mode = OPT_PROMPT;
+	gtk_tree_store_clear(tree2);
+	display_tree(&rootmenu);	/* instead of update_tree to speed-up */
 }
 
 
@@ -733,6 +771,7 @@ void on_introduction1_activate(GtkMenuItem * menuitem, gpointer user_data)
 	const gchar *intro_text = _(
 	    "Welcome to gkc, the GTK+ graphical kernel configuration tool\n"
 	    "for Linux.\n"
+	    "Welcome to gkc, the GTK+ graphical configuration tool\n"
 	    "For each option, a blank box indicates the feature is disabled, a\n"
 	    "check indicates it is enabled, and a dot indicates that it is to\n"
 	    "be compiled as a module.  Clicking on the box will cycle through the three states.\n"
@@ -752,6 +791,7 @@ void on_introduction1_activate(GtkMenuItem * menuitem, gpointer user_data)
 					GTK_DIALOG_DESTROY_WITH_PARENT,
 					GTK_MESSAGE_INFO,
 					GTK_BUTTONS_CLOSE, intro_text);
+					GTK_BUTTONS_CLOSE, "%s", intro_text);
 	g_signal_connect_swapped(GTK_OBJECT(dialog), "response",
 				 G_CALLBACK(gtk_widget_destroy),
 				 GTK_OBJECT(dialog));
@@ -770,6 +810,7 @@ void on_about1_activate(GtkMenuItem * menuitem, gpointer user_data)
 					GTK_DIALOG_DESTROY_WITH_PARENT,
 					GTK_MESSAGE_INFO,
 					GTK_BUTTONS_CLOSE, about_text);
+					GTK_BUTTONS_CLOSE, "%s", about_text);
 	g_signal_connect_swapped(GTK_OBJECT(dialog), "response",
 				 G_CALLBACK(gtk_widget_destroy),
 				 GTK_OBJECT(dialog));
@@ -789,6 +830,7 @@ void on_license1_activate(GtkMenuItem * menuitem, gpointer user_data)
 					GTK_DIALOG_DESTROY_WITH_PARENT,
 					GTK_MESSAGE_INFO,
 					GTK_BUTTONS_CLOSE, license_text);
+					GTK_BUTTONS_CLOSE, "%s", license_text);
 	g_signal_connect_swapped(GTK_OBJECT(dialog), "response",
 				 G_CALLBACK(gtk_widget_destroy),
 				 GTK_OBJECT(dialog));
@@ -901,6 +943,7 @@ static void change_sym_value(struct menu *menu, gint col)
 {
 	struct symbol *sym = menu->sym;
 	tristate oldval, newval;
+	tristate newval;
 
 	if (!sym)
 		return;
@@ -1177,6 +1220,12 @@ static gchar **fill_row(struct menu *menu)
 			    sym && sym_has_value(sym) ? "(NEW)" : "");
 
 	if (show_all && !menu_is_visible(menu))
+			    sym && !sym_has_value(sym) ? "(NEW)" : "");
+
+	if (opt_mode == OPT_ALL && !menu_is_visible(menu))
+		row[COL_COLOR] = g_strdup("DarkGray");
+	else if (opt_mode == OPT_PROMPT &&
+			menu_has_prompt(menu) && !menu_is_visible(menu))
 		row[COL_COLOR] = g_strdup("DarkGray");
 	else
 		row[COL_COLOR] = g_strdup("Black");
@@ -1235,6 +1284,7 @@ static gchar **fill_row(struct menu *menu)
 			row[COL_BTNVIS] = GINT_TO_POINTER(TRUE);
 		if (sym_is_choice(sym))
 			break;
+		/* fall through */
 	case S_TRISTATE:
 		val = sym_get_tristate_value(sym);
 		switch (val) {
@@ -1400,6 +1450,11 @@ static void update_tree(struct menu *src, GtkTreeIter * dst)
 #endif
 
 		if (!menu_is_visible(child1) && !show_all) {	// remove node
+		if ((opt_mode == OPT_NORMAL && !menu_is_visible(child1)) ||
+		    (opt_mode == OPT_PROMPT && !menu_has_prompt(child1)) ||
+		    (opt_mode == OPT_ALL    && !menu_get_prompt(child1))) {
+
+			/* remove node */
 			if (gtktree_iter_find_node(dst, menu1) != NULL) {
 				memcpy(&tmp, child2, sizeof(GtkTreeIter));
 				valid = gtk_tree_model_iter_next(model2,
@@ -1409,6 +1464,9 @@ static void update_tree(struct menu *src, GtkTreeIter * dst)
 					return;	// next parent
 				else
 					goto reparse;	// next child
+					return;		/* next parent */
+				else
+					goto reparse;	/* next child */
 			} else
 				continue;
 		}
@@ -1478,6 +1536,9 @@ static void display_tree(struct menu *menu)
 			continue;
 
 		if (menu_is_visible(child) || show_all)
+		if ((opt_mode == OPT_NORMAL && menu_is_visible(child)) ||
+		    (opt_mode == OPT_PROMPT && menu_has_prompt(child)) ||
+		    (opt_mode == OPT_ALL    && menu_get_prompt(child)))
 			place_node(child, fill_row(child));
 #ifdef DEBUG
 		printf("%*c%s: ", indent, ' ', menu_get_prompt(child));
@@ -1488,6 +1549,12 @@ static void display_tree(struct menu *menu)
 			dbg_print_stype(sym->type);
 			printf(" | ");
 			dbg_print_flags(sym->flags);
+		printf("%s", prop_get_type_name(ptype));
+		printf(" | ");
+		if (sym) {
+			printf("%s", sym_type_name(sym->type));
+			printf(" | ");
+			printf("%s", dbg_sym_flags(sym->flags));
 			printf("\n");
 		} else
 			printf("\n");
@@ -1499,6 +1566,15 @@ static void display_tree(struct menu *menu)
                 if (((menu != &rootmenu) && !(menu->flags & MENU_ROOT))
 		    || (view_mode == FULL_VIEW)
 		    || (view_mode == SPLIT_VIEW))*/
+		if (((menu != &rootmenu) && !(menu->flags & MENU_ROOT))
+		    || (view_mode == FULL_VIEW)
+		    || (view_mode == SPLIT_VIEW))*/
+
+		/* Change paned position if the view is not in 'split mode' */
+		if (view_mode == SINGLE_VIEW || view_mode == FULL_VIEW) {
+			gtk_paned_set_position(GTK_PANED(hpaned), 0);
+		}
+
 		if (((view_mode == SINGLE_VIEW) && (menu->flags & MENU_ROOT))
 		    || (view_mode == FULL_VIEW)
 		    || (view_mode == SPLIT_VIEW)) {
@@ -1597,6 +1673,12 @@ int main(int ac, char *av[])
 		case 'h':
 		case '?':
 			printf("%s <config>\n", av[0]);
+		case 's':
+			conf_set_message_callback(NULL);
+			break;
+		case 'h':
+		case '?':
+			printf("%s [-s] <config>\n", av[0]);
 			exit(0);
 		}
 		name = av[2];
@@ -1605,6 +1687,13 @@ int main(int ac, char *av[])
 
 	conf_parse(name);
 	fixup_rootmenu(&rootmenu);
+
+	/* Load the interface and connect signals */
+	init_main_window(glade_file);
+	init_tree_model();
+	init_left_tree();
+	init_right_tree();
+
 	conf_read(NULL);
 
 	switch (view_mode) {

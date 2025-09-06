@@ -1,11 +1,9 @@
 		NOTES ON KERNEL OSS-EMULATION
-		=============================
 
 		Jan. 22, 2004  Takashi Iwai <tiwai@suse.de>
 
 
 Modules
-=======
 
 ALSA provides a powerful OSS emulation on the kernel.
 The OSS emulation for PCM, mixer and sequencer devices is implemented
@@ -20,6 +18,7 @@ define these aliases by yourself.
 
 Only necessary step for auto-loading of OSS modules is to define the
 card alias in /etc/modprobe.conf, such as
+card alias in /etc/modprobe.d/alsa.conf, such as
 
 	alias sound-slot-0 snd-emu10k1
 
@@ -39,7 +38,6 @@ even if "NOT ENABLED IN CONFIG" is shown in it.
 
 
 Device Mapping
-==============
 
 ALSA supports the following OSS device files:
 
@@ -108,7 +106,6 @@ For example, to assign the third MIDI device on the first card to
 
 
 PCM Mode
-========
 
 As default, ALSA emulates the OSS PCM with so-called plugin layer,
 i.e. tries to convert the sample format, rate or channels
@@ -197,7 +194,6 @@ as below:
 
 
 Mixer Elements
-==============
 
 Since ALSA has completely different mixer interface, the emulation of
 OSS mixer is relatively complicated.  ALSA builds up a mixer element
@@ -279,7 +275,6 @@ image.
 
 
 Duplex Streams
-==============
 
 Note that when attempting to use a single device file for playback and
 capture, the OSS API provides no way to set the format, sample rate or
@@ -294,7 +289,6 @@ and set the values for the corresponding handle.
 
 
 Unsupported Features
-====================
 
 MMAP on ICE1712 driver
 ----------------------

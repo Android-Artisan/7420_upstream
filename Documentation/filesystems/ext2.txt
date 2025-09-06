@@ -1,6 +1,5 @@
 
 The Second Extended Filesystem
-==============================
 
 ext2 was originally released in January 1993.  Written by R\'emy Card,
 Theodore Ts'o and Stephen Tweedie, it was a major rewrite of the
@@ -9,7 +8,6 @@ filesystem in use by Linux.  There are also implementations available
 for NetBSD, FreeBSD, the GNU HURD, Windows 95/98/NT, OS/2 and RISC OS.
 
 Options
-=======
 
 Most defaults are determined by the filesystem superblock, and can be
 set using tune2fs(8). Kernel-determined defaults are indicated by (*).
@@ -19,6 +17,9 @@ minixdf				Makes `df' act like Minix.
 
 check=none, nocheck	(*)	Don't do extra checking of bitmaps on mount
 				(check=normal and check=strict options removed)
+
+dax				Use direct access (no page cache).  See
+				Documentation/filesystems/dax.txt.
 
 debug				Extra debugging information is sent to the
 				kernel syslog.  Useful for developers.
@@ -62,7 +63,6 @@ grpquota,noquota,quota,usrquota	Quota options are silently ignored by ext2.
 
 
 Specification
-=============
 
 ext2 shares many properties with traditional Unix filesystems.  It has
 the concepts of blocks, inodes and directories.  It has space in the
@@ -323,6 +323,7 @@ so 8kB blocks are only allowed on Alpha systems (and other architectures
 which support larger pages).
 
 There is an upper limit of 32768 subdirectories in a single directory.
+There is an upper limit of 32000 subdirectories in a single directory.
 
 There is a "soft" upper limit of about 10-15k files in a single directory
 with the current linear linked-list directory implementation.  This limit
@@ -361,9 +362,10 @@ the blocks in that transaction so they are discarded (which means any
 filesystem changes they represent are also lost).
 Check Documentation/filesystems/ext3.txt if you want to read more about
 ext3 and journaling.
+Check Documentation/filesystems/ext4.txt if you want to read more about
+ext4 and journaling.
 
 References
-==========
 
 The kernel source	file:/usr/src/linux/fs/ext2/
 e2fsprogs (e2fsck)	http://e2fsprogs.sourceforge.net/
@@ -380,3 +382,11 @@ OS/2			http://perso.wanadoo.fr/matthieu.willm/ext2-os2/
 RISC OS client		ftp://ftp.barnet.ac.uk/pub/acorn/armlinux/iscafs/
 
 (*) no longer actively developed/supported (as of Apr 2001)
+Windows 95/98/NT/2000	http://www.chrysocome.net/explore2fs
+Windows 95 (*)		http://www.yipton.net/content.html#FSDEXT2
+DOS client (*)		ftp://metalab.unc.edu/pub/Linux/system/filesystems/ext2/
+OS/2 (+)		ftp://metalab.unc.edu/pub/Linux/system/filesystems/ext2/
+RISC OS client		http://www.esw-heim.tu-clausthal.de/~marco/smorbrod/IscaFS/
+
+(*) no longer actively developed/supported (as of Apr 2001)
+(+) no longer actively developed/supported (as of Mar 2009)

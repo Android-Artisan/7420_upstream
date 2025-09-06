@@ -20,6 +20,7 @@ See the GNU General Public License for more details.
 You should have received a copy of the GNU General Public License along with
 this program; if not, write to the Free Software Foundation, Inc.,
 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+this program; if not, see <http://www.gnu.org/licenses/>.
 
  * Comment:
  * jul/08/2002 : Rx buffer length should use Rx ring ptr.	
@@ -212,6 +213,7 @@ static void DisableDmaChannel(unsigned int channel)
 	default:
 		break;
 	};			//Switch
+	}
 }
 
 static unsigned char ReadLPCReg(int iRegNum)
@@ -240,6 +242,7 @@ static void WriteLPCReg(int iRegNum, unsigned char iVal)
 static __u8 ReadReg(unsigned int BaseAddr, int iRegNum)
 {
 	return ((__u8) inb(BaseAddr + iRegNum));
+	return (__u8) inb(BaseAddr + iRegNum);
 }
 
 static void WriteReg(unsigned int BaseAddr, int iRegNum, unsigned char iVal)
@@ -776,6 +779,7 @@ static void SetBaudRate(__u16 iobase, __u32 rate)
 		default:
 			break;
 		};
+		}
 	} else if (IsMIROn(iobase)) {
 		value = 0;	// will automatically be fixed in 1.152M
 	} else if (IsFIROn(iobase)) {

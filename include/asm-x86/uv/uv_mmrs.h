@@ -13,9 +13,7 @@
 
 #define UV_MMR_ENABLE		(1UL << 63)
 
-/* ========================================================================= */
 /*                           UVH_BAU_DATA_CONFIG                             */
-/* ========================================================================= */
 #define UVH_BAU_DATA_CONFIG 0x61680UL
 #define UVH_BAU_DATA_CONFIG_32 0x0438
 
@@ -52,9 +50,7 @@ union uvh_bau_data_config_u {
     } s;
 };
 
-/* ========================================================================= */
 /*                           UVH_EVENT_OCCURRED0                             */
-/* ========================================================================= */
 #define UVH_EVENT_OCCURRED0 0x70000UL
 #define UVH_EVENT_OCCURRED0_32 0x005e8
 
@@ -236,15 +232,11 @@ union uvh_event_occurred0_u {
     } s;
 };
 
-/* ========================================================================= */
 /*                        UVH_EVENT_OCCURRED0_ALIAS                          */
-/* ========================================================================= */
 #define UVH_EVENT_OCCURRED0_ALIAS 0x0000000000070008UL
 #define UVH_EVENT_OCCURRED0_ALIAS_32 0x005f0
 
-/* ========================================================================= */
 /*                               UVH_INT_CMPB                                */
-/* ========================================================================= */
 #define UVH_INT_CMPB 0x22080UL
 
 #define UVH_INT_CMPB_REAL_TIME_CMPB_SHFT 0
@@ -258,9 +250,7 @@ union uvh_int_cmpb_u {
     } s;
 };
 
-/* ========================================================================= */
 /*                               UVH_INT_CMPC                                */
-/* ========================================================================= */
 #define UVH_INT_CMPC 0x22100UL
 
 #define UVH_INT_CMPC_REAL_TIME_CMPC_SHFT 0
@@ -274,9 +264,7 @@ union uvh_int_cmpc_u {
     } s;
 };
 
-/* ========================================================================= */
 /*                               UVH_INT_CMPD                                */
-/* ========================================================================= */
 #define UVH_INT_CMPD 0x22180UL
 
 #define UVH_INT_CMPD_REAL_TIME_CMPD_SHFT 0
@@ -290,9 +278,7 @@ union uvh_int_cmpd_u {
     } s;
 };
 
-/* ========================================================================= */
 /*                               UVH_IPI_INT                                 */
-/* ========================================================================= */
 #define UVH_IPI_INT 0x60500UL
 #define UVH_IPI_INT_32 0x0348
 
@@ -320,9 +306,7 @@ union uvh_ipi_int_u {
     } s;
 };
 
-/* ========================================================================= */
 /*                   UVH_LB_BAU_INTD_PAYLOAD_QUEUE_FIRST                     */
-/* ========================================================================= */
 #define UVH_LB_BAU_INTD_PAYLOAD_QUEUE_FIRST 0x320050UL
 #define UVH_LB_BAU_INTD_PAYLOAD_QUEUE_FIRST_32 0x009c0
 
@@ -342,9 +326,7 @@ union uvh_lb_bau_intd_payload_queue_first_u {
     } s;
 };
 
-/* ========================================================================= */
 /*                    UVH_LB_BAU_INTD_PAYLOAD_QUEUE_LAST                     */
-/* ========================================================================= */
 #define UVH_LB_BAU_INTD_PAYLOAD_QUEUE_LAST 0x320060UL
 #define UVH_LB_BAU_INTD_PAYLOAD_QUEUE_LAST_32 0x009c8
 
@@ -360,9 +342,7 @@ union uvh_lb_bau_intd_payload_queue_last_u {
     } s;
 };
 
-/* ========================================================================= */
 /*                    UVH_LB_BAU_INTD_PAYLOAD_QUEUE_TAIL                     */
-/* ========================================================================= */
 #define UVH_LB_BAU_INTD_PAYLOAD_QUEUE_TAIL 0x320070UL
 #define UVH_LB_BAU_INTD_PAYLOAD_QUEUE_TAIL_32 0x009d0
 
@@ -378,9 +358,7 @@ union uvh_lb_bau_intd_payload_queue_tail_u {
     } s;
 };
 
-/* ========================================================================= */
 /*                   UVH_LB_BAU_INTD_SOFTWARE_ACKNOWLEDGE                    */
-/* ========================================================================= */
 #define UVH_LB_BAU_INTD_SOFTWARE_ACKNOWLEDGE 0x320080UL
 #define UVH_LB_BAU_INTD_SOFTWARE_ACKNOWLEDGE_32 0x0a68
 
@@ -439,15 +417,11 @@ union uvh_lb_bau_intd_software_acknowledge_u {
     } s;
 };
 
-/* ========================================================================= */
 /*                UVH_LB_BAU_INTD_SOFTWARE_ACKNOWLEDGE_ALIAS                 */
-/* ========================================================================= */
 #define UVH_LB_BAU_INTD_SOFTWARE_ACKNOWLEDGE_ALIAS 0x0000000000320088UL
 #define UVH_LB_BAU_INTD_SOFTWARE_ACKNOWLEDGE_ALIAS_32 0x0a70
 
-/* ========================================================================= */
 /*                     UVH_LB_BAU_SB_ACTIVATION_CONTROL                      */
-/* ========================================================================= */
 #define UVH_LB_BAU_SB_ACTIVATION_CONTROL 0x320020UL
 #define UVH_LB_BAU_SB_ACTIVATION_CONTROL_32 0x009a8
 
@@ -468,9 +442,7 @@ union uvh_lb_bau_sb_activation_control_u {
     } s;
 };
 
-/* ========================================================================= */
 /*                    UVH_LB_BAU_SB_ACTIVATION_STATUS_0                      */
-/* ========================================================================= */
 #define UVH_LB_BAU_SB_ACTIVATION_STATUS_0 0x320030UL
 #define UVH_LB_BAU_SB_ACTIVATION_STATUS_0_32 0x009b0
 
@@ -484,9 +456,7 @@ union uvh_lb_bau_sb_activation_status_0_u {
     } s;
 };
 
-/* ========================================================================= */
 /*                    UVH_LB_BAU_SB_ACTIVATION_STATUS_1                      */
-/* ========================================================================= */
 #define UVH_LB_BAU_SB_ACTIVATION_STATUS_1 0x320040UL
 #define UVH_LB_BAU_SB_ACTIVATION_STATUS_1_32 0x009b8
 
@@ -500,9 +470,7 @@ union uvh_lb_bau_sb_activation_status_1_u {
     } s;
 };
 
-/* ========================================================================= */
 /*                      UVH_LB_BAU_SB_DESCRIPTOR_BASE                        */
-/* ========================================================================= */
 #define UVH_LB_BAU_SB_DESCRIPTOR_BASE 0x320010UL
 #define UVH_LB_BAU_SB_DESCRIPTOR_BASE_32 0x009a0
 
@@ -522,9 +490,7 @@ union uvh_lb_bau_sb_descriptor_base_u {
     } s;
 };
 
-/* ========================================================================= */
 /*                      UVH_LB_MCAST_AOERR0_RPT_ENABLE                       */
-/* ========================================================================= */
 #define UVH_LB_MCAST_AOERR0_RPT_ENABLE 0x50b20UL
 
 #define UVH_LB_MCAST_AOERR0_RPT_ENABLE_MCAST_OBESE_MSG_SHFT 0
@@ -664,9 +630,7 @@ union uvh_lb_mcast_aoerr0_rpt_enable_u {
     } s;
 };
 
-/* ========================================================================= */
 /*                          UVH_LOCAL_INT0_CONFIG                            */
-/* ========================================================================= */
 #define UVH_LOCAL_INT0_CONFIG 0x61000UL
 
 #define UVH_LOCAL_INT0_CONFIG_VECTOR_SHFT 0
@@ -702,9 +666,7 @@ union uvh_local_int0_config_u {
     } s;
 };
 
-/* ========================================================================= */
 /*                          UVH_LOCAL_INT0_ENABLE                            */
-/* ========================================================================= */
 #define UVH_LOCAL_INT0_ENABLE 0x65000UL
 
 #define UVH_LOCAL_INT0_ENABLE_LB_HCERR_SHFT 0
@@ -850,9 +812,7 @@ union uvh_local_int0_enable_u {
     } s;
 };
 
-/* ========================================================================= */
 /*                               UVH_NODE_ID                                 */
-/* ========================================================================= */
 #define UVH_NODE_ID 0x0UL
 
 #define UVH_NODE_ID_FORCE1_SHFT 0
@@ -886,9 +846,7 @@ union uvh_node_id_u {
     } s;
 };
 
-/* ========================================================================= */
 /*                          UVH_NODE_PRESENT_TABLE                           */
-/* ========================================================================= */
 #define UVH_NODE_PRESENT_TABLE 0x1400UL
 #define UVH_NODE_PRESENT_TABLE_DEPTH 16
 
@@ -902,9 +860,7 @@ union uvh_node_present_table_u {
     } s;
 };
 
-/* ========================================================================= */
 /*                UVH_RH_GAM_ALIAS210_REDIRECT_CONFIG_0_MMR                  */
-/* ========================================================================= */
 #define UVH_RH_GAM_ALIAS210_REDIRECT_CONFIG_0_MMR 0x16000d0UL
 
 #define UVH_RH_GAM_ALIAS210_REDIRECT_CONFIG_0_MMR_DEST_BASE_SHFT 24
@@ -919,9 +875,7 @@ union uvh_rh_gam_alias210_redirect_config_0_mmr_u {
     } s;
 };
 
-/* ========================================================================= */
 /*                UVH_RH_GAM_ALIAS210_REDIRECT_CONFIG_1_MMR                  */
-/* ========================================================================= */
 #define UVH_RH_GAM_ALIAS210_REDIRECT_CONFIG_1_MMR 0x16000e0UL
 
 #define UVH_RH_GAM_ALIAS210_REDIRECT_CONFIG_1_MMR_DEST_BASE_SHFT 24
@@ -936,9 +890,7 @@ union uvh_rh_gam_alias210_redirect_config_1_mmr_u {
     } s;
 };
 
-/* ========================================================================= */
 /*                UVH_RH_GAM_ALIAS210_REDIRECT_CONFIG_2_MMR                  */
-/* ========================================================================= */
 #define UVH_RH_GAM_ALIAS210_REDIRECT_CONFIG_2_MMR 0x16000f0UL
 
 #define UVH_RH_GAM_ALIAS210_REDIRECT_CONFIG_2_MMR_DEST_BASE_SHFT 24
@@ -953,9 +905,7 @@ union uvh_rh_gam_alias210_redirect_config_2_mmr_u {
     } s;
 };
 
-/* ========================================================================= */
 /*                    UVH_RH_GAM_CFG_OVERLAY_CONFIG_MMR                      */
-/* ========================================================================= */
 #define UVH_RH_GAM_CFG_OVERLAY_CONFIG_MMR 0x1600020UL
 
 #define UVH_RH_GAM_CFG_OVERLAY_CONFIG_MMR_BASE_SHFT 26
@@ -973,9 +923,7 @@ union uvh_rh_gam_cfg_overlay_config_mmr_u {
     } s;
 };
 
-/* ========================================================================= */
 /*                    UVH_RH_GAM_GRU_OVERLAY_CONFIG_MMR                      */
-/* ========================================================================= */
 #define UVH_RH_GAM_GRU_OVERLAY_CONFIG_MMR 0x1600010UL
 
 #define UVH_RH_GAM_GRU_OVERLAY_CONFIG_MMR_BASE_SHFT 28
@@ -1001,9 +949,7 @@ union uvh_rh_gam_gru_overlay_config_mmr_u {
     } s;
 };
 
-/* ========================================================================= */
 /*                   UVH_RH_GAM_MMIOH_OVERLAY_CONFIG_MMR                     */
-/* ========================================================================= */
 #define UVH_RH_GAM_MMIOH_OVERLAY_CONFIG_MMR 0x1600030UL
 
 #define UVH_RH_GAM_MMIOH_OVERLAY_CONFIG_MMR_BASE_SHFT 30
@@ -1027,9 +973,7 @@ union uvh_rh_gam_mmioh_overlay_config_mmr_u {
     } s;
 };
 
-/* ========================================================================= */
 /*                    UVH_RH_GAM_MMR_OVERLAY_CONFIG_MMR                      */
-/* ========================================================================= */
 #define UVH_RH_GAM_MMR_OVERLAY_CONFIG_MMR 0x1600028UL
 
 #define UVH_RH_GAM_MMR_OVERLAY_CONFIG_MMR_BASE_SHFT 26
@@ -1050,9 +994,7 @@ union uvh_rh_gam_mmr_overlay_config_mmr_u {
     } s;
 };
 
-/* ========================================================================= */
 /*                                 UVH_RTC                                   */
-/* ========================================================================= */
 #define UVH_RTC 0x340000UL
 
 #define UVH_RTC_REAL_TIME_CLOCK_SHFT 0
@@ -1066,9 +1008,7 @@ union uvh_rtc_u {
     } s;
 };
 
-/* ========================================================================= */
 /*                           UVH_RTC1_INT_CONFIG                             */
-/* ========================================================================= */
 #define UVH_RTC1_INT_CONFIG 0x615c0UL
 
 #define UVH_RTC1_INT_CONFIG_VECTOR_SHFT 0
@@ -1104,9 +1044,7 @@ union uvh_rtc1_int_config_u {
     } s;
 };
 
-/* ========================================================================= */
 /*                           UVH_RTC2_INT_CONFIG                             */
-/* ========================================================================= */
 #define UVH_RTC2_INT_CONFIG 0x61600UL
 
 #define UVH_RTC2_INT_CONFIG_VECTOR_SHFT 0
@@ -1142,9 +1080,7 @@ union uvh_rtc2_int_config_u {
     } s;
 };
 
-/* ========================================================================= */
 /*                           UVH_RTC3_INT_CONFIG                             */
-/* ========================================================================= */
 #define UVH_RTC3_INT_CONFIG 0x61640UL
 
 #define UVH_RTC3_INT_CONFIG_VECTOR_SHFT 0
@@ -1180,9 +1116,7 @@ union uvh_rtc3_int_config_u {
     } s;
 };
 
-/* ========================================================================= */
 /*                            UVH_RTC_INC_RATIO                              */
-/* ========================================================================= */
 #define UVH_RTC_INC_RATIO 0x350000UL
 
 #define UVH_RTC_INC_RATIO_FRACTION_SHFT 0
@@ -1199,9 +1133,7 @@ union uvh_rtc_inc_ratio_u {
     } s;
 };
 
-/* ========================================================================= */
 /*                          UVH_SI_ADDR_MAP_CONFIG                           */
-/* ========================================================================= */
 #define UVH_SI_ADDR_MAP_CONFIG 0xc80000UL
 
 #define UVH_SI_ADDR_MAP_CONFIG_M_SKT_SHFT 0
@@ -1219,9 +1151,7 @@ union uvh_si_addr_map_config_u {
     } s;
 };
 
-/* ========================================================================= */
 /*                       UVH_SI_ALIAS0_OVERLAY_CONFIG                        */
-/* ========================================================================= */
 #define UVH_SI_ALIAS0_OVERLAY_CONFIG 0xc80008UL
 
 #define UVH_SI_ALIAS0_OVERLAY_CONFIG_BASE_SHFT 24
@@ -1243,9 +1173,7 @@ union uvh_si_alias0_overlay_config_u {
     } s;
 };
 
-/* ========================================================================= */
 /*                       UVH_SI_ALIAS1_OVERLAY_CONFIG                        */
-/* ========================================================================= */
 #define UVH_SI_ALIAS1_OVERLAY_CONFIG 0xc80010UL
 
 #define UVH_SI_ALIAS1_OVERLAY_CONFIG_BASE_SHFT 24
@@ -1267,9 +1195,7 @@ union uvh_si_alias1_overlay_config_u {
     } s;
 };
 
-/* ========================================================================= */
 /*                       UVH_SI_ALIAS2_OVERLAY_CONFIG                        */
-/* ========================================================================= */
 #define UVH_SI_ALIAS2_OVERLAY_CONFIG 0xc80018UL
 
 #define UVH_SI_ALIAS2_OVERLAY_CONFIG_BASE_SHFT 24

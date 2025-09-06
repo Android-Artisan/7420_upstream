@@ -116,6 +116,13 @@ unsigned long frv_dma_inprogress;
 
 #define frv_set_dma_inprogress(channel) \
 	atomic_set_mask(1 << (channel), &frv_dma_inprogress);
+unsigned int frv_dma_inprogress;
+
+#define frv_clear_dma_inprogress(channel) \
+	(void)__atomic32_fetch_and(~(1 << (channel)), &frv_dma_inprogress);
+
+#define frv_set_dma_inprogress(channel) \
+	(void)__atomic32_fetch_or(1 << (channel), &frv_dma_inprogress);
 
 /*****************************************************************************/
 /*

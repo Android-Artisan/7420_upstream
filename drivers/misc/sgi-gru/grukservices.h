@@ -41,6 +41,15 @@
  * 	- gru_create_message_queue() needs interrupt vector info
  */
 
+struct gru_message_queue_desc {
+	void		*mq;			/* message queue vaddress */
+	unsigned long	mq_gpa;			/* global address of mq */
+	int		qlines;			/* queue size in CL */
+	int		interrupt_vector;	/* interrupt vector */
+	int		interrupt_pnode;	/* pnode for interrupt */
+	int		interrupt_apicid;	/* lapicid for interrupt */
+};
+
 /*
  * Initialize a user allocated chunk of memory to be used as
  * a message queue. The caller must ensure that the queue is
@@ -53,12 +62,20 @@
  *  Input:
  * 	p	pointer to user allocated memory.
  * 	bytes	size of message queue in bytes
+ * 	mqd	pointer to message queue descriptor
+ * 	p	pointer to user allocated mesq memory.
+ * 	bytes	size of message queue in bytes
+ *      vector	interrupt vector (zero if no interrupts)
+ *      nasid	nasid of blade where interrupt is delivered
+ *      apicid	apicid of cpu for interrupt
  *
  *  Errors:
  *  	0	OK
  *  	>0	error
  */
 extern int gru_create_message_queue(void *p, unsigned int bytes);
+extern int gru_create_message_queue(struct gru_message_queue_desc *mqd,
+		void *p, unsigned int bytes, int nasid, int vector, int apicid);
 
 /*
  * Send a message to a message queue.
@@ -69,6 +86,7 @@ extern int gru_create_message_queue(void *p, unsigned int bytes);
  *
  *   Input:
  * 	xmq	message queue - must be a UV global physical address
+ * 	mqd	pointer to message queue descriptor
  * 	mesg	pointer to message. Must be 64-bit aligned
  * 	bytes	size of message in bytes
  *
@@ -79,6 +97,8 @@ extern int gru_create_message_queue(void *p, unsigned int bytes);
  */
 extern int gru_send_message_gpa(unsigned long mq_gpa, void *mesg,
 						unsigned int bytes);
+extern int gru_send_message_gpa(struct gru_message_queue_desc *mqd,
+			void *mesg, unsigned int bytes);
 
 /* Status values for gru_send_message() */
 #define MQE_OK			0	/* message sent successfully */
@@ -98,6 +118,11 @@ extern int gru_send_message_gpa(unsigned long mq_gpa, void *mesg,
  * 	mesq	message being freed
  */
 extern void gru_free_message(void *mq, void *mesq);
+ * 	mqd	pointer to message queue descriptor
+ * 	mesq	message being freed
+ */
+extern void gru_free_message(struct gru_message_queue_desc *mqd,
+			     void *mesq);
 
 /*
  * Get next message from message queue. Returns pointer to
@@ -107,12 +132,28 @@ extern void gru_free_message(void *mq, void *mesq);
  *
  *   Input
  * 	mq	message queue
+ * 	mqd	pointer to message queue descriptor
  *
  *   Output:
  *	p	pointer to message
  *	NULL	no message available
  */
 extern void *gru_get_next_message(void *mq);
+extern void *gru_get_next_message(struct gru_message_queue_desc *mqd);
+
+
+/*
+ * Read a GRU global GPA. Source can be located in a remote partition.
+ *
+ *    Input:
+ *    	value		memory address where MMR value is returned
+ *    	gpa		source numalink physical address of GPA
+ *
+ *    Output:
+ *	0		OK
+ *	>0		error
+ */
+int gru_read_gpa(unsigned long *value, unsigned long gpa);
 
 
 /*
@@ -130,5 +171,56 @@ extern void *gru_get_next_message(void *mq);
  */
 extern int gru_copy_gpa(unsigned long dest_gpa, unsigned long src_gpa,
 							unsigned int bytes);
+
+/*
+ * Reserve GRU resources to be used asynchronously.
+ *
+ * 	input:
+ * 		blade_id  - blade on which resources should be reserved
+ * 		cbrs	  - number of CBRs
+ * 		dsr_bytes - number of DSR bytes needed
+ * 		cmp	  - completion structure for waiting for
+ * 			    async completions
+ *	output:
+ *		handle to identify resource
+ *		(0 = no resources)
+ */
+extern unsigned long gru_reserve_async_resources(int blade_id, int cbrs, int dsr_bytes,
+				struct completion *cmp);
+
+/*
+ * Release async resources previously reserved.
+ *
+ *	input:
+ *		han - handle to identify resources
+ */
+extern void gru_release_async_resources(unsigned long han);
+
+/*
+ * Wait for async GRU instructions to complete.
+ *
+ *	input:
+ *		han - handle to identify resources
+ */
+extern void gru_wait_async_cbr(unsigned long han);
+
+/*
+ * Lock previous reserved async GRU resources
+ *
+ *	input:
+ *		han - handle to identify resources
+ *	output:
+ *		cb  - pointer to first CBR
+ *		dsr - pointer to first DSR
+ */
+extern void gru_lock_async_resource(unsigned long han,  void **cb, void **dsr);
+
+/*
+ * Unlock previous reserved async GRU resources
+ *
+ *	input:
+ *		han - handle to identify resources
+ */
+extern void gru_unlock_async_resource(unsigned long han);
 
 #endif 		/* __GRU_KSERVICES_H_ */

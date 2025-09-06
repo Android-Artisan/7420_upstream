@@ -7,6 +7,9 @@
 
 #define dn_ntohs(x) le16_to_cpu(x)
 #define dn_htons(x) cpu_to_le16(x)
+#include <net/flow.h>
+#include <asm/byteorder.h>
+#include <asm/unaligned.h>
 
 struct dn_scp                                   /* Session Control Port */
 {
@@ -176,6 +179,7 @@ struct dn_skb_cb {
 static inline __le16 dn_eth2dn(unsigned char *ethaddr)
 {
 	return dn_htons(ethaddr[4] | (ethaddr[5] << 8));
+	return get_unaligned((__le16 *)(ethaddr + 4));
 }
 
 static inline __le16 dn_saddr2dn(struct sockaddr_dn *saddr)
@@ -186,6 +190,7 @@ static inline __le16 dn_saddr2dn(struct sockaddr_dn *saddr)
 static inline void dn_dn2eth(unsigned char *ethaddr, __le16 addr)
 {
 	__u16 a = dn_ntohs(addr);
+	__u16 a = le16_to_cpu(addr);
 	ethaddr[0] = 0xAA;
 	ethaddr[1] = 0x00;
 	ethaddr[2] = 0x04;
@@ -201,6 +206,15 @@ static inline void dn_sk_ports_copy(struct flowi *fl, struct dn_scp *scp)
 }
 
 extern unsigned dn_mss_from_pmtu(struct net_device *dev, int mtu);
+static inline void dn_sk_ports_copy(struct flowidn *fld, struct dn_scp *scp)
+{
+	fld->fld_sport = scp->addrloc;
+	fld->fld_dport = scp->addrrem;
+}
+
+unsigned int dn_mss_from_pmtu(struct net_device *dev, int mtu);
+void dn_register_sysctl(void);
+void dn_unregister_sysctl(void);
 
 #define DN_MENUVER_ACC 0x01
 #define DN_MENUVER_USR 0x02
@@ -218,6 +232,19 @@ extern int dn_username2sockaddr(unsigned char *data, int len, struct sockaddr_dn
 
 extern void dn_start_slow_timer(struct sock *sk);
 extern void dn_stop_slow_timer(struct sock *sk);
+struct sock *dn_sklist_find_listener(struct sockaddr_dn *addr);
+struct sock *dn_find_by_skb(struct sk_buff *skb);
+#define DN_ASCBUF_LEN 9
+char *dn_addr2asc(__u16, char *);
+int dn_destroy_timer(struct sock *sk);
+
+int dn_sockaddr2username(struct sockaddr_dn *addr, unsigned char *buf,
+			 unsigned char type);
+int dn_username2sockaddr(unsigned char *data, int len, struct sockaddr_dn *addr,
+			 unsigned char *type);
+
+void dn_start_slow_timer(struct sock *sk);
+void dn_stop_slow_timer(struct sock *sk);
 
 extern __le16 decnet_address;
 extern int decnet_debug_level;
@@ -228,6 +255,7 @@ extern int decnet_dr_count;
 extern int decnet_no_fc_max_cwnd;
 
 extern int sysctl_decnet_mem[3];
+extern long sysctl_decnet_mem[3];
 extern int sysctl_decnet_wmem[3];
 extern int sysctl_decnet_rmem[3];
 

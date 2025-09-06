@@ -58,6 +58,12 @@ struct flat_hdr {
 
 
 #ifdef __KERNEL__ /* so systems without linux headers can compile the apps */
+#ifndef _LINUX_FLAT_H
+#define _LINUX_FLAT_H
+
+#include <asm/flat.h>
+#include <uapi/linux/flat.h>
+
 /*
  * While it would be nice to keep this header clean,  users of older
  * tools still need this support in the kernel.  So this section is

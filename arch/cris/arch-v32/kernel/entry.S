@@ -26,11 +26,14 @@
 
 #include <asm/arch/hwregs/asm/reg_map_asm.h>
 #include <asm/arch/hwregs/asm/intr_vect_defs_asm.h>
+#include <hwregs/asm/reg_map_asm.h>
+#include <hwregs/asm/intr_vect_defs_asm.h>
 
 	;; Exported functions.
 	.globl system_call
 	.globl ret_from_intr
 	.globl ret_from_fork
+	.globl ret_from_kernel_thread
 	.globl resume
 	.globl multiple_interrupt
 	.globl nmi_interrupt
@@ -76,6 +79,7 @@ _need_resched:
 
 	; Called at exit from fork. schedule_tail must be called to drop
 	; spinlock if CONFIG_PREEMPT.
+	.type	ret_from_fork,@function
 ret_from_fork:
 	jsr schedule_tail
 	nop
@@ -83,6 +87,24 @@ ret_from_fork:
 	nop
 
 ret_from_intr:
+	.size	ret_from_fork, . - ret_from_fork
+
+	.type	ret_from_kernel_thread,@function
+ret_from_kernel_thread:
+	jsr schedule_tail
+	nop
+	move.d	$r2, $r10
+	jsr	$r1
+	nop
+	moveq	0, $r9			; no syscall restarts, TYVM...
+	ba  ret_from_sys_call
+	nop
+	.size	ret_from_kernel_thread, . - ret_from_kernel_thread
+
+	.type	ret_from_intr,@function
+ret_from_intr:
+	moveq	0, $r9			; not a syscall
+
 	;; Check for resched if preemptive kernel, or if we're going back to
 	;; user-mode. This test matches the user_regs(regs) macro. Don't simply
 	;; test CCS since that doesn't necessarily reflect what mode we'll
@@ -94,6 +116,10 @@ ret_from_intr:
 
 	; Note that di below is in delay slot.
 
+	.size	ret_from_intr, . - ret_from_intr + 2	; +2 includes the dslot.
+
+	; Note that di below is in delay slot.
+	.type	_resume_userspace,@function
 _resume_userspace:
 	di			; So need_resched and sigpending don't change.
 
@@ -107,6 +133,7 @@ _resume_userspace:
 	nop
 	ba	_Rexit
 	nop
+	.size	_resume_userspace, . - _resume_userspace
 
 	;; The system_call is called by a BREAK instruction, which looks pretty
 	;; much like any other exception.
@@ -146,6 +173,29 @@ system_call:
 	move.d	$r10, [$sp]	; Push orig_r10.
 
 ; Set S-bit when kernel debugging to keep hardware breakpoints active.
+	.type	system_call,@function
+system_call:
+	;; Stack-frame similar to the irq heads, which is reversed in
+	;; ret_from_sys_call.
+
+	sub.d	92, $sp		; Skip EDA.
+	movem	$r13, [$sp]
+	move.d	$sp, $r8
+	addq	14*4, $r8
+	move.d	$acr, $r0
+	move	$srs, $r1
+	move	$mof, $r2
+	move	$spc, $r3
+	move	$ccs, $r4
+	move	$srp, $r5
+	move	$erp, $r6
+	move.d	$r9, $r7	; Store syscall number in EXS
+	subq	4, $sp
+	movem	$r7, [$r8]
+	ei			; Enable interrupts while processing syscalls.
+	move.d	$r10, [$sp]
+
+	; Set S-bit when kernel debugging to keep hardware breakpoints active.
 #ifdef CONFIG_ETRAX_KGDB
 	move $ccs, $r0
 	or.d (1<<9), $r0
@@ -180,6 +230,7 @@ _syscall_traced:
 
 	;; The registers carrying parameters (R10-R13) are intact. The optional
 	;; fifth and sixth parameters is in MOF and SRP respectivly. Put them
+	;; fifth and sixth parameters is in MOF and SRP respectively. Put them
 	;; back on the stack.
 	subq	4, $sp
 	move	$srp, [$sp]
@@ -219,6 +270,21 @@ ret_from_sys_call:
 	nop
 
 _Rexit:
+	.size	system_call, . - system_call
+
+	.type	_Rexit,@function
+_Rexit:
+#if defined(CONFIG_TRACE_IRQFLAGS)
+	addoq	+PT_ccs, $sp, $acr
+	move.d	[$acr], $r0
+	btstq	15, $r0		; I1
+	bpl	1f
+	nop
+	jsr	trace_hardirqs_on
+	nop
+1:
+#endif
+
 	;; This epilogue MUST match the prologues in multiple_interrupt, irq.h
 	;; and ptregs.h.
 	addq	4, $sp		; Skip orig_r10.
@@ -234,10 +300,12 @@ _Rexit:
 	addq    8, $sp		; Skip EXS, EDA.
 	jump	$erp
 	rfe			; Restore condition code stack in delay-slot.
+	.size	_Rexit, . - _Rexit
 
 	;; We get here after doing a syscall if extra work might need to be done
 	;; perform syscall exit tracing if needed.
 
+	.type	_syscall_exit_work,@function
 _syscall_exit_work:
 	;; R0 contains current at this point and irq's are disabled.
 
@@ -288,6 +356,19 @@ _work_notifysig:
 
 	ba _Rexit
 	nop
+	.size	_syscall_exit_work, . - _syscall_exit_work
+
+	.type	_work_pending,@function
+_work_pending:
+	addoq	+TI_flags, $r0, $acr
+	move.d	[$acr], $r12		; The thread_info_flags parameter.
+	move.d	$sp, $r11		; The regs param.
+	jsr	do_work_pending
+	move.d	$r9, $r10		; The syscall/irq param.
+
+	ba _Rexit
+	nop
+	.size	_work_pending, . - _work_pending
 
 	;; We get here as a sidetrack when we've entered a syscall with the
 	;; trace-bit set. We need to call do_syscall_trace and then continue
@@ -334,6 +415,13 @@ resume:
 	move	$srp, [$sp]		; Keep old/new PC on the stack.
 	add.d	$r12, $r10		; R10 = current tasks tss.
 	addoq	+THREAD_ccs, $r10, $acr
+	.type	resume,@function
+resume:
+	subq	4, $sp			; Make space for srp.
+
+	add.d	$r12, $r10		; R10 = current tasks tss.
+	addoq	+THREAD_ccs, $r10, $acr
+	move	$srp, [$sp]		; Keep old/new PC on the stack.
 	move	$ccs, [$acr]		; Save IRQ enable state.
 	di
 
@@ -364,6 +452,32 @@ resume:
 	move.d	[$sp+], $acr
 	jump	$acr			; Restore PC.
 	nop
+	subq	10*4, $sp		; Make room for R9.
+	move	$usp, [$acr]		; Save user-mode stackpointer.
+
+	;; See copy_thread for the reason why register R9 is saved.
+	movem	$r9, [$sp]		; Save non-scratch registers and R9.
+
+	addoq	+THREAD_ksp, $r10, $acr
+	move.d	$sp, $r10		; Return last running task in R10.
+	move.d	$sp, [$acr]		; Save kernel SP for old task.
+
+	and.d   -8192, $r10		; Get thread_info from stackpointer.
+	addoq	+TI_task, $r10, $acr
+	add.d	$r12, $r11		; Find the new tasks tss.
+	move.d	[$acr], $r10		; Get task.
+	addoq	+THREAD_ksp, $r11, $acr
+	move.d	[$acr], $sp		; Switch to new stackframe.
+	addoq	+THREAD_usp, $r11, $acr
+	movem	[$sp+], $r9		; Restore non-scratch registers and R9.
+
+	move	[$acr], $usp		; Restore user-mode stackpointer.
+
+	addoq	+THREAD_ccs, $r11, $acr
+	move.d	[$sp+], $r11
+	jump	$r11			; Restore PC.
+	move	[$acr], $ccs		; Restore IRQ enable status.
+	.size	resume, . - resume
 
 nmi_interrupt:
 
@@ -396,6 +510,7 @@ nmi_interrupt:
 	nop
 	jsr	handle_watchdog_bite	; In time.c.
         move.d	$sp, $r10		; Pointer to registers
+	move.d	$sp, $r10		; Pointer to registers
 1:	btstq	REG_BIT(intr_vect, r_nmi, ext), $r0
 	bpl     1f
 	nop
@@ -426,6 +541,10 @@ spurious_interrupt:
 	;; time. Jump to the first set interrupt bit in a priotiry fashion. The
 	;; hardware will call the unserved interrupts after the handler
 	;; finishes.
+	;; time. Jump to the first set interrupt bit in a priority fashion. The
+	;; hardware will call the unserved interrupts after the handler
+	;; finishes.
+	.type	multiple_interrupt, @function
 multiple_interrupt:
 	;; This prologue MUST match the one in irq.h and the struct in ptregs.h!
 	subq	12, $sp		; Skip EXS, EDA.
@@ -458,6 +577,7 @@ multiple_interrupt:
 	move.d	$sp, $r10
 	jump    ret_from_intr
 	nop
+	.size	multiple_interrupt, . - multiple_interrupt
 
 do_sigtrap:
 	;; Sigtraps the process that executed the BREAK instruction. Creates a
@@ -616,6 +736,8 @@ sys_call_table:
 	.long sys_reboot
 	.long old_readdir
 	.long old_mmap		/* 90 */
+	.long sys_old_readdir
+	.long sys_old_mmap	/* 90 */
 	.long sys_munmap
 	.long sys_truncate
 	.long sys_ftruncate
@@ -695,6 +817,7 @@ sys_call_table:
 	.long sys_ni_syscall	/* Old sys_query_module */
 	.long sys_poll
 	.long sys_nfsservctl
+	.long sys_ni_syscall	/* Old nfsservctl */
 	.long sys_setresgid16	/* 170 */
 	.long sys_getresgid16
 	.long sys_prctl
@@ -859,6 +982,46 @@ sys_call_table:
          * entries. Don't panic if you notice that this hasn't
          * been shrunk every time we add a new system call.
          */
+	.long sys_signalfd4
+	.long sys_eventfd2
+	.long sys_epoll_create1
+	.long sys_dup3			/* 330 */
+	.long sys_pipe2
+	.long sys_inotify_init1
+	.long sys_preadv
+	.long sys_pwritev
+	.long sys_setns			/* 335 */
+	.long sys_name_to_handle_at
+	.long sys_open_by_handle_at
+	.long sys_rt_tgsigqueueinfo
+	.long sys_perf_event_open
+	.long sys_recvmmsg		/* 340 */
+	.long sys_accept4
+	.long sys_fanotify_init
+	.long sys_fanotify_mark
+	.long sys_prlimit64
+	.long sys_clock_adjtime		/* 345 */
+	.long sys_syncfs
+	.long sys_sendmmsg
+	.long sys_process_vm_readv
+	.long sys_process_vm_writev
+	.long sys_kcmp			/* 350 */
+	.long sys_finit_module
+	.long sys_sched_setattr
+	.long sys_sched_getattr
+	.long sys_renameat2
+	.long sys_seccomp		/* 355 */
+	.long sys_getrandom
+	.long sys_memfd_create
+	.long sys_bpf
+	.long sys_execveat
+
+	/*
+	 * NOTE!! This doesn't have to be exact - we just have
+	 * to make sure we have _enough_ of the "sys_ni_syscall"
+	 * entries. Don't panic if you notice that this hasn't
+	 * been shrunk every time we add a new system call.
+	 */
 
 	.rept NR_syscalls - (.-sys_call_table) / 4
 		.long sys_ni_syscall

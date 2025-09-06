@@ -4,6 +4,8 @@
 */
 
 #ifndef RAYLINK_H
+#ifndef _RAY_CS_H_
+#define _RAY_CS_H_
 
 struct beacon_rx {
     struct mac_header mac;
@@ -73,3 +75,4 @@ typedef struct ray_dev_t {
 /*****************************************************************************/
 
 #endif /* RAYLINK_H */
+#endif /* _RAY_CS_H_ */

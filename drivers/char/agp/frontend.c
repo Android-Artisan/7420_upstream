@@ -605,6 +605,8 @@ static int agp_mmap(struct file *file, struct vm_area_struct *vma)
 		} else if (io_remap_pfn_range(vma, vma->vm_start,
 				(kerninfo.aper_base + offset) >> PAGE_SHIFT,
 					    size, vma->vm_page_prot)) {
+				size,
+				pgprot_writecombine(vma->vm_page_prot))) {
 			goto out_again;
 		}
 		mutex_unlock(&(agp_fe.agp_mutex));
@@ -621,6 +623,9 @@ static int agp_mmap(struct file *file, struct vm_area_struct *vma)
 		} else if (io_remap_pfn_range(vma, vma->vm_start,
 					    kerninfo.aper_base >> PAGE_SHIFT,
 					    size, vma->vm_page_prot)) {
+				kerninfo.aper_base >> PAGE_SHIFT,
+				size,
+				pgprot_writecombine(vma->vm_page_prot))) {
 			goto out_again;
 		}
 		mutex_unlock(&(agp_fe.agp_mutex));
@@ -688,6 +693,17 @@ static int agp_open(struct inode *inode, struct file *file)
 	if (priv == NULL)
 		goto err_out_nomem;
 
+	if (minor != AGPGART_MINOR)
+		return -ENXIO;
+
+	mutex_lock(&(agp_fe.agp_mutex));
+
+	priv = kzalloc(sizeof(struct agp_file_private), GFP_KERNEL);
+	if (priv == NULL) {
+		mutex_unlock(&(agp_fe.agp_mutex));
+		return -ENOMEM;
+	}
+
 	set_bit(AGP_FF_ALLOW_CLIENT, &priv->access_flags);
 	priv->my_pid = current->pid;
 
@@ -695,6 +711,10 @@ static int agp_open(struct inode *inode, struct file *file)
 		/* Root priv, can be controller */
 		set_bit(AGP_FF_ALLOW_CONTROLLER, &priv->access_flags);
 	}
+	if (capable(CAP_SYS_RAWIO))
+		/* Root priv, can be controller */
+		set_bit(AGP_FF_ALLOW_CONTROLLER, &priv->access_flags);
+
 	client = agp_find_client_by_pid(current->pid);
 
 	if (client != NULL) {
@@ -727,6 +747,10 @@ static ssize_t agp_write(struct file *file, const char __user *buf,
 			 size_t count, loff_t * ppos)
 {
 	return -EINVAL;
+
+	mutex_unlock(&(agp_fe.agp_mutex));
+
+	return 0;
 }
 
 static int agpioc_info_wrap(struct agp_file_private *priv, void __user *arg)
@@ -736,6 +760,7 @@ static int agpioc_info_wrap(struct agp_file_private *priv, void __user *arg)
 
 	agp_copy_info(agp_bridge, &kerninfo);
 
+	memset(&userinfo, 0, sizeof(userinfo));
 	userinfo.version.major = kerninfo.version.major;
 	userinfo.version.minor = kerninfo.version.minor;
 	userinfo.bridge_id = kerninfo.device->vendor |

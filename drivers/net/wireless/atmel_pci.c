@@ -17,6 +17,8 @@
     You should have received a copy of the GNU General Public License
     along with Atmel wireless lan drivers; if not, write to the Free Software
     Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+    along with Atmel wireless lan drivers; if not, see
+    <http://www.gnu.org/licenses/>.
 
 ******************************************************************************/
 #include <linux/pci.h>
@@ -32,6 +34,7 @@ MODULE_LICENSE("GPL");
 MODULE_SUPPORTED_DEVICE("Atmel at76c506 PCI wireless cards");
 
 static struct pci_device_id card_ids[] = {
+static const struct pci_device_id card_ids[] = {
 	{ 0x1114, 0x0506, PCI_ANY_ID, PCI_ANY_ID },
 	{ 0, }
 };
@@ -50,6 +53,11 @@ static struct pci_driver atmel_driver = {
 
 
 static int __devinit atmel_pci_probe(struct pci_dev *pdev,
+	.remove   = atmel_pci_remove,
+};
+
+
+static int atmel_pci_probe(struct pci_dev *pdev,
 				     const struct pci_device_id *pent)
 {
 	struct net_device *dev;
@@ -70,6 +78,7 @@ static int __devinit atmel_pci_probe(struct pci_dev *pdev,
 }
 
 static void __devexit atmel_pci_remove(struct pci_dev *pdev)
+static void atmel_pci_remove(struct pci_dev *pdev)
 {
 	stop_atmel_card(pci_get_drvdata(pdev));
 }
@@ -86,3 +95,4 @@ static void __exit atmel_cleanup_module(void)
 
 module_init(atmel_init_module);
 module_exit(atmel_cleanup_module);
+module_pci_driver(atmel_driver);

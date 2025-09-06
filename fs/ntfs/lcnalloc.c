@@ -100,7 +100,6 @@ int ntfs_cluster_free_from_rl_nolock(ntfs_volume *vol,
  * PTR_ERR() gives you the error code.
  *
  * Notes on the allocation algorithm
- * =================================
  *
  * There are two data zones.  First is the area between the end of the mft zone
  * and the end of the volume, and second is the area between the start of the

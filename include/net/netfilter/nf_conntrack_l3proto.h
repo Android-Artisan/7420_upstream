@@ -18,6 +18,7 @@
 
 struct nf_conntrack_l3proto
 {
+struct nf_conntrack_l3proto {
 	/* L3 Protocol Family number. ex) PF_INET */
 	u_int16_t l3proto;
 
@@ -41,6 +42,8 @@ struct nf_conntrack_l3proto
 	/* Print out the per-protocol part of the tuple. */
 	int (*print_tuple)(struct seq_file *s,
 			   const struct nf_conntrack_tuple *);
+	void (*print_tuple)(struct seq_file *s,
+			    const struct nf_conntrack_tuple *);
 
 	/*
 	 * Called before tracking. 
@@ -53,6 +56,11 @@ struct nf_conntrack_l3proto
 	int (*tuple_to_nlattr)(struct sk_buff *skb,
 			       const struct nf_conntrack_tuple *t);
 
+	/*
+	 * Calculate size of tuple nlattr
+	 */
+	int (*nlattr_tuple_size)(void);
+
 	int (*nlattr_to_tuple)(struct nlattr *tb[],
 			       struct nf_conntrack_tuple *t);
 	const struct nla_policy *nla_policy;
@@ -62,6 +70,15 @@ struct nf_conntrack_l3proto
 	struct ctl_path		*ctl_table_path;
 	struct ctl_table	*ctl_table;
 #endif /* CONFIG_SYSCTL */
+
+	size_t nla_size;
+
+#ifdef CONFIG_SYSCTL
+	const char		*ctl_table_path;
+#endif /* CONFIG_SYSCTL */
+
+	/* Init l3proto pernet data */
+	int (*init_net)(struct net *net);
 
 	/* Module (if any) which this is connected to. */
 	struct module *me;
@@ -74,6 +91,19 @@ extern int nf_conntrack_l3proto_register(struct nf_conntrack_l3proto *proto);
 extern void nf_conntrack_l3proto_unregister(struct nf_conntrack_l3proto *proto);
 extern struct nf_conntrack_l3proto *nf_ct_l3proto_find_get(u_int16_t l3proto);
 extern void nf_ct_l3proto_put(struct nf_conntrack_l3proto *p);
+extern struct nf_conntrack_l3proto __rcu *nf_ct_l3protos[AF_MAX];
+
+/* Protocol pernet registration. */
+int nf_ct_l3proto_pernet_register(struct net *net,
+				  struct nf_conntrack_l3proto *proto);
+void nf_ct_l3proto_pernet_unregister(struct net *net,
+				     struct nf_conntrack_l3proto *proto);
+
+/* Protocol global registration. */
+int nf_ct_l3proto_register(struct nf_conntrack_l3proto *proto);
+void nf_ct_l3proto_unregister(struct nf_conntrack_l3proto *proto);
+
+struct nf_conntrack_l3proto *nf_ct_l3proto_find_get(u_int16_t l3proto);
 
 /* Existing built-in protocols */
 extern struct nf_conntrack_l3proto nf_conntrack_l3proto_generic;

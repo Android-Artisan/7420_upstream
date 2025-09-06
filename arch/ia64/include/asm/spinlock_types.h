@@ -10,6 +10,9 @@ typedef struct {
 } raw_spinlock_t;
 
 #define __RAW_SPIN_LOCK_UNLOCKED	{ 0 }
+} arch_spinlock_t;
+
+#define __ARCH_SPIN_LOCK_UNLOCKED	{ 0 }
 
 typedef struct {
 	volatile unsigned int read_counter	: 31;
@@ -17,5 +20,8 @@ typedef struct {
 } raw_rwlock_t;
 
 #define __RAW_RW_LOCK_UNLOCKED		{ 0, 0 }
+} arch_rwlock_t;
+
+#define __ARCH_RW_LOCK_UNLOCKED		{ 0, 0 }
 
 #endif

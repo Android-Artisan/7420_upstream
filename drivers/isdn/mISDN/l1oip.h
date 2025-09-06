@@ -11,6 +11,7 @@
 /* enable to disorder received bchannels by sequence 2143658798... */
 /*
 #define REORDER_DEBUG
+  #define REORDER_DEBUG
 */
 
 /* frames */
@@ -31,6 +32,8 @@
 struct l1oip_chan {
 	struct dchannel       	*dch;
 	struct bchannel       	*bch;
+	struct dchannel		*dch;
+	struct bchannel		*bch;
 	u32			tx_counter;	/* counts xmit bytes/packets */
 	u32			rx_counter;	/* counts recv bytes/packets */
 	u32			codecstate;	/* used by codec to save data */
@@ -58,10 +61,13 @@ struct l1oip {
 	int			bundle;		/* bundle channels in one frm */
 	int			codec;		/* codec to use for transmis. */
 	int			limit;		/* limit number of bchannels */
+	bool			shutdown;	/* if card is released */
 
 	/* timer */
 	struct timer_list 	keep_tl;
 	struct timer_list 	timeout_tl;
+	struct timer_list	keep_tl;
+	struct timer_list	timeout_tl;
 	int			timeout_on;
 	struct work_struct	workq;
 
@@ -77,6 +83,17 @@ struct l1oip {
 	struct sockaddr_in	sin_remote;	/* remote socket name */
 	struct msghdr		sendmsg;	/* ip message to send */
 	struct iovec		sendiov;	/* iov for message */
+	struct socket		*socket;	/* if set, socket is created */
+	struct completion	socket_complete;/* completion of sock thread */
+	struct task_struct	*socket_thread;
+	spinlock_t		socket_lock;	/* access sock outside thread */
+	u32			remoteip;	/* if all set, ip is assigned */
+	u16			localport;	/* must always be set */
+	u16			remoteport;	/* must always be set */
+	struct sockaddr_in	sin_local;	/* local socket name */
+	struct sockaddr_in	sin_remote;	/* remote socket name */
+	struct msghdr		sendmsg;	/* ip message to send */
+	struct kvec		sendiov;	/* iov for message */
 
 	/* frame */
 	struct l1oip_chan	chan[128];	/* channel instances */

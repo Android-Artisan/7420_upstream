@@ -1,4 +1,19 @@
 #include <asm/variant/core.h>
+/*
+ *  linux/arch/xtensa/boot/boot-elf/boot.lds.S
+ *
+ *  Copyright (C) 2008 - 2013 by Tensilica Inc.
+ *
+ *  Chris Zankel <chris@zankel.net>
+ *  Marc Gauthier <marc@tensilica.com
+ *  Pete Delaney <piet@tensilica.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
+ */
+
+#include <asm/vectors.h>
 OUTPUT_ARCH(xtensa)
 ENTRY(_ResetVector)
 
@@ -43,6 +58,12 @@ SECTIONS
 	. = ALIGN(0x10);
 	__image_load = . ;
 	.image 0xd0001000:
+	.ResetVector.text XCHAL_RESET_VECTOR_VADDR :
+	{
+		*(.ResetVector.text)
+	}
+
+	.image KERNELOFFSET: AT (LOAD_MEMORY_ADDRESS)
 	{
 		_image_start = .;
 		*(image)

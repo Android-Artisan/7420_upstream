@@ -29,6 +29,11 @@
 #define DIVA_PRI_NO_PCI_BIOS_WORKAROUND 1
 
 extern int diva_card_read_xlog(diva_os_xdi_adapter_t * a);
+   -------------------------------------------------------------------------- */
+
+#define DIVA_PRI_NO_PCI_BIOS_WORKAROUND 1
+
+extern int diva_card_read_xlog(diva_os_xdi_adapter_t *a);
 
 /*
 **  IMPORTS
@@ -43,6 +48,12 @@ static int diva_pri_cmd_card_proc(struct _diva_os_xdi_adapter *a,
 static int pri_get_serial_number(diva_os_xdi_adapter_t * a);
 static int diva_pri_stop_adapter(diva_os_xdi_adapter_t * a);
 static dword diva_pri_detect_dsps(diva_os_xdi_adapter_t * a);
+static int diva_pri_cleanup_adapter(diva_os_xdi_adapter_t *a);
+static int diva_pri_cmd_card_proc(struct _diva_os_xdi_adapter *a,
+				  diva_xdi_um_cfg_cmd_t *cmd, int length);
+static int pri_get_serial_number(diva_os_xdi_adapter_t *a);
+static int diva_pri_stop_adapter(diva_os_xdi_adapter_t *a);
+static dword diva_pri_detect_dsps(diva_os_xdi_adapter_t *a);
 
 /*
 **  Check card revision
@@ -58,6 +69,7 @@ static int pri_is_rev_2_card(int card_ordinal)
 }
 
 static void diva_pri_set_addresses(diva_os_xdi_adapter_t * a)
+static void diva_pri_set_addresses(diva_os_xdi_adapter_t *a)
 {
 	a->resources.pci.mem_type_id[MEM_TYPE_ADDRESS] = 0;
 	a->resources.pci.mem_type_id[MEM_TYPE_CONTROL] = 2;
@@ -67,6 +79,7 @@ static void diva_pri_set_addresses(diva_os_xdi_adapter_t * a)
 	a->resources.pci.mem_type_id[MEM_TYPE_CFG] = 4;
 	a->resources.pci.mem_type_id[MEM_TYPE_PROM] = 3;
 	
+
 	a->xdi_adapter.Address = a->resources.pci.addr[0];
 	a->xdi_adapter.Control = a->resources.pci.addr[2];
 	a->xdi_adapter.Config = a->resources.pci.addr[4];
@@ -93,6 +106,7 @@ static void diva_pri_set_addresses(diva_os_xdi_adapter_t * a)
 **  BAR4 - CONFIG (CFG),	0x1000
 */
 int diva_pri_init_card(diva_os_xdi_adapter_t * a)
+int diva_pri_init_card(diva_os_xdi_adapter_t *a)
 {
 	int bar = 0;
 	int pri_rev_2;
@@ -135,6 +149,31 @@ int diva_pri_init_card(diva_os_xdi_adapter_t * a)
 	    (byte) divasa_get_pci_irq(a->resources.pci.bus,
 				      a->resources.pci.func,
 				      a->resources.pci.hdev);
+	  Set properties
+	*/
+	a->xdi_adapter.Properties = CardProperties[a->CardOrdinal];
+	DBG_LOG(("Load %s", a->xdi_adapter.Properties.Name))
+
+		/*
+		  First initialization step: get and check hardware resoures.
+		  Do not map resources and do not acecess card at this step
+		*/
+		for (bar = 0; bar < 5; bar++) {
+			a->resources.pci.bar[bar] =
+				divasa_get_pci_bar(a->resources.pci.bus,
+						   a->resources.pci.func, bar,
+						   a->resources.pci.hdev);
+			if (!a->resources.pci.bar[bar]
+			    || (a->resources.pci.bar[bar] == 0xFFFFFFF0)) {
+				DBG_ERR(("A: invalid bar[%d]=%08x", bar,
+					 a->resources.pci.bar[bar]))
+					return (-1);
+			}
+		}
+	a->resources.pci.irq =
+		(byte) divasa_get_pci_irq(a->resources.pci.bus,
+					  a->resources.pci.func,
+					  a->resources.pci.hdev);
 	if (!a->resources.pci.irq) {
 		DBG_ERR(("A: invalid irq"));
 		return (-1);
@@ -151,6 +190,16 @@ int diva_pri_init_card(diva_os_xdi_adapter_t * a)
 			DBG_ERR(("A: A(%d), can't map bar[%d]",
 				 a->controller, bar))
 			diva_pri_cleanup_adapter(a);
+	  Map all BAR's
+	*/
+	for (bar = 0; bar < 5; bar++) {
+		a->resources.pci.addr[bar] =
+			divasa_remap_pci_bar(a, bar, a->resources.pci.bar[bar],
+					     bar_length[bar]);
+		if (!a->resources.pci.addr[bar]) {
+			DBG_ERR(("A: A(%d), can't map bar[%d]",
+				 a->controller, bar))
+				diva_pri_cleanup_adapter(a);
 			return (-1);
 		}
 	}
@@ -163,6 +212,13 @@ int diva_pri_init_card(diva_os_xdi_adapter_t * a)
 	/*
 	   Get Serial Number of this adapter
 	 */
+	  Set all memory areas
+	*/
+	diva_pri_set_addresses(a);
+
+	/*
+	  Get Serial Number of this adapter
+	*/
 	if (pri_get_serial_number(a)) {
 		dword serNo;
 		serNo = a->resources.pci.bar[1] & 0xffff0000;
@@ -177,6 +233,12 @@ int diva_pri_init_card(diva_os_xdi_adapter_t * a)
 	/*
 	   Initialize os objects
 	 */
+			}
+
+
+	/*
+	  Initialize os objects
+	*/
 	if (diva_os_initialize_spin_lock(&a->xdi_adapter.isr_spin_lock, "isr")) {
 		diva_pri_cleanup_adapter(a);
 		return (-1);
@@ -205,11 +267,21 @@ int diva_pri_init_card(diva_os_xdi_adapter_t * a)
 	   Next step of card initialization:
 	   set up all interface pointers
 	 */
+	  Do not initialize second DPC - only one thread will be created
+	*/
+	a->xdi_adapter.isr_soft_isr.object =
+		a->xdi_adapter.req_soft_isr.object;
+
+	/*
+	  Next step of card initialization:
+	  set up all interface pointers
+	*/
 	a->xdi_adapter.Channels = CardProperties[a->CardOrdinal].Channels;
 	a->xdi_adapter.e_max = CardProperties[a->CardOrdinal].E_info;
 
 	a->xdi_adapter.e_tbl =
 	    diva_os_malloc(0, a->xdi_adapter.e_max * sizeof(E_INFO));
+		diva_os_malloc(0, a->xdi_adapter.e_max * sizeof(E_INFO));
 	if (!a->xdi_adapter.e_tbl) {
 		diva_pri_cleanup_adapter(a);
 		return (-1);
@@ -232,6 +304,8 @@ int diva_pri_init_card(diva_os_xdi_adapter_t * a)
 	/*
 	   Allocate DMA map
 	 */
+	  Allocate DMA map
+	*/
 	if (pri_rev_2) {
 		diva_init_dma_map(a->resources.pci.hdev,
 				  (struct _diva_dma_map_entry **) &a->xdi_adapter.dma_map, 32);
@@ -240,6 +314,8 @@ int diva_pri_init_card(diva_os_xdi_adapter_t * a)
 	/*
 	   Set IRQ handler
 	 */
+	  Set IRQ handler
+	*/
 	a->xdi_adapter.irq_info.irq_nr = a->resources.pci.irq;
 	sprintf(a->xdi_adapter.irq_info.irq_name,
 		"DIVA PRI %ld", (long) a->xdi_adapter.serialNo);
@@ -258,12 +334,15 @@ int diva_pri_init_card(diva_os_xdi_adapter_t * a)
 }
 
 static int diva_pri_cleanup_adapter(diva_os_xdi_adapter_t * a)
+static int diva_pri_cleanup_adapter(diva_os_xdi_adapter_t *a)
 {
 	int bar = 0;
 
 	/*
 	   Stop Adapter if adapter is running
 	 */
+	  Stop Adapter if adapter is running
+	*/
 	if (a->xdi_adapter.Initialized) {
 		diva_pri_stop_adapter(a);
 	}
@@ -271,6 +350,8 @@ static int diva_pri_cleanup_adapter(diva_os_xdi_adapter_t * a)
 	/*
 	   Remove ISR Handler
 	 */
+	  Remove ISR Handler
+	*/
 	if (a->xdi_adapter.irq_info.registered) {
 		diva_os_remove_irq(a, a->xdi_adapter.irq_info.irq_nr);
 	}
@@ -279,6 +360,8 @@ static int diva_pri_cleanup_adapter(diva_os_xdi_adapter_t * a)
 	/*
 	   Step 1: unmap all BAR's, if any was mapped
 	 */
+	  Step 1: unmap all BAR's, if any was mapped
+	*/
 	for (bar = 0; bar < 5; bar++) {
 		if (a->resources.pci.bar[bar]
 		    && a->resources.pci.addr[bar]) {
@@ -291,6 +374,8 @@ static int diva_pri_cleanup_adapter(diva_os_xdi_adapter_t * a)
 	/*
 	   Free OS objects
 	 */
+	  Free OS objects
+	*/
 	diva_os_cancel_soft_isr(&a->xdi_adapter.isr_soft_isr);
 	diva_os_cancel_soft_isr(&a->xdi_adapter.req_soft_isr);
 
@@ -303,6 +388,8 @@ static int diva_pri_cleanup_adapter(diva_os_xdi_adapter_t * a)
 	/*
 	   Free memory accupied by XDI adapter
 	 */
+	  Free memory accupied by XDI adapter
+	*/
 	if (a->xdi_adapter.e_tbl) {
 		diva_os_free(0, a->xdi_adapter.e_tbl);
 		a->xdi_adapter.e_tbl = NULL;
@@ -314,6 +401,8 @@ static int diva_pri_cleanup_adapter(diva_os_xdi_adapter_t * a)
 	/*
 	   Free adapter DMA map
 	 */
+	  Free adapter DMA map
+	*/
 	diva_free_dma_map(a->resources.pci.hdev,
 			  (struct _diva_dma_map_entry *) a->xdi_adapter.
 			  dma_map);
@@ -323,6 +412,8 @@ static int diva_pri_cleanup_adapter(diva_os_xdi_adapter_t * a)
 	/*
 	   Detach this adapter from debug driver
 	 */
+	  Detach this adapter from debug driver
+	*/
 
 	return (0);
 }
@@ -342,6 +433,7 @@ static int diva_pri_reset_adapter(PISDN_ADAPTER IoAdapter)
 		DBG_ERR(("A: A(%d) can't reset PRI adapter - please stop first",
 			 IoAdapter->ANum))
 		return (-1);
+			return (-1);
 	}
 
 	boot = (struct mp_load __iomem *) DIVA_OS_MEM_ATTACH_ADDRESS(IoAdapter);
@@ -361,12 +453,14 @@ static int diva_pri_reset_adapter(PISDN_ADAPTER IoAdapter)
 		DBG_ERR(("A: A(%d) CPU on PRI %ld is not alive!",
 			 IoAdapter->ANum, IoAdapter->serialNo))
 		return (-1);
+			return (-1);
 	}
 	if (READ_DWORD(&boot->err)) {
 		DBG_ERR(("A: A(%d) PRI %ld Board Selftest failed, error=%08lx",
 			 IoAdapter->ANum, IoAdapter->serialNo,
 			 READ_DWORD(&boot->err)))
 		DIVA_OS_MEM_DETACH_ADDRESS(IoAdapter, boot);
+			DIVA_OS_MEM_DETACH_ADDRESS(IoAdapter, boot);
 		return (-1);
 	}
 	DIVA_OS_MEM_DETACH_ADDRESS(IoAdapter, boot);
@@ -374,6 +468,8 @@ static int diva_pri_reset_adapter(PISDN_ADAPTER IoAdapter)
 	/*
 	   Forget all outstanding entities
 	 */
+	  Forget all outstanding entities
+	*/
 	IoAdapter->e_count = 0;
 	if (IoAdapter->e_tbl) {
 		memset(IoAdapter->e_tbl, 0x00,
@@ -408,6 +504,7 @@ static int
 diva_pri_write_sdram_block(PISDN_ADAPTER IoAdapter,
 			   dword address,
 			   const byte * data, dword length, dword limit)
+			   const byte *data, dword length, dword limit)
 {
 	byte __iomem *p = DIVA_OS_MEM_ATTACH_ADDRESS(IoAdapter);
 	byte __iomem *mem = p;
@@ -417,6 +514,7 @@ diva_pri_write_sdram_block(PISDN_ADAPTER IoAdapter,
 		DBG_ERR(("A: A(%d) write PRI address=0x%08lx",
 			 IoAdapter->ANum, address + length))
 		return (-1);
+			return (-1);
 	}
 	mem += address;
 
@@ -444,12 +542,14 @@ diva_pri_start_adapter(PISDN_ADAPTER IoAdapter,
 		DBG_ERR(("A: A(%d) pri_start_adapter, adapter already running",
 			 IoAdapter->ANum))
 		return (-1);
+			return (-1);
 	}
 	if (!boot) {
 		DIVA_OS_MEM_DETACH_ADDRESS(IoAdapter, boot);
 		DBG_ERR(("A: PRI %ld can't start, adapter not mapped",
 			 IoAdapter->serialNo))
 		return (-1);
+			return (-1);
 	}
 
 	sprintf(IoAdapter->Name, "A(%d)", (int) IoAdapter->ANum);
@@ -457,6 +557,7 @@ diva_pri_start_adapter(PISDN_ADAPTER IoAdapter,
 		 start_address))
 
 	WRITE_DWORD(&boot->addr, start_address);
+		WRITE_DWORD(&boot->addr, start_address);
 	WRITE_DWORD(&boot->cmd, 3);
 
 	for (i = 0; i < 300; ++i) {
@@ -465,6 +566,7 @@ diva_pri_start_adapter(PISDN_ADAPTER IoAdapter,
 			DBG_LOG(("A(%d) Protocol startup time %d.%02d seconds",
 				 IoAdapter->ANum, (i / 100), (i % 100)))
 			started = 1;
+				started = 1;
 			break;
 		}
 	}
@@ -479,6 +581,7 @@ diva_pri_start_adapter(PISDN_ADAPTER IoAdapter,
 			 IoAdapter->ANum, READ_DWORD(&boot->signature),
 			 TrapId, debug))
 		DIVA_OS_MEM_DETACH_ADDRESS(IoAdapter, boot);
+			DIVA_OS_MEM_DETACH_ADDRESS(IoAdapter, boot);
 		if (IoAdapter->trapFnc) {
 			(*(IoAdapter->trapFnc)) (IoAdapter);
 		}
@@ -495,6 +598,11 @@ diva_pri_start_adapter(PISDN_ADAPTER IoAdapter,
 	IoAdapter->IrqCount = 0;
 	p = DIVA_OS_MEM_ATTACH_CFG(IoAdapter);
 	WRITE_DWORD(p, (dword) ~ 0x03E00000);
+	  Check Interrupt
+	*/
+	IoAdapter->IrqCount = 0;
+	p = DIVA_OS_MEM_ATTACH_CFG(IoAdapter);
+	WRITE_DWORD(p, (dword)~0x03E00000);
 	DIVA_OS_MEM_DETACH_CFG(IoAdapter, p);
 	a->ReadyInt = 1;
 	a->ram_out(a, &PR_RAM->ReadyInt, 1);
@@ -505,6 +613,7 @@ diva_pri_start_adapter(PISDN_ADAPTER IoAdapter,
 		DBG_ERR(("A: A(%d) interrupt test failed",
 			 IoAdapter->ANum))
 		IoAdapter->Initialized = false;
+			IoAdapter->Initialized = false;
 		IoAdapter->stop(IoAdapter);
 		return (-1);
 	}
@@ -518,17 +627,25 @@ diva_pri_start_adapter(PISDN_ADAPTER IoAdapter,
 	   Register with DIDD
 	 */
 	diva_xdi_didd_register_adapter(IoAdapter->ANum);
+	DBG_LOG(("A(%d) PRI adapter successfully started", IoAdapter->ANum))
+		/*
+		  Register with DIDD
+		*/
+		diva_xdi_didd_register_adapter(IoAdapter->ANum);
 
 	return (0);
 }
 
 static void diva_pri_clear_interrupts(diva_os_xdi_adapter_t * a)
+static void diva_pri_clear_interrupts(diva_os_xdi_adapter_t *a)
 {
 	PISDN_ADAPTER IoAdapter = &a->xdi_adapter;
 
 	/*
 	   clear any pending interrupt
 	 */
+	  clear any pending interrupt
+	*/
 	IoAdapter->disIrq(IoAdapter);
 
 	IoAdapter->tst_irq(&IoAdapter->a);
@@ -538,6 +655,8 @@ static void diva_pri_clear_interrupts(diva_os_xdi_adapter_t * a)
 	/*
 	   kill pending dpcs
 	 */
+	  kill pending dpcs
+	*/
 	diva_os_cancel_soft_isr(&IoAdapter->req_soft_isr);
 	diva_os_cancel_soft_isr(&IoAdapter->isr_soft_isr);
 }
@@ -547,6 +666,7 @@ static void diva_pri_clear_interrupts(diva_os_xdi_adapter_t * a)
 **  will be restarted later
 */
 static int diva_pri_stop_adapter(diva_os_xdi_adapter_t * a)
+static int diva_pri_stop_adapter(diva_os_xdi_adapter_t *a)
 {
 	PISDN_ADAPTER IoAdapter = &a->xdi_adapter;
 	int i = 100;
@@ -558,6 +678,7 @@ static int diva_pri_stop_adapter(diva_os_xdi_adapter_t * a)
 		DBG_ERR(("A: A(%d) can't stop PRI adapter - not running",
 			 IoAdapter->ANum))
 		return (-1);	/* nothing to stop */
+			return (-1);	/* nothing to stop */
 	}
 	IoAdapter->Initialized = 0;
 
@@ -569,6 +690,13 @@ static int diva_pri_stop_adapter(diva_os_xdi_adapter_t * a)
 	/*
 	   Stop interrupts
 	 */
+	  Disconnect Adapter from DIDD
+	*/
+	diva_xdi_didd_remove_adapter(IoAdapter->ANum);
+
+	/*
+	  Stop interrupts
+	*/
 	a->clear_interrupts_proc = diva_pri_clear_interrupts;
 	IoAdapter->a.ReadyInt = 1;
 	IoAdapter->a.ram_inc(&IoAdapter->a, &PR_RAM->ReadyInt);
@@ -587,6 +715,12 @@ static int diva_pri_stop_adapter(diva_os_xdi_adapter_t * a)
 	/*
 	   Stop and reset adapter
 	 */
+			}
+	IoAdapter->a.ReadyInt = 0;
+
+	/*
+	  Stop and reset adapter
+	*/
 	IoAdapter->stop(IoAdapter);
 
 	return (0);
@@ -601,6 +735,7 @@ static int diva_pri_stop_adapter(diva_os_xdi_adapter_t * a)
 static int
 diva_pri_cmd_card_proc(struct _diva_os_xdi_adapter *a,
 		       diva_xdi_um_cfg_cmd_t * cmd, int length)
+		       diva_xdi_um_cfg_cmd_t *cmd, int length)
 {
 	int ret = -1;
 
@@ -608,6 +743,7 @@ diva_pri_cmd_card_proc(struct _diva_os_xdi_adapter *a,
 		DBG_ERR(("A: pri_cmd, invalid controller=%d != %d",
 			 cmd->adapter, a->controller))
 		return (-1);
+			return (-1);
 	}
 
 	switch (cmd->command) {
@@ -618,6 +754,10 @@ diva_pri_cmd_card_proc(struct _diva_os_xdi_adapter *a,
 		if (a->xdi_mbox.data) {
 			*(dword *) a->xdi_mbox.data =
 			    (dword) a->CardOrdinal;
+			diva_os_malloc(0, a->xdi_mbox.data_length);
+		if (a->xdi_mbox.data) {
+			*(dword *) a->xdi_mbox.data =
+				(dword) a->CardOrdinal;
 			a->xdi_mbox.status = DIVA_XDI_MBOX_BUSY;
 			ret = 0;
 		}
@@ -630,6 +770,10 @@ diva_pri_cmd_card_proc(struct _diva_os_xdi_adapter *a,
 		if (a->xdi_mbox.data) {
 			*(dword *) a->xdi_mbox.data =
 			    (dword) a->xdi_adapter.serialNo;
+			diva_os_malloc(0, a->xdi_mbox.data_length);
+		if (a->xdi_mbox.data) {
+			*(dword *) a->xdi_mbox.data =
+				(dword) a->xdi_adapter.serialNo;
 			a->xdi_mbox.status = DIVA_XDI_MBOX_BUSY;
 			ret = 0;
 		}
@@ -639,6 +783,7 @@ diva_pri_cmd_card_proc(struct _diva_os_xdi_adapter *a,
 		a->xdi_mbox.data_length = sizeof(dword) * 9;
 		a->xdi_mbox.data =
 		    diva_os_malloc(0, a->xdi_mbox.data_length);
+			diva_os_malloc(0, a->xdi_mbox.data_length);
 		if (a->xdi_mbox.data) {
 			int i;
 			dword *data = (dword *) a->xdi_mbox.data;
@@ -661,6 +806,7 @@ diva_pri_cmd_card_proc(struct _diva_os_xdi_adapter *a,
 						 cmd->command_data.
 						 write_sdram.offset,
 						 (byte *) & cmd[1],
+						 (byte *)&cmd[1],
 						 cmd->command_data.
 						 write_sdram.length,
 						 pri_is_rev_2_card(a->
@@ -689,6 +835,12 @@ diva_pri_cmd_card_proc(struct _diva_os_xdi_adapter *a,
 		DBG_TRC(("Set raw protocol features (%08x)",
 			 a->xdi_adapter.features))
 		ret = 0;
+			cmd->command_data.features.features;
+		a->xdi_adapter.a.protocol_capabilities =
+			a->xdi_adapter.features;
+		DBG_TRC(("Set raw protocol features (%08x)",
+			 a->xdi_adapter.features))
+			ret = 0;
 		break;
 
 	case DIVA_XDI_UM_CMD_GET_CARD_STATE:
@@ -699,6 +851,11 @@ diva_pri_cmd_card_proc(struct _diva_os_xdi_adapter *a,
 			dword *data = (dword *) a->xdi_mbox.data;
 			if (!a->xdi_adapter.ram ||
 				!a->xdi_adapter.reset ||
+			diva_os_malloc(0, a->xdi_mbox.data_length);
+		if (a->xdi_mbox.data) {
+			dword *data = (dword *) a->xdi_mbox.data;
+			if (!a->xdi_adapter.ram ||
+			    !a->xdi_adapter.reset ||
 			    !a->xdi_adapter.cfg) {
 				*data = 3;
 			} else if (a->xdi_adapter.trapped) {
@@ -730,6 +887,16 @@ diva_pri_cmd_card_proc(struct _diva_os_xdi_adapter *a,
 					    diva_os_malloc(0,
 							   a->xdi_mbox.
 							   data_length);
+				(a->xdi_mbox.data_length =
+				 cmd->command_data.read_sdram.length)) {
+				if (
+					(a->xdi_mbox.data_length +
+					 cmd->command_data.read_sdram.offset) <
+					a->xdi_adapter.MemorySize) {
+					a->xdi_mbox.data =
+						diva_os_malloc(0,
+							       a->xdi_mbox.
+							       data_length);
 					if (a->xdi_mbox.data) {
 						byte __iomem *p = DIVA_OS_MEM_ATTACH_ADDRESS(&a->xdi_adapter);
 						byte __iomem *src = p;
@@ -754,6 +921,7 @@ diva_pri_cmd_card_proc(struct _diva_os_xdi_adapter *a,
 		DBG_ERR(("A: A(%d) invalid cmd=%d", a->controller,
 			 cmd->command))
 	}
+			}
 
 	return (ret);
 }
@@ -762,6 +930,7 @@ diva_pri_cmd_card_proc(struct _diva_os_xdi_adapter *a,
 **  Get Serial Number
 */
 static int pri_get_serial_number(diva_os_xdi_adapter_t * a)
+static int pri_get_serial_number(diva_os_xdi_adapter_t *a)
 {
 	byte data[64];
 	int i;
@@ -774,6 +943,7 @@ static int pri_get_serial_number(diva_os_xdi_adapter_t * a)
  *  First set some GT6401x config registers before accessing the BOOT-ROM
  */
  	config = DIVA_OS_MEM_ATTACH_CONFIG(&a->xdi_adapter);
+	config = DIVA_OS_MEM_ATTACH_CONFIG(&a->xdi_adapter);
 	c = READ_BYTE(&config[0xc3c]);
 	if (!(c & 0x08)) {
 		WRITE_BYTE(&config[0xc3c], c);	/* Base Address enable register */
@@ -781,6 +951,7 @@ static int pri_get_serial_number(diva_os_xdi_adapter_t * a)
 	WRITE_BYTE(&config[LOW_BOOTCS_DREG], 0x00);
 	WRITE_BYTE(&config[HI_BOOTCS_DREG], 0xFF);
  	DIVA_OS_MEM_DETACH_CONFIG(&a->xdi_adapter, config);
+	DIVA_OS_MEM_DETACH_CONFIG(&a->xdi_adapter, config);
 /*
  *  Read only the last 64 bytes of manufacturing data
  */
@@ -795,6 +966,16 @@ static int pri_get_serial_number(diva_os_xdi_adapter_t * a)
 	WRITE_BYTE(&config[LOW_BOOTCS_DREG], 0xFC);	/* Disable FLASH EPROM access */
 	WRITE_BYTE(&config[HI_BOOTCS_DREG], 0xFF);
  	DIVA_OS_MEM_DETACH_CONFIG(&a->xdi_adapter, config);
+	flash = DIVA_OS_MEM_ATTACH_PROM(&a->xdi_adapter);
+	for (i = 0; i < len; i++) {
+		data[i] = READ_BYTE(&flash[0x8000 - len + i]);
+	}
+	DIVA_OS_MEM_DETACH_PROM(&a->xdi_adapter, flash);
+
+	config = DIVA_OS_MEM_ATTACH_CONFIG(&a->xdi_adapter);
+	WRITE_BYTE(&config[LOW_BOOTCS_DREG], 0xFC);	/* Disable FLASH EPROM access */
+	WRITE_BYTE(&config[HI_BOOTCS_DREG], 0xFF);
+	DIVA_OS_MEM_DETACH_CONFIG(&a->xdi_adapter, config);
 
 	if (memcmp(&data[48], "DIVAserverPR", 12)) {
 #if !defined(DIVA_PRI_NO_PCI_BIOS_WORKAROUND)	/* { */
@@ -813,6 +994,11 @@ static int pri_get_serial_number(diva_os_xdi_adapter_t * a)
 			     data[4], data[5], data[6], data[7]))
 
 		Bus = a->resources.pci.bus;
+			DBG_LOG(("%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x",
+				 data[0], data[1], data[2], data[3],
+				 data[4], data[5], data[6], data[7]))
+
+			Bus = a->resources.pci.bus;
 		Slot = a->resources.pci.func;
 		hdev = a->resources.pci.hdev;
 		PCIread(Bus, Slot, 0x04, &cmd_org, sizeof(cmd_org), hdev);
@@ -837,6 +1023,11 @@ static int pri_get_serial_number(diva_os_xdi_adapter_t * a)
 		len = sizeof(data);
 
  		config = DIVA_OS_MEM_ATTACH_CONFIG(&a->xdi_adapter);
+		  Try to read Flash again
+		*/
+		len = sizeof(data);
+
+		config = DIVA_OS_MEM_ATTACH_CONFIG(&a->xdi_adapter);
 		if (!(config[0xc3c] & 0x08)) {
 			config[0xc3c] |= 0x08;	/* Base Address enable register */
 		}
@@ -875,6 +1066,39 @@ static int pri_get_serial_number(diva_os_xdi_adapter_t * a)
 	a->xdi_adapter.serialNo =
 	    (data[47] << 24) | (data[46] << 16) | (data[45] << 8) |
 	    data[44];
+		DIVA_OS_MEM_DETACH_CONFIG(&a->xdi_adapter, config);
+
+		memset(data, '\0', len);
+		flash = DIVA_OS_MEM_ATTACH_PROM(&a->xdi_adapter);
+		for (i = 0; i < len; i++) {
+			data[i] = flash[0x8000 - len + i];
+		}
+		DIVA_OS_MEM_ATTACH_PROM(&a->xdi_adapter, flash);
+		config = DIVA_OS_MEM_ATTACH_CONFIG(&a->xdi_adapter);
+		config[LOW_BOOTCS_DREG] = 0xFC;
+		config[HI_BOOTCS_DREG] = 0xFF;
+		DIVA_OS_MEM_DETACH_CONFIG(&a->xdi_adapter, config);
+
+		if (memcmp(&data[48], "DIVAserverPR", 12)) {
+			DBG_ERR(("A: failed to read serial number"))
+				DBG_LOG(("%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x",
+					 data[0], data[1], data[2], data[3],
+					 data[4], data[5], data[6], data[7]))
+				return (-1);
+		}
+#else				/* } { */
+		DBG_ERR(("A: failed to read DIVA signature word"))
+			DBG_LOG(("%02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x",
+				 data[0], data[1], data[2], data[3],
+				 data[4], data[5], data[6], data[7]))
+			DBG_LOG(("%02x:%02x:%02x:%02x", data[47], data[46],
+				 data[45], data[44]))
+#endif				/* } */
+			}
+
+	a->xdi_adapter.serialNo =
+		(data[47] << 24) | (data[46] << 16) | (data[45] << 8) |
+		data[44];
 	if (!a->xdi_adapter.serialNo
 	    || (a->xdi_adapter.serialNo == 0xffffffff)) {
 		a->xdi_adapter.serialNo = 0;
@@ -895,6 +1119,22 @@ static int pri_get_serial_number(diva_os_xdi_adapter_t * a)
 		     (int) data[28], (int) data[29], (int) data[30]))
 
 	return (0);
+			return (-1);
+	}
+
+	DBG_LOG(("Serial No.          : %ld", a->xdi_adapter.serialNo))
+		DBG_TRC(("Board Revision      : %d.%02d", (int) data[41],
+			 (int) data[40]))
+		DBG_TRC(("PLD revision        : %d.%02d", (int) data[33],
+			 (int) data[32]))
+		DBG_TRC(("Boot loader version : %d.%02d", (int) data[37],
+			 (int) data[36]))
+
+		DBG_TRC(("Manufacturing Date  : %d/%02d/%02d  (yyyy/mm/dd)",
+			 (int) ((data[28] > 90) ? 1900 : 2000) +
+			 (int) data[28], (int) data[29], (int) data[30]))
+
+		return (0);
 }
 
 void diva_os_prepare_pri2_functions(PISDN_ADAPTER IoAdapter)
@@ -910,6 +1150,7 @@ void diva_os_prepare_pri_functions(PISDN_ADAPTER IoAdapter)
 */
 static int
 dsp_check_presence(volatile byte __iomem * addr, volatile byte __iomem * data, int dsp)
+dsp_check_presence(volatile byte __iomem *addr, volatile byte __iomem *data, int dsp)
 {
 	word pattern;
 
@@ -923,6 +1164,7 @@ dsp_check_presence(volatile byte __iomem * addr, volatile byte __iomem * data, i
 		DBG_TRC(("W: DSP[%d] %04x(is) != %04x(should)",
 			 dsp, pattern, DSP_SIGNATURE_PROBE_WORD))
 		return (-1);
+			return (-1);
 	}
 
 	WRITE_WORD(addr, 0x4000);
@@ -935,11 +1177,16 @@ dsp_check_presence(volatile byte __iomem * addr, volatile byte __iomem * data, i
 		DBG_ERR(("A: DSP[%d] %04x(is) != %04x(should)",
 			 dsp, pattern, (word) ~ DSP_SIGNATURE_PROBE_WORD))
 		return (-2);
+	if (pattern != (word)~DSP_SIGNATURE_PROBE_WORD) {
+		DBG_ERR(("A: DSP[%d] %04x(is) != %04x(should)",
+			 dsp, pattern, (word)~DSP_SIGNATURE_PROBE_WORD))
+			return (-2);
 	}
 
 	DBG_TRC(("DSP[%d] present", dsp))
 
 	return (0);
+		return (0);
 }
 
 
@@ -953,6 +1200,7 @@ dsp_check_presence(volatile byte __iomem * addr, volatile byte __iomem * data, i
 **  Bit 29 - DSP30
 */
 static dword diva_pri_detect_dsps(diva_os_xdi_adapter_t * a)
+static dword diva_pri_detect_dsps(diva_os_xdi_adapter_t *a)
 {
 	byte __iomem *base;
 	byte __iomem *p;
@@ -1010,6 +1258,8 @@ static dword diva_pri_detect_dsps(diva_os_xdi_adapter_t * a)
 	/*
 	   Verify modules
 	 */
+	  Verify modules
+	*/
 	for (dsp_row = 0; dsp_row < 4; dsp_row++) {
 		row_state = ((ret >> (dsp_row * 7)) & 0x7F);
 		if (row_state && (row_state != 0x7F)) {
@@ -1019,6 +1269,7 @@ static dword diva_pri_detect_dsps(diva_os_xdi_adapter_t * a)
 						 dsp_row + 1,
 						 dsp_index + 1))
 				}
+						}
 			}
 		}
 	}
@@ -1049,4 +1300,28 @@ static dword diva_pri_detect_dsps(diva_os_xdi_adapter_t * a)
 		 ~ret & 0x3fffffff))
 
 	return (ret);
+			}
+	if (!(ret & 0x20000000)) {
+		DBG_ERR(("A: ON BOARD-DSP[2] failed"))
+			}
+
+	/*
+	  Print module population now
+	*/
+	DBG_LOG(("+-----------------------+"))
+		DBG_LOG(("| DSP MODULE POPULATION |"))
+		DBG_LOG(("+-----------------------+"))
+		DBG_LOG(("|  1  |  2  |  3  |  4  |"))
+		DBG_LOG(("+-----------------------+"))
+		DBG_LOG(("|  %s  |  %s  |  %s  |  %s  |",
+			 ((ret >> (0 * 7)) & 0x7F) ? "Y" : "N",
+			 ((ret >> (1 * 7)) & 0x7F) ? "Y" : "N",
+			 ((ret >> (2 * 7)) & 0x7F) ? "Y" : "N",
+			 ((ret >> (3 * 7)) & 0x7F) ? "Y" : "N"))
+		DBG_LOG(("+-----------------------+"))
+
+		DBG_LOG(("DSP's(present-absent):%08x-%08x", ret,
+			 ~ret & 0x3fffffff))
+
+		return (ret);
 }

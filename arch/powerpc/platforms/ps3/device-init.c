@@ -23,6 +23,7 @@
 #include <linux/kernel.h>
 #include <linux/kthread.h>
 #include <linux/init.h>
+#include <linux/slab.h>
 #include <linux/reboot.h>
 
 #include <asm/firmware.h>
@@ -83,6 +84,7 @@ static int __init ps3_register_lpm_devices(void)
 	}
 
 	pr_debug("%s:%d: pu_id %lu, rights %lu(%lxh)\n",
+	pr_debug("%s:%d: pu_id %llu, rights %llu(%llxh)\n",
 		__func__, __LINE__, dev->lpm.pu_id, dev->lpm.rights,
 		dev->lpm.rights);
 
@@ -319,6 +321,17 @@ static int __init ps3_setup_vuart_device(enum ps3_match_id match_id,
 			__func__, __LINE__);
 
 	pr_debug(" <- %s:%d\n", __func__, __LINE__);
+	if (result) {
+		pr_debug("%s:%d ps3_system_bus_device_register failed\n",
+			__func__, __LINE__);
+		goto fail_device_register;
+	}
+	pr_debug(" <- %s:%d\n", __func__, __LINE__);
+	return 0;
+
+fail_device_register:
+	kfree(p);
+	pr_debug(" <- %s:%d fail\n", __func__, __LINE__);
 	return result;
 }
 
@@ -343,6 +356,7 @@ static int ps3_setup_storage_dev(const struct ps3_repository_device *repo,
 	}
 
 	pr_debug("%s:%u: (%u:%u:%u): port %lu blk_size %lu num_blocks %lu "
+	pr_debug("%s:%u: (%u:%u:%u): port %llu blk_size %llu num_blocks %llu "
 		 "num_regions %u\n", __func__, __LINE__, repo->bus_index,
 		 repo->dev_index, repo->dev_type, port, blk_size, num_blocks,
 		 num_regions);
@@ -389,6 +403,7 @@ static int ps3_setup_storage_dev(const struct ps3_repository_device *repo,
 			goto fail_read_region;
 		}
 		pr_debug("%s:%u: region %u: id %u start %lu size %lu\n",
+		pr_debug("%s:%u: region %u: id %u start %llu size %llu\n",
 			 __func__, __LINE__, i, id, start, size);
 
 		p->regions[i].id = id;
@@ -468,6 +483,17 @@ static int __init ps3_register_sound_devices(void)
 			__func__, __LINE__);
 
 	pr_debug(" <- %s:%d\n", __func__, __LINE__);
+	if (result) {
+		pr_debug("%s:%d ps3_system_bus_device_register failed\n",
+			__func__, __LINE__);
+		goto fail_device_register;
+	}
+	pr_debug(" <- %s:%d\n", __func__, __LINE__);
+	return 0;
+
+fail_device_register:
+	kfree(p);
+	pr_debug(" <- %s:%d failed\n", __func__, __LINE__);
 	return result;
 }
 
@@ -487,6 +513,8 @@ static int __init ps3_register_graphics_devices(void)
 
 	p->dev.match_id = PS3_MATCH_ID_GRAPHICS;
 	p->dev.match_sub_id = PS3_MATCH_SUB_ID_FB;
+	p->dev.match_id = PS3_MATCH_ID_GPU;
+	p->dev.match_sub_id = PS3_MATCH_SUB_ID_GPU_FB;
 	p->dev.dev_type = PS3_DEVICE_TYPE_IOC0;
 
 	result = ps3_system_bus_device_register(&p->dev);
@@ -496,6 +524,53 @@ static int __init ps3_register_graphics_devices(void)
 			__func__, __LINE__);
 
 	pr_debug(" <- %s:%d\n", __func__, __LINE__);
+	if (result) {
+		pr_debug("%s:%d ps3_system_bus_device_register failed\n",
+			__func__, __LINE__);
+		goto fail_device_register;
+	}
+
+	pr_debug(" <- %s:%d\n", __func__, __LINE__);
+	return 0;
+
+fail_device_register:
+	kfree(p);
+	pr_debug(" <- %s:%d failed\n", __func__, __LINE__);
+	return result;
+}
+
+static int __init ps3_register_ramdisk_device(void)
+{
+	int result;
+	struct layout {
+		struct ps3_system_bus_device dev;
+	} *p;
+
+	pr_debug(" -> %s:%d\n", __func__, __LINE__);
+
+	p = kzalloc(sizeof(struct layout), GFP_KERNEL);
+
+	if (!p)
+		return -ENOMEM;
+
+	p->dev.match_id = PS3_MATCH_ID_GPU;
+	p->dev.match_sub_id = PS3_MATCH_SUB_ID_GPU_RAMDISK;
+	p->dev.dev_type = PS3_DEVICE_TYPE_IOC0;
+
+	result = ps3_system_bus_device_register(&p->dev);
+
+	if (result) {
+		pr_debug("%s:%d ps3_system_bus_device_register failed\n",
+			__func__, __LINE__);
+		goto fail_device_register;
+	}
+
+	pr_debug(" <- %s:%d\n", __func__, __LINE__);
+	return 0;
+
+fail_device_register:
+	kfree(p);
+	pr_debug(" <- %s:%d failed\n", __func__, __LINE__);
 	return result;
 }
 
@@ -515,6 +590,10 @@ static int ps3_setup_dynamic_device(const struct ps3_repository_device *repo)
 		if (result == -ENODEV) {
 			result = 0;
 			pr_debug("%s:%u: not accessable\n", __func__,
+		/* Some devices are not accessible from the Other OS lpar. */
+		if (result == -ENODEV) {
+			result = 0;
+			pr_debug("%s:%u: not accessible\n", __func__,
 				 __LINE__);
 		}
 
@@ -609,12 +688,14 @@ static void ps3_find_and_add_device(u64 bus_id, u64 dev_id)
 			break;
 	}
 	pr_warning("%s:%u: device %lu:%lu not found\n", __func__, __LINE__,
+	pr_warning("%s:%u: device %llu:%llu not found\n", __func__, __LINE__,
 		   bus_id, dev_id);
 	return;
 
 found:
 	if (retries)
 		pr_debug("%s:%u: device %lu:%lu found after %u retries\n",
+		pr_debug("%s:%u: device %llu:%llu found after %u retries\n",
 			 __func__, __LINE__, bus_id, dev_id, retries);
 
 	ps3_setup_dynamic_device(&repo);
@@ -669,6 +750,14 @@ static irqreturn_t ps3_notification_interrupt(int irq, void *data)
 		       status);
 	} else {
 		pr_debug("%s:%u: completed, status 0x%lx\n", __func__,
+		pr_err("%s:%u: tag mismatch, got %llx, expected %llx\n",
+		       __func__, __LINE__, tag, dev->tag);
+
+	if (res) {
+		pr_err("%s:%u: res %d status 0x%llx\n", __func__, __LINE__, res,
+		       status);
+	} else {
+		pr_debug("%s:%u: completed, status 0x%llx\n", __func__,
 			 __LINE__, status);
 		dev->lv1_status = status;
 		complete(&dev->done);
@@ -697,7 +786,7 @@ static int ps3_notification_read_write(struct ps3_notification_device *dev,
 	}
 	pr_debug("%s:%u: notification %s issued\n", __func__, __LINE__, op);
 
-	res = wait_event_interruptible(dev->done.wait,
+	res = swait_event_interruptible(dev->done.wait,
 				       dev->done.done || kthread_should_stop());
 	if (kthread_should_stop())
 		res = -EINTR;
@@ -708,6 +797,7 @@ static int ps3_notification_read_write(struct ps3_notification_device *dev,
 
 	if (dev->lv1_status) {
 		pr_err("%s:%u: %s not completed, status 0x%lx\n", __func__,
+		pr_err("%s:%u: %s not completed, status 0x%llx\n", __func__,
 		       __LINE__, op, dev->lv1_status);
 		return -EIO;
 	}
@@ -771,6 +861,7 @@ static int ps3_probe_thread(void *data)
 	spin_lock_init(&dev.lock);
 
 	res = request_irq(irq, ps3_notification_interrupt, IRQF_DISABLED,
+	res = request_irq(irq, ps3_notification_interrupt, 0,
 			  "ps3_notification", &dev);
 	if (res) {
 		pr_err("%s:%u: request_irq failed %d\n", __func__, __LINE__,
@@ -798,6 +889,8 @@ static int ps3_probe_thread(void *data)
 
 		pr_debug("%s:%u: notify event type 0x%lx bus id %lu dev id %lu"
 			 " type %lu port %lu\n", __func__, __LINE__,
+		pr_debug("%s:%u: notify event type 0x%llx bus id %llu dev id %llu"
+			 " type %llu port %llu\n", __func__, __LINE__,
 			 notify_event->event_type, notify_event->bus_id,
 			 notify_event->dev_id, notify_event->dev_type,
 			 notify_event->dev_port);
@@ -806,6 +899,8 @@ static int ps3_probe_thread(void *data)
 		    notify_event->bus_id != dev.sbd.bus_id) {
 			pr_warning("%s:%u: bad notify_event: event %lu, "
 				   "dev_id %lu, dev_type %lu\n",
+			pr_warning("%s:%u: bad notify_event: event %llu, "
+				   "dev_id %llu, dev_type %llu\n",
 				   __func__, __LINE__, notify_event->event_type,
 				   notify_event->dev_id,
 				   notify_event->dev_type);
@@ -926,6 +1021,8 @@ static int __init ps3_register_devices(void)
 	ps3_register_sound_devices();
 
 	ps3_register_lpm_devices();
+
+	ps3_register_ramdisk_device();
 
 	pr_debug(" <- %s:%d\n", __func__, __LINE__);
 	return 0;

@@ -14,6 +14,7 @@
 #include <linux/mm.h>
 #include <linux/bootmem.h>
 #include <linux/spinlock.h>
+#include <linux/gfp.h>
 #include <asm/mipsregs.h>
 #include <asm/jazz.h>
 #include <asm/io.h>
@@ -63,6 +64,7 @@ static int __init vdma_init(void)
 {
 	/*
 	 * Allocate 32k of memory for DMA page tables.  This needs to be page
+	 * Allocate 32k of memory for DMA page tables.	This needs to be page
 	 * aligned and should be uncached to avoid cache flushing after every
 	 * update.
 	 */
@@ -70,15 +72,17 @@ static int __init vdma_init(void)
 						    get_order(VDMA_PGTBL_SIZE));
 	if (!pgtbl)
 		BUG();
+	BUG_ON(!pgtbl);
 	dma_cache_wback_inv((unsigned long)pgtbl, VDMA_PGTBL_SIZE);
-	pgtbl = (VDMA_PGTBL_ENTRY *)KSEG1ADDR(pgtbl);
+	pgtbl = (VDMA_PGTBL_ENTRY *)CKSEG1ADDR((unsigned long)pgtbl);
 
 	/*
 	 * Clear the R4030 translation table
 	 */
 	vdma_pgtbl_init();
 
-	r4030_write_reg32(JAZZ_R4030_TRSTBL_BASE, CPHYSADDR(pgtbl));
+	r4030_write_reg32(JAZZ_R4030_TRSTBL_BASE,
+			  CPHYSADDR((unsigned long)pgtbl));
 	r4030_write_reg32(JAZZ_R4030_TRSTBL_LIM, VDMA_PGTBL_SIZE);
 	r4030_write_reg32(JAZZ_R4030_TRSTBL_INV, 0);
 
@@ -192,6 +196,7 @@ int vdma_free(unsigned long laddr)
 	}
 
 	while (pgtbl[i].owner == laddr && i < VDMA_PGTBL_ENTRIES) {
+	while (i < VDMA_PGTBL_ENTRIES && pgtbl[i].owner == laddr) {
 		pgtbl[i].owner = VDMA_PAGE_EMPTY;
 		i++;
 	}
@@ -212,6 +217,7 @@ EXPORT_SYMBOL(vdma_free);
 int vdma_remap(unsigned long laddr, unsigned long paddr, unsigned long size)
 {
 	int first, pages, npages;
+	int first, pages;
 
 	if (laddr > 0xffffff) {
 		if (vdma_debug)
@@ -219,6 +225,7 @@ int vdma_remap(unsigned long laddr, unsigned long paddr, unsigned long size)
 			    ("vdma_map: Invalid logical address: %08lx\n",
 			     laddr);
 		return -EINVAL;	/* invalid logical address */
+		return -EINVAL; /* invalid logical address */
 	}
 	if (paddr > 0x1fffffff) {
 		if (vdma_debug)
@@ -230,6 +237,10 @@ int vdma_remap(unsigned long laddr, unsigned long paddr, unsigned long size)
 
 	npages = pages =
 	    (((paddr & (VDMA_PAGESIZE - 1)) + size) >> 12) + 1;
+		return -EINVAL; /* invalid physical address */
+	}
+
+	pages = (((paddr & (VDMA_PAGESIZE - 1)) + size) >> 12) + 1;
 	first = laddr >> 12;
 	if (vdma_debug)
 		printk("vdma_remap: first=%x, pages=%x\n", first, pages);

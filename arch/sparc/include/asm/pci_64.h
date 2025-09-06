@@ -168,6 +168,12 @@ static inline void pci_dma_burst_advice(struct pci_dev *pdev,
 /* Return the index of the PCI controller for device PDEV. */
 
 extern int pci_domain_nr(struct pci_bus *bus);
+#define PCI64_REQUIRED_MASK	(~(u64)0)
+#define PCI64_ADDR_BASE		0xfffc000000000000UL
+
+/* Return the index of the PCI controller for device PDEV. */
+
+int pci_domain_nr(struct pci_bus *bus);
 static inline int pci_proc_domain(struct pci_bus *bus)
 {
 	return 1;
@@ -192,6 +198,9 @@ pcibios_bus_to_resource(struct pci_dev *dev, struct resource *res,
 			struct pci_bus_region *region);
 
 extern struct resource *pcibios_select_root(struct pci_dev *, struct resource *);
+int pci_mmap_page_range(struct pci_dev *dev, struct vm_area_struct *vma,
+			enum pci_mmap_state mmap_state,
+			int write_combine);
 
 static inline int pci_get_legacy_ide_irq(struct pci_dev *dev, int channel)
 {
@@ -205,6 +214,10 @@ extern struct device_node *pci_device_to_OF_node(struct pci_dev *pdev);
 extern void pci_resource_to_user(const struct pci_dev *dev, int bar,
 				 const struct resource *rsrc,
 				 resource_size_t *start, resource_size_t *end);
+#define HAVE_ARCH_PCI_RESOURCE_TO_USER
+void pci_resource_to_user(const struct pci_dev *dev, int bar,
+			  const struct resource *rsrc,
+			  resource_size_t *start, resource_size_t *end);
 #endif /* __KERNEL__ */
 
 #endif /* __SPARC64_PCI_H */

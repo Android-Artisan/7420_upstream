@@ -30,5 +30,9 @@ static inline void raw_local_irq_restore(unsigned long flags)
 	if ((flags & 0xf0) != 0xf0)
 		raw_local_irq_enable();
 }
+#define ARCH_IRQ_DISABLED	0xf0
+#define ARCH_IRQ_ENABLED	0x00
+
+#include <asm-generic/irqflags.h>
 
 #endif /* __ASM_SH_IRQFLAGS_H */

@@ -22,3 +22,10 @@ extern void __init netx_init_irq(void);
 
 struct sys_timer;
 extern struct sys_timer netx_timer;
+#include <linux/reboot.h>
+
+extern void __init netx_map_io(void);
+extern void __init netx_init_irq(void);
+extern void netx_restart(enum reboot_mode, const char *);
+
+extern void netx_timer_init(void);

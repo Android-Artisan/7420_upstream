@@ -58,6 +58,37 @@ union cnt32_to_63 {
  * counter to properly update the state bit in memory. This is usually not a
  * problem in practice, but if it is then a kernel timer could be scheduled
  * to manage for this code to be executed often enough.
+ * The restrictions for the algorithm to work properly are:
+ *
+ * 1) this code must be called at least once per each half period of the
+ *    32-bit counter;
+ *
+ * 2) this code must not be preempted for a duration longer than the
+ *    32-bit counter half period minus the longest period between two
+ *    calls to this code;
+ *
+ * Those requirements ensure proper update to the state bit in memory.
+ * This is usually not a problem in practice, but if it is then a kernel
+ * timer should be scheduled to manage for this code to be executed often
+ * enough.
+ *
+ * And finally:
+ *
+ * 3) the cnt_lo argument must be seen as a globally incrementing value,
+ *    meaning that it should be a direct reference to the counter data which
+ *    can be evaluated according to a specific ordering within the macro,
+ *    and not the result of a previous evaluation stored in a variable.
+ *
+ * For example, this is wrong:
+ *
+ *	u32 partial = get_hw_count();
+ *	u64 full = cnt32_to_63(partial);
+ *	return full;
+ *
+ * This is fine:
+ *
+ *	u64 full = cnt32_to_63(get_hw_count());
+ *	return full;
  *
  * Note that the top bit (bit 63) in the returned value should be considered
  * as garbage.  It is not cleared here because callers are likely to use a
@@ -71,6 +102,10 @@ union cnt32_to_63 {
 	static volatile u32 __m_cnt_hi; \
 	union cnt32_to_63 __x; \
 	__x.hi = __m_cnt_hi; \
+	static u32 __m_cnt_hi; \
+	union cnt32_to_63 __x; \
+	__x.hi = __m_cnt_hi; \
+ 	smp_rmb(); \
 	__x.lo = (cnt_lo); \
 	if (unlikely((s32)(__x.hi ^ __x.lo) < 0)) \
 		__m_cnt_hi = __x.hi = (__x.hi ^ 0x80000000) + (__x.hi >> 31); \

@@ -21,6 +21,17 @@ static int slot_cover_open;
 static struct device *mmc_device;
 
 static int sx1_mmc_set_power(struct device *dev, int slot, int power_on,
+#include <linux/gpio.h>
+#include <linux/platform_device.h>
+
+#include <mach/hardware.h>
+#include <mach/board-sx1.h>
+
+#include "mmc.h"
+
+#if defined(CONFIG_MMC_OMAP) || defined(CONFIG_MMC_OMAP_MODULE)
+
+static int mmc_set_power(struct device *dev, int slot, int power_on,
 				int vdd)
 {
 	int err;
@@ -103,6 +114,12 @@ static struct omap_mmc_platform_data sx1_mmc_data = {
 		.get_cover_state        = sx1_mmc_get_cover_state,
 		.ocr_mask               = MMC_VDD_28_29 | MMC_VDD_30_31 |
 					  MMC_VDD_32_33 | MMC_VDD_33_34,
+/* Cover switch is at OMAP_MPUIO(3) */
+static struct omap_mmc_platform_data mmc1_data = {
+	.nr_slots                       = 1,
+	.slots[0]       = {
+		.set_power              = mmc_set_power,
+		.ocr_mask               = MMC_VDD_32_33 | MMC_VDD_33_34,
 		.name                   = "mmcblk",
 	},
 };
@@ -110,6 +127,12 @@ static struct omap_mmc_platform_data sx1_mmc_data = {
 void __init sx1_mmc_init(void)
 {
 	omap_set_mmc_info(1, &sx1_mmc_data);
+static struct omap_mmc_platform_data *mmc_data[OMAP15XX_NR_MMC];
+
+void __init sx1_mmc_init(void)
+{
+	mmc_data[0] = &mmc1_data;
+	omap1_init_mmc(mmc_data, OMAP15XX_NR_MMC);
 }
 
 #else

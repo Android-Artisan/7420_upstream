@@ -1,5 +1,5 @@
-================================================================================
 			README for USB8388
+			README for Libertas
 
  (c) Copyright © 2003-2006, Marvell International Ltd.
  All Rights Reserved
@@ -11,16 +11,15 @@
  is available along with the File in the license.txt file or by writing to
  the Free Software Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA
  02111-1307 or on the worldwide web at http://www.gnu.org/licenses/gpl.txt.
+ is available along with the File in the license.txt file or on the worldwide
+ web at http://www.gnu.org/licenses/gpl.txt.
 
  THE FILE IS DISTRIBUTED AS-IS, WITHOUT WARRANTY OF ANY KIND, AND THE
  IMPLIED WARRANTIES OF MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE
  ARE EXPRESSLY DISCLAIMED.  The License provides additional details about
  this warranty disclaimer.
-================================================================================
 
-=====================
 DRIVER LOADING
-=====================
 
 	o. Copy the firmware image (e.g. usb8388.bin) to /lib/firmware/
 
@@ -28,9 +27,7 @@ DRIVER LOADING
 
 		insmod usb8388.ko [fw_name=usb8388.bin]
 
-=========================
 ETHTOOL
-=========================
 
 
 Use the -i option to retrieve version information from the driver.
@@ -57,13 +54,10 @@ Offset          Values
 ------          ------
 0x0000          38 33 30 58 00 00 34 f4 00 00 10 00 00 c4 17 00
 
-========================
 DEBUGFS COMMANDS
-========================
 
 those commands are used via debugfs interface
 
-===========
 rdmac
 rdbbp
 rdrf
@@ -73,6 +67,9 @@ rdrf
 	hexadecimal (its possible to preceed preceding the number with a "0x").
 
 	Path: /debugfs/libertas_wireless/ethX/registers/
+	hexadecimal (its possible to precede preceding the number with a "0x").
+
+	Path: /sys/kernel/debug/libertas_wireless/ethX/registers/
 
 	Usage:
 		echo "0xa123" > rdmac ; cat rdmac
@@ -85,6 +82,7 @@ wrrf
 	card.  These commands take two parameters that specify the offset
 	location and the value that is to be written. This parameters must
 	be specified in hexadecimal (its possible to preceed the number
+	be specified in hexadecimal (its possible to precede the number
 	with a "0x").
 
 	Usage:
@@ -96,6 +94,7 @@ sleepparams
 	This command is used to set the sleepclock configurations
 
 	Path: /debugfs/libertas_wireless/ethX/
+	Path: /sys/kernel/debug/libertas_wireless/ethX/
 
 	Usage:
 		cat sleepparams: reads the current sleepclock configuration
@@ -116,6 +115,7 @@ subscribed_events
 	subscribed events API.
 
 	Path: /debugfs/libertas_wireless/ethX/subscribed_events/
+	Path: /sys/kernel/debug/libertas_wireless/ethX/subscribed_events/
 
 	Each event is represented by a filename. Each filename consists of the
 	following three fields:
@@ -166,6 +166,7 @@ extscan
 	This command is used to do a specific scan.
 
 	Path: /debugfs/libertas_wireless/ethX/
+	Path: /sys/kernel/debug/libertas_wireless/ethX/
 
 	Usage: echo "SSID" > extscan
 
@@ -180,6 +181,7 @@ getscantable
 	scan results).
 
 	Path: /debugfs/libertas_wireless/ethX/
+	Path: /sys/kernel/debug/libertas_wireless/ethX/
 
 	Usage:
 		cat getscantable
@@ -189,6 +191,7 @@ setuserscan
 
 
 	Path: /debugfs/libertas_wireless/ethX/
+	Path: /sys/kernel/debug/libertas_wireless/ethX/
 
     Usage:
        echo "[ARGS]" > setuserscan
@@ -226,4 +229,15 @@ setuserscan
     All entries in the scan table (not just the new scan data when keep=1)
     will be displayed upon completion by use of the getscantable ioctl.
 
-==============================================================================
+hostsleep
+	This command is used to enable/disable host sleep.
+	Note: Host sleep parameters should be configured using
+	"ethtool -s ethX wol X" command before enabling host sleep.
+
+	Path: /sys/kernel/debug/libertas_wireless/ethX/
+
+	Usage:
+		cat hostsleep: reads the current hostsleep state
+		echo "1" > hostsleep : enable host sleep.
+		echo "0" > hostsleep : disable host sleep
+

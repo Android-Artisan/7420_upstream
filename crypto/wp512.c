@@ -19,6 +19,7 @@
  * (at your option) any later version.
  *
  */
+#include <crypto/internal/hash.h>
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/mm.h>
@@ -767,6 +768,17 @@ static const u64 rc[WHIRLPOOL_ROUNDS + 1] = {
 	0x60bc9b8ea30c7b35ULL, 0x1de0d7c22e4bfe57ULL, 0x157737e59ff04adaULL,
 	0x58c9290ab1a06b85ULL, 0xbd5d10f4cb3e0567ULL, 0xe427418ba77d95d8ULL,
 	0xfbee7c66dd17479eULL, 0xca2dbf07ad5a8333ULL,
+static const u64 rc[WHIRLPOOL_ROUNDS] = {
+	0x1823c6e887b8014fULL,
+	0x36a6d2f5796f9152ULL,
+	0x60bc9b8ea30c7b35ULL,
+	0x1de0d7c22e4bfe57ULL,
+	0x157737e59ff04adaULL,
+	0x58c9290ab1a06b85ULL,
+	0xbd5d10f4cb3e0567ULL,
+	0xe427418ba77d95d8ULL,
+	0xfbee7c66dd17479eULL,
+	0xca2dbf07ad5a8333ULL,
 };
 
 /**
@@ -794,6 +806,7 @@ static void wp512_process_buffer(struct wp512_ctx *wctx) {
 	state[7] = block[7] ^ (K[7] = wctx->hash[7]);
 
 	for (r = 1; r <= WHIRLPOOL_ROUNDS; r++) {
+	for (r = 0; r < WHIRLPOOL_ROUNDS; r++) {
 
 		L[0] = C0[(int)(K[0] >> 56)       ] ^
 			   C1[(int)(K[7] >> 48) & 0xff] ^
@@ -982,6 +995,8 @@ static void wp512_process_buffer(struct wp512_ctx *wctx) {
 
 static void wp512_init(struct crypto_tfm *tfm) {
 	struct wp512_ctx *wctx = crypto_tfm_ctx(tfm);
+static int wp512_init(struct shash_desc *desc) {
+	struct wp512_ctx *wctx = shash_desc_ctx(desc);
 	int i;
 
 	memset(wctx->bitLength, 0, 32);
@@ -996,6 +1011,14 @@ static void wp512_update(struct crypto_tfm *tfm, const u8 *source,
 			 unsigned int len)
 {
 	struct wp512_ctx *wctx = crypto_tfm_ctx(tfm);
+
+	return 0;
+}
+
+static int wp512_update(struct shash_desc *desc, const u8 *source,
+			 unsigned int len)
+{
+	struct wp512_ctx *wctx = shash_desc_ctx(desc);
 	int sourcePos    = 0;
 	unsigned int bits_len = len * 8; // convert to number of bits
 	int sourceGap    = (8 - ((int)bits_len & 7)) & 7;
@@ -1056,6 +1079,12 @@ static void wp512_update(struct crypto_tfm *tfm, const u8 *source,
 static void wp512_final(struct crypto_tfm *tfm, u8 *out)
 {
 	struct wp512_ctx *wctx = crypto_tfm_ctx(tfm);
+	return 0;
+}
+
+static int wp512_final(struct shash_desc *desc, u8 *out)
+{
+	struct wp512_ctx *wctx = shash_desc_ctx(desc);
 	int i;
    	u8 *buffer      = wctx->buffer;
    	u8 *bitLength   = wctx->bitLength;
@@ -1170,6 +1199,73 @@ static int __init wp512_mod_init(void)
 	}
 out:
 	return ret;
+
+	return 0;
+}
+
+static int wp384_final(struct shash_desc *desc, u8 *out)
+{
+	u8 D[64];
+
+	wp512_final(desc, D);
+	memcpy(out, D, WP384_DIGEST_SIZE);
+	memzero_explicit(D, WP512_DIGEST_SIZE);
+
+	return 0;
+}
+
+static int wp256_final(struct shash_desc *desc, u8 *out)
+{
+	u8 D[64];
+
+	wp512_final(desc, D);
+	memcpy(out, D, WP256_DIGEST_SIZE);
+	memzero_explicit(D, WP512_DIGEST_SIZE);
+
+	return 0;
+}
+
+static struct shash_alg wp_algs[3] = { {
+	.digestsize	=	WP512_DIGEST_SIZE,
+	.init		=	wp512_init,
+	.update		=	wp512_update,
+	.final		=	wp512_final,
+	.descsize	=	sizeof(struct wp512_ctx),
+	.base		=	{
+		.cra_name	=	"wp512",
+		.cra_flags	=	CRYPTO_ALG_TYPE_SHASH,
+		.cra_blocksize	=	WP512_BLOCK_SIZE,
+		.cra_module	=	THIS_MODULE,
+	}
+}, {
+	.digestsize	=	WP384_DIGEST_SIZE,
+	.init		=	wp512_init,
+	.update		=	wp512_update,
+	.final		=	wp384_final,
+	.descsize	=	sizeof(struct wp512_ctx),
+	.base		=	{
+		.cra_name	=	"wp384",
+		.cra_flags	=	CRYPTO_ALG_TYPE_SHASH,
+		.cra_blocksize	=	WP512_BLOCK_SIZE,
+		.cra_module	=	THIS_MODULE,
+	}
+}, {
+	.digestsize	=	WP256_DIGEST_SIZE,
+	.init		=	wp512_init,
+	.update		=	wp512_update,
+	.final		=	wp256_final,
+	.descsize	=	sizeof(struct wp512_ctx),
+	.base		=	{
+		.cra_name	=	"wp256",
+		.cra_flags	=	CRYPTO_ALG_TYPE_SHASH,
+		.cra_blocksize	=	WP512_BLOCK_SIZE,
+		.cra_module	=	THIS_MODULE,
+	}
+} };
+
+static int __init wp512_mod_init(void)
+{
+	return crypto_register_shashes(wp_algs, ARRAY_SIZE(wp_algs));
 }
 
 static void __exit wp512_mod_fini(void)
@@ -1181,6 +1277,12 @@ static void __exit wp512_mod_fini(void)
 
 MODULE_ALIAS("wp384");
 MODULE_ALIAS("wp256");
+	crypto_unregister_shashes(wp_algs, ARRAY_SIZE(wp_algs));
+}
+
+MODULE_ALIAS_CRYPTO("wp512");
+MODULE_ALIAS_CRYPTO("wp384");
+MODULE_ALIAS_CRYPTO("wp256");
 
 module_init(wp512_mod_init);
 module_exit(wp512_mod_fini);

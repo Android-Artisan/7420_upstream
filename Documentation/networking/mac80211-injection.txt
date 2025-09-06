@@ -1,5 +1,4 @@
 How to use packet injection with mac80211
-=========================================
 
 mac80211 now allows arbitrary packets to be injected down any Monitor Mode
 interface from userland.  The packet you inject needs to be composed in the
@@ -31,6 +30,10 @@ radiotap headers and used to control injection:
    transmit power in dBm, automatic if not present
 
 
+Despite many radiotap parameters being currently defined, most only make sense
+to appear on received packets.  The following information is parsed from the
+radiotap headers and used to control injection:
+
  * IEEE80211_RADIOTAP_FLAGS
 
    IEEE80211_RADIOTAP_F_FCS: FCS will be removed and recalculated
@@ -39,11 +42,18 @@ radiotap headers and used to control injection:
 			      current fragmentation threshold. Note that
 			      this flag is only reliable when software
 			      fragmentation is enabled)
+			      current fragmentation threshold.
+
+ * IEEE80211_RADIOTAP_TX_FLAGS
+
+   IEEE80211_RADIOTAP_F_TX_NOACK: frame should be sent without waiting for
+				  an ACK even if it is a unicast frame
 
 The injection code can also skip all other currently defined radiotap fields
 facilitating replay of captured radiotap headers directly.
 
 Here is an example valid radiotap header defining these three parameters
+Here is an example valid radiotap header defining some parameters
 
 	0x00, 0x00, // <-- radiotap version
 	0x0b, 0x00, // <- radiotap header length
@@ -75,5 +85,8 @@ interface), along the following lines:
 You can also find sources for a complete inject test applet here:
 
 http://penumbra.warmcat.com/_twk/tiki-index.php?page=packetspammer
+You can also find a link to a complete inject application here:
+
+http://wireless.kernel.org/en/users/Documentation/packetspammer
 
 Andy Green <andy@warmcat.com>

@@ -24,6 +24,18 @@
 #ifdef CONFIG_X86_64
 #include <asm/genapic.h>
 #define is_uv()		is_uv_system()
+#if defined CONFIG_X86_UV || defined CONFIG_IA64_SGI_UV
+#include <asm/uv/uv.h>
+#define is_uv()		is_uv_system()
+#endif
+
+#ifndef is_uv
+#define is_uv()		0
+#endif
+
+#if defined CONFIG_IA64
+#include <asm/sn/arch.h>	/* defines is_shub1() and is_shub2() */
+#define is_shub()	ia64_platform_is("sn2")
 #endif
 
 #ifndef is_shub1
@@ -193,6 +205,10 @@ enum xp_retval {
 	xpBadMsgType,		/* 60: invalid message type */
 
 	xpUnknownReason		/* 61: unknown reason - must be last in enum */
+	xpBadMsgType,		/* 61: invalid message type */
+	xpBiosError,		/* 62: BIOS error */
+
+	xpUnknownReason		/* 63: unknown reason - must be last in enum */
 };
 
 /*
@@ -341,6 +357,12 @@ extern unsigned long (*xp_pa) (void *);
 extern enum xp_retval (*xp_remote_memcpy) (unsigned long, const unsigned long,
 		       size_t);
 extern int (*xp_cpu_to_nasid) (int);
+extern unsigned long (*xp_socket_pa) (unsigned long);
+extern enum xp_retval (*xp_remote_memcpy) (unsigned long, const unsigned long,
+		       size_t);
+extern int (*xp_cpu_to_nasid) (int);
+extern enum xp_retval (*xp_expand_memprotect) (unsigned long, unsigned long);
+extern enum xp_retval (*xp_restrict_memprotect) (unsigned long, unsigned long);
 
 extern u64 xp_nofault_PIOR_target;
 extern int xp_nofault_PIOR(void *);

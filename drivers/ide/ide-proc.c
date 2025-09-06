@@ -1,6 +1,7 @@
 /*
  *  Copyright (C) 1997-1998	Mark Lord
  *  Copyright (C) 2003		Red Hat <alan@redhat.com>
+ *  Copyright (C) 2003		Red Hat
  *
  *  Some code was moved here from ide.c, see it for original copyrights.
  */
@@ -34,6 +35,9 @@
 #include <linux/hdreg.h>
 #include <linux/ide.h>
 #include <linux/seq_file.h>
+#include <linux/ide.h>
+#include <linux/seq_file.h>
+#include <linux/slab.h>
 
 #include <asm/io.h>
 
@@ -44,6 +48,9 @@ static int proc_ide_read_imodel
 {
 	ide_hwif_t	*hwif = (ide_hwif_t *) data;
 	int		len;
+static int ide_imodel_proc_show(struct seq_file *m, void *v)
+{
+	ide_hwif_t	*hwif = (ide_hwif_t *) m->private;
 	const char	*name;
 
 	switch (hwif->chipset) {
@@ -243,6 +250,114 @@ repeat:
  *	@name: setting name
  *
  *	Scan's the device setting table for a matching entry and returns
+	seq_printf(m, "%s\n", name);
+	return 0;
+}
+
+static int ide_imodel_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, ide_imodel_proc_show, PDE_DATA(inode));
+}
+
+static const struct file_operations ide_imodel_proc_fops = {
+	.owner		= THIS_MODULE,
+	.open		= ide_imodel_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
+static int ide_mate_proc_show(struct seq_file *m, void *v)
+{
+	ide_hwif_t	*hwif = (ide_hwif_t *) m->private;
+
+	if (hwif && hwif->mate)
+		seq_printf(m, "%s\n", hwif->mate->name);
+	else
+		seq_printf(m, "(none)\n");
+	return 0;
+}
+
+static int ide_mate_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, ide_mate_proc_show, PDE_DATA(inode));
+}
+
+static const struct file_operations ide_mate_proc_fops = {
+	.owner		= THIS_MODULE,
+	.open		= ide_mate_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
+static int ide_channel_proc_show(struct seq_file *m, void *v)
+{
+	ide_hwif_t	*hwif = (ide_hwif_t *) m->private;
+
+	seq_printf(m, "%c\n", hwif->channel ? '1' : '0');
+	return 0;
+}
+
+static int ide_channel_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, ide_channel_proc_show, PDE_DATA(inode));
+}
+
+static const struct file_operations ide_channel_proc_fops = {
+	.owner		= THIS_MODULE,
+	.open		= ide_channel_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
+static int ide_identify_proc_show(struct seq_file *m, void *v)
+{
+	ide_drive_t *drive = (ide_drive_t *)m->private;
+	u8 *buf;
+
+	if (!drive) {
+		seq_putc(m, '\n');
+		return 0;
+	}
+
+	buf = kmalloc(SECTOR_SIZE, GFP_KERNEL);
+	if (!buf)
+		return -ENOMEM;
+	if (taskfile_lib_get_identify(drive, buf) == 0) {
+		__le16 *val = (__le16 *)buf;
+		int i;
+
+		for (i = 0; i < SECTOR_SIZE / 2; i++) {
+			seq_printf(m, "%04x%c", le16_to_cpu(val[i]),
+					(i % 8) == 7 ? '\n' : ' ');
+		}
+	} else
+		seq_putc(m, buf[0]);
+	kfree(buf);
+	return 0;
+}
+
+static int ide_identify_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, ide_identify_proc_show, PDE_DATA(inode));
+}
+
+static const struct file_operations ide_identify_proc_fops = {
+	.owner		= THIS_MODULE,
+	.open		= ide_identify_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
+/**
+ *	ide_find_setting	-	find a specific setting
+ *	@st: setting table pointer
+ *	@name: setting name
+ *
+ *	Scan's the setting table for a matching entry and returns
  *	this or NULL if no entry is found. The caller must hold the
  *	setting semaphore
  */
@@ -257,6 +372,16 @@ static ide_settings_t *ide_find_setting_by_name(ide_drive_t *drive, char *name)
 		setting = setting->next;
 	}
 	return setting;
+static
+const struct ide_proc_devset *ide_find_setting(const struct ide_proc_devset *st,
+					       char *name)
+{
+	while (st->name) {
+		if (strcmp(st->name, name) == 0)
+			break;
+		st++;
+	}
+	return st->name ? st : NULL;
 }
 
 /**
@@ -292,6 +417,15 @@ static int ide_read_setting(ide_drive_t *drive, ide_settings_t *setting)
 		}
 		spin_unlock_irqrestore(&ide_lock, flags);
 	}
+static int ide_read_setting(ide_drive_t *drive,
+			    const struct ide_proc_devset *setting)
+{
+	const struct ide_devset *ds = setting->setting;
+	int val = -EINVAL;
+
+	if (ds->get)
+		val = ds->get(drive);
+
 	return val;
 }
 
@@ -344,6 +478,26 @@ static int set_xfer_rate (ide_drive_t *drive, int arg)
 {
 	ide_task_t task;
 	int err;
+static int ide_write_setting(ide_drive_t *drive,
+			     const struct ide_proc_devset *setting, int val)
+{
+	const struct ide_devset *ds = setting->setting;
+
+	if (!capable(CAP_SYS_ADMIN))
+		return -EACCES;
+	if (!ds->set)
+		return -EPERM;
+	if ((ds->flags & DS_SYNC)
+	    && (val < setting->min || val > setting->max))
+		return -EINVAL;
+	return ide_devset_execute(drive, ds, val);
+}
+
+ide_devset_get(xfer_rate, current_speed);
+
+static int set_xfer_rate (ide_drive_t *drive, int arg)
+{
+	struct ide_cmd cmd;
 
 	if (arg < XFER_PIO_0 || arg > XFER_UDMA_6)
 		return -EINVAL;
@@ -407,6 +561,47 @@ static int proc_ide_read_settings
 	ide_settings_t	*setting = (ide_settings_t *) drive->settings;
 	char		*out = page;
 	int		len, rc, mul_factor, div_factor;
+	memset(&cmd, 0, sizeof(cmd));
+	cmd.tf.command = ATA_CMD_SET_FEATURES;
+	cmd.tf.feature = SETFEATURES_XFER;
+	cmd.tf.nsect   = (u8)arg;
+	cmd.valid.out.tf = IDE_VALID_FEATURE | IDE_VALID_NSECT;
+	cmd.valid.in.tf  = IDE_VALID_NSECT;
+	cmd.tf_flags   = IDE_TFLAG_SET_XFER;
+
+	return ide_no_data_taskfile(drive, &cmd);
+}
+
+ide_devset_rw(current_speed, xfer_rate);
+ide_devset_rw_field(init_speed, init_speed);
+ide_devset_rw_flag(nice1, IDE_DFLAG_NICE1);
+ide_devset_rw_field(number, dn);
+
+static const struct ide_proc_devset ide_generic_settings[] = {
+	IDE_PROC_DEVSET(current_speed, 0, 70),
+	IDE_PROC_DEVSET(init_speed, 0, 70),
+	IDE_PROC_DEVSET(io_32bit,  0, 1 + (SUPPORT_VLB_SYNC << 1)),
+	IDE_PROC_DEVSET(keepsettings, 0, 1),
+	IDE_PROC_DEVSET(nice1, 0, 1),
+	IDE_PROC_DEVSET(number, 0, 3),
+	IDE_PROC_DEVSET(pio_mode, 0, 255),
+	IDE_PROC_DEVSET(unmaskirq, 0, 1),
+	IDE_PROC_DEVSET(using_dma, 0, 1),
+	{ NULL },
+};
+
+static void proc_ide_settings_warn(void)
+{
+	printk_once(KERN_WARNING "Warning: /proc/ide/hd?/settings interface is "
+			    "obsolete, and will be removed soon!\n");
+}
+
+static int ide_settings_proc_show(struct seq_file *m, void *v)
+{
+	const struct ide_proc_devset *setting, *g, *d;
+	const struct ide_devset *ds;
+	ide_drive_t	*drive = (ide_drive_t *) m->private;
+	int		rc, mul_factor, div_factor;
 
 	proc_ide_settings_warn();
 
@@ -433,6 +628,44 @@ static int proc_ide_read_settings
 	len = out - page;
 	mutex_unlock(&ide_setting_mtx);
 	PROC_IDE_READ_RETURN(page, start, off, count, eof, len);
+	g = ide_generic_settings;
+	d = drive->settings;
+	seq_printf(m, "name\t\t\tvalue\t\tmin\t\tmax\t\tmode\n");
+	seq_printf(m, "----\t\t\t-----\t\t---\t\t---\t\t----\n");
+	while (g->name || (d && d->name)) {
+		/* read settings in the alphabetical order */
+		if (g->name && d && d->name) {
+			if (strcmp(d->name, g->name) < 0)
+				setting = d++;
+			else
+				setting = g++;
+		} else if (d && d->name) {
+			setting = d++;
+		} else
+			setting = g++;
+		mul_factor = setting->mulf ? setting->mulf(drive) : 1;
+		div_factor = setting->divf ? setting->divf(drive) : 1;
+		seq_printf(m, "%-24s", setting->name);
+		rc = ide_read_setting(drive, setting);
+		if (rc >= 0)
+			seq_printf(m, "%-16d", rc * mul_factor / div_factor);
+		else
+			seq_printf(m, "%-16s", "write-only");
+		seq_printf(m, "%-16d%-16d", (setting->min * mul_factor + div_factor - 1) / div_factor, setting->max * mul_factor / div_factor);
+		ds = setting->setting;
+		if (ds->get)
+			seq_printf(m, "r");
+		if (ds->set)
+			seq_printf(m, "w");
+		seq_printf(m, "\n");
+	}
+	mutex_unlock(&ide_setting_mtx);
+	return 0;
+}
+
+static int ide_settings_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, ide_settings_proc_show, PDE_DATA(inode));
 }
 
 #define MAX_LEN	30
@@ -445,6 +678,15 @@ static int proc_ide_write_settings(struct file *file, const char __user *buffer,
 	int		for_real = 0;
 	unsigned long	n;
 	ide_settings_t	*setting;
+static ssize_t ide_settings_proc_write(struct file *file, const char __user *buffer,
+				       size_t count, loff_t *pos)
+{
+	ide_drive_t	*drive = PDE_DATA(file_inode(file));
+	char		name[MAX_LEN + 1];
+	int		for_real = 0, mul_factor, div_factor;
+	unsigned long	n;
+
+	const struct ide_proc_devset *setting;
 	char *buf, *s;
 
 	if (!capable(CAP_SYS_ADMIN))
@@ -519,6 +761,21 @@ static int proc_ide_write_settings(struct file *file, const char __user *buffer,
 			}
 			if (for_real)
 				ide_write_setting(drive, setting, val * setting->div_factor / setting->mul_factor);
+			/* generic settings first, then driver specific ones */
+			setting = ide_find_setting(ide_generic_settings, name);
+			if (!setting) {
+				if (drive->settings)
+					setting = ide_find_setting(drive->settings, name);
+				if (!setting) {
+					mutex_unlock(&ide_setting_mtx);
+					goto parse_error;
+				}
+			}
+			if (for_real) {
+				mul_factor = setting->mulf ? setting->mulf(drive) : 1;
+				div_factor = setting->divf ? setting->divf(drive) : 1;
+				ide_write_setting(drive, setting, val * div_factor / mul_factor);
+			}
 			mutex_unlock(&ide_setting_mtx);
 		}
 	} while (!for_real++);
@@ -584,6 +841,104 @@ static int proc_ide_read_driver
 	} else
 		len = sprintf(page, "ide-default version 0.9.newide\n");
 	PROC_IDE_READ_RETURN(page, start, off, count, eof, len);
+	printk("%s(): parse error\n", __func__);
+	return -EINVAL;
+}
+
+static const struct file_operations ide_settings_proc_fops = {
+	.owner		= THIS_MODULE,
+	.open		= ide_settings_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+	.write		= ide_settings_proc_write,
+};
+
+static int ide_capacity_proc_show(struct seq_file *m, void *v)
+{
+	seq_printf(m, "%llu\n", (long long)0x7fffffff);
+	return 0;
+}
+
+static int ide_capacity_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, ide_capacity_proc_show, NULL);
+}
+
+const struct file_operations ide_capacity_proc_fops = {
+	.owner		= THIS_MODULE,
+	.open		= ide_capacity_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+EXPORT_SYMBOL_GPL(ide_capacity_proc_fops);
+
+static int ide_geometry_proc_show(struct seq_file *m, void *v)
+{
+	ide_drive_t	*drive = (ide_drive_t *) m->private;
+
+	seq_printf(m, "physical     %d/%d/%d\n",
+			drive->cyl, drive->head, drive->sect);
+	seq_printf(m, "logical      %d/%d/%d\n",
+			drive->bios_cyl, drive->bios_head, drive->bios_sect);
+	return 0;
+}
+
+static int ide_geometry_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, ide_geometry_proc_show, PDE_DATA(inode));
+}
+
+const struct file_operations ide_geometry_proc_fops = {
+	.owner		= THIS_MODULE,
+	.open		= ide_geometry_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+EXPORT_SYMBOL(ide_geometry_proc_fops);
+
+static int ide_dmodel_proc_show(struct seq_file *seq, void *v)
+{
+	ide_drive_t	*drive = (ide_drive_t *) seq->private;
+	char		*m = (char *)&drive->id[ATA_ID_PROD];
+
+	seq_printf(seq, "%.40s\n", m[0] ? m : "(none)");
+	return 0;
+}
+
+static int ide_dmodel_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, ide_dmodel_proc_show, PDE_DATA(inode));
+}
+
+static const struct file_operations ide_dmodel_proc_fops = {
+	.owner		= THIS_MODULE,
+	.open		= ide_dmodel_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
+static int ide_driver_proc_show(struct seq_file *m, void *v)
+{
+	ide_drive_t		*drive = (ide_drive_t *)m->private;
+	struct device		*dev = &drive->gendev;
+	struct ide_driver	*ide_drv;
+
+	if (dev->driver) {
+		ide_drv = to_ide_driver(dev->driver);
+		seq_printf(m, "%s version %s\n",
+				dev->driver->name, ide_drv->version);
+	} else
+		seq_printf(m, "ide-default version 0.9.newide\n");
+	return 0;
+}
+
+static int ide_driver_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, ide_driver_proc_show, PDE_DATA(inode));
 }
 
 static int ide_replace_subdriver(ide_drive_t *drive, const char *driver)
@@ -617,6 +972,10 @@ static int proc_ide_write_driver
 	(struct file *file, const char __user *buffer, unsigned long count, void *data)
 {
 	ide_drive_t	*drive = (ide_drive_t *) data;
+static ssize_t ide_driver_proc_write(struct file *file, const char __user *buffer,
+				     size_t count, loff_t *pos)
+{
+	ide_drive_t	*drive = PDE_DATA(file_inode(file));
 	char name[32];
 
 	if (!capable(CAP_SYS_ADMIN))
@@ -637,6 +996,19 @@ static int proc_ide_read_media
 	ide_drive_t	*drive = (ide_drive_t *) data;
 	const char	*media;
 	int		len;
+static const struct file_operations ide_driver_proc_fops = {
+	.owner		= THIS_MODULE,
+	.open		= ide_driver_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+	.write		= ide_driver_proc_write,
+};
+
+static int ide_media_proc_show(struct seq_file *m, void *v)
+{
+	ide_drive_t	*drive = (ide_drive_t *) m->private;
+	const char	*media;
 
 	switch (drive->media) {
 	case ide_disk:		media = "disk\n";	break;
@@ -660,6 +1032,30 @@ static ide_proc_entry_t generic_drive_entries[] = {
 	{ "settings",	S_IFREG|S_IRUSR|S_IWUSR, proc_ide_read_settings,
 						 proc_ide_write_settings },
 	{ NULL,	0, NULL, NULL }
+	seq_puts(m, media);
+	return 0;
+}
+
+static int ide_media_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, ide_media_proc_show, PDE_DATA(inode));
+}
+
+static const struct file_operations ide_media_proc_fops = {
+	.owner		= THIS_MODULE,
+	.open		= ide_media_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
+static ide_proc_entry_t generic_drive_entries[] = {
+	{ "driver",	S_IFREG|S_IRUGO,	 &ide_driver_proc_fops	},
+	{ "identify",	S_IFREG|S_IRUSR,	 &ide_identify_proc_fops},
+	{ "media",	S_IFREG|S_IRUGO,	 &ide_media_proc_fops	},
+	{ "model",	S_IFREG|S_IRUGO,	 &ide_dmodel_proc_fops	},
+	{ "settings",	S_IFREG|S_IRUSR|S_IWUSR, &ide_settings_proc_fops},
+	{}
 };
 
 static void ide_add_proc_entries(struct proc_dir_entry *dir, ide_proc_entry_t *p, void *data)
@@ -674,6 +1070,8 @@ static void ide_add_proc_entries(struct proc_dir_entry *dir, ide_proc_entry_t *p
 		ent->data = data;
 		ent->read_proc = p->read_proc;
 		ent->write_proc = p->write_proc;
+		ent = proc_create_data(p->name, p->mode, dir, p->proc_fops, data);
+		if (!ent) return;
 		p++;
 	}
 }
@@ -691,6 +1089,13 @@ static void ide_remove_proc_entries(struct proc_dir_entry *dir, ide_proc_entry_t
 void ide_proc_register_driver(ide_drive_t *drive, ide_driver_t *driver)
 {
 	ide_add_proc_entries(drive->proc, driver->proc, drive);
+void ide_proc_register_driver(ide_drive_t *drive, struct ide_driver *driver)
+{
+	mutex_lock(&ide_setting_mtx);
+	drive->settings = driver->proc_devsets(drive);
+	mutex_unlock(&ide_setting_mtx);
+
+	ide_add_proc_entries(drive->proc, driver->proc_entries(drive), drive);
 }
 
 EXPORT_SYMBOL(ide_proc_register_driver);
@@ -728,6 +1133,19 @@ void ide_proc_unregister_driver(ide_drive_t *drive, ide_driver_t *driver)
 	 */
 	auto_remove_settings(drive);
 	spin_unlock_irqrestore(&ide_lock, flags);
+ *	Takes ide_setting_mtx.
+ */
+
+void ide_proc_unregister_driver(ide_drive_t *drive, struct ide_driver *driver)
+{
+	ide_remove_proc_entries(drive->proc, driver->proc_entries(drive));
+
+	mutex_lock(&ide_setting_mtx);
+	/*
+	 * ide_setting_mtx protects both the settings list and the use
+	 * of settings (we cannot take a setting out that is being used).
+	 */
+	drive->settings = NULL;
 	mutex_unlock(&ide_setting_mtx);
 }
 EXPORT_SYMBOL(ide_proc_unregister_driver);
@@ -745,6 +1163,14 @@ void ide_proc_port_register_devices(ide_hwif_t *hwif)
 		if (!drive->present)
 			continue;
 		if (drive->proc)
+	struct proc_dir_entry *ent;
+	struct proc_dir_entry *parent = hwif->proc;
+	ide_drive_t *drive;
+	char name[64];
+	int i;
+
+	ide_port_for_each_dev(i, drive, hwif) {
+		if ((drive->dev_flags & IDE_DFLAG_PRESENT) == 0)
 			continue;
 
 		drive->proc = proc_mkdir(drive->name, parent);
@@ -771,6 +1197,10 @@ static ide_proc_entry_t hwif_entries[] = {
 	{ "mate",	S_IFREG|S_IRUGO,	proc_ide_read_mate,	NULL },
 	{ "model",	S_IFREG|S_IRUGO,	proc_ide_read_imodel,	NULL },
 	{ NULL,	0, NULL, NULL }
+	{ "channel",	S_IFREG|S_IRUGO,	&ide_channel_proc_fops	},
+	{ "mate",	S_IFREG|S_IRUGO,	&ide_mate_proc_fops	},
+	{ "model",	S_IFREG|S_IRUGO,	&ide_imodel_proc_fops	},
+	{}
 };
 
 void ide_proc_register_port(ide_hwif_t *hwif)
@@ -797,6 +1227,7 @@ void ide_proc_unregister_port(ide_hwif_t *hwif)
 static int proc_print_driver(struct device_driver *drv, void *data)
 {
 	ide_driver_t *ide_drv = container_of(drv, ide_driver_t, gen_driver);
+	struct ide_driver *ide_drv = to_ide_driver(drv);
 	struct seq_file *s = data;
 
 	seq_printf(s, "%s version %s\n", drv->name, ide_drv->version);

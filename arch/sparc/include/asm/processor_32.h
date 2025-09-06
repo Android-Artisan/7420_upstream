@@ -76,6 +76,7 @@ struct thread_struct {
 
 /* Return saved PC of a blocked thread. */
 extern unsigned long thread_saved_pc(struct task_struct *t);
+unsigned long thread_saved_pc(struct task_struct *t);
 
 /* Do necessary setup to start up a newly executed thread. */
 static inline void start_thread(struct pt_regs * regs, unsigned long pc,
@@ -100,6 +101,7 @@ static inline void start_thread(struct pt_regs * regs, unsigned long pc,
 			     : /* no outputs */
 			     : "r" (regs),
 			       "r" (sp - sizeof(struct reg_window)),
+			       "r" (sp - sizeof(struct reg_window32)),
 			       "r" (zero),
 			       "i" ((const unsigned long)(&((struct pt_regs *)0)->u_regs[0]))
 			     : "memory");
@@ -114,6 +116,8 @@ extern pid_t kernel_thread(int (*fn)(void *), void * arg, unsigned long flags);
 
 extern unsigned long get_wchan(struct task_struct *);
 
+unsigned long get_wchan(struct task_struct *);
+
 #define task_pt_regs(tsk) ((tsk)->thread.kregs)
 #define KSTK_EIP(tsk)  ((tsk)->thread.kregs->pc)
 #define KSTK_ESP(tsk)  ((tsk)->thread.kregs->u_regs[UREG_FP])
@@ -123,6 +127,12 @@ extern unsigned long get_wchan(struct task_struct *);
 extern struct task_struct *last_task_used_math;
 
 #define cpu_relax()	barrier()
+int do_mathemu(struct pt_regs *regs, struct task_struct *fpt);
+
+#define cpu_relax()	barrier()
+#define cpu_relax_lowlatency() cpu_relax()
+
+extern void (*sparc_idle)(void);
 
 #endif
 

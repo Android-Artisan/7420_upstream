@@ -62,7 +62,7 @@ static int snd_seq_oss_oob_user(struct seq_oss_devinfo *dp, void __user *arg)
 	if (copy_from_user(ev, arg, 8))
 		return -EFAULT;
 	memset(&tmpev, 0, sizeof(tmpev));
-	snd_seq_oss_fill_addr(dp, &tmpev, dp->addr.port, dp->addr.client);
+	snd_seq_oss_fill_addr(dp, &tmpev, dp->addr.client, dp->addr.port);
 	tmpev.time.tick = 0;
 	if (! snd_seq_oss_process_event(dp, (union evrec *)ev, &tmpev)) {
 		snd_seq_oss_dispatch(dp, &tmpev, 0, 0);
@@ -133,6 +133,9 @@ snd_seq_oss_ioctl(struct seq_oss_devinfo *dp, unsigned int cmd, unsigned long ca
 
 	case SNDCTL_SEQ_RESETSAMPLES:
 		debug_printk(("reset samples\n"));
+		return put_user(snd_seq_oss_timer_cur_tick(dp->timer), p) ? -EFAULT : 0;
+
+	case SNDCTL_SEQ_RESETSAMPLES:
 		if (get_user(dev, p))
 			return -EFAULT;
 		return snd_seq_oss_synth_ioctl(dp, dev, cmd, carg);
@@ -147,6 +150,12 @@ snd_seq_oss_ioctl(struct seq_oss_devinfo *dp, unsigned int cmd, unsigned long ca
 
 	case SNDCTL_SYNTH_MEMAVL:
 		debug_printk(("mem avail\n"));
+		return put_user(dp->max_synthdev, p) ? -EFAULT : 0;
+
+	case SNDCTL_SEQ_NRMIDIS:
+		return put_user(dp->max_mididev, p) ? -EFAULT : 0;
+
+	case SNDCTL_SYNTH_MEMAVL:
 		if (get_user(dev, p))
 			return -EFAULT;
 		val = snd_seq_oss_synth_ioctl(dp, dev, cmd, carg);
@@ -174,6 +183,15 @@ snd_seq_oss_ioctl(struct seq_oss_devinfo *dp, unsigned int cmd, unsigned long ca
 
 	case SNDCTL_SEQ_THRESHOLD:
 		debug_printk(("threshold\n"));
+		return snd_seq_oss_synth_info_user(dp, arg);
+
+	case SNDCTL_SEQ_OUTOFBAND:
+		return snd_seq_oss_oob_user(dp, arg);
+
+	case SNDCTL_MIDI_INFO:
+		return snd_seq_oss_midi_info_user(dp, arg);
+
+	case SNDCTL_SEQ_THRESHOLD:
 		if (! is_write_mode(dp->file_mode))
 			return 0;
 		if (get_user(val, p))

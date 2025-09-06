@@ -10,12 +10,12 @@
 
 #ifndef __ASM_IA64_UV_MMRS__
 #define __ASM_IA64_UV_MMRS__
+#ifndef _ASM_IA64_UV_UV_MMRS_H
+#define _ASM_IA64_UV_UV_MMRS_H
 
 #define UV_MMR_ENABLE		(1UL << 63)
 
-/* ========================================================================= */
 /*                           UVH_BAU_DATA_CONFIG                             */
-/* ========================================================================= */
 #define UVH_BAU_DATA_CONFIG 0x61680UL
 #define UVH_BAU_DATA_CONFIG_32 0x0438
 
@@ -52,9 +52,7 @@ union uvh_bau_data_config_u {
     } s;
 };
 
-/* ========================================================================= */
 /*                           UVH_EVENT_OCCURRED0                             */
-/* ========================================================================= */
 #define UVH_EVENT_OCCURRED0 0x70000UL
 #define UVH_EVENT_OCCURRED0_32 0x005e8
 
@@ -236,15 +234,155 @@ union uvh_event_occurred0_u {
     } s;
 };
 
-/* ========================================================================= */
 /*                        UVH_EVENT_OCCURRED0_ALIAS                          */
-/* ========================================================================= */
 #define UVH_EVENT_OCCURRED0_ALIAS 0x0000000000070008UL
 #define UVH_EVENT_OCCURRED0_ALIAS_32 0x005f0
 
-/* ========================================================================= */
+/*                         UVH_GR0_TLB_INT0_CONFIG                           */
+#define UVH_GR0_TLB_INT0_CONFIG 0x61b00UL
+
+#define UVH_GR0_TLB_INT0_CONFIG_VECTOR_SHFT 0
+#define UVH_GR0_TLB_INT0_CONFIG_VECTOR_MASK 0x00000000000000ffUL
+#define UVH_GR0_TLB_INT0_CONFIG_DM_SHFT 8
+#define UVH_GR0_TLB_INT0_CONFIG_DM_MASK 0x0000000000000700UL
+#define UVH_GR0_TLB_INT0_CONFIG_DESTMODE_SHFT 11
+#define UVH_GR0_TLB_INT0_CONFIG_DESTMODE_MASK 0x0000000000000800UL
+#define UVH_GR0_TLB_INT0_CONFIG_STATUS_SHFT 12
+#define UVH_GR0_TLB_INT0_CONFIG_STATUS_MASK 0x0000000000001000UL
+#define UVH_GR0_TLB_INT0_CONFIG_P_SHFT 13
+#define UVH_GR0_TLB_INT0_CONFIG_P_MASK 0x0000000000002000UL
+#define UVH_GR0_TLB_INT0_CONFIG_T_SHFT 15
+#define UVH_GR0_TLB_INT0_CONFIG_T_MASK 0x0000000000008000UL
+#define UVH_GR0_TLB_INT0_CONFIG_M_SHFT 16
+#define UVH_GR0_TLB_INT0_CONFIG_M_MASK 0x0000000000010000UL
+#define UVH_GR0_TLB_INT0_CONFIG_APIC_ID_SHFT 32
+#define UVH_GR0_TLB_INT0_CONFIG_APIC_ID_MASK 0xffffffff00000000UL
+
+union uvh_gr0_tlb_int0_config_u {
+    unsigned long	v;
+    struct uvh_gr0_tlb_int0_config_s {
+	unsigned long	vector_  :  8;  /* RW */
+	unsigned long	dm       :  3;  /* RW */
+	unsigned long	destmode :  1;  /* RW */
+	unsigned long	status   :  1;  /* RO */
+	unsigned long	p        :  1;  /* RO */
+	unsigned long	rsvd_14  :  1;  /*    */
+	unsigned long	t        :  1;  /* RO */
+	unsigned long	m        :  1;  /* RW */
+	unsigned long	rsvd_17_31: 15;  /*    */
+	unsigned long	apic_id  : 32;  /* RW */
+    } s;
+};
+
+/*                         UVH_GR0_TLB_INT1_CONFIG                           */
+#define UVH_GR0_TLB_INT1_CONFIG 0x61b40UL
+
+#define UVH_GR0_TLB_INT1_CONFIG_VECTOR_SHFT 0
+#define UVH_GR0_TLB_INT1_CONFIG_VECTOR_MASK 0x00000000000000ffUL
+#define UVH_GR0_TLB_INT1_CONFIG_DM_SHFT 8
+#define UVH_GR0_TLB_INT1_CONFIG_DM_MASK 0x0000000000000700UL
+#define UVH_GR0_TLB_INT1_CONFIG_DESTMODE_SHFT 11
+#define UVH_GR0_TLB_INT1_CONFIG_DESTMODE_MASK 0x0000000000000800UL
+#define UVH_GR0_TLB_INT1_CONFIG_STATUS_SHFT 12
+#define UVH_GR0_TLB_INT1_CONFIG_STATUS_MASK 0x0000000000001000UL
+#define UVH_GR0_TLB_INT1_CONFIG_P_SHFT 13
+#define UVH_GR0_TLB_INT1_CONFIG_P_MASK 0x0000000000002000UL
+#define UVH_GR0_TLB_INT1_CONFIG_T_SHFT 15
+#define UVH_GR0_TLB_INT1_CONFIG_T_MASK 0x0000000000008000UL
+#define UVH_GR0_TLB_INT1_CONFIG_M_SHFT 16
+#define UVH_GR0_TLB_INT1_CONFIG_M_MASK 0x0000000000010000UL
+#define UVH_GR0_TLB_INT1_CONFIG_APIC_ID_SHFT 32
+#define UVH_GR0_TLB_INT1_CONFIG_APIC_ID_MASK 0xffffffff00000000UL
+
+union uvh_gr0_tlb_int1_config_u {
+    unsigned long	v;
+    struct uvh_gr0_tlb_int1_config_s {
+	unsigned long	vector_  :  8;  /* RW */
+	unsigned long	dm       :  3;  /* RW */
+	unsigned long	destmode :  1;  /* RW */
+	unsigned long	status   :  1;  /* RO */
+	unsigned long	p        :  1;  /* RO */
+	unsigned long	rsvd_14  :  1;  /*    */
+	unsigned long	t        :  1;  /* RO */
+	unsigned long	m        :  1;  /* RW */
+	unsigned long	rsvd_17_31: 15;  /*    */
+	unsigned long	apic_id  : 32;  /* RW */
+    } s;
+};
+
+/*                         UVH_GR1_TLB_INT0_CONFIG                           */
+#define UVH_GR1_TLB_INT0_CONFIG 0x61f00UL
+
+#define UVH_GR1_TLB_INT0_CONFIG_VECTOR_SHFT 0
+#define UVH_GR1_TLB_INT0_CONFIG_VECTOR_MASK 0x00000000000000ffUL
+#define UVH_GR1_TLB_INT0_CONFIG_DM_SHFT 8
+#define UVH_GR1_TLB_INT0_CONFIG_DM_MASK 0x0000000000000700UL
+#define UVH_GR1_TLB_INT0_CONFIG_DESTMODE_SHFT 11
+#define UVH_GR1_TLB_INT0_CONFIG_DESTMODE_MASK 0x0000000000000800UL
+#define UVH_GR1_TLB_INT0_CONFIG_STATUS_SHFT 12
+#define UVH_GR1_TLB_INT0_CONFIG_STATUS_MASK 0x0000000000001000UL
+#define UVH_GR1_TLB_INT0_CONFIG_P_SHFT 13
+#define UVH_GR1_TLB_INT0_CONFIG_P_MASK 0x0000000000002000UL
+#define UVH_GR1_TLB_INT0_CONFIG_T_SHFT 15
+#define UVH_GR1_TLB_INT0_CONFIG_T_MASK 0x0000000000008000UL
+#define UVH_GR1_TLB_INT0_CONFIG_M_SHFT 16
+#define UVH_GR1_TLB_INT0_CONFIG_M_MASK 0x0000000000010000UL
+#define UVH_GR1_TLB_INT0_CONFIG_APIC_ID_SHFT 32
+#define UVH_GR1_TLB_INT0_CONFIG_APIC_ID_MASK 0xffffffff00000000UL
+
+union uvh_gr1_tlb_int0_config_u {
+    unsigned long	v;
+    struct uvh_gr1_tlb_int0_config_s {
+	unsigned long	vector_  :  8;  /* RW */
+	unsigned long	dm       :  3;  /* RW */
+	unsigned long	destmode :  1;  /* RW */
+	unsigned long	status   :  1;  /* RO */
+	unsigned long	p        :  1;  /* RO */
+	unsigned long	rsvd_14  :  1;  /*    */
+	unsigned long	t        :  1;  /* RO */
+	unsigned long	m        :  1;  /* RW */
+	unsigned long	rsvd_17_31: 15;  /*    */
+	unsigned long	apic_id  : 32;  /* RW */
+    } s;
+};
+
+/*                         UVH_GR1_TLB_INT1_CONFIG                           */
+#define UVH_GR1_TLB_INT1_CONFIG 0x61f40UL
+
+#define UVH_GR1_TLB_INT1_CONFIG_VECTOR_SHFT 0
+#define UVH_GR1_TLB_INT1_CONFIG_VECTOR_MASK 0x00000000000000ffUL
+#define UVH_GR1_TLB_INT1_CONFIG_DM_SHFT 8
+#define UVH_GR1_TLB_INT1_CONFIG_DM_MASK 0x0000000000000700UL
+#define UVH_GR1_TLB_INT1_CONFIG_DESTMODE_SHFT 11
+#define UVH_GR1_TLB_INT1_CONFIG_DESTMODE_MASK 0x0000000000000800UL
+#define UVH_GR1_TLB_INT1_CONFIG_STATUS_SHFT 12
+#define UVH_GR1_TLB_INT1_CONFIG_STATUS_MASK 0x0000000000001000UL
+#define UVH_GR1_TLB_INT1_CONFIG_P_SHFT 13
+#define UVH_GR1_TLB_INT1_CONFIG_P_MASK 0x0000000000002000UL
+#define UVH_GR1_TLB_INT1_CONFIG_T_SHFT 15
+#define UVH_GR1_TLB_INT1_CONFIG_T_MASK 0x0000000000008000UL
+#define UVH_GR1_TLB_INT1_CONFIG_M_SHFT 16
+#define UVH_GR1_TLB_INT1_CONFIG_M_MASK 0x0000000000010000UL
+#define UVH_GR1_TLB_INT1_CONFIG_APIC_ID_SHFT 32
+#define UVH_GR1_TLB_INT1_CONFIG_APIC_ID_MASK 0xffffffff00000000UL
+
+union uvh_gr1_tlb_int1_config_u {
+    unsigned long	v;
+    struct uvh_gr1_tlb_int1_config_s {
+	unsigned long	vector_  :  8;  /* RW */
+	unsigned long	dm       :  3;  /* RW */
+	unsigned long	destmode :  1;  /* RW */
+	unsigned long	status   :  1;  /* RO */
+	unsigned long	p        :  1;  /* RO */
+	unsigned long	rsvd_14  :  1;  /*    */
+	unsigned long	t        :  1;  /* RO */
+	unsigned long	m        :  1;  /* RW */
+	unsigned long	rsvd_17_31: 15;  /*    */
+	unsigned long	apic_id  : 32;  /* RW */
+    } s;
+};
+
 /*                               UVH_INT_CMPB                                */
-/* ========================================================================= */
 #define UVH_INT_CMPB 0x22080UL
 
 #define UVH_INT_CMPB_REAL_TIME_CMPB_SHFT 0
@@ -258,9 +396,7 @@ union uvh_int_cmpb_u {
     } s;
 };
 
-/* ========================================================================= */
 /*                               UVH_INT_CMPC                                */
-/* ========================================================================= */
 #define UVH_INT_CMPC 0x22100UL
 
 #define UVH_INT_CMPC_REAL_TIME_CMPC_SHFT 0
@@ -274,9 +410,7 @@ union uvh_int_cmpc_u {
     } s;
 };
 
-/* ========================================================================= */
 /*                               UVH_INT_CMPD                                */
-/* ========================================================================= */
 #define UVH_INT_CMPD 0x22180UL
 
 #define UVH_INT_CMPD_REAL_TIME_CMPD_SHFT 0
@@ -290,9 +424,7 @@ union uvh_int_cmpd_u {
     } s;
 };
 
-/* ========================================================================= */
 /*                               UVH_NODE_ID                                 */
-/* ========================================================================= */
 #define UVH_NODE_ID 0x0UL
 
 #define UVH_NODE_ID_FORCE1_SHFT 0
@@ -326,9 +458,7 @@ union uvh_node_id_u {
     } s;
 };
 
-/* ========================================================================= */
 /*                UVH_RH_GAM_ALIAS210_REDIRECT_CONFIG_0_MMR                  */
-/* ========================================================================= */
 #define UVH_RH_GAM_ALIAS210_REDIRECT_CONFIG_0_MMR 0x16000d0UL
 
 #define UVH_RH_GAM_ALIAS210_REDIRECT_CONFIG_0_MMR_DEST_BASE_SHFT 24
@@ -343,9 +473,7 @@ union uvh_rh_gam_alias210_redirect_config_0_mmr_u {
     } s;
 };
 
-/* ========================================================================= */
 /*                UVH_RH_GAM_ALIAS210_REDIRECT_CONFIG_1_MMR                  */
-/* ========================================================================= */
 #define UVH_RH_GAM_ALIAS210_REDIRECT_CONFIG_1_MMR 0x16000e0UL
 
 #define UVH_RH_GAM_ALIAS210_REDIRECT_CONFIG_1_MMR_DEST_BASE_SHFT 24
@@ -360,9 +488,7 @@ union uvh_rh_gam_alias210_redirect_config_1_mmr_u {
     } s;
 };
 
-/* ========================================================================= */
 /*                UVH_RH_GAM_ALIAS210_REDIRECT_CONFIG_2_MMR                  */
-/* ========================================================================= */
 #define UVH_RH_GAM_ALIAS210_REDIRECT_CONFIG_2_MMR 0x16000f0UL
 
 #define UVH_RH_GAM_ALIAS210_REDIRECT_CONFIG_2_MMR_DEST_BASE_SHFT 24
@@ -377,9 +503,7 @@ union uvh_rh_gam_alias210_redirect_config_2_mmr_u {
     } s;
 };
 
-/* ========================================================================= */
 /*                    UVH_RH_GAM_GRU_OVERLAY_CONFIG_MMR                      */
-/* ========================================================================= */
 #define UVH_RH_GAM_GRU_OVERLAY_CONFIG_MMR 0x1600010UL
 
 #define UVH_RH_GAM_GRU_OVERLAY_CONFIG_MMR_BASE_SHFT 28
@@ -405,9 +529,7 @@ union uvh_rh_gam_gru_overlay_config_mmr_u {
     } s;
 };
 
-/* ========================================================================= */
 /*                    UVH_RH_GAM_MMR_OVERLAY_CONFIG_MMR                      */
-/* ========================================================================= */
 #define UVH_RH_GAM_MMR_OVERLAY_CONFIG_MMR 0x1600028UL
 
 #define UVH_RH_GAM_MMR_OVERLAY_CONFIG_MMR_BASE_SHFT 26
@@ -428,9 +550,7 @@ union uvh_rh_gam_mmr_overlay_config_mmr_u {
     } s;
 };
 
-/* ========================================================================= */
 /*                                 UVH_RTC                                   */
-/* ========================================================================= */
 #define UVH_RTC 0x340000UL
 
 #define UVH_RTC_REAL_TIME_CLOCK_SHFT 0
@@ -444,9 +564,7 @@ union uvh_rtc_u {
     } s;
 };
 
-/* ========================================================================= */
 /*                           UVH_RTC1_INT_CONFIG                             */
-/* ========================================================================= */
 #define UVH_RTC1_INT_CONFIG 0x615c0UL
 
 #define UVH_RTC1_INT_CONFIG_VECTOR_SHFT 0
@@ -482,9 +600,7 @@ union uvh_rtc1_int_config_u {
     } s;
 };
 
-/* ========================================================================= */
 /*                           UVH_RTC2_INT_CONFIG                             */
-/* ========================================================================= */
 #define UVH_RTC2_INT_CONFIG 0x61600UL
 
 #define UVH_RTC2_INT_CONFIG_VECTOR_SHFT 0
@@ -520,9 +636,7 @@ union uvh_rtc2_int_config_u {
     } s;
 };
 
-/* ========================================================================= */
 /*                           UVH_RTC3_INT_CONFIG                             */
-/* ========================================================================= */
 #define UVH_RTC3_INT_CONFIG 0x61640UL
 
 #define UVH_RTC3_INT_CONFIG_VECTOR_SHFT 0
@@ -558,9 +672,7 @@ union uvh_rtc3_int_config_u {
     } s;
 };
 
-/* ========================================================================= */
 /*                            UVH_RTC_INC_RATIO                              */
-/* ========================================================================= */
 #define UVH_RTC_INC_RATIO 0x350000UL
 
 #define UVH_RTC_INC_RATIO_FRACTION_SHFT 0
@@ -577,9 +689,7 @@ union uvh_rtc_inc_ratio_u {
     } s;
 };
 
-/* ========================================================================= */
 /*                          UVH_SI_ADDR_MAP_CONFIG                           */
-/* ========================================================================= */
 #define UVH_SI_ADDR_MAP_CONFIG 0xc80000UL
 
 #define UVH_SI_ADDR_MAP_CONFIG_M_SKT_SHFT 0
@@ -597,9 +707,7 @@ union uvh_si_addr_map_config_u {
     } s;
 };
 
-/* ========================================================================= */
 /*                       UVH_SI_ALIAS0_OVERLAY_CONFIG                        */
-/* ========================================================================= */
 #define UVH_SI_ALIAS0_OVERLAY_CONFIG 0xc80008UL
 
 #define UVH_SI_ALIAS0_OVERLAY_CONFIG_BASE_SHFT 24
@@ -621,9 +729,7 @@ union uvh_si_alias0_overlay_config_u {
     } s;
 };
 
-/* ========================================================================= */
 /*                       UVH_SI_ALIAS1_OVERLAY_CONFIG                        */
-/* ========================================================================= */
 #define UVH_SI_ALIAS1_OVERLAY_CONFIG 0xc80010UL
 
 #define UVH_SI_ALIAS1_OVERLAY_CONFIG_BASE_SHFT 24
@@ -645,9 +751,7 @@ union uvh_si_alias1_overlay_config_u {
     } s;
 };
 
-/* ========================================================================= */
 /*                       UVH_SI_ALIAS2_OVERLAY_CONFIG                        */
-/* ========================================================================= */
 #define UVH_SI_ALIAS2_OVERLAY_CONFIG 0xc80018UL
 
 #define UVH_SI_ALIAS2_OVERLAY_CONFIG_BASE_SHFT 24
@@ -671,3 +775,4 @@ union uvh_si_alias2_overlay_config_u {
 
 
 #endif /* __ASM_IA64_UV_MMRS__ */
+#endif /* _ASM_IA64_UV_UV_MMRS_H */

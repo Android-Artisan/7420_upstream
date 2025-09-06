@@ -9,6 +9,8 @@
  *
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/kernel.h>
 #include <linux/sched.h>
 #include <linux/slab.h>
@@ -25,6 +27,7 @@
  * Returns: 0 if the data CRC is correct;
  * 	    1 - if incorrect;
  *	    error code if an error occured.
+ *	    error code if an error occurred.
  */
 static int check_node_data(struct jffs2_sb_info *c, struct jffs2_tmp_dnode_info *tn)
 {
@@ -73,6 +76,15 @@ static int check_node_data(struct jffs2_sb_info *c, struct jffs2_tmp_dnode_info 
 		else
 			pointed = 1; /* succefully pointed to device */
 	}
+	err = mtd_point(c->mtd, ofs, len, &retlen, (void **)&buffer, NULL);
+	if (!err && retlen < len) {
+		JFFS2_WARNING("MTD point returned len too short: %zu instead of %u.\n", retlen, tn->csize);
+		mtd_unpoint(c->mtd, ofs, retlen);
+	} else if (err) {
+		if (err != -EOPNOTSUPP)
+			JFFS2_WARNING("MTD point failed: error code %d.\n", err);
+	} else
+		pointed = 1; /* succefully pointed to device */
 #endif
 
 	if (!pointed) {
@@ -102,6 +114,7 @@ static int check_node_data(struct jffs2_sb_info *c, struct jffs2_tmp_dnode_info 
 #ifndef __ECOS
 	else
 		c->mtd->unpoint(c->mtd, ofs, len);
+		mtd_unpoint(c->mtd, ofs, len);
 #endif
 
 	if (crc != tn->data_crc) {
@@ -138,6 +151,7 @@ free_out:
 #ifndef __ECOS
 	else
 		c->mtd->unpoint(c->mtd, ofs, len);
+		mtd_unpoint(c->mtd, ofs, len);
 #endif
 	return err;
 }
@@ -225,6 +239,11 @@ static int jffs2_add_tn_to_tree(struct jffs2_sb_info *c,
 	dbg_readinode("insert fragment %#04x-%#04x, ver %u at %08x\n", tn->fn->ofs, fn_end, tn->version, ref_offset(tn->fn->raw));
 
 	/* If a node has zero dsize, we only have to keep if it if it might be the
+	struct jffs2_tmp_dnode_info *this, *ptn;
+
+	dbg_readinode("insert fragment %#04x-%#04x, ver %u at %08x\n", tn->fn->ofs, fn_end, tn->version, ref_offset(tn->fn->raw));
+
+	/* If a node has zero dsize, we only have to keep it if it might be the
 	   node with highest version -- i.e. the one which will end up as f->metadata.
 	   Note that such nodes won't be REF_UNCHECKED since there are no data to
 	   check anyway. */
@@ -256,6 +275,18 @@ static int jffs2_add_tn_to_tree(struct jffs2_sb_info *c,
 
 		/* First node should never be marked overlapped */
 		BUG_ON(!this);
+		while (this->overlapped) {
+			ptn = tn_prev(this);
+			if (!ptn) {
+				/*
+				 * We killed a node which set the overlapped
+				 * flags during the scan. Fix it up.
+				 */
+				this->overlapped = 0;
+				break;
+			}
+			this = ptn;
+		}
 		dbg_readinode("'this' found %#04x-%#04x (%s)\n", this->fn->ofs, this->fn->ofs + this->fn->size, this->fn ? "data" : "hole");
 	}
 
@@ -361,6 +392,17 @@ static int jffs2_add_tn_to_tree(struct jffs2_sb_info *c,
 			if (!this->overlapped)
 				break;
 			this = tn_prev(this);
+
+			ptn = tn_prev(this);
+			if (!ptn) {
+				/*
+				 * We killed a node which set the overlapped
+				 * flags during the scan. Fix it up.
+				 */
+				this->overlapped = 0;
+				break;
+			}
+			this = ptn;
 		}
 	}
 
@@ -379,6 +421,11 @@ static int jffs2_add_tn_to_tree(struct jffs2_sb_info *c,
 /* Trivial function to remove the last node in the tree. Which by definition
    has no right-hand -- so can be removed just by making its only child (if
    any) take its place under its parent. */
+   has no right-hand child — so can be removed just by making its left-hand
+   child (if any) take its place under its parent. Since this is only done
+   when we're consuming the whole tree, there's no need to use rb_erase()
+   and let it worry about adjusting colours and balancing the tree. That
+   would just be a waste of time. */
 static void eat_last(struct rb_root *root, struct rb_node *node)
 {
 	struct rb_node *parent = rb_parent(node);
@@ -401,6 +448,12 @@ static void eat_last(struct rb_root *root, struct rb_node *node)
 }
 
 /* We put this in reverse order, so we can just use eat_last */
+	if (node->rb_left)
+		node->rb_left->__rb_parent_color = node->__rb_parent_color;
+}
+
+/* We put the version tree in reverse order, so we can use the same eat_last()
+   function that we use to consume the tmpnode tree (tn_root). */
 static void ver_insert(struct rb_root *ver_root, struct jffs2_tmp_dnode_info *tn)
 {
 	struct rb_node **link = &ver_root->rb_node;
@@ -458,6 +511,15 @@ static int jffs2_build_inode_fragtree(struct jffs2_sb_info *c,
 
 		if (unlikely(last->overlapped))
 			continue;
+		if (unlikely(last->overlapped)) {
+			if (pen)
+				continue;
+			/*
+			 * We killed a node which set the overlapped
+			 * flags during the scan. Fix it up.
+			 */
+			last->overlapped = 0;
+		}
 
 		/* Now we have a bunch of nodes in reverse version
 		   order, in the tree at ver_root. Most of the time,
@@ -544,6 +606,14 @@ static void jffs2_free_tmp_dnode_info_list(struct rb_root *list)
 		}
 	}
 	list->rb_node = NULL;
+	struct jffs2_tmp_dnode_info *tn, *next;
+
+	rbtree_postorder_for_each_entry_safe(tn, next, list, rb) {
+			jffs2_free_full_dnode(tn->fn);
+			jffs2_free_tmp_dnode_info(tn);
+	}
+
+	*list = RB_ROOT;
 }
 
 static void jffs2_free_full_dirent_list(struct jffs2_full_dirent *fd)
@@ -655,12 +725,34 @@ static inline int read_direntry(struct jffs2_sb_info *c, struct jffs2_raw_node_r
 				rd->nsize - already, &read, &fd->name[already]);
 		if (unlikely(read != rd->nsize - already) && likely(!err))
 			return -EIO;
+		if (unlikely(read != rd->nsize - already) && likely(!err)) {
+			jffs2_free_full_dirent(fd);
+			JFFS2_ERROR("short read: wanted %d bytes, got %zd\n",
+				    rd->nsize - already, read);
+			return -EIO;
+		}
 
 		if (unlikely(err)) {
 			JFFS2_ERROR("read remainder of name: error %d\n", err);
 			jffs2_free_full_dirent(fd);
 			return -EIO;
 		}
+
+#ifdef CONFIG_JFFS2_SUMMARY
+		/*
+		 * we use CONFIG_JFFS2_SUMMARY because without it, we
+		 * have checked it while mounting
+		 */
+		crc = crc32(0, fd->name, rd->nsize);
+		if (unlikely(crc != je32_to_cpu(rd->name_crc))) {
+			JFFS2_NOTICE("name CRC failed on dirent node at"
+			   "%#08x: read %#08x,calculated %#08x\n",
+			   ref_offset(ref), je32_to_cpu(rd->node_crc), crc);
+			jffs2_mark_node_obsolete(c, ref);
+			jffs2_free_full_dirent(fd);
+			return 0;
+		}
+#endif
 	}
 
 	fd->nhash = full_name_hash(fd->name, rd->nsize);
@@ -908,6 +1000,7 @@ static inline int read_unknown(struct jffs2_sb_info *c, struct jffs2_raw_node_re
  * The function detects whether more data should be read and reads it if yes.
  *
  * Returns: 0 on succes;
+ * Returns: 0 on success;
  * 	    negative error code on failure.
  */
 static int read_more(struct jffs2_sb_info *c, struct jffs2_raw_node_ref *ref,
@@ -1018,6 +1111,7 @@ static int jffs2_get_inode_nodes(struct jffs2_sb_info *c, struct jffs2_inode_inf
 		err = jffs2_flash_read(c, ref_offset(ref), len, &retlen, buf);
 		if (err) {
 			JFFS2_ERROR("can not read %d bytes from 0x%08x, " "error code: %d.\n", len, ref_offset(ref), err);
+			JFFS2_ERROR("can not read %d bytes from 0x%08x, error code: %d.\n", len, ref_offset(ref), err);
 			goto free_out;
 		}
 
@@ -1199,6 +1293,7 @@ static int jffs2_do_read_inode_internal(struct jffs2_sb_info *c,
 		mutex_unlock(&f->sem);
 		jffs2_do_clear_inode(c, f);
 		return ret?ret:-EIO;
+		return ret ? ret : -EIO;
 	}
 
 	crc = crc32(0, latest_node, sizeof(*latest_node)-8);
@@ -1247,6 +1342,12 @@ static int jffs2_do_read_inode_internal(struct jffs2_sb_info *c,
 				JFFS2_ERROR("can't allocate %d bytes of memory for the symlink target path cache\n", je32_to_cpu(latest_node->csize));
 				mutex_unlock(&f->sem);
 				jffs2_do_clear_inode(c, f);
+			uint32_t csize = je32_to_cpu(latest_node->csize);
+			if (csize > JFFS2_MAX_NAME_LEN)
+				return -ENAMETOOLONG;
+			f->target = kmalloc(csize + 1, GFP_KERNEL);
+			if (!f->target) {
+				JFFS2_ERROR("can't allocate %u bytes of memory for the symlink target path cache\n", csize);
 				return -ENOMEM;
 			}
 
@@ -1264,6 +1365,17 @@ static int jffs2_do_read_inode_internal(struct jffs2_sb_info *c,
 			}
 
 			f->target[je32_to_cpu(latest_node->csize)] = '\0';
+					       csize, &retlen, (char *)f->target);
+
+			if (ret || retlen != csize) {
+				if (retlen != csize)
+					ret = -EIO;
+				kfree(f->target);
+				f->target = NULL;
+				return ret;
+			}
+
+			f->target[csize] = '\0';
 			dbg_readinode("symlink's target '%s' cached\n", f->target);
 		}
 
@@ -1391,6 +1503,9 @@ int jffs2_do_crccheck_inode(struct jffs2_sb_info *c, struct jffs2_inode_cache *i
 		mutex_unlock(&f->sem);
 		jffs2_do_clear_inode(c, f);
 	}
+	mutex_unlock(&f->sem);
+	jffs2_do_clear_inode(c, f);
+	jffs2_xattr_do_crccheck_inode(c, ic);
 	kfree (f);
 	return ret;
 }
@@ -1415,11 +1530,6 @@ void jffs2_do_clear_inode(struct jffs2_sb_info *c, struct jffs2_inode_info *f)
 	}
 
 	jffs2_kill_fragtree(&f->fragtree, deleted?c:NULL);
-
-	if (f->target) {
-		kfree(f->target);
-		f->target = NULL;
-	}
 
 	fds = f->dents;
 	while(fds) {

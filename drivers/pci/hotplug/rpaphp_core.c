@@ -30,6 +30,9 @@
 #include <linux/slab.h>
 #include <linux/smp.h>
 #include <linux/init.h>
+#include <linux/smp.h>
+#include <linux/init.h>
+#include <linux/vmalloc.h>
 #include <asm/eeh.h>       /* for eeh_add_device() */
 #include <asm/rtas.h>		/* rtas_call */
 #include <asm/pci-bridge.h>	/* for pci_controller */
@@ -39,6 +42,9 @@
 
 int debug;
 LIST_HEAD(rpaphp_slot_head);
+bool rpaphp_debug;
+LIST_HEAD(rpaphp_slot_head);
+EXPORT_SYMBOL_GPL(rpaphp_slot_head);
 
 #define DRIVER_VERSION	"0.1"
 #define DRIVER_AUTHOR	"Linda Xie <lxie@us.ibm.com>"
@@ -51,6 +57,7 @@ MODULE_DESCRIPTION(DRIVER_DESC);
 MODULE_LICENSE("GPL");
 
 module_param(debug, bool, 0644);
+module_param_named(debug, rpaphp_debug, bool, 0644);
 
 /**
  * set_attention_status - set attention LED
@@ -89,6 +96,7 @@ static int set_attention_status(struct hotplug_slot *hotplug_slot, u8 value)
  * @value: pointer to store status
  */
 static int get_power_status(struct hotplug_slot *hotplug_slot, u8 * value)
+static int get_power_status(struct hotplug_slot *hotplug_slot, u8 *value)
 {
 	int retval, level;
 	struct slot *slot = (struct slot *)hotplug_slot->private;
@@ -105,6 +113,7 @@ static int get_power_status(struct hotplug_slot *hotplug_slot, u8 * value)
  * @value: pointer to store status
  */
 static int get_attention_status(struct hotplug_slot *hotplug_slot, u8 * value)
+static int get_attention_status(struct hotplug_slot *hotplug_slot, u8 *value)
 {
 	struct slot *slot = (struct slot *)hotplug_slot->private;
 	*value = slot->hotplug_slot->info->attention_status;
@@ -112,6 +121,7 @@ static int get_attention_status(struct hotplug_slot *hotplug_slot, u8 * value)
 }
 
 static int get_adapter_status(struct hotplug_slot *hotplug_slot, u8 * value)
+static int get_adapter_status(struct hotplug_slot *hotplug_slot, u8 *value)
 {
 	struct slot *slot = (struct slot *)hotplug_slot->private;
 	int rc, state;
@@ -134,6 +144,9 @@ static int get_max_bus_speed(struct hotplug_slot *hotplug_slot, enum pci_bus_spe
 {
 	struct slot *slot = (struct slot *)hotplug_slot->private;
 
+static enum pci_bus_speed get_max_bus_speed(struct slot *slot)
+{
+	enum pci_bus_speed speed;
 	switch (slot->type) {
 	case 1:
 	case 2:
@@ -165,6 +178,30 @@ static int get_max_bus_speed(struct hotplug_slot *hotplug_slot, enum pci_bus_spe
 
 	}
 	return 0;
+		speed = PCI_SPEED_33MHz;	/* speed for case 1-6 */
+		break;
+	case 7:
+	case 8:
+		speed = PCI_SPEED_66MHz;
+		break;
+	case 11:
+	case 14:
+		speed = PCI_SPEED_66MHz_PCIX;
+		break;
+	case 12:
+	case 15:
+		speed = PCI_SPEED_100MHz_PCIX;
+		break;
+	case 13:
+	case 16:
+		speed = PCI_SPEED_133MHz_PCIX;
+		break;
+	default:
+		speed = PCI_SPEED_UNKNOWN;
+		break;
+	}
+
+	return speed;
 }
 
 static int get_children_props(struct device_node *dn, const int **drc_indexes,
@@ -234,6 +271,16 @@ int rpaphp_get_drc_props(struct device_node *dn, int *drc_index,
 				*drc_index = *my_index;
 			if (drc_power_domain)
 				*drc_power_domain = domains[i+1];
+	for (i = 0; i < be32_to_cpu(indexes[0]); i++) {
+		if ((unsigned int) indexes[i + 1] == *my_index) {
+			if (drc_name)
+				*drc_name = name_tmp;
+			if (drc_type)
+				*drc_type = type_tmp;
+			if (drc_index)
+				*drc_index = be32_to_cpu(*my_index);
+			if (drc_power_domain)
+				*drc_power_domain = be32_to_cpu(domains[i+1]);
 			return 0;
 		}
 		name_tmp += (strlen(name_tmp) + 1);
@@ -242,6 +289,7 @@ int rpaphp_get_drc_props(struct device_node *dn, int *drc_index,
 
 	return -EINVAL;
 }
+EXPORT_SYMBOL_GPL(rpaphp_get_drc_props);
 
 static int is_php_type(char *drc_type)
 {
@@ -292,6 +340,8 @@ static int is_php_dn(struct device_node *dn, const int **indexes,
  *
  * This subroutine will register a hotplugable slot with the
  * PCI hotplug infrastructure. This routine is typicaly called
+ * This subroutine will register a hotpluggable slot with the
+ * PCI hotplug infrastructure. This routine is typically called
  * during boot time, if the hotplug slots are present at boot time,
  * or is called later, by the dlpar add code, if the slot is
  * being dynamically added during runtime.
@@ -325,6 +375,12 @@ int rpaphp_add_slot(struct device_node *dn)
 	for (i = 0; i < indexes[0]; i++) {
 
 		slot = alloc_slot_struct(dn, indexes[i + 1], name, power_domains[i + 1]);
+	for (i = 0; i < be32_to_cpu(indexes[0]); i++) {
+		int index;
+
+		index = be32_to_cpu(indexes[i + 1]);
+		slot = alloc_slot_struct(dn, index, name,
+					 be32_to_cpu(power_domains[i + 1]));
 		if (!slot)
 			return -ENOMEM;
 
@@ -332,6 +388,9 @@ int rpaphp_add_slot(struct device_node *dn)
 				
 		dbg("Found drc-index:0x%x drc-name:%s drc-type:%s\n",
 				indexes[i + 1], name, type);
+
+		dbg("Found drc-index:0x%x drc-name:%s drc-type:%s\n",
+				index, name, type);
 
 		retval = rpaphp_enable_slot(slot);
 		if (!retval)
@@ -348,6 +407,7 @@ int rpaphp_add_slot(struct device_node *dn)
 	/* XXX FIXME: reports a failure only if last entry in loop failed */
 	return retval;
 }
+EXPORT_SYMBOL_GPL(rpaphp_add_slot);
 
 static void __exit cleanup_slots(void)
 {
@@ -358,6 +418,7 @@ static void __exit cleanup_slots(void)
 	 * Unregister all of our slots with the pci_hotplug subsystem,
 	 * and free up all memory that we had allocated.
 	 * memory will be freed in release_slot callback. 
+	 * memory will be freed in release_slot callback.
 	 */
 
 	list_for_each_safe(tmp, n, &rpaphp_slot_head) {
@@ -375,6 +436,11 @@ static int __init rpaphp_init(void)
 	info(DRIVER_DESC " version: " DRIVER_VERSION "\n");
 
 	while ((dn = of_find_node_by_name(dn, "pci")))
+	struct device_node *dn;
+
+	info(DRIVER_DESC " version: " DRIVER_VERSION "\n");
+
+	for_each_node_by_name(dn, "pci")
 		rpaphp_add_slot(dn);
 
 	return 0;
@@ -400,6 +466,9 @@ static int enable_slot(struct hotplug_slot *hotplug_slot)
 
 	if (state == PRESENT) {
 		pcibios_add_pci_devices(slot->bus);
+		pci_lock_rescan_remove();
+		pcibios_add_pci_devices(slot->bus);
+		pci_unlock_rescan_remove();
 		slot->state = CONFIGURED;
 	} else if (state == EMPTY) {
 		slot->state = EMPTY;
@@ -408,6 +477,8 @@ static int enable_slot(struct hotplug_slot *hotplug_slot)
 		slot->state = NOT_VALID;
 		return -EINVAL;
 	}
+
+	slot->bus->max_bus_speed = get_max_bus_speed(slot);
 	return 0;
 }
 
@@ -418,6 +489,11 @@ static int disable_slot(struct hotplug_slot *hotplug_slot)
 		return -EINVAL;
 
 	pcibios_remove_pci_devices(slot->bus);
+	pci_lock_rescan_remove();
+	pcibios_remove_pci_devices(slot->bus);
+	pci_unlock_rescan_remove();
+	vm_unmap_aliases();
+
 	slot->state = NOT_CONFIGURED;
 	return 0;
 }

@@ -23,6 +23,7 @@
  */
 
 #include "rawmidi.h"
+#include <sound/rawmidi.h>
 #include <linux/interrupt.h>
 
 #define MPU401_HW_MPU401		1	/* native MPU401 */
@@ -51,6 +52,10 @@
 #define MPU401_INFO_MMIO	(1 << 3)	/* MMIO access */
 #define MPU401_INFO_TX_IRQ	(1 << 4)	/* independent TX irq */
 #define MPU401_INFO_NO_ACK	(1 << 6)	/* No ACK cmd needed */
+#define MPU401_INFO_IRQ_HOOK	(1 << 5)	/* mpu401 irq handler is called
+						   from driver irq handler */
+#define MPU401_INFO_NO_ACK	(1 << 6)	/* No ACK cmd needed */
+#define MPU401_INFO_USE_TIMER	(1 << 15)	/* internal */
 
 #define MPU401_MODE_BIT_INPUT		0
 #define MPU401_MODE_BIT_OUTPUT		1
@@ -75,6 +80,7 @@ struct snd_mpu401 {
 	struct resource *res;		/* port resource */
 	int irq;			/* IRQ number of MPU-401 chip (-1 = poll) */
 	int irq_flags;
+	int irq;			/* IRQ number of MPU-401 chip */
 
 	unsigned long mode;		/* MPU401_MODE_XXXX */
 	int timer_invoked;

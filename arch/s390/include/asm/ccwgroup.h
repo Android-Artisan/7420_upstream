@@ -14,6 +14,10 @@ struct ccw_driver;
  */
 struct ccwgroup_device {
 	unsigned long creator_id;
+ * @ungroup_work: work to be done when a ccwgroup notifier has action
+ *	type %BUS_NOTIFY_UNBIND_DRIVER
+ */
+struct ccwgroup_device {
 	enum {
 		CCWGROUP_OFFLINE,
 		CCWGROUP_ONLINE,
@@ -24,6 +28,7 @@ struct ccwgroup_device {
 /* public: */
 	unsigned int count;
 	struct device	dev;
+	struct work_struct ungroup_work;
 	struct ccw_device *cdev[0];
 };
 
@@ -34,6 +39,7 @@ struct ccwgroup_device {
  * @max_slaves: maximum number of slave devices
  * @driver_id: unique id
  * @probe: function called on probe
+ * @setup: function called during device creation to setup the device
  * @remove: function called on remove
  * @set_online: function called when device is set online
  * @set_offline: function called when device is set offline
@@ -47,10 +53,24 @@ struct ccwgroup_driver {
 	unsigned long driver_id;
 
 	int (*probe) (struct ccwgroup_device *);
+ * @prepare: prepare for pm state transition
+ * @complete: undo work done in @prepare
+ * @freeze: callback for freezing during hibernation snapshotting
+ * @thaw: undo work done in @freeze
+ * @restore: callback for restoring after hibernation
+ * @driver: embedded driver structure
+ */
+struct ccwgroup_driver {
+	int (*setup) (struct ccwgroup_device *);
 	void (*remove) (struct ccwgroup_device *);
 	int (*set_online) (struct ccwgroup_device *);
 	int (*set_offline) (struct ccwgroup_device *);
 	void (*shutdown)(struct ccwgroup_device *);
+	int (*prepare) (struct ccwgroup_device *);
+	void (*complete) (struct ccwgroup_device *);
+	int (*freeze)(struct ccwgroup_device *);
+	int (*thaw) (struct ccwgroup_device *);
+	int (*restore)(struct ccwgroup_device *);
 
 	struct device_driver driver;
 };
@@ -60,6 +80,11 @@ extern void ccwgroup_driver_unregister (struct ccwgroup_driver *cdriver);
 int ccwgroup_create_from_string(struct device *root, unsigned int creator_id,
 				struct ccw_driver *cdrv, int num_devices,
 				const char *buf);
+int ccwgroup_create_dev(struct device *root, struct ccwgroup_driver *gdrv,
+			int num_devices, const char *buf);
+
+extern int ccwgroup_set_online(struct ccwgroup_device *gdev);
+extern int ccwgroup_set_offline(struct ccwgroup_device *gdev);
 
 extern int ccwgroup_probe_ccwdev(struct ccw_device *cdev);
 extern void ccwgroup_remove_ccwdev(struct ccw_device *cdev);

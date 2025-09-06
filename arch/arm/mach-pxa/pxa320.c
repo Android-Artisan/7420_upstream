@@ -27,6 +27,14 @@
 #include "clock.h"
 
 static struct pxa3xx_mfp_addr_map pxa320_mfp_addr_map[] __initdata = {
+#include <linux/io.h>
+
+#include <mach/pxa320.h>
+
+#include "generic.h"
+#include "devices.h"
+
+static struct mfp_addr_map pxa320_mfp_addr_map[] __initdata = {
 
 	MFP_ADDR_X(GPIO0,  GPIO4,   0x0124),
 	MFP_ADDR_X(GPIO5,  GPIO9,   0x028C),
@@ -90,6 +98,11 @@ static int __init pxa320_init(void)
 		pxa3xx_init_mfp();
 		pxa3xx_mfp_init_addr(pxa320_mfp_addr_map);
 		clks_register(ARRAY_AND_SIZE(pxa320_clks));
+static int __init pxa320_init(void)
+{
+	if (cpu_is_pxa320()) {
+		mfp_init_base(io_p2v(MFPR_BASE));
+		mfp_init_addr(pxa320_mfp_addr_map);
 	}
 
 	return 0;

@@ -14,6 +14,7 @@
 #include <asm/processor.h>
 #include <asm/io.h>
 #include <asm/fpu.h>
+#include <asm/traps.h>
 
 /* The PR (precision) bit in the FP Status Register must be clear when
  * an frchg instruction is executed, otherwise the instruction is undefined.
@@ -33,6 +34,11 @@ save_fpu(struct task_struct *tsk, struct pt_regs *regs)
 	unsigned long dummy;
 
 	clear_tsk_thread_flag(tsk, TIF_USEDFPU);
+ */
+void save_fpu(struct task_struct *tsk)
+{
+	unsigned long dummy;
+
 	enable_fpu();
 	asm volatile("sts.l	fpul, @-%0\n\t"
 		     "sts.l	fpscr, @-%0\n\t"
@@ -55,6 +61,7 @@ save_fpu(struct task_struct *tsk, struct pt_regs *regs)
 		     "lds	%3, fpscr\n\t"
 		     : "=r" (dummy)
 		     : "0" ((char *)(&tsk->thread.fpu.hard.status)),
+		     : "0" ((char *)(&tsk->thread.xstate->hardfpu.status)),
 		       "r" (FPSCR_RCHG),
 		       "r" (FPSCR_INIT)
 		     : "memory");
@@ -65,6 +72,9 @@ save_fpu(struct task_struct *tsk, struct pt_regs *regs)
 
 static void
 restore_fpu(struct task_struct *tsk)
+}
+
+void restore_fpu(struct task_struct *tsk)
 {
 	unsigned long dummy;
 
@@ -89,6 +99,7 @@ restore_fpu(struct task_struct *tsk)
 		     "lds.l	@%0+, fpul\n\t"
 		     : "=r" (dummy)
 		     : "0" (&tsk->thread.fpu), "r" (FPSCR_RCHG)
+		     : "0" (tsk->thread.xstate), "r" (FPSCR_RCHG)
 		     : "memory");
 	disable_fpu();
 }
@@ -496,6 +507,9 @@ ieee_fpe_handler (struct pt_regs *regs)
 		if ((tsk->thread.fpu.hard.fpscr & FPSCR_FPU_ERROR)) {
 			/* FPU error */
 			denormal_to_double (&tsk->thread.fpu.hard,
+		if ((tsk->thread.xstate->hardfpu.fpscr & FPSCR_FPU_ERROR)) {
+			/* FPU error */
+			denormal_to_double (&tsk->thread.xstate->hardfpu,
 					    (finsn >> 8) & 0xf);
 		} else
 			return 0;
@@ -513,6 +527,9 @@ ieee_fpe_handler (struct pt_regs *regs)
 		hx = tsk->thread.fpu.hard.fp_regs[n];
 		hy = tsk->thread.fpu.hard.fp_regs[m];
 		fpscr = tsk->thread.fpu.hard.fpscr;
+		hx = tsk->thread.xstate->hardfpu.fp_regs[n];
+		hy = tsk->thread.xstate->hardfpu.fp_regs[m];
+		fpscr = tsk->thread.xstate->hardfpu.fpscr;
 		prec = fpscr & (1 << 19);
 
 		if ((fpscr & FPSCR_FPU_ERROR)
@@ -525,12 +542,17 @@ ieee_fpe_handler (struct pt_regs *regs)
 			       | tsk->thread.fpu.hard.fp_regs[n+1];
 			lly = ((long long) hy << 32)
 			       | tsk->thread.fpu.hard.fp_regs[m+1];
+			       | tsk->thread.xstate->hardfpu.fp_regs[n+1];
+			lly = ((long long) hy << 32)
+			       | tsk->thread.xstate->hardfpu.fp_regs[m+1];
 			if ((hx & 0x7fffffff) >= 0x00100000)
 				llx = denormal_muld(lly, llx);
 			else
 				llx = denormal_muld(llx, lly);
 			tsk->thread.fpu.hard.fp_regs[n] = llx >> 32;
 			tsk->thread.fpu.hard.fp_regs[n+1] = llx & 0xffffffff;
+			tsk->thread.xstate->hardfpu.fp_regs[n] = llx >> 32;
+			tsk->thread.xstate->hardfpu.fp_regs[n+1] = llx & 0xffffffff;
 		} else if ((fpscr & FPSCR_FPU_ERROR)
 		     && (!prec && ((hx & 0x7fffffff) < 0x00800000
 				   || (hy & 0x7fffffff) < 0x00800000))) {
@@ -540,6 +562,7 @@ ieee_fpe_handler (struct pt_regs *regs)
 			else
 				hx = denormal_mulf(hx, hy);
 			tsk->thread.fpu.hard.fp_regs[n] = hx;
+			tsk->thread.xstate->hardfpu.fp_regs[n] = hx;
 		} else
 			return 0;
 
@@ -556,6 +579,9 @@ ieee_fpe_handler (struct pt_regs *regs)
 		hx = tsk->thread.fpu.hard.fp_regs[n];
 		hy = tsk->thread.fpu.hard.fp_regs[m];
 		fpscr = tsk->thread.fpu.hard.fpscr;
+		hx = tsk->thread.xstate->hardfpu.fp_regs[n];
+		hy = tsk->thread.xstate->hardfpu.fp_regs[m];
+		fpscr = tsk->thread.xstate->hardfpu.fpscr;
 		prec = fpscr & (1 << 19);
 
 		if ((fpscr & FPSCR_FPU_ERROR)
@@ -568,12 +594,17 @@ ieee_fpe_handler (struct pt_regs *regs)
 			       | tsk->thread.fpu.hard.fp_regs[n+1];
 			lly = ((long long) hy << 32)
 			       | tsk->thread.fpu.hard.fp_regs[m+1];
+			       | tsk->thread.xstate->hardfpu.fp_regs[n+1];
+			lly = ((long long) hy << 32)
+			       | tsk->thread.xstate->hardfpu.fp_regs[m+1];
 			if ((finsn & 0xf00f) == 0xf000)
 				llx = denormal_addd(llx, lly);
 			else
 				llx = denormal_addd(llx, lly ^ (1LL << 63));
 			tsk->thread.fpu.hard.fp_regs[n] = llx >> 32;
 			tsk->thread.fpu.hard.fp_regs[n+1] = llx & 0xffffffff;
+			tsk->thread.xstate->hardfpu.fp_regs[n] = llx >> 32;
+			tsk->thread.xstate->hardfpu.fp_regs[n+1] = llx & 0xffffffff;
 		} else if ((fpscr & FPSCR_FPU_ERROR)
 		     && (!prec && ((hx & 0x7fffffff) < 0x00800000
 				   || (hy & 0x7fffffff) < 0x00800000))) {
@@ -583,6 +614,7 @@ ieee_fpe_handler (struct pt_regs *regs)
 			else
 				hx = denormal_addf(hx, hy ^ 0x80000000);
 			tsk->thread.fpu.hard.fp_regs[n] = hx;
+			tsk->thread.xstate->hardfpu.fp_regs[n] = hx;
 		} else
 			return 0;
 
@@ -605,6 +637,13 @@ BUILD_TRAP_HANDLER(fpu_error)
 		grab_fpu(regs);
 		restore_fpu(tsk);
 		set_tsk_thread_flag(tsk, TIF_USEDFPU);
+	__unlazy_fpu(tsk, regs);
+	if (ieee_fpe_handler(regs)) {
+		tsk->thread.xstate->hardfpu.fpscr &=
+			~(FPSCR_CAUSE_MASK | FPSCR_FLAG_MASK);
+		grab_fpu(regs);
+		restore_fpu(tsk);
+		task_thread_info(tsk)->status |= TS_USEDFPU;
 		return;
 	}
 

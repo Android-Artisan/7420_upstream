@@ -7,6 +7,7 @@
  */
 
 #include <linux/kernel.h>
+#include <linux/gfp.h>
 #include <linux/mm.h>
 #include <linux/swap.h>
 #include <linux/init.h>
@@ -29,6 +30,7 @@
 DEFINE_PER_CPU(struct mmu_gather, mmu_gathers);
 
 pgd_t swapper_pg_dir[PTRS_PER_PGD] __page_aligned;
+pgd_t swapper_pg_dir[PTRS_PER_PGD] __page_aligned_data;
 
 struct page *empty_zero_page;
 EXPORT_SYMBOL(empty_zero_page);
@@ -165,6 +167,16 @@ static inline void free_area(unsigned long addr, unsigned long end, char *s)
 	if (size && s)
 		printk(KERN_INFO "Freeing %s memory: %dK (%lx - %lx)\n",
 		       s, size, end - (size << 10), end);
+	pg_data_t *pgdat;
+
+	high_memory = NULL;
+	for_each_online_pgdat(pgdat)
+		high_memory = max_t(void *, high_memory,
+				    __va(pgdat_end_pfn(pgdat) << PAGE_SHIFT));
+
+	set_max_mapnr(MAP_NR(high_memory));
+	free_all_bootmem();
+	mem_init_print_info(NULL);
 }
 
 void free_initmem(void)
@@ -180,4 +192,12 @@ void free_initrd_mem(unsigned long start, unsigned long end)
 	free_area(start, end, "initrd");
 }
 
+	free_initmem_default(-1);
+}
+
+#ifdef CONFIG_BLK_DEV_INITRD
+void free_initrd_mem(unsigned long start, unsigned long end)
+{
+	free_reserved_area((void *)start, (void *)end, -1, "initrd");
+}
 #endif

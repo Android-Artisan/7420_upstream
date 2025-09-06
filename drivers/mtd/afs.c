@@ -1,8 +1,8 @@
-/*======================================================================
 
     drivers/mtd/afs.c: ARM Flash Layout/Partitioning
 
     Copyright (C) 2000 ARM Limited
+    Copyright © 2000 ARM Limited
 
    This program is free software; you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -21,7 +21,6 @@
    This is access code for flashes using ARM's flash partitioning
    standards.
 
-======================================================================*/
 
 #include <linux/module.h>
 #include <linux/types.h>
@@ -76,6 +75,7 @@ afs_read_footer(struct mtd_info *mtd, u_int *img_start, u_int *iis_start,
 	int ret;
 
 	ret = mtd->read(mtd, ptr, sizeof(fs), &sz, (u_char *) &fs);
+	ret = mtd_read(mtd, ptr, sizeof(fs), &sz, (u_char *)&fs);
 	if (ret >= 0 && sz != sizeof(fs))
 		ret = -EINVAL;
 
@@ -133,6 +133,7 @@ afs_read_iis(struct mtd_info *mtd, struct image_info_struct *iis, u_int ptr)
 
 	memset(iis, 0, sizeof(*iis));
 	ret = mtd->read(mtd, ptr, sizeof(*iis), &sz, (u_char *) iis);
+	ret = mtd_read(mtd, ptr, sizeof(*iis), &sz, (u_char *)iis);
 	if (ret < 0)
 		goto failed;
 
@@ -164,6 +165,8 @@ afs_read_iis(struct mtd_info *mtd, struct image_info_struct *iis, u_int ptr)
 static int parse_afs_partitions(struct mtd_info *mtd,
                          struct mtd_partition **pparts,
                          unsigned long origin)
+				struct mtd_partition **pparts,
+				struct mtd_part_parser_data *data)
 {
 	struct mtd_partition *parts;
 	u_int mask, off, idx, sz;
@@ -240,6 +243,7 @@ static int parse_afs_partitions(struct mtd_info *mtd,
 		parts[idx].mask_flags	= 0;
 
 		printk("  mtd%d: at 0x%08x, %5dKB, %8u, %s\n",
+		printk("  mtd%d: at 0x%08x, %5lluKiB, %8u, %s\n",
 			idx, img_ptr, parts[idx].size / 1024,
 			iis.imageNumber, str);
 
@@ -265,6 +269,8 @@ static struct mtd_part_parser afs_parser = {
 static int __init afs_parser_init(void)
 {
 	return register_mtd_parser(&afs_parser);
+	register_mtd_parser(&afs_parser);
+	return 0;
 }
 
 static void __exit afs_parser_exit(void)

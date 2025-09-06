@@ -34,6 +34,30 @@
 
 static struct tty_driver *console_driver;
 
+#include <linux/posix_types.h>
+#include <linux/tty.h>
+#include <linux/tty_flip.h>
+#include <linux/types.h>
+#include <linux/major.h>
+#include <linux/kdev_t.h>
+#include <linux/console.h>
+#include <linux/string.h>
+#include <linux/sched.h>
+#include <linux/list.h>
+#include <linux/init.h>
+#include <linux/interrupt.h>
+#include <linux/slab.h>
+#include <linux/hardirq.h>
+#include <asm/current.h>
+#include <asm/irq.h>
+#include "stdio_console.h"
+#include "chan.h"
+#include <irq_user.h>
+#include "mconsole_kern.h"
+#include <init.h>
+
+#define MAX_TTYS (16)
+
 static void stdio_announce(char *dev_name, int dev)
 {
 	printk(KERN_INFO "Virtual console %d assigned device '%s'\n", dev,
@@ -80,6 +104,9 @@ static struct line_driver driver = {
 static struct line vts[MAX_TTYS] = { LINE_INIT(CONFIG_CON_ZERO_CHAN, &driver),
 				     [ 1 ... MAX_TTYS - 1 ] =
 				     LINE_INIT(CONFIG_CON_CHAN, &driver) };
+static char *vt_conf[MAX_TTYS];
+static char *def_conf;
+static struct line vts[MAX_TTYS];
 
 static int con_config(char *str, char **error_out)
 {
@@ -111,6 +138,17 @@ static int con_init_done = 0;
 
 static const struct tty_operations console_ops = {
 	.open 	 		= con_open,
+/* Set in an initcall, checked in an exitcall */
+static int con_init_done = 0;
+
+static int con_install(struct tty_driver *driver, struct tty_struct *tty)
+{
+	return line_install(driver, tty, &vts[tty->index]);
+}
+
+static const struct tty_operations console_ops = {
+	.open 	 		= line_open,
+	.install		= con_install,
 	.close 	 		= line_close,
 	.write 	 		= line_write,
 	.put_char 		= line_put_char,
@@ -122,6 +160,9 @@ static const struct tty_operations console_ops = {
 	.ioctl 	 		= line_ioctl,
 	.throttle 		= line_throttle,
 	.unthrottle 		= line_unthrottle,
+	.throttle 		= line_throttle,
+	.unthrottle 		= line_unthrottle,
+	.hangup			= line_hangup,
 };
 
 static void uml_console_write(struct console *console, const char *string,
@@ -132,6 +173,7 @@ static void uml_console_write(struct console *console, const char *string,
 
 	spin_lock_irqsave(&line->lock, flags);
 	console_write_chan(&line->chan_list, string, len);
+	console_write_chan(line->chan_out, string, len);
 	spin_unlock_irqrestore(&line->lock, flags);
 }
 
@@ -139,6 +181,7 @@ static struct tty_driver *uml_console_device(struct console *c, int *index)
 {
 	*index = c->index;
 	return console_driver;
+	return driver.driver;
 }
 
 static int uml_console_setup(struct console *co, char *options)
@@ -166,6 +209,14 @@ static int stdio_init(void)
 					ARRAY_SIZE(vts));
 	if (console_driver == NULL)
 		return -1;
+	int err;
+	int i;
+
+	err = register_lines(&driver, &console_ops, vts,
+					ARRAY_SIZE(vts));
+	if (err)
+		return err;
+
 	printk(KERN_INFO "Initialized stdio console driver\n");
 
 	new_title = add_xterm_umid(opts.xterm_title);
@@ -173,6 +224,17 @@ static int stdio_init(void)
 		opts.xterm_title = new_title;
 
 	lines_init(vts, ARRAY_SIZE(vts), &opts);
+	for (i = 0; i < MAX_TTYS; i++) {
+		char *error;
+		char *s = vt_conf[i];
+		if (!s)
+			s = def_conf;
+		if (!s)
+			s = i ? CONFIG_CON_CHAN : CONFIG_CON_ZERO_CHAN;
+		if (setup_one_line(vts, i, s, &opts, &error))
+			printk(KERN_ERR "setup_one_line failed for "
+			       "device %d : %s\n", i, error);
+	}
 
 	con_init_done = 1;
 	register_console(&stdiocons);
@@ -198,6 +260,7 @@ static int console_chan_setup(char *str)
 		printk(KERN_ERR "Failed to set up console with "
 		       "configuration string \"%s\" : %s\n", str, error);
 
+	line_setup(vt_conf, MAX_TTYS, &def_conf, str, "console");
 	return 1;
 }
 __setup("con", console_chan_setup);

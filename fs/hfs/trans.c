@@ -14,7 +14,6 @@
 
 #include "hfs_fs.h"
 
-/*================ Global functions ================*/
 
 /*
  * hfs_mac2asc()
@@ -40,6 +39,8 @@ int hfs_mac2asc(struct super_block *sb, char *out, const struct hfs_name *in)
 
 	src = in->name;
 	srclen = in->len;
+	if (srclen > HFS_NAMELEN)
+		srclen = HFS_NAMELEN;
 	dst = out;
 	dstlen = HFS_MAX_NAMELEN;
 	if (nls_io) {
@@ -107,7 +108,7 @@ void hfs_asc2mac(struct super_block *sb, struct hfs_name *out, struct qstr *in)
 	if (nls_io) {
 		wchar_t ch;
 
-		while (srclen > 0) {
+		while (srclen > 0 && dstlen > 0) {
 			size = nls_io->char2uni(src, srclen, &ch);
 			if (size < 0) {
 				ch = '?';

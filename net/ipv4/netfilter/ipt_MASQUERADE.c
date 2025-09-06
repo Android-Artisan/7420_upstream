@@ -9,6 +9,7 @@
  * published by the Free Software Foundation.
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 #include <linux/types.h>
 #include <linux/inetdevice.h>
 #include <linux/ip.h>
@@ -22,6 +23,10 @@
 #include <net/netfilter/nf_nat_rule.h>
 #include <linux/netfilter_ipv4.h>
 #include <linux/netfilter/x_tables.h>
+#include <linux/netfilter_ipv4.h>
+#include <linux/netfilter/x_tables.h>
+#include <net/netfilter/nf_nat.h>
+#include <net/netfilter/ipv4/nf_nat_masquerade.h>
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Netfilter Core Team <coreteam@netfilter.org>");
@@ -156,6 +161,41 @@ static struct xt_target masquerade_tg_reg __read_mostly = {
 	.family		= AF_INET,
 	.target		= masquerade_tg,
 	.targetsize	= sizeof(struct nf_nat_multi_range_compat),
+/* FIXME: Multiple targets. --RR */
+static int masquerade_tg_check(const struct xt_tgchk_param *par)
+{
+	const struct nf_nat_ipv4_multi_range_compat *mr = par->targinfo;
+
+	if (mr->range[0].flags & NF_NAT_RANGE_MAP_IPS) {
+		pr_debug("bad MAP_IPS.\n");
+		return -EINVAL;
+	}
+	if (mr->rangesize != 1) {
+		pr_debug("bad rangesize %u\n", mr->rangesize);
+		return -EINVAL;
+	}
+	return 0;
+}
+
+static unsigned int
+masquerade_tg(struct sk_buff *skb, const struct xt_action_param *par)
+{
+	struct nf_nat_range range;
+	const struct nf_nat_ipv4_multi_range_compat *mr;
+
+	mr = par->targinfo;
+	range.flags = mr->range[0].flags;
+	range.min_proto = mr->range[0].min;
+	range.max_proto = mr->range[0].max;
+
+	return nf_nat_masquerade_ipv4(skb, par->hooknum, &range, par->out);
+}
+
+static struct xt_target masquerade_tg_reg __read_mostly = {
+	.name		= "MASQUERADE",
+	.family		= NFPROTO_IPV4,
+	.target		= masquerade_tg,
+	.targetsize	= sizeof(struct nf_nat_ipv4_multi_range_compat),
 	.table		= "nat",
 	.hooks		= 1 << NF_INET_POST_ROUTING,
 	.checkentry	= masquerade_tg_check,
@@ -174,6 +214,8 @@ static int __init masquerade_tg_init(void)
 		/* Register IP address change reports */
 		register_inetaddr_notifier(&masq_inet_notifier);
 	}
+	if (ret == 0)
+		nf_nat_masquerade_ipv4_register_notifier();
 
 	return ret;
 }
@@ -183,6 +225,7 @@ static void __exit masquerade_tg_exit(void)
 	xt_unregister_target(&masquerade_tg_reg);
 	unregister_netdevice_notifier(&masq_dev_notifier);
 	unregister_inetaddr_notifier(&masq_inet_notifier);
+	nf_nat_masquerade_ipv4_unregister_notifier();
 }
 
 module_init(masquerade_tg_init);

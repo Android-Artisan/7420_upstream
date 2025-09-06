@@ -2,6 +2,7 @@
  * SH7705 Setup
  *
  *  Copyright (C) 2006, 2007  Paul Mundt
+ *  Copyright (C) 2006 - 2009  Paul Mundt
  *  Copyright (C) 2007  Nobuhiro Iwamatsu
  *
  * This file is subject to the terms and conditions of the GNU General Public
@@ -14,6 +15,10 @@
 #include <linux/serial.h>
 #include <linux/serial_sci.h>
 #include <asm/rtc.h>
+#include <linux/sh_timer.h>
+#include <linux/sh_intc.h>
+#include <asm/rtc.h>
+#include <cpu/serial.h>
 
 enum {
 	UNUSED = 0,
@@ -34,6 +39,13 @@ enum {
 
 	/* interrupt groups */
 	RTC, TMU2, DMAC, USB, SCIF2, SCIF0,
+
+	DMAC, SCIF0, SCIF2, ADC_ADI, USB,
+
+	TPU0, TPU1, TPU2, TPU3,
+	TMU0, TMU1, TMU2,
+
+	RTC, WDT, REF_RCMI,
 };
 
 static struct intc_vect vectors[] __initdata = {
@@ -53,6 +65,20 @@ static struct intc_vect vectors[] __initdata = {
 	INTC_VECT(TMU2_TUNI, 0x440), INTC_VECT(TMU2_TICPI, 0x460),
 	INTC_VECT(RTC_ATI, 0x480), INTC_VECT(RTC_PRI, 0x4a0),
 	INTC_VECT(RTC_CUI, 0x4c0),
+	INTC_VECT(DMAC, 0x800), INTC_VECT(DMAC, 0x820),
+	INTC_VECT(DMAC, 0x840), INTC_VECT(DMAC, 0x860),
+	INTC_VECT(SCIF0, 0x880), INTC_VECT(SCIF0, 0x8a0),
+	INTC_VECT(SCIF0, 0x8e0),
+	INTC_VECT(SCIF2, 0x900), INTC_VECT(SCIF2, 0x920),
+	INTC_VECT(SCIF2, 0x960),
+	INTC_VECT(ADC_ADI, 0x980),
+	INTC_VECT(USB, 0xa20), INTC_VECT(USB, 0xa40),
+	INTC_VECT(TPU0, 0xc00), INTC_VECT(TPU1, 0xc20),
+	INTC_VECT(TPU2, 0xc80), INTC_VECT(TPU3, 0xca0),
+	INTC_VECT(TMU0, 0x400), INTC_VECT(TMU1, 0x420),
+	INTC_VECT(TMU2, 0x440), INTC_VECT(TMU2, 0x460),
+	INTC_VECT(RTC, 0x480), INTC_VECT(RTC, 0x4a0),
+	INTC_VECT(RTC, 0x4c0),
 	INTC_VECT(WDT, 0x560),
 	INTC_VECT(REF_RCMI, 0x580),
 };
@@ -102,6 +128,53 @@ static struct platform_device sci_device = {
 	.id		= -1,
 	.dev		= {
 		.platform_data	= sci_platform_data,
+static DECLARE_INTC_DESC(intc_desc, "sh7705", vectors, NULL,
+			 NULL, prio_registers, NULL);
+
+static struct plat_sci_port scif0_platform_data = {
+	.flags		= UPF_BOOT_AUTOCONF,
+	.scscr		= SCSCR_TIE | SCSCR_RIE  | SCSCR_TE |
+			  SCSCR_RE  | SCSCR_CKE1 | SCSCR_CKE0,
+	.type		= PORT_SCIF,
+	.ops		= &sh770x_sci_port_ops,
+	.regtype	= SCIx_SH7705_SCIF_REGTYPE,
+};
+
+static struct resource scif0_resources[] = {
+	DEFINE_RES_MEM(0xa4410000, 0x100),
+	DEFINE_RES_IRQ(evt2irq(0x900)),
+};
+
+static struct platform_device scif0_device = {
+	.name		= "sh-sci",
+	.id		= 0,
+	.resource	= scif0_resources,
+	.num_resources	= ARRAY_SIZE(scif0_resources),
+	.dev		= {
+		.platform_data	= &scif0_platform_data,
+	},
+};
+
+static struct plat_sci_port scif1_platform_data = {
+	.flags		= UPF_BOOT_AUTOCONF,
+	.scscr		= SCSCR_TIE | SCSCR_RIE | SCSCR_TE | SCSCR_RE,
+	.type		= PORT_SCIF,
+	.ops		= &sh770x_sci_port_ops,
+	.regtype	= SCIx_SH7705_SCIF_REGTYPE,
+};
+
+static struct resource scif1_resources[] = {
+	DEFINE_RES_MEM(0xa4400000, 0x100),
+	DEFINE_RES_IRQ(evt2irq(0x880)),
+};
+
+static struct platform_device scif1_device = {
+	.name		= "sh-sci",
+	.id		= 1,
+	.resource	= scif1_resources,
+	.num_resources	= ARRAY_SIZE(scif1_resources),
+	.dev		= {
+		.platform_data	= &scif1_platform_data,
 	},
 };
 
@@ -123,6 +196,9 @@ static struct resource rtc_resources[] = {
 		.start	= 22,
 		.flags  = IORESOURCE_IRQ,
 	},
+		.start  = evt2irq(0x480),
+		.flags	= IORESOURCE_IRQ,
+	},
 };
 
 static struct sh_rtc_platform_info rtc_info = {
@@ -141,6 +217,31 @@ static struct platform_device rtc_device = {
 
 static struct platform_device *sh7705_devices[] __initdata = {
 	&sci_device,
+static struct sh_timer_config tmu0_platform_data = {
+	.channels_mask = 7,
+};
+
+static struct resource tmu0_resources[] = {
+	DEFINE_RES_MEM(0xfffffe90, 0x2c),
+	DEFINE_RES_IRQ(evt2irq(0x400)),
+	DEFINE_RES_IRQ(evt2irq(0x420)),
+	DEFINE_RES_IRQ(evt2irq(0x440)),
+};
+
+static struct platform_device tmu0_device = {
+	.name		= "sh-tmu-sh3",
+	.id		= 0,
+	.dev = {
+		.platform_data	= &tmu0_platform_data,
+	},
+	.resource	= tmu0_resources,
+	.num_resources	= ARRAY_SIZE(tmu0_resources),
+};
+
+static struct platform_device *sh7705_devices[] __initdata = {
+	&scif0_device,
+	&scif1_device,
+	&tmu0_device,
 	&rtc_device,
 };
 
@@ -150,6 +251,19 @@ static int __init sh7705_devices_setup(void)
 				    ARRAY_SIZE(sh7705_devices));
 }
 __initcall(sh7705_devices_setup);
+arch_initcall(sh7705_devices_setup);
+
+static struct platform_device *sh7705_early_devices[] __initdata = {
+	&scif0_device,
+	&scif1_device,
+	&tmu0_device,
+};
+
+void __init plat_early_device_setup(void)
+{
+	early_platform_add_devices(sh7705_early_devices,
+				   ARRAY_SIZE(sh7705_early_devices));
+}
 
 void __init plat_irq_setup(void)
 {

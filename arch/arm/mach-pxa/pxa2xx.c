@@ -20,6 +20,13 @@
 #include <mach/mfp-pxa25x.h>
 #include <mach/reset.h>
 #include <mach/irda.h>
+#include <linux/io.h>
+
+#include <mach/hardware.h>
+#include <mach/pxa2xx-regs.h>
+#include <mach/mfp-pxa25x.h>
+#include <mach/reset.h>
+#include <linux/platform_data/irda-pxaficp.h>
 
 void pxa2xx_clear_reset_status(unsigned int mask)
 {
@@ -53,3 +60,4 @@ void pxa2xx_transceiver_mode(struct device *dev, int mode)
 	} else
 		BUG();
 }
+EXPORT_SYMBOL_GPL(pxa2xx_transceiver_mode);

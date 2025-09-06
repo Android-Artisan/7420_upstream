@@ -81,6 +81,7 @@ enum smic_states {
 
 /* Timeouts in microseconds. */
 #define SMIC_RETRY_TIMEOUT 2000000
+#define SMIC_RETRY_TIMEOUT (2*USEC_PER_SEC)
 
 /* SMIC Flags Register Bits */
 #define SMIC_RX_DATA_READY	0x80
@@ -590,6 +591,7 @@ static int smic_size(void)
 }
 
 struct si_sm_handlers smic_smi_handlers = {
+const struct si_sm_handlers smic_smi_handlers = {
 	.init_data         = init_smic_data,
 	.start_transaction = start_smic_transaction,
 	.get_result        = smic_get_result,

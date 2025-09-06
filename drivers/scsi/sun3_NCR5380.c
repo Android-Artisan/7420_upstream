@@ -278,7 +278,6 @@ static struct scsi_host_template *the_template = NULL;
 
 /*
  * Functions for handling tagged queuing
- * =====================================
  *
  * ++roman (01/96): Now I've implemented SCSI-2 tagged queuing. Some notes:
  *

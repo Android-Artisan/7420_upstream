@@ -6,7 +6,7 @@
  *
  *				Alan Cox <Alan.Cox@linux.org>
  */
- 
+
 #ifndef _LINUX_NOTIFIER_H
 #define _LINUX_NOTIFIER_H
 #include <linux/errno.h>
@@ -42,20 +42,25 @@
  * in srcu_notifier_call_chain(): no cache bounces and no memory barriers.
  * As compensation, srcu_notifier_chain_unregister() is rather expensive.
  * SRCU notifier chains should be used when the chain will be called very
- * often but notifier_blocks will seldom be removed.  Also, SRCU notifier
- * chains are slightly more difficult to use because they require special
- * runtime initialization.
+ * often but notifier_blocks will seldom be removed.
  */
 
 struct notifier_block {
 	int (*notifier_call)(struct notifier_block *, unsigned long, void *);
 	struct notifier_block *next;
+typedef	int (*notifier_fn_t)(struct notifier_block *nb,
+			unsigned long action, void *data);
+
+struct notifier_block {
+	notifier_fn_t notifier_call;
+	struct notifier_block __rcu *next;
 	int priority;
 };
 
 struct atomic_notifier_head {
 	spinlock_t lock;
 	struct notifier_block *head;
+	struct notifier_block __rcu *head;
 };
 
 struct blocking_notifier_head {
@@ -65,12 +70,18 @@ struct blocking_notifier_head {
 
 struct raw_notifier_head {
 	struct notifier_block *head;
+	struct notifier_block __rcu *head;
+};
+
+struct raw_notifier_head {
+	struct notifier_block __rcu *head;
 };
 
 struct srcu_notifier_head {
 	struct mutex mutex;
 	struct srcu_struct srcu;
 	struct notifier_block *head;
+	struct notifier_block __rcu *head;
 };
 
 #define ATOMIC_INIT_NOTIFIER_HEAD(name) do {	\
@@ -85,7 +96,7 @@ struct srcu_notifier_head {
 		(name)->head = NULL;		\
 	} while (0)
 
-/* srcu_notifier_heads must be initialized and cleaned up dynamically */
+/* srcu_notifier_heads must be cleaned up dynamically */
 extern void srcu_init_notifier_head(struct srcu_notifier_head *nh);
 #define srcu_cleanup_notifier_head(name)	\
 		cleanup_srcu_struct(&(name)->srcu);
@@ -98,7 +109,13 @@ extern void srcu_init_notifier_head(struct srcu_notifier_head *nh);
 		.head = NULL }
 #define RAW_NOTIFIER_INIT(name)	{				\
 		.head = NULL }
-/* srcu_notifier_heads cannot be initialized statically */
+
+#define SRCU_NOTIFIER_INIT(name, pcpu)				\
+	{							\
+		.mutex = __MUTEX_INITIALIZER(name.mutex),	\
+		.head = NULL,					\
+		.srcu = __SRCU_STRUCT_INIT(name.srcu, pcpu),	\
+	}
 
 #define ATOMIC_NOTIFIER_HEAD(name)				\
 	struct atomic_notifier_head name =			\
@@ -109,6 +126,18 @@ extern void srcu_init_notifier_head(struct srcu_notifier_head *nh);
 #define RAW_NOTIFIER_HEAD(name)					\
 	struct raw_notifier_head name =				\
 		RAW_NOTIFIER_INIT(name)
+
+#define _SRCU_NOTIFIER_HEAD(name, mod)				\
+	static DEFINE_PER_CPU(struct srcu_struct_array,		\
+			name##_head_srcu_array);		\
+	mod struct srcu_notifier_head name =			\
+			SRCU_NOTIFIER_INIT(name, name##_head_srcu_array)
+
+#define SRCU_NOTIFIER_HEAD(name)				\
+	_SRCU_NOTIFIER_HEAD(name, )
+
+#define SRCU_NOTIFIER_HEAD_STATIC(name)				\
+	_SRCU_NOTIFIER_HEAD(name, static)
 
 #ifdef __KERNEL__
 
@@ -165,6 +194,10 @@ extern int __srcu_notifier_call_chain(struct srcu_notifier_head *nh,
 static inline int notifier_from_errno(int err)
 {
 	return NOTIFY_STOP_MASK | (NOTIFY_OK - err);
+	if (err)
+		return NOTIFY_STOP_MASK | (NOTIFY_OK - err);
+
+	return NOTIFY_OK;
 }
 
 /* Restore (negative) errno value from notify return value. */
@@ -176,9 +209,9 @@ static inline int notifier_to_errno(int ret)
 
 /*
  *	Declared notifiers so far. I can imagine quite a few more chains
- *	over time (eg laptop power reset chains, reboot chain (to clean 
+ *	over time (eg laptop power reset chains, reboot chain (to clean
  *	device units up), device [un]mount chain, module load/unload chain,
- *	low memory chain, screenblank chain (for plug in modular screenblankers) 
+ *	low memory chain, screenblank chain (for plug in modular screenblankers)
  *	VC switch chains (for loadable kernel svgalib VC switch helpers) etc...
  */
  
@@ -237,6 +270,18 @@ static inline int notifier_to_errno(int ret)
 #define PM_POST_SUSPEND		0x0004 /* Suspend finished */
 #define PM_RESTORE_PREPARE	0x0005 /* Going to restore a saved image */
 #define PM_POST_RESTORE		0x0006 /* Restore failed */
+
+/* CPU notfiers are defined in include/linux/cpu.h. */
+
+/* netdevice notifiers are defined in include/linux/netdevice.h */
+
+/* reboot notifiers are defined in include/linux/reboot.h. */
+
+/* Hibernation and suspend events are defined in include/linux/suspend.h. */
+
+/* Virtual Terminal events are defined in include/linux/vt.h. */
+
+#define NETLINK_URELEASE	0x0001	/* Unicast netlink socket released */
 
 /* Console keyboard events.
  * Note: KBD_KEYCODE is always sent before KBD_UNBOUND_KEYCODE, KBD_UNICODE and

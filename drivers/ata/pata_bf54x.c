@@ -251,6 +251,8 @@ static const u32 udma_tenvmin = 20;
 static const u32 udma_tackmin = 20;
 static const u32 udma_tssmin = 50;
 
+#define BFIN_MAX_SG_SEGMENTS 4
+
 /**
  *
  *	Function:       num_clocks_min
@@ -822,6 +824,18 @@ static void bfin_dev_select(struct ata_port *ap, unsigned int device)
 }
 
 /**
+ *	bfin_set_devctl - Write device control reg
+ *	@ap: port where the device is
+ *	@ctl: value to write
+ */
+
+static void bfin_set_devctl(struct ata_port *ap, u8 ctl)
+{
+	void __iomem *base = (void __iomem *)ap->ioaddr.ctl_addr;
+	write_atapi_register(base, ATA_REG_CTRL, ctl);
+}
+
+/**
  *	bfin_bmdma_setup - Set up IDE DMA transaction
  *	@qc: Info associated with this ATA transaction.
  *
@@ -833,6 +847,15 @@ static void bfin_bmdma_setup(struct ata_queued_cmd *qc)
 	unsigned short config = WDSIZE_16;
 	struct scatterlist *sg;
 	unsigned int si;
+	struct ata_port *ap = qc->ap;
+	struct dma_desc_array *dma_desc_cpu = (struct dma_desc_array *)ap->bmdma_prd;
+	void __iomem *base = (void __iomem *)ap->ioaddr.ctl_addr;
+	unsigned short config = DMAFLOW_ARRAY | NDSIZE_5 | RESTART | WDSIZE_16 | DMAEN;
+	struct scatterlist *sg;
+	unsigned int si;
+	unsigned int channel;
+	unsigned int dir;
+	unsigned int size = 0;
 
 	dev_dbg(qc->ap->dev, "in atapi dma setup\n");
 	/* Program the ATA_CTRL register with dir */
@@ -854,6 +877,61 @@ static void bfin_bmdma_setup(struct ata_queued_cmd *qc)
 			set_dma_x_count(CH_ATAPI_RX, sg_dma_len(sg) >> 1);
 		}
 	}
+		channel = CH_ATAPI_TX;
+		dir = DMA_TO_DEVICE;
+	} else {
+		channel = CH_ATAPI_RX;
+		dir = DMA_FROM_DEVICE;
+		config |= WNR;
+	}
+
+	dma_map_sg(ap->dev, qc->sg, qc->n_elem, dir);
+
+	/* fill the ATAPI DMA controller */
+	for_each_sg(qc->sg, sg, qc->n_elem, si) {
+		dma_desc_cpu[si].start_addr = sg_dma_address(sg);
+		dma_desc_cpu[si].cfg = config;
+		dma_desc_cpu[si].x_count = sg_dma_len(sg) >> 1;
+		dma_desc_cpu[si].x_modify = 2;
+		size += sg_dma_len(sg);
+	}
+
+	/* Set the last descriptor to stop mode */
+	dma_desc_cpu[qc->n_elem - 1].cfg &= ~(DMAFLOW | NDSIZE);
+
+	flush_dcache_range((unsigned int)dma_desc_cpu,
+		(unsigned int)dma_desc_cpu +
+			qc->n_elem * sizeof(struct dma_desc_array));
+
+	/* Enable ATA DMA operation*/
+	set_dma_curr_desc_addr(channel, (unsigned long *)ap->bmdma_prd_dma);
+	set_dma_x_count(channel, 0);
+	set_dma_x_modify(channel, 0);
+	set_dma_config(channel, config);
+
+	SSYNC();
+
+	/* Send ATA DMA command */
+	bfin_exec_command(ap, &qc->tf);
+
+	if (qc->tf.flags & ATA_TFLAG_WRITE) {
+		/* set ATA DMA write direction */
+		ATAPI_SET_CONTROL(base, (ATAPI_GET_CONTROL(base)
+			| XFER_DIR));
+	} else {
+		/* set ATA DMA read direction */
+		ATAPI_SET_CONTROL(base, (ATAPI_GET_CONTROL(base)
+			& ~XFER_DIR));
+	}
+
+	/* Reset all transfer count */
+	ATAPI_SET_CONTROL(base, ATAPI_GET_CONTROL(base) | TFRCNT_RST);
+
+	/* Set ATAPI state machine contorl in terminate sequence */
+	ATAPI_SET_CONTROL(base, ATAPI_GET_CONTROL(base) | END_ON_TERM);
+
+	/* Set transfer length to the total size of sg buffers */
+	ATAPI_SET_XFER_LEN(base, size >> 1);
 }
 
 /**
@@ -920,6 +998,13 @@ static void bfin_bmdma_start(struct ata_queued_cmd *qc)
 	}
 
 	/* Enable ATA DMA operation*/
+
+	dev_dbg(qc->ap->dev, "in atapi dma start\n");
+
+	if (!(ap->udma_mask || ap->mwdma_mask))
+		return;
+
+	/* start ATAPI transfer*/
 	if (ap->udma_mask)
 		ATAPI_SET_CONTROL(base, ATAPI_GET_CONTROL(base)
 			| ULTRA_START);
@@ -940,6 +1025,10 @@ static void bfin_bmdma_stop(struct ata_queued_cmd *qc)
 	unsigned int si;
 
 	dev_dbg(qc->ap->dev, "in atapi dma stop\n");
+	unsigned int dir;
+
+	dev_dbg(qc->ap->dev, "in atapi dma stop\n");
+
 	if (!(ap->udma_mask || ap->mwdma_mask))
 		return;
 
@@ -964,6 +1053,15 @@ static void bfin_bmdma_stop(struct ata_queued_cmd *qc)
 			}
 		}
 	}
+	if (qc->tf.flags & ATA_TFLAG_WRITE) {
+		dir = DMA_TO_DEVICE;
+		disable_dma(CH_ATAPI_TX);
+	} else {
+		dir = DMA_FROM_DEVICE;
+		disable_dma(CH_ATAPI_RX);
+	}
+
+	dma_unmap_sg(ap->dev, qc->sg, qc->n_elem, dir);
 }
 
 /**
@@ -1036,6 +1134,7 @@ static void bfin_bus_post_reset(struct ata_port *ap, unsigned int devmask)
 			break;
 		}
 		msleep(50);	/* give drive a breather */
+		ata_msleep(ap, 50);	/* give drive a breather */
 	}
 	if (dev1)
 		ata_sff_busy_sleep(ap, ATA_TMOUT_BOOT_QUICK, ATA_TMOUT_BOOT);
@@ -1077,6 +1176,7 @@ static unsigned int bfin_bus_softreset(struct ata_port *ap,
 	 * Old drivers/ide uses the 2mS rule and then waits for ready
 	 */
 	msleep(150);
+	ata_msleep(ap, 150);
 
 	/* Before we perform post reset processing we want to see if
 	 * the bus shows 0xFF because the odd clown forgets the D7
@@ -1119,6 +1219,7 @@ static int bfin_softreset(struct ata_link *link, unsigned int *classes,
 	err_mask = bfin_bus_softreset(ap, devmask);
 	if (err_mask) {
 		ata_port_printk(ap, KERN_ERR, "SRST failed (err_mask=0x%x)\n",
+		ata_port_err(ap, "SRST failed (err_mask=0x%x)\n",
 				err_mask);
 		return -EIO;
 	}
@@ -1151,6 +1252,11 @@ static unsigned char bfin_bmdma_status(struct ata_port *ap)
 		host_stat |= ATA_DMA_INTR;
 	if (int_status & (MULTI_TERM_INT|UDMAIN_TERM_INT|UDMAOUT_TERM_INT))
 		host_stat |= ATA_DMA_ERR|ATA_DMA_INTR;
+
+	if (ATAPI_GET_STATUS(base) & (MULTI_XFER_ON | ULTRA_XFER_ON))
+		host_stat |= ATA_DMA_ACTIVE;
+	if (ATAPI_GET_INT_STATUS(base) & ATAPI_DEV_INT)
+		host_stat |= ATA_DMA_INTR;
 
 	dev_dbg(ap->dev, "ATAPI: host_stat=0x%x\n", host_stat);
 
@@ -1204,6 +1310,7 @@ static unsigned int bfin_data_xfer(struct ata_device *dev, unsigned char *buf,
  *	@ap: Port associated with this ATA transaction.
  *
  *	Note: Original code is ata_sff_irq_clear().
+ *	Note: Original code is ata_bmdma_irq_clear().
  */
 
 static void bfin_irq_clear(struct ata_port *ap)
@@ -1278,6 +1385,7 @@ void bfin_thaw(struct ata_port *ap)
 	dev_dbg(ap->dev, "in atapi dma thaw\n");
 	bfin_check_status(ap);
 	bfin_irq_on(ap);
+	ata_sff_irq_on(ap);
 }
 
 /**
@@ -1295,6 +1403,7 @@ static void bfin_postreset(struct ata_link *link, unsigned int *classes)
 
 	/* re-enable interrupts */
 	bfin_irq_on(ap);
+	ata_sff_irq_on(ap);
 
 	/* is double-select really necessary? */
 	if (classes[0] != ATA_DEV_NONE)
@@ -1315,6 +1424,11 @@ static void bfin_port_stop(struct ata_port *ap)
 {
 	dev_dbg(ap->dev, "in atapi port stop\n");
 	if (ap->udma_mask != 0 || ap->mwdma_mask != 0) {
+		dma_free_coherent(ap->dev,
+			BFIN_MAX_SG_SEGMENTS * sizeof(struct dma_desc_array),
+			ap->bmdma_prd,
+			ap->bmdma_prd_dma);
+
 		free_dma(CH_ATAPI_RX);
 		free_dma(CH_ATAPI_TX);
 	}
@@ -1326,6 +1440,16 @@ static int bfin_port_start(struct ata_port *ap)
 	if (!(ap->udma_mask || ap->mwdma_mask))
 		return 0;
 
+	ap->bmdma_prd = dma_alloc_coherent(ap->dev,
+				BFIN_MAX_SG_SEGMENTS * sizeof(struct dma_desc_array),
+				&ap->bmdma_prd_dma,
+				GFP_KERNEL);
+
+	if (ap->bmdma_prd == NULL) {
+		dev_info(ap->dev, "Unable to allocate DMA descriptor array.\n");
+		goto out;
+	}
+
 	if (request_dma(CH_ATAPI_RX, "BFIN ATAPI RX DMA") >= 0) {
 		if (request_dma(CH_ATAPI_TX,
 			"BFIN ATAPI TX DMA") >= 0)
@@ -1334,6 +1458,13 @@ static int bfin_port_start(struct ata_port *ap)
 		free_dma(CH_ATAPI_RX);
 	}
 
+		dma_free_coherent(ap->dev,
+			BFIN_MAX_SG_SEGMENTS * sizeof(struct dma_desc_array),
+			ap->bmdma_prd,
+			ap->bmdma_prd_dma);
+	}
+
+out:
 	ap->udma_mask = 0;
 	ap->mwdma_mask = 0;
 	dev_err(ap->dev, "Unable to request ATAPI DMA!"
@@ -1382,6 +1513,7 @@ static unsigned int bfin_ata_host_intr(struct ata_port *ap,
 
 			if (unlikely(host_stat & ATA_DMA_ERR)) {
 				/* error when transfering data to/from memory */
+				/* error when transferring data to/from memory */
 				qc->err_mask |= AC_ERR_HOST_BUS;
 				ap->hsm_task_state = HSM_ST_ERR;
 			}
@@ -1422,6 +1554,7 @@ idle_irq:
 	if ((ap->stats.idle_irq % 1000) == 0) {
 		ap->ops->irq_ack(ap, 0); /* debug trap */
 		ata_port_printk(ap, KERN_WARNING, "irq trap\n");
+		ata_port_warn(ap, "irq trap\n");
 		return 1;
 	}
 #endif
@@ -1451,6 +1584,12 @@ static irqreturn_t bfin_ata_interrupt(int irq, void *dev_instance)
 			    (qc->flags & ATA_QCFLAG_ACTIVE))
 				handled |= bfin_ata_host_intr(ap, qc);
 		}
+		struct ata_port *ap = host->ports[i];
+		struct ata_queued_cmd *qc;
+
+		qc = ata_qc_from_tag(ap, ap->link.active_tag);
+		if (qc && (!(qc->tf.flags & ATA_TFLAG_POLLING)))
+			handled |= bfin_ata_host_intr(ap, qc);
 	}
 
 	spin_unlock_irqrestore(&host->lock, flags);
@@ -1462,11 +1601,13 @@ static irqreturn_t bfin_ata_interrupt(int irq, void *dev_instance)
 static struct scsi_host_template bfin_sht = {
 	ATA_BASE_SHT(DRV_NAME),
 	.sg_tablesize		= SG_NONE,
+	.sg_tablesize		= BFIN_MAX_SG_SEGMENTS,
 	.dma_boundary		= ATA_DMA_BOUNDARY,
 };
 
 static struct ata_port_operations bfin_pata_ops = {
 	.inherits		= &ata_sff_port_ops,
+	.inherits		= &ata_bmdma_port_ops,
 
 	.set_piomode		= bfin_set_piomode,
 	.set_dmamode		= bfin_set_dmamode,
@@ -1477,6 +1618,7 @@ static struct ata_port_operations bfin_pata_ops = {
 	.sff_check_status	= bfin_check_status,
 	.sff_check_altstatus	= bfin_check_altstatus,
 	.sff_dev_select		= bfin_dev_select,
+	.sff_set_devctl		= bfin_set_devctl,
 
 	.bmdma_setup		= bfin_bmdma_setup,
 	.bmdma_start		= bfin_bmdma_start,
@@ -1504,6 +1646,8 @@ static struct ata_port_info bfin_port_info[] = {
 				| ATA_FLAG_MMIO
 				| ATA_FLAG_NO_LEGACY,
 		.pio_mask	= 0x1f,	/* pio0-4 */
+		.flags		= ATA_FLAG_SLAVE_POSS,
+		.pio_mask	= ATA_PIO4,
 		.mwdma_mask	= 0,
 		.udma_mask	= 0,
 		.port_ops	= &bfin_pata_ops,
@@ -1558,6 +1702,25 @@ static unsigned short atapi_io_port[] = {
 	P_ATAPI_DMARQ,
 	P_ATAPI_INTRQ,
 	P_ATAPI_IORDY,
+	P_ATAPI_D0A,
+	P_ATAPI_D1A,
+	P_ATAPI_D2A,
+	P_ATAPI_D3A,
+	P_ATAPI_D4A,
+	P_ATAPI_D5A,
+	P_ATAPI_D6A,
+	P_ATAPI_D7A,
+	P_ATAPI_D8A,
+	P_ATAPI_D9A,
+	P_ATAPI_D10A,
+	P_ATAPI_D11A,
+	P_ATAPI_D12A,
+	P_ATAPI_D13A,
+	P_ATAPI_D14A,
+	P_ATAPI_D15A,
+	P_ATAPI_A0A,
+	P_ATAPI_A1A,
+	P_ATAPI_A2A,
 	0
 };
 
@@ -1575,6 +1738,7 @@ static unsigned short atapi_io_port[] = {
  *
  */
 static int __devinit bfin_atapi_probe(struct platform_device *pdev)
+static int bfin_atapi_probe(struct platform_device *pdev)
 {
 	int board_idx = 0;
 	struct resource *res;
@@ -1616,6 +1780,7 @@ static int __devinit bfin_atapi_probe(struct platform_device *pdev)
 
 	if (peripheral_request_list(atapi_io_port, "atapi-io-port")) {
 		dev_err(&pdev->dev, "Requesting Peripherals faild\n");
+		dev_err(&pdev->dev, "Requesting Peripherals failed\n");
 		return -EFAULT;
 	}
 
@@ -1632,6 +1797,8 @@ static int __devinit bfin_atapi_probe(struct platform_device *pdev)
 		return -ENODEV;
 	}
 
+	platform_set_drvdata(pdev, host);
+
 	return 0;
 }
 
@@ -1646,6 +1813,9 @@ static int __devexit bfin_atapi_remove(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct ata_host *host = dev_get_drvdata(dev);
+static int bfin_atapi_remove(struct platform_device *pdev)
+{
+	struct ata_host *host = platform_get_drvdata(pdev);
 
 	ata_host_detach(host);
 
@@ -1664,6 +1834,35 @@ int bfin_atapi_resume(struct platform_device *pdev)
 {
 	return 0;
 }
+#ifdef CONFIG_PM_SLEEP
+static int bfin_atapi_suspend(struct platform_device *pdev, pm_message_t state)
+{
+	struct ata_host *host = platform_get_drvdata(pdev);
+	if (host)
+		return ata_host_suspend(host, state);
+	else
+		return 0;
+}
+
+static int bfin_atapi_resume(struct platform_device *pdev)
+{
+	struct ata_host *host = platform_get_drvdata(pdev);
+	int ret;
+
+	if (host) {
+		ret = bfin_reset_controller(host);
+		if (ret) {
+			printk(KERN_ERR DRV_NAME ": Error during HW init\n");
+			return ret;
+		}
+		ata_host_resume(host);
+	}
+
+	return 0;
+}
+#else
+#define bfin_atapi_suspend NULL
+#define bfin_atapi_resume NULL
 #endif
 
 static struct platform_driver bfin_atapi_driver = {
@@ -1676,6 +1875,11 @@ static struct platform_driver bfin_atapi_driver = {
 		.suspend	= bfin_atapi_suspend,
 		.resume		= bfin_atapi_resume,
 #endif
+	.remove			= bfin_atapi_remove,
+	.suspend		= bfin_atapi_suspend,
+	.resume			= bfin_atapi_resume,
+	.driver = {
+		.name		= DRV_NAME,
 	},
 };
 

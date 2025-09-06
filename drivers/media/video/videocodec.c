@@ -69,9 +69,7 @@ struct codec_list {
 
 static struct codec_list *codeclist_top = NULL;
 
-/* ================================================= */
 /* function prototypes of the master/slave interface */
-/* ================================================= */
 
 struct videocodec *
 videocodec_attach (struct videocodec_master *master)
@@ -364,9 +362,7 @@ static const struct file_operations videocodecs_proc_fops = {
 };
 #endif
 
-/* ===================== */
 /* hook in driver module */
-/* ===================== */
 static int __init
 videocodec_init (void)
 {

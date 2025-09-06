@@ -2,6 +2,7 @@
  *  Cobalt time initialization.
  *
  *  Copyright (C) 2007  Yoichi Yuasa <yoichi_yuasa@tripeaks.co.jp>
+ *  Copyright (C) 2007  Yoichi Yuasa <yuasa@linux-mips.org>
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -21,6 +22,10 @@
 
 #include <asm/gt64120.h>
 #include <asm/i8253.h>
+#include <linux/i8253.h>
+#include <linux/init.h>
+
+#include <asm/gt64120.h>
 #include <asm/time.h>
 
 #define GT641XX_BASE_CLOCK	50000000	/* 50MHz */

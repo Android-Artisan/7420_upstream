@@ -8,6 +8,11 @@
 
 #include <linux/module.h>
 #include <linux/kernel.h>
+#include <linux/bootmem.h>
+#include <linux/init.h>
+#include <linux/module.h>
+#include <linux/kernel.h>
+#include <linux/gfp.h>
 #include <linux/mm.h>
 #include <linux/list.h>
 
@@ -30,6 +35,7 @@ extern void sun3_dvma_init(void);
 #endif
 
 static unsigned long iommu_use[IOMMU_TOTAL_ENTRIES];
+static unsigned long *iommu_use;
 
 #define dvma_index(baddr) ((baddr - DVMA_START) >> DVMA_PAGE_SHIFT)
 
@@ -245,6 +251,7 @@ static inline int free_baddr(unsigned long baddr)
 }
 
 void dvma_init(void)
+void __init dvma_init(void)
 {
 
 	struct hole *hole;
@@ -265,6 +272,7 @@ void dvma_init(void)
 	list_add(&(hole->list), &hole_list);
 
 	memset(iommu_use, 0, sizeof(iommu_use));
+	iommu_use = alloc_bootmem(IOMMU_TOTAL_ENTRIES * sizeof(unsigned long));
 
 	dvma_unmap_iommu(DVMA_START, DVMA_SIZE);
 
@@ -275,6 +283,7 @@ void dvma_init(void)
 }
 
 inline unsigned long dvma_map_align(unsigned long kaddr, int len, int align)
+unsigned long dvma_map_align(unsigned long kaddr, int len, int align)
 {
 
 	unsigned long baddr;

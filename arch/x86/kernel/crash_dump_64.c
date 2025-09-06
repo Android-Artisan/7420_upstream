@@ -10,6 +10,8 @@
 
 #include <asm/uaccess.h>
 #include <asm/io.h>
+#include <linux/uaccess.h>
+#include <linux/io.h>
 
 /**
  * copy_oldmem_page - copy one page from "oldmem"
@@ -26,6 +28,7 @@
  */
 ssize_t copy_oldmem_page(unsigned long pfn, char *buf,
                                size_t csize, unsigned long offset, int userbuf)
+		size_t csize, unsigned long offset, int userbuf)
 {
 	void  *vaddr;
 
@@ -36,12 +39,21 @@ ssize_t copy_oldmem_page(unsigned long pfn, char *buf,
 
 	if (userbuf) {
 		if (copy_to_user(buf, (vaddr + offset), csize)) {
+	vaddr = ioremap_cache(pfn << PAGE_SHIFT, PAGE_SIZE);
+	if (!vaddr)
+		return -ENOMEM;
+
+	if (userbuf) {
+		if (copy_to_user(buf, vaddr + offset, csize)) {
 			iounmap(vaddr);
 			return -EFAULT;
 		}
 	} else
 	memcpy(buf, (vaddr + offset), csize);
 
+		memcpy(buf, vaddr + offset, csize);
+
+	set_iounmap_nonlazy();
 	iounmap(vaddr);
 	return csize;
 }

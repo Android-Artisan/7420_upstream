@@ -7,7 +7,6 @@ prefix, or the related __gpio_* prefix.
 
 
 What is a GPIO?
-===============
 A "General Purpose Input/Output" (GPIO) is a flexible software-controlled
 digital signal.  They are provided from many kinds of chip, and are familiar
 to Linux developers working with embedded and custom hardware.  Each GPIO
@@ -54,7 +53,6 @@ watchdog, sensing a switch, and so on.
 
 
 GPIO conventions
-================
 Note that this is called a "convention" because you don't need to do it this
 way, and it's no crime if you don't.  There **are** cases where portability
 is not the main issue; GPIOs are often used for the kind of board-specific
@@ -318,7 +316,6 @@ signaling rate accordingly.
 
 
 What do these conventions omit?
-===============================
 One of the biggest things these conventions omit is pin multiplexing, since
 this is highly chip-specific and nonportable.  One platform might not need
 explicit multiplexing; another might have just two options for use of any
@@ -349,7 +346,6 @@ a side effect of configuring an add-on board with some GPIO expanders.
 
 
 GPIO implementor's framework (OPTIONAL)
-=======================================
 As noted earlier, there is an optional implementation framework making it
 easier for platforms to support different kinds of GPIO controller using
 the same programming interface.  This framework is called "gpiolib".
@@ -451,7 +447,6 @@ the GPIO controller device becomes unavailable.
 
 
 Sysfs Interface for Userspace (OPTIONAL)
-========================================
 Platforms which use the "gpiolib" implementors framework may choose to
 configure a sysfs user interface to GPIOs.  This is different from the
 debugfs interface, since it provides control over GPIO direction and

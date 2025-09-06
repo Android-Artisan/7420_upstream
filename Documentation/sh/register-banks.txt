@@ -1,5 +1,4 @@
 	Notes on register bank usage in the kernel
-	==========================================
 
 Introduction
 ------------

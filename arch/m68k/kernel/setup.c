@@ -512,3 +512,8 @@ static int __init adb_probe_sync_enable (char *str) {
 
 __setup("adb_sync", adb_probe_sync_enable);
 #endif /* CONFIG_ADB */
+#ifdef CONFIG_MMU
+#include "setup_mm.c"
+#else
+#include "setup_no.c"
+#endif

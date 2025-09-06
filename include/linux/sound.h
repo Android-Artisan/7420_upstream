@@ -24,6 +24,10 @@
 #define SND_DEV_ADSP		12	/* Like /dev/dsp (obsolete) */
 #define SND_DEV_AMIDI		13	/* Like /dev/midi (obsolete) */
 #define SND_DEV_ADMMIDI		14	/* Like /dev/dmmidi (onsolete) */
+#ifndef _LINUX_SOUND_H
+#define _LINUX_SOUND_H
+
+#include <uapi/linux/sound.h>
 
 /*
  *	Sound core interface functions
@@ -40,3 +44,4 @@ extern void unregister_sound_special(int unit);
 extern void unregister_sound_mixer(int unit);
 extern void unregister_sound_midi(int unit);
 extern void unregister_sound_dsp(int unit);
+#endif /* _LINUX_SOUND_H */

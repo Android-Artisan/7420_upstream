@@ -6,6 +6,7 @@
  * published by the Free Software Foundation.
  */
 
+#include <linux/gpio.h>
 #include <linux/kernel.h>
 #include <linux/types.h>
 #include <linux/interrupt.h>
@@ -18,12 +19,14 @@
 #include <asm/mach/map.h>
 #include <asm/mach/irq.h>
 
+#include <mach/gpio-ks8695.h>
 #include <mach/devices.h>
 
 #include "generic.h"
 
 #ifdef CONFIG_PCI
 static int micrel_pci_map_irq(struct pci_dev *dev, u8 slot, u8 pin)
+static int micrel_pci_map_irq(const struct pci_dev *dev, u8 slot, u8 pin)
 {
 	return KS8695_IRQ_EXTERN0;
 }
@@ -38,6 +41,8 @@ static struct ks8695_pci_cfg __initdata micrel_pci = {
 static void __init micrel_init(void)
 {
 	printk(KERN_INFO "Micrel KS8695 Development Board initializing\n");
+
+	ks8695_register_gpios();
 
 #ifdef CONFIG_PCI
 	ks8695_init_pci(&micrel_pci);
@@ -57,4 +62,10 @@ MACHINE_START(KS8695, "KS8695 Centaur Development Board")
 	.init_irq	= ks8695_init_irq,
 	.init_machine	= micrel_init,
 	.timer		= &ks8695_timer,
+	.atag_offset	= 0x100,
+	.map_io		= ks8695_map_io,
+	.init_irq	= ks8695_init_irq,
+	.init_machine	= micrel_init,
+	.init_time	= ks8695_timer_init,
+	.restart	= ks8695_restart,
 MACHINE_END

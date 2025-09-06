@@ -51,6 +51,12 @@ typedef struct _drm_via_sg_info {
 	int aborted;
 	enum {
 	        dr_via_device_mapped,
+	dma_addr_t chain_start;
+	uint32_t free_on_sequence;
+	unsigned int descriptors_per_page;
+	int aborted;
+	enum {
+		dr_via_device_mapped,
 		dr_via_desc_pages_alloc,
 		dr_via_pages_locked,
 		dr_via_pages_alloc,
@@ -69,6 +75,7 @@ typedef struct _drm_via_blitq {
 	unsigned num_outstanding;
 	unsigned long end;
         int aborting;
+	int aborting;
 	int is_active;
 	drm_via_sg_info_t *blits[VIA_NUM_BLIT_SLOTS];
 	spinlock_t blit_lock;

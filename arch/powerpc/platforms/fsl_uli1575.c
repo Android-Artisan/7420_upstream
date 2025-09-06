@@ -58,6 +58,20 @@ static void __devinit early_uli5249(struct pci_dev *dev)
 
 	if (!machine_is(mpc86xx_hpcn) && !machine_is(mpc8544_ds) &&
 			!machine_is(mpc8572_ds))
+static inline bool is_quirk_valid(void)
+{
+	return (machine_is(mpc86xx_hpcn) ||
+		machine_is(mpc8544_ds) ||
+		machine_is(p2020_ds) ||
+		machine_is(mpc8572_ds));
+}
+
+/* Bridge */
+static void early_uli5249(struct pci_dev *dev)
+{
+	unsigned char temp;
+
+	if (!is_quirk_valid())
 		return;
 
 	pci_write_config_word(dev, PCI_COMMAND, PCI_COMMAND_IO |
@@ -82,6 +96,11 @@ static void __devinit quirk_uli1575(struct pci_dev *dev)
 
 	if (!machine_is(mpc86xx_hpcn) && !machine_is(mpc8544_ds) &&
 			!machine_is(mpc8572_ds))
+static void quirk_uli1575(struct pci_dev *dev)
+{
+	int i;
+
+	if (!is_quirk_valid())
 		return;
 
 	/*
@@ -135,6 +154,7 @@ static void __devinit quirk_uli1575(struct pci_dev *dev)
 }
 
 static void __devinit quirk_final_uli1575(struct pci_dev *dev)
+static void quirk_final_uli1575(struct pci_dev *dev)
 {
 	/* Set i8259 interrupt trigger
 	 * IRQ 3:  Level
@@ -151,6 +171,7 @@ static void __devinit quirk_final_uli1575(struct pci_dev *dev)
 	 */
 	if (!machine_is(mpc86xx_hpcn) && !machine_is(mpc8544_ds) &&
 			!machine_is(mpc8572_ds))
+	if (!is_quirk_valid())
 		return;
 
 	outb(0xfa, 0x4d0);
@@ -172,12 +193,14 @@ static void __devinit quirk_final_uli1575(struct pci_dev *dev)
 
 /* SATA */
 static void __devinit quirk_uli5288(struct pci_dev *dev)
+static void quirk_uli5288(struct pci_dev *dev)
 {
 	unsigned char c;
 	unsigned int d;
 
 	if (!machine_is(mpc86xx_hpcn) && !machine_is(mpc8544_ds) &&
 			!machine_is(mpc8572_ds))
+	if (!is_quirk_valid())
 		return;
 
 	/* read/write lock */
@@ -203,6 +226,11 @@ static void __devinit quirk_uli5229(struct pci_dev *dev)
 
 	if (!machine_is(mpc86xx_hpcn) && !machine_is(mpc8544_ds) &&
 			!machine_is(mpc8572_ds))
+static void quirk_uli5229(struct pci_dev *dev)
+{
+	unsigned short temp;
+
+	if (!is_quirk_valid())
 		return;
 
 	pci_write_config_word(dev, PCI_COMMAND, PCI_COMMAND_INTX_DISABLE |
@@ -215,10 +243,12 @@ static void __devinit quirk_uli5229(struct pci_dev *dev)
 
 /* We have to do a dummy read on the P2P for the RTC to work, WTF */
 static void __devinit quirk_final_uli5249(struct pci_dev *dev)
+static void quirk_final_uli5249(struct pci_dev *dev)
 {
 	int i;
 	u8 *dummy;
 	struct pci_bus *bus = dev->bus;
+	struct resource *res;
 	resource_size_t end = 0;
 
 	for (i = PCI_BRIDGE_RESOURCES; i < PCI_BRIDGE_RESOURCES+3; i++) {
@@ -234,6 +264,12 @@ static void __devinit quirk_final_uli5249(struct pci_dev *dev)
 				dummy = ioremap(bus->resource[i]->start, 0x4);
 			else
 				dummy = ioremap(bus->resource[i]->end - 3, 0x4);
+	pci_bus_for_each_resource(bus, res, i) {
+		if (res && res->flags & IORESOURCE_MEM) {
+			if (res->end == end)
+				dummy = ioremap(res->start, 0x4);
+			else
+				dummy = ioremap(res->end - 3, 0x4);
 			if (dummy) {
 				in_8(dummy);
 				iounmap(dummy);
@@ -251,6 +287,9 @@ DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_AL, 0x5249, quirk_final_uli5249);
 DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_AL, 0x1575, quirk_final_uli1575);
 
 static void __devinit hpcd_quirk_uli1575(struct pci_dev *dev)
+DECLARE_PCI_FIXUP_RESUME(PCI_VENDOR_ID_AL, 0x5229, quirk_uli5229);
+
+static void hpcd_quirk_uli1575(struct pci_dev *dev)
 {
 	u32 temp32;
 
@@ -270,6 +309,9 @@ static void __devinit hpcd_quirk_uli5288(struct pci_dev *dev)
 {
 	unsigned char c;
 	unsigned short temp;
+static void hpcd_quirk_uli5288(struct pci_dev *dev)
+{
+	unsigned char c;
 
 	if (!machine_is(mpc86xx_hpcd))
 		return;
@@ -299,6 +341,7 @@ static void __devinit hpcd_quirk_uli5288(struct pci_dev *dev)
  * as the interrupt for IDE device.
  */
 static void __devinit hpcd_quirk_uli5229(struct pci_dev *dev)
+static void hpcd_quirk_uli5229(struct pci_dev *dev)
 {
 	unsigned char c;
 
@@ -326,6 +369,11 @@ static void __devinit hpcd_final_uli5288(struct pci_dev *dev)
 	struct device_node *hosenode = hose ? hose->dn : NULL;
 	struct of_irq oirq;
 	int virq, pin = 2;
+static void hpcd_final_uli5288(struct pci_dev *dev)
+{
+	struct pci_controller *hose = pci_bus_to_host(dev->bus);
+	struct device_node *hosenode = hose ? hose->dn : NULL;
+	struct of_phandle_args oirq;
 	u32 laddr[3];
 
 	if (!machine_is(mpc86xx_hpcd))
@@ -340,6 +388,13 @@ static void __devinit hpcd_final_uli5288(struct pci_dev *dev)
 	virq = irq_create_of_mapping(oirq.controller, oirq.specifier,
 				     oirq.size);
 	dev->irq = virq;
+	oirq.np = hosenode;
+	oirq.args[0] = 2;
+	oirq.args_count = 1;
+	laddr[0] = (hose->first_busno << 16) | (PCI_DEVFN(31, 0) << 8);
+	laddr[1] = laddr[2] = 0;
+	of_irq_parse_raw(laddr, &oirq);
+	dev->irq = irq_create_of_mapping(&oirq);
 }
 
 DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_AL, 0x1575, hpcd_quirk_uli1575);

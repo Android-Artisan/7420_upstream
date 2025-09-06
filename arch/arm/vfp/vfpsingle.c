@@ -4,7 +4,6 @@
  * This code is derived in part from John R. Housers softfloat library, which
  * carries the following notice:
  *
- * ===========================================================================
  * This C source file is part of the SoftFloat IEC/IEEE Floating-point
  * Arithmetic Package, Release 2.
  *
@@ -28,7 +27,6 @@
  * (1) they include prominent notice that the work is derivative, and (2) they
  * include prominent notice akin to these three paragraphs for those parts of
  * this code that are retained.
- * ===========================================================================
  */
 #include <linux/kernel.h>
 #include <linux/bitops.h>
@@ -291,6 +289,7 @@ u32 vfp_estimate_sqrt_significand(u32 exponent, u32 significand)
 
 	if ((significand & 0xc0000000) != 0x40000000) {
 		printk(KERN_WARNING "VFP: estimate_sqrt: invalid significand\n");
+		pr_warn("VFP: estimate_sqrt: invalid significand\n");
 	}
 
 	a = significand << 1;
@@ -915,6 +914,8 @@ vfp_single_multiply_accumulate(int sd, int sn, s32 m, u32 fpscr, u32 negate, cha
 	v = vfp_get_float(sd);
 	pr_debug("VFP: s%u = %08x\n", sd, v);
 	vfp_single_unpack(&vsn, v);
+	if (vsn.exponent == 0 && vsn.significand)
+		vfp_single_normalise_denormal(&vsn);
 	if (negate & NEG_SUBTRACT)
 		vsn.sign = vfp_sign_negate(vsn.sign);
 

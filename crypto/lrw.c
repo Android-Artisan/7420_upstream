@@ -4,6 +4,7 @@
  * Copyright (c) 2006 Rik Snel <rsnel@cube.dyndns.org>
  *
  * Based om ecb.c
+ * Based on ecb.c
  * Copyright (c) 2006 Herbert Xu <herbert@gondor.apana.org.au>
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -16,6 +17,7 @@
  * http://www.mail-archive.com/stds-p1619@listserv.ieee.org/msg00173.html
  *
  * The test vectors are included in the testing module tcrypt.[ch] */
+
 #include <crypto/algapi.h>
 #include <linux/err.h>
 #include <linux/init.h>
@@ -41,6 +43,11 @@ struct priv {
 	 * needed for optimized multiplication of incrementing values
 	 * with key2 */
 	be128 mulinc[128];
+#include <crypto/lrw.h>
+
+struct priv {
+	struct crypto_cipher *child;
+	struct lrw_table_ctx table;
 };
 
 static inline void setbit128_bbe(void *b, int bit)
@@ -64,12 +71,26 @@ static int setkey(struct crypto_tfm *parent, const u8 *key,
 		return err;
 	crypto_tfm_set_flags(parent, crypto_cipher_get_flags(child) &
 				     CRYPTO_TFM_RES_MASK);
+	__set_bit(bit ^ (0x80 -
+#ifdef __BIG_ENDIAN
+			 BITS_PER_LONG
+#else
+			 BITS_PER_BYTE
+#endif
+			), b);
+}
+
+int lrw_init_table(struct lrw_table_ctx *ctx, const u8 *tweak)
+{
+	be128 tmp = { 0 };
+	int i;
 
 	if (ctx->table)
 		gf128mul_free_64k(ctx->table);
 
 	/* initialize multiplication table for Key2 */
 	ctx->table = gf128mul_init_64k_bbe((be128 *)(key + keylen - bsize));
+	ctx->table = gf128mul_init_64k_bbe((be128 *)tweak);
 	if (!ctx->table)
 		return -ENOMEM;
 
@@ -81,6 +102,34 @@ static int setkey(struct crypto_tfm *parent, const u8 *key,
 	}
 
 	return 0;
+}
+EXPORT_SYMBOL_GPL(lrw_init_table);
+
+void lrw_free_table(struct lrw_table_ctx *ctx)
+{
+	if (ctx->table)
+		gf128mul_free_64k(ctx->table);
+}
+EXPORT_SYMBOL_GPL(lrw_free_table);
+
+static int setkey(struct crypto_tfm *parent, const u8 *key,
+		  unsigned int keylen)
+{
+	struct priv *ctx = crypto_tfm_ctx(parent);
+	struct crypto_cipher *child = ctx->child;
+	int err, bsize = LRW_BLOCK_SIZE;
+	const u8 *tweak = key + keylen - bsize;
+
+	crypto_cipher_clear_flags(child, CRYPTO_TFM_REQ_MASK);
+	crypto_cipher_set_flags(child, crypto_tfm_get_flags(parent) &
+				       CRYPTO_TFM_REQ_MASK);
+	err = crypto_cipher_setkey(child, key, keylen - bsize);
+	if (err)
+		return err;
+	crypto_tfm_set_flags(parent, crypto_cipher_get_flags(child) &
+				     CRYPTO_TFM_RES_MASK);
+
+	return lrw_init_table(&ctx->table, tweak);
 }
 
 struct sinfo {
@@ -119,7 +168,12 @@ static inline int get_index128(be128 *block)
 		return x + ffz(val);
 	}
 
-	return x;
+	/*
+	 * If we get here, then x == 128 and we are incrementing the counter
+	 * from all ones to all zeros. This means we must return index 127, i.e.
+	 * the one corresponding to key2*{ 1,...,1 }.
+	 */
+	return 127;
 }
 
 static int crypt(struct blkcipher_desc *d,
@@ -129,6 +183,7 @@ static int crypt(struct blkcipher_desc *d,
 	int err;
 	unsigned int avail;
 	const int bs = crypto_cipher_blocksize(ctx->child);
+	const int bs = LRW_BLOCK_SIZE;
 	struct sinfo s = {
 		.tfm = crypto_cipher_tfm(ctx->child),
 		.fn = fn
@@ -150,6 +205,7 @@ static int crypt(struct blkcipher_desc *d,
 
 	/* T <- I*Key2 */
 	gf128mul_64k_bbe(&s.t, ctx->table);
+	gf128mul_64k_bbe(&s.t, ctx->table.table);
 
 	goto first;
 
@@ -158,6 +214,8 @@ static int crypt(struct blkcipher_desc *d,
 			/* T <- I*Key2, using the optimization
 			 * discussed in the specification */
 			be128_xor(&s.t, &s.t, &ctx->mulinc[get_index128(iv)]);
+			be128_xor(&s.t, &s.t,
+				  &ctx->table.mulinc[get_index128(iv)]);
 			inc(iv);
 
 first:
@@ -200,6 +258,85 @@ static int decrypt(struct blkcipher_desc *desc, struct scatterlist *dst,
 		     crypto_cipher_alg(ctx->child)->cia_decrypt);
 }
 
+int lrw_crypt(struct blkcipher_desc *desc, struct scatterlist *sdst,
+	      struct scatterlist *ssrc, unsigned int nbytes,
+	      struct lrw_crypt_req *req)
+{
+	const unsigned int bsize = LRW_BLOCK_SIZE;
+	const unsigned int max_blks = req->tbuflen / bsize;
+	struct lrw_table_ctx *ctx = req->table_ctx;
+	struct blkcipher_walk walk;
+	unsigned int nblocks;
+	be128 *iv, *src, *dst, *t;
+	be128 *t_buf = req->tbuf;
+	int err, i;
+
+	BUG_ON(max_blks < 1);
+
+	blkcipher_walk_init(&walk, sdst, ssrc, nbytes);
+
+	err = blkcipher_walk_virt(desc, &walk);
+	nbytes = walk.nbytes;
+	if (!nbytes)
+		return err;
+
+	nblocks = min(walk.nbytes / bsize, max_blks);
+	src = (be128 *)walk.src.virt.addr;
+	dst = (be128 *)walk.dst.virt.addr;
+
+	/* calculate first value of T */
+	iv = (be128 *)walk.iv;
+	t_buf[0] = *iv;
+
+	/* T <- I*Key2 */
+	gf128mul_64k_bbe(&t_buf[0], ctx->table);
+
+	i = 0;
+	goto first;
+
+	for (;;) {
+		do {
+			for (i = 0; i < nblocks; i++) {
+				/* T <- I*Key2, using the optimization
+				 * discussed in the specification */
+				be128_xor(&t_buf[i], t,
+						&ctx->mulinc[get_index128(iv)]);
+				inc(iv);
+first:
+				t = &t_buf[i];
+
+				/* PP <- T xor P */
+				be128_xor(dst + i, t, src + i);
+			}
+
+			/* CC <- E(Key2,PP) */
+			req->crypt_fn(req->crypt_ctx, (u8 *)dst,
+				      nblocks * bsize);
+
+			/* C <- T xor CC */
+			for (i = 0; i < nblocks; i++)
+				be128_xor(dst + i, dst + i, &t_buf[i]);
+
+			src += nblocks;
+			dst += nblocks;
+			nbytes -= nblocks * bsize;
+			nblocks = min(nbytes / bsize, max_blks);
+		} while (nblocks > 0);
+
+		err = blkcipher_walk_done(desc, &walk, nbytes);
+		nbytes = walk.nbytes;
+		if (!nbytes)
+			break;
+
+		nblocks = min(nbytes / bsize, max_blks);
+		src = (be128 *)walk.src.virt.addr;
+		dst = (be128 *)walk.dst.virt.addr;
+	}
+
+	return err;
+}
+EXPORT_SYMBOL_GPL(lrw_crypt);
+
 static int init_tfm(struct crypto_tfm *tfm)
 {
 	struct crypto_cipher *cipher;
@@ -214,6 +351,9 @@ static int init_tfm(struct crypto_tfm *tfm)
 
 	if (crypto_cipher_blocksize(cipher) != 16) {
 		*flags |= CRYPTO_TFM_RES_BAD_BLOCK_LEN;
+	if (crypto_cipher_blocksize(cipher) != LRW_BLOCK_SIZE) {
+		*flags |= CRYPTO_TFM_RES_BAD_BLOCK_LEN;
+		crypto_free_cipher(cipher);
 		return -EINVAL;
 	}
 
@@ -226,6 +366,8 @@ static void exit_tfm(struct crypto_tfm *tfm)
 	struct priv *ctx = crypto_tfm_ctx(tfm);
 	if (ctx->table)
 		gf128mul_free_64k(ctx->table);
+
+	lrw_free_table(&ctx->table);
 	crypto_free_cipher(ctx->child);
 }
 
@@ -278,7 +420,7 @@ out_put_alg:
 	return inst;
 }
 
-static void free(struct crypto_instance *inst)
+static void free_inst(struct crypto_instance *inst)
 {
 	crypto_drop_spawn(crypto_instance_ctx(inst));
 	kfree(inst);
@@ -287,7 +429,7 @@ static void free(struct crypto_instance *inst)
 static struct crypto_template crypto_tmpl = {
 	.name = "lrw",
 	.alloc = alloc,
-	.free = free,
+	.free = free_inst,
 	.module = THIS_MODULE,
 };
 
@@ -306,3 +448,4 @@ module_exit(crypto_module_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("LRW block cipher mode");
+MODULE_ALIAS_CRYPTO("lrw");

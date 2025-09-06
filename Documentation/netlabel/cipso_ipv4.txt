@@ -1,5 +1,4 @@
 NetLabel CIPSO/IPv4 Protocol Engine
-==============================================================================
 Paul Moore, paul.moore@hp.com
 
 May 17, 2006

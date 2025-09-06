@@ -16,6 +16,12 @@
 #include <linux/platform_device.h>
 
 /*
+ * WM97xx variants
+ */
+#define	WM97xx_GENERIC			0x0000
+#define	WM97xx_WM1613			0x1613
+
+/*
  * WM97xx AC97 Touchscreen registers
  */
 #define AC97_WM97XX_DIGITISER1		0x76
@@ -33,6 +39,11 @@
 #define WM97XX_ADCSEL_Y		0x2000	/* y coord measurement */
 #define WM97XX_ADCSEL_PRES	0x3000	/* pressure measurement */
 #define WM97XX_ADCSEL_MASK	0x7000
+#define WM97XX_AUX_ID1		0x4000
+#define WM97XX_AUX_ID2		0x5000
+#define WM97XX_AUX_ID3		0x6000
+#define WM97XX_AUX_ID4		0x7000
+#define WM97XX_ADCSEL_MASK	0x7000	/* ADC selection mask */
 #define WM97XX_COO		0x0800	/* enable coordinate mode */
 #define WM97XX_CTC		0x0400	/* enable continuous mode */
 #define WM97XX_CM_RATE_93	0x0000	/* 93.75Hz continuous rate */
@@ -284,6 +295,28 @@ struct wm97xx {
 	unsigned aux_waiting:1;		/* aux measurement waiting */
 	unsigned pen_probably_down:1;	/* used in polling mode */
 	u16 suspend_mode;               /* PRP in suspend mode */
+};
+
+	u16 variant;			/* WM97xx chip variant */
+	u16 suspend_mode;               /* PRP in suspend mode */
+};
+
+struct wm97xx_batt_pdata {
+	int	batt_aux;
+	int	temp_aux;
+	int	charge_gpio;
+	int	min_voltage;
+	int	max_voltage;
+	int	batt_div;
+	int	batt_mult;
+	int	temp_div;
+	int	temp_mult;
+	int	batt_tech;
+	char	*batt_name;
+};
+
+struct wm97xx_pdata {
+	struct wm97xx_batt_pdata	*batt_pdata;	/* battery data */
 };
 
 /*

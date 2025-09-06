@@ -58,6 +58,7 @@ static int amba_kmi_write(struct serio *io, unsigned char val)
 	unsigned int timeleft = 10000; /* timeout in 100ms */
 
 	while ((readb(KMISTAT) & KMISTAT_TXEMPTY) == 0 && timeleft--)
+	while ((readb(KMISTAT) & KMISTAT_TXEMPTY) == 0 && --timeleft)
 		udelay(10);
 
 	if (timeleft)
@@ -73,6 +74,7 @@ static int amba_kmi_open(struct serio *io)
 	int ret;
 
 	ret = clk_enable(kmi->clk);
+	ret = clk_prepare_enable(kmi->clk);
 	if (ret)
 		goto out;
 
@@ -81,6 +83,8 @@ static int amba_kmi_open(struct serio *io)
 	writeb(KMICR_EN, KMICR);
 
 	ret = request_irq(kmi->irq, amba_kmi_int, 0, "kmi-pl050", kmi);
+	ret = request_irq(kmi->irq, amba_kmi_int, IRQF_SHARED, "kmi-pl050",
+			  kmi);
 	if (ret) {
 		printk(KERN_ERR "kmi: failed to claim IRQ%d\n", kmi->irq);
 		writeb(0, KMICR);
@@ -93,6 +97,7 @@ static int amba_kmi_open(struct serio *io)
 
  clk_disable:
 	clk_disable(kmi->clk);
+	clk_disable_unprepare(kmi->clk);
  out:
 	return ret;
 }
@@ -108,6 +113,11 @@ static void amba_kmi_close(struct serio *io)
 }
 
 static int amba_kmi_probe(struct amba_device *dev, void *id)
+	clk_disable_unprepare(kmi->clk);
+}
+
+static int amba_kmi_probe(struct amba_device *dev,
+	const struct amba_id *id)
 {
 	struct amba_kmi_port *kmi;
 	struct serio *io;
@@ -136,6 +146,13 @@ static int amba_kmi_probe(struct amba_device *dev, void *id)
 
 	kmi->io 	= io;
 	kmi->base	= ioremap(dev->res.start, KMI_SIZE);
+	strlcpy(io->name, dev_name(&dev->dev), sizeof(io->name));
+	strlcpy(io->phys, dev_name(&dev->dev), sizeof(io->phys));
+	io->port_data	= kmi;
+	io->dev.parent	= &dev->dev;
+
+	kmi->io		= io;
+	kmi->base	= ioremap(dev->res.start, resource_size(&dev->res));
 	if (!kmi->base) {
 		ret = -ENOMEM;
 		goto out;
@@ -179,12 +196,17 @@ static int amba_kmi_remove(struct amba_device *dev)
 static int amba_kmi_resume(struct amba_device *dev)
 {
 	struct amba_kmi_port *kmi = amba_get_drvdata(dev);
+static int __maybe_unused amba_kmi_resume(struct device *dev)
+{
+	struct amba_kmi_port *kmi = dev_get_drvdata(dev);
 
 	/* kick the serio layer to rescan this port */
 	serio_reconnect(kmi->io);
 
 	return 0;
 }
+
+static SIMPLE_DEV_PM_OPS(amba_kmi_dev_pm_ops, NULL, amba_kmi_resume);
 
 static struct amba_id amba_kmi_idtable[] = {
 	{
@@ -197,6 +219,13 @@ static struct amba_id amba_kmi_idtable[] = {
 static struct amba_driver ambakmi_driver = {
 	.drv		= {
 		.name	= "kmi-pl050",
+MODULE_DEVICE_TABLE(amba, amba_kmi_idtable);
+
+static struct amba_driver ambakmi_driver = {
+	.drv		= {
+		.name	= "kmi-pl050",
+		.owner	= THIS_MODULE,
+		.pm	= &amba_kmi_dev_pm_ops,
 	},
 	.id_table	= amba_kmi_idtable,
 	.probe		= amba_kmi_probe,
@@ -216,6 +245,9 @@ static void __exit amba_kmi_exit(void)
 
 module_init(amba_kmi_init);
 module_exit(amba_kmi_exit);
+};
+
+module_amba_driver(ambakmi_driver);
 
 MODULE_AUTHOR("Russell King <rmk@arm.linux.org.uk>");
 MODULE_DESCRIPTION("AMBA KMI controller driver");

@@ -13,6 +13,7 @@
  */
 #include <linux/init.h>
 #include <linux/module.h>
+#include <linux/slab.h>
 #include <net/llc.h>
 #include <net/llc_sap.h>
 #include <net/llc_conn.h>
@@ -153,9 +154,14 @@ static int llc_stat_ev_rx_null_dsap_xid_c(struct sk_buff *skb)
 
 	return ev->type == LLC_STATION_EV_TYPE_PDU &&
 	       LLC_PDU_IS_CMD(pdu) &&			/* command PDU */
+static int llc_stat_ev_rx_null_dsap_xid_c(struct sk_buff *skb)
+{
+	struct llc_pdu_un *pdu = llc_pdu_un_hdr(skb);
+
+	return LLC_PDU_IS_CMD(pdu) &&			/* command PDU */
 	       LLC_PDU_TYPE_IS_U(pdu) &&		/* U type PDU */
 	       LLC_U_PDU_CMD(pdu) == LLC_1_PDU_CMD_XID &&
-	       !pdu->dsap ? 0 : 1;			/* NULL DSAP value */
+	       !pdu->dsap;				/* NULL DSAP value */
 }
 
 static int llc_stat_ev_rx_null_dsap_0_xid_r_xid_r_cnt_eq(struct sk_buff *skb)
@@ -191,9 +197,14 @@ static int llc_stat_ev_rx_null_dsap_test_c(struct sk_buff *skb)
 
 	return ev->type == LLC_STATION_EV_TYPE_PDU &&
 	       LLC_PDU_IS_CMD(pdu) &&			/* command PDU */
+static int llc_stat_ev_rx_null_dsap_test_c(struct sk_buff *skb)
+{
+	struct llc_pdu_un *pdu = llc_pdu_un_hdr(skb);
+
+	return LLC_PDU_IS_CMD(pdu) &&			/* command PDU */
 	       LLC_PDU_TYPE_IS_U(pdu) &&		/* U type PDU */
 	       LLC_U_PDU_CMD(pdu) == LLC_1_PDU_CMD_TEST &&
-	       !pdu->dsap ? 0 : 1;			/* NULL DSAP */
+	       !pdu->dsap;				/* NULL DSAP */
 }
 
 static int llc_stat_ev_disable_req(struct sk_buff *skb)
@@ -293,6 +304,11 @@ out:
 	return rc;
 free:
 	kfree_skb(skb);
+	dev_queue_xmit(nskb);
+out:
+	return rc;
+free:
+	kfree_skb(nskb);
 	goto out;
 }
 
@@ -302,6 +318,9 @@ static int llc_station_ac_send_test_r(struct sk_buff *skb)
 	int rc = 1;
 	u32 data_size;
 	struct sk_buff *nskb;
+
+	if (skb->mac_len < ETH_HLEN)
+		goto out;
 
 	/* The test request command is type U (llc_len = 3) */
 	data_size = ntohs(eth_hdr(skb)->h_proto) - 3;
@@ -672,6 +691,15 @@ static void llc_station_ack_tmr_cb(unsigned long timeout_data)
 }
 
 /*
+	dev_queue_xmit(nskb);
+out:
+	return rc;
+free:
+	kfree_skb(nskb);
+	goto out;
+}
+
+/**
  *	llc_station_rcv - send received pdu to the station state machine
  *	@skb: received frame.
  *
@@ -716,6 +744,19 @@ out:
 }
 
 void __exit llc_station_exit(void)
+	if (llc_stat_ev_rx_null_dsap_xid_c(skb))
+		llc_station_ac_send_xid_r(skb);
+	else if (llc_stat_ev_rx_null_dsap_test_c(skb))
+		llc_station_ac_send_test_r(skb);
+	kfree_skb(skb);
+}
+
+void __init llc_station_init(void)
+{
+	llc_set_station_handler(llc_station_rcv);
+}
+
+void llc_station_exit(void)
 {
 	llc_set_station_handler(NULL);
 }

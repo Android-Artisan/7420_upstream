@@ -60,7 +60,6 @@ typedef uLong (*check_func) (uLong check, const Byte *buf,
 #define DO8(buf,i)  DO4(buf,i); DO4(buf,i+4);
 #define DO16(buf)   DO8(buf,0); DO8(buf,8);
 
-/* ========================================================================= */
 /*
      Update a running Adler-32 checksum with the bytes buf[0..len-1] and
    return the updated checksum. If buf is NULL, this function returns
@@ -72,6 +71,10 @@ typedef uLong (*check_func) (uLong check, const Byte *buf,
 
      while (read_buffer(buffer, length) != EOF) {
        adler = adler32(adler, buffer, length);
+     uLong adler = zlib_adler32(0L, NULL, 0);
+
+     while (read_buffer(buffer, length) != EOF) {
+       adler = zlib_adler32(adler, buffer, length);
      }
      if (adler != original_adler) error();
 */

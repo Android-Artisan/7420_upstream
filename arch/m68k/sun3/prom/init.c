@@ -73,6 +73,13 @@ void __init prom_init(struct linux_romvec *rp)
 #endif
 //	printk("PROMLIB: Sun Boot Prom Version %d Revision %d\n",
 //	       romvec->pv_romvers, prom_rev);
+ * routines in the prom library.
+ * It gets passed the pointer to the PROM vector.
+ */
+
+void __init prom_init(struct linux_romvec *rp)
+{
+	romvec = rp;
 
 	/* Initialization successful. */
 	return;

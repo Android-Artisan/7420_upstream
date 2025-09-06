@@ -31,6 +31,7 @@
  */
 #include <linux/module.h>
 #include <linux/list.h>
+#include <linux/slab.h>
 #include <linux/workqueue.h>
 #include <linux/skbuff.h>
 #include <linux/timer.h>
@@ -107,6 +108,9 @@ static DECLARE_WORK(skb_work, process_work);
 
 static struct sk_buff_head rxq;
 static cxgb3_cpl_handler_func work_handlers[NUM_CPL_CMDS];
+static struct workqueue_struct *workq;
+
+static struct sk_buff_head rxq;
 
 static struct sk_buff *get_skb(struct sk_buff *skb, int len, gfp_t gfp);
 static void ep_timeout(unsigned long arg);
@@ -133,10 +137,44 @@ static void stop_ep_timer(struct iwch_ep *ep)
 		printk(KERN_ERR "%s timer stopped when its not running!  ep %p state %u\n",
 			__func__, ep, ep->com.state);
 		WARN_ON(1);
+		WARN(1, "%s timer stopped when its not running!  ep %p state %u\n",
+			__func__, ep, ep->com.state);
 		return;
 	}
 	del_timer_sync(&ep->timer);
 	put_ep(&ep->com);
+}
+
+static int iwch_l2t_send(struct t3cdev *tdev, struct sk_buff *skb, struct l2t_entry *l2e)
+{
+	int	error = 0;
+	struct cxio_rdev *rdev;
+
+	rdev = (struct cxio_rdev *)tdev->ulp;
+	if (cxio_fatal_error(rdev)) {
+		kfree_skb(skb);
+		return -EIO;
+	}
+	error = l2t_send(tdev, skb, l2e);
+	if (error < 0)
+		kfree_skb(skb);
+	return error < 0 ? error : 0;
+}
+
+int iwch_cxgb3_ofld_send(struct t3cdev *tdev, struct sk_buff *skb)
+{
+	int	error = 0;
+	struct cxio_rdev *rdev;
+
+	rdev = (struct cxio_rdev *)tdev->ulp;
+	if (cxio_fatal_error(rdev)) {
+		kfree_skb(skb);
+		return -EIO;
+	}
+	error = cxgb3_ofld_send(tdev, skb);
+	if (error < 0)
+		kfree_skb(skb);
+	return error < 0 ? error : 0;
 }
 
 static void release_tid(struct t3cdev *tdev, u32 hwtid, struct sk_buff *skb)
@@ -151,6 +189,7 @@ static void release_tid(struct t3cdev *tdev, u32 hwtid, struct sk_buff *skb)
 	OPCODE_TID(req) = htonl(MK_OPCODE_TID(CPL_TID_RELEASE, hwtid));
 	skb->priority = CPL_PRIORITY_SETUP;
 	cxgb3_ofld_send(tdev, skb);
+	iwch_cxgb3_ofld_send(tdev, skb);
 	return;
 }
 
@@ -174,6 +213,7 @@ int iwch_quiesce_tid(struct iwch_ep *ep)
 	skb->priority = CPL_PRIORITY_DATA;
 	cxgb3_ofld_send(ep->com.tdev, skb);
 	return 0;
+	return iwch_cxgb3_ofld_send(ep->com.tdev, skb);
 }
 
 int iwch_resume_tid(struct iwch_ep *ep)
@@ -196,6 +236,7 @@ int iwch_resume_tid(struct iwch_ep *ep)
 	skb->priority = CPL_PRIORITY_DATA;
 	cxgb3_ofld_send(ep->com.tdev, skb);
 	return 0;
+	return iwch_cxgb3_ofld_send(ep->com.tdev, skb);
 }
 
 static void set_emss(struct iwch_ep *ep, u16 opt)
@@ -256,6 +297,16 @@ void __free_ep(struct kref *kref)
 	epc = container_of(kref, struct iwch_ep_common, kref);
 	PDBG("%s ep %p state %s\n", __func__, epc, states[state_read(epc)]);
 	kfree(epc);
+	struct iwch_ep *ep;
+	ep = container_of(container_of(kref, struct iwch_ep_common, kref),
+			  struct iwch_ep, com);
+	PDBG("%s ep %p state %s\n", __func__, ep, states[state_read(&ep->com)]);
+	if (test_bit(RELEASE_RESOURCES, &ep->com.flags)) {
+		cxgb3_remove_tid(ep->com.tdev, (void *)ep, ep->hwtid);
+		dst_release(ep->dst);
+		l2t_release(ep->com.tdev, ep->l2t);
+	}
+	kfree(ep);
 }
 
 static void release_ep_resources(struct iwch_ep *ep)
@@ -286,6 +337,10 @@ static void process_work(struct work_struct *work)
 		 */
 		put_ep((struct iwch_ep_common *)ep);
 	}
+}
+
+	set_bit(RELEASE_RESOURCES, &ep->com.flags);
+	put_ep(&ep->com);
 }
 
 static int status2errno(int status)
@@ -344,6 +399,12 @@ static struct rtable *find_route(struct t3cdev *dev, __be32 local_ip,
 	};
 
 	if (ip_route_output_flow(&init_net, &rt, &fl, NULL, 0))
+	struct flowi4 fl4;
+
+	rt = ip_route_output_ports(&init_net, &fl4, NULL, peer_ip, local_ip,
+				   peer_port, local_port, IPPROTO_TCP,
+				   tos, 0);
+	if (IS_ERR(rt))
 		return NULL;
 	return rt;
 }
@@ -383,6 +444,7 @@ static void abort_arp_failure(struct t3cdev *dev, struct sk_buff *skb)
 	PDBG("%s t3cdev %p\n", __func__, dev);
 	req->cmd = CPL_ABORT_NO_RST;
 	cxgb3_ofld_send(dev, skb);
+	iwch_cxgb3_ofld_send(dev, skb);
 }
 
 static int send_halfclose(struct iwch_ep *ep, gfp_t gfp)
@@ -404,6 +466,7 @@ static int send_halfclose(struct iwch_ep *ep, gfp_t gfp)
 	OPCODE_TID(req) = htonl(MK_OPCODE_TID(CPL_CLOSE_CON_REQ, ep->hwtid));
 	l2t_send(ep->com.tdev, skb, ep->l2t);
 	return 0;
+	return iwch_l2t_send(ep->com.tdev, skb, ep->l2t);
 }
 
 static int send_abort(struct iwch_ep *ep, struct sk_buff *skb, gfp_t gfp)
@@ -420,12 +483,14 @@ static int send_abort(struct iwch_ep *ep, struct sk_buff *skb, gfp_t gfp)
 	skb->priority = CPL_PRIORITY_DATA;
 	set_arp_failure_handler(skb, abort_arp_failure);
 	req = (struct cpl_abort_req *) skb_put(skb, sizeof(*req));
+	memset(req, 0, sizeof(*req));
 	req->wr.wr_hi = htonl(V_WR_OP(FW_WROPCODE_OFLD_HOST_ABORT_CON_REQ));
 	req->wr.wr_lo = htonl(V_WR_TID(ep->hwtid));
 	OPCODE_TID(req) = htonl(MK_OPCODE_TID(CPL_ABORT_REQ, ep->hwtid));
 	req->cmd = CPL_ABORT_SEND_RST;
 	l2t_send(ep->com.tdev, skb, ep->l2t);
 	return 0;
+	return iwch_l2t_send(ep->com.tdev, skb, ep->l2t);
 }
 
 static int send_connect(struct iwch_ep *ep)
@@ -455,6 +520,8 @@ static int send_connect(struct iwch_ep *ep)
 	    V_L2T_IDX(ep->l2t->idx) | V_TX_CHANNEL(ep->l2t->smt_idx);
 	opt0l = V_TOS((ep->tos >> 2) & M_TOS) | V_RCV_BUFSIZ(rcv_win>>10);
 	opt2 = V_FLAVORS_VALID(1) | V_CONG_CONTROL_FLAVOR(cong_flavor);
+	opt2 = F_RX_COALESCE_VALID | V_RX_COALESCE(0) | V_FLAVORS_VALID(1) |
+	       V_CONG_CONTROL_FLAVOR(cong_flavor);
 	skb->priority = CPL_PRIORITY_SETUP;
 	set_arp_failure_handler(skb, act_open_req_arp_failure);
 
@@ -471,6 +538,7 @@ static int send_connect(struct iwch_ep *ep)
 	req->opt2 = htonl(opt2);
 	l2t_send(ep->com.tdev, skb, ep->l2t);
 	return 0;
+	return iwch_l2t_send(ep->com.tdev, skb, ep->l2t);
 }
 
 static void send_mpa_req(struct iwch_ep *ep, struct sk_buff *skb)
@@ -528,6 +596,7 @@ static void send_mpa_req(struct iwch_ep *ep, struct sk_buff *skb)
 	BUG_ON(ep->mpa_skb);
 	ep->mpa_skb = skb;
 	l2t_send(ep->com.tdev, skb, ep->l2t);
+	iwch_l2t_send(ep->com.tdev, skb, ep->l2t);
 	start_ep_timer(ep);
 	state_set(&ep->com, MPA_REQ_SENT);
 	return;
@@ -580,6 +649,7 @@ static int send_mpa_reject(struct iwch_ep *ep, const void *pdata, u8 plen)
 	ep->mpa_skb = skb;
 	l2t_send(ep->com.tdev, skb, ep->l2t);
 	return 0;
+	return iwch_l2t_send(ep->com.tdev, skb, ep->l2t);
 }
 
 static int send_mpa_reply(struct iwch_ep *ep, const void *pdata, u8 plen)
@@ -632,6 +702,7 @@ static int send_mpa_reply(struct iwch_ep *ep, const void *pdata, u8 plen)
 	state_set(&ep->com, MPA_REP_SENT);
 	l2t_send(ep->com.tdev, skb, ep->l2t);
 	return 0;
+	return iwch_l2t_send(ep->com.tdev, skb, ep->l2t);
 }
 
 static int act_establish(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
@@ -728,6 +799,10 @@ static void connect_reply_upcall(struct iwch_ep *ep, int status)
 	event.status = status;
 	event.local_addr = ep->com.local_addr;
 	event.remote_addr = ep->com.remote_addr;
+	memcpy(&event.local_addr, &ep->com.local_addr,
+	       sizeof(ep->com.local_addr));
+	memcpy(&event.remote_addr, &ep->com.remote_addr,
+	       sizeof(ep->com.remote_addr));
 
 	if ((status == 0) || (status == -ECONNREFUSED)) {
 		event.private_data_len = ep->plen;
@@ -761,6 +836,24 @@ static void connect_request_upcall(struct iwch_ep *ep)
 		ep->parent_ep->com.cm_id->event_handler(
 						ep->parent_ep->com.cm_id,
 						&event);
+	memcpy(&event.local_addr, &ep->com.local_addr,
+	       sizeof(ep->com.local_addr));
+	memcpy(&event.remote_addr, &ep->com.remote_addr,
+	       sizeof(ep->com.local_addr));
+	event.private_data_len = ep->plen;
+	event.private_data = ep->mpa_pkt + sizeof(struct mpa_message);
+	event.provider_data = ep;
+	/*
+	 * Until ird/ord negotiation via MPAv2 support is added, send max
+	 * supported values
+	 */
+	event.ird = event.ord = 8;
+	if (state_read(&ep->parent_ep->com) != DEAD) {
+		get_ep(&ep->com);
+		ep->parent_ep->com.cm_id->event_handler(
+						ep->parent_ep->com.cm_id,
+						&event);
+	}
 	put_ep(&ep->parent_ep->com);
 	ep->parent_ep = NULL;
 }
@@ -772,6 +865,11 @@ static void established_upcall(struct iwch_ep *ep)
 	PDBG("%s ep %p\n", __func__, ep);
 	memset(&event, 0, sizeof(event));
 	event.event = IW_CM_EVENT_ESTABLISHED;
+	/*
+	 * Until ird/ord negotiation via MPAv2 support is added, send max
+	 * supported values
+	 */
+	event.ird = event.ord = 8;
 	if (ep->com.cm_id) {
 		PDBG("%s ep %p tid %d\n", __func__, ep, ep->hwtid);
 		ep->com.cm_id->event_handler(ep->com.cm_id, &event);
@@ -796,6 +894,7 @@ static int update_rx_credits(struct iwch_ep *ep, u32 credits)
 	req->credit_dack = htonl(V_RX_CREDITS(credits) | V_RX_FORCE_ACK(1));
 	skb->priority = CPL_PRIORITY_ACK;
 	cxgb3_ofld_send(ep->com.tdev, skb);
+	iwch_cxgb3_ofld_send(ep->com.tdev, skb);
 	return credits;
 }
 
@@ -917,6 +1016,7 @@ static void process_mpa_reply(struct iwch_ep *ep, struct sk_buff *skb)
 
 	if (peer2peer && iwch_rqes_posted(ep->com.qp) == 0) {
 		iwch_post_zb_read(ep->com.qp);
+		iwch_post_zb_read(ep);
 	}
 
 	goto out;
@@ -1080,6 +1180,8 @@ static int tx_ack(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 	struct iwch_ep *ep = ctx;
 	struct cpl_wr_ack *hdr = cplhdr(skb);
 	unsigned int credits = ntohs(hdr->credits);
+	unsigned long flags;
+	int post_zb = 0;
 
 	PDBG("%s ep %p credits %u\n", __func__, ep, credits);
 
@@ -1089,6 +1191,12 @@ static int tx_ack(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 		return CPL_RET_BUF_DONE;
 	}
 
+		PDBG("%s 0 credit ack  ep %p state %u\n",
+		     __func__, ep, state_read(&ep->com));
+		return CPL_RET_BUF_DONE;
+	}
+
+	spin_lock_irqsave(&ep->com.lock, flags);
 	BUG_ON(credits != 1);
 	dst_confirm(ep->dst);
 	if (!ep->mpa_skb) {
@@ -1111,6 +1219,29 @@ static int tx_ack(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 		kfree_skb(ep->mpa_skb);
 		ep->mpa_skb = NULL;
 	}
+			__func__, ep, ep->com.state);
+		if (ep->mpa_attr.initiator) {
+			PDBG("%s initiator ep %p state %u\n",
+				__func__, ep, ep->com.state);
+			if (peer2peer && ep->com.state == FPDU_MODE)
+				post_zb = 1;
+		} else {
+			PDBG("%s responder ep %p state %u\n",
+				__func__, ep, ep->com.state);
+			if (ep->com.state == MPA_REQ_RCVD) {
+				ep->com.rpl_done = 1;
+				wake_up(&ep->com.waitq);
+			}
+		}
+	} else {
+		PDBG("%s lsm ack ep %p state %u freeing skb\n",
+			__func__, ep, ep->com.state);
+		kfree_skb(ep->mpa_skb);
+		ep->mpa_skb = NULL;
+	}
+	spin_unlock_irqrestore(&ep->com.lock, flags);
+	if (post_zb)
+		iwch_post_zb_read(ep);
 	return CPL_RET_BUF_DONE;
 }
 
@@ -1129,6 +1260,7 @@ static int abort_rpl(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 	 */
 	if (!(ep->flags & ABORT_REQ_IN_PROGRESS)) {
 		ep->flags |= ABORT_REQ_IN_PROGRESS;
+	if (!test_and_set_bit(ABORT_REQ_IN_PROGRESS, &ep->com.flags)) {
 		return CPL_RET_BUF_DONE;
 	}
 
@@ -1174,6 +1306,7 @@ static int act_open_rpl(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 	cxgb3_free_atid(ep->com.tdev, ep->atid);
 	dst_release(ep->dst);
 	l2t_release(L2DATA(ep->com.tdev), ep->l2t);
+	l2t_release(ep->com.tdev, ep->l2t);
 	put_ep(&ep->com);
 	return CPL_RET_BUF_DONE;
 }
@@ -1205,6 +1338,7 @@ static int listen_start(struct iwch_listen_ep *ep)
 	skb->priority = 1;
 	cxgb3_ofld_send(ep->com.tdev, skb);
 	return 0;
+	return iwch_cxgb3_ofld_send(ep->com.tdev, skb);
 }
 
 static int pass_open_rpl(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
@@ -1239,6 +1373,7 @@ static int listen_stop(struct iwch_listen_ep *ep)
 	skb->priority = 1;
 	cxgb3_ofld_send(ep->com.tdev, skb);
 	return 0;
+	return iwch_cxgb3_ofld_send(ep->com.tdev, skb);
 }
 
 static int close_listsrv_rpl(struct t3cdev *tdev, struct sk_buff *skb,
@@ -1276,6 +1411,8 @@ static void accept_cr(struct iwch_ep *ep, __be32 peer_ip, struct sk_buff *skb)
 	    V_L2T_IDX(ep->l2t->idx) | V_TX_CHANNEL(ep->l2t->smt_idx);
 	opt0l = V_TOS((ep->tos >> 2) & M_TOS) | V_RCV_BUFSIZ(rcv_win>>10);
 	opt2 = V_FLAVORS_VALID(1) | V_CONG_CONTROL_FLAVOR(cong_flavor);
+	opt2 = F_RX_COALESCE_VALID | V_RX_COALESCE(0) | V_FLAVORS_VALID(1) |
+	       V_CONG_CONTROL_FLAVOR(cong_flavor);
 
 	rpl = cplhdr(skb);
 	rpl->wr.wr_hi = htonl(V_WR_OP(FW_WROPCODE_FORWARD));
@@ -1287,6 +1424,7 @@ static void accept_cr(struct iwch_ep *ep, __be32 peer_ip, struct sk_buff *skb)
 	rpl->rsvd = rpl->opt2;	/* workaround for HW bug */
 	skb->priority = CPL_PRIORITY_SETUP;
 	l2t_send(ep->com.tdev, skb, ep->l2t);
+	iwch_l2t_send(ep->com.tdev, skb, ep->l2t);
 
 	return;
 }
@@ -1316,6 +1454,7 @@ static void reject_cr(struct t3cdev *tdev, u32 hwtid, __be32 peer_ip,
 		rpl->opt2 = 0;
 		rpl->rsvd = rpl->opt2;
 		cxgb3_ofld_send(tdev, skb);
+		iwch_cxgb3_ofld_send(tdev, skb);
 	}
 }
 
@@ -1352,6 +1491,8 @@ static int pass_accept_req(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 			req->dst_mac[3],
 			req->dst_mac[4],
 			req->dst_mac[5]);
+		printk(KERN_ERR "%s bad dst mac %pM\n",
+			__func__, req->dst_mac);
 		goto reject;
 	}
 
@@ -1368,6 +1509,8 @@ static int pass_accept_req(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 	}
 	dst = &rt->u.dst;
 	l2t = t3_l2t_get(tdev, dst->neighbour, dst->neighbour->dev);
+	dst = &rt->dst;
+	l2t = t3_l2t_get(tdev, dst, NULL, &req->peer_ip);
 	if (!l2t) {
 		printk(KERN_ERR MOD "%s - failed to allocate l2t entry!\n",
 		       __func__);
@@ -1379,6 +1522,7 @@ static int pass_accept_req(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 		printk(KERN_ERR MOD "%s - failed to allocate ep entry!\n",
 		       __func__);
 		l2t_release(L2DATA(tdev), l2t);
+		l2t_release(tdev, l2t);
 		dst_release(dst);
 		goto reject;
 	}
@@ -1454,6 +1598,14 @@ static int peer_close(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 		 */
 		__state_set(&ep->com, CLOSING);
 		get_ep(&ep->com);
+		 * rejects the CR. Also wake up anyone waiting
+		 * in rdma connection migration (see iwch_accept_cr()).
+		 */
+		__state_set(&ep->com, CLOSING);
+		ep->com.rpl_done = 1;
+		ep->com.rpl_err = -ECONNRESET;
+		PDBG("waking up ep %p\n", ep);
+		wake_up(&ep->com.waitq);
 		break;
 	case MPA_REP_SENT:
 		__state_set(&ep->com, CLOSING);
@@ -1536,6 +1688,7 @@ static int peer_abort(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 	 */
 	if (!(ep->flags & PEER_ABORT_IN_PROGRESS)) {
 		ep->flags |= PEER_ABORT_IN_PROGRESS;
+	if (!test_and_set_bit(PEER_ABORT_IN_PROGRESS, &ep->com.flags)) {
 		return CPL_RET_BUF_DONE;
 	}
 
@@ -1565,6 +1718,13 @@ static int peer_abort(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 		 * rejects the CR.
 		 */
 		get_ep(&ep->com);
+		 * rejects the CR. Also wake up anyone waiting
+		 * in rdma connection migration (see iwch_accept_cr()).
+		 */
+		ep->com.rpl_done = 1;
+		ep->com.rpl_err = -ECONNRESET;
+		PDBG("waking up ep %p\n", ep);
+		wake_up(&ep->com.waitq);
 		break;
 	case MORIBUND:
 	case CLOSING:
@@ -1614,6 +1774,7 @@ static int peer_abort(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 	OPCODE_TID(rpl) = htonl(MK_OPCODE_TID(CPL_ABORT_RPL, ep->hwtid));
 	rpl->cmd = CPL_ABORT_NO_RST;
 	cxgb3_ofld_send(ep->com.tdev, rpl_skb);
+	iwch_cxgb3_ofld_send(ep->com.tdev, rpl_skb);
 out:
 	if (release)
 		release_ep_resources(ep);
@@ -1667,6 +1828,7 @@ static int close_con_rpl(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
  * 1) send up a CPL_RDMA_TERMINATE message with the TERM packet
  * 2) generate an async event on the QP with the TERMINATE opcode
  * 3) post a TERMINATE opcde cqe into the associated CQ.
+ * 3) post a TERMINATE opcode cqe into the associated CQ.
  *
  * For (1), we save the message in the qp for later consumer consumption.
  * For (2), we move the QP into TERMINATE, post a QP event and disconnect.
@@ -1677,6 +1839,9 @@ static int close_con_rpl(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 static int terminate(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 {
 	struct iwch_ep *ep = ctx;
+
+	if (state_read(&ep->com) != FPDU_MODE)
+		return CPL_RET_BUF_DONE;
 
 	PDBG("%s ep %p\n", __func__, ep);
 	skb_pull(skb, sizeof(struct cpl_rdma_terminate));
@@ -1742,6 +1907,8 @@ static void ep_timeout(unsigned long arg)
 		printk(KERN_ERR "%s unexpected state ep %p state %u\n",
 			__func__, ep, ep->com.state);
 		WARN_ON(1);
+		WARN(1, "%s unexpected state ep %p state %u\n",
+			__func__, ep, ep->com.state);
 		abort = 0;
 	}
 	spin_unlock_irqrestore(&ep->com.lock, flags);
@@ -1767,6 +1934,7 @@ int iwch_reject_cr(struct iw_cm_id *cm_id, const void *pdata, u8 pdata_len)
 		err = send_mpa_reject(ep, pdata, pdata_len);
 		err = iwch_ep_disconnect(ep, 0, GFP_KERNEL);
 	}
+	put_ep(&ep->com);
 	return 0;
 }
 
@@ -1782,6 +1950,10 @@ int iwch_accept_cr(struct iw_cm_id *cm_id, struct iw_cm_conn_param *conn_param)
 	PDBG("%s ep %p tid %u\n", __func__, ep, ep->hwtid);
 	if (state_read(&ep->com) == DEAD)
 		return -ECONNRESET;
+	if (state_read(&ep->com) == DEAD) {
+		err = -ECONNRESET;
+		goto err;
+	}
 
 	BUG_ON(state_read(&ep->com) != MPA_REQ_RCVD);
 	BUG_ON(!qp);
@@ -1790,6 +1962,8 @@ int iwch_accept_cr(struct iw_cm_id *cm_id, struct iw_cm_conn_param *conn_param)
 	    (conn_param->ird > qp->rhp->attr.max_rdma_reads_per_qp)) {
 		abort_connection(ep, NULL, GFP_KERNEL);
 		return -EINVAL;
+		err = -EINVAL;
+		goto err;
 	}
 
 	cm_id->add_ref(cm_id);
@@ -1803,6 +1977,13 @@ int iwch_accept_cr(struct iw_cm_id *cm_id, struct iw_cm_conn_param *conn_param)
 	PDBG("%s %d ird %d ord %d\n", __func__, __LINE__, ep->ird, ep->ord);
 
 	get_ep(&ep->com);
+	ep->ird = conn_param->ird;
+	ep->ord = conn_param->ord;
+
+	if (peer2peer && ep->ird == 0)
+		ep->ird = 1;
+
+	PDBG("%s %d ird %d ord %d\n", __func__, __LINE__, ep->ird, ep->ord);
 
 	/* bind QP to EP and move to RTS */
 	attrs.mpa_attr = ep->mpa_attr;
@@ -1822,6 +2003,7 @@ int iwch_accept_cr(struct iw_cm_id *cm_id, struct iw_cm_conn_param *conn_param)
 			     ep->com.qp, mask, &attrs, 1);
 	if (err)
 		goto err;
+		goto err1;
 
 	/* if needed, wait for wr_ack */
 	if (iwch_rqes_posted(qp)) {
@@ -1829,12 +2011,14 @@ int iwch_accept_cr(struct iw_cm_id *cm_id, struct iw_cm_conn_param *conn_param)
 		err = ep->com.rpl_err;
 		if (err)
 			goto err;
+			goto err1;
 	}
 
 	err = send_mpa_reply(ep, conn_param->private_data,
 			     conn_param->private_data_len);
 	if (err)
 		goto err;
+		goto err1;
 
 
 	state_set(&ep->com, FPDU_MODE);
@@ -1845,6 +2029,11 @@ err:
 	ep->com.cm_id = NULL;
 	ep->com.qp = NULL;
 	cm_id->rem_ref(cm_id);
+err1:
+	ep->com.cm_id = NULL;
+	ep->com.qp = NULL;
+	cm_id->rem_ref(cm_id);
+err:
 	put_ep(&ep->com);
 	return err;
 }
@@ -1854,6 +2043,9 @@ static int is_loopback_dst(struct iw_cm_id *cm_id)
 	struct net_device *dev;
 
 	dev = ip_dev_find(&init_net, cm_id->remote_addr.sin_addr.s_addr);
+	struct sockaddr_in *raddr = (struct sockaddr_in *)&cm_id->remote_addr;
+
+	dev = ip_dev_find(&init_net, raddr->sin_addr.s_addr);
 	if (!dev)
 		return 0;
 	dev_put(dev);
@@ -1866,6 +2058,17 @@ int iwch_connect(struct iw_cm_id *cm_id, struct iw_cm_conn_param *conn_param)
 	struct iwch_dev *h = to_iwch_dev(cm_id->device);
 	struct iwch_ep *ep;
 	struct rtable *rt;
+	struct iwch_dev *h = to_iwch_dev(cm_id->device);
+	struct iwch_ep *ep;
+	struct rtable *rt;
+	int err = 0;
+	struct sockaddr_in *laddr = (struct sockaddr_in *)&cm_id->local_addr;
+	struct sockaddr_in *raddr = (struct sockaddr_in *)&cm_id->remote_addr;
+
+	if (cm_id->remote_addr.ss_family != PF_INET) {
+		err = -ENOSYS;
+		goto out;
+	}
 
 	if (is_loopback_dst(cm_id)) {
 		err = -ENOSYS;
@@ -1885,6 +2088,10 @@ int iwch_connect(struct iw_cm_id *cm_id, struct iw_cm_conn_param *conn_param)
 		       conn_param->private_data, ep->plen);
 	ep->ird = conn_param->ird;
 	ep->ord = conn_param->ord;
+
+	if (peer2peer && ep->ord == 0)
+		ep->ord = 1;
+
 	ep->com.tdev = h->rdev.t3cdev_p;
 
 	cm_id->add_ref(cm_id);
@@ -1910,6 +2117,9 @@ int iwch_connect(struct iw_cm_id *cm_id, struct iw_cm_conn_param *conn_param)
 			cm_id->remote_addr.sin_addr.s_addr,
 			cm_id->local_addr.sin_port,
 			cm_id->remote_addr.sin_port, IPTOS_LOWDELAY);
+	rt = find_route(h->rdev.t3cdev_p, laddr->sin_addr.s_addr,
+			raddr->sin_addr.s_addr, laddr->sin_port,
+			raddr->sin_port, IPTOS_LOWDELAY);
 	if (!rt) {
 		printk(KERN_ERR MOD "%s - cannot find route.\n", __func__);
 		err = -EHOSTUNREACH;
@@ -1920,6 +2130,9 @@ int iwch_connect(struct iw_cm_id *cm_id, struct iw_cm_conn_param *conn_param)
 	/* get a l2t entry */
 	ep->l2t = t3_l2t_get(ep->com.tdev, ep->dst->neighbour,
 			     ep->dst->neighbour->dev);
+	ep->dst = &rt->dst;
+	ep->l2t = t3_l2t_get(ep->com.tdev, ep->dst, NULL,
+			     &raddr->sin_addr.s_addr);
 	if (!ep->l2t) {
 		printk(KERN_ERR MOD "%s - cannot alloc l2e.\n", __func__);
 		err = -ENOMEM;
@@ -1930,6 +2143,10 @@ int iwch_connect(struct iw_cm_id *cm_id, struct iw_cm_conn_param *conn_param)
 	ep->tos = IPTOS_LOWDELAY;
 	ep->com.local_addr = cm_id->local_addr;
 	ep->com.remote_addr = cm_id->remote_addr;
+	memcpy(&ep->com.local_addr, &cm_id->local_addr,
+	       sizeof(ep->com.local_addr));
+	memcpy(&ep->com.remote_addr, &cm_id->remote_addr,
+	       sizeof(ep->com.remote_addr));
 
 	/* send connect request to rnic */
 	err = send_connect(ep);
@@ -1937,11 +2154,13 @@ int iwch_connect(struct iw_cm_id *cm_id, struct iw_cm_conn_param *conn_param)
 		goto out;
 
 	l2t_release(L2DATA(h->rdev.t3cdev_p), ep->l2t);
+	l2t_release(h->rdev.t3cdev_p, ep->l2t);
 fail4:
 	dst_release(ep->dst);
 fail3:
 	cxgb3_free_atid(ep->com.tdev, ep->atid);
 fail2:
+	cm_id->rem_ref(cm_id);
 	put_ep(&ep->com);
 out:
 	return err;
@@ -1956,6 +2175,11 @@ int iwch_create_listen(struct iw_cm_id *cm_id, int backlog)
 
 	might_sleep();
 
+	if (cm_id->local_addr.ss_family != PF_INET) {
+		err = -ENOSYS;
+		goto fail1;
+	}
+
 	ep = alloc_ep(sizeof(*ep), GFP_KERNEL);
 	if (!ep) {
 		printk(KERN_ERR MOD "%s - cannot alloc ep.\n", __func__);
@@ -1968,6 +2192,8 @@ int iwch_create_listen(struct iw_cm_id *cm_id, int backlog)
 	ep->com.cm_id = cm_id;
 	ep->backlog = backlog;
 	ep->com.local_addr = cm_id->local_addr;
+	memcpy(&ep->com.local_addr, &cm_id->local_addr,
+	       sizeof(ep->com.local_addr));
 
 	/*
 	 * Allocate a server TID.
@@ -2015,6 +2241,11 @@ int iwch_destroy_listen(struct iw_cm_id *cm_id)
 	err = listen_stop(ep);
 	wait_event(ep->com.waitq, ep->com.rpl_done);
 	cxgb3_free_stid(ep->com.tdev, ep->stid);
+	if (err)
+		goto done;
+	wait_event(ep->com.waitq, ep->com.rpl_done);
+	cxgb3_free_stid(ep->com.tdev, ep->stid);
+done:
 	err = ep->com.rpl_err;
 	cm_id->rem_ref(cm_id);
 	put_ep(&ep->com);
@@ -2026,12 +2257,22 @@ int iwch_ep_disconnect(struct iwch_ep *ep, int abrupt, gfp_t gfp)
 	int ret=0;
 	unsigned long flags;
 	int close = 0;
+	int fatal = 0;
+	struct t3cdev *tdev;
+	struct cxio_rdev *rdev;
 
 	spin_lock_irqsave(&ep->com.lock, flags);
 
 	PDBG("%s ep %p state %s, abrupt %d\n", __func__, ep,
 	     states[ep->com.state], abrupt);
 
+	tdev = (struct t3cdev *)ep->com.tdev;
+	rdev = (struct cxio_rdev *)tdev->ulp;
+	if (cxio_fatal_error(rdev)) {
+		fatal = 1;
+		close_complete_upcall(ep);
+		ep->com.state = DEAD;
+	}
 	switch (ep->com.state) {
 	case MPA_REQ_WAIT:
 	case MPA_REQ_SENT:
@@ -2053,6 +2294,17 @@ int iwch_ep_disconnect(struct iwch_ep *ep, int abrupt, gfp_t gfp)
 			ep->com.state = ABORTING;
 		} else
 			ep->com.state = MORIBUND;
+		set_bit(CLOSE_SENT, &ep->com.flags);
+		break;
+	case CLOSING:
+		if (!test_and_set_bit(CLOSE_SENT, &ep->com.flags)) {
+			close = 1;
+			if (abrupt) {
+				stop_ep_timer(ep);
+				ep->com.state = ABORTING;
+			} else
+				ep->com.state = MORIBUND;
+		}
 		break;
 	case MORIBUND:
 	case ABORTING:
@@ -2072,6 +2324,11 @@ int iwch_ep_disconnect(struct iwch_ep *ep, int abrupt, gfp_t gfp)
 		else
 			ret = send_halfclose(ep, gfp);
 	}
+		if (ret)
+			fatal = 1;
+	}
+	if (fatal)
+		release_ep_resources(ep);
 	return ret;
 }
 
@@ -2087,6 +2344,7 @@ int iwch_ep_redirect(void *ctx, struct dst_entry *old, struct dst_entry *new,
 	     l2t);
 	dst_hold(new);
 	l2t_release(L2DATA(ep->com.tdev), ep->l2t);
+	l2t_release(ep->com.tdev, ep->l2t);
 	ep->l2t = l2t;
 	dst_release(old);
 	ep->dst = new;
@@ -2096,6 +2354,49 @@ int iwch_ep_redirect(void *ctx, struct dst_entry *old, struct dst_entry *new,
 /*
  * All the CM events are handled on a work queue to have a safe context.
  */
+ * These are the real handlers that are called from the work queue.
+ */
+static const cxgb3_cpl_handler_func work_handlers[NUM_CPL_CMDS] = {
+	[CPL_ACT_ESTABLISH]	= act_establish,
+	[CPL_ACT_OPEN_RPL]	= act_open_rpl,
+	[CPL_RX_DATA]		= rx_data,
+	[CPL_TX_DMA_ACK]	= tx_ack,
+	[CPL_ABORT_RPL_RSS]	= abort_rpl,
+	[CPL_ABORT_RPL]		= abort_rpl,
+	[CPL_PASS_OPEN_RPL]	= pass_open_rpl,
+	[CPL_CLOSE_LISTSRV_RPL]	= close_listsrv_rpl,
+	[CPL_PASS_ACCEPT_REQ]	= pass_accept_req,
+	[CPL_PASS_ESTABLISH]	= pass_establish,
+	[CPL_PEER_CLOSE]	= peer_close,
+	[CPL_ABORT_REQ_RSS]	= peer_abort,
+	[CPL_CLOSE_CON_RPL]	= close_con_rpl,
+	[CPL_RDMA_TERMINATE]	= terminate,
+	[CPL_RDMA_EC_STATUS]	= ec_status,
+};
+
+static void process_work(struct work_struct *work)
+{
+	struct sk_buff *skb = NULL;
+	void *ep;
+	struct t3cdev *tdev;
+	int ret;
+
+	while ((skb = skb_dequeue(&rxq))) {
+		ep = *((void **) (skb->cb));
+		tdev = *((struct t3cdev **) (skb->cb + sizeof(void *)));
+		ret = work_handlers[G_OPCODE(ntohl((__force __be32)skb->csum))](tdev, skb, ep);
+		if (ret & CPL_RET_BUF_DONE)
+			kfree_skb(skb);
+
+		/*
+		 * ep was referenced in sched(), and is freed here.
+		 */
+		put_ep((struct iwch_ep_common *)ep);
+	}
+}
+
+static DECLARE_WORK(skb_work, process_work);
+
 static int sched(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 {
 	struct iwch_ep_common *epc = ctx;
@@ -2126,6 +2427,29 @@ static int set_tcb_rpl(struct t3cdev *tdev, struct sk_buff *skb, void *ctx)
 	}
 	return CPL_RET_BUF_DONE;
 }
+
+/*
+ * All upcalls from the T3 Core go to sched() to schedule the
+ * processing on a work queue.
+ */
+cxgb3_cpl_handler_func t3c_handlers[NUM_CPL_CMDS] = {
+	[CPL_ACT_ESTABLISH]	= sched,
+	[CPL_ACT_OPEN_RPL]	= sched,
+	[CPL_RX_DATA]		= sched,
+	[CPL_TX_DMA_ACK]	= sched,
+	[CPL_ABORT_RPL_RSS]	= sched,
+	[CPL_ABORT_RPL]		= sched,
+	[CPL_PASS_OPEN_RPL]	= sched,
+	[CPL_CLOSE_LISTSRV_RPL]	= sched,
+	[CPL_PASS_ACCEPT_REQ]	= sched,
+	[CPL_PASS_ESTABLISH]	= sched,
+	[CPL_PEER_CLOSE]	= sched,
+	[CPL_CLOSE_CON_RPL]	= sched,
+	[CPL_ABORT_REQ_RSS]	= sched,
+	[CPL_RDMA_TERMINATE]	= sched,
+	[CPL_RDMA_EC_STATUS]	= sched,
+	[CPL_SET_TCB_RPL]	= set_tcb_rpl,
+};
 
 int __init iwch_cm_init(void)
 {

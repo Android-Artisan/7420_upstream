@@ -67,4 +67,10 @@ static inline void rtc_sysfs_del_device(struct rtc_device *rtc)
 {
 }
 
+const struct attribute_group **rtc_get_dev_attribute_groups(void);
+#else
+static inline const struct attribute_group **rtc_get_dev_attribute_groups(void)
+{
+	return NULL;
+}
 #endif

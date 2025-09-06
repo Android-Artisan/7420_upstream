@@ -40,6 +40,24 @@ static void ipoib_get_drvinfo(struct net_device *netdev,
 			      struct ethtool_drvinfo *drvinfo)
 {
 	strncpy(drvinfo->driver, "ipoib", sizeof(drvinfo->driver) - 1);
+	struct ipoib_dev_priv *priv = netdev_priv(netdev);
+	struct ib_device_attr *attr;
+
+	attr = kmalloc(sizeof(*attr), GFP_KERNEL);
+	if (attr && !ib_query_device(priv->ca, attr))
+		snprintf(drvinfo->fw_version, sizeof(drvinfo->fw_version),
+			 "%d.%d.%d", (int)(attr->fw_ver >> 32),
+			 (int)(attr->fw_ver >> 16) & 0xffff,
+			 (int)attr->fw_ver & 0xffff);
+	kfree(attr);
+
+	strlcpy(drvinfo->bus_info, dev_name(priv->ca->dma_device),
+		sizeof(drvinfo->bus_info));
+
+	strlcpy(drvinfo->version, ipoib_driver_version,
+		sizeof(drvinfo->version));
+
+	strlcpy(drvinfo->driver, "ib_ipoib", sizeof(drvinfo->driver));
 }
 
 static int ipoib_get_coalesce(struct net_device *dev,
@@ -51,6 +69,7 @@ static int ipoib_get_coalesce(struct net_device *dev,
 	coal->tx_coalesce_usecs = priv->ethtool.coalesce_usecs;
 	coal->rx_max_coalesced_frames = priv->ethtool.max_coalesced_frames;
 	coal->tx_max_coalesced_frames = priv->ethtool.max_coalesced_frames;
+	coal->rx_max_coalesced_frames = priv->ethtool.max_coalesced_frames;
 
 	return 0;
 }
@@ -66,6 +85,8 @@ static int ipoib_set_coalesce(struct net_device *dev,
 	 * that rx params dictate the configuration.  These values are
 	 * saved in the private data and returned when ipoib_get_coalesce()
 	 * is called.
+	 * These values are saved in the private data and returned
+	 * when ipoib_get_coalesce() is called
 	 */
 	if (coal->rx_coalesce_usecs       > 0xffff ||
 	    coal->rx_max_coalesced_frames > 0xffff)
@@ -137,9 +158,14 @@ static const struct ethtool_ops ipoib_ethtool_ops = {
 	.get_strings		= ipoib_get_strings,
 	.get_sset_count		= ipoib_get_sset_count,
 	.get_ethtool_stats	= ipoib_get_ethtool_stats,
+static const struct ethtool_ops ipoib_ethtool_ops = {
+	.get_drvinfo		= ipoib_get_drvinfo,
+	.get_coalesce		= ipoib_get_coalesce,
+	.set_coalesce		= ipoib_set_coalesce,
 };
 
 void ipoib_set_ethtool_ops(struct net_device *dev)
 {
 	SET_ETHTOOL_OPS(dev, &ipoib_ethtool_ops);
+	dev->ethtool_ops = &ipoib_ethtool_ops;
 }

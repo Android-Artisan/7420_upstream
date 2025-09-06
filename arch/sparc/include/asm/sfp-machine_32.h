@@ -82,6 +82,9 @@
 	   : "=r" ((USItype)(r2)),					\
 	     "=&r" ((USItype)(r1)),					\
 	     "=&r" ((USItype)(r0))					\
+	   : "=r" (r2),							\
+	     "=&r" (r1),						\
+	     "=&r" (r0)							\
 	   : "%rJ" ((USItype)(x2)),					\
 	     "rI" ((USItype)(y2)),					\
 	     "%rJ" ((USItype)(x1)),					\
@@ -97,6 +100,9 @@
 	   : "=r" ((USItype)(r2)),					\
 	     "=&r" ((USItype)(r1)),					\
 	     "=&r" ((USItype)(r0))					\
+	   : "=r" (r2),							\
+	     "=&r" (r1),						\
+	     "=&r" (r0)							\
 	   : "%rJ" ((USItype)(x2)),					\
 	     "rI" ((USItype)(y2)),					\
 	     "%rJ" ((USItype)(x1)),					\
@@ -117,6 +123,8 @@
 	    "addx %r2,%3,%%g1\n\t"					\
 	   : "=&r" ((USItype)(r1)),					\
 	     "=&r" ((USItype)(r0))					\
+	   : "=&r" (r1),						\
+	     "=&r" (r0)							\
 	   : "%rJ" ((USItype)(x3)),					\
 	     "rI" ((USItype)(y3)),					\
 	     "%rJ" ((USItype)(x2)),					\
@@ -142,6 +150,8 @@
 	    "subx %r2,%3,%%g1\n\t"					\
 	   : "=&r" ((USItype)(r1)),					\
 	     "=&r" ((USItype)(r0))					\
+	   : "=&r" (r1),						\
+	     "=&r" (r0)							\
 	   : "%rJ" ((USItype)(x3)),					\
 	     "rI" ((USItype)(y3)),					\
 	     "%rJ" ((USItype)(x2)),					\
@@ -168,6 +178,10 @@
 	     "=&r" ((USItype)(x2)),					\
 	     "=&r" ((USItype)(x1)),					\
 	     "=&r" ((USItype)(x0))					\
+	   : "=&r" (x3),						\
+	     "=&r" (x2),						\
+	     "=&r" (x1),						\
+	     "=&r" (x0)							\
 	   : "rI" ((USItype)(i)),					\
 	     "0" ((USItype)(x3)),					\
 	     "1" ((USItype)(x2)),					\

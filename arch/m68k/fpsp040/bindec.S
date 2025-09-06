@@ -610,6 +610,7 @@ do_fint:
 |      result is exactly 10^LEN, decrement ILOG and divide
 |      the mantissa by 10.  The calculation of 10^LEN cannot
 |      be inexact, since all powers of ten upto 10^27 are exact
+|      be inexact, since all powers of ten up to 10^27 are exact
 |      in extended precision, so the use of a previous power-of-ten
 |      table will introduce no error.
 |

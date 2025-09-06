@@ -77,12 +77,14 @@ int swarm_be_handler(struct pt_regs *regs, int is_fixup)
 		       __read_64bit_c0_register($26, 1));
 	}
 	return (is_fixup ? MIPS_BE_FIXUP : MIPS_BE_FATAL);
+	return is_fixup ? MIPS_BE_FIXUP : MIPS_BE_FATAL;
 }
 
 enum swarm_rtc_type {
 	RTC_NONE,
 	RTC_XICOR,
 	RTC_M4LT81
+	RTC_M41T81,
 };
 
 enum swarm_rtc_type swarm_rtc_type;
@@ -100,6 +102,26 @@ unsigned long read_persistent_clock(void)
 	default:
 		return mktime(2000, 1, 1, 0, 0, 0);
 	}
+void read_persistent_clock(struct timespec *ts)
+{
+	unsigned long sec;
+
+	switch (swarm_rtc_type) {
+	case RTC_XICOR:
+		sec = xicor_get_time();
+		break;
+
+	case RTC_M41T81:
+		sec = m41t81_get_time();
+		break;
+
+	case RTC_NONE:
+	default:
+		sec = mktime(2000, 1, 1, 0, 0, 0);
+		break;
+	}
+	ts->tv_sec = sec;
+	ts->tv_nsec = 0;
 }
 
 int rtc_mips_set_time(unsigned long sec)
@@ -109,6 +131,7 @@ int rtc_mips_set_time(unsigned long sec)
 		return xicor_set_time(sec);
 
 	case RTC_M4LT81:
+	case RTC_M41T81:
 		return m41t81_set_time(sec);
 
 	case RTC_NONE:
@@ -161,6 +184,18 @@ void __init plat_mem_setup(void)
 		25,             /* orig_video_lines */
 		0x22,           /* orig_video_isVGA */
 		16              /* orig_video_points */
+		swarm_rtc_type = RTC_M41T81;
+
+#ifdef CONFIG_VT
+	screen_info = (struct screen_info) {
+		.orig_video_page	= 52,
+		.orig_video_mode	= 3,
+		.orig_video_cols	= 80,
+		.flags			= 12,
+		.orig_video_ega_bx	= 3,
+		.orig_video_lines	= 25,
+		.orig_video_isVGA	= 0x22,
+		.orig_video_points	= 16,
        };
        /* XXXKW for CFE, get lines/cols from environment */
 #endif

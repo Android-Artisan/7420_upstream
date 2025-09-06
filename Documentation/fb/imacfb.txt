@@ -1,12 +1,10 @@
 
 What is imacfb?
-===============
 
 This is a generic EFI platform driver for Intel based Apple computers.
 Imacfb is only for EFI booted Intel Macs.
 
 Supported Hardware
-==================
 
 iMac 17"/20"
 Macbook
@@ -14,7 +12,6 @@ Macbook Pro 15"/17"
 MacMini
 
 How to use it?
-==============
 
 Imacfb does not have any kind of autodetection of your machine.
 You have to add the following kernel parameters in your elilo.conf:

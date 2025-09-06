@@ -12,10 +12,13 @@
 #include <sys/mount.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/sysmacros.h>
 #include <sys/un.h>
 #include "kern_constants.h"
 #include "os.h"
 #include "user.h"
+#include <sys/types.h>
+#include <os.h>
 
 static void copy_stat(struct uml_stat *dst, const struct stat64 *src)
 {
@@ -239,6 +242,12 @@ void os_close_file(int fd)
 {
 	close(fd);
 }
+int os_fsync_file(int fd)
+{
+	if (fsync(fd) < 0)
+	    return -errno;
+	return 0;
+}
 
 int os_seek_file(int fd, unsigned long long offset)
 {
@@ -262,6 +271,15 @@ int os_read_file(int fd, void *buf, int len)
 int os_write_file(int fd, const void *buf, int len)
 {
 	int n = write(fd, (void *) buf, len);
+
+	if (n < 0)
+		return -errno;
+	return n;
+}
+
+int os_sync_file(int fd)
+{
+	int n = fsync(fd);
 
 	if (n < 0)
 		return -errno;
@@ -560,4 +578,19 @@ int os_lock_file(int fd, int excl)
 	err = save;
  out:
 	return err;
+}
+
+unsigned os_major(unsigned long long dev)
+{
+	return major(dev);
+}
+
+unsigned os_minor(unsigned long long dev)
+{
+	return minor(dev);
+}
+
+unsigned long long os_makedev(unsigned major, unsigned minor)
+{
+	return makedev(major, minor);
 }

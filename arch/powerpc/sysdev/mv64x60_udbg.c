@@ -86,6 +86,7 @@ static void mv64x60_udbg_init(void)
 		return;
 
 	for_each_compatible_node(np, "serial", "marvell,mv64360-mpsc") {
+	for_each_compatible_node(np, NULL, "marvell,mv64360-mpsc") {
 		if (np == stdout)
 			break;
 	}
@@ -130,6 +131,11 @@ static void mv64x60_udbg_init(void)
 		return;
 
 	mpsc_intr_cause = ioremap(r[1].start, r[1].end - r[1].start + 1);
+	mpsc_base = ioremap(r[0].start, resource_size(&r[0]));
+	if (!mpsc_base)
+		return;
+
+	mpsc_intr_cause = ioremap(r[1].start, resource_size(&r[1]));
 	if (!mpsc_intr_cause) {
 		iounmap(mpsc_base);
 		return;

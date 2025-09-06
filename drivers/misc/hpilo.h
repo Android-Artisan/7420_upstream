@@ -15,10 +15,19 @@
 
 /* max number of open channel control blocks per device, hw limited to 32 */
 #define MAX_CCB		8
+#define MAX_CCB	       24
+/* min number of open channel control blocks per device, hw limited to 32 */
+#define MIN_CCB		8
 /* max number of supported devices */
 #define MAX_ILO_DEV	1
 /* max number of files */
 #define MAX_OPEN	(MAX_CCB * MAX_ILO_DEV)
+/* total wait time in usec */
+#define MAX_WAIT_TIME	10000
+/* per spin wait time in usec */
+#define WAIT_TIME	10
+/* spin counter for open/close delay */
+#define MAX_WAIT	(MAX_WAIT_TIME / WAIT_TIME)
 
 /*
  * Per device, used to track global memory allocations.
@@ -38,6 +47,18 @@ struct ilo_hwinfo {
 
 	struct pci_dev *ilo_dev;
 
+	/*
+	 * open_lock      serializes ccb_cnt during open and close
+	 * [ irq disabled ]
+	 * -> alloc_lock  used when adding/removing/searching ccb_alloc,
+	 *                which represents all ccbs open on the device
+	 * --> fifo_lock  controls access to fifo queues shared with hw
+	 *
+	 * Locks must be taken in this order, but open_lock and alloc_lock
+	 * are optional, they do not need to be held in order to take a
+	 * lower level lock.
+	 */
+	spinlock_t open_lock;
 	spinlock_t alloc_lock;
 	spinlock_t fifo_lock;
 
@@ -45,6 +66,9 @@ struct ilo_hwinfo {
 };
 
 /* offset from mmio_vaddr */
+/* offset from mmio_vaddr for enabling doorbell interrupts */
+#define DB_IRQ		0xB2
+/* offset from mmio_vaddr for outbound communications */
 #define DB_OUT		0xD4
 /* DB_OUT reset bit */
 #define DB_RESET	26
@@ -64,6 +88,11 @@ struct ccb {
 	union {
 		char *send_desc;
 		u64 padding2;
+		u64 send_fifobar_pa;
+	} ccb_u1;
+	union {
+		char *send_desc;
+		u64 send_desc_pa;
 	} ccb_u2;
 	u64 send_ctrl;
 
@@ -74,6 +103,11 @@ struct ccb {
 	union {
 		char *recv_desc;
 		u64 padding4;
+		u64 recv_fifobar_pa;
+	} ccb_u3;
+	union {
+		char *recv_desc;
+		u64 recv_desc_pa;
 	} ccb_u4;
 	u64 recv_ctrl;
 
@@ -124,6 +158,9 @@ struct ccb_data {
 
 	/* pointer to hardware device info */
 	struct ilo_hwinfo *ilo_hw;
+
+	/* queue for this ccb to wait for recv data */
+	wait_queue_head_t ccb_waitq;
 
 	/* usage count, to allow for shared ccb's */
 	int	    ccb_cnt;

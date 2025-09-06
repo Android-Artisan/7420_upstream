@@ -33,6 +33,7 @@
 #include "ubifs.h"
 #include <linux/writeback.h>
 #include <asm/div64.h>
+#include <linux/math64.h>
 
 /*
  * When pessimistic budget calculations say that there is no enough space,
@@ -44,6 +45,10 @@
 #define MAX_GC_RETRIES     4
 #define MAX_CMT_RETRIES    2
 #define MAX_NOSPC_RETRIES  1
+ * or committing. The below constant defines maximum number of times UBIFS
+ * repeats the operations.
+ */
+#define MAX_MKSPC_RETRIES 3
 
 /*
  * The below constant defines amount of dirty pages which should be written
@@ -84,6 +89,7 @@ struct retries_info {
  * of dirty inodes and their pages. Returns the amount of pages which were
  * written back. The returned value does not include dirty inodes which were
  * synchronized.
+ * of dirty inodes and their pages.
  *
  * Note, this function synchronizes even VFS inodes which are locked
  * (@i_mutex) by the caller of the budgeting function, because write-back does
@@ -118,6 +124,13 @@ static int shrink_liability(struct ubifs_info *c, int nr_to_write)
 	return nr_written;
 }
 
+
+static void shrink_liability(struct ubifs_info *c, int nr_to_write)
+{
+	down_read(&c->vfs_sb->s_umount);
+	writeback_inodes_sb(c->vfs_sb, WB_REASON_FS_FREE_SPACE);
+	up_read(&c->vfs_sb->s_umount);
+}
 
 /**
  * run_gc - run garbage collector.
@@ -154,6 +167,29 @@ static int run_gc(struct ubifs_info *c)
  * This function is called when an operation cannot be budgeted because there
  * is supposedly no free space. But in most cases there is some free space:
  *   o budgeting is pessimistic, so it always budgets more then it is actually
+ * get_liability - calculate current liability.
+ * @c: UBIFS file-system description object
+ *
+ * This function calculates and returns current UBIFS liability, i.e. the
+ * amount of bytes UBIFS has "promised" to write to the media.
+ */
+static long long get_liability(struct ubifs_info *c)
+{
+	long long liab;
+
+	spin_lock(&c->space_lock);
+	liab = c->bi.idx_growth + c->bi.data_growth + c->bi.dd_growth;
+	spin_unlock(&c->space_lock);
+	return liab;
+}
+
+/**
+ * make_free_space - make more free space on the file-system.
+ * @c: UBIFS file-system description object
+ *
+ * This function is called when an operation cannot be budgeted because there
+ * is supposedly no free space. But in most cases there is some free space:
+ *   o budgeting is pessimistic, so it always budgets more than it is actually
  *     needed, so shrinking the liability is one way to make free space - the
  *     cached data will take less space then it was budgeted for;
  *   o GC may turn some dark space into free space (budgeting treats dark space
@@ -209,6 +245,28 @@ static int make_free_space(struct ubifs_info *c, struct retries_info *ri)
 			 ri->gc_retries, MAX_GC_RETRIES);
 
 		ri->try_gc = 0;
+static int make_free_space(struct ubifs_info *c)
+{
+	int err, retries = 0;
+	long long liab1, liab2;
+
+	do {
+		liab1 = get_liability(c);
+		/*
+		 * We probably have some dirty pages or inodes (liability), try
+		 * to write them back.
+		 */
+		dbg_budg("liability %lld, run write-back", liab1);
+		shrink_liability(c, NR_TO_WRITE);
+
+		liab2 = get_liability(c);
+		if (liab2 < liab1)
+			return -EAGAIN;
+
+		dbg_budg("new liability %lld (not shrunk)", liab2);
+
+		/* Liability did not shrink again, try GC */
+		dbg_budg("Run GC");
 		err = run_gc(c);
 		if (!err)
 			return -EAGAIN;
@@ -246,6 +304,16 @@ static int make_free_space(struct ubifs_info *c, struct retries_info *ri)
 			return err;
 		return -EAGAIN;
 	}
+		if (err != -EAGAIN && err != -ENOSPC)
+			/* Some real error happened */
+			return err;
+
+		dbg_budg("Run commit (retries %d)", retries);
+		err = ubifs_run_commit(c);
+		if (err)
+			return err;
+	} while (retries++ < MAX_MKSPC_RETRIES);
+
 	return -ENOSPC;
 }
 
@@ -266,6 +334,20 @@ int ubifs_calc_min_idx_lebs(struct ubifs_info *c)
 	/* And make sure we have thrice the index size of space reserved */
 	idx_size = idx_size + (idx_size << 1);
 
+ * ubifs_calc_min_idx_lebs - calculate amount of LEBs for the index.
+ * @c: UBIFS file-system description object
+ *
+ * This function calculates and returns the number of LEBs which should be kept
+ * for index usage.
+ */
+int ubifs_calc_min_idx_lebs(struct ubifs_info *c)
+{
+	int idx_lebs;
+	long long idx_size;
+
+	idx_size = c->bi.old_idx_sz + c->bi.idx_growth + c->bi.uncommitted_idx;
+	/* And make sure we have thrice the index size of space reserved */
+	idx_size += idx_size << 1;
 	/*
 	 * We do not maintain 'old_idx_size' as 'old_idx_lebs'/'old_idx_bytes'
 	 * pair, nor similarly the two variables for the new index size, so we
@@ -275,6 +357,7 @@ int ubifs_calc_min_idx_lebs(struct ubifs_info *c)
 		ret = idx_size + 1;
 	else
 		ret = idx_size;
+	idx_lebs = div_u64(idx_size + c->idx_leb_size - 1, c->idx_leb_size);
 	/*
 	 * The index head is not available for the in-the-gaps method, so add an
 	 * extra LEB to compensate.
@@ -288,6 +371,10 @@ int ubifs_calc_min_idx_lebs(struct ubifs_info *c)
 	if (ret < 2)
 		ret = 2;
 	return ret;
+	idx_lebs += 1;
+	if (idx_lebs < MIN_INDEX_LEBS)
+		idx_lebs = MIN_INDEX_LEBS;
+	return idx_lebs;
 }
 
 /**
@@ -315,11 +402,10 @@ long long ubifs_calc_available(const struct ubifs_info *c, int min_idx_lebs)
 	subtract_lebs += 1;
 
 	/*
-	 * The GC journal head LEB is not really accessible. And since
-	 * different write types go to different heads, we may count only on
-	 * one head's space.
+	 * Since different write types go to different heads, we should
+	 * reserve one leb for each head.
 	 */
-	subtract_lebs += c->jhead_cnt - 1;
+	subtract_lebs += c->jhead_cnt;
 
 	/* We also reserve one LEB for deletions, which bypass budgeting */
 	subtract_lebs += 1;
@@ -365,6 +451,8 @@ static int can_use_rp(struct ubifs_info *c)
 {
 	if (current->fsuid == c->rp_uid || capable(CAP_SYS_RESOURCE) ||
 	    (c->rp_gid != 0 && in_group_p(c->rp_gid)))
+	if (uid_eq(current_fsuid(), c->rp_uid) || capable(CAP_SYS_RESOURCE) ||
+	    (!gid_eq(c->rp_gid, GLOBAL_ROOT_GID) && in_group_p(c->rp_gid)))
 		return 1;
 	return 0;
 }
@@ -375,6 +463,8 @@ static int can_use_rp(struct ubifs_info *c)
  *
  * This function makes sure UBIFS has enough free eraseblocks for index growth
  * and data.
+ * This function makes sure UBIFS has enough free LEBs for index growth and
+ * data.
  *
  * When budgeting index space, UBIFS reserves thrice as many LEBs as the index
  * would take if it was consolidated and written to the flash. This guarantees
@@ -384,12 +474,17 @@ static int can_use_rp(struct ubifs_info *c)
  * and makes sure this does not exceed the amount of free eraseblocks.
  *
  * Notes about @c->min_idx_lebs and @c->lst.idx_lebs variables:
+ * and makes sure this does not exceed the amount of free LEBs.
+ *
+ * Notes about @c->bi.min_idx_lebs and @c->lst.idx_lebs variables:
  * o @c->lst.idx_lebs is the number of LEBs the index currently uses. It might
  *    be large, because UBIFS does not do any index consolidation as long as
  *    there is free space. IOW, the index may take a lot of LEBs, but the LEBs
  *    will contain a lot of dirt.
  * o @c->min_idx_lebs is the the index presumably takes. IOW, the index may be
  *   consolidated to take up to @c->min_idx_lebs LEBs.
+ * o @c->bi.min_idx_lebs is the number of LEBS the index presumably takes. IOW,
+ *    the index may be consolidated to take up to @c->bi.min_idx_lebs LEBs.
  *
  * This function returns zero in case of success, and %-ENOSPC in case of
  * failure.
@@ -427,6 +522,21 @@ static int do_budget_space(struct ubifs_info *c)
 	 * Note, @taken_empty_lebs may temporarily be higher by one because of
 	 * the way we serialize LEB allocations and budgeting. See a comment in
 	 * 'ubifs_find_free_space()'.
+	 * @c->lst.empty_lebs are available because they are empty.
+	 * @c->freeable_cnt are available because they contain only free and
+	 * dirty space, @c->idx_gc_cnt are available because they are index
+	 * LEBs that have been garbage collected and are awaiting the commit
+	 * before they can be used. And the in-the-gaps method will grab these
+	 * if it needs them. @c->lst.taken_empty_lebs are empty LEBs that have
+	 * already been allocated for some purpose.
+	 *
+	 * Note, @c->idx_gc_cnt is included to both @c->lst.empty_lebs (because
+	 * these LEBs are empty) and to @c->lst.taken_empty_lebs (because they
+	 * are taken until after the commit).
+	 *
+	 * Note, @c->lst.taken_empty_lebs may temporarily be higher by one
+	 * because of the way we serialize LEB allocations and budgeting. See a
+	 * comment in 'ubifs_find_free_space()'.
 	 */
 	lebs = c->lst.empty_lebs + c->freeable_cnt + c->idx_gc_cnt -
 	       c->lst.taken_empty_lebs;
@@ -434,11 +544,14 @@ static int do_budget_space(struct ubifs_info *c)
 		dbg_budg("out of indexing space: min_idx_lebs %d (old %d), "
 			 "rsvd_idx_lebs %d", min_idx_lebs, c->min_idx_lebs,
 			 rsvd_idx_lebs);
+		dbg_budg("out of indexing space: min_idx_lebs %d (old %d), rsvd_idx_lebs %d",
+			 min_idx_lebs, c->bi.min_idx_lebs, rsvd_idx_lebs);
 		return -ENOSPC;
 	}
 
 	available = ubifs_calc_available(c, min_idx_lebs);
 	outstanding = c->budg_data_growth + c->budg_dd_growth;
+	outstanding = c->bi.data_growth + c->bi.dd_growth;
 
 	if (unlikely(available < outstanding)) {
 		dbg_budg("out of data space: available %lld, outstanding %lld",
@@ -450,6 +563,7 @@ static int do_budget_space(struct ubifs_info *c)
 		return -ENOSPC;
 
 	c->min_idx_lebs = min_idx_lebs;
+	c->bi.min_idx_lebs = min_idx_lebs;
 	return 0;
 }
 
@@ -487,6 +601,11 @@ static int calc_data_growth(const struct ubifs_info *c,
 		data_growth += c->page_budget;
 	if (req->new_dent)
 		data_growth += c->dent_budget;
+	data_growth = req->new_ino  ? c->bi.inode_budget : 0;
+	if (req->new_page)
+		data_growth += c->bi.page_budget;
+	if (req->new_dent)
+		data_growth += c->bi.dent_budget;
 	data_growth += req->new_ino_d;
 	return data_growth;
 }
@@ -508,6 +627,12 @@ static int calc_dd_growth(const struct ubifs_info *c,
 		dd_growth += c->inode_budget << (req->dirtied_ino - 1);
 	if (req->mod_dent)
 		dd_growth += c->dent_budget;
+	dd_growth = req->dirtied_page ? c->bi.page_budget : 0;
+
+	if (req->dirtied_ino)
+		dd_growth += c->bi.inode_budget * req->dirtied_ino;
+	if (req->mod_dent)
+		dd_growth += c->bi.dent_budget;
 	dd_growth += req->dirtied_ino_d;
 	return dd_growth;
 }
@@ -530,6 +655,7 @@ int ubifs_budget_space(struct ubifs_info *c, struct ubifs_budget_req *req)
 	int uninitialized_var(cmt_retries), uninitialized_var(wb_retries);
 	int err, idx_growth, data_growth, dd_growth;
 	struct retries_info ri;
+	int err, idx_growth, data_growth, dd_growth, retried = 0;
 
 	ubifs_assert(req->new_page <= 1);
 	ubifs_assert(req->dirtied_page <= 1);
@@ -556,6 +682,14 @@ again:
 	ubifs_assert(c->budg_dd_growth >= 0);
 
 	if (unlikely(c->nospace) && (c->nospace_rp || !can_use_rp(c))) {
+
+again:
+	spin_lock(&c->space_lock);
+	ubifs_assert(c->bi.idx_growth >= 0);
+	ubifs_assert(c->bi.data_growth >= 0);
+	ubifs_assert(c->bi.dd_growth >= 0);
+
+	if (unlikely(c->bi.nospace) && (c->bi.nospace_rp || !can_use_rp(c))) {
 		dbg_budg("no space");
 		spin_unlock(&c->space_lock);
 		return -ENOSPC;
@@ -564,6 +698,9 @@ again:
 	c->budg_idx_growth += idx_growth;
 	c->budg_data_growth += data_growth;
 	c->budg_dd_growth += dd_growth;
+	c->bi.idx_growth += idx_growth;
+	c->bi.data_growth += data_growth;
+	c->bi.dd_growth += dd_growth;
 
 	err = do_budget_space(c);
 	if (likely(!err)) {
@@ -578,6 +715,9 @@ again:
 	c->budg_idx_growth -= idx_growth;
 	c->budg_data_growth -= data_growth;
 	c->budg_dd_growth -= dd_growth;
+	c->bi.idx_growth -= idx_growth;
+	c->bi.data_growth -= data_growth;
+	c->bi.dd_growth -= dd_growth;
 	spin_unlock(&c->space_lock);
 
 	if (req->fast) {
@@ -598,6 +738,24 @@ again:
 		smp_wmb();
 	} else
 		ubifs_err("cannot budget space, error %d", err);
+	err = make_free_space(c);
+	cond_resched();
+	if (err == -EAGAIN) {
+		dbg_budg("try again");
+		goto again;
+	} else if (err == -ENOSPC) {
+		if (!retried) {
+			retried = 1;
+			dbg_budg("-ENOSPC, but anyway try once again");
+			goto again;
+		}
+		dbg_budg("FS is full, -ENOSPC");
+		c->bi.nospace = 1;
+		if (can_use_rp(c) || c->rp_size == 0)
+			c->bi.nospace_rp = 1;
+		smp_wmb();
+	} else
+		ubifs_err(c, "cannot budget space, error %d", err);
 	return err;
 }
 
@@ -611,6 +769,8 @@ again:
  * only be written to the media on commit, this function moves the index budget
  * from @c->budg_idx_growth to @c->budg_uncommitted_idx. The latter will be
  * zeroed by the commit operation.
+ * from @c->bi.idx_growth to @c->bi.uncommitted_idx. The latter will be zeroed
+ * by the commit operation.
  */
 void ubifs_release_budget(struct ubifs_info *c, struct ubifs_budget_req *req)
 {
@@ -656,6 +816,23 @@ void ubifs_release_budget(struct ubifs_info *c, struct ubifs_budget_req *req)
 	ubifs_assert(!(c->budg_idx_growth & 7));
 	ubifs_assert(!(c->budg_data_growth & 7));
 	ubifs_assert(!(c->budg_dd_growth & 7));
+	c->bi.nospace = c->bi.nospace_rp = 0;
+	smp_wmb();
+
+	spin_lock(&c->space_lock);
+	c->bi.idx_growth -= req->idx_growth;
+	c->bi.uncommitted_idx += req->idx_growth;
+	c->bi.data_growth -= req->data_growth;
+	c->bi.dd_growth -= req->dd_growth;
+	c->bi.min_idx_lebs = ubifs_calc_min_idx_lebs(c);
+
+	ubifs_assert(c->bi.idx_growth >= 0);
+	ubifs_assert(c->bi.data_growth >= 0);
+	ubifs_assert(c->bi.dd_growth >= 0);
+	ubifs_assert(c->bi.min_idx_lebs < c->main_lebs);
+	ubifs_assert(!(c->bi.idx_growth & 7));
+	ubifs_assert(!(c->bi.data_growth & 7));
+	ubifs_assert(!(c->bi.dd_growth & 7));
 	spin_unlock(&c->space_lock);
 }
 
@@ -665,6 +842,7 @@ void ubifs_release_budget(struct ubifs_info *c, struct ubifs_budget_req *req)
  *
  * This function converts budget which was allocated for a new page of data to
  * the budget of changing an existing page of data. The latter is smaller then
+ * the budget of changing an existing page of data. The latter is smaller than
  * the former, so this function only does simple re-calculation and does not
  * involve any write-back.
  */
@@ -679,6 +857,13 @@ void ubifs_convert_page_budget(struct ubifs_info *c)
 	c->budg_dd_growth += c->page_budget;
 	/* And re-calculate the indexing space reservation */
 	c->min_idx_lebs = ubifs_calc_min_idx_lebs(c);
+	c->bi.idx_growth -= c->max_idx_node_sz << UBIFS_BLOCKS_PER_PAGE_SHIFT;
+	/* Release the data growth reservation */
+	c->bi.data_growth -= c->bi.page_budget;
+	/* Increase the dirty data growth reservation instead */
+	c->bi.dd_growth += c->bi.page_budget;
+	/* And re-calculate the indexing space reservation */
+	c->bi.min_idx_lebs = ubifs_calc_min_idx_lebs(c);
 	spin_unlock(&c->space_lock);
 }
 
@@ -690,6 +875,7 @@ void ubifs_convert_page_budget(struct ubifs_info *c)
  * This function releases budget corresponding to a dirty inode. It is usually
  * called when after the inode has been written to the media and marked as
  * clean.
+ * clean. It also causes the "no space" flags to be cleared.
  */
 void ubifs_release_dirty_inode_budget(struct ubifs_info *c,
 				      struct ubifs_inode *ui)
@@ -698,6 +884,8 @@ void ubifs_release_dirty_inode_budget(struct ubifs_info *c,
 
 	memset(&req, 0, sizeof(struct ubifs_budget_req));
 	req.dd_growth = c->inode_budget + ALIGN(ui->data_len, 8);
+	/* The "no space" flags will be cleared because dd_growth is > 0 */
+	req.dd_growth = c->bi.inode_budget + ALIGN(ui->data_len, 8);
 	ubifs_release_budget(c, &req);
 }
 
@@ -713,6 +901,9 @@ void ubifs_release_dirty_inode_budget(struct ubifs_info *c,
  * node and it has to write indexind nodes as well. This introduces additional
  * overhead, and UBIFS it has to report sligtly less free space to meet the
  * above expectetion.
+ * node and it has to write indexing nodes as well. This introduces additional
+ * overhead, and UBIFS has to report slightly less free space to meet the above
+ * expectations.
  *
  * This function assumes free space is made up of uncompressed data nodes and
  * full index nodes (one per data node, tripled because we always allow enough
@@ -722,6 +913,7 @@ void ubifs_release_dirty_inode_budget(struct ubifs_info *c,
  * UBIFS reports less space than it actually has.
  */
 long long ubifs_reported_space(const struct ubifs_info *c, uint64_t free)
+long long ubifs_reported_space(const struct ubifs_info *c, long long free)
 {
 	int divisor, factor, f;
 
@@ -736,6 +928,7 @@ long long ubifs_reported_space(const struct ubifs_info *c, uint64_t free)
 	 * as less than maximum fanout, we assume that each data node
 	 * introduces 3 * @c->max_idx_node_sz / (@c->fanout/2 - 1) bytes.
 	 * Note, the multiplier 3 is because UBIFS reseves thrice as more space
+	 * Note, the multiplier 3 is because UBIFS reserves thrice as more space
 	 * for the index.
 	 */
 	f = c->fanout > 3 ? c->fanout >> 1 : 2;
@@ -749,6 +942,11 @@ long long ubifs_reported_space(const struct ubifs_info *c, uint64_t free)
 
 /**
  * ubifs_get_free_space - return amount of free space.
+	return div_u64(free, divisor);
+}
+
+/**
+ * ubifs_get_free_space_nolock - return amount of free space.
  * @c: UBIFS file-system description object
  *
  * This function calculates amount of free space to report to user-space.
@@ -782,6 +980,23 @@ long long ubifs_get_free_space(struct ubifs_info *c)
 	}
 
 	available = ubifs_calc_available(c, min_idx_lebs);
+ * alignment, wastage at the end of LEBs, etc), it cannot report real amount of
+ * free flash space it has (well, because not all dirty space is reclaimable,
+ * UBIFS does not actually know the real amount). If UBIFS did so, it would
+ * bread user expectations about what free space is. Users seem to accustomed
+ * to assume that if the file-system reports N bytes of free space, they would
+ * be able to fit a file of N bytes to the FS. This almost works for
+ * traditional file-systems, because they have way less overhead than UBIFS.
+ * So, to keep users happy, UBIFS tries to take the overhead into account.
+ */
+long long ubifs_get_free_space_nolock(struct ubifs_info *c)
+{
+	int rsvd_idx_lebs, lebs;
+	long long available, outstanding, free;
+
+	ubifs_assert(c->bi.min_idx_lebs == ubifs_calc_min_idx_lebs(c));
+	outstanding = c->bi.data_growth + c->bi.dd_growth;
+	available = ubifs_calc_available(c, c->bi.min_idx_lebs);
 
 	/*
 	 * When reporting free space to user-space, UBIFS guarantees that it is
@@ -796,6 +1011,8 @@ long long ubifs_get_free_space(struct ubifs_info *c)
 	 */
 	if (min_idx_lebs > c->lst.idx_lebs)
 		rsvd_idx_lebs = min_idx_lebs - c->lst.idx_lebs;
+	if (c->bi.min_idx_lebs > c->lst.idx_lebs)
+		rsvd_idx_lebs = c->bi.min_idx_lebs - c->lst.idx_lebs;
 	else
 		rsvd_idx_lebs = 0;
 	lebs = c->lst.empty_lebs + c->freeable_cnt + c->idx_gc_cnt -
@@ -808,5 +1025,23 @@ long long ubifs_get_free_space(struct ubifs_info *c)
 		free = ubifs_reported_space(c, available - outstanding);
 	else
 		free = 0;
+	return free;
+}
+
+/**
+ * ubifs_get_free_space - return amount of free space.
+ * @c: UBIFS file-system description object
+ *
+ * This function calculates and returns amount of free space to report to
+ * user-space.
+ */
+long long ubifs_get_free_space(struct ubifs_info *c)
+{
+	long long free;
+
+	spin_lock(&c->space_lock);
+	free = ubifs_get_free_space_nolock(c);
+	spin_unlock(&c->space_lock);
+
 	return free;
 }

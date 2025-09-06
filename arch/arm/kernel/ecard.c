@@ -108,7 +108,6 @@ static inline ecard_t *slot_to_ecard(unsigned int slot)
 	return slot < MAX_ECARDS ? slot_to_expcard[slot] : NULL;
 }
 
-/* ===================== Expansion card daemon ======================== */
 /*
  * Since the loader programs on the expansion cards need to be run
  * in a specific environment, create a separate task with this
@@ -312,7 +311,6 @@ static void ecard_call(struct ecard_request *req)
 	mutex_unlock(&ecard_mutex);
 }
 
-/* ======================= Mid-level card control ===================== */
 
 static void
 ecard_readbytes(void *addr, ecard_t *ec, int off, int len, int useld)
@@ -386,7 +384,6 @@ int ecard_readchunk(struct in_chunk_dir *cd, ecard_t *ec, int id, int num)
 	return 1;
 }
 
-/* ======================= Interrupt control ============================ */
 
 static void ecard_def_irq_enable(ecard_t *ec, int irqnr)
 {

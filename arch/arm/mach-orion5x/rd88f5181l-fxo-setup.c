@@ -8,6 +8,7 @@
  * warranty of any kind, whether express or implied.
  */
 
+#include <linux/gpio.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/platform_device.h>
@@ -19,6 +20,8 @@
 #include <asm/mach-types.h>
 #include <asm/gpio.h>
 #include <asm/leds.h>
+#include <net/dsa.h>
+#include <asm/mach-types.h>
 #include <asm/mach/arch.h>
 #include <asm/mach/pci.h>
 #include <mach/orion5x.h>
@@ -89,8 +92,48 @@ static struct orion5x_mpp_mode rd88f5181l_fxo_mpp_modes[] __initdata = {
 
 static struct mv643xx_eth_platform_data rd88f5181l_fxo_eth_data = {
 	.phy_addr	= -1,
+static unsigned int rd88f5181l_fxo_mpp_modes[] __initdata = {
+	MPP0_GPIO,		/* LED1 CardBus LED (front panel) */
+	MPP1_GPIO,		/* PCI_intA */
+	MPP2_GPIO,		/* Hard Reset / Factory Init*/
+	MPP3_GPIO,		/* FXS or DAA select */
+	MPP4_GPIO,		/* LED6 - phone LED (front panel) */
+	MPP5_GPIO,		/* LED5 - phone LED (front panel) */
+	MPP6_PCI_CLK,		/* CPU PCI refclk */
+	MPP7_PCI_CLK,		/* PCI/PCIe refclk */
+	MPP8_GPIO,		/* CardBus reset */
+	MPP9_GPIO,		/* GE_RXERR */
+	MPP10_GPIO,		/* LED2 MiniPCI LED (front panel) */
+	MPP11_GPIO,		/* Lifeline control */
+	MPP12_GIGE,		/* GE_TXD[4] */
+	MPP13_GIGE,		/* GE_TXD[5] */
+	MPP14_GIGE,		/* GE_TXD[6] */
+	MPP15_GIGE,		/* GE_TXD[7] */
+	MPP16_GIGE,		/* GE_RXD[4] */
+	MPP17_GIGE,		/* GE_RXD[5] */
+	MPP18_GIGE,		/* GE_RXD[6] */
+	MPP19_GIGE,		/* GE_RXD[7] */
+	0,
+};
+
+static struct mv643xx_eth_platform_data rd88f5181l_fxo_eth_data = {
+	.phy_addr	= MV643XX_ETH_PHY_NONE,
 	.speed		= SPEED_1000,
 	.duplex		= DUPLEX_FULL,
+};
+
+static struct dsa_chip_data rd88f5181l_fxo_switch_chip_data = {
+	.port_names[0]	= "lan2",
+	.port_names[1]	= "lan1",
+	.port_names[2]	= "wan",
+	.port_names[3]	= "cpu",
+	.port_names[5]	= "lan4",
+	.port_names[7]	= "lan3",
+};
+
+static struct dsa_platform_data rd88f5181l_fxo_switch_plat_data = {
+	.nr_chips	= 1,
+	.chip		= &rd88f5181l_fxo_switch_chip_data,
 };
 
 static void __init rd88f5181l_fxo_init(void)
@@ -111,11 +154,19 @@ static void __init rd88f5181l_fxo_init(void)
 
 	orion5x_setup_dev_boot_win(RD88F5181L_FXO_NOR_BOOT_BASE,
 				   RD88F5181L_FXO_NOR_BOOT_SIZE);
+	orion5x_eth_switch_init(&rd88f5181l_fxo_switch_plat_data, NO_IRQ);
+	orion5x_uart0_init();
+
+	mvebu_mbus_add_window_by_id(ORION_MBUS_DEVBUS_BOOT_TARGET,
+				    ORION_MBUS_DEVBUS_BOOT_ATTR,
+				    RD88F5181L_FXO_NOR_BOOT_BASE,
+				    RD88F5181L_FXO_NOR_BOOT_SIZE);
 	platform_device_register(&rd88f5181l_fxo_nor_boot_flash);
 }
 
 static int __init
 rd88f5181l_fxo_pci_map_irq(struct pci_dev *dev, u8 slot, u8 pin)
+rd88f5181l_fxo_pci_map_irq(const struct pci_dev *dev, u8 slot, u8 pin)
 {
 	int irq;
 
@@ -161,4 +212,12 @@ MACHINE_START(RD88F5181L_FXO, "Marvell Orion-VoIP FXO Reference Design")
 	.init_irq	= orion5x_init_irq,
 	.timer		= &orion5x_timer,
 	.fixup		= tag_fixup_mem32,
+	.atag_offset	= 0x100,
+	.init_machine	= rd88f5181l_fxo_init,
+	.map_io		= orion5x_map_io,
+	.init_early	= orion5x_init_early,
+	.init_irq	= orion5x_init_irq,
+	.init_time	= orion5x_timer_init,
+	.fixup		= tag_fixup_mem32,
+	.restart	= orion5x_restart,
 MACHINE_END

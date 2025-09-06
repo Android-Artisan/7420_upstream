@@ -43,6 +43,8 @@ unsigned int idt_cpu_freq = 132000000;
 EXPORT_SYMBOL(idt_cpu_freq);
 unsigned int gpio_bootup_state;
 EXPORT_SYMBOL(gpio_bootup_state);
+unsigned int idt_cpu_freq = 132000000;
+EXPORT_SYMBOL(idt_cpu_freq);
 
 static struct resource ddr_reg[] = {
 	{
@@ -77,6 +79,10 @@ void __init prom_setup_cmdline(void)
 	char *cp, *board;
 	int prom_argc;
 	char **prom_argv, **prom_envp;
+	static char cmd_line[COMMAND_LINE_SIZE] __initdata;
+	char *cp, *board;
+	int prom_argc;
+	char **prom_argv;
 	int i;
 
 	prom_argc = fw_arg0;
@@ -128,6 +134,7 @@ void __init prom_setup_cmdline(void)
 		strcpy(cp, GPIO_INIT_BUTTON);
 
 	cmd_line[CL_SIZE-1] = '\0';
+	cmd_line[COMMAND_LINE_SIZE - 1] = '\0';
 
 	strcpy(arcs_cmdline, cmd_line);
 }
@@ -137,6 +144,8 @@ void __init prom_init(void)
 	struct ddr_ram __iomem *ddr;
 	phys_t memsize;
 	phys_t ddrbase;
+	phys_addr_t memsize;
+	phys_addr_t ddrbase;
 
 	ddr = ioremap_nocache(ddr_reg[0].start,
 			ddr_reg[0].end - ddr_reg[0].start);
@@ -148,6 +157,8 @@ void __init prom_init(void)
 
 	ddrbase = (phys_t)&ddr->ddrbase;
 	memsize = (phys_t)&ddr->ddrmask;
+	ddrbase = (phys_addr_t)&ddr->ddrbase;
+	memsize = (phys_addr_t)&ddr->ddrmask;
 	memsize = 0 - memsize;
 
 	prom_setup_cmdline();

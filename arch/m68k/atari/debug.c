@@ -37,6 +37,9 @@ static inline void ata_mfp_out(char c)
 	while (!(mfp.trn_stat & 0x80))	/* wait for tx buf empty */
 		barrier();
 	mfp.usart_dta = c;
+	while (!(st_mfp.trn_stat & 0x80))	/* wait for tx buf empty */
+		barrier();
+	st_mfp.usart_dta = c;
 }
 
 static void atari_mfp_console_write(struct console *co, const char *str,
@@ -56,6 +59,9 @@ static inline void ata_scc_out(char c)
 	} while (!(scc.cha_b_ctrl & 0x04)); /* wait for tx buf empty */
 	MFPDELAY();
 	scc.cha_b_data = c;
+	} while (!(atari_scc.cha_b_ctrl & 0x04)); /* wait for tx buf empty */
+	MFPDELAY();
+	atari_scc.cha_b_data = c;
 }
 
 static void atari_scc_console_write(struct console *co, const char *str,
@@ -92,6 +98,7 @@ static int ata_par_out(char c)
 	unsigned long i = loops_per_jiffy > 1 ? loops_per_jiffy : 10000000/HZ;
 
 	while ((mfp.par_dt_reg & 1) && --i) /* wait for BUSY == L */
+	while ((st_mfp.par_dt_reg & 1) && --i) /* wait for BUSY == L */
 		;
 	if (!i)
 		return 0;
@@ -134,6 +141,9 @@ int atari_mfp_console_wait_key(struct console *co)
 	while (!(mfp.rcv_stat & 0x80))	/* wait for rx buf filled */
 		barrier();
 	return mfp.usart_dta;
+	while (!(st_mfp.rcv_stat & 0x80))	/* wait for rx buf filled */
+		barrier();
+	return st_mfp.usart_dta;
 }
 
 int atari_scc_console_wait_key(struct console *co)
@@ -143,6 +153,9 @@ int atari_scc_console_wait_key(struct console *co)
 	} while (!(scc.cha_b_ctrl & 0x01)); /* wait for rx buf filled */
 	MFPDELAY();
 	return scc.cha_b_data;
+	} while (!(atari_scc.cha_b_ctrl & 0x01)); /* wait for rx buf filled */
+	MFPDELAY();
+	return atari_scc.cha_b_data;
 }
 
 int atari_midi_console_wait_key(struct console *co)
@@ -181,6 +194,12 @@ static void __init atari_init_mfp_port(int cflag)
 	mfp.tim_dt_d = baud_table[baud];
 	mfp.tim_ct_cd |= 0x01;		/* start timer D, 1:4 */
 	mfp.trn_stat |= 0x01;		/* enable TX */
+	st_mfp.trn_stat &= ~0x01;	/* disable TX */
+	st_mfp.usart_ctr = parity | csize | 0x88; /* 1:16 clk mode, 1 stop bit */
+	st_mfp.tim_ct_cd &= 0x70;	/* stop timer D */
+	st_mfp.tim_dt_d = baud_table[baud];
+	st_mfp.tim_ct_cd |= 0x01;	/* start timer D, 1:4 */
+	st_mfp.trn_stat |= 0x01;	/* enable TX */
 }
 
 #define SCC_WRITE(reg, val)				\
@@ -188,6 +207,9 @@ static void __init atari_init_mfp_port(int cflag)
 		scc.cha_b_ctrl = (reg);			\
 		MFPDELAY();				\
 		scc.cha_b_ctrl = (val);			\
+		atari_scc.cha_b_ctrl = (reg);		\
+		MFPDELAY();				\
+		atari_scc.cha_b_ctrl = (val);		\
 		MFPDELAY();				\
 	} while (0)
 
@@ -241,6 +263,7 @@ static void __init atari_init_scc_port(int cflag)
 	reg5 = (cflag & CSIZE) == CS8 ? 0x60 : 0x20 | 0x82 /* assert DTR/RTS */;
 
 	(void)scc.cha_b_ctrl;		/* reset reg pointer */
+	(void)atari_scc.cha_b_ctrl;	/* reset reg pointer */
 	SCC_WRITE(9, 0xc0);		/* reset */
 	LONG_DELAY();			/* extra delay after WR9 access */
 	SCC_WRITE(4, (cflag & PARENB) ? ((cflag & PARODD) ? 0x01 : 0x03)
@@ -288,6 +311,8 @@ static void __init atari_init_midi_port(int cflag)
 
 static int __init atari_debug_setup(char *arg)
 {
+	bool registered;
+
 	if (!MACH_IS_ATARI)
 		return 0;
 
@@ -295,6 +320,7 @@ static int __init atari_debug_setup(char *arg)
 		/* defaults to ser2 for a Falcon and ser1 otherwise */
 		arg = MACH_IS_FALCON ? "ser2" : "ser1";
 
+	registered = !!atari_console_driver.write;
 	if (!strcmp(arg, "ser1")) {
 		/* ST-MFP Modem1 serial port */
 		atari_init_mfp_port(B9600|CS8);
@@ -319,6 +345,7 @@ static int __init atari_debug_setup(char *arg)
 		atari_console_driver.write = atari_par_console_write;
 	}
 	if (atari_console_driver.write)
+	if (atari_console_driver.write && !registered)
 		register_console(&atari_console_driver);
 
 	return 0;

@@ -17,6 +17,7 @@
 
 #include <asm/mach-types.h>
 #include <mach/pxa-regs.h>
+#include <linux/export.h>
 
 #include "soc_common.h"
 
@@ -43,6 +44,10 @@ static int cmx270_pcmcia_hw_init(struct soc_pcmcia_socket *skt)
 	ret = soc_pcmcia_request_irqs(skt, irqs, ARRAY_SIZE(irqs));
 	if (!ret)
 		gpio_free(GPIO_PCMCIA_RESET);
+	skt->stat[SOC_STAT_CD].gpio = GPIO_PCMCIA_S0_CD_VALID;
+	skt->stat[SOC_STAT_CD].name = "PCMCIA0 CD";
+	skt->stat[SOC_STAT_RDY].gpio = GPIO_PCMCIA_S0_RDYINT;
+	skt->stat[SOC_STAT_RDY].name = "PCMCIA0 RDY";
 
 	return ret;
 }
@@ -64,6 +69,8 @@ static void cmx270_pcmcia_socket_state(struct soc_pcmcia_socket *skt,
 	state->vs_3v  = 0;
 	state->vs_Xv  = 0;
 	state->wrprot = 0;  /* not available */
+	state->vs_3v  = 0;
+	state->vs_Xv  = 0;
 }
 
 
@@ -112,6 +119,10 @@ static int __init cmx270_pcmcia_init(void)
 	if (!machine_is_armcore())
 		return -ENODEV;
 
+int __init cmx270_pcmcia_init(void)
+{
+	int ret;
+
 	cmx270_pcmcia_device = platform_device_alloc("pxa2xx-pcmcia", -1);
 
 	if (!cmx270_pcmcia_device)
@@ -142,3 +153,7 @@ module_exit(cmx270_pcmcia_exit);
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Mike Rapoport <mike@compulab.co.il>");
 MODULE_DESCRIPTION("CM-x270 PCMCIA driver");
+void __exit cmx270_pcmcia_exit(void)
+{
+	platform_device_unregister(cmx270_pcmcia_device);
+}

@@ -18,6 +18,7 @@
 
 #include <asm/ptrace.h>
 #include <asm/system.h>
+#include <asm/mce.h>
 #include <asm/dma.h>
 #include <asm/irq.h>
 #include <asm/mmu_context.h>
@@ -76,6 +77,22 @@ static struct hw_interrupt_type mikasa_irq_type = {
 	.disable	= mikasa_disable_irq,
 	.ack		= mikasa_disable_irq,
 	.end		= mikasa_end_irq,
+mikasa_enable_irq(struct irq_data *d)
+{
+	mikasa_update_irq_hw(cached_irq_mask |= 1 << (d->irq - 16));
+}
+
+static void
+mikasa_disable_irq(struct irq_data *d)
+{
+	mikasa_update_irq_hw(cached_irq_mask &= ~(1 << (d->irq - 16)));
+}
+
+static struct irq_chip mikasa_irq_type = {
+	.name		= "MIKASA",
+	.irq_unmask	= mikasa_enable_irq,
+	.irq_mask	= mikasa_disable_irq,
+	.irq_mask_ack	= mikasa_disable_irq,
 };
 
 static void 
@@ -117,6 +134,9 @@ mikasa_init_irq(void)
 	for (i = 16; i < 32; ++i) {
 		irq_desc[i].status = IRQ_DISABLED | IRQ_LEVEL;
 		irq_desc[i].chip = &mikasa_irq_type;
+		irq_set_chip_and_handler(i, &mikasa_irq_type,
+					 handle_level_irq);
+		irq_set_status_flags(i, IRQ_LEVEL);
 	}
 
 	init_i8259a_irqs();
@@ -163,6 +183,7 @@ mikasa_init_irq(void)
 
 static int __init
 mikasa_map_irq(struct pci_dev *dev, u8 slot, u8 pin)
+mikasa_map_irq(const struct pci_dev *dev, u8 slot, u8 pin)
 {
 	static char irq_tab[8][5] __initdata = {
 		/*INT    INTA   INTB   INTC   INTD */

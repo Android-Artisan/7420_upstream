@@ -1,6 +1,7 @@
 CFLAGS_bootx_init.o  		+= -fPIC
 
 ifdef CONFIG_FTRACE
+ifdef CONFIG_FUNCTION_TRACER
 # Do not trace early boot code
 CFLAGS_REMOVE_bootx_init.o = -pg -mno-sched-epilog
 endif
@@ -12,6 +13,7 @@ obj-$(CONFIG_PMAC_BACKLIGHT)	+= backlight.o
 obj-$(CONFIG_CPU_FREQ_PMAC)	+= cpufreq_32.o
 obj-$(CONFIG_CPU_FREQ_PMAC64)	+= cpufreq_64.o
 # CONFIG_NVRAM is an arch. independant tristate symbol, for pmac32 we really
+# CONFIG_NVRAM is an arch. independent tristate symbol, for pmac32 we really
 # need this to be a bool.  Cheat here and pretend CONFIG_NVRAM=m is really
 # CONFIG_NVRAM=y
 obj-$(CONFIG_NVRAM:m=y)		+= nvram.o

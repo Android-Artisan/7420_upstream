@@ -41,6 +41,8 @@
 #define ADB_QUERY_GETDEVINFO	1
 
 #ifdef __KERNEL__
+#include <uapi/linux/adb.h>
+
 
 struct adb_request {
 	unsigned char data[32];

@@ -27,6 +27,7 @@
  *     along with this program; if not, write to the Free Software
  *     Foundation, Inc., 59 Temple Place, Suite 330, Boston,
  *     MA 02111-1307 USA
+ *     along with this program; if not, see <http://www.gnu.org/licenses/>.
  *
  ********************************************************************/
 
@@ -34,6 +35,8 @@
 #include <linux/socket.h>
 #include <linux/fs.h>
 #include <linux/seq_file.h>
+#include <linux/slab.h>
+#include <linux/export.h>
 
 #include <net/irda/irda.h>
 #include <net/irda/irlmp.h>
@@ -236,6 +239,10 @@ void irlmp_dump_discoveries(hashbin_t *log)
 		IRDA_DEBUG(0, "  daddr=%08x\n", discovery->data.daddr);
 		IRDA_DEBUG(0, "  saddr=%08x\n", discovery->data.saddr);
 		IRDA_DEBUG(0, "  nickname=%s\n", discovery->data.info);
+		pr_debug("Discovery:\n");
+		pr_debug("  daddr=%08x\n", discovery->data.daddr);
+		pr_debug("  saddr=%08x\n", discovery->data.saddr);
+		pr_debug("  nickname=%s\n", discovery->data.info);
 
 		discovery = (discovery_t *) hashbin_get_next(log);
 	}
@@ -315,6 +322,7 @@ struct irda_device_info *irlmp_copy_discoveries(hashbin_t *log, int *pn,
 	/* Get the actual number of device in the buffer and return */
 	*pn = i;
 	return(buffer);
+	return buffer;
 }
 
 #ifdef CONFIG_PROC_FS

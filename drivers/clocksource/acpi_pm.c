@@ -18,6 +18,7 @@
 
 #include <linux/acpi_pmtmr.h>
 #include <linux/clocksource.h>
+#include <linux/timex.h>
 #include <linux/errno.h>
 #include <linux/init.h>
 #include <linux/pci.h>
@@ -63,6 +64,7 @@ static cycle_t acpi_pm_read_slow(void)
 }
 
 static cycle_t acpi_pm_read(void)
+static cycle_t acpi_pm_read(struct clocksource *cs)
 {
 	return (cycle_t)read_pmtmr();
 }
@@ -76,17 +78,24 @@ static struct clocksource clocksource_acpi_pm = {
 	.shift		= 22,
 	.flags		= CLOCK_SOURCE_IS_CONTINUOUS,
 
+	.flags		= CLOCK_SOURCE_IS_CONTINUOUS,
 };
 
 
 #ifdef CONFIG_PCI
 static int __devinitdata acpi_pm_good;
+static int acpi_pm_good;
 static int __init acpi_pm_good_setup(char *__str)
 {
 	acpi_pm_good = 1;
 	return 1;
 }
 __setup("acpi_pm_good", acpi_pm_good_setup);
+
+static cycle_t acpi_pm_read_slow(struct clocksource *cs)
+{
+	return (cycle_t)acpi_pm_read_verified();
+}
 
 static inline void acpi_pm_need_workaround(void)
 {
@@ -105,6 +114,7 @@ static inline void acpi_pm_need_workaround(void)
  * timer specification is violated due to erroneous reads.
  */
 static void __devinit acpi_pm_check_blacklist(struct pci_dev *dev)
+static void acpi_pm_check_blacklist(struct pci_dev *dev)
 {
 	if (acpi_pm_good)
 		return;
@@ -123,6 +133,7 @@ DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_82371AB_3,
 			acpi_pm_check_blacklist);
 
 static void __devinit acpi_pm_check_graylist(struct pci_dev *dev)
+static void acpi_pm_check_graylist(struct pci_dev *dev)
 {
 	if (acpi_pm_good)
 		return;
@@ -146,6 +157,9 @@ DECLARE_PCI_FIXUP_EARLY(PCI_VENDOR_ID_SERVERWORKS, PCI_DEVICE_ID_SERVERWORKS_LE,
 #include "mach_timer.h"
 #define PMTMR_EXPECTED_RATE \
   ((CALIBRATE_LATCH * (PMTMR_TICKS_PER_SEC >> 10)) / (CLOCK_TICK_RATE>>10))
+#include <asm/mach_timer.h>
+#define PMTMR_EXPECTED_RATE \
+  ((CALIBRATE_LATCH * (PMTMR_TICKS_PER_SEC >> 10)) / (PIT_TICK_RATE>>10))
 /*
  * Some boards have the PMTMR running way too fast. We check
  * the PMTMR rate against PIT channel 2 to catch these cases.
@@ -159,6 +173,9 @@ static int verify_pmtmr_rate(void)
 	value1 = clocksource_acpi_pm.read();
 	mach_countup(&count);
 	value2 = clocksource_acpi_pm.read();
+	value1 = clocksource_acpi_pm.read(&clocksource_acpi_pm);
+	mach_countup(&count);
+	value2 = clocksource_acpi_pm.read(&clocksource_acpi_pm);
 	delta = (value2 - value1) & ACPI_PM_MASK;
 
 	/* Check that the PMTMR delta is within 5% of what we expect */
@@ -198,6 +215,12 @@ static int __init init_acpi_pm_clocksource(void)
 		value1 = clocksource_acpi_pm.read();
 		for (i = 0; i < ACPI_PM_READ_CHECKS; i++) {
 			value2 = clocksource_acpi_pm.read();
+	/* "verify" this timing source: */
+	for (j = 0; j < ACPI_PM_MONOTONICITY_CHECKS; j++) {
+		udelay(100 * j);
+		value1 = clocksource_acpi_pm.read(&clocksource_acpi_pm);
+		for (i = 0; i < ACPI_PM_READ_CHECKS; i++) {
+			value2 = clocksource_acpi_pm.read(&clocksource_acpi_pm);
 			if (value2 == value1)
 				continue;
 			if (value2 > value1)
@@ -207,11 +230,16 @@ static int __init init_acpi_pm_clocksource(void)
 			printk(KERN_INFO "PM-Timer had inconsistent results:"
 			       " 0x%#llx, 0x%#llx - aborting.\n",
 			       value1, value2);
+			       " %#llx, %#llx - aborting.\n",
+			       value1, value2);
+			pmtmr_ioport = 0;
 			return -EINVAL;
 		}
 		if (i == ACPI_PM_READ_CHECKS) {
 			printk(KERN_INFO "PM-Timer failed consistency check "
 			       " (0x%#llx) - aborting.\n", value1);
+			       " (%#llx) - aborting.\n", value1);
+			pmtmr_ioport = 0;
 			return -ENODEV;
 		}
 	}
@@ -220,6 +248,13 @@ static int __init init_acpi_pm_clocksource(void)
 		return -ENODEV;
 
 	return clocksource_register(&clocksource_acpi_pm);
+	if (verify_pmtmr_rate() != 0){
+		pmtmr_ioport = 0;
+		return -ENODEV;
+	}
+
+	return clocksource_register_hz(&clocksource_acpi_pm,
+						PMTMR_TICKS_PER_SEC);
 }
 
 /* We use fs_initcall because we want the PCI fixups to have run
@@ -240,6 +275,17 @@ static int __init parse_pmtmr(char *arg)
 
 	printk(KERN_INFO "PMTMR IOPort override: 0x%04x -> 0x%04lx\n",
 	       (unsigned int)pmtmr_ioport, base);
+	unsigned int base;
+	int ret;
+
+	ret = kstrtouint(arg, 16, &base);
+	if (ret) {
+		pr_warn("PMTMR: invalid 'pmtmr=' value: '%s'\n", arg);
+		return 1;
+	}
+
+	pr_info("PMTMR IOPort override: 0x%04x -> 0x%04x\n", pmtmr_ioport,
+		base);
 	pmtmr_ioport = base;
 
 	return 1;

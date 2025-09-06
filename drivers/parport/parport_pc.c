@@ -1,5 +1,6 @@
 /* Low-level parallel-port routines for 8255-based PC-style hardware.
  * 
+ *
  * Authors: Phil Blundell <philb@gnu.org>
  *          Tim Waugh <tim@cyberelk.demon.co.uk>
  *	    Jose Renau <renau@acm.org>
@@ -12,6 +13,7 @@
  * DMA support - Bert De Jonghe <bert@sophis.be>
  * Many ECP bugs fixed.  Fred Barnes & Jamie Lokier, 1999
  * More PCI support now conditional on CONFIG_PCI, 03/2001, Paul G. 
+ * More PCI support now conditional on CONFIG_PCI, 03/2001, Paul G.
  * Various hacks, Fred Barnes, 04/2001
  * Updated probing logic - Adam Belay <ambx1@neo.rr.com>
  */
@@ -60,6 +62,10 @@
 #include <asm/io.h>
 #include <asm/dma.h>
 #include <asm/uaccess.h>
+#include <linux/io.h>
+#include <linux/uaccess.h>
+
+#include <asm/dma.h>
 
 #include <linux/parport.h>
 #include <linux/parport_pc.h>
@@ -83,6 +89,7 @@
 #define ECR_CNF 07
 #define ECR_MODE_MASK 0xe0
 #define ECR_WRITE(p,v) frob_econtrol((p),0xff,(v))
+#define ECR_WRITE(p, v) frob_econtrol((p), 0xff, (v))
 
 #undef DEBUG
 
@@ -110,6 +117,7 @@ static int pnp_registered_parport;
 
 /* frob_control, but for ECR */
 static void frob_econtrol (struct parport *pb, unsigned char m,
+static void frob_econtrol(struct parport *pb, unsigned char m,
 			   unsigned char v)
 {
 	unsigned char ectr = 0;
@@ -130,6 +138,21 @@ static __inline__ void frob_set_mode (struct parport *p, int mode)
 
 #ifdef CONFIG_PARPORT_PC_FIFO
 /* Safely change the mode bits in the ECR 
+		ectr = inb(ECONTROL(pb));
+
+	DPRINTK(KERN_DEBUG "frob_econtrol(%02x,%02x): %02x -> %02x\n",
+		m, v, ectr, (ectr & ~m) ^ v);
+
+	outb((ectr & ~m) ^ v, ECONTROL(pb));
+}
+
+static inline void frob_set_mode(struct parport *p, int mode)
+{
+	frob_econtrol(p, ECR_MODE_MASK, mode << 5);
+}
+
+#ifdef CONFIG_PARPORT_PC_FIFO
+/* Safely change the mode bits in the ECR
    Returns:
 	    0    : Success
 	   -EBUSY: Could not drain FIFO in some finite amount of time,
@@ -145,6 +168,10 @@ static int change_mode(struct parport *p, int m)
 
 	if (!priv->ecr) {
 		printk (KERN_DEBUG "change_mode: but there's no ECR!\n");
+	DPRINTK(KERN_INFO "parport change_mode ECP-ISA to mode 0x%02x\n", m);
+
+	if (!priv->ecr) {
+		printk(KERN_DEBUG "change_mode: but there's no ECR!\n");
 		return 0;
 	}
 
@@ -152,6 +179,10 @@ static int change_mode(struct parport *p, int m)
 	oecr = inb (ECONTROL (p));
 	mode = (oecr >> 5) & 0x7;
 	if (mode == m) return 0;
+	oecr = inb(ECONTROL(p));
+	mode = (oecr >> 5) & 0x7;
+	if (mode == m)
+		return 0;
 
 	if (mode >= 2 && !(priv->ctr & 0x20)) {
 		/* This mode resets the FIFO, so we may
@@ -176,6 +207,21 @@ static int change_mode(struct parport *p, int m)
 					return -EBUSY;
 				schedule_timeout_interruptible(msecs_to_jiffies(10));
 				if (signal_pending (current))
+				if (inb(ECONTROL(p)) & 0x01)
+					break;
+				if (signal_pending(current))
+					break;
+				udelay(5);
+			}
+
+			/* Poll slowly. */
+			while (!(inb(ECONTROL(p)) & 0x01)) {
+				if (time_after_eq(jiffies, expire))
+					/* The FIFO is stuck. */
+					return -EBUSY;
+				schedule_timeout_interruptible(
+							msecs_to_jiffies(10));
+				if (signal_pending(current))
 					break;
 			}
 		}
@@ -186,6 +232,7 @@ static int change_mode(struct parport *p, int m)
 		oecr &= ~(7 << 5);
 		oecr |= ECR_PS2 << 5;
 		ECR_WRITE (p, oecr);
+		ECR_WRITE(p, oecr);
 	}
 
 	/* Set the mode. */
@@ -240,6 +287,9 @@ static int get_fifo_residue (struct parport *p)
 }
 #endif  /*  0 */
 #endif /* IEEE 1284 support */
+	ECR_WRITE(p, oecr);
+	return 0;
+}
 #endif /* FIFO support */
 
 /*
@@ -259,6 +309,8 @@ static int clear_epp_timeout(struct parport *pb)
 	r = parport_pc_read_status(pb);
 	outb (r | 0x01, STATUS (pb)); /* Some reset by writing 1 */
 	outb (r & 0xfe, STATUS (pb)); /* Others by writing 0 */
+	outb(r | 0x01, STATUS(pb)); /* Some reset by writing 1 */
+	outb(r & 0xfe, STATUS(pb)); /* Others by writing 0 */
 	r = parport_pc_read_status(pb);
 
 	return !(r & 0x01);
@@ -273,6 +325,8 @@ static int clear_epp_timeout(struct parport *pb)
  */
 
 static void parport_pc_init_state(struct pardevice *dev, struct parport_state *s)
+static void parport_pc_init_state(struct pardevice *dev,
+						struct parport_state *s)
 {
 	s->u.pc.ctr = 0xc;
 	if (dev->irq_func &&
@@ -305,6 +359,23 @@ static void parport_pc_restore_state(struct parport *p, struct parport_state *s)
 #ifdef CONFIG_PARPORT_1284
 static size_t parport_pc_epp_read_data (struct parport *port, void *buf,
 					size_t length, int flags)
+		s->u.pc.ecr = inb(ECONTROL(p));
+}
+
+static void parport_pc_restore_state(struct parport *p,
+						struct parport_state *s)
+{
+	struct parport_pc_private *priv = p->physport->private_data;
+	register unsigned char c = s->u.pc.ctr & priv->ctr_writable;
+	outb(c, CONTROL(p));
+	priv->ctr = c;
+	if (priv->ecr)
+		ECR_WRITE(p, s->u.pc.ecr);
+}
+
+#ifdef CONFIG_PARPORT_1284
+static size_t parport_pc_epp_read_data(struct parport *port, void *buf,
+				       size_t length, int flags)
 {
 	size_t got = 0;
 
@@ -326,12 +397,22 @@ static size_t parport_pc_epp_read_data (struct parport *port, void *buf,
 				} else {
 					insb (EPPDATA (port), buf, 16);
 				}
+		status = inb(STATUS(port));
+
+		while (!(status & 0x08) && got < length) {
+			if (left >= 16 && (status & 0x20) && !(status & 0x08)) {
+				/* can grab 16 bytes from warp fifo */
+				if (!((long)buf & 0x03))
+					insl(EPPDATA(port), buf, 4);
+				else
+					insb(EPPDATA(port), buf, 16);
 				buf += 16;
 				got += 16;
 				left -= 16;
 			} else {
 				/* grab single byte from the warp fifo */
 				*((char *)buf) = inb (EPPDATA (port));
+				*((char *)buf) = inb(EPPDATA(port));
 				buf++;
 				got++;
 				left--;
@@ -342,6 +423,12 @@ static size_t parport_pc_epp_read_data (struct parport *port, void *buf,
 				printk (KERN_DEBUG "%s: EPP timeout occurred while talking to "
 					"w91284pic (should not have done)\n", port->name);
 				clear_epp_timeout (port);
+			status = inb(STATUS(port));
+			if (status & 0x01) {
+				/* EPP timeout should never occur... */
+				printk(KERN_DEBUG
+"%s: EPP timeout occurred while talking to w91284pic (should not have done)\n", port->name);
+				clear_epp_timeout(port);
 			}
 		}
 		return got;
@@ -354,6 +441,12 @@ static size_t parport_pc_epp_read_data (struct parport *port, void *buf,
 		}
 		if (inb (STATUS (port)) & 0x01) {
 			clear_epp_timeout (port);
+		if (!(((long)buf | length) & 0x03))
+			insl(EPPDATA(port), buf, (length >> 2));
+		else
+			insb(EPPDATA(port), buf, length);
+		if (inb(STATUS(port)) & 0x01) {
+			clear_epp_timeout(port);
 			return -EIO;
 		}
 		return length;
@@ -364,6 +457,11 @@ static size_t parport_pc_epp_read_data (struct parport *port, void *buf,
 		if (inb (STATUS (port)) & 0x01) {
 			/* EPP timeout */
 			clear_epp_timeout (port);
+		*((char *)buf) = inb(EPPDATA(port));
+		buf++;
+		if (inb(STATUS(port)) & 0x01) {
+			/* EPP timeout */
+			clear_epp_timeout(port);
 			break;
 		}
 	}
@@ -373,6 +471,8 @@ static size_t parport_pc_epp_read_data (struct parport *port, void *buf,
 
 static size_t parport_pc_epp_write_data (struct parport *port, const void *buf,
 					 size_t length, int flags)
+static size_t parport_pc_epp_write_data(struct parport *port, const void *buf,
+					size_t length, int flags)
 {
 	size_t written = 0;
 
@@ -384,6 +484,12 @@ static size_t parport_pc_epp_write_data (struct parport *port, const void *buf,
 		}
 		if (inb (STATUS (port)) & 0x01) {
 			clear_epp_timeout (port);
+		if (!(((long)buf | length) & 0x03))
+			outsl(EPPDATA(port), buf, (length >> 2));
+		else
+			outsb(EPPDATA(port), buf, length);
+		if (inb(STATUS(port)) & 0x01) {
+			clear_epp_timeout(port);
 			return -EIO;
 		}
 		return length;
@@ -393,6 +499,10 @@ static size_t parport_pc_epp_write_data (struct parport *port, const void *buf,
 		buf++;
 		if (inb (STATUS(port)) & 0x01) {
 			clear_epp_timeout (port);
+		outb(*((char *)buf), EPPDATA(port));
+		buf++;
+		if (inb(STATUS(port)) & 0x01) {
+			clear_epp_timeout(port);
 			break;
 		}
 	}
@@ -401,6 +511,7 @@ static size_t parport_pc_epp_write_data (struct parport *port, const void *buf,
 }
 
 static size_t parport_pc_epp_read_addr (struct parport *port, void *buf,
+static size_t parport_pc_epp_read_addr(struct parport *port, void *buf,
 					size_t length, int flags)
 {
 	size_t got = 0;
@@ -409,6 +520,9 @@ static size_t parport_pc_epp_read_addr (struct parport *port, void *buf,
 		insb (EPPADDR (port), buf, length);
 		if (inb (STATUS (port)) & 0x01) {
 			clear_epp_timeout (port);
+		insb(EPPADDR(port), buf, length);
+		if (inb(STATUS(port)) & 0x01) {
+			clear_epp_timeout(port);
 			return -EIO;
 		}
 		return length;
@@ -418,6 +532,10 @@ static size_t parport_pc_epp_read_addr (struct parport *port, void *buf,
 		buf++;
 		if (inb (STATUS (port)) & 0x01) {
 			clear_epp_timeout (port);
+		*((char *)buf) = inb(EPPADDR(port));
+		buf++;
+		if (inb(STATUS(port)) & 0x01) {
+			clear_epp_timeout(port);
 			break;
 		}
 	}
@@ -426,6 +544,7 @@ static size_t parport_pc_epp_read_addr (struct parport *port, void *buf,
 }
 
 static size_t parport_pc_epp_write_addr (struct parport *port,
+static size_t parport_pc_epp_write_addr(struct parport *port,
 					 const void *buf, size_t length,
 					 int flags)
 {
@@ -435,6 +554,9 @@ static size_t parport_pc_epp_write_addr (struct parport *port,
 		outsb (EPPADDR (port), buf, length);
 		if (inb (STATUS (port)) & 0x01) {
 			clear_epp_timeout (port);
+		outsb(EPPADDR(port), buf, length);
+		if (inb(STATUS(port)) & 0x01) {
+			clear_epp_timeout(port);
 			return -EIO;
 		}
 		return length;
@@ -444,6 +566,10 @@ static size_t parport_pc_epp_write_addr (struct parport *port,
 		buf++;
 		if (inb (STATUS (port)) & 0x01) {
 			clear_epp_timeout (port);
+		outb(*((char *)buf), EPPADDR(port));
+		buf++;
+		if (inb(STATUS(port)) & 0x01) {
+			clear_epp_timeout(port);
 			break;
 		}
 	}
@@ -461,6 +587,16 @@ static size_t parport_pc_ecpepp_read_data (struct parport *port, void *buf,
 	parport_pc_write_control (port, 0x4);
 	got = parport_pc_epp_read_data (port, buf, length, flags);
 	frob_set_mode (port, ECR_PS2);
+static size_t parport_pc_ecpepp_read_data(struct parport *port, void *buf,
+					  size_t length, int flags)
+{
+	size_t got;
+
+	frob_set_mode(port, ECR_EPP);
+	parport_pc_data_reverse(port);
+	parport_pc_write_control(port, 0x4);
+	got = parport_pc_epp_read_data(port, buf, length, flags);
+	frob_set_mode(port, ECR_PS2);
 
 	return got;
 }
@@ -476,6 +612,17 @@ static size_t parport_pc_ecpepp_write_data (struct parport *port,
 	parport_pc_data_forward (port);
 	written = parport_pc_epp_write_data (port, buf, length, flags);
 	frob_set_mode (port, ECR_PS2);
+static size_t parport_pc_ecpepp_write_data(struct parport *port,
+					   const void *buf, size_t length,
+					   int flags)
+{
+	size_t written;
+
+	frob_set_mode(port, ECR_EPP);
+	parport_pc_write_control(port, 0x4);
+	parport_pc_data_forward(port);
+	written = parport_pc_epp_write_data(port, buf, length, flags);
+	frob_set_mode(port, ECR_PS2);
 
 	return written;
 }
@@ -490,11 +637,22 @@ static size_t parport_pc_ecpepp_read_addr (struct parport *port, void *buf,
 	parport_pc_write_control (port, 0x4);
 	got = parport_pc_epp_read_addr (port, buf, length, flags);
 	frob_set_mode (port, ECR_PS2);
+static size_t parport_pc_ecpepp_read_addr(struct parport *port, void *buf,
+					  size_t length, int flags)
+{
+	size_t got;
+
+	frob_set_mode(port, ECR_EPP);
+	parport_pc_data_reverse(port);
+	parport_pc_write_control(port, 0x4);
+	got = parport_pc_epp_read_addr(port, buf, length, flags);
+	frob_set_mode(port, ECR_PS2);
 
 	return got;
 }
 
 static size_t parport_pc_ecpepp_write_addr (struct parport *port,
+static size_t parport_pc_ecpepp_write_addr(struct parport *port,
 					    const void *buf, size_t length,
 					    int flags)
 {
@@ -505,6 +663,11 @@ static size_t parport_pc_ecpepp_write_addr (struct parport *port,
 	parport_pc_data_forward (port);
 	written = parport_pc_epp_write_addr (port, buf, length, flags);
 	frob_set_mode (port, ECR_PS2);
+	frob_set_mode(port, ECR_EPP);
+	parport_pc_write_control(port, 0x4);
+	parport_pc_data_forward(port);
+	written = parport_pc_epp_write_addr(port, buf, length, flags);
+	frob_set_mode(port, ECR_PS2);
 
 	return written;
 }
@@ -512,6 +675,7 @@ static size_t parport_pc_ecpepp_write_addr (struct parport *port,
 
 #ifdef CONFIG_PARPORT_PC_FIFO
 static size_t parport_pc_fifo_write_block_pio (struct parport *port,
+static size_t parport_pc_fifo_write_block_pio(struct parport *port,
 					       const void *buf, size_t length)
 {
 	int ret = 0;
@@ -519,6 +683,8 @@ static size_t parport_pc_fifo_write_block_pio (struct parport *port,
 	size_t left = length;
 	unsigned long expire = jiffies + port->physport->cad->timeout;
 	const int fifo = FIFO (port);
+	const int fifo = FIFO(port);
+	const unsigned long fifo = FIFO(port);
 	int poll_for = 8; /* 80 usecs */
 	const struct parport_pc_private *priv = port->physport->private_data;
 	const int fifo_depth = priv->fifo_depth;
@@ -545,6 +711,25 @@ static size_t parport_pc_fifo_write_block_pio (struct parport *port,
 		/* Anyone else waiting for the port? */
 		if (port->waithead) {
 			printk (KERN_DEBUG "Somebody wants the port\n");
+	parport_pc_disable_irq(port);
+	/* set nErrIntrEn and serviceIntr */
+	frob_econtrol(port, (1<<4) | (1<<2), (1<<4) | (1<<2));
+
+	/* Forward mode. */
+	parport_pc_data_forward(port); /* Must be in PS2 mode */
+
+	while (left) {
+		unsigned char byte;
+		unsigned char ecrval = inb(ECONTROL(port));
+		int i = 0;
+
+		if (need_resched() && time_before(jiffies, expire))
+			/* Can't yield the port. */
+			schedule();
+
+		/* Anyone else waiting for the port? */
+		if (port->waithead) {
+			printk(KERN_DEBUG "Somebody wants the port\n");
 			break;
 		}
 
@@ -567,6 +752,22 @@ static size_t parport_pc_fifo_write_block_pio (struct parport *port,
 				if (need_resched() &&
 				    time_before (jiffies, expire))
 					schedule ();
+			ECR_WRITE(port, ecrval & ~(1<<2));
+false_alarm:
+			ret = parport_wait_event(port, HZ);
+			if (ret < 0)
+				break;
+			ret = 0;
+			if (!time_before(jiffies, expire)) {
+				/* Timed out. */
+				printk(KERN_DEBUG "FIFO write timed out\n");
+				break;
+			}
+			ecrval = inb(ECONTROL(port));
+			if (!(ecrval & (1<<2))) {
+				if (need_resched() &&
+				    time_before(jiffies, expire))
+					schedule();
 
 				goto false_alarm;
 			}
@@ -579,12 +780,15 @@ static size_t parport_pc_fifo_write_block_pio (struct parport *port,
 
 	poll:
 		if (signal_pending (current))
+poll:
+		if (signal_pending(current))
 			break;
 
 		if (ecrval & 0x01) {
 			/* FIFO is empty. Blast it full. */
 			const int n = left < fifo_depth ? left : fifo_depth;
 			outsb (fifo, bufp, n);
+			outsb(fifo, bufp, n);
 			bufp += n;
 			left -= n;
 
@@ -604,11 +808,27 @@ static size_t parport_pc_fifo_write_block_pio (struct parport *port,
         }
 
 dump_parport_state ("leave fifo_write_block_pio", port);
+			if (i < (poll_for - 2))
+				poll_for--;
+			continue;
+		} else if (i++ < poll_for) {
+			udelay(10);
+			ecrval = inb(ECONTROL(port));
+			goto poll;
+		}
+
+		/* Half-full(call me an optimist) */
+		byte = *bufp++;
+		outb(byte, fifo);
+		left--;
+	}
+	dump_parport_state("leave fifo_write_block_pio", port);
 	return length - left;
 }
 
 #ifdef HAS_DMA
 static size_t parport_pc_fifo_write_block_dma (struct parport *port,
+static size_t parport_pc_fifo_write_block_dma(struct parport *port,
 					       const void *buf, size_t length)
 {
 	int ret = 0;
@@ -622,6 +842,7 @@ static size_t parport_pc_fifo_write_block_dma (struct parport *port,
 	unsigned long end = (unsigned long) buf + length - 1;
 
 dump_parport_state ("enter fifo_write_block_dma", port);
+	dump_parport_state("enter fifo_write_block_dma", port);
 	if (end < MAX_DMA_ADDRESS) {
 		/* If it would cross a 64k boundary, cap it at the end. */
 		if ((start ^ end) & ~0xffffUL)
@@ -631,6 +852,9 @@ dump_parport_state ("enter fifo_write_block_dma", port);
 						       DMA_TO_DEVICE);
         } else {
 		/* above 16 MB we use a bounce buffer as ISA-DMA is not possible */
+	} else {
+		/* above 16 MB we use a bounce buffer as ISA-DMA
+		   is not possible */
 		maxlen   = PAGE_SIZE;          /* sizeof(priv->dma_buf) */
 		dma_addr = priv->dma_handle;
 		dma_handle = 0;
@@ -645,6 +869,12 @@ dump_parport_state ("enter fifo_write_block_dma", port);
 
 	/* Forward mode. */
 	parport_pc_data_forward (port); /* Must be in PS2 mode */
+	parport_pc_disable_irq(port);
+	/* set nErrIntrEn and serviceIntr */
+	frob_econtrol(port, (1<<4) | (1<<2), (1<<4) | (1<<2));
+
+	/* Forward mode. */
+	parport_pc_data_forward(port); /* Must be in PS2 mode */
 
 	while (left) {
 		unsigned long expire = jiffies + port->physport->cad->timeout;
@@ -669,6 +899,10 @@ dump_parport_state ("enter fifo_write_block_dma", port);
 
 		/* Clear serviceIntr */
 		frob_econtrol (port, 1<<2, 0);
+		frob_econtrol(port, 1<<3, 1<<3);
+
+		/* Clear serviceIntr */
+		frob_econtrol(port, 1<<2, 0);
 
 		enable_dma(port->dma);
 		release_dma_lock(dmaflag);
@@ -690,6 +924,22 @@ dump_parport_state ("enter fifo_write_block_dma", port);
 		}
 		/* Is serviceIntr set? */
 		if (!(inb (ECONTROL (port)) & (1<<2))) {
+		if (dma_handle)
+			dma_addr += count;
+
+		/* Wait for interrupt. */
+false_alarm:
+		ret = parport_wait_event(port, HZ);
+		if (ret < 0)
+			break;
+		ret = 0;
+		if (!time_before(jiffies, expire)) {
+			/* Timed out. */
+			printk(KERN_DEBUG "DMA write timed out\n");
+			break;
+		}
+		/* Is serviceIntr set? */
+		if (!(inb(ECONTROL(port)) & (1<<2))) {
 			cond_resched();
 
 			goto false_alarm;
@@ -706,6 +956,7 @@ dump_parport_state ("enter fifo_write_block_dma", port);
 		/* Anyone else waiting for the port? */
 		if (port->waithead) {
 			printk (KERN_DEBUG "Somebody wants the port\n");
+			printk(KERN_DEBUG "Somebody wants the port\n");
 			break;
 		}
 
@@ -713,6 +964,8 @@ dump_parport_state ("enter fifo_write_block_dma", port);
 		buf  -= count;
 		left += count;
 		if (dma_handle) dma_addr -= count;
+		if (dma_handle)
+			dma_addr -= count;
 	}
 
 	/* Maybe got here through break, so adjust for DMA residue! */
@@ -724,11 +977,13 @@ dump_parport_state ("enter fifo_write_block_dma", port);
 
 	/* Turn off DMA mode */
 	frob_econtrol (port, 1<<3, 0);
+	frob_econtrol(port, 1<<3, 0);
 
 	if (dma_handle)
 		dma_unmap_single(dev, dma_handle, length, DMA_TO_DEVICE);
 
 dump_parport_state ("leave fifo_write_block_dma", port);
+	dump_parport_state("leave fifo_write_block_dma", port);
 	return length - left;
 }
 #endif
@@ -745,6 +1000,13 @@ static inline size_t parport_pc_fifo_write_block(struct parport *port,
 
 /* Parallel Port FIFO mode (ECP chipsets) */
 static size_t parport_pc_compat_write_block_pio (struct parport *port,
+		return parport_pc_fifo_write_block_dma(port, buf, length);
+#endif
+	return parport_pc_fifo_write_block_pio(port, buf, length);
+}
+
+/* Parallel Port FIFO mode (ECP chipsets) */
+static size_t parport_pc_compat_write_block_pio(struct parport *port,
 						 const void *buf, size_t length,
 						 int flags)
 {
@@ -764,6 +1026,16 @@ static size_t parport_pc_compat_write_block_pio (struct parport *port,
 	parport_pc_frob_control (port, PARPORT_CONTROL_STROBE, 0);
 	r = change_mode (port, ECR_PPF); /* Parallel port FIFO */
 	if (r)  printk (KERN_DEBUG "%s: Warning change_mode ECR_PPF failed\n", port->name);
+		return parport_ieee1284_write_compat(port, buf,
+						      length, flags);
+
+	/* Set up parallel port FIFO mode.*/
+	parport_pc_data_forward(port); /* Must be in PS2 mode */
+	parport_pc_frob_control(port, PARPORT_CONTROL_STROBE, 0);
+	r = change_mode(port, ECR_PPF); /* Parallel port FIFO */
+	if (r)
+		printk(KERN_DEBUG "%s: Warning change_mode ECR_PPF failed\n",
+								port->name);
 
 	port->physport->ieee1284.phase = IEEE1284_PH_FWD_DATA;
 
@@ -809,6 +1081,39 @@ static size_t parport_pc_compat_write_block_pio (struct parport *port,
 	if (r)
 		printk (KERN_DEBUG
 			"%s: BUSY timeout (%d) in compat_write_block_pio\n", 
+	expire = jiffies + (priv->fifo_depth * HZ * 4);
+	do {
+		/* Wait for the FIFO to empty */
+		r = change_mode(port, ECR_PS2);
+		if (r != -EBUSY)
+			break;
+	} while (time_before(jiffies, expire));
+	if (r == -EBUSY) {
+
+		printk(KERN_DEBUG "%s: FIFO is stuck\n", port->name);
+
+		/* Prevent further data transfer. */
+		frob_set_mode(port, ECR_TST);
+
+		/* Adjust for the contents of the FIFO. */
+		for (written -= priv->fifo_depth; ; written++) {
+			if (inb(ECONTROL(port)) & 0x2) {
+				/* Full up. */
+				break;
+			}
+			outb(0, FIFO(port));
+		}
+
+		/* Reset the FIFO and return to PS2 mode. */
+		frob_set_mode(port, ECR_PS2);
+	}
+
+	r = parport_wait_peripheral(port,
+				     PARPORT_STATUS_BUSY,
+				     PARPORT_STATUS_BUSY);
+	if (r)
+		printk(KERN_DEBUG
+			"%s: BUSY timeout (%d) in compat_write_block_pio\n",
 			port->name, r);
 
 	port->physport->ieee1284.phase = IEEE1284_PH_FWD_IDLE;
@@ -819,6 +1124,7 @@ static size_t parport_pc_compat_write_block_pio (struct parport *port,
 /* ECP */
 #ifdef CONFIG_PARPORT_1284
 static size_t parport_pc_ecp_write_block_pio (struct parport *port,
+static size_t parport_pc_ecp_write_block_pio(struct parport *port,
 					      const void *buf, size_t length,
 					      int flags)
 {
@@ -831,12 +1137,14 @@ static size_t parport_pc_ecp_write_block_pio (struct parport *port,
 	 * Also if O_NONBLOCK is set then use the default implementation. */
 	if (port->physport->cad->timeout <= PARPORT_INACTIVITY_O_NONBLOCK)
 		return parport_ieee1284_ecp_write_data (port, buf,
+		return parport_ieee1284_ecp_write_data(port, buf,
 							length, flags);
 
 	/* Switch to forward mode if necessary. */
 	if (port->physport->ieee1284.phase != IEEE1284_PH_FWD_IDLE) {
 		/* Event 47: Set nInit high. */
 		parport_frob_control (port,
+		parport_frob_control(port,
 				      PARPORT_CONTROL_INIT
 				      | PARPORT_CONTROL_AUTOFD,
 				      PARPORT_CONTROL_INIT
@@ -848,6 +1156,11 @@ static size_t parport_pc_ecp_write_block_pio (struct parport *port,
 					     PARPORT_STATUS_PAPEROUT);
 		if (r) {
 			printk (KERN_DEBUG "%s: PError timeout (%d) "
+		r = parport_wait_peripheral(port,
+					     PARPORT_STATUS_PAPEROUT,
+					     PARPORT_STATUS_PAPEROUT);
+		if (r) {
+			printk(KERN_DEBUG "%s: PError timeout (%d) "
 				"in ecp_write_block_pio\n", port->name, r);
 		}
 	}
@@ -860,6 +1173,15 @@ static size_t parport_pc_ecp_write_block_pio (struct parport *port,
 				 0);
 	r = change_mode (port, ECR_ECP); /* ECP FIFO */
 	if (r) printk (KERN_DEBUG "%s: Warning change_mode ECR_ECP failed\n", port->name);
+	parport_pc_data_forward(port); /* Must be in PS2 mode */
+	parport_pc_frob_control(port,
+				 PARPORT_CONTROL_STROBE |
+				 PARPORT_CONTROL_AUTOFD,
+				 0);
+	r = change_mode(port, ECR_ECP); /* ECP FIFO */
+	if (r)
+		printk(KERN_DEBUG "%s: Warning change_mode ECR_ECP failed\n",
+								port->name);
 	port->physport->ieee1284.phase = IEEE1284_PH_FWD_DATA;
 
 	/* Write the data to the FIFO. */
@@ -922,6 +1244,54 @@ static size_t parport_pc_ecp_write_block_pio (struct parport *port,
 				     PARPORT_STATUS_BUSY);
 	if(r)
 		printk (KERN_DEBUG
+		r = change_mode(port, ECR_PS2);
+		if (r != -EBUSY)
+			break;
+	} while (time_before(jiffies, expire));
+	if (r == -EBUSY) {
+
+		printk(KERN_DEBUG "%s: FIFO is stuck\n", port->name);
+
+		/* Prevent further data transfer. */
+		frob_set_mode(port, ECR_TST);
+
+		/* Adjust for the contents of the FIFO. */
+		for (written -= priv->fifo_depth; ; written++) {
+			if (inb(ECONTROL(port)) & 0x2) {
+				/* Full up. */
+				break;
+			}
+			outb(0, FIFO(port));
+		}
+
+		/* Reset the FIFO and return to PS2 mode. */
+		frob_set_mode(port, ECR_PS2);
+
+		/* Host transfer recovery. */
+		parport_pc_data_reverse(port); /* Must be in PS2 mode */
+		udelay(5);
+		parport_frob_control(port, PARPORT_CONTROL_INIT, 0);
+		r = parport_wait_peripheral(port, PARPORT_STATUS_PAPEROUT, 0);
+		if (r)
+			printk(KERN_DEBUG "%s: PE,1 timeout (%d) "
+				"in ecp_write_block_pio\n", port->name, r);
+
+		parport_frob_control(port,
+				      PARPORT_CONTROL_INIT,
+				      PARPORT_CONTROL_INIT);
+		r = parport_wait_peripheral(port,
+					     PARPORT_STATUS_PAPEROUT,
+					     PARPORT_STATUS_PAPEROUT);
+		if (r)
+			printk(KERN_DEBUG "%s: PE,2 timeout (%d) "
+				"in ecp_write_block_pio\n", port->name, r);
+	}
+
+	r = parport_wait_peripheral(port,
+				     PARPORT_STATUS_BUSY,
+				     PARPORT_STATUS_BUSY);
+	if (r)
+		printk(KERN_DEBUG
 			"%s: BUSY timeout (%d) in ecp_write_block_pio\n",
 			port->name, r);
 
@@ -1166,6 +1536,7 @@ dump_parport_state ("fwd idle", port);
    so we use outlined_ variants here.  */
 static const struct parport_operations parport_pc_ops =
 {
+static const struct parport_operations parport_pc_ops = {
 	.write_data	= parport_pc_write_data,
 	.read_data	= parport_pc_read_data,
 
@@ -1207,6 +1578,24 @@ static void __devinit show_parconfig_smsc37c669(int io, int key)
 {
 	int cr1,cr4,cra,cr23,cr26,cr27,i=0;
 	static const char *const modes[]={
+
+static struct superio_struct *find_free_superio(void)
+{
+	int i;
+	for (i = 0; i < NR_SUPERIOS; i++)
+		if (superios[i].io == 0)
+			return &superios[i];
+	return NULL;
+}
+
+
+/* Super-IO chipset detection, Winbond, SMSC */
+static void show_parconfig_smsc37c669(int io, int key)
+{
+	int cr1, cr4, cra, cr23, cr26, cr27;
+	struct superio_struct *s;
+
+	static const char *const modes[] = {
 		"SPP and Bidirectional (PS/2)",
 		"EPP and SPP",
 		"ECP",
@@ -1247,6 +1636,47 @@ static void __devinit show_parconfig_smsc37c669(int io, int key)
 		       (cr4 & 0x40) ? "1.7" : "1.9");
 	}
 		
+	outb(key, io);
+	outb(key, io);
+	outb(1, io);
+	cr1 = inb(io + 1);
+	outb(4, io);
+	cr4 = inb(io + 1);
+	outb(0x0a, io);
+	cra = inb(io + 1);
+	outb(0x23, io);
+	cr23 = inb(io + 1);
+	outb(0x26, io);
+	cr26 = inb(io + 1);
+	outb(0x27, io);
+	cr27 = inb(io + 1);
+	outb(0xaa, io);
+
+	if (verbose_probing) {
+		printk(KERN_INFO
+			"SMSC 37c669 LPT Config: cr_1=0x%02x, 4=0x%02x, "
+			"A=0x%2x, 23=0x%02x, 26=0x%02x, 27=0x%02x\n",
+			cr1, cr4, cra, cr23, cr26, cr27);
+
+		/* The documentation calls DMA and IRQ-Lines by letters, so
+		   the board maker can/will wire them
+		   appropriately/randomly...  G=reserved H=IDE-irq, */
+		printk(KERN_INFO
+	"SMSC LPT Config: io=0x%04x, irq=%c, dma=%c, fifo threshold=%d\n",
+				cr23 * 4,
+				(cr27 & 0x0f) ? 'A' - 1 + (cr27 & 0x0f) : '-',
+				(cr26 & 0x0f) ? 'A' - 1 + (cr26 & 0x0f) : '-',
+				cra & 0x0f);
+		printk(KERN_INFO "SMSC LPT Config: enabled=%s power=%s\n",
+		       (cr23 * 4 >= 0x100) ? "yes" : "no",
+		       (cr1 & 4) ? "yes" : "no");
+		printk(KERN_INFO
+			"SMSC LPT Config: Port mode=%s, EPP version =%s\n",
+				(cr1 & 0x08) ? "Standard mode only (SPP)"
+					      : modes[cr4 & 0x03],
+				(cr4 & 0x40) ? "1.7" : "1.9");
+	}
+
 	/* Heuristics !  BIOS setup for this mainboard device limits
 	   the choices to standard settings, i.e. io-address and IRQ
 	   are related, however DMA can be 1 or 3, assume DMA_A=DMA1,
@@ -1284,6 +1714,39 @@ static void __devinit show_parconfig_smsc37c669(int io, int key)
 static void __devinit show_parconfig_winbond(int io, int key)
 {
 	int cr30,cr60,cr61,cr70,cr74,crf0,i=0;
+	if (cr23 * 4 >= 0x100) { /* if active */
+		s = find_free_superio();
+		if (s == NULL)
+			printk(KERN_INFO "Super-IO: too many chips!\n");
+		else {
+			int d;
+			switch (cr23 * 4) {
+			case 0x3bc:
+				s->io = 0x3bc;
+				s->irq = 7;
+				break;
+			case 0x378:
+				s->io = 0x378;
+				s->irq = 7;
+				break;
+			case 0x278:
+				s->io = 0x278;
+				s->irq = 5;
+			}
+			d = (cr26 & 0x0f);
+			if (d == 1 || d == 3)
+				s->dma = d;
+			else
+				s->dma = PARPORT_DMA_NONE;
+		}
+	}
+}
+
+
+static void show_parconfig_winbond(int io, int key)
+{
+	int cr30, cr60, cr61, cr70, cr74, crf0;
+	struct superio_struct *s;
 	static const char *const modes[] = {
 		"Standard (SPP) and Bidirectional(PS/2)", /* 0 */
 		"EPP-1.9 and SPP",
@@ -1341,6 +1804,53 @@ static void __devinit show_parconfig_winbond(int io, int key)
 			superios[i].io = (cr60<<8)|cr61;
 			superios[i].irq = cr70&0x0f;
 			superios[i].dma = (((cr74 & 0x07) > 3) ?
+
+	/* The registers are called compatible-PnP because the
+	   register layout is modelled after ISA-PnP, the access
+	   method is just another ... */
+	outb(key, io);
+	outb(key, io);
+	outb(0x07, io);   /* Register 7: Select Logical Device */
+	outb(0x01, io + 1); /* LD1 is Parallel Port */
+	outb(0x30, io);
+	cr30 = inb(io + 1);
+	outb(0x60, io);
+	cr60 = inb(io + 1);
+	outb(0x61, io);
+	cr61 = inb(io + 1);
+	outb(0x70, io);
+	cr70 = inb(io + 1);
+	outb(0x74, io);
+	cr74 = inb(io + 1);
+	outb(0xf0, io);
+	crf0 = inb(io + 1);
+	outb(0xaa, io);
+
+	if (verbose_probing) {
+		printk(KERN_INFO
+    "Winbond LPT Config: cr_30=%02x 60,61=%02x%02x 70=%02x 74=%02x, f0=%02x\n",
+					cr30, cr60, cr61, cr70, cr74, crf0);
+		printk(KERN_INFO "Winbond LPT Config: active=%s, io=0x%02x%02x irq=%d, ",
+		       (cr30 & 0x01) ? "yes" : "no", cr60, cr61, cr70 & 0x0f);
+		if ((cr74 & 0x07) > 3)
+			printk("dma=none\n");
+		else
+			printk("dma=%d\n", cr74 & 0x07);
+		printk(KERN_INFO
+		    "Winbond LPT Config: irqtype=%s, ECP fifo threshold=%d\n",
+					irqtypes[crf0>>7], (crf0>>3)&0x0f);
+		printk(KERN_INFO "Winbond LPT Config: Port mode=%s\n",
+					modes[crf0 & 0x07]);
+	}
+
+	if (cr30 & 0x01) { /* the settings can be interrogated later ... */
+		s = find_free_superio();
+		if (s == NULL)
+			printk(KERN_INFO "Super-IO: too many chips!\n");
+		else {
+			s->io = (cr60 << 8) | cr61;
+			s->irq = cr70 & 0x0f;
+			s->dma = (((cr74 & 0x07) > 3) ?
 					   PARPORT_DMA_NONE : (cr74 & 0x07));
 		}
 	}
@@ -1400,6 +1910,81 @@ static void __devinit decode_smsc(int efer, int key, int devid, int devrev)
 	else if	(id==0x6582) type="37c665IR";
 	else if	(devid==0x65) type="37c665GT";
 	else if	(devid==0x66) type="37c666GT";
+static void decode_winbond(int efer, int key, int devid, int devrev, int oldid)
+{
+	const char *type = "unknown";
+	int id, progif = 2;
+
+	if (devid == devrev)
+		/* simple heuristics, we happened to read some
+		   non-winbond register */
+		return;
+
+	id = (devid << 8) | devrev;
+
+	/* Values are from public data sheets pdf files, I can just
+	   confirm 83977TF is correct :-) */
+	if (id == 0x9771)
+		type = "83977F/AF";
+	else if (id == 0x9773)
+		type = "83977TF / SMSC 97w33x/97w34x";
+	else if (id == 0x9774)
+		type = "83977ATF";
+	else if ((id & ~0x0f) == 0x5270)
+		type = "83977CTF / SMSC 97w36x";
+	else if ((id & ~0x0f) == 0x52f0)
+		type = "83977EF / SMSC 97w35x";
+	else if ((id & ~0x0f) == 0x5210)
+		type = "83627";
+	else if ((id & ~0x0f) == 0x6010)
+		type = "83697HF";
+	else if ((oldid & 0x0f) == 0x0a) {
+		type = "83877F";
+		progif = 1;
+	} else if ((oldid & 0x0f) == 0x0b) {
+		type = "83877AF";
+		progif = 1;
+	} else if ((oldid & 0x0f) == 0x0c) {
+		type = "83877TF";
+		progif = 1;
+	} else if ((oldid & 0x0f) == 0x0d) {
+		type = "83877ATF";
+		progif = 1;
+	} else
+		progif = 0;
+
+	if (verbose_probing)
+		printk(KERN_INFO "Winbond chip at EFER=0x%x key=0x%02x "
+		       "devid=%02x devrev=%02x oldid=%02x type=%s\n",
+		       efer, key, devid, devrev, oldid, type);
+
+	if (progif == 2)
+		show_parconfig_winbond(efer, key);
+}
+
+static void decode_smsc(int efer, int key, int devid, int devrev)
+{
+	const char *type = "unknown";
+	void (*func)(int io, int key);
+	int id;
+
+	if (devid == devrev)
+		/* simple heuristics, we happened to read some
+		   non-smsc register */
+		return;
+
+	func = NULL;
+	id = (devid << 8) | devrev;
+
+	if (id == 0x0302) {
+		type = "37c669";
+		func = show_parconfig_smsc37c669;
+	} else if (id == 0x6582)
+		type = "37c665IR";
+	else if	(devid == 0x65)
+		type = "37c665GT";
+	else if	(devid == 0x66)
+		type = "37c666GT";
 
 	if (verbose_probing)
 		printk(KERN_INFO "SMSC chip at EFER=0x%x "
@@ -1414,6 +1999,13 @@ static void __devinit decode_smsc(int efer, int key, int devid, int devrev)
 static void __devinit winbond_check(int io, int key)
 {
 	int devid,devrev,oldid,x_devid,x_devrev,x_oldid;
+		func(efer, key);
+}
+
+
+static void winbond_check(int io, int key)
+{
+	int origval, devid, devrev, oldid, x_devid, x_devrev, x_oldid;
 
 	if (!request_region(io, 3, __func__))
 		return;
@@ -1436,11 +2028,34 @@ static void __devinit winbond_check(int io, int key)
 	outb(0x09,io);
 	oldid=inb(io+1);
 	outb(0xaa,io);    /* Magic Seal */
+	origval = inb(io); /* Save original value */
+
+	/* First probe without key */
+	outb(0x20, io);
+	x_devid = inb(io + 1);
+	outb(0x21, io);
+	x_devrev = inb(io + 1);
+	outb(0x09, io);
+	x_oldid = inb(io + 1);
+
+	outb(key, io);
+	outb(key, io);     /* Write Magic Sequence to EFER, extended
+			      function enable register */
+	outb(0x20, io);    /* Write EFIR, extended function index register */
+	devid = inb(io + 1);  /* Read EFDR, extended function data register */
+	outb(0x21, io);
+	devrev = inb(io + 1);
+	outb(0x09, io);
+	oldid = inb(io + 1);
+	outb(0xaa, io);    /* Magic Seal */
+
+	outb(origval, io); /* in case we poked some entirely different hardware */
 
 	if ((x_devid == devid) && (x_devrev == devrev) && (x_oldid == oldid))
 		goto out; /* protection against false positives */
 
 	decode_winbond(io,key,devid,devrev,oldid);
+	decode_winbond(io, key, devid, devrev, oldid);
 out:
 	release_region(io, 3);
 }
@@ -1448,6 +2063,9 @@ out:
 static void __devinit winbond_check2(int io,int key)
 {
         int devid,devrev,oldid,x_devid,x_devrev,x_oldid;
+static void winbond_check2(int io, int key)
+{
+	int origval[3], devid, devrev, oldid, x_devid, x_devrev, x_oldid;
 
 	if (!request_region(io, 3, __func__))
 		return;
@@ -1474,6 +2092,36 @@ static void __devinit winbond_check2(int io,int key)
 		goto out; /* protection against false positives */
 
 	decode_winbond(io,key,devid,devrev,oldid);
+	origval[0] = inb(io); /* Save original values */
+	origval[1] = inb(io + 1);
+	origval[2] = inb(io + 2);
+
+	/* First probe without the key */
+	outb(0x20, io + 2);
+	x_devid = inb(io + 2);
+	outb(0x21, io + 1);
+	x_devrev = inb(io + 2);
+	outb(0x09, io + 1);
+	x_oldid = inb(io + 2);
+
+	outb(key, io);     /* Write Magic Byte to EFER, extended
+			      function enable register */
+	outb(0x20, io + 2);  /* Write EFIR, extended function index register */
+	devid = inb(io + 2);  /* Read EFDR, extended function data register */
+	outb(0x21, io + 1);
+	devrev = inb(io + 2);
+	outb(0x09, io + 1);
+	oldid = inb(io + 2);
+	outb(0xaa, io);    /* Magic Seal */
+
+	outb(origval[0], io); /* in case we poked some entirely different hardware */
+	outb(origval[1], io + 1);
+	outb(origval[2], io + 2);
+
+	if (x_devid == devid && x_devrev == devrev && x_oldid == oldid)
+		goto out; /* protection against false positives */
+
+	decode_winbond(io, key, devid, devrev, oldid);
 out:
 	release_region(io, 3);
 }
@@ -1481,6 +2129,9 @@ out:
 static void __devinit smsc_check(int io, int key)
 {
         int id,rev,oldid,oldrev,x_id,x_rev,x_oldid,x_oldrev;
+static void smsc_check(int io, int key)
+{
+	int origval, id, rev, oldid, oldrev, x_id, x_rev, x_oldid, x_oldrev;
 
 	if (!request_region(io, 3, __func__))
 		return;
@@ -1513,6 +2164,38 @@ static void __devinit smsc_check(int io, int key)
 		goto out; /* protection against false positives */
 
         decode_smsc(io,key,oldid,oldrev);
+	origval = inb(io); /* Save original value */
+
+	/* First probe without the key */
+	outb(0x0d, io);
+	x_oldid = inb(io + 1);
+	outb(0x0e, io);
+	x_oldrev = inb(io + 1);
+	outb(0x20, io);
+	x_id = inb(io + 1);
+	outb(0x21, io);
+	x_rev = inb(io + 1);
+
+	outb(key, io);
+	outb(key, io);     /* Write Magic Sequence to EFER, extended
+			      function enable register */
+	outb(0x0d, io);    /* Write EFIR, extended function index register */
+	oldid = inb(io + 1);  /* Read EFDR, extended function data register */
+	outb(0x0e, io);
+	oldrev = inb(io + 1);
+	outb(0x20, io);
+	id = inb(io + 1);
+	outb(0x21, io);
+	rev = inb(io + 1);
+	outb(0xaa, io);    /* Magic Seal */
+
+	outb(origval, io); /* in case we poked some entirely different hardware */
+
+	if (x_id == id && x_oldrev == oldrev &&
+	    x_oldid == oldid && x_rev == rev)
+		goto out; /* protection against false positives */
+
+	decode_smsc(io, key, oldid, oldrev);
 out:
 	release_region(io, 3);
 }
@@ -1549,6 +2232,38 @@ static void __devinit detect_and_report_it87(void)
 		printk(KERN_DEBUG "IT8705 Super-IO detection, now testing port 2E ...\n");
 	if (!request_region(0x2e, 1, __func__))
 		return;
+static void detect_and_report_winbond(void)
+{
+	if (verbose_probing)
+		printk(KERN_DEBUG "Winbond Super-IO detection, now testing ports 3F0,370,250,4E,2E ...\n");
+	winbond_check(0x3f0, 0x87);
+	winbond_check(0x370, 0x87);
+	winbond_check(0x2e , 0x87);
+	winbond_check(0x4e , 0x87);
+	winbond_check(0x3f0, 0x86);
+	winbond_check2(0x250, 0x88);
+	winbond_check2(0x250, 0x89);
+}
+
+static void detect_and_report_smsc(void)
+{
+	if (verbose_probing)
+		printk(KERN_DEBUG "SMSC Super-IO detection, now testing Ports 2F0, 370 ...\n");
+	smsc_check(0x3f0, 0x55);
+	smsc_check(0x370, 0x55);
+	smsc_check(0x3f0, 0x44);
+	smsc_check(0x370, 0x44);
+}
+
+static void detect_and_report_it87(void)
+{
+	u16 dev;
+	u8 origval, r;
+	if (verbose_probing)
+		printk(KERN_DEBUG "IT8705 Super-IO detection, now testing port 2E ...\n");
+	if (!request_muxed_region(0x2e, 2, __func__))
+		return;
+	origval = inb(0x2e);		/* Save original value */
 	outb(0x87, 0x2e);
 	outb(0x01, 0x2e);
 	outb(0x55, 0x2e);
@@ -1593,6 +2308,38 @@ static int get_superio_irq (struct parport *p)
         return PARPORT_IRQ_NONE;
 }
 	
+	} else {
+		outb(origval, 0x2e);	/* Oops, sorry to disturb */
+	}
+	release_region(0x2e, 2);
+}
+#endif /* CONFIG_PARPORT_PC_SUPERIO */
+
+static struct superio_struct *find_superio(struct parport *p)
+{
+	int i;
+	for (i = 0; i < NR_SUPERIOS; i++)
+		if (superios[i].io == p->base)
+			return &superios[i];
+	return NULL;
+}
+
+static int get_superio_dma(struct parport *p)
+{
+	struct superio_struct *s = find_superio(p);
+	if (s)
+		return s->dma;
+	return PARPORT_DMA_NONE;
+}
+
+static int get_superio_irq(struct parport *p)
+{
+	struct superio_struct *s = find_superio(p);
+	if (s)
+		return s->irq;
+	return PARPORT_IRQ_NONE;
+}
+
 
 /* --- Mode detection ------------------------------------- */
 
@@ -1601,6 +2348,9 @@ static int get_superio_irq (struct parport *p)
  * Returns: 
  *         0           :  No parallel port at this address
  *  PARPORT_MODE_PCSPP :  SPP port detected 
+ * Returns:
+ *         0           :  No parallel port at this address
+ *  PARPORT_MODE_PCSPP :  SPP port detected
  *                        (if the user specified an ioport himself,
  *                         this shall always be the case!)
  *
@@ -1611,6 +2361,7 @@ static int parport_SPP_supported(struct parport *pb)
 
 	/*
 	 * first clear an eventually pending EPP timeout 
+	 * first clear an eventually pending EPP timeout
 	 * I (sailer@ife.ee.ethz.ch) have an SMSC chipset
 	 * that does not even respond to SPP cycles if an EPP
 	 * timeout is pending
@@ -1620,6 +2371,7 @@ static int parport_SPP_supported(struct parport *pb)
 	/* Do a simple read-write test to make sure the port exists. */
 	w = 0xc;
 	outb (w, CONTROL (pb));
+	outb(w, CONTROL(pb));
 
 	/* Is there a control register that we can read from?  Some
 	 * ports don't allow reads, so read_control just returns a
@@ -1632,6 +2384,12 @@ static int parport_SPP_supported(struct parport *pb)
 		outb (w, CONTROL (pb));
 		r = inb (CONTROL (pb));
 		outb (0xc, CONTROL (pb));
+	r = inb(CONTROL(pb));
+	if ((r & 0xf) == w) {
+		w = 0xe;
+		outb(w, CONTROL(pb));
+		r = inb(CONTROL(pb));
+		outb(0xc, CONTROL(pb));
 		if ((r & 0xf) == w)
 			return PARPORT_MODE_PCSPP;
 	}
@@ -1640,6 +2398,7 @@ static int parport_SPP_supported(struct parport *pb)
 		/* That didn't work, but the user thinks there's a
 		 * port here. */
 		printk (KERN_INFO "parport 0x%lx (WARNING): CTR: "
+		printk(KERN_INFO "parport 0x%lx (WARNING): CTR: "
 			"wrote 0x%02x, read 0x%02x\n", pb->base, w, r);
 
 	/* Try the data register.  The data lines aren't tri-stated at
@@ -1651,6 +2410,12 @@ static int parport_SPP_supported(struct parport *pb)
 		w = 0x55;
 		parport_pc_write_data (pb, w);
 		r = parport_pc_read_data (pb);
+	parport_pc_write_data(pb, w);
+	r = parport_pc_read_data(pb);
+	if (r == w) {
+		w = 0x55;
+		parport_pc_write_data(pb, w);
+		r = parport_pc_read_data(pb);
 		if (r == w)
 			return PARPORT_MODE_PCSPP;
 	}
@@ -1661,6 +2426,9 @@ static int parport_SPP_supported(struct parport *pb)
 		printk (KERN_INFO "parport 0x%lx (WARNING): DATA: "
 			"wrote 0x%02x, read 0x%02x\n", pb->base, w, r);
 		printk (KERN_INFO "parport 0x%lx: You gave this address, "
+		printk(KERN_INFO "parport 0x%lx (WARNING): DATA: "
+			"wrote 0x%02x, read 0x%02x\n", pb->base, w, r);
+		printk(KERN_INFO "parport 0x%lx: You gave this address, "
 			"but there is probably no parallel port there!\n",
 			pb->base);
 	}
@@ -1712,12 +2480,35 @@ static int parport_ECR_present(struct parport *pb)
 	
 	/* Go to mode 000 */
 	frob_set_mode (pb, ECR_SPP);
+	outb(r, CONTROL(pb));
+	if ((inb(ECONTROL(pb)) & 0x3) == (r & 0x3)) {
+		outb(r ^ 0x2, CONTROL(pb)); /* Toggle bit 1 */
+
+		r = inb(CONTROL(pb));
+		if ((inb(ECONTROL(pb)) & 0x2) == (r & 0x2))
+			goto no_reg; /* Sure that no ECR register exists */
+	}
+
+	if ((inb(ECONTROL(pb)) & 0x3) != 0x1)
+		goto no_reg;
+
+	ECR_WRITE(pb, 0x34);
+	if (inb(ECONTROL(pb)) != 0x35)
+		goto no_reg;
+
+	priv->ecr = 1;
+	outb(0xc, CONTROL(pb));
+
+	/* Go to mode 000 */
+	frob_set_mode(pb, ECR_SPP);
 
 	return 1;
 
  no_reg:
 	outb (0xc, CONTROL (pb));
 	return 0; 
+	outb(0xc, CONTROL(pb));
+	return 0;
 }
 
 #ifdef CONFIG_PARPORT_1284
@@ -1728,6 +2519,7 @@ static int parport_ECR_present(struct parport *pb)
  * 0xff but any peripheral attached to the port may drag some or all of the
  * lines down to zero.  So if we get back anything that isn't the contents
  * of the data register we deem PS/2 support to be present. 
+ * of the data register we deem PS/2 support to be present.
  *
  * Some SPP ports have "half PS/2" ability - you can't turn off the line
  * drivers, but an external peripheral with sufficiently beefy drivers of
@@ -1736,6 +2528,7 @@ static int parport_ECR_present(struct parport *pb)
  * and the right type of device attached are likely to fail the SPP test,
  * (as they will appear to have stuck bits) and so the fact that they might
  * be misdetected here is rather academic. 
+ * be misdetected here is rather academic.
  */
 
 static int parport_PS2_supported(struct parport *pb)
@@ -1756,6 +2549,22 @@ static int parport_PS2_supported(struct parport *pb)
 	/* cancel input mode */
 	parport_pc_data_forward (pb);
 
+	clear_epp_timeout(pb);
+
+	/* try to tri-state the buffer */
+	parport_pc_data_reverse(pb);
+
+	parport_pc_write_data(pb, 0x55);
+	if (parport_pc_read_data(pb) != 0x55)
+		ok++;
+
+	parport_pc_write_data(pb, 0xaa);
+	if (parport_pc_read_data(pb) != 0xaa)
+		ok++;
+
+	/* cancel input mode */
+	parport_pc_data_forward(pb);
+
 	if (ok) {
 		pb->modes |= PARPORT_MODE_TRISTATE;
 	} else {
@@ -1775,6 +2584,8 @@ static int parport_ECP_supported(struct parport *pb)
 	struct parport_pc_private *priv = pb->private_data;
 	/* Translate ECP intrLine to ISA irq value */	
 	static const int intrline[]= { 0, 7, 9, 10, 11, 14, 15, 5 }; 
+	/* Translate ECP intrLine to ISA irq value */
+	static const int intrline[] = { 0, 7, 9, 10, 11, 14, 15, 5 };
 
 	/* If there is no ECR, we have no hope of supporting ECP. */
 	if (!priv->ecr)
@@ -1785,6 +2596,10 @@ static int parport_ECP_supported(struct parport *pb)
 	ECR_WRITE (pb, ECR_TST << 5); /* TEST FIFO */
 	for (i=0; i < 1024 && !(inb (ECONTROL (pb)) & 0x02); i++)
 		outb (0xaa, FIFO (pb));
+	ECR_WRITE(pb, ECR_SPP << 5); /* Reset FIFO */
+	ECR_WRITE(pb, ECR_TST << 5); /* TEST FIFO */
+	for (i = 0; i < 1024 && !(inb(ECONTROL(pb)) & 0x02); i++)
+		outb(0xaa, FIFO(pb));
 
 	/*
 	 * Using LGS chipset it uses ECR register, but
@@ -1792,6 +2607,7 @@ static int parport_ECP_supported(struct parport *pb)
 	 */
 	if (i == 1024) {
 		ECR_WRITE (pb, ECR_SPP << 5);
+		ECR_WRITE(pb, ECR_SPP << 5);
 		return 0;
 	}
 
@@ -1806,6 +2622,15 @@ static int parport_ECP_supported(struct parport *pb)
 		inb (FIFO (pb));
 		udelay (50);
 		if (inb (ECONTROL (pb)) & (1<<2))
+		printk(KERN_DEBUG "0x%lx: FIFO is %d bytes\n", pb->base, i);
+
+	/* Find out writeIntrThreshold */
+	frob_econtrol(pb, 1<<2, 1<<2);
+	frob_econtrol(pb, 1<<2, 0);
+	for (i = 1; i <= priv->fifo_depth; i++) {
+		inb(FIFO(pb));
+		udelay(50);
+		if (inb(ECONTROL(pb)) & (1<<2))
 			break;
 	}
 
@@ -1816,6 +2641,11 @@ static int parport_ECP_supported(struct parport *pb)
 	} else
 		/* Number of bytes we know we can write if we get an
                    interrupt. */
+			printk(KERN_DEBUG "0x%lx: writeIntrThreshold is %d\n",
+				pb->base, i);
+	} else
+		/* Number of bytes we know we can write if we get an
+		   interrupt. */
 		i = 0;
 
 	priv->writeIntrThreshold = i;
@@ -1829,12 +2659,21 @@ static int parport_ECP_supported(struct parport *pb)
 	for (i = 1; i <= priv->fifo_depth; i++) {
 		outb (0xaa, FIFO (pb));
 		if (inb (ECONTROL (pb)) & (1<<2))
+	frob_set_mode(pb, ECR_PS2); /* Reset FIFO and enable PS2 */
+	parport_pc_data_reverse(pb); /* Must be in PS2 mode */
+	frob_set_mode(pb, ECR_TST); /* Test FIFO */
+	frob_econtrol(pb, 1<<2, 1<<2);
+	frob_econtrol(pb, 1<<2, 0);
+	for (i = 1; i <= priv->fifo_depth; i++) {
+		outb(0xaa, FIFO(pb));
+		if (inb(ECONTROL(pb)) & (1<<2))
 			break;
 	}
 
 	if (i <= priv->fifo_depth) {
 		if (verbose_probing)
 			printk (KERN_INFO "0x%lx: readIntrThreshold is %d\n",
+			printk(KERN_INFO "0x%lx: readIntrThreshold is %d\n",
 				pb->base, i);
 	} else
 		/* Number of bytes we can read if we get an interrupt. */
@@ -1845,11 +2684,15 @@ static int parport_ECP_supported(struct parport *pb)
 	ECR_WRITE (pb, ECR_SPP << 5); /* Reset FIFO */
 	ECR_WRITE (pb, 0xf4); /* Configuration mode */
 	config = inb (CONFIGA (pb));
+	ECR_WRITE(pb, ECR_SPP << 5); /* Reset FIFO */
+	ECR_WRITE(pb, 0xf4); /* Configuration mode */
+	config = inb(CONFIGA(pb));
 	pword = (config >> 4) & 0x7;
 	switch (pword) {
 	case 0:
 		pword = 2;
 		printk (KERN_WARNING "0x%lx: Unsupported pword size!\n",
+		printk(KERN_WARNING "0x%lx: Unsupported pword size!\n",
 			pb->base);
 		break;
 	case 2:
@@ -1859,8 +2702,13 @@ static int parport_ECP_supported(struct parport *pb)
 		break;
 	default:
 		printk (KERN_WARNING "0x%lx: Unknown implementation ID\n",
+		printk(KERN_WARNING "0x%lx: Unsupported pword size!\n",
 			pb->base);
-		/* Assume 1 */
+		break;
+	default:
+		printk(KERN_WARNING "0x%lx: Unknown implementation ID\n",
+			pb->base);
+		/* Fall through - Assume 1 */
 	case 1:
 		pword = 1;
 	}
@@ -1889,10 +2737,73 @@ static int parport_ECP_supported(struct parport *pb)
 
 	/* Go back to mode 000 */
 	frob_set_mode (pb, ECR_SPP);
+		printk(KERN_DEBUG "0x%lx: PWord is %d bits\n",
+			pb->base, 8 * pword);
+
+		printk(KERN_DEBUG "0x%lx: Interrupts are ISA-%s\n", pb->base,
+			config & 0x80 ? "Level" : "Pulses");
+
+		configb = inb(CONFIGB(pb));
+		printk(KERN_DEBUG "0x%lx: ECP port cfgA=0x%02x cfgB=0x%02x\n",
+			pb->base, config, configb);
+		printk(KERN_DEBUG "0x%lx: ECP settings irq=", pb->base);
+		if ((configb >> 3) & 0x07)
+			printk("%d", intrline[(configb >> 3) & 0x07]);
+		else
+			printk("<none or set by other means>");
+		printk(" dma=");
+		if ((configb & 0x03) == 0x00)
+			printk("<none or set by other means>\n");
+		else
+			printk("%d\n", configb & 0x07);
+	}
+
+	/* Go back to mode 000 */
+	frob_set_mode(pb, ECR_SPP);
 
 	return 1;
 }
 #endif
+
+#ifdef CONFIG_X86_32
+static int intel_bug_present_check_epp(struct parport *pb)
+{
+	const struct parport_pc_private *priv = pb->private_data;
+	int bug_present = 0;
+
+	if (priv->ecr) {
+		/* store value of ECR */
+		unsigned char ecr = inb(ECONTROL(pb));
+		unsigned char i;
+		for (i = 0x00; i < 0x80; i += 0x20) {
+			ECR_WRITE(pb, i);
+			if (clear_epp_timeout(pb)) {
+				/* Phony EPP in ECP. */
+				bug_present = 1;
+				break;
+			}
+		}
+		/* return ECR into the inital state */
+		ECR_WRITE(pb, ecr);
+	}
+
+	return bug_present;
+}
+static int intel_bug_present(struct parport *pb)
+{
+/* Check whether the device is legacy, not PCI or PCMCIA. Only legacy is known to be affected. */
+	if (pb->dev != NULL) {
+		return 0;
+	}
+
+	return intel_bug_present_check_epp(pb);
+}
+#else
+static int intel_bug_present(struct parport *pb)
+{
+	return 0;
+}
+#endif /* CONFIG_X86_32 */
 
 static int parport_ECPPS2_supported(struct parport *pb)
 {
@@ -1907,6 +2818,10 @@ static int parport_ECPPS2_supported(struct parport *pb)
 	ECR_WRITE (pb, ECR_PS2 << 5);
 	result = parport_PS2_supported(pb);
 	ECR_WRITE (pb, oecr);
+	oecr = inb(ECONTROL(pb));
+	ECR_WRITE(pb, ECR_PS2 << 5);
+	result = parport_PS2_supported(pb);
+	ECR_WRITE(pb, oecr);
 	return result;
 }
 
@@ -1945,6 +2860,12 @@ static int parport_EPP_supported(struct parport *pb)
 			}
 		}
 	}
+	if (!clear_epp_timeout(pb))
+		return 0;  /* No way to clear timeout */
+
+	/* Check for Intel bug. */
+	if (intel_bug_present(pb))
+		return 0;
 
 	pb->modes |= PARPORT_MODE_EPP;
 
@@ -1974,6 +2895,16 @@ static int parport_ECPEPP_supported(struct parport *pb)
 	result = parport_EPP_supported(pb);
 
 	ECR_WRITE (pb, oecr);
+	if (!priv->ecr)
+		return 0;
+
+	oecr = inb(ECONTROL(pb));
+	/* Search for SMC style EPP+ECP mode */
+	ECR_WRITE(pb, 0x80);
+	outb(0x04, CONTROL(pb));
+	result = parport_EPP_supported(pb);
+
+	ECR_WRITE(pb, oecr);
 
 	if (result) {
 		/* Set up access functions to use ECP+EPP hardware. */
@@ -1996,6 +2927,27 @@ static int parport_ECP_supported(struct parport *pb) { return 0; }
 static int __devinit parport_EPP_supported(struct parport *pb) { return 0; }
 static int __devinit parport_ECPEPP_supported(struct parport *pb){return 0;}
 static int __devinit parport_ECPPS2_supported(struct parport *pb){return 0;}
+static int parport_PS2_supported(struct parport *pb) { return 0; }
+#ifdef CONFIG_PARPORT_PC_FIFO
+static int parport_ECP_supported(struct parport *pb)
+{
+	return 0;
+}
+#endif
+static int parport_EPP_supported(struct parport *pb)
+{
+	return 0;
+}
+
+static int parport_ECPEPP_supported(struct parport *pb)
+{
+	return 0;
+}
+
+static int parport_ECPPS2_supported(struct parport *pb)
+{
+	return 0;
+}
 
 #endif /* No IEEE 1284 support */
 
@@ -2006,6 +2958,7 @@ static int programmable_irq_support(struct parport *pb)
 {
 	int irq, intrLine;
 	unsigned char oecr = inb (ECONTROL (pb));
+	unsigned char oecr = inb(ECONTROL(pb));
 	static const int lookup[8] = {
 		PARPORT_IRQ_NONE, 7, 9, 10, 11, 14, 15, 5
 	};
@@ -2016,6 +2969,12 @@ static int programmable_irq_support(struct parport *pb)
 	irq = lookup[intrLine];
 
 	ECR_WRITE (pb, oecr);
+	ECR_WRITE(pb, ECR_CNF << 5); /* Configuration MODE */
+
+	intrLine = (inb(CONFIGB(pb)) >> 3) & 0x07;
+	irq = lookup[intrLine];
+
+	ECR_WRITE(pb, oecr);
 	return irq;
 }
 
@@ -2037,6 +2996,17 @@ static int irq_probe_ECP(struct parport *pb)
 	pb->irq = probe_irq_off(irqs);
 	ECR_WRITE (pb, ECR_SPP << 5);
 
+	ECR_WRITE(pb, ECR_SPP << 5); /* Reset FIFO */
+	ECR_WRITE(pb, (ECR_TST << 5) | 0x04);
+	ECR_WRITE(pb, ECR_TST << 5);
+
+	/* If Full FIFO sure that writeIntrThreshold is generated */
+	for (i = 0; i < 1024 && !(inb(ECONTROL(pb)) & 0x02) ; i++)
+		outb(0xaa, FIFO(pb));
+
+	pb->irq = probe_irq_off(irqs);
+	ECR_WRITE(pb, ECR_SPP << 5);
+
 	if (pb->irq <= 0)
 		pb->irq = PARPORT_IRQ_NONE;
 
@@ -2046,6 +3016,7 @@ static int irq_probe_ECP(struct parport *pb)
 /*
  * This detection seems that only works in National Semiconductors
  * This doesn't work in SMC, LGS, and Winbond 
+ * This doesn't work in SMC, LGS, and Winbond
  */
 static int irq_probe_EPP(struct parport *pb)
 {
@@ -2057,6 +3028,7 @@ static int irq_probe_EPP(struct parport *pb)
 
 	if (pb->modes & PARPORT_MODE_PCECR)
 		oecr = inb (ECONTROL (pb));
+		oecr = inb(ECONTROL(pb));
 
 	irqs = probe_irq_on();
 
@@ -2066,6 +3038,11 @@ static int irq_probe_EPP(struct parport *pb)
 	clear_epp_timeout(pb);
 	parport_pc_frob_control (pb, 0x20, 0x20);
 	parport_pc_frob_control (pb, 0x10, 0x10);
+		frob_econtrol(pb, 0x10, 0x10);
+
+	clear_epp_timeout(pb);
+	parport_pc_frob_control(pb, 0x20, 0x20);
+	parport_pc_frob_control(pb, 0x10, 0x10);
 	clear_epp_timeout(pb);
 
 	/* Device isn't expecting an EPP read
@@ -2077,6 +3054,9 @@ static int irq_probe_EPP(struct parport *pb)
 	pb->irq = probe_irq_off (irqs);
 	if (pb->modes & PARPORT_MODE_PCECR)
 		ECR_WRITE (pb, oecr);
+	pb->irq = probe_irq_off(irqs);
+	if (pb->modes & PARPORT_MODE_PCECR)
+		ECR_WRITE(pb, oecr);
 	parport_pc_write_control(pb, 0xc);
 
 	if (pb->irq <= 0)
@@ -2141,6 +3121,14 @@ static int programmable_dma_support (struct parport *p)
 	frob_set_mode (p, ECR_CNF);
 	
 	dma = inb (CONFIGB(p)) & 0x07;
+static int programmable_dma_support(struct parport *p)
+{
+	unsigned char oecr = inb(ECONTROL(p));
+	int dma;
+
+	frob_set_mode(p, ECR_CNF);
+
+	dma = inb(CONFIGB(p)) & 0x07;
 	/* 000: Indicates jumpered 8-bit DMA if read-only.
 	   100: Indicates jumpered 16-bit DMA if read-only. */
 	if ((dma & 0x03) == 0)
@@ -2155,6 +3143,15 @@ static int parport_dma_probe (struct parport *p)
 	const struct parport_pc_private *priv = p->private_data;
 	if (priv->ecr)
 		p->dma = programmable_dma_support(p); /* ask ECP chipset first */
+	ECR_WRITE(p, oecr);
+	return dma;
+}
+
+static int parport_dma_probe(struct parport *p)
+{
+	const struct parport_pc_private *priv = p->private_data;
+	if (priv->ecr)		/* ask ECP chipset first */
+		p->dma = programmable_dma_support(p);
 	if (p->dma == PARPORT_DMA_NONE) {
 		/* ask known Super-IO chips proper, although these
 		   claim ECP compatible, some don't report their DMA
@@ -2174,6 +3171,11 @@ struct parport *parport_pc_probe_port (unsigned long int base,
 				       unsigned long int base_hi,
 				       int irq, int dma,
 				       struct device *dev)
+struct parport *parport_pc_probe_port(unsigned long int base,
+				      unsigned long int base_hi,
+				      int irq, int dma,
+				      struct device *dev,
+				      int irqflags)
 {
 	struct parport_pc_private *priv;
 	struct parport_operations *ops;
@@ -2183,6 +3185,7 @@ struct parport *parport_pc_probe_port (unsigned long int base,
 	struct resource	*ECR_res = NULL;
 	struct resource	*EPP_res = NULL;
 	struct platform_device *pdev = NULL;
+	int ret;
 
 	if (!dev) {
 		/* We need a physical device to attach to, but none was
@@ -2199,6 +3202,19 @@ struct parport *parport_pc_probe_port (unsigned long int base,
 		goto out1;
 
 	priv = kmalloc (sizeof (struct parport_pc_private), GFP_KERNEL);
+
+		ret = dma_coerce_mask_and_coherent(dev, DMA_BIT_MASK(24));
+		if (ret) {
+			dev_err(dev, "Unable to set coherent dma mask: disabling DMA\n");
+			dma = PARPORT_DMA_NONE;
+		}
+	}
+
+	ops = kmalloc(sizeof(struct parport_operations), GFP_KERNEL);
+	if (!ops)
+		goto out1;
+
+	priv = kmalloc(sizeof(struct parport_pc_private), GFP_KERNEL);
 	if (!priv)
 		goto out2;
 
@@ -2212,6 +3228,7 @@ struct parport *parport_pc_probe_port (unsigned long int base,
 		goto out4;
 
 	memcpy(ops, &parport_pc_ops, sizeof (struct parport_operations));
+	memcpy(ops, &parport_pc_ops, sizeof(struct parport_operations));
 	priv->ctr = 0xc;
 	priv->ctr_writable = ~0x10;
 	priv->ecr = 0;
@@ -2239,6 +3256,7 @@ struct parport *parport_pc_probe_port (unsigned long int base,
 				parport_ECPEPP_supported(p);
 	}
 	if (!parport_SPP_supported (p))
+	if (!parport_SPP_supported(p))
 		/* No port. */
 		goto out5;
 	if (priv->ecr)
@@ -2251,6 +3269,11 @@ struct parport *parport_pc_probe_port (unsigned long int base,
 	printk(KERN_INFO "%s: PC-style at 0x%lx", p->name, p->base);
 	if (p->base_hi && priv->ecr)
 		printk(" (0x%lx)", p->base_hi);
+	p->size = (p->modes & PARPORT_MODE_EPP) ? 8 : 3;
+
+	printk(KERN_INFO "%s: PC-style at 0x%lx", p->name, p->base);
+	if (p->base_hi && priv->ecr)
+		printk(KERN_CONT " (0x%lx)", p->base_hi);
 	if (p->irq == PARPORT_IRQ_AUTO) {
 		p->irq = PARPORT_IRQ_NONE;
 		parport_irq_probe(p);
@@ -2262,6 +3285,7 @@ struct parport *parport_pc_probe_port (unsigned long int base,
 	}
 	if (p->irq != PARPORT_IRQ_NONE) {
 		printk(", irq %d", p->irq);
+		printk(KERN_CONT ", irq %d", p->irq);
 		priv->ctr_writable |= 0x10;
 
 		if (p->dma == PARPORT_DMA_AUTO) {
@@ -2271,6 +3295,7 @@ struct parport *parport_pc_probe_port (unsigned long int base,
 	}
 	if (p->dma == PARPORT_DMA_AUTO) /* To use DMA, giving the irq
                                            is mandatory (see above) */
+					   is mandatory (see above) */
 		p->dma = PARPORT_DMA_NONE;
 
 #ifdef CONFIG_PARPORT_PC_FIFO
@@ -2291,12 +3316,27 @@ struct parport *parport_pc_probe_port (unsigned long int base,
 		else printk(", using FIFO");
 	}
 	else
+			printk(KERN_CONT ", dma %d", p->dma);
+			p->modes |= PARPORT_MODE_DMA;
+		} else
+			printk(KERN_CONT ", using FIFO");
+	} else
 		/* We can't use the DMA channel after all. */
 		p->dma = PARPORT_DMA_NONE;
 #endif /* Allowed to use FIFO/DMA */
 
 	printk(" [");
 #define printmode(x) {if(p->modes&PARPORT_MODE_##x){printk("%s%s",f?",":"",#x);f++;}}
+	printk(KERN_CONT " [");
+
+#define printmode(x) \
+	{\
+		if (p->modes & PARPORT_MODE_##x) {\
+			printk(KERN_CONT "%s%s", f ? "," : "", #x);\
+			f++;\
+		} \
+	}
+
 	{
 		int f = 0;
 		printmode(PCSPP);
@@ -2312,6 +3352,10 @@ struct parport *parport_pc_probe_port (unsigned long int base,
 #endif /* CONFIG_PARPORT_1284 */
 	printk("]\n");
 	if (probedirq != PARPORT_IRQ_NONE) 
+	printk(KERN_CONT "(,...)");
+#endif /* CONFIG_PARPORT_1284 */
+	printk(KERN_CONT "]\n");
+	if (probedirq != PARPORT_IRQ_NONE)
 		printk(KERN_INFO "%s: irq %d detected\n", p->name, probedirq);
 
 	/* If No ECP release the ports grabbed above. */
@@ -2328,6 +3372,9 @@ struct parport *parport_pc_probe_port (unsigned long int base,
 		if (request_irq (p->irq, parport_irq_handler,
 				 0, p->name, p)) {
 			printk (KERN_WARNING "%s: irq %d in use, "
+		if (request_irq(p->irq, parport_irq_handler,
+				 irqflags, p->name, p)) {
+			printk(KERN_WARNING "%s: irq %d in use, "
 				"resorting to polled operation\n",
 				p->name, p->irq);
 			p->irq = PARPORT_IRQ_NONE;
@@ -2339,6 +3386,8 @@ struct parport *parport_pc_probe_port (unsigned long int base,
 		if (p->dma != PARPORT_DMA_NONE) {
 			if (request_dma (p->dma, p->name)) {
 				printk (KERN_WARNING "%s: dma %d in use, "
+			if (request_dma(p->dma, p->name)) {
+				printk(KERN_WARNING "%s: dma %d in use, "
 					"resorting to PIO operation\n",
 					p->name, p->dma);
 				p->dma = PARPORT_DMA_NONE;
@@ -2350,6 +3399,8 @@ struct parport *parport_pc_probe_port (unsigned long int base,
 						       GFP_KERNEL);
 				if (! priv->dma_buf) {
 					printk (KERN_WARNING "%s: "
+				if (!priv->dma_buf) {
+					printk(KERN_WARNING "%s: "
 						"cannot get buffer for DMA, "
 						"resorting to PIO operation\n",
 						p->name);
@@ -2372,6 +3423,10 @@ struct parport *parport_pc_probe_port (unsigned long int base,
 
 	parport_pc_write_data(p, 0);
 	parport_pc_data_forward (p);
+		ECR_WRITE(p, 0x34);
+
+	parport_pc_write_data(p, 0);
+	parport_pc_data_forward(p);
 
 	/* Now that we've told the sharing engine about the port, and
 	   found out its characteristics, let the high-level drivers
@@ -2380,6 +3435,7 @@ struct parport *parport_pc_probe_port (unsigned long int base,
 	list_add(&priv->list, &ports_list);
 	spin_unlock(&ports_lock);
 	parport_announce_port (p);
+	parport_announce_port(p);
 
 	return p;
 
@@ -2395,6 +3451,11 @@ out3:
 	kfree (priv);
 out2:
 	kfree (ops);
+	parport_del_port(p);
+out3:
+	kfree(priv);
+out2:
+	kfree(ops);
 out1:
 	if (pdev)
 		platform_device_unregister(pdev);
@@ -2404,6 +3465,9 @@ out1:
 EXPORT_SYMBOL (parport_pc_probe_port);
 
 void parport_pc_unregister_port (struct parport *p)
+EXPORT_SYMBOL(parport_pc_probe_port);
+
+void parport_pc_unregister_port(struct parport *p)
 {
 	struct parport_pc_private *priv = p->private_data;
 	struct parport_operations *ops = p->ops;
@@ -2435,6 +3499,11 @@ void parport_pc_unregister_port (struct parport *p)
 }
 
 EXPORT_SYMBOL (parport_pc_unregister_port);
+	kfree(p->private_data);
+	parport_del_port(p);
+	kfree(ops); /* hope no-one cached it */
+}
+EXPORT_SYMBOL(parport_pc_unregister_port);
 
 #ifdef CONFIG_PCI
 
@@ -2445,6 +3514,10 @@ static int __devinit sio_ite_8872_probe (struct pci_dev *pdev, int autoirq,
 {
 	short inta_addr[6] = { 0x2A0, 0x2C0, 0x220, 0x240, 0x1E0 };
 	struct resource *base_res;
+static int sio_ite_8872_probe(struct pci_dev *pdev, int autoirq, int autodma,
+			      const struct parport_pc_via_data *via)
+{
+	short inta_addr[6] = { 0x2A0, 0x2C0, 0x220, 0x240, 0x1E0 };
 	u32 ite8872set;
 	u32 ite8872_lpt, ite8872_lpthi;
 	u8 ite8872_irq, type;
@@ -2473,6 +3546,28 @@ static int __devinit sio_ite_8872_probe (struct pci_dev *pdev, int autoirq,
 	}
 
 	type = inb (inta_addr[i] + 0x18);
+	DPRINTK(KERN_DEBUG "sio_ite_8872_probe()\n");
+
+	/* make sure which one chip */
+	for (i = 0; i < 5; i++) {
+		if (request_region(inta_addr[i], 32, "it887x")) {
+			int test;
+			pci_write_config_dword(pdev, 0x60,
+						0xe5000000 | inta_addr[i]);
+			pci_write_config_dword(pdev, 0x78,
+						0x00000000 | inta_addr[i]);
+			test = inb(inta_addr[i]);
+			if (test != 0xff)
+				break;
+			release_region(inta_addr[i], 32);
+		}
+	}
+	if (i >= 5) {
+		printk(KERN_INFO "parport_pc: cannot find ITE8872 INTA\n");
+		return 0;
+	}
+
+	type = inb(inta_addr[i] + 0x18);
 	type &= 0x0f;
 
 	switch (type) {
@@ -2518,6 +3613,50 @@ static int __devinit sio_ite_8872_probe (struct pci_dev *pdev, int autoirq,
 	DPRINTK (KERN_DEBUG "ITE887x: The PARALLEL I/O port is 0x%x.\n",
 		 ite8872_lpt);
 	DPRINTK (KERN_DEBUG "ITE887x: The PARALLEL I/O porthi is 0x%x.\n",
+		printk(KERN_INFO "parport_pc: ITE8871 found (1P)\n");
+		ite8872set = 0x64200000;
+		break;
+	case 0xa:
+		printk(KERN_INFO "parport_pc: ITE8875 found (1P)\n");
+		ite8872set = 0x64200000;
+		break;
+	case 0xe:
+		printk(KERN_INFO "parport_pc: ITE8872 found (2S1P)\n");
+		ite8872set = 0x64e00000;
+		break;
+	case 0x6:
+		printk(KERN_INFO "parport_pc: ITE8873 found (1S)\n");
+		release_region(inta_addr[i], 32);
+		return 0;
+	case 0x8:
+		printk(KERN_INFO "parport_pc: ITE8874 found (2S)\n");
+		release_region(inta_addr[i], 32);
+		return 0;
+	default:
+		printk(KERN_INFO "parport_pc: unknown ITE887x\n");
+		printk(KERN_INFO "parport_pc: please mail 'lspci -nvv' "
+			"output to Rich.Liu@ite.com.tw\n");
+		release_region(inta_addr[i], 32);
+		return 0;
+	}
+
+	pci_read_config_byte(pdev, 0x3c, &ite8872_irq);
+	pci_read_config_dword(pdev, 0x1c, &ite8872_lpt);
+	ite8872_lpt &= 0x0000ff00;
+	pci_read_config_dword(pdev, 0x20, &ite8872_lpthi);
+	ite8872_lpthi &= 0x0000ff00;
+	pci_write_config_dword(pdev, 0x6c, 0xe3000000 | ite8872_lpt);
+	pci_write_config_dword(pdev, 0x70, 0xe3000000 | ite8872_lpthi);
+	pci_write_config_dword(pdev, 0x80, (ite8872_lpthi<<16) | ite8872_lpt);
+	/* SET SPP&EPP , Parallel Port NO DMA , Enable All Function */
+	/* SET Parallel IRQ */
+	pci_write_config_dword(pdev, 0x9c,
+				ite8872set | (ite8872_irq * 0x11111));
+
+	DPRINTK(KERN_DEBUG "ITE887x: The IRQ is %d.\n", ite8872_irq);
+	DPRINTK(KERN_DEBUG "ITE887x: The PARALLEL I/O port is 0x%x.\n",
+		 ite8872_lpt);
+	DPRINTK(KERN_DEBUG "ITE887x: The PARALLEL I/O porthi is 0x%x.\n",
 		 ite8872_lpthi);
 
 	/* Let the user (or defaults) steer us away from interrupts */
@@ -2537,6 +3676,15 @@ static int __devinit sio_ite_8872_probe (struct pci_dev *pdev, int autoirq,
 		if (irq != PARPORT_IRQ_NONE)
 			printk (", irq=%d", irq);
 		printk ("\n");
+	release_region(inta_addr[i], 32);
+	if (parport_pc_probe_port(ite8872_lpt, ite8872_lpthi,
+				   irq, PARPORT_DMA_NONE, &pdev->dev, 0)) {
+		printk(KERN_INFO
+			"parport_pc: ITE 8872 parallel port: io=0x%X",
+								ite8872_lpt);
+		if (irq != PARPORT_IRQ_NONE)
+			printk(", irq=%d", irq);
+		printk("\n");
 		return 1;
 	}
 
@@ -2549,6 +3697,10 @@ static int __devinitdata parport_init_mode = 0;
 
 /* Data for two known VIA chips */
 static struct parport_pc_via_data via_686a_data __devinitdata = {
+static int parport_init_mode;
+
+/* Data for two known VIA chips */
+static struct parport_pc_via_data via_686a_data = {
 	0x51,
 	0x50,
 	0x85,
@@ -2558,6 +3710,7 @@ static struct parport_pc_via_data via_686a_data __devinitdata = {
 	0xE6
 };
 static struct parport_pc_via_data via_8231_data __devinitdata = {
+static struct parport_pc_via_data via_8231_data = {
 	0x45,
 	0x44,
 	0x50,
@@ -2570,6 +3723,8 @@ static struct parport_pc_via_data via_8231_data __devinitdata = {
 static int __devinit sio_via_probe (struct pci_dev *pdev, int autoirq,
 				    int autodma,
 				    const struct parport_pc_via_data *via)
+static int sio_via_probe(struct pci_dev *pdev, int autoirq, int autodma,
+			 const struct parport_pc_via_data *via)
 {
 	u8 tmp, tmp2, siofunc;
 	u8 ppcontrol = 0;
@@ -2611,6 +3766,38 @@ static int __devinit sio_via_probe (struct pci_dev *pdev, int autoirq,
 	    printk(KERN_DEBUG "parport_pc: probing current configuration\n");
 	    siofunc = VIA_FUNCTION_PROBE;
 	    break;
+	switch (parport_init_mode) {
+	case 1:
+		printk(KERN_DEBUG "parport_pc: setting SPP mode\n");
+		siofunc = VIA_FUNCTION_PARPORT_SPP;
+		break;
+	case 2:
+		printk(KERN_DEBUG "parport_pc: setting PS/2 mode\n");
+		siofunc = VIA_FUNCTION_PARPORT_SPP;
+		ppcontrol = VIA_PARPORT_BIDIR;
+		break;
+	case 3:
+		printk(KERN_DEBUG "parport_pc: setting EPP mode\n");
+		siofunc = VIA_FUNCTION_PARPORT_EPP;
+		ppcontrol = VIA_PARPORT_BIDIR;
+		have_epp = 1;
+		break;
+	case 4:
+		printk(KERN_DEBUG "parport_pc: setting ECP mode\n");
+		siofunc = VIA_FUNCTION_PARPORT_ECP;
+		ppcontrol = VIA_PARPORT_BIDIR;
+		break;
+	case 5:
+		printk(KERN_DEBUG "parport_pc: setting EPP+ECP mode\n");
+		siofunc = VIA_FUNCTION_PARPORT_ECP;
+		ppcontrol = VIA_PARPORT_BIDIR|VIA_PARPORT_ECPEPP;
+		have_epp = 1;
+		break;
+	default:
+		printk(KERN_DEBUG
+			"parport_pc: probing current configuration\n");
+		siofunc = VIA_FUNCTION_PROBE;
+		break;
 	}
 	/*
 	 * unlock super i/o configuration
@@ -2653,6 +3840,36 @@ static int __devinit sio_via_probe (struct pci_dev *pdev, int autoirq,
 	    outb((0x378 >> 2), VIA_CONFIG_DATA);
 	    printk(KERN_DEBUG "parport_pc: Parallel port base changed to 0x378\n");
 	    port1 = 0x378;
+	tmp = inb(VIA_CONFIG_DATA);
+	/* Bit 5: EPP+ECP enable; bit 7: PS/2 bidirectional port enable */
+	outb(via->viacfg_parport_control, VIA_CONFIG_INDEX);
+	tmp2 = inb(VIA_CONFIG_DATA);
+	if (siofunc == VIA_FUNCTION_PROBE) {
+		siofunc = tmp & VIA_FUNCTION_PARPORT_DISABLE;
+		ppcontrol = tmp2;
+	} else {
+		tmp &= ~VIA_FUNCTION_PARPORT_DISABLE;
+		tmp |= siofunc;
+		outb(via->viacfg_function, VIA_CONFIG_INDEX);
+		outb(tmp, VIA_CONFIG_DATA);
+		tmp2 &= ~(VIA_PARPORT_BIDIR|VIA_PARPORT_ECPEPP);
+		tmp2 |= ppcontrol;
+		outb(via->viacfg_parport_control, VIA_CONFIG_INDEX);
+		outb(tmp2, VIA_CONFIG_DATA);
+	}
+
+	/* Parallel Port I/O Base Address, bits 9-2 */
+	outb(via->viacfg_parport_base, VIA_CONFIG_INDEX);
+	port1 = inb(VIA_CONFIG_DATA) << 2;
+
+	printk(KERN_DEBUG "parport_pc: Current parallel port base: 0x%X\n",
+									port1);
+	if (port1 == 0x3BC && have_epp) {
+		outb(via->viacfg_parport_base, VIA_CONFIG_INDEX);
+		outb((0x378 >> 2), VIA_CONFIG_DATA);
+		printk(KERN_DEBUG
+			"parport_pc: Parallel port base changed to 0x378\n");
+		port1 = 0x378;
 	}
 
 	/*
@@ -2667,6 +3884,7 @@ static int __devinit sio_via_probe (struct pci_dev *pdev, int autoirq,
 		return 0;
 	}
 	
+
 	/* Bits 7-4: PnP Routing for Parallel Port IRQ */
 	pci_read_config_byte(pdev, via->via_pci_parport_irq_reg, &tmp);
 	irq = ((tmp & VIA_IRQCONTROL_PARALLEL) >> 4);
@@ -2696,6 +3914,34 @@ static int __devinit sio_via_probe (struct pci_dev *pdev, int autoirq,
 	default:
 		printk(KERN_INFO "parport_pc: Weird VIA parport base 0x%X, ignoring\n",
 			port1);
+	if (siofunc == VIA_FUNCTION_PARPORT_ECP) {
+		/* Bits 3-2: PnP Routing for Parallel Port DMA */
+		pci_read_config_byte(pdev, via->via_pci_parport_dma_reg, &tmp);
+		dma = ((tmp & VIA_DMACONTROL_PARALLEL) >> 2);
+	} else
+		/* if ECP not enabled, DMA is not enabled, assumed
+		   bogus 'dma' value */
+		dma = PARPORT_DMA_NONE;
+
+	/* Let the user (or defaults) steer us away from interrupts and DMA */
+	if (autoirq == PARPORT_IRQ_NONE) {
+		irq = PARPORT_IRQ_NONE;
+		dma = PARPORT_DMA_NONE;
+	}
+	if (autodma == PARPORT_DMA_NONE)
+		dma = PARPORT_DMA_NONE;
+
+	switch (port1) {
+	case 0x3bc:
+		port2 = 0x7bc; break;
+	case 0x378:
+		port2 = 0x778; break;
+	case 0x278:
+		port2 = 0x678; break;
+	default:
+		printk(KERN_INFO
+			"parport_pc: Weird VIA parport base 0x%X, ignoring\n",
+									port1);
 		return 0;
 	}
 
@@ -2724,6 +3970,17 @@ static int __devinit sio_via_probe (struct pci_dev *pdev, int autoirq,
 		return 1;
 	}
 	
+	if (parport_pc_probe_port(port1, port2, irq, dma, &pdev->dev, 0)) {
+		printk(KERN_INFO
+			"parport_pc: VIA parallel port: io=0x%X", port1);
+		if (irq != PARPORT_IRQ_NONE)
+			printk(", irq=%d", irq);
+		if (dma != PARPORT_DMA_NONE)
+			printk(", dma=%d", dma);
+		printk("\n");
+		return 1;
+	}
+
 	printk(KERN_WARNING "parport_pc: Strange, can't probe VIA parallel port: io=0x%X, irq=%d, dma=%d\n",
 		port1, irq, dma);
 	return 0;
@@ -2733,6 +3990,8 @@ static int __devinit sio_via_probe (struct pci_dev *pdev, int autoirq,
 enum parport_pc_sio_types {
 	sio_via_686a = 0,	/* Via VT82C686A motherboard Super I/O */
 	sio_via_8231,		/* Via VT8231 south bridge integrated Super IO */
+	sio_via_686a = 0,   /* Via VT82C686A motherboard Super I/O */
+	sio_via_8231,	    /* Via VT8231 south bridge integrated Super IO */
 	sio_ite_8872,
 	last_sio
 };
@@ -2743,6 +4002,7 @@ static struct parport_pc_superio {
 		      const struct parport_pc_via_data *via);
 	const struct parport_pc_via_data *via;
 } parport_pc_superio_info[] __devinitdata = {
+} parport_pc_superio_info[] = {
 	{ sio_via_probe, &via_686a_data, },
 	{ sio_via_probe, &via_8231_data, },
 	{ sio_ite_8872_probe, NULL, },
@@ -2791,6 +4051,7 @@ enum parport_pc_pci_cards {
 	oxsemi_952,
 	oxsemi_954,
 	oxsemi_840,
+	oxsemi_pcie_pport,
 	aks_0100,
 	mobility_pp,
 	netmos_9705,
@@ -2798,11 +4059,18 @@ enum parport_pc_pci_cards {
 	netmos_9755,
 	netmos_9805,
 	netmos_9815,
+	netmos_9901,
+	netmos_9865,
+	asix_ax99100,
 	quatech_sppxp100,
+	wch_ch382l,
+	brainboxes_uc146,
+	brainboxes_px203,
 };
 
 
 /* each element directly indexed from enum list, above 
+/* each element directly indexed from enum list, above
  * (but offset by last_sio) */
 static struct parport_pc_pci {
 	int numports;
@@ -2811,6 +4079,10 @@ static struct parport_pc_pci {
 		int lo;
 		int hi; /* -1 if not there, >6 for offset-method (max
                            BAR is 6) */
+		    space header */
+		int lo;
+		int hi;
+		/* -1 if not there, >6 for offset-method (max BAR is 6) */
 	} addr[4];
 
 	/* If set, this is called immediately after pci_enable_device.
@@ -2861,6 +4133,10 @@ static struct parport_pc_pci {
 	/* titan_010l */		{ 1, { { 3, -1 }, } },
 	/* titan_1284p1 */              { 1, { { 0, 1 }, } },
 	/* titan_1284p2 */		{ 2, { { 0, 1 }, { 2, 3 }, } },
+					   a 1K io window */
+	/* syba_2p_epp AP138B */	{ 2, { { 0, 0x078 }, { 0, 0x178 }, } },
+	/* syba_1p_ecp W83787 */	{ 1, { { 0, 0x078 }, } },
+	/* titan_010l */		{ 1, { { 3, -1 }, } },
 	/* avlab_1p		*/	{ 1, { { 0, 1}, } },
 	/* avlab_2p		*/	{ 2, { { 0, 1}, { 2, 3 },} },
 	/* The Oxford Semi cards are unusual: 954 doesn't support ECP,
@@ -2875,7 +4151,23 @@ static struct parport_pc_pci {
         /* netmos_9755 */               { 2, { { 0, 1 }, { 2, 3 },} }, /* untested */
 	/* netmos_9805 */               { 1, { { 0, -1 }, } }, /* untested */
 	/* netmos_9815 */               { 2, { { 0, -1 }, { 2, -1 }, } }, /* untested */
+	/* oxsemi_pcie_pport */		{ 1, { { 0, 1 }, } },
+	/* aks_0100 */                  { 1, { { 0, -1 }, } },
+	/* mobility_pp */		{ 1, { { 0, 1 }, } },
+
+	/* The netmos entries below are untested */
+	/* netmos_9705 */               { 1, { { 0, -1 }, } },
+	/* netmos_9715 */               { 2, { { 0, 1 }, { 2, 3 },} },
+	/* netmos_9755 */               { 2, { { 0, 1 }, { 2, 3 },} },
+	/* netmos_9805 */		{ 1, { { 0, 1 }, } },
+	/* netmos_9815 */		{ 2, { { 0, 1 }, { 2, 3 }, } },
+	/* netmos_9901 */               { 1, { { 0, -1 }, } },
+	/* netmos_9865 */               { 1, { { 0, -1 }, } },
+	/* asix_ax99100 */		{ 1, { { 0, 1 }, } },
 	/* quatech_sppxp100 */		{ 1, { { 0, 1 }, } },
+	/* wch_ch382l */		{ 1, { { 2, -1 }, } },
+	/* brainboxes_uc146 */	{ 1, { { 3, -1 }, } },
+	/* brainboxes_px203 */	{ 1, { { 0, -1 }, } },
 };
 
 static const struct pci_device_id parport_pc_pci_tbl[] = {
@@ -2923,6 +4215,8 @@ static const struct pci_device_id parport_pc_pci_tbl[] = {
 	{ 0x1409, 0x7168, 0x1409, 0xb079, 0, 0, timedia_9079a },
 	{ 0x1409, 0x7168, 0x1409, 0xc079, 0, 0, timedia_9079b },
 	{ 0x1409, 0x7168, 0x1409, 0xd079, 0, 0, timedia_9079c },
+	  PCI_SUBVENDOR_ID_EXSYS, PCI_SUBDEVICE_ID_EXSYS_4014, 0, 0, plx_9050 },
+	/* PCI_VENDOR_ID_TIMEDIA/SUNIX has many differing cards ...*/
 	{ 0x1409, 0x7268, 0x1409, 0x0101, 0, 0, timedia_4006a },
 	{ 0x1409, 0x7268, 0x1409, 0x0102, 0, 0, timedia_4014 },
 	{ 0x1409, 0x7268, 0x1409, 0x0103, 0, 0, timedia_4008a },
@@ -2939,6 +4233,9 @@ static const struct pci_device_id parport_pc_pci_tbl[] = {
 	{ 0x9710, 0x9815, 0x1000, 0x0020, 0, 0, titan_1284p2 },
 	/* PCI_VENDOR_ID_AVLAB/Intek21 has another bunch of cards ...*/
 	{ 0x14db, 0x2120, PCI_ANY_ID, PCI_ANY_ID, 0, 0, avlab_1p}, /* AFAVLAB_TK9902 */
+	/* PCI_VENDOR_ID_AVLAB/Intek21 has another bunch of cards ...*/
+	/* AFAVLAB_TK9902 */
+	{ 0x14db, 0x2120, PCI_ANY_ID, PCI_ANY_ID, 0, 0, avlab_1p},
 	{ 0x14db, 0x2121, PCI_ANY_ID, PCI_ANY_ID, 0, 0, avlab_2p},
 	{ PCI_VENDOR_ID_OXSEMI, PCI_DEVICE_ID_OXSEMI_16PCI952PP,
 	  PCI_ANY_ID, PCI_ANY_ID, 0, 0, oxsemi_952 },
@@ -2948,6 +4245,25 @@ static const struct pci_device_id parport_pc_pci_tbl[] = {
 	  PCI_ANY_ID, PCI_ANY_ID, 0, 0, oxsemi_840 },
 	{ PCI_VENDOR_ID_AKS, PCI_DEVICE_ID_AKS_ALADDINCARD,
 	  PCI_ANY_ID, PCI_ANY_ID, 0, 0, aks_0100 },
+	{ PCI_VENDOR_ID_OXSEMI, PCI_DEVICE_ID_OXSEMI_PCIe840,
+	  PCI_ANY_ID, PCI_ANY_ID, 0, 0, oxsemi_pcie_pport },
+	{ PCI_VENDOR_ID_OXSEMI, PCI_DEVICE_ID_OXSEMI_PCIe840_G,
+	  PCI_ANY_ID, PCI_ANY_ID, 0, 0, oxsemi_pcie_pport },
+	{ PCI_VENDOR_ID_OXSEMI, PCI_DEVICE_ID_OXSEMI_PCIe952_0,
+	  PCI_ANY_ID, PCI_ANY_ID, 0, 0, oxsemi_pcie_pport },
+	{ PCI_VENDOR_ID_OXSEMI, PCI_DEVICE_ID_OXSEMI_PCIe952_0_G,
+	  PCI_ANY_ID, PCI_ANY_ID, 0, 0, oxsemi_pcie_pport },
+	{ PCI_VENDOR_ID_OXSEMI, PCI_DEVICE_ID_OXSEMI_PCIe952_1,
+	  PCI_ANY_ID, PCI_ANY_ID, 0, 0, oxsemi_pcie_pport },
+	{ PCI_VENDOR_ID_OXSEMI, PCI_DEVICE_ID_OXSEMI_PCIe952_1_G,
+	  PCI_ANY_ID, PCI_ANY_ID, 0, 0, oxsemi_pcie_pport },
+	{ PCI_VENDOR_ID_OXSEMI, PCI_DEVICE_ID_OXSEMI_PCIe952_1_U,
+	  PCI_ANY_ID, PCI_ANY_ID, 0, 0, oxsemi_pcie_pport },
+	{ PCI_VENDOR_ID_OXSEMI, PCI_DEVICE_ID_OXSEMI_PCIe952_1_GU,
+	  PCI_ANY_ID, PCI_ANY_ID, 0, 0, oxsemi_pcie_pport },
+	{ PCI_VENDOR_ID_AKS, PCI_DEVICE_ID_AKS_ALADDINCARD,
+	  PCI_ANY_ID, PCI_ANY_ID, 0, 0, aks_0100 },
+	{ 0x14f2, 0x0121, PCI_ANY_ID, PCI_ANY_ID, 0, 0, mobility_pp },
 	/* NetMos communication controllers */
 	{ PCI_VENDOR_ID_NETMOS, PCI_DEVICE_ID_NETMOS_9705,
 	  PCI_ANY_ID, PCI_ANY_ID, 0, 0, netmos_9705 },
@@ -2959,12 +4275,41 @@ static const struct pci_device_id parport_pc_pci_tbl[] = {
 	  PCI_ANY_ID, PCI_ANY_ID, 0, 0, netmos_9805 },
 	{ PCI_VENDOR_ID_NETMOS, PCI_DEVICE_ID_NETMOS_9815,
 	  PCI_ANY_ID, PCI_ANY_ID, 0, 0, netmos_9815 },
+	{ PCI_VENDOR_ID_NETMOS, PCI_DEVICE_ID_NETMOS_9901,
+	  0xA000, 0x2000, 0, 0, netmos_9901 },
+	{ PCI_VENDOR_ID_NETMOS, PCI_DEVICE_ID_NETMOS_9865,
+	  0xA000, 0x1000, 0, 0, netmos_9865 },
+	{ PCI_VENDOR_ID_NETMOS, PCI_DEVICE_ID_NETMOS_9865,
+	  0xA000, 0x2000, 0, 0, netmos_9865 },
+	/* ASIX AX99100 PCIe to Multi I/O Controller */
+	{ PCI_VENDOR_ID_ASIX, PCI_DEVICE_ID_ASIX_AX99100,
+	  0xA000, 0x2000, 0, 0, asix_ax99100 },
 	/* Quatech SPPXP-100 Parallel port PCI ExpressCard */
 	{ PCI_VENDOR_ID_QUATECH, PCI_DEVICE_ID_QUATECH_SPPXP_100,
 	  PCI_ANY_ID, PCI_ANY_ID, 0, 0, quatech_sppxp100 },
+	/* WCH CH382L PCI-E single parallel port card */
+	{ 0x1c00, 0x3050, 0x1c00, 0x3050, 0, 0, wch_ch382l },
+	/* Brainboxes IX-500/550 */
+	{ PCI_VENDOR_ID_INTASHIELD, 0x402a,
+	  PCI_ANY_ID, PCI_ANY_ID, 0, 0, oxsemi_pcie_pport },
+	/* Brainboxes UC-146/UC-157 */
+	{ PCI_VENDOR_ID_INTASHIELD, 0x0be1,
+	  PCI_ANY_ID, PCI_ANY_ID, 0, 0, brainboxes_uc146 },
+	{ PCI_VENDOR_ID_INTASHIELD, 0x0be2,
+	  PCI_ANY_ID, PCI_ANY_ID, 0, 0, brainboxes_uc146 },
+	/* Brainboxes PX-146/PX-257 */
+	{ PCI_VENDOR_ID_INTASHIELD, 0x401c,
+	  PCI_ANY_ID, PCI_ANY_ID, 0, 0, oxsemi_pcie_pport },
+	/* Brainboxes PX-203 */
+	{ PCI_VENDOR_ID_INTASHIELD, 0x4007,
+	  PCI_ANY_ID, PCI_ANY_ID, 0, 0, brainboxes_px203 },
+	/* Brainboxes PX-475 */
+	{ PCI_VENDOR_ID_INTASHIELD, 0x401f,
+	  PCI_ANY_ID, PCI_ANY_ID, 0, 0, oxsemi_pcie_pport },
 	{ 0, } /* terminate list */
 };
 MODULE_DEVICE_TABLE(pci,parport_pc_pci_tbl);
+MODULE_DEVICE_TABLE(pci, parport_pc_pci_tbl);
 
 struct pci_parport_data {
 	int num;
@@ -2972,6 +4317,7 @@ struct pci_parport_data {
 };
 
 static int parport_pc_pci_probe (struct pci_dev *dev,
+static int parport_pc_pci_probe(struct pci_dev *dev,
 					   const struct pci_device_id *id)
 {
 	int err, count, n, i = id->driver_data;
@@ -2985,6 +4331,8 @@ static int parport_pc_pci_probe (struct pci_dev *dev,
 	i -= last_sio;
 	count = 0;
 	if ((err = pci_enable_device (dev)) != 0)
+	err = pci_enable_device(dev);
+	if (err)
 		return err;
 
 	data = kmalloc(sizeof(struct pci_parport_data), GFP_KERNEL);
@@ -2993,6 +4341,7 @@ static int parport_pc_pci_probe (struct pci_dev *dev,
 
 	if (cards[i].preinit_hook &&
 	    cards[i].preinit_hook (dev, PARPORT_IRQ_NONE, PARPORT_DMA_NONE)) {
+	    cards[i].preinit_hook(dev, PARPORT_IRQ_NONE, PARPORT_DMA_NONE)) {
 		kfree(data);
 		return -ENODEV;
 	}
@@ -3017,6 +4366,32 @@ static int parport_pc_pci_probe (struct pci_dev *dev,
 		data->ports[count] =
 			parport_pc_probe_port (io_lo, io_hi, PARPORT_IRQ_NONE,
 					       PARPORT_DMA_NONE, &dev->dev);
+		int irq;
+		unsigned long io_lo, io_hi;
+		io_lo = pci_resource_start(dev, lo);
+		io_hi = 0;
+		if ((hi >= 0) && (hi <= 6))
+			io_hi = pci_resource_start(dev, hi);
+		else if (hi > 6)
+			io_lo += hi; /* Reinterpret the meaning of
+					"hi" as an offset (see SYBA
+					def.) */
+		/* TODO: test if sharing interrupts works */
+		irq = dev->irq;
+		if (irq == IRQ_NONE) {
+			printk(KERN_DEBUG
+	"PCI parallel port detected: %04x:%04x, I/O at %#lx(%#lx)\n",
+				id->vendor, id->device, io_lo, io_hi);
+			irq = PARPORT_IRQ_NONE;
+		} else {
+			printk(KERN_DEBUG
+	"PCI parallel port detected: %04x:%04x, I/O at %#lx(%#lx), IRQ %d\n",
+				id->vendor, id->device, io_lo, io_hi, irq);
+		}
+		data->ports[count] =
+			parport_pc_probe_port(io_lo, io_hi, irq,
+					       PARPORT_DMA_NONE, &dev->dev,
+					       IRQF_SHARED);
 		if (data->ports[count])
 			count++;
 	}
@@ -3025,6 +4400,7 @@ static int parport_pc_pci_probe (struct pci_dev *dev,
 
 	if (cards[i].postinit_hook)
 		cards[i].postinit_hook (dev, count == 0);
+		cards[i].postinit_hook(dev, count == 0);
 
 	if (count) {
 		pci_set_drvdata(dev, data);
@@ -3037,6 +4413,7 @@ static int parport_pc_pci_probe (struct pci_dev *dev,
 }
 
 static void __devexit parport_pc_pci_remove(struct pci_dev *dev)
+static void parport_pc_pci_remove(struct pci_dev *dev)
 {
 	struct pci_parport_data *data = pci_get_drvdata(dev);
 	int i;
@@ -3059,6 +4436,10 @@ static struct pci_driver parport_pc_pci_driver = {
 };
 
 static int __init parport_pc_init_superio (int autoirq, int autodma)
+	.remove		= parport_pc_pci_remove,
+};
+
+static int __init parport_pc_init_superio(int autoirq, int autodma)
 {
 	const struct pci_device_id *id;
 	struct pci_dev *pdev = NULL;
@@ -3071,6 +4452,9 @@ static int __init parport_pc_init_superio (int autoirq, int autodma)
 
 		if (parport_pc_superio_info[id->driver_data].probe
 			(pdev, autoirq, autodma,parport_pc_superio_info[id->driver_data].via)) {
+		if (parport_pc_superio_info[id->driver_data].probe(
+			pdev, autoirq, autodma,
+			parport_pc_superio_info[id->driver_data].via)) {
 			ret++;
 		}
 	}
@@ -3080,6 +4464,10 @@ static int __init parport_pc_init_superio (int autoirq, int autodma)
 #else
 static struct pci_driver parport_pc_pci_driver;
 static int __init parport_pc_init_superio(int autoirq, int autodma) {return 0;}
+static int __init parport_pc_init_superio(int autoirq, int autodma)
+{
+	return 0;
+}
 #endif /* CONFIG_PCI */
 
 #ifdef CONFIG_PNP
@@ -3095,6 +4483,10 @@ static const struct pnp_device_id parport_pc_pnp_tbl[] = {
 MODULE_DEVICE_TABLE(pnp,parport_pc_pnp_tbl);
 
 static int parport_pc_pnp_probe(struct pnp_dev *dev, const struct pnp_device_id *id)
+MODULE_DEVICE_TABLE(pnp, parport_pc_pnp_tbl);
+
+static int parport_pc_pnp_probe(struct pnp_dev *dev,
+						const struct pnp_device_id *id)
 {
 	struct parport *pdata;
 	unsigned long io_lo, io_hi;
@@ -3121,6 +4513,27 @@ static int parport_pc_pnp_probe(struct pnp_dev *dev, const struct pnp_device_id 
 	if (pnp_dma_valid(dev,0) &&
 		!(pnp_dma_flags(dev,0) & IORESOURCE_DISABLED)) {
 		dma = pnp_dma(dev,0);
+	if (pnp_port_valid(dev, 0) &&
+		!(pnp_port_flags(dev, 0) & IORESOURCE_DISABLED)) {
+		io_lo = pnp_port_start(dev, 0);
+	} else
+		return -EINVAL;
+
+	if (pnp_port_valid(dev, 1) &&
+		!(pnp_port_flags(dev, 1) & IORESOURCE_DISABLED)) {
+		io_hi = pnp_port_start(dev, 1);
+	} else
+		io_hi = 0;
+
+	if (pnp_irq_valid(dev, 0) &&
+		!(pnp_irq_flags(dev, 0) & IORESOURCE_DISABLED)) {
+		irq = pnp_irq(dev, 0);
+	} else
+		irq = PARPORT_IRQ_NONE;
+
+	if (pnp_dma_valid(dev, 0) &&
+		!(pnp_dma_flags(dev, 0) & IORESOURCE_DISABLED)) {
+		dma = pnp_dma(dev, 0);
 	} else
 		dma = PARPORT_DMA_NONE;
 
@@ -3129,6 +4542,11 @@ static int parport_pc_pnp_probe(struct pnp_dev *dev, const struct pnp_device_id 
 		return -ENODEV;
 
 	pnp_set_drvdata(dev,pdata);
+	pdata = parport_pc_probe_port(io_lo, io_hi, irq, dma, &dev->dev, 0);
+	if (pdata == NULL)
+		return -ENODEV;
+
+	pnp_set_drvdata(dev, pdata);
 	return 0;
 }
 
@@ -3154,6 +4572,7 @@ static struct pnp_driver parport_pc_pnp_driver;
 #endif /* CONFIG_PNP */
 
 static int __devinit parport_pc_platform_probe(struct platform_device *pdev)
+static int parport_pc_platform_probe(struct platform_device *pdev)
 {
 	/* Always succeed, the actual probing is done in
 	 * parport_pc_probe_port(). */
@@ -3179,6 +4598,16 @@ parport_pc_find_isa_ports (int autoirq, int autodma)
 	if (parport_pc_probe_port(0x378, 0x778, autoirq, autodma, NULL))
 		count++;
 	if (parport_pc_probe_port(0x278, 0x678, autoirq, autodma, NULL))
+static int __attribute__((unused))
+parport_pc_find_isa_ports(int autoirq, int autodma)
+{
+	int count = 0;
+
+	if (parport_pc_probe_port(0x3bc, 0x7bc, autoirq, autodma, NULL, 0))
+		count++;
+	if (parport_pc_probe_port(0x378, 0x778, autoirq, autodma, NULL, 0))
+		count++;
+	if (parport_pc_probe_port(0x278, 0x678, autoirq, autodma, NULL, 0))
 		count++;
 
 	return count;
@@ -3195,6 +4624,7 @@ parport_pc_find_isa_ports (int autoirq, int autodma)
  * autodma is PARPORT_DMA_NONE or PARPORT_DMA_AUTO
  */
 static void __init parport_pc_find_ports (int autoirq, int autodma)
+static void __init parport_pc_find_ports(int autoirq, int autodma)
 {
 	int count = 0, err;
 
@@ -3233,6 +4663,18 @@ static int __initdata io_hi[PARPORT_PC_MAX_PORTS+1] =
 	{ [0 ... PARPORT_PC_MAX_PORTS] = PARPORT_IOHI_AUTO };
 static int __initdata dmaval[PARPORT_PC_MAX_PORTS] = { [0 ... PARPORT_PC_MAX_PORTS-1] = PARPORT_DMA_NONE };
 static int __initdata irqval[PARPORT_PC_MAX_PORTS] = { [0 ... PARPORT_PC_MAX_PORTS-1] = PARPORT_IRQ_PROBEONLY };
+static int __initdata io[PARPORT_PC_MAX_PORTS+1] = {
+	[0 ... PARPORT_PC_MAX_PORTS] = 0
+};
+static int __initdata io_hi[PARPORT_PC_MAX_PORTS+1] = {
+	[0 ... PARPORT_PC_MAX_PORTS] = PARPORT_IOHI_AUTO
+};
+static int __initdata dmaval[PARPORT_PC_MAX_PORTS] = {
+	[0 ... PARPORT_PC_MAX_PORTS-1] = PARPORT_DMA_NONE
+};
+static int __initdata irqval[PARPORT_PC_MAX_PORTS] = {
+	[0 ... PARPORT_PC_MAX_PORTS-1] = PARPORT_IRQ_PROBEONLY
+};
 
 static int __init parport_parse_param(const char *s, int *val,
 				int automatic, int none, int nofifo)
@@ -3244,6 +4686,7 @@ static int __init parport_parse_param(const char *s, int *val,
 	else if (!strncmp(s, "none", 4))
 		*val = none;
 	else if (nofifo && !strncmp(s, "nofifo", 4))
+	else if (nofifo && !strncmp(s, "nofifo", 6))
 		*val = nofifo;
 	else {
 		char *ep;
@@ -3285,6 +4728,19 @@ static int __init parport_init_mode_setup(char *str)
 		parport_init_mode=4;
 	if (!strcmp (str, "ecpepp"))
 		parport_init_mode=5;
+	printk(KERN_DEBUG
+	     "parport_pc.c: Specified parameter parport_init_mode=%s\n", str);
+
+	if (!strcmp(str, "spp"))
+		parport_init_mode = 1;
+	if (!strcmp(str, "ps2"))
+		parport_init_mode = 2;
+	if (!strcmp(str, "epp"))
+		parport_init_mode = 3;
+	if (!strcmp(str, "ecp"))
+		parport_init_mode = 4;
+	if (!strcmp(str, "ecpepp"))
+		parport_init_mode = 5;
 	return 1;
 }
 #endif
@@ -3292,6 +4748,8 @@ static int __init parport_init_mode_setup(char *str)
 #ifdef MODULE
 static const char *irq[PARPORT_PC_MAX_PORTS];
 static const char *dma[PARPORT_PC_MAX_PORTS];
+static char *irq[PARPORT_PC_MAX_PORTS];
+static char *dma[PARPORT_PC_MAX_PORTS];
 
 MODULE_PARM_DESC(io, "Base I/O address (SPP regs)");
 module_param_array(io, int, NULL, 0);
@@ -3309,6 +4767,8 @@ module_param(verbose_probing, int, 0644);
 #ifdef CONFIG_PCI
 static char *init_mode;
 MODULE_PARM_DESC(init_mode, "Initialise mode for VIA VT8231 port (spp, ps2, epp, ecp or ecpepp)");
+MODULE_PARM_DESC(init_mode,
+	"Initialise mode for VIA VT8231 port (spp, ps2, epp, ecp or ecpepp)");
 module_param(init_mode, charp, 0);
 #endif
 
@@ -3340,6 +4800,7 @@ static int __init parse_parport_params(void)
 				break;
 			default:
 				printk (KERN_WARNING
+				printk(KERN_WARNING
 					"parport_pc: irq specified "
 					"without base address.  Use 'io=' "
 					"to specify one\n");
@@ -3353,6 +4814,7 @@ static int __init parse_parport_params(void)
 				break;
 			default:
 				printk (KERN_WARNING
+				printk(KERN_WARNING
 					"parport_pc: dma specified "
 					"without base address.  Use 'io=' "
 					"to specify one\n");
@@ -3364,6 +4826,7 @@ static int __init parse_parport_params(void)
 #else
 
 static int parport_setup_ptr __initdata = 0;
+static int parport_setup_ptr __initdata;
 
 /*
  * Acceptable parameters:
@@ -3375,6 +4838,7 @@ static int parport_setup_ptr __initdata = 0;
  * IRQ/DMA may be numeric or 'auto' or 'none'
  */
 static int __init parport_setup (char *str)
+static int __init parport_setup(char *str)
 {
 	char *endptr;
 	char *sep;
@@ -3387,6 +4851,7 @@ static int __init parport_setup (char *str)
 	}
 
 	if (!strncmp (str, "auto", 4)) {
+	if (!strncmp(str, "auto", 4)) {
 		irqval[0] = PARPORT_IRQ_AUTO;
 		dmaval[0] = PARPORT_DMA_AUTO;
 		return 1;
@@ -3395,6 +4860,9 @@ static int __init parport_setup (char *str)
 	val = simple_strtoul (str, &endptr, 0);
 	if (endptr == str) {
 		printk (KERN_WARNING "parport=%s not understood\n", str);
+	val = simple_strtoul(str, &endptr, 0);
+	if (endptr == str) {
+		printk(KERN_WARNING "parport=%s not understood\n", str);
 		return 1;
 	}
 
@@ -3429,6 +4897,7 @@ static int __init parse_parport_params(void)
 }
 
 __setup ("parport=", parport_setup);
+__setup("parport=", parport_setup);
 
 /*
  * Acceptable parameters:
@@ -3437,6 +4906,7 @@ __setup ("parport=", parport_setup);
  */
 #ifdef CONFIG_PCI
 __setup("parport_init_mode=",parport_init_mode_setup);
+__setup("parport_init_mode=", parport_init_mode_setup);
 #endif
 #endif
 
@@ -3467,6 +4937,13 @@ static int __init parport_pc_init(void)
 		}
 	} else
 		parport_pc_find_ports (irqval[0], dmaval[0]);
+			if (io_hi[i] == PARPORT_IOHI_AUTO)
+				io_hi[i] = 0x400 + io[i];
+			parport_pc_probe_port(io[i], io_hi[i],
+					irqval[i], dmaval[i], NULL, 0);
+		}
+	} else
+		parport_pc_find_ports(irqval[0], dmaval[0]);
 
 	return 0;
 }
@@ -3477,6 +4954,9 @@ static void __exit parport_pc_exit(void)
 		pci_unregister_driver (&parport_pc_pci_driver);
 	if (pnp_registered_parport)
 		pnp_unregister_driver (&parport_pc_pnp_driver);
+		pci_unregister_driver(&parport_pc_pci_driver);
+	if (pnp_registered_parport)
+		pnp_unregister_driver(&parport_pc_pnp_driver);
 	platform_driver_unregister(&parport_pc_platform_driver);
 
 	while (!list_empty(&ports_list)) {
@@ -3489,6 +4969,14 @@ static void __exit parport_pc_exit(void)
 			platform_device_unregister(
 				to_platform_device(port->dev));
 		parport_pc_unregister_port(port);
+		struct device *dev;
+		priv = list_entry(ports_list.next,
+				  struct parport_pc_private, list);
+		port = priv->port;
+		dev = port->dev;
+		parport_pc_unregister_port(port);
+		if (dev && dev->bus == &platform_bus_type)
+			platform_device_unregister(to_platform_device(dev));
 	}
 }
 

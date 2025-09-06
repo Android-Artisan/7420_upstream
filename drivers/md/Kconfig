@@ -5,6 +5,7 @@
 menuconfig MD
 	bool "Multiple devices driver support (RAID and LVM)"
 	depends on BLOCK
+	select SRCU
 	help
 	  Support multiple physical spindles through a single logical device.
 	  Required for RAID and logical volume management.
@@ -29,6 +30,20 @@ config BLK_DEV_MD
 	  where to get the supporting user space utilities raidtools.
 
 	  If unsure, say N.
+
+config MD_AUTODETECT
+	bool "Autodetect RAID arrays during kernel boot"
+	depends on BLK_DEV_MD=y
+	default y
+	---help---
+	  If you say Y here, then the kernel will try to autodetect raid
+	  arrays as part of its boot process. 
+
+	  If you don't use raid and say Y, this autodetection can cause 
+	  a several-second delay in the boot time due to various
+	  synchronisation steps that are part of this step.
+
+	  If unsure, say Y.
 
 config MD_LINEAR
 	tristate "Linear (append) mode"
@@ -88,6 +103,8 @@ config MD_RAID1
 config MD_RAID10
 	tristate "RAID-10 (mirrored striping) mode (EXPERIMENTAL)"
 	depends on BLK_DEV_MD && EXPERIMENTAL
+	tristate "RAID-10 (mirrored striping) mode"
+	depends on BLK_DEV_MD
 	---help---
 	  RAID-10 provides a combination of striping (RAID-0) and
 	  mirroring (RAID-1) with easier configuration and more flexible
@@ -109,6 +126,12 @@ config MD_RAID456
 	depends on BLK_DEV_MD
 	select ASYNC_MEMCPY
 	select ASYNC_XOR
+	select RAID6_PQ
+	select LIBCRC32C
+	select ASYNC_MEMCPY
+	select ASYNC_XOR
+	select ASYNC_PQ
+	select ASYNC_RAID6_RECOV
 	---help---
 	  A RAID-5 set of N drives with a capacity of C MB per drive provides
 	  the capacity of C * (N - 1) MB, and protects against a failure
@@ -175,6 +198,10 @@ config MD_MULTIPATH
 	  paths can be defined and handled at runtime, and ensures that a
 	  transparent failover to the backup path(s) happens if a IO errors
 	  arrives on the primary path.
+	  MD_MULTIPATH provides a simple multi-path personality for use
+	  the MD framework.  It is not under active development.  New
+	  projects should consider using DM_MULTIPATH which has more
+	  features and more testing.
 
 	  If unsure, say N.
 
@@ -189,6 +216,30 @@ config MD_FAULTY
 
 config BLK_DEV_DM
 	tristate "Device mapper support"
+
+config MD_CLUSTER
+	tristate "Cluster Support for MD (EXPERIMENTAL)"
+	depends on BLK_DEV_MD
+	depends on DLM
+	default n
+	---help---
+	Clustering support for MD devices. This enables locking and
+	synchronization across multiple systems on the cluster, so all
+	nodes in the cluster can access the MD devices simultaneously.
+
+	This brings the redundancy (and uptime) of RAID levels across the
+	nodes of the cluster.
+
+	If unsure, say N.
+
+source "drivers/md/bcache/Kconfig"
+
+config BLK_DEV_DM_BUILTIN
+	bool
+
+config BLK_DEV_DM
+	tristate "Device mapper support"
+	select BLK_DEV_DM_BUILTIN
 	---help---
 	  Device-mapper is a low level volume manager.  It works by allowing
 	  people to specify mappings for ranges of logical sectors.  Various
@@ -204,11 +255,41 @@ config BLK_DEV_DM
 
 config DM_DEBUG
 	boolean "Device mapper debugging support"
+config DM_MQ_DEFAULT
+	bool "request-based DM: use blk-mq I/O path by default"
+	depends on BLK_DEV_DM
+	---help---
+	  This option enables the blk-mq based I/O path for request-based
+	  DM devices by default.  With the option the dm_mod.use_blk_mq
+	  module/boot option defaults to Y, without it to N, but it can
+	  still be overriden either way.
+
+	  If unsure say N.
+
+config DM_DEBUG
+	bool "Device mapper debugging support"
 	depends on BLK_DEV_DM
 	---help---
 	  Enable this for messages that may help debug device-mapper problems.
 
 	  If unsure, say N.
+
+config DM_BUFIO
+       tristate
+       depends on BLK_DEV_DM
+       ---help---
+	 This interface allows you to do buffered I/O on a device and acts
+	 as a cache, holding recently-read blocks in memory and performing
+	 delayed writes.
+
+config DM_BIO_PRISON
+       tristate
+       depends on BLK_DEV_DM
+       ---help---
+	 Some bio locking schemes used by other device-mapper targets
+	 including thin provisioning.
+
+source "drivers/md/persistent-data/Kconfig"
 
 config DM_CRYPT
 	tristate "Crypt target support"
@@ -223,6 +304,8 @@ config DM_CRYPT
 	  Information on how to use dm-crypt can be found on
 
 	  <http://www.saout.de/misc/dm-crypt/>
+	  For further information on dm-crypt and userspace tools see:
+	  <https://gitlab.com/cryptsetup/cryptsetup/wikis/DMCrypt>
 
 	  To compile this code as a module, choose M here: the module will
 	  be called dm-crypt.
@@ -235,12 +318,116 @@ config DM_SNAPSHOT
        ---help---
          Allow volume managers to take writable snapshots of a device.
 
+       select DM_BUFIO
+       ---help---
+         Allow volume managers to take writable snapshots of a device.
+
+config DM_THIN_PROVISIONING
+       tristate "Thin provisioning target"
+       depends on BLK_DEV_DM
+       select DM_PERSISTENT_DATA
+       select DM_BIO_PRISON
+       ---help---
+         Provides thin provisioning and snapshots that share a data store.
+
+config DM_CACHE
+       tristate "Cache target (EXPERIMENTAL)"
+       depends on BLK_DEV_DM
+       default n
+       select DM_PERSISTENT_DATA
+       select DM_BIO_PRISON
+       ---help---
+         dm-cache attempts to improve performance of a block device by
+         moving frequently used data to a smaller, higher performance
+         device.  Different 'policy' plugins can be used to change the
+         algorithms used to select which blocks are promoted, demoted,
+         cleaned etc.  It supports writeback and writethrough modes.
+
+config DM_CACHE_MQ
+       tristate "MQ Cache Policy (EXPERIMENTAL)"
+       depends on DM_CACHE
+       default y
+       ---help---
+         A cache policy that uses a multiqueue ordered by recent hit
+         count to select which blocks should be promoted and demoted.
+         This is meant to be a general purpose policy.  It prioritises
+         reads over writes.
+
+config DM_CACHE_SMQ
+       tristate "Stochastic MQ Cache Policy (EXPERIMENTAL)"
+       depends on DM_CACHE
+       default y
+       ---help---
+         A cache policy that uses a multiqueue ordered by recent hits
+         to select which blocks should be promoted and demoted.
+         This is meant to be a general purpose policy.  It prioritises
+         reads over writes.  This SMQ policy (vs MQ) offers the promise
+         of less memory utilization, improved performance and increased
+         adaptability in the face of changing workloads.
+
+config DM_CACHE_CLEANER
+       tristate "Cleaner Cache Policy (EXPERIMENTAL)"
+       depends on DM_CACHE
+       default y
+       ---help---
+         A simple cache policy that writes back all data to the
+         origin.  Used when decommissioning a dm-cache.
+
+config DM_ERA
+       tristate "Era target (EXPERIMENTAL)"
+       depends on BLK_DEV_DM
+       default n
+       select DM_PERSISTENT_DATA
+       select DM_BIO_PRISON
+       ---help---
+         dm-era tracks which parts of a block device are written to
+         over time.  Useful for maintaining cache coherency when using
+         vendor snapshots.
+
 config DM_MIRROR
        tristate "Mirror target"
        depends on BLK_DEV_DM
        ---help---
          Allow volume managers to mirror logical volumes, also
          needed for live data migration tools such as 'pvmove'.
+
+config DM_LOG_USERSPACE
+	tristate "Mirror userspace logging"
+	depends on DM_MIRROR && NET
+	select CONNECTOR
+	---help---
+	  The userspace logging module provides a mechanism for
+	  relaying the dm-dirty-log API to userspace.  Log designs
+	  which are more suited to userspace implementation (e.g.
+	  shared storage logs) or experimental logs can be implemented
+	  by leveraging this framework.
+
+config DM_RAID
+       tristate "RAID 1/4/5/6/10 target"
+       depends on BLK_DEV_DM
+       select MD_RAID0
+       select MD_RAID1
+       select MD_RAID10
+       select MD_RAID456
+       select BLK_DEV_MD
+       ---help---
+	 A dm target that supports RAID1, RAID10, RAID4, RAID5 and RAID6 mappings
+
+	 A RAID-5 set of N drives with a capacity of C MB per drive provides
+	 the capacity of C * (N - 1) MB, and protects against a failure
+	 of a single drive. For a given sector (row) number, (N - 1) drives
+	 contain data sectors, and one drive contains the parity protection.
+	 For a RAID-4 set, the parity blocks are present on a single drive,
+	 while a RAID-5 set distributes the parity across the drives in one
+	 of the available parity distribution methods.
+
+	 A RAID-6 set of N drives with a capacity of C MB per drive
+	 provides the capacity of C * (N - 2) MB, and protects
+	 against a failure of any two drives. For a given sector
+	 (row) number, (N - 2) drives contain data sectors, and two
+	 drives contains two independent redundancy syndromes.  Like
+	 RAID-5, RAID-6 distributes the syndromes across the drives
+	 in one of the available parity distribution methods.
 
 config DM_ZERO
 	tristate "Zero target"
@@ -263,6 +450,32 @@ config DM_MULTIPATH
 config DM_DELAY
 	tristate "I/O delaying target (EXPERIMENTAL)"
 	depends on BLK_DEV_DM && EXPERIMENTAL
+	depends on !SCSI_DH || SCSI
+	---help---
+	  Allow volume managers to support multipath hardware.
+
+config DM_MULTIPATH_QL
+	tristate "I/O Path Selector based on the number of in-flight I/Os"
+	depends on DM_MULTIPATH
+	---help---
+	  This path selector is a dynamic load balancer which selects
+	  the path with the least number of in-flight I/Os.
+
+	  If unsure, say N.
+
+config DM_MULTIPATH_ST
+	tristate "I/O Path Selector based on the service time"
+	depends on DM_MULTIPATH
+	---help---
+	  This path selector is a dynamic load balancer which selects
+	  the path expected to complete the incoming I/O in the shortest
+	  time.
+
+	  If unsure, say N.
+
+config DM_DELAY
+	tristate "I/O delaying target"
+	depends on BLK_DEV_DM
 	---help---
 	A target that delays reads and/or writes and can send
 	them to different devices.  Useful for testing.
@@ -274,5 +487,66 @@ config DM_UEVENT
 	depends on BLK_DEV_DM && EXPERIMENTAL
 	---help---
 	Generate udev events for DM events.
+
+	bool "DM uevents"
+	depends on BLK_DEV_DM
+	---help---
+	Generate udev events for DM events.
+
+config DM_FLAKEY
+       tristate "Flakey target"
+       depends on BLK_DEV_DM
+       ---help---
+         A target that intermittently fails I/O for debugging purposes.
+
+config DM_VERITY
+	tristate "Verity target support"
+	depends on BLK_DEV_DM
+	select CRYPTO
+	select CRYPTO_HASH
+	select DM_BUFIO
+	---help---
+	  This device-mapper target creates a read-only device that
+	  transparently validates the data on one underlying device against
+	  a pre-generated tree of cryptographic checksums stored on a second
+	  device.
+
+	  You'll need to activate the digests you're going to use in the
+	  cryptoapi configuration.
+
+	  To compile this code as a module, choose M here: the module will
+	  be called dm-verity.
+
+	  If unsure, say N.
+
+config DM_SWITCH
+	tristate "Switch target support (EXPERIMENTAL)"
+	depends on BLK_DEV_DM
+	---help---
+	  This device-mapper target creates a device that supports an arbitrary
+	  mapping of fixed-size regions of I/O across a fixed set of paths.
+	  The path used for any specific region can be switched dynamically
+	  by sending the target a message.
+
+	  To compile this code as a module, choose M here: the module will
+	  be called dm-switch.
+
+	  If unsure, say N.
+
+config DM_LOG_WRITES
+	tristate "Log writes target support"
+	depends on BLK_DEV_DM
+	---help---
+	  This device-mapper target takes two devices, one device to use
+	  normally, one to log all write operations done to the first device.
+	  This is for use by file system developers wishing to verify that
+	  their fs is writing a consistent file system at all times by allowing
+	  them to replay the log in a variety of ways and to check the
+	  contents.
+
+	  To compile this code as a module, choose M here: the module will
+	  be called dm-log-writes.
+
+	  If unsure, say N.
 
 endif # MD

@@ -7,6 +7,7 @@
  * multiple pagecache pages.
  *
  * 15May2002	akpm@zip.com.au
+ * 15May2002	Andrew Morton
  *		Initial version
  * 27Jun2002	axboe@suse.de
  *		use bio_add_page() to build bio's just the right size
@@ -16,6 +17,10 @@
 #include <linux/module.h>
 #include <linux/mm.h>
 #include <linux/kdev_t.h>
+#include <linux/export.h>
+#include <linux/mm.h>
+#include <linux/kdev_t.h>
+#include <linux/gfp.h>
 #include <linux/bio.h>
 #include <linux/fs.h>
 #include <linux/buffer_head.h>
@@ -26,6 +31,8 @@
 #include <linux/writeback.h>
 #include <linux/backing-dev.h>
 #include <linux/pagevec.h>
+#include <linux/cleancache.h>
+#include "internal.h"
 
 /*
  * I/O completion handler for multipage BIOs.
@@ -91,6 +98,26 @@ struct bio *mpage_bio_submit(int rw, struct bio *bio)
 	return NULL;
 }
 EXPORT_SYMBOL(mpage_bio_submit);
+static void mpage_end_io(struct bio *bio)
+{
+	struct bio_vec *bv;
+	int i;
+
+	bio_for_each_segment_all(bv, bio, i) {
+		struct page *page = bv->bv_page;
+		page_endio(page, bio_data_dir(bio), bio->bi_error);
+	}
+
+	bio_put(bio);
+}
+
+static struct bio *mpage_bio_submit(int rw, struct bio *bio)
+{
+	bio->bi_end_io = mpage_end_io;
+	guard_bio_eod(rw, bio);
+	submit_bio(rw, bio);
+	return NULL;
+}
 
 static struct bio *
 mpage_alloc(struct block_device *bdev,
@@ -109,6 +136,7 @@ mpage_alloc(struct block_device *bdev,
 	if (bio) {
 		bio->bi_bdev = bdev;
 		bio->bi_sector = first_sector;
+		bio->bi_iter.bi_sector = first_sector;
 	}
 	return bio;
 }
@@ -140,7 +168,7 @@ map_buffer_to_page(struct page *page, struct buffer_head *bh, int page_block)
 			SetPageUptodate(page);    
 			return;
 		}
-		create_empty_buffers(page, 1 << inode->i_blkbits, 0);
+		create_empty_buffers(page, i_blocksize(inode), 0);
 	}
 	head = page_buffers(page);
 	page_bh = head;
@@ -169,6 +197,8 @@ static struct bio *
 do_mpage_readpage(struct bio *bio, struct page *page, unsigned nr_pages,
 		sector_t *last_block_in_bio, struct buffer_head *map_bh,
 		unsigned long *first_logical_block, get_block_t get_block)
+		unsigned long *first_logical_block, get_block_t get_block,
+		gfp_t gfp)
 {
 	struct inode *inode = page->mapping->host;
 	const unsigned blkbits = inode->i_blkbits;
@@ -287,6 +317,12 @@ do_mpage_readpage(struct bio *bio, struct page *page, unsigned nr_pages,
 		SetPageMappedToDisk(page);
 	}
 
+	if (fully_mapped && blocks_per_page == 1 && !PageUptodate(page) &&
+	    cleancache_get_page(page) == 0) {
+		SetPageUptodate(page);
+		goto confused;
+	}
+
 	/*
 	 * This page will go to BIO.  Do we need to send this BIO off first?
 	 */
@@ -298,6 +334,13 @@ alloc_new:
 		bio = mpage_alloc(bdev, blocks[0] << (blkbits - 9),
 			  	min_t(int, nr_pages, bio_get_nr_vecs(bdev)),
 				GFP_KERNEL);
+		if (first_hole == blocks_per_page) {
+			if (!bdev_read_page(bdev, blocks[0] << (blkbits - 9),
+								page))
+				goto out;
+		}
+		bio = mpage_alloc(bdev, blocks[0] << (blkbits - 9),
+				min_t(int, nr_pages, BIO_MAX_PAGES), gfp);
 		if (bio == NULL)
 			goto confused;
 	}
@@ -309,6 +352,10 @@ alloc_new:
 	}
 
 	if (buffer_boundary(map_bh) || (first_hole != blocks_per_page))
+	relative_block = block_in_file - *first_logical_block;
+	nblocks = map_bh->b_size >> blkbits;
+	if ((buffer_boundary(map_bh) && relative_block == nblocks) ||
+	    (first_hole != blocks_per_page))
 		bio = mpage_bio_submit(READ, bio);
 	else
 		*last_block_in_bio = blocks[blocks_per_page - 1];
@@ -379,6 +426,10 @@ mpage_readpages(struct address_space *mapping, struct list_head *pages,
 	unsigned long first_logical_block = 0;
 
 	clear_buffer_mapped(&map_bh);
+	gfp_t gfp = mapping_gfp_constraint(mapping, GFP_KERNEL);
+
+	map_bh.b_state = 0;
+	map_bh.b_size = 0;
 	for (page_idx = 0; page_idx < nr_pages; page_idx++) {
 		struct page *page = list_entry(pages->prev, struct page, lru);
 
@@ -386,11 +437,14 @@ mpage_readpages(struct address_space *mapping, struct list_head *pages,
 		list_del(&page->lru);
 		if (!add_to_page_cache_lru(page, mapping,
 					page->index, GFP_KERNEL)) {
+					page->index,
+					gfp)) {
 			bio = do_mpage_readpage(bio, page,
 					nr_pages - page_idx,
 					&last_block_in_bio, &map_bh,
 					&first_logical_block,
 					get_block);
+					get_block, gfp);
 		}
 		page_cache_release(page);
 	}
@@ -414,6 +468,12 @@ int mpage_readpage(struct page *page, get_block_t get_block)
 	clear_buffer_mapped(&map_bh);
 	bio = do_mpage_readpage(bio, page, 1, &last_block_in_bio,
 			&map_bh, &first_logical_block, get_block);
+	gfp_t gfp = mapping_gfp_constraint(page->mapping, GFP_KERNEL);
+
+	map_bh.b_state = 0;
+	map_bh.b_size = 0;
+	bio = do_mpage_readpage(bio, page, 1, &last_block_in_bio,
+			&map_bh, &first_logical_block, get_block, gfp);
 	if (bio)
 		mpage_bio_submit(READ, bio);
 	return 0;
@@ -438,6 +498,43 @@ EXPORT_SYMBOL(mpage_readpage);
  */
 
 int __mpage_writepage(struct page *page, struct writeback_control *wbc,
+struct mpage_data {
+	struct bio *bio;
+	sector_t last_block_in_bio;
+	get_block_t *get_block;
+	unsigned use_writepage;
+};
+
+/*
+ * We have our BIO, so we can now mark the buffers clean.  Make
+ * sure to only clean buffers which we know we'll be writing.
+ */
+static void clean_buffers(struct page *page, unsigned first_unmapped)
+{
+	unsigned buffer_counter = 0;
+	struct buffer_head *bh, *head;
+	if (!page_has_buffers(page))
+		return;
+	head = page_buffers(page);
+	bh = head;
+
+	do {
+		if (buffer_counter++ == first_unmapped)
+			break;
+		clear_buffer_dirty(bh);
+		bh = bh->b_this_page;
+	} while (bh != head);
+
+	/*
+	 * we cannot drop the bh if the page is not uptodate or a concurrent
+	 * readpage would fail to serialize with the bh and it would read from
+	 * disk before we reach the platter.
+	 */
+	if (buffer_heads_over_limit && PageUptodate(page))
+		try_to_free_buffers(page);
+}
+
+static int __mpage_writepage(struct page *page, struct writeback_control *wbc,
 		      void *data)
 {
 	struct mpage_data *mpd = data;
@@ -460,6 +557,7 @@ int __mpage_writepage(struct page *page, struct writeback_control *wbc,
 	struct buffer_head map_bh;
 	loff_t i_size = i_size_read(inode);
 	int ret = 0;
+	int wr = (wbc->sync_mode == WB_SYNC_ALL ?  WRITE_SYNC : WRITE);
 
 	if (page_has_buffers(page)) {
 		struct buffer_head *head = page_buffers(page);
@@ -552,6 +650,7 @@ page_is_mapped:
 		/*
 		 * The page straddles i_size.  It must be zeroed out on each
 		 * and every writepage invokation because it may be mmapped.
+		 * and every writepage invocation because it may be mmapped.
 		 * "A file is mapped in multiples of the page size.  For a file
 		 * that is not a multiple of the page size, the remaining memory
 		 * is zeroed when mapped, and writes to that region are not
@@ -576,6 +675,23 @@ alloc_new:
 				bio_get_nr_vecs(bdev), GFP_NOFS|__GFP_HIGH);
 		if (bio == NULL)
 			goto confused;
+		bio = mpage_bio_submit(wr, bio);
+
+alloc_new:
+	if (bio == NULL) {
+		if (first_unmapped == blocks_per_page) {
+			if (!bdev_write_page(bdev, blocks[0] << (blkbits - 9),
+								page, wbc)) {
+				clean_buffers(page, first_unmapped);
+				goto out;
+			}
+		}
+		bio = mpage_alloc(bdev, blocks[0] << (blkbits - 9),
+				BIO_MAX_PAGES, GFP_NOFS|__GFP_HIGH);
+		if (bio == NULL)
+			goto confused;
+
+		wbc_init_bio(wbc, bio);
 	}
 
 	/*
@@ -613,12 +729,21 @@ alloc_new:
 		if (buffer_heads_over_limit && PageUptodate(page))
 			try_to_free_buffers(page);
 	}
+	wbc_account_io(wbc, page, PAGE_SIZE);
+	length = first_unmapped << blkbits;
+	if (bio_add_page(bio, page, length, 0) < length) {
+		bio = mpage_bio_submit(wr, bio);
+		goto alloc_new;
+	}
+
+	clean_buffers(page, first_unmapped);
 
 	BUG_ON(PageWriteback(page));
 	set_page_writeback(page);
 	unlock_page(page);
 	if (boundary || (first_unmapped != blocks_per_page)) {
 		bio = mpage_bio_submit(WRITE, bio);
+		bio = mpage_bio_submit(wr, bio);
 		if (boundary_block) {
 			write_boundary_block(boundary_bdev,
 					boundary_block, 1 << blkbits);
@@ -631,6 +756,7 @@ alloc_new:
 confused:
 	if (bio)
 		bio = mpage_bio_submit(WRITE, bio);
+		bio = mpage_bio_submit(wr, bio);
 
 	if (mpd->use_writepage) {
 		ret = mapping->a_ops->writepage(page, wbc);
@@ -673,6 +799,11 @@ mpage_writepages(struct address_space *mapping,
 {
 	int ret;
 
+	struct blk_plug plug;
+	int ret;
+
+	blk_start_plug(&plug);
+
 	if (!get_block)
 		ret = generic_writepages(mapping, wbc);
 	else {
@@ -687,6 +818,13 @@ mpage_writepages(struct address_space *mapping,
 		if (mpd.bio)
 			mpage_bio_submit(WRITE, mpd.bio);
 	}
+		if (mpd.bio) {
+			int wr = (wbc->sync_mode == WB_SYNC_ALL ?
+				  WRITE_SYNC : WRITE);
+			mpage_bio_submit(wr, mpd.bio);
+		}
+	}
+	blk_finish_plug(&plug);
 	return ret;
 }
 EXPORT_SYMBOL(mpage_writepages);
@@ -703,6 +841,11 @@ int mpage_writepage(struct page *page, get_block_t get_block,
 	int ret = __mpage_writepage(page, wbc, &mpd);
 	if (mpd.bio)
 		mpage_bio_submit(WRITE, mpd.bio);
+	if (mpd.bio) {
+		int wr = (wbc->sync_mode == WB_SYNC_ALL ?
+			  WRITE_SYNC : WRITE);
+		mpage_bio_submit(wr, mpd.bio);
+	}
 	return ret;
 }
 EXPORT_SYMBOL(mpage_writepage);

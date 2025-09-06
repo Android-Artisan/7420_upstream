@@ -5,6 +5,7 @@
 #include <linux/elevator.h>
 #include <linux/bio.h>
 #include <linux/module.h>
+#include <linux/slab.h>
 #include <linux/init.h>
 
 struct noop_data {
@@ -24,6 +25,10 @@ static int noop_dispatch(struct request_queue *q, int force)
 	if (!list_empty(&nd->queue)) {
 		struct request *rq;
 		rq = list_entry(nd->queue.next, struct request, queuelist);
+	struct request *rq;
+
+	rq = list_first_entry_or_null(&nd->queue, struct request, queuelist);
+	if (rq) {
 		list_del_init(&rq->queuelist);
 		elv_dispatch_sort(q, rq);
 		return 1;
@@ -53,6 +58,7 @@ noop_former_request(struct request_queue *q, struct request *rq)
 	if (rq->queuelist.prev == &nd->queue)
 		return NULL;
 	return list_entry(rq->queuelist.prev, struct request, queuelist);
+	return list_prev_entry(rq, queuelist);
 }
 
 static struct request *
@@ -77,6 +83,34 @@ static void *noop_init_queue(struct request_queue *q)
 }
 
 static void noop_exit_queue(elevator_t *e)
+	return list_next_entry(rq, queuelist);
+}
+
+static int noop_init_queue(struct request_queue *q, struct elevator_type *e)
+{
+	struct noop_data *nd;
+	struct elevator_queue *eq;
+
+	eq = elevator_alloc(q, e);
+	if (!eq)
+		return -ENOMEM;
+
+	nd = kmalloc_node(sizeof(*nd), GFP_KERNEL, q->node);
+	if (!nd) {
+		kobject_put(&eq->kobj);
+		return -ENOMEM;
+	}
+	eq->elevator_data = nd;
+
+	INIT_LIST_HEAD(&nd->queue);
+
+	spin_lock_irq(q->queue_lock);
+	q->elevator = eq;
+	spin_unlock_irq(q->queue_lock);
+	return 0;
+}
+
+static void noop_exit_queue(struct elevator_queue *e)
 {
 	struct noop_data *nd = e->elevator_data;
 
@@ -104,6 +138,7 @@ static int __init noop_init(void)
 	elv_register(&elevator_noop);
 
 	return 0;
+	return elv_register(&elevator_noop);
 }
 
 static void __exit noop_exit(void)

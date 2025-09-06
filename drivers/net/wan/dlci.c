@@ -28,6 +28,8 @@
  *		2 of the License, or (at your option) any later version.
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/types.h>
@@ -78,6 +80,11 @@ static int dlci_header(struct sk_buff *skb, struct net_device *dev,
 
 	hdr.control = FRAD_I_UI;
 	switch(type)
+	unsigned int		hlen;
+	char			*dest;
+
+	hdr.control = FRAD_I_UI;
+	switch (type)
 	{
 		case ETH_P_IP:
 			hdr.IP_NLPID = FRAD_P_IP;
@@ -102,6 +109,11 @@ static int dlci_header(struct sk_buff *skb, struct net_device *dev,
 	memcpy(dest, &hdr, hlen);
 
 	return(hlen);
+		return 0;
+
+	memcpy(dest, &hdr, hlen);
+
+	return hlen;
 }
 
 static void dlci_receive(struct sk_buff *skb, struct net_device *dev)
@@ -115,6 +127,12 @@ static void dlci_receive(struct sk_buff *skb, struct net_device *dev)
 		printk(KERN_NOTICE "%s: invalid data no header\n",
 		       dev->name);
 		dlp->stats.rx_errors++;
+	struct frhdr		*hdr;
+	int					process, header;
+
+	if (!pskb_may_pull(skb, sizeof(*hdr))) {
+		netdev_notice(dev, "invalid data no header\n");
+		dev->stats.rx_errors++;
 		kfree_skb(skb);
 		return;
 	}
@@ -131,12 +149,21 @@ static void dlci_receive(struct sk_buff *skb, struct net_device *dev)
 	}
 	else
 		switch(hdr->IP_NLPID)
+		netdev_notice(dev, "Invalid header flag 0x%02X\n",
+			      hdr->control);
+		dev->stats.rx_errors++;
+	}
+	else
+		switch (hdr->IP_NLPID)
 		{
 			case FRAD_P_PADDING:
 				if (hdr->NLPID != FRAD_P_SNAP)
 				{
 					printk(KERN_NOTICE "%s: Unsupported NLPID 0x%02X.\n", dev->name, hdr->NLPID);
 					dlp->stats.rx_errors++;
+					netdev_notice(dev, "Unsupported NLPID 0x%02X\n",
+						      hdr->NLPID);
+					dev->stats.rx_errors++;
 					break;
 				}
 	 
@@ -144,6 +171,11 @@ static void dlci_receive(struct sk_buff *skb, struct net_device *dev)
 				{
 					printk(KERN_NOTICE "%s: Unsupported organizationally unique identifier 0x%02X-%02X-%02X.\n", dev->name, hdr->OUI[0], hdr->OUI[1], hdr->OUI[2]);
 					dlp->stats.rx_errors++;
+					netdev_notice(dev, "Unsupported organizationally unique identifier 0x%02X-%02X-%02X\n",
+						      hdr->OUI[0],
+						      hdr->OUI[1],
+						      hdr->OUI[2]);
+					dev->stats.rx_errors++;
 					break;
 				}
 
@@ -170,6 +202,15 @@ static void dlci_receive(struct sk_buff *skb, struct net_device *dev)
 			default:
 				printk(KERN_NOTICE "%s: Invalid pad byte 0x%02X.\n", dev->name, hdr->pad);
 				dlp->stats.rx_errors++;
+				netdev_notice(dev, "Unsupported NLPID 0x%02X\n",
+					      hdr->pad);
+				dev->stats.rx_errors++;
+				break;
+
+			default:
+				netdev_notice(dev, "Invalid pad byte 0x%02X\n",
+					      hdr->pad);
+				dev->stats.rx_errors++;
 				break;				
 		}
 
@@ -182,6 +223,9 @@ static void dlci_receive(struct sk_buff *skb, struct net_device *dev)
 		netif_rx(skb);
 		dlp->stats.rx_packets++;
 		dev->last_rx = jiffies;
+		dev->stats.rx_bytes += skb->len;
+		netif_rx(skb);
+		dev->stats.rx_packets++;
 	}
 	else
 		dev_kfree_skb(skb);
@@ -226,6 +270,15 @@ static int dlci_transmit(struct sk_buff *skb, struct net_device *dev)
 		netif_wake_queue(dev);
 	}
 	return(ret);
+static netdev_tx_t dlci_transmit(struct sk_buff *skb, struct net_device *dev)
+{
+	struct dlci_local *dlp = netdev_priv(dev);
+
+	if (skb) {
+		struct netdev_queue *txq = skb_get_tx_queue(dev, skb);
+		netdev_start_xmit(skb, dlp->slave, txq, false);
+	}
+	return NETDEV_TX_OK;
 }
 
 static int dlci_config(struct net_device *dev, struct dlci_conf __user *conf, int get)
@@ -245,6 +298,16 @@ static int dlci_config(struct net_device *dev, struct dlci_conf __user *conf, in
 			return -EFAULT;
 		if (config.flags & ~DLCI_VALID_FLAGS)
 			return(-EINVAL);
+	dlp = netdev_priv(dev);
+
+	flp = netdev_priv(dlp->slave);
+
+	if (!get)
+	{
+		if (copy_from_user(&config, conf, sizeof(struct dlci_conf)))
+			return -EFAULT;
+		if (config.flags & ~DLCI_VALID_FLAGS)
+			return -EINVAL;
 		memcpy(&dlp->config, &config, sizeof(struct dlci_conf));
 		dlp->configured = 1;
 	}
@@ -260,6 +323,15 @@ static int dlci_config(struct net_device *dev, struct dlci_conf __user *conf, in
 	}
 
 	return(0);
+		return err;
+
+	if (get)
+	{
+		if (copy_to_user(conf, &dlp->config, sizeof(struct dlci_conf)))
+			return -EFAULT;
+	}
+
+	return 0;
 }
 
 static int dlci_dev_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
@@ -276,6 +348,15 @@ static int dlci_dev_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 		case DLCI_GET_SLAVE:
 			if (!*(short *)(dev->dev_addr))
 				return(-EINVAL);
+		return -EPERM;
+
+	dlp = netdev_priv(dev);
+
+	switch (cmd)
+	{
+		case DLCI_GET_SLAVE:
+			if (!*(short *)(dev->dev_addr))
+				return -EINVAL;
 
 			strncpy(ifr->ifr_slave, dlp->slave->name, sizeof(ifr->ifr_slave));
 			break;
@@ -292,6 +373,14 @@ static int dlci_dev_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 			return(-EOPNOTSUPP);
 	}
 	return(0);
+				return -EINVAL;
+
+			return dlci_config(dev, ifr->ifr_data, cmd == DLCI_GET_CONF);
+
+		default: 
+			return -EOPNOTSUPP;
+	}
+	return 0;
 }
 
 static int dlci_change_mtu(struct net_device *dev, int new_mtu)
@@ -301,6 +390,9 @@ static int dlci_change_mtu(struct net_device *dev, int new_mtu)
 	dlp = dev->priv;
 
 	return((*dlp->slave->change_mtu)(dlp->slave, new_mtu));
+	struct dlci_local *dlp = netdev_priv(dev);
+
+	return dev_set_mtu(dlp->slave, new_mtu);
 }
 
 static int dlci_open(struct net_device *dev)
@@ -321,6 +413,18 @@ static int dlci_open(struct net_device *dev)
 	err = (*flp->activate)(dlp->slave, dev);
 	if (err)
 		return(err);
+	dlp = netdev_priv(dev);
+
+	if (!*(short *)(dev->dev_addr))
+		return -EINVAL;
+
+	if (!netif_running(dlp->slave))
+		return -ENOTCONN;
+
+	flp = netdev_priv(dlp->slave);
+	err = (*flp->activate)(dlp->slave, dev);
+	if (err)
+		return err;
 
 	netif_start_queue(dev);
 
@@ -338,6 +442,9 @@ static int dlci_close(struct net_device *dev)
 	dlp = dev->priv;
 
 	flp = dlp->slave->priv;
+	dlp = netdev_priv(dev);
+
+	flp = netdev_priv(dlp->slave);
 	err = (*flp->deactivate)(dlp->slave, dev);
 
 	return 0;
@@ -371,6 +478,12 @@ static int dlci_add(struct dlci_add *dlci)
 	/* create device name */
 	master = alloc_netdev( sizeof(struct dlci_local), "dlci%d",
 			      dlci_setup);
+	if (slave->type != ARPHRD_FRAD || netdev_priv(slave) == NULL)
+		goto err1;
+
+	/* create device name */
+	master = alloc_netdev(sizeof(struct dlci_local), "dlci%d",
+			      NET_NAME_UNKNOWN, dlci_setup);
 	if (!master) {
 		err = -ENOMEM;
 		goto err1;
@@ -396,6 +509,13 @@ static int dlci_add(struct dlci_add *dlci)
 	dlp->master = master;
 
 	flp = slave->priv;
+	*(short *)(master->dev_addr) = dlci->dlci;
+
+	dlp = netdev_priv(master);
+	dlp->slave = slave;
+	dlp->master = master;
+
+	flp = netdev_priv(slave);
 	err = (*flp->assoc)(slave, master);
 	if (err < 0)
 		goto err2;
@@ -410,6 +530,7 @@ static int dlci_add(struct dlci_add *dlci)
 	rtnl_unlock();
 
 	return(0);
+	return 0;
 
  err2:
 	rtnl_unlock();
@@ -417,6 +538,7 @@ static int dlci_add(struct dlci_add *dlci)
  err1:
 	dev_put(slave);
 	return(err);
+	return err;
 }
 
 static int dlci_del(struct dlci_add *dlci)
@@ -440,6 +562,37 @@ static int dlci_del(struct dlci_add *dlci)
 	flp = slave->priv;
 
 	rtnl_lock();
+	bool			found = false;
+
+	rtnl_lock();
+
+	/* validate slave device */
+	master = __dev_get_by_name(&init_net, dlci->devname);
+	if (!master) {
+		err = -ENODEV;
+		goto out;
+	}
+
+	list_for_each_entry(dlp, &dlci_devs, list) {
+		if (dlp->master == master) {
+			found = true;
+			break;
+		}
+	}
+	if (!found) {
+		err = -ENODEV;
+		goto out;
+	}
+
+	if (netif_running(master)) {
+		err = -EBUSY;
+		goto out;
+	}
+
+	dlp = netdev_priv(master);
+	slave = dlp->slave;
+	flp = netdev_priv(slave);
+
 	err = (*flp->deassoc)(slave, master);
 	if (!err) {
 		list_del(&dlp->list);
@@ -451,6 +604,9 @@ static int dlci_del(struct dlci_add *dlci)
 	rtnl_unlock();
 
 	return(err);
+out:
+	rtnl_unlock();
+	return err;
 }
 
 static int dlci_ioctl(unsigned int cmd, void __user *arg)
@@ -462,6 +618,9 @@ static int dlci_ioctl(unsigned int cmd, void __user *arg)
 		return(-EPERM);
 
 	if(copy_from_user(&add, arg, sizeof(struct dlci_add)))
+		return -EPERM;
+
+	if (copy_from_user(&add, arg, sizeof(struct dlci_add)))
 		return -EFAULT;
 
 	switch (cmd)
@@ -471,6 +630,7 @@ static int dlci_ioctl(unsigned int cmd, void __user *arg)
 
 			if (!err)
 				if(copy_to_user(arg, &add, sizeof(struct dlci_add)))
+				if (copy_to_user(arg, &add, sizeof(struct dlci_add)))
 					return -EFAULT;
 			break;
 
@@ -483,6 +643,7 @@ static int dlci_ioctl(unsigned int cmd, void __user *arg)
 	}
 
 	return(err);
+	return err;
 }
 
 static const struct header_ops dlci_header_ops = {
@@ -501,6 +662,21 @@ static void dlci_setup(struct net_device *dev)
 	dev->header_ops		= &dlci_header_ops;
 	dev->get_stats		= dlci_get_stats;
 	dev->change_mtu		= dlci_change_mtu;
+static const struct net_device_ops dlci_netdev_ops = {
+	.ndo_open	= dlci_open,
+	.ndo_stop	= dlci_close,
+	.ndo_do_ioctl	= dlci_dev_ioctl,
+	.ndo_start_xmit	= dlci_transmit,
+	.ndo_change_mtu	= dlci_change_mtu,
+};
+
+static void dlci_setup(struct net_device *dev)
+{
+	struct dlci_local *dlp = netdev_priv(dev);
+
+	dev->flags		= 0;
+	dev->header_ops		= &dlci_header_ops;
+	dev->netdev_ops		= &dlci_netdev_ops;
 	dev->destructor		= free_netdev;
 
 	dlp->receive		= dlci_receive;
@@ -516,6 +692,7 @@ static int dlci_dev_event(struct notifier_block *unused,
 			  unsigned long event, void *ptr)
 {
 	struct net_device *dev = (struct net_device *) ptr;
+	struct net_device *dev = netdev_notifier_info_to_dev(ptr);
 
 	if (dev_net(dev) != &init_net)
 		return NOTIFY_DONE;

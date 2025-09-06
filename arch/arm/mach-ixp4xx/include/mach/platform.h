@@ -13,6 +13,8 @@
 
 #ifndef __ASSEMBLY__
 
+#include <linux/reboot.h>
+
 #include <asm/types.h>
 
 #ifndef	__ARMEB__
@@ -73,6 +75,7 @@ extern unsigned long ixp4xx_exp_bus_size;
  * Clock Speed Definitions.
  */
 #define IXP4XX_PERIPHERAL_BUS_CLOCK 	(66) /* 66Mhzi APB BUS   */ 
+#define IXP4XX_PERIPHERAL_BUS_CLOCK 	(66) /* 66MHzi APB BUS   */ 
 #define IXP4XX_UART_XTAL        	14745600
 
 /*
@@ -168,6 +171,15 @@ static inline void gpio_line_set(u8 line, int value)
 	else if (value == IXP4XX_GPIO_LOW)
 	    *IXP4XX_GPIO_GPOUTR &= ~(1 << line);
 }
+extern void ixp4xx_init_early(void);
+extern void ixp4xx_init_irq(void);
+extern void ixp4xx_sys_init(void);
+extern void ixp4xx_timer_init(void);
+extern void ixp4xx_restart(enum reboot_mode, const char *);
+extern void ixp4xx_pci_preinit(void);
+struct pci_sys_data;
+extern int ixp4xx_setup(int nr, struct pci_sys_data *sys);
+extern struct pci_ops ixp4xx_ops;
 
 #endif // __ASSEMBLY__
 

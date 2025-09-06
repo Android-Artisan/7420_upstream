@@ -6,6 +6,7 @@
  *      Authors: Bjorn Wesen (bjornw@axis.com)
  *
  *      This file contains the interrupt vectors and some 
+ *      This file contains the interrupt vectors and some
  *      helper functions
  *
  */
@@ -19,6 +20,11 @@
 
 #define mask_irq(irq_nr) (*R_VECT_MASK_CLR = 1 << (irq_nr));
 #define unmask_irq(irq_nr) (*R_VECT_MASK_SET = 1 << (irq_nr));
+#define crisv10_mask_irq(irq_nr) (*R_VECT_MASK_CLR = 1 << (irq_nr));
+#define crisv10_unmask_irq(irq_nr) (*R_VECT_MASK_SET = 1 << (irq_nr));
+
+extern void kgdb_init(void);
+extern void breakpoint(void);
 
 /* don't use set_int_vector, it bypasses the linux interrupt handlers. it is
  * global just so that the kernel gdb can use it.
@@ -141,6 +147,21 @@ static struct hw_interrupt_type crisv10_irq_type = {
 	.ack =         ack_crisv10_irq,
 	.end =         end_crisv10_irq,
 	.set_affinity = NULL
+static void enable_crisv10_irq(struct irq_data *data)
+{
+	crisv10_unmask_irq(data->irq);
+}
+
+static void disable_crisv10_irq(struct irq_data *data)
+{
+	crisv10_mask_irq(data->irq);
+}
+
+static struct irq_chip crisv10_irq_type = {
+	.name		= "CRISv10",
+	.irq_shutdown	= disable_crisv10_irq,
+	.irq_enable	= enable_crisv10_irq,
+	.irq_disable	= disable_crisv10_irq,
 };
 
 void weird_irq(void);
@@ -203,6 +224,7 @@ void do_multiple_IRQ(struct pt_regs* regs)
 
 void __init
 init_IRQ(void)
+void __init init_IRQ(void)
 {
 	int i;
 
@@ -214,6 +236,9 @@ init_IRQ(void)
 	*R_IRQ_MASK2_CLR = 0xffffffff;
 #endif
 
+	*R_IRQ_MASK0_CLR = 0xffffffff;
+	*R_IRQ_MASK1_CLR = 0xffffffff;
+	*R_IRQ_MASK2_CLR = 0xffffffff;
 	*R_VECT_MASK_CLR = 0xffffffff;
 
         for (i = 0; i < 256; i++)
@@ -222,6 +247,8 @@ init_IRQ(void)
 	/* Initialize IRQ handler descriptors. */
 	for(i = 2; i < NR_IRQS; i++) {
 		irq_desc[i].chip = &crisv10_irq_type;
+		irq_set_chip_and_handler(i, &crisv10_irq_type,
+					 handle_simple_irq);
 		set_int_vector(i, interrupt[i]);
 	}
 
@@ -239,6 +266,13 @@ init_IRQ(void)
 	
 	/* 0 and 1 which are special breakpoint/NMI traps */
 
+	for (i = 0; i < 16; i++)
+                set_break_vector(i, do_sigtrap);
+
+	/* except IRQ 15 which is the multiple-IRQ handler on Etrax100 */
+	set_int_vector(15, multiple_interrupt);
+
+	/* 0 and 1 which are special breakpoint/NMI traps */
 	set_int_vector(0, hwbreakpoint);
 	set_int_vector(1, IRQ1_interrupt);
 
@@ -248,6 +282,9 @@ init_IRQ(void)
 
 	/* setup the system-call trap, which is reached by BREAK 13 */
 
+	set_int_vector(14, mmu_bus_fault);
+
+	/* setup the system-call trap, which is reached by BREAK 13 */
 	set_break_vector(13, system_call);
 
         /* setup a breakpoint handler for debugging used for both user and

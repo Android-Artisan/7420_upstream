@@ -20,6 +20,7 @@
 #include <linux/init.h>
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
+#include <linux/export.h>
 #include <net/net_namespace.h>
 #include <net/sock.h>
 #include <net/x25.h>
@@ -47,6 +48,8 @@ static void *x25_seq_route_start(struct seq_file *seq, loff_t *pos)
 
 	read_lock_bh(&x25_route_list_lock);
 	return l ? x25_get_route_idx(--l) : SEQ_START_TOKEN;
+	read_lock_bh(&x25_route_list_lock);
+	return seq_list_start_head(&x25_route_list, *pos);
 }
 
 static void *x25_seq_route_next(struct seq_file *seq, void *v, loff_t *pos)
@@ -68,6 +71,7 @@ static void *x25_seq_route_next(struct seq_file *seq, void *v, loff_t *pos)
 		rt = NULL;
 out:
 	return rt;
+	return seq_list_next(v, &x25_route_list, pos);
 }
 
 static void x25_seq_route_stop(struct seq_file *seq, void *v)
@@ -81,6 +85,9 @@ static int x25_seq_route_show(struct seq_file *seq, void *v)
 	struct x25_route *rt;
 
 	if (v == SEQ_START_TOKEN) {
+	struct x25_route *rt = list_entry(v, struct x25_route, node);
+
+	if (v == &x25_route_list) {
 		seq_puts(seq, "Address          Digits  Device\n");
 		goto out;
 	}
@@ -113,6 +120,11 @@ static void *x25_seq_socket_start(struct seq_file *seq, loff_t *pos)
 
 	read_lock_bh(&x25_list_lock);
 	return l ? x25_get_socket_idx(--l) : SEQ_START_TOKEN;
+static void *x25_seq_socket_start(struct seq_file *seq, loff_t *pos)
+	__acquires(x25_list_lock)
+{
+	read_lock_bh(&x25_list_lock);
+	return seq_hlist_start_head(&x25_list, *pos);
 }
 
 static void *x25_seq_socket_next(struct seq_file *seq, void *v, loff_t *pos)
@@ -127,6 +139,7 @@ static void *x25_seq_socket_next(struct seq_file *seq, void *v, loff_t *pos)
 	s = sk_next(v);
 out:
 	return s;
+	return seq_hlist_next(v, &x25_list, pos);
 }
 
 static void x25_seq_socket_stop(struct seq_file *seq, void *v)
@@ -149,6 +162,7 @@ static int x25_seq_socket_show(struct seq_file *seq, void *v)
 	}
 
 	s = v;
+	s = sk_entry(v);
 	x25 = x25_sk(s);
 
 	if (!x25->neighbour || (dev = x25->neighbour->dev) == NULL)
@@ -165,6 +179,8 @@ static int x25_seq_socket_show(struct seq_file *seq, void *v)
 		   x25->t21 / HZ, x25->t22 / HZ, x25->t23 / HZ,
 		   atomic_read(&s->sk_wmem_alloc),
 		   atomic_read(&s->sk_rmem_alloc),
+		   sk_wmem_alloc_get(s),
+		   sk_rmem_alloc_get(s),
 		   s->sk_socket ? SOCK_INODE(s->sk_socket)->i_ino : 0L);
 out:
 	return 0;
@@ -193,6 +209,11 @@ static void *x25_seq_forward_start(struct seq_file *seq, loff_t *pos)
 
 	read_lock_bh(&x25_forward_list_lock);
 	return l ? x25_get_forward_idx(--l) : SEQ_START_TOKEN;
+static void *x25_seq_forward_start(struct seq_file *seq, loff_t *pos)
+	__acquires(x25_forward_list_lock)
+{
+	read_lock_bh(&x25_forward_list_lock);
+	return seq_list_start_head(&x25_forward_list, *pos);
 }
 
 static void *x25_seq_forward_next(struct seq_file *seq, void *v, loff_t *pos)
@@ -215,6 +236,7 @@ static void *x25_seq_forward_next(struct seq_file *seq, void *v, loff_t *pos)
 out:
 	return f;
 
+	return seq_list_next(v, &x25_forward_list, pos);
 }
 
 static void x25_seq_forward_stop(struct seq_file *seq, void *v)
@@ -228,6 +250,9 @@ static int x25_seq_forward_show(struct seq_file *seq, void *v)
 	struct x25_forward *f;
 
 	if (v == SEQ_START_TOKEN) {
+	struct x25_forward *f = list_entry(v, struct x25_forward, node);
+
+	if (v == &x25_forward_list) {
 		seq_printf(seq, "lci dev1       dev2\n");
 		goto out;
 	}
@@ -335,6 +360,27 @@ out_socket:
 out_route:
 	remove_proc_entry("x25", init_net.proc_net);
 	goto out;
+int __init x25_proc_init(void)
+{
+	if (!proc_mkdir("x25", init_net.proc_net))
+		return -ENOMEM;
+
+	if (!proc_create("x25/route", S_IRUGO, init_net.proc_net,
+			&x25_seq_route_fops))
+		goto out;
+
+	if (!proc_create("x25/socket", S_IRUGO, init_net.proc_net,
+			&x25_seq_socket_fops))
+		goto out;
+
+	if (!proc_create("x25/forward", S_IRUGO, init_net.proc_net,
+			&x25_seq_forward_fops))
+		goto out;
+	return 0;
+
+out:
+	remove_proc_subtree("x25", init_net.proc_net);
+	return -ENOMEM;
 }
 
 void __exit x25_proc_exit(void)
@@ -343,6 +389,7 @@ void __exit x25_proc_exit(void)
 	remove_proc_entry("route", x25_proc_dir);
 	remove_proc_entry("socket", x25_proc_dir);
 	remove_proc_entry("x25", init_net.proc_net);
+	remove_proc_subtree("x25", init_net.proc_net);
 }
 
 #else /* CONFIG_PROC_FS */

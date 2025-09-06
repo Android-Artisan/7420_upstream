@@ -1044,7 +1044,6 @@ static int tda18271_dump_std_map(struct dvb_frontend *fe)
 	struct tda18271_priv *priv = fe->tuner_priv;
 	struct tda18271_std_map *std = &priv->std;
 
-	tda_dbg("========== STANDARD MAP SETTINGS ==========\n");
 	tda18271_dump_std_item(fm_radio, "  fm  ");
 	tda18271_dump_std_item(atv_b,  "atv b ");
 	tda18271_dump_std_item(atv_dk, "atv dk");

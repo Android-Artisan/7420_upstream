@@ -25,11 +25,15 @@
  * along with this program; if not, see the file COPYING, or write
  * to the Free Software Foundation, Inc.,
  * 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+ * Copyright 2004-2009 Analog Devices Inc.
+ *
+ * Licensed under the GPL-2 or later
  */
 
 #include <linux/linkage.h>
 #include <asm/thread_info.h>
 #include <asm/errno.h>
+#include <asm/blackfin.h>
 #include <asm/asm-offsets.h>
 
 #include <asm/context.S>
@@ -104,3 +108,41 @@ ENTRY(_sys_rt_sigreturn)
 	rets = [sp++];
 	rts;
 ENDPROC(_sys_rt_sigreturn)
+#ifdef CONFIG_IPIPE
+	/*
+	 * Hw IRQs are off on entry, and we don't want the scheduling tail
+	 * code to starve high priority domains from interrupts while it
+	 * runs. Therefore we first stall the root stage to have the
+	 * virtual interrupt state reflect IMASK.
+	 */
+	p0.l = ___ipipe_root_status;
+	p0.h = ___ipipe_root_status;
+	r4 = [p0];
+	bitset(r4, 0);
+	[p0] = r4;
+	/*
+	 * Then we may enable hw IRQs, allowing preemption from high
+	 * priority domains. schedule_tail() will do local_irq_enable()
+	 * since Blackfin does not define __ARCH_WANT_UNLOCKED_CTXSW, so
+	 * there is no need to unstall the root domain by ourselves
+	 * afterwards.
+	 */
+	p0.l = _bfin_irq_flags;
+	p0.h = _bfin_irq_flags;
+	r4 = [p0];
+	sti r4;
+#endif /* CONFIG_IPIPE */
+	SP += -12;
+	pseudo_long_call _schedule_tail, p5;
+	SP += 12;
+	p1 = [sp++];
+	r0 = [sp++];
+	cc = p1 == 0;
+	if cc jump .Lfork;
+	sp += -12;
+	call (p1);
+	sp += 12;
+.Lfork:
+	RESTORE_CONTEXT
+	rti;
+ENDPROC(_ret_from_fork)

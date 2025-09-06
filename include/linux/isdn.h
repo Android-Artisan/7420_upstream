@@ -139,6 +139,9 @@ typedef struct {
 #define ISDN_NET_DIALMODE(x) ((&(x))->flags & ISDN_NET_DIALMODE_MASK)
 
 #ifdef __KERNEL__
+#ifndef __ISDN_H__
+#define __ISDN_H__
+
 
 #include <linux/errno.h>
 #include <linux/fs.h>
@@ -162,6 +165,7 @@ typedef struct {
 #include <linux/skbuff.h>
 #include <linux/tcp.h>
 #include <linux/mutex.h>
+#include <uapi/linux/isdn.h>
 
 #define ISDN_TTY_MAJOR    43
 #define ISDN_TTYAUX_MAJOR 44
@@ -188,6 +192,7 @@ typedef struct {
 
 #include <linux/ppp_defs.h>
 #include <linux/if_ppp.h>
+#include <linux/ppp-ioctl.h>
 
 #include <linux/isdn_ppp.h>
 #endif
@@ -252,7 +257,6 @@ typedef struct {
 /* GLOBAL_FLAGS */
 #define ISDN_GLOBAL_STOPPED 1
 
-/*=================== Start of ip-over-ISDN stuff =========================*/
 
 /* Feature- and status-flags for a net-interface */
 #define ISDN_NET_CONNECTED  0x01       /* Bound to ISDN-Channel             */
@@ -387,9 +391,7 @@ typedef struct isdn_net_dev_s {
 
 } isdn_net_dev;
 
-/*===================== End of ip-over-ISDN stuff ===========================*/
 
-/*======================= Start of ISDN-tty stuff ===========================*/
 
 #define ISDN_ASYNC_MAGIC          0x49344C01 /* for paranoia-checking        */
 #define ISDN_ASYNC_INITIALIZED	  0x80000000 /* port was initialized         */
@@ -407,6 +409,8 @@ typedef struct isdn_net_dev_s {
 #define ISDN_SERIAL_XMIT_MAX            4000 /* Maximum bufsize for write    */
 #define ISDN_SERIAL_TYPE_NORMAL            1
 #define ISDN_SERIAL_TYPE_CALLOUT           2
+#define ISDN_SERIAL_XMIT_SIZE           1024 /* Default bufsize for write    */
+#define ISDN_SERIAL_XMIT_MAX            4000 /* Maximum bufsize for write    */
 
 #ifdef CONFIG_ISDN_AUDIO
 /* For using sk_buffs with audio we need some private variables
@@ -450,6 +454,7 @@ typedef struct modem_info {
   int			magic;
   struct module		*owner;
   int			flags;		 /* defined in tty.h               */
+  struct tty_port	port;
   int			x_char;		 /* xon/xoff character             */
   int			mcr;		 /* Modem control register         */
   int                   msr;             /* Modem status register          */
@@ -501,6 +506,7 @@ typedef struct modem_info {
   struct ktermios	normal_termios;  /* For saving termios structs     */
   struct ktermios	callout_termios;
   wait_queue_head_t	open_wait, close_wait;
+  atemu                 emu;             /* AT-emulator data               */
   spinlock_t	        readlock;
 } modem_info;
 
@@ -516,9 +522,7 @@ typedef struct _isdn_modem {
   modem_info         info[ISDN_MAX_CHANNELS];	   /* Private data           */
 } isdn_modem_t;
 
-/*======================= End of ISDN-tty stuff ============================*/
 
-/*======================== Start of V.110 stuff ============================*/
 #define V110_BUFSIZE 1024
 
 typedef struct {
@@ -541,9 +545,7 @@ typedef struct {
 	unsigned char decodebuf[V110_BUFSIZE]; /* incomplete V110 matrices     */
 } isdn_v110_stream;
 
-/*========================= End of V.110 stuff =============================*/
 
-/*======================= Start of general stuff ===========================*/
 
 typedef struct {
 	char *next;

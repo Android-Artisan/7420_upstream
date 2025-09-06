@@ -1,3 +1,7 @@
+Version 15 of schedstats dropped counters for some sched_yield:
+yld_exp_empty, yld_act_empty and yld_both_empty. Otherwise, it is
+identical to version 14.
+
 Version 14 of schedstats includes support for sched_domains, which hit the
 mainline kernel in 2.6.20 although it is identical to the stats from version
 12 which was in the kernel from 2.6.13-2.6.19 (version 13 never saw a kernel
@@ -54,6 +58,26 @@ Next three are statistics describing scheduling latency:
     11) sum of all time spent waiting to run by tasks on this processor (in
         jiffies)
     12) # of timeslices run on this cpu
+cpu<N> 1 2 3 4 5 6 7 8 9
+
+First field is a sched_yield() statistic:
+     1) # of times sched_yield() was called
+
+Next three are schedule() statistics:
+     2) This field is a legacy array expiration count field used in the O(1)
+	scheduler. We kept it for ABI compatibility, but it is always set to zero.
+     3) # of times schedule() was called
+     4) # of times schedule() left the processor idle
+
+Next two are try_to_wake_up() statistics:
+     5) # of times try_to_wake_up() was called
+     6) # of times try_to_wake_up() was called to wake up the local cpu
+
+Next three are statistics describing scheduling latency:
+     7) sum of all time spent running by tasks on this processor (in jiffies)
+     8) sum of all time spent waiting to run by tasks on this processor (in
+        jiffies)
+     9) # of timeslices run on this cpu
 
 
 Domain statistics

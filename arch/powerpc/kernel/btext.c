@@ -8,6 +8,8 @@
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/lmb.h>
+#include <linux/export.h>
+#include <linux/memblock.h>
 
 #include <asm/sections.h>
 #include <asm/prom.h>
@@ -51,6 +53,26 @@ static unsigned char vga_font[cmapsz];
 
 int boot_text_mapped __force_data = 0;
 int force_printk_to_btext = 0;
+
+extern void rmci_on(void);
+extern void rmci_off(void);
+
+static inline void rmci_maybe_on(void)
+{
+#if defined(CONFIG_PPC_EARLY_DEBUG_BOOTX) && defined(CONFIG_PPC64)
+	if (!(mfmsr() & MSR_DR))
+		rmci_on();
+#endif
+}
+
+static inline void rmci_maybe_off(void)
+{
+#if defined(CONFIG_PPC_EARLY_DEBUG_BOOTX) && defined(CONFIG_PPC64)
+	if (!(mfmsr() & MSR_DR))
+		rmci_off();
+#endif
+}
+
 
 #ifdef CONFIG_PPC32
 /* Calc BAT values for mapping the display and store them
@@ -100,6 +122,7 @@ void __init btext_prepare_BAT(void)
 /* This function can be used to enable the early boot text when doing
  * OF booting or within bootx init. It must be followed by a btext_unmap()
  * call before the logical address becomes unuseable
+ * call before the logical address becomes unusable
  */
 void __init btext_setup_display(int width, int height, int depth, int pitch,
 				unsigned long address)
@@ -135,6 +158,7 @@ void __init btext_unmap(void)
  */
 
 static void map_boot_text(void)
+void btext_map(void)
 {
 	unsigned long base, offset, size;
 	unsigned char *vbase;
@@ -210,6 +234,7 @@ int btext_initialize(struct device_node *np)
 	dispDeviceRect[3] = height;
 
 	map_boot_text();
+	btext_map();
 
 	return 0;
 }
@@ -242,8 +267,10 @@ int __init btext_find_display(int allow_nonstdout)
 			rc = btext_initialize(np);
 			printk("result: %d\n", rc);
 		}
-		if (rc == 0)
+		if (rc == 0) {
+			of_node_put(np);
 			break;
+		}
 	}
 	return rc;
 }
@@ -284,6 +311,7 @@ void btext_update_display(unsigned long phys, int width, int height,
 		boot_text_mapped = 0;
 	}
 	map_boot_text();
+	btext_map();
 	g_loc_X = 0;
 	g_loc_Y = 0;
 	g_max_loc_X = width / 8;
@@ -298,6 +326,7 @@ void btext_clearscreen(void)
 					(dispDeviceDepth >> 3)) >> 2;
 	int i,j;
 
+	rmci_maybe_on();
 	for (i=0; i<(dispDeviceRect[3] - dispDeviceRect[1]); i++)
 	{
 		unsigned int *ptr = base;
@@ -305,6 +334,7 @@ void btext_clearscreen(void)
 			*(ptr++) = 0;
 		base += (dispDeviceRowBytes >> 2);
 	}
+	rmci_maybe_off();
 }
 
 void btext_flushscreen(void)
@@ -355,6 +385,8 @@ static void scrollscreen(void)
 				   (dispDeviceDepth >> 3)) >> 2;
 	int i,j;
 
+	rmci_maybe_on();
+
 	for (i=0; i<(dispDeviceRect[3] - dispDeviceRect[1] - 16); i++)
 	{
 		unsigned int *src_ptr = src;
@@ -373,6 +405,116 @@ static void scrollscreen(void)
 	}
 }
 #endif /* ndef NO_SCROLL */
+
+
+	rmci_maybe_off();
+}
+#endif /* ndef NO_SCROLL */
+
+static unsigned int expand_bits_8[16] = {
+	0x00000000,
+	0x000000ff,
+	0x0000ff00,
+	0x0000ffff,
+	0x00ff0000,
+	0x00ff00ff,
+	0x00ffff00,
+	0x00ffffff,
+	0xff000000,
+	0xff0000ff,
+	0xff00ff00,
+	0xff00ffff,
+	0xffff0000,
+	0xffff00ff,
+	0xffffff00,
+	0xffffffff
+};
+
+static unsigned int expand_bits_16[4] = {
+	0x00000000,
+	0x0000ffff,
+	0xffff0000,
+	0xffffffff
+};
+
+
+static void draw_byte_32(unsigned char *font, unsigned int *base, int rb)
+{
+	int l, bits;
+	int fg = 0xFFFFFFFFUL;
+	int bg = 0x00000000UL;
+
+	for (l = 0; l < 16; ++l)
+	{
+		bits = *font++;
+		base[0] = (-(bits >> 7) & fg) ^ bg;
+		base[1] = (-((bits >> 6) & 1) & fg) ^ bg;
+		base[2] = (-((bits >> 5) & 1) & fg) ^ bg;
+		base[3] = (-((bits >> 4) & 1) & fg) ^ bg;
+		base[4] = (-((bits >> 3) & 1) & fg) ^ bg;
+		base[5] = (-((bits >> 2) & 1) & fg) ^ bg;
+		base[6] = (-((bits >> 1) & 1) & fg) ^ bg;
+		base[7] = (-(bits & 1) & fg) ^ bg;
+		base = (unsigned int *) ((char *)base + rb);
+	}
+}
+
+static inline void draw_byte_16(unsigned char *font, unsigned int *base, int rb)
+{
+	int l, bits;
+	int fg = 0xFFFFFFFFUL;
+	int bg = 0x00000000UL;
+	unsigned int *eb = (int *)expand_bits_16;
+
+	for (l = 0; l < 16; ++l)
+	{
+		bits = *font++;
+		base[0] = (eb[bits >> 6] & fg) ^ bg;
+		base[1] = (eb[(bits >> 4) & 3] & fg) ^ bg;
+		base[2] = (eb[(bits >> 2) & 3] & fg) ^ bg;
+		base[3] = (eb[bits & 3] & fg) ^ bg;
+		base = (unsigned int *) ((char *)base + rb);
+	}
+}
+
+static inline void draw_byte_8(unsigned char *font, unsigned int *base, int rb)
+{
+	int l, bits;
+	int fg = 0x0F0F0F0FUL;
+	int bg = 0x00000000UL;
+	unsigned int *eb = (int *)expand_bits_8;
+
+	for (l = 0; l < 16; ++l)
+	{
+		bits = *font++;
+		base[0] = (eb[bits >> 4] & fg) ^ bg;
+		base[1] = (eb[bits & 0xf] & fg) ^ bg;
+		base = (unsigned int *) ((char *)base + rb);
+	}
+}
+
+static noinline void draw_byte(unsigned char c, long locX, long locY)
+{
+	unsigned char *base	= calc_base(locX << 3, locY << 4);
+	unsigned char *font	= &vga_font[((unsigned int)c) * 16];
+	int rb			= dispDeviceRowBytes;
+
+	rmci_maybe_on();
+	switch(dispDeviceDepth) {
+	case 24:
+	case 32:
+		draw_byte_32(font, (unsigned int *)base, rb);
+		break;
+	case 15:
+	case 16:
+		draw_byte_16(font, (unsigned int *)base, rb);
+		break;
+	case 8:
+		draw_byte_8(font, (unsigned int *)base, rb);
+		break;
+	}
+	rmci_maybe_off();
+}
 
 void btext_drawchar(char c)
 {
@@ -568,6 +710,35 @@ static void draw_byte_8(unsigned char *font, unsigned int *base, int rb)
 		base[1] = (eb[bits & 0xf] & fg) ^ bg;
 		base = (unsigned int *) ((char *)base + rb);
 	}
+	if (!boot_text_mapped)
+		return;
+#ifdef CONFIG_PPC64
+	btext_drawchar(hex_asc_hi(v >> 56));
+	btext_drawchar(hex_asc_lo(v >> 56));
+	btext_drawchar(hex_asc_hi(v >> 48));
+	btext_drawchar(hex_asc_lo(v >> 48));
+	btext_drawchar(hex_asc_hi(v >> 40));
+	btext_drawchar(hex_asc_lo(v >> 40));
+	btext_drawchar(hex_asc_hi(v >> 32));
+	btext_drawchar(hex_asc_lo(v >> 32));
+#endif
+	btext_drawchar(hex_asc_hi(v >> 24));
+	btext_drawchar(hex_asc_lo(v >> 24));
+	btext_drawchar(hex_asc_hi(v >> 16));
+	btext_drawchar(hex_asc_lo(v >> 16));
+	btext_drawchar(hex_asc_hi(v >> 8));
+	btext_drawchar(hex_asc_lo(v >> 8));
+	btext_drawchar(hex_asc_hi(v));
+	btext_drawchar(hex_asc_lo(v));
+	btext_drawchar(' ');
+}
+
+void __init udbg_init_btext(void)
+{
+	/* If btext is enabled, we might have a BAT setup for early display,
+	 * thus we do enable some very basic udbg output
+	 */
+	udbg_putc = btext_drawchar;
 }
 
 static unsigned char vga_font[cmapsz] = {

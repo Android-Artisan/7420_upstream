@@ -27,6 +27,9 @@
  * along with this program; see the file copying.
  * if not, write to the free software foundation,
  * 59 temple place - suite 330, boston, ma 02111-1307, usa.
+ * Copyright 2005-2010 Analog Devices Inc.
+ *
+ * Licensed under the Clear BSD license or the GPL-2 (or later)
  */
 
 #ifndef _DEF_BF537_H

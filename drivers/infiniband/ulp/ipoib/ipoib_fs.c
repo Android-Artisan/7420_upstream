@@ -32,10 +32,12 @@
 
 #include <linux/err.h>
 #include <linux/seq_file.h>
+#include <linux/slab.h>
 
 struct file_operations;
 
 #include <linux/debugfs.h>
+#include <linux/export.h>
 
 #include "ipoib.h"
 
@@ -212,6 +214,7 @@ static int ipoib_path_seq_show(struct seq_file *file, void *iter_ptr)
 
 	if (path.pathrec.dlid) {
 		rate = ib_rate_to_mult(path.pathrec.rate) * 25;
+		rate = ib_rate_to_mbps(path.pathrec.rate);
 
 		seq_printf(file,
 			   "  DLID:     0x%04x\n"
@@ -221,6 +224,10 @@ static int ipoib_path_seq_show(struct seq_file *file, void *iter_ptr)
 			   path.pathrec.sl,
 			   10 - ((rate % 10) ? 2 : 0),
 			   rate / 10, rate % 10 ? ".5" : "");
+			   "  rate: %8d.%d Gb/sec\n",
+			   be16_to_cpu(path.pathrec.dlid),
+			   path.pathrec.sl,
+			   rate / 1000, rate % 1000);
 	}
 
 	seq_putc(file, '\n');
@@ -284,6 +291,11 @@ void ipoib_delete_debug_files(struct net_device *dev)
 		debugfs_remove(priv->mcg_dentry);
 	if (priv->path_dentry)
 		debugfs_remove(priv->path_dentry);
+	WARN_ONCE(!priv->mcg_dentry, "null mcg debug file\n");
+	WARN_ONCE(!priv->path_dentry, "null path debug file\n");
+	debugfs_remove(priv->mcg_dentry);
+	debugfs_remove(priv->path_dentry);
+	priv->mcg_dentry = priv->path_dentry = NULL;
 }
 
 int ipoib_register_debugfs(void)

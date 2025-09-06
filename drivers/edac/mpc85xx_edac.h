@@ -1,5 +1,6 @@
 /*
  * Freescale MPC85xx Memory Controller kenel module
+ * Freescale MPC85xx Memory Controller kernel module
  * Author: Dave Jiang <djiang@mvista.com>
  *
  * 2006-2007 (c) MontaVista Software, Inc. This file is licensed under
@@ -12,6 +13,7 @@
 #define _MPC85XX_EDAC_H_
 
 #define MPC85XX_REVISION " Ver: 2.0.0 " __DATE__
+#define MPC85XX_REVISION " Ver: 2.0.0"
 #define EDAC_MOD_STR	"MPC85xx_edac"
 
 #define mpc85xx_printk(level, fmt, arg...) \
@@ -43,16 +45,21 @@
 #define MPC85XX_MC_ERR_INT_EN		0x0e48
 #define MPC85XX_MC_CAPTURE_ATRIBUTES	0x0e4c
 #define MPC85XX_MC_CAPTURE_ADDRESS	0x0e50
+#define MPC85XX_MC_CAPTURE_EXT_ADDRESS	0x0e54
 #define MPC85XX_MC_ERR_SBE		0x0e58
 
 #define DSC_MEM_EN	0x80000000
 #define DSC_ECC_EN	0x20000000
 #define DSC_RD_EN	0x10000000
+#define DSC_DBW_MASK	0x00180000
+#define DSC_DBW_32	0x00080000
+#define DSC_DBW_64	0x00000000
 
 #define DSC_SDTYPE_MASK		0x07000000
 
 #define DSC_SDTYPE_DDR		0x02000000
 #define DSC_SDTYPE_DDR2		0x03000000
+#define DSC_SDTYPE_DDR3		0x07000000
 #define DSC_X32_EN	0x00000020
 
 /* Err_Int_En */
@@ -132,11 +139,19 @@
 #define MPC85XX_PCI_ERR_EN		0x0008
 #define MPC85XX_PCI_ERR_ATTRIB		0x000c
 #define MPC85XX_PCI_ERR_ADDR		0x0010
+#define   PEX_ERR_ICCAIE_EN_BIT		0x00020000
+#define MPC85XX_PCI_ERR_ATTRIB		0x000c
+#define MPC85XX_PCI_ERR_ADDR		0x0010
+#define   PEX_ERR_ICCAD_DISR_BIT	0x00020000
 #define MPC85XX_PCI_ERR_EXT_ADDR	0x0014
 #define MPC85XX_PCI_ERR_DL		0x0018
 #define MPC85XX_PCI_ERR_DH		0x001c
 #define MPC85XX_PCI_GAS_TIMR		0x0020
 #define MPC85XX_PCI_PCIX_TIMR		0x0024
+#define MPC85XX_PCIE_ERR_CAP_R0		0x0028
+#define MPC85XX_PCIE_ERR_CAP_R1		0x002c
+#define MPC85XX_PCIE_ERR_CAP_R2		0x0030
+#define MPC85XX_PCIE_ERR_CAP_R3		0x0034
 
 struct mpc85xx_mc_pdata {
 	char *name;
@@ -154,6 +169,7 @@ struct mpc85xx_l2_pdata {
 
 struct mpc85xx_pci_pdata {
 	char *name;
+	bool is_pcie;
 	int edac_idx;
 	void __iomem *pci_vbase;
 	int irq;

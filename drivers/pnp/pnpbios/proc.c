@@ -24,6 +24,7 @@
 #include <linux/types.h>
 #include <linux/proc_fs.h>
 #include <linux/pnp.h>
+#include <linux/seq_file.h>
 #include <linux/init.h>
 
 #include <asm/uaccess.h>
@@ -35,6 +36,7 @@ static struct proc_dir_entry *proc_pnp_boot = NULL;
 
 static int proc_read_pnpconfig(char *buf, char **start, off_t pos,
 			       int count, int *eof, void *data)
+static int pnpconfig_proc_show(struct seq_file *m, void *v)
 {
 	struct pnp_isa_config_struc pnps;
 
@@ -49,6 +51,27 @@ static int proc_read_pnpconfig(char *buf, char **start, off_t pos,
 
 static int proc_read_escdinfo(char *buf, char **start, off_t pos,
 			      int count, int *eof, void *data)
+	seq_printf(m, "structure_revision %d\n"
+		      "number_of_CSNs %d\n"
+		      "ISA_read_data_port 0x%x\n",
+		   pnps.revision, pnps.no_csns, pnps.isa_rd_data_port);
+	return 0;
+}
+
+static int pnpconfig_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, pnpconfig_proc_show, NULL);
+}
+
+static const struct file_operations pnpconfig_proc_fops = {
+	.owner		= THIS_MODULE,
+	.open		= pnpconfig_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
+static int escd_info_proc_show(struct seq_file *m, void *v)
 {
 	struct escd_info_struc escd;
 
@@ -56,6 +79,7 @@ static int proc_read_escdinfo(char *buf, char **start, off_t pos,
 		return -EIO;
 	return snprintf(buf, count,
 			"min_ESCD_write_size %d\n"
+	seq_printf(m, "min_ESCD_write_size %d\n"
 			"ESCD_size %d\n"
 			"NVRAM_base 0x%x\n",
 			escd.min_escd_write_size,
@@ -69,6 +93,28 @@ static int proc_read_escd(char *buf, char **start, off_t pos,
 	struct escd_info_struc escd;
 	char *tmpbuf;
 	int escd_size, escd_left_to_read, n;
+	return 0;
+}
+
+static int escd_info_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, escd_info_proc_show, NULL);
+}
+
+static const struct file_operations escd_info_proc_fops = {
+	.owner		= THIS_MODULE,
+	.open		= escd_info_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
+#define MAX_SANE_ESCD_SIZE (32*1024)
+static int escd_proc_show(struct seq_file *m, void *v)
+{
+	struct escd_info_struc escd;
+	char *tmpbuf;
+	int escd_size;
 
 	if (pnp_bios_escd_info(&escd))
 		return -EIO;
@@ -77,6 +123,7 @@ static int proc_read_escd(char *buf, char **start, off_t pos,
 	if (escd.escd_size > MAX_SANE_ESCD_SIZE) {
 		printk(KERN_ERR
 		       "PnPBIOS: proc_read_escd: ESCD size reported by BIOS escd_info call is too great\n");
+		       "PnPBIOS: %s: ESCD size reported by BIOS escd_info call is too great\n", __func__);
 		return -EFBIG;
 	}
 
@@ -96,6 +143,8 @@ static int proc_read_escd(char *buf, char **start, off_t pos,
 	if (escd_size > MAX_SANE_ESCD_SIZE) {
 		printk(KERN_ERR "PnPBIOS: proc_read_escd: ESCD size reported by"
 				" BIOS read_escd call is too great\n");
+		printk(KERN_ERR "PnPBIOS: %s: ESCD size reported by"
+				" BIOS read_escd call is too great\n", __func__);
 		kfree(tmpbuf);
 		return -EFBIG;
 	}
@@ -131,6 +180,58 @@ static int proc_read_devices(char *buf, char **start, off_t pos,
 
 	if (pos >= 0xff)
 		return 0;
+	seq_write(m, tmpbuf, escd_size);
+	kfree(tmpbuf);
+	return 0;
+}
+
+static int escd_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, escd_proc_show, NULL);
+}
+
+static const struct file_operations escd_proc_fops = {
+	.owner		= THIS_MODULE,
+	.open		= escd_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
+static int pnp_legacyres_proc_show(struct seq_file *m, void *v)
+{
+	void *buf;
+
+	buf = kmalloc(65536, GFP_KERNEL);
+	if (!buf)
+		return -ENOMEM;
+	if (pnp_bios_get_stat_res(buf)) {
+		kfree(buf);
+		return -EIO;
+	}
+
+	seq_write(m, buf, 65536);
+	kfree(buf);
+	return 0;
+}
+
+static int pnp_legacyres_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, pnp_legacyres_proc_show, NULL);
+}
+
+static const struct file_operations pnp_legacyres_proc_fops = {
+	.owner		= THIS_MODULE,
+	.open		= pnp_legacyres_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
+static int pnp_devices_proc_show(struct seq_file *m, void *v)
+{
+	struct pnp_bios_node *node;
+	u8 nodenum;
 
 	node = kzalloc(node_info.max_node_size, GFP_KERNEL);
 	if (!node)
@@ -147,6 +248,14 @@ static int proc_read_devices(char *buf, char **start, off_t pos,
 			     node->handle, node->eisa_id,
 			     node->type_code[0], node->type_code[1],
 			     node->type_code[2], node->flags);
+	for (nodenum = 0; nodenum < 0xff;) {
+		u8 thisnodenum = nodenum;
+
+		if (pnp_bios_get_dev_node(&nodenum, PNPMODE_DYNAMIC, node))
+			break;
+		seq_printf(m, "%02x\t%08x\t%3phC\t%04x\n",
+			     node->handle, node->eisa_id,
+			     node->type_code, node->flags);
 		if (nodenum <= thisnodenum) {
 			printk(KERN_ERR
 			       "%s Node number 0x%x is out of sequence following node 0x%x. Aborting.\n",
@@ -167,6 +276,25 @@ static int proc_read_devices(char *buf, char **start, off_t pos,
 static int proc_read_node(char *buf, char **start, off_t pos,
 			  int count, int *eof, void *data)
 {
+	return 0;
+}
+
+static int pnp_devices_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, pnp_devices_proc_show, NULL);
+}
+
+static const struct file_operations pnp_devices_proc_fops = {
+	.owner		= THIS_MODULE,
+	.open		= pnp_devices_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
+static int pnpbios_proc_show(struct seq_file *m, void *v)
+{
+	void *data = m->private;
 	struct pnp_bios_node *node;
 	int boot = (long)data >> 8;
 	u8 nodenum = (long)data;
@@ -188,6 +316,20 @@ static int proc_read_node(char *buf, char **start, off_t pos,
 static int proc_write_node(struct file *file, const char __user * buf,
 			   unsigned long count, void *data)
 {
+	seq_write(m, node->data, len);
+	kfree(node);
+	return 0;
+}
+
+static int pnpbios_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, pnpbios_proc_show, PDE_DATA(inode));
+}
+
+static ssize_t pnpbios_proc_write(struct file *file, const char __user *buf,
+				  size_t count, loff_t *pos)
+{
+	void *data = PDE_DATA(file_inode(file));
 	struct pnp_bios_node *node;
 	int boot = (long)data >> 8;
 	u8 nodenum = (long)data;
@@ -222,6 +364,18 @@ int pnpbios_interface_attach_device(struct pnp_bios_node *node)
 {
 	char name[3];
 	struct proc_dir_entry *ent;
+static const struct file_operations pnpbios_proc_fops = {
+	.owner		= THIS_MODULE,
+	.open		= pnpbios_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+	.write		= pnpbios_proc_write,
+};
+
+int pnpbios_interface_attach_device(struct pnp_bios_node *node)
+{
+	char name[3];
 
 	sprintf(name, "%02x", node->handle);
 
@@ -234,6 +388,8 @@ int pnpbios_interface_attach_device(struct pnp_bios_node *node)
 			ent->write_proc = proc_write_node;
 			ent->data = (void *)(long)(node->handle);
 		}
+		proc_create_data(name, 0644, proc_pnp, &pnpbios_proc_fops,
+				 (void *)(long)(node->handle));
 	}
 
 	if (!proc_pnp_boot)
@@ -246,6 +402,9 @@ int pnpbios_interface_attach_device(struct pnp_bios_node *node)
 		return 0;
 	}
 
+	if (proc_create_data(name, 0644, proc_pnp_boot, &pnpbios_proc_fops,
+			     (void *)(long)(node->handle + 0x100)))
+		return 0;
 	return -EIO;
 }
 
@@ -270,6 +429,11 @@ int __init pnpbios_proc_init(void)
 	create_proc_read_entry("escd", S_IRUSR, proc_pnp, proc_read_escd, NULL);
 	create_proc_read_entry("legacy_device_resources", 0, proc_pnp,
 			       proc_read_legacyres, NULL);
+	proc_create("devices", 0, proc_pnp, &pnp_devices_proc_fops);
+	proc_create("configuration_info", 0, proc_pnp, &pnpconfig_proc_fops);
+	proc_create("escd_info", 0, proc_pnp, &escd_info_proc_fops);
+	proc_create("escd", S_IRUSR, proc_pnp, &escd_proc_fops);
+	proc_create("legacy_device_resources", 0, proc_pnp, &pnp_legacyres_proc_fops);
 
 	return 0;
 }

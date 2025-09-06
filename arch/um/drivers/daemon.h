@@ -7,6 +7,7 @@
 #define __DAEMON_H__
 
 #include "net_user.h"
+#include <net_user.h>
 
 #define SWITCH_VERSION 3
 

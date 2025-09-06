@@ -29,6 +29,16 @@
 
 int ieee754sp_cmp(ieee754sp x, ieee754sp y, int cmp, int sig)
 {
+ *  51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA.
+ */
+
+#include "ieee754sp.h"
+
+int ieee754sp_cmp(union ieee754sp x, union ieee754sp y, int cmp, int sig)
+{
+	int vx;
+	int vy;
+
 	COMPXSP;
 	COMPYSP;
 
@@ -51,6 +61,16 @@ int ieee754sp_cmp(ieee754sp x, ieee754sp y, int cmp, int sig)
 	} else {
 		int vx = x.bits;
 		int vy = y.bits;
+	ieee754_clearcx();	/* Even clear inexact flag here */
+
+	if (ieee754_class_nan(xc) || ieee754_class_nan(yc)) {
+		if (sig ||
+		    xc == IEEE754_CLASS_SNAN || yc == IEEE754_CLASS_SNAN)
+			ieee754_setcx(IEEE754_INVALID_OPERATION);
+		return (cmp & IEEE754_CUN) != 0;
+	} else {
+		vx = x.bits;
+		vy = y.bits;
 
 		if (vx < 0)
 			vx = -vx ^ SP_SIGN_BIT;

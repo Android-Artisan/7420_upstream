@@ -25,6 +25,12 @@ static int affs_symlink_readpage(struct file *file, struct page *page)
 	pr_debug("AFFS: follow_link(ino=%lu)\n",inode->i_ino);
 
 	err = -EIO;
+	int			 i, j;
+	char			 c;
+	char			 lc;
+
+	pr_debug("follow_link(ino=%lu)\n", inode->i_ino);
+
 	bh = affs_bread(inode->i_sb, inode->i_ino);
 	if (!bh)
 		goto fail;
@@ -37,6 +43,15 @@ static int affs_symlink_readpage(struct file *file, struct page *page)
 	if (strchr(lf->symname,':')) {	/* Handle assign or volume name */
 		while (i < 1023 && (c = pf[i]))
 			link[i++] = c;
+
+	if (strchr(lf->symname,':')) {	/* Handle assign or volume name */
+		struct affs_sb_info *sbi = AFFS_SB(inode->i_sb);
+		char *pf;
+		spin_lock(&sbi->symlink_lock);
+		pf = sbi->s_prefix ? sbi->s_prefix : "/";
+		while (i < 1023 && (c = pf[i]))
+			link[i++] = c;
+		spin_unlock(&sbi->symlink_lock);
 		while (i < 1023 && lf->symname[j] != ':')
 			link[i++] = lf->symname[j++];
 		if (i < 1023)
@@ -64,6 +79,7 @@ fail:
 	kunmap(page);
 	unlock_page(page);
 	return err;
+	return -EIO;
 }
 
 const struct address_space_operations affs_symlink_aops = {

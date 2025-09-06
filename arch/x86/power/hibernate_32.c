@@ -12,6 +12,14 @@
 #include <asm/system.h>
 #include <asm/page.h>
 #include <asm/pgtable.h>
+#include <linux/gfp.h>
+#include <linux/suspend.h>
+#include <linux/bootmem.h>
+
+#include <asm/page.h>
+#include <asm/pgtable.h>
+#include <asm/mmzone.h>
+#include <asm/sections.h>
 
 /* Defined in hibernate_asm_32.S */
 extern int restore_image(void);
@@ -127,6 +135,7 @@ static int resume_physical_mapping_init(pgd_t *pgd_base)
 			}
 		}
 	}
+
 	return 0;
 }
 
@@ -142,7 +151,7 @@ static inline void resume_init_first_level_page_table(pgd_t *pg_dir)
 #endif
 }
 
-int swsusp_arch_resume(void)
+asmlinkage int swsusp_arch_resume(void)
 {
 	int error;
 

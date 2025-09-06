@@ -18,6 +18,9 @@
 #define HWCAP_THUMBEE	2048
 
 #if defined(__KERNEL__) && !defined(__ASSEMBLY__)
+#include <uapi/asm/hwcap.h>
+
+#if !defined(__ASSEMBLY__)
 /*
  * This yields a mask that user programs can use to figure out what
  * instruction set this cpu supports.
@@ -26,4 +29,7 @@
 extern unsigned int elf_hwcap;
 #endif
 
+#define ELF_HWCAP2	(elf_hwcap2)
+extern unsigned int elf_hwcap, elf_hwcap2;
+#endif
 #endif

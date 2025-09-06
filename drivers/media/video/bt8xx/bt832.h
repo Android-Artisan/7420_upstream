@@ -126,7 +126,6 @@ static COMBOBOX_ENTRY gwCameraOptions[] =
 };
 
 // SRAM table values
-//===========================================================================
 typedef enum { TGB_NTSC624, TGB_NTSC780, TGB_NTSC858, TGB_NTSC392 } TimeGenByte;
 
 BYTE SRAMTable[][ 60 ] =
@@ -170,9 +169,7 @@ BYTE SRAMTable[][ 60 ] =
    }
 };
 
-//===========================================================================
 // This is the structure of the camera specifications
-//===========================================================================
 typedef struct tag_cameraSpec
 {
    SignalFormat signal;       // which digital signal format the camera has
@@ -188,11 +185,9 @@ typedef struct tag_cameraSpec
    BOOL         interlace;    // interlace signal?
 } CameraSpec;
 
-//===========================================================================
 // <UPDATE REQUIRED>
 // Camera specifications database. Update this table whenever camera spec
 // has been changed or added/deleted supported camera models
-//===========================================================================
 static CameraSpec dbCameraSpec[ N_CAMERAOPTIONS ] =
 {  // Silicon Vision 512N
    { Signal_CCIR656, VFormat_NTSC, VRef_alignedCb, Off, DecClk_GPCLK, TGB_NTSC624, 64, KHz19636,
@@ -247,15 +242,12 @@ For the CCIR-601 standards, the sampling is based on a static orthogonal samplin
 
 /* from DScaler:*/
 /*
-//===========================================================================
 // CCIR656 Digital Input Support: The tables were taken from DScaler proyect
 //
 // 13 Dec 2000 - Michael Eskin, Conexant Systems - Initial version
 //
 
-//===========================================================================
 // Timing generator SRAM table values for CCIR601 720x480 NTSC
-//===========================================================================
 // For NTSC CCIR656
 BYTE BtCard::SRAMTable_NTSC[] =
 {
@@ -279,9 +271,7 @@ BYTE BtCard::SRAMTable_NTSC[] =
     0xac, 0x21, 0x50
 };
 
-//===========================================================================
 // Timing generator SRAM table values for CCIR601 720x576 NTSC
-//===========================================================================
 // For PAL CCIR656
 BYTE BtCard::SRAMTable_PAL[] =
 {

@@ -1194,6 +1194,7 @@ typedef struct {
 #define IPS_VER_KEYWEST "7.12.02"
 
 /* Compatability IDs for various adapters */
+/* Compatibility IDs for various adapters */
 #define IPS_COMPAT_UNKNOWN ""
 #define IPS_COMPAT_CURRENT "KW710"
 #define IPS_COMPAT_SERVERAID1 "2.25.01"

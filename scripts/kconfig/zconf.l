@@ -1,5 +1,7 @@
 %option backup nostdinit noyywrap never-interactive full ecs
 %option 8bit backup nodefault perf-report perf-report
+%option nostdinit noyywrap never-interactive full ecs
+%option 8bit nodefault perf-report perf-report
 %option noinput
 %x COMMAND HELP STRING PARAM
 %{
@@ -30,6 +32,8 @@ static int text_size, text_asize;
 struct buffer {
         struct buffer *parent;
         YY_BUFFER_STATE state;
+	struct buffer *parent;
+	YY_BUFFER_STATE state;
 };
 
 struct buffer *current_buf;
@@ -42,12 +46,16 @@ static void zconf_endfile(void);
 void new_string(void)
 {
 	text = malloc(START_STRSIZE);
+static void new_string(void)
+{
+	text = xmalloc(START_STRSIZE);
 	text_asize = START_STRSIZE;
 	text_size = 0;
 	*text = 0;
 }
 
 void append_string(const char *str, int size)
+static void append_string(const char *str, int size)
 {
 	int new_size = text_size + size + 1;
 	if (new_size > text_asize) {
@@ -71,6 +79,22 @@ void alloc_string(const char *str, int size)
 
 ws	[ \n\t]
 n	[A-Za-z0-9_]
+static void alloc_string(const char *str, int size)
+{
+	text = xmalloc(size + 1);
+	memcpy(text, str, size);
+	text[size] = 0;
+}
+
+static void warn_ignored_character(char chr)
+{
+	fprintf(stderr,
+	        "%s:%d:warning: ignoring unsupported character '%c'\n",
+	        current_file->name, yylineno, chr);
+}
+%}
+
+n	[A-Za-z0-9_-]
 
 %%
 	int str = 0;
@@ -97,6 +121,7 @@ n	[A-Za-z0-9_]
 <COMMAND>{
 	{n}+	{
 		struct kconf_id *id = kconf_id_lookup(yytext, yyleng);
+		const struct kconf_id *id = kconf_id_lookup(yytext, yyleng);
 		BEGIN(PARAM);
 		current_pos.file = current_file;
 		current_pos.lineno = current_file->lineno;
@@ -109,6 +134,7 @@ n	[A-Za-z0-9_]
 		return T_WORD;
 	}
 	.
+	.	warn_ignored_character(*yytext);
 	\n	{
 		BEGIN(INITIAL);
 		current_file->lineno++;
@@ -124,6 +150,10 @@ n	[A-Za-z0-9_]
 	"!"	return T_NOT;
 	"="	return T_EQUAL;
 	"!="	return T_UNEQUAL;
+	"<="	return T_LESS_EQUAL;
+	">="	return T_GREATER_EQUAL;
+	"<"	return T_LESS;
+	">"	return T_GREATER;
 	\"|\'	{
 		str = yytext[0];
 		new_string();
@@ -133,6 +163,8 @@ n	[A-Za-z0-9_]
 	---	/* ignore */
 	({n}|[-/.])+	{
 		struct kconf_id *id = kconf_id_lookup(yytext, yyleng);
+	({n}|[/.])+	{
+		const struct kconf_id *id = kconf_id_lookup(yytext, yyleng);
 		if (id && id->flags & TF_PARAM) {
 			zconflval.id = id;
 			return id->token;
@@ -144,6 +176,8 @@ n	[A-Za-z0-9_]
 	#.*	/* comment */
 	\\\n	current_file->lineno++;
 	.
+	[[:blank:]]+
+	.	warn_ignored_character(*yytext);
 	<<EOF>> {
 		BEGIN(INITIAL);
 	}
@@ -182,6 +216,8 @@ n	[A-Za-z0-9_]
 	}
 	<<EOF>>	{
 		BEGIN(INITIAL);
+		yylval.string = text;
+		return T_WORD_QUOTE;
 	}
 }
 
@@ -290,6 +326,7 @@ void zconf_initscan(const char *name)
 	}
 
 	current_buf = malloc(sizeof(*current_buf));
+	current_buf = xmalloc(sizeof(*current_buf));
 	memset(current_buf, 0, sizeof(*current_buf));
 
 	current_file = file_lookup(name);
@@ -307,6 +344,16 @@ void zconf_nextfile(const char *name)
 	yyin = zconf_fopen(name);
 	if (!yyin) {
 		printf("%s:%d: can't open file \"%s\"\n", zconf_curname(), zconf_lineno(), name);
+	struct file *iter;
+	struct file *file = file_lookup(name);
+	struct buffer *buf = xmalloc(sizeof(*buf));
+	memset(buf, 0, sizeof(*buf));
+
+	current_buf->state = YY_CURRENT_BUFFER;
+	yyin = zconf_fopen(file->name);
+	if (!yyin) {
+		printf("%s:%d: can't open file \"%s\"\n",
+		    zconf_curname(), zconf_lineno(), file->name);
 		exit(1);
 	}
 	yy_switch_to_buffer(yy_create_buffer(yyin, YY_BUF_SIZE));
@@ -322,6 +369,25 @@ void zconf_nextfile(const char *name)
 		exit(1);
 	}
 	file->flags |= FILE_BUSY;
+	for (iter = current_file->parent; iter; iter = iter->parent ) {
+		if (!strcmp(current_file->name,iter->name) ) {
+			printf("%s:%d: recursive inclusion detected. "
+			       "Inclusion path:\n  current file : '%s'\n",
+			       zconf_curname(), zconf_lineno(),
+			       zconf_curname());
+			iter = current_file->parent;
+			while (iter && \
+			       strcmp(iter->name,current_file->name)) {
+				printf("  included from: '%s:%d'\n",
+				       iter->name, iter->lineno-1);
+				iter = iter->parent;
+			}
+			if (iter)
+				printf("  included from: '%s:%d'\n",
+				       iter->name, iter->lineno+1);
+			exit(1);
+		}
+	}
 	file->lineno = 1;
 	file->parent = current_file;
 	current_file = file;
@@ -351,6 +417,7 @@ int zconf_lineno(void)
 }
 
 char *zconf_curname(void)
+const char *zconf_curname(void)
 {
 	return current_pos.file ? current_pos.file->name : "<none>";
 }

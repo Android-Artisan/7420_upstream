@@ -10,6 +10,14 @@
  *		 Rewritten by
  *			  Frank Pavlic (fpavlic@de.ibm.com) and
  *		 	  Martin Schwidefsky <schwidefsky@de.ibm.com>
+ *  Linux for S/390 Lan Channel Station Network Driver
+ *
+ *  Copyright IBM Corp. 1999, 2009
+ *  Author(s): Original Code written by
+ *			DJ Barrow <djbarrow@de.ibm.com,barrow_dj@yahoo.com>
+ *	       Rewritten by
+ *			Frank Pavlic <fpavlic@de.ibm.com> and
+ *			Martin Schwidefsky <schwidefsky@de.ibm.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -26,6 +34,9 @@
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
+#define KMSG_COMPONENT		"lcs"
+#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
+
 #include <linux/module.h>
 #include <linux/if.h>
 #include <linux/netdevice.h>
@@ -36,6 +47,8 @@
 #include <linux/in.h>
 #include <linux/igmp.h>
 #include <linux/delay.h>
+#include <linux/kthread.h>
+#include <linux/slab.h>
 #include <net/arp.h>
 #include <net/ip.h>
 
@@ -56,6 +69,12 @@
 
 #define PRINTK_HEADER		" lcs: "
 
+
+
+#if !defined(CONFIG_ETHERNET) && !defined(CONFIG_FDDI)
+#error Cannot compile lcs.c without some net devices switched on.
+#endif
+
 /**
  * initialization string for output
  */
@@ -64,17 +83,26 @@ static char version[] __initdata = "LCS driver";
 static char debug_buffer[255];
 
 /**
+  * the root device for lcs group devices
+  */
+static struct device *lcs_root_dev;
+
+/**
  * Some prototypes.
  */
 static void lcs_tasklet(unsigned long);
 static void lcs_start_kernel_thread(struct work_struct *);
 static void lcs_get_frames_cb(struct lcs_channel *, struct lcs_buffer *);
 static int lcs_send_delipm(struct lcs_card *, struct lcs_ipm_list *);
+#ifdef CONFIG_IP_MULTICAST
+static int lcs_send_delipm(struct lcs_card *, struct lcs_ipm_list *);
+#endif /* CONFIG_IP_MULTICAST */
 static int lcs_recovery(void *ptr);
 
 /**
  * Debug Facility Stuff
  */
+static char debug_buffer[255];
 static debug_info_t *lcs_dbf_setup;
 static debug_info_t *lcs_dbf_trace;
 
@@ -88,6 +116,8 @@ lcs_unregister_debug_facility(void)
 		debug_unregister(lcs_dbf_setup);
 	if (lcs_dbf_trace)
 		debug_unregister(lcs_dbf_trace);
+	debug_unregister(lcs_dbf_setup);
+	debug_unregister(lcs_dbf_trace);
 }
 
 static int
@@ -97,6 +127,7 @@ lcs_register_debug_facility(void)
 	lcs_dbf_trace = debug_register("lcs_trace", 4, 1, 8);
 	if (lcs_dbf_setup == NULL || lcs_dbf_trace == NULL) {
 		PRINT_ERR("Not enough memory for debug facility.\n");
+		pr_err("Not enough memory for debug facility.\n");
 		lcs_unregister_debug_facility();
 		return -ENOMEM;
 	}
@@ -279,6 +310,7 @@ lcs_setup_write_ccws(struct lcs_card *card)
 	LCS_DBF_TEXT(3, setup, "iwritccw");
 	/* Setup write ccws. */
 	memset(card->write.ccws, 0, sizeof(struct ccw1) * LCS_NUM_BUFFS + 1);
+	memset(card->write.ccws, 0, sizeof(struct ccw1) * (LCS_NUM_BUFFS + 1));
 	for (cnt = 0; cnt < LCS_NUM_BUFFS; cnt++) {
 		card->write.ccws[cnt].cmd_code = LCS_CCW_WRITE;
 		card->write.ccws[cnt].count = 0;
@@ -493,6 +525,7 @@ lcs_start_channel(struct lcs_channel *channel)
 	int rc;
 
 	LCS_DBF_TEXT_(4,trace,"ssch%s", channel->ccwdev->dev.bus_id);
+	LCS_DBF_TEXT_(4, trace,"ssch%s", dev_name(&channel->ccwdev->dev));
 	spin_lock_irqsave(get_ccwdev_lock(channel->ccwdev), flags);
 	rc = ccw_device_start(channel->ccwdev,
 			      channel->ccws + channel->io_idx, 0, 0,
@@ -503,6 +536,11 @@ lcs_start_channel(struct lcs_channel *channel)
 	if (rc) {
 		LCS_DBF_TEXT_(4,trace,"essh%s", channel->ccwdev->dev.bus_id);
 		PRINT_ERR("Error in starting channel, rc=%d!\n", rc);
+		LCS_DBF_TEXT_(4,trace,"essh%s",
+			      dev_name(&channel->ccwdev->dev));
+		dev_err(&channel->ccwdev->dev,
+			"Starting an LCS device resulted in an error,"
+			" rc=%d!\n", rc);
 	}
 	return rc;
 }
@@ -515,11 +553,14 @@ lcs_clear_channel(struct lcs_channel *channel)
 
 	LCS_DBF_TEXT(4,trace,"clearch");
 	LCS_DBF_TEXT_(4,trace,"%s", channel->ccwdev->dev.bus_id);
+	LCS_DBF_TEXT_(4, trace, "%s", dev_name(&channel->ccwdev->dev));
 	spin_lock_irqsave(get_ccwdev_lock(channel->ccwdev), flags);
 	rc = ccw_device_clear(channel->ccwdev, (addr_t) channel);
 	spin_unlock_irqrestore(get_ccwdev_lock(channel->ccwdev), flags);
 	if (rc) {
 		LCS_DBF_TEXT_(4,trace,"ecsc%s", channel->ccwdev->dev.bus_id);
+		LCS_DBF_TEXT_(4, trace, "ecsc%s",
+			      dev_name(&channel->ccwdev->dev));
 		return rc;
 	}
 	wait_event(channel->wait_q, (channel->state == LCS_CH_STATE_CLEARED));
@@ -541,12 +582,15 @@ lcs_stop_channel(struct lcs_channel *channel)
 		return 0;
 	LCS_DBF_TEXT(4,trace,"haltsch");
 	LCS_DBF_TEXT_(4,trace,"%s", channel->ccwdev->dev.bus_id);
+	LCS_DBF_TEXT_(4, trace, "%s", dev_name(&channel->ccwdev->dev));
 	channel->state = LCS_CH_STATE_INIT;
 	spin_lock_irqsave(get_ccwdev_lock(channel->ccwdev), flags);
 	rc = ccw_device_halt(channel->ccwdev, (addr_t) channel);
 	spin_unlock_irqrestore(get_ccwdev_lock(channel->ccwdev), flags);
 	if (rc) {
 		LCS_DBF_TEXT_(4,trace,"ehsc%s", channel->ccwdev->dev.bus_id);
+		LCS_DBF_TEXT_(4, trace, "ehsc%s",
+			      dev_name(&channel->ccwdev->dev));
 		return rc;
 	}
 	/* Asynchronous halt initialted. Wait for its completion. */
@@ -637,6 +681,14 @@ __lcs_resume_channel(struct lcs_channel *channel)
 	if (rc) {
 		LCS_DBF_TEXT_(4, trace, "ersc%s", channel->ccwdev->dev.bus_id);
 		PRINT_ERR("Error in lcs_resume_channel: rc=%d\n",rc);
+	LCS_DBF_TEXT_(5, trace, "rsch%s", dev_name(&channel->ccwdev->dev));
+	rc = ccw_device_resume(channel->ccwdev);
+	if (rc) {
+		LCS_DBF_TEXT_(4, trace, "ersc%s",
+			      dev_name(&channel->ccwdev->dev));
+		dev_err(&channel->ccwdev->dev,
+			"Sending data from the LCS device to the LAN failed"
+			" with rc=%d\n",rc);
 	} else
 		channel->state = LCS_CH_STATE_RUNNING;
 	return rc;
@@ -827,6 +879,7 @@ lcs_notify_lancmd_waiters(struct lcs_card *card, struct lcs_cmd *cmd)
 
 /**
  * Emit buffer of a lan comand.
+ * Emit buffer of a lan command.
  */
 static void
 lcs_lancmd_timeout(unsigned long data)
@@ -881,12 +934,14 @@ lcs_send_lancmd(struct lcs_card *card, struct lcs_buffer *buffer,
 	if (rc)
 		return rc;
 	init_timer(&timer);
+	init_timer_on_stack(&timer);
 	timer.function = lcs_lancmd_timeout;
 	timer.data = (unsigned long) reply;
 	timer.expires = jiffies + HZ*card->lancmd_timeout;
 	add_timer(&timer);
 	wait_event(reply->wait_q, reply->received);
 	del_timer_sync(&timer);
+	destroy_timer_on_stack(&timer);
 	LCS_DBF_TEXT_(4, trace, "rc:%d",reply->rc);
 	rc = reply->rc;
 	lcs_put_reply(reply);
@@ -1083,6 +1138,7 @@ lcs_check_multicast_support(struct lcs_card *card)
 	rc = lcs_send_lancmd(card, buffer, __lcs_check_multicast_cb);
 	if (rc != 0) {
 		PRINT_ERR("Query IPAssist failed. Assuming unsupported!\n");
+		pr_err("Query IPAssist failed. Assuming unsupported!\n");
 		return -EOPNOTSUPP;
 	}
 	if (card->ip_assists_supported & LCS_IPASS_MULTICAST_SUPPORT)
@@ -1109,6 +1165,7 @@ list_modified:
 		switch (ipm->ipm_state) {
 		case LCS_IPM_STATE_SET_REQUIRED:
 			/* del from ipm_list so noone else can tamper with
+			/* del from ipm_list so no one else can tamper with
 			 * this entry */
 			list_del_init(&ipm->list);
 			spin_unlock_irqrestore(&card->ipm_lock, flags);
@@ -1117,6 +1174,8 @@ list_modified:
 			if (rc) {
 				PRINT_INFO("Adding multicast address failed. "
 					   "Table possibly full!\n");
+				pr_info("Adding multicast address failed."
+					" Table possibly full!\n");
 				/* store ipm in failed list -> will be added
 				 * to ipm_list again, so a retry will be done
 				 * during the next call of this function */
@@ -1156,6 +1215,7 @@ lcs_get_mac_for_ipm(__be32 ipm, char *mac, struct net_device *dev)
 		ip_tr_mc_map(ipm, mac);
 	else
 		ip_eth_mc_map(ipm, mac);
+	ip_eth_mc_map(ipm, mac);
 }
 
 /**
@@ -1175,6 +1235,8 @@ lcs_remove_mc_addresses(struct lcs_card *card, struct in_device *in4_dev)
 	list_for_each(l, &card->ipm_list) {
 		ipm = list_entry(l, struct lcs_ipm_list, list);
 		for (im4 = in4_dev->mc_list; im4 != NULL; im4 = im4->next) {
+		for (im4 = rcu_dereference(in4_dev->mc_list);
+		     im4 != NULL; im4 = rcu_dereference(im4->next_rcu)) {
 			lcs_get_mac_for_ipm(im4->multiaddr, buf, card->dev);
 			if ( (ipm->ipm.ip_addr == im4->multiaddr) &&
 			     (memcmp(buf, &ipm->ipm.mac_addr,
@@ -1220,6 +1282,8 @@ lcs_set_mc_addresses(struct lcs_card *card, struct in_device *in4_dev)
 
 	LCS_DBF_TEXT(4, trace, "setmclst");
 	for (im4 = in4_dev->mc_list; im4; im4 = im4->next) {
+	for (im4 = rcu_dereference(in4_dev->mc_list); im4 != NULL;
+	     im4 = rcu_dereference(im4->next_rcu)) {
 		lcs_get_mac_for_ipm(im4->multiaddr, buf, card->dev);
 		ipm = lcs_check_addr_entry(card, im4, buf);
 		if (ipm != NULL)
@@ -1229,6 +1293,10 @@ lcs_set_mc_addresses(struct lcs_card *card, struct in_device *in4_dev)
 		if (ipm == NULL) {
 			PRINT_INFO("Not enough memory to add "
 				   "new multicast entry!\n");
+		ipm = kzalloc(sizeof(struct lcs_ipm_list), GFP_ATOMIC);
+		if (ipm == NULL) {
+			pr_info("Not enough memory to add"
+				" new multicast entry!\n");
 			break;
 		}
 		memcpy(&ipm->ipm.mac_addr, buf, LCS_MAC_LENGTH);
@@ -1261,6 +1329,10 @@ lcs_register_mc_addresses(void *data)
 	lcs_remove_mc_addresses(card,in4_dev);
 	lcs_set_mc_addresses(card, in4_dev);
 	read_unlock(&in4_dev->mc_list_lock);
+	rcu_read_lock();
+	lcs_remove_mc_addresses(card,in4_dev);
+	lcs_set_mc_addresses(card, in4_dev);
+	rcu_read_unlock();
 	in_dev_put(in4_dev);
 
 	netif_carrier_off(card->dev);
@@ -1276,6 +1348,8 @@ out:
 	lcs_clear_thread_running_bit(card, LCS_SET_MC_THREAD);
 	return 0;
 }
+#endif /* CONFIG_IP_MULTICAST */
+
 /**
  * function called by net device to
  * handle multicast address relevant things
@@ -1293,6 +1367,16 @@ lcs_set_multicast_list(struct net_device *dev)
 }
 
 #endif /* CONFIG_IP_MULTICAST */
+#ifdef CONFIG_IP_MULTICAST
+        struct lcs_card *card;
+
+        LCS_DBF_TEXT(4, trace, "setmulti");
+        card = (struct lcs_card *) dev->ml_priv;
+
+        if (!lcs_set_thread_start_bit(card, LCS_SET_MC_THREAD))
+		schedule_work(&card->kernel_thread_starter);
+#endif /* CONFIG_IP_MULTICAST */
+}
 
 static long
 lcs_check_irb_error(struct ccw_device *cdev, struct irb *irb)
@@ -1303,17 +1387,24 @@ lcs_check_irb_error(struct ccw_device *cdev, struct irb *irb)
 	switch (PTR_ERR(irb)) {
 	case -EIO:
 		PRINT_WARN("i/o-error on device %s\n", cdev->dev.bus_id);
+		dev_warn(&cdev->dev,
+			"An I/O-error occurred on the LCS device\n");
 		LCS_DBF_TEXT(2, trace, "ckirberr");
 		LCS_DBF_TEXT_(2, trace, "  rc%d", -EIO);
 		break;
 	case -ETIMEDOUT:
 		PRINT_WARN("timeout on device %s\n", cdev->dev.bus_id);
+		dev_warn(&cdev->dev,
+			"A command timed out on the LCS device\n");
 		LCS_DBF_TEXT(2, trace, "ckirberr");
 		LCS_DBF_TEXT_(2, trace, "  rc%d", -ETIMEDOUT);
 		break;
 	default:
 		PRINT_WARN("unknown error %ld on device %s\n", PTR_ERR(irb),
 			   cdev->dev.bus_id);
+		dev_warn(&cdev->dev,
+			"An error occurred on the LCS device, rc=%ld\n",
+			PTR_ERR(irb));
 		LCS_DBF_TEXT(2, trace, "ckirberr");
 		LCS_DBF_TEXT(2, trace, "  rc???");
 	}
@@ -1391,6 +1482,7 @@ lcs_irq(struct ccw_device *cdev, unsigned long intparm, struct irb *irb)
 	cstat = irb->scsw.cmd.cstat;
 	dstat = irb->scsw.cmd.dstat;
 	LCS_DBF_TEXT_(5, trace, "Rint%s",cdev->dev.bus_id);
+	LCS_DBF_TEXT_(5, trace, "Rint%s", dev_name(&cdev->dev));
 	LCS_DBF_TEXT_(5, trace, "%4x%4x", irb->scsw.cmd.cstat,
 		      irb->scsw.cmd.dstat);
 	LCS_DBF_TEXT_(5, trace, "%4x%4x", irb->scsw.cmd.fctl,
@@ -1401,6 +1493,10 @@ lcs_irq(struct ccw_device *cdev, unsigned long intparm, struct irb *irb)
 	if (rc || (dstat & DEV_STAT_UNIT_EXCEP)) {
 		PRINT_WARN("check on device %s, dstat=0x%X, cstat=0x%X \n",
 			    cdev->dev.bus_id, dstat, cstat);
+		dev_warn(&cdev->dev,
+			"The LCS device stopped because of an error,"
+			" dstat=0x%X, cstat=0x%X \n",
+			    dstat, cstat);
 		if (rc) {
 			channel->state = LCS_CH_STATE_ERROR;
 		}
@@ -1465,6 +1561,9 @@ lcs_tasklet(unsigned long data)
 	channel = (struct lcs_channel *) data;
 	LCS_DBF_TEXT_(5, trace, "tlet%s",channel->ccwdev->dev.bus_id);
 
+	channel = (struct lcs_channel *) data;
+	LCS_DBF_TEXT_(5, trace, "tlet%s", dev_name(&channel->ccwdev->dev));
+
 	/* Check for processed buffers. */
 	iob = channel->iob;
 	buf_idx = channel->buf_idx;
@@ -1485,6 +1584,11 @@ lcs_tasklet(unsigned long data)
 		// FIXME: what if rc != 0 ??
 		rc = __lcs_resume_channel(channel);
 	}
+		lcs_start_channel(channel);
+	spin_lock_irqsave(get_ccwdev_lock(channel->ccwdev), flags);
+	if (channel->state == LCS_CH_STATE_SUSPENDED &&
+	    channel->iob[channel->io_idx].state == LCS_BUF_STATE_READY)
+		__lcs_resume_channel(channel);
 	spin_unlock_irqrestore(get_ccwdev_lock(channel->ccwdev), flags);
 
 	/* Something happened on the channel. Wake up waiters. */
@@ -1533,18 +1637,19 @@ lcs_txbuffer_cb(struct lcs_channel *channel, struct lcs_buffer *buffer)
 /**
  * Packet transmit function called by network stack
  */
-static int
-__lcs_start_xmit(struct lcs_card *card, struct sk_buff *skb,
-		 struct net_device *dev)
+static netdev_tx_t __lcs_start_xmit(struct lcs_card *card, struct sk_buff *skb,
+				    struct net_device *dev)
 {
 	struct lcs_header *header;
 	int rc = 0;
+	int rc = NETDEV_TX_OK;
 
 	LCS_DBF_TEXT(5, trace, "hardxmit");
 	if (skb == NULL) {
 		card->stats.tx_dropped++;
 		card->stats.tx_errors++;
 		return -EIO;
+		return NETDEV_TX_OK;
 	}
 	if (card->state != DEV_STATE_UP) {
 		dev_kfree_skb(skb);
@@ -1556,6 +1661,11 @@ __lcs_start_xmit(struct lcs_card *card, struct sk_buff *skb,
 	if (skb->protocol == htons(ETH_P_IPV6)) {
 		dev_kfree_skb(skb);
 		return 0;
+		return NETDEV_TX_OK;
+	}
+	if (skb->protocol == htons(ETH_P_IPV6)) {
+		dev_kfree_skb(skb);
+		return NETDEV_TX_OK;
 	}
 	netif_stop_queue(card->dev);
 	spin_lock(&card->lock);
@@ -1570,6 +1680,7 @@ __lcs_start_xmit(struct lcs_card *card, struct sk_buff *skb,
 		if (card->tx_buffer == NULL) {
 			card->stats.tx_dropped++;
 			rc = -EBUSY;
+			rc = NETDEV_TX_BUSY;
 			goto out;
 		}
 		card->tx_buffer->callback = lcs_txbuffer_cb;
@@ -1596,14 +1707,14 @@ out:
 	return rc;
 }
 
-static int
-lcs_start_xmit(struct sk_buff *skb, struct net_device *dev)
+static netdev_tx_t lcs_start_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	struct lcs_card *card;
 	int rc;
 
 	LCS_DBF_TEXT(5, trace, "pktxmit");
 	card = (struct lcs_card *) dev->priv;
+	card = (struct lcs_card *) dev->ml_priv;
 	rc = __lcs_start_xmit(card, skb, dev);
 	return rc;
 }
@@ -1618,6 +1729,7 @@ lcs_startlan_auto(struct lcs_card *card)
 
 	LCS_DBF_TEXT(2, trace, "strtauto");
 #ifdef CONFIG_NET_ETHERNET
+#ifdef CONFIG_ETHERNET
 	card->lan_type = LCS_FRAME_TYPE_ENET;
 	rc = lcs_send_startlan(card, LCS_INITIATOR_TCPIP);
 	if (rc == 0)
@@ -1740,6 +1852,10 @@ lcs_start_kernel_thread(struct work_struct *work)
 	if (lcs_do_start_thread(card, LCS_SET_MC_THREAD))
 		kernel_thread(lcs_register_mc_addresses,
 				(void *) card, SIGCHLD);
+		kthread_run(lcs_recovery, card, "lcs_recover");
+#ifdef CONFIG_IP_MULTICAST
+	if (lcs_do_start_thread(card, LCS_SET_MC_THREAD))
+		kthread_run(lcs_register_mc_addresses, card, "regipm");
 #endif
 }
 
@@ -1759,6 +1875,8 @@ lcs_get_control(struct lcs_card *card, struct lcs_cmd *cmd)
 		case LCS_CMD_STOPLAN:
 			PRINT_WARN("Stoplan for %s initiated by LGW.\n",
 					card->dev->name);
+			pr_warning("Stoplan for %s initiated by LGW.\n",
+				   card->dev->name);
 			if (card->dev)
 				netif_carrier_off(card->dev);
 			break;
@@ -1787,6 +1905,8 @@ lcs_get_skb(struct lcs_card *card, char *skb_data, unsigned int skb_len)
 	skb = dev_alloc_skb(skb_len);
 	if (skb == NULL) {
 		PRINT_ERR("LCS: alloc_skb failed for device=%s\n",
+		dev_err(&card->dev->dev,
+			" Allocating a socket buffer to interface %s failed\n",
 			  card->dev->name);
 		card->stats.rx_dropped++;
 		return;
@@ -1860,6 +1980,7 @@ lcs_getstats(struct net_device *dev)
 
 	LCS_DBF_TEXT(4, trace, "netstats");
 	card = (struct lcs_card *) dev->priv;
+	card = (struct lcs_card *) dev->ml_priv;
 	return &card->stats;
 }
 
@@ -1875,6 +1996,7 @@ lcs_stop_device(struct net_device *dev)
 
 	LCS_DBF_TEXT(2, trace, "stopdev");
 	card   = (struct lcs_card *) dev->priv;
+	card   = (struct lcs_card *) dev->ml_priv;
 	netif_carrier_off(dev);
 	netif_tx_disable(dev);
 	dev->flags &= ~IFF_UP;
@@ -1883,6 +2005,8 @@ lcs_stop_device(struct net_device *dev)
 	rc = lcs_stopcard(card);
 	if (rc)
 		PRINT_ERR("Try it again!\n ");
+		dev_err(&card->dev->dev,
+			" Shutting down the LCS device failed\n ");
 	return rc;
 }
 
@@ -1902,6 +2026,11 @@ lcs_open_device(struct net_device *dev)
 	rc = lcs_detect(card);
 	if (rc) {
 		PRINT_ERR("LCS:Error in opening device!\n");
+	card = (struct lcs_card *) dev->ml_priv;
+	/* initialize statistics */
+	rc = lcs_detect(card);
+	if (rc) {
+		pr_err("Error in opening device!\n");
 
 	} else {
 		dev->flags |= IFF_UP;
@@ -1921,6 +2050,7 @@ lcs_portno_show (struct device *dev, struct device_attribute *attr, char *buf)
         struct lcs_card *card;
 
 	card = (struct lcs_card *)dev->driver_data;
+	card = dev_get_drvdata(dev);
 
         if (!card)
                 return 0;
@@ -1938,11 +2068,18 @@ lcs_portno_store (struct device *dev, struct device_attribute *attr, const char 
         int value;
 
 	card = (struct lcs_card *)dev->driver_data;
+	int rc;
+	s16 value;
+
+	card = dev_get_drvdata(dev);
 
         if (!card)
                 return 0;
 
         sscanf(buf, "%u", &value);
+	rc = kstrtos16(buf, 0, &value);
+	if (rc)
+		return -EINVAL;
         /* TODO: sanity checks */
         card->portno = value;
 
@@ -1951,6 +2088,15 @@ lcs_portno_store (struct device *dev, struct device_attribute *attr, const char 
 }
 
 static DEVICE_ATTR(portno, 0644, lcs_portno_show, lcs_portno_store);
+
+static const char *lcs_type[] = {
+	"not a channel",
+	"2216 parallel",
+	"2216 channel",
+	"OSA LCS card",
+	"unknown channel type",
+	"unsupported channel type",
+};
 
 static ssize_t
 lcs_type_show(struct device *dev, struct device_attribute *attr, char *buf)
@@ -1962,6 +2108,7 @@ lcs_type_show(struct device *dev, struct device_attribute *attr, char *buf)
 		return -ENODEV;
 
 	return sprintf(buf, "%s\n", cu3088_type[cgdev->cdev[0]->id.driver_info]);
+	return sprintf(buf, "%s\n", lcs_type[cgdev->cdev[0]->id.driver_info]);
 }
 
 static DEVICE_ATTR(type, 0444, lcs_type_show, NULL);
@@ -1972,6 +2119,7 @@ lcs_timeout_show(struct device *dev, struct device_attribute *attr, char *buf)
 	struct lcs_card *card;
 
 	card = (struct lcs_card *)dev->driver_data;
+	card = dev_get_drvdata(dev);
 
 	return card ? sprintf(buf, "%u\n", card->lancmd_timeout) : 0;
 }
@@ -1983,11 +2131,18 @@ lcs_timeout_store (struct device *dev, struct device_attribute *attr, const char
         int value;
 
 	card = (struct lcs_card *)dev->driver_data;
+	unsigned int value;
+	int rc;
+
+	card = dev_get_drvdata(dev);
 
         if (!card)
                 return 0;
 
         sscanf(buf, "%u", &value);
+	rc = kstrtouint(buf, 0, &value);
+	if (rc)
+		return -EINVAL;
         /* TODO: sanity checks */
         card->lancmd_timeout = value;
 
@@ -2002,6 +2157,7 @@ lcs_dev_recover_store(struct device *dev, struct device_attribute *attr,
 		      const char *buf, size_t count)
 {
 	struct lcs_card *card = dev->driver_data;
+	struct lcs_card *card = dev_get_drvdata(dev);
 	char *tmp;
 	int i;
 
@@ -2027,6 +2183,17 @@ static struct attribute * lcs_attrs[] = {
 
 static struct attribute_group lcs_attr_group = {
 	.attrs = lcs_attrs,
+};
+static struct attribute_group lcs_attr_group = {
+	.attrs = lcs_attrs,
+};
+static const struct attribute_group *lcs_attr_groups[] = {
+	&lcs_attr_group,
+	NULL,
+};
+static const struct device_type lcs_devtype = {
+	.name = "lcs",
+	.groups = lcs_attr_groups,
 };
 
 /**
@@ -2055,6 +2222,7 @@ lcs_probe_device(struct ccwgroup_device *ccwgdev)
 		return ret;
         }
 	ccwgdev->dev.driver_data = card;
+	dev_set_drvdata(&ccwgdev->dev, card);
 	ccwgdev->cdev[0]->handler = lcs_irq;
 	ccwgdev->cdev[1]->handler = lcs_irq;
 	card->gdev = ccwgdev;
@@ -2063,6 +2231,9 @@ lcs_probe_device(struct ccwgroup_device *ccwgdev)
 	card->thread_allowed_mask = 0;
 	card->thread_running_mask = 0;
         return 0;
+	ccwgdev->dev.type = &lcs_devtype;
+
+	return 0;
 }
 
 static int
@@ -2072,6 +2243,7 @@ lcs_register_netdev(struct ccwgroup_device *ccwgdev)
 
 	LCS_DBF_TEXT(2, setup, "regnetdv");
 	card = (struct lcs_card *)ccwgdev->dev.driver_data;
+	card = dev_get_drvdata(&ccwgdev->dev);
 	if (card->dev->reg_state != NETREG_UNINITIALIZED)
 		return 0;
 	SET_NETDEV_DEV(card->dev, &ccwgdev->dev);
@@ -2081,6 +2253,20 @@ lcs_register_netdev(struct ccwgroup_device *ccwgdev)
 /**
  * lcs_new_device will be called by setting the group device online.
  */
+static const struct net_device_ops lcs_netdev_ops = {
+	.ndo_open		= lcs_open_device,
+	.ndo_stop		= lcs_stop_device,
+	.ndo_get_stats		= lcs_getstats,
+	.ndo_start_xmit		= lcs_start_xmit,
+};
+
+static const struct net_device_ops lcs_mc_netdev_ops = {
+	.ndo_open		= lcs_open_device,
+	.ndo_stop		= lcs_stop_device,
+	.ndo_get_stats		= lcs_getstats,
+	.ndo_start_xmit		= lcs_start_xmit,
+	.ndo_set_rx_mode	= lcs_set_multicast_list,
+};
 
 static int
 lcs_new_device(struct ccwgroup_device *ccwgdev)
@@ -2091,6 +2277,7 @@ lcs_new_device(struct ccwgroup_device *ccwgdev)
 	int rc;
 
 	card = (struct lcs_card *)ccwgdev->dev.driver_data;
+	card = dev_get_drvdata(&ccwgdev->dev);
 	if (!card)
 		return -ENODEV;
 
@@ -2102,6 +2289,12 @@ lcs_new_device(struct ccwgroup_device *ccwgdev)
 	recover_state = card->state;
 	ccw_device_set_online(card->read.ccwdev);
 	ccw_device_set_online(card->write.ccwdev);
+	rc = ccw_device_set_online(card->read.ccwdev);
+	if (rc)
+		goto out_err;
+	rc = ccw_device_set_online(card->write.ccwdev);
+	if (rc)
+		goto out_werr;
 
 	LCS_DBF_TEXT(3, setup, "lcsnewdv");
 
@@ -2111,6 +2304,9 @@ lcs_new_device(struct ccwgroup_device *ccwgdev)
 		LCS_DBF_TEXT(2, setup, "dtctfail");
 		PRINT_WARN("Detection of LCS card failed with return code "
 			   "%d (0x%x)\n", rc, rc);
+		dev_err(&ccwgdev->dev,
+			"Detecting a network adapter for LCS devices"
+			" failed with rc=%d (0x%x)\n", rc, rc);
 		lcs_stopcard(card);
 		goto out;
 	}
@@ -2121,6 +2317,7 @@ lcs_new_device(struct ccwgroup_device *ccwgdev)
 	}
 	switch (card->lan_type) {
 #ifdef CONFIG_NET_ETHERNET
+#ifdef CONFIG_ETHERNET
 	case LCS_FRAME_TYPE_ENET:
 		card->lan_type_trans = eth_type_trans;
 		dev = alloc_etherdev(0);
@@ -2141,6 +2338,7 @@ lcs_new_device(struct ccwgroup_device *ccwgdev)
 	default:
 		LCS_DBF_TEXT(3, setup, "errinit");
 		PRINT_ERR("LCS: Initialization failed\n");
+		pr_err(" Initialization failed\n");
 		goto out;
 	}
 	if (!dev)
@@ -2155,6 +2353,12 @@ lcs_new_device(struct ccwgroup_device *ccwgdev)
 #ifdef CONFIG_IP_MULTICAST
 	if (!lcs_check_multicast_support(card))
 		card->dev->set_multicast_list = lcs_set_multicast_list;
+	card->dev->ml_priv = card;
+	card->dev->netdev_ops = &lcs_netdev_ops;
+	memcpy(card->dev->dev_addr, card->mac, LCS_MAC_LENGTH);
+#ifdef CONFIG_IP_MULTICAST
+	if (!lcs_check_multicast_support(card))
+		card->dev->netdev_ops = &lcs_mc_netdev_ops;
 #endif
 netdev_out:
 	lcs_set_allowed_threads(card,0xffffffff);
@@ -2184,6 +2388,20 @@ out:
 
 	ccw_device_set_offline(card->read.ccwdev);
 	ccw_device_set_offline(card->write.ccwdev);
+	pr_info("LCS device %s %s IPv6 support\n", card->dev->name,
+		(card->ip_assists_supported & LCS_IPASS_IPV6_SUPPORT) ?
+		"with" : "without");
+	/* Print out supported assist: Multicast */
+	pr_info("LCS device %s %s Multicast support\n", card->dev->name,
+		(card->ip_assists_supported & LCS_IPASS_MULTICAST_SUPPORT) ?
+		"with" : "without");
+	return 0;
+out:
+
+	ccw_device_set_offline(card->write.ccwdev);
+out_werr:
+	ccw_device_set_offline(card->read.ccwdev);
+out_err:
 	return -ENODEV;
 }
 
@@ -2199,6 +2417,10 @@ __lcs_shutdown_device(struct ccwgroup_device *ccwgdev, int recovery_mode)
 
 	LCS_DBF_TEXT(3, setup, "shtdndev");
 	card = (struct lcs_card *)ccwgdev->dev.driver_data;
+	int ret = 0, ret2 = 0, ret3 = 0;
+
+	LCS_DBF_TEXT(3, setup, "shtdndev");
+	card = dev_get_drvdata(&ccwgdev->dev);
 	if (!card)
 		return -ENODEV;
 	if (recovery_mode == 0) {
@@ -2217,6 +2439,15 @@ __lcs_shutdown_device(struct ccwgroup_device *ccwgdev, int recovery_mode)
 	}
 	if (ret)
 		return ret;
+	ret2 = ccw_device_set_offline(card->read.ccwdev);
+	ret3 = ccw_device_set_offline(card->write.ccwdev);
+	if (!ret)
+		ret = (ret2) ? ret2 : ret3;
+	if (ret)
+		LCS_DBF_TEXT_(3, setup, "1err:%d", ret);
+	if (recover_state == DEV_STATE_UP) {
+		card->state = DEV_STATE_RECOVER;
+	}
 	return 0;
 }
 
@@ -2253,6 +2484,16 @@ lcs_recovery(void *ptr)
 	else
 		PRINT_INFO("Device %s could not be recovered!\n",
 				card->dev->name);
+	dev_warn(&gdev->dev,
+		"A recovery process has been started for the LCS device\n");
+	rc = __lcs_shutdown_device(gdev, 1);
+	rc = lcs_new_device(gdev);
+	if (!rc)
+		pr_info("Device %s successfully recovered!\n",
+			card->dev->name);
+	else
+		pr_info("Device %s could not be recovered!\n",
+			card->dev->name);
 	lcs_clear_thread_running_bit(card, LCS_RECOVERY_THREAD);
 	return 0;
 }
@@ -2266,6 +2507,7 @@ lcs_remove_device(struct ccwgroup_device *ccwgdev)
 	struct lcs_card *card;
 
 	card = (struct lcs_card *)ccwgdev->dev.driver_data;
+	card = dev_get_drvdata(&ccwgdev->dev);
 	if (!card)
 		return;
 
@@ -2282,6 +2524,85 @@ lcs_remove_device(struct ccwgroup_device *ccwgdev)
 	put_device(&ccwgdev->dev);
 }
 
+	lcs_cleanup_card(card);
+	lcs_free_card(card);
+	dev_set_drvdata(&ccwgdev->dev, NULL);
+	put_device(&ccwgdev->dev);
+}
+
+static int lcs_pm_suspend(struct lcs_card *card)
+{
+	if (card->dev)
+		netif_device_detach(card->dev);
+	lcs_set_allowed_threads(card, 0);
+	lcs_wait_for_threads(card, 0xffffffff);
+	if (card->state != DEV_STATE_DOWN)
+		__lcs_shutdown_device(card->gdev, 1);
+	return 0;
+}
+
+static int lcs_pm_resume(struct lcs_card *card)
+{
+	int rc = 0;
+
+	if (card->state == DEV_STATE_RECOVER)
+		rc = lcs_new_device(card->gdev);
+	if (card->dev)
+		netif_device_attach(card->dev);
+	if (rc) {
+		dev_warn(&card->gdev->dev, "The lcs device driver "
+			"failed to recover the device\n");
+	}
+	return rc;
+}
+
+static int lcs_prepare(struct ccwgroup_device *gdev)
+{
+	return 0;
+}
+
+static void lcs_complete(struct ccwgroup_device *gdev)
+{
+	return;
+}
+
+static int lcs_freeze(struct ccwgroup_device *gdev)
+{
+	struct lcs_card *card = dev_get_drvdata(&gdev->dev);
+	return lcs_pm_suspend(card);
+}
+
+static int lcs_thaw(struct ccwgroup_device *gdev)
+{
+	struct lcs_card *card = dev_get_drvdata(&gdev->dev);
+	return lcs_pm_resume(card);
+}
+
+static int lcs_restore(struct ccwgroup_device *gdev)
+{
+	struct lcs_card *card = dev_get_drvdata(&gdev->dev);
+	return lcs_pm_resume(card);
+}
+
+static struct ccw_device_id lcs_ids[] = {
+	{CCW_DEVICE(0x3088, 0x08), .driver_info = lcs_channel_type_parallel},
+	{CCW_DEVICE(0x3088, 0x1f), .driver_info = lcs_channel_type_2216},
+	{CCW_DEVICE(0x3088, 0x60), .driver_info = lcs_channel_type_osa2},
+	{},
+};
+MODULE_DEVICE_TABLE(ccw, lcs_ids);
+
+static struct ccw_driver lcs_ccw_driver = {
+	.driver = {
+		.owner	= THIS_MODULE,
+		.name	= "lcs",
+	},
+	.ids	= lcs_ids,
+	.probe	= ccwgroup_probe_ccwdev,
+	.remove	= ccwgroup_remove_ccwdev,
+	.int_class = IRQIO_LCS,
+};
+
 /**
  * LCS ccwgroup driver registration
  */
@@ -2294,6 +2615,40 @@ static struct ccwgroup_driver lcs_group_driver = {
 	.remove      = lcs_remove_device,
 	.set_online  = lcs_new_device,
 	.set_offline = lcs_shutdown_device,
+	.driver = {
+		.owner	= THIS_MODULE,
+		.name	= "lcs",
+	},
+	.setup	     = lcs_probe_device,
+	.remove      = lcs_remove_device,
+	.set_online  = lcs_new_device,
+	.set_offline = lcs_shutdown_device,
+	.prepare     = lcs_prepare,
+	.complete    = lcs_complete,
+	.freeze	     = lcs_freeze,
+	.thaw	     = lcs_thaw,
+	.restore     = lcs_restore,
+};
+
+static ssize_t lcs_driver_group_store(struct device_driver *ddrv,
+				      const char *buf, size_t count)
+{
+	int err;
+	err = ccwgroup_create_dev(lcs_root_dev, &lcs_group_driver, 2, buf);
+	return err ? err : count;
+}
+static DRIVER_ATTR(group, 0200, NULL, lcs_driver_group_store);
+
+static struct attribute *lcs_drv_attrs[] = {
+	&driver_attr_group.attr,
+	NULL,
+};
+static struct attribute_group lcs_drv_attr_group = {
+	.attrs = lcs_drv_attrs,
+};
+static const struct attribute_group *lcs_drv_attr_groups[] = {
+	&lcs_drv_attr_group,
+	NULL,
 };
 
 /**
@@ -2318,6 +2673,33 @@ __init lcs_init_module(void)
 		return rc;
 	}
 	return 0;
+	pr_info("Loading %s\n", version);
+	rc = lcs_register_debug_facility();
+	LCS_DBF_TEXT(0, setup, "lcsinit");
+	if (rc)
+		goto out_err;
+	lcs_root_dev = root_device_register("lcs");
+	rc = PTR_ERR_OR_ZERO(lcs_root_dev);
+	if (rc)
+		goto register_err;
+	rc = ccw_driver_register(&lcs_ccw_driver);
+	if (rc)
+		goto ccw_err;
+	lcs_group_driver.driver.groups = lcs_drv_attr_groups;
+	rc = ccwgroup_driver_register(&lcs_group_driver);
+	if (rc)
+		goto ccwgroup_err;
+	return 0;
+
+ccwgroup_err:
+	ccw_driver_unregister(&lcs_ccw_driver);
+ccw_err:
+	root_device_unregister(lcs_root_dev);
+register_err:
+	lcs_unregister_debug_facility();
+out_err:
+	pr_err("Initializing the lcs device driver failed\n");
+	return rc;
 }
 
 
@@ -2330,6 +2712,11 @@ __exit lcs_cleanup_module(void)
 	PRINT_INFO("Terminating lcs module.\n");
 	LCS_DBF_TEXT(0, trace, "cleanup");
 	unregister_cu3088_discipline(&lcs_group_driver);
+	pr_info("Terminating lcs module.\n");
+	LCS_DBF_TEXT(0, trace, "cleanup");
+	ccwgroup_driver_unregister(&lcs_group_driver);
+	ccw_driver_unregister(&lcs_ccw_driver);
+	root_device_unregister(lcs_root_dev);
 	lcs_unregister_debug_facility();
 }
 

@@ -1,6 +1,7 @@
 /*
  * Linux ARCnet driver - RFC1051 ("simple" standard) packet encapsulation
  * 
+ *
  * Written 1994-1999 by Avery Pennarun.
  * Derived from skeleton.c by Donald Becker.
  *
@@ -24,6 +25,11 @@
  * **********************
  */
 #include <linux/module.h>
+
+#define pr_fmt(fmt) "arcnet:" KBUILD_MODNAME ": " fmt
+
+#include <linux/module.h>
+#include <linux/gfp.h>
 #include <linux/init.h>
 #include <linux/if_arp.h>
 #include <net/arp.h>
@@ -33,6 +39,8 @@
 
 #define VERSION "arcnet: RFC1051 \"simple standard\" (`s') encapsulation support loaded.\n"
 
+
+#include "arcdevice.h"
 
 static __be16 type_trans(struct sk_buff *skb, struct net_device *dev);
 static void rx(struct net_device *dev, int bufnum,
@@ -45,6 +53,7 @@ static int prepare_tx(struct net_device *dev, struct archdr *pkt, int length,
 
 static struct ArcProto rfc1051_proto =
 {
+static struct ArcProto rfc1051_proto = {
 	.suffix		= 's',
 	.mtu		= XMTU - RFC1051_HDR_SIZE,
 	.is_ip          = 1,
@@ -59,6 +68,9 @@ static struct ArcProto rfc1051_proto =
 static int __init arcnet_rfc1051_init(void)
 {
 	printk(VERSION);
+static int __init arcnet_rfc1051_init(void)
+{
+	pr_info("%s\n", "RFC1051 \"simple standard\" (`s') encapsulation support loaded");
 
 	arc_proto_map[ARC_P_IP_RFC1051]
 	    = arc_proto_map[ARC_P_ARP_RFC1051]
@@ -84,12 +96,15 @@ MODULE_LICENSE("GPL");
 /*
  * Determine a packet's protocol ID.
  * 
+/* Determine a packet's protocol ID.
+ *
  * With ARCnet we have to convert everything to Ethernet-style stuff.
  */
 static __be16 type_trans(struct sk_buff *skb, struct net_device *dev)
 {
 	struct arcnet_local *lp = dev->priv;
 	struct archdr *pkt = (struct archdr *) skb->data;
+	struct archdr *pkt = (struct archdr *)skb->data;
 	struct arc_rfc1051 *soft = &pkt->soft.rfc1051;
 	int hdr_size = ARC_HDR_SIZE + RFC1051_HDR_SIZE;
 
@@ -100,6 +115,9 @@ static __be16 type_trans(struct sk_buff *skb, struct net_device *dev)
 	if (pkt->hard.dest == 0)
 		skb->pkt_type = PACKET_BROADCAST;
 	else if (dev->flags & IFF_PROMISC) {
+	if (pkt->hard.dest == 0) {
+		skb->pkt_type = PACKET_BROADCAST;
+	} else if (dev->flags & IFF_PROMISC) {
 		/* if we're not sending to ourselves :) */
 		if (pkt->hard.dest != dev->dev_addr[0])
 			skb->pkt_type = PACKET_OTHERHOST;
@@ -114,6 +132,8 @@ static __be16 type_trans(struct sk_buff *skb, struct net_device *dev)
 	default:
 		lp->stats.rx_errors++;
 		lp->stats.rx_crc_errors++;
+		dev->stats.rx_errors++;
+		dev->stats.rx_crc_errors++;
 		return 0;
 	}
 
@@ -126,11 +146,13 @@ static void rx(struct net_device *dev, int bufnum,
 	       struct archdr *pkthdr, int length)
 {
 	struct arcnet_local *lp = dev->priv;
+	struct arcnet_local *lp = netdev_priv(dev);
 	struct sk_buff *skb;
 	struct archdr *pkt = pkthdr;
 	int ofs;
 
 	BUGMSG(D_DURING, "it's a raw packet (length=%d)\n", length);
+	arc_printk(D_DURING, dev, "it's a raw packet (length=%d)\n", length);
 
 	if (length >= MinTU)
 		ofs = 512 - length;
@@ -141,12 +163,15 @@ static void rx(struct net_device *dev, int bufnum,
 	if (skb == NULL) {
 		BUGMSG(D_NORMAL, "Memory squeeze, dropping packet.\n");
 		lp->stats.rx_dropped++;
+	if (!skb) {
+		dev->stats.rx_dropped++;
 		return;
 	}
 	skb_put(skb, length + ARC_HDR_SIZE);
 	skb->dev = dev;
 
 	pkt = (struct archdr *) skb->data;
+	pkt = (struct archdr *)skb->data;
 
 	/* up to sizeof(pkt->soft) has already been copied from the card */
 	memcpy(pkt, pkthdr, sizeof(struct archdr));
@@ -172,6 +197,19 @@ static int build_header(struct sk_buff *skb, struct net_device *dev,
 	struct arcnet_local *lp = dev->priv;
 	int hdr_size = ARC_HDR_SIZE + RFC1051_HDR_SIZE;
 	struct archdr *pkt = (struct archdr *) skb_push(skb, hdr_size);
+	if (BUGLVL(D_SKB))
+		arcnet_dump_skb(dev, skb, "rx");
+
+	skb->protocol = type_trans(skb, dev);
+	netif_rx(skb);
+}
+
+/* Create the ARCnet hard/soft headers for RFC1051 */
+static int build_header(struct sk_buff *skb, struct net_device *dev,
+			unsigned short type, uint8_t daddr)
+{
+	int hdr_size = ARC_HDR_SIZE + RFC1051_HDR_SIZE;
+	struct archdr *pkt = (struct archdr *)skb_push(skb, hdr_size);
 	struct arc_rfc1051 *soft = &pkt->soft.rfc1051;
 
 	/* set the protocol ID according to RFC1051 */
@@ -197,6 +235,18 @@ static int build_header(struct sk_buff *skb, struct net_device *dev,
 	 * This is pretty pointless for most purposes, but it can help in
 	 * debugging.  ARCnet does not allow us to change the source address in
 	 * the actual packet sent)
+		arc_printk(D_NORMAL, dev, "RFC1051: I don't understand protocol %d (%Xh)\n",
+			   type, type);
+		dev->stats.tx_errors++;
+		dev->stats.tx_aborted_errors++;
+		return 0;
+	}
+
+	/* Set the source hardware address.
+	 *
+	 * This is pretty pointless for most purposes, but it can help in
+	 * debugging.  ARCnet does not allow us to change the source address
+	 * in the actual packet sent.
 	 */
 	pkt->hard.source = *dev->dev_addr;
 
@@ -206,6 +256,8 @@ static int build_header(struct sk_buff *skb, struct net_device *dev,
 		/* 
 		 * FIXME: fill in the last byte of the dest ipaddr here to better
 		 * comply with RFC1051 in "noarp" mode.
+		/* FIXME: fill in the last byte of the dest ipaddr here to
+		 * better comply with RFC1051 in "noarp" mode.
 		 */
 		pkt->hard.dest = 0;
 		return hdr_size;
@@ -233,6 +285,23 @@ static int prepare_tx(struct net_device *dev, struct archdr *pkt, int length,
 		/* should never happen! other people already check for this. */
 		BUGMSG(D_NORMAL, "Bug!  prepare_tx with size %d (> %d)\n",
 		       length, XMTU);
+static int prepare_tx(struct net_device *dev, struct archdr *pkt, int length,
+		      int bufnum)
+{
+	struct arcnet_local *lp = netdev_priv(dev);
+	struct arc_hardware *hard = &pkt->hard;
+	int ofs;
+
+	arc_printk(D_DURING, dev, "prepare_tx: txbufs=%d/%d/%d\n",
+		   lp->next_tx, lp->cur_tx, bufnum);
+
+	/* hard header is not included in packet length */
+	length -= ARC_HDR_SIZE;
+
+	if (length > XMTU) {
+		/* should never happen! other people already check for this. */
+		arc_printk(D_NORMAL, dev, "Bug!  prepare_tx with size %d (> %d)\n",
+			   length, XMTU);
 		length = XMTU;
 	}
 	if (length > MinTU) {
@@ -243,6 +312,9 @@ static int prepare_tx(struct net_device *dev, struct archdr *pkt, int length,
 		hard->offset[1] = ofs = 512 - length - 3;
 	} else
 		hard->offset[0] = ofs = 256 - length;
+	} else {
+		hard->offset[0] = ofs = 256 - length;
+	}
 
 	lp->hw.copy_to_card(dev, bufnum, 0, hard, ARC_HDR_SIZE);
 	lp->hw.copy_to_card(dev, bufnum, ofs, &pkt->soft, length);

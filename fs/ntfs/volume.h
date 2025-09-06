@@ -25,6 +25,7 @@
 #define _LINUX_NTFS_VOLUME_H
 
 #include <linux/rwsem.h>
+#include <linux/uidgid.h>
 
 #include "types.h"
 #include "layout.h"
@@ -50,6 +51,10 @@ typedef struct {
 	gid_t gid;			/* gid that files will be mounted as. */
 	mode_t fmask;			/* The mask for file permissions. */
 	mode_t dmask;			/* The mask for directory
+	kuid_t uid;			/* uid that files will be mounted as. */
+	kgid_t gid;			/* gid that files will be mounted as. */
+	umode_t fmask;			/* The mask for file permissions. */
+	umode_t dmask;			/* The mask for directory
 					   permissions. */
 	u8 mft_zone_multiplier;		/* Initial mft zone multiplier. */
 	u8 on_errors;			/* What to do on filesystem errors. */

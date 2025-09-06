@@ -153,7 +153,7 @@ slot (const struct insn *insn)
 static int
 apply_imm64 (struct module *mod, struct insn *insn, uint64_t val)
 {
-	if (slot(insn) != 2) {
+	if (slot(insn) != 1 && slot(insn) != 2) {
 		printk(KERN_ERR "%s: invalid slot number %d for IMM64\n",
 		       mod->name, slot(insn));
 		return 0;
@@ -165,13 +165,15 @@ apply_imm64 (struct module *mod, struct insn *insn, uint64_t val)
 static int
 apply_imm60 (struct module *mod, struct insn *insn, uint64_t val)
 {
-	if (slot(insn) != 2) {
+	if (slot(insn) != 1 && slot(insn) != 2) {
 		printk(KERN_ERR "%s: invalid slot number %d for IMM60\n",
 		       mod->name, slot(insn));
 		return 0;
 	}
 	if (val + ((uint64_t) 1 << 59) >= (1UL << 60)) {
 		printk(KERN_ERR "%s: value %ld out of IMM60 range\n", mod->name, (int64_t) val);
+		printk(KERN_ERR "%s: value %ld out of IMM60 range\n",
+			mod->name, (long) val);
 		return 0;
 	}
 	ia64_patch_imm60((u64) insn, val);
@@ -183,6 +185,8 @@ apply_imm22 (struct module *mod, struct insn *insn, uint64_t val)
 {
 	if (val + (1 << 21) >= (1 << 22)) {
 		printk(KERN_ERR "%s: value %li out of IMM22 range\n", mod->name, (int64_t)val);
+		printk(KERN_ERR "%s: value %li out of IMM22 range\n",
+			mod->name, (long)val);
 		return 0;
 	}
 	ia64_patch((u64) insn, 0x01fffcfe000UL, (  ((val & 0x200000UL) << 15) /* bit 21 -> 36 */
@@ -197,6 +201,8 @@ apply_imm21b (struct module *mod, struct insn *insn, uint64_t val)
 {
 	if (val + (1 << 20) >= (1 << 21)) {
 		printk(KERN_ERR "%s: value %li out of IMM21b range\n", mod->name, (int64_t)val);
+		printk(KERN_ERR "%s: value %li out of IMM21b range\n",
+			mod->name, (long)val);
 		return 0;
 	}
 	ia64_patch((u64) insn, 0x11ffffe000UL, (  ((val & 0x100000UL) << 16) /* bit 20 -> 36 */
@@ -318,6 +324,13 @@ module_free (struct module *mod, void *module_region)
 		mod->arch.init_unw_table = NULL;
 	}
 	vfree(module_region);
+void
+module_arch_freeing_init (struct module *mod)
+{
+	if (mod->arch.init_unw_table) {
+		unw_remove_unwind_table(mod->arch.init_unw_table);
+		mod->arch.init_unw_table = NULL;
+	}
 }
 
 /* Have we already seen one of these relocations? */
@@ -527,6 +540,7 @@ get_ltoff (struct module *mod, uint64_t value, int *okp)
 	/* Not enough GOT entries? */
 	if (e >= (struct got_entry *) (mod->arch.got->sh_addr + mod->arch.got->sh_size))
 		BUG();
+	BUG_ON(e >= (struct got_entry *) (mod->arch.got->sh_addr + mod->arch.got->sh_size));
 
 	e->val = value;
 	++mod->arch.next_got_entry;
@@ -696,6 +710,9 @@ do_reloc (struct module *mod, uint8_t r_type, Elf64_Sym *sym, uint64_t addend,
 			if (!is_internal(mod, val)) {
 				printk(KERN_ERR "%s: %s reloc against non-local symbol (%lx)\n",
 				       __func__, reloc_name[r_type], val);
+				printk(KERN_ERR "%s: %s reloc against "
+					"non-local symbol (%lx)\n", __func__,
+					reloc_name[r_type], (unsigned long)val);
 				return -ENOEXEC;
 			}
 			format = RF_INSN21B;
@@ -927,8 +944,12 @@ module_finalize (const Elf_Ehdr *hdr, const Elf_Shdr *sechdrs, struct module *mo
 void
 module_arch_cleanup (struct module *mod)
 {
-	if (mod->arch.init_unw_table)
+	if (mod->arch.init_unw_table) {
 		unw_remove_unwind_table(mod->arch.init_unw_table);
-	if (mod->arch.core_unw_table)
+		mod->arch.init_unw_table = NULL;
+	}
+	if (mod->arch.core_unw_table) {
 		unw_remove_unwind_table(mod->arch.core_unw_table);
+		mod->arch.core_unw_table = NULL;
+	}
 }

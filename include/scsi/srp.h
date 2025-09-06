@@ -42,6 +42,7 @@
  */
 
 #include <linux/types.h>
+#include <scsi/scsi.h>
 
 enum {
 	SRP_LOGIN_REQ	= 0x00,
@@ -180,6 +181,7 @@ struct srp_tsk_mgmt {
 	u64	tag;
 	u8	reserved2[4];
 	__be64	lun __attribute__((packed));
+	struct scsi_lun	lun;
 	u8	reserved3[2];
 	u8	tsk_mgmt_func;
 	u8	reserved4;
@@ -201,6 +203,7 @@ struct srp_cmd {
 	u64	tag;
 	u8	reserved2[4];
 	__be64	lun __attribute__((packed));
+	struct scsi_lun	lun;
 	u8	reserved3;
 	u8	task_attr;
 	u8	reserved4;
@@ -238,5 +241,43 @@ struct srp_rsp {
 	__be32	resp_data_len;
 	u8	data[0];
 } __attribute__((packed));
+
+struct srp_cred_req {
+	u8	opcode;
+	u8	sol_not;
+	u8	reserved[2];
+	__be32	req_lim_delta;
+	u64	tag;
+};
+
+struct srp_cred_rsp {
+	u8	opcode;
+	u8	reserved[7];
+	u64	tag;
+};
+
+/*
+ * The SRP spec defines the fixed portion of the AER_REQ structure to be
+ * 36 bytes, so it needs to be packed to avoid having it padded to 40 bytes
+ * on 64-bit architectures.
+ */
+struct srp_aer_req {
+	u8	opcode;
+	u8	sol_not;
+	u8	reserved[2];
+	__be32	req_lim_delta;
+	u64	tag;
+	u32	reserved2;
+	struct scsi_lun	lun;
+	__be32	sense_data_len;
+	u32	reserved3;
+	u8	sense_data[0];
+} __attribute__((packed));
+
+struct srp_aer_rsp {
+	u8	opcode;
+	u8	reserved[7];
+	u64	tag;
+};
 
 #endif /* SCSI_SRP_H */

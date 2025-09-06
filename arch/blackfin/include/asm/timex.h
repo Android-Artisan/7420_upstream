@@ -17,6 +17,7 @@ static inline cycles_t get_cycles(void)
 {
 	unsigned long tmp, tmp2;
 	__asm__("%0 = cycles; %1 = cycles2;" : "=d"(tmp), "=d"(tmp2));
+	__asm__ __volatile__("%0 = cycles; %1 = cycles2;" : "=d"(tmp), "=d"(tmp2));
 	return tmp | ((cycles_t)tmp2 << 32);
 }
 

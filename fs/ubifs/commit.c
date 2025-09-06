@@ -47,6 +47,59 @@
 #include <linux/kthread.h>
 #include "ubifs.h"
 
+#include <linux/slab.h>
+#include "ubifs.h"
+
+/*
+ * nothing_to_commit - check if there is nothing to commit.
+ * @c: UBIFS file-system description object
+ *
+ * This is a helper function which checks if there is anything to commit. It is
+ * used as an optimization to avoid starting the commit if it is not really
+ * necessary. Indeed, the commit operation always assumes flash I/O (e.g.,
+ * writing the commit start node to the log), and it is better to avoid doing
+ * this unnecessarily. E.g., 'ubifs_sync_fs()' runs the commit, but if there is
+ * nothing to commit, it is more optimal to avoid any flash I/O.
+ *
+ * This function has to be called with @c->commit_sem locked for writing -
+ * this function does not take LPT/TNC locks because the @c->commit_sem
+ * guarantees that we have exclusive access to the TNC and LPT data structures.
+ *
+ * This function returns %1 if there is nothing to commit and %0 otherwise.
+ */
+static int nothing_to_commit(struct ubifs_info *c)
+{
+	/*
+	 * During mounting or remounting from R/O mode to R/W mode we may
+	 * commit for various recovery-related reasons.
+	 */
+	if (c->mounting || c->remounting_rw)
+		return 0;
+
+	/*
+	 * If the root TNC node is dirty, we definitely have something to
+	 * commit.
+	 */
+	if (c->zroot.znode && ubifs_zn_dirty(c->zroot.znode))
+		return 0;
+
+	/*
+	 * Even though the TNC is clean, the LPT tree may have dirty nodes. For
+	 * example, this may happen if the budgeting subsystem invoked GC to
+	 * make some free space, and the GC found an LEB with only dirty and
+	 * free space. In this case GC would just change the lprops of this
+	 * LEB (by turning all space into free space) and unmap it.
+	 */
+	if (c->nroot && test_bit(DIRTY_CNODE, &c->nroot->flags))
+		return 0;
+
+	ubifs_assert(atomic_long_read(&c->dirty_zn_cnt) == 0);
+	ubifs_assert(c->dirty_pn_cnt == 0);
+	ubifs_assert(c->dirty_nn_cnt == 0);
+
+	return 1;
+}
+
 /**
  * do_commit - commit the journal.
  * @c: UBIFS file-system description object
@@ -63,8 +116,17 @@ static int do_commit(struct ubifs_info *c)
 
 	dbg_cmt("start");
 	if (c->ro_media) {
+	ubifs_assert(!c->ro_media && !c->ro_mount);
+
+	if (c->ro_error) {
 		err = -EROFS;
 		goto out_up;
+	}
+
+	if (nothing_to_commit(c)) {
+		up_write(&c->commit_sem);
+		err = 0;
+		goto out_cancel;
 	}
 
 	/* Sync all write buffers (necessary for recovery) */
@@ -124,6 +186,7 @@ static int do_commit(struct ubifs_info *c)
 	c->mst_node->ihead_lnum  = cpu_to_le32(c->ihead_lnum);
 	c->mst_node->ihead_offs  = cpu_to_le32(c->ihead_offs);
 	c->mst_node->index_size  = cpu_to_le64(c->old_idx_sz);
+	c->mst_node->index_size  = cpu_to_le64(c->bi.old_idx_sz);
 	c->mst_node->lpt_lnum    = cpu_to_le32(c->lpt_lnum);
 	c->mst_node->lpt_offs    = cpu_to_le32(c->lpt_offs);
 	c->mst_node->nhead_lnum  = cpu_to_le32(c->nhead_lnum);
@@ -146,6 +209,9 @@ static int do_commit(struct ubifs_info *c)
 		c->mst_node->flags &= ~cpu_to_le32(UBIFS_MST_NO_ORPHS);
 	err = ubifs_write_master(c);
 	mutex_unlock(&c->mst_mutex);
+
+	old_ltail_lnum = c->ltail_lnum;
+	err = ubifs_log_end_commit(c, new_ltail_lnum);
 	if (err)
 		goto out;
 
@@ -159,6 +225,7 @@ static int do_commit(struct ubifs_info *c)
 	if (err)
 		goto out;
 
+out_cancel:
 	spin_lock(&c->cs_lock);
 	c->cmt_state = COMMIT_RESTING;
 	wake_up(&c->cmt_wq);
@@ -171,6 +238,7 @@ out_up:
 	up_write(&c->commit_sem);
 out:
 	ubifs_err("commit failed, error %d", err);
+	ubifs_err(c, "commit failed, error %d", err);
 	spin_lock(&c->cs_lock);
 	c->cmt_state = COMMIT_BROKEN;
 	wake_up(&c->cmt_wq);
@@ -235,6 +303,7 @@ int ubifs_bg_thread(void *info)
 	struct ubifs_info *c = info;
 
 	ubifs_msg("background thread \"%s\" started, PID %d",
+	ubifs_msg(c, "background thread \"%s\" started, PID %d",
 		  c->bgt_name, current->pid);
 	set_freezable();
 
@@ -270,6 +339,7 @@ int ubifs_bg_thread(void *info)
 	}
 
 	dbg_msg("background thread \"%s\" stops", c->bgt_name);
+	ubifs_msg(c, "background thread \"%s\" stops", c->bgt_name);
 	return 0;
 }
 
@@ -360,6 +430,7 @@ int ubifs_run_commit(struct ubifs_info *c)
 	spin_lock(&c->cs_lock);
 	if (c->cmt_state == COMMIT_BROKEN) {
 		err = -EINVAL;
+		err = -EROFS;
 		goto out;
 	}
 
@@ -386,6 +457,7 @@ int ubifs_run_commit(struct ubifs_info *c)
 	 */
 	if (c->cmt_state == COMMIT_BROKEN) {
 		err = -EINVAL;
+		err = -EROFS;
 		goto out_cmt_unlock;
 	}
 
@@ -438,6 +510,9 @@ int ubifs_gc_should_commit(struct ubifs_info *c)
 }
 
 #ifdef CONFIG_UBIFS_FS_DEBUG
+/*
+ * Everything below is related to debugging.
+ */
 
 /**
  * struct idx_node - hold index nodes during index tree traversal.
@@ -454,6 +529,7 @@ struct idx_node {
 	int iip;
 	union ubifs_key upper_key;
 	struct ubifs_idx_node idx __attribute__((aligned(8)));
+	struct ubifs_idx_node idx __aligned(8);
 };
 
 /**
@@ -476,6 +552,12 @@ int dbg_old_index_check_init(struct ubifs_info *c, struct ubifs_zbranch *zroot)
 	lnum = c->old_zroot.lnum;
 	offs = c->old_zroot.offs;
 	len = c->old_zroot.len;
+	struct ubifs_debug_info *d = c->dbg;
+
+	d->old_zroot = *zroot;
+	lnum = d->old_zroot.lnum;
+	offs = d->old_zroot.offs;
+	len = d->old_zroot.len;
 
 	idx = kmalloc(c->max_idx_node_sz, GFP_NOFS);
 	if (!idx)
@@ -487,6 +569,8 @@ int dbg_old_index_check_init(struct ubifs_info *c, struct ubifs_zbranch *zroot)
 
 	c->old_zroot_level = le16_to_cpu(idx->level);
 	c->old_zroot_sqnum = le64_to_cpu(idx->ch.sqnum);
+	d->old_zroot_level = le16_to_cpu(idx->level);
+	d->old_zroot_sqnum = le64_to_cpu(idx->ch.sqnum);
 out:
 	kfree(idx);
 	return err;
@@ -510,6 +594,8 @@ int dbg_check_old_index(struct ubifs_info *c, struct ubifs_zbranch *zroot)
 	int lnum, offs, len, err = 0, uninitialized_var(last_level), child_cnt;
 	int first = 1, iip;
 	union ubifs_key lower_key, upper_key, l_key, u_key;
+	struct ubifs_debug_info *d = c->dbg;
+	union ubifs_key uninitialized_var(lower_key), upper_key, l_key, u_key;
 	unsigned long long uninitialized_var(last_sqnum);
 	struct ubifs_idx_node *idx;
 	struct list_head list;
@@ -518,6 +604,8 @@ int dbg_check_old_index(struct ubifs_info *c, struct ubifs_zbranch *zroot)
 
 	if (!(ubifs_chk_flags & UBIFS_CHK_OLD_IDX))
 		goto out;
+	if (!dbg_is_chk_index(c))
+		return 0;
 
 	INIT_LIST_HEAD(&list);
 
@@ -528,6 +616,9 @@ int dbg_check_old_index(struct ubifs_info *c, struct ubifs_zbranch *zroot)
 	lnum = c->old_zroot.lnum;
 	offs = c->old_zroot.offs;
 	len = c->old_zroot.len;
+	lnum = d->old_zroot.lnum;
+	offs = d->old_zroot.offs;
+	len = d->old_zroot.len;
 	iip = 0;
 
 	/*
@@ -565,6 +656,11 @@ int dbg_check_old_index(struct ubifs_info *c, struct ubifs_zbranch *zroot)
 				goto out_dump;
 			}
 			if (le64_to_cpu(idx->ch.sqnum) != c->old_zroot_sqnum) {
+			if (le16_to_cpu(idx->level) != d->old_zroot_level) {
+				err = 2;
+				goto out_dump;
+			}
+			if (le64_to_cpu(idx->ch.sqnum) != d->old_zroot_sqnum) {
 				err = 3;
 				goto out_dump;
 			}
@@ -656,12 +752,16 @@ out:
 out_dump:
 	dbg_err("dumping index node (iip=%d)", i->iip);
 	dbg_dump_node(c, idx);
+	ubifs_err(c, "dumping index node (iip=%d)", i->iip);
+	ubifs_dump_node(c, idx);
 	list_del(&i->list);
 	kfree(i);
 	if (!list_empty(&list)) {
 		i = list_entry(list.prev, struct idx_node, list);
 		dbg_err("dumping parent index node");
 		dbg_dump_node(c, &i->idx);
+		ubifs_err(c, "dumping parent index node");
+		ubifs_dump_node(c, &i->idx);
 	}
 out_free:
 	while (!list_empty(&list)) {
@@ -670,6 +770,7 @@ out_free:
 		kfree(i);
 	}
 	ubifs_err("failed, error %d", err);
+	ubifs_err(c, "failed, error %d", err);
 	if (err > 0)
 		err = -EINVAL;
 	return err;

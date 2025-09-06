@@ -22,6 +22,8 @@
 
 /*
  * Distance above which we begin to use zone reclaim
+ * Nodes within this distance are eligible for reclaim by zone_reclaim() when
+ * zone_reclaim_mode is enabled.
  */
 #define RECLAIM_DISTANCE 15
 
@@ -34,6 +36,11 @@
  * Returns a bitmask of CPUs on Node 'node'.
  */
 #define node_to_cpumask(node) (node_to_cpu_mask[node])
+ * Returns a bitmask of CPUs on Node 'node'.
+ */
+#define cpumask_of_node(node) ((node) == -1 ?				\
+			       cpu_all_mask :				\
+			       &node_to_cpu_mask[node])
 
 /*
  * Returns the number of the node containing Node 'nid'.
@@ -112,6 +119,8 @@ void build_cpu_to_node_map(void);
 #define topology_core_siblings(cpu)		(cpu_core_map[cpu])
 #define topology_thread_siblings(cpu)		(per_cpu(cpu_sibling_map, cpu))
 #define smt_capable() 				(smp_num_siblings > 1)
+#define topology_core_cpumask(cpu)		(&cpu_core_map[cpu])
+#define topology_sibling_cpumask(cpu)		(&per_cpu(cpu_sibling_map, cpu))
 #endif
 
 extern void arch_fix_phys_package_id(int num, u32 slot);
@@ -120,6 +129,9 @@ extern void arch_fix_phys_package_id(int num, u32 slot);
 					CPU_MASK_ALL : \
 					node_to_cpumask(pcibus_to_node(bus)) \
 				)
+#define cpumask_of_pcibus(bus)	(pcibus_to_node(bus) == -1 ?		\
+				 cpu_all_mask :				\
+				 cpumask_of_node(pcibus_to_node(bus)))
 
 #include <asm-generic/topology.h>
 

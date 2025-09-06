@@ -5,6 +5,12 @@
 #include <linux/spinlock.h>
 #include <asm/compiler.h>
 #include <asm/system.h>
+/* Fit everything into one 128MB HAE window. */
+#define T2_ONE_HAE_WINDOW 1
+
+#include <linux/types.h>
+#include <linux/spinlock.h>
+#include <asm/compiler.h>
 
 /*
  * T2 is the internal name for the core logic chipset which provides
@@ -20,6 +26,7 @@
  */
 
 #define T2_MEM_R1_MASK 0x07ffffff  /* Mem sparse region 1 mask is 26 bits */
+#define T2_MEM_R1_MASK 0x07ffffff  /* Mem sparse region 1 mask is 27 bits */
 
 /* GAMMA-SABLE is a SABLE with EV5-based CPUs */
 /* All LYNX machines, EV4 or EV5, use the GAMMA bias also */
@@ -86,6 +93,9 @@
 #define T2_ICE			(IDENT_ADDR + GAMMA_BIAS + 0x38e0004c0UL)
 
 #define T2_HAE_ADDRESS		T2_HAE_1
+#ifndef T2_ONE_HAE_WINDOW
+#define T2_HAE_ADDRESS		T2_HAE_1
+#endif
 
 /*  T2 CSRs are in the non-cachable primary IO space from 3.8000.0000 to
  3.8fff.ffff
@@ -436,6 +446,15 @@ extern inline void t2_outl(u32 b, unsigned long addr)
 }
 
 extern spinlock_t t2_hae_lock;
+#ifdef T2_ONE_HAE_WINDOW
+#define t2_set_hae
+#else
+#define t2_set_hae { \
+	unsigned long msb = addr >> 27; \
+	addr &= T2_MEM_R1_MASK; \
+	set_hae(msb); \
+}
+#endif
 
 /*
  * NOTE: take T2_DENSE_MEM off in each readX/writeX routine, since
@@ -449,6 +468,7 @@ __EXTERN_INLINE u8 t2_readb(const volatile void __iomem *xaddr)
 	unsigned long result, msb;
 	unsigned long flags;
 	spin_lock_irqsave(&t2_hae_lock, flags);
+	unsigned long result;
 
 	t2_set_hae;
 
@@ -463,6 +483,7 @@ __EXTERN_INLINE u16 t2_readw(const volatile void __iomem *xaddr)
 	unsigned long result, msb;
 	unsigned long flags;
 	spin_lock_irqsave(&t2_hae_lock, flags);
+	unsigned long result;
 
 	t2_set_hae;
 
@@ -481,6 +502,7 @@ __EXTERN_INLINE u32 t2_readl(const volatile void __iomem *xaddr)
 	unsigned long result, msb;
 	unsigned long flags;
 	spin_lock_irqsave(&t2_hae_lock, flags);
+	unsigned long result;
 
 	t2_set_hae;
 
@@ -495,6 +517,7 @@ __EXTERN_INLINE u64 t2_readq(const volatile void __iomem *xaddr)
 	unsigned long r0, r1, work, msb;
 	unsigned long flags;
 	spin_lock_irqsave(&t2_hae_lock, flags);
+	unsigned long r0, r1, work;
 
 	t2_set_hae;
 
@@ -511,6 +534,7 @@ __EXTERN_INLINE void t2_writeb(u8 b, volatile void __iomem *xaddr)
 	unsigned long msb, w;
 	unsigned long flags;
 	spin_lock_irqsave(&t2_hae_lock, flags);
+	unsigned long w;
 
 	t2_set_hae;
 
@@ -525,6 +549,7 @@ __EXTERN_INLINE void t2_writew(u16 b, volatile void __iomem *xaddr)
 	unsigned long msb, w;
 	unsigned long flags;
 	spin_lock_irqsave(&t2_hae_lock, flags);
+	unsigned long w;
 
 	t2_set_hae;
 
@@ -556,6 +581,7 @@ __EXTERN_INLINE void t2_writeq(u64 b, volatile void __iomem *xaddr)
 	unsigned long msb, work;
 	unsigned long flags;
 	spin_lock_irqsave(&t2_hae_lock, flags);
+	unsigned long work;
 
 	t2_set_hae;
 

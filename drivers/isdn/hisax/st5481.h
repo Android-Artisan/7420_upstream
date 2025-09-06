@@ -5,6 +5,7 @@
  * Copyright    2001 by Frode Isaksen      <fisaksen@bewan.com>
  *              2001 by Kai Germaschewski  <kai.germaschewski@gmx.de>
  * 
+ *
  * This software may be used and distributed according to the terms
  * of the GNU General Public License, incorporated herein by reference.
  *
@@ -32,6 +33,7 @@
 #define EP_D_OUT  0x06U /* D channel out */
 #define EP_D_IN   0x07U /* D channel in */
   
+
 // Number of isochronous packets. With 20 packets we get
 // 50 interrupts/sec for each endpoint.
 
@@ -52,6 +54,7 @@
 
 // Registers that are written using vendor specific device request
 // on endpoint 0. 
+// on endpoint 0.
 
 #define LBA			0x02 /* S loopback */
 #define SET_DEFAULT		0x06 /* Soft reset */
@@ -85,6 +88,7 @@
 #define GPIO_DIR		0x52 /* GPIO pins direction registers */
 #define GPIO_OUT		0x53 /* GPIO pins output register */
 #define GPIO_IN			0x54 /* GPIO pins input register */ 
+#define GPIO_IN			0x54 /* GPIO pins input register */
 #define TXCI			0x56 /* CI command to be transmitted */
 
 
@@ -126,6 +130,8 @@
 
 #define ANY_REC_INT	(IN_OVERRUN+IN_UP+IN_DOWN+IN_COUNTER_ZEROED)
 #define ANY_XMIT_INT	(OUT_UNDERRUN+OUT_UP+OUT_DOWN+OUT_COUNTER_ZEROED)
+#define ANY_REC_INT	(IN_OVERRUN + IN_UP + IN_DOWN + IN_COUNTER_ZEROED)
+#define ANY_XMIT_INT	(OUT_UNDERRUN + OUT_UP + OUT_DOWN + OUT_COUNTER_ZEROED)
 
 
 // Level 1 commands that are sent using the TXCI device request
@@ -159,6 +165,7 @@ enum {
 
 	ST_DOUT_WAIT_FOR_UNDERRUN,
         ST_DOUT_WAIT_FOR_NOT_BUSY,
+	ST_DOUT_WAIT_FOR_NOT_BUSY,
 	ST_DOUT_WAIT_FOR_STOP,
 	ST_DOUT_WAIT_FOR_RESET,
 };
@@ -191,6 +198,9 @@ enum {
 #define L1_STATE_COUNT (ST_L1_F8+1)
 
 // The first 16 entries match the Level 1 indications that 
+#define L1_STATE_COUNT (ST_L1_F8 + 1)
+
+// The first 16 entries match the Level 1 indications that
 // are found at offset 4 (CCIST) in the interrupt packet
 
 enum {
@@ -227,17 +237,27 @@ printk(KERN_WARNING "%s:%s: " format "\n" , __FILE__,  __func__ , ## arg)
 printk(KERN_INFO "%s:%s: " format "\n" , __FILE__,  __func__ , ## arg)
 
 #include "isdnhdlc.h"
+#define ERR(format, arg...)						\
+	printk(KERN_ERR "%s:%s: " format "\n" , __FILE__,  __func__ , ## arg)
+
+#define WARNING(format, arg...)						\
+	printk(KERN_WARNING "%s:%s: " format "\n" , __FILE__,  __func__ , ## arg)
+
+#define INFO(format, arg...)						\
+	printk(KERN_INFO "%s:%s: " format "\n" , __FILE__,  __func__ , ## arg)
+
+#include <linux/isdn/hdlc.h>
 #include "fsm.h"
 #include "hisax_if.h"
 #include <linux/skbuff.h>
 
-/* ======================================================================
  * FIFO handling
  */
 
 /* Generic FIFO structure */
 struct fifo {
 	u_char r,w,count,size;
+	u_char r, w, count, size;
 	spinlock_t lock;
 };
 
@@ -270,6 +290,7 @@ static inline int fifo_add(struct fifo *fifo)
 	} else {
 		// Return index where to get the next data to add to the FIFO
 		index = fifo->w++ & (fifo->size-1);
+		index = fifo->w++ & (fifo->size - 1);
 		fifo->count++;
 	}
 	spin_unlock_irqrestore(&fifo->lock, flags);
@@ -295,6 +316,7 @@ static inline int fifo_remove(struct fifo *fifo)
 	} else {
 		// Return index where to get the next data from the FIFO
 		index = fifo->r++ & (fifo->size-1);
+		index = fifo->r++ & (fifo->size - 1);
 		fifo->count--;
 	}
 	spin_unlock_irqrestore(&fifo->lock, flags);
@@ -302,7 +324,6 @@ static inline int fifo_remove(struct fifo *fifo)
 	return index;
 }
 
-/* ======================================================================
  * control pipe
  */
 typedef void (*ctrl_complete_t)(void *);
@@ -312,6 +333,7 @@ typedef struct ctrl_msg {
 	ctrl_complete_t complete;
 	void *context;
 } ctrl_msg; 
+} ctrl_msg;
 
 /* FIFO of ctrl messages waiting to be sent */
 #define MAX_EP0_MSG 16
@@ -319,6 +341,7 @@ struct ctrl_msg_fifo {
 	struct fifo f;
 	struct ctrl_msg data[MAX_EP0_MSG];
 };	
+};
 
 #define MAX_DFRAME_LEN_L1	300
 #define HSCX_BUFMAX	4096
@@ -331,6 +354,7 @@ struct st5481_ctrl {
 
 struct st5481_intr {
   //	struct evt_fifo evt_fifo;
+	//	struct evt_fifo evt_fifo;
 	struct urb *urb;
 };
 
@@ -400,7 +424,6 @@ struct st5481_adapter {
 
 #define TIMER3_VALUE 7000
 
-/* ======================================================================
  *
  */
 
@@ -416,6 +439,14 @@ struct st5481_adapter {
 	} \
         status; \
 })
+#define SUBMIT_URB(urb, mem_flags)					\
+	({								\
+		int status;						\
+		if ((status = usb_submit_urb(urb, mem_flags)) < 0) {	\
+			WARNING("usb_submit_urb failed,status=%d", status); \
+		}							\
+		status;							\
+	})
 
 /*
  * USB double buffering, return the URB index (0 or 1).
@@ -423,6 +454,7 @@ struct st5481_adapter {
 static inline int get_buf_nr(struct urb *urbs[], struct urb *urb)
 {
         return (urbs[0]==urb ? 0 : 1); 
+	return (urbs[0] == urb ? 0 : 1);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -454,6 +486,17 @@ void st5481_usb_pipe_reset(struct st5481_adapter *adapter,
 void st5481_usb_device_ctrl_msg(struct st5481_adapter *adapter,
 			 u8 request, u16 value,
 			 ctrl_complete_t complete, void *context);
+int st5481_setup_isocpipes(struct urb *urb[2], struct usb_device *dev,
+			   unsigned int pipe, int num_packets,
+			   int packet_size, int buf_size,
+			   usb_complete_t complete, void *context);
+void st5481_release_isocpipes(struct urb *urb[2]);
+
+void st5481_usb_pipe_reset(struct st5481_adapter *adapter,
+			   u_char pipe, ctrl_complete_t complete, void *context);
+void st5481_usb_device_ctrl_msg(struct st5481_adapter *adapter,
+				u8 request, u16 value,
+				ctrl_complete_t complete, void *context);
 int  st5481_setup_usb(struct st5481_adapter *adapter);
 void st5481_release_usb(struct st5481_adapter *adapter);
 void st5481_start(struct st5481_adapter *adapter);
@@ -471,6 +514,8 @@ extern int st5481_debug;
 
 #define DBG_ISO_PACKET(level,urb) \
   if (level & __debug_variable) dump_iso_packet(__func__,urb)
+#define DBG_ISO_PACKET(level, urb)					\
+	if (level & __debug_variable) dump_iso_packet(__func__, urb)
 
 static void __attribute__((unused))
 dump_iso_packet(const char *name, struct urb *urb)
@@ -481,6 +526,12 @@ dump_iso_packet(const char *name, struct urb *urb)
 
 	printk(KERN_DEBUG "%s: packets=%d,errors=%d\n",
 	       name,urb->number_of_packets,urb->error_count);
+	int i, j;
+	int len, ofs;
+	u_char *data;
+
+	printk(KERN_DEBUG "%s: packets=%d,errors=%d\n",
+	       name, urb->number_of_packets, urb->error_count);
 	for (i = 0; i  < urb->number_of_packets; ++i) {
 		if (urb->pipe & USB_DIR_IN) {
 			len = urb->iso_frame_desc[i].actual_length;
@@ -493,6 +544,11 @@ dump_iso_packet(const char *name, struct urb *urb)
 			data = urb->transfer_buffer+ofs;
 			for (j=0; j < len; j++) {
 				printk ("%.2x", data[j]);
+		printk(KERN_DEBUG "len=%.2d,ofs=%.3d ", len, ofs);
+		if (len) {
+			data = urb->transfer_buffer + ofs;
+			for (j = 0; j < len; j++) {
+				printk("%.2x", data[j]);
 			}
 		}
 		printk("\n");
@@ -523,8 +579,17 @@ static inline const char *ST5481_CMD_string(int evt)
 
 #define DBG_ISO_PACKET(level,urb) do {} while (0)
 
+	sprintf(s, "0x%x", evt);
+	return s;
+}
+
+#else
+
+#define DBG_ISO_PACKET(level, urb) do {} while (0)
+
 #endif
 
 
 
 #endif 
+#endif

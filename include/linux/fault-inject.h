@@ -6,6 +6,8 @@
 #include <linux/types.h>
 #include <linux/debugfs.h>
 #include <asm/atomic.h>
+#include <linux/ratelimit.h>
+#include <linux/atomic.h>
 
 /*
  * For explanation of the elements of this struct, see
@@ -18,6 +20,7 @@ struct fault_attr {
 	atomic_t space;
 	unsigned long verbose;
 	u32 task_filter;
+	bool task_filter;
 	unsigned long stacktrace_depth;
 	unsigned long require_start;
 	unsigned long require_end;
@@ -53,6 +56,18 @@ struct fault_attr {
 		.require_end = ULONG_MAX,			\
 		.stacktrace_depth = 32,				\
 		.verbose = 2,					\
+	struct ratelimit_state ratelimit_state;
+	struct dentry *dname;
+};
+
+#define FAULT_ATTR_INITIALIZER {					\
+		.interval = 1,						\
+		.times = ATOMIC_INIT(1),				\
+		.require_end = ULONG_MAX,				\
+		.stacktrace_depth = 32,					\
+		.ratelimit_state = RATELIMIT_STATE_INIT_DISABLED,	\
+		.verbose = 2,						\
+		.dname = NULL,						\
 	}
 
 #define DECLARE_FAULT_ATTR(name) struct fault_attr name = FAULT_ATTR_INITIALIZER
@@ -75,10 +90,29 @@ static inline int init_fault_attr_dentries(struct fault_attr *attr,
 
 static inline void cleanup_fault_attr_dentries(struct fault_attr *attr)
 {
+struct dentry *fault_create_debugfs_attr(const char *name,
+			struct dentry *parent, struct fault_attr *attr);
+
+#else /* CONFIG_FAULT_INJECTION_DEBUG_FS */
+
+static inline struct dentry *fault_create_debugfs_attr(const char *name,
+			struct dentry *parent, struct fault_attr *attr)
+{
+	return ERR_PTR(-ENODEV);
 }
 
 #endif /* CONFIG_FAULT_INJECTION_DEBUG_FS */
 
 #endif /* CONFIG_FAULT_INJECTION */
+
+#ifdef CONFIG_FAILSLAB
+extern bool should_failslab(size_t size, gfp_t gfpflags, unsigned long flags);
+#else
+static inline bool should_failslab(size_t size, gfp_t gfpflags,
+				unsigned long flags)
+{
+	return false;
+}
+#endif /* CONFIG_FAILSLAB */
 
 #endif /* _LINUX_FAULT_INJECT_H */

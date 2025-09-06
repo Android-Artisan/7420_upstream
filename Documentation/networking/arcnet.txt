@@ -73,6 +73,12 @@ There are archives of the mailing list at:
 The people on linux-net@vger.kernel.org have also been known to be very
 helpful, especially when we're talking about ALPHA Linux kernels that may or
 may not work right in the first place.
+	http://epistolary.org/mailman/listinfo.cgi/arcnet
+
+The people on linux-net@vger.kernel.org (now defunct, replaced by
+netdev@vger.kernel.org) have also been known to be very helpful, especially
+when we're talking about ALPHA Linux kernels that may or may not work right
+in the first place.
 
 
 Other Drivers and Info
@@ -80,6 +86,7 @@ Other Drivers and Info
 
 You can try my ARCNET page on the World Wide Web at:
 	http://www.worldvisions.ca/~apenwarr/arcnet/
+	http://www.qis.net/~jschmitz/arcnet/	
 
 Also, SMC (one of the companies that makes ARCnet cards) has a WWW site you
 might be interested in, which includes several drivers for various cards

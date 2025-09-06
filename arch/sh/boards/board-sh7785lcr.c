@@ -2,6 +2,7 @@
  * Renesas Technology Corp. R0P7785LC0011RL Support.
  *
  * Copyright (C) 2008  Yoshihiro Shimoda
+ * Copyright (C) 2009  Paul Mundt
  *
  * This file is subject to the terms and conditions of the GNU General Public
  * License.  See the file "COPYING" in the main directory of this archive
@@ -20,6 +21,21 @@
 #include <linux/i2c-algo-pca.h>
 #include <asm/heartbeat.h>
 #include <asm/sh7785lcr.h>
+#include <linux/interrupt.h>
+#include <linux/i2c.h>
+#include <linux/i2c-pca-platform.h>
+#include <linux/i2c-algo-pca.h>
+#include <linux/usb/r8a66597.h>
+#include <linux/sh_intc.h>
+#include <linux/irq.h>
+#include <linux/io.h>
+#include <linux/clk.h>
+#include <linux/errno.h>
+#include <mach/sh7785lcr.h>
+#include <cpu/sh7785.h>
+#include <asm/heartbeat.h>
+#include <asm/clock.h>
+#include <asm/bl_bit.h>
 
 /*
  * NOTE: This board has 2 physical memory maps.
@@ -35,6 +51,10 @@ static struct resource heartbeat_resources[] = {
 
 static struct heartbeat_data heartbeat_data = {
 	.regsize = 8,
+static struct resource heartbeat_resource = {
+	.start	= PLD_LEDCR,
+	.end	= PLD_LEDCR,
+	.flags	= IORESOURCE_MEM | IORESOURCE_MEM_8BIT,
 };
 
 static struct platform_device heartbeat_device = {
@@ -45,6 +65,8 @@ static struct platform_device heartbeat_device = {
 	},
 	.num_resources	= ARRAY_SIZE(heartbeat_resources),
 	.resource	= heartbeat_resources,
+	.num_resources	= 1,
+	.resource	= &heartbeat_resource,
 };
 
 static struct mtd_partition nor_flash_partitions[] = {
@@ -96,6 +118,13 @@ static struct platform_device nor_flash_device = {
 static struct resource r8a66597_usb_host_resources[] = {
 	[0] = {
 		.name	= "r8a66597_hcd",
+static struct r8a66597_platdata r8a66597_data = {
+	.xtal = R8A66597_PLATDATA_XTAL_12MHZ,
+	.vif = 1,
+};
+
+static struct resource r8a66597_usb_host_resources[] = {
+	[0] = {
 		.start	= R8A66597_ADDR,
 		.end	= R8A66597_ADDR + R8A66597_SIZE - 1,
 		.flags	= IORESOURCE_MEM,
@@ -105,6 +134,9 @@ static struct resource r8a66597_usb_host_resources[] = {
 		.start	= 2,
 		.end	= 2,
 		.flags	= IORESOURCE_IRQ,
+		.start	= evt2irq(0x240),
+		.end	= evt2irq(0x240),
+		.flags	= IORESOURCE_IRQ | IRQF_TRIGGER_LOW,
 	},
 };
 
@@ -114,6 +146,7 @@ static struct platform_device r8a66597_usb_host_device = {
 	.dev = {
 		.dma_mask		= NULL,
 		.coherent_dma_mask	= 0xffffffff,
+		.platform_data		= &r8a66597_data,
 	},
 	.num_resources	= ARRAY_SIZE(r8a66597_usb_host_resources),
 	.resource	= r8a66597_usb_host_resources,
@@ -132,6 +165,7 @@ static struct resource sm501_resources[] = {
 	},
 	[2]	= {
 		.start	= 10,
+		.start	= evt2irq(0x340),
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -212,6 +246,19 @@ static struct platform_device sm501_device = {
 	.resource	= sm501_resources,
 };
 
+static struct resource i2c_proto_resources[] = {
+	[0] = {
+		.start	= PCA9564_PROTO_32BIT_ADDR,
+		.end	= PCA9564_PROTO_32BIT_ADDR + PCA9564_SIZE - 1,
+		.flags	= IORESOURCE_MEM | IORESOURCE_MEM_8BIT,
+	},
+	[1] = {
+		.start	= evt2irq(0x380),
+		.end	= evt2irq(0x380),
+		.flags	= IORESOURCE_IRQ,
+	},
+};
+
 static struct resource i2c_resources[] = {
 	[0] = {
 		.start	= PCA9564_ADDR,
@@ -221,6 +268,8 @@ static struct resource i2c_resources[] = {
 	[1] = {
 		.start	= 12,
 		.end	= 12,
+		.start	= evt2irq(0x380),
+		.end	= evt2irq(0x380),
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -229,6 +278,7 @@ static struct i2c_pca9564_pf_platform_data i2c_platform_data = {
 	.gpio			= 0,
 	.i2c_clock_speed	= I2C_PCA_CON_330kHz,
 	.timeout		= 100,
+	.timeout		= HZ,
 };
 
 static struct platform_device i2c_device = {
@@ -264,6 +314,15 @@ static int __init sh7785lcr_devices_setup(void)
 				    ARRAY_SIZE(sh7785lcr_devices));
 }
 __initcall(sh7785lcr_devices_setup);
+	if (mach_is_sh7785lcr_pt()) {
+		i2c_device.resource = i2c_proto_resources;
+		i2c_device.num_resources = ARRAY_SIZE(i2c_proto_resources);
+	}
+
+	return platform_add_devices(sh7785lcr_devices,
+				    ARRAY_SIZE(sh7785lcr_devices));
+}
+device_initcall(sh7785lcr_devices_setup);
 
 /* Initialize IRQ setting */
 void __init init_sh7785lcr_IRQ(void)
@@ -275,6 +334,34 @@ void __init init_sh7785lcr_IRQ(void)
 static void sh7785lcr_power_off(void)
 {
 	ctrl_outb(0x01, P2SEGADDR(PLD_POFCR));
+static int sh7785lcr_clk_init(void)
+{
+	struct clk *clk;
+	int ret;
+
+	clk = clk_get(NULL, "extal");
+	if (IS_ERR(clk))
+		return PTR_ERR(clk);
+	ret = clk_set_rate(clk, 33333333);
+	clk_put(clk);
+
+	return ret;
+}
+
+static void sh7785lcr_power_off(void)
+{
+	unsigned char *p;
+
+	p = ioremap(PLD_POFCR, PLD_POFCR + 1);
+	if (!p) {
+		printk(KERN_ERR "%s: ioremap error.\n", __func__);
+		return;
+	}
+	*p = 0x01;
+	iounmap(p);
+	set_bl_bit();
+	while (1)
+		cpu_relax();
 }
 
 /* Initialize the board */
@@ -289,6 +376,34 @@ static void __init sh7785lcr_setup(char **cmdline_p)
 	/* sm501 DRAM configuration */
 	sm501_reg = (void __iomem *)0xb3e00000 + SM501_DRAM_CONTROL;
 	writel(0x000307c2, sm501_reg);
+	sm501_reg = ioremap_nocache(SM107_REG_ADDR, SM501_DRAM_CONTROL);
+	if (!sm501_reg) {
+		printk(KERN_ERR "%s: ioremap error.\n", __func__);
+		return;
+	}
+
+	writel(0x000307c2, sm501_reg + SM501_DRAM_CONTROL);
+	iounmap(sm501_reg);
+}
+
+/* Return the board specific boot mode pin configuration */
+static int sh7785lcr_mode_pins(void)
+{
+	int value = 0;
+
+	/* These are the factory default settings of S1 and S2.
+	 * If you change these dip switches then you will need to
+	 * adjust the values below as well.
+	 */
+	value |= MODE_PIN4; /* Clock Mode 16 */
+	value |= MODE_PIN5; /* 32-bit Area0 bus width */
+	value |= MODE_PIN6; /* 32-bit Area0 bus width */
+	value |= MODE_PIN7; /* Area 0 SRAM interface [fixed] */
+	value |= MODE_PIN8; /* Little Endian */
+	value |= MODE_PIN9; /* Master Mode */
+	value |= MODE_PIN14; /* No PLL step-up */
+
+	return value;
 }
 
 /*
@@ -298,5 +413,8 @@ static struct sh_machine_vector mv_sh7785lcr __initmv = {
 	.mv_name		= "SH7785LCR",
 	.mv_setup		= sh7785lcr_setup,
 	.mv_init_irq		= init_sh7785lcr_IRQ,
+	.mv_clk_init		= sh7785lcr_clk_init,
+	.mv_init_irq		= init_sh7785lcr_IRQ,
+	.mv_mode_pins		= sh7785lcr_mode_pins,
 };
 

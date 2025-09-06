@@ -28,6 +28,9 @@
 #include <linux/loop.h>
 #include <linux/scatterlist.h>
 #include <asm/uaccess.h>
+#include <linux/scatterlist.h>
+#include <asm/uaccess.h>
+#include "loop.h"
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("loop blockdevice transferfunction adaptor / CryptoAPI");
@@ -201,6 +204,8 @@ init_cryptoloop(void)
 
 	if (rc)
 		printk(KERN_ERR "cryptoloop: loop_register_transfer failed\n");
+	else
+		pr_warn("the cryptoloop driver has been deprecated and will be removed in in Linux 5.16\n");
 	return rc;
 }
 

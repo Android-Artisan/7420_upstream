@@ -1,5 +1,4 @@
 		HP IPAQ H1940
-		=============
 
 http://www.handhelds.org/projects/h1940.html
 
@@ -37,4 +36,5 @@ Maintainers
   Thanks to the many others who have also provided support.
 
 
+(c) 2005 Ben Dooks
 (c) 2005 Ben Dooks

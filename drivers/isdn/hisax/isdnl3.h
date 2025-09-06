@@ -6,6 +6,7 @@
  */
 
 #define SBIT(state) (1<<state)
+#define SBIT(state) (1 << state)
 #define ALL_STATES  0x03ffffff
 
 #define PROTO_DIS_EURO	0x08

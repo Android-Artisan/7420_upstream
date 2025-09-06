@@ -55,6 +55,36 @@
 	bcsr@f8000000 {
 		device_type = "board-control";
 		reg = <0xf8000000 0x8000>;
+	localbus@e0005000 {
+		#address-cells = <2>;
+		#size-cells = <1>;
+		compatible = "fsl,mpc8360-localbus", "fsl,pq2pro-localbus",
+			     "simple-bus";
+		reg = <0xe0005000 0xd8>;
+		ranges = <0 0 0xfe000000 0x02000000
+		          1 0 0xf8000000 0x00008000>;
+
+		flash@0,0 {
+			compatible = "cfi-flash";
+			reg = <0 0 0x2000000>;
+			bank-width = <2>;
+			device-width = <1>;
+		};
+
+		bcsr@1,0 {
+			#address-cells = <1>;
+			#size-cells = <1>;
+ 			compatible = "fsl,mpc8360mds-bcsr";
+			reg = <1 0 0x8000>;
+			ranges = <0 1 0 0x8000>;
+
+			bcsr13: gpio-controller@d {
+				#gpio-cells = <2>;
+				compatible = "fsl,mpc8360mds-bcsr-gpio";
+				reg = <0xd 1>;
+				gpio-controller;
+			};
+		};
 	};
 
 	soc8360@e0000000 {
@@ -70,6 +100,13 @@
 			device_type = "watchdog";
 			compatible = "mpc83xx_wdt";
 			reg = <0x200 0x100>;
+		};
+
+		pmc: power@b00 {
+			compatible = "fsl,mpc8360-pmc", "fsl,mpc8349-pmc";
+			reg = <0xb00 0x100 0xa00 0x100>;
+			interrupts = <80 0x8>;
+			interrupt-parent = <&ipic>;
 		};
 
 		i2c@3000 {
@@ -103,6 +140,7 @@
 			cell-index = <0>;
 			device_type = "serial";
 			compatible = "ns16550";
+			compatible = "fsl,ns16550", "ns16550";
 			reg = <0x4500 0x100>;
 			clock-frequency = <264000000>;
 			interrupts = <9 0x8>;
@@ -113,6 +151,7 @@
 			cell-index = <1>;
 			device_type = "serial";
 			compatible = "ns16550";
+			compatible = "fsl,ns16550", "ns16550";
 			reg = <0x4600 0x100>;
 			clock-frequency = <264000000>;
 			interrupts = <10 0x8>;
@@ -131,24 +170,28 @@
 			dma-channel@0 {
 				compatible = "fsl,mpc8360-dma-channel", "fsl,elo-dma-channel";
 				reg = <0 0x80>;
+				cell-index = <0>;
 				interrupt-parent = <&ipic>;
 				interrupts = <71 8>;
 			};
 			dma-channel@80 {
 				compatible = "fsl,mpc8360-dma-channel", "fsl,elo-dma-channel";
 				reg = <0x80 0x80>;
+				cell-index = <1>;
 				interrupt-parent = <&ipic>;
 				interrupts = <71 8>;
 			};
 			dma-channel@100 {
 				compatible = "fsl,mpc8360-dma-channel", "fsl,elo-dma-channel";
 				reg = <0x100 0x80>;
+				cell-index = <2>;
 				interrupt-parent = <&ipic>;
 				interrupts = <71 8>;
 			};
 			dma-channel@180 {
 				compatible = "fsl,mpc8360-dma-channel", "fsl,elo-dma-channel";
 				reg = <0x180 0x28>;
+				cell-index = <3>;
 				interrupt-parent = <&ipic>;
 				interrupts = <71 8>;
 			};
@@ -163,6 +206,7 @@
 			fsl,channel-fifo-len = <24>;
 			fsl,exec-units-mask = <0x7e>;
 			fsl,descriptor-types-mask = <0x01010ebf>;
+			sleep = <&pmc 0x03000000>;
 		};
 
 		ipic: pic@700 {
@@ -177,6 +221,21 @@
 			reg = <0x1400 0x100>;
 			device_type = "par_io";
 			num-ports = <7>;
+
+			#address-cells = <1>;
+			#size-cells = <1>;
+			reg = <0x1400 0x100>;
+			ranges = <0 0x1400 0x100>;
+			device_type = "par_io";
+			num-ports = <7>;
+
+			qe_pio_b: gpio-controller@18 {
+				#gpio-cells = <2>;
+				compatible = "fsl,mpc8360-qe-pario-bank",
+					     "fsl,mpc8323-qe-pario-bank";
+				reg = <0x18 0x18>;
+				gpio-controller;
+			};
 
 			pio1: ucc_pin@01 {
 				pio-map = <
@@ -247,6 +306,8 @@
 		reg = <0xe0100000 0x480>;
 		brg-frequency = <0>;
 		bus-frequency = <396000000>;
+		fsl,qe-num-riscs = <2>;
+		fsl,qe-num-snums = <28>;
 
 		muram@10000 {
  			#address-cells = <1>;
@@ -259,6 +320,15 @@
 					     "fsl,cpm-muram-data";
 				reg = <0x0 0xc000>;
 			};
+		};
+
+		timer@440 {
+			compatible = "fsl,mpc8360-qe-gtm",
+				     "fsl,qe-gtm", "fsl,gtm";
+			reg = <0x440 0x40>;
+			clock-frequency = <132000000>;
+			interrupts = <12 13 14 15>;
+			interrupt-parent = <&qeic>;
 		};
 
 		spi@4c0 {
@@ -285,6 +355,20 @@
 			interrupts = <11>;
 			interrupt-parent = <&qeic>;
 			mode = "slave";
+			compatible = "fsl,mpc8360-qe-usb",
+				     "fsl,mpc8323-qe-usb";
+			reg = <0x6c0 0x40 0x8b00 0x100>;
+			interrupts = <11>;
+			interrupt-parent = <&qeic>;
+			fsl,fullspeed-clock = "clk21";
+			fsl,lowspeed-clock = "brg9";
+			gpios = <&qe_pio_b  2 0   /* USBOE */
+				 &qe_pio_b  3 0   /* USBTP */
+				 &qe_pio_b  8 0   /* USBTN */
+				 &qe_pio_b  9 0   /* USBRP */
+				 &qe_pio_b 11 0   /* USBRN */
+				 &bcsr13    5 0   /* SPEED */
+				 &bcsr13    4 1>; /* POWER */
 		};
 
 		enet0: ucc@2000 {
@@ -334,6 +418,10 @@
 				interrupts = <18 0x8>;
 				reg = <0x1>;
 				device_type = "ethernet-phy";
+			};
+			tbi-phy@2 {
+				device_type = "tbi-phy";
+				reg = <0x2>;
 			};
 		};
 
@@ -408,5 +496,10 @@
 		reg = <0xe0008500 0x100>;
 		compatible = "fsl,mpc8349-pci";
 		device_type = "pci";
+		reg = <0xe0008500 0x100		/* internal registers */
+		       0xe0008300 0x8>;		/* config space access registers */
+		compatible = "fsl,mpc8349-pci";
+		device_type = "pci";
+		sleep = <&pmc 0x00010000>;
 	};
 };

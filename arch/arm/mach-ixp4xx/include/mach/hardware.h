@@ -26,6 +26,11 @@
 #define	HAVE_ARCH_PCI_SET_DMA_MASK
 
 #define pcibios_assign_all_busses()	1
+#ifdef CONFIG_IXP4XX_INDIRECT_PCI
+#define PCIBIOS_MAX_MEM		0x4FFFFFFF
+#else
+#define PCIBIOS_MAX_MEM		0x4BFFFFFF
+#endif
 
 /* Register locations and bits */
 #include "ixp4xx-regs.h"

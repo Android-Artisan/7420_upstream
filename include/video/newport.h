@@ -6,6 +6,9 @@
  * Copyright (C) 1996 David S. Miller (dm@engr.sgi.com)
  * 
  * Ulf Carlsson - Compability with the IRIX structures added
+ * Copyright (C) 1996 David S. Miller (davem@davemloft.net)
+ * 
+ * Ulf Carlsson - Compatibility with the IRIX structures added
  */
 
 #ifndef _SGI_NEWPORT_H
@@ -454,6 +457,7 @@ static __inline__ int newport_wait(struct newport_regs *regs)
 	int t = BUSY_TIMEOUT;
 
 	while (t--)
+	while (--t)
 		if (!(regs->cset.status & NPORT_STAT_GBUSY))
 			break;
 	return !t;
@@ -464,6 +468,7 @@ static __inline__ int newport_bfwait(struct newport_regs *regs)
 	int t = BUSY_TIMEOUT;
 
 	while (t--)
+	while (--t)
 		if(!(regs->cset.status & NPORT_STAT_BBUSY))
 			break;
 	return !t;

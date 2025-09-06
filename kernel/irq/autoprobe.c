@@ -10,6 +10,7 @@
 #include <linux/module.h>
 #include <linux/interrupt.h>
 #include <linux/delay.h>
+#include <linux/async.h>
 
 #include "internals.h"
 
@@ -17,6 +18,7 @@
  * Autodetection depends on the fact that any interrupt that
  * comes in on to an unassigned handler will get stuck with
  * "IRQ_WAITING" cleared and the interrupt disabled.
+ * "IRQS_WAITING" cleared and the interrupt disabled.
  */
 static DEFINE_MUTEX(probing_active);
 
@@ -33,6 +35,13 @@ unsigned long probe_irq_on(void)
 	unsigned long mask;
 	unsigned int i;
 
+	unsigned long mask = 0;
+	int i;
+
+	/*
+	 * quiesce the kernel, or at least the asynchronous portion
+	 */
+	async_synchronize_full();
 	mutex_lock(&probing_active);
 	/*
 	 * something may have generated an irq long ago and we want to
@@ -49,6 +58,9 @@ unsigned long probe_irq_on(void)
 			 */
 			compat_irq_chip_set_default_handler(desc);
 
+	for_each_irq_desc_reverse(i, desc) {
+		raw_spin_lock_irq(&desc->lock);
+		if (!desc->action && irq_settings_can_probe(desc)) {
 			/*
 			 * Some chips need to know about probing in
 			 * progress:
@@ -58,6 +70,12 @@ unsigned long probe_irq_on(void)
 			desc->chip->startup(i);
 		}
 		spin_unlock_irq(&desc->lock);
+			if (desc->irq_data.chip->irq_set_type)
+				desc->irq_data.chip->irq_set_type(&desc->irq_data,
+							 IRQ_TYPE_PROBE);
+			irq_startup(desc, false);
+		}
+		raw_spin_unlock_irq(&desc->lock);
 	}
 
 	/* Wait for longstanding interrupts to trigger. */
@@ -78,6 +96,14 @@ unsigned long probe_irq_on(void)
 				desc->status |= IRQ_PENDING;
 		}
 		spin_unlock_irq(&desc->lock);
+	for_each_irq_desc_reverse(i, desc) {
+		raw_spin_lock_irq(&desc->lock);
+		if (!desc->action && irq_settings_can_probe(desc)) {
+			desc->istate |= IRQS_AUTODETECT | IRQS_WAITING;
+			if (irq_startup(desc, false))
+				desc->istate |= IRQS_PENDING;
+		}
+		raw_spin_unlock_irq(&desc->lock);
 	}
 
 	/*
@@ -101,11 +127,20 @@ unsigned long probe_irq_on(void)
 			if (!(status & IRQ_WAITING)) {
 				desc->status = status & ~IRQ_AUTODETECT;
 				desc->chip->shutdown(i);
+	for_each_irq_desc(i, desc) {
+		raw_spin_lock_irq(&desc->lock);
+
+		if (desc->istate & IRQS_AUTODETECT) {
+			/* It triggered already - consider it spurious. */
+			if (!(desc->istate & IRQS_WAITING)) {
+				desc->istate &= ~IRQS_AUTODETECT;
+				irq_shutdown(desc);
 			} else
 				if (i < 32)
 					mask |= 1 << i;
 		}
 		spin_unlock_irq(&desc->lock);
+		raw_spin_unlock_irq(&desc->lock);
 	}
 
 	return mask;
@@ -145,6 +180,20 @@ unsigned int probe_irq_mask(unsigned long val)
 			desc->chip->shutdown(i);
 		}
 		spin_unlock_irq(&desc->lock);
+	unsigned int mask = 0;
+	struct irq_desc *desc;
+	int i;
+
+	for_each_irq_desc(i, desc) {
+		raw_spin_lock_irq(&desc->lock);
+		if (desc->istate & IRQS_AUTODETECT) {
+			if (i < 16 && !(desc->istate & IRQS_WAITING))
+				mask |= 1 << i;
+
+			desc->istate &= ~IRQS_AUTODETECT;
+			irq_shutdown(desc);
+		}
+		raw_spin_unlock_irq(&desc->lock);
 	}
 	mutex_unlock(&probing_active);
 
@@ -194,6 +243,26 @@ int probe_irq_off(unsigned long val)
 	mutex_unlock(&probing_active);
 
 	if (nr_irqs > 1)
+	int i, irq_found = 0, nr_of_irqs = 0;
+	struct irq_desc *desc;
+
+	for_each_irq_desc(i, desc) {
+		raw_spin_lock_irq(&desc->lock);
+
+		if (desc->istate & IRQS_AUTODETECT) {
+			if (!(desc->istate & IRQS_WAITING)) {
+				if (!nr_of_irqs)
+					irq_found = i;
+				nr_of_irqs++;
+			}
+			desc->istate &= ~IRQS_AUTODETECT;
+			irq_shutdown(desc);
+		}
+		raw_spin_unlock_irq(&desc->lock);
+	}
+	mutex_unlock(&probing_active);
+
+	if (nr_of_irqs > 1)
 		irq_found = -irq_found;
 
 	return irq_found;

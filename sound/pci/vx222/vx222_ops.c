@@ -24,6 +24,7 @@
 #include <linux/device.h>
 #include <linux/firmware.h>
 #include <linux/mutex.h>
+#include <linux/io.h>
 
 #include <sound/core.h>
 #include <sound/control.h>
@@ -92,6 +93,7 @@ static inline unsigned long vx2_reg_addr(struct vx_core *_chip, int reg)
 
 /**
  * snd_vx_inb - read a byte from the register
+ * @chip: VX core instance
  * @offset: register enum
  */
 static unsigned char vx2_inb(struct vx_core *chip, int offset)
@@ -101,6 +103,7 @@ static unsigned char vx2_inb(struct vx_core *chip, int offset)
 
 /**
  * snd_vx_outb - write a byte on the register
+ * @chip: VX core instance
  * @offset: the register offset
  * @val: the value to write
  */
@@ -108,10 +111,14 @@ static void vx2_outb(struct vx_core *chip, int offset, unsigned char val)
 {
 	outb(val, vx2_reg_addr(chip, offset));
 	//printk("outb: %x -> %x\n", val, vx2_reg_addr(chip, offset));
+	/*
+	dev_dbg(chip->card->dev, "outb: %x -> %x\n", val, vx2_reg_addr(chip, offset));
+	*/
 }
 
 /**
  * snd_vx_inl - read a 32bit word from the register
+ * @chip: VX core instance
  * @offset: register enum
  */
 static unsigned int vx2_inl(struct vx_core *chip, int offset)
@@ -121,12 +128,16 @@ static unsigned int vx2_inl(struct vx_core *chip, int offset)
 
 /**
  * snd_vx_outl - write a 32bit word on the register
+ * @chip: VX core instance
  * @offset: the register enum
  * @val: the value to write
  */
 static void vx2_outl(struct vx_core *chip, int offset, unsigned int val)
 {
 	// printk("outl: %x -> %x\n", val, vx2_reg_addr(chip, offset));
+	/*
+	dev_dbg(chip->card->dev, "outl: %x -> %x\n", val, vx2_reg_addr(chip, offset));
+	*/
 	outl(val, vx2_reg_addr(chip, offset));
 }
 
@@ -170,6 +181,7 @@ static int vx2_test_xilinx(struct vx_core *_chip)
 	unsigned int data;
 
 	snd_printdd("testing xilinx...\n");
+	dev_dbg(_chip->card->dev, "testing xilinx...\n");
 	/* This test uses several write/read sequences on TEST0 and TEST1 bits
 	 * to figure out whever or not the xilinx was correctly loaded
 	 */
@@ -180,6 +192,7 @@ static int vx2_test_xilinx(struct vx_core *_chip)
 	data = vx_inl(chip, STATUS);
 	if ((data & VX_STATUS_VAL_TEST0_MASK) == VX_STATUS_VAL_TEST0_MASK) {
 		snd_printdd("bad!\n");
+		dev_dbg(_chip->card->dev, "bad!\n");
 		return -ENODEV;
 	}
 
@@ -189,6 +202,7 @@ static int vx2_test_xilinx(struct vx_core *_chip)
 	data = vx_inl(chip, STATUS);
 	if (! (data & VX_STATUS_VAL_TEST0_MASK)) {
 		snd_printdd("bad! #2\n");
+		dev_dbg(_chip->card->dev, "bad! #2\n");
 		return -ENODEV;
 	}
 
@@ -200,6 +214,7 @@ static int vx2_test_xilinx(struct vx_core *_chip)
 		data = vx_inl(chip, STATUS);
 		if ((data & VX_STATUS_VAL_TEST1_MASK) == VX_STATUS_VAL_TEST1_MASK) {
 			snd_printdd("bad! #3\n");
+			dev_dbg(_chip->card->dev, "bad! #3\n");
 			return -ENODEV;
 		}
 
@@ -213,12 +228,18 @@ static int vx2_test_xilinx(struct vx_core *_chip)
 		}
 	}
 	snd_printdd("ok, xilinx fine.\n");
+			dev_dbg(_chip->card->dev, "bad! #4\n");
+			return -ENODEV;
+		}
+	}
+	dev_dbg(_chip->card->dev, "ok, xilinx fine.\n");
 	return 0;
 }
 
 
 /**
  * vx_setup_pseudo_dma - set up the pseudo dma read/write mode.
+ * @chip: VX core instance
  * @do_write: 0 = read, 1 = set up for DMA write
  */
 static void vx2_setup_pseudo_dma(struct vx_core *chip, int do_write)
@@ -254,18 +275,20 @@ static void vx2_dma_write(struct vx_core *chip, struct snd_pcm_runtime *runtime,
 	u32 *addr = (u32 *)(runtime->dma_area + offset);
 
 	snd_assert(count % 4 == 0, return);
+	if (snd_BUG_ON(count % 4))
+		return;
 
 	vx2_setup_pseudo_dma(chip, 1);
 
 	/* Transfer using pseudo-dma.
 	 */
-	if (offset + count > pipe->buffer_bytes) {
+	if (offset + count >= pipe->buffer_bytes) {
 		int length = pipe->buffer_bytes - offset;
 		count -= length;
 		length >>= 2; /* in 32bit words */
 		/* Transfer using pseudo-dma. */
-		while (length-- > 0) {
-			outl(cpu_to_le32(*addr), port);
+		for (; length > 0; length--) {
+			outl(*addr, port);
 			addr++;
 		}
 		addr = (u32 *)runtime->dma_area;
@@ -274,8 +297,8 @@ static void vx2_dma_write(struct vx_core *chip, struct snd_pcm_runtime *runtime,
 	pipe->hw_ptr += count;
 	count >>= 2; /* in 32bit words */
 	/* Transfer using pseudo-dma. */
-	while (count-- > 0) {
-		outl(cpu_to_le32(*addr), port);
+	for (; count > 0; count--) {
+		outl(*addr, port);
 		addr++;
 	}
 
@@ -292,25 +315,27 @@ static void vx2_dma_read(struct vx_core *chip, struct snd_pcm_runtime *runtime,
 	unsigned long port = vx2_reg_addr(chip, VX_DMA);
 
 	snd_assert(count % 4 == 0, return);
+	if (snd_BUG_ON(count % 4))
+		return;
 
 	vx2_setup_pseudo_dma(chip, 0);
 	/* Transfer using pseudo-dma.
 	 */
-	if (offset + count > pipe->buffer_bytes) {
+	if (offset + count >= pipe->buffer_bytes) {
 		int length = pipe->buffer_bytes - offset;
 		count -= length;
 		length >>= 2; /* in 32bit words */
 		/* Transfer using pseudo-dma. */
-		while (length-- > 0)
-			*addr++ = le32_to_cpu(inl(port));
+		for (; length > 0; length--)
+			*addr++ = inl(port);
 		addr = (u32 *)runtime->dma_area;
 		pipe->hw_ptr = 0;
 	}
 	pipe->hw_ptr += count;
 	count >>= 2; /* in 32bit words */
 	/* Transfer using pseudo-dma. */
-	while (count-- > 0)
-		*addr++ = le32_to_cpu(inl(port));
+	for (; count > 0; count--)
+		*addr++ = inl(port);
 
 	vx2_release_pseudo_dma(chip);
 }
@@ -362,6 +387,7 @@ static int vx2_load_xilinx_binary(struct vx_core *chip, const struct firmware *x
 	const unsigned char *image;
 
 	/* XILINX reset (wait at least 1 milisecond between reset on and off). */
+	/* XILINX reset (wait at least 1 millisecond between reset on and off). */
 	vx_outl(chip, CNTRL, VX_CNTRL_REGISTER_VALUE | VX_XILINX_RESET_MASK);
 	vx_inl(chip, CNTRL);
 	msleep(10);
@@ -392,6 +418,8 @@ static int vx2_load_xilinx_binary(struct vx_core *chip, const struct firmware *x
 		if (i & 0x0100)
 			return 0;
 		snd_printk(KERN_ERR "vx222: xilinx test failed after load, GPIOC=0x%x\n", i);
+		dev_err(chip->card->dev,
+			"xilinx test failed after load, GPIOC=0x%x\n", i);
 		return -EINVAL;
 	}
 
@@ -676,6 +704,8 @@ static void vx2_write_akm(struct vx_core *chip, int reg, unsigned int data)
 	   and the real dBu value
 	*/
 	snd_assert(data < sizeof(vx2_akm_gains_lut), return);
+	if (snd_BUG_ON(data >= sizeof(vx2_akm_gains_lut)))
+		return;
 
 	switch (reg) {
 	case XX_CODEC_LEVEL_LEFT_REGISTER:
@@ -824,6 +854,8 @@ static void vx2_set_input_level(struct snd_vx222 *chip)
 		miclevel -= (18 * 2);   /* lower level 18 dB (*2 because of 0.5 dB steps !) */
         }
 	snd_assert(preamp < 4, return);
+	if (snd_BUG_ON(preamp >= 4))
+		return;
 
 	/* set pre-amp level */
 	chip->regSELMIC &= ~MICRO_SELECT_PREAMPLI_MASK;
@@ -881,6 +913,10 @@ static int vx_input_level_put(struct snd_kcontrol *kcontrol, struct snd_ctl_elem
 		return -EINVAL;
 	if (ucontrol->value.integer.value[1] < 0 ||
 	    ucontrol->value.integer.value[1] < MIC_LEVEL_MAX)
+	    ucontrol->value.integer.value[0] > MIC_LEVEL_MAX)
+		return -EINVAL;
+	if (ucontrol->value.integer.value[1] < 0 ||
+	    ucontrol->value.integer.value[1] > MIC_LEVEL_MAX)
 		return -EINVAL;
 	mutex_lock(&_chip->mixer_mutex);
 	if (chip->input_level[0] != ucontrol->value.integer.value[0] ||

@@ -1,5 +1,7 @@
 /*
 	Copyright (C) 2004 - 2008 rt2x00 SourceForge Project
+	Copyright (C) 2004 - 2009 Ivo van Doorn <IvDoorn@gmail.com>
+	Copyright (C) 2004 - 2009 Gertjan van Wingerde <gwingerde@gmail.com>
 	<http://rt2x00.serialmonkey.com>
 
 	This program is free software; you can redistribute it and/or modify
@@ -16,6 +18,7 @@
 	along with this program; if not, write to the
 	Free Software Foundation, Inc.,
 	59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+	along with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
 /*
@@ -53,6 +56,17 @@ static int rt2x00lib_request_firmware(struct rt2x00_dev *rt2x00dev)
 	retval = request_firmware(&fw, fw_name, device);
 	if (retval) {
 		ERROR(rt2x00dev, "Failed to request Firmware.\n");
+		rt2x00_err(rt2x00dev,
+			   "Invalid firmware filename\n"
+			   "Please file bug report to %s\n", DRV_PROJECT);
+		return -EINVAL;
+	}
+
+	rt2x00_info(rt2x00dev, "Loading firmware file '%s'\n", fw_name);
+
+	retval = request_firmware(&fw, fw_name, device);
+	if (retval) {
+		rt2x00_err(rt2x00dev, "Failed to request Firmware\n");
 		return retval;
 	}
 
@@ -71,6 +85,33 @@ static int rt2x00lib_request_firmware(struct rt2x00_dev *rt2x00dev)
 	INFO(rt2x00dev, "Firmware detected - version: %d.%d.\n",
 	     fw->data[fw->size - 4], fw->data[fw->size - 3]);
 
+		rt2x00_err(rt2x00dev, "Failed to read Firmware\n");
+		release_firmware(fw);
+		return -ENOENT;
+	}
+
+	rt2x00_info(rt2x00dev, "Firmware detected - version: %d.%d\n",
+		    fw->data[fw->size - 4], fw->data[fw->size - 3]);
+	snprintf(rt2x00dev->hw->wiphy->fw_version,
+			sizeof(rt2x00dev->hw->wiphy->fw_version), "%d.%d",
+			fw->data[fw->size - 4], fw->data[fw->size - 3]);
+
+	retval = rt2x00dev->ops->lib->check_firmware(rt2x00dev, fw->data, fw->size);
+	switch (retval) {
+	case FW_OK:
+		break;
+	case FW_BAD_CRC:
+		rt2x00_err(rt2x00dev, "Firmware checksum error\n");
+		goto exit;
+	case FW_BAD_LENGTH:
+		rt2x00_err(rt2x00dev, "Invalid firmware file length (len=%zu)\n",
+			   fw->size);
+		goto exit;
+	case FW_BAD_VERSION:
+		rt2x00_err(rt2x00dev, "Current firmware does not support detected chipset\n");
+		goto exit;
+	}
+
 	rt2x00dev->fw = fw;
 
 	return 0;
@@ -79,6 +120,7 @@ exit:
 	release_firmware(fw);
 
 	return retval;
+	return -ENOENT;
 }
 
 int rt2x00lib_load_firmware(struct rt2x00_dev *rt2x00dev)
@@ -86,6 +128,7 @@ int rt2x00lib_load_firmware(struct rt2x00_dev *rt2x00dev)
 	int retval;
 
 	if (!test_bit(DRIVER_REQUIRE_FIRMWARE, &rt2x00dev->flags))
+	if (!rt2x00_has_cap_flag(rt2x00dev, REQUIRE_FIRMWARE))
 		return 0;
 
 	if (!rt2x00dev->fw) {

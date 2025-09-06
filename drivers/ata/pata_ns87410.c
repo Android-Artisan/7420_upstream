@@ -88,6 +88,7 @@ static void ns87410_set_piomode(struct ata_port *ap, struct ata_device *adev)
 
 	if (ata_timing_compute(adev, adev->pio_mode, &at, 30303, 1) < 0) {
 		dev_printk(KERN_ERR, &pdev->dev, "unknown mode %d.\n", adev->pio_mode);
+		dev_err(&pdev->dev, "unknown mode %d\n", adev->pio_mode);
 		return;
 	}
 
@@ -150,6 +151,11 @@ static int ns87410_init_one(struct pci_dev *dev, const struct pci_device_id *id)
 	};
 	const struct ata_port_info *ppi[] = { &info, NULL };
 	return ata_pci_sff_init_one(dev, ppi, &ns87410_sht, NULL);
+		.pio_mask = ATA_PIO3,
+		.port_ops = &ns87410_port_ops
+	};
+	const struct ata_port_info *ppi[] = { &info, NULL };
+	return ata_pci_sff_init_one(dev, ppi, &ns87410_sht, NULL, 0);
 }
 
 static const struct pci_device_id ns87410[] = {
@@ -164,6 +170,7 @@ static struct pci_driver ns87410_pci_driver = {
 	.probe 		= ns87410_init_one,
 	.remove		= ata_pci_remove_one,
 #ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 	.suspend	= ata_pci_device_suspend,
 	.resume		= ata_pci_device_resume,
 #endif
@@ -178,6 +185,7 @@ static void __exit ns87410_exit(void)
 {
 	pci_unregister_driver(&ns87410_pci_driver);
 }
+module_pci_driver(ns87410_pci_driver);
 
 MODULE_AUTHOR("Alan Cox");
 MODULE_DESCRIPTION("low-level driver for Nat Semi 87410");

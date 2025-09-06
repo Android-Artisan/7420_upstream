@@ -41,6 +41,45 @@ PM_SUSPEND_PREPARE	The system is preparing for a suspend.
 PM_POST_SUSPEND		The system has just resumed or an error occured during
 			the suspend.	Device drivers' .resume() callbacks have
 			been executed and tasks have been thawed.
+	(C) 2007-2011 Rafael J. Wysocki <rjw@sisk.pl>, GPL
+
+There are some operations that subsystems or drivers may want to carry out
+before hibernation/suspend or after restore/resume, but they require the system
+to be fully functional, so the drivers' and subsystems' .suspend() and .resume()
+or even .prepare() and .complete() callbacks are not suitable for this purpose.
+For example, device drivers may want to upload firmware to their devices after
+resume/restore, but they cannot do it by calling request_firmware() from their
+.resume() or .complete() routines (user land processes are frozen at these
+points).  The solution may be to load the firmware into memory before processes
+are frozen and upload it from there in the .resume() routine.
+A suspend/hibernation notifier may be used for this purpose.
+
+The subsystems or drivers having such needs can register suspend notifiers that
+will be called upon the following events by the PM core:
+
+PM_HIBERNATION_PREPARE	The system is going to hibernate, tasks will be frozen
+			immediately. This is different from PM_SUSPEND_PREPARE
+			below because here we do additional work between notifiers
+			and drivers freezing.
+
+PM_POST_HIBERNATION	The system memory state has been restored from a
+			hibernation image or an error occurred during
+			hibernation.  Device drivers' restore callbacks have
+			been executed and tasks have been thawed.
+
+PM_RESTORE_PREPARE	The system is going to restore a hibernation image.
+			If all goes well, the restored kernel will issue a
+			PM_POST_HIBERNATION notification.
+
+PM_POST_RESTORE		An error occurred during restore from hibernation.
+			Device drivers' restore callbacks have been executed
+			and tasks have been thawed.
+
+PM_SUSPEND_PREPARE	The system is preparing for suspend.
+
+PM_POST_SUSPEND		The system has just resumed or an error occurred during
+			suspend.  Device drivers' resume callbacks have been
+			executed and tasks have been thawed.
 
 It is generally assumed that whatever the notifiers do for
 PM_HIBERNATION_PREPARE, should be undone for PM_POST_HIBERNATION.  Analogously,

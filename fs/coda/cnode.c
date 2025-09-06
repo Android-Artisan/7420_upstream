@@ -10,6 +10,8 @@
 #include <linux/coda_linux.h>
 #include <linux/coda_fs_i.h>
 #include <linux/coda_psdev.h>
+#include <linux/coda_psdev.h>
+#include "coda_linux.h"
 
 static inline int coda_fideq(struct CodaFid *fid1, struct CodaFid *fid2)
 {
@@ -46,12 +48,16 @@ static int coda_test_inode(struct inode *inode, void *data)
 {
 	struct CodaFid *fid = (struct CodaFid *)data;
 	return coda_fideq(&(ITOC(inode)->c_fid), fid);
+	struct coda_inode_info *cii = ITOC(inode);
+	return coda_fideq(&cii->c_fid, fid);
 }
 
 static int coda_set_inode(struct inode *inode, void *data)
 {
 	struct CodaFid *fid = (struct CodaFid *)data;
 	ITOC(inode)->c_fid = *fid;
+	struct coda_inode_info *cii = ITOC(inode);
+	cii->c_fid = *fid;
 	return 0;
 }
 
@@ -71,6 +77,7 @@ struct inode * coda_iget(struct super_block * sb, struct CodaFid * fid,
 		cii = ITOC(inode);
 		/* we still need to set i_ino for things like stat(2) */
 		inode->i_ino = hash;
+		/* inode is locked and unique, no need to grab cii->c_lock */
 		cii->c_mapcount = 0;
 		unlock_new_inode(inode);
 	}
@@ -89,6 +96,10 @@ struct inode * coda_iget(struct super_block * sb, struct CodaFid * fid,
 int coda_cnode_make(struct inode **inode, struct CodaFid *fid, struct super_block *sb)
 {
         struct coda_vattr attr;
+struct inode *coda_cnode_make(struct CodaFid *fid, struct super_block *sb)
+{
+        struct coda_vattr attr;
+	struct inode *inode;
         int error;
         
 	/* We get inode numbers from Venus -- see venus source */
@@ -115,6 +126,30 @@ void coda_replace_fid(struct inode *inode, struct CodaFid *oldfid,
 	
 	cii = ITOC(inode);
 
+	if (error)
+		return ERR_PTR(error);
+
+	inode = coda_iget(sb, fid, &attr);
+	if (IS_ERR(inode))
+		pr_warn("%s: coda_iget failed\n", __func__);
+	return inode;
+}
+
+
+/* Although we treat Coda file identifiers as immutable, there is one
+ * special case for files created during a disconnection where they may
+ * not be globally unique. When an identifier collision is detected we
+ * first try to flush the cached inode from the kernel and finally
+ * resort to renaming/rehashing in-place. Userspace remembers both old
+ * and new values of the identifier to handle any in-flight upcalls.
+ * The real solution is to use globally unique UUIDs as identifiers, but
+ * retrofitting the existing userspace code for this is non-trivial. */
+void coda_replace_fid(struct inode *inode, struct CodaFid *oldfid, 
+		      struct CodaFid *newfid)
+{
+	struct coda_inode_info *cii = ITOC(inode);
+	unsigned long hash = coda_f2i(newfid);
+	
 	BUG_ON(!coda_fideq(&cii->c_fid, oldfid));
 
 	/* replace fid and rehash inode */
@@ -133,6 +168,7 @@ struct inode *coda_fid_to_inode(struct CodaFid *fid, struct super_block *sb)
 
 	if ( !sb ) {
 		printk("coda_fid_to_inode: no sb!\n");
+		pr_warn("%s: no sb!\n", __func__);
 		return NULL;
 	}
 
@@ -162,5 +198,16 @@ int coda_cnode_makectl(struct inode **inode, struct super_block *sb)
 	}
 
 	return error;
+struct inode *coda_cnode_makectl(struct super_block *sb)
+{
+	struct inode *inode = new_inode(sb);
+	if (inode) {
+		inode->i_ino = CTL_INO;
+		inode->i_op = &coda_ioctl_inode_operations;
+		inode->i_fop = &coda_ioctl_operations;
+		inode->i_mode = 0444;
+		return inode;
+	}
+	return ERR_PTR(-ENOMEM);
 }
 

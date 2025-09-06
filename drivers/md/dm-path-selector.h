@@ -57,6 +57,8 @@ struct path_selector_type {
 	 */
 	struct dm_path *(*select_path) (struct path_selector *ps,
 				     unsigned *repeat_count);
+					unsigned *repeat_count,
+					size_t nr_bytes);
 
 	/*
 	 * Notify the selector that a path has failed.
@@ -76,6 +78,10 @@ struct path_selector_type {
 		       status_type_t type, char *result, unsigned int maxlen);
 
 	int (*end_io) (struct path_selector *ps, struct dm_path *path);
+	int (*start_io) (struct path_selector *ps, struct dm_path *path,
+			 size_t nr_bytes);
+	int (*end_io) (struct path_selector *ps, struct dm_path *path,
+		       size_t nr_bytes);
 };
 
 /* Register a path selector */

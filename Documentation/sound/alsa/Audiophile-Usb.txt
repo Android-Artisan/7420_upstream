@@ -1,5 +1,4 @@
 	Guide to using M-Audio Audiophile USB with ALSA and Jack	v1.5
-	========================================================
 
 	    Thibault Le Meur <Thibault.LeMeur@supelec.fr>
 
@@ -7,7 +6,6 @@ This document is a guide to using the M-Audio Audiophile USB (tm) device with
 ALSA and JACK.
 
 History
-=======
 * v1.4 - Thibault Le Meur (2007-07-11)
  - Added Low Endianness nature of 16bits-modes
    found by Hakan Lennestal <Hakan.Lennestal@brfsodrahamn.se>
@@ -17,7 +15,6 @@ History
 
 
 1 - Audiophile USB Specs and correct usage
-==========================================
 
 This part is a reminder of important facts about the functions and limitations 
 of the device.
@@ -64,7 +61,6 @@ synchronization error (for instance sound played at an odd sample rate)
 
 
 2 - Audiophile USB MIDI support in ALSA
-=======================================
 
 The Audiophile USB MIDI ports will be automatically supported once the
 following modules have been loaded:
@@ -75,7 +71,6 @@ No additional setting is required.
 
 
 3 - Audiophile USB Audio support in ALSA
-========================================
 
 Audio functions of the Audiophile USB device are handled by the snd-usb-audio 
 module. This module can work in a default mode (without any device-specific 
@@ -233,6 +228,7 @@ The parameter can be given:
 
  * Or while configuring the modules options in your modules configuration file
    - For Fedora distributions, edit the /etc/modprobe.conf file:
+   (typically a .conf file in /etc/modprobe.d/ directory:
        alias snd-card-1 snd-usb-audio
        options snd-usb-audio index=1 device_setup=0x09
 
@@ -254,6 +250,7 @@ CAUTION when initializing the device
    - de-register the snd-usb-audio module (modprobe -r)
    - change the device_setup parameter by changing the device_setup
      option in /etc/modprobe.conf 
+     option in /etc/modprobe.d/*.conf
    - turn on the device
  * A workaround for this last issue has been applied to kernel 2.6.23, but it may not
    be enough to ensure the 'stability' of the device initialization.
@@ -375,7 +372,6 @@ parse_audio_endpoints function uses a quirk called
 corresponding to device_setup from being registered in the driver.
 
 4 - Audiophile USB and Jack support
-===================================
 
 This section deals with support of the Audiophile USB device in Jack.
 

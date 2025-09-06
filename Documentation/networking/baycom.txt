@@ -94,6 +94,7 @@ modems it should access at which ports. This can be done with the setbaycom
 utility. If you are only using one modem, you can also configure the
 driver from the insmod command line (or by means of an option line in
 /etc/modprobe.conf).
+/etc/modprobe.d/*.conf).
 
 Examples:
   modprobe baycom_ser_fdx mode="ser12*" iobase=0x3f8 irq=4

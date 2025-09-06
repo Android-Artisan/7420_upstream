@@ -3,9 +3,14 @@
  *
  *  S390 version
  *    Copyright IBM Corp. 1999,2007
+ *  S390 version
+ *    Copyright IBM Corp. 1999, 2007
  *    Author(s): Martin Schwidefsky (schwidefsky@de.ibm.com),
  *               Christian Borntraeger (cborntra@de.ibm.com),
  */
+
+#define KMSG_COMPONENT "cpcmd"
+#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
 
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -16,6 +21,9 @@
 #include <asm/ebcdic.h>
 #include <asm/cpcmd.h>
 #include <asm/system.h>
+#include <asm/diag.h>
+#include <asm/ebcdic.h>
+#include <asm/cpcmd.h>
 #include <asm/io.h>
 
 static DEFINE_SPINLOCK(cpcmd_lock);
@@ -34,16 +42,21 @@ static int diag8_noresponse(int cmdlen)
 		"	diag	%1,%0,0x8\n"
 		"	sam64\n"
 #endif /* CONFIG_64BIT */
+		"	sam31\n"
+		"	diag	%1,%0,0x8\n"
+		"	sam64\n"
 		: "+d" (reg3) : "d" (reg2) : "cc");
 	return reg3;
 }
 
 static int diag8_response(int cmdlen, char *response, int *rlen)
 {
+	unsigned long _cmdlen = cmdlen | 0x40000000L;
+	unsigned long _rlen = *rlen;
 	register unsigned long reg2 asm ("2") = (addr_t) cpcmd_buf;
 	register unsigned long reg3 asm ("3") = (addr_t) response;
-	register unsigned long reg4 asm ("4") = cmdlen | 0x40000000L;
-	register unsigned long reg5 asm ("5") = *rlen;
+	register unsigned long reg4 asm ("4") = _cmdlen;
+	register unsigned long reg5 asm ("5") = _rlen;
 
 	asm volatile(
 #ifndef CONFIG_64BIT
@@ -80,6 +93,7 @@ int  __cpcmd(const char *cmd, char *response, int rlen, int *response_code)
 	memcpy(cpcmd_buf, cmd, cmdlen);
 	ASCEBC(cpcmd_buf, cmdlen);
 
+	diag_stat_inc(DIAG_STAT_X008);
 	if (response) {
 		memset(response, 0, rlen);
 		response_len = rlen;
@@ -106,6 +120,8 @@ int cpcmd(const char *cmd, char *response, int rlen, int *response_code)
 		if (!lowbuf) {
 			printk(KERN_WARNING
 				"cpcmd: could not allocate response buffer\n");
+			pr_warning("The cpcmd kernel function failed to "
+				   "allocate a response buffer\n");
 			return -ENOMEM;
 		}
 		spin_lock_irqsave(&cpcmd_lock, flags);

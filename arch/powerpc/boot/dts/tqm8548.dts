@@ -59,6 +59,22 @@
 		bus-frequency = <0>;
 		compatible = "fsl,mpc8548-immr", "simple-bus";
 
+		bus-frequency = <0>;
+		compatible = "fsl,mpc8548-immr", "simple-bus";
+
+		ecm-law@0 {
+			compatible = "fsl,ecm-law";
+			reg = <0x0 0x1000>;
+			fsl,num-laws = <10>;
+		};
+
+		ecm@1000 {
+			compatible = "fsl,mpc8548-ecm", "fsl,ecm";
+			reg = <0x1000 0x1000>;
+			interrupts = <17 2>;
+			interrupt-parent = <&mpic>;
+		};
+
 		memory-controller@2000 {
 			compatible = "fsl,mpc8548-memory-controller";
 			reg = <0x2000 0x1000>;
@@ -84,6 +100,11 @@
 			interrupts = <43 2>;
 			interrupt-parent = <&mpic>;
 			dfsrr;
+
+			dtt@48 {
+				compatible = "national,lm75";
+				reg = <0x48>;
+			};
 
 			rtc@68 {
 				compatible = "dallas,ds1337";
@@ -182,6 +203,9 @@
 		};
 
 		enet0: ethernet@24000 {
+		enet0: ethernet@24000 {
+			#address-cells = <1>;
+			#size-cells = <1>;
 			cell-index = <0>;
 			device_type = "network";
 			model = "eTSEC";
@@ -194,6 +218,54 @@
 		};
 
 		enet1: ethernet@25000 {
+			ranges = <0x0 0x24000 0x1000>;
+			local-mac-address = [ 00 00 00 00 00 00 ];
+			interrupts = <29 2 30 2 34 2>;
+			interrupt-parent = <&mpic>;
+			tbi-handle = <&tbi0>;
+			phy-handle = <&phy2>;
+
+			mdio@520 {
+				#address-cells = <1>;
+				#size-cells = <0>;
+				compatible = "fsl,gianfar-mdio";
+				reg = <0x520 0x20>;
+
+				phy1: ethernet-phy@0 {
+					interrupt-parent = <&mpic>;
+					interrupts = <8 1>;
+					reg = <1>;
+				};
+				phy2: ethernet-phy@1 {
+					interrupt-parent = <&mpic>;
+					interrupts = <8 1>;
+					reg = <2>;
+				};
+				phy3: ethernet-phy@3 {
+					interrupt-parent = <&mpic>;
+					interrupts = <8 1>;
+					reg = <3>;
+				};
+				phy4: ethernet-phy@4 {
+					interrupt-parent = <&mpic>;
+					interrupts = <8 1>;
+					reg = <4>;
+				};
+				phy5: ethernet-phy@5 {
+					interrupt-parent = <&mpic>;
+					interrupts = <8 1>;
+					reg = <5>;
+				};
+				tbi0: tbi-phy@11 {
+					reg = <0x11>;
+					device_type = "tbi-phy";
+				};
+			};
+		};
+
+		enet1: ethernet@25000 {
+			#address-cells = <1>;
+			#size-cells = <1>;
 			cell-index = <1>;
 			device_type = "network";
 			model = "eTSEC";
@@ -206,6 +278,29 @@
 		};
 
 		enet2: ethernet@26000 {
+			ranges = <0x0 0x25000 0x1000>;
+			local-mac-address = [ 00 00 00 00 00 00 ];
+			interrupts = <35 2 36 2 40 2>;
+			interrupt-parent = <&mpic>;
+			tbi-handle = <&tbi1>;
+			phy-handle = <&phy1>;
+
+			mdio@520 {
+				#address-cells = <1>;
+				#size-cells = <0>;
+				compatible = "fsl,gianfar-tbi";
+				reg = <0x520 0x20>;
+
+				tbi1: tbi-phy@11 {
+					reg = <0x11>;
+					device_type = "tbi-phy";
+				};
+			};
+		};
+
+		enet2: ethernet@26000 {
+			#address-cells = <1>;
+			#size-cells = <1>;
 			cell-index = <2>;
 			device_type = "network";
 			model = "eTSEC";
@@ -218,6 +313,29 @@
 		};
 
 		enet3: ethernet@27000 {
+			ranges = <0x0 0x26000 0x1000>;
+			local-mac-address = [ 00 00 00 00 00 00 ];
+			interrupts = <31 2 32 2 33 2>;
+			interrupt-parent = <&mpic>;
+			tbi-handle = <&tbi2>;
+			phy-handle = <&phy4>;
+
+			mdio@520 {
+				#address-cells = <1>;
+				#size-cells = <0>;
+				compatible = "fsl,gianfar-tbi";
+				reg = <0x520 0x20>;
+
+				tbi2: tbi-phy@11 {
+					reg = <0x11>;
+					device_type = "tbi-phy";
+				};
+			};
+		};
+
+		enet3: ethernet@27000 {
+			#address-cells = <1>;
+			#size-cells = <1>;
 			cell-index = <3>;
 			device_type = "network";
 			model = "eTSEC";
@@ -227,12 +345,31 @@
 			interrupts = <37 2 38 2 39 2>;
 			interrupt-parent = <&mpic>;
 			phy-handle = <&phy4>;
+			ranges = <0x0 0x27000 0x1000>;
+			local-mac-address = [ 00 00 00 00 00 00 ];
+			interrupts = <37 2 38 2 39 2>;
+			interrupt-parent = <&mpic>;
+			tbi-handle = <&tbi3>;
+			phy-handle = <&phy5>;
+
+			mdio@520 {
+				#address-cells = <1>;
+				#size-cells = <0>;
+				compatible = "fsl,gianfar-tbi";
+				reg = <0x520 0x20>;
+
+				tbi3: tbi-phy@11 {
+					reg = <0x11>;
+					device_type = "tbi-phy";
+				};
+			};
 		};
 
 		serial0: serial@4500 {
 			cell-index = <0>;
 			device_type = "serial";
 			compatible = "ns16550";
+			compatible = "fsl,ns16550", "ns16550";
 			reg = <0x4500 0x100>;	// reg base, size
 			clock-frequency = <0>;	// should we fill in in uboot?
 			current-speed = <115200>;
@@ -244,6 +381,7 @@
 			cell-index = <1>;
 			device_type = "serial";
 			compatible = "ns16550";
+			compatible = "fsl,ns16550", "ns16550";
 			reg = <0x4600 0x100>;	// reg base, size
 			clock-frequency = <0>;	// should we fill in in uboot?
 			current-speed = <115200>;
@@ -273,11 +411,14 @@
 		#address-cells = <2>;
 		#size-cells = <1>;
 		reg = <0xe0005000 0x100>;	// BRx, ORx, etc.
+		interrupt-parent = <&mpic>;
+		interrupts = <19 2>;
 
 		ranges = <
 			0 0x0 0xfc000000 0x04000000	// NOR FLASH bank 1
 			1 0x0 0xf8000000 0x08000000	// NOR FLASH bank 0
 			2 0x0 0xe3000000 0x00008000	// CAN (2 x i82527)
+			2 0x0 0xe3000000 0x00008000	// CAN (2 x CC770)
 			3 0x0 0xe3010000 0x00008000	// NAND FLASH
 
 		>;
@@ -330,6 +471,27 @@
 			reg = <2 0x100 0x100>;
 			interrupts = <4 0>;
 			interrupt-parent = <&mpic>;
+		can@2,0 {
+			compatible = "bosch,cc770"; // Bosch CC770
+			reg = <2 0x0 0x100>;
+			interrupts = <4 1>;
+			interrupt-parent = <&mpic>;
+			bosch,external-clock-frequency = <16000000>;
+			bosch,disconnect-rx1-input;
+			bosch,disconnect-tx1-output;
+			bosch,iso-low-speed-mux;
+			bosch,clock-out-frequency = <16000000>;
+		};
+
+		can@2,100 {
+			compatible = "bosch,cc770"; // Bosch CC770
+			reg = <2 0x100 0x100>;
+			interrupts = <4 1>;
+			interrupt-parent = <&mpic>;
+			bosch,external-clock-frequency = <16000000>;
+			bosch,disconnect-rx1-input;
+			bosch,disconnect-tx1-output;
+			bosch,iso-low-speed-mux;
 		};
 
 		/* Note: NAND support needs to be enabled in U-Boot */
@@ -340,6 +502,13 @@
 			reg = <3 0x0 0x800>;
 			fsl,upm-addr-offset = <0x10>;
 			fsl,upm-cmd-offset = <0x08>;
+			compatible = "tqc,tqm8548-upm-nand", "fsl,upm-nand";
+			reg = <3 0x0 0x800>;
+			fsl,upm-addr-offset = <0x10>;
+			fsl,upm-cmd-offset = <0x08>;
+			/* Micron MT29F8G08FAB multi-chip device */
+			fsl,upm-addr-line-cs-offsets = <0x0 0x200>;
+			fsl,upm-wait-flags = <0x5>;
 			chip-delay = <25>; // in micro-seconds
 
 			nand@0 {
@@ -349,6 +518,7 @@
 				partition@0 {
 					    label = "fs";
 					    reg = <0x00000000 0x01000000>;
+					    reg = <0x00000000 0x10000000>;
 				};
 			};
 		};
@@ -368,6 +538,14 @@
 				/* IDSEL 28 */
 				 0xe000 0 0 1 &mpic 2 1
 				 0xe000 0 0 2 &mpic 3 1>;
+				 0xe000 0 0 2 &mpic 3 1
+				 0xe000 0 0 3 &mpic 6 1
+				 0xe000 0 0 4 &mpic 5 1
+
+				/* IDSEL 11 */
+				 0x5800 0 0 1 &mpic 6 1
+				 0x5800 0 0 2 &mpic 5 1
+				 >;
 
 		interrupt-parent = <&mpic>;
 		interrupts = <24 2>;

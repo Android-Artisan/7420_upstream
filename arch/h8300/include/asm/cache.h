@@ -5,6 +5,8 @@
 #define        L1_CACHE_BYTES  4
 
 /* m68k-elf-gcc  2.95.2 doesn't like these */
+#define        L1_CACHE_SHIFT  2
+#define        L1_CACHE_BYTES  (1 << L1_CACHE_SHIFT)
 
 #define __cacheline_aligned
 #define ____cacheline_aligned

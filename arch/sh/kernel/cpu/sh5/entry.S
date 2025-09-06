@@ -10,6 +10,7 @@
  * for more details.
  */
 #include <linux/errno.h>
+#include <linux/init.h>
 #include <linux/sys.h>
 #include <cpu/registers.h>
 #include <asm/processor.h>
@@ -187,6 +188,7 @@ trap_jtable:
 		.long do_exception_error	/* 0x880 - 0x920 */
 	.endr
 	.long	do_software_break_point	/* 0x940 */
+	.long	breakpoint_trap_handler	/* 0x940 */
 	.long	do_exception_error		/* 0x960 */
 	.long	do_single_step		/* 0x980 */
 
@@ -335,6 +337,7 @@ tlb_miss:
 	   to the restore code right away to return to the excepting context.
 	   */
 	beqi/u	r2, 0, tr1
+	bnei/u	r2, 0, tr1
 
 fast_tlb_miss_restore:
 	ld.q	SP, SAVED_TR0, r2
@@ -965,6 +968,7 @@ ret_with_reschedule:
 	pta	restore_all, tr1
 
 	movi	(_TIF_SIGPENDING | _TIF_RESTORE_SIGMASK), r8
+	movi	(_TIF_SIGPENDING|_TIF_NOTIFY_RESUME), r8
 	and	r8, r7, r8
 	pta	work_notifysig, tr0
 	bne	r8, ZERO, tr0
@@ -1113,6 +1117,8 @@ restore_all:
  * (r3)   writeaccess, whether it's a store fault as opposed to load fault
  * (r4)   execaccess, whether it's a ITLB fault as opposed to DTLB fault
  * (r5)   Effective Address of fault
+ * (r3)   page fault error code (see asm/thread_info.h)
+ * (r4)   Effective Address of fault
  * (LINK) return address
  * (SP)   = r2
  *
@@ -1125,6 +1131,7 @@ tlb_miss_load:
 	or	ZERO, ZERO, r3		/* Read */
 	or	ZERO, ZERO, r4		/* Data */
 	getcon	TEA, r5
+	getcon	TEA, r4
 	pta	call_do_page_fault, tr0
 	beq	ZERO, ZERO, tr0
 
@@ -1133,6 +1140,8 @@ tlb_miss_store:
 	movi	1, r3			/* Write */
 	or	ZERO, ZERO, r4		/* Data */
 	getcon	TEA, r5
+	movi	FAULT_CODE_WRITE, r3		/* Write */
+	getcon	TEA, r4
 	pta	call_do_page_fault, tr0
 	beq	ZERO, ZERO, tr0
 
@@ -1143,6 +1152,11 @@ itlb_miss_or_IRQ:
 	or	ZERO, ZERO, r3		/* Read */
 	movi	1, r4			/* Text */
 	getcon	TEA, r5
+
+	/* ITLB miss */
+	or	SP, ZERO, r2
+	movi	FAULT_CODE_ITLB, r3
+	getcon	TEA, r4
 	/* Fall through */
 
 call_do_page_fault:
@@ -1156,6 +1170,7 @@ fpu_error_or_IRQA:
 	beqi/l	r4, EVENT_INTERRUPT, tr0
 #ifdef CONFIG_SH_FPU
 	movi	do_fpu_state_restore, r6
+	movi	fpu_state_restore_trap_handler, r6
 #else
 	movi	do_exception_error, r6
 #endif
@@ -1167,6 +1182,7 @@ fpu_error_or_IRQB:
 	beqi/l	r4, EVENT_INTERRUPT, tr0
 #ifdef CONFIG_SH_FPU
 	movi	do_fpu_state_restore, r6
+	movi	fpu_state_restore_trap_handler, r6
 #else
 	movi	do_exception_error, r6
 #endif
@@ -1285,6 +1301,24 @@ ret_from_fork:
 	blink	tr0, ZERO
 
 
+.global	ret_from_kernel_thread
+ret_from_kernel_thread:
+
+	movi	schedule_tail,r5
+	ori	r5, 1, r5
+	ptabs	r5, tr0
+	blink	tr0, LINK
+
+	ld.q	SP, FRAME_R(2), r2
+	ld.q	SP, FRAME_R(3), r3
+	ptabs	r3, tr0
+	blink	tr0, LINK
+
+	ld.q	SP, FRAME_S(FSPC), r2
+	addi	r2, 4, r2		/* Move PC, being pre-execution event */
+	st.q	SP, FRAME_S(FSPC), r2
+	pta	ret_from_syscall, tr0
+	blink	tr0, ZERO
 
 syscall_allowed:
 	/* Use LINK to deflect the exit point, default is syscall_ret */
@@ -1411,6 +1445,8 @@ peek_real_address_q:
 	   This is provided as a cheapskate way of manipulating device
 	   registers for debugging (to avoid the need to onchip_remap the debug
 	   module, and to avoid the need to onchip_remap the watchpoint
+	   registers for debugging (to avoid the need to ioremap the debug
+	   module, and to avoid the need to ioremap the watchpoint
 	   controller in a way that identity maps sufficient bits to avoid the
 	   SH5-101 cut2 silicon defect).
 
@@ -1460,6 +1496,8 @@ poke_real_address_q:
 	   This is provided as a cheapskate way of manipulating device
 	   registers for debugging (to avoid the need to onchip_remap the debug
 	   module, and to avoid the need to onchip_remap the watchpoint
+	   registers for debugging (to avoid the need to ioremap the debug
+	   module, and to avoid the need to ioremap the watchpoint
 	   controller in a way that identity maps sufficient bits to avoid the
 	   SH5-101 cut2 silicon defect).
 
@@ -2062,6 +2100,10 @@ asm_uaccess_end:
  */
 
 	.section	.text.init, "ax"
+ * --- .init.text Section
+ */
+
+	__INIT
 
 /*
  * void trap_init (void)

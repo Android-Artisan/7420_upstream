@@ -2,7 +2,7 @@
 #define _LAPB_H 
 #include <linux/lapb.h>
 
-#define	LAPB_HEADER_LEN	20		/* LAPB over Ethernet + a bit more */
+#define	LAPB_HEADER_LEN MAX_HEADER		/* LAPB over Ethernet + a bit more */
 
 #define	LAPB_ACK_PENDING_CONDITION	0x01
 #define	LAPB_REJECT_CONDITION		0x02
@@ -96,6 +96,7 @@ struct lapb_cb {
 	struct sk_buff_head	ack_queue;
 	unsigned char		window;
 	struct lapb_register_struct callbacks;
+	const struct lapb_register_struct *callbacks;
 
 	/* FRMR control information */
 	struct lapb_frame	frmr_data;
@@ -139,6 +140,40 @@ extern void lapb_start_t2timer(struct lapb_cb *lapb);
 extern void lapb_stop_t1timer(struct lapb_cb *lapb);
 extern void lapb_stop_t2timer(struct lapb_cb *lapb);
 extern int  lapb_t1timer_running(struct lapb_cb *lapb);
+void lapb_connect_confirmation(struct lapb_cb *lapb, int);
+void lapb_connect_indication(struct lapb_cb *lapb, int);
+void lapb_disconnect_confirmation(struct lapb_cb *lapb, int);
+void lapb_disconnect_indication(struct lapb_cb *lapb, int);
+int lapb_data_indication(struct lapb_cb *lapb, struct sk_buff *);
+int lapb_data_transmit(struct lapb_cb *lapb, struct sk_buff *);
+
+/* lapb_in.c */
+void lapb_data_input(struct lapb_cb *lapb, struct sk_buff *);
+
+/* lapb_out.c */
+void lapb_kick(struct lapb_cb *lapb);
+void lapb_transmit_buffer(struct lapb_cb *lapb, struct sk_buff *, int);
+void lapb_establish_data_link(struct lapb_cb *lapb);
+void lapb_enquiry_response(struct lapb_cb *lapb);
+void lapb_timeout_response(struct lapb_cb *lapb);
+void lapb_check_iframes_acked(struct lapb_cb *lapb, unsigned short);
+void lapb_check_need_response(struct lapb_cb *lapb, int, int);
+
+/* lapb_subr.c */
+void lapb_clear_queues(struct lapb_cb *lapb);
+void lapb_frames_acked(struct lapb_cb *lapb, unsigned short);
+void lapb_requeue_frames(struct lapb_cb *lapb);
+int lapb_validate_nr(struct lapb_cb *lapb, unsigned short);
+int lapb_decode(struct lapb_cb *lapb, struct sk_buff *, struct lapb_frame *);
+void lapb_send_control(struct lapb_cb *lapb, int, int, int);
+void lapb_transmit_frmr(struct lapb_cb *lapb);
+
+/* lapb_timer.c */
+void lapb_start_t1timer(struct lapb_cb *lapb);
+void lapb_start_t2timer(struct lapb_cb *lapb);
+void lapb_stop_t1timer(struct lapb_cb *lapb);
+void lapb_stop_t2timer(struct lapb_cb *lapb);
+int lapb_t1timer_running(struct lapb_cb *lapb);
 
 /*
  * Debug levels.
@@ -148,5 +183,11 @@ extern int  lapb_t1timer_running(struct lapb_cb *lapb);
  *	3 = Hex dumps, Packets I/O and State Changes.
  */
 #define	LAPB_DEBUG	0
+
+#define lapb_dbg(level, fmt, ...)			\
+do {							\
+	if (level < LAPB_DEBUG)				\
+		pr_debug(fmt, ##__VA_ARGS__);		\
+} while (0)
 
 #endif

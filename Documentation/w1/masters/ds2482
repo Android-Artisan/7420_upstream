@@ -1,5 +1,4 @@
 Kernel driver ds2482
-====================
 
 Supported chips:
   * Maxim DS2482-100, Maxim DS2482-800
@@ -8,6 +7,8 @@ Supported chips:
     Datasheets:
         http://pdfserv.maxim-ic.com/en/ds/DS2482-100-DS2482S-100.pdf
         http://pdfserv.maxim-ic.com/en/ds/DS2482-800-DS2482S-800.pdf
+        http://datasheets.maxim-ic.com/en/ds/DS2482-100.pdf
+        http://datasheets.maxim-ic.com/en/ds/DS2482-800.pdf
 
 Author: Ben Gardner <bgardner@wabtec.com>
 
@@ -28,4 +29,8 @@ detection is done.
 You should force the device address.
 
 $ modprobe ds2482 force=0,0x18
+detection is done. You should instantiate the device explicitly.
+
+$ modprobe ds2482
+$ echo ds2482 0x18 > /sys/bus/i2c/devices/i2c-0/new_device
 

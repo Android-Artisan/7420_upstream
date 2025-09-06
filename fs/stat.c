@@ -5,6 +5,7 @@
  */
 
 #include <linux/module.h>
+#include <linux/export.h>
 #include <linux/mm.h>
 #include <linux/errno.h>
 #include <linux/file.h>
@@ -33,6 +34,12 @@ void generic_fillattr(struct inode *inode, struct kstat *stat)
 	stat->size = i_size_read(inode);
 	stat->blocks = inode->i_blocks;
 	stat->blksize = (1 << inode->i_blkbits);
+	stat->size = i_size_read(inode);
+	stat->atime = inode->i_atime;
+	stat->mtime = inode->i_mtime;
+	stat->ctime = inode->i_ctime;
+	stat->blksize = i_blocksize(inode);
+	stat->blocks = inode->i_blocks;
 }
 
 EXPORT_SYMBOL(generic_fillattr);
@@ -48,6 +55,24 @@ int vfs_getattr(struct vfsmount *mnt, struct dentry *dentry, struct kstat *stat)
 
 	if (inode->i_op->getattr)
 		return inode->i_op->getattr(mnt, dentry, stat);
+/**
+ * vfs_getattr_nosec - getattr without security checks
+ * @path: file to get attributes from
+ * @stat: structure to return attributes in
+ *
+ * Get attributes without calling security_inode_getattr.
+ *
+ * Currently the only caller other than vfs_getattr is internal to the
+ * filehandle lookup code, which uses only the inode number and returns
+ * no attributes to any user.  Any other code probably wants
+ * vfs_getattr.
+ */
+int vfs_getattr_nosec(struct path *path, struct kstat *stat)
+{
+	struct inode *inode = d_backing_inode(path->dentry);
+
+	if (inode->i_op->getattr)
+		return inode->i_op->getattr(path->mnt, path->dentry, stat);
 
 	generic_fillattr(inode, stat);
 	return 0;
@@ -109,6 +134,77 @@ int vfs_fstat(unsigned int fd, struct kstat *stat)
 
 EXPORT_SYMBOL(vfs_fstat);
 
+EXPORT_SYMBOL(vfs_getattr_nosec);
+
+int vfs_getattr(struct path *path, struct kstat *stat)
+{
+	int retval;
+
+	retval = security_inode_getattr(path);
+	if (retval)
+		return retval;
+	return vfs_getattr_nosec(path, stat);
+}
+
+EXPORT_SYMBOL(vfs_getattr);
+
+int vfs_fstat(unsigned int fd, struct kstat *stat)
+{
+	struct fd f = fdget_raw(fd);
+	int error = -EBADF;
+
+	if (f.file) {
+		error = vfs_getattr(&f.file->f_path, stat);
+		fdput(f);
+	}
+	return error;
+}
+EXPORT_SYMBOL(vfs_fstat);
+
+int vfs_fstatat(int dfd, const char __user *filename, struct kstat *stat,
+		int flag)
+{
+	struct path path;
+	int error = -EINVAL;
+	unsigned int lookup_flags = 0;
+
+	if ((flag & ~(AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT |
+		      AT_EMPTY_PATH)) != 0)
+		goto out;
+
+	if (!(flag & AT_SYMLINK_NOFOLLOW))
+		lookup_flags |= LOOKUP_FOLLOW;
+	if (flag & AT_EMPTY_PATH)
+		lookup_flags |= LOOKUP_EMPTY;
+retry:
+	error = user_path_at(dfd, filename, lookup_flags, &path);
+	if (error)
+		goto out;
+
+	error = vfs_getattr(&path, stat);
+	path_put(&path);
+	if (retry_estale(error, lookup_flags)) {
+		lookup_flags |= LOOKUP_REVAL;
+		goto retry;
+	}
+out:
+	return error;
+}
+EXPORT_SYMBOL(vfs_fstatat);
+
+int vfs_stat(const char __user *name, struct kstat *stat)
+{
+	return vfs_fstatat(AT_FDCWD, name, stat, 0);
+}
+EXPORT_SYMBOL(vfs_stat);
+
+int vfs_lstat(const char __user *name, struct kstat *stat)
+{
+	return vfs_fstatat(AT_FDCWD, name, stat, AT_SYMLINK_NOFOLLOW);
+}
+EXPORT_SYMBOL(vfs_lstat);
+
+
 #ifdef __ARCH_WANT_OLD_STAT
 
 /*
@@ -140,6 +236,8 @@ static int cp_old_stat(struct kstat *stat, struct __old_kernel_stat __user * sta
 		return -EOVERFLOW;
 	SET_UID(tmp.st_uid, stat->uid);
 	SET_GID(tmp.st_gid, stat->gid);
+	SET_UID(tmp.st_uid, from_kuid_munged(current_user_ns(), stat->uid));
+	SET_GID(tmp.st_gid, from_kgid_munged(current_user_ns(), stat->gid));
 	tmp.st_rdev = old_encode_dev(stat->rdev);
 #if BITS_PER_LONG == 32
 	if (stat->size > MAX_NON_LFS)
@@ -173,6 +271,33 @@ asmlinkage long sys_lstat(char __user * filename, struct __old_kernel_stat __use
 	return error;
 }
 asmlinkage long sys_fstat(unsigned int fd, struct __old_kernel_stat __user * statbuf)
+SYSCALL_DEFINE2(stat, const char __user *, filename,
+		struct __old_kernel_stat __user *, statbuf)
+{
+	struct kstat stat;
+	int error;
+
+	error = vfs_stat(filename, &stat);
+	if (error)
+		return error;
+
+	return cp_old_stat(&stat, statbuf);
+}
+
+SYSCALL_DEFINE2(lstat, const char __user *, filename,
+		struct __old_kernel_stat __user *, statbuf)
+{
+	struct kstat stat;
+	int error;
+
+	error = vfs_lstat(filename, &stat);
+	if (error)
+		return error;
+
+	return cp_old_stat(&stat, statbuf);
+}
+
+SYSCALL_DEFINE2(fstat, unsigned int, fd, struct __old_kernel_stat __user *, statbuf)
 {
 	struct kstat stat;
 	int error = vfs_fstat(fd, &stat);
@@ -184,6 +309,19 @@ asmlinkage long sys_fstat(unsigned int fd, struct __old_kernel_stat __user * sta
 }
 
 #endif /* __ARCH_WANT_OLD_STAT */
+
+#if BITS_PER_LONG == 32
+#  define choose_32_64(a,b) a
+#else
+#  define choose_32_64(a,b) b
+#endif
+
+#define valid_dev(x)  choose_32_64(old_valid_dev,new_valid_dev)(x)
+#define encode_dev(x) choose_32_64(old_encode_dev,new_encode_dev)(x)
+
+#ifndef INIT_STRUCT_STAT_PADDING
+#  define INIT_STRUCT_STAT_PADDING(st) memset(&st, 0, sizeof(st))
+#endif
 
 static int cp_new_stat(struct kstat *stat, struct stat __user *statbuf)
 {
@@ -203,6 +341,15 @@ static int cp_new_stat(struct kstat *stat, struct stat __user *statbuf)
 #else
 	tmp.st_dev = new_encode_dev(stat->dev);
 #endif
+	if (!valid_dev(stat->dev) || !valid_dev(stat->rdev))
+		return -EOVERFLOW;
+#if BITS_PER_LONG == 32
+	if (stat->size > MAX_NON_LFS)
+		return -EOVERFLOW;
+#endif
+
+	INIT_STRUCT_STAT_PADDING(tmp);
+	tmp.st_dev = encode_dev(stat->dev);
 	tmp.st_ino = stat->ino;
 	if (sizeof(tmp.st_ino) < sizeof(stat->ino) && tmp.st_ino != stat->ino)
 		return -EOVERFLOW;
@@ -221,6 +368,9 @@ static int cp_new_stat(struct kstat *stat, struct stat __user *statbuf)
 	if (stat->size > MAX_NON_LFS)
 		return -EOVERFLOW;
 #endif	
+	SET_UID(tmp.st_uid, from_kuid_munged(current_user_ns(), stat->uid));
+	SET_GID(tmp.st_gid, from_kgid_munged(current_user_ns(), stat->gid));
+	tmp.st_rdev = encode_dev(stat->rdev);
 	tmp.st_size = stat->size;
 	tmp.st_atime = stat->atime.tv_sec;
 	tmp.st_mtime = stat->mtime.tv_sec;
@@ -281,6 +431,45 @@ out:
 #endif
 
 asmlinkage long sys_newfstat(unsigned int fd, struct stat __user *statbuf)
+SYSCALL_DEFINE2(newstat, const char __user *, filename,
+		struct stat __user *, statbuf)
+{
+	struct kstat stat;
+	int error = vfs_stat(filename, &stat);
+
+	if (error)
+		return error;
+	return cp_new_stat(&stat, statbuf);
+}
+
+SYSCALL_DEFINE2(newlstat, const char __user *, filename,
+		struct stat __user *, statbuf)
+{
+	struct kstat stat;
+	int error;
+
+	error = vfs_lstat(filename, &stat);
+	if (error)
+		return error;
+
+	return cp_new_stat(&stat, statbuf);
+}
+
+#if !defined(__ARCH_WANT_STAT64) || defined(__ARCH_WANT_SYS_NEWFSTATAT)
+SYSCALL_DEFINE4(newfstatat, int, dfd, const char __user *, filename,
+		struct stat __user *, statbuf, int, flag)
+{
+	struct kstat stat;
+	int error;
+
+	error = vfs_fstatat(dfd, filename, &stat, flag);
+	if (error)
+		return error;
+	return cp_new_stat(&stat, statbuf);
+}
+#endif
+
+SYSCALL_DEFINE2(newfstat, unsigned int, fd, struct stat __user *, statbuf)
 {
 	struct kstat stat;
 	int error = vfs_fstat(fd, &stat);
@@ -296,6 +485,13 @@ asmlinkage long sys_readlinkat(int dfd, const char __user *pathname,
 {
 	struct path path;
 	int error;
+SYSCALL_DEFINE4(readlinkat, int, dfd, const char __user *, pathname,
+		char __user *, buf, int, bufsiz)
+{
+	struct path path;
+	int error;
+	int empty = 0;
+	unsigned int lookup_flags = LOOKUP_EMPTY;
 
 	if (bufsiz <= 0)
 		return -EINVAL;
@@ -309,17 +505,33 @@ asmlinkage long sys_readlinkat(int dfd, const char __user *pathname,
 			error = security_inode_readlink(path.dentry);
 			if (!error) {
 				touch_atime(path.mnt, path.dentry);
+retry:
+	error = user_path_at_empty(dfd, pathname, lookup_flags, &path, &empty);
+	if (!error) {
+		struct inode *inode = d_backing_inode(path.dentry);
+
+		error = empty ? -ENOENT : -EINVAL;
+		if (inode->i_op->readlink) {
+			error = security_inode_readlink(path.dentry);
+			if (!error) {
+				touch_atime(&path);
 				error = inode->i_op->readlink(path.dentry,
 							      buf, bufsiz);
 			}
 		}
 		path_put(&path);
+		if (retry_estale(error, lookup_flags)) {
+			lookup_flags |= LOOKUP_REVAL;
+			goto retry;
+		}
 	}
 	return error;
 }
 
 asmlinkage long sys_readlink(const char __user *path, char __user *buf,
 				int bufsiz)
+SYSCALL_DEFINE3(readlink, const char __user *, path, char __user *, buf,
+		int, bufsiz)
 {
 	return sys_readlinkat(AT_FDCWD, path, buf, bufsiz);
 }
@@ -327,6 +539,11 @@ asmlinkage long sys_readlink(const char __user *path, char __user *buf,
 
 /* ---------- LFS-64 ----------- */
 #ifdef __ARCH_WANT_STAT64
+#if defined(__ARCH_WANT_STAT64) || defined(__ARCH_WANT_COMPAT_STAT64)
+
+#ifndef INIT_STRUCT_STAT64_PADDING
+#  define INIT_STRUCT_STAT64_PADDING(st) memset(&st, 0, sizeof(st))
+#endif
 
 static long cp_new_stat64(struct kstat *stat, struct stat64 __user *statbuf)
 {
@@ -337,6 +554,9 @@ static long cp_new_stat64(struct kstat *stat, struct stat64 __user *statbuf)
 	/* mips has weird padding, so we don't get 64 bits there */
 	if (!new_valid_dev(stat->dev) || !new_valid_dev(stat->rdev))
 		return -EOVERFLOW;
+	INIT_STRUCT_STAT64_PADDING(tmp);
+#ifdef CONFIG_MIPS
+	/* mips has weird padding, so we don't get 64 bits there */
 	tmp.st_dev = new_encode_dev(stat->dev);
 	tmp.st_rdev = new_encode_dev(stat->rdev);
 #else
@@ -353,6 +573,8 @@ static long cp_new_stat64(struct kstat *stat, struct stat64 __user *statbuf)
 	tmp.st_nlink = stat->nlink;
 	tmp.st_uid = stat->uid;
 	tmp.st_gid = stat->gid;
+	tmp.st_uid = from_kuid_munged(current_user_ns(), stat->uid);
+	tmp.st_gid = from_kgid_munged(current_user_ns(), stat->gid);
 	tmp.st_atime = stat->atime.tv_sec;
 	tmp.st_atime_nsec = stat->atime.tv_nsec;
 	tmp.st_mtime = stat->mtime.tv_sec;
@@ -366,6 +588,8 @@ static long cp_new_stat64(struct kstat *stat, struct stat64 __user *statbuf)
 }
 
 asmlinkage long sys_stat64(char __user * filename, struct stat64 __user * statbuf)
+SYSCALL_DEFINE2(stat64, const char __user *, filename,
+		struct stat64 __user *, statbuf)
 {
 	struct kstat stat;
 	int error = vfs_stat(filename, &stat);
@@ -376,6 +600,9 @@ asmlinkage long sys_stat64(char __user * filename, struct stat64 __user * statbu
 	return error;
 }
 asmlinkage long sys_lstat64(char __user * filename, struct stat64 __user * statbuf)
+
+SYSCALL_DEFINE2(lstat64, const char __user *, filename,
+		struct stat64 __user *, statbuf)
 {
 	struct kstat stat;
 	int error = vfs_lstat(filename, &stat);
@@ -386,6 +613,8 @@ asmlinkage long sys_lstat64(char __user * filename, struct stat64 __user * statb
 	return error;
 }
 asmlinkage long sys_fstat64(unsigned long fd, struct stat64 __user * statbuf)
+
+SYSCALL_DEFINE2(fstat64, unsigned long, fd, struct stat64 __user *, statbuf)
 {
 	struct kstat stat;
 	int error = vfs_fstat(fd, &stat);
@@ -421,6 +650,22 @@ out:
 void inode_add_bytes(struct inode *inode, loff_t bytes)
 {
 	spin_lock(&inode->i_lock);
+SYSCALL_DEFINE4(fstatat64, int, dfd, const char __user *, filename,
+		struct stat64 __user *, statbuf, int, flag)
+{
+	struct kstat stat;
+	int error;
+
+	error = vfs_fstatat(dfd, filename, &stat, flag);
+	if (error)
+		return error;
+	return cp_new_stat64(&stat, statbuf);
+}
+#endif /* __ARCH_WANT_STAT64 || __ARCH_WANT_COMPAT_STAT64 */
+
+/* Caller is here responsible for sufficient locking (ie. inode->i_lock) */
+void __inode_add_bytes(struct inode *inode, loff_t bytes)
+{
 	inode->i_blocks += bytes >> 9;
 	bytes &= 511;
 	inode->i_bytes += bytes;
@@ -428,6 +673,13 @@ void inode_add_bytes(struct inode *inode, loff_t bytes)
 		inode->i_blocks++;
 		inode->i_bytes -= 512;
 	}
+}
+EXPORT_SYMBOL(__inode_add_bytes);
+
+void inode_add_bytes(struct inode *inode, loff_t bytes)
+{
+	spin_lock(&inode->i_lock);
+	__inode_add_bytes(inode, bytes);
 	spin_unlock(&inode->i_lock);
 }
 
@@ -436,6 +688,8 @@ EXPORT_SYMBOL(inode_add_bytes);
 void inode_sub_bytes(struct inode *inode, loff_t bytes)
 {
 	spin_lock(&inode->i_lock);
+void __inode_sub_bytes(struct inode *inode, loff_t bytes)
+{
 	inode->i_blocks -= bytes >> 9;
 	bytes &= 511;
 	if (inode->i_bytes < bytes) {
@@ -443,6 +697,14 @@ void inode_sub_bytes(struct inode *inode, loff_t bytes)
 		inode->i_bytes += 512;
 	}
 	inode->i_bytes -= bytes;
+}
+
+EXPORT_SYMBOL(__inode_sub_bytes);
+
+void inode_sub_bytes(struct inode *inode, loff_t bytes)
+{
+	spin_lock(&inode->i_lock);
+	__inode_sub_bytes(inode, bytes);
 	spin_unlock(&inode->i_lock);
 }
 

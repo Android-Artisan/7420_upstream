@@ -5,6 +5,10 @@
  *			 IBM Corporation
  *    Author(s): Martin Schwidefsky (schwidefsky@de.ibm.com)
  *               Cornelia Huck (cornelia.huck@de.ibm.com)
+ * Copyright IBM Corp. 2002, 2009
+ *
+ * Author(s): Martin Schwidefsky (schwidefsky@de.ibm.com)
+ *	      Cornelia Huck (cornelia.huck@de.ibm.com)
  */
 #include <linux/module.h>
 #include <linux/init.h>
@@ -13,6 +17,7 @@
 #include <linux/list.h>
 #include <linux/device.h>
 #include <linux/delay.h>
+#include <linux/completion.h>
 
 #include <asm/ccwdev.h>
 #include <asm/idals.h>
@@ -48,6 +53,7 @@ int ccw_device_set_options_mask(struct ccw_device *cdev, unsigned long flags)
 	cdev->private->options.repall = (flags & CCWDEV_REPORT_ALL) != 0;
 	cdev->private->options.pgroup = (flags & CCWDEV_DO_PATHGROUP) != 0;
 	cdev->private->options.force = (flags & CCWDEV_ALLOW_FORCE) != 0;
+	cdev->private->options.mpath = (flags & CCWDEV_DO_MULTIPATH) != 0;
 	return 0;
 }
 
@@ -76,6 +82,7 @@ int ccw_device_set_options(struct ccw_device *cdev, unsigned long flags)
 	cdev->private->options.repall |= (flags & CCWDEV_REPORT_ALL) != 0;
 	cdev->private->options.pgroup |= (flags & CCWDEV_DO_PATHGROUP) != 0;
 	cdev->private->options.force |= (flags & CCWDEV_ALLOW_FORCE) != 0;
+	cdev->private->options.mpath |= (flags & CCWDEV_DO_MULTIPATH) != 0;
 	return 0;
 }
 
@@ -93,6 +100,34 @@ void ccw_device_clear_options(struct ccw_device *cdev, unsigned long flags)
 	cdev->private->options.pgroup &= (flags & CCWDEV_DO_PATHGROUP) == 0;
 	cdev->private->options.force &= (flags & CCWDEV_ALLOW_FORCE) == 0;
 }
+
+/**
+	cdev->private->options.mpath &= (flags & CCWDEV_DO_MULTIPATH) == 0;
+}
+
+/**
+ * ccw_device_is_pathgroup - determine if paths to this device are grouped
+ * @cdev: ccw device
+ *
+ * Return non-zero if there is a path group, zero otherwise.
+ */
+int ccw_device_is_pathgroup(struct ccw_device *cdev)
+{
+	return cdev->private->flags.pgroup;
+}
+EXPORT_SYMBOL(ccw_device_is_pathgroup);
+
+/**
+ * ccw_device_is_multipath - determine if device is operating in multipath mode
+ * @cdev: ccw device
+ *
+ * Return non-zero if device is operating in multipath mode, zero otherwise.
+ */
+int ccw_device_is_multipath(struct ccw_device *cdev)
+{
+	return cdev->private->flags.mpath;
+}
+EXPORT_SYMBOL(ccw_device_is_multipath);
 
 /**
  * ccw_device_clear() - terminate I/O request processing
@@ -116,6 +151,11 @@ int ccw_device_clear(struct ccw_device *cdev, unsigned long intparm)
 
 	if (!cdev)
 		return -ENODEV;
+	if (!cdev || !cdev->dev.parent)
+		return -ENODEV;
+	sch = to_subchannel(cdev->dev.parent);
+	if (!sch->schib.pmcw.ena)
+		return -EINVAL;
 	if (cdev->private->state == DEV_STATE_NOT_OPER)
 		return -ENODEV;
 	if (cdev->private->state != DEV_STATE_ONLINE &&
@@ -124,6 +164,7 @@ int ccw_device_clear(struct ccw_device *cdev, unsigned long intparm)
 	sch = to_subchannel(cdev->dev.parent);
 	if (!sch)
 		return -ENODEV;
+
 	ret = cio_clear(sch);
 	if (ret == 0)
 		cdev->private->intparm = intparm;
@@ -173,6 +214,17 @@ int ccw_device_start_key(struct ccw_device *cdev, struct ccw1 *cpa,
 		/* Remember to fake irb when finished. */
 		if (!cdev->private->flags.fake_irb) {
 			cdev->private->flags.fake_irb = 1;
+	if (!cdev || !cdev->dev.parent)
+		return -ENODEV;
+	sch = to_subchannel(cdev->dev.parent);
+	if (!sch->schib.pmcw.ena)
+		return -EINVAL;
+	if (cdev->private->state == DEV_STATE_NOT_OPER)
+		return -ENODEV;
+	if (cdev->private->state == DEV_STATE_VERIFY) {
+		/* Remember to fake irb when finished. */
+		if (!cdev->private->flags.fake_irb) {
+			cdev->private->flags.fake_irb = FAKE_CMD_IRB;
 			cdev->private->intparm = intparm;
 			return 0;
 		} else
@@ -190,6 +242,9 @@ int ccw_device_start_key(struct ccw_device *cdev, struct ccw1 *cpa,
 	/* Adjust requested path mask to excluded varied off paths. */
 	if (lpm) {
 		lpm &= sch->opm;
+	/* Adjust requested path mask to exclude unusable paths. */
+	if (lpm) {
+		lpm &= sch->lpm;
 		if (lpm == 0)
 			return -EACCES;
 	}
@@ -341,6 +396,11 @@ int ccw_device_halt(struct ccw_device *cdev, unsigned long intparm)
 
 	if (!cdev)
 		return -ENODEV;
+	if (!cdev || !cdev->dev.parent)
+		return -ENODEV;
+	sch = to_subchannel(cdev->dev.parent);
+	if (!sch->schib.pmcw.ena)
+		return -EINVAL;
 	if (cdev->private->state == DEV_STATE_NOT_OPER)
 		return -ENODEV;
 	if (cdev->private->state != DEV_STATE_ONLINE &&
@@ -349,6 +409,7 @@ int ccw_device_halt(struct ccw_device *cdev, unsigned long intparm)
 	sch = to_subchannel(cdev->dev.parent);
 	if (!sch)
 		return -ENODEV;
+
 	ret = cio_halt(sch);
 	if (ret == 0)
 		cdev->private->intparm = intparm;
@@ -377,6 +438,11 @@ int ccw_device_resume(struct ccw_device *cdev)
 	sch = to_subchannel(cdev->dev.parent);
 	if (!sch)
 		return -ENODEV;
+	if (!cdev || !cdev->dev.parent)
+		return -ENODEV;
+	sch = to_subchannel(cdev->dev.parent);
+	if (!sch->schib.pmcw.ena)
+		return -EINVAL;
 	if (cdev->private->state == DEV_STATE_NOT_OPER)
 		return -ENODEV;
 	if (cdev->private->state != DEV_STATE_ONLINE ||
@@ -549,6 +615,23 @@ out_unlock:
 }
 
 void *ccw_device_get_chp_desc(struct ccw_device *cdev, int chp_no)
+	if (!cdev->dev.parent)
+		return 0;
+
+	sch = to_subchannel(cdev->dev.parent);
+	return sch->lpm;
+}
+
+/**
+ * chp_get_chp_desc - return newly allocated channel-path descriptor
+ * @cdev: device to obtain the descriptor for
+ * @chp_idx: index of the channel path
+ *
+ * On success return a newly allocated copy of the channel-path description
+ * data associated with the given channel path. Return %NULL on error.
+ */
+struct channel_path_desc *ccw_device_get_chp_desc(struct ccw_device *cdev,
+						  int chp_idx)
 {
 	struct subchannel *sch;
 	struct chp_id chpid;
@@ -556,6 +639,7 @@ void *ccw_device_get_chp_desc(struct ccw_device *cdev, int chp_no)
 	sch = to_subchannel(cdev->dev.parent);
 	chp_id_init(&chpid);
 	chpid.id = sch->schib.pmcw.chpid[chp_no];
+	chpid.id = sch->schib.pmcw.chpid[chp_idx];
 	return chp_get_chp_desc(chpid);
 }
 
@@ -593,6 +677,23 @@ int ccw_device_tm_start_key(struct ccw_device *cdev, struct tcw *tcw,
 	/* Adjust requested path mask to excluded varied off paths. */
 	if (lpm) {
 		lpm &= sch->opm;
+	if (!sch->schib.pmcw.ena)
+		return -EINVAL;
+	if (cdev->private->state == DEV_STATE_VERIFY) {
+		/* Remember to fake irb when finished. */
+		if (!cdev->private->flags.fake_irb) {
+			cdev->private->flags.fake_irb = FAKE_TM_IRB;
+			cdev->private->intparm = intparm;
+			return 0;
+		} else
+			/* There's already a fake I/O around. */
+			return -EBUSY;
+	}
+	if (cdev->private->state != DEV_STATE_ONLINE)
+		return -EIO;
+	/* Adjust requested path mask to exclude unusable paths. */
+	if (lpm) {
+		lpm &= sch->lpm;
 		if (lpm == 0)
 			return -EACCES;
 	}
@@ -667,6 +768,52 @@ int ccw_device_tm_start_timeout(struct ccw_device *cdev, struct tcw *tcw,
 EXPORT_SYMBOL(ccw_device_tm_start_timeout);
 
 /**
+ * ccw_device_get_mdc - accumulate max data count
+ * @cdev: ccw device for which the max data count is accumulated
+ * @mask: mask of paths to use
+ *
+ * Return the number of 64K-bytes blocks all paths at least support
+ * for a transport command. Return values <= 0 indicate failures.
+ */
+int ccw_device_get_mdc(struct ccw_device *cdev, u8 mask)
+{
+	struct subchannel *sch = to_subchannel(cdev->dev.parent);
+	struct channel_path *chp;
+	struct chp_id chpid;
+	int mdc = 0, i;
+
+	/* Adjust requested path mask to excluded varied off paths. */
+	if (mask)
+		mask &= sch->lpm;
+	else
+		mask = sch->lpm;
+
+	chp_id_init(&chpid);
+	for (i = 0; i < 8; i++) {
+		if (!(mask & (0x80 >> i)))
+			continue;
+		chpid.id = sch->schib.pmcw.chpid[i];
+		chp = chpid_to_chp(chpid);
+		if (!chp)
+			continue;
+
+		mutex_lock(&chp->lock);
+		if (!chp->desc_fmt1.f) {
+			mutex_unlock(&chp->lock);
+			return 0;
+		}
+		if (!chp->desc_fmt1.r)
+			mdc = 1;
+		mdc = mdc ? min_t(int, mdc, chp->desc_fmt1.mdc) :
+			    chp->desc_fmt1.mdc;
+		mutex_unlock(&chp->lock);
+	}
+
+	return mdc;
+}
+EXPORT_SYMBOL(ccw_device_get_mdc);
+
+/**
  * ccw_device_tm_intrg - perform interrogate function
  * @cdev: ccw device on which to perform the interrogate function
  *
@@ -681,6 +828,12 @@ int ccw_device_tm_intrg(struct ccw_device *cdev)
 		return -EIO;
 	if (!scsw_is_tm(&sch->schib.scsw) ||
 	    !(scsw_actl(&sch->schib.scsw) | SCSW_ACTL_START_PEND))
+	if (!sch->schib.pmcw.ena)
+		return -EINVAL;
+	if (cdev->private->state != DEV_STATE_ONLINE)
+		return -EIO;
+	if (!scsw_is_tm(&sch->schib.scsw) ||
+	    !(scsw_actl(&sch->schib.scsw) & SCSW_ACTL_START_PEND))
 		return -EINVAL;
 	return cio_tm_intrg(sch);
 }
@@ -694,6 +847,18 @@ _ccw_device_get_subchannel_number(struct ccw_device *cdev)
 	return cdev->private->schid.sch_no;
 }
 
+/**
+ * ccw_device_get_schid - obtain a subchannel id
+ * @cdev: device to obtain the id for
+ * @schid: where to fill in the values
+ */
+void ccw_device_get_schid(struct ccw_device *cdev, struct subchannel_id *schid)
+{
+	struct subchannel *sch = to_subchannel(cdev->dev.parent);
+
+	*schid = sch->schid;
+}
+EXPORT_SYMBOL_GPL(ccw_device_get_schid);
 
 MODULE_LICENSE("GPL");
 EXPORT_SYMBOL(ccw_device_set_options_mask);

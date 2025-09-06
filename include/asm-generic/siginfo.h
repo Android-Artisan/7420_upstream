@@ -116,6 +116,8 @@ typedef struct siginfo {
 #define si_fd		_sifields._sigpoll._fd
 
 #ifdef __KERNEL__
+#include <uapi/asm-generic/siginfo.h>
+
 #define __SI_MASK	0xffff0000u
 #define __SI_KILL	(0 << 16)
 #define __SI_TIMER	(1 << 16)
@@ -268,6 +270,8 @@ typedef struct sigevent {
 #define sigev_notify_thread_id	 _sigev_un._tid
 
 #ifdef __KERNEL__
+#define __SI_SYS	(7 << 16)
+#define __SI_CODE(T,N)	((T) | ((N) & 0xffff))
 
 struct siginfo;
 void do_schedule_next_timer(struct siginfo *info);
@@ -290,5 +294,6 @@ static inline void copy_siginfo(struct siginfo *to, struct siginfo *from)
 extern int copy_siginfo_to_user(struct siginfo __user *to, struct siginfo *from);
 
 #endif /* __KERNEL__ */
+extern int copy_siginfo_to_user(struct siginfo __user *to, const struct siginfo *from);
 
 #endif

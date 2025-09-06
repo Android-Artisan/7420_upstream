@@ -52,6 +52,7 @@
 #include "aic79xx_pci.h"
 
 static __inline uint64_t
+static inline uint64_t
 ahd_compose_id(u_int device, u_int vendor, u_int subdevice, u_int subvendor)
 {
 	uint64_t id;
@@ -227,6 +228,10 @@ static const char *pci_bus_modes[] =
 	"PCI-X 67-100Mhz",
 	"PCI-X 50-66Mhz",
 	"PCI 33 or 66Mhz"
+	"PCI-X 101-133MHz",
+	"PCI-X 67-100MHz",
+	"PCI-X 50-66MHz",
+	"PCI 33 or 66MHz"
 };
 
 #define		TESTMODE	0x00000800ul
@@ -341,6 +346,8 @@ ahd_pci_config(struct ahd_softc *ahd, const struct ahd_pci_identity *entry)
 
 		if (bootverbose)
 			printf("%s: Enabling 39Bit Addressing\n",
+		if (bootverbose)
+			printk("%s: Enabling 39Bit Addressing\n",
 			       ahd_name(ahd));
 		devconfig = ahd_pci_read_config(ahd->dev_softc,
 						DEVCONFIG, /*bytes*/4);
@@ -379,6 +386,7 @@ ahd_pci_config(struct ahd_softc *ahd, const struct ahd_pci_identity *entry)
 	error = ahd_init(ahd);
 	if (error != 0)
 		return (error);
+	ahd->init_level++;
 
 	/*
 	 * Allow interrupts now that we are completely setup.
@@ -387,6 +395,7 @@ ahd_pci_config(struct ahd_softc *ahd, const struct ahd_pci_identity *entry)
 	if (!error)
 		ahd->init_level++;
 	return error;
+	return ahd_pci_map_int(ahd);
 }
 
 #ifdef CONFIG_PM
@@ -535,6 +544,7 @@ ahd_check_extport(struct ahd_softc *ahd)
 		 */
 		if (bootverbose) 
 			printf("%s: Reading VPD from SEEPROM...",
+			printk("%s: Reading VPD from SEEPROM...",
 			       ahd_name(ahd));
 
 		/* Address is always in units of 16bit words */
@@ -548,11 +558,13 @@ ahd_check_extport(struct ahd_softc *ahd)
 			error = ahd_parse_vpddata(ahd, &vpd);
 		if (bootverbose) 
 			printf("%s: VPD parsing %s\n",
+			printk("%s: VPD parsing %s\n",
 			       ahd_name(ahd),
 			       error == 0 ? "successful" : "failed");
 
 		if (bootverbose) 
 			printf("%s: Reading SEEPROM...", ahd_name(ahd));
+			printk("%s: Reading SEEPROM...", ahd_name(ahd));
 
 		/* Address is always in units of 16bit words */
 		start_addr = (sizeof(*sc) / 2) * (ahd->channel - 'A');
@@ -563,6 +575,7 @@ ahd_check_extport(struct ahd_softc *ahd)
 
 		if (error != 0) {
 			printf("Unable to read SEEPROM\n");
+			printk("Unable to read SEEPROM\n");
 			have_seeprom = 0;
 		} else {
 			have_seeprom = ahd_verify_cksum(sc);
@@ -572,6 +585,9 @@ ahd_check_extport(struct ahd_softc *ahd)
 					printf ("checksum error\n");
 				else
 					printf ("done.\n");
+					printk ("checksum error\n");
+				else
+					printk ("done.\n");
 			}
 		}
 		ahd_release_seeprom(ahd);
@@ -626,6 +642,11 @@ ahd_check_extport(struct ahd_softc *ahd)
 		for (i = 0; i < (sizeof(*sc)); i += 2)
 			printf("\n\t0x%.4x", sc_data[i]);
 		printf("\n");
+		printk("%s: Seeprom Contents:", ahd_name(ahd));
+		sc_data = (uint16_t *)sc;
+		for (i = 0; i < (sizeof(*sc)); i += 2)
+			printk("\n\t0x%.4x", sc_data[i]);
+		printk("\n");
 	}
 #endif
 
@@ -636,6 +657,11 @@ ahd_check_extport(struct ahd_softc *ahd)
 		error = ahd_default_config(ahd);
 		adapter_control = CFAUTOTERM|CFSEAUTOTERM;
 		free(ahd->seep_config, M_DEVBUF);
+			printk("%s: No SEEPROM available.\n", ahd_name(ahd));
+		ahd->flags |= AHD_USEDEFAULTS;
+		error = ahd_default_config(ahd);
+		adapter_control = CFAUTOTERM|CFSEAUTOTERM;
+		kfree(ahd->seep_config);
 		ahd->seep_config = NULL;
 	} else {
 		error = ahd_parse_cfgdata(ahd, sc);
@@ -663,6 +689,7 @@ ahd_configure_termination(struct ahd_softc *ahd, u_int adapter_control)
 		devconfig |= STPWLEVEL;
 	if (bootverbose)
 		printf("%s: STPWLEVEL is %s\n",
+		printk("%s: STPWLEVEL is %s\n",
 		       ahd_name(ahd), (devconfig & STPWLEVEL) ? "on" : "off");
 	ahd_pci_write_config(ahd->dev_softc, DEVCONFIG, devconfig, /*bytes*/4);
  
@@ -678,6 +705,7 @@ ahd_configure_termination(struct ahd_softc *ahd, u_int adapter_control)
 	if ((adapter_control & CFAUTOTERM) == 0) {
 		if (bootverbose)
 			printf("%s: Manual Primary Termination\n",
+			printk("%s: Manual Primary Termination\n",
 			       ahd_name(ahd));
 		termctl &= ~(FLX_TERMCTL_ENPRILOW|FLX_TERMCTL_ENPRIHIGH);
 		if ((adapter_control & CFSTERM) != 0)
@@ -686,6 +714,7 @@ ahd_configure_termination(struct ahd_softc *ahd, u_int adapter_control)
 			termctl |= FLX_TERMCTL_ENPRIHIGH;
 	} else if (error != 0) {
 		printf("%s: Primary Auto-Term Sensing failed! "
+		printk("%s: Primary Auto-Term Sensing failed! "
 		       "Using Defaults.\n", ahd_name(ahd));
 		termctl = FLX_TERMCTL_ENPRILOW|FLX_TERMCTL_ENPRIHIGH;
 	}
@@ -693,6 +722,7 @@ ahd_configure_termination(struct ahd_softc *ahd, u_int adapter_control)
 	if ((adapter_control & CFSEAUTOTERM) == 0) {
 		if (bootverbose)
 			printf("%s: Manual Secondary Termination\n",
+			printk("%s: Manual Secondary Termination\n",
 			       ahd_name(ahd));
 		termctl &= ~(FLX_TERMCTL_ENSECLOW|FLX_TERMCTL_ENSECHIGH);
 		if ((adapter_control & CFSELOWTERM) != 0)
@@ -701,6 +731,7 @@ ahd_configure_termination(struct ahd_softc *ahd, u_int adapter_control)
 			termctl |= FLX_TERMCTL_ENSECHIGH;
 	} else if (error != 0) {
 		printf("%s: Secondary Auto-Term Sensing failed! "
+		printk("%s: Secondary Auto-Term Sensing failed! "
 		       "Using Defaults.\n", ahd_name(ahd));
 		termctl |= FLX_TERMCTL_ENSECLOW|FLX_TERMCTL_ENSECHIGH;
 	}
@@ -736,6 +767,22 @@ ahd_configure_termination(struct ahd_softc *ahd, u_int adapter_control)
 		       (termctl & FLX_TERMCTL_ENSECHIGH) ? "En" : "Dis");
 
 		printf("%s: Secondary Low byte termination %sabled\n",
+		printk("%s: Unable to set termination settings!\n",
+		       ahd_name(ahd));
+	} else if (bootverbose) {
+		printk("%s: Primary High byte termination %sabled\n",
+		       ahd_name(ahd),
+		       (termctl & FLX_TERMCTL_ENPRIHIGH) ? "En" : "Dis");
+
+		printk("%s: Primary Low byte termination %sabled\n",
+		       ahd_name(ahd),
+		       (termctl & FLX_TERMCTL_ENPRILOW) ? "En" : "Dis");
+
+		printk("%s: Secondary High byte termination %sabled\n",
+		       ahd_name(ahd),
+		       (termctl & FLX_TERMCTL_ENSECHIGH) ? "En" : "Dis");
+
+		printk("%s: Secondary Low byte termination %sabled\n",
 		       ahd_name(ahd),
 		       (termctl & FLX_TERMCTL_ENSECLOW) ? "En" : "Dis");
 	}
@@ -812,6 +859,7 @@ ahd_pci_intr(struct ahd_softc *ahd)
 		return;
 
 	printf("%s: PCI error Interrupt\n", ahd_name(ahd));
+	printk("%s: PCI error Interrupt\n", ahd_name(ahd));
 	saved_modes = ahd_save_modes(ahd);
 	ahd_dump_card_state(ahd);
 	ahd_set_modes(ahd, AHD_MODE_CFG, AHD_MODE_CFG);
@@ -834,11 +882,13 @@ ahd_pci_intr(struct ahd_softc *ahd)
 
 			if ((pci_status[i] & (0x1 << bit)) != 0) {
 				static const char *s;
+				const char *s;
 
 				s = pci_status_strings[bit];
 				if (i == 7/*TARG*/ && bit == 3)
 					s = "%s: Signaled Target Abort\n";
 				printf(s, ahd_name(ahd), pci_status_source[i]);
+				printk(s, ahd_name(ahd), pci_status_source[i]);
 			}
 		}	
 	}
@@ -869,6 +919,7 @@ ahd_pci_split_intr(struct ahd_softc *ahd, u_int intstat)
 	pcix_status = ahd_pci_read_config(ahd->dev_softc, PCIXR_STATUS,
 					  /*bytes*/2);
 	printf("%s: PCI Split Interrupt - PCI-X status = 0x%x\n",
+	printk("%s: PCI Split Interrupt - PCI-X status = 0x%x\n",
 	       ahd_name(ahd), pcix_status);
 	saved_modes = ahd_save_modes(ahd);
 	for (i = 0; i < 4; i++) {
@@ -900,6 +951,9 @@ ahd_pci_split_intr(struct ahd_softc *ahd, u_int intstat)
 				printf(s, ahd_name(ahd),
 				       split_status_source[i]);
 			}
+			if ((split_status[i] & (0x1 << bit)) != 0)
+				printk(split_status_strings[bit], ahd_name(ahd),
+				       split_status_source[i]);
 
 			if (i > 1)
 				continue;
@@ -910,6 +964,8 @@ ahd_pci_split_intr(struct ahd_softc *ahd, u_int intstat)
 				s = split_status_strings[bit];
 				printf(s, ahd_name(ahd), "SG");
 			}
+			if ((sg_split_status[i] & (0x1 << bit)) != 0)
+				printk(split_status_strings[bit], ahd_name(ahd), "SG");
 		}
 	}
 	/*
@@ -957,6 +1013,7 @@ ahd_aic790X_setup(struct ahd_softc *ahd)
 	rev = ahd_pci_read_config(pci, PCIR_REVID, /*bytes*/1);
 	if (rev < ID_AIC7902_PCI_REV_A4) {
 		printf("%s: Unable to attach to unsupported chip revision %d\n",
+		printk("%s: Unable to attach to unsupported chip revision %d\n",
 		       ahd_name(ahd), rev);
 		ahd_pci_write_config(pci, PCIR_COMMAND, 0, /*bytes*/2);
 		return (ENXIO);

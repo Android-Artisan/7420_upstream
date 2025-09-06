@@ -34,6 +34,7 @@
 #include <linux/sched.h>
 #include <linux/init.h>
 #include <linux/module.h>
+#include <linux/export.h>
 #include <linux/adb.h>
 #include <linux/pmu.h>
 #include <linux/delay.h>
@@ -42,6 +43,8 @@
 #include <linux/interrupt.h>
 #include <linux/timer.h>
 #include <linux/mutex.h>
+#include <linux/i2c.h>
+#include <linux/slab.h>
 #include <asm/keylargo.h>
 #include <asm/uninorth.h>
 #include <asm/io.h>
@@ -81,6 +84,7 @@ struct pmac_i2c_bus
 	int			type;
 	int			flags;
 	struct i2c_adapter	*adapter;
+	struct i2c_adapter	adapter;
 	void			*hostdata;
 	int			channel;	/* some hosts have multiple */
 	int			mode;		/* current mode */
@@ -364,11 +368,20 @@ static void kw_i2c_timeout(unsigned long data)
 	unsigned long flags;
 
 	spin_lock_irqsave(&host->lock, flags);
+
+	/*
+	 * If the timer is pending, that means we raced with the
+	 * irq, in which case we just return
+	 */
+	if (timer_pending(&host->timeout_timer))
+		goto skip;
+
 	kw_i2c_handle_interrupt(host, kw_read_reg(reg_isr));
 	if (host->state != state_idle) {
 		host->timeout_timer.expires = jiffies + KW_POLL_TIMEOUT;
 		add_timer(&host->timeout_timer);
 	}
+ skip:
 	spin_unlock_irqrestore(&host->lock, flags);
 }
 
@@ -442,6 +455,7 @@ static int kw_i2c_xfer(struct pmac_i2c_bus *bus, u8 addrdir, int subsize,
 	if (use_irq) {
 		/* Clear completion */
 		INIT_COMPLETION(host->complete);
+		reinit_completion(&host->complete);
 		/* Ack stale interrupts */
 		kw_write_reg(reg_isr, kw_read_reg(reg_isr));
 		/* Arm timeout */
@@ -542,6 +556,12 @@ static struct pmac_i2c_host_kw *__init kw_i2c_host_init(struct device_node *np)
 
 	/* Request chip interrupt */
 	if (request_irq(host->irq, kw_i2c_irq, 0, "keywest i2c", host))
+	/* Request chip interrupt. We set IRQF_NO_SUSPEND because we don't
+	 * want that interrupt disabled between the 2 passes of driver
+	 * suspend or we'll have issues running the pfuncs
+	 */
+	if (request_irq(host->irq, kw_i2c_irq, IRQF_NO_SUSPEND,
+			"keywest i2c", host))
 		host->irq = NO_IRQ;
 
 	printk(KERN_INFO "KeyWest i2c @0x%08x irq %d %s\n",
@@ -588,6 +608,7 @@ static void __init kw_i2c_probe(void)
 	for_each_compatible_node(np, "i2c","keywest-i2c") {
 		struct pmac_i2c_host_kw *host;
 		int multibus, chans, i;
+		int multibus;
 
 		/* Found one, init a host structure */
 		host = kw_i2c_host_init(np);
@@ -609,6 +630,8 @@ static void __init kw_i2c_probe(void)
 		 * parent type
 		 */
 		if (multibus) {
+			int chans, i;
+
 			parent = of_get_parent(np);
 			if (parent == NULL)
 				continue;
@@ -701,6 +724,7 @@ static int pmu_i2c_xfer(struct pmac_i2c_bus *bus, u8 addrdir, int subsize,
 		}
 
 		INIT_COMPLETION(comp);
+		reinit_completion(&comp);
 		req->data[0] = PMU_I2C_CMD;
 		req->reply[0] = 0xff;
 		req->nbytes = sizeof(struct pmu_i2c_hdr) + 1;
@@ -732,6 +756,7 @@ static int pmu_i2c_xfer(struct pmac_i2c_bus *bus, u8 addrdir, int subsize,
 		hdr->bus = PMU_I2C_BUS_STATUS;
 
 		INIT_COMPLETION(comp);
+		reinit_completion(&comp);
 		req->data[0] = PMU_I2C_CMD;
 		req->reply[0] = 0xff;
 		req->nbytes = 2;
@@ -897,6 +922,7 @@ static void __init smu_i2c_probe(void)
 
 	/* Look for childs, note that they might not be of the right
 	 * type as older device trees mix i2c busses and other thigns
+	 * type as older device trees mix i2c busses and other things
 	 * at the same level
 	 */
 	for (busnode = NULL;
@@ -1030,6 +1056,9 @@ EXPORT_SYMBOL_GPL(pmac_i2c_detach_adapter);
 struct i2c_adapter *pmac_i2c_get_adapter(struct pmac_i2c_bus *bus)
 {
 	return bus->adapter;
+struct i2c_adapter *pmac_i2c_get_adapter(struct pmac_i2c_bus *bus)
+{
+	return &bus->adapter;
 }
 EXPORT_SYMBOL_GPL(pmac_i2c_get_adapter);
 
@@ -1039,6 +1068,7 @@ struct pmac_i2c_bus *pmac_i2c_adapter_to_bus(struct i2c_adapter *adapter)
 
 	list_for_each_entry(bus, &pmac_i2c_busses, link)
 		if (bus->adapter == adapter)
+		if (&bus->adapter == adapter)
 			return bus;
 	return NULL;
 }
@@ -1051,6 +1081,7 @@ int pmac_i2c_match_adapter(struct device_node *dev, struct i2c_adapter *adapter)
 	if (bus == NULL)
 		return 0;
 	return (bus->adapter == adapter);
+	return (&bus->adapter == adapter);
 }
 EXPORT_SYMBOL_GPL(pmac_i2c_match_adapter);
 
@@ -1271,6 +1302,7 @@ static void pmac_i2c_do_end(struct pmf_function *func, void *instdata)
 	pmac_i2c_close(inst->bus);
 	if (inst)
 		kfree(inst);
+	kfree(inst);
 }
 
 static int pmac_i2c_do_read(PMF_STD_ARGS, u32 len)
@@ -1503,6 +1535,7 @@ static int __init pmac_i2c_create_platform_devices(void)
 		if (bus->platform_dev == NULL)
 			return -ENOMEM;
 		bus->platform_dev->dev.platform_data = bus;
+		bus->platform_dev->dev.of_node = bus->busnode;
 		platform_device_add(bus->platform_dev);
 	}
 

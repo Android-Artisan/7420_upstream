@@ -18,6 +18,8 @@
 #include <asm/system.h>
 #include <asm/processor.h>
 #include <asm/arch/hwregs/supp_reg.h>
+#include <asm/processor.h>
+#include <arch/hwregs/supp_reg.h>
 
 /*
  * Determines which bits in CCS the user has access to.
@@ -78,6 +80,35 @@ int put_reg(struct task_struct *task, unsigned int regno, unsigned long data)
 	return 0;
 }
 
+void user_enable_single_step(struct task_struct *child)
+{
+	unsigned long tmp;
+
+	/*
+	 * Set up SPC if not set already (in which case we have no other
+	 * choice but to trust it).
+	 */
+	if (!get_reg(child, PT_SPC)) {
+		/* In case we're stopped in a delay slot. */
+		tmp = get_reg(child, PT_ERP) & ~1;
+		put_reg(child, PT_SPC, tmp);
+	}
+	tmp = get_reg(child, PT_CCS) | SBIT_USER;
+	put_reg(child, PT_CCS, tmp);
+}
+
+void user_disable_single_step(struct task_struct *child)
+{
+	put_reg(child, PT_SPC, 0);
+
+	if (!get_debugreg(child->pid, PT_BP_CTRL)) {
+		unsigned long tmp;
+		/* If no h/w bp configured, disable S bit. */
+		tmp = get_reg(child, PT_CCS) & ~SBIT_USER;
+		put_reg(child, PT_CCS, tmp);
+	}
+}
+
 /*
  * Called by kernel/ptrace.c when detaching.
  *
@@ -91,6 +122,8 @@ ptrace_disable(struct task_struct *child)
 	/* Deconfigure SPC and S-bit. */
 	tmp = get_reg(child, PT_CCS) & ~SBIT_USER;
 	put_reg(child, PT_CCS, tmp);
+	/* Deconfigure SPC and S-bit. */
+	user_disable_single_step(child);
 	put_reg(child, PT_SPC, 0);
 
 	/* Deconfigure any watchpoints associated with the child. */
@@ -101,6 +134,11 @@ ptrace_disable(struct task_struct *child)
 long arch_ptrace(struct task_struct *child, long request, long addr, long data)
 {
 	int ret;
+long arch_ptrace(struct task_struct *child, long request,
+		 unsigned long addr, unsigned long data)
+{
+	int ret;
+	unsigned int regno = addr >> 2;
 	unsigned long __user *datap = (unsigned long __user *)data;
 
 	switch (request) {
@@ -139,6 +177,10 @@ long arch_ptrace(struct task_struct *child, long request, long addr, long data)
 				break;
 
 			tmp = get_reg(child, addr >> 2);
+			if ((addr & 3) || regno > PT_MAX)
+				break;
+
+			tmp = get_reg(child, regno);
 			ret = put_user(tmp, datap);
 			break;
 		}
@@ -158,6 +200,10 @@ long arch_ptrace(struct task_struct *child, long request, long addr, long data)
 			addr >>= 2;
 
 			if (addr == PT_CCS) {
+			if ((addr & 3) || regno > PT_MAX)
+				break;
+
+			if (regno == PT_CCS) {
 				/* don't allow the tracing process to change stuff like
 				 * interrupt enable, kernel/user bit, dma enables etc.
 				 */
@@ -165,6 +211,7 @@ long arch_ptrace(struct task_struct *child, long request, long addr, long data)
 				data |= get_reg(child, PT_CCS) & ~CCS_MASK;
 			}
 			if (put_reg(child, addr, data))
+			if (put_reg(child, regno, data))
 				break;
 			ret = 0;
 			break;

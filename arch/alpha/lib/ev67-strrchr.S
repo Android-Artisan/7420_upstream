@@ -18,7 +18,7 @@
  *	L	- lower subcluster; L0 - subcluster L0; L1 - subcluster L1
  */
 
-
+#include <asm/export.h>
 #include <asm/regdef.h>
 
 	.set noreorder
@@ -83,6 +83,7 @@ $eos:
 	negq	t1, t4		# E : isolate first null byte match
 	and	t1, t4, t4	# E :
 	subq	t4, 1, t5	# E : build a mask of the bytes upto...
+	subq	t4, 1, t5	# E : build a mask of the bytes up to...
 	or	t4, t5, t4	# E : ... and including the null
 
 	and	t3, t4, t3	# E : mask out char matches after null
@@ -107,3 +108,4 @@ $eos:
 	nop
 
 	.end strrchr
+	EXPORT_SYMBOL(strrchr)

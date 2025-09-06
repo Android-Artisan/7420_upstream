@@ -75,6 +75,7 @@ struct eeprom_type
   /* this one is to keep the read/write operations atomic */
   wait_queue_head_t wait_q;
   volatile int busy;
+  struct mutex lock;
   int retry_cnt_addr; /* Used to keep track of number of retries for
                          adaptive timing adjustments */
   int retry_cnt_read;
@@ -117,6 +118,7 @@ int __init eeprom_init(void)
 {
   init_waitqueue_head(&eeprom.wait_q);
   eeprom.busy = 0;
+  mutex_init(&eeprom.lock);
 
 #ifdef CONFIG_ETRAX_I2C_EEPROM_PROBE
 #define EETEXT "Found"
@@ -443,6 +445,7 @@ static int eeprom_read_buf(loff_t addr, char * buf, int count)
 
   f.f_pos = addr;
   return eeprom_read(&f, buf, count, &addr);
+  return eeprom_read(NULL, buf, count, &addr);
 }
 
 
@@ -453,6 +456,7 @@ static ssize_t eeprom_read(struct file * file, char * buf, size_t count, loff_t 
 {
   int read=0;
   unsigned long p = file->f_pos;
+  unsigned long p = *off;
 
   unsigned char page;
 
@@ -467,6 +471,9 @@ static ssize_t eeprom_read(struct file * file, char * buf, size_t count, loff_t 
 
   eeprom.busy++;
 
+  if (mutex_lock_interruptible(&eeprom.lock))
+    return -EINTR;
+
   page = (unsigned char) (p >> 8);
   
   if(!eeprom_address(p))
@@ -478,6 +485,7 @@ static ssize_t eeprom_read(struct file * file, char * buf, size_t count, loff_t 
     /* don't forget to wake them up */
     eeprom.busy--;
     wake_up_interruptible(&eeprom.wait_q);  
+    mutex_unlock(&eeprom.lock);
     return -EFAULT;
   }
 
@@ -506,6 +514,10 @@ static ssize_t eeprom_read(struct file * file, char * buf, size_t count, loff_t 
 
   eeprom.busy--;
   wake_up_interruptible(&eeprom.wait_q);
+    *off += read;
+  }
+
+  mutex_unlock(&eeprom.lock);
   return read;
 }
 
@@ -518,6 +530,7 @@ static int eeprom_write_buf(loff_t addr, const char * buf, int count)
   f.f_pos = addr;
   
   return eeprom_write(&f, buf, count, &addr);
+  return eeprom_write(NULL, buf, count, &addr);
 }
 
 
@@ -539,11 +552,15 @@ static ssize_t eeprom_write(struct file * file, const char * buf, size_t count,
   if (signal_pending(current))
     return -EINTR;
   eeprom.busy++;
+  /* bail out if we get interrupted */
+  if (mutex_lock_interruptible(&eeprom.lock))
+    return -EINTR;
   for(i = 0; (i < EEPROM_RETRIES) && (restart > 0); i++)
   {
     restart = 0;
     written = 0;
     p = file->f_pos;
+    p = *off;
    
     
     while( (written < count) && (p < eeprom.size))
@@ -558,6 +575,7 @@ static ssize_t eeprom_write(struct file * file, const char * buf, size_t count,
         /* don't forget to wake them up */
         eeprom.busy--;
         wake_up_interruptible(&eeprom.wait_q);
+        mutex_unlock(&eeprom.lock);
         return -EFAULT;
       }
 #ifdef EEPROM_ADAPTIVE_TIMING      
@@ -675,6 +693,11 @@ static ssize_t eeprom_write(struct file * file, const char * buf, size_t count,
     return -ENOSPC;
   }
   file->f_pos += written;
+  mutex_unlock(&eeprom.lock);
+  if (written == 0 && p >= eeprom.size){
+    return -ENOSPC;
+  }
+  *off = p;
   return written;
 }
 
@@ -870,3 +893,4 @@ static void eeprom_disable_write_protect(void)
 }
 
 module_init(eeprom_init);
+device_initcall(eeprom_init);

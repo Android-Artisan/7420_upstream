@@ -25,6 +25,15 @@
 #include <mach/regs-wan.h>
 #include <mach/regs-lan.h>
 #include <mach/regs-hpna.h>
+#include <linux/gpio.h>
+#include <linux/platform_device.h>
+
+#include <mach/irqs.h>
+#include <mach/regs-wan.h>
+#include <mach/regs-lan.h>
+#include <mach/regs-hpna.h>
+#include <mach/regs-switch.h>
+#include <mach/regs-misc.h>
 
 
 /* --------------------------------------------------------------------
@@ -38,6 +47,8 @@ static struct resource ks8695_wan_resources[] = {
 	[0] = {
 		.start	= KS8695_WAN_VA,
 		.end	= KS8695_WAN_VA + 0x00ff,
+		.start	= KS8695_WAN_PA,
+		.end	= KS8695_WAN_PA + 0x00ff,
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
@@ -58,6 +69,12 @@ static struct resource ks8695_wan_resources[] = {
 		.end	= KS8695_IRQ_WAN_LINK,
 		.flags	= IORESOURCE_IRQ,
 	},
+	[4] = {
+		.name	= "WAN PHY",
+		.start	= KS8695_MISC_PA,
+		.end	= KS8695_MISC_PA + 0x1f,
+		.flags	= IORESOURCE_MEM,
+	},
 };
 
 static struct platform_device ks8695_wan_device = {
@@ -76,6 +93,8 @@ static struct resource ks8695_lan_resources[] = {
 	[0] = {
 		.start	= KS8695_LAN_VA,
 		.end	= KS8695_LAN_VA + 0x00ff,
+		.start	= KS8695_LAN_PA,
+		.end	= KS8695_LAN_PA + 0x00ff,
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
@@ -89,6 +108,12 @@ static struct resource ks8695_lan_resources[] = {
 		.start	= KS8695_IRQ_LAN_TX_STATUS,
 		.end	= KS8695_IRQ_LAN_TX_STATUS,
 		.flags	= IORESOURCE_IRQ,
+	},
+	[3] = {
+		.name	= "LAN SWITCH",
+		.start	= KS8695_SWITCH_PA,
+		.end	= KS8695_SWITCH_PA + 0x4f,
+		.flags	= IORESOURCE_MEM,
 	},
 };
 
@@ -108,6 +133,8 @@ static struct resource ks8695_hpna_resources[] = {
 	[0] = {
 		.start	= KS8695_HPNA_VA,
 		.end	= KS8695_HPNA_VA + 0x00ff,
+		.start	= KS8695_HPNA_PA,
+		.end	= KS8695_HPNA_PA + 0x00ff,
 		.flags	= IORESOURCE_MEM,
 	},
 	[1] = {
@@ -196,6 +223,8 @@ void __init ks8695_init_leds(u8 cpu_led, u8 timer_led)
 #else
 void __init ks8695_init_leds(u8 cpu_led, u8 timer_led) {}
 #endif
+
+
 
 /* -------------------------------------------------------------------- */
 

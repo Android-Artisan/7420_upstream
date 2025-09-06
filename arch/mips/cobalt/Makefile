@@ -9,3 +9,6 @@ obj-$(CONFIG_EARLY_PRINTK)	+= console.o
 obj-$(CONFIG_MTD_PHYSMAP)	+= mtd.o
 
 EXTRA_CFLAGS += -Werror
+obj-y := buttons.o irq.o lcd.o led.o mtd.o reset.o rtc.o serial.o setup.o time.o
+
+obj-$(CONFIG_PCI)		+= pci.o

@@ -21,6 +21,19 @@
  *      "AS-IS" and at no charge.
  *
  *      (c) Copyright 1995    Alan Cox <alan@lxorguk.ukuu.org.uk>*
+ *	(c) Copyright 1996-1997 Alan Cox <alan@lxorguk.ukuu.org.uk>,
+ *						All Rights Reserved.
+ *
+ *	This program is free software; you can redistribute it and/or
+ *	modify it under the terms of the GNU General Public License
+ *	as published by the Free Software Foundation; either version
+ *	2 of the License, or (at your option) any later version.
+ *
+ *	Neither Alan Cox nor CymruNet Ltd. admit liability nor provide
+ *	warranty for any of this software. This material is provided
+ *	"AS-IS" and at no charge.
+ *
+ *	(c) Copyright 1995    Alan Cox <alan@lxorguk.ukuu.org.uk>*
  */
 
 /* Changelog:
@@ -38,12 +51,15 @@
  *
  * 2002.05.30 - Joel Becker <joel.becker@oracle.com>
  * 	Added Matt Domsch's nowayout module option.
+ *	Added Matt Domsch's nowayout module option.
  */
 
 /*
  *	The eurotech CPU-1220/1410/1420's watchdog is a part
  *	of the on-board SUPER I/O device SMSC FDC 37B782.
  */
+
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/interrupt.h>
 #include <linux/module.h>
@@ -69,6 +85,10 @@ static spinlock_t eurwdt_lock;
 /*
  * You must set these - there is no sane way to probe for this board.
  * You can use eurwdt=x,y to set these now.
+static DEFINE_SPINLOCK(eurwdt_lock);
+
+/*
+ * You must set these - there is no sane way to probe for this board.
  */
 
 static int io = 0x3f0;
@@ -79,6 +99,8 @@ static char *ev = "int";
 
 static int nowayout = WATCHDOG_NOWAYOUT;
 module_param(nowayout, int, 0);
+static bool nowayout = WATCHDOG_NOWAYOUT;
+module_param(nowayout, bool, 0);
 MODULE_PARM_DESC(nowayout,
 		"Watchdog cannot be stopped once started (default="
 				__MODULE_STRING(WATCHDOG_NOWAYOUT) ")");
@@ -152,6 +174,13 @@ static void eurwdt_activate_timer(void)
 		printk(KERN_INFO ": interrupt disabled\n");
 
 	eurwdt_write_reg(WDT_TIMER_CFG, irq<<4);
+		pr_err("invalid irq number\n");
+		irq = 0;	/* if invalid we disable interrupt */
+	}
+	if (irq == 0)
+		pr_info("interrupt disabled\n");
+
+	eurwdt_write_reg(WDT_TIMER_CFG, irq << 4);
 
 	eurwdt_write_reg(WDT_UNIT_SEL, WDT_UNIT_SECS);	/* we use seconds */
 	eurwdt_set_timeout(0);	/* the default timeout */
@@ -170,6 +199,12 @@ static irqreturn_t eurwdt_interrupt(int irq, void *dev_id)
 	printk(KERN_CRIT "Would Reboot.\n");
 #else
 	printk(KERN_CRIT "Initiating system reboot.\n");
+	pr_crit("timeout WDT timeout\n");
+
+#ifdef ONLY_TESTING
+	pr_crit("Would Reboot\n");
+#else
+	pr_crit("Initiating system reboot\n");
 	emergency_restart();
 #endif
 	return IRQ_HANDLED;
@@ -203,6 +238,7 @@ static ssize_t eurwdt_write(struct file *file, const char __user *buf,
 size_t count, loff_t *ppos)
 {
 	if (count) 	{
+	if (count) {
 		if (!nowayout) {
 			size_t i;
 
@@ -239,6 +275,7 @@ static long eurwdt_ioctl(struct file *file,
 	void __user *argp = (void __user *)arg;
 	int __user *p = argp;
 	static struct watchdog_info ident = {
+	static const struct watchdog_info ident = {
 		.options	  = WDIOF_KEEPALIVEPING | WDIOF_SETTIMEOUT
 							| WDIOF_MAGICCLOSE,
 		.firmware_version = 1,
@@ -338,6 +375,7 @@ static int eurwdt_release(struct inode *inode, struct file *file)
 	else {
 		printk(KERN_CRIT
 			"eurwdt: Unexpected close, not stopping watchdog!\n");
+		pr_crit("Unexpected close, not stopping watchdog!\n");
 		eurwdt_ping();
 	}
 	clear_bit(0, &eurwdt_is_open);
@@ -431,11 +469,15 @@ static int __init eurwdt_init(void)
 	ret = request_irq(irq, eurwdt_interrupt, IRQF_DISABLED, "eurwdt", NULL);
 	if (ret) {
 		printk(KERN_ERR "eurwdt: IRQ %d is not free.\n", irq);
+	ret = request_irq(irq, eurwdt_interrupt, 0, "eurwdt", NULL);
+	if (ret) {
+		pr_err("IRQ %d is not free\n", irq);
 		goto out;
 	}
 
 	if (!request_region(io, 2, "eurwdt")) {
 		printk(KERN_ERR "eurwdt: IO %X is not free.\n", io);
+		pr_err("IO %X is not free\n", io);
 		ret = -EBUSY;
 		goto outirq;
 	}
@@ -453,6 +495,13 @@ static int __init eurwdt_init(void)
 	if (ret) {
 		printk(KERN_ERR "eurwdt: can't misc_register on minor=%d\n",
 		WATCHDOG_MINOR);
+		pr_err("can't register reboot notifier (err=%d)\n", ret);
+		goto outreg;
+	}
+
+	ret = misc_register(&eurwdt_miscdev);
+	if (ret) {
+		pr_err("can't misc_register on minor=%d\n", WATCHDOG_MINOR);
 		goto outreboot;
 	}
 
@@ -461,6 +510,7 @@ static int __init eurwdt_init(void)
 	ret = 0;
 	printk(KERN_INFO "Eurotech WDT driver 0.01 at %X (Interrupt %d)"
 		" - timeout event: %s\n",
+	pr_info("Eurotech WDT driver 0.01 at %X (Interrupt %d) - timeout event: %s\n",
 		io, irq, (!strcmp("int", ev) ? "int" : "reboot"));
 
 out:

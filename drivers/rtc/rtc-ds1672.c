@@ -20,6 +20,11 @@ static const unsigned short normal_i2c[] = { I2C_CLIENT_END };
 
 /* Insmod parameters */
 I2C_CLIENT_INSMOD;
+#include <linux/i2c.h>
+#include <linux/rtc.h>
+#include <linux/module.h>
+
+#define DRV_VERSION "0.4"
 
 /* Registers */
 
@@ -31,6 +36,7 @@ I2C_CLIENT_INSMOD;
 
 /* Prototypes */
 static int ds1672_probe(struct i2c_adapter *adapter, int address, int kind);
+static struct i2c_driver ds1672_driver;
 
 /*
  * In the routines that deal directly with the ds1672 hardware, we use
@@ -46,6 +52,17 @@ static int ds1672_get_datetime(struct i2c_client *client, struct rtc_time *tm)
 	struct i2c_msg msgs[] = {
 		{ client->addr, 0, 1, &addr },		/* setup read ptr */
 		{ client->addr, I2C_M_RD, 4, buf },	/* read date */
+		{/* setup read ptr */
+			.addr = client->addr,
+			.len = 1,
+			.buf = &addr
+		},
+		{/* read date */
+			.addr = client->addr,
+			.flags = I2C_M_RD,
+			.len = 4,
+			.buf = buf
+		},
 	};
 
 	/* read date registers */
@@ -58,7 +75,8 @@ static int ds1672_get_datetime(struct i2c_client *client, struct rtc_time *tm)
 		"%s: raw read data - counters=%02x,%02x,%02x,%02x\n",
 		__func__, buf[0], buf[1], buf[2], buf[3]);
 
-	time = (buf[3] << 24) | (buf[2] << 16) | (buf[1] << 8) | buf[0];
+	time = ((unsigned long)buf[3] << 24) | (buf[2] << 16) |
+	       (buf[1] << 8) | buf[0];
 
 	rtc_time_to_tm(time, tm);
 
@@ -81,6 +99,7 @@ static int ds1672_set_mmss(struct i2c_client *client, unsigned long secs)
 	buf[3] = (secs & 0x00FF0000) >> 16;
 	buf[4] = (secs & 0xFF000000) >> 24;
 	buf[5] = 0;	/* set control reg to enable counting */
+	buf[5] = 0;		/* set control reg to enable counting */
 
 	xfer = i2c_master_send(client, buf, 6);
 	if (xfer != 6) {
@@ -129,6 +148,17 @@ static int ds1672_get_control(struct i2c_client *client, u8 *status)
 	struct i2c_msg msgs[] = {
 		{ client->addr, 0, 1, &addr },		/* setup read ptr */
 		{ client->addr, I2C_M_RD, 1, status },	/* read control */
+		{/* setup read ptr */
+			.addr = client->addr,
+			.len = 1,
+			.buf = &addr
+		},
+		{/* read control */
+			.addr = client->addr,
+			.flags = I2C_M_RD,
+			.len = 1,
+			.buf = status
+		},
 	};
 
 	/* read control register */
@@ -142,6 +172,8 @@ static int ds1672_get_control(struct i2c_client *client, u8 *status)
 
 /* following are the sysfs callback functions */
 static ssize_t show_control(struct device *dev, struct device_attribute *attr, char *buf)
+static ssize_t show_control(struct device *dev, struct device_attribute *attr,
+			    char *buf)
 {
 	struct i2c_client *client = to_i2c_client(dev);
 	u8 control;
@@ -231,6 +263,35 @@ static int ds1672_probe(struct i2c_adapter *adapter, int address, int kind)
 		err = PTR_ERR(rtc);
 		goto exit_detach;
 	}
+		       ? "disabled" : "enabled");
+}
+
+static DEVICE_ATTR(control, S_IRUGO, show_control, NULL);
+
+static const struct rtc_class_ops ds1672_rtc_ops = {
+	.read_time = ds1672_rtc_read_time,
+	.set_mmss = ds1672_rtc_set_mmss,
+};
+
+static int ds1672_probe(struct i2c_client *client,
+			const struct i2c_device_id *id)
+{
+	int err = 0;
+	u8 control;
+	struct rtc_device *rtc;
+
+	dev_dbg(&client->dev, "%s\n", __func__);
+
+	if (!i2c_check_functionality(client->adapter, I2C_FUNC_I2C))
+		return -ENODEV;
+
+	dev_info(&client->dev, "chip found, driver version " DRV_VERSION "\n");
+
+	rtc = devm_rtc_device_register(&client->dev, ds1672_driver.driver.name,
+				  &ds1672_rtc_ops, THIS_MODULE);
+
+	if (IS_ERR(rtc))
+		return PTR_ERR(rtc);
 
 	i2c_set_clientdata(client, rtc);
 
@@ -242,6 +303,13 @@ static int ds1672_probe(struct i2c_adapter *adapter, int address, int kind)
 	if (control & DS1672_REG_CONTROL_EOSC)
 		dev_warn(&client->dev, "Oscillator not enabled. "
 					"Set time to enable.\n");
+	if (err) {
+		dev_warn(&client->dev, "Unable to read the control register\n");
+	}
+
+	if (control & DS1672_REG_CONTROL_EOSC)
+		dev_warn(&client->dev, "Oscillator not enabled. "
+			 "Set time to enable.\n");
 
 	/* Register sysfs hooks */
 	err = device_create_file(&client->dev, &dev_attr_control);
@@ -272,6 +340,27 @@ static void __exit ds1672_exit(void)
 {
 	i2c_del_driver(&ds1672_driver);
 }
+		dev_err(&client->dev, "Unable to create sysfs entry: %s\n",
+			dev_attr_control.attr.name);
+
+	return 0;
+}
+
+static struct i2c_device_id ds1672_id[] = {
+	{ "ds1672", 0 },
+	{ }
+};
+MODULE_DEVICE_TABLE(i2c, ds1672_id);
+
+static struct i2c_driver ds1672_driver = {
+	.driver = {
+		   .name = "rtc-ds1672",
+		   },
+	.probe = &ds1672_probe,
+	.id_table = ds1672_id,
+};
+
+module_i2c_driver(ds1672_driver);
 
 MODULE_AUTHOR("Alessandro Zummo <a.zummo@towertech.it>");
 MODULE_DESCRIPTION("Dallas/Maxim DS1672 timekeeper driver");

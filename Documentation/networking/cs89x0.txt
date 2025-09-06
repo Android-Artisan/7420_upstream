@@ -4,6 +4,7 @@ NOTE
 
 This document was contributed by Cirrus Logic for kernel 2.2.5.  This version
 has been updated for 2.3.48 by Andrew Morton <andrewm@uow.edu.au>
+has been updated for 2.3.48 by Andrew Morton.
 
 Cirrus make a copy of this driver available at their website, as
 described below.  In general, you should use the driver version which
@@ -13,7 +14,6 @@ comes with your Linux distribution.
 
 CIRRUS LOGIC LAN CS8900/CS8920 ETHERNET ADAPTERS
 Linux Network Interface Driver ver. 2.00 <kernel 2.3.48>
-===============================================================================
  
 
 TABLE OF CONTENTS
@@ -55,7 +55,6 @@ TABLE OF CONTENTS
 
 
 1.0 CIRRUS LOGIC LAN CS8900/CS8920 ETHERNET ADAPTERS
-===============================================================================
 
 
 1.1 PRODUCT OVERVIEW
@@ -141,7 +140,6 @@ Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 
 
 2.0 ADAPTER INSTALLATION and CONFIGURATION
-===============================================================================
 
 Both the CS8900 and CS8920-based adapters can be configured using parameters 
 stored in an on-board EEPROM. You must use the DOS-based CS8900/20 Setup 
@@ -202,7 +200,6 @@ communicate with the adapter.
 
 
 3.0 LOADING THE DRIVER AS A MODULE
-===============================================================================
 
 If the driver is compiled as a loadable module, you can load the driver module
 with the 'modprobe' command.  Many of the adapter's configuration parameters can 
@@ -339,7 +336,6 @@ n) If the cs89x0 driver is compiled directly into the kernel, DMA
 
 
 4.0 COMPILING THE DRIVER
-===============================================================================
 
 The cs89x0 driver can be compiled directly into the kernel or compiled into
 a loadable device driver module.
@@ -444,7 +440,6 @@ into the /usr/src/linux/drivers/net directory.
 
 
 5.0 TESTING AND TROUBLESHOOTING
-===============================================================================
 
 5.1 KNOWN DEFECTS and LIMITATIONS
 
@@ -630,7 +625,6 @@ E000-FFFF	AT BIOS
 
 
 6.0 TECHNICAL SUPPORT
-===============================================================================
 
 6.1 CONTACTING CIRRUS LOGIC'S TECHNICAL SUPPORT
 
@@ -691,6 +685,7 @@ latest drivers and technical publications.
 
 In February 2000 the maintenance of this driver was assumed by Andrew
 Morton <akpm@zip.com.au>
+Morton.
 
 6.5 Kernel module parameters
 

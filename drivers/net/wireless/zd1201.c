@@ -17,6 +17,11 @@
 #include <linux/netdevice.h>
 #include <linux/etherdevice.h>
 #include <linux/wireless.h>
+#include <linux/slab.h>
+#include <linux/netdevice.h>
+#include <linux/etherdevice.h>
+#include <linux/wireless.h>
+#include <net/cfg80211.h>
 #include <net/iw_handler.h>
 #include <linux/string.h>
 #include <linux/if_arp.h>
@@ -29,6 +34,7 @@ static struct usb_device_id zd1201_table[] = {
 	{USB_DEVICE(0x0ace, 0x1201)}, /* ZyDAS ZD1201 Wireless USB Adapter */
 	{USB_DEVICE(0x050d, 0x6051)}, /* Belkin F5D6051 usb  adapter */
 	{USB_DEVICE(0x0db0, 0x6823)}, /* MSI UB11B usb  adapter */
+	{USB_DEVICE(0x1044, 0x8004)}, /* Gigabyte GN-WLBZ101 */
 	{USB_DEVICE(0x1044, 0x8005)}, /* GIGABYTE GN-WLBZ201 usb adapter */
 	{}
 };
@@ -75,6 +81,10 @@ static int zd1201_fw_upload(struct usb_device *dev, int apfw)
 	buf = kmalloc(1024, GFP_ATOMIC);
 	if (!buf)
 		goto exit;
+	if (!buf) {
+		err = -ENOMEM;
+		goto exit;
+	}
 	
 	while (len > 0) {
 		int translen = (len > 1024) ? 1024 : len;
@@ -100,6 +110,12 @@ static int zd1201_fw_upload(struct usb_device *dev, int apfw)
 	if (err < 0)
 		goto exit;
 
+	    USB_DIR_IN | 0x40, 0, 0, buf, sizeof(ret), ZD1201_FW_TIMEOUT);
+	if (err < 0)
+		goto exit;
+
+	memcpy(&ret, buf, sizeof(ret));
+
 	if (ret & 0x80) {
 		err = -EIO;
 		goto exit;
@@ -111,6 +127,9 @@ exit:
 	release_firmware(fw_entry);
 	return err;
 }
+
+MODULE_FIRMWARE("zd1201-ap.fw");
+MODULE_FIRMWARE("zd1201.fw");
 
 static void zd1201_usbfree(struct urb *urb)
 {
@@ -331,6 +350,8 @@ static void zd1201_usbrx(struct urb *urb)
 			skb->dev->last_rx = jiffies;
 			zd->stats.rx_packets++;
 			zd->stats.rx_bytes += skb->len;
+			zd->dev->stats.rx_packets++;
+			zd->dev->stats.rx_bytes += skb->len;
 			netif_rx(skb);
 			goto resubmit;
 		}
@@ -347,6 +368,7 @@ static void zd1201_usbrx(struct urb *urb)
 				if (!frag)
 					goto resubmit;
 				skb = dev_alloc_skb(IEEE80211_DATA_LEN +14+2);
+				skb = dev_alloc_skb(IEEE80211_MAX_DATA_LEN +14+2);
 				if (!skb) {
 					kfree(frag);
 					goto resubmit;
@@ -361,6 +383,7 @@ static void zd1201_usbrx(struct urb *urb)
 				goto resubmit;
 			}
 			hlist_for_each_entry(frag, node, &zd->fraglist, fnode)
+			hlist_for_each_entry(frag, &zd->fraglist, fnode)
 				if (frag->seq == (seq&IEEE80211_SCTL_SEQ))
 					break;
 			if (!frag)
@@ -388,6 +411,8 @@ static void zd1201_usbrx(struct urb *urb)
 		skb->dev->last_rx = jiffies;
 		zd->stats.rx_packets++;
 		zd->stats.rx_bytes += skb->len;
+		zd->dev->stats.rx_packets++;
+		zd->dev->stats.rx_bytes += skb->len;
 		netif_rx(skb);
 	}
 resubmit:
@@ -746,6 +771,7 @@ static int zd1201_join(struct zd1201 *zd, char *essid, int essidlen)
 static int zd1201_net_open(struct net_device *dev)
 {
 	struct zd1201 *zd = (struct zd1201 *)dev->priv;
+	struct zd1201 *zd = netdev_priv(dev);
 
 	/* Start MAC with wildcard if no essid set */
 	if (!zd->mac_enabled)
@@ -784,6 +810,10 @@ static int zd1201_net_stop(struct net_device *dev)
 static int zd1201_hard_start_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	struct zd1201 *zd = (struct zd1201 *)dev->priv;
+static netdev_tx_t zd1201_hard_start_xmit(struct sk_buff *skb,
+						struct net_device *dev)
+{
+	struct zd1201 *zd = netdev_priv(dev);
 	unsigned char *txbuf = zd->txdata;
 	int txbuflen, pad = 0, err;
 	struct urb *urb = zd->tx_urb;
@@ -792,6 +822,9 @@ static int zd1201_hard_start_xmit(struct sk_buff *skb, struct net_device *dev)
 		zd->stats.tx_dropped++;
 		kfree_skb(skb);
 		return 0;
+		dev->stats.tx_dropped++;
+		kfree_skb(skb);
+		return NETDEV_TX_OK;
 	}
 	netif_stop_queue(dev);
 
@@ -829,11 +862,21 @@ static int zd1201_hard_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	kfree_skb(skb);
 
 	return 0;
+		dev->stats.tx_errors++;
+		netif_start_queue(dev);
+	} else {
+		dev->stats.tx_packets++;
+		dev->stats.tx_bytes += skb->len;
+	}
+	kfree_skb(skb);
+
+	return NETDEV_TX_OK;
 }
 
 static void zd1201_tx_timeout(struct net_device *dev)
 {
 	struct zd1201 *zd = (struct zd1201 *)dev->priv;
+	struct zd1201 *zd = netdev_priv(dev);
 
 	if (!zd)
 		return;
@@ -843,12 +886,16 @@ static void zd1201_tx_timeout(struct net_device *dev)
 	zd->stats.tx_errors++;
 	/* Restart the timeout to quiet the watchdog: */
 	dev->trans_start = jiffies;
+	dev->stats.tx_errors++;
+	/* Restart the timeout to quiet the watchdog: */
+	dev->trans_start = jiffies; /* prevent tx timeout */
 }
 
 static int zd1201_set_mac_address(struct net_device *dev, void *p)
 {
 	struct sockaddr *addr = p;
 	struct zd1201 *zd = (struct zd1201 *)dev->priv;
+	struct zd1201 *zd = netdev_priv(dev);
 	int err;
 
 	if (!zd)
@@ -873,6 +920,9 @@ static struct net_device_stats *zd1201_get_stats(struct net_device *dev)
 static struct iw_statistics *zd1201_get_wireless_stats(struct net_device *dev)
 {
 	struct zd1201 *zd = (struct zd1201 *)dev->priv;
+static struct iw_statistics *zd1201_get_wireless_stats(struct net_device *dev)
+{
+	struct zd1201 *zd = netdev_priv(dev);
 
 	return &zd->iwstats;
 }
@@ -894,12 +944,26 @@ static void zd1201_set_multicast(struct net_device *dev)
 	zd1201_setconfig(zd, ZD1201_RID_CNFGROUPADDRESS, reqbuf,
 	    dev->mc_count*ETH_ALEN, 0);
 	
+	struct zd1201 *zd = netdev_priv(dev);
+	struct netdev_hw_addr *ha;
+	unsigned char reqbuf[ETH_ALEN*ZD1201_MAXMULTI];
+	int i;
+
+	if (netdev_mc_count(dev) > ZD1201_MAXMULTI)
+		return;
+
+	i = 0;
+	netdev_for_each_mc_addr(ha, dev)
+		memcpy(reqbuf + i++ * ETH_ALEN, ha->addr, ETH_ALEN);
+	zd1201_setconfig(zd, ZD1201_RID_CNFGROUPADDRESS, reqbuf,
+			 netdev_mc_count(dev) * ETH_ALEN, 0);
 }
 
 static int zd1201_config_commit(struct net_device *dev, 
     struct iw_request_info *info, struct iw_point *data, char *essid)
 {
 	struct zd1201 *zd = (struct zd1201 *)dev->priv;
+	struct zd1201 *zd = netdev_priv(dev);
 
 	return zd1201_mac_reset(zd);
 }
@@ -915,6 +979,7 @@ static int zd1201_set_freq(struct net_device *dev,
     struct iw_request_info *info, struct iw_freq *freq, char *extra)
 {
 	struct zd1201 *zd = (struct zd1201 *)dev->priv;
+	struct zd1201 *zd = netdev_priv(dev);
 	short channel = 0;
 	int err;
 
@@ -926,6 +991,8 @@ static int zd1201_set_freq(struct net_device *dev,
 		if (freq->m >= 2407)
 			channel = (freq->m-2407)/5;
 	}
+	else
+		channel = ieee80211_frequency_to_channel(freq->m);
 
 	err = zd1201_setconfig16(zd, ZD1201_RID_CNFOWNCHANNEL, channel);
 	if (err)
@@ -940,6 +1007,7 @@ static int zd1201_get_freq(struct net_device *dev,
     struct iw_request_info *info, struct iw_freq *freq, char *extra)
 {
 	struct zd1201 *zd = (struct zd1201 *)dev->priv;
+	struct zd1201 *zd = netdev_priv(dev);
 	short channel;
 	int err;
 
@@ -956,6 +1024,7 @@ static int zd1201_set_mode(struct net_device *dev,
     struct iw_request_info *info, __u32 *mode, char *extra)
 {
 	struct zd1201 *zd = (struct zd1201 *)dev->priv;
+	struct zd1201 *zd = netdev_priv(dev);
 	short porttype, monitor = 0;
 	unsigned char buffer[IW_ESSID_MAX_SIZE+2];
 	int err;
@@ -1018,6 +1087,7 @@ static int zd1201_get_mode(struct net_device *dev,
     struct iw_request_info *info, __u32 *mode, char *extra)
 {
 	struct zd1201 *zd = (struct zd1201 *)dev->priv;
+	struct zd1201 *zd = netdev_priv(dev);
 	short porttype;
 	int err;
 
@@ -1094,6 +1164,7 @@ static int zd1201_get_wap(struct net_device *dev,
     struct iw_request_info *info, struct sockaddr *ap_addr, char *extra)
 {
 	struct zd1201 *zd = (struct zd1201 *)dev->priv;
+	struct zd1201 *zd = netdev_priv(dev);
 	unsigned char buffer[6];
 
 	if (!zd1201_getconfig(zd, ZD1201_RID_COMMSQUALITY, buffer, 6)) {
@@ -1122,6 +1193,7 @@ static int zd1201_get_scan(struct net_device *dev,
     struct iw_request_info *info, struct iw_point *srq, char *extra)
 {
 	struct zd1201 *zd = (struct zd1201 *)dev->priv;
+	struct zd1201 *zd = netdev_priv(dev);
 	int err, i, j, enabled_save;
 	struct iw_event iwe;
 	char *cev = extra;
@@ -1214,6 +1286,7 @@ static int zd1201_set_essid(struct net_device *dev,
     struct iw_request_info *info, struct iw_point *data, char *essid)
 {
 	struct zd1201 *zd = (struct zd1201 *)dev->priv;
+	struct zd1201 *zd = netdev_priv(dev);
 
 	if (data->length > IW_ESSID_MAX_SIZE)
 		return -EINVAL;
@@ -1229,6 +1302,7 @@ static int zd1201_get_essid(struct net_device *dev,
     struct iw_request_info *info, struct iw_point *data, char *essid)
 {
 	struct zd1201 *zd = (struct zd1201 *)dev->priv;
+	struct zd1201 *zd = netdev_priv(dev);
 
 	memcpy(essid, zd->essid, zd->essidlen);
 	data->flags = 1;
@@ -1250,6 +1324,7 @@ static int zd1201_set_rate(struct net_device *dev,
     struct iw_request_info *info, struct iw_param *rrq, char *extra)
 {
 	struct zd1201 *zd = (struct zd1201 *)dev->priv;
+	struct zd1201 *zd = netdev_priv(dev);
 	short rate;
 	int err;
 
@@ -1283,6 +1358,7 @@ static int zd1201_get_rate(struct net_device *dev,
     struct iw_request_info *info, struct iw_param *rrq, char *extra)
 {
 	struct zd1201 *zd = (struct zd1201 *)dev->priv;
+	struct zd1201 *zd = netdev_priv(dev);
 	short rate;
 	int err;
 
@@ -1316,6 +1392,7 @@ static int zd1201_set_rts(struct net_device *dev, struct iw_request_info *info,
     struct iw_param *rts, char *extra)
 {
 	struct zd1201 *zd = (struct zd1201 *)dev->priv;
+	struct zd1201 *zd = netdev_priv(dev);
 	int err;
 	short val = rts->value;
 
@@ -1336,6 +1413,7 @@ static int zd1201_get_rts(struct net_device *dev, struct iw_request_info *info,
     struct iw_param *rts, char *extra)
 {
 	struct zd1201 *zd = (struct zd1201 *)dev->priv;
+	struct zd1201 *zd = netdev_priv(dev);
 	short rtst;
 	int err;
 
@@ -1353,6 +1431,7 @@ static int zd1201_set_frag(struct net_device *dev, struct iw_request_info *info,
     struct iw_param *frag, char *extra)
 {
 	struct zd1201 *zd = (struct zd1201 *)dev->priv;
+	struct zd1201 *zd = netdev_priv(dev);
 	int err;
 	short val = frag->value;
 
@@ -1374,6 +1453,7 @@ static int zd1201_get_frag(struct net_device *dev, struct iw_request_info *info,
     struct iw_param *frag, char *extra)
 {
 	struct zd1201 *zd = (struct zd1201 *)dev->priv;
+	struct zd1201 *zd = netdev_priv(dev);
 	short fragt;
 	int err;
 
@@ -1403,6 +1483,7 @@ static int zd1201_set_encode(struct net_device *dev,
     struct iw_request_info *info, struct iw_point *erq, char *key)
 {
 	struct zd1201 *zd = (struct zd1201 *)dev->priv;
+	struct zd1201 *zd = netdev_priv(dev);
 	short i;
 	int err, rid;
 
@@ -1460,6 +1541,7 @@ static int zd1201_get_encode(struct net_device *dev,
     struct iw_request_info *info, struct iw_point *erq, char *key)
 {
 	struct zd1201 *zd = (struct zd1201 *)dev->priv;
+	struct zd1201 *zd = netdev_priv(dev);
 	short i;
 	int err;
 
@@ -1493,6 +1575,7 @@ static int zd1201_set_power(struct net_device *dev,
     struct iw_request_info *info, struct iw_param *vwrq, char *extra)
 {
 	struct zd1201 *zd = (struct zd1201 *)dev->priv;
+	struct zd1201 *zd = netdev_priv(dev);
 	short enabled, duration, level;
 	int err;
 
@@ -1532,6 +1615,7 @@ static int zd1201_get_power(struct net_device *dev,
     struct iw_request_info *info, struct iw_param *vwrq, char *extra)
 {
 	struct zd1201 *zd = (struct zd1201 *)dev->priv;
+	struct zd1201 *zd = netdev_priv(dev);
 	short enabled, level, duration;
 	int err;
 
@@ -1619,6 +1703,7 @@ static int zd1201_set_hostauth(struct net_device *dev,
     struct iw_request_info *info, struct iw_param *rrq, char *extra)
 {
 	struct zd1201 *zd = (struct zd1201 *)dev->priv;
+	struct zd1201 *zd = netdev_priv(dev);
 
 	if (!zd->ap)
 		return -EOPNOTSUPP;
@@ -1630,6 +1715,7 @@ static int zd1201_get_hostauth(struct net_device *dev,
     struct iw_request_info *info, struct iw_param *rrq, char *extra)
 {
 	struct zd1201 *zd = (struct zd1201 *)dev->priv;
+	struct zd1201 *zd = netdev_priv(dev);
 	short hostauth;
 	int err;
 
@@ -1649,6 +1735,7 @@ static int zd1201_auth_sta(struct net_device *dev,
     struct iw_request_info *info, struct sockaddr *sta, char *extra)
 {
 	struct zd1201 *zd = (struct zd1201 *)dev->priv;
+	struct zd1201 *zd = netdev_priv(dev);
 	unsigned char buffer[10];
 
 	if (!zd->ap)
@@ -1665,6 +1752,7 @@ static int zd1201_set_maxassoc(struct net_device *dev,
     struct iw_request_info *info, struct iw_param *rrq, char *extra)
 {
 	struct zd1201 *zd = (struct zd1201 *)dev->priv;
+	struct zd1201 *zd = netdev_priv(dev);
 	int err;
 
 	if (!zd->ap)
@@ -1680,6 +1768,7 @@ static int zd1201_get_maxassoc(struct net_device *dev,
     struct iw_request_info *info, struct iw_param *rrq, char *extra)
 {
 	struct zd1201 *zd = (struct zd1201 *)dev->priv;
+	struct zd1201 *zd = netdev_priv(dev);
 	short maxassoc;
 	int err;
 
@@ -1727,10 +1816,22 @@ static const struct iw_handler_def zd1201_iw_handlers = {
 	.get_wireless_stats	= zd1201_get_wireless_stats,
 };
 
+static const struct net_device_ops zd1201_netdev_ops = {
+	.ndo_open		= zd1201_net_open,
+	.ndo_stop		= zd1201_net_stop,
+	.ndo_start_xmit		= zd1201_hard_start_xmit,
+	.ndo_tx_timeout		= zd1201_tx_timeout,
+	.ndo_set_rx_mode	= zd1201_set_multicast,
+	.ndo_set_mac_address	= zd1201_set_mac_address,
+	.ndo_change_mtu		= eth_change_mtu,
+	.ndo_validate_addr	= eth_validate_addr,
+};
+
 static int zd1201_probe(struct usb_interface *interface,
 			const struct usb_device_id *id)
 {
 	struct zd1201 *zd;
+	struct net_device *dev;
 	struct usb_device *usb;
 	int err;
 	short porttype;
@@ -1741,6 +1842,12 @@ static int zd1201_probe(struct usb_interface *interface,
 	zd = kzalloc(sizeof(struct zd1201), GFP_KERNEL);
 	if (!zd)
 		return -ENOMEM;
+	dev = alloc_etherdev(sizeof(*zd));
+	if (!dev)
+		return -ENOMEM;
+	zd = netdev_priv(dev);
+	zd->dev = dev;
+
 	zd->ap = ap;
 	zd->usb = usb;
 	zd->removed = 0;
@@ -1760,6 +1867,10 @@ static int zd1201_probe(struct usb_interface *interface,
 	zd->tx_urb = usb_alloc_urb(0, GFP_KERNEL);
 	if (!zd->rx_urb || !zd->tx_urb)
 		goto err_zd;
+	if (!zd->rx_urb || !zd->tx_urb) {
+		err = -ENOMEM;
+		goto err_zd;
+	}
 
 	mdelay(100);
 	err = zd1201_drvr_start(zd);
@@ -1796,6 +1907,15 @@ static int zd1201_probe(struct usb_interface *interface,
 	    zd->dev->dev_addr, zd->dev->addr_len);
 	if (err)
 		goto err_net;
+	dev->netdev_ops = &zd1201_netdev_ops;
+	dev->wireless_handlers = &zd1201_iw_handlers;
+	dev->watchdog_timeo = ZD1201_TX_TIMEOUT;
+	strcpy(dev->name, "wlan%d");
+
+	err = zd1201_getconfig(zd, ZD1201_RID_CNFOWNMACADDR, 
+	    dev->dev_addr, dev->addr_len);
+	if (err)
+		goto err_start;
 
 	/* Set wildcard essid to match zd->essid */
 	*(__le16 *)buf = cpu_to_le16(0);
@@ -1803,6 +1923,7 @@ static int zd1201_probe(struct usb_interface *interface,
 	    IW_ESSID_MAX_SIZE+2, 1);
 	if (err)
 		goto err_net;
+		goto err_start;
 
 	if (zd->ap)
 		porttype = ZD1201_PORTTYPE_AP;
@@ -1819,6 +1940,15 @@ static int zd1201_probe(struct usb_interface *interface,
 		goto err_net;
 	dev_info(&usb->dev, "%s: ZD1201 USB Wireless interface\n",
 	    zd->dev->name);
+		goto err_start;
+
+	SET_NETDEV_DEV(dev, &usb->dev);
+
+	err = register_netdev(dev);
+	if (err)
+		goto err_start;
+	dev_info(&usb->dev, "%s: ZD1201 USB Wireless interface\n",
+	    dev->name);
 
 	usb_set_intfdata(interface, zd);
 	zd1201_enable(zd);	/* zd1201 likes to startup enabled, */
@@ -1834,6 +1964,7 @@ err_zd:
 	usb_free_urb(zd->tx_urb);
 	usb_free_urb(zd->rx_urb);
 	kfree(zd);
+	free_netdev(dev);
 	return err;
 }
 
@@ -1841,6 +1972,8 @@ static void zd1201_disconnect(struct usb_interface *interface)
 {
 	struct zd1201 *zd=(struct zd1201 *)usb_get_intfdata(interface);
 	struct hlist_node *node, *node2;
+	struct zd1201 *zd = usb_get_intfdata(interface);
+	struct hlist_node *node2;
 	struct zd1201_frag *frag;
 
 	if (!zd)
@@ -1852,6 +1985,8 @@ static void zd1201_disconnect(struct usb_interface *interface)
 	}
 
 	hlist_for_each_entry_safe(frag, node, node2, &zd->fraglist, fnode) {
+
+	hlist_for_each_entry_safe(frag, node2, &zd->fraglist, fnode) {
 		hlist_del_init(&frag->fnode);
 		kfree_skb(frag->skb);
 		kfree(frag);
@@ -1866,6 +2001,11 @@ static void zd1201_disconnect(struct usb_interface *interface)
 		usb_free_urb(zd->rx_urb);
 	}
 	kfree(zd);
+
+	if (zd->dev) {
+		unregister_netdev(zd->dev);
+		free_netdev(zd->dev);
+	}
 }
 
 #ifdef CONFIG_PM
@@ -1928,3 +2068,7 @@ static void __exit zd1201_cleanup(void)
 
 module_init(zd1201_init);
 module_exit(zd1201_cleanup);
+	.disable_hub_initiated_lpm = 1,
+};
+
+module_usb_driver(zd1201_usb);

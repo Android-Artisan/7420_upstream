@@ -24,6 +24,23 @@
 #define fs_err(fs, fmt, arg...) \
 	fs_printk(KERN_ERR, fs , fmt , ## arg)
 
+#ifdef pr_fmt
+#undef pr_fmt
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+#endif
+
+#include <linux/mempool.h>
+
+#include "incore.h"
+
+#define fs_emerg(fs, fmt, ...)						\
+	pr_emerg("fsid=%s: " fmt, (fs)->sd_fsname, ##__VA_ARGS__)
+#define fs_warn(fs, fmt, ...)						\
+	pr_warn("fsid=%s: " fmt, (fs)->sd_fsname, ##__VA_ARGS__)
+#define fs_err(fs, fmt, ...)						\
+	pr_err("fsid=%s: " fmt, (fs)->sd_fsname, ##__VA_ARGS__)
+#define fs_info(fs, fmt, ...)						\
+	pr_info("fsid=%s: " fmt, (fs)->sd_fsname, ##__VA_ARGS__)
 
 void gfs2_assert_i(struct gfs2_sbd *sdp);
 
@@ -94,6 +111,19 @@ static inline int gfs2_meta_check_i(struct gfs2_sbd *sdp,
 gfs2_meta_check_i((sdp), (bh), __func__, __FILE__, __LINE__)
 
 
+static inline int gfs2_meta_check(struct gfs2_sbd *sdp,
+				    struct buffer_head *bh)
+{
+	struct gfs2_meta_header *mh = (struct gfs2_meta_header *)bh->b_data;
+	u32 magic = be32_to_cpu(mh->mh_magic);
+	if (unlikely(magic != GFS2_MAGIC)) {
+		pr_err("Magic number missing at %llu\n",
+		       (unsigned long long)bh->b_blocknr);
+		return -EIO;
+	}
+	return 0;
+}
+
 int gfs2_metatype_check_ii(struct gfs2_sbd *sdp, struct buffer_head *bh,
 			   u16 type, u16 t,
 			   const char *function,
@@ -148,6 +178,13 @@ extern struct kmem_cache *gfs2_glock_cachep;
 extern struct kmem_cache *gfs2_inode_cachep;
 extern struct kmem_cache *gfs2_bufdata_cachep;
 extern struct kmem_cache *gfs2_rgrpd_cachep;
+extern struct kmem_cache *gfs2_glock_aspace_cachep;
+extern struct kmem_cache *gfs2_inode_cachep;
+extern struct kmem_cache *gfs2_bufdata_cachep;
+extern struct kmem_cache *gfs2_rgrpd_cachep;
+extern struct kmem_cache *gfs2_quotad_cachep;
+extern struct kmem_cache *gfs2_rsrv_cachep;
+extern mempool_t *gfs2_page_pool;
 
 static inline unsigned int gfs2_tune_get_i(struct gfs2_tune *gt,
 					   unsigned int *p)
@@ -168,3 +205,7 @@ int gfs2_lm_withdraw(struct gfs2_sbd *sdp, char *fmt, ...);
 
 #endif /* __UTIL_DOT_H__ */
 
+__printf(2, 3)
+int gfs2_lm_withdraw(struct gfs2_sbd *sdp, const char *fmt, ...);
+
+#endif /* __UTIL_DOT_H__ */

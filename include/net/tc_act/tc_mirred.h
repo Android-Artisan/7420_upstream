@@ -12,5 +12,10 @@ struct tcf_mirred {
 };
 #define to_mirred(pc) \
 	container_of(pc, struct tcf_mirred, common)
+	struct net_device __rcu	*tcfm_dev;
+	struct list_head	tcfm_list;
+};
+#define to_mirred(a) \
+	container_of(a->priv, struct tcf_mirred, common)
 
 #endif /* __NET_TC_MIR_H */

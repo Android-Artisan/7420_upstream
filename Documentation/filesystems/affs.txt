@@ -1,5 +1,4 @@
 Overview of Amiga Filesystems
-=============================
 
 Not all varieties of the Amiga filesystems are supported for reading and
 writing. The Amiga currently knows six different filesystems:
@@ -34,7 +33,6 @@ The muFS (multi user File System) equivalents of the above file systems
 are supported, too.
 
 Mount options for the AFFS
-==========================
 
 protect		If this option is set, the protection bits cannot be altered.
 
@@ -48,6 +46,10 @@ mode=mode	Sets the mode flags to the given (octal) value, regardless
 		permission if the corresponding r bit is set.
 		This is useful since most of the plain AmigaOS files
 		will map to 600.
+
+nofilenametruncate
+		The file system will return an error when filename exceeds
+		standard maximum filename length (30 characters).
 
 reserved=num	Sets the number of reserved blocks at the start of the
 		partition to num. You should never need this option.
@@ -81,7 +83,6 @@ volume=name	When symbolic links with an absolute path are created
 		(See below.)
 
 Handling of the Users/Groups and protection flags
-=================================================
 
 Amiga -> Linux:
 
@@ -89,13 +90,15 @@ The Amiga protection flags RWEDRWEDHSPARWED are handled as follows:
 
   - R maps to r for user, group and others. On directories, R implies x.
 
-  - If both W and D are allowed, w will be set.
+  - W maps to w.
 
   - E maps to x.
 
-  - H and P are always retained and ignored under Linux.
+  - D is ignored.
 
-  - A is always reset when a file is written to.
+  - H, S and P are always retained and ignored under Linux.
+
+  - A is cleared when a file is written to.
 
 User id and group id will be used unless set[gu]id are given as mount
 options. Since most of the Amiga file systems are single user systems
@@ -107,11 +110,13 @@ Linux -> Amiga:
 
 The Linux rwxrwxrwx file mode is handled as follows:
 
-  - r permission will set R for user, group and others.
+  - r permission will allow R for user, group and others.
 
-  - w permission will set W and D for user, group and others.
+  - w permission will allow W for user, group and others.
 
-  - x permission of the user will set E for plain files.
+  - x permission of the user will allow E for plain files.
+
+  - D will be allowed for user, group and others.
 
   - All other flags (suid, sgid, ...) are ignored and will
     not be retained.
@@ -120,7 +125,6 @@ Newly created files and directories will get the user and group ID
 of the current user and a mode according to the umask.
 
 Symbolic links
-==============
 
 Although the Amiga and Linux file systems resemble each other, there
 are some, not always subtle, differences. One of them becomes apparent
@@ -142,7 +146,6 @@ might be "User", "WB" and "Graphics", the mount points /amiga/User,
 "/amiga/User/sc/include/dos/dos.h".
 
 Examples
-========
 
 Command line:
     mount  Archive/Amiga/Workbench3.1.adf /mnt -t affs -o loop,verbose
@@ -152,7 +155,6 @@ Command line:
     /dev/sdb5	/amiga/Workbench    affs    noauto,user,exec,verbose 0 0
 
 IMPORTANT NOTE
-==============
 
 If you boot Windows 95 (don't know about 3.x, 98 and NT) while you
 have an Amiga harddisk connected to your PC, it will overwrite
@@ -174,7 +176,6 @@ DO AT YOUR OWN RISK:
   dd if=rdb.fixed of=/dev/<disk>
 
 Bugs, Restrictions, Caveats
-===========================
 
 Quite a few things may not work as advertised. Not everything is
 tested, though several hundred MB have been read and written using
@@ -184,6 +185,8 @@ fs/affs/Changes.
 Filenames are truncated to 30 characters without warning (this
 can be changed by setting the compile-time option AFFS_NO_TRUNCATE
 in include/linux/amigaffs.h).
+By default, filenames are truncated to 30 characters without warning.
+'nofilenametruncate' mount option can change that behavior.
 
 Case is ignored by the affs in filename matching, but Linux shells
 do care about the case. Example (with /wb being an affs mounted fs):
@@ -217,3 +220,4 @@ due to an incompatibility with the Amiga floppy controller.
 If you are interested in an Amiga Emulator for Linux, look at
 
 http://www.freiburg.linux.de/~uae/
+http://web.archive.org/web/*/http://www.freiburg.linux.de/~uae/

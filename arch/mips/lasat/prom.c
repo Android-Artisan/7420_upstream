@@ -102,6 +102,8 @@ void __init prom_init(void)
 	if (argc > 0) {
 		strncpy(arcs_cmdline, argv[0], CL_SIZE-1);
 		arcs_cmdline[CL_SIZE-1] = '\0';
+		strncpy(arcs_cmdline, argv[0], COMMAND_LINE_SIZE-1);
+		arcs_cmdline[COMMAND_LINE_SIZE-1] = '\0';
 	}
 
 	/* Set the I/O base address */

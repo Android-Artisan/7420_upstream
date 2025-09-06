@@ -36,11 +36,16 @@ static void br_hello_timer_expired(unsigned long arg)
 	struct net_bridge *br = (struct net_bridge *)arg;
 
 	pr_debug("%s: hello timer expired\n", br->dev->name);
+	br_debug(br, "hello timer expired\n");
 	spin_lock(&br->lock);
 	if (br->dev->flags & IFF_UP) {
 		br_config_bpdu_generation(br);
 
 		mod_timer(&br->hello_timer, round_jiffies(jiffies + br->hello_time));
+		if (br->stp_enabled != BR_USER_STP)
+		if (br->stp_enabled == BR_KERNEL_STP)
+			mod_timer(&br->hello_timer,
+				  round_jiffies(jiffies + br->hello_time));
 	}
 	spin_unlock(&br->lock);
 }
@@ -62,6 +67,9 @@ static void br_message_age_timer_expired(unsigned long arg)
 		id->addr[0], id->addr[1], id->addr[2],
 		id->addr[3], id->addr[4], id->addr[5],
 		p->port_no, p->dev->name);
+	br_info(br, "port %u(%s) neighbor %.2x%.2x.%pM lost\n",
+		(unsigned int) p->port_no, p->dev->name,
+		id->prio[0], id->prio[1], &id->addr);
 
 	/*
 	 * According to the spec, the message age timer cannot be
@@ -100,6 +108,23 @@ static void br_forward_delay_timer_expired(unsigned long arg)
 			br_topology_change_detection(br);
 	}
 	br_log_state(p);
+	br_debug(br, "port %u(%s) forward delay timer\n",
+		 (unsigned int) p->port_no, p->dev->name);
+	spin_lock(&br->lock);
+	if (p->state == BR_STATE_LISTENING) {
+		br_set_state(p, BR_STATE_LEARNING);
+		mod_timer(&p->forward_delay_timer,
+			  jiffies + br->forward_delay);
+	} else if (p->state == BR_STATE_LEARNING) {
+		br_set_state(p, BR_STATE_FORWARDING);
+		if (br_is_designated_for_some_port(br))
+			br_topology_change_detection(br);
+		netif_carrier_on(br->dev);
+	}
+	br_log_state(p);
+	rcu_read_lock();
+	br_ifinfo_notify(RTM_NEWLINK, p);
+	rcu_read_unlock();
 	spin_unlock(&br->lock);
 }
 
@@ -113,6 +138,12 @@ static void br_tcn_timer_expired(unsigned long arg)
 		br_transmit_tcn(br);
 
 		mod_timer(&br->tcn_timer,jiffies + br->bridge_hello_time);
+	br_debug(br, "tcn timer expired\n");
+	spin_lock(&br->lock);
+	if (!br_is_root_bridge(br) && (br->dev->flags & IFF_UP)) {
+		br_transmit_tcn(br);
+
+		mod_timer(&br->tcn_timer, jiffies + br->bridge_hello_time);
 	}
 	spin_unlock(&br->lock);
 }
@@ -122,6 +153,7 @@ static void br_topology_change_timer_expired(unsigned long arg)
 	struct net_bridge *br = (struct net_bridge *) arg;
 
 	pr_debug("%s: topo change timer expired\n", br->dev->name);
+	br_debug(br, "topo change timer expired\n");
 	spin_lock(&br->lock);
 	br->topology_change_detected = 0;
 	br->topology_change = 0;
@@ -134,6 +166,8 @@ static void br_hold_timer_expired(unsigned long arg)
 
 	pr_debug("%s: %d(%s) hold timer expired\n",
 		 p->br->dev->name,  p->port_no, p->dev->name);
+	br_debug(p->br, "port %u(%s) hold timer expired\n",
+		 (unsigned int) p->port_no, p->dev->name);
 
 	spin_lock(&p->br->lock);
 	if (p->config_pending)
@@ -173,4 +207,5 @@ unsigned long br_timer_value(const struct timer_list *timer)
 {
 	return timer_pending(timer)
 		? jiffies_to_clock_t(timer->expires - jiffies) : 0;
+		? jiffies_delta_to_clock_t(timer->expires - jiffies) : 0;
 }

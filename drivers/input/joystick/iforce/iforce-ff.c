@@ -198,12 +198,17 @@ static unsigned char find_button(struct iforce *iforce, signed short button)
  * parameter packet
  */
 static int need_condition_modifier(struct ff_effect *old, struct ff_effect *new)
+static int need_condition_modifier(struct iforce *iforce,
+				   struct ff_effect *old,
+				   struct ff_effect *new)
 {
 	int ret = 0;
 	int i;
 
 	if (new->type != FF_SPRING && new->type != FF_FRICTION) {
 		warn("bad effect type in need_condition_modifier");
+		dev_warn(&iforce->dev->dev, "bad effect type in %s\n",
+			 __func__);
 		return 0;
 	}
 
@@ -226,6 +231,13 @@ static int need_magnitude_modifier(struct ff_effect *old, struct ff_effect *effe
 {
 	if (effect->type != FF_CONSTANT) {
 		warn("bad effect type in need_envelope_modifier");
+static int need_magnitude_modifier(struct iforce *iforce,
+				   struct ff_effect *old,
+				   struct ff_effect *effect)
+{
+	if (effect->type != FF_CONSTANT) {
+		dev_warn(&iforce->dev->dev, "bad effect type in %s\n",
+			 __func__);
 		return 0;
 	}
 
@@ -237,6 +249,8 @@ static int need_magnitude_modifier(struct ff_effect *old, struct ff_effect *effe
  * parameter packet
  */
 static int need_envelope_modifier(struct ff_effect *old, struct ff_effect *effect)
+static int need_envelope_modifier(struct iforce *iforce, struct ff_effect *old,
+				  struct ff_effect *effect)
 {
 	switch (effect->type) {
 	case FF_CONSTANT:
@@ -257,6 +271,8 @@ static int need_envelope_modifier(struct ff_effect *old, struct ff_effect *effec
 
 	default:
 		warn("bad effect type in need_envelope_modifier");
+		dev_warn(&iforce->dev->dev, "bad effect type in %s\n",
+			 __func__);
 	}
 
 	return 0;
@@ -270,6 +286,12 @@ static int need_period_modifier(struct ff_effect *old, struct ff_effect *new)
 {
 	if (new->type != FF_PERIODIC) {
 		warn("bad effect type in need_period_modifier");
+static int need_period_modifier(struct iforce *iforce, struct ff_effect *old,
+				struct ff_effect *new)
+{
+	if (new->type != FF_PERIODIC) {
+		dev_warn(&iforce->dev->dev, "bad effect type in %s\n",
+			 __func__);
 		return 0;
 	}
 	return (old->u.periodic.period != new->u.periodic.period
@@ -356,6 +378,7 @@ int iforce_upload_periodic(struct iforce *iforce, struct ff_effect *effect, stru
 	int core_err = 0;
 
 	if (!old || need_period_modifier(old, effect)) {
+	if (!old || need_period_modifier(iforce, old, effect)) {
 		param1_err = make_period_modifier(iforce, mod1_chunk,
 			old != NULL,
 			effect->u.periodic.magnitude, effect->u.periodic.offset,
@@ -366,6 +389,7 @@ int iforce_upload_periodic(struct iforce *iforce, struct ff_effect *effect, stru
 	}
 
 	if (!old || need_envelope_modifier(old, effect)) {
+	if (!old || need_envelope_modifier(iforce, old, effect)) {
 		param2_err = make_envelope_modifier(iforce, mod2_chunk,
 			old !=NULL,
 			effect->u.periodic.envelope.attack_length,
@@ -426,6 +450,7 @@ int iforce_upload_constant(struct iforce *iforce, struct ff_effect *effect, stru
 	int core_err = 0;
 
 	if (!old || need_magnitude_modifier(old, effect)) {
+	if (!old || need_magnitude_modifier(iforce, old, effect)) {
 		param1_err = make_magnitude_modifier(iforce, mod1_chunk,
 			old != NULL,
 			effect->u.constant.level);
@@ -435,6 +460,7 @@ int iforce_upload_constant(struct iforce *iforce, struct ff_effect *effect, stru
 	}
 
 	if (!old || need_envelope_modifier(old, effect)) {
+	if (!old || need_envelope_modifier(iforce, old, effect)) {
 		param2_err = make_envelope_modifier(iforce, mod2_chunk,
 			old != NULL,
 			effect->u.constant.envelope.attack_length,
@@ -488,6 +514,7 @@ int iforce_upload_condition(struct iforce *iforce, struct ff_effect *effect, str
 	}
 
 	if (!old || need_condition_modifier(old, effect)) {
+	if (!old || need_condition_modifier(iforce, old, effect)) {
 		param_err = make_condition_modifier(iforce, mod1_chunk,
 			old != NULL,
 			effect->u.condition[0].right_saturation,

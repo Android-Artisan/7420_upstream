@@ -43,6 +43,7 @@
  */
 
 #include <linux/highmem.h>
+#include <linux/export.h>
 #include <scsi/scsi.h>
 #include <scsi/scsi_cmnd.h>
 
@@ -59,6 +60,11 @@
 void usb_stor_qic157_command(struct scsi_cmnd *srb, struct us_data *us)
 {
 	/* Pad the ATAPI command with zeros 
+void usb_stor_pad12_command(struct scsi_cmnd *srb, struct us_data *us)
+{
+	/*
+	 * Pad the SCSI command with zeros out to 12 bytes.  If the
+	 * command already is 12 bytes or longer, leave it alone.
 	 *
 	 * NOTE: This only works because a scsi_cmnd struct field contains
 	 * a unsigned char cmnd[16], so we know we have storage available
@@ -68,6 +74,9 @@ void usb_stor_qic157_command(struct scsi_cmnd *srb, struct us_data *us)
 
 	/* set command length to 12 bytes */
 	srb->cmd_len = 12;
+
+	for (; srb->cmd_len < 12; srb->cmd_len++)
+		srb->cmnd[srb->cmd_len] = 0;
 
 	/* send the command to the transport layer */
 	usb_stor_invoke_transport(srb, us);
@@ -97,6 +106,10 @@ void usb_stor_ufi_command(struct scsi_cmnd *srb, struct us_data *us)
 {
 	/* fix some commands -- this is a form of mode translation
 	 * UFI devices only accept 12 byte long commands 
+void usb_stor_ufi_command(struct scsi_cmnd *srb, struct us_data *us)
+{
+	/* fix some commands -- this is a form of mode translation
+	 * UFI devices only accept 12 byte long commands
 	 *
 	 * NOTE: This only works because a scsi_cmnd struct field contains
 	 * a unsigned char cmnd[16], so we know we have storage available
@@ -104,6 +117,7 @@ void usb_stor_ufi_command(struct scsi_cmnd *srb, struct us_data *us)
 
 	/* Pad the ATAPI command with zeros */
 	for (; srb->cmd_len<12; srb->cmd_len++)
+	for (; srb->cmd_len < 12; srb->cmd_len++)
 		srb->cmnd[srb->cmd_len] = 0;
 
 	/* set command length to 12 bytes (this affects the transport layer) */
@@ -141,6 +155,7 @@ void usb_stor_transparent_scsi_command(struct scsi_cmnd *srb,
 	/* send the command to the transport layer */
 	usb_stor_invoke_transport(srb, us);
 }
+EXPORT_SYMBOL_GPL(usb_stor_transparent_scsi_command);
 
 /***********************************************************************
  * Scatter-gather transfer buffer access routines
@@ -219,6 +234,45 @@ unsigned int usb_stor_access_xfer_buf(unsigned char *buffer,
 	/* Return the amount actually transferred */
 	return cnt;
 }
+	unsigned int cnt = 0;
+	struct scatterlist *sg = *sgptr;
+	struct sg_mapping_iter miter;
+	unsigned int nents = scsi_sg_count(srb);
+
+	if (sg)
+		nents = sg_nents(sg);
+	else
+		sg = scsi_sglist(srb);
+
+	sg_miter_start(&miter, sg, nents, dir == FROM_XFER_BUF ?
+		SG_MITER_FROM_SG: SG_MITER_TO_SG);
+
+	if (!sg_miter_skip(&miter, *offset))
+		return cnt;
+
+	while (sg_miter_next(&miter) && cnt < buflen) {
+		unsigned int len = min_t(unsigned int, miter.length,
+				buflen - cnt);
+
+		if (dir == FROM_XFER_BUF)
+			memcpy(buffer + cnt, miter.addr, len);
+		else
+			memcpy(miter.addr, buffer + cnt, len);
+
+		if (*offset + len < miter.piter.sg->length) {
+			*offset += len;
+			*sgptr = miter.piter.sg;
+		} else {
+			*offset = 0;
+			*sgptr = sg_next(miter.piter.sg);
+		}
+		cnt += len;
+	}
+	sg_miter_stop(&miter);
+
+	return cnt;
+}
+EXPORT_SYMBOL_GPL(usb_stor_access_xfer_buf);
 
 /* Store the contents of buffer into srb's transfer buffer and set the
  * SCSI residue.
@@ -235,3 +289,4 @@ void usb_stor_set_xfer_buf(unsigned char *buffer,
 	if (buflen < scsi_bufflen(srb))
 		scsi_set_resid(srb, scsi_bufflen(srb) - buflen);
 }
+EXPORT_SYMBOL_GPL(usb_stor_set_xfer_buf);

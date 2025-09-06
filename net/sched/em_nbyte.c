@@ -9,6 +9,7 @@
  * Authors:	Thomas Graf <tgraf@suug.ch>
  */
 
+#include <linux/gfp.h>
 #include <linux/module.h>
 #include <linux/types.h>
 #include <linux/kernel.h>
@@ -19,11 +20,13 @@
 
 struct nbyte_data
 {
+struct nbyte_data {
 	struct tcf_em_nbyte	hdr;
 	char			pattern[0];
 };
 
 static int em_nbyte_change(struct tcf_proto *tp, void *data, int data_len,
+static int em_nbyte_change(struct net *net, void *data, int data_len,
 			   struct tcf_ematch *em)
 {
 	struct tcf_em_nbyte *nbyte = data;

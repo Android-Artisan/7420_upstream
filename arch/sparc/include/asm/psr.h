@@ -36,6 +36,11 @@
 #define PSR_IMPL    0xf0000000         /* cpu-implementation field   */
 
 #ifdef __KERNEL__
+#ifndef __LINUX_SPARC_PSR_H
+#define __LINUX_SPARC_PSR_H
+
+#include <uapi/asm/psr.h>
+
 
 #ifndef __ASSEMBLY__
 /* Get the %psr register. */

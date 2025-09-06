@@ -65,3 +65,8 @@ hostapd hostapd.conf
 
 # Run wpa_supplicant (station) for wlan1
 wpa_supplicant -Dwext -iwlan1 -c wpa_supplicant.conf
+
+
+More test cases are available in hostap.git:
+git://w1.fi/srv/git/hostap.git and mac80211_hwsim/tests subdirectory
+(http://w1.fi/gitweb/gitweb.cgi?p=hostap.git;a=tree;f=mac80211_hwsim/tests)

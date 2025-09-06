@@ -1,6 +1,7 @@
 /*
  * Linux ARCnet driver - COM20020 chipset support
  * 
+ *
  * Written 1997 by David Woodhouse.
  * Written 1994-1999 by Avery Pennarun.
  * Written 1999-2000 by Martin Mares <mj@ucw.cz>.
@@ -25,6 +26,9 @@
  *
  * **********************
  */
+
+#define pr_fmt(fmt) "arcnet:" KBUILD_MODNAME ": " fmt
+
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/kernel.h>
@@ -46,6 +50,14 @@
 
 /*
  * We cannot (yet) probe for an IO mapped card, although we can check that
+#include <linux/interrupt.h>
+#include <linux/bootmem.h>
+#include <linux/io.h>
+
+#include "arcdevice.h"
+#include "com20020.h"
+
+/* We cannot (yet) probe for an IO mapped card, although we can check that
  * it's where we were told it was, and even do autoirq.
  */
 static int __init com20020isa_probe(struct net_device *dev)
@@ -70,6 +82,24 @@ static int __init com20020isa_probe(struct net_device *dev)
 	}
 	if (ASTATUS() == 0xFF) {
 		BUGMSG(D_NORMAL, "IO address %x empty\n", ioaddr);
+	struct arcnet_local *lp = netdev_priv(dev);
+	int err;
+
+	if (BUGLVL(D_NORMAL))
+		pr_info("%s\n", "COM20020 ISA support (by David Woodhouse et al.)");
+
+	ioaddr = dev->base_addr;
+	if (!ioaddr) {
+		arc_printk(D_NORMAL, dev, "No autoprobe (yet) for IO mapped cards; you must specify the base address!\n");
+		return -ENODEV;
+	}
+	if (!request_region(ioaddr, ARCNET_TOTAL_SIZE, "arcnet (COM20020)")) {
+		arc_printk(D_NORMAL, dev, "IO region %xh-%xh already allocated.\n",
+			   ioaddr, ioaddr + ARCNET_TOTAL_SIZE - 1);
+		return -ENXIO;
+	}
+	if (arcnet_inb(ioaddr, COM20020_REG_R_STATUS) == 0xFF) {
+		arc_printk(D_NORMAL, dev, "IO address %x empty\n", ioaddr);
 		err = -ENODEV;
 		goto out;
 	}
@@ -100,6 +130,24 @@ static int __init com20020isa_probe(struct net_device *dev)
 			dev->irq = probe_irq_off(airqmask);
 			if (dev->irq <= 0) {
 				BUGMSG(D_NORMAL, "Autoprobe IRQ failed.\n");
+		arc_printk(D_INIT_REASONS, dev, "intmask was %02Xh\n",
+			   arcnet_inb(ioaddr, COM20020_REG_R_STATUS));
+		arcnet_outb(0, ioaddr, COM20020_REG_W_INTMASK);
+		airqmask = probe_irq_on();
+		arcnet_outb(NORXflag, ioaddr, COM20020_REG_W_INTMASK);
+		udelay(1);
+		arcnet_outb(0, ioaddr, COM20020_REG_W_INTMASK);
+		dev->irq = probe_irq_off(airqmask);
+
+		if ((int)dev->irq <= 0) {
+			arc_printk(D_INIT_REASONS, dev, "Autoprobe IRQ failed first time\n");
+			airqmask = probe_irq_on();
+			arcnet_outb(NORXflag, ioaddr, COM20020_REG_W_INTMASK);
+			udelay(5);
+			arcnet_outb(0, ioaddr, COM20020_REG_W_INTMASK);
+			dev->irq = probe_irq_off(airqmask);
+			if ((int)dev->irq <= 0) {
+				arc_printk(D_NORMAL, dev, "Autoprobe IRQ failed.\n");
 				err = -ENODEV;
 				goto out;
 			}
@@ -108,6 +156,9 @@ static int __init com20020isa_probe(struct net_device *dev)
 
 	lp->card_name = "ISA COM20020";
 	if ((err = com20020_found(dev, 0)) != 0)
+
+	err = com20020_found(dev, 0);
+	if (err != 0)
 		goto out;
 
 	return 0;
@@ -152,6 +203,9 @@ static int __init com20020_init(void)
 		dev->dev_addr[0] = node;
 
 	lp = dev->priv;
+	dev->netdev_ops = &com20020_netdev_ops;
+
+	lp = netdev_priv(dev);
 	lp->backplane = backplane;
 	lp->clockp = clockp & 7;
 	lp->clockm = clockm & 3;
@@ -193,6 +247,7 @@ static int __init com20020isa_setup(char *s)
 	switch (ints[0]) {
 	default:		/* ERROR */
 		printk("com90xx: Too many arguments.\n");
+		pr_info("Too many arguments\n");
 	case 6:		/* Timeout */
 		timeout = ints[6];
 	case 5:		/* CKP value */

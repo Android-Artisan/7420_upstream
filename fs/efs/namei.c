@@ -14,6 +14,8 @@
 
 
 static efs_ino_t efs_find_entry(struct inode *inode, const char *name, int len) {
+static efs_ino_t efs_find_entry(struct inode *inode, const char *name, int len)
+{
 	struct buffer_head *bh;
 
 	int			slot, namelen;
@@ -25,12 +27,16 @@ static efs_ino_t efs_find_entry(struct inode *inode, const char *name, int len) 
  
 	if (inode->i_size & (EFS_DIRBSIZE-1))
 		printk(KERN_WARNING "EFS: WARNING: find_entry(): directory size not a multiple of EFS_DIRBSIZE\n");
+		pr_warn("%s(): directory size not a multiple of EFS_DIRBSIZE\n",
+			__func__);
 
 	for(block = 0; block < inode->i_blocks; block++) {
 
 		bh = sb_bread(inode->i_sb, efs_bmap(inode, block));
 		if (!bh) {
 			printk(KERN_ERR "EFS: find_entry(): failed to read dir block %d\n", block);
+			pr_err("%s(): failed to read dir block %d\n",
+			       __func__, block);
 			return 0;
 		}
     
@@ -43,6 +49,12 @@ static efs_ino_t efs_find_entry(struct inode *inode, const char *name, int len) 
 		}
 
 		for(slot = 0; slot < dirblock->slots; slot++) {
+			pr_err("%s(): invalid directory block\n", __func__);
+			brelse(bh);
+			return 0;
+		}
+
+		for (slot = 0; slot < dirblock->slots; slot++) {
 			dirslot  = (struct efs_dentry *) (((char *) bh->b_data) + EFS_SLOTAT(dirblock, slot));
 
 			namelen  = dirslot->namelen;
@@ -52,6 +64,7 @@ static efs_ino_t efs_find_entry(struct inode *inode, const char *name, int len) 
 				inodenum = be32_to_cpu(dirslot->inode);
 				brelse(bh);
 				return(inodenum);
+				return inodenum;
 			}
 		}
 		brelse(bh);
@@ -73,6 +86,17 @@ struct dentry *efs_lookup(struct inode *dir, struct dentry *dentry, struct namei
 		}
 	}
 	unlock_kernel();
+	return 0;
+}
+
+struct dentry *efs_lookup(struct inode *dir, struct dentry *dentry, unsigned int flags)
+{
+	efs_ino_t inodenum;
+	struct inode *inode = NULL;
+
+	inodenum = efs_find_entry(dir, dentry->d_name.name, dentry->d_name.len);
+	if (inodenum)
+		inode = efs_iget(dir->i_sb, inodenum);
 
 	return d_splice_alias(inode, dentry);
 }
@@ -143,4 +167,12 @@ struct dentry *efs_get_parent(struct dentry *child)
  fail:
 	unlock_kernel();
 	return ERR_PTR(error);
+	struct dentry *parent = ERR_PTR(-ENOENT);
+	efs_ino_t ino;
+
+	ino = efs_find_entry(d_inode(child), "..", 2);
+	if (ino)
+		parent = d_obtain_alias(efs_iget(d_inode(child)->i_sb, ino));
+
+	return parent;
 }

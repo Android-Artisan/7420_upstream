@@ -1,5 +1,4 @@
 Frequently Asked Questions:
-===========================
 subject: unified zoran driver (zr360x7, zoran, buz, dc10(+), dc30(+), lml33)
 website: http://mjpeg.sourceforge.net/driver-zoran/
 
@@ -15,7 +14,6 @@ website: http://mjpeg.sourceforge.net/driver-zoran/
 8. Maintainers/Contacting
 9. License
 
-===========================
 
 1. What cards are supported
 
@@ -132,7 +130,6 @@ Note: No module for the mse3000 is available yet
 Note: No module for the vpx3224 is available yet
 Note: use encoder=X or decoder=X for non-default i2c chips (see i2c-id.h)
 
-===========================
 
 1.1 What the TV decoder can do an what not
 
@@ -175,6 +172,7 @@ We do not talk about how the audio is broadcast !
 
 A rather good sites about the TV standards are:
 http://www.sony.jp/ServiceArea/Voltage_map/
+http://www.sony.jp/support/
 http://info.electronicwerkstatt.de/bereiche/fernsehtechnik/frequenzen_und_normen/Fernsehnormen/
 and http://www.cabl.com/restaurant/channel.html
 
@@ -211,7 +209,6 @@ Samsung ks0127 TV decoder
 is used in the AVS6EYES card and
 can handle: NTSC-M/N/44, PAL-M/N/B/G/H/I/D/K/L and SECAM
 
-===========================
 
 1.2 What the TV encoder can do an what not
 
@@ -248,7 +245,6 @@ The adv717x, should be able to produce PAL N. But you find nothing PAL N
 specific in the registers. Seem that you have to reuse a other standard
 to generate PAL N, maybe it would work if you use the PAL M settings.
 
-==========================
 
 2. How do I get this damn thing to work
 
@@ -257,6 +253,7 @@ option with X being the card number as given in the previous section.
 To have more than one card, use card=X1[,X2[,X3,[X4[..]]]]
 
 To automate this, add the following to your /etc/modprobe.conf:
+To automate this, add the following to your /etc/modprobe.d/zoran.conf:
 
 options zr36067 card=X1[,X2[,X3[,X4[..]]]]
 alias char-major-81-0 zr36067
@@ -269,7 +266,6 @@ XF86Config-4 when you use X by default, or to run 'v4l-conf -c <device>' in
 one of your startup scripts (normally rc.local) if you don't use X. Both
 make sure that the modules are loaded on startup, under the root account.
 
-===========================
 
 3. What mainboard should I use (or why doesn't my card work)
 
@@ -318,7 +314,6 @@ the quality/buffersize during capture (see 'Concerning buffer sizes, quality,
 output size etc.'). If it hangs, there's little we can do as of now. Check
 your IRQs and make sure the card has its own interrupts.
 
-===========================
 
 4. Programming interface
 
@@ -392,6 +387,11 @@ Get the status of the input lines (video source connected/norm).
 For programming example, please, look at lavrec.c and lavplay.c code in
 lavtools-1.2p2 package (URL: http://www.cicese.mx/~mirsev/DC10plus/)
 and the 'examples' directory in the original Buz driver distribution.
+This driver conforms to video4linux2. Support for V4L1 and for the custom
+zoran ioctls has been removed in kernel 2.6.38.
+
+For programming example, please, look at lavrec.c and lavplay.c code in
+the MJPEG-tools (http://mjpeg.sf.net/).
 
 Additional notes for software developers:
 
@@ -406,8 +406,8 @@ Additional notes for software developers:
 --
 Please note that lavplay/lavrec are also included in the MJPEG-tools
 (http://mjpeg.sf.net/).
+   square pixel format.
 
-===========================
 
 5. Applications
 
@@ -433,7 +433,6 @@ Video editing:
 * MainActor
 * mjpegtools (or Linux Video Studio)
 
-===========================
 
 6. Concerning buffer sizes, quality, output size etc.
 
@@ -518,7 +517,6 @@ If you experience timeouts, lowering the quality/buffersize or using
 'low_bitrate=1 as insmod option for zr36060.o might actually help, as is
 proven by the Buz.
 
-===========================
 
 7. It hangs/crashes/fails/whatevers! Help!
 
@@ -537,7 +535,6 @@ the kernel version, driver version, glibc version, gcc version and any other
 information that might possibly be of interest. Also provide the dmesg output
 at high verbosity. See 'Contacting' on how to contact the developers.
 
-===========================
 
 8. Maintainers/Contacting
 
@@ -557,7 +554,6 @@ Previous maintainers/developers of this driver include Serguei Miridonov
 <mirsev@cicese.mx>, Wolfgang Scherr <scherr@net4you.net>, Dave Perks
 <dperks@ibm.net> and Rainer Johanni <Rainer@Johanni.de>.
 
-===========================
 
 9. License
 

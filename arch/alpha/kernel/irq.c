@@ -21,6 +21,7 @@
 #include <linux/slab.h>
 #include <linux/random.h>
 #include <linux/init.h>
+#include <linux/random.h>
 #include <linux/irq.h>
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
@@ -32,6 +33,7 @@
 #include <asm/uaccess.h>
 
 volatile unsigned long irq_err_count;
+DEFINE_PER_CPU(unsigned long, irq_pmi_count);
 
 void ack_bad_irq(unsigned int irq)
 {
@@ -56,6 +58,25 @@ int irq_select_affinity(unsigned int irq)
 
 	irq_desc[irq].affinity = cpumask_of_cpu(cpu);
 	irq_desc[irq].chip->set_affinity(irq, cpumask_of_cpu(cpu));
+	struct irq_data *data = irq_get_irq_data(irq);
+	struct irq_chip *chip;
+	static int last_cpu;
+	int cpu = last_cpu + 1;
+
+	if (!data)
+		return 1;
+	chip = irq_data_get_irq_chip(data);
+
+	if (!chip->irq_set_affinity || irq_user_affinity[irq])
+		return 1;
+
+	while (!cpu_possible(cpu) ||
+	       !cpumask_test_cpu(cpu, irq_default_affinity))
+		cpu = (cpu < (NR_CPUS-1) ? cpu + 1 : 0);
+	last_cpu = cpu;
+
+	cpumask_copy(irq_data_get_affinity_mask(data), cpumask_of(cpu));
+	chip->irq_set_affinity(data, cpumask_of(cpu), false);
 	return 0;
 }
 #endif /* CONFIG_SMP */
@@ -114,6 +135,21 @@ unlock:
 #endif
 		seq_printf(p, "ERR: %10lu\n", irq_err_count);
 	}
+int arch_show_interrupts(struct seq_file *p, int prec)
+{
+	int j;
+
+#ifdef CONFIG_SMP
+	seq_puts(p, "IPI: ");
+	for_each_online_cpu(j)
+		seq_printf(p, "%10lu ", cpu_data[j].ipi_count);
+	seq_putc(p, '\n');
+#endif
+	seq_puts(p, "PMI: ");
+	for_each_online_cpu(j)
+		seq_printf(p, "%10lu ", per_cpu(irq_pmi_count, j));
+	seq_puts(p, "          Performance Monitoring\n");
+	seq_printf(p, "ERR: %10lu\n", irq_err_count);
 	return 0;
 }
 
@@ -141,6 +177,10 @@ handle_irq(int irq)
 	static unsigned int illegal_count=0;
 	
 	if ((unsigned) irq > ACTUAL_NR_IRQS && illegal_count < MAX_ILLEGAL_IRQS ) {
+	struct irq_desc *desc = irq_to_desc(irq);
+	
+	if (!desc || ((unsigned) irq > ACTUAL_NR_IRQS &&
+	    illegal_count < MAX_ILLEGAL_IRQS)) {
 		irq_err_count++;
 		illegal_count++;
 		printk(KERN_CRIT "device_interrupt: invalid interrupt %d\n",
@@ -157,5 +197,6 @@ handle_irq(int irq)
 	 */
 	local_irq_disable();
 	__do_IRQ(irq);
+	generic_handle_irq_desc(desc);
 	irq_exit();
 }

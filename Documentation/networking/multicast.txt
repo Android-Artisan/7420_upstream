@@ -1,5 +1,4 @@
 Behaviour of Cards Under Multicast
-==================================
 
 This is how they currently behave, not what the hardware can do--for example,
 the Lance driver doesn't use its filter, even though the code for loading

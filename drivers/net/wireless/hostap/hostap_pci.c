@@ -9,6 +9,10 @@
 #include <linux/if.h>
 #include <linux/skbuff.h>
 #include <linux/netdevice.h>
+#include <linux/if.h>
+#include <linux/skbuff.h>
+#include <linux/netdevice.h>
+#include <linux/slab.h>
 #include <linux/workqueue.h>
 #include <linux/wireless.h>
 #include <net/iw_handler.h>
@@ -40,6 +44,7 @@ struct hostap_pci_priv {
 
 
 static struct pci_device_id prism2_pci_id_table[] __devinitdata = {
+static const struct pci_device_id prism2_pci_id_table[] = {
 	/* Intersil Prism3 ISL3872 11Mb/s WLAN Controller */
 	{ 0x1260, 0x3872, PCI_ANY_ID, PCI_ANY_ID },
 	/* Intersil Prism2.5 ISL3874 11Mb/s WLAN Controller */
@@ -313,6 +318,7 @@ static int prism2_pci_probe(struct pci_dev *pdev,
 	}
 
 	mem = ioremap(phymem, pci_resource_len(pdev, 0));
+	mem = pci_ioremap_bar(pdev, 0);
 	if (mem == NULL) {
 		printk(KERN_ERR "prism2: Cannot remap PCI memory region\n") ;
 		goto fail;
@@ -329,6 +335,7 @@ static int prism2_pci_probe(struct pci_dev *pdev,
 
         dev->irq = pdev->irq;
         hw_priv->mem_start = mem;
+	dev->base_addr = (unsigned long) mem;
 
 	prism2_pci_cor_sreset(local);
 
@@ -470,3 +477,4 @@ static void __exit exit_prism2_pci(void)
 
 module_init(init_prism2_pci);
 module_exit(exit_prism2_pci);
+module_pci_driver(prism2_pci_driver);

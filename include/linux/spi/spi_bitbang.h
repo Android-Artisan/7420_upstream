@@ -24,6 +24,10 @@ struct spi_bitbang {
 
 	spinlock_t		lock;
 	struct list_head	queue;
+#include <linux/workqueue.h>
+
+struct spi_bitbang {
+	struct mutex		lock;
 	u8			busy;
 	u8			use_dma;
 	u8			flags;		/* extra spi->mode support */
@@ -141,3 +145,6 @@ bitbang_txrx_be_cpha1(struct spi_device *spi,
 }
 
 #endif	/* EXPAND_BITBANG_TXRX */
+extern void spi_bitbang_stop(struct spi_bitbang *spi);
+
+#endif	/* __SPI_BITBANG_H */

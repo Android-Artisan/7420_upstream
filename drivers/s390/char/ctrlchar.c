@@ -3,6 +3,9 @@
  *  Unified handling of special chars.
  *
  *    Copyright (C) 2001 IBM Deutschland Entwicklung GmbH, IBM Corporation
+ *  Unified handling of special chars.
+ *
+ *    Copyright IBM Corp. 2001
  *    Author(s): Fritz Elfert <felfert@millenux.com> <elfert@de.ibm.com>
  *
  */
@@ -17,6 +20,7 @@
 #ifdef CONFIG_MAGIC_SYSRQ
 static int ctrlchar_sysrq_key;
 static struct tty_struct *sysrq_tty;
+static struct sysrq_work ctrlchar_sysrq;
 
 static void
 ctrlchar_handle_sysrq(struct work_struct *work)
@@ -25,6 +29,16 @@ ctrlchar_handle_sysrq(struct work_struct *work)
 }
 
 static DECLARE_WORK(ctrlchar_work, ctrlchar_handle_sysrq);
+	struct sysrq_work *sysrq = container_of(work, struct sysrq_work, work);
+
+	handle_sysrq(sysrq->key);
+}
+
+void schedule_sysrq_work(struct sysrq_work *sw)
+{
+	INIT_WORK(&sw->work, ctrlchar_handle_sysrq);
+	schedule_work(&sw->work);
+}
 #endif
 
 
@@ -56,6 +70,8 @@ ctrlchar_handle(const unsigned char *buf, int len, struct tty_struct *tty)
 		ctrlchar_sysrq_key = buf[2];
 		sysrq_tty = tty;
 		schedule_work(&ctrlchar_work);
+		ctrlchar_sysrq.key = buf[2];
+		schedule_sysrq_work(&ctrlchar_sysrq);
 		return CTRLCHAR_SYSRQ;
 	}
 #endif

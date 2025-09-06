@@ -28,6 +28,8 @@
 #endif
 
 uint64_t rdtsc() {
+static uint64_t rdtsc(void)
+{
 uint32_t lo, hi;
 /* We cannot use "=A", since this would use %rax on x86_64 */
 __asm__ __volatile__ ("rdtsc" : "=a" (lo), "=d" (hi));
@@ -35,11 +37,13 @@ return (uint64_t)hi << 32 | lo;
 }
 
 void sigsegv_expect(int sig)
+static void sigsegv_expect(int sig)
 {
 	/* */
 }
 
 void segvtask(void)
+static void segvtask(void)
 {
 	if (prctl(PR_SET_TSC, PR_TSC_SIGSEGV) < 0)
 	{
@@ -55,12 +59,14 @@ void segvtask(void)
 
 
 void sigsegv_fail(int sig)
+static void sigsegv_fail(int sig)
 {
 	fprintf(stderr, "FATAL ERROR, rdtsc() failed while enabled\n");
 	exit(0);
 }
 
 void rdtsctask(void)
+static void rdtsctask(void)
 {
 	if (prctl(PR_SET_TSC, PR_TSC_ENABLE) < 0)
 	{

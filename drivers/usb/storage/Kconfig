@@ -9,6 +9,12 @@ comment "may also be needed; see USB_STORAGE Help for more information"
 config USB_STORAGE
 	tristate "USB Mass Storage support"
 	depends on USB && SCSI
+comment "NOTE: USB_STORAGE depends on SCSI but BLK_DEV_SD may"
+comment "also be needed; see USB_STORAGE Help for more info"
+
+config USB_STORAGE
+	tristate "USB Mass Storage support"
+	depends on SCSI
 	---help---
 	  Say Y here if you want to connect USB mass storage devices to your
 	  computer's USB port. This is the driver you need for USB
@@ -40,6 +46,31 @@ config USB_STORAGE_DATAFAB
 
 config USB_STORAGE_FREECOM
 	bool "Freecom USB/ATAPI Bridge support"
+config USB_STORAGE_REALTEK
+	tristate "Realtek Card Reader support"
+	depends on USB_STORAGE
+	help
+	  Say Y here to include additional code to support the power-saving function
+	  for Realtek RTS51xx USB card readers.
+
+	  If this driver is compiled as a module, it will be named ums-realtek.
+
+config REALTEK_AUTOPM
+	bool "Realtek Card Reader autosuspend support"
+	depends on USB_STORAGE_REALTEK && PM
+	default y
+
+config USB_STORAGE_DATAFAB
+	tristate "Datafab Compact Flash Reader support"
+	depends on USB_STORAGE
+	help
+	  Support for certain Datafab CompactFlash readers.
+	  Datafab has a web page at <http://www.datafab.com/>.
+
+	  If this driver is compiled as a module, it will be named ums-datafab.
+
+config USB_STORAGE_FREECOM
+	tristate "Freecom USB/ATAPI Bridge support"
 	depends on USB_STORAGE
 	help
 	  Support for the Freecom USB to IDE/ATAPI adaptor.
@@ -47,6 +78,10 @@ config USB_STORAGE_FREECOM
 
 config USB_STORAGE_ISD200
 	bool "ISD-200 USB/ATA Bridge support"
+	  If this driver is compiled as a module, it will be named ums-freecom.
+
+config USB_STORAGE_ISD200
+	tristate "ISD-200 USB/ATA Bridge support"
 	depends on USB_STORAGE
 	---help---
 	  Say Y here if you want to use USB Mass Store devices based
@@ -70,6 +105,10 @@ config USB_STORAGE_DPCM
 
 config USB_STORAGE_USBAT
 	bool "USBAT/USBAT02-based storage support"
+	  If this driver is compiled as a module, it will be named ums-isd200.
+
+config USB_STORAGE_USBAT
+	tristate "USBAT/USBAT02-based storage support"
 	depends on USB_STORAGE
 	help
 	  Say Y here to include additional code to support storage devices
@@ -91,6 +130,10 @@ config USB_STORAGE_USBAT
 
 config USB_STORAGE_SDDR09
 	bool "SanDisk SDDR-09 (and other SmartMedia) support"
+	  If this driver is compiled as a module, it will be named ums-usbat.
+
+config USB_STORAGE_SDDR09
+	tristate "SanDisk SDDR-09 (and other SmartMedia, including DPCM) support"
 	depends on USB_STORAGE
 	help
 	  Say Y here to include additional code to support the Sandisk SDDR-09
@@ -99,6 +142,12 @@ config USB_STORAGE_SDDR09
 
 config USB_STORAGE_SDDR55
 	bool "SanDisk SDDR-55 SmartMedia support"
+	  Also works for the Microtech Zio! CompactFlash/SmartMedia reader.
+
+	  If this driver is compiled as a module, it will be named ums-sddr09.
+
+config USB_STORAGE_SDDR55
+	tristate "SanDisk SDDR-55 SmartMedia support"
 	depends on USB_STORAGE
 	help
 	  Say Y here to include additional code to support the Sandisk SDDR-55
@@ -106,6 +155,10 @@ config USB_STORAGE_SDDR55
 
 config USB_STORAGE_JUMPSHOT
 	bool "Lexar Jumpshot Compact Flash Reader"
+	  If this driver is compiled as a module, it will be named ums-sddr55.
+
+config USB_STORAGE_JUMPSHOT
+	tristate "Lexar Jumpshot Compact Flash Reader"
 	depends on USB_STORAGE
 	help
 	  Say Y here to include additional code to support the Lexar Jumpshot
@@ -113,6 +166,10 @@ config USB_STORAGE_JUMPSHOT
 
 config USB_STORAGE_ALAUDA
 	bool "Olympus MAUSB-10/Fuji DPC-R1 support"
+	  If this driver is compiled as a module, it will be named ums-jumpshot.
+
+config USB_STORAGE_ALAUDA
+	tristate "Olympus MAUSB-10/Fuji DPC-R1 support"
 	depends on USB_STORAGE
 	help
 	  Say Y here to include additional code to support the Olympus MAUSB-10
@@ -123,6 +180,10 @@ config USB_STORAGE_ALAUDA
 
 config USB_STORAGE_ONETOUCH
 	bool "Support OneTouch Button on Maxtor Hard Drives"
+	  If this driver is compiled as a module, it will be named ums-alauda.
+
+config USB_STORAGE_ONETOUCH
+	tristate "Support OneTouch Button on Maxtor Hard Drives"
 	depends on USB_STORAGE
 	depends on INPUT=y || INPUT=USB_STORAGE
 	help
@@ -136,6 +197,10 @@ config USB_STORAGE_ONETOUCH
 
 config USB_STORAGE_KARMA
 	bool "Support for Rio Karma music player"
+	  If this driver is compiled as a module, it will be named ums-onetouch.
+
+config USB_STORAGE_KARMA
+	tristate "Support for Rio Karma music player"
 	depends on USB_STORAGE
 	help
 	  Say Y here to include additional code to support the Rio Karma
@@ -148,6 +213,10 @@ config USB_STORAGE_KARMA
 
 config USB_STORAGE_CYPRESS_ATACB
 	bool "SAT emulation on Cypress USB/ATA Bridge with ATACB"
+	  If this driver is compiled as a module, it will be named ums-karma.
+
+config USB_STORAGE_CYPRESS_ATACB
+	tristate "SAT emulation on Cypress USB/ATA Bridge with ATACB"
 	depends on USB_STORAGE
 	---help---
 	  Say Y here if you want to use SAT (ata pass through) on devices based
@@ -170,3 +239,32 @@ config USB_LIBUSUAL
 		options libusual bias="ub"
 
 	  If unsure, say N.
+	  If this driver is compiled as a module, it will be named ums-cypress.
+
+config USB_STORAGE_ENE_UB6250
+	tristate "USB ENE card reader support"
+	depends on SCSI
+	depends on USB_STORAGE
+	---help---
+	  Say Y here if you wish to control a ENE SD/MS Card reader.
+	  Note that this driver does not support SM cards.
+
+	  This option depends on 'SCSI' support being enabled, but you
+	  probably also need 'SCSI device support: SCSI disk support'
+	  (BLK_DEV_SD) for most USB storage devices.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called ums-eneub6250.
+
+config USB_UAS
+	tristate "USB Attached SCSI"
+	depends on SCSI && USB_STORAGE
+	help
+	  The USB Attached SCSI protocol is supported by some USB
+	  storage devices.  It permits higher performance by supporting
+	  multiple outstanding commands.
+
+	  If you don't know whether you have a UAS device, it is safe to
+	  say 'Y' or 'M' here and the kernel will use the right driver.
+
+	  If you compile this driver as a module, it will be named uas.

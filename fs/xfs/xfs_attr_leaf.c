@@ -49,9 +49,7 @@
  * Routines to implement leaf blocks of attributes as Btrees of hashed names.
  */
 
-/*========================================================================
  * Function prototypes for the kernel.
- *========================================================================*/
 
 /*
  * Routines used for growing the Btree.
@@ -90,9 +88,7 @@ STATIC void xfs_attr_leaf_moveents(xfs_attr_leafblock_t *src_leaf,
 					 xfs_mount_t *mp);
 STATIC int xfs_attr_leaf_entsize(xfs_attr_leafblock_t *leaf, int index);
 
-/*========================================================================
  * Namespace helper routines
- *========================================================================*/
 
 /*
  * If namespace bits don't match return 0.
@@ -105,9 +101,7 @@ xfs_attr_namesp_match(int arg_flags, int ondisk_flags)
 }
 
 
-/*========================================================================
  * External routines when attribute fork size < XFS_LITINO(mp).
- *========================================================================*/
 
 /*
  * Query whether the requested number of additional bytes of extended
@@ -898,9 +892,7 @@ out:
 }
 
 
-/*========================================================================
  * Routines used for growing the Btree.
- *========================================================================*/
 
 /*
  * Create the initial contents of a leaf attribute list
@@ -1510,9 +1502,7 @@ xfs_attr_leaf_figure_balance(xfs_da_state_t *state,
 	return(foundit);
 }
 
-/*========================================================================
  * Routines used for shrinking the Btree.
- *========================================================================*/
 
 /*
  * Check a leaf block and its neighbors to see if the block should be
@@ -1896,9 +1886,7 @@ xfs_attr_leaf_unbalance(xfs_da_state_t *state, xfs_da_state_blk_t *drop_blk,
 		save_leaf->entries[be16_to_cpu(save_leaf->hdr.count)-1].hashval);
 }
 
-/*========================================================================
  * Routines used for finding things in the Btree.
- *========================================================================*/
 
 /*
  * Look up a name in a leaf attribute list structure.
@@ -2069,9 +2057,7 @@ xfs_attr_leaf_getvalue(xfs_dabuf_t *bp, xfs_da_args_t *args)
 	return(0);
 }
 
-/*========================================================================
  * Utility routines.
- *========================================================================*/
 
 /*
  * Move the indicated entries from one leaf to another.
@@ -2428,9 +2414,7 @@ xfs_attr_leaf_list_int(xfs_dabuf_t *bp, xfs_attr_list_context_t *context)
 }
 
 
-/*========================================================================
  * Manage the INCOMPLETE flag in a leaf entry
- *========================================================================*/
 
 /*
  * Clear the INCOMPLETE flag on an entry in a leaf block.
@@ -2666,9 +2650,7 @@ xfs_attr_leaf_flipflags(xfs_da_args_t *args)
 	return(error);
 }
 
-/*========================================================================
  * Indiscriminately delete the entire attribute fork
- *========================================================================*/
 
 /*
  * Recurse (gasp!) through the attribute nodes until we find leaves.

@@ -25,6 +25,7 @@
 #include <linux/mtd/physmap.h>
 #include <linux/spi/spi.h>
 #include <linux/spi/max7301.h>
+#include <linux/spi/pxa2xx_spi.h>
 #include <linux/leds.h>
 
 #include <asm/mach-types.h>
@@ -34,6 +35,7 @@
 #include <mach/pxa2xx-gpio.h>
 #include <mach/pxa2xx-regs.h>
 #include <mach/pxa2xx_spi.h>
+#include <mach/pxa27x.h>
 #include <mach/pcm027.h>
 #include "generic.h"
 
@@ -85,6 +87,28 @@
  *
  * *) CPU internal use only
  */
+
+static unsigned long pcm027_pin_config[] __initdata = {
+	/* Chip Selects */
+	GPIO20_nSDCS_2,
+	GPIO21_nSDCS_3,
+	GPIO15_nCS_1,
+	GPIO78_nCS_2,
+	GPIO80_nCS_4,
+	GPIO33_nCS_5,	/* Ethernet */
+
+	/* I2C */
+	GPIO117_I2C_SCL,
+	GPIO118_I2C_SDA,
+
+	/* GPIO */
+	GPIO52_GPIO,	/* IRQ from network controller */
+#ifdef CONFIG_LEDS_GPIO
+	GPIO90_GPIO,	/* PCM027_LED_CPU */
+	GPIO91_GPIO,	/* PCM027_LED_HEART_BEAT */
+#endif
+	GPIO114_GPIO,	/* IRQ from CAN controller */
+};
 
 /*
  * SMC91x network controller specific stuff
@@ -213,6 +237,13 @@ static void __init pcm027_init(void)
 	pxa_gpio_mode(PCM027_LED_CPU | GPIO_OUT);
 	pxa_gpio_mode(PCM027_LED_HEARD_BEAT | GPIO_OUT);
 #endif /* CONFIG_LEDS_GPIO */
+	pxa2xx_mfp_config(pcm027_pin_config, ARRAY_SIZE(pcm027_pin_config));
+
+	pxa_set_ffuart_info(NULL);
+	pxa_set_btuart_info(NULL);
+	pxa_set_stuart_info(NULL);
+
+	platform_add_devices(devices, ARRAY_SIZE(devices));
 
 	/* at last call the baseboard to initialize itself */
 #ifdef CONFIG_MACH_PCM990_BASEBOARD
@@ -226,6 +257,7 @@ static void __init pcm027_init(void)
 static void __init pcm027_map_io(void)
 {
 	pxa_map_io();
+	pxa27x_map_io();
 
 	/* initialize sleep mode regs (wake-up sources, etc) */
 	PGSR0 = 0x01308000;
@@ -246,4 +278,12 @@ MACHINE_START(PCM027, "Phytec Messtechnik GmbH phyCORE-PXA270")
 	.init_irq	= pxa27x_init_irq,
 	.timer		= &pxa_timer,
 	.init_machine	= pcm027_init,
+	.atag_offset	= 0x100,
+	.map_io		= pcm027_map_io,
+	.nr_irqs	= PCM027_NR_IRQS,
+	.init_irq	= pxa27x_init_irq,
+	.handle_irq	= pxa27x_handle_irq,
+	.init_time	= pxa_timer_init,
+	.init_machine	= pcm027_init,
+	.restart	= pxa_restart,
 MACHINE_END

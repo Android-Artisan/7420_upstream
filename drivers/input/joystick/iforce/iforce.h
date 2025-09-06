@@ -115,6 +115,7 @@ struct iforce {
 #endif
 #ifdef CONFIG_JOYSTICK_IFORCE_USB
 	struct usb_device *usbdev;	/* USB transfer */
+	struct usb_interface *intf;
 	struct urb *irq, *out, *ctrl;
 	struct usb_ctrlrequest cr;
 #endif
@@ -155,6 +156,9 @@ void iforce_usb_delete(struct iforce *iforce);
 /* iforce-main.c */
 int iforce_init_device(struct iforce *iforce);
 void iforce_delete_device(struct iforce *iforce);
+
+/* iforce-main.c */
+int iforce_init_device(struct iforce *iforce);
 
 /* iforce-packets.c */
 int iforce_control_playback(struct iforce*, u16 id, unsigned int);

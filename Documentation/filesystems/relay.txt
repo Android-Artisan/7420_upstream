@@ -1,5 +1,4 @@
 relay interface (formerly relayfs)
-==================================
 
 The relay interface provides a means for kernel applications to
 efficiently log and transfer large quantities of data from the kernel
@@ -27,11 +26,11 @@ details of the function parameters are documented along with the
 functions in the relay interface code - please see that for details.
 
 Semantics
-=========
 
 Each relay channel has one buffer per CPU, each buffer has one or more
 sub-buffers.  Messages are written to the first sub-buffer until it is
 too full to contain a new message, in which case it it is written to
+too full to contain a new message, in which case it is written to
 the next (if available).  Messages are never split across sub-buffers.
 At this point, userspace can be notified so it empties the first
 sub-buffer, while the kernel continues writing to the next.
@@ -65,7 +64,6 @@ approach; the example code attempts to make the tradeoff between the
 two approaches as small as possible.
 
 klog and relay-apps example code
-================================
 
 The relay interface itself is ready to use, but to make things easier,
 a couple simple utility functions and a set of examples are provided.
@@ -102,7 +100,6 @@ klog and the relay-apps examples can be found in the relay-apps
 tarball on http://relayfs.sourceforge.net
 
 The relay interface user space API
-==================================
 
 The relay interface implements basic file operations for user space
 access to relay channel buffer data.  Here are the file operations
@@ -149,7 +146,6 @@ NOTE:   the host filesystem doesn't need to be mounted for kernel
 
 
 The relay interface kernel API
-==============================
 
 Here's a summary of the API the relay interface provides to in-kernel clients:
 
@@ -471,7 +467,6 @@ the channel.
 
 
 Resources
-=========
 
 For news, example code, mailing list, etc. see the relay interface homepage:
 
@@ -479,7 +474,6 @@ For news, example code, mailing list, etc. see the relay interface homepage:
 
 
 Credits
-=======
 
 The ideas and specs for the relay interface came about as a result of
 discussions on tracing involving the following:

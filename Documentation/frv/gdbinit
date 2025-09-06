@@ -3,7 +3,6 @@ set remotebreak 1
 define _amr
 
 printf "AMRx           DAMR                    IAMR         \n"
-printf "====   =====================   =====================\n"
 printf "amr0 : L:%08lx P:%08lx : L:%08lx P:%08lx\n",__debug_mmu.damr[0x0].L,__debug_mmu.damr[0x0].P,__debug_mmu.iamr[0x0].L,__debug_mmu.iamr[0x0].P
 printf "amr1 : L:%08lx P:%08lx : L:%08lx P:%08lx\n",__debug_mmu.damr[0x1].L,__debug_mmu.damr[0x1].P,__debug_mmu.iamr[0x1].L,__debug_mmu.iamr[0x1].P
 printf "amr2 : L:%08lx P:%08lx : L:%08lx P:%08lx\n",__debug_mmu.damr[0x2].L,__debug_mmu.damr[0x2].P,__debug_mmu.iamr[0x2].L,__debug_mmu.iamr[0x2].P

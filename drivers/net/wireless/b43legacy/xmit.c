@@ -7,6 +7,7 @@
   Copyright (C) 2005 Martin Langer <martin-langer@gmx.de>
   Copyright (C) 2005 Stefano Brivio <stefano.brivio@polimi.it>
   Copyright (C) 2005, 2006 Michael Buesch <mb@bu3sch.de>
+  Copyright (C) 2005, 2006 Michael Buesch <m@bues.ch>
   Copyright (C) 2005 Danny van Dyk <kugelfang@gentoo.org>
   Copyright (C) 2005 Andreas Jaggi <andreas.jaggi@waterwave.ch>
   Copyright (C) 2007 Larry Finger <Larry.Finger@lwfinger.net>
@@ -189,6 +190,7 @@ static int generate_txhdr_fw3(struct b43legacy_wldev *dev,
 			       const unsigned char *fragment_data,
 			       unsigned int fragment_len,
 			       const struct ieee80211_tx_info *info,
+			       struct ieee80211_tx_info *info,
 			       u16 cookie)
 {
 	const struct ieee80211_hdr *wlhdr;
@@ -205,6 +207,9 @@ static int generate_txhdr_fw3(struct b43legacy_wldev *dev,
 
 	wlhdr = (const struct ieee80211_hdr *)fragment_data;
 	fctl = le16_to_cpu(wlhdr->frame_control);
+	struct ieee80211_tx_rate *rates;
+
+	wlhdr = (const struct ieee80211_hdr *)fragment_data;
 
 	memset(txhdr, 0, sizeof(*txhdr));
 
@@ -217,6 +222,11 @@ static int generate_txhdr_fw3(struct b43legacy_wldev *dev,
 
 	txhdr->mac_frame_ctl = wlhdr->frame_control;
 	memcpy(txhdr->tx_receiver, wlhdr->addr1, 6);
+	rate_fb = ieee80211_get_alt_retry_rate(dev->wl->hw, info, 0) ? : tx_rate;
+	rate_fb_ofdm = b43legacy_is_ofdm_rate(rate_fb->hw_value);
+
+	txhdr->mac_frame_ctl = wlhdr->frame_control;
+	memcpy(txhdr->tx_receiver, wlhdr->addr1, ETH_ALEN);
 
 	/* Calculate duration for fallback rate */
 	if ((rate_fb->hw_value == rate) ||
@@ -229,6 +239,7 @@ static int generate_txhdr_fw3(struct b43legacy_wldev *dev,
 	} else {
 		txhdr->dur_fb = ieee80211_generic_frame_duration(dev->wl->hw,
 							 info->control.vif,
+							 info->band,
 							 fragment_len,
 							 rate_fb);
 	}
@@ -246,6 +257,7 @@ static int generate_txhdr_fw3(struct b43legacy_wldev *dev,
 		if (key->enabled) {
 			/* Hardware appends ICV. */
 			plcp_fragment_len += info->control.icv_len;
+			plcp_fragment_len += info->control.hw_key->icv_len;
 
 			key_idx = b43legacy_kidx_to_fw(dev, key_idx);
 			mac_ctl |= (key_idx << B43legacy_TX4_MAC_KEYIDX_SHIFT) &
@@ -255,6 +267,8 @@ static int generate_txhdr_fw3(struct b43legacy_wldev *dev,
 				   B43legacy_TX4_MAC_KEYALG;
 			wlhdr_len = ieee80211_get_hdrlen(fctl);
 			iv_len = min((size_t)info->control.iv_len,
+			wlhdr_len = ieee80211_hdrlen(wlhdr->frame_control);
+			iv_len = min_t(size_t, info->control.hw_key->iv_len,
 				     ARRAY_SIZE(txhdr->iv));
 			memcpy(txhdr->iv, ((u8 *)wlhdr) + wlhdr_len, iv_len);
 		} else {
@@ -271,6 +285,7 @@ static int generate_txhdr_fw3(struct b43legacy_wldev *dev,
 				    rate);
 	b43legacy_generate_plcp_hdr((struct b43legacy_plcp_hdr4 *)
 				    (&txhdr->plcp_fb), plcp_fragment_len,
+	b43legacy_generate_plcp_hdr(&txhdr->plcp_fb, plcp_fragment_len,
 				    rate_fb->hw_value);
 
 	/* PHY TX Control word */
@@ -293,6 +308,13 @@ static int generate_txhdr_fw3(struct b43legacy_wldev *dev,
 	}
 
 	/* MAC control */
+		phy_ctl |= B43legacy_TX4_PHY_ENC_OFDM;
+	if (info->control.rates[0].flags & IEEE80211_TX_RC_USE_SHORT_PREAMBLE)
+		phy_ctl |= B43legacy_TX4_PHY_SHORTPRMBL;
+	phy_ctl |= B43legacy_TX4_PHY_ANTLAST;
+
+	/* MAC control */
+	rates = info->control.rates;
 	if (!(info->flags & IEEE80211_TX_CTL_NO_ACK))
 		mac_ctl |= B43legacy_TX4_MAC_ACK;
 	if (info->flags & IEEE80211_TX_CTL_ASSIGN_SEQ)
@@ -307,6 +329,22 @@ static int generate_txhdr_fw3(struct b43legacy_wldev *dev,
 	/* Generate the RTS or CTS-to-self frame */
 	if ((info->flags & IEEE80211_TX_CTL_USE_RTS_CTS) ||
 	    (info->flags & IEEE80211_TX_CTL_USE_CTS_PROTECT)) {
+
+	/* Overwrite rates[0].count to make the retry calculation
+	 * in the tx status easier. need the actual retry limit to
+	 * detect whether the fallback rate was used.
+	 */
+	if ((rates[0].flags & IEEE80211_TX_RC_USE_RTS_CTS) ||
+	    (rates[0].count <= dev->wl->hw->conf.long_frame_max_tx_count)) {
+		rates[0].count = dev->wl->hw->conf.long_frame_max_tx_count;
+		mac_ctl |= B43legacy_TX4_MAC_LONGFRAME;
+	} else {
+		rates[0].count = dev->wl->hw->conf.short_frame_max_tx_count;
+	}
+
+	/* Generate the RTS or CTS-to-self frame */
+	if ((rates[0].flags & IEEE80211_TX_RC_USE_RTS_CTS) ||
+	    (rates[0].flags & IEEE80211_TX_RC_USE_CTS_PROTECT)) {
 		unsigned int len;
 		struct ieee80211_hdr *hdr;
 		int rts_rate;
@@ -316,12 +354,16 @@ static int generate_txhdr_fw3(struct b43legacy_wldev *dev,
 
 		rts_rate = ieee80211_get_rts_cts_rate(dev->wl->hw, info)->hw_value;
 		rts_rate_ofdm = b43legacy_is_ofdm_rate(rts_rate);
+		int rts_rate_fb_ofdm;
+
+		rts_rate = ieee80211_get_rts_cts_rate(dev->wl->hw, info)->hw_value;
 		rts_rate_fb = b43legacy_calc_fallback_rate(rts_rate);
 		rts_rate_fb_ofdm = b43legacy_is_ofdm_rate(rts_rate_fb);
 		if (rts_rate_fb_ofdm)
 			mac_ctl |= B43legacy_TX4_MAC_CTSFALLBACKOFDM;
 
 		if (info->flags & IEEE80211_TX_CTL_USE_CTS_PROTECT) {
+		if (rates[0].flags & IEEE80211_TX_RC_USE_CTS_PROTECT) {
 			ieee80211_ctstoself_get(dev->wl->hw,
 						info->control.vif,
 						fragment_data,
@@ -345,6 +387,7 @@ static int generate_txhdr_fw3(struct b43legacy_wldev *dev,
 					    len, rts_rate);
 		b43legacy_generate_plcp_hdr((struct b43legacy_plcp_hdr4 *)
 					    (&txhdr->rts_plcp_fb),
+		b43legacy_generate_plcp_hdr(&txhdr->rts_plcp_fb,
 					    len, rts_rate_fb);
 		hdr = (struct ieee80211_hdr *)(&txhdr->rts_frame);
 		txhdr->rts_dur_fb = hdr->duration_id;
@@ -365,6 +408,7 @@ int b43legacy_generate_txhdr(struct b43legacy_wldev *dev,
 			      const unsigned char *fragment_data,
 			      unsigned int fragment_len,
 			      const struct ieee80211_tx_info *info,
+			      struct ieee80211_tx_info *info,
 			      u16 cookie)
 {
 	return generate_txhdr_fw3(dev, (struct b43legacy_txhdr_fw3 *)txhdr,
@@ -565,6 +609,7 @@ void b43legacy_rx(struct b43legacy_wldev *dev,
 		if (low_mactime_now <= mactime)
 			status.mactime -= 0x10000;
 		status.flag |= RX_FLAG_TSFT;
+		status.flag |= RX_FLAG_MACTIME_START;
 	}
 
 	chanid = (chanstat & B43legacy_RX_CHAN_ID) >>
@@ -578,10 +623,13 @@ void b43legacy_rx(struct b43legacy_wldev *dev,
 	default:
 		b43legacywarn(dev->wl, "Unexpected value for chanstat (0x%X)\n",
 		       chanstat);
+		goto drop;
 	}
 
 	dev->stats.last_rx = jiffies;
 	ieee80211_rx_irqsafe(dev->wl->hw, skb, &status);
+	memcpy(IEEE80211_SKB_RXCB(skb), &status, sizeof(status));
+	ieee80211_rx_irqsafe(dev->wl->hw, skb);
 
 	return;
 drop:
@@ -627,6 +675,7 @@ void b43legacy_handle_hwtxstatus(struct b43legacy_wldev *dev,
 	status.frame_count = (tmp >> 4);
 	status.rts_count = (tmp & 0x0F);
 	tmp = hw->flags;
+	tmp = hw->flags << 1;
 	status.supp_reason = ((tmp & 0x1C) >> 2);
 	status.pm_indicated = !!(tmp & 0x80);
 	status.intermediate = !!(tmp & 0x40);

@@ -1,6 +1,7 @@
 menuconfig MTD
 	tristate "Memory Technology Device (MTD) support"
 	depends on HAS_IOMEM
+	depends on GENERIC_IO
 	help
 	  Memory Technology Devices are flash, RAM and similar chips, often
 	  used for solid state file systems on embedded devices. This option
@@ -48,6 +49,19 @@ config MTD_PARTITIONS
 config MTD_REDBOOT_PARTS
 	tristate "RedBoot partition table parsing"
 	depends on MTD_PARTITIONS
+config MTD_TESTS
+	tristate "MTD tests support (DANGEROUS)"
+	depends on m
+	help
+	  This option includes various MTD tests into compilation. The tests
+	  should normally be compiled as kernel modules. The modules perform
+	  various checks and verifications when loaded.
+
+	  WARNING: some of the tests will ERASE entire MTD device which they
+	  test. Do not use these tests unless you really know what you do.
+
+config MTD_REDBOOT_PARTS
+	tristate "RedBoot partition table parsing"
 	---help---
 	  RedBoot is a ROM monitor and bootloader which deals with multiple
 	  'images' in flash devices by putting a table one of the erase
@@ -67,6 +81,10 @@ config MTD_REDBOOT_PARTS
 config MTD_REDBOOT_DIRECTORY_BLOCK
 	int "Location of RedBoot partition table"
 	depends on MTD_REDBOOT_PARTS
+if MTD_REDBOOT_PARTS
+
+config MTD_REDBOOT_DIRECTORY_BLOCK
+	int "Location of RedBoot partition table"
 	default "-1"
 	---help---
 	  This option is the Linux counterpart to the
@@ -98,6 +116,11 @@ config MTD_REDBOOT_PARTS_READONLY
 config MTD_CMDLINE_PARTS
 	bool "Command line partition table parsing"
 	depends on MTD_PARTITIONS = "y" && MTD = "y"
+endif # MTD_REDBOOT_PARTS
+
+config MTD_CMDLINE_PARTS
+	tristate "Command line partition table parsing"
+	depends on MTD
 	---help---
 	  Allow generic configuration of the MTD partition tables via the kernel
 	  command line. Multiple flash resources are supported for hardware where
@@ -135,6 +158,7 @@ config MTD_CMDLINE_PARTS
 config MTD_AFS_PARTS
 	tristate "ARM Firmware Suite partition parsing"
 	depends on ARM && MTD_PARTITIONS
+	depends on ARM
 	---help---
 	  The ARM Firmware Suite allows the user to divide flash devices into
 	  multiple 'images'. Each such image has a header containing its name
@@ -176,6 +200,44 @@ config MTD_BLKDEVS
 	tristate "Common interface to block layer for MTD 'translation layers'"
 	depends on BLOCK
 	default n
+	  'physmap' map driver (CONFIG_MTD_PHYSMAP) does this, for example.
+
+config MTD_OF_PARTS
+	tristate "OpenFirmware partitioning information support"
+	default y
+	depends on OF
+	help
+	  This provides a partition parsing function which derives
+	  the partition map from the children of the flash node,
+	  as described in Documentation/devicetree/bindings/mtd/partition.txt.
+
+config MTD_AR7_PARTS
+	tristate "TI AR7 partitioning support"
+	---help---
+	  TI AR7 partitioning support
+
+config MTD_BCM63XX_PARTS
+	tristate "BCM63XX CFE partitioning support"
+	depends on BCM63XX
+	select CRC32
+	help
+	  This provides partions parsing for BCM63xx devices with CFE
+	  bootloaders.
+
+config MTD_BCM47XX_PARTS
+	tristate "BCM47XX partitioning support"
+	depends on BCM47XX || ARCH_BCM_5301X
+	help
+	  This provides partitions parser for devices based on BCM47xx
+	  boards.
+
+comment "User Modules And Translation Layers"
+
+#
+# MTD block device support is select'ed if needed
+#
+config MTD_BLKDEVS
+	tristate
 
 config MTD_BLOCK
 	tristate "Caching block device access to MTD devices"
@@ -293,6 +355,24 @@ config SSFDC
 config MTD_OOPS
 	tristate "Log panic/oops to an MTD buffer"
 	depends on MTD
+
+config SM_FTL
+	tristate "SmartMedia/xD new translation layer"
+	depends on BLOCK
+	select MTD_BLKDEVS
+	select MTD_NAND_ECC
+	help
+	  This enables EXPERIMENTAL R/W support for SmartMedia/xD
+	  FTL (Flash translation layer).
+	  Write support is only lightly tested, therefore this driver
+	  isn't recommended to use with valuable data (anyway if you have
+	  valuable data, do backups regardless of software/hardware you
+	  use, because you never know what will eat your data...)
+	  If you only need R/O access, you can use older R/O driver
+	  (CONFIG_SSFDC)
+
+config MTD_OOPS
+	tristate "Log panic/oops to an MTD buffer"
 	help
 	  This enables panic and oops messages to be logged to a circular
 	  buffer in a flash partition where it can be read back at some
@@ -300,6 +380,28 @@ config MTD_OOPS
 
 	  To use, add console=ttyMTDx to the kernel command line,
 	  where x is the MTD device number to use.
+config MTD_SWAP
+	tristate "Swap on MTD device support"
+	depends on MTD && SWAP
+	select MTD_BLKDEVS
+	help
+	  Provides volatile block device driver on top of mtd partition
+          suitable for swapping.  The mapping of written blocks is not saved.
+	  The driver provides wear leveling by storing erase counter into the
+	  OOB.
+
+config MTD_PARTITIONED_MASTER
+	bool "Retain master device when partitioned"
+	default n
+	depends on MTD
+	help
+	  For historical reasons, by default, either a master is present or
+	  several partitions are present, but not both. The concern was that
+	  data listed in multiple partitions was dangerous; however, SCSI does
+	  this and it is frequently useful for applications. This config option
+	  leaves the master in even if the device is partitioned. It also makes
+	  the parent of the partition device be the master device, rather than
+	  what lies behind the master.
 
 source "drivers/mtd/chips/Kconfig"
 
@@ -310,6 +412,10 @@ source "drivers/mtd/devices/Kconfig"
 source "drivers/mtd/nand/Kconfig"
 
 source "drivers/mtd/onenand/Kconfig"
+
+source "drivers/mtd/lpddr/Kconfig"
+
+source "drivers/mtd/spi-nor/Kconfig"
 
 source "drivers/mtd/ubi/Kconfig"
 

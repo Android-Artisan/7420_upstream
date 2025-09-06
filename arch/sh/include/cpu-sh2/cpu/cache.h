@@ -19,6 +19,7 @@
 
 #if defined(CONFIG_CPU_SUBTYPE_SH7619)
 #define CCR		0xffffffec
+#define SH_CCR		0xffffffec
 
 #define CCR_CACHE_CE	0x01	/* Cache enable */
 #define CCR_CACHE_WT	0x02    /* CCR[bit1=1,bit2=1] */

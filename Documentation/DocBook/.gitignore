@@ -4,3 +4,14 @@
 *.html
 *.9.gz
 *.9
+*.aux
+*.dvi
+*.log
+*.out
+*.png
+*.gif
+*.svg
+*.proc
+*.db
+media-indices.tmpl
+media-entities.tmpl

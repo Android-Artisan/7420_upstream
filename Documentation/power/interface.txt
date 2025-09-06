@@ -9,6 +9,8 @@ is mounted at /sys).
 /sys/power/state controls system power state. Reading from this file
 returns what states are supported, which is hard-coded to 'standby'
 (Power-On Suspend), 'mem' (Suspend-to-RAM), and 'disk'
+returns what states are supported, which is hard-coded to 'freeze',
+'standby' (Power-On Suspend), 'mem' (Suspend-to-RAM), and 'disk'
 (Suspend-to-Disk). 
 
 Writing to this file one of those strings causes the system to
@@ -58,6 +60,7 @@ suspend image will be as small as possible.
 
 Reading from this file will display the current image size limit, which
 is set to 500 MB by default.
+is set to 2/5 of available RAM by default.
 
 /sys/power/pm_trace controls the code which saves the last PM event point in
 the RTC across reboots, so that you can debug a machine that just hangs

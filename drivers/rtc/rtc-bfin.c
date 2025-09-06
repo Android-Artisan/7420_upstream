@@ -3,6 +3,9 @@
  *  Supports BF52[257]/BF53[123]/BF53[467]/BF54[24789]
  *
  * Copyright 2004-2008 Analog Devices Inc.
+ *  Supports BF51x/BF52x/BF53[123]/BF53[467]/BF54x
+ *
+ * Copyright 2004-2010 Analog Devices Inc.
  *
  * Enter bugs at http://blackfin.uclinux.org/
  *
@@ -23,6 +26,9 @@
  * would have to sleep for up to 1 second everytime we wanted to write a
  * register), we only check the write pending status before we start to issue
  * a new write.  We bank on the idea that it doesnt matter when the sync
+ * would have to sleep for up to 1 second every time we wanted to write a
+ * register), we only check the write pending status before we start to issue
+ * a new write.  We bank on the idea that it doesn't matter when the sync
  * happens so long as we don't attempt another write before it does.  The only
  * time userspace would take this penalty is when they try and do multiple
  * operations right after another ... but in this case, they need to take the
@@ -51,6 +57,7 @@
 #include <linux/platform_device.h>
 #include <linux/rtc.h>
 #include <linux/seq_file.h>
+#include <linux/slab.h>
 
 #include <asm/blackfin.h>
 
@@ -183,6 +190,7 @@ static irqreturn_t bfin_rtc_interrupt(int irq, void *dev_id)
 	unsigned long events = 0;
 	bool write_complete = false;
 	u16 rtc_istat, rtc_ictl;
+	u16 rtc_istat, rtc_istat_clear, rtc_ictl, bits;
 
 	dev_dbg_stamp(dev);
 
@@ -191,6 +199,11 @@ static irqreturn_t bfin_rtc_interrupt(int irq, void *dev_id)
 
 	if (rtc_istat & RTC_ISTAT_WRITE_COMPLETE) {
 		bfin_write_RTC_ISTAT(RTC_ISTAT_WRITE_COMPLETE);
+	rtc_istat_clear = 0;
+
+	bits = RTC_ISTAT_WRITE_COMPLETE;
+	if (rtc_istat & bits) {
+		rtc_istat_clear |= bits;
 		write_complete = true;
 		complete(&bfin_write_complete);
 	}
@@ -198,6 +211,10 @@ static irqreturn_t bfin_rtc_interrupt(int irq, void *dev_id)
 	if (rtc_ictl & (RTC_ISTAT_ALARM | RTC_ISTAT_ALARM_DAY)) {
 		if (rtc_istat & (RTC_ISTAT_ALARM | RTC_ISTAT_ALARM_DAY)) {
 			bfin_write_RTC_ISTAT(RTC_ISTAT_ALARM | RTC_ISTAT_ALARM_DAY);
+	bits = (RTC_ISTAT_ALARM | RTC_ISTAT_ALARM_DAY);
+	if (rtc_ictl & bits) {
+		if (rtc_istat & bits) {
+			rtc_istat_clear |= bits;
 			events |= RTC_AF | RTC_IRQF;
 		}
 	}
@@ -205,6 +222,10 @@ static irqreturn_t bfin_rtc_interrupt(int irq, void *dev_id)
 	if (rtc_ictl & RTC_ISTAT_SEC) {
 		if (rtc_istat & RTC_ISTAT_SEC) {
 			bfin_write_RTC_ISTAT(RTC_ISTAT_SEC);
+	bits = RTC_ISTAT_SEC;
+	if (rtc_ictl & bits) {
+		if (rtc_istat & bits) {
+			rtc_istat_clear |= bits;
 			events |= RTC_UF | RTC_IRQF;
 		}
 	}
@@ -215,6 +236,10 @@ static irqreturn_t bfin_rtc_interrupt(int irq, void *dev_id)
 	if (write_complete || events)
 		return IRQ_HANDLED;
 	else
+	if (write_complete || events) {
+		bfin_write_RTC_ISTAT(rtc_istat_clear);
+		return IRQ_HANDLED;
+	} else
 		return IRQ_NONE;
 }
 
@@ -268,6 +293,18 @@ static int bfin_rtc_ioctl(struct device *dev, unsigned int cmd, unsigned long ar
 	}
 
 	return ret;
+
+static int bfin_rtc_alarm_irq_enable(struct device *dev, unsigned int enabled)
+{
+	struct bfin_rtc *rtc = dev_get_drvdata(dev);
+
+	dev_dbg_stamp(dev);
+	if (enabled)
+		bfin_rtc_int_set_alarm(rtc);
+	else
+		bfin_rtc_int_clear(~(RTC_ISTAT_ALARM | RTC_ISTAT_ALARM_DAY));
+
+	return 0;
 }
 
 static int bfin_rtc_read_time(struct device *dev, struct rtc_time *tm)
@@ -364,11 +401,21 @@ static int __devinit bfin_rtc_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	int ret = 0;
 	unsigned long timeout;
+	.alarm_irq_enable = bfin_rtc_alarm_irq_enable,
+};
+
+static int bfin_rtc_probe(struct platform_device *pdev)
+{
+	struct bfin_rtc *rtc;
+	struct device *dev = &pdev->dev;
+	int ret;
+	unsigned long timeout = jiffies + HZ;
 
 	dev_dbg_stamp(dev);
 
 	/* Allocate memory for our RTC struct */
 	rtc = kzalloc(sizeof(*rtc), GFP_KERNEL);
+	rtc = devm_kzalloc(dev, sizeof(*rtc), GFP_KERNEL);
 	if (unlikely(!rtc))
 		return -ENOMEM;
 	platform_set_drvdata(pdev, rtc);
@@ -382,6 +429,23 @@ static int __devinit bfin_rtc_probe(struct platform_device *pdev)
 	 * enabled, so let's just do a quick timeout here since the IRQ will not fire ...
 	 */
 	timeout = jiffies + HZ;
+	/* Register our RTC with the RTC framework */
+	rtc->rtc_dev = devm_rtc_device_register(dev, pdev->name, &bfin_rtc_ops,
+						THIS_MODULE);
+	if (IS_ERR(rtc->rtc_dev))
+		return PTR_ERR(rtc->rtc_dev);
+
+	/* Grab the IRQ and init the hardware */
+	ret = devm_request_irq(dev, IRQ_RTC, bfin_rtc_interrupt, 0,
+				pdev->name, dev);
+	if (unlikely(ret))
+		dev_err(&pdev->dev,
+			"unable to request IRQ; alarm won't work, "
+			"and writes will be delayed\n");
+
+	/* sometimes the bootloader touched things, but the write complete was not
+	 * enabled, so let's just do a quick timeout here since the IRQ will not fire ...
+	 */
 	while (bfin_read_RTC_ISTAT() & RTC_ISTAT_WRITE_PENDING)
 		if (time_after(jiffies, timeout))
 			break;
@@ -414,6 +478,14 @@ static int __devexit bfin_rtc_remove(struct platform_device *pdev)
 	rtc_device_unregister(rtc->rtc_dev);
 	platform_set_drvdata(pdev, NULL);
 	kfree(rtc);
+	return 0;
+}
+
+static int bfin_rtc_remove(struct platform_device *pdev)
+{
+	struct device *dev = &pdev->dev;
+
+	bfin_rtc_reset(dev, 0);
 
 	return 0;
 }
@@ -426,6 +498,16 @@ static int bfin_rtc_suspend(struct platform_device *pdev, pm_message_t state)
 		bfin_rtc_sync_pending(&pdev->dev);
 	} else
 		bfin_rtc_int_clear(-1);
+#ifdef CONFIG_PM_SLEEP
+static int bfin_rtc_suspend(struct device *dev)
+{
+	dev_dbg_stamp(dev);
+
+	if (device_may_wakeup(dev)) {
+		enable_irq_wake(IRQ_RTC);
+		bfin_rtc_sync_pending(dev);
+	} else
+		bfin_rtc_int_clear(0);
 
 	return 0;
 }
@@ -467,6 +549,40 @@ static void __exit bfin_rtc_exit(void)
 
 module_init(bfin_rtc_init);
 module_exit(bfin_rtc_exit);
+static int bfin_rtc_resume(struct device *dev)
+{
+	dev_dbg_stamp(dev);
+
+	if (device_may_wakeup(dev))
+		disable_irq_wake(IRQ_RTC);
+
+	/*
+	 * Since only some of the RTC bits are maintained externally in the
+	 * Vbat domain, we need to wait for the RTC MMRs to be synced into
+	 * the core after waking up.  This happens every RTC 1HZ.  Once that
+	 * has happened, we can go ahead and re-enable the important write
+	 * complete interrupt event.
+	 */
+	while (!(bfin_read_RTC_ISTAT() & RTC_ISTAT_SEC))
+		continue;
+	bfin_rtc_int_set(RTC_ISTAT_WRITE_COMPLETE);
+
+	return 0;
+}
+#endif
+
+static SIMPLE_DEV_PM_OPS(bfin_rtc_pm_ops, bfin_rtc_suspend, bfin_rtc_resume);
+
+static struct platform_driver bfin_rtc_driver = {
+	.driver		= {
+		.name	= "rtc-bfin",
+		.pm	= &bfin_rtc_pm_ops,
+	},
+	.probe		= bfin_rtc_probe,
+	.remove		= bfin_rtc_remove,
+};
+
+module_platform_driver(bfin_rtc_driver);
 
 MODULE_DESCRIPTION("Blackfin On-Chip Real Time Clock Driver");
 MODULE_AUTHOR("Mike Frysinger <vapier@gentoo.org>");

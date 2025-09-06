@@ -1241,7 +1241,6 @@ static int af9005_fe_get_frontend(struct dvb_frontend *fe,
 				      &temp);
 	if (ret)
 		return ret;
-	deb_info("===== fe_get_frontend ==============\n");
 	deb_info("CONSTELLATION ");
 	switch (temp) {
 	case 0:

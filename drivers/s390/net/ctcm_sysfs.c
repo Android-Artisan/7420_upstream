@@ -11,6 +11,12 @@
 #undef DEBUGCCW
 
 #include <linux/sysfs.h>
+#define KMSG_COMPONENT "ctcm"
+#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
+
+#include <linux/device.h>
+#include <linux/sysfs.h>
+#include <linux/slab.h>
 #include "ctcm_main.h"
 
 /*
@@ -36,11 +42,21 @@ static ssize_t ctcm_buffer_write(struct device *dev,
 
 	if (!(priv && priv->channel[READ] &&
 			(ndev = priv->channel[READ]->netdev))) {
+	unsigned int bs1;
+	struct ctcm_priv *priv = dev_get_drvdata(dev);
+	int rc;
+
+	if (!(priv && priv->channel[CTCM_READ] &&
+	      priv->channel[CTCM_READ]->netdev)) {
 		CTCM_DBF_TEXT(SETUP, CTC_DBF_ERROR, "bfnondev");
 		return -ENODEV;
 	}
+	ndev = priv->channel[CTCM_READ]->netdev;
 
 	sscanf(buf, "%u", &bs1);
+	rc = kstrtouint(buf, 0, &bs1);
+	if (rc)
+		goto einval;
 	if (bs1 > CTCM_BUFSIZE_LIMIT)
 					goto einval;
 	if (bs1 < (576 + LL_HEADER_LENGTH + 2))
@@ -57,6 +73,12 @@ static ssize_t ctcm_buffer_write(struct device *dev,
 		ndev->mtu = bs1 - LL_HEADER_LENGTH - 2;
 	priv->channel[READ]->flags |= CHANNEL_FLAGS_BUFSIZE_CHANGED;
 	priv->channel[WRITE]->flags |= CHANNEL_FLAGS_BUFSIZE_CHANGED;
+	priv->channel[CTCM_READ]->max_bufsize = bs1;
+	priv->channel[CTCM_WRITE]->max_bufsize = bs1;
+	if (!(ndev->flags & IFF_RUNNING))
+		ndev->mtu = bs1 - LL_HEADER_LENGTH - 2;
+	priv->channel[CTCM_READ]->flags |= CHANNEL_FLAGS_BUFSIZE_CHANGED;
+	priv->channel[CTCM_WRITE]->flags |= CHANNEL_FLAGS_BUFSIZE_CHANGED;
 
 	CTCM_DBF_DEV(SETUP, ndev, buf);
 	return count;
@@ -84,6 +106,9 @@ static void ctcm_print_statistics(struct ctcm_priv *priv)
 		     fsm_getstate_str(priv->channel[READ]->fsm));
 	p += sprintf(p, "  TX channel FSM state: %s\n",
 		     fsm_getstate_str(priv->channel[WRITE]->fsm));
+		     fsm_getstate_str(priv->channel[CTCM_READ]->fsm));
+	p += sprintf(p, "  TX channel FSM state: %s\n",
+		     fsm_getstate_str(priv->channel[CTCM_WRITE]->fsm));
 	p += sprintf(p, "  Max. TX buffer used: %ld\n",
 		     priv->channel[WRITE]->prof.maxmulti);
 	p += sprintf(p, "  Max. chained SKBs: %ld\n",
@@ -99,6 +124,11 @@ static void ctcm_print_statistics(struct ctcm_priv *priv)
 
 	printk(KERN_INFO "Statistics for %s:\n%s",
 				priv->channel[WRITE]->netdev->name, sbuf);
+	p += sprintf(p, "  Max. TX IO-time: %u\n",
+		     jiffies_to_usecs(priv->channel[WRITE]->prof.tx_time));
+
+	printk(KERN_INFO "Statistics for %s:\n%s",
+				priv->channel[CTCM_WRITE]->netdev->name, sbuf);
 	kfree(sbuf);
 	return;
 }
@@ -108,6 +138,12 @@ static ssize_t stats_show(struct device *dev,
 {
 	struct ctcm_priv *priv = dev_get_drvdata(dev);
 	if (!priv)
+			  struct device_attribute *attr, char *buf)
+{
+	struct ccwgroup_device *gdev = to_ccwgroupdev(dev);
+	struct ctcm_priv *priv = dev_get_drvdata(dev);
+
+	if (!priv || gdev->state != CCWGROUP_ONLINE)
 		return -ENODEV;
 	ctcm_print_statistics(priv);
 	return sprintf(buf, "0\n");
@@ -122,6 +158,7 @@ static ssize_t stats_write(struct device *dev, struct device_attribute *attr,
 	/* Reset statistics */
 	memset(&priv->channel[WRITE]->prof, 0,
 				sizeof(priv->channel[WRITE]->prof));
+				sizeof(priv->channel[CTCM_WRITE]->prof));
 	return count;
 }
 
@@ -139,12 +176,16 @@ static ssize_t ctcm_proto_store(struct device *dev,
 		struct device_attribute *attr, const char *buf, size_t count)
 {
 	int value;
+	int value, rc;
 	struct ctcm_priv *priv = dev_get_drvdata(dev);
 
 	if (!priv)
 		return -ENODEV;
 	sscanf(buf, "%u", &value);
 	if (!((value == CTCM_PROTO_S390)  ||
+	rc = kstrtoint(buf, 0, &value);
+	if (rc ||
+	    !((value == CTCM_PROTO_S390)  ||
 	      (value == CTCM_PROTO_LINUX) ||
 	      (value == CTCM_PROTO_MPC) ||
 	      (value == CTCM_PROTO_OS390)))
@@ -154,6 +195,15 @@ static ssize_t ctcm_proto_store(struct device *dev,
 
 	return count;
 }
+
+static const char *ctcm_type[] = {
+	"not a channel",
+	"CTC/A",
+	"FICON channel",
+	"ESCON channel",
+	"unknown channel type",
+	"unsupported channel type",
+};
 
 static ssize_t ctcm_type_show(struct device *dev,
 				struct device_attribute *attr, char *buf)
@@ -166,6 +216,7 @@ static ssize_t ctcm_type_show(struct device *dev,
 
 	return sprintf(buf, "%s\n",
 			cu3088_type[cgdev->cdev[0]->id.driver_info]);
+			ctcm_type[cgdev->cdev[0]->id.driver_info]);
 }
 
 static DEVICE_ATTR(buffer, 0644, ctcm_buffer_show, ctcm_buffer_write);
@@ -177,6 +228,7 @@ static struct attribute *ctcm_attr[] = {
 	&dev_attr_protocol.attr,
 	&dev_attr_type.attr,
 	&dev_attr_buffer.attr,
+	&dev_attr_stats.attr,
 	NULL,
 };
 
@@ -208,3 +260,7 @@ void ctcm_remove_files(struct device *dev)
 	sysfs_remove_group(&dev->kobj, &ctcm_attr_group);
 }
 
+const struct attribute_group *ctcm_attr_groups[] = {
+	&ctcm_attr_group,
+	NULL,
+};

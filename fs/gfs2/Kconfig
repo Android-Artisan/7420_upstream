@@ -3,6 +3,10 @@ config GFS2_FS
 	depends on EXPERIMENTAL && (64BIT || (LSF && LBD))
 	select FS_POSIX_ACL
 	select CRC32
+	depends on (64BIT || LBDAF)
+	select FS_POSIX_ACL
+	select CRC32
+	select QUOTACTL
 	help
 	  A cluster filesystem.
 
@@ -30,5 +34,16 @@ config GFS2_FS_LOCKING_DLM
 	  Multiple node locking module for GFS2
 
 	  Most users of GFS2 will require this module. It provides the locking
+	  The "nolock" lock module is now built in to GFS2 by default. If
+	  you want to use the DLM, be sure to enable IPv4/6 networking.
+
+config GFS2_FS_LOCKING_DLM
+	bool "GFS2 DLM locking"
+	depends on (GFS2_FS!=n) && NET && INET && (IPV6 || IPV6=n) && \
+		CONFIGFS_FS && SYSFS && (DLM=y || DLM=GFS2_FS)
+	help
+	  Multiple node locking module for GFS2
+
+	  Most users of GFS2 will require this. It provides the locking
 	  interface between GFS2 and the DLM, which is required to use GFS2
 	  in a cluster environment.

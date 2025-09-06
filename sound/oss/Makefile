@@ -15,6 +15,9 @@ obj-$(CONFIG_SOUND_AEDSP16)	+= aedsp16.o
 obj-$(CONFIG_SOUND_PSS)		+= pss.o ad1848.o mpu401.o
 obj-$(CONFIG_SOUND_TRIX)	+= trix.o ad1848.o sb_lib.o uart401.o
 obj-$(CONFIG_SOUND_SSCAPE)	+= sscape.o ad1848.o mpu401.o
+obj-$(CONFIG_SOUND_AEDSP16)	+= aedsp16.o
+obj-$(CONFIG_SOUND_PSS)		+= pss.o ad1848.o mpu401.o
+obj-$(CONFIG_SOUND_TRIX)	+= trix.o ad1848.o sb_lib.o uart401.o
 obj-$(CONFIG_SOUND_MSS)		+= ad1848.o
 obj-$(CONFIG_SOUND_PAS)		+= pas2.o sb.o sb_lib.o uart401.o
 obj-$(CONFIG_SOUND_SB)		+= sb.o sb_lib.o uart401.o
@@ -91,6 +94,7 @@ ifeq ($(CONFIG_PSS_HAVE_BOOT),y)
 else
     $(obj)/pss_boot.h:
 	(							\
+	$(Q)(							\
 	    echo 'static unsigned char * pss_synth = NULL;';	\
 	    echo 'static int pss_synthLen = 0;';		\
 	) > $@
@@ -106,6 +110,7 @@ ifeq ($(CONFIG_TRIX_HAVE_BOOT),y)
 else
     $(obj)/trix_boot.h:
 	(							\
+	$(Q)(							\
 	    echo 'static unsigned char * trix_boot = NULL;';	\
 	    echo 'static int trix_boot_len = 0;';		\
 	) > $@

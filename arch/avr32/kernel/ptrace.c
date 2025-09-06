@@ -31,6 +31,9 @@ static struct pt_regs *get_user_regs(struct task_struct *tsk)
 static void ptrace_single_step(struct task_struct *tsk)
 {
 	pr_debug("ptrace_single_step: pid=%u, PC=0x%08lx, SR=0x%08lx\n",
+void user_enable_single_step(struct task_struct *tsk)
+{
+	pr_debug("user_enable_single_step: pid=%u, PC=0x%08lx, SR=0x%08lx\n",
 		 tsk->pid, task_pt_regs(tsk)->pc, task_pt_regs(tsk)->sr);
 
 	/*
@@ -47,6 +50,11 @@ static void ptrace_single_step(struct task_struct *tsk)
 	 */
 	set_tsk_thread_flag(tsk, TIF_BREAKPOINT);
 	set_tsk_thread_flag(tsk, TIF_SINGLE_STEP);
+}
+
+void user_disable_single_step(struct task_struct *child)
+{
+	/* XXX(hch): a no-op here seems wrong.. */
 }
 
 /*
@@ -144,6 +152,11 @@ static int ptrace_setregs(struct task_struct *tsk, const void __user *uregs)
 long arch_ptrace(struct task_struct *child, long request, long addr, long data)
 {
 	int ret;
+long arch_ptrace(struct task_struct *child, long request,
+		 unsigned long addr, unsigned long data)
+{
+	int ret;
+	void __user *datap = (void __user *) data;
 
 	switch (request) {
 	/* Read the word at location addr in the child process */
@@ -155,6 +168,7 @@ long arch_ptrace(struct task_struct *child, long request, long addr, long data)
 	case PTRACE_PEEKUSR:
 		ret = ptrace_read_user(child, addr,
 				       (unsigned long __user *)data);
+		ret = ptrace_read_user(child, addr, datap);
 		break;
 
 	/* Write the word in data at location addr */
@@ -217,6 +231,12 @@ long arch_ptrace(struct task_struct *child, long request, long addr, long data)
 
 	case PTRACE_SETREGS:
 		ret = ptrace_setregs(child, (const void __user *)data);
+	case PTRACE_GETREGS:
+		ret = ptrace_getregs(child, datap);
+		break;
+
+	case PTRACE_SETREGS:
+		ret = ptrace_setregs(child, datap);
 		break;
 
 	default:

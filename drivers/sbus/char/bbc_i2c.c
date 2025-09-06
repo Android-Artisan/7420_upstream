@@ -3,6 +3,10 @@
  *            platforms.
  *
  * Copyright (C) 2001 David S. Miller (davem@redhat.com)
+/* bbc_i2c.c: I2C low-level driver for BBC device on UltraSPARC-III
+ *            platforms.
+ *
+ * Copyright (C) 2001, 2008 David S. Miller (davem@davemloft.net)
  */
 
 #include <linux/module.h>
@@ -17,6 +21,9 @@
 #include <asm/oplib.h>
 #include <asm/ebus.h>
 #include <asm/spitfire.h>
+#include <linux/interrupt.h>
+#include <linux/of.h>
+#include <linux/of_device.h>
 #include <asm/bbc.h>
 #include <asm/io.h>
 
@@ -82,6 +89,7 @@ struct bbc_i2c_client {
 };
 
 static int find_device(struct bbc_i2c_bus *bp, struct linux_ebus_child *echild)
+static void set_device_claimage(struct bbc_i2c_bus *bp, struct platform_device *op, int val)
 {
 	int i;
 
@@ -101,6 +109,7 @@ static void set_device_claimage(struct bbc_i2c_bus *bp, struct linux_ebus_child 
 
 	for (i = 0; i < NUM_CHILDREN; i++) {
 		if (bp->devs[i].device == echild) {
+		if (bp->devs[i].device == op) {
 			bp->devs[i].client_claimed = val;
 			return;
 		}
@@ -156,6 +165,31 @@ struct bbc_i2c_client *bbc_i2c_attach(struct linux_ebus_child *echild)
 
 	if (!bp)
 		return NULL;
+struct platform_device *bbc_i2c_getdev(struct bbc_i2c_bus *bp, int index)
+{
+	struct platform_device *op = NULL;
+	int curidx = 0, i;
+
+	for (i = 0; i < NUM_CHILDREN; i++) {
+		if (!(op = bp->devs[i].device))
+			break;
+		if (curidx == index)
+			goto out;
+		op = NULL;
+		curidx++;
+	}
+
+out:
+	if (curidx == index)
+		return op;
+	return NULL;
+}
+
+struct bbc_i2c_client *bbc_i2c_attach(struct bbc_i2c_bus *bp, struct platform_device *op)
+{
+	struct bbc_i2c_client *client;
+	const u32 *reg;
+
 	client = kzalloc(sizeof(*client), GFP_KERNEL);
 	if (!client)
 		return NULL;
@@ -165,6 +199,18 @@ struct bbc_i2c_client *bbc_i2c_attach(struct linux_ebus_child *echild)
 	client->address = echild->resource[1].start;
 
 	claim_device(bp, echild);
+	client->op = op;
+
+	reg = of_get_property(op->dev.of_node, "reg", NULL);
+	if (!reg) {
+		kfree(client);
+		return NULL;
+	}
+
+	client->bus = reg[0];
+	client->address = reg[1];
+
+	claim_device(bp, op);
 
 	return client;
 }
@@ -175,6 +221,9 @@ void bbc_i2c_detach(struct bbc_i2c_client *client)
 	struct linux_ebus_child *echild = client->echild;
 
 	release_device(bp, echild);
+	struct platform_device *op = client->op;
+
+	release_device(bp, op);
 	kfree(client);
 }
 
@@ -188,6 +237,7 @@ static int wait_for_pin(struct bbc_i2c_bus *bp, u8 *status)
 	add_wait_queue(&bp->wq, &wait);
 	while (limit-- > 0) {
 		unsigned long val;
+		long val;
 
 		val = wait_event_interruptible_timeout(
 				bp->wq,
@@ -298,6 +348,9 @@ int bbc_i2c_write_buf(struct bbc_i2c_client *client,
 			break;
 		}
 
+		ret = bbc_i2c_writeb(client, *buf, off);
+		if (ret < 0)
+			break;
 		len--;
 		buf++;
 		off++;
@@ -316,6 +369,9 @@ int bbc_i2c_read_buf(struct bbc_i2c_client *client,
 			ret = err;
 			break;
 		}
+		ret = bbc_i2c_readb(client, buf, off);
+		if (ret < 0)
+			break;
 		len--;
 		buf++;
 		off++;
@@ -347,6 +403,7 @@ static irqreturn_t bbc_i2c_interrupt(int irq, void *dev_id)
 }
 
 static void __init reset_one_i2c(struct bbc_i2c_bus *bp)
+static void reset_one_i2c(struct bbc_i2c_bus *bp)
 {
 	writeb(I2C_PCF_PIN, bp->i2c_control_regs + 0x0);
 	writeb(bp->own, bp->i2c_control_regs + 0x1);
@@ -359,6 +416,10 @@ static int __init attach_one_i2c(struct linux_ebus_device *edev, int index)
 {
 	struct bbc_i2c_bus *bp;
 	struct linux_ebus_child *echild;
+static struct bbc_i2c_bus * attach_one_i2c(struct platform_device *op, int index)
+{
+	struct bbc_i2c_bus *bp;
+	struct device_node *dp;
 	int entry;
 
 	bp = kzalloc(sizeof(*bp), GFP_KERNEL);
@@ -371,6 +432,17 @@ static int __init attach_one_i2c(struct linux_ebus_device *edev, int index)
 
 	if (edev->num_addrs == 2) {
 		bp->i2c_bussel_reg = ioremap(edev->resource[1].start, 0x1);
+		return NULL;
+
+	INIT_LIST_HEAD(&bp->temps);
+	INIT_LIST_HEAD(&bp->fans);
+
+	bp->i2c_control_regs = of_ioremap(&op->resource[0], 0, 0x2, "bbc_i2c_regs");
+	if (!bp->i2c_control_regs)
+		goto fail;
+
+	if (op->num_resources == 2) {
+		bp->i2c_bussel_reg = of_ioremap(&op->resource[1], 0, 0x1, "bbc_i2c_bussel");
 		if (!bp->i2c_bussel_reg)
 			goto fail;
 	}
@@ -378,6 +450,7 @@ static int __init attach_one_i2c(struct linux_ebus_device *edev, int index)
 	bp->waiting = 0;
 	init_waitqueue_head(&bp->wq);
 	if (request_irq(edev->irqs[0], bbc_i2c_interrupt,
+	if (request_irq(op->archdata.irqs[0], bbc_i2c_interrupt,
 			IRQF_SHARED, "bbc_i2c", bp))
 		goto fail;
 
@@ -393,6 +466,18 @@ static int __init attach_one_i2c(struct linux_ebus_device *edev, int index)
 	     echild && entry < 8;
 	     echild = echild->next, entry++) {
 		bp->devs[entry].device = echild;
+	bp->op = op;
+
+	spin_lock_init(&bp->lock);
+
+	entry = 0;
+	for (dp = op->dev.of_node->child;
+	     dp && entry < 8;
+	     dp = dp->sibling, entry++) {
+		struct platform_device *child_op;
+
+		child_op = of_find_device_by_node(dp);
+		bp->devs[entry].device = child_op;
 		bp->devs[entry].client_claimed = 0;
 	}
 
@@ -488,4 +573,80 @@ static void bbc_i2c_cleanup(void)
 
 module_init(bbc_i2c_init);
 module_exit(bbc_i2c_cleanup);
+	return bp;
+
+fail:
+	if (bp->i2c_bussel_reg)
+		of_iounmap(&op->resource[1], bp->i2c_bussel_reg, 1);
+	if (bp->i2c_control_regs)
+		of_iounmap(&op->resource[0], bp->i2c_control_regs, 2);
+	kfree(bp);
+	return NULL;
+}
+
+extern int bbc_envctrl_init(struct bbc_i2c_bus *bp);
+extern void bbc_envctrl_cleanup(struct bbc_i2c_bus *bp);
+
+static int bbc_i2c_probe(struct platform_device *op)
+{
+	struct bbc_i2c_bus *bp;
+	int err, index = 0;
+
+	bp = attach_one_i2c(op, index);
+	if (!bp)
+		return -EINVAL;
+
+	err = bbc_envctrl_init(bp);
+	if (err) {
+		free_irq(op->archdata.irqs[0], bp);
+		if (bp->i2c_bussel_reg)
+			of_iounmap(&op->resource[0], bp->i2c_bussel_reg, 1);
+		if (bp->i2c_control_regs)
+			of_iounmap(&op->resource[1], bp->i2c_control_regs, 2);
+		kfree(bp);
+	} else {
+		dev_set_drvdata(&op->dev, bp);
+	}
+
+	return err;
+}
+
+static int bbc_i2c_remove(struct platform_device *op)
+{
+	struct bbc_i2c_bus *bp = dev_get_drvdata(&op->dev);
+
+	bbc_envctrl_cleanup(bp);
+
+	free_irq(op->archdata.irqs[0], bp);
+
+	if (bp->i2c_bussel_reg)
+		of_iounmap(&op->resource[0], bp->i2c_bussel_reg, 1);
+	if (bp->i2c_control_regs)
+		of_iounmap(&op->resource[1], bp->i2c_control_regs, 2);
+
+	kfree(bp);
+
+	return 0;
+}
+
+static const struct of_device_id bbc_i2c_match[] = {
+	{
+		.name = "i2c",
+		.compatible = "SUNW,bbc-i2c",
+	},
+	{},
+};
+MODULE_DEVICE_TABLE(of, bbc_i2c_match);
+
+static struct platform_driver bbc_i2c_driver = {
+	.driver = {
+		.name = "bbc_i2c",
+		.of_match_table = bbc_i2c_match,
+	},
+	.probe		= bbc_i2c_probe,
+	.remove		= bbc_i2c_remove,
+};
+
+module_platform_driver(bbc_i2c_driver);
+
 MODULE_LICENSE("GPL");

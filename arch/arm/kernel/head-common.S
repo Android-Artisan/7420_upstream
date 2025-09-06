@@ -26,6 +26,63 @@ __switch_data:
 	.long	__atags_pointer			@ r6
 	.long	cr_alignment			@ r7
 	.long	init_thread_union + THREAD_START_SP @ sp
+#include <asm/assembler.h>
+
+#define ATAG_CORE 0x54410001
+#define ATAG_CORE_SIZE ((2*4 + 3*4) >> 2)
+#define ATAG_CORE_SIZE_EMPTY ((2*4) >> 2)
+
+#ifdef CONFIG_CPU_BIG_ENDIAN
+#define OF_DT_MAGIC 0xd00dfeed
+#else
+#define OF_DT_MAGIC 0xedfe0dd0 /* 0xd00dfeed in big-endian */
+#endif
+
+/*
+ * Exception handling.  Something went wrong and we can't proceed.  We
+ * ought to tell the user, but since we don't have any guarantee that
+ * we're even running on the right architecture, we do virtually nothing.
+ *
+ * If CONFIG_DEBUG_LL is set we try to print out something about the error
+ * and hope for the best (useful if bootloader fails to pass a proper
+ * machine ID for example).
+ */
+	__HEAD
+
+/* Determine validity of the r2 atags pointer.  The heuristic requires
+ * that the pointer be aligned, in the first 16k of physical RAM and
+ * that the ATAG_CORE marker is first and present.  If CONFIG_OF_FLATTREE
+ * is selected, then it will also accept a dtb pointer.  Future revisions
+ * of this function may be more lenient with the physical address and
+ * may also be able to move the ATAGS block if necessary.
+ *
+ * Returns:
+ *  r2 either valid atags pointer, valid dtb pointer, or zero
+ *  r5, r6 corrupted
+ */
+__vet_atags:
+	tst	r2, #0x3			@ aligned?
+	bne	1f
+
+	ldr	r5, [r2, #0]
+#ifdef CONFIG_OF_FLATTREE
+	ldr	r6, =OF_DT_MAGIC		@ is it a DTB?
+	cmp	r5, r6
+	beq	2f
+#endif
+	cmp	r5, #ATAG_CORE_SIZE		@ is first tag ATAG_CORE?
+	cmpne	r5, #ATAG_CORE_SIZE_EMPTY
+	bne	1f
+	ldr	r5, [r2, #4]
+	ldr	r6, =ATAG_CORE
+	cmp	r5, r6
+	bne	1f
+
+2:	ret	lr				@ atag/dtb pointer is ok
+
+1:	mov	r2, #0
+	ret	lr
+ENDPROC(__vet_atags)
 
 /*
  * The following fragment of code is executed with the MMU on in MMU mode,
@@ -39,6 +96,12 @@ __switch_data:
 	.type	__mmap_switched, %function
 __mmap_switched:
 	adr	r3, __switch_data + 4
+ *  r2  = atags/dtb pointer
+ *  r9  = processor ID
+ */
+	__INIT
+__mmap_switched:
+	adr	r3, __mmap_switched_data
 
 	ldmia	r3!, {r4, r5, r6, r7}
 	cmp	r4, r5				@ Copy data segment if needed
@@ -71,6 +134,102 @@ __mmap_switched:
  */
 
 	.type	__error_p, %function
+ ARM(	ldmia	r3, {r4, r5, r6, r7, sp})
+ THUMB(	ldmia	r3, {r4, r5, r6, r7}	)
+ THUMB(	ldr	sp, [r3, #16]		)
+	str	r9, [r4]			@ Save processor ID
+	str	r1, [r5]			@ Save machine type
+	str	r2, [r6]			@ Save atags pointer
+	cmp	r7, #0
+	strne	r0, [r7]			@ Save control register values
+	b	start_kernel
+ENDPROC(__mmap_switched)
+
+	.align	2
+	.type	__mmap_switched_data, %object
+__mmap_switched_data:
+	.long	__data_loc			@ r4
+	.long	_sdata				@ r5
+	.long	__bss_start			@ r6
+	.long	_end				@ r7
+	.long	processor_id			@ r4
+	.long	__machine_arch_type		@ r5
+	.long	__atags_pointer			@ r6
+#ifdef CONFIG_CPU_CP15
+	.long	cr_alignment			@ r7
+#else
+	.long	0				@ r7
+#endif
+	.long	init_thread_union + THREAD_START_SP @ sp
+	.size	__mmap_switched_data, . - __mmap_switched_data
+
+	__FINIT
+	.text
+
+/*
+ * This provides a C-API version of __lookup_processor_type
+ */
+ENTRY(lookup_processor_type)
+	stmfd	sp!, {r4 - r6, r9, lr}
+	mov	r9, r0
+	bl	__lookup_processor_type
+	mov	r0, r5
+	ldmfd	sp!, {r4 - r6, r9, pc}
+ENDPROC(lookup_processor_type)
+
+/*
+ * Read processor ID register (CP#15, CR0), and look up in the linker-built
+ * supported processor list.  Note that we can't use the absolute addresses
+ * for the __proc_info lists since we aren't running with the MMU on
+ * (and therefore, we are not in the correct address space).  We have to
+ * calculate the offset.
+ *
+ *	r9 = cpuid
+ * Returns:
+ *	r3, r4, r6 corrupted
+ *	r5 = proc_info pointer in physical address space
+ *	r9 = cpuid (preserved)
+ */
+__lookup_processor_type:
+	adr	r3, __lookup_processor_type_data
+	ldmia	r3, {r4 - r6}
+	sub	r3, r3, r4			@ get offset between virt&phys
+	add	r5, r5, r3			@ convert virt addresses to
+	add	r6, r6, r3			@ physical address space
+1:	ldmia	r5, {r3, r4}			@ value, mask
+	and	r4, r4, r9			@ mask wanted bits
+	teq	r3, r4
+	beq	2f
+	add	r5, r5, #PROC_INFO_SZ		@ sizeof(proc_info_list)
+	cmp	r5, r6
+	blo	1b
+	mov	r5, #0				@ unknown processor
+2:	ret	lr
+ENDPROC(__lookup_processor_type)
+
+/*
+ * Look in <asm/procinfo.h> for information about the __proc_info structure.
+ */
+	.align	2
+	.type	__lookup_processor_type_data, %object
+__lookup_processor_type_data:
+	.long	.
+	.long	__proc_info_begin
+	.long	__proc_info_end
+	.size	__lookup_processor_type_data, . - __lookup_processor_type_data
+
+__error_lpae:
+#ifdef CONFIG_DEBUG_LL
+	adr	r0, str_lpae
+	bl 	printascii
+	b	__error
+str_lpae: .asciz "\nError: Kernel with LPAE support, but CPU does not support LPAE.\n"
+#else
+	b	__error
+#endif
+	.align
+ENDPROC(__error_lpae)
+
 __error_p:
 #ifdef CONFIG_DEBUG_LL
 	adr	r0, str_p1
@@ -122,6 +281,8 @@ str_a3:	.asciz	"\nPlease check your kernel config and/or bootloader.\n"
 #endif
 
 	.type	__error, %function
+ENDPROC(__error_p)
+
 __error:
 #ifdef CONFIG_ARCH_RPC
 /*
@@ -257,3 +418,4 @@ __vet_atags:
 
 1:	mov	r2, #0
 	mov	pc, lr
+ENDPROC(__error)

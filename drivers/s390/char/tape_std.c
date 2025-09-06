@@ -4,12 +4,19 @@
  *
  *  S390 and zSeries version
  *    Copyright (C) 2001,2002 IBM Deutschland Entwicklung GmbH, IBM Corporation
+ *    standard tape device functions for ibm tapes.
+ *
+ *  S390 and zSeries version
+ *    Copyright IBM Corp. 2001, 2002
  *    Author(s): Carsten Otte <cotte@de.ibm.com>
  *		 Michael Holzheu <holzheu@de.ibm.com>
  *		 Tuan Ngo-Anh <ngoanh@de.ibm.com>
  *		 Martin Schwidefsky <schwidefsky@de.ibm.com>
  *		 Stefan Bader <shbader@de.ibm.com>
  */
+
+#define KMSG_COMPONENT "tape"
+#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
 
 #include <linux/stddef.h>
 #include <linux/kernel.h>
@@ -41,6 +48,8 @@ tape_std_assign_timeout(unsigned long data)
 	request = (struct tape_request *) data;
 	if ((device = request->device) == NULL)
 		BUG();
+	device = request->device;
+	BUG_ON(!device);
 
 	DBF_EVENT(3, "%08x: Assignment timeout. Device busy.\n",
 			device->cdev_id);
@@ -49,6 +58,8 @@ tape_std_assign_timeout(unsigned long data)
 		PRINT_ERR("(%s): Assign timeout: Cancel failed with rc = %i\n",
 			device->cdev->dev.bus_id, rc);
 
+		DBF_EVENT(3, "(%08x): Assign timeout: Cancel failed with rc = "
+			  "%i\n", device->cdev_id, rc);
 }
 
 int
@@ -72,6 +83,7 @@ tape_std_assign(struct tape_device *device)
 	 * So we set up a timeout for this call.
 	 */
 	init_timer(&timeout);
+	init_timer_on_stack(&timeout);
 	timeout.function = tape_std_assign_timeout;
 	timeout.data     = (unsigned long) request;
 	timeout.expires  = jiffies + 2 * HZ;
@@ -84,6 +96,10 @@ tape_std_assign(struct tape_device *device)
 	if (rc != 0) {
 		PRINT_WARN("%s: assign failed - device might be busy\n",
 			device->cdev->dev.bus_id);
+	del_timer_sync(&timeout);
+	destroy_timer_on_stack(&timeout);
+
+	if (rc != 0) {
 		DBF_EVENT(3, "%08x: assign failed - device might be busy\n",
 			device->cdev_id);
 	} else {
@@ -584,6 +600,7 @@ tape_std_mtreten(struct tape_device *device, int mt_count)
 	tape_ccw_end(request->cpaddr + 3, CCW_CMD_TIC, 0, request->cpaddr);
 	/* execute it, MTRETEN rc gets ignored */
 	rc = tape_do_io_interruptible(device, request);
+	tape_do_io_interruptible(device, request);
 	tape_free_request(request);
 	return tape_mtop(device, MTREW, 1);
 }

@@ -23,10 +23,16 @@
 #include <linux/of.h>
 #include <linux/of_device.h>
 #include <linux/of_platform.h>
+#include <linux/of_address.h>
+#include <linux/of_device.h>
+#include <linux/of_platform.h>
+#include <linux/fs.h>
 #include <linux/module.h>
 #include <linux/cdev.h>
 #include <linux/list.h>
 #include <linux/mm.h>
+#include <linux/slab.h>
+#include <asm/pgtable.h>
 #include <asm/io.h>
 
 /*
@@ -60,6 +66,8 @@ struct bsr_dev {
 	unsigned bsr_num;      /* bsr id number for its type */
 	int      bsr_minor;
 
+	struct list_head bsr_list;
+
 	dev_t    bsr_dev;
 	struct cdev bsr_cdev;
 	struct device *bsr_device;
@@ -69,6 +77,8 @@ struct bsr_dev {
 
 static unsigned num_bsr_devs;
 static struct bsr_dev *bsr_devs;
+static unsigned total_bsr_devs;
+static struct list_head bsr_devs = LIST_HEAD_INIT(bsr_devs);
 static struct class *bsr_class;
 static int bsr_major;
 
@@ -79,6 +89,13 @@ enum {
 	BSR_128 = 3,
 	BSR_UNKNOWN = 4,
 	BSR_MAX = 5,
+	BSR_8    = 0,
+	BSR_16   = 1,
+	BSR_64   = 2,
+	BSR_128  = 3,
+	BSR_4096 = 4,
+	BSR_UNKNOWN = 5,
+	BSR_MAX  = 6,
 };
 
 static unsigned bsr_types[BSR_MAX];
@@ -89,6 +106,7 @@ bsr_size_show(struct device *dev, struct device_attribute *attr, char *buf)
 	struct bsr_dev *bsr_dev = dev_get_drvdata(dev);
 	return sprintf(buf, "%u\n", bsr_dev->bsr_bytes);
 }
+static DEVICE_ATTR_RO(bsr_size);
 
 static ssize_t
 bsr_stride_show(struct device *dev, struct device_attribute *attr, char *buf)
@@ -110,6 +128,23 @@ static struct device_attribute bsr_dev_attrs[] = {
 	__ATTR(bsr_length, S_IRUGO, bsr_len_show, NULL),
 	__ATTR_NULL
 };
+static DEVICE_ATTR_RO(bsr_stride);
+
+static ssize_t
+bsr_length_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	struct bsr_dev *bsr_dev = dev_get_drvdata(dev);
+	return sprintf(buf, "%llu\n", bsr_dev->bsr_len);
+}
+static DEVICE_ATTR_RO(bsr_length);
+
+static struct attribute *bsr_dev_attrs[] = {
+	&dev_attr_bsr_size.attr,
+	&dev_attr_bsr_stride.attr,
+	&dev_attr_bsr_length.attr,
+	NULL,
+};
+ATTRIBUTE_GROUPS(bsr_dev);
 
 static int bsr_mmap(struct file *filp, struct vm_area_struct *vma)
 {
@@ -124,6 +159,22 @@ static int bsr_mmap(struct file *filp, struct vm_area_struct *vma)
 
 	if (io_remap_pfn_range(vma, vma->vm_start, dev->bsr_addr >> PAGE_SHIFT,
 			       size, vma->vm_page_prot))
+	int ret;
+
+	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
+
+	/* check for the case of a small BSR device and map one 4k page for it*/
+	if (dev->bsr_len < PAGE_SIZE && size == PAGE_SIZE)
+		ret = remap_4k_pfn(vma, vma->vm_start, dev->bsr_addr >> 12,
+				   vma->vm_page_prot);
+	else if (size <= dev->bsr_len)
+		ret = io_remap_pfn_range(vma, vma->vm_start,
+					 dev->bsr_addr >> PAGE_SHIFT,
+					 size, vma->vm_page_prot);
+	else
+		return -EINVAL;
+
+	if (ret)
 		return -EAGAIN;
 
 	return 0;
@@ -142,6 +193,11 @@ const static struct file_operations bsr_fops = {
 	.owner = THIS_MODULE,
 	.mmap  = bsr_mmap,
 	.open  = bsr_open,
+static const struct file_operations bsr_fops = {
+	.owner = THIS_MODULE,
+	.mmap  = bsr_mmap,
+	.open  = bsr_open,
+	.llseek = noop_llseek,
 };
 
 static void bsr_cleanup_devs(void)
@@ -149,6 +205,9 @@ static void bsr_cleanup_devs(void)
 	int i;
 	for (i=0 ; i < num_bsr_devs; i++) {
 		struct bsr_dev *cur = bsr_devs + i;
+	struct bsr_dev *cur, *n;
+
+	list_for_each_entry_safe(cur, n, &bsr_devs, bsr_list) {
 		if (cur->bsr_device) {
 			cdev_del(&cur->bsr_cdev);
 			device_del(cur->bsr_device);
@@ -164,6 +223,18 @@ static int bsr_create_devs(struct device_node *bn)
 	const u32 *bsr_stride;
 	const u32 *bsr_bytes;
 	unsigned i;
+		list_del(&cur->bsr_list);
+		kfree(cur);
+	}
+}
+
+static int bsr_add_node(struct device_node *bn)
+{
+	int bsr_stride_len, bsr_bytes_len, num_bsr_devs;
+	const u32 *bsr_stride;
+	const u32 *bsr_bytes;
+	unsigned i;
+	int ret = -ENODEV;
 
 	bsr_stride = of_get_property(bn, "ibm,lock-stride", &bsr_stride_len);
 	bsr_bytes  = of_get_property(bn, "ibm,#lock-bytes", &bsr_bytes_len);
@@ -172,6 +243,7 @@ static int bsr_create_devs(struct device_node *bn)
 	    (bsr_stride_len != bsr_bytes_len)) {
 		printk(KERN_ERR "bsr of-node has missing/incorrect property\n");
 		return -ENODEV;
+		return ret;
 	}
 
 	num_bsr_devs = bsr_bytes_len / sizeof(u32);
@@ -200,6 +272,36 @@ static int bsr_create_devs(struct device_node *bn)
 		cur->bsr_bytes  = bsr_bytes[i];
 		cur->bsr_stride = bsr_stride[i];
 		cur->bsr_dev    = MKDEV(bsr_major, i);
+	for (i = 0 ; i < num_bsr_devs; i++) {
+		struct bsr_dev *cur = kzalloc(sizeof(struct bsr_dev),
+					      GFP_KERNEL);
+		struct resource res;
+		int result;
+
+		if (!cur) {
+			printk(KERN_ERR "Unable to alloc bsr dev\n");
+			ret = -ENOMEM;
+			goto out_err;
+		}
+
+		result = of_address_to_resource(bn, i, &res);
+		if (result < 0) {
+			printk(KERN_ERR "bsr of-node has invalid reg property, skipping\n");
+			kfree(cur);
+			continue;
+		}
+
+		cur->bsr_minor  = i + total_bsr_devs;
+		cur->bsr_addr   = res.start;
+		cur->bsr_len    = resource_size(&res);
+		cur->bsr_bytes  = bsr_bytes[i];
+		cur->bsr_stride = bsr_stride[i];
+		cur->bsr_dev    = MKDEV(bsr_major, i + total_bsr_devs);
+
+		/* if we have a bsr_len of > 4k and less then PAGE_SIZE (64k pages) */
+		/* we can only map 4k of it, so only advertise the 4k in sysfs */
+		if (cur->bsr_len > 4096 && cur->bsr_len < PAGE_SIZE)
+			cur->bsr_len = 4096;
 
 		switch(cur->bsr_bytes) {
 		case 8:
@@ -221,6 +323,14 @@ static int bsr_create_devs(struct device_node *bn)
 
 		cur->bsr_num = bsr_types[cur->bsr_type];
 		bsr_types[cur->bsr_type] = cur->bsr_num + 1;
+		case 4096:
+			cur->bsr_type = BSR_4096;
+			break;
+		default:
+			cur->bsr_type = BSR_UNKNOWN;
+		}
+
+		cur->bsr_num = bsr_types[cur->bsr_type];
 		snprintf(cur->bsr_name, 32, "bsr%d_%d",
 			 cur->bsr_bytes, cur->bsr_num);
 
@@ -240,12 +350,49 @@ static int bsr_create_devs(struct device_node *bn)
 		}
 	}
 
+		if (result) {
+			kfree(cur);
+			goto out_err;
+		}
+
+		cur->bsr_device = device_create(bsr_class, NULL, cur->bsr_dev,
+						cur, "%s", cur->bsr_name);
+		if (IS_ERR(cur->bsr_device)) {
+			printk(KERN_ERR "device_create failed for %s\n",
+			       cur->bsr_name);
+			cdev_del(&cur->bsr_cdev);
+			kfree(cur);
+			goto out_err;
+		}
+
+		bsr_types[cur->bsr_type] = cur->bsr_num + 1;
+		list_add_tail(&cur->bsr_list, &bsr_devs);
+	}
+
+	total_bsr_devs += num_bsr_devs;
+
 	return 0;
 
  out_err:
 
 	bsr_cleanup_devs();
 	return -ENODEV;
+	return ret;
+}
+
+static int bsr_create_devs(struct device_node *bn)
+{
+	int ret;
+
+	while (bn) {
+		ret = bsr_add_node(bn);
+		if (ret) {
+			of_node_put(bn);
+			return ret;
+		}
+		bn = of_find_compatible_node(bn, NULL, "ibm,bsr");
+	}
+	return 0;
 }
 
 static int __init bsr_init(void)
@@ -256,6 +403,10 @@ static int __init bsr_init(void)
 	int result;
 
 	np = of_find_compatible_node(NULL, "ibm,bsr", "ibm,bsr");
+	dev_t bsr_dev;
+	int ret = -ENODEV;
+
+	np = of_find_compatible_node(NULL, NULL, "ibm,bsr");
 	if (!np)
 		goto out_err;
 
@@ -269,6 +420,14 @@ static int __init bsr_init(void)
 	result = alloc_chrdev_region(&bsr_dev, 0, BSR_MAX_DEVS, "bsr");
 	bsr_major = MAJOR(bsr_dev);
 	if (result < 0) {
+		ret = PTR_ERR(bsr_class);
+		goto out_err_1;
+	}
+	bsr_class->dev_groups = bsr_dev_groups;
+
+	ret = alloc_chrdev_region(&bsr_dev, 0, BSR_MAX_DEVS, "bsr");
+	bsr_major = MAJOR(bsr_dev);
+	if (ret < 0) {
 		printk(KERN_ERR "alloc_chrdev_region() failed for bsr\n");
 		goto out_err_2;
 	}
@@ -277,6 +436,10 @@ static int __init bsr_init(void)
 		goto out_err_3;
 
 	of_node_put(np);
+	if ((ret = bsr_create_devs(np)) < 0) {
+		np = NULL;
+		goto out_err_3;
+	}
 
 	return 0;
 

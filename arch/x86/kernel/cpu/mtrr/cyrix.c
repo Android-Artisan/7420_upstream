@@ -5,6 +5,14 @@
 #include <asm/io.h>
 #include <asm/processor-cyrix.h>
 #include <asm/processor-flags.h>
+#include <linux/io.h>
+#include <linux/mm.h>
+
+#include <asm/processor-cyrix.h>
+#include <asm/processor-flags.h>
+#include <asm/mtrr.h>
+#include <asm/msr.h>
+
 #include "mtrr.h"
 
 static void
@@ -17,6 +25,11 @@ cyrix_get_arr(unsigned int reg, unsigned long *base,
 	arr = CX86_ARR_BASE + (reg << 1) + reg;	/* avoid multiplication by 3 */
 
 	/* Save flags and disable interrupts */
+	unsigned char arr, ccr3, rcr, shift;
+	unsigned long flags;
+
+	arr = CX86_ARR_BASE + (reg << 1) + reg;	/* avoid multiplication by 3 */
+
 	local_irq_save(flags);
 
 	ccr3 = getCx86(CX86_CCR3);
@@ -33,6 +46,19 @@ cyrix_get_arr(unsigned int reg, unsigned long *base,
 	*base >>= PAGE_SHIFT;
 
 	/* Power of two, at least 4K on ARR0-ARR6, 256K on ARR7
+	((unsigned char *)base)[3] = getCx86(arr);
+	((unsigned char *)base)[2] = getCx86(arr + 1);
+	((unsigned char *)base)[1] = getCx86(arr + 2);
+	rcr = getCx86(CX86_RCR_BASE + reg);
+	setCx86(CX86_CCR3, ccr3);			/* disable MAPEN */
+
+	local_irq_restore(flags);
+
+	shift = ((unsigned char *) base)[1] & 0x0f;
+	*base >>= PAGE_SHIFT;
+
+	/*
+	 * Power of two, at least 4K on ARR0-ARR6, 256K on ARR7
 	 * Note: shift==0xf means 4G, this is unsupported.
 	 */
 	if (shift)
@@ -87,6 +113,20 @@ cyrix_get_free_region(unsigned long base, unsigned long size, int replace_reg)
 	int i;
 	mtrr_type ltype;
 	unsigned long lbase, lsize;
+/*
+ * cyrix_get_free_region - get a free ARR.
+ *
+ * @base: the starting (base) address of the region.
+ * @size: the size (in bytes) of the region.
+ *
+ * Returns: the index of the region on success, else -1 on error.
+*/
+static int
+cyrix_get_free_region(unsigned long base, unsigned long size, int replace_reg)
+{
+	unsigned long lbase, lsize;
+	mtrr_type ltype;
+	int i;
 
 	switch (replace_reg) {
 	case 7:
@@ -108,6 +148,7 @@ cyrix_get_free_region(unsigned long base, unsigned long size, int replace_reg)
 		if (lsize == 0)
 			return 7;
 		/*  Else try ARR0-ARR6 first  */
+		/* Else try ARR0-ARR6 first  */
 	} else {
 		for (i = 0; i < 7; i++) {
 			cyrix_get_arr(i, &lbase, &lsize, &ltype);
@@ -115,6 +156,10 @@ cyrix_get_free_region(unsigned long base, unsigned long size, int replace_reg)
 				return i;
 		}
 		/* ARR0-ARR6 isn't free, try ARR7 but its size must be at least 256K */
+		/*
+		 * ARR0-ARR6 isn't free
+		 * try ARR7 but its size must be at least 256K
+		 */
 		cyrix_get_arr(i, &lbase, &lsize, &ltype);
 		if ((lsize == 0) && (size >= 0x40))
 			return i;
@@ -124,6 +169,7 @@ cyrix_get_free_region(unsigned long base, unsigned long size, int replace_reg)
 
 static u32 cr4 = 0;
 static u32 ccr3;
+static u32 cr4, ccr3;
 
 static void prepare_set(void)
 {
@@ -137,6 +183,15 @@ static void prepare_set(void)
 
 	/*  Disable and flush caches. Note that wbinvd flushes the TLBs as
 	    a side-effect  */
+	if (cpu_has_pge) {
+		cr4 = __read_cr4();
+		__write_cr4(cr4 & ~X86_CR4_PGE);
+	}
+
+	/*
+	 * Disable and flush caches.
+	 * Note that wbinvd flushes the TLBs as a side-effect
+	 */
 	cr0 = read_cr0() | X86_CR0_CD;
 	wbinvd();
 	write_cr0(cr0);
@@ -153,6 +208,7 @@ static void prepare_set(void)
 static void post_set(void)
 {
 	/*  Flush caches and TLBs  */
+	/* Flush caches and TLBs */
 	wbinvd();
 
 	/* Cyrix ARRs - everything else was excluded at the top */
@@ -164,6 +220,13 @@ static void post_set(void)
 	/*  Restore value of CR4  */
 	if ( cpu_has_pge )
 		write_cr4(cr4);
+
+	/* Enable caches */
+	write_cr0(read_cr0() & ~X86_CR0_CD);
+
+	/* Restore value of CR4 */
+	if (cpu_has_pge)
+		__write_cr4(cr4);
 }
 
 static void cyrix_set_arr(unsigned int reg, unsigned long base,
@@ -179,6 +242,8 @@ static void cyrix_set_arr(unsigned int reg, unsigned long base,
 
 	size &= 0x7fff;		/* make sure arr_size <= 14 */
 	for (arr_size = 0; size; arr_size++, size >>= 1) ;
+	for (arr_size = 0; size; arr_size++, size >>= 1)
+		;
 
 	if (reg < 7) {
 		switch (type) {
@@ -218,6 +283,9 @@ static void cyrix_set_arr(unsigned int reg, unsigned long base,
 	setCx86(arr, ((unsigned char *) &base)[3]);
 	setCx86(arr + 1, ((unsigned char *) &base)[2]);
 	setCx86(arr + 2, (((unsigned char *) &base)[1]) | arr_size);
+	setCx86(arr + 0,  ((unsigned char *)&base)[3]);
+	setCx86(arr + 1,  ((unsigned char *)&base)[2]);
+	setCx86(arr + 2, (((unsigned char *)&base)[1]) | arr_size);
 	setCx86(CX86_RCR_BASE + reg, arr_type);
 
 	post_set();
@@ -227,6 +295,9 @@ typedef struct {
 	unsigned long base;
 	unsigned long size;
 	mtrr_type type;
+	unsigned long	base;
+	unsigned long	size;
+	mtrr_type	type;
 } arr_state_t;
 
 static arr_state_t arr_state[8] = {
@@ -251,12 +322,19 @@ static void cyrix_set_all(void)
 		cyrix_set_arr(i, arr_state[i].base, 
 			      arr_state[i].size, arr_state[i].type);
 
+	for (i = 0; i < 8; i++) {
+		cyrix_set_arr(i, arr_state[i].base,
+			      arr_state[i].size, arr_state[i].type);
+	}
+
 	post_set();
 }
 
 static struct mtrr_ops cyrix_mtrr_ops = {
 	.vendor            = X86_VENDOR_CYRIX,
 //	.init              = cyrix_arr_init,
+static const struct mtrr_ops cyrix_mtrr_ops = {
+	.vendor            = X86_VENDOR_CYRIX,
 	.set_all	   = cyrix_set_all,
 	.set               = cyrix_set_arr,
 	.get               = cyrix_get_arr,

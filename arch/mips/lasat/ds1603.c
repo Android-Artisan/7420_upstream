@@ -136,6 +136,7 @@ static void rtc_end_op(void)
 }
 
 unsigned long read_persistent_clock(void)
+void read_persistent_clock(struct timespec *ts)
 {
 	unsigned long word;
 	unsigned long flags;
@@ -148,6 +149,8 @@ unsigned long read_persistent_clock(void)
 	spin_unlock_irqrestore(&rtc_lock, flags);
 
 	return word;
+	ts->tv_sec = word;
+	ts->tv_nsec = 0;
 }
 
 int rtc_mips_set_mmss(unsigned long time)

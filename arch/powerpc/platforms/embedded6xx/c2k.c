@@ -25,6 +25,9 @@
 #include <asm/machdep.h>
 #include <asm/prom.h>
 #include <asm/system.h>
+
+#include <asm/machdep.h>
+#include <asm/prom.h>
 #include <asm/time.h>
 
 #include <mm/mmu_decl.h>
@@ -120,6 +123,7 @@ void c2k_show_cpuinfo(struct seq_file *m)
 
 	seq_printf(m, "Vendor\t\t: GEFanuc\n");
 	seq_printf(m, "Memory\t\t: %d MB\n", memsize / (1024 * 1024));
+	seq_printf(m, "Vendor\t\t: GEFanuc\n");
 	seq_printf(m, "coherency\t: %s\n", COHERENCY_SETTING);
 }
 

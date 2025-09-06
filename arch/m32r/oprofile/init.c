@@ -13,6 +13,7 @@
 #include <linux/init.h>
 
 int __init oprofile_arch_init(struct oprofile_operations * ops)
+int __init oprofile_arch_init(struct oprofile_operations *ops)
 {
 	return -ENODEV;
 }

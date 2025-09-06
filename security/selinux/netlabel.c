@@ -5,11 +5,13 @@
  * subsystem.
  *
  * Author: Paul Moore <paul.moore@hp.com>
+ * Author: Paul Moore <paul@paul-moore.com>
  *
  */
 
 /*
  * (c) Copyright Hewlett-Packard Development Company, L.P., 2007
+ * (c) Copyright Hewlett-Packard Development Company, L.P., 2007, 2008
  *
  * This program is free software;  you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -31,6 +33,13 @@
 #include <linux/rcupdate.h>
 #include <net/sock.h>
 #include <net/netlabel.h>
+#include <linux/gfp.h>
+#include <linux/ip.h>
+#include <linux/ipv6.h>
+#include <net/sock.h>
+#include <net/netlabel.h>
+#include <net/ip.h>
+#include <net/ipv6.h>
 
 #include "objsec.h"
 #include "security.h"
@@ -91,6 +100,61 @@ static int selinux_netlbl_sock_setsid(struct sock *sk, u32 sid)
 sock_setsid_return:
 	netlbl_secattr_destroy(&secattr);
 	return rc;
+ * selinux_netlbl_sock_genattr - Generate the NetLabel socket secattr
+ * @sk: the socket
+ *
+ * Description:
+ * Generate the NetLabel security attributes for a socket, making full use of
+ * the socket's attribute cache.  Returns a pointer to the security attributes
+ * on success, NULL on failure.
+ *
+ */
+static struct netlbl_lsm_secattr *selinux_netlbl_sock_genattr(struct sock *sk)
+{
+	int rc;
+	struct sk_security_struct *sksec = sk->sk_security;
+	struct netlbl_lsm_secattr *secattr;
+
+	if (sksec->nlbl_secattr != NULL)
+		return sksec->nlbl_secattr;
+
+	secattr = netlbl_secattr_alloc(GFP_ATOMIC);
+	if (secattr == NULL)
+		return NULL;
+	rc = security_netlbl_sid_to_secattr(sksec->sid, secattr);
+	if (rc != 0) {
+		netlbl_secattr_free(secattr);
+		return NULL;
+	}
+	sksec->nlbl_secattr = secattr;
+
+	return secattr;
+}
+
+/**
+ * selinux_netlbl_sock_getattr - Get the cached NetLabel secattr
+ * @sk: the socket
+ * @sid: the SID
+ *
+ * Query the socket's cached secattr and if the SID matches the cached value
+ * return the cache, otherwise return NULL.
+ *
+ */
+static struct netlbl_lsm_secattr *selinux_netlbl_sock_getattr(
+							const struct sock *sk,
+							u32 sid)
+{
+	struct sk_security_struct *sksec = sk->sk_security;
+	struct netlbl_lsm_secattr *secattr = sksec->nlbl_secattr;
+
+	if (secattr == NULL)
+		return NULL;
+
+	if ((secattr->flags & NETLBL_SECATTR_SECID) &&
+	    (secattr->attr.secid == sid))
+		return secattr;
+
+	return NULL;
 }
 
 /**
@@ -108,6 +172,40 @@ void selinux_netlbl_cache_invalidate(void)
 /**
  * selinux_netlbl_sk_security_reset - Reset the NetLabel fields
  * @ssec: the sk_security_struct
+ * selinux_netlbl_err - Handle a NetLabel packet error
+ * @skb: the packet
+ * @error: the error code
+ * @gateway: true if host is acting as a gateway, false otherwise
+ *
+ * Description:
+ * When a packet is dropped due to a call to avc_has_perm() pass the error
+ * code to the NetLabel subsystem so any protocol specific processing can be
+ * done.  This is safe to call even if you are unsure if NetLabel labeling is
+ * present on the packet, NetLabel is smart enough to only act when it should.
+ *
+ */
+void selinux_netlbl_err(struct sk_buff *skb, int error, int gateway)
+{
+	netlbl_skbuff_err(skb, error, gateway);
+}
+
+/**
+ * selinux_netlbl_sk_security_free - Free the NetLabel fields
+ * @sksec: the sk_security_struct
+ *
+ * Description:
+ * Free all of the memory in the NetLabel fields of a sk_security_struct.
+ *
+ */
+void selinux_netlbl_sk_security_free(struct sk_security_struct *sksec)
+{
+	if (sksec->nlbl_secattr != NULL)
+		netlbl_secattr_free(sksec->nlbl_secattr);
+}
+
+/**
+ * selinux_netlbl_sk_security_reset - Reset the NetLabel fields
+ * @sksec: the sk_security_struct
  * @family: the socket family
  *
  * Description:
@@ -122,6 +220,12 @@ void selinux_netlbl_sk_security_reset(struct sk_security_struct *ssec,
 		ssec->nlbl_state = NLBL_REQUIRE;
 	else
 		ssec->nlbl_state = NLBL_UNSET;
+ * The caller is responsible for all the NetLabel sk_security_struct locking.
+ *
+ */
+void selinux_netlbl_sk_security_reset(struct sk_security_struct *sksec)
+{
+	sksec->nlbl_state = NLBL_UNSET;
 }
 
 /**
@@ -192,11 +296,103 @@ void selinux_netlbl_sock_graft(struct sock *sk, struct socket *sock)
 	 * here we will pick up the pieces in later calls to
 	 * selinux_netlbl_inode_permission(). */
 	selinux_netlbl_sock_setsid(sk, sksec->sid);
+ * selinux_netlbl_skbuff_setsid - Set the NetLabel on a packet given a sid
+ * @skb: the packet
+ * @family: protocol family
+ * @sid: the SID
+ *
+ * Description
+ * Call the NetLabel mechanism to set the label of a packet using @sid.
+ * Returns zero on success, negative values on failure.
+ *
+ */
+int selinux_netlbl_skbuff_setsid(struct sk_buff *skb,
+				 u16 family,
+				 u32 sid)
+{
+	int rc;
+	struct netlbl_lsm_secattr secattr_storage;
+	struct netlbl_lsm_secattr *secattr = NULL;
+	struct sock *sk;
+
+	/* if this is a locally generated packet check to see if it is already
+	 * being labeled by it's parent socket, if it is just exit */
+	sk = skb_to_full_sk(skb);
+	if (sk != NULL) {
+		struct sk_security_struct *sksec = sk->sk_security;
+		if (sksec->nlbl_state != NLBL_REQSKB)
+			return 0;
+		secattr = selinux_netlbl_sock_getattr(sk, sid);
+	}
+	if (secattr == NULL) {
+		secattr = &secattr_storage;
+		netlbl_secattr_init(secattr);
+		rc = security_netlbl_sid_to_secattr(sid, secattr);
+		if (rc != 0)
+			goto skbuff_setsid_return;
+	}
+
+	rc = netlbl_skbuff_setattr(skb, family, secattr);
+
+skbuff_setsid_return:
+	if (secattr == &secattr_storage)
+		netlbl_secattr_destroy(secattr);
+	return rc;
+}
+
+/**
+ * selinux_netlbl_inet_conn_request - Label an incoming stream connection
+ * @req: incoming connection request socket
+ *
+ * Description:
+ * A new incoming connection request is represented by @req, we need to label
+ * the new request_sock here and the stack will ensure the on-the-wire label
+ * will get preserved when a full sock is created once the connection handshake
+ * is complete.  Returns zero on success, negative values on failure.
+ *
+ */
+int selinux_netlbl_inet_conn_request(struct request_sock *req, u16 family)
+{
+	int rc;
+	struct netlbl_lsm_secattr secattr;
+
+	if (family != PF_INET)
+		return 0;
+
+	netlbl_secattr_init(&secattr);
+	rc = security_netlbl_sid_to_secattr(req->secid, &secattr);
+	if (rc != 0)
+		goto inet_conn_request_return;
+	rc = netlbl_req_setattr(req, &secattr);
+inet_conn_request_return:
+	netlbl_secattr_destroy(&secattr);
+	return rc;
+}
+
+/**
+ * selinux_netlbl_inet_csk_clone - Initialize the newly created sock
+ * @sk: the new sock
+ *
+ * Description:
+ * A new connection has been established using @sk, we've already labeled the
+ * socket via the request_sock struct in selinux_netlbl_inet_conn_request() but
+ * we need to set the NetLabel state here since we now have a sock structure.
+ *
+ */
+void selinux_netlbl_inet_csk_clone(struct sock *sk, u16 family)
+{
+	struct sk_security_struct *sksec = sk->sk_security;
+
+	if (family == PF_INET)
+		sksec->nlbl_state = NLBL_LABELED;
+	else
+		sksec->nlbl_state = NLBL_UNSET;
 }
 
 /**
  * selinux_netlbl_socket_post_create - Label a socket using NetLabel
  * @sock: the socket to label
+ * @family: protocol family
  *
  * Description:
  * Attempt to label a socket using the NetLabel mechanism using the given
@@ -251,6 +447,28 @@ int selinux_netlbl_inode_permission(struct inode *inode, int mask)
 		rc = 0;
 	bh_unlock_sock(sk);
 	local_bh_enable();
+int selinux_netlbl_socket_post_create(struct sock *sk, u16 family)
+{
+	int rc;
+	struct sk_security_struct *sksec = sk->sk_security;
+	struct netlbl_lsm_secattr *secattr;
+
+	if (family != PF_INET)
+		return 0;
+
+	secattr = selinux_netlbl_sock_genattr(sk);
+	if (secattr == NULL)
+		return -ENOMEM;
+	rc = netlbl_sock_setattr(sk, family, secattr);
+	switch (rc) {
+	case 0:
+		sksec->nlbl_state = NLBL_LABELED;
+		break;
+	case -EDESTADDRREQ:
+		sksec->nlbl_state = NLBL_REQSKB;
+		rc = 0;
+		break;
+	}
 
 	return rc;
 }
@@ -272,6 +490,7 @@ int selinux_netlbl_sock_rcv_skb(struct sk_security_struct *sksec,
 				struct sk_buff *skb,
 				u16 family,
 				struct avc_audit_data *ad)
+				struct common_audit_data *ad)
 {
 	int rc;
 	u32 nlbl_sid;
@@ -308,6 +527,7 @@ int selinux_netlbl_sock_rcv_skb(struct sk_security_struct *sksec,
 
 	if (nlbl_sid != SECINITSID_UNLABELED)
 		netlbl_skbuff_err(skb, rc);
+		netlbl_skbuff_err(skb, rc, 0);
 	return rc;
 }
 
@@ -341,8 +561,66 @@ int selinux_netlbl_socket_setsockopt(struct socket *sock,
 		release_sock(sk);
 		if (rc == 0 && secattr.flags != NETLBL_SECATTR_NONE)
 			rc = -EACCES;
+	    (sksec->nlbl_state == NLBL_LABELED ||
+	     sksec->nlbl_state == NLBL_CONNLABELED)) {
+		netlbl_secattr_init(&secattr);
+		lock_sock(sk);
+		/* call the netlabel function directly as we want to see the
+		 * on-the-wire label that is assigned via the socket's options
+		 * and not the cached netlabel/lsm attributes */
+		rc = netlbl_sock_getattr(sk, &secattr);
+		release_sock(sk);
+		if (rc == 0)
+			rc = -EACCES;
+		else if (rc == -ENOMSG)
+			rc = 0;
 		netlbl_secattr_destroy(&secattr);
 	}
 
+	return rc;
+}
+
+/**
+ * selinux_netlbl_socket_connect - Label a client-side socket on connect
+ * @sk: the socket to label
+ * @addr: the destination address
+ *
+ * Description:
+ * Attempt to label a connected socket with NetLabel using the given address.
+ * Returns zero values on success, negative values on failure.
+ *
+ */
+int selinux_netlbl_socket_connect(struct sock *sk, struct sockaddr *addr)
+{
+	int rc;
+	struct sk_security_struct *sksec = sk->sk_security;
+	struct netlbl_lsm_secattr *secattr;
+
+	if (sksec->nlbl_state != NLBL_REQSKB &&
+	    sksec->nlbl_state != NLBL_CONNLABELED)
+		return 0;
+
+	lock_sock(sk);
+
+	/* connected sockets are allowed to disconnect when the address family
+	 * is set to AF_UNSPEC, if that is what is happening we want to reset
+	 * the socket */
+	if (addr->sa_family == AF_UNSPEC) {
+		netlbl_sock_delattr(sk);
+		sksec->nlbl_state = NLBL_REQSKB;
+		rc = 0;
+		goto socket_connect_return;
+	}
+	secattr = selinux_netlbl_sock_genattr(sk);
+	if (secattr == NULL) {
+		rc = -ENOMEM;
+		goto socket_connect_return;
+	}
+	rc = netlbl_conn_setattr(sk, addr, secattr);
+	if (rc == 0)
+		sksec->nlbl_state = NLBL_CONNLABELED;
+
+socket_connect_return:
+	release_sock(sk);
 	return rc;
 }

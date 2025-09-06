@@ -24,6 +24,7 @@
  */
 
 #include <linux/init.h>
+#include <linux/slab.h>
 #include <linux/module.h>
 #include <linux/delay.h>
 
@@ -52,6 +53,7 @@ struct voice_info
 };
 
 typedef struct opl_devinfo
+struct opl_devinfo
 {
 	int             base;
 	int             left_io, right_io;
@@ -73,6 +75,7 @@ typedef struct opl_devinfo
 
 	int             is_opl4;
 } opl_devinfo;
+};
 
 static struct opl_devinfo *devc = NULL;
 
@@ -667,6 +670,7 @@ static int opl3_start_note (int dev, int voice, int note, int volume)
 
 	data = 0x20 | ((block & 0x7) << 2) | ((fnum >> 8) & 0x3);
 		 devc->voc[voice].keyon_byte = data;
+	devc->voc[voice].keyon_byte = data;
 	opl3_command(map->ioaddr, KEYON_BLOCK + map->voice_num, data);
 	if (voice_mode == 4)
 		opl3_command(map->ioaddr, KEYON_BLOCK + map->voice_num + 3, data);
@@ -718,6 +722,7 @@ static void freq_to_fnum    (int freq, int *block, int *fnum)
 static void opl3_command    (int io_addr, unsigned int addr, unsigned int val)
 {
 	 int i;
+	int i;
 
 	/*
 	 * The original 2-OP synth requires a quite long delay after writing to a
@@ -820,6 +825,7 @@ static void opl3_hw_control(int dev, unsigned char *event)
 
 static int opl3_load_patch(int dev, int format, const char __user *addr,
 		int offs, int count, int pmgr_flag)
+		int count, int pmgr_flag)
 {
 	struct sbi_instrument ins;
 
@@ -834,6 +840,7 @@ static int opl3_load_patch(int dev, int format, const char __user *addr,
 	 * of ins and then check the field pretty close to that beginning?
 	 */
 	if(copy_from_user(&((char *) &ins)[offs], addr + offs, sizeof(ins) - offs))
+	if (copy_from_user(&ins, addr, sizeof(ins)))
 		return -EFAULT;
 
 	if (ins.channel < 0 || ins.channel >= SBFM_MAXINSTR)
@@ -848,6 +855,10 @@ static int opl3_load_patch(int dev, int format, const char __user *addr,
 
 static void opl3_panning(int dev, int voice, int value)
 {
+
+	if (voice < 0 || voice >= devc->nr_voice)
+		return;
+
 	devc->voc[voice].panning = value;
 }
 
@@ -1067,6 +1078,15 @@ static void opl3_setup_voice(int dev, int voice, int chn)
 {
 	struct channel_info *info =
 	&synth_devs[dev]->chn_info[chn];
+	struct channel_info *info;
+
+	if (voice < 0 || voice >= devc->nr_voice)
+		return;
+
+	if (chn < 0 || chn > 15)
+		return;
+
+	info = &synth_devs[dev]->chn_info[chn];
 
 	opl3_set_instr(dev, voice, info->pgm_num);
 
@@ -1183,6 +1203,7 @@ static int opl3_init(int ioaddr, struct module *owner)
 		for (i = 0; i < 18; i++)
 			pv_map[i].ioaddr = devc->left_io;
 	};
+	}
 	conf_printf2(devc->fm_info.name, ioaddr, 0, -1, -1);
 
 	for (i = 0; i < SBFM_MAXINSTR; i++)

@@ -34,6 +34,7 @@
 
 #include <linux/list.h>
 #include <linux/mutex.h>
+#include <linux/kfifo.h>
 
 #include "t3_cpl.h"
 #include "t3cdev.h"
@@ -53,6 +54,7 @@
 #define T3_MAX_RQ_SIZE 1024
 #define T3_MAX_QP_DEPTH (T3_MAX_RQ_SIZE-1)
 #define T3_MAX_CQ_DEPTH 8192
+#define T3_MAX_CQ_DEPTH 65536
 #define T3_MAX_NUM_STAG (1<<15)
 #define T3_MAX_MR_SIZE 0x100000000ULL
 #define T3_PAGESIZE_MASK 0xffff000  /* 4KB-128MB */
@@ -60,6 +62,8 @@
 #define T3_STAG_UNSET 0xffffffff
 
 #define T3_MAX_DEV_NAME_LEN 32
+
+#define CXIO_FW_MAJ 7
 
 struct cxio_hal_ctrl_qp {
 	u32 wptr;
@@ -69,6 +73,7 @@ struct cxio_hal_ctrl_qp {
 	union t3_wr *workq;	/* the work request queue */
 	dma_addr_t dma_addr;	/* pci bus address of the workq */
 	DECLARE_PCI_UNMAP_ADDR(mapping)
+	DEFINE_DMA_UNMAP_ADDR(mapping);
 	void __iomem *doorbell;
 };
 
@@ -80,6 +85,13 @@ struct cxio_hal_resource {
 	struct kfifo *cqid_fifo;
 	spinlock_t cqid_fifo_lock;
 	struct kfifo *pdid_fifo;
+	struct kfifo tpt_fifo;
+	spinlock_t tpt_fifo_lock;
+	struct kfifo qpid_fifo;
+	spinlock_t qpid_fifo_lock;
+	struct kfifo cqid_fifo;
+	spinlock_t cqid_fifo_lock;
+	struct kfifo pdid_fifo;
 	spinlock_t pdid_fifo_lock;
 };
 
@@ -109,6 +121,16 @@ struct cxio_rdev {
 	struct gen_pool *rqt_pool;
 	struct list_head entry;
 };
+
+	struct ch_embedded_info fw_info;
+	u32	flags;
+#define	CXIO_ERROR_FATAL	1
+};
+
+static inline int cxio_fatal_error(struct cxio_rdev *rdev_p)
+{
+	return rdev_p->flags & CXIO_ERROR_FATAL;
+}
 
 static inline int cxio_num_stags(struct cxio_rdev *rdev_p)
 {
@@ -147,6 +169,7 @@ void cxio_rdev_close(struct cxio_rdev *rdev);
 int cxio_hal_cq_op(struct cxio_rdev *rdev, struct t3_cq *cq,
 		   enum t3_cq_opcode op, u32 credit);
 int cxio_create_cq(struct cxio_rdev *rdev, struct t3_cq *cq);
+int cxio_create_cq(struct cxio_rdev *rdev, struct t3_cq *cq, int kernel);
 int cxio_destroy_cq(struct cxio_rdev *rdev, struct t3_cq *cq);
 int cxio_resize_cq(struct cxio_rdev *rdev, struct t3_cq *cq);
 void cxio_release_ucontext(struct cxio_rdev *rdev, struct cxio_ucontext *uctx);
@@ -183,6 +206,7 @@ void cxio_count_scqes(struct t3_cq *cq, struct t3_wq *wq, int *count);
 void cxio_flush_hw_cq(struct t3_cq *cq);
 int cxio_poll_cq(struct t3_wq *wq, struct t3_cq *cq, struct t3_cqe *cqe,
 		     u8 *cqe_flushed, u64 *cookie, u32 *credit);
+int iwch_cxgb3_ofld_send(struct t3cdev *tdev, struct sk_buff *skb);
 
 #define MOD "iw_cxgb3: "
 #define PDBG(fmt, args...) pr_debug(MOD fmt, ## args)

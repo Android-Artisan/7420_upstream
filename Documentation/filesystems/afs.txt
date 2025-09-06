@@ -1,6 +1,4 @@
-			     ====================
 			     kAFS: AFS FILESYSTEM
-			     ====================
 
 Contents:
 
@@ -13,9 +11,7 @@ Contents:
  - Examples.
 
 
-========
 OVERVIEW
-========
 
 This filesystem provides a fairly simple secure AFS filesystem driver. It is
 under development and does not yet provide the full feature set.  The features
@@ -33,12 +29,18 @@ It does not yet support the following AFS features:
 
  (*) Local caching.
 
+ (*) File reading and writing.
+
+ (*) Automounting.
+
+ (*) Local caching (via fscache).
+
+It does not yet support the following AFS features:
+
  (*) pioctl() system call.
 
 
-===========
 COMPILATION
-===========
 
 The filesystem should be enabled by turning on the kernel configuration
 options:
@@ -57,6 +59,7 @@ the masks in the following files:
 
 	/sys/module/af_rxrpc/parameters/debug
 	/sys/module/afs/parameters/debug
+	/sys/module/kafs/parameters/debug
 
 
 =====
@@ -69,6 +72,9 @@ list of volume location server IP addresses:
 	insmod af_rxrpc.o
 	insmod rxkad.o
 	insmod kafs.o rootcell=cambridge.redhat.com:172.16.18.73:172.16.18.91
+	modprobe af_rxrpc
+	modprobe rxkad
+	modprobe kafs rootcell=cambridge.redhat.com:172.16.18.73:172.16.18.91
 
 The first module is the AF_RXRPC network protocol driver.  This provides the
 RxRPC remote operation protocol and may also be accessed from userspace.  See:
@@ -82,6 +88,7 @@ Once the module has been loaded, more modules can be added by the following
 procedure:
 
 	echo add grand.central.org 18.7.14.88:128.2.191.224 >/proc/fs/afs/cells
+	echo add grand.central.org 18.9.48.14:128.2.203.61:130.237.48.87 >/proc/fs/afs/cells
 
 Where the parameters to the "add" command are the name of a cell and a list of
 volume location servers within that cell, with the latter separated by colons.
@@ -102,13 +109,12 @@ specify connection to only volumes of those types.
 
 The name of the cell is optional, and if not given during a mount, then the
 named volume will be looked up in the cell specified during insmod.
+named volume will be looked up in the cell specified during modprobe.
 
 Additional cells can be added through /proc (see later section).
 
 
-===========
 MOUNTPOINTS
-===========
 
 AFS has a concept of mountpoints. In AFS terms, these are specially formatted
 symbolic links (of the same form as the "device name" passed to mount).  kAFS
@@ -130,9 +136,7 @@ mounted on /afs in one go by doing:
 	umount /afs
 
 
-===============
 PROC FILESYSTEM
-===============
 
 The AFS modules creates a "/proc/fs/afs/" directory and populates it:
 
@@ -157,13 +161,12 @@ The AFS modules creates a "/proc/fs/afs/" directory and populates it:
 	  1 Val 20000000 20000001 20000002 root.afs
 
 
-=================
 THE CELL DATABASE
-=================
 
 The filesystem maintains an internal database of all the cells it knows and the
 IP addresses of the volume location servers for those cells.  The cell to which
 the system belongs is added to the database when insmod is performed by the
+the system belongs is added to the database when modprobe is performed by the
 "rootcell=" argument or, if compiled in, using a "kafs.rootcell=" argument on
 the kernel command line.
 
@@ -171,13 +174,12 @@ Further cells can be added by commands similar to the following:
 
 	echo add CELLNAME VLADDR[:VLADDR][:VLADDR]... >/proc/fs/afs/cells
 	echo add grand.central.org 18.7.14.88:128.2.191.224 >/proc/fs/afs/cells
+	echo add grand.central.org 18.9.48.14:128.2.203.61:130.237.48.87 >/proc/fs/afs/cells
 
 No other cell database operations are available at this time.
 
 
-========
 SECURITY
-========
 
 Secure operations are initiated by acquiring a key using the klog program.  A
 very primitive klog program is available at:
@@ -218,9 +220,7 @@ socket), then the operations on the file will be made with key that was used to
 open the file.
 
 
-========
 EXAMPLES
-========
 
 Here's what I use to test this.  Some of the names and IP addresses are local
 to my internal DNS.  My "root.afs" partition has a mount point within it for
@@ -234,6 +234,7 @@ mount -t afs \%root.afs. /afs
 mount -t afs \%cambridge.redhat.com:root.cell. /afs/cambridge.redhat.com/
 
 echo add grand.central.org 18.7.14.88:128.2.191.224 > /proc/fs/afs/cells
+echo add grand.central.org 18.9.48.14:128.2.203.61:130.237.48.87 > /proc/fs/afs/cells
 mount -t afs "#grand.central.org:root.cell." /afs/grand.central.org/
 mount -t afs "#grand.central.org:root.archive." /afs/grand.central.org/archive
 mount -t afs "#grand.central.org:root.contrib." /afs/grand.central.org/contrib

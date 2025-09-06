@@ -23,6 +23,33 @@
     chip found on newer Abit uGuru motherboards. Note: because of lack of specs
     only reading the sensors and their settings is supported.
 */
+ * abituguru3.c
+ *
+ * Copyright (c) 2006-2008 Hans de Goede <hdegoede@redhat.com>
+ * Copyright (c) 2008 Alistair John Strachan <alistair@devzero.co.uk>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+ */
+/*
+ * This driver supports the sensor part of revision 3 of the custom Abit uGuru
+ * chip found on newer Abit uGuru motherboards. Note: because of lack of specs
+ * only reading the sensors and their settings is supported.
+ */
+
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/slab.h>
@@ -35,6 +62,7 @@
 #include <linux/hwmon-sysfs.h>
 #include <linux/dmi.h>
 #include <asm/io.h>
+#include <linux/io.h>
 
 /* uGuru3 bank addresses */
 #define ABIT_UGURU3_SETTINGS_BANK		0x01
@@ -94,6 +122,58 @@
    reverse engineered by Louis Kruger, hence the names might not be 100%
    logical. I could come up with better names, but I prefer keeping the names
    identical so that this driver can be compared with his work more easily. */
+/*
+ * Timeouts / Retries, if these turn out to need a lot of fiddling we could
+ * convert them to params. Determined by trial and error. I assume this is
+ * cpu-speed independent, since the ISA-bus and not the CPU should be the
+ * bottleneck.
+ */
+#define ABIT_UGURU3_WAIT_TIMEOUT		250
+/*
+ * Normally the 0xAC at the end of synchronize() is reported after the
+ * first read, but sometimes not and we need to poll
+ */
+#define ABIT_UGURU3_SYNCHRONIZE_TIMEOUT		5
+/* utility macros */
+#define ABIT_UGURU3_NAME			"abituguru3"
+#define ABIT_UGURU3_DEBUG(format, arg...)		\
+	do {						\
+		if (verbose)				\
+			pr_debug(format , ## arg);	\
+	} while (0)
+
+/* Macros to help calculate the sysfs_names array length */
+#define ABIT_UGURU3_MAX_NO_SENSORS 26
+/*
+ * sum of strlen +1 of: in??_input\0, in??_{min,max}\0, in??_{min,max}_alarm\0,
+ * in??_{min,max}_alarm_enable\0, in??_beep\0, in??_shutdown\0, in??_label\0
+ */
+#define ABIT_UGURU3_IN_NAMES_LENGTH \
+				(11 + 2 * 9 + 2 * 15 + 2 * 22 + 10 + 14 + 11)
+/*
+ * sum of strlen +1 of: temp??_input\0, temp??_max\0, temp??_crit\0,
+ * temp??_alarm\0, temp??_alarm_enable\0, temp??_beep\0, temp??_shutdown\0,
+ * temp??_label\0
+ */
+#define ABIT_UGURU3_TEMP_NAMES_LENGTH (13 + 11 + 12 + 13 + 20 + 12 + 16 + 13)
+/*
+ * sum of strlen +1 of: fan??_input\0, fan??_min\0, fan??_alarm\0,
+ * fan??_alarm_enable\0, fan??_beep\0, fan??_shutdown\0, fan??_label\0
+ */
+#define ABIT_UGURU3_FAN_NAMES_LENGTH (12 + 10 + 12 + 19 + 11 + 15 + 12)
+/*
+ * Worst case scenario 16 in sensors (longest names_length) and the rest
+ * temp sensors (second longest names_length).
+ */
+#define ABIT_UGURU3_SYSFS_NAMES_LENGTH (16 * ABIT_UGURU3_IN_NAMES_LENGTH + \
+	(ABIT_UGURU3_MAX_NO_SENSORS - 16) * ABIT_UGURU3_TEMP_NAMES_LENGTH)
+
+/*
+ * All the macros below are named identical to the openguru2 program
+ * reverse engineered by Louis Kruger, hence the names might not be 100%
+ * logical. I could come up with better names, but I prefer keeping the names
+ * identical so that this driver can be compared with his work more easily.
+ */
 /* Two i/o-ports are used by uGuru */
 #define ABIT_UGURU3_BASE			0x00E0
 #define ABIT_UGURU3_CMD				0x00
@@ -101,6 +181,10 @@
 #define ABIT_UGURU3_REGION_LENGTH		5
 /* The wait_xxx functions return this on success and the last contents
    of the DATA register (0-255) on failure. */
+/*
+ * The wait_xxx functions return this on success and the last contents
+ * of the DATA register (0-255) on failure.
+ */
 #define ABIT_UGURU3_SUCCESS			-1
 /* uGuru status flags */
 #define ABIT_UGURU3_STATUS_READY_FOR_READ	0x01
@@ -110,6 +194,7 @@
 /* Structures */
 struct abituguru3_sensor_info {
 	const char* name;
+	const char *name;
 	int port;
 	int type;
 	int multiplier;
@@ -120,6 +205,12 @@ struct abituguru3_sensor_info {
 struct abituguru3_motherboard_info {
 	u16 id;
 	const char *dmi_name;
+/* Avoid use of flexible array members */
+#define ABIT_UGURU3_MAX_DMI_NAMES 2
+
+struct abituguru3_motherboard_info {
+	u16 id;
+	const char *dmi_name[ABIT_UGURU3_MAX_DMI_NAMES + 1];
 	/* + 1 -> end of sensors indicated by a sensor with name == NULL */
 	struct abituguru3_sensor_info sensors[ABIT_UGURU3_MAX_NO_SENSORS + 1];
 };
@@ -127,6 +218,11 @@ struct abituguru3_motherboard_info {
 /* For the Abit uGuru, we need to keep some data in memory.
    The structure is dynamically allocated, at the same time when a new
    abituguru3 device is allocated. */
+/*
+ * For the Abit uGuru, we need to keep some data in memory.
+ * The structure is dynamically allocated, at the same time when a new
+ * abituguru3 device is allocated.
+ */
 struct abituguru3_data {
 	struct device *hwmon_dev;	/* hwmon registered device */
 	struct mutex update_lock;	/* protect access to data and uGuru */
@@ -136,6 +232,10 @@ struct abituguru3_data {
 
 	/* For convenience the sysfs attr and their names are generated
 	   automatically. We have max 10 entries per sensor (for in sensors) */
+	/*
+	 * For convenience the sysfs attr and their names are generated
+	 * automatically. We have max 10 entries per sensor (for in sensors)
+	 */
 	struct sensor_device_attribute_2 sysfs_attr[ABIT_UGURU3_MAX_NO_SENSORS
 		* 10];
 
@@ -148,6 +248,11 @@ struct abituguru3_data {
 	/* The abituguru3 supports upto 48 sensors, and thus has registers
 	   sets for 48 sensors, for convienence reasons / simplicity of the
 	   code we always read and store all registers for all 48 sensors */
+	/*
+	 * The abituguru3 supports up to 48 sensors, and thus has registers
+	 * sets for 48 sensors, for convenience reasons / simplicity of the
+	 * code we always read and store all registers for all 48 sensors
+	 */
 
 	/* Alarms for all 48 sensors (1 bit per sensor) */
 	u8 alarms[48/8];
@@ -158,6 +263,11 @@ struct abituguru3_data {
 	/* Settings of all 48 sensors, note in and temp sensors (the first 32
 	   sensors) have 3 bytes of settings, while fans only have 2 bytes,
 	   for convenience we use 3 bytes for all sensors */
+	/*
+	 * Settings of all 48 sensors, note in and temp sensors (the first 32
+	 * sensors) have 3 bytes of settings, while fans only have 2 bytes,
+	 * for convenience we use 3 bytes for all sensors
+	 */
 	u8 settings[48][3];
 };
 
@@ -165,6 +275,7 @@ struct abituguru3_data {
 /* Constants */
 static const struct abituguru3_motherboard_info abituguru3_motherboards[] = {
 	{ 0x000C, NULL /* Unknown, need DMI string */, {
+	{ 0x000C, { NULL } /* Unknown, need DMI string */, {
 		{ "CPU Core",		 0, 0, 10, 1, 0 },
 		{ "DDR",		 1, 0, 10, 1, 0 },
 		{ "DDR VTT",		 2, 0, 10, 1, 0 },
@@ -179,6 +290,7 @@ static const struct abituguru3_motherboard_info abituguru3_motherboards[] = {
 		{ "5VSB",		11, 0, 30, 1, 0 },
 		{ "CPU",		24, 1, 1, 1, 0 },
 		{ "System ",		25, 1, 1, 1, 0 },
+		{ "System",		25, 1, 1, 1, 0 },
 		{ "PWM",		26, 1, 1, 1, 0 },
 		{ "CPU Fan",		32, 2, 60, 1, 0 },
 		{ "NB Fan",		33, 2, 60, 1, 0 },
@@ -187,6 +299,7 @@ static const struct abituguru3_motherboard_info abituguru3_motherboards[] = {
 		{ NULL, 0, 0, 0, 0, 0 } }
 	},
 	{ 0x000D, NULL /* Abit AW8, need DMI string */, {
+	{ 0x000D, { NULL } /* Abit AW8, need DMI string */, {
 		{ "CPU Core",		 0, 0, 10, 1, 0 },
 		{ "DDR",		 1, 0, 10, 1, 0 },
 		{ "DDR VTT",		 2, 0, 10, 1, 0 },
@@ -201,6 +314,7 @@ static const struct abituguru3_motherboard_info abituguru3_motherboards[] = {
 		{ "5VSB",		11, 0, 30, 1, 0 },
 		{ "CPU",		24, 1, 1, 1, 0 },
 		{ "System ",		25, 1, 1, 1, 0 },
+		{ "System",		25, 1, 1, 1, 0 },
 		{ "PWM1",		26, 1, 1, 1, 0 },
 		{ "PWM2",		27, 1, 1, 1, 0 },
 		{ "PWM3",		28, 1, 1, 1, 0 },
@@ -216,6 +330,7 @@ static const struct abituguru3_motherboard_info abituguru3_motherboards[] = {
 		{ NULL, 0, 0, 0, 0, 0 } }
 	},
 	{ 0x000E, NULL /* AL-8, need DMI string */, {
+	{ 0x000E, { NULL } /* AL-8, need DMI string */, {
 		{ "CPU Core",		 0, 0, 10, 1, 0 },
 		{ "DDR",		 1, 0, 10, 1, 0 },
 		{ "DDR VTT",		 2, 0, 10, 1, 0 },
@@ -230,6 +345,7 @@ static const struct abituguru3_motherboard_info abituguru3_motherboards[] = {
 		{ "5VSB",		11, 0, 30, 1, 0 },
 		{ "CPU",		24, 1, 1, 1, 0 },
 		{ "System ",		25, 1, 1, 1, 0 },
+		{ "System",		25, 1, 1, 1, 0 },
 		{ "PWM",		26, 1, 1, 1, 0 },
 		{ "CPU Fan",		32, 2, 60, 1, 0 },
 		{ "NB Fan",		33, 2, 60, 1, 0 },
@@ -237,6 +353,8 @@ static const struct abituguru3_motherboard_info abituguru3_motherboards[] = {
 		{ NULL, 0, 0, 0, 0, 0 } }
 	},
 	{ 0x000F, NULL /* Unknown, need DMI string */, {
+	{ 0x000F, { NULL } /* Unknown, need DMI string */, {
+
 		{ "CPU Core",		 0, 0, 10, 1, 0 },
 		{ "DDR",		 1, 0, 10, 1, 0 },
 		{ "DDR VTT",		 2, 0, 10, 1, 0 },
@@ -251,6 +369,7 @@ static const struct abituguru3_motherboard_info abituguru3_motherboards[] = {
 		{ "5VSB",		11, 0, 30, 1, 0 },
 		{ "CPU",		24, 1, 1, 1, 0 },
 		{ "System ",		25, 1, 1, 1, 0 },
+		{ "System",		25, 1, 1, 1, 0 },
 		{ "PWM",		26, 1, 1, 1, 0 },
 		{ "CPU Fan",		32, 2, 60, 1, 0 },
 		{ "NB Fan",		33, 2, 60, 1, 0 },
@@ -258,6 +377,7 @@ static const struct abituguru3_motherboard_info abituguru3_motherboards[] = {
 		{ NULL, 0, 0, 0, 0, 0 } }
 	},
 	{ 0x0010, NULL /* Abit NI8 SLI GR, need DMI string */, {
+	{ 0x0010, { NULL } /* Abit NI8 SLI GR, need DMI string */, {
 		{ "CPU Core",		 0, 0, 10, 1, 0 },
 		{ "DDR",		 1, 0, 10, 1, 0 },
 		{ "DDR VTT",		 2, 0, 10, 1, 0 },
@@ -280,6 +400,7 @@ static const struct abituguru3_motherboard_info abituguru3_motherboards[] = {
 		{ NULL, 0, 0, 0, 0, 0 } }
 	},
 	{ 0x0011, "AT8 32X(ATI RD580-ULI M1575)", {
+	{ 0x0011, { "AT8 32X", NULL }, {
 		{ "CPU Core",		 0, 0, 10, 1, 0 },
 		{ "DDR",		 1, 0, 20, 1, 0 },
 		{ "DDR VTT",		 2, 0, 10, 1, 0 },
@@ -307,6 +428,7 @@ static const struct abituguru3_motherboard_info abituguru3_motherboards[] = {
 		{ NULL, 0, 0, 0, 0, 0 } }
 	},
 	{ 0x0012, NULL /* Abit AN8 32X, need DMI string */, {
+	{ 0x0012, { NULL } /* Abit AN8 32X, need DMI string */, {
 		{ "CPU Core",		 0, 0, 10, 1, 0 },
 		{ "DDR",		 1, 0, 20, 1, 0 },
 		{ "DDR VTT",		 2, 0, 10, 1, 0 },
@@ -329,6 +451,7 @@ static const struct abituguru3_motherboard_info abituguru3_motherboards[] = {
 		{ NULL, 0, 0, 0, 0, 0 } }
 	},
 	{ 0x0013, NULL /* Abit AW8D, need DMI string */, {
+	{ 0x0013, { NULL } /* Abit AW8D, need DMI string */, {
 		{ "CPU Core",		 0, 0, 10, 1, 0 },
 		{ "DDR",		 1, 0, 10, 1, 0 },
 		{ "DDR VTT",		 2, 0, 10, 1, 0 },
@@ -343,6 +466,7 @@ static const struct abituguru3_motherboard_info abituguru3_motherboards[] = {
 		{ "5VSB",		11, 0, 30, 1, 0 },
 		{ "CPU",		24, 1, 1, 1, 0 },
 		{ "System ",		25, 1, 1, 1, 0 },
+		{ "System",		25, 1, 1, 1, 0 },
 		{ "PWM1",		26, 1, 1, 1, 0 },
 		{ "PWM2",		27, 1, 1, 1, 0 },
 		{ "PWM3",		28, 1, 1, 1, 0 },
@@ -358,6 +482,7 @@ static const struct abituguru3_motherboard_info abituguru3_motherboards[] = {
 		{ NULL, 0, 0, 0, 0, 0 } }
 	},
 	{ 0x0014, NULL /* Abit AB9 Pro, need DMI string */, {
+	{ 0x0014, { "AB9", "AB9 Pro", NULL }, {
 		{ "CPU Core",		 0, 0, 10, 1, 0 },
 		{ "DDR",		 1, 0, 10, 1, 0 },
 		{ "DDR VTT",		 2, 0, 10, 1, 0 },
@@ -372,6 +497,7 @@ static const struct abituguru3_motherboard_info abituguru3_motherboards[] = {
 		{ "5VSB",		11, 0, 30, 1, 0 },
 		{ "CPU",		24, 1, 1, 1, 0 },
 		{ "System ",		25, 1, 1, 1, 0 },
+		{ "System",		25, 1, 1, 1, 0 },
 		{ "PWM",		26, 1, 1, 1, 0 },
 		{ "CPU Fan",		32, 2, 60, 1, 0 },
 		{ "NB Fan",		33, 2, 60, 1, 0 },
@@ -379,6 +505,7 @@ static const struct abituguru3_motherboard_info abituguru3_motherboards[] = {
 		{ NULL, 0, 0, 0, 0, 0 } }
 	},
 	{ 0x0015, NULL /* Unknown, need DMI string */, {
+	{ 0x0015, { NULL } /* Unknown, need DMI string */, {
 		{ "CPU Core",		 0, 0, 10, 1, 0 },
 		{ "DDR",		 1, 0, 20, 1, 0 },
 		{ "DDR VTT",		 2, 0, 10, 1, 0 },
@@ -403,6 +530,7 @@ static const struct abituguru3_motherboard_info abituguru3_motherboards[] = {
 		{ NULL, 0, 0, 0, 0, 0 } }
 	},
 	{ 0x0016, NULL /* AW9D-MAX, need DMI string */, {
+	{ 0x0016, { "AW9D-MAX", NULL }, {
 		{ "CPU Core",		 0, 0, 10, 1, 0 },
 		{ "DDR2",		 1, 0, 20, 1, 0 },
 		{ "DDR2 VTT",		 2, 0, 10, 1, 0 },
@@ -417,6 +545,7 @@ static const struct abituguru3_motherboard_info abituguru3_motherboards[] = {
 		{ "5VSB",		11, 0, 30, 1, 0 },
 		{ "CPU",		24, 1, 1, 1, 0 },
 		{ "System ",		25, 1, 1, 1, 0 },
+		{ "System",		25, 1, 1, 1, 0 },
 		{ "PWM1",		26, 1, 1, 1, 0 },
 		{ "PWM2",		27, 1, 1, 1, 0 },
 		{ "PWM3",		28, 1, 1, 1, 0 },
@@ -431,6 +560,7 @@ static const struct abituguru3_motherboard_info abituguru3_motherboards[] = {
 		{ NULL, 0, 0, 0, 0, 0 } }
 	},
 	{ 0x0017, NULL /* Unknown, need DMI string */, {
+	{ 0x0017, { NULL } /* Unknown, need DMI string */, {
 		{ "CPU Core",		 0, 0, 10, 1, 0 },
 		{ "DDR2",		 1, 0, 20, 1, 0 },
 		{ "DDR2 VTT",		 2, 0, 10, 1, 0 },
@@ -447,6 +577,7 @@ static const struct abituguru3_motherboard_info abituguru3_motherboards[] = {
 		{ "ATX 5VSB",		11, 0, 30, 1, 0 },
 		{ "CPU",		24, 1, 1, 1, 0 },
 		{ "System ",		26, 1, 1, 1, 0 },
+		{ "System",		26, 1, 1, 1, 0 },
 		{ "PWM",		27, 1, 1, 1, 0 },
 		{ "CPU FAN",		32, 2, 60, 1, 0 },
 		{ "SYS FAN",		34, 2, 60, 1, 0 },
@@ -456,6 +587,7 @@ static const struct abituguru3_motherboard_info abituguru3_motherboards[] = {
 		{ NULL, 0, 0, 0, 0, 0 } }
 	},
 	{ 0x0018, NULL /* Unknown, need DMI string */, {
+	{ 0x0018, { "AB9 QuadGT", NULL }, {
 		{ "CPU Core",		 0, 0, 10, 1, 0 },
 		{ "DDR2",		 1, 0, 20, 1, 0 },
 		{ "DDR2 VTT",		 2, 0, 10, 1, 0 },
@@ -470,6 +602,7 @@ static const struct abituguru3_motherboard_info abituguru3_motherboards[] = {
 		{ "5VSB",		11, 0, 30, 1, 0 },
 		{ "CPU",		24, 1, 1, 1, 0 },
 		{ "System ",		25, 1, 1, 1, 0 },
+		{ "System",		25, 1, 1, 1, 0 },
 		{ "PWM Phase1",		26, 1, 1, 1, 0 },
 		{ "PWM Phase2",		27, 1, 1, 1, 0 },
 		{ "PWM Phase3",		28, 1, 1, 1, 0 },
@@ -483,11 +616,13 @@ static const struct abituguru3_motherboard_info abituguru3_motherboards[] = {
 		{ NULL, 0, 0, 0, 0, 0 } }
 	},
 	{ 0x0019, NULL /* Unknown, need DMI string */, {
+	{ 0x0019, { "IN9 32X MAX", NULL }, {
 		{ "CPU Core",		 7, 0, 10, 1, 0 },
 		{ "DDR2",		13, 0, 20, 1, 0 },
 		{ "DDR2 VTT",		14, 0, 10, 1, 0 },
 		{ "CPU VTT",		 3, 0, 20, 1, 0 },
 		{ "NB 1.2V ",		 4, 0, 10, 1, 0 },
+		{ "NB 1.2V",		 4, 0, 10, 1, 0 },
 		{ "SB 1.5V",		 6, 0, 10, 1, 0 },
 		{ "HyperTransport",	 5, 0, 10, 1, 0 },
 		{ "ATX +12V (24-Pin)",	12, 0, 60, 1, 0 },
@@ -497,6 +632,7 @@ static const struct abituguru3_motherboard_info abituguru3_motherboards[] = {
 		{ "ATX 5VSB",		11, 0, 30, 1, 0 },
 		{ "CPU",		24, 1, 1, 1, 0 },
 		{ "System ",		25, 1, 1, 1, 0 },
+		{ "System",		25, 1, 1, 1, 0 },
 		{ "PWM Phase1",		26, 1, 1, 1, 0 },
 		{ "PWM Phase2",		27, 1, 1, 1, 0 },
 		{ "PWM Phase3",		28, 1, 1, 1, 0 },
@@ -510,6 +646,7 @@ static const struct abituguru3_motherboard_info abituguru3_motherboards[] = {
 		{ NULL, 0, 0, 0, 0, 0 } }
 	},
 	{ 0x001A, "IP35 Pro(Intel P35-ICH9R)", {
+	{ 0x001A, { "IP35 Pro", "IP35 Pro XE", NULL }, {
 		{ "CPU Core",		 0, 0, 10, 1, 0 },
 		{ "DDR2",		 1, 0, 20, 1, 0 },
 		{ "DDR2 VTT",		 2, 0, 10, 1, 0 },
@@ -525,6 +662,8 @@ static const struct abituguru3_motherboard_info abituguru3_motherboards[] = {
 		{ "CPU",		24, 1, 1, 1, 0 },
 		{ "System ",		25, 1, 1, 1, 0 },
 		{ "PWM ",		26, 1, 1, 1, 0 },
+		{ "System",		25, 1, 1, 1, 0 },
+		{ "PWM",		26, 1, 1, 1, 0 },
 		{ "PWM Phase2",		27, 1, 1, 1, 0 },
 		{ "PWM Phase3",		28, 1, 1, 1, 0 },
 		{ "PWM Phase4",		29, 1, 1, 1, 0 },
@@ -538,6 +677,7 @@ static const struct abituguru3_motherboard_info abituguru3_motherboards[] = {
 		{ NULL, 0, 0, 0, 0, 0 } }
 	},
 	{ 0x001B, NULL /* Unknown, need DMI string */, {
+	{ 0x001B, { NULL } /* Unknown, need DMI string */, {
 		{ "CPU Core",		 0, 0, 10, 1, 0 },
 		{ "DDR3",		 1, 0, 20, 1, 0 },
 		{ "DDR3 VTT",		 2, 0, 10, 1, 0 },
@@ -565,6 +705,7 @@ static const struct abituguru3_motherboard_info abituguru3_motherboards[] = {
 		{ NULL, 0, 0, 0, 0, 0 } }
 	},
 	{ 0x001C, NULL /* Unknown, need DMI string */, {
+	{ 0x001C, { "IX38 QuadGT", NULL }, {
 		{ "CPU Core",		 0, 0, 10, 1, 0 },
 		{ "DDR2",		 1, 0, 20, 1, 0 },
 		{ "DDR2 VTT",		 2, 0, 10, 1, 0 },
@@ -592,6 +733,7 @@ static const struct abituguru3_motherboard_info abituguru3_motherboards[] = {
 		{ NULL, 0, 0, 0, 0, 0 } }
 	},
 	{ 0x0000, NULL, { { NULL, 0, 0, 0, 0, 0 } } }
+	{ 0x0000, { NULL }, { { NULL, 0, 0, 0, 0, 0 } } }
 };
 
 
@@ -604,6 +746,17 @@ static int verbose = 1;
 module_param(verbose, bool, 0644);
 MODULE_PARM_DESC(verbose, "Enable/disable verbose error reporting");
 
+static bool force;
+module_param(force, bool, 0);
+MODULE_PARM_DESC(force, "Set to one to force detection.");
+/* Default verbose is 1, since this driver is still in the testing phase */
+static bool verbose = 1;
+module_param(verbose, bool, 0644);
+MODULE_PARM_DESC(verbose, "Enable/disable verbose error reporting");
+
+static const char *never_happen = "This should never happen.";
+static const char *report_this =
+	"Please report this to the abituguru3 maintainer (see MAINTAINERS)";
 
 /* wait while the uguru is busy (usually after a write) */
 static int abituguru3_wait_while_busy(struct abituguru3_data *data)
@@ -618,6 +771,10 @@ static int abituguru3_wait_while_busy(struct abituguru3_data *data)
 			return x;
 		/* sleep a bit before our last try, to give the uGuru3 one
 		   last chance to respond. */
+		/*
+		 * sleep a bit before our last try, to give the uGuru3 one
+		 * last chance to respond.
+		 */
 		if (timeout == 1)
 			msleep(1);
 	}
@@ -637,6 +794,10 @@ static int abituguru3_wait_for_read(struct abituguru3_data *data)
 			return x;
 		/* sleep a bit before our last try, to give the uGuru3 one
 		   last chance to respond. */
+		/*
+		 * sleep a bit before our last try, to give the uGuru3 one
+		 * last chance to respond.
+		 */
 		if (timeout == 1)
 			msleep(1);
 	}
@@ -645,11 +806,17 @@ static int abituguru3_wait_for_read(struct abituguru3_data *data)
 
 /* This synchronizes us with the uGuru3's protocol state machine, this
    must be done before each command. */
+/*
+ * This synchronizes us with the uGuru3's protocol state machine, this
+ * must be done before each command.
+ */
 static int abituguru3_synchronize(struct abituguru3_data *data)
 {
 	int x, timeout = ABIT_UGURU3_SYNCHRONIZE_TIMEOUT;
 
 	if ((x = abituguru3_wait_while_busy(data)) != ABIT_UGURU3_SUCCESS) {
+	x = abituguru3_wait_while_busy(data);
+	if (x != ABIT_UGURU3_SUCCESS) {
 		ABIT_UGURU3_DEBUG("synchronize timeout during initial busy "
 			"wait, status: 0x%02x\n", x);
 		return -EIO;
@@ -657,6 +824,8 @@ static int abituguru3_synchronize(struct abituguru3_data *data)
 
 	outb(0x20, data->addr + ABIT_UGURU3_DATA);
 	if ((x = abituguru3_wait_while_busy(data)) != ABIT_UGURU3_SUCCESS) {
+	x = abituguru3_wait_while_busy(data);
+	if (x != ABIT_UGURU3_SUCCESS) {
 		ABIT_UGURU3_DEBUG("synchronize timeout after sending 0x20, "
 			"status: 0x%02x\n", x);
 		return -EIO;
@@ -664,6 +833,8 @@ static int abituguru3_synchronize(struct abituguru3_data *data)
 
 	outb(0x10, data->addr + ABIT_UGURU3_CMD);
 	if ((x = abituguru3_wait_while_busy(data)) != ABIT_UGURU3_SUCCESS) {
+	x = abituguru3_wait_while_busy(data);
+	if (x != ABIT_UGURU3_SUCCESS) {
 		ABIT_UGURU3_DEBUG("synchronize timeout after sending 0x10, "
 			"status: 0x%02x\n", x);
 		return -EIO;
@@ -671,12 +842,16 @@ static int abituguru3_synchronize(struct abituguru3_data *data)
 
 	outb(0x00, data->addr + ABIT_UGURU3_CMD);
 	if ((x = abituguru3_wait_while_busy(data)) != ABIT_UGURU3_SUCCESS) {
+	x = abituguru3_wait_while_busy(data);
+	if (x != ABIT_UGURU3_SUCCESS) {
 		ABIT_UGURU3_DEBUG("synchronize timeout after sending 0x00, "
 			"status: 0x%02x\n", x);
 		return -EIO;
 	}
 
 	if ((x = abituguru3_wait_for_read(data)) != ABIT_UGURU3_SUCCESS) {
+	x = abituguru3_wait_for_read(data);
+	if (x != ABIT_UGURU3_SUCCESS) {
 		ABIT_UGURU3_DEBUG("synchronize timeout waiting for read, "
 			"status: 0x%02x\n", x);
 		return -EIO;
@@ -697,6 +872,10 @@ static int abituguru3_synchronize(struct abituguru3_data *data)
 
 /* Read count bytes from sensor sensor_addr in bank bank_addr and store the
    result in buf */
+/*
+ * Read count bytes from sensor sensor_addr in bank bank_addr and store the
+ * result in buf
+ */
 static int abituguru3_read(struct abituguru3_data *data, u8 bank, u8 offset,
 	u8 count, u8 *buf)
 {
@@ -707,6 +886,13 @@ static int abituguru3_read(struct abituguru3_data *data, u8 bank, u8 offset,
 
 	outb(0x1A, data->addr + ABIT_UGURU3_DATA);
 	if ((x = abituguru3_wait_while_busy(data)) != ABIT_UGURU3_SUCCESS) {
+	x = abituguru3_synchronize(data);
+	if (x)
+		return x;
+
+	outb(0x1A, data->addr + ABIT_UGURU3_DATA);
+	x = abituguru3_wait_while_busy(data);
+	if (x != ABIT_UGURU3_SUCCESS) {
 		ABIT_UGURU3_DEBUG("read from 0x%02x:0x%02x timed out after "
 			"sending 0x1A, status: 0x%02x\n", (unsigned int)bank,
 			(unsigned int)offset, x);
@@ -715,6 +901,8 @@ static int abituguru3_read(struct abituguru3_data *data, u8 bank, u8 offset,
 
 	outb(bank, data->addr + ABIT_UGURU3_CMD);
 	if ((x = abituguru3_wait_while_busy(data)) != ABIT_UGURU3_SUCCESS) {
+	x = abituguru3_wait_while_busy(data);
+	if (x != ABIT_UGURU3_SUCCESS) {
 		ABIT_UGURU3_DEBUG("read from 0x%02x:0x%02x timed out after "
 			"sending the bank, status: 0x%02x\n",
 			(unsigned int)bank, (unsigned int)offset, x);
@@ -723,6 +911,8 @@ static int abituguru3_read(struct abituguru3_data *data, u8 bank, u8 offset,
 
 	outb(offset, data->addr + ABIT_UGURU3_CMD);
 	if ((x = abituguru3_wait_while_busy(data)) != ABIT_UGURU3_SUCCESS) {
+	x = abituguru3_wait_while_busy(data);
+	if (x != ABIT_UGURU3_SUCCESS) {
 		ABIT_UGURU3_DEBUG("read from 0x%02x:0x%02x timed out after "
 			"sending the offset, status: 0x%02x\n",
 			(unsigned int)bank, (unsigned int)offset, x);
@@ -731,6 +921,8 @@ static int abituguru3_read(struct abituguru3_data *data, u8 bank, u8 offset,
 
 	outb(count, data->addr + ABIT_UGURU3_CMD);
 	if ((x = abituguru3_wait_while_busy(data)) != ABIT_UGURU3_SUCCESS) {
+	x = abituguru3_wait_while_busy(data);
+	if (x != ABIT_UGURU3_SUCCESS) {
 		ABIT_UGURU3_DEBUG("read from 0x%02x:0x%02x timed out after "
 			"sending the count, status: 0x%02x\n",
 			(unsigned int)bank, (unsigned int)offset, x);
@@ -740,6 +932,8 @@ static int abituguru3_read(struct abituguru3_data *data, u8 bank, u8 offset,
 	for (i = 0; i < count; i++) {
 		if ((x = abituguru3_wait_for_read(data)) !=
 				ABIT_UGURU3_SUCCESS) {
+		x = abituguru3_wait_for_read(data);
+		if (x != ABIT_UGURU3_SUCCESS) {
 			ABIT_UGURU3_DEBUG("timeout reading byte %d from "
 				"0x%02x:0x%02x, status: 0x%02x\n", i,
 				(unsigned int)bank, (unsigned int)offset, x);
@@ -752,6 +946,10 @@ static int abituguru3_read(struct abituguru3_data *data, u8 bank, u8 offset,
 
 /* Sensor settings are stored 1 byte per offset with the bytes
    placed add consecutive offsets. */
+/*
+ * Sensor settings are stored 1 byte per offset with the bytes
+ * placed add consecutive offsets.
+ */
 static int abituguru3_read_increment_offset(struct abituguru3_data *data,
 					    u8 bank, u8 offset, u8 count,
 					    u8 *buf, int offset_count)
@@ -762,6 +960,15 @@ static int abituguru3_read_increment_offset(struct abituguru3_data *data,
 		if ((x = abituguru3_read(data, bank, offset + i, count,
 				buf + i * count)) != count)
 			return i * count + (i && (x < 0)) ? 0 : x;
+	for (i = 0; i < offset_count; i++) {
+		x = abituguru3_read(data, bank, offset + i, count,
+				    buf + i * count);
+		if (x != count) {
+			if (x < 0)
+				return x;
+			return i * count + x;
+		}
+	}
 
 	return i * count;
 }
@@ -769,6 +976,11 @@ static int abituguru3_read_increment_offset(struct abituguru3_data *data,
 /* Following are the sysfs callback functions. These functions expect:
    sensor_device_attribute_2->index:   index into the data->sensors array
    sensor_device_attribute_2->nr:      register offset, bitmask or NA. */
+/*
+ * Following are the sysfs callback functions. These functions expect:
+ * sensor_device_attribute_2->index:   index into the data->sensors array
+ * sensor_device_attribute_2->nr:      register offset, bitmask or NA.
+ */
 static struct abituguru3_data *abituguru3_update_device(struct device *dev);
 
 static ssize_t show_value(struct device *dev,
@@ -796,6 +1008,10 @@ static ssize_t show_value(struct device *dev,
 
 	/* alternatively we could update the sensors settings struct for this,
 	   but then its contents would differ from the windows sw ini files */
+	/*
+	 * alternatively we could update the sensors settings struct for this,
+	 * but then its contents would differ from the windows sw ini files
+	 */
 	if (sensor->type == ABIT_UGURU3_TEMP_SENSOR)
 		value *= 1000;
 
@@ -818,6 +1034,12 @@ static ssize_t show_alarm(struct device *dev,
 	   given in attr->nr also check if the alarm matches the type of alarm
 	   we're looking for (for volt it can be either low or high). The type
 	   is stored in a few readonly bits in the settings of the sensor. */
+	/*
+	 * See if the alarm bit for this sensor is set and if a bitmask is
+	 * given in attr->nr also check if the alarm matches the type of alarm
+	 * we're looking for (for volt it can be either low or high). The type
+	 * is stored in a few readonly bits in the settings of the sensor.
+	 */
 	if ((data->alarms[port / 8] & (0x01 << (port % 8))) &&
 			(!attr->nr || (data->settings[port][0] & attr->nr)))
 		return sprintf(buf, "1\n");
@@ -901,6 +1123,7 @@ static struct sensor_device_attribute_2 abituguru3_sysfs_attr[] = {
 };
 
 static int __devinit abituguru3_probe(struct platform_device *pdev)
+static int abituguru3_probe(struct platform_device *pdev)
 {
 	const int no_sysfs_attr[3] = { 10, 8, 7 };
 	int sensor_index[3] = { 0, 1, 1 };
@@ -911,6 +1134,9 @@ static int __devinit abituguru3_probe(struct platform_device *pdev)
 	u16 id;
 
 	if (!(data = kzalloc(sizeof(struct abituguru3_data), GFP_KERNEL)))
+	data = devm_kzalloc(&pdev->dev, sizeof(struct abituguru3_data),
+			    GFP_KERNEL);
+	if (!data)
 		return -ENOMEM;
 
 	data->addr = platform_get_resource(pdev, IORESOURCE_IO, 0)->start;
@@ -922,6 +1148,10 @@ static int __devinit abituguru3_probe(struct platform_device *pdev)
 			ABIT_UGURU3_BOARD_ID, 2, buf)) != 2) {
 		goto abituguru3_probe_error;
 	}
+	i = abituguru3_read(data, ABIT_UGURU3_MISC_BANK, ABIT_UGURU3_BOARD_ID,
+			    2, buf);
+	if (i != 2)
+		goto abituguru3_probe_error;
 
 	/* Completely read the uGuru to see if one really is there */
 	if (!abituguru3_update_device(&pdev->dev))
@@ -936,6 +1166,8 @@ static int __devinit abituguru3_probe(struct platform_device *pdev)
 		printk(KERN_ERR ABIT_UGURU3_NAME ": error unknown motherboard "
 			"ID: %04X. Please report this to the abituguru3 "
 			"maintainer (see MAINTAINERS)\n", (unsigned int)id);
+		pr_err("error unknown motherboard ID: %04X. %s\n",
+		       (unsigned int)id, report_this);
 		goto abituguru3_probe_error;
 	}
 	data->sensors = abituguru3_motherboards[i].sensors;
@@ -951,6 +1183,7 @@ static int __devinit abituguru3_probe(struct platform_device *pdev)
 			"(see MAINTAINERS)\n");
 	}
 #endif
+	pr_info("found Abit uGuru3, motherboard ID: %04X\n", (unsigned int)id);
 
 	/* Fill the sysfs attr array */
 	sysfs_attr_i = 0;
@@ -964,6 +1197,8 @@ static int __devinit abituguru3_probe(struct platform_device *pdev)
 				"then ABIT_UGURU3_MAX_NO_SENSORS. This should "
 				"never happen please report to the abituguru3 "
 				"maintainer (see MAINTAINERS)\n");
+			pr_err("Fatal error motherboard has more sensors then ABIT_UGURU3_MAX_NO_SENSORS. %s %s\n",
+			       never_happen, report_this);
 			res = -ENAMETOOLONG;
 			goto abituguru3_probe_error;
 		}
@@ -989,6 +1224,8 @@ static int __devinit abituguru3_probe(struct platform_device *pdev)
 			": Fatal error ran out of space for sysfs attr names. "
 			"This should never happen please report to the "
 			"abituguru3 maintainer (see MAINTAINERS)\n");
+		pr_err("Fatal error ran out of space for sysfs attr names. %s %s\n",
+		       never_happen, report_this);
 		res = -ENAMETOOLONG;
 		goto abituguru3_probe_error;
 	}
@@ -1022,6 +1259,10 @@ abituguru3_probe_error:
 }
 
 static int __devexit abituguru3_remove(struct platform_device *pdev)
+	return res;
+}
+
+static int abituguru3_remove(struct platform_device *pdev)
 {
 	int i;
 	struct abituguru3_data *data = platform_get_drvdata(pdev);
@@ -1096,6 +1337,14 @@ static int abituguru3_suspend(struct platform_device *pdev, pm_message_t state)
 	struct abituguru3_data *data = platform_get_drvdata(pdev);
 	/* make sure all communications with the uguru3 are done and no new
 	   ones are started */
+#ifdef CONFIG_PM_SLEEP
+static int abituguru3_suspend(struct device *dev)
+{
+	struct abituguru3_data *data = dev_get_drvdata(dev);
+	/*
+	 * make sure all communications with the uguru3 are done and no new
+	 * ones are started
+	 */
 	mutex_lock(&data->update_lock);
 	return 0;
 }
@@ -1109,6 +1358,17 @@ static int abituguru3_resume(struct platform_device *pdev)
 #else
 #define abituguru3_suspend	NULL
 #define abituguru3_resume	NULL
+static int abituguru3_resume(struct device *dev)
+{
+	struct abituguru3_data *data = dev_get_drvdata(dev);
+	mutex_unlock(&data->update_lock);
+	return 0;
+}
+
+static SIMPLE_DEV_PM_OPS(abituguru3_pm, abituguru3_suspend, abituguru3_resume);
+#define ABIT_UGURU3_PM	(&abituguru3_pm)
+#else
+#define ABIT_UGURU3_PM	NULL
 #endif /* CONFIG_PM */
 
 static struct platform_driver abituguru3_driver = {
@@ -1124,10 +1384,19 @@ static struct platform_driver abituguru3_driver = {
 
 #ifdef CONFIG_DMI
 
+		.name	= ABIT_UGURU3_NAME,
+		.pm	= ABIT_UGURU3_PM
+	},
+	.probe	= abituguru3_probe,
+	.remove	= abituguru3_remove,
+};
+
 static int __init abituguru3_dmi_detect(void)
 {
 	const char *board_vendor, *board_name;
 	int i, err = (force) ? 1 : -ENODEV;
+	const char *const *dmi_name;
+	size_t sublen;
 
 	board_vendor = dmi_get_system_info(DMI_BOARD_VENDOR);
 	if (!board_vendor || strcmp(board_vendor, "http://www.abit.com.tw/"))
@@ -1159,6 +1428,32 @@ static inline int abituguru3_dmi_detect(void)
 #endif /* CONFIG_DMI */
 
 /* FIXME: Manual detection should die eventually; we need to collect stable
+	/*
+	 * At the moment, we don't care about the part of the vendor
+	 * DMI string contained in brackets. Truncate the string at
+	 * the first occurrence of a bracket. Trim any trailing space
+	 * from the substring.
+	 */
+	sublen = strcspn(board_name, "(");
+	while (sublen > 0 && board_name[sublen - 1] == ' ')
+		sublen--;
+
+	for (i = 0; abituguru3_motherboards[i].id; i++) {
+		dmi_name = abituguru3_motherboards[i].dmi_name;
+		for ( ; *dmi_name; dmi_name++) {
+			if (strlen(*dmi_name) != sublen)
+				continue;
+			if (!strncasecmp(board_name, *dmi_name, sublen))
+				return 0;
+		}
+	}
+
+	/* No match found */
+	return 1;
+}
+
+/*
+ * FIXME: Manual detection should die eventually; we need to collect stable
  *        DMI model names first before we can rely entirely on CONFIG_DMI.
  */
 
@@ -1167,6 +1462,11 @@ static int __init abituguru3_detect(void)
 	/* See if there is an uguru3 there. An idle uGuru3 will hold 0x00 or
 	   0x08 at DATA and 0xAC at CMD. Sometimes the uGuru3 will hold 0x05
 	   or 0x55 at CMD instead, why is unknown. */
+	/*
+	 * See if there is an uguru3 there. An idle uGuru3 will hold 0x00 or
+	 * 0x08 at DATA and 0xAC at CMD. Sometimes the uGuru3 will hold 0x05
+	 * or 0x55 at CMD instead, why is unknown.
+	 */
 	u8 data_val = inb_p(ABIT_UGURU3_BASE + ABIT_UGURU3_DATA);
 	u8 cmd_val = inb_p(ABIT_UGURU3_BASE + ABIT_UGURU3_CMD);
 	if (((data_val == 0x00) || (data_val == 0x08)) &&
@@ -1180,6 +1480,7 @@ static int __init abituguru3_detect(void)
 	if (force) {
 		printk(KERN_INFO ABIT_UGURU3_NAME ": Assuming Abit uGuru3 is "
 				"present because of \"force\" parameter\n");
+		pr_info("Assuming Abit uGuru3 is present because of \"force\" parameter\n");
 		return 0;
 	}
 
@@ -1200,12 +1501,17 @@ static int __init abituguru3_init(void)
 		return err;
 
 	/* Fall back to manual detection if there was no exact
+	/*
+	 * Fall back to manual detection if there was no exact
 	 * board name match, or force was specified.
 	 */
 	if (err > 0) {
 		err = abituguru3_detect();
 		if (err)
 			return err;
+
+		pr_warn("this motherboard was not detected using DMI. "
+			"Please send the output of \"dmidecode\" to the abituguru3 maintainer (see MAINTAINERS)\n");
 	}
 
 	err = platform_driver_register(&abituguru3_driver);
@@ -1217,6 +1523,7 @@ static int __init abituguru3_init(void)
 	if (!abituguru3_pdev) {
 		printk(KERN_ERR ABIT_UGURU3_NAME
 			": Device allocation failed\n");
+		pr_err("Device allocation failed\n");
 		err = -ENOMEM;
 		goto exit_driver_unregister;
 	}
@@ -1229,6 +1536,7 @@ static int __init abituguru3_init(void)
 	if (err) {
 		printk(KERN_ERR ABIT_UGURU3_NAME
 			": Device resource addition failed (%d)\n", err);
+		pr_err("Device resource addition failed (%d)\n", err);
 		goto exit_device_put;
 	}
 
@@ -1236,6 +1544,7 @@ static int __init abituguru3_init(void)
 	if (err) {
 		printk(KERN_ERR ABIT_UGURU3_NAME
 			": Device addition failed (%d)\n", err);
+		pr_err("Device addition failed (%d)\n", err);
 		goto exit_device_put;
 	}
 
@@ -1256,6 +1565,7 @@ static void __exit abituguru3_exit(void)
 }
 
 MODULE_AUTHOR("Hans de Goede <j.w.r.degoede@hhs.nl>");
+MODULE_AUTHOR("Hans de Goede <hdegoede@redhat.com>");
 MODULE_DESCRIPTION("Abit uGuru3 Sensor device");
 MODULE_LICENSE("GPL");
 

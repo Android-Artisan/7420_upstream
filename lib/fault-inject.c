@@ -9,6 +9,13 @@
 #include <linux/unwind.h>
 #include <linux/stacktrace.h>
 #include <linux/kallsyms.h>
+#include <linux/sched.h>
+#include <linux/stat.h>
+#include <linux/types.h>
+#include <linux/fs.h>
+#include <linux/export.h>
+#include <linux/interrupt.h>
+#include <linux/stacktrace.h>
 #include <linux/fault-inject.h>
 
 /*
@@ -16,6 +23,7 @@
  * returns 0 on error, because that is what __setup handlers do.
  */
 int __init setup_fault_attr(struct fault_attr *attr, char *str)
+int setup_fault_attr(struct fault_attr *attr, char *str)
 {
 	unsigned long probability;
 	unsigned long interval;
@@ -44,6 +52,20 @@ static void fail_dump(struct fault_attr *attr)
 		printk(KERN_NOTICE "FAULT_INJECTION: forcing a failure\n");
 	if (attr->verbose > 1)
 		dump_stack();
+EXPORT_SYMBOL_GPL(setup_fault_attr);
+
+static void fail_dump(struct fault_attr *attr)
+{
+	if (attr->verbose > 0 && __ratelimit(&attr->ratelimit_state)) {
+		printk(KERN_NOTICE "FAULT_INJECTION: forcing a failure.\n"
+		       "name %pd, interval %lu, probability %lu, "
+		       "space %d, times %d\n", attr->dname,
+		       attr->interval, attr->probability,
+		       atomic_read(&attr->space),
+		       atomic_read(&attr->times));
+		if (attr->verbose > 1)
+			dump_stack();
+	}
 }
 
 #define atomic_dec_not_zero(v)		atomic_add_unless((v), -1, 0)
@@ -101,6 +123,10 @@ static inline bool fail_stacktrace(struct fault_attr *attr)
 
 bool should_fail(struct fault_attr *attr, ssize_t size)
 {
+	/* No need to check any other properties if the probability is 0 */
+	if (attr->probability == 0)
+		return false;
+
 	if (attr->task_filter && !fail_task(attr, current))
 		return false;
 
@@ -119,6 +145,7 @@ bool should_fail(struct fault_attr *attr, ssize_t size)
 	}
 
 	if (attr->probability <= random32() % 100)
+	if (attr->probability <= prandom_u32() % 100)
 		return false;
 
 	if (!fail_stacktrace(attr))
@@ -131,6 +158,7 @@ bool should_fail(struct fault_attr *attr, ssize_t size)
 
 	return true;
 }
+EXPORT_SYMBOL_GPL(should_fail);
 
 #ifdef CONFIG_FAULT_INJECTION_DEBUG_FS
 
@@ -159,6 +187,7 @@ static int debugfs_ul_get(void *data, u64 *val)
 DEFINE_SIMPLE_ATTRIBUTE(fops_ul, debugfs_ul_get, debugfs_ul_set, "%llu\n");
 
 static struct dentry *debugfs_create_ul(const char *name, mode_t mode,
+static struct dentry *debugfs_create_ul(const char *name, umode_t mode,
 				struct dentry *parent, unsigned long *value)
 {
 	return debugfs_create_file(name, mode, parent, value, &fops_ul);
@@ -277,6 +306,55 @@ int init_fault_attr_dentries(struct fault_attr *attr, const char *name)
 	if (!attr->dentries.probability_file || !attr->dentries.interval_file ||
 	    !attr->dentries.times_file || !attr->dentries.space_file ||
 	    !attr->dentries.verbose_file || !attr->dentries.task_filter_file)
+
+static int debugfs_stacktrace_depth_set(void *data, u64 val)
+{
+	*(unsigned long *)data =
+		min_t(unsigned long, val, MAX_STACK_TRACE_DEPTH);
+
+	return 0;
+}
+
+DEFINE_SIMPLE_ATTRIBUTE(fops_stacktrace_depth, debugfs_ul_get,
+			debugfs_stacktrace_depth_set, "%llu\n");
+
+static struct dentry *debugfs_create_stacktrace_depth(
+	const char *name, umode_t mode,
+	struct dentry *parent, unsigned long *value)
+{
+	return debugfs_create_file(name, mode, parent, value,
+				   &fops_stacktrace_depth);
+}
+
+#endif /* CONFIG_FAULT_INJECTION_STACKTRACE_FILTER */
+
+struct dentry *fault_create_debugfs_attr(const char *name,
+			struct dentry *parent, struct fault_attr *attr)
+{
+	umode_t mode = S_IFREG | S_IRUSR | S_IWUSR;
+	struct dentry *dir;
+
+	dir = debugfs_create_dir(name, parent);
+	if (!dir)
+		return ERR_PTR(-ENOMEM);
+
+	if (!debugfs_create_ul("probability", mode, dir, &attr->probability))
+		goto fail;
+	if (!debugfs_create_ul("interval", mode, dir, &attr->interval))
+		goto fail;
+	if (!debugfs_create_atomic_t("times", mode, dir, &attr->times))
+		goto fail;
+	if (!debugfs_create_atomic_t("space", mode, dir, &attr->space))
+		goto fail;
+	if (!debugfs_create_ul("verbose", mode, dir, &attr->verbose))
+		goto fail;
+	if (!debugfs_create_u32("verbose_ratelimit_interval_ms", mode, dir,
+				&attr->ratelimit_state.interval))
+		goto fail;
+	if (!debugfs_create_u32("verbose_ratelimit_burst", mode, dir,
+				&attr->ratelimit_state.burst))
+		goto fail;
+	if (!debugfs_create_bool("task-filter", mode, dir, &attr->task_filter))
 		goto fail;
 
 #ifdef CONFIG_FAULT_INJECTION_STACKTRACE_FILTER
@@ -302,6 +380,17 @@ int init_fault_attr_dentries(struct fault_attr *attr, const char *name)
 	    !attr->dentries.require_end_file ||
 	    !attr->dentries.reject_start_file ||
 	    !attr->dentries.reject_end_file)
+	if (!debugfs_create_stacktrace_depth("stacktrace-depth", mode, dir,
+				&attr->stacktrace_depth))
+		goto fail;
+	if (!debugfs_create_ul("require-start", mode, dir,
+				&attr->require_start))
+		goto fail;
+	if (!debugfs_create_ul("require-end", mode, dir, &attr->require_end))
+		goto fail;
+	if (!debugfs_create_ul("reject-start", mode, dir, &attr->reject_start))
+		goto fail;
+	if (!debugfs_create_ul("reject-end", mode, dir, &attr->reject_end))
 		goto fail;
 
 #endif /* CONFIG_FAULT_INJECTION_STACKTRACE_FILTER */
@@ -311,5 +400,13 @@ fail:
 	cleanup_fault_attr_dentries(attr);
 	return -ENOMEM;
 }
+	attr->dname = dget(dir);
+	return dir;
+fail:
+	debugfs_remove_recursive(dir);
+
+	return ERR_PTR(-ENOMEM);
+}
+EXPORT_SYMBOL_GPL(fault_create_debugfs_attr);
 
 #endif /* CONFIG_FAULT_INJECTION_DEBUG_FS */

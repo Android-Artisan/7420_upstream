@@ -30,6 +30,25 @@ do_csum:
 
 	cmp	+0,d2
 	beq	do_csum_done			# return if zero-length buffer
+	.section .text
+	.balign	L1_CACHE_BYTES
+
+###############################################################################
+#
+# unsigned int do_csum(const unsigned char *buff, int len)
+#
+###############################################################################
+	.globl	do_csum
+	.type	do_csum,@function
+do_csum:
+	movm	[d2,d3],(sp)
+	mov	d1,d2				# count
+	mov	d0,a0				# buff
+	mov	a0,a1
+	clr	d1				# accumulator
+
+	cmp	+0,d2
+	ble	do_csum_done			# check for zero length or negative
 
 	# 4-byte align the buffer pointer
 	btst	+3,a0
@@ -45,6 +64,9 @@ do_csum:
 	add	-1,d2
 do_csum_addr_not_odd:
 
+	add	-1,d2
+
+do_csum_addr_not_odd:
 	cmp	+2,d2
 	bcs	do_csum_fewer_than_4
 	btst	+2,a0
@@ -80,6 +102,20 @@ do_csum_loop:
 	mov	(a0+),e1
 	addc	e1,d1
 	mov	(a0+),e3
+	mov	(a0+),e0
+	mov	(a0+),e1
+	mov	(a0+),e3
+	add	d0,d1
+	addc	e0,d1
+	addc	e1,d1
+	addc	e3,d1
+	mov	(a0+),d0
+	mov	(a0+),e0
+	mov	(a0+),e1
+	mov	(a0+),e3
+	addc	d0,d1
+	addc	e0,d1
+	addc	e1,d1
 	addc	e3,d1
 	addc	+0,d1
 
@@ -100,6 +136,12 @@ do_csum_remainder:
 	mov	(a0+),e1
 	addc	e1,d1
 	mov	(a0+),e3
+	mov	(a0+),e0
+	mov	(a0+),e1
+	mov	(a0+),e3
+	add	d0,d1
+	addc	e0,d1
+	addc	e1,d1
 	addc	e3,d1
 	addc	+0,d1
 	add	-16,d2
@@ -134,6 +176,9 @@ do_csum_fewer_than_4:
 do_csum_fewer_than_2:
 	and	+1,d2
 	beq	do_csum_add_last_bit
+	and	+1,d2
+	beq	do_csum_add_last_bit
+do_csum_fewer_than_2:
 	movbu	(a0),d3
 	add	d3,d0
 do_csum_add_last_bit:
@@ -146,12 +191,17 @@ do_csum_done:
 	and	d1,d2
 	asl	+16,d1
 	add	d2,d1,d0
+	mov	+0xffff0000,d0
+	and	d1,d0
+	asl	+16,d1
+	add	d1,d0
 	addc	+0xffff,d0
 	lsr	+16,d0
 
 	# flip the halves of the word result if the buffer was oddly aligned
 	mov	(12,sp),d1
 	and	+1,d1
+	and	+1,a1
 	beq	do_csum_not_oddly_aligned
 	swaph	d0,d0				# exchange bits 15:8 with 7:0
 
@@ -160,3 +210,4 @@ do_csum_not_oddly_aligned:
 
 do_csum_end:
 	.size	do_csum, do_csum_end-do_csum
+	.size	do_csum, .-do_csum

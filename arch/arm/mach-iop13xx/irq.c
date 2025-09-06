@@ -196,6 +196,79 @@ static struct irq_chip iop13xx_irqchip4 = {
 	.ack    = iop13xx_irq_mask3,
 	.mask   = iop13xx_irq_mask3,
 	.unmask = iop13xx_irq_unmask3,
+iop13xx_irq_mask0 (struct irq_data *d)
+{
+	write_intctl_0(read_intctl_0() & ~(1 << (d->irq - 0)));
+}
+
+static void
+iop13xx_irq_mask1 (struct irq_data *d)
+{
+	write_intctl_1(read_intctl_1() & ~(1 << (d->irq - 32)));
+}
+
+static void
+iop13xx_irq_mask2 (struct irq_data *d)
+{
+	write_intctl_2(read_intctl_2() & ~(1 << (d->irq - 64)));
+}
+
+static void
+iop13xx_irq_mask3 (struct irq_data *d)
+{
+	write_intctl_3(read_intctl_3() & ~(1 << (d->irq - 96)));
+}
+
+static void
+iop13xx_irq_unmask0(struct irq_data *d)
+{
+	write_intctl_0(read_intctl_0() | (1 << (d->irq - 0)));
+}
+
+static void
+iop13xx_irq_unmask1(struct irq_data *d)
+{
+	write_intctl_1(read_intctl_1() | (1 << (d->irq - 32)));
+}
+
+static void
+iop13xx_irq_unmask2(struct irq_data *d)
+{
+	write_intctl_2(read_intctl_2() | (1 << (d->irq - 64)));
+}
+
+static void
+iop13xx_irq_unmask3(struct irq_data *d)
+{
+	write_intctl_3(read_intctl_3() | (1 << (d->irq - 96)));
+}
+
+static struct irq_chip iop13xx_irqchip1 = {
+	.name       = "IOP13xx-1",
+	.irq_ack    = iop13xx_irq_mask0,
+	.irq_mask   = iop13xx_irq_mask0,
+	.irq_unmask = iop13xx_irq_unmask0,
+};
+
+static struct irq_chip iop13xx_irqchip2 = {
+	.name       = "IOP13xx-2",
+	.irq_ack    = iop13xx_irq_mask1,
+	.irq_mask   = iop13xx_irq_mask1,
+	.irq_unmask = iop13xx_irq_unmask1,
+};
+
+static struct irq_chip iop13xx_irqchip3 = {
+	.name       = "IOP13xx-3",
+	.irq_ack    = iop13xx_irq_mask2,
+	.irq_mask   = iop13xx_irq_mask2,
+	.irq_unmask = iop13xx_irq_unmask2,
+};
+
+static struct irq_chip iop13xx_irqchip4 = {
+	.name       = "IOP13xx-4",
+	.irq_ack    = iop13xx_irq_mask3,
+	.irq_mask   = iop13xx_irq_mask3,
+	.irq_unmask = iop13xx_irq_unmask3,
 };
 
 extern void iop_init_cp6_handler(void);
@@ -234,6 +307,16 @@ void __init iop13xx_init_irq(void)
 
 		set_irq_handler(i, handle_level_irq);
 		set_irq_flags(i, IRQF_VALID | IRQF_PROBE);
+			irq_set_chip(i, &iop13xx_irqchip1);
+		else if (i < 64)
+			irq_set_chip(i, &iop13xx_irqchip2);
+		else if (i < 96)
+			irq_set_chip(i, &iop13xx_irqchip3);
+		else
+			irq_set_chip(i, &iop13xx_irqchip4);
+
+		irq_set_handler(i, handle_level_irq);
+		irq_clear_status_flags(i, IRQ_NOREQUEST | IRQ_NOPROBE);
 	}
 
 	iop13xx_msi_init();

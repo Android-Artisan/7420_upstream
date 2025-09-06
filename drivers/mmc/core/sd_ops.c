@@ -10,6 +10,9 @@
  */
 
 #include <linux/types.h>
+#include <linux/slab.h>
+#include <linux/types.h>
+#include <linux/export.h>
 #include <linux/scatterlist.h>
 
 #include <linux/mmc/host.h>
@@ -24,6 +27,10 @@ static int mmc_app_cmd(struct mmc_host *host, struct mmc_card *card)
 {
 	int err;
 	struct mmc_command cmd;
+int mmc_app_cmd(struct mmc_host *host, struct mmc_card *card)
+{
+	int err;
+	struct mmc_command cmd = {0};
 
 	BUG_ON(!host);
 	BUG_ON(card && (card->host != host));
@@ -48,6 +55,7 @@ static int mmc_app_cmd(struct mmc_host *host, struct mmc_card *card)
 
 	return 0;
 }
+EXPORT_SYMBOL_GPL(mmc_app_cmd);
 
 /**
  *	mmc_wait_for_app_cmd - start an application command and wait for
@@ -66,6 +74,7 @@ int mmc_wait_for_app_cmd(struct mmc_host *host, struct mmc_card *card,
 	struct mmc_command *cmd, int retries)
 {
 	struct mmc_request mrq;
+	struct mmc_request mrq = {NULL};
 
 	int i, err;
 
@@ -121,6 +130,7 @@ int mmc_app_set_bus_width(struct mmc_card *card, int width)
 {
 	int err;
 	struct mmc_command cmd;
+	struct mmc_command cmd = {0};
 
 	BUG_ON(!card);
 	BUG_ON(!card->host);
@@ -151,6 +161,7 @@ int mmc_app_set_bus_width(struct mmc_card *card, int width)
 int mmc_send_app_op_cond(struct mmc_host *host, u32 ocr, u32 *rocr)
 {
 	struct mmc_command cmd;
+	struct mmc_command cmd = {0};
 	int i, err = 0;
 
 	BUG_ON(!host);
@@ -187,6 +198,9 @@ int mmc_send_app_op_cond(struct mmc_host *host, u32 ocr, u32 *rocr)
 		mmc_delay(10);
 	}
 
+	if (!i)
+		pr_err("%s: card never left busy state\n", mmc_hostname(host));
+
 	if (rocr && !mmc_host_is_spi(host))
 		*rocr = cmd.resp[0];
 
@@ -196,6 +210,7 @@ int mmc_send_app_op_cond(struct mmc_host *host, u32 ocr, u32 *rocr)
 int mmc_send_if_cond(struct mmc_host *host, u32 ocr)
 {
 	struct mmc_command cmd;
+	struct mmc_command cmd = {0};
 	int err;
 	static const u8 test_pattern = 0xAA;
 	u8 result_pattern;
@@ -228,6 +243,7 @@ int mmc_send_relative_addr(struct mmc_host *host, unsigned int *rca)
 {
 	int err;
 	struct mmc_command cmd;
+	struct mmc_command cmd = {0};
 
 	BUG_ON(!host);
 	BUG_ON(!rca);
@@ -254,6 +270,11 @@ int mmc_app_send_scr(struct mmc_card *card, u32 *scr)
 	struct mmc_command cmd;
 	struct mmc_data data;
 	struct scatterlist sg;
+	struct mmc_request mrq = {NULL};
+	struct mmc_command cmd = {0};
+	struct mmc_data data = {0};
+	struct scatterlist sg;
+	void *data_buf;
 
 	BUG_ON(!card);
 	BUG_ON(!card->host);
@@ -268,6 +289,12 @@ int mmc_app_send_scr(struct mmc_card *card, u32 *scr)
 	memset(&mrq, 0, sizeof(struct mmc_request));
 	memset(&cmd, 0, sizeof(struct mmc_command));
 	memset(&data, 0, sizeof(struct mmc_data));
+	/* dma onto stack is unsafe/nonportable, but callers to this
+	 * routine normally provide temporary on-stack buffers ...
+	 */
+	data_buf = kmalloc(sizeof(card->raw_scr), GFP_KERNEL);
+	if (data_buf == NULL)
+		return -ENOMEM;
 
 	mrq.cmd = &cmd;
 	mrq.data = &data;
@@ -283,10 +310,14 @@ int mmc_app_send_scr(struct mmc_card *card, u32 *scr)
 	data.sg_len = 1;
 
 	sg_init_one(&sg, scr, 8);
+	sg_init_one(&sg, data_buf, 8);
 
 	mmc_set_data_timeout(&data, card);
 
 	mmc_wait_for_req(card->host, &mrq);
+
+	memcpy(scr, data_buf, sizeof(card->raw_scr));
+	kfree(data_buf);
 
 	if (cmd.error)
 		return cmd.error;
@@ -305,6 +336,9 @@ int mmc_sd_switch(struct mmc_card *card, int mode, int group,
 	struct mmc_request mrq;
 	struct mmc_command cmd;
 	struct mmc_data data;
+	struct mmc_request mrq = {NULL};
+	struct mmc_command cmd = {0};
+	struct mmc_data data = {0};
 	struct scatterlist sg;
 
 	BUG_ON(!card);
@@ -348,3 +382,47 @@ int mmc_sd_switch(struct mmc_card *card, int mode, int group,
 	return 0;
 }
 
+int mmc_app_sd_status(struct mmc_card *card, void *ssr)
+{
+	int err;
+	struct mmc_request mrq = {NULL};
+	struct mmc_command cmd = {0};
+	struct mmc_data data = {0};
+	struct scatterlist sg;
+
+	BUG_ON(!card);
+	BUG_ON(!card->host);
+	BUG_ON(!ssr);
+
+	/* NOTE: caller guarantees ssr is heap-allocated */
+
+	err = mmc_app_cmd(card->host, card);
+	if (err)
+		return err;
+
+	mrq.cmd = &cmd;
+	mrq.data = &data;
+
+	cmd.opcode = SD_APP_SD_STATUS;
+	cmd.arg = 0;
+	cmd.flags = MMC_RSP_SPI_R2 | MMC_RSP_R1 | MMC_CMD_ADTC;
+
+	data.blksz = 64;
+	data.blocks = 1;
+	data.flags = MMC_DATA_READ;
+	data.sg = &sg;
+	data.sg_len = 1;
+
+	sg_init_one(&sg, ssr, 64);
+
+	mmc_set_data_timeout(&data, card);
+
+	mmc_wait_for_req(card->host, &mrq);
+
+	if (cmd.error)
+		return cmd.error;
+	if (data.error)
+		return data.error;
+
+	return 0;
+}

@@ -4,6 +4,8 @@
  * Based on linux/arch/mips/pci/ops-tx4938.c,
  *          linux/arch/mips/pci/fixup-rbtx4938.c,
  *          linux/arch/mips/txx9/rbtx4938/setup.c,
+ *	    linux/arch/mips/pci/fixup-rbtx4938.c,
+ *	    linux/arch/mips/txx9/rbtx4938/setup.c,
  *	    and RBTX49xx patch from CELF patch archive.
  *
  * 2003-2005 (c) MontaVista Software, Inc.
@@ -12,11 +14,14 @@
  *
  * This program is free software; you can redistribute  it and/or modify it
  * under  the terms of  the GNU General  Public License as published by the
+ * This program is free software; you can redistribute	it and/or modify it
+ * under  the terms of	the GNU General	 Public License as published by the
  * Free Software Foundation;  either version 2 of the  License, or (at your
  * option) any later version.
  */
 #include <linux/kernel.h>
 #include <linux/interrupt.h>
+#include <linux/irq.h>
 #include <asm/txx9/pci.h>
 #include <asm/txx9/tx4927pcic.h>
 
@@ -191,6 +196,7 @@ static struct {
 	u8 retryto;
 	u16 gbwc;
 } tx4927_pci_opts __devinitdata = {
+} tx4927_pci_opts = {
 	.trdyto = 0,
 	.retryto = 0,
 	.gbwc = 0xfe0,	/* 4064 GBUSCLK for CCFG.GTOT=0b11 */
@@ -202,16 +208,25 @@ char *__devinit tx4927_pcibios_setup(char *str)
 
 	if (!strncmp(str, "trdyto=", 7)) {
 		if (strict_strtoul(str + 7, 0, &val) == 0)
+char *tx4927_pcibios_setup(char *str)
+{
+	if (!strncmp(str, "trdyto=", 7)) {
+		u8 val = 0;
+		if (kstrtou8(str + 7, 0, &val) == 0)
 			tx4927_pci_opts.trdyto = val;
 		return NULL;
 	}
 	if (!strncmp(str, "retryto=", 8)) {
 		if (strict_strtoul(str + 8, 0, &val) == 0)
+		u8 val = 0;
+		if (kstrtou8(str + 8, 0, &val) == 0)
 			tx4927_pci_opts.retryto = val;
 		return NULL;
 	}
 	if (!strncmp(str, "gbwc=", 5)) {
 		if (strict_strtoul(str + 5, 0, &val) == 0)
+		u16 val;
+		if (kstrtou16(str + 5, 0, &val) == 0)
 			tx4927_pci_opts.gbwc = val;
 		return NULL;
 	}
@@ -495,6 +510,7 @@ irqreturn_t tx4927_pcierr_interrupt(int irq, void *dev_id)
 
 #ifdef CONFIG_TOSHIBA_FPCIB0
 static void __init tx4927_quirk_slc90e66_bridge(struct pci_dev *dev)
+static void tx4927_quirk_slc90e66_bridge(struct pci_dev *dev)
 {
 	struct tx4927_pcic_reg __iomem *pcicptr = pci_bus_to_pcicptr(dev->bus);
 

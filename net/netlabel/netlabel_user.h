@@ -6,6 +6,7 @@
  * protocols such as CIPSO and RIPSO.
  *
  * Author: Paul Moore <paul.moore@hp.com>
+ * Author: Paul Moore <paul@paul-moore.com>
  *
  */
 
@@ -25,6 +26,7 @@
  * You should have received a copy of the GNU General Public License
  * along with this program;  if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+ * along with this program;  if not, see <http://www.gnu.org/licenses/>.
  *
  */
 
@@ -52,6 +54,9 @@ static inline void netlbl_netlink_auditinfo(struct sk_buff *skb,
 	audit_info->secid = NETLINK_CB(skb).sid;
 	audit_info->loginuid = NETLINK_CB(skb).loginuid;
 	audit_info->sessionid = NETLINK_CB(skb).sessionid;
+	security_task_getsecid(current, &audit_info->secid);
+	audit_info->loginuid = audit_get_loginuid(current);
+	audit_info->sessionid = audit_get_sessionid(current);
 }
 
 /* NetLabel NETLINK I/O functions */

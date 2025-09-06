@@ -27,6 +27,11 @@
 #include <linux/list.h>
 #include <linux/module.h>
 #include <linux/syscalls.h>
+#include <linux/gfp.h>
+#include <linux/list.h>
+#include <linux/syscalls.h>
+#include <linux/coredump.h>
+#include <linux/binfmts.h>
 
 #include <asm/uaccess.h>
 
@@ -43,6 +48,7 @@ static ssize_t do_coredump_read(int num, struct spu_context *ctx, void *buffer,
 
 	data = spufs_coredump_read[num].get(ctx);
 	ret = snprintf(buffer, size, "0x%.16lx", data);
+	ret = snprintf(buffer, size, "0x%.16llx", data);
 	if (ret >= size)
 		return size;
 	return ++ret; /* count trailing NULL */
@@ -106,6 +112,17 @@ static int spufs_ctx_note_size(struct spu_context *ctx, int dfd)
 	return total;
 }
 
+static int match_context(const void *v, struct file *file, unsigned fd)
+{
+	struct spu_context *ctx;
+	if (file->f_op != &spufs_context_fops)
+		return 0;
+	ctx = SPUFS_I(file_inode(file))->i_ctx;
+	if (ctx->flags & SPU_CREATE_NOSCHED)
+		return 0;
+	return fd + 1;
+}
+
 /*
  * The additional architecture-specific notes for Cell are various
  * context files in the spu context.
@@ -138,6 +155,18 @@ static struct spu_context *coredump_next_context(int *fd)
 	}
 
 	return ctx;
+/*
+ * descriptor table is not shared, so files can't change or go away.
+ */
+static struct spu_context *coredump_next_context(int *fd)
+{
+	struct file *file;
+	int n = iterate_fd(current->files, *fd, match_context, NULL);
+	if (!n)
+		return NULL;
+	*fd = n - 1;
+	file = fcheck(*fd);
+	return SPUFS_I(file_inode(file))->i_ctx;
 }
 
 int spufs_coredump_extra_notes_size(void)
@@ -169,6 +198,10 @@ static int spufs_arch_write_note(struct spu_context *ctx, int i,
 {
 	loff_t pos = 0;
 	int sz, rc, nread, total = 0;
+				  struct coredump_params *cprm, int dfd)
+{
+	loff_t pos = 0;
+	int sz, rc, total = 0;
 	const int bufsz = PAGE_SIZE;
 	char *name;
 	char fullname[80], *buf;
@@ -222,6 +255,41 @@ out:
 }
 
 int spufs_coredump_extra_notes_write(struct file *file, loff_t *foffset)
+	if (!dump_emit(cprm, &en, sizeof(en)))
+		goto Eio;
+
+	if (!dump_emit(cprm, fullname, en.n_namesz))
+		goto Eio;
+
+	if (!dump_align(cprm, 4))
+		goto Eio;
+
+	do {
+		rc = do_coredump_read(i, ctx, buf, bufsz, &pos);
+		if (rc > 0) {
+			if (!dump_emit(cprm, buf, rc))
+				goto Eio;
+			total += rc;
+		}
+	} while (rc == bufsz && total < sz);
+
+	if (rc < 0)
+		goto out;
+
+	if (!dump_skip(cprm,
+		       roundup(cprm->written - total + sz, 4) - cprm->written))
+		goto Eio;
+
+	rc = 0;
+out:
+	free_page((unsigned long)buf);
+	return rc;
+Eio:
+	free_page((unsigned long)buf);
+	return -EIO;
+}
+
+int spufs_coredump_extra_notes_write(struct coredump_params *cprm)
 {
 	struct spu_context *ctx;
 	int fd, j, rc;
@@ -234,6 +302,7 @@ int spufs_coredump_extra_notes_write(struct file *file, loff_t *foffset)
 
 		for (j = 0; spufs_coredump_read[j].name != NULL; j++) {
 			rc = spufs_arch_write_note(ctx, j, file, fd, foffset);
+			rc = spufs_arch_write_note(ctx, j, cprm, fd);
 			if (rc) {
 				spu_release_saved(ctx);
 				return rc;

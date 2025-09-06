@@ -21,6 +21,9 @@
 #include <asm/irq.h>
 #include <asm/signal.h>
 #include <asm/system.h>
+#include <linux/io.h>
+#include <asm/irq.h>
+#include <asm/signal.h>
 #include <mach/hardware.h>
 #include <asm/mach/pci.h>
 #include <asm/hardware/iop3xx.h>
@@ -162,6 +165,7 @@ iop3xx_write_config(struct pci_bus *bus, unsigned int devfn, int where,
 }
 
 static struct pci_ops iop3xx_ops = {
+struct pci_ops iop3xx_ops = {
 	.read	= iop3xx_read_config,
 	.write	= iop3xx_write_config,
 };
@@ -208,6 +212,15 @@ int iop3xx_pci_setup(int nr, struct pci_sys_data *sys)
 	res[1].name  = "IOP3XX PCI Memory Space";
 	res[1].flags = IORESOURCE_MEM;
 	request_resource(&iomem_resource, &res[1]);
+	res = kzalloc(sizeof(struct resource), GFP_KERNEL);
+	if (!res)
+		panic("PCI: unable to alloc resources");
+
+	res->start = IOP3XX_PCI_LOWER_MEM_PA;
+	res->end   = IOP3XX_PCI_LOWER_MEM_PA + IOP3XX_PCI_MEM_WINDOW_SIZE - 1;
+	res->name  = "IOP3XX PCI Memory Space";
+	res->flags = IORESOURCE_MEM;
+	request_resource(&iomem_resource, res);
 
 	/*
 	 * Use whatever translation is already setup.
@@ -218,6 +231,10 @@ int iop3xx_pci_setup(int nr, struct pci_sys_data *sys)
 	sys->resource[0] = &res[0];
 	sys->resource[1] = &res[1];
 	sys->resource[2] = NULL;
+
+	pci_add_resource_offset(&sys->resources, res, sys->mem_offset);
+
+	pci_ioremap_io(0, IOP3XX_PCI_LOWER_IO_PA);
 
 	return 1;
 }
@@ -258,6 +275,8 @@ void __init iop3xx_atu_setup(void)
 
 	/* Outbound window 1 */
 	*IOP3XX_OMWTVR1 = IOP3XX_PCI_LOWER_MEM_BA + IOP3XX_PCI_MEM_WINDOW_SIZE;
+	*IOP3XX_OMWTVR1 = IOP3XX_PCI_LOWER_MEM_BA +
+			  IOP3XX_PCI_MEM_WINDOW_SIZE / 2;
 	*IOP3XX_OUMWTVR1 = 0;
 
 	/* BAR 3 ( Disabled ) */
@@ -359,6 +378,7 @@ static void __init iop3xx_atu_debug(void)
 	DBG("ATU: IOP3XX_ATUCR=0x%08x\n", *IOP3XX_ATUCR);
 
 	hook_fault_code(16+6, iop3xx_pci_abort, SIGBUS, "imprecise external abort");
+	hook_fault_code(16+6, iop3xx_pci_abort, SIGBUS, 0, "imprecise external abort");
 }
 
 /* for platforms that might be host-bus-adapters */
@@ -373,6 +393,8 @@ void __init iop3xx_pci_preinit_cond(void)
 
 void __init iop3xx_pci_preinit(void)
 {
+	pcibios_min_mem = 0;
+
 	iop3xx_atu_disable();
 	iop3xx_atu_setup();
 	iop3xx_atu_debug();

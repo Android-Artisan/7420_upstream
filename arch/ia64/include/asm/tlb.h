@@ -23,6 +23,7 @@
  * the following template:
  *
  *	tlb <- tlb_gather_mmu(mm, full_mm_flush);	// start unmap for address space MM
+ *	tlb <- tlb_gather_mmu(mm, start, end);		// start unmap for address space MM
  *	{
  *	  for each vma that needs a shootdown do {
  *	    tlb_start_vma(tlb, vma);
@@ -62,6 +63,23 @@ struct mmu_gather {
 	unsigned long		start_addr;
 	unsigned long		end_addr;
 	struct page 		*pages[FREE_PTE_NR];
+/*
+ * If we can't allocate a page to make a big batch of page pointers
+ * to work on, then just handle a few from the on-stack structure.
+ */
+#define	IA64_GATHER_BUNDLE	8
+
+struct mmu_gather {
+	struct mm_struct	*mm;
+	unsigned int		nr;
+	unsigned int		max;
+	unsigned char		fullmm;		/* non-zero means full mm flush */
+	unsigned char		need_flush;	/* really unmapped some PTEs? */
+	unsigned long		start, end;
+	unsigned long		start_addr;
+	unsigned long		end_addr;
+	struct page		**pages;
+	struct page		*local[IA64_GATHER_BUNDLE];
 };
 
 struct ia64_tr_entry {
@@ -75,6 +93,7 @@ extern int ia64_itr_entry(u64 target_mask, u64 va, u64 pte, u64 log_size);
 extern void ia64_ptr_entry(u64 target_mask, int slot);
 
 extern struct ia64_tr_entry __per_cpu_idtrs[NR_CPUS][2][IA64_TR_ALLOC_MAX];
+extern struct ia64_tr_entry *ia64_idtrs[NR_CPUS];
 
 /*
  region register macros
@@ -104,6 +123,9 @@ ia64_tlb_flush_mmu (struct mmu_gather *tlb, unsigned long start, unsigned long e
 
 	if (!tlb->need_flush)
 		return;
+static inline void
+ia64_tlb_flush_mmu_tlbonly(struct mmu_gather *tlb, unsigned long start, unsigned long end)
+{
 	tlb->need_flush = 0;
 
 	if (tlb->fullmm) {
@@ -175,12 +197,65 @@ tlb_gather_mmu (struct mm_struct *mm, unsigned int full_mm_flush)
 	return tlb;
 }
 
+static inline void
+ia64_tlb_flush_mmu_free(struct mmu_gather *tlb)
+{
+	unsigned long i;
+	unsigned int nr;
+
+	/* lastly, release the freed pages */
+	nr = tlb->nr;
+
+	tlb->nr = 0;
+	tlb->start_addr = ~0UL;
+	for (i = 0; i < nr; ++i)
+		free_page_and_swap_cache(tlb->pages[i]);
+}
+
+/*
+ * Flush the TLB for address range START to END and, if not in fast mode, release the
+ * freed pages that where gathered up to this point.
+ */
+static inline void
+ia64_tlb_flush_mmu (struct mmu_gather *tlb, unsigned long start, unsigned long end)
+{
+	if (!tlb->need_flush)
+		return;
+	ia64_tlb_flush_mmu_tlbonly(tlb, start, end);
+	ia64_tlb_flush_mmu_free(tlb);
+}
+
+static inline void __tlb_alloc_page(struct mmu_gather *tlb)
+{
+	unsigned long addr = __get_free_pages(GFP_NOWAIT | __GFP_NOWARN, 0);
+
+	if (addr) {
+		tlb->pages = (void *)addr;
+		tlb->max = PAGE_SIZE / sizeof(void *);
+	}
+}
+
+
+static inline void
+tlb_gather_mmu(struct mmu_gather *tlb, struct mm_struct *mm, unsigned long start, unsigned long end)
+{
+	tlb->mm = mm;
+	tlb->max = ARRAY_SIZE(tlb->local);
+	tlb->pages = tlb->local;
+	tlb->nr = 0;
+	tlb->fullmm = !(start | (end+1));
+	tlb->start = start;
+	tlb->end = end;
+	tlb->start_addr = ~0UL;
+}
+
 /*
  * Called at the end of the shootdown operation to free up any resources that were
  * collected.
  */
 static inline void
 tlb_finish_mmu (struct mmu_gather *tlb, unsigned long start, unsigned long end)
+tlb_finish_mmu(struct mmu_gather *tlb, unsigned long start, unsigned long end)
 {
 	/*
 	 * Note: tlb->nr may be 0 at this point, so we can't rely on tlb->start_addr and
@@ -192,6 +267,8 @@ tlb_finish_mmu (struct mmu_gather *tlb, unsigned long start, unsigned long end)
 	check_pgt_cache();
 
 	put_cpu_var(mmu_gathers);
+	if (tlb->pages != tlb->local)
+		free_pages((unsigned long)tlb->pages, 0);
 }
 
 /*
@@ -211,6 +288,38 @@ tlb_remove_page (struct mmu_gather *tlb, struct page *page)
 	tlb->pages[tlb->nr++] = page;
 	if (tlb->nr >= FREE_PTE_NR)
 		ia64_tlb_flush_mmu(tlb, tlb->start_addr, tlb->end_addr);
+static inline int __tlb_remove_page(struct mmu_gather *tlb, struct page *page)
+{
+	tlb->need_flush = 1;
+
+	if (!tlb->nr && tlb->pages == tlb->local)
+		__tlb_alloc_page(tlb);
+
+	tlb->pages[tlb->nr++] = page;
+	VM_BUG_ON(tlb->nr > tlb->max);
+
+	return tlb->max - tlb->nr;
+}
+
+static inline void tlb_flush_mmu_tlbonly(struct mmu_gather *tlb)
+{
+	ia64_tlb_flush_mmu_tlbonly(tlb, tlb->start_addr, tlb->end_addr);
+}
+
+static inline void tlb_flush_mmu_free(struct mmu_gather *tlb)
+{
+	ia64_tlb_flush_mmu_free(tlb);
+}
+
+static inline void tlb_flush_mmu(struct mmu_gather *tlb)
+{
+	ia64_tlb_flush_mmu(tlb, tlb->start_addr, tlb->end_addr);
+}
+
+static inline void tlb_remove_page(struct mmu_gather *tlb, struct page *page)
+{
+	if (!__tlb_remove_page(tlb, page))
+		tlb_flush_mmu(tlb);
 }
 
 /*
@@ -223,6 +332,16 @@ __tlb_remove_tlb_entry (struct mmu_gather *tlb, pte_t *ptep, unsigned long addre
 	if (tlb->start_addr == ~0UL)
 		tlb->start_addr = address;
 	tlb->end_addr = address + PAGE_SIZE;
+}
+
+static inline void
+tlb_flush_pmd_range(struct mmu_gather *tlb, unsigned long address,
+		    unsigned long size)
+{
+	if (tlb->start_addr > address)
+		tlb->start_addr = address;
+	if (tlb->end_addr < address + size)
+		tlb->end_addr = address + size;
 }
 
 #define tlb_migrate_finish(mm)	platform_tlb_migrate_finish(mm)
@@ -252,6 +371,22 @@ do {							\
 do {							\
 	tlb->need_flush = 1;				\
 	__pud_free_tlb(tlb, pudp);			\
+#define pte_free_tlb(tlb, ptep, address)		\
+do {							\
+	tlb->need_flush = 1;				\
+	__pte_free_tlb(tlb, ptep, address);		\
+} while (0)
+
+#define pmd_free_tlb(tlb, ptep, address)		\
+do {							\
+	tlb->need_flush = 1;				\
+	__pmd_free_tlb(tlb, ptep, address);		\
+} while (0)
+
+#define pud_free_tlb(tlb, pudp, address)		\
+do {							\
+	tlb->need_flush = 1;				\
+	__pud_free_tlb(tlb, pudp, address);		\
 } while (0)
 
 #endif /* _ASM_IA64_TLB_H */

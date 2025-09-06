@@ -28,6 +28,7 @@ struct op_counter_config {
 struct op_mips_model {
 	void (*reg_setup) (struct op_counter_config *);
 	void (*cpu_setup) (void * dummy);
+	void (*cpu_setup) (void *dummy);
 	int (*init)(void);
 	void (*exit)(void);
 	void (*cpu_start)(void *args);
@@ -35,5 +36,7 @@ struct op_mips_model {
 	char *cpu_type;
 	unsigned char num_counters;
 };
+
+void op_mips_backtrace(struct pt_regs * const regs, unsigned int depth);
 
 #endif

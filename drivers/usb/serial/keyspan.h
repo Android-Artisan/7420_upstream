@@ -10,6 +10,7 @@
   (at your option) any later version.
 
   See http://misc.nu/hugh/keyspan.html for more information.
+  See http://blemings.org/hugh/keyspan.html for more information.
   
   Code in this driver inspired by and in a number of places taken
   from Brian Warner's original Keyspan-PDA driver.
@@ -43,6 +44,14 @@ static void keyspan_close		(struct tty_struct *tty,
 					 struct file *filp);
 static int  keyspan_startup		(struct usb_serial *serial);
 static void keyspan_shutdown		(struct usb_serial *serial);
+					 struct usb_serial_port *port);
+static void keyspan_close		(struct usb_serial_port *port);
+static void keyspan_dtr_rts		(struct usb_serial_port *port, int on);
+static int  keyspan_startup		(struct usb_serial *serial);
+static void keyspan_disconnect		(struct usb_serial *serial);
+static void keyspan_release		(struct usb_serial *serial);
+static int keyspan_port_probe(struct usb_serial_port *port);
+static int keyspan_port_remove(struct usb_serial_port *port);
 static int  keyspan_write_room		(struct tty_struct *tty);
 
 static int  keyspan_write		(struct tty_struct *tty,
@@ -79,6 +88,29 @@ static int  keyspan_usa28_calc_baud	(u32 baud_rate, u32 baudclk,
 					 u8 *prescaler, int portnum);
 
 static int  keyspan_usa19hs_calc_baud	(u32 baud_rate, u32 baudclk,
+static int  keyspan_tiocmget		(struct tty_struct *tty);
+static int  keyspan_tiocmset		(struct tty_struct *tty,
+					 unsigned int set,
+					 unsigned int clear);
+static int  keyspan_fake_startup	(struct usb_serial *serial);
+
+static int  keyspan_usa19_calc_baud	(struct usb_serial_port *port,
+					 u32 baud_rate, u32 baudclk,
+					 u8 *rate_hi, u8 *rate_low,
+					 u8 *prescaler, int portnum);
+
+static int  keyspan_usa19w_calc_baud	(struct usb_serial_port *port,
+					 u32 baud_rate, u32 baudclk,
+					 u8 *rate_hi, u8 *rate_low,
+					 u8 *prescaler, int portnum);
+
+static int  keyspan_usa28_calc_baud	(struct usb_serial_port *port,
+					 u32 baud_rate, u32 baudclk,
+					 u8 *rate_hi, u8 *rate_low,
+					 u8 *prescaler, int portnum);
+
+static int  keyspan_usa19hs_calc_baud	(struct usb_serial_port *port,
+					 u32 baud_rate, u32 baudclk,
 					 u8 *rate_hi, u8 *rate_low,
 					 u8 *prescaler, int portnum);
 
@@ -192,6 +224,9 @@ struct keyspan_device_details {
 
 	int	(*calculate_baud_rate) (u32 baud_rate, u32 baudclk,
 			u8 *rate_hi, u8 *rate_low, u8 *prescaler, int portnum);
+	int	(*calculate_baud_rate) (struct usb_serial_port *port,
+					u32 baud_rate, u32 baudclk,
+					u8 *rate_hi, u8 *rate_low, u8 *prescaler, int portnum);
 	u32	baudclk;
 }; 
 
@@ -458,6 +493,7 @@ static const struct keyspan_device_details *keyspan_devices[] = {
 };
 
 static struct usb_device_id keyspan_ids_combined[] = {
+static const struct usb_device_id keyspan_ids_combined[] = {
 	{ USB_DEVICE(KEYSPAN_VENDOR_ID, keyspan_usa18x_pre_product_id) },
 	{ USB_DEVICE(KEYSPAN_VENDOR_ID, keyspan_usa19_pre_product_id) },
 	{ USB_DEVICE(KEYSPAN_VENDOR_ID, keyspan_usa19w_pre_product_id) },
@@ -499,6 +535,8 @@ static struct usb_driver keyspan_driver = {
 
 /* usb_device_id table for the pre-firmware download keyspan devices */
 static struct usb_device_id keyspan_pre_ids[] = {
+/* usb_device_id table for the pre-firmware download keyspan devices */
+static const struct usb_device_id keyspan_pre_ids[] = {
 	{ USB_DEVICE(KEYSPAN_VENDOR_ID, keyspan_usa18x_pre_product_id) },
 	{ USB_DEVICE(KEYSPAN_VENDOR_ID, keyspan_usa19_pre_product_id) },
 	{ USB_DEVICE(KEYSPAN_VENDOR_ID, keyspan_usa19qi_pre_product_id) },
@@ -515,6 +553,7 @@ static struct usb_device_id keyspan_pre_ids[] = {
 };
 
 static struct usb_device_id keyspan_1port_ids[] = {
+static const struct usb_device_id keyspan_1port_ids[] = {
 	{ USB_DEVICE(KEYSPAN_VENDOR_ID, keyspan_usa18x_product_id) },
 	{ USB_DEVICE(KEYSPAN_VENDOR_ID, keyspan_usa19_product_id) },
 	{ USB_DEVICE(KEYSPAN_VENDOR_ID, keyspan_usa19qi_product_id) },
@@ -526,6 +565,7 @@ static struct usb_device_id keyspan_1port_ids[] = {
 };
 
 static struct usb_device_id keyspan_2port_ids[] = {
+static const struct usb_device_id keyspan_2port_ids[] = {
 	{ USB_DEVICE(KEYSPAN_VENDOR_ID, keyspan_usa28_product_id) },
 	{ USB_DEVICE(KEYSPAN_VENDOR_ID, keyspan_usa28x_product_id) },
 	{ USB_DEVICE(KEYSPAN_VENDOR_ID, keyspan_usa28xa_product_id) },
@@ -534,6 +574,7 @@ static struct usb_device_id keyspan_2port_ids[] = {
 };
 
 static struct usb_device_id keyspan_4port_ids[] = {
+static const struct usb_device_id keyspan_4port_ids[] = {
 	{ USB_DEVICE(KEYSPAN_VENDOR_ID, keyspan_usa49w_product_id) },
 	{ USB_DEVICE(KEYSPAN_VENDOR_ID, keyspan_usa49wlc_product_id)},
 	{ USB_DEVICE(KEYSPAN_VENDOR_ID, keyspan_usa49wg_product_id)},
@@ -562,6 +603,7 @@ static struct usb_serial_driver keyspan_1port_device = {
 	.num_ports		= 1,
 	.open			= keyspan_open,
 	.close			= keyspan_close,
+	.dtr_rts		= keyspan_dtr_rts,
 	.write			= keyspan_write,
 	.write_room		= keyspan_write_room,
 	.set_termios		= keyspan_set_termios,
@@ -570,6 +612,10 @@ static struct usb_serial_driver keyspan_1port_device = {
 	.tiocmset		= keyspan_tiocmset,
 	.attach			= keyspan_startup,
 	.shutdown		= keyspan_shutdown,
+	.disconnect		= keyspan_disconnect,
+	.release		= keyspan_release,
+	.port_probe		= keyspan_port_probe,
+	.port_remove		= keyspan_port_remove,
 };
 
 static struct usb_serial_driver keyspan_2port_device = {
@@ -582,6 +628,7 @@ static struct usb_serial_driver keyspan_2port_device = {
 	.num_ports		= 2,
 	.open			= keyspan_open,
 	.close			= keyspan_close,
+	.dtr_rts		= keyspan_dtr_rts,
 	.write			= keyspan_write,
 	.write_room		= keyspan_write_room,
 	.set_termios		= keyspan_set_termios,
@@ -590,6 +637,10 @@ static struct usb_serial_driver keyspan_2port_device = {
 	.tiocmset		= keyspan_tiocmset,
 	.attach			= keyspan_startup,
 	.shutdown		= keyspan_shutdown,
+	.disconnect		= keyspan_disconnect,
+	.release		= keyspan_release,
+	.port_probe		= keyspan_port_probe,
+	.port_remove		= keyspan_port_remove,
 };
 
 static struct usb_serial_driver keyspan_4port_device = {
@@ -602,6 +653,7 @@ static struct usb_serial_driver keyspan_4port_device = {
 	.num_ports		= 4,
 	.open			= keyspan_open,
 	.close			= keyspan_close,
+	.dtr_rts		= keyspan_dtr_rts,
 	.write			= keyspan_write,
 	.write_room		= keyspan_write_room,
 	.set_termios		= keyspan_set_termios,
@@ -610,6 +662,15 @@ static struct usb_serial_driver keyspan_4port_device = {
 	.tiocmset		= keyspan_tiocmset,
 	.attach			= keyspan_startup,
 	.shutdown		= keyspan_shutdown,
+	.disconnect		= keyspan_disconnect,
+	.release		= keyspan_release,
+	.port_probe		= keyspan_port_probe,
+	.port_remove		= keyspan_port_remove,
+};
+
+static struct usb_serial_driver * const serial_drivers[] = {
+	&keyspan_pre_device, &keyspan_1port_device,
+	&keyspan_2port_device, &keyspan_4port_device, NULL
 };
 
 #endif

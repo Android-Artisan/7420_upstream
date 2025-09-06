@@ -1,5 +1,4 @@
 Software cursor for VGA    by Pavel Machek <pavel@atrey.karlin.mff.cuni.cz>
-=======================    and Martin Mares <mj@atrey.karlin.mff.cuni.cz>
 
    Linux now has some ability to manipulate cursor appearance. Normally, you
 can set the size of hardware cursor (and also work around some ugly bugs in
@@ -32,7 +31,6 @@ Bit setting takes place before bit toggling, so you can simply clear a bit by
 including it in both the set mask and the toggle mask.
 
 Examples:
-=========
 
 To get normal blinking underline, use: echo -e '\033[?2c'
 To get blinking block, use:            echo -e '\033[?6c'

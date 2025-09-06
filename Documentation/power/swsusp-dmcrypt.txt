@@ -2,7 +2,6 @@ Author: Andreas Steinmetz <ast@domdv.de>
 
 
 How to use dm-crypt and swsusp together:
-========================================
 
 Some prerequisites:
 You know how dm-crypt works. If not, visit the following web page:

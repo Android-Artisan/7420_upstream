@@ -28,6 +28,9 @@
 #endif
 #include <asm/io.h>
 #include <asm/system.h>
+#include <asm/mac_via.h>
+#endif
+#include <asm/io.h>
 #include <linux/init.h>
 
 static volatile unsigned char __iomem *via;
@@ -119,6 +122,42 @@ struct adb_driver via_cuda_driver = {
 #endif /* CONFIG_ADB */
 
 #ifdef CONFIG_PPC
+	.name         = "CUDA",
+	.probe        = cuda_probe,
+	.send_request = cuda_send_request,
+	.autopoll     = cuda_adb_autopoll,
+	.poll         = cuda_poll,
+	.reset_bus    = cuda_reset_adb_bus,
+};
+#endif /* CONFIG_ADB */
+
+#ifdef CONFIG_MAC
+int __init find_via_cuda(void)
+{
+    struct adb_request req;
+    int err;
+
+    if (macintosh_config->adb_type != MAC_ADB_CUDA)
+	return 0;
+
+    via = via1;
+    cuda_state = idle;
+
+    err = cuda_init_via();
+    if (err) {
+	printk(KERN_ERR "cuda_init_via() failed\n");
+	via = NULL;
+	return 0;
+    }
+
+    /* enable autopoll */
+    cuda_request(&req, NULL, 3, CUDA_PACKET, CUDA_AUTOPOLL, 1);
+    while (!req.complete)
+	cuda_poll();
+
+    return 1;
+}
+#else
 int __init find_via_cuda(void)
 {
     struct adb_request req;
@@ -177,6 +216,7 @@ int __init find_via_cuda(void)
     return 0;
 }
 #endif /* CONFIG_PPC */
+#endif /* !defined CONFIG_MAC */
 
 static int __init via_cuda_start(void)
 {
@@ -186,6 +226,7 @@ static int __init via_cuda_start(void)
 #ifdef CONFIG_MAC
     cuda_irq = IRQ_MAC_ADB;
 #else /* CONFIG_MAC */
+#else
     cuda_irq = irq_of_parse_and_map(vias, 0);
     if (cuda_irq == NO_IRQ) {
 	printk(KERN_ERR "via-cuda: can't map interrupts for %s\n",
@@ -193,6 +234,7 @@ static int __init via_cuda_start(void)
 	return -ENODEV;
     }
 #endif /* CONFIG_MAC */
+#endif
 
     if (request_irq(cuda_irq, cuda_interrupt, 0, "ADB", cuda_interrupt)) {
 	printk(KERN_ERR "via-cuda: can't request irq %d\n", cuda_irq);
@@ -239,6 +281,10 @@ cuda_init(void)
 
     return via_cuda_start();
 #endif
+#endif
+    if (via == NULL)
+	return -ENODEV;
+    return 0;
 }
 #endif /* CONFIG_ADB */
 
@@ -256,6 +302,7 @@ cuda_init(void)
 
 static int
 cuda_init_via(void)
+__init cuda_init_via(void)
 {
     out_8(&via[DIRB], (in_8(&via[DIRB]) | TACK | TIP) & ~TREQ);	/* TACK & TIP out */
     out_8(&via[B], in_8(&via[B]) | TACK | TIP);			/* negate them */
@@ -375,6 +422,7 @@ cuda_request(struct adb_request *req, void (*done)(struct adb_request *),
     req->reply_expected = 1;
     return cuda_write(req);
 }
+EXPORT_SYMBOL(cuda_request);
 
 static int
 cuda_write(struct adb_request *req)
@@ -435,6 +483,13 @@ cuda_poll(void)
     cuda_interrupt(0, NULL);
     enable_irq(cuda_irq);
 }
+    if (cuda_irq)
+	disable_irq(cuda_irq);
+    cuda_interrupt(0, NULL);
+    if (cuda_irq)
+	enable_irq(cuda_irq);
+}
+EXPORT_SYMBOL(cuda_poll);
 
 static irqreturn_t
 cuda_interrupt(int irq, void *arg)
@@ -448,6 +503,7 @@ cuda_interrupt(int irq, void *arg)
     spin_lock(&cuda_lock);
 
     /* On powermacs, this handler is registered for the VIA IRQ. But it uses
+    /* On powermacs, this handler is registered for the VIA IRQ. But they use
      * just the shift register IRQ -- other VIA interrupt sources are disabled.
      * On m68k macs, the VIA IRQ sources are dispatched individually. Unless
      * we are polling, the shift register IRQ flag has already been cleared.

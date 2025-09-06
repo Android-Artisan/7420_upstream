@@ -45,6 +45,7 @@ inline void irlmp_send_data_pdu(struct lap_cb *self, __u8 dlsap, __u8 slsap,
 
 	if (expedited) {
 		IRDA_DEBUG(4, "%s(), sending expedited data\n", __func__);
+		pr_debug("%s(), sending expedited data\n", __func__);
 		irlap_data_request(self->irlap, skb, TRUE);
 	} else
 		irlap_data_request(self->irlap, skb, FALSE);
@@ -118,6 +119,8 @@ void irlmp_link_data_indication(struct lap_cb *self, struct sk_buff *skb,
 		IRDA_DEBUG(3, "%s(), incoming connection, "
 			   "source LSAP=%d, dest LSAP=%d\n",
 			   __func__, slsap_sel, dlsap_sel);
+		pr_debug("%s(), incoming connection, source LSAP=%d, dest LSAP=%d\n",
+			 __func__, slsap_sel, dlsap_sel);
 
 		/* Try to find LSAP among the unconnected LSAPs */
 		lsap = irlmp_find_lsap(self, dlsap_sel, slsap_sel, CONNECT_CMD,
@@ -126,6 +129,8 @@ void irlmp_link_data_indication(struct lap_cb *self, struct sk_buff *skb,
 		/* Maybe LSAP was already connected, so try one more time */
 		if (!lsap) {
 			IRDA_DEBUG(1, "%s(), incoming connection for LSAP already connected\n", __func__);
+			pr_debug("%s(), incoming connection for LSAP already connected\n",
+				 __func__);
 			lsap = irlmp_find_lsap(self, dlsap_sel, slsap_sel, 0,
 					       self->lsaps);
 		}
@@ -142,6 +147,14 @@ void irlmp_link_data_indication(struct lap_cb *self, struct sk_buff *skb,
 				   __func__, fp[2]);
 		} else {
 			IRDA_DEBUG(2, "%s(), received data frame\n", __func__);
+		pr_debug("IrLMP, Sorry, no LSAP for received frame!\n");
+		pr_debug("%s(), slsap_sel = %02x, dlsap_sel = %02x\n",
+			 __func__, slsap_sel, dlsap_sel);
+		if (fp[0] & CONTROL_BIT) {
+			pr_debug("%s(), received control frame %02x\n",
+				 __func__, fp[2]);
+		} else {
+			pr_debug("%s(), received data frame\n", __func__);
 		}
 		return;
 	}
@@ -161,6 +174,8 @@ void irlmp_link_data_indication(struct lap_cb *self, struct sk_buff *skb,
 		case DISCONNECT:
 			IRDA_DEBUG(4, "%s(), Disconnect indication!\n",
 				   __func__);
+			pr_debug("%s(), Disconnect indication!\n",
+				 __func__);
 			irlmp_do_lsap_event(lsap, LM_DISCONNECT_INDICATION,
 					    skb);
 			break;
@@ -173,6 +188,14 @@ void irlmp_link_data_indication(struct lap_cb *self, struct sk_buff *skb,
 		default:
 			IRDA_DEBUG(0, "%s(), Unknown control frame %02x\n",
 				   __func__, fp[2]);
+			pr_debug("Access mode cmd not implemented!\n");
+			break;
+		case ACCESSMODE_CNF:
+			pr_debug("Access mode cnf not implemented!\n");
+			break;
+		default:
+			pr_debug("%s(), Unknown control frame %02x\n",
+				 __func__, fp[2]);
 			break;
 		}
 	} else if (unreliable) {
@@ -225,12 +248,15 @@ void irlmp_link_unitdata_indication(struct lap_cb *self, struct sk_buff *skb)
 	if (pid & 0x80) {
 		IRDA_DEBUG(0, "%s(), extension in PID not supp!\n",
 			   __func__);
+		pr_debug("%s(), extension in PID not supp!\n",
+			 __func__);
 		return;
 	}
 
 	/* Check if frame is addressed to the connectionless LSAP */
 	if ((slsap_sel != LSAP_CONNLESS) || (dlsap_sel != LSAP_CONNLESS)) {
 		IRDA_DEBUG(0, "%s(), dropping frame!\n", __func__);
+		pr_debug("%s(), dropping frame!\n", __func__);
 		return;
 	}
 
@@ -255,6 +281,7 @@ void irlmp_link_unitdata_indication(struct lap_cb *self, struct sk_buff *skb)
 		irlmp_connless_data_indication(lsap, skb);
 	else {
 		IRDA_DEBUG(0, "%s(), found no matching LSAP!\n", __func__);
+		pr_debug("%s(), found no matching LSAP!\n", __func__);
 	}
 }
 #endif /* CONFIG_IRDA_ULTRA */
@@ -449,6 +476,7 @@ static struct lsap_cb *irlmp_find_lsap(struct lap_cb *self, __u8 dlsap_sel,
 	    (self->cache.dlsap_sel == dlsap_sel))
 	{
 		return (self->cache.lsap);
+		return self->cache.lsap;
 	}
 #endif
 

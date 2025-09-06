@@ -9,7 +9,7 @@
  * as published by the Free Software Foundation; either version
  * 2 of the Licence, or (at your option) any later version.
  */
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
 unsigned long
 __generic_copy_to_user(void *to, const void *from, unsigned long n)
@@ -24,6 +24,8 @@ __generic_copy_from_user(void *to, const void *from, unsigned long n)
 {
 	if (access_ok(VERIFY_READ, from, n))
 		__copy_user_zeroing(to, from, n);
+	else
+		memset(to, 0, n);
 	return n;
 }
 
@@ -63,6 +65,7 @@ do {								\
 		:"=&r"(res), "=r"(count), "=&r"(w)		\
 		:"i"(-EFAULT), "1"(count), "a"(src), "a"(dst)	\
 		:"memory");					\
+		: "memory", "cc");					\
 } while (0)
 
 long
@@ -110,6 +113,7 @@ do {						\
 		: "+r"(size), "=&r"(w)		\
 		: "a"(addr), "d"(0)		\
 		: "memory");			\
+		: "memory", "cc");		\
 } while (0)
 
 unsigned long
@@ -162,5 +166,6 @@ long strnlen_user(const char *s, long n)
 		:"=d"(res), "=&r"(w)
 		:"0"(0), "a"(s), "r"(n)
 		:"memory");
+		: "memory", "cc");
 	return res;
 }

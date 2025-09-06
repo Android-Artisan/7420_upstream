@@ -2,6 +2,7 @@
    3w-xxxx.h -- 3ware Storage Controller device driver for Linux.
    
    Written By: Adam Radford <linuxraid@amcc.com>
+   Written By: Adam Radford <linuxraid@lsi.com>
    Modifications By: Joel Jacobson <linux@3ware.com>
    		     Arnaldo Carvalho de Melo <acme@conectiva.com.br>
                      Brad Strand <linux@3ware.com>
@@ -9,6 +10,9 @@
    Copyright (C) 1999-2007 3ware Inc.
 
    Kernel compatiblity By:	Andre Hedrick <andre@suse.com>
+   Copyright (C) 1999-2010 3ware Inc.
+
+   Kernel compatibility By:	Andre Hedrick <andre@suse.com>
    Non-Copyright (C) 2000	Andre Hedrick <andre@suse.com>
 
    This program is free software; you can redistribute it and/or modify
@@ -49,6 +53,10 @@
    
    For more information, goto:
    http://www.amcc.com
+   linuxraid@lsi.com
+   
+   For more information, goto:
+   http://www.lsi.com
 */
 
 #ifndef _3W_XXXX_H
@@ -235,6 +243,7 @@ static unsigned char tw_sense_table[][4] =
 #define TW_IOCTL_CHRDEV_TIMEOUT               60 /* 60 seconds */
 #define TW_IOCTL_CHRDEV_FREE                  -1
 #define TW_DMA_MASK			      DMA_32BIT_MASK
+#define TW_DMA_MASK			      DMA_BIT_MASK(32)
 #define TW_MAX_CDB_LEN			      16
 
 /* Bitmask macros to eliminate bitfields */
@@ -391,6 +400,8 @@ typedef struct TAG_TW_Passthru
 	TW_SG_Entry sg_list[TW_ATA_PASS_SGL_MAX];
 	unsigned char padding[12];
 } TW_Passthru;
+
+#pragma pack()
 
 typedef struct TAG_TW_Device_Extension {
 	u32			base_addr;

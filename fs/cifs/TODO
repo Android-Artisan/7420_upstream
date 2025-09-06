@@ -1,7 +1,6 @@
 Version 1.53 May 20, 2008
 
 A Partial List of Missing Features
-==================================
 
 Contributions are welcome.  There are plenty of opportunities
 for visible, important contributions to this module.  Here
@@ -90,7 +89,6 @@ y) Fix Samba 3 to handle reads/writes over 127K (and remove the cifs mount
 restriction of wsize max being 127K) 
 
 KNOWN BUGS (updated April 24, 2007)
-====================================
 See http://bugzilla.samba.org - search on product "CifsVFS" for
 current bug list.
 
@@ -112,7 +110,6 @@ flags on the second mount to the same share, and see if we
 can do the same trick that NFS does to remount duplicate shares.
 
 Misc testing to do
-==================
 1) check out max path names and max path name components against various server
 types. Try nested symlinks (8 deep). Return max path name in stat -f information
 

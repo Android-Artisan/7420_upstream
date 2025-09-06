@@ -61,6 +61,7 @@ int __init vsyscall_init(void)
 /* Setup a VMA at program startup for the vsyscall page */
 int arch_setup_additional_pages(struct linux_binprm *bprm,
 				int executable_stack)
+int arch_setup_additional_pages(struct linux_binprm *bprm, int uses_interp)
 {
 	struct mm_struct *mm = current->mm;
 	unsigned long addr;
@@ -77,6 +78,7 @@ int arch_setup_additional_pages(struct linux_binprm *bprm,
 				      VM_READ | VM_EXEC |
 				      VM_MAYREAD | VM_MAYWRITE | VM_MAYEXEC |
 				      VM_ALWAYSDUMP,
+				      VM_MAYREAD | VM_MAYWRITE | VM_MAYEXEC,
 				      syscall_pages);
 	if (unlikely(ret))
 		goto up_fail;

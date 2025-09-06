@@ -3,6 +3,10 @@
 #include <linux/module.h>
 #include <linux/mount.h>
 #include <linux/namei.h>
+#include <linux/export.h>
+#include <linux/mount.h>
+#include <linux/namei.h>
+#include <linux/slab.h>
 
 #include <asm/uaccess.h>
 
@@ -47,6 +51,7 @@ static long do_spu_run(struct file *filp,
 		goto out;
 
 	i = SPUFS_I(filp->f_path.dentry->d_inode);
+	i = SPUFS_I(file_inode(filp));
 	ret = spufs_run_spu(i->i_ctx, &npc, &status);
 
 	if (put_user(npc, unpc))
@@ -76,6 +81,17 @@ static long do_spu_create(const char __user *pathname, unsigned int flags,
 			path_put(&nd.path);
 		}
 		putname(tmp);
+		umode_t mode, struct file *neighbor)
+{
+	struct path path;
+	struct dentry *dentry;
+	int ret;
+
+	dentry = user_path_create(AT_FDCWD, pathname, &path, LOOKUP_DIRECTORY);
+	ret = PTR_ERR(dentry);
+	if (!IS_ERR(dentry)) {
+		ret = spufs_create(&path, dentry, flags, mode, neighbor);
+		done_path_create(&path, dentry);
 	}
 
 	return ret;
@@ -88,4 +104,10 @@ struct spufs_calls spufs_calls = {
 	.coredump_extra_notes_write = spufs_coredump_extra_notes_write,
 	.notify_spus_active = do_notify_spus_active,
 	.owner = THIS_MODULE,
+	.notify_spus_active = do_notify_spus_active,
+	.owner = THIS_MODULE,
+#ifdef CONFIG_COREDUMP
+	.coredump_extra_notes_size = spufs_coredump_extra_notes_size,
+	.coredump_extra_notes_write = spufs_coredump_extra_notes_write,
+#endif
 };

@@ -427,6 +427,7 @@ midi_synth_open(int dev, int mode)
 	struct midi_input_info *inc;
 
 	if (orig_dev < 0 || orig_dev > num_midis || midi_devs[orig_dev] == NULL)
+	if (orig_dev < 0 || orig_dev >= num_midis || midi_devs[orig_dev] == NULL)
 		return -ENXIO;
 
 	midi2synth[orig_dev] = dev;
@@ -477,6 +478,7 @@ EXPORT_SYMBOL(midi_synth_hw_control);
 int
 midi_synth_load_patch(int dev, int format, const char __user *addr,
 		      int offs, int count, int pmgr_flag)
+		      int count, int pmgr_flag)
 {
 	int             orig_dev = synth_devs[dev]->midi_dev;
 
@@ -518,12 +520,38 @@ midi_synth_load_patch(int dev, int format, const char __user *addr,
 	}
   	left = sysex.len;
   	src_offs = 0;
+	/* Invalid patch format */
+	if (format != SYSEX_PATCH)
+		  return -EINVAL;
+
+	/* Patch header too short */
+	if (count < hdr_size)
+		return -EINVAL;
+
+	count -= hdr_size;
+
+	/*
+	 * Copy the header from user space
+	 */
+
+	if (copy_from_user(&sysex, addr, hdr_size))
+		return -EFAULT;
+
+	/* Sysex record too short */
+	if ((unsigned)count < (unsigned)sysex.len)
+		sysex.len = count;
+
+	left = sysex.len;
+	src_offs = 0;
 
 	for (i = 0; i < left && !signal_pending(current); i++)
 	{
 		unsigned char   data;
 
 		get_user(*(unsigned char *) &data, (unsigned char __user *) &((addr)[hdr_size + i]));
+		if (get_user(data,
+		    (unsigned char __user *)(addr + hdr_size + i)))
+			return -EFAULT;
 
 		eox_seen = (i > 0 && data & 0x80);	/* End of sysex */
 

@@ -2,6 +2,7 @@
 #include <linux/errno.h>
 #include <linux/kernel.h>
 #include <linux/proc_fs.h>
+#include <linux/slab.h>
 #include <linux/types.h>
 #include <asm/ptrace.h>
 #include <asm/uaccess.h>
@@ -14,6 +15,11 @@ static int prof_running = 0;
 
 void
 cris_profile_sample(struct pt_regs* regs)
+static char *sample_buffer;
+static char *sample_buffer_pos;
+static int prof_running = 0;
+
+void cris_profile_sample(struct pt_regs *regs)
 {
 	if (!prof_running)
 		return;
@@ -24,6 +30,7 @@ cris_profile_sample(struct pt_regs* regs)
 		*(unsigned int*)sample_buffer_pos = 0;
 
 	*(unsigned int*)(sample_buffer_pos + 4) = instruction_pointer(regs);
+	*(unsigned int *)(sample_buffer_pos + 4) = instruction_pointer(regs);
 	sample_buffer_pos += 8;
 
 	if (sample_buffer_pos == sample_buffer + SAMPLE_BUFFER_SIZE)
@@ -53,6 +60,7 @@ write_cris_profile(struct file *file, const char __user *buf,
 {
 	sample_buffer_pos = sample_buffer;
 	memset(sample_buffer, 0, SAMPLE_BUFFER_SIZE);
+	return count < SAMPLE_BUFFER_SIZE ? count : SAMPLE_BUFFER_SIZE;
 }
 
 static const struct file_operations cris_proc_profile_operations = {
@@ -62,6 +70,10 @@ static const struct file_operations cris_proc_profile_operations = {
 
 static int
 __init init_cris_profile(void)
+	.llseek		= default_llseek,
+};
+
+static int __init init_cris_profile(void)
 {
 	struct proc_dir_entry *entry;
 
@@ -76,6 +88,7 @@ __init init_cris_profile(void)
 			    &cris_proc_profile_operations);
 	if (entry) {
 		entry->size = SAMPLE_BUFFER_SIZE;
+		proc_set_size(entry, SAMPLE_BUFFER_SIZE);
 	}
 	prof_running = 1;
 
@@ -83,3 +96,5 @@ __init init_cris_profile(void)
 }
 
 __initcall(init_cris_profile);
+__initcall(init_cris_profile);
+

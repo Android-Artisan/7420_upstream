@@ -1,7 +1,7 @@
 SH7760/SH7763 integrated LCDC Framebuffer driver
-================================================
 
 0. Overwiew
+0. Overview
 -----------
 The SH7760/SH7763 have an integrated LCD Display controller (LCDC) which
 supports (in theory) resolutions ranging from 1x1 to 1024x1024,
@@ -52,7 +52,6 @@ Suggest you take a closer look at the SH7760 Manual, Section 30.
 The following code illustrates what needs to be done to
 get the framebuffer working on a 640x480 TFT:
 
-====================== cut here ======================================
 
 #include <linux/fb.h>
 #include <asm/sh7760fb.h>
@@ -128,4 +127,3 @@ static struct platform_device sh7760_lcdc_dev = {
        .num_resources  = ARRAY_SIZE(sh7760_lcdc_res),
 };
 
-====================== cut here ======================================

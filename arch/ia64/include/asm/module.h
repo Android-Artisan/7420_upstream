@@ -1,6 +1,8 @@
 #ifndef _ASM_IA64_MODULE_H
 #define _ASM_IA64_MODULE_H
 
+#include <asm-generic/module.h>
+
 /*
  * IA-64-specific support for kernel module loader.
  *

@@ -1,5 +1,4 @@
 dm-zero
-=======
 
 Device-Mapper's "zero" target provides a block-device that always returns
 zero'd data on reads and silently drops writes. This is similar behavior to

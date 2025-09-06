@@ -189,4 +189,9 @@ extern struct edd edd;
 #endif /* __KERNEL__ */
 #endif				/*!__ASSEMBLY__ */
 
+#include <uapi/linux/edd.h>
+
+#ifndef __ASSEMBLY__
+extern struct edd edd;
+#endif				/*!__ASSEMBLY__ */
 #endif				/* _LINUX_EDD_H */

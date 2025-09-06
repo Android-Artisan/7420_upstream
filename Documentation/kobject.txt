@@ -1,6 +1,7 @@
 Everything you never wanted to know about kobjects, ksets, and ktypes
 
 Greg Kroah-Hartman <gregkh@suse.de>
+Greg Kroah-Hartman <gregkh@linuxfoundation.org>
 
 Based on an original article by Jon Corbet for lwn.net written October 1,
 2003 and located at http://lwn.net/Articles/51437/
@@ -71,6 +72,20 @@ struct uio_mem {
 };
 
 If you have a struct uio_mem structure, finding its embedded kobject is
+(As an aside, for those familiar with the kernel linked list implementation,
+this is analogous as to how "list_head" structs are rarely useful on
+their own, but are invariably found embedded in the larger objects of
+interest.)
+
+So, for example, the UIO code in drivers/uio/uio.c has a structure that
+defines the memory region associated with a uio device:
+
+    struct uio_map {
+	struct kobject kobj;
+	struct uio_mem *mem;
+    };
+
+If you have a struct uio_map structure, finding its embedded kobject is
 just a matter of using the kobj member.  Code that works with kobjects will
 often have the opposite problem, however: given a struct kobject pointer,
 what is the pointer to the containing structure?  You must avoid tricks
@@ -90,6 +105,36 @@ containing uio_mem structure with:
 
 Programmers often define a simple macro for "back-casting" kobject pointers
 to the containing type.
+    container_of(pointer, type, member)
+
+where:
+
+  * "pointer" is the pointer to the embedded kobject,
+  * "type" is the type of the containing structure, and
+  * "member" is the name of the structure field to which "pointer" points.
+
+The return value from container_of() is a pointer to the corresponding
+container type. So, for example, a pointer "kp" to a struct kobject
+embedded *within* a struct uio_map could be converted to a pointer to the
+*containing* uio_map structure with:
+
+    struct uio_map *u_map = container_of(kp, struct uio_map, kobj);
+
+For convenience, programmers often define a simple macro for "back-casting"
+kobject pointers to the containing type.  Exactly this happens in the
+earlier drivers/uio/uio.c, as you can see here:
+
+    struct uio_map {
+        struct kobject kobj;
+        struct uio_mem *mem;
+    };
+
+    #define to_map(map) container_of(map, struct uio_map, kobj)
+
+where the macro argument "map" is a pointer to the struct kobject in
+question.  That macro is subsequently invoked with:
+
+    struct uio_map *map = to_map(kobj);
 
 
 Initialization of kobjects
@@ -118,6 +163,10 @@ the name of the kobject, call kobject_rename():
 
     int kobject_rename(struct kobject *kobj, const char *new_name);
 
+kobject_rename does not perform any locking or have a solid notion of
+what names are valid so the caller must provide their own sanity checking
+and serialization.
+
 There is a function called kobject_set_name() but that is legacy cruft and
 is being removed.  If your code needs to call this function, it is
 incorrect and needs to be fixed.
@@ -129,6 +178,7 @@ kobject_name():
 
 There is a helper function to both initialize and add the kobject to the
 kernel at the same time, called supprisingly enough kobject_init_and_add():
+kernel at the same time, called surprisingly enough kobject_init_and_add():
 
     int kobject_init_and_add(struct kobject *kobj, struct kobj_type *ktype,
                              struct kobject *parent, const char *fmt, ...);
@@ -151,6 +201,7 @@ have been initialized properly, as userspace will instantly start to look
 for them when this call happens.
 
 When the kobject is removed from the kernel (details on how to do that is
+When the kobject is removed from the kernel (details on how to do that are
 below), the uevent for KOBJ_REMOVE will be automatically created by the
 kobject core, so the caller does not have to worry about doing that by
 hand.
@@ -264,6 +315,11 @@ kobj_type:
 	    void (*release)(struct kobject *);
 	    struct sysfs_ops	*sysfs_ops;
 	    struct attribute	**default_attrs;
+	    void (*release)(struct kobject *kobj);
+	    const struct sysfs_ops *sysfs_ops;
+	    struct attribute **default_attrs;
+	    const struct kobj_ns_type_operations *(*child_ns_type)(struct kobject *kobj);
+	    const void *(*namespace)(struct kobject *kobj);
     };
 
 This structure is used to describe a particular type of kobject (or, more
@@ -318,6 +374,10 @@ kset use:
 When you are finished with the kset, call:
   void kset_unregister(struct kset *kset);
 to destroy it.
+to destroy it.  This removes the kset from sysfs and decrements its reference
+count.  When the reference count goes to zero, the kset will be released.
+Because other references to the kset may still exist, the release may happen
+after kset_unregister() returns.
 
 An example of using a kset can be seen in the
 samples/kobject/kset-example.c file in the kernel tree.
@@ -384,3 +444,5 @@ Example code to copy from
 
 For a more complete example of using ksets and kobjects properly, see the
 sample/kobject/kset-example.c code.
+example programs samples/kobject/{kobject-example.c,kset-example.c},
+which will be built as loadable modules if you select CONFIG_SAMPLE_KOBJECT.

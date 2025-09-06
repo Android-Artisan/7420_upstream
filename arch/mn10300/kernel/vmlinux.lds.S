@@ -11,6 +11,7 @@
 #define __VMLINUX_LDS__
 #include <asm-generic/vmlinux.lds.h>
 #include <asm/thread_info.h>
+#include <asm/page.h>
 
 OUTPUT_FORMAT("elf32-am33lin", "elf32-am33lin", "elf32-am33lin")
 OUTPUT_ARCH(mn10300)
@@ -30,6 +31,7 @@ SECTIONS
 	.text.head
 	.text
 	)
+	HEAD_TEXT
 	TEXT_TEXT
 	SCHED_TEXT
 	LOCK_TEXT
@@ -79,6 +81,18 @@ SECTIONS
 
   /* might get freed after init */
   . = ALIGN(4096);
+  EXCEPTION_TABLE(16)
+  BUG_TABLE
+
+  RO_DATA(PAGE_SIZE)
+
+  /* writeable */
+  _sdata = .;     /* Start of rw data section */
+  RW_DATA_SECTION(32, PAGE_SIZE, THREAD_SIZE)
+  _edata = .;
+
+  /* might get freed after init */
+  . = ALIGN(PAGE_SIZE);
   .smp_locks : AT(ADDR(.smp_locks) - LOAD_OFFSET) {
   	__smp_locks = .;
 	*(.smp_locks)
@@ -109,6 +123,10 @@ SECTIONS
   __con_initcall_end = .;
 
   SECURITY_INIT
+  . = ALIGN(PAGE_SIZE);		/* Init code and data */
+  __init_begin = .;
+  INIT_TEXT_SECTION(PAGE_SIZE)
+  INIT_DATA_SECTION(16)
   . = ALIGN(4);
   __alt_instructions = .;
   .altinstructions : { *(.altinstructions) }
@@ -141,6 +159,15 @@ SECTIONS
   }
   . = ALIGN(4);
   __bss_stop = .;
+	.exit.text : { EXIT_TEXT; }
+	.exit.data : { EXIT_DATA; }
+
+  PERCPU_SECTION(32)
+  . = ALIGN(PAGE_SIZE);
+  __init_end = .;
+  /* freed after init ends here */
+
+  BSS_SECTION(0, PAGE_SIZE, 4)
 
   _end = . ;
 
@@ -156,4 +183,13 @@ SECTIONS
   STABS_DEBUG
 
   DWARF_DEBUG
+  . = ALIGN(PAGE_SIZE);
+  pg0 = .;
+
+  STABS_DEBUG
+
+  DWARF_DEBUG
+
+  /* Sections to be discarded */
+  DISCARDS
 }

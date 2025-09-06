@@ -53,9 +53,7 @@
  * Routines to implement directories as Btrees of hashed names.
  */
 
-/*========================================================================
  * Function prototypes for the kernel.
- *========================================================================*/
 
 /*
  * Routines used for growing the Btree.
@@ -99,9 +97,7 @@ STATIC int	xfs_da_blk_unlink(xfs_da_state_t *state,
 				  xfs_da_state_blk_t *save_blk);
 STATIC void	xfs_da_state_kill_altpath(xfs_da_state_t *state);
 
-/*========================================================================
  * Routines used for growing the Btree.
- *========================================================================*/
 
 /*
  * Create the initial contents of an intermediate node.
@@ -614,9 +610,7 @@ xfs_da_node_add(xfs_da_state_t *state, xfs_da_state_blk_t *oldblk,
 	oldblk->hashval = be32_to_cpu(node->btree[be16_to_cpu(node->hdr.count)-1 ].hashval);
 }
 
-/*========================================================================
  * Routines used for shrinking the Btree.
- *========================================================================*/
 
 /*
  * Deallocate an empty leaf node, remove it from its parent,
@@ -1030,9 +1024,7 @@ xfs_da_node_unbalance(xfs_da_state_t *state, xfs_da_state_blk_t *drop_blk,
 	save_blk->hashval = be32_to_cpu(save_node->btree[be16_to_cpu(save_node->hdr.count)-1].hashval);
 }
 
-/*========================================================================
  * Routines used for finding things in the Btree.
- *========================================================================*/
 
 /*
  * Walk down the Btree looking for a particular filename, filling
@@ -1180,9 +1172,7 @@ xfs_da_node_lookup_int(xfs_da_state_t *state, int *result)
 	return(0);
 }
 
-/*========================================================================
  * Utility routines.
- *========================================================================*/
 
 /*
  * Link a new block into a doubly linked list of blocks (of whatever type).
@@ -1493,9 +1483,7 @@ xfs_da_path_shift(xfs_da_state_t *state, xfs_da_state_path_t *path,
 }
 
 
-/*========================================================================
  * Utility routines.
- *========================================================================*/
 
 /*
  * Implement a simple hash on a character string.

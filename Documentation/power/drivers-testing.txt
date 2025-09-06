@@ -27,6 +27,10 @@ a) Build the driver as a module, load it and try the test modes of hibernation
 
 b) Load the driver and attempt to hibernate in the "reboot", "shutdown" and
    "platform" modes (see: Documents/power/basic-pm-debugging.txt, 1).
+   (see: Documentation/power/basic-pm-debugging.txt, 1).
+
+b) Load the driver and attempt to hibernate in the "reboot", "shutdown" and
+   "platform" modes (see: Documentation/power/basic-pm-debugging.txt, 1).
 
 c) Compile the driver directly into the kernel and try the test modes of
    hibernation.
@@ -35,11 +39,13 @@ d) Attempt to hibernate with the driver compiled directly into the kernel
    in the "reboot", "shutdown" and "platform" modes.
 
 e) Try the test modes of suspend (see: Documents/power/basic-pm-debugging.txt,
+e) Try the test modes of suspend (see: Documentation/power/basic-pm-debugging.txt,
    2).  [As far as the STR tests are concerned, it should not matter whether or
    not the driver is built as a module.]
 
 f) Attempt to suspend to RAM using the s2ram tool with the driver loaded
    (see: Documents/power/basic-pm-debugging.txt, 2).
+   (see: Documentation/power/basic-pm-debugging.txt, 2).
 
 Each of the above tests should be repeated several times and the STD tests
 should be mixed with the STR tests.  If any of them fails, the driver cannot be

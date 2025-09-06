@@ -42,6 +42,9 @@
  */
 #define MLX4_IB_UVERBS_ABI_VERSION	3
 
+#define MLX4_IB_UVERBS_NO_DEV_CAPS_ABI_VERSION	3
+#define MLX4_IB_UVERBS_ABI_VERSION		4
+
 /*
  * Make sure that all structs defined in this file remain laid out so
  * that they pack the same way on 32-bit and 64-bit architectures (to
@@ -51,9 +54,18 @@
  */
 
 struct mlx4_ib_alloc_ucontext_resp {
+struct mlx4_ib_alloc_ucontext_resp_v3 {
 	__u32	qp_tab_size;
 	__u16	bf_reg_size;
 	__u16	bf_regs_per_page;
+};
+
+struct mlx4_ib_alloc_ucontext_resp {
+	__u32	dev_caps;
+	__u32	qp_tab_size;
+	__u16	bf_reg_size;
+	__u16	bf_regs_per_page;
+	__u32	cqe_size;
 };
 
 struct mlx4_ib_alloc_pd_resp {

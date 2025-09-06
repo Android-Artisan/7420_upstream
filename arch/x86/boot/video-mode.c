@@ -26,6 +26,13 @@ int adapter;			/* 0=CGA/MDA/HGC, 1=EGA, 2=VGA+ */
 u16 video_segment;
 int force_x, force_y;	/* Don't query the BIOS for cols/rows */
 
+#include <uapi/asm/boot.h>
+
+/*
+ * Common variables
+ */
+int adapter;		/* 0=CGA/MDA/HGC, 1=EGA, 2=VGA+ */
+int force_x, force_y;	/* Don't query the BIOS for cols/rows */
 int do_restore;		/* Screen contents changed during mode flip */
 int graphic_mode;	/* Graphic mode with linear frame buffer */
 

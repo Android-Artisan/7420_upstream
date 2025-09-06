@@ -1,5 +1,4 @@
 /*
-===============================================================================
 
 This C source file is part of the SoftFloat IEC/IEEE Floating-point
 Arithmetic Package, Release 2.
@@ -13,6 +12,8 @@ processor in collaboration with the University of California at Berkeley,
 overseen by Profs. Nelson Morgan and John Wawrzynek.  More information
 is available through the web page `http://HTTP.CS.Berkeley.EDU/~jhauser/
 arithmetic/softfloat.html'.
+is available through the web page
+http://www.jhauser.us/arithmetic/SoftFloat-2b/SoftFloat-source.txt
 
 THIS SOFTWARE IS DISTRIBUTED AS IS, FOR FREE.  Although reasonable effort
 has been made to avoid it, THIS SOFTWARE MAY CONTAIN FAULTS THAT WILL AT
@@ -25,7 +26,6 @@ Derivative works are acceptable, even for commercial purposes, so long as
 include prominent notice akin to these three paragraphs for those parts of
 this code that are retained.
 
-===============================================================================
 */
 
 #include <asm/div64.h>

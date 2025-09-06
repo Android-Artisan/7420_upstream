@@ -835,7 +835,6 @@ static void e1000_dump_eeprom(struct e1000_adapter *adapter)
 	printk(KERN_ERR "Calculated              : 0x%04x\n", csum_new);
 
 	printk(KERN_ERR "Offset    Values\n");
-	printk(KERN_ERR "========  ======\n");
 	print_hex_dump(KERN_ERR, "", DUMP_PREFIX_OFFSET, 16, 1, data, 128, 0);
 
 	printk(KERN_ERR "Include this output when contacting your support "

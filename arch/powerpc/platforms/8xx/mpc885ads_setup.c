@@ -25,6 +25,8 @@
 #include <linux/fs_uart_pd.h>
 #include <linux/fsl_devices.h>
 #include <linux/mii.h>
+#include <linux/of_address.h>
+#include <linux/of_fdt.h>
 #include <linux/of_platform.h>
 
 #include <asm/delay.h>
@@ -35,6 +37,7 @@
 #include <asm/system.h>
 #include <asm/time.h>
 #include <asm/mpc8xx.h>
+#include <asm/time.h>
 #include <asm/8xx_immap.h>
 #include <asm/cpm1.h>
 #include <asm/fs_pd.h>
@@ -259,6 +262,7 @@ static int __init mpc885ads_probe(void)
 }
 
 static struct of_device_id __initdata of_bus_ids[] = {
+static const struct of_device_id of_bus_ids[] __initconst = {
 	{ .name = "soc", },
 	{ .name = "cpm", },
 	{ .name = "localbus", },

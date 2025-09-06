@@ -23,6 +23,7 @@
  */
 
 #include "asequencer.h"
+#include <sound/asequencer.h>
 
 #define MAX_MIDI_EVENT_BUF	256
 

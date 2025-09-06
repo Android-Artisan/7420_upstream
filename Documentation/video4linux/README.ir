@@ -1,6 +1,5 @@
 
 infrared remote control support in video4linux drivers
-======================================================
 
 
 basics
@@ -43,7 +42,6 @@ keymaps (2.6.x kernels only through).
 
 
 using with lircd
-================
 
 The cvs version of the lircd daemon supports reading events from the
 linux input layer (via event device).  The input layer tools tarball
@@ -51,7 +49,6 @@ comes with a lircd config file.
 
 
 using without lircd
-===================
 
 XFree86 likely can be configured to recognise the remote keys.  Once I
 simply tried to configure one of the multimedia keyboards as input

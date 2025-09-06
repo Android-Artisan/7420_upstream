@@ -5,6 +5,7 @@
  *
  * Copyright (c) Ian Molton 2004, 2005, 2008
  *    Original work, independant of sharps code. Included hardware ECC support.
+ *    Original work, independent of sharps code. Included hardware ECC support.
  *    Hard ECC did not work for writes in the early revisions.
  * Copyright (c) Dirk Opfer 2005.
  *    Modifications developed from sharps code but
@@ -37,6 +38,7 @@
 #include <linux/mtd/nand.h>
 #include <linux/mtd/nand_ecc.h>
 #include <linux/mtd/partitions.h>
+#include <linux/slab.h>
 
 /*--------------------------------------------------------------------------*/
 
@@ -304,6 +306,24 @@ static int tmio_nand_calculate_ecc(struct mtd_info *mtd, const u_char *dat,
 static int tmio_hw_init(struct platform_device *dev, struct tmio_nand *tmio)
 {
 	struct mfd_cell *cell = (struct mfd_cell *)dev->dev.platform_data;
+static int tmio_nand_correct_data(struct mtd_info *mtd, unsigned char *buf,
+		unsigned char *read_ecc, unsigned char *calc_ecc)
+{
+	int r0, r1;
+
+	/* assume ecc.size = 512 and ecc.bytes = 6 */
+	r0 = __nand_correct_data(buf, read_ecc, calc_ecc, 256);
+	if (r0 < 0)
+		return r0;
+	r1 = __nand_correct_data(buf + 256, read_ecc + 3, calc_ecc + 3, 256);
+	if (r1 < 0)
+		return r1;
+	return r0 + r1;
+}
+
+static int tmio_hw_init(struct platform_device *dev, struct tmio_nand *tmio)
+{
+	const struct mfd_cell *cell = mfd_get_cell(dev);
 	int ret;
 
 	if (cell->enable) {
@@ -348,6 +368,7 @@ static int tmio_hw_init(struct platform_device *dev, struct tmio_nand *tmio)
 static void tmio_hw_stop(struct platform_device *dev, struct tmio_nand *tmio)
 {
 	struct mfd_cell *cell = (struct mfd_cell *)dev->dev.platform_data;
+	const struct mfd_cell *cell = mfd_get_cell(dev);
 
 	tmio_iowrite8(FCR_MODE_POWER_OFF, tmio->fcr + FCR_MODE);
 	if (cell->disable)
@@ -358,6 +379,7 @@ static int tmio_probe(struct platform_device *dev)
 {
 	struct mfd_cell *cell = (struct mfd_cell *)dev->dev.platform_data;
 	struct tmio_nand_data *data = cell->driver_data;
+	struct tmio_nand_data *data = dev_get_platdata(&dev->dev);
 	struct resource *fcr = platform_get_resource(dev,
 			IORESOURCE_MEM, 0);
 	struct resource *ccr = platform_get_resource(dev,
@@ -380,6 +402,9 @@ static int tmio_probe(struct platform_device *dev)
 		retval = -ENOMEM;
 		goto err_kzalloc;
 	}
+	tmio = devm_kzalloc(&dev->dev, sizeof(*tmio), GFP_KERNEL);
+	if (!tmio)
+		return -ENOMEM;
 
 	tmio->dev = dev;
 
@@ -405,6 +430,20 @@ static int tmio_probe(struct platform_device *dev)
 	retval = tmio_hw_init(dev, tmio);
 	if (retval)
 		goto err_hwinit;
+	mtd->dev.parent = &dev->dev;
+
+	tmio->ccr = devm_ioremap(&dev->dev, ccr->start, resource_size(ccr));
+	if (!tmio->ccr)
+		return -EIO;
+
+	tmio->fcr_base = fcr->start & 0xfffff;
+	tmio->fcr = devm_ioremap(&dev->dev, fcr->start, resource_size(fcr));
+	if (!tmio->fcr)
+		return -EIO;
+
+	retval = tmio_hw_init(dev, tmio);
+	if (retval)
+		return retval;
 
 	/* Set address of NAND IO lines */
 	nand_chip->IO_ADDR_R = tmio->fcr;
@@ -425,6 +464,10 @@ static int tmio_probe(struct platform_device *dev)
 	nand_chip->ecc.hwctl = tmio_nand_enable_hwecc;
 	nand_chip->ecc.calculate = tmio_nand_calculate_ecc;
 	nand_chip->ecc.correct = nand_correct_data;
+	nand_chip->ecc.strength = 2;
+	nand_chip->ecc.hwctl = tmio_nand_enable_hwecc;
+	nand_chip->ecc.calculate = tmio_nand_calculate_ecc;
+	nand_chip->ecc.correct = tmio_nand_correct_data;
 
 	if (data)
 		nand_chip->badblock_pattern = data->badblock_pattern;
@@ -434,6 +477,8 @@ static int tmio_probe(struct platform_device *dev)
 
 	retval = request_irq(irq, &tmio_irq,
 				IRQF_DISABLED, dev->dev.bus_id, tmio);
+	retval = devm_request_irq(&dev->dev, irq, &tmio_irq, 0,
+				  dev_name(&dev->dev), tmio);
 	if (retval) {
 		dev_err(&dev->dev, "request_irq error %d\n", retval);
 		goto err_irq;
@@ -463,10 +508,16 @@ static int tmio_probe(struct platform_device *dev)
 #endif
 	retval = add_mtd_device(mtd);
 
+		goto err_irq;
+	}
+	/* Register the partitions */
+	retval = mtd_device_parse_register(mtd, NULL, NULL,
+					   data ? data->partition : NULL,
+					   data ? data->num_partitions : 0);
 	if (!retval)
 		return retval;
 
-	nand_release(mtd);
+	nand_cleanup(nand_chip);
 
 err_scan:
 	if (tmio->irq)
@@ -480,6 +531,8 @@ err_iomap_fcr:
 err_iomap_ccr:
 	kfree(tmio);
 err_kzalloc:
+err_irq:
+	tmio_hw_stop(dev, tmio);
 	return retval;
 }
 
@@ -494,6 +547,7 @@ static int tmio_remove(struct platform_device *dev)
 	iounmap(tmio->fcr);
 	iounmap(tmio->ccr);
 	kfree(tmio);
+	tmio_hw_stop(dev, tmio);
 	return 0;
 }
 
@@ -501,6 +555,7 @@ static int tmio_remove(struct platform_device *dev)
 static int tmio_suspend(struct platform_device *dev, pm_message_t state)
 {
 	struct mfd_cell *cell = (struct mfd_cell *)dev->dev.platform_data;
+	const struct mfd_cell *cell = mfd_get_cell(dev);
 
 	if (cell->suspend)
 		cell->suspend(dev);
@@ -512,6 +567,7 @@ static int tmio_suspend(struct platform_device *dev, pm_message_t state)
 static int tmio_resume(struct platform_device *dev)
 {
 	struct mfd_cell *cell = (struct mfd_cell *)dev->dev.platform_data;
+	const struct mfd_cell *cell = mfd_get_cell(dev);
 
 	/* FIXME - is this required or merely another attack of the broken
 	 * SHARP platform? Looks suspicious.
@@ -549,6 +605,7 @@ static void __exit tmio_exit(void)
 
 module_init(tmio_init);
 module_exit(tmio_exit);
+module_platform_driver(tmio_driver);
 
 MODULE_LICENSE("GPL v2");
 MODULE_AUTHOR("Ian Molton, Dirk Opfer, Chris Humbert, Dmitry Baryshkov");

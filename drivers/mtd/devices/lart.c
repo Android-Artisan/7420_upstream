@@ -18,6 +18,7 @@
  *
  *    [2] MTD internal API documentation
  *           - http://www.linux-mtd.infradead.org/tech/
+ *           - http://www.linux-mtd.infradead.org/ 
  *
  * Limitations:
  *
@@ -47,6 +48,7 @@
 #ifdef HAVE_PARTITIONS
 #include <linux/mtd/partitions.h>
 #endif
+#include <linux/mtd/partitions.h>
 
 #ifndef CONFIG_SA1100_LART
 #error This is for LART architecture only
@@ -354,6 +356,7 @@ static inline int erase_block (__u32 offset)
    write32 (DATA_TO_FLASH (READ_ARRAY),offset);
 
    /* was the erase successfull? */
+   /* was the erase successful? */
    if ((status & STATUS_ERASE_ERR))
 	 {
 		printk (KERN_WARNING "%s: erase error at address 0x%.8x.\n",module_name,offset);
@@ -394,6 +397,8 @@ static int flash_erase (struct mtd_info *mtd,struct erase_info *instr)
 	* effect here.
 	*/
    if (instr->addr & (mtd->eraseregions[i].erasesize - 1)) return (-EINVAL);
+   if (i < 0 || (instr->addr & (mtd->eraseregions[i].erasesize - 1)))
+      return -EINVAL;
 
    /* Remember the erase region we start on */
    first = i;
@@ -410,6 +415,8 @@ static int flash_erase (struct mtd_info *mtd,struct erase_info *instr)
 
    /* is the end aligned on a block boundary? */
    if ((instr->addr + instr->len) & (mtd->eraseregions[i].erasesize - 1)) return (-EINVAL);
+   if (i < 0 || ((instr->addr + instr->len) & (mtd->eraseregions[i].erasesize - 1)))
+      return -EINVAL;
 
    addr = instr->addr;
    len = instr->len;
@@ -507,6 +514,7 @@ static inline int write_dword (__u32 offset,__u32 x)
    write32 (DATA_TO_FLASH (READ_ARRAY),offset);
 
    /* was the write successfull? */
+   /* was the write successful? */
    if ((status & STATUS_PGM_ERR) || read32 (offset) != x)
 	 {
 		printk (KERN_WARNING "%s: write error at address 0x%.8x.\n",module_name,offset);
@@ -530,6 +538,8 @@ static int flash_write (struct mtd_info *mtd,loff_t to,size_t len,size_t *retlen
    /* sanity checks */
    if (!len) return (0);
    if (to + len > mtd->size) return (-EINVAL);
+   /* sanity checks */
+   if (!len) return (0);
 
    /* first, we write a 0xFF.... padded byte until we reach a dword boundary */
    if (to & (BUSWIDTH - 1))
@@ -620,6 +630,9 @@ static struct mtd_partition lart_partitions[] = {
 #endif
 
 int __init lart_flash_init (void)
+#define NUM_PARTITIONS ARRAY_SIZE(lart_partitions)
+
+static int __init lart_flash_init (void)
 {
    int result;
    memset (&mtd,0,sizeof (mtd));
@@ -634,6 +647,7 @@ int __init lart_flash_init (void)
    mtd.name = module_name;
    mtd.type = MTD_NORFLASH;
    mtd.writesize = 1;
+   mtd.writebufsize = 4;
    mtd.flags = MTD_CAP_NORFLASH;
    mtd.size = FLASH_BLOCKSIZE_PARAM * FLASH_NUMBLOCKS_16m_PARAM + FLASH_BLOCKSIZE_MAIN * FLASH_NUMBLOCKS_16m_MAIN;
    mtd.erasesize = FLASH_BLOCKSIZE_MAIN;
@@ -642,6 +656,9 @@ int __init lart_flash_init (void)
    mtd.erase = flash_erase;
    mtd.read = flash_read;
    mtd.write = flash_write;
+   mtd._erase = flash_erase;
+   mtd._read = flash_read;
+   mtd._write = flash_write;
    mtd.owner = THIS_MODULE;
 
 #ifdef LART_DEBUG
@@ -687,6 +704,9 @@ int __init lart_flash_init (void)
    result = add_mtd_partitions (&mtd,lart_partitions, ARRAY_SIZE(lart_partitions));
 #endif
 
+   result = mtd_device_register(&mtd, lart_partitions,
+                                ARRAY_SIZE(lart_partitions));
+
    return (result);
 }
 
@@ -697,6 +717,9 @@ void __exit lart_flash_exit (void)
 #else
    del_mtd_partitions (&mtd);
 #endif
+static void __exit lart_flash_exit (void)
+{
+   mtd_device_unregister(&mtd);
 }
 
 module_init (lart_flash_init);

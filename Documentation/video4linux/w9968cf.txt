@@ -1,7 +1,6 @@
 
 		   W996[87]CF JPEG USB Dual Mode Camera Chip
 		     Driver for Linux 2.6 (basic version)
-		   =========================================
 
 			       - Documentation -
 
@@ -21,18 +20,15 @@ Index
 
 
 1. Copyright
-============
 Copyright (C) 2002-2004 by Luca Risolia <luca.risolia@studio.unibo.it>
 
 
 2. Disclaimer
-=============
 Winbond is a trademark of Winbond Electronics Corporation.
 This software is not sponsored or developed by Winbond.
 
 
 3. License
-==========
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
 the Free Software Foundation; either version 2 of the License, or
@@ -49,7 +45,6 @@ Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 
 
 4. Overview
-===========
 This driver supports the video streaming capabilities of the devices mounting
 Winbond W9967CF and Winbond W9968CF JPEG USB Dual Mode Camera Chips. OV681
 based cameras should be supported as well.
@@ -84,7 +79,6 @@ compiled with the automatic module loading option).
 
 
 5. Supported devices
-====================
 At the moment, known W996[87]CF and OV681 based devices are:
 - Aroma Digi Pen VGA Dual Mode ADG-5000 (unknown image sensor)
 - AVerMedia AVerTV USB (SAA7111A, Philips FI1216Mk2 tuner, PT2313L audio chip)
@@ -112,7 +106,6 @@ additional testing and full support, would be much appreciated.
 
 
 6. Module dependencies
-======================
 For it to work properly, the driver needs kernel support for Video4Linux, USB
 and I2C, and the "ovcamchip" module for the image sensor. Make sure you are not
 actually using any external "ovcamchip" module, given that the W996[87]CF
@@ -156,7 +149,6 @@ And finally:
 
 
 7. Module loading
-=================
 To use the driver, it is necessary to load the "w9968cf" module into memory
 after every other module required.
 
@@ -181,7 +173,6 @@ explanation about them and which syntax to use, it is recommended to run the
 
 
 8. Module parameters
-====================
 Module parameters are listed below:
 -------------------------------------------------------------------------------
 Name:            ovmod_load
@@ -433,7 +424,6 @@ Default:        0
 
 
 9. Contact information
-======================
 I may be contacted by e-mail at <luca.risolia@studio.unibo.it>.
 
 I can accept GPG/PGP encrypted e-mail. My GPG key ID is 'FCE635A4'.
@@ -442,7 +432,6 @@ is: '88E8 F32F 7244 68BA 3958  5D40 99DA 5D2A FCE6 35A4'.
 
 
 10. Credits
-==========
 The development would not have proceed much further without having looked at
 the source code of other drivers and without the help of several persons; in
 particular:

@@ -1,5 +1,4 @@
 			S3C24XX NAND Support
-			====================
 
 Introduction
 ------------

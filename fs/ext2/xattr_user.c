@@ -13,12 +13,15 @@
 
 static size_t
 ext2_xattr_user_list(struct inode *inode, char *list, size_t list_size,
+ext2_xattr_user_list(const struct xattr_handler *handler,
+		     struct dentry *dentry, char *list, size_t list_size,
 		     const char *name, size_t name_len)
 {
 	const size_t prefix_len = XATTR_USER_PREFIX_LEN;
 	const size_t total_len = prefix_len + name_len + 1;
 
 	if (!test_opt(inode->i_sb, XATTR_USER))
+	if (!test_opt(dentry->d_sb, XATTR_USER))
 		return 0;
 
 	if (list && total_len <= list_size) {
@@ -31,6 +34,8 @@ ext2_xattr_user_list(struct inode *inode, char *list, size_t list_size,
 
 static int
 ext2_xattr_user_get(struct inode *inode, const char *name,
+ext2_xattr_user_get(const struct xattr_handler *handler,
+		    struct dentry *dentry, const char *name,
 		    void *buffer, size_t size)
 {
 	if (strcmp(name, "") == 0)
@@ -42,6 +47,15 @@ ext2_xattr_user_get(struct inode *inode, const char *name,
 
 static int
 ext2_xattr_user_set(struct inode *inode, const char *name,
+	if (!test_opt(dentry->d_sb, XATTR_USER))
+		return -EOPNOTSUPP;
+	return ext2_xattr_get(d_inode(dentry), EXT2_XATTR_INDEX_USER,
+			      name, buffer, size);
+}
+
+static int
+ext2_xattr_user_set(const struct xattr_handler *handler,
+		    struct dentry *dentry, const char *name,
 		    const void *value, size_t size, int flags)
 {
 	if (strcmp(name, "") == 0)
@@ -54,6 +68,14 @@ ext2_xattr_user_set(struct inode *inode, const char *name,
 }
 
 struct xattr_handler ext2_xattr_user_handler = {
+	if (!test_opt(dentry->d_sb, XATTR_USER))
+		return -EOPNOTSUPP;
+
+	return ext2_xattr_set(d_inode(dentry), EXT2_XATTR_INDEX_USER,
+			      name, value, size, flags);
+}
+
+const struct xattr_handler ext2_xattr_user_handler = {
 	.prefix	= XATTR_USER_PREFIX,
 	.list	= ext2_xattr_user_list,
 	.get	= ext2_xattr_user_get,

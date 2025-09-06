@@ -14,6 +14,7 @@
 #include <linux/irq.h>
 #include <linux/platform_device.h>
 #include <linux/random.h>
+#include <linux/slab.h>
 
 #include <asm/io.h>
 
@@ -92,6 +93,37 @@ static int eic_set_irq_type(unsigned int irq, unsigned int flow_type)
 	unsigned int i = irq - eic->first_irq;
 	u32 mode, edge, level;
 	int ret = 0;
+static void eic_ack_irq(struct irq_data *d)
+{
+	struct eic *eic = irq_data_get_irq_chip_data(d);
+	eic_writel(eic, ICR, 1 << (d->irq - eic->first_irq));
+}
+
+static void eic_mask_irq(struct irq_data *d)
+{
+	struct eic *eic = irq_data_get_irq_chip_data(d);
+	eic_writel(eic, IDR, 1 << (d->irq - eic->first_irq));
+}
+
+static void eic_mask_ack_irq(struct irq_data *d)
+{
+	struct eic *eic = irq_data_get_irq_chip_data(d);
+	eic_writel(eic, ICR, 1 << (d->irq - eic->first_irq));
+	eic_writel(eic, IDR, 1 << (d->irq - eic->first_irq));
+}
+
+static void eic_unmask_irq(struct irq_data *d)
+{
+	struct eic *eic = irq_data_get_irq_chip_data(d);
+	eic_writel(eic, IER, 1 << (d->irq - eic->first_irq));
+}
+
+static int eic_set_irq_type(struct irq_data *d, unsigned int flow_type)
+{
+	struct eic *eic = irq_data_get_irq_chip_data(d);
+	unsigned int irq = d->irq;
+	unsigned int i = irq - eic->first_irq;
+	u32 mode, edge, level;
 
 	flow_type &= IRQ_TYPE_SENSE_MASK;
 	if (flow_type == IRQ_TYPE_NONE)
@@ -140,6 +172,20 @@ static int eic_set_irq_type(unsigned int irq, unsigned int flow_type)
 	}
 
 	return ret;
+		return -EINVAL;
+	}
+
+	eic_writel(eic, MODE, mode);
+	eic_writel(eic, EDGE, edge);
+	eic_writel(eic, LEVEL, level);
+
+	irqd_set_trigger_type(d, flow_type);
+	if (flow_type & (IRQ_TYPE_LEVEL_LOW | IRQ_TYPE_LEVEL_HIGH))
+		irq_set_handler_locked(d, handle_level_irq);
+	else
+		irq_set_handler_locked(d, handle_edge_irq);
+
+	return IRQ_SET_MASK_OK_NOCOPY;
 }
 
 static struct irq_chip eic_chip = {
@@ -154,6 +200,16 @@ static struct irq_chip eic_chip = {
 static void demux_eic_irq(unsigned int irq, struct irq_desc *desc)
 {
 	struct eic *eic = desc->handler_data;
+	.irq_ack	= eic_ack_irq,
+	.irq_mask	= eic_mask_irq,
+	.irq_mask_ack	= eic_mask_ack_irq,
+	.irq_unmask	= eic_unmask_irq,
+	.irq_set_type	= eic_set_irq_type,
+};
+
+static void demux_eic_irq(struct irq_desc *desc)
+{
+	struct eic *eic = irq_desc_get_handler_data(desc);
 	unsigned long status, pending;
 	unsigned int i;
 
@@ -192,6 +248,7 @@ static int __init eic_probe(struct platform_device *pdev)
 	struct resource *regs;
 	unsigned int i;
 	unsigned int nr_irqs;
+	unsigned int nr_of_irqs;
 	unsigned int int_irq;
 	int ret;
 	u32 pattern;
@@ -199,6 +256,7 @@ static int __init eic_probe(struct platform_device *pdev)
 	regs = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	int_irq = platform_get_irq(pdev, 0);
 	if (!regs || !int_irq) {
+	if (!regs || (int)int_irq <= 0) {
 		dev_dbg(&pdev->dev, "missing regs and/or irq resource\n");
 		return -ENXIO;
 	}
@@ -212,6 +270,7 @@ static int __init eic_probe(struct platform_device *pdev)
 
 	eic->first_irq = EIM_IRQ_BASE + 32 * pdev->id;
 	eic->regs = ioremap(regs->start, regs->end - regs->start + 1);
+	eic->regs = ioremap(regs->start, resource_size(regs));
 	if (!eic->regs) {
 		dev_dbg(&pdev->dev, "failed to map regs\n");
 		goto err_ioremap;
@@ -225,6 +284,7 @@ static int __init eic_probe(struct platform_device *pdev)
 	eic_writel(eic, MODE, ~0UL);
 	pattern = eic_readl(eic, MODE);
 	nr_irqs = fls(pattern);
+	nr_of_irqs = fls(pattern);
 
 	/* Trigger on low level unless overridden by driver */
 	eic_writel(eic, EDGE, 0UL);
@@ -240,6 +300,13 @@ static int __init eic_probe(struct platform_device *pdev)
 
 	set_irq_chained_handler(int_irq, demux_eic_irq);
 	set_irq_data(int_irq, eic);
+	for (i = 0; i < nr_of_irqs; i++) {
+		irq_set_chip_and_handler(eic->first_irq + i, &eic_chip,
+					 handle_level_irq);
+		irq_set_chip_data(eic->first_irq + i, eic);
+	}
+
+	irq_set_chained_handler_and_data(int_irq, demux_eic_irq, eic);
 
 	if (pdev->id == 0) {
 		nmi_eic = eic;
@@ -257,6 +324,7 @@ static int __init eic_probe(struct platform_device *pdev)
 	dev_info(&pdev->dev,
 		 "Handling %u external IRQs, starting with IRQ %u\n",
 		 nr_irqs, eic->first_irq);
+		 nr_of_irqs, eic->first_irq);
 
 	return 0;
 

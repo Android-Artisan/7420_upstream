@@ -21,6 +21,7 @@ struct pci_dev;
 struct pci_ops;
 struct pci_controller;
 struct _alpha_agp_info;
+struct rtc_time;
 
 struct alpha_machine_vector
 {
@@ -32,6 +33,7 @@ struct alpha_machine_vector
 
 	int nr_irqs;
 	int rtc_port;
+	int rtc_boot_cpu_only;
 	unsigned int max_asn;
 	unsigned long max_isa_dma_address;
 	unsigned long irq_probe_mask;
@@ -80,6 +82,7 @@ struct alpha_machine_vector
 	void (*ack_irq)(unsigned long);
 	void (*device_interrupt)(unsigned long vector);
 	void (*machine_check)(u64 vector, u64 la);
+	void (*machine_check)(unsigned long vector, unsigned long la);
 
 	void (*smp_callin)(void);
 	void (*init_arch)(void);
@@ -90,6 +93,7 @@ struct alpha_machine_vector
 
 	u8 (*pci_swizzle)(struct pci_dev *, u8 *);
 	int (*pci_map_irq)(struct pci_dev *, u8, u8);
+	int (*pci_map_irq)(const struct pci_dev *, u8, u8);
 	struct pci_ops *pci_ops;
 
 	struct _alpha_agp_info *(*agp_info)(void);
@@ -131,4 +135,19 @@ extern int alpha_using_srm;
 #endif /* GENERIC */
 
 #endif
+extern int alpha_using_qemu;
+#else
+# ifdef CONFIG_ALPHA_SRM
+#  define alpha_using_srm 1
+# else
+#  define alpha_using_srm 0
+# endif
+# ifdef CONFIG_ALPHA_QEMU
+#  define alpha_using_qemu 1
+# else
+#  define alpha_using_qemu 0
+# endif
+#endif /* GENERIC */
+
+#endif /* __KERNEL__ */
 #endif /* __ALPHA_MACHVEC_H */

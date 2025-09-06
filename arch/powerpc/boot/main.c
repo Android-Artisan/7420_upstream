@@ -59,6 +59,19 @@ static struct addr_range prep_kernel(void)
 		if ((unsigned long)_start < ei.memsize)
 			fatal("Insufficient memory for kernel at address 0!"
 			       " (_start=%p)\n\r", _start);
+		/*
+		 * Check if the kernel image (without bss) would overwrite the
+		 * bootwrapper. The device tree has been moved in fdt_init()
+		 * to an area allocated with malloc() (somewhere past _end).
+		 */
+		if ((unsigned long)_start < ei.loadsize)
+			fatal("Insufficient memory for kernel at address 0!"
+			       " (_start=%p, uncompressed size=%08lx)\n\r",
+			       _start, ei.loadsize);
+
+		if ((unsigned long)_end < ei.memsize)
+			fatal("The final kernel image would overwrite the "
+					"device tree\n\r");
 	}
 
 	/* Finally, gunzip the kernel */
@@ -130,6 +143,7 @@ static struct addr_range prep_initrd(struct addr_range vmlinux, void *chosen,
  * The buffer is put in it's own section so that tools may locate it easier.
  */
 static char cmdline[COMMAND_LINE_SIZE]
+static char cmdline[BOOT_COMMAND_LINE_SIZE]
 	__attribute__((__section__("__builtin_cmdline")));
 
 static void prep_cmdline(void *chosen)
@@ -141,6 +155,24 @@ static void prep_cmdline(void *chosen)
 	/* If possible, edit the command line */
 	if (console_ops.edit_cmdline)
 		console_ops.edit_cmdline(cmdline, COMMAND_LINE_SIZE);
+	unsigned int getline_timeout = 5000;
+	int v;
+	int n;
+
+	/* Wait-for-input time */
+	n = getprop(chosen, "linux,cmdline-timeout", &v, sizeof(v));
+	if (n == sizeof(v))
+		getline_timeout = v;
+
+	if (cmdline[0] == '\0')
+		getprop(chosen, "bootargs", cmdline, BOOT_COMMAND_LINE_SIZE-1);
+
+	printf("\n\rLinux/PowerPC load: %s", cmdline);
+
+	/* If possible, edit the command line */
+	if (console_ops.edit_cmdline && getline_timeout)
+		console_ops.edit_cmdline(cmdline, BOOT_COMMAND_LINE_SIZE, getline_timeout);
+
 	printf("\n\r");
 
 	/* Put the command line back into the devtree for the kernel */
@@ -165,6 +197,7 @@ void start(void)
 	if ((loader_info.cmdline_len > 0) && (cmdline[0] == '\0'))
 		memmove(cmdline, loader_info.cmdline,
 			min(loader_info.cmdline_len, COMMAND_LINE_SIZE-1));
+			min(loader_info.cmdline_len, BOOT_COMMAND_LINE_SIZE-1));
 
 	if (console_ops.open && (console_ops.open() < 0))
 		exit();

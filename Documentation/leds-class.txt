@@ -1,5 +1,4 @@
 LED handling under Linux
-========================
 
 If you're reading this and thinking about keyboard leds, these are
 handled by the input subsystem and the led class is *not* needed.
@@ -33,7 +32,6 @@ selected.
 
 
 Design Philosophy
-=================
 
 The underlying design philosophy is simplicity. LEDs are simple devices
 and the aim is to keep a small amount of code giving as much functionality
@@ -41,7 +39,6 @@ as possible.  Please keep this in mind when suggesting enhancements.
 
 
 LED Device Naming
-=================
 
 Is currently of the form:
 
@@ -55,7 +52,6 @@ of the name don't apply, just leave that section blank.
 
 
 Hardware accelerated blink of LEDs
-==================================
 
 Some LEDs can be programmed to blink without any CPU interaction. To
 support this feature, a LED driver can optionally implement the
@@ -75,7 +71,6 @@ hardware blinking function, if any.
 
 
 Known Issues
-============
 
 The LED Trigger core cannot be a module as the simple trigger functions
 would cause nightmare dependency issues. I see this as a minor issue
@@ -84,7 +79,6 @@ rest of the LED subsystem can be modular.
 
 
 Future Development
-==================
 
 At the moment, a trigger can't be created specifically for a single LED.
 There are a number of cases where a trigger might only be mappable to a

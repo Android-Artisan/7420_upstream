@@ -6,6 +6,7 @@
 
   Copyright (c) 2005-2007 Stefano Brivio <stefano.brivio@polimi.it>
   Copyright (c) 2005-2007 Michael Buesch <mbuesch@freenet.de>
+  Copyright (c) 2005-2007 Michael Buesch <m@bues.ch>
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -28,6 +29,7 @@
 #include "main.h"
 #include "tables.h"
 #include "phy.h"
+#include "phy_common.h"
 #include "wa.h"
 
 static void b43_wa_papd(struct b43_wldev *dev)
@@ -38,6 +40,7 @@ static void b43_wa_papd(struct b43_wldev *dev)
 	b43_ofdmtab_write16(dev, B43_OFDMTAB_PWRDYN2, 0, 7);
 	b43_ofdmtab_write16(dev, B43_OFDMTAB_UNKNOWN_APHY, 0, 0);
 	b43_dummy_transmission(dev);
+	b43_dummy_transmission(dev, true, true);
 	b43_ofdmtab_write16(dev, B43_OFDMTAB_PWRDYN2, 0, backup);
 }
 
@@ -64,6 +67,7 @@ void b43_wa_initgains(struct b43_wldev *dev)
 	b43_phy_write(dev, B43_PHY_LNAHPFCTL, 0x1FF9);
 	b43_phy_write(dev, B43_PHY_LPFGAINCTL,
 		b43_phy_read(dev, B43_PHY_LPFGAINCTL) & 0xFF0F);
+	b43_phy_mask(dev, B43_PHY_LPFGAINCTL, 0xFF0F);
 	if (phy->rev <= 2)
 		b43_ofdmtab_write16(dev, B43_OFDMTAB_LPFGAIN, 0, 0x1FBF);
 	b43_radio_write16(dev, 0x0002, 0x1FBF);
@@ -78,6 +82,9 @@ void b43_wa_initgains(struct b43_wldev *dev)
 	else if (phy->rev == 5) {
 		b43_phy_write(dev, 0x002A,
 			(b43_phy_read(dev, 0x002A) & 0x00FF) | 0x1A00);
+		b43_phy_maskset(dev, 0x002A, 0x00FF, 0x0400);
+	else if (phy->rev == 5) {
+		b43_phy_maskset(dev, 0x002A, 0x00FF, 0x1A00);
 		b43_phy_write(dev, 0x00CC, 0x2121);
 	}
 	if (phy->rev >= 3)
@@ -87,6 +94,7 @@ void b43_wa_initgains(struct b43_wldev *dev)
 static void b43_wa_divider(struct b43_wldev *dev)
 {
 	b43_phy_write(dev, 0x002B, b43_phy_read(dev, 0x002B) & ~0x0100);
+	b43_phy_mask(dev, 0x002B, ~0x0100);
 	b43_phy_write(dev, 0x008E, 0x58C1);
 }
 
@@ -274,6 +282,7 @@ static void b43_wa_lms(struct b43_wldev *dev)
 {
 	b43_phy_write(dev, 0x0055,
 		(b43_phy_read(dev, 0x0055) & 0xFFC0) | 0x0004);
+	b43_phy_maskset(dev, 0x0055, 0xFFC0, 0x0004);
 }
 
 static void b43_wa_mixedsignal(struct b43_wldev *dev)
@@ -321,6 +330,7 @@ static void b43_wa_crs_ed(struct b43_wldev *dev)
 		b43_phy_write(dev, B43_PHY_ANTDWELL,
 				  b43_phy_read(dev, B43_PHY_ANTDWELL)
 				  | 0x0800);
+		b43_phy_set(dev, B43_PHY_ANTDWELL, 0x0800);
 	} else {
 		b43_phy_write(dev, B43_PHY_CRSTHRES1, 0x0098);
 		b43_phy_write(dev, B43_PHY_CRSTHRES2, 0x0070);
@@ -328,6 +338,7 @@ static void b43_wa_crs_ed(struct b43_wldev *dev)
 		b43_phy_write(dev, B43_PHY_ANTDWELL,
 				  b43_phy_read(dev, B43_PHY_ANTDWELL)
 				  | 0x0800);
+		b43_phy_set(dev, B43_PHY_ANTDWELL, 0x0800);
 	}
 }
 
@@ -335,6 +346,7 @@ static void b43_wa_crs_thr(struct b43_wldev *dev)
 {
 	b43_phy_write(dev, B43_PHY_CRS0,
 			(b43_phy_read(dev, B43_PHY_CRS0) & ~0x03C0) | 0xD000);
+	b43_phy_maskset(dev, B43_PHY_CRS0, ~0x03C0, 0xD000);
 }
 
 static void b43_wa_crs_blank(struct b43_wldev *dev)
@@ -457,6 +469,45 @@ static void b43_wa_altagc(struct b43_wldev *dev)
 		b43_phy_write(dev, B43_PHY_OFDM(0x8B), 0x005E);
 		b43_phy_write(dev, B43_PHY_ANTWRSETT,
 			(b43_phy_read(dev, B43_PHY_ANTWRSETT) & ~0x00FF) | 0x001E);
+	b43_phy_maskset(dev, B43_PHY_CCKSHIFTBITS_WA, 0x00FF, 0x5700);
+	b43_phy_maskset(dev, B43_PHY_OFDM(0x1A), ~0x007F, 0x000F);
+	b43_phy_maskset(dev, B43_PHY_OFDM(0x1A), ~0x3F80, 0x2B80);
+	b43_phy_maskset(dev, B43_PHY_ANTWRSETT, 0xF0FF, 0x0300);
+	b43_radio_set(dev, 0x7A, 0x0008);
+	b43_phy_maskset(dev, B43_PHY_N1P1GAIN, ~0x000F, 0x0008);
+	b43_phy_maskset(dev, B43_PHY_P1P2GAIN, ~0x0F00, 0x0600);
+	b43_phy_maskset(dev, B43_PHY_N1N2GAIN, ~0x0F00, 0x0700);
+	b43_phy_maskset(dev, B43_PHY_N1P1GAIN, ~0x0F00, 0x0100);
+	if (phy->rev == 1) {
+		b43_phy_maskset(dev, B43_PHY_N1N2GAIN, ~0x000F, 0x0007);
+	}
+	b43_phy_maskset(dev, B43_PHY_OFDM(0x88), ~0x00FF, 0x001C);
+	b43_phy_maskset(dev, B43_PHY_OFDM(0x88), ~0x3F00, 0x0200);
+	b43_phy_maskset(dev, B43_PHY_OFDM(0x96), ~0x00FF, 0x001C);
+	b43_phy_maskset(dev, B43_PHY_OFDM(0x89), ~0x00FF, 0x0020);
+	b43_phy_maskset(dev, B43_PHY_OFDM(0x89), ~0x3F00, 0x0200);
+	b43_phy_maskset(dev, B43_PHY_OFDM(0x82), ~0x00FF, 0x002E);
+	b43_phy_maskset(dev, B43_PHY_OFDM(0x96), 0x00FF, 0x1A00);
+	b43_phy_maskset(dev, B43_PHY_OFDM(0x81), ~0x00FF, 0x0028);
+	b43_phy_maskset(dev, B43_PHY_OFDM(0x81), 0x00FF, 0x2C00);
+	if (phy->rev == 1) {
+		b43_phy_write(dev, B43_PHY_PEAK_COUNT, 0x092B);
+		b43_phy_maskset(dev, B43_PHY_OFDM(0x1B), ~0x001E, 0x0002);
+	} else {
+		b43_phy_mask(dev, B43_PHY_OFDM(0x1B), ~0x001E);
+		b43_phy_write(dev, B43_PHY_OFDM(0x1F), 0x287A);
+		b43_phy_maskset(dev, B43_PHY_LPFGAINCTL, ~0x000F, 0x0004);
+		if (phy->rev >= 6) {
+			b43_phy_write(dev, B43_PHY_OFDM(0x22), 0x287A);
+			b43_phy_maskset(dev, B43_PHY_LPFGAINCTL, 0x0FFF, 0x3000);
+		}
+	}
+	b43_phy_maskset(dev, B43_PHY_DIVSRCHIDX, 0x8080, 0x7874);
+	b43_phy_write(dev, B43_PHY_OFDM(0x8E), 0x1C00);
+	if (phy->rev == 1) {
+		b43_phy_maskset(dev, B43_PHY_DIVP1P2GAIN, ~0x0F00, 0x0600);
+		b43_phy_write(dev, B43_PHY_OFDM(0x8B), 0x005E);
+		b43_phy_maskset(dev, B43_PHY_ANTWRSETT, ~0x00FF, 0x001E);
 		b43_phy_write(dev, B43_PHY_OFDM(0x8D), 0x0002);
 		b43_ofdmtab_write16(dev, B43_OFDMTAB_AGC3_R1, 0, 0);
 		b43_ofdmtab_write16(dev, B43_OFDMTAB_AGC3_R1, 1, 7);
@@ -473,6 +524,8 @@ static void b43_wa_altagc(struct b43_wldev *dev)
 			b43_phy_read(dev, B43_PHY_OFDM(0x26)) & ~0x0003);
 		b43_phy_write(dev, B43_PHY_OFDM(0x26),
 			b43_phy_read(dev, B43_PHY_OFDM(0x26)) & ~0x1000);
+		b43_phy_mask(dev, B43_PHY_OFDM(0x26), ~0x0003);
+		b43_phy_mask(dev, B43_PHY_OFDM(0x26), ~0x1000);
 	}
 	b43_phy_read(dev, B43_PHY_VERSION_OFDM); /* Dummy read */
 }
@@ -480,6 +533,7 @@ static void b43_wa_altagc(struct b43_wldev *dev)
 static void b43_wa_tr_ltov(struct b43_wldev *dev) /* TR Lookup Table Original Values */
 {
 	b43_gtab_write(dev, B43_GTAB_ORIGTR, 0, 0xC480);
+	b43_gtab_write(dev, B43_GTAB_ORIGTR, 0, 0x7654);
 }
 
 static void b43_wa_cpll_nonpilot(struct b43_wldev *dev)
@@ -501,12 +555,17 @@ static void b43_wa_boards_a(struct b43_wldev *dev)
 	if (bus->boardinfo.vendor == SSB_BOARDVENDOR_BCM &&
 	    bus->boardinfo.type == SSB_BOARD_BU4306 &&
 	    bus->boardinfo.rev < 0x30) {
+	if (dev->dev->board_vendor == SSB_BOARDVENDOR_BCM &&
+	    dev->dev->board_type == SSB_BOARD_BU4306 &&
+	    dev->dev->board_rev < 0x30) {
 		b43_phy_write(dev, 0x0010, 0xE000);
 		b43_phy_write(dev, 0x0013, 0x0140);
 		b43_phy_write(dev, 0x0014, 0x0280);
 	} else {
 		if (bus->boardinfo.type == SSB_BOARD_MP4318 &&
 		    bus->boardinfo.rev < 0x20) {
+		if (dev->dev->board_type == SSB_BOARD_MP4318 &&
+		    dev->dev->board_rev < 0x20) {
 			b43_phy_write(dev, 0x0013, 0x0210);
 			b43_phy_write(dev, 0x0014, 0x0840);
 		} else {
@@ -530,6 +589,12 @@ static void b43_wa_boards_g(struct b43_wldev *dev)
 	if (bus->boardinfo.vendor != SSB_BOARDVENDOR_BCM ||
 	    bus->boardinfo.type != SSB_BOARD_BU4306 ||
 	    bus->boardinfo.rev != 0x17) {
+	struct ssb_sprom *sprom = dev->dev->bus_sprom;
+	struct b43_phy *phy = &dev->phy;
+
+	if (dev->dev->board_vendor != SSB_BOARDVENDOR_BCM ||
+	    dev->dev->board_type != SSB_BOARD_BU4306 ||
+	    dev->dev->board_rev != 0x17) {
 		if (phy->rev < 2) {
 			b43_ofdmtab_write16(dev, B43_OFDMTAB_GAINX_R1, 1, 0x0002);
 			b43_ofdmtab_write16(dev, B43_OFDMTAB_GAINX_R1, 2, 0x0001);
@@ -540,6 +605,9 @@ static void b43_wa_boards_g(struct b43_wldev *dev)
 			    (phy->rev >= 7)) {
 				b43_phy_write(dev, B43_PHY_EXTG(0x11),
 					b43_phy_read(dev, B43_PHY_EXTG(0x11)) & 0xF7FF);
+			if ((sprom->boardflags_lo & B43_BFL_EXTLNA) &&
+			    (phy->rev >= 7)) {
+				b43_phy_mask(dev, B43_PHY_EXTG(0x11), 0xF7FF);
 				b43_ofdmtab_write16(dev, B43_OFDMTAB_GAINX, 0x0020, 0x0001);
 				b43_ofdmtab_write16(dev, B43_OFDMTAB_GAINX, 0x0021, 0x0001);
 				b43_ofdmtab_write16(dev, B43_OFDMTAB_GAINX, 0x0022, 0x0001);
@@ -550,6 +618,7 @@ static void b43_wa_boards_g(struct b43_wldev *dev)
 		}
 	}
 	if (bus->sprom.boardflags_lo & B43_BFL_FEM) {
+	if (sprom->boardflags_lo & B43_BFL_FEM) {
 		b43_phy_write(dev, B43_PHY_GTABCTL, 0x3120);
 		b43_phy_write(dev, B43_PHY_GTABDATA, 0xC480);
 	}
@@ -668,6 +737,7 @@ void b43_wa_all(struct b43_wldev *dev)
 		}
 		b43_wa_boards_g(dev);
 	} else { /* No N PHY support so far */
+	} else { /* No N PHY support so far, LP PHY is in phy_lp.c */
 		B43_WARN_ON(1);
 	}
 

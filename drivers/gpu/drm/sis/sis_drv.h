@@ -28,6 +28,8 @@
 #ifndef _SIS_DRV_H_
 #define _SIS_DRV_H_
 
+#include <drm/drm_legacy.h>
+
 /* General customization:
  */
 
@@ -50,6 +52,12 @@ enum sis_family {
 #define SIS_BASE (dev_priv->mmio)
 #define SIS_READ(reg)         DRM_READ32(SIS_BASE, reg);
 #define SIS_WRITE(reg, val)   DRM_WRITE32(SIS_BASE, reg, val);
+#include <drm/drm_mm.h>
+
+
+#define SIS_BASE (dev_priv->mmio)
+#define SIS_READ(reg)         DRM_READ32(SIS_BASE, reg)
+#define SIS_WRITE(reg, val)   DRM_WRITE32(SIS_BASE, reg, val)
 
 typedef struct drm_sis_private {
 	drm_local_map_t *mmio;
@@ -62,12 +70,23 @@ typedef struct drm_sis_private {
 	unsigned long agp_offset;
 } drm_sis_private_t;
 
+	struct drm_mm vram_mm;
+	struct drm_mm agp_mm;
+	/** Mapping of userspace keys to mm objects */
+	struct idr object_idr;
+} drm_sis_private_t;
+
+struct sis_file_private {
+	struct list_head obj_list;
+};
+
 extern int sis_idle(struct drm_device *dev);
 extern void sis_reclaim_buffers_locked(struct drm_device *dev,
 				       struct drm_file *file_priv);
 extern void sis_lastclose(struct drm_device *dev);
 
 extern struct drm_ioctl_desc sis_ioctls[];
+extern const struct drm_ioctl_desc sis_ioctls[];
 extern int sis_max_ioctl;
 
 #endif

@@ -116,6 +116,10 @@ static int __init pc110pad_init(void)
 		pci_dev_put(dev);
 		return -ENODEV;
 	}
+	int err;
+
+	if (!no_pci_devices())
+		return -ENODEV;
 
 	if (!request_region(pc110pad_io, 4, "pc110pad")) {
 		printk(KERN_ERR "pc110pad: I/O area %#x-%#x in use.\n",
@@ -151,6 +155,8 @@ static int __init pc110pad_init(void)
 
 	pc110pad_dev->absmax[ABS_X] = 0x1ff;
 	pc110pad_dev->absmax[ABS_Y] = 0x0ff;
+	input_abs_set_max(pc110pad_dev, ABS_X, 0x1ff);
+	input_abs_set_max(pc110pad_dev, ABS_Y, 0x0ff);
 
 	pc110pad_dev->open = pc110pad_open;
 	pc110pad_dev->close = pc110pad_close;

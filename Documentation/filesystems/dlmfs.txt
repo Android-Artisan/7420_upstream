@@ -1,5 +1,4 @@
 dlmfs
-==================
 A minimal DLM userspace interface implemented via a virtual file
 system.
 
@@ -7,12 +6,13 @@ dlmfs is built with OCFS2 as it requires most of its infrastructure.
 
 Project web page:    http://oss.oracle.com/projects/ocfs2
 Tools web page:      http://oss.oracle.com/projects/ocfs2-tools
+Project web page:    http://ocfs2.wiki.kernel.org
+Tools web page:      https://github.com/markfasheh/ocfs2-tools
 OCFS2 mailing lists: http://oss.oracle.com/projects/ocfs2/mailman/
 
 All code copyright 2005 Oracle except when otherwise noted.
 
 CREDITS
-=======
 
 Some code taken from ramfs which is Copyright (C) 2000 Linus Torvalds
 and Transmeta Corp.
@@ -20,12 +20,10 @@ and Transmeta Corp.
 Mark Fasheh <mark.fasheh@oracle.com>
 
 Caveats
-=======
 - Right now it only works with the OCFS2 DLM, though support for other
   DLM implementations should not be a major issue.
 
 Mount options
-=============
 None
 
 Usage
@@ -48,6 +46,7 @@ your lockspace can access. The easiest way to do this is via
 ocfs2_hb_ctl (distributed with ocfs2-tools). Right now it requires
 that an OCFS2 file system be in place so that it can automatically
 find it's heartbeat area, though it will eventually support heartbeat
+find its heartbeat area, though it will eventually support heartbeat
 against raw disks.
 
 Please see the ocfs2_hb_ctl and mkfs.ocfs2 manual pages distributed
@@ -57,7 +56,6 @@ Once you're heartbeating, DLM lock 'domains' can be easily created /
 destroyed and locks within them accessed.
 
 Locking
-=======
 
 Users may access dlmfs via standard file system calls, or they can use
 'libo2dlm' (distributed with ocfs2-tools) which abstracts the file
@@ -124,7 +122,6 @@ Once written, an LVB will be visible to other nodes who obtain Read
 Only or higher level locks on the resource.
 
 See Also
-========
 http://opendlm.sourceforge.net/cvsmirror/opendlm/docs/dlmbook_final.pdf
 
 For more information on the VMS distributed locking API.

@@ -7,6 +7,9 @@
 #include <linux/dma-mapping.h>
 #include <asm/scatterlist.h>
 #include <asm/machvec.h>
+#include <linux/scatterlist.h>
+#include <asm/machvec.h>
+#include <asm-generic/pci-bridge.h>
 
 /*
  * The following structure is used to manage multiple PCI busses.
@@ -223,6 +226,11 @@ static inline void pci_dma_burst_advice(struct pci_dev *pdev,
 	*strat = PCI_DMA_BURST_BOUNDARY;
 	*strategy_parameter = cacheline_size;
 }
+#ifdef CONFIG_PCI
+
+/* implement the pci_ DMA API in terms of the generic device dma_ one */
+#include <asm-generic/pci-dma-compat.h>
+
 #endif
 
 /* TODO: integrate with include/asm-generic/pci.h ? */
@@ -272,5 +280,19 @@ struct pci_dev *alpha_gendev_to_pci(struct device *dev);
 #define IOBASE_FROM_HOSE	0x10000
 
 extern struct pci_dev *isa_bridge;
+
+extern int pci_legacy_read(struct pci_bus *bus, loff_t port, u32 *val,
+			   size_t count);
+extern int pci_legacy_write(struct pci_bus *bus, loff_t port, u32 val,
+			    size_t count);
+extern int pci_mmap_legacy_page_range(struct pci_bus *bus,
+				      struct vm_area_struct *vma,
+				      enum pci_mmap_state mmap_state);
+extern void pci_adjust_legacy_attr(struct pci_bus *bus,
+				   enum pci_mmap_state mmap_type);
+#define HAVE_PCI_LEGACY	1
+
+extern int pci_create_resource_files(struct pci_dev *dev);
+extern void pci_remove_resource_files(struct pci_dev *dev);
 
 #endif /* __ALPHA_PCI_H */

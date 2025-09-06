@@ -13,6 +13,7 @@
  *  You should have received a copy of the GNU General Public License
  *  along with this program; if not, write to the Free Software
  *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ *  along with this program; if not, see <http://www.gnu.org/licenses/>.
  *
  */
 
@@ -35,12 +36,14 @@ struct rfmon_header {
 	u8 rssi;
 	u8 padding[3];
 } __attribute__ ((packed));
+} __packed;
 
 struct rx_annex_header {
 	u8 addr1[ETH_ALEN];
 	u8 addr2[ETH_ALEN];
 	struct rfmon_header rfmon;
 } __attribute__ ((packed));
+} __packed;
 
 /* wlan-ng (and hopefully others) AVS header, version one.  Fields in
  * network byte order. */
@@ -65,6 +68,7 @@ struct avs_80211_1_header {
 
 void islpci_eth_cleanup_transmit(islpci_private *, isl38xx_control_block *);
 int islpci_eth_transmit(struct sk_buff *, struct net_device *);
+netdev_tx_t islpci_eth_transmit(struct sk_buff *, struct net_device *);
 int islpci_eth_receive(islpci_private *);
 void islpci_eth_tx_timeout(struct net_device *);
 void islpci_do_reset_and_wake(struct work_struct *);

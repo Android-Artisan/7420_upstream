@@ -12,6 +12,7 @@
  * the CPU.
  */
 #define ARCH_KMALLOC_MINALIGN	L1_CACHE_BYTES
+#define ARCH_DMA_MINALIGN	L1_CACHE_BYTES
 
 #ifndef __ASSEMBLER__
 struct cache_info {

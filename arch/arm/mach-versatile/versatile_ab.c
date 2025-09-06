@@ -26,6 +26,10 @@
 
 #include <mach/hardware.h>
 #include <asm/io.h>
+#include <linux/amba/bus.h>
+#include <linux/io.h>
+
+#include <mach/hardware.h>
 #include <asm/irq.h>
 #include <asm/mach-types.h>
 
@@ -42,4 +46,11 @@ MACHINE_START(VERSATILE_AB, "ARM-Versatile AB")
 	.init_irq	= versatile_init_irq,
 	.timer		= &versatile_timer,
 	.init_machine	= versatile_init,
+	.atag_offset	= 0x100,
+	.map_io		= versatile_map_io,
+	.init_early	= versatile_init_early,
+	.init_irq	= versatile_init_irq,
+	.init_time	= versatile_timer_init,
+	.init_machine	= versatile_init,
+	.restart	= versatile_restart,
 MACHINE_END

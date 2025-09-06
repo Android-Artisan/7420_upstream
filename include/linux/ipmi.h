@@ -221,6 +221,17 @@ struct kernel_ipmi_msg {
 #include <linux/module.h>
 #include <linux/device.h>
 #include <linux/proc_fs.h>
+#ifndef __LINUX_IPMI_H
+#define __LINUX_IPMI_H
+
+#include <uapi/linux/ipmi.h>
+
+#include <linux/list.h>
+#include <linux/proc_fs.h>
+#include <linux/acpi.h> /* For acpi_handle */
+
+struct module;
+struct device;
 
 /* Opaque type for a IPMI message user.  One of these is needed to
    send and receive messages. */
@@ -258,6 +269,7 @@ struct ipmi_recv_msg {
 
 	/* Place-holder for the data, don't make any assumptions about
 	   the size or existance of this, since it may change. */
+	   the size or existence of this, since it may change. */
 	unsigned char   msg_data[IPMI_MAX_MSG_LENGTH];
 };
 
@@ -419,6 +431,7 @@ int ipmi_set_maintenance_mode(ipmi_user_t user, int mode);
  * have been queued while no one was waiting for events.
  */
 int ipmi_set_gets_events(ipmi_user_t user, int val);
+int ipmi_set_gets_events(ipmi_user_t user, bool val);
 
 /*
  * Called when a new SMI is registered.  This will also be called on
@@ -691,5 +704,45 @@ struct ipmi_timing_parms {
  */
 #define IPMICTL_GET_MAINTENANCE_MODE_CMD	_IOR(IPMI_IOC_MAGIC, 30, int)
 #define IPMICTL_SET_MAINTENANCE_MODE_CMD	_IOW(IPMI_IOC_MAGIC, 31, int)
+/*
+ * How did the IPMI driver find out about the device?
+ */
+enum ipmi_addr_src {
+	SI_INVALID = 0, SI_HOTMOD, SI_HARDCODED, SI_SPMI, SI_ACPI, SI_SMBIOS,
+	SI_PCI,	SI_DEVICETREE, SI_DEFAULT
+};
+const char *ipmi_addr_src_to_str(enum ipmi_addr_src src);
+
+union ipmi_smi_info_union {
+#ifdef CONFIG_ACPI
+	/*
+	 * the acpi_info element is defined for the SI_ACPI
+	 * address type
+	 */
+	struct {
+		acpi_handle acpi_handle;
+	} acpi_info;
+#endif
+};
+
+struct ipmi_smi_info {
+	enum ipmi_addr_src addr_src;
+
+	/*
+	 * Base device for the interface.  Don't forget to put this when
+	 * you are done.
+	 */
+	struct device *dev;
+
+	/*
+	 * The addr_info provides more detailed info for some IPMI
+	 * devices, depending on the addr_src.  Currently only SI_ACPI
+	 * info is provided.
+	 */
+	union ipmi_smi_info_union addr_info;
+};
+
+/* This is to get the private info of ipmi_smi_t */
+extern int ipmi_get_smi_info(int if_num, struct ipmi_smi_info *data);
 
 #endif /* __LINUX_IPMI_H */

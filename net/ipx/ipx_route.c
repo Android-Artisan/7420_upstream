@@ -9,6 +9,7 @@
 
 #include <linux/list.h>
 #include <linux/route.h>
+#include <linux/slab.h>
 #include <linux/spinlock.h>
 
 #include <net/ipx.h>
@@ -169,6 +170,7 @@ int ipxrtr_route_skb(struct sk_buff *skb)
  */
 int ipxrtr_route_packet(struct sock *sk, struct sockaddr_ipx *usipx,
 			struct iovec *iov, size_t len, int noblock)
+			struct msghdr *msg, size_t len, int noblock)
 {
 	struct sk_buff *skb;
 	struct ipx_sock *ipxs = ipx_sk(sk);
@@ -233,6 +235,7 @@ int ipxrtr_route_packet(struct sock *sk, struct sockaddr_ipx *usipx,
 	ipx->ipx_dest.sock		= usipx->sipx_port;
 
 	rc = memcpy_fromiovec(skb_put(skb, len), iov, len);
+	rc = memcpy_from_msg(skb_put(skb, len), msg, len);
 	if (rc) {
 		kfree_skb(skb);
 		goto out_put;
@@ -240,6 +243,8 @@ int ipxrtr_route_packet(struct sock *sk, struct sockaddr_ipx *usipx,
 
 	/* Apply checksum. Not allowed on 802.3 links. */
 	if (sk->sk_no_check || intrfc->if_dlink_type == htons(IPX_FRAME_8023))
+	if (sk->sk_no_check_tx ||
+	    intrfc->if_dlink_type == htons(IPX_FRAME_8023))
 		ipx->ipx_checksum = htons(0xFFFF);
 	else
 		ipx->ipx_checksum = ipx_cksum(ipx, len + sizeof(struct ipxhdr));

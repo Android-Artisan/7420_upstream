@@ -2,6 +2,7 @@
  * i2c-amd756-s4882.c - i2c-amd756 extras for the Tyan S4882 motherboard
  *
  * Copyright (C) 2004, 2008 Jean Delvare <khali@linux-fr.org>
+ * Copyright (C) 2004, 2008 Jean Delvare <jdelvare@suse.de>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -174,6 +175,7 @@ static int __init amd756_s4882_init(void)
 		dev_err(&amd756_smbus.dev, "Physical bus removal failed\n");
 		goto ERROR0;
 	}
+	i2c_del_adapter(&amd756_smbus);
 
 	printk(KERN_INFO "Enabling SMBus multiplexing for Tyan S4882\n");
 	/* Define the 5 virtual adapters and algorithms structures */
@@ -199,6 +201,8 @@ static int __init amd756_s4882_init(void)
 		s4882_adapter[i] = amd756_smbus;
 		sprintf(s4882_adapter[i].name,
 			"SMBus 8111 adapter (CPU%d)", i-1);
+		snprintf(s4882_adapter[i].name, sizeof(s4882_adapter[i].name),
+			 "SMBus 8111 adapter (CPU%d)", i-1);
 		s4882_adapter[i].algo = s4882_algo+i;
 		s4882_adapter[i].dev.parent = amd756_smbus.dev.parent;
 	}
@@ -255,6 +259,7 @@ static void __exit amd756_s4882_exit(void)
 }
 
 MODULE_AUTHOR("Jean Delvare <khali@linux-fr.org>");
+MODULE_AUTHOR("Jean Delvare <jdelvare@suse.de>");
 MODULE_DESCRIPTION("S4882 SMBus multiplexing");
 MODULE_LICENSE("GPL");
 

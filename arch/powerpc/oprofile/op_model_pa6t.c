@@ -133,6 +133,7 @@ static int pa6t_reg_setup(struct op_counter_config *ctr,
 		/* counters are 40 bit. Move to cputable at some point? */
 		reset_value[pmc] = (0x1UL << 39) - ctr[pmc].count;
 		pr_debug("reset_value for pmc%u inited to 0x%lx\n",
+		pr_debug("reset_value for pmc%u inited to 0x%llx\n",
 				 pmc, reset_value[pmc]);
 	}
 
@@ -178,6 +179,7 @@ static int pa6t_start(struct op_counter_config *ctr)
 	oprofile_running = 1;
 
 	pr_debug("start on cpu %d, mmcr0 %lx\n", smp_processor_id(), mmcr0);
+	pr_debug("start on cpu %d, mmcr0 %llx\n", smp_processor_id(), mmcr0);
 
 	return 0;
 }
@@ -194,6 +196,7 @@ static void pa6t_stop(void)
 	oprofile_running = 0;
 
 	pr_debug("stop on cpu %d, mmcr0 %lx\n", smp_processor_id(), mmcr0);
+	pr_debug("stop on cpu %d, mmcr0 %llx\n", smp_processor_id(), mmcr0);
 }
 
 /* handle the perfmon overflow vector */

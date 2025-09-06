@@ -238,3 +238,4 @@ static void __exit magellan_exit(void)
 
 module_init(magellan_init);
 module_exit(magellan_exit);
+module_serio_driver(magellan_drv);

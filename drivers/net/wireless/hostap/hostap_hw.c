@@ -38,6 +38,7 @@
 #include <linux/netdevice.h>
 #include <linux/etherdevice.h>
 #include <linux/proc_fs.h>
+#include <linux/seq_file.h>
 #include <linux/if_arp.h>
 #include <linux/delay.h>
 #include <linux/random.h>
@@ -48,6 +49,7 @@
 #include <net/iw_handler.h>
 #include <net/ieee80211.h>
 #include <net/ieee80211_crypt.h>
+#include <net/lib80211.h>
 #include <asm/irq.h>
 
 #include "hostap_80211.h"
@@ -132,6 +134,7 @@ static void prism2_check_sta_fw_version(local_info_t *local);
 /* hostap_download.c */
 static int prism2_download_aux_dump(struct net_device *dev,
 				    unsigned int addr, int len, u8 *buf);
+static const struct file_operations prism2_download_aux_dump_proc_fops;
 static u8 * prism2_read_pda(struct net_device *dev);
 static int prism2_download(local_info_t *local,
 			   struct prism2_download_param *param);
@@ -353,6 +356,9 @@ static int hfa384x_cmd(struct net_device *dev, u16 cmd, u16 param0,
 		       dev->name);
 		return -ENOMEM;
 	}
+	if (entry == NULL)
+		return -ENOMEM;
+
 	atomic_set(&entry->usecnt, 1);
 	entry->type = CMD_SLEEP;
 	entry->cmd = cmd;
@@ -521,6 +527,9 @@ static int hfa384x_cmd_callback(struct net_device *dev, u16 cmd, u16 param0,
 		       "failed\n", dev->name);
 		return -ENOMEM;
 	}
+	if (entry == NULL)
+		return -ENOMEM;
+
 	atomic_set(&entry->usecnt, 1);
 	entry->type = CMD_CALLBACK;
 	entry->cmd = cmd;
@@ -841,25 +850,30 @@ static int hfa384x_get_rid(struct net_device *dev, u16 rid, void *buf, int len,
 	spin_lock_bh(&local->baplock);
 
 	res = hfa384x_setup_bap(dev, BAP0, rid, 0);
-	if (!res)
-		res = hfa384x_from_bap(dev, BAP0, &rec, sizeof(rec));
+	if (res)
+		goto unlock;
+
+	res = hfa384x_from_bap(dev, BAP0, &rec, sizeof(rec));
+	if (res)
+		goto unlock;
 
 	if (le16_to_cpu(rec.len) == 0) {
 		/* RID not available */
 		res = -ENODATA;
+		goto unlock;
 	}
 
 	rlen = (le16_to_cpu(rec.len) - 1) * 2;
-	if (!res && exact_len && rlen != len) {
+	if (exact_len && rlen != len) {
 		printk(KERN_DEBUG "%s: hfa384x_get_rid - RID len mismatch: "
 		       "rid=0x%04x, len=%d (expected %d)\n",
 		       dev->name, rid, rlen, len);
 		res = -ENODATA;
 	}
 
-	if (!res)
-		res = hfa384x_from_bap(dev, BAP0, buf, len);
+	res = hfa384x_from_bap(dev, BAP0, buf, len);
 
+unlock:
 	spin_unlock_bh(&local->baplock);
 	mutex_unlock(&local->rid_bap_mtx);
 
@@ -1425,12 +1439,14 @@ static int prism2_hw_init2(struct net_device *dev, int initial)
 
 		if (hfa384x_get_rid(dev, HFA384X_RID_CNFOWNMACADDR,
 				    &dev->dev_addr, 6, 1) < 0) {
+				    dev->dev_addr, 6, 1) < 0) {
 			printk("%s: could not get own MAC address\n",
 			       dev->name);
 		}
 		list_for_each(ptr, &local->hostap_interfaces) {
 			iface = list_entry(ptr, struct hostap_interface, list);
 			memcpy(iface->dev->dev_addr, dev->dev_addr, ETH_ALEN);
+			eth_hw_addr_inherit(iface->dev, dev);
 		}
 	} else if (local->fw_ap)
 		prism2_check_sta_fw_version(local);
@@ -1472,6 +1488,7 @@ static int prism2_hw_enable(struct net_device *dev, int initial)
 	 * here just in case */
 	if (initial && prism2_reset_port(dev)) {
 		printk("%s: MAC port 0 reseting failed\n", dev->name);
+		printk("%s: MAC port 0 resetting failed\n", dev->name);
 		return 1;
 	}
 
@@ -1563,6 +1580,7 @@ static void prism2_hw_reset(struct net_device *dev)
 
 	/* do not reset card more than once per second to avoid ending up in a
 	 * busy loop reseting the card */
+	 * busy loop resetting the card */
 	if (time_before_eq(jiffies, last_reset + HZ))
 		return;
 	last_reset = jiffies;
@@ -1684,6 +1702,7 @@ static int prism2_get_txfid_idx(local_info_t *local)
 	PDEBUG(DEBUG_EXTRA2, "prism2_get_txfid_idx: no room in txfid buf: "
 	       "packet dropped\n");
 	local->stats.tx_dropped++;
+	local->dev->stats.tx_dropped++;
 
 	return -1;
 }
@@ -1793,6 +1812,9 @@ static int prism2_transmit(struct net_device *dev, int idx)
 		       "failed (res=%d)\n", dev->name, res);
 		stats = hostap_get_stats(dev);
 		stats->tx_dropped++;
+		printk(KERN_DEBUG "%s: prism2_transmit: CMDCODE_TRANSMIT "
+		       "failed (res=%d)\n", dev->name, res);
+		dev->stats.tx_dropped++;
 		netif_wake_queue(dev);
 		return -1;
 	}
@@ -1842,6 +1864,8 @@ static int prism2_tx_80211(struct sk_buff *skb, struct net_device *dev)
  	fc = le16_to_cpu(txdesc.frame_control);
 	if (WLAN_FC_GET_TYPE(fc) == IEEE80211_FTYPE_DATA &&
 	    (fc & IEEE80211_FCTL_FROMDS) && (fc & IEEE80211_FCTL_TODS) &&
+	if (ieee80211_is_data(txdesc.frame_control) &&
+	    ieee80211_has_a4(txdesc.frame_control) &&
 	    skb->len >= 30) {
 		/* Addr4 */
 		skb_copy_from_linear_data_offset(skb, hdr_len, txdesc.addr4,
@@ -1900,6 +1924,7 @@ fail:
  * register has changed values between consecutive reads for an unknown reason.
  * This should really not happen, so more debugging is needed. This test
  * version is a big slower, but it will detect most of such register changes
+ * version is a bit slower, but it will detect most of such register changes
  * and will try to get the correct fid eventually. */
 #define EXTRA_FID_READ_TESTS
 
@@ -2033,6 +2058,7 @@ static void prism2_rx(local_info_t *local)
 
  rx_dropped:
 	stats->rx_dropped++;
+	dev->stats.rx_dropped++;
 	if (skb)
 		dev_kfree_skb(skb);
 	goto rx_exit;
@@ -2083,6 +2109,7 @@ static void hostap_rx_skb(local_info_t *local, struct sk_buff *skb)
 
 	/* Convert Prism2 RX structure into IEEE 802.11 header */
 	hdrlen = hostap_80211_get_hdrlen(le16_to_cpu(rxdesc->frame_control));
+	hdrlen = hostap_80211_get_hdrlen(rxdesc->frame_control);
 	if (hdrlen > rx_hdrlen)
 		hdrlen = rx_hdrlen;
 
@@ -2185,6 +2212,7 @@ static void hostap_tx_callback(local_info_t *local,
 
 	/* Make sure that frame was from us. */
 	if (memcmp(txdesc->addr2, local->dev->dev_addr, ETH_ALEN)) {
+	if (!ether_addr_equal(txdesc->addr2, local->dev->dev_addr)) {
 		printk(KERN_DEBUG "%s: TX callback - foreign frame\n",
 		       local->dev->name);
 		return;
@@ -2205,6 +2233,7 @@ static void hostap_tx_callback(local_info_t *local,
 	}
 
 	hdrlen = hostap_80211_get_hdrlen(le16_to_cpu(txdesc->frame_control));
+	hdrlen = hostap_80211_get_hdrlen(txdesc->frame_control);
 	len = le16_to_cpu(txdesc->data_len);
 	skb = dev_alloc_skb(hdrlen + len);
 	if (skb == NULL) {
@@ -2317,6 +2346,7 @@ static void hostap_sta_tx_exc_tasklet(unsigned long data)
 			 */
 			u16 fc = le16_to_cpu(txdesc->frame_control);
 			int hdrlen = hostap_80211_get_hdrlen(fc);
+			int hdrlen = hostap_80211_get_hdrlen(txdesc->frame_control);
 			memmove(skb_pull(skb, sizeof(*txdesc) - hdrlen),
 				&txdesc->frame_control, hdrlen);
 
@@ -2342,6 +2372,9 @@ static void prism2_txexc(local_info_t *local)
 
 	show_dump = local->frame_dump & PRISM2_DUMP_TXEXC_HDR;
 	local->stats.tx_errors++;
+
+	show_dump = local->frame_dump & PRISM2_DUMP_TXEXC_HDR;
+	dev->stats.tx_errors++;
 
 	res = hostap_tx_compl_read(local, 1, &txdesc, &payload);
 	HFA384X_OUTW(HFA384X_EV_TXEXC, HFA384X_EVACK_OFF);
@@ -2407,6 +2440,15 @@ static void prism2_txexc(local_info_t *local)
 	PDEBUG(DEBUG_EXTRA, "   A1=%s A2=%s A3=%s A4=%s\n",
 	       print_mac(mac, txdesc.addr1), print_mac(mac2, txdesc.addr2),
 	       print_mac(mac3, txdesc.addr3), print_mac(mac4, txdesc.addr4));
+	       ieee80211_is_mgmt(txdesc.frame_control) ? "Mgmt" : "",
+	       ieee80211_is_ctl(txdesc.frame_control) ? "Ctrl" : "",
+	       ieee80211_is_data(txdesc.frame_control) ? "Data" : "",
+	       (fc & IEEE80211_FCTL_STYPE) >> 4,
+	       ieee80211_has_tods(txdesc.frame_control) ? " ToDS" : "",
+	       ieee80211_has_fromds(txdesc.frame_control) ? " FromDS" : "");
+	PDEBUG(DEBUG_EXTRA, "   A1=%pM A2=%pM A3=%pM A4=%pM\n",
+	       txdesc.addr1, txdesc.addr2,
+	       txdesc.addr3, txdesc.addr4);
 }
 
 
@@ -2630,6 +2672,18 @@ static irqreturn_t prism2_interrupt(int irq, void *dev_id)
 
 	iface = netdev_priv(dev);
 	local = iface->local;
+
+	/* Detect early interrupt before driver is fully configured */
+	spin_lock(&local->irq_init_lock);
+	if (!dev->base_addr) {
+		if (net_ratelimit()) {
+			printk(KERN_DEBUG "%s: Interrupt, but dev not configured\n",
+			       dev->name);
+		}
+		spin_unlock(&local->irq_init_lock);
+		return IRQ_HANDLED;
+	}
+	spin_unlock(&local->irq_init_lock);
 
 	prism2_io_debug_add(dev, PRISM2_IO_DEBUG_CMD_INTERRUPT, 0, 0);
 
@@ -2948,6 +3002,12 @@ static int prism2_registers_proc_read(char *page, char **start, off_t off,
 
 #define SHOW_REG(n) \
 p += sprintf(p, #n "=%04x\n", hfa384x_read_reg(local->dev, HFA384X_##n##_OFF))
+static int prism2_registers_proc_show(struct seq_file *m, void *v)
+{
+	local_info_t *local = m->private;
+
+#define SHOW_REG(n) \
+  seq_printf(m, #n "=%04x\n", hfa384x_read_reg(local->dev, HFA384X_##n##_OFF))
 
 	SHOW_REG(CMD);
 	SHOW_REG(PARAM0);
@@ -2995,6 +3055,21 @@ p += sprintf(p, #n "=%04x\n", hfa384x_read_reg(local->dev, HFA384X_##n##_OFF))
 
 	return (p - page);
 }
+	return 0;
+}
+
+static int prism2_registers_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, prism2_registers_proc_show, PDE_DATA(inode));
+}
+
+static const struct file_operations prism2_registers_proc_fops = {
+	.open		= prism2_registers_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
 #endif /* PRISM2_NO_PROCFS_DEBUG */
 
 
@@ -3020,6 +3095,9 @@ static int prism2_set_tim(struct net_device *dev, int aid, int set)
 		       local->dev->name);
 		return -ENOMEM;
 	}
+	if (new_entry == NULL)
+		return -ENOMEM;
+
 	new_entry->aid = aid;
 	new_entry->set = set;
 
@@ -3172,6 +3250,7 @@ prism2_init_local_data(struct prism2_helper_functions *funcs, int card_idx,
 	local->func->schedule_reset = prism2_schedule_reset;
 #ifdef PRISM2_DOWNLOAD_SUPPORT
 	local->func->read_aux = prism2_download_aux_dump;
+	local->func->read_aux_fops = &prism2_download_aux_dump_proc_fops;
 	local->func->download = prism2_download;
 #endif /* PRISM2_DOWNLOAD_SUPPORT */
 	local->func->tx = prism2_tx_80211;
@@ -3187,6 +3266,7 @@ prism2_init_local_data(struct prism2_helper_functions *funcs, int card_idx,
 	spin_lock_init(&local->cmdlock);
 	spin_lock_init(&local->baplock);
 	spin_lock_init(&local->lock);
+	spin_lock_init(&local->irq_init_lock);
 	mutex_init(&local->rid_bap_mtx);
 
 	if (card_idx < 0 || card_idx >= MAX_PARM_DEVICES)
@@ -3259,6 +3339,8 @@ while (0)
 	local->crypt_deinit_timer.data = (unsigned long) local;
 	local->crypt_deinit_timer.function = prism2_crypt_deinit_handler;
 
+	lib80211_crypt_info_init(&local->crypt_info, dev->name, &local->lock);
+
 	init_timer(&local->passive_scan_timer);
 	local->passive_scan_timer.data = (unsigned long) local;
 	local->passive_scan_timer.function = hostap_passive_scan;
@@ -3321,6 +3403,8 @@ static int hostap_hw_ready(struct net_device *dev)
 #ifndef PRISM2_NO_PROCFS_DEBUG
 		create_proc_read_entry("registers", 0, local->proc,
 				       prism2_registers_proc_read, local);
+		proc_create_data("registers", 0, local->proc,
+				 &prism2_registers_proc_fops, local);
 #endif /* PRISM2_NO_PROCFS_DEBUG */
 		hostap_init_ap_proc(local);
 		return 0;
@@ -3361,6 +3445,15 @@ static void prism2_free_local_data(struct net_device *dev)
 	if (timer_pending(&local->crypt_deinit_timer))
 		del_timer(&local->crypt_deinit_timer);
 	prism2_crypt_deinit_entries(local, 1);
+	flush_work(&local->reset_queue);
+	flush_work(&local->set_multicast_list_queue);
+	flush_work(&local->set_tim_queue);
+#ifndef PRISM2_NO_STATION_MODES
+	flush_work(&local->info_queue);
+#endif
+	flush_work(&local->comms_qual_update);
+
+	lib80211_crypt_info_free(&local->crypt_info);
 
 	if (timer_pending(&local->passive_scan_timer))
 		del_timer(&local->passive_scan_timer);

@@ -1,5 +1,4 @@
 Kernel driver gl518sm
-=====================
 
 Supported chips:
   * Genesys Logic GL518SM release 0x00
@@ -10,12 +9,17 @@ Supported chips:
     Prefix: 'gl518sm'
     Addresses scanned: I2C 0x2c and 0x2d
     Datasheet: http://www.genesyslogic.com/pdf
+  * Genesys Logic GL518SM release 0x80
+    Prefix: 'gl518sm'
+    Addresses scanned: I2C 0x2c and 0x2d
+    Datasheet: http://www.genesyslogic.com/
 
 Authors:
         Frodo Looijaard <frodol@dds.nl>,
         Kyösti Mälkki <kmalkki@cc.hut.fi>
         Hong-Gunn Chew <hglinux@gunnet.org>
         Jean Delvare <khali@linux-fr.org>
+        Jean Delvare <jdelvare@suse.de>
 
 Description
 -----------

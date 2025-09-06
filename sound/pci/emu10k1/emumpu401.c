@@ -65,6 +65,9 @@ static void mpu401_clear_rx(struct snd_emu10k1 *emu, struct snd_emu10k1_midi *mp
 #ifdef CONFIG_SND_DEBUG
 	if (timeout <= 0)
 		snd_printk(KERN_ERR "cmd: clear rx timeout (status = 0x%x)\n", mpu401_read_stat(emu, mpu));
+		dev_err(emu->card->dev,
+			"cmd: clear rx timeout (status = 0x%x)\n",
+			mpu401_read_stat(emu, mpu));
 #endif
 }
 
@@ -142,6 +145,8 @@ static int snd_emu10k1_midi_cmd(struct snd_emu10k1 * emu, struct snd_emu10k1_mid
 	spin_unlock_irqrestore(&midi->input_lock, flags);
 	if (!ok) {
 		snd_printk(KERN_ERR "midi_cmd: 0x%x failed at 0x%lx (status = 0x%x, data = 0x%x)!!!\n",
+		dev_err(emu->card->dev,
+			"midi_cmd: 0x%x failed at 0x%lx (status = 0x%x, data = 0x%x)!!!\n",
 			   cmd, emu->port,
 			   mpu401_read_stat(emu, midi),
 			   mpu401_read_data(emu, midi));
@@ -158,6 +163,8 @@ static int snd_emu10k1_midi_input_open(struct snd_rawmidi_substream *substream)
 
 	emu = midi->emu;
 	snd_assert(emu, return -ENXIO);
+	if (snd_BUG_ON(!emu))
+		return -ENXIO;
 	spin_lock_irqsave(&midi->open_lock, flags);
 	midi->midi_mode |= EMU10K1_MIDI_MODE_INPUT;
 	midi->substream_input = substream;
@@ -184,6 +191,8 @@ static int snd_emu10k1_midi_output_open(struct snd_rawmidi_substream *substream)
 
 	emu = midi->emu;
 	snd_assert(emu, return -ENXIO);
+	if (snd_BUG_ON(!emu))
+		return -ENXIO;
 	spin_lock_irqsave(&midi->open_lock, flags);
 	midi->midi_mode |= EMU10K1_MIDI_MODE_OUTPUT;
 	midi->substream_output = substream;
@@ -211,6 +220,8 @@ static int snd_emu10k1_midi_input_close(struct snd_rawmidi_substream *substream)
 
 	emu = midi->emu;
 	snd_assert(emu, return -ENXIO);
+	if (snd_BUG_ON(!emu))
+		return -ENXIO;
 	spin_lock_irqsave(&midi->open_lock, flags);
 	snd_emu10k1_intr_disable(emu, midi->rx_enable);
 	midi->midi_mode &= ~EMU10K1_MIDI_MODE_INPUT;
@@ -233,6 +244,8 @@ static int snd_emu10k1_midi_output_close(struct snd_rawmidi_substream *substream
 
 	emu = midi->emu;
 	snd_assert(emu, return -ENXIO);
+	if (snd_BUG_ON(!emu))
+		return -ENXIO;
 	spin_lock_irqsave(&midi->open_lock, flags);
 	snd_emu10k1_intr_disable(emu, midi->tx_enable);
 	midi->midi_mode &= ~EMU10K1_MIDI_MODE_OUTPUT;
@@ -252,6 +265,8 @@ static void snd_emu10k1_midi_input_trigger(struct snd_rawmidi_substream *substre
 	struct snd_emu10k1_midi *midi = (struct snd_emu10k1_midi *)substream->rmidi->private_data;
 	emu = midi->emu;
 	snd_assert(emu, return);
+	if (snd_BUG_ON(!emu))
+		return;
 
 	if (up)
 		snd_emu10k1_intr_enable(emu, midi->rx_enable);
@@ -267,6 +282,8 @@ static void snd_emu10k1_midi_output_trigger(struct snd_rawmidi_substream *substr
 
 	emu = midi->emu;
 	snd_assert(emu, return);
+	if (snd_BUG_ON(!emu))
+		return;
 
 	if (up) {
 		int max = 4;
@@ -316,11 +333,13 @@ static struct snd_rawmidi_ops snd_emu10k1_midi_input =
 static void snd_emu10k1_midi_free(struct snd_rawmidi *rmidi)
 {
 	struct snd_emu10k1_midi *midi = (struct snd_emu10k1_midi *)rmidi->private_data;
+	struct snd_emu10k1_midi *midi = rmidi->private_data;
 	midi->interrupt = NULL;
 	midi->rmidi = NULL;
 }
 
 static int __devinit emu10k1_midi_init(struct snd_emu10k1 *emu, struct snd_emu10k1_midi *midi, int device, char *name)
+static int emu10k1_midi_init(struct snd_emu10k1 *emu, struct snd_emu10k1_midi *midi, int device, char *name)
 {
 	struct snd_rawmidi *rmidi;
 	int err;
@@ -344,6 +363,7 @@ static int __devinit emu10k1_midi_init(struct snd_emu10k1 *emu, struct snd_emu10
 }
 
 int __devinit snd_emu10k1_midi(struct snd_emu10k1 *emu)
+int snd_emu10k1_midi(struct snd_emu10k1 *emu)
 {
 	struct snd_emu10k1_midi *midi = &emu->midi;
 	int err;
@@ -361,6 +381,7 @@ int __devinit snd_emu10k1_midi(struct snd_emu10k1 *emu)
 }
 
 int __devinit snd_emu10k1_audigy_midi(struct snd_emu10k1 *emu)
+int snd_emu10k1_audigy_midi(struct snd_emu10k1 *emu)
 {
 	struct snd_emu10k1_midi *midi;
 	int err;

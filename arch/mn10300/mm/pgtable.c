@@ -12,6 +12,7 @@
 #include <linux/sched.h>
 #include <linux/kernel.h>
 #include <linux/errno.h>
+#include <linux/gfp.h>
 #include <linux/mm.h>
 #include <linux/swap.h>
 #include <linux/smp.h>
@@ -60,6 +61,7 @@ void set_pmd_pfn(unsigned long vaddr, unsigned long pfn, pgprot_t flags)
 	 * (PGE mappings get flushed as well)
 	 */
 	__flush_tlb_one(vaddr);
+	local_flush_tlb_one(vaddr);
 }
 
 pte_t *pte_alloc_one_kernel(struct mm_struct *mm, unsigned long address)
@@ -81,6 +83,13 @@ struct page *pte_alloc_one(struct mm_struct *mm, unsigned long address)
 #endif
 	if (pte)
 		clear_highpage(pte);
+	if (!pte)
+		return NULL;
+	clear_highpage(pte);
+	if (!pgtable_page_ctor(pte)) {
+		__free_page(pte);
+		return NULL;
+	}
 	return pte;
 }
 
@@ -97,6 +106,7 @@ struct page *pte_alloc_one(struct mm_struct *mm, unsigned long address)
  * could be used. The locking scheme was chosen on the basis of
  * manfred's recommendations and having no core impact whatsoever.
  * -- wli
+ * -- nyc
  */
 DEFINE_SPINLOCK(pgd_lock);
 struct page *pgd_list;

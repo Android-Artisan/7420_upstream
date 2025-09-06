@@ -23,6 +23,7 @@
 #ifndef __ASSEMBLY__
 
 #include <linux/spinlock.h>
+#include <asm/cputable.h>
 
 typedef struct {
 	unsigned int base;
@@ -31,6 +32,7 @@ typedef struct {
 static inline bool dcr_map_ok_native(dcr_host_native_t host)
 {
 	return 1;
+	return true;
 }
 
 #define dcr_map_native(dev, dcr_n, dcr_c) \
@@ -47,6 +49,34 @@ unsigned int __mfdcr(int reg);
 	if (__builtin_constant_p(rn))				\
 		asm volatile("mfdcr %0," __stringify(rn)	\
 		              : "=r" (rval));			\
+/* Table based DCR accessors */
+extern void __mtdcr(unsigned int reg, unsigned int val);
+extern unsigned int __mfdcr(unsigned int reg);
+
+/* mfdcrx/mtdcrx instruction based accessors. We hand code
+ * the opcodes in order not to depend on newer binutils
+ */
+static inline unsigned int mfdcrx(unsigned int reg)
+{
+	unsigned int ret;
+	asm volatile(".long 0x7c000206 | (%0 << 21) | (%1 << 16)"
+		     : "=r" (ret) : "r" (reg));
+	return ret;
+}
+
+static inline void mtdcrx(unsigned int reg, unsigned int val)
+{
+	asm volatile(".long 0x7c000306 | (%0 << 21) | (%1 << 16)"
+		     : : "r" (val), "r" (reg));
+}
+
+#define mfdcr(rn)						\
+	({unsigned int rval;					\
+	if (__builtin_constant_p(rn) && rn < 1024)		\
+		asm volatile("mfdcr %0, %1" : "=r" (rval)	\
+			      : "n" (rn));			\
+	else if (likely(cpu_has_feature(CPU_FTR_INDEXED_DCR)))	\
+		rval = mfdcrx(rn);				\
 	else							\
 		rval = __mfdcr(rn);				\
 	rval;})
@@ -56,6 +86,11 @@ do {								\
 	if (__builtin_constant_p(rn))				\
 		asm volatile("mtdcr " __stringify(rn) ",%0"	\
 			      : : "r" (v)); 			\
+	if (__builtin_constant_p(rn) && rn < 1024)		\
+		asm volatile("mtdcr %0, %1"			\
+			      : : "n" (rn), "r" (v));		\
+	else if (likely(cpu_has_feature(CPU_FTR_INDEXED_DCR)))	\
+		mtdcrx(rn, v);					\
 	else							\
 		__mtdcr(rn, v);					\
 } while (0)
@@ -71,6 +106,13 @@ static inline unsigned __mfdcri(int base_addr, int base_data, int reg)
 	spin_lock_irqsave(&dcr_ind_lock, flags);
 	__mtdcr(base_addr, reg);
 	val = __mfdcr(base_data);
+	if (cpu_has_feature(CPU_FTR_INDEXED_DCR)) {
+		mtdcrx(base_addr, reg);
+		val = mfdcrx(base_data);
+	} else {
+		__mtdcr(base_addr, reg);
+		val = __mfdcr(base_data);
+	}
 	spin_unlock_irqrestore(&dcr_ind_lock, flags);
 	return val;
 }
@@ -83,6 +125,13 @@ static inline void __mtdcri(int base_addr, int base_data, int reg,
 	spin_lock_irqsave(&dcr_ind_lock, flags);
 	__mtdcr(base_addr, reg);
 	__mtdcr(base_data, val);
+	if (cpu_has_feature(CPU_FTR_INDEXED_DCR)) {
+		mtdcrx(base_addr, reg);
+		mtdcrx(base_data, val);
+	} else {
+		__mtdcr(base_addr, reg);
+		__mtdcr(base_data, val);
+	}
 	spin_unlock_irqrestore(&dcr_ind_lock, flags);
 }
 
@@ -96,6 +145,15 @@ static inline void __dcri_clrset(int base_addr, int base_data, int reg,
 	__mtdcr(base_addr, reg);
 	val = (__mfdcr(base_data) & ~clr) | set;
 	__mtdcr(base_data, val);
+	if (cpu_has_feature(CPU_FTR_INDEXED_DCR)) {
+		mtdcrx(base_addr, reg);
+		val = (mfdcrx(base_data) & ~clr) | set;
+		mtdcrx(base_data, val);
+	} else {
+		__mtdcr(base_addr, reg);
+		val = (__mfdcr(base_data) & ~clr) | set;
+		__mtdcr(base_data, val);
+	}
 	spin_unlock_irqrestore(&dcr_ind_lock, flags);
 }
 

@@ -1,4 +1,3 @@
-/*======================================================================
     fmvj18x_cs.c 2.8 2002/03/23
 
     A fmvj18x (and its compatibles) PCMCIA client driver
@@ -26,7 +25,6 @@
     410 Severn Ave., Suite 210
     Annapolis MD 21403
    
-======================================================================*/
 
 #define DRV_NAME	"fmvj18x_cs"
 #define DRV_VERSION	"2.9"
@@ -59,7 +57,6 @@
 #include <asm/io.h>
 #include <asm/system.h>
 
-/*====================================================================*/
 
 /* Module parameters */
 
@@ -80,7 +77,6 @@ static char *version = DRV_NAME ".c " DRV_VERSION " 2002/03/23";
 #define DEBUG(n, args...)
 #endif
 
-/*====================================================================*/
 /*
     PCMCIA event handlers
  */
@@ -129,7 +125,6 @@ typedef struct local_info_t {
 
 #define MC_FILTERBREAK 64
 
-/*====================================================================*/
 /* 
     ioport offset from the base address 
  */
@@ -274,7 +269,6 @@ static int fmvj18x_probe(struct pcmcia_device *link)
     return fmvj18x_config(link);
 } /* fmvj18x_attach */
 
-/*====================================================================*/
 
 static void fmvj18x_detach(struct pcmcia_device *link)
 {
@@ -290,7 +284,6 @@ static void fmvj18x_detach(struct pcmcia_device *link)
     free_netdev(dev);
 } /* fmvj18x_detach */
 
-/*====================================================================*/
 
 #define CS_CHECK(fn, ret) \
 do { last_fn = (fn); if ((last_ret = (ret)) != 0) goto cs_failed; } while (0)
@@ -551,7 +544,6 @@ failed:
     fmvj18x_release(link);
     return -ENODEV;
 } /* fmvj18x_config */
-/*====================================================================*/
 
 static int fmvj18x_get_hwinfo(struct pcmcia_device *link, u_char *node_id)
 {
@@ -604,7 +596,6 @@ static int fmvj18x_get_hwinfo(struct pcmcia_device *link, u_char *node_id)
     return (i != 0x200) ? 0 : -1;
 
 } /* fmvj18x_get_hwinfo */
-/*====================================================================*/
 
 static int fmvj18x_setup_mfc(struct pcmcia_device *link)
 {
@@ -647,7 +638,6 @@ static int fmvj18x_setup_mfc(struct pcmcia_device *link)
     return 0;
 
 }
-/*====================================================================*/
 
 static void fmvj18x_release(struct pcmcia_device *link)
 {
@@ -677,7 +667,6 @@ static int fmvj18x_resume(struct pcmcia_device *link)
 	return 0;
 }
 
-/*====================================================================*/
 
 static struct pcmcia_device_id fmvj18x_ids[] = {
 	PCMCIA_DEVICE_MANF_CARD(0x0004, 0x0004),
@@ -732,7 +721,6 @@ static void __exit exit_fmvj18x_cs(void)
 module_init(init_fmvj18x_cs);
 module_exit(exit_fmvj18x_cs);
 
-/*====================================================================*/
 
 static irqreturn_t fjn_interrupt(int dummy, void *dev_id)
 {
@@ -787,7 +775,6 @@ static irqreturn_t fjn_interrupt(int dummy, void *dev_id)
 
 } /* fjn_interrupt */
 
-/*====================================================================*/
 
 static void fjn_tx_timeout(struct net_device *dev)
 {
@@ -890,7 +877,6 @@ static int fjn_start_xmit(struct sk_buff *skb, struct net_device *dev)
     return 0;
 } /* fjn_start_xmit */
 
-/*====================================================================*/
 
 static void fjn_reset(struct net_device *dev)
 {
@@ -969,7 +955,6 @@ static void fjn_reset(struct net_device *dev)
 	outb(INTR_ON, ioaddr + LAN_CTRL);
 } /* fjn_reset */
 
-/*====================================================================*/
 
 static void fjn_rx(struct net_device *dev)
 {
@@ -1065,7 +1050,6 @@ static void fjn_rx(struct net_device *dev)
     return;
 } /* fjn_rx */
 
-/*====================================================================*/
 
 static void netdev_get_drvinfo(struct net_device *dev,
 			       struct ethtool_drvinfo *info)
@@ -1122,7 +1106,6 @@ static int fjn_open(struct net_device *dev)
     return 0;
 } /* fjn_open */
 
-/*====================================================================*/
 
 static int fjn_close(struct net_device *dev)
 {
@@ -1155,7 +1138,6 @@ static int fjn_close(struct net_device *dev)
     return 0;
 } /* fjn_close */
 
-/*====================================================================*/
 
 static struct net_device_stats *fjn_get_stats(struct net_device *dev)
 {
@@ -1163,7 +1145,6 @@ static struct net_device_stats *fjn_get_stats(struct net_device *dev)
     return &lp->stats;
 } /* fjn_get_stats */
 
-/*====================================================================*/
 
 /*
   Set the multicast/promiscuous mode for this adaptor.

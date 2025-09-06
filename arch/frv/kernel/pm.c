@@ -154,6 +154,10 @@ static int sysctl_pm_do_suspend(ctl_table *ctl, int write, struct file *filp,
 				void __user *buffer, size_t *lenp, loff_t *fpos)
 {
 	int retval, mode;
+static int sysctl_pm_do_suspend(struct ctl_table *ctl, int write,
+				void __user *buffer, size_t *lenp, loff_t *fpos)
+{
+	int mode;
 
 	if (*lenp <= 0)
 		return -EIO;
@@ -170,6 +174,16 @@ static int sysctl_pm_do_suspend(ctl_table *ctl, int write, struct file *filp,
 	}
 
 	return retval;
+	switch (mode) {
+	case 1:
+	    return pm_do_suspend();
+
+	case 5:
+	    return pm_do_bus_sleep();
+
+	default:
+	    return -EINVAL;
+	}
 }
 
 static int try_set_cmode(int new_cmode)
@@ -199,12 +213,14 @@ static int try_set_cmode(int new_cmode)
 
 
 static int cmode_procctl(ctl_table *ctl, int write, struct file *filp,
+static int cmode_procctl(struct ctl_table *ctl, int write,
 			 void __user *buffer, size_t *lenp, loff_t *fpos)
 {
 	int new_cmode;
 
 	if (!write)
 		return proc_dointvec(ctl, write, filp, buffer, lenp, fpos);
+		return proc_dointvec(ctl, write, buffer, lenp, fpos);
 
 	new_cmode = user_atoi(buffer, *lenp);
 
@@ -302,12 +318,14 @@ static int try_set_cm(int new_cm)
 }
 
 static int p0_procctl(ctl_table *ctl, int write, struct file *filp,
+static int p0_procctl(struct ctl_table *ctl, int write,
 		      void __user *buffer, size_t *lenp, loff_t *fpos)
 {
 	int new_p0;
 
 	if (!write)
 		return proc_dointvec(ctl, write, filp, buffer, lenp, fpos);
+		return proc_dointvec(ctl, write, buffer, lenp, fpos);
 
 	new_p0 = user_atoi(buffer, *lenp);
 
@@ -346,12 +364,14 @@ static int p0_sysctl(ctl_table *table, int __user *name, int nlen,
 }
 
 static int cm_procctl(ctl_table *ctl, int write, struct file *filp,
+static int cm_procctl(struct ctl_table *ctl, int write,
 		      void __user *buffer, size_t *lenp, loff_t *fpos)
 {
 	int new_cm;
 
 	if (!write)
 		return proc_dointvec(ctl, write, filp, buffer, lenp, fpos);
+		return proc_dointvec(ctl, write, buffer, lenp, fpos);
 
 	new_cm = user_atoi(buffer, *lenp);
 
@@ -394,6 +414,9 @@ static struct ctl_table pm_table[] =
 {
 	{
 		.ctl_name	= CTL_PM_SUSPEND,
+static struct ctl_table pm_table[] =
+{
+	{
 		.procname	= "suspend",
 		.data		= NULL,
 		.maxlen		= 0,
@@ -402,6 +425,9 @@ static struct ctl_table pm_table[] =
 	},
 	{
 		.ctl_name	= CTL_PM_CMODE,
+		.proc_handler	= sysctl_pm_do_suspend,
+	},
+	{
 		.procname	= "cmode",
 		.data		= &clock_cmode_current,
 		.maxlen		= sizeof(int),
@@ -411,6 +437,9 @@ static struct ctl_table pm_table[] =
 	},
 	{
 		.ctl_name	= CTL_PM_P0,
+		.proc_handler	= cmode_procctl,
+	},
+	{
 		.procname	= "p0",
 		.data		= &clock_p0_current,
 		.maxlen		= sizeof(int),
@@ -420,6 +449,9 @@ static struct ctl_table pm_table[] =
 	},
 	{
 		.ctl_name	= CTL_PM_CM,
+		.proc_handler	= p0_procctl,
+	},
+	{
 		.procname	= "cm",
 		.data		= &clock_cm_current,
 		.maxlen		= sizeof(int),
@@ -428,6 +460,9 @@ static struct ctl_table pm_table[] =
 		.strategy	= &cm_sysctl,
 	},
 	{ .ctl_name = 0}
+		.proc_handler	= cm_procctl,
+	},
+	{ }
 };
 
 static struct ctl_table pm_dir_table[] =
@@ -439,6 +474,7 @@ static struct ctl_table pm_dir_table[] =
 		.child		= pm_table,
 	},
 	{ .ctl_name = 0}
+	{ }
 };
 
 /*

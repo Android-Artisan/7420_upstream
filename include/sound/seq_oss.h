@@ -23,6 +23,8 @@
 
 #include "asequencer.h"
 #include "seq_kernel.h"
+#include <sound/asequencer.h>
+#include <sound/seq_kernel.h>
 
 /*
  * argument structure for synthesizer operations

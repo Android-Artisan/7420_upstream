@@ -25,6 +25,8 @@ static int efs_symlink_readpage(struct file *file, struct page *page)
 		goto fail_notlocked;
   
 	lock_kernel();
+		goto fail;
+  
 	/* read first 512 bytes of link target */
 	err = -EIO;
 	bh = sb_bread(inode->i_sb, efs_bmap(inode, 0));

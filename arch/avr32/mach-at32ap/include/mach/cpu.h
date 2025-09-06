@@ -1,5 +1,6 @@
 /*
  * AVR32 and (fake) AT91 CPU identification
+ * AVR32 CPU identification
  *
  * Copyright (C) 2007 Atmel Corporation
  *

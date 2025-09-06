@@ -42,6 +42,7 @@
 #include <linux/kd.h>
 #include <linux/slab.h>
 #include <linux/vt_kern.h>
+#include <linux/sched.h>
 #include <linux/selection.h>
 #include <linux/spinlock.h>
 #include <linux/ioport.h>
@@ -52,11 +53,16 @@
 #include <asm/io.h>
 
 static DEFINE_SPINLOCK(vga_lock);
+#include <video/vga.h>
+#include <asm/io.h>
+
+static DEFINE_RAW_SPINLOCK(vga_lock);
 static int cursor_size_lastfrom;
 static int cursor_size_lastto;
 static u32 vgacon_xres;
 static u32 vgacon_yres;
 static struct vgastate state;
+static struct vgastate vgastate;
 
 #define BLANK 0x0020
 
@@ -88,6 +94,8 @@ static int vgacon_scroll(struct vc_data *c, int t, int b, int dir,
 			 int lines);
 static void vgacon_invert_region(struct vc_data *c, u16 * p, int count);
 static unsigned long vgacon_uni_pagedir[2];
+static struct uni_pagedir *vgacon_uni_pagedir;
+static int vgacon_refcount;
 
 /* Description of the hardware situation */
 static int		vga_init_done		__read_mostly;
@@ -111,6 +119,23 @@ static int 		vga_512_chars;
 static int 		vga_video_font_height;
 static int 		vga_scan_lines		__read_mostly;
 static unsigned int 	vga_rolled_over;
+
+static int vgacon_text_mode_force;
+
+bool vgacon_text_force(void)
+{
+	return vgacon_text_mode_force ? true : false;
+}
+EXPORT_SYMBOL(vgacon_text_force);
+
+static int __init text_mode(char *str)
+{
+	vgacon_text_mode_force = 1;
+	return 1;
+}
+
+/* force text mode - used by kernel modesetting */
+__setup("nomodeset", text_mode);
 
 static int __init no_scroll(char *str)
 {
@@ -142,6 +167,7 @@ static inline void write_vga(unsigned char reg, unsigned int val)
 	 * handlers, thus the write has to be IRQ-atomic.
 	 */
 	spin_lock_irqsave(&vga_lock, flags);
+	raw_spin_lock_irqsave(&vga_lock, flags);
 
 #ifndef SLOW_VGA
 	v1 = reg + (val & 0xff00);
@@ -155,6 +181,7 @@ static inline void write_vga(unsigned char reg, unsigned int val)
 	outb_p(val & 0xff, vga_video_port_val);
 #endif
 	spin_unlock_irqrestore(&vga_lock, flags);
+	raw_spin_unlock_irqrestore(&vga_lock, flags);
 }
 
 static inline void vga_set_mem_top(struct vc_data *c)
@@ -195,6 +222,9 @@ static void __init_refok vgacon_scrollback_startup(void)
 {
 	vgacon_scrollback = alloc_bootmem(CONFIG_VGACON_SOFT_SCROLLBACK_SIZE
 					  * 1024);
+static void vgacon_scrollback_startup(void)
+{
+	vgacon_scrollback = kcalloc(CONFIG_VGACON_SOFT_SCROLLBACK_SIZE, 1024, GFP_NOWAIT);
 	vgacon_scrollback_init(vga_video_num_columns * 2);
 }
 
@@ -241,6 +271,7 @@ static int vgacon_scrolldelta(struct vc_data *c, int lines)
 {
 	int start, end, count, soff, diff;
 	void *d, *s;
+	int start, end, count, soff;
 
 	if (!lines) {
 		c->vc_visible_origin = c->vc_origin;
@@ -310,6 +341,29 @@ static int vgacon_scrolldelta(struct vc_data *c, int lines)
 			s += c->vc_size_row;
 		}
 	}
+	if (count) {
+		int copysize;
+
+		int diff = c->vc_rows - count;
+		void *d = (void *) c->vc_origin;
+		void *s = (void *) c->vc_screenbuf;
+
+		count *= c->vc_size_row;
+		/* how much memory to end of buffer left? */
+		copysize = min(count, vgacon_scrollback_size - soff);
+		scr_memcpyw(d, vgacon_scrollback + soff, copysize);
+		d += copysize;
+		count -= copysize;
+
+		if (count) {
+			scr_memcpyw(d, vgacon_scrollback, count);
+			d += count;
+		}
+
+		if (diff)
+			scr_memcpyw(d, s, diff * c->vc_size_row);
+	} else
+		vgacon_cursor(c, CM_MOVE);
 
 	return 1;
 }
@@ -354,7 +408,6 @@ static int vgacon_scrolldelta(struct vc_data *c, int lines)
 	vga_set_mem_top(c);
 	return 1;
 }
-#endif /* CONFIG_VGACON_SOFT_SCROLLBACK */
 
 static const char *vgacon_startup(void)
 {
@@ -363,6 +416,8 @@ static const char *vgacon_startup(void)
 	volatile u16 *p;
 
 	if (screen_info.orig_video_isVGA == VIDEO_TYPE_VLFB) {
+	if (screen_info.orig_video_isVGA == VIDEO_TYPE_VLFB ||
+	    screen_info.orig_video_isVGA == VIDEO_TYPE_EFI) {
 	      no_vga:
 #ifdef CONFIG_DUMMY_CONSOLE
 		conswitchp = &dummy_con;
@@ -389,6 +444,7 @@ static const char *vgacon_startup(void)
 	vga_video_num_lines = screen_info.orig_video_lines;
 	vga_video_num_columns = screen_info.orig_video_cols;
 	state.vgabase = NULL;
+	vgastate.vgabase = NULL;
 
 	if (screen_info.orig_video_mode == 7) {
 		/* Monochrome display */
@@ -397,7 +453,10 @@ static const char *vgacon_startup(void)
 		vga_video_port_val = VGA_CRT_DM;
 		if ((screen_info.orig_video_ega_bx & 0xff) != 0x10) {
 			static struct resource ega_console_resource =
-			    { .name = "ega", .start = 0x3B0, .end = 0x3BF };
+			    { .name	= "ega",
+			      .flags	= IORESOURCE_IO,
+			      .start	= 0x3B0,
+			      .end	= 0x3BF };
 			vga_video_type = VIDEO_TYPE_EGAM;
 			vga_vram_size = 0x8000;
 			display_desc = "EGA+";
@@ -405,9 +464,15 @@ static const char *vgacon_startup(void)
 					 &ega_console_resource);
 		} else {
 			static struct resource mda1_console_resource =
-			    { .name = "mda", .start = 0x3B0, .end = 0x3BB };
+			    { .name	= "mda",
+			      .flags	= IORESOURCE_IO,
+			      .start	= 0x3B0,
+			      .end	= 0x3BB };
 			static struct resource mda2_console_resource =
-			    { .name = "mda", .start = 0x3BF, .end = 0x3BF };
+			    { .name	= "mda",
+			      .flags	= IORESOURCE_IO,
+			      .start	= 0x3BF,
+			      .end	= 0x3BF };
 			vga_video_type = VIDEO_TYPE_MDA;
 			vga_vram_size = 0x2000;
 			display_desc = "*MDA";
@@ -429,15 +494,21 @@ static const char *vgacon_startup(void)
 			vga_vram_size = 0x8000;
 
 			if (!screen_info.orig_video_isVGA) {
-				static struct resource ega_console_resource
-				    = { .name = "ega", .start = 0x3C0, .end = 0x3DF };
+				static struct resource ega_console_resource =
+				    { .name	= "ega",
+				      .flags	= IORESOURCE_IO,
+				      .start	= 0x3C0,
+				      .end	= 0x3DF };
 				vga_video_type = VIDEO_TYPE_EGAC;
 				display_desc = "EGA";
 				request_resource(&ioport_resource,
 						 &ega_console_resource);
 			} else {
-				static struct resource vga_console_resource
-				    = { .name = "vga+", .start = 0x3C0, .end = 0x3DF };
+				static struct resource vga_console_resource =
+				    { .name	= "vga+",
+				      .flags	= IORESOURCE_IO,
+				      .start	= 0x3C0,
+				      .end	= 0x3DF };
 				vga_video_type = VIDEO_TYPE_VGAC;
 				display_desc = "VGA+";
 				request_resource(&ioport_resource,
@@ -481,7 +552,10 @@ static const char *vgacon_startup(void)
 			}
 		} else {
 			static struct resource cga_console_resource =
-			    { .name = "cga", .start = 0x3D4, .end = 0x3D5 };
+			    { .name	= "cga",
+			      .flags	= IORESOURCE_IO,
+			      .start	= 0x3D4,
+			      .end	= 0x3D5 };
 			vga_video_type = VIDEO_TYPE_CGA;
 			vga_vram_size = 0x2000;
 			display_desc = "*CGA";
@@ -532,10 +606,7 @@ static const char *vgacon_startup(void)
 	vgacon_xres = screen_info.orig_video_cols * VGA_FONTWIDTH;
 	vgacon_yres = vga_scan_lines;
 
-	if (!vga_init_done) {
-		vgacon_scrollback_startup();
-		vga_init_done = 1;
-	}
+	vga_init_done = 1;
 
 	return display_desc;
 }
@@ -543,13 +614,20 @@ static const char *vgacon_startup(void)
 static void vgacon_init(struct vc_data *c, int init)
 {
 	unsigned long p;
+	struct uni_pagedir *p;
 
 	/*
-	 * We cannot be loaded as a module, therefore init is always 1,
-	 * but vgacon_init can be called more than once, and init will
-	 * not be 1.
+	 * We cannot be loaded as a module, therefore init will be 1
+	 * if we are the default console, however if we are a fallback
+	 * console, for example if fbcon has failed registration, then
+	 * init will be 0, so we need to make sure our boot parameters
+	 * have been copied to the console structure for vgacon_resize
+	 * ultimately called by vc_resize.  Any subsequent calls to
+	 * vgacon_init init will have init set to 0 too.
 	 */
 	c->vc_can_do_color = vga_can_do_color;
+	c->vc_scan_lines = vga_scan_lines;
+	c->vc_font.height = c->vc_cell_height = vga_video_font_height;
 
 	/* set dimensions manually if init != 0 since vc_resize() will fail */
 	if (init) {
@@ -558,8 +636,6 @@ static void vgacon_init(struct vc_data *c, int init)
 	} else
 		vc_resize(c, vga_video_num_columns, vga_video_num_lines);
 
-	c->vc_scan_lines = vga_scan_lines;
-	c->vc_font.height = vga_video_font_height;
 	c->vc_complement_mask = 0x7700;
 	if (vga_512_chars)
 		c->vc_hi_font_mask = 0x0800;
@@ -571,6 +647,18 @@ static void vgacon_init(struct vc_data *c, int init)
 	vgacon_uni_pagedir[1]++;
 	if (!vgacon_uni_pagedir[0] && p)
 		con_set_default_unimap(c);
+	if (c->vc_uni_pagedir_loc != &vgacon_uni_pagedir) {
+		con_free_unimap(c);
+		c->vc_uni_pagedir_loc = &vgacon_uni_pagedir;
+		vgacon_refcount++;
+	}
+	if (!vgacon_uni_pagedir && p)
+		con_set_default_unimap(c);
+
+	/* Only set the default if the user didn't deliberately override it */
+	if (global_cursor_default == -1)
+		global_cursor_default =
+			!(screen_info.flags & VIDEO_FLAGS_NOCURSOR);
 }
 
 static void vgacon_deinit(struct vc_data *c)
@@ -581,6 +669,14 @@ static void vgacon_deinit(struct vc_data *c)
 		vga_set_mem_top(c);
 		con_free_unimap(c);
 	}
+	/* When closing the active console, reset video origin */
+	if (CON_IS_VISIBLE(c)) {
+		c->vc_visible_origin = vga_vram_base;
+		vga_set_mem_top(c);
+	}
+
+	if (!--vgacon_refcount)
+		con_free_unimap(c);
 	c->vc_uni_pagedir_loc = &c->vc_uni_pagedir;
 	con_set_default_unimap(c);
 }
@@ -648,6 +744,7 @@ static void vgacon_set_cursor_size(int xpos, int from, int to)
 	cursor_size_lastto = to;
 
 	spin_lock_irqsave(&vga_lock, flags);
+	raw_spin_lock_irqsave(&vga_lock, flags);
 	if (vga_video_type >= VIDEO_TYPE_VGAC) {
 		outb_p(VGA_CRTC_CURSOR_START, vga_video_port_reg);
 		curs = inb_p(vga_video_port_val);
@@ -666,6 +763,7 @@ static void vgacon_set_cursor_size(int xpos, int from, int to)
 	outb_p(VGA_CRTC_CURSOR_END, vga_video_port_reg);
 	outb_p(cure, vga_video_port_val);
 	spin_unlock_irqrestore(&vga_lock, flags);
+	raw_spin_unlock_irqrestore(&vga_lock, flags);
 }
 
 static void vgacon_cursor(struct vc_data *c, int mode)
@@ -690,32 +788,32 @@ static void vgacon_cursor(struct vc_data *c, int mode)
 		switch (c->vc_cursor_type & 0x0f) {
 		case CUR_UNDERLINE:
 			vgacon_set_cursor_size(c->vc_x,
-					       c->vc_font.height -
-					       (c->vc_font.height <
+					       c->vc_cell_height -
+					       (c->vc_cell_height <
 						10 ? 2 : 3),
-					       c->vc_font.height -
-					       (c->vc_font.height <
+					       c->vc_cell_height -
+					       (c->vc_cell_height <
 						10 ? 1 : 2));
 			break;
 		case CUR_TWO_THIRDS:
 			vgacon_set_cursor_size(c->vc_x,
-					       c->vc_font.height / 3,
-					       c->vc_font.height -
-					       (c->vc_font.height <
+					       c->vc_cell_height / 3,
+					       c->vc_cell_height -
+					       (c->vc_cell_height <
 						10 ? 1 : 2));
 			break;
 		case CUR_LOWER_THIRD:
 			vgacon_set_cursor_size(c->vc_x,
-					       (c->vc_font.height * 2) / 3,
-					       c->vc_font.height -
-					       (c->vc_font.height <
+					       (c->vc_cell_height * 2) / 3,
+					       c->vc_cell_height -
+					       (c->vc_cell_height <
 						10 ? 1 : 2));
 			break;
 		case CUR_LOWER_HALF:
 			vgacon_set_cursor_size(c->vc_x,
-					       c->vc_font.height / 2,
-					       c->vc_font.height -
-					       (c->vc_font.height <
+					       c->vc_cell_height / 2,
+					       c->vc_cell_height -
+					       (c->vc_cell_height <
 						10 ? 1 : 2));
 			break;
 		case CUR_NONE:
@@ -726,7 +824,7 @@ static void vgacon_cursor(struct vc_data *c, int mode)
 			break;
 		default:
 			vgacon_set_cursor_size(c->vc_x, 1,
-					       c->vc_font.height);
+					       c->vc_cell_height);
 			break;
 		}
 		break;
@@ -737,13 +835,14 @@ static int vgacon_doresize(struct vc_data *c,
 		unsigned int width, unsigned int height)
 {
 	unsigned long flags;
-	unsigned int scanlines = height * c->vc_font.height;
+	unsigned int scanlines = height * c->vc_cell_height;
 	u8 scanlines_lo = 0, r7 = 0, vsync_end = 0, mode, max_scan;
 
 	spin_lock_irqsave(&vga_lock, flags);
+	raw_spin_lock_irqsave(&vga_lock, flags);
 
 	vgacon_xres = width * VGA_FONTWIDTH;
-	vgacon_yres = height * c->vc_font.height;
+	vgacon_yres = height * c->vc_cell_height;
 	if (vga_video_type >= VIDEO_TYPE_VGAC) {
 		outb_p(VGA_CRTC_MAX_SCAN, vga_video_port_reg);
 		max_scan = inb_p(vga_video_port_val);
@@ -792,15 +891,16 @@ static int vgacon_doresize(struct vc_data *c,
 	}
 
 	spin_unlock_irqrestore(&vga_lock, flags);
+	raw_spin_unlock_irqrestore(&vga_lock, flags);
 	return 0;
 }
 
 static int vgacon_switch(struct vc_data *c)
 {
 	int x = c->vc_cols * VGA_FONTWIDTH;
-	int y = c->vc_rows * c->vc_font.height;
+	int y = c->vc_rows * c->vc_cell_height;
 	int rows = screen_info.orig_video_lines * vga_default_font_height/
-		c->vc_font.height;
+		c->vc_cell_height;
 	/*
 	 * We need to save screen size here as it's the only way
 	 * we can spot the screen has been resized and we need to
@@ -824,7 +924,6 @@ static int vgacon_switch(struct vc_data *c)
 			vgacon_doresize(c, c->vc_cols, c->vc_rows);
 	}
 
-	vgacon_scrollback_init(c->vc_size_row);
 	return 0;		/* Redrawing not needed */
 }
 
@@ -838,6 +937,12 @@ static void vga_set_palette(struct vc_data *vc, unsigned char *table)
 		vga_w(state.vgabase, VGA_PEL_D, vc->vc_palette[j++] >> 2);
 		vga_w(state.vgabase, VGA_PEL_D, vc->vc_palette[j++] >> 2);
 		vga_w(state.vgabase, VGA_PEL_D, vc->vc_palette[j++] >> 2);
+	vga_w(vgastate.vgabase, VGA_PEL_MSK, 0xff);
+	for (i = j = 0; i < 16; i++) {
+		vga_w(vgastate.vgabase, VGA_PEL_IW, table[i]);
+		vga_w(vgastate.vgabase, VGA_PEL_D, vc->vc_palette[j++] >> 2);
+		vga_w(vgastate.vgabase, VGA_PEL_D, vc->vc_palette[j++] >> 2);
+		vga_w(vgastate.vgabase, VGA_PEL_D, vc->vc_palette[j++] >> 2);
 	}
 }
 
@@ -879,6 +984,11 @@ static void vga_vesa_blank(struct vgastate *state, int mode)
 		vga_state.CrtCtrlIndex = inb_p(vga_video_port_reg);
 		vga_state.CrtMiscIO = vga_r(state->vgabase, VGA_MIS_R);
 		spin_unlock_irq(&vga_lock);
+		raw_spin_lock_irq(&vga_lock);
+		vga_state.SeqCtrlIndex = vga_r(state->vgabase, VGA_SEQ_I);
+		vga_state.CrtCtrlIndex = inb_p(vga_video_port_reg);
+		vga_state.CrtMiscIO = vga_r(state->vgabase, VGA_MIS_R);
+		raw_spin_unlock_irq(&vga_lock);
 
 		outb_p(0x00, vga_video_port_reg);	/* HorizontalTotal */
 		vga_state.HorizontalTotal = inb_p(vga_video_port_val);
@@ -902,6 +1012,7 @@ static void vga_vesa_blank(struct vgastate *state, int mode)
 	/* assure that video is enabled */
 	/* "0x20" is VIDEO_ENABLE_bit in register 01 of sequencer */
 	spin_lock_irq(&vga_lock);
+	raw_spin_lock_irq(&vga_lock);
 	vga_wseq(state->vgabase, VGA_SEQ_CLOCK_MODE, vga_state.ClockingMode | 0x20);
 
 	/* test for vertical retrace in process.... */
@@ -938,12 +1049,14 @@ static void vga_vesa_blank(struct vgastate *state, int mode)
 	vga_w(state->vgabase, VGA_SEQ_I, vga_state.SeqCtrlIndex);
 	outb_p(vga_state.CrtCtrlIndex, vga_video_port_reg);
 	spin_unlock_irq(&vga_lock);
+	raw_spin_unlock_irq(&vga_lock);
 }
 
 static void vga_vesa_unblank(struct vgastate *state)
 {
 	/* restore original values of VGA controller registers */
 	spin_lock_irq(&vga_lock);
+	raw_spin_lock_irq(&vga_lock);
 	vga_w(state->vgabase, VGA_MIS_W, vga_state.CrtMiscIO);
 
 	outb_p(0x00, vga_video_port_reg);	/* HorizontalTotal */
@@ -969,6 +1082,7 @@ static void vga_vesa_unblank(struct vgastate *state)
 	vga_w(state->vgabase, VGA_SEQ_I, vga_state.SeqCtrlIndex);
 	outb_p(vga_state.CrtCtrlIndex, vga_video_port_reg);
 	spin_unlock_irq(&vga_lock);
+	raw_spin_unlock_irq(&vga_lock);
 }
 
 static void vga_pal_blank(struct vgastate *state)
@@ -990,6 +1104,7 @@ static int vgacon_blank(struct vc_data *c, int blank, int mode_switch)
 	case 0:		/* Unblank */
 		if (vga_vesa_blanked) {
 			vga_vesa_unblank(&state);
+			vga_vesa_unblank(&vgastate);
 			vga_vesa_blanked = 0;
 		}
 		if (vga_palette_blanked) {
@@ -1004,6 +1119,7 @@ static int vgacon_blank(struct vc_data *c, int blank, int mode_switch)
 	case -1:	/* Obsolete */
 		if (!mode_switch && vga_video_type == VIDEO_TYPE_VGAC) {
 			vga_pal_blank(&state);
+			vga_pal_blank(&vgastate);
 			vga_palette_blanked = 1;
 			return 0;
 		}
@@ -1016,6 +1132,7 @@ static int vgacon_blank(struct vc_data *c, int blank, int mode_switch)
 	default:		/* VESA blanking */
 		if (vga_video_type == VIDEO_TYPE_VGAC) {
 			vga_vesa_blank(&state, blank - 1);
+			vga_vesa_blank(&vgastate, blank - 1);
 			vga_vesa_blanked = blank;
 		}
 		return 0;
@@ -1048,6 +1165,7 @@ static int vgacon_do_font_op(struct vgastate *state,char *arg,int set,int ch512)
 	int font_select = 0x00, beg, i;
 	char *charmap;
 	
+	bool clear_attribs = false;
 	if (vga_video_type != VIDEO_TYPE_EGAM) {
 		charmap = (char *) VGA_MAP_MEM(colourmap, 0);
 		beg = 0x0e;
@@ -1089,6 +1207,7 @@ static int vgacon_do_font_op(struct vgastate *state,char *arg,int set,int ch512)
 
 	unlock_kernel();
 	spin_lock_irq(&vga_lock);
+	raw_spin_lock_irq(&vga_lock);
 	/* First, the Sequencer */
 	vga_wseq(state->vgabase, VGA_SEQ_RESET, 0x1);
 	/* CPU writes only to map 2 */
@@ -1113,6 +1232,19 @@ static int vgacon_do_font_op(struct vgastate *state,char *arg,int set,int ch512)
 		else
 			for (i = 0; i < cmapsz; i++)
 				arg[i] = vga_readb(charmap + i);
+	raw_spin_unlock_irq(&vga_lock);
+
+	if (arg) {
+		if (set)
+			for (i = 0; i < cmapsz; i++) {
+				vga_writeb(arg[i], charmap + i);
+				cond_resched();
+			}
+		else
+			for (i = 0; i < cmapsz; i++) {
+				arg[i] = vga_readb(charmap + i);
+				cond_resched();
+			}
 
 		/*
 		 * In 512-character mode, the character map is not contiguous if
@@ -1132,6 +1264,19 @@ static int vgacon_do_font_op(struct vgastate *state,char *arg,int set,int ch512)
 	}
 
 	spin_lock_irq(&vga_lock);
+				for (i = 0; i < cmapsz; i++) {
+					vga_writeb(arg[i], charmap + i);
+					cond_resched();
+				}
+			else
+				for (i = 0; i < cmapsz; i++) {
+					arg[i] = vga_readb(charmap + i);
+					cond_resched();
+				}
+		}
+	}
+
+	raw_spin_lock_irq(&vga_lock);
 	/* First, the sequencer, Synchronous reset */
 	vga_wseq(state->vgabase, VGA_SEQ_RESET, 0x01);	
 	/* CPU writes to maps 0 and 1 */
@@ -1172,6 +1317,22 @@ static int vgacon_do_font_op(struct vgastate *state,char *arg,int set,int ch512)
 	}
 	spin_unlock_irq(&vga_lock);
 	lock_kernel();
+		clear_attribs = true;
+	}
+	raw_spin_unlock_irq(&vga_lock);
+
+	if (clear_attribs) {
+		for (i = 0; i < MAX_NR_CONSOLES; i++) {
+			struct vc_data *c = vc_cons[i].d;
+			if (c && c->vc_sw == &vga_con) {
+				/* force hi font mask to 0, so we always clear
+				   the bit on either transition */
+				c->vc_hi_font_mask = 0x00;
+				clear_buffer_attributes(c);
+				c->vc_hi_font_mask = ch512 ? 0x0800 : 0;
+			}
+		}
+	}
 	return 0;
 }
 
@@ -1197,11 +1358,13 @@ static int vgacon_adjust_height(struct vc_data *vc, unsigned fontheight)
 	   are all don't care bits on EGA, so I guess it doesn't matter. */
 
 	spin_lock_irq(&vga_lock);
+	raw_spin_lock_irq(&vga_lock);
 	outb_p(0x07, vga_video_port_reg);	/* CRTC overflow register */
 	ovr = inb_p(vga_video_port_val);
 	outb_p(0x09, vga_video_port_reg);	/* Font size register */
 	fsr = inb_p(vga_video_port_val);
 	spin_unlock_irq(&vga_lock);
+	raw_spin_unlock_irq(&vga_lock);
 
 	vde = maxscan & 0xff;	/* Vertical display end reg */
 	ovr = (ovr & 0xbd) +	/* Overflow register */
@@ -1209,6 +1372,7 @@ static int vgacon_adjust_height(struct vc_data *vc, unsigned fontheight)
 	fsr = (fsr & 0xe0) + (fontheight - 1);	/*  Font size register */
 
 	spin_lock_irq(&vga_lock);
+	raw_spin_lock_irq(&vga_lock);
 	outb_p(0x07, vga_video_port_reg);	/* CRTC overflow register */
 	outb_p(ovr, vga_video_port_val);
 	outb_p(0x09, vga_video_port_reg);	/* Font size */
@@ -1216,6 +1380,7 @@ static int vgacon_adjust_height(struct vc_data *vc, unsigned fontheight)
 	outb_p(0x12, vga_video_port_reg);	/* Vertical display limit */
 	outb_p(vde, vga_video_port_val);
 	spin_unlock_irq(&vga_lock);
+	raw_spin_unlock_irq(&vga_lock);
 	vga_video_font_height = fontheight;
 
 	for (i = 0; i < MAX_NR_CONSOLES; i++) {
@@ -1228,7 +1393,7 @@ static int vgacon_adjust_height(struct vc_data *vc, unsigned fontheight)
 				cursor_size_lastto = 0;
 				c->vc_sw->con_cursor(c, CM_DRAW);
 			}
-			c->vc_font.height = fontheight;
+			c->vc_font.height = c->vc_cell_height = fontheight;
 			vc_resize(c, 0, rows);	/* Adjust console size */
 		}
 	}
@@ -1248,6 +1413,7 @@ static int vgacon_font_set(struct vc_data *c, struct console_font *font, unsigne
 		return -EINVAL;
 
 	rc = vgacon_do_font_op(&state, font->data, 1, charcount == 512);
+	rc = vgacon_do_font_op(&vgastate, font->data, 1, charcount == 512);
 	if (rc)
 		return rc;
 
@@ -1267,6 +1433,7 @@ static int vgacon_font_get(struct vc_data *c, struct console_font *font)
 	if (!font->data)
 		return 0;
 	return vgacon_do_font_op(&state, font->data, 0, 0);
+	return vgacon_do_font_op(&vgastate, font->data, 0, vga_512_chars);
 }
 
 #else
@@ -1279,12 +1446,23 @@ static int vgacon_font_get(struct vc_data *c, struct console_font *font)
 static int vgacon_resize(struct vc_data *c, unsigned int width,
 			 unsigned int height, unsigned int user)
 {
+	if ((width << 1) * height > vga_vram_size)
+		return -EINVAL;
+
+	if (user) {
+		/*
+		 * Ho ho!  Someone (svgatextmode, eh?) may have reprogrammed
+		 * the video mode!  Set the new defaults then and go away.
+		 */
+		screen_info.orig_video_cols = width;
+		screen_info.orig_video_lines = height;
+		vga_default_font_height = c->vc_cell_height;
+		return 0;
+	}
 	if (width % 2 || width > screen_info.orig_video_cols ||
 	    height > (screen_info.orig_video_lines * vga_default_font_height)/
-	    c->vc_font.height)
-		/* let svgatextmode tinker with video timings and
-		   return success */
-		return (user) ? 0 : -EINVAL;
+	    c->vc_cell_height)
+		return -EINVAL;
 
 	if (CON_IS_VISIBLE(c) && !vga_is_gfx) /* who knows */
 		vgacon_doresize(c, width, height);
@@ -1317,6 +1495,7 @@ static void vgacon_save_screen(struct vc_data *c)
 	}
 
 	/* We can't copy in more then the size of the video buffer,
+	/* We can't copy in more than the size of the video buffer,
 	 * or we'll be copying in VGA BIOS */
 
 	if (!vga_is_gfx)
@@ -1340,7 +1519,6 @@ static int vgacon_scroll(struct vc_data *c, int t, int b, int dir,
 	oldo = c->vc_origin;
 	delta = lines * c->vc_size_row;
 	if (dir == SM_UP) {
-		vgacon_scrollback_update(c, t, lines);
 		if (c->vc_scr_end + delta >= vga_vram_end) {
 			scr_memcpyw((u16 *) vga_vram_base,
 				    (u16 *) (oldo + delta),
@@ -1351,6 +1529,7 @@ static int vgacon_scroll(struct vc_data *c, int t, int b, int dir,
 			c->vc_origin += delta;
 		scr_memsetw((u16 *) (c->vc_origin + c->vc_screenbuf_size -
 				     delta), c->vc_scrl_erase_char,
+				     delta), c->vc_video_erase_char,
 			    delta);
 	} else {
 		if (oldo - delta < vga_vram_base) {
@@ -1364,6 +1543,7 @@ static int vgacon_scroll(struct vc_data *c, int t, int b, int dir,
 			c->vc_origin -= delta;
 		c->vc_scr_end = c->vc_origin + c->vc_screenbuf_size;
 		scr_memsetw((u16 *) (c->vc_origin), c->vc_scrl_erase_char,
+		scr_memsetw((u16 *) (c->vc_origin), c->vc_video_erase_char,
 			    delta);
 	}
 	c->vc_scr_end = c->vc_origin + c->vc_screenbuf_size;
@@ -1408,5 +1588,6 @@ const struct consw vga_con = {
 	.con_build_attr = vgacon_build_attr,
 	.con_invert_region = vgacon_invert_region,
 };
+EXPORT_SYMBOL(vga_con);
 
 MODULE_LICENSE("GPL");

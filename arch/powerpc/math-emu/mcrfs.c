@@ -3,6 +3,8 @@
 #include <asm/uaccess.h>
 
 #include "soft-fp.h"
+#include <asm/sfp-machine.h>
+#include <math-emu/soft-fp.h>
 
 int
 mcrfs(u32 *ccr, u32 crfD, u32 crfS)

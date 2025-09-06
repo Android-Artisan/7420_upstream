@@ -3,6 +3,7 @@
 #
 
 af-rxrpc-objs := \
+af-rxrpc-y := \
 	af_rxrpc.o \
 	ar-accept.o \
 	ar-ack.o \
@@ -23,6 +24,8 @@ af-rxrpc-objs := \
 ifeq ($(CONFIG_PROC_FS),y)
 af-rxrpc-objs += ar-proc.o
 endif
+af-rxrpc-$(CONFIG_PROC_FS) += ar-proc.o
+af-rxrpc-$(CONFIG_SYSCTL) += sysctl.o
 
 obj-$(CONFIG_AF_RXRPC) += af-rxrpc.o
 

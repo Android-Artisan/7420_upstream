@@ -1,5 +1,4 @@
 The Framebuffer Console
-=======================
 
 	The framebuffer console (fbcon), as its name implies, is a text
 console running on top of the framebuffer device. It has the functionality of
@@ -151,6 +150,7 @@ C. Boot options
 C. Attaching, Detaching and Unloading
 
 Before going on on how to attach, detach and unload the framebuffer console, an
+Before going on how to attach, detach and unload the framebuffer console, an
 illustration of the dependencies may help.
 
 The console layer, as with most subsystems, needs a driver that interfaces with
@@ -232,7 +232,6 @@ all the drivers without unloading fbcon will make it impossible for the
 console to bind fbcon.
 
 Notes for vesafb users:
-=======================
 
 Unfortunately, if your bootline includes a vga=xxx parameter that sets the
 hardware in graphics mode, such as when loading vesafb, vgacon will not load.
@@ -273,7 +272,6 @@ Variation 2:
        echo 1 > /sys/class/vtconsole/vtcon1/bind
 
 Samples:
-========
 
 Here are 2 sample bash scripts that you can use to bind or unbind the
 framebuffer console driver if you are in an X86 box:

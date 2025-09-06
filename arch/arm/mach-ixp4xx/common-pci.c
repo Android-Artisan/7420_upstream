@@ -31,6 +31,13 @@
 #include <asm/irq.h>
 #include <asm/sizes.h>
 #include <asm/system.h>
+#include <linux/io.h>
+#include <linux/export.h>
+#include <asm/dma-mapping.h>
+
+#include <asm/cputype.h>
+#include <asm/irq.h>
+#include <asm/sizes.h>
 #include <asm/mach/pci.h>
 #include <mach/hardware.h>
 
@@ -54,6 +61,7 @@ unsigned long ixp4xx_pci_reg_base = 0;
  * with corrupt data on the bus or in a driver.
  */
 static DEFINE_SPINLOCK(ixp4xx_pci_lock);
+static DEFINE_RAW_SPINLOCK(ixp4xx_pci_lock);
 
 /*
  * Read from PCI config space
@@ -65,6 +73,10 @@ static void crp_read(u32 ad_cbe, u32 *data)
 	*PCI_CRP_AD_CBE = ad_cbe;
 	*data = *PCI_CRP_RDATA;
 	spin_unlock_irqrestore(&ixp4xx_pci_lock, flags);
+	raw_spin_lock_irqsave(&ixp4xx_pci_lock, flags);
+	*PCI_CRP_AD_CBE = ad_cbe;
+	*data = *PCI_CRP_RDATA;
+	raw_spin_unlock_irqrestore(&ixp4xx_pci_lock, flags);
 }
 
 /*
@@ -77,6 +89,10 @@ static void crp_write(u32 ad_cbe, u32 data)
 	*PCI_CRP_AD_CBE = CRP_AD_CBE_WRITE | ad_cbe;
 	*PCI_CRP_WDATA = data;
 	spin_unlock_irqrestore(&ixp4xx_pci_lock, flags);
+	raw_spin_lock_irqsave(&ixp4xx_pci_lock, flags);
+	*PCI_CRP_AD_CBE = CRP_AD_CBE_WRITE | ad_cbe;
+	*PCI_CRP_WDATA = data;
+	raw_spin_unlock_irqrestore(&ixp4xx_pci_lock, flags);
 }
 
 static inline int check_master_abort(void)
@@ -101,6 +117,7 @@ int ixp4xx_pci_read_errata(u32 addr, u32 cmd, u32* data)
 	int i;
 
 	spin_lock_irqsave(&ixp4xx_pci_lock, flags);
+	raw_spin_lock_irqsave(&ixp4xx_pci_lock, flags);
 
 	*PCI_NP_AD = addr;
 
@@ -118,6 +135,7 @@ int ixp4xx_pci_read_errata(u32 addr, u32 cmd, u32* data)
 		retval = 1;
 
 	spin_unlock_irqrestore(&ixp4xx_pci_lock, flags);
+	raw_spin_unlock_irqrestore(&ixp4xx_pci_lock, flags);
 	return retval;
 }
 
@@ -127,6 +145,7 @@ int ixp4xx_pci_read_no_errata(u32 addr, u32 cmd, u32* data)
 	int retval = 0;
 
 	spin_lock_irqsave(&ixp4xx_pci_lock, flags);
+	raw_spin_lock_irqsave(&ixp4xx_pci_lock, flags);
 
 	*PCI_NP_AD = addr;
 
@@ -140,6 +159,7 @@ int ixp4xx_pci_read_no_errata(u32 addr, u32 cmd, u32* data)
 		retval = 1;
 
 	spin_unlock_irqrestore(&ixp4xx_pci_lock, flags);
+	raw_spin_unlock_irqrestore(&ixp4xx_pci_lock, flags);
 	return retval;
 }
 
@@ -149,6 +169,7 @@ int ixp4xx_pci_write(u32 addr, u32 cmd, u32 data)
 	int retval = 0;
 
 	spin_lock_irqsave(&ixp4xx_pci_lock, flags);
+	raw_spin_lock_irqsave(&ixp4xx_pci_lock, flags);
 
 	*PCI_NP_AD = addr;
 
@@ -162,6 +183,7 @@ int ixp4xx_pci_write(u32 addr, u32 cmd, u32 data)
 		retval = 1;
 
 	spin_unlock_irqrestore(&ixp4xx_pci_lock, flags);
+	raw_spin_unlock_irqrestore(&ixp4xx_pci_lock, flags);
 	return retval;
 }
 
@@ -370,11 +392,21 @@ void __init ixp4xx_pci_preinit(void)
 
 	asm("mrc p15, 0, %0, cr0, cr0, 0;" : "=r"(processor_id) :);
 
+void __init ixp4xx_pci_preinit(void)
+{
+	unsigned long cpuid = read_cpuid_id();
+
+#ifdef CONFIG_IXP4XX_INDIRECT_PCI
+	pcibios_min_mem = 0x10000000; /* 1 GB of indirect PCI MMIO space */
+#else
+	pcibios_min_mem = 0x48000000; /* 64 MB of PCI MMIO space */
+#endif
 	/*
 	 * Determine which PCI read method to use.
 	 * Rev 0 IXP425 requires workaround.
 	 */
 	if (!(processor_id & 0xf) && cpu_is_ixp42x()) {
+	if (!(cpuid & 0xf) && cpu_is_ixp42x()) {
 		printk("PCI: IXP42x A0 silicon detected - "
 			"PCI Non-Prefetch Workaround Enabled\n");
 		ixp4xx_pci_read = ixp4xx_pci_read_errata;
@@ -388,6 +420,12 @@ void __init ixp4xx_pci_preinit(void)
 	pr_debug("setup PCI-AHB(inbound) and AHB-PCI(outbound) address mappings\n");
 
 	/* 
+	hook_fault_code(16+6, abort_handler, SIGBUS, 0,
+			"imprecise external abort");
+
+	pr_debug("setup PCI-AHB(inbound) and AHB-PCI(outbound) address mappings\n");
+
+	/*
 	 * We use identity AHB->PCI address translation
 	 * in the 0x48000000 to 0x4bffffff address space
 	 */
@@ -398,6 +436,11 @@ void __init ixp4xx_pci_preinit(void)
 	 * in 4 16MB BARs that begin at the physical memory start
 	 */
 	*PCI_AHBMEMBASE = (PHYS_OFFSET & 0xFF000000) + 
+	/*
+	 * We also use identity PCI->AHB address translation
+	 * in 4 16MB BARs that begin at the physical memory start
+	 */
+	*PCI_AHBMEMBASE = (PHYS_OFFSET & 0xFF000000) +
 		((PHYS_OFFSET & 0xFF000000) >> 8) +
 		((PHYS_OFFSET & 0xFF000000) >> 16) +
 		((PHYS_OFFSET & 0xFF000000) >> 24) +
@@ -421,11 +464,26 @@ void __init ixp4xx_pci_preinit(void)
 		 * Enable CSR window at 0xff000000.
 		 */
 		local_write_config(PCI_BASE_ADDRESS_4, 4, 0xff000008);
+		 * We configure the PCI inbound memory windows to be
+		 * 1:1 mapped to SDRAM
+		 */
+		local_write_config(PCI_BASE_ADDRESS_0, 4, PHYS_OFFSET);
+		local_write_config(PCI_BASE_ADDRESS_1, 4, PHYS_OFFSET + SZ_16M);
+		local_write_config(PCI_BASE_ADDRESS_2, 4, PHYS_OFFSET + SZ_32M);
+		local_write_config(PCI_BASE_ADDRESS_3, 4,
+					PHYS_OFFSET + SZ_32M + SZ_16M);
+
+		/*
+		 * Enable CSR window at 64 MiB to allow PCI masters
+		 * to continue prefetching past 64 MiB boundary.
+		 */
+		local_write_config(PCI_BASE_ADDRESS_4, 4, PHYS_OFFSET + SZ_64M);
 
 		/*
 		 * Enable the IO window to be way up high, at 0xfffffc00
 		 */
 		local_write_config(PCI_BASE_ADDRESS_5, 4, 0xfffffc01);
+		local_write_config(0x40, 4, 0x000080FF); /* No TRDY time limit */
 	} else {
 		printk("PCI: IXP4xx is target - No bus scan performed\n");
 	}
@@ -486,6 +544,7 @@ int ixp4xx_setup(int nr, struct pci_sys_data *sys)
 #else
 	res[1].end = 0x4fffffff;
 #endif
+	res[1].end = PCIBIOS_MAX_MEM;
 	res[1].flags = IORESOURCE_MEM;
 
 	request_resource(&ioport_resource, &res[0]);
@@ -497,6 +556,8 @@ int ixp4xx_setup(int nr, struct pci_sys_data *sys)
 
 	platform_notify = ixp4xx_pci_platform_notify;
 	platform_notify_remove = ixp4xx_pci_platform_notify_remove;
+	pci_add_resource_offset(&sys->resources, &res[0], sys->io_offset);
+	pci_add_resource_offset(&sys->resources, &res[1], sys->mem_offset);
 
 	return 1;
 }
@@ -535,3 +596,5 @@ pci_set_consistent_dma_mask(struct pci_dev *dev, u64 mask)
 EXPORT_SYMBOL(ixp4xx_pci_read);
 EXPORT_SYMBOL(ixp4xx_pci_write);
 
+EXPORT_SYMBOL(ixp4xx_pci_read);
+EXPORT_SYMBOL(ixp4xx_pci_write);

@@ -120,6 +120,7 @@
 #include <linux/slab.h>
 #include <linux/module.h>
 #include <linux/kref.h>
+#include <linux/slab.h>
 #include <linux/usb.h>
 #include <linux/device.h>
 #include <linux/crc32.h>
@@ -157,6 +158,7 @@ struct ks959_speedparams {
 	__u8 flags;
 	__u8 reserved[3];
 } __attribute__ ((packed));
+} __packed;
 
 #define KS_DATA_5_BITS 0x00
 #define KS_DATA_6_BITS 0x01
@@ -176,6 +178,7 @@ struct ks959_cb {
 	struct net_device *netdev;	/* network layer */
 	struct irlap_cb *irlap;	/* The link layer we are binded to */
 	struct net_device_stats stats;	/* network statistics */
+
 	struct qos_info qos;
 
 	struct usb_ctrlrequest *tx_setuprequest;
@@ -251,6 +254,9 @@ static void ks959_speed_irq(struct urb *urb)
 	if (urb->status != 0) {
 		err("ks959_speed_irq: urb asynchronously failed - %d",
 		    urb->status);
+		dev_err(&urb->dev->dev,
+			"ks959_speed_irq: urb asynchronously failed - %d\n",
+			urb->status);
 	}
 }
 
@@ -335,6 +341,8 @@ static void ks959_send_irq(struct urb *urb)
 	/* in process of stopping, just drop data */
 	if (!netif_running(kingsun->netdev)) {
 		err("ks959_send_irq: Network not running!");
+		dev_err(&kingsun->usbdev->dev,
+			"ks959_send_irq: Network not running!\n");
 		return;
 	}
 
@@ -342,6 +350,9 @@ static void ks959_send_irq(struct urb *urb)
 	if (urb->status != 0) {
 		err("ks959_send_irq: urb asynchronously failed - %d",
 		    urb->status);
+		dev_err(&kingsun->usbdev->dev,
+			"ks959_send_irq: urb asynchronously failed - %d\n",
+			urb->status);
 		return;
 	}
 
@@ -362,12 +373,16 @@ static void ks959_send_irq(struct urb *urb)
 			if ((ret = ks959_submit_tx_fragment(kingsun)) != 0) {
 				err("ks959_send_irq: failed tx_urb submit: %d",
 				    ret);
+				dev_err(&kingsun->usbdev->dev,
+					"ks959_send_irq: failed tx_urb submit: %d\n",
+					ret);
 				switch (ret) {
 				case -ENODEV:
 				case -EPIPE:
 					break;
 				default:
 					kingsun->stats.tx_errors++;
+					netdev->stats.tx_errors++;
 					netif_start_queue(netdev);
 				}
 			}
@@ -387,6 +402,8 @@ static void ks959_send_irq(struct urb *urb)
  * Called from net/core when new frame is available.
  */
 static int ks959_hard_xmit(struct sk_buff *skb, struct net_device *netdev)
+static netdev_tx_t ks959_hard_xmit(struct sk_buff *skb,
+					 struct net_device *netdev)
 {
 	struct ks959_cb *kingsun;
 	unsigned int wraplen;
@@ -412,6 +429,8 @@ static int ks959_hard_xmit(struct sk_buff *skb, struct net_device *netdev)
 
 	if ((ret = ks959_submit_tx_fragment(kingsun)) != 0) {
 		err("ks959_hard_xmit: failed tx_urb submit: %d", ret);
+		dev_err(&kingsun->usbdev->dev,
+			"ks959_hard_xmit: failed tx_urb submit: %d\n", ret);
 		switch (ret) {
 		case -ENODEV:
 		case -EPIPE:
@@ -423,6 +442,12 @@ static int ks959_hard_xmit(struct sk_buff *skb, struct net_device *netdev)
 	} else {
 		kingsun->stats.tx_packets++;
 		kingsun->stats.tx_bytes += skb->len;
+			netdev->stats.tx_errors++;
+			netif_start_queue(netdev);
+		}
+	} else {
+		netdev->stats.tx_packets++;
+		netdev->stats.tx_bytes += skb->len;
 
 	}
 
@@ -430,6 +455,7 @@ static int ks959_hard_xmit(struct sk_buff *skb, struct net_device *netdev)
 	spin_unlock(&kingsun->lock);
 
 	return ret;
+	return NETDEV_TX_OK;
 }
 
 /* Receive callback function */
@@ -448,6 +474,9 @@ static void ks959_rcv_irq(struct urb *urb)
 	if (urb->status != 0) {
 		err("kingsun_rcv_irq: urb asynchronously failed - %d",
 		    urb->status);
+		dev_err(&kingsun->usbdev->dev,
+			"kingsun_rcv_irq: urb asynchronously failed - %d\n",
+			urb->status);
 		kingsun->receiving = 0;
 		return;
 	}
@@ -471,6 +500,7 @@ static void ks959_rcv_irq(struct urb *urb)
 			if (kingsun->rx_variable_xormask != 0) {
 				async_unwrap_char(kingsun->netdev,
 						  &kingsun->stats,
+						  &kingsun->netdev->stats,
 						  &kingsun->rx_unwrap_buff,
 						  bytes[i]);
 			}
@@ -542,6 +572,8 @@ static int ks959_net_open(struct net_device *netdev)
 	kingsun->irlap = irlap_open(netdev, &kingsun->qos, hwname);
 	if (!kingsun->irlap) {
 		err("ks959-sir: irlap_open failed");
+		err = -ENOMEM;
+		dev_err(&kingsun->usbdev->dev, "irlap_open failed\n");
 		goto free_mem;
 	}
 
@@ -555,6 +587,8 @@ static int ks959_net_open(struct net_device *netdev)
 	err = usb_submit_urb(kingsun->rx_urb, GFP_KERNEL);
 	if (err) {
 		err("ks959-sir: first urb-submit failed: %d", err);
+		dev_err(&kingsun->usbdev->dev,
+			"first urb-submit failed: %d\n", err);
 		goto close_irlap;
 	}
 
@@ -679,6 +713,12 @@ static struct net_device_stats *ks959_net_get_stats(struct net_device *netdev)
 	return &kingsun->stats;
 }
 
+static const struct net_device_ops ks959_ops = {
+	.ndo_start_xmit	= ks959_hard_xmit,
+	.ndo_open	= ks959_net_open,
+	.ndo_stop	= ks959_net_close,
+	.ndo_do_ioctl	= ks959_net_ioctl,
+};
 /*
  * This routine is called by the USB subsystem for each new device
  * in the system. We need to check if the device is ours, and in
@@ -796,12 +836,15 @@ static int ks959_probe(struct usb_interface *intf,
 	net->stop = ks959_net_close;
 	net->get_stats = ks959_net_get_stats;
 	net->do_ioctl = ks959_net_ioctl;
+	net->netdev_ops = &ks959_ops;
 
 	ret = register_netdev(net);
 	if (ret != 0)
 		goto free_mem;
 
 	info("IrDA: Registered KingSun KS-959 device %s", net->name);
+	dev_info(&net->dev, "IrDA: Registered KingSun KS-959 device %s\n",
+		 net->name);
 
 	usb_set_intfdata(intf, kingsun);
 
@@ -932,6 +975,7 @@ static void __exit ks959_cleanup(void)
 }
 
 module_exit(ks959_cleanup);
+module_usb_driver(irda_driver);
 
 MODULE_AUTHOR("Alex Villacís Lasso <a_villacis@palosanto.com>");
 MODULE_DESCRIPTION("IrDA-USB Dongle Driver for KingSun KS-959");

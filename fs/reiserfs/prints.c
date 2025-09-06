@@ -5,6 +5,7 @@
 #include <linux/time.h>
 #include <linux/fs.h>
 #include <linux/reiserfs_fs.h>
+#include "reiserfs.h"
 #include <linux/string.h>
 #include <linux/buffer_head.h>
 
@@ -18,6 +19,7 @@ static char *reiserfs_cpu_offset(struct cpu_key *key)
 {
 	if (cpu_key_k_type(key) == TYPE_DIRENTRY)
 		sprintf(off_buf, "%Lu(%Lu)",
+		sprintf(off_buf, "%llu(%llu)",
 			(unsigned long long)
 			GET_HASH_VALUE(cpu_key_k_offset(key)),
 			(unsigned long long)
@@ -35,6 +37,7 @@ static char *le_offset(struct reiserfs_key *key)
 	version = le_key_version(key);
 	if (le_key_k_type(version, key) == TYPE_DIRENTRY)
 		sprintf(off_buf, "%Lu(%Lu)",
+		sprintf(off_buf, "%llu(%llu)",
 			(unsigned long long)
 			GET_HASH_VALUE(le_key_k_offset(version, key)),
 			(unsigned long long)
@@ -163,6 +166,10 @@ static char *is_there_reiserfs_struct(char *fmt, int *what, int *skip)
 
 	*skip = 0;
 
+static char *is_there_reiserfs_struct(char *fmt, int *what)
+{
+	char *k = fmt;
+
 	while ((k = strchr(k, '%')) != NULL) {
 		if (k[1] == 'k' || k[1] == 'K' || k[1] == 'h' || k[1] == 't' ||
 		    k[1] == 'z' || k[1] == 'b' || k[1] == 'y' || k[1] == 'a') {
@@ -188,6 +195,20 @@ static char *is_there_reiserfs_struct(char *fmt, int *what, int *skip)
            key->k_offset, key->k_uniqueness); 
 */
 
+/*
+ * debugging reiserfs we used to print out a lot of different
+ * variables, like keys, item headers, buffer heads etc. Values of
+ * most fields matter. So it took a long time just to write
+ * appropriative printk. With this reiserfs_warning you can use format
+ * specification for complex structures like you used to do with
+ * printfs for integers, doubles and pointers. For instance, to print
+ * out key structure you have to write just:
+ * reiserfs_warning ("bad key %k", key);
+ * instead of
+ * printk ("bad key %lu %lu %lu %lu", key->k_dir_id, key->k_objectid,
+ *         key->k_offset, key->k_uniqueness);
+ */
+static DEFINE_SPINLOCK(error_lock);
 static void prepare_error_buf(const char *fmt, va_list args)
 {
 	char *fmt1 = fmt_buf;
@@ -198,6 +219,13 @@ static void prepare_error_buf(const char *fmt, va_list args)
 	strcpy(fmt1, fmt);
 
 	while ((k = is_there_reiserfs_struct(fmt1, &what, &skip)) != NULL) {
+	int what;
+
+	spin_lock(&error_lock);
+
+	strcpy(fmt1, fmt);
+
+	while ((k = is_there_reiserfs_struct(fmt1, &what)) != NULL) {
 		*k = 0;
 
 		p += vsprintf(p, fmt1, args);
@@ -255,6 +283,20 @@ static void prepare_error_buf(const char *fmt, va_list args)
    %z to print block head (arg must be struct buffer_head *
    %b to print buffer_head
 */
+	spin_unlock(&error_lock);
+
+}
+
+/*
+ * in addition to usual conversion specifiers this accepts reiserfs
+ * specific conversion specifiers:
+ * %k to print little endian key,
+ * %K to print cpu key,
+ * %h to print item_head,
+ * %t to print directory entry
+ * %z to print block head (arg must be struct buffer_head *
+ * %b to print buffer_head
+ */
 
 #define do_reiserfs_warning(fmt)\
 {\
@@ -272,6 +314,17 @@ void reiserfs_warning(struct super_block *sb, const char *fmt, ...)
 		       reiserfs_bdevname(sb), error_buf);
 	else
 		printk(KERN_WARNING "ReiserFS: warning: %s\n", error_buf);
+void __reiserfs_warning(struct super_block *sb, const char *id,
+			 const char *function, const char *fmt, ...)
+{
+	do_reiserfs_warning(fmt);
+	if (sb)
+		printk(KERN_WARNING "REISERFS warning (device %s): %s%s%s: "
+		       "%s\n", sb->s_id, id ? id : "", id ? " " : "",
+		       function, error_buf);
+	else
+		printk(KERN_WARNING "REISERFS warning: %s%s%s: %s\n",
+		       id ? id : "", id ? " " : "", function, error_buf);
 }
 
 /* No newline.. reiserfs_info calls can be followed by printk's */
@@ -283,6 +336,10 @@ void reiserfs_info(struct super_block *sb, const char *fmt, ...)
 		       reiserfs_bdevname(sb), error_buf);
 	else
 		printk(KERN_NOTICE "ReiserFS: %s", error_buf);
+		printk(KERN_NOTICE "REISERFS (device %s): %s",
+		       sb->s_id, error_buf);
+	else
+		printk(KERN_NOTICE "REISERFS %s:", error_buf);
 }
 
 /* No newline.. reiserfs_printk calls can be followed by printk's */
@@ -361,6 +418,101 @@ void reiserfs_panic(struct super_block *sb, const char *fmt, ...)
 
 	panic(KERN_EMERG "REISERFS: panic (device %s): %s\n",
 	       reiserfs_bdevname(sb), error_buf);
+		printk(KERN_DEBUG "REISERFS debug (device %s): %s\n",
+		       s->s_id, error_buf);
+	else
+		printk(KERN_DEBUG "REISERFS debug: %s\n", error_buf);
+#endif
+}
+
+/*
+ * The format:
+ *
+ *          maintainer-errorid: [function-name:] message
+ *
+ *   where errorid is unique to the maintainer and function-name is
+ *   optional, is recommended, so that anyone can easily find the bug
+ *   with a simple grep for the short to type string
+ *   maintainer-errorid.  Don't bother with reusing errorids, there are
+ *   lots of numbers out there.
+ *
+ *   Example:
+ *
+ *   reiserfs_panic(
+ *     p_sb, "reiser-29: reiserfs_new_blocknrs: "
+ *     "one of search_start or rn(%d) is equal to MAX_B_NUM,"
+ *     "which means that we are optimizing location based on the "
+ *     "bogus location of a temp buffer (%p).",
+ *     rn, bh
+ *   );
+ *
+ *   Regular panic()s sometimes clear the screen before the message can
+ *   be read, thus the need for the while loop.
+ *
+ *   Numbering scheme for panic used by Vladimir and Anatoly( Hans completely
+ *   ignores this scheme, and considers it pointless complexity):
+ *
+ *   panics in reiserfs_fs.h have numbers from 1000 to 1999
+ *   super.c			2000 to 2999
+ *   preserve.c (unused)	3000 to 3999
+ *   bitmap.c			4000 to 4999
+ *   stree.c			5000 to 5999
+ *   prints.c			6000 to 6999
+ *   namei.c			7000 to 7999
+ *   fix_nodes.c		8000 to 8999
+ *   dir.c			9000 to 9999
+ *   lbalance.c			10000 to 10999
+ *   ibalance.c			11000 to 11999 not ready
+ *   do_balan.c			12000 to 12999
+ *   inode.c			13000 to 13999
+ *   file.c			14000 to 14999
+ *   objectid.c			15000 - 15999
+ *   buffer.c			16000 - 16999
+ *   symlink.c			17000 - 17999
+ *
+ *  .  */
+
+void __reiserfs_panic(struct super_block *sb, const char *id,
+		      const char *function, const char *fmt, ...)
+{
+	do_reiserfs_warning(fmt);
+
+#ifdef CONFIG_REISERFS_CHECK
+	dump_stack();
+#endif
+	if (sb)
+		printk(KERN_WARNING "REISERFS panic (device %s): %s%s%s: %s\n",
+		      sb->s_id, id ? id : "", id ? " " : "",
+		      function, error_buf);
+	else
+		printk(KERN_WARNING "REISERFS panic: %s%s%s: %s\n",
+		      id ? id : "", id ? " " : "", function, error_buf);
+	BUG();
+}
+
+void __reiserfs_error(struct super_block *sb, const char *id,
+		      const char *function, const char *fmt, ...)
+{
+	do_reiserfs_warning(fmt);
+
+	BUG_ON(sb == NULL);
+
+	if (reiserfs_error_panic(sb))
+		__reiserfs_panic(sb, id, function, error_buf);
+
+	if (id && id[0])
+		printk(KERN_CRIT "REISERFS error (device %s): %s %s: %s\n",
+		       sb->s_id, id, function, error_buf);
+	else
+		printk(KERN_CRIT "REISERFS error (device %s): %s: %s\n",
+		       sb->s_id, function, error_buf);
+
+	if (sb->s_flags & MS_RDONLY)
+		return;
+
+	reiserfs_info(sb, "Remounting filesystem read-only\n");
+	sb->s_flags |= MS_RDONLY;
+	reiserfs_abort_journal(sb, -EIO);
 }
 
 void reiserfs_abort(struct super_block *sb, int errno, const char *fmt, ...)
@@ -385,6 +537,25 @@ void reiserfs_abort(struct super_block *sb, int errno, const char *fmt, ...)
 /* this prints internal nodes (4 keys/items in line) (dc_number,
    dc_size)[k_dirid, k_objectid, k_offset, k_uniqueness](dc_number,
    dc_size)...*/
+		panic(KERN_CRIT "REISERFS panic (device %s): %s\n", sb->s_id,
+		      error_buf);
+	}
+
+	if (reiserfs_is_journal_aborted(SB_JOURNAL(sb)))
+		return;
+
+	printk(KERN_CRIT "REISERFS abort (device %s): %s\n", sb->s_id,
+	       error_buf);
+
+	sb->s_flags |= MS_RDONLY;
+	reiserfs_abort_journal(sb, errno);
+}
+
+/*
+ * this prints internal nodes (4 keys/items in line) (dc_number,
+ * dc_size)[k_dirid, k_objectid, k_offset, k_uniqueness](dc_number,
+ * dc_size)...
+ */
 static int print_internal(struct buffer_head *bh, int first, int last)
 {
 	struct reiserfs_key *key;
@@ -411,6 +582,7 @@ static int print_internal(struct buffer_head *bh, int first, int last)
 	reiserfs_printk("PTR %d: %y ", from, dc);
 
 	for (i = from, key = B_N_PDELIM_KEY(bh, from), dc++; i < to;
+	for (i = from, key = internal_key(bh, from), dc++; i < to;
 	     i++, key++, dc++) {
 		reiserfs_printk("KEY %d: %k PTR %d: %y ", i, key, i + 1, dc);
 		if (i && i % 4 == 0)
@@ -435,10 +607,10 @@ static int print_leaf(struct buffer_head *bh, int print_mode, int first,
 
 	blkh = B_BLK_HEAD(bh);
 	ih = B_N_PITEM_HEAD(bh, 0);
+	ih = item_head(bh, 0);
 	nr = blkh_nr_item(blkh);
 
 	printk
-	    ("\n===================================================================\n");
 	reiserfs_printk("LEAF NODE (%ld) contains %z\n", bh->b_blocknr, bh);
 
 	if (!(print_mode & PRINT_LEAF_ITEMS)) {
@@ -468,10 +640,10 @@ static int print_leaf(struct buffer_head *bh, int print_mode, int first,
 		reiserfs_printk("|%2d| %h |\n", i, ih);
 		if (print_mode & PRINT_LEAF_ITEMS)
 			op_print_item(ih, B_I_PITEM(bh, ih));
+			op_print_item(ih, ih_item_body(bh, ih));
 	}
 
 	printk
-	    ("===================================================================\n");
 
 	return 0;
 }
@@ -517,6 +689,11 @@ static int print_super_block(struct buffer_head *bh)
 	// FIXME: this would be confusing if
 	// someone stores reiserfs super block in some data block ;)
 //    skipped = (bh->b_blocknr * bh->b_size) / sb_blocksize(rs);
+	/*
+	 * FIXME: this would be confusing if
+	 * someone stores reiserfs super block in some data block ;)
+//    skipped = (bh->b_blocknr * bh->b_size) / sb_blocksize(rs);
+	 */
 	skipped = bh->b_blocknr;
 	data_blocks = sb_block_count(rs) - skipped - 1 - sb_bmap_nr(rs) -
 	    (!is_reiserfs_jr(rs) ? sb_jp_journal_size(rs) +
@@ -554,6 +731,8 @@ static int print_desc_block(struct buffer_head *bh)
 }
 
 void print_block(struct buffer_head *bh, ...)	//int print_mode, int first, int last)
+/* ..., int print_mode, int first, int last) */
+void print_block(struct buffer_head *bh, ...)
 {
 	va_list args;
 	int mode, first, last;
@@ -564,6 +743,8 @@ void print_block(struct buffer_head *bh, ...)	//int print_mode, int first, int l
 		printk("print_block: buffer is NULL\n");
 		return;
 	}
+
+	va_start(args, bh);
 
 	mode = va_arg(args, int);
 	first = va_arg(args, int);
@@ -594,7 +775,6 @@ void store_print_tb(struct tree_balance *tb)
 	sprintf(print_tb_buf, "\n"
 		"BALANCING %d\n"
 		"MODE=%c, ITEM_POS=%d POS_IN_ITEM=%d\n"
-		"=====================================================================\n"
 		"* h *    S    *    L    *    R    *   F   *   FL  *   FR  *  CFL  *  CFR  *\n",
 		REISERFS_SB(tb->tb_sb)->s_do_balance,
 		tb->tb_mode, PATH_LAST_POSITION(tb->tb_path),
@@ -620,6 +800,11 @@ void store_print_tb(struct tree_balance *tb)
 			(tb->L[h]) ? atomic_read(&(tb->L[h]->b_count)) : -1,
 			(tb->R[h]) ? (long long)(tb->R[h]->b_blocknr) : (-1LL),
 			(tb->R[h]) ? atomic_read(&(tb->R[h]->b_count)) : -1,
+			(tbSh) ? atomic_read(&tbSh->b_count) : -1,
+			(tb->L[h]) ? (long long)(tb->L[h]->b_blocknr) : (-1LL),
+			(tb->L[h]) ? atomic_read(&tb->L[h]->b_count) : -1,
+			(tb->R[h]) ? (long long)(tb->R[h]->b_blocknr) : (-1LL),
+			(tb->R[h]) ? atomic_read(&tb->R[h]->b_count) : -1,
 			(tbFh) ? (long long)(tbFh->b_blocknr) : (-1LL),
 			(tb->FL[h]) ? (long long)(tb->FL[h]->
 						  b_blocknr) : (-1LL),
@@ -632,13 +817,15 @@ void store_print_tb(struct tree_balance *tb)
 	}
 
 	sprintf(print_tb_buf + strlen(print_tb_buf),
-		"=====================================================================\n"
 		"* h * size * ln * lb * rn * rb * blkn * s0 * s1 * s1b * s2 * s2b * curb * lk * rk *\n"
 		"* 0 * %4d * %2d * %2d * %2d * %2d * %4d * %2d * %2d * %3d * %2d * %3d * %4d * %2d * %2d *\n",
 		tb->insert_size[0], tb->lnum[0], tb->lbytes, tb->rnum[0],
 		tb->rbytes, tb->blknum[0], tb->s0num, tb->s1num, tb->s1bytes,
 		tb->s2num, tb->s2bytes, tb->cur_blknum, tb->lkey[0],
 		tb->rkey[0]);
+		tb->rbytes, tb->blknum[0], tb->s0num, tb->snum[0],
+		tb->sbytes[0], tb->snum[1], tb->sbytes[1],
+		tb->cur_blknum, tb->lkey[0], tb->rkey[0]);
 
 	/* this prints balance parameters for non-leaf levels */
 	h = 0;
@@ -651,7 +838,6 @@ void store_print_tb(struct tree_balance *tb)
 	} while (tb->insert_size[h]);
 
 	sprintf(print_tb_buf + strlen(print_tb_buf),
-		"=====================================================================\n"
 		"FEB list: ");
 
 	/* print FEB list (list of buffers in form (bh (b_blocknr, b_count), that will be used for new nodes) */
@@ -662,10 +848,10 @@ void store_print_tb(struct tree_balance *tb)
 			tb->FEB[i] ? (unsigned long long)tb->FEB[i]->
 			b_blocknr : 0ULL,
 			tb->FEB[i] ? atomic_read(&(tb->FEB[i]->b_count)) : 0,
+			tb->FEB[i] ? atomic_read(&tb->FEB[i]->b_count) : 0,
 			(i == ARRAY_SIZE(tb->FEB) - 1) ? "\n" : ", ");
 
 	sprintf(print_tb_buf + strlen(print_tb_buf),
-		"======================== the end ====================================\n");
 }
 
 void print_cur_tb(char *mes)
@@ -687,6 +873,10 @@ static void check_leaf_block_head(struct buffer_head *bh)
 	if (blkh_free_space(blkh) > bh->b_size - BLKH_SIZE - IH_SIZE * nr)
 		reiserfs_panic(NULL,
 			       "vs-6020: check_leaf_block_head: invalid free space %z",
+		reiserfs_panic(NULL, "vs-6010", "invalid item number %z",
+			       bh);
+	if (blkh_free_space(blkh) > bh->b_size - BLKH_SIZE - IH_SIZE * nr)
+		reiserfs_panic(NULL, "vs-6020", "invalid free space %z",
 			       bh);
 
 }
@@ -705,6 +895,10 @@ static void check_internal_block_head(struct buffer_head *bh)
 		reiserfs_panic(NULL,
 			       "vs-6030: check_internal_block_head: invalid item number %z",
 			       bh);
+		reiserfs_panic(NULL, "vs-6025", "invalid level %z", bh);
+
+	if (B_NR_ITEMS(bh) > (bh->b_size - BLKH_SIZE) / IH_SIZE)
+		reiserfs_panic(NULL, "vs-6030", "invalid item number %z", bh);
 
 	if (B_FREE_SPACE(bh) !=
 	    bh->b_size - BLKH_SIZE - KEY_SIZE * B_NR_ITEMS(bh) -
@@ -712,6 +906,7 @@ static void check_internal_block_head(struct buffer_head *bh)
 		reiserfs_panic(NULL,
 			       "vs-6040: check_internal_block_head: invalid free space %z",
 			       bh);
+		reiserfs_panic(NULL, "vs-6040", "invalid free space %z", bh);
 
 }
 
@@ -725,6 +920,8 @@ void check_leaf(struct buffer_head *bh)
 	check_leaf_block_head(bh);
 	for (i = 0, ih = B_N_PITEM_HEAD(bh, 0); i < B_NR_ITEMS(bh); i++, ih++)
 		op_check_item(ih, B_I_PITEM(bh, ih));
+	for (i = 0, ih = item_head(bh, 0); i < B_NR_ITEMS(bh); i++, ih++)
+		op_check_item(ih, ih_item_body(bh, ih));
 }
 
 void check_internal(struct buffer_head *bh)

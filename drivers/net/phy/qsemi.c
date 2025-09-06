@@ -113,6 +113,7 @@ static int qs6612_config_intr(struct phy_device *phydev)
 }
 
 static struct phy_driver qs6612_driver = {
+static struct phy_driver qs6612_driver[] = { {
 	.phy_id		= 0x00181440,
 	.name		= "QS6612",
 	.phy_id_mask	= 0xfffffff0,
@@ -138,3 +139,13 @@ static void __exit qs6612_exit(void)
 
 module_init(qs6612_init);
 module_exit(qs6612_exit);
+} };
+
+module_phy_driver(qs6612_driver);
+
+static struct mdio_device_id __maybe_unused qs6612_tbl[] = {
+	{ 0x00181440, 0xfffffff0 },
+	{ }
+};
+
+MODULE_DEVICE_TABLE(mdio, qs6612_tbl);

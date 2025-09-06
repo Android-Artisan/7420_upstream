@@ -10,6 +10,7 @@
  */
 
 static inline int fls(int x)
+static __always_inline int fls(int x)
 {
 	int r = 32;
 

@@ -26,6 +26,9 @@
 struct notifier_block;
 extern const int NR_TYPES;
 extern const int max_vals[];
+#include <uapi/linux/keyboard.h>
+
+struct notifier_block;
 extern unsigned short *key_maps[MAX_NR_KEYMAPS];
 extern unsigned short plain_map[NR_KEYS];
 

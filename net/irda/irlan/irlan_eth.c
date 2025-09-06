@@ -30,6 +30,7 @@
 #include <linux/inetdevice.h>
 #include <linux/if_arp.h>
 #include <linux/module.h>
+#include <linux/sched.h>
 #include <net/arp.h>
 
 #include <net/irda/irda.h>
@@ -44,6 +45,18 @@ static int  irlan_eth_close(struct net_device *dev);
 static int  irlan_eth_xmit(struct sk_buff *skb, struct net_device *dev);
 static void irlan_eth_set_multicast_list( struct net_device *dev);
 static struct net_device_stats *irlan_eth_get_stats(struct net_device *dev);
+static netdev_tx_t  irlan_eth_xmit(struct sk_buff *skb,
+					 struct net_device *dev);
+static void irlan_eth_set_multicast_list(struct net_device *dev);
+
+static const struct net_device_ops irlan_eth_netdev_ops = {
+	.ndo_open		= irlan_eth_open,
+	.ndo_stop		= irlan_eth_close,
+	.ndo_start_xmit		= irlan_eth_xmit,
+	.ndo_set_rx_mode	= irlan_eth_set_multicast_list,
+	.ndo_change_mtu		= eth_change_mtu,
+	.ndo_validate_addr	= eth_validate_addr,
+};
 
 /*
  * Function irlan_eth_setup (dev)
@@ -61,6 +74,11 @@ static void irlan_eth_setup(struct net_device *dev)
 	dev->destructor		= free_netdev;
 
 	ether_setup(dev);
+	ether_setup(dev);
+
+	dev->netdev_ops		= &irlan_eth_netdev_ops;
+	dev->destructor		= free_netdev;
+
 
 	/*
 	 * Lets do all queueing in IrTTP instead of this device driver.
@@ -90,6 +108,7 @@ static void irlan_eth_setup(struct net_device *dev)
 struct net_device *alloc_irlandev(const char *name)
 {
 	return alloc_netdev(sizeof(struct irlan_cb), name,
+	return alloc_netdev(sizeof(struct irlan_cb), name, NET_NAME_UNKNOWN,
 			    irlan_eth_setup);
 }
 
@@ -159,6 +178,12 @@ static int irlan_eth_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	struct irlan_cb *self = netdev_priv(dev);
 	int ret;
+static netdev_tx_t irlan_eth_xmit(struct sk_buff *skb,
+					struct net_device *dev)
+{
+	struct irlan_cb *self = netdev_priv(dev);
+	int ret;
+	unsigned int len;
 
 	/* skb headroom large enough to contain all IrDA-headers? */
 	if ((skb_headroom(skb) < self->max_header_size) || (skb_shared(skb))) {
@@ -171,6 +196,7 @@ static int irlan_eth_xmit(struct sk_buff *skb, struct net_device *dev)
 		/* Did the realloc succeed? */
 		if (new_skb == NULL)
 			return 0;
+			return NETDEV_TX_OK;
 
 		/* Use the new skb instead */
 		skb = new_skb;
@@ -178,6 +204,7 @@ static int irlan_eth_xmit(struct sk_buff *skb, struct net_device *dev)
 
 	dev->trans_start = jiffies;
 
+	len = skb->len;
 	/* Now queue the packet in the transport layer */
 	if (self->use_udata)
 		ret = irttp_udata_request(self->tsap_data, skb);
@@ -203,6 +230,13 @@ static int irlan_eth_xmit(struct sk_buff *skb, struct net_device *dev)
 	}
 
 	return 0;
+		dev->stats.tx_dropped++;
+	} else {
+		dev->stats.tx_packets++;
+		dev->stats.tx_bytes += len;
+	}
+
+	return NETDEV_TX_OK;
 }
 
 /*
@@ -223,6 +257,16 @@ int irlan_eth_receive(void *instance, void *sap, struct sk_buff *skb)
 		IRDA_DEBUG(0, "%s() : IrLAN frame too short (%d)\n",
 			   __func__, skb->len);
 		++self->stats.rx_dropped;
+	struct net_device *dev = self->dev;
+
+	if (skb == NULL) {
+		dev->stats.rx_dropped++;
+		return 0;
+	}
+	if (skb->len < ETH_HLEN) {
+		pr_debug("%s() : IrLAN frame too short (%d)\n",
+			 __func__, skb->len);
+		dev->stats.rx_dropped++;
 		dev_kfree_skb(skb);
 		return 0;
 	}
@@ -236,6 +280,10 @@ int irlan_eth_receive(void *instance, void *sap, struct sk_buff *skb)
 
 	self->stats.rx_packets++;
 	self->stats.rx_bytes += skb->len;
+	skb->protocol = eth_type_trans(skb, dev); /* Remove eth header */
+
+	dev->stats.rx_packets++;
+	dev->stats.rx_bytes += skb->len;
 
 	netif_rx(skb);   /* Eat it! */
 
@@ -262,6 +310,7 @@ void irlan_eth_flow_indication(void *instance, void *sap, LOCAL_FLOW flow)
 	struct net_device *dev;
 
 	self = (struct irlan_cb *) instance;
+	self = instance;
 
 	IRDA_ASSERT(self != NULL, return;);
 	IRDA_ASSERT(self->magic == IRLAN_MAGIC, return;);
@@ -273,6 +322,9 @@ void irlan_eth_flow_indication(void *instance, void *sap, LOCAL_FLOW flow)
 	IRDA_DEBUG(0, "%s() : flow %s ; running %d\n", __func__,
 		   flow == FLOW_STOP ? "FLOW_STOP" : "FLOW_START",
 		   netif_running(dev));
+	pr_debug("%s() : flow %s ; running %d\n", __func__,
+		 flow == FLOW_STOP ? "FLOW_STOP" : "FLOW_START",
+		 netif_running(dev));
 
 	switch (flow) {
 	case FLOW_STOP:
@@ -304,6 +356,9 @@ static void irlan_eth_set_multicast_list(struct net_device *dev)
 	/* Check if data channel has been connected yet */
 	if (self->client.state != IRLAN_DATA) {
 		IRDA_DEBUG(1, "%s(), delaying!\n", __func__ );
+	/* Check if data channel has been connected yet */
+	if (self->client.state != IRLAN_DATA) {
+		pr_debug("%s(), delaying!\n", __func__);
 		return;
 	}
 
@@ -320,6 +375,16 @@ static void irlan_eth_set_multicast_list(struct net_device *dev)
 	}
 	else if (dev->mc_count) {
 		IRDA_DEBUG(4, "%s(), Setting multicast filter\n", __func__ );
+		net_warn_ratelimited("Promiscuous mode not implemented by IrLAN!\n");
+	} else if ((dev->flags & IFF_ALLMULTI) ||
+		 netdev_mc_count(dev) > HW_MAX_ADDRS) {
+		/* Disable promiscuous mode, use normal mode. */
+		pr_debug("%s(), Setting multicast filter\n", __func__);
+		/* hardware_set_filter(NULL); */
+
+		irlan_set_multicast_filter(self, TRUE);
+	} else if (!netdev_mc_empty(dev)) {
+		pr_debug("%s(), Setting multicast filter\n", __func__);
 		/* Walk the address list, and load the filter */
 		/* hardware_set_filter(dev->mc_list); */
 
@@ -327,6 +392,8 @@ static void irlan_eth_set_multicast_list(struct net_device *dev)
 	}
 	else {
 		IRDA_DEBUG(4, "%s(), Clearing multicast filter\n", __func__ );
+	} else {
+		pr_debug("%s(), Clearing multicast filter\n", __func__);
 		irlan_set_multicast_filter(self, FALSE);
 	}
 

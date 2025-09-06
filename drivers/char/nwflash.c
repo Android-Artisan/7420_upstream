@@ -33,6 +33,12 @@
 #include <asm/leds.h>
 #include <asm/mach-types.h>
 #include <asm/system.h>
+#include <linux/mutex.h>
+#include <linux/jiffies.h>
+
+#include <asm/hardware/dec21285.h>
+#include <asm/io.h>
+#include <asm/mach-types.h>
 #include <asm/uaccess.h>
 
 /*****************************************************************************/
@@ -40,6 +46,7 @@
 
 #define	NWFLASH_VERSION "6.4"
 
+static DEFINE_MUTEX(flash_mutex);
 static void kick_open(void);
 static int get_flash_id(void);
 static int erase_block(int nBlock);
@@ -51,6 +58,7 @@ static int write_block(unsigned long p, const char __user *buf, int count);
 #define KFLASH_ID4	0xB0D4		//Intel flash 4Meg
 
 static int flashdebug;		//if set - we will display progress msgs
+static bool flashdebug;		//if set - we will display progress msgs
 
 static int gbWriteEnable;
 static int gbWriteBase64Enable;
@@ -97,6 +105,9 @@ static int get_flash_id(void)
 
 static int flash_ioctl(struct inode *inodep, struct file *filep, unsigned int cmd, unsigned long arg)
 {
+static long flash_ioctl(struct file *filep, unsigned int cmd, unsigned long arg)
+{
+	mutex_lock(&flash_mutex);
 	switch (cmd) {
 	case CMD_WRITE_DISABLE:
 		gbWriteBase64Enable = 0;
@@ -116,6 +127,10 @@ static int flash_ioctl(struct inode *inodep, struct file *filep, unsigned int cm
 		gbWriteEnable = 0;
 		return -EINVAL;
 	}
+		mutex_unlock(&flash_mutex);
+		return -EINVAL;
+	}
+	mutex_unlock(&flash_mutex);
 	return 0;
 }
 
@@ -281,6 +296,7 @@ static loff_t flash_llseek(struct file *file, loff_t offset, int orig)
 	loff_t ret;
 
 	lock_kernel();
+	mutex_lock(&flash_mutex);
 	if (flashdebug)
 		printk(KERN_DEBUG "flash_llseek: offset=0x%X, orig=0x%X.\n",
 		       (unsigned int) offset, orig);
@@ -316,6 +332,7 @@ static loff_t flash_llseek(struct file *file, loff_t offset, int orig)
 		ret = -EINVAL;
 	}
 	unlock_kernel();
+	mutex_unlock(&flash_mutex);
 	return ret;
 }
 
@@ -568,6 +585,9 @@ static int write_block(unsigned long p, const char __user *buf, int count)
 				 * red LED == write
 				 */
 				leds_event(led_red_on);
+				 * wait couple ms
+				 */
+				msleep(10);
 
 				goto WriteRetry;
 			} else {
@@ -619,6 +639,9 @@ static void kick_open(void)
 	spin_lock_irqsave(&gpio_lock, flags);
 	cpld_modify(1, 1);
 	spin_unlock_irqrestore(&gpio_lock, flags);
+	raw_spin_lock_irqsave(&nw_gpio_lock, flags);
+	nw_cpld_modify(CPLD_FLASH_WR_ENABLE, CPLD_FLASH_WR_ENABLE);
+	raw_spin_unlock_irqrestore(&nw_gpio_lock, flags);
 
 	/*
 	 * let the ISA bus to catch on...
@@ -633,6 +656,7 @@ static const struct file_operations flash_fops =
 	.read		= flash_read,
 	.write		= flash_write,
 	.ioctl		= flash_ioctl,
+	.unlocked_ioctl	= flash_ioctl,
 };
 
 static struct miscdevice flash_miscdev =

@@ -36,11 +36,19 @@
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/skbuff.h>
+#define pr_fmt(fmt) KBUILD_MODNAME ":%s: " fmt, __func__
+
+#include <linux/module.h>
+#include <linux/init.h>
+#include <linux/interrupt.h>
+#include <linux/skbuff.h>
+#include <linux/slab.h>
 #include <linux/atm.h>
 #include <linux/atmdev.h>
 #include <linux/capability.h>
 #include <linux/ppp_defs.h>
 #include <linux/if_ppp.h>
+#include <linux/ppp-ioctl.h>
 #include <linux/ppp_channel.h>
 #include <linux/atmppp.h>
 
@@ -58,10 +66,27 @@ struct pppoatm_vcc {
 	void (*old_pop)(struct atm_vcc *, struct sk_buff *);
 					/* keep old push/pop for detaching */
 	enum pppoatm_encaps encaps;
+	void (*old_release_cb)(struct atm_vcc *);
+	struct module *old_owner;
+					/* keep old push/pop for detaching */
+	enum pppoatm_encaps encaps;
+	atomic_t inflight;
+	unsigned long blocked;
 	int flags;			/* SC_COMP_PROT - compress protocol */
 	struct ppp_channel chan;	/* interface to generic ppp layer */
 	struct tasklet_struct wakeup_tasklet;
 };
+
+/*
+ * We want to allow two packets in the queue. The one that's currently in
+ * flight, and *one* queued up ready for the ATM device to send immediately
+ * from its TX done IRQ. We want to be able to use atomic_inc_not_zero(), so
+ * inflight == -2 represents an empty queue, -1 one packet, and zero means
+ * there are two packets in the queue.
+ */
+#define NONE_INFLIGHT -2
+
+#define BLOCKED 0
 
 /*
  * Header used for LLC Encapsulated PPP (4 bytes) followed by the LCP protocol
@@ -90,6 +115,24 @@ static void pppoatm_wakeup_sender(unsigned long arg)
 	ppp_output_wakeup((struct ppp_channel *) arg);
 }
 
+static void pppoatm_release_cb(struct atm_vcc *atmvcc)
+{
+	struct pppoatm_vcc *pvcc = atmvcc_to_pvcc(atmvcc);
+
+	/*
+	 * As in pppoatm_pop(), it's safe to clear the BLOCKED bit here because
+	 * the wakeup *can't* race with pppoatm_send(). They both hold the PPP
+	 * channel's ->downl lock. And the potential race with *setting* it,
+	 * which leads to the double-check dance in pppoatm_may_send(), doesn't
+	 * exist here. In the sock_owned_by_user() case in pppoatm_send(), we
+	 * set the BLOCKED bit while the socket is still locked. We know that
+	 * ->release_cb() can't be called until that's done.
+	 */
+	if (test_and_clear_bit(BLOCKED, &pvcc->blocked))
+		tasklet_schedule(&pvcc->wakeup_tasklet);
+	if (pvcc->old_release_cb)
+		pvcc->old_release_cb(atmvcc);
+}
 /*
  * This gets called every time the ATM card has finished sending our
  * skb.  The ->old_pop will take care up normal atm flow control,
@@ -108,6 +151,30 @@ static void pppoatm_pop(struct atm_vcc *atmvcc, struct sk_buff *skb)
 	 * For now we do the safe thing.
 	 */
 	tasklet_schedule(&pvcc->wakeup_tasklet);
+
+	pvcc->old_pop(atmvcc, skb);
+	atomic_dec(&pvcc->inflight);
+
+	/*
+	 * We always used to run the wakeup tasklet unconditionally here, for
+	 * fear of race conditions where we clear the BLOCKED flag just as we
+	 * refuse another packet in pppoatm_send(). This was quite inefficient.
+	 *
+	 * In fact it's OK. The PPP core will only ever call pppoatm_send()
+	 * while holding the channel->downl lock. And ppp_output_wakeup() as
+	 * called by the tasklet will *also* grab that lock. So even if another
+	 * CPU is in pppoatm_send() right now, the tasklet isn't going to race
+	 * with it. The wakeup *will* happen after the other CPU is safely out
+	 * of pppoatm_send() again.
+	 *
+	 * So if the CPU in pppoatm_send() has already set the BLOCKED bit and
+	 * it about to return, that's fine. We trigger a wakeup which will
+	 * happen later. And if the CPU in pppoatm_send() *hasn't* set the
+	 * BLOCKED bit yet, that's fine too because of the double check in
+	 * pppoatm_may_send() which is commented there.
+	 */
+	if (test_and_clear_bit(BLOCKED, &pvcc->blocked))
+		tasklet_schedule(&pvcc->wakeup_tasklet);
 }
 
 /*
@@ -120,6 +187,7 @@ static void pppoatm_unassign_vcc(struct atm_vcc *atmvcc)
 	pvcc = atmvcc_to_pvcc(atmvcc);
 	atmvcc->push = pvcc->old_push;
 	atmvcc->pop = pvcc->old_pop;
+	atmvcc->release_cb = pvcc->old_release_cb;
 	tasklet_kill(&pvcc->wakeup_tasklet);
 	ppp_unregister_channel(&pvcc->chan);
 	atmvcc->user_back = NULL;
@@ -137,6 +205,15 @@ static void pppoatm_push(struct atm_vcc *atmvcc, struct sk_buff *skb)
 		pr_debug("removing ATMPPP VCC %p\n", pvcc);
 		pppoatm_unassign_vcc(atmvcc);
 		atmvcc->push(atmvcc, NULL);	/* Pass along bad news */
+	pr_debug("\n");
+	if (skb == NULL) {			/* VCC was closed */
+		struct module *module;
+
+		pr_debug("removing ATMPPP VCC %p\n", pvcc);
+		module = pvcc->old_owner;
+		pppoatm_unassign_vcc(atmvcc);
+		atmvcc->push(atmvcc, NULL);	/* Pass along bad news */
+		module_put(module);
 		return;
 	}
 	atm_return(atmvcc, skb->truesize);
@@ -169,6 +246,9 @@ static void pppoatm_push(struct atm_vcc *atmvcc, struct sk_buff *skb)
 		    "(skb: %02X %02X %02X %02X %02X %02X)\n",
 		    skb->data[0], skb->data[1], skb->data[2],
 		    skb->data[3], skb->data[4], skb->data[5]);
+		pr_debug("Couldn't autodetect yet (skb: %02X %02X %02X %02X %02X %02X)\n",
+			 skb->data[0], skb->data[1], skb->data[2],
+			 skb->data[3], skb->data[4], skb->data[5]);
 		goto error;
 	case e_vc:
 		break;
@@ -176,10 +256,57 @@ static void pppoatm_push(struct atm_vcc *atmvcc, struct sk_buff *skb)
 	ppp_input(&pvcc->chan, skb);
 	return;
     error:
+
+error:
 	kfree_skb(skb);
 	ppp_input_error(&pvcc->chan, 0);
 }
 
+static int pppoatm_may_send(struct pppoatm_vcc *pvcc, int size)
+{
+	/*
+	 * It's not clear that we need to bother with using atm_may_send()
+	 * to check we don't exceed sk->sk_sndbuf. If userspace sets a
+	 * value of sk_sndbuf which is lower than the MTU, we're going to
+	 * block for ever. But the code always did that before we introduced
+	 * the packet count limit, so...
+	 */
+	if (atm_may_send(pvcc->atmvcc, size) &&
+	    atomic_inc_not_zero_hint(&pvcc->inflight, NONE_INFLIGHT))
+		return 1;
+
+	/*
+	 * We use test_and_set_bit() rather than set_bit() here because
+	 * we need to ensure there's a memory barrier after it. The bit
+	 * *must* be set before we do the atomic_inc() on pvcc->inflight.
+	 * There's no smp_mb__after_set_bit(), so it's this or abuse
+	 * smp_mb__after_atomic().
+	 */
+	test_and_set_bit(BLOCKED, &pvcc->blocked);
+
+	/*
+	 * We may have raced with pppoatm_pop(). If it ran for the
+	 * last packet in the queue, *just* before we set the BLOCKED
+	 * bit, then it might never run again and the channel could
+	 * remain permanently blocked. Cope with that race by checking
+	 * *again*. If it did run in that window, we'll have space on
+	 * the queue now and can return success. It's harmless to leave
+	 * the BLOCKED flag set, since it's only used as a trigger to
+	 * run the wakeup tasklet. Another wakeup will never hurt.
+	 * If pppoatm_pop() is running but hasn't got as far as making
+	 * space on the queue yet, then it hasn't checked the BLOCKED
+	 * flag yet either, so we're safe in that case too. It'll issue
+	 * an "immediate" wakeup... where "immediate" actually involves
+	 * taking the PPP channel's ->downl lock, which is held by the
+	 * code path that calls pppoatm_send(), and is thus going to
+	 * wait for us to finish.
+	 */
+	if (atm_may_send(pvcc->atmvcc, size) &&
+	    atomic_inc_not_zero(&pvcc->inflight))
+		return 1;
+
+	return 0;
+}
 /*
  * Called by the ppp_generic.c to send a packet - returns true if packet
  * was accepted.  If we return false, then it's our job to call
@@ -197,6 +324,33 @@ static int pppoatm_send(struct ppp_channel *chan, struct sk_buff *skb)
 	pr_debug("pppoatm_send (skb=0x%p, vcc=0x%p)\n", skb, pvcc->atmvcc);
 	if (skb->data[0] == '\0' && (pvcc->flags & SC_COMP_PROT))
 		(void) skb_pull(skb, 1);
+	struct atm_vcc *vcc;
+	int ret;
+
+	ATM_SKB(skb)->vcc = pvcc->atmvcc;
+	pr_debug("(skb=0x%p, vcc=0x%p)\n", skb, pvcc->atmvcc);
+	if (skb->data[0] == '\0' && (pvcc->flags & SC_COMP_PROT))
+		(void) skb_pull(skb, 1);
+
+	vcc = ATM_SKB(skb)->vcc;
+	bh_lock_sock(sk_atm(vcc));
+	if (sock_owned_by_user(sk_atm(vcc))) {
+		/*
+		 * Needs to happen (and be flushed, hence test_and_) before we unlock
+		 * the socket. It needs to be seen by the time our ->release_cb gets
+		 * called.
+		 */
+		test_and_set_bit(BLOCKED, &pvcc->blocked);
+		goto nospace;
+	}
+	if (test_bit(ATM_VF_RELEASED, &vcc->flags) ||
+	    test_bit(ATM_VF_CLOSE, &vcc->flags) ||
+	    !test_bit(ATM_VF_READY, &vcc->flags)) {
+		bh_unlock_sock(sk_atm(vcc));
+		kfree_skb(skb);
+		return DROP_PACKET;
+	}
+
 	switch (pvcc->encaps) {		/* LLC encapsulation needed */
 	case e_llc:
 		if (skb_headroom(skb) < LLC_LEN) {
@@ -211,6 +365,17 @@ static int pppoatm_send(struct ppp_channel *chan, struct sk_buff *skb)
 			if ((skb = n) == NULL)
 				return DROP_PACKET;
 		} else if (!atm_may_send(pvcc->atmvcc, skb->truesize))
+			    !pppoatm_may_send(pvcc, n->truesize)) {
+				kfree_skb(n);
+				goto nospace;
+			}
+			consume_skb(skb);
+			skb = n;
+			if (skb == NULL) {
+				bh_unlock_sock(sk_atm(vcc));
+				return DROP_PACKET;
+			}
+		} else if (!pppoatm_may_send(pvcc, skb->truesize))
 			goto nospace;
 		memcpy(skb_push(skb, LLC_LEN), pppllc, LLC_LEN);
 		break;
@@ -219,6 +384,11 @@ static int pppoatm_send(struct ppp_channel *chan, struct sk_buff *skb)
 			goto nospace;
 		break;
 	case e_autodetect:
+		if (!pppoatm_may_send(pvcc, skb->truesize))
+			goto nospace;
+		break;
+	case e_autodetect:
+		bh_unlock_sock(sk_atm(vcc));
 		pr_debug("Trying to send without setting encaps!\n");
 		kfree_skb(skb);
 		return 1;
@@ -231,6 +401,14 @@ static int pppoatm_send(struct ppp_channel *chan, struct sk_buff *skb)
 	return ATM_SKB(skb)->vcc->send(ATM_SKB(skb)->vcc, skb)
 	    ? DROP_PACKET : 1;
     nospace:
+	pr_debug("atm_skb(%p)->vcc(%p)->dev(%p)\n",
+		 skb, ATM_SKB(skb)->vcc, ATM_SKB(skb)->vcc->dev);
+	ret = ATM_SKB(skb)->vcc->send(ATM_SKB(skb)->vcc, skb)
+	    ? DROP_PACKET : 1;
+	bh_unlock_sock(sk_atm(vcc));
+	return ret;
+nospace:
+	bh_unlock_sock(sk_atm(vcc));
 	/*
 	 * We don't have space to send this SKB now, but we might have
 	 * already applied SC_COMP_PROT compression, so may need to undo
@@ -257,6 +435,7 @@ static int pppoatm_devppp_ioctl(struct ppp_channel *chan, unsigned int cmd,
 }
 
 static /*const*/ struct ppp_channel_ops pppoatm_ops = {
+static const struct ppp_channel_ops pppoatm_ops = {
 	.start_xmit = pppoatm_send,
 	.ioctl = pppoatm_devppp_ioctl,
 };
@@ -282,6 +461,13 @@ static int pppoatm_assign_vcc(struct atm_vcc *atmvcc, void __user *arg)
 	pvcc->atmvcc = atmvcc;
 	pvcc->old_push = atmvcc->push;
 	pvcc->old_pop = atmvcc->pop;
+
+	/* Maximum is zero, so that we can use atomic_inc_not_zero() */
+	atomic_set(&pvcc->inflight, NONE_INFLIGHT);
+	pvcc->old_push = atmvcc->push;
+	pvcc->old_pop = atmvcc->pop;
+	pvcc->old_owner = atmvcc->owner;
+	pvcc->old_release_cb = atmvcc->release_cb;
 	pvcc->encaps = (enum pppoatm_encaps) be.encaps;
 	pvcc->chan.private = pvcc;
 	pvcc->chan.ops = &pppoatm_ops;
@@ -290,6 +476,8 @@ static int pppoatm_assign_vcc(struct atm_vcc *atmvcc, void __user *arg)
 	pvcc->wakeup_tasklet = tasklet_proto;
 	pvcc->wakeup_tasklet.data = (unsigned long) &pvcc->chan;
 	if ((err = ppp_register_channel(&pvcc->chan)) != 0) {
+	err = ppp_register_channel(&pvcc->chan);
+	if (err != 0) {
 		kfree(pvcc);
 		return err;
 	}
@@ -297,6 +485,13 @@ static int pppoatm_assign_vcc(struct atm_vcc *atmvcc, void __user *arg)
 	atmvcc->push = pppoatm_push;
 	atmvcc->pop = pppoatm_pop;
 	__module_get(THIS_MODULE);
+	atmvcc->release_cb = pppoatm_release_cb;
+	__module_get(THIS_MODULE);
+	atmvcc->owner = THIS_MODULE;
+
+	/* re-process everything received between connection setup and
+	   backend setup */
+	vcc_process_recv_queue(atmvcc);
 	return 0;
 }
 
@@ -321,6 +516,8 @@ static int pppoatm_ioctl(struct socket *sock, unsigned int cmd,
 			return -ENOIOCTLCMD;
 		if (!capable(CAP_NET_ADMIN))
 			return -EPERM;
+		if (sock->state != SS_CONNECTED)
+			return -EINVAL;
 		return pppoatm_assign_vcc(atmvcc, argp);
 		}
 	case PPPIOCGCHAN:

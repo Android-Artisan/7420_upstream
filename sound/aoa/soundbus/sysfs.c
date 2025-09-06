@@ -10,6 +10,7 @@ field##_show (struct device *dev, struct device_attribute *attr,	\
 {									\
 	struct soundbus_dev *mdev = to_soundbus_device (dev);		\
 	return sprintf (buf, format_string, mdev->ofdev.node->field);	\
+	return sprintf (buf, format_string, mdev->ofdev.dev.of_node->field); \
 }
 
 static ssize_t modalias_show(struct device *dev, struct device_attribute *attr,
@@ -17,6 +18,7 @@ static ssize_t modalias_show(struct device *dev, struct device_attribute *attr,
 {
 	struct soundbus_dev *sdev = to_soundbus_device(dev);
 	struct of_device *of = &sdev->ofdev;
+	struct platform_device *of = &sdev->ofdev;
 	int length;
 
 	if (*sdev->modalias) {
@@ -26,6 +28,7 @@ static ssize_t modalias_show(struct device *dev, struct device_attribute *attr,
 	} else {
 		length = sprintf(buf, "of:N%sT%s\n",
 				 of->node->name, of->node->type);
+				 of->dev.of_node->name, of->dev.of_node->type);
 	}
 
 	return length;
@@ -39,4 +42,16 @@ struct device_attribute soundbus_dev_attrs[] = {
 	__ATTR_RO(type),
 	__ATTR_RO(modalias),
 	__ATTR_NULL
+static DEVICE_ATTR_RO(modalias);
+
+soundbus_config_of_attr (name, "%s\n");
+static DEVICE_ATTR_RO(name);
+soundbus_config_of_attr (type, "%s\n");
+static DEVICE_ATTR_RO(type);
+
+struct attribute *soundbus_dev_attrs[] = {
+	&dev_attr_name.attr,
+	&dev_attr_type.attr,
+	&dev_attr_modalias.attr,
+	NULL,
 };

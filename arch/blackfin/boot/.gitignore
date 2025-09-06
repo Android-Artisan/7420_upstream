@@ -1,1 +1,4 @@
 +vmImage
+vmImage*
+vmlinux*
+uImage*

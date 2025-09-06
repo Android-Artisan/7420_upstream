@@ -134,6 +134,11 @@ enum {
 #define PMU_IOC_GRAB_BACKLIGHT	_IOR('B', 6, size_t) 
 
 #ifdef __KERNEL__
+#ifndef _LINUX_PMU_H
+#define _LINUX_PMU_H
+
+#include <uapi/linux/pmu.h>
+
 
 extern int find_via_pmu(void);
 
@@ -207,3 +212,4 @@ extern int pmu_sys_suspended;
 #endif
 
 #endif	/* __KERNEL__ */
+#endif /* _LINUX_PMU_H */

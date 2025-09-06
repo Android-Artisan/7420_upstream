@@ -67,6 +67,7 @@ static inline int pte_file(pte_t pte) { return 0; }
  */
 #define pgprot_noncached(prot)	__pgprot(0)
 #define pgprot_writecombine(prot) __pgprot(0)
+#define pgprot_dmacoherent(prot) __pgprot(0)
 
 
 /*
@@ -90,6 +91,10 @@ extern unsigned int kobjsize(const void *objp);
 #define	VMALLOC_END	0xffffffff
 
 #define FIRST_USER_ADDRESS      (0)
+#define	VMALLOC_START	0UL
+#define	VMALLOC_END	0xffffffffUL
+
+#define FIRST_USER_ADDRESS      0UL
 
 #include <asm-generic/pgtable.h>
 

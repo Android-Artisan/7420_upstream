@@ -2390,9 +2390,6 @@ static void ata_set_par(struct atafb_par *par)
 }
 
 
-/* =========================================================== */
-/* ============== Hardware Independent Functions ============= */
-/* =========================================================== */
 
 /* used for hardware scrolling */
 

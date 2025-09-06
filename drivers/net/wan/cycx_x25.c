@@ -11,7 +11,6 @@
 *		modify it under the terms of the GNU General Public License
 *		as published by the Free Software Foundation; either version
 *		2 of the License, or (at your option) any later version.
-* ============================================================================
 * 2001/01/12	acme		use dev_kfree_skb_irq on interrupt context
 * 2000/04/02	acme		dprintk, cycx_debug
 * 				fixed the bug introduced in get_dev_by_lcn and

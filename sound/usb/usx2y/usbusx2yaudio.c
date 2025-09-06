@@ -33,6 +33,9 @@
 
 #include <linux/interrupt.h>
 #include <linux/usb.h>
+#include <linux/slab.h>
+#include <linux/usb.h>
+#include <linux/moduleparam.h>
 #include <sound/core.h>
 #include <sound/info.h>
 #include <sound/pcm.h>
@@ -79,6 +82,7 @@ static int usX2Y_urb_capt_retire(struct snd_usX2Y_substream *subs)
 		if (urb->iso_frame_desc[i].status) { /* active? hmm, skip this */
 			snd_printk(KERN_ERR "active frame status %i. "
 				   "Most propably some hardware problem.\n",
+				   "Most probably some hardware problem.\n",
 				   urb->iso_frame_desc[i].status);
 			return urb->iso_frame_desc[i].status;
 		}
@@ -200,6 +204,7 @@ static int usX2Y_urb_submit(struct snd_usX2Y_substream *subs, struct urb *urb, i
 	urb->start_frame = (frame + NRURBS * nr_of_packs());  // let hcd do rollover sanity checks
 	urb->hcpriv = NULL;
 	urb->dev = subs->usX2Y->chip.dev; /* we need to set this at each time */
+	urb->dev = subs->usX2Y->dev; /* we need to set this at each time */
 	if ((err = usb_submit_urb(urb, GFP_ATOMIC)) < 0) {
 		snd_printk(KERN_ERR "usb_submit_urb() returned %i\n", err);
 		return err;
@@ -273,6 +278,8 @@ static void usX2Y_clients_stop(struct usX2Ydev *usX2Y)
 			if (atomic_read(&subs->state) >= state_PRERUNNING) {
 				snd_pcm_stop(subs->pcm_substream, SNDRV_PCM_STATE_XRUN);
 			}
+			if (atomic_read(&subs->state) >= state_PRERUNNING)
+				snd_pcm_stop_xrun(subs->pcm_substream);
 			for (u = 0; u < NRURBS; u++) {
 				struct urb *urb = subs->urb[u];
 				if (NULL != urb)
@@ -313,6 +320,7 @@ static void i_usX2Y_urb_complete(struct urb *urb)
 	if (unlikely(atomic_read(&subs->state) < state_PREPARED)) {
 		snd_printdd("hcd_frame=%i ep=%i%s status=%i start_frame=%i\n",
 			    usb_get_current_frame_number(usX2Y->chip.dev),
+			    usb_get_current_frame_number(usX2Y->dev),
 			    subs->endpoint, usb_pipein(urb->pipe) ? "in" : "out",
 			    urb->status, urb->start_frame);
 		return;
@@ -327,6 +335,9 @@ static void i_usX2Y_urb_complete(struct urb *urb)
 		usX2Y_error_sequence(usX2Y, subs, urb);
 		return;
 	}
+
+	subs->completed_urb = urb;
+
 	{
 		struct snd_usX2Y_substream *capsubs = usX2Y->subs[SNDRV_PCM_STREAM_CAPTURE],
 			*playbacksubs = usX2Y->subs[SNDRV_PCM_STREAM_PLAYBACK];
@@ -424,6 +435,7 @@ static int usX2Y_urbs_allocate(struct snd_usX2Y_substream *subs)
 	unsigned int pipe;
 	int is_playback = subs == subs->usX2Y->subs[SNDRV_PCM_STREAM_PLAYBACK];
 	struct usb_device *dev = subs->usX2Y->chip.dev;
+	struct usb_device *dev = subs->usX2Y->dev;
 
 	pipe = is_playback ? usb_sndisocpipe(dev, subs->endpoint) :
 			usb_rcvisocpipe(dev, subs->endpoint);
@@ -501,6 +513,7 @@ static int usX2Y_urbs_start(struct snd_usX2Y_substream *subs)
 				atomic_set(&subs->state, state_STARTING3);
 			urb->dev = usX2Y->chip.dev;
 			urb->transfer_flags = URB_ISO_ASAP;
+			urb->dev = usX2Y->dev;
 			for (pack = 0; pack < nr_of_packs(); pack++) {
 				urb->iso_frame_desc[pack].offset = subs->maxpacksize * pack;
 				urb->iso_frame_desc[pack].length = subs->maxpacksize;
@@ -696,6 +709,8 @@ static int usX2Y_rate_set(struct usX2Ydev *usX2Y, int rate)
 #ifdef OLD_USB
 			us->urb[i]->transfer_flags = USB_QUEUE_BULK;
 #endif
+			usb_fill_bulk_urb(us->urb[i], usX2Y->dev, usb_sndbulkpipe(usX2Y->dev, 4),
+					  usbdata + i, 2, i_usX2Y_04Int, usX2Y);
 		}
 		us->submitted =	0;
 		us->len =	NOOF_SETRATE_URBS;
@@ -709,6 +724,8 @@ static int usX2Y_rate_set(struct usX2Ydev *usX2Y, int rate)
 			us->submitted =	2*NOOF_SETRATE_URBS;
 			for (i = 0; i < NOOF_SETRATE_URBS; ++i) {
 				struct urb *urb = us->urb[i];
+				if (!urb)
+					continue;
 				if (urb->status) {
 					if (!err)
 						err = -ENODEV;
@@ -750,6 +767,17 @@ static int usX2Y_format_set(struct usX2Ydev *usX2Y, snd_pcm_format_t format)
 	usX2Y->In04urb->dev = usX2Y->chip.dev;
 	err = usb_submit_urb(usX2Y->In04urb, GFP_KERNEL);
 	list_for_each(p, &usX2Y->chip.midi_list) {
+	list_for_each(p, &usX2Y->midi_list) {
+		snd_usbmidi_input_stop(p);
+	}
+	usb_kill_urb(usX2Y->In04urb);
+	if ((err = usb_set_interface(usX2Y->dev, 0, alternate))) {
+		snd_printk(KERN_ERR "usb_set_interface error \n");
+		return err;
+	}
+	usX2Y->In04urb->dev = usX2Y->dev;
+	err = usb_submit_urb(usX2Y->In04urb, GFP_KERNEL);
+	list_for_each(p, &usX2Y->midi_list) {
 		snd_usbmidi_input_start(p);
 	}
 	usX2Y->format = format;
@@ -795,6 +823,44 @@ static int snd_usX2Y_pcm_hw_params(struct snd_pcm_substream *substream,
 		return err;
 	}
 	return 0;
+	struct usX2Ydev	*dev = usX2Y(card);
+	int i;
+
+	mutex_lock(&usX2Y(card)->pcm_mutex);
+	snd_printdd("snd_usX2Y_hw_params(%p, %p)\n", substream, hw_params);
+	/* all pcm substreams off one usX2Y have to operate at the same
+	 * rate & format
+	 */
+	for (i = 0; i < dev->pcm_devs * 2; i++) {
+		struct snd_usX2Y_substream *subs = dev->subs[i];
+		struct snd_pcm_substream *test_substream;
+
+		if (!subs)
+			continue;
+		test_substream = subs->pcm_substream;
+		if (!test_substream || test_substream == substream ||
+		    !test_substream->runtime)
+			continue;
+		if ((test_substream->runtime->format &&
+		     test_substream->runtime->format != format) ||
+		    (test_substream->runtime->rate &&
+		     test_substream->runtime->rate != rate)) {
+			err = -EINVAL;
+			goto error;
+		}
+	}
+
+	err = snd_pcm_lib_malloc_pages(substream,
+				       params_buffer_bytes(hw_params));
+	if (err < 0) {
+		snd_printk(KERN_ERR "snd_pcm_lib_malloc_pages(%p, %i) returned %i\n",
+			   substream, params_buffer_bytes(hw_params), err);
+		goto error;
+	}
+
+ error:
+	mutex_unlock(&usX2Y(card)->pcm_mutex);
+	return err;
 }
 
 /*
@@ -805,6 +871,7 @@ static int snd_usX2Y_pcm_hw_free(struct snd_pcm_substream *substream)
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct snd_usX2Y_substream *subs = runtime->private_data;
 	mutex_lock(&subs->usX2Y->prepare_mutex);
+	mutex_lock(&subs->usX2Y->pcm_mutex);
 	snd_printdd("snd_usX2Y_hw_free(%p)\n", substream);
 
 	if (SNDRV_PCM_STREAM_PLAYBACK == substream->stream) {
@@ -826,6 +893,7 @@ static int snd_usX2Y_pcm_hw_free(struct snd_pcm_substream *substream)
 		}
 	}
 	mutex_unlock(&subs->usX2Y->prepare_mutex);
+	mutex_unlock(&subs->usX2Y->pcm_mutex);
 	return snd_pcm_lib_free_pages(substream);
 }
 /*
@@ -843,6 +911,7 @@ static int snd_usX2Y_pcm_prepare(struct snd_pcm_substream *substream)
 	snd_printdd("snd_usX2Y_pcm_prepare(%p)\n", substream);
 
 	mutex_lock(&usX2Y->prepare_mutex);
+	mutex_lock(&usX2Y->pcm_mutex);
 	usX2Y_subs_prepare(subs);
 // Start hardware streams
 // SyncStream first....
@@ -863,6 +932,7 @@ static int snd_usX2Y_pcm_prepare(struct snd_pcm_substream *substream)
 
  up_prepare_mutex:
 	mutex_unlock(&usX2Y->prepare_mutex);
+	mutex_unlock(&usX2Y->pcm_mutex);
 	return err;
 }
 
@@ -871,6 +941,8 @@ static struct snd_pcm_hardware snd_usX2Y_2c =
 	.info =			(SNDRV_PCM_INFO_MMAP | SNDRV_PCM_INFO_INTERLEAVED |
 				 SNDRV_PCM_INFO_BLOCK_TRANSFER |
 				 SNDRV_PCM_INFO_MMAP_VALID),
+				 SNDRV_PCM_INFO_MMAP_VALID |
+				 SNDRV_PCM_INFO_BATCH),
 	.formats =                 SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S24_3LE,
 	.rates =                   SNDRV_PCM_RATE_44100 | SNDRV_PCM_RATE_48000,
 	.rate_min =                44100,
@@ -954,6 +1026,7 @@ static int usX2Y_audio_stream_new(struct snd_card *card, int playback_endpoint, 
 	int err, i;
 	struct snd_usX2Y_substream **usX2Y_substream =
 		usX2Y(card)->subs + 2 * usX2Y(card)->chip.pcm_devs;
+		usX2Y(card)->subs + 2 * usX2Y(card)->pcm_devs;
 
 	for (i = playback_endpoint ? SNDRV_PCM_STREAM_PLAYBACK : SNDRV_PCM_STREAM_CAPTURE;
 	     i <= SNDRV_PCM_STREAM_CAPTURE; ++i) {
@@ -970,6 +1043,7 @@ static int usX2Y_audio_stream_new(struct snd_card *card, int playback_endpoint, 
 	usX2Y_substream[SNDRV_PCM_STREAM_CAPTURE]->endpoint = capture_endpoint;
 
 	err = snd_pcm_new(card, NAME_ALLCAPS" Audio", usX2Y(card)->chip.pcm_devs,
+	err = snd_pcm_new(card, NAME_ALLCAPS" Audio", usX2Y(card)->pcm_devs,
 			  playback_endpoint ? 1 : 0, 1,
 			  &pcm);
 	if (err < 0) {
@@ -986,6 +1060,7 @@ static int usX2Y_audio_stream_new(struct snd_card *card, int playback_endpoint, 
 	pcm->info_flags = 0;
 
 	sprintf(pcm->name, NAME_ALLCAPS" Audio #%d", usX2Y(card)->chip.pcm_devs);
+	sprintf(pcm->name, NAME_ALLCAPS" Audio #%d", usX2Y(card)->pcm_devs);
 
 	if ((playback_endpoint &&
 	     0 > (err = snd_pcm_lib_preallocate_pages(pcm->streams[SNDRV_PCM_STREAM_PLAYBACK].substream,
@@ -1000,6 +1075,7 @@ static int usX2Y_audio_stream_new(struct snd_card *card, int playback_endpoint, 
 		return err;
 	}
 	usX2Y(card)->chip.pcm_devs++;
+	usX2Y(card)->pcm_devs++;
 
 	return 0;
 }
@@ -1019,6 +1095,14 @@ int usX2Y_audio_create(struct snd_card *card)
 	     if (0 > (err = usX2Y_audio_stream_new(card, 0, 0xA)))
 		     return err;
 	if (le16_to_cpu(usX2Y(card)->chip.dev->descriptor.idProduct) != USB_ID_US122)
+	INIT_LIST_HEAD(&usX2Y(card)->pcm_list);
+
+	if (0 > (err = usX2Y_audio_stream_new(card, 0xA, 0x8)))
+		return err;
+	if (le16_to_cpu(usX2Y(card)->dev->descriptor.idProduct) == USB_ID_US428)
+	     if (0 > (err = usX2Y_audio_stream_new(card, 0, 0xA)))
+		     return err;
+	if (le16_to_cpu(usX2Y(card)->dev->descriptor.idProduct) != USB_ID_US122)
 		err = usX2Y_rate_set(usX2Y(card), 44100);	// Lets us428 recognize output-volume settings, disturbs us122.
 	return err;
 }

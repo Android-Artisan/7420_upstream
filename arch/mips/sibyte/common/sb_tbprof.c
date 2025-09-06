@@ -29,6 +29,7 @@
 #include <linux/interrupt.h>
 #include <linux/slab.h>
 #include <linux/smp_lock.h>
+#include <linux/sched.h>
 #include <linux/vmalloc.h>
 #include <linux/fs.h>
 #include <linux/errno.h>
@@ -46,6 +47,7 @@
 #include <asm/sibyte/sb1250_int.h>
 #else
 #error invalid SiByte UART configuation
+#error invalid SiByte UART configuration
 #endif
 
 #if defined(CONFIG_SIBYTE_BCM1x55) || defined(CONFIG_SIBYTE_BCM1x80)
@@ -156,6 +158,7 @@ static u64 tb_period;
 static void arm_tb(void)
 {
         u64 scdperfcnt;
+	u64 scdperfcnt;
 	u64 next = (1ULL << 40) - tb_period;
 	u64 tb_options = M_SCD_TRACE_CFG_FREEZE_FULL;
 
@@ -262,6 +265,8 @@ static irqreturn_t sbprof_pc_intr(int irq, void *dev_id)
  * Requires: Already called zclk_timer_init with a value that won't
  *           saturate 40 bits.  No subsequent use of SCD performance counters
  *           or trace buffer.
+ *	     saturate 40 bits.	No subsequent use of SCD performance counters
+ *	     or trace buffer.
  */
 
 static int sbprof_zbprof_start(struct file *filp)
@@ -293,6 +298,8 @@ static int sbprof_zbprof_start(struct file *filp)
 	 * We grab this interrupt to prevent others from trying to use
          * it, even though we don't want to service the interrupts
          * (they only feed into the trace-on-interrupt mechanism)
+	 * it, even though we don't want to service the interrupts
+	 * (they only feed into the trace-on-interrupt mechanism)
 	 */
 	if (request_irq(K_INT_PERF_CNT, sbprof_pc_intr, 0, DEVNAME " scd perfcnt", &sbp)) {
 		free_irq(K_INT_TRACE_FREEZE, &sbp);
@@ -302,6 +309,7 @@ static int sbprof_zbprof_start(struct file *filp)
 	/*
 	 * I need the core to mask these, but the interrupt mapper to
 	 *  pass them through.  I am exploiting my knowledge that
+	 *  pass them through.	I am exploiting my knowledge that
 	 *  cp0_status masks out IP[5]. krw
 	 */
 #if defined(CONFIG_SIBYTE_BCM1x55) || defined(CONFIG_SIBYTE_BCM1x80)
@@ -332,6 +340,7 @@ static int sbprof_zbprof_start(struct file *filp)
 
 	/* Initialize Trace Event 0-7 */
 	/*				when interrupt  */
+	/*				when interrupt	*/
 	__raw_writeq(M_SCD_TREVT_INTERRUPT, IOADDR(A_SCD_TRACE_EVENT_0));
 	__raw_writeq(0, IOADDR(A_SCD_TRACE_EVENT_1));
 	__raw_writeq(0, IOADDR(A_SCD_TRACE_EVENT_2));
@@ -424,6 +433,22 @@ static int sbprof_tb_open(struct inode *inode, struct file *filp)
 		goto out;
 	}
 	memset(sbp.sbprof_tbbuf, 0, MAX_TBSAMPLE_BYTES);
+
+	minor = iminor(inode);
+	if (minor != 0)
+		return -ENODEV;
+
+	if (xchg(&sbp.open, SB_OPENING) != SB_CLOSED)
+		return -EBUSY;
+
+	memset(&sbp, 0, sizeof(struct sbprof_tb));
+	sbp.sbprof_tbbuf = vzalloc(MAX_TBSAMPLE_BYTES);
+	if (!sbp.sbprof_tbbuf) {
+		sbp.open = SB_CLOSED;
+		wmb();
+		return -ENOMEM;
+	}
+
 	init_waitqueue_head(&sbp.tb_sync);
 	init_waitqueue_head(&sbp.tb_read);
 	mutex_init(&sbp.lock);
@@ -433,6 +458,9 @@ static int sbprof_tb_open(struct inode *inode, struct file *filp)
   out:
 	unlock_kernel();
 	return err;
+	wmb();
+
+	return 0;
 }
 
 static int sbprof_tb_release(struct inode *inode, struct file *filp)
@@ -441,6 +469,7 @@ static int sbprof_tb_release(struct inode *inode, struct file *filp)
 
 	minor = iminor(inode);
 	if (minor != 0 || !sbp.open)
+	if (minor != 0 || sbp.open != SB_CLOSED)
 		return -ENODEV;
 
 	mutex_lock(&sbp.lock);
@@ -450,6 +479,8 @@ static int sbprof_tb_release(struct inode *inode, struct file *filp)
 
 	vfree(sbp.sbprof_tbbuf);
 	sbp.open = 0;
+	sbp.open = SB_CLOSED;
+	wmb();
 
 	mutex_unlock(&sbp.lock);
 
@@ -488,6 +519,7 @@ static ssize_t sbprof_tb_read(struct file *filp, char *buf,
 		}
 		pr_debug(DEVNAME ": read from sample %d, %d bytes\n",
 		         cur_sample, cur_count);
+			 cur_sample, cur_count);
 		size -= cur_count;
 		sample_left -= cur_count;
 		if (!sample_left) {
@@ -551,6 +583,10 @@ static const struct file_operations sbprof_tb_fops = {
 	.unlocked_ioctl	= sbprof_tb_ioctl,
 	.compat_ioctl	= sbprof_tb_ioctl,
 	.mmap		= NULL,
+	.unlocked_ioctl = sbprof_tb_ioctl,
+	.compat_ioctl	= sbprof_tb_ioctl,
+	.mmap		= NULL,
+	.llseek		= default_llseek,
 };
 
 static struct class *tb_class;
@@ -578,6 +614,7 @@ static int __init sbprof_tb_init(void)
 
 	dev = device_create_drvdata(tbc, NULL, MKDEV(SBPROF_TB_MAJOR, 0),
 				    NULL, "tb");
+	dev = device_create(tbc, NULL, MKDEV(SBPROF_TB_MAJOR, 0), NULL, "tb");
 	if (IS_ERR(dev)) {
 		err = PTR_ERR(dev);
 		goto out_class;
@@ -585,6 +622,8 @@ static int __init sbprof_tb_init(void)
 	tb_dev = dev;
 
 	sbp.open = 0;
+	sbp.open = SB_CLOSED;
+	wmb();
 	tb_period = zbbus_mhz * 10000LL;
 	pr_info(DEVNAME ": initialized - tb_period = %lld\n",
 		(long long) tb_period);

@@ -33,6 +33,11 @@ echo shutdown > /sys/power/disk; echo disk > /sys/power/state
 
 echo platform > /sys/power/disk; echo disk > /sys/power/state
 
+. If you would like to write hibernation image to swap and then suspend
+to RAM (provided your platform supports it), you can try
+
+echo suspend > /sys/power/disk; echo disk > /sys/power/state
+
 . If you have SATA disks, you'll need recent kernels with SATA suspend
 support. For suspend and resume to work, make sure your disk drivers
 are built into kernel -- not modules. [There's way to make
@@ -49,6 +54,23 @@ before suspend (it is limited to 500 MB by default).
 Article about goals and implementation of Software Suspend for Linux
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 Author: Gábor Kuti
+. The resume process checks for the presence of the resume device,
+if found, it then checks the contents for the hibernation image signature.
+If both are found, it resumes the hibernation image.
+
+. The resume process may be triggered in two ways:
+  1) During lateinit:  If resume=/dev/your_swap_partition is specified on
+     the kernel command line, lateinit runs the resume process.  If the
+     resume device has not been probed yet, the resume process fails and
+     bootup continues.
+  2) Manually from an initrd or initramfs:  May be run from
+     the init script by using the /sys/power/resume file.  It is vital
+     that this be done prior to remounting any filesystems (even as
+     read-only) otherwise data may be corrupted.
+
+Article about goals and implementation of Software Suspend for Linux
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Author: Gábor Kuti
 Last revised: 2003-10-20 by Pavel Machek
 
 Idea and goals to achieve
@@ -67,12 +89,13 @@ powerdowns.  You must explicitly specify the swap partition to resume from with
 ``resume='' kernel option. If signature is found it loads and restores saved
 state. If the option ``noresume'' is specified as a boot parameter, it skips
 the resuming.
+the resuming.  If the option ``hibernate=nocompress'' is specified as a boot
+parameter, it saves hibernation image without compression.
 
 In the meantime while the system is suspended you should not add/remove any
 of the hardware, write to the filesystems, etc.
 
 Sleep states summary
-====================
 
 There are three different interfaces you can use, /proc/acpi should
 work like this:
@@ -88,7 +111,6 @@ and perhaps
 echo 4b > /proc/acpi/sleep      # for suspend to disk via s4bios
 
 Frequently Asked Questions
-==========================
 
 Q: well, suspending a server is IMHO a really stupid thing,
 but... (Diego Zuccato):
@@ -192,6 +214,7 @@ distinctions between SUSPEND and FREEZE.
 
 A: Doing SUSPEND when you are asked to do FREEZE is always correct,
 but it may be unneccessarily slow. If you want your driver to stay simple,
+but it may be unnecessarily slow. If you want your driver to stay simple,
 slowness may not matter to you. It can always be fixed later.
 
 For devices like disk it does matter, you do not want to spindown for
@@ -202,6 +225,10 @@ Q: After resuming, system is paging heavily, leading to very bad interactivity.
 A: Try running
 
 cat `cat /proc/[0-9]*/maps | grep / | sed 's:.* /:/:' | sort -u` > /dev/null
+cat /proc/[0-9]*/maps | grep / | sed 's:.* /:/:' | sort -u | while read file
+do
+  test -f "$file" && cat "$file" > /dev/null
+done
 
 after resume. swapoff -a; swapon -a may also be useful.
 
@@ -237,6 +264,7 @@ disk. Whole sequence goes like
       running system, user asks for suspend-to-disk
 
       user processes are stopped (in common case there are none, but with resume-from-initrd, noone knows)
+      user processes are stopped (in common case there are none, but with resume-from-initrd, no one knows)
 
       read image from disk
 
@@ -321,6 +349,7 @@ disk drivers (especially SATA)?
 
 A: Well, it can be done, load the drivers, then do echo into
 /sys/power/disk/resume file from initrd. Be sure not to mount
+/sys/power/resume file from initrd. Be sure not to mount
 anything, not even read-only mount, or you are going to lose your
 data.
 
@@ -390,6 +419,17 @@ Q: Can I suspend-to-disk using a swap partition under LVM?
 
 A: No. You can suspend successfully, but you'll not be able to
 resume. uswsusp should be able to work with LVM. See suspend.sf.net.
+A: Yes and No.  You can suspend successfully, but the kernel will not be able
+to resume on its own.  You need an initramfs that can recognize the resume
+situation, activate the logical volume containing the swap volume (but not
+touch any filesystems!), and eventually call
+
+echo -n "$major:$minor" > /sys/power/resume
+
+where $major and $minor are the respective major and minor device numbers of
+the swap volume.
+
+uswsusp works with LVM, too.  See http://suspend.sourceforge.net/
 
 Q: I upgraded the kernel from 2.6.15 to 2.6.16. Both kernels were
 compiled with the similar configuration files. Anyway I found that

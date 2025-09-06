@@ -22,6 +22,12 @@
 #include <linux/unistd.h>
 #include <linux/ptrace.h>
 #include <linux/slab.h>
+#include <linux/slab.h>
+#include <linux/fs.h>
+#include <linux/smp.h>
+#include <linux/stddef.h>
+#include <linux/unistd.h>
+#include <linux/ptrace.h>
 #include <linux/user.h>
 #include <linux/reboot.h>
 #include <linux/init_task.h>
@@ -29,6 +35,9 @@
 
 #include <asm/uaccess.h>
 #include <asm/system.h>
+#include <linux/rcupdate.h>
+
+#include <asm/uaccess.h>
 #include <asm/traps.h>
 #include <asm/machdep.h>
 #include <asm/setup.h>
@@ -57,6 +66,9 @@ struct task_struct init_task = INIT_TASK(init_task);
 EXPORT_SYMBOL(init_task);
 
 asmlinkage void ret_from_fork(void);
+
+asmlinkage void ret_from_fork(void);
+asmlinkage void ret_from_kernel_thread(void);
 
 
 /*
@@ -104,6 +116,16 @@ void cpu_idle(void)
 		schedule();
 		preempt_disable();
 	}
+}
+
+void arch_cpu_idle(void)
+{
+#if defined(MACH_ATARI_ONLY)
+	/* block out HSYNC on the atari (falcon) */
+	__asm__("stop #0x2200" : : : "cc");
+#else
+	__asm__("stop #0x2000" : : : "cc");
+#endif
 }
 
 void machine_restart(char * __unused)
@@ -256,12 +278,74 @@ int copy_thread(int nr, unsigned long clone_flags, unsigned long usp,
 
 	p->thread.usp = usp;
 	p->thread.ksp = (unsigned long)childstack;
+void flush_thread(void)
+{
+	current->thread.fs = __USER_DS;
+#ifdef CONFIG_FPU
+	if (!FPU_IS_EMU) {
+		unsigned long zero = 0;
+		asm volatile("frestore %0": :"m" (zero));
+	}
+#endif
+}
+
+/*
+ * Why not generic sys_clone, you ask?  m68k passes all arguments on stack.
+ * And we need all registers saved, which means a bunch of stuff pushed
+ * on top of pt_regs, which means that sys_clone() arguments would be
+ * buried.  We could, of course, copy them, but it's too costly for no
+ * good reason - generic clone() would have to copy them *again* for
+ * do_fork() anyway.  So in this case it's actually better to pass pt_regs *
+ * and extract arguments for do_fork() from there.  Eventually we might
+ * go for calling do_fork() directly from the wrapper, but only after we
+ * are finished with do_fork() prototype conversion.
+ */
+asmlinkage int m68k_clone(struct pt_regs *regs)
+{
+	/* regs will be equal to current_pt_regs() */
+	return do_fork(regs->d1, regs->d2, 0,
+		       (int __user *)regs->d3, (int __user *)regs->d4);
+}
+
+int copy_thread(unsigned long clone_flags, unsigned long usp,
+		 unsigned long arg, struct task_struct *p)
+{
+	struct fork_frame {
+		struct switch_stack sw;
+		struct pt_regs regs;
+	} *frame;
+
+	frame = (struct fork_frame *) (task_stack_page(p) + THREAD_SIZE) - 1;
+
+	p->thread.ksp = (unsigned long)frame;
+	p->thread.esp0 = (unsigned long)&frame->regs;
+
 	/*
 	 * Must save the current SFC/DFC value, NOT the value when
 	 * the parent was last descheduled - RGH  10-08-96
 	 */
 	p->thread.fs = get_fs().seg;
 
+	if (unlikely(p->flags & PF_KTHREAD)) {
+		/* kernel thread */
+		memset(frame, 0, sizeof(struct fork_frame));
+		frame->regs.sr = PS_S;
+		frame->sw.a3 = usp; /* function */
+		frame->sw.d7 = arg;
+		frame->sw.retpc = (unsigned long)ret_from_kernel_thread;
+		p->thread.usp = 0;
+		return 0;
+	}
+	memcpy(frame, container_of(current_pt_regs(), struct fork_frame, regs),
+		sizeof(struct fork_frame));
+	frame->regs.d0 = 0;
+	frame->sw.retpc = (unsigned long)ret_from_fork;
+	p->thread.usp = usp ?: rdusp();
+
+	if (clone_flags & CLONE_SETTLS)
+		task_thread_info(p)->tp_value = frame->regs.d5;
+
+#ifdef CONFIG_FPU
 	if (!FPU_IS_EMU) {
 		/* Copy the current fpu state */
 		asm volatile ("fsave %0" : : "m" (p->thread.fpstate[0]) : "memory");
@@ -274,12 +358,39 @@ int copy_thread(int nr, unsigned long clone_flags, unsigned long usp,
 		/* Restore the state in case the fpu was busy */
 		asm volatile ("frestore %0" : : "m" (p->thread.fpstate[0]));
 	}
+		if (!CPU_IS_060 ? p->thread.fpstate[0] : p->thread.fpstate[2]) {
+			if (CPU_IS_COLDFIRE) {
+				asm volatile ("fmovemd %/fp0-%/fp7,%0\n\t"
+					      "fmovel %/fpiar,%1\n\t"
+					      "fmovel %/fpcr,%2\n\t"
+					      "fmovel %/fpsr,%3"
+					      :
+					      : "m" (p->thread.fp[0]),
+						"m" (p->thread.fpcntl[0]),
+						"m" (p->thread.fpcntl[1]),
+						"m" (p->thread.fpcntl[2])
+					      : "memory");
+			} else {
+				asm volatile ("fmovemx %/fp0-%/fp7,%0\n\t"
+					      "fmoveml %/fpiar/%/fpcr/%/fpsr,%1"
+					      :
+					      : "m" (p->thread.fp[0]),
+						"m" (p->thread.fpcntl[0])
+					      : "memory");
+			}
+		}
+
+		/* Restore the state in case the fpu was busy */
+		asm volatile ("frestore %0" : : "m" (p->thread.fpstate[0]));
+	}
+#endif /* CONFIG_FPU */
 
 	return 0;
 }
 
 /* Fill in the fpu structure for a core dump.  */
 
+#ifdef CONFIG_FPU
 int dump_fpu (struct pt_regs *regs, struct user_m68kfp_struct *fpu)
 {
 	char fpustate[216];
@@ -333,6 +444,32 @@ out:
 	unlock_kernel();
 	return error;
 }
+	if (CPU_IS_COLDFIRE) {
+		asm volatile ("fmovel %/fpiar,%0\n\t"
+			      "fmovel %/fpcr,%1\n\t"
+			      "fmovel %/fpsr,%2\n\t"
+			      "fmovemd %/fp0-%/fp7,%3"
+			      :
+			      : "m" (fpu->fpcntl[0]),
+				"m" (fpu->fpcntl[1]),
+				"m" (fpu->fpcntl[2]),
+				"m" (fpu->fpregs[0])
+			      : "memory");
+	} else {
+		asm volatile ("fmovem %/fpiar/%/fpcr/%/fpsr,%0"
+			      :
+			      : "m" (fpu->fpcntl[0])
+			      : "memory");
+		asm volatile ("fmovemx %/fp0-%/fp7,%0"
+			      :
+			      : "m" (fpu->fpregs[0])
+			      : "memory");
+	}
+
+	return 1;
+}
+EXPORT_SYMBOL(dump_fpu);
+#endif /* CONFIG_FPU */
 
 unsigned long get_wchan(struct task_struct *p)
 {

@@ -17,6 +17,7 @@
  *
  */
 
+#include <linux/gpio.h>
 #include <linux/if_ether.h>
 #include <linux/irq.h>
 #include <linux/serial.h>
@@ -26,12 +27,33 @@
 #include <linux/i2c.h>
 #include <linux/i2c-gpio.h>
 
+#include <linux/io.h>
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
 #include <asm/mach/flash.h>
 #include <asm/mach/time.h>
 #include <asm/io.h>
 #include <asm/gpio.h>
+
+#define NSLU2_SDA_PIN		7
+#define NSLU2_SCL_PIN		6
+
+/* NSLU2 Timer */
+#define NSLU2_FREQ 66000000
+
+/* Buttons */
+#define NSLU2_PB_GPIO		5	/* power button */
+#define NSLU2_PO_GPIO		8	/* power off */
+#define NSLU2_RB_GPIO		12	/* reset button */
+
+/* Buzzer */
+#define NSLU2_GPIO_BUZZ		4
+
+/* LEDs */
+#define NSLU2_LED_RED_GPIO	0
+#define NSLU2_LED_GRN_GPIO	1
+#define NSLU2_LED_DISK1_GPIO	3
+#define NSLU2_LED_DISK2_GPIO	2
 
 static struct flash_platform_data nslu2_flash_data = {
 	.map_name		= "cfi_probe",
@@ -184,6 +206,8 @@ static void nslu2_power_off(void)
 
 	/* do the deed */
 	gpio_line_set(NSLU2_PO_GPIO, IXP4XX_GPIO_HIGH);
+	/* enable the pwr cntl gpio and assert power off */
+	gpio_direction_output(NSLU2_PO_GPIO, 1);
 }
 
 static irqreturn_t nslu2_power_handler(int irq, void *dev_id)
@@ -205,6 +229,16 @@ static irqreturn_t nslu2_reset_handler(int irq, void *dev_id)
 	return IRQ_HANDLED;
 }
 
+static int __init nslu2_gpio_init(void)
+{
+	if (!machine_is_nslu2())
+		return 0;
+
+	/* Request the power off GPIO */
+	return gpio_request(NSLU2_PO_GPIO, "power off");
+}
+device_initcall(nslu2_gpio_init);
+
 static void __init nslu2_timer_init(void)
 {
     /* The xtal on this machine is non-standard. */
@@ -221,6 +255,8 @@ static struct sys_timer nslu2_timer = {
 static void __init nslu2_init(void)
 {
 	DECLARE_MAC_BUF(mac_buf);
+static void __init nslu2_init(void)
+{
 	uint8_t __iomem *f;
 	int i;
 
@@ -247,6 +283,7 @@ static void __init nslu2_init(void)
 	if (request_irq(gpio_to_irq(NSLU2_RB_GPIO), &nslu2_reset_handler,
 		IRQF_DISABLED | IRQF_TRIGGER_LOW,
 		"NSLU2 reset button", NULL) < 0) {
+		IRQF_TRIGGER_LOW, "NSLU2 reset button", NULL) < 0) {
 
 		printk(KERN_DEBUG "Reset Button IRQ %d not available\n",
 			gpio_to_irq(NSLU2_RB_GPIO));
@@ -255,6 +292,7 @@ static void __init nslu2_init(void)
 	if (request_irq(gpio_to_irq(NSLU2_PB_GPIO), &nslu2_power_handler,
 		IRQF_DISABLED | IRQF_TRIGGER_HIGH,
 		"NSLU2 power button", NULL) < 0) {
+		IRQF_TRIGGER_HIGH, "NSLU2 power button", NULL) < 0) {
 
 		printk(KERN_DEBUG "Power Button IRQ %d not available\n",
 			gpio_to_irq(NSLU2_PB_GPIO));
@@ -277,6 +315,8 @@ static void __init nslu2_init(void)
 	}
 	printk(KERN_INFO "NSLU2: Using MAC address %s for port 0\n",
 	       print_mac(mac_buf, nslu2_plat_eth[0].hwaddr));
+	printk(KERN_INFO "NSLU2: Using MAC address %pM for port 0\n",
+	       nslu2_plat_eth[0].hwaddr);
 
 }
 
@@ -289,4 +329,14 @@ MACHINE_START(NSLU2, "Linksys NSLU2")
 	.init_irq	= ixp4xx_init_irq,
 	.timer          = &nslu2_timer,
 	.init_machine	= nslu2_init,
+	.atag_offset	= 0x100,
+	.map_io		= ixp4xx_map_io,
+	.init_early	= ixp4xx_init_early,
+	.init_irq	= ixp4xx_init_irq,
+	.init_time	= nslu2_timer_init,
+	.init_machine	= nslu2_init,
+#if defined(CONFIG_PCI)
+	.dma_zone_size	= SZ_64M,
+#endif
+	.restart	= ixp4xx_restart,
 MACHINE_END

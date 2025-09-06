@@ -18,6 +18,7 @@
 #include <linux/io.h>
 #include <linux/clk.h>
 #include <linux/platform_device.h>
+#include <linux/slab.h>
 
 /* PSIF register offsets */
 #define PSIF_CR				0x00
@@ -100,6 +101,9 @@ struct psif {
 	unsigned int		open;
 	/* Prevent concurrent writes to PSIF THR. */
 	spinlock_t		lock;
+	/* Prevent concurrent writes to PSIF THR. */
+	spinlock_t		lock;
+	bool			open;
 };
 
 static irqreturn_t psif_interrupt(int irq, void *_ptr)
@@ -138,6 +142,7 @@ static int psif_write(struct serio *io, unsigned char val)
 
 	while (!(psif_readl(psif, SR) & PSIF_BIT(TXEMPTY)) && timeout--)
 		msleep(10);
+		udelay(50);
 
 	if (timeout >= 0) {
 		psif_writel(psif, THR, val);
@@ -164,6 +169,7 @@ static int psif_open(struct serio *io)
 	psif_writel(psif, IER, PSIF_BIT(RXRDY));
 
 	psif->open = 1;
+	psif->open = true;
 out:
 	return retval;
 }
@@ -173,6 +179,7 @@ static void psif_close(struct serio *io)
 	struct psif *psif = io->port_data;
 
 	psif->open = 0;
+	psif->open = false;
 
 	psif_writel(psif, IDR, ~0UL);
 	psif_writel(psif, CR, PSIF_BIT(CR_TXDIS) | PSIF_BIT(CR_RXDIS));
@@ -232,6 +239,7 @@ static int __init psif_probe(struct platform_device *pdev)
 	}
 
 	psif->regs = ioremap(regs->start, regs->end - regs->start + 1);
+	psif->regs = ioremap(regs->start, resource_size(regs));
 	if (!psif->regs) {
 		ret = -ENOMEM;
 		dev_dbg(&pdev->dev, "could not map I/O memory\n");
@@ -321,6 +329,13 @@ static int __exit psif_remove(struct platform_device *pdev)
 #ifdef CONFIG_PM
 static int psif_suspend(struct platform_device *pdev, pm_message_t state)
 {
+	return 0;
+}
+
+#ifdef CONFIG_PM_SLEEP
+static int psif_suspend(struct device *dev)
+{
+	struct platform_device *pdev = to_platform_device(dev);
 	struct psif *psif = platform_get_drvdata(pdev);
 
 	if (psif->open) {
@@ -333,6 +348,9 @@ static int psif_suspend(struct platform_device *pdev, pm_message_t state)
 
 static int psif_resume(struct platform_device *pdev)
 {
+static int psif_resume(struct device *dev)
+{
+	struct platform_device *pdev = to_platform_device(dev);
 	struct psif *psif = platform_get_drvdata(pdev);
 
 	if (psif->open) {
@@ -347,6 +365,10 @@ static int psif_resume(struct platform_device *pdev)
 #define psif_suspend	NULL
 #define psif_resume	NULL
 #endif
+
+#endif
+
+static SIMPLE_DEV_PM_OPS(psif_pm_ops, psif_suspend, psif_resume);
 
 static struct platform_driver psif_driver = {
 	.remove		= __exit_p(psif_remove),
@@ -371,5 +393,12 @@ module_init(psif_init);
 module_exit(psif_exit);
 
 MODULE_AUTHOR("Hans-Christian Egtvedt <hans-christian.egtvedt@atmel.com>");
+		.pm	= &psif_pm_ops,
+	},
+};
+
+module_platform_driver_probe(psif_driver, psif_probe);
+
+MODULE_AUTHOR("Hans-Christian Egtvedt <egtvedt@samfundet.no>");
 MODULE_DESCRIPTION("Atmel AVR32 PSIF PS/2 driver");
 MODULE_LICENSE("GPL");

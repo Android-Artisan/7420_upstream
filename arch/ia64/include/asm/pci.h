@@ -11,6 +11,19 @@
 #include <asm/scatterlist.h>
 #include <asm/hw_irq.h>
 
+#include <linux/scatterlist.h>
+
+#include <asm/io.h>
+#include <asm/hw_irq.h>
+
+struct pci_vector_struct {
+	__u16 segment;	/* PCI Segment number */
+	__u16 bus;	/* PCI Bus number */
+	__u32 pci_id;	/* ACPI split 16 bits device, 16 bits function (see section 6.1.1) */
+	__u8 pin;	/* PCI PIN (0 = A, 1 = B, 2 = C, 3 = D) */
+	__u32 irq;	/* IRQ assigned */
+};
+
 /*
  * Can be used to override the logic in pci_scan_bus for skipping already-configured bus
  * numbers - to be used for buggy BIOSes or architectures with incomplete PCI setup by the
@@ -90,6 +103,8 @@ static inline void pci_dma_burst_advice(struct pci_dev *pdev,
 }
 #endif
 
+#include <asm-generic/pci-dma-compat.h>
+
 #define HAVE_PCI_MMAP
 extern int pci_mmap_page_range (struct pci_dev *dev, struct vm_area_struct *vma,
 				enum pci_mmap_state mmap_state, int write_combine);
@@ -105,6 +120,8 @@ extern ssize_t pci_write_legacy_io(struct kobject *kobj,
 extern int pci_mmap_legacy_mem(struct kobject *kobj,
 			       struct bin_attribute *attr,
 			       struct vm_area_struct *vma);
+				      struct vm_area_struct *vma,
+				      enum pci_mmap_state mmap_state);
 
 #define pci_get_legacy_mem platform_pci_get_legacy_mem
 #define pci_legacy_read platform_pci_legacy_read
@@ -123,9 +140,15 @@ struct pci_controller {
 
 	unsigned int windows;
 	struct pci_window *window;
+struct pci_controller {
+	struct acpi_device *companion;
+	void *iommu;
+	int segment;
+	int node;		/* nearest node with memory or NUMA_NO_NODE for global allocation */
 
 	void *platform_data;
 };
+
 
 #define PCI_CONTROLLER(busdev) ((struct pci_controller *) busdev->sysdata)
 #define pci_domain_nr(busdev)    (PCI_CONTROLLER(busdev)->segment)
@@ -164,4 +187,7 @@ static inline int pci_get_legacy_ide_irq(struct pci_dev *dev, int channel)
 	return channel ? isa_irq_to_vector(15) : isa_irq_to_vector(14);
 }
 
+#ifdef CONFIG_INTEL_IOMMU
+extern void pci_iommu_alloc(void);
+#endif
 #endif /* _ASM_IA64_PCI_H */

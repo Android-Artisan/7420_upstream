@@ -1,7 +1,6 @@
 [This file is cloned from VesaFB. Thanks go to Gerd Knorr]
 
 What is matroxfb?
-=================
 
 This is a driver for a graphic framebuffer for Matrox devices on
 Alpha, Intel and PPC boxes.
@@ -20,7 +19,6 @@ Disadvantages:
 
 
 How to use it?
-==============
 
 Switching modes is done using the video=matroxfb:vesa:... boot parameter
 or using `fbset' program.
@@ -92,7 +90,6 @@ virtual consoles, otherwise X will corrupt accelerator settings.
 
 
 SVGALib
-=======
 
 Driver contains SVGALib compatibility code. It is turned on by choosing textual
 mode for console. You can do it at boot time by using videomode
@@ -103,7 +100,6 @@ problem and not mine, but I'm not sure.
 
 
 Configuration
-=============
 
 You can pass kernel command line options to matroxfb with
 `video=matroxfb:option1,option2:value2,option3' (multiple options should be 
@@ -179,6 +175,8 @@ sdram    - tells to driver that you have Gxx0 with SDRAM memory.
            It is a default.
 inv24    - change timings parameters for 24bpp modes on Millenium and
            Millenium II. Specify this if you see strange color shadows around
+inv24    - change timings parameters for 24bpp modes on Millennium and
+           Millennium II. Specify this if you see strange color shadows around
 	   characters.
 noinv24  - use standard timings. It is the default.
 inverse  - invert colors on screen (for LCD displays)
@@ -189,6 +187,7 @@ dev:X    - bind driver to device X. Driver numbers device from 0 up to N,
 	   Default is `every' known device for driver with multihead support
 	   and first working device (usually dev:0) for driver without
 	   multihead support.
+	   Default is `every' known device.
 nohwcursor - disables hardware cursor (use software cursor instead).
 hwcursor - enables hardware cursor. It is default. If you are using
            non-accelerated mode (`noaccel' or `fbset -accel false'), software
@@ -209,6 +208,9 @@ cross4MB - enables that pixel line can cross 4MB boundary. It is default for
            non-Millenium.
 nocross4MB - pixel line must not cross 4MB boundary. It is default for
              Millenium I or II, because of these devices have hardware
+           non-Millennium.
+nocross4MB - pixel line must not cross 4MB boundary. It is default for
+             Millennium I or II, because of these devices have hardware
 	     limitations which do not allow this. But this option is
 	     incompatible with some (if not all yet released) versions of
 	     XF86_FBDev.
@@ -280,7 +282,6 @@ fv:X     - maximum vertical frequency. X must be specified in Hz. Default is
 
 
 Limitations
-===========
 
 There are known and unknown bugs, features and misfeatures.
 Currently there are following known bugs:
@@ -333,7 +334,6 @@ And following features:
 
 
 Benchmarks
-==========
 It is time to redraw whole screen 1000 times in 1024x768, 60Hz. It is
 time for draw 6144000 characters on screen through /dev/vcsa
 (for 32bpp it is about 3GB of data (exactly 3000 MB); for 8x16 font in 
@@ -375,7 +375,6 @@ TEXT     3.29         1.50
 
 
 Dualhead G400
-=============
 Driver supports dualhead G400 with some limitations:
  + secondary head shares videomemory with primary head. It is not problem
    if you have 32MB of videoram, but if you have only 16MB, you may have
@@ -396,7 +395,6 @@ Driver supports dualhead G400 with some limitations:
 
 
 Dualhead G450
-=============
 Driver supports dualhead G450 with some limitations:
  + secondary head shares videomemory with primary head. It is not problem
    if you have 32MB of videoram, but if you have only 16MB, you may have

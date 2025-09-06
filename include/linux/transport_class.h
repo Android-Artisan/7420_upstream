@@ -10,6 +10,7 @@
 #define _TRANSPORT_CLASS_H_
 
 #include <linux/device.h>
+#include <linux/bug.h>
 #include <linux/attribute_container.h>
 
 struct transport_container;
@@ -56,6 +57,7 @@ struct anon_transport_class cls = {				\
 struct transport_container {
 	struct attribute_container ac;
 	struct attribute_group *statistics;
+	const struct attribute_group *statistics;
 };
 
 #define attribute_container_to_transport_container(x) \

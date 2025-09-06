@@ -52,6 +52,19 @@
 #include <asm/mach/irq.h>
 #include <asm/mach/time.h>
 
+#include <linux/io.h>
+#include <linux/sched_clock.h>
+
+#include <asm/irq.h>
+
+#include <mach/hardware.h>
+#include <asm/mach/irq.h>
+#include <asm/mach/time.h>
+
+#include "iomap.h"
+#include "common.h"
+
+#ifdef CONFIG_OMAP_MPU_TIMER
 
 #define OMAP_MPU_TIMER_BASE		OMAP_MPU_TIMER1_BASE
 #define OMAP_MPU_TIMER_OFFSET		0x100
@@ -70,6 +83,14 @@ static inline unsigned long omap_mpu_timer_read(int nr)
 {
 	volatile omap_mpu_timer_regs_t* timer = omap_mpu_timer_base(nr);
 	return timer->read_tim;
+#define omap_mpu_timer_base(n)							\
+((omap_mpu_timer_regs_t __iomem *)OMAP1_IO_ADDRESS(OMAP_MPU_TIMER_BASE +	\
+				 (n)*OMAP_MPU_TIMER_OFFSET))
+
+static inline unsigned long notrace omap_mpu_timer_read(int nr)
+{
+	omap_mpu_timer_regs_t __iomem *timer = omap_mpu_timer_base(nr);
+	return readl(&timer->read_tim);
 }
 
 static inline void omap_mpu_set_autoreset(int nr)
@@ -77,6 +98,9 @@ static inline void omap_mpu_set_autoreset(int nr)
 	volatile omap_mpu_timer_regs_t* timer = omap_mpu_timer_base(nr);
 
 	timer->cntl = timer->cntl | MPU_TIMER_AR;
+	omap_mpu_timer_regs_t __iomem *timer = omap_mpu_timer_base(nr);
+
+	writel(readl(&timer->cntl) | MPU_TIMER_AR, &timer->cntl);
 }
 
 static inline void omap_mpu_remove_autoreset(int nr)
@@ -84,6 +108,9 @@ static inline void omap_mpu_remove_autoreset(int nr)
 	volatile omap_mpu_timer_regs_t* timer = omap_mpu_timer_base(nr);
 
 	timer->cntl = timer->cntl & ~MPU_TIMER_AR;
+	omap_mpu_timer_regs_t __iomem *timer = omap_mpu_timer_base(nr);
+
+	writel(readl(&timer->cntl) & ~MPU_TIMER_AR, &timer->cntl);
 }
 
 static inline void omap_mpu_timer_start(int nr, unsigned long load_val,
@@ -99,6 +126,17 @@ static inline void omap_mpu_timer_start(int nr, unsigned long load_val,
 	timer->load_tim = load_val;
         udelay(1);
 	timer->cntl = timerflags;
+	omap_mpu_timer_regs_t __iomem *timer = omap_mpu_timer_base(nr);
+	unsigned int timerflags = MPU_TIMER_CLOCK_ENABLE | MPU_TIMER_ST;
+
+	if (autoreset)
+		timerflags |= MPU_TIMER_AR;
+
+	writel(MPU_TIMER_CLOCK_ENABLE, &timer->cntl);
+	udelay(1);
+	writel(load_val, &timer->load_tim);
+        udelay(1);
+	writel(timerflags, &timer->cntl);
 }
 
 static inline void omap_mpu_timer_stop(int nr)
@@ -106,6 +144,9 @@ static inline void omap_mpu_timer_stop(int nr)
 	volatile omap_mpu_timer_regs_t* timer = omap_mpu_timer_base(nr);
 
 	timer->cntl &= ~MPU_TIMER_ST;
+	omap_mpu_timer_regs_t __iomem *timer = omap_mpu_timer_base(nr);
+
+	writel(readl(&timer->cntl) & ~MPU_TIMER_ST, &timer->cntl);
 }
 
 /*
@@ -144,6 +185,26 @@ static struct clock_event_device clockevent_mpu_timer1 = {
 	.shift		= 32,
 	.set_next_event	= omap_mpu_set_next_event,
 	.set_mode	= omap_mpu_set_mode,
+static int omap_mpu_set_oneshot(struct clock_event_device *evt)
+{
+	omap_mpu_timer_stop(0);
+	omap_mpu_remove_autoreset(0);
+	return 0;
+}
+
+static int omap_mpu_set_periodic(struct clock_event_device *evt)
+{
+	omap_mpu_set_autoreset(0);
+	return 0;
+}
+
+static struct clock_event_device clockevent_mpu_timer1 = {
+	.name			= "mpu_timer1",
+	.features		= CLOCK_EVT_FEAT_PERIODIC |
+				  CLOCK_EVT_FEAT_ONESHOT,
+	.set_next_event		= omap_mpu_set_next_event,
+	.set_state_periodic	= omap_mpu_set_periodic,
+	.set_state_oneshot	= omap_mpu_set_oneshot,
 };
 
 static irqreturn_t omap_mpu_timer1_interrupt(int irq, void *dev_id)
@@ -158,6 +219,7 @@ static irqreturn_t omap_mpu_timer1_interrupt(int irq, void *dev_id)
 static struct irqaction omap_mpu_timer1_irq = {
 	.name		= "mpu_timer1",
 	.flags		= IRQF_DISABLED | IRQF_TIMER | IRQF_IRQPOLL,
+	.flags		= IRQF_TIMER | IRQF_IRQPOLL,
 	.handler	= omap_mpu_timer1_interrupt,
 };
 
@@ -175,6 +237,9 @@ static __init void omap_init_mpu_timer(unsigned long rate)
 
 	clockevent_mpu_timer1.cpumask = cpumask_of_cpu(0);
 	clockevents_register_device(&clockevent_mpu_timer1);
+	clockevent_mpu_timer1.cpumask = cpumask_of(0);
+	clockevents_config_and_register(&clockevent_mpu_timer1, rate,
+					1, -1);
 }
 
 
@@ -199,6 +264,7 @@ static struct irqaction omap_mpu_timer2_irq = {
 };
 
 static cycle_t mpu_read(void)
+static u64 notrace omap_mpu_read_sched_clock(void)
 {
 	return ~omap_mpu_timer_read(1);
 }
@@ -233,6 +299,21 @@ static void __init omap_init_clocksource(unsigned long rate)
  * ---------------------------------------------------------------------------
  */
 static void __init omap_timer_init(void)
+static void __init omap_init_clocksource(unsigned long rate)
+{
+	omap_mpu_timer_regs_t __iomem *timer = omap_mpu_timer_base(1);
+	static char err[] __initdata = KERN_ERR
+			"%s: can't register clocksource!\n";
+
+	omap_mpu_timer_start(1, ~0, 1);
+	sched_clock_register(omap_mpu_read_sched_clock, 32, rate);
+
+	if (clocksource_mmio_init(&timer->read_tim, "mpu_timer2", rate,
+			300, 32, clocksource_mmio_readl_down))
+		printk(err, "mpu_timer2");
+}
+
+static void __init omap_mpu_timer_init(void)
 {
 	struct clk	*ck_ref = clk_get(NULL, "ck_ref");
 	unsigned long	rate;
@@ -252,3 +333,20 @@ static void __init omap_timer_init(void)
 struct sys_timer omap_timer = {
 	.init		= omap_timer_init,
 };
+#else
+static inline void omap_mpu_timer_init(void)
+{
+	pr_err("Bogus timer, should not happen\n");
+}
+#endif	/* CONFIG_OMAP_MPU_TIMER */
+
+/*
+ * ---------------------------------------------------------------------------
+ * Timer initialization
+ * ---------------------------------------------------------------------------
+ */
+void __init omap1_timer_init(void)
+{
+	if (omap_32k_timer_init() != 0)
+		omap_mpu_timer_init();
+}

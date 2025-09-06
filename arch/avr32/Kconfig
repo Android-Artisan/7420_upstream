@@ -13,6 +13,25 @@ config AVR32
 	select HAVE_CLK
 	select HAVE_OPROFILE
 	select HAVE_KPROBES
+config AVR32
+	def_bool y
+	# With EXPERT=n, we get lots of stuff automatically selected
+	# that we usually don't need on AVR32.
+	select EXPERT
+	select HAVE_CLK
+	select HAVE_OPROFILE
+	select HAVE_KPROBES
+	select VIRT_TO_BUS
+	select GENERIC_IRQ_PROBE
+	select GENERIC_ATOMIC64
+	select HARDIRQS_SW_RESEND
+	select GENERIC_IRQ_SHOW
+	select ARCH_HAVE_CUSTOM_GPIO_H
+	select ARCH_WANT_IPC_PARSE_VERSION
+	select ARCH_HAVE_NMI_SAFE_CMPXCHG
+	select GENERIC_CLOCKEVENTS
+	select HAVE_MOD_ARCH_SPECIFIC
+	select MODULES_USE_ELF_RELA
 	help
 	  AVR32 is a high-performance 32-bit RISC microprocessor core,
 	  designed for cost-sensitive embedded applications, with particular
@@ -51,6 +70,9 @@ config GENERIC_TIME
 config GENERIC_CLOCKEVENTS
 	def_bool y
 
+config RWSEM_GENERIC_SPINLOCK
+	def_bool y
+
 config RWSEM_XCHGADD_ALGORITHM
 	def_bool n
 
@@ -75,6 +97,9 @@ source "init/Kconfig"
 menu "System Type and features"
 
 source "kernel/time/Kconfig"
+source "kernel/Kconfig.freezer"
+
+menu "System Type and features"
 
 config SUBARCH_AVR32B
 	bool
@@ -90,6 +115,7 @@ config PLATFORM_AT32AP
 	select PERFORMANCE_COUNTERS
 	select ARCH_REQUIRE_GPIOLIB
 	select GENERIC_ALLOCATOR
+	select HAVE_FB_ATMEL
 
 #
 # CPU types
@@ -109,6 +135,11 @@ config CPU_AT32AP7002
 	bool
 	select CPU_AT32AP700X
 
+# AP700X boards
+config BOARD_ATNGW100_COMMON
+	bool
+	select CPU_AT32AP7000
+
 choice
 	prompt "AVR32 board type"
 	default BOARD_ATSTK1000
@@ -124,6 +155,59 @@ endchoice
 if BOARD_ATSTK1000
 source "arch/avr32/boards/atstk1000/Kconfig"
 endif
+config BOARD_ATNGW100_MKI
+	bool "ATNGW100 Network Gateway"
+	select BOARD_ATNGW100_COMMON
+
+config BOARD_ATNGW100_MKII
+	bool "ATNGW100 mkII Network Gateway"
+	select BOARD_ATNGW100_COMMON
+
+config BOARD_HAMMERHEAD
+	bool "Hammerhead board"
+	select CPU_AT32AP7000
+	select USB_ARCH_HAS_HCD
+	help
+	  The Hammerhead platform is built around an AVR32 32-bit microcontroller from Atmel.
+	  It offers versatile peripherals, such as ethernet, usb device, usb host etc.
+
+	  The board also incorporates a power supply and is a Power over Ethernet (PoE) Powered
+	  Device (PD).
+
+	  Additionally, a Cyclone III FPGA from Altera is integrated on the board. The FPGA is
+	  mapped into the 32-bit AVR memory bus. The FPGA offers two DDR2 SDRAM interfaces, which
+	  will cover even the most exceptional need of memory bandwidth. Together with the onboard
+	  video decoder the board is ready for video processing.
+
+	  For more information see: http://www.miromico.ch/index.php/hammerhead.html 
+
+config BOARD_FAVR_32
+	bool "Favr-32 LCD-board"
+	select CPU_AT32AP7000
+
+config BOARD_MERISC
+	bool "Merisc board"
+	select CPU_AT32AP7000
+	help
+	  Merisc is the family name for a range of AVR32-based boards.
+
+	  The boards are designed to be used in a man-machine
+	  interfacing environment, utilizing a touch-based graphical
+	  user interface. They host a vast range of I/O peripherals as
+	  well as a large SDRAM & Flash memory bank.
+
+	  For more information see: http://www.martinsson.se/merisc
+
+config BOARD_MIMC200
+	bool "MIMC200 CPU board"
+	select CPU_AT32AP7000
+endchoice
+
+source "arch/avr32/boards/atstk1000/Kconfig"
+source "arch/avr32/boards/atngw100/Kconfig"
+source "arch/avr32/boards/hammerhead/Kconfig"
+source "arch/avr32/boards/favr-32/Kconfig"
+source "arch/avr32/boards/merisc/Kconfig"
 
 choice
 	prompt "Boot loader type"
@@ -169,6 +253,11 @@ config ARCH_DISCONTIGMEM_ENABLE
 
 config ARCH_SPARSEMEM_ENABLE
 	def_bool n
+
+config NODES_SHIFT
+	int
+	default "2"
+	depends on NEED_MULTIPLE_NODES
 
 source "mm/Kconfig"
 
@@ -226,6 +315,7 @@ config CPU_FREQ_AT32AP
 
 	  If in doubt, say N.
 
+source "drivers/cpufreq/Kconfig"
 endmenu
 
 endmenu

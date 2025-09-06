@@ -57,6 +57,11 @@ static struct irqaction cayman_action_pci2 = {
 
 static void enable_cayman_irq(unsigned int irq)
 {
+};
+
+static void enable_cayman_irq(struct irq_data *data)
+{
+	unsigned int irq = data->irq;
 	unsigned long flags;
 	unsigned long mask;
 	unsigned int reg;
@@ -74,6 +79,15 @@ static void enable_cayman_irq(unsigned int irq)
 
 void disable_cayman_irq(unsigned int irq)
 {
+	mask = __raw_readl(reg);
+	mask |= bit;
+	__raw_writel(mask, reg);
+	local_irq_restore(flags);
+}
+
+static void disable_cayman_irq(struct irq_data *data)
+{
+	unsigned int irq = data->irq;
 	unsigned long flags;
 	unsigned long mask;
 	unsigned int reg;
@@ -119,6 +133,16 @@ struct hw_interrupt_type cayman_irq_type = {
 	.disable	= disable_cayman_irq,
 	.ack		= ack_cayman_irq,
 	.end		= end_cayman_irq,
+	mask = __raw_readl(reg);
+	mask &= ~bit;
+	__raw_writel(mask, reg);
+	local_irq_restore(flags);
+}
+
+struct irq_chip cayman_irq_type = {
+	.name		= "Cayman-IRQ",
+	.irq_unmask	= enable_cayman_irq,
+	.irq_mask	= disable_cayman_irq,
 };
 
 int cayman_irq_demux(int evt)
@@ -131,6 +155,8 @@ int cayman_irq_demux(int evt)
 
 		status = ctrl_inl(EPLD_STATUS_BASE) &
 			 ctrl_inl(EPLD_MASK_BASE) & 0xff;
+		status = __raw_readl(EPLD_STATUS_BASE) &
+			 __raw_readl(EPLD_MASK_BASE) & 0xff;
 		if (status == 0) {
 			irq = -1;
 		} else {
@@ -148,6 +174,8 @@ int cayman_irq_demux(int evt)
 
 		status = ctrl_inl(EPLD_STATUS_BASE + 3 * sizeof(u32)) &
 			 ctrl_inl(EPLD_MASK_BASE + 3 * sizeof(u32)) & 0xff;
+		status = __raw_readl(EPLD_STATUS_BASE + 3 * sizeof(u32)) &
+			 __raw_readl(EPLD_MASK_BASE + 3 * sizeof(u32)) & 0xff;
 		if (status == 0) {
 			irq = -1;
 		} else {
@@ -182,6 +210,7 @@ void init_cayman_irq(void)
 	int i;
 
 	epld_virt = onchip_remap(EPLD_BASE, 1024, "EPLD");
+	epld_virt = (unsigned long)ioremap_nocache(EPLD_BASE, 1024);
 	if (!epld_virt) {
 		printk(KERN_ERR "Cayman IRQ: Unable to remap EPLD\n");
 		return;
@@ -189,6 +218,9 @@ void init_cayman_irq(void)
 
 	for (i=0; i<NR_EXT_IRQS; i++) {
 		irq_desc[START_EXT_IRQS + i].chip = &cayman_irq_type;
+	for (i = 0; i < NR_EXT_IRQS; i++) {
+		irq_set_chip_and_handler(START_EXT_IRQS + i,
+					 &cayman_irq_type, handle_level_irq);
 	}
 
 	/* Setup the SMSC interrupt */

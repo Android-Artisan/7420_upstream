@@ -33,6 +33,7 @@
 #include <linux/pci.h>
 #include <linux/spinlock.h>
 #include <linux/string.h>
+#include <linux/export.h>
 #include <asm/hardware.h>
 #include <asm/io.h>
 #include <asm/pdc.h>
@@ -44,6 +45,7 @@ EXPORT_SYMBOL(hppa_dma_ops);
 
 static struct device root = {
 	.bus_id = "parisc",
+	.init_name = "parisc",
 };
 
 static inline int check_dev(struct device *dev)
@@ -306,6 +308,7 @@ static void get_node_path(struct device *dev, struct hardware_path *path)
 	memset(&path->bc, -1, 6);
 
 	if (is_pci_dev(dev)) {
+	if (dev_is_pci(dev)) {
 		unsigned int devfn = to_pci_dev(dev)->devfn;
 		path->mod = PCI_FUNC(devfn);
 		path->bc[i--] = PCI_SLOT(devfn);
@@ -314,6 +317,7 @@ static void get_node_path(struct device *dev, struct hardware_path *path)
 
 	while (dev != &root) {
 		if (is_pci_dev(dev)) {
+		if (dev_is_pci(dev)) {
 			unsigned int devfn = to_pci_dev(dev)->devfn;
 			path->bc[i--] = PCI_SLOT(devfn) | (PCI_FUNC(devfn)<< 5);
 		} else if (dev->bus == &parisc_bus_type) {
@@ -394,6 +398,8 @@ static void setup_bus_id(struct parisc_device *padev)
 {
 	struct hardware_path path;
 	char *output = padev->dev.bus_id;
+	char name[28];
+	char *output = name;
 	int i;
 
 	get_node_path(padev->dev.parent, &path);
@@ -404,6 +410,7 @@ static void setup_bus_id(struct parisc_device *padev)
 		output += sprintf(output, "%u:", (unsigned char) path.bc[i]);
 	}
 	sprintf(output, "%u", (unsigned char) padev->hw_path);
+	dev_set_name(&padev->dev, name);
 }
 
 struct parisc_device * create_tree_node(char id, struct device *parent)
@@ -513,7 +520,6 @@ alloc_pa_dev(unsigned long hpa, struct hardware_path *mod_path)
 	dev->id.hversion_rev = iodc_data[1] & 0x0f;
 	dev->id.sversion = ((iodc_data[4] & 0x0f) << 16) |
 			(iodc_data[5] << 8) | iodc_data[6];
-	dev->hpa.name = parisc_pathname(dev);
 	dev->hpa.start = hpa;
 	/* This is awkward.  The STI spec says that gfx devices may occupy
 	 * 32MB or 64MB.  Unfortunately, we don't know how to tell whether
@@ -527,10 +533,10 @@ alloc_pa_dev(unsigned long hpa, struct hardware_path *mod_path)
 		dev->hpa.end = hpa + 0xfff;
 	}
 	dev->hpa.flags = IORESOURCE_MEM;
-	name = parisc_hardware_description(&dev->id);
-	if (name) {
-		strlcpy(dev->name, name, sizeof(dev->name));
-	}
+	dev->hpa.name = dev->name;
+	name = parisc_hardware_description(&dev->id) ? : "unknown";
+	snprintf(dev->name, sizeof(dev->name), "%s [%s]",
+		name, parisc_pathname(dev));
 
 	/* Silently fail things like mouse ports which are subsumed within
 	 * the keyboard controller
@@ -545,6 +551,38 @@ alloc_pa_dev(unsigned long hpa, struct hardware_path *mod_path)
 static int parisc_generic_match(struct device *dev, struct device_driver *drv)
 {
 	return match_device(to_parisc_driver(drv), to_parisc_device(dev));
+}
+
+static ssize_t make_modalias(struct device *dev, char *buf)
+{
+	const struct parisc_device *padev = to_parisc_device(dev);
+	const struct parisc_device_id *id = &padev->id;
+
+	return sprintf(buf, "parisc:t%02Xhv%04Xrev%02Xsv%08X\n",
+		(u8)id->hw_type, (u16)id->hversion, (u8)id->hversion_rev,
+		(u32)id->sversion);
+}
+
+static int parisc_uevent(struct device *dev, struct kobj_uevent_env *env)
+{
+	const struct parisc_device *padev;
+	char modalias[40];
+
+	if (!dev)
+		return -ENODEV;
+
+	padev = to_parisc_device(dev);
+	if (!padev)
+		return -ENODEV;
+
+	if (add_uevent_var(env, "PARISC_NAME=%s", padev->name))
+		return -ENOMEM;
+
+	make_modalias(dev, modalias);
+	if (add_uevent_var(env, "MODALIAS=%s", modalias))
+		return -ENOMEM;
+
+	return 0;
 }
 
 #define pa_dev_attr(name, field, format_string)				\
@@ -570,6 +608,7 @@ static ssize_t modalias_show(struct device *dev, struct device_attribute *attr, 
 	return sprintf(buf, "parisc:t%02Xhv%04Xrev%02Xsv%08X\n",
 		(u8)id->hw_type, (u16)id->hversion, (u8)id->hversion_rev,
 		(u32)id->sversion);
+	return make_modalias(dev, buf);
 }
 
 static struct device_attribute parisc_device_attrs[] = {
@@ -585,6 +624,7 @@ static struct device_attribute parisc_device_attrs[] = {
 struct bus_type parisc_bus_type = {
 	.name = "parisc",
 	.match = parisc_generic_match,
+	.uevent = parisc_uevent,
 	.dev_attrs = parisc_device_attrs,
 	.probe = parisc_driver_probe,
 	.remove = parisc_driver_remove,
@@ -629,6 +669,10 @@ static int match_pci_device(struct device *dev, int index,
 					(modpath->mod == PCI_FUNC(devfn)));
 	}
 
+	/* index might be out of bounds for bc[] */
+	if (index >= 6)
+		return 0;
+
 	id = PCI_SLOT(pdev->devfn) | (PCI_FUNC(pdev->devfn) << 5);
 	return (modpath->bc[index] == id);
 }
@@ -665,6 +709,7 @@ static int check_parent(struct device * dev, void * data)
 			if (match_parisc_device(dev, d->index, d->modpath))
 				d->dev = dev;
 		} else if (is_pci_dev(dev)) {
+		} else if (dev_is_pci(dev)) {
 			if (match_pci_device(dev, d->index, d->modpath))
 				d->dev = dev;
 		} else if (dev->bus == NULL) {
@@ -723,6 +768,7 @@ struct device *hwpath_to_device(struct hardware_path *modpath)
 			return NULL;
 	}
 	if (is_pci_dev(parent)) /* pci devices already parse MOD */
+	if (dev_is_pci(parent)) /* pci devices already parse MOD */
 		return parent;
 	else
 		return parse_tree_node(parent, 6, modpath);
@@ -742,6 +788,7 @@ void device_to_hwpath(struct device *dev, struct hardware_path *path)
 		get_node_path(dev->parent, path);
 		path->mod = padev->hw_path;
 	} else if (is_pci_dev(dev)) {
+	} else if (dev_is_pci(dev)) {
 		get_node_path(dev, path);
 	}
 }

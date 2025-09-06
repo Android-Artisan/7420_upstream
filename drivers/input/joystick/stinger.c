@@ -224,3 +224,4 @@ static void __exit stinger_exit(void)
 
 module_init(stinger_init);
 module_exit(stinger_exit);
+module_serio_driver(stinger_drv);

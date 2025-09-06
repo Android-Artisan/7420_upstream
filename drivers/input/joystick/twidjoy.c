@@ -273,3 +273,4 @@ static void __exit twidjoy_exit(void)
 
 module_init(twidjoy_init);
 module_exit(twidjoy_exit);
+module_serio_driver(twidjoy_drv);

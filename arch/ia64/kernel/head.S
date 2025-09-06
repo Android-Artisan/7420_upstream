@@ -31,6 +31,9 @@
 #include <asm/processor.h>
 #include <asm/ptrace.h>
 #include <asm/system.h>
+#include <asm/pgtable.h>
+#include <asm/processor.h>
+#include <asm/ptrace.h>
 #include <asm/mca_asm.h>
 #include <linux/init.h>
 #include <linux/linkage.h>
@@ -168,6 +171,7 @@ RestRR:											\
 	mov rr[_tmp1]=_tmp2
 
 	.section __special_page_section,"ax"
+	__PAGE_ALIGNED_DATA
 
 	.global empty_zero_page
 empty_zero_page:
@@ -182,6 +186,7 @@ halt_msg:
 	stringz "Halting kernel\n"
 
 	.section .text.head,"ax"
+	__REF
 
 	.global start_ap
 
@@ -1037,6 +1042,7 @@ END(ia64_delay_loop)
  * NOT synchronized across CPUs its return value must never be
  * compared against the values returned on another CPU.  The usage in
  * kernel/sched.c ensures that.
+ * kernel/sched/core.c ensures that.
  *
  * The return-value of sched_clock() is NOT supposed to wrap-around.
  * If it did, it would cause some scheduling hiccups (at the worst).
@@ -1052,6 +1058,8 @@ END(ia64_delay_loop)
  */
 GLOBAL_ENTRY(sched_clock)
 	addl r8=THIS_CPU(cpu_info) + IA64_CPUINFO_NSEC_PER_CYC_OFFSET,r0
+GLOBAL_ENTRY(ia64_native_sched_clock)
+	addl r8=THIS_CPU(ia64_cpu_info) + IA64_CPUINFO_NSEC_PER_CYC_OFFSET,r0
 	mov.m r9=ar.itc		// fetch cycle-counter				(35 cyc)
 	;;
 	ldf8 f8=[r8]
@@ -1072,6 +1080,12 @@ END(sched_clock)
 GLOBAL_ENTRY(cycle_to_cputime)
 	alloc r16=ar.pfs,1,0,0,0
 	addl r8=THIS_CPU(cpu_info) + IA64_CPUINFO_NSEC_PER_CYC_OFFSET,r0
+END(ia64_native_sched_clock)
+
+#ifdef CONFIG_VIRT_CPU_ACCOUNTING_NATIVE
+GLOBAL_ENTRY(cycle_to_cputime)
+	alloc r16=ar.pfs,1,0,0,0
+	addl r8=THIS_CPU(ia64_cpu_info) + IA64_CPUINFO_NSEC_PER_CYC_OFFSET,r0
 	;;
 	ldf8 f8=[r8]
 	;;
@@ -1100,6 +1114,7 @@ GLOBAL_ENTRY(start_kernel_thread)
 	br.call.sptk.many rp = sys_exit;;
 1:	br.sptk.few 1b				// not reached
 END(start_kernel_thread)
+#endif /* CONFIG_VIRT_CPU_ACCOUNTING_NATIVE */
 
 #ifdef CONFIG_IA64_BRL_EMU
 
@@ -1237,6 +1252,7 @@ GLOBAL_ENTRY(ia64_jump_to_sal)
 	mov cr.ipsr=r16
 	mov cr.ifs=r0;;
 	rfi;;
+	rfi;;			// note: this unmask MCA/INIT (psr.mc)
 1:
 	/*
 	 * Invalidate all TLB data/inst

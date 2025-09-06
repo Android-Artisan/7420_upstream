@@ -63,6 +63,16 @@ struct iw_cm_event {
 	void *private_data;
 	u8 private_data_len;
 	void *provider_data;
+struct iw_cm_event {
+	enum iw_cm_event_type event;
+	int			 status;
+	struct sockaddr_storage local_addr;
+	struct sockaddr_storage remote_addr;
+	void *private_data;
+	void *provider_data;
+	u8 private_data_len;
+	u8 ord;
+	u8 ird;
 };
 
 /**
@@ -92,12 +102,15 @@ struct iw_cm_id {
 	struct ib_device	*device;
 	struct sockaddr_in      local_addr;
 	struct sockaddr_in	remote_addr;
+	struct sockaddr_storage local_addr;
+	struct sockaddr_storage	remote_addr;
 	void			*provider_data;	 /* provider private data */
 	iw_event_handler        event_handler;   /* cb for provider
 						    events */
 	/* Used by provider to add and remove refs on IW cm_id */
 	void (*add_ref)(struct iw_cm_id *);
 	void (*rem_ref)(struct iw_cm_id *);
+	u8  tos;
 };
 
 struct iw_cm_conn_param {

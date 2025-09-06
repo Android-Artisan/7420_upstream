@@ -52,6 +52,12 @@ static void	ahd_dump_device_state(struct info_str *info,
 				      struct scsi_device *sdev);
 static int	ahd_proc_write_seeprom(struct ahd_softc *ahd,
 				       char *buffer, int length);
+static void	ahd_dump_target_state(struct ahd_softc *ahd,
+				      struct seq_file *m,
+				      u_int our_id, char channel,
+				      u_int target_id);
+static void	ahd_dump_device_state(struct seq_file *m,
+				      struct scsi_device *sdev);
 
 /*
  * Table of syncrates that don't follow the "divisible by 4"
@@ -138,6 +144,8 @@ copy_info(struct info_str *info, char *fmt, ...)
 
 static void
 ahd_format_transinfo(struct info_str *info, struct ahd_transinfo *tinfo)
+static void
+ahd_format_transinfo(struct seq_file *m, struct ahd_transinfo *tinfo)
 {
 	u_int speed;
 	u_int freq;
@@ -145,6 +153,7 @@ ahd_format_transinfo(struct info_str *info, struct ahd_transinfo *tinfo)
 
 	if (tinfo->period == AHD_PERIOD_UNKNOWN) {
 		copy_info(info, "Renegotiation Pending\n");
+		seq_puts(m, "Renegotiation Pending\n");
 		return;
 	}
         speed = 3300;
@@ -159,6 +168,9 @@ ahd_format_transinfo(struct info_str *info, struct ahd_transinfo *tinfo)
 		copy_info(info, "%d.%03dMB/s transfers", mb, speed % 1000);
         else
 		copy_info(info, "%dKB/s transfers", speed);
+		seq_printf(m, "%d.%03dMB/s transfers", mb, speed % 1000);
+        else
+		seq_printf(m, "%dKB/s transfers", speed);
 
 	if (freq != 0) {
 		int	printed_options;
@@ -185,6 +197,25 @@ ahd_format_transinfo(struct info_str *info, struct ahd_transinfo *tinfo)
 		if ((tinfo->ppr_options & MSG_EXT_PPR_QAS_REQ) != 0) {
 			copy_info(info, "%s",
 				  printed_options ? "|QAS" : " QAS");
+		seq_printf(m, " (%d.%03dMHz", freq / 1000, freq % 1000);
+		if ((tinfo->ppr_options & MSG_EXT_PPR_RD_STRM) != 0) {
+			seq_puts(m, " RDSTRM");
+			printed_options++;
+		}
+		if ((tinfo->ppr_options & MSG_EXT_PPR_DT_REQ) != 0) {
+			seq_puts(m, printed_options ? "|DT" : " DT");
+			printed_options++;
+		}
+		if ((tinfo->ppr_options & MSG_EXT_PPR_IU_REQ) != 0) {
+			seq_puts(m, printed_options ? "|IU" : " IU");
+			printed_options++;
+		}
+		if ((tinfo->ppr_options & MSG_EXT_PPR_RTI) != 0) {
+			seq_puts(m, printed_options ? "|RTI" : " RTI");
+			printed_options++;
+		}
+		if ((tinfo->ppr_options & MSG_EXT_PPR_QAS_REQ) != 0) {
+			seq_puts(m, printed_options ? "|QAS" : " QAS");
 			printed_options++;
 		}
 	}
@@ -204,6 +235,19 @@ ahd_format_transinfo(struct info_str *info, struct ahd_transinfo *tinfo)
 
 static void
 ahd_dump_target_state(struct ahd_softc *ahd, struct info_str *info,
+			seq_puts(m, ", ");
+		} else {
+			seq_puts(m, " (");
+		}
+		seq_printf(m, "%dbit)", 8 * (0x01 << tinfo->width));
+	} else if (freq != 0) {
+		seq_putc(m, ')');
+	}
+	seq_putc(m, '\n');
+}
+
+static void
+ahd_dump_target_state(struct ahd_softc *ahd, struct seq_file *m,
 		      u_int our_id, char channel, u_int target_id)
 {
 	struct  scsi_target *starget;
@@ -216,6 +260,9 @@ ahd_dump_target_state(struct ahd_softc *ahd, struct info_str *info,
 	copy_info(info, "Target %d Negotiation Settings\n", target_id);
 	copy_info(info, "\tUser: ");
 	ahd_format_transinfo(info, &tinfo->user);
+	seq_printf(m, "Target %d Negotiation Settings\n", target_id);
+	seq_puts(m, "\tUser: ");
+	ahd_format_transinfo(m, &tinfo->user);
 	starget = ahd->platform_data->starget[target_id];
 	if (starget == NULL)
 		return;
@@ -224,6 +271,10 @@ ahd_dump_target_state(struct ahd_softc *ahd, struct info_str *info,
 	ahd_format_transinfo(info, &tinfo->goal);
 	copy_info(info, "\tCurr: ");
 	ahd_format_transinfo(info, &tinfo->curr);
+	seq_puts(m, "\tGoal: ");
+	ahd_format_transinfo(m, &tinfo->goal);
+	seq_puts(m, "\tCurr: ");
+	ahd_format_transinfo(m, &tinfo->curr);
 
 	for (lun = 0; lun < AHD_NUM_LUNS; lun++) {
 		struct scsi_device *dev;
@@ -234,6 +285,7 @@ ahd_dump_target_state(struct ahd_softc *ahd, struct info_str *info,
 			continue;
 
 		ahd_dump_device_state(info, dev);
+		ahd_dump_device_state(m, dev);
 	}
 }
 
@@ -256,6 +308,25 @@ ahd_dump_device_state(struct info_str *info, struct scsi_device *sdev)
 static int
 ahd_proc_write_seeprom(struct ahd_softc *ahd, char *buffer, int length)
 {
+ahd_dump_device_state(struct seq_file *m, struct scsi_device *sdev)
+{
+	struct ahd_linux_device *dev = scsi_transport_device_data(sdev);
+
+	seq_printf(m, "\tChannel %c Target %d Lun %d Settings\n",
+		  sdev->sdev_target->channel + 'A',
+		   sdev->sdev_target->id, (u8)sdev->lun);
+
+	seq_printf(m, "\t\tCommands Queued %ld\n", dev->commands_issued);
+	seq_printf(m, "\t\tCommands Active %d\n", dev->active);
+	seq_printf(m, "\t\tCommand Openings %d\n", dev->openings);
+	seq_printf(m, "\t\tMax Tagged Openings %d\n", dev->maxtags);
+	seq_printf(m, "\t\tDevice Queue Frozen Count %d\n", dev->qfrozen);
+}
+
+int
+ahd_proc_write_seeprom(struct Scsi_Host *shost, char *buffer, int length)
+{
+	struct	ahd_softc *ahd = *(struct ahd_softc **)shost->hostdata;
 	ahd_mode_state saved_modes;
 	int have_seeprom;
 	u_long s;
@@ -273,18 +344,21 @@ ahd_proc_write_seeprom(struct ahd_softc *ahd, char *buffer, int length)
 	ahd_set_modes(ahd, AHD_MODE_SCSI, AHD_MODE_SCSI);
 	if (length != sizeof(struct seeprom_config)) {
 		printf("ahd_proc_write_seeprom: incorrect buffer size\n");
+		printk("ahd_proc_write_seeprom: incorrect buffer size\n");
 		goto done;
 	}
 
 	have_seeprom = ahd_verify_cksum((struct seeprom_config*)buffer);
 	if (have_seeprom == 0) {
 		printf("ahd_proc_write_seeprom: cksum verification failed\n");
+		printk("ahd_proc_write_seeprom: cksum verification failed\n");
 		goto done;
 	}
 
 	have_seeprom = ahd_acquire_seeprom(ahd);
 	if (!have_seeprom) {
 		printf("ahd_proc_write_seeprom: No Serial EEPROM\n");
+		printk("ahd_proc_write_seeprom: No Serial EEPROM\n");
 		goto done;
 	} else {
 		u_int start_addr;
@@ -294,11 +368,15 @@ ahd_proc_write_seeprom(struct ahd_softc *ahd, char *buffer, int length)
 						  M_DEVBUF, M_NOWAIT);
 			if (ahd->seep_config == NULL) {
 				printf("aic79xx: Unable to allocate serial "
+			ahd->seep_config = kmalloc(sizeof(*ahd->seep_config), GFP_ATOMIC);
+			if (ahd->seep_config == NULL) {
+				printk("aic79xx: Unable to allocate serial "
 				       "eeprom buffer.  Write failing\n");
 				goto done;
 			}
 		}
 		printf("aic79xx: Writing Serial EEPROM\n");
+		printk("aic79xx: Writing Serial EEPROM\n");
 		start_addr = 32 * (ahd->channel - 'A');
 		ahd_write_seeprom(ahd, (u_int16_t *)buffer, start_addr,
 				  sizeof(struct seeprom_config)/2);
@@ -350,6 +428,19 @@ ahd_linux_proc_info(struct Scsi_Host *shost, char *buffer, char **start,
 	ahd_controller_info(ahd, ahd_info);
 	copy_info(&info, "%s\n", ahd_info);
 	copy_info(&info, "Allocated SCBs: %d, SG List Length: %d\n\n",
+ahd_linux_show_info(struct seq_file *m, struct Scsi_Host *shost)
+{
+	struct	ahd_softc *ahd = *(struct ahd_softc **)shost->hostdata;
+	char	ahd_info[256];
+	u_int	max_targ;
+	u_int	i;
+
+	seq_printf(m, "Adaptec AIC79xx driver version: %s\n",
+		  AIC79XX_DRIVER_VERSION);
+	seq_printf(m, "%s\n", ahd->description);
+	ahd_controller_info(ahd, ahd_info);
+	seq_printf(m, "%s\n", ahd_info);
+	seq_printf(m, "Allocated SCBs: %d, SG List Length: %d\n\n",
 		  ahd->scb_data.numscbs, AHD_NSEG);
 
 	max_targ = 16;
@@ -368,6 +459,19 @@ ahd_linux_proc_info(struct Scsi_Host *shost, char *buffer, char **start,
 		copy_info(&info, "\n");
 	}
 	copy_info(&info, "\n");
+		seq_puts(m, "No Serial EEPROM\n");
+	else {
+		seq_puts(m, "Serial EEPROM:\n");
+		for (i = 0; i < sizeof(*ahd->seep_config)/2; i++) {
+			if (((i % 8) == 0) && (i != 0)) {
+				seq_putc(m, '\n');
+			}
+			seq_printf(m, "0x%.4x ",
+				  ((uint16_t*)ahd->seep_config)[i]);
+		}
+		seq_putc(m, '\n');
+	}
+	seq_putc(m, '\n');
 
 	if ((ahd->features & AHD_WIDE) == 0)
 		max_targ = 8;
@@ -380,4 +484,8 @@ ahd_linux_proc_info(struct Scsi_Host *shost, char *buffer, char **start,
 	retval = info.pos > info.offset ? info.pos - info.offset : 0;
 done:
 	return (retval);
+		ahd_dump_target_state(ahd, m, ahd->our_id, 'A',
+				      /*target_id*/i);
+	}
+	return 0;
 }

@@ -6,6 +6,7 @@
  * are rerouted to the same facility as the one used by printk which, in our
  * case means sys_sim.c console (goes via the simulator). The code hereafter
  * is completely leveraged from the serial.c driver.
+ * case means sys_sim.c console (goes via the simulator).
  *
  * Copyright (C) 1999-2000, 2002-2003 Hewlett-Packard Co
  *	Stephane Eranian <eranian@hpl.hp.com>
@@ -35,6 +36,20 @@
 #include <asm/irq.h>
 #include <asm/hw_irq.h>
 #include <asm/uaccess.h>
+#include <linux/seq_file.h>
+#include <linux/slab.h>
+#include <linux/capability.h>
+#include <linux/circ_buf.h>
+#include <linux/console.h>
+#include <linux/irq.h>
+#include <linux/module.h>
+#include <linux/serial.h>
+#include <linux/sysrq.h>
+#include <linux/uaccess.h>
+
+#include <asm/hpsim.h>
+
+#include "hpsim_ssc.h"
 
 #undef SIMSERIAL_DEBUG	/* define this to get some debug information */
 
@@ -127,6 +142,20 @@ static void rs_start(struct tty_struct *tty)
 }
 
 static  void receive_chars(struct tty_struct *tty)
+struct serial_state {
+	struct tty_port port;
+	struct circ_buf xmit;
+	int irq;
+	int x_char;
+};
+
+static struct serial_state rs_table[NR_PORTS];
+
+struct tty_driver *hp_simserial_driver;
+
+static struct console *console;
+
+static void receive_chars(struct tty_port *port)
 {
 	unsigned char ch;
 	static unsigned char seen_esc = 0;
@@ -161,6 +190,32 @@ static  void receive_chars(struct tty_struct *tty)
 			break;
 	}
 	tty_flip_buffer_push(tty);
+		if (ch == 27 && seen_esc == 0) {
+			seen_esc = 1;
+			continue;
+		} else if (seen_esc == 1 && ch == 'O') {
+			seen_esc = 2;
+			continue;
+		} else if (seen_esc == 2) {
+			if (ch == 'P') /* F1 */
+				show_state();
+#ifdef CONFIG_MAGIC_SYSRQ
+			if (ch == 'S') { /* F4 */
+				do {
+					ch = ia64_ssc(0, 0, 0, 0, SSC_GETCHAR);
+				} while (!ch);
+				handle_sysrq(ch);
+			}
+#endif
+			seen_esc = 0;
+			continue;
+		}
+		seen_esc = 0;
+
+		if (tty_insert_flip_char(port, ch, TTY_NORMAL) == 0)
+			break;
+	}
+	tty_flip_buffer_push(port);
 }
 
 /*
@@ -184,6 +239,10 @@ static irqreturn_t rs_interrupt_single(int irq, void *dev_id)
 	 * on inbound traffic
 	 */
 	receive_chars(info->tty);
+	struct serial_state *info = dev_id;
+
+	receive_chars(&info->port);
+
 	return IRQ_HANDLED;
 }
 
@@ -204,6 +263,12 @@ static int rs_put_char(struct tty_struct *tty, unsigned char ch)
 	unsigned long flags;
 
 	if (!tty || !info->xmit.buf)
+static int rs_put_char(struct tty_struct *tty, unsigned char ch)
+{
+	struct serial_state *info = tty->driver_data;
+	unsigned long flags;
+
+	if (!info->xmit.buf)
 		return 0;
 
 	local_irq_save(flags);
@@ -218,6 +283,8 @@ static int rs_put_char(struct tty_struct *tty, unsigned char ch)
 }
 
 static void transmit_chars(struct async_struct *info, int *intr_done)
+static void transmit_chars(struct tty_struct *tty, struct serial_state *info,
+		int *intr_done)
 {
 	int count;
 	unsigned long flags;
@@ -240,6 +307,10 @@ static void transmit_chars(struct async_struct *info, int *intr_done)
 #ifdef SIMSERIAL_DEBUG
 		printk("transmit_chars: head=%d, tail=%d, stopped=%d\n",
 		       info->xmit.head, info->xmit.tail, info->tty->stopped);
+	if (info->xmit.head == info->xmit.tail || tty->stopped) {
+#ifdef SIMSERIAL_DEBUG
+		printk("transmit_chars: head=%d, tail=%d, stopped=%d\n",
+		       info->xmit.head, info->xmit.tail, tty->stopped);
 #endif
 		goto out;
 	}
@@ -289,6 +360,24 @@ static int rs_write(struct tty_struct * tty,
 	unsigned long flags;
 
 	if (!tty || !info->xmit.buf || !tmp_buf) return 0;
+	struct serial_state *info = tty->driver_data;
+
+	if (info->xmit.head == info->xmit.tail || tty->stopped ||
+			!info->xmit.buf)
+		return;
+
+	transmit_chars(tty, info, NULL);
+}
+
+static int rs_write(struct tty_struct * tty,
+		    const unsigned char *buf, int count)
+{
+	struct serial_state *info = tty->driver_data;
+	int	c, ret = 0;
+	unsigned long flags;
+
+	if (!info->xmit.buf)
+		return 0;
 
 	local_irq_save(flags);
 	while (1) {
@@ -313,12 +402,17 @@ static int rs_write(struct tty_struct * tty,
 	    && !tty->stopped && !tty->hw_stopped) {
 		transmit_chars(info, NULL);
 	}
+	if (CIRC_CNT(info->xmit.head, info->xmit.tail, SERIAL_XMIT_SIZE) &&
+			!tty->stopped)
+		transmit_chars(tty, info, NULL);
+
 	return ret;
 }
 
 static int rs_write_room(struct tty_struct *tty)
 {
 	struct async_struct *info = (struct async_struct *)tty->driver_data;
+	struct serial_state *info = tty->driver_data;
 
 	return CIRC_SPACE(info->xmit.head, info->xmit.tail, SERIAL_XMIT_SIZE);
 }
@@ -326,6 +420,7 @@ static int rs_write_room(struct tty_struct *tty)
 static int rs_chars_in_buffer(struct tty_struct *tty)
 {
 	struct async_struct *info = (struct async_struct *)tty->driver_data;
+	struct serial_state *info = tty->driver_data;
 
 	return CIRC_CNT(info->xmit.head, info->xmit.tail, SERIAL_XMIT_SIZE);
 }
@@ -333,6 +428,7 @@ static int rs_chars_in_buffer(struct tty_struct *tty)
 static void rs_flush_buffer(struct tty_struct *tty)
 {
 	struct async_struct *info = (struct async_struct *)tty->driver_data;
+	struct serial_state *info = tty->driver_data;
 	unsigned long flags;
 
 	local_irq_save(flags);
@@ -349,6 +445,7 @@ static void rs_flush_buffer(struct tty_struct *tty)
 static void rs_send_xchar(struct tty_struct *tty, char ch)
 {
 	struct async_struct *info = (struct async_struct *)tty->driver_data;
+	struct serial_state *info = tty->driver_data;
 
 	info->x_char = ch;
 	if (ch) {
@@ -357,6 +454,7 @@ static void rs_send_xchar(struct tty_struct *tty, char ch)
 		 * let's do that for now.
 		 */
 		transmit_chars(info, NULL);
+		transmit_chars(tty, info, NULL);
 	}
 }
 
@@ -371,6 +469,8 @@ static void rs_send_xchar(struct tty_struct *tty, char ch)
 static void rs_throttle(struct tty_struct * tty)
 {
 	if (I_IXOFF(tty)) rs_send_xchar(tty, STOP_CHAR(tty));
+	if (I_IXOFF(tty))
+		rs_send_xchar(tty, STOP_CHAR(tty));
 
 	printk(KERN_INFO "simrs_throttle called\n");
 }
@@ -378,6 +478,7 @@ static void rs_throttle(struct tty_struct * tty)
 static void rs_unthrottle(struct tty_struct * tty)
 {
 	struct async_struct *info = (struct async_struct *)tty->driver_data;
+	struct serial_state *info = tty->driver_data;
 
 	if (I_IXOFF(tty)) {
 		if (info->x_char)
@@ -395,6 +496,11 @@ static int rs_ioctl(struct tty_struct *tty, struct file * file,
 	if ((cmd != TIOCGSERIAL) && (cmd != TIOCSSERIAL) &&
 	    (cmd != TIOCSERCONFIG) && (cmd != TIOCSERGSTRUCT) &&
 	    (cmd != TIOCMIWAIT) && (cmd != TIOCGICOUNT)) {
+static int rs_ioctl(struct tty_struct *tty, unsigned int cmd, unsigned long arg)
+{
+	if ((cmd != TIOCGSERIAL) && (cmd != TIOCSSERIAL) &&
+	    (cmd != TIOCSERCONFIG) && (cmd != TIOCSERGSTRUCT) &&
+	    (cmd != TIOCMIWAIT)) {
 		if (tty->flags & (1 << TTY_IO_ERROR))
 		    return -EIO;
 	}
@@ -452,6 +558,21 @@ static int rs_ioctl(struct tty_struct *tty, struct file * file,
 			return -ENOIOCTLCMD;
 		}
 	return 0;
+	case TIOCGSERIAL:
+	case TIOCSSERIAL:
+	case TIOCSERGSTRUCT:
+	case TIOCMIWAIT:
+		return 0;
+	case TIOCSERCONFIG:
+	case TIOCSERGETLSR: /* Get line status register */
+		return -EINVAL;
+	case TIOCSERGWILD:
+	case TIOCSERSWILD:
+		/* "setserial -W" is called in Debian boot */
+		printk (KERN_INFO "TIOCSER?WILD ioctl obsolete, ignored.\n");
+		return 0;
+	}
+	return -ENOIOCTLCMD;
 }
 
 #define RELEVANT_IFLAG(iflag) (iflag & (IGNBRK|BRKINT|IGNPAR|PARMRK|INPCK))
@@ -521,6 +642,19 @@ static void shutdown(struct async_struct * info)
 		if (info->tty) set_bit(TTY_IO_ERROR, &info->tty->flags);
 
 		info->flags &= ~ASYNC_INITIALIZED;
+static void shutdown(struct tty_port *port)
+{
+	struct serial_state *info = container_of(port, struct serial_state,
+			port);
+	unsigned long flags;
+
+	local_irq_save(flags);
+	if (info->irq)
+		free_irq(info->irq, info);
+
+	if (info->xmit.buf) {
+		free_page((unsigned long) info->xmit.buf);
+		info->xmit.buf = NULL;
 	}
 	local_irq_restore(flags);
 }
@@ -676,6 +810,27 @@ startup(struct async_struct *info)
 	irq_handler_t handler;
 	struct serial_state *state= info->state;
 	unsigned long page;
+static void rs_close(struct tty_struct *tty, struct file * filp)
+{
+	struct serial_state *info = tty->driver_data;
+
+	tty_port_close(&info->port, tty, filp);
+}
+
+static void rs_hangup(struct tty_struct *tty)
+{
+	struct serial_state *info = tty->driver_data;
+
+	rs_flush_buffer(tty);
+	tty_port_hangup(&info->port);
+}
+
+static int activate(struct tty_port *port, struct tty_struct *tty)
+{
+	struct serial_state *state = container_of(port, struct serial_state,
+			port);
+	unsigned long flags, page;
+	int retval = 0;
 
 	page = get_zeroed_page(GFP_KERNEL);
 	if (!page)
@@ -745,6 +900,19 @@ startup(struct async_struct *info)
 	timer_table[RS_TIMER].expires = jiffies + 2*HZ/100;
 	timer_active |= 1 << RS_TIMER;
 #endif
+	if (state->xmit.buf)
+		free_page(page);
+	else
+		state->xmit.buf = (unsigned char *) page;
+
+	if (state->irq) {
+		retval = request_irq(state->irq, rs_interrupt_single, 0,
+				"simserial", state);
+		if (retval)
+			goto errout;
+	}
+
+	state->xmit.head = state->xmit.tail = 0;
 
 	/*
 	 * Set up the tty->alt_speed kludge
@@ -763,6 +931,14 @@ startup(struct async_struct *info)
 	info->flags |= ASYNC_INITIALIZED;
 	local_irq_restore(flags);
 	return 0;
+	if ((port->flags & ASYNC_SPD_MASK) == ASYNC_SPD_HI)
+		tty->alt_speed = 57600;
+	if ((port->flags & ASYNC_SPD_MASK) == ASYNC_SPD_VHI)
+		tty->alt_speed = 115200;
+	if ((port->flags & ASYNC_SPD_MASK) == ASYNC_SPD_SHI)
+		tty->alt_speed = 230400;
+	if ((port->flags & ASYNC_SPD_MASK) == ASYNC_SPD_WARP)
+		tty->alt_speed = 460800;
 
 errout:
 	local_irq_restore(flags);
@@ -828,6 +1004,11 @@ static int rs_open(struct tty_struct *tty, struct file * filp)
 	if (retval) {
 		return retval;
 	}
+	struct serial_state *info = rs_table + tty->index;
+	struct tty_port *port = &info->port;
+
+	tty->driver_data = info;
+	port->low_latency = (port->flags & ASYNC_LOW_LATENCY) ? 1 : 0;
 
 	/*
 	 * figure out which console to use (should be one already)
@@ -842,6 +1023,7 @@ static int rs_open(struct tty_struct *tty, struct file * filp)
 	printk("rs_open ttys%d successful\n", info->line);
 #endif
 	return 0;
+	return tty_port_open(port, tty, filp);
 }
 
 /*
@@ -898,6 +1080,29 @@ static inline void show_serial_version(void)
 	printk(KERN_INFO "%s version %s with", serial_name, serial_version);
 	printk(KERN_INFO " no serial options enabled\n");
 }
+static int rs_proc_show(struct seq_file *m, void *v)
+{
+	int i;
+
+	seq_printf(m, "simserinfo:1.0\n");
+	for (i = 0; i < NR_PORTS; i++)
+		seq_printf(m, "%d: uart:16550 port:3F8 irq:%d\n",
+		       i, rs_table[i].irq);
+	return 0;
+}
+
+static int rs_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, rs_proc_show, NULL);
+}
+
+static const struct file_operations rs_proc_fops = {
+	.owner		= THIS_MODULE,
+	.open		= rs_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
 
 static const struct tty_operations hp_ops = {
 	.open = rs_open,
@@ -928,6 +1133,19 @@ simrs_init (void)
 {
 	int			i, rc;
 	struct serial_state	*state;
+	.hangup = rs_hangup,
+	.proc_fops = &rs_proc_fops,
+};
+
+static const struct tty_port_operations hp_port_ops = {
+	.activate = activate,
+	.shutdown = shutdown,
+};
+
+static int __init simrs_init(void)
+{
+	struct serial_state *state;
+	int retval;
 
 	if (!ia64_platform_is("hpsim"))
 		return -ENODEV;
@@ -941,6 +1159,14 @@ simrs_init (void)
 	/* Initialize the tty_driver structure */
 
 	hp_simserial_driver->owner = THIS_MODULE;
+	hp_simserial_driver = alloc_tty_driver(NR_PORTS);
+	if (!hp_simserial_driver)
+		return -ENOMEM;
+
+	printk(KERN_INFO "SimSerial driver with no serial options enabled\n");
+
+	/* Initialize the tty_driver structure */
+
 	hp_simserial_driver->driver_name = "simserial";
 	hp_simserial_driver->name = "ttyS";
 	hp_simserial_driver->major = TTY_MAJOR;
@@ -978,6 +1204,35 @@ simrs_init (void)
 		panic("Couldn't register simserial driver\n");
 
 	return 0;
+	state = rs_table;
+	tty_port_init(&state->port);
+	state->port.ops = &hp_port_ops;
+	state->port.close_delay = 0; /* XXX really 0? */
+
+	retval = hpsim_get_irq(KEYBOARD_INTR);
+	if (retval < 0) {
+		printk(KERN_ERR "%s: out of interrupt vectors!\n",
+				__func__);
+		goto err_free_tty;
+	}
+
+	state->irq = retval;
+
+	/* the port is imaginary */
+	printk(KERN_INFO "ttyS0 at 0x03f8 (irq = %d) is a 16550\n", state->irq);
+
+	tty_port_link_device(&state->port, hp_simserial_driver, 0);
+	retval = tty_register_driver(hp_simserial_driver);
+	if (retval) {
+		printk(KERN_ERR "Couldn't register simserial driver\n");
+		goto err_free_tty;
+	}
+
+	return 0;
+err_free_tty:
+	put_tty_driver(hp_simserial_driver);
+	tty_port_destroy(&state->port);
+	return retval;
 }
 
 #ifndef MODULE

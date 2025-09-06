@@ -94,6 +94,7 @@ void __init setup_pdc(void)
 	case 0x7:		/* 715, 725 */
 	case 0x8:		/* 745, 747, 742 */
 	case 0xA:		/* 712 and similiar */
+	case 0xA:		/* 712 and similar */
 	case 0xC:		/* 715/64, at least */
 
 		pdc_type = PDC_TYPE_SNAKE;
@@ -171,6 +172,7 @@ static int __init
 pat_query_module(ulong pcell_loc, ulong mod_index)
 {
 	pdc_pat_cell_mod_maddr_block_t pa_pdc_cell;
+	pdc_pat_cell_mod_maddr_block_t *pa_pdc_cell;
 	unsigned long bytecnt;
 	unsigned long temp;	/* 64-bit scratch value */
 	long status;		/* PDC return value status */
@@ -188,6 +190,24 @@ pat_query_module(ulong pcell_loc, ulong mod_index)
 	temp = pa_pdc_cell.cba;
 	dev = alloc_pa_dev(PAT_GET_CBA(temp), &pa_pdc_cell.mod_path);
 	if (!dev) {
+	pa_pdc_cell = kmalloc(sizeof (*pa_pdc_cell), GFP_KERNEL);
+	if (!pa_pdc_cell)
+		panic("couldn't allocate memory for PDC_PAT_CELL!");
+
+	/* return cell module (PA or Processor view) */
+	status = pdc_pat_cell_module(&bytecnt, pcell_loc, mod_index,
+				     PA_VIEW, pa_pdc_cell);
+
+	if (status != PDC_OK) {
+		/* no more cell modules or error */
+		kfree(pa_pdc_cell);
+		return status;
+	}
+
+	temp = pa_pdc_cell->cba;
+	dev = alloc_pa_dev(PAT_GET_CBA(temp), &(pa_pdc_cell->mod_path));
+	if (!dev) {
+		kfree(pa_pdc_cell);
 		return PDC_OK;
 	}
 
@@ -205,6 +225,9 @@ pat_query_module(ulong pcell_loc, ulong mod_index)
 	/* REVISIT: who is the consumer of this? not sure yet... */
 	dev->mod_info = pa_pdc_cell.mod_info;	/* pass to PAT_GET_ENTITY() */
 	dev->pmod_loc = pa_pdc_cell.mod_location;
+	dev->mod_info = pa_pdc_cell->mod_info;	/* pass to PAT_GET_ENTITY() */
+	dev->pmod_loc = pa_pdc_cell->mod_location;
+	dev->mod0 = pa_pdc_cell->mod[0];
 
 	register_parisc_device(dev);	/* advertise device */
 
@@ -217,6 +240,7 @@ pat_query_module(ulong pcell_loc, ulong mod_index)
 	case PAT_ENTITY_PROC:
 		printk(KERN_DEBUG "PAT_ENTITY_PROC: id_eid 0x%lx\n",
 			pa_pdc_cell.mod[0]);
+			pa_pdc_cell->mod[0]);
 		break;
 
 	case PAT_ENTITY_MEM:
@@ -224,6 +248,8 @@ pat_query_module(ulong pcell_loc, ulong mod_index)
 			"PAT_ENTITY_MEM: amount 0x%lx min_gni_base 0x%lx min_gni_len 0x%lx\n",
 			pa_pdc_cell.mod[0], pa_pdc_cell.mod[1], 
 			pa_pdc_cell.mod[2]);
+			pa_pdc_cell->mod[0], pa_pdc_cell->mod[1],
+			pa_pdc_cell->mod[2]);
 		break;
 	case PAT_ENTITY_CA:
 		printk(KERN_DEBUG "PAT_ENTITY_CA: %ld\n", pcell_loc);
@@ -255,11 +281,26 @@ pat_query_module(ulong pcell_loc, ulong mod_index)
 				i, io_pdc_cell.mod[2 + i * 3],	/* type */
 				io_pdc_cell.mod[3 + i * 3],	/* start */
 				io_pdc_cell.mod[4 + i * 3]);	/* finish (ie end) */
+		printk(KERN_DEBUG "ranges %ld\n", pa_pdc_cell->mod[1]);
+		for (i = 0; i < pa_pdc_cell->mod[1]; i++) {
+			printk(KERN_DEBUG 
+				"  PA_VIEW %ld: 0x%016lx 0x%016lx 0x%016lx\n", 
+				i, pa_pdc_cell->mod[2 + i * 3],	/* type */
+				pa_pdc_cell->mod[3 + i * 3],	/* start */
+				pa_pdc_cell->mod[4 + i * 3]);	/* finish (ie end) */
+			printk(KERN_DEBUG 
+				"  IO_VIEW %ld: 0x%016lx 0x%016lx 0x%016lx\n", 
+				i, io_pdc_cell->mod[2 + i * 3],	/* type */
+				io_pdc_cell->mod[3 + i * 3],	/* start */
+				io_pdc_cell->mod[4 + i * 3]);	/* finish (ie end) */
 		}
 		printk(KERN_DEBUG "\n");
 		break;
 	}
 #endif /* DEBUG_PAT */
+
+	kfree(pa_pdc_cell);
+
 	return PDC_OK;
 }
 

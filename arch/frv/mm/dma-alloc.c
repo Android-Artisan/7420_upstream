@@ -40,6 +40,11 @@
 #include <asm/pgalloc.h>
 #include <asm/io.h>
 #include <asm/hardirq.h>
+#include <linux/hardirq.h>
+#include <linux/gfp.h>
+
+#include <asm/pgalloc.h>
+#include <asm/io.h>
 #include <asm/mmu_context.h>
 #include <asm/pgtable.h>
 #include <asm/mmu.h>

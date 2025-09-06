@@ -6,11 +6,15 @@
 #include <linux/version.h>
 #include <linux/module.h>
 #include <linux/sched.h>
+#include <linux/module.h>
+#include <linux/sched.h>
+#include <linux/slab.h>
 #include <linux/fs.h>
 #include <linux/vfs.h>
 #include <linux/parser.h>
 #include <linux/buffer_head.h>
 #include <linux/vmalloc.h>
+#include <linux/writeback.h>
 #include <linux/crc-itu-t.h>
 #include "omfs.h"
 
@@ -19,6 +23,16 @@ MODULE_DESCRIPTION("OMFS (ReplayTV/Karma) Filesystem for Linux");
 MODULE_LICENSE("GPL");
 
 struct inode *omfs_new_inode(struct inode *dir, int mode)
+struct buffer_head *omfs_bread(struct super_block *sb, sector_t block)
+{
+	struct omfs_sb_info *sbi = OMFS_SB(sb);
+	if (block >= sbi->s_num_blocks)
+		return NULL;
+
+	return sb_bread(sb, clus_to_blk(sbi, block));
+}
+
+struct inode *omfs_new_inode(struct inode *dir, umode_t mode)
 {
 	struct inode *inode;
 	u64 new_block;
@@ -40,6 +54,7 @@ struct inode *omfs_new_inode(struct inode *dir, int mode)
 	inode->i_uid = current->fsuid;
 	inode->i_gid = current->fsgid;
 	inode->i_blocks = 0;
+	inode_init_owner(inode, NULL, mode);
 	inode->i_mapping->a_ops = &omfs_aops;
 
 	inode->i_atime = inode->i_mtime = inode->i_ctime = CURRENT_TIME;
@@ -91,6 +106,7 @@ static void omfs_update_checksums(struct omfs_inode *oi)
 }
 
 static int omfs_write_inode(struct inode *inode, int wait)
+static int __omfs_write_inode(struct inode *inode, int wait)
 {
 	struct omfs_inode *oi;
 	struct omfs_sb_info *sbi = OMFS_SB(inode->i_sb);
@@ -104,6 +120,7 @@ static int omfs_write_inode(struct inode *inode, int wait)
 	/* get current inode since we may have written sibling ptrs etc. */
 	block = clus_to_blk(sbi, inode->i_ino);
 	bh = sb_bread(inode->i_sb, block);
+	bh = omfs_bread(inode->i_sb, inode->i_ino);
 	if (!bh)
 		goto out;
 
@@ -144,6 +161,7 @@ static int omfs_write_inode(struct inode *inode, int wait)
 	for (i = 1; i < sbi->s_mirrors; i++) {
 		bh2 = sb_bread(inode->i_sb, block + i *
 			(sbi->s_blocksize / sbi->s_sys_blocksize));
+		bh2 = omfs_bread(inode->i_sb, inode->i_ino + i);
 		if (!bh2)
 			goto out_brelse;
 
@@ -166,6 +184,14 @@ out:
 int omfs_sync_inode(struct inode *inode)
 {
 	return omfs_write_inode(inode, 1);
+static int omfs_write_inode(struct inode *inode, struct writeback_control *wbc)
+{
+	return __omfs_write_inode(inode, wbc->sync_mode == WB_SYNC_ALL);
+}
+
+int omfs_sync_inode(struct inode *inode)
+{
+	return __omfs_write_inode(inode, 1);
 }
 
 /*
@@ -175,6 +201,13 @@ int omfs_sync_inode(struct inode *inode)
 static void omfs_delete_inode(struct inode *inode)
 {
 	truncate_inode_pages(&inode->i_data, 0);
+static void omfs_evict_inode(struct inode *inode)
+{
+	truncate_inode_pages_final(&inode->i_data);
+	clear_inode(inode);
+
+	if (inode->i_nlink)
+		return;
 
 	if (S_ISREG(inode->i_mode)) {
 		inode->i_size = 0;
@@ -203,6 +236,7 @@ struct inode *omfs_iget(struct super_block *sb, ino_t ino)
 
 	block = clus_to_blk(sbi, ino);
 	bh = sb_bread(inode->i_sb, block);
+	bh = omfs_bread(inode->i_sb, ino);
 	if (!bh)
 		goto iget_failed;
 
@@ -263,6 +297,8 @@ static int omfs_statfs(struct dentry *dentry, struct kstatfs *buf)
 {
 	struct super_block *s = dentry->d_sb;
 	struct omfs_sb_info *sbi = OMFS_SB(s);
+	u64 id = huge_encode_dev(s->s_bdev->bd_dev);
+
 	buf->f_type = OMFS_MAGIC;
 	buf->f_bsize = sbi->s_blocksize;
 	buf->f_blocks = sbi->s_num_blocks;
@@ -277,6 +313,18 @@ static int omfs_statfs(struct dentry *dentry, struct kstatfs *buf)
 static struct super_operations omfs_sops = {
 	.write_inode	= omfs_write_inode,
 	.delete_inode	= omfs_delete_inode,
+	buf->f_fsid.val[0] = (u32)id;
+	buf->f_fsid.val[1] = (u32)(id >> 32);
+
+	buf->f_bfree = buf->f_bavail = buf->f_ffree =
+		omfs_count_free(s);
+
+	return 0;
+}
+
+static const struct super_operations omfs_sops = {
+	.write_inode	= omfs_write_inode,
+	.evict_inode	= omfs_evict_inode,
 	.put_super	= omfs_put_super,
 	.statfs		= omfs_statfs,
 	.show_options	= generic_show_options,
@@ -293,6 +341,7 @@ static int omfs_get_imap(struct super_block *sb)
 {
 	int bitmap_size;
 	int array_size;
+	unsigned int bitmap_size, array_size;
 	int count;
 	struct omfs_sb_info *sbi = OMFS_SB(sb);
 	struct buffer_head *bh;
@@ -307,10 +356,14 @@ static int omfs_get_imap(struct super_block *sb)
 
 	sbi->s_imap_size = array_size;
 	sbi->s_imap = kzalloc(array_size * sizeof(unsigned long *), GFP_KERNEL);
+	sbi->s_imap = kcalloc(array_size, sizeof(unsigned long *), GFP_KERNEL);
 	if (!sbi->s_imap)
 		goto nomem;
 
 	block = clus_to_blk(sbi, sbi->s_bitmap_ino);
+	if (block >= sbi->s_num_blocks)
+		goto nomem;
+
 	ptr = sbi->s_imap;
 	for (count = bitmap_size; count > 0; count -= sb->s_blocksize) {
 		bh = sb_bread(sb, block++);
@@ -347,11 +400,16 @@ enum {
 };
 
 static match_table_t tokens = {
+	Opt_uid, Opt_gid, Opt_umask, Opt_dmask, Opt_fmask, Opt_err
+};
+
+static const match_table_t tokens = {
 	{Opt_uid, "uid=%u"},
 	{Opt_gid, "gid=%u"},
 	{Opt_umask, "umask=%o"},
 	{Opt_dmask, "dmask=%o"},
 	{Opt_fmask, "fmask=%o"},
+	{Opt_err, NULL},
 };
 
 static int parse_options(char *options, struct omfs_sb_info *sbi)
@@ -374,11 +432,17 @@ static int parse_options(char *options, struct omfs_sb_info *sbi)
 			if (match_int(&args[0], &option))
 				return 0;
 			sbi->s_uid = option;
+			sbi->s_uid = make_kuid(current_user_ns(), option);
+			if (!uid_valid(sbi->s_uid))
+				return 0;
 			break;
 		case Opt_gid:
 			if (match_int(&args[0], &option))
 				return 0;
 			sbi->s_gid = option;
+			sbi->s_gid = make_kgid(current_user_ns(), option);
+			if (!gid_valid(sbi->s_gid))
+				return 0;
 			break;
 		case Opt_umask:
 			if (match_octal(&args[0], &option))
@@ -423,6 +487,9 @@ static int omfs_fill_super(struct super_block *sb, void *data, int silent)
 	sbi->s_uid = current->uid;
 	sbi->s_gid = current->gid;
 	sbi->s_dmask = sbi->s_fmask = current->fs->umask;
+	sbi->s_uid = current_uid();
+	sbi->s_gid = current_gid();
+	sbi->s_dmask = sbi->s_fmask = current_umask();
 
 	if (!parse_options((char *) data, sbi))
 		goto end;
@@ -452,6 +519,12 @@ static int omfs_fill_super(struct super_block *sb, void *data, int silent)
 	sbi->s_sys_blocksize = be32_to_cpu(omfs_sb->s_sys_blocksize);
 	mutex_init(&sbi->s_bitmap_lock);
 
+	if (sbi->s_num_blocks > OMFS_MAX_BLOCKS) {
+		printk(KERN_ERR "omfs: sysblock number (%llx) is out of range\n",
+		       (unsigned long long)sbi->s_num_blocks);
+		goto out_brelse_bh;
+	}
+
 	if (sbi->s_sys_blocksize > PAGE_SIZE) {
 		printk(KERN_ERR "omfs: sysblock size (%d) is out of range\n",
 			sbi->s_sys_blocksize);
@@ -480,6 +553,7 @@ static int omfs_fill_super(struct super_block *sb, void *data, int silent)
 
 	start = clus_to_blk(sbi, be64_to_cpu(omfs_sb->s_root_block));
 	bh2 = sb_bread(sb, start);
+	bh2 = omfs_bread(sb, be64_to_cpu(omfs_sb->s_root_block));
 	if (!bh2)
 		goto out_brelse_bh;
 
@@ -493,6 +567,21 @@ static int omfs_fill_super(struct super_block *sb, void *data, int silent)
 			"super and root blocks (%llx, %llx)\n",
 			(unsigned long long)sbi->s_num_blocks,
 			(unsigned long long)be64_to_cpu(omfs_rb->r_num_blocks));
+		goto out_brelse_bh2;
+	}
+
+	if (sbi->s_bitmap_ino != ~0ULL &&
+	    sbi->s_bitmap_ino > sbi->s_num_blocks) {
+		printk(KERN_ERR "omfs: free space bitmap location is corrupt "
+			"(%llx, total blocks %llx)\n",
+			(unsigned long long) sbi->s_bitmap_ino,
+			(unsigned long long) sbi->s_num_blocks);
+		goto out_brelse_bh2;
+	}
+	if (sbi->s_clustersize < 1 ||
+	    sbi->s_clustersize > OMFS_MAX_CLUSTER_SIZE) {
+		printk(KERN_ERR "omfs: cluster size out of range (%d)",
+			sbi->s_clustersize);
 		goto out_brelse_bh2;
 	}
 
@@ -511,6 +600,9 @@ static int omfs_fill_super(struct super_block *sb, void *data, int silent)
 	sb->s_root = d_alloc_root(root);
 	if (!sb->s_root) {
 		iput(root);
+	sb->s_root = d_make_root(root);
+	if (!sb->s_root) {
+		ret = -ENOMEM;
 		goto out_brelse_bh2;
 	}
 	printk(KERN_DEBUG "omfs: Mounted volume %s\n", omfs_rb->r_name);
@@ -529,6 +621,15 @@ static int omfs_get_sb(struct file_system_type *fs_type,
 			void *data, struct vfsmount *m)
 {
 	return get_sb_bdev(fs_type, flags, dev_name, data, omfs_fill_super, m);
+	if (ret)
+		kfree(sbi);
+	return ret;
+}
+
+static struct dentry *omfs_mount(struct file_system_type *fs_type,
+			int flags, const char *dev_name, void *data)
+{
+	return mount_bdev(fs_type, flags, dev_name, data, omfs_fill_super);
 }
 
 static struct file_system_type omfs_fs_type = {
@@ -538,6 +639,11 @@ static struct file_system_type omfs_fs_type = {
 	.kill_sb = kill_block_super,
 	.fs_flags = FS_REQUIRES_DEV,
 };
+	.mount = omfs_mount,
+	.kill_sb = kill_block_super,
+	.fs_flags = FS_REQUIRES_DEV,
+};
+MODULE_ALIAS_FS("omfs");
 
 static int __init init_omfs_fs(void)
 {

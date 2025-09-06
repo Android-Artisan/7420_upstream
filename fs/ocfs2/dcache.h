@@ -27,6 +27,7 @@
 #define OCFS2_DCACHE_H
 
 extern struct dentry_operations ocfs2_dentry_ops;
+extern const struct dentry_operations ocfs2_dentry_ops;
 
 struct ocfs2_dentry_lock {
 	unsigned int		dl_count;
@@ -54,5 +55,6 @@ void ocfs2_dentry_move(struct dentry *dentry, struct dentry *target,
 		       struct inode *old_dir, struct inode *new_dir);
 
 extern spinlock_t dentry_attach_lock;
+void ocfs2_dentry_attach_gen(struct dentry *dentry);
 
 #endif /* OCFS2_DCACHE_H */

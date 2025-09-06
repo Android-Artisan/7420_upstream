@@ -27,9 +27,7 @@
  * ------------------------------------------------------------------------
  */
 
-/* =================== */
 /* general description */
-/* =================== */
 
 /* Should ease the (re-)usage of drivers supporting cards with (different)
    video codecs. The codecs register to this module their functionality,
@@ -70,9 +68,7 @@
 */
 
 
-/* ========================================== */
 /* description of the videocodec_io structure */
-/* ========================================== */
 
 /*
    ==== master setup ====
@@ -116,9 +112,7 @@
 		if needed and a flag which allows blocking until its ready
 */
 
-/* ============== */
 /* user interface */
-/* ============== */
 
 /*
    Currently there is only a information display planned, as the layer
@@ -137,9 +131,7 @@ M                       zr36055[1] 0001 0000c001 00000000 (zr36050[1])
 */
 
 
-/* =============================================== */
 /* special defines for the videocodec_io structure */
-/* =============================================== */
 
 #ifndef __LINUX_VIDEOCODEC_H
 #define __LINUX_VIDEOCODEC_H
@@ -217,9 +209,7 @@ M                       zr36055[1] 0001 0000c001 00000000 (zr36050[1])
 #define CODEC_TRANSFER_USER   1	/* use "to/from_user" */
 
 
-/* ========================= */
 /* the structures itself ... */
-/* ========================= */
 
 struct vfe_polarity {
 	unsigned int vsync_pol:1;
@@ -335,9 +325,7 @@ struct videocodec_master {
 };
 
 
-/* ================================================= */
 /* function prototypes of the master/slave interface */
-/* ================================================= */
 
 /* attach and detach commands for the master */
 // * master structure needs to be kmalloc'ed before calling attach

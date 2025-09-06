@@ -8,6 +8,7 @@
  * Copyright (C) 2001 Axis Communications AB
  *
  * Authors:  Mikael Starvik (starvik@axis.com)	
+ * Authors:  Mikael Starvik (starvik@axis.com)
  */
 
 #define PA_SET_VALUE ((CONFIG_ETRAX_DEF_R_PORT_PA_DIR << 8) | \
@@ -16,12 +17,14 @@
 		(CONFIG_ETRAX_DEF_R_PORT_PB_DIR << 8) | \
 		(CONFIG_ETRAX_DEF_R_PORT_PB_DATA))
 	
+
 	.ascii "HW_PARAM_MAGIC" ; Magic number
 	.dword 0xc0004000	; Kernel start address
 
 	; Debug port
 #ifdef CONFIG_ETRAX_DEBUG_PORT0
 	.dword 0		
+	.dword 0
 #elif defined(CONFIG_ETRAX_DEBUG_PORT1)
 	.dword 1
 #elif defined(CONFIG_ETRAX_DEBUG_PORT2)
@@ -31,6 +34,7 @@
 #else
 	.dword 4 ; No debug
 #endif			
+#endif
 
 	; SDRAM or EDO DRAM?
 #ifdef CONFIG_ETRAX_SDRAM
@@ -40,6 +44,7 @@
 #endif
 
 	; Register values 
+	; Register values
 	.dword R_WAITSTATES
 	.dword CONFIG_ETRAX_DEF_R_WAITSTATES
 	.dword R_BUS_CONFIG
@@ -57,6 +62,7 @@
 #endif
 	.dword R_PORT_PA_SET
 	.dword PA_SET_VALUE 
+	.dword PA_SET_VALUE
 	.dword R_PORT_PB_SET
 	.dword PB_SET_VALUE
 	.dword 0 ; No more register values

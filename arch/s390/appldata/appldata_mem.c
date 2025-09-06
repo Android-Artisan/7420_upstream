@@ -5,6 +5,10 @@
  * Collects data related to memory management.
  *
  * Copyright (C) 2003,2006 IBM Corporation, IBM Deutschland Entwicklung GmbH.
+ * Data gathering module for Linux-VM Monitor Stream, Stage 1.
+ * Collects data related to memory management.
+ *
+ * Copyright IBM Corp. 2003, 2006
  *
  * Author: Gerald Schaefer <gerald.schaefer@de.ibm.com>
  */
@@ -16,6 +20,7 @@
 #include <linux/kernel_stat.h>
 #include <linux/pagemap.h>
 #include <linux/swap.h>
+#include <linux/slab.h>
 #include <asm/io.h>
 
 #include "appldata.h"
@@ -36,6 +41,7 @@
  * http://oss.software.ibm.com/developerworks/opensource/linux390/index.shtml
  */
 static struct appldata_mem_data {
+struct appldata_mem_data {
 	u64 timestamp;
 	u32 sync_count_1;       /* after VM collected the record data, */
 	u32 sync_count_2;	/* sync_count_1 and sync_count_2 should be the
@@ -67,6 +73,7 @@ static struct appldata_mem_data {
 // <-- New in 2.6
 
 } __attribute__((packed)) appldata_mem_data;
+} __packed;
 
 
 /*
@@ -79,6 +86,7 @@ static void appldata_get_mem_data(void *data)
 	/*
 	 * don't put large structures on the stack, we are
 	 * serialized through the appldata_ops_lock and can use static
+	 * serialized through the appldata_ops_mutex and can use static
 	 */
 	static struct sysinfo val;
 	unsigned long ev[NR_VM_EVENT_ITEMS];
@@ -96,6 +104,7 @@ static void appldata_get_mem_data(void *data)
 #ifdef CONFIG_ZONE_DMA
 	mem_data->pgalloc    += ev[PGALLOC_DMA];
 #endif
+	mem_data->pgalloc    += ev[PGALLOC_DMA];
 	mem_data->pgfault    = ev[PGFAULT];
 	mem_data->pgmajfault = ev[PGMAJFAULT];
 
@@ -114,6 +123,7 @@ static void appldata_get_mem_data(void *data)
 	mem_data->freeswap  = P2K(val.freeswap);
 
 	mem_data->timestamp = get_clock();
+	mem_data->timestamp = get_tod_clock();
 	mem_data->sync_count_2++;
 }
 
@@ -137,6 +147,17 @@ static struct appldata_ops ops = {
 static int __init appldata_mem_init(void)
 {
 	return appldata_register_ops(&ops);
+	int ret;
+
+	ops.data = kzalloc(sizeof(struct appldata_mem_data), GFP_KERNEL);
+	if (!ops.data)
+		return -ENOMEM;
+
+	ret = appldata_register_ops(&ops);
+	if (ret)
+		kfree(ops.data);
+
+	return ret;
 }
 
 /*
@@ -147,6 +168,7 @@ static int __init appldata_mem_init(void)
 static void __exit appldata_mem_exit(void)
 {
 	appldata_unregister_ops(&ops);
+	kfree(ops.data);
 }
 
 

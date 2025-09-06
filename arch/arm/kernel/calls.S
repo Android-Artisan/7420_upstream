@@ -12,6 +12,7 @@
 /* 0 */		CALL(sys_restart_syscall)
 		CALL(sys_exit)
 		CALL(sys_fork_wrapper)
+		CALL(sys_fork)
 		CALL(sys_read)
 		CALL(sys_write)
 /* 5 */		CALL(sys_open)
@@ -21,6 +22,7 @@
 		CALL(sys_link)
 /* 10 */	CALL(sys_unlink)
 		CALL(sys_execve_wrapper)
+		CALL(sys_execve)
 		CALL(sys_chdir)
 		CALL(OBSOLETE(sys_time))	/* used by libc4 */
 		CALL(sys_mknod)
@@ -82,6 +84,7 @@
 /* 70 */	CALL(sys_setreuid16)
 		CALL(sys_setregid16)
 		CALL(sys_sigsuspend_wrapper)
+		CALL(sys_sigsuspend)
 		CALL(sys_sigpending)
 		CALL(sys_sethostname)
 /* 75 */	CALL(sys_setrlimit)
@@ -92,6 +95,7 @@
 /* 80 */	CALL(sys_getgroups16)
 		CALL(sys_setgroups16)
 		CALL(OBSOLETE(old_select))	/* used by libc4 */
+		CALL(OBSOLETE(sys_old_select))	/* used by libc4 */
 		CALL(sys_symlink)
 		CALL(sys_ni_syscall)		/* was sys_lstat */
 /* 85 */	CALL(sys_readlink)
@@ -100,6 +104,8 @@
 		CALL(sys_reboot)
 		CALL(OBSOLETE(old_readdir))	/* used by libc4 */
 /* 90 */	CALL(OBSOLETE(old_mmap))	/* used by libc4 */
+		CALL(OBSOLETE(sys_old_readdir))	/* used by libc4 */
+/* 90 */	CALL(OBSOLETE(sys_old_mmap))	/* used by libc4 */
 		CALL(sys_munmap)
 		CALL(sys_truncate)
 		CALL(sys_ftruncate)
@@ -130,6 +136,7 @@
 		CALL(sys_fsync)
 		CALL(sys_sigreturn_wrapper)
 /* 120 */	CALL(sys_clone_wrapper)
+/* 120 */	CALL(sys_clone)
 		CALL(sys_setdomainname)
 		CALL(sys_newuname)
 		CALL(sys_ni_syscall)		/* modify_ldt */
@@ -173,12 +180,14 @@
 		CALL(sys_sched_rr_get_interval)
 		CALL(sys_nanosleep)
 		CALL(sys_arm_mremap)
+		CALL(sys_mremap)
 		CALL(sys_setresuid16)
 /* 165 */	CALL(sys_getresuid16)
 		CALL(sys_ni_syscall)		/* vm86 */
 		CALL(sys_ni_syscall)		/* was sys_query_module */
 		CALL(sys_poll)
 		CALL(sys_nfsservctl)
+		CALL(sys_ni_syscall)		/* was nfsservctl */
 /* 170 */	CALL(sys_setresgid16)
 		CALL(sys_getresgid16)
 		CALL(sys_prctl)
@@ -189,6 +198,7 @@
 		CALL(sys_rt_sigtimedwait)
 		CALL(sys_rt_sigqueueinfo)
 		CALL(sys_rt_sigsuspend_wrapper)
+		CALL(sys_rt_sigsuspend)
 /* 180 */	CALL(ABI(sys_pread64, sys_oabi_pread64))
 		CALL(ABI(sys_pwrite64, sys_oabi_pwrite64))
 		CALL(sys_chown16)
@@ -200,6 +210,11 @@
 		CALL(sys_ni_syscall)		/* getpmsg */
 		CALL(sys_ni_syscall)		/* putpmsg */
 /* 190 */	CALL(sys_vfork_wrapper)
+		CALL(sys_sigaltstack)
+		CALL(sys_sendfile)
+		CALL(sys_ni_syscall)		/* getpmsg */
+		CALL(sys_ni_syscall)		/* putpmsg */
+/* 190 */	CALL(sys_vfork)
 		CALL(sys_getrlimit)
 		CALL(sys_mmap2)
 		CALL(ABI(sys_truncate64, sys_oabi_truncate64))
@@ -346,6 +361,8 @@
 		CALL(sys_faccessat)
 /* 335 */	CALL(sys_ni_syscall)		/* eventually pselect6 */
 		CALL(sys_ni_syscall)		/* eventually ppoll */
+/* 335 */	CALL(sys_pselect6)
+		CALL(sys_ppoll)
 		CALL(sys_unshare)
 		CALL(sys_set_robust_list)
 		CALL(sys_get_robust_list)
@@ -356,6 +373,7 @@
 		CALL(sys_move_pages)
 /* 345 */	CALL(sys_getcpu)
 		CALL(sys_ni_syscall)		/* eventually epoll_pwait */
+		CALL(sys_epoll_pwait)
 		CALL(sys_kexec_load)
 		CALL(sys_utimensat)
 		CALL(sys_signalfd)
@@ -370,6 +388,36 @@
 		CALL(sys_dup3)
 		CALL(sys_pipe2)
 /* 360 */	CALL(sys_inotify_init1)
+		CALL(sys_preadv)
+		CALL(sys_pwritev)
+		CALL(sys_rt_tgsigqueueinfo)
+		CALL(sys_perf_event_open)
+/* 365 */	CALL(sys_recvmmsg)
+		CALL(sys_accept4)
+		CALL(sys_fanotify_init)
+		CALL(sys_fanotify_mark)
+		CALL(sys_prlimit64)
+/* 370 */	CALL(sys_name_to_handle_at)
+		CALL(sys_open_by_handle_at)
+		CALL(sys_clock_adjtime)
+		CALL(sys_syncfs)
+		CALL(sys_sendmmsg)
+/* 375 */	CALL(sys_setns)
+		CALL(sys_process_vm_readv)
+		CALL(sys_process_vm_writev)
+		CALL(sys_kcmp)
+		CALL(sys_finit_module)
+/* 380 */	CALL(sys_sched_setattr)
+		CALL(sys_sched_getattr)
+		CALL(sys_renameat2)
+		CALL(sys_seccomp)
+		CALL(sys_getrandom)
+/* 385 */	CALL(sys_memfd_create)
+		CALL(sys_bpf)
+		CALL(sys_execveat)
+		CALL(sys_userfaultfd)
+		CALL(sys_membarrier)
+		CALL(sys_mlock2)
 #ifndef syscalls_counted
 .equ syscalls_padding, ((NR_syscalls + 3) & ~3) - NR_syscalls
 #define syscalls_counted

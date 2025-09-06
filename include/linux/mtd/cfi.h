@@ -1,6 +1,23 @@
 
 /* Common Flash Interface structures
  * See http://support.intel.com/design/flash/technote/index.htm
+/*
+ * Copyright © 2000-2010 David Woodhouse <dwmw2@infradead.org> et al.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+ *
  */
 
 #ifndef __MTD_CFI_H__
@@ -8,10 +25,12 @@
 
 #include <linux/delay.h>
 #include <linux/types.h>
+#include <linux/bug.h>
 #include <linux/interrupt.h>
 #include <linux/mtd/flashchip.h>
 #include <linux/mtd/map.h>
 #include <linux/mtd/cfi_endian.h>
+#include <linux/mtd/xip.h>
 
 #ifdef CONFIG_MTD_CFI_I1
 #define cfi_interleave(cfi) 1
@@ -138,6 +157,7 @@ struct cfi_ident {
 	uint8_t  NumEraseRegions;
 	uint32_t EraseRegionInfo[0]; /* Not host ordered */
 } __attribute__((packed));
+} __packed;
 
 /* Extended Query Structure for both PRI and ALT */
 
@@ -146,6 +166,7 @@ struct cfi_extquery {
 	uint8_t  MajorVersion;
 	uint8_t  MinorVersion;
 } __attribute__((packed));
+} __packed;
 
 /* Vendor-Specific PRI for Intel/Sharp Extended Command Set (0x0001) */
 
@@ -165,6 +186,7 @@ struct cfi_pri_intelext {
 	uint8_t  UserProtRegSize;
 	uint8_t  extra[0];
 } __attribute__((packed));
+} __packed;
 
 struct cfi_intelext_otpinfo {
 	uint32_t ProtRegAddr;
@@ -173,6 +195,7 @@ struct cfi_intelext_otpinfo {
 	uint16_t UserGroups;
 	uint8_t  UserProtRegSize;
 } __attribute__((packed));
+} __packed;
 
 struct cfi_intelext_blockinfo {
 	uint16_t NumIdentBlocks;
@@ -181,6 +204,7 @@ struct cfi_intelext_blockinfo {
 	uint8_t  BitsPerCell;
 	uint8_t  BlockCap;
 } __attribute__((packed));
+} __packed;
 
 struct cfi_intelext_regioninfo {
 	uint16_t NumIdentPartitions;
@@ -190,6 +214,7 @@ struct cfi_intelext_regioninfo {
 	uint8_t  NumBlockTypes;
 	struct cfi_intelext_blockinfo BlockTypes[1];
 } __attribute__((packed));
+} __packed;
 
 struct cfi_intelext_programming_regioninfo {
 	uint8_t  ProgRegShift;
@@ -199,6 +224,7 @@ struct cfi_intelext_programming_regioninfo {
 	uint8_t  ControlInvalid;
 	uint8_t  Reserved3;
 } __attribute__((packed));
+} __packed;
 
 /* Vendor-Specific PRI for AMD/Fujitsu Extended Command Set (0x0002) */
 
@@ -218,6 +244,7 @@ struct cfi_pri_amdstd {
 	uint8_t  VppMax;
 	uint8_t  TopBottom;
 } __attribute__((packed));
+} __packed;
 
 /* Vendor-Specific PRI for Atmel chips (command set 0x0002) */
 
@@ -230,17 +257,20 @@ struct cfi_pri_atmel {
 	uint8_t BurstMode;
 	uint8_t PageMode;
 } __attribute__((packed));
+} __packed;
 
 struct cfi_pri_query {
 	uint8_t  NumFields;
 	uint32_t ProtField[1]; /* Not host ordered */
 } __attribute__((packed));
+} __packed;
 
 struct cfi_bri_query {
 	uint8_t  PageModeReadCap;
 	uint8_t  NumFields;
 	uint32_t ConfField[1]; /* Not host ordered */
 } __attribute__((packed));
+} __packed;
 
 #define P_ID_NONE               0x0000
 #define P_ID_INTEL_EXT          0x0001
@@ -252,6 +282,7 @@ struct cfi_bri_query {
 #define P_ID_MITSUBISHI_STD     0x0100
 #define P_ID_MITSUBISHI_EXT     0x0101
 #define P_ID_SST_PAGE           0x0102
+#define P_ID_SST_OLD            0x0701
 #define P_ID_INTEL_PERFORMANCE  0x0200
 #define P_ID_INTEL_DATA         0x0210
 #define P_ID_RESERVED           0xffff
@@ -273,8 +304,10 @@ struct cfi_private {
 				  must be of the same type. */
 	int mfr, id;
 	int numchips;
+	map_word sector_erase_cmd;
 	unsigned long chipshift; /* Because they're of the same type */
 	const char *im_name;	 /* inter_module name for cmdset_setup */
+	unsigned long quirks;
 	struct flchip chips[0];  /* per-chip data structure for each chip */
 };
 
@@ -440,6 +473,19 @@ static inline uint32_t cfi_send_gen_cmd(u_char cmd, uint32_t cmd_addr, uint32_t 
 
 	return addr - base;
 }
+uint32_t cfi_build_cmd_addr(uint32_t cmd_ofs,
+				struct map_info *map, struct cfi_private *cfi);
+
+map_word cfi_build_cmd(u_long cmd, struct map_info *map, struct cfi_private *cfi);
+#define CMD(x)  cfi_build_cmd((x), map, cfi)
+
+unsigned long cfi_merge_status(map_word val, struct map_info *map,
+					   struct cfi_private *cfi);
+#define MERGESTATUS(x) cfi_merge_status((x), map, cfi)
+
+uint32_t cfi_send_gen_cmd(u_char cmd, uint32_t cmd_addr, uint32_t base,
+				struct map_info *map, struct cfi_private *cfi,
+				int type, map_word *prev_val);
 
 static inline uint8_t cfi_read_query(struct map_info *map, uint32_t addr)
 {
@@ -449,11 +495,13 @@ static inline uint8_t cfi_read_query(struct map_info *map, uint32_t addr)
 		return val.x[0];
 	} else if (map_bankwidth_is_2(map)) {
 		return cfi16_to_cpu(val.x[0]);
+		return cfi16_to_cpu(map, val.x[0]);
 	} else {
 		/* No point in a 64-bit byteswap since that would just be
 		   swapping the responses from different chips, and we are
 		   only interested in one chip (a representative sample) */
 		return cfi32_to_cpu(val.x[0]);
+		return cfi32_to_cpu(map, val.x[0]);
 	}
 }
 
@@ -465,6 +513,7 @@ static inline uint16_t cfi_read_query16(struct map_info *map, uint32_t addr)
 		return val.x[0] & 0xff;
 	} else if (map_bankwidth_is_2(map)) {
 		return cfi16_to_cpu(val.x[0]);
+		return cfi16_to_cpu(map, val.x[0]);
 	} else {
 		/* No point in a 64-bit byteswap since that would just be
 		   swapping the responses from different chips, and we are
@@ -482,6 +531,18 @@ static inline void cfi_udelay(int us)
 		cond_resched();
 	}
 }
+		return cfi32_to_cpu(map, val.x[0]);
+	}
+}
+
+void cfi_udelay(int us);
+
+int __xipram cfi_qry_present(struct map_info *map, __u32 base,
+			     struct cfi_private *cfi);
+int __xipram cfi_qry_mode_on(uint32_t base, struct map_info *map,
+			     struct cfi_private *cfi);
+void __xipram cfi_qry_mode_off(uint32_t base, struct map_info *map,
+			       struct cfi_private *cfi);
 
 struct cfi_extquery *cfi_read_pri(struct map_info *map, uint16_t adr, uint16_t size,
 			     const char* name);
@@ -498,6 +559,29 @@ struct cfi_fixup {
 #define CFI_MFR_AMD 0x0001
 #define CFI_MFR_ATMEL 0x001F
 #define CFI_MFR_ST  0x0020 	/* STMicroelectronics */
+	void (*fixup)(struct mtd_info *mtd);
+};
+
+#define CFI_MFR_ANY		0xFFFF
+#define CFI_ID_ANY		0xFFFF
+#define CFI_MFR_CONTINUATION	0x007F
+
+#define CFI_MFR_AMD		0x0001
+#define CFI_MFR_AMIC		0x0037
+#define CFI_MFR_ATMEL		0x001F
+#define CFI_MFR_EON		0x001C
+#define CFI_MFR_FUJITSU		0x0004
+#define CFI_MFR_HYUNDAI		0x00AD
+#define CFI_MFR_INTEL		0x0089
+#define CFI_MFR_MACRONIX	0x00C2
+#define CFI_MFR_NEC		0x0010
+#define CFI_MFR_PMC		0x009D
+#define CFI_MFR_SAMSUNG		0x00EC
+#define CFI_MFR_SHARP		0x00B0
+#define CFI_MFR_SST		0x00BF
+#define CFI_MFR_ST		0x0020 /* STMicroelectronics */
+#define CFI_MFR_TOSHIBA		0x0098
+#define CFI_MFR_WINBOND		0x00DA
 
 void cfi_fixup(struct mtd_info *mtd, struct cfi_fixup* fixups);
 

@@ -77,6 +77,15 @@ do { if(!(expr)) { \
 #define IRDA_ASSERT_LABEL(label)	label
 #else
 #define IRDA_DEBUG(n, args...) do { } while (0)
+
+#ifdef CONFIG_IRDA_DEBUG
+#define IRDA_ASSERT(expr, func) \
+do { if(!(expr)) { \
+	printk( "Assertion failed! %s:%s:%d %s\n", \
+		__FILE__,__func__,__LINE__,(#expr) ); \
+	func } } while (0)
+#define IRDA_ASSERT_LABEL(label)	label
+#else
 #define IRDA_ASSERT(expr, func) do { (void)(expr); } while (0)
 #define IRDA_ASSERT_LABEL(label)
 #endif /* CONFIG_IRDA_DEBUG */
@@ -131,5 +140,19 @@ extern void irda_nl_unregister(void);
 extern int irlap_driver_rcv(struct sk_buff *skb, struct net_device *dev,
 			    struct packet_type *ptype,
 			    struct net_device *orig_dev);
+void irda_proc_register(void);
+void irda_proc_unregister(void);
+
+int irda_sysctl_register(void);
+void irda_sysctl_unregister(void);
+
+int irsock_init(void);
+void irsock_cleanup(void);
+
+int irda_nl_register(void);
+void irda_nl_unregister(void);
+
+int irlap_driver_rcv(struct sk_buff *skb, struct net_device *dev,
+		     struct packet_type *ptype, struct net_device *orig_dev);
 
 #endif /* NET_IRDA_H */

@@ -15,6 +15,10 @@
 #include <asm/clock.h>
 #include <asm/freq.h>
 #include <asm/io.h>
+#include <linux/io.h>
+#include <linux/clkdev.h>
+#include <asm/clock.h>
+#include <asm/freq.h>
 
 #define CPG2_FRQCR3	0xfe0a0018
 
@@ -25,6 +29,10 @@ static void emi_clk_recalc(struct clk *clk)
 {
 	int idx = ctrl_inl(CPG2_FRQCR3) & 0x0007;
 	clk->rate = clk->parent->rate / frqcr3_divisors[idx];
+static unsigned long emi_clk_recalc(struct clk *clk)
+{
+	int idx = __raw_readl(CPG2_FRQCR3) & 0x0007;
+	return clk->parent->rate / frqcr3_divisors[idx];
 }
 
 static inline int frqcr3_lookup(struct clk *clk, unsigned long rate)
@@ -41,6 +49,7 @@ static inline int frqcr3_lookup(struct clk *clk, unsigned long rate)
 }
 
 static struct clk_ops sh4202_emi_clk_ops = {
+static struct sh_clk_ops sh4202_emi_clk_ops = {
 	.recalc		= emi_clk_recalc,
 };
 
@@ -57,12 +66,24 @@ static void femi_clk_recalc(struct clk *clk)
 }
 
 static struct clk_ops sh4202_femi_clk_ops = {
+	.flags		= CLK_ENABLE_ON_INIT,
+	.ops		= &sh4202_emi_clk_ops,
+};
+
+static unsigned long femi_clk_recalc(struct clk *clk)
+{
+	int idx = (__raw_readl(CPG2_FRQCR3) >> 3) & 0x0007;
+	return clk->parent->rate / frqcr3_divisors[idx];
+}
+
+static struct sh_clk_ops sh4202_femi_clk_ops = {
 	.recalc		= femi_clk_recalc,
 };
 
 static struct clk sh4202_femi_clk = {
 	.name		= "femi_clk",
 	.flags		= CLK_ALWAYS_ENABLED,
+	.flags		= CLK_ENABLE_ON_INIT,
 	.ops		= &sh4202_femi_clk_ops,
 };
 
@@ -84,6 +105,7 @@ static void shoc_clk_init(struct clk *clk)
 
 		if (clk->ops->set_rate(clk, clk->parent->rate /
 						divisor, 0) == 0)
+		if (clk->ops->set_rate(clk, clk->parent->rate / divisor) == 0)
 			break;
 	}
 
@@ -94,6 +116,10 @@ static void shoc_clk_recalc(struct clk *clk)
 {
 	int idx = (ctrl_inl(CPG2_FRQCR3) >> 6) & 0x0007;
 	clk->rate = clk->parent->rate / frqcr3_divisors[idx];
+static unsigned long shoc_clk_recalc(struct clk *clk)
+{
+	int idx = (__raw_readl(CPG2_FRQCR3) >> 6) & 0x0007;
+	return clk->parent->rate / frqcr3_divisors[idx];
 }
 
 static int shoc_clk_verify_rate(struct clk *clk, unsigned long rate)
@@ -112,6 +138,7 @@ static int shoc_clk_verify_rate(struct clk *clk, unsigned long rate)
 }
 
 static int shoc_clk_set_rate(struct clk *clk, unsigned long rate, int algo_id)
+static int shoc_clk_set_rate(struct clk *clk, unsigned long rate)
 {
 	unsigned long frqcr3;
 	unsigned int tmp;
@@ -126,6 +153,10 @@ static int shoc_clk_set_rate(struct clk *clk, unsigned long rate, int algo_id)
 	frqcr3 &= ~(0x0007 << 6);
 	frqcr3 |= tmp << 6;
 	ctrl_outl(frqcr3, CPG2_FRQCR3);
+	frqcr3 = __raw_readl(CPG2_FRQCR3);
+	frqcr3 &= ~(0x0007 << 6);
+	frqcr3 |= tmp << 6;
+	__raw_writel(frqcr3, CPG2_FRQCR3);
 
 	clk->rate = clk->parent->rate / frqcr3_divisors[tmp];
 
@@ -133,6 +164,7 @@ static int shoc_clk_set_rate(struct clk *clk, unsigned long rate, int algo_id)
 }
 
 static struct clk_ops sh4202_shoc_clk_ops = {
+static struct sh_clk_ops sh4202_shoc_clk_ops = {
 	.init		= shoc_clk_init,
 	.recalc		= shoc_clk_recalc,
 	.set_rate	= shoc_clk_set_rate,
@@ -141,6 +173,7 @@ static struct clk_ops sh4202_shoc_clk_ops = {
 static struct clk sh4202_shoc_clk = {
 	.name		= "shoc_clk",
 	.flags		= CLK_ALWAYS_ENABLED,
+	.flags		= CLK_ENABLE_ON_INIT,
 	.ops		= &sh4202_shoc_clk_ops,
 };
 
@@ -155,6 +188,21 @@ static int __init sh4202_clk_init(void)
 	struct clk *clk = clk_get(NULL, "master_clk");
 	int i;
 
+static struct clk_lookup lookups[] = {
+	/* main clocks */
+	CLKDEV_CON_ID("emi_clk", &sh4202_emi_clk),
+	CLKDEV_CON_ID("femi_clk", &sh4202_femi_clk),
+	CLKDEV_CON_ID("shoc_clk", &sh4202_shoc_clk),
+};
+
+int __init arch_clk_init(void)
+{
+	struct clk *clk;
+	int i, ret = 0;
+
+	cpg_clk_init();
+
+	clk = clk_get(NULL, "master_clk");
 	for (i = 0; i < ARRAY_SIZE(sh4202_onchip_clocks); i++) {
 		struct clk *clkp = sh4202_onchip_clocks[i];
 
@@ -178,3 +226,12 @@ static int __init sh4202_clk_init(void)
 
 arch_initcall(sh4202_clk_init);
 
+		ret |= clk_register(clkp);
+	}
+
+	clk_put(clk);
+
+	clkdev_add_table(lookups, ARRAY_SIZE(lookups));
+
+	return ret;
+}

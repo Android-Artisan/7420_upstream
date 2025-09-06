@@ -16,6 +16,10 @@
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/edac.h>
+#include <linux/interrupt.h>
+#include <linux/io.h>
+#include <linux/edac.h>
+#include <linux/gfp.h>
 
 #include "edac_core.h"
 #include "edac_module.h"
@@ -91,6 +95,7 @@ static int __init mv64x60_pci_fixup(struct platform_device *pdev)
 	}
 
 	pci_serr = ioremap(r->start, r->end - r->start + 1);
+	pci_serr = ioremap(r->start, resource_size(r));
 	if (!pci_serr)
 		return -ENOMEM;
 
@@ -101,6 +106,7 @@ static int __init mv64x60_pci_fixup(struct platform_device *pdev)
 }
 
 static int __devinit mv64x60_pci_err_probe(struct platform_device *pdev)
+static int mv64x60_pci_err_probe(struct platform_device *pdev)
 {
 	struct edac_pci_ctl_info *pci;
 	struct mv64x60_pci_pdata *pdata;
@@ -122,6 +128,7 @@ static int __devinit mv64x60_pci_err_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, pci);
 	pci->dev = &pdev->dev;
 	pci->dev_name = pdev->dev.bus_id;
+	pci->dev_name = dev_name(&pdev->dev);
 	pci->mod_name = EDAC_MOD_STR;
 	pci->ctl_name = pdata->name;
 
@@ -141,6 +148,7 @@ static int __devinit mv64x60_pci_err_probe(struct platform_device *pdev)
 	if (!devm_request_mem_region(&pdev->dev,
 				     r->start,
 				     r->end - r->start + 1,
+				     resource_size(r),
 				     pdata->name)) {
 		printk(KERN_ERR "%s: Error while requesting mem region\n",
 		       __func__);
@@ -151,6 +159,7 @@ static int __devinit mv64x60_pci_err_probe(struct platform_device *pdev)
 	pdata->pci_vbase = devm_ioremap(&pdev->dev,
 					r->start,
 					r->end - r->start + 1);
+					resource_size(r));
 	if (!pdata->pci_vbase) {
 		printk(KERN_ERR "%s: Unable to setup PCI err regs\n", __func__);
 		res = -ENOMEM;
@@ -170,6 +179,7 @@ static int __devinit mv64x60_pci_err_probe(struct platform_device *pdev)
 
 	if (edac_pci_add_device(pci, pdata->edac_idx) > 0) {
 		debugf3("%s(): failed edac_pci_add_device()\n", __func__);
+		edac_dbg(3, "failed edac_pci_add_device()\n");
 		goto err;
 	}
 
@@ -179,6 +189,7 @@ static int __devinit mv64x60_pci_err_probe(struct platform_device *pdev)
 				       pdata->irq,
 				       mv64x60_pci_isr,
 				       IRQF_DISABLED,
+				       0,
 				       "[EDAC] PCI err",
 				       pci);
 		if (res < 0) {
@@ -195,6 +206,7 @@ static int __devinit mv64x60_pci_err_probe(struct platform_device *pdev)
 
 	/* get this far and it's successful */
 	debugf3("%s(): success\n", __func__);
+	edac_dbg(3, "success\n");
 
 	return 0;
 
@@ -211,6 +223,7 @@ static int mv64x60_pci_err_remove(struct platform_device *pdev)
 	struct edac_pci_ctl_info *pci = platform_get_drvdata(pdev);
 
 	debugf0("%s()\n", __func__);
+	edac_dbg(0, "\n");
 
 	edac_pci_del_device(&pdev->dev);
 
@@ -222,6 +235,7 @@ static int mv64x60_pci_err_remove(struct platform_device *pdev)
 static struct platform_driver mv64x60_pci_err_driver = {
 	.probe = mv64x60_pci_err_probe,
 	.remove = __devexit_p(mv64x60_pci_err_remove),
+	.remove = mv64x60_pci_err_remove,
 	.driver = {
 		   .name = "mv64x60_pci_err",
 	}
@@ -272,6 +286,7 @@ static irqreturn_t mv64x60_sram_isr(int irq, void *dev_id)
 }
 
 static int __devinit mv64x60_sram_err_probe(struct platform_device *pdev)
+static int mv64x60_sram_err_probe(struct platform_device *pdev)
 {
 	struct edac_device_ctl_info *edac_dev;
 	struct mv64x60_sram_pdata *pdata;
@@ -295,6 +310,7 @@ static int __devinit mv64x60_sram_err_probe(struct platform_device *pdev)
 	edac_dev->dev = &pdev->dev;
 	platform_set_drvdata(pdev, edac_dev);
 	edac_dev->dev_name = pdev->dev.bus_id;
+	edac_dev->dev_name = dev_name(&pdev->dev);
 
 	r = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (!r) {
@@ -307,6 +323,7 @@ static int __devinit mv64x60_sram_err_probe(struct platform_device *pdev)
 	if (!devm_request_mem_region(&pdev->dev,
 				     r->start,
 				     r->end - r->start + 1,
+				     resource_size(r),
 				     pdata->name)) {
 		printk(KERN_ERR "%s: Error while request mem region\n",
 		       __func__);
@@ -317,6 +334,7 @@ static int __devinit mv64x60_sram_err_probe(struct platform_device *pdev)
 	pdata->sram_vbase = devm_ioremap(&pdev->dev,
 					 r->start,
 					 r->end - r->start + 1);
+					 resource_size(r));
 	if (!pdata->sram_vbase) {
 		printk(KERN_ERR "%s: Unable to setup SRAM err regs\n",
 		       __func__);
@@ -337,6 +355,7 @@ static int __devinit mv64x60_sram_err_probe(struct platform_device *pdev)
 
 	if (edac_device_add_device(edac_dev) > 0) {
 		debugf3("%s(): failed edac_device_add_device()\n", __func__);
+		edac_dbg(3, "failed edac_device_add_device()\n");
 		goto err;
 	}
 
@@ -346,6 +365,7 @@ static int __devinit mv64x60_sram_err_probe(struct platform_device *pdev)
 				       pdata->irq,
 				       mv64x60_sram_isr,
 				       IRQF_DISABLED,
+				       0,
 				       "[EDAC] SRAM err",
 				       edac_dev);
 		if (res < 0) {
@@ -364,6 +384,7 @@ static int __devinit mv64x60_sram_err_probe(struct platform_device *pdev)
 
 	/* get this far and it's successful */
 	debugf3("%s(): success\n", __func__);
+	edac_dbg(3, "success\n");
 
 	return 0;
 
@@ -380,6 +401,7 @@ static int mv64x60_sram_err_remove(struct platform_device *pdev)
 	struct edac_device_ctl_info *edac_dev = platform_get_drvdata(pdev);
 
 	debugf0("%s()\n", __func__);
+	edac_dbg(0, "\n");
 
 	edac_device_del_device(&pdev->dev);
 	edac_device_free_ctl_info(edac_dev);
@@ -440,6 +462,7 @@ static irqreturn_t mv64x60_cpu_isr(int irq, void *dev_id)
 }
 
 static int __devinit mv64x60_cpu_err_probe(struct platform_device *pdev)
+static int mv64x60_cpu_err_probe(struct platform_device *pdev)
 {
 	struct edac_device_ctl_info *edac_dev;
 	struct resource *r;
@@ -463,6 +486,7 @@ static int __devinit mv64x60_cpu_err_probe(struct platform_device *pdev)
 	edac_dev->dev = &pdev->dev;
 	platform_set_drvdata(pdev, edac_dev);
 	edac_dev->dev_name = pdev->dev.bus_id;
+	edac_dev->dev_name = dev_name(&pdev->dev);
 
 	r = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (!r) {
@@ -475,6 +499,7 @@ static int __devinit mv64x60_cpu_err_probe(struct platform_device *pdev)
 	if (!devm_request_mem_region(&pdev->dev,
 				     r->start,
 				     r->end - r->start + 1,
+				     resource_size(r),
 				     pdata->name)) {
 		printk(KERN_ERR "%s: Error while requesting mem region\n",
 		       __func__);
@@ -485,6 +510,7 @@ static int __devinit mv64x60_cpu_err_probe(struct platform_device *pdev)
 	pdata->cpu_vbase[0] = devm_ioremap(&pdev->dev,
 					   r->start,
 					   r->end - r->start + 1);
+					   resource_size(r));
 	if (!pdata->cpu_vbase[0]) {
 		printk(KERN_ERR "%s: Unable to setup CPU err regs\n", __func__);
 		res = -ENOMEM;
@@ -502,6 +528,7 @@ static int __devinit mv64x60_cpu_err_probe(struct platform_device *pdev)
 	if (!devm_request_mem_region(&pdev->dev,
 				     r->start,
 				     r->end - r->start + 1,
+				     resource_size(r),
 				     pdata->name)) {
 		printk(KERN_ERR "%s: Error while requesting mem region\n",
 		       __func__);
@@ -512,6 +539,7 @@ static int __devinit mv64x60_cpu_err_probe(struct platform_device *pdev)
 	pdata->cpu_vbase[1] = devm_ioremap(&pdev->dev,
 					   r->start,
 					   r->end - r->start + 1);
+					   resource_size(r));
 	if (!pdata->cpu_vbase[1]) {
 		printk(KERN_ERR "%s: Unable to setup CPU err regs\n", __func__);
 		res = -ENOMEM;
@@ -532,6 +560,7 @@ static int __devinit mv64x60_cpu_err_probe(struct platform_device *pdev)
 
 	if (edac_device_add_device(edac_dev) > 0) {
 		debugf3("%s(): failed edac_device_add_device()\n", __func__);
+		edac_dbg(3, "failed edac_device_add_device()\n");
 		goto err;
 	}
 
@@ -541,6 +570,7 @@ static int __devinit mv64x60_cpu_err_probe(struct platform_device *pdev)
 				       pdata->irq,
 				       mv64x60_cpu_isr,
 				       IRQF_DISABLED,
+				       0,
 				       "[EDAC] CPU err",
 				       edac_dev);
 		if (res < 0) {
@@ -559,6 +589,7 @@ static int __devinit mv64x60_cpu_err_probe(struct platform_device *pdev)
 
 	/* get this far and it's successful */
 	debugf3("%s(): success\n", __func__);
+	edac_dbg(3, "success\n");
 
 	return 0;
 
@@ -575,6 +606,7 @@ static int mv64x60_cpu_err_remove(struct platform_device *pdev)
 	struct edac_device_ctl_info *edac_dev = platform_get_drvdata(pdev);
 
 	debugf0("%s()\n", __func__);
+	edac_dbg(0, "\n");
 
 	edac_device_del_device(&pdev->dev);
 	edac_device_free_ctl_info(edac_dev);
@@ -617,6 +649,17 @@ static void mv64x60_mc_check(struct mem_ctl_info *mci)
 	else	/* 2 bit error, UE */
 		edac_mc_handle_ue(mci, err_addr >> PAGE_SHIFT,
 				  err_addr & PAGE_MASK, 0, mci->ctl_name);
+		edac_mc_handle_error(HW_EVENT_ERR_CORRECTED, mci, 1,
+				     err_addr >> PAGE_SHIFT,
+				     err_addr & PAGE_MASK, syndrome,
+				     0, 0, -1,
+				     mci->ctl_name, "");
+	else	/* 2 bit error, UE */
+		edac_mc_handle_error(HW_EVENT_ERR_UNCORRECTED, mci, 1,
+				     err_addr >> PAGE_SHIFT,
+				     err_addr & PAGE_MASK, 0,
+				     0, 0, -1,
+				     mci->ctl_name, "");
 
 	/* clear the error */
 	out_le32(pdata->mc_vbase + MV64X60_SDRAM_ERR_ADDR, 0);
@@ -656,6 +699,8 @@ static void mv64x60_init_csrows(struct mem_ctl_info *mci,
 				struct mv64x60_mc_pdata *pdata)
 {
 	struct csrow_info *csrow;
+	struct dimm_info *dimm;
+
 	u32 devtype;
 	u32 ctl;
 
@@ -670,6 +715,13 @@ static void mv64x60_init_csrows(struct mem_ctl_info *mci,
 	csrow->grain = 8;
 
 	csrow->mtype = (ctl & MV64X60_SDRAM_REGISTERED) ? MEM_RDDR : MEM_DDR;
+	csrow = mci->csrows[0];
+	dimm = csrow->channels[0]->dimm;
+
+	dimm->nr_pages = pdata->total_mem >> PAGE_SHIFT;
+	dimm->grain = 8;
+
+	dimm->mtype = (ctl & MV64X60_SDRAM_REGISTERED) ? MEM_RDDR : MEM_DDR;
 
 	devtype = (ctl >> 20) & 0x3;
 	switch (devtype) {
@@ -693,6 +745,26 @@ static void mv64x60_init_csrows(struct mem_ctl_info *mci,
 static int __devinit mv64x60_mc_err_probe(struct platform_device *pdev)
 {
 	struct mem_ctl_info *mci;
+		dimm->dtype = DEV_X32;
+		break;
+	case 0x2:		/* could be X8 too, but no way to tell */
+		dimm->dtype = DEV_X16;
+		break;
+	case 0x3:
+		dimm->dtype = DEV_X4;
+		break;
+	default:
+		dimm->dtype = DEV_UNKNOWN;
+		break;
+	}
+
+	dimm->edac_mode = EDAC_SECDED;
+}
+
+static int mv64x60_mc_err_probe(struct platform_device *pdev)
+{
+	struct mem_ctl_info *mci;
+	struct edac_mc_layer layers[2];
 	struct mv64x60_mc_pdata *pdata;
 	struct resource *r;
 	u32 ctl;
@@ -702,6 +774,14 @@ static int __devinit mv64x60_mc_err_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	mci = edac_mc_alloc(sizeof(struct mv64x60_mc_pdata), 1, 1, edac_mc_idx);
+	layers[0].type = EDAC_MC_LAYER_CHIP_SELECT;
+	layers[0].size = 1;
+	layers[0].is_virt_csrow = true;
+	layers[1].type = EDAC_MC_LAYER_CHANNEL;
+	layers[1].size = 1;
+	layers[1].is_virt_csrow = false;
+	mci = edac_mc_alloc(edac_mc_idx, ARRAY_SIZE(layers), layers,
+			    sizeof(struct mv64x60_mc_pdata));
 	if (!mci) {
 		printk(KERN_ERR "%s: No memory for CPU err\n", __func__);
 		devres_release_group(&pdev->dev, mv64x60_mc_err_probe);
@@ -714,6 +794,11 @@ static int __devinit mv64x60_mc_err_probe(struct platform_device *pdev)
 	pdata->name = "mv64x60_mc_err";
 	pdata->irq = NO_IRQ;
 	mci->dev_name = pdev->dev.bus_id;
+	mci->pdev = &pdev->dev;
+	platform_set_drvdata(pdev, mci);
+	pdata->name = "mv64x60_mc_err";
+	pdata->irq = NO_IRQ;
+	mci->dev_name = dev_name(&pdev->dev);
 	pdata->edac_idx = edac_mc_idx++;
 
 	r = platform_get_resource(pdev, IORESOURCE_MEM, 0);
@@ -727,6 +812,7 @@ static int __devinit mv64x60_mc_err_probe(struct platform_device *pdev)
 	if (!devm_request_mem_region(&pdev->dev,
 				     r->start,
 				     r->end - r->start + 1,
+				     resource_size(r),
 				     pdata->name)) {
 		printk(KERN_ERR "%s: Error while requesting mem region\n",
 		       __func__);
@@ -737,6 +823,7 @@ static int __devinit mv64x60_mc_err_probe(struct platform_device *pdev)
 	pdata->mc_vbase = devm_ioremap(&pdev->dev,
 				       r->start,
 				       r->end - r->start + 1);
+				       resource_size(r));
 	if (!pdata->mc_vbase) {
 		printk(KERN_ERR "%s: Unable to setup MC err regs\n", __func__);
 		res = -ENOMEM;
@@ -748,10 +835,11 @@ static int __devinit mv64x60_mc_err_probe(struct platform_device *pdev)
 		/* Non-ECC RAM? */
 		printk(KERN_WARNING "%s: No ECC DIMMs discovered\n", __func__);
 		res = -ENODEV;
-		goto err2;
+		goto err;
 	}
 
 	debugf3("%s(): init mci\n", __func__);
+	edac_dbg(3, "init mci\n");
 	mci->mtype_cap = MEM_FLAG_RDDR | MEM_FLAG_DDR;
 	mci->edac_ctl_cap = EDAC_FLAG_NONE | EDAC_FLAG_SECDED;
 	mci->edac_cap = EDAC_FLAG_SECDED;
@@ -776,6 +864,9 @@ static int __devinit mv64x60_mc_err_probe(struct platform_device *pdev)
 
 	if (edac_mc_add_mc(mci)) {
 		debugf3("%s(): failed edac_mc_add_mc()\n", __func__);
+	res = edac_mc_add_mc(mci);
+	if (res) {
+		edac_dbg(3, "failed edac_mc_add_mc()\n");
 		goto err;
 	}
 
@@ -786,6 +877,7 @@ static int __devinit mv64x60_mc_err_probe(struct platform_device *pdev)
 				       pdata->irq,
 				       mv64x60_mc_isr,
 				       IRQF_DISABLED,
+				       0,
 				       "[EDAC] MC err",
 				       mci);
 		if (res < 0) {
@@ -801,6 +893,7 @@ static int __devinit mv64x60_mc_err_probe(struct platform_device *pdev)
 
 	/* get this far and it's successful */
 	debugf3("%s(): success\n", __func__);
+	edac_dbg(3, "success\n");
 
 	return 0;
 
@@ -817,6 +910,7 @@ static int mv64x60_mc_err_remove(struct platform_device *pdev)
 	struct mem_ctl_info *mci = platform_get_drvdata(pdev);
 
 	debugf0("%s()\n", __func__);
+	edac_dbg(0, "\n");
 
 	edac_mc_del_mc(&pdev->dev);
 	edac_mc_free(mci);

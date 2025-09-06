@@ -50,6 +50,16 @@ static struct hw_interrupt_type imask_irq_type = {
 };
 
 void static inline set_interrupt_registers(int ip)
+#include <linux/bitmap.h>
+#include <asm/irq.h>
+
+/* Bitmap of IRQ masked */
+#define IMASK_PRIORITY	15
+
+static DECLARE_BITMAP(imask_mask, IMASK_PRIORITY);
+static int interrupt_priority;
+
+static inline void set_interrupt_registers(int ip)
 {
 	unsigned long __dummy;
 
@@ -110,4 +120,35 @@ void make_imask_irq(unsigned int irq)
 	disable_irq_nosync(irq);
 	irq_desc[irq].chip = &imask_irq_type;
 	enable_irq(irq);
+static void mask_imask_irq(struct irq_data *data)
+{
+	unsigned int irq = data->irq;
+
+	clear_bit(irq, imask_mask);
+	if (interrupt_priority < IMASK_PRIORITY - irq)
+		interrupt_priority = IMASK_PRIORITY - irq;
+	set_interrupt_registers(interrupt_priority);
+}
+
+static void unmask_imask_irq(struct irq_data *data)
+{
+	unsigned int irq = data->irq;
+
+	set_bit(irq, imask_mask);
+	interrupt_priority = IMASK_PRIORITY -
+		find_first_zero_bit(imask_mask, IMASK_PRIORITY);
+	set_interrupt_registers(interrupt_priority);
+}
+
+static struct irq_chip imask_irq_chip = {
+	.name		= "SR.IMASK",
+	.irq_mask	= mask_imask_irq,
+	.irq_unmask	= unmask_imask_irq,
+	.irq_mask_ack	= mask_imask_irq,
+};
+
+void make_imask_irq(unsigned int irq)
+{
+	irq_set_chip_and_handler_name(irq, &imask_irq_chip, handle_level_irq,
+				      "level");
 }

@@ -50,5 +50,10 @@ struct spu_proxydma_info {
 	__u64 proxydma_info_status;
 	struct mfc_cq_sr proxydma_info_command_data[8];
 };
+#ifndef _SPU_INFO_H
+#define _SPU_INFO_H
+
+#include <asm/spu.h>
+#include <uapi/asm/spu_info.h>
 
 #endif

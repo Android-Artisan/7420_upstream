@@ -19,6 +19,7 @@ do_command()
 drop="generic um ppc sparc64 cris"
 
 archs=$(ls ${srctree}/arch)
+archs=${HDR_ARCH_LIST:-$(ls ${srctree}/arch)}
 
 for arch in ${archs}; do
 	case ${arch} in

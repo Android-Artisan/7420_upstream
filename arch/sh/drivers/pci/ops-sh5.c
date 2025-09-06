@@ -47,6 +47,9 @@ char * __devinit pcibios_setup(char *str)
 	return str;
 }
 
+#include <asm/io.h>
+#include "pci-sh5.h"
+
 static int sh5pci_read(struct pci_bus *bus, unsigned int devfn, int where,
 			int size, u32 *val)
 {

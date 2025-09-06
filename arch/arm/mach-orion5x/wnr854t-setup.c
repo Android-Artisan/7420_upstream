@@ -6,6 +6,7 @@
  * warranty of any kind, whether express or implied.
  */
 
+#include <linux/gpio.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/platform_device.h>
@@ -17,6 +18,8 @@
 #include <linux/ethtool.h>
 #include <asm/mach-types.h>
 #include <asm/gpio.h>
+#include <net/dsa.h>
+#include <asm/mach-types.h>
 #include <asm/mach/arch.h>
 #include <asm/mach/pci.h>
 #include <mach/orion5x.h>
@@ -45,6 +48,28 @@ static struct orion5x_mpp_mode wnr854t_mpp_modes[] __initdata = {
 	{ 18, MPP_GIGE },		/* GE_RXD[6] */
 	{ 19, MPP_GIGE },		/* GE_RXD[7] */
 	{ -1 },
+static unsigned int wnr854t_mpp_modes[] __initdata = {
+	MPP0_GPIO,		/* Power LED green (0=on) */
+	MPP1_GPIO,		/* Reset Button (0=off) */
+	MPP2_GPIO,		/* Power LED blink (0=off) */
+	MPP3_GPIO,		/* WAN Status LED amber (0=off) */
+	MPP4_GPIO,		/* PCI int */
+	MPP5_GPIO,		/* ??? */
+	MPP6_GPIO,		/* ??? */
+	MPP7_GPIO,		/* ??? */
+	MPP8_UNUSED,		/* ??? */
+	MPP9_GIGE,		/* GE_RXERR */
+	MPP10_UNUSED,		/* ??? */
+	MPP11_UNUSED,		/* ??? */
+	MPP12_GIGE,		/* GE_TXD[4] */
+	MPP13_GIGE,		/* GE_TXD[5] */
+	MPP14_GIGE,		/* GE_TXD[6] */
+	MPP15_GIGE,		/* GE_TXD[7] */
+	MPP16_GIGE,		/* GE_RXD[4] */
+	MPP17_GIGE,		/* GE_RXD[5] */
+	MPP18_GIGE,		/* GE_RXD[6] */
+	MPP19_GIGE,		/* GE_RXD[7] */
+	0,
 };
 
 /*
@@ -93,8 +118,23 @@ static struct platform_device wnr854t_nor_flash = {
 
 static struct mv643xx_eth_platform_data wnr854t_eth_data = {
 	.phy_addr	= -1,
+	.phy_addr	= MV643XX_ETH_PHY_NONE,
 	.speed		= SPEED_1000,
 	.duplex		= DUPLEX_FULL,
+};
+
+static struct dsa_chip_data wnr854t_switch_chip_data = {
+	.port_names[0] = "lan3",
+	.port_names[1] = "lan4",
+	.port_names[2] = "wan",
+	.port_names[3] = "cpu",
+	.port_names[5] = "lan1",
+	.port_names[7] = "lan2",
+};
+
+static struct dsa_platform_data wnr854t_switch_plat_data = {
+	.nr_chips	= 1,
+	.chip		= &wnr854t_switch_chip_data,
 };
 
 static void __init wnr854t_init(void)
@@ -118,6 +158,18 @@ static void __init wnr854t_init(void)
 }
 
 static int __init wnr854t_pci_map_irq(struct pci_dev *dev, u8 slot, u8 pin)
+	orion5x_eth_switch_init(&wnr854t_switch_plat_data, NO_IRQ);
+	orion5x_uart0_init();
+
+	mvebu_mbus_add_window_by_id(ORION_MBUS_DEVBUS_BOOT_TARGET,
+				    ORION_MBUS_DEVBUS_BOOT_ATTR,
+				    WNR854T_NOR_BOOT_BASE,
+				    WNR854T_NOR_BOOT_SIZE);
+	platform_device_register(&wnr854t_nor_flash);
+}
+
+static int __init wnr854t_pci_map_irq(const struct pci_dev *dev, u8 slot,
+	u8 pin)
 {
 	int irq;
 
@@ -164,4 +216,12 @@ MACHINE_START(WNR854T, "Netgear WNR854T")
 	.init_irq	= orion5x_init_irq,
 	.timer		= &orion5x_timer,
 	.fixup		= tag_fixup_mem32,
+	.atag_offset	= 0x100,
+	.init_machine	= wnr854t_init,
+	.map_io		= orion5x_map_io,
+	.init_early	= orion5x_init_early,
+	.init_irq	= orion5x_init_irq,
+	.init_time	= orion5x_timer_init,
+	.fixup		= tag_fixup_mem32,
+	.restart	= orion5x_restart,
 MACHINE_END

@@ -13,6 +13,7 @@
 #include <asm/mmu_context.h>
 #include <asm/tlbflush.h>
 
+#ifdef CONFIG_MN10300_TLB_USE_PIDR
 /*
  * list of the MMU contexts last allocated on each CPU
  */
@@ -47,6 +48,10 @@ void flush_tlb_page(struct vm_area_struct *vma, unsigned long addr)
 
 	local_irq_restore(flags);
 }
+	[0 ... NR_CPUS - 1] =
+	MMU_CONTEXT_FIRST_VERSION * 2 - (1 - MMU_CONTEXT_TLBPID_LOCK_NR),
+};
+#endif /* CONFIG_MN10300_TLB_USE_PIDR */
 
 /*
  * preemptively set a TLB entry
@@ -54,6 +59,10 @@ void flush_tlb_page(struct vm_area_struct *vma, unsigned long addr)
 void update_mmu_cache(struct vm_area_struct *vma, unsigned long addr, pte_t pte)
 {
 	unsigned long pteu, ptel, cnx, flags;
+void update_mmu_cache(struct vm_area_struct *vma, unsigned long addr, pte_t *ptep)
+{
+	unsigned long pteu, ptel, cnx, flags;
+	pte_t pte = *ptep;
 
 	addr &= PAGE_MASK;
 	ptel = pte_val(pte) & ~(xPTEL_UNUSED1 | xPTEL_UNUSED2);
@@ -66,6 +75,16 @@ void update_mmu_cache(struct vm_area_struct *vma, unsigned long addr, pte_t pte)
 
 	if (cnx != MMU_NO_CONTEXT) {
 		pteu = addr | (cnx & 0x000000ffUL);
+	cnx = ~MMU_NO_CONTEXT;
+#ifdef CONFIG_MN10300_TLB_USE_PIDR
+	cnx = mm_context(vma->vm_mm);
+#endif
+
+	if (cnx != MMU_NO_CONTEXT) {
+		pteu = addr;
+#ifdef CONFIG_MN10300_TLB_USE_PIDR
+		pteu |= cnx & MMU_CONTEXT_TLBPID_MASK;
+#endif
 		if (!(pte_val(pte) & _PAGE_NX)) {
 			IPTEU = pteu;
 			if (IPTEL & xPTEL_V)

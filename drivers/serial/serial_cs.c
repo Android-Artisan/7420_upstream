@@ -1,4 +1,3 @@
-/*======================================================================
 
     A driver for PCMCIA serial devices
 
@@ -29,7 +28,6 @@
     the provisions above, a recipient may use your version of this
     file under either the MPL or the GPL.
     
-======================================================================*/
 
 #include <linux/module.h>
 #include <linux/moduleparam.h>
@@ -63,7 +61,6 @@ static char *version = "serial_cs.c 1.134 2002/05/04 05:48:53 (David Hinds)";
 #define DEBUG(n, args...)
 #endif
 
-/*====================================================================*/
 
 /* Parameters that can be set with 'insmod' */
 
@@ -75,7 +72,6 @@ static int buggy_uart;
 module_param(do_sound, int, 0444);
 module_param(buggy_uart, int, 0444);
 
-/*====================================================================*/
 
 /* Table of multi-port card ID's */
 
@@ -271,12 +267,10 @@ static const struct serial_quirk quirks[] = {
 static int serial_config(struct pcmcia_device * link);
 
 
-/*======================================================================
 
     After a card is removed, serial_remove() will unregister
     the serial device(s), and release the PCMCIA configuration.
     
-======================================================================*/
 
 static void serial_remove(struct pcmcia_device *link)
 {
@@ -322,13 +316,11 @@ static int serial_resume(struct pcmcia_device *link)
 	return 0;
 }
 
-/*======================================================================
 
     serial_attach() creates an "instance" of the driver, allocating
     local data structures for one device.  The device is registered
     with Card Services.
 
-======================================================================*/
 
 static int serial_probe(struct pcmcia_device *link)
 {
@@ -357,14 +349,12 @@ static int serial_probe(struct pcmcia_device *link)
 	return serial_config(link);
 }
 
-/*======================================================================
 
     This deletes a driver "instance".  The device is de-registered
     with Card Services.  If it has been released, all local data
     structures are freed.  Otherwise, the structures will be freed
     when the device is released.
 
-======================================================================*/
 
 static void serial_detach(struct pcmcia_device *link)
 {
@@ -386,7 +376,6 @@ static void serial_detach(struct pcmcia_device *link)
 	kfree(info);
 }
 
-/*====================================================================*/
 
 static int setup_serial(struct pcmcia_device *handle, struct serial_info * info,
 			unsigned int iobase, int irq)
@@ -424,7 +413,6 @@ static int setup_serial(struct pcmcia_device *handle, struct serial_info * info,
 	return 0;
 }
 
-/*====================================================================*/
 
 static int
 first_tuple(struct pcmcia_device *handle, tuple_t * tuple, cisparse_t * parse)
@@ -452,7 +440,6 @@ next_tuple(struct pcmcia_device *handle, tuple_t * tuple, cisparse_t * parse)
 	return pcmcia_parse_tuple(handle, tuple, parse);
 }
 
-/*====================================================================*/
 
 static int simple_config(struct pcmcia_device *link)
 {
@@ -709,13 +696,11 @@ free_cfg_mem:
 	return rc;
 }
 
-/*======================================================================
 
     serial_config() is scheduled to run after a CARD_INSERTION event
     is received, to configure the PCMCIA socket, and to make the
     serial device available to the system.
 
-======================================================================*/
 
 static int serial_config(struct pcmcia_device * link)
 {

@@ -10,3 +10,13 @@ can-raw-objs		:= raw.o
 
 obj-$(CONFIG_CAN_BCM)	+= can-bcm.o
 can-bcm-objs		:= bcm.o
+can-y			:= af_can.o proc.o
+
+obj-$(CONFIG_CAN_RAW)	+= can-raw.o
+can-raw-y		:= raw.o
+
+obj-$(CONFIG_CAN_BCM)	+= can-bcm.o
+can-bcm-y		:= bcm.o
+
+obj-$(CONFIG_CAN_GW)	+= can-gw.o
+can-gw-y		:= gw.o

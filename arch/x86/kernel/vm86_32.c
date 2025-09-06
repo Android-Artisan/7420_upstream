@@ -31,6 +31,12 @@
 #include <linux/capability.h>
 #include <linux/errno.h>
 #include <linux/interrupt.h>
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
+#include <linux/capability.h>
+#include <linux/errno.h>
+#include <linux/interrupt.h>
+#include <linux/syscalls.h>
 #include <linux/sched.h>
 #include <linux/kernel.h>
 #include <linux/signal.h>
@@ -41,11 +47,15 @@
 #include <linux/ptrace.h>
 #include <linux/audit.h>
 #include <linux/stddef.h>
+#include <linux/slab.h>
+#include <linux/security.h>
 
 #include <asm/uaccess.h>
 #include <asm/io.h>
 #include <asm/tlbflush.h>
 #include <asm/irq.h>
+#include <asm/traps.h>
+#include <asm/vm86.h>
 
 /*
  * Known problems:
@@ -80,6 +90,8 @@
  */
 #define VFLAGS	(*(unsigned short *)&(current->thread.v86flags))
 #define VEFLAGS	(current->thread.v86flags)
+#define VFLAGS	(*(unsigned short *)&(current->thread.vm86->veflags))
+#define VEFLAGS	(current->thread.vm86->veflags)
 
 #define set_flags(X, new, mask) \
 ((X) = ((X) & ~(mask)) | ((new) & (mask)))
@@ -127,6 +139,13 @@ struct pt_regs *save_v86_state(struct kernel_vm86_regs *regs)
 	struct tss_struct *tss;
 	struct pt_regs *ret;
 	unsigned long tmp;
+void save_v86_state(struct kernel_vm86_regs *regs, int retval)
+{
+	struct tss_struct *tss;
+	struct task_struct *tsk = current;
+	struct vm86plus_struct __user *user;
+	struct vm86 *vm86 = current->thread.vm86;
+	long err = 0;
 
 	/*
 	 * This gets called from entry.S with interrupts disabled, but
@@ -160,6 +179,57 @@ struct pt_regs *save_v86_state(struct kernel_vm86_regs *regs)
 	loadsegment(gs, current->thread.saved_gs);
 
 	return ret;
+	if (!vm86 || !vm86->user_vm86) {
+		pr_alert("no user_vm86: BAD\n");
+		do_exit(SIGSEGV);
+	}
+	set_flags(regs->pt.flags, VEFLAGS, X86_EFLAGS_VIF | vm86->veflags_mask);
+	user = vm86->user_vm86;
+
+	if (!access_ok(VERIFY_WRITE, user, vm86->vm86plus.is_vm86pus ?
+		       sizeof(struct vm86plus_struct) :
+		       sizeof(struct vm86_struct))) {
+		pr_alert("could not access userspace vm86 info\n");
+		do_exit(SIGSEGV);
+	}
+
+	put_user_try {
+		put_user_ex(regs->pt.bx, &user->regs.ebx);
+		put_user_ex(regs->pt.cx, &user->regs.ecx);
+		put_user_ex(regs->pt.dx, &user->regs.edx);
+		put_user_ex(regs->pt.si, &user->regs.esi);
+		put_user_ex(regs->pt.di, &user->regs.edi);
+		put_user_ex(regs->pt.bp, &user->regs.ebp);
+		put_user_ex(regs->pt.ax, &user->regs.eax);
+		put_user_ex(regs->pt.ip, &user->regs.eip);
+		put_user_ex(regs->pt.cs, &user->regs.cs);
+		put_user_ex(regs->pt.flags, &user->regs.eflags);
+		put_user_ex(regs->pt.sp, &user->regs.esp);
+		put_user_ex(regs->pt.ss, &user->regs.ss);
+		put_user_ex(regs->es, &user->regs.es);
+		put_user_ex(regs->ds, &user->regs.ds);
+		put_user_ex(regs->fs, &user->regs.fs);
+		put_user_ex(regs->gs, &user->regs.gs);
+
+		put_user_ex(vm86->screen_bitmap, &user->screen_bitmap);
+	} put_user_catch(err);
+	if (err) {
+		pr_alert("could not access userspace vm86 info\n");
+		do_exit(SIGSEGV);
+	}
+
+	tss = &per_cpu(cpu_tss, get_cpu());
+	tsk->thread.sp0 = vm86->saved_sp0;
+	tsk->thread.sysenter_cs = __KERNEL_CS;
+	load_sp0(tss, &tsk->thread);
+	vm86->saved_sp0 = 0;
+	put_cpu();
+
+	memcpy(&regs->pt, &vm86->regs32, sizeof(struct pt_regs));
+
+	lazy_load_gs(vm86->regs32.gs);
+
+	regs->pt.ax = retval;
 }
 
 static void mark_screen_rdonly(struct mm_struct *mm)
@@ -171,6 +241,7 @@ static void mark_screen_rdonly(struct mm_struct *mm)
 	spinlock_t *ptl;
 	int i;
 
+	down_write(&mm->mmap_sem);
 	pgd = pgd_offset(mm, 0xA0000);
 	if (pgd_none_or_clear_bad(pgd))
 		goto out;
@@ -178,6 +249,7 @@ static void mark_screen_rdonly(struct mm_struct *mm)
 	if (pud_none_or_clear_bad(pud))
 		goto out;
 	pmd = pmd_offset(pud, 0xA0000);
+	split_huge_page_pmd_mm(mm, 0xA0000, pmd);
 	if (pmd_none_or_clear_bad(pmd))
 		goto out;
 	pte = pte_offset_map_lock(mm, pmd, 0xA0000, &ptl);
@@ -188,7 +260,8 @@ static void mark_screen_rdonly(struct mm_struct *mm)
 	}
 	pte_unmap_unlock(pte, ptl);
 out:
-	flush_tlb();
+	up_write(&mm->mmap_sem);
+	flush_tlb_mm_range(mm, 0xA0000, 0xA0000 + 32*PAGE_SIZE, 0UL);
 }
 
 
@@ -239,12 +312,24 @@ asmlinkage int sys_vm86(struct pt_regs regs)
 
 	tsk = current;
 	switch (regs.bx) {
+static long do_sys_vm86(struct vm86plus_struct __user *user_vm86, bool plus);
+
+SYSCALL_DEFINE1(vm86old, struct vm86_struct __user *, user_vm86)
+{
+	return do_sys_vm86((struct vm86plus_struct __user *) user_vm86, false);
+}
+
+
+SYSCALL_DEFINE2(vm86, unsigned long, cmd, unsigned long, arg)
+{
+	switch (cmd) {
 	case VM86_REQUEST_IRQ:
 	case VM86_FREE_IRQ:
 	case VM86_GET_IRQ_BITS:
 	case VM86_GET_AND_RESET_IRQ:
 		ret = do_vm86_irq_handling(regs.bx, (int)regs.cx);
 		goto out;
+		return do_vm86_irq_handling(cmd, (int)arg);
 	case VM86_PLUS_INSTALL_CHECK:
 		/*
 		 * NOTE: on old vm86 stuff this will return the error
@@ -290,6 +375,110 @@ static void do_sys_vm86(struct kernel_vm86_struct *info, struct task_struct *tsk
 /* we are clearing gs later just before "jmp resume_userspace",
  * because it is not saved/restored.
  */
+		return 0;
+	}
+
+	/* we come here only for functions VM86_ENTER, VM86_ENTER_NO_BYPASS */
+	return do_sys_vm86((struct vm86plus_struct __user *) arg, true);
+}
+
+
+static long do_sys_vm86(struct vm86plus_struct __user *user_vm86, bool plus)
+{
+	struct tss_struct *tss;
+	struct task_struct *tsk = current;
+	struct vm86 *vm86 = tsk->thread.vm86;
+	struct kernel_vm86_regs vm86regs;
+	struct pt_regs *regs = current_pt_regs();
+	unsigned long err = 0;
+
+	err = security_mmap_addr(0);
+	if (err) {
+		/*
+		 * vm86 cannot virtualize the address space, so vm86 users
+		 * need to manage the low 1MB themselves using mmap.  Given
+		 * that BIOS places important data in the first page, vm86
+		 * is essentially useless if mmap_min_addr != 0.  DOSEMU,
+		 * for example, won't even bother trying to use vm86 if it
+		 * can't map a page at virtual address 0.
+		 *
+		 * To reduce the available kernel attack surface, simply
+		 * disallow vm86(old) for users who cannot mmap at va 0.
+		 *
+		 * The implementation of security_mmap_addr will allow
+		 * suitably privileged users to map va 0 even if
+		 * vm.mmap_min_addr is set above 0, and we want this
+		 * behavior for vm86 as well, as it ensures that legacy
+		 * tools like vbetool will not fail just because of
+		 * vm.mmap_min_addr.
+		 */
+		pr_info_once("Denied a call to vm86(old) from %s[%d] (uid: %d).  Set the vm.mmap_min_addr sysctl to 0 and/or adjust LSM mmap_min_addr policy to enable vm86 if you are using a vm86-based DOS emulator.\n",
+			     current->comm, task_pid_nr(current),
+			     from_kuid_munged(&init_user_ns, current_uid()));
+		return -EPERM;
+	}
+
+	if (!vm86) {
+		if (!(vm86 = kzalloc(sizeof(*vm86), GFP_KERNEL)))
+			return -ENOMEM;
+		tsk->thread.vm86 = vm86;
+	}
+	if (vm86->saved_sp0)
+		return -EPERM;
+
+	if (!access_ok(VERIFY_READ, user_vm86, plus ?
+		       sizeof(struct vm86_struct) :
+		       sizeof(struct vm86plus_struct)))
+		return -EFAULT;
+
+	memset(&vm86regs, 0, sizeof(vm86regs));
+	get_user_try {
+		unsigned short seg;
+		get_user_ex(vm86regs.pt.bx, &user_vm86->regs.ebx);
+		get_user_ex(vm86regs.pt.cx, &user_vm86->regs.ecx);
+		get_user_ex(vm86regs.pt.dx, &user_vm86->regs.edx);
+		get_user_ex(vm86regs.pt.si, &user_vm86->regs.esi);
+		get_user_ex(vm86regs.pt.di, &user_vm86->regs.edi);
+		get_user_ex(vm86regs.pt.bp, &user_vm86->regs.ebp);
+		get_user_ex(vm86regs.pt.ax, &user_vm86->regs.eax);
+		get_user_ex(vm86regs.pt.ip, &user_vm86->regs.eip);
+		get_user_ex(seg, &user_vm86->regs.cs);
+		vm86regs.pt.cs = seg;
+		get_user_ex(vm86regs.pt.flags, &user_vm86->regs.eflags);
+		get_user_ex(vm86regs.pt.sp, &user_vm86->regs.esp);
+		get_user_ex(seg, &user_vm86->regs.ss);
+		vm86regs.pt.ss = seg;
+		get_user_ex(vm86regs.es, &user_vm86->regs.es);
+		get_user_ex(vm86regs.ds, &user_vm86->regs.ds);
+		get_user_ex(vm86regs.fs, &user_vm86->regs.fs);
+		get_user_ex(vm86regs.gs, &user_vm86->regs.gs);
+
+		get_user_ex(vm86->flags, &user_vm86->flags);
+		get_user_ex(vm86->screen_bitmap, &user_vm86->screen_bitmap);
+		get_user_ex(vm86->cpu_type, &user_vm86->cpu_type);
+	} get_user_catch(err);
+	if (err)
+		return err;
+
+	if (copy_from_user(&vm86->int_revectored,
+			   &user_vm86->int_revectored,
+			   sizeof(struct revectored_struct)))
+		return -EFAULT;
+	if (copy_from_user(&vm86->int21_revectored,
+			   &user_vm86->int21_revectored,
+			   sizeof(struct revectored_struct)))
+		return -EFAULT;
+	if (plus) {
+		if (copy_from_user(&vm86->vm86plus, &user_vm86->vm86plus,
+				   sizeof(struct vm86plus_info_struct)))
+			return -EFAULT;
+		vm86->vm86plus.is_vm86pus = 1;
+	} else
+		memset(&vm86->vm86plus, 0,
+		       sizeof(struct vm86plus_info_struct));
+
+	memcpy(&vm86->regs32, regs, sizeof(struct pt_regs));
+	vm86->user_vm86 = user_vm86;
 
 /*
  * The flags register is also special: we cannot trust that the user
@@ -313,6 +502,25 @@ static void do_sys_vm86(struct kernel_vm86_struct *info, struct task_struct *tsk
 		break;
 	default:
 		tsk->thread.v86mask = X86_EFLAGS_ID | X86_EFLAGS_AC | X86_EFLAGS_NT | X86_EFLAGS_IOPL;
+	VEFLAGS = vm86regs.pt.flags;
+	vm86regs.pt.flags &= SAFE_MASK;
+	vm86regs.pt.flags |= regs->flags & ~SAFE_MASK;
+	vm86regs.pt.flags |= X86_VM_MASK;
+
+	vm86regs.pt.orig_ax = regs->orig_ax;
+
+	switch (vm86->cpu_type) {
+	case CPU_286:
+		vm86->veflags_mask = 0;
+		break;
+	case CPU_386:
+		vm86->veflags_mask = X86_EFLAGS_NT | X86_EFLAGS_IOPL;
+		break;
+	case CPU_486:
+		vm86->veflags_mask = X86_EFLAGS_AC | X86_EFLAGS_NT | X86_EFLAGS_IOPL;
+		break;
+	default:
+		vm86->veflags_mask = X86_EFLAGS_ID | X86_EFLAGS_AC | X86_EFLAGS_NT | X86_EFLAGS_IOPL;
 		break;
 	}
 
@@ -326,8 +534,18 @@ static void do_sys_vm86(struct kernel_vm86_struct *info, struct task_struct *tsk
 
 	tss = &per_cpu(init_tss, get_cpu());
 	tsk->thread.sp0 = (unsigned long) &info->VM86_TSS_ESP0;
-	if (cpu_has_sep)
+ * Save old state
+ */
+	vm86->saved_sp0 = tsk->thread.sp0;
+	lazy_save_gs(vm86->regs32.gs);
+
+	tss = &per_cpu(cpu_tss, get_cpu());
+	/* make room for real-mode segments */
+	tsk->thread.sp0 += 16;
+
+	if (static_cpu_has(X86_FEATURE_SEP))
 		tsk->thread.sysenter_cs = 0;
+
 	load_sp0(tss, &tsk->thread);
 	put_cpu();
 
@@ -359,6 +577,12 @@ static inline void return_to_32bit(struct kernel_vm86_regs *regs16, int retval)
 		"movl %1,%%ebp\n\t"
 		"jmp resume_userspace"
 		: : "r" (regs32), "r" (current_thread_info()));
+	if (vm86->flags & VM86_SCREEN_BITMAP)
+		mark_screen_rdonly(tsk->mm);
+
+	memcpy((struct kernel_vm86_regs *)regs, &vm86regs, sizeof(vm86regs));
+	force_iret();
+	return regs->ax;
 }
 
 static inline void set_IF(struct kernel_vm86_regs *regs)
@@ -398,6 +622,7 @@ static inline void clear_AC(struct kernel_vm86_regs *regs)
 static inline void set_vflags_long(unsigned long flags, struct kernel_vm86_regs *regs)
 {
 	set_flags(VEFLAGS, flags, current->thread.v86mask);
+	set_flags(VEFLAGS, flags, current->thread.vm86->veflags_mask);
 	set_flags(regs->pt.flags, flags, SAFE_MASK);
 	if (flags & X86_EFLAGS_IF)
 		set_IF(regs);
@@ -408,6 +633,7 @@ static inline void set_vflags_long(unsigned long flags, struct kernel_vm86_regs 
 static inline void set_vflags_short(unsigned short flags, struct kernel_vm86_regs *regs)
 {
 	set_flags(VFLAGS, flags, current->thread.v86mask);
+	set_flags(VFLAGS, flags, current->thread.vm86->veflags_mask);
 	set_flags(regs->pt.flags, flags, SAFE_MASK);
 	if (flags & X86_EFLAGS_IF)
 		set_IF(regs);
@@ -423,6 +649,7 @@ static inline unsigned long get_vflags(struct kernel_vm86_regs *regs)
 		flags |= X86_EFLAGS_IF;
 	flags |= X86_EFLAGS_IOPL;
 	return flags | (VEFLAGS & current->thread.v86mask);
+	return flags | (VEFLAGS & current->thread.vm86->veflags_mask);
 }
 
 static inline int is_revectored(int nr, struct revectored_struct *bitmap)
@@ -526,6 +753,13 @@ static void do_int(struct kernel_vm86_regs *regs, int i,
 	if (is_revectored(i, &KVM86->int_revectored))
 		goto cannot_handle;
 	if (i == 0x21 && is_revectored(AH(regs), &KVM86->int21_revectored))
+	struct vm86 *vm86 = current->thread.vm86;
+
+	if (regs->pt.cs == BIOSSEG)
+		goto cannot_handle;
+	if (is_revectored(i, &vm86->int_revectored))
+		goto cannot_handle;
+	if (i == 0x21 && is_revectored(AH(regs), &vm86->int21_revectored))
 		goto cannot_handle;
 	intr_ptr = (unsigned long __user *) (i << 2);
 	if (get_user(segoffs, intr_ptr))
@@ -545,6 +779,7 @@ static void do_int(struct kernel_vm86_regs *regs, int i,
 
 cannot_handle:
 	return_to_32bit(regs, VM86_INTx + (i << 8));
+	save_v86_state(regs, VM86_INTx + (i << 8));
 }
 
 int handle_vm86_trap(struct kernel_vm86_regs *regs, long error_code, int trapno)
@@ -552,12 +787,20 @@ int handle_vm86_trap(struct kernel_vm86_regs *regs, long error_code, int trapno)
 	if (VMPI.is_vm86pus) {
 		if ((trapno == 3) || (trapno == 1))
 			return_to_32bit(regs, VM86_TRAP + (trapno << 8));
+	struct vm86 *vm86 = current->thread.vm86;
+
+	if (vm86->vm86plus.is_vm86pus) {
+		if ((trapno == 3) || (trapno == 1)) {
+			save_v86_state(regs, VM86_TRAP + (trapno << 8));
+			return 0;
+		}
 		do_int(regs, trapno, (unsigned char __user *) (regs->pt.ss << 4), SP(regs));
 		return 0;
 	}
 	if (trapno != 1)
 		return 1; /* we let this handle by the calling routine */
 	current->thread.trap_no = trapno;
+	current->thread.trap_nr = trapno;
 	current->thread.error_code = error_code;
 	force_sig(SIGTRAP, current);
 	return 0;
@@ -580,6 +823,11 @@ void handle_vm86_fault(struct kernel_vm86_regs *regs, long error_code)
 	if (orig_flags & X86_EFLAGS_TF) \
 		handle_vm86_trap(regs, 0, 1); \
 	return; } while (0)
+	struct vm86plus_info_struct *vmpi = &current->thread.vm86->vm86plus;
+
+#define CHECK_IF_IN_TRAP \
+	if (vmpi->vm86dbg_active && vmpi->vm86dbg_TFpendig) \
+		newflags |= X86_EFLAGS_TF
 
 	orig_flags = *(unsigned short *)&regs->pt.flags;
 
@@ -619,6 +867,7 @@ void handle_vm86_fault(struct kernel_vm86_regs *regs, long error_code)
 		}
 		IP(regs) = ip;
 		VM86_FAULT_RETURN;
+		goto vm86_fault_return;
 
 	/* popf */
 	case 0x9d:
@@ -639,6 +888,7 @@ void handle_vm86_fault(struct kernel_vm86_regs *regs, long error_code)
 			set_vflags_short(newflags, regs);
 
 		VM86_FAULT_RETURN;
+		goto check_vip;
 		}
 
 	/* int xx */
@@ -648,6 +898,11 @@ void handle_vm86_fault(struct kernel_vm86_regs *regs, long error_code)
 		if (VMPI.vm86dbg_active) {
 			if ((1 << (intno & 7)) & VMPI.vm86dbg_intxxtab[intno >> 3])
 				return_to_32bit(regs, VM86_INTx + (intno << 8));
+		if (vmpi->vm86dbg_active) {
+			if ((1 << (intno & 7)) & vmpi->vm86dbg_intxxtab[intno >> 3]) {
+				save_v86_state(regs, VM86_INTx + (intno << 8));
+				return;
+			}
 		}
 		do_int(regs, intno, ssp, sp);
 		return;
@@ -679,6 +934,7 @@ void handle_vm86_fault(struct kernel_vm86_regs *regs, long error_code)
 			set_vflags_short(newflags, regs);
 		}
 		VM86_FAULT_RETURN;
+		goto check_vip;
 		}
 
 	/* cli */
@@ -686,6 +942,7 @@ void handle_vm86_fault(struct kernel_vm86_regs *regs, long error_code)
 		IP(regs) = ip;
 		clear_IF(regs);
 		VM86_FAULT_RETURN;
+		goto vm86_fault_return;
 
 	/* sti */
 	/*
@@ -701,8 +958,28 @@ void handle_vm86_fault(struct kernel_vm86_regs *regs, long error_code)
 
 	default:
 		return_to_32bit(regs, VM86_UNKNOWN);
+		goto check_vip;
+
+	default:
+		save_v86_state(regs, VM86_UNKNOWN);
 	}
 
+	return;
+
+check_vip:
+	if ((VEFLAGS & (X86_EFLAGS_VIP | X86_EFLAGS_VIF)) ==
+	    (X86_EFLAGS_VIP | X86_EFLAGS_VIF)) {
+		save_v86_state(regs, VM86_STI);
+		return;
+	}
+
+vm86_fault_return:
+	if (vmpi->force_return_for_pic  && (VEFLAGS & (X86_EFLAGS_IF | X86_EFLAGS_VIF))) {
+		save_v86_state(regs, VM86_PICRETURN);
+		return;
+	}
+	if (orig_flags & X86_EFLAGS_TF)
+		handle_vm86_trap(regs, 0, X86_TRAP_DB);
 	return;
 
 simulate_sigsegv:
@@ -717,6 +994,7 @@ simulate_sigsegv:
 	 *        get the information? [KD]
 	 */
 	return_to_32bit(regs, VM86_UNKNOWN);
+	save_v86_state(regs, VM86_UNKNOWN);
 }
 
 /* ---------------- vm86 special IRQ passing stuff ----------------- */

@@ -198,6 +198,10 @@ See fs/inotify.c and fs/inotify_user.c for the locking and lifetime rules.
 
 
 (vi) Rationale
+Document updated 4 Jan 2015 by Zhang Zhen <zhenzhang.zhang@huawei.com>
+	--Deleted obsoleted interface, just refer to manpages for user interface.
+
+(i) Rationale
 
 Q: What is the design decision behind not tying the watch to the open fd of
    the watched object?

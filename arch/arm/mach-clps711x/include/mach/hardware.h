@@ -33,6 +33,22 @@
  * processors are in use.
  */
 #ifndef CONFIG_EP72XX_ROM_BOOT
+#ifndef __MACH_HARDWARE_H
+#define __MACH_HARDWARE_H
+
+#include <mach/clps711x.h>
+
+#define CLPS711X_VIRT_BASE	IOMEM(0xfeff0000)
+
+#ifndef __ASSEMBLY__
+#define clps_readb(off)		readb(CLPS711X_VIRT_BASE + (off))
+#define clps_readw(off)		readw(CLPS711X_VIRT_BASE + (off))
+#define clps_readl(off)		readl(CLPS711X_VIRT_BASE + (off))
+#define clps_writeb(val,off)	writeb(val, CLPS711X_VIRT_BASE + (off))
+#define clps_writew(val,off)	writew(val, CLPS711X_VIRT_BASE + (off))
+#define clps_writel(val,off)	writel(val, CLPS711X_VIRT_BASE + (off))
+#endif
+
 #define CS0_PHYS_BASE		(0x00000000)
 #define CS1_PHYS_BASE		(0x10000000)
 #define CS2_PHYS_BASE		(0x20000000)
@@ -233,5 +249,11 @@
 // Black button
 #define CEIVA_PB0_BLK_BTN	(1<<0)
 #endif // #if defined (CONFIG_ARCH_CEIVA)
+
+#define CLPS711X_SRAM_BASE	CS6_PHYS_BASE
+#define CLPS711X_SRAM_SIZE	(48 * 1024)
+
+#define CLPS711X_SDRAM0_BASE	(0xc0000000)
+#define CLPS711X_SDRAM1_BASE	(0xd0000000)
 
 #endif

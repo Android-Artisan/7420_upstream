@@ -25,6 +25,9 @@
  * along with this program; if not, see the file COPYING, or write
  * to the Free Software Foundation, Inc.,
  * 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+ * Copyright 2007-2009 Analog Devices Inc.
+ *
+ * Licensed under the GPL-2 or later.
  */
 
 /*
@@ -95,6 +98,11 @@
 	sti r0;
 #else
 	cli r0;
+#endif
+#ifdef CONFIG_TRACE_IRQFLAGS
+	sp += -12;
+	call _trace_hardirqs_off;
+	sp += 12;
 #endif
 	[--sp] = RETI;  /*orig_pc*/
 	/* Clear all L registers.  */
@@ -226,6 +234,10 @@
 #ifdef CONFIG_KGDB
 	r1.l = lo(IPEND);
 	r1.h = hi(IPEND);
+#ifdef CONFIG_DEBUG_KERNEL
+	p1.l = lo(IPEND);
+	p1.h = hi(IPEND);
+	r1 = [p1];
 	[--sp] = r1;
 #else
 	[--sp] = r0;	/* Skip IPEND as well. */
@@ -306,6 +318,23 @@
 	p0.h = _irq_flags;
 	p0.l = _irq_flags;
 	r0 = [p0];
+
+#ifdef CONFIG_TRACE_IRQFLAGS
+	sp += -12;
+	call _trace_hardirqs_on;
+	sp += 12;
+#endif
+
+	RETS = [sp++];
+
+#ifdef CONFIG_SMP
+	GET_PDA(p0, r0);
+	r0 = [p0 + PDA_IRQFLAGS];
+#else
+	p0.h = _bfin_irq_flags;
+	p0.l = _bfin_irq_flags;
+	r0 = [p0];
+#endif
 	sti r0;
 
 	sp += 4;	/* Skip Reserved */
@@ -352,4 +381,61 @@
 	SYSCFG = [sp++];
 	csync;
 .endm
+
+.macro save_context_cplb
+	[--sp] = (R7:0, P5:0);
+	[--sp] = fp;
+
+	[--sp] = a0.x;
+	[--sp] = a0.w;
+	[--sp] = a1.x;
+	[--sp] = a1.w;
+
+	[--sp] = LC0;
+	[--sp] = LC1;
+	[--sp] = LT0;
+	[--sp] = LT1;
+	[--sp] = LB0;
+	[--sp] = LB1;
+
+	[--sp] = RETS;
+.endm
+
+.macro restore_context_cplb
+	RETS = [sp++];
+
+	LB1 = [sp++];
+	LB0 = [sp++];
+	LT1 = [sp++];
+	LT0 = [sp++];
+	LC1 = [sp++];
+	LC0 = [sp++];
+
+	a1.w = [sp++];
+	a1.x = [sp++];
+	a0.w = [sp++];
+	a0.x = [sp++];
+
+	fp = [sp++];
+
+	(R7:0, P5:0) = [SP++];
+.endm
+
+.macro pseudo_long_call func:req, scratch:req
+#ifdef CONFIG_ROMKERNEL
+	\scratch\().l = \func;
+	\scratch\().h = \func;
+	call (\scratch);
+#else
+	call \func;
+#endif
+.endm
+
+#if defined(CONFIG_BFIN_SCRATCH_REG_RETN)
+# define EX_SCRATCH_REG RETN
+#elif defined(CONFIG_BFIN_SCRATCH_REG_RETE)
+# define EX_SCRATCH_REG RETE
+#else
+# define EX_SCRATCH_REG CYCLES
+#endif
 

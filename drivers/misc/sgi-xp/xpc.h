@@ -4,6 +4,7 @@
  * for more details.
  *
  * Copyright (c) 2004-2008 Silicon Graphics, Inc.  All Rights Reserved.
+ * Copyright (c) 2004-2009 Silicon Graphics, Inc.  All Rights Reserved.
  */
 
 /*
@@ -100,6 +101,21 @@ struct xpc_rsvd_page {
 };
 
 #define XPC_RP_VERSION _XPC_VERSION(2, 0) /* version 2.0 of the reserved page */
+	unsigned long ts_jiffies; /* timestamp when rsvd pg was setup by XPC */
+	union {
+		struct {
+			unsigned long vars_pa;	/* phys addr */
+		} sn2;
+		struct {
+			unsigned long heartbeat_gpa; /* phys addr */
+			unsigned long activate_gru_mq_desc_gpa; /* phys addr */
+		} uv;
+	} sn;
+	u64 pad2[9];		/* align to last u64 in 2nd 64-byte cacheline */
+	u64 SAL_nasids_size;	/* SAL: size of each nasid mask in bytes */
+};
+
+#define XPC_RP_VERSION _XPC_VERSION(3, 0) /* version 3.0 of the reserved page */
 
 /*
  * Define the structures by which XPC variables can be exported to other
@@ -185,6 +201,37 @@ struct xpc_vars_part_sn2 {
  * heartbeat, partition active state, and channel state. This is UV only.
  */
 struct xpc_activate_mq_msghdr_uv {
+
+/*
+ * The following structure describes the partition's heartbeat info which
+ * will be periodically read by other partitions to determine whether this
+ * XPC is still 'alive'.
+ */
+struct xpc_heartbeat_uv {
+	unsigned long value;
+	unsigned long offline;	/* if 0, heartbeat should be changing */
+};
+
+/*
+ * Info pertinent to a GRU message queue using a watch list for irq generation.
+ */
+struct xpc_gru_mq_uv {
+	void *address;		/* address of GRU message queue */
+	unsigned int order;	/* size of GRU message queue as a power of 2 */
+	int irq;		/* irq raised when message is received in mq */
+	int mmr_blade;		/* blade where watchlist was allocated from */
+	unsigned long mmr_offset; /* offset of irq mmr located on mmr_blade */
+	unsigned long mmr_value; /* value of irq mmr located on mmr_blade */
+	int watchlist_num;	/* number of watchlist allocatd by BIOS */
+	void *gru_mq_desc;	/* opaque structure used by the GRU driver */
+};
+
+/*
+ * The activate_mq is used to send/receive GRU messages that affect XPC's
+ * partition active state and channel state. This is uv only.
+ */
+struct xpc_activate_mq_msghdr_uv {
+	unsigned int gru_msg_hdr; /* FOR GRU INTERNAL USE ONLY */
 	short partid;		/* sender's partid */
 	u8 act_state;		/* sender's act_state at time msg sent */
 	u8 type;		/* message's type */
@@ -208,6 +255,18 @@ struct xpc_activate_mq_msghdr_uv {
 #define XPC_ACTIVATE_MQ_MSG_MARK_ENGAGED_UV		10
 #define XPC_ACTIVATE_MQ_MSG_MARK_DISENGAGED_UV		11
 
+#define XPC_ACTIVATE_MQ_MSG_ACTIVATE_REQ_UV		1
+#define XPC_ACTIVATE_MQ_MSG_DEACTIVATE_REQ_UV		2
+
+#define XPC_ACTIVATE_MQ_MSG_CHCTL_CLOSEREQUEST_UV	3
+#define XPC_ACTIVATE_MQ_MSG_CHCTL_CLOSEREPLY_UV		4
+#define XPC_ACTIVATE_MQ_MSG_CHCTL_OPENREQUEST_UV	5
+#define XPC_ACTIVATE_MQ_MSG_CHCTL_OPENREPLY_UV		6
+#define XPC_ACTIVATE_MQ_MSG_CHCTL_OPENCOMPLETE_UV	7
+
+#define XPC_ACTIVATE_MQ_MSG_MARK_ENGAGED_UV		8
+#define XPC_ACTIVATE_MQ_MSG_MARK_DISENGAGED_UV		9
+
 struct xpc_activate_mq_msg_uv {
 	struct xpc_activate_mq_msghdr_uv hdr;
 };
@@ -221,6 +280,11 @@ struct xpc_activate_mq_msg_activate_req_uv {
 	struct xpc_activate_mq_msghdr_uv hdr;
 	unsigned long rp_gpa;
 	unsigned long activate_mq_gpa;
+struct xpc_activate_mq_msg_activate_req_uv {
+	struct xpc_activate_mq_msghdr_uv hdr;
+	unsigned long rp_gpa;
+	unsigned long heartbeat_gpa;
+	unsigned long activate_gru_mq_desc_gpa;
 };
 
 struct xpc_activate_mq_msg_deactivate_req_uv {
@@ -252,6 +316,12 @@ struct xpc_activate_mq_msg_chctl_openreply_uv {
 	short remote_nentries;	/* ??? Is this needed? What is? */
 	short local_nentries;	/* ??? Is this needed? What is? */
 	unsigned long local_notify_mq_gpa;
+	unsigned long notify_gru_mq_desc_gpa;
+};
+
+struct xpc_activate_mq_msg_chctl_opencomplete_uv {
+	struct xpc_activate_mq_msghdr_uv hdr;
+	short ch_number;
 };
 
 /*
@@ -503,6 +573,12 @@ struct xpc_channel_uv {
 
 	struct xpc_send_msg_slot_uv *send_msg_slots;
 	struct xpc_notify_mq_msg_uv *recv_msg_slots;
+	void *cached_notify_gru_mq_desc; /* remote partition's notify mq's */
+					 /* gru mq descriptor */
+
+	struct xpc_send_msg_slot_uv *send_msg_slots;
+	void *recv_msg_slots;	/* each slot will hold a xpc_notify_mq_msg_uv */
+				/* structure plus the user's payload */
 
 	struct xpc_fifo_head_uv msg_slot_free_list;
 	struct xpc_fifo_head_uv recv_msg_list;	/* deliverable payloads */
@@ -582,6 +658,32 @@ struct xpc_channel {
 #define	XPC_C_DISCONNECTINGCALLOUT_MADE \
 				0x00020000 /* disconnecting callout completed */
 #define	XPC_C_WDISCONNECT	0x00040000  /* waiting for channel disconnect */
+#define XPC_C_ROPENCOMPLETE	0x00000002    /* remote open channel complete */
+#define XPC_C_OPENCOMPLETE	0x00000004     /* local open channel complete */
+#define	XPC_C_ROPENREPLY	0x00000008	/* remote open channel reply */
+#define	XPC_C_OPENREPLY		0x00000010	/* local open channel reply */
+#define	XPC_C_ROPENREQUEST	0x00000020     /* remote open channel request */
+#define	XPC_C_OPENREQUEST	0x00000040	/* local open channel request */
+
+#define	XPC_C_SETUP		0x00000080 /* channel's msgqueues are alloc'd */
+#define	XPC_C_CONNECTEDCALLOUT	0x00000100     /* connected callout initiated */
+#define	XPC_C_CONNECTEDCALLOUT_MADE \
+				0x00000200     /* connected callout completed */
+#define	XPC_C_CONNECTED		0x00000400	/* local channel is connected */
+#define	XPC_C_CONNECTING	0x00000800	/* channel is being connected */
+
+#define	XPC_C_RCLOSEREPLY	0x00001000	/* remote close channel reply */
+#define	XPC_C_CLOSEREPLY	0x00002000	/* local close channel reply */
+#define	XPC_C_RCLOSEREQUEST	0x00004000    /* remote close channel request */
+#define	XPC_C_CLOSEREQUEST	0x00008000     /* local close channel request */
+
+#define	XPC_C_DISCONNECTED	0x00010000	/* channel is disconnected */
+#define	XPC_C_DISCONNECTING	0x00020000   /* channel is being disconnected */
+#define	XPC_C_DISCONNECTINGCALLOUT \
+				0x00040000 /* disconnecting callout initiated */
+#define	XPC_C_DISCONNECTINGCALLOUT_MADE \
+				0x00080000 /* disconnecting callout completed */
+#define	XPC_C_WDISCONNECT	0x00100000  /* waiting for channel disconnect */
 
 /*
  * The channel control flags (chctl) union consists of a 64-bit variable which
@@ -605,6 +707,13 @@ union xpc_channel_ctl_flags {
 #define XPC_OPENCLOSE_CHCTL_FLAGS \
 			(XPC_CHCTL_CLOSEREQUEST | XPC_CHCTL_CLOSEREPLY | \
 			 XPC_CHCTL_OPENREQUEST | XPC_CHCTL_OPENREPLY)
+#define XPC_CHCTL_OPENCOMPLETE	0x10
+#define	XPC_CHCTL_MSGREQUEST	0x20
+
+#define XPC_OPENCLOSE_CHCTL_FLAGS \
+			(XPC_CHCTL_CLOSEREQUEST | XPC_CHCTL_CLOSEREPLY | \
+			 XPC_CHCTL_OPENREQUEST | XPC_CHCTL_OPENREPLY | \
+			 XPC_CHCTL_OPENCOMPLETE)
 #define XPC_MSG_CHCTL_FLAGS	XPC_CHCTL_MSGREQUEST
 
 static inline int
@@ -671,6 +780,15 @@ struct xpc_partition_sn2 {
 struct xpc_partition_uv {
 	unsigned long remote_activate_mq_gpa;	/* gru phys address of remote */
 						/* partition's activate mq */
+	unsigned long heartbeat_gpa; /* phys addr of partition's heartbeat */
+	struct xpc_heartbeat_uv cached_heartbeat; /* cached copy of */
+						  /* partition's heartbeat */
+	unsigned long activate_gru_mq_desc_gpa;	/* phys addr of parititon's */
+						/* activate mq's gru mq */
+						/* descriptor */
+	void *cached_activate_gru_mq_desc; /* cached copy of partition's */
+					   /* activate mq's gru mq descriptor */
+	struct mutex cached_activate_gru_mq_desc_mutex;
 	spinlock_t flags_lock;	/* protect updating of flags */
 	unsigned int flags;	/* general flags */
 	u8 remote_act_state;	/* remote partition's act_state */
@@ -683,6 +801,8 @@ struct xpc_partition_uv {
 
 #define XPC_P_HEARTBEAT_OFFLINE_UV	0x00000001
 #define XPC_P_ENGAGED_UV		0x00000002
+#define XPC_P_CACHED_ACTIVATE_GRU_MQ_DESC_UV	0x00000001
+#define XPC_P_ENGAGED_UV			0x00000002
 
 /* struct xpc_partition_uv act_state change requests */
 
@@ -739,6 +859,62 @@ struct xpc_partition {
 
 } ____cacheline_aligned;
 
+struct xpc_arch_operations {
+	int (*setup_partitions) (void);
+	void (*teardown_partitions) (void);
+	void (*process_activate_IRQ_rcvd) (void);
+	enum xp_retval (*get_partition_rsvd_page_pa)
+		(void *, u64 *, unsigned long *, size_t *);
+	int (*setup_rsvd_page) (struct xpc_rsvd_page *);
+
+	void (*allow_hb) (short);
+	void (*disallow_hb) (short);
+	void (*disallow_all_hbs) (void);
+	void (*increment_heartbeat) (void);
+	void (*offline_heartbeat) (void);
+	void (*online_heartbeat) (void);
+	void (*heartbeat_init) (void);
+	void (*heartbeat_exit) (void);
+	enum xp_retval (*get_remote_heartbeat) (struct xpc_partition *);
+
+	void (*request_partition_activation) (struct xpc_rsvd_page *,
+						 unsigned long, int);
+	void (*request_partition_reactivation) (struct xpc_partition *);
+	void (*request_partition_deactivation) (struct xpc_partition *);
+	void (*cancel_partition_deactivation_request) (struct xpc_partition *);
+	enum xp_retval (*setup_ch_structures) (struct xpc_partition *);
+	void (*teardown_ch_structures) (struct xpc_partition *);
+
+	enum xp_retval (*make_first_contact) (struct xpc_partition *);
+
+	u64 (*get_chctl_all_flags) (struct xpc_partition *);
+	void (*send_chctl_closerequest) (struct xpc_channel *, unsigned long *);
+	void (*send_chctl_closereply) (struct xpc_channel *, unsigned long *);
+	void (*send_chctl_openrequest) (struct xpc_channel *, unsigned long *);
+	void (*send_chctl_openreply) (struct xpc_channel *, unsigned long *);
+	void (*send_chctl_opencomplete) (struct xpc_channel *, unsigned long *);
+	void (*process_msg_chctl_flags) (struct xpc_partition *, int);
+
+	enum xp_retval (*save_remote_msgqueue_pa) (struct xpc_channel *,
+						      unsigned long);
+
+	enum xp_retval (*setup_msg_structures) (struct xpc_channel *);
+	void (*teardown_msg_structures) (struct xpc_channel *);
+
+	void (*indicate_partition_engaged) (struct xpc_partition *);
+	void (*indicate_partition_disengaged) (struct xpc_partition *);
+	void (*assume_partition_disengaged) (short);
+	int (*partition_engaged) (short);
+	int (*any_partition_engaged) (void);
+
+	int (*n_of_deliverable_payloads) (struct xpc_channel *);
+	enum xp_retval (*send_payload) (struct xpc_channel *, u32, void *,
+					   u16, u8, xpc_notify_func, void *);
+	void *(*get_deliverable_payload) (struct xpc_channel *);
+	void (*received_payload) (struct xpc_channel *, void *);
+	void (*notify_senders_of_disconnect) (struct xpc_channel *);
+};
+
 /* struct xpc_partition act_state values (for XPC HB) */
 
 #define	XPC_P_AS_INACTIVE	0x00	/* partition is not active */
@@ -779,6 +955,7 @@ extern struct xpc_registration xpc_registrations[];
 /* found in xpc_main.c */
 extern struct device *xpc_part;
 extern struct device *xpc_chan;
+extern struct xpc_arch_operations xpc_arch_ops;
 extern int xpc_disengage_timelimit;
 extern int xpc_disengage_timedout;
 extern int xpc_activate_IRQ_rcvd;

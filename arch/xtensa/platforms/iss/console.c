@@ -1,5 +1,6 @@
 /*
  * arch/xtensa/platform-iss/console.c
+ * arch/xtensa/platforms/iss/console.c
  *
  * This file is subject to the terms and conditions of the GNU General Public
  * License.  See the file "COPYING" in the main directory of this archive
@@ -20,11 +21,17 @@
 #include <linux/param.h>
 #include <linux/serial.h>
 #include <linux/serialP.h>
+#include <linux/mm.h>
+#include <linux/major.h>
+#include <linux/param.h>
+#include <linux/seq_file.h>
+#include <linux/serial.h>
 
 #include <asm/uaccess.h>
 #include <asm/irq.h>
 
 #include <asm/platform/simcall.h>
+#include <platform/simcall.h>
 
 #include <linux/tty.h>
 #include <linux/tty_flip.h>
@@ -37,6 +44,10 @@
 #define SERIAL_TIMER_VALUE (20 * HZ)
 
 static struct tty_driver *serial_driver;
+#define SERIAL_TIMER_VALUE (HZ / 10)
+
+static struct tty_driver *serial_driver;
+static struct tty_port serial_port;
 static struct timer_list serial_timer;
 
 static DEFINE_SPINLOCK(timer_lock);
@@ -82,6 +93,14 @@ static int rs_open(struct tty_struct *tty, struct file * filp)
 		mod_timer(&serial_timer, jiffies + SERIAL_TIMER_VALUE);
 	}
 	spin_unlock(&timer_lock);
+	tty->port = &serial_port;
+	spin_lock_bh(&timer_lock);
+	if (tty->count == 1) {
+		setup_timer(&serial_timer, rs_poll,
+				(unsigned long)&serial_port);
+		mod_timer(&serial_timer, jiffies + SERIAL_TIMER_VALUE);
+	}
+	spin_unlock_bh(&timer_lock);
 
 	return 0;
 }
@@ -103,6 +122,10 @@ static void rs_close(struct tty_struct *tty, struct file * filp)
 	if (tty->count == 1)
 		del_timer_sync(&serial_timer);
 	spin_unlock(&timer_lock);
+	spin_lock_bh(&timer_lock);
+	if (tty->count == 1)
+		del_timer_sync(&serial_timer);
+	spin_unlock_bh(&timer_lock);
 }
 
 
@@ -112,6 +135,7 @@ static int rs_write(struct tty_struct * tty,
 	/* see drivers/char/serialX.c to reference original version */
 
 	__simc (SYS_write, 1, (unsigned long)buf, count, 0, 0);
+	simc_write(1, buf, count);
 	return count;
 }
 
@@ -120,7 +144,9 @@ static void rs_poll(unsigned long priv)
 	struct tty_struct* tty = (struct tty_struct*) priv;
 
 	struct timeval tv = { .tv_sec = 0, .tv_usec = 0 };
+	struct tty_port *port = (struct tty_port *)priv;
 	int i = 0;
+	int rd = 1;
 	unsigned char c;
 
 	spin_lock(&timer_lock);
@@ -128,14 +154,19 @@ static void rs_poll(unsigned long priv)
 	while (__simc(SYS_select_one, 0, XTISS_SELECT_ONE_READ, (int)&tv,0,0)){
 		__simc (SYS_read, 0, (unsigned long)&c, 1, 0, 0);
 		tty_insert_flip_char(tty, c, TTY_NORMAL);
+	while (simc_poll(0)) {
+		rd = simc_read(0, &c, 1);
+		if (rd <= 0)
+			break;
+		tty_insert_flip_char(port, c, TTY_NORMAL);
 		i++;
 	}
 
 	if (i)
 		tty_flip_buffer_push(tty);
-
-
-	mod_timer(&serial_timer, jiffies + SERIAL_TIMER_VALUE);
+		tty_flip_buffer_push(port);
+	if (rd)
+		mod_timer(&serial_timer, jiffies + SERIAL_TIMER_VALUE);
 	spin_unlock(&timer_lock);
 }
 
@@ -150,6 +181,9 @@ static void rs_put_char(struct tty_struct *tty, unsigned char ch)
 	buf[0] = ch;
 	buf[1] = '\0';		/* Is this NULL necessary? */
 	__simc (SYS_write, 1, (unsigned long) buf, 1, 0, 0);
+static int rs_put_char(struct tty_struct *tty, unsigned char ch)
+{
+	return rs_write(tty, &ch, 1);
 }
 
 static void rs_flush_chars(struct tty_struct *tty)
@@ -196,6 +230,26 @@ static int rs_read_proc(char *page, char **start, off_t off, int count,
 
 
 static struct tty_operations serial_ops = {
+static int rs_proc_show(struct seq_file *m, void *v)
+{
+	seq_printf(m, "serinfo:1.0 driver:%s\n", serial_version);
+	return 0;
+}
+
+static int rs_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, rs_proc_show, NULL);
+}
+
+static const struct file_operations rs_proc_fops = {
+	.owner		= THIS_MODULE,
+	.open		= rs_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
+static const struct tty_operations serial_ops = {
 	.open = rs_open,
 	.close = rs_close,
 	.write = rs_write,
@@ -206,11 +260,20 @@ static struct tty_operations serial_ops = {
 	.hangup = rs_hangup,
 	.wait_until_sent = rs_wait_until_sent,
 	.read_proc = rs_read_proc
+	.proc_fops = &rs_proc_fops,
 };
 
 int __init rs_init(void)
 {
 	serial_driver = alloc_tty_driver(1);
+	tty_port_init(&serial_port);
+	int ret;
+
+	serial_driver = alloc_tty_driver(SERIAL_MAX_NUM_LINES);
+	if (!serial_driver)
+		return -ENOMEM;
+
+	tty_port_init(&serial_port);
 
 	printk ("%s %s\n", serial_name, serial_version);
 
@@ -229,9 +292,17 @@ int __init rs_init(void)
 	serial_driver->flags = TTY_DRIVER_REAL_RAW;
 
 	tty_set_operations(serial_driver, &serial_ops);
+	tty_port_link_device(&serial_port, serial_driver, 0);
 
-	if (tty_register_driver(serial_driver))
-		panic("Couldn't register serial driver\n");
+	ret = tty_register_driver(serial_driver);
+	if (ret) {
+		pr_err("Couldn't register serial driver\n");
+		tty_driver_kref_put(serial_driver);
+		tty_port_destroy(&serial_port);
+
+		return ret;
+	}
+
 	return 0;
 }
 
@@ -244,6 +315,7 @@ static __exit void rs_exit(void)
 		printk("ISS_SERIAL: failed to unregister serial driver (%d)\n",
 		       error);
 	put_tty_driver(serial_driver);
+	tty_port_destroy(&serial_port);
 }
 
 
@@ -268,6 +340,7 @@ static void iss_console_write(struct console *co, const char *s, unsigned count)
 	if (s != 0 && *s != 0)
 		__simc (SYS_write, 1, (unsigned long)s,
 			count < len ? count : len,0,0);
+		simc_write(1, s, count < len ? count : len);
 }
 
 static struct tty_driver* iss_console_device(struct console *c, int *index)

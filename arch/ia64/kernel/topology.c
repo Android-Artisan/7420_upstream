@@ -17,10 +17,12 @@
 #include <linux/kernel.h>
 #include <linux/mm.h>
 #include <linux/node.h>
+#include <linux/slab.h>
 #include <linux/init.h>
 #include <linux/bootmem.h>
 #include <linux/nodemask.h>
 #include <linux/notifier.h>
+#include <linux/export.h>
 #include <asm/mmzone.h>
 #include <asm/numa.h>
 #include <asm/cpu.h>
@@ -43,6 +45,7 @@ int __ref arch_register_cpu(int num)
 #ifdef CONFIG_ACPI
 	/*
 	 * If CPEI can be re-targetted or if this is not
+	 * If CPEI can be re-targeted or if this is not
 	 * CPEI target, then it is hotpluggable
 	 */
 	if (can_cpei_retarget() || !is_cpu_cpei_target(num))
@@ -57,6 +60,12 @@ void arch_unregister_cpu(int num)
 {
 	unregister_cpu(&sysfs_cpus[num].cpu);
 	unmap_cpu_from_node(num, cpu_to_node(num));
+void __ref arch_unregister_cpu(int num)
+{
+	unregister_cpu(&sysfs_cpus[num].cpu);
+#ifdef CONFIG_ACPI
+	unmap_cpu_from_node(num, cpu_to_node(num));
+#endif
 }
 EXPORT_SYMBOL(arch_unregister_cpu);
 #else
@@ -136,6 +145,11 @@ static struct cpu_cache_info	all_cpu_cache_info[NR_CPUS] __cpuinitdata;
 
 #ifdef CONFIG_SMP
 static void __cpuinit cache_shared_cpu_map_setup( unsigned int cpu,
+static struct cpu_cache_info	all_cpu_cache_info[NR_CPUS];
+#define LEAF_KOBJECT_PTR(x,y)    (&all_cpu_cache_info[x].cache_leaves[y])
+
+#ifdef CONFIG_SMP
+static void cache_shared_cpu_map_setup(unsigned int cpu,
 		struct cache_info * this_leaf)
 {
 	pal_cache_shared_info_t	csi;
@@ -145,6 +159,7 @@ static void __cpuinit cache_shared_cpu_map_setup( unsigned int cpu,
 	if (cpu_data(cpu)->threads_per_core <= 1 &&
 		cpu_data(cpu)->cores_per_socket <= 1) {
 		cpu_set(cpu, this_leaf->shared_cpu_map);
+		cpumask_set_cpu(cpu, &this_leaf->shared_cpu_map);
 		return;
 	}
 
@@ -161,6 +176,7 @@ static void __cpuinit cache_shared_cpu_map_setup( unsigned int cpu,
 				&& cpu_data(j)->core_id == csi.log1_cid
 				&& cpu_data(j)->thread_id == csi.log1_tid)
 				cpu_set(j, this_leaf->shared_cpu_map);
+				cpumask_set_cpu(j, &this_leaf->shared_cpu_map);
 
 		i++;
 	} while (i < num_shared &&
@@ -174,6 +190,10 @@ static void __cpuinit cache_shared_cpu_map_setup(unsigned int cpu,
 		struct cache_info * this_leaf)
 {
 	cpu_set(cpu, this_leaf->shared_cpu_map);
+static void cache_shared_cpu_map_setup(unsigned int cpu,
+		struct cache_info * this_leaf)
+{
+	cpumask_set_cpu(cpu, &this_leaf->shared_cpu_map);
 	return;
 }
 #endif
@@ -220,6 +240,12 @@ static ssize_t show_shared_cpu_map(struct cache_info *this_leaf, char *buf)
 	len = cpumask_scnprintf(buf, NR_CPUS+1, shared_cpu_map);
 	len += sprintf(buf+len, "\n");
 	return len;
+	cpumask_t shared_cpu_map;
+
+	cpumask_and(&shared_cpu_map,
+				&this_leaf->shared_cpu_map, cpu_online_mask);
+	return scnprintf(buf, PAGE_SIZE, "%*pb\n",
+			 cpumask_pr_args(&shared_cpu_map));
 }
 
 static ssize_t show_type(struct cache_info *this_leaf, char *buf)
@@ -271,6 +297,7 @@ static struct attribute * cache_default_attrs[] = {
 #define to_attr(a) container_of(a, struct cache_attr, attr)
 
 static ssize_t cache_show(struct kobject * kobj, struct attribute * attr, char * buf)
+static ssize_t ia64_cache_show(struct kobject * kobj, struct attribute * attr, char * buf)
 {
 	struct cache_attr *fattr = to_attr(attr);
 	struct cache_info *this_leaf = to_object(kobj);
@@ -282,6 +309,8 @@ static ssize_t cache_show(struct kobject * kobj, struct attribute * attr, char *
 
 static struct sysfs_ops cache_sysfs_ops = {
 	.show   = cache_show
+static const struct sysfs_ops cache_sysfs_ops = {
+	.show   = ia64_cache_show
 };
 
 static struct kobj_type cache_ktype = {
@@ -294,6 +323,7 @@ static struct kobj_type cache_ktype_percpu_entry = {
 };
 
 static void __cpuinit cpu_cache_sysfs_exit(unsigned int cpu)
+static void cpu_cache_sysfs_exit(unsigned int cpu)
 {
 	kfree(all_cpu_cache_info[cpu].cache_leaves);
 	all_cpu_cache_info[cpu].cache_leaves = NULL;
@@ -308,6 +338,12 @@ static int __cpuinit cpu_cache_sysfs_init(unsigned int cpu)
 	pal_cache_config_info_t cci;
 	int j;
 	s64 status;
+static int cpu_cache_sysfs_init(unsigned int cpu)
+{
+	unsigned long i, levels, unique_caches;
+	pal_cache_config_info_t cci;
+	int j;
+	long status;
 	struct cache_info *this_cache;
 	int num_cache_leaves = 0;
 
@@ -347,6 +383,7 @@ static int __cpuinit cpu_cache_sysfs_init(unsigned int cpu)
 
 /* Add cache interface for CPU device */
 static int __cpuinit cache_add_dev(struct sys_device * sys_dev)
+static int cache_add_dev(struct device *sys_dev)
 {
 	unsigned int cpu = sys_dev->id;
 	unsigned long i, j;
@@ -359,17 +396,23 @@ static int __cpuinit cache_add_dev(struct sys_device * sys_dev)
 
 	oldmask = current->cpus_allowed;
 	retval = set_cpus_allowed(current, cpumask_of_cpu(cpu));
+	retval = set_cpus_allowed_ptr(current, cpumask_of(cpu));
 	if (unlikely(retval))
 		return retval;
 
 	retval = cpu_cache_sysfs_init(cpu);
 	set_cpus_allowed(current, oldmask);
+	set_cpus_allowed_ptr(current, &oldmask);
 	if (unlikely(retval < 0))
 		return retval;
 
 	retval = kobject_init_and_add(&all_cpu_cache_info[cpu].kobj,
 				      &cache_ktype_percpu_entry, &sys_dev->kobj,
 				      "%s", "cache");
+	if (unlikely(retval < 0)) {
+		cpu_cache_sysfs_exit(cpu);
+		return retval;
+	}
 
 	for (i = 0; i < all_cpu_cache_info[cpu].num_cache_leaves; i++) {
 		this_object = LEAF_KOBJECT_PTR(cpu,i);
@@ -384,6 +427,7 @@ static int __cpuinit cache_add_dev(struct sys_device * sys_dev)
 			kobject_put(&all_cpu_cache_info[cpu].kobj);
 			cpu_cache_sysfs_exit(cpu);
 			break;
+			return retval;
 		}
 		kobject_uevent(&(this_object->kobj), KOBJ_ADD);
 	}
@@ -393,6 +437,7 @@ static int __cpuinit cache_add_dev(struct sys_device * sys_dev)
 
 /* Remove cache interface for CPU device */
 static int __cpuinit cache_remove_dev(struct sys_device * sys_dev)
+static int cache_remove_dev(struct device *sys_dev)
 {
 	unsigned int cpu = sys_dev->id;
 	unsigned long i;
@@ -423,6 +468,13 @@ static int __cpuinit cache_cpu_callback(struct notifier_block *nfb,
 	struct sys_device *sys_dev;
 
 	sys_dev = get_cpu_sysdev(cpu);
+static int cache_cpu_callback(struct notifier_block *nfb,
+		unsigned long action, void *hcpu)
+{
+	unsigned int cpu = (unsigned long)hcpu;
+	struct device *sys_dev;
+
+	sys_dev = get_cpu_device(cpu);
 	switch (action) {
 	case CPU_ONLINE:
 	case CPU_ONLINE_FROZEN:
@@ -437,6 +489,7 @@ static int __cpuinit cache_cpu_callback(struct notifier_block *nfb,
 }
 
 static struct notifier_block __cpuinitdata cache_cpu_notifier =
+static struct notifier_block cache_cpu_notifier =
 {
 	.notifier_call = cache_cpu_callback
 };
@@ -451,6 +504,16 @@ static int __init cache_sysfs_init(void)
 	}
 
 	register_hotcpu_notifier(&cache_cpu_notifier);
+	cpu_notifier_register_begin();
+
+	for_each_online_cpu(i) {
+		struct device *sys_dev = get_cpu_device((unsigned int)i);
+		cache_add_dev(sys_dev);
+	}
+
+	__register_hotcpu_notifier(&cache_cpu_notifier);
+
+	cpu_notifier_register_done();
 
 	return 0;
 }

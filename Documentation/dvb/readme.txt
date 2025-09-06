@@ -1,5 +1,4 @@
 Linux Digital Video Broadcast (DVB) subsystem
-=============================================
 
 The main development site and CVS repository for these
 drivers is http://linuxtv.org/.

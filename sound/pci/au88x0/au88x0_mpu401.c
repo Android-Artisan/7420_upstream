@@ -42,6 +42,7 @@
 #define MPU401_ACK		    0xfe
 
 static int __devinit snd_vortex_midi(vortex_t * vortex)
+static int snd_vortex_midi(vortex_t *vortex)
 {
 	struct snd_rawmidi *rmidi;
 	int temp, mode;
@@ -74,6 +75,7 @@ static int __devinit snd_vortex_midi(vortex_t * vortex)
 	temp = hwread(vortex->mmio, VORTEX_MIDI_DATA);
 	if (temp != MPU401_ACK /*0xfe */ ) {
 		printk(KERN_ERR "midi port doesn't acknowledge!\n");
+		dev_err(vortex->card->dev, "midi port doesn't acknowledge!\n");
 		return -ENODEV;
 	}
 	/* Enable MPU401 interrupts. */
@@ -85,6 +87,7 @@ static int __devinit snd_vortex_midi(vortex_t * vortex)
 	if ((temp =
 	     snd_mpu401_uart_new(vortex->card, 0, MPU401_HW_MPU401, 0x330,
 				 0, 0, 0, &rmidi)) != 0) {
+				 MPU401_INFO_IRQ_HOOK, -1, &rmidi)) != 0) {
 		hwwrite(vortex->mmio, VORTEX_CTRL,
 			(hwread(vortex->mmio, VORTEX_CTRL) &
 			 ~CTRL_MIDI_PORT) & ~CTRL_MIDI_EN);
@@ -96,6 +99,8 @@ static int __devinit snd_vortex_midi(vortex_t * vortex)
 	     snd_mpu401_uart_new(vortex->card, 0, MPU401_HW_AUREAL, port,
 				 MPU401_INFO_INTEGRATED | MPU401_INFO_MMIO,
 				 0, 0, &rmidi)) != 0) {
+				 MPU401_INFO_INTEGRATED | MPU401_INFO_MMIO |
+				 MPU401_INFO_IRQ_HOOK, -1, &rmidi)) != 0) {
 		hwwrite(vortex->mmio, VORTEX_CTRL,
 			(hwread(vortex->mmio, VORTEX_CTRL) &
 			 ~CTRL_MIDI_PORT) & ~CTRL_MIDI_EN);

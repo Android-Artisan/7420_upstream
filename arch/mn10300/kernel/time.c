@@ -17,6 +17,8 @@
 #include <linux/smp.h>
 #include <linux/profile.h>
 #include <linux/cnt32_to_63.h>
+#include <linux/clocksource.h>
+#include <linux/clockchips.h>
 #include <asm/irq.h>
 #include <asm/div64.h>
 #include <asm/processor.h>
@@ -28,6 +30,7 @@ unsigned long mn10300_ioclk;		/* system I/O clock frequency */
 unsigned long mn10300_iobclk;		/* system I/O clock frequency */
 unsigned long mn10300_tsc_per_HZ;	/* number of ioclks per jiffy */
 #endif /* CONFIG_MN10300_RTC */
+#include "internal.h"
 
 static unsigned long mn10300_last_tsc;	/* time-stamp counter at last time
 					 * interrupt occurred */
@@ -64,6 +67,19 @@ unsigned long long sched_clock(void)
 	 *   following will go horribly wrong - see cnt32_to_63()
 	 */
 	tsc64.ll = cnt32_to_63(tsc) & 0x7fffffffffffffffULL;
+	unsigned long tmp;
+	unsigned product[3]; /* 96-bit intermediate value */
+
+	/* cnt32_to_63() is not safe with preemption */
+	preempt_disable();
+
+	/* expand the tsc to 64-bits.
+	 * - sched_clock() must be called once a minute or better or the
+	 *   following will go horribly wrong - see cnt32_to_63()
+	 */
+	tsc64.ll = cnt32_to_63(get_cycles()) & 0x7fffffffffffffffULL;
+
+	preempt_enable();
 
 	/* scale the 64-bit TSC value to a nanosecond value via a 96-bit
 	 * intermediate
@@ -119,6 +135,16 @@ static irqreturn_t timer_interrupt(int irq, void *dev_id)
 
 	update_process_times(user_mode(get_irq_regs()));
 
+/**
+ * local_timer_interrupt - Local timer interrupt handler
+ *
+ * Handle local timer interrupts for this CPU.  They may have been propagated
+ * to this CPU from the CPU that actually gets them by way of an IPI.
+ */
+irqreturn_t local_timer_interrupt(void)
+{
+	profile_tick(CPU_PROFILING);
+	update_process_times(user_mode(get_irq_regs()));
 	return IRQ_HANDLED;
 }
 
@@ -134,6 +160,7 @@ void __init time_init(void)
 	TMPSCNT |= TMPSCNT_ENABLE;
 
 	startup_timestamp_counter();
+	init_clocksource();
 
 	printk(KERN_INFO
 	       "timestamp counter I/O clock running at %lu.%02lu"
@@ -151,6 +178,9 @@ void __init time_init(void)
 	set_intr_level(TMJCIRQ, TMJCICR_LEVEL);
 
 	startup_jiffies_counter();
+	mn10300_last_tsc = read_timestamp_counter();
+
+	init_clockevents();
 
 #ifdef CONFIG_MN10300_WD_TIMER
 	/* start the watchdog timer */

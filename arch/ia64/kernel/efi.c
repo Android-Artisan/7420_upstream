@@ -26,6 +26,11 @@
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/types.h>
+#include <linux/crash_dump.h>
+#include <linux/kernel.h>
+#include <linux/init.h>
+#include <linux/types.h>
+#include <linux/slab.h>
 #include <linux/time.h>
 #include <linux/efi.h>
 #include <linux/kexec.h>
@@ -37,6 +42,7 @@
 #include <asm/pgtable.h>
 #include <asm/processor.h>
 #include <asm/mca.h>
+#include <asm/setup.h>
 #include <asm/tlbflush.h>
 
 #define EFI_DEBUG	0
@@ -47,6 +53,17 @@ struct efi efi;
 EXPORT_SYMBOL(efi);
 static efi_runtime_services_t *runtime;
 static unsigned long mem_limit = ~0UL, max_addr = ~0UL, min_addr = 0UL;
+static __initdata unsigned long palo_phys;
+
+static __initdata efi_config_table_type_t arch_tables[] = {
+	{PROCESSOR_ABSTRACTION_LAYER_OVERWRITE_GUID, "PALO", &palo_phys},
+	{NULL_GUID, NULL, 0},
+};
+
+extern efi_status_t efi_call_phys (void *, ...);
+
+static efi_runtime_services_t *runtime;
+static u64 mem_limit = ~0UL, max_addr = ~0UL, min_addr = 0UL;
 
 #define efi_call_virt(f, args...)	(*(f))(args)
 
@@ -155,6 +172,7 @@ prefix##_get_next_variable (unsigned long *name_size, efi_char16_t *name,      \
 static efi_status_t							       \
 prefix##_set_variable (efi_char16_t *name, efi_guid_t *vendor,		       \
 		       unsigned long attr, unsigned long data_size,	       \
+		       u32 attr, unsigned long data_size,		       \
 		       void *data)					       \
 {									       \
 	struct ia64_fpreg fr[6];					       \
@@ -357,6 +375,7 @@ efi_get_pal_addr (void)
 		if (++pal_code_count > 1) {
 			printk(KERN_ERR "Too many EFI Pal Code memory ranges, "
 			       "dropped @ %lx\n", md->phys_addr);
+			       "dropped @ %llx\n", md->phys_addr);
 			continue;
 		}
 		/*
@@ -423,6 +442,9 @@ static u8 __init palo_checksum(u8 *buffer, u32 length)
 static void __init handle_palo(unsigned long palo_phys)
 {
 	struct palo_table *palo = __va(palo_phys);
+static void __init handle_palo(unsigned long phys_addr)
+{
+	struct palo_table *palo = __va(phys_addr);
 	u8  checksum;
 
 	if (strncmp(palo->signature, PALO_SIG, sizeof(PALO_SIG) - 1)) {
@@ -470,6 +492,9 @@ efi_init (void)
 	int i;
 	unsigned long palo_phys;
 
+	set_bit(EFI_BOOT, &efi.flags);
+	set_bit(EFI_64BIT, &efi.flags);
+
 	/*
 	 * It's too early to be able to use the standard kernel command line
 	 * support...
@@ -493,6 +518,10 @@ efi_init (void)
 		       min_addr >> 20);
 	if (max_addr != ~0UL)
 		printk(KERN_INFO "Ignoring memory above %luMB\n",
+		printk(KERN_INFO "Ignoring memory below %lluMB\n",
+		       min_addr >> 20);
+	if (max_addr != ~0UL)
+		printk(KERN_INFO "Ignoring memory above %lluMB\n",
 		       max_addr >> 20);
 
 	efi.systab = __va(ia64_boot_param->efi_systab);
@@ -561,6 +590,12 @@ efi_init (void)
 		}
 	}
 	printk("\n");
+	set_bit(EFI_SYSTEM_TABLES, &efi.flags);
+
+	palo_phys      = EFI_INVALID_TABLE_ADDR;
+
+	if (efi_config_init(arch_tables) != 0)
+		return;
 
 	if (palo_phys != EFI_INVALID_TABLE_ADDR)
 		handle_palo(palo_phys);
@@ -591,6 +626,7 @@ efi_init (void)
 		{
 			const char *unit;
 			unsigned long size;
+			char buf[64];
 
 			md = p;
 			size = md->num_pages << EFI_PAGE_SHIFT;
@@ -612,6 +648,10 @@ efi_init (void)
 			printk("mem%02d: type=%2u, attr=0x%016lx, "
 			       "range=[0x%016lx-0x%016lx) (%4lu%s)\n",
 			       i, md->type, md->attribute, md->phys_addr,
+			printk("mem%02d: %s "
+			       "range=[0x%016lx-0x%016lx) (%4lu%s)\n",
+			       i, efi_md_typeattr_format(buf, sizeof(buf), md),
+			       md->phys_addr,
 			       md->phys_addr + efi_md_size(md), size, unit);
 		}
 	}
@@ -684,6 +724,8 @@ efi_enter_virtual_mode (void)
 		       "virtual mode (status=%lu)\n", status);
 		return;
 	}
+
+	set_bit(EFI_RUNTIME_SERVICES, &efi.flags);
 
 	/*
 	 * Now that EFI is in virtual mode, we call the EFI functions more
@@ -867,6 +909,7 @@ EXPORT_SYMBOL(kern_mem_attribute);
 
 int
 valid_phys_addr_range (unsigned long phys_addr, unsigned long size)
+valid_phys_addr_range (phys_addr_t phys_addr, unsigned long size)
 {
 	u64 attr;
 
@@ -1066,6 +1109,7 @@ find_memmap_space (void)
  */
 unsigned long
 efi_memmap_init(unsigned long *s, unsigned long *e)
+efi_memmap_init(u64 *s, u64 *e)
 {
 	struct kern_memdesc *k, *prev = NULL;
 	u64	contig_low=0, contig_high=0;
@@ -1247,6 +1291,10 @@ efi_initialize_iomem_resources(struct resource *code_resource,
 				flags |= IORESOURCE_DISABLED;
 				break;
 
+			case EFI_PERSISTENT_MEMORY:
+				name = "Persistent Memory";
+				break;
+
 			case EFI_RESERVED_TYPE:
 			case EFI_RUNTIME_SERVICES_CODE:
 			case EFI_RUNTIME_SERVICES_DATA:
@@ -1336,6 +1384,7 @@ kdump_find_rsvd_region (unsigned long size, struct rsvd_region *r, int n)
 #endif
 
 #ifdef CONFIG_PROC_VMCORE
+#ifdef CONFIG_CRASH_DUMP
 /* locate the size find a the descriptor at a certain address */
 unsigned long __init
 vmcore_find_descriptor_size (unsigned long address)

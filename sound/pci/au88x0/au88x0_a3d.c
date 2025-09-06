@@ -54,6 +54,7 @@ a3dsrc_GetTimeConsts(a3dsrc_t * a, short *HrtfTrack, short *ItdTrack,
 
 #endif
 /* Atmospheric absorbtion. */
+/* Atmospheric absorption. */
 
 static void
 a3dsrc_SetAtmosTarget(a3dsrc_t * a, short aa, short b, short c, short d,
@@ -465,6 +466,10 @@ static void a3dsrc_ZeroState(a3dsrc_t * a)
 
 	//printk("vortex: ZeroState slice: %d, source %d\n", a->slice, a->source);
 
+	/*
+	pr_debug( "vortex: ZeroState slice: %d, source %d\n",
+	       a->slice, a->source);
+	*/
 	a3dsrc_SetAtmosState(a, 0, 0, 0, 0);
 	a3dsrc_SetHrtfState(a, A3dHrirZeros, A3dHrirZeros);
 	a3dsrc_SetItdDline(a, A3dItdDlineZeros);
@@ -484,11 +489,14 @@ static void a3dsrc_ZeroState(a3dsrc_t * a)
 
 /* Reset entire A3D engine */
 static void a3dsrc_ZeroStateA3D(a3dsrc_t * a)
+static void a3dsrc_ZeroStateA3D(a3dsrc_t *a, vortex_t *v)
 {
 	int i, var, var2;
 
 	if ((a->vortex) == NULL) {
 		printk(KERN_ERR "vortex: ZeroStateA3D: ERROR: a->vortex is NULL\n");
+		dev_err(v->card->dev,
+			"ZeroStateA3D: ERROR: a->vortex is NULL\n");
 		return;
 	}
 
@@ -594,6 +602,7 @@ static int vortex_a3d_register_controls(vortex_t * vortex);
 static void vortex_a3d_unregister_controls(vortex_t * vortex);
 /* A3D base support init/shudown */
 static void __devinit vortex_Vort3D_enable(vortex_t * v)
+static void vortex_Vort3D_enable(vortex_t *v)
 {
 	int i;
 
@@ -601,6 +610,7 @@ static void __devinit vortex_Vort3D_enable(vortex_t * v)
 	for (i = 0; i < NR_A3D; i++) {
 		vortex_A3dSourceHw_Initialize(v, i % 4, i >> 2);
 		a3dsrc_ZeroStateA3D(&(v->a3d[0]));
+		a3dsrc_ZeroStateA3D(&v->a3d[0], v);
 	}
 	/* Register ALSA controls */
 	vortex_a3d_register_controls(v);
@@ -629,6 +639,8 @@ static void vortex_Vort3D_connect(vortex_t * v, int en)
 	if (v->mixxtlk[0] < 0) {
 		printk
 		    ("vortex: vortex_Vort3D: ERROR: not enough free mixer resources.\n");
+		dev_warn(v->card->dev,
+			 "vortex_Vort3D: ERROR: not enough free mixer resources.\n");
 		return;
 	}
 	v->mixxtlk[1] =
@@ -636,6 +648,8 @@ static void vortex_Vort3D_connect(vortex_t * v, int en)
 	if (v->mixxtlk[1] < 0) {
 		printk
 		    ("vortex: vortex_Vort3D: ERROR: not enough free mixer resources.\n");
+		dev_warn(v->card->dev,
+			 "vortex_Vort3D: ERROR: not enough free mixer resources.\n");
 		return;
 	}
 #endif
@@ -680,6 +694,11 @@ static void vortex_Vort3D_InitializeSource(a3dsrc_t * a, int en)
 	if (a->vortex == NULL) {
 		printk
 		    ("vortex: Vort3D_InitializeSource: A3D source not initialized\n");
+static void vortex_Vort3D_InitializeSource(a3dsrc_t *a, int en, vortex_t *v)
+{
+	if (a->vortex == NULL) {
+		dev_warn(v->card->dev,
+			 "Vort3D_InitializeSource: A3D source not initialized\n");
 		return;
 	}
 	if (en) {
@@ -835,6 +854,7 @@ snd_vortex_a3d_filter_put(struct snd_kcontrol *kcontrol,
 	/* Translate generic filter params to a3d filter params. */
 	vortex_a3d_translate_filter(a->filter, params);
 	/* Atmospheric absorbtion and filtering. */
+	/* Atmospheric absorption and filtering. */
 	a3dsrc_SetAtmosTarget(a, a->filter[0],
 			      a->filter[1], a->filter[2],
 			      a->filter[3], a->filter[4]);
@@ -845,6 +865,7 @@ snd_vortex_a3d_filter_put(struct snd_kcontrol *kcontrol,
 }
 
 static struct snd_kcontrol_new vortex_a3d_kcontrol __devinitdata = {
+static struct snd_kcontrol_new vortex_a3d_kcontrol = {
 	.iface = SNDRV_CTL_ELEM_IFACE_PCM,
 	.name = "Playback PCM advanced processing",
 	.access = SNDRV_CTL_ELEM_ACCESS_READWRITE,
@@ -855,6 +876,7 @@ static struct snd_kcontrol_new vortex_a3d_kcontrol __devinitdata = {
 
 /* Control (un)registration. */
 static int __devinit vortex_a3d_register_controls(vortex_t * vortex)
+static int vortex_a3d_register_controls(vortex_t *vortex)
 {
 	struct snd_kcontrol *kcontrol;
 	int err, i;

@@ -43,6 +43,9 @@ extern int  sysctl_max_baud_rate;
 extern int  sysctl_min_tx_turn_time;
 extern int  sysctl_max_tx_data_size;
 extern int  sysctl_max_tx_window;
+extern unsigned int sysctl_min_tx_turn_time;
+extern unsigned int sysctl_max_tx_data_size;
+extern unsigned int sysctl_max_tx_window;
 extern int  sysctl_max_noreply_time;
 extern int  sysctl_warn_noreply_time;
 extern int  sysctl_lap_keepalive_time;
@@ -74,11 +77,13 @@ static int min_lap_keepalive_time = 100;	/* 100us */
  * us on that - Jean II */
 
 static int do_devname(ctl_table *table, int write, struct file *filp,
+static int do_devname(struct ctl_table *table, int write,
 		      void __user *buffer, size_t *lenp, loff_t *ppos)
 {
 	int ret;
 
 	ret = proc_dostring(table, write, filp, buffer, lenp, ppos);
+	ret = proc_dostring(table, write, buffer, lenp, ppos);
 	if (ret == 0 && write) {
 		struct ias_value *val;
 
@@ -91,11 +96,13 @@ static int do_devname(ctl_table *table, int write, struct file *filp,
 
 
 static int do_discovery(ctl_table *table, int write, struct file *filp,
+static int do_discovery(struct ctl_table *table, int write,
                     void __user *buffer, size_t *lenp, loff_t *ppos)
 {
        int ret;
 
        ret = proc_dointvec(table, write, filp, buffer, lenp, ppos);
+       ret = proc_dointvec(table, write, buffer, lenp, ppos);
        if (ret)
 	       return ret;
 
@@ -114,6 +121,8 @@ static int do_discovery(ctl_table *table, int write, struct file *filp,
 static ctl_table irda_table[] = {
 	{
 		.ctl_name	= NET_IRDA_DISCOVERY,
+static struct ctl_table irda_table[] = {
+	{
 		.procname	= "discovery",
 		.data		= &sysctl_discovery,
 		.maxlen		= sizeof(int),
@@ -123,6 +132,9 @@ static ctl_table irda_table[] = {
 	},
 	{
 		.ctl_name	= NET_IRDA_DEVNAME,
+		.proc_handler	= do_discovery,
+	},
+	{
 		.procname	= "devname",
 		.data		= sysctl_devname,
 		.maxlen		= 65,
@@ -143,6 +155,10 @@ static ctl_table irda_table[] = {
 #ifdef CONFIG_IRDA_FAST_RR
 	{
 		.ctl_name	= NET_IRDA_FAST_POLL,
+		.proc_handler	= do_devname,
+	},
+#ifdef CONFIG_IRDA_FAST_RR
+	{
 		.procname	= "fast_poll_increase",
 		.data		= &sysctl_fast_poll_increase,
 		.maxlen		= sizeof(int),
@@ -152,12 +168,17 @@ static ctl_table irda_table[] = {
 #endif
 	{
 		.ctl_name	= NET_IRDA_DISCOVERY_SLOTS,
+		.proc_handler	= proc_dointvec
+	},
+#endif
+	{
 		.procname	= "discovery_slots",
 		.data		= &sysctl_discovery_slots,
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec_minmax,
 		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &min_discovery_slots,
 		.extra2		= &max_discovery_slots
 	},
@@ -171,12 +192,16 @@ static ctl_table irda_table[] = {
 	},
 	{
 		.ctl_name	= NET_IRDA_SLOT_TIMEOUT,
+		.proc_handler	= proc_dointvec
+	},
+	{
 		.procname	= "slot_timeout",
 		.data		= &sysctl_slot_timeout,
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec_minmax,
 		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &min_slot_timeout,
 		.extra2		= &max_slot_timeout
 	},
@@ -188,6 +213,7 @@ static ctl_table irda_table[] = {
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec_minmax,
 		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &min_max_baud_rate,
 		.extra2		= &max_max_baud_rate
 	},
@@ -199,6 +225,7 @@ static ctl_table irda_table[] = {
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec_minmax,
 		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &min_min_tx_turn_time,
 		.extra2		= &max_min_tx_turn_time
 	},
@@ -210,6 +237,7 @@ static ctl_table irda_table[] = {
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec_minmax,
 		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &min_max_tx_data_size,
 		.extra2		= &max_max_tx_data_size
 	},
@@ -221,6 +249,7 @@ static ctl_table irda_table[] = {
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec_minmax,
 		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &min_max_tx_window,
 		.extra2		= &max_max_tx_window
 	},
@@ -232,6 +261,7 @@ static ctl_table irda_table[] = {
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec_minmax,
 		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &min_max_noreply_time,
 		.extra2		= &max_max_noreply_time
 	},
@@ -243,6 +273,7 @@ static ctl_table irda_table[] = {
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec_minmax,
 		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &min_warn_noreply_time,
 		.extra2		= &max_warn_noreply_time
 	},
@@ -263,6 +294,10 @@ static ctl_table irda_table[] = {
 static struct ctl_path irda_path[] = {
 	{ .procname = "net", .ctl_name = CTL_NET, },
 	{ .procname = "irda", .ctl_name = NET_IRDA, },
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= &min_lap_keepalive_time,
+		.extra2		= &max_lap_keepalive_time
+	},
 	{ }
 };
 
@@ -277,6 +312,7 @@ static struct ctl_table_header *irda_table_header;
 int __init irda_sysctl_register(void)
 {
 	irda_table_header = register_sysctl_paths(irda_path, irda_table);
+	irda_table_header = register_net_sysctl(&init_net, "net/irda", irda_table);
 	if (!irda_table_header)
 		return -ENOMEM;
 
@@ -292,6 +328,7 @@ int __init irda_sysctl_register(void)
 void irda_sysctl_unregister(void)
 {
 	unregister_sysctl_table(irda_table_header);
+	unregister_net_sysctl_table(irda_table_header);
 }
 
 

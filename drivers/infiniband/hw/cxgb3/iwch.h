@@ -36,6 +36,7 @@
 #include <linux/list.h>
 #include <linux/spinlock.h>
 #include <linux/idr.h>
+#include <linux/workqueue.h>
 
 #include <rdma/ib_verbs.h>
 
@@ -110,11 +111,17 @@ struct iwch_dev {
 	struct idr mmidr;
 	spinlock_t lock;
 	struct list_head entry;
+	struct delayed_work db_drop_task;
 };
 
 static inline struct iwch_dev *to_iwch_dev(struct ib_device *ibdev)
 {
 	return container_of(ibdev, struct iwch_dev, ibdev);
+}
+
+static inline struct iwch_dev *rdev_to_iwch_dev(struct cxio_rdev *rdev)
+{
+	return container_of(rdev, struct iwch_dev, rdev);
 }
 
 static inline int t3b_device(const struct iwch_dev *rhp)
@@ -159,6 +166,17 @@ static inline int insert_handle(struct iwch_dev *rhp, struct idr *idr,
 	} while (ret == -EAGAIN);
 
 	return ret;
+
+	idr_preload(GFP_KERNEL);
+	spin_lock_irq(&rhp->lock);
+
+	ret = idr_alloc(idr, handle, id, id + 1, GFP_NOWAIT);
+
+	spin_unlock_irq(&rhp->lock);
+	idr_preload_end();
+
+	BUG_ON(ret == -ENOSPC);
+	return ret < 0 ? ret : 0;
 }
 
 static inline void remove_handle(struct iwch_dev *rhp, struct idr *idr, u32 id)

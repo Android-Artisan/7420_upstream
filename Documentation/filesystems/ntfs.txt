@@ -1,9 +1,7 @@
 The Linux NTFS filesystem driver
-================================
 
 
 Table of contents
-=================
 
 - Overview
 - Web site
@@ -18,7 +16,6 @@ Table of contents
 
 
 Overview
-========
 
 Linux-NTFS comes with a number of user-space programs known as ntfsprogs.
 These include mkntfs, a full-featured ntfs filesystem format utility,
@@ -37,7 +34,6 @@ with NTFS" for details.
 
 
 Web site
-========
 
 There is plenty of additional information on the linux-ntfs web site
 at http://www.linux-ntfs.org/
@@ -48,7 +44,6 @@ userspace utilities, etc.
 
 
 Features
-========
 
 - This is a complete rewrite of the NTFS driver that used to be in the 2.4 and
   earlier kernels.  This new driver implements NTFS read support and is
@@ -99,7 +94,6 @@ Features
   the file and we do not implement directory modifications yet.
 
 Supported mount options
-=======================
 
 In addition to the generic mount options described by the manual page for the
 mount command (man 8 mount, also see man 5 fstab), the NTFS driver supports the
@@ -212,7 +206,6 @@ mft_zone_multiplier=	Set the MFT zone multiplier for the volume (this
 
 
 Known bugs and (mis-)features
-=============================
 
 - The link count on each directory inode entry is set to 1, due to Linux not
   supporting directory hard links.  This may well confuse some user space
@@ -227,7 +220,6 @@ list at sourceforge: linux-ntfs-dev@lists.sourceforge.net
 
 
 Using NTFS volume and stripe sets
-=================================
 
 For support of volume and stripe sets, you can either use the kernel's
 Device-Mapper driver or the kernel's Software RAID / MD driver.  The former is
@@ -351,6 +343,7 @@ already in sync which will be the case on a clean shutdown of Windows.  If the
 mirrors are not clean, you can specify the "sync" option instead of "nosync"
 and the Device-Mapper driver will then copy the entirety of the "Source Device"
 to the "Target Device" or if you specified multipled target devices to all of
+to the "Target Device" or if you specified multiple target devices to all of
 them.
 
 Once you have your table, save it in a file somewhere (e.g. /etc/ntfsvolume1),
@@ -453,7 +446,6 @@ not have this problem with odd numbers of sectors.
 
 
 ChangeLog
-=========
 
 Note, a technical ChangeLog aimed at kernel hackers is in fs/ntfs/ChangeLog.
 

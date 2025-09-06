@@ -75,4 +75,18 @@ extern unsigned long __per_cpu_offset[NR_CPUS];
 
 #define DECLARE_PER_CPU(type, name) extern __typeof__(type) per_cpu_var(name)
 
+/*
+ * To calculate addresses of locally defined variables, GCC uses
+ * 32-bit displacement from the GP. Which doesn't work for per cpu
+ * variables in modules, as an offset to the kernel per cpu area is
+ * way above 4G.
+ *
+ * Always use weak definitions for percpu variables in modules.
+ */
+#if defined(MODULE) && defined(CONFIG_SMP)
+#define ARCH_NEEDS_WEAK_PER_CPU
+#endif
+
+#include <asm-generic/percpu.h>
+
 #endif /* __ALPHA_PERCPU_H */

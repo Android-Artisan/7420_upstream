@@ -23,6 +23,7 @@ char *strcpy(char *dest, const char *src)
 		"jne 1b"
 		: "=&S" (d0), "=&D" (d1), "=&a" (d2)
 		:"0" (src), "1" (dest) : "memory");
+		: "0" (src), "1" (dest) : "memory");
 	return dest;
 }
 EXPORT_SYMBOL(strcpy);
@@ -43,6 +44,7 @@ char *strncpy(char *dest, const char *src, size_t count)
 		"2:"
 		: "=&S" (d0), "=&D" (d1), "=&c" (d2), "=&a" (d3)
 		:"0" (src), "1" (dest), "2" (count) : "memory");
+		: "0" (src), "1" (dest), "2" (count) : "memory");
 	return dest;
 }
 EXPORT_SYMBOL(strncpy);
@@ -61,6 +63,7 @@ char *strcat(char *dest, const char *src)
 		"jne 1b"
 		: "=&S" (d0), "=&D" (d1), "=&a" (d2), "=&c" (d3)
 		: "0" (src), "1" (dest), "2" (0), "3" (0xffffffffu): "memory");
+		: "0" (src), "1" (dest), "2" (0), "3" (0xffffffffu) : "memory");
 	return dest;
 }
 EXPORT_SYMBOL(strcat);
@@ -108,6 +111,9 @@ int strcmp(const char *cs, const char *ct)
 		:"=a" (res), "=&S" (d0), "=&D" (d1)
 		:"1" (cs), "2" (ct)
 		:"memory");
+		: "=a" (res), "=&S" (d0), "=&D" (d1)
+		: "1" (cs), "2" (ct)
+		: "memory");
 	return res;
 }
 EXPORT_SYMBOL(strcmp);
@@ -133,6 +139,9 @@ int strncmp(const char *cs, const char *ct, size_t count)
 		:"=a" (res), "=&S" (d0), "=&D" (d1), "=&c" (d2)
 		:"1" (cs), "2" (ct), "3" (count)
 		:"memory");
+		: "=a" (res), "=&S" (d0), "=&D" (d1), "=&c" (d2)
+		: "1" (cs), "2" (ct), "3" (count)
+		: "memory");
 	return res;
 }
 EXPORT_SYMBOL(strncmp);
@@ -155,6 +164,9 @@ char *strchr(const char *s, int c)
 		:"=a" (res), "=&S" (d0)
 		:"1" (s), "0" (c)
 		:"memory");
+		: "=a" (res), "=&S" (d0)
+		: "1" (s), "0" (c)
+		: "memory");
 	return res;
 }
 EXPORT_SYMBOL(strchr);
@@ -173,6 +185,13 @@ size_t strlen(const char *s)
 		:"1" (s), "a" (0), "0" (0xffffffffu)
 		:"memory");
 	return res;
+	size_t res;
+	asm volatile("repne\n\t"
+		"scasb"
+		: "=c" (res), "=&D" (d0)
+		: "1" (s), "a" (0), "0" (0xffffffffu)
+		: "memory");
+	return ~res - 1;
 }
 EXPORT_SYMBOL(strlen);
 #endif
@@ -192,6 +211,9 @@ void *memchr(const void *cs, int c, size_t count)
 		:"=D" (res), "=&c" (d0)
 		:"a" (c), "0" (cs), "1" (count)
 		:"memory");
+		: "=D" (res), "=&c" (d0)
+		: "a" (c), "0" (cs), "1" (count)
+		: "memory");
 	return res;
 }
 EXPORT_SYMBOL(memchr);
@@ -231,6 +253,9 @@ size_t strnlen(const char *s, size_t count)
 		:"=a" (res), "=&d" (d0)
 		:"c" (s), "1" (count)
 		:"memory");
+		: "=a" (res), "=&d" (d0)
+		: "c" (s), "1" (count)
+		: "memory");
 	return res;
 }
 EXPORT_SYMBOL(strnlen);

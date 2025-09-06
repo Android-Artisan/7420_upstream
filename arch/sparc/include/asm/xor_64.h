@@ -27,6 +27,13 @@ extern void xor_vis_4(unsigned long, unsigned long *, unsigned long *,
 		      unsigned long *, unsigned long *);
 extern void xor_vis_5(unsigned long, unsigned long *, unsigned long *,
 		      unsigned long *, unsigned long *, unsigned long *);
+void xor_vis_2(unsigned long, unsigned long *, unsigned long *);
+void xor_vis_3(unsigned long, unsigned long *, unsigned long *,
+	       unsigned long *);
+void xor_vis_4(unsigned long, unsigned long *, unsigned long *,
+	       unsigned long *, unsigned long *);
+void xor_vis_5(unsigned long, unsigned long *, unsigned long *,
+	       unsigned long *, unsigned long *, unsigned long *);
 
 /* XXX Ugh, write cheetah versions... -DaveM */
 
@@ -45,6 +52,13 @@ extern void xor_niagara_4(unsigned long, unsigned long *, unsigned long *,
 			  unsigned long *, unsigned long *);
 extern void xor_niagara_5(unsigned long, unsigned long *, unsigned long *,
 			  unsigned long *, unsigned long *, unsigned long *);
+void xor_niagara_2(unsigned long, unsigned long *, unsigned long *);
+void xor_niagara_3(unsigned long, unsigned long *, unsigned long *,
+		   unsigned long *);
+void xor_niagara_4(unsigned long, unsigned long *, unsigned long *,
+		   unsigned long *, unsigned long *);
+void xor_niagara_5(unsigned long, unsigned long *, unsigned long *,
+		   unsigned long *, unsigned long *, unsigned long *);
 
 static struct xor_block_template xor_block_niagara = {
         .name	= "Niagara",
@@ -66,5 +80,9 @@ static struct xor_block_template xor_block_niagara = {
 	((tlb_type == hypervisor && \
 	  (sun4v_chip_type == SUN4V_CHIP_NIAGARA1 || \
 	   sun4v_chip_type == SUN4V_CHIP_NIAGARA2)) ? \
+	   sun4v_chip_type == SUN4V_CHIP_NIAGARA2 || \
+	   sun4v_chip_type == SUN4V_CHIP_NIAGARA3 || \
+	   sun4v_chip_type == SUN4V_CHIP_NIAGARA4 || \
+	   sun4v_chip_type == SUN4V_CHIP_NIAGARA5)) ? \
 	 &xor_block_niagara : \
 	 &xor_block_VIS)

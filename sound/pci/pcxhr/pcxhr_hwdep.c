@@ -25,6 +25,8 @@
 #include <linux/firmware.h>
 #include <linux/pci.h>
 #include <asm/io.h>
+#include <linux/module.h>
+#include <linux/io.h>
 #include <sound/core.h>
 #include <sound/hwdep.h>
 #include "pcxhr.h"
@@ -44,6 +46,13 @@
  * get basic information and init pcxhr card
  */
 
+#include "pcxhr_mix22.h"
+
+
+static int pcxhr_sub_init(struct pcxhr_mgr *mgr);
+/*
+ * get basic information and init pcxhr card
+ */
 static int pcxhr_init_board(struct pcxhr_mgr *mgr)
 {
 	int err;
@@ -74,12 +83,29 @@ static int pcxhr_init_board(struct pcxhr_mgr *mgr)
 	snd_assert((rmh.stat[1] & 0x5F) >= card_streams, return -EINVAL);
 	/* test max nb substream per pipe */
 	snd_assert(((rmh.stat[1]>>7)&0x5F) >= PCXHR_PLAYBACK_STREAMS, return -EINVAL);
+	/* test 4, 8 or 12 phys out */
+	if ((rmh.stat[0] & MASK_FIRST_FIELD) < mgr->playback_chips * 2)
+		return -EINVAL;
+	/* test 4, 8 or 2 phys in */
+	if (((rmh.stat[0] >> (2 * FIELD_SIZE)) & MASK_FIRST_FIELD) <
+	    mgr->capture_chips * 2)
+		return -EINVAL;
+	/* test max nb substream per board */
+	if ((rmh.stat[1] & 0x5F) < card_streams)
+		return -EINVAL;
+	/* test max nb substream per pipe */
+	if (((rmh.stat[1] >> 7) & 0x5F) < PCXHR_PLAYBACK_STREAMS)
+		return -EINVAL;
+	dev_dbg(&mgr->pci->dev,
+		"supported formats : playback=%x capture=%x\n",
+		    rmh.stat[2], rmh.stat[3]);
 
 	pcxhr_init_rmh(&rmh, CMD_VERSION);
 	/* firmware num for DSP */
 	rmh.cmd[0] |= mgr->firmware_num;
 	/* transfer granularity in samples (should be multiple of 48) */
 	rmh.cmd[1] = (1<<23) + PCXHR_GRANULARITY;
+	rmh.cmd[1] = (1<<23) + mgr->granularity;
 	rmh.cmd_len = 2;
 	err = pcxhr_send_msg(mgr, &rmh);
 	if (err)
@@ -87,6 +113,23 @@ static int pcxhr_init_board(struct pcxhr_mgr *mgr)
 	snd_printdd("PCXHR DSP version is %d.%d.%d\n",
 		    (rmh.stat[0]>>16)&0xff, (rmh.stat[0]>>8)&0xff, rmh.stat[0]&0xff);
 	mgr->dsp_version = rmh.stat[0];
+
+	dev_dbg(&mgr->pci->dev,
+		"PCXHR DSP version is %d.%d.%d\n", (rmh.stat[0]>>16)&0xff,
+		    (rmh.stat[0]>>8)&0xff, rmh.stat[0]&0xff);
+	mgr->dsp_version = rmh.stat[0];
+
+	if (mgr->is_hr_stereo)
+		err = hr222_sub_init(mgr);
+	else
+		err = pcxhr_sub_init(mgr);
+	return err;
+}
+
+static int pcxhr_sub_init(struct pcxhr_mgr *mgr)
+{
+	int err;
+	struct pcxhr_rmh rmh;
 
 	/* get options */
 	pcxhr_init_rmh(&rmh, CMD_ACCESS_IO_READ);
@@ -102,6 +145,9 @@ static int pcxhr_init_board(struct pcxhr_mgr *mgr)
 	else
 		/* analog addon board not available -> no support for instance */
 		return -EINVAL;	
+	if ((rmh.stat[1] & REG_STATUS_OPT_DAUGHTER_MASK) ==
+	    REG_STATUS_OPT_ANALOG_BOARD)
+		mgr->board_has_analog = 1;	/* analog addon board found */
 
 	/* unmute inputs */
 	err = pcxhr_write_io_num_reg_cont(mgr, REG_CONT_UNMUTE_INPUTS,
@@ -111,6 +157,13 @@ static int pcxhr_init_board(struct pcxhr_mgr *mgr)
 	/* unmute outputs */
 	pcxhr_init_rmh(&rmh, CMD_ACCESS_IO_READ); /* a write to IO_NUM_REG_MUTE_OUT mutes! */
 	rmh.cmd[0] |= IO_NUM_REG_MUTE_OUT;
+	/* unmute outputs (a write to IO_NUM_REG_MUTE_OUT mutes!) */
+	pcxhr_init_rmh(&rmh, CMD_ACCESS_IO_READ);
+	rmh.cmd[0] |= IO_NUM_REG_MUTE_OUT;
+	if (DSP_EXT_CMD_SET(mgr)) {
+		rmh.cmd[1]  = 1;	/* unmute digital plugs */
+		rmh.cmd_len = 2;
+	}
 	err = pcxhr_send_msg(mgr, &rmh);
 	return err;
 }
@@ -121,6 +174,7 @@ void pcxhr_reset_board(struct pcxhr_mgr *mgr)
 
 	if (mgr->dsp_loaded & (1 << PCXHR_FIRMWARE_DSP_MAIN_INDEX)) {
 		/* mute outputs */
+	    if (!mgr->is_hr_stereo) {
 		/* a read to IO_NUM_REG_MUTE_OUT register unmutes! */
 		pcxhr_init_rmh(&rmh, CMD_ACCESS_IO_WRITE);
 		rmh.cmd[0] |= IO_NUM_REG_MUTE_OUT;
@@ -134,6 +188,19 @@ void pcxhr_reset_board(struct pcxhr_mgr *mgr)
 	/* reset second xilinx */
 	if (mgr->dsp_loaded & ( 1 << PCXHR_FIRMWARE_XLX_COM_INDEX))
 		pcxhr_reset_xilinx_com(mgr);
+		pcxhr_write_io_num_reg_cont(mgr, REG_CONT_UNMUTE_INPUTS,
+					    0, NULL);
+	    }
+		/* stereo cards mute with reset of dsp */
+	}
+	/* reset pcxhr dsp */
+	if (mgr->dsp_loaded & (1 << PCXHR_FIRMWARE_DSP_EPRM_INDEX))
+		pcxhr_reset_dsp(mgr);
+	/* reset second xilinx */
+	if (mgr->dsp_loaded & (1 << PCXHR_FIRMWARE_XLX_COM_INDEX)) {
+		pcxhr_reset_xilinx_com(mgr);
+		mgr->dsp_loaded = 1;
+	}
 	return;
 }
 
@@ -143,6 +210,9 @@ void pcxhr_reset_board(struct pcxhr_mgr *mgr)
  */
 static int pcxhr_dsp_allocate_pipe( struct pcxhr_mgr *mgr, struct pcxhr_pipe *pipe,
 				    int is_capture, int pin)
+static int pcxhr_dsp_allocate_pipe(struct pcxhr_mgr *mgr,
+				   struct pcxhr_pipe *pipe,
+				   int is_capture, int pin)
 {
 	int stream_count, audio_count;
 	int err;
@@ -159,6 +229,8 @@ static int pcxhr_dsp_allocate_pipe( struct pcxhr_mgr *mgr, struct pcxhr_pipe *pi
 		audio_count = 2;	/* always stereo */
 	}
 	snd_printdd("snd_add_ref_pipe pin(%d) pcm%c0\n", pin, is_capture ? 'c' : 'p');
+	dev_dbg(&mgr->pci->dev, "snd_add_ref_pipe pin(%d) pcm%c0\n",
+		    pin, is_capture ? 'c' : 'p');
 	pipe->is_capture = is_capture;
 	pipe->first_audio = pin;
 	/* define pipe (P_PCM_ONLY_MASK (0x020000) is not necessary) */
@@ -167,6 +239,17 @@ static int pcxhr_dsp_allocate_pipe( struct pcxhr_mgr *mgr, struct pcxhr_pipe *pi
 	err = pcxhr_send_msg(mgr, &rmh);
 	if (err < 0) {
 		snd_printk(KERN_ERR "error pipe allocation (CMD_RES_PIPE) err=%x!\n", err );
+	pcxhr_set_pipe_cmd_params(&rmh, is_capture, pin,
+				  audio_count, stream_count);
+	rmh.cmd[1] |= 0x020000; /* add P_PCM_ONLY_MASK */
+	if (DSP_EXT_CMD_SET(mgr)) {
+		/* add channel mask to command */
+	  rmh.cmd[rmh.cmd_len++] = (audio_count == 1) ? 0x01 : 0x03;
+	}
+	err = pcxhr_send_msg(mgr, &rmh);
+	if (err < 0) {
+		dev_err(&mgr->pci->dev, "error pipe allocation "
+			   "(CMD_RES_PIPE) err=%x!\n", err);
 		return err;
 	}
 	pipe->status = PCXHR_PIPE_DEFINED;
@@ -200,6 +283,15 @@ static int pcxhr_dsp_free_pipe( struct pcxhr_mgr *mgr, struct pcxhr_pipe *pipe)
 	err = pcxhr_send_msg(mgr, &rmh);
 	if (err < 0)
 		snd_printk(KERN_ERR "error pipe release (CMD_FREE_PIPE) err(%x)\n", err);
+		dev_err(&mgr->pci->dev, "error stopping pipe!\n");
+	/* release the pipe */
+	pcxhr_init_rmh(&rmh, CMD_FREE_PIPE);
+	pcxhr_set_pipe_cmd_params(&rmh, pipe->is_capture, pipe->first_audio,
+				  0, 0);
+	err = pcxhr_send_msg(mgr, &rmh);
+	if (err < 0)
+		dev_err(&mgr->pci->dev, "error pipe release "
+			   "(CMD_FREE_PIPE) err(%x)\n", err);
 	pipe->status = PCXHR_PIPE_UNDEFINED;
 	return err;
 }
@@ -248,6 +340,9 @@ static int pcxhr_start_pipes(struct pcxhr_mgr *mgr)
 			playback_mask |= (1 << chip->playback_pipe.first_audio);
 		for (j = 0; j < chip->nb_streams_capt; j++)
 			capture_mask |= (1 << chip->capture_pipe[j].first_audio);
+			playback_mask |= 1 << chip->playback_pipe.first_audio;
+		for (j = 0; j < chip->nb_streams_capt; j++)
+			capture_mask |= 1 << chip->capture_pipe[j].first_audio;
 	}
 	return pcxhr_set_pipe_state(mgr, playback_mask, capture_mask, 1);
 }
@@ -258,6 +353,13 @@ static int pcxhr_dsp_load(struct pcxhr_mgr *mgr, int index, const struct firmwar
 	int err, card_index;
 
 	snd_printdd("loading dsp [%d] size = %Zd\n", index, dsp->size);
+static int pcxhr_dsp_load(struct pcxhr_mgr *mgr, int index,
+			  const struct firmware *dsp)
+{
+	int err, card_index;
+
+	dev_dbg(&mgr->pci->dev,
+		"loading dsp [%d] size = %Zd\n", index, dsp->size);
 
 	switch (index) {
 	case PCXHR_FIRMWARE_XLX_INT_INDEX:
@@ -282,6 +384,7 @@ static int pcxhr_dsp_load(struct pcxhr_mgr *mgr, int index, const struct firmwar
 		break;	/* continue with first init */
 	default:
 		snd_printk(KERN_ERR "wrong file index\n");
+		dev_err(&mgr->pci->dev, "wrong file index\n");
 		return -EFAULT;
 	} /* end of switch file index*/
 
@@ -289,11 +392,13 @@ static int pcxhr_dsp_load(struct pcxhr_mgr *mgr, int index, const struct firmwar
 	err = pcxhr_init_board(mgr);
         if (err < 0) {
 		snd_printk(KERN_ERR "pcxhr could not be set up\n");
+		dev_err(&mgr->pci->dev, "pcxhr could not be set up\n");
 		return err;
 	}
 	err = pcxhr_config_pipes(mgr);
         if (err < 0) {
 		snd_printk(KERN_ERR "pcxhr pipes could not be set up\n");
+		dev_err(&mgr->pci->dev, "pcxhr pipes could not be set up\n");
 		return err;
 	}
        	/* create devices and mixer in accordance with HW options*/
@@ -316,6 +421,11 @@ static int pcxhr_dsp_load(struct pcxhr_mgr *mgr, int index, const struct firmwar
 		return err;
 	}
 	snd_printdd("pcxhr firmware downloaded and successfully set up\n");
+		dev_err(&mgr->pci->dev, "pcxhr pipes could not be started\n");
+		return err;
+	}
+	dev_dbg(&mgr->pci->dev,
+		"pcxhr firmware downloaded and successfully set up\n");
 
 	return 0;
 }
@@ -333,6 +443,21 @@ int pcxhr_setup_firmware(struct pcxhr_mgr *mgr)
 		"e321_512.e56",
 		"b321_512.b56",
 		"d321_512.d56"
+int pcxhr_setup_firmware(struct pcxhr_mgr *mgr)
+{
+	static char *fw_files[][5] = {
+	[0] = { "xlxint.dat", "xlxc882hr.dat",
+		"dspe882.e56", "dspb882hr.b56", "dspd882.d56" },
+	[1] = { "xlxint.dat", "xlxc882e.dat",
+		"dspe882.e56", "dspb882e.b56", "dspd882.d56" },
+	[2] = { "xlxint.dat", "xlxc1222hr.dat",
+		"dspe882.e56", "dspb1222hr.b56", "dspd1222.d56" },
+	[3] = { "xlxint.dat", "xlxc1222e.dat",
+		"dspe882.e56", "dspb1222e.b56", "dspd1222.d56" },
+	[4] = { NULL, "xlxc222.dat",
+		"dspe924.e56", "dspb924.b56", "dspd222.d56" },
+	[5] = { NULL, "xlxc924.dat",
+		"dspe924.e56", "dspb924.b56", "dspd222.d56" },
 	};
 	char path[32];
 
@@ -343,6 +468,16 @@ int pcxhr_setup_firmware(struct pcxhr_mgr *mgr)
 		sprintf(path, "pcxhr/%s", fw_files[i]);
 		if (request_firmware(&fw_entry, path, &mgr->pci->dev)) {
 			snd_printk(KERN_ERR "pcxhr: can't load firmware %s\n", path);
+	int fw_set = mgr->fw_file_set;
+
+	for (i = 0; i < 5; i++) {
+		if (!fw_files[fw_set][i])
+			continue;
+		sprintf(path, "pcxhr/%s", fw_files[fw_set][i]);
+		if (request_firmware(&fw_entry, path, &mgr->pci->dev)) {
+			dev_err(&mgr->pci->dev,
+				"pcxhr: can't load firmware %s\n",
+				   path);
 			return -ENOENT;
 		}
 		/* fake hwdep dsp record */
@@ -441,3 +576,22 @@ int pcxhr_setup_firmware(struct pcxhr_mgr *mgr)
 }
 
 #endif /* SND_PCXHR_FW_LOADER */
+MODULE_FIRMWARE("pcxhr/xlxint.dat");
+MODULE_FIRMWARE("pcxhr/xlxc882hr.dat");
+MODULE_FIRMWARE("pcxhr/xlxc882e.dat");
+MODULE_FIRMWARE("pcxhr/dspe882.e56");
+MODULE_FIRMWARE("pcxhr/dspb882hr.b56");
+MODULE_FIRMWARE("pcxhr/dspb882e.b56");
+MODULE_FIRMWARE("pcxhr/dspd882.d56");
+
+MODULE_FIRMWARE("pcxhr/xlxc1222hr.dat");
+MODULE_FIRMWARE("pcxhr/xlxc1222e.dat");
+MODULE_FIRMWARE("pcxhr/dspb1222hr.b56");
+MODULE_FIRMWARE("pcxhr/dspb1222e.b56");
+MODULE_FIRMWARE("pcxhr/dspd1222.d56");
+
+MODULE_FIRMWARE("pcxhr/xlxc222.dat");
+MODULE_FIRMWARE("pcxhr/xlxc924.dat");
+MODULE_FIRMWARE("pcxhr/dspe924.e56");
+MODULE_FIRMWARE("pcxhr/dspb924.b56");
+MODULE_FIRMWARE("pcxhr/dspd222.d56");

@@ -31,6 +31,11 @@
 #include <linux/usb/input.h>
 #include <linux/hid.h>
 
+/* for apple IDs */
+#ifdef CONFIG_USB_HID_MODULE
+#include "../hid-ids.h"
+#endif
+
 /*
  * Version Information
  */
@@ -90,6 +95,10 @@ resubmit:
 		err ("can't resubmit intr, %s-%s/input0, status %d",
 				mouse->usbdev->bus->bus_name,
 				mouse->usbdev->devpath, status);
+		dev_err(&mouse->usbdev->dev,
+			"can't resubmit intr, %s-%s/input0, status %d\n",
+			mouse->usbdev->bus->bus_name,
+			mouse->usbdev->devpath, status);
 }
 
 static int usb_mouse_open(struct input_dev *dev)
@@ -138,6 +147,7 @@ static int usb_mouse_probe(struct usb_interface *intf, const struct usb_device_i
 		goto fail1;
 
 	mouse->data = usb_buffer_alloc(dev, 8, GFP_ATOMIC, &mouse->data_dma);
+	mouse->data = usb_alloc_coherent(dev, 8, GFP_ATOMIC, &mouse->data_dma);
 	if (!mouse->data)
 		goto fail1;
 
@@ -201,6 +211,7 @@ fail3:
 	usb_free_urb(mouse->irq);
 fail2:	
 	usb_buffer_free(dev, 8, mouse->data, mouse->data_dma);
+	usb_free_coherent(dev, 8, mouse->data, mouse->data_dma);
 fail1:	
 	input_free_device(input_dev);
 	kfree(mouse);
@@ -217,6 +228,7 @@ static void usb_mouse_disconnect(struct usb_interface *intf)
 		input_unregister_device(mouse->dev);
 		usb_free_urb(mouse->irq);
 		usb_buffer_free(interface_to_usbdev(intf), 8, mouse->data, mouse->data_dma);
+		usb_free_coherent(interface_to_usbdev(intf), 8, mouse->data, mouse->data_dma);
 		kfree(mouse);
 	}
 }
@@ -251,3 +263,4 @@ static void __exit usb_mouse_exit(void)
 
 module_init(usb_mouse_init);
 module_exit(usb_mouse_exit);
+module_usb_driver(usb_mouse_driver);

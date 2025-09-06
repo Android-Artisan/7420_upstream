@@ -158,6 +158,8 @@ struct rtl8150 {
 	struct net_device_stats stats;
 	struct net_device *netdev;
 	struct urb *rx_urb, *tx_urb, *intr_urb, *ctrl_urb;
+	struct net_device *netdev;
+	struct urb *rx_urb, *tx_urb, *intr_urb;
 	struct sk_buff *tx_skb, *rx_skb;
 	struct sk_buff *rx_skb_pool[RX_SKB_POOL_SIZE];
 	spinlock_t rx_pool_lock;
@@ -190,6 +192,13 @@ static struct usb_driver rtl8150_driver = {
 	.resume =	rtl8150_resume
 };
 
+struct async_req {
+	struct usb_ctrlrequest dr;
+	u16 rx_creg;
+};
+
+static const char driver_name [] = "rtl8150";
+
 /*
 **
 **	device related part of the code
@@ -197,16 +206,36 @@ static struct usb_driver rtl8150_driver = {
 */
 static int get_registers(rtl8150_t * dev, u16 indx, u16 size, void *data)
 {
-	return usb_control_msg(dev->udev, usb_rcvctrlpipe(dev->udev, 0),
-			       RTL8150_REQ_GET_REGS, RTL8150_REQT_READ,
-			       indx, 0, data, size, 500);
+	void *buf;
+	int ret;
+
+	buf = kmalloc(size, GFP_NOIO);
+	if (!buf)
+		return -ENOMEM;
+
+	ret = usb_control_msg(dev->udev, usb_rcvctrlpipe(dev->udev, 0),
+			      RTL8150_REQ_GET_REGS, RTL8150_REQT_READ,
+			      indx, 0, buf, size, 500);
+	if (ret > 0 && ret <= size)
+		memcpy(data, buf, ret);
+	kfree(buf);
+	return ret;
 }
 
-static int set_registers(rtl8150_t * dev, u16 indx, u16 size, void *data)
+static int set_registers(rtl8150_t * dev, u16 indx, u16 size, const void *data)
 {
-	return usb_control_msg(dev->udev, usb_sndctrlpipe(dev->udev, 0),
-			       RTL8150_REQ_SET_REGS, RTL8150_REQT_WRITE,
-			       indx, 0, data, size, 500);
+	void *buf;
+	int ret;
+
+	buf = kmemdup(data, size, GFP_NOIO);
+	if (!buf)
+		return -ENOMEM;
+
+	ret = usb_control_msg(dev->udev, usb_sndctrlpipe(dev->udev, 0),
+			      RTL8150_REQ_SET_REGS, RTL8150_REQT_WRITE,
+			      indx, 0, buf, size, 500);
+	kfree(buf);
+	return ret;
 }
 
 static void ctrl_callback(struct urb *urb)
@@ -251,6 +280,47 @@ static int async_set_registers(rtl8150_t * dev, u16 indx, u16 size)
 		set_bit(RX_REG_SET, &dev->flags);
 
 	return ret;
+static void async_set_reg_cb(struct urb *urb)
+{
+	struct async_req *req = (struct async_req *)urb->context;
+	int status = urb->status;
+
+	if (status < 0)
+		dev_dbg(&urb->dev->dev, "%s failed with %d", __func__, status);
+	kfree(req);
+	usb_free_urb(urb);
+}
+
+static int async_set_registers(rtl8150_t *dev, u16 indx, u16 size, u16 reg)
+{
+	int res = -ENOMEM;
+	struct urb *async_urb;
+	struct async_req *req;
+
+	req = kmalloc(sizeof(struct async_req), GFP_ATOMIC);
+	if (req == NULL)
+		return res;
+	async_urb = usb_alloc_urb(0, GFP_ATOMIC);
+	if (async_urb == NULL) {
+		kfree(req);
+		return res;
+	}
+	req->rx_creg = cpu_to_le16(reg);
+	req->dr.bRequestType = RTL8150_REQT_WRITE;
+	req->dr.bRequest = RTL8150_REQ_SET_REGS;
+	req->dr.wIndex = 0;
+	req->dr.wValue = cpu_to_le16(indx);
+	req->dr.wLength = cpu_to_le16(size);
+	usb_fill_control_urb(async_urb, dev->udev,
+	                     usb_sndctrlpipe(dev->udev, 0), (void *)&req->dr,
+			     &req->rx_creg, size, async_set_reg_cb, req);
+	res = usb_submit_urb(async_urb, GFP_ATOMIC);
+	if (res) {
+		if (res == -ENODEV)
+			netif_device_detach(dev->netdev);
+		dev_err(&dev->udev->dev, "%s failed with %d\n", __func__, res);
+	}
+	return res;
 }
 
 static int read_mii_word(rtl8150_t * dev, u8 phy, __u8 indx, u16 * reg)
@@ -270,6 +340,7 @@ static int read_mii_word(rtl8150_t * dev, u8 phy, __u8 indx, u16 * reg)
 	} while ((data[0] & PHY_GO) && (i++ < MII_TIMEOUT));
 
 	if (i < MII_TIMEOUT) {
+	if (i <= MII_TIMEOUT) {
 		get_registers(dev, PHYDAT, 2, data);
 		*reg = data[0] | (data[1] << 8);
 		return 0;
@@ -295,17 +366,26 @@ static int write_mii_word(rtl8150_t * dev, u8 phy, __u8 indx, u16 reg)
 	} while ((data[0] & PHY_GO) && (i++ < MII_TIMEOUT));
 
 	if (i < MII_TIMEOUT)
+	if (i <= MII_TIMEOUT)
 		return 0;
 	else
 		return 1;
 }
 
-static inline void set_ethernet_addr(rtl8150_t * dev)
+static void set_ethernet_addr(rtl8150_t *dev)
 {
-	u8 node_id[6];
+	u8 node_id[ETH_ALEN];
+	int ret;
 
-	get_registers(dev, IDR, sizeof(node_id), node_id);
-	memcpy(dev->netdev->dev_addr, node_id, sizeof(node_id));
+	ret = get_registers(dev, IDR, sizeof(node_id), node_id);
+
+	if (ret == sizeof(node_id)) {
+		ether_addr_copy(dev->netdev->dev_addr, node_id);
+	} else {
+		eth_hw_addr_random(dev->netdev);
+		netdev_notice(dev->netdev, "Assigned a random MAC address: %pM\n",
+			      dev->netdev->dev_addr);
+	}
 }
 
 static int rtl8150_set_mac_address(struct net_device *netdev, void *p)
@@ -326,6 +406,12 @@ static int rtl8150_set_mac_address(struct net_device *netdev, void *p)
 	set_registers(dev, IDR, sizeof(netdev->dev_addr), netdev->dev_addr);
 #ifdef EEPROM_WRITE
 	{
+	netdev_dbg(netdev, "Setting MAC address to %pM\n", netdev->dev_addr);
+	/* Set the IDR registers. */
+	set_registers(dev, IDR, netdev->addr_len, netdev->dev_addr);
+#ifdef EEPROM_WRITE
+	{
+	int i;
 	u8 cr;
 	/* Get the CR contents. */
 	get_registers(dev, CR, 1, &cr);
@@ -336,6 +422,7 @@ static int rtl8150_set_mac_address(struct net_device *netdev, void *p)
 	   so we need to split them up. */
 	for (i = 0; i * 2 < netdev->addr_len; i++) {
 		set_registers(dev, IDR_EEPROM + (i * 2), 2, 
+		set_registers(dev, IDR_EEPROM + (i * 2), 2,
 		netdev->dev_addr + (i * 2));
 	}
 	/* Clear the WEPROM bit (preventing accidental eeprom writes). */
@@ -425,6 +512,8 @@ static void read_bulk_callback(struct urb *urb)
 	struct net_device *netdev;
 	u16 rx_stat;
 	int status;
+	int status = urb->status;
+	int result;
 
 	dev = urb->context;
 	if (!dev)
@@ -436,6 +525,7 @@ static void read_bulk_callback(struct urb *urb)
 		return;
 
 	switch (urb->status) {
+	switch (status) {
 	case 0:
 		break;
 	case -ENOENT:
@@ -445,6 +535,12 @@ static void read_bulk_callback(struct urb *urb)
 		goto goon;
 	default:
 		warn("Rx status %d", urb->status);
+		if (printk_ratelimit())
+			dev_warn(&urb->dev->dev, "may be reset is needed?..\n");
+		goto goon;
+	default:
+		if (printk_ratelimit())
+			dev_warn(&urb->dev->dev, "Rx status %d\n", status);
 		goto goon;
 	}
 
@@ -463,6 +559,8 @@ static void read_bulk_callback(struct urb *urb)
 	netif_rx(dev->rx_skb);
 	dev->stats.rx_packets++;
 	dev->stats.rx_bytes += pkt_len;
+	netdev->stats.rx_packets++;
+	netdev->stats.rx_bytes += pkt_len;
 
 	spin_lock(&dev->rx_pool_lock);
 	skb = pull_skb(dev);
@@ -478,6 +576,10 @@ goon:
 	if (status == -ENODEV)
 		netif_device_detach(dev->netdev);
 	else if (status) {
+	result = usb_submit_urb(dev->rx_urb, GFP_ATOMIC);
+	if (result == -ENODEV)
+		netif_device_detach(dev->netdev);
+	else if (result) {
 		set_bit(RX_URB_FAIL, &dev->flags);
 		goto resched;
 	} else {
@@ -530,6 +632,10 @@ tlsched:
 static void write_bulk_callback(struct urb *urb)
 {
 	rtl8150_t *dev;
+static void write_bulk_callback(struct urb *urb)
+{
+	rtl8150_t *dev;
+	int status = urb->status;
 
 	dev = urb->context;
 	if (!dev)
@@ -539,6 +645,9 @@ static void write_bulk_callback(struct urb *urb)
 		return;
 	if (urb->status)
 		info("%s: Tx status %d", dev->netdev->name, urb->status);
+	if (status)
+		dev_info(&urb->dev->dev, "%s: Tx status %d\n",
+			 dev->netdev->name, status);
 	dev->netdev->trans_start = jiffies;
 	netif_wake_queue(dev->netdev);
 }
@@ -548,11 +657,14 @@ static void intr_callback(struct urb *urb)
 	rtl8150_t *dev;
 	__u8 *d;
 	int status;
+	int status = urb->status;
+	int res;
 
 	dev = urb->context;
 	if (!dev)
 		return;
 	switch (urb->status) {
+	switch (status) {
 	case 0:			/* success */
 		break;
 	case -ECONNRESET:	/* unlink */
@@ -562,6 +674,8 @@ static void intr_callback(struct urb *urb)
 	/* -EPIPE:  should clear the halt */
 	default:
 		info("%s: intr status %d", dev->netdev->name, urb->status);
+		dev_info(&urb->dev->dev, "%s: intr status %d\n",
+			 dev->netdev->name, status);
 		goto resubmit;
 	}
 
@@ -574,17 +688,26 @@ static void intr_callback(struct urb *urb)
 			dev->stats.tx_window_errors++;
 		if (d[INT_TSR] & TSR_LOSS_CRS)
 			dev->stats.tx_carrier_errors++;
+		dev->netdev->stats.tx_errors++;
+		if (d[INT_TSR] & (TSR_ECOL | TSR_JBR))
+			dev->netdev->stats.tx_aborted_errors++;
+		if (d[INT_TSR] & TSR_LCOL)
+			dev->netdev->stats.tx_window_errors++;
+		if (d[INT_TSR] & TSR_LOSS_CRS)
+			dev->netdev->stats.tx_carrier_errors++;
 	}
 	/* Report link status changes to the network stack */
 	if ((d[INT_MSR] & MSR_LINK) == 0) {
 		if (netif_carrier_ok(dev->netdev)) {
 			netif_carrier_off(dev->netdev);
 			dbg("%s: LINK LOST\n", __func__);
+			netdev_dbg(dev->netdev, "%s: LINK LOST\n", __func__);
 		}
 	} else {
 		if (!netif_carrier_ok(dev->netdev)) {
 			netif_carrier_on(dev->netdev);
 			dbg("%s: LINK CAME BACK\n", __func__);
+			netdev_dbg(dev->netdev, "%s: LINK CAME BACK\n", __func__);
 		}
 	}
 
@@ -596,6 +719,13 @@ resubmit:
 		err ("can't resubmit intr, %s-%s/input0, status %d",
 				dev->udev->bus->bus_name,
 				dev->udev->devpath, status);
+	res = usb_submit_urb (urb, GFP_ATOMIC);
+	if (res == -ENODEV)
+		netif_device_detach(dev->netdev);
+	else if (res)
+		dev_err(&dev->udev->dev,
+			"can't resubmit intr, %s-%s/input0, status %d\n",
+			dev->udev->bus->bus_name, dev->udev->devpath, res);
 }
 
 static int rtl8150_suspend(struct usb_interface *intf, pm_message_t message)
@@ -660,6 +790,42 @@ static void free_skb_pool(rtl8150_t *dev)
 			dev_kfree_skb(dev->rx_skb_pool[i]);
 }
 
+static void rx_fixup(unsigned long data)
+{
+	struct rtl8150 *dev = (struct rtl8150 *)data;
+	struct sk_buff *skb;
+	int status;
+
+	spin_lock_irq(&dev->rx_pool_lock);
+	fill_skb_pool(dev);
+	spin_unlock_irq(&dev->rx_pool_lock);
+	if (test_bit(RX_URB_FAIL, &dev->flags))
+		if (dev->rx_skb)
+			goto try_again;
+	spin_lock_irq(&dev->rx_pool_lock);
+	skb = pull_skb(dev);
+	spin_unlock_irq(&dev->rx_pool_lock);
+	if (skb == NULL)
+		goto tlsched;
+	dev->rx_skb = skb;
+	usb_fill_bulk_urb(dev->rx_urb, dev->udev, usb_rcvbulkpipe(dev->udev, 1),
+		      dev->rx_skb->data, RTL8150_MTU, read_bulk_callback, dev);
+try_again:
+	status = usb_submit_urb(dev->rx_urb, GFP_ATOMIC);
+	if (status == -ENODEV) {
+		netif_device_detach(dev->netdev);
+	} else if (status) {
+		set_bit(RX_URB_FAIL, &dev->flags);
+		goto tlsched;
+	} else {
+		clear_bit(RX_URB_FAIL, &dev->flags);
+	}
+
+	return;
+tlsched:
+	tasklet_schedule(&dev->tl);
+}
+
 static int enable_net_traffic(rtl8150_t * dev)
 {
 	u8 cr, tcr, rcr, msr;
@@ -670,6 +836,10 @@ static int enable_net_traffic(rtl8150_t * dev)
 	/* RCR bit7=1 attach Rx info at the end;  =0 HW CRC (which is broken) */
 	rcr = 0x9e;
 	dev->rx_creg = cpu_to_le16(rcr);
+		dev_warn(&dev->udev->dev, "device reset failed\n");
+	}
+	/* RCR bit7=1 attach Rx info at the end;  =0 HW CRC (which is broken) */
+	rcr = 0x9e;
 	tcr = 0xd8;
 	cr = 0x0c;
 	if (!(rcr & 0x80))
@@ -702,6 +872,12 @@ static void rtl8150_tx_timeout(struct net_device *netdev)
 	warn("%s: Tx timeout.", netdev->name);
 	usb_unlink_urb(dev->tx_urb);
 	dev->stats.tx_errors++;
+static void rtl8150_tx_timeout(struct net_device *netdev)
+{
+	rtl8150_t *dev = netdev_priv(netdev);
+	dev_warn(&netdev->dev, "Tx timeout.\n");
+	usb_unlink_urb(dev->tx_urb);
+	netdev->stats.tx_errors++;
 }
 
 static void rtl8150_set_multicast(struct net_device *netdev)
@@ -725,6 +901,27 @@ static void rtl8150_set_multicast(struct net_device *netdev)
 }
 
 static int rtl8150_start_xmit(struct sk_buff *skb, struct net_device *netdev)
+	u16 rx_creg = 0x9e;
+
+	netif_stop_queue(netdev);
+	if (netdev->flags & IFF_PROMISC) {
+		rx_creg |= 0x0001;
+		dev_info(&netdev->dev, "%s: promiscuous mode\n", netdev->name);
+	} else if (!netdev_mc_empty(netdev) ||
+		   (netdev->flags & IFF_ALLMULTI)) {
+		rx_creg &= 0xfffe;
+		rx_creg |= 0x0002;
+		dev_dbg(&netdev->dev, "%s: allmulti set\n", netdev->name);
+	} else {
+		/* ~RX_MULTICAST, ~RX_PROMISCUOUS */
+		rx_creg &= 0x00fc;
+	}
+	async_set_registers(dev, RCR, sizeof(rx_creg), rx_creg);
+	netif_wake_queue(netdev);
+}
+
+static netdev_tx_t rtl8150_start_xmit(struct sk_buff *skb,
+					    struct net_device *netdev)
 {
 	rtl8150_t *dev = netdev_priv(netdev);
 	int count, res;
@@ -751,6 +948,17 @@ static int rtl8150_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 	}
 
 	return 0;
+			dev_warn(&netdev->dev, "failed tx_urb %d\n", res);
+			netdev->stats.tx_errors++;
+			netif_start_queue(netdev);
+		}
+	} else {
+		netdev->stats.tx_packets++;
+		netdev->stats.tx_bytes += skb->len;
+		netdev->trans_start = jiffies;
+	}
+
+	return NETDEV_TX_OK;
 }
 
 
@@ -778,12 +986,14 @@ static int rtl8150_open(struct net_device *netdev)
 
 	set_registers(dev, IDR, 6, netdev->dev_addr);
 	
+
 	usb_fill_bulk_urb(dev->rx_urb, dev->udev, usb_rcvbulkpipe(dev->udev, 1),
 		      dev->rx_skb->data, RTL8150_MTU, read_bulk_callback, dev);
 	if ((res = usb_submit_urb(dev->rx_urb, GFP_KERNEL))) {
 		if (res == -ENODEV)
 			netif_device_detach(dev->netdev);
 		warn("%s: rx_urb submit failed: %d", __FUNCTION__, res);
+		dev_warn(&netdev->dev, "rx_urb submit failed: %d\n", res);
 		return res;
 	}
 	usb_fill_int_urb(dev->intr_urb, dev->udev, usb_rcvintpipe(dev->udev, 3),
@@ -793,6 +1003,7 @@ static int rtl8150_open(struct net_device *netdev)
 		if (res == -ENODEV)
 			netif_device_detach(dev->netdev);
 		warn("%s: intr_urb submit failed: %d", __FUNCTION__, res);
+		dev_warn(&netdev->dev, "intr_urb submit failed: %d\n", res);
 		usb_kill_urb(dev->rx_urb);
 		return res;
 	}
@@ -814,6 +1025,7 @@ static int rtl8150_close(struct net_device *netdev)
 	unlink_all_urbs(dev);
 
 	return res;
+	return 0;
 }
 
 static void rtl8150_get_drvinfo(struct net_device *netdev, struct ethtool_drvinfo *info)
@@ -823,12 +1035,16 @@ static void rtl8150_get_drvinfo(struct net_device *netdev, struct ethtool_drvinf
 	strncpy(info->driver, driver_name, ETHTOOL_BUSINFO_LEN);
 	strncpy(info->version, DRIVER_VERSION, ETHTOOL_BUSINFO_LEN);
 	usb_make_path(dev->udev, info->bus_info, sizeof info->bus_info);
+	strlcpy(info->driver, driver_name, sizeof(info->driver));
+	strlcpy(info->version, DRIVER_VERSION, sizeof(info->version));
+	usb_make_path(dev->udev, info->bus_info, sizeof(info->bus_info));
 }
 
 static int rtl8150_get_settings(struct net_device *netdev, struct ethtool_cmd *ecmd)
 {
 	rtl8150_t *dev = netdev_priv(netdev);
-	short lpa, bmcr;
+	short lpa = 0;
+	short bmcr = 0;
 
 	ecmd->supported = (SUPPORTED_10baseT_Half |
 			  SUPPORTED_10baseT_Full |
@@ -846,6 +1062,11 @@ static int rtl8150_get_settings(struct net_device *netdev, struct ethtool_cmd *e
 		ecmd->speed = (lpa & (LPA_100HALF | LPA_100FULL)) ?
 			     SPEED_100 : SPEED_10;
 		if (ecmd->speed == SPEED_100)
+		u32 speed = ((lpa & (LPA_100HALF | LPA_100FULL)) ?
+			     SPEED_100 : SPEED_10);
+		ethtool_cmd_speed_set(ecmd, speed);
+		ecmd->autoneg = AUTONEG_ENABLE;
+		if (speed == SPEED_100)
 			ecmd->duplex = (lpa & LPA_100FULL) ?
 			    DUPLEX_FULL : DUPLEX_HALF;
 		else
@@ -855,6 +1076,8 @@ static int rtl8150_get_settings(struct net_device *netdev, struct ethtool_cmd *e
 		ecmd->autoneg = AUTONEG_DISABLE;
 		ecmd->speed = (bmcr & BMCR_SPEED100) ?
 		    SPEED_100 : SPEED_10;
+		ethtool_cmd_speed_set(ecmd, ((bmcr & BMCR_SPEED100) ?
+					     SPEED_100 : SPEED_10));
 		ecmd->duplex = (bmcr & BMCR_FULLDPLX) ?
 		    DUPLEX_FULL : DUPLEX_HALF;
 	}
@@ -862,6 +1085,7 @@ static int rtl8150_get_settings(struct net_device *netdev, struct ethtool_cmd *e
 }
 
 static struct ethtool_ops ops = {
+static const struct ethtool_ops ops = {
 	.get_drvinfo = rtl8150_get_drvinfo,
 	.get_settings = rtl8150_get_settings,
 	.get_link = ethtool_op_get_link
@@ -891,6 +1115,19 @@ static int rtl8150_ioctl(struct net_device *netdev, struct ifreq *rq, int cmd)
 	return res;
 }
 
+static const struct net_device_ops rtl8150_netdev_ops = {
+	.ndo_open		= rtl8150_open,
+	.ndo_stop		= rtl8150_close,
+	.ndo_do_ioctl		= rtl8150_ioctl,
+	.ndo_start_xmit		= rtl8150_start_xmit,
+	.ndo_tx_timeout		= rtl8150_tx_timeout,
+	.ndo_set_rx_mode	= rtl8150_set_multicast,
+	.ndo_set_mac_address	= rtl8150_set_mac_address,
+
+	.ndo_change_mtu		= eth_change_mtu,
+	.ndo_validate_addr	= eth_validate_addr,
+};
+
 static int rtl8150_probe(struct usb_interface *intf,
 			 const struct usb_device_id *id)
 {
@@ -903,6 +1140,8 @@ static int rtl8150_probe(struct usb_interface *intf,
 		err("Out of memory");
 		return -ENOMEM;
 	}
+	if (!netdev)
+		return -ENOMEM;
 
 	dev = netdev_priv(netdev);
 
@@ -935,6 +1174,20 @@ static int rtl8150_probe(struct usb_interface *intf,
 	}
 	if (!rtl8150_reset(dev)) {
 		err("couldn't reset the device");
+
+	dev->udev = udev;
+	dev->netdev = netdev;
+	netdev->netdev_ops = &rtl8150_netdev_ops;
+	netdev->watchdog_timeo = RTL8150_TX_TIMEOUT;
+	netdev->ethtool_ops = &ops;
+	dev->intr_interval = 100;	/* 100ms */
+
+	if (!alloc_all_urbs(dev)) {
+		dev_err(&intf->dev, "out of memory\n");
+		goto out;
+	}
+	if (!rtl8150_reset(dev)) {
+		dev_err(&intf->dev, "couldn't reset the device\n");
 		goto out1;
 	}
 	fill_skb_pool(dev);
@@ -948,6 +1201,15 @@ static int rtl8150_probe(struct usb_interface *intf,
 	}
 
 	info("%s: rtl8150 is detected", netdev->name);
+
+	usb_set_intfdata(intf, dev);
+	SET_NETDEV_DEV(netdev, &intf->dev);
+	if (register_netdev(netdev) != 0) {
+		dev_err(&intf->dev, "couldn't register the device\n");
+		goto out2;
+	}
+
+	dev_info(&intf->dev, "%s: rtl8150 is detected\n", netdev->name);
 
 	return 0;
 
@@ -995,6 +1257,17 @@ static void __exit usb_rtl8150_exit(void)
 
 module_init(usb_rtl8150_init);
 module_exit(usb_rtl8150_exit);
+static struct usb_driver rtl8150_driver = {
+	.name		= driver_name,
+	.probe		= rtl8150_probe,
+	.disconnect	= rtl8150_disconnect,
+	.id_table	= rtl8150_table,
+	.suspend	= rtl8150_suspend,
+	.resume		= rtl8150_resume,
+	.disable_hub_initiated_lpm = 1,
+};
+
+module_usb_driver(rtl8150_driver);
 
 MODULE_AUTHOR(DRIVER_AUTHOR);
 MODULE_DESCRIPTION(DRIVER_DESC);

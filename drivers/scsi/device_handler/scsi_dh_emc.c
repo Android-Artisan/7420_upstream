@@ -20,6 +20,8 @@
  * along with this program; see the file COPYING.  If not, write to
  * the Free Software Foundation, 675 Mass Ave, Cambridge, MA 02139, USA.
  */
+#include <linux/slab.h>
+#include <linux/module.h>
 #include <scsi/scsi.h>
 #include <scsi/scsi_eh.h>
 #include <scsi/scsi_dh.h>
@@ -85,6 +87,7 @@ struct clariion_dh_data {
 	 * I/O buffer for both MODE_SELECT and INQUIRY commands.
 	 */
 	char buffer[CLARIION_BUFFER_SIZE];
+	unsigned char buffer[CLARIION_BUFFER_SIZE];
 	/*
 	 * SCSI sense buffer for commands -- assumes serial issuance
 	 * and completion sequence of all commands for same multipath.
@@ -177,6 +180,7 @@ static int parse_sp_info_reply(struct scsi_device *sdev,
 		goto out;
 	}
 	if (csdev->buffer[4] < 0 || csdev->buffer[4] > 2) {
+	if (csdev->buffer[4] > 2) {
 		/* Invalid buffer format */
 		sdev_printk(KERN_NOTICE, sdev,
 			    "%s: invalid VPD page 0xC0 format\n",
@@ -274,11 +278,14 @@ static struct request *get_req(struct scsi_device *sdev, int cmd,
 	rq = blk_get_request(sdev->request_queue,
 			(cmd == MODE_SELECT) ? WRITE : READ, GFP_NOIO);
 	if (!rq) {
+			(cmd != INQUIRY) ? WRITE : READ, GFP_NOIO);
+	if (IS_ERR(rq)) {
 		sdev_printk(KERN_INFO, sdev, "get_req: blk_get_request failed");
 		return NULL;
 	}
 
 	memset(rq->cmd, 0, BLK_MAX_CDB);
+	blk_rq_set_block_pc(rq);
 	rq->cmd_len = COMMAND_SIZE(cmd);
 	rq->cmd[0] = cmd;
 
@@ -295,6 +302,17 @@ static struct request *get_req(struct scsi_device *sdev, int cmd,
 		break;
 	case INQUIRY:
 		len = CLARIION_BUFFER_SIZE;
+		rq->cmd[1] = 0x10;
+		rq->cmd[4] = len;
+		break;
+	case MODE_SELECT_10:
+		len = sizeof(long_trespass);
+		rq->cmd[1] = 0x10;
+		rq->cmd[8] = len;
+		break;
+	case INQUIRY:
+		len = CLARIION_BUFFER_SIZE;
+		rq->cmd[4] = len;
 		memset(buffer, 0, len);
 		break;
 	default:
@@ -305,6 +323,8 @@ static struct request *get_req(struct scsi_device *sdev, int cmd,
 	rq->cmd[4] = len;
 	rq->cmd_type = REQ_TYPE_BLOCK_PC;
 	rq->cmd_flags |= REQ_FAILFAST;
+	rq->cmd_flags |= REQ_FAILFAST_DEV | REQ_FAILFAST_TRANSPORT |
+			 REQ_FAILFAST_DRIVER;
 	rq->timeout = CLARIION_TIMEOUT;
 	rq->retries = CLARIION_RETRIES;
 
@@ -449,6 +469,7 @@ static int clariion_check_sense(struct scsi_device *sdev,
 static int clariion_prep_fn(struct scsi_device *sdev, struct request *req)
 {
 	struct clariion_dh_data *h = get_clariion_data(sdev);
+	struct clariion_dh_data *h = sdev->handler_data;
 	int ret = BLKPREP_OK;
 
 	if (h->lun_state != CLARIION_LUN_OWNED) {
@@ -462,7 +483,7 @@ static int clariion_prep_fn(struct scsi_device *sdev, struct request *req)
 static int clariion_std_inquiry(struct scsi_device *sdev,
 				struct clariion_dh_data *csdev)
 {
-	int err;
+	int err = SCSI_DH_OK;
 	char *sp_model;
 
 	err = send_inquiry_cmd(sdev, 0, csdev);
@@ -531,6 +552,10 @@ retry:
 static int clariion_activate(struct scsi_device *sdev)
 {
 	struct clariion_dh_data *csdev = get_clariion_data(sdev);
+static int clariion_activate(struct scsi_device *sdev,
+				activate_complete fn, void *data)
+{
+	struct clariion_dh_data *csdev = sdev->handler_data;
 	int result;
 
 	result = clariion_send_inquiry(sdev, csdev);
@@ -603,6 +628,74 @@ static int clariion_bus_attach(struct scsi_device *sdev)
 
 	scsi_dh_data->scsi_dh = &clariion_dh;
 	h = (struct clariion_dh_data *) scsi_dh_data->buf;
+	if (fn)
+		fn(data, result);
+	return 0;
+}
+/*
+ * params - parameters in the following format
+ *      "no_of_params\0param1\0param2\0param3\0...\0"
+ *      for example, string for 2 parameters with value 10 and 21
+ *      is specified as "2\010\021\0".
+ */
+static int clariion_set_params(struct scsi_device *sdev, const char *params)
+{
+	struct clariion_dh_data *csdev = sdev->handler_data;
+	unsigned int hr = 0, st = 0, argc;
+	const char *p = params;
+	int result = SCSI_DH_OK;
+
+	if ((sscanf(params, "%u", &argc) != 1) || (argc != 2))
+		return -EINVAL;
+
+	while (*p++)
+		;
+	if ((sscanf(p, "%u", &st) != 1) || (st > 1))
+		return -EINVAL;
+
+	while (*p++)
+		;
+	if ((sscanf(p, "%u", &hr) != 1) || (hr > 1))
+		return -EINVAL;
+
+	if (st)
+		csdev->flags |= CLARIION_SHORT_TRESPASS;
+	else
+		csdev->flags &= ~CLARIION_SHORT_TRESPASS;
+
+	if (hr)
+		csdev->flags |= CLARIION_HONOR_RESERVATIONS;
+	else
+		csdev->flags &= ~CLARIION_HONOR_RESERVATIONS;
+
+	/*
+	 * If this path is owned, we have to send a trespass command
+	 * with the new parameters. If not, simply return. Next trespass
+	 * command would use the parameters.
+	 */
+	if (csdev->lun_state != CLARIION_LUN_OWNED)
+		goto done;
+
+	csdev->lun_state = CLARIION_LUN_UNINITIALIZED;
+	result = send_trespass_cmd(sdev, csdev);
+	if (result != SCSI_DH_OK)
+		goto done;
+
+	/* Update status */
+	result = clariion_send_inquiry(sdev, csdev);
+
+done:
+	return result;
+}
+
+static int clariion_bus_attach(struct scsi_device *sdev)
+{
+	struct clariion_dh_data *h;
+	int err;
+
+	h = kzalloc(sizeof(*h) , GFP_KERNEL);
+	if (!h)
+		return -ENOMEM;
 	h->lun_state = CLARIION_LUN_UNINITIALIZED;
 	h->default_sp = CLARIION_UNBOUND_LU;
 	h->current_sp = CLARIION_UNBOUND_LU;
@@ -634,6 +727,11 @@ failed:
 	kfree(scsi_dh_data);
 	sdev_printk(KERN_ERR, sdev, "%s: not attached\n",
 		    CLARIION_NAME);
+	sdev->handler_data = h;
+	return 0;
+
+failed:
+	kfree(h);
 	return -EINVAL;
 }
 
@@ -653,6 +751,21 @@ static void clariion_bus_detach(struct scsi_device *sdev)
 	kfree(scsi_dh_data);
 	module_put(THIS_MODULE);
 }
+
+	kfree(sdev->handler_data);
+	sdev->handler_data = NULL;
+}
+
+static struct scsi_device_handler clariion_dh = {
+	.name		= CLARIION_NAME,
+	.module		= THIS_MODULE,
+	.attach		= clariion_bus_attach,
+	.detach		= clariion_bus_detach,
+	.check_sense	= clariion_check_sense,
+	.activate	= clariion_activate,
+	.prep_fn	= clariion_prep_fn,
+	.set_params	= clariion_set_params,
+};
 
 static int __init clariion_init(void)
 {

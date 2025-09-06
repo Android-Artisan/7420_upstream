@@ -16,6 +16,8 @@
 #include "kern_constants.h"
 #include "os.h"
 #include "user.h"
+#include <init.h>
+#include <os.h>
 
 #define UML_DIR "~/.uml/"
 

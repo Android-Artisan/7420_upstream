@@ -12,6 +12,9 @@
 #include "os.h"
 #include "slirp.h"
 #include "user.h"
+#include <net_user.h>
+#include <os.h>
+#include "slirp.h"
 
 static int slirp_user_init(void *data, void *dev)
 {
@@ -24,6 +27,8 @@ static int slirp_user_init(void *data, void *dev)
 struct slirp_pre_exec_data {
 	int stdin;
 	int stdout;
+	int stdin_fd;
+	int stdout_fd;
 };
 
 static void slirp_pre_exec(void *arg)
@@ -34,6 +39,10 @@ static void slirp_pre_exec(void *arg)
 		dup2(data->stdin, 0);
 	if (data->stdout != -1)
 		dup2(data->stdout, 1);
+	if (data->stdin_fd != -1)
+		dup2(data->stdin_fd, 0);
+	if (data->stdout_fd != -1)
+		dup2(data->stdout_fd, 1);
 }
 
 static int slirp_tramp(char **argv, int fd)
@@ -43,6 +52,8 @@ static int slirp_tramp(char **argv, int fd)
 
 	pe_data.stdin = fd;
 	pe_data.stdout = fd;
+	pe_data.stdin_fd = fd;
+	pe_data.stdout_fd = fd;
 	pid = run_helper(slirp_pre_exec, &pe_data, argv);
 
 	return pid;

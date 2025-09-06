@@ -18,6 +18,26 @@
 
 #include "rtc-core.h"
 
+#define NAME_SIZE	10
+
+#if defined(CONFIG_RTC_HCTOSYS_DEVICE)
+static bool is_rtc_hctosys(struct rtc_device *rtc)
+{
+	int size;
+	char name[NAME_SIZE];
+
+	size = snprintf(name, NAME_SIZE, "rtc%d", rtc->id);
+	if (size >= NAME_SIZE)
+		return false;
+
+	return !strncmp(name, CONFIG_RTC_HCTOSYS_DEVICE, NAME_SIZE);
+}
+#else
+static bool is_rtc_hctosys(struct rtc_device *rtc)
+{
+	return (rtc->id == 0);
+}
+#endif
 
 static int rtc_proc_show(struct seq_file *seq, void *offset)
 {
@@ -69,6 +89,14 @@ static int rtc_proc_show(struct seq_file *seq, void *offset)
 				alrm.enabled ? "yes" : "no");
 		seq_printf(seq, "alrm_pending\t: %s\n",
 				alrm.pending ? "yes" : "no");
+		seq_printf(seq, "update IRQ enabled\t: %s\n",
+			(rtc->uie_rtctimer.enabled) ? "yes" : "no");
+		seq_printf(seq, "periodic IRQ enabled\t: %s\n",
+			(rtc->pie_enabled) ? "yes" : "no");
+		seq_printf(seq, "periodic IRQ frequency\t: %d\n",
+			rtc->irq_freq);
+		seq_printf(seq, "max user IRQ frequency\t: %d\n",
+			rtc->max_user_freq);
 	}
 
 	seq_printf(seq, "24hr\t\t: yes\n");
@@ -82,11 +110,17 @@ static int rtc_proc_show(struct seq_file *seq, void *offset)
 static int rtc_proc_open(struct inode *inode, struct file *file)
 {
 	struct rtc_device *rtc = PDE(inode)->data;
+	int ret;
+	struct rtc_device *rtc = PDE_DATA(inode);
 
 	if (!try_module_get(THIS_MODULE))
 		return -ENODEV;
 
 	return single_open(file, rtc_proc_show, rtc);
+	ret = single_open(file, rtc_proc_show, rtc);
+	if (ret)
+		module_put(THIS_MODULE);
+	return ret;
 }
 
 static int rtc_proc_release(struct inode *inode, struct file *file)
@@ -113,10 +147,13 @@ void rtc_proc_add_device(struct rtc_device *rtc)
 		if (ent)
 			ent->owner = rtc->owner;
 	}
+	if (is_rtc_hctosys(rtc))
+		proc_create_data("driver/rtc", 0, NULL, &rtc_proc_fops, rtc);
 }
 
 void rtc_proc_del_device(struct rtc_device *rtc)
 {
 	if (rtc->id == 0)
+	if (is_rtc_hctosys(rtc))
 		remove_proc_entry("driver/rtc", NULL);
 }

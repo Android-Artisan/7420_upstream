@@ -23,6 +23,17 @@
 #include "uml-config.h"
 
 extern unsigned long batch_syscall_stub, __syscall_stub_start;
+#include <init.h>
+#include <as-layout.h>
+#include <mm_id.h>
+#include <os.h>
+#include <ptrace_user.h>
+#include <registers.h>
+#include <skas.h>
+#include <sysdep/ptrace.h>
+#include <sysdep/stub.h>
+
+extern char batch_syscall_stub[], __syscall_stub_start[];
 
 extern void wait_stub_done(int pid);
 
@@ -44,6 +55,10 @@ static int __init init_syscall_regs(void)
 	syscall_regs[REGS_IP_INDEX] = STUB_CODE +
 		((unsigned long) &batch_syscall_stub -
 		 (unsigned long) &__syscall_stub_start);
+	get_safe_registers(syscall_regs, NULL);
+	syscall_regs[REGS_IP_INDEX] = STUB_CODE +
+		((unsigned long) batch_syscall_stub -
+		 (unsigned long) __syscall_stub_start);
 	return 0;
 }
 
@@ -223,6 +238,12 @@ int map(struct mm_id * mm_idp, unsigned long virt, unsigned long len, int prot,
 		ret = run_syscall_stub(mm_idp, STUB_MMAP_NR, args, virt,
 				       data, done);
 	}
+	unsigned long args[] = { virt, len, prot,
+				 MAP_SHARED | MAP_FIXED, phys_fd,
+				 MMAP_OFFSET(offset) };
+
+	ret = run_syscall_stub(mm_idp, STUB_MMAP_NR, args, virt,
+			       data, done);
 
 	return ret;
 }
@@ -257,6 +278,11 @@ int unmap(struct mm_id * mm_idp, unsigned long addr, unsigned long len,
 		ret = run_syscall_stub(mm_idp, __NR_munmap, args, 0,
 				       data, done);
 	}
+	unsigned long args[] = { (unsigned long) addr, len, 0, 0, 0,
+				 0 };
+
+	ret = run_syscall_stub(mm_idp, __NR_munmap, args, 0,
+			       data, done);
 
 	return ret;
 }
@@ -291,6 +317,11 @@ int protect(struct mm_id * mm_idp, unsigned long addr, unsigned long len,
 		ret = run_syscall_stub(mm_idp, __NR_mprotect, args, 0,
 				       data, done);
 	}
+	int ret;
+	unsigned long args[] = { addr, len, prot, 0, 0, 0 };
+
+	ret = run_syscall_stub(mm_idp, __NR_mprotect, args, 0,
+			       data, done);
 
 	return ret;
 }

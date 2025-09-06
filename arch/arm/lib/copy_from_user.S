@@ -12,11 +12,13 @@
 
 #include <linux/linkage.h>
 #include <asm/assembler.h>
+#include <asm/unwind.h>
 
 /*
  * Prototype:
  *
  *	size_t __copy_from_user(void *to, const void *from, size_t n)
+ *	size_t arm_copy_from_user(void *to, const void *from, size_t n)
  *
  * Purpose:
  *
@@ -38,6 +40,15 @@
 	.section __ex_table, "a"
 	.long 100b, \abort
 	.previous
+#ifndef CONFIG_THUMB2_KERNEL
+#define LDR1W_SHIFT	0
+#else
+#define LDR1W_SHIFT	1
+#endif
+#define STR1W_SHIFT	0
+
+	.macro ldr1w ptr reg abort
+	ldrusr	\reg, \ptr, 4, abort=\abort
 	.endm
 
 	.macro ldr4w ptr reg1 reg2 reg3 reg4 abort
@@ -61,6 +72,11 @@
 
 	.macro str1w ptr reg abort
 	str \reg, [\ptr], #4
+	ldrusr	\reg, \ptr, 1, \cond, abort=\abort
+	.endm
+
+	.macro str1w ptr reg abort
+	W(str) \reg, [\ptr], #4
 	.endm
 
 	.macro str8w ptr reg1 reg2 reg3 reg4 reg5 reg6 reg7 reg8 abort
@@ -76,6 +92,10 @@
 	stmdb	sp!, {r0, r2, r3, \reg1, \reg2}
 	.endm
 
+	.macro usave reg1 reg2
+	UNWIND(	.save {r0, r2, r3, \reg1, \reg2}	)
+	.endm
+
 	.macro exit reg1 reg2
 	add	sp, sp, #8
 	ldmfd	sp!, {r0, \reg1, \reg2}
@@ -88,6 +108,18 @@ ENTRY(__copy_from_user)
 #include "copy_template.S"
 
 	.section .fixup,"ax"
+ENTRY(arm_copy_from_user)
+#ifdef CONFIG_CPU_SPECTRE
+	get_thread_info r3
+	ldr	r3, [r3, #TI_ADDR_LIMIT]
+	uaccess_mask_range_ptr r1, r2, r3, ip
+#endif
+
+#include "copy_template.S"
+
+ENDPROC(arm_copy_from_user)
+
+	.pushsection .text.fixup,"ax"
 	.align 0
 	copy_abort_preamble
 	ldmfd	sp!, {r1, r2}
@@ -98,4 +130,5 @@ ENTRY(__copy_from_user)
 	ldr	r0, [sp], #4
 	copy_abort_end
 	.previous
+	.popsection
 

@@ -1,20 +1,17 @@
 
             The Spidernet Device Driver
-            ===========================
 
 Written by Linas Vepstas <linas@austin.ibm.com>
 
 Version of 7 June 2007
 
 Abstract
-========
 This document sketches the structure of portions of the spidernet
 device driver in the Linux kernel tree. The spidernet is a gigabit
 ethernet device built into the Toshiba southbridge commonly used
 in the SONY Playstation 3 and the IBM QS20 Cell blade.
 
 The Structure of the RX Ring.
-=============================
 The receive (RX) ring is a circular linked list of RX descriptors,
 together with three pointers into the ring that are used to manage its
 contents.
@@ -74,6 +71,7 @@ all be pointing at the same descr, which should be "empty". All of the
 other descrs in the ring should be "empty" as well.
 
 The show_rx_chain() routine will print out the the locations of the
+The show_rx_chain() routine will print out the locations of the
 GDACTDPA, tail and head pointers. It will also summarize the contents
 of the ring, starting at the tail pointer, and listing the status
 of the descrs that follow.
@@ -109,7 +107,6 @@ used for these same concepts, so that
 
 
 The RX RAM full bug/feature
-===========================
 
 As long as the OS can empty out the RX buffers at a rate faster than
 the hardware can fill them, there is no problem. If, for some reason,
@@ -180,7 +177,6 @@ well, even under heavy network loads.
 
 
 The TX ring
-===========
 The TX ring uses a low-watermark interrupt scheme to make sure that
 the TX queue is appropriately serviced for large packet sizes.
 
@@ -200,5 +196,4 @@ interrupts, as the hardware can empty the queue faster than the kernel
 can fill it.
 
 
- ======= END OF DOCUMENT ========
 

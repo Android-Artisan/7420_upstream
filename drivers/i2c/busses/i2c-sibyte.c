@@ -23,6 +23,7 @@
 #include <linux/init.h>
 #include <linux/i2c.h>
 #include <asm/io.h>
+#include <linux/io.h>
 #include <asm/sibyte/sb1250_regs.h>
 #include <asm/sibyte/sb1250_smbus.h>
 
@@ -95,6 +96,7 @@ static int smbus_xfer(struct i2c_adapter *i2c_adap, u16 addr,
 		break;
 	default:
 		return -1;      /* XXXKW better error code? */
+		return -EOPNOTSUPP;
 	}
 
 	while (csr_in32(SMB_CSR(adap, R_SMB_STATUS)) & M_SMB_BUSY)
@@ -105,6 +107,7 @@ static int smbus_xfer(struct i2c_adapter *i2c_adap, u16 addr,
 		/* Clear error bit by writing a 1 */
 		csr_out32(M_SMB_ERROR, SMB_CSR(adap, R_SMB_STATUS));
 		return -1;      /* XXXKW better error code? */
+		return (error & M_SMB_ERROR_TYPE) ? -EIO : -ENXIO;
 	}
 
 	if (data_bytes == 1)

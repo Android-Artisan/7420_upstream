@@ -81,4 +81,11 @@ struct autofs_packet_expire {
 #define AUTOFS_IOC_SETTIMEOUT _IOWR(0x93,0x64,unsigned long)
 #define AUTOFS_IOC_EXPIRE     _IOR(0x93,0x65,struct autofs_packet_expire)
 
+#ifndef _LINUX_AUTO_FS_H
+#define _LINUX_AUTO_FS_H
+
+#include <linux/fs.h>
+#include <linux/limits.h>
+#include <linux/ioctl.h>
+#include <uapi/linux/auto_fs.h>
 #endif /* _LINUX_AUTO_FS_H */

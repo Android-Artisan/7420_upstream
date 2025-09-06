@@ -2,6 +2,7 @@
  *  Registration of Lasat UART platform device.
  *
  *  Copyright (C) 2007  Brian Murphy <brian@murphy.dk>
+ *  Copyright (C) 2007	Brian Murphy <brian@murphy.dk>
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by

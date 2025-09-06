@@ -15,6 +15,7 @@
 #include <linux/module.h>
 #include <linux/pci.h>
 #include <linux/init.h>
+#include <linux/slab.h>
 #include <linux/agp_backend.h>
 #include <asm/sn/addrs.h>
 #include <asm/sn/io.h>
@@ -39,6 +40,7 @@ static struct aper_size_info_fixed sgi_tioca_sizes[] = {
 };
 
 static void *sgi_tioca_alloc_page(struct agp_bridge_data *bridge)
+static struct page *sgi_tioca_alloc_page(struct agp_bridge_data *bridge)
 {
 	struct page *page;
 	int nid;
@@ -53,6 +55,7 @@ static void *sgi_tioca_alloc_page(struct agp_bridge_data *bridge)
 	get_page(page);
 	atomic_inc(&agp_bridge->current_memory_agp);
 	return page_address(page);
+	return page;
 }
 
 /*
@@ -72,6 +75,8 @@ static void sgi_tioca_tlbflush(struct agp_memory *mem)
 static unsigned long
 sgi_tioca_mask_memory(struct agp_bridge_data *bridge,
 		      unsigned long addr, int type)
+sgi_tioca_mask_memory(struct agp_bridge_data *bridge, dma_addr_t addr,
+		      int type)
 {
 	return tioca_physpage_to_gart(addr);
 }
@@ -190,6 +195,8 @@ static int sgi_tioca_insert_memory(struct agp_memory *mem, off_t pg_start,
 	for (i = 0, j = pg_start; i < mem->page_count; i++, j++) {
 		table[j] =
 		    bridge->driver->mask_memory(bridge, mem->memory[i],
+		    bridge->driver->mask_memory(bridge,
+						page_to_phys(mem->pages[i]),
 						mem->type);
 	}
 
@@ -270,6 +277,7 @@ const struct agp_bridge_driver sgi_tioca_driver = {
 };
 
 static int __devinit agp_sgi_init(void)
+static int agp_sgi_init(void)
 {
 	unsigned int j;
 	struct tioca_kernel *info;
@@ -294,6 +302,11 @@ static int __devinit agp_sgi_init(void)
 		list_for_each(tmp, info->ca_devices) {
 			u8 cap_ptr;
 			pdev = pci_dev_b(tmp);
+		if (list_empty(info->ca_devices))
+			continue;
+		list_for_each_entry(pdev, info->ca_devices, bus_list) {
+			u8 cap_ptr;
+
 			if (pdev->class != (PCI_CLASS_DISPLAY_VGA << 8))
 				continue;
 			cap_ptr = pci_find_capability(pdev, PCI_CAP_ID_AGP);
@@ -328,6 +341,7 @@ static int __devinit agp_sgi_init(void)
 }
 
 static void __devexit agp_sgi_cleanup(void)
+static void agp_sgi_cleanup(void)
 {
 	kfree(sgi_tioca_agp_bridges);
 	sgi_tioca_agp_bridges = NULL;

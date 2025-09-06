@@ -49,6 +49,42 @@ static int __init nas100d_map_irq(struct pci_dev *dev, u8 slot, u8 pin)
 		irq = pci_irq_table[slot-1][pin-1];
 
 	return irq;
+#include <asm/mach/pci.h>
+#include <asm/mach-types.h>
+
+#define MAX_DEV		3
+#define IRQ_LINES	3
+
+/* PCI controller GPIO to IRQ pin mappings */
+#define INTA		11
+#define INTB		10
+#define INTC		9
+#define INTD		8
+#define INTE		7
+
+void __init nas100d_pci_preinit(void)
+{
+	irq_set_irq_type(IXP4XX_GPIO_IRQ(INTA), IRQ_TYPE_LEVEL_LOW);
+	irq_set_irq_type(IXP4XX_GPIO_IRQ(INTB), IRQ_TYPE_LEVEL_LOW);
+	irq_set_irq_type(IXP4XX_GPIO_IRQ(INTC), IRQ_TYPE_LEVEL_LOW);
+	irq_set_irq_type(IXP4XX_GPIO_IRQ(INTD), IRQ_TYPE_LEVEL_LOW);
+	irq_set_irq_type(IXP4XX_GPIO_IRQ(INTE), IRQ_TYPE_LEVEL_LOW);
+	ixp4xx_pci_preinit();
+}
+
+static int __init nas100d_map_irq(const struct pci_dev *dev, u8 slot, u8 pin)
+{
+	static int pci_irq_table[MAX_DEV][IRQ_LINES] = {
+		{ IXP4XX_GPIO_IRQ(INTA), -1, -1 },
+		{ IXP4XX_GPIO_IRQ(INTB), -1, -1 },
+		{ IXP4XX_GPIO_IRQ(INTC), IXP4XX_GPIO_IRQ(INTD),
+		  IXP4XX_GPIO_IRQ(INTE) },
+	};
+
+	if (slot >= 1 && slot <= MAX_DEV && pin >= 1 && pin <= IRQ_LINES)
+		return pci_irq_table[slot - 1][pin - 1];
+
+	return -1;
 }
 
 struct hw_pci __initdata nas100d_pci = {
@@ -57,6 +93,9 @@ struct hw_pci __initdata nas100d_pci = {
 	.swizzle	= pci_std_swizzle,
 	.setup		= ixp4xx_setup,
 	.scan		= ixp4xx_scan_bus,
+	.ops		= &ixp4xx_ops,
+	.preinit	= nas100d_pci_preinit,
+	.setup		= ixp4xx_setup,
 	.map_irq	= nas100d_map_irq,
 };
 

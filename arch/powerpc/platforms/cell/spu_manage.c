@@ -24,6 +24,8 @@
 #include <linux/module.h>
 #include <linux/ptrace.h>
 #include <linux/slab.h>
+#include <linux/export.h>
+#include <linux/ptrace.h>
 #include <linux/wait.h>
 #include <linux/mm.h>
 #include <linux/io.h>
@@ -179,11 +181,13 @@ out:
 static int __init spu_map_interrupts(struct spu *spu, struct device_node *np)
 {
 	struct of_irq oirq;
+	struct of_phandle_args oirq;
 	int ret;
 	int i;
 
 	for (i=0; i < 3; i++) {
 		ret = of_irq_map_one(np, i, &oirq);
+		ret = of_irq_parse_one(np, i, &oirq);
 		if (ret) {
 			pr_debug("spu_new: failed to get irq %d\n", i);
 			goto err;
@@ -193,6 +197,9 @@ static int __init spu_map_interrupts(struct spu *spu, struct device_node *np)
 			 oirq.controller->full_name);
 		spu->irqs[i] = irq_create_of_mapping(oirq.controller,
 					oirq.specifier, oirq.size);
+		pr_debug("  irq %d no 0x%x on %s\n", i, oirq.args[0],
+			 oirq.np->full_name);
+		spu->irqs[i] = irq_create_of_mapping(&oirq);
 		if (spu->irqs[i] == NO_IRQ) {
 			pr_debug("spu_new: failed to map it !\n");
 			goto err;
@@ -202,6 +209,7 @@ static int __init spu_map_interrupts(struct spu *spu, struct device_node *np)
 
 err:
 	pr_debug("failed to map irq %x for spu %s\n", *oirq.specifier,
+	pr_debug("failed to map irq %x for spu %s\n", *oirq.args,
 		spu->name);
 	for (; i >= 0; i--) {
 		if (spu->irqs[i] != NO_IRQ)
@@ -224,6 +232,7 @@ static int spu_map_resource(struct spu *spu, int nr,
 	if (phys)
 		*phys = resource.start;
 	len = resource.end - resource.start + 1;
+	len = resource_size(&resource);
 	*virt = ioremap(resource.start, len);
 	if (!*virt)
 		return -EINVAL;
@@ -458,6 +467,7 @@ neighbour_spu(int cbe, struct device_node *target, struct device_node *avoid)
 		vic_handles = of_get_property(spu_dn, "vicinity", &lenp);
 		for (i=0; i < (lenp / sizeof(phandle)); i++) {
 			if (vic_handles[i] == target->linux_phandle)
+			if (vic_handles[i] == target->phandle)
 				return spu;
 		}
 	}
@@ -500,6 +510,7 @@ static void init_affinity_node(int cbe)
 			if (strcmp(name, "spe") == 0) {
 				spu = devnode_spu(cbe, vic_dn);
 				avoid_ph = last_spu_dn->linux_phandle;
+				avoid_ph = last_spu_dn->phandle;
 			} else {
 				/*
 				 * "mic-tm" and "bif0" nodes do not have
@@ -515,6 +526,7 @@ static void init_affinity_node(int cbe)
 					spu->has_mem_affinity = 1;
 				}
 				avoid_ph = vic_dn->linux_phandle;
+				avoid_ph = vic_dn->phandle;
 			}
 
 			list_add_tail(&spu->aff_list, &last_spu->aff_list);

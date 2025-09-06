@@ -227,6 +227,7 @@ static int __init nettel_init(void)
 	if ((amd_mtd = do_map_probe("jedec_probe", &nettel_amd_map))) {
 		printk(KERN_NOTICE "SNAPGEAR: AMD flash device size = %dK\n",
 			amd_mtd->size>>10);
+			(int)(amd_mtd->size>>10));
 
 		amd_mtd->owner = THIS_MODULE;
 
@@ -364,6 +365,12 @@ static int __init nettel_init(void)
 
 	num_intel_partitions = sizeof(nettel_intel_partitions) /
 		sizeof(nettel_intel_partitions[0]);
+	printk(KERN_NOTICE "SNAPGEAR: Intel flash device size = %lldKiB\n",
+	       (unsigned long long)(intel_mtd->size >> 10));
+
+	intel_mtd->owner = THIS_MODULE;
+
+	num_intel_partitions = ARRAY_SIZE(nettel_intel_partitions);
 
 	if (intelboot) {
 		/*
@@ -391,6 +398,17 @@ static int __init nettel_init(void)
 	if (amd_mtd) {
 		rc = add_mtd_partitions(amd_mtd, nettel_amd_partitions,
 			num_amd_partitions);
+	rc = mtd_device_register(intel_mtd, nettel_intel_partitions,
+				 num_intel_partitions);
+	if (rc)
+		goto out_map_destroy;
+#endif
+
+	if (amd_mtd) {
+		rc = mtd_device_register(amd_mtd, nettel_amd_partitions,
+					 num_amd_partitions);
+		if (rc)
+			goto out_mtd_unreg;
 	}
 
 #ifdef CONFIG_MTD_CFI_INTELEXT
@@ -400,6 +418,13 @@ static int __init nettel_init(void)
 	return(rc);
 
 #ifdef CONFIG_MTD_CFI_INTELEXT
+	return rc;
+
+out_mtd_unreg:
+#ifdef CONFIG_MTD_CFI_INTELEXT
+	mtd_device_unregister(intel_mtd);
+out_map_destroy:
+	map_destroy(intel_mtd);
 out_unmap1:
 	iounmap(nettel_intel_map.virt);
 #endif
@@ -410,6 +435,7 @@ out_unmap2:
 
 	return(rc);
 
+	return rc;
 }
 
 /****************************************************************************/
@@ -421,6 +447,7 @@ static void __exit nettel_cleanup(void)
 #endif
 	if (amd_mtd) {
 		del_mtd_partitions(amd_mtd);
+		mtd_device_unregister(amd_mtd);
 		map_destroy(amd_mtd);
 	}
 	if (nettel_mmcrp) {
@@ -434,6 +461,7 @@ static void __exit nettel_cleanup(void)
 #ifdef CONFIG_MTD_CFI_INTELEXT
 	if (intel_mtd) {
 		del_mtd_partitions(intel_mtd);
+		mtd_device_unregister(intel_mtd);
 		map_destroy(intel_mtd);
 	}
 	if (nettel_intel_map.virt) {

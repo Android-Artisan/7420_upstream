@@ -6,6 +6,7 @@
 #include <linux/init.h>
 #include <linux/dmi.h>
 #include "pci.h"
+#include <asm/pci_x86.h>
 
 /*
  * Functions for accessing PCI base (first 256 bytes) and extended
@@ -23,11 +24,13 @@ static int pci_conf1_read(unsigned int seg, unsigned int bus,
 	unsigned long flags;
 
 	if ((bus > 255) || (devfn > 255) || (reg > 4095)) {
+	if (seg || (bus > 255) || (devfn > 255) || (reg > 4095)) {
 		*value = -1;
 		return -EINVAL;
 	}
 
 	spin_lock_irqsave(&pci_config_lock, flags);
+	raw_spin_lock_irqsave(&pci_config_lock, flags);
 
 	outl(PCI_CONF1_ADDRESS(bus, devfn, reg), 0xCF8);
 
@@ -44,6 +47,7 @@ static int pci_conf1_read(unsigned int seg, unsigned int bus,
 	}
 
 	spin_unlock_irqrestore(&pci_config_lock, flags);
+	raw_spin_unlock_irqrestore(&pci_config_lock, flags);
 
 	return 0;
 }
@@ -57,6 +61,10 @@ static int pci_conf1_write(unsigned int seg, unsigned int bus,
 		return -EINVAL;
 
 	spin_lock_irqsave(&pci_config_lock, flags);
+	if (seg || (bus > 255) || (devfn > 255) || (reg > 4095))
+		return -EINVAL;
+
+	raw_spin_lock_irqsave(&pci_config_lock, flags);
 
 	outl(PCI_CONF1_ADDRESS(bus, devfn, reg), 0xCF8);
 
@@ -73,6 +81,7 @@ static int pci_conf1_write(unsigned int seg, unsigned int bus,
 	}
 
 	spin_unlock_irqrestore(&pci_config_lock, flags);
+	raw_spin_unlock_irqrestore(&pci_config_lock, flags);
 
 	return 0;
 }
@@ -80,6 +89,7 @@ static int pci_conf1_write(unsigned int seg, unsigned int bus,
 #undef PCI_CONF1_ADDRESS
 
 struct pci_raw_ops pci_direct_conf1 = {
+const struct pci_raw_ops pci_direct_conf1 = {
 	.read =		pci_conf1_read,
 	.write =	pci_conf1_write,
 };
@@ -97,6 +107,7 @@ static int pci_conf2_read(unsigned int seg, unsigned int bus,
 	unsigned long flags;
 	int dev, fn;
 
+	WARN_ON(seg);
 	if ((bus > 255) || (devfn > 255) || (reg > 255)) {
 		*value = -1;
 		return -EINVAL;
@@ -109,6 +120,7 @@ static int pci_conf2_read(unsigned int seg, unsigned int bus,
 		return PCIBIOS_DEVICE_NOT_FOUND;
 
 	spin_lock_irqsave(&pci_config_lock, flags);
+	raw_spin_lock_irqsave(&pci_config_lock, flags);
 
 	outb((u8)(0xF0 | (fn << 1)), 0xCF8);
 	outb((u8)bus, 0xCFA);
@@ -128,6 +140,7 @@ static int pci_conf2_read(unsigned int seg, unsigned int bus,
 	outb(0, 0xCF8);
 
 	spin_unlock_irqrestore(&pci_config_lock, flags);
+	raw_spin_unlock_irqrestore(&pci_config_lock, flags);
 
 	return 0;
 }
@@ -138,6 +151,7 @@ static int pci_conf2_write(unsigned int seg, unsigned int bus,
 	unsigned long flags;
 	int dev, fn;
 
+	WARN_ON(seg);
 	if ((bus > 255) || (devfn > 255) || (reg > 255)) 
 		return -EINVAL;
 
@@ -148,6 +162,7 @@ static int pci_conf2_write(unsigned int seg, unsigned int bus,
 		return PCIBIOS_DEVICE_NOT_FOUND;
 
 	spin_lock_irqsave(&pci_config_lock, flags);
+	raw_spin_lock_irqsave(&pci_config_lock, flags);
 
 	outb((u8)(0xF0 | (fn << 1)), 0xCF8);
 	outb((u8)bus, 0xCFA);
@@ -167,6 +182,7 @@ static int pci_conf2_write(unsigned int seg, unsigned int bus,
 	outb(0, 0xCF8);    
 
 	spin_unlock_irqrestore(&pci_config_lock, flags);
+	raw_spin_unlock_irqrestore(&pci_config_lock, flags);
 
 	return 0;
 }
@@ -174,6 +190,7 @@ static int pci_conf2_write(unsigned int seg, unsigned int bus,
 #undef PCI_CONF2_ADDRESS
 
 static struct pci_raw_ops pci_direct_conf2 = {
+static const struct pci_raw_ops pci_direct_conf2 = {
 	.read =		pci_conf2_read,
 	.write =	pci_conf2_write,
 };
@@ -193,12 +210,18 @@ static int __init pci_sanity_check(struct pci_raw_ops *o)
 {
 	u32 x = 0;
 	int devfn;
+static int __init pci_sanity_check(const struct pci_raw_ops *o)
+{
+	u32 x = 0;
+	int year, devfn;
 
 	if (pci_probe & PCI_NO_CHECKS)
 		return 1;
 	/* Assume Type 1 works for newer systems.
 	   This handles machines that don't have anything on PCI Bus 0. */
 	if (dmi_get_year(DMI_BIOS_DATE) >= 2001)
+	dmi_get_date(DMI_BIOS_DATE, &year, NULL, NULL);
+	if (year >= 2001)
 		return 1;
 
 	for (devfn = 0; devfn < 0x100; devfn++) {
@@ -285,6 +308,9 @@ int __init pci_direct_probe(void)
 		goto type2;
 	region = request_region(0xCF8, 8, "PCI conf1");
 	if (!region)
+	if ((pci_probe & PCI_PROBE_CONF1) == 0)
+		goto type2;
+	if (!request_region(0xCF8, 8, "PCI conf1"))
 		goto type2;
 
 	if (pci_check_type1()) {
@@ -292,6 +318,10 @@ int __init pci_direct_probe(void)
 		return 1;
 	}
 	release_resource(region);
+		port_cf9_safe = true;
+		return 1;
+	}
+	release_region(0xCF8, 8);
 
  type2:
 	if ((pci_probe & PCI_PROBE_CONF2) == 0)
@@ -301,6 +331,9 @@ int __init pci_direct_probe(void)
 		return 0;
 	region2 = request_region(0xC000, 0x1000, "PCI conf2");
 	if (!region2)
+	if (!request_region(0xCF8, 4, "PCI conf2"))
+		return 0;
+	if (!request_region(0xC000, 0x1000, "PCI conf2"))
 		goto fail2;
 
 	if (pci_check_type2()) {
@@ -311,5 +344,12 @@ int __init pci_direct_probe(void)
 	release_resource(region2);
  fail2:
 	release_resource(region);
+		port_cf9_safe = true;
+		return 2;
+	}
+
+	release_region(0xC000, 0x1000);
+ fail2:
+	release_region(0xCF8, 4);
 	return 0;
 }

@@ -1,4 +1,5 @@
 /*
+ * Copyright (C) 2015 Thomas Meyer (thomas@m3y3r.de)
  * Copyright (C) 2007 Jeff Dike (jdike@{addtoit,linux.intel}.com)
  * Licensed under the GPL
  */
@@ -12,6 +13,10 @@
 #include "ptrace_user.h"
 #include "stub-data.h"
 #include "sysdep/stub.h"
+#include <as-layout.h>
+#include <ptrace_user.h>
+#include <stub-data.h>
+#include <sysdep/stub.h>
 
 /*
  * This is in a separate file because it needs to be compiled with any

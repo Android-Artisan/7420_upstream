@@ -1,6 +1,5 @@
   
 X.25 support within isdn4linux
-==============================
 
 This is alpha/beta test code. Use it completely at your own risk.
 As new versions appear, the stuff described here might suddenly change
@@ -27,7 +26,6 @@ more bugs as usual.
 
 
 How to configure the kernel
-===========================
  
 The ITU-T (former CCITT) X.25 network protocol layer has been implemented
 in the Linux source tree since version 2.1.16. The isdn subsystem might be 
@@ -55,7 +53,6 @@ from certain errors by simply unloading and reloading the modules.
 
 
 What's it for? How to use it?
-=============================
 
 X.25 on top of isdn might be useful with two different scenarios:
 
@@ -133,7 +130,6 @@ it to the isdn.
 
 
 How to set up a test installation?
-==================================
 
 To test X.25 on top of isdn, you need to get
 

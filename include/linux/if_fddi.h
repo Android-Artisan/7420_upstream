@@ -13,6 +13,7 @@
  *			Fred N. van Kempen, <waltje@uWalt.NL.Mugnet.ORG>
  *			Donald Becker, <becker@super.org>
  *			Alan Cox, <alan@redhat.com>
+ *			Alan Cox, <alan@lxorguk.ukuu.org.uk>
  *			Steve Whitehouse, <gw7rrm@eeshack3.swan.ac.uk>
  *			Peter De Schrijver, <stud11@cc4.kuleuven.ac.be>
  *
@@ -106,6 +107,8 @@ struct fddihdr
 
 #ifdef __KERNEL__
 #include <linux/netdevice.h>
+#include <linux/netdevice.h>
+#include <uapi/linux/if_fddi.h>
 
 /* Define FDDI statistics structure */
 struct fddi_statistics {
@@ -200,4 +203,5 @@ struct fddi_statistics {
 	};
 #endif /* __KERNEL__ */
 
+};
 #endif	/* _LINUX_IF_FDDI_H */

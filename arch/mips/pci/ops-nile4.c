@@ -8,6 +8,9 @@
 #include <asm/nile4.h>
 
 #define PCI_ACCESS_READ  0
+#include <asm/nile4.h>
+
+#define PCI_ACCESS_READ	 0
 #define PCI_ACCESS_WRITE 1
 
 #define LO(reg) (reg / 4)
@@ -92,6 +95,8 @@ static int nile4_pcibios_read(struct pci_bus *bus, unsigned int devfn,
 					&data);
 	spin_unlock_irqrestore(&nile4_pci_lock, flags);
 
+	err = nile4_pcibios_config_access(PCI_ACCESS_READ, bus, devfn, where,
+					  &data);
 	if (err)
 		return err;
 
@@ -122,6 +127,8 @@ static int nile4_pcibios_write(struct pci_bus *bus, unsigned int devfn,
 					  &data);
 	spin_unlock_irqrestore(&nile4_pci_lock, flags);
 
+	err = nile4_pcibios_config_access(PCI_ACCESS_READ, bus, devfn, where,
+					  &data);
 	if (err)
 		return err;
 

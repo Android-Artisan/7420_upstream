@@ -41,6 +41,11 @@
 #include <linux/inetdevice.h>
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
+#include <linux/bottom_half.h>
+#include <linux/inetdevice.h>
+#include <linux/proc_fs.h>
+#include <linux/seq_file.h>
+#include <linux/export.h>
 #include <net/sock.h>
 #include <net/raw.h>
 
@@ -60,12 +65,33 @@ static int sockstat_seq_show(struct seq_file *seq, void *v)
 	seq_printf(seq, "UDP: inuse %d mem %d\n",
 		   sock_prot_inuse_get(net, &udp_prot),
 		   atomic_read(&udp_memory_allocated));
+	unsigned int frag_mem;
+	int orphans, sockets;
+
+	local_bh_disable();
+	orphans = percpu_counter_sum_positive(&tcp_orphan_count);
+	sockets = proto_sockets_allocated_sum_positive(&tcp_prot);
+	local_bh_enable();
+
+	socket_seq_show(seq);
+	seq_printf(seq, "TCP: inuse %d orphan %d tw %d alloc %d mem %ld\n",
+		   sock_prot_inuse_get(net, &tcp_prot), orphans,
+		   atomic_read(&tcp_death_row.tw_count), sockets,
+		   proto_memory_allocated(&tcp_prot));
+	seq_printf(seq, "UDP: inuse %d mem %ld\n",
+		   sock_prot_inuse_get(net, &udp_prot),
+		   proto_memory_allocated(&udp_prot));
 	seq_printf(seq, "UDPLITE: inuse %d\n",
 		   sock_prot_inuse_get(net, &udplite_prot));
 	seq_printf(seq, "RAW: inuse %d\n",
 		   sock_prot_inuse_get(net, &raw_prot));
 	seq_printf(seq,  "FRAG: inuse %d memory %d\n",
 			ip_frag_nqueues(net), ip_frag_mem(net));
+	frag_mem = ip_frag_mem(net);
+	seq_printf(seq,  "FRAG: inuse %u memory %u\n", !!frag_mem, frag_mem);
+	seq_printf(seq,  "FRAG: inuse %u memory %lu\n",
+		   atomic_read(&net->ipv4.frags.rhashtable.nelems),
+		   frag_mem_limit(&net->ipv4.frags));
 	return 0;
 }
 
@@ -85,6 +111,7 @@ static const struct file_operations sockstat_seq_fops = {
 /* snmp items */
 static const struct snmp_mib snmp4_ipstats_list[] = {
 	SNMP_MIB_ITEM("InReceives", IPSTATS_MIB_INRECEIVES),
+	SNMP_MIB_ITEM("InReceives", IPSTATS_MIB_INPKTS),
 	SNMP_MIB_ITEM("InHdrErrors", IPSTATS_MIB_INHDRERRORS),
 	SNMP_MIB_ITEM("InAddrErrors", IPSTATS_MIB_INADDRERRORS),
 	SNMP_MIB_ITEM("ForwDatagrams", IPSTATS_MIB_OUTFORWDATAGRAMS),
@@ -92,6 +119,7 @@ static const struct snmp_mib snmp4_ipstats_list[] = {
 	SNMP_MIB_ITEM("InDiscards", IPSTATS_MIB_INDISCARDS),
 	SNMP_MIB_ITEM("InDelivers", IPSTATS_MIB_INDELIVERS),
 	SNMP_MIB_ITEM("OutRequests", IPSTATS_MIB_OUTREQUESTS),
+	SNMP_MIB_ITEM("OutRequests", IPSTATS_MIB_OUTPKTS),
 	SNMP_MIB_ITEM("OutDiscards", IPSTATS_MIB_OUTDISCARDS),
 	SNMP_MIB_ITEM("OutNoRoutes", IPSTATS_MIB_OUTNOROUTES),
 	SNMP_MIB_ITEM("ReasmTimeout", IPSTATS_MIB_REASMTIMEOUT),
@@ -105,6 +133,7 @@ static const struct snmp_mib snmp4_ipstats_list[] = {
 };
 
 /* Following RFC4293 items are displayed in /proc/net/netstat */
+/* Following items are displayed in /proc/net/netstat */
 static const struct snmp_mib snmp4_ipextstats_list[] = {
 	SNMP_MIB_ITEM("InNoRoutes", IPSTATS_MIB_INNOROUTES),
 	SNMP_MIB_ITEM("InTruncatedPkts", IPSTATS_MIB_INTRUNCATEDPKTS),
@@ -117,6 +146,24 @@ static const struct snmp_mib snmp4_ipextstats_list[] = {
 
 static struct {
 	char *name;
+	SNMP_MIB_ITEM("InOctets", IPSTATS_MIB_INOCTETS),
+	SNMP_MIB_ITEM("OutOctets", IPSTATS_MIB_OUTOCTETS),
+	SNMP_MIB_ITEM("InMcastOctets", IPSTATS_MIB_INMCASTOCTETS),
+	SNMP_MIB_ITEM("OutMcastOctets", IPSTATS_MIB_OUTMCASTOCTETS),
+	SNMP_MIB_ITEM("InBcastOctets", IPSTATS_MIB_INBCASTOCTETS),
+	SNMP_MIB_ITEM("OutBcastOctets", IPSTATS_MIB_OUTBCASTOCTETS),
+	/* Non RFC4293 fields */
+	SNMP_MIB_ITEM("InCsumErrors", IPSTATS_MIB_CSUMERRORS),
+	SNMP_MIB_ITEM("InNoECTPkts", IPSTATS_MIB_NOECTPKTS),
+	SNMP_MIB_ITEM("InECT1Pkts", IPSTATS_MIB_ECT1PKTS),
+	SNMP_MIB_ITEM("InECT0Pkts", IPSTATS_MIB_ECT0PKTS),
+	SNMP_MIB_ITEM("InCEPkts", IPSTATS_MIB_CEPKTS),
+	SNMP_MIB_ITEM("ReasmOverlaps", IPSTATS_MIB_REASM_OVERLAPS),
+	SNMP_MIB_SENTINEL
+};
+
+static const struct {
+	const char *name;
 	int index;
 } icmpmibmap[] = {
 	{ "DestUnreachs", ICMP_DEST_UNREACH },
@@ -149,6 +196,7 @@ static const struct snmp_mib snmp4_tcp_list[] = {
 	SNMP_MIB_ITEM("RetransSegs", TCP_MIB_RETRANSSEGS),
 	SNMP_MIB_ITEM("InErrs", TCP_MIB_INERRS),
 	SNMP_MIB_ITEM("OutRsts", TCP_MIB_OUTRSTS),
+	SNMP_MIB_ITEM("InCsumErrors", TCP_MIB_CSUMERRORS),
 	SNMP_MIB_SENTINEL
 };
 
@@ -159,6 +207,8 @@ static const struct snmp_mib snmp4_udp_list[] = {
 	SNMP_MIB_ITEM("OutDatagrams", UDP_MIB_OUTDATAGRAMS),
 	SNMP_MIB_ITEM("RcvbufErrors", UDP_MIB_RCVBUFERRORS),
 	SNMP_MIB_ITEM("SndbufErrors", UDP_MIB_SNDBUFERRORS),
+	SNMP_MIB_ITEM("InCsumErrors", UDP_MIB_CSUMERRORS),
+	SNMP_MIB_ITEM("IgnoredMulti", UDP_MIB_IGNOREDMULTI),
 	SNMP_MIB_SENTINEL
 };
 
@@ -212,6 +262,8 @@ static const struct snmp_mib snmp4_net_list[] = {
 	SNMP_MIB_ITEM("TCPForwardRetrans", LINUX_MIB_TCPFORWARDRETRANS),
 	SNMP_MIB_ITEM("TCPSlowStartRetrans", LINUX_MIB_TCPSLOWSTARTRETRANS),
 	SNMP_MIB_ITEM("TCPTimeouts", LINUX_MIB_TCPTIMEOUTS),
+	SNMP_MIB_ITEM("TCPLossProbes", LINUX_MIB_TCPLOSSPROBES),
+	SNMP_MIB_ITEM("TCPLossProbeRecovery", LINUX_MIB_TCPLOSSPROBERECOVERY),
 	SNMP_MIB_ITEM("TCPRenoRecoveryFail", LINUX_MIB_TCPRENORECOVERYFAIL),
 	SNMP_MIB_ITEM("TCPSackRecoveryFail", LINUX_MIB_TCPSACKRECOVERYFAIL),
 	SNMP_MIB_ITEM("TCPSchedulerFailed", LINUX_MIB_TCPSCHEDULERFAILED),
@@ -237,12 +289,81 @@ static const struct snmp_mib snmp4_net_list[] = {
 	SNMP_MIB_SENTINEL
 };
 
+	SNMP_MIB_ITEM("TCPSackShifted", LINUX_MIB_SACKSHIFTED),
+	SNMP_MIB_ITEM("TCPSackMerged", LINUX_MIB_SACKMERGED),
+	SNMP_MIB_ITEM("TCPSackShiftFallback", LINUX_MIB_SACKSHIFTFALLBACK),
+	SNMP_MIB_ITEM("TCPBacklogDrop", LINUX_MIB_TCPBACKLOGDROP),
+	SNMP_MIB_ITEM("TCPMinTTLDrop", LINUX_MIB_TCPMINTTLDROP),
+	SNMP_MIB_ITEM("TCPDeferAcceptDrop", LINUX_MIB_TCPDEFERACCEPTDROP),
+	SNMP_MIB_ITEM("IPReversePathFilter", LINUX_MIB_IPRPFILTER),
+	SNMP_MIB_ITEM("TCPTimeWaitOverflow", LINUX_MIB_TCPTIMEWAITOVERFLOW),
+	SNMP_MIB_ITEM("TCPReqQFullDoCookies", LINUX_MIB_TCPREQQFULLDOCOOKIES),
+	SNMP_MIB_ITEM("TCPReqQFullDrop", LINUX_MIB_TCPREQQFULLDROP),
+	SNMP_MIB_ITEM("TCPRetransFail", LINUX_MIB_TCPRETRANSFAIL),
+	SNMP_MIB_ITEM("TCPRcvCoalesce", LINUX_MIB_TCPRCVCOALESCE),
+	SNMP_MIB_ITEM("TCPOFOQueue", LINUX_MIB_TCPOFOQUEUE),
+	SNMP_MIB_ITEM("TCPOFODrop", LINUX_MIB_TCPOFODROP),
+	SNMP_MIB_ITEM("TCPOFOMerge", LINUX_MIB_TCPOFOMERGE),
+	SNMP_MIB_ITEM("TCPChallengeACK", LINUX_MIB_TCPCHALLENGEACK),
+	SNMP_MIB_ITEM("TCPSYNChallenge", LINUX_MIB_TCPSYNCHALLENGE),
+	SNMP_MIB_ITEM("TCPFastOpenActive", LINUX_MIB_TCPFASTOPENACTIVE),
+	SNMP_MIB_ITEM("TCPFastOpenActiveFail", LINUX_MIB_TCPFASTOPENACTIVEFAIL),
+	SNMP_MIB_ITEM("TCPFastOpenPassive", LINUX_MIB_TCPFASTOPENPASSIVE),
+	SNMP_MIB_ITEM("TCPFastOpenPassiveFail", LINUX_MIB_TCPFASTOPENPASSIVEFAIL),
+	SNMP_MIB_ITEM("TCPFastOpenListenOverflow", LINUX_MIB_TCPFASTOPENLISTENOVERFLOW),
+	SNMP_MIB_ITEM("TCPFastOpenCookieReqd", LINUX_MIB_TCPFASTOPENCOOKIEREQD),
+	SNMP_MIB_ITEM("TCPSpuriousRtxHostQueues", LINUX_MIB_TCPSPURIOUS_RTX_HOSTQUEUES),
+	SNMP_MIB_ITEM("BusyPollRxPackets", LINUX_MIB_BUSYPOLLRXPACKETS),
+	SNMP_MIB_ITEM("TCPAutoCorking", LINUX_MIB_TCPAUTOCORKING),
+	SNMP_MIB_ITEM("TCPFromZeroWindowAdv", LINUX_MIB_TCPFROMZEROWINDOWADV),
+	SNMP_MIB_ITEM("TCPToZeroWindowAdv", LINUX_MIB_TCPTOZEROWINDOWADV),
+	SNMP_MIB_ITEM("TCPWantZeroWindowAdv", LINUX_MIB_TCPWANTZEROWINDOWADV),
+	SNMP_MIB_ITEM("TCPSynRetrans", LINUX_MIB_TCPSYNRETRANS),
+	SNMP_MIB_ITEM("TCPOrigDataSent", LINUX_MIB_TCPORIGDATASENT),
+	SNMP_MIB_ITEM("TCPHystartTrainDetect", LINUX_MIB_TCPHYSTARTTRAINDETECT),
+	SNMP_MIB_ITEM("TCPHystartTrainCwnd", LINUX_MIB_TCPHYSTARTTRAINCWND),
+	SNMP_MIB_ITEM("TCPHystartDelayDetect", LINUX_MIB_TCPHYSTARTDELAYDETECT),
+	SNMP_MIB_ITEM("TCPHystartDelayCwnd", LINUX_MIB_TCPHYSTARTDELAYCWND),
+	SNMP_MIB_ITEM("TCPACKSkippedSynRecv", LINUX_MIB_TCPACKSKIPPEDSYNRECV),
+	SNMP_MIB_ITEM("TCPACKSkippedPAWS", LINUX_MIB_TCPACKSKIPPEDPAWS),
+	SNMP_MIB_ITEM("TCPACKSkippedSeq", LINUX_MIB_TCPACKSKIPPEDSEQ),
+	SNMP_MIB_ITEM("TCPACKSkippedFinWait2", LINUX_MIB_TCPACKSKIPPEDFINWAIT2),
+	SNMP_MIB_ITEM("TCPACKSkippedTimeWait", LINUX_MIB_TCPACKSKIPPEDTIMEWAIT),
+	SNMP_MIB_ITEM("TCPACKSkippedChallenge", LINUX_MIB_TCPACKSKIPPEDCHALLENGE),
+	SNMP_MIB_ITEM("TCPWinProbe", LINUX_MIB_TCPWINPROBE),
+	SNMP_MIB_ITEM("TCPKeepAlive", LINUX_MIB_TCPKEEPALIVE),
+	SNMP_MIB_ITEM("TCPMTUPFail", LINUX_MIB_TCPMTUPFAIL),
+	SNMP_MIB_ITEM("TCPMTUPSuccess", LINUX_MIB_TCPMTUPSUCCESS),
+	SNMP_MIB_ITEM("TCPWqueueTooBig", LINUX_MIB_TCPWQUEUETOOBIG),
+	SNMP_MIB_SENTINEL
+};
+
+static void icmpmsg_put_line(struct seq_file *seq, unsigned long *vals,
+			     unsigned short *type, int count)
+{
+	int j;
+
+	if (count) {
+		seq_puts(seq, "\nIcmpMsg:");
+		for (j = 0; j < count; ++j)
+			seq_printf(seq, " %sType%u",
+				type[j] & 0x100 ? "Out" : "In",
+				type[j] & 0xff);
+		seq_puts(seq, "\nIcmpMsg:");
+		for (j = 0; j < count; ++j)
+			seq_printf(seq, " %lu", vals[j]);
+	}
+}
+
 static void icmpmsg_put(struct seq_file *seq)
 {
 #define PERLINE	16
 
 	int j, i, count;
 	static int out[PERLINE];
+	int i, count;
+	unsigned short type[PERLINE];
+	unsigned long vals[PERLINE], val;
 	struct net *net = seq->private;
 
 	count = 0;
@@ -274,6 +395,17 @@ static void icmpmsg_put(struct seq_file *seq)
 			seq_printf(seq, " %lu", snmp_fold_field((void **)
 				net->mib.icmpmsg_statistics, out[j]));
 	}
+		val = atomic_long_read(&net->mib.icmpmsg_statistics->mibs[i]);
+		if (val) {
+			type[count] = i;
+			vals[count++] = val;
+		}
+		if (count == PERLINE) {
+			icmpmsg_put_line(seq, vals, type, count);
+			count = 0;
+		}
+	}
+	icmpmsg_put_line(seq, vals, type, count);
 
 #undef PERLINE
 }
@@ -303,6 +435,27 @@ static void icmp_put(struct seq_file *seq)
 		seq_printf(seq, " %lu",
 			snmp_fold_field((void **) net->mib.icmpmsg_statistics,
 				icmpmibmap[i].index | 0x100));
+	atomic_long_t *ptr = net->mib.icmpmsg_statistics->mibs;
+
+	seq_puts(seq, "\nIcmp: InMsgs InErrors InCsumErrors");
+	for (i = 0; icmpmibmap[i].name != NULL; i++)
+		seq_printf(seq, " In%s", icmpmibmap[i].name);
+	seq_puts(seq, " OutMsgs OutErrors");
+	for (i = 0; icmpmibmap[i].name != NULL; i++)
+		seq_printf(seq, " Out%s", icmpmibmap[i].name);
+	seq_printf(seq, "\nIcmp: %lu %lu %lu",
+		snmp_fold_field(net->mib.icmp_statistics, ICMP_MIB_INMSGS),
+		snmp_fold_field(net->mib.icmp_statistics, ICMP_MIB_INERRORS),
+		snmp_fold_field(net->mib.icmp_statistics, ICMP_MIB_CSUMERRORS));
+	for (i = 0; icmpmibmap[i].name != NULL; i++)
+		seq_printf(seq, " %lu",
+			   atomic_long_read(ptr + icmpmibmap[i].index));
+	seq_printf(seq, " %lu %lu",
+		snmp_fold_field(net->mib.icmp_statistics, ICMP_MIB_OUTMSGS),
+		snmp_fold_field(net->mib.icmp_statistics, ICMP_MIB_OUTERRORS));
+	for (i = 0; icmpmibmap[i].name != NULL; i++)
+		seq_printf(seq, " %lu",
+			   atomic_long_read(ptr + (icmpmibmap[i].index | 0x100)));
 }
 
 /*
@@ -326,6 +479,12 @@ static int snmp_seq_show(struct seq_file *seq, void *v)
 		seq_printf(seq, " %lu",
 			   snmp_fold_field((void **)net->mib.ip_statistics,
 					   snmp4_ipstats_list[i].entry));
+	BUILD_BUG_ON(offsetof(struct ipstats_mib, mibs) != 0);
+	for (i = 0; snmp4_ipstats_list[i].name != NULL; i++)
+		seq_printf(seq, " %llu",
+			   snmp_fold_field64(net->mib.ip_statistics,
+					     snmp4_ipstats_list[i].entry,
+					     offsetof(struct ipstats_mib, syncp)));
 
 	icmp_put(seq);	/* RFC 2011 compatibility */
 	icmpmsg_put(seq);
@@ -344,6 +503,11 @@ static int snmp_seq_show(struct seq_file *seq, void *v)
 		else
 			seq_printf(seq, " %lu",
 				   snmp_fold_field((void **)net->mib.tcp_statistics,
+				   snmp_fold_field(net->mib.tcp_statistics,
+						   snmp4_tcp_list[i].entry));
+		else
+			seq_printf(seq, " %lu",
+				   snmp_fold_field(net->mib.tcp_statistics,
 						   snmp4_tcp_list[i].entry));
 	}
 
@@ -355,6 +519,7 @@ static int snmp_seq_show(struct seq_file *seq, void *v)
 	for (i = 0; snmp4_udp_list[i].name != NULL; i++)
 		seq_printf(seq, " %lu",
 			   snmp_fold_field((void **)net->mib.udp_statistics,
+			   snmp_fold_field(net->mib.udp_statistics,
 					   snmp4_udp_list[i].entry));
 
 	/* the UDP and UDP-Lite MIBs are the same */
@@ -366,6 +531,7 @@ static int snmp_seq_show(struct seq_file *seq, void *v)
 	for (i = 0; snmp4_udp_list[i].name != NULL; i++)
 		seq_printf(seq, " %lu",
 			   snmp_fold_field((void **)net->mib.udplite_statistics,
+			   snmp_fold_field(net->mib.udplite_statistics,
 					   snmp4_udp_list[i].entry));
 
 	seq_putc(seq, '\n');
@@ -403,6 +569,7 @@ static int netstat_seq_show(struct seq_file *seq, void *v)
 	for (i = 0; snmp4_net_list[i].name != NULL; i++)
 		seq_printf(seq, " %lu",
 			   snmp_fold_field((void **)net->mib.net_statistics,
+			   snmp_fold_field(net->mib.net_statistics,
 					   snmp4_net_list[i].entry));
 
 	seq_puts(seq, "\nIpExt:");
@@ -414,6 +581,10 @@ static int netstat_seq_show(struct seq_file *seq, void *v)
 		seq_printf(seq, " %lu",
 			   snmp_fold_field((void **)net->mib.ip_statistics,
 					   snmp4_ipextstats_list[i].entry));
+		seq_printf(seq, " %llu",
+			   snmp_fold_field64(net->mib.ip_statistics,
+					     snmp4_ipextstats_list[i].entry,
+					     offsetof(struct ipstats_mib, syncp)));
 
 	seq_putc(seq, '\n');
 	return 0;
@@ -439,6 +610,12 @@ static __net_init int ip_proc_init_net(struct net *net)
 	if (!proc_net_fops_create(net, "netstat", S_IRUGO, &netstat_seq_fops))
 		goto out_netstat;
 	if (!proc_net_fops_create(net, "snmp", S_IRUGO, &snmp_seq_fops))
+	if (!proc_create("sockstat", S_IRUGO, net->proc_net,
+			 &sockstat_seq_fops))
+		goto out_sockstat;
+	if (!proc_create("netstat", S_IRUGO, net->proc_net, &netstat_seq_fops))
+		goto out_netstat;
+	if (!proc_create("snmp", S_IRUGO, net->proc_net, &snmp_seq_fops))
 		goto out_snmp;
 
 	return 0;
@@ -447,6 +624,9 @@ out_snmp:
 	proc_net_remove(net, "netstat");
 out_netstat:
 	proc_net_remove(net, "sockstat");
+	remove_proc_entry("netstat", net->proc_net);
+out_netstat:
+	remove_proc_entry("sockstat", net->proc_net);
 out_sockstat:
 	return -ENOMEM;
 }
@@ -456,6 +636,9 @@ static __net_exit void ip_proc_exit_net(struct net *net)
 	proc_net_remove(net, "snmp");
 	proc_net_remove(net, "netstat");
 	proc_net_remove(net, "sockstat");
+	remove_proc_entry("snmp", net->proc_net);
+	remove_proc_entry("netstat", net->proc_net);
+	remove_proc_entry("sockstat", net->proc_net);
 }
 
 static __net_initdata struct pernet_operations ip_proc_ops = {

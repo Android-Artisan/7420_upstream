@@ -5,6 +5,7 @@
   Copyright (c) 2005 Martin Langer <martin-langer@gmx.de>,
   Copyright (c) 2005-2007 Stefano Brivio <stefano.brivio@polimi.it>
   Copyright (c) 2006, 2006 Michael Buesch <mb@bu3sch.de>
+  Copyright (c) 2006, 2006 Michael Buesch <m@bues.ch>
   Copyright (c) 2005 Danny van Dyk <kugelfang@gentoo.org>
   Copyright (c) 2005 Andreas Jaggi <andreas.jaggi@waterwave.ch>
 
@@ -28,6 +29,8 @@
 #include "b43.h"
 #include "tables.h"
 #include "phy.h"
+#include "phy_g.h"
+
 
 const u32 b43_tab_rotor[] = {
 	0xFEB93FFD, 0xFEC63FFD,	/* 0 */
@@ -388,6 +391,17 @@ u16 b43_ofdmtab_read16(struct b43_wldev *dev, u16 table, u16 offset)
 		phy->ofdmtab_addr_direction = B43_OFDMTAB_DIRECTION_READ;
 	}
 	phy->ofdmtab_addr = addr;
+	struct b43_phy_g *gphy = dev->phy.g;
+	u16 addr;
+
+	addr = table + offset;
+	if ((gphy->ofdmtab_addr_direction != B43_OFDMTAB_DIRECTION_READ) ||
+	    (addr - 1 != gphy->ofdmtab_addr)) {
+		/* The hardware has a different address in memory. Update it. */
+		b43_phy_write(dev, B43_PHY_OTABLECTL, addr);
+		gphy->ofdmtab_addr_direction = B43_OFDMTAB_DIRECTION_READ;
+	}
+	gphy->ofdmtab_addr = addr;
 
 	return b43_phy_read(dev, B43_PHY_OTABLEI);
 
@@ -409,12 +423,24 @@ void b43_ofdmtab_write16(struct b43_wldev *dev, u16 table,
 		phy->ofdmtab_addr_direction = B43_OFDMTAB_DIRECTION_WRITE;
 	}
 	phy->ofdmtab_addr = addr;
+	struct b43_phy_g *gphy = dev->phy.g;
+	u16 addr;
+
+	addr = table + offset;
+	if ((gphy->ofdmtab_addr_direction != B43_OFDMTAB_DIRECTION_WRITE) ||
+	    (addr - 1 != gphy->ofdmtab_addr)) {
+		/* The hardware has a different address in memory. Update it. */
+		b43_phy_write(dev, B43_PHY_OTABLECTL, addr);
+		gphy->ofdmtab_addr_direction = B43_OFDMTAB_DIRECTION_WRITE;
+	}
+	gphy->ofdmtab_addr = addr;
 	b43_phy_write(dev, B43_PHY_OTABLEI, value);
 }
 
 u32 b43_ofdmtab_read32(struct b43_wldev *dev, u16 table, u16 offset)
 {
 	struct b43_phy *phy = &dev->phy;
+	struct b43_phy_g *gphy = dev->phy.g;
 	u32 ret;
 	u16 addr;
 
@@ -426,6 +452,13 @@ u32 b43_ofdmtab_read32(struct b43_wldev *dev, u16 table, u16 offset)
 		phy->ofdmtab_addr_direction = B43_OFDMTAB_DIRECTION_READ;
 	}
 	phy->ofdmtab_addr = addr;
+	if ((gphy->ofdmtab_addr_direction != B43_OFDMTAB_DIRECTION_READ) ||
+	    (addr - 1 != gphy->ofdmtab_addr)) {
+		/* The hardware has a different address in memory. Update it. */
+		b43_phy_write(dev, B43_PHY_OTABLECTL, addr);
+		gphy->ofdmtab_addr_direction = B43_OFDMTAB_DIRECTION_READ;
+	}
+	gphy->ofdmtab_addr = addr;
 	ret = b43_phy_read(dev, B43_PHY_OTABLEQ);
 	ret <<= 16;
 	ret |= b43_phy_read(dev, B43_PHY_OTABLEI);
@@ -447,6 +480,17 @@ void b43_ofdmtab_write32(struct b43_wldev *dev, u16 table,
 		phy->ofdmtab_addr_direction = B43_OFDMTAB_DIRECTION_WRITE;
 	}
 	phy->ofdmtab_addr = addr;
+	struct b43_phy_g *gphy = dev->phy.g;
+	u16 addr;
+
+	addr = table + offset;
+	if ((gphy->ofdmtab_addr_direction != B43_OFDMTAB_DIRECTION_WRITE) ||
+	    (addr - 1 != gphy->ofdmtab_addr)) {
+		/* The hardware has a different address in memory. Update it. */
+		b43_phy_write(dev, B43_PHY_OTABLECTL, addr);
+		gphy->ofdmtab_addr_direction = B43_OFDMTAB_DIRECTION_WRITE;
+	}
+	gphy->ofdmtab_addr = addr;
 
 	b43_phy_write(dev, B43_PHY_OTABLEI, value);
 	b43_phy_write(dev, B43_PHY_OTABLEQ, (value >> 16));

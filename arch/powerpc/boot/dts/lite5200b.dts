@@ -11,6 +11,11 @@
  */
 
 /dts-v1/;
+/include/ "mpc5200b.dtsi"
+
+&gpt0 { fsl,has-wdt; };
+&gpt2 { gpio-controller; };
+&gpt3 { gpio-controller; };
 
 / {
 	model = "fsl,lite5200b";
@@ -37,6 +42,23 @@
 
 	memory {
 		device_type = "memory";
+
+	leds {
+		compatible = "gpio-leds";
+		tmr2 {
+			gpios = <&gpt2 0 1>;
+		};
+		tmr3 {
+			gpios = <&gpt3 0 1>;
+			linux,default-trigger = "heartbeat";
+		};
+		led1 { gpios = <&gpio_wkup 2 1>; };
+		led2 { gpios = <&gpio_simple 3 1>; };
+		led3 { gpios = <&gpio_wkup 3 1>; };
+		led4 { gpios = <&gpio_simple 2 1>; };
+	};
+
+	memory@0 {
 		reg = <0x00000000 0x10000000>;	// 256MB
 	};
 
@@ -204,6 +226,29 @@
 			reg = <0x2000 0x100>;
 			interrupts = <2 1 0>;
 			interrupt-parent = <&mpc5200_pic>;
+		psc@2000 {		// PSC1
+			compatible = "fsl,mpc5200b-psc-uart","fsl,mpc5200-psc-uart";
+			cell-index = <0>;
+		};
+
+		psc@2200 {		// PSC2
+			status = "disabled";
+		};
+
+		psc@2400 {		// PSC3
+			status = "disabled";
+		};
+
+		psc@2600 {		// PSC4
+			status = "disabled";
+		};
+
+		psc@2800 {		// PSC5
+			status = "disabled";
+		};
+
+		psc@2c00 {		// PSC6
+			status = "disabled";
 		};
 
 		// PSC2 in ac97 mode example
@@ -260,6 +305,9 @@
 			local-mac-address = [ 00 00 00 00 00 00 ];
 			interrupts = <2 5 0>;
 			interrupt-parent = <&mpc5200_pic>;
+		//};
+
+		ethernet@3000 {
 			phy-handle = <&phy0>;
 		};
 
@@ -273,6 +321,7 @@
 
 			phy0: ethernet-phy@0 {
 				device_type = "ethernet-phy";
+			phy0: ethernet-phy@0 {
 				reg = <0>;
 			};
 		};
@@ -308,6 +357,15 @@
 		};
 		sram@8000 {
 			compatible = "fsl,mpc5200b-sram","fsl,mpc5200-sram","sram";
+		i2c@3d40 {
+			eeprom@50 {
+				compatible = "atmel,24c02";
+				reg = <0x50>;
+			};
+		};
+
+		sram@8000 {
+			compatible = "fsl,mpc5200b-sram","fsl,mpc5200-sram";
 			reg = <0x8000 0x4000>;
 		};
 	};
@@ -337,4 +395,38 @@
 			  0x02000000 0 0xa0000000 0xa0000000 0 0x10000000
 			  0x01000000 0 0x00000000 0xb0000000 0 0x01000000>;
 	};
+
+	localbus {
+		ranges = <0 0 0xfe000000 0x02000000>;
+
+		flash@0,0 {
+			compatible = "cfi-flash";
+			reg = <0 0 0x02000000>;
+			bank-width = <1>;
+			#size-cells = <1>;
+			#address-cells = <1>;
+
+			partition@0 {
+				label = "kernel";
+				reg = <0x00000000 0x00200000>;
+			};
+			partition@200000 {
+				label = "rootfs";
+				reg = <0x00200000 0x01d00000>;
+			};
+			partition@1f00000 {
+				label = "u-boot";
+				reg = <0x01f00000 0x00060000>;
+			};
+			partition@1f60000 {
+				label = "u-boot-env";
+				reg = <0x01f60000 0x00020000>;
+			};
+			partition@1f80000 {
+				label = "dtb";
+				reg = <0x01f80000 0x00080000>;
+			};
+		};
+	};
+
 };

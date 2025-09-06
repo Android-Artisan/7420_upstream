@@ -21,6 +21,9 @@
 #include <linux/mtd/nand.h>
 #include <linux/mtd/partitions.h>
 #include <linux/gpio.h>
+#include <linux/slab.h>
+#include <linux/gpio.h>
+#include <linux/module.h>
 
 #include <asm/io.h>
 #include <asm/irq.h>
@@ -28,6 +31,7 @@
 
 #include <mach/hardware.h>
 #include <mach/pxa-regs.h>
+#include <mach/pxa2xx-regs.h>
 
 #define GPIO_NAND_CS	(11)
 #define GPIO_NAND_RB	(89)
@@ -157,6 +161,12 @@ static int cmx270_init(void)
 	int ret;
 
 	if (!machine_is_armcore())
+static int __init cmx270_init(void)
+{
+	struct nand_chip *this;
+	int ret;
+
+	if (!(machine_is_armcore() && cpu_is_pxa27x()))
 		return -ENODEV;
 
 	ret = gpio_request(GPIO_NAND_CS, "NAND CS");
@@ -239,6 +249,9 @@ static int cmx270_init(void)
 	/* Register the partitions */
 	pr_notice("Using %s partition definition\n", part_type);
 	ret = add_mtd_partitions(cmx270_nand_mtd, mtd_parts, mtd_parts_nb);
+	/* Register the partitions */
+	ret = mtd_device_parse_register(cmx270_nand_mtd, NULL, NULL,
+					partition_info, NUM_PARTITIONS);
 	if (ret)
 		goto err_scan;
 
@@ -263,6 +276,7 @@ module_init(cmx270_init);
  * Clean up routine
  */
 static void cmx270_cleanup(void)
+static void __exit cmx270_cleanup(void)
 {
 	/* Release resources, unregister device */
 	nand_release(cmx270_nand_mtd);

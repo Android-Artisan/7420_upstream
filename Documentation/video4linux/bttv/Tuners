@@ -1,5 +1,4 @@
 1) Tuner Programming
-====================
 There are some flavors of Tuner programming APIs.
 These differ mainly by the bandswitch byte.
 
@@ -10,7 +9,6 @@ These differ mainly by the bandswitch byte.
     M= PHILIPS_MK3  (VHF_LO=0x01, VHF_HI=0x02, UHF=0x04, radio=0x19)
 
 2) Tuner Manufacturers
-======================
 
 SAMSUNG Tuner identification: (e.g. TCPM9091PD27)
   TCP [ABCJLMNQ] 90[89][125] [DP] [ACD] 27 [ABCD]

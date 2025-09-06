@@ -2,6 +2,7 @@
  * Floating proportions
  *
  *  Copyright (C) 2007 Red Hat, Inc., Peter Zijlstra <pzijlstr@redhat.com>
+ *  Copyright (C) 2007 Red Hat, Inc., Peter Zijlstra
  *
  * Description:
  *
@@ -74,6 +75,7 @@
 #include <linux/rcupdate.h>
 
 int prop_descriptor_init(struct prop_descriptor *pd, int shift)
+int prop_descriptor_init(struct prop_descriptor *pd, int shift, gfp_t gfp)
 {
 	int err;
 
@@ -88,6 +90,11 @@ int prop_descriptor_init(struct prop_descriptor *pd, int shift)
 		goto out;
 
 	err = percpu_counter_init_irq(&pd->pg[1].events, 0);
+	err = percpu_counter_init(&pd->pg[0].events, 0, gfp);
+	if (err)
+		goto out;
+
+	err = percpu_counter_init(&pd->pg[1].events, 0, gfp);
 	if (err)
 		percpu_counter_destroy(&pd->pg[0].events);
 
@@ -147,6 +154,7 @@ out:
  * this is used to track the active references.
  */
 static struct prop_global *prop_get_global(struct prop_descriptor *pd)
+__acquires(RCU)
 {
 	int index;
 
@@ -160,6 +168,7 @@ static struct prop_global *prop_get_global(struct prop_descriptor *pd)
 }
 
 static void prop_put_global(struct prop_descriptor *pd, struct prop_global *pg)
+__releases(RCU)
 {
 	rcu_read_unlock();
 }
@@ -192,6 +201,12 @@ int prop_local_init_percpu(struct prop_local_percpu *pl)
 	pl->shift = 0;
 	pl->period = 0;
 	return percpu_counter_init_irq(&pl->events, 0);
+int prop_local_init_percpu(struct prop_local_percpu *pl, gfp_t gfp)
+{
+	raw_spin_lock_init(&pl->lock);
+	pl->shift = 0;
+	pl->period = 0;
+	return percpu_counter_init(&pl->events, 0, gfp);
 }
 
 void prop_local_destroy_percpu(struct prop_local_percpu *pl)
@@ -225,6 +240,7 @@ void prop_norm_percpu(struct prop_global *pg, struct prop_local_percpu *pl)
 		return;
 
 	spin_lock_irqsave(&pl->lock, flags);
+	raw_spin_lock_irqsave(&pl->lock, flags);
 	prop_adjust_shift(&pl->shift, &pl->period, pg->shift);
 
 	/*
@@ -246,6 +262,7 @@ void prop_norm_percpu(struct prop_global *pg, struct prop_local_percpu *pl)
 
 	pl->period = global_period;
 	spin_unlock_irqrestore(&pl->lock, flags);
+	raw_spin_unlock_irqrestore(&pl->lock, flags);
 }
 
 /*
@@ -323,6 +340,7 @@ void prop_fraction_percpu(struct prop_descriptor *pd,
 int prop_local_init_single(struct prop_local_single *pl)
 {
 	spin_lock_init(&pl->lock);
+	raw_spin_lock_init(&pl->lock);
 	pl->shift = 0;
 	pl->period = 0;
 	pl->events = 0;
@@ -355,6 +373,7 @@ void prop_norm_single(struct prop_global *pg, struct prop_local_single *pl)
 		return;
 
 	spin_lock_irqsave(&pl->lock, flags);
+	raw_spin_lock_irqsave(&pl->lock, flags);
 	prop_adjust_shift(&pl->shift, &pl->period, pg->shift);
 	/*
 	 * For each missed period, we half the local counter.
@@ -366,6 +385,7 @@ void prop_norm_single(struct prop_global *pg, struct prop_local_single *pl)
 		pl->events = 0;
 	pl->period = global_period;
 	spin_unlock_irqrestore(&pl->lock, flags);
+	raw_spin_unlock_irqrestore(&pl->lock, flags);
 }
 
 /*

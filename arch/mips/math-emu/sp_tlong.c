@@ -32,6 +32,22 @@ s64 ieee754sp_tlong(ieee754sp x)
 	COMPXDP;		/* <-- need 64-bit mantissa tmp */
 
 	CLEARCX;
+ *  51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA.
+ */
+
+#include "ieee754sp.h"
+#include "ieee754dp.h"
+
+s64 ieee754sp_tlong(union ieee754sp x)
+{
+	u32 residue;
+	int round;
+	int sticky;
+	int odd;
+
+	COMPXDP;		/* <-- need 64-bit mantissa tmp */
+
+	ieee754_clearcx();
 
 	EXPLODEXSP;
 	FLUSHXSP;
@@ -44,6 +60,12 @@ s64 ieee754sp_tlong(ieee754sp x)
 		return ieee754di_xcpt(ieee754di_indef(), "sp_tlong", x);
 	case IEEE754_CLASS_ZERO:
 		return 0;
+		ieee754_setcx(IEEE754_INVALID_OPERATION);
+		return ieee754di_indef();
+
+	case IEEE754_CLASS_ZERO:
+		return 0;
+
 	case IEEE754_CLASS_DNORM:
 	case IEEE754_CLASS_NORM:
 		break;
@@ -66,6 +88,13 @@ s64 ieee754sp_tlong(ieee754sp x)
 		int sticky;
 		int odd;
 
+		ieee754_setcx(IEEE754_INVALID_OPERATION);
+		return ieee754di_indef();
+	}
+	/* oh gawd */
+	if (xe > SP_FBITS) {
+		xm <<= xe - SP_FBITS;
+	} else if (xe < SP_FBITS) {
 		if (xe < -1) {
 			residue = xm;
 			round = 0;
@@ -91,6 +120,25 @@ s64 ieee754sp_tlong(ieee754sp x)
 				xm++;
 			break;
 		case IEEE754_RD:	/* toward -Infinity */
+		} else {
+			residue = xm << (32 - SP_FBITS + xe);
+			round = (residue >> 31) != 0;
+			sticky = (residue << 1) != 0;
+			xm >>= SP_FBITS - xe;
+		}
+		odd = (xm & 0x1) != 0x0;
+		switch (ieee754_csr.rm) {
+		case FPU_CSR_RN:
+			if (round && (sticky || odd))
+				xm++;
+			break;
+		case FPU_CSR_RZ:
+			break;
+		case FPU_CSR_RU:	/* toward +Infinity */
+			if ((round || sticky) && !xs)
+				xm++;
+			break;
+		case FPU_CSR_RD:	/* toward -Infinity */
 			if ((round || sticky) && xs)
 				xm++;
 			break;
@@ -102,6 +150,11 @@ s64 ieee754sp_tlong(ieee754sp x)
 		}
 		if (round || sticky)
 			SETCX(IEEE754_INEXACT);
+			ieee754_setcx(IEEE754_INVALID_OPERATION);
+			return ieee754di_indef();
+		}
+		if (round || sticky)
+			ieee754_setcx(IEEE754_INEXACT);
 	}
 	if (xs)
 		return -xm;

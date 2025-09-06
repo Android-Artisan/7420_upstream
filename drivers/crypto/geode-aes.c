@@ -17,12 +17,15 @@
 
 #include <asm/io.h>
 #include <asm/delay.h>
+#include <linux/io.h>
+#include <linux/delay.h>
 
 #include "geode-aes.h"
 
 /* Static structures */
 
 static void __iomem * _iobase;
+static void __iomem *_iobase;
 static spinlock_t lock;
 
 /* Write a 128 bit field (either a writable key or IV) */
@@ -31,6 +34,7 @@ _writefield(u32 offset, void *value)
 {
 	int i;
 	for(i = 0; i < 4; i++)
+	for (i = 0; i < 4; i++)
 		iowrite32(((u32 *) value)[i], _iobase + offset + (i * 4));
 }
 
@@ -40,6 +44,7 @@ _readfield(u32 offset, void *value)
 {
 	int i;
 	for(i = 0; i < 4; i++)
+	for (i = 0; i < 4; i++)
 		((u32 *) value)[i] = ioread32(_iobase + offset + (i * 4));
 }
 
@@ -60,6 +65,7 @@ do_crypt(void *src, void *dst, int len, u32 flags)
 		status = ioread32(_iobase + AES_INTR_REG);
 		cpu_relax();
 	} while(!(status & AES_INTRA_PENDING) && --counter);
+	} while (!(status & AES_INTRA_PENDING) && --counter);
 
 	/* Clear the event */
 	iowrite32((status & 0xFF) | AES_INTRA_PENDING, _iobase + AES_INTR_REG);
@@ -137,11 +143,14 @@ static int geode_setkey_cip(struct crypto_tfm *tfm, const u8 *key,
 	 */
 	op->fallback.blk->base.crt_flags &= ~CRYPTO_TFM_REQ_MASK;
 	op->fallback.blk->base.crt_flags |= (tfm->crt_flags & CRYPTO_TFM_REQ_MASK);
+	op->fallback.cip->base.crt_flags &= ~CRYPTO_TFM_REQ_MASK;
+	op->fallback.cip->base.crt_flags |= (tfm->crt_flags & CRYPTO_TFM_REQ_MASK);
 
 	ret = crypto_cipher_setkey(op->fallback.cip, key, len);
 	if (ret) {
 		tfm->crt_flags &= ~CRYPTO_TFM_RES_MASK;
 		tfm->crt_flags |= (op->fallback.blk->base.crt_flags & CRYPTO_TFM_RES_MASK);
+		tfm->crt_flags |= (op->fallback.cip->base.crt_flags & CRYPTO_TFM_RES_MASK);
 	}
 	return ret;
 }
@@ -227,6 +236,7 @@ geode_encrypt(struct crypto_tfm *tfm, u8 *out, const u8 *in)
 	op->mode = AES_MODE_ECB;
 	op->flags = 0;
 	op->len = AES_MIN_BLOCK_SIZE;
+	op->len = AES_BLOCK_SIZE;
 	op->dir = AES_DIR_ENCRYPT;
 
 	geode_aes_crypt(op);
@@ -248,6 +258,7 @@ geode_decrypt(struct crypto_tfm *tfm, u8 *out, const u8 *in)
 	op->mode = AES_MODE_ECB;
 	op->flags = 0;
 	op->len = AES_MIN_BLOCK_SIZE;
+	op->len = AES_BLOCK_SIZE;
 	op->dir = AES_DIR_DECRYPT;
 
 	geode_aes_crypt(op);
@@ -256,6 +267,7 @@ geode_decrypt(struct crypto_tfm *tfm, u8 *out, const u8 *in)
 static int fallback_init_cip(struct crypto_tfm *tfm)
 {
 	const char *name = tfm->__crt_alg->cra_name;
+	const char *name = crypto_tfm_alg_name(tfm);
 	struct geode_aes_op *op = crypto_tfm_ctx(tfm);
 
 	op->fallback.cip = crypto_alloc_cipher(name, 0,
@@ -264,6 +276,7 @@ static int fallback_init_cip(struct crypto_tfm *tfm)
 	if (IS_ERR(op->fallback.cip)) {
 		printk(KERN_ERR "Error allocating fallback algo %s\n", name);
 		return PTR_ERR(op->fallback.blk);
+		return PTR_ERR(op->fallback.cip);
 	}
 
 	return 0;
@@ -290,6 +303,9 @@ static struct crypto_alg geode_alg = {
 	.cra_ctxsize		=	sizeof(struct geode_aes_op),
 	.cra_module			=	THIS_MODULE,
 	.cra_list			=	LIST_HEAD_INIT(geode_alg.cra_list),
+	.cra_blocksize		=	AES_BLOCK_SIZE,
+	.cra_ctxsize		=	sizeof(struct geode_aes_op),
+	.cra_module			=	THIS_MODULE,
 	.cra_u				=	{
 		.cipher	=	{
 			.cia_min_keysize	=	AES_MIN_KEY_SIZE,
@@ -322,6 +338,11 @@ geode_cbc_decrypt(struct blkcipher_desc *desc,
 		op->dst = walk.dst.virt.addr;
 		op->mode = AES_MODE_CBC;
 		op->len = nbytes - (nbytes % AES_MIN_BLOCK_SIZE);
+	while ((nbytes = walk.nbytes)) {
+		op->src = walk.src.virt.addr,
+		op->dst = walk.dst.virt.addr;
+		op->mode = AES_MODE_CBC;
+		op->len = nbytes - (nbytes % AES_BLOCK_SIZE);
 		op->dir = AES_DIR_DECRYPT;
 
 		ret = geode_aes_crypt(op);
@@ -354,6 +375,11 @@ geode_cbc_encrypt(struct blkcipher_desc *desc,
 		op->dst = walk.dst.virt.addr;
 		op->mode = AES_MODE_CBC;
 		op->len = nbytes - (nbytes % AES_MIN_BLOCK_SIZE);
+	while ((nbytes = walk.nbytes)) {
+		op->src = walk.src.virt.addr,
+		op->dst = walk.dst.virt.addr;
+		op->mode = AES_MODE_CBC;
+		op->len = nbytes - (nbytes % AES_BLOCK_SIZE);
 		op->dir = AES_DIR_ENCRYPT;
 
 		ret = geode_aes_crypt(op);
@@ -367,6 +393,7 @@ geode_cbc_encrypt(struct blkcipher_desc *desc,
 static int fallback_init_blk(struct crypto_tfm *tfm)
 {
 	const char *name = tfm->__crt_alg->cra_name;
+	const char *name = crypto_tfm_alg_name(tfm);
 	struct geode_aes_op *op = crypto_tfm_ctx(tfm);
 
 	op->fallback.blk = crypto_alloc_blkcipher(name, 0,
@@ -397,6 +424,11 @@ static struct crypto_alg geode_cbc_alg = {
 	.cra_init			=	fallback_init_blk,
 	.cra_exit			=	fallback_exit_blk,
 	.cra_blocksize		=	AES_MIN_BLOCK_SIZE,
+						CRYPTO_ALG_KERN_DRIVER_ONLY |
+						CRYPTO_ALG_NEED_FALLBACK,
+	.cra_init			=	fallback_init_blk,
+	.cra_exit			=	fallback_exit_blk,
+	.cra_blocksize		=	AES_BLOCK_SIZE,
 	.cra_ctxsize		=	sizeof(struct geode_aes_op),
 	.cra_alignmask		=	15,
 	.cra_type			=	&crypto_blkcipher_type,
@@ -410,6 +442,7 @@ static struct crypto_alg geode_cbc_alg = {
 			.encrypt		=	geode_cbc_encrypt,
 			.decrypt		=	geode_cbc_decrypt,
 			.ivsize			=	AES_IV_LENGTH,
+			.ivsize			=	AES_BLOCK_SIZE,
 		}
 	}
 };
@@ -434,6 +467,11 @@ geode_ecb_decrypt(struct blkcipher_desc *desc,
 		op->dst = walk.dst.virt.addr;
 		op->mode = AES_MODE_ECB;
 		op->len = nbytes - (nbytes % AES_MIN_BLOCK_SIZE);
+	while ((nbytes = walk.nbytes)) {
+		op->src = walk.src.virt.addr,
+		op->dst = walk.dst.virt.addr;
+		op->mode = AES_MODE_ECB;
+		op->len = nbytes - (nbytes % AES_BLOCK_SIZE);
 		op->dir = AES_DIR_DECRYPT;
 
 		ret = geode_aes_crypt(op);
@@ -464,6 +502,11 @@ geode_ecb_encrypt(struct blkcipher_desc *desc,
 		op->dst = walk.dst.virt.addr;
 		op->mode = AES_MODE_ECB;
 		op->len = nbytes - (nbytes % AES_MIN_BLOCK_SIZE);
+	while ((nbytes = walk.nbytes)) {
+		op->src = walk.src.virt.addr,
+		op->dst = walk.dst.virt.addr;
+		op->mode = AES_MODE_ECB;
+		op->len = nbytes - (nbytes % AES_BLOCK_SIZE);
 		op->dir = AES_DIR_ENCRYPT;
 
 		ret = geode_aes_crypt(op);
@@ -483,6 +526,11 @@ static struct crypto_alg geode_ecb_alg = {
 	.cra_init			=	fallback_init_blk,
 	.cra_exit			=	fallback_exit_blk,
 	.cra_blocksize		=	AES_MIN_BLOCK_SIZE,
+						CRYPTO_ALG_KERN_DRIVER_ONLY |
+						CRYPTO_ALG_NEED_FALLBACK,
+	.cra_init			=	fallback_init_blk,
+	.cra_exit			=	fallback_exit_blk,
+	.cra_blocksize		=	AES_BLOCK_SIZE,
 	.cra_ctxsize		=	sizeof(struct geode_aes_op),
 	.cra_alignmask		=	15,
 	.cra_type			=	&crypto_blkcipher_type,
@@ -501,6 +549,7 @@ static struct crypto_alg geode_ecb_alg = {
 
 static void __devexit
 geode_aes_remove(struct pci_dev *dev)
+static void geode_aes_remove(struct pci_dev *dev)
 {
 	crypto_unregister_alg(&geode_alg);
 	crypto_unregister_alg(&geode_ecb_alg);
@@ -523,6 +572,15 @@ geode_aes_probe(struct pci_dev *dev, const struct pci_device_id *id)
 		return ret;
 
 	if ((ret = pci_request_regions(dev, "geode-aes")))
+static int geode_aes_probe(struct pci_dev *dev, const struct pci_device_id *id)
+{
+	int ret;
+	ret = pci_enable_device(dev);
+	if (ret)
+		return ret;
+
+	ret = pci_request_regions(dev, "geode-aes");
+	if (ret)
 		goto eenable;
 
 	_iobase = pci_iomap(dev, 0, 0);
@@ -547,6 +605,19 @@ geode_aes_probe(struct pci_dev *dev, const struct pci_device_id *id)
 		goto eecb;
 
 	printk(KERN_NOTICE "geode-aes: GEODE AES engine enabled.\n");
+	ret = crypto_register_alg(&geode_alg);
+	if (ret)
+		goto eiomap;
+
+	ret = crypto_register_alg(&geode_ecb_alg);
+	if (ret)
+		goto ealg;
+
+	ret = crypto_register_alg(&geode_cbc_alg);
+	if (ret)
+		goto eecb;
+
+	dev_notice(&dev->dev, "GEODE AES engine enabled.\n");
 	return 0;
 
  eecb:
@@ -565,11 +636,13 @@ geode_aes_probe(struct pci_dev *dev, const struct pci_device_id *id)
 	pci_disable_device(dev);
 
 	printk(KERN_ERR "geode-aes:  GEODE AES initialization failed.\n");
+	dev_err(&dev->dev, "GEODE AES initialization failed.\n");
 	return ret;
 }
 
 static struct pci_device_id geode_aes_tbl[] = {
 	{ PCI_VENDOR_ID_AMD, PCI_DEVICE_ID_AMD_LX_AES, PCI_ANY_ID, PCI_ANY_ID} ,
+	{ PCI_VDEVICE(AMD, PCI_DEVICE_ID_AMD_LX_AES), } ,
 	{ 0, }
 };
 
@@ -593,6 +666,10 @@ geode_aes_exit(void)
 {
 	pci_unregister_driver(&geode_aes_driver);
 }
+	.remove = geode_aes_remove,
+};
+
+module_pci_driver(geode_aes_driver);
 
 MODULE_AUTHOR("Advanced Micro Devices, Inc.");
 MODULE_DESCRIPTION("Geode LX Hardware AES driver");

@@ -17,6 +17,7 @@
 
 #include <asm/bootinfo.h>
 #include <asm/reboot.h>
+#include <asm/setup.h>
 #include <asm/gt64120.h>
 
 #include <cobalt.h>
@@ -120,6 +121,23 @@ void __init prom_init(void)
 	}
 
 	add_memory_region(0x0, memsz, BOOT_MEM_RAM);
+	unsigned long memsz;
+	int argc, i;
+	char **argv;
+
+	memsz = fw_arg0 & 0x7fff0000;
+	argc = fw_arg0 & 0x0000ffff;
+	argv = (char **)fw_arg1;
+
+	for (i = 1; i < argc; i++) {
+		strlcat(arcs_cmdline, argv[i], COMMAND_LINE_SIZE);
+		if (i < (argc - 1))
+			strlcat(arcs_cmdline, " ", COMMAND_LINE_SIZE);
+	}
+
+	add_memory_region(0x0, memsz, BOOT_MEM_RAM);
+
+	setup_8250_early_printk_port(CKSEG1ADDR(0x1c800000), 0, 0);
 }
 
 void __init prom_free_prom_memory(void)

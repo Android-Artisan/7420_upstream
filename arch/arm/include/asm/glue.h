@@ -16,6 +16,11 @@
 #ifdef __KERNEL__
 
 
+ *  when we're only targeting one class of TLB, or indirect calls
+ *  when we're targeting multiple classes of TLBs.
+ */
+#ifdef __KERNEL__
+
 #ifdef __STDC__
 #define ____glue(name,fn)	name##fn
 #else
@@ -27,7 +32,6 @@
 
 /*
  *	Data Abort Model
- *	================
  *
  *	We have the following to choose from:
  *	  arm6          - ARM6 style

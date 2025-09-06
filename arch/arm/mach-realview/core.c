@@ -90,6 +90,41 @@ static void realview_flash_exit(void)
 }
 
 static void realview_flash_set_vpp(int on)
+#include <linux/device.h>
+#include <linux/interrupt.h>
+#include <linux/amba/bus.h>
+#include <linux/amba/clcd.h>
+#include <linux/platform_data/video-clcd-versatile.h>
+#include <linux/io.h>
+#include <linux/smsc911x.h>
+#include <linux/smc91x.h>
+#include <linux/ata_platform.h>
+#include <linux/amba/mmci.h>
+#include <linux/gfp.h>
+#include <linux/mtd/physmap.h>
+#include <linux/memblock.h>
+
+#include <clocksource/timer-sp804.h>
+
+#include <mach/hardware.h>
+#include <asm/irq.h>
+#include <asm/mach-types.h>
+#include <asm/hardware/icst.h>
+
+#include <asm/mach/arch.h>
+#include <asm/mach/irq.h>
+#include <asm/mach/map.h>
+
+#include <mach/platform.h>
+#include <mach/irqs.h>
+
+#include <plat/sched_clock.h>
+
+#include "core.h"
+
+#define REALVIEW_FLASHCTRL    (__io_address(REALVIEW_SYS_BASE) + REALVIEW_SYS_FLASH_OFFSET)
+
+static void realview_flash_set_vpp(struct platform_device *pdev, int on)
 {
 	u32 val;
 
@@ -106,11 +141,14 @@ static struct flash_platform_data realview_flash_data = {
 	.width			= 4,
 	.init			= realview_flash_init,
 	.exit			= realview_flash_exit,
+static struct physmap_flash_data realview_flash_data = {
+	.width			= 4,
 	.set_vpp		= realview_flash_set_vpp,
 };
 
 struct platform_device realview_flash_device = {
 	.name			= "armflash",
+	.name			= "physmap-flash",
 	.id			= 0,
 	.dev			= {
 		.platform_data	= &realview_flash_data,
@@ -124,6 +162,90 @@ int realview_flash_register(struct resource *res, u32 num)
 	return platform_device_register(&realview_flash_device);
 }
 
+static struct smsc911x_platform_config smsc911x_config = {
+	.flags		= SMSC911X_USE_32BIT,
+	.irq_polarity	= SMSC911X_IRQ_POLARITY_ACTIVE_HIGH,
+	.irq_type	= SMSC911X_IRQ_TYPE_PUSH_PULL,
+	.phy_interface	= PHY_INTERFACE_MODE_MII,
+};
+
+static struct smc91x_platdata smc91x_platdata = {
+	.flags = SMC91X_USE_8BIT | SMC91X_USE_16BIT | SMC91X_USE_32BIT |
+		 SMC91X_NOWAIT,
+};
+
+static struct platform_device realview_eth_device = {
+	.name		= "smsc911x",
+	.id		= 0,
+	.num_resources	= 2,
+};
+
+int realview_eth_register(const char *name, struct resource *res)
+{
+	if (name)
+		realview_eth_device.name = name;
+	realview_eth_device.resource = res;
+	if (strcmp(realview_eth_device.name, "smsc911x") == 0)
+		realview_eth_device.dev.platform_data = &smsc911x_config;
+	else
+		realview_eth_device.dev.platform_data = &smc91x_platdata;
+
+	return platform_device_register(&realview_eth_device);
+}
+
+struct platform_device realview_usb_device = {
+	.name			= "isp1760",
+	.num_resources		= 2,
+};
+
+int realview_usb_register(struct resource *res)
+{
+	realview_usb_device.resource = res;
+	return platform_device_register(&realview_usb_device);
+}
+
+static struct pata_platform_info pata_platform_data = {
+	.ioport_shift		= 1,
+};
+
+static struct resource pata_resources[] = {
+	[0] = {
+		.start		= REALVIEW_CF_BASE,
+		.end		= REALVIEW_CF_BASE + 0xff,
+		.flags		= IORESOURCE_MEM,
+	},
+	[1] = {
+		.start		= REALVIEW_CF_BASE + 0x100,
+		.end		= REALVIEW_CF_BASE + SZ_4K - 1,
+		.flags		= IORESOURCE_MEM,
+	},
+};
+
+struct platform_device realview_cf_device = {
+	.name			= "pata_platform",
+	.id			= -1,
+	.num_resources		= ARRAY_SIZE(pata_resources),
+	.resource		= pata_resources,
+	.dev			= {
+		.platform_data	= &pata_platform_data,
+	},
+};
+
+static struct resource realview_leds_resources[] = {
+	{
+		.start	= REALVIEW_SYS_BASE + REALVIEW_SYS_LED_OFFSET,
+		.end	= REALVIEW_SYS_BASE + REALVIEW_SYS_LED_OFFSET + 4,
+		.flags	= IORESOURCE_MEM,
+	},
+};
+
+struct platform_device realview_leds_device = {
+	.name		= "versatile-leds",
+	.id		= -1,
+	.num_resources	= ARRAY_SIZE(realview_leds_resources),
+	.resource	= realview_leds_resources,
+};
+
 static struct resource realview_i2c_resource = {
 	.start		= REALVIEW_I2C_BASE,
 	.end		= REALVIEW_I2C_BASE + SZ_4K - 1,
@@ -133,16 +255,50 @@ static struct resource realview_i2c_resource = {
 struct platform_device realview_i2c_device = {
 	.name		= "versatile-i2c",
 	.id		= -1,
+	.id		= 0,
 	.num_resources	= 1,
 	.resource	= &realview_i2c_resource,
 };
 
 #define REALVIEW_SYSMCI	(__io_address(REALVIEW_SYS_BASE) + REALVIEW_SYS_MCI_OFFSET)
 
+static struct i2c_board_info realview_i2c_board_info[] = {
+	{
+		I2C_BOARD_INFO("ds1338", 0xd0 >> 1),
+	},
+};
+
+static int __init realview_i2c_init(void)
+{
+	return i2c_register_board_info(0, realview_i2c_board_info,
+				       ARRAY_SIZE(realview_i2c_board_info));
+}
+arch_initcall(realview_i2c_init);
+
+#define REALVIEW_SYSMCI	(__io_address(REALVIEW_SYS_BASE) + REALVIEW_SYS_MCI_OFFSET)
+
+/*
+ * This is only used if GPIOLIB support is disabled
+ */
 static unsigned int realview_mmc_status(struct device *dev)
 {
 	struct amba_device *adev = container_of(dev, struct amba_device, dev);
 	u32 mask;
+
+	if (machine_is_realview_pb1176()) {
+		static bool inserted = false;
+
+		/*
+		 * The PB1176 does not have the status register,
+		 * assume it is inserted at startup, then invert
+		 * for each call so card insertion/removal will
+		 * be detected anyway. This will not be called if
+		 * GPIO on PL061 is active, which is the proper
+		 * way to do this on the PB1176.
+		 */
+		inserted = !inserted;
+		return inserted ? 0 : 1;
+	}
 
 	if (adev->res.start == REALVIEW_MMCI0_BASE)
 		mask = 1;
@@ -193,6 +349,29 @@ struct clk realview_clcd_clk = {
 	.params	= &realview_oscvco_params,
 	.setvco = realview_oscvco_set,
 };
+
+struct mmci_platform_data realview_mmc0_plat_data = {
+	.ocr_mask	= MMC_VDD_32_33|MMC_VDD_33_34,
+	.status		= realview_mmc_status,
+	.gpio_wp	= 17,
+	.gpio_cd	= 16,
+	.cd_invert	= true,
+};
+
+struct mmci_platform_data realview_mmc1_plat_data = {
+	.ocr_mask	= MMC_VDD_32_33|MMC_VDD_33_34,
+	.status		= realview_mmc_status,
+	.gpio_wp	= 19,
+	.gpio_cd	= 18,
+	.cd_invert	= true,
+};
+
+void __init realview_init_early(void)
+{
+	void __iomem *sys = __io_address(REALVIEW_SYS_BASE);
+
+	versatile_sched_clock_init(sys + REALVIEW_SYS_24MHz_OFFSET, 24000000);
+}
 
 /*
  * CLCD support.
@@ -391,10 +570,53 @@ static void realview_clcd_remove(struct clcd_fb *fb)
 {
 	dma_free_writecombine(&fb->dev->dev, fb->fb.fix.smem_len,
 			      fb->fb.screen_base, fb->fb.fix.smem_start);
+/*
+ * Detect which LCD panel is connected, and return the appropriate
+ * clcd_panel structure.  Note: we do not have any information on
+ * the required timings for the 8.4in panel, so we presently assume
+ * VGA timings.
+ */
+static int realview_clcd_setup(struct clcd_fb *fb)
+{
+	void __iomem *sys_clcd = __io_address(REALVIEW_SYS_BASE) + REALVIEW_SYS_CLCD_OFFSET;
+	const char *panel_name, *vga_panel_name;
+	unsigned long framesize;
+	u32 val;
+
+	if (machine_is_realview_eb()) {
+		/* VGA, 16bpp */
+		framesize = 640 * 480 * 2;
+		vga_panel_name = "VGA";
+	} else {
+		/* XVGA, 16bpp */
+		framesize = 1024 * 768 * 2;
+		vga_panel_name = "XVGA";
+	}
+
+	val = readl(sys_clcd) & SYS_CLCD_ID_MASK;
+	if (val == SYS_CLCD_ID_SANYO_3_8)
+		panel_name = "Sanyo TM38QV67A02A";
+	else if (val == SYS_CLCD_ID_SANYO_2_5)
+		panel_name = "Sanyo QVGA Portrait";
+	else if (val == SYS_CLCD_ID_EPSON_2_2)
+		panel_name = "Epson L2F50113T00";
+	else if (val == SYS_CLCD_ID_VGA)
+		panel_name = vga_panel_name;
+	else {
+		pr_err("CLCD: unknown LCD panel ID 0x%08x, using VGA\n", val);
+		panel_name = vga_panel_name;
+	}
+
+	fb->panel = versatile_clcd_get_panel(panel_name);
+	if (!fb->panel)
+		return -EINVAL;
+
+	return versatile_clcd_setup_dma(fb, framesize);
 }
 
 struct clcd_board clcd_plat_data = {
 	.name		= "RealView",
+	.caps		= CLCD_CAP_ALL,
 	.check		= clcdfb_check,
 	.decode		= clcdfb_decode,
 	.disable	= realview_clcd_disable,
@@ -440,6 +662,10 @@ void realview_leds_event(led_event_t ledevt)
 	local_irq_restore(flags);
 }
 #endif	/* CONFIG_LEDS */
+
+	.mmap		= versatile_clcd_mmap_dma,
+	.remove		= versatile_clcd_remove_dma,
+};
 
 /*
  * Where is the timer (VA)?
@@ -618,4 +844,27 @@ void __init realview_timer_init(unsigned int timer_irq)
 
 	realview_clocksource_init();
 	realview_clockevents_init(timer_irq);
+	sp804_timer_disable(timer0_va_base);
+	sp804_timer_disable(timer1_va_base);
+	sp804_timer_disable(timer2_va_base);
+	sp804_timer_disable(timer3_va_base);
+
+	sp804_clocksource_init(timer3_va_base, "timer3");
+	sp804_clockevents_init(timer0_va_base, timer_irq, "timer0");
+}
+
+/*
+ * Setup the memory banks.
+ */
+void realview_fixup(struct tag *tags, char **from)
+{
+	/*
+	 * Most RealView platforms have 512MB contiguous RAM at 0x70000000.
+	 * Half of this is mirrored at 0.
+	 */
+#ifdef CONFIG_REALVIEW_HIGH_PHYS_OFFSET
+	memblock_add(0x70000000, SZ_512M);
+#else
+	memblock_add(0, SZ_256M);
+#endif
 }

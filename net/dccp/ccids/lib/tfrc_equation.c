@@ -83,6 +83,10 @@
     lookup[M][0]  =  g(1000000)			 =  1000000 * f(100%)
     lookup[0][1]  =  g(TFRC_SMALLEST_P)		  = 1000000 * f(0.01%)
     lookup[M][1]  =  g(TFRC_CALC_X_SPLIT)	 =  1000000 * f(5%)
+    lookup[0][0]  =  g(1000000/(M+1))		= 1000000 * f(0.2%)
+    lookup[M][0]  =  g(1000000)			= 1000000 * f(100%)
+    lookup[0][1]  =  g(TFRC_SMALLEST_P)		= 1000000 * f(0.01%)
+    lookup[M][1]  =  g(TFRC_CALC_X_SPLIT)	= 1000000 * f(5%)
 
   In summary, the two columns represent f(p) for the following ranges:
     * The first column is for   0.002  <= p <= 1.0
@@ -615,6 +619,11 @@ static inline u32 tfrc_binsearch(u32 fval, u8 small)
  *  @R: RTT                  scaled by 1000000   (i.e., microseconds)
  *  @p: loss ratio estimate  scaled by 1000000
  *  Returns X_calc           in bytes per second (not scaled).
+ * @s: packet size          in bytes
+ * @R: RTT                  scaled by 1000000   (i.e., microseconds)
+ * @p: loss ratio estimate  scaled by 1000000
+ *
+ * Returns X_calc           in bytes per second (not scaled).
  */
 u32 tfrc_calc_x(u16 s, u32 R, u32 p)
 {
@@ -631,16 +640,19 @@ u32 tfrc_calc_x(u16 s, u32 R, u32 p)
 	}
 
 	if (p <= TFRC_CALC_X_SPLIT) 		{     /* 0.0000 < p <= 0.05   */
+	if (p <= TFRC_CALC_X_SPLIT)		{     /* 0.0000 < p <= 0.05   */
 		if (p < TFRC_SMALLEST_P) {	      /* 0.0000 < p <  0.0001 */
 			DCCP_WARN("Value of p (%d) below resolution. "
 				  "Substituting %d\n", p, TFRC_SMALLEST_P);
 			index = 0;
 		} else 				      /* 0.0001 <= p <= 0.05  */
+		} else				      /* 0.0001 <= p <= 0.05  */
 			index =  p/TFRC_SMALLEST_P - 1;
 
 		f = tfrc_calc_x_lookup[index][1];
 
 	} else {	 			      /* 0.05   <  p <= 1.00  */
+	} else {				      /* 0.05   <  p <= 1.00  */
 		index = p/(1000000/TFRC_CALC_X_ARRSIZE) - 1;
 
 		f = tfrc_calc_x_lookup[index][0];
@@ -665,6 +677,10 @@ EXPORT_SYMBOL_GPL(tfrc_calc_x);
  *  tfrc_calc_x_reverse_lookup  -  try to find p given f(p)
  *
  *  @fvalue: function value to match, scaled by 1000000
+/**
+ *  tfrc_calc_x_reverse_lookup  -  try to find p given f(p)
+ *  @fvalue: function value to match, scaled by 1000000
+ *
  *  Returns closest match for p, also scaled by 1000000
  */
 u32 tfrc_calc_x_reverse_lookup(u32 fvalue)
@@ -695,3 +711,16 @@ u32 tfrc_calc_x_reverse_lookup(u32 fvalue)
 }
 
 EXPORT_SYMBOL_GPL(tfrc_calc_x_reverse_lookup);
+/**
+ * tfrc_invert_loss_event_rate  -  Compute p so that 10^6 corresponds to 100%
+ * When @loss_event_rate is large, there is a chance that p is truncated to 0.
+ * To avoid re-entering slow-start in that case, we set p = TFRC_SMALLEST_P > 0.
+ */
+u32 tfrc_invert_loss_event_rate(u32 loss_event_rate)
+{
+	if (loss_event_rate == UINT_MAX)		/* see RFC 4342, 8.5 */
+		return 0;
+	if (unlikely(loss_event_rate == 0))		/* map 1/0 into 100% */
+		return 1000000;
+	return max_t(u32, scaled_div(1, loss_event_rate), TFRC_SMALLEST_P);
+}

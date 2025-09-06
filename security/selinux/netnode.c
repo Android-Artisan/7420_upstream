@@ -7,6 +7,7 @@
  * a per-packet basis.
  *
  * Author: Paul Moore <paul.moore@hp.com>
+ * Author: Paul Moore <paul@paul-moore.com>
  *
  * This code is heavily based on the "netif" concept originally developed by
  * James Morris <jmorris@redhat.com>
@@ -31,6 +32,7 @@
 #include <linux/types.h>
 #include <linux/rcupdate.h>
 #include <linux/list.h>
+#include <linux/slab.h>
 #include <linux/spinlock.h>
 #include <linux/in.h>
 #include <linux/in6.h>
@@ -140,6 +142,7 @@ static struct sel_netnode *sel_netnode_find(const void *addr, u16 family)
 		break;
 	default:
 		BUG();
+		return NULL;
 	}
 
 	list_for_each_entry_rcu(node, &sel_netnode_hash[idx].list, list)
@@ -184,6 +187,9 @@ static void sel_netnode_insert(struct sel_netnode *node)
 
 	INIT_RCU_HEAD(&node->rcu);
 
+		return;
+	}
+
 	/* we need to impose a limit on the growth of the hash table so check
 	 * this bucket to make sure it is within the specified bounds */
 	list_add_rcu(&node->list, &sel_netnode_hash[idx].list);
@@ -194,6 +200,11 @@ static void sel_netnode_insert(struct sel_netnode *node)
 			struct sel_netnode, list);
 		list_del_rcu(&tail->list);
 		call_rcu(&tail->rcu, sel_netnode_free);
+			rcu_dereference_protected(sel_netnode_hash[idx].list.prev,
+						  lockdep_is_held(&sel_netnode_lock)),
+			struct sel_netnode, list);
+		list_del_rcu(&tail->list);
+		kfree_rcu(tail, rcu);
 	} else
 		sel_netnode_hash[idx].size++;
 }
@@ -240,6 +251,11 @@ static int sel_netnode_sid_slow(void *addr, u16 family, u32 *sid)
 		break;
 	default:
 		BUG();
+		new->nsec.addr.ipv6 = *(struct in6_addr *)addr;
+		break;
+	default:
+		BUG();
+		ret = -EINVAL;
 	}
 	if (ret != 0)
 		goto out;
@@ -297,6 +313,7 @@ int sel_netnode_sid(void *addr, u16 family, u32 *sid)
  *
  */
 static void sel_netnode_flush(void)
+void sel_netnode_flush(void)
 {
 	unsigned int idx;
 	struct sel_netnode *node, *node_tmp;
@@ -307,6 +324,7 @@ static void sel_netnode_flush(void)
 					 &sel_netnode_hash[idx].list, list) {
 				list_del_rcu(&node->list);
 				call_rcu(&node->rcu, sel_netnode_free);
+				kfree_rcu(node, rcu);
 		}
 		sel_netnode_hash[idx].size = 0;
 	}
@@ -327,6 +345,9 @@ static __init int sel_netnode_init(void)
 {
 	int iter;
 	int ret;
+static __init int sel_netnode_init(void)
+{
+	int iter;
 
 	if (!selinux_enabled)
 		return 0;
@@ -342,6 +363,7 @@ static __init int sel_netnode_init(void)
 		panic("avc_add_callback() failed, error %d\n", ret);
 
 	return ret;
+	return 0;
 }
 
 __initcall(sel_netnode_init);

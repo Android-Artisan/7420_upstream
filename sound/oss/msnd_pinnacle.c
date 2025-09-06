@@ -41,6 +41,8 @@
 #include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/smp_lock.h>
+#include <linux/mutex.h>
+#include <linux/gfp.h>
 #include <asm/irq.h>
 #include <asm/io.h>
 #include "sound_config.h"
@@ -79,6 +81,7 @@
 					 dev.rec_sample_rate /		\
 					 dev.rec_channels)
 
+static DEFINE_MUTEX(msnd_pinnacle_mutex);
 static multisound_dev_t			dev;
 
 #ifndef HAVE_DSPCODEH
@@ -642,6 +645,10 @@ static int mixer_ioctl(unsigned int cmd, unsigned long arg)
 static int dev_ioctl(struct inode *inode, struct file *file, unsigned int cmd, unsigned long arg)
 {
 	int minor = iminor(inode);
+static long dev_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+{
+	int minor = iminor(file_inode(file));
+	int ret;
 
 	if (cmd == OSS_GETVERSION) {
 		int sound_version = SOUND_VERSION;
@@ -654,6 +661,16 @@ static int dev_ioctl(struct inode *inode, struct file *file, unsigned int cmd, u
 		return mixer_ioctl(cmd, arg);
 
 	return -EINVAL;
+	ret = -EINVAL;
+
+	mutex_lock(&msnd_pinnacle_mutex);
+	if (minor == dev.dsp_minor)
+		ret = dsp_ioctl(file, cmd, arg);
+	else if (minor == dev.mixer_minor)
+		ret = mixer_ioctl(cmd, arg);
+	mutex_unlock(&msnd_pinnacle_mutex);
+
+	return ret;
 }
 
 static void dsp_write_flush(void)
@@ -667,6 +684,18 @@ static void dsp_write_flush(void)
 	clear_bit(F_WRITEFLUSH, &dev.flags);
 	if (!signal_pending(current)) {
 		current->state = TASK_INTERRUPTIBLE;
+	int timeout = get_play_delay_jiffies(dev.DAPF.len);
+
+	if (!(dev.mode & FMODE_WRITE) || !test_bit(F_WRITING, &dev.flags))
+		return;
+	set_bit(F_WRITEFLUSH, &dev.flags);
+	wait_event_interruptible_timeout(
+		dev.writeflush,
+		!test_bit(F_WRITEFLUSH, &dev.flags),
+		timeout);
+	clear_bit(F_WRITEFLUSH, &dev.flags);
+	if (!signal_pending(current)) {
+		__set_current_state(TASK_INTERRUPTIBLE);
 		schedule_timeout(get_play_delay_jiffies(DAP_BUFF_SIZE));
 	}
 	clear_bit(F_WRITING, &dev.flags);
@@ -756,12 +785,17 @@ static int dev_open(struct inode *inode, struct file *file)
 	int minor = iminor(inode);
 	int err = 0;
 
+	mutex_lock(&msnd_pinnacle_mutex);
 	if (minor == dev.dsp_minor) {
 		if ((file->f_mode & FMODE_WRITE &&
 		     test_bit(F_AUDIO_WRITE_INUSE, &dev.flags)) ||
 		    (file->f_mode & FMODE_READ &&
 		     test_bit(F_AUDIO_READ_INUSE, &dev.flags)))
 			return -EBUSY;
+		     test_bit(F_AUDIO_READ_INUSE, &dev.flags))) {
+			err = -EBUSY;
+			goto out;
+		}
 
 		if ((err = dsp_open(file)) >= 0) {
 			dev.nresets = 0;
@@ -783,6 +817,8 @@ static int dev_open(struct inode *inode, struct file *file)
 	} else
 		err = -EINVAL;
 
+out:
+	mutex_unlock(&msnd_pinnacle_mutex);
 	return err;
 }
 
@@ -792,6 +828,7 @@ static int dev_release(struct inode *inode, struct file *file)
 	int err = 0;
 
 	lock_kernel();
+	mutex_lock(&msnd_pinnacle_mutex);
 	if (minor == dev.dsp_minor)
 		err = dsp_release(file);
 	else if (minor == dev.mixer_minor) {
@@ -799,6 +836,7 @@ static int dev_release(struct inode *inode, struct file *file)
 	} else
 		err = -EINVAL;
 	unlock_kernel();
+	mutex_unlock(&msnd_pinnacle_mutex);
 	return err;
 }
 
@@ -887,6 +925,7 @@ static int dsp_read(char __user *buf, size_t len)
 {
 	int count = len;
 	char *page = (char *)__get_free_page(GFP_KERNEL);
+	int timeout = get_rec_delay_jiffies(DAR_BUFF_SIZE);
 
 	if (!page)
 		return -ENOMEM;
@@ -931,6 +970,11 @@ static int dsp_read(char __user *buf, size_t len)
 				get_rec_delay_jiffies(DAR_BUFF_SIZE)))
 				clear_bit(F_READING, &dev.flags);
 			clear_bit(F_READBLOCK, &dev.flags);
+			if (wait_event_interruptible_timeout(
+					dev.readblock,
+					test_bit(F_READBLOCK, &dev.flags),
+					timeout) <= 0)
+				clear_bit(F_READING, &dev.flags);
 			if (signal_pending(current)) {
 				free_page((unsigned long)page);
 				return -EINTR;
@@ -945,6 +989,7 @@ static int dsp_write(const char __user *buf, size_t len)
 {
 	int count = len;
 	char *page = (char *)__get_free_page(GFP_KERNEL);
+	int timeout = get_play_delay_jiffies(DAP_BUFF_SIZE);
 
 	if (!page)
 		return -ENOMEM;
@@ -989,6 +1034,10 @@ static int dsp_write(const char __user *buf, size_t len)
 				&dev.writeblock,
 				get_play_delay_jiffies(DAP_BUFF_SIZE));
 			clear_bit(F_WRITEBLOCK, &dev.flags);
+			wait_event_interruptible_timeout(
+				dev.writeblock,
+				test_bit(F_WRITEBLOCK, &dev.flags),
+				timeout);
 			if (signal_pending(current)) {
 				free_page((unsigned long)page);
 				return -EINTR;
@@ -1003,6 +1052,7 @@ static int dsp_write(const char __user *buf, size_t len)
 static ssize_t dev_read(struct file *file, char __user *buf, size_t count, loff_t *off)
 {
 	int minor = iminor(file->f_path.dentry->d_inode);
+	int minor = iminor(file_inode(file));
 	if (minor == dev.dsp_minor)
 		return dsp_read(buf, count);
 	else
@@ -1012,6 +1062,7 @@ static ssize_t dev_read(struct file *file, char __user *buf, size_t count, loff_
 static ssize_t dev_write(struct file *file, const char __user *buf, size_t count, loff_t *off)
 {
 	int minor = iminor(file->f_path.dentry->d_inode);
+	int minor = iminor(file_inode(file));
 	if (minor == dev.dsp_minor)
 		return dsp_write(buf, count);
 	else
@@ -1035,6 +1086,7 @@ static __inline__ void eval_dsp_msg(register WORD wMessage)
 		}
 
 		if (test_bit(F_WRITEBLOCK, &dev.flags))
+		if (test_and_clear_bit(F_WRITEBLOCK, &dev.flags))
 			wake_up_interruptible(&dev.writeblock);
 		break;
 
@@ -1046,6 +1098,7 @@ static __inline__ void eval_dsp_msg(register WORD wMessage)
 		pack_DARQ_to_DARF(dev.last_recbank);
 
 		if (test_bit(F_READBLOCK, &dev.flags))
+		if (test_and_clear_bit(F_READBLOCK, &dev.flags))
 			wake_up_interruptible(&dev.readblock);
 		break;
 
@@ -1108,6 +1161,10 @@ static const struct file_operations dev_fileops = {
 	.ioctl		= dev_ioctl,
 	.open		= dev_open,
 	.release	= dev_release,
+	.unlocked_ioctl	= dev_ioctl,
+	.open		= dev_open,
+	.release	= dev_release,
+	.llseek		= noop_llseek,
 };
 
 static int reset_dsp(void)
@@ -1274,6 +1331,7 @@ static int __init calibrate_adc(WORD srate)
 	    chk_send_dsp_cmd(&dev, HDEX_AUX_REQ) == 0) {
 		current->state = TASK_INTERRUPTIBLE;
 		schedule_timeout(HZ / 3);
+		schedule_timeout_interruptible(HZ / 3);
 		return 0;
 	}
 	printk(KERN_WARNING LOGNAME ": ADC calibration failed\n");
@@ -1283,6 +1341,8 @@ static int __init calibrate_adc(WORD srate)
 
 static int upload_dsp_code(void)
 {
+	int ret = 0;
+
 	msnd_outb(HPBLKSEL_0, dev.io + HP_BLKS);
 #ifndef HAVE_DSPCODEH
 	INITCODESIZE = mod_firmware_load(INITCODEFILE, &INITCODE);
@@ -1302,6 +1362,8 @@ static int upload_dsp_code(void)
 	if (msnd_upload_host(&dev, INITCODE, INITCODESIZE) < 0) {
 		printk(KERN_WARNING LOGNAME ": Error uploading to DSP\n");
 		return -ENODEV;
+		ret = -ENODEV;
+		goto out;
 	}
 #ifdef HAVE_DSPCODEH
 	printk(KERN_INFO LOGNAME ": DSP firmware uploaded (resident)\n");
@@ -1309,12 +1371,14 @@ static int upload_dsp_code(void)
 	printk(KERN_INFO LOGNAME ": DSP firmware uploaded\n");
 #endif
 
+out:
 #ifndef HAVE_DSPCODEH
 	vfree(INITCODE);
 	vfree(PERMCODE);
 #endif
 
 	return 0;
+	return ret;
 }
 
 #ifdef MSND_CLASSIC
@@ -1394,6 +1458,13 @@ static int __init attach_multisound(void)
 	request_region(dev.io, dev.numio, dev.name);
 
         if ((err = dsp_full_reset()) < 0) {
+	if (request_region(dev.io, dev.numio, dev.name) == NULL) {
+		free_irq(dev.irq, &dev);
+		return -EBUSY;
+	}
+
+	err = dsp_full_reset();
+	if (err < 0) {
 		release_region(dev.io, dev.numio);
 		free_irq(dev.irq, &dev);
 		return err;
@@ -1617,6 +1688,7 @@ static int joystick_io __initdata = 0;
 
 /* If we have the digital daugherboard... */
 static int digital __initdata = 0;
+static bool digital __initdata = false;
 #endif
 
 static int fifosize __initdata =	DEFFIFOSIZE;
@@ -1687,6 +1759,7 @@ static int joystick_io __initdata =	CONFIG_MSNDPIN_JOYSTICK_IO;
 #  define CONFIG_MSNDPIN_DIGITAL	0
 #endif
 static int digital __initdata =		CONFIG_MSNDPIN_DIGITAL;
+static bool digital __initdata =	CONFIG_MSNDPIN_DIGITAL;
 
 #endif /* MSND_CLASSIC */
 

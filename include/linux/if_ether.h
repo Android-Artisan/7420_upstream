@@ -10,6 +10,7 @@
  * Author:	Fred N. van Kempen, <waltje@uWalt.NL.Mugnet.ORG>
  *		Donald Becker, <becker@super.org>
  *		Alan Cox, <alan@redhat.com>
+ *		Alan Cox, <alan@lxorguk.ukuu.org.uk>
  *		Steve Whitehouse, <gw7rrm@eeshack3.swan.ac.uk>
  *
  *		This program is free software; you can redistribute it and/or
@@ -112,10 +113,23 @@ struct ethhdr {
 
 #ifdef __KERNEL__
 #include <linux/skbuff.h>
+#ifndef _LINUX_IF_ETHER_H
+#define _LINUX_IF_ETHER_H
+
+#include <linux/skbuff.h>
+#include <uapi/linux/if_ether.h>
 
 static inline struct ethhdr *eth_hdr(const struct sk_buff *skb)
 {
 	return (struct ethhdr *)skb_mac_header(skb);
+}
+
+/* Prefer this version in TX path, instead of
+ * skb_reset_mac_header() + eth_hdr()
+ */
+static inline struct ethhdr *skb_eth_hdr(const struct sk_buff *skb)
+{
+	return (struct ethhdr *)skb->data;
 }
 
 int eth_header_parse(const struct sk_buff *skb, unsigned char *haddr);
@@ -135,5 +149,7 @@ extern char *print_mac(char *buf, const unsigned char *addr);
 #define DECLARE_MAC_BUF(var) char var[MAC_BUF_SIZE] __maybe_unused
 
 #endif
+
+extern ssize_t sysfs_format_mac(char *buf, const unsigned char *addr, int len);
 
 #endif	/* _LINUX_IF_ETHER_H */

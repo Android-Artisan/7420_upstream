@@ -218,3 +218,4 @@ static void __exit mtouch_exit(void)
 
 module_init(mtouch_init);
 module_exit(mtouch_exit);
+module_serio_driver(mtouch_drv);

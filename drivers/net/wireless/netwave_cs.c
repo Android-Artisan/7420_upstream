@@ -163,7 +163,6 @@ static char *version =
 #define DEBUG(n, args...)
 #endif
 
-/*====================================================================*/
 
 /* Parameters that can be set with 'insmod' */
 
@@ -186,7 +185,6 @@ module_param(domain, int, 0);
 module_param(scramble_key, int, 0);
 module_param(mem_speed, int, 0);
 
-/*====================================================================*/
 
 /* PCMCIA (Card Services) related functions */
 static void netwave_release(struct pcmcia_device *link);     /* Card removal */

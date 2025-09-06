@@ -68,6 +68,43 @@
 #define HWCAP_SPARC_ULTRA3	32
 #define HWCAP_SPARC_BLKINIT	64
 #define HWCAP_SPARC_N2		128
+#define HWCAP_SPARC_FLUSH       0x00000001
+#define HWCAP_SPARC_STBAR       0x00000002
+#define HWCAP_SPARC_SWAP        0x00000004
+#define HWCAP_SPARC_MULDIV      0x00000008
+#define HWCAP_SPARC_V9		0x00000010
+#define HWCAP_SPARC_ULTRA3	0x00000020
+#define HWCAP_SPARC_BLKINIT	0x00000040
+#define HWCAP_SPARC_N2		0x00000080
+
+/* Solaris compatible AT_HWCAP bits. */
+#define AV_SPARC_MUL32		0x00000100 /* 32x32 multiply is efficient */
+#define AV_SPARC_DIV32		0x00000200 /* 32x32 divide is efficient */
+#define AV_SPARC_FSMULD		0x00000400 /* 'fsmuld' is efficient */
+#define AV_SPARC_V8PLUS		0x00000800 /* v9 insn available to 32bit */
+#define AV_SPARC_POPC		0x00001000 /* 'popc' is efficient */
+#define AV_SPARC_VIS		0x00002000 /* VIS insns available */
+#define AV_SPARC_VIS2		0x00004000 /* VIS2 insns available */
+#define AV_SPARC_ASI_BLK_INIT	0x00008000 /* block init ASIs available */
+#define AV_SPARC_FMAF		0x00010000 /* fused multiply-add */
+#define AV_SPARC_VIS3		0x00020000 /* VIS3 insns available */
+#define AV_SPARC_HPC		0x00040000 /* HPC insns available */
+#define AV_SPARC_RANDOM		0x00080000 /* 'random' insn available */
+#define AV_SPARC_TRANS		0x00100000 /* transaction insns available */
+#define AV_SPARC_FJFMAU		0x00200000 /* unfused multiply-add */
+#define AV_SPARC_IMA		0x00400000 /* integer multiply-add */
+#define AV_SPARC_ASI_CACHE_SPARING \
+				0x00800000 /* cache sparing ASIs available */
+#define AV_SPARC_PAUSE		0x01000000 /* PAUSE available */
+#define AV_SPARC_CBCOND		0x02000000 /* CBCOND insns available */
+
+/* Solaris decided to enumerate every single crypto instruction type
+ * in the AT_HWCAP bits.  This is wasteful, since if crypto is present,
+ * you still need to look in the CFR register to see if the opcode is
+ * really available.  So we simply advertise only "crypto" support.
+ */
+#define HWCAP_SPARC_CRYPTO	0x04000000 /* CRYPTO insns available */
+#define HWCAP_SPARC_ADI		0x08000000 /* ADI available */
 
 #define CORE_DUMP_USE_REGSET
 
@@ -188,6 +225,8 @@ static inline unsigned int sparc64_elf_hwcap(void)
 }
 
 #define ELF_HWCAP	sparc64_elf_hwcap();
+extern unsigned long sparc64_elf_hwcap;
+#define ELF_HWCAP	sparc64_elf_hwcap
 
 /* This yields a string that ld.so will use to load implementation
    specific libraries for optimization.  This is more specific in
@@ -212,6 +251,15 @@ do {	unsigned long new_flags = current_thread_info()->flags; \
 		set_personality(PER_SVR4);		\
 	else if (current->personality != PER_LINUX32)	\
 		set_personality(PER_LINUX);		\
+#define SET_PERSONALITY(ex)				\
+do {	if ((ex).e_ident[EI_CLASS] == ELFCLASS32)	\
+		set_thread_flag(TIF_32BIT);		\
+	else						\
+		clear_thread_flag(TIF_32BIT);		\
+	/* flush_thread will update pgd cache */	\
+	if (personality(current->personality) != PER_LINUX32)	\
+		set_personality(PER_LINUX |		\
+			(current->personality & (~PER_MASK)));	\
 } while (0)
 
 #endif /* !(__ASM_SPARC64_ELF_H) */

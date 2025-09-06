@@ -20,6 +20,7 @@
  */
 
 #include <linux/init.h>
+#include <linux/export.h>
 #include <sound/core.h>
 
 #include "seq_info.h"
@@ -50,6 +51,13 @@ create_info_entry(char *name, void (*read)(struct snd_info_entry *,
 	return entry;
 }
 
+static void free_info_entries(void)
+{
+	snd_info_free_entry(queues_entry);
+	snd_info_free_entry(clients_entry);
+	snd_info_free_entry(timer_entry);
+}
+
 /* create all our /proc entries */
 int __init snd_seq_info_init(void)
 {
@@ -59,6 +67,13 @@ int __init snd_seq_info_init(void)
 					  snd_seq_info_clients_read);
 	timer_entry = create_info_entry("timer", snd_seq_info_timer_read);
 	return 0;
+	if (!queues_entry || !clients_entry || !timer_entry)
+		goto error;
+	return 0;
+
+ error:
+	free_info_entries();
+	return -ENOMEM;
 }
 
 int __exit snd_seq_info_done(void)
@@ -69,3 +84,6 @@ int __exit snd_seq_info_done(void)
 	return 0;
 }
 #endif
+	free_info_entries();
+	return 0;
+}

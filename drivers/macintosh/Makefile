@@ -11,7 +11,8 @@ obj-$(CONFIG_MAC_EMUMOUSEBTN)	+= mac_hid.o
 obj-$(CONFIG_INPUT_ADBHID)	+= adbhid.o
 obj-$(CONFIG_ANSLCD)		+= ans-lcd.o
 
-obj-$(CONFIG_ADB_PMU)		+= via-pmu.o via-pmu-event.o
+obj-$(CONFIG_ADB_PMU)		+= via-pmu.o
+obj-$(CONFIG_ADB_PMU_EVENT)	+= via-pmu-event.o
 obj-$(CONFIG_ADB_PMU_LED)	+= via-pmu-led.o
 obj-$(CONFIG_PMAC_BACKLIGHT)	+= via-pmu-backlight.o
 obj-$(CONFIG_ADB_CUDA)		+= via-cuda.o
@@ -29,6 +30,24 @@ obj-$(CONFIG_THERM_PM72)	+= therm_pm72.o
 obj-$(CONFIG_THERM_WINDTUNNEL)	+= therm_windtunnel.o
 obj-$(CONFIG_THERM_ADT746X)	+= therm_adt746x.o
 obj-$(CONFIG_WINDFARM)	        += windfarm_core.o
+obj-$(CONFIG_THERM_WINDTUNNEL)	+= therm_windtunnel.o
+obj-$(CONFIG_THERM_ADT746X)	+= therm_adt746x.o
+obj-$(CONFIG_WINDFARM)	        += windfarm_core.o
+obj-$(CONFIG_WINDFARM_PM72)     += windfarm_fcu_controls.o \
+				   windfarm_ad7417_sensor.o \
+				   windfarm_lm75_sensor.o \
+				   windfarm_max6690_sensor.o \
+				   windfarm_pid.o \
+				   windfarm_cpufreq_clamp.o \
+				   windfarm_pm72.o
+obj-$(CONFIG_WINDFARM_RM31)     += windfarm_fcu_controls.o \
+				   windfarm_ad7417_sensor.o \
+				   windfarm_lm75_sensor.o \
+				   windfarm_lm87_sensor.o \
+				   windfarm_max6690_sensor.o \
+				   windfarm_pid.o \
+				   windfarm_cpufreq_clamp.o \
+				   windfarm_rm31.o
 obj-$(CONFIG_WINDFARM_PM81)     += windfarm_smu_controls.o \
 				   windfarm_smu_sensors.o \
 				   windfarm_lm75_sensor.o windfarm_pid.o \
@@ -48,3 +67,5 @@ obj-$(CONFIG_WINDFARM_PM121)	+= windfarm_pm121.o windfarm_smu_sat.o \
 				   windfarm_max6690_sensor.o \
 				   windfarm_lm75_sensor.o windfarm_pid.o
 obj-$(CONFIG_PMAC_RACKMETER)	+= rack-meter.o
+
+obj-$(CONFIG_SENSORS_AMS)	+= ams/

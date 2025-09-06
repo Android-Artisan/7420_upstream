@@ -22,6 +22,9 @@
 
 #include <linux/module.h>
 
+#include <linux/export.h>
+#include <linux/proc_fs.h>
+#include <linux/seq_file.h>
 #include <linux/types.h>
 #include <linux/errno.h>
 #include <linux/kernel.h>
@@ -34,6 +37,7 @@
 #include <linux/ioctl.h>
 #include <linux/file.h>
 #include <linux/wait.h>
+#include <linux/kthread.h>
 #include <net/sock.h>
 
 #include <linux/isdn/capilli.h>
@@ -106,6 +110,9 @@ static struct cmtp_application *cmtp_application_get(struct cmtp_session *sessio
 	struct list_head *p, *n;
 
 	list_for_each_safe(p, n, &session->applications) {
+	struct list_head *p;
+
+	list_for_each(p, &session->applications) {
 		app = list_entry(p, struct cmtp_application, list);
 		switch (pattern) {
 		case CMTP_MSGNUM:
@@ -148,6 +155,7 @@ static void cmtp_send_capimsg(struct cmtp_session *session, struct sk_buff *skb)
 	skb_queue_tail(&session->transmit, skb);
 
 	cmtp_schedule(session);
+	wake_up_interruptible(sk_sleep(session->sock->sk));
 }
 
 static void cmtp_send_interopmsg(struct cmtp_session *session,
@@ -160,6 +168,8 @@ static void cmtp_send_interopmsg(struct cmtp_session *session,
 	BT_DBG("session %p subcmd 0x%02x appl %d msgnum %d", session, subcmd, appl, msgnum);
 
 	if (!(skb = alloc_skb(CAPI_MSG_BASELEN + 6 + len, GFP_ATOMIC))) {
+	skb = alloc_skb(CAPI_MSG_BASELEN + 6 + len, GFP_ATOMIC);
+	if (!skb) {
 		BT_ERR("Can't allocate memory for interoperability packet");
 		return;
 	}
@@ -329,6 +339,7 @@ void cmtp_recv_capimsg(struct cmtp_session *session, struct sk_buff *skb)
 	struct capi_ctr *ctrl = &session->ctrl;
 	struct cmtp_application *application;
 	__u16 cmd, appl;
+	__u16 appl;
 	__u32 contr;
 
 	BT_DBG("session %p skb %p len %d", session, skb, skb->len);
@@ -342,6 +353,7 @@ void cmtp_recv_capimsg(struct cmtp_session *session, struct sk_buff *skb)
 	}
 
 	if (session->flags & (1 << CMTP_LOOPBACK)) {
+	if (session->flags & BIT(CMTP_LOOPBACK)) {
 		kfree_skb(skb);
 		return;
 	}
@@ -391,6 +403,10 @@ static void cmtp_reset_ctr(struct capi_ctr *ctrl)
 
 	atomic_inc(&session->terminate);
 	cmtp_schedule(session);
+	capi_ctr_down(ctrl);
+
+	atomic_inc(&session->terminate);
+	wake_up_process(session->task);
 }
 
 static void cmtp_register_appl(struct capi_ctr *ctrl, __u16 appl, capi_register_params *rp)
@@ -548,6 +564,37 @@ static int cmtp_ctr_read_proc(char *page, char **start, off_t off, int count, in
 	return ((count < len - off) ? count : len - off);
 }
 
+static int cmtp_proc_show(struct seq_file *m, void *v)
+{
+	struct capi_ctr *ctrl = m->private;
+	struct cmtp_session *session = ctrl->driverdata;
+	struct cmtp_application *app;
+	struct list_head *p;
+
+	seq_printf(m, "%s\n\n", cmtp_procinfo(ctrl));
+	seq_printf(m, "addr %s\n", session->name);
+	seq_printf(m, "ctrl %d\n", session->num);
+
+	list_for_each(p, &session->applications) {
+		app = list_entry(p, struct cmtp_application, list);
+		seq_printf(m, "appl %d -> %d\n", app->appl, app->mapping);
+	}
+
+	return 0;
+}
+
+static int cmtp_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, cmtp_proc_show, PDE_DATA(inode));
+}
+
+static const struct file_operations cmtp_proc_fops = {
+	.owner		= THIS_MODULE,
+	.open		= cmtp_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
 
 int cmtp_attach_device(struct cmtp_session *session)
 {
@@ -588,6 +635,7 @@ int cmtp_attach_device(struct cmtp_session *session)
 
 	session->ctrl.procinfo      = cmtp_procinfo;
 	session->ctrl.ctr_read_proc = cmtp_ctr_read_proc;
+	session->ctrl.proc_fops = &cmtp_proc_fops;
 
 	if (attach_capi_ctr(&session->ctrl) < 0) {
 		BT_ERR("Can't attach new controller");

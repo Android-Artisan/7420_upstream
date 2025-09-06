@@ -20,6 +20,7 @@
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/netfilter.h>
+#include <linux/slab.h>
 #include <linux/in.h>
 #include <linux/tcp.h>
 #include <net/netfilter/nf_conntrack.h>
@@ -30,6 +31,7 @@
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Michal Schmidt <mschmidt@redhat.com>");
 MODULE_DESCRIPTION("SANE connection tracking helper");
+MODULE_ALIAS_NFCT_HELPER("sane");
 
 static char *sane_buffer;
 
@@ -68,6 +70,7 @@ static int help(struct sk_buff *skb,
 	int ret = NF_ACCEPT;
 	int dir = CTINFO2DIR(ctinfo);
 	struct nf_ct_sane_master *ct_sane_info;
+	struct nf_ct_sane_master *ct_sane_info = nfct_help_data(ct);
 	struct nf_conntrack_expect *exp;
 	struct nf_conntrack_tuple *tuple;
 	struct sane_request *req;
@@ -77,6 +80,9 @@ static int help(struct sk_buff *skb,
 	/* Until there's been traffic both ways, don't look in packets. */
 	if (ctinfo != IP_CT_ESTABLISHED &&
 	    ctinfo != IP_CT_ESTABLISHED+IP_CT_IS_REPLY)
+	/* Until there's been traffic both ways, don't look in packets. */
+	if (ctinfo != IP_CT_ESTABLISHED &&
+	    ctinfo != IP_CT_ESTABLISHED_REPLY)
 		return NF_ACCEPT;
 
 	/* Not a full tcp header? */
@@ -137,6 +143,7 @@ static int help(struct sk_buff *skb,
 
 	exp = nf_ct_expect_alloc(ct);
 	if (exp == NULL) {
+		nf_ct_helper_log(skb, ct, "cannot alloc expectation");
 		ret = NF_DROP;
 		goto out;
 	}
@@ -152,6 +159,10 @@ static int help(struct sk_buff *skb,
 	/* Can't expect this?  Best to drop packet now. */
 	if (nf_ct_expect_related(exp) != 0)
 		ret = NF_DROP;
+	if (nf_ct_expect_related(exp) != 0) {
+		nf_ct_helper_log(skb, ct, "cannot add expectation");
+		ret = NF_DROP;
+	}
 
 	nf_ct_expect_put(exp);
 
@@ -203,6 +214,7 @@ static int __init nf_conntrack_sane_init(void)
 		sane[i][0].tuple.src.l3num = PF_INET;
 		sane[i][1].tuple.src.l3num = PF_INET6;
 		for (j = 0; j < 2; j++) {
+			sane[i][j].data_len = sizeof(struct nf_ct_sane_master);
 			sane[i][j].tuple.src.u.tcp.port = htons(ports[i]);
 			sane[i][j].tuple.dst.protonum = IPPROTO_TCP;
 			sane[i][j].expect_policy = &sane_exp_policy;
@@ -214,6 +226,10 @@ static int __init nf_conntrack_sane_init(void)
 			else
 				sprintf(tmpname, "sane-%d", ports[i]);
 			sane[i][j].name = tmpname;
+			if (ports[i] == SANE_PORT)
+				sprintf(sane[i][j].name, "sane");
+			else
+				sprintf(sane[i][j].name, "sane-%d", ports[i]);
 
 			pr_debug("nf_ct_sane: registering helper for pf: %d "
 				 "port: %d\n",

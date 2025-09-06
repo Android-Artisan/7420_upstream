@@ -30,6 +30,7 @@ struct hppb_card {
 };
 
 struct hppb_card hppb_card_head = {
+static struct hppb_card hppb_card_head = {
 	.hpa = 0,
 	.next = NULL,
 };
@@ -63,6 +64,8 @@ static int hppb_probe(struct parisc_device *dev)
 		card = card->next;
 	}
         printk(KERN_INFO "Found GeckoBoa at 0x%x\n", dev->hpa.start);
+	printk(KERN_INFO "Found GeckoBoa at 0x%llx\n",
+			(unsigned long long) dev->hpa.start);
 
 	card->hpa = dev->hpa.start;
 	card->mmio_region.name = "HP-PB Bus";
@@ -75,6 +78,8 @@ static int hppb_probe(struct parisc_device *dev)
 	if(status < 0) {
 		printk(KERN_ERR "%s: failed to claim HP-PB bus space (%08x, %08x)\n",
 			__FILE__, card->mmio_region.start, card->mmio_region.end);
+		printk(KERN_ERR "%s: failed to claim HP-PB bus space (%pR)\n",
+			__FILE__, &card->mmio_region);
 	}
 
         return 0;

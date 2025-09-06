@@ -1,5 +1,4 @@
 Kernel driver lm83
-==================
 
 Supported chips:
   * National Semiconductor LM83
@@ -14,6 +13,7 @@ Supported chips:
 
 
 Author: Jean Delvare <khali@linux-fr.org>
+Author: Jean Delvare <jdelvare@suse.de>
 
 Description
 -----------

@@ -5,6 +5,9 @@
 #include "paravirt_inst.h"
 
 #ifdef CONFIG_VIRT_CPU_ACCOUNTING
+#include <asm/native/inst.h>
+
+#ifdef CONFIG_VIRT_CPU_ACCOUNTING_NATIVE
 /* read ar.itc in advance, and use it before leaving bank 0 */
 #define ACCOUNT_GET_STAMP				\
 (pUStk) mov.m r20=ar.itc;
@@ -17,6 +20,7 @@
 #endif
 
 .section ".data.patch.rse", "a"
+.section ".data..patch.rse", "a"
 .previous
 
 /*
@@ -216,6 +220,7 @@
 (pUStk)	sub r16=r18,r22;			\
 [1:](pKStk)	br.cond.sptk.many 1f;		\
 	.xdata4 ".data.patch.rse",1b-.		\
+	.xdata4 ".data..patch.rse",1b-.		\
 	;;					\
 	cmp.ge p6,p7 = 33,r17;			\
 	;;					\

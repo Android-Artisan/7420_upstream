@@ -10,6 +10,8 @@
 
 #include <asm/asm.h>
 #include <asm/asmmacro.h>
+#include <asm/compiler.h>
+#include <asm/irqflags.h>
 #include <asm/regdef.h>
 #include <asm/mipsregs.h>
 #include <asm/stackframe.h>
@@ -36,6 +38,11 @@ FEXPORT(ret_from_exception)
 FEXPORT(ret_from_irq)
 	LONG_S	s0, TI_REGS($28)
 FEXPORT(__ret_from_irq)
+/*
+ * We can be coming here from a syscall done in the kernel space,
+ * e.g. a failed kernel_execve().
+ */
+resume_userspace_check:
 	LONG_L	t0, PT_STATUS(sp)		# returning to kernel mode?
 	andi	t0, t0, KU_USER
 	beqz	t0, resume_kernel
@@ -44,6 +51,11 @@ resume_userspace:
 	local_irq_disable		# make sure we dont miss an
 					# interrupt setting need_resched
 					# between sampling and return
+#ifdef CONFIG_MIPSR2_TO_R6_EMULATOR
+	lw	k0, TI_R2_EMUL_RET($28)
+	bnez	k0, restore_all_from_r2_emul
+#endif
+
 	LONG_L	a2, TI_FLAGS($28)	# current->work
 	andi	t0, a2, _TIF_WORK_MASK	# (ignoring syscall_trace)
 	bnez	t0, work_pending
@@ -64,6 +76,12 @@ need_resched:
 	jal	preempt_schedule_irq
 	b	need_resched
 #endif
+
+FEXPORT(ret_from_kernel_thread)
+	jal	schedule_tail		# a0 = struct task_struct *prev
+	move	a0, s1
+	jal	s0
+	j	syscall_exit
 
 FEXPORT(ret_from_fork)
 	jal	schedule_tail		# a0 = struct task_struct *prev
@@ -113,11 +131,13 @@ FEXPORT(restore_all)			# restore full frame
 	jal	deferred_smtc_ipi
 	LONG_S	s0, TI_REGS($28)
 #endif /* CONFIG_MIPS_MT_SMTC */
+restore_all:				# restore full frame
 	.set	noat
 	RESTORE_TEMP
 	RESTORE_AT
 	RESTORE_STATIC
 FEXPORT(restore_partial)		# restore partial frame
+restore_partial:		# restore partial frame
 #ifdef CONFIG_TRACE_IRQFLAGS
 	SAVE_STATIC
 	SAVE_AT
@@ -141,10 +161,24 @@ FEXPORT(restore_partial)		# restore partial frame
 	RESTORE_SP_AND_RET
 	.set	at
 
+#ifdef CONFIG_MIPSR2_TO_R6_EMULATOR
+restore_all_from_r2_emul:			# restore full frame
+	.set	noat
+	sw	zero, TI_R2_EMUL_RET($28)	# reset it
+	RESTORE_TEMP
+	RESTORE_AT
+	RESTORE_STATIC
+	RESTORE_SOME
+	LONG_L	sp, PT_R29(sp)
+	eretnc
+	.set	at
+#endif
+
 work_pending:
 	andi	t0, a2, _TIF_NEED_RESCHED # a2 is preloaded with TI_FLAGS
 	beqz	t0, work_notifysig
 work_resched:
+	TRACE_IRQS_OFF
 	jal	schedule
 
 	local_irq_disable		# make sure need_resched and
@@ -178,6 +212,32 @@ syscall_exit_work:
 	b	resume_userspace
 
 #if defined(CONFIG_CPU_MIPSR2) || defined(CONFIG_MIPS_MT)
+	j	resume_userspace_check
+
+FEXPORT(syscall_exit_partial)
+	local_irq_disable		# make sure need_resched doesn't
+					# change between and return
+	LONG_L	a2, TI_FLAGS($28)	# current->work
+	li	t0, _TIF_ALLWORK_MASK
+	and	t0, a2
+	beqz	t0, restore_partial
+	SAVE_STATIC
+syscall_exit_work:
+	LONG_L	t0, PT_STATUS(sp)		# returning to kernel mode?
+	andi	t0, t0, KU_USER
+	beqz	t0, resume_kernel
+	li	t0, _TIF_WORK_SYSCALL_EXIT
+	and	t0, a2			# a2 is preloaded with TI_FLAGS
+	beqz	t0, work_pending	# trace bit set?
+	local_irq_enable		# could let syscall_trace_leave()
+					# call schedule() instead
+	TRACE_IRQS_ON
+	move	a0, sp
+	jal	syscall_trace_leave
+	b	resume_userspace
+
+#if defined(CONFIG_CPU_MIPSR2) || defined(CONFIG_CPU_MIPSR6) || \
+    defined(CONFIG_MIPS_MT)
 
 /*
  * MIPS32R2 Instruction Hazard Barrier - must be called
@@ -186,8 +246,10 @@ syscall_exit_work:
  */
 LEAF(mips_ihb)
 	.set	mips32r2
+	.set	MIPS_ISA_LEVEL_RAW
 	jr.hb	ra
 	nop
 	END(mips_ihb)
 
 #endif /* CONFIG_CPU_MIPSR2 or CONFIG_MIPS_MT */
+#endif /* CONFIG_CPU_MIPSR2 or CONFIG_CPU_MIPSR6 or CONFIG_MIPS_MT */

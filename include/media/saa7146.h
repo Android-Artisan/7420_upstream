@@ -13,6 +13,8 @@
 #include <linux/stringify.h>
 #include <linux/mutex.h>
 #include <linux/scatterlist.h>
+#include <media/v4l2-device.h>
+#include <media/v4l2-ctrls.h>
 
 #include <linux/vmalloc.h>	/* for vmalloc() */
 #include <linux/mm.h>		/* for vmalloc_to_page() */
@@ -42,9 +44,33 @@ extern unsigned int saa7146_debug;
 #define DEB_VBI(x)  if (0!=(DEBUG_VARIABLE&0x10)) { DEBUG_PROLOG; printk x; } /* vbi debug messages */
 #define DEB_INT(x)  if (0!=(DEBUG_VARIABLE&0x20)) { DEBUG_PROLOG; printk x; } /* interrupt debug messages */
 #define DEB_CAP(x)  if (0!=(DEBUG_VARIABLE&0x40)) { DEBUG_PROLOG; printk x; } /* capture debug messages */
+#define ERR(fmt, ...)	pr_err("%s: " fmt, __func__, ##__VA_ARGS__)
+
+#define _DBG(mask, fmt, ...)						\
+do {									\
+	if (DEBUG_VARIABLE & mask)					\
+		pr_debug("%s(): " fmt, __func__, ##__VA_ARGS__);	\
+} while (0)
+
+/* simple debug messages */
+#define DEB_S(fmt, ...)		_DBG(0x01, fmt, ##__VA_ARGS__)
+/* more detailed debug messages */
+#define DEB_D(fmt, ...)		_DBG(0x02, fmt, ##__VA_ARGS__)
+/* print enter and exit of functions */
+#define DEB_EE(fmt, ...)	_DBG(0x04, fmt, ##__VA_ARGS__)
+/* i2c debug messages */
+#define DEB_I2C(fmt, ...)	_DBG(0x08, fmt, ##__VA_ARGS__)
+/* vbi debug messages */
+#define DEB_VBI(fmt, ...)	_DBG(0x10, fmt, ##__VA_ARGS__)
+/* interrupt debug messages */
+#define DEB_INT(fmt, ...)	_DBG(0x20, fmt, ##__VA_ARGS__)
+/* capture debug messages */
+#define DEB_CAP(fmt, ...)	_DBG(0x40, fmt, ##__VA_ARGS__)
 
 #define SAA7146_ISR_CLEAR(x,y) \
 	saa7146_write(x, ISR, (y));
+
+struct module;
 
 struct saa7146_dev;
 struct saa7146_extension;
@@ -113,6 +139,12 @@ struct saa7146_dev
 	/* different device locks */
 	spinlock_t			slock;
 	struct mutex			lock;
+	struct v4l2_device 		v4l2_dev;
+	struct v4l2_ctrl_handler	ctrl_handler;
+
+	/* different device locks */
+	spinlock_t			slock;
+	struct mutex			v4l2_lock;
 
 	unsigned char			__iomem *mem;		/* pointer to mapped IO memory */
 	u32				revision;	/* chip revision; needed for bug-workarounds*/
@@ -145,6 +177,11 @@ struct saa7146_dev
 	struct saa7146_dma		d_rps1;
 };
 
+static inline struct saa7146_dev *to_saa7146_dev(struct v4l2_device *v4l2_dev)
+{
+	return container_of(v4l2_dev, struct saa7146_dev, v4l2_dev);
+}
+
 /* from saa7146_i2c.c */
 int saa7146_i2c_adapter_prepare(struct saa7146_dev *dev, struct i2c_adapter *i2c_adapter, u32 bitrate);
 
@@ -154,6 +191,9 @@ extern struct mutex saa7146_devices_lock;
 int saa7146_register_extension(struct saa7146_extension*);
 int saa7146_unregister_extension(struct saa7146_extension*);
 struct saa7146_format* format_by_fourcc(struct saa7146_dev *dev, int fourcc);
+int saa7146_register_extension(struct saa7146_extension*);
+int saa7146_unregister_extension(struct saa7146_extension*);
+struct saa7146_format* saa7146_format_by_fourcc(struct saa7146_dev *dev, int fourcc);
 int saa7146_pgtable_alloc(struct pci_dev *pci, struct saa7146_pgtable *pt);
 void saa7146_pgtable_free(struct pci_dev *pci, struct saa7146_pgtable *pt);
 int saa7146_pgtable_build_single(struct pci_dev *pci, struct saa7146_pgtable *pt, struct scatterlist *list, int length );

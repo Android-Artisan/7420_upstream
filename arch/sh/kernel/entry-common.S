@@ -46,6 +46,10 @@
 
 #if defined(CONFIG_PREEMPT)
 #  define preempt_stop()	cli
+#include <asm/dwarf.h>
+
+#if defined(CONFIG_PREEMPT)
+#  define preempt_stop()	cli ; TRACE_IRQS_OFF
 #else
 #  define preempt_stop()
 #  define resume_kernel		__restore_all
@@ -60,6 +64,7 @@ ENTRY(exception_error)
 	jsr	@r0
 	 nop
 #endif
+	TRACE_IRQS_ON
 	sti
 	mov.l	1f, r0
 	jmp	@r0
@@ -79,6 +84,21 @@ ret_from_exception:
 	jsr	@r0
 	 nop
 #endif
+
+	.align	2
+ret_from_exception:
+	CFI_STARTPROC simple
+	CFI_DEF_CFA r14, 0
+	CFI_REL_OFFSET 17, 64
+	CFI_REL_OFFSET 15, 60
+	CFI_REL_OFFSET 14, 56
+	CFI_REL_OFFSET 13, 52
+	CFI_REL_OFFSET 12, 48
+	CFI_REL_OFFSET 11, 44
+	CFI_REL_OFFSET 10, 40
+	CFI_REL_OFFSET 9, 36
+	CFI_REL_OFFSET 8, 32
+	preempt_stop()
 ENTRY(ret_from_irq)
 	!
 	mov	#OFF_SR, r0
@@ -93,6 +113,7 @@ ENTRY(ret_from_irq)
 	 nop
 ENTRY(resume_kernel)
 	cli
+	TRACE_IRQS_OFF
 	mov.l	@(TI_PRE_COUNT,r8), r0	! current_thread_info->preempt_count
 	tst	r0, r0
 	bf	noresched
@@ -107,6 +128,11 @@ need_resched:
 	cmp/eq	#0xf0, r0
 	bt	noresched
 	mov.l	3f, r0
+	shlr	r0
+	and	#(0xf0>>1), r0		! interrupts off (exception path)?
+	cmp/eq	#(0xf0>>1), r0
+	bt	noresched
+	mov.l	1f, r0
 	jsr	@r0			! call preempt_schedule_irq
 	 nop
 	bra	need_resched
@@ -120,6 +146,7 @@ noresched:
 1:	.long	PREEMPT_ACTIVE
 2:	.long	schedule
 3:	.long	preempt_schedule_irq
+1:	.long	preempt_schedule_irq
 #endif
 
 ENTRY(resume_userspace)
@@ -132,6 +159,9 @@ ENTRY(resume_userspace)
 #endif
 	mov.l	@(TI_FLAGS,r8), r0		! current_thread_info->flags
 	tst	#_TIF_WORK_MASK, r0
+	TRACE_IRQS_OFF
+	mov.l	@(TI_FLAGS,r8), r0		! current_thread_info->flags
+	tst	#(_TIF_WORK_MASK & 0xff), r0
 	bt/s	__restore_all
 	 tst	#_TIF_NEED_RESCHED, r0
 
@@ -142,11 +172,13 @@ work_pending:
 	! t:  result of "tst	#_TIF_NEED_RESCHED, r0"
 	bf/s	work_resched
 	 tst	#(_TIF_SIGPENDING | _TIF_RESTORE_SIGMASK), r0
+	 tst	#(_TIF_SIGPENDING | _TIF_NOTIFY_RESUME), r0
 work_notifysig:
 	bt/s	__restore_all
 	 mov	r15, r4
 	mov	r12, r5		! set arg1(save_r0)
 	mov	r0, r6
+	sti
 	mov.l	2f, r1
 	mov.l	3f, r0
 	jmp	@r1
@@ -164,6 +196,10 @@ work_resched:
 	!
 	mov.l	@(TI_FLAGS,r8), r0		! current_thread_info->flags
 	tst	#_TIF_WORK_MASK, r0
+	TRACE_IRQS_OFF
+	!
+	mov.l	@(TI_FLAGS,r8), r0		! current_thread_info->flags
+	tst	#(_TIF_WORK_MASK & 0xff), r0
 	bt	__restore_all
 	bra	work_pending
 	 tst	#_TIF_NEED_RESCHED, r0
@@ -189,6 +225,10 @@ syscall_exit_work:
 	jsr	@r0
 	 nop
 #endif
+	tst	#(_TIF_WORK_SYSCALL_MASK & 0xff), r0
+	bt/s	work_pending
+	 tst	#_TIF_NEED_RESCHED, r0
+	TRACE_IRQS_ON
 	sti
 	mov	r15, r4
 	mov.l	8f, r0			! do_syscall_trace_leave
@@ -212,13 +252,17 @@ syscall_trace_entry:
 	!   	    	    	from the kernel stack anyway, so don't need
 	!   	    	    	to be reloaded here.)  This allows the parent
 	!   	    	    	to rewrite system calls and args on the fly.
+	!   	    	    	reloaded from the kernel stack by syscall_call
+	!   	    	    	below, so don't need to be reloaded here.)
+	!   	    	    	This allows the parent to rewrite system calls
+	!   	    	    	and args on the fly.
 	mov.l	@(OFF_R4,r15), r4   ! arg0
 	mov.l	@(OFF_R5,r15), r5
 	mov.l	@(OFF_R6,r15), r6
 	mov.l	@(OFF_R7,r15), r7   ! arg3
 	mov.l	@(OFF_R3,r15), r3   ! syscall_nr
 	!
-	mov.l	2f, r10			! Number of syscalls
+	mov.l	6f, r10			! Number of syscalls
 	cmp/hs	r10, r3
 	bf	syscall_call
 	mov	#-ENOSYS, r0
@@ -227,11 +271,26 @@ syscall_trace_entry:
 
 __restore_all:
 	mov.l	1f, r0
+	mov	#OFF_SR, r0
+	mov.l	@(r0,r15), r0	! get status register
+
+	shlr2	r0
+	and	#0x3c, r0
+	cmp/eq	#0x3c, r0
+	bt	1f
+	TRACE_IRQS_ON
+	bra	2f
+	 nop
+1:
+	TRACE_IRQS_OFF
+2:
+	mov.l	3f, r0
 	jmp	@r0
 	 nop
 
 	.align	2
 1:	.long	restore_all
+3:	.long	restore_all
 
 	.align	2
 syscall_badsys:			! Bad syscall number
@@ -257,8 +316,9 @@ debug_trap:
 	mov.l	@r8, r8
 	jsr	@r8
 	 nop
-	bra	__restore_all
+	bra	ret_from_exception
 	 nop
+	CFI_ENDPROC
 
 	.align	2
 1:	.long	debug_trap_table
@@ -296,6 +356,19 @@ ret_from_fork:
 	 mov	r0, r4
 	bra	syscall_exit
 	 nop
+
+	.align	2
+	.globl	ret_from_kernel_thread
+ret_from_kernel_thread:
+	mov.l	1f, r8
+	jsr	@r8
+	 mov	r0, r4
+	mov.l	@(OFF_R5,r15), r5   ! fn
+	jsr	@r5
+	 mov.l	@(OFF_R4,r15), r4   ! arg
+	bra	syscall_exit
+	 nop
+
 	.align	2
 1:	.long	schedule_tail
 
@@ -304,10 +377,16 @@ ret_from_fork:
  * system calls and debug traps through their respective jump tables.
  */
 ENTRY(system_call)
+	setup_frame_reg
 #if !defined(CONFIG_CPU_SH2)
 	mov.l	1f, r9
 	mov.l	@r9, r8		! Read from TRA (Trap Address) Register
 #endif
+
+	mov	#OFF_TRA, r10
+	add	r15, r10
+	mov.l	r8, @r10		! set TRA value to tra
+
 	/*
 	 * Check the trap type
 	 */
@@ -322,6 +401,9 @@ ENTRY(system_call)
 	jsr	@r10
 	 nop
 #endif
+	 nop
+
+	TRACE_IRQS_ON
 	sti
 
 	!
@@ -329,9 +411,15 @@ ENTRY(system_call)
 	mov.l	@(TI_FLAGS,r8), r8
 	mov	#_TIF_WORK_SYSCALL_MASK, r10
 	tst	r10, r8
+	mov	#(_TIF_WORK_SYSCALL_MASK & 0xff), r10
+	mov	#(_TIF_WORK_SYSCALL_MASK >> 8), r9
+	tst	r10, r8
+	shll8	r9
+	bf	syscall_trace_entry
+	tst	r9, r8
 	bf	syscall_trace_entry
 	!
-	mov.l	2f, r8			! Number of syscalls
+	mov.l	6f, r8			! Number of syscalls
 	cmp/hs	r8, r3
 	bt	syscall_badsys
 	!
@@ -342,6 +430,15 @@ syscall_call:
 	mov.l	@r3, r8
 	jsr	@r8	    	! jump to specific syscall handler
 	 nop
+	mov.l	@(OFF_R2,r15), r2
+	mov.l	@(OFF_R1,r15), r1
+	mov.l	@(OFF_R0,r15), r0
+	mov.l	r2, @-r15
+	mov.l	r1, @-r15
+	mov.l	r0, @-r15
+	jsr	@r8	    	! jump to specific syscall handler
+	 nop
+	add	#12, r15
 	mov.l	@(OFF_R0,r15), r12		! save r0
 	mov.l	r0, @(OFF_R0,r15)		! save the return value
 	!
@@ -356,6 +453,15 @@ syscall_exit:
 	get_current_thread_info r8, r0
 	mov.l	@(TI_FLAGS,r8), r0		! current_thread_info->flags
 	tst	#_TIF_ALLWORK_MASK, r0
+	TRACE_IRQS_OFF
+	!
+	get_current_thread_info r8, r0
+	mov.l	@(TI_FLAGS,r8), r0		! current_thread_info->flags
+	tst	#(_TIF_ALLWORK_MASK & 0xff), r0
+	mov	#(_TIF_ALLWORK_MASK >> 8), r1
+	bf	syscall_exit_work
+	shlr8	r0
+	tst	r0, r1
 	bf	syscall_exit_work
 	bra	__restore_all
 	 nop
@@ -363,7 +469,7 @@ syscall_exit:
 #if !defined(CONFIG_CPU_SH2)
 1:	.long	TRA
 #endif
-2:	.long	NR_syscalls
+6:	.long	NR_syscalls
 3:	.long	sys_call_table
 #ifdef CONFIG_TRACE_IRQFLAGS
 5:	.long	trace_hardirqs_on

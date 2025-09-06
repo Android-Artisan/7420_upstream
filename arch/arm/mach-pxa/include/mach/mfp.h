@@ -315,5 +315,6 @@ typedef unsigned long mfp_cfg_t;
 #define MFP_CFG_X(pin, af, drv, lpm)	\
 	((MFP_CFG_DEFAULT & ~(MFP_AF_MASK | MFP_DS_MASK | MFP_LPM_STATE_MASK)) |\
 	 (MFP_PIN(MFP_PIN_##pin) | MFP_##af | MFP_##drv | MFP_LPM_##lpm))
+#include <plat/mfp.h>
 
 #endif /* __ASM_ARCH_MFP_H */

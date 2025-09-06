@@ -84,6 +84,15 @@ static inline void selinux_secmark_refcount_dec(void)
 	return;
 }
 
+ * selinux_is_enabled - is SELinux enabled?
+ */
+bool selinux_is_enabled(void);
+#else
+
+static inline bool selinux_is_enabled(void)
+{
+	return false;
+}
 #endif	/* CONFIG_SECURITY_SELINUX */
 
 #endif /* _LINUX_SELINUX_H */

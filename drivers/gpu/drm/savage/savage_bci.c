@@ -24,6 +24,8 @@
  */
 #include "drmP.h"
 #include "savage_drm.h"
+#include <drm/drmP.h>
+#include <drm/savage_drm.h>
 #include "savage_drv.h"
 
 /* Need a long timeout for shadow status updates can take a while
@@ -50,6 +52,7 @@ savage_bci_wait_fifo_shadow(drm_savage_private_t * dev_priv, unsigned int n)
 
 	for (i = 0; i < SAVAGE_DEFAULT_USEC_TIMEOUT; i++) {
 		DRM_MEMORYBARRIER();
+		mb();
 		status = dev_priv->status_ptr[0];
 		if ((status & mask) < threshold)
 			return 0;
@@ -124,6 +127,7 @@ savage_bci_wait_event_shadow(drm_savage_private_t * dev_priv, uint16_t e)
 
 	for (i = 0; i < SAVAGE_EVENT_USEC_TIMEOUT; i++) {
 		DRM_MEMORYBARRIER();
+		mb();
 		status = dev_priv->status_ptr[1];
 		if ((((status & 0xffff) - e) & 0xffff) <= 0x7fff ||
 		    (status & 0xffff) == 0)
@@ -300,6 +304,8 @@ static int savage_dma_init(drm_savage_private_t * dev_priv)
 	    (SAVAGE_DMA_PAGE_SIZE * 4);
 	dev_priv->dma_pages = drm_alloc(sizeof(drm_savage_dma_page_t) *
 					dev_priv->nr_dma_pages, DRM_MEM_DRIVER);
+	dev_priv->dma_pages = kmalloc(sizeof(drm_savage_dma_page_t) *
+				      dev_priv->nr_dma_pages, GFP_KERNEL);
 	if (dev_priv->dma_pages == NULL)
 		return -ENOMEM;
 
@@ -450,6 +456,7 @@ static void savage_dma_flush(drm_savage_private_t * dev_priv)
 	}
 
 	DRM_MEMORYBARRIER();
+	mb();
 
 	/* do flush ... */
 	phys_addr = dev_priv->cmd_dma->offset +
@@ -544,9 +551,15 @@ int savage_driver_load(struct drm_device *dev, unsigned long chipset)
 		return -ENOMEM;
 
 	memset(dev_priv, 0, sizeof(drm_savage_private_t));
+	dev_priv = kzalloc(sizeof(drm_savage_private_t), GFP_KERNEL);
+	if (dev_priv == NULL)
+		return -ENOMEM;
+
 	dev->dev_private = (void *)dev_priv;
 
 	dev_priv->chipset = (enum savage_family)chipset;
+
+	pci_set_master(dev->pdev);
 
 	return 0;
 }
@@ -556,6 +569,9 @@ int savage_driver_load(struct drm_device *dev, unsigned long chipset)
  * Initalize mappings. On Savage4 and SavageIX the alignment
  * and size of the aperture is not suitable for automatic MTRR setup
  * in drm_addmap. Therefore we add them manually before the maps are
+ * Initialize mappings. On Savage4 and SavageIX the alignment
+ * and size of the aperture is not suitable for automatic MTRR setup
+ * in drm_legacy_addmap. Therefore we add them manually before the maps are
  * initialized, and tear them down on last close.
  */
 int savage_driver_firstopen(struct drm_device *dev)
@@ -575,6 +591,9 @@ int savage_driver_firstopen(struct drm_device *dev)
 	if (S3_SAVAGE3D_SERIES(dev_priv->chipset)) {
 		fb_rsrc = 0;
 		fb_base = drm_get_resource_start(dev, 0);
+	if (S3_SAVAGE3D_SERIES(dev_priv->chipset)) {
+		fb_rsrc = 0;
+		fb_base = pci_resource_start(dev->pdev, 0);
 		fb_size = SAVAGE_FB_SIZE_S3;
 		mmio_base = fb_base + SAVAGE_FB_SIZE_S3;
 		aper_rsrc = 0;
@@ -607,6 +626,27 @@ int savage_driver_firstopen(struct drm_device *dev)
 		mmio_base = drm_get_resource_start(dev, 0);
 		fb_rsrc = 1;
 		fb_base = drm_get_resource_start(dev, 1);
+		if (pci_resource_len(dev->pdev, 0) == 0x08000000) {
+			/* Don't make MMIO write-cobining! We need 3
+			 * MTRRs. */
+			dev_priv->mtrr_handles[0] =
+				arch_phys_wc_add(fb_base, 0x01000000);
+			dev_priv->mtrr_handles[1] =
+				arch_phys_wc_add(fb_base + 0x02000000,
+						 0x02000000);
+			dev_priv->mtrr_handles[2] =
+				arch_phys_wc_add(fb_base + 0x04000000,
+						0x04000000);
+		} else {
+			DRM_ERROR("strange pci_resource_len %08llx\n",
+				  (unsigned long long)
+				  pci_resource_len(dev->pdev, 0));
+		}
+	} else if (dev_priv->chipset != S3_SUPERSAVAGE &&
+		   dev_priv->chipset != S3_SAVAGE2000) {
+		mmio_base = pci_resource_start(dev->pdev, 0);
+		fb_rsrc = 1;
+		fb_base = pci_resource_start(dev->pdev, 1);
 		fb_size = SAVAGE_FB_SIZE_S4;
 		aper_rsrc = 1;
 		aperture_base = fb_base + SAVAGE_APERTURE_OFFSET;
@@ -649,6 +689,41 @@ int savage_driver_firstopen(struct drm_device *dev)
 	if (ret)
 		return ret;
 
+		if (pci_resource_len(dev->pdev, 1) == 0x08000000) {
+			/* Can use one MTRR to cover both fb and
+			 * aperture. */
+			dev_priv->mtrr_handles[0] =
+				arch_phys_wc_add(fb_base,
+						 0x08000000);
+		} else {
+			DRM_ERROR("strange pci_resource_len %08llx\n",
+				  (unsigned long long)
+				  pci_resource_len(dev->pdev, 1));
+		}
+	} else {
+		mmio_base = pci_resource_start(dev->pdev, 0);
+		fb_rsrc = 1;
+		fb_base = pci_resource_start(dev->pdev, 1);
+		fb_size = pci_resource_len(dev->pdev, 1);
+		aper_rsrc = 2;
+		aperture_base = pci_resource_start(dev->pdev, 2);
+		/* Automatic MTRR setup will do the right thing. */
+	}
+
+	ret = drm_legacy_addmap(dev, mmio_base, SAVAGE_MMIO_SIZE,
+				_DRM_REGISTERS, _DRM_READ_ONLY,
+				&dev_priv->mmio);
+	if (ret)
+		return ret;
+
+	ret = drm_legacy_addmap(dev, fb_base, fb_size, _DRM_FRAME_BUFFER,
+				_DRM_WRITE_COMBINING, &dev_priv->fb);
+	if (ret)
+		return ret;
+
+	ret = drm_legacy_addmap(dev, aperture_base, SAVAGE_APERTURE_SIZE,
+				_DRM_FRAME_BUFFER, _DRM_WRITE_COMBINING,
+				&dev_priv->aperture);
 	return ret;
 }
 
@@ -665,6 +740,10 @@ void savage_driver_lastclose(struct drm_device *dev)
 			drm_mtrr_del(dev_priv->mtrr[i].handle,
 				 dev_priv->mtrr[i].base,
 				 dev_priv->mtrr[i].size, DRM_MTRR_WC);
+	for (i = 0; i < 3; ++i) {
+		arch_phys_wc_del(dev_priv->mtrr_handles[i]);
+		dev_priv->mtrr_handles[i] = 0;
+	}
 }
 
 int savage_driver_unload(struct drm_device *dev)
@@ -672,6 +751,7 @@ int savage_driver_unload(struct drm_device *dev)
 	drm_savage_private_t *dev_priv = dev->dev_private;
 
 	drm_free(dev_priv, sizeof(drm_savage_private_t), DRM_MEM_DRIVER);
+	kfree(dev_priv);
 
 	return 0;
 }
@@ -712,6 +792,7 @@ static int savage_do_init_bci(struct drm_device * dev, drm_savage_init_t * init)
 	dev_priv->texture_size = init->texture_size;
 
 	dev_priv->sarea = drm_getsarea(dev);
+	dev_priv->sarea = drm_legacy_getsarea(dev);
 	if (!dev_priv->sarea) {
 		DRM_ERROR("could not find sarea!\n");
 		savage_do_cleanup_bci(dev);
@@ -719,6 +800,7 @@ static int savage_do_init_bci(struct drm_device * dev, drm_savage_init_t * init)
 	}
 	if (init->status_offset != 0) {
 		dev_priv->status = drm_core_findmap(dev, init->status_offset);
+		dev_priv->status = drm_legacy_findmap(dev, init->status_offset);
 		if (!dev_priv->status) {
 			DRM_ERROR("could not find shadow status region!\n");
 			savage_do_cleanup_bci(dev);
@@ -730,6 +812,7 @@ static int savage_do_init_bci(struct drm_device * dev, drm_savage_init_t * init)
 	if (dev_priv->dma_type == SAVAGE_DMA_AGP && init->buffers_offset) {
 		dev->agp_buffer_token = init->buffers_offset;
 		dev->agp_buffer_map = drm_core_findmap(dev,
+		dev->agp_buffer_map = drm_legacy_findmap(dev,
 						       init->buffers_offset);
 		if (!dev->agp_buffer_map) {
 			DRM_ERROR("could not find DMA buffer region!\n");
@@ -738,6 +821,8 @@ static int savage_do_init_bci(struct drm_device * dev, drm_savage_init_t * init)
 		}
 		drm_core_ioremap(dev->agp_buffer_map, dev);
 		if (!dev->agp_buffer_map) {
+		drm_legacy_ioremap(dev->agp_buffer_map, dev);
+		if (!dev->agp_buffer_map->handle) {
 			DRM_ERROR("failed to ioremap DMA buffer region!\n");
 			savage_do_cleanup_bci(dev);
 			return -ENOMEM;
@@ -746,6 +831,7 @@ static int savage_do_init_bci(struct drm_device * dev, drm_savage_init_t * init)
 	if (init->agp_textures_offset) {
 		dev_priv->agp_textures =
 		    drm_core_findmap(dev, init->agp_textures_offset);
+		    drm_legacy_findmap(dev, init->agp_textures_offset);
 		if (!dev_priv->agp_textures) {
 			DRM_ERROR("could not find agp texture region!\n");
 			savage_do_cleanup_bci(dev);
@@ -769,6 +855,7 @@ static int savage_do_init_bci(struct drm_device * dev, drm_savage_init_t * init)
 			return -EINVAL;
 		}
 		dev_priv->cmd_dma = drm_core_findmap(dev, init->cmd_dma_offset);
+		dev_priv->cmd_dma = drm_legacy_findmap(dev, init->cmd_dma_offset);
 		if (!dev_priv->cmd_dma) {
 			DRM_ERROR("could not find command DMA region!\n");
 			savage_do_cleanup_bci(dev);
@@ -782,6 +869,7 @@ static int savage_do_init_bci(struct drm_device * dev, drm_savage_init_t * init)
 				return -EINVAL;
 			}
 			drm_core_ioremap(dev_priv->cmd_dma, dev);
+			drm_legacy_ioremap(dev_priv->cmd_dma, dev);
 			if (!dev_priv->cmd_dma->handle) {
 				DRM_ERROR("failed to ioremap command "
 					  "DMA region!\n");
@@ -806,6 +894,8 @@ static int savage_do_init_bci(struct drm_device * dev, drm_savage_init_t * init)
 		dev_priv->fake_dma.type = _DRM_SHM;
 		dev_priv->fake_dma.handle = drm_alloc(SAVAGE_FAKE_DMA_SIZE,
 						      DRM_MEM_DRIVER);
+		dev_priv->fake_dma.handle = kmalloc(SAVAGE_FAKE_DMA_SIZE,
+						    GFP_KERNEL);
 		if (!dev_priv->fake_dma.handle) {
 			DRM_ERROR("could not allocate faked DMA buffer!\n");
 			savage_do_cleanup_bci(dev);
@@ -914,6 +1004,15 @@ static int savage_do_cleanup_bci(struct drm_device * dev)
 	if (dev_priv->dma_type == SAVAGE_DMA_AGP &&
 	    dev->agp_buffer_map && dev->agp_buffer_map->handle) {
 		drm_core_ioremapfree(dev->agp_buffer_map, dev);
+		kfree(dev_priv->fake_dma.handle);
+	} else if (dev_priv->cmd_dma && dev_priv->cmd_dma->handle &&
+		   dev_priv->cmd_dma->type == _DRM_AGP &&
+		   dev_priv->dma_type == SAVAGE_DMA_AGP)
+		drm_legacy_ioremapfree(dev_priv->cmd_dma, dev);
+
+	if (dev_priv->dma_type == SAVAGE_DMA_AGP &&
+	    dev->agp_buffer_map && dev->agp_buffer_map->handle) {
+		drm_legacy_ioremapfree(dev->agp_buffer_map, dev);
 		/* make sure the next instance (which may be running
 		 * in PCI mode) doesn't try to use an old
 		 * agp_buffer_map. */
@@ -924,6 +1023,7 @@ static int savage_do_cleanup_bci(struct drm_device * dev)
 		drm_free(dev_priv->dma_pages,
 			 sizeof(drm_savage_dma_page_t) * dev_priv->nr_dma_pages,
 			 DRM_MEM_DRIVER);
+	kfree(dev_priv->dma_pages);
 
 	return 0;
 }
@@ -1012,6 +1112,10 @@ static int savage_bci_get_buffers(struct drm_device *dev,
 				     &buf->idx, sizeof(buf->idx)))
 			return -EFAULT;
 		if (DRM_COPY_TO_USER(&d->request_sizes[i],
+		if (copy_to_user(&d->request_indices[i],
+				     &buf->idx, sizeof(buf->idx)))
+			return -EFAULT;
+		if (copy_to_user(&d->request_sizes[i],
 				     &buf->total, sizeof(buf->total)))
 			return -EFAULT;
 
@@ -1057,6 +1161,7 @@ void savage_reclaim_buffers(struct drm_device *dev, struct drm_file *file_priv)
 {
 	struct drm_device_dma *dma = dev->dma;
 	drm_savage_private_t *dev_priv = dev->dev_private;
+	int release_idlelock = 0;
 	int i;
 
 	if (!dma)
@@ -1067,6 +1172,10 @@ void savage_reclaim_buffers(struct drm_device *dev, struct drm_file *file_priv)
 		return;
 
 	/*i830_flush_queue(dev); */
+	if (file_priv->master && file_priv->master->lock.hw_lock) {
+		drm_legacy_idlelock_take(&file_priv->master->lock);
+		release_idlelock = 1;
+	}
 
 	for (i = 0; i < dma->buf_count; i++) {
 		struct drm_buf *buf = dma->buflist[i];
@@ -1093,3 +1202,15 @@ struct drm_ioctl_desc savage_ioctls[] = {
 };
 
 int savage_max_ioctl = DRM_ARRAY_SIZE(savage_ioctls);
+	if (release_idlelock)
+		drm_legacy_idlelock_release(&file_priv->master->lock);
+}
+
+const struct drm_ioctl_desc savage_ioctls[] = {
+	DRM_IOCTL_DEF_DRV(SAVAGE_BCI_INIT, savage_bci_init, DRM_AUTH|DRM_MASTER|DRM_ROOT_ONLY),
+	DRM_IOCTL_DEF_DRV(SAVAGE_BCI_CMDBUF, savage_bci_cmdbuf, DRM_AUTH),
+	DRM_IOCTL_DEF_DRV(SAVAGE_BCI_EVENT_EMIT, savage_bci_event_emit, DRM_AUTH),
+	DRM_IOCTL_DEF_DRV(SAVAGE_BCI_EVENT_WAIT, savage_bci_event_wait, DRM_AUTH),
+};
+
+int savage_max_ioctl = ARRAY_SIZE(savage_ioctls);

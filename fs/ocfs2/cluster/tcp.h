@@ -63,6 +63,7 @@ typedef void (o2net_post_msg_handler_func)(int status, void *data,
 #define O2NET_KEEPALIVE_DELAY_MS_DEFAULT	2000
 #define O2NET_IDLE_TIMEOUT_MS_DEFAULT		30000
 
+#define O2NET_TCP_USER_TIMEOUT			0x7fffffff
 
 /* TODO: figure this out.... */
 static inline int o2net_link_down(int err, struct socket *sock)
@@ -105,6 +106,8 @@ int o2net_register_handler(u32 msg_type, u32 key, u32 max_len,
 			   o2net_post_msg_handler_func *post_func,
 			   struct list_head *unreg_list);
 void o2net_unregister_handler_list(struct list_head *list);
+
+void o2net_fill_node_map(unsigned long *map, unsigned bytes);
 
 struct o2nm_node;
 int o2net_register_hb_callbacks(void);

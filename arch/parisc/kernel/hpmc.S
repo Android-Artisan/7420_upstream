@@ -56,12 +56,14 @@
 	 */
 
 	.align	PAGE_SIZE
+	.align 4096
 hpmc_stack:
 	.block 16384
 
 #define HPMC_IODC_BUF_SIZE 0x8000
 
 	.align	PAGE_SIZE
+	.align 4096
 hpmc_iodc_buf:
 	.block HPMC_IODC_BUF_SIZE
 
@@ -80,6 +82,7 @@ END(hpmc_pim_data)
 
 	.import intr_save, code
 ENTRY(os_hpmc)
+.os_hpmc:
 
 	/*
 	 * registers modified:
@@ -297,3 +300,10 @@ os_hpmc_6:
 ENDPROC(os_hpmc)
 ENTRY(os_hpmc_end)	/* this label used to compute os_hpmc checksum */
 	nop
+.os_hpmc_end:
+	nop
+.data
+.align 4
+	.export os_hpmc_size
+os_hpmc_size:
+	.word .os_hpmc_end-.os_hpmc

@@ -83,6 +83,9 @@
 #define WM8990_REGISTER_COUNT                   60
 #define WM8990_MAX_REGISTER                     0x3F
 
+#define WM8990_EXT_ACCESS_ENA			0x75
+#define WM8990_EXT_CTL1				0x7a
+
 /*
  * Field Definitions.
  */

@@ -17,6 +17,7 @@
  */
 
 #include <linux/types.h>
+#include <linux/gpio.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/device.h>
@@ -33,6 +34,20 @@
 static void fpga_mask_irq(unsigned int irq)
 {
 	irq -= OMAP_FPGA_IRQ_BASE;
+#include <linux/io.h>
+
+#include <asm/irq.h>
+#include <asm/mach/irq.h>
+
+#include <mach/hardware.h>
+
+#include "iomap.h"
+#include "common.h"
+#include "fpga.h"
+
+static void fpga_mask_irq(struct irq_data *d)
+{
+	unsigned int irq = d->irq - OMAP_FPGA_IRQ_BASE;
 
 	if (irq < 8)
 		__raw_writeb((__raw_readb(OMAP1510_FPGA_IMR_LO)
@@ -59,6 +74,7 @@ static inline u32 get_fpga_unmasked_irqs(void)
 
 
 static void fpga_ack_irq(unsigned int irq)
+static void fpga_ack_irq(struct irq_data *d)
 {
 	/* Don't need to explicitly ACK FPGA interrupts */
 }
@@ -66,6 +82,9 @@ static void fpga_ack_irq(unsigned int irq)
 static void fpga_unmask_irq(unsigned int irq)
 {
 	irq -= OMAP_FPGA_IRQ_BASE;
+static void fpga_unmask_irq(struct irq_data *d)
+{
+	unsigned int irq = d->irq - OMAP_FPGA_IRQ_BASE;
 
 	if (irq < 8)
 		__raw_writeb((__raw_readb(OMAP1510_FPGA_IMR_LO) | (1 << irq)),
@@ -87,6 +106,14 @@ static void fpga_mask_ack_irq(unsigned int irq)
 void innovator_fpga_IRQ_demux(unsigned int irq, struct irq_desc *desc)
 {
 	struct irq_desc *d;
+static void fpga_mask_ack_irq(struct irq_data *d)
+{
+	fpga_mask_irq(d);
+	fpga_ack_irq(d);
+}
+
+static void innovator_fpga_IRQ_demux(struct irq_desc *desc)
+{
 	u32 stat;
 	int fpga_irq;
 
@@ -101,6 +128,7 @@ void innovator_fpga_IRQ_demux(unsigned int irq, struct irq_desc *desc)
 		if (stat & 1) {
 			d = irq_desc + fpga_irq;
 			desc_handle_irq(fpga_irq, d);
+			generic_handle_irq(fpga_irq);
 		}
 	}
 }
@@ -110,6 +138,9 @@ static struct irq_chip omap_fpga_irq_ack = {
 	.ack		= fpga_mask_ack_irq,
 	.mask		= fpga_mask_irq,
 	.unmask		= fpga_unmask_irq,
+	.irq_ack	= fpga_mask_ack_irq,
+	.irq_mask	= fpga_mask_irq,
+	.irq_unmask	= fpga_unmask_irq,
 };
 
 
@@ -118,6 +149,9 @@ static struct irq_chip omap_fpga_irq = {
 	.ack		= fpga_ack_irq,
 	.mask		= fpga_mask_irq,
 	.unmask		= fpga_unmask_irq,
+	.irq_ack	= fpga_ack_irq,
+	.irq_mask	= fpga_mask_irq,
+	.irq_unmask	= fpga_unmask_irq,
 };
 
 /*
@@ -136,6 +170,7 @@ static struct irq_chip omap_fpga_irq = {
  * being serviced is left unmasked.  We can do this because the FPGA cascade
  * interrupt is installed with the IRQF_DISABLED flag, which leaves all
  * interrupts masked at the CPU while an FPGA interrupt handler executes.
+ * interrupt is run with all interrupts masked.
  *
  * Limited testing indicates that this workaround appears to be effective
  * for the smc9194 Ethernet driver used on the Innovator.  It should work
@@ -146,6 +181,7 @@ static struct irq_chip omap_fpga_irq = {
 void omap1510_fpga_init_irq(void)
 {
 	int i;
+	int i, res;
 
 	__raw_writeb(0, OMAP1510_FPGA_IMR_LO);
 	__raw_writeb(0, OMAP1510_FPGA_IMR_HI);
@@ -159,6 +195,7 @@ void omap1510_fpga_init_irq(void)
 			 * we'll use the regular mask_ack routine for it.
 			 */
 			set_irq_chip(i, &omap_fpga_irq_ack);
+			irq_set_chip(i, &omap_fpga_irq_ack);
 		}
 		else {
 			/*
@@ -170,6 +207,11 @@ void omap1510_fpga_init_irq(void)
 
 		set_irq_handler(i, handle_edge_irq);
 		set_irq_flags(i, IRQF_VALID);
+			irq_set_chip(i, &omap_fpga_irq);
+		}
+
+		irq_set_handler(i, handle_edge_irq);
+		irq_clear_status_flags(i, IRQ_NOREQUEST);
 	}
 
 	/*
@@ -186,3 +228,12 @@ void omap1510_fpga_init_irq(void)
 }
 
 EXPORT_SYMBOL(omap1510_fpga_init_irq);
+	res = gpio_request(13, "FPGA irq");
+	if (res) {
+		pr_err("%s failed to get gpio\n", __func__);
+		return;
+	}
+	gpio_direction_input(13);
+	irq_set_irq_type(gpio_to_irq(13), IRQ_TYPE_EDGE_RISING);
+	irq_set_chained_handler(OMAP1510_INT_FPGA, innovator_fpga_IRQ_demux);
+}

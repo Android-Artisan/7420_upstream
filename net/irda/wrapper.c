@@ -107,6 +107,7 @@ int async_wrap_skb(struct sk_buff *skb, __u8 *tx_buff, int buffsize)
 		 * BOF's
 		 */
 		IRDA_DEBUG(1, "%s(), wrong magic in skb!\n", __func__);
+		pr_debug("%s(), wrong magic in skb!\n", __func__);
 		xbofs = 10;
 	} else
 		xbofs = cb->xbofs + cb->xbofs_delay;
@@ -117,6 +118,12 @@ int async_wrap_skb(struct sk_buff *skb, __u8 *tx_buff, int buffsize)
 	if (xbofs > 163) {
 		IRDA_DEBUG(0, "%s(), too many xbofs (%d)\n", __func__,
 			   xbofs);
+	pr_debug("%s(), xbofs=%d\n", __func__, xbofs);
+
+	/* Check that we never use more than 115 + 48 xbofs */
+	if (xbofs > 163) {
+		pr_debug("%s(), too many xbofs (%d)\n", __func__,
+			 xbofs);
 		xbofs = 163;
 	}
 
@@ -136,6 +143,8 @@ int async_wrap_skb(struct sk_buff *skb, __u8 *tx_buff, int buffsize)
 		if(n >= (buffsize-5)) {
 			IRDA_ERROR("%s(), tx buffer overflow (n=%d)\n",
 				   __func__, n);
+			net_err_ratelimited("%s(), tx buffer overflow (n=%d)\n",
+					    __func__, n);
 			return n;
 		}
 
@@ -288,6 +297,8 @@ async_unwrap_bof(struct net_device *dev,
 		 * finished - Jean II */
 		IRDA_DEBUG(1, "%s(), Discarding incomplete frame\n",
 			   __func__);
+		pr_debug("%s(), Discarding incomplete frame\n",
+			 __func__);
 		stats->rx_errors++;
 		stats->rx_missed_errors++;
 		irda_device_set_media_busy(dev, TRUE);
@@ -361,6 +372,7 @@ async_unwrap_eof(struct net_device *dev,
 			irda_device_set_media_busy(dev, TRUE);
 
 			IRDA_DEBUG(1, "%s(), crc error\n", __func__);
+			pr_debug("%s(), crc error\n", __func__);
 			stats->rx_errors++;
 			stats->rx_crc_errors++;
 		}
@@ -387,6 +399,7 @@ async_unwrap_ce(struct net_device *dev,
 
 	case LINK_ESCAPE:
 		IRDA_WARNING("%s: state not defined\n", __func__);
+		net_warn_ratelimited("%s: state not defined\n", __func__);
 		break;
 
 	case BEGIN_FRAME:
@@ -422,6 +435,8 @@ async_unwrap_other(struct net_device *dev,
 		} else {
 			IRDA_DEBUG(1, "%s(), Rx buffer overflow, aborting\n",
 				   __func__);
+			pr_debug("%s(), Rx buffer overflow, aborting\n",
+				 __func__);
 			rx_buff->state = OUTSIDE_FRAME;
 		}
 		break;
@@ -441,6 +456,8 @@ async_unwrap_other(struct net_device *dev,
 		} else {
 			IRDA_DEBUG(1, "%s(), Rx buffer overflow, aborting\n",
 				   __func__);
+			pr_debug("%s(), Rx buffer overflow, aborting\n",
+				 __func__);
 			rx_buff->state = OUTSIDE_FRAME;
 		}
 		break;

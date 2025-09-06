@@ -132,6 +132,11 @@
 #define SONYPI_IOCGTEMP		_IOR('v', 12, __u8)
 
 #ifdef __KERNEL__
+#ifndef _SONYPI_H_
+#define _SONYPI_H_
+
+#include <uapi/linux/sonypi.h>
+
 
 /* used only for communication between v4l and sonypi */
 

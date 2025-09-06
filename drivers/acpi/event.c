@@ -110,6 +110,20 @@ static const struct file_operations acpi_system_event_ops = {
 };
 #endif	/* CONFIG_ACPI_PROC_EVENT */
 
+#include <linux/export.h>
+#include <linux/proc_fs.h>
+#include <linux/init.h>
+#include <linux/poll.h>
+#include <linux/gfp.h>
+#include <linux/acpi.h>
+#include <net/netlink.h>
+#include <net/genetlink.h>
+
+#include "internal.h"
+
+#define _COMPONENT		ACPI_SYSTEM_COMPONENT
+ACPI_MODULE_NAME("event");
+
 /* ACPI notifier chain */
 static BLOCKING_NOTIFIER_HEAD(acpi_chain_head);
 
@@ -167,6 +181,10 @@ enum {
 #define ACPI_GENL_VERSION		0x01
 #define ACPI_GENL_MCAST_GROUP_NAME 	"acpi_mc_group"
 
+static const struct genl_multicast_group acpi_event_mcgrps[] = {
+	{ .name = ACPI_GENL_MCAST_GROUP_NAME, },
+};
+
 static struct genl_family acpi_event_genl_family = {
 	.id = GENL_ID_GENERATE,
 	.name = ACPI_GENL_FAMILY_NAME,
@@ -176,6 +194,8 @@ static struct genl_family acpi_event_genl_family = {
 
 static struct genl_multicast_group acpi_event_mcgrp = {
 	.name = ACPI_GENL_MCAST_GROUP_NAME,
+	.mcgrps = acpi_event_mcgrps,
+	.n_mcgrps = ARRAY_SIZE(acpi_event_mcgrps),
 };
 
 int acpi_bus_generate_netlink_event(const char *device_class,
@@ -240,6 +260,9 @@ int acpi_bus_generate_netlink_event(const char *device_class,
 	if (result)
 		ACPI_DEBUG_PRINT((ACPI_DB_INFO,
 				  "Failed to send a Genetlink message!\n"));
+	genlmsg_end(skb, msg_header);
+
+	genlmsg_multicast(&acpi_event_genl_family, skb, 0, 0, GFP_ATOMIC);
 	return 0;
 }
 
@@ -259,6 +282,7 @@ static int acpi_event_genetlink_init(void)
 		genl_unregister_family(&acpi_event_genl_family);
 
 	return result;
+	return genl_register_family(&acpi_event_genl_family);
 }
 
 #else

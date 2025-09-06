@@ -550,6 +550,7 @@ typedef struct comm_proc {
 /* USB Controller.
 */
 typedef struct usb_ctlr {
+typedef struct cpm_usb_ctlr {
 	u8	usb_usmod;
 	u8	usb_usadr;
 	u8	usb_uscom;
@@ -562,6 +563,11 @@ typedef struct usb_ctlr {
 	u16	usb_usber;
 	u8	res3[2];
 	u16	usb_usbmr;
+	__be16  usb_usep[4];
+	u8	res2[4];
+	__be16  usb_usber;
+	u8	res3[2];
+	__be16  usb_usbmr;
 	u8	usb_usbs;
 	u8	res4[7];
 } usb_cpm2_t;

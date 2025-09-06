@@ -12,6 +12,7 @@
  *
  * Hardware driver for the AMD 768 Random Number Generator (RNG)
  * (c) Copyright 2001 Red Hat Inc <alan@redhat.com>
+ * (c) Copyright 2001 Red Hat Inc
  *
  * derived from
  *
@@ -46,6 +47,8 @@
 static const struct pci_device_id pci_tbl[] = {
 	{ 0x1022, 0x7443, PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0, },
 	{ 0x1022, 0x746b, PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0, },
+	{ PCI_VDEVICE(AMD, 0x7443), 0, },
+	{ PCI_VDEVICE(AMD, 0x746b), 0, },
 	{ 0, },	/* terminate list */
 };
 MODULE_DEVICE_TABLE(pci, pci_tbl);
@@ -127,8 +130,10 @@ static int __init mod_init(void)
 
 found:
 	err = pci_read_config_dword(pdev, 0x58, &pmbase);
-	if (err)
+	if (err) {
+		err = pcibios_err_to_errno(err);
 		goto out;
+	}
 	err = -EIO;
 	pmbase &= 0x0000FF00;
 	if (pmbase == 0)
@@ -141,6 +146,21 @@ found:
 	if (err) {
 		printk(KERN_ERR PFX "RNG registering failed (%d)\n",
 		       err);
+	if (!request_region(pmbase + 0xF0, 8, "AMD HWRNG")) {
+		dev_err(&pdev->dev, "AMD HWRNG region 0x%x already in use!\n",
+			pmbase + 0xF0);
+		err = -EBUSY;
+		goto out;
+	}
+	amd_rng.priv = (unsigned long)pmbase;
+	amd_pdev = pdev;
+
+	pr_info("AMD768 RNG detected\n");
+	err = hwrng_register(&amd_rng);
+	if (err) {
+		pr_err(PFX "RNG registering failed (%d)\n",
+		       err);
+		release_region(pmbase + 0xF0, 8);
 		goto out;
 	}
 out:
@@ -149,6 +169,8 @@ out:
 
 static void __exit mod_exit(void)
 {
+	u32 pmbase = (unsigned long)amd_rng.priv;
+	release_region(pmbase + 0xF0, 8);
 	hwrng_unregister(&amd_rng);
 }
 

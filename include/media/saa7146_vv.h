@@ -3,6 +3,7 @@
 
 #include <media/v4l2-common.h>
 #include <media/v4l2-ioctl.h>
+#include <media/v4l2-fh.h>
 #include <media/saa7146.h>
 #include <media/videobuf-dma-sg.h>
 
@@ -99,6 +100,15 @@ struct saa7146_fh {
 	struct videobuf_queue	vbi_q;
 	struct v4l2_vbi_format	vbi_fmt;
 	struct timer_list	vbi_read_timeout;
+	/* Must be the first field! */
+	struct v4l2_fh		fh;
+	struct saa7146_dev	*dev;
+
+	/* video capture */
+	struct videobuf_queue	video_q;
+
+	/* vbi capture */
+	struct videobuf_queue	vbi_q;
 
 	unsigned int resources;	/* resource management for device open */
 };
@@ -112,6 +122,10 @@ struct saa7146_vv
 
 	/* vbi capture */
 	struct saa7146_dmaqueue		vbi_q;
+	/* vbi capture */
+	struct saa7146_dmaqueue		vbi_dmaq;
+	struct v4l2_vbi_format		vbi_fmt;
+	struct timer_list		vbi_read_timeout;
 	/* vbi workaround interrupt queue */
 	wait_queue_head_t		vbi_wq;
 	int				vbi_fieldcount;
@@ -130,6 +144,14 @@ struct saa7146_vv
 
 	/* video capture */
 	struct saa7146_dmaqueue		video_q;
+	struct saa7146_overlay		ov;
+	struct v4l2_framebuffer		ov_fb;
+	struct saa7146_format		*ov_fmt;
+	struct saa7146_fh		*ov_suspend;
+
+	/* video capture */
+	struct saa7146_dmaqueue		video_dmaq;
+	struct v4l2_pix_format		video_fmt;
 	enum v4l2_field			last_field;
 
 	/* common: fixme? shouldn't this be in saa7146_fh?
@@ -180,6 +202,13 @@ struct saa7146_ext_vv
 	int (*ioctl)(struct saa7146_fh*, unsigned int cmd, void *arg);
 
 	struct file_operations vbi_fops;
+	/* the extension can override this */
+	struct v4l2_ioctl_ops vid_ops;
+	struct v4l2_ioctl_ops vbi_ops;
+	/* pointer to the saa7146 core ops */
+	const struct v4l2_ioctl_ops *core_ops;
+
+	struct v4l2_file_operations vbi_fops;
 };
 
 struct saa7146_use_ops  {
@@ -193,6 +222,8 @@ struct saa7146_use_ops  {
 /* from saa7146_fops.c */
 int saa7146_register_device(struct video_device **vid, struct saa7146_dev* dev, char *name, int type);
 int saa7146_unregister_device(struct video_device **vid, struct saa7146_dev* dev);
+int saa7146_register_device(struct video_device *vid, struct saa7146_dev *dev, char *name, int type);
+int saa7146_unregister_device(struct video_device *vid, struct saa7146_dev *dev);
 void saa7146_buffer_finish(struct saa7146_dev *dev, struct saa7146_dmaqueue *q, int state);
 void saa7146_buffer_next(struct saa7146_dev *dev, struct saa7146_dmaqueue *q,int vbi);
 int saa7146_buffer_queue(struct saa7146_dev *dev, struct saa7146_dmaqueue *q, struct saa7146_buf *buf);
@@ -218,6 +249,13 @@ int saa7146_start_preview(struct saa7146_fh *fh);
 int saa7146_stop_preview(struct saa7146_fh *fh);
 int saa7146_video_do_ioctl(struct inode *inode, struct file *file,
 			   unsigned int cmd, void *arg);
+extern const struct v4l2_ioctl_ops saa7146_video_ioctl_ops;
+extern const struct v4l2_ioctl_ops saa7146_vbi_ioctl_ops;
+extern struct saa7146_use_ops saa7146_video_uops;
+int saa7146_start_preview(struct saa7146_fh *fh);
+int saa7146_stop_preview(struct saa7146_fh *fh);
+long saa7146_video_do_ioctl(struct file *file, unsigned int cmd, void *arg);
+int saa7146_s_ctrl(struct v4l2_ctrl *ctrl);
 
 /* from saa7146_vbi.c */
 extern struct saa7146_use_ops saa7146_vbi_uops;

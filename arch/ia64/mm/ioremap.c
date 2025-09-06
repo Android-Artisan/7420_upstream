@@ -17,8 +17,19 @@
 
 static inline void __iomem *
 __ioremap (unsigned long phys_addr)
+__ioremap_uc(unsigned long phys_addr)
 {
 	return (void __iomem *) (__IA64_UNCACHED_OFFSET | phys_addr);
+}
+
+void __iomem *
+early_ioremap (unsigned long phys_addr, unsigned long size)
+{
+	u64 attr;
+	attr = kern_mem_attribute(phys_addr, size);
+	if (attr & EFI_MEMORY_WB)
+		return (void __iomem *) phys_to_virt(phys_addr);
+	return __ioremap_uc(phys_addr);
 }
 
 void __iomem *
@@ -42,6 +53,7 @@ ioremap (unsigned long phys_addr, unsigned long size)
 		return (void __iomem *) phys_to_virt(phys_addr);
 	else if (attr & EFI_MEMORY_UC)
 		return __ioremap(phys_addr);
+		return __ioremap_uc(phys_addr);
 
 	/*
 	 * Some chipsets don't support UC access to memory.  If
@@ -88,6 +100,7 @@ ioremap (unsigned long phys_addr, unsigned long size)
 	}
 
 	return __ioremap(phys_addr);
+	return __ioremap_uc(phys_addr);
 }
 EXPORT_SYMBOL(ioremap);
 
@@ -98,8 +111,14 @@ ioremap_nocache (unsigned long phys_addr, unsigned long size)
 		return NULL;
 
 	return __ioremap(phys_addr);
+	return __ioremap_uc(phys_addr);
 }
 EXPORT_SYMBOL(ioremap_nocache);
+
+void
+early_iounmap (volatile void __iomem *addr, unsigned long size)
+{
+}
 
 void
 iounmap (volatile void __iomem *addr)

@@ -4,6 +4,7 @@
  *
  *  MPU-401 supports UART mode which is not capable generate transmit
  *  interrupts thus output is done via polling. Also, if irq < 0, then
+ *  interrupts thus output is done via polling. Without interrupt,
  *  input is done also via polling. Do not expect good performance.
  *
  *
@@ -29,10 +30,12 @@
  */
 
 #include <asm/io.h>
+#include <linux/io.h>
 #include <linux/delay.h>
 #include <linux/init.h>
 #include <linux/slab.h>
 #include <linux/ioport.h>
+#include <linux/module.h>
 #include <linux/interrupt.h>
 #include <linux/errno.h>
 #include <sound/core.h>
@@ -128,6 +131,8 @@ static void _snd_mpu401_uart_interrupt(struct snd_mpu401 *mpu)
  * @dev_id: mpu401 instance
  *
  * Processes the interrupt for MPU401-UART i/o.
+ *
+ * Return: %IRQ_HANDLED if the interrupt was handled. %IRQ_NONE otherwise.
  */
 irqreturn_t snd_mpu401_uart_interrupt(int irq, void *dev_id)
 {
@@ -147,6 +152,8 @@ EXPORT_SYMBOL(snd_mpu401_uart_interrupt);
  * @dev_id: mpu401 instance
  *
  * Processes the interrupt for MPU401-UART output.
+ *
+ * Return: %IRQ_HANDLED if the interrupt was handled. %IRQ_NONE otherwise.
  */
 irqreturn_t snd_mpu401_uart_interrupt_tx(int irq, void *dev_id)
 {
@@ -173,6 +180,7 @@ static void snd_mpu401_uart_timer(unsigned long data)
 	/*mpu->mode |= MPU401_MODE_TIMER;*/
 	mpu->timer.expires = 1 + jiffies;
 	add_timer(&mpu->timer);
+	mod_timer(&mpu->timer,  1 + jiffies);
 	spin_unlock_irqrestore(&mpu->timer_lock, flags);
 	if (mpu->rmidi)
 		_snd_mpu401_uart_interrupt(mpu);
@@ -192,6 +200,9 @@ static void snd_mpu401_uart_add_timer (struct snd_mpu401 *mpu, int input)
 		mpu->timer.function = snd_mpu401_uart_timer;
 		mpu->timer.expires = 1 + jiffies;
 		add_timer(&mpu->timer);
+		setup_timer(&mpu->timer, snd_mpu401_uart_timer,
+			    (unsigned long)mpu);
+		mod_timer(&mpu->timer, 1 + jiffies);
 	} 
 	mpu->timer_invoked |= input ? MPU401_MODE_INPUT_TIMER :
 		MPU401_MODE_OUTPUT_TIMER;
@@ -375,6 +386,7 @@ snd_mpu401_uart_input_trigger(struct snd_rawmidi_substream *substream, int up)
 			while (max-- > 0)
 				mpu->read(mpu, MPU401D(mpu));
 			if (mpu->irq < 0)
+			if (mpu->info_flags & MPU401_INFO_USE_TIMER)
 				snd_mpu401_uart_add_timer(mpu, 1);
 		}
 		
@@ -384,6 +396,7 @@ snd_mpu401_uart_input_trigger(struct snd_rawmidi_substream *substream, int up)
 		spin_unlock_irqrestore(&mpu->input_lock, flags);
 	} else {
 		if (mpu->irq < 0)
+		if (mpu->info_flags & MPU401_INFO_USE_TIMER)
 			snd_mpu401_uart_remove_timer(mpu, 1);
 		clear_bit(MPU401_MODE_BIT_INPUT_TRIGGER, &mpu->mode);
 	}
@@ -497,6 +510,7 @@ static void snd_mpu401_uart_free(struct snd_rawmidi *rmidi)
 {
 	struct snd_mpu401 *mpu = rmidi->private_data;
 	if (mpu->irq_flags && mpu->irq >= 0)
+	if (mpu->irq >= 0)
 		free_irq(mpu->irq, (void *) mpu);
 	release_and_free_resource(mpu->res);
 	kfree(mpu);
@@ -511,6 +525,7 @@ static void snd_mpu401_uart_free(struct snd_rawmidi *rmidi)
  * @info_flags: bitflags MPU401_INFO_XXX
  * @irq: the irq number, -1 if no interrupt for mpu
  * @irq_flags: the irq request flags (SA_XXX), 0 if irq was already reserved.
+ * @irq: the ISA irq number, -1 if not to be allocated
  * @rrawmidi: the pointer to store the new rawmidi instance
  *
  * Creates a new MPU-401 instance.
@@ -520,12 +535,14 @@ static void snd_mpu401_uart_free(struct snd_rawmidi *rmidi)
  * cast from rawmidi->private_data (with struct snd_mpu401 magic-cast).
  *
  * Returns zero if successful, or a negative error code.
+ * Return: Zero if successful, or a negative error code.
  */
 int snd_mpu401_uart_new(struct snd_card *card, int device,
 			unsigned short hardware,
 			unsigned long port,
 			unsigned int info_flags,
 			int irq, int irq_flags,
+			int irq,
 			struct snd_rawmidi ** rrawmidi)
 {
 	struct snd_mpu401 *mpu;
@@ -554,6 +571,7 @@ int snd_mpu401_uart_new(struct snd_card *card, int device,
 	spin_lock_init(&mpu->output_lock);
 	spin_lock_init(&mpu->timer_lock);
 	mpu->hardware = hardware;
+	mpu->irq = -1;
 	if (! (info_flags & MPU401_INFO_INTEGRATED)) {
 		int res_size = hardware == MPU401_HW_PC98II ? 4 : 2;
 		mpu->res = request_region(port, res_size, "MPU401 UART");
@@ -579,6 +597,8 @@ int snd_mpu401_uart_new(struct snd_card *card, int device,
 		mpu->cport = port + 1;
 	if (irq >= 0 && irq_flags) {
 		if (request_irq(irq, snd_mpu401_uart_interrupt, irq_flags,
+	if (irq >= 0) {
+		if (request_irq(irq, snd_mpu401_uart_interrupt, 0,
 				"MPU401 UART", (void *) mpu)) {
 			snd_printk(KERN_ERR "mpu401_uart: "
 				   "unable to grab IRQ %d\n", irq);
@@ -589,6 +609,10 @@ int snd_mpu401_uart_new(struct snd_card *card, int device,
 	mpu->info_flags = info_flags;
 	mpu->irq = irq;
 	mpu->irq_flags = irq_flags;
+	if (irq < 0 && !(info_flags & MPU401_INFO_IRQ_HOOK))
+		info_flags |= MPU401_INFO_USE_TIMER;
+	mpu->info_flags = info_flags;
+	mpu->irq = irq;
 	if (card->shortname[0])
 		snprintf(rmidi->name, sizeof(rmidi->name), "%s MIDI",
 			 card->shortname);

@@ -40,6 +40,7 @@
 #include <linux/cpu.h>
 #include <linux/types.h>
 #include <linux/proc_fs.h>
+#include <linux/seq_file.h>
 #include <linux/module.h>
 #include <linux/smp.h>
 #include <linux/timer.h>
@@ -54,6 +55,7 @@ MODULE_DESCRIPTION("/proc interface to IA-64 SAL features");
 MODULE_LICENSE("GPL");
 
 static int salinfo_read(char *page, char **start, off_t off, int count, int *eof, void *data);
+static const struct file_operations proc_salinfo_fops;
 
 typedef struct {
 	const char		*name;		/* name of the proc entry */
@@ -66,6 +68,7 @@ typedef struct {
  * that this module exports
  */
 static salinfo_entry_t salinfo_entries[]={
+static const salinfo_entry_t salinfo_entries[]={
 	{ "bus_lock",           IA64_SAL_PLATFORM_FEATURE_BUS_LOCK, },
 	{ "irq_redirection",	IA64_SAL_PLATFORM_FEATURE_IRQ_REDIR_HINT, },
 	{ "ipi_redirection",	IA64_SAL_PLATFORM_FEATURE_IPI_REDIR_HINT, },
@@ -193,6 +196,7 @@ static void
 salinfo_work_to_do(struct salinfo_data *data)
 {
 	down_trylock(&data->mutex);
+	(void)(down_trylock(&data->mutex) ?: 0);
 	up(&data->mutex);
 }
 
@@ -256,6 +260,7 @@ salinfo_log_wakeup(int type, u8 *buffer, u64 size, int irqsafe)
 		}
 	}
 	cpu_set(smp_processor_id(), data->cpu_event);
+	cpumask_set_cpu(smp_processor_id(), &data->cpu_event);
 	if (irqsafe) {
 		salinfo_work_to_do(data);
 		spin_unlock_irqrestore(&data_saved_lock, flags);
@@ -274,6 +279,7 @@ salinfo_timeout_check(struct salinfo_data *data)
 	if (!data->open)
 		return;
 	if (!cpus_empty(data->cpu_event)) {
+	if (!cpumask_empty(&data->cpu_event)) {
 		spin_lock_irqsave(&data_saved_lock, flags);
 		salinfo_work_to_do(data);
 		spin_unlock_irqrestore(&data_saved_lock, flags);
@@ -304,12 +310,14 @@ salinfo_event_read(struct file *file, char __user *buffer, size_t count, loff_t 
 	struct inode *inode = file->f_path.dentry->d_inode;
 	struct proc_dir_entry *entry = PDE(inode);
 	struct salinfo_data *data = entry->data;
+	struct salinfo_data *data = PDE_DATA(file_inode(file));
 	char cmd[32];
 	size_t size;
 	int i, n, cpu = -1;
 
 retry:
 	if (cpus_empty(data->cpu_event) && down_trylock(&data->mutex)) {
+	if (cpumask_empty(&data->cpu_event) && down_trylock(&data->mutex)) {
 		if (file->f_flags & O_NONBLOCK)
 			return -EAGAIN;
 		if (down_interruptible(&data->mutex))
@@ -321,12 +329,17 @@ retry:
 		if (cpu_isset(n, data->cpu_event)) {
 			if (!cpu_online(n)) {
 				cpu_clear(n, data->cpu_event);
+	for (i = 0; i < nr_cpu_ids; i++) {
+		if (cpumask_test_cpu(n, &data->cpu_event)) {
+			if (!cpu_online(n)) {
+				cpumask_clear_cpu(n, &data->cpu_event);
 				continue;
 			}
 			cpu = n;
 			break;
 		}
 		if (++n == NR_CPUS)
+		if (++n == nr_cpu_ids)
 			n = 0;
 	}
 
@@ -338,6 +351,7 @@ retry:
 	/* for next read, start checking at next CPU */
 	data->cpu_check = cpu;
 	if (++data->cpu_check == NR_CPUS)
+	if (++data->cpu_check == nr_cpu_ids)
 		data->cpu_check = 0;
 
 	snprintf(cmd, sizeof(cmd), "read %d\n", cpu);
@@ -354,6 +368,7 @@ retry:
 static const struct file_operations salinfo_event_fops = {
 	.open  = salinfo_event_open,
 	.read  = salinfo_event_read,
+	.llseek = noop_llseek,
 };
 
 static int
@@ -361,6 +376,7 @@ salinfo_log_open(struct inode *inode, struct file *file)
 {
 	struct proc_dir_entry *entry = PDE(inode);
 	struct salinfo_data *data = entry->data;
+	struct salinfo_data *data = PDE_DATA(inode);
 
 	if (!capable(CAP_SYS_ADMIN))
 		return -EPERM;
@@ -387,6 +403,7 @@ salinfo_log_release(struct inode *inode, struct file *file)
 {
 	struct proc_dir_entry *entry = PDE(inode);
 	struct salinfo_data *data = entry->data;
+	struct salinfo_data *data = PDE_DATA(inode);
 
 	if (data->state == STATE_NO_DATA) {
 		vfree(data->log_buffer);
@@ -408,6 +425,9 @@ call_on_cpu(int cpu, void (*fn)(void *), void *arg)
 	set_cpus_allowed(current, new_cpus_allowed);
 	(*fn)(arg);
 	set_cpus_allowed(current, save_cpus_allowed);
+	set_cpus_allowed_ptr(current, cpumask_of(cpu));
+	(*fn)(arg);
+	set_cpus_allowed_ptr(current, &save_cpus_allowed);
 }
 
 static void
@@ -455,6 +475,7 @@ retry:
 	if (!data->log_size) {
 		data->state = STATE_NO_DATA;
 		cpu_clear(cpu, data->cpu_event);
+		cpumask_clear_cpu(cpu, &data->cpu_event);
 	} else {
 		data->state = STATE_LOG_RECORD;
 	}
@@ -466,6 +487,7 @@ salinfo_log_read(struct file *file, char __user *buffer, size_t count, loff_t *p
 	struct inode *inode = file->f_path.dentry->d_inode;
 	struct proc_dir_entry *entry = PDE(inode);
 	struct salinfo_data *data = entry->data;
+	struct salinfo_data *data = PDE_DATA(file_inode(file));
 	u8 *buf;
 	u64 bufsize;
 
@@ -501,6 +523,11 @@ salinfo_log_clear(struct salinfo_data *data, int cpu)
 		return 0;
 	}
 	cpu_clear(cpu, data->cpu_event);
+	if (!cpumask_test_cpu(cpu, &data->cpu_event)) {
+		spin_unlock_irqrestore(&data_saved_lock, flags);
+		return 0;
+	}
+	cpumask_clear_cpu(cpu, &data->cpu_event);
 	if (data->saved_num) {
 		shift1_data_saved(data, data->saved_num - 1);
 		data->saved_num = 0;
@@ -515,6 +542,7 @@ salinfo_log_clear(struct salinfo_data *data, int cpu)
 	if (data->state == STATE_LOG_RECORD) {
 		spin_lock_irqsave(&data_saved_lock, flags);
 		cpu_set(cpu, data->cpu_event);
+		cpumask_set_cpu(cpu, &data->cpu_event);
 		salinfo_work_to_do(data);
 		spin_unlock_irqrestore(&data_saved_lock, flags);
 	}
@@ -527,6 +555,7 @@ salinfo_log_write(struct file *file, const char __user *buffer, size_t count, lo
 	struct inode *inode = file->f_path.dentry->d_inode;
 	struct proc_dir_entry *entry = PDE(inode);
 	struct salinfo_data *data = entry->data;
+	struct salinfo_data *data = PDE_DATA(file_inode(file));
 	char cmd[32];
 	size_t size;
 	u32 offset;
@@ -575,6 +604,10 @@ static const struct file_operations salinfo_data_fops = {
 };
 
 static int __cpuinit
+	.llseek  = default_llseek,
+};
+
+static int
 salinfo_cpu_callback(struct notifier_block *nb, unsigned long action, void *hcpu)
 {
 	unsigned int i, cpu = (unsigned long)hcpu;
@@ -588,6 +621,7 @@ salinfo_cpu_callback(struct notifier_block *nb, unsigned long action, void *hcpu
 		     i < ARRAY_SIZE(salinfo_data);
 		     ++i, ++data) {
 			cpu_set(cpu, data->cpu_event);
+			cpumask_set_cpu(cpu, &data->cpu_event);
 			salinfo_work_to_do(data);
 		}
 		spin_unlock_irqrestore(&data_saved_lock, flags);
@@ -608,6 +642,7 @@ salinfo_cpu_callback(struct notifier_block *nb, unsigned long action, void *hcpu
 				}
 			}
 			cpu_clear(cpu, data->cpu_event);
+			cpumask_clear_cpu(cpu, &data->cpu_event);
 		}
 		spin_unlock_irqrestore(&data_saved_lock, flags);
 		break;
@@ -616,6 +651,7 @@ salinfo_cpu_callback(struct notifier_block *nb, unsigned long action, void *hcpu
 }
 
 static struct notifier_block salinfo_cpu_notifier __cpuinitdata =
+static struct notifier_block salinfo_cpu_notifier =
 {
 	.notifier_call = salinfo_cpu_callback,
 	.priority = 0,
@@ -644,6 +680,17 @@ salinfo_init(void)
 		data = salinfo_data + i;
 		data->type = i;
 		init_MUTEX(&data->mutex);
+		*sdir++ = proc_create_data(salinfo_entries[i].name, 0, salinfo_dir,
+					   &proc_salinfo_fops,
+					   (void *)salinfo_entries[i].feature);
+	}
+
+	cpu_notifier_register_begin();
+
+	for (i = 0; i < ARRAY_SIZE(salinfo_log_name); i++) {
+		data = salinfo_data + i;
+		data->type = i;
+		sema_init(&data->mutex, 1);
 		dir = proc_mkdir(salinfo_log_name[i], salinfo_dir);
 		if (!dir)
 			continue;
@@ -663,6 +710,7 @@ salinfo_init(void)
 		/* we missed any events before now */
 		for_each_online_cpu(j)
 			cpu_set(j, data->cpu_event);
+			cpumask_set_cpu(j, &data->cpu_event);
 
 		*sdir++ = dir;
 	}
@@ -675,6 +723,9 @@ salinfo_init(void)
 	add_timer(&salinfo_timer);
 
 	register_hotcpu_notifier(&salinfo_cpu_notifier);
+	__register_hotcpu_notifier(&salinfo_cpu_notifier);
+
+	cpu_notifier_register_done();
 
 	return 0;
 }
@@ -700,5 +751,24 @@ salinfo_read(char *page, char **start, off_t off, int count, int *eof, void *dat
 
 	return len;
 }
+
+static int proc_salinfo_show(struct seq_file *m, void *v)
+{
+	unsigned long data = (unsigned long)v;
+	seq_puts(m, (sal_platform_features & data) ? "1\n" : "0\n");
+	return 0;
+}
+
+static int proc_salinfo_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, proc_salinfo_show, PDE_DATA(inode));
+}
+
+static const struct file_operations proc_salinfo_fops = {
+	.open		= proc_salinfo_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
 
 module_init(salinfo_init);

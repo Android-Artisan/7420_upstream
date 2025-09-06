@@ -19,6 +19,10 @@
 #include <locale.h>
 
 #define LKC_DIRECT_LINK
+#include <signal.h>
+#include <unistd.h>
+#include <locale.h>
+
 #include "lkc.h"
 #include "lxdialog/dialog.h"
 
@@ -30,6 +34,9 @@ static const char mconf_readme[] = N_(
 "may be completely removed altogether.  There are also certain\n"
 "kernel parameters which are not really features, but must be\n"
 "entered in as decimal or hexadecimal numbers or possibly text.\n"
+"This interface lets you select features and parameters for the build.\n"
+"Features can either be built-in, modularized, or ignored. Parameters\n"
+"must be entered in as decimal or hexadecimal numbers or text.\n"
 "\n"
 "Menu items beginning with following braces represent features that\n"
 "  [ ] can be built in or removed\n"
@@ -43,6 +50,8 @@ static const char mconf_readme[] = N_(
 "keys and press <Y> to build it in, <M> to make it a module or\n"
 "<N> to removed it.  You may also press the <Space Bar> to cycle\n"
 "through the available options (ie. Y->N->M->Y).\n"
+"<N> to remove it.  You may also press the <Space Bar> to cycle\n"
+"through the available options (i.e. Y->N->M->Y).\n"
 "\n"
 "Some additional keyboard hints:\n"
 "\n"
@@ -51,6 +60,9 @@ static const char mconf_readme[] = N_(
 "o  Use the Up/Down arrow keys (cursor keys) to highlight the item\n"
 "   you wish to change or submenu wish to select and press <Enter>.\n"
 "   Submenus are designated by \"--->\".\n"
+"o  Use the Up/Down arrow keys (cursor keys) to highlight the item you\n"
+"   wish to change or the submenu you wish to select and press <Enter>.\n"
+"   Submenus are designated by \"--->\", empty ones by \"----\".\n"
 "\n"
 "   Shortcut: Press the option's highlighted letter (hotkey).\n"
 "             Pressing a hotkey more than once will sequence\n"
@@ -73,6 +85,15 @@ static const char mconf_readme[] = N_(
 "   and Press <ENTER>.\n"
 "\n"
 "   Shortcut: Press <H> or <?>.\n"
+"\n"
+"   <Exit>, <Help>, <Save>, and <Load>.\n"
+"\n"
+"o  To get help with an item, use the cursor keys to highlight <Help>\n"
+"   and press <ENTER>.\n"
+"\n"
+"   Shortcut: Press <H> or <?>.\n"
+"\n"
+"o  To toggle the display of hidden options, press <Z>.\n"
 "\n"
 "\n"
 "Radiolists  (Choice lists)\n"
@@ -109,6 +130,10 @@ static const char mconf_readme[] = N_(
 "   who are familiar with less and lynx.\n"
 "\n"
 "o  Press <E>, <X>, <Enter> or <Esc><Esc> to exit.\n"
+"   keys h,j,k,l function here as do <u>, <d>, <SPACE BAR> and <B> for\n"
+"   those who are familiar with less and lynx.\n"
+"\n"
+"o  Press <E>, <X>, <q>, <Enter> or <Esc><Esc> to exit.\n"
 "\n"
 "\n"
 "Alternate Configuration Files\n"
@@ -134,6 +159,23 @@ static const char mconf_readme[] = N_(
 "$TERM variable set to point to a xterm definition which supports color.\n"
 "Otherwise, Menuconfig will look rather bad.  Menuconfig will not\n"
 "display correctly in a RXVT window because rxvt displays only one\n"
+"between different configurations.\n"
+"\n"
+"The <Save> button will let you save the current configuration to\n"
+"a file of your choosing.  Use the <Load> button to load a previously\n"
+"saved alternate configuration.\n"
+"\n"
+"Even if you don't use alternate configuration files, but you find\n"
+"during a Menuconfig session that you have completely messed up your\n"
+"settings, you may use the <Load> button to restore your previously\n"
+"saved settings from \".config\" without restarting Menuconfig.\n"
+"\n"
+"Other information\n"
+"-----------------\n"
+"If you use Menuconfig in an XTERM window, make sure you have your\n"
+"$TERM variable set to point to an xterm definition which supports\n"
+"color.  Otherwise, Menuconfig will look rather bad.  Menuconfig will\n"
+"not display correctly in an RXVT window because rxvt displays only one\n"
 "intensity of color, bright.\n"
 "\n"
 "Menuconfig will display larger menus on screens or xterms which are\n"
@@ -151,6 +193,9 @@ static const char mconf_readme[] = N_(
 "If you prefer to have all of the kernel options listed in a single\n"
 "menu, rather than the default multimenu hierarchy, run the menuconfig\n"
 "with MENUCONFIG_MODE environment variable set to single_menu. Example:\n"
+"If you prefer to have all of the options listed in a single menu,\n"
+"rather than the default multimenu hierarchy, run the menuconfig with\n"
+"MENUCONFIG_MODE environment variable set to single_menu. Example:\n"
 "\n"
 "make MENUCONFIG_MODE=single_menu menuconfig\n"
 "\n"
@@ -177,6 +222,11 @@ static const char mconf_readme[] = N_(
 menu_instructions[] = N_(
 	"Arrow keys navigate the menu.  "
 	"<Enter> selects submenus --->.  "
+" bluetitle  => an LCD friendly version of classic. (default)\n"
+"\n"),
+menu_instructions[] = N_(
+	"Arrow keys navigate the menu.  "
+	"<Enter> selects submenus ---> (or empty submenus ----).  "
 	"Highlighted letters are hotkeys.  "
 	"Pressing <Y> includes, <N> excludes, <M> modularizes features.  "
 	"Press <Esc><Esc> to exit, <?> for Help, </> for Search.  "
@@ -216,6 +266,15 @@ load_config_help[] = N_(
 	"\n"
 	"If you are uncertain, then you have probably never used alternate\n"
 	"configuration files.  You should therefor leave this blank to abort.\n"),
+	"For various reasons, one may wish to keep several different\n"
+	"configurations available on a single machine.\n"
+	"\n"
+	"If you have saved a previous configuration in a file other than the\n"
+	"default one, entering its name here will allow you to modify that\n"
+	"configuration.\n"
+	"\n"
+	"If you are uncertain, then you have probably never used alternate\n"
+	"configuration files. You should therefore leave this blank to abort.\n"),
 save_config_text[] = N_(
 	"Enter a filename to which this configuration should be saved "
 	"as an alternate.  Leave blank to abort."),
@@ -223,6 +282,8 @@ save_config_help[] = N_(
 	"\n"
 	"For various reasons, one may wish to keep different kernel\n"
 	"configurations available on a single machine.\n"
+	"For various reasons, one may wish to keep different configurations\n"
+	"available on a single machine.\n"
 	"\n"
 	"Entering a file name here will allow you to later retrieve, modify\n"
 	"and use the current configuration as an alternate to whatever\n"
@@ -233,6 +294,7 @@ save_config_help[] = N_(
 search_help[] = N_(
 	"\n"
 	"Search for CONFIG_ symbols and display their relations.\n"
+	"Search for symbols and display their relations.\n"
 	"Regular expressions are allowed.\n"
 	"Example: search for \"^FOO\"\n"
 	"Result:\n"
@@ -261,6 +323,36 @@ search_help[] = N_(
 	"o The 'Selects:' line tell what symbol will be automatically\n"
 	"  selected if this symbol is selected (y or m)\n"
 	"o The 'Selected by' line tell what symbol has selected this symbol\n"
+	"Type  : tristate\n"
+	"Prompt: Foo bus is used to drive the bar HW\n"
+	"  Location:\n"
+	"    -> Bus options (PCI, PCMCIA, EISA, ISA)\n"
+	"      -> PCI support (PCI [=y])\n"
+	"(1)     -> PCI access mode (<choice> [=y])\n"
+	"  Defined at drivers/pci/Kconfig:47\n"
+	"  Depends on: X86_LOCAL_APIC && X86_IO_APIC || IA64\n"
+	"  Selects: LIBCRC32\n"
+	"  Selected by: BAR [=n]\n"
+	"-----------------------------------------------------------------\n"
+	"o The line 'Type:' shows the type of the configuration option for\n"
+	"  this symbol (boolean, tristate, string, ...)\n"
+	"o The line 'Prompt:' shows the text used in the menu structure for\n"
+	"  this symbol\n"
+	"o The 'Defined at' line tells at what file / line number the symbol\n"
+	"  is defined\n"
+	"o The 'Depends on:' line tells what symbols need to be defined for\n"
+	"  this symbol to be visible in the menu (selectable)\n"
+	"o The 'Location:' lines tells where in the menu structure this symbol\n"
+	"  is located\n"
+	"    A location followed by a [=y] indicates that this is a\n"
+	"    selectable menu item - and the current value is displayed inside\n"
+	"    brackets.\n"
+	"    Press the key in the (#) prefix to jump directly to that\n"
+	"    location. You will be returned to the current search results\n"
+	"    after exiting this new menu.\n"
+	"o The 'Selects:' line tells what symbols will be automatically\n"
+	"  selected if this symbol is selected (y or m)\n"
+	"o The 'Selected by' line tells what symbol has selected this symbol\n"
 	"\n"
 	"Only relevant lines are shown.\n"
 	"\n\n"
@@ -268,6 +360,9 @@ search_help[] = N_(
 	"Examples: USB	=> find all CONFIG_ symbols containing USB\n"
 	"          ^USB => find all CONFIG_ symbols starting with USB\n"
 	"          USB$ => find all CONFIG_ symbols ending with USB\n"
+	"Examples: USB	=> find all symbols containing USB\n"
+	"          ^USB => find all symbols starting with USB\n"
+	"          USB$ => find all symbols ending with USB\n"
 	"\n");
 
 static int indent;
@@ -276,10 +371,18 @@ static int child_count;
 static int single_menu_mode;
 
 static void conf(struct menu *menu);
+static int show_all_options;
+static int save_and_exit;
+static int silent;
+
+static void conf(struct menu *menu, struct menu *active_menu);
 static void conf_choice(struct menu *menu);
 static void conf_string(struct menu *menu);
 static void conf_load(void);
 static void conf_save(void);
+static int show_textbox_ext(const char *title, char *text, int r, int c,
+			    int *keys, int *vscroll, int *hscroll,
+			    update_text_fn update_text, void *data);
 static void show_textbox(const char *title, const char *text, int r, int c);
 static void show_helptext(const char *title, const char *text);
 static void show_help(struct menu *menu);
@@ -369,6 +472,9 @@ static void set_config_filename(const char *config_filename)
 	size = snprintf(menu_backtitle, sizeof(menu_backtitle),
 	                _("%s - Linux Kernel v%s Configuration"),
 		        config_filename, sym_get_string_value(sym));
+
+	size = snprintf(menu_backtitle, sizeof(menu_backtitle),
+			"%s - %s", config_filename, rootmenu.prompt->text);
 	if (size >= sizeof(menu_backtitle))
 		menu_backtitle[sizeof(menu_backtitle)-1] = '\0';
 	set_dialog_backtitle(menu_backtitle);
@@ -378,6 +484,83 @@ static void set_config_filename(const char *config_filename)
 		filename[sizeof(filename)-1] = '\0';
 }
 
+struct subtitle_part {
+	struct list_head entries;
+	const char *text;
+};
+static LIST_HEAD(trail);
+
+static struct subtitle_list *subtitles;
+static void set_subtitle(void)
+{
+	struct subtitle_part *sp;
+	struct subtitle_list *pos, *tmp;
+
+	for (pos = subtitles; pos != NULL; pos = tmp) {
+		tmp = pos->next;
+		free(pos);
+	}
+
+	subtitles = NULL;
+	list_for_each_entry(sp, &trail, entries) {
+		if (sp->text) {
+			if (pos) {
+				pos->next = xcalloc(1, sizeof(*pos));
+				pos = pos->next;
+			} else {
+				subtitles = pos = xcalloc(1, sizeof(*pos));
+			}
+			pos->text = sp->text;
+		}
+	}
+
+	set_dialog_subtitles(subtitles);
+}
+
+static void reset_subtitle(void)
+{
+	struct subtitle_list *pos, *tmp;
+
+	for (pos = subtitles; pos != NULL; pos = tmp) {
+		tmp = pos->next;
+		free(pos);
+	}
+	subtitles = NULL;
+	set_dialog_subtitles(subtitles);
+}
+
+struct search_data {
+	struct list_head *head;
+	struct menu **targets;
+	int *keys;
+};
+
+static void update_text(char *buf, size_t start, size_t end, void *_data)
+{
+	struct search_data *data = _data;
+	struct jump_key *pos;
+	int k = 0;
+
+	list_for_each_entry(pos, data->head, entries) {
+		if (pos->offset >= start && pos->offset < end) {
+			char header[4];
+
+			if (k < JUMP_NB) {
+				int key = '0' + (pos->index % JUMP_NB) + 1;
+
+				sprintf(header, "(%c)", key);
+				data->keys[k] = key;
+				data->targets[k] = pos->target;
+				k++;
+			} else {
+				sprintf(header, "   ");
+			}
+
+			memcpy(buf + pos->offset, header, sizeof(header) - 1);
+		}
+	}
+	data->keys[k] = 0;
+}
 
 static void search_conf(void)
 {
@@ -390,6 +573,21 @@ again:
 	dres = dialog_inputbox(_("Search Configuration Parameter"),
 			      _("Enter CONFIG_ (sub)string to search for "
 				"(with or without \"CONFIG\")"),
+	struct gstr title;
+	char *dialog_input;
+	int dres, vscroll = 0, hscroll = 0;
+	bool again;
+	struct gstr sttext;
+	struct subtitle_part stpart;
+
+	title = str_new();
+	str_printf( &title, _("Enter (sub)string or regexp to search for "
+			      "(with or without \"%s\")"), CONFIG_);
+
+again:
+	dialog_clear();
+	dres = dialog_inputbox(_("Search Configuration Parameter"),
+			      str_get(&title),
 			      10, 75, "");
 	switch (dres) {
 	case 0:
@@ -411,6 +609,52 @@ again:
 	free(sym_arr);
 	show_textbox(_("Search Results"), str_get(&res), 0, 0);
 	str_free(&res);
+		str_free(&title);
+		return;
+	}
+
+	/* strip the prefix if necessary */
+	dialog_input = dialog_input_result;
+	if (strncasecmp(dialog_input_result, CONFIG_, strlen(CONFIG_)) == 0)
+		dialog_input += strlen(CONFIG_);
+
+	sttext = str_new();
+	str_printf(&sttext, "Search (%s)", dialog_input_result);
+	stpart.text = str_get(&sttext);
+	list_add_tail(&stpart.entries, &trail);
+
+	sym_arr = sym_re_search(dialog_input);
+	do {
+		LIST_HEAD(head);
+		struct menu *targets[JUMP_NB];
+		int keys[JUMP_NB + 1], i;
+		struct search_data data = {
+			.head = &head,
+			.targets = targets,
+			.keys = keys,
+		};
+		struct jump_key *pos, *tmp;
+
+		res = get_relations_str(sym_arr, &head);
+		set_subtitle();
+		dres = show_textbox_ext(_("Search Results"), (char *)
+					str_get(&res), 0, 0, keys, &vscroll,
+					&hscroll, &update_text, (void *)
+					&data);
+		again = false;
+		for (i = 0; i < JUMP_NB && keys[i]; i++)
+			if (dres == keys[i]) {
+				conf(targets[i]->parent, targets[i]);
+				again = true;
+			}
+		str_free(&res);
+		list_for_each_entry_safe(pos, tmp, &head, entries)
+			free(pos);
+	} while (again);
+	free(sym_arr);
+	str_free(&title);
+	list_del(trail.prev);
+	str_free(&sttext);
 }
 
 static void build_conf(struct menu *menu)
@@ -423,6 +667,16 @@ static void build_conf(struct menu *menu)
 	char ch;
 
 	if (!menu_is_visible(menu))
+	bool visible;
+
+	/*
+	 * note: menu_is_visible() has side effect that it will
+	 * recalc the value of the symbol.
+	 */
+	visible = menu_is_visible(menu);
+	if (show_all_options && !menu_has_prompt(menu))
+		return;
+	else if (!show_all_options && !visible)
 		return;
 
 	sym = menu->sym;
@@ -441,6 +695,9 @@ static void build_conf(struct menu *menu)
 				} else
 					item_make("   %*c%s  --->", indent + 1, ' ', prompt);
 
+					item_make("   %*c%s  %s",
+						  indent + 1, ' ', prompt,
+						  menu_is_empty(menu) ? "----" : "--->");
 				item_set_tag('m');
 				item_set_data(menu);
 				if (single_menu_mode && menu->data)
@@ -572,6 +829,7 @@ static void build_conf(struct menu *menu)
 			  "" : _(" (NEW)"));
 		if (menu->prompt->type == P_MENU) {
 			item_add_str("  --->");
+			item_add_str("  %s", menu_is_empty(menu) ? "----" : "--->");
 			return;
 		}
 	}
@@ -592,6 +850,21 @@ static void conf(struct menu *menu)
 	int res;
 	int s_scroll = 0;
 
+static void conf(struct menu *menu, struct menu *active_menu)
+{
+	struct menu *submenu;
+	const char *prompt = menu_get_prompt(menu);
+	struct subtitle_part stpart;
+	struct symbol *sym;
+	int res;
+	int s_scroll = 0;
+
+	if (menu != &rootmenu)
+		stpart.text = menu_get_prompt(menu);
+	else
+		stpart.text = NULL;
+	list_add_tail(&stpart.entries, &trail);
+
 	while (1) {
 		item_reset();
 		current_menu = menu;
@@ -606,6 +879,7 @@ static void conf(struct menu *menu)
 			item_make(_("    Save an Alternate Configuration File"));
 			item_set_tag('S');
 		}
+		set_subtitle();
 		dialog_clear();
 		res = dialog_menu(prompt ? _(prompt) : _("Main Menu"),
 				  _(menu_instructions),
@@ -617,6 +891,12 @@ static void conf(struct menu *menu)
 		if (!item_tag())
 			continue;
 
+		if (item_count() != 0) {
+			if (!item_activate_selected())
+				continue;
+			if (!item_tag())
+				continue;
+		}
 		submenu = item_data();
 		active_menu = item_data();
 		if (submenu)
@@ -632,12 +912,14 @@ static void conf(struct menu *menu)
 					submenu->data = (void *) (long) !submenu->data;
 				else
 					conf(submenu);
+					conf(submenu, NULL);
 				break;
 			case 't':
 				if (sym_is_choice(sym) && sym_get_tristate_value(sym) == yes)
 					conf_choice(submenu);
 				else if (submenu->prompt->type == P_MENU)
 					conf(submenu);
+					conf(submenu, NULL);
 				break;
 			case 's':
 				conf_string(submenu);
@@ -657,6 +939,20 @@ static void conf(struct menu *menu)
 				show_helptext(_("README"), _(mconf_readme));
 			break;
 		case 3:
+			else {
+				reset_subtitle();
+				show_helptext(_("README"), _(mconf_readme));
+			}
+			break;
+		case 3:
+			reset_subtitle();
+			conf_save();
+			break;
+		case 4:
+			reset_subtitle();
+			conf_load();
+			break;
+		case 5:
 			if (item_is_tag('t')) {
 				if (sym_set_tristate_value(sym, yes))
 					break;
@@ -683,12 +979,47 @@ static void conf(struct menu *menu)
 			break;
 		}
 	}
+		case 6:
+			if (item_is_tag('t'))
+				sym_set_tristate_value(sym, no);
+			break;
+		case 7:
+			if (item_is_tag('t'))
+				sym_set_tristate_value(sym, mod);
+			break;
+		case 8:
+			if (item_is_tag('t'))
+				sym_toggle_tristate_value(sym);
+			else if (item_is_tag('m'))
+				conf(submenu, NULL);
+			break;
+		case 9:
+			search_conf();
+			break;
+		case 10:
+			show_all_options = !show_all_options;
+			break;
+		}
+	}
+
+	list_del(trail.prev);
+}
+
+static int show_textbox_ext(const char *title, char *text, int r, int c, int
+			    *keys, int *vscroll, int *hscroll, update_text_fn
+			    update_text, void *data)
+{
+	dialog_clear();
+	return dialog_textbox(title, text, r, c, keys, vscroll, hscroll,
+			      update_text, data);
 }
 
 static void show_textbox(const char *title, const char *text, int r, int c)
 {
 	dialog_clear();
 	dialog_textbox(title, text, r, c);
+	show_textbox_ext(title, (char *) text, r, c, (int []) {0}, NULL, NULL,
+			 NULL, NULL);
 }
 
 static void show_helptext(const char *title, const char *text)
@@ -712,6 +1043,26 @@ static void show_help(struct menu *menu)
 		str_append(&help, nohelp_text);
 	}
 	get_symbol_str(&help, sym);
+static void conf_message_callback(const char *fmt, va_list ap)
+{
+	char buf[PATH_MAX+1];
+
+	vsnprintf(buf, sizeof(buf), fmt, ap);
+	if (save_and_exit) {
+		if (!silent)
+			printf("%s", buf);
+	} else {
+		show_textbox(NULL, buf, 6, 60);
+	}
+}
+
+static void show_help(struct menu *menu)
+{
+	struct gstr help = str_new();
+
+	help.max_width = getmaxx(stdscr) - 10;
+	menu_get_ext_help(menu, &help);
+
 	show_helptext(_(menu_get_prompt(menu)), str_get(&help));
 	str_free(&help);
 }
@@ -733,6 +1084,12 @@ static void conf_choice(struct menu *menu)
 			if (!menu_is_visible(child))
 				continue;
 			item_make("%s", _(menu_get_prompt(child)));
+			if (child->sym)
+				item_make("%s", _(menu_get_prompt(child)));
+			else {
+				item_make("*** %s ***", _(menu_get_prompt(child)));
+				item_set_tag(':');
+			}
 			item_set_data(child);
 			if (child->sym == active)
 				item_set_selected(1);
@@ -743,11 +1100,17 @@ static void conf_choice(struct menu *menu)
 		res = dialog_checklist(prompt ? _(prompt) : _("Main Menu"),
 					_(radiolist_instructions),
 					 15, 70, 6);
+					MENUBOX_HEIGTH_MIN,
+					MENUBOX_WIDTH_MIN,
+					CHECKLIST_HEIGTH_MIN);
 		selected = item_activate_selected();
 		switch (res) {
 		case 0:
 			if (selected) {
 				child = item_data();
+				if (!child->sym)
+					break;
+
 				sym_set_tristate_value(child->sym, yes);
 			}
 			return;
@@ -864,6 +1227,60 @@ static void conf_save(void)
 int main(int ac, char **av)
 {
 	int saved_x, saved_y;
+static int handle_exit(void)
+{
+	int res;
+
+	save_and_exit = 1;
+	reset_subtitle();
+	dialog_clear();
+	if (conf_get_changed())
+		res = dialog_yesno(NULL,
+				   _("Do you wish to save your new configuration?\n"
+				     "(Press <ESC><ESC> to continue kernel configuration.)"),
+				   6, 60);
+	else
+		res = -1;
+
+	end_dialog(saved_x, saved_y);
+
+	switch (res) {
+	case 0:
+		if (conf_write(filename)) {
+			fprintf(stderr, _("\n\n"
+					  "Error while writing of the configuration.\n"
+					  "Your configuration changes were NOT saved."
+					  "\n\n"));
+			return 1;
+		}
+		/* fall through */
+	case -1:
+		if (!silent)
+			printf(_("\n\n"
+				 "*** End of the configuration.\n"
+				 "*** Execute 'make' to start the build or try 'make help'."
+				 "\n\n"));
+		res = 0;
+		break;
+	default:
+		if (!silent)
+			fprintf(stderr, _("\n\n"
+					  "Your configuration changes were NOT saved."
+					  "\n\n"));
+		if (res != KEY_ESC)
+			res = 0;
+	}
+
+	return res;
+}
+
+static void sig_handler(int signo)
+{
+	exit(handle_exit());
+}
+
+int main(int ac, char **av)
+{
 	char *mode;
 	int res;
 
@@ -871,6 +1288,14 @@ int main(int ac, char **av)
 	bindtextdomain(PACKAGE, LOCALEDIR);
 	textdomain(PACKAGE);
 
+	signal(SIGINT, sig_handler);
+
+	if (ac > 1 && strcmp(av[1], "-s") == 0) {
+		silent = 1;
+		/* Silence conf_read() until the real callback is set up */
+		conf_set_message_callback(NULL);
+		av++;
+	}
 	conf_parse(av[1]);
 	conf_read(NULL);
 
@@ -926,3 +1351,11 @@ int main(int ac, char **av)
 	return 0;
 }
 
+	conf_set_message_callback(conf_message_callback);
+	do {
+		conf(&rootmenu, NULL);
+		res = handle_exit();
+	} while (res == KEY_ESC);
+
+	return res;
+}

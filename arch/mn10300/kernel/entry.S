@@ -16,11 +16,13 @@
 #include <linux/linkage.h>
 #include <asm/smp.h>
 #include <asm/system.h>
+#include <asm/irqflags.h>
 #include <asm/thread_info.h>
 #include <asm/intctl-regs.h>
 #include <asm/busctl-regs.h>
 #include <asm/timer-regs.h>
 #include <asm/unit/leds.h>
+#include <unit/leds.h>
 #include <asm/page.h>
 #include <asm/pgtable.h>
 #include <asm/errno.h>
@@ -29,6 +31,12 @@
 
 #ifdef CONFIG_PREEMPT
 #define preempt_stop		__cli
+#if defined(CONFIG_SMP) && defined(CONFIG_GDBSTUB)
+#include <asm/gdb-stub.h>
+#endif /* CONFIG_SMP && CONFIG_GDBSTUB */
+
+#ifdef CONFIG_PREEMPT
+#define preempt_stop		LOCAL_IRQ_DISABLE
 #else
 #define preempt_stop
 #define resume_kernel		restore_all
@@ -63,6 +71,16 @@ ENTRY(ret_from_fork)
 	mov	d0,(REG_D0,fp)
 	jmp	syscall_exit
 
+ENTRY(ret_from_kernel_thread)
+	call	schedule_tail[],0
+	mov	(REG_D0,fp),d0
+	mov	(REG_A0,fp),a0
+	calls	(a0)
+	GET_THREAD_INFO a2		# A2 must be set on return from sys_exit()
+	clr	d0
+	mov	d0,(REG_D0,fp)
+	jmp	syscall_exit
+
 ###############################################################################
 #
 # system call handler
@@ -77,6 +95,7 @@ ENTRY(system_call)
 	bcc	syscall_badsys
 	btst	_TIF_SYSCALL_TRACE,(TI_flags,a2)
 	bne	syscall_trace_entry
+	bne	syscall_entry_trace
 syscall_call:
 	add	d0,d0,a1
 	add	a1,a1
@@ -88,6 +107,7 @@ syscall_exit:
 	# make sure we don't miss an interrupt setting need_resched or
 	# sigpending between sampling and the rti
 	__cli
+	LOCAL_IRQ_DISABLE
 	mov	(TI_flags,a2),d2
 	btst	_TIF_ALLWORK_MASK,d2
 	bne	syscall_exit_work
@@ -109,6 +129,16 @@ syscall_exit_work:
 	mov	fp,d0
 	mov	1,d1
 	call	do_syscall_trace[],0	# do_syscall_trace(regs,entryexit)
+	mov	(REG_EPSW,fp),d0
+	and	EPSW_nSL,d0
+	beq	resume_kernel		# returning to supervisor mode
+
+	LOCAL_IRQ_ENABLE		# could let syscall_trace_exit() call
+					# schedule() instead
+	btst	_TIF_SYSCALL_TRACE,d2
+	beq	work_pending
+	mov	fp,d0
+	call	syscall_trace_exit[],0	# do_syscall_trace(regs)
 	jmp	resume_userspace
 
 	ALIGN
@@ -122,11 +152,17 @@ work_resched:
 	# make sure we don't miss an interrupt setting need_resched or
 	# sigpending between sampling and the rti
 	__cli
+resume_userspace:
+	# make sure we don't miss an interrupt setting need_resched or
+	# sigpending between sampling and the rti
+	LOCAL_IRQ_DISABLE
 
 	# is there any work to be done other than syscall tracing?
 	mov	(TI_flags,a2),d2
 	btst	_TIF_WORK_MASK,d2
 	beq	restore_all
+
+	LOCAL_IRQ_ENABLE
 	btst	_TIF_NEED_RESCHED,d2
 	bne	work_resched
 
@@ -145,6 +181,11 @@ syscall_trace_entry:
 	clr	d1
 	call	do_syscall_trace[],0
 	mov	(REG_ORIG_D0,fp),d0
+syscall_entry_trace:
+	mov	-ENOSYS,d0
+	mov	d0,(REG_D0,fp)
+	mov	fp,d0
+	call	syscall_trace_entry[],0	# returns the syscall number to actually use
 	mov	(REG_D1,fp),d1
 	cmp	nr_syscalls,d0
 	bcs	syscall_call
@@ -180,6 +221,11 @@ ENTRY(resume_userspace)
 
 #ifdef CONFIG_PREEMPT
 ENTRY(resume_kernel)
+	bne	resume_userspace	# returning to userspace
+
+#ifdef CONFIG_PREEMPT
+resume_kernel:
+	LOCAL_IRQ_DISABLE
 	mov	(TI_preempt_count,a2),d0	# non-zero preempt_count ?
 	cmp	0,d0
 	bne	restore_all
@@ -193,6 +239,11 @@ need_resched:
 	beq	restore_all
 	call	preempt_schedule_irq[],0
 	jmp	need_resched
+	bne	restore_all
+	call	preempt_schedule_irq[],0
+	jmp	need_resched
+#else
+	jmp	resume_kernel
 #endif
 
 
@@ -277,6 +328,10 @@ double_fault_loop:
 ENTRY(raw_bus_error)
 	add	-4,sp
 	mov	d0,(sp)
+#if defined(CONFIG_ERRATUM_NEED_TO_RELOAD_MMUCTR)
+	mov	(MMUCTR),d0
+	mov	d0,(MMUCTR)
+#endif
 	mov	(BCBERR),d0		# what
 	btst	BCBERR_BEMR_DMA,d0	# see if it was an external bus error
 	beq	__common_exception_aux	# it wasn't
@@ -297,6 +352,11 @@ ENTRY(raw_bus_error)
 ###############################################################################
 #
 # Miscellaneous exception entry points
+# NMI exception entry points
+#
+# This is used by ordinary interrupt channels that have the GxICR_NMI bit set
+# in addition to the main NMI and Watchdog channels.  SMP NMI IPIs use this
+# facility.
 #
 ###############################################################################
 ENTRY(nmi_handler)
@@ -308,6 +368,67 @@ ENTRY(nmi_handler)
 ENTRY(__common_exception)
 	add	-4,sp
 	mov	d0,(sp)
+
+#ifdef CONFIG_SMP
+	add	-4,sp
+	mov	d0,(sp)			# save d0(TBR)
+	movhu	(NMIAGR),d0
+	and	NMIAGR_GN,d0
+	lsr	0x2,d0
+	cmp	CALL_FUNCTION_NMI_IPI,d0
+	bne	nmi_not_smp_callfunc	# if not call function, jump
+
+	# function call nmi ipi
+	add	4,sp			# no need to store TBR
+	mov	GxICR_DETECT,d0		# clear NMI request
+	movbu	d0,(GxICR(CALL_FUNCTION_NMI_IPI))
+	movhu	(GxICR(CALL_FUNCTION_NMI_IPI)),d0
+	and	~EPSW_NMID,epsw		# enable NMI
+
+	mov	(sp),d0			# restore d0
+	SAVE_ALL
+	call	smp_nmi_call_function_interrupt[],0
+	RESTORE_ALL
+
+nmi_not_smp_callfunc:
+#ifdef CONFIG_KERNEL_DEBUGGER
+	cmp	DEBUGGER_NMI_IPI,d0
+	bne	nmi_not_debugger	# if not kernel debugger NMI IPI, jump
+
+	# kernel debugger NMI IPI
+	add	4,sp			# no need to store TBR
+	mov	GxICR_DETECT,d0		# clear NMI
+	movbu	d0,(GxICR(DEBUGGER_NMI_IPI))
+	movhu	(GxICR(DEBUGGER_NMI_IPI)),d0
+	and	~EPSW_NMID,epsw		# enable NMI
+
+	mov     (sp),d0
+	SAVE_ALL
+	mov	fp,d0			# arg 0: stacked register file
+	mov	a2,d1			# arg 1: exception number
+	call    debugger_nmi_interrupt[],0
+	RESTORE_ALL
+
+nmi_not_debugger:
+#endif /* CONFIG_KERNEL_DEBUGGER */
+	mov     (sp),d0                 # restore TBR to d0
+	add     4,sp
+#endif /* CONFIG_SMP */
+
+	bra	__common_exception_nonmi
+
+###############################################################################
+#
+# General exception entry point
+#
+###############################################################################
+ENTRY(__common_exception)
+	add	-4,sp
+	mov	d0,(sp)
+#if defined(CONFIG_ERRATUM_NEED_TO_RELOAD_MMUCTR)
+	mov	(MMUCTR),d0
+	mov	d0,(MMUCTR)
+#endif
 
 __common_exception_aux:
 	mov	(TBR),d0
@@ -334,6 +455,14 @@ __common_exception_nonmi:
 #ifdef CONFIG_GDBSTUB
 	btst	0x01,(gdbstub_busy)
 	beq	2f
+#ifdef CONFIG_SMP
+	call	gdbstub_busy_check[],0
+	and	d0,d0			# check return value
+	beq	2f
+#else  /* CONFIG_SMP */
+	btst	0x01,(gdbstub_busy)
+	beq	2f
+#endif /* CONFIG_SMP */
 	and	~EPSW_IE,epsw
 	mov	fp,d0
 	mov	a2,d1
@@ -341,6 +470,7 @@ __common_exception_nonmi:
 	bra	restore_all
 2:
 #endif
+#endif /* CONFIG_GDBSTUB */
 
 	mov	fp,d0			# arg 0: stacked register file
 	mov	a2,d1			# arg 1: exception number
@@ -380,6 +510,7 @@ ENTRY(set_excp_vector)
 #else
 	ret	[],0
 #endif
+	ret	[],0
 
 ###############################################################################
 #
@@ -471,6 +602,7 @@ ENTRY(sys_call_table)
 	.long sys_getgroups16	/* 80 */
 	.long sys_setgroups16
 	.long old_select
+	.long sys_old_select
 	.long sys_symlink
 	.long sys_lstat
 	.long sys_readlink	/* 85 */
@@ -478,6 +610,7 @@ ENTRY(sys_call_table)
 	.long sys_swapon
 	.long sys_reboot
 	.long old_readdir
+	.long sys_old_readdir
 	.long old_mmap		/* 90 */
 	.long sys_munmap
 	.long sys_truncate
@@ -558,6 +691,7 @@ ENTRY(sys_call_table)
 	.long sys_ni_syscall	/* Old sys_query_module */
 	.long sys_poll
 	.long sys_nfsservctl
+	.long sys_ni_syscall	/* was nfsservctl */
 	.long sys_setresgid16	/* 170 */
 	.long sys_getresgid16
 	.long sys_prctl
@@ -581,6 +715,7 @@ ENTRY(sys_call_table)
 	.long sys_vfork		/* 190 */
 	.long sys_getrlimit
 	.long sys_mmap2
+	.long sys_mmap_pgoff
 	.long sys_truncate64
 	.long sys_ftruncate64
 	.long sys_stat64	/* 195 */
@@ -722,6 +857,12 @@ ENTRY(sys_call_table)
 	.long sys_dup3
 	.long sys_pipe2
 	.long sys_inotify_init1
+	.long sys_preadv
+	.long sys_pwritev		/* 335 */
+	.long sys_rt_tgsigqueueinfo
+	.long sys_perf_event_open
+	.long sys_recvmmsg
+	.long sys_setns
 
 
 nr_syscalls=(.-sys_call_table)/4

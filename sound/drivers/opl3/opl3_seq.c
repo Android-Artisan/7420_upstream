@@ -25,6 +25,7 @@
 #include "opl3_voice.h"
 #include <linux/init.h>
 #include <linux/moduleparam.h>
+#include <linux/module.h>
 #include <sound/initval.h>
 
 MODULE_AUTHOR("Uros Bizjak <uros@kss-loka.si>");
@@ -32,6 +33,7 @@ MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("ALSA driver for OPL3 FM synth");
 
 int use_internal_drums = 0;
+bool use_internal_drums = 0;
 module_param(use_internal_drums, bool, 0444);
 MODULE_PARM_DESC(use_internal_drums, "Enable internal OPL2/3 drums.");
 
@@ -217,6 +219,9 @@ static int snd_opl3_synth_create_port(struct snd_opl3 * opl3)
 
 static int snd_opl3_seq_new_device(struct snd_seq_device *dev)
 {
+static int snd_opl3_seq_probe(struct device *_dev)
+{
+	struct snd_seq_device *dev = to_seq_dev(_dev);
 	struct snd_opl3 *opl3;
 	int client, err;
 	char name[32];
@@ -249,6 +254,7 @@ static int snd_opl3_seq_new_device(struct snd_seq_device *dev)
 	init_timer(&opl3->tlist);
 	opl3->tlist.function = snd_opl3_timer_func;
 	opl3->tlist.data = (unsigned long) opl3;
+	setup_timer(&opl3->tlist, snd_opl3_timer_func, (unsigned long) opl3);
 	spin_lock_init(&opl3->sys_timer_lock);
 	opl3->sys_timer_status = 0;
 
@@ -260,6 +266,9 @@ static int snd_opl3_seq_new_device(struct snd_seq_device *dev)
 
 static int snd_opl3_seq_delete_device(struct snd_seq_device *dev)
 {
+static int snd_opl3_seq_remove(struct device *_dev)
+{
+	struct snd_seq_device *dev = to_seq_dev(_dev);
 	struct snd_opl3 *opl3;
 
 	opl3 = *(struct snd_opl3 **)SNDRV_SEQ_DEVICE_ARGPTR(dev);
@@ -295,3 +304,14 @@ static void __exit alsa_opl3_seq_exit(void)
 
 module_init(alsa_opl3_seq_init)
 module_exit(alsa_opl3_seq_exit)
+static struct snd_seq_driver opl3_seq_driver = {
+	.driver = {
+		.name = KBUILD_MODNAME,
+		.probe = snd_opl3_seq_probe,
+		.remove = snd_opl3_seq_remove,
+	},
+	.id = SNDRV_SEQ_DEV_ID_OPL3,
+	.argsize = sizeof(struct snd_opl3 *),
+};
+
+module_snd_seq_driver(opl3_seq_driver);

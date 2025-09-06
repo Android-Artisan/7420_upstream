@@ -1,4 +1,3 @@
-/*======================================================================
 
     Device driver for the PCMCIA control functionality of StrongARM
     SA-1100 microprocessors.
@@ -28,7 +27,6 @@
     the provisions above, a recipient may use your version of this
     file under either the MPL or the GPL.
 
-======================================================================*/
 
 #if !defined(_PCMCIA_SA1100_H)
 # define _PCMCIA_SA1100_H
@@ -118,6 +116,8 @@ static inline unsigned int sa1100_pcmcia_cmd_time(unsigned int cpu_clock_khz,
 }
 
 
+int sa11xx_drv_pcmcia_add_one(struct soc_pcmcia_socket *skt);
+void sa11xx_drv_pcmcia_ops(struct pcmcia_low_level *ops);
 extern int sa11xx_drv_pcmcia_probe(struct device *dev, struct pcmcia_low_level *ops, int first, int nr);
 
 #endif  /* !defined(_PCMCIA_SA1100_H) */

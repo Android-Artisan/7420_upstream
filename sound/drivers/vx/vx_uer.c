@@ -63,6 +63,9 @@ static int vx_read_one_cbit(struct vx_core *chip, int index)
 	unsigned long flags;
 	int val;
 	spin_lock_irqsave(&chip->lock, flags);
+	int val;
+
+	mutex_lock(&chip->lock);
 	if (chip->type >= VX_TYPE_VXPOCKET) {
 		vx_outb(chip, CSUER, 1); /* read */
 		vx_outb(chip, RUER, index & XX_UER_CBITS_OFFSET_MASK);
@@ -73,6 +76,7 @@ static int vx_read_one_cbit(struct vx_core *chip, int index)
 		val = (vx_inl(chip, RUER) >> 7) & 0x01;
 	}
 	spin_unlock_irqrestore(&chip->lock, flags);
+	mutex_unlock(&chip->lock);
 	return val;
 }
 
@@ -86,6 +90,8 @@ static void vx_write_one_cbit(struct vx_core *chip, int index, int val)
 	unsigned long flags;
 	val = !!val;	/* 0 or 1 */
 	spin_lock_irqsave(&chip->lock, flags);
+	val = !!val;	/* 0 or 1 */
+	mutex_lock(&chip->lock);
 	if (vx_is_pcmcia(chip)) {
 		vx_outb(chip, CSUER, 0); /* write */
 		vx_outb(chip, RUER, (val << 7) | (index & XX_UER_CBITS_OFFSET_MASK));
@@ -94,6 +100,7 @@ static void vx_write_one_cbit(struct vx_core *chip, int index, int val)
 		vx_outl(chip, RUER, (val << 7) | (index & XX_UER_CBITS_OFFSET_MASK));
 	}
 	spin_unlock_irqrestore(&chip->lock, flags);
+	mutex_unlock(&chip->lock);
 }
 
 /*
@@ -104,6 +111,7 @@ static void vx_write_one_cbit(struct vx_core *chip, int index, int val)
  * or a negative error code.
  */
 static int vx_read_uer_status(struct vx_core *chip, int *mode)
+static int vx_read_uer_status(struct vx_core *chip, unsigned int *mode)
 {
 	int val, freq;
 
@@ -164,12 +172,16 @@ static int vx_calc_clock_from_freq(struct vx_core *chip, int freq)
 	int hexfreq;
 
 	snd_assert(freq > 0, return 0);
+	if (snd_BUG_ON(freq <= 0))
+		return 0;
 
 	hexfreq = (28224000 * 10) / freq;
 	hexfreq = (hexfreq + 5) / 10;
 
 	/* max freq = 55125 Hz */
 	snd_assert(hexfreq > 0x00000200, return 0);
+	if (snd_BUG_ON(hexfreq <= 0x00000200))
+		return 0;
 
 	if (hexfreq <= 0x03ff)
 		return hexfreq - 0x00000201;
@@ -196,6 +208,12 @@ static void vx_change_clock_source(struct vx_core *chip, int source)
 	chip->ops->set_clock_source(chip, source);
 	chip->clock_source = source;
 	spin_unlock_irqrestore(&chip->lock, flags);
+	/* we mute DAC to prevent clicks */
+	vx_toggle_dac_mute(chip, 1);
+	mutex_lock(&chip->lock);
+	chip->ops->set_clock_source(chip, source);
+	chip->clock_source = source;
+	mutex_unlock(&chip->lock);
 	/* unmute */
 	vx_toggle_dac_mute(chip, 0);
 }
@@ -212,6 +230,11 @@ void vx_set_internal_clock(struct vx_core *chip, unsigned int freq)
 	clock = vx_calc_clock_from_freq(chip, freq);
 	snd_printdd(KERN_DEBUG "set internal clock to 0x%x from freq %d\n", clock, freq);
 	spin_lock_irqsave(&chip->lock, flags);
+
+	/* Get real clock value */
+	clock = vx_calc_clock_from_freq(chip, freq);
+	snd_printdd(KERN_DEBUG "set internal clock to 0x%x from freq %d\n", clock, freq);
+	mutex_lock(&chip->lock);
 	if (vx_is_pcmcia(chip)) {
 		vx_outb(chip, HIFREQ, (clock >> 8) & 0x0f);
 		vx_outb(chip, LOFREQ, clock & 0xff);
@@ -220,6 +243,7 @@ void vx_set_internal_clock(struct vx_core *chip, unsigned int freq)
 		vx_outl(chip, LOFREQ, clock & 0xff);
 	}
 	spin_unlock_irqrestore(&chip->lock, flags);
+	mutex_unlock(&chip->lock);
 }
 
 

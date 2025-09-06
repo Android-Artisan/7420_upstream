@@ -35,7 +35,6 @@ void snd_gf1_delay(struct snd_gus_card * gus)
 }
 
 /*
- *  =======================================================================
  */
 
 /*
@@ -134,7 +133,6 @@ static inline unsigned int __snd_gf1_read_addr(struct snd_gus_card * gus,
 
 
 /*
- *  =======================================================================
  */
 
 void snd_gf1_ctrl_stop(struct snd_gus_card * gus, unsigned char reg)

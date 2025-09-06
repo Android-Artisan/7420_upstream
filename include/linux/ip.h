@@ -107,9 +107,17 @@ struct iphdr {
 #ifdef __KERNEL__
 #include <linux/skbuff.h>
 
+#include <linux/skbuff.h>
+#include <uapi/linux/ip.h>
+
 static inline struct iphdr *ip_hdr(const struct sk_buff *skb)
 {
 	return (struct iphdr *)skb_network_header(skb);
+}
+
+static inline struct iphdr *inner_ip_hdr(const struct sk_buff *skb)
+{
+	return (struct iphdr *)skb_inner_network_header(skb);
 }
 
 static inline struct iphdr *ipip_hdr(const struct sk_buff *skb)

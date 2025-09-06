@@ -25,6 +25,11 @@
  * along with this program; if not, see the file COPYING, or write
  * to the Free Software Foundation, Inc.,
  * 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+ * libgcc1 routines for Blackfin 5xx
+ *
+ * Copyright 2004-2009 Analog Devices Inc.
+ *
+ * Licensed under the Clear BSD license or the GPL-2 (or later)
  */
 
 #ifdef CONFIG_ARITHMETIC_OPS_L1

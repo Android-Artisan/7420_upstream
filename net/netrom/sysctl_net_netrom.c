@@ -37,12 +37,15 @@ static struct ctl_table_header *nr_table_header;
 static ctl_table nr_table[] = {
 	{
 		.ctl_name	= NET_NETROM_DEFAULT_PATH_QUALITY,
+static struct ctl_table nr_table[] = {
+	{
 		.procname	= "default_path_quality",
 		.data		= &sysctl_netrom_default_path_quality,
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec_minmax,
 		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &min_quality,
 		.extra2		= &max_quality
 	},
@@ -54,6 +57,7 @@ static ctl_table nr_table[] = {
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec_minmax,
 		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &min_obs,
 		.extra2		= &max_obs
 	},
@@ -65,6 +69,7 @@ static ctl_table nr_table[] = {
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec_minmax,
 		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &min_ttl,
 		.extra2		= &max_ttl
 	},
@@ -76,6 +81,7 @@ static ctl_table nr_table[] = {
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec_minmax,
 		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &min_t1,
 		.extra2		= &max_t1
 	},
@@ -87,6 +93,7 @@ static ctl_table nr_table[] = {
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec_minmax,
 		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &min_n2,
 		.extra2		= &max_n2
 	},
@@ -98,6 +105,7 @@ static ctl_table nr_table[] = {
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec_minmax,
 		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &min_t2,
 		.extra2		= &max_t2
 	},
@@ -109,6 +117,7 @@ static ctl_table nr_table[] = {
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec_minmax,
 		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &min_t4,
 		.extra2		= &max_t4
 	},
@@ -120,6 +129,7 @@ static ctl_table nr_table[] = {
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec_minmax,
 		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &min_window,
 		.extra2		= &max_window
 	},
@@ -131,6 +141,7 @@ static ctl_table nr_table[] = {
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec_minmax,
 		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &min_idle,
 		.extra2		= &max_idle
 	},
@@ -142,6 +153,7 @@ static ctl_table nr_table[] = {
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec_minmax,
 		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &min_route,
 		.extra2		= &max_route
 	},
@@ -153,6 +165,7 @@ static ctl_table nr_table[] = {
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec_minmax,
 		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &min_fails,
 		.extra2		= &max_fails
 	},
@@ -173,15 +186,21 @@ static ctl_table nr_table[] = {
 static struct ctl_path nr_path[] = {
 	{ .procname = "net", .ctl_name = CTL_NET, },
 	{ .procname = "netrom", .ctl_name = NET_NETROM, },
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= &min_reset,
+		.extra2		= &max_reset
+	},
 	{ }
 };
 
 void __init nr_register_sysctl(void)
 {
 	nr_table_header = register_sysctl_paths(nr_path, nr_table);
+	nr_table_header = register_net_sysctl(&init_net, "net/netrom", nr_table);
 }
 
 void nr_unregister_sysctl(void)
 {
 	unregister_sysctl_table(nr_table_header);
+	unregister_net_sysctl_table(nr_table_header);
 }

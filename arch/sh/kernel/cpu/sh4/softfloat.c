@@ -4,7 +4,6 @@
  * Floating-point Arithmetic Package, Release 2 the original license of
  * which is reproduced below.
  *
- * ========================================================================
  *
  * This C source file is part of the SoftFloat IEC/IEEE Floating-point
  * Arithmetic Package, Release 2.
@@ -30,13 +29,13 @@
  * include prominent notice akin to these three paragraphs for those parts of
  * this code that are retained.
  *
- * ========================================================================
  *
  * SH4 modifications by Ismail Dhaoui <ismail.dhaoui@st.com>
  * and Kamel Khelifi <kamel.khelifi@st.com>
  */
 #include <linux/kernel.h>
 #include <cpu/fpu.h>
+#include <asm/div64.h>
 
 #define LIT64( a ) a##LL
 
@@ -77,6 +76,16 @@ inline float64 packFloat64(flag zSign, int16 zExp, bits64 zSig);
 inline void shift64RightJamming(bits64 a, int16 count, bits64 * zPtr);
 inline float32 packFloat32(flag zSign, int16 zExp, bits32 zSig);
 inline void shift32RightJamming(bits32 a, int16 count, bits32 * zPtr);
+bits64 extractFloat64Frac(float64 a);
+flag extractFloat64Sign(float64 a);
+int16 extractFloat64Exp(float64 a);
+int16 extractFloat32Exp(float32 a);
+flag extractFloat32Sign(float32 a);
+bits32 extractFloat32Frac(float32 a);
+float64 packFloat64(flag zSign, int16 zExp, bits64 zSig);
+void shift64RightJamming(bits64 a, int16 count, bits64 * zPtr);
+float32 packFloat32(flag zSign, int16 zExp, bits32 zSig);
+void shift32RightJamming(bits32 a, int16 count, bits32 * zPtr);
 float64 float64_sub(float64 a, float64 b);
 float32 float32_sub(float32 a, float32 b);
 float32 float32_add(float32 a, float32 b);
@@ -90,6 +99,12 @@ inline void add128(bits64 a0, bits64 a1, bits64 b0, bits64 b1, bits64 * z0Ptr,
 inline void sub128(bits64 a0, bits64 a1, bits64 b0, bits64 b1, bits64 * z0Ptr,
 		   bits64 * z1Ptr);
 inline void mul64To128(bits64 a, bits64 b, bits64 * z0Ptr, bits64 * z1Ptr);
+float32 float64_to_float32(float64 a);
+void add128(bits64 a0, bits64 a1, bits64 b0, bits64 b1, bits64 * z0Ptr,
+		   bits64 * z1Ptr);
+void sub128(bits64 a0, bits64 a1, bits64 b0, bits64 b1, bits64 * z0Ptr,
+		   bits64 * z1Ptr);
+void mul64To128(bits64 a, bits64 b, bits64 * z0Ptr, bits64 * z1Ptr);
 
 static int8 countLeadingZeros32(bits32 a);
 static int8 countLeadingZeros64(bits64 a);
@@ -110,41 +125,49 @@ static void normalizeFloat32Subnormal(bits32 aSig, int16 * zExpPtr,
 				      bits32 * zSigPtr);
 
 inline bits64 extractFloat64Frac(float64 a)
+bits64 extractFloat64Frac(float64 a)
 {
 	return a & LIT64(0x000FFFFFFFFFFFFF);
 }
 
 inline flag extractFloat64Sign(float64 a)
+flag extractFloat64Sign(float64 a)
 {
 	return a >> 63;
 }
 
 inline int16 extractFloat64Exp(float64 a)
+int16 extractFloat64Exp(float64 a)
 {
 	return (a >> 52) & 0x7FF;
 }
 
 inline int16 extractFloat32Exp(float32 a)
+int16 extractFloat32Exp(float32 a)
 {
 	return (a >> 23) & 0xFF;
 }
 
 inline flag extractFloat32Sign(float32 a)
+flag extractFloat32Sign(float32 a)
 {
 	return a >> 31;
 }
 
 inline bits32 extractFloat32Frac(float32 a)
+bits32 extractFloat32Frac(float32 a)
 {
 	return a & 0x007FFFFF;
 }
 
 inline float64 packFloat64(flag zSign, int16 zExp, bits64 zSig)
+float64 packFloat64(flag zSign, int16 zExp, bits64 zSig)
 {
 	return (((bits64) zSign) << 63) + (((bits64) zExp) << 52) + zSig;
 }
 
 inline void shift64RightJamming(bits64 a, int16 count, bits64 * zPtr)
+void shift64RightJamming(bits64 a, int16 count, bits64 * zPtr)
 {
 	bits64 z;
 
@@ -338,11 +361,13 @@ static float64 addFloat64Sigs(float64 a, float64 b, flag zSign)
 }
 
 inline float32 packFloat32(flag zSign, int16 zExp, bits32 zSig)
+float32 packFloat32(flag zSign, int16 zExp, bits32 zSig)
 {
 	return (((bits32) zSign) << 31) + (((bits32) zExp) << 23) + zSig;
 }
 
 inline void shift32RightJamming(bits32 a, int16 count, bits32 * zPtr)
+void shift32RightJamming(bits32 a, int16 count, bits32 * zPtr)
 {
 	bits32 z;
 	if (count == 0) {
@@ -634,6 +659,7 @@ normalizeFloat64Subnormal(bits64 aSig, int16 * zExpPtr, bits64 * zSigPtr)
 }
 
 inline void add128(bits64 a0, bits64 a1, bits64 b0, bits64 b1, bits64 * z0Ptr,
+void add128(bits64 a0, bits64 a1, bits64 b0, bits64 b1, bits64 * z0Ptr,
 		   bits64 * z1Ptr)
 {
 	bits64 z1;
@@ -644,6 +670,7 @@ inline void add128(bits64 a0, bits64 a1, bits64 b0, bits64 b1, bits64 * z0Ptr,
 }
 
 inline void
+void
 sub128(bits64 a0, bits64 a1, bits64 b0, bits64 b1, bits64 * z0Ptr,
        bits64 * z1Ptr)
 {
@@ -660,6 +687,14 @@ static bits64 estimateDiv128To64(bits64 a0, bits64 a1, bits64 b)
 		return LIT64(0xFFFFFFFFFFFFFFFF);
 	b0 = b >> 32;
 	z = (b0 << 32 <= a0) ? LIT64(0xFFFFFFFF00000000) : (a0 / b0) << 32;
+	bits64 z, tmp;
+	if (b <= a0)
+		return LIT64(0xFFFFFFFFFFFFFFFF);
+	b0 = b >> 32;
+	tmp = a0;
+	do_div(tmp, b0);
+
+	z = (b0 << 32 <= a0) ? LIT64(0xFFFFFFFF00000000) : tmp << 32;
 	mul64To128(b, z, &term0, &term1);
 	sub128(a0, a1, term0, term1, &rem0, &rem1);
 	while (((sbits64) rem0) < 0) {
@@ -673,6 +708,13 @@ static bits64 estimateDiv128To64(bits64 a0, bits64 a1, bits64 b)
 }
 
 inline void mul64To128(bits64 a, bits64 b, bits64 * z0Ptr, bits64 * z1Ptr)
+	tmp = rem0;
+	do_div(tmp, b0);
+	z |= (b0 << 32 <= rem0) ? 0xFFFFFFFF : tmp;
+	return z;
+}
+
+void mul64To128(bits64 a, bits64 b, bits64 * z0Ptr, bits64 * z1Ptr)
 {
 	bits32 aHigh, aLow, bHigh, bLow;
 	bits64 z0, zMiddleA, zMiddleB, z1;
@@ -769,6 +811,8 @@ float32 float32_div(float32 a, float32 b)
 	flag aSign, bSign, zSign;
 	int16 aExp, bExp, zExp;
 	bits32 aSig, bSig, zSig;
+	bits32 aSig, bSig;
+	uint64_t zSig;
 
 	aSig = extractFloat32Frac(a);
 	aExp = extractFloat32Exp(a);
@@ -808,6 +852,13 @@ float32 float32_div(float32 a, float32 b)
 		zSig |= (((bits64) bSig) * zSig != ((bits64) aSig) << 32);
 	}
 	return roundAndPackFloat32(zSign, zExp, zSig);
+	zSig = (((bits64) aSig) << 32);
+	do_div(zSig, bSig);
+
+	if ((zSig & 0x3F) == 0) {
+		zSig |= (((bits64) bSig) * zSig != ((bits64) aSig) << 32);
+	}
+	return roundAndPackFloat32(zSign, zExp, (bits32)zSig);
 
 }
 
@@ -889,4 +940,32 @@ float64 float64_mul(float64 a, float64 b)
 		--zExp;
 	}
 	return roundAndPackFloat64(zSign, zExp, zSig0);
+}
+
+/*
+ * -------------------------------------------------------------------------------
+ *  Returns the result of converting the double-precision floating-point value
+ *  `a' to the single-precision floating-point format.  The conversion is
+ *  performed according to the IEC/IEEE Standard for Binary Floating-point
+ *  Arithmetic.
+ *  -------------------------------------------------------------------------------
+ *  */
+float32 float64_to_float32(float64 a)
+{
+    flag aSign;
+    int16 aExp;
+    bits64 aSig;
+    bits32 zSig;
+
+    aSig = extractFloat64Frac( a );
+    aExp = extractFloat64Exp( a );
+    aSign = extractFloat64Sign( a );
+
+    shift64RightJamming( aSig, 22, &aSig );
+    zSig = aSig;
+    if ( aExp || zSig ) {
+        zSig |= 0x40000000;
+        aExp -= 0x381;
+    }
+    return roundAndPackFloat32(aSign, aExp, zSig);
 }

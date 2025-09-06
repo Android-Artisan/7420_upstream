@@ -30,6 +30,7 @@
 #include <linux/sched.h>
 #include <linux/parser.h>
 #include <linux/idr.h>
+#include <linux/slab.h>
 #include <net/9p/9p.h>
 
 /**
@@ -67,6 +68,7 @@ EXPORT_SYMBOL(p9_idpool_create);
 /**
  * p9_idpool_destroy - create a new per-connection id pool
  * @p: idpool to destory
+ * @p: idpool to destroy
  */
 
 void p9_idpool_destroy(struct p9_idpool *p)
@@ -105,6 +107,21 @@ retry:
 	else if (error)
 		return -1;
 
+	int i;
+	unsigned long flags;
+
+	idr_preload(GFP_NOFS);
+	spin_lock_irqsave(&p->lock, flags);
+
+	/* no need to store exactly p, we just need something non-null */
+	i = idr_alloc(&p->pool, p, 0, 0, GFP_NOWAIT);
+
+	spin_unlock_irqrestore(&p->lock, flags);
+	idr_preload_end();
+	if (i < 0)
+		return -1;
+
+	p9_debug(P9_DEBUG_MUX, " id %d pool %p\n", i, p);
 	return i;
 }
 EXPORT_SYMBOL(p9_idpool_get);
@@ -121,6 +138,9 @@ EXPORT_SYMBOL(p9_idpool_get);
 void p9_idpool_put(int id, struct p9_idpool *p)
 {
 	unsigned long flags;
+
+	p9_debug(P9_DEBUG_MUX, " id %d pool %p\n", id, p);
+
 	spin_lock_irqsave(&p->lock, flags);
 	idr_remove(&p->pool, id);
 	spin_unlock_irqrestore(&p->lock, flags);

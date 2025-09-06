@@ -77,6 +77,8 @@ struct iwch_mr {
 	struct iwch_dev *rhp;
 	u64 kva;
 	struct tpt_attributes attr;
+	u64 *pages;
+	u32 npages;
 };
 
 typedef struct iwch_mw iwch_mw_handle;
@@ -103,6 +105,7 @@ struct iwch_cq {
 	struct iwch_dev *rhp;
 	struct t3_cq cq;
 	spinlock_t lock;
+	spinlock_t comp_handler_lock;
 	atomic_t refcnt;
 	wait_queue_head_t wait;
 	u32 __user *user_rptr_addr;
@@ -337,6 +340,9 @@ int iwch_register_device(struct iwch_dev *dev);
 void iwch_unregister_device(struct iwch_dev *dev);
 int iwch_quiesce_qps(struct iwch_cq *chp);
 int iwch_resume_qps(struct iwch_cq *chp);
+int iwch_post_zb_read(struct iwch_ep *ep);
+int iwch_register_device(struct iwch_dev *dev);
+void iwch_unregister_device(struct iwch_dev *dev);
 void stop_read_rep_timer(struct iwch_qp *qhp);
 int iwch_register_mem(struct iwch_dev *rhp, struct iwch_pd *php,
 		      struct iwch_mr *mhp, int shift);

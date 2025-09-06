@@ -10,6 +10,7 @@
  * warranty of any kind, whether express or implied.
  */
 
+#include <linux/gpio.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/platform_device.h>
@@ -22,6 +23,8 @@
 #include <asm/mach-types.h>
 #include <asm/gpio.h>
 #include <asm/leds.h>
+#include <linux/leds.h>
+#include <asm/mach-types.h>
 #include <asm/mach/arch.h>
 #include <asm/mach/pci.h>
 #include <mach/orion5x.h>
@@ -133,12 +136,39 @@ static int __init rd88f5182_dbgled_init(void)
 __initcall(rd88f5182_dbgled_init);
 
 #endif
+/*****************************************************************************
+ * Use GPIO LED as CPU active indication
+ ****************************************************************************/
+
+#define RD88F5182_GPIO_LED		0
+
+static struct gpio_led rd88f5182_gpio_led_pins[] = {
+	{
+		.name		= "rd88f5182:cpu",
+		.default_trigger = "cpu0",
+		.gpio		= RD88F5182_GPIO_LED,
+	},
+};
+
+static struct gpio_led_platform_data rd88f5182_gpio_led_data = {
+	.leds		= rd88f5182_gpio_led_pins,
+	.num_leds	= ARRAY_SIZE(rd88f5182_gpio_led_pins),
+};
+
+static struct platform_device rd88f5182_gpio_leds = {
+	.name	= "leds-gpio",
+	.id	= -1,
+	.dev	= {
+		.platform_data = &rd88f5182_gpio_led_data,
+	},
+};
 
 /*****************************************************************************
  * PCI
  ****************************************************************************/
 
 void __init rd88f5182_pci_preinit(void)
+static void __init rd88f5182_pci_preinit(void)
 {
 	int pin;
 
@@ -151,6 +181,9 @@ void __init rd88f5182_pci_preinit(void)
 			set_irq_type(gpio_to_irq(pin), IRQ_TYPE_LEVEL_LOW);
 		} else {
 			printk(KERN_ERR "rd88f5182_pci_preinit faield to "
+			irq_set_irq_type(gpio_to_irq(pin), IRQ_TYPE_LEVEL_LOW);
+		} else {
+			printk(KERN_ERR "rd88f5182_pci_preinit failed to "
 					"set_irq_type pin %d\n", pin);
 			gpio_free(pin);
 		}
@@ -164,6 +197,9 @@ void __init rd88f5182_pci_preinit(void)
 			set_irq_type(gpio_to_irq(pin), IRQ_TYPE_LEVEL_LOW);
 		} else {
 			printk(KERN_ERR "rd88f5182_pci_preinit faield to "
+			irq_set_irq_type(gpio_to_irq(pin), IRQ_TYPE_LEVEL_LOW);
+		} else {
+			printk(KERN_ERR "rd88f5182_pci_preinit failed to "
 					"set_irq_type pin %d\n", pin);
 			gpio_free(pin);
 		}
@@ -173,6 +209,8 @@ void __init rd88f5182_pci_preinit(void)
 }
 
 static int __init rd88f5182_pci_map_irq(struct pci_dev *dev, u8 slot, u8 pin)
+static int __init rd88f5182_pci_map_irq(const struct pci_dev *dev, u8 slot,
+	u8 pin)
 {
 	int irq;
 
@@ -222,6 +260,7 @@ subsys_initcall(rd88f5182_pci_init);
 
 static struct mv643xx_eth_platform_data rd88f5182_eth_data = {
 	.phy_addr	= 8,
+	.phy_addr	= MV643XX_ETH_PHY_ADDR(8),
 };
 
 /*****************************************************************************
@@ -263,6 +302,28 @@ static struct orion5x_mpp_mode rd88f5182_mpp_modes[] __initdata = {
 	{ 18, MPP_UNUSED },
 	{ 19, MPP_UNUSED },
 	{ -1 },
+static unsigned int rd88f5182_mpp_modes[] __initdata = {
+	MPP0_GPIO,		/* Debug Led */
+	MPP1_GPIO,		/* Reset Switch */
+	MPP2_UNUSED,
+	MPP3_GPIO,		/* RTC Int */
+	MPP4_GPIO,
+	MPP5_GPIO,
+	MPP6_GPIO,		/* PCI_intA */
+	MPP7_GPIO,		/* PCI_intB */
+	MPP8_UNUSED,
+	MPP9_UNUSED,
+	MPP10_UNUSED,
+	MPP11_UNUSED,
+	MPP12_SATA_LED,		/* SATA 0 presence */
+	MPP13_SATA_LED,		/* SATA 1 presence */
+	MPP14_SATA_LED,		/* SATA 0 active */
+	MPP15_SATA_LED,		/* SATA 1 active */
+	MPP16_UNUSED,
+	MPP17_UNUSED,
+	MPP18_UNUSED,
+	MPP19_UNUSED,
+	0,
 };
 
 static void __init rd88f5182_init(void)
@@ -299,6 +360,16 @@ static void __init rd88f5182_init(void)
 
 	orion5x_setup_dev1_win(RD88F5182_NOR_BASE, RD88F5182_NOR_SIZE);
 	platform_device_register(&rd88f5182_nor_flash);
+	mvebu_mbus_add_window_by_id(ORION_MBUS_DEVBUS_BOOT_TARGET,
+				    ORION_MBUS_DEVBUS_BOOT_ATTR,
+				    RD88F5182_NOR_BOOT_BASE,
+				    RD88F5182_NOR_BOOT_SIZE);
+	mvebu_mbus_add_window_by_id(ORION_MBUS_DEVBUS_TARGET(1),
+				    ORION_MBUS_DEVBUS_ATTR(1),
+				    RD88F5182_NOR_BASE,
+				    RD88F5182_NOR_SIZE);
+	platform_device_register(&rd88f5182_nor_flash);
+	platform_device_register(&rd88f5182_gpio_leds);
 
 	i2c_register_board_info(0, &rd88f5182_i2c_rtc, 1);
 }
@@ -312,4 +383,11 @@ MACHINE_START(RD88F5182, "Marvell Orion-NAS Reference Design")
 	.map_io		= orion5x_map_io,
 	.init_irq	= orion5x_init_irq,
 	.timer		= &orion5x_timer,
+	.atag_offset	= 0x100,
+	.init_machine	= rd88f5182_init,
+	.map_io		= orion5x_map_io,
+	.init_early	= orion5x_init_early,
+	.init_irq	= orion5x_init_irq,
+	.init_time	= orion5x_timer_init,
+	.restart	= orion5x_restart,
 MACHINE_END

@@ -299,6 +299,9 @@ static int ak4396_dac_vol_put(struct snd_kcontrol *kcontrol, struct snd_ctl_elem
 static const DECLARE_TLV_DB_SCALE(db_scale_wm_dac, -12700, 100, 1);
 
 static struct snd_kcontrol_new prodigy_hd2_controls[] __devinitdata = {
+static const DECLARE_TLV_DB_LINEAR(ak4396_db_scale, TLV_DB_GAIN_MUTE, 0);
+
+static struct snd_kcontrol_new prodigy_hd2_controls[] = {
     {
 	.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
 	.access = (SNDRV_CTL_ELEM_ACCESS_READWRITE |
@@ -308,6 +311,7 @@ static struct snd_kcontrol_new prodigy_hd2_controls[] __devinitdata = {
 	.get = ak4396_dac_vol_get,
 	.put = ak4396_dac_vol_put,
 	.tlv = { .p = db_scale_wm_dac },
+	.tlv = { .p = ak4396_db_scale },
     },
 };
 
@@ -538,6 +542,7 @@ static int wm_adc_mux_enum_info(struct snd_kcontrol *kcontrol,
 				struct snd_ctl_elem_info *uinfo)
 {
 	static char* texts[32] = {
+	static const char * const texts[32] = {
 		"NULL", WM_AIN1, WM_AIN2, WM_AIN1 "+" WM_AIN2,
 		WM_AIN3, WM_AIN1 "+" WM_AIN3, WM_AIN2 "+" WM_AIN3,
 		WM_AIN1 "+" WM_AIN2 "+" WM_AIN3,
@@ -568,6 +573,7 @@ static int wm_adc_mux_enum_info(struct snd_kcontrol *kcontrol,
 	strcpy(uinfo->value.enumerated.name,
 	       texts[uinfo->value.enumerated.item]);
 	return 0;
+	return snd_ctl_enum_info(uinfo, 1, 32, texts);
 }
 
 static int wm_adc_mux_enum_get(struct snd_kcontrol *kcontrol,
@@ -576,7 +582,7 @@ static int wm_adc_mux_enum_get(struct snd_kcontrol *kcontrol,
 	struct snd_ice1712 *ice = snd_kcontrol_chip(kcontrol);
 
 	mutex_lock(&ice->gpio_mutex);
-	ucontrol->value.integer.value[0] = wm_get(ice, WM_ADC_MUX) & 0x1f;
+	ucontrol->value.enumerated.item[0] = wm_get(ice, WM_ADC_MUX) & 0x1f;
 	mutex_unlock(&ice->gpio_mutex);
 	return 0;
 }
@@ -590,7 +596,7 @@ static int wm_adc_mux_enum_put(struct snd_kcontrol *kcontrol,
 
 	mutex_lock(&ice->gpio_mutex);
 	oval = wm_get(ice, WM_ADC_MUX);
-	nval = (oval & 0xe0) | ucontrol->value.integer.value[0];
+	nval = (oval & 0xe0) | ucontrol->value.enumerated.item[0];
 	if (nval != oval) {
 		wm_put(ice, WM_ADC_MUX, nval);
 		change = 1;
@@ -782,6 +788,7 @@ static int wm_chswap_put(struct snd_kcontrol *kcontrol,
  */
 
 static struct snd_kcontrol_new prodigy_hifi_controls[] __devinitdata = {
+static struct snd_kcontrol_new prodigy_hifi_controls[] = {
 	{
 		.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
 		.access = (SNDRV_CTL_ELEM_ACCESS_READWRITE |
@@ -939,6 +946,7 @@ static void wm_proc_init(struct snd_ice1712 *ice)
 }
 
 static int __devinit prodigy_hifi_add_controls(struct snd_ice1712 *ice)
+static int prodigy_hifi_add_controls(struct snd_ice1712 *ice)
 {
 	unsigned int i;
 	int err;
@@ -956,6 +964,7 @@ static int __devinit prodigy_hifi_add_controls(struct snd_ice1712 *ice)
 }
 
 static int __devinit prodigy_hd2_add_controls(struct snd_ice1712 *ice)
+static int prodigy_hd2_add_controls(struct snd_ice1712 *ice)
 {
 	unsigned int i;
 	int err;
@@ -977,6 +986,7 @@ static int __devinit prodigy_hd2_add_controls(struct snd_ice1712 *ice)
  * initialize the chip
  */
 static int __devinit prodigy_hifi_init(struct snd_ice1712 *ice)
+static int prodigy_hifi_init(struct snd_ice1712 *ice)
 {
 	static unsigned short wm_inits[] = {
 		/* These come first to reduce init pop noise */
@@ -1047,6 +1057,7 @@ static int __devinit prodigy_hifi_init(struct snd_ice1712 *ice)
 	*/
 	ice->gpio.saved[0] = 0;
 	/* to remeber the register values */
+	/* to remember the register values */
 
 	ice->akm = kzalloc(sizeof(struct snd_akm4xxx), GFP_KERNEL);
 	if (! ice->akm)
@@ -1078,6 +1089,7 @@ static int __devinit prodigy_hifi_init(struct snd_ice1712 *ice)
  * initialize the chip
  */
 static int __devinit prodigy_hd2_init(struct snd_ice1712 *ice)
+static void ak4396_init(struct snd_ice1712 *ice)
 {
 	static unsigned short ak4396_inits[] = {
 		AK4396_CTRL1,	   0x87,   /* I2S Normal Mode, 24 bit */
@@ -1090,6 +1102,37 @@ static int __devinit prodigy_hd2_init(struct snd_ice1712 *ice)
 	struct prodigy_hifi_spec *spec;
 	unsigned int i;
 
+	unsigned int i;
+
+	/* initialize ak4396 codec */
+	/* reset codec */
+	ak4396_write(ice, AK4396_CTRL1, 0x86);
+	msleep(100);
+	ak4396_write(ice, AK4396_CTRL1, 0x87);
+
+	for (i = 0; i < ARRAY_SIZE(ak4396_inits); i += 2)
+		ak4396_write(ice, ak4396_inits[i], ak4396_inits[i+1]);
+}
+
+#ifdef CONFIG_PM_SLEEP
+static int prodigy_hd2_resume(struct snd_ice1712 *ice)
+{
+	/* initialize ak4396 codec and restore previous mixer volumes */
+	struct prodigy_hifi_spec *spec = ice->spec;
+	int i;
+	mutex_lock(&ice->gpio_mutex);
+	ak4396_init(ice);
+	for (i = 0; i < 2; i++)
+		ak4396_write(ice, AK4396_LCH_ATT + i, spec->vol[i] & 0xff);
+	mutex_unlock(&ice->gpio_mutex);
+	return 0;
+}
+#endif
+
+static int prodigy_hd2_init(struct snd_ice1712 *ice)
+{
+	struct prodigy_hifi_spec *spec;
+
 	ice->vt1720 = 0;
 	ice->vt1724 = 1;
 
@@ -1101,6 +1144,7 @@ static int __devinit prodigy_hd2_init(struct snd_ice1712 *ice)
 	*/
 	ice->gpio.saved[0] = 0;
 	/* to remeber the register values */
+	/* to remember the register values */
 
 	ice->akm = kzalloc(sizeof(struct snd_akm4xxx), GFP_KERNEL);
 	if (! ice->akm)
@@ -1120,12 +1164,19 @@ static int __devinit prodigy_hd2_init(struct snd_ice1712 *ice)
 			
 	for (i = 0; i < ARRAY_SIZE(ak4396_inits); i += 2)
 		ak4396_write(ice, ak4396_inits[i], ak4396_inits[i+1]);
+#ifdef CONFIG_PM_SLEEP
+	ice->pm_resume = &prodigy_hd2_resume;
+	ice->pm_suspend_enabled = 1;
+#endif
+
+	ak4396_init(ice);
 
 	return 0;
 }
 
 
 static unsigned char prodigy71hifi_eeprom[] __devinitdata = {
+static unsigned char prodigy71hifi_eeprom[] = {
 	0x4b,   /* SYSCONF: clock 512, spdif-in/ADC, 4DACs */
 	0x80,   /* ACLINK: I2S */
 	0xfc,   /* I2S: vol, 96k, 24bit, 192k */
@@ -1142,6 +1193,7 @@ static unsigned char prodigy71hifi_eeprom[] __devinitdata = {
 };
 
 static unsigned char prodigyhd2_eeprom[] __devinitdata = {
+static unsigned char prodigyhd2_eeprom[] = {
 	0x4b,   /* SYSCONF: clock 512, spdif-in/ADC, 4DACs */
 	0x80,   /* ACLINK: I2S */
 	0xfc,   /* I2S: vol, 96k, 24bit, 192k */
@@ -1158,6 +1210,7 @@ static unsigned char prodigyhd2_eeprom[] __devinitdata = {
 };
 
 static unsigned char fortissimo4_eeprom[] __devinitdata = {
+static unsigned char fortissimo4_eeprom[] = {
 	0x43,   /* SYSCONF: clock 512, ADC, 4DACs */	
 	0x80,   /* ACLINK: I2S */
 	0xfc,   /* I2S: vol, 96k, 24bit, 192k */
@@ -1175,6 +1228,7 @@ static unsigned char fortissimo4_eeprom[] __devinitdata = {
 
 /* entry point */
 struct snd_ice1712_card_info snd_vt1724_prodigy_hifi_cards[] __devinitdata = {
+struct snd_ice1712_card_info snd_vt1724_prodigy_hifi_cards[] = {
 	{
 		.subvendor = VT1724_SUBDEVICE_PRODIGY_HIFI,
 		.name = "Audiotrak Prodigy 7.1 HiFi",

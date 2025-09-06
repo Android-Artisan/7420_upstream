@@ -8,6 +8,7 @@
  * usage: insmod kretprobe_example.ko func=<func_name>
  *
  * If no func_name is specified, do_fork is instrumented
+ * If no func_name is specified, _do_fork is instrumented
  *
  * For more information on theory of operation of kretprobes, see
  * Documentation/kprobes.txt
@@ -25,6 +26,9 @@
 #include <linux/limits.h>
 
 static char func_name[NAME_MAX] = "do_fork";
+#include <linux/sched.h>
+
+static char func_name[NAME_MAX] = "_do_fork";
 module_param_string(func, func_name, NAME_MAX, S_IRUGO);
 MODULE_PARM_DESC(func, "Function to kretprobe; this module will report the"
 			" function's execution time");

@@ -23,6 +23,17 @@ struct ax_plat_data {
 	unsigned char	 rcr_val;		/* default value for RCR */
 	unsigned char	 gpoc_val;		/* default value for GPOC */
 	u32		*reg_offsets;		/* register offsets */
+#define AXFLG_MAC_FROMPLATFORM		(1<<3)	/* MAC given by platform data */
+
+struct ax_plat_data {
+	unsigned int	 flags;
+	unsigned char	 wordlength;	/* 1 or 2 */
+	unsigned char	 dcr_val;	/* default value for DCR */
+	unsigned char	 rcr_val;	/* default value for RCR */
+	unsigned char	 gpoc_val;	/* default value for GPOC */
+	u32		*reg_offsets;	/* register offsets */
+	u8		*mac_addr;	/* MAC addr (only used when
+					   AXFLG_MAC_FROMPLATFORM is used */
 };
 
 #endif /* __NET_AX88796_PLAT_H */

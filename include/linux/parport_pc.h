@@ -233,5 +233,11 @@ extern struct parport *parport_pc_probe_port (unsigned long base,
 					      int irq, int dma,
 					      struct device *dev);
 extern void parport_pc_unregister_port (struct parport *p);
+extern struct parport *parport_pc_probe_port(unsigned long base,
+					     unsigned long base_hi,
+					     int irq, int dma,
+					     struct device *dev,
+					     int irqflags);
+extern void parport_pc_unregister_port(struct parport *p);
 
 #endif

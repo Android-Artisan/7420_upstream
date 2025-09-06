@@ -1,6 +1,9 @@
 #ifndef _LINUX_KDEV_T_H
 #define _LINUX_KDEV_T_H
 #ifdef __KERNEL__
+
+#include <uapi/linux/kdev_t.h>
+
 #define MINORBITS	20
 #define MINORMASK	((1U << MINORBITS) - 1)
 
@@ -19,6 +22,7 @@
 
 /* acceptable for old filesystems */
 static inline int old_valid_dev(dev_t dev)
+static inline bool old_valid_dev(dev_t dev)
 {
 	return MAJOR(dev) < 256 && MINOR(dev) < 256;
 }
@@ -34,6 +38,7 @@ static inline dev_t old_decode_dev(u16 val)
 }
 
 static inline int new_valid_dev(dev_t dev)
+static inline bool new_valid_dev(dev_t dev)
 {
 	return 1;
 }

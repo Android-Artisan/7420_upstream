@@ -14,6 +14,10 @@
 #include <linux/interrupt.h>
 #include <linux/platform_device.h>
 #include <asm/r7780rp.h>
+#include <linux/module.h>
+#include <linux/interrupt.h>
+#include <linux/platform_device.h>
+#include <mach/highlander.h>
 #include <asm/push-switch.h>
 
 static irqreturn_t psw_irq_handler(int irq, void *arg)
@@ -25,6 +29,7 @@ static irqreturn_t psw_irq_handler(int irq, void *arg)
 	int ret = 0;
 
 	l = ctrl_inw(PA_DBSW);
+	l = __raw_readw(PA_DBSW);
 
 	/* Nothing to do if there's no state change */
 	if (psw->state) {
@@ -46,6 +51,7 @@ out:
 	/* Clear the switch IRQs */
 	l |= (0x7 << 12);
 	ctrl_outw(l, PA_DBSW);
+	__raw_writew(l, PA_DBSW);
 
 	return IRQ_RETVAL(ret);
 }

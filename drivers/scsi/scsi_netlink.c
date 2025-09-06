@@ -21,6 +21,9 @@
 #include <linux/time.h>
 #include <linux/jiffies.h>
 #include <linux/security.h>
+#include <linux/delay.h>
+#include <linux/slab.h>
+#include <linux/export.h>
 #include <net/sock.h>
 #include <net/netlink.h>
 
@@ -49,6 +52,10 @@ scsi_nl_rcv_msg(struct sk_buff *skb)
 	int err;
 
 	while (skb->len >= NLMSG_SPACE(0)) {
+	u32 rlen;
+	int err, tport;
+
+	while (skb->len >= NLMSG_HDRLEN) {
 		err = 0;
 
 		nlh = nlmsg_hdr(skb);
@@ -69,6 +76,10 @@ scsi_nl_rcv_msg(struct sk_buff *skb)
 		}
 
 		hdr = NLMSG_DATA(nlh);
+			goto next_msg;
+		}
+
+		hdr = nlmsg_data(nlh);
 		if ((hdr->version != SCSI_NL_VERSION) ||
 		    (hdr->magic != SCSI_NL_MAGIC)) {
 			err = -EPROTOTYPE;
@@ -76,6 +87,7 @@ scsi_nl_rcv_msg(struct sk_buff *skb)
 		}
 
 		if (security_netlink_recv(skb, CAP_SYS_ADMIN)) {
+		if (!netlink_capable(skb, CAP_SYS_ADMIN)) {
 			err = -EPERM;
 			goto next_msg;
 		}
@@ -89,6 +101,29 @@ scsi_nl_rcv_msg(struct sk_buff *skb)
 		/*
 		 * We currently don't support anyone sending us a message
 		 */
+			goto next_msg;
+		}
+
+		/*
+		 * Deliver message to the appropriate transport
+		 */
+		tport = hdr->transport;
+		if (tport == SCSI_NL_TRANSPORT) {
+			switch (hdr->msgtype) {
+			case SCSI_NL_SHOST_VENDOR:
+				/* Locate the driver that corresponds to the message */
+				err = -ESRCH;
+				break;
+			default:
+				err = -EBADR;
+				break;
+			}
+			if (err)
+				printk(KERN_WARNING "%s: Msgtype %d failed - err %d\n",
+				       __func__, hdr->msgtype, err);
+		}
+		else
+			err = -ENOENT;
 
 next_msg:
 		if ((err) || (nlh->nlmsg_flags & NLM_F_ACK))
@@ -129,6 +164,9 @@ static struct notifier_block scsi_netlink_notifier = {
 
 /**
  * scsi_netlink_init - Called by SCSI subsystem to intialize the SCSI transport netlink interface
+/**
+ * scsi_netlink_init - Called by SCSI subsystem to initialize
+ * 	the SCSI transport netlink interface
  *
  **/
 void
@@ -150,6 +188,17 @@ scsi_netlink_init(void)
 		printk(KERN_ERR "%s: register of recieve handler failed\n",
 				__func__);
 		netlink_unregister_notifier(&scsi_netlink_notifier);
+	struct netlink_kernel_cfg cfg = {
+		.input	= scsi_nl_rcv_msg,
+		.groups	= SCSI_NL_GRP_CNT,
+	};
+
+	scsi_nl_sock = netlink_kernel_create(&init_net, NETLINK_SCSITRANSPORT,
+					     &cfg);
+	if (!scsi_nl_sock) {
+		printk(KERN_ERR "%s: register of receive handler failed\n",
+				__func__);
+		return;
 	}
 
 	return;

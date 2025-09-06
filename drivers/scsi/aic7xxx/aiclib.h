@@ -134,6 +134,7 @@ struct scsi_sense_data
 
 /************************* Large Disk Handling ********************************/
 static __inline int
+static inline int
 aic_sector_div(sector_t capacity, int heads, int sectors)
 {
 	/* ugly, ugly sector_div calling convention.. */
@@ -142,6 +143,7 @@ aic_sector_div(sector_t capacity, int heads, int sectors)
 }
 
 static __inline uint32_t
+static inline uint32_t
 scsi_4btoul(uint8_t *bytes)
 {
 	uint32_t rv;

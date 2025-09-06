@@ -10,6 +10,8 @@
 #include "net_user.h"
 #include "um_malloc.h"
 #include "user.h"
+#include <net_user.h>
+#include <um_malloc.h>
 #include "vde.h"
 
 static int vde_user_init(void *data, void *dev)
@@ -79,6 +81,7 @@ void vde_init_libstuff(struct vde_data *vpri, struct vde_init *init)
 	struct vde_open_args *args;
 
 	vpri->args = kmalloc(sizeof(struct vde_open_args), UM_GFP_KERNEL);
+	vpri->args = uml_kmalloc(sizeof(struct vde_open_args), UM_GFP_KERNEL);
 	if (vpri->args == NULL) {
 		printk(UM_KERN_ERR "vde_init_libstuff - vde_open_args "
 		       "allocation failed");
@@ -93,6 +96,8 @@ void vde_init_libstuff(struct vde_data *vpri, struct vde_init *init)
 
 	args->port ?  printk(UM_KERN_INFO "port %d", args->port) :
 		printk(UM_KERN_INFO "undefined port");
+	args->port ?  printk("port %d", args->port) :
+		printk("undefined port");
 }
 
 int vde_user_read(void *conn, void *buf, int len)

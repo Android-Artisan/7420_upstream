@@ -1,11 +1,9 @@
 USING UFS
-=========
 
 mount -t ufs -o ufstype=type_of_ufs device dir
 
 
 UFS OPTIONS
-===========
 
 ufstype=type_of_ufs
 	UFS is a file system widely used in different operating systems.
@@ -48,13 +46,11 @@ ufstype=type_of_ufs
 
 
 POSSIBLE PROBLEMS
-=================
 
 See next section, if you have any.
 
 
 BUG REPORTS
-===========
 
 Any ufs bug report you can send to daniel.pirkl@email.cz or
 to dushistov@mail.ru (do not send partition tables bug reports).

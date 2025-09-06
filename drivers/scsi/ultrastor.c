@@ -141,6 +141,9 @@
 
 #include <asm/io.h>
 #include <asm/system.h>
+#include <linux/delay.h>
+
+#include <asm/io.h>
 #include <asm/dma.h>
 
 #define ULTRASTOR_PRIVATE	/* Get the private stuff from ultrastor.h */
@@ -307,6 +310,7 @@ static inline int find_and_clear_bit_16(unsigned long *field)
 	"btr %0,%1\n\t"
 	"jnc 0b"
 	: "=&r" (rv), "=m" (*field) :);
+	: "=&r" (rv), "+m" (*field) :);
 
   return rv;
 }
@@ -701,6 +705,7 @@ static inline void build_sg_list(struct mscp *mscp, struct scsi_cmnd *SCpnt)
 }
 
 static int ultrastor_queuecommand(struct scsi_cmnd *SCpnt,
+static int ultrastor_queuecommand_lck(struct scsi_cmnd *SCpnt,
 				void (*done) (struct scsi_cmnd *))
 {
     struct mscp *my_mscp;
@@ -824,6 +829,8 @@ retry:
 
     return 0;
 }
+
+static DEF_SCSI_QCMD(ultrastor_queuecommand)
 
 /* This code must deal with 2 cases:
 

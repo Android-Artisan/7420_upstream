@@ -25,6 +25,8 @@
 #include <linux/interrupt.h>
 #include <linux/slab.h>
 #include <linux/ioport.h>
+#include <linux/module.h>
+#include <linux/io.h>
 #include <sound/core.h>
 #include <sound/sb.h>
 #include <sound/initval.h>
@@ -170,6 +172,9 @@ static int snd_sbdsp_probe(struct snd_sb * chip)
 	case SB_HW_CS5530:
 		str = "16 (CS5530)";
 		break;
+	case SB_HW_JAZZ16:
+		str = "Pro (Jazz16)";
+		break;
 	default:
 		return -ENODEV;
 	}
@@ -182,6 +187,7 @@ static int snd_sbdsp_free(struct snd_sb *chip)
 {
 	if (chip->res_port)
 		release_and_free_resource(chip->res_port);
+	release_and_free_resource(chip->res_port);
 	if (chip->irq >= 0)
 		free_irq(chip->irq, (void *) chip);
 #ifdef CONFIG_ISA
@@ -220,6 +226,8 @@ int snd_sbdsp_create(struct snd_card *card,
 	};
 
 	snd_assert(r_chip != NULL, return -EINVAL);
+	if (snd_BUG_ON(!r_chip))
+		return -EINVAL;
 	*r_chip = NULL;
 	chip = kzalloc(sizeof(*chip), GFP_KERNEL);
 	if (chip == NULL)
@@ -237,6 +245,7 @@ int snd_sbdsp_create(struct snd_card *card,
 			(hardware == SB_HW_ALS4000 ||
 			 hardware == SB_HW_CS5530) ?
 			IRQF_SHARED : IRQF_DISABLED,
+			IRQF_SHARED : 0,
 			"SoundBlaster", (void *) chip)) {
 		snd_printk(KERN_ERR "sb: can't grab irq %d\n", irq);
 		snd_sbdsp_free(chip);

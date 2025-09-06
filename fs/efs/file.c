@@ -26,6 +26,8 @@ int efs_get_block(struct inode *inode, sector_t iblock,
 			block,
 			inode->i_blocks,
 			inode->i_size);
+		pr_warn("%s(): block %d >= %ld (filesize %ld)\n",
+			__func__, block, inode->i_blocks, inode->i_size);
 #endif
 		return 0;
 	}
@@ -39,6 +41,7 @@ int efs_bmap(struct inode *inode, efs_block_t block) {
 
 	if (block < 0) {
 		printk(KERN_WARNING "EFS: bmap(): block < 0\n");
+		pr_warn("%s(): block < 0\n", __func__);
 		return 0;
 	}
 
@@ -52,6 +55,8 @@ int efs_bmap(struct inode *inode, efs_block_t block) {
 			block,
 			inode->i_blocks,
 			inode->i_size);
+		pr_warn("%s(): block %d >= %ld (filesize %ld)\n",
+			__func__, block, inode->i_blocks, inode->i_size);
 #endif
 		return 0;
 	}

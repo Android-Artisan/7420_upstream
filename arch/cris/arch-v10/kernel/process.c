@@ -16,6 +16,13 @@
 #include <linux/slab.h>
 #include <asm/arch/svinto.h>
 #include <linux/init.h>
+#include <linux/slab.h>
+#include <linux/err.h>
+#include <linux/fs.h>
+#include <arch/svinto.h>
+#include <linux/init.h>
+#include <arch/system.h>
+#include <linux/ptrace.h>
 
 #ifdef CONFIG_ETRAX_GPIO
 void etrax_gpio_wake_up_check(void); /* drivers/gpio.c */
@@ -30,6 +37,9 @@ void default_idle(void)
 #ifdef CONFIG_ETRAX_GPIO
   etrax_gpio_wake_up_check();
 #endif
+	etrax_gpio_wake_up_check();
+#endif
+	local_irq_enable();
 }
 
 /*
@@ -54,6 +64,7 @@ void hard_reset_now (void)
 	 * this code, implementing hard reset through the watchdog.
 	 */
 #if defined(CONFIG_ETRAX_WATCHDOG) && !defined(CONFIG_SVINTO_SIM)
+#if defined(CONFIG_ETRAX_WATCHDOG)
 	extern int cause_of_death;
 #endif
 
@@ -61,6 +72,7 @@ void hard_reset_now (void)
 	local_irq_disable();
 
 #if defined(CONFIG_ETRAX_WATCHDOG) && !defined(CONFIG_SVINTO_SIM)
+#if defined(CONFIG_ETRAX_WATCHDOG)
 	cause_of_death = 0xbedead;
 #else
 	/* Since we dont plan to keep on resetting the watchdog,
@@ -121,6 +133,13 @@ int copy_thread(int nr, unsigned long clone_flags, unsigned long usp,
 {
 	struct pt_regs * childregs;
 	struct switch_stack *swstack;
+asmlinkage void ret_from_kernel_thread(void);
+
+int copy_thread(unsigned long clone_flags, unsigned long usp,
+		unsigned long arg, struct task_struct *p)
+{
+	struct pt_regs *childregs = task_pt_regs(p);
+	struct switch_stack *swstack = ((struct switch_stack *)childregs) - 1;
 	
 	/* put the pt_regs structure at the end of the new kernel stack page and fix it up
 	 * remember that the task_struct doubles as the kernel stack for the task
@@ -137,6 +156,22 @@ int copy_thread(int nr, unsigned long clone_flags, unsigned long usp,
 	/* put the switch stack right below the pt_regs */
 
 	swstack = ((struct switch_stack *)childregs) - 1;
+	if (unlikely(p->flags & PF_KTHREAD)) {
+		memset(swstack, 0,
+			sizeof(struct switch_stack) + sizeof(struct pt_regs));
+		swstack->r1 = usp;
+		swstack->r2 = arg;
+		childregs->dccr = 1 << I_DCCR_BITNR;
+		swstack->return_ip = (unsigned long) ret_from_kernel_thread;
+		p->thread.ksp = (unsigned long) swstack;
+		p->thread.usp = 0;
+		return 0;
+	}
+	*childregs = *current_pt_regs();  /* struct copy of pt_regs */
+
+        childregs->r10 = 0;  /* child returns 0 after a fork/clone */
+
+	/* put the switch stack right below the pt_regs */
 
 	swstack->r9 = 0; /* parameter to ret_from_sys_call, 0 == dont restart the syscall */
 
@@ -147,6 +182,7 @@ int copy_thread(int nr, unsigned long clone_flags, unsigned long usp,
 	/* fix the user-mode stackpointer */
 
 	p->thread.usp = usp;	
+	p->thread.usp = usp ?: rdusp();
 
 	/* and the kernel-mode one */
 
@@ -255,6 +291,9 @@ unsigned long get_wchan(struct task_struct *p)
 void show_regs(struct pt_regs * regs)
 {
 	unsigned long usp = rdusp();
+
+	show_regs_print_info(KERN_DEFAULT);
+
 	printk("IRP: %08lx SRP: %08lx DCCR: %08lx USP: %08lx MOF: %08lx\n",
 	       regs->irp, regs->srp, regs->dccr, usp, regs->mof );
 	printk(" r0: %08lx  r1: %08lx   r2: %08lx  r3: %08lx\n",

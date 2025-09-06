@@ -12,6 +12,8 @@ struct subchannel_id {
 
 #ifdef __KERNEL__
 #include <linux/string.h>
+#include <linux/string.h>
+#include <uapi/asm/schid.h>
 
 /* Helper function for sane state of pre-allocated subchannel_id. */
 static inline void

@@ -49,3 +49,7 @@ struct compat_statfs64 {
 };
 
 #endif
+#include <uapi/asm-generic/statfs.h>
+
+typedef __kernel_fsid_t	fsid_t;
+#endif

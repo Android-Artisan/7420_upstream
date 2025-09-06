@@ -30,13 +30,12 @@ is available from the web page (see above).
 Please check http://www.opensound.com/pguide for more info about programming
 with OSS API.
 
-   ====================================================
 -  THIS VERSION ____REQUIRES____ Linux 2.1.57 OR LATER.
-   ====================================================
 
 Packages "snd-util-3.8.tar.gz" and "snd-data-0.1.tar.Z"
 contain useful utilities to be used with this driver.
 See http://www.opensound.com/ossfree/getting.html for
+See http://www.opensound.com/ossfree/ for
 download instructions.
 
 If you are looking for the installation instructions, please
@@ -133,7 +132,6 @@ Music Quest Inc. ($$)
 Creative Labs ($$$)
 
 If you have some problems
-=========================
 
 Read the sound HOWTO (sunsite.unc.edu:/pub/Linux/docs/...?).
 Also look at the home page (http://www.opensound.com/ossfree). It may
@@ -167,7 +165,6 @@ The following errors are likely with /dev/dsp and /dev/audio.
 	for sound driver version 2.X or later.
 
 Linux installation
-==================
 
 IMPORTANT!	Read this if you are installing a separately
 		distributed version of this driver.
@@ -227,7 +224,6 @@ check for possible boot (insmod) time error messages in /var/adm/messages.
 Please check http://www.opensound.com/ossfree for more info.
 
 Configuring version 3.8 (for Linux) with some common sound cards
-================================================================
 
 This document describes configuring sound cards with the freeware version of
 Open Sound Systems (OSS/Free). Information about the commercial version
@@ -253,7 +249,6 @@ IMPORTANT!	This document covers only cards that were "known" when
 
 
 THE BIGGEST MISTAKES YOU CAN MAKE
-=================================
 
 1. Assuming that the card is Sound Blaster compatible when it's not.
 --------------------------------------------------------------------
@@ -317,14 +312,12 @@ covered by this document.
 
 
 Cards that are not (fully) supported by this driver
-===================================================
 
 See http://www.opensound.com/ossfree for information about sound cards 
 to be supported in future. 
 
 
 How to use sound without recompiling kernel and/or sound driver
-===============================================================
 
 There is a commercial sound driver which comes in precompiled form and doesn't
 require recompiling of the kernel. See http://www.4Front-tech.com/oss.html for
@@ -332,7 +325,6 @@ more info.
 
 
 Configuring PnP cards
-=====================
 
 New versions of most sound cards use the so-called ISA PnP protocol for
 soft configuring their I/O, IRQ, DMA and shared memory resources.
@@ -382,7 +374,6 @@ required tools.
 
 
 Read this before trying to configure the driver
-===============================================
 
 There are currently many cards that work with this driver. Some of the cards
 have native support while others work since they emulate some other
@@ -421,7 +412,6 @@ Sound Blasters
 		MAD16 chips are very common in so called "SB 16 bit cards"
 		(try with the MAD16 driver).
 
-	======================================================================
 	"Supposed to be SB compatible" cards.
 		Forget the SB compatibility and check for other alternatives
 		first. The only cards that work with the SB driver in
@@ -444,7 +434,6 @@ Sound Blasters
 		In most cases the 16 bit native mode is supported by Linux.
 		Use the SB mode with "clones" only if you don't find anything
 		better from the rest of this doc.
-	======================================================================
 
 Gravis Ultrasound (GUS)
 	GUS
@@ -638,7 +627,6 @@ Turtle Beach Maui and Tropez "classic"
 
 
 Jumpers and software configuration
-==================================
 
 Some of the earliest sound cards were jumper configurable. You have to
 configure the driver use I/O, IRQ and DMA settings
@@ -672,7 +660,6 @@ MPU401 or Windows Sound System).
 
 
 What if your card was not listed above?
-=======================================
 
 The first thing to do is to look at the major IC chips on the card.
 Many of the latest sound cards are based on some standard chips. If you
@@ -696,7 +683,6 @@ should work OK.
 
 
 Configuring sound driver (with Linux)
-=====================================
 
 The sound driver is currently distributed as part of the Linux kernel. The 
 files are in /usr/src/linux/drivers/sound/. 
@@ -880,7 +866,6 @@ Instructions for answering these questions are given in the next section.
 
 
 Card specific information
-=========================
 
 This section gives additional instructions about configuring some cards.
 Please refer manual of your card for valid I/O, IRQ and DMA numbers. Using
@@ -1347,12 +1332,14 @@ network telephones. The ACI mixer has to be switched into the "solo"
 mode for duplex operation in order to avoid feedback caused by the
 mixer (input hears output signal). You can de-/activate this mode
 through toggleing the record button for the wave controller with an
+through toggling the record button for the wave controller with an
 OSS-mixer.
 
 The PCM20 contains a radio tuner, which is also controlled by
 ACI. This radio tuner is supported by the ACI driver together with the
 miropcm20.o module. Also the 7-band equalizer is integrated
 (limited by the OSS-design). Developement has started and maybe
+(limited by the OSS-design). Development has started and maybe
 finished for the RDS decoder on this card, too. You will be able to
 read RadioText, the Programme Service name, Programme TYpe and
 others. Even the v4l radio module benefits from it with a refined
@@ -1385,7 +1372,6 @@ card which works with Linux, please inform me (or is anybody else
 willing to maintain a database of supported cards (just like in XF86)?).
 
 Cards not supported yet
-=======================
 
 Please check the version of sound driver you are using before 
 complaining that your card is not supported. It's possible you are 
@@ -1439,6 +1425,7 @@ There are some common audio chipsets that are not supported yet. For example
 Sierra Aria and IBM Mwave. It's possible that these architectures
 get some support in future but I can't make any promises. Just look
 at the home page (http://www.opensound.com/ossfree/new_cards.html)
+at the home page (http://www.opensound.com/ossfree/)
 for latest info.
 
 Information about unsupported sound cards and chipsets is welcome as well

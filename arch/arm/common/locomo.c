@@ -27,10 +27,19 @@
 
 #include <mach/hardware.h>
 #include <asm/io.h>
+#include <linux/io.h>
+
+#include <mach/hardware.h>
 #include <asm/irq.h>
 #include <asm/mach/irq.h>
 
 #include <asm/hardware/locomo.h>
+
+/* LoCoMo Interrupts */
+#define IRQ_LOCOMO_KEY		(0)
+#define IRQ_LOCOMO_GPIO		(1)
+#define IRQ_LOCOMO_LT		(2)
+#define IRQ_LOCOMO_SPI		(3)
 
 /* M62332 output channel selection */
 #define M62332_EVR_CH	1	/* M62332 volume channel number  */
@@ -58,6 +67,7 @@ struct locomo {
 	struct device *dev;
 	unsigned long phys;
 	unsigned int irq;
+	int irq_base;
 	spinlock_t lock;
 	void __iomem *base;
 #ifdef CONFIG_PM
@@ -84,6 +94,7 @@ static struct locomo_dev_info locomo_devices[] = {
 		.irq = {
 			IRQ_LOCOMO_KEY,
 		},
+		.irq		= { IRQ_LOCOMO_KEY },
 		.name		= "locomo-keyboard",
 		.offset		= LOCOMO_KEYBOARD,
 		.length		= 16,
@@ -185,6 +196,25 @@ static void locomo_handler(unsigned int irq, struct irq_desc *desc)
 		for (i = 0; i <= 3; i++, d++, irq++) {
 			if (req & (0x0100 << i)) {
 				desc_handle_irq(irq, d);
+static void locomo_handler(struct irq_desc *desc)
+{
+	struct locomo *lchip = irq_desc_get_chip_data(desc);
+	int req, i;
+
+	/* Acknowledge the parent IRQ */
+	desc->irq_data.chip->irq_ack(&desc->irq_data);
+
+	/* check why this interrupt was generated */
+	req = locomo_readl(lchip->base + LOCOMO_ICR) & 0x0f00;
+
+	if (req) {
+		unsigned int irq;
+
+		/* generate the next interrupt(s) */
+		irq = lchip->irq_base;
+		for (i = 0; i <= 3; i++, irq++) {
+			if (req & (0x0100 << i)) {
+				generic_handle_irq(irq);
 			}
 
 		}
@@ -463,12 +493,40 @@ static struct irq_chip locomo_spi_chip = {
 	.ack	= locomo_spi_ack_irq,
 	.mask	= locomo_spi_mask_irq,
 	.unmask	= locomo_spi_unmask_irq,
+static void locomo_ack_irq(struct irq_data *d)
+{
+}
+
+static void locomo_mask_irq(struct irq_data *d)
+{
+	struct locomo *lchip = irq_data_get_irq_chip_data(d);
+	unsigned int r;
+	r = locomo_readl(lchip->base + LOCOMO_ICR);
+	r &= ~(0x0010 << (d->irq - lchip->irq_base));
+	locomo_writel(r, lchip->base + LOCOMO_ICR);
+}
+
+static void locomo_unmask_irq(struct irq_data *d)
+{
+	struct locomo *lchip = irq_data_get_irq_chip_data(d);
+	unsigned int r;
+	r = locomo_readl(lchip->base + LOCOMO_ICR);
+	r |= (0x0010 << (d->irq - lchip->irq_base));
+	locomo_writel(r, lchip->base + LOCOMO_ICR);
+}
+
+static struct irq_chip locomo_chip = {
+	.name		= "LOCOMO",
+	.irq_ack	= locomo_ack_irq,
+	.irq_mask	= locomo_mask_irq,
+	.irq_unmask	= locomo_unmask_irq,
 };
 
 static void locomo_setup_irq(struct locomo *lchip)
 {
 	int irq;
 	void __iomem *irqbase = lchip->base;
+	int irq = lchip->irq_base;
 
 	/*
 	 * Install handler for IRQ_LOCOMO_HW.
@@ -520,6 +578,15 @@ static void locomo_setup_irq(struct locomo *lchip)
 		set_irq_chip_data(irq, irqbase);
 		set_irq_handler(irq, handle_edge_irq);
 		set_irq_flags(irq, IRQF_VALID | IRQF_PROBE);
+	irq_set_irq_type(lchip->irq, IRQ_TYPE_EDGE_FALLING);
+	irq_set_chip_data(lchip->irq, lchip);
+	irq_set_chained_handler(lchip->irq, locomo_handler);
+
+	/* Install handlers for IRQ_LOCOMO_* */
+	for ( ; irq <= lchip->irq_base + 3; irq++) {
+		irq_set_chip_and_handler(irq, &locomo_chip, handle_level_irq);
+		irq_set_chip_data(irq, lchip);
+		irq_clear_status_flags(irq, IRQ_NOREQUEST | IRQ_NOPROBE);
 	}
 }
 
@@ -566,6 +633,8 @@ locomo_init_one_child(struct locomo *lchip, struct locomo_dev_info *info)
 	dev->length = info->length;
 
 	memmove(dev->irq, info->irq, sizeof(dev->irq));
+	dev->irq[0] = (lchip->irq_base == NO_IRQ) ?
+			NO_IRQ : lchip->irq_base + info->irq[0];
 
 	ret = device_register(&dev->dev);
 	if (ret) {
@@ -603,6 +672,7 @@ static int locomo_suspend(struct platform_device *dev, pm_message_t state)
 	locomo_writel(0x00, lchip->base + LOCOMO_GPO);
 	save->LCM_SPICT   = locomo_readl(lchip->base + LOCOMO_SPI + LOCOMO_SPICT);	/* SPI */
 	locomo_writel(0x40, lchip->base + LOCOMO_SPICT);
+	locomo_writel(0x40, lchip->base + LOCOMO_SPI + LOCOMO_SPICT);
 	save->LCM_GPE     = locomo_readl(lchip->base + LOCOMO_GPE);	/* GPIO */
 	locomo_writel(0x00, lchip->base + LOCOMO_GPE);
 	save->LCM_ASD     = locomo_readl(lchip->base + LOCOMO_ASD);	/* ADSTART */
@@ -682,6 +752,7 @@ static int locomo_resume(struct platform_device *dev)
 static int
 __locomo_probe(struct device *me, struct resource *mem, int irq)
 {
+	struct locomo_platform_data *pdata = me->platform_data;
 	struct locomo *lchip;
 	unsigned long r;
 	int i, ret = -ENODEV;
@@ -697,6 +768,7 @@ __locomo_probe(struct device *me, struct resource *mem, int irq)
 
 	lchip->phys = mem->start;
 	lchip->irq = irq;
+	lchip->irq_base = (pdata) ? pdata->irq_base : NO_IRQ;
 
 	/*
 	 * Map the whole region.  This also maps the
@@ -729,6 +801,7 @@ __locomo_probe(struct device *me, struct resource *mem, int irq)
 	locomo_writel(0, lchip->base + LOCOMO_LTINT);
 	/* SPI */
 	locomo_writel(0, lchip->base + LOCOMO_SPIIE);
+	locomo_writel(0, lchip->base + LOCOMO_SPI + LOCOMO_SPIIE);
 
 	locomo_writel(6 + 8 + 320 + 30 - 10, lchip->base + LOCOMO_ASD);
 	r = locomo_readl(lchip->base + LOCOMO_ASD);
@@ -764,6 +837,7 @@ __locomo_probe(struct device *me, struct resource *mem, int irq)
 	 * other device to ensure that the interrupts are available.
 	 */
 	if (lchip->irq != NO_IRQ)
+	if (lchip->irq != NO_IRQ && lchip->irq_base != NO_IRQ)
 		locomo_setup_irq(lchip);
 
 	for (i = 0; i < ARRAY_SIZE(locomo_devices); i++)
@@ -788,6 +862,7 @@ static void __locomo_remove(struct locomo *lchip)
 	if (lchip->irq != NO_IRQ) {
 		set_irq_chained_handler(lchip->irq, NULL);
 		set_irq_data(lchip->irq, NULL);
+		irq_set_chained_handler_and_data(lchip->irq, NULL, NULL);
 	}
 
 	iounmap(lchip->base);
@@ -875,6 +950,7 @@ void locomo_gpio_set_dir(struct device *dev, unsigned int bits, unsigned int dir
 
 	spin_unlock_irqrestore(&lchip->lock, flags);
 }
+EXPORT_SYMBOL(locomo_gpio_set_dir);
 
 int locomo_gpio_read_level(struct device *dev, unsigned int bits)
 {
@@ -892,6 +968,7 @@ int locomo_gpio_read_level(struct device *dev, unsigned int bits)
 	ret &= bits;
 	return ret;
 }
+EXPORT_SYMBOL(locomo_gpio_read_level);
 
 int locomo_gpio_read_output(struct device *dev, unsigned int bits)
 {
@@ -909,6 +986,7 @@ int locomo_gpio_read_output(struct device *dev, unsigned int bits)
 	ret &= bits;
 	return ret;
 }
+EXPORT_SYMBOL(locomo_gpio_read_output);
 
 void locomo_gpio_write(struct device *dev, unsigned int bits, unsigned int set)
 {
@@ -930,6 +1008,7 @@ void locomo_gpio_write(struct device *dev, unsigned int bits, unsigned int set)
 
 	spin_unlock_irqrestore(&lchip->lock, flags);
 }
+EXPORT_SYMBOL(locomo_gpio_write);
 
 static void locomo_m62332_sendbit(void *mapbase, int bit)
 {
@@ -1014,6 +1093,7 @@ void locomo_m62332_senddata(struct locomo_dev *ldev, unsigned int dac_data, int 
 	if (locomo_readl(mapbase + LOCOMO_DAC) & LOCOMO_DAC_SDAOEB) {	/* High is error */
 		printk(KERN_WARNING "locomo: m62332_senddata Error 1\n");
 		return;
+		goto out;
 	}
 
 	/* Send Sub address (LSB is channel select) */
@@ -1042,6 +1122,7 @@ void locomo_m62332_senddata(struct locomo_dev *ldev, unsigned int dac_data, int 
 	if (locomo_readl(mapbase + LOCOMO_DAC) & LOCOMO_DAC_SDAOEB) {	/* High is error */
 		printk(KERN_WARNING "locomo: m62332_senddata Error 2\n");
 		return;
+		goto out;
 	}
 
 	/* Send DAC data */
@@ -1069,6 +1150,9 @@ void locomo_m62332_senddata(struct locomo_dev *ldev, unsigned int dac_data, int 
 		return;
 	}
 
+	}
+
+out:
 	/* stop */
 	r = locomo_readl(mapbase + LOCOMO_DAC);
 	r &=  ~(LOCOMO_DAC_SCLOEB);
@@ -1094,6 +1178,7 @@ void locomo_m62332_senddata(struct locomo_dev *ldev, unsigned int dac_data, int 
 
 	spin_unlock_irqrestore(&lchip->lock, flags);
 }
+EXPORT_SYMBOL(locomo_m62332_senddata);
 
 /*
  *	Frontlight control
@@ -1118,6 +1203,7 @@ void locomo_frontlight_set(struct locomo_dev *dev, int duty, int vr, int bpwf)
 	locomo_writel(bpwf | LOCOMO_ALC_EN, lchip->base + LOCOMO_FRONTLIGHT + LOCOMO_ALS);
 	spin_unlock_irqrestore(&lchip->lock, flags);
 }
+EXPORT_SYMBOL(locomo_frontlight_set);
 
 /*
  *	LoCoMo "Register Access Bus."
@@ -1191,11 +1277,13 @@ int locomo_driver_register(struct locomo_driver *driver)
 	driver->drv.bus = &locomo_bus_type;
 	return driver_register(&driver->drv);
 }
+EXPORT_SYMBOL(locomo_driver_register);
 
 void locomo_driver_unregister(struct locomo_driver *driver)
 {
 	driver_unregister(&driver->drv);
 }
+EXPORT_SYMBOL(locomo_driver_unregister);
 
 static int __init locomo_init(void)
 {

@@ -6,6 +6,8 @@ infblock.c
 infblock.h
 infcodes.c
 infcodes.h
+empty.c
+hack-coff
 inffast.c
 inffast.h
 inffixed.h
@@ -21,6 +23,7 @@ mktree
 uImage
 cuImage.*
 dtbImage.*
+*.dtb
 treeImage.*
 zImage
 zImage.initrd
@@ -29,6 +32,8 @@ zImage.chrp
 zImage.coff
 zImage.holly
 zImage.iseries
+zImage.epapr
+zImage.holly
 zImage.*lds
 zImage.miboot
 zImage.pmac
@@ -36,3 +41,13 @@ zImage.pseries
 zconf.h
 zlib.h
 zutil.h
+fdt.c
+fdt.h
+fdt_ro.c
+fdt_rw.c
+fdt_strerror.c
+fdt_sw.c
+fdt_wip.c
+libfdt.h
+libfdt_internal.h
+

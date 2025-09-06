@@ -11,6 +11,7 @@ config INFINIBAND_CXGB3
 
 	  For customer support, please visit our customer support page at
 	  <http://www.chelsio.com/support.htm>.
+	  <http://www.chelsio.com/support.html>.
 
 	  Please send feedback to <linux-bugs@chelsio.com>.
 

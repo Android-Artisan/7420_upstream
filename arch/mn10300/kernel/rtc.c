@@ -30,6 +30,10 @@ static unsigned long mn10300_rtc_update_period;
  * read the current RTC time
  */
 unsigned long __init get_initial_rtc_time(void)
+/*
+ * Read the current RTC time
+ */
+void read_persistent_clock(struct timespec *ts)
 {
 	struct rtc_time tm;
 
@@ -37,6 +41,13 @@ unsigned long __init get_initial_rtc_time(void)
 
 	return mktime(tm.tm_year, tm.tm_mon, tm.tm_mday,
 		      tm.tm_hour, tm.tm_min, tm.tm_sec);
+	ts->tv_nsec = 0;
+	ts->tv_sec = mktime(tm.tm_year, tm.tm_mon, tm.tm_mday,
+			    tm.tm_hour, tm.tm_min, tm.tm_sec);
+
+	/* if rtc is way off in the past, set something reasonable */
+	if (ts->tv_sec < 0)
+		ts->tv_sec = mktime(2009, 1, 1, 12, 0, 0);
 }
 
 /*
@@ -68,6 +79,7 @@ static int set_rtc_mmss(unsigned long nowtime)
 	cmos_minutes = CMOS_READ(RTC_MINUTES);
 	if (!(save_control & RTC_DM_BINARY) || RTC_ALWAYS_BCD)
 		BCD_TO_BIN(cmos_minutes);
+		cmos_minutes = bcd2bin(cmos_minutes);
 
 	/*
 	 * since we're only adjusting minutes and seconds,
@@ -86,11 +98,14 @@ static int set_rtc_mmss(unsigned long nowtime)
 		if (!(save_control & RTC_DM_BINARY) || RTC_ALWAYS_BCD) {
 			BIN_TO_BCD(real_seconds);
 			BIN_TO_BCD(real_minutes);
+			real_seconds = bin2bcd(real_seconds);
+			real_minutes = bin2bcd(real_minutes);
 		}
 		CMOS_WRITE(real_seconds, RTC_SECONDS);
 		CMOS_WRITE(real_minutes, RTC_MINUTES);
 	} else {
 		printk(KERN_WARNING
+		printk_once(KERN_NOTICE
 		       "set_rtc_mmss: can't update from %d to %d\n",
 		       cmos_minutes, real_minutes);
 		retval = -1;
@@ -128,6 +143,9 @@ void check_rtc_time(void)
 			/* do it again in 60s */
 			last_rtc_update = xtime.tv_sec - 600;
 	}
+int update_persistent_clock(struct timespec now)
+{
+	return set_rtc_mmss(now.tv_sec);
 }
 
 /*
@@ -170,4 +188,8 @@ void __init calibrate_clock(void)
 	MN10300_TSCCLK = count0 - count1; /* the timers count down */
 	mn10300_rtc_update_period = counth - count1;
 	MN10300_TSC_PER_HZ = MN10300_TSCCLK / HZ;
+	RTCRB &= ~RTCRB_DM_BINARY;
+	RTCRA |= RTCRA_DVR;
+	RTCRA &= ~RTCRA_DVR;
+	RTCRB &= ~RTCRB_SET;
 }

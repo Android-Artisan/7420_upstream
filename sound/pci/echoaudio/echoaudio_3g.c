@@ -43,6 +43,8 @@ static int check_asic_status(struct echoaudio *chip)
 	chip->comm_page->ext_box_status =
 		__constant_cpu_to_le32(E3G_ASIC_NOT_LOADED);
 	chip->asic_loaded = FALSE;
+	chip->comm_page->ext_box_status = cpu_to_le32(E3G_ASIC_NOT_LOADED);
+	chip->asic_loaded = false;
 	clear_handshake(chip);
 	send_vector(chip, DSP_VC_TEST_ASIC);
 
@@ -57,6 +59,11 @@ static int check_asic_status(struct echoaudio *chip)
 		return -ENODEV;
 
 	chip->asic_loaded = TRUE;
+	dev_dbg(chip->card->dev, "box_status=%x\n", box_status);
+	if (box_status == E3G_ASIC_NOT_LOADED)
+		return -ENODEV;
+
+	chip->asic_loaded = true;
 	return box_status & E3G_BOX_TYPE_MASK;
 }
 
@@ -78,6 +85,8 @@ static int write_control_reg(struct echoaudio *chip, u32 ctl, u32 frq,
 		return -EIO;
 
 	DE_ACT(("WriteControlReg: Setting 0x%x, 0x%x\n", ctl, frq));
+	dev_dbg(chip->card->dev,
+		"WriteControlReg: Setting 0x%x, 0x%x\n", ctl, frq);
 
 	ctl = cpu_to_le32(ctl);
 	frq = cpu_to_le32(frq);
@@ -91,6 +100,7 @@ static int write_control_reg(struct echoaudio *chip, u32 ctl, u32 frq,
 	}
 
 	DE_ACT(("WriteControlReg: not written, no change\n"));
+	dev_dbg(chip->card->dev, "WriteControlReg: not written, no change\n");
 	return 0;
 }
 
@@ -106,6 +116,11 @@ static int set_digital_mode(struct echoaudio *chip, u8 mode)
 	snd_assert(!chip->pipe_alloc_mask, return -EAGAIN);
 
 	snd_assert(chip->digital_modes & (1 << mode), return -EINVAL);
+	if (snd_BUG_ON(chip->pipe_alloc_mask))
+		return -EAGAIN;
+
+	if (snd_BUG_ON(!(chip->digital_modes & (1 << mode))))
+		return -EINVAL;
 
 	previous_mode = chip->digital_mode;
 	err = dsp_set_digital_mode(chip, mode);
@@ -232,6 +247,11 @@ static int load_asic(struct echoaudio *chip)
 		return err;
 
 	chip->asic_code = &card_fw[FW_3G_ASIC];
+	err = load_asic_generic(chip, DSP_FNC_LOAD_3G_ASIC, FW_3G_ASIC);
+	if (err < 0)
+		return err;
+
+	chip->asic_code = FW_3G_ASIC;
 
 	/* Now give the new ASIC some time to set up */
 	msleep(1000);
@@ -243,6 +263,7 @@ static int load_asic(struct echoaudio *chip)
 	if (box_type >= 0) {
 		err = write_control_reg(chip, E3G_48KHZ,
 					E3G_FREQ_REG_DEFAULT, TRUE);
+					E3G_FREQ_REG_DEFAULT, true);
 		if (err < 0)
 			return err;
 	}
@@ -260,6 +281,8 @@ static int set_sample_rate(struct echoaudio *chip, u32 rate)
 	if (chip->input_clock != ECHO_CLOCK_INTERNAL) {
 		DE_ACT(("set_sample_rate: Cannot set sample rate - "
 			"clock not set to CLK_CLOCKININTERNAL\n"));
+		dev_warn(chip->card->dev,
+			 "Cannot set sample rate - clock not set to CLK_CLOCKININTERNAL\n");
 		/* Save the rate anyhow */
 		chip->comm_page->sample_rate = cpu_to_le32(rate);
 		chip->sample_rate = rate;
@@ -269,6 +292,9 @@ static int set_sample_rate(struct echoaudio *chip, u32 rate)
 
 	snd_assert(rate < 50000 || chip->digital_mode != DIGITAL_MODE_ADAT,
 		   return -EINVAL);
+	if (snd_BUG_ON(rate >= 50000 &&
+		       chip->digital_mode == DIGITAL_MODE_ADAT))
+		return -EINVAL;
 
 	clock = 0;
 	control_reg = le32_to_cpu(chip->comm_page->control_register);
@@ -313,6 +339,8 @@ static int set_sample_rate(struct echoaudio *chip, u32 rate)
 	chip->comm_page->sample_rate = cpu_to_le32(rate);	/* ignored by the DSP */
 	chip->sample_rate = rate;
 	DE_ACT(("SetSampleRate: %d clock %x\n", rate, control_reg));
+	dev_dbg(chip->card->dev,
+		"SetSampleRate: %d clock %x\n", rate, control_reg);
 
 	/* Tell the DSP about it - DSP reads both control reg & freq reg */
 	return write_control_reg(chip, control_reg, frq_reg, 0);
@@ -364,6 +392,8 @@ static int set_input_clock(struct echoaudio *chip, u16 clock)
 		break;
 	default:
 		DE_ACT(("Input clock 0x%x not supported for Echo3G\n", clock));
+		dev_err(chip->card->dev,
+			"Input clock 0x%x not supported for Echo3G\n", clock);
 		return -EINVAL;
 	}
 
@@ -380,6 +410,7 @@ static int dsp_set_digital_mode(struct echoaudio *chip, u8 mode)
 
 	/* Set clock to "internal" if it's not compatible with the new mode */
 	incompatible_clock = FALSE;
+	incompatible_clock = false;
 	switch (mode) {
 	case DIGITAL_MODE_SPDIF_OPTICAL:
 	case DIGITAL_MODE_SPDIF_RCA:
@@ -392,6 +423,15 @@ static int dsp_set_digital_mode(struct echoaudio *chip, u8 mode)
 		break;
 	default:
 		DE_ACT(("Digital mode not supported: %d\n", mode));
+			incompatible_clock = true;
+		break;
+	case DIGITAL_MODE_ADAT:
+		if (chip->input_clock == ECHO_CLOCK_SPDIF)
+			incompatible_clock = true;
+		break;
+	default:
+		dev_err(chip->card->dev,
+			"Digital mode not supported: %d\n", mode);
 		return -EINVAL;
 	}
 
@@ -427,5 +467,6 @@ static int dsp_set_digital_mode(struct echoaudio *chip, u8 mode)
 	chip->digital_mode = mode;
 
 	DE_ACT(("set_digital_mode(%d)\n", chip->digital_mode));
+	dev_dbg(chip->card->dev, "set_digital_mode(%d)\n", chip->digital_mode);
 	return incompatible_clock;
 }

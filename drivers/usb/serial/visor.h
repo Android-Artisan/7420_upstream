@@ -11,6 +11,9 @@
  *
  * See Documentation/usb/usb-serial.txt for more information on using this driver
  * 
+ * See Documentation/usb/usb-serial.txt for more information on using this
+ * driver.
+ *
  */
 
 #ifndef __LINUX_USB_SERIAL_VISOR_H
@@ -66,6 +69,7 @@
 
 #define KYOCERA_VENDOR_ID		0x0C88
 #define KYOCERA_7135_ID			0x0021 
+#define KYOCERA_7135_ID			0x0021
 
 #define FOSSIL_VENDOR_ID		0x0E67
 #define FOSSIL_ABACUS_ID		0x0002
@@ -136,6 +140,7 @@ struct visor_connection_info {
  *	connections.port contains the endpoint number, which is the same for in
  *	and out.
  * @port_function_id: contains the creator id of the applicaton that opened
+ * @port_function_id: contains the creator id of the application that opened
  *	this connection.
  * @port: contains the in/out endpoint number.  Is 0 if in and out endpoint
  *	numbers are different.
@@ -146,6 +151,7 @@ struct visor_connection_info {
  */
 struct palm_ext_connection_info {
 	__u8 num_ports;		
+	__u8 num_ports;
 	__u8 endpoint_numbers_different;
 	__le16 reserved1;
 	struct {

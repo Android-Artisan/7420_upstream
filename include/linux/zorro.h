@@ -117,6 +117,13 @@ struct ConfigDev {
 #include <linux/init.h>
 #include <linux/ioport.h>
 
+#include <uapi/linux/zorro.h>
+
+#include <linux/device.h>
+#include <linux/init.h>
+#include <linux/ioport.h>
+#include <linux/mod_devicetable.h>
+
 #include <asm/zorro.h>
 
 
@@ -196,6 +203,23 @@ static inline struct zorro_driver *zorro_dev_driver(const struct zorro_dev *z)
 
 extern unsigned int zorro_num_autocon;	/* # of autoconfig devices found */
 extern struct zorro_dev zorro_autocon[ZORRO_NUM_AUTO];
+extern struct zorro_dev *zorro_autocon;
+
+
+    /*
+     * Minimal information about a Zorro device, passed from bootinfo
+     * Only available temporarily, i.e. until initmem has been freed!
+     */
+
+struct zorro_dev_init {
+	struct ExpansionRom rom;
+	u16 slotaddr;
+	u16 slotsize;
+	u32 boardaddr;
+	u32 boardsize;
+};
+
+extern struct zorro_dev_init zorro_autocon_init[ZORRO_NUM_AUTO] __initdata;
 
 
     /*
@@ -208,6 +232,7 @@ extern struct zorro_dev *zorro_find_device(zorro_id id,
 #define zorro_resource_start(z)	((z)->resource.start)
 #define zorro_resource_end(z)	((z)->resource.end)
 #define zorro_resource_len(z)	((z)->resource.end-(z)->resource.start+1)
+#define zorro_resource_len(z)	(resource_size(&(z)->resource))
 #define zorro_resource_flags(z)	((z)->resource.flags)
 
 #define zorro_request_device(z, name) \

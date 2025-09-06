@@ -36,6 +36,7 @@ static char version[] = "sb1000.c:v1.1.2 6/01/98 (fventuri@mediaone.net)\n";
 
 #include <linux/module.h>
 #include <linux/kernel.h>
+#include <linux/sched.h>
 #include <linux/string.h>
 #include <linux/interrupt.h>
 #include <linux/errno.h>
@@ -51,6 +52,7 @@ static char version[] = "sb1000.c:v1.1.2 6/01/98 (fventuri@mediaone.net)\n";
 #include <linux/pnp.h>
 #include <linux/init.h>
 #include <linux/bitops.h>
+#include <linux/gfp.h>
 
 #include <asm/io.h>
 #include <asm/processor.h>
@@ -83,6 +85,8 @@ extern int sb1000_probe(struct net_device *dev);
 static int sb1000_open(struct net_device *dev);
 static int sb1000_dev_ioctl (struct net_device *dev, struct ifreq *ifr, int cmd);
 static int sb1000_start_xmit(struct sk_buff *skb, struct net_device *dev);
+static netdev_tx_t sb1000_start_xmit(struct sk_buff *skb,
+				     struct net_device *dev);
 static irqreturn_t sb1000_interrupt(int irq, void *dev_id);
 static int sb1000_close(struct net_device *dev);
 
@@ -133,6 +137,16 @@ static const struct pnp_device_id sb1000_pnp_ids[] = {
 	{ "", 0 }
 };
 MODULE_DEVICE_TABLE(pnp, sb1000_pnp_ids);
+
+static const struct net_device_ops sb1000_netdev_ops = {
+	.ndo_open		= sb1000_open,
+	.ndo_start_xmit		= sb1000_start_xmit,
+	.ndo_do_ioctl		= sb1000_dev_ioctl,
+	.ndo_stop		= sb1000_close,
+	.ndo_change_mtu		= eth_change_mtu,
+	.ndo_set_mac_address 	= eth_mac_addr,
+	.ndo_validate_addr	= eth_validate_addr,
+};
 
 static int
 sb1000_probe_one(struct pnp_dev *pdev, const struct pnp_device_id *id)
@@ -197,6 +211,7 @@ sb1000_probe_one(struct pnp_dev *pdev, const struct pnp_device_id *id)
 	dev->do_ioctl		= sb1000_dev_ioctl;
 	dev->hard_start_xmit	= sb1000_start_xmit;
 	dev->stop		= sb1000_close;
+	dev->netdev_ops	= &sb1000_netdev_ops;
 
 	/* hardware address is 0:0:serial_number */
 	dev->dev_addr[2]	= serial_number >> 24 & 0xff;
@@ -962,11 +977,15 @@ sb1000_open(struct net_device *dev)
 	lp->rx_session_id[0] = 0x48;
 	lp->rx_session_id[0] = 0x44;
 	lp->rx_session_id[0] = 0x42;
+	lp->rx_session_id[1] = 0x48;
+	lp->rx_session_id[2] = 0x44;
+	lp->rx_session_id[3] = 0x42;
 	lp->rx_frame_id[0] = 0;
 	lp->rx_frame_id[1] = 0;
 	lp->rx_frame_id[2] = 0;
 	lp->rx_frame_id[3] = 0;
 	if (request_irq(dev->irq, &sb1000_interrupt, 0, "sb1000", dev)) {
+	if (request_irq(dev->irq, sb1000_interrupt, 0, "sb1000", dev)) {
 		return -EAGAIN;
 	}
 
@@ -1076,12 +1095,14 @@ static int sb1000_dev_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 
 /* transmit function: do nothing since SB1000 can't send anything out */
 static int
+static netdev_tx_t
 sb1000_start_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	printk(KERN_WARNING "%s: trying to transmit!!!\n", dev->name);
 	/* sb1000 can't xmit datagrams */
 	dev_kfree_skb(skb);
 	return 0;
+	return NETDEV_TX_OK;
 }
 
 /* SB1000 interrupt handler. */
@@ -1187,3 +1208,4 @@ sb1000_exit(void)
 
 module_init(sb1000_init);
 module_exit(sb1000_exit);
+module_pnp_driver(sb1000_driver);

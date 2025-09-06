@@ -13,6 +13,9 @@
 #include <linux/of_platform.h>
 
 #include <asm/system.h>
+#include <linux/of_irq.h>
+#include <linux/of_platform.h>
+
 #include <asm/mpic.h>
 #include <asm/i8259.h>
 
@@ -23,6 +26,15 @@ static void mpc86xx_8259_cascade(unsigned int irq, struct irq_desc *desc)
 	if (cascade_irq != NO_IRQ)
 		generic_handle_irq(cascade_irq);
 	desc->chip->eoi(irq);
+static void mpc86xx_8259_cascade(struct irq_desc *desc)
+{
+	struct irq_chip *chip = irq_desc_get_chip(desc);
+	unsigned int cascade_irq = i8259_irq();
+
+	if (cascade_irq != NO_IRQ)
+		generic_handle_irq(cascade_irq);
+
+	chip->irq_eoi(&desc->irq_data);
 }
 #endif	/* CONFIG_PPC_I8259 */
 
@@ -32,6 +44,8 @@ void __init mpc86xx_init_irq(void)
 	struct device_node *np;
 	struct resource res;
 #ifdef CONFIG_PPC_I8259
+#ifdef CONFIG_PPC_I8259
+	struct device_node *np;
 	struct device_node *cascade_node = NULL;
 	int cascade_irq;
 #endif
@@ -47,6 +61,9 @@ void __init mpc86xx_init_irq(void)
 			MPIC_BIG_ENDIAN | MPIC_BROKEN_FRR_NIRQS,
 			0, 256, " MPIC     ");
 	of_node_put(np);
+	struct mpic *mpic = mpic_alloc(NULL, 0, MPIC_BIG_ENDIAN |
+			MPIC_SINGLE_DEST_CPU,
+			0, 256, " MPIC     ");
 	BUG_ON(mpic == NULL);
 
 	mpic_init(mpic);
@@ -74,5 +91,6 @@ void __init mpc86xx_init_irq(void)
 	of_node_put(cascade_node);
 
 	set_irq_chained_handler(cascade_irq, mpc86xx_8259_cascade);
+	irq_set_chained_handler(cascade_irq, mpc86xx_8259_cascade);
 #endif
 }

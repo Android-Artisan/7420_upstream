@@ -25,6 +25,9 @@
  * along with this program; if not, see the file COPYING, or write
  * to the Free Software Foundation, Inc.,
  * 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+ * Copyright 2004-2009 Analog Devices Inc.
+ *
+ * Licensed under the GPL-2 or later.
  */
 
 #ifndef _CPLB_H
@@ -56,9 +59,41 @@
 
 #define L1_DMEMORY       (CPLB_LOCK | CPLB_COMMON)
 #define L2_MEMORY        (CPLB_COMMON)
+#ifdef CONFIG_BFIN_EXTMEM_WRITEBACK
+#define SDRAM_DGENERIC   (CPLB_L1_CHBL | CPLB_COMMON)
+#elif defined(CONFIG_BFIN_EXTMEM_WRITETHROUGH)
+#define SDRAM_DGENERIC   (CPLB_L1_CHBL | CPLB_WT | CPLB_L1_AOW  | CPLB_COMMON)
+#else
+#define SDRAM_DGENERIC   (CPLB_COMMON)
+#endif
+
 #define SDRAM_DNON_CHBL  (CPLB_COMMON)
 #define SDRAM_EBIU       (CPLB_COMMON)
 #define SDRAM_OOPS       (CPLB_VALID | ANOMALY_05000158_WORKAROUND | CPLB_LOCK | CPLB_DIRTY)
+
+#define L1_DMEMORY       (CPLB_LOCK | CPLB_COMMON)
+
+#ifdef CONFIG_SMP
+#define L2_ATTR          (INITIAL_T | I_CPLB | D_CPLB)
+#define L2_IMEMORY       (CPLB_COMMON | PAGE_SIZE_1MB)
+#define L2_DMEMORY       (CPLB_LOCK | CPLB_COMMON | PAGE_SIZE_1MB)
+
+#else
+#define L2_ATTR          (INITIAL_T | SWITCH_T | I_CPLB | D_CPLB)
+# if defined(CONFIG_BFIN_L2_ICACHEABLE)
+# define L2_IMEMORY      (CPLB_L1_CHBL | CPLB_USER_RD | CPLB_VALID | PAGE_SIZE_1MB)
+# else
+# define L2_IMEMORY      (               CPLB_USER_RD | CPLB_VALID | PAGE_SIZE_1MB)
+# endif
+
+# if defined(CONFIG_BFIN_L2_WRITEBACK)
+# define L2_DMEMORY      (CPLB_L1_CHBL | CPLB_COMMON | PAGE_SIZE_1MB)
+# elif defined(CONFIG_BFIN_L2_WRITETHROUGH)
+# define L2_DMEMORY      (CPLB_L1_CHBL | CPLB_WT | CPLB_L1_AOW | CPLB_COMMON | PAGE_SIZE_1MB)
+# else
+# define L2_DMEMORY      (CPLB_COMMON | PAGE_SIZE_1MB)
+# endif
+#endif /* CONFIG_SMP */
 
 #define SIZE_1K 0x00000400      /* 1K */
 #define SIZE_4K 0x00001000      /* 4K */
@@ -73,6 +108,12 @@
 
 #define ASYNC_MEMORY_CPLB_COVERAGE	((ASYNC_BANK0_SIZE + ASYNC_BANK1_SIZE + \
 				 ASYNC_BANK2_SIZE + ASYNC_BANK3_SIZE) / SIZE_4M)
+#define SIZE_16K 0x00004000      /* 16K */
+#define SIZE_64K 0x00010000      /* 64K */
+#define SIZE_16M 0x01000000      /* 16M */
+#define SIZE_64M 0x04000000      /* 64M */
+
+#define MAX_CPLBS 16
 
 #define CPLB_ENABLE_ICACHE_P	0
 #define CPLB_ENABLE_DCACHE_P	1
@@ -108,3 +149,52 @@
 #define CPLB_IDOCACHE   	CPLB_INOCACHE | CPLB_L1_CHBL
 
 #endif				/* _CPLB_H */
+#define FAULT_RW        (1 << 16)
+#define FAULT_USERSUPV  (1 << 17)
+#define FAULT_CPLBBITS  0x0000ffff
+
+#ifndef __ASSEMBLY__
+
+static inline void _disable_cplb(u32 mmr, u32 mask)
+{
+	u32 ctrl = bfin_read32(mmr) & ~mask;
+	/* CSYNC to ensure load store ordering */
+	__builtin_bfin_csync();
+	bfin_write32(mmr, ctrl);
+	__builtin_bfin_ssync();
+}
+static inline void disable_cplb(u32 mmr, u32 mask)
+{
+	u32 ctrl = bfin_read32(mmr) & ~mask;
+	CSYNC();
+	bfin_write32(mmr, ctrl);
+	SSYNC();
+}
+#define _disable_dcplb() _disable_cplb(DMEM_CONTROL, ENDCPLB)
+#define  disable_dcplb()  disable_cplb(DMEM_CONTROL, ENDCPLB)
+#define _disable_icplb() _disable_cplb(IMEM_CONTROL, ENICPLB)
+#define  disable_icplb()  disable_cplb(IMEM_CONTROL, ENICPLB)
+
+static inline void _enable_cplb(u32 mmr, u32 mask)
+{
+	u32 ctrl = bfin_read32(mmr) | mask;
+	/* CSYNC to ensure load store ordering */
+	__builtin_bfin_csync();
+	bfin_write32(mmr, ctrl);
+	__builtin_bfin_ssync();
+}
+static inline void enable_cplb(u32 mmr, u32 mask)
+{
+	u32 ctrl = bfin_read32(mmr) | mask;
+	CSYNC();
+	bfin_write32(mmr, ctrl);
+	SSYNC();
+}
+#define _enable_dcplb()  _enable_cplb(DMEM_CONTROL, ENDCPLB)
+#define  enable_dcplb()   enable_cplb(DMEM_CONTROL, ENDCPLB)
+#define _enable_icplb()  _enable_cplb(IMEM_CONTROL, ENICPLB)
+#define  enable_icplb()   enable_cplb(IMEM_CONTROL, ENICPLB)
+
+#endif		/* __ASSEMBLY__ */
+
+#endif		/* _CPLB_H */

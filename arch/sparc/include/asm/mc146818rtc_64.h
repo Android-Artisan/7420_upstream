@@ -13,6 +13,8 @@ extern unsigned long ds1287_regs;
 #define ds1287_regs (0UL)
 #endif
 #define RTC_PORT(x)	(ds1287_regs + (x))
+extern unsigned long cmos_regs;
+#define RTC_PORT(x)	(cmos_regs + (x))
 #define RTC_ALWAYS_BCD	0
 #endif
 

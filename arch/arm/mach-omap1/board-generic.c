@@ -13,6 +13,7 @@
  * published by the Free Software Foundation.
  */
 
+#include <linux/gpio.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/platform_device.h>
@@ -33,6 +34,11 @@ static void __init omap_generic_init_irq(void)
 	omap1_init_common_hw();
 	omap_init_irq();
 }
+#include <mach/mux.h>
+
+#include <mach/usb.h>
+
+#include "common.h"
 
 /* assume no Mini-AB port */
 
@@ -71,6 +77,15 @@ static void __init omap_generic_init(void)
 #ifdef CONFIG_ARCH_OMAP15XX
 	if (cpu_is_omap15xx()) {
 		generic_config[0].data = &generic1510_usb_config;
+		/* mux pins for uarts */
+		omap_cfg_reg(UART1_TX);
+		omap_cfg_reg(UART1_RTS);
+		omap_cfg_reg(UART2_TX);
+		omap_cfg_reg(UART2_RTS);
+		omap_cfg_reg(UART3_TX);
+		omap_cfg_reg(UART3_RX);
+
+		omap1_usb_init(&generic1510_usb_config);
 	}
 #endif
 #if defined(CONFIG_ARCH_OMAP16XX)
@@ -81,6 +96,10 @@ static void __init omap_generic_init(void)
 
 	omap_board_config = generic_config;
 	omap_board_config_size = ARRAY_SIZE(generic_config);
+		omap1_usb_init(&generic1610_usb_config);
+	}
+#endif
+
 	omap_serial_init();
 	omap_register_i2c_bus(1, 100, NULL, 0);
 }
@@ -99,4 +118,15 @@ MACHINE_START(OMAP_GENERIC, "Generic OMAP1510/1610/1710")
 	.init_irq	= omap_generic_init_irq,
 	.init_machine	= omap_generic_init,
 	.timer		= &omap_timer,
+MACHINE_START(OMAP_GENERIC, "Generic OMAP1510/1610/1710")
+	/* Maintainer: Tony Lindgren <tony@atomide.com> */
+	.atag_offset	= 0x100,
+	.map_io		= omap16xx_map_io,
+	.init_early	= omap1_init_early,
+	.init_irq	= omap1_init_irq,
+	.handle_irq	= omap1_handle_irq,
+	.init_machine	= omap_generic_init,
+	.init_late	= omap1_init_late,
+	.init_time	= omap1_timer_init,
+	.restart	= omap1_restart,
 MACHINE_END

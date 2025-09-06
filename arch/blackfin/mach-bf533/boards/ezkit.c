@@ -26,6 +26,11 @@
  * along with this program; if not, see the file COPYING, or write
  * to the Free Software Foundation, Inc.,
  * 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+ * Copyright 2004-2009 Analog Devices Inc.
+ *                2005 National ICT Australia (NICTA)
+ *                      Aidan Williams <aidan@nicta.com.au>
+ *
+ * Licensed under the GPL-2 or later.
  */
 
 #include <linux/device.h>
@@ -38,6 +43,15 @@
 #include <linux/usb/isp1362.h>
 #endif
 #include <linux/irq.h>
+#include <linux/mtd/plat-ram.h>
+#include <linux/mtd/physmap.h>
+#include <linux/spi/spi.h>
+#include <linux/spi/flash.h>
+#if IS_ENABLED(CONFIG_USB_ISP1362_HCD)
+#include <linux/usb/isp1362.h>
+#endif
+#include <linux/irq.h>
+#include <linux/i2c.h>
 #include <asm/dma.h>
 #include <asm/bfin5xx_spi.h>
 #include <asm/portmux.h>
@@ -49,6 +63,9 @@
 const char bfin_board_name[] = "ADDS-BF533-EZKIT";
 
 #if defined(CONFIG_RTC_DRV_BFIN) || defined(CONFIG_RTC_DRV_BFIN_MODULE)
+const char bfin_board_name[] = "ADI BF533-EZKIT";
+
+#if IS_ENABLED(CONFIG_RTC_DRV_BFIN)
 static struct platform_device rtc_device = {
 	.name = "rtc-bfin",
 	.id   = -1,
@@ -66,6 +83,15 @@ static struct platform_device bfin_fb_adv7393_device = {
  *  Driver needs to know address, irq and flag pin.
  */
 #if defined(CONFIG_SMC91X) || defined(CONFIG_SMC91X_MODULE)
+#if IS_ENABLED(CONFIG_SMC91X)
+#include <linux/smc91x.h>
+
+static struct smc91x_platdata smc91x_info = {
+	.flags = SMC91X_USE_16BIT | SMC91X_NOWAIT,
+	.leda = RPC_LED_100_10,
+	.ledb = RPC_LED_TX_RX,
+};
+
 static struct resource smc91x_resources[] = {
 	{
 		.name = "smc91x-regs",
@@ -87,6 +113,123 @@ static struct platform_device smc91x_device = {
 #endif
 
 #if defined(CONFIG_MTD_M25P80) || defined(CONFIG_MTD_M25P80_MODULE)
+	.dev	= {
+		.platform_data	= &smc91x_info,
+	},
+};
+#endif
+
+#if IS_ENABLED(CONFIG_MTD_PHYSMAP)
+static struct mtd_partition ezkit_partitions_a[] = {
+	{
+		.name       = "bootloader(nor a)",
+		.size       = 0x40000,
+		.offset     = 0,
+	}, {
+		.name       = "linux kernel(nor a)",
+		.size       = MTDPART_SIZ_FULL,
+		.offset     = MTDPART_OFS_APPEND,
+	},
+};
+
+static struct physmap_flash_data ezkit_flash_data_a = {
+	.width      = 2,
+	.parts      = ezkit_partitions_a,
+	.nr_parts   = ARRAY_SIZE(ezkit_partitions_a),
+};
+
+static struct resource ezkit_flash_resource_a = {
+	.start = 0x20000000,
+	.end   = 0x200fffff,
+	.flags = IORESOURCE_MEM,
+};
+
+static struct platform_device ezkit_flash_device_a = {
+	.name          = "physmap-flash",
+	.id            = 0,
+	.dev = {
+		.platform_data = &ezkit_flash_data_a,
+	},
+	.num_resources = 1,
+	.resource      = &ezkit_flash_resource_a,
+};
+
+static struct mtd_partition ezkit_partitions_b[] = {
+	{
+		.name   = "file system(nor b)",
+		.size   = MTDPART_SIZ_FULL,
+		.offset = MTDPART_OFS_APPEND,
+	},
+};
+
+static struct physmap_flash_data ezkit_flash_data_b = {
+	.width      = 2,
+	.parts      = ezkit_partitions_b,
+	.nr_parts   = ARRAY_SIZE(ezkit_partitions_b),
+};
+
+static struct resource ezkit_flash_resource_b = {
+	.start = 0x20100000,
+	.end   = 0x201fffff,
+	.flags = IORESOURCE_MEM,
+};
+
+static struct platform_device ezkit_flash_device_b = {
+	.name          = "physmap-flash",
+	.id            = 4,
+	.dev = {
+		.platform_data = &ezkit_flash_data_b,
+	},
+	.num_resources = 1,
+	.resource      = &ezkit_flash_resource_b,
+};
+#endif
+
+#if IS_ENABLED(CONFIG_MTD_PLATRAM)
+static struct platdata_mtd_ram sram_data_a = {
+	.mapname   = "Flash A SRAM",
+	.bankwidth = 2,
+};
+
+static struct resource sram_resource_a = {
+	.start = 0x20240000,
+	.end   = 0x2024ffff,
+	.flags = IORESOURCE_MEM,
+};
+
+static struct platform_device sram_device_a = {
+	.name          = "mtd-ram",
+	.id            = 8,
+	.dev = {
+		.platform_data = &sram_data_a,
+	},
+	.num_resources = 1,
+	.resource      = &sram_resource_a,
+};
+
+static struct platdata_mtd_ram sram_data_b = {
+	.mapname   = "Flash B SRAM",
+	.bankwidth = 2,
+};
+
+static struct resource sram_resource_b = {
+	.start = 0x202c0000,
+	.end   = 0x202cffff,
+	.flags = IORESOURCE_MEM,
+};
+
+static struct platform_device sram_device_b = {
+	.name          = "mtd-ram",
+	.id            = 9,
+	.dev = {
+		.platform_data = &sram_data_b,
+	},
+	.num_resources = 1,
+	.resource      = &sram_resource_b,
+};
+#endif
+
+#if IS_ENABLED(CONFIG_MTD_M25P80)
 static struct mtd_partition bfin_spi_flash_partitions[] = {
 	{
 		.name = "bootloader(spi)",
@@ -142,6 +285,7 @@ static struct bfin5xx_spi_chip spidev_chip_info = {
 
 static struct spi_board_info bfin_spi_board_info[] __initdata = {
 #if defined(CONFIG_MTD_M25P80) || defined(CONFIG_MTD_M25P80_MODULE)
+#if IS_ENABLED(CONFIG_MTD_M25P80)
 	{
 		/* the modalias must be the same as spi device driver name */
 		.modalias = "m25p80", /* Name of spi_driver for this device */
@@ -175,6 +319,15 @@ static struct spi_board_info bfin_spi_board_info[] __initdata = {
 	},
 #endif
 #if defined(CONFIG_SPI_SPIDEV) || defined(CONFIG_SPI_SPIDEV_MODULE)
+#if IS_ENABLED(CONFIG_SND_BF5XX_SOC_AD183X)
+	{
+		.modalias = "ad183x",
+		.max_speed_hz = 3125000,     /* max spi clock (SCK) speed in HZ */
+		.bus_num = 0,
+		.chip_select = 4,
+	},
+#endif
+#if IS_ENABLED(CONFIG_SPI_SPIDEV)
 	{
 		.modalias = "spidev",
 		.max_speed_hz = 3125000,     /* max spi clock (SCK) speed in HZ */
@@ -186,6 +339,7 @@ static struct spi_board_info bfin_spi_board_info[] __initdata = {
 };
 
 #if defined(CONFIG_SPI_BFIN) || defined(CONFIG_SPI_BFIN_MODULE)
+#if IS_ENABLED(CONFIG_SPI_BFIN5XX)
 /* SPI (0) */
 static struct resource bfin_spi0_resource[] = {
 	[0] = {
@@ -196,6 +350,11 @@ static struct resource bfin_spi0_resource[] = {
 	[1] = {
 		.start = CH_SPI,
 		.end   = CH_SPI,
+		.flags = IORESOURCE_DMA,
+	},
+	[2] = {
+		.start = IRQ_SPI,
+		.end   = IRQ_SPI,
 		.flags = IORESOURCE_IRQ,
 	}
 };
@@ -238,6 +397,60 @@ static struct platform_device bfin_uart_device = {
 #if defined(CONFIG_BFIN_SIR) || defined(CONFIG_BFIN_SIR_MODULE)
 static struct resource bfin_sir_resources[] = {
 #ifdef CONFIG_BFIN_SIR0
+#if IS_ENABLED(CONFIG_SERIAL_BFIN)
+#ifdef CONFIG_SERIAL_BFIN_UART0
+static struct resource bfin_uart0_resources[] = {
+	{
+		.start = BFIN_UART_THR,
+		.end = BFIN_UART_GCTL+2,
+		.flags = IORESOURCE_MEM,
+	},
+	{
+		.start = IRQ_UART0_TX,
+		.end = IRQ_UART0_TX,
+		.flags = IORESOURCE_IRQ,
+	},
+	{
+		.start = IRQ_UART0_RX,
+		.end = IRQ_UART0_RX,
+		.flags = IORESOURCE_IRQ,
+	},
+	{
+		.start = IRQ_UART0_ERROR,
+		.end = IRQ_UART0_ERROR,
+		.flags = IORESOURCE_IRQ,
+	},
+	{
+		.start = CH_UART0_TX,
+		.end = CH_UART0_TX,
+		.flags = IORESOURCE_DMA,
+	},
+	{
+		.start = CH_UART0_RX,
+		.end = CH_UART0_RX,
+		.flags = IORESOURCE_DMA,
+	},
+};
+
+static unsigned short bfin_uart0_peripherals[] = {
+	P_UART0_TX, P_UART0_RX, 0
+};
+
+static struct platform_device bfin_uart0_device = {
+	.name = "bfin-uart",
+	.id = 0,
+	.num_resources = ARRAY_SIZE(bfin_uart0_resources),
+	.resource = bfin_uart0_resources,
+	.dev = {
+		.platform_data = &bfin_uart0_peripherals, /* Passed to driver */
+	},
+};
+#endif
+#endif
+
+#if IS_ENABLED(CONFIG_BFIN_SIR)
+#ifdef CONFIG_BFIN_SIR0
+static struct resource bfin_sir0_resources[] = {
 	{
 		.start = 0xFFC00400,
 		.end = 0xFFC004FF,
@@ -255,6 +468,28 @@ static struct platform_device bfin_sir_device = {
 #endif
 
 #if defined(CONFIG_KEYBOARD_GPIO) || defined(CONFIG_KEYBOARD_GPIO_MODULE)
+	{
+		.start = IRQ_UART0_RX,
+		.end = IRQ_UART0_RX+1,
+		.flags = IORESOURCE_IRQ,
+	},
+	{
+		.start = CH_UART0_RX,
+		.end = CH_UART0_RX+1,
+		.flags = IORESOURCE_DMA,
+	},
+};
+
+static struct platform_device bfin_sir0_device = {
+	.name = "bfin_sir",
+	.id = 0,
+	.num_resources = ARRAY_SIZE(bfin_sir0_resources),
+	.resource = bfin_sir0_resources,
+};
+#endif
+#endif
+
+#if IS_ENABLED(CONFIG_KEYBOARD_GPIO)
 #include <linux/input.h>
 #include <linux/gpio_keys.h>
 
@@ -297,6 +532,12 @@ static struct platform_device bfin_gpios_device = {
 static struct i2c_gpio_platform_data i2c_gpio_data = {
 	.sda_pin		= 1,
 	.scl_pin		= 0,
+#if IS_ENABLED(CONFIG_I2C_GPIO)
+#include <linux/i2c-gpio.h>
+
+static struct i2c_gpio_platform_data i2c_gpio_data = {
+	.sda_pin		= GPIO_PF1,
+	.scl_pin		= GPIO_PF0,
 	.sda_is_open_drain	= 0,
 	.scl_is_open_drain	= 0,
 	.udelay			= 40,
@@ -338,6 +579,30 @@ static struct platform_device bfin_dpmc = {
 	},
 };
 
+static struct i2c_board_info __initdata bfin_i2c_board_info[] = {
+#if IS_ENABLED(CONFIG_FB_BFIN_7393)
+	{
+		I2C_BOARD_INFO("bfin-adv7393", 0x2B),
+	},
+#endif
+};
+
+#if IS_ENABLED(CONFIG_SND_BF5XX_I2S)
+static struct platform_device bfin_i2s = {
+	.name = "bfin-i2s",
+	.id = CONFIG_SND_BF5XX_SPORT_NUM,
+	/* TODO: add platform data here */
+};
+#endif
+
+#if IS_ENABLED(CONFIG_SND_BF5XX_AC97)
+static struct platform_device bfin_ac97 = {
+	.name = "bfin-ac97",
+	.id = CONFIG_SND_BF5XX_SPORT_NUM,
+	/* TODO: add platform data here */
+};
+#endif
+
 static struct platform_device *ezkit_devices[] __initdata = {
 
 	&bfin_dpmc,
@@ -375,6 +640,55 @@ static struct platform_device *ezkit_devices[] __initdata = {
 #endif
 
 	&bfin_gpios_device,
+#if IS_ENABLED(CONFIG_MTD_PHYSMAP)
+	&ezkit_flash_device_a,
+	&ezkit_flash_device_b,
+#endif
+
+#if IS_ENABLED(CONFIG_MTD_PLATRAM)
+	&sram_device_a,
+	&sram_device_b,
+#endif
+
+#if IS_ENABLED(CONFIG_SMC91X)
+	&smc91x_device,
+#endif
+
+#if IS_ENABLED(CONFIG_SPI_BFIN5XX)
+	&bfin_spi0_device,
+#endif
+
+#if IS_ENABLED(CONFIG_RTC_DRV_BFIN)
+	&rtc_device,
+#endif
+
+#if IS_ENABLED(CONFIG_SERIAL_BFIN)
+#ifdef CONFIG_SERIAL_BFIN_UART0
+	&bfin_uart0_device,
+#endif
+#endif
+
+#if IS_ENABLED(CONFIG_BFIN_SIR)
+#ifdef CONFIG_BFIN_SIR0
+	&bfin_sir0_device,
+#endif
+#endif
+
+#if IS_ENABLED(CONFIG_KEYBOARD_GPIO)
+	&bfin_device_gpiokeys,
+#endif
+
+#if IS_ENABLED(CONFIG_I2C_GPIO)
+	&i2c_gpio_device,
+#endif
+
+#if IS_ENABLED(CONFIG_SND_BF5XX_I2S)
+	&bfin_i2s,
+#endif
+
+#if IS_ENABLED(CONFIG_SND_BF5XX_AC97)
+	&bfin_ac97,
+#endif
 };
 
 static int __init ezkit_init(void)
@@ -382,7 +696,24 @@ static int __init ezkit_init(void)
 	printk(KERN_INFO "%s(): registering device resources\n", __func__);
 	platform_add_devices(ezkit_devices, ARRAY_SIZE(ezkit_devices));
 	spi_register_board_info(bfin_spi_board_info, ARRAY_SIZE(bfin_spi_board_info));
+	i2c_register_board_info(0, bfin_i2c_board_info,
+				ARRAY_SIZE(bfin_i2c_board_info));
 	return 0;
 }
 
 arch_initcall(ezkit_init);
+
+static struct platform_device *ezkit_early_devices[] __initdata = {
+#if defined(CONFIG_SERIAL_BFIN_CONSOLE) || defined(CONFIG_EARLY_PRINTK)
+#ifdef CONFIG_SERIAL_BFIN_UART0
+	&bfin_uart0_device,
+#endif
+#endif
+};
+
+void __init native_machine_early_platform_add_devices(void)
+{
+	printk(KERN_INFO "register early platform devices\n");
+	early_platform_add_devices(ezkit_early_devices,
+		ARRAY_SIZE(ezkit_early_devices));
+}

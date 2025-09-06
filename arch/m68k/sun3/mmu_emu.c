@@ -6,6 +6,7 @@
 ** Started 1/16/98 @ 2:22 am
 */
 
+#include <linux/init.h>
 #include <linux/mman.h>
 #include <linux/mm.h>
 #include <linux/kernel.h>
@@ -48,6 +49,8 @@ extern void prom_reboot (char *) __attribute__ ((__noreturn__));
 
 unsigned long vmalloc_end;
 EXPORT_SYMBOL(vmalloc_end);
+unsigned long m68k_vmalloc_end;
+EXPORT_SYMBOL(m68k_vmalloc_end);
 
 unsigned long pmeg_vaddr[PMEGS_NUM];
 unsigned char pmeg_alloc[PMEGS_NUM];
@@ -125,6 +128,7 @@ void print_pte_vaddr (unsigned long vaddr)
  * Initialise the MMU emulator.
  */
 void mmu_emu_init(unsigned long bootmem_end)
+void __init mmu_emu_init(unsigned long bootmem_end)
 {
 	unsigned long seg, num;
 	int i,j;
@@ -175,6 +179,8 @@ void mmu_emu_init(unsigned long bootmem_end)
 			// vmalloc region
 			if(!vmalloc_end)
 				vmalloc_end = seg;
+			if (!m68k_vmalloc_end)
+				m68k_vmalloc_end = seg;
 
 			// mark the segmap alloc'd, and reserve any
 			// of the first 0xbff pages the hardware is

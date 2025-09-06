@@ -1,5 +1,7 @@
 obj-$(CONFIG_OPROFILE) += oprofile.o
 
+CFLAGS_common.o	+= -DUTS_MACHINE='"$(UTS_MACHINE)"'
+
 DRIVER_OBJS = $(addprefix ../../../drivers/oprofile/, \
 		oprof.o cpu_buffer.o buffer_sync.o \
 		event_buffer.o oprofile_files.o \
@@ -16,3 +18,8 @@ profdrvr-$(CONFIG_CPU_SUBTYPE_SH7091)	:= op_model_sh7750.o
 oprofile-y				:= $(DRIVER_OBJS) $(profdrvr-y)
 
 EXTRA_CFLAGS += -Werror
+ifeq ($(CONFIG_HW_PERF_EVENTS),y)
+DRIVER_OBJS += $(addprefix ../../../drivers/oprofile/, oprofile_perf.o)
+endif
+
+oprofile-y	:= $(DRIVER_OBJS) common.o backtrace.o

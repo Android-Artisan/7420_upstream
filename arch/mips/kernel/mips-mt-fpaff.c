@@ -3,6 +3,11 @@
  * Copyright (C) 2005 Mips Technologies, Inc
  */
 #include <linux/cpu.h>
+ * General MIPS MT support routines, usable in AP/SP and SMVP.
+ * Copyright (C) 2005 Mips Technologies, Inc
+ */
+#include <linux/cpu.h>
+#include <linux/cpuset.h>
 #include <linux/cpumask.h>
 #include <linux/delay.h>
 #include <linux/kernel.h>
@@ -19,6 +24,7 @@ cpumask_t mt_fpu_cpumask;
 
 static int fpaff_threshold = -1;
 unsigned long mt_fpemul_threshold = 0;
+unsigned long mt_fpemul_threshold;
 
 /*
  * Replacement functions for the sys_sched_setaffinity() and
@@ -27,11 +33,13 @@ unsigned long mt_fpemul_threshold = 0;
  * This code is 98% identical with the sys_sched_setaffinity()
  * and sys_sched_getaffinity() system calls, and should be
  * updated when kernel/sched.c changes.
+ * updated when kernel/sched/core.c changes.
  */
 
 /*
  * find_process_by_pid - find a process with a matching PID value.
  * used in sys_sched_set/getaffinity() in kernel/sched.c, so
+ * used in sys_sched_set/getaffinity() in kernel/sched/core.c, so
  * cloned here.
  */
 static inline struct task_struct *find_process_by_pid(pid_t pid)
@@ -39,6 +47,21 @@ static inline struct task_struct *find_process_by_pid(pid_t pid)
 	return pid ? find_task_by_vpid(pid) : current;
 }
 
+/*
+ * check the target process has a UID that matches the current process's
+ */
+static bool check_same_owner(struct task_struct *p)
+{
+	const struct cred *cred = current_cred(), *pcred;
+	bool match;
+
+	rcu_read_lock();
+	pcred = __task_cred(p);
+	match = (uid_eq(cred->euid, pcred->euid) ||
+		 uid_eq(cred->euid, pcred->uid));
+	rcu_read_unlock();
+	return match;
+}
 
 /*
  * mipsmt_sys_sched_setaffinity - set the cpu affinity of a process
@@ -51,6 +74,10 @@ asmlinkage long mipsmt_sys_sched_setaffinity(pid_t pid, unsigned int len,
 	int retval;
 	struct task_struct *p;
 	struct thread_info *ti;
+	cpumask_var_t cpus_allowed, new_mask, effective_mask;
+	struct thread_info *ti;
+	struct task_struct *p;
+	int retval;
 
 	if (len < sizeof(new_mask))
 		return -EINVAL;
@@ -64,6 +91,11 @@ asmlinkage long mipsmt_sys_sched_setaffinity(pid_t pid, unsigned int len,
 	p = find_process_by_pid(pid);
 	if (!p) {
 		read_unlock(&tasklist_lock);
+	rcu_read_lock();
+
+	p = find_process_by_pid(pid);
+	if (!p) {
+		rcu_read_unlock();
 		put_online_cpus();
 		return -ESRCH;
 	}
@@ -84,6 +116,27 @@ asmlinkage long mipsmt_sys_sched_setaffinity(pid_t pid, unsigned int len,
 	}
 
 	retval = security_task_setscheduler(p, 0, NULL);
+	/* Prevent p going away */
+	get_task_struct(p);
+	rcu_read_unlock();
+
+	if (!alloc_cpumask_var(&cpus_allowed, GFP_KERNEL)) {
+		retval = -ENOMEM;
+		goto out_put_task;
+	}
+	if (!alloc_cpumask_var(&new_mask, GFP_KERNEL)) {
+		retval = -ENOMEM;
+		goto out_free_cpus_allowed;
+	}
+	if (!alloc_cpumask_var(&effective_mask, GFP_KERNEL)) {
+		retval = -ENOMEM;
+		goto out_free_new_mask;
+	}
+	retval = -EPERM;
+	if (!check_same_owner(p) && !capable(CAP_SYS_NICE))
+		goto out_unlock;
+
+	retval = security_task_setscheduler(p);
 	if (retval)
 		goto out_unlock;
 
@@ -105,6 +158,40 @@ asmlinkage long mipsmt_sys_sched_setaffinity(pid_t pid, unsigned int len,
 	}
 
 out_unlock:
+	cpumask_copy(&p->thread.user_cpus_allowed, new_mask);
+
+ again:
+	/* Compute new global allowed CPU set if necessary */
+	ti = task_thread_info(p);
+	if (test_ti_thread_flag(ti, TIF_FPUBOUND) &&
+	    cpumask_intersects(new_mask, &mt_fpu_cpumask)) {
+		cpumask_and(effective_mask, new_mask, &mt_fpu_cpumask);
+		retval = set_cpus_allowed_ptr(p, effective_mask);
+	} else {
+		cpumask_copy(effective_mask, new_mask);
+		clear_ti_thread_flag(ti, TIF_FPUBOUND);
+		retval = set_cpus_allowed_ptr(p, new_mask);
+	}
+
+	if (!retval) {
+		cpuset_cpus_allowed(p, cpus_allowed);
+		if (!cpumask_subset(effective_mask, cpus_allowed)) {
+			/*
+			 * We must have raced with a concurrent cpuset
+			 * update. Just reset the cpus_allowed to the
+			 * cpuset's cpus_allowed
+			 */
+			cpumask_copy(new_mask, cpus_allowed);
+			goto again;
+		}
+	}
+out_unlock:
+	free_cpumask_var(effective_mask);
+out_free_new_mask:
+	free_cpumask_var(new_mask);
+out_free_cpus_allowed:
+	free_cpumask_var(cpus_allowed);
+out_put_task:
 	put_task_struct(p);
 	put_online_cpus();
 	return retval;
@@ -118,6 +205,7 @@ asmlinkage long mipsmt_sys_sched_getaffinity(pid_t pid, unsigned int len,
 {
 	unsigned int real_len;
 	cpumask_t mask;
+	cpumask_t allowed, mask;
 	int retval;
 	struct task_struct *p;
 
@@ -137,6 +225,8 @@ asmlinkage long mipsmt_sys_sched_getaffinity(pid_t pid, unsigned int len,
 		goto out_unlock;
 
 	cpus_and(mask, p->thread.user_cpus_allowed, cpu_possible_map);
+	cpumask_or(&allowed, &p->thread.user_cpus_allowed, &p->cpus_allowed);
+	cpumask_and(&mask, &allowed, cpu_active_mask);
 
 out_unlock:
 	read_unlock(&tasklist_lock);

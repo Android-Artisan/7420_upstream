@@ -1,11 +1,13 @@
 /******************************************************************************
  *
  * Name: acpi.h - Master include file, Publics and external data.
+ * Name: acpi.h - Master public include file used to interface to ACPICA
  *
  *****************************************************************************/
 
 /*
  * Copyright (C) 2000 - 2008, Intel Corp.
+ * Copyright (C) 2000 - 2015, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -65,5 +67,23 @@
 #include "acglobal.h"		/* All global variables */
 #include "achware.h"		/* Hardware defines and interfaces */
 #include "acutils.h"		/* Utility interfaces */
+ * Public include files for use by code that will interface to ACPICA.
+ *
+ * Information includes the ACPICA data types, names, exceptions, and
+ * external interface prototypes. Also included are the definitions for
+ * all ACPI tables (FADT, MADT, etc.)
+ *
+ * Note: The order of these include files is important.
+ */
+#include <acpi/platform/acenv.h>	/* Environment-specific items */
+#include <acpi/acnames.h>		/* Common ACPI names and strings */
+#include <acpi/actypes.h>		/* ACPICA data types and structures */
+#include <acpi/acexcep.h>		/* ACPICA exceptions */
+#include <acpi/actbl.h>		/* ACPI table definitions */
+#include <acpi/acoutput.h>		/* Error output and Debug macros */
+#include <acpi/acrestyp.h>		/* Resource Descriptor structs */
+#include <acpi/acpiosxf.h>		/* OSL interfaces (ACPICA-to-OS) */
+#include <acpi/acpixf.h>		/* ACPI core subsystem external interfaces */
+#include <acpi/platform/acenvex.h>	/* Extra environment-specific items */
 
 #endif				/* __ACPI_H__ */

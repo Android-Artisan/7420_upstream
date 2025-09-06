@@ -10,6 +10,10 @@
 #include <linux/platform_device.h>
 #include <asm/machvec.h>
 #include <mach-se/mach/se.h>
+#include <linux/sh_eth.h>
+#include <mach-se/mach/se.h>
+#include <mach-se/mach/mrshpc.h>
+#include <asm/machvec.h>
 #include <asm/io.h>
 #include <asm/smc37c93x.h>
 #include <asm/heartbeat.h>
@@ -103,6 +107,12 @@ static struct resource heartbeat_resources[] = {
 	},
 };
 
+static struct resource heartbeat_resource = {
+	.start	= PA_LED,
+	.end	= PA_LED,
+	.flags	= IORESOURCE_MEM | IORESOURCE_MEM_16BIT,
+};
+
 static struct platform_device heartbeat_device = {
 	.name		= "heartbeat",
 	.id		= -1,
@@ -111,11 +121,18 @@ static struct platform_device heartbeat_device = {
 	},
 	.num_resources	= ARRAY_SIZE(heartbeat_resources),
 	.resource	= heartbeat_resources,
+	.num_resources	= 1,
+	.resource	= &heartbeat_resource,
 };
 
 #if defined(CONFIG_CPU_SUBTYPE_SH7710) ||\
 	defined(CONFIG_CPU_SUBTYPE_SH7712)
 /* SH771X Ethernet driver */
+static struct sh_eth_plat_data sh_eth_plat = {
+	.phy = PHY_ID,
+	.phy_interface = PHY_INTERFACE_MODE_MII,
+};
+
 static struct resource sh_eth0_resources[] = {
 	[0] = {
 		.start = SH_ETH0_BASE,
@@ -132,8 +149,10 @@ static struct resource sh_eth0_resources[] = {
 static struct platform_device sh_eth0_device = {
 	.name = "sh-eth",
 	.id	= 0,
+	.name = "sh771x-ether",
+	.id = 0,
 	.dev = {
-		.platform_data = PHY_ID,
+		.platform_data = &sh_eth_plat,
 	},
 	.num_resources = ARRAY_SIZE(sh_eth0_resources),
 	.resource = sh_eth0_resources,
@@ -155,8 +174,10 @@ static struct resource sh_eth1_resources[] = {
 static struct platform_device sh_eth1_device = {
 	.name = "sh-eth",
 	.id	= 1,
+	.name = "sh771x-ether",
+	.id = 1,
 	.dev = {
-		.platform_data = PHY_ID,
+		.platform_data = &sh_eth_plat,
 	},
 	.num_resources = ARRAY_SIZE(sh_eth1_resources),
 	.resource = sh_eth1_resources,
@@ -175,6 +196,7 @@ static struct platform_device *se_devices[] __initdata = {
 
 static int __init se_devices_setup(void)
 {
+	mrshpc_setup_windows();
 	return platform_add_devices(se_devices, ARRAY_SIZE(se_devices));
 }
 device_initcall(se_devices_setup);

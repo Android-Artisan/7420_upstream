@@ -18,6 +18,7 @@ slabs that have data in them. See "slabinfo -h" for more options when
 running the command. slabinfo can be compiled with
 
 gcc -o slabinfo Documentation/vm/slabinfo.c
+gcc -o slabinfo tools/vm/slabinfo.c
 
 Some of the modes of operation of slabinfo require that slub debugging
 be enabled on the command line. F.e. no tracking information will be
@@ -41,6 +42,9 @@ Possible debug options are
 	P		Poisoning (object and padding)
 	U		User tracking (free and alloc)
 	T		Trace (please only use on single slabs)
+	A		Toggle failslab filter mark for the cache
+	O		Switch debugging off for caches that would have
+			caused higher minimum slab orders
 	-		Switch all debugging off (useful if the kernel is
 			configured with CONFIG_SLUB_DEBUG_ON)
 
@@ -58,6 +62,14 @@ Red zoning and tracking may realign the slab.  We can just apply sanity checks
 to the dentry cache with
 
 	slub_debug=F,dentry
+
+Debugging options may require the minimum possible slab order to increase as
+a result of storing the metadata (for example, caches with PAGE_SIZE object
+sizes).  This has a higher liklihood of resulting in slab allocation errors
+in low memory situations or if there's high fragmentation of memory.  To
+switch off debugging for such caches by default, use
+
+	slub_debug=O
 
 In case you forgot to enable debugging on the kernel command line: It is
 possible to enable debugging manually when the kernel is up. Look at the
@@ -107,6 +119,7 @@ can be influenced by kernel parameters:
 slub_min_objects=x		(default 4)
 slub_min_order=x		(default 0)
 slub_max_order=x		(default 1)
+slub_max_order=x		(default 3 (PAGE_ALLOC_COSTLY_ORDER))
 
 slub_min_objects allows to specify how many objects must at least fit
 into one slab in order for the allocation order to be acceptable.
@@ -121,13 +134,16 @@ slub_max_order specified the order at which slub_min_objects should no
 longer be checked. This is useful to avoid SLUB trying to generate
 super large order pages to fit slub_min_objects of a slab cache with
 large object sizes into one high order page.
+large object sizes into one high order page. Setting command line
+parameter debug_guardpage_minorder=N (N > 0), forces setting
+slub_max_order to 0, what cause minimum possible order of slabs
+allocation.
 
 SLUB Debug output
 -----------------
 
 Here is a sample of slub debug output:
 
-====================================================================
 BUG kmalloc-8: Redzone overwritten
 --------------------------------------------------------------------
 
@@ -161,7 +177,6 @@ Bytes b4 0xc90f6d10:  00 00 00 00 00 00 00 00 5a 5a 5a 5a 5a 5a 5a 5a ........ZZ
   [<c01841d7>] sys_write+0x3d/0x72
   [<c0104112>] sysenter_past_esp+0x5f/0x99
   [<b7f7b410>] 0xb7f7b410
-  =======================
 
 FIX kmalloc-8: Restoring Redzone 0xc90f6d28-0xc90f6d2b=0xcc
 
@@ -173,7 +188,6 @@ into the syslog:
 
 This will be a message in the system log starting with
 
-===============================================
 BUG <slab cache affected>: <What went wrong>
 -----------------------------------------------
 
@@ -236,6 +250,7 @@ has the length of 8 characters. However, a 8 character string needs a
 terminating 0. That zero has overwritten the first byte of the Redzone field.
 After reporting the details of the issue encountered the FIX SLUB message
 tell us that SLUB has restored the Redzone to its proper value and then
+tells us that SLUB has restored the Redzone to its proper value and then
 system operations continue.
 
 Emergency operations:
@@ -267,3 +282,63 @@ of other objects.
 	slub_debug=FZ,dentry
 
 Christoph Lameter, May 30, 2007
+Extended slabinfo mode and plotting
+-----------------------------------
+
+The slabinfo tool has a special 'extended' ('-X') mode that includes:
+ - Slabcache Totals
+ - Slabs sorted by size (up to -N <num> slabs, default 1)
+ - Slabs sorted by loss (up to -N <num> slabs, default 1)
+
+Additionally, in this mode slabinfo does not dynamically scale sizes (G/M/K)
+and reports everything in bytes (this functionality is also available to
+other slabinfo modes via '-B' option) which makes reporting more precise and
+accurate. Moreover, in some sense the `-X' mode also simplifies the analysis
+of slabs' behaviour, because its output can be plotted using the
+slabinfo-gnuplot.sh script. So it pushes the analysis from looking through
+the numbers (tons of numbers) to something easier -- visual analysis.
+
+To generate plots:
+a) collect slabinfo extended records, for example:
+
+  while [ 1 ]; do slabinfo -X >> FOO_STATS; sleep 1; done
+
+b) pass stats file(-s) to slabinfo-gnuplot.sh script:
+  slabinfo-gnuplot.sh FOO_STATS [FOO_STATS2 .. FOO_STATSN]
+
+The slabinfo-gnuplot.sh script will pre-processes the collected records
+and generates 3 png files (and 3 pre-processing cache files) per STATS
+file:
+ - Slabcache Totals: FOO_STATS-totals.png
+ - Slabs sorted by size: FOO_STATS-slabs-by-size.png
+ - Slabs sorted by loss: FOO_STATS-slabs-by-loss.png
+
+Another use case, when slabinfo-gnuplot can be useful, is when you need
+to compare slabs' behaviour "prior to" and "after" some code modification.
+To help you out there, slabinfo-gnuplot.sh script can 'merge' the
+`Slabcache Totals` sections from different measurements. To visually
+compare N plots:
+
+a) Collect as many STATS1, STATS2, .. STATSN files as you need
+  while [ 1 ]; do slabinfo -X >> STATS<X>; sleep 1; done
+
+b) Pre-process those STATS files
+  slabinfo-gnuplot.sh STATS1 STATS2 .. STATSN
+
+c) Execute slabinfo-gnuplot.sh in '-t' mode, passing all of the
+generated pre-processed *-totals
+  slabinfo-gnuplot.sh -t STATS1-totals STATS2-totals .. STATSN-totals
+
+This will produce a single plot (png file).
+
+Plots, expectedly, can be large so some fluctuations or small spikes
+can go unnoticed. To deal with that, `slabinfo-gnuplot.sh' has two
+options to 'zoom-in'/'zoom-out':
+ a) -s %d,%d  overwrites the default image width and heigh
+ b) -r %d,%d  specifies a range of samples to use (for example,
+              in `slabinfo -X >> FOO_STATS; sleep 1;' case, using
+              a "-r 40,60" range will plot only samples collected
+              between 40th and 60th seconds).
+
+Christoph Lameter, May 30, 2007
+Sergey Senozhatsky, October 23, 2015

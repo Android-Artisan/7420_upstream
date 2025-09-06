@@ -24,6 +24,8 @@
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/slab.h>
+#include <linux/of_address.h>
+#include <linux/of_irq.h>
 
 #include <asm/machdep.h>
 #include <asm/macio.h>
@@ -34,6 +36,7 @@
 #undef DEBUG
 
 #define MAX_NODE_NAME_SIZE (BUS_ID_SIZE - 12)
+#define MAX_NODE_NAME_SIZE (20 - 12)
 
 static struct macio_chip      *macio_on_hold;
 
@@ -42,11 +45,13 @@ static int macio_bus_match(struct device *dev, struct device_driver *drv)
 	struct macio_dev * macio_dev = to_macio_device(dev);
 	struct macio_driver * macio_drv = to_macio_driver(drv);
 	const struct of_device_id * matches = macio_drv->match_table;
+	const struct of_device_id * matches = drv->of_match_table;
 
 	if (!matches) 
 		return 0;
 
 	return of_match_device(matches, &macio_dev->ofdev) != NULL;
+	return of_match_device(matches, dev) != NULL;
 }
 
 struct macio_dev *macio_dev_get(struct macio_dev *dev)
@@ -85,6 +90,7 @@ static int macio_device_probe(struct device *dev)
 	macio_dev_get(macio_dev);
 
 	match = of_match_device(drv->match_table, &macio_dev->ofdev);
+	match = of_match_device(drv->driver.of_match_table, dev);
 	if (match)
 		error = drv->probe(macio_dev, match);
 	if (error)
@@ -140,6 +146,7 @@ struct bus_type macio_bus_type = {
        .name	= "macio",
        .match	= macio_bus_match,
        .uevent = of_device_uevent,
+       .uevent = of_device_uevent_modalias,
        .probe	= macio_device_probe,
        .remove	= macio_device_remove,
        .shutdown = macio_device_shutdown,
@@ -241,6 +248,7 @@ static void macio_create_fixup_irq(struct macio_dev *dev, int index,
 		dev->interrupt[index].start = irq;
 		dev->interrupt[index].flags = IORESOURCE_IRQ;
 		dev->interrupt[index].name = dev->ofdev.dev.bus_id;
+		dev->interrupt[index].name = dev_name(&dev->ofdev.dev);
 	}
 	if (dev->n_interrupts <= index)
 		dev->n_interrupts = index + 1;
@@ -249,6 +257,7 @@ static void macio_create_fixup_irq(struct macio_dev *dev, int index,
 static void macio_add_missing_resources(struct macio_dev *dev)
 {
 	struct device_node *np = dev->ofdev.node;
+	struct device_node *np = dev->ofdev.dev.of_node;
 	unsigned int irq_base;
 
 	/* Gatwick has some missing interrupts on child nodes */
@@ -290,6 +299,7 @@ static void macio_add_missing_resources(struct macio_dev *dev)
 static void macio_setup_interrupts(struct macio_dev *dev)
 {
 	struct device_node *np = dev->ofdev.node;
+	struct device_node *np = dev->ofdev.dev.of_node;
 	unsigned int irq;
 	int i = 0, j = 0;
 
@@ -298,12 +308,18 @@ static void macio_setup_interrupts(struct macio_dev *dev)
 
 		if (j >= MACIO_DEV_COUNT_IRQS)
 			break;
+		struct resource *res;
+
+		if (j >= MACIO_DEV_COUNT_IRQS)
+			break;
+		res = &dev->interrupt[j];
 		irq = irq_of_parse_and_map(np, i++);
 		if (irq == NO_IRQ)
 			break;
 		res->start = irq;
 		res->flags = IORESOURCE_IRQ;
 		res->name = dev->ofdev.dev.bus_id;
+		res->name = dev_name(&dev->ofdev.dev);
 		if (macio_resource_quirks(np, res, i - 1)) {
 			memset(res, 0, sizeof(struct resource));
 			continue;
@@ -317,6 +333,7 @@ static void macio_setup_resources(struct macio_dev *dev,
 				  struct resource *parent_res)
 {
 	struct device_node *np = dev->ofdev.node;
+	struct device_node *np = dev->ofdev.dev.of_node;
 	struct resource r;
 	int index;
 
@@ -326,6 +343,12 @@ static void macio_setup_resources(struct macio_dev *dev,
 			break;
 		*res = r;
 		res->name = dev->ofdev.dev.bus_id;
+		struct resource *res;
+		if (index >= MACIO_DEV_COUNT_RESOURCES)
+			break;
+		res = &dev->resource[index];
+		*res = r;
+		res->name = dev_name(&dev->ofdev.dev);
 
 		if (macio_resource_quirks(np, res, index)) {
 			memset(res, 0, sizeof(struct resource));
@@ -339,6 +362,7 @@ static void macio_setup_resources(struct macio_dev *dev,
 			printk(KERN_WARNING "Can't request resource "
 			       "%d for MacIO device %s\n",
 			       index, dev->ofdev.dev.bus_id);
+			       index, dev_name(&dev->ofdev.dev));
 		}
 	}
 	dev->n_resources = index;
@@ -377,6 +401,27 @@ static struct macio_dev * macio_add_one_device(struct macio_chip *chip,
 	dev->ofdev.dev.parent = parent;
 	dev->ofdev.dev.bus = &macio_bus_type;
 	dev->ofdev.dev.release = macio_release_dev;
+	dev->ofdev.dev.of_node = np;
+	dev->ofdev.archdata.dma_mask = 0xffffffffUL;
+	dev->ofdev.dev.dma_mask = &dev->ofdev.archdata.dma_mask;
+	dev->ofdev.dev.parent = parent;
+	dev->ofdev.dev.bus = &macio_bus_type;
+	dev->ofdev.dev.release = macio_release_dev;
+	dev->ofdev.dev.dma_parms = &dev->dma_parms;
+
+	/* Standard DMA paremeters */
+	dma_set_max_seg_size(&dev->ofdev.dev, 65536);
+	dma_set_seg_boundary(&dev->ofdev.dev, 0xffffffff);
+
+#ifdef CONFIG_PCI
+	/* Set the DMA ops to the ones from the PCI device, this could be
+	 * fishy if we didn't know that on PowerMac it's always direct ops
+	 * or iommu ops that will work fine
+	 *
+	 * To get all the fields, copy all archdata
+	 */
+	dev->ofdev.dev.archdata = chip->lbus.pdev->dev.archdata;
+#endif /* CONFIG_PCI */
 
 #ifdef DEBUG
 	printk("preparing mdev @%p, ofdev @%p, dev @%p, kobj @%p\n",
@@ -387,6 +432,8 @@ static struct macio_dev * macio_add_one_device(struct macio_chip *chip,
 	if (np == chip->of_node) {
 		sprintf(dev->ofdev.dev.bus_id, "%1d.%08x:%.*s",
 			chip->lbus.index,
+		dev_set_name(&dev->ofdev.dev, "%1d.%08x:%.*s",
+			     chip->lbus.index,
 #ifdef CONFIG_PCI
 			(unsigned int)pci_resource_start(chip->lbus.pdev, 0),
 #else
@@ -398,6 +445,9 @@ static struct macio_dev * macio_add_one_device(struct macio_chip *chip,
 		sprintf(dev->ofdev.dev.bus_id, "%1d.%08x:%.*s",
 			chip->lbus.index,
 			reg ? *reg : 0, MAX_NODE_NAME_SIZE, np->name);
+		dev_set_name(&dev->ofdev.dev, "%1d.%08x:%.*s",
+			     chip->lbus.index,
+			     reg ? *reg : 0, MAX_NODE_NAME_SIZE, np->name);
 	}
 
 	/* Setup interrupts & resources */
@@ -409,7 +459,8 @@ static struct macio_dev * macio_add_one_device(struct macio_chip *chip,
 	if (of_device_register(&dev->ofdev) != 0) {
 		printk(KERN_DEBUG"macio: device registration error for %s!\n",
 		       dev->ofdev.dev.bus_id);
-		kfree(dev);
+		       dev_name(&dev->ofdev.dev));
+		put_device(&dev->ofdev.dev);
 		return NULL;
 	}
 
@@ -479,6 +530,9 @@ static void macio_pci_add_devices(struct macio_chip *chip)
 	if (mbdev)
 		for (np = NULL; (np = of_get_next_child(mbdev->ofdev.node, np))
 			     != NULL;) {
+	if (mbdev) {
+		pnode = mbdev->ofdev.dev.of_node;
+		for (np = NULL; (np = of_get_next_child(pnode, np)) != NULL;) {
 			if (macio_skip_device(np))
 				continue;
 			of_node_get(np);
@@ -491,6 +545,12 @@ static void macio_pci_add_devices(struct macio_chip *chip)
 	if (sdev) {
 		for (np = NULL; (np = of_get_next_child(sdev->ofdev.node, np))
 			     != NULL;) {
+	}
+
+	/* Add serial ports if any */
+	if (sdev) {
+		pnode = sdev->ofdev.dev.of_node;
+		for (np = NULL; (np = of_get_next_child(pnode, np)) != NULL;) {
 			if (macio_skip_device(np))
 				continue;
 			of_node_get(np);
@@ -525,6 +585,42 @@ void macio_unregister_driver(struct macio_driver *drv)
 	driver_unregister(&drv->driver);
 }
 
+/* Managed MacIO resources */
+struct macio_devres {
+	u32	res_mask;
+};
+
+static void maciom_release(struct device *gendev, void *res)
+{
+	struct macio_dev *dev = to_macio_device(gendev);
+	struct macio_devres *dr = res;
+	int i, max;
+
+	max = min(dev->n_resources, 32);
+	for (i = 0; i < max; i++) {
+		if (dr->res_mask & (1 << i))
+			macio_release_resource(dev, i);
+	}
+}
+
+int macio_enable_devres(struct macio_dev *dev)
+{
+	struct macio_devres *dr;
+
+	dr = devres_find(&dev->ofdev.dev, maciom_release, NULL, NULL);
+	if (!dr) {
+		dr = devres_alloc(maciom_release, sizeof(*dr), GFP_KERNEL);
+		if (!dr)
+			return -ENOMEM;
+	}
+	return devres_get(&dev->ofdev.dev, dr, NULL, NULL) != NULL;
+}
+
+static struct macio_devres * find_macio_dr(struct macio_dev *dev)
+{
+	return devres_find(&dev->ofdev.dev, maciom_release, NULL, NULL);
+}
+
 /**
  *	macio_request_resource - Request an MMIO resource
  * 	@dev: pointer to the device holding the resource
@@ -542,6 +638,8 @@ void macio_unregister_driver(struct macio_driver *drv)
 int macio_request_resource(struct macio_dev *dev, int resource_no,
 			   const char *name)
 {
+	struct macio_devres *dr = find_macio_dr(dev);
+
 	if (macio_resource_len(dev, resource_no) == 0)
 		return 0;
 		
@@ -549,6 +647,9 @@ int macio_request_resource(struct macio_dev *dev, int resource_no,
 				macio_resource_len(dev, resource_no),
 				name))
 		goto err_out;
+
+	if (dr && resource_no < 32)
+		dr->res_mask |= 1 << resource_no;
 	
 	return 0;
 
@@ -559,6 +660,7 @@ err_out:
 		macio_resource_len(dev, resource_no),
 		macio_resource_start(dev, resource_no),
 		dev->ofdev.dev.bus_id);
+		dev_name(&dev->ofdev.dev));
 	return -EBUSY;
 }
 
@@ -569,10 +671,14 @@ err_out:
  */
 void macio_release_resource(struct macio_dev *dev, int resource_no)
 {
+	struct macio_devres *dr = find_macio_dr(dev);
+
 	if (macio_resource_len(dev, resource_no) == 0)
 		return;
 	release_mem_region(macio_resource_start(dev, resource_no),
 			   macio_resource_len(dev, resource_no));
+	if (dr && resource_no < 32)
+		dr->res_mask &= ~(1 << resource_no);
 }
 
 /**
@@ -620,6 +726,7 @@ void macio_release_resources(struct macio_dev *dev)
 #ifdef CONFIG_PCI
 
 static int __devinit macio_pci_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
+static int macio_pci_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 {
 	struct device_node* np;
 	struct macio_chip* chip;
@@ -680,6 +787,7 @@ static int __devinit macio_pci_probe(struct pci_dev *pdev, const struct pci_devi
 }
 
 static void __devexit macio_pci_remove(struct pci_dev* pdev)
+static void macio_pci_remove(struct pci_dev* pdev)
 {
 	panic("removing of macio-asic not supported !\n");
 }
@@ -689,6 +797,7 @@ static void __devexit macio_pci_remove(struct pci_dev* pdev)
  * will then decide wether it applies or not
  */
 static const struct pci_device_id __devinitdata pci_ids [] = { {
+static const struct pci_device_id pci_ids[] = { {
 	.vendor		= PCI_VENDOR_ID_APPLE,
 	.device		= PCI_ANY_ID,
 	.subvendor	= PCI_ANY_ID,
@@ -731,3 +840,5 @@ EXPORT_SYMBOL(macio_request_resource);
 EXPORT_SYMBOL(macio_release_resource);
 EXPORT_SYMBOL(macio_request_resources);
 EXPORT_SYMBOL(macio_release_resources);
+EXPORT_SYMBOL(macio_enable_devres);
+

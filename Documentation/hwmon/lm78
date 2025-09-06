@@ -1,5 +1,4 @@
 Kernel driver lm78
-==================
 
 Supported chips:
   * National Semiconductor LM78 / LM78-J
@@ -14,6 +13,8 @@ Supported chips:
                http://www.national.com/
 
 Author: Frodo Looijaard <frodol@dds.nl>
+Authors: Frodo Looijaard <frodol@dds.nl>
+         Jean Delvare <jdelvare@suse.de>
 
 Description
 -----------

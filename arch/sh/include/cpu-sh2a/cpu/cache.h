@@ -19,6 +19,8 @@
 
 #define CCR		0xfffc1000 /* CCR1 */
 #define CCR2		0xfffc1004
+#define SH_CCR		0xfffc1000 /* CCR1 */
+#define SH_CCR2		0xfffc1004
 
 /*
  * Most of the SH-2A CCR1 definitions resemble the SH-4 ones. All others not

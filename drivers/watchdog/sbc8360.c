@@ -10,6 +10,12 @@
  *
  *      Based on advantechwdt.c which is based on acquirewdt.c which
  *       is based on wdt.c.
+ *	on acquirewdt.c which is based on wdt.c.
+ *
+ *	(c) Copyright 2001 Charles Howes <chowes@vsol.net>
+ *
+ *	Based on advantechwdt.c which is based on acquirewdt.c which
+ *	is based on wdt.c.
  *
  *	(c) Copyright 2000-2001 Marek Michalkiewicz <marekm@linux.org.pl>
  *
@@ -18,6 +24,8 @@
  *
  *	(c) Copyright 1996 Alan Cox <alan@redhat.com>, All Rights Reserved.
  *				http://www.redhat.com
+ *	(c) Copyright 1996 Alan Cox <alan@lxorguk.ukuu.org.uk>,
+ *						All Rights Reserved.
  *
  *	This program is free software; you can redistribute it and/or
  *	modify it under the terms of the GNU General Public License
@@ -35,6 +43,16 @@
  *           Added timeout module option to override default
  *
  */
+
+ *	(c) Copyright 1995    Alan Cox <alan@lxorguk.ukuu.org.uk>
+ *
+ *	14-Dec-2001 Matt Domsch <Matt_Domsch@dell.com>
+ *	     Added nowayout module option to override CONFIG_WATCHDOG_NOWAYOUT
+ *	     Added timeout module option to override default
+ *
+ */
+
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/module.h>
 #include <linux/types.h>
@@ -115,6 +133,7 @@ static char expect_close;
  *	D |	7s	70s	700s	1400s
  *	E |	7.5s	75s	750s	1500s
  *	F |	8s	80s 	800s 	1600s
+ *	F |	8s	80s	800s	1600s
  *
  * Another way to say the same things is:
  *  For N=1, Timeout = (M+1) * 0.5s
@@ -202,6 +221,11 @@ static int nowayout = WATCHDOG_NOWAYOUT;
 module_param(timeout, int, 0);
 MODULE_PARM_DESC(timeout, "Index into timeout table (0-63) (default=27 (60s))");
 module_param(nowayout, int, 0);
+static bool nowayout = WATCHDOG_NOWAYOUT;
+
+module_param(timeout, int, 0);
+MODULE_PARM_DESC(timeout, "Index into timeout table (0-63) (default=27 (60s))");
+module_param(nowayout, bool, 0);
 MODULE_PARM_DESC(nowayout,
 		 "Watchdog cannot be stopped once started (default="
 				__MODULE_STRING(WATCHDOG_NOWAYOUT) ")");
@@ -282,6 +306,7 @@ static int sbc8360_close(struct inode *inode, struct file *file)
 	else
 		printk(KERN_CRIT PFX
 			"SBC8360 device closed unexpectedly.  SBC8360 will not stop!\n");
+		pr_crit("SBC8360 device closed unexpectedly.  SBC8360 will not stop!\n");
 
 	clear_bit(0, &sbc8360_is_open);
 	expect_close = 0;
@@ -335,12 +360,14 @@ static int __init sbc8360_init(void)
 
 	if (timeout < 0 || timeout > 63) {
 		printk(KERN_ERR PFX "Invalid timeout index (must be 0-63).\n");
+		pr_err("Invalid timeout index (must be 0-63)\n");
 		res = -EINVAL;
 		goto out;
 	}
 
 	if (!request_region(SBC8360_ENABLE, 1, "SBC8360")) {
 		printk(KERN_ERR PFX "ENABLE method I/O %X is not available.\n",
+		pr_err("ENABLE method I/O %X is not available\n",
 		       SBC8360_ENABLE);
 		res = -EIO;
 		goto out;
@@ -348,6 +375,7 @@ static int __init sbc8360_init(void)
 	if (!request_region(SBC8360_BASETIME, 1, "SBC8360")) {
 		printk(KERN_ERR PFX
 		       "BASETIME method I/O %X is not available.\n",
+		pr_err("BASETIME method I/O %X is not available\n",
 		       SBC8360_BASETIME);
 		res = -EIO;
 		goto out_nobasetimereg;
@@ -356,12 +384,14 @@ static int __init sbc8360_init(void)
 	res = register_reboot_notifier(&sbc8360_notifier);
 	if (res) {
 		printk(KERN_ERR PFX "Failed to register reboot notifier.\n");
+		pr_err("Failed to register reboot notifier\n");
 		goto out_noreboot;
 	}
 
 	res = misc_register(&sbc8360_miscdev);
 	if (res) {
 		printk(KERN_ERR PFX "failed to register misc device\n");
+		pr_err("failed to register misc device\n");
 		goto out_nomisc;
 	}
 
@@ -379,6 +409,7 @@ static int __init sbc8360_init(void)
 
 	/* My kingdom for the ability to print "0.5 seconds" in the kernel! */
 	printk(KERN_INFO PFX "Timeout set at %ld ms.\n", mseconds);
+	pr_info("Timeout set at %ld ms\n", mseconds);
 
 	return 0;
 

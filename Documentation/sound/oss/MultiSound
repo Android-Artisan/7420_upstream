@@ -438,7 +438,6 @@ else
   $echo 'failed to create lock directory'
   exit 1
 fi
-# ============= MultiSound.d/setdigital.c ==============
 if test ! -d 'MultiSound.d'; then
   $echo 'x -' 'creating directory' 'MultiSound.d'
   mkdir 'MultiSound.d'
@@ -542,7 +541,6 @@ SHAR_EOF
     $echo 'MultiSound.d/setdigital.c:' 'original size' '2046,' 'current size' "$shar_count!"
   fi
 fi
-# ============= MultiSound.d/pinnaclecfg.c ==============
 if test -f 'MultiSound.d/pinnaclecfg.c' && test "$first_param" != -c; then
   $echo 'x -' SKIPPING 'MultiSound.d/pinnaclecfg.c' '(file already exists)'
 else
@@ -996,7 +994,6 @@ SHAR_EOF
     $echo 'MultiSound.d/pinnaclecfg.c:' 'original size' '10235,' 'current size' "$shar_count!"
   fi
 fi
-# ============= MultiSound.d/Makefile ==============
 if test -f 'MultiSound.d/Makefile' && test "$first_param" != -c; then
   $echo 'x -' SKIPPING 'MultiSound.d/Makefile' '(file already exists)'
 else
@@ -1026,7 +1023,6 @@ SHAR_EOF
     $echo 'MultiSound.d/Makefile:' 'original size' '106,' 'current size' "$shar_count!"
   fi
 fi
-# ============= MultiSound.d/conv.l ==============
 if test -f 'MultiSound.d/conv.l' && test "$first_param" != -c; then
   $echo 'x -' SKIPPING 'MultiSound.d/conv.l' '(file already exists)'
 else
@@ -1056,7 +1052,6 @@ SHAR_EOF
     $echo 'MultiSound.d/conv.l:' 'original size' '141,' 'current size' "$shar_count!"
   fi
 fi
-# ============= MultiSound.d/msndreset.c ==============
 if test -f 'MultiSound.d/msndreset.c' && test "$first_param" != -c; then
   $echo 'x -' SKIPPING 'MultiSound.d/msndreset.c' '(file already exists)'
 else

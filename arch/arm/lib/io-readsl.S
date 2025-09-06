@@ -13,6 +13,7 @@
 ENTRY(__raw_readsl)
 		teq	r2, #0		@ do we have to check for the zero len?
 		moveq	pc, lr
+		reteq	lr
 		ands	ip, r1, #3
 		bne	3f
 
@@ -34,6 +35,7 @@ ENTRY(__raw_readsl)
 		ldrne	r3, [r0, #0]
 		strne	r3, [r1, #0]
 		mov	pc, lr
+		ret	lr
 
 3:		ldr	r3, [r0]
 		cmp	ip, #2
@@ -50,6 +52,9 @@ ENTRY(__raw_readsl)
 		mov	ip, r3, pull #24
 		ldrne	r3, [r0]
 		orrne	ip, ip, r3, push #8
+		mov	ip, r3, lspull #24
+		ldrne	r3, [r0]
+		orrne	ip, ip, r3, lspush #8
 		strne	ip, [r1], #4
 		bne	4b
 		b	8f
@@ -58,6 +63,9 @@ ENTRY(__raw_readsl)
 		mov	ip, r3, pull #16
 		ldrne	r3, [r0]
 		orrne	ip, ip, r3, push #16
+		mov	ip, r3, lspull #16
+		ldrne	r3, [r0]
+		orrne	ip, ip, r3, lspush #16
 		strne	ip, [r1], #4
 		bne	5b
 		b	7f
@@ -66,6 +74,9 @@ ENTRY(__raw_readsl)
 		mov	ip, r3, pull #8
 		ldrne	r3, [r0]
 		orrne	ip, ip, r3, push #24
+		mov	ip, r3, lspull #8
+		ldrne	r3, [r0]
+		orrne	ip, ip, r3, lspush #24
 		strne	ip, [r1], #4
 		bne	6b
 
@@ -76,3 +87,5 @@ ENTRY(__raw_readsl)
 8:		mov	r3, ip, get_byte_0
 		strb	r3, [r1, #0]
 		mov	pc, lr
+		ret	lr
+ENDPROC(__raw_readsl)

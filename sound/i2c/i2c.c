@@ -22,6 +22,7 @@
 
 #include <linux/init.h>
 #include <linux/slab.h>
+#include <linux/module.h>
 #include <linux/string.h>
 #include <linux/errno.h>
 #include <sound/core.h>
@@ -50,6 +51,8 @@ static int snd_i2c_bus_free(struct snd_i2c_bus *bus)
 	struct snd_i2c_device *device;
 
 	snd_assert(bus != NULL, return -EINVAL);
+	if (snd_BUG_ON(!bus))
+		return -EINVAL;
 	while (!list_empty(&bus->devices)) {
 		device = snd_i2c_device(bus->devices.next);
 		snd_i2c_device_free(device);
@@ -98,6 +101,8 @@ int snd_i2c_bus_create(struct snd_card *card, const char *name,
 	}
 	strlcpy(bus->name, name, sizeof(bus->name));
 	if ((err = snd_device_new(card, SNDRV_DEV_BUS, bus, &ops)) < 0) {
+	err = snd_device_new(card, SNDRV_DEV_BUS, bus, &ops);
+	if (err < 0) {
 		snd_i2c_bus_free(bus);
 		return err;
 	}
@@ -114,6 +119,8 @@ int snd_i2c_device_create(struct snd_i2c_bus *bus, const char *name,
 
 	*rdevice = NULL;
 	snd_assert(bus != NULL, return -EINVAL);
+	if (snd_BUG_ON(!bus))
+		return -EINVAL;
 	device = kzalloc(sizeof(*device), GFP_KERNEL);
 	if (device == NULL)
 		return -ENOMEM;
@@ -245,6 +252,8 @@ static int snd_i2c_bit_sendbyte(struct snd_i2c_bus *bus, unsigned char data)
 	for (i = 7; i >= 0; i--)
 		snd_i2c_bit_send(bus, !!(data & (1 << i)));
 	if ((err = snd_i2c_bit_ack(bus)) < 0)
+	err = snd_i2c_bit_ack(bus);
+	if (err < 0)
 		return err;
 	return 0;
 }
@@ -277,11 +286,15 @@ static int snd_i2c_bit_sendbytes(struct snd_i2c_device *device,
 		return -EIO;		/* not yet implemented */
 	snd_i2c_bit_start(bus);
 	if ((err = snd_i2c_bit_sendbyte(bus, device->addr << 1)) < 0) {
+	err = snd_i2c_bit_sendbyte(bus, device->addr << 1);
+	if (err < 0) {
 		snd_i2c_bit_hw_stop(bus);
 		return err;
 	}
 	while (count-- > 0) {
 		if ((err = snd_i2c_bit_sendbyte(bus, *bytes++)) < 0) {
+		err = snd_i2c_bit_sendbyte(bus, *bytes++);
+		if (err < 0) {
 			snd_i2c_bit_hw_stop(bus);
 			return err;
 		}
@@ -301,11 +314,15 @@ static int snd_i2c_bit_readbytes(struct snd_i2c_device *device,
 		return -EIO;		/* not yet implemented */
 	snd_i2c_bit_start(bus);
 	if ((err = snd_i2c_bit_sendbyte(bus, (device->addr << 1) | 1)) < 0) {
+	err = snd_i2c_bit_sendbyte(bus, (device->addr << 1) | 1);
+	if (err < 0) {
 		snd_i2c_bit_hw_stop(bus);
 		return err;
 	}
 	while (count-- > 0) {
 		if ((err = snd_i2c_bit_readbyte(bus, count == 0)) < 0) {
+		err = snd_i2c_bit_readbyte(bus, count == 0);
+		if (err < 0) {
 			snd_i2c_bit_hw_stop(bus);
 			return err;
 		}

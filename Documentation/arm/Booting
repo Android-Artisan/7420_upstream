@@ -1,5 +1,4 @@
 			Booting ARM Linux
-			=================
 
 Author:	Russell King
 Date  : 18 May 2002
@@ -19,6 +18,8 @@ following:
 3. Detect the machine type.
 4. Setup the kernel tagged list.
 5. Call the kernel image.
+5. Load initramfs.
+6. Call the kernel image.
 
 
 1. Setup and initialise RAM
@@ -58,6 +59,7 @@ serial format options as described in
 
 Existing boot loaders:		OPTIONAL
 New boot loaders:		MANDATORY
+New boot loaders:		MANDATORY except for DT-only platforms
 
 The boot loader should detect the machine type its running on by some
 method.  Whether this is a hard coded value or some algorithm that
@@ -68,9 +70,25 @@ value to the kernel. (see linux/arch/arm/tools/mach-types).
 
 4. Setup the kernel tagged list
 -------------------------------
+value to the kernel. (see linux/arch/arm/tools/mach-types).  This
+should be passed to the kernel in register r1.
+
+For DT-only platforms, the machine type will be determined by device
+tree.  set the machine type to all ones (~0).  This is not strictly
+necessary, but assures that it will not match any existing types.
+
+4. Setup boot data
+------------------
 
 Existing boot loaders:		OPTIONAL, HIGHLY RECOMMENDED
 New boot loaders:		MANDATORY
+
+The boot loader must provide either a tagged list or a dtb image for
+passing configuration data to the kernel.  The physical address of the
+boot data is passed to the kernel in register r2.
+
+4a. Setup the kernel tagged list
+--------------------------------
 
 The boot loader must create and initialise the kernel tagged list.
 A valid tagged list starts with ATAG_CORE and ends with ATAG_NONE.
@@ -102,6 +120,40 @@ the kernel decompressor nor initrd 'bootp' program will overwrite
 it.  The recommended placement is in the first 16KiB of RAM.
 
 5. Calling the kernel image
+4b. Setup the device tree
+-------------------------
+
+The boot loader must load a device tree image (dtb) into system ram
+at a 64bit aligned address and initialize it with the boot data.  The
+dtb format is documented in Documentation/devicetree/booting-without-of.txt.
+The kernel will look for the dtb magic value of 0xd00dfeed at the dtb
+physical address to determine if a dtb has been passed instead of a
+tagged list.
+
+The boot loader must pass at a minimum the size and location of the
+system memory, and the root filesystem location.  The dtb must be
+placed in a region of memory where the kernel decompressor will not
+overwrite it, whilst remaining within the region which will be covered
+by the kernel's low-memory mapping.
+
+A safe location is just above the 128MiB boundary from start of RAM.
+
+5. Load initramfs.
+------------------
+
+Existing boot loaders:		OPTIONAL
+New boot loaders:		OPTIONAL
+
+If an initramfs is in use then, as with the dtb, it must be placed in
+a region of memory where the kernel decompressor will not overwrite it
+while also with the region which will be covered by the kernel's
+low-memory mapping.
+
+A safe location is just above the device tree blob which itself will
+be loaded just above the 128MiB boundary from the start of RAM as
+recommended above.
+
+6. Calling the kernel image
 ---------------------------
 
 Existing boot loaders:		MANDATORY
@@ -117,6 +169,17 @@ called there.  Note that the kernel uses 16K of RAM below the image
 to store page tables.  The recommended placement is 32KiB into RAM.
 
 In either case, the following conditions must be met:
+The zImage may also be placed in system RAM and called there.  The
+kernel should be placed in the first 128MiB of RAM.  It is recommended
+that it is loaded above 32MiB in order to avoid the need to relocate
+prior to decompression, which will make the boot process slightly
+faster.
+
+When booting a raw (non-zImage) kernel the constraints are tighter.
+In this case the kernel must be loaded at an offset into system equal
+to TEXT_OFFSET - PAGE_OFFSET.
+
+In any case, the following conditions must be met:
 
 - Quiesce all DMA capable devices so that memory does not get
   corrupted by bogus network packets or disk data. This will save
@@ -130,6 +193,23 @@ In either case, the following conditions must be met:
 - CPU mode
   All forms of interrupts must be disabled (IRQs and FIQs)
   The CPU must be in SVC mode.  (A special exception exists for Angel)
+  r2 = physical address of tagged list in system RAM, or
+       physical address of device tree block (dtb) in system RAM
+
+- CPU mode
+  All forms of interrupts must be disabled (IRQs and FIQs)
+
+  For CPUs which do not include the ARM virtualization extensions, the
+  CPU must be in SVC mode.  (A special exception exists for Angel)
+
+  CPUs which include support for the virtualization extensions can be
+  entered in HYP mode in order to enable the kernel to make full use of
+  these extensions.  This is the recommended boot method for such CPUs,
+  unless the virtualisations are already in use by a pre-installed
+  hypervisor.
+
+  If the kernel is not entered in HYP mode for any reason, it must be
+  entered in SVC mode.
 
 - Caches, MMUs
   The MMU must be off.
@@ -139,3 +219,20 @@ In either case, the following conditions must be met:
 - The boot loader is expected to call the kernel image by jumping
   directly to the first instruction of the kernel image.
 
+  If the kernel is entered in HYP mode, the above requirements apply to
+  the HYP mode configuration in addition to the ordinary PL1 (privileged
+  kernel modes) configuration.  In addition, all traps into the
+  hypervisor must be disabled, and PL1 access must be granted for all
+  peripherals and CPU resources for which this is architecturally
+  possible.  Except for entering in HYP mode, the system configuration
+  should be such that a kernel which does not include support for the
+  virtualization extensions can boot correctly without extra help.
+
+- The boot loader is expected to call the kernel image by jumping
+  directly to the first instruction of the kernel image.
+
+  On CPUs supporting the ARM instruction set, the entry must be
+  made in ARM state, even for a Thumb-2 kernel.
+
+  On CPUs supporting only the Thumb instruction set such as
+  Cortex-M class CPUs, the entry must be made in Thumb state.

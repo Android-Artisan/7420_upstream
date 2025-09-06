@@ -12,6 +12,7 @@
 #ifdef DEBUG_PROCESS
 #define DPRINTK(fmt, args...)  printk("%s:%d:%s: " fmt, __FILE__, __LINE__, \
   __FUNCTION__, ##args)
+  __func__, ##args)
 #else
 #define DPRINTK(fmt, args...)
 #endif
@@ -26,6 +27,12 @@
 #include <linux/unistd.h>
 #include <linux/slab.h>
 #include <linux/hardirq.h>
+#include <linux/slab.h>
+#include <linux/module.h>
+#include <linux/ptrace.h>
+#include <linux/unistd.h>
+#include <linux/hardirq.h>
+#include <linux/rcupdate.h>
 
 #include <asm/io.h>
 #include <asm/uaccess.h>
@@ -96,6 +103,9 @@ void cpu_idle (void)
 	}
 }
 
+void (*pm_power_off)(void) = NULL;
+EXPORT_SYMBOL(pm_power_off);
+
 void machine_restart(char *__unused)
 {
 #if defined(CONFIG_PLAT_MAPPI3)
@@ -137,6 +147,11 @@ __setup("idle=", idle_setup);
 void show_regs(struct pt_regs * regs)
 {
 	printk("\n");
+void show_regs(struct pt_regs * regs)
+{
+	printk("\n");
+	show_regs_print_info(KERN_DEFAULT);
+
 	printk("BPC[%08lx]:PSW[%08lx]:LR [%08lx]:FP [%08lx]\n", \
 	  regs->bpc, regs->psw, regs->lr, regs->fp);
 	printk("BBPC[%08lx]:BBPSW[%08lx]:SPU[%08lx]:SPI[%08lx]\n", \
@@ -239,6 +254,28 @@ int copy_thread(int nr, unsigned long clone_flags, unsigned long spu,
 	regs->r0 = tsk->pid;
 	tsk->thread.sp = (unsigned long)childregs;
 	tsk->thread.lr = (unsigned long)ret_from_fork;
+int copy_thread(unsigned long clone_flags, unsigned long spu,
+	unsigned long arg, struct task_struct *tsk)
+{
+	struct pt_regs *childregs = task_pt_regs(tsk);
+	extern void ret_from_fork(void);
+	extern void ret_from_kernel_thread(void);
+
+	if (unlikely(tsk->flags & PF_KTHREAD)) {
+		memset(childregs, 0, sizeof(struct pt_regs));
+		childregs->psw = M32R_PSW_BIE;
+		childregs->r1 = spu;	/* fn */
+		childregs->r0 = arg;
+		tsk->thread.lr = (unsigned long)ret_from_kernel_thread;
+	} else {
+		/* Copy registers */
+		*childregs = *current_pt_regs();
+		if (spu)
+			childregs->spu = spu;
+		childregs->r0 = 0;	/* Child gets zero as return value */
+		tsk->thread.lr = (unsigned long)ret_from_fork;
+	}
+	tsk->thread.sp = (unsigned long)childregs;
 
 	return 0;
 }

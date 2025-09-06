@@ -25,6 +25,10 @@
 #define debug(format, arg...) pr_debug("hid-pidff: " format "\n" , ## arg)
 
 #include <linux/input.h>
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
+#include <linux/input.h>
+#include <linux/slab.h>
 #include <linux/usb.h>
 
 #include <linux/hid.h>
@@ -32,6 +36,7 @@
 #include "usbhid.h"
 
 #define	PID_EFFECTS_MAX		64
+#define	PID_INFINITE		0xffff
 
 /* Report usage table used to put reports into an array */
 
@@ -220,6 +225,7 @@ static void pidff_set(struct pidff_usage *usage, u16 value)
 {
 	usage->value[0] = pidff_rescale(value, 0xffff, usage->field);
 	debug("calculated from %d to %d", value, usage->value[0]);
+	pr_debug("calculated from %d to %d\n", value, usage->value[0]);
 }
 
 static void pidff_set_signed(struct pidff_usage *usage, s16 value)
@@ -235,6 +241,7 @@ static void pidff_set_signed(struct pidff_usage *usage, s16 value)
 			    pidff_rescale(value, 0x7fff, usage->field);
 	}
 	debug("calculated from %d to %d", value, usage->value[0]);
+	pr_debug("calculated from %d to %d\n", value, usage->value[0]);
 }
 
 /*
@@ -263,6 +270,12 @@ static void pidff_set_envelope_report(struct pidff_device *pidff,
 
 	usbhid_submit_report(pidff->hid, pidff->reports[PID_SET_ENVELOPE],
 			  USB_DIR_OUT);
+	hid_dbg(pidff->hid, "attack %u => %d\n",
+		envelope->attack_level,
+		pidff->set_envelope[PID_ATTACK_LEVEL].value[0]);
+
+	hid_hw_request(pidff->hid, pidff->reports[PID_SET_ENVELOPE],
+			HID_REQ_SET_REPORT);
 }
 
 /*
@@ -271,10 +284,22 @@ static void pidff_set_envelope_report(struct pidff_device *pidff,
 static int pidff_needs_set_envelope(struct ff_envelope *envelope,
 				    struct ff_envelope *old)
 {
-	return envelope->attack_level != old->attack_level ||
-	       envelope->fade_level != old->fade_level ||
+	bool needs_new_envelope;
+	needs_new_envelope = envelope->attack_level  != 0 ||
+			     envelope->fade_level    != 0 ||
+			     envelope->attack_length != 0 ||
+			     envelope->fade_length   != 0;
+
+	if (!needs_new_envelope)
+		return false;
+
+	if (!old)
+		return needs_new_envelope;
+
+	return envelope->attack_level  != old->attack_level  ||
+	       envelope->fade_level    != old->fade_level    ||
 	       envelope->attack_length != old->attack_length ||
-	       envelope->fade_length != old->fade_length;
+	       envelope->fade_length   != old->fade_length;
 }
 
 /*
@@ -290,6 +315,8 @@ static void pidff_set_constant_force_report(struct pidff_device *pidff,
 
 	usbhid_submit_report(pidff->hid, pidff->reports[PID_SET_CONSTANT],
 			  USB_DIR_OUT);
+	hid_hw_request(pidff->hid, pidff->reports[PID_SET_CONSTANT],
+			HID_REQ_SET_REPORT);
 }
 
 /*
@@ -311,7 +338,12 @@ static void pidff_set_effect_report(struct pidff_device *pidff,
 		pidff->block_load[PID_EFFECT_BLOCK_INDEX].value[0];
 	pidff->set_effect_type->value[0] =
 		pidff->create_new_effect_type->value[0];
-	pidff->set_effect[PID_DURATION].value[0] = effect->replay.length;
+
+	/* Convert infinite length from Linux API (0)
+	   to PID standard (NULL) if needed */
+	pidff->set_effect[PID_DURATION].value[0] =
+		effect->replay.length == 0 ? PID_INFINITE : effect->replay.length;
+
 	pidff->set_effect[PID_TRIGGER_BUTTON].value[0] = effect->trigger.button;
 	pidff->set_effect[PID_TRIGGER_REPEAT_INT].value[0] =
 		effect->trigger.interval;
@@ -325,6 +357,8 @@ static void pidff_set_effect_report(struct pidff_device *pidff,
 
 	usbhid_submit_report(pidff->hid, pidff->reports[PID_SET_EFFECT],
 			  USB_DIR_OUT);
+	hid_hw_request(pidff->hid, pidff->reports[PID_SET_EFFECT],
+			HID_REQ_SET_REPORT);
 }
 
 /*
@@ -357,6 +391,8 @@ static void pidff_set_periodic_report(struct pidff_device *pidff,
 
 	usbhid_submit_report(pidff->hid, pidff->reports[PID_SET_PERIODIC],
 			  USB_DIR_OUT);
+	hid_hw_request(pidff->hid, pidff->reports[PID_SET_PERIODIC],
+			HID_REQ_SET_REPORT);
 
 }
 
@@ -400,6 +436,8 @@ static void pidff_set_condition_report(struct pidff_device *pidff,
 		usbhid_wait_io(pidff->hid);
 		usbhid_submit_report(pidff->hid, pidff->reports[PID_SET_CONDITION],
 				  USB_DIR_OUT);
+		hid_hw_request(pidff->hid, pidff->reports[PID_SET_CONDITION],
+				HID_REQ_SET_REPORT);
 	}
 }
 
@@ -441,6 +479,8 @@ static void pidff_set_ramp_force_report(struct pidff_device *pidff,
 			 effect->u.ramp.end_level);
 	usbhid_submit_report(pidff->hid, pidff->reports[PID_SET_RAMP],
 			  USB_DIR_OUT);
+	hid_hw_request(pidff->hid, pidff->reports[PID_SET_RAMP],
+			HID_REQ_SET_REPORT);
 }
 
 /*
@@ -482,17 +522,38 @@ static int pidff_request_effect_upload(struct pidff_device *pidff, int efnum)
 			debug("device reported free memory: %d bytes",
 			      pidff->block_load[PID_RAM_POOL_AVAILABLE].value ?
 				pidff->block_load[PID_RAM_POOL_AVAILABLE].value[0] : -1);
+	hid_hw_request(pidff->hid, pidff->reports[PID_CREATE_NEW_EFFECT],
+			HID_REQ_SET_REPORT);
+	hid_dbg(pidff->hid, "create_new_effect sent, type: %d\n", efnum);
+
+	pidff->block_load[PID_EFFECT_BLOCK_INDEX].value[0] = 0;
+	pidff->block_load_status->value[0] = 0;
+	hid_hw_wait(pidff->hid);
+
+	for (j = 0; j < 60; j++) {
+		hid_dbg(pidff->hid, "pid_block_load requested\n");
+		hid_hw_request(pidff->hid, pidff->reports[PID_BLOCK_LOAD],
+				HID_REQ_GET_REPORT);
+		hid_hw_wait(pidff->hid);
+		if (pidff->block_load_status->value[0] ==
+		    pidff->status_id[PID_BLOCK_LOAD_SUCCESS]) {
+			hid_dbg(pidff->hid, "device reported free memory: %d bytes\n",
+				 pidff->block_load[PID_RAM_POOL_AVAILABLE].value ?
+				 pidff->block_load[PID_RAM_POOL_AVAILABLE].value[0] : -1);
 			return 0;
 		}
 		if (pidff->block_load_status->value[0] ==
 		    pidff->status_id[PID_BLOCK_LOAD_FULL]) {
 			debug("not enough memory free: %d bytes",
 			      pidff->block_load[PID_RAM_POOL_AVAILABLE].value ?
+			hid_dbg(pidff->hid, "not enough memory free: %d bytes\n",
+				pidff->block_load[PID_RAM_POOL_AVAILABLE].value ?
 				pidff->block_load[PID_RAM_POOL_AVAILABLE].value[0] : -1);
 			return -ENOSPC;
 		}
 	}
 	printk(KERN_ERR "hid-pidff: pid_block_load failed 60 times\n");
+	hid_err(pidff->hid, "pid_block_load failed 60 times\n");
 	return -EIO;
 }
 
@@ -515,6 +576,8 @@ static void pidff_playback_pid(struct pidff_device *pidff, int pid_id, int n)
 	usbhid_wait_io(pidff->hid);
 	usbhid_submit_report(pidff->hid, pidff->reports[PID_EFFECT_OPERATION],
 			  USB_DIR_OUT);
+	hid_hw_request(pidff->hid, pidff->reports[PID_EFFECT_OPERATION],
+			HID_REQ_SET_REPORT);
 }
 
 /**
@@ -537,6 +600,8 @@ static void pidff_erase_pid(struct pidff_device *pidff, int pid_id)
 	pidff->block_free[PID_EFFECT_BLOCK_INDEX].value[0] = pid_id;
 	usbhid_submit_report(pidff->hid, pidff->reports[PID_BLOCK_FREE],
 			  USB_DIR_OUT);
+	hid_hw_request(pidff->hid, pidff->reports[PID_BLOCK_FREE],
+			HID_REQ_SET_REPORT);
 }
 
 /*
@@ -548,6 +613,11 @@ static int pidff_erase_effect(struct input_dev *dev, int effect_id)
 	int pid_id = pidff->pid_id[effect_id];
 
 	debug("starting to erase %d/%d", effect_id, pidff->pid_id[effect_id]);
+	hid_dbg(pidff->hid, "starting to erase %d/%d\n",
+		effect_id, pidff->pid_id[effect_id]);
+	/* Wait for the queue to clear. We do not want a full fifo to
+	   prevent the effect removal. */
+	hid_hw_wait(pidff->hid);
 	pidff_playback_pid(pidff, pid_id, 0);
 	pidff_erase_pid(pidff, pid_id);
 
@@ -564,6 +634,12 @@ static int pidff_upload_effect(struct input_dev *dev, struct ff_effect *effect,
 	int type_id;
 	int error;
 
+	pidff->block_load[PID_EFFECT_BLOCK_INDEX].value[0] = 0;
+	if (old) {
+		pidff->block_load[PID_EFFECT_BLOCK_INDEX].value[0] =
+			pidff->pid_id[effect->id];
+	}
+
 	switch (effect->type) {
 	case FF_CONSTANT:
 		if (!old) {
@@ -576,11 +652,9 @@ static int pidff_upload_effect(struct input_dev *dev, struct ff_effect *effect,
 			pidff_set_effect_report(pidff, effect);
 		if (!old || pidff_needs_set_constant(effect, old))
 			pidff_set_constant_force_report(pidff, effect);
-		if (!old ||
-		    pidff_needs_set_envelope(&effect->u.constant.envelope,
-					&old->u.constant.envelope))
-			pidff_set_envelope_report(pidff,
-					&effect->u.constant.envelope);
+		if (pidff_needs_set_envelope(&effect->u.constant.envelope,
+					old ? &old->u.constant.envelope : NULL))
+			pidff_set_envelope_report(pidff, &effect->u.constant.envelope);
 		break;
 
 	case FF_PERIODIC:
@@ -604,6 +678,7 @@ static int pidff_upload_effect(struct input_dev *dev, struct ff_effect *effect,
 			default:
 				printk(KERN_ERR
 				       "hid-pidff: invalid waveform\n");
+				hid_err(pidff->hid, "invalid waveform\n");
 				return -EINVAL;
 			}
 
@@ -616,11 +691,9 @@ static int pidff_upload_effect(struct input_dev *dev, struct ff_effect *effect,
 			pidff_set_effect_report(pidff, effect);
 		if (!old || pidff_needs_set_periodic(effect, old))
 			pidff_set_periodic_report(pidff, effect);
-		if (!old ||
-		    pidff_needs_set_envelope(&effect->u.periodic.envelope,
-					&old->u.periodic.envelope))
-			pidff_set_envelope_report(pidff,
-					&effect->u.periodic.envelope);
+		if (pidff_needs_set_envelope(&effect->u.periodic.envelope,
+					old ? &old->u.periodic.envelope : NULL))
+			pidff_set_envelope_report(pidff, &effect->u.periodic.envelope);
 		break;
 
 	case FF_RAMP:
@@ -634,11 +707,9 @@ static int pidff_upload_effect(struct input_dev *dev, struct ff_effect *effect,
 			pidff_set_effect_report(pidff, effect);
 		if (!old || pidff_needs_set_ramp(effect, old))
 			pidff_set_ramp_force_report(pidff, effect);
-		if (!old ||
-		    pidff_needs_set_envelope(&effect->u.ramp.envelope,
-					&old->u.ramp.envelope))
-			pidff_set_envelope_report(pidff,
-					&effect->u.ramp.envelope);
+		if (pidff_needs_set_envelope(&effect->u.ramp.envelope,
+					old ? &old->u.ramp.envelope : NULL))
+			pidff_set_envelope_report(pidff, &effect->u.ramp.envelope);
 		break;
 
 	case FF_SPRING:
@@ -695,6 +766,7 @@ static int pidff_upload_effect(struct input_dev *dev, struct ff_effect *effect,
 
 	default:
 		printk(KERN_ERR "hid-pidff: invalid type\n");
+		hid_err(pidff->hid, "invalid type\n");
 		return -EINVAL;
 	}
 
@@ -703,6 +775,7 @@ static int pidff_upload_effect(struct input_dev *dev, struct ff_effect *effect,
 		    pidff->block_load[PID_EFFECT_BLOCK_INDEX].value[0];
 
 	debug("uploaded");
+	hid_dbg(pidff->hid, "uploaded\n");
 
 	return 0;
 }
@@ -717,6 +790,8 @@ static void pidff_set_gain(struct input_dev *dev, u16 gain)
 	pidff_set(&pidff->device_gain[PID_DEVICE_GAIN_FIELD], gain);
 	usbhid_submit_report(pidff->hid, pidff->reports[PID_DEVICE_GAIN],
 			  USB_DIR_OUT);
+	hid_hw_request(pidff->hid, pidff->reports[PID_DEVICE_GAIN],
+			HID_REQ_SET_REPORT);
 }
 
 static void pidff_autocenter(struct pidff_device *pidff, u16 magnitude)
@@ -743,6 +818,8 @@ static void pidff_autocenter(struct pidff_device *pidff, u16 magnitude)
 
 	usbhid_submit_report(pidff->hid, pidff->reports[PID_SET_EFFECT],
 			  USB_DIR_OUT);
+	hid_hw_request(pidff->hid, pidff->reports[PID_SET_EFFECT],
+			HID_REQ_SET_REPORT);
 }
 
 /*
@@ -763,6 +840,11 @@ static int pidff_find_fields(struct pidff_usage *usage, const u8 *table,
 {
 	int i, j, k, found;
 
+	if (!report) {
+		pr_debug("pidff_find_fields, null report\n");
+		return -1;
+	}
+
 	for (k = 0; k < count; k++) {
 		found = 0;
 		for (i = 0; i < report->maxfield; i++) {
@@ -770,12 +852,15 @@ static int pidff_find_fields(struct pidff_usage *usage, const u8 *table,
 			    report->field[i]->report_count) {
 				debug("maxusage and report_count do not match, "
 				      "skipping");
+				pr_debug("maxusage and report_count do not match, skipping\n");
 				continue;
 			}
 			for (j = 0; j < report->field[i]->maxusage; j++) {
 				if (report->field[i]->usage[j].hid ==
 				    (HID_UP_PID | table[k])) {
 					debug("found %d at %d->%d", k, i, j);
+					pr_debug("found %d at %d->%d\n",
+						 k, i, j);
 					usage[k].field = report->field[i];
 					usage[k].value =
 						&report->field[i]->value[j];
@@ -788,6 +873,7 @@ static int pidff_find_fields(struct pidff_usage *usage, const u8 *table,
 		}
 		if (!found && strict) {
 			debug("failed to locate %d", k);
+			pr_debug("failed to locate %d\n", k);
 			return -1;
 		}
 	}
@@ -826,6 +912,8 @@ static void pidff_find_reports(struct hid_device *hid, int report_type,
 		if (ret != -1) {
 			debug("found usage 0x%02x from field->logical",
 			      pidff_reports[ret]);
+			hid_dbg(hid, "found usage 0x%02x from field->logical\n",
+				pidff_reports[ret]);
 			pidff->reports[ret] = report;
 			continue;
 		}
@@ -845,6 +933,9 @@ static void pidff_find_reports(struct hid_device *hid, int report_type,
 		if (ret != -1 && !pidff->reports[ret]) {
 			debug("found usage 0x%02x from collection array",
 			      pidff_reports[ret]);
+			hid_dbg(hid,
+				"found usage 0x%02x from collection array\n",
+				pidff_reports[ret]);
 			pidff->reports[ret] = report;
 		}
 	}
@@ -860,6 +951,7 @@ static int pidff_reports_ok(struct pidff_device *pidff)
 	for (i = 0; i <= PID_REQUIRED_REPORTS; i++) {
 		if (!pidff->reports[i]) {
 			debug("%d missing", i);
+			hid_dbg(pidff->hid, "%d missing\n", i);
 			return 0;
 		}
 	}
@@ -875,6 +967,11 @@ static struct hid_field *pidff_find_special_field(struct hid_report *report,
 {
 	int i;
 
+	if (!report) {
+		pr_debug("pidff_find_special_field, null report\n");
+		return NULL;
+	}
+
 	for (i = 0; i < report->maxfield; i++) {
 		if (report->field[i]->logical == (HID_UP_PID | usage) &&
 		    report->field[i]->report_count > 0) {
@@ -884,6 +981,7 @@ static struct hid_field *pidff_find_special_field(struct hid_report *report,
 			else {
 				printk(KERN_ERR "hid-pidff: logical_minimum "
 					"is not 1 as it should be\n");
+				pr_err("logical_minimum is not 1 as it should be\n");
 				return NULL;
 			}
 		}
@@ -923,6 +1021,7 @@ static int pidff_find_special_keys(int *keys, struct hid_field *fld,
 static int pidff_find_special_fields(struct pidff_device *pidff)
 {
 	debug("finding special fields");
+	hid_dbg(pidff->hid, "finding special fields\n");
 
 	pidff->create_new_effect_type =
 		pidff_find_special_field(pidff->reports[PID_CREATE_NEW_EFFECT],
@@ -947,28 +1046,36 @@ static int pidff_find_special_fields(struct pidff_device *pidff)
 
 	if (!pidff->create_new_effect_type || !pidff->set_effect_type) {
 		printk(KERN_ERR "hid-pidff: effect lists not found\n");
+	hid_dbg(pidff->hid, "search done\n");
+
+	if (!pidff->create_new_effect_type || !pidff->set_effect_type) {
+		hid_err(pidff->hid, "effect lists not found\n");
 		return -1;
 	}
 
 	if (!pidff->effect_direction) {
 		printk(KERN_ERR "hid-pidff: direction field not found\n");
+		hid_err(pidff->hid, "direction field not found\n");
 		return -1;
 	}
 
 	if (!pidff->device_control) {
 		printk(KERN_ERR "hid-pidff: device control field not found\n");
+		hid_err(pidff->hid, "device control field not found\n");
 		return -1;
 	}
 
 	if (!pidff->block_load_status) {
 		printk(KERN_ERR
 		       "hid-pidff: block load status field not found\n");
+		hid_err(pidff->hid, "block load status field not found\n");
 		return -1;
 	}
 
 	if (!pidff->effect_operation_status) {
 		printk(KERN_ERR
 		       "hid-pidff: effect operation field not found\n");
+		hid_err(pidff->hid, "effect operation field not found\n");
 		return -1;
 	}
 
@@ -981,6 +1088,7 @@ static int pidff_find_special_fields(struct pidff_device *pidff)
 	if (!PIDFF_FIND_SPECIAL_KEYS(type_id, create_new_effect_type,
 				     effect_types)) {
 		printk(KERN_ERR "hid-pidff: no effect types found\n");
+		hid_err(pidff->hid, "no effect types found\n");
 		return -1;
 	}
 
@@ -989,6 +1097,8 @@ static int pidff_find_special_fields(struct pidff_device *pidff)
 			sizeof(pidff_block_load_status)) {
 		printk(KERN_ERR
 		       "hidpidff: block load status identifiers not found\n");
+		hid_err(pidff->hid,
+			"block load status identifiers not found\n");
 		return -1;
 	}
 
@@ -997,6 +1107,7 @@ static int pidff_find_special_fields(struct pidff_device *pidff)
 			sizeof(pidff_effect_operation_status)) {
 		printk(KERN_ERR
 		       "hidpidff: effect operation identifiers not found\n");
+		hid_err(pidff->hid, "effect operation identifiers not found\n");
 		return -1;
 	}
 
@@ -1017,6 +1128,8 @@ static int pidff_find_effects(struct pidff_device *pidff,
 		    pidff->create_new_effect_type->usage[pidff_type].hid) {
 			printk(KERN_ERR "hid-pidff: "
 			       "effect type number %d is invalid\n", i);
+			hid_err(pidff->hid,
+				"effect type number %d is invalid\n", i);
 			return -1;
 		}
 	}
@@ -1073,6 +1186,7 @@ static int pidff_init_fields(struct pidff_device *pidff, struct input_dev *dev)
 	if (PIDFF_FIND_FIELDS(set_effect, PID_SET_EFFECT, 1)) {
 		printk(KERN_ERR
 		       "hid-pidff: unknown set_effect report layout\n");
+		hid_err(pidff->hid, "unknown set_effect report layout\n");
 		return -ENODEV;
 	}
 
@@ -1080,18 +1194,21 @@ static int pidff_init_fields(struct pidff_device *pidff, struct input_dev *dev)
 	if (!pidff->block_load[PID_EFFECT_BLOCK_INDEX].value) {
 		printk(KERN_ERR
 		       "hid-pidff: unknown pid_block_load report layout\n");
+		hid_err(pidff->hid, "unknown pid_block_load report layout\n");
 		return -ENODEV;
 	}
 
 	if (PIDFF_FIND_FIELDS(effect_operation, PID_EFFECT_OPERATION, 1)) {
 		printk(KERN_ERR
 		       "hid-pidff: unknown effect_operation report layout\n");
+		hid_err(pidff->hid, "unknown effect_operation report layout\n");
 		return -ENODEV;
 	}
 
 	if (PIDFF_FIND_FIELDS(block_free, PID_BLOCK_FREE, 1)) {
 		printk(KERN_ERR
 		       "hid-pidff: unknown pid_block_free report layout\n");
+		hid_err(pidff->hid, "unknown pid_block_free report layout\n");
 		return -ENODEV;
 	}
 
@@ -1112,18 +1229,29 @@ static int pidff_init_fields(struct pidff_device *pidff, struct input_dev *dev)
 		if (test_and_clear_bit(FF_PERIODIC, dev->ffbit))
 			printk(KERN_WARNING "hid-pidff: "
 				"has periodic effect but no envelope\n");
+			hid_warn(pidff->hid,
+				 "has constant effect but no envelope\n");
+		if (test_and_clear_bit(FF_RAMP, dev->ffbit))
+			hid_warn(pidff->hid,
+				 "has ramp effect but no envelope\n");
+
+		if (test_and_clear_bit(FF_PERIODIC, dev->ffbit))
+			hid_warn(pidff->hid,
+				 "has periodic effect but no envelope\n");
 	}
 
 	if (test_bit(FF_CONSTANT, dev->ffbit) &&
 	    PIDFF_FIND_FIELDS(set_constant, PID_SET_CONSTANT, 1)) {
 		printk(KERN_WARNING
 		       "hid-pidff: unknown constant effect layout\n");
+		hid_warn(pidff->hid, "unknown constant effect layout\n");
 		clear_bit(FF_CONSTANT, dev->ffbit);
 	}
 
 	if (test_bit(FF_RAMP, dev->ffbit) &&
 	    PIDFF_FIND_FIELDS(set_ramp, PID_SET_RAMP, 1)) {
 		printk(KERN_WARNING "hid-pidff: unknown ramp effect layout\n");
+		hid_warn(pidff->hid, "unknown ramp effect layout\n");
 		clear_bit(FF_RAMP, dev->ffbit);
 	}
 
@@ -1134,6 +1262,7 @@ static int pidff_init_fields(struct pidff_device *pidff, struct input_dev *dev)
 	    PIDFF_FIND_FIELDS(set_condition, PID_SET_CONDITION, 1)) {
 		printk(KERN_WARNING
 		       "hid-pidff: unknown condition effect layout\n");
+		hid_warn(pidff->hid, "unknown condition effect layout\n");
 		clear_bit(FF_SPRING, dev->ffbit);
 		clear_bit(FF_DAMPER, dev->ffbit);
 		clear_bit(FF_FRICTION, dev->ffbit);
@@ -1144,6 +1273,7 @@ static int pidff_init_fields(struct pidff_device *pidff, struct input_dev *dev)
 	    PIDFF_FIND_FIELDS(set_periodic, PID_SET_PERIODIC, 1)) {
 		printk(KERN_WARNING
 		       "hid-pidff: unknown periodic effect layout\n");
+		hid_warn(pidff->hid, "unknown periodic effect layout\n");
 		clear_bit(FF_PERIODIC, dev->ffbit);
 	}
 
@@ -1192,6 +1322,32 @@ static void pidff_reset(struct pidff_device *pidff)
 			usbhid_submit_report(hid, pidff->reports[PID_POOL],
 					  USB_DIR_IN);
 			usbhid_wait_io(hid);
+	hid_hw_request(hid, pidff->reports[PID_DEVICE_CONTROL], HID_REQ_SET_REPORT);
+	hid_hw_wait(hid);
+	hid_hw_request(hid, pidff->reports[PID_DEVICE_CONTROL], HID_REQ_SET_REPORT);
+	hid_hw_wait(hid);
+
+	pidff->device_control->value[0] =
+		pidff->control_id[PID_ENABLE_ACTUATORS];
+	hid_hw_request(hid, pidff->reports[PID_DEVICE_CONTROL], HID_REQ_SET_REPORT);
+	hid_hw_wait(hid);
+
+	/* pool report is sometimes messed up, refetch it */
+	hid_hw_request(hid, pidff->reports[PID_POOL], HID_REQ_GET_REPORT);
+	hid_hw_wait(hid);
+
+	if (pidff->pool[PID_SIMULTANEOUS_MAX].value) {
+		while (pidff->pool[PID_SIMULTANEOUS_MAX].value[0] < 2) {
+			if (i++ > 20) {
+				hid_warn(pidff->hid,
+					 "device reports %d simultaneous effects\n",
+					 pidff->pool[PID_SIMULTANEOUS_MAX].value[0]);
+				break;
+			}
+			hid_dbg(pidff->hid, "pid_pool requested again\n");
+			hid_hw_request(hid, pidff->reports[PID_POOL],
+					  HID_REQ_GET_REPORT);
+			hid_hw_wait(hid);
 		}
 	}
 }
@@ -1215,6 +1371,7 @@ static int pidff_check_autocenter(struct pidff_device *pidff,
 	error = pidff_request_effect_upload(pidff, 1);
 	if (error) {
 		printk(KERN_ERR "hid-pidff: upload request failed\n");
+		hid_err(pidff->hid, "upload request failed\n");
 		return error;
 	}
 
@@ -1225,6 +1382,8 @@ static int pidff_check_autocenter(struct pidff_device *pidff,
 	} else {
 		printk(KERN_NOTICE "hid-pidff: "
 		       "device has unknown autocenter control method\n");
+		hid_notice(pidff->hid,
+			   "device has unknown autocenter control method\n");
 	}
 
 	pidff_erase_pid(pidff,
@@ -1251,6 +1410,10 @@ int hid_pidff_init(struct hid_device *hid)
 
 	if (list_empty(&hid->report_enum[HID_OUTPUT_REPORT].report_list)) {
 		debug("not a PID device, no output report");
+	hid_dbg(hid, "starting pid init\n");
+
+	if (list_empty(&hid->report_enum[HID_OUTPUT_REPORT].report_list)) {
+		hid_dbg(hid, "not a PID device, no output report\n");
 		return -ENODEV;
 	}
 
@@ -1260,11 +1423,14 @@ int hid_pidff_init(struct hid_device *hid)
 
 	pidff->hid = hid;
 
+	hid_device_io_start(hid);
+
 	pidff_find_reports(hid, HID_OUTPUT_REPORT, pidff);
 	pidff_find_reports(hid, HID_FEATURE_REPORT, pidff);
 
 	if (!pidff_reports_ok(pidff)) {
 		debug("reports not ok, aborting");
+		hid_dbg(hid, "reports not ok, aborting\n");
 		error = -ENODEV;
 		goto fail;
 	}
@@ -1279,6 +1445,8 @@ int hid_pidff_init(struct hid_device *hid)
 		pidff_set(&pidff->device_gain[PID_DEVICE_GAIN_FIELD], 0xffff);
 		usbhid_submit_report(pidff->hid, pidff->reports[PID_DEVICE_GAIN],
 				  USB_DIR_OUT);
+		hid_hw_request(hid, pidff->reports[PID_DEVICE_GAIN],
+				     HID_REQ_SET_REPORT);
 	}
 
 	error = pidff_check_autocenter(pidff, dev);
@@ -1290,6 +1458,7 @@ int hid_pidff_init(struct hid_device *hid)
 	    pidff->block_load[PID_EFFECT_BLOCK_INDEX].field->logical_minimum +
 	    1;
 	debug("max effects is %d", max_effects);
+	hid_dbg(hid, "max effects is %d\n", max_effects);
 
 	if (max_effects > PID_EFFECTS_MAX)
 		max_effects = PID_EFFECTS_MAX;
@@ -1306,6 +1475,18 @@ int hid_pidff_init(struct hid_device *hid)
 	    pidff->pool[PID_DEVICE_MANAGED_POOL].value[0] == 0) {
 		printk(KERN_NOTICE "hid-pidff: "
 		       "device does not support device managed pool\n");
+		hid_dbg(hid, "max simultaneous effects is %d\n",
+			pidff->pool[PID_SIMULTANEOUS_MAX].value[0]);
+
+	if (pidff->pool[PID_RAM_POOL_SIZE].value)
+		hid_dbg(hid, "device memory size is %d bytes\n",
+			pidff->pool[PID_RAM_POOL_SIZE].value[0]);
+
+	if (pidff->pool[PID_DEVICE_MANAGED_POOL].value &&
+	    pidff->pool[PID_DEVICE_MANAGED_POOL].value[0] == 0) {
+		error = -EPERM;
+		hid_notice(hid,
+			   "device does not support device managed pool\n");
 		goto fail;
 	}
 
@@ -1323,10 +1504,15 @@ int hid_pidff_init(struct hid_device *hid)
 
 	printk(KERN_INFO "Force feedback for USB HID PID devices by "
 	       "Anssi Hannula <anssi.hannula@gmail.com>\n");
+	hid_info(dev, "Force feedback for USB HID PID devices by Anssi Hannula <anssi.hannula@gmail.com>\n");
+
+	hid_device_io_stop(hid);
 
 	return 0;
 
  fail:
+	hid_device_io_stop(hid);
+
 	kfree(pidff);
 	return error;
 }

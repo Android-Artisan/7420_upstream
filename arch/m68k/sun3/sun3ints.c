@@ -54,6 +54,11 @@ static irqreturn_t sun3_int7(int irq, void *dev_id)
 	*sun3_intreg |=  (1 << irq);
 	if (!(kstat_cpu(0).irqs[irq] % 2000))
 		sun3_leds(led_pattern[(kstat_cpu(0).irqs[irq] % 16000) / 2000]);
+	unsigned int cnt;
+
+	cnt = kstat_irqs_cpu(irq, 0);
+	if (!(cnt % 2000))
+		sun3_leds(led_pattern[cnt % 16000 / 2000]);
 	return IRQ_HANDLED;
 }
 
@@ -72,6 +77,24 @@ static irqreturn_t sun3_int5(int irq, void *dev_id)
 #endif
         if (!(kstat_cpu(0).irqs[irq] % 20))
                 sun3_leds(led_pattern[(kstat_cpu(0).irqs[irq] % 160) / 20]);
+	unsigned long flags;
+	unsigned int cnt;
+
+	local_irq_save(flags);
+#ifdef CONFIG_SUN3
+	intersil_clear();
+#endif
+	sun3_disable_irq(5);
+	sun3_enable_irq(5);
+#ifdef CONFIG_SUN3
+	intersil_clear();
+#endif
+	xtime_update(1);
+	update_process_times(user_mode(get_irq_regs()));
+	cnt = kstat_irqs_cpu(irq, 0);
+	if (!(cnt % 20))
+		sun3_leds(led_pattern[cnt % 160 / 20]);
+	local_irq_restore(flags);
 	return IRQ_HANDLED;
 }
 
@@ -97,6 +120,9 @@ static struct irq_controller sun3_irq_controller = {
 	.disable	= sun3_disable_irq,
 };
 
+	return IRQ_HANDLED;
+}
+
 void __init sun3_init_IRQ(void)
 {
 	*sun3_intreg = 1;
@@ -108,4 +134,12 @@ void __init sun3_init_IRQ(void)
 	request_irq(IRQ_AUTO_5, sun3_int5, 0, "int5", NULL);
 	request_irq(IRQ_AUTO_7, sun3_int7, 0, "int7", NULL);
 	request_irq(IRQ_USER+127, sun3_vec255, 0, "vec255", NULL);
+	m68k_setup_user_interrupt(VEC_USER, 128);
+
+	if (request_irq(IRQ_AUTO_5, sun3_int5, 0, "clock", NULL))
+		pr_err("Couldn't register %s interrupt\n", "int5");
+	if (request_irq(IRQ_AUTO_7, sun3_int7, 0, "nmi", NULL))
+		pr_err("Couldn't register %s interrupt\n", "int7");
+	if (request_irq(IRQ_USER+127, sun3_vec255, 0, "vec255", NULL))
+		pr_err("Couldn't register %s interrupt\n", "vec255");
 }

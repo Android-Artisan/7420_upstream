@@ -18,6 +18,7 @@
 #include <asm/assembler.h>
 #include <asm/asm-offsets.h>
 #include <asm/elf.h>
+#include <asm/hwcap.h>
 #include <mach/hardware.h>
 #include <asm/pgtable-hwdef.h>
 #include <asm/pgtable.h>
@@ -39,6 +40,7 @@ ENTRY(cpu_sa110_proc_init)
 	mov	r0, #0
 	mcr	p15, 0, r0, c15, c1, 2		@ Enable clock switching
 	mov	pc, lr
+	ret	lr
 
 /*
  * cpu_sa110_proc_fin()
@@ -49,12 +51,14 @@ ENTRY(cpu_sa110_proc_fin)
 	msr	cpsr_c, ip
 	bl	v4wb_flush_kern_cache_all	@ clean caches
 1:	mov	r0, #0
+	mov	r0, #0
 	mcr	p15, 0, r0, c15, c2, 2		@ Disable clock switching
 	mrc	p15, 0, r0, c1, c0, 0		@ ctrl register
 	bic	r0, r0, #0x1000			@ ...i............
 	bic	r0, r0, #0x000e			@ ............wca.
 	mcr	p15, 0, r0, c1, c0, 0		@ disable caches
 	ldmfd	sp!, {pc}
+	ret	lr
 
 /*
  * cpu_sa110_reset(loc)
@@ -66,6 +70,7 @@ ENTRY(cpu_sa110_proc_fin)
  * loc: location to jump to for soft reset
  */
 	.align	5
+	.pushsection	.idmap.text, "ax"
 ENTRY(cpu_sa110_reset)
 	mov	ip, #0
 	mcr	p15, 0, ip, c7, c7, 0		@ invalidate I,D caches
@@ -78,6 +83,9 @@ ENTRY(cpu_sa110_reset)
 	bic	ip, ip, #0x1100			@ ...i...s........
 	mcr	p15, 0, ip, c1, c0, 0		@ ctrl register
 	mov	pc, r0
+	ret	r0
+ENDPROC(cpu_sa110_reset)
+	.popsection
 
 /*
  * cpu_sa110_do_idle(type)
@@ -105,8 +113,8 @@ ENTRY(cpu_sa110_do_idle)
 	mov	r0, r0				@ safety
 	mcr	p15, 0, r0, c15, c1, 2		@ enable clock switching
 	mov	pc, lr
+	ret	lr
 
-/* ================================= CACHE ================================ */
 
 /*
  * cpu_sa110_dcache_clean_area(addr,sz)
@@ -123,8 +131,8 @@ ENTRY(cpu_sa110_dcache_clean_area)
 	subs	r1, r1, #DCACHELINESIZE
 	bhi	1b
 	mov	pc, lr
+	ret	lr
 
-/* =============================== PageTable ============================== */
 
 /*
  * cpu_sa110_switch_mm(pgd)
@@ -143,6 +151,7 @@ ENTRY(cpu_sa110_switch_mm)
 	ldr	pc, [sp], #4
 #else
 	mov	pc, lr
+	ret	lr
 #endif
 
 /*
@@ -171,6 +180,7 @@ ENTRY(cpu_sa110_set_pte_ext)
 	movne	r2, #0
 
 	str	r2, [r0]			@ hardware version
+	armv3_set_pte_ext wc_disable=0
 	mov	r0, r0
 	mcr	p15, 0, r0, c7, c10, 1		@ clean D entry
 	mcr	p15, 0, r0, c7, c10, 4		@ drain WB
@@ -178,6 +188,7 @@ ENTRY(cpu_sa110_set_pte_ext)
 	mov	pc, lr
 
 	__INIT
+	ret	lr
 
 	.type	__sa110_setup, #function
 __sa110_setup:
@@ -194,6 +205,7 @@ __sa110_setup:
 	bic	r0, r0, r5
 	orr	r0, r0, r6
 	mov	pc, lr
+	ret	lr
 	.size	__sa110_setup, . - __sa110_setup
 
 	/*
@@ -246,6 +258,18 @@ cpu_sa110_name:
 	.align
 
 	.section ".proc.info.init", #alloc, #execinstr
+	@ define struct processor (see <asm/proc-fns.h> and proc-macros.S)
+	define_processor_functions sa110, dabort=v4_early_abort, pabort=legacy_pabort
+
+	.section ".rodata"
+
+	string	cpu_arch_name, "armv4"
+	string	cpu_elf_name, "v4"
+	string	cpu_sa110_name, "StrongARM-110"
+
+	.align
+
+	.section ".proc.info.init", "a"
 
 	.type	__sa110_proc_info,#object
 __sa110_proc_info:
@@ -260,6 +284,7 @@ __sa110_proc_info:
 		PMD_SECT_AP_WRITE | \
 		PMD_SECT_AP_READ
 	b	__sa110_setup
+	initfn	__sa110_setup, __sa110_proc_info
 	.long	cpu_arch_name
 	.long	cpu_elf_name
 	.long	HWCAP_SWP | HWCAP_HALF | HWCAP_26BIT | HWCAP_FAST_MULT

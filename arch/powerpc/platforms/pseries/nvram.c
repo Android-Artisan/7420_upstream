@@ -17,17 +17,32 @@
 #include <linux/init.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
+#include <linux/spinlock.h>
+#include <linux/slab.h>
+#include <linux/kmsg_dump.h>
+#include <linux/pstore.h>
+#include <linux/ctype.h>
 #include <asm/uaccess.h>
 #include <asm/nvram.h>
 #include <asm/rtas.h>
 #include <asm/prom.h>
 #include <asm/machdep.h>
 
+/* Max bytes to read/write in one go */
+#define NVRW_CNT 0x20
+
 static unsigned int nvram_size;
 static int nvram_fetch, nvram_store;
 static char nvram_buf[NVRW_CNT];	/* assume this is in the first 4GB */
 static DEFINE_SPINLOCK(nvram_lock);
 
+/* See clobbering_unread_rtas_event() */
+#define NVRAM_RTAS_READ_TIMEOUT 5		/* seconds */
+static time64_t last_unread_rtas_event;		/* timestamp */
+
+#ifdef CONFIG_PSTORE
+time64_t last_rtas_event;
+#endif
 
 static ssize_t pSeries_nvram_read(char *buf, size_t count, loff_t *index)
 {
@@ -124,6 +139,94 @@ int __init pSeries_nvram_init(void)
 {
 	struct device_node *nvram;
 	const unsigned int *nbytes_p;
+/* nvram_write_error_log
+ *
+ * We need to buffer the error logs into nvram to ensure that we have
+ * the failure information to decode.
+ */
+int nvram_write_error_log(char * buff, int length,
+                          unsigned int err_type, unsigned int error_log_cnt)
+{
+	int rc = nvram_write_os_partition(&rtas_log_partition, buff, length,
+						err_type, error_log_cnt);
+	if (!rc) {
+		last_unread_rtas_event = ktime_get_real_seconds();
+#ifdef CONFIG_PSTORE
+		last_rtas_event = ktime_get_real_seconds();
+#endif
+	}
+
+	return rc;
+}
+
+/* nvram_read_error_log
+ *
+ * Reads nvram for error log for at most 'length'
+ */
+int nvram_read_error_log(char *buff, int length,
+			unsigned int *err_type, unsigned int *error_log_cnt)
+{
+	return nvram_read_partition(&rtas_log_partition, buff, length,
+						err_type, error_log_cnt);
+}
+
+/* This doesn't actually zero anything, but it sets the event_logged
+ * word to tell that this event is safely in syslog.
+ */
+int nvram_clear_error_log(void)
+{
+	loff_t tmp_index;
+	int clear_word = ERR_FLAG_ALREADY_LOGGED;
+	int rc;
+
+	if (rtas_log_partition.index == -1)
+		return -1;
+
+	tmp_index = rtas_log_partition.index;
+	
+	rc = ppc_md.nvram_write((char *)&clear_word, sizeof(int), &tmp_index);
+	if (rc <= 0) {
+		printk(KERN_ERR "nvram_clear_error_log: Failed nvram_write (%d)\n", rc);
+		return rc;
+	}
+	last_unread_rtas_event = 0;
+
+	return 0;
+}
+
+/*
+ * Are we using the ibm,rtas-log for oops/panic reports?  And if so,
+ * would logging this oops/panic overwrite an RTAS event that rtas_errd
+ * hasn't had a chance to read and process?  Return 1 if so, else 0.
+ *
+ * We assume that if rtas_errd hasn't read the RTAS event in
+ * NVRAM_RTAS_READ_TIMEOUT seconds, it's probably not going to.
+ */
+int clobbering_unread_rtas_event(void)
+{
+	return (oops_log_partition.index == rtas_log_partition.index
+		&& last_unread_rtas_event
+		&& ktime_get_real_seconds() - last_unread_rtas_event <=
+						NVRAM_RTAS_READ_TIMEOUT);
+}
+
+static int __init pseries_nvram_init_log_partitions(void)
+{
+	int rc;
+
+	/* Scan nvram for partitions */
+	nvram_scan_partitions();
+
+	rc = nvram_init_os_partition(&rtas_log_partition);
+	nvram_init_oops_partition(rc == 0);
+	return 0;
+}
+machine_arch_initcall(pseries, pseries_nvram_init_log_partitions);
+
+int __init pSeries_nvram_init(void)
+{
+	struct device_node *nvram;
+	const __be32 *nbytes_p;
 	unsigned int proplen;
 
 	nvram = of_find_node_by_type(NULL, "nvram");
@@ -137,6 +240,7 @@ int __init pSeries_nvram_init(void)
 	}
 
 	nvram_size = *nbytes_p;
+	nvram_size = be32_to_cpup(nbytes_p);
 
 	nvram_fetch = rtas_token("nvram-fetch");
 	nvram_store = rtas_token("nvram-store");
@@ -149,3 +253,4 @@ int __init pSeries_nvram_init(void)
 
 	return 0;
 }
+

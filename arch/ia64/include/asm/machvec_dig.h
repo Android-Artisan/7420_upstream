@@ -11,6 +11,7 @@ extern ia64_mv_setup_t dig_setup;
  * the macros are used directly.
  */
 #define platform_name		"dig"
+#define ia64_platform_name	"dig"
 #define platform_setup		dig_setup
 
 #endif /* _ASM_IA64_MACHVEC_DIG_h */

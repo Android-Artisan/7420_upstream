@@ -28,11 +28,13 @@
 
 #ifndef TEST
 #include "um_malloc.h"
+#include <um_malloc.h>
 #else
 #include <stdio.h>
 #define um_kmalloc malloc
 #endif
 #include "os.h"
+#include <os.h>
 
 /* Execute FILE, searching in the `PATH' environment variable if it contains
    no slashes, with arguments ARGV and environment from `environ'.  */

@@ -110,6 +110,7 @@ viking_flush_cache_page:
 viking_flush_cache_range:
 #ifndef CONFIG_SMP
 	ld	[%o0 + 0x0], %o0		/* XXX vma->vm_mm, GROSS XXX */
+	ld	[%o0 + VMA_VM_MM], %o0
 #endif
 viking_flush_cache_mm:
 #ifndef CONFIG_SMP
@@ -150,6 +151,7 @@ viking_flush_tlb_mm:
 
 viking_flush_tlb_range:
 	ld	[%o0 + 0x00], %o0	/* XXX vma->vm_mm GROSS XXX */
+	ld	[%o0 + VMA_VM_MM], %o0
 	mov	SRMMU_CTX_REG, %g1
 	ld	[%o0 + AOFF_mm_context], %o3
 	lda	[%g1] ASI_M_MMUREGS, %g5
@@ -175,6 +177,7 @@ viking_flush_tlb_range:
 
 viking_flush_tlb_page:
 	ld	[%o0 + 0x00], %o0	/* XXX vma->vm_mm GROSS XXX */
+	ld	[%o0 + VMA_VM_MM], %o0
 	mov	SRMMU_CTX_REG, %g1
 	ld	[%o0 + AOFF_mm_context], %o3
 	lda	[%g1] ASI_M_MMUREGS, %g5
@@ -241,6 +244,7 @@ sun4dsmp_flush_tlb_range:
 	bne	3f
 	 mov	SRMMU_CTX_REG, %g1
 	ld	[%o0 + 0x00], %o0	/* XXX vma->vm_mm GROSS XXX */
+	ld	[%o0 + VMA_VM_MM], %o0
 	ld	[%o0 + AOFF_mm_context], %o3
 	lda	[%g1] ASI_M_MMUREGS, %g5
 	sethi	%hi(~((1 << SRMMU_PGDIR_SHIFT) - 1)), %o4
@@ -267,6 +271,7 @@ sun4dsmp_flush_tlb_page:
 	bne	2f
 	 mov	SRMMU_CTX_REG, %g1
 	ld	[%o0 + 0x00], %o0	/* XXX vma->vm_mm GROSS XXX */
+	ld	[%o0 + VMA_VM_MM], %o0
 	ld	[%o0 + AOFF_mm_context], %o3
 	lda	[%g1] ASI_M_MMUREGS, %g5
 	and	%o1, PAGE_MASK, %o1

@@ -468,7 +468,6 @@ int tda18271_init_regs(struct dvb_frontend *fe)
  *  Standby modes, EP3 [7:5]
  *
  *  | SM  || SM_LT || SM_XT || mode description
- *  |=====\\=======\\=======\\===================================
  *  |  0  ||   0   ||   0   || normal mode
  *  |-----||-------||-------||-----------------------------------
  *  |     ||       ||       || standby mode w/ slave tuner output

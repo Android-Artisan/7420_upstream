@@ -1,5 +1,4 @@
 			   ARM Linux 2.6
-			   =============
 
     Please check <ftp://ftp.arm.linux.org.uk/pub/armlinux> for
     updates.
@@ -42,11 +41,13 @@ Bug reports etc
 
   Please send patches to the patch system.  For more information, see
   http://www.arm.linux.org.uk/patches/info.html  Always include some
+  http://www.arm.linux.org.uk/developer/patches/info.php Always include some
   explanation as to what the patch does and why it is needed.
 
   Bug reports should be sent to linux-arm-kernel@lists.arm.linux.org.uk,
   or submitted through the web form at
   http://www.arm.linux.org.uk/forms/solution.shtml
+  http://www.arm.linux.org.uk/developer/ 
 
   When sending bug reports, please ensure that they contain all relevant
   information, eg. the kernel messages that were printed before/during
@@ -192,6 +193,21 @@ Kernel entry (head.S)
   You can register a new machine via the web site at:
 
     <http://www.arm.linux.org.uk/developer/machines/>
+
+  For platforms that support device tree (DT), the machine selection is
+  controlled at runtime by passing the device tree blob to the kernel.  At
+  compile-time, support for the machine type must be selected.  This allows for
+  a single multiplatform kernel build to be used for several machine types.
+
+  For platforms that do not use device tree, this machine selection is
+  controlled by the machine type ID, which acts both as a run-time and a
+  compile-time code selection method.  You can register a new machine via the
+  web site at:
+
+    <http://www.arm.linux.org.uk/developer/machines/>
+
+  Note: Please do not register a machine type for DT-only platforms.  If your
+  platform is DT-only, you do not need a registered machine type.
 
 ---
 Russell King (15/03/2004)

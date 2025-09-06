@@ -4,6 +4,7 @@
  * for more details.
  *
  * Copyright (C) 1999-2008 Silicon Graphics, Inc. All rights reserved.
+ * Copyright (C) 1999-2009 Silicon Graphics, Inc. All rights reserved.
  */
 
 /*
@@ -20,6 +21,7 @@
  *
  */
 
+#include <linux/slab.h>
 #include <linux/module.h>
 #include <linux/netdevice.h>
 #include <linux/etherdevice.h>
@@ -139,6 +141,7 @@ struct device_driver xpnet_dbg_name = {
 
 struct device xpnet_dbg_subname = {
 	.bus_id = {0},		/* set to "" */
+	.init_name = "",	/* set to "" */
 	.driver = &xpnet_dbg_name
 };
 
@@ -163,6 +166,7 @@ xpnet_receive(short partid, int channel, struct xpnet_message *msg)
 		xpc_received(partid, channel, (void *)msg);
 
 		priv->stats.rx_errors++;
+		xpnet_device->stats.rx_errors++;
 
 		return;
 	}
@@ -178,6 +182,7 @@ xpnet_receive(short partid, int channel, struct xpnet_message *msg)
 		xpc_received(partid, channel, (void *)msg);
 
 		priv->stats.rx_errors++;
+		xpnet_device->stats.rx_errors++;
 
 		return;
 	}
@@ -228,6 +233,7 @@ xpnet_receive(short partid, int channel, struct xpnet_message *msg)
 			xpc_received(partid, channel, (void *)msg);
 
 			priv->stats.rx_errors++;
+			xpnet_device->stats.rx_errors++;
 
 			return;
 		}
@@ -243,6 +249,7 @@ xpnet_receive(short partid, int channel, struct xpnet_message *msg)
 
 	dev_dbg(xpnet, "passing skb to network layer\n"
 		KERN_DEBUG "\tskb->head=0x%p skb->data=0x%p skb->tail=0x%p "
+		"\tskb->head=0x%p skb->data=0x%p skb->tail=0x%p "
 		"skb->end=0x%p skb->len=%d\n",
 		(void *)skb->head, (void *)skb->data, skb_tail_pointer(skb),
 		skb_end_pointer(skb), skb->len);
@@ -250,6 +257,8 @@ xpnet_receive(short partid, int channel, struct xpnet_message *msg)
 	xpnet_device->last_rx = jiffies;
 	priv->stats.rx_packets++;
 	priv->stats.rx_bytes += skb->len + ETH_HLEN;
+	xpnet_device->stats.rx_packets++;
+	xpnet_device->stats.rx_bytes += skb->len + ETH_HLEN;
 
 	netif_rx_ni(skb);
 	xpc_received(partid, channel, (void *)msg);
@@ -429,6 +438,7 @@ xpnet_send(struct sk_buff *skb, struct xpnet_pending_msg *queued_msg,
 
 	dev_dbg(xpnet, "sending XPC message to %d:%d\n"
 		KERN_DEBUG "msg->buf_pa=0x%lx, msg->size=%u, "
+		"msg->buf_pa=0x%lx, msg->size=%u, "
 		"msg->leadin_ignore=%u, msg->tailout_ignore=%u\n",
 		dest_partid, XPC_NET_CHANNEL, msg->buf_pa, msg->size,
 		msg->leadin_ignore, msg->tailout_ignore);
@@ -467,6 +477,7 @@ xpnet_dev_hard_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	if (skb->data[0] == 0x33) {
 		dev_kfree_skb(skb);
 		return 0;	/* nothing needed to be done */
+		return NETDEV_TX_OK;	/* nothing needed to be done */
 	}
 
 	/*
@@ -481,6 +492,9 @@ xpnet_dev_hard_start_xmit(struct sk_buff *skb, struct net_device *dev)
 
 		priv->stats.tx_errors++;
 		return -ENOMEM;
+		dev->stats.tx_errors++;
+		dev_kfree_skb(skb);
+		return NETDEV_TX_OK;
 	}
 
 	/* get the beginning of the first cacheline and end of last */
@@ -506,6 +520,7 @@ xpnet_dev_hard_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	if (skb->data[0] == 0xff) {
 		/* we are being asked to broadcast to all partitions */
 		for_each_bit(dest_partid, xpnet_broadcast_partitions,
+		for_each_set_bit(dest_partid, xpnet_broadcast_partitions,
 			     xp_max_npartitions) {
 
 			xpnet_send(skb, queued_msg, start_addr, end_addr,
@@ -524,6 +539,9 @@ xpnet_dev_hard_start_xmit(struct sk_buff *skb, struct net_device *dev)
 		}
 	}
 
+	dev->stats.tx_packets++;
+	dev->stats.tx_bytes += skb->len;
+
 	if (atomic_dec_return(&queued_msg->use_count) == 0) {
 		dev_kfree_skb(skb);
 		kfree(queued_msg);
@@ -533,6 +551,7 @@ xpnet_dev_hard_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	priv->stats.tx_bytes += skb->len;
 
 	return 0;
+	return NETDEV_TX_OK;
 }
 
 /*
@@ -548,6 +567,19 @@ xpnet_dev_tx_timeout(struct net_device *dev)
 	priv->stats.tx_errors++;
 	return;
 }
+
+	dev->stats.tx_errors++;
+}
+
+static const struct net_device_ops xpnet_netdev_ops = {
+	.ndo_open		= xpnet_dev_open,
+	.ndo_stop		= xpnet_dev_stop,
+	.ndo_start_xmit		= xpnet_dev_hard_start_xmit,
+	.ndo_change_mtu		= xpnet_dev_change_mtu,
+	.ndo_tx_timeout		= xpnet_dev_tx_timeout,
+	.ndo_set_mac_address 	= eth_mac_addr,
+	.ndo_validate_addr	= eth_validate_addr,
+};
 
 static int __init
 xpnet_init(void)
@@ -570,6 +602,8 @@ xpnet_init(void)
 	 */
 	xpnet_device = alloc_netdev(sizeof(struct xpnet_dev_private),
 				    XPNET_DEVICE_NAME, ether_setup);
+	xpnet_device = alloc_netdev(0, XPNET_DEVICE_NAME, NET_NAME_UNKNOWN,
+				    ether_setup);
 	if (xpnet_device == NULL) {
 		kfree(xpnet_broadcast_partitions);
 		return -ENOMEM;
@@ -585,6 +619,8 @@ xpnet_init(void)
 	xpnet_device->hard_start_xmit = xpnet_dev_hard_start_xmit;
 	xpnet_device->tx_timeout = xpnet_dev_tx_timeout;
 	xpnet_device->set_config = xpnet_dev_set_config;
+	xpnet_device->netdev_ops = &xpnet_netdev_ops;
+	xpnet_device->mtu = XPNET_DEF_MTU;
 
 	/*
 	 * Multicast assumes the LSB of the first octet is set for multicast
@@ -608,6 +644,7 @@ xpnet_init(void)
 	 * packet will be dropped.
 	 */
 	xpnet_device->features = NETIF_F_NO_CSUM;
+	xpnet_device->features = NETIF_F_HW_CSUM;
 
 	result = register_netdev(xpnet_device);
 	if (result != 0) {

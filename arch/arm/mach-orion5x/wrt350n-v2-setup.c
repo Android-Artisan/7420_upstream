@@ -6,6 +6,7 @@
  * warranty of any kind, whether express or implied.
  */
 
+#include <linux/gpio.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/platform_device.h>
@@ -17,6 +18,11 @@
 #include <linux/ethtool.h>
 #include <asm/mach-types.h>
 #include <asm/gpio.h>
+#include <linux/leds.h>
+#include <linux/gpio_keys.h>
+#include <linux/input.h>
+#include <net/dsa.h>
+#include <asm/mach-types.h>
 #include <asm/mach/arch.h>
 #include <asm/mach/pci.h>
 #include <mach/orion5x.h>
@@ -45,6 +51,102 @@ static struct orion5x_mpp_mode wrt350n_v2_mpp_modes[] __initdata = {
 	{ 18, MPP_GIGE },		/* GE_RXD[6] */
 	{ 19, MPP_GIGE },		/* GE_RXD[7] */
 	{ -1 },
+/*
+ * LEDs attached to GPIO
+ */
+static struct gpio_led wrt350n_v2_led_pins[] = {
+	{
+		.name		= "wrt350nv2:green:power",
+		.gpio		= 0,
+		.active_low	= 1,
+	}, {
+		.name		= "wrt350nv2:green:security",
+		.gpio		= 1,
+		.active_low	= 1,
+	}, {
+		.name		= "wrt350nv2:orange:power",
+		.gpio		= 5,
+		.active_low	= 1,
+	}, {
+		.name		= "wrt350nv2:green:usb",
+		.gpio		= 6,
+		.active_low	= 1,
+	}, {
+		.name		= "wrt350nv2:green:wireless",
+		.gpio		= 7,
+		.active_low	= 1,
+	},
+};
+
+static struct gpio_led_platform_data wrt350n_v2_led_data = {
+	.leds		= wrt350n_v2_led_pins,
+	.num_leds	= ARRAY_SIZE(wrt350n_v2_led_pins),
+};
+
+static struct platform_device wrt350n_v2_leds = {
+	.name	= "leds-gpio",
+	.id	= -1,
+	.dev	= {
+		.platform_data	= &wrt350n_v2_led_data,
+	},
+};
+
+/*
+ * Buttons attached to GPIO
+ */
+static struct gpio_keys_button wrt350n_v2_buttons[] = {
+	{
+		.code		= KEY_RESTART,
+		.gpio		= 3,
+		.desc		= "Reset Button",
+		.active_low	= 1,
+	}, {
+		.code		= KEY_WPS_BUTTON,
+		.gpio		= 2,
+		.desc		= "WPS Button",
+		.active_low	= 1,
+	},
+};
+
+static struct gpio_keys_platform_data wrt350n_v2_button_data = {
+	.buttons	= wrt350n_v2_buttons,
+	.nbuttons	= ARRAY_SIZE(wrt350n_v2_buttons),
+};
+
+static struct platform_device wrt350n_v2_button_device = {
+	.name		= "gpio-keys",
+	.id		= -1,
+	.num_resources	= 0,
+	.dev		= {
+		.platform_data	= &wrt350n_v2_button_data,
+	},
+};
+
+/*
+ * General setup
+ */
+static unsigned int wrt350n_v2_mpp_modes[] __initdata = {
+	MPP0_GPIO,		/* Power LED green (0=on) */
+	MPP1_GPIO,		/* Security LED (0=on) */
+	MPP2_GPIO,		/* Internal Button (0=on) */
+	MPP3_GPIO,		/* Reset Button (0=on) */
+	MPP4_GPIO,		/* PCI int */
+	MPP5_GPIO,		/* Power LED orange (0=on) */
+	MPP6_GPIO,		/* USB LED (0=on) */
+	MPP7_GPIO,		/* Wireless LED (0=on) */
+	MPP8_UNUSED,		/* ??? */
+	MPP9_GIGE,		/* GE_RXERR */
+	MPP10_UNUSED,		/* ??? */
+	MPP11_UNUSED,		/* ??? */
+	MPP12_GIGE,		/* GE_TXD[4] */
+	MPP13_GIGE,		/* GE_TXD[5] */
+	MPP14_GIGE,		/* GE_TXD[6] */
+	MPP15_GIGE,		/* GE_TXD[7] */
+	MPP16_GIGE,		/* GE_RXD[4] */
+	MPP17_GIGE,		/* GE_RXD[5] */
+	MPP18_GIGE,		/* GE_RXD[6] */
+	MPP19_GIGE,		/* GE_RXD[7] */
+	0,
 };
 
 /*
@@ -101,8 +203,23 @@ static struct platform_device wrt350n_v2_nor_flash = {
 
 static struct mv643xx_eth_platform_data wrt350n_v2_eth_data = {
 	.phy_addr	= -1,
+	.phy_addr	= MV643XX_ETH_PHY_NONE,
 	.speed		= SPEED_1000,
 	.duplex		= DUPLEX_FULL,
+};
+
+static struct dsa_chip_data wrt350n_v2_switch_chip_data = {
+	.port_names[0]	= "lan2",
+	.port_names[1]	= "lan1",
+	.port_names[2]	= "wan",
+	.port_names[3]	= "cpu",
+	.port_names[5]	= "lan3",
+	.port_names[7]	= "lan4",
+};
+
+static struct dsa_platform_data wrt350n_v2_switch_plat_data = {
+	.nr_chips	= 1,
+	.chip		= &wrt350n_v2_switch_chip_data,
 };
 
 static void __init wrt350n_v2_init(void)
@@ -127,6 +244,20 @@ static void __init wrt350n_v2_init(void)
 }
 
 static int __init wrt350n_v2_pci_map_irq(struct pci_dev *dev, u8 slot, u8 pin)
+	orion5x_eth_switch_init(&wrt350n_v2_switch_plat_data, NO_IRQ);
+	orion5x_uart0_init();
+
+	mvebu_mbus_add_window_by_id(ORION_MBUS_DEVBUS_BOOT_TARGET,
+				    ORION_MBUS_DEVBUS_BOOT_ATTR,
+				    WRT350N_V2_NOR_BOOT_BASE,
+				    WRT350N_V2_NOR_BOOT_SIZE);
+	platform_device_register(&wrt350n_v2_nor_flash);
+	platform_device_register(&wrt350n_v2_leds);
+	platform_device_register(&wrt350n_v2_button_device);
+}
+
+static int __init wrt350n_v2_pci_map_irq(const struct pci_dev *dev, u8 slot,
+	u8 pin)
 {
 	int irq;
 
@@ -173,4 +304,12 @@ MACHINE_START(WRT350N_V2, "Linksys WRT350N v2")
 	.init_irq	= orion5x_init_irq,
 	.timer		= &orion5x_timer,
 	.fixup		= tag_fixup_mem32,
+	.atag_offset	= 0x100,
+	.init_machine	= wrt350n_v2_init,
+	.map_io		= orion5x_map_io,
+	.init_early	= orion5x_init_early,
+	.init_irq	= orion5x_init_irq,
+	.init_time	= orion5x_timer_init,
+	.fixup		= tag_fixup_mem32,
+	.restart	= orion5x_restart,
 MACHINE_END

@@ -26,6 +26,7 @@ if WAN
 config HOSTESS_SV11
 	tristate "Comtrol Hostess SV-11 support"
 	depends on ISA && m && ISA_DMA_API && INET && HDLC
+	depends on ISA && m && ISA_DMA_API && INET && HDLC && VIRT_TO_BUS
 	help
 	  Driver for Comtrol Hostess SV-11 network card which
 	  operates on low speed synchronous serial links at up to
@@ -38,6 +39,7 @@ config HOSTESS_SV11
 config COSA
 	tristate "COSA/SRP sync serial boards support"
 	depends on ISA && m && ISA_DMA_API && HDLC
+	depends on ISA && m && ISA_DMA_API && HDLC && VIRT_TO_BUS
 	---help---
 	  Driver for COSA and SRP synchronous serial boards.
 
@@ -88,6 +90,7 @@ config LANMEDIA
 config SEALEVEL_4021
 	tristate "Sealevel Systems 4021 support"
 	depends on ISA && m && ISA_DMA_API && INET && HDLC
+	depends on ISA && m && ISA_DMA_API && INET && HDLC && VIRT_TO_BUS
 	help
 	  This is a driver for the Sealevel Systems ACB 56 serial I/O adapter.
 
@@ -290,6 +293,8 @@ config FARSYNC
 	  If you want the module to be automatically loaded when the interface
 	  is referenced then you should add "alias hdlcX farsync" to
 	  /etc/modprobe.conf for each interface, where X is 0, 1, 2, ..., or
+	  is referenced then you should add "alias hdlcX farsync" to a file
+	  in /etc/modprobe.d/ for each interface, where X is 0, 1, 2, ..., or
 	  simply use "alias hdlc* farsync" to indicate all of them.
 
 	  To compile this driver as a module, choose M here: the
@@ -332,6 +337,13 @@ config DSCC4_PCI_RST
 	  cards. Contact your manufacturer for details.
 
 	  Say Y if your card supports this feature.
+
+config IXP4XX_HSS
+	tristate "Intel IXP4xx HSS (synchronous serial port) support"
+	depends on HDLC && ARM && ARCH_IXP4XX && IXP4XX_NPE && IXP4XX_QMGR
+	help
+	  Say Y here if you want to use built-in HSS ports
+	  on IXP4xx processor.
 
 config DLCI
 	tristate "Frame Relay DLCI support"
@@ -435,6 +447,9 @@ config CYCLOMX_X25
 # X.25 network drivers
 config LAPBETHER
 	tristate "LAPB over Ethernet driver (EXPERIMENTAL)"
+# X.25 network drivers
+config LAPBETHER
+	tristate "LAPB over Ethernet driver"
 	depends on LAPB && X25
 	---help---
 	  Driver for a pseudo device (typically called /dev/lapb0) which allows
@@ -452,6 +467,8 @@ config LAPBETHER
 config X25_ASY
 	tristate "X.25 async driver (EXPERIMENTAL)"
 	depends on LAPB && X25
+	tristate "X.25 async driver"
+	depends on LAPB && X25 && TTY
 	---help---
 	  Send and receive X.25 frames over regular asynchronous serial
 	  lines such as telephone lines equipped with ordinary modems.

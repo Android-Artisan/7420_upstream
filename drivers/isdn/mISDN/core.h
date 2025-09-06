@@ -50,6 +50,11 @@ extern int	connect_layer1(struct mISDNdevice *, struct mISDNchannel *,
 			u_int, struct sockaddr_mISDN *);
 extern int	create_l2entity(struct mISDNdevice *, struct mISDNchannel *,
 			u_int, struct sockaddr_mISDN *);
+			       u_int, struct sockaddr_mISDN *);
+extern int	connect_layer1(struct mISDNdevice *, struct mISDNchannel *,
+			       u_int, struct sockaddr_mISDN *);
+extern int	create_l2entity(struct mISDNdevice *, struct mISDNchannel *,
+				u_int, struct sockaddr_mISDN *);
 
 extern int	create_stack(struct mISDNdevice *);
 extern int	create_teimanager(struct mISDNdevice *);
@@ -73,5 +78,12 @@ extern int	l1_init(u_int *);
 extern void	l1_cleanup(void);
 extern int 	Isdnl2_Init(u_int *);
 extern void	Isdnl2_cleanup(void);
+
+extern int	Isdnl1_Init(u_int *);
+extern void	Isdnl1_cleanup(void);
+extern int	Isdnl2_Init(u_int *);
+extern void	Isdnl2_cleanup(void);
+
+extern void	mISDN_init_clock(u_int *);
 
 #endif

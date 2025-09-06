@@ -8,6 +8,11 @@ to implement them for any given architecture and shows how they can be used
 properly. It also stresses on the precautions that must be taken when reading
 those local variables across CPUs when the order of memory writes matters.
 
+Note that local_t based operations are not recommended for general kernel use.
+Please use the this_cpu operations instead unless there is really a special purpose.
+Most uses of local_t in the kernel have been replaced by this_cpu operations.
+this_cpu operations combine the relocation with the local_t like semantics in
+a single instruction and yield more compact and faster executing code.
 
 
 * Purpose of local atomic operations
@@ -35,6 +40,7 @@ out of order wrt other memory writes by the owner CPU.
 It can be done by slightly modifying the standard atomic operations : only
 their UP variant must be kept. It typically means removing LOCK prefix (on
 i386 and x86_64) and any SMP sychronization barrier. If the architecture does
+i386 and x86_64) and any SMP synchronization barrier. If the architecture does
 not have a different behavior between SMP and UP, including asm-generic/local.h
 in your architecture's local.h is sufficient.
 
@@ -91,6 +97,10 @@ If you are already in a preemption-safe context, you can directly use
 __get_cpu_var() instead.
 
 	local_inc(&__get_cpu_var(counters));
+If you are already in a preemption-safe context, you can use
+this_cpu_ptr() instead.
+
+	local_inc(this_cpu_ptr(&counters));
 
 
 
@@ -135,6 +145,7 @@ static void test_each(void *info)
 	/* Increment the counter from a non preemptible context */
 	printk("Increment on cpu %d\n", smp_processor_id());
 	local_inc(&__get_cpu_var(counters));
+	local_inc(this_cpu_ptr(&counters));
 
 	/* This is what incrementing the variable would look like within a
 	 * preemptible context (it disables preemption) :
@@ -150,6 +161,7 @@ static void do_test_timer(unsigned long data)
 
 	/* Increment the counters */
 	on_each_cpu(test_each, NULL, 0, 1);
+	on_each_cpu(test_each, NULL, 1);
 	/* Read all the counters */
 	printk("Counters read from CPU %d\n", smp_processor_id());
 	for_each_online_cpu(cpu) {

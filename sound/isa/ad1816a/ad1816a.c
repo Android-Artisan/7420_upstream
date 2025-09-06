@@ -23,6 +23,7 @@
 #include <linux/wait.h>
 #include <linux/pnp.h>
 #include <linux/moduleparam.h>
+#include <linux/module.h>
 #include <sound/core.h>
 #include <sound/initval.h>
 #include <sound/ad1816a.h>
@@ -45,6 +46,7 @@ MODULE_SUPPORTED_DEVICE("{{Highscreen,Sound-Boostar 16 3D},"
 static int index[SNDRV_CARDS] = SNDRV_DEFAULT_IDX;	/* Index 1-MAX */
 static char *id[SNDRV_CARDS] = SNDRV_DEFAULT_STR;	/* ID for this card */
 static int enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE_ISAPNP;	/* Enable this card */
+static bool enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE_ISAPNP;	/* Enable this card */
 static long port[SNDRV_CARDS] = SNDRV_DEFAULT_PORT;	/* PnP setup */
 static long mpu_port[SNDRV_CARDS] = SNDRV_DEFAULT_PORT;	/* PnP setup */
 static long fm_port[SNDRV_CARDS] = SNDRV_DEFAULT_PORT;	/* PnP setup */
@@ -85,6 +87,10 @@ static struct pnp_card_device_id snd_ad1816a_pnpids[] = {
 	{ .id = "SMM7180", .devs = { { .id = "ADS7180" }, { .id = "ADS7181" } } },
 	/* Analog Devices AD1816A - Terratec AudioSystem EWS64S */
 	{ .id = "TER1112", .devs = { { .id = "ADS7180" }, { .id = "ADS7181" } } },
+	/* Analog Devices AD1816A - Terratec AudioSystem EWS64 S */
+	{ .id = "TER1112", .devs = { { .id = "ADS7180" }, { .id = "ADS7181" } } },
+	/* Analog Devices AD1816A - Terratec AudioSystem EWS64 S */
+	{ .id = "TER1112", .devs = { { .id = "TER1100" }, { .id = "TER1101" } } },
 	/* Analog Devices AD1816A - Terratec Base 64 */
 	{ .id = "TER1411", .devs = { { .id = "ADS7180" }, { .id = "ADS7181" } } },
 	/* end */
@@ -100,6 +106,8 @@ MODULE_DEVICE_TABLE(pnp_card, snd_ad1816a_pnpids);
 static int __devinit snd_card_ad1816a_pnp(int dev, struct snd_card_ad1816a *acard,
 					  struct pnp_card_link *card,
 					  const struct pnp_card_device_id *id)
+static int snd_card_ad1816a_pnp(int dev, struct pnp_card_link *card,
+				const struct pnp_card_device_id *id)
 {
 	struct pnp_dev *pdev;
 	int err;
@@ -115,6 +123,10 @@ static int __devinit snd_card_ad1816a_pnp(int dev, struct snd_card_ad1816a *acar
 	}
 
 	pdev = acard->dev;
+
+	pdev = pnp_request_card_device(card, id->devs[0].id, NULL);
+	if (pdev == NULL)
+		return -EBUSY;
 
 	err = pnp_activate_dev(pdev);
 	if (err < 0) {
@@ -132,6 +144,12 @@ static int __devinit snd_card_ad1816a_pnp(int dev, struct snd_card_ad1816a *acar
 		return 0;
 
 	pdev = acard->devmpu;
+	pdev = pnp_request_card_device(card, id->devs[1].id, NULL);
+	if (pdev == NULL) {
+		mpu_port[dev] = -1;
+		snd_printk(KERN_WARNING PFX "MPU401 device busy, skipping.\n");
+		return 0;
+	}
 
 	err = pnp_activate_dev(pdev);
 	if (err < 0) {
@@ -165,12 +183,32 @@ static int __devinit snd_card_ad1816a_probe(int dev, struct pnp_card_link *pcard
 		return error;
 	}
 	snd_card_set_dev(card, &pcard->card->dev);
+static int snd_card_ad1816a_probe(int dev, struct pnp_card_link *pcard,
+				  const struct pnp_card_device_id *pid)
+{
+	int error;
+	struct snd_card *card;
+	struct snd_ad1816a *chip;
+	struct snd_opl3 *opl3;
+
+	error = snd_card_new(&pcard->card->dev,
+			     index[dev], id[dev], THIS_MODULE,
+			     sizeof(struct snd_ad1816a), &card);
+	if (error < 0)
+		return error;
+	chip = card->private_data;
+
+	if ((error = snd_card_ad1816a_pnp(dev, pcard, pid))) {
+		snd_card_free(card);
+		return error;
+	}
 
 	if ((error = snd_ad1816a_create(card, port[dev],
 					irq[dev],
 					dma1[dev],
 					dma2[dev],
 					&chip)) < 0) {
+					chip)) < 0) {
 		snd_card_free(card);
 		return error;
 	}
@@ -183,6 +221,7 @@ static int __devinit snd_card_ad1816a_probe(int dev, struct pnp_card_link *pcard
 		card->shortname, chip->port, irq[dev], dma1[dev], dma2[dev]);
 
 	if ((error = snd_ad1816a_pcm(chip, 0, NULL)) < 0) {
+	if ((error = snd_ad1816a_pcm(chip, 0)) < 0) {
 		snd_card_free(card);
 		return error;
 	}
@@ -195,6 +234,15 @@ static int __devinit snd_card_ad1816a_probe(int dev, struct pnp_card_link *pcard
 	if (mpu_port[dev] > 0) {
 		if (snd_mpu401_uart_new(card, 0, MPU401_HW_MPU401,
 					mpu_port[dev], 0, mpu_irq[dev], IRQF_DISABLED,
+	error = snd_ad1816a_timer(chip, 0);
+	if (error < 0) {
+		snd_card_free(card);
+		return error;
+	}
+
+	if (mpu_port[dev] > 0) {
+		if (snd_mpu401_uart_new(card, 0, MPU401_HW_MPU401,
+					mpu_port[dev], 0, mpu_irq[dev],
 					NULL) < 0)
 			printk(KERN_ERR PFX "no MPU-401 device at 0x%lx.\n", mpu_port[dev]);
 	}
@@ -210,6 +258,8 @@ static int __devinit snd_card_ad1816a_probe(int dev, struct pnp_card_link *pcard
 				return error;
 			}
 			if ((error = snd_opl3_hwdep_new(opl3, 0, 1, NULL)) < 0) {
+			error = snd_opl3_hwdep_new(opl3, 0, 1, NULL);
+			if (error < 0) {
 				snd_card_free(card);
 				return error;
 			}
@@ -228,6 +278,10 @@ static unsigned int __devinitdata ad1816a_devices;
 
 static int __devinit snd_ad1816a_pnp_detect(struct pnp_card_link *card,
 					    const struct pnp_card_device_id *id)
+static unsigned int ad1816a_devices;
+
+static int snd_ad1816a_pnp_detect(struct pnp_card_link *card,
+				  const struct pnp_card_device_id *id)
 {
 	static int dev;
 	int res;
@@ -246,10 +300,32 @@ static int __devinit snd_ad1816a_pnp_detect(struct pnp_card_link *card,
 }
 
 static void __devexit snd_ad1816a_pnp_remove(struct pnp_card_link * pcard)
+static void snd_ad1816a_pnp_remove(struct pnp_card_link *pcard)
 {
 	snd_card_free(pnp_get_card_drvdata(pcard));
 	pnp_set_card_drvdata(pcard, NULL);
 }
+
+#ifdef CONFIG_PM
+static int snd_ad1816a_pnp_suspend(struct pnp_card_link *pcard,
+				   pm_message_t state)
+{
+	struct snd_card *card = pnp_get_card_drvdata(pcard);
+
+	snd_power_change_state(card, SNDRV_CTL_POWER_D3hot);
+	snd_ad1816a_suspend(card->private_data);
+	return 0;
+}
+
+static int snd_ad1816a_pnp_resume(struct pnp_card_link *pcard)
+{
+	struct snd_card *card = pnp_get_card_drvdata(pcard);
+
+	snd_ad1816a_resume(card->private_data);
+	snd_power_change_state(card, SNDRV_CTL_POWER_D0);
+	return 0;
+}
+#endif
 
 static struct pnp_card_driver ad1816a_pnpc_driver = {
 	.flags		= PNP_DRIVER_RES_DISABLE,
@@ -258,6 +334,11 @@ static struct pnp_card_driver ad1816a_pnpc_driver = {
 	.probe		= snd_ad1816a_pnp_detect,
 	.remove		= __devexit_p(snd_ad1816a_pnp_remove),
 	/* FIXME: suspend/resume */
+	.remove		= snd_ad1816a_pnp_remove,
+#ifdef CONFIG_PM
+	.suspend	= snd_ad1816a_pnp_suspend,
+	.resume		= snd_ad1816a_pnp_resume,
+#endif
 };
 
 static int __init alsa_card_ad1816a_init(void)

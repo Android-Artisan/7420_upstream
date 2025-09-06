@@ -1,7 +1,6 @@
 Release notes for Neterion's (Formerly S2io) Xframe I/II PCI-X 10GbE driver.
 
 Contents
-=======
 - 1.  Introduction
 - 2.  Identifying the adapter/interface
 - 3.  Features supported
@@ -39,6 +38,8 @@ The corresponding adapter's LED will blink multiple times.
 3.	Features supported:
 a. Jumbo frames. Xframe I/II supports MTU upto 9600 bytes,
 modifiable using ifconfig command.
+a. Jumbo frames. Xframe I/II supports MTU up to 9600 bytes,
+modifiable using ip command.
 
 b. Offloads. Supports checksum offload(TCP/UDP/IP) on transmit
 and receive, TSO.
@@ -50,6 +51,7 @@ IBM xSeries).
 
 d. MSI/MSI-X. Can be enabled on platforms which support this feature
 (IA64, Xeon) resulting in noticeable performance improvement(upto 7%
+(IA64, Xeon) resulting in noticeable performance improvement(up to 7%
 on certain platforms).
 
 e. Statistics. Comprehensive MAC-level and software statistics displayed
@@ -148,3 +150,9 @@ For further support please contact either your 10GbE Xframe NIC vendor (IBM,
 HP, SGI etc.) or click on the "Support" link on the Neterion site:  
 http://www.neterion.com.
 
+http://vip.amd.com/us-en/assets/content_type/white_papers_and_tech_docs/
+26310_AMD-8131_HyperTransport_PCI-X_Tunnel_Revision_Guide_rev_3_18.pdf
+
+6. Support
+For further support please contact either your 10GbE Xframe NIC vendor (IBM, 
+HP, SGI etc.)

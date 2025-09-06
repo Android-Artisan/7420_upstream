@@ -59,6 +59,9 @@
 #define UDCOTGICR_IEXR	(1 << 17)	/* Extra Transciever Interrupt
 					   Rising Edge Interrupt Enable */
 #define UDCOTGICR_IEXF	(1 << 16)	/* Extra Transciever Interrupt
+#define UDCOTGICR_IEXR	(1 << 17)	/* Extra Transceiver Interrupt
+					   Rising Edge Interrupt Enable */
+#define UDCOTGICR_IEXF	(1 << 16)	/* Extra Transceiver Interrupt
 					   Falling Edge Interrupt Enable */
 #define UDCOTGICR_IEVV40R (1 << 9)	/* OTG Vbus Valid 4.0V Rising Edge
 					   Interrupt Enable */

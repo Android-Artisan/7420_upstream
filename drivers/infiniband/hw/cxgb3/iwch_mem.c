@@ -29,6 +29,7 @@
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
+#include <linux/slab.h>
 #include <asm/byteorder.h>
 
 #include <rdma/iw_cm.h>
@@ -40,6 +41,7 @@
 #include "iwch_provider.h"
 
 static void iwch_finish_mem_reg(struct iwch_mr *mhp, u32 stag)
+static int iwch_finish_mem_reg(struct iwch_mr *mhp, u32 stag)
 {
 	u32 mmid;
 
@@ -49,12 +51,15 @@ static void iwch_finish_mem_reg(struct iwch_mr *mhp, u32 stag)
 	mhp->ibmr.rkey = mhp->ibmr.lkey = stag;
 	insert_handle(mhp->rhp, &mhp->rhp->mmidr, mhp, mmid);
 	PDBG("%s mmid 0x%x mhp %p\n", __func__, mmid, mhp);
+	PDBG("%s mmid 0x%x mhp %p\n", __func__, mmid, mhp);
+	return insert_handle(mhp->rhp, &mhp->rhp->mmidr, mhp, mmid);
 }
 
 int iwch_register_mem(struct iwch_dev *rhp, struct iwch_pd *php,
 		      struct iwch_mr *mhp, int shift)
 {
 	u32 stag;
+	int ret;
 
 	if (cxio_register_phys_mem(&rhp->rdev,
 				   &stag, mhp->attr.pdid,
@@ -69,6 +74,11 @@ int iwch_register_mem(struct iwch_dev *rhp, struct iwch_pd *php,
 	iwch_finish_mem_reg(mhp, stag);
 
 	return 0;
+	ret = iwch_finish_mem_reg(mhp, stag);
+	if (ret)
+		cxio_dereg_mem(&rhp->rdev, mhp->attr.stag, mhp->attr.pbl_size,
+		       mhp->attr.pbl_addr);
+	return ret;
 }
 
 int iwch_reregister_mem(struct iwch_dev *rhp, struct iwch_pd *php,
@@ -77,6 +87,7 @@ int iwch_reregister_mem(struct iwch_dev *rhp, struct iwch_pd *php,
 					int npages)
 {
 	u32 stag;
+	int ret;
 
 	/* We could support this... */
 	if (npages > mhp->attr.pbl_size)
@@ -96,6 +107,12 @@ int iwch_reregister_mem(struct iwch_dev *rhp, struct iwch_pd *php,
 	iwch_finish_mem_reg(mhp, stag);
 
 	return 0;
+	ret = iwch_finish_mem_reg(mhp, stag);
+	if (ret)
+		cxio_dereg_mem(&rhp->rdev, mhp->attr.stag, mhp->attr.pbl_size,
+		       mhp->attr.pbl_addr);
+
+	return ret;
 }
 
 int iwch_alloc_pbl(struct iwch_mr *mhp, int npages)

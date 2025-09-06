@@ -1,5 +1,6 @@
 /*
  * include/asm-h8300/flat.h -- uClinux flat-format executables
+ * arch/h8300/asm/include/flat.h -- uClinux flat-format executables
  */
 
 #ifndef __H8300_FLAT_H__
@@ -23,5 +24,12 @@
         (get_unaligned(rp) & ((flags & FLAT_FLAG_GOTPIC) ? 0xffffffff: 0x00ffffff))
 #define flat_put_addr_at_rp(rp, addr, rel) \
 	put_unaligned (((*(char *)(rp)) << 24) | ((addr) & 0x00ffffff), rp)
+#define	flat_get_relocate_addr(rel)		(rel & ~0x00000001)
+#define flat_get_addr_from_rp(rp, relval, flags, persistent) \
+	({(void)persistent; \
+		get_unaligned(rp) & (((flags) & FLAT_FLAG_GOTPIC) ?	\
+				     0xffffffff : 0x00ffffff); })
+#define flat_put_addr_at_rp(rp, addr, rel) \
+	put_unaligned(((*(char *)(rp)) << 24) | ((addr) & 0x00ffffff), (rp))
 
 #endif /* __H8300_FLAT_H__ */

@@ -1,7 +1,9 @@
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 #include <linux/module.h>
 #include <linux/skbuff.h>
 #include <net/ip.h>
 #include <net/ipv6.h>
+#include <net/sctp/sctp.h>
 #include <linux/sctp.h>
 
 #include <linux/netfilter/x_tables.h>
@@ -53,6 +55,7 @@ match_packet(const struct sk_buff *skb,
 	int flag_count = info->flag_count;
 
 #ifdef DEBUG_SCTP
+#ifdef DEBUG
 	int i = 0;
 #endif
 
@@ -73,6 +76,19 @@ match_packet(const struct sk_buff *skb,
 		offset += (ntohs(sch->length) + 3) & ~3;
 
 		duprintf("skb->len: %d\toffset: %d\n", skb->len, offset);
+			pr_debug("Dropping invalid SCTP packet.\n");
+			*hotdrop = true;
+			return false;
+		}
+#ifdef DEBUG
+		pr_debug("Chunk num: %d\toffset: %d\ttype: %d\tlength: %d"
+			 "\tflags: %x\n",
+			 ++i, offset, sch->type, htons(sch->length),
+			 sch->flags);
+#endif
+		offset += WORD_ROUND(ntohs(sch->length));
+
+		pr_debug("skb->len: %d\toffset: %d\n", skb->len, offset);
 
 		if (SCTP_CHUNKMAP_IS_SET(info->chunkmap, sch->type)) {
 			switch (chunk_match_type) {
@@ -106,6 +122,7 @@ match_packet(const struct sk_buff *skb,
 	switch (chunk_match_type) {
 	case SCTP_CHUNK_MATCH_ALL:
 		return SCTP_CHUNKMAP_IS_CLEAR(info->chunkmap);
+		return SCTP_CHUNKMAP_IS_CLEAR(chunkmapcopy);
 	case SCTP_CHUNK_MATCH_ANY:
 		return false;
 	case SCTP_CHUNK_MATCH_ONLY:
@@ -137,6 +154,24 @@ sctp_mt(const struct sk_buff *skb, const struct net_device *in,
 		return false;
 	}
 	duprintf("spt: %d\tdpt: %d\n", ntohs(sh->source), ntohs(sh->dest));
+sctp_mt(const struct sk_buff *skb, struct xt_action_param *par)
+{
+	const struct xt_sctp_info *info = par->matchinfo;
+	const sctp_sctphdr_t *sh;
+	sctp_sctphdr_t _sh;
+
+	if (par->fragoff != 0) {
+		pr_debug("Dropping non-first fragment.. FIXME\n");
+		return false;
+	}
+
+	sh = skb_header_pointer(skb, par->thoff, sizeof(_sh), &_sh);
+	if (sh == NULL) {
+		pr_debug("Dropping evil TCP offset=0 tinygram.\n");
+		par->hotdrop = true;
+		return false;
+	}
+	pr_debug("spt: %d\tdpt: %d\n", ntohs(sh->source), ntohs(sh->dest));
 
 	return  SCCHECK(ntohs(sh->source) >= info->spts[0]
 			&& ntohs(sh->source) <= info->spts[1],
@@ -164,12 +199,36 @@ sctp_mt_check(const char *tablename, const void *inf,
 				(SCTP_CHUNK_MATCH_ALL
 				| SCTP_CHUNK_MATCH_ANY
 				| SCTP_CHUNK_MATCH_ONLY)));
+		&& SCCHECK(match_packet(skb, par->thoff + sizeof(sctp_sctphdr_t),
+					info, &par->hotdrop),
+			   XT_SCTP_CHUNK_TYPES, info->flags, info->invflags);
+}
+
+static int sctp_mt_check(const struct xt_mtchk_param *par)
+{
+	const struct xt_sctp_info *info = par->matchinfo;
+
+	if (info->flag_count > ARRAY_SIZE(info->flag_info))
+		return -EINVAL;
+	if (info->flags & ~XT_SCTP_VALID_FLAGS)
+		return -EINVAL;
+	if (info->invflags & ~XT_SCTP_VALID_FLAGS)
+		return -EINVAL;
+	if (info->invflags & ~info->flags)
+		return -EINVAL;
+	if (!(info->flags & XT_SCTP_CHUNK_TYPES))
+		return 0;
+	if (info->chunk_match_type & (SCTP_CHUNK_MATCH_ALL |
+	    SCTP_CHUNK_MATCH_ANY | SCTP_CHUNK_MATCH_ONLY))
+		return 0;
+	return -EINVAL;
 }
 
 static struct xt_match sctp_mt_reg[] __read_mostly = {
 	{
 		.name		= "sctp",
 		.family		= AF_INET,
+		.family		= NFPROTO_IPV4,
 		.checkentry	= sctp_mt_check,
 		.match		= sctp_mt,
 		.matchsize	= sizeof(struct xt_sctp_info),
@@ -179,6 +238,7 @@ static struct xt_match sctp_mt_reg[] __read_mostly = {
 	{
 		.name		= "sctp",
 		.family		= AF_INET6,
+		.family		= NFPROTO_IPV6,
 		.checkentry	= sctp_mt_check,
 		.match		= sctp_mt,
 		.matchsize	= sizeof(struct xt_sctp_info),

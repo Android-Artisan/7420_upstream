@@ -38,6 +38,43 @@ enum {
 };
 
 
+#include <asm-generic/pci-bridge.h>
+
+struct device_node;
+
+/*
+ * PCI controller operations
+ */
+struct pci_controller_ops {
+	void		(*dma_dev_setup)(struct pci_dev *dev);
+	void		(*dma_bus_setup)(struct pci_bus *bus);
+
+	int		(*probe_mode)(struct pci_bus *);
+
+	/* Called when pci_enable_device() is called. Returns true to
+	 * allow assignment/enabling of the device. */
+	bool		(*enable_device_hook)(struct pci_dev *);
+
+	void		(*disable_device)(struct pci_dev *);
+
+	void		(*release_device)(struct pci_dev *);
+
+	/* Called during PCI resource reassignment */
+	resource_size_t (*window_alignment)(struct pci_bus *, unsigned long type);
+	void		(*reset_secondary_bus)(struct pci_dev *dev);
+
+#ifdef CONFIG_PCI_MSI
+	int		(*setup_msi_irqs)(struct pci_dev *dev,
+					  int nvec, int type);
+	void		(*teardown_msi_irqs)(struct pci_dev *dev);
+#endif
+
+	int             (*dma_set_mask)(struct pci_dev *dev, u64 dma_mask);
+	u64		(*dma_get_required_mask)(struct pci_dev *dev);
+
+	void		(*shutdown)(struct pci_controller *);
+};
+
 /*
  * Structure of a PCI controller (host bridge)
  */
@@ -56,6 +93,8 @@ struct pci_controller {
 #ifndef CONFIG_PPC64
 	int self_busno;
 #endif
+	int self_busno;
+	struct resource busn;
 
 	void __iomem *io_base_virt;
 #ifdef CONFIG_PPC64
@@ -74,6 +113,16 @@ struct pci_controller {
 	unsigned long pci_io_size;
 #endif
 
+	resource_size_t pci_io_size;
+
+	/* Some machines have a special region to forward the ISA
+	 * "memory" cycles such as VGA memory regions. Left to 0
+	 * if unsupported
+	 */
+	resource_size_t	isa_mem_phys;
+	resource_size_t	isa_mem_size;
+
+	struct pci_controller_ops controller_ops;
 	struct pci_ops *ops;
 	unsigned int __iomem *cfg_addr;
 	void __iomem *cfg_data;
@@ -84,6 +133,7 @@ struct pci_controller {
 	 *  SET_CFG_TYPE - used on 4xx or any PHB that does explicit type0/1
 	 *  EXT_REG - provides access to PCI-e extended registers
 	 *  SURPRESS_PRIMARY_BUS - we surpress the setting of PCI_PRIMARY_BUS
+	 *  SURPRESS_PRIMARY_BUS - we suppress the setting of PCI_PRIMARY_BUS
 	 *   on Freescale PCI-e controllers since they used the PCI_PRIMARY_BUS
 	 *   to determine which bus number to match on when generating type0
 	 *   config cycles
@@ -94,6 +144,8 @@ struct pci_controller {
 	 *  BIG_ENDIAN - cfg_addr is a big endian register
 	 *  BROKEN_MRM - the 440EPx/GRx chips have an errata that causes hangs on
 	 *   the PLB4.  Effectively disable MRM commands by setting this.
+	 *  FSL_CFG_REG_LINK - Freescale controller version in which the PCIe
+	 *   link status is in a RC PCIe cfg register (vs being a SoC register)
 	 */
 #define PPC_INDIRECT_TYPE_SET_CFG_TYPE		0x00000001
 #define PPC_INDIRECT_TYPE_EXT_REG		0x00000002
@@ -103,6 +155,8 @@ struct pci_controller {
 #define PPC_INDIRECT_TYPE_BROKEN_MRM		0x00000020
 	u32 indirect_type;
 #endif	/* !CONFIG_PPC64 */
+#define PPC_INDIRECT_TYPE_FSL_CFG_REG_LINK	0x00000040
+	u32 indirect_type;
 	/* Currently, we limit ourselves to 1 IO range and 3 mem
 	 * ranges since the common pci_bus structure can't handle more
 	 */
@@ -133,6 +187,20 @@ static inline int isa_vaddr_is_ioport(void __iomem *address)
 	return 0;
 }
 
+	resource_size_t mem_offset[3];
+	int global_number;		/* PCI domain number */
+
+	resource_size_t dma_window_base_cur;
+	resource_size_t dma_window_size;
+
+#ifdef CONFIG_PPC64
+	unsigned long buid;
+	struct pci_dn *pci_data;
+#endif	/* CONFIG_PPC64 */
+
+	void *private_data;
+};
+
 /* These are used for config access before all the PCI probing
    has been done. */
 extern int early_read_config_byte(struct pci_controller *hose, int bus,
@@ -155,6 +223,36 @@ extern void setup_indirect_pci(struct pci_controller* hose,
 			       resource_size_t cfg_addr,
 			       resource_size_t cfg_data, u32 flags);
 extern void setup_grackle(struct pci_controller *hose);
+
+extern int indirect_read_config(struct pci_bus *bus, unsigned int devfn,
+				int offset, int len, u32 *val);
+
+extern int __indirect_read_config(struct pci_controller *hose,
+				  unsigned char bus_number, unsigned int devfn,
+				  int offset, int len, u32 *val);
+
+extern int indirect_write_config(struct pci_bus *bus, unsigned int devfn,
+				 int offset, int len, u32 val);
+
+static inline struct pci_controller *pci_bus_to_host(const struct pci_bus *bus)
+{
+	return bus->sysdata;
+}
+
+#ifndef CONFIG_PPC64
+
+extern int pci_device_from_OF_node(struct device_node *node,
+				   u8 *bus, u8 *devfn);
+extern void pci_create_OF_bus_map(void);
+
+static inline int isa_vaddr_is_ioport(void __iomem *address)
+{
+	/* No specific ISA handling on ppc32 at this stage, it
+	 * all goes through PCI
+	 */
+	return 0;
+}
+
 #else	/* CONFIG_PPC64 */
 
 /*
@@ -169,6 +267,18 @@ struct pci_dn {
 
 	struct  pci_controller *phb;	/* for pci devices */
 	struct	iommu_table *iommu_table;	/* for phb's or bridges */
+	int     flags;
+#define PCI_DN_FLAG_IOV_VF	0x01
+
+	int	busno;			/* pci bus number */
+	int	devfn;			/* pci device and function number */
+	int	vendor_id;		/* Vendor ID */
+	int	device_id;		/* Device ID */
+	int	class_code;		/* Device class code */
+
+	struct  pci_dn *parent;
+	struct  pci_controller *phb;	/* for pci devices */
+	struct	iommu_table_group *table_group;	/* for phb's or bridges */
 	struct	device_node *node;	/* back-pointer to the device_node */
 
 	int	pci_ext_config_space;	/* for pci devices */
@@ -184,6 +294,23 @@ struct pci_dn {
 	int	eeh_false_positives;	/* # times this device reported #ff's */
 	u32	config_space[16];	/* saved PCI config space */
 #endif
+	struct eeh_dev *edev;		/* eeh device */
+#endif
+#define IODA_INVALID_PE		(-1)
+#ifdef CONFIG_PPC_POWERNV
+	int	pe_number;
+#ifdef CONFIG_PCI_IOV
+	u16     vfs_expanded;		/* number of VFs IOV BAR expanded */
+	u16     num_vfs;		/* number of VFs enabled*/
+	int     offset;			/* PE# for the first VF PE */
+#define M64_PER_IOV 4
+	int     m64_per_iov;
+#define IODA_INVALID_M64        (-1)
+	int     m64_wins[PCI_SRIOV_NUM_BARS][M64_PER_IOV];
+#endif /* CONFIG_PCI_IOV */
+#endif
+	struct list_head child_list;
+	struct list_head list;
 };
 
 /* Get the pointer to a device_node's pci_dn */
@@ -207,6 +334,12 @@ static inline struct device_node *pci_device_to_OF_node(struct pci_dev *dev)
 		return dn;	/* fast path.  sysdata is good */
 	return fetch_dev_dn(dev);
 }
+extern struct pci_dn *pci_get_pdn_by_devfn(struct pci_bus *bus,
+					   int devfn);
+extern struct pci_dn *pci_get_pdn(struct pci_dev *pdev);
+extern struct pci_dn *add_dev_pci_data(struct pci_dev *pdev);
+extern void remove_dev_pci_data(struct pci_dev *pdev);
+extern void *update_dn_pci_info(struct device_node *dn, void *data);
 
 static inline int pci_device_from_OF_node(struct device_node *np,
 					  u8 *bus, u8 *devfn)
@@ -225,6 +358,14 @@ static inline struct device_node *pci_bus_to_OF_node(struct pci_bus *bus)
 	else
 		return bus->sysdata; /* Must be root bus (PHB) */
 }
+#if defined(CONFIG_EEH)
+static inline struct eeh_dev *pdn_to_eeh_dev(struct pci_dn *pdn)
+{
+	return pdn ? pdn->edev : NULL;
+}
+#else
+#define pdn_to_eeh_dev(x)	(NULL)
+#endif
 
 /** Find the bus corresponding to the indicated device node */
 extern struct pci_bus *pcibios_find_pci_bus(struct device_node *dn);
@@ -292,6 +433,8 @@ static inline unsigned long pci_address_to_pio(phys_addr_t address)
 {
 	return (unsigned long)-1;
 }
+extern int pcibios_vaddr_is_ioport(void __iomem *address);
+#else
 static inline int pcibios_vaddr_is_ioport(void __iomem *address)
 {
 	return 0;

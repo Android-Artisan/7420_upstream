@@ -36,6 +36,7 @@
 
 #ifdef CONFIG_SND_CS46XX_NEW_DSP
 #define CS46XX_MIN_PERIOD_SIZE 1
+#define CS46XX_MIN_PERIOD_SIZE 64
 #define CS46XX_MAX_PERIOD_SIZE 1024*1024
 #else
 #define CS46XX_MIN_PERIOD_SIZE 2048
@@ -63,6 +64,11 @@ static inline void snd_cs46xx_poke(struct snd_cs46xx *chip, unsigned long reg, u
 	unsigned int offset = reg & 0xffff;
 
 	/*if (bank == 0) printk("snd_cs46xx_poke: %04X - %08X\n",reg >> 2,val); */
+	/*
+	if (bank == 0)
+		printk(KERN_DEBUG "snd_cs46xx_poke: %04X - %08X\n",
+		       reg >> 2,val);
+	*/
 	writel(val, chip->region.idx[bank+1].remap_addr + offset);
 }
 
@@ -87,11 +93,13 @@ struct dsp_spos_instance *cs46xx_dsp_spos_create (struct snd_cs46xx * chip);
 void cs46xx_dsp_spos_destroy (struct snd_cs46xx * chip);
 int cs46xx_dsp_load_module (struct snd_cs46xx * chip, struct dsp_module_desc * module);
 #ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 int cs46xx_dsp_resume(struct snd_cs46xx * chip);
 #endif
 struct dsp_symbol_entry *cs46xx_dsp_lookup_symbol (struct snd_cs46xx * chip, char * symbol_name,
 						   int symbol_type);
 #ifdef CONFIG_PROC_FS
+#ifdef CONFIG_SND_PROC_FS
 int cs46xx_dsp_proc_init (struct snd_card *card, struct snd_cs46xx *chip);
 int cs46xx_dsp_proc_done (struct snd_cs46xx *chip);
 #else
@@ -115,6 +123,7 @@ int cs46xx_poke_via_dsp (struct snd_cs46xx *chip, u32 address, u32 data);
 struct dsp_scb_descriptor * cs46xx_dsp_create_scb (struct snd_cs46xx *chip, char * name,
 						   u32 * scb_data, u32 dest);
 #ifdef CONFIG_PROC_FS
+#ifdef CONFIG_SND_PROC_FS
 void cs46xx_dsp_proc_free_scb_desc (struct dsp_scb_descriptor * scb);
 void cs46xx_dsp_proc_register_scb_desc (struct snd_cs46xx *chip,
 					struct dsp_scb_descriptor * scb);

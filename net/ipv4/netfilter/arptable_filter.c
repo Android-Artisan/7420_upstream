@@ -7,6 +7,9 @@
 
 #include <linux/module.h>
 #include <linux/netfilter_arp/arp_tables.h>
+#include <linux/netfilter/x_tables.h>
+#include <linux/netfilter_arp/arp_tables.h>
+#include <linux/slab.h>
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("David S. Miller <davem@redhat.com>");
@@ -117,6 +120,35 @@ static int __net_init arptable_filter_net_init(struct net *net)
 	if (IS_ERR(net->ipv4.arptable_filter))
 		return PTR_ERR(net->ipv4.arptable_filter);
 	return 0;
+static const struct xt_table packet_filter = {
+	.name		= "filter",
+	.valid_hooks	= FILTER_VALID_HOOKS,
+	.me		= THIS_MODULE,
+	.af		= NFPROTO_ARP,
+	.priority	= NF_IP_PRI_FILTER,
+};
+
+/* The work comes in here from netfilter.c */
+static unsigned int
+arptable_filter_hook(void *priv, struct sk_buff *skb,
+		     const struct nf_hook_state *state)
+{
+	return arpt_do_table(skb, state, state->net->ipv4.arptable_filter);
+}
+
+static struct nf_hook_ops *arpfilter_ops __read_mostly;
+
+static int __net_init arptable_filter_net_init(struct net *net)
+{
+	struct arpt_replace *repl;
+	
+	repl = arpt_alloc_initial_table(&packet_filter);
+	if (repl == NULL)
+		return -ENOMEM;
+	net->ipv4.arptable_filter =
+		arpt_register_table(net, &packet_filter, repl);
+	kfree(repl);
+	return PTR_ERR_OR_ZERO(net->ipv4.arptable_filter);
 }
 
 static void __net_exit arptable_filter_net_exit(struct net *net)
@@ -140,6 +172,11 @@ static int __init arptable_filter_init(void)
 	ret = nf_register_hooks(arpt_ops, ARRAY_SIZE(arpt_ops));
 	if (ret < 0)
 		goto cleanup_table;
+	arpfilter_ops = xt_hook_link(&packet_filter, arptable_filter_hook);
+	if (IS_ERR(arpfilter_ops)) {
+		ret = PTR_ERR(arpfilter_ops);
+		goto cleanup_table;
+	}
 	return ret;
 
 cleanup_table:
@@ -150,6 +187,7 @@ cleanup_table:
 static void __exit arptable_filter_fini(void)
 {
 	nf_unregister_hooks(arpt_ops, ARRAY_SIZE(arpt_ops));
+	xt_hook_unlink(&packet_filter, arpfilter_ops);
 	unregister_pernet_subsys(&arptable_filter_net_ops);
 }
 

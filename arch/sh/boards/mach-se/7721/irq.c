@@ -39,6 +39,7 @@ void __init init_se7721_IRQ(void)
 {
 	/* PPCR */
 	ctrl_outw(ctrl_inw(0xa4050118) & ~0x00ff, 0xa4050118);
+	__raw_writew(__raw_readw(0xa4050118) & ~0x00ff, 0xa4050118);
 
 	register_intc_controller(&intc_desc);
 	intc_set_priority(MRSHPC_IRQ0, 0xf - MRSHPC_IRQ0);

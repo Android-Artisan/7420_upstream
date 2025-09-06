@@ -14,6 +14,8 @@
  */
 
 #include <crypto/internal/skcipher.h>
+#include <crypto/rng.h>
+#include <crypto/crypto_wq.h>
 #include <linux/err.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
@@ -103,6 +105,20 @@ static int chainiv_init_common(struct crypto_tfm *tfm)
 	tfm->crt_ablkcipher.reqsize = sizeof(struct ablkcipher_request);
 
 	return skcipher_geniv_init(tfm);
+static int chainiv_init_common(struct crypto_tfm *tfm, char iv[])
+{
+	struct crypto_ablkcipher *geniv = __crypto_ablkcipher_cast(tfm);
+	int err = 0;
+
+	tfm->crt_ablkcipher.reqsize = sizeof(struct ablkcipher_request);
+
+	if (iv) {
+		err = crypto_rng_get_bytes(crypto_default_rng, iv,
+					   crypto_ablkcipher_ivsize(geniv));
+		crypto_put_default_rng();
+	}
+
+	return err ?: skcipher_geniv_init(tfm);
 }
 
 static int chainiv_init(struct crypto_tfm *tfm)
@@ -112,6 +128,19 @@ static int chainiv_init(struct crypto_tfm *tfm)
 	spin_lock_init(&ctx->lock);
 
 	return chainiv_init_common(tfm);
+	struct crypto_ablkcipher *geniv = __crypto_ablkcipher_cast(tfm);
+	struct chainiv_ctx *ctx = crypto_tfm_ctx(tfm);
+	char *iv;
+
+	spin_lock_init(&ctx->lock);
+
+	iv = NULL;
+	if (!crypto_get_default_rng()) {
+		crypto_ablkcipher_crt(geniv)->givencrypt = chainiv_givencrypt;
+		iv = ctx->iv;
+	}
+
+	return chainiv_init_common(tfm, iv);
 }
 
 static int async_chainiv_schedule_work(struct async_chainiv_ctx *ctx)
@@ -121,6 +150,7 @@ static int async_chainiv_schedule_work(struct async_chainiv_ctx *ctx)
 
 	if (!ctx->queue.qlen) {
 		smp_mb__before_clear_bit();
+		smp_mb__before_atomic();
 		clear_bit(CHAINIV_STATE_INUSE, &ctx->state);
 
 		if (!ctx->queue.qlen ||
@@ -129,6 +159,7 @@ static int async_chainiv_schedule_work(struct async_chainiv_ctx *ctx)
 	}
 
 	queued = schedule_work(&ctx->postponed);
+	queued = queue_work(kcrypto_wq, &ctx->postponed);
 	BUG_ON(!queued);
 
 out:
@@ -253,6 +284,9 @@ static void async_chainiv_do_postponed(struct work_struct *work)
 static int async_chainiv_init(struct crypto_tfm *tfm)
 {
 	struct async_chainiv_ctx *ctx = crypto_tfm_ctx(tfm);
+	struct crypto_ablkcipher *geniv = __crypto_ablkcipher_cast(tfm);
+	struct async_chainiv_ctx *ctx = crypto_tfm_ctx(tfm);
+	char *iv;
 
 	spin_lock_init(&ctx->lock);
 
@@ -260,6 +294,14 @@ static int async_chainiv_init(struct crypto_tfm *tfm)
 	INIT_WORK(&ctx->postponed, async_chainiv_do_postponed);
 
 	return chainiv_init_common(tfm);
+	iv = NULL;
+	if (!crypto_get_default_rng()) {
+		crypto_ablkcipher_crt(geniv)->givencrypt =
+			async_chainiv_givencrypt;
+		iv = ctx->iv;
+	}
+
+	return chainiv_init_common(tfm, iv);
 }
 
 static void async_chainiv_exit(struct crypto_tfm *tfm)
@@ -283,6 +325,10 @@ static struct crypto_instance *chainiv_alloc(struct rtattr **tb)
 	err = PTR_ERR(algt);
 	if (IS_ERR(algt))
 		return ERR_PTR(err);
+
+	algt = crypto_get_attr_type(tb);
+	if (IS_ERR(algt))
+		return ERR_CAST(algt);
 
 	inst = skcipher_geniv_alloc(&chainiv_tmpl, tb, 0, 0);
 	if (IS_ERR(inst))
@@ -321,6 +367,7 @@ static struct crypto_template chainiv_tmpl = {
 };
 
 int __init chainiv_module_init(void)
+static int __init chainiv_module_init(void)
 {
 	return crypto_register_template(&chainiv_tmpl);
 }
@@ -329,3 +376,14 @@ void chainiv_module_exit(void)
 {
 	crypto_unregister_template(&chainiv_tmpl);
 }
+static void chainiv_module_exit(void)
+{
+	crypto_unregister_template(&chainiv_tmpl);
+}
+
+module_init(chainiv_module_init);
+module_exit(chainiv_module_exit);
+
+MODULE_LICENSE("GPL");
+MODULE_DESCRIPTION("Chain IV Generator");
+MODULE_ALIAS_CRYPTO("chainiv");

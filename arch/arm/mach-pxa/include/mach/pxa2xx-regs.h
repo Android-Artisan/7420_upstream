@@ -81,6 +81,7 @@
 
 #endif
 
+#include <mach/hardware.h>
 
 /*
  * Power Manager
@@ -209,6 +210,16 @@
 #define CCCR_M_MASK	0x0060	/* Memory Frequency to Run Mode Frequency Multiplier */
 #define CCCR_L_MASK	0x001f	/* Crystal Frequency to Memory Frequency Multiplier */
 
+#define CCCR_CPDIS_BIT	(31)
+#define CCCR_PPDIS_BIT	(30)
+#define CCCR_LCD_26_BIT	(27)
+#define CCCR_A_BIT	(25)
+
+#define CCSR_N2_MASK	CCCR_N_MASK
+#define CCSR_M_MASK	CCCR_M_MASK
+#define CCSR_L_MASK	CCCR_L_MASK
+#define CCSR_N2_SHIFT	7
+
 #define CKEN_AC97CONF   (31)    /* AC97 Controller Configuration */
 #define CKEN_CAMERA	(24)	/* Camera Interface Clock Enable */
 #define CKEN_SSP1	(23)	/* SSP1 Unit Clock Enable */
@@ -242,5 +253,12 @@
 
 #define OSCC_OON	(1 << 1)	/* 32.768kHz OON (write-once only bit) */
 #define OSCC_OOK	(1 << 0)	/* 32.768kHz OOK (read-only bit) */
+
+/* PWRMODE register M field values */
+
+#define PWRMODE_IDLE		0x1
+#define PWRMODE_STANDBY		0x2
+#define PWRMODE_SLEEP		0x3
+#define PWRMODE_DEEPSLEEP	0x7
 
 #endif

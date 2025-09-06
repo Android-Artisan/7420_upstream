@@ -11,6 +11,7 @@
  *  with glibc2.2) that we do not need to support the old non-realtime
  *  Linux signals.  Therefore we don't.  HP/UX signals will go in
  *  arch/parisc/hpux/signal.c when we figure out how to do them.
+ *  Linux signals.  Therefore we don't.
  */
 
 #include <linux/sched.h>
@@ -21,6 +22,7 @@
 #include <linux/errno.h>
 #include <linux/wait.h>
 #include <linux/ptrace.h>
+#include <linux/tracehook.h>
 #include <linux/unistd.h>
 #include <linux/stddef.h>
 #include <linux/compat.h>
@@ -89,6 +91,7 @@ restore_sigcontext(struct sigcontext __user *sc, struct pt_regs *regs)
 	err |= __copy_from_user(regs->iasq, sc->sc_iasq, sizeof(regs->iasq));
 	err |= __get_user(regs->sar, &sc->sc_sar);
 	DBG(2,"restore_sigcontext: iaoq is 0x%#lx / 0x%#lx\n", 
+	DBG(2,"restore_sigcontext: iaoq is %#lx / %#lx\n",
 			regs->iaoq[0],regs->iaoq[1]);
 	DBG(2,"restore_sigcontext: r28 is %ld\n", regs->gr[28]);
 	return err;
@@ -110,11 +113,14 @@ sys_rt_sigreturn(struct pt_regs *regs, int in_syscall)
 		sigframe_size = PARISC_RT_SIGFRAME_SIZE32;
 #endif
 
+	current->restart_block.fn = do_no_restart_syscall;
 
 	/* Unwind the user stack to get the rt_sigframe structure. */
 	frame = (struct rt_sigframe __user *)
 		(usp - sigframe_size);
 	DBG(2,"sys_rt_sigreturn: frame is %p\n", frame);
+
+	regs->orig_r28 = 1; /* no restarts for sigreturn */
 
 #ifdef CONFIG_64BIT
 	compat_frame = (struct compat_rt_sigframe __user *)frame;
@@ -136,6 +142,7 @@ sys_rt_sigreturn(struct pt_regs *regs, int in_syscall)
 	current->blocked = set;
 	recalc_sigpending();
 	spin_unlock_irq(&current->sighand->siglock);
+	set_current_blocked(&set);
 
 	/* Good thing we saved the old gr[30], eh? */
 #ifdef CONFIG_64BIT
@@ -149,6 +156,7 @@ sys_rt_sigreturn(struct pt_regs *regs, int in_syscall)
 		DBG(1,"sys_rt_sigreturn: usp %#08lx stack 0x%p\n", 
 				usp, &compat_frame->uc.uc_stack);
 		if (do_sigaltstack32(&compat_frame->uc.uc_stack, NULL, usp) == -EFAULT)
+		if (compat_restore_altstack(&compat_frame->uc.uc_stack))
 			goto give_sigsegv;
 	} else
 #endif
@@ -160,6 +168,7 @@ sys_rt_sigreturn(struct pt_regs *regs, int in_syscall)
 		DBG(1,"sys_rt_sigreturn: usp %#08lx stack 0x%p\n", 
 				usp, &frame->uc.uc_stack);
 		if (do_sigaltstack(&frame->uc.uc_stack, NULL, usp) == -EFAULT)
+		if (restore_altstack(&frame->uc.uc_stack))
 			goto give_sigsegv;
 	}
 		
@@ -185,6 +194,7 @@ give_sigsegv:
 	si.si_uid = current->uid;
 	si.si_addr = &frame->uc;
 	force_sig_info(SIGSEGV, &si, current);
+	force_sig(SIGSEGV, current);
 	return;
 }
 
@@ -203,6 +213,10 @@ get_sigframe(struct k_sigaction *ka, unsigned long sp, size_t frame_size)
 	
 	if ((ka->sa.sa_flags & SA_ONSTACK) != 0 && ! sas_ss_flags(sp))
 		sp = current->sas_ss_sp; /* Stacks grow up! */
+	/* Align alternate stack and reserve 64 bytes for the signal
+	   handler's frame marker.  */
+	if ((ka->sa.sa_flags & SA_ONSTACK) != 0 && ! sas_ss_flags(sp))
+		sp = (current->sas_ss_sp + 0x7f) & ~0x3f; /* Stacks grow up! */
 
 	DBG(1,"get_sigframe: Returning sp = %#lx\n", (unsigned long)sp);
 	return (void __user *) sp; /* Stacks grow up.  Fun. */
@@ -245,6 +259,8 @@ setup_sigcontext(struct sigcontext __user *sc, struct pt_regs *regs, int in_sysc
 static long
 setup_rt_frame(int sig, struct k_sigaction *ka, siginfo_t *info,
 	       sigset_t *set, struct pt_regs *regs, int in_syscall)
+setup_rt_frame(struct ksignal *ksig, sigset_t *set, struct pt_regs *regs,
+	       int in_syscall)
 {
 	struct rt_sigframe __user *frame;
 	unsigned long rp, usp;
@@ -257,11 +273,21 @@ setup_rt_frame(int sig, struct k_sigaction *ka, siginfo_t *info,
 #endif
 	
 	usp = (regs->gr[30] & ~(0x01UL));
+#ifdef CONFIG_64BIT
+	if (is_compat_task()) {
+		/* The gcc alloca implementation leaves garbage in the upper 32 bits of sp */
+		usp = (compat_uint_t)usp;
+	}
+#endif
 	/*FIXME: frame_size parameter is unused, remove it. */
 	frame = get_sigframe(ka, usp, sizeof(*frame));
 
 	DBG(1,"SETUP_RT_FRAME: START\n");
 	DBG(1,"setup_rt_frame: frame %p info %p\n", frame, info);
+	frame = get_sigframe(&ksig->ka, usp, sizeof(*frame));
+
+	DBG(1,"SETUP_RT_FRAME: START\n");
+	DBG(1,"setup_rt_frame: frame %p info %p\n", frame, ksig->info);
 
 	
 #ifdef CONFIG_64BIT
@@ -280,6 +306,8 @@ setup_rt_frame(int sig, struct k_sigaction *ka, siginfo_t *info,
 		DBG(1,"SETUP_RT_FRAME: 3\n");
 		compat_val = sas_ss_flags(regs->gr[30]);		
 		err |= __put_user(compat_val, &compat_frame->uc.uc_stack.ss_flags);		
+		err |= copy_siginfo_to_user32(&compat_frame->info, &ksig->info);
+		err |= __compat_save_altstack( &compat_frame->uc.uc_stack, regs->gr[30]);
 		DBG(1,"setup_rt_frame: frame->uc = 0x%p\n", &compat_frame->uc);
 		DBG(1,"setup_rt_frame: frame->uc.uc_mcontext = 0x%p\n", &compat_frame->uc.uc_mcontext);
 		err |= setup_sigcontext32(&compat_frame->uc.uc_mcontext, 
@@ -299,11 +327,18 @@ setup_rt_frame(int sig, struct k_sigaction *ka, siginfo_t *info,
 		DBG(1,"setup_rt_frame: frame->uc.uc_mcontext = 0x%p\n", &frame->uc.uc_mcontext);
 		err |= setup_sigcontext(&frame->uc.uc_mcontext, regs, in_syscall);
 		/* FIXME: Should probably be converted aswell for the compat case */
+		err |= copy_siginfo_to_user(&frame->info, &ksig->info);
+		err |= __save_altstack(&frame->uc.uc_stack, regs->gr[30]);
+		DBG(1,"setup_rt_frame: frame->uc = 0x%p\n", &frame->uc);
+		DBG(1,"setup_rt_frame: frame->uc.uc_mcontext = 0x%p\n", &frame->uc.uc_mcontext);
+		err |= setup_sigcontext(&frame->uc.uc_mcontext, regs, in_syscall);
+		/* FIXME: Should probably be converted as well for the compat case */
 		err |= __copy_to_user(&frame->uc.uc_sigmask, set, sizeof(*set));
 	}
 	
 	if (err)
 		goto give_sigsegv;
+		return -EFAULT;
 
 	/* Set up to return from userspace.  If provided, use a stub
 	   already in userspace. The first words of tramp are used to
@@ -322,6 +357,7 @@ setup_rt_frame(int sig, struct k_sigaction *ka, siginfo_t *info,
 	/* Assert that we're flushing in the correct space... */
 	{
 		int sid;
+		unsigned long sid;
 		asm ("mfsp %%sr3,%0" : "=r" (sid));
 		DBG(1,"setup_rt_frame: Flushing 64 bytes at space %#x offset %p\n",
 		       sid, frame->tramp);
@@ -343,6 +379,9 @@ setup_rt_frame(int sig, struct k_sigaction *ka, siginfo_t *info,
 		goto give_sigsegv;
 
 	haddr = A(ka->sa.sa_handler);
+		return -EFAULT;
+
+	haddr = A(ksig->ka.sa.sa_handler);
 	/* The sa_handler may be a pointer to a function descriptor */
 #ifdef CONFIG_64BIT
 	if (is_compat_task()) {
@@ -355,6 +394,7 @@ setup_rt_frame(int sig, struct k_sigaction *ka, siginfo_t *info,
 
 			if (err)
 				goto give_sigsegv;
+				return -EFAULT;
 
 			haddr = fdesc.addr;
 			regs->gr[19] = fdesc.gp;
@@ -368,6 +408,7 @@ setup_rt_frame(int sig, struct k_sigaction *ka, siginfo_t *info,
 		
 		if (err)
 			goto give_sigsegv;
+			return -EFAULT;
 		
 		haddr = fdesc.addr;
 		regs->gr[19] = fdesc.gp;
@@ -415,6 +456,7 @@ setup_rt_frame(int sig, struct k_sigaction *ka, siginfo_t *info,
 
 	regs->gr[2]  = rp;                /* userland return pointer */
 	regs->gr[26] = sig;               /* signal number */
+	regs->gr[26] = ksig->sig;               /* signal number */
 	
 #ifdef CONFIG_64BIT
 	if (is_compat_task()) {
@@ -468,6 +510,72 @@ handle_signal(unsigned long sig, siginfo_t *info, struct k_sigaction *ka,
 	recalc_sigpending();
 	spin_unlock_irq(&current->sighand->siglock);
 	return 1;
+static void
+handle_signal(struct ksignal *ksig, struct pt_regs *regs, int in_syscall)
+{
+	int ret;
+	sigset_t *oldset = sigmask_to_save();
+
+	DBG(1,"handle_signal: sig=%ld, ka=%p, info=%p, oldset=%p, regs=%p\n",
+	       ksig->sig, ksig->ka, ksig->info, oldset, regs);
+	
+	/* Set up the stack frame */
+	ret = setup_rt_frame(ksig, oldset, regs, in_syscall);
+
+	signal_setup_done(ret, ksig, test_thread_flag(TIF_SINGLESTEP) ||
+			  test_thread_flag(TIF_BLOCKSTEP));
+
+	DBG(1,KERN_DEBUG "do_signal: Exit (success), regs->gr[28] = %ld\n",
+		regs->gr[28]);
+}
+
+/*
+ * Check how the syscall number gets loaded into %r20 within
+ * the delay branch in userspace and adjust as needed.
+ */
+
+static void check_syscallno_in_delay_branch(struct pt_regs *regs)
+{
+	u32 opcode, source_reg;
+	u32 __user *uaddr;
+	int err;
+
+	/* Usually we don't have to restore %r20 (the system call number)
+	 * because it gets loaded in the delay slot of the branch external
+	 * instruction via the ldi instruction.
+	 * In some cases a register-to-register copy instruction might have
+	 * been used instead, in which case we need to copy the syscall
+	 * number into the source register before returning to userspace.
+	 */
+
+	/* A syscall is just a branch, so all we have to do is fiddle the
+	 * return pointer so that the ble instruction gets executed again.
+	 */
+	regs->gr[31] -= 8; /* delayed branching */
+
+	/* Get assembler opcode of code in delay branch */
+	uaddr = (unsigned int *) ((regs->gr[31] & ~3) + 4);
+	err = get_user(opcode, uaddr);
+	if (err)
+		return;
+
+	/* Check if delay branch uses "ldi int,%r20" */
+	if ((opcode & 0xffff0000) == 0x34140000)
+		return;	/* everything ok, just return */
+
+	/* Check if delay branch uses "nop" */
+	if (opcode == INSN_NOP)
+		return;
+
+	/* Check if delay branch uses "copy %rX,%r20" */
+	if ((opcode & 0xffe0ffff) == 0x08000254) {
+		source_reg = (opcode >> 16) & 31;
+		regs->gr[source_reg] = regs->gr[20];
+		return;
+	}
+
+	pr_warn("syscall restart: %s (pid %d): unexpected opcode 0x%08x\n",
+		current->comm, task_pid_nr(current), opcode);
 }
 
 static inline void
@@ -478,6 +586,12 @@ syscall_restart(struct pt_regs *regs, struct k_sigaction *ka)
 	case -ERESTART_RESTARTBLOCK:
 		current_thread_info()->restart_block.fn =
 			do_no_restart_syscall;
+	if (regs->orig_r28)
+		return;
+	regs->orig_r28 = 1; /* no more restarts */
+	/* Check the return code */
+	switch (regs->gr[28]) {
+	case -ERESTART_RESTARTBLOCK:
 	case -ERESTARTNOHAND:
 		DBG(1,"ERESTARTNOHAND: returning -EINTR\n");
 		regs->gr[28] = -EINTR;
@@ -497,6 +611,7 @@ syscall_restart(struct pt_regs *regs, struct k_sigaction *ka)
 		regs->gr[31] -= 8; /* delayed branching */
 		/* Preserve original r28. */
 		regs->gr[28] = regs->orig_r28;
+		check_syscallno_in_delay_branch(regs);
 		break;
 	}
 }
@@ -504,10 +619,16 @@ syscall_restart(struct pt_regs *regs, struct k_sigaction *ka)
 static inline void
 insert_restart_trampoline(struct pt_regs *regs)
 {
+	if (regs->orig_r28)
+		return;
+	regs->orig_r28 = 1; /* no more restarts */
 	switch(regs->gr[28]) {
 	case -ERESTART_RESTARTBLOCK: {
 		/* Restart the system call - no handlers present */
 		unsigned int *usp = (unsigned int *)regs->gr[30];
+		unsigned long start = (unsigned long) &usp[2];
+		unsigned long end  = (unsigned long) &usp[5];
+		long err = 0;
 
 		/* Setup a trampoline to restart the syscall
 		 * with __NR_restart_syscall
@@ -541,6 +662,23 @@ insert_restart_trampoline(struct pt_regs *regs)
 		/* Preserve original r28. */
 		regs->gr[28] = regs->orig_r28;
 
+		err |= put_user(regs->gr[31] >> 32, &usp[0]);
+		err |= put_user(regs->gr[31] & 0xffffffff, &usp[1]);
+		err |= put_user(0x0fc010df, &usp[2]);
+#else
+		err |= put_user(regs->gr[31], &usp[0]);
+		err |= put_user(0x0fc0109f, &usp[2]);
+#endif
+		err |= put_user(0xe0008200, &usp[3]);
+		err |= put_user(0x34140000, &usp[4]);
+
+		WARN_ON(err);
+
+		/* flush data/instruction cache for new insns */
+		flush_user_dcache_range(start, end);
+		flush_user_icache_range(start, end);
+
+		regs->gr[31] = regs->gr[30] + 8;
 		return;
 	}
 	case -ERESTARTNOHAND:
@@ -557,6 +695,9 @@ insert_restart_trampoline(struct pt_regs *regs)
 
 		return;
 	}
+	case -ERESTARTNOINTR:
+		check_syscallno_in_delay_branch(regs);
+		return;
 	default:
 		break;
 	}
@@ -624,6 +765,20 @@ do_signal(struct pt_regs *regs, long in_syscall)
 		}
 	}
 	/* end of while(1) looping forever if we can't force a signal */
+	struct ksignal ksig;
+
+	DBG(1,"\ndo_signal: regs=0x%p, sr7 %#lx, in_syscall=%d\n",
+	       regs, regs->sr[7], in_syscall);
+
+	if (get_signal(&ksig)) {
+		DBG(3,"do_signal: signr = %d, regs->gr[28] = %ld\n", signr, regs->gr[28]);
+		/* Restart a system call if necessary. */
+		if (in_syscall)
+			syscall_restart(regs, &ksig.ka);
+
+		handle_signal(&ksig, regs, in_syscall);
+		return;
+	}
 
 	/* Did we come from a system call? */
 	if (in_syscall)
@@ -638,6 +793,7 @@ do_signal(struct pt_regs *regs, long in_syscall)
 	}
 
 	return;
+	restore_saved_sigmask();
 }
 
 void do_notify_resume(struct pt_regs *regs, long in_syscall)
@@ -645,4 +801,11 @@ void do_notify_resume(struct pt_regs *regs, long in_syscall)
 	if (test_thread_flag(TIF_SIGPENDING) ||
 	    test_thread_flag(TIF_RESTORE_SIGMASK))
 		do_signal(regs, in_syscall);
+	if (test_thread_flag(TIF_SIGPENDING))
+		do_signal(regs, in_syscall);
+
+	if (test_thread_flag(TIF_NOTIFY_RESUME)) {
+		clear_thread_flag(TIF_NOTIFY_RESUME);
+		tracehook_notify_resume(regs);
+	}
 }

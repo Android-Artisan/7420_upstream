@@ -7,6 +7,8 @@
 struct siginfo;
 
 #ifdef __KERNEL__
+#include <uapi/asm/signal.h>
+
 /* Most things should be clean enough to redefine this at will, if care
    is taken to make libc match.  */
 
@@ -157,5 +159,7 @@ typedef struct sigaltstack {
 #define ptrace_signal_deliver(regs, cookie) do { } while (0)
 
 #endif /* __KERNEL__ */
+#define __ARCH_HAS_SA_RESTORER
+#include <asm/sigcontext.h>
 
 #endif /* _H8300_SIGNAL_H */

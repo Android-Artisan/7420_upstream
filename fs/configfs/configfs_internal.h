@@ -24,6 +24,12 @@
  * configfs Copyright (C) 2005 Oracle.  All rights reserved.
  */
 
+#ifdef pr_fmt
+#undef pr_fmt
+#endif
+
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/slab.h>
 #include <linux/list.h>
 #include <linux/spinlock.h>
@@ -39,6 +45,9 @@ struct configfs_dirent {
 	umode_t			s_mode;
 	struct dentry		* s_dentry;
 	struct iattr		* s_iattr;
+#ifdef CONFIG_LOCKDEP
+	int			s_depth;
+#endif
 };
 
 #define CONFIGFS_ROOT		0x0001
@@ -64,6 +73,8 @@ extern struct inode * configfs_new_inode(mode_t mode, struct configfs_dirent *);
 extern int configfs_create(struct dentry *, int mode, int (*init)(struct inode *));
 extern int configfs_inode_init(void);
 extern void configfs_inode_exit(void);
+extern struct inode * configfs_new_inode(umode_t mode, struct configfs_dirent *, struct super_block *);
+extern int configfs_create(struct dentry *, umode_t mode, void (*init)(struct inode *));
 
 extern int configfs_create_file(struct config_item *, const struct configfs_attribute *);
 extern int configfs_make_dirent(struct configfs_dirent *,
@@ -82,11 +93,18 @@ extern void configfs_release_fs(void);
 
 extern struct rw_semaphore configfs_rename_sem;
 extern struct super_block * configfs_sb;
+extern struct dentry *configfs_pin_fs(void);
+extern void configfs_release_fs(void);
+
+extern struct rw_semaphore configfs_rename_sem;
 extern const struct file_operations configfs_dir_operations;
 extern const struct file_operations configfs_file_operations;
 extern const struct file_operations bin_fops;
 extern const struct inode_operations configfs_dir_inode_operations;
 extern const struct inode_operations configfs_symlink_inode_operations;
+extern const struct inode_operations configfs_root_inode_operations;
+extern const struct inode_operations configfs_symlink_inode_operations;
+extern const struct dentry_operations configfs_dentry_ops;
 
 extern int configfs_symlink(struct inode *dir, struct dentry *dentry,
 			    const char *symname);
@@ -118,6 +136,7 @@ static inline struct config_item *configfs_get_config_item(struct dentry *dentry
 	struct config_item * item = NULL;
 
 	spin_lock(&dcache_lock);
+	spin_lock(&dentry->d_lock);
 	if (!d_unhashed(dentry)) {
 		struct configfs_dirent * sd = dentry->d_fsdata;
 		if (sd->s_type & CONFIGFS_ITEM_LINK) {
@@ -127,6 +146,7 @@ static inline struct config_item *configfs_get_config_item(struct dentry *dentry
 			item = config_item_get(sd->s_element);
 	}
 	spin_unlock(&dcache_lock);
+	spin_unlock(&dentry->d_lock);
 
 	return item;
 }

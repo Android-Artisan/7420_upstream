@@ -228,6 +228,7 @@ static void hac_ac97_coldrst(struct snd_ac97 *ac97)
 }
 
 struct snd_ac97_bus_ops soc_ac97_ops = {
+static struct snd_ac97_bus_ops hac_ac97_ops = {
 	.read	= hac_ac97_read,
 	.write	= hac_ac97_write,
 	.reset	= hac_ac97_coldrst,
@@ -240,6 +241,12 @@ static int hac_hw_params(struct snd_pcm_substream *substream,
 {
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
 	struct hac_priv *hac = &hac_cpu_data[rtd->dai->cpu_dai->id];
+
+static int hac_hw_params(struct snd_pcm_substream *substream,
+			 struct snd_pcm_hw_params *params,
+			 struct snd_soc_dai *dai)
+{
+	struct hac_priv *hac = &hac_cpu_data[dai->id];
 	int d = substream->stream == SNDRV_PCM_STREAM_PLAYBACK ? 0 : 1;
 
 	switch (params->msbits) {
@@ -271,6 +278,14 @@ struct snd_soc_dai sh4_hac_dai[] = {
 	.name			= "HAC0",
 	.id			= 0,
 	.type			= SND_SOC_DAI_AC97,
+static const struct snd_soc_dai_ops hac_dai_ops = {
+	.hw_params	= hac_hw_params,
+};
+
+static struct snd_soc_dai_driver sh4_hac_dai[] = {
+{
+	.name			= "hac-dai.0",
+	.bus_control		= true,
 	.playback = {
 		.rates		= AC97_RATES,
 		.formats	= AC97_FMTS,
@@ -292,6 +307,12 @@ struct snd_soc_dai sh4_hac_dai[] = {
 	.name			= "HAC1",
 	.id			= 1,
 	.type			= SND_SOC_DAI_AC97,
+	.ops = &hac_dai_ops,
+},
+#ifdef CONFIG_CPU_SUBTYPE_SH7760
+{
+	.name			= "hac-dai.1",
+	.id			= 1,
 	.playback = {
 		.rates		= AC97_RATES,
 		.formats	= AC97_FMTS,
@@ -307,11 +328,44 @@ struct snd_soc_dai sh4_hac_dai[] = {
 	.ops = {
 		.hw_params	= hac_hw_params,
 	},
+	.ops = &hac_dai_ops,
 
 },
 #endif
 };
 EXPORT_SYMBOL_GPL(sh4_hac_dai);
+
+static const struct snd_soc_component_driver sh4_hac_component = {
+	.name		= "sh4-hac",
+};
+
+static int hac_soc_platform_probe(struct platform_device *pdev)
+{
+	ret = snd_soc_set_ac97_ops(&hac_ac97_ops);
+	if (ret != 0)
+		return ret;
+
+	return snd_soc_register_component(&pdev->dev, &sh4_hac_component,
+					  sh4_hac_dai, ARRAY_SIZE(sh4_hac_dai));
+}
+
+static int hac_soc_platform_remove(struct platform_device *pdev)
+{
+	snd_soc_unregister_component(&pdev->dev);
+	snd_soc_set_ac97_ops(NULL);
+	return 0;
+}
+
+static struct platform_driver hac_pcm_driver = {
+	.driver = {
+			.name = "hac-pcm-audio",
+	},
+
+	.probe = hac_soc_platform_probe,
+	.remove = hac_soc_platform_remove,
+};
+
+module_platform_driver(hac_pcm_driver);
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("SuperH onchip HAC (AC97) audio driver");

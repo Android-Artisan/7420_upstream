@@ -12,7 +12,6 @@ have the time or knowledge to read the source code.
 Furthermore, the programmers who built sysctl have built it to
 be actually used, not just for the fun of programming it :-)
 
-==============================================================
 
 Legal blurb:
 
@@ -35,7 +34,6 @@ stories to: <riel@nl.linux.org>
 
 Rik van Riel.
 
-==============================================================
 
 Introduction:
 

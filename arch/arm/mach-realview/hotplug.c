@@ -17,11 +17,15 @@ extern volatile int pen_release;
 
 static DECLARE_COMPLETION(cpu_killed);
 
+#include <asm/cp15.h>
+#include <asm/smp_plat.h>
+
 static inline void cpu_enter_lowpower(void)
 {
 	unsigned int v;
 
 	asm volatile(	"mcr	p15, 0, %1, c7, c14, 0\n"
+	asm volatile(
 	"	mcr	p15, 0, %1, c7, c5, 0\n"
 	"	mcr	p15, 0, %1, c7, c10, 4\n"
 	/*
@@ -35,6 +39,10 @@ static inline void cpu_enter_lowpower(void)
 	"	mcr	p15, 0, %0, c1, c0, 0\n"
 	  : "=&r" (v)
 	  : "r" (0)
+	"	bic	%0, %0, %2\n"
+	"	mcr	p15, 0, %0, c1, c0, 0\n"
+	  : "=&r" (v)
+	  : "r" (0), "Ir" (CR_C)
 	  : "cc");
 }
 
@@ -44,6 +52,7 @@ static inline void cpu_leave_lowpower(void)
 
 	asm volatile(	"mrc	p15, 0, %0, c1, c0, 0\n"
 	"	orr	%0, %0, #0x04\n"
+	"	orr	%0, %0, %1\n"
 	"	mcr	p15, 0, %0, c1, c0, 0\n"
 	"	mrc	p15, 0, %0, c1, c0, 1\n"
 	"	orr	%0, %0, #0x20\n"
@@ -54,6 +63,11 @@ static inline void cpu_leave_lowpower(void)
 }
 
 static inline void platform_do_lowpower(unsigned int cpu)
+	  : "Ir" (CR_C)
+	  : "cc");
+}
+
+static inline void platform_do_lowpower(unsigned int cpu, int *spurious)
 {
 	/*
 	 * there is no power-control hardware on this platform, so all
@@ -70,6 +84,7 @@ static inline void platform_do_lowpower(unsigned int cpu)
 		    : "memory", "cc");
 
 		if (pen_release == cpu) {
+		if (pen_release == cpu_logical_map(cpu)) {
 			/*
 			 * OK, proper wakeup, we're done
 			 */
@@ -95,6 +110,16 @@ int platform_cpu_kill(unsigned int cpu)
 	return wait_for_completion_timeout(&cpu_killed, 5000);
 }
 
+		 * Getting here, means that we have come out of WFI without
+		 * having been woken up - this shouldn't happen
+		 *
+		 * Just note it happening - when we're woken, we can report
+		 * its occurrence.
+		 */
+		(*spurious)++;
+	}
+}
+
 /*
  * platform-specific code to shutdown a CPU
  *
@@ -114,12 +139,16 @@ void platform_cpu_die(unsigned int cpu)
 
 	printk(KERN_NOTICE "CPU%u: shutdown\n", cpu);
 	complete(&cpu_killed);
+void realview_cpu_die(unsigned int cpu)
+{
+	int spurious = 0;
 
 	/*
 	 * we're ready for shutdown now, so do it
 	 */
 	cpu_enter_lowpower();
 	platform_do_lowpower(cpu);
+	platform_do_lowpower(cpu, &spurious);
 
 	/*
 	 * bring this CPU back into the world of cache
@@ -135,4 +164,7 @@ int mach_cpu_disable(unsigned int cpu)
 	 * e.g. clock tick interrupts)
 	 */
 	return cpu == 0 ? -EPERM : 0;
+
+	if (spurious)
+		pr_warn("CPU%u: %u spurious wakeup calls\n", cpu, spurious);
 }

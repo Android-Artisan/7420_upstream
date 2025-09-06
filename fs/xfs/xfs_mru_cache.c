@@ -108,6 +108,20 @@ typedef struct xfs_mru_cache_elem
 } xfs_mru_cache_elem_t;
 
 static kmem_zone_t		*xfs_mru_elem_zone;
+struct xfs_mru_cache {
+	struct radix_tree_root	store;     /* Core storage data structure.  */
+	struct list_head	*lists;    /* Array of lists, one per grp.  */
+	struct list_head	reap_list; /* Elements overdue for reaping. */
+	spinlock_t		lock;      /* Lock to protect this struct.  */
+	unsigned int		grp_count; /* Number of discrete groups.    */
+	unsigned int		grp_time;  /* Time period spanned by grps.  */
+	unsigned int		lru_grp;   /* Group containing time zero.   */
+	unsigned long		time_zero; /* Time first element was added. */
+	xfs_mru_cache_free_func_t free_func; /* Function pointer for freeing. */
+	struct delayed_work	work;      /* Workqueue data for reaping.   */
+	unsigned int		queued;	   /* work has been queued */
+};
+
 static struct workqueue_struct	*xfs_mru_reap_wq;
 
 /*
@@ -135,6 +149,12 @@ _xfs_mru_cache_migrate(
 	unsigned int	grp;
 	unsigned int	migrated = 0;
 	struct list_head *lru_list;
+	struct xfs_mru_cache	*mru,
+	unsigned long		now)
+{
+	unsigned int		grp;
+	unsigned int		migrated = 0;
+	struct list_head	*lru_list;
 
 	/* Nothing to do if the data store is empty. */
 	if (!mru->time_zero)
@@ -198,6 +218,11 @@ _xfs_mru_cache_list_insert(
 {
 	unsigned int	grp = 0;
 	unsigned long	now = jiffies;
+	struct xfs_mru_cache	*mru,
+	struct xfs_mru_cache_elem *elem)
+{
+	unsigned int		grp = 0;
+	unsigned long		now = jiffies;
 
 	/*
 	 * If the data store is empty, initialise time zero, leave grp set to
@@ -235,6 +260,10 @@ _xfs_mru_cache_clear_reap_list(
 
 {
 	xfs_mru_cache_elem_t	*elem, *next;
+	struct xfs_mru_cache	*mru)
+		__releases(mru->lock) __acquires(mru->lock)
+{
+	struct xfs_mru_cache_elem *elem, *next;
 	struct list_head	tmp;
 
 	INIT_LIST_HEAD(&tmp);
@@ -261,6 +290,8 @@ _xfs_mru_cache_clear_reap_list(
 
 		/* Free the element structure. */
 		kmem_zone_free(xfs_mru_elem_zone, elem);
+		list_del_init(&elem->list_node);
+		mru->free_func(elem);
 	}
 
 	spin_lock(&mru->lock);
@@ -278,6 +309,8 @@ _xfs_mru_cache_reap(
 	struct work_struct	*work)
 {
 	xfs_mru_cache_t		*mru = container_of(work, xfs_mru_cache_t, work.work);
+	struct xfs_mru_cache	*mru =
+		container_of(work, struct xfs_mru_cache, work.work);
 	unsigned long		now, next;
 
 	ASSERT(mru && mru->lists);
@@ -319,6 +352,11 @@ xfs_mru_cache_init(void)
 	kmem_zone_destroy(xfs_mru_elem_zone);
  out:
 	return -ENOMEM;
+	xfs_mru_reap_wq = alloc_workqueue("xfs_mru_cache",
+				WQ_MEM_RECLAIM|WQ_FREEZABLE, 1);
+	if (!xfs_mru_reap_wq)
+		return -ENOMEM;
+	return 0;
 }
 
 void
@@ -337,6 +375,7 @@ xfs_mru_cache_uninit(void)
 int
 xfs_mru_cache_create(
 	xfs_mru_cache_t		**mrup,
+	struct xfs_mru_cache	**mrup,
 	unsigned int		lifetime_ms,
 	unsigned int		grp_count,
 	xfs_mru_cache_free_func_t free_func)
@@ -344,6 +383,9 @@ xfs_mru_cache_create(
 	xfs_mru_cache_t	*mru = NULL;
 	int		err = 0, grp;
 	unsigned int	grp_time;
+	struct xfs_mru_cache	*mru = NULL;
+	int			err = 0, grp;
+	unsigned int		grp_time;
 
 	if (mrup)
 		*mrup = NULL;
@@ -356,6 +398,13 @@ xfs_mru_cache_create(
 
 	if (!(mru = kmem_zalloc(sizeof(*mru), KM_SLEEP)))
 		return ENOMEM;
+		return -EINVAL;
+
+	if (!(grp_time = msecs_to_jiffies(lifetime_ms) / grp_count))
+		return -EINVAL;
+
+	if (!(mru = kmem_zalloc(sizeof(*mru), KM_SLEEP)))
+		return -ENOMEM;
 
 	/* An extra list is needed to avoid reaping up to a grp_time early. */
 	mru->grp_count = grp_count + 1;
@@ -363,6 +412,7 @@ xfs_mru_cache_create(
 
 	if (!mru->lists) {
 		err = ENOMEM;
+		err = -ENOMEM;
 		goto exit;
 	}
 
@@ -401,6 +451,9 @@ exit:
 void
 xfs_mru_cache_flush(
 	xfs_mru_cache_t		*mru)
+static void
+xfs_mru_cache_flush(
+	struct xfs_mru_cache	*mru)
 {
 	if (!mru || !mru->lists)
 		return;
@@ -409,6 +462,7 @@ xfs_mru_cache_flush(
 	if (mru->queued) {
 		spin_unlock(&mru->lock);
 		cancel_rearming_delayed_workqueue(xfs_mru_reap_wq, &mru->work);
+		cancel_delayed_work_sync(&mru->work);
 		spin_lock(&mru->lock);
 	}
 
@@ -421,6 +475,7 @@ xfs_mru_cache_flush(
 void
 xfs_mru_cache_destroy(
 	xfs_mru_cache_t		*mru)
+	struct xfs_mru_cache	*mru)
 {
 	if (!mru || !mru->lists)
 		return;
@@ -470,6 +525,30 @@ xfs_mru_cache_insert(
 	spin_unlock(&mru->lock);
 
 	return 0;
+	struct xfs_mru_cache	*mru,
+	unsigned long		key,
+	struct xfs_mru_cache_elem *elem)
+{
+	int			error;
+
+	ASSERT(mru && mru->lists);
+	if (!mru || !mru->lists)
+		return -EINVAL;
+
+	if (radix_tree_preload(GFP_NOFS))
+		return -ENOMEM;
+
+	INIT_LIST_HEAD(&elem->list_node);
+	elem->key = key;
+
+	spin_lock(&mru->lock);
+	error = radix_tree_insert(&mru->store, key, elem);
+	radix_tree_preload_end();
+	if (!error)
+		_xfs_mru_cache_list_insert(mru, elem);
+	spin_unlock(&mru->lock);
+
+	return error;
 }
 
 /*
@@ -485,6 +564,12 @@ xfs_mru_cache_remove(
 {
 	xfs_mru_cache_elem_t *elem;
 	void		*value = NULL;
+struct xfs_mru_cache_elem *
+xfs_mru_cache_remove(
+	struct xfs_mru_cache	*mru,
+	unsigned long		key)
+{
+	struct xfs_mru_cache_elem *elem;
 
 	ASSERT(mru && mru->lists);
 	if (!mru || !mru->lists)
@@ -503,6 +588,11 @@ xfs_mru_cache_remove(
 		kmem_zone_free(xfs_mru_elem_zone, elem);
 
 	return value;
+	if (elem)
+		list_del(&elem->list_node);
+	spin_unlock(&mru->lock);
+
+	return elem;
 }
 
 /*
@@ -518,6 +608,14 @@ xfs_mru_cache_delete(
 
 	if (value)
 		mru->free_func(key, value);
+	struct xfs_mru_cache	*mru,
+	unsigned long		key)
+{
+	struct xfs_mru_cache_elem *elem;
+
+	elem = xfs_mru_cache_remove(mru, key);
+	if (elem)
+		mru->free_func(elem);
 }
 
 /*
@@ -546,6 +644,12 @@ xfs_mru_cache_lookup(
 	unsigned long	key)
 {
 	xfs_mru_cache_elem_t *elem;
+struct xfs_mru_cache_elem *
+xfs_mru_cache_lookup(
+	struct xfs_mru_cache	*mru,
+	unsigned long		key)
+{
+	struct xfs_mru_cache_elem *elem;
 
 	ASSERT(mru && mru->lists);
 	if (!mru || !mru->lists)
@@ -590,6 +694,7 @@ xfs_mru_cache_peek(
 		__release(mru_lock); /* help sparse not be stupid */
 
 	return elem ? elem->value : NULL;
+	return elem;
 }
 
 /*
@@ -600,6 +705,8 @@ xfs_mru_cache_peek(
 void
 xfs_mru_cache_done(
 	xfs_mru_cache_t	*mru) __releases(mru->lock)
+	struct xfs_mru_cache	*mru)
+		__releases(mru->lock)
 {
 	spin_unlock(&mru->lock);
 }

@@ -27,6 +27,9 @@
 
 static void disable_se7206_irq(unsigned int irq)
 {
+static void disable_se7206_irq(struct irq_data *data)
+{
+	unsigned int irq = data->irq;
 	unsigned short val;
 	unsigned short mask = 0xffff ^ (0x0f << 4 * (3 - (IRQ0_IRQ - irq)));
 	unsigned short msk0,msk1;
@@ -38,6 +41,12 @@ static void disable_se7206_irq(unsigned int irq)
 	/* FPGA mask set */
 	msk0 = ctrl_inw(INTMSK0);
 	msk1 = ctrl_inw(INTMSK1);
+	val = __raw_readw(INTC_IPR01);
+	val &= mask;
+	__raw_writew(val, INTC_IPR01);
+	/* FPGA mask set */
+	msk0 = __raw_readw(INTMSK0);
+	msk1 = __raw_readw(INTMSK1);
 
 	switch (irq) {
 	case IRQ0_IRQ:
@@ -57,6 +66,13 @@ static void disable_se7206_irq(unsigned int irq)
 
 static void enable_se7206_irq(unsigned int irq)
 {
+	__raw_writew(msk0, INTMSK0);
+	__raw_writew(msk1, INTMSK1);
+}
+
+static void enable_se7206_irq(struct irq_data *data)
+{
+	unsigned int irq = data->irq;
 	unsigned short val;
 	unsigned short value = (0x0001 << 4 * (3 - (IRQ0_IRQ - irq)));
 	unsigned short msk0,msk1;
@@ -69,6 +85,13 @@ static void enable_se7206_irq(unsigned int irq)
 	/* FPGA mask reset */
 	msk0 = ctrl_inw(INTMSK0);
 	msk1 = ctrl_inw(INTMSK1);
+	val = __raw_readw(INTC_IPR01);
+	val |= value;
+	__raw_writew(val, INTC_IPR01);
+
+	/* FPGA mask reset */
+	msk0 = __raw_readw(INTMSK0);
+	msk1 = __raw_readw(INTMSK1);
 
 	switch (irq) {
 	case IRQ0_IRQ:
@@ -95,6 +118,20 @@ static void eoi_se7206_irq(unsigned int irq)
 	/* FPGA isr clear */
 	sts0 = ctrl_inw(INTSTS0);
 	sts1 = ctrl_inw(INTSTS1);
+	__raw_writew(msk0, INTMSK0);
+	__raw_writew(msk1, INTMSK1);
+}
+
+static void eoi_se7206_irq(struct irq_data *data)
+{
+	unsigned short sts0,sts1;
+	unsigned int irq = data->irq;
+
+	if (!irqd_irq_disabled(data) && !irqd_irq_inprogress(data))
+		enable_se7206_irq(data);
+	/* FPGA isr clear */
+	sts0 = __raw_readw(INTSTS0);
+	sts1 = __raw_readw(INTSTS1);
 
 	switch (irq) {
 	case IRQ0_IRQ:
@@ -110,6 +147,8 @@ static void eoi_se7206_irq(unsigned int irq)
 	}
 	ctrl_outw(sts0, INTSTS0);
 	ctrl_outw(sts1, INTSTS1);
+	__raw_writew(sts0, INTSTS0);
+	__raw_writew(sts1, INTSTS1);
 }
 
 static struct irq_chip se7206_irq_chip __read_mostly = {
@@ -118,6 +157,9 @@ static struct irq_chip se7206_irq_chip __read_mostly = {
 	.unmask		= enable_se7206_irq,
 	.mask_ack	= disable_se7206_irq,
 	.eoi		= eoi_se7206_irq,
+	.irq_mask	= disable_se7206_irq,
+	.irq_unmask	= enable_se7206_irq,
+	.irq_eoi	= eoi_se7206_irq,
 };
 
 static void make_se7206_irq(unsigned int irq)
@@ -126,6 +168,9 @@ static void make_se7206_irq(unsigned int irq)
 	set_irq_chip_and_handler_name(irq, &se7206_irq_chip,
 				      handle_level_irq, "level");
 	disable_se7206_irq(irq);
+	irq_set_chip_and_handler_name(irq, &se7206_irq_chip,
+				      handle_level_irq, "level");
+	disable_se7206_irq(irq_get_irq_data(irq));
 }
 
 /*
@@ -143,4 +188,13 @@ void __init init_se7206_IRQ(void)
 	ctrl_outw(0x0000,INTSTS1); /* Clear INTSTS1 */
 	/* IRQ0=LAN, IRQ1=ATA, IRQ3=SLT,PCM */
 	ctrl_outw(0x0001,INTSEL);
+
+	__raw_writew(__raw_readw(INTC_ICR1) | 0x000b, INTC_ICR1); /* ICR1 */
+
+	/* FPGA System register setup*/
+	__raw_writew(0x0000,INTSTS0); /* Clear INTSTS0 */
+	__raw_writew(0x0000,INTSTS1); /* Clear INTSTS1 */
+
+	/* IRQ0=LAN, IRQ1=ATA, IRQ3=SLT,PCM */
+	__raw_writew(0x0001,INTSEL);
 }

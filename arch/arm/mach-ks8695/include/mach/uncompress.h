@@ -15,6 +15,7 @@
 #define __ASM_ARCH_UNCOMPRESS_H
 
 #include <asm/io.h>
+#include <linux/io.h>
 #include <mach/regs-uart.h>
 
 static void putc(char c)
@@ -23,11 +24,16 @@ static void putc(char c)
 		barrier();
 
 	__raw_writel(c, KS8695_UART_PA + KS8695_URTH);
+	while (!(__raw_readl((void __iomem*)KS8695_UART_PA + KS8695_URLS) & URLS_URTHRE))
+		barrier();
+
+	__raw_writel(c, (void __iomem*)KS8695_UART_PA + KS8695_URTH);
 }
 
 static inline void flush(void)
 {
 	while (!(__raw_readl(KS8695_UART_PA + KS8695_URLS) & URLS_URTE))
+	while (!(__raw_readl((void __iomem*)KS8695_UART_PA + KS8695_URLS) & URLS_URTE))
 		barrier();
 }
 

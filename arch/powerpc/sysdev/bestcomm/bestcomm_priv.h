@@ -27,9 +27,7 @@
 #include "sram.h"
 
 
-/* ======================================================================== */
 /* Engine related stuff                                                     */
-/* ======================================================================== */
 
 /* Zones sizes and needed alignments */
 #define BCOM_MAX_TASKS		16
@@ -81,9 +79,7 @@ struct bcom_engine {
 extern struct bcom_engine *bcom_eng;
 
 
-/* ======================================================================== */
 /* Tasks related stuff                                                      */
-/* ======================================================================== */
 
 /* Tasks image header */
 #define BCOM_TASK_MAGIC		0x4243544B	/* 'BCTK' */
@@ -229,9 +225,7 @@ struct bcom_task_header {
 #define BCOM_IPR_SCTMR_7	2
 
 
-/* ======================================================================== */
 /* API                                                                      */
-/* ======================================================================== */
 
 extern struct bcom_task *bcom_task_alloc(int bd_count, int bd_size, int priv_size);
 extern void bcom_task_free(struct bcom_task *tsk);

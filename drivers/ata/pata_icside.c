@@ -2,6 +2,7 @@
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/blkdev.h>
+#include <linux/gfp.h>
 #include <scsi/scsi_host.h>
 #include <linux/ata.h>
 #include <linux/libata.h>
@@ -214,6 +215,8 @@ static void pata_icside_set_dmamode(struct ata_port *ap, struct ata_device *adev
 
 	ata_dev_printk(adev, KERN_INFO, "timings: act %dns rec %dns cyc %dns (%c)\n",
 		t.active, t.recover, t.cycle, iomd_type);
+	ata_dev_info(adev, "timings: act %dns rec %dns cyc %dns (%c)\n",
+		     t.active, t.recover, t.cycle, iomd_type);
 
 	state->port[ap->port_no].speed[adev->devno] = cycle;
 }
@@ -225,6 +228,7 @@ static void pata_icside_bmdma_setup(struct ata_queued_cmd *qc)
 	struct scatterlist *sg, *rsg = state->sg;
 	unsigned int write = qc->tf.flags & ATA_TFLAG_WRITE;
 	unsigned int si;
+	unsigned int write = qc->tf.flags & ATA_TFLAG_WRITE;
 
 	/*
 	 * We are simplex; BUG if we try to fiddle with DMA
@@ -247,6 +251,7 @@ static void pata_icside_bmdma_setup(struct ata_queued_cmd *qc)
 
 	set_dma_speed(state->dma, state->port[ap->port_no].speed[qc->dev->devno]);
 	set_dma_sg(state->dma, state->sg, rsg - state->sg);
+	set_dma_sg(state->dma, qc->sg, qc->n_elem);
 	set_dma_mode(state->dma, write ? DMA_MODE_WRITE : DMA_MODE_READ);
 
 	/* issue r/w command */
@@ -298,6 +303,7 @@ static int icside_dma_init(struct pata_icside_info *info)
 	if (ec->dma != NO_DMA && !request_dma(ec->dma, DRV_NAME)) {
 		state->dma = ec->dma;
 		info->mwdma_mask = 0x07;	/* MW0..2 */
+		info->mwdma_mask = ATA_MWDMA2;
 	}
 
 	return 0;
@@ -308,6 +314,8 @@ static struct scsi_host_template pata_icside_sht = {
 	ATA_BASE_SHT(DRV_NAME),
 	.sg_tablesize		= PATA_ICSIDE_MAX_SG,
 	.dma_boundary		= ~0, /* no dma boundaries */
+	.sg_tablesize		= SCSI_MAX_SG_CHAIN_SEGMENTS,
+	.dma_boundary		= IOMD_DMA_BOUNDARY,
 };
 
 static void pata_icside_postreset(struct ata_link *link, unsigned int *classes)
@@ -334,6 +342,7 @@ static void pata_icside_postreset(struct ata_link *link, unsigned int *classes)
 
 static struct ata_port_operations pata_icside_port_ops = {
 	.inherits		= &ata_sff_port_ops,
+	.inherits		= &ata_bmdma_port_ops,
 	/* no need to build any PRD tables for DMA */
 	.qc_prep		= ata_noop_qc_prep,
 	.sff_data_xfer		= ata_sff_data_xfer_noirq,
@@ -352,6 +361,13 @@ static void __devinit
 pata_icside_setup_ioaddr(struct ata_port *ap, void __iomem *base,
 			 struct pata_icside_info *info,
 			 const struct portinfo *port)
+
+	.port_start		= ATA_OP_NULL,	/* don't need PRD table */
+};
+
+static void pata_icside_setup_ioaddr(struct ata_port *ap, void __iomem *base,
+				     struct pata_icside_info *info,
+				     const struct portinfo *port)
 {
 	struct ata_ioports *ioaddr = &ap->ioaddr;
 	void __iomem *cmd = base + port->dataoffset;
@@ -380,6 +396,7 @@ pata_icside_setup_ioaddr(struct ata_port *ap, void __iomem *base,
 }
 
 static int __devinit pata_icside_register_v5(struct pata_icside_info *info)
+static int pata_icside_register_v5(struct pata_icside_info *info)
 {
 	struct pata_icside_state *state = info->state;
 	void __iomem *base;
@@ -403,6 +420,7 @@ static int __devinit pata_icside_register_v5(struct pata_icside_info *info)
 }
 
 static int __devinit pata_icside_register_v6(struct pata_icside_info *info)
+static int pata_icside_register_v6(struct pata_icside_info *info)
 {
 	struct pata_icside_state *state = info->state;
 	struct expansion_card *ec = info->ec;
@@ -446,6 +464,7 @@ static int __devinit pata_icside_register_v6(struct pata_icside_info *info)
 }
 
 static int __devinit pata_icside_add_ports(struct pata_icside_info *info)
+static int pata_icside_add_ports(struct pata_icside_info *info)
 {
 	struct expansion_card *ec = info->ec;
 	struct ata_host *host;
@@ -474,6 +493,7 @@ static int __devinit pata_icside_add_ports(struct pata_icside_info *info)
 		struct ata_port *ap = host->ports[i];
 
 		ap->pio_mask = 0x1f;
+		ap->pio_mask = ATA_PIO4;
 		ap->mwdma_mask = info->mwdma_mask;
 		ap->flags |= ATA_FLAG_SLAVE_POSS;
 		ap->ops = &pata_icside_port_ops;
@@ -487,6 +507,12 @@ static int __devinit pata_icside_add_ports(struct pata_icside_info *info)
 
 static int __devinit
 pata_icside_probe(struct expansion_card *ec, const struct ecard_id *id)
+	return ata_host_activate(host, ec->irq, ata_bmdma_interrupt, 0,
+				 &pata_icside_sht);
+}
+
+static int pata_icside_probe(struct expansion_card *ec,
+			     const struct ecard_id *id)
 {
 	struct pata_icside_state *state;
 	struct pata_icside_info info;
@@ -587,6 +613,7 @@ static void pata_icside_shutdown(struct expansion_card *ec)
 }
 
 static void __devexit pata_icside_remove(struct expansion_card *ec)
+static void pata_icside_remove(struct expansion_card *ec)
 {
 	struct ata_host *host = ecard_get_drvdata(ec);
 	struct pata_icside_state *state = host->private_data;
@@ -614,6 +641,7 @@ static const struct ecard_id pata_icside_ids[] = {
 static struct ecard_driver pata_icside_driver = {
 	.probe		= pata_icside_probe,
 	.remove 	= __devexit_p(pata_icside_remove),
+	.remove 	= pata_icside_remove,
 	.shutdown	= pata_icside_shutdown,
 	.id_table	= pata_icside_ids,
 	.drv = {

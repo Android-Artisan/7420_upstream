@@ -1,7 +1,6 @@
 
 	Information regarding the Enhanced IDE drive in Linux 2.6
 
-==============================================================================
 
 
    The hdparm utility can be used to control various IDE features on a
@@ -11,7 +10,6 @@
 
 
 ***  IMPORTANT NOTICES:  BUGGY IDE CHIPSETS CAN CORRUPT DATA!!
-***  =================
 ***  PCI versions of the CMD640 and RZ1000 interfaces are now detected
 ***  automatically at startup when PCI BIOS support is configured.
 ***
@@ -34,7 +32,6 @@
 ***
 ***  Use of the "serialize" option is no longer necessary.
 
-================================================================================
 Common pitfalls:
 
 - 40-conductor IDE cables are capable of transferring data in DMA modes up to
@@ -49,7 +46,6 @@ Common pitfalls:
 - Even better try to stick to the same vendor and device type on the same
   cable.
 
-================================================================================
 
 This is the multiple IDE interface driver, as evolved from hd.c.
 
@@ -170,13 +166,13 @@ When using ide.c as a module in combination with kmod, add:
 	alias block-major-3 ide-probe
 
 to /etc/modprobe.conf.
+to a configuration file in /etc/modprobe.d/.
 
 When ide.c is used as a module, you can pass command line parameters to the
 driver using the "options=" keyword to insmod, while replacing any ',' with
 ';'.
 
 
-================================================================================
 
 Summary of ide driver parameters for kernel command line
 --------------------------------------------------------
@@ -216,6 +212,8 @@ Other kernel parameters for ide_core are:
 
 * "noflush=[interface_number.device_number]" to disable flush requests
 
+* "nohpa=[interface_number.device_number]" to disable Host Protected Area
+
 * "noprobe=[interface_number.device_number]" to skip probing
 
 * "nowerr=[interface_number.device_number]" to ignore the WRERR_STAT bit
@@ -224,7 +222,6 @@ Other kernel parameters for ide_core are:
 
 * "chs=[interface_number.device_number]" to force device as a disk (using CHS)
 
-================================================================================
 
 Some Terminology
 ----------------

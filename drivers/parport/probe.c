@@ -1,4 +1,5 @@
 /* $Id: parport_probe.c,v 1.1 1999/07/03 08:56:17 davem Exp $
+/*
  * Parallel port device probing code
  *
  * Authors:    Carsten Gross, carsten@sol.wohnheim.uni-ulm.de
@@ -9,6 +10,7 @@
 #include <linux/parport.h>
 #include <linux/ctype.h>
 #include <linux/string.h>
+#include <linux/slab.h>
 #include <asm/uaccess.h>
 
 static const struct {

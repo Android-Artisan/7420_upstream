@@ -1,5 +1,6 @@
 #include <linux/io.h>
 #include <linux/module.h>
+#include <linux/export.h>
 
 /**
  *	check_signature		-	find BIOS signatures

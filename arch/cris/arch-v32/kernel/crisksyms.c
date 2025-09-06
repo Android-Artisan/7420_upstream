@@ -4,6 +4,9 @@
 #include <asm/arch/intmem.h>
 #include <asm/arch/mach/pinmux.h>
 #include <asm/arch/io.h>
+#include <arch/dma.h>
+#include <arch/intmem.h>
+#include <mach/pinmux.h>
 
 /* Functions for allocating DMA channels */
 EXPORT_SYMBOL(crisv32_request_dma);
@@ -26,3 +29,7 @@ EXPORT_SYMBOL(crisv32_io_get);
 /* Functions masking/unmasking interrupts */
 EXPORT_SYMBOL(mask_irq);
 EXPORT_SYMBOL(unmask_irq);
+
+/* Functions masking/unmasking interrupts */
+EXPORT_SYMBOL(crisv32_mask_irq);
+EXPORT_SYMBOL(crisv32_unmask_irq);

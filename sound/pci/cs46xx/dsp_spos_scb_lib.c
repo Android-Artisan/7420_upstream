@@ -22,6 +22,7 @@
 
 
 #include <asm/io.h>
+#include <linux/io.h>
 #include <linux/delay.h>
 #include <linux/pm.h>
 #include <linux/init.h>
@@ -32,6 +33,7 @@
 #include <sound/control.h>
 #include <sound/info.h>
 #include <sound/cs46xx.h>
+#include "cs46xx.h"
 
 #include "cs46xx_lib.h"
 #include "dsp_spos.h"
@@ -48,6 +50,11 @@ static void remove_symbol (struct snd_cs46xx * chip, struct dsp_symbol_entry * s
 
 	snd_assert(ins->symbol_table.nsymbols > 0,return);
 	snd_assert(symbol_index >= 0 && symbol_index < ins->symbol_table.nsymbols, return);
+	if (snd_BUG_ON(ins->symbol_table.nsymbols <= 0))
+		return;
+	if (snd_BUG_ON(symbol_index < 0 ||
+		       symbol_index >= ins->symbol_table.nsymbols))
+		return;
 
 	ins->symbol_table.symbols[symbol_index].deleted = 1;
 
@@ -65,6 +72,7 @@ static void remove_symbol (struct snd_cs46xx * chip, struct dsp_symbol_entry * s
 }
 
 #ifdef CONFIG_PROC_FS
+#ifdef CONFIG_SND_PROC_FS
 static void cs46xx_dsp_proc_scb_info_read (struct snd_info_entry *entry,
 					   struct snd_info_buffer *buffer)
 {
@@ -118,6 +126,12 @@ static void _dsp_unlink_scb (struct snd_cs46xx *chip, struct dsp_scb_descriptor 
 		/* unlink parent SCB */
 		snd_assert ((scb->parent_scb_ptr->sub_list_ptr == scb ||
 			     scb->parent_scb_ptr->next_scb_ptr == scb),return);
+
+	if ( scb->parent_scb_ptr ) {
+		/* unlink parent SCB */
+		if (snd_BUG_ON(scb->parent_scb_ptr->sub_list_ptr != scb &&
+			       scb->parent_scb_ptr->next_scb_ptr != scb))
+			return;
   
 		if (scb->parent_scb_ptr->sub_list_ptr == scb) {
 
@@ -184,6 +198,10 @@ void cs46xx_dsp_remove_scb (struct snd_cs46xx *chip, struct dsp_scb_descriptor *
 	snd_assert ( (scb->index >= 0 && 
 		      scb->index < ins->nscb && 
 		      (ins->scbs + scb->index) == scb), return );
+	if (snd_BUG_ON(scb->index < 0 ||
+		       scb->index >= ins->nscb ||
+		       (ins->scbs + scb->index) != scb))
+		return;
 
 #if 0
 	/* can't remove a SCB with childs before 
@@ -202,6 +220,25 @@ void cs46xx_dsp_remove_scb (struct snd_cs46xx *chip, struct dsp_scb_descriptor *
 	remove_symbol (chip,scb->scb_symbol);
 
 	ins->scbs[scb->index].deleted = 1;
+	if (snd_BUG_ON(scb->sub_list_ptr != ins->the_null_scb ||
+		       scb->next_scb_ptr != ins->the_null_scb))
+		goto _end;
+#endif
+
+	spin_lock_irqsave(&chip->reg_lock, flags);    
+	_dsp_unlink_scb (chip,scb);
+	spin_unlock_irqrestore(&chip->reg_lock, flags);
+
+	cs46xx_dsp_proc_free_scb_desc(scb);
+	if (snd_BUG_ON(!scb->scb_symbol))
+		return;
+	remove_symbol (chip,scb->scb_symbol);
+
+	ins->scbs[scb->index].deleted = 1;
+#ifdef CONFIG_PM_SLEEP
+	kfree(ins->scbs[scb->index].data);
+	ins->scbs[scb->index].data = NULL;
+#endif
 
 	if (scb->index < ins->scb_highest_frag_index)
 		ins->scb_highest_frag_index = scb->index;
@@ -224,12 +261,18 @@ void cs46xx_dsp_remove_scb (struct snd_cs46xx *chip, struct dsp_scb_descriptor *
 
 
 #ifdef CONFIG_PROC_FS
+#ifdef CONFIG_SND_PROC_FS
 void cs46xx_dsp_proc_free_scb_desc (struct dsp_scb_descriptor * scb)
 {
 	if (scb->proc_info) {
 		struct proc_scb_info * scb_info = scb->proc_info->private_data;
 
 		snd_printdd("cs46xx_dsp_proc_free_scb_desc: freeing %s\n",scb->scb_name);
+		struct snd_cs46xx *chip = scb_info->chip;
+
+		dev_dbg(chip->card->dev,
+			"cs46xx_dsp_proc_free_scb_desc: freeing %s\n",
+			scb->scb_name);
 
 		snd_info_free_entry(scb->proc_info);
 		scb->proc_info = NULL;
@@ -279,6 +322,7 @@ out:
 	}
 }
 #endif /* CONFIG_PROC_FS */
+#endif /* CONFIG_SND_PROC_FS */
 
 static struct dsp_scb_descriptor * 
 _dsp_create_generic_scb (struct snd_cs46xx *chip, char * name, u32 * scb_data, u32 dest,
@@ -292,6 +336,8 @@ _dsp_create_generic_scb (struct snd_cs46xx *chip, char * name, u32 * scb_data, u
 	unsigned long flags;
 
 	snd_assert (ins->the_null_scb != NULL,return NULL);
+	if (snd_BUG_ON(!ins->the_null_scb))
+		return NULL;
 
 	/* fill the data that will be wroten to DSP */
 	scb_data[SCBsubListPtr] = 
@@ -301,6 +347,7 @@ _dsp_create_generic_scb (struct snd_cs46xx *chip, char * name, u32 * scb_data, u
 	scb_data[SCBfuncEntryPtr] |= task_entry->address;
 
 	snd_printdd("dsp_spos: creating SCB <%s>\n",name);
+	dev_dbg(chip->card->dev, "dsp_spos: creating SCB <%s>\n", name);
 
 	scb = cs46xx_dsp_create_scb(chip,name,scb_data,dest);
 
@@ -323,6 +370,21 @@ _dsp_create_generic_scb (struct snd_cs46xx *chip, char * name, u32 * scb_data, u
 		if (scb_child_type == SCB_ON_PARENT_NEXT_SCB) {
 			snd_assert ( (scb->parent_scb_ptr->next_scb_ptr == ins->the_null_scb),
 				     return NULL);
+		dev_dbg(chip->card->dev,
+			"scb->parent_scb_ptr = %s\n",
+			scb->parent_scb_ptr->scb_name);
+		dev_dbg(chip->card->dev,
+			"scb->parent_scb_ptr->next_scb_ptr = %s\n",
+			scb->parent_scb_ptr->next_scb_ptr->scb_name);
+		dev_dbg(chip->card->dev,
+			"scb->parent_scb_ptr->sub_list_ptr = %s\n",
+			scb->parent_scb_ptr->sub_list_ptr->scb_name);
+#endif
+		/* link to  parent SCB */
+		if (scb_child_type == SCB_ON_PARENT_NEXT_SCB) {
+			if (snd_BUG_ON(scb->parent_scb_ptr->next_scb_ptr !=
+				       ins->the_null_scb))
+				return NULL;
 
 			scb->parent_scb_ptr->next_scb_ptr = scb;
 
@@ -333,6 +395,13 @@ _dsp_create_generic_scb (struct snd_cs46xx *chip, char * name, u32 * scb_data, u
 			scb->parent_scb_ptr->sub_list_ptr = scb;
 		} else {
 			snd_assert (0,return NULL);
+			if (snd_BUG_ON(scb->parent_scb_ptr->sub_list_ptr !=
+				       ins->the_null_scb))
+				return NULL;
+
+			scb->parent_scb_ptr->sub_list_ptr = scb;
+		} else {
+			snd_BUG();
 		}
 
 		spin_lock_irqsave(&chip->reg_lock, flags);
@@ -362,6 +431,8 @@ cs46xx_dsp_create_generic_scb (struct snd_cs46xx *chip, char * name, u32 * scb_d
   
 	if (task_entry == NULL) {
 		snd_printk (KERN_ERR "dsp_spos: symbol %s not found\n",task_entry_name);
+		dev_err(chip->card->dev,
+			"dsp_spos: symbol %s not found\n", task_entry_name);
 		return NULL;
 	}
   
@@ -576,6 +647,8 @@ cs46xx_dsp_create_pcm_reader_scb(struct snd_cs46xx * chip, char * scb_name,
     
 		if (ins->null_algorithm == NULL) {
 			snd_printk (KERN_ERR "dsp_spos: symbol NULLALGORITHM not found\n");
+			dev_err(chip->card->dev,
+				"dsp_spos: symbol NULLALGORITHM not found\n");
 			return NULL;
 		}    
 	}
@@ -606,6 +679,8 @@ cs46xx_dsp_create_src_task_scb(struct snd_cs46xx * chip, char * scb_name,
 	unsigned int correctionPerGOF, correctionPerSec;
 
 	snd_printdd( "dsp_spos: setting %s rate to %u\n",scb_name,rate);
+	dev_dbg(chip->card->dev, "dsp_spos: setting %s rate to %u\n",
+		scb_name, rate);
 
 	/*
 	 *  Compute the values used to drive the actual sample rate conversion.
@@ -664,6 +739,8 @@ cs46xx_dsp_create_src_task_scb(struct snd_cs46xx * chip, char * scb_name,
 			
 			if (ins->s16_up == NULL) {
 				snd_printk (KERN_ERR "dsp_spos: symbol S16_UPSRC not found\n");
+				dev_err(chip->card->dev,
+					"dsp_spos: symbol S16_UPSRC not found\n");
 				return NULL;
 			}    
 		}
@@ -676,6 +753,7 @@ cs46xx_dsp_create_src_task_scb(struct snd_cs46xx * chip, char * scb_name,
 			/* wont work with any other rate than
 			   the native DSP rate */
 			snd_assert (rate == 48000);
+			snd_BUG_ON(rate != 48000);
 
 			scb = cs46xx_dsp_create_generic_scb(chip,scb_name,(u32 *)&src_task_scb,
 							    dest,"DMAREADER",parent_scb,
@@ -1143,6 +1221,8 @@ find_next_free_scb (struct snd_cs46xx * chip, struct dsp_scb_descriptor * from)
 
 	while (scb->next_scb_ptr != ins->the_null_scb) {
 		snd_assert (scb->next_scb_ptr != NULL, return NULL);
+		if (snd_BUG_ON(!scb->next_scb_ptr))
+			return NULL;
 
 		scb = scb->next_scb_ptr;
 	}
@@ -1250,6 +1330,11 @@ cs46xx_dsp_create_pcm_channel (struct snd_cs46xx * chip,
 		break;
 	case DSP_IEC958_CHANNEL:
 		snd_assert (ins->asynch_tx_scb != NULL, return NULL);
+		snd_BUG();
+		break;
+	case DSP_IEC958_CHANNEL:
+		if (snd_BUG_ON(!ins->asynch_tx_scb))
+			return NULL;
 		mixer_scb = ins->asynch_tx_scb;
 
 		/* if sample rate is set to 48khz we pass
@@ -1257,12 +1342,14 @@ cs46xx_dsp_create_pcm_channel (struct snd_cs46xx * chip,
 		   alter the raw data stream ...) */
 		if (sample_rate == 48000) {
 			snd_printdd ("IEC958 pass through\n");
+			dev_dbg(chip->card->dev, "IEC958 pass through\n");
 			/* Hack to bypass creating a new SRC */
 			pass_through = 1;
 		}
 		break;
 	default:
 		snd_assert (0);
+		snd_BUG();
 		return NULL;
 	}
 	/* default sample rate is 44100 */
@@ -1291,12 +1378,15 @@ cs46xx_dsp_create_pcm_channel (struct snd_cs46xx * chip,
 
 	if (pcm_index == -1) {
 		snd_printk (KERN_ERR "dsp_spos: no free PCM channel\n");
+		dev_err(chip->card->dev, "dsp_spos: no free PCM channel\n");
 		return NULL;
 	}
 
 	if (src_scb == NULL) {
 		if (ins->nsrc_scb >= DSP_MAX_SRC_NR) {
 			snd_printk(KERN_ERR "dsp_spos: to many SRC instances\n!");
+			dev_err(chip->card->dev,
+				"dsp_spos: to many SRC instances\n!");
 			return NULL;
 		}
 
@@ -1309,6 +1399,8 @@ cs46xx_dsp_create_pcm_channel (struct snd_cs46xx * chip,
 			}
 		}
 		snd_assert (src_index != -1,return NULL);
+		if (snd_BUG_ON(src_index == -1))
+			return NULL;
 
 		/* we need to create a new SRC SCB */
 		if (mixer_scb->sub_list_ptr == ins->the_null_scb) {
@@ -1322,6 +1414,8 @@ cs46xx_dsp_create_pcm_channel (struct snd_cs46xx * chip,
 		snprintf (scb_name,DSP_MAX_SCB_NAME,"SrcTask_SCB%d",src_index);
 		
 		snd_printdd( "dsp_spos: creating SRC \"%s\"\n",scb_name);
+		dev_dbg(chip->card->dev,
+			"dsp_spos: creating SRC \"%s\"\n", scb_name);
 		src_scb = cs46xx_dsp_create_src_task_scb(chip,scb_name,
 							 sample_rate,
 							 src_output_buffer_addr[src_index],
@@ -1334,6 +1428,8 @@ cs46xx_dsp_create_pcm_channel (struct snd_cs46xx * chip,
 
 		if (!src_scb) {
 			snd_printk (KERN_ERR "dsp_spos: failed to create SRCtaskSCB\n");
+			dev_err(chip->card->dev,
+				"dsp_spos: failed to create SRCtaskSCB\n");
 			return NULL;
 		}
 
@@ -1347,6 +1443,8 @@ cs46xx_dsp_create_pcm_channel (struct snd_cs46xx * chip,
 
 	snd_printdd( "dsp_spos: creating PCM \"%s\" (%d)\n",scb_name,
                  pcm_channel_id);
+	dev_dbg(chip->card->dev, "dsp_spos: creating PCM \"%s\" (%d)\n",
+		scb_name, pcm_channel_id);
 
 	pcm_scb = cs46xx_dsp_create_pcm_reader_scb(chip,scb_name,
 						   pcm_reader_buffer_addr[pcm_index],
@@ -1360,6 +1458,8 @@ cs46xx_dsp_create_pcm_channel (struct snd_cs46xx * chip,
 
 	if (!pcm_scb) {
 		snd_printk (KERN_ERR "dsp_spos: failed to create PCMreaderSCB\n");
+		dev_err(chip->card->dev,
+			"dsp_spos: failed to create PCMreaderSCB\n");
 		return NULL;
 	}
 	
@@ -1410,6 +1510,8 @@ int cs46xx_dsp_pcm_channel_set_period (struct snd_cs46xx * chip,
 		break; 
 	default:
 		snd_printdd ("period size (%d) not supported by HW\n", period_size);
+		dev_dbg(chip->card->dev,
+			"period size (%d) not supported by HW\n", period_size);
 		return -EINVAL;
 	}
 
@@ -1448,6 +1550,8 @@ int cs46xx_dsp_pcm_ostream_set_period (struct snd_cs46xx * chip,
 		break; 
 	default:
 		snd_printdd ("period size (%d) not supported by HW\n", period_size);
+		dev_dbg(chip->card->dev,
+			"period size (%d) not supported by HW\n", period_size);
 		return -EINVAL;
 	}
 
@@ -1465,6 +1569,10 @@ void cs46xx_dsp_destroy_pcm_channel (struct snd_cs46xx * chip,
 	snd_assert(pcm_channel->active, return );
 	snd_assert(ins->npcm_channels > 0, return );
 	snd_assert(pcm_channel->src_scb->ref_count > 0, return );
+	if (snd_BUG_ON(!pcm_channel->active ||
+		       ins->npcm_channels <= 0 ||
+		       pcm_channel->src_scb->ref_count <= 0))
+		return;
 
 	spin_lock_irqsave(&chip->reg_lock, flags);
 	pcm_channel->unlinked = 1;
@@ -1481,6 +1589,9 @@ void cs46xx_dsp_destroy_pcm_channel (struct snd_cs46xx * chip,
 
 		snd_assert (pcm_channel->src_slot >= 0 && pcm_channel->src_slot < DSP_MAX_SRC_NR,
 			    return );
+		if (snd_BUG_ON(pcm_channel->src_slot < 0 ||
+			       pcm_channel->src_slot >= DSP_MAX_SRC_NR))
+			return;
 
 		ins->src_scb_slots[pcm_channel->src_slot] = 0;
 		ins->nsrc_scb --;
@@ -1510,6 +1621,23 @@ int cs46xx_dsp_pcm_unlink (struct snd_cs46xx * chip,
 	_dsp_unlink_scb (chip,pcm_channel->pcm_reader_scb);
 
 	spin_unlock(&pcm_channel->src_scb->lock);
+	unsigned long flags;
+
+	if (snd_BUG_ON(!pcm_channel->active ||
+		       chip->dsp_spos_instance->npcm_channels <= 0))
+		return -EIO;
+
+	spin_lock_irqsave(&chip->reg_lock, flags);
+	if (pcm_channel->unlinked) {
+		spin_unlock_irqrestore(&chip->reg_lock, flags);
+		return -EIO;
+	}
+
+	pcm_channel->unlinked = 1;
+
+	_dsp_unlink_scb (chip,pcm_channel->pcm_reader_scb);
+	spin_unlock_irqrestore(&chip->reg_lock, flags);
+
 	return 0;
 }
 
@@ -1525,6 +1653,10 @@ int cs46xx_dsp_pcm_link (struct snd_cs46xx * chip,
 
 	if (pcm_channel->unlinked == 0) {
 		spin_unlock(&pcm_channel->src_scb->lock);
+	spin_lock_irqsave(&chip->reg_lock, flags);
+
+	if (pcm_channel->unlinked == 0) {
+		spin_unlock_irqrestore(&chip->reg_lock, flags);
 		return -EIO;
 	}
 
@@ -1541,6 +1673,9 @@ int cs46xx_dsp_pcm_link (struct snd_cs46xx * chip,
 	pcm_channel->pcm_reader_scb->parent_scb_ptr = parent_scb;
 
 	spin_lock_irqsave(&chip->reg_lock, flags);
+
+	snd_BUG_ON(pcm_channel->pcm_reader_scb->parent_scb_ptr);
+	pcm_channel->pcm_reader_scb->parent_scb_ptr = parent_scb;
 
 	/* update SCB entry in DSP RAM */
 	cs46xx_dsp_spos_update_scb(chip,pcm_channel->pcm_reader_scb);
@@ -1565,6 +1700,8 @@ cs46xx_add_record_source (struct snd_cs46xx *chip, struct dsp_scb_descriptor * s
 	int insert_point;
 
 	snd_assert (ins->record_mixer_scb != NULL,return NULL);
+	if (snd_BUG_ON(!ins->record_mixer_scb))
+		return NULL;
 
 	if (ins->record_mixer_scb->sub_list_ptr != ins->the_null_scb) {
 		parent = find_next_free_scb (chip,ins->record_mixer_scb->sub_list_ptr);
@@ -1584,11 +1721,18 @@ cs46xx_add_record_source (struct snd_cs46xx *chip, struct dsp_scb_descriptor * s
 int cs46xx_src_unlink(struct snd_cs46xx *chip, struct dsp_scb_descriptor * src)
 {
 	snd_assert (src->parent_scb_ptr != NULL,  return -EINVAL );
+	unsigned long flags;
+
+	if (snd_BUG_ON(!src->parent_scb_ptr))
+		return -EINVAL;
 
 	/* mute SCB */
 	cs46xx_dsp_scb_set_volume (chip,src,0,0);
 
 	_dsp_unlink_scb (chip,src);
+	spin_lock_irqsave(&chip->reg_lock, flags);
+	_dsp_unlink_scb (chip,src);
+	spin_unlock_irqrestore(&chip->reg_lock, flags);
 
 	return 0;
 }
@@ -1600,6 +1744,10 @@ int cs46xx_src_link(struct snd_cs46xx *chip, struct dsp_scb_descriptor * src)
 
 	snd_assert (src->parent_scb_ptr == NULL,   return -EINVAL );
 	snd_assert(ins->master_mix_scb !=NULL,   return -EINVAL );
+	if (snd_BUG_ON(src->parent_scb_ptr))
+		return -EINVAL;
+	if (snd_BUG_ON(!ins->master_mix_scb))
+		return -EINVAL;
 
 	if (ins->master_mix_scb->sub_list_ptr != ins->the_null_scb) {
 		parent_scb = find_next_free_scb (chip,ins->master_mix_scb->sub_list_ptr);
@@ -1637,6 +1785,11 @@ int cs46xx_dsp_enable_spdif_out (struct snd_cs46xx *chip)
 
 	snd_assert (ins->asynch_tx_scb == NULL, return -EINVAL);
 	snd_assert (ins->master_mix_scb->next_scb_ptr == ins->the_null_scb, return -EINVAL);
+	if (snd_BUG_ON(ins->asynch_tx_scb))
+		return -EINVAL;
+	if (snd_BUG_ON(ins->master_mix_scb->next_scb_ptr !=
+		       ins->the_null_scb))
+		return -EINVAL;
 
 	/* reset output snooper sample buffer pointer */
 	snd_cs46xx_poke (chip, (ins->ref_snoop_scb->address + 2) << 2,
@@ -1680,6 +1833,15 @@ int  cs46xx_dsp_disable_spdif_out (struct snd_cs46xx *chip)
 	snd_assert (ins->spdif_pcm_input_scb != NULL,return -EINVAL);
 	snd_assert (ins->master_mix_scb->next_scb_ptr == ins->asynch_tx_scb, return -EINVAL);
 	snd_assert (ins->asynch_tx_scb->parent_scb_ptr == ins->master_mix_scb, return -EINVAL);
+	if (snd_BUG_ON(!ins->asynch_tx_scb))
+		return -EINVAL;
+	if (snd_BUG_ON(!ins->spdif_pcm_input_scb))
+		return -EINVAL;
+	if (snd_BUG_ON(ins->master_mix_scb->next_scb_ptr != ins->asynch_tx_scb))
+		return -EINVAL;
+	if (snd_BUG_ON(ins->asynch_tx_scb->parent_scb_ptr !=
+		       ins->master_mix_scb))
+		return -EINVAL;
 
 	cs46xx_dsp_remove_scb (chip,ins->spdif_pcm_input_scb);
 	cs46xx_dsp_remove_scb (chip,ins->asynch_tx_scb);
@@ -1702,7 +1864,7 @@ int cs46xx_iec958_pre_open (struct snd_cs46xx *chip)
 	struct dsp_spos_instance * ins = chip->dsp_spos_instance;
 
 	if ( ins->spdif_status_out & DSP_SPDIF_STATUS_OUTPUT_ENABLED ) {
-		/* remove AsynchFGTxSCB and and PCMSerialInput_II */
+		/* remove AsynchFGTxSCB and PCMSerialInput_II */
 		cs46xx_dsp_disable_spdif_out (chip);
 
 		/* save state */
@@ -1735,6 +1897,8 @@ int cs46xx_iec958_post_close (struct snd_cs46xx *chip)
 	struct dsp_spos_instance * ins = chip->dsp_spos_instance;
 
 	snd_assert (ins->asynch_tx_scb != NULL, return -EINVAL);
+	if (snd_BUG_ON(!ins->asynch_tx_scb))
+		return -EINVAL;
 
 	ins->spdif_status_out  &= ~DSP_SPDIF_STATUS_PLAYBACK_OPEN;
 

@@ -1,5 +1,4 @@
 README file for the dc395x SCSI driver
-==========================================
 
 Status
 ------

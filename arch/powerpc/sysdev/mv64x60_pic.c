@@ -71,6 +71,7 @@ static u32 mv64x60_cached_high_mask = MV64X60_HIGH_GPP_GROUPS;
 static u32 mv64x60_cached_gpp_mask;
 
 static struct irq_host *mv64x60_irq_host;
+static struct irq_domain *mv64x60_irq_host;
 
 /*
  * mv64x60_chip_low functions
@@ -79,6 +80,9 @@ static struct irq_host *mv64x60_irq_host;
 static void mv64x60_mask_low(unsigned int virq)
 {
 	int level2 = irq_map[virq].hwirq & MV64x60_LEVEL2_MASK;
+static void mv64x60_mask_low(struct irq_data *d)
+{
+	int level2 = irqd_to_hwirq(d) & MV64x60_LEVEL2_MASK;
 	unsigned long flags;
 
 	spin_lock_irqsave(&mv64x60_lock, flags);
@@ -92,6 +96,9 @@ static void mv64x60_mask_low(unsigned int virq)
 static void mv64x60_unmask_low(unsigned int virq)
 {
 	int level2 = irq_map[virq].hwirq & MV64x60_LEVEL2_MASK;
+static void mv64x60_unmask_low(struct irq_data *d)
+{
+	int level2 = irqd_to_hwirq(d) & MV64x60_LEVEL2_MASK;
 	unsigned long flags;
 
 	spin_lock_irqsave(&mv64x60_lock, flags);
@@ -107,6 +114,9 @@ static struct irq_chip mv64x60_chip_low = {
 	.mask		= mv64x60_mask_low,
 	.mask_ack	= mv64x60_mask_low,
 	.unmask		= mv64x60_unmask_low,
+	.irq_mask	= mv64x60_mask_low,
+	.irq_mask_ack	= mv64x60_mask_low,
+	.irq_unmask	= mv64x60_unmask_low,
 };
 
 /*
@@ -116,6 +126,9 @@ static struct irq_chip mv64x60_chip_low = {
 static void mv64x60_mask_high(unsigned int virq)
 {
 	int level2 = irq_map[virq].hwirq & MV64x60_LEVEL2_MASK;
+static void mv64x60_mask_high(struct irq_data *d)
+{
+	int level2 = irqd_to_hwirq(d) & MV64x60_LEVEL2_MASK;
 	unsigned long flags;
 
 	spin_lock_irqsave(&mv64x60_lock, flags);
@@ -129,6 +142,9 @@ static void mv64x60_mask_high(unsigned int virq)
 static void mv64x60_unmask_high(unsigned int virq)
 {
 	int level2 = irq_map[virq].hwirq & MV64x60_LEVEL2_MASK;
+static void mv64x60_unmask_high(struct irq_data *d)
+{
+	int level2 = irqd_to_hwirq(d) & MV64x60_LEVEL2_MASK;
 	unsigned long flags;
 
 	spin_lock_irqsave(&mv64x60_lock, flags);
@@ -144,6 +160,9 @@ static struct irq_chip mv64x60_chip_high = {
 	.mask		= mv64x60_mask_high,
 	.mask_ack	= mv64x60_mask_high,
 	.unmask		= mv64x60_unmask_high,
+	.irq_mask	= mv64x60_mask_high,
+	.irq_mask_ack	= mv64x60_mask_high,
+	.irq_unmask	= mv64x60_unmask_high,
 };
 
 /*
@@ -153,6 +172,9 @@ static struct irq_chip mv64x60_chip_high = {
 static void mv64x60_mask_gpp(unsigned int virq)
 {
 	int level2 = irq_map[virq].hwirq & MV64x60_LEVEL2_MASK;
+static void mv64x60_mask_gpp(struct irq_data *d)
+{
+	int level2 = irqd_to_hwirq(d) & MV64x60_LEVEL2_MASK;
 	unsigned long flags;
 
 	spin_lock_irqsave(&mv64x60_lock, flags);
@@ -166,6 +188,9 @@ static void mv64x60_mask_gpp(unsigned int virq)
 static void mv64x60_mask_ack_gpp(unsigned int virq)
 {
 	int level2 = irq_map[virq].hwirq & MV64x60_LEVEL2_MASK;
+static void mv64x60_mask_ack_gpp(struct irq_data *d)
+{
+	int level2 = irqd_to_hwirq(d) & MV64x60_LEVEL2_MASK;
 	unsigned long flags;
 
 	spin_lock_irqsave(&mv64x60_lock, flags);
@@ -181,6 +206,9 @@ static void mv64x60_mask_ack_gpp(unsigned int virq)
 static void mv64x60_unmask_gpp(unsigned int virq)
 {
 	int level2 = irq_map[virq].hwirq & MV64x60_LEVEL2_MASK;
+static void mv64x60_unmask_gpp(struct irq_data *d)
+{
+	int level2 = irqd_to_hwirq(d) & MV64x60_LEVEL2_MASK;
 	unsigned long flags;
 
 	spin_lock_irqsave(&mv64x60_lock, flags);
@@ -196,6 +224,9 @@ static struct irq_chip mv64x60_chip_gpp = {
 	.mask		= mv64x60_mask_gpp,
 	.mask_ack	= mv64x60_mask_ack_gpp,
 	.unmask		= mv64x60_unmask_gpp,
+	.irq_mask	= mv64x60_mask_gpp,
+	.irq_mask_ack	= mv64x60_mask_ack_gpp,
+	.irq_unmask	= mv64x60_unmask_gpp,
 };
 
 /*
@@ -209,6 +240,7 @@ static struct irq_chip *mv64x60_chips[] = {
 };
 
 static int mv64x60_host_map(struct irq_host *h, unsigned int virq,
+static int mv64x60_host_map(struct irq_domain *h, unsigned int virq,
 			  irq_hw_number_t hwirq)
 {
 	int level1;
@@ -218,11 +250,18 @@ static int mv64x60_host_map(struct irq_host *h, unsigned int virq,
 	level1 = (hwirq & MV64x60_LEVEL1_MASK) >> MV64x60_LEVEL1_OFFSET;
 	BUG_ON(level1 > MV64x60_LEVEL1_GPP);
 	set_irq_chip_and_handler(virq, mv64x60_chips[level1], handle_level_irq);
+	irq_set_status_flags(virq, IRQ_LEVEL);
+
+	level1 = (hwirq & MV64x60_LEVEL1_MASK) >> MV64x60_LEVEL1_OFFSET;
+	BUG_ON(level1 > MV64x60_LEVEL1_GPP);
+	irq_set_chip_and_handler(virq, mv64x60_chips[level1],
+				 handle_level_irq);
 
 	return 0;
 }
 
 static struct irq_host_ops mv64x60_host_ops = {
+static const struct irq_domain_ops mv64x60_host_ops = {
 	.map   = mv64x60_host_map,
 };
 
@@ -252,6 +291,8 @@ void __init mv64x60_init_irq(void)
 	mv64x60_irq_host = irq_alloc_host(np, IRQ_HOST_MAP_LINEAR,
 					  MV64x60_NUM_IRQS,
 					  &mv64x60_host_ops, MV64x60_NUM_IRQS);
+	mv64x60_irq_host = irq_domain_add_linear(np, MV64x60_NUM_IRQS,
+					  &mv64x60_host_ops, NULL);
 
 	spin_lock_irqsave(&mv64x60_lock, flags);
 	out_le32(mv64x60_gpp_reg_base + MV64x60_GPP_INTR_MASK,

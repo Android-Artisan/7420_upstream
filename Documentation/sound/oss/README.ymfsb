@@ -2,10 +2,10 @@ Legacy audio driver for YMF7xx PCI cards.
 
 
 FIRST OF ALL
-============
 
   This code references YAMAHA's sample codes and data sheets.
   I respect and thank for all people they made open the informations
+  I respect and thank for all people they made open the information
   about YMF7xx cards.
 
   And this codes heavily based on Jeff Garzik <jgarzik@pobox.com>'s
@@ -13,7 +13,6 @@ FIRST OF ALL
 
 
 DISCLIMER
-=========
 
  This driver is currently at early ALPHA stage. It may cause serious
  damage to your computer when used.
@@ -21,7 +20,6 @@ DISCLIMER
 
 
 ABOUT THIS DRIVER
-=================
 
   This code enables you to use your YMF724[A-F], YMF740[A-C], YMF744, YMF754
  cards. When enabled, your card acts as "SoundBlaster Pro" compatible card.
@@ -39,7 +37,6 @@ USAGE
 
 
 OPTIONS FOR MODULE
-==================
 
   io           : SB base address     (0x220, 0x240, 0x260, 0x280)
   synth_io     : OPL3 base address   (0x388, 0x398, 0x3a0, 0x3a8)
@@ -51,7 +48,6 @@ OPTIONS FOR MODULE
 
 
 FREQUENCY
-=========
 
   When playing sounds via this driver, you will hear its pitch is slightly
  lower than original sounds. Since this driver recognizes your card acts
@@ -65,7 +61,6 @@ FREQUENCY
 
 
 SPDIF OUT
-=========
 
   With installing modules with option 'spdif_out=1', you can enjoy your
  sounds from SPDIF-out of your card (if it had).
@@ -75,7 +70,6 @@ SPDIF OUT
 
 
 COPYING
-=======
 
  This program is free software; you can redistribute it and/or modify
  it under the terms of the GNU General Public License as published by

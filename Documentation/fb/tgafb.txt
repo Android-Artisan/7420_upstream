@@ -1,7 +1,6 @@
 $Id: tgafb.txt,v 1.1.2.2 2000/04/04 06:50:18 mato Exp $
 
 What is tgafb?
-===============
 
 This is a driver for DECChip 21030 based graphics framebuffers, a.k.a. TGA
 cards, which are usually found in older Digital Alpha systems. The
@@ -33,7 +32,6 @@ can however be used with the standard VGA Text Console driver.
 
 
 Configuration
-=============
 
 You can pass kernel command line options to tgafb with
 `video=tgafb:option1,option2:value2,option3' (multiple options should be
@@ -51,7 +49,6 @@ mode:X    - default video mode. The following video modes are supported:
  
 
 Known Issues
-============
 
 The XFree86 FBDev server has been reported not to work, since tgafb doesn't do
 mmap(). Running the standard XF86_TGA server from XFree86 3.3.x works fine for

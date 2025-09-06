@@ -19,6 +19,7 @@
 #include <linux/signal.h>
 #include <linux/sched.h>
 #include <linux/pagemap.h>
+#include <linux/gfp.h>
 #include <linux/swap.h>
 #include <linux/mm.h>
 #include <linux/kernel.h>
@@ -81,6 +82,7 @@ void __init paging_init(void)
 
 #ifdef CONFIG_HIGHMEM
 	if (num_physpages - num_mappedpages) {
+	if (get_num_physpages() - num_mappedpages) {
 		pgd_t *pge;
 		pud_t *pue;
 		pmd_t *pme;
@@ -101,6 +103,7 @@ void __init paging_init(void)
 	zones_size[ZONE_NORMAL]  = max_low_pfn - min_low_pfn;
 #ifdef CONFIG_HIGHMEM
 	zones_size[ZONE_HIGHMEM] = num_physpages - num_mappedpages;
+	zones_size[ZONE_HIGHMEM] = get_num_physpages() - num_mappedpages;
 #endif
 
 	free_area_init(zones_size);
@@ -163,6 +166,24 @@ void __init mem_init(void)
 	       datak
 	       );
 
+	unsigned long code_size = _etext - _stext;
+
+	/* this will put all low memory onto the freelists */
+	free_all_bootmem();
+#if defined(CONFIG_MMU) && defined(CONFIG_HIGHMEM)
+	{
+		unsigned long pfn;
+
+		for (pfn = get_num_physpages() - 1;
+		     pfn >= num_mappedpages; pfn--)
+			free_highmem_page(&mem_map[pfn]);
+	}
+#endif
+
+	mem_init_print_info(NULL);
+	if (rom_length > 0 && rom_length >= code_size)
+		printk("Memory available:  %luKiB/%luKiB ROM\n",
+			(rom_length - code_size) >> 10, rom_length >> 10);
 } /* end mem_init() */
 
 /*****************************************************************************/
@@ -187,6 +208,7 @@ void free_initmem(void)
 
 	printk("Freeing unused kernel memory: %ldKiB freed (0x%lx - 0x%lx)\n",
 	       (end - start) >> 10, start, end);
+	free_initmem_default(-1);
 #endif
 } /* end free_initmem() */
 
@@ -206,5 +228,6 @@ void __init free_initrd_mem(unsigned long start, unsigned long end)
 		pages++;
 	}
 	printk("Freeing initrd memory: %dKiB freed\n", (pages * PAGE_SIZE) >> 10);
+	free_reserved_area((void *)start, (void *)end, -1, "initrd");
 } /* end free_initrd_mem() */
 #endif

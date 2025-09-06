@@ -18,10 +18,13 @@
 #include <linux/module.h>
 #include <linux/mod_devicetable.h>
 #include <linux/slab.h>
+#include <linux/export.h>
+#include <linux/mod_devicetable.h>
 #include <linux/pci.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
 #include <linux/of_platform.h>
+#include <linux/atomic.h>
 
 #include <asm/errno.h>
 #include <asm/topology.h>
@@ -229,6 +232,7 @@ struct of_device *of_find_device_by_phandle(phandle ph)
 }
 EXPORT_SYMBOL(of_find_device_by_phandle);
 
+#include <asm/eeh.h>
 
 #ifdef CONFIG_PPC_OF_PLATFORM_PCI
 
@@ -240,6 +244,7 @@ EXPORT_SYMBOL(of_find_device_by_phandle);
 
 static int __devinit of_pci_phb_probe(struct of_device *dev,
 				      const struct of_device_id *match)
+static int of_pci_phb_probe(struct platform_device *dev)
 {
 	struct pci_controller *phb;
 
@@ -251,6 +256,10 @@ static int __devinit of_pci_phb_probe(struct of_device *dev,
 
 	/* Alloc and setup PHB data structure */
 	phb = pcibios_alloc_controller(dev->node);
+	pr_info("Setting up PCI bus %s\n", dev->dev.of_node->full_name);
+
+	/* Alloc and setup PHB data structure */
+	phb = pcibios_alloc_controller(dev->dev.of_node);
 	if (!phb)
 		return -ENODEV;
 
@@ -265,6 +274,7 @@ static int __devinit of_pci_phb_probe(struct of_device *dev,
 
 	/* Process "ranges" property */
 	pci_process_bridge_OF_ranges(phb, dev->node, 0);
+	pci_process_bridge_OF_ranges(phb, dev->dev.of_node, 0);
 
 	/* Init pci_dn data structures */
 	pci_devs_phb_init_dynamic(phb);
@@ -277,11 +287,21 @@ static int __devinit of_pci_phb_probe(struct of_device *dev,
 
 	/* Scan the bus */
 	scan_phb(phb);
+	/* Create EEH devices for the PHB */
+	eeh_dev_phb_init_dynamic(phb);
+
+	/* Register devices with EEH */
+	if (dev->dev.of_node->child)
+		eeh_add_device_tree_early(PCI_DN(dev->dev.of_node));
+
+	/* Scan the bus */
+	pcibios_scan_phb(phb);
 	if (phb->bus == NULL)
 		return -ENXIO;
 
 	/* Claim resources. This might need some rework as well depending
 	 * wether we are doing probe-only or not, like assigning unassigned
+	 * whether we are doing probe-only or not, like assigning unassigned
 	 * resources etc...
 	 */
 	pcibios_claim_one_bus(phb->bus);
@@ -290,6 +310,7 @@ static int __devinit of_pci_phb_probe(struct of_device *dev,
 #ifdef CONFIG_EEH
 	eeh_add_device_tree_late(phb->bus);
 #endif
+	eeh_add_device_tree_late(phb->bus);
 
 	/* Add probed PCI devices to the device model */
 	pci_bus_add_devices(phb->bus);
@@ -298,6 +319,13 @@ static int __devinit of_pci_phb_probe(struct of_device *dev,
 }
 
 static struct of_device_id of_pci_phb_ids[] = {
+	/* sysfs files should only be added after devices are added */
+	eeh_add_sysfs_files(phb->bus);
+
+	return 0;
+}
+
+static const struct of_device_id of_pci_phb_ids[] = {
 	{ .type = "pci", },
 	{ .type = "pcix", },
 	{ .type = "pcie", },
@@ -311,12 +339,18 @@ static struct of_platform_driver of_pci_phb_driver = {
 	.probe = of_pci_phb_probe,
 	.driver = {
 		.name = "of-pci",
+static struct platform_driver of_pci_phb_driver = {
+	.probe = of_pci_phb_probe,
+	.driver = {
+		.name = "of-pci",
+		.of_match_table = of_pci_phb_ids,
 	},
 };
 
 static __init int of_pci_phb_init(void)
 {
 	return of_register_platform_driver(&of_pci_phb_driver);
+	return platform_driver_register(&of_pci_phb_driver);
 }
 
 device_initcall(of_pci_phb_init);

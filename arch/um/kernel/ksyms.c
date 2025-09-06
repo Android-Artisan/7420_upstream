@@ -30,6 +30,11 @@ EXPORT_SYMBOL(copy_to_user);
 EXPORT_SYMBOL(copy_from_user);
 EXPORT_SYMBOL(clear_user);
 EXPORT_SYMBOL(uml_strdup);
+#include <linux/module.h>
+#include <os.h>
+
+EXPORT_SYMBOL(set_signals);
+EXPORT_SYMBOL(get_signals);
 
 EXPORT_SYMBOL(os_stat_fd);
 EXPORT_SYMBOL(os_stat_file);
@@ -75,3 +80,12 @@ extern void __read_lock_failed(rwlock_t *rw);
 EXPORT_SYMBOL(__read_lock_failed);
 
 #endif
+EXPORT_SYMBOL(os_major);
+EXPORT_SYMBOL(os_minor);
+EXPORT_SYMBOL(os_makedev);
+
+EXPORT_SYMBOL(add_sigio_fd);
+EXPORT_SYMBOL(ignore_sigio_fd);
+EXPORT_SYMBOL(sigio_broken);
+
+EXPORT_SYMBOL(syscall);

@@ -28,12 +28,19 @@
 #include "ieee754sp.h"
 
 ieee754sp ieee754sp_fint(int x)
+ *  51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA.
+ */
+
+#include "ieee754sp.h"
+
+union ieee754sp ieee754sp_fint(int x)
 {
 	unsigned xm;
 	int xe;
 	int xs;
 
 	CLEARCX;
+	ieee754_clearcx();
 
 	if (x == 0)
 		return ieee754sp_zero(0);
@@ -57,12 +64,19 @@ ieee754sp ieee754sp_fint(int x)
 		/* shunt out overflow bits
 		 */
 		while (xm >> (SP_MBITS + 1 + 3)) {
+	xe = SP_FBITS + 3;
+
+	if (xm >> (SP_FBITS + 1 + 3)) {
+		/* shunt out overflow bits
+		 */
+		while (xm >> (SP_FBITS + 1 + 3)) {
 			SPXSRSX1();
 		}
 	} else {
 		/* normalize in grs extended single precision
 		 */
 		while ((xm >> (SP_MBITS + 3)) == 0) {
+		while ((xm >> (SP_FBITS + 3)) == 0) {
 			xm <<= 1;
 			xe--;
 		}
@@ -77,4 +91,5 @@ ieee754sp ieee754sp_funs(unsigned int u)
 		return ieee754sp_add(ieee754sp_1e31(),
 				     ieee754sp_fint(u & ~(1 << 31)));
 	return ieee754sp_fint(u);
+	return ieee754sp_format(xs, xe, xm);
 }

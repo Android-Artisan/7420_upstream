@@ -28,6 +28,14 @@ static inline void set_ether_mac(struct net_device *dev, unsigned char *addr)
 {
 	memcpy(dev->dev_addr, addr, ETH_ALEN);
 }
+#include <linux/slab.h>
+#include <linux/spinlock.h>
+#include <init.h>
+#include <irq_kern.h>
+#include <irq_user.h>
+#include "mconsole_kern.h"
+#include <net_kern.h>
+#include <net_user.h>
 
 #define DRIVER_NAME "uml-netdev"
 
@@ -77,6 +85,7 @@ out:
 static int uml_net_rx(struct net_device *dev)
 {
 	struct uml_net_private *lp = dev->priv;
+	struct uml_net_private *lp = netdev_priv(dev);
 	int pkt_len;
 	struct sk_buff *skb;
 
@@ -87,6 +96,7 @@ static int uml_net_rx(struct net_device *dev)
 		/* Read a packet into drop_skb and don't do anything with it. */
 		(*lp->read)(lp->fd, drop_skb, lp);
 		lp->stats.rx_dropped++;
+		dev->stats.rx_dropped++;
 		return 0;
 	}
 
@@ -101,6 +111,8 @@ static int uml_net_rx(struct net_device *dev)
 
 		lp->stats.rx_bytes += skb->len;
 		lp->stats.rx_packets++;
+		dev->stats.rx_bytes += skb->len;
+		dev->stats.rx_packets++;
 		netif_rx(skb);
 		return pkt_len;
 	}
@@ -120,6 +132,7 @@ static irqreturn_t uml_net_interrupt(int irq, void *dev_id)
 {
 	struct net_device *dev = dev_id;
 	struct uml_net_private *lp = dev->priv;
+	struct uml_net_private *lp = netdev_priv(dev);
 	int err;
 
 	if (!netif_running(dev))
@@ -151,6 +164,7 @@ out:
 static int uml_net_open(struct net_device *dev)
 {
 	struct uml_net_private *lp = dev->priv;
+	struct uml_net_private *lp = netdev_priv(dev);
 	int err;
 
 	if (lp->fd >= 0) {
@@ -166,6 +180,7 @@ static int uml_net_open(struct net_device *dev)
 
 	err = um_request_irq(dev->irq, lp->fd, IRQ_READ, uml_net_interrupt,
 			     IRQF_DISABLED | IRQF_SHARED, dev->name, dev);
+			     IRQF_SHARED, dev->name, dev);
 	if (err != 0) {
 		printk(KERN_ERR "uml_net_open: failed to get irq(%d)\n", err);
 		err = -ENETUNREACH;
@@ -200,6 +215,11 @@ static int uml_net_close(struct net_device *dev)
 	netif_stop_queue(dev);
 
 	free_irq(dev->irq, dev);
+	struct uml_net_private *lp = netdev_priv(dev);
+
+	netif_stop_queue(dev);
+
+	um_free_irq(dev->irq, dev);
 	if (lp->close != NULL)
 		(*lp->close)(lp->fd, &lp->user);
 	lp->fd = -1;
@@ -211,9 +231,10 @@ static int uml_net_close(struct net_device *dev)
 	return 0;
 }
 
-static int uml_net_start_xmit(struct sk_buff *skb, struct net_device *dev)
+static netdev_tx_t uml_net_start_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	struct uml_net_private *lp = dev->priv;
+	struct uml_net_private *lp = netdev_priv(dev);
 	unsigned long flags;
 	int len;
 
@@ -226,6 +247,11 @@ static int uml_net_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	if (len == skb->len) {
 		lp->stats.tx_packets++;
 		lp->stats.tx_bytes += skb->len;
+	skb_tx_timestamp(skb);
+
+	if (len == skb->len) {
+		dev->stats.tx_packets++;
+		dev->stats.tx_bytes += skb->len;
 		dev->trans_start = jiffies;
 		netif_start_queue(dev);
 
@@ -235,6 +261,7 @@ static int uml_net_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	else if (len == 0) {
 		netif_start_queue(dev);
 		lp->stats.tx_dropped++;
+		dev->stats.tx_dropped++;
 	}
 	else {
 		netif_start_queue(dev);
@@ -252,6 +279,9 @@ static struct net_device_stats *uml_net_get_stats(struct net_device *dev)
 {
 	struct uml_net_private *lp = dev->priv;
 	return &lp->stats;
+	dev_consume_skb_any(skb);
+
+	return NETDEV_TX_OK;
 }
 
 static void uml_net_set_multicast_list(struct net_device *dev)
@@ -294,6 +324,26 @@ static void uml_net_get_drvinfo(struct net_device *dev,
 static struct ethtool_ops uml_net_ethtool_ops = {
 	.get_drvinfo	= uml_net_get_drvinfo,
 	.get_link	= ethtool_op_get_link,
+#ifdef CONFIG_NET_POLL_CONTROLLER
+static void uml_net_poll_controller(struct net_device *dev)
+{
+	disable_irq(dev->irq);
+	uml_net_interrupt(dev->irq, dev);
+	enable_irq(dev->irq);
+}
+#endif
+
+static void uml_net_get_drvinfo(struct net_device *dev,
+				struct ethtool_drvinfo *info)
+{
+	strlcpy(info->driver, DRIVER_NAME, sizeof(info->driver));
+	strlcpy(info->version, "42", sizeof(info->version));
+}
+
+static const struct ethtool_ops uml_net_ethtool_ops = {
+	.get_drvinfo	= uml_net_get_drvinfo,
+	.get_link	= ethtool_op_get_link,
+	.get_ts_info	= ethtool_op_get_ts_info,
 };
 
 static void uml_net_user_timer_expire(unsigned long _conn)
@@ -308,6 +358,9 @@ static void uml_net_user_timer_expire(unsigned long _conn)
 
 static void setup_etheraddr(char *str, unsigned char *addr, char *name)
 {
+static void setup_etheraddr(struct net_device *dev, char *str)
+{
+	unsigned char *addr = dev->dev_addr;
 	char *end;
 	int i;
 
@@ -353,6 +406,8 @@ random:
 	printk(KERN_INFO
 	       "Choosing a random ethernet address for device %s\n", name);
 	random_ether_addr(addr);
+	       "Choosing a random ethernet address for device %s\n", dev->name);
+	eth_hw_addr_random(dev);
 }
 
 static DEFINE_SPINLOCK(devices_lock);
@@ -369,6 +424,10 @@ static void net_device_release(struct device *dev)
 	struct uml_net *device = dev->driver_data;
 	struct net_device *netdev = device->dev;
 	struct uml_net_private *lp = netdev->priv;
+	struct uml_net *device = dev_get_drvdata(dev);
+	struct uml_net *device = container_of(dev, struct uml_net, pdev.dev);
+	struct net_device *netdev = device->dev;
+	struct uml_net_private *lp = netdev_priv(netdev);
 
 	if (lp->remove != NULL)
 		(*lp->remove)(&lp->user);
@@ -376,6 +435,20 @@ static void net_device_release(struct device *dev)
 	kfree(device);
 	free_netdev(netdev);
 }
+
+static const struct net_device_ops uml_netdev_ops = {
+	.ndo_open 		= uml_net_open,
+	.ndo_stop 		= uml_net_close,
+	.ndo_start_xmit 	= uml_net_start_xmit,
+	.ndo_set_rx_mode	= uml_net_set_multicast_list,
+	.ndo_tx_timeout 	= uml_net_tx_timeout,
+	.ndo_set_mac_address	= eth_mac_addr,
+	.ndo_change_mtu 	= uml_net_change_mtu,
+	.ndo_validate_addr	= eth_validate_addr,
+#ifdef CONFIG_NET_POLL_CONTROLLER
+	.ndo_poll_controller = uml_net_poll_controller,
+#endif
+};
 
 /*
  * Ensures that platform_driver_register is called only once by
@@ -385,6 +458,7 @@ static int driver_registered;
 
 static void eth_configure(int n, void *init, char *mac,
 			  struct transport *transport)
+			  struct transport *transport, gfp_t gfp_mask)
 {
 	struct uml_net *device;
 	struct net_device *dev;
@@ -394,6 +468,7 @@ static void eth_configure(int n, void *init, char *mac,
 	size = transport->private_size + sizeof(struct uml_net_private);
 
 	device = kzalloc(sizeof(*device), GFP_KERNEL);
+	device = kzalloc(sizeof(*device), gfp_mask);
 	if (device == NULL) {
 		printk(KERN_ERR "eth_configure failed to allocate struct "
 		       "uml_net\n");
@@ -426,6 +501,11 @@ static void eth_configure(int n, void *init, char *mac,
 	printk(": ");
 
 	lp = dev->priv;
+	setup_etheraddr(dev, mac);
+
+	printk(KERN_INFO "Netdevice %d (%pM) : ", n, dev->dev_addr);
+
+	lp = netdev_priv(dev);
 	/* This points to the transport private data. It's still clear, but we
 	 * must memset it to 0 *now*. Let's help the drivers. */
 	memset(lp, 0, size);
@@ -440,6 +520,7 @@ static void eth_configure(int n, void *init, char *mac,
 	device->pdev.name = DRIVER_NAME;
 	device->pdev.dev.release = net_device_release;
 	device->pdev.dev.driver_data = device;
+	dev_set_drvdata(&device->pdev.dev, device);
 	if (platform_device_register(&device->pdev))
 		goto out_free_netdev;
 	SET_NETDEV_DEV(dev,&device->pdev.dev);
@@ -471,6 +552,7 @@ static void eth_configure(int n, void *init, char *mac,
 	spin_lock_init(&lp->lock);
 	lp->tl.function = uml_net_user_timer_expire;
 	memcpy(lp->mac, device->mac, sizeof(lp->mac));
+	memcpy(lp->mac, dev->dev_addr, sizeof(lp->mac));
 
 	if ((transport->user->init != NULL) &&
 	    ((*transport->user->init)(&lp->user, dev) != 0))
@@ -486,6 +568,8 @@ static void eth_configure(int n, void *init, char *mac,
 	dev->tx_timeout = uml_net_tx_timeout;
 	dev->set_mac_address = uml_net_set_mac;
 	dev->change_mtu = uml_net_change_mtu;
+	dev->mtu = transport->user->mtu;
+	dev->netdev_ops = &uml_netdev_ops;
 	dev->ethtool_ops = &uml_net_ethtool_ops;
 	dev->watchdog_timeo = (HZ >> 1);
 	dev->irq = UM_ETH_IRQ;
@@ -540,6 +624,7 @@ static int eth_parse(char *str, int *index_out, char **str_out,
 {
 	char *end;
 	int n, err = -EINVAL;;
+	int n, err = -EINVAL;
 
 	n = simple_strtoul(str, &end, 0);
 	if (end == str) {
@@ -578,6 +663,7 @@ static LIST_HEAD(eth_cmd_line);
 
 static int check_transport(struct transport *transport, char *eth, int n,
 			   void **init_out, char **mac_out)
+			   void **init_out, char **mac_out, gfp_t gfp_mask)
 {
 	int len;
 
@@ -592,6 +678,7 @@ static int check_transport(struct transport *transport, char *eth, int n,
 		return 0;
 
 	*init_out = kmalloc(transport->setup_size, GFP_KERNEL);
+	*init_out = kmalloc(transport->setup_size, gfp_mask);
 	if (*init_out == NULL)
 		return 1;
 
@@ -623,6 +710,11 @@ void register_transport(struct transport *new)
 			continue;
 		else if (init != NULL) {
 			eth_configure(eth->index, init, mac, new);
+					&mac, GFP_KERNEL);
+		if (!match)
+			continue;
+		else if (init != NULL) {
+			eth_configure(eth->index, init, mac, new, GFP_KERNEL);
 			kfree(init);
 		}
 		list_del(&eth->list);
@@ -644,6 +736,11 @@ static int eth_setup_common(char *str, int index)
 			continue;
 		if (init != NULL) {
 			eth_configure(index, init, mac, transport);
+	        if (!check_transport(transport, str, index, &init,
+					&mac, GFP_ATOMIC))
+			continue;
+		if (init != NULL) {
+			eth_configure(index, init, mac, transport, GFP_ATOMIC);
 			kfree(init);
 		}
 		found = 1;
@@ -736,6 +833,7 @@ static int net_remove(int n, char **error_out)
 
 	dev = device->dev;
 	lp = dev->priv;
+	lp = netdev_priv(dev);
 	if (lp->fd > 0)
 		return -EBUSY;
 	unregister_netdev(dev);
@@ -767,6 +865,10 @@ static int uml_inetaddr_event(struct notifier_block *this, unsigned long event,
 		return NOTIFY_DONE;
 
 	lp = dev->priv;
+	if (dev->netdev_ops->ndo_open != uml_net_open)
+		return NOTIFY_DONE;
+
+	lp = netdev_priv(dev);
 
 	proc = NULL;
 	switch (event) {
@@ -841,6 +943,7 @@ static void close_devices(void)
 	list_for_each(ele, &opened) {
 		lp = list_entry(ele, struct uml_net_private, list);
 		free_irq(lp->dev->irq, lp->dev);
+		um_free_irq(lp->dev->irq, lp->dev);
 		if ((lp->close != NULL) && (lp->fd >= 0))
 			(*lp->close)(lp->fd, &lp->user);
 		if (lp->remove != NULL)

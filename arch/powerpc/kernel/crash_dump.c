@@ -14,11 +14,14 @@
 #include <linux/crash_dump.h>
 #include <linux/bootmem.h>
 #include <linux/lmb.h>
+#include <linux/io.h>
+#include <linux/memblock.h>
 #include <asm/code-patching.h>
 #include <asm/kdump.h>
 #include <asm/prom.h>
 #include <asm/firmware.h>
 #include <asm/uaccess.h>
+#include <asm/rtas.h>
 
 #ifdef DEBUG
 #include <asm/udbg.h>
@@ -30,6 +33,10 @@
 void __init reserve_kdump_trampoline(void)
 {
 	lmb_reserve(0, KDUMP_RESERVE_LIMIT);
+#ifndef CONFIG_NONSTATIC_KERNEL
+void __init reserve_kdump_trampoline(void)
+{
+	memblock_reserve(0, KDUMP_RESERVE_LIMIT);
 }
 
 static void __init create_trampoline(unsigned long addr)
@@ -45,6 +52,7 @@ static void __init create_trampoline(unsigned long addr)
 	 * two instructions it doesn't require any registers.
 	 */
 	patch_instruction(p, PPC_NOP_INSTR);
+	patch_instruction(p, PPC_INST_NOP);
 	patch_branch(++p, addr + PHYSICAL_START, 0);
 }
 
@@ -86,6 +94,7 @@ static int __init parse_savemaxmem(char *p)
 }
 __setup("savemaxmem=", parse_savemaxmem);
 
+#endif /* CONFIG_NONSTATIC_KERNEL */
 
 static size_t copy_oldmem_vaddr(void *vaddr, char *buf, size_t csize,
                                unsigned long offset, int userbuf)
@@ -116,6 +125,7 @@ ssize_t copy_oldmem_page(unsigned long pfn, char *buf,
 			size_t csize, unsigned long offset, int userbuf)
 {
 	void  *vaddr;
+	phys_addr_t paddr;
 
 	if (!csize)
 		return 0;
@@ -127,9 +137,46 @@ ssize_t copy_oldmem_page(unsigned long pfn, char *buf,
 		csize = copy_oldmem_vaddr(vaddr, buf, csize, offset, userbuf);
 	} else {
 		vaddr = __ioremap(pfn << PAGE_SHIFT, PAGE_SIZE, 0);
+	csize = min_t(size_t, csize, PAGE_SIZE);
+	paddr = pfn << PAGE_SHIFT;
+
+	if (memblock_is_region_memory(paddr, csize)) {
+		vaddr = __va(paddr);
+		csize = copy_oldmem_vaddr(vaddr, buf, csize, offset, userbuf);
+	} else {
+		vaddr = __ioremap(paddr, PAGE_SIZE, 0);
 		csize = copy_oldmem_vaddr(vaddr, buf, csize, offset, userbuf);
 		iounmap(vaddr);
 	}
 
 	return csize;
 }
+
+#ifdef CONFIG_PPC_RTAS
+/*
+ * The crashkernel region will almost always overlap the RTAS region, so
+ * we have to be careful when shrinking the crashkernel region.
+ */
+void crash_free_reserved_phys_range(unsigned long begin, unsigned long end)
+{
+	unsigned long addr;
+	const __be32 *basep, *sizep;
+	unsigned int rtas_start = 0, rtas_end = 0;
+
+	basep = of_get_property(rtas.dev, "linux,rtas-base", NULL);
+	sizep = of_get_property(rtas.dev, "rtas-size", NULL);
+
+	if (basep && sizep) {
+		rtas_start = be32_to_cpup(basep);
+		rtas_end = rtas_start + be32_to_cpup(sizep);
+	}
+
+	for (addr = begin; addr < end; addr += PAGE_SIZE) {
+		/* Does this page overlap with the RTAS region? */
+		if (addr <= rtas_end && ((addr + PAGE_SIZE) > rtas_start))
+			continue;
+
+		free_reserved_page(pfn_to_page(addr >> PAGE_SHIFT));
+	}
+}
+#endif

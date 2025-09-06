@@ -21,6 +21,7 @@
 #include <linux/fs.h>
 #include <linux/xattr.h>
 #include <linux/posix_acl_xattr.h>
+#include <linux/slab.h>
 #include <linux/quotaops.h>
 #include <linux/security.h>
 #include "jfs_incore.h"
@@ -85,6 +86,17 @@ struct ea_buffer {
 #define EA_MALLOC	0x0008
 
 
+static int is_known_namespace(const char *name)
+{
+	if (strncmp(name, XATTR_SYSTEM_PREFIX, XATTR_SYSTEM_PREFIX_LEN) &&
+	    strncmp(name, XATTR_USER_PREFIX, XATTR_USER_PREFIX_LEN) &&
+	    strncmp(name, XATTR_SECURITY_PREFIX, XATTR_SECURITY_PREFIX_LEN) &&
+	    strncmp(name, XATTR_TRUSTED_PREFIX, XATTR_TRUSTED_PREFIX_LEN))
+		return false;
+
+	return true;
+}
+
 /*
  * These three routines are used to recognize on-disk extended attributes
  * that are in a recognized namespace.  If the attribute is not recognized,
@@ -125,6 +137,9 @@ static inline int is_os2_xattr(struct jfs_ea *ea)
 	 * We assume it's OS/2's flat namespace
 	 */
 	return true;
+static int is_os2_xattr(struct jfs_ea *ea)
+{
+	return !is_known_namespace(ea->name);
 }
 
 static inline int name_size(struct jfs_ea *ea)
@@ -263,11 +278,15 @@ static int ea_write(struct inode *ip, struct jfs_ea_list *ealist, int size,
 	if (DQUOT_ALLOC_BLOCK(ip, nblocks)) {
 		return -EDQUOT;
 	}
+	rc = dquot_alloc_block(ip, nblocks);
+	if (rc)
+		return rc;
 
 	rc = dbAlloc(ip, INOHINT(ip), nblocks, &blkno);
 	if (rc) {
 		/*Rollback quota allocation. */
 		DQUOT_FREE_BLOCK(ip, nblocks);
+		dquot_free_block(ip, nblocks);
 		return rc;
 	}
 
@@ -333,6 +352,7 @@ static int ea_write(struct inode *ip, struct jfs_ea_list *ealist, int size,
       failed:
 	/* Rollback quota allocation. */
 	DQUOT_FREE_BLOCK(ip, nblocks);
+	dquot_free_block(ip, nblocks);
 
 	dbFree(ip, blkno, nblocks);
 	return rc;
@@ -403,6 +423,7 @@ static int ea_read(struct inode *ip, struct jfs_ea_list *ealist)
 	nbytes = sizeDXD(&ji->ea);
 	if (!nbytes) {
 		jfs_error(sb, "ea_read: nbytes is 0");
+		jfs_error(sb, "nbytes is 0\n");
 		return -EIO;
 	}
 
@@ -469,6 +490,8 @@ static int ea_get(struct inode *inode, struct ea_buffer *ea_buf, int min_size)
 	int rc;
 	int quota_allocation = 0;
 
+	memset(&ea_buf->new_ea, 0, sizeof(ea_buf->new_ea));
+
 	/* When fsck.jfs clears a bad ea, it doesn't clear the size */
 	if (ji->ea.flag == 0)
 		ea_size = 0;
@@ -503,6 +526,7 @@ static int ea_get(struct inode *inode, struct ea_buffer *ea_buf, int min_size)
 	} else {
 		if (!(ji->ea.flag & DXD_EXTENT)) {
 			jfs_error(sb, "ea_get: invalid ea.flag)");
+			jfs_error(sb, "invalid ea.flag\n");
 			return -EIO;
 		}
 		current_blocks = (ea_size + sb->s_blocksize - 1) >>
@@ -513,15 +537,17 @@ static int ea_get(struct inode *inode, struct ea_buffer *ea_buf, int min_size)
 	if (size > PSIZE) {
 		/*
 		 * To keep the rest of the code simple.  Allocate a
-		 * contiguous buffer to work with
+		 * contiguous buffer to work with. Make the buffer large
+		 * enough to make use of the whole extent.
 		 */
-		ea_buf->xattr = kmalloc(size, GFP_KERNEL);
+		ea_buf->max_size = (size + sb->s_blocksize - 1) &
+		    ~(sb->s_blocksize - 1);
+
+		ea_buf->xattr = kmalloc(ea_buf->max_size, GFP_KERNEL);
 		if (ea_buf->xattr == NULL)
 			return -ENOMEM;
 
 		ea_buf->flag = EA_MALLOC;
-		ea_buf->max_size = (size + sb->s_blocksize - 1) &
-		    ~(sb->s_blocksize - 1);
 
 		if (ea_size == 0)
 			return 0;
@@ -539,6 +565,8 @@ static int ea_get(struct inode *inode, struct ea_buffer *ea_buf, int min_size)
 	if (blocks_needed > current_blocks) {
 		/* Allocate new blocks to quota. */
 		if (DQUOT_ALLOC_BLOCK(inode, blocks_needed))
+		rc = dquot_alloc_block(inode, blocks_needed);
+		if (rc)
 			return -EDQUOT;
 
 		quota_allocation = blocks_needed;
@@ -589,9 +617,16 @@ static int ea_get(struct inode *inode, struct ea_buffer *ea_buf, int min_size)
 
       size_check:
 	if (EALIST_SIZE(ea_buf->xattr) != ea_size) {
-		printk(KERN_ERR "ea_get: invalid extended attribute\n");
-		print_hex_dump(KERN_ERR, "", DUMP_PREFIX_ADDRESS, 16, 1,
-				     ea_buf->xattr, ea_size, 1);
+		if (unlikely(EALIST_SIZE(ea_buf->xattr) > INT_MAX)) {
+			printk(KERN_ERR "ea_get: extended attribute size too large: %u > INT_MAX\n",
+			       EALIST_SIZE(ea_buf->xattr));
+		} else {
+			int size = clamp_t(int, ea_size, 0, EALIST_SIZE(ea_buf->xattr));
+
+			printk(KERN_ERR "ea_get: invalid extended attribute\n");
+			print_hex_dump(KERN_ERR, "", DUMP_PREFIX_ADDRESS, 16, 1,
+				       ea_buf->xattr, size, 1);
+		}
 		ea_release(inode, ea_buf);
 		rc = -EIO;
 		goto clean_up;
@@ -603,6 +638,7 @@ static int ea_get(struct inode *inode, struct ea_buffer *ea_buf, int min_size)
 	/* Rollback quota allocation */
 	if (quota_allocation)
 		DQUOT_FREE_BLOCK(inode, quota_allocation);
+		dquot_free_block(inode, quota_allocation);
 
 	return (rc);
 }
@@ -678,6 +714,7 @@ static int ea_put(tid_t tid, struct inode *inode, struct ea_buffer *ea_buf,
 	/* If old blocks exist, they must be removed from quota allocation. */
 	if (old_blocks)
 		DQUOT_FREE_BLOCK(inode, old_blocks);
+		dquot_free_block(inode, old_blocks);
 
 	inode->i_ctime = CURRENT_TIME;
 
@@ -760,6 +797,7 @@ static int can_set_system_xattr(struct inode *inode, const char *name,
 /*
  * Most of the permission checking is done by xattr_permission in the vfs.
  * The local file system is responsible for handling the system.* namespace.
+ * Most of the permission checking is done by xattr_permission in the vfs.
  * We also need to verify that this is a namespace that we recognize.
  */
 static int can_set_xattr(struct inode *inode, const char *name,
@@ -767,6 +805,16 @@ static int can_set_xattr(struct inode *inode, const char *name,
 {
 	if (!strncmp(name, XATTR_SYSTEM_PREFIX, XATTR_SYSTEM_PREFIX_LEN))
 		return can_set_system_xattr(inode, name, value, value_len);
+	if (!strncmp(name, XATTR_OS2_PREFIX, XATTR_OS2_PREFIX_LEN)) {
+		/*
+		 * This makes sure that we aren't trying to set an
+		 * attribute in a different namespace by prefixing it
+		 * with "os2."
+		 */
+		if (is_known_namespace(name + XATTR_OS2_PREFIX_LEN))
+			return -EOPNOTSUPP;
+		return 0;
+	}
 
 	/*
 	 * Don't allow setting an attribute in an unknown namespace.
@@ -775,6 +823,7 @@ static int can_set_xattr(struct inode *inode, const char *name,
 	    strncmp(name, XATTR_SECURITY_PREFIX, XATTR_SECURITY_PREFIX_LEN) &&
 	    strncmp(name, XATTR_USER_PREFIX, XATTR_USER_PREFIX_LEN) &&
 	    strncmp(name, XATTR_OS2_PREFIX, XATTR_OS2_PREFIX_LEN))
+	    strncmp(name, XATTR_USER_PREFIX, XATTR_USER_PREFIX_LEN))
 		return -EOPNOTSUPP;
 
 	return 0;
@@ -877,6 +926,19 @@ int __jfs_setxattr(tid_t tid, struct inode *inode, const char *name,
 			/* Completely new ea list */
 			xattr_size = sizeof (struct jfs_ea_list);
 
+		/*
+		 * The size of EA value is limitted by on-disk format up to
+		 *  __le16, there would be an overflow if the size is equal
+		 * to XATTR_SIZE_MAX (65536).  In order to avoid this issue,
+		 * we can pre-checkup the value size against USHRT_MAX, and
+		 * return -E2BIG in this case, which is consistent with the
+		 * VFS setxattr interface.
+		 */
+		if (value_len >= USHRT_MAX) {
+			rc = -E2BIG;
+			goto release;
+		}
+
 		ea = (struct jfs_ea *) ((char *) ealist + xattr_size);
 		ea->flag = 0;
 		ea->namelen = namelen;
@@ -892,6 +954,7 @@ int __jfs_setxattr(tid_t tid, struct inode *inode, const char *name,
 	if (xattr_size != new_size) {
 		printk(KERN_ERR
 		       "jfs_xsetattr: xattr_size = %d, new_size = %d\n",
+		       "__jfs_setxattr: xattr_size = %d, new_size = %d\n",
 		       xattr_size, new_size);
 
 		rc = -EINVAL;
@@ -923,9 +986,18 @@ int jfs_setxattr(struct dentry *dentry, const char *name, const void *value,
 		 size_t value_len, int flags)
 {
 	struct inode *inode = dentry->d_inode;
+	struct inode *inode = d_inode(dentry);
 	struct jfs_inode_info *ji = JFS_IP(inode);
 	int rc;
 	tid_t tid;
+
+	/*
+	 * If this is a request for a synthetic attribute in the system.*
+	 * namespace use the generic infrastructure to resolve a handler
+	 * for it via sb->s_xattr.
+	 */
+	if (!strncmp(name, XATTR_SYSTEM_PREFIX, XATTR_SYSTEM_PREFIX_LEN))
+		return generic_setxattr(dentry, name, value, value_len, flags);
 
 	if ((rc = can_set_xattr(inode, name, value, value_len)))
 		return rc;
@@ -938,6 +1010,7 @@ int jfs_setxattr(struct dentry *dentry, const char *name, const void *value,
 	tid = txBegin(inode->i_sb, 0);
 	mutex_lock(&ji->commit_mutex);
 	rc = __jfs_setxattr(tid, dentry->d_inode, name, value, value_len,
+	rc = __jfs_setxattr(tid, d_inode(dentry), name, value, value_len,
 			    flags);
 	if (!rc)
 		rc = txCommit(tid, 1, &inode, 0);
@@ -951,7 +1024,7 @@ ssize_t __jfs_getxattr(struct inode *inode, const char *name, void *data,
 		       size_t buf_size)
 {
 	struct jfs_ea_list *ealist;
-	struct jfs_ea *ea;
+	struct jfs_ea *ea, *ealist_end;
 	struct ea_buffer ea_buf;
 	int xattr_size;
 	ssize_t size;
@@ -969,6 +1042,8 @@ ssize_t __jfs_getxattr(struct inode *inode, const char *name, void *data,
 		namelen -= XATTR_OS2_PREFIX_LEN;
 	}
 
+	char *value;
+
 	down_read(&JFS_IP(inode)->xattr_sem);
 
 	xattr_size = ea_get(inode, &ea_buf, 0);
@@ -982,9 +1057,16 @@ ssize_t __jfs_getxattr(struct inode *inode, const char *name, void *data,
 		goto not_found;
 
 	ealist = (struct jfs_ea_list *) ea_buf.xattr;
+	ealist_end = END_EALIST(ealist);
 
 	/* Find the named attribute */
-	for (ea = FIRST_EA(ealist); ea < END_EALIST(ealist); ea = NEXT_EA(ea))
+	for (ea = FIRST_EA(ealist); ea < ealist_end; ea = NEXT_EA(ea)) {
+		if (unlikely(ea + 1 > ealist_end) ||
+		    unlikely(NEXT_EA(ea) > ealist_end)) {
+			size = -EUCLEAN;
+			goto release;
+		}
+
 		if ((namelen == ea->namelen) &&
 		    memcmp(name, ea->name, namelen) == 0) {
 			/* Found it */
@@ -999,6 +1081,7 @@ ssize_t __jfs_getxattr(struct inode *inode, const char *name, void *data,
 			memcpy(data, value, size);
 			goto release;
 		}
+	}
       not_found:
 	size = -ENODATA;
       release:
@@ -1017,6 +1100,28 @@ ssize_t jfs_getxattr(struct dentry *dentry, const char *name, void *data,
 	int err;
 
 	err = __jfs_getxattr(dentry->d_inode, name, data, buf_size);
+	/*
+	 * If this is a request for a synthetic attribute in the system.*
+	 * namespace use the generic infrastructure to resolve a handler
+	 * for it via sb->s_xattr.
+	 */
+	if (!strncmp(name, XATTR_SYSTEM_PREFIX, XATTR_SYSTEM_PREFIX_LEN))
+		return generic_getxattr(dentry, name, data, buf_size);
+
+	if (strncmp(name, XATTR_OS2_PREFIX, XATTR_OS2_PREFIX_LEN) == 0) {
+		/*
+		 * skip past "os2." prefix
+		 */
+		name += XATTR_OS2_PREFIX_LEN;
+		/*
+		 * Don't allow retrieving properly prefixed attributes
+		 * by prepending them with "os2."
+		 */
+		if (is_known_namespace(name))
+			return -EOPNOTSUPP;
+	}
+
+	err = __jfs_getxattr(d_inode(dentry), name, data, buf_size);
 
 	return err;
 }
@@ -1034,11 +1139,12 @@ static inline int can_list(struct jfs_ea *ea)
 ssize_t jfs_listxattr(struct dentry * dentry, char *data, size_t buf_size)
 {
 	struct inode *inode = dentry->d_inode;
+	struct inode *inode = d_inode(dentry);
 	char *buffer;
 	ssize_t size = 0;
 	int xattr_size;
 	struct jfs_ea_list *ealist;
-	struct jfs_ea *ea;
+	struct jfs_ea *ea, *ealist_end;
 	struct ea_buffer ea_buf;
 
 	down_read(&JFS_IP(inode)->xattr_sem);
@@ -1053,9 +1159,16 @@ ssize_t jfs_listxattr(struct dentry * dentry, char *data, size_t buf_size)
 		goto release;
 
 	ealist = (struct jfs_ea_list *) ea_buf.xattr;
+	ealist_end = END_EALIST(ealist);
 
 	/* compute required size of list */
-	for (ea = FIRST_EA(ealist); ea < END_EALIST(ealist); ea = NEXT_EA(ea)) {
+	for (ea = FIRST_EA(ealist); ea < ealist_end; ea = NEXT_EA(ea)) {
+		if (unlikely(ea + 1 > ealist_end) ||
+		    unlikely(NEXT_EA(ea) > ealist_end)) {
+			size = -EUCLEAN;
+			goto release;
+		}
+
 		if (can_list(ea))
 			size += name_size(ea) + 1;
 	}
@@ -1087,9 +1200,18 @@ ssize_t jfs_listxattr(struct dentry * dentry, char *data, size_t buf_size)
 int jfs_removexattr(struct dentry *dentry, const char *name)
 {
 	struct inode *inode = dentry->d_inode;
+	struct inode *inode = d_inode(dentry);
 	struct jfs_inode_info *ji = JFS_IP(inode);
 	int rc;
 	tid_t tid;
+
+	/*
+	 * If this is a request for a synthetic attribute in the system.*
+	 * namespace use the generic infrastructure to resolve a handler
+	 * for it via sb->s_xattr.
+	 */
+	if (!strncmp(name, XATTR_SYSTEM_PREFIX, XATTR_SYSTEM_PREFIX_LEN))
+		return generic_removexattr(dentry, name);
 
 	if ((rc = can_set_xattr(inode, name, NULL, 0)))
 		return rc;
@@ -1097,6 +1219,7 @@ int jfs_removexattr(struct dentry *dentry, const char *name)
 	tid = txBegin(inode->i_sb, 0);
 	mutex_lock(&ji->commit_mutex);
 	rc = __jfs_setxattr(tid, dentry->d_inode, name, NULL, 0, XATTR_REPLACE);
+	rc = __jfs_setxattr(tid, d_inode(dentry), name, NULL, 0, XATTR_REPLACE);
 	if (!rc)
 		rc = txCommit(tid, 1, &inode, 0);
 	txEnd(tid);
@@ -1137,5 +1260,51 @@ kmalloc_failed:
 	kfree(value);
 
 	return rc;
+/*
+ * List of handlers for synthetic system.* attributes.  All real ondisk
+ * attributes are handled directly.
+ */
+const struct xattr_handler *jfs_xattr_handlers[] = {
+#ifdef CONFIG_JFS_POSIX_ACL
+	&posix_acl_access_xattr_handler,
+	&posix_acl_default_xattr_handler,
+#endif
+	NULL,
+};
+
+
+#ifdef CONFIG_JFS_SECURITY
+static int jfs_initxattrs(struct inode *inode, const struct xattr *xattr_array,
+			  void *fs_info)
+{
+	const struct xattr *xattr;
+	tid_t *tid = fs_info;
+	char *name;
+	int err = 0;
+
+	for (xattr = xattr_array; xattr->name != NULL; xattr++) {
+		name = kmalloc(XATTR_SECURITY_PREFIX_LEN +
+			       strlen(xattr->name) + 1, GFP_NOFS);
+		if (!name) {
+			err = -ENOMEM;
+			break;
+		}
+		strcpy(name, XATTR_SECURITY_PREFIX);
+		strcpy(name + XATTR_SECURITY_PREFIX_LEN, xattr->name);
+
+		err = __jfs_setxattr(*tid, inode, name,
+				     xattr->value, xattr->value_len, 0);
+		kfree(name);
+		if (err < 0)
+			break;
+	}
+	return err;
+}
+
+int jfs_init_security(tid_t tid, struct inode *inode, struct inode *dir,
+		      const struct qstr *qstr)
+{
+	return security_inode_init_security(inode, dir, qstr,
+					    &jfs_initxattrs, &tid);
 }
 #endif

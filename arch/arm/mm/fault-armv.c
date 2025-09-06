@@ -23,6 +23,19 @@
 
 static unsigned long shared_pte_mask = L_PTE_CACHEABLE;
 
+#include <linux/gfp.h>
+
+#include <asm/bugs.h>
+#include <asm/cacheflush.h>
+#include <asm/cachetype.h>
+#include <asm/pgtable.h>
+#include <asm/tlbflush.h>
+
+#include "mm.h"
+
+static pteval_t shared_pte_mask = L_PTE_MT_BUFFERABLE;
+
+#if __LINUX_ARM_ARCH__ < 6
 /*
  * We take the easy way out of this problem - we make the
  * PTE uncacheable.  However, we leave the write buffer on.
@@ -53,6 +66,12 @@ static int adjust_pte(struct vm_area_struct *vma, unsigned long address)
 
 	pte = pte_offset_map(pmd, address);
 	entry = *pte;
+
+static int do_adjust_pte(struct vm_area_struct *vma, unsigned long address,
+	unsigned long pfn, pte_t *ptep)
+{
+	pte_t entry = *ptep;
+	int ret;
 
 	/*
 	 * If this page is present, it's actually being shared.
@@ -91,6 +110,88 @@ make_coherent(struct address_space *mapping, struct vm_area_struct *vma, unsigne
 	struct mm_struct *mm = vma->vm_mm;
 	struct vm_area_struct *mpnt;
 	struct prio_tree_iter iter;
+	if (ret && (pte_val(entry) & L_PTE_MT_MASK) != shared_pte_mask) {
+		flush_cache_page(vma, address, pfn);
+		outer_flush_range((pfn << PAGE_SHIFT),
+				  (pfn << PAGE_SHIFT) + PAGE_SIZE);
+		pte_val(entry) &= ~L_PTE_MT_MASK;
+		pte_val(entry) |= shared_pte_mask;
+		set_pte_at(vma->vm_mm, address, ptep, entry);
+		flush_tlb_page(vma, address);
+	}
+
+	return ret;
+}
+
+#if USE_SPLIT_PTE_PTLOCKS
+/*
+ * If we are using split PTE locks, then we need to take the page
+ * lock here.  Otherwise we are using shared mm->page_table_lock
+ * which is already locked, thus cannot take it.
+ */
+static inline void do_pte_lock(spinlock_t *ptl)
+{
+	/*
+	 * Use nested version here to indicate that we are already
+	 * holding one similar spinlock.
+	 */
+	spin_lock_nested(ptl, SINGLE_DEPTH_NESTING);
+}
+
+static inline void do_pte_unlock(spinlock_t *ptl)
+{
+	spin_unlock(ptl);
+}
+#else /* !USE_SPLIT_PTE_PTLOCKS */
+static inline void do_pte_lock(spinlock_t *ptl) {}
+static inline void do_pte_unlock(spinlock_t *ptl) {}
+#endif /* USE_SPLIT_PTE_PTLOCKS */
+
+static int adjust_pte(struct vm_area_struct *vma, unsigned long address,
+	unsigned long pfn)
+{
+	spinlock_t *ptl;
+	pgd_t *pgd;
+	pud_t *pud;
+	pmd_t *pmd;
+	pte_t *pte;
+	int ret;
+
+	pgd = pgd_offset(vma->vm_mm, address);
+	if (pgd_none_or_clear_bad(pgd))
+		return 0;
+
+	pud = pud_offset(pgd, address);
+	if (pud_none_or_clear_bad(pud))
+		return 0;
+
+	pmd = pmd_offset(pud, address);
+	if (pmd_none_or_clear_bad(pmd))
+		return 0;
+
+	/*
+	 * This is called while another page table is mapped, so we
+	 * must use the nested version.  This also means we need to
+	 * open-code the spin-locking.
+	 */
+	ptl = pte_lockptr(vma->vm_mm, pmd);
+	pte = pte_offset_map(pmd, address);
+	do_pte_lock(ptl);
+
+	ret = do_adjust_pte(vma, address, pfn, pte);
+
+	do_pte_unlock(ptl);
+	pte_unmap(pte);
+
+	return ret;
+}
+
+static void
+make_coherent(struct address_space *mapping, struct vm_area_struct *vma,
+	unsigned long addr, pte_t *ptep, unsigned long pfn)
+{
+	struct mm_struct *mm = vma->vm_mm;
+	struct vm_area_struct *mpnt;
 	unsigned long offset;
 	pgoff_t pgoff;
 	int aliases = 0;
@@ -104,6 +205,7 @@ make_coherent(struct address_space *mapping, struct vm_area_struct *vma, unsigne
 	 */
 	flush_dcache_mmap_lock(mapping);
 	vma_prio_tree_foreach(mpnt, &iter, &mapping->i_mmap, pgoff, pgoff) {
+	vma_interval_tree_foreach(mpnt, &mapping->i_mmap, pgoff, pgoff) {
 		/*
 		 * If this VMA is not in our MM, we can ignore it.
 		 * Note that we intentionally mask out the VMA
@@ -121,6 +223,11 @@ make_coherent(struct address_space *mapping, struct vm_area_struct *vma, unsigne
 		adjust_pte(vma, addr);
 	else
 		flush_cache_page(vma, addr, pfn);
+		aliases += adjust_pte(mpnt, mpnt->vm_start + offset, pfn);
+	}
+	flush_dcache_mmap_unlock(mapping);
+	if (aliases)
+		do_adjust_pte(vma, addr, pfn, ptep);
 }
 
 /*
@@ -129,6 +236,7 @@ make_coherent(struct address_space *mapping, struct vm_area_struct *vma, unsigne
  * things that we need to take care of:
  *
  *  1. If PG_dcache_dirty is set for the page, we need to ensure
+ *  1. If PG_dcache_clean is not set for the page, we need to ensure
  *     that any cache entries for the kernels virtual memory
  *     range are written back to the page.
  *  2. If we have multiple shared mappings of the same space in
@@ -139,6 +247,10 @@ make_coherent(struct address_space *mapping, struct vm_area_struct *vma, unsigne
 void update_mmu_cache(struct vm_area_struct *vma, unsigned long addr, pte_t pte)
 {
 	unsigned long pfn = pte_pfn(pte);
+void update_mmu_cache(struct vm_area_struct *vma, unsigned long addr,
+	pte_t *ptep)
+{
+	unsigned long pfn = pte_pfn(*ptep);
 	struct address_space *mapping;
 	struct page *page;
 
@@ -157,10 +269,25 @@ void update_mmu_cache(struct vm_area_struct *vma, unsigned long addr, pte_t pte)
 
 		if (cache_is_vivt())
 			make_coherent(mapping, vma, addr, pfn);
+	/*
+	 * The zero page is never written to, so never has any dirty
+	 * cache lines, and therefore never needs to be flushed.
+	 */
+	page = pfn_to_page(pfn);
+	if (page == ZERO_PAGE(0))
+		return;
+
+	mapping = page_mapping(page);
+	if (!test_and_set_bit(PG_dcache_clean, &page->flags))
+		__flush_dcache_page(mapping, page);
+	if (mapping) {
+		if (cache_is_vivt())
+			make_coherent(mapping, vma, addr, ptep, pfn);
 		else if (vma->vm_flags & VM_EXEC)
 			__flush_icache_all();
 	}
 }
+#endif	/* __LINUX_ARM_ARCH__ < 6 */
 
 /*
  * Check whether the write buffer has physical address aliasing
@@ -191,6 +318,7 @@ void __init check_writebuffer_bugs(void)
 	unsigned long v = 1;
 
 	printk(KERN_INFO "CPU: Testing write buffer coherency: ");
+	pr_info("CPU: Testing write buffer coherency: ");
 
 	page = alloc_page(GFP_KERNEL);
 	if (page) {
@@ -198,6 +326,8 @@ void __init check_writebuffer_bugs(void)
 		pgprot_t prot = __pgprot(L_PTE_PRESENT|L_PTE_YOUNG|
 					 L_PTE_DIRTY|L_PTE_WRITE|
 					 L_PTE_BUFFERABLE);
+		pgprot_t prot = __pgprot_modify(PAGE_KERNEL,
+					L_PTE_MT_MASK, L_PTE_MT_BUFFERABLE);
 
 		p1 = vmap(&page, 1, VM_IOREMAP, prot);
 		p2 = vmap(&page, 1, VM_IOREMAP, prot);
@@ -221,5 +351,9 @@ void __init check_writebuffer_bugs(void)
 		shared_pte_mask |= L_PTE_BUFFERABLE;
 	} else {
 		printk("ok\n");
+		pr_cont("failed, %s\n", reason);
+		shared_pte_mask = L_PTE_MT_UNCACHED;
+	} else {
+		pr_cont("ok\n");
 	}
 }

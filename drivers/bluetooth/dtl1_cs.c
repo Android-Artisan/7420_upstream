@@ -43,6 +43,8 @@
 
 #include <pcmcia/cs_types.h>
 #include <pcmcia/cs.h>
+#include <asm/io.h>
+
 #include <pcmcia/cistpl.h>
 #include <pcmcia/ciscode.h>
 #include <pcmcia/ds.h>
@@ -53,7 +55,6 @@
 
 
 
-/* ======================== Module parameters ======================== */
 
 
 MODULE_AUTHOR("Marcel Holtmann <marcel@holtmann.org>");
@@ -62,12 +63,13 @@ MODULE_LICENSE("GPL");
 
 
 
-/* ======================== Local structures ======================== */
 
 
 typedef struct dtl1_info_t {
 	struct pcmcia_device *p_dev;
 	dev_node_t node;
+struct dtl1_info {
+	struct pcmcia_device *p_dev;
 
 	struct hci_dev *hdev;
 
@@ -89,6 +91,10 @@ static int dtl1_config(struct pcmcia_device *link);
 static void dtl1_release(struct pcmcia_device *link);
 
 static void dtl1_detach(struct pcmcia_device *p_dev);
+};
+
+
+static int dtl1_config(struct pcmcia_device *link);
 
 
 /* Transmit states  */
@@ -106,12 +112,16 @@ typedef struct {
 	u8 zero;
 	u16 len;
 } __attribute__ ((packed)) nsh_t;	/* Nokia Specific Header */
+struct nsh {
+	u8 type;
+	u8 zero;
+	u16 len;
+} __packed;	/* Nokia Specific Header */
 
 #define NSHL  4				/* Nokia Specific Header Length */
 
 
 
-/* ======================== Interrupt handling ======================== */
 
 
 static int dtl1_write(unsigned int iobase, int fifo_size, __u8 *buf, int len)
@@ -134,6 +144,7 @@ static int dtl1_write(unsigned int iobase, int fifo_size, __u8 *buf, int len)
 
 
 static void dtl1_write_wakeup(dtl1_info_t *info)
+static void dtl1_write_wakeup(struct dtl1_info *info)
 {
 	if (!info) {
 		BT_ERR("Unknown device");
@@ -154,6 +165,9 @@ static void dtl1_write_wakeup(dtl1_info_t *info)
 		register unsigned int iobase = info->p_dev->io.BasePort1;
 		register struct sk_buff *skb;
 		register int len;
+		unsigned int iobase = info->p_dev->resource[0]->start;
+		register struct sk_buff *skb;
+		int len;
 
 		clear_bit(XMIT_WAKEUP, &(info->tx_state));
 
@@ -161,6 +175,8 @@ static void dtl1_write_wakeup(dtl1_info_t *info)
 			return;
 
 		if (!(skb = skb_dequeue(&(info->txq))))
+		skb = skb_dequeue(&(info->txq));
+		if (!skb)
 			break;
 
 		/* Send frame */
@@ -183,6 +199,7 @@ static void dtl1_write_wakeup(dtl1_info_t *info)
 
 
 static void dtl1_control(dtl1_info_t *info, struct sk_buff *skb)
+static void dtl1_control(struct dtl1_info *info, struct sk_buff *skb)
 {
 	u8 flowmask = *(u8 *)skb->data;
 	int i;
@@ -191,6 +208,9 @@ static void dtl1_control(dtl1_info_t *info, struct sk_buff *skb)
 	for (i = 0; i < skb->len; i++) {
 		printk(" %02x", skb->data[i]);
 	}
+	for (i = 0; i < skb->len; i++)
+		printk(" %02x", skb->data[i]);
+
 	printk("\n");
 
 	/* transition to active state */
@@ -209,6 +229,10 @@ static void dtl1_receive(dtl1_info_t *info)
 {
 	unsigned int iobase;
 	nsh_t *nsh;
+static void dtl1_receive(struct dtl1_info *info)
+{
+	unsigned int iobase;
+	struct nsh *nsh;
 	int boguscount = 0;
 
 	if (!info) {
@@ -217,6 +241,7 @@ static void dtl1_receive(dtl1_info_t *info)
 	}
 
 	iobase = info->p_dev->io.BasePort1;
+	iobase = info->p_dev->resource[0]->start;
 
 	do {
 		info->hdev->stat.byte_rx++;
@@ -224,6 +249,9 @@ static void dtl1_receive(dtl1_info_t *info)
 		/* Allocate packet */
 		if (info->rx_skb == NULL)
 			if (!(info->rx_skb = bt_skb_alloc(HCI_MAX_FRAME_SIZE, GFP_ATOMIC))) {
+		if (info->rx_skb == NULL) {
+			info->rx_skb = bt_skb_alloc(HCI_MAX_FRAME_SIZE, GFP_ATOMIC);
+			if (!info->rx_skb) {
 				BT_ERR("Can't allocate mem for new packet");
 				info->rx_state = RECV_WAIT_NSH;
 				info->rx_count = NSHL;
@@ -232,6 +260,10 @@ static void dtl1_receive(dtl1_info_t *info)
 
 		*skb_put(info->rx_skb, 1) = inb(iobase + UART_RX);
 		nsh = (nsh_t *)info->rx_skb->data;
+		}
+
+		*skb_put(info->rx_skb, 1) = inb(iobase + UART_RX);
+		nsh = (struct nsh *)info->rx_skb->data;
 
 		info->rx_count--;
 
@@ -266,6 +298,8 @@ static void dtl1_receive(dtl1_info_t *info)
 					info->rx_skb->dev = (void *) info->hdev;
 					bt_cb(info->rx_skb)->pkt_type &= 0x0f;
 					hci_recv_frame(info->rx_skb);
+					bt_cb(info->rx_skb)->pkt_type &= 0x0f;
+					hci_recv_frame(info->hdev, info->rx_skb);
 					break;
 				default:
 					/* unknown packet */
@@ -293,6 +327,7 @@ static void dtl1_receive(dtl1_info_t *info)
 static irqreturn_t dtl1_interrupt(int irq, void *dev_inst)
 {
 	dtl1_info_t *info = dev_inst;
+	struct dtl1_info *info = dev_inst;
 	unsigned int iobase;
 	unsigned char msr;
 	int boguscount = 0;
@@ -301,12 +336,20 @@ static irqreturn_t dtl1_interrupt(int irq, void *dev_inst)
 	BUG_ON(!info->hdev);
 
 	iobase = info->p_dev->io.BasePort1;
+	irqreturn_t r = IRQ_NONE;
+
+	if (!info || !info->hdev)
+		/* our irq handler is shared */
+		return IRQ_NONE;
+
+	iobase = info->p_dev->resource[0]->start;
 
 	spin_lock(&(info->lock));
 
 	iir = inb(iobase + UART_IIR) & UART_IIR_ID;
 	while (iir) {
 
+		r = IRQ_HANDLED;
 		/* Clear interrupt */
 		lsr = inb(iobase + UART_LSR);
 
@@ -343,16 +386,17 @@ static irqreturn_t dtl1_interrupt(int irq, void *dev_inst)
 		info->ri_latch = msr & UART_MSR_RI;
 		clear_bit(XMIT_WAITING, &(info->tx_state));
 		dtl1_write_wakeup(info);
+		r = IRQ_HANDLED;
 	}
 
 	spin_unlock(&(info->lock));
 
 	return IRQ_HANDLED;
+	return r;
 }
 
 
 
-/* ======================== HCI interface ======================== */
 
 
 static int dtl1_hci_open(struct hci_dev *hdev)
@@ -366,6 +410,7 @@ static int dtl1_hci_open(struct hci_dev *hdev)
 static int dtl1_hci_flush(struct hci_dev *hdev)
 {
 	dtl1_info_t *info = (dtl1_info_t *)(hdev->driver_data);
+	struct dtl1_info *info = hci_get_drvdata(hdev);
 
 	/* Drop TX queue */
 	skb_queue_purge(&(info->txq));
@@ -398,6 +443,11 @@ static int dtl1_hci_send_frame(struct sk_buff *skb)
 	}
 
 	info = (dtl1_info_t *)(hdev->driver_data);
+static int dtl1_hci_send_frame(struct hci_dev *hdev, struct sk_buff *skb)
+{
+	struct dtl1_info *info = hci_get_drvdata(hdev);
+	struct sk_buff *s;
+	struct nsh nsh;
 
 	switch (bt_cb(skb)->pkt_type) {
 	case HCI_COMMAND_PKT:
@@ -413,6 +463,9 @@ static int dtl1_hci_send_frame(struct sk_buff *skb)
 		nsh.type = 0x83;
 		break;
 	};
+	default:
+		return -EILSEQ;
+	}
 
 	nsh.zero = 0;
 	nsh.len = skb->len;
@@ -450,13 +503,16 @@ static int dtl1_hci_ioctl(struct hci_dev *hdev, unsigned int cmd,  unsigned long
 
 
 
-/* ======================== Card services HCI interaction ======================== */
 
 
 static int dtl1_open(dtl1_info_t *info)
 {
 	unsigned long flags;
 	unsigned int iobase = info->p_dev->io.BasePort1;
+static int dtl1_open(struct dtl1_info *info)
+{
+	unsigned long flags;
+	unsigned int iobase = info->p_dev->resource[0]->start;
 	struct hci_dev *hdev;
 
 	spin_lock_init(&(info->lock));
@@ -490,6 +546,14 @@ static int dtl1_open(dtl1_info_t *info)
 	hdev->ioctl    = dtl1_hci_ioctl;
 
 	hdev->owner = THIS_MODULE;
+	hdev->bus = HCI_PCCARD;
+	hci_set_drvdata(hdev, info);
+	SET_HCIDEV_DEV(hdev, &info->p_dev->dev);
+
+	hdev->open  = dtl1_hci_open;
+	hdev->close = dtl1_hci_close;
+	hdev->flush = dtl1_hci_flush;
+	hdev->send  = dtl1_hci_send_frame;
 
 	spin_lock_irqsave(&(info->lock), flags);
 
@@ -504,6 +568,8 @@ static int dtl1_open(dtl1_info_t *info)
 	outb((UART_MCR_DTR | UART_MCR_RTS | UART_MCR_OUT2), iobase + UART_MCR);
 
 	info->ri_latch = inb(info->p_dev->io.BasePort1 + UART_MSR) & UART_MSR_RI;
+	info->ri_latch = inb(info->p_dev->resource[0]->start + UART_MSR)
+				& UART_MSR_RI;
 
 	/* Turn on interrupts */
 	outb(UART_IER_RLSI | UART_IER_RDI | UART_IER_THRI, iobase + UART_IER);
@@ -529,6 +595,10 @@ static int dtl1_close(dtl1_info_t *info)
 {
 	unsigned long flags;
 	unsigned int iobase = info->p_dev->io.BasePort1;
+static int dtl1_close(struct dtl1_info *info)
+{
+	unsigned long flags;
+	unsigned int iobase = info->p_dev->resource[0]->start;
 	struct hci_dev *hdev = info->hdev;
 
 	if (!hdev)
@@ -549,6 +619,7 @@ static int dtl1_close(dtl1_info_t *info)
 	if (hci_unregister_dev(hdev) < 0)
 		BT_ERR("Can't unregister HCI device %s", hdev->name);
 
+	hci_unregister_dev(hdev);
 	hci_free_dev(hdev);
 
 	return 0;
@@ -560,6 +631,10 @@ static int dtl1_probe(struct pcmcia_device *link)
 
 	/* Create new info device */
 	info = kzalloc(sizeof(*info), GFP_KERNEL);
+	struct dtl1_info *info;
+
+	/* Create new info device */
+	info = devm_kzalloc(&link->dev, sizeof(*info), GFP_KERNEL);
 	if (!info)
 		return -ENOMEM;
 
@@ -576,6 +651,7 @@ static int dtl1_probe(struct pcmcia_device *link)
 
 	link->conf.Attributes = CONF_ENABLE_IRQ;
 	link->conf.IntType = INT_MEMORY_AND_IO;
+	link->config_flags |= CONF_ENABLE_IRQ | CONF_AUTO_SET_IO;
 
 	return dtl1_config(link);
 }
@@ -613,6 +689,21 @@ static int next_tuple(struct pcmcia_device *handle, tuple_t *tuple, cisparse_t *
 	if (pcmcia_get_next_tuple(handle, tuple) != CS_SUCCESS)
 		return CS_NO_MORE_ITEMS;
 	return get_tuple(handle, tuple, parse);
+	struct dtl1_info *info = link->priv;
+
+	dtl1_close(info);
+	pcmcia_disable_device(link);
+}
+
+static int dtl1_confcheck(struct pcmcia_device *p_dev, void *priv_data)
+{
+	if ((p_dev->resource[1]->end) || (p_dev->resource[1]->end < 8))
+		return -ENODEV;
+
+	p_dev->resource[0]->flags &= ~IO_DATA_PATH_WIDTH;
+	p_dev->resource[0]->flags |= IO_DATA_PATH_WIDTH_8;
+
+	return pcmcia_request_io(p_dev);
 }
 
 static int dtl1_config(struct pcmcia_device *link)
@@ -668,6 +759,26 @@ static int dtl1_config(struct pcmcia_device *link)
 
 	strcpy(info->node.dev_name, info->hdev->name);
 	link->dev_node = &info->node;
+	struct dtl1_info *info = link->priv;
+	int ret;
+
+	/* Look for a generic full-sized window */
+	link->resource[0]->end = 8;
+	ret = pcmcia_loop_config(link, dtl1_confcheck, NULL);
+	if (ret)
+		goto failed;
+
+	ret = pcmcia_request_irq(link, dtl1_interrupt);
+	if (ret)
+		goto failed;
+
+	ret = pcmcia_enable_device(link);
+	if (ret)
+		goto failed;
+
+	ret = dtl1_open(info);
+	if (ret)
+		goto failed;
 
 	return 0;
 
@@ -688,6 +799,11 @@ static void dtl1_release(struct pcmcia_device *link)
 
 
 static struct pcmcia_device_id dtl1_ids[] = {
+	dtl1_detach(link);
+	return ret;
+}
+
+static const struct pcmcia_device_id dtl1_ids[] = {
 	PCMCIA_DEVICE_PROD_ID12("Nokia Mobile Phones", "DTL-1", 0xe1bfdd64, 0xe168480d),
 	PCMCIA_DEVICE_PROD_ID12("Nokia Mobile Phones", "DTL-4", 0xe1bfdd64, 0x9102bc82),
 	PCMCIA_DEVICE_PROD_ID12("Socket", "CF", 0xb38bcc2e, 0x44ebf863),
@@ -701,6 +817,7 @@ static struct pcmcia_driver dtl1_driver = {
 	.drv		= {
 		.name	= "dtl1_cs",
 	},
+	.name		= "dtl1_cs",
 	.probe		= dtl1_probe,
 	.remove		= dtl1_detach,
 	.id_table	= dtl1_ids,
@@ -719,3 +836,4 @@ static void __exit exit_dtl1_cs(void)
 
 module_init(init_dtl1_cs);
 module_exit(exit_dtl1_cs);
+module_pcmcia_driver(dtl1_driver);

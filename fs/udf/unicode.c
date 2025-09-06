@@ -28,6 +28,12 @@
 #include "udf_sb.h"
 
 static int udf_translate_to_linux(uint8_t *, uint8_t *, int, uint8_t *, int);
+#include <linux/slab.h>
+
+#include "udf_sb.h"
+
+static int udf_translate_to_linux(uint8_t *, int, uint8_t *, int, uint8_t *,
+				  int);
 
 static int udf_char_to_ustr(struct ustr *dest, const uint8_t *src, int strlen)
 {
@@ -71,6 +77,8 @@ static int udf_build_ustr_exact(struct ustr *dest, dstring *ptr, int exactsize)
 	if ((!dest) || (!ptr) || (!exactsize))
 		return -1;
 
+static void udf_build_ustr_exact(struct ustr *dest, dstring *ptr, int exactsize)
+{
 	memset(dest, 0, sizeof(struct ustr));
 	dest->u_cmpID = ptr[0];
 	dest->u_len = exactsize - 1;
@@ -81,6 +89,10 @@ static int udf_build_ustr_exact(struct ustr *dest, dstring *ptr, int exactsize)
 
 /*
  * udf_ocu_to_utf8
+}
+
+/*
+ * udf_CS0toUTF8
  *
  * PURPOSE
  *	Convert OSTA Compressed Unicode to the UTF-8 equivalent.
@@ -93,6 +105,7 @@ static int udf_build_ustr_exact(struct ustr *dest, dstring *ptr, int exactsize)
  *
  * POST-CONDITIONS
  *	<return>		Zero on success.
+ *	<return>		>= 0 on success.
  *
  * HISTORY
  *	November 12, 1997 - Andrew E. Mileski
@@ -116,6 +129,9 @@ int udf_CS0toUTF8(struct ustr *utf_o, const struct ustr *ocu_i)
 		printk(KERN_ERR "udf: unknown compression code (%d) stri=%s\n",
 		       cmp_id, ocu_i->u_name);
 		return 0;
+		pr_err("unknown compression code (%d) stri=%s\n",
+		       cmp_id, ocu_i->u_name);
+		return -EINVAL;
 	}
 
 	ocu = ocu_i->u_name;
@@ -131,11 +147,15 @@ int udf_CS0toUTF8(struct ustr *utf_o, const struct ustr *ocu_i)
 		if (c < 0x80U)
 			utf_o->u_name[utf_o->u_len++] = (uint8_t)c;
 		else if (c < 0x800U) {
+			if (utf_o->u_len > (UDF_NAME_LEN - 4))
+				break;
 			utf_o->u_name[utf_o->u_len++] =
 						(uint8_t)(0xc0 | (c >> 6));
 			utf_o->u_name[utf_o->u_len++] =
 						(uint8_t)(0x80 | (c & 0x3f));
 		} else {
+			if (utf_o->u_len > (UDF_NAME_LEN - 5))
+				break;
 			utf_o->u_name[utf_o->u_len++] =
 						(uint8_t)(0xe0 | (c >> 12));
 			utf_o->u_name[utf_o->u_len++] =
@@ -153,6 +173,7 @@ int udf_CS0toUTF8(struct ustr *utf_o, const struct ustr *ocu_i)
 /*
  *
  * udf_utf8_to_ocu
+ * udf_UTF8toCS0
  *
  * PURPOSE
  *	Convert UTF-8 to the OSTA Compressed Unicode equivalent.
@@ -176,17 +197,22 @@ int udf_CS0toUTF8(struct ustr *utf_o, const struct ustr *ocu_i)
 static int udf_UTF8toCS0(dstring *ocu, struct ustr *utf, int length)
 {
 	unsigned c, i, max_val, utf_char;
-	int utf_cnt, u_len;
+	int utf_cnt, u_len, u_ch;
 
 	memset(ocu, 0, sizeof(dstring) * length);
 	ocu[0] = 8;
 	max_val = 0xffU;
+	u_ch = 1;
 
 try_again:
 	u_len = 0U;
 	utf_char = 0U;
 	utf_cnt = 0U;
 	for (i = 0U; i < utf->u_len; i++) {
+		/* Name didn't fit? */
+		if (u_len + 1 + u_ch >= length)
+			return 0;
+
 		c = (uint8_t)utf->u_name[i];
 
 		/* Complete a multi-byte UTF-8 character */
@@ -228,6 +254,7 @@ try_again:
 			if (max_val == 0xffU) {
 				max_val = 0xffffU;
 				ocu[0] = (uint8_t)0x10U;
+				u_ch = 2;
 				goto try_again;
 			}
 			goto error_out;
@@ -242,6 +269,7 @@ try_again:
 error_out:
 		ocu[++u_len] = '?';
 		printk(KERN_DEBUG "udf: bad UTF-8 character\n");
+		printk(KERN_DEBUG pr_fmt("bad UTF-8 character\n"));
 	}
 
 	ocu[length - 1] = (uint8_t)u_len + 1;
@@ -255,6 +283,7 @@ static int udf_CS0toNLS(struct nls_table *nls, struct ustr *utf_o,
 	const uint8_t *ocu;
 	uint8_t cmp_id, ocu_len;
 	int i;
+	int i, len;
 
 
 	ocu_len = ocu_i->u_len;
@@ -269,6 +298,9 @@ static int udf_CS0toNLS(struct nls_table *nls, struct ustr *utf_o,
 		printk(KERN_ERR "udf: unknown compression code (%d) stri=%s\n",
 		       cmp_id, ocu_i->u_name);
 		return 0;
+		pr_err("unknown compression code (%d) stri=%s\n",
+		       cmp_id, ocu_i->u_name);
+		return -EINVAL;
 	}
 
 	ocu = ocu_i->u_name;
@@ -281,6 +313,13 @@ static int udf_CS0toNLS(struct nls_table *nls, struct ustr *utf_o,
 
 		utf_o->u_len += nls->uni2char(c, &utf_o->u_name[utf_o->u_len],
 					      UDF_NAME_LEN - utf_o->u_len);
+		len = nls->uni2char(c, &utf_o->u_name[utf_o->u_len],
+				    UDF_NAME_LEN - 2 - utf_o->u_len);
+		/* Valid character? */
+		if (len >= 0)
+			utf_o->u_len += len;
+		else
+			utf_o->u_name[utf_o->u_len++] = '?';
 	}
 	utf_o->u_cmpID = 8;
 
@@ -291,23 +330,37 @@ static int udf_NLStoCS0(struct nls_table *nls, dstring *ocu, struct ustr *uni,
 			int length)
 {
 	unsigned len, i, max_val;
+	int len;
+	unsigned i, max_val;
 	uint16_t uni_char;
-	int u_len;
+	int u_len, u_ch;
 
 	memset(ocu, 0, sizeof(dstring) * length);
 	ocu[0] = 8;
 	max_val = 0xffU;
+	u_ch = 1;
 
 try_again:
 	u_len = 0U;
 	for (i = 0U; i < uni->u_len; i++) {
+		/* Name didn't fit? */
+		if (u_len + 1 + u_ch >= length)
+			return 0;
 		len = nls->char2uni(&uni->u_name[i], uni->u_len - i, &uni_char);
 		if (len <= 0)
 			continue;
+		if (!len)
+			continue;
+		/* Invalid character, deal with it */
+		if (len < 0) {
+			len = 1;
+			uni_char = '?';
+		}
 
 		if (uni_char > max_val) {
 			max_val = 0xffffU;
 			ocu[0] = (uint8_t)0x10U;
+			u_ch = 2;
 			goto try_again;
 		}
 
@@ -352,6 +405,55 @@ int udf_get_filename(struct super_block *sb, uint8_t *sname, uint8_t *dname,
 		return len;
 
 	return 0;
+int udf_get_filename(struct super_block *sb, uint8_t *sname, int slen,
+		     uint8_t *dname, int dlen)
+{
+	struct ustr *filename, *unifilename;
+	int ret;
+
+	if (!slen)
+		return -EIO;
+
+	filename = kmalloc(sizeof(struct ustr), GFP_NOFS);
+	if (!filename)
+		return -ENOMEM;
+
+	unifilename = kmalloc(sizeof(struct ustr), GFP_NOFS);
+	if (!unifilename) {
+		ret = -ENOMEM;
+		goto out1;
+	}
+
+	udf_build_ustr_exact(unifilename, sname, slen);
+	if (UDF_QUERY_FLAG(sb, UDF_FLAG_UTF8)) {
+		ret = udf_CS0toUTF8(filename, unifilename);
+		if (ret < 0) {
+			udf_debug("Failed in udf_get_filename: sname = %s\n",
+				  sname);
+			goto out2;
+		}
+	} else if (UDF_QUERY_FLAG(sb, UDF_FLAG_NLS_MAP)) {
+		ret = udf_CS0toNLS(UDF_SB(sb)->s_nls_map, filename,
+				   unifilename);
+		if (ret < 0) {
+			udf_debug("Failed in udf_get_filename: sname = %s\n",
+				  sname);
+			goto out2;
+		}
+	} else
+		BUG();
+
+	ret = udf_translate_to_linux(dname, dlen,
+				     filename->u_name, filename->u_len,
+				     unifilename->u_name, unifilename->u_len);
+	/* Zero length filename isn't valid... */
+	if (ret == 0)
+		ret = -EINVAL;
+out2:
+	kfree(unifilename);
+out1:
+	kfree(filename);
+	return ret;
 }
 
 int udf_put_filename(struct super_block *sb, const uint8_t *sname,
@@ -386,6 +488,12 @@ int udf_put_filename(struct super_block *sb, const uint8_t *sname,
 static int udf_translate_to_linux(uint8_t *newName, uint8_t *udfName,
 				  int udfLen, uint8_t *fidName,
 				  int fidNameLen)
+/* Number of chars we need to store generated CRC to make filename unique */
+#define CRC_LEN			5
+
+static int udf_translate_to_linux(uint8_t *newName, int newLen,
+				  uint8_t *udfName, int udfLen,
+				  uint8_t *fidName, int fidNameLen)
 {
 	int index, newIndex = 0, needsCRC = 0;
 	int extIndex = 0, newExtIndex = 0, hasExt = 0;
@@ -420,6 +528,7 @@ static int udf_translate_to_linux(uint8_t *newName, uint8_t *udfName,
 				}
 			}
 			if (newIndex < 256)
+			if (newIndex < newLen)
 				newName[newIndex++] = curr;
 			else
 				needsCRC = 1;
@@ -448,6 +557,7 @@ static int udf_translate_to_linux(uint8_t *newName, uint8_t *udfName,
 				ext[localExtIndex++] = curr;
 			}
 			maxFilenameLen = 250 - localExtIndex;
+			maxFilenameLen = newLen - CRC_LEN - localExtIndex;
 			if (newIndex > maxFilenameLen)
 				newIndex = maxFilenameLen;
 			else
@@ -460,6 +570,14 @@ static int udf_translate_to_linux(uint8_t *newName, uint8_t *udfName,
 		newName[newIndex++] = hexChar[(valueCRC & 0x0f00) >> 8];
 		newName[newIndex++] = hexChar[(valueCRC & 0x00f0) >> 4];
 		newName[newIndex++] = hexChar[(valueCRC & 0x000f)];
+		} else if (newIndex > newLen - CRC_LEN)
+			newIndex = newLen - CRC_LEN;
+		newName[newIndex++] = CRC_MARK;
+		valueCRC = crc_itu_t(0, fidName, fidNameLen);
+		newName[newIndex++] = hex_asc_upper_hi(valueCRC >> 8);
+		newName[newIndex++] = hex_asc_upper_lo(valueCRC >> 8);
+		newName[newIndex++] = hex_asc_upper_hi(valueCRC);
+		newName[newIndex++] = hex_asc_upper_lo(valueCRC);
 
 		if (hasExt) {
 			newName[newIndex++] = EXT_MARK;

@@ -54,6 +54,9 @@ static signed short btn_avb_wheel[] =
 static signed short abs_joystick[] =
 { ABS_X, ABS_Y, ABS_THROTTLE, ABS_HAT0X, ABS_HAT0Y, -1 };
 
+static signed short abs_joystick_rudder[] =
+{ ABS_X, ABS_Y, ABS_THROTTLE, ABS_RUDDER, ABS_HAT0X, ABS_HAT0Y, -1 };
+
 static signed short abs_avb_pegasus[] =
 { ABS_X, ABS_Y, ABS_THROTTLE, ABS_RUDDER, ABS_HAT0X, ABS_HAT0Y,
   ABS_HAT1X, ABS_HAT1Y, -1 };
@@ -77,6 +80,11 @@ static struct iforce_device iforce_device[] = {
 	{ 0x06f8, 0x0001, "Guillemot Race Leader Force Feedback",	btn_wheel, abs_wheel, ff_iforce }, //?
 	{ 0x06f8, 0x0004, "Guillemot Force Feedback Racing Wheel",	btn_wheel, abs_wheel, ff_iforce }, //?
 	{ 0x06f8, 0x0004, "Gullemot Jet Leader 3D",			btn_joystick, abs_joystick, ff_iforce }, //?
+	{ 0x061c, 0xc084, "ACT LABS Force RS",				btn_wheel, abs_wheel, ff_iforce },
+	{ 0x06f8, 0x0001, "Guillemot Race Leader Force Feedback",	btn_wheel, abs_wheel, ff_iforce }, //?
+	{ 0x06f8, 0x0001, "Guillemot Jet Leader Force Feedback",	btn_joystick, abs_joystick_rudder, ff_iforce },
+	{ 0x06f8, 0x0004, "Guillemot Force Feedback Racing Wheel",	btn_wheel, abs_wheel, ff_iforce }, //?
+	{ 0x06f8, 0xa302, "Guillemot Jet Leader 3D",			btn_joystick, abs_joystick, ff_iforce }, //?
 	{ 0x06d6, 0x29bc, "Trust Force Feedback Race Master",		btn_wheel, abs_wheel, ff_iforce },
 	{ 0x0000, 0x0000, "Unknown I-Force Device [%04x:%04x]",		btn_joystick, abs_joystick, ff_iforce }
 };
@@ -210,6 +218,7 @@ static int iforce_open(struct input_dev *dev)
 }
 
 static void iforce_release(struct input_dev *dev)
+static void iforce_close(struct input_dev *dev)
 {
 	struct iforce *iforce = input_get_drvdata(dev);
 	int i;
@@ -219,12 +228,18 @@ static void iforce_release(struct input_dev *dev)
 		for (i = 0; i < dev->ff->max_effects; i++) {
 			if (test_bit(FF_CORE_IS_USED, iforce->core_effects[i].flags)) {
 				warn("iforce_release: Device still owns effects");
+				dev_warn(&dev->dev,
+					"%s: Device still owns effects\n",
+					__func__);
 				break;
 			}
 		}
 
 		/* Disable force feedback playback */
 		iforce_send_packet(iforce, FF_CMD_ENABLE, "\001");
+		/* Wait for the command to complete */
+		wait_event_interruptible(iforce->wait,
+			!test_bit(IFORCE_XMIT_RUNNING, iforce->xmit_flags));
 	}
 
 	switch (iforce->bus) {
@@ -249,6 +264,10 @@ void iforce_delete_device(struct iforce *iforce)
 #ifdef CONFIG_JOYSTICK_IFORCE_USB
 	case IFORCE_USB:
 		iforce_usb_delete(iforce);
+	case IFORCE_USB:
+		usb_kill_urb(iforce->irq);
+		usb_kill_urb(iforce->out);
+		usb_kill_urb(iforce->ctrl);
 		break;
 #endif
 #ifdef CONFIG_JOYSTICK_IFORCE_232
@@ -301,6 +320,7 @@ int iforce_init_device(struct iforce *iforce)
 	input_dev->name = "Unknown I-Force device";
 	input_dev->open = iforce_open;
 	input_dev->close = iforce_release;
+	input_dev->close = iforce_close;
 
 /*
  * On-device memory allocation.
@@ -324,6 +344,8 @@ int iforce_init_device(struct iforce *iforce)
 
 	if (i == 20) { /* 5 seconds */
 		err("Timeout waiting for response from device.");
+		dev_err(&input_dev->dev,
+			"Timeout waiting for response from device.\n");
 		error = -ENODEV;
 		goto fail;
 	}
@@ -336,16 +358,19 @@ int iforce_init_device(struct iforce *iforce)
 		input_dev->id.vendor = (iforce->edata[2] << 8) | iforce->edata[1];
 	else
 		warn("Device does not respond to id packet M");
+		dev_warn(&iforce->dev->dev, "Device does not respond to id packet M\n");
 
 	if (!iforce_get_id_packet(iforce, "P"))
 		input_dev->id.product = (iforce->edata[2] << 8) | iforce->edata[1];
 	else
 		warn("Device does not respond to id packet P");
+		dev_warn(&iforce->dev->dev, "Device does not respond to id packet P\n");
 
 	if (!iforce_get_id_packet(iforce, "B"))
 		iforce->device_memory.end = (iforce->edata[2] << 8) | iforce->edata[1];
 	else
 		warn("Device does not respond to id packet B");
+		dev_warn(&iforce->dev->dev, "Device does not respond to id packet B\n");
 
 	if (!iforce_get_id_packet(iforce, "N"))
 		ff_effects = iforce->edata[1];
@@ -355,6 +380,11 @@ int iforce_init_device(struct iforce *iforce)
 	/* Check if the device can store more effects than the driver can really handle */
 	if (ff_effects > IFORCE_EFFECTS_MAX) {
 		warn("Limiting number of effects to %d (device reports %d)",
+		dev_warn(&iforce->dev->dev, "Device does not respond to id packet N\n");
+
+	/* Check if the device can store more effects than the driver can really handle */
+	if (ff_effects > IFORCE_EFFECTS_MAX) {
+		dev_warn(&iforce->dev->dev, "Limiting number of effects to %d (device reports %d)\n",
 		       IFORCE_EFFECTS_MAX, ff_effects);
 		ff_effects = IFORCE_EFFECTS_MAX;
 	}

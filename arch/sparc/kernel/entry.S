@@ -7,6 +7,7 @@
  * Copyright (C) 1997 Anton Blanchard (anton@progsoc.uts.edu.au)
  */
 
+#include <linux/linkage.h>
 #include <linux/errno.h>
 
 #include <asm/head.h>
@@ -25,6 +26,8 @@
 #else
 #include <asm/pgtsun4c.h>
 #endif
+#include <asm/page.h>
+#include <asm/pgtable.h>
 #include <asm/winmacro.h>
 #include <asm/signal.h>
 #include <asm/obio.h>
@@ -134,6 +137,7 @@ floppy_tdone:
 	subcc   %l5, 1, %g0		/* enum { sun4c = 1 }; */
 	be	1f
 	 ldub	[%l7], %l5
+	ldub	[%l7], %l5
 
 	or	%l5, 0xc2, %l5
 	stb	%l5, [%l7]
@@ -234,6 +238,7 @@ real_irq_entry:
 	.globl	patchme_maybe_smp_msg
 
 	cmp	%l7, 12
+	cmp	%l7, 11
 patchme_maybe_smp_msg:
 	bgu	maybe_smp4m_msg
 	 nop
@@ -287,6 +292,32 @@ maybe_smp4m_msg:
 	st	%o2, [%o5 + 0x4]
 	WRITE_PAUSE
 	ld	[%o5], %g0
+#define GET_PROCESSOR4M_ID(reg)	\
+	rd	%tbr, %reg;	\
+	srl	%reg, 12, %reg;	\
+	and	%reg, 3, %reg;
+
+	/* Here is where we check for possible SMP IPI passed to us
+	 * on some level other than 15 which is the NMI and only used
+	 * for cross calls.  That has a separate entry point below.
+	 *
+	 * IPIs are sent on Level 12, 13 and 14. See IRQ_IPI_*.
+	 */
+maybe_smp4m_msg:
+	GET_PROCESSOR4M_ID(o3)
+	sethi	%hi(sun4m_irq_percpu), %l5
+	sll	%o3, 2, %o3
+	or	%l5, %lo(sun4m_irq_percpu), %o5
+	sethi	%hi(0x70000000), %o2	! Check all soft-IRQs
+	ld	[%o5 + %o3], %o1
+	ld	[%o1 + 0x00], %o3	! sun4m_irq_percpu[cpu]->pending
+	andcc	%o3, %o2, %g0
+	be,a	smp4m_ticker
+	 cmp	%l7, 14
+	/* Soft-IRQ IPI */
+	st	%o2, [%o1 + 0x04]	! sun4m_irq_percpu[cpu]->clear=0x70000000
+	WRITE_PAUSE
+	ld	[%o1 + 0x00], %g0	! sun4m_irq_percpu[cpu]->pending
 	WRITE_PAUSE
 	or	%l0, PSR_PIL, %l4
 	wr	%l4, 0x0, %psr
@@ -296,6 +327,27 @@ maybe_smp4m_msg:
 	call	smp_reschedule_irq
 	 nop
 
+	srl	%o3, 28, %o2		! shift for simpler checks below
+maybe_smp4m_msg_check_single:
+	andcc	%o2, 0x1, %g0
+	beq,a	maybe_smp4m_msg_check_mask
+	 andcc	%o2, 0x2, %g0
+	call	smp_call_function_single_interrupt
+	 nop
+	andcc	%o2, 0x2, %g0
+maybe_smp4m_msg_check_mask:
+	beq,a	maybe_smp4m_msg_check_resched
+	 andcc	%o2, 0x4, %g0
+	call	smp_call_function_interrupt
+	 nop
+	andcc	%o2, 0x4, %g0
+maybe_smp4m_msg_check_resched:
+	/* rescheduling is done in RESTORE_ALL regardless, but incr stats */
+	beq,a	maybe_smp4m_msg_out
+	 nop
+	call	smp_resched_interrupt
+	 nop
+maybe_smp4m_msg_out:
 	RESTORE_ALL
 
 	.align	4
@@ -314,6 +366,16 @@ linux_trap_ipi15_sun4m:
 	 st	%o2, [%o5 + 4]
 	WRITE_PAUSE
 	ld	[%o5], %g0
+	sethi	%hi(sun4m_irq_percpu), %l5
+	or	%l5, %lo(sun4m_irq_percpu), %o5
+	sll	%o0, 2, %o0
+	ld	[%o5 + %o0], %o5
+	ld	[%o5 + 0x00], %o3	! sun4m_irq_percpu[cpu]->pending
+	andcc	%o3, %o2, %g0
+	be	sun4m_nmi_error		! Must be an NMI async memory error
+	 st	%o2, [%o5 + 0x04]	! sun4m_irq_percpu[cpu]->clear=0x80000000
+	WRITE_PAUSE
+	ld	[%o5 + 0x00], %g0	! sun4m_irq_percpu[cpu]->pending
 	WRITE_PAUSE
 	or	%l0, PSR_PIL, %l4
 	wr	%l4, 0x0, %psr
@@ -403,6 +465,36 @@ linux_trap_ipi15_sun4d:
 	stha	%l5, [%l4] ASI_M_MXCC
 	/* FIXME */
 1:	b,a	1b
+
+	.globl	smpleon_ipi
+	.extern leon_ipi_interrupt
+	/* SMP per-cpu IPI interrupts are handled specially. */
+smpleon_ipi:
+        SAVE_ALL
+	or	%l0, PSR_PIL, %g2
+	wr	%g2, 0x0, %psr
+	WRITE_PAUSE
+	wr	%g2, PSR_ET, %psr
+	WRITE_PAUSE
+	call	leonsmp_ipi_interrupt
+	 add	%sp, STACKFRAME_SZ, %o1 ! pt_regs
+	wr	%l0, PSR_ET, %psr
+	WRITE_PAUSE
+	RESTORE_ALL
+
+	.align	4
+	.globl	linux_trap_ipi15_leon
+linux_trap_ipi15_leon:
+	SAVE_ALL
+	or	%l0, PSR_PIL, %l4
+	wr	%l4, 0x0, %psr
+	WRITE_PAUSE
+	wr	%l4, PSR_ET, %psr
+	WRITE_PAUSE
+	call	leon_cross_call_irq
+	 nop
+	b	ret_trap_lockless_ipi
+	 clr	%l6
 
 #endif /* CONFIG_SMP */
 
@@ -1080,6 +1172,37 @@ sun4c_fault_fromuser:
 	 add	%sp, STACKFRAME_SZ, %o0	! arg1 = pt_regs ptr
 
 	RESTORE_ALL
+sun4m_nmi_error:
+	/* NMI async memory error handling. */
+	sethi	%hi(0x80000000), %l4
+	sethi	%hi(sun4m_irq_global), %o5
+	ld	[%o5 + %lo(sun4m_irq_global)], %l5
+	st	%l4, [%l5 + 0x0c]	! sun4m_irq_global->mask_set=0x80000000
+	WRITE_PAUSE
+	ld	[%l5 + 0x00], %g0	! sun4m_irq_global->pending
+	WRITE_PAUSE
+	or	%l0, PSR_PIL, %l4
+	wr	%l4, 0x0, %psr
+	WRITE_PAUSE
+	wr	%l4, PSR_ET, %psr
+	WRITE_PAUSE
+	call	sun4m_nmi
+	 nop
+	st	%l4, [%l5 + 0x08]	! sun4m_irq_global->mask_clear=0x80000000
+	WRITE_PAUSE
+	ld	[%l5 + 0x00], %g0	! sun4m_irq_global->pending
+	WRITE_PAUSE
+	RESTORE_ALL
+
+#ifndef CONFIG_SMP
+	.align	4
+	.globl	linux_trap_ipi15_sun4m
+linux_trap_ipi15_sun4m:
+	SAVE_ALL
+
+	ba	sun4m_nmi_error
+	 nop
+#endif /* CONFIG_SMP */
 
 	.align	4
 	.globl	srmmu_fault
@@ -1089,6 +1212,11 @@ srmmu_fault:
 
 	lda	[%l5] ASI_M_MMUREGS, %l6	! read sfar first
 	lda	[%l4] ASI_M_MMUREGS, %l5	! read sfsr last
+LEON_PI(lda	[%l5] ASI_LEON_MMUREGS, %l6)	! read sfar first
+SUN_PI_(lda	[%l5] ASI_M_MMUREGS, %l6)	! read sfar first
+
+LEON_PI(lda	[%l4] ASI_LEON_MMUREGS, %l5)	! read sfsr last
+SUN_PI_(lda	[%l4] ASI_M_MMUREGS, %l5)	! read sfsr last
 
 	andn	%l6, 0xfff, %l6
 	srl	%l5, 6, %l5			! and encode all info into l7
@@ -1144,6 +1272,14 @@ sunos_execv:
 	.align	4
 	.globl	sys_pipe
 sys_pipe:
+sunos_execv:
+	.globl	sunos_execv
+	b	sys_execve
+	 clr	%i2
+
+	.align	4
+	.globl	sys_sparc_pipe
+sys_sparc_pipe:
 	mov	%o7, %l5
 	add	%sp, STACKFRAME_SZ, %o0		! pt_regs *regs arg
 	call	sparc_pipe
@@ -1178,6 +1314,7 @@ sys_sigreturn:
 
 	call	syscall_trace
 	 nop
+	 mov	1, %o1
 
 1:
 	/* We don't want to muck with user registers like a
@@ -1287,6 +1424,9 @@ linux_fast_syscall:
 	jmpl	%l7 + %g0, %g0
 	 mov	%i3, %o3
 
+	b       do_syscall
+	 or     %l7, %lo(sys_ni_syscall), %l7
+
 linux_syscall_trace:
 	add	%sp, STACKFRAME_SZ, %o0
 	call	syscall_trace
@@ -1294,7 +1434,24 @@ linux_syscall_trace:
 	cmp	%o0, 0
 	bne	3f
 	 mov	-ENOSYS, %o0
+
+	/* Syscall tracing can modify the registers.  */
+	ld	[%sp + STACKFRAME_SZ + PT_G1], %g1
+	sethi	%hi(sys_call_table), %l7
+	ld	[%sp + STACKFRAME_SZ + PT_I0], %i0
+	or	%l7, %lo(sys_call_table), %l7
+	ld	[%sp + STACKFRAME_SZ + PT_I1], %i1
+	ld	[%sp + STACKFRAME_SZ + PT_I2], %i2
+	ld	[%sp + STACKFRAME_SZ + PT_I3], %i3
+	ld	[%sp + STACKFRAME_SZ + PT_I4], %i4
+	ld	[%sp + STACKFRAME_SZ + PT_I5], %i5
+	cmp	%g1, NR_syscalls
+	bgeu	3f
+	 mov	-ENOSYS, %o0
+
+	sll	%g1, 2, %l4
 	mov	%i0, %o0
+	ld	[%l7 + %l4], %l7
 	mov	%i1, %o1
 	mov	%i2, %o2
 	mov	%i3, %o3
@@ -1307,6 +1464,27 @@ ret_from_fork:
 	 mov	%g3, %o0
 	b	ret_sys_call
 	 ld	[%sp + STACKFRAME_SZ + PT_I0], %o0
+
+	 ld	[%g3 + TI_TASK], %o0
+	b	ret_sys_call
+	 ld	[%sp + STACKFRAME_SZ + PT_I0], %o0
+
+	.globl	ret_from_kernel_thread
+ret_from_kernel_thread:
+	call	schedule_tail
+	 ld	[%g3 + TI_TASK], %o0
+	ld	[%sp + STACKFRAME_SZ + PT_G1], %l0
+	call	%l0
+	 ld	[%sp + STACKFRAME_SZ + PT_G2], %o0
+	rd	%psr, %l1
+	ld	[%sp + STACKFRAME_SZ + PT_PSR], %l0
+	andn	%l0, PSR_CWP, %l0
+	nop
+	and	%l1, PSR_CWP, %l1
+	or	%l0, %l1, %l0
+	st	%l0, [%sp + STACKFRAME_SZ + PT_PSR]
+	b	ret_sys_call
+	 mov	0, %o0
 
 	/* Linux native system calls enter here... */
 	.align	4
@@ -1324,6 +1502,12 @@ linux_sparc_syscall:
 	 /* Just do first insn from SAVE_ALL in the delay slot */
 
 syscall_is_too_hard:
+	cmp	%g1, NR_syscalls
+	bgeu	linux_sparc_ni_syscall
+	 sll	%g1, 2, %l4
+	ld	[%l7 + %l4], %l7
+
+do_syscall:
 	SAVE_ALL_HEAD
 	 rd	%wim, %l3
 
@@ -1488,6 +1672,13 @@ __ndelay:
 	 mov	0x1ae, %o1		! 2**32 / (1 000 000 000 / HZ)
 	call	.umul
 	 mov	%i1, %o1		! udelay_val
+	mov	%i0, %o0		! round multiplier up so large ns ok
+	mov	0x1ae, %o1		! 2**32 / (1 000 000 000 / HZ)
+	umul	%o0, %o1, %o0
+	rd	%y, %o1
+	mov	%i1, %o1		! udelay_val
+	umul	%o0, %o1, %o0
+	rd	%y, %o1
 	ba	delay_continue
 	 mov	%o1, %o0		! >>32 later for better resolution
 
@@ -1500,6 +1691,12 @@ __udelay:
 	 or	%o1, %lo(0x10c7), %o1	! 2**32 / 1 000 000
 	call	.umul
 	 mov	%i1, %o1		! udelay_val
+	or	%o1, %lo(0x10c7), %o1	! 2**32 / 1 000 000
+	umul	%o0, %o1, %o0
+	rd	%y, %o1
+	mov	%i1, %o1		! udelay_val
+	umul	%o0, %o1, %o0
+	rd	%y, %o1
 	sethi	%hi(0x028f4b62), %l0	! Add in rounding constant * 2**32,
 	or	%g0, %lo(0x028f4b62), %l0
 	addcc	%o0, %l0, %o0		! 2**32 * 0.009 999
@@ -1508,6 +1705,9 @@ __udelay:
 3:
 	call	.umul
 	 mov	HZ, %o0			! >>32 earlier for wider range
+	mov	HZ, %o0			! >>32 earlier for wider range
+	umul	%o0, %o1, %o0
+	rd	%y, %o1
 
 delay_continue:
 	cmp	%o0, 0x0
@@ -1605,6 +1805,7 @@ restore_current:
 	 nop
 
 #ifdef CONFIG_PCI
+#ifdef CONFIG_PCIC_PCI
 #include <asm/pcic.h>
 
 	.align	4
@@ -1651,6 +1852,7 @@ pcic_nmi_trap_patch:
 	.word	0
 
 #endif /* CONFIG_PCI */
+#endif /* CONFIG_PCIC_PCI */
 
 	.globl	flushw_all
 flushw_all:
@@ -1669,5 +1871,27 @@ flushw_all:
 	restore
 	ret
 	 restore
+
+#ifdef CONFIG_SMP
+ENTRY(hard_smp_processor_id)
+661:	rd		%tbr, %g1
+	srl		%g1, 12, %o0
+	and		%o0, 3, %o0
+	.section	.cpuid_patch, "ax"
+	/* Instruction location. */
+	.word		661b
+	/* SUN4D implementation. */
+	lda		[%g0] ASI_M_VIKING_TMP1, %o0
+	nop
+	nop
+	/* LEON implementation. */
+	rd		%asr17, %o0
+	srl		%o0, 0x1c, %o0
+	nop
+	.previous
+	retl
+	 nop
+ENDPROC(hard_smp_processor_id)
+#endif
 
 /* End of entry.S */

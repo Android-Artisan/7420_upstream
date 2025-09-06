@@ -23,6 +23,7 @@
 #include <linux/pci.h>
 #include <linux/slab.h>
 #include <linux/moduleparam.h>
+#include <linux/module.h>
 #include <sound/core.h>
 #include <sound/initval.h>
 #include <sound/tlv.h>
@@ -39,6 +40,8 @@ static int index[SNDRV_CARDS] = SNDRV_DEFAULT_IDX;	/* Index 0-MAX */
 static char *id[SNDRV_CARDS] = SNDRV_DEFAULT_STR;	/* ID for this card */
 static int enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE_PNP;	/* Enable this card */
 static int mic[SNDRV_CARDS]; /* microphone */
+static bool enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE_PNP;	/* Enable this card */
+static bool mic[SNDRV_CARDS]; /* microphone */
 static int ibl[SNDRV_CARDS]; /* microphone */
 
 module_param_array(index, int, NULL, 0444);
@@ -61,6 +64,7 @@ enum {
 };
 
 static struct pci_device_id snd_vx222_ids[] = {
+static const struct pci_device_id snd_vx222_ids[] = {
 	{ 0x10b5, 0x9050, 0x1369, PCI_ANY_ID, 0, 0, VX_PCI_VX222_OLD, },   /* PLX */
 	{ 0x10b5, 0x9030, 0x1369, PCI_ANY_ID, 0, 0, VX_PCI_VX222_NEW, },   /* PLX */
 	{ 0, }
@@ -137,6 +141,9 @@ static int snd_vx222_dev_free(struct snd_device *device)
 static int __devinit snd_vx222_create(struct snd_card *card, struct pci_dev *pci,
 				      struct snd_vx_hardware *hw,
 				      struct snd_vx222 **rchip)
+static int snd_vx222_create(struct snd_card *card, struct pci_dev *pci,
+			    struct snd_vx_hardware *hw,
+			    struct snd_vx222 **rchip)
 {
 	struct vx_core *chip;
 	struct snd_vx222 *vx;
@@ -171,6 +178,10 @@ static int __devinit snd_vx222_create(struct snd_card *card, struct pci_dev *pci
 	if (request_irq(pci->irq, snd_vx_irq_handler, IRQF_SHARED,
 			CARD_NAME, chip)) {
 		snd_printk(KERN_ERR "unable to grab IRQ %d\n", pci->irq);
+	if (request_threaded_irq(pci->irq, snd_vx_irq_handler,
+				 snd_vx_threaded_irq_handler, IRQF_SHARED,
+				 KBUILD_MODNAME, chip)) {
+		dev_err(card->dev, "unable to grab IRQ %d\n", pci->irq);
 		snd_vx222_free(chip);
 		return -EBUSY;
 	}
@@ -190,6 +201,8 @@ static int __devinit snd_vx222_create(struct snd_card *card, struct pci_dev *pci
 
 static int __devinit snd_vx222_probe(struct pci_dev *pci,
 				     const struct pci_device_id *pci_id)
+static int snd_vx222_probe(struct pci_dev *pci,
+			   const struct pci_device_id *pci_id)
 {
 	static int dev;
 	struct snd_card *card;
@@ -207,6 +220,10 @@ static int __devinit snd_vx222_probe(struct pci_dev *pci,
 	card = snd_card_new(index[dev], id[dev], THIS_MODULE, 0);
 	if (card == NULL)
 		return -ENOMEM;
+	err = snd_card_new(&pci->dev, index[dev], id[dev], THIS_MODULE,
+			   0, &card);
+	if (err < 0)
+		return err;
 
 	switch ((int)pci_id->driver_data) {
 	case VX_PCI_VX222_OLD:
@@ -230,6 +247,7 @@ static int __devinit snd_vx222_probe(struct pci_dev *pci,
 	sprintf(card->longname, "%s at 0x%lx & 0x%lx, irq %i",
 		card->shortname, vx->port[0], vx->port[1], vx->core.irq);
 	snd_printdd("%s at 0x%lx & 0x%lx, irq %i\n",
+	dev_dbg(card->dev, "%s at 0x%lx & 0x%lx, irq %i\n",
 		    card->shortname, vx->port[0], vx->port[1], vx->core.irq);
 
 #ifdef SND_VX_FW_LOADER
@@ -312,3 +330,42 @@ static void __exit alsa_card_vx222_exit(void)
 
 module_init(alsa_card_vx222_init)
 module_exit(alsa_card_vx222_exit)
+static void snd_vx222_remove(struct pci_dev *pci)
+{
+	snd_card_free(pci_get_drvdata(pci));
+}
+
+#ifdef CONFIG_PM_SLEEP
+static int snd_vx222_suspend(struct device *dev)
+{
+	struct snd_card *card = dev_get_drvdata(dev);
+	struct snd_vx222 *vx = card->private_data;
+
+	return snd_vx_suspend(&vx->core);
+}
+
+static int snd_vx222_resume(struct device *dev)
+{
+	struct snd_card *card = dev_get_drvdata(dev);
+	struct snd_vx222 *vx = card->private_data;
+
+	return snd_vx_resume(&vx->core);
+}
+
+static SIMPLE_DEV_PM_OPS(snd_vx222_pm, snd_vx222_suspend, snd_vx222_resume);
+#define SND_VX222_PM_OPS	&snd_vx222_pm
+#else
+#define SND_VX222_PM_OPS	NULL
+#endif
+
+static struct pci_driver vx222_driver = {
+	.name = KBUILD_MODNAME,
+	.id_table = snd_vx222_ids,
+	.probe = snd_vx222_probe,
+	.remove = snd_vx222_remove,
+	.driver = {
+		.pm = SND_VX222_PM_OPS,
+	},
+};
+
+module_pci_driver(vx222_driver);

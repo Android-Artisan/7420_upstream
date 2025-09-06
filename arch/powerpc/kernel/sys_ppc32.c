@@ -25,6 +25,7 @@
 #include <linux/utsname.h>
 #include <linux/smp.h>
 #include <linux/smp_lock.h>
+#include <linux/smp.h>
 #include <linux/sem.h>
 #include <linux/msg.h>
 #include <linux/shm.h>
@@ -42,6 +43,7 @@
 #include <linux/ptrace.h>
 #include <linux/elf.h>
 #include <linux/ipc.h>
+#include <linux/slab.h>
 
 #include <asm/ptrace.h>
 #include <asm/types.h>
@@ -51,6 +53,7 @@
 #include <asm/mmu_context.h>
 #include <asm/ppc-pci.h>
 #include <asm/syscalls.h>
+#include <asm/switch_to.h>
 
 
 asmlinkage long ppc32_select(u32 n, compat_ulong_t __user *inp,
@@ -694,6 +697,7 @@ compat_ssize_t compat_sys_pread64(unsigned int fd, char __user *ubuf, compat_siz
 }
 
 compat_ssize_t compat_sys_pwrite64(unsigned int fd, char __user *ubuf, compat_size_t count,
+compat_ssize_t compat_sys_pwrite64(unsigned int fd, const char __user *ubuf, compat_size_t count,
 			      u32 reg6, u32 poshi, u32 poslo)
 {
 	return sys_pwrite64(fd, ubuf, count, ((loff_t)poshi << 32) | poslo);

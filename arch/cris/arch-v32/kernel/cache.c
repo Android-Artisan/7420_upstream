@@ -2,6 +2,8 @@
 #include <asm/io.h>
 #include <asm/arch/cache.h>
 #include <asm/arch/hwregs/dma.h>
+#include <arch/cache.h>
+#include <arch/hwregs/dma.h>
 
 /* This file is used to workaround a cache bug, Guinness TR 106. */
 

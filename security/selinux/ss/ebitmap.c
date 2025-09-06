@@ -5,6 +5,7 @@
  */
 /*
  * Updated: Hewlett-Packard <paul.moore@hp.com>
+ * Updated: Hewlett-Packard <paul@paul-moore.com>
  *
  *      Added support to import/export the NetLabel category bitmap
  *
@@ -21,6 +22,8 @@
 #include <net/netlabel.h>
 #include "ebitmap.h"
 #include "policydb.h"
+
+#define BITS_PER_U64	(sizeof(u64) * 8)
 
 int ebitmap_cmp(struct ebitmap *e1, struct ebitmap *e2)
 {
@@ -97,6 +100,13 @@ int ebitmap_netlbl_export(struct ebitmap *ebmap,
 	 * In addition, you should pay attention the following implementation
 	 * assumes unsigned long has a width equal with or less than 64-bit.
 	 */
+			  struct netlbl_lsm_catmap **catmap)
+{
+	struct ebitmap_node *e_iter = ebmap->node;
+	unsigned long e_map;
+	u32 offset;
+	unsigned int iter;
+	int rc;
 
 	if (e_iter == NULL) {
 		*catmap = NULL;
@@ -129,6 +139,23 @@ int ebitmap_netlbl_export(struct ebitmap *ebmap,
 			cmap_sft = delta % NETLBL_CATMAP_MAPSIZE;
 			c_iter->bitmap[cmap_idx]
 				|= e_iter->maps[cmap_idx] << cmap_sft;
+	if (*catmap != NULL)
+		netlbl_catmap_free(*catmap);
+	*catmap = NULL;
+
+	while (e_iter) {
+		offset = e_iter->startbit;
+		for (iter = 0; iter < EBITMAP_UNIT_NUMS; iter++) {
+			e_map = e_iter->maps[iter];
+			if (e_map != 0) {
+				rc = netlbl_catmap_setlong(catmap,
+							   offset,
+							   e_map,
+							   GFP_ATOMIC);
+				if (rc != 0)
+					goto netlbl_export_failure;
+			}
+			offset += EBITMAP_UNIT_SIZE;
 		}
 		e_iter = e_iter->next;
 	}
@@ -137,6 +164,7 @@ int ebitmap_netlbl_export(struct ebitmap *ebmap,
 
 netlbl_export_failure:
 	netlbl_secattr_catmap_free(*catmap);
+	netlbl_catmap_free(*catmap);
 	return -ENOMEM;
 }
 
@@ -203,6 +231,50 @@ int ebitmap_netlbl_import(struct ebitmap *ebmap,
 	else
 		ebitmap_destroy(ebmap);
 
+			  struct netlbl_lsm_catmap *catmap)
+{
+	int rc;
+	struct ebitmap_node *e_iter = NULL;
+	struct ebitmap_node *e_prev = NULL;
+	u32 offset = 0, idx;
+	unsigned long bitmap;
+
+	for (;;) {
+		rc = netlbl_catmap_getlong(catmap, &offset, &bitmap);
+		if (rc < 0)
+			goto netlbl_import_failure;
+		if (offset == (u32)-1)
+			return 0;
+
+		/* don't waste ebitmap space if the netlabel bitmap is empty */
+		if (bitmap == 0) {
+			offset += EBITMAP_UNIT_SIZE;
+			continue;
+		}
+
+		if (e_iter == NULL ||
+		    offset >= e_iter->startbit + EBITMAP_SIZE) {
+			e_prev = e_iter;
+			e_iter = kzalloc(sizeof(*e_iter), GFP_ATOMIC);
+			if (e_iter == NULL)
+				goto netlbl_import_failure;
+			e_iter->startbit = offset & ~(EBITMAP_SIZE - 1);
+			if (e_prev == NULL)
+				ebmap->node = e_iter;
+			else
+				e_prev->next = e_iter;
+			ebmap->highbit = e_iter->startbit + EBITMAP_SIZE;
+		}
+
+		/* offset will always be aligned to an unsigned long */
+		idx = EBITMAP_NODE_INDEX(e_iter, offset);
+		e_iter->maps[idx] = bitmap;
+
+		/* next */
+		offset += EBITMAP_UNIT_SIZE;
+	}
+
+	/* NOTE: we should never reach this return */
 	return 0;
 
 netlbl_import_failure:
@@ -212,6 +284,12 @@ netlbl_import_failure:
 #endif /* CONFIG_NETLABEL */
 
 int ebitmap_contains(struct ebitmap *e1, struct ebitmap *e2)
+/*
+ * Check to see if all the bits set in e2 are also set in e1. Optionally,
+ * if last_e2bit is non-zero, the highest set bit in e2 cannot exceed
+ * last_e2bit.
+ */
+int ebitmap_contains(struct ebitmap *e1, struct ebitmap *e2, u32 last_e2bit)
 {
 	struct ebitmap_node *n1, *n2;
 	int i;
@@ -221,6 +299,7 @@ int ebitmap_contains(struct ebitmap *e1, struct ebitmap *e2)
 
 	n1 = e1->node;
 	n2 = e2->node;
+
 	while (n1 && n2 && (n1->startbit <= n2->startbit)) {
 		if (n1->startbit < n2->startbit) {
 			n1 = n1->next;
@@ -229,6 +308,19 @@ int ebitmap_contains(struct ebitmap *e1, struct ebitmap *e2)
 		for (i = 0; i < EBITMAP_UNIT_NUMS; i++) {
 			if ((n1->maps[i] & n2->maps[i]) != n2->maps[i])
 				return 0;
+		for (i = EBITMAP_UNIT_NUMS - 1; (i >= 0) && !n2->maps[i]; )
+			i--;	/* Skip trailing NULL map entries */
+		if (last_e2bit && (i >= 0)) {
+			u32 lastsetbit = n2->startbit + i * EBITMAP_UNIT_SIZE +
+					 __fls(n2->maps[i]);
+			if (lastsetbit > last_e2bit)
+				return 0;
+		}
+
+		while (i >= 0) {
+			if ((n1->maps[i] & n2->maps[i]) != n2->maps[i])
+				return 0;
+			i--;
 		}
 
 		n1 = n1->next;
@@ -367,6 +459,10 @@ int ebitmap_read(struct ebitmap *e, void *fp)
 		printk(KERN_ERR "SELinux: ebitmap: map size %u does not "
 		       "match my size %Zd (high bit was %d)\n",
 		       mapunit, sizeof(u64) * 8, e->highbit);
+	if (mapunit != BITS_PER_U64) {
+		printk(KERN_ERR "SELinux: ebitmap: map size %u does not "
+		       "match my size %Zd (high bit was %d)\n",
+		       mapunit, BITS_PER_U64, e->highbit);
 		goto bad;
 	}
 
@@ -445,4 +541,79 @@ bad:
 		rc = -EINVAL;
 	ebitmap_destroy(e);
 	goto out;
+}
+
+int ebitmap_write(struct ebitmap *e, void *fp)
+{
+	struct ebitmap_node *n;
+	u32 count;
+	__le32 buf[3];
+	u64 map;
+	int bit, last_bit, last_startbit, rc;
+
+	buf[0] = cpu_to_le32(BITS_PER_U64);
+
+	count = 0;
+	last_bit = 0;
+	last_startbit = -1;
+	ebitmap_for_each_positive_bit(e, n, bit) {
+		if (rounddown(bit, (int)BITS_PER_U64) > last_startbit) {
+			count++;
+			last_startbit = rounddown(bit, BITS_PER_U64);
+		}
+		last_bit = roundup(bit + 1, BITS_PER_U64);
+	}
+	buf[1] = cpu_to_le32(last_bit);
+	buf[2] = cpu_to_le32(count);
+
+	rc = put_entry(buf, sizeof(u32), 3, fp);
+	if (rc)
+		return rc;
+
+	map = 0;
+	last_startbit = INT_MIN;
+	ebitmap_for_each_positive_bit(e, n, bit) {
+		if (rounddown(bit, (int)BITS_PER_U64) > last_startbit) {
+			__le64 buf64[1];
+
+			/* this is the very first bit */
+			if (!map) {
+				last_startbit = rounddown(bit, BITS_PER_U64);
+				map = (u64)1 << (bit - last_startbit);
+				continue;
+			}
+
+			/* write the last node */
+			buf[0] = cpu_to_le32(last_startbit);
+			rc = put_entry(buf, sizeof(u32), 1, fp);
+			if (rc)
+				return rc;
+
+			buf64[0] = cpu_to_le64(map);
+			rc = put_entry(buf64, sizeof(u64), 1, fp);
+			if (rc)
+				return rc;
+
+			/* set up for the next node */
+			map = 0;
+			last_startbit = rounddown(bit, BITS_PER_U64);
+		}
+		map |= (u64)1 << (bit - last_startbit);
+	}
+	/* write the last node */
+	if (map) {
+		__le64 buf64[1];
+
+		/* write the last node */
+		buf[0] = cpu_to_le32(last_startbit);
+		rc = put_entry(buf, sizeof(u32), 1, fp);
+		if (rc)
+			return rc;
+
+		buf64[0] = cpu_to_le64(map);
+		rc = put_entry(buf64, sizeof(u64), 1, fp);
+		if (rc)
+			return rc;
+	}
+	return 0;
 }

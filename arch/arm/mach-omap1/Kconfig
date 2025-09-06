@@ -1,3 +1,7 @@
+if ARCH_OMAP1
+
+menu "TI OMAP1 specific features"
+
 comment "OMAP Core Type"
 	depends on ARCH_OMAP1
 
@@ -5,16 +9,27 @@ config ARCH_OMAP730
 	depends on ARCH_OMAP1
 	bool "OMAP730 Based System"
 	select ARCH_OMAP_OTG
+	select CPU_ARM926T
+	select OMAP_MPU_TIMER
+
+config ARCH_OMAP850
+	depends on ARCH_OMAP1
+	bool "OMAP850 Based System"
+	select ARCH_OMAP_OTG
+	select CPU_ARM926T
 
 config ARCH_OMAP15XX
 	depends on ARCH_OMAP1
 	default y
 	bool "OMAP15xx Based System"
+	select CPU_ARM925T
+	select OMAP_MPU_TIMER
 
 config ARCH_OMAP16XX
 	depends on ARCH_OMAP1
 	bool "OMAP16xx Based System"
 	select ARCH_OMAP_OTG
+	select CPU_ARM926T
 
 comment "OMAP Board Type"
 	depends on ARCH_OMAP1
@@ -47,6 +62,15 @@ config MACH_OMAP_OSK
 	bool "TI OSK Support"
 	depends on ARCH_OMAP1 && ARCH_OMAP16XX
 	select OMAP_MCBSP
+config MACH_HERALD
+	bool "HTC Herald"
+	depends on ARCH_OMAP850
+	help
+	  HTC Herald smartphone support (AKA T-Mobile Wing, ...)
+
+config MACH_OMAP_OSK
+	bool "TI OSK Support"
+	depends on ARCH_OMAP1 && ARCH_OMAP16XX
     	help
 	  TI OMAP 5912 OSK (OMAP Starter Kit) board support. Say Y here
           if you have such a board.
@@ -96,6 +120,7 @@ config MACH_OMAP_PALMZ71
 	 Support for the Palm Zire71 PDA. To boot the kernel,
 	 you'll need a PalmOS compatible bootloader; check out
 	 http://hackndev.com/palm/z71 for more informations.
+	 http://hackndev.com/palm/z71 for more information.
 	 Say Y here if you have such a PDA, say N otherwise.
 
 config MACH_OMAP_PALMTT
@@ -105,11 +130,13 @@ config MACH_OMAP_PALMTT
 	  Support for the Palm Tungsten|T PDA. To boot the kernel, you'll
 	  need a PalmOS compatible bootloader (Garux); check out
 	  http://www.hackndev.com/palm/tt/ for more information.
+	  http://garux.sourceforge.net/ for more information.
 	  Say Y here if you have this PDA model, say N otherwise.
 
 config MACH_SX1
 	bool "Siemens SX1"
 	depends on ARCH_OMAP1 && ARCH_OMAP15XX
+	select I2C
 	help
 	  Support for the Siemens SX1 phone. To boot the kernel,
 	  you'll need a SX1 compatible bootloader; check out
@@ -128,6 +155,11 @@ config MACH_NOKIA770
 config MACH_AMS_DELTA
 	bool "Amstrad E3 (Delta)"
 	depends on ARCH_OMAP1 && ARCH_OMAP15XX
+	select FIQ
+	select GPIO_GENERIC_PLATFORM
+	select LEDS_GPIO_REGISTER
+	select REGULATOR
+	select REGULATOR_FIXED_VOLTAGE
 	help
 	  Support for the Amstrad E3 (codename Delta) videophone. Say Y here
 	  if you have such a device.
@@ -207,3 +239,6 @@ config OMAP_ARM_30MHZ
 	help
           Enable 30MHz clock for OMAP CPU. If unsure, say N.
 
+endmenu
+
+endif

@@ -16,6 +16,9 @@
 #include <linux/module.h>
 #include <linux/types.h>
 #include <linux/init.h>
+#include <linux/err.h>
+#include <linux/module.h>
+#include <linux/types.h>
 #include <linux/kernel.h>
 #include <linux/string.h>
 #include <linux/slab.h>
@@ -109,6 +112,8 @@ static void ixp4xx_copy_from(struct map_info *map, void *to,
 	if (from & 1) {
 		*dest++ = BYTE1(flash_read16(src));
                 src++;
+		*dest++ = BYTE1(flash_read16(src-1));
+		src++;
 		--len;
 	}
 
@@ -119,6 +124,7 @@ static void ixp4xx_copy_from(struct map_info *map, void *to,
 		src += 2;
 		len -= 2;
         }
+	}
 
 	if (len > 0)
 		*dest++ = BYTE0(flash_read16(src));
@@ -158,6 +164,16 @@ static int ixp4xx_flash_remove(struct platform_device *dev)
 
 	platform_set_drvdata(dev, NULL);
 
+	struct resource *res;
+};
+
+static const char * const probes[] = { "RedBoot", "cmdlinepart", NULL };
+
+static int ixp4xx_flash_remove(struct platform_device *dev)
+{
+	struct flash_platform_data *plat = dev_get_platdata(&dev->dev);
+	struct ixp4xx_flash_info *info = platform_get_drvdata(dev);
+
 	if(!info)
 		return 0;
 
@@ -174,6 +190,9 @@ static int ixp4xx_flash_remove(struct platform_device *dev)
 		release_resource(info->res);
 		kfree(info->res);
 	}
+		mtd_device_unregister(info->mtd);
+		map_destroy(info->mtd);
+	}
 
 	if (plat->exit)
 		plat->exit();
@@ -185,6 +204,11 @@ static int ixp4xx_flash_probe(struct platform_device *dev)
 {
 	struct flash_platform_data *plat = dev->dev.platform_data;
 	struct ixp4xx_flash_info *info;
+	struct flash_platform_data *plat = dev_get_platdata(&dev->dev);
+	struct ixp4xx_flash_info *info;
+	struct mtd_part_parser_data ppdata = {
+		.origin = dev->resource->start,
+	};
 	int err = -1;
 
 	if (!plat)
@@ -197,6 +221,8 @@ static int ixp4xx_flash_probe(struct platform_device *dev)
 	}
 
 	info = kmalloc(sizeof(struct ixp4xx_flash_info), GFP_KERNEL);
+	info = devm_kzalloc(&dev->dev, sizeof(struct ixp4xx_flash_info),
+			    GFP_KERNEL);
 	if(!info) {
 		err = -ENOMEM;
 		goto Error;
@@ -211,6 +237,7 @@ static int ixp4xx_flash_probe(struct platform_device *dev)
 	 */
 	info->map.phys = NO_XIP;
 	info->map.size = dev->resource->end - dev->resource->start + 1;
+	info->map.size = resource_size(dev->resource);
 
 	/*
 	 * We only support 16-bit accesses for now. If and when
@@ -237,6 +264,14 @@ static int ixp4xx_flash_probe(struct platform_device *dev)
 	if (!info->map.virt) {
 		printk(KERN_ERR "IXP4XXFlash: Failed to ioremap region\n");
 		err = -EIO;
+	info->map.name = dev_name(&dev->dev);
+	info->map.read = ixp4xx_read16;
+	info->map.write = ixp4xx_probe_write16;
+	info->map.copy_from = ixp4xx_copy_from;
+
+	info->map.virt = devm_ioremap_resource(&dev->dev, dev->resource);
+	if (IS_ERR(info->map.virt)) {
+		err = PTR_ERR(info->map.virt);
 		goto Error;
 	}
 
@@ -260,6 +295,17 @@ static int ixp4xx_flash_probe(struct platform_device *dev)
 
 	if (err)
 		goto Error;
+	info->mtd->dev.parent = &dev->dev;
+
+	/* Use the fast version */
+	info->map.write = ixp4xx_write16;
+
+	err = mtd_device_parse_register(info->mtd, probes, &ppdata,
+			plat->parts, plat->nr_parts);
+	if (err) {
+		printk(KERN_ERR "Could not parse partitions\n");
+		goto Error;
+	}
 
 	return 0;
 
@@ -290,6 +336,10 @@ static void __exit ixp4xx_flash_exit(void)
 
 module_init(ixp4xx_flash_init);
 module_exit(ixp4xx_flash_exit);
+	},
+};
+
+module_platform_driver(ixp4xx_flash_driver);
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("MTD map driver for Intel IXP4xx systems");

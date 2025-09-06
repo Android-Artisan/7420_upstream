@@ -186,6 +186,7 @@ method.  This method is called when the config_item's reference count
 reaches zero.  Items that wish to display an attribute need to provide
 the ct_item_ops->show_attribute() method.  Similarly, storing a new
 attribute value uses the store_attribute() method.
+reaches zero.
 
 [struct configfs_attribute]
 
@@ -193,6 +194,9 @@ attribute value uses the store_attribute() method.
 		char                    *ca_name;
 		struct module           *ca_owner;
 		mode_t                  ca_mode;
+		umode_t                  ca_mode;
+		ssize_t (*show)(struct config_item *, char *);
+		ssize_t (*store)(struct config_item *, const char *, size_t);
 	};
 
 When a config_item wants an attribute to appear as a file in the item's
@@ -206,6 +210,10 @@ If an attribute is readable and the config_item provides a
 ct_item_ops->show_attribute() method, that method will be called
 whenever userspace asks for a read(2) on the attribute.  The converse
 will happen for write(2).
+If an attribute is readable and provides a ->show method, that method will
+be called whenever userspace asks for a read(2) on the attribute.  If an
+attribute is writable and provides a ->store  method, that method will be
+be called whenever userspace asks for a write(2) on the attribute.
 
 [struct config_group]
 
@@ -325,6 +333,10 @@ by explicitly defining the structures involved.  Conversely
 configfs_example_macros.c uses some convenience macros from configfs.h
 to define the attributes.  These macros are similar to their sysfs
 counterparts.
+subsystem/group and the simple_child item in
+samples/configfs/configfs_sample.c. It shows a trivial object displaying
+and storing an attribute, and a simple group creating and destroying
+these children.
 
 [Hierarchy Navigation and the Subsystem Mutex]
 
@@ -410,6 +422,7 @@ rmdir(2).  They also are not considered when rmdir(2) on the parent
 group is checking for children.
 
 [Dependant Subsystems]
+[Dependent Subsystems]
 
 Sometimes other drivers depend on particular configfs items.  For
 example, ocfs2 mounts depend on a heartbeat region item.  If that

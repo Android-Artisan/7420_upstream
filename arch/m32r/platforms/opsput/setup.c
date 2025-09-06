@@ -79,6 +79,30 @@ static struct hw_interrupt_type opsput_irq_type =
 	.disable = disable_opsput_irq,
 	.ack = mask_and_ack_opsput,
 	.end = end_opsput_irq
+static void mask_opsput(struct irq_data *data)
+{
+	disable_opsput_irq(data->irq);
+}
+
+static void unmask_opsput(struct irq_data *data)
+{
+	enable_opsput_irq(data->irq);
+}
+
+static void shutdown_opsput(struct irq_data *data)
+{
+	unsigned long port;
+
+	port = irq2port(data->irq);
+	outl(M32R_ICUCR_ILEVEL7, port);
+}
+
+static struct irq_chip opsput_irq_type =
+{
+	.name		= "OPSPUT-IRQ",
+	.irq_shutdown	= shutdown_opsput,
+	.irq_mask	= mask_opsput,
+	.irq_unmask	= unmask_opsput,
 };
 
 /*
@@ -137,12 +161,25 @@ static unsigned int startup_opsput_pld_irq(unsigned int irq)
 }
 
 static void shutdown_opsput_pld_irq(unsigned int irq)
+static void mask_opsput_pld(struct irq_data *data)
+{
+	disable_opsput_pld_irq(data->irq);
+}
+
+static void unmask_opsput_pld(struct irq_data *data)
+{
+	enable_opsput_pld_irq(data->irq);
+	enable_opsput_irq(M32R_IRQ_INT1);
+}
+
+static void shutdown_opsput_pld(struct irq_data *data)
 {
 	unsigned long port;
 	unsigned int pldirq;
 
 	pldirq = irq2pldirq(irq);
 //	shutdown_opsput_irq(M32R_IRQ_INT1);
+	pldirq = irq2pldirq(data->irq);
 	port = pldirq2port(pldirq);
 	outw(PLD_ICUCR_ILEVEL7, port);
 }
@@ -156,6 +193,12 @@ static struct hw_interrupt_type opsput_pld_irq_type =
 	.disable = disable_opsput_pld_irq,
 	.ack = mask_and_ack_opsput_pld,
 	.end = end_opsput_pld_irq
+static struct irq_chip opsput_pld_irq_type =
+{
+	.name		= "OPSPUT-PLD-IRQ",
+	.irq_shutdown	= shutdown_opsput_pld,
+	.irq_mask	= mask_opsput_pld,
+	.irq_unmask	= unmask_opsput_pld,
 };
 
 /*
@@ -207,11 +250,24 @@ static unsigned int startup_opsput_lanpld_irq(unsigned int irq)
 }
 
 static void shutdown_opsput_lanpld_irq(unsigned int irq)
+static void mask_opsput_lanpld(struct irq_data *data)
+{
+	disable_opsput_lanpld_irq(data->irq);
+}
+
+static void unmask_opsput_lanpld(struct irq_data *data)
+{
+	enable_opsput_lanpld_irq(data->irq);
+	enable_opsput_irq(M32R_IRQ_INT0);
+}
+
+static void shutdown_opsput_lanpld(struct irq_data *data)
 {
 	unsigned long port;
 	unsigned int pldirq;
 
 	pldirq = irq2lanpldirq(irq);
+	pldirq = irq2lanpldirq(data->irq);
 	port = lanpldirq2port(pldirq);
 	outw(PLD_ICUCR_ILEVEL7, port);
 }
@@ -225,6 +281,12 @@ static struct hw_interrupt_type opsput_lanpld_irq_type =
 	.disable = disable_opsput_lanpld_irq,
 	.ack = mask_and_ack_opsput_lanpld,
 	.end = end_opsput_lanpld_irq
+static struct irq_chip opsput_lanpld_irq_type =
+{
+	.name		= "OPSPUT-PLD-LAN-IRQ",
+	.irq_shutdown	= shutdown_opsput_lanpld,
+	.irq_mask	= mask_opsput_lanpld,
+	.irq_unmask	= unmask_opsput_lanpld,
 };
 
 /*
@@ -276,11 +338,24 @@ static unsigned int startup_opsput_lcdpld_irq(unsigned int irq)
 }
 
 static void shutdown_opsput_lcdpld_irq(unsigned int irq)
+static void mask_opsput_lcdpld(struct irq_data *data)
+{
+	disable_opsput_lcdpld_irq(data->irq);
+}
+
+static void unmask_opsput_lcdpld(struct irq_data *data)
+{
+	enable_opsput_lcdpld_irq(data->irq);
+	enable_opsput_irq(M32R_IRQ_INT2);
+}
+
+static void shutdown_opsput_lcdpld(struct irq_data *data)
 {
 	unsigned long port;
 	unsigned int pldirq;
 
 	pldirq = irq2lcdpldirq(irq);
+	pldirq = irq2lcdpldirq(data->irq);
 	port = lcdpldirq2port(pldirq);
 	outw(PLD_ICUCR_ILEVEL7, port);
 }
@@ -294,6 +369,11 @@ static struct hw_interrupt_type opsput_lcdpld_irq_type =
 	disable_opsput_lcdpld_irq,
 	mask_and_ack_opsput_lcdpld,
 	end_opsput_lcdpld_irq
+static struct irq_chip opsput_lcdpld_irq_type = {
+	.name		= "OPSPUT-PLD-LCD-IRQ",
+	.irq_shutdown	= shutdown_opsput_lcdpld,
+	.irq_mask	= mask_opsput_lcdpld,
+	.irq_unmask	= unmask_opsput_lcdpld,
 };
 
 void __init init_IRQ(void)
@@ -304,6 +384,8 @@ void __init init_IRQ(void)
 	irq_desc[OPSPUT_LAN_IRQ_LAN].chip = &opsput_lanpld_irq_type;
 	irq_desc[OPSPUT_LAN_IRQ_LAN].action = 0;
 	irq_desc[OPSPUT_LAN_IRQ_LAN].depth = 1;	/* disable nested irq */
+	irq_set_chip_and_handler(OPSPUT_LAN_IRQ_LAN, &opsput_lanpld_irq_type,
+				 handle_level_irq);
 	lanpld_icu_data[irq2lanpldirq(OPSPUT_LAN_IRQ_LAN)].icucr = PLD_ICUCR_IEN|PLD_ICUCR_ISMOD02;	/* "H" edge sense */
 	disable_opsput_lanpld_irq(OPSPUT_LAN_IRQ_LAN);
 #endif  /* CONFIG_SMC91X */
@@ -313,6 +395,8 @@ void __init init_IRQ(void)
 	irq_desc[M32R_IRQ_MFT2].chip = &opsput_irq_type;
 	irq_desc[M32R_IRQ_MFT2].action = 0;
 	irq_desc[M32R_IRQ_MFT2].depth = 1;
+	irq_set_chip_and_handler(M32R_IRQ_MFT2, &opsput_irq_type,
+				 handle_level_irq);
 	icu_data[M32R_IRQ_MFT2].icucr = M32R_ICUCR_IEN;
 	disable_opsput_irq(M32R_IRQ_MFT2);
 
@@ -321,6 +405,8 @@ void __init init_IRQ(void)
 	irq_desc[M32R_IRQ_SIO0_R].chip = &opsput_irq_type;
 	irq_desc[M32R_IRQ_SIO0_R].action = 0;
 	irq_desc[M32R_IRQ_SIO0_R].depth = 1;
+	irq_set_chip_and_handler(M32R_IRQ_SIO0_R, &opsput_irq_type,
+				 handle_level_irq);
 	icu_data[M32R_IRQ_SIO0_R].icucr = 0;
 	disable_opsput_irq(M32R_IRQ_SIO0_R);
 
@@ -329,6 +415,8 @@ void __init init_IRQ(void)
 	irq_desc[M32R_IRQ_SIO0_S].chip = &opsput_irq_type;
 	irq_desc[M32R_IRQ_SIO0_S].action = 0;
 	irq_desc[M32R_IRQ_SIO0_S].depth = 1;
+	irq_set_chip_and_handler(M32R_IRQ_SIO0_S, &opsput_irq_type,
+				 handle_level_irq);
 	icu_data[M32R_IRQ_SIO0_S].icucr = 0;
 	disable_opsput_irq(M32R_IRQ_SIO0_S);
 
@@ -337,6 +425,8 @@ void __init init_IRQ(void)
 	irq_desc[M32R_IRQ_SIO1_R].chip = &opsput_irq_type;
 	irq_desc[M32R_IRQ_SIO1_R].action = 0;
 	irq_desc[M32R_IRQ_SIO1_R].depth = 1;
+	irq_set_chip_and_handler(M32R_IRQ_SIO1_R, &opsput_irq_type,
+				 handle_level_irq);
 	icu_data[M32R_IRQ_SIO1_R].icucr = 0;
 	disable_opsput_irq(M32R_IRQ_SIO1_R);
 
@@ -345,6 +435,8 @@ void __init init_IRQ(void)
 	irq_desc[M32R_IRQ_SIO1_S].chip = &opsput_irq_type;
 	irq_desc[M32R_IRQ_SIO1_S].action = 0;
 	irq_desc[M32R_IRQ_SIO1_S].depth = 1;
+	irq_set_chip_and_handler(M32R_IRQ_SIO1_S, &opsput_irq_type,
+				 handle_level_irq);
 	icu_data[M32R_IRQ_SIO1_S].icucr = 0;
 	disable_opsput_irq(M32R_IRQ_SIO1_S);
 
@@ -353,6 +445,8 @@ void __init init_IRQ(void)
 	irq_desc[M32R_IRQ_DMA1].chip = &opsput_irq_type;
 	irq_desc[M32R_IRQ_DMA1].action = 0;
 	irq_desc[M32R_IRQ_DMA1].depth = 1;
+	irq_set_chip_and_handler(M32R_IRQ_DMA1, &opsput_irq_type,
+				 handle_level_irq);
 	icu_data[M32R_IRQ_DMA1].icucr = 0;
 	disable_opsput_irq(M32R_IRQ_DMA1);
 
@@ -362,6 +456,8 @@ void __init init_IRQ(void)
 	irq_desc[PLD_IRQ_SIO0_RCV].chip = &opsput_pld_irq_type;
 	irq_desc[PLD_IRQ_SIO0_RCV].action = 0;
 	irq_desc[PLD_IRQ_SIO0_RCV].depth = 1;	/* disable nested irq */
+	irq_set_chip_and_handler(PLD_IRQ_SIO0_RCV, &opsput_pld_irq_type,
+				 handle_level_irq);
 	pld_icu_data[irq2pldirq(PLD_IRQ_SIO0_RCV)].icucr = PLD_ICUCR_IEN|PLD_ICUCR_ISMOD03;
 	disable_opsput_pld_irq(PLD_IRQ_SIO0_RCV);
 
@@ -370,6 +466,8 @@ void __init init_IRQ(void)
 	irq_desc[PLD_IRQ_SIO0_SND].chip = &opsput_pld_irq_type;
 	irq_desc[PLD_IRQ_SIO0_SND].action = 0;
 	irq_desc[PLD_IRQ_SIO0_SND].depth = 1;	/* disable nested irq */
+	irq_set_chip_and_handler(PLD_IRQ_SIO0_SND, &opsput_pld_irq_type,
+				 handle_level_irq);
 	pld_icu_data[irq2pldirq(PLD_IRQ_SIO0_SND)].icucr = PLD_ICUCR_IEN|PLD_ICUCR_ISMOD03;
 	disable_opsput_pld_irq(PLD_IRQ_SIO0_SND);
 #endif  /* CONFIG_SERIAL_M32R_PLDSIO */
@@ -379,6 +477,8 @@ void __init init_IRQ(void)
 	irq_desc[PLD_IRQ_CFIREQ].chip = &opsput_pld_irq_type;
 	irq_desc[PLD_IRQ_CFIREQ].action = 0;
 	irq_desc[PLD_IRQ_CFIREQ].depth = 1;	/* disable nested irq */
+	irq_set_chip_and_handler(PLD_IRQ_CFIREQ, &opsput_pld_irq_type,
+				 handle_level_irq);
 	pld_icu_data[irq2pldirq(PLD_IRQ_CFIREQ)].icucr = PLD_ICUCR_IEN|PLD_ICUCR_ISMOD01;	/* 'L' level sense */
 	disable_opsput_pld_irq(PLD_IRQ_CFIREQ);
 
@@ -387,6 +487,8 @@ void __init init_IRQ(void)
 	irq_desc[PLD_IRQ_CFC_INSERT].chip = &opsput_pld_irq_type;
 	irq_desc[PLD_IRQ_CFC_INSERT].action = 0;
 	irq_desc[PLD_IRQ_CFC_INSERT].depth = 1;	/* disable nested irq */
+	irq_set_chip_and_handler(PLD_IRQ_CFC_INSERT, &opsput_pld_irq_type,
+				 handle_level_irq);
 	pld_icu_data[irq2pldirq(PLD_IRQ_CFC_INSERT)].icucr = PLD_ICUCR_IEN|PLD_ICUCR_ISMOD00;	/* 'L' edge sense */
 	disable_opsput_pld_irq(PLD_IRQ_CFC_INSERT);
 
@@ -395,6 +497,8 @@ void __init init_IRQ(void)
 	irq_desc[PLD_IRQ_CFC_EJECT].chip = &opsput_pld_irq_type;
 	irq_desc[PLD_IRQ_CFC_EJECT].action = 0;
 	irq_desc[PLD_IRQ_CFC_EJECT].depth = 1;	/* disable nested irq */
+	irq_set_chip_and_handler(PLD_IRQ_CFC_EJECT, &opsput_pld_irq_type,
+				 handle_level_irq);
 	pld_icu_data[irq2pldirq(PLD_IRQ_CFC_EJECT)].icucr = PLD_ICUCR_IEN|PLD_ICUCR_ISMOD02;	/* 'H' edge sense */
 	disable_opsput_pld_irq(PLD_IRQ_CFC_EJECT);
 
@@ -421,6 +525,11 @@ void __init init_IRQ(void)
     irq_desc[OPSPUT_LCD_IRQ_USB_INT1].depth = 1;
     lcdpld_icu_data[irq2lcdpldirq(OPSPUT_LCD_IRQ_USB_INT1)].icucr = PLD_ICUCR_IEN|PLD_ICUCR_ISMOD01;	/* "L" level sense */
     disable_opsput_lcdpld_irq(OPSPUT_LCD_IRQ_USB_INT1);
+	outw(USBCR_OTGS, USBCR);	/* USBCR: non-OTG */
+	irq_set_chip_and_handler(OPSPUT_LCD_IRQ_USB_INT1,
+				 &opsput_lcdpld_irq_type, handle_level_irq);
+	lcdpld_icu_data[irq2lcdpldirq(OPSPUT_LCD_IRQ_USB_INT1)].icucr = PLD_ICUCR_IEN|PLD_ICUCR_ISMOD01;	/* "L" level sense */
+	disable_opsput_lcdpld_irq(OPSPUT_LCD_IRQ_USB_INT1);
 #endif
 	/*
 	 * INT2# is used for BAT, USB, AUDIO
@@ -437,6 +546,8 @@ void __init init_IRQ(void)
 	irq_desc[M32R_IRQ_INT3].chip = &opsput_irq_type;
 	irq_desc[M32R_IRQ_INT3].action = 0;
 	irq_desc[M32R_IRQ_INT3].depth = 1;
+	irq_set_chip_and_handler(M32R_IRQ_INT3, &opsput_irq_type,
+				 handle_level_irq);
 	icu_data[M32R_IRQ_INT3].icucr = M32R_ICUCR_IEN|M32R_ICUCR_ISMOD10;
 	disable_opsput_irq(M32R_IRQ_INT3);
 #endif /* CONFIG_VIDEO_M32R_AR */

@@ -94,6 +94,8 @@ static snd_pcm_sframes_t linear_transfer(struct snd_pcm_plugin *plugin,
 
 	snd_assert(plugin != NULL && src_channels != NULL && dst_channels != NULL, return -ENXIO);
 	data = (struct linear_priv *)plugin->extra_data;
+	if (snd_BUG_ON(!plugin || !src_channels || !dst_channels))
+		return -ENXIO;
 	if (frames == 0)
 		return 0;
 #ifdef CONFIG_SND_DEBUG
@@ -106,14 +108,24 @@ static snd_pcm_sframes_t linear_transfer(struct snd_pcm_plugin *plugin,
 			snd_assert(dst_channels[channel].area.first % 8 == 0 &&
 				   dst_channels[channel].area.step % 8 == 0,
 				   return -ENXIO);
+			if (snd_BUG_ON(src_channels[channel].area.first % 8 ||
+				       src_channels[channel].area.step % 8))
+				return -ENXIO;
+			if (snd_BUG_ON(dst_channels[channel].area.first % 8 ||
+				       dst_channels[channel].area.step % 8))
+				return -ENXIO;
 		}
 	}
 #endif
+	if (frames > dst_channels[0].frames)
+		frames = dst_channels[0].frames;
 	convert(plugin, src_channels, dst_channels, frames);
 	return frames;
 }
 
 static void init_data(struct linear_priv *data, int src_format, int dst_format)
+static void init_data(struct linear_priv *data,
+		      snd_pcm_format_t src_format, snd_pcm_format_t dst_format)
 {
 	int src_le, dst_le, src_bytes, dst_bytes;
 
@@ -142,6 +154,9 @@ static void init_data(struct linear_priv *data, int src_format, int dst_format)
 			data->flip = cpu_to_le32(0x80000000);
 		else
 			data->flip = cpu_to_be32(0x80000000);
+			data->flip = (__force u32)cpu_to_le32(0x80000000);
+		else
+			data->flip = (__force u32)cpu_to_be32(0x80000000);
 	}
 }
 
@@ -161,6 +176,17 @@ int snd_pcm_plugin_build_linear(struct snd_pcm_substream *plug,
 	snd_assert(src_format->channels == dst_format->channels, return -ENXIO);
 	snd_assert(snd_pcm_format_linear(src_format->format) &&
 		   snd_pcm_format_linear(dst_format->format), return -ENXIO);
+	if (snd_BUG_ON(!r_plugin))
+		return -ENXIO;
+	*r_plugin = NULL;
+
+	if (snd_BUG_ON(src_format->rate != dst_format->rate))
+		return -ENXIO;
+	if (snd_BUG_ON(src_format->channels != dst_format->channels))
+		return -ENXIO;
+	if (snd_BUG_ON(!snd_pcm_format_linear(src_format->format) ||
+		       !snd_pcm_format_linear(dst_format->format)))
+		return -ENXIO;
 
 	err = snd_pcm_plugin_build(plug, "linear format conversion",
 				   src_format, dst_format,

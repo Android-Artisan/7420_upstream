@@ -6,6 +6,7 @@
  * needed to reduce the lookup overhead.
  *
  * Author: Paul Moore <paul.moore@hp.com>
+ * Author: Paul Moore <paul@paul-moore.com>
  *
  */
 
@@ -25,6 +26,8 @@
 
 #ifndef _SELINUX_NETPORT_H
 #define _SELINUX_NETPORT_H
+
+void sel_netport_flush(void);
 
 int sel_netport_sid(u8 protocol, u16 pnum, u32 *sid);
 

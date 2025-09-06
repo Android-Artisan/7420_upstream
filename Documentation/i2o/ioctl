@@ -2,10 +2,8 @@
 Linux I2O User Space Interface
 rev 0.3 - 04/20/99
 
-=============================================================================
 Originally written by Deepak Saxena(deepak@plexity.net)
 Currently maintained by Deepak Saxena(deepak@plexity.net)
-=============================================================================
 
 I. Introduction
 
@@ -377,9 +375,7 @@ XII. Events
     that an event is available, the user would call read() to retrieve
     a list of all the events that are pending for the specific device.
 
-=============================================================================
 Revision History
-=============================================================================
 
 Rev 0.1 - 04/01/99
 - Initial revision

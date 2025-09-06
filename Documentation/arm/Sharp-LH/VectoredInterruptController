@@ -1,5 +1,4 @@
 README on the Vectored Interrupt Controller of the LH7A404
-==========================================================
 
 The 404 revision of the LH7A40X series comes with two vectored
 interrupts controllers.  While the kernel does use some of the

@@ -29,6 +29,16 @@
 #include <asm/cpu.h>
 #include <asm/processor.h>
 #include <asm/system.h>
+#include <linux/smp.h>
+#include <linux/cpumask.h>
+#include <linux/interrupt.h>
+#include <linux/compiler.h>
+#include <linux/irqchip/mips-gic.h>
+
+#include <linux/atomic.h>
+#include <asm/cacheflush.h>
+#include <asm/cpu.h>
+#include <asm/processor.h>
 #include <asm/hardirq.h>
 #include <asm/mmu_context.h>
 #include <asm/smp.h>
@@ -159,6 +169,22 @@ static void cmp_init_secondary(void)
 #endif
 #ifdef CONFIG_MIPS_MT_SMTC
 	c->tc_id  = (read_c0_tcbind() >> TCBIND_CURTC_SHIFT) & TCBIND_CURTC;
+#include <asm/amon.h>
+
+static void cmp_init_secondary(void)
+{
+	struct cpuinfo_mips *c __maybe_unused = &current_cpu_data;
+
+	/* Assume GIC is present */
+	change_c0_status(ST0_IM, STATUSF_IP2 | STATUSF_IP3 | STATUSF_IP4 |
+				 STATUSF_IP5 | STATUSF_IP6 | STATUSF_IP7);
+
+	/* Enable per-cpu interrupts: platform specific */
+
+#ifdef CONFIG_MIPS_MT_SMP
+	if (cpu_has_mipsmt)
+		c->vpe_id = (read_c0_tcbind() >> TCBIND_CURVPE_SHIFT) &
+			TCBIND_CURVPE;
 #endif
 }
 
@@ -173,6 +199,7 @@ static void cmp_smp_finish(void)
 	/* If we have an FPU, enroll ourselves in the FPU-full mask */
 	if (cpu_has_fpu)
 		cpu_set(smp_processor_id(), mt_fpu_cpumask);
+		cpumask_set_cpu(smp_processor_id(), &mt_fpu_cpumask);
 #endif /* CONFIG_MIPS_MT_FPAFF */
 
 	local_irq_enable();
@@ -206,6 +233,7 @@ static void cmp_boot_secondary(int cpu, struct task_struct *idle)
 #endif
 
 	amon_cpu_start(cpu, pc, sp, gp, a0);
+	amon_cpu_start(cpu, pc, sp, (unsigned long)gp, a0);
 }
 
 /*
@@ -222,6 +250,7 @@ void __init cmp_smp_setup(void)
 	/* If we have an FPU, enroll ourselves in the FPU-full mask */
 	if (cpu_has_fpu)
 		cpu_set(0, mt_fpu_cpumask);
+		cpumask_set_cpu(0, &mt_fpu_cpumask);
 #endif /* CONFIG_MIPS_MT_FPAFF */
 
 	for (i = 1; i < NR_CPUS; i++) {
@@ -229,6 +258,9 @@ void __init cmp_smp_setup(void)
 			cpu_set(i, phys_cpu_present_map);
 			__cpu_number_map[i]	= ++ncpu;
 			__cpu_logical_map[ncpu]	= i;
+			set_cpu_possible(i, true);
+			__cpu_number_map[i]	= ++ncpu;
+			__cpu_logical_map[ncpu] = i;
 		}
 	}
 
@@ -236,6 +268,12 @@ void __init cmp_smp_setup(void)
 		unsigned int nvpe, mvpconf0 = read_c0_mvpconf0();
 
 		nvpe = ((mvpconf0 & MVPCONF0_PTC) >> MVPCONF0_PTC_SHIFT) + 1;
+		unsigned int nvpe = 1;
+#ifdef CONFIG_MIPS_MT_SMP
+		unsigned int mvpconf0 = read_c0_mvpconf0();
+
+		nvpe = ((mvpconf0 & MVPCONF0_PVPE) >> MVPCONF0_PVPE_SHIFT) + 1;
+#endif
 		smp_num_siblings = nvpe;
 	}
 	pr_info("Detected %i available secondary CPU(s)\n", ncpu);
@@ -246,6 +284,7 @@ void __init cmp_prepare_cpus(unsigned int max_cpus)
 	pr_debug("SMPCMP: CPU%d: %s max_cpus=%d\n",
 		 smp_processor_id(), __func__, max_cpus);
 
+#ifdef CONFIG_MIPS_MT
 	/*
 	 * FIXME: some of these options are per-system, some per-core and
 	 * some per-cpu
@@ -259,6 +298,15 @@ struct plat_smp_ops cmp_smp_ops = {
 	.init_secondary		= cmp_init_secondary,
 	.smp_finish		= cmp_smp_finish,
 	.cpus_done		= cmp_cpus_done,
+#endif
+
+}
+
+struct plat_smp_ops cmp_smp_ops = {
+	.send_ipi_single	= gic_send_ipi_single,
+	.send_ipi_mask		= gic_send_ipi_mask,
+	.init_secondary		= cmp_init_secondary,
+	.smp_finish		= cmp_smp_finish,
 	.boot_secondary		= cmp_boot_secondary,
 	.smp_setup		= cmp_smp_setup,
 	.prepare_cpus		= cmp_prepare_cpus,

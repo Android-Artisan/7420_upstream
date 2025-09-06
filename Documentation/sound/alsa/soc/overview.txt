@@ -1,5 +1,4 @@
 ALSA SoC Layer
-==============
 
 The overall project goal of the ALSA System on Chip (ASoC) layer is to
 provide better ALSA support for embedded system-on-chip processors (e.g.
@@ -24,7 +23,6 @@ had some limitations:-
 
 
 ASoC Design
-===========
 
 The ASoC layer is designed to address these issues and provide the following
 features :-
@@ -34,6 +32,7 @@ features :-
 
   * Easy I2S/PCM audio interface setup between codec and SoC. Each SoC
     interface and codec registers it's audio interface capabilities with the
+    interface and codec registers its audio interface capabilities with the
     core and are subsequently matched and configured when the application
     hardware parameters are known.
 
@@ -61,10 +60,26 @@ components :-
 
   * Machine driver: The machine driver handles any machine specific controls and
     audio events (e.g. turning on an amp at start of playback).
+To achieve all this, ASoC basically splits an embedded audio system into
+multiple re-usable component drivers :-
+
+  * Codec class drivers: The codec class driver is platform independent and
+    contains audio controls, audio interface capabilities, codec DAPM
+    definition and codec IO functions. This class extends to BT, FM and MODEM
+    ICs if required. Codec class drivers should be generic code that can run
+    on any architecture and machine.
+
+  * Platform class drivers: The platform class driver includes the audio DMA
+    engine driver, digital audio interface (DAI) drivers (e.g. I2S, AC97, PCM)
+    and any audio DSP drivers for that platform.
+
+  * Machine class driver: The machine driver class acts as the glue that
+    decribes and binds the other component drivers together to form an ALSA
+    "sound card device". It handles any machine specific controls and
+    machine level audio events (e.g. turning on an amp at start of playback).
 
 
 Documentation
-=============
 
 The documentation is spilt into the following sections:-
 
@@ -84,3 +99,7 @@ machine.txt: Machine driver internals.
 pop_clicks.txt: How to minimise audio artifacts.
 
 clocking.txt: ASoC clocking for best power performance.
+
+jack.txt: ASoC jack detection.
+
+DPCM.txt: Dynamic PCM - Describes DPCM with DSP examples.

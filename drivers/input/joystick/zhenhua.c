@@ -50,6 +50,9 @@
 #include <linux/input.h>
 #include <linux/serio.h>
 #include <linux/init.h>
+#include <linux/bitrev.h>
+#include <linux/input.h>
+#include <linux/serio.h>
 
 #define DRIVER_DESC	"RC transmitter with 5-byte Zhen Hua protocol joystick driver"
 
@@ -122,6 +125,7 @@ static irqreturn_t zhenhua_interrupt(struct serio *serio, unsigned char data, un
 
 	if (zhenhua->idx < ZHENHUA_MAX_LENGTH)
 		zhenhua->data[zhenhua->idx++] = zhenhua_bitreverse(data);
+		zhenhua->data[zhenhua->idx++] = bitrev8(data);
 
 	if (zhenhua->idx == ZHENHUA_MAX_LENGTH) {
 		zhenhua_process_packet(zhenhua);
@@ -241,3 +245,4 @@ static void __exit zhenhua_exit(void)
 
 module_init(zhenhua_init);
 module_exit(zhenhua_exit);
+module_serio_driver(zhenhua_drv);

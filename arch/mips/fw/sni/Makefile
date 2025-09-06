@@ -3,3 +3,4 @@
 #
 
 lib-$(CONFIG_SNIPROM)	+= sniprom.o
+lib-$(CONFIG_FW_SNIPROM)	+= sniprom.o

@@ -134,6 +134,15 @@ struct rtas_sensors {
 	unsigned int quant;
 };
 
+/* Globals */
+static struct rtas_sensors sensors;
+static struct device_node *rtas_node = NULL;
+static unsigned long power_on_time = 0; /* Save the time the user set */
+static char progress_led[MAX_LINELENGTH];
+
+static unsigned long rtas_tone_frequency = 1000;
+static unsigned long rtas_tone_volume = 0;
+
 /* ****************************************************************** */
 /* Declarations */
 static int ppc_rtas_sensors_show(struct seq_file *m, void *v);
@@ -275,6 +284,19 @@ static int __init proc_rtas_init(void)
 	proc_create("ppc64/rtas/volume", S_IWUSR|S_IRUGO, NULL,
 		    &ppc_rtas_tone_volume_operations);
 	proc_create("ppc64/rtas/rmo_buffer", S_IRUSR, NULL,
+	proc_create("powerpc/rtas/progress", S_IRUGO|S_IWUSR, NULL,
+		    &ppc_rtas_progress_operations);
+	proc_create("powerpc/rtas/clock", S_IRUGO|S_IWUSR, NULL,
+		    &ppc_rtas_clock_operations);
+	proc_create("powerpc/rtas/poweron", S_IWUSR|S_IRUGO, NULL,
+		    &ppc_rtas_poweron_operations);
+	proc_create("powerpc/rtas/sensors", S_IRUGO, NULL,
+		    &ppc_rtas_sensors_operations);
+	proc_create("powerpc/rtas/frequency", S_IWUSR|S_IRUGO, NULL,
+		    &ppc_rtas_tone_freq_operations);
+	proc_create("powerpc/rtas/volume", S_IWUSR|S_IRUGO, NULL,
+		    &ppc_rtas_tone_volume_operations);
+	proc_create("powerpc/rtas/rmo_buffer", S_IRUSR, NULL,
 		    &ppc_rtas_rmo_buf_ops);
 	return 0;
 }

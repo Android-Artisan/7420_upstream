@@ -21,6 +21,7 @@
 
 #include "emu8000_local.h"
 #include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <linux/moduleparam.h>
 
 static int emu8000_reset_addr;
@@ -157,6 +158,8 @@ snd_emu8000_sample_new(struct snd_emux *rec, struct snd_sf_sample *sp,
 
 	emu = rec->hw;
 	snd_assert(sp != NULL, return -EINVAL);
+	if (snd_BUG_ON(!sp))
+		return -EINVAL;
 
 	if (sp->v.size == 0)
 		return 0;

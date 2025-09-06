@@ -22,6 +22,13 @@
 #include <linux/interrupt.h>
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/partitions.h>
+#include <linux/delay.h>
+#include <linux/mtd/mtd.h>
+#include <linux/mtd/partitions.h>
+#include <linux/gpio.h>
+#include <linux/err.h>
+#include <linux/clk.h>
+#include <linux/usb/gpio_vbus.h>
 
 #include <asm/setup.h>
 #include <asm/memory.h>
@@ -41,6 +48,12 @@
 #include <mach/pxa-regs.h>
 #include <mach/pxa2xx-regs.h>
 #include <mach/pxa2xx-gpio.h>
+
+
+#include <mach/pxa25x.h>
+#include <linux/platform_data/mmc-pxamci.h>
+#include <mach/udc.h>
+#include <mach/gumstix.h>
 
 #include "generic.h"
 
@@ -100,6 +113,11 @@ static int gumstix_mci_init(struct device *dev, irq_handler_t detect_int,
 static struct pxamci_platform_data gumstix_mci_platform_data = {
 	.ocr_mask	= MMC_VDD_32_33|MMC_VDD_33_34,
 	.init		= gumstix_mci_init,
+static struct pxamci_platform_data gumstix_mci_platform_data = {
+	.ocr_mask		= MMC_VDD_32_33|MMC_VDD_33_34,
+	.gpio_card_detect 	= -1,
+	.gpio_card_ro		= -1,
+	.gpio_power		= -1,
 };
 
 static void __init gumstix_mmc_init(void)
@@ -115,6 +133,12 @@ static void __init gumstix_mmc_init(void)
 
 #ifdef CONFIG_USB_GADGET_PXA2XX
 static struct pxa2xx_udc_mach_info gumstix_udc_info __initdata = {
+	pr_debug("Gumstix mmc disabled\n");
+}
+#endif
+
+#ifdef CONFIG_USB_PXA25X
+static struct gpio_vbus_mach_info gumstix_udc_info = {
 	.gpio_vbus		= GPIO_GUMSTIX_USB_GPIOn,
 	.gpio_pullup		= GPIO_GUMSTIX_USB_GPIOx,
 };
@@ -122,6 +146,17 @@ static struct pxa2xx_udc_mach_info gumstix_udc_info __initdata = {
 static void __init gumstix_udc_init(void)
 {
 	pxa_set_udc_info(&gumstix_udc_info);
+static struct platform_device gumstix_gpio_vbus = {
+	.name	= "gpio-vbus",
+	.id	= -1,
+	.dev	= {
+		.platform_data	= &gumstix_udc_info,
+	},
+};
+
+static void __init gumstix_udc_init(void)
+{
+	platform_device_register(&gumstix_gpio_vbus);
 }
 #else
 static void gumstix_udc_init(void)
@@ -145,4 +180,117 @@ MACHINE_START(GUMSTIX, "Gumstix")
 	.init_irq	= pxa25x_init_irq,
 	.timer		= &pxa_timer,
 	.init_machine	= gumstix_init,
+	pr_debug("Gumstix udc is disabled\n");
+}
+#endif
+
+#ifdef CONFIG_BT
+/* Normally, the bootloader would have enabled this 32kHz clock but many
+** boards still have u-boot 1.1.4 so we check if it has been turned on and
+** if not, we turn it on with a warning message. */
+static void gumstix_setup_bt_clock(void)
+{
+	int timeout = 500;
+
+	if (!(OSCC & OSCC_OOK))
+		pr_warn("32kHz clock was not on. Bootloader may need to be updated\n");
+	else
+		return;
+
+	OSCC |= OSCC_OON;
+	do {
+		if (OSCC & OSCC_OOK)
+			break;
+		udelay(1);
+	} while (--timeout);
+	if (!timeout)
+		pr_err("Failed to start 32kHz clock\n");
+}
+
+static void __init gumstix_bluetooth_init(void)
+{
+	int err;
+
+	gumstix_setup_bt_clock();
+
+	err = gpio_request(GPIO_GUMSTIX_BTRESET, "BTRST");
+	if (err) {
+		pr_err("gumstix: failed request gpio for bluetooth reset\n");
+		return;
+	}
+
+	err = gpio_direction_output(GPIO_GUMSTIX_BTRESET, 1);
+	if (err) {
+		pr_err("gumstix: can't reset bluetooth\n");
+		return;
+	}
+	gpio_set_value(GPIO_GUMSTIX_BTRESET, 0);
+	udelay(100);
+	gpio_set_value(GPIO_GUMSTIX_BTRESET, 1);
+}
+#else
+static void gumstix_bluetooth_init(void)
+{
+	pr_debug("Gumstix Bluetooth is disabled\n");
+}
+#endif
+
+static unsigned long gumstix_pin_config[] __initdata = {
+	GPIO12_32KHz,
+	/* BTUART */
+	GPIO42_HWUART_RXD,
+	GPIO43_HWUART_TXD,
+	GPIO44_HWUART_CTS,
+	GPIO45_HWUART_RTS,
+	/* MMC */
+	GPIO6_MMC_CLK,
+	GPIO53_MMC_CLK,
+	GPIO8_MMC_CS0,
+};
+
+int __attribute__((weak)) am200_init(void)
+{
+	return 0;
+}
+
+int __attribute__((weak)) am300_init(void)
+{
+	return 0;
+}
+
+static void __init carrier_board_init(void)
+{
+	/*
+	 * put carrier/expansion board init here if
+	 * they cannot be detected programatically
+	 */
+	am200_init();
+	am300_init();
+}
+
+static void __init gumstix_init(void)
+{
+	pxa2xx_mfp_config(ARRAY_AND_SIZE(gumstix_pin_config));
+
+	pxa_set_ffuart_info(NULL);
+	pxa_set_btuart_info(NULL);
+	pxa_set_stuart_info(NULL);
+	pxa_set_hwuart_info(NULL);
+
+	gumstix_bluetooth_init();
+	gumstix_udc_init();
+	gumstix_mmc_init();
+	(void) platform_add_devices(devices, ARRAY_SIZE(devices));
+	carrier_board_init();
+}
+
+MACHINE_START(GUMSTIX, "Gumstix")
+	.atag_offset	= 0x100, /* match u-boot bi_boot_params */
+	.map_io		= pxa25x_map_io,
+	.nr_irqs	= PXA_NR_IRQS,
+	.init_irq	= pxa25x_init_irq,
+	.handle_irq	= pxa25x_handle_irq,
+	.init_time	= pxa_timer_init,
+	.init_machine	= gumstix_init,
+	.restart	= pxa_restart,
 MACHINE_END

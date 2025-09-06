@@ -21,6 +21,7 @@
 #include <linux/fs.h>
 #include <linux/string.h>
 #include <linux/kernel.h>
+#include <linux/slab.h>
 
 #if 0
 #define DEBUGP printk
@@ -70,6 +71,17 @@ int apply_relocate(Elf32_Shdr *sechdrs,
 	printk(KERN_ERR "module %s: REL relocation unsupported\n", me->name);
 	return -ENOEXEC;
 }
+void *module_alloc(unsigned long size)
+{
+	return kmalloc(size, GFP_KERNEL);
+}
+
+/* Free memory returned from module_alloc */
+void module_memfree(void *module_region)
+{
+	kfree(module_region);
+}
+#endif
 
 int apply_relocate_add(Elf32_Shdr *sechdrs,
 		       const char *strtab,

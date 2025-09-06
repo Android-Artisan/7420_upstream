@@ -10,6 +10,7 @@
 #include <linux/device.h>
 #include <linux/init.h>
 #include <linux/delay.h>
+#include <linux/gpio.h>
 
 #include <mach/hardware.h>
 #include <asm/mach-types.h>
@@ -30,11 +31,30 @@ static int cerf_pcmcia_hw_init(struct soc_pcmcia_socket *skt)
 	skt->irq = CERF_IRQ_GPIO_CF_IRQ;
 
 	return soc_pcmcia_request_irqs(skt, irqs, ARRAY_SIZE(irqs));
+static int cerf_pcmcia_hw_init(struct soc_pcmcia_socket *skt)
+{
+	int ret;
+
+	ret = gpio_request_one(CERF_GPIO_CF_RESET, GPIOF_OUT_INIT_LOW, "CF_RESET");
+	if (ret)
+		return ret;
+
+	skt->stat[SOC_STAT_CD].gpio = CERF_GPIO_CF_CD;
+	skt->stat[SOC_STAT_CD].name = "CF_CD";
+	skt->stat[SOC_STAT_BVD1].gpio = CERF_GPIO_CF_BVD1;
+	skt->stat[SOC_STAT_BVD1].name = "CF_BVD1";
+	skt->stat[SOC_STAT_BVD2].gpio = CERF_GPIO_CF_BVD2;
+	skt->stat[SOC_STAT_BVD2].name = "CF_BVD2";
+	skt->stat[SOC_STAT_RDY].gpio = CERF_GPIO_CF_IRQ;
+	skt->stat[SOC_STAT_RDY].name = "CF_IRQ";
+
+	return 0;
 }
 
 static void cerf_pcmcia_hw_shutdown(struct soc_pcmcia_socket *skt)
 {
 	soc_pcmcia_free_irqs(skt, irqs, ARRAY_SIZE(irqs));
+	gpio_free(CERF_GPIO_CF_RESET);
 }
 
 static void
@@ -72,6 +92,7 @@ cerf_pcmcia_configure_socket(struct soc_pcmcia_socket *skt,
 	} else {
 		GPCR = CERF_GPIO_CF_RESET;
 	}
+	gpio_set_value(CERF_GPIO_CF_RESET, !!(state->flags & SS_RESET));
 
 	return 0;
 }
@@ -98,6 +119,9 @@ static struct pcmcia_low_level cerf_pcmcia_ops = {
 };
 
 int __init pcmcia_cerf_init(struct device *dev)
+};
+
+int pcmcia_cerf_init(struct device *dev)
 {
 	int ret = -ENODEV;
 

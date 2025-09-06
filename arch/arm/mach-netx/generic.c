@@ -26,6 +26,11 @@
 #include <asm/mach/map.h>
 #include <asm/hardware/vic.h>
 #include <asm/io.h>
+#include <linux/io.h>
+#include <linux/irqchip/arm-vic.h>
+#include <linux/reboot.h>
+#include <mach/hardware.h>
+#include <asm/mach/map.h>
 #include <mach/netx-regs.h>
 #include <asm/mach/irq.h>
 
@@ -70,6 +75,7 @@ static struct platform_device *devices[] __initdata = {
 
 static void
 netx_hif_demux_handler(unsigned int irq_unused, struct irq_desc *desc)
+static void netx_hif_demux_handler(struct irq_desc *desc)
 {
 	unsigned int irq = NETX_IRQ_HIF_CHAINED(0);
 	unsigned int stat;
@@ -86,18 +92,26 @@ netx_hif_demux_handler(unsigned int irq_unused, struct irq_desc *desc)
 		}
 		irq++;
 		desc++;
+	while (stat) {
+		if (stat & 1) {
+			DEBUG_IRQ("handling irq %d\n", irq);
+			generic_handle_irq(irq);
+		}
+		irq++;
 		stat >>= 1;
 	}
 }
 
 static int
 netx_hif_irq_type(unsigned int _irq, unsigned int type)
+netx_hif_irq_type(struct irq_data *d, unsigned int type)
 {
 	unsigned int val, irq;
 
 	val = readl(NETX_DPMAS_IF_CONF1);
 
 	irq = _irq - NETX_IRQ_HIF_CHAINED(0);
+	irq = d->irq - NETX_IRQ_HIF_CHAINED(0);
 
 	if (type & IRQ_TYPE_EDGE_RISING) {
 		DEBUG_IRQ("rising edges\n");
@@ -127,6 +141,11 @@ netx_hif_ack_irq(unsigned int _irq)
 	unsigned int val, irq;
 
 	irq = _irq - NETX_IRQ_HIF_CHAINED(0);
+netx_hif_ack_irq(struct irq_data *d)
+{
+	unsigned int val, irq;
+
+	irq = d->irq - NETX_IRQ_HIF_CHAINED(0);
 	writel((1 << 24) << irq, NETX_DPMAS_INT_STAT);
 
 	val = readl(NETX_DPMAS_INT_EN);
@@ -165,6 +184,38 @@ static struct irq_chip netx_hif_chip = {
 	.mask = netx_hif_mask_irq,
 	.unmask = netx_hif_unmask_irq,
 	.set_type = netx_hif_irq_type,
+	DEBUG_IRQ("%s: irq %d\n", __func__, d->irq);
+}
+
+static void
+netx_hif_mask_irq(struct irq_data *d)
+{
+	unsigned int val, irq;
+
+	irq = d->irq - NETX_IRQ_HIF_CHAINED(0);
+	val = readl(NETX_DPMAS_INT_EN);
+	val &= ~((1 << 24) << irq);
+	writel(val, NETX_DPMAS_INT_EN);
+	DEBUG_IRQ("%s: irq %d\n", __func__, d->irq);
+}
+
+static void
+netx_hif_unmask_irq(struct irq_data *d)
+{
+	unsigned int val, irq;
+
+	irq = d->irq - NETX_IRQ_HIF_CHAINED(0);
+	val = readl(NETX_DPMAS_INT_EN);
+	val |= (1 << 24) << irq;
+	writel(val, NETX_DPMAS_INT_EN);
+	DEBUG_IRQ("%s: irq %d\n", __func__, d->irq);
+}
+
+static struct irq_chip netx_hif_chip = {
+	.irq_ack = netx_hif_ack_irq,
+	.irq_mask = netx_hif_mask_irq,
+	.irq_unmask = netx_hif_unmask_irq,
+	.irq_set_type = netx_hif_irq_type,
 };
 
 void __init netx_init_irq(void)
@@ -181,6 +232,16 @@ void __init netx_init_irq(void)
 
 	writel(NETX_DPMAS_INT_EN_GLB_EN, NETX_DPMAS_INT_EN);
 	set_irq_chained_handler(NETX_IRQ_HIF, netx_hif_demux_handler);
+	vic_init(io_p2v(NETX_PA_VIC), NETX_IRQ_VIC_START, ~0, 0);
+
+	for (irq = NETX_IRQ_HIF_CHAINED(0); irq <= NETX_IRQ_HIF_LAST; irq++) {
+		irq_set_chip_and_handler(irq, &netx_hif_chip,
+					 handle_level_irq);
+		irq_clear_status_flags(irq, IRQ_NOREQUEST);
+	}
+
+	writel(NETX_DPMAS_INT_EN_GLB_EN, NETX_DPMAS_INT_EN);
+	irq_set_chained_handler(NETX_IRQ_HIF, netx_hif_demux_handler);
 }
 
 static int __init netx_init(void)
@@ -190,3 +251,8 @@ static int __init netx_init(void)
 
 subsys_initcall(netx_init);
 
+void netx_restart(enum reboot_mode mode, const char *cmd)
+{
+	writel(NETX_SYSTEM_RES_CR_FIRMW_RES_EN | NETX_SYSTEM_RES_CR_FIRMW_RES,
+	       NETX_SYSTEM_RES_CR);
+}

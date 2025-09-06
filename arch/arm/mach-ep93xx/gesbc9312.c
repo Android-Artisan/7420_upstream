@@ -67,6 +67,18 @@ static struct platform_device gesbc9312_eth_device = {
 	},
 	.num_resources	= 2,
 	.resource	= gesbc9312_eth_resource,
+#include <linux/platform_device.h>
+#include <linux/sizes.h>
+
+#include <mach/hardware.h>
+
+#include <asm/mach-types.h>
+#include <asm/mach/arch.h>
+
+#include "soc.h"
+
+static struct ep93xx_eth_data __initdata gesbc9312_eth_data = {
+	.phy_id		= 1,
 };
 
 static void __init gesbc9312_init_machine(void)
@@ -74,6 +86,8 @@ static void __init gesbc9312_init_machine(void)
 	ep93xx_init_devices();
 	platform_device_register(&gesbc9312_flash);
 	platform_device_register(&gesbc9312_eth_device);
+	ep93xx_register_flash(4, EP93XX_CS6_PHYS_BASE, SZ_8M);
+	ep93xx_register_eth(&gesbc9312_eth_data, 0);
 }
 
 MACHINE_START(GESBC9312, "Glomation GESBC-9312-sx")
@@ -85,4 +99,11 @@ MACHINE_START(GESBC9312, "Glomation GESBC-9312-sx")
 	.init_irq	= ep93xx_init_irq,
 	.timer		= &ep93xx_timer,
 	.init_machine	= gesbc9312_init_machine,
+	.atag_offset	= 0x100,
+	.map_io		= ep93xx_map_io,
+	.init_irq	= ep93xx_init_irq,
+	.init_time	= ep93xx_timer_init,
+	.init_machine	= gesbc9312_init_machine,
+	.init_late	= ep93xx_init_late,
+	.restart	= ep93xx_restart,
 MACHINE_END

@@ -11,6 +11,10 @@
 #include <asm/sysreg.h>
 
 static inline unsigned long __raw_local_save_flags(void)
+#include <linux/types.h>
+#include <asm/sysreg.h>
+
+static inline unsigned long arch_local_save_flags(void)
 {
 	return sysreg_read(SR);
 }
@@ -26,22 +30,26 @@ static inline unsigned long __raw_local_save_flags(void)
  * also serving as a barrier.
  */
 static inline void raw_local_irq_restore(unsigned long flags)
+static inline void arch_local_irq_restore(unsigned long flags)
 {
 	sysreg_write(SR, flags);
 	asm volatile("" : : : "memory", "cc");
 }
 
 static inline void raw_local_irq_disable(void)
+static inline void arch_local_irq_disable(void)
 {
 	asm volatile("ssrf %0" : : "n"(SYSREG_GM_OFFSET) : "memory");
 }
 
 static inline void raw_local_irq_enable(void)
+static inline void arch_local_irq_enable(void)
 {
 	asm volatile("csrf %0" : : "n"(SYSREG_GM_OFFSET) : "memory");
 }
 
 static inline int raw_irqs_disabled_flags(unsigned long flags)
+static inline bool arch_irqs_disabled_flags(unsigned long flags)
 {
 	return (flags & SYSREG_BIT(GM)) != 0;
 }
@@ -58,6 +66,16 @@ static inline unsigned long __raw_local_irq_save(void)
 	unsigned long flags = __raw_local_save_flags();
 
 	raw_local_irq_disable();
+static inline bool arch_irqs_disabled(void)
+{
+	return arch_irqs_disabled_flags(arch_local_save_flags());
+}
+
+static inline unsigned long arch_local_irq_save(void)
+{
+	unsigned long flags = arch_local_save_flags();
+
+	arch_local_irq_disable();
 
 	return flags;
 }

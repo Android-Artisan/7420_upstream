@@ -123,6 +123,7 @@ static int pdacf_pcm_trigger(struct snd_pcm_substream *subs, int cmd)
 		return -EINVAL;
 	}
 	spin_lock(&chip->reg_lock);
+	mutex_lock(&chip->reg_lock);
 	chip->pcm_running += inc;
 	tmp = pdacf_reg_read(chip, PDAUDIOCF_REG_SCR);
 	if (chip->pcm_running) {
@@ -137,6 +138,7 @@ static int pdacf_pcm_trigger(struct snd_pcm_substream *subs, int cmd)
 	pdacf_reg_write(chip, PDAUDIOCF_REG_SCR, tmp);
       __end:
 	spin_unlock(&chip->reg_lock);
+	mutex_unlock(&chip->reg_lock);
 	snd_ak4117_check_rate_and_errors(chip->ak4117, AK4117_CHECK_NO_RATE);
 	return ret;
 }
@@ -148,6 +150,8 @@ static int pdacf_pcm_hw_params(struct snd_pcm_substream *subs,
 				     struct snd_pcm_hw_params *hw_params)
 {
 	return snd_pcm_alloc_vmalloc_buffer(subs, params_buffer_bytes(hw_params));
+	return snd_pcm_lib_alloc_vmalloc_32_buffer
+					(subs, params_buffer_bytes(hw_params));
 }
 
 /*
@@ -156,6 +160,7 @@ static int pdacf_pcm_hw_params(struct snd_pcm_substream *subs,
 static int pdacf_pcm_hw_free(struct snd_pcm_substream *subs)
 {
 	return snd_pcm_free_vmalloc_buffer(subs);
+	return snd_pcm_lib_free_vmalloc_buffer(subs);
 }
 
 /*
@@ -241,6 +246,8 @@ static struct snd_pcm_hardware pdacf_pcm_capture_hw = {
 	.info =			(SNDRV_PCM_INFO_MMAP | SNDRV_PCM_INFO_INTERLEAVED |
 				 SNDRV_PCM_INFO_PAUSE | SNDRV_PCM_INFO_RESUME |
 				 SNDRV_PCM_INFO_MMAP_VALID),
+				 SNDRV_PCM_INFO_MMAP_VALID |
+				 SNDRV_PCM_INFO_BATCH),
 	.formats =		SNDRV_PCM_FMTBIT_S16_LE | SNDRV_PCM_FMTBIT_S16_BE |
 				SNDRV_PCM_FMTBIT_S24_3LE | SNDRV_PCM_FMTBIT_S24_3BE |
 				SNDRV_PCM_FMTBIT_S32_LE | SNDRV_PCM_FMTBIT_S32_BE,
@@ -319,6 +326,8 @@ static struct snd_pcm_ops pdacf_pcm_capture_ops = {
 	.trigger =	pdacf_pcm_trigger,
 	.pointer =	pdacf_pcm_capture_pointer,
 	.page =		snd_pcm_get_vmalloc_page,
+	.page =		snd_pcm_lib_get_vmalloc_page,
+	.mmap =		snd_pcm_lib_mmap_vmalloc,
 };
 
 
@@ -338,6 +347,7 @@ int snd_pdacf_pcm_new(struct snd_pdacf *chip)
 
 	pcm->private_data = chip;
 	pcm->info_flags = 0;
+	pcm->nonatomic = true;
 	strcpy(pcm->name, chip->card->shortname);
 	chip->pcm = pcm;
 	

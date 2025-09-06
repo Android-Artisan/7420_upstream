@@ -37,6 +37,11 @@ void __init p3_cache_init(void)
 #define sh64_dcache_purge_virt_page(mm, eaddr)			do { } while (0)
 #endif
 
+extern void __weak sh4__flush_region_init(void);
+
+/* Wired TLB entry for the D-cache */
+static unsigned long long dtlb_cache_slot;
+
 /*
  * The following group of functions deal with mapping and unmapping a
  * temporary page into a DTLB slot that has been set aside for exclusive
@@ -61,6 +66,10 @@ static inline void sh64_icache_inv_all(void)
 {
 	unsigned long long addr, flag, data;
 	unsigned int flags;
+static inline void sh64_icache_inv_all(void)
+{
+	unsigned long long addr, flag, data;
+	unsigned long flags;
 
 	addr = ICCR0;
 	flag = ICCR0_ICI;
@@ -173,6 +182,7 @@ static void sh64_icache_inv_user_page_range(struct mm_struct *mm,
 		unsigned long after_last_page_start;
 		unsigned long mm_asid, current_asid;
 		unsigned long long flags = 0ULL;
+		unsigned long flags = 0;
 
 		mm_asid = cpu_asid(smp_processor_id(), mm);
 		current_asid = get_asid();
@@ -290,6 +300,7 @@ static void sh64_icache_inv_current_user_range(unsigned long start, unsigned lon
 #endif /* !CONFIG_ICACHE_DISABLED */
 
 #ifndef CONFIG_DCACHE_DISABLED
+
 /* Buffer used as the target of alloco instructions to purge data from cache
    sets by natural eviction. -- RPC */
 #define DUMMY_ALLOCO_AREA_SIZE ((L1_CACHE_BYTES << 10) + (1024 * 4))
@@ -343,6 +354,7 @@ static void inline sh64_dcache_purge_sets(int sets_to_purge_base, int n_sets)
 			 */
 			if (test_bit(SH_CACHE_MODE_WT, &(cpu_data->dcache.flags)))
 				ctrl_inb(eaddr);
+				__raw_readb((unsigned long)eaddr);
 		}
 	}
 
@@ -594,6 +606,10 @@ void __flush_invalidate_region(void *start, int size)
  * memory any dirty data from the D-cache.
  */
 void flush_cache_all(void)
+ * Invalidate the entire contents of both caches, after writing back to
+ * memory any dirty data from the D-cache.
+ */
+static void sh5_flush_cache_all(void *unused)
 {
 	sh64_dcache_purge_all();
 	sh64_icache_inv_all();
@@ -621,6 +637,7 @@ void flush_cache_all(void)
  * flush_tlb_mm - see fault.c.
  */
 void flush_cache_mm(struct mm_struct *mm)
+static void sh5_flush_cache_mm(void *unused)
 {
 	sh64_dcache_purge_all();
 }
@@ -639,6 +656,18 @@ void flush_cache_range(struct vm_area_struct *vma, unsigned long start,
 
 	sh64_dcache_purge_user_range(mm, start, end);
 	sh64_icache_inv_user_page_range(mm, start, end);
+static void sh5_flush_cache_range(void *args)
+{
+	struct flusher_data *data = args;
+	struct vm_area_struct *vma;
+	unsigned long start, end;
+
+	vma = data->vma;
+	start = data->addr1;
+	end = data->addr2;
+
+	sh64_dcache_purge_user_range(vma->vm_mm, start, end);
+	sh64_icache_inv_user_page_range(vma->vm_mm, start, end);
 }
 
 /*
@@ -653,6 +682,16 @@ void flush_cache_range(struct vm_area_struct *vma, unsigned long start,
 void flush_cache_page(struct vm_area_struct *vma, unsigned long eaddr,
 		      unsigned long pfn)
 {
+static void sh5_flush_cache_page(void *args)
+{
+	struct flusher_data *data = args;
+	struct vm_area_struct *vma;
+	unsigned long eaddr, pfn;
+
+	vma = data->vma;
+	eaddr = data->addr1;
+	pfn = data->addr2;
+
 	sh64_dcache_purge_phy_page(pfn << PAGE_SHIFT);
 
 	if (vma->vm_flags & VM_EXEC)
@@ -662,11 +701,15 @@ void flush_cache_page(struct vm_area_struct *vma, unsigned long eaddr,
 void flush_dcache_page(struct page *page)
 {
 	sh64_dcache_purge_phy_page(page_to_phys(page));
+static void sh5_flush_dcache_page(void *page)
+{
+	sh64_dcache_purge_phy_page(page_to_phys((struct page *)page));
 	wmb();
 }
 
 /*
  * Flush the range [start,end] of kernel virtual adddress space from
+ * Flush the range [start,end] of kernel virtual address space from
  * the I-cache.  The corresponding range must be purged from the
  * D-cache also because the SH-5 doesn't have cache snooping between
  * the caches.  The addresses will be visible through the superpage
@@ -675,6 +718,14 @@ void flush_dcache_page(struct page *page)
  */
 void flush_icache_range(unsigned long start, unsigned long end)
 {
+static void sh5_flush_icache_range(void *args)
+{
+	struct flusher_data *data = args;
+	unsigned long start, end;
+
+	start = data->addr1;
+	end = data->addr2;
+
 	__flush_purge_region((void *)start, end);
 	wmb();
 	sh64_icache_inv_kernel_range(start, end);
@@ -832,3 +883,28 @@ void clear_user_page(void *to, unsigned long address, struct page *page)
 		sh64_clear_user_page_coloured(to, address);
 }
 #endif
+static void sh5_flush_cache_sigtramp(void *vaddr)
+{
+	unsigned long end = (unsigned long)vaddr + L1_CACHE_BYTES;
+
+	__flush_wback_region(vaddr, L1_CACHE_BYTES);
+	wmb();
+	sh64_icache_inv_current_user_range((unsigned long)vaddr, end);
+}
+
+void __init sh5_cache_init(void)
+{
+	local_flush_cache_all		= sh5_flush_cache_all;
+	local_flush_cache_mm		= sh5_flush_cache_mm;
+	local_flush_cache_dup_mm	= sh5_flush_cache_mm;
+	local_flush_cache_page		= sh5_flush_cache_page;
+	local_flush_cache_range		= sh5_flush_cache_range;
+	local_flush_dcache_page		= sh5_flush_dcache_page;
+	local_flush_icache_range	= sh5_flush_icache_range;
+	local_flush_cache_sigtramp	= sh5_flush_cache_sigtramp;
+
+	/* Reserve a slot for dcache colouring in the DTLB */
+	dtlb_cache_slot	= sh64_get_wired_dtlb_entry();
+
+	sh4__flush_region_init();
+}

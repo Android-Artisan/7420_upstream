@@ -47,6 +47,8 @@
 #define ENV_TTY_DEV		0x0F
 
 #ifdef __KERNEL__
+#include <uapi/asm/console.h>
+
 #ifndef __ASSEMBLY__
 extern long callback_puts(long unit, const char *s, long length);
 extern long callback_getc(long unit);

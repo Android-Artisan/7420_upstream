@@ -18,6 +18,7 @@
 #include <linux/buffer_head.h>
 #include <linux/string.h>
 
+#include <linux/buffer_head.h>
 #include "adfs.h"
 #include "dir_f.h"
 
@@ -217,6 +218,8 @@ release_buffers:
  */
 static inline void
 adfs_dir2obj(struct object_info *obj, struct adfs_direntry *de)
+adfs_dir2obj(struct adfs_dir *dir, struct object_info *obj,
+	struct adfs_direntry *de)
 {
 	obj->name_len =	adfs_readname(obj->name, de->dirobname, ADFS_F_NAME_LEN);
 	obj->file_id  = adfs_readval(de->dirinddiscadd, 3);
@@ -224,6 +227,23 @@ adfs_dir2obj(struct object_info *obj, struct adfs_direntry *de)
 	obj->execaddr = adfs_readval(de->direxec, 4);
 	obj->size     = adfs_readval(de->dirlen,  4);
 	obj->attr     = de->newdiratts;
+	obj->filetype = -1;
+
+	/*
+	 * object is a file and is filetyped and timestamped?
+	 * RISC OS 12-bit filetype is stored in load_address[19:8]
+	 */
+	if ((0 == (obj->attr & ADFS_NDA_DIRECTORY)) &&
+		(0xfff00000 == (0xfff00000 & obj->loadaddr))) {
+		obj->filetype = (__u16) ((0x000fff00 & obj->loadaddr) >> 8);
+
+		/* optionally append the ,xyz hex filetype suffix */
+		if (ADFS_SB(dir->sb)->s_ftsuffix)
+			obj->name_len +=
+				append_filetype_suffix(
+					&obj->name[obj->name_len],
+					obj->filetype);
+	}
 }
 
 /*
@@ -269,6 +289,7 @@ __adfs_dir_get(struct adfs_dir *dir, int pos, struct object_info *obj)
 		return -ENOENT;
 
 	adfs_dir2obj(obj, &de);
+	adfs_dir2obj(dir, obj, &de);
 
 	return 0;
 }
@@ -437,6 +458,22 @@ bad_dir:
 #endif
 }
 
+static int
+adfs_f_sync(struct adfs_dir *dir)
+{
+	int err = 0;
+	int i;
+
+	for (i = dir->nr_buffers - 1; i >= 0; i--) {
+		struct buffer_head *bh = dir->bh[i];
+		sync_dirty_buffer(bh);
+		if (buffer_req(bh) && !buffer_uptodate(bh))
+			err = -EIO;
+	}
+
+	return err;
+}
+
 static void
 adfs_f_free(struct adfs_dir *dir)
 {
@@ -456,5 +493,6 @@ struct adfs_dir_ops adfs_f_dir_ops = {
 	.setpos		= adfs_f_setpos,
 	.getnext	= adfs_f_getnext,
 	.update		= adfs_f_update,
+	.sync		= adfs_f_sync,
 	.free		= adfs_f_free
 };

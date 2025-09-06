@@ -9,11 +9,13 @@
  * published by the Free Software Foundation.
  *
  */
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 #include <linux/module.h>
 #include <linux/proc_fs.h>
 #include <linux/jhash.h>
 #include <linux/bitops.h>
 #include <linux/skbuff.h>
+#include <linux/slab.h>
 #include <linux/ip.h>
 #include <linux/tcp.h>
 #include <linux/udp.h>
@@ -27,6 +29,9 @@
 #include <net/netfilter/nf_conntrack.h>
 #include <net/net_namespace.h>
 #include <net/checksum.h>
+#include <net/netns/generic.h>
+#include <net/checksum.h>
+#include <net/ip.h>
 
 #define CLUSTERIP_VERSION "0.8"
 
@@ -63,10 +68,35 @@ static const struct file_operations clusterip_proc_fops;
 static struct proc_dir_entry *clusterip_procdir;
 #endif
 
+	struct rcu_head rcu;
+};
+
+#ifdef CONFIG_PROC_FS
+static const struct file_operations clusterip_proc_fops;
+#endif
+
+static int clusterip_net_id __read_mostly;
+
+struct clusterip_net {
+	struct list_head configs;
+	/* lock protects the configs list */
+	spinlock_t lock;
+
+#ifdef CONFIG_PROC_FS
+	struct proc_dir_entry *procdir;
+#endif
+};
+
 static inline void
 clusterip_config_get(struct clusterip_config *c)
 {
 	atomic_inc(&c->refcount);
+}
+
+
+static void clusterip_config_rcu_free(struct rcu_head *head)
+{
+	kfree(container_of(head, struct clusterip_config, rcu));
 }
 
 static inline void
@@ -74,6 +104,7 @@ clusterip_config_put(struct clusterip_config *c)
 {
 	if (atomic_dec_and_test(&c->refcount))
 		kfree(c);
+		call_rcu_bh(&c->rcu, clusterip_config_rcu_free);
 }
 
 /* decrease the count of entries using/referencing this config.  If last
@@ -88,6 +119,16 @@ clusterip_config_entry_put(struct clusterip_config *c)
 		write_unlock_bh(&clusterip_lock);
 
 		dev_mc_delete(c->dev, c->clustermac, ETH_ALEN, 0);
+	struct net *net = dev_net(c->dev);
+	struct clusterip_net *cn = net_generic(net, clusterip_net_id);
+
+	local_bh_disable();
+	if (atomic_dec_and_lock(&c->entries, &cn->lock)) {
+		list_del_rcu(&c->list);
+		spin_unlock(&cn->lock);
+		local_bh_enable();
+
+		dev_mc_del(c->dev, c->clustermac);
 		dev_put(c->dev);
 
 		/* In case anyone still accesses the file, the open/close
@@ -107,6 +148,20 @@ __clusterip_config_find(__be32 clusterip)
 	struct clusterip_config *c;
 
 	list_for_each_entry(c, &clusterip_configs, list) {
+		proc_remove(c->pde);
+#endif
+		return;
+	}
+	local_bh_enable();
+}
+
+static struct clusterip_config *
+__clusterip_config_find(struct net *net, __be32 clusterip)
+{
+	struct clusterip_config *c;
+	struct clusterip_net *cn = net_generic(net, clusterip_net_id);
+
+	list_for_each_entry_rcu(c, &cn->configs, list) {
 		if (c->clusterip == clusterip)
 			return c;
 	}
@@ -129,6 +184,19 @@ clusterip_config_find_get(__be32 clusterip, int entry)
 	if (entry)
 		atomic_inc(&c->entries);
 	read_unlock_bh(&clusterip_lock);
+clusterip_config_find_get(struct net *net, __be32 clusterip, int entry)
+{
+	struct clusterip_config *c;
+
+	rcu_read_lock_bh();
+	c = __clusterip_config_find(net, clusterip);
+	if (c) {
+		if (unlikely(!atomic_inc_not_zero(&c->refcount)))
+			c = NULL;
+		else if (entry)
+			atomic_inc(&c->entries);
+	}
+	rcu_read_unlock_bh();
 
 	return c;
 }
@@ -148,6 +216,7 @@ clusterip_config_init(const struct ipt_clusterip_tgt_info *i, __be32 ip,
 			struct net_device *dev)
 {
 	struct clusterip_config *c;
+	struct clusterip_net *cn = net_generic(dev_net(dev), clusterip_net_id);
 
 	c = kzalloc(sizeof(*c), GFP_ATOMIC);
 	if (!c)
@@ -171,6 +240,9 @@ clusterip_config_init(const struct ipt_clusterip_tgt_info *i, __be32 ip,
 		sprintf(buffer, "%u.%u.%u.%u", NIPQUAD(ip));
 		c->pde = proc_create_data(buffer, S_IWUSR|S_IRUSR,
 					  clusterip_procdir,
+		sprintf(buffer, "%pI4", &ip);
+		c->pde = proc_create_data(buffer, S_IWUSR|S_IRUSR,
+					  cn->procdir,
 					  &clusterip_proc_fops, c);
 		if (!c->pde) {
 			kfree(c);
@@ -182,6 +254,9 @@ clusterip_config_init(const struct ipt_clusterip_tgt_info *i, __be32 ip,
 	write_lock_bh(&clusterip_lock);
 	list_add(&c->list, &clusterip_configs);
 	write_unlock_bh(&clusterip_lock);
+	spin_lock_bh(&cn->lock);
+	list_add_rcu(&c->list, &cn->configs);
+	spin_unlock_bh(&cn->lock);
 
 	return c;
 }
@@ -241,6 +316,21 @@ clusterip_hashfn(const struct sk_buff *skb,
 			printk(KERN_NOTICE "CLUSTERIP: unknown protocol `%u'\n",
 				iph->protocol);
 		sport = dport = 0;
+	u_int16_t sport = 0, dport = 0;
+	int poff;
+
+	poff = proto_ports_offset(iph->protocol);
+	if (poff >= 0) {
+		const u_int16_t *ports;
+		u16 _ports[2];
+
+		ports = skb_header_pointer(skb, iph->ihl * 4 + poff, 4, _ports);
+		if (ports) {
+			sport = ports[0];
+			dport = ports[1];
+		}
+	} else {
+		net_info_ratelimited("unknown protocol %u\n", iph->protocol);
 	}
 
 	switch (config->hash_mode) {
@@ -262,12 +352,14 @@ clusterip_hashfn(const struct sk_buff *skb,
 		/* This cannot happen, unless the check function wasn't called
 		 * at rule load time */
 		printk("CLUSTERIP: unknown mode `%u'\n", config->hash_mode);
+		pr_info("unknown mode %u\n", config->hash_mode);
 		BUG();
 		break;
 	}
 
 	/* node numbers are 1..n, not 0..n */
 	return (((u64)hashval * config->num_total_nodes) >> 32) + 1;
+	return reciprocal_scale(hashval, config->num_total_nodes) + 1;
 }
 
 static inline int
@@ -286,6 +378,9 @@ clusterip_tg(struct sk_buff *skb, const struct net_device *in,
              const struct xt_target *target, const void *targinfo)
 {
 	const struct ipt_clusterip_tgt_info *cipinfo = targinfo;
+clusterip_tg(struct sk_buff *skb, const struct xt_action_param *par)
+{
+	const struct ipt_clusterip_tgt_info *cipinfo = par->targinfo;
 	struct nf_conn *ct;
 	enum ip_conntrack_info ctinfo;
 	u_int32_t hash;
@@ -308,6 +403,14 @@ clusterip_tg(struct sk_buff *skb, const struct net_device *in,
 	if (ip_hdr(skb)->protocol == IPPROTO_ICMP
 	    && (ctinfo == IP_CT_RELATED
 		|| ctinfo == IP_CT_RELATED+IP_CT_IS_REPLY))
+	if (ct == NULL)
+		return NF_DROP;
+
+	/* special case: ICMP error handling. conntrack distinguishes between
+	 * error messages (RELATED) and information requests (see below) */
+	if (ip_hdr(skb)->protocol == IPPROTO_ICMP &&
+	    (ctinfo == IP_CT_RELATED ||
+	     ctinfo == IP_CT_RELATED_REPLY))
 		return XT_CONTINUE;
 
 	/* ip_conntrack_icmp guarantees us that we only have ICMP_ECHO,
@@ -330,6 +433,19 @@ clusterip_tg(struct sk_buff *skb, const struct net_device *in,
 			break;
 		default:
 			break;
+	case IP_CT_NEW:
+		ct->mark = hash;
+		break;
+	case IP_CT_RELATED:
+	case IP_CT_RELATED_REPLY:
+		/* FIXME: we don't handle expectations at the moment.
+		 * They can arrive on a different node than
+		 * the master connection (e.g. FTP passive mode) */
+	case IP_CT_ESTABLISHED:
+	case IP_CT_ESTABLISHED_REPLY:
+		break;
+	default:			/* Prevent gcc warnings */
+		break;
 	}
 
 #ifdef DEBUG
@@ -358,6 +474,17 @@ clusterip_tg_check(const char *tablename, const void *e_void,
 	const struct ipt_entry *e = e_void;
 
 	struct clusterip_config *config;
+static int clusterip_tg_check(const struct xt_tgchk_param *par)
+{
+	struct ipt_clusterip_tgt_info *cipinfo = par->targinfo;
+	const struct ipt_entry *e = par->entryinfo;
+	struct clusterip_config *config;
+	int ret, i;
+
+	if (par->nft_compat) {
+		pr_err("cannot use CLUSTERIP target from nftables compat\n");
+		return -EOPNOTSUPP;
+	}
 
 	if (cipinfo->hash_mode != CLUSTERIP_HASHMODE_SIP &&
 	    cipinfo->hash_mode != CLUSTERIP_HASHMODE_SIP_SPT &&
@@ -371,15 +498,39 @@ clusterip_tg_check(const char *tablename, const void *e_void,
 	    || e->ip.dst.s_addr == 0) {
 		printk(KERN_ERR "CLUSTERIP: Please specify destination IP\n");
 		return false;
-	}
+		pr_info("unknown mode %u\n", cipinfo->hash_mode);
+		return -EINVAL;
 
-	/* FIXME: further sanity checks */
+	}
+	if (e->ip.dmsk.s_addr != htonl(0xffffffff) ||
+	    e->ip.dst.s_addr == 0) {
+		pr_info("Please specify destination IP\n");
+		return -EINVAL;
+	}
+	if (cipinfo->num_local_nodes > ARRAY_SIZE(cipinfo->local_nodes)) {
+		pr_info("bad num_local_nodes %u\n", cipinfo->num_local_nodes);
+		return -EINVAL;
+	}
+	for (i = 0; i < cipinfo->num_local_nodes; i++) {
+		if (cipinfo->local_nodes[i] - 1 >=
+		    sizeof(config->local_nodes) * 8) {
+			pr_info("bad local_nodes[%d] %u\n",
+				i, cipinfo->local_nodes[i]);
+			return -EINVAL;
+		}
+	}
 
 	config = clusterip_config_find_get(e->ip.dst.s_addr, 1);
 	if (!config) {
 		if (!(cipinfo->flags & CLUSTERIP_FLAG_NEW)) {
 			printk(KERN_WARNING "CLUSTERIP: no config found for %u.%u.%u.%u, need 'new'\n", NIPQUAD(e->ip.dst.s_addr));
 			return false;
+	config = clusterip_config_find_get(par->net, e->ip.dst.s_addr, 1);
+	if (!config) {
+		if (!(cipinfo->flags & CLUSTERIP_FLAG_NEW)) {
+			pr_info("no config found for %pI4, need 'new'\n",
+				&e->ip.dst.s_addr);
+			return -EINVAL;
 		} else {
 			struct net_device *dev;
 
@@ -392,6 +543,15 @@ clusterip_tg_check(const char *tablename, const void *e_void,
 			if (!dev) {
 				printk(KERN_WARNING "CLUSTERIP: no such interface %s\n", e->ip.iniface);
 				return false;
+				pr_info("Please specify an interface name\n");
+				return -EINVAL;
+			}
+
+			dev = dev_get_by_name(par->net, e->ip.iniface);
+			if (!dev) {
+				pr_info("no such interface %s\n",
+					e->ip.iniface);
+				return -ENOENT;
 			}
 
 			config = clusterip_config_init(cipinfo,
@@ -402,6 +562,10 @@ clusterip_tg_check(const char *tablename, const void *e_void,
 				return false;
 			}
 			dev_mc_add(config->dev,config->clustermac, ETH_ALEN, 0);
+				dev_put(dev);
+				return -ENOMEM;
+			}
+			dev_mc_add(config->dev, config->clustermac);
 		}
 	}
 	cipinfo->config = config;
@@ -419,6 +583,24 @@ clusterip_tg_check(const char *tablename, const void *e_void,
 static void clusterip_tg_destroy(const struct xt_target *target, void *targinfo)
 {
 	const struct ipt_clusterip_tgt_info *cipinfo = targinfo;
+	ret = nf_ct_l3proto_try_module_get(par->family);
+	if (ret < 0)
+		pr_info("cannot load conntrack support for proto=%u\n",
+			par->family);
+
+	if (!par->net->xt.clusterip_deprecated_warning) {
+		pr_info("ipt_CLUSTERIP is deprecated and it will removed soon, "
+			"use xt_cluster instead\n");
+		par->net->xt.clusterip_deprecated_warning = true;
+	}
+
+	return ret;
+}
+
+/* drop reference count of cluster config when rule is deleted */
+static void clusterip_tg_destroy(const struct xt_tgdtor_param *par)
+{
+	const struct ipt_clusterip_tgt_info *cipinfo = par->targinfo;
 
 	/* if no more entries are referencing the config, remove it
 	 * from the list and destroy the proc entry */
@@ -427,6 +609,7 @@ static void clusterip_tg_destroy(const struct xt_target *target, void *targinfo)
 	clusterip_config_put(cipinfo->config);
 
 	nf_ct_l3proto_module_put(target->family);
+	nf_ct_l3proto_module_put(par->family);
 }
 
 #ifdef CONFIG_COMPAT
@@ -446,6 +629,7 @@ struct compat_ipt_clusterip_tgt_info
 static struct xt_target clusterip_tg_reg __read_mostly = {
 	.name		= "CLUSTERIP",
 	.family		= AF_INET,
+	.family		= NFPROTO_IPV4,
 	.target		= clusterip_tg,
 	.checkentry	= clusterip_tg_check,
 	.destroy	= clusterip_tg_destroy,
@@ -468,6 +652,7 @@ struct arp_payload {
 	u_int8_t dst_hw[ETH_ALEN];
 	__be32 dst_ip;
 } __attribute__ ((packed));
+} __packed;
 
 #ifdef DEBUG
 static void arp_print(struct arp_payload *payload)
@@ -486,6 +671,17 @@ static void arp_print(struct arp_payload *payload)
 	printk("src %u.%u.%u.%u@%s, dst %u.%u.%u.%u\n",
 		NIPQUAD(payload->src_ip), hbuffer,
 		NIPQUAD(payload->dst_ip));
+	int j, k;
+
+	for (k = 0, j = 0; k < HBUFFERLEN - 3 && j < ETH_ALEN; j++) {
+		hbuffer[k++] = hex_asc_hi(payload->src_hw[j]);
+		hbuffer[k++] = hex_asc_lo(payload->src_hw[j]);
+		hbuffer[k++] = ':';
+	}
+	hbuffer[--k] = '\0';
+
+	pr_debug("src %pI4@%s, dst %pI4\n",
+		 &payload->src_ip, hbuffer, &payload->dst_ip);
 }
 #endif
 
@@ -495,6 +691,9 @@ arp_mangle(unsigned int hook,
 	   const struct net_device *in,
 	   const struct net_device *out,
 	   int (*okfn)(struct sk_buff *))
+arp_mangle(void *priv,
+	   struct sk_buff *skb,
+	   const struct nf_hook_state *state)
 {
 	struct arphdr *arp = arp_hdr(skb);
 	struct arp_payload *payload;
@@ -509,6 +708,17 @@ arp_mangle(unsigned int hook,
 	/* we only want to mangle arp requests and replies */
 	if (arp->ar_op != htons(ARPOP_REPLY)
 	    && arp->ar_op != htons(ARPOP_REQUEST))
+	struct net *net = state->net;
+
+	/* we don't care about non-ethernet and non-ipv4 ARP */
+	if (arp->ar_hrd != htons(ARPHRD_ETHER) ||
+	    arp->ar_pro != htons(ETH_P_IP) ||
+	    arp->ar_pln != 4 || arp->ar_hln != ETH_ALEN)
+		return NF_ACCEPT;
+
+	/* we only want to mangle arp requests and replies */
+	if (arp->ar_op != htons(ARPOP_REPLY) &&
+	    arp->ar_op != htons(ARPOP_REQUEST))
 		return NF_ACCEPT;
 
 	payload = (void *)(arp+1);
@@ -516,6 +726,7 @@ arp_mangle(unsigned int hook,
 	/* if there is no clusterip configuration for the arp reply's
 	 * source ip, we don't want to mangle it */
 	c = clusterip_config_find_get(payload->src_ip, 0);
+	c = clusterip_config_find_get(net, payload->src_ip, 0);
 	if (!c)
 		return NF_ACCEPT;
 
@@ -527,6 +738,10 @@ arp_mangle(unsigned int hook,
 		pr_debug("CLUSTERIP: not mangling arp reply on different "
 			 "interface: cip'%s'-skb'%s'\n",
 			 c->dev->name, out->name);
+	if (c->dev != state->out) {
+		pr_debug("not mangling arp reply on different "
+			 "interface: cip'%s'-skb'%s'\n",
+			 c->dev->name, state->out->name);
 		clusterip_config_put(c);
 		return NF_ACCEPT;
 	}
@@ -536,6 +751,7 @@ arp_mangle(unsigned int hook,
 
 #ifdef DEBUG
 	pr_debug(KERN_DEBUG "CLUSTERIP mangled arp reply: ");
+	pr_debug("mangled arp reply: ");
 	arp_print(payload);
 #endif
 
@@ -547,6 +763,7 @@ arp_mangle(unsigned int hook,
 static struct nf_hook_ops cip_arp_ops __read_mostly = {
 	.hook = arp_mangle,
 	.pf = NF_ARP,
+	.pf = NFPROTO_ARP,
 	.hooknum = NF_ARP_OUT,
 	.priority = -1
 };
@@ -568,6 +785,7 @@ static void *clusterip_seq_start(struct seq_file *s, loff_t *pos)
 {
 	const struct proc_dir_entry *pde = s->private;
 	struct clusterip_config *c = pde->data;
+	struct clusterip_config *c = s->private;
 	unsigned int weight;
 	u_int32_t local_nodes;
 	struct clusterip_seq_position *idx;
@@ -608,6 +826,8 @@ static void *clusterip_seq_next(struct seq_file *s, void *v, loff_t *pos)
 static void clusterip_seq_stop(struct seq_file *s, void *v)
 {
 	kfree(v);
+	if (!IS_ERR(v))
+		kfree(v);
 }
 
 static int clusterip_seq_show(struct seq_file *s, void *v)
@@ -642,6 +862,9 @@ static int clusterip_proc_open(struct inode *inode, struct file *file)
 		struct clusterip_config *c = pde->data;
 
 		sf->private = pde;
+		struct clusterip_config *c = PDE_DATA(inode);
+
+		sf->private = c;
 
 		clusterip_config_get(c);
 	}
@@ -653,6 +876,7 @@ static int clusterip_proc_release(struct inode *inode, struct file *file)
 {
 	struct proc_dir_entry *pde = PDE(inode);
 	struct clusterip_config *c = pde->data;
+	struct clusterip_config *c = PDE_DATA(inode);
 	int ret;
 
 	ret = seq_release(inode, file);
@@ -681,6 +905,28 @@ static ssize_t clusterip_proc_write(struct file *file, const char __user *input,
 			return -ENOMEM;
 	} else if (*buffer == '-') {
 		nodenum = simple_strtoul(buffer+1, NULL,10);
+	struct clusterip_config *c = PDE_DATA(file_inode(file));
+#define PROC_WRITELEN	10
+	char buffer[PROC_WRITELEN+1];
+	unsigned long nodenum;
+	int rc;
+
+	if (size > PROC_WRITELEN)
+		return -EIO;
+	if (copy_from_user(buffer, input, size))
+		return -EFAULT;
+	buffer[size] = 0;
+
+	if (*buffer == '+') {
+		rc = kstrtoul(buffer+1, 10, &nodenum);
+		if (rc)
+			return rc;
+		if (clusterip_add_node(c, nodenum))
+			return -ENOMEM;
+	} else if (*buffer == '-') {
+		rc = kstrtoul(buffer+1, 10, &nodenum);
+		if (rc)
+			return rc;
 		if (clusterip_del_node(c, nodenum))
 			return -ENOENT;
 	} else
@@ -700,6 +946,40 @@ static const struct file_operations clusterip_proc_fops = {
 
 #endif /* CONFIG_PROC_FS */
 
+static int clusterip_net_init(struct net *net)
+{
+	struct clusterip_net *cn = net_generic(net, clusterip_net_id);
+
+	INIT_LIST_HEAD(&cn->configs);
+
+	spin_lock_init(&cn->lock);
+
+#ifdef CONFIG_PROC_FS
+	cn->procdir = proc_mkdir("ipt_CLUSTERIP", net->proc_net);
+	if (!cn->procdir) {
+		pr_err("Unable to proc dir entry\n");
+		return -ENOMEM;
+	}
+#endif /* CONFIG_PROC_FS */
+
+	return 0;
+}
+
+static void clusterip_net_exit(struct net *net)
+{
+#ifdef CONFIG_PROC_FS
+	struct clusterip_net *cn = net_generic(net, clusterip_net_id);
+	proc_remove(cn->procdir);
+#endif
+}
+
+static struct pernet_operations clusterip_net_ops = {
+	.init = clusterip_net_init,
+	.exit = clusterip_net_exit,
+	.id   = &clusterip_net_id,
+	.size = sizeof(struct clusterip_net),
+};
+
 static int __init clusterip_tg_init(void)
 {
 	int ret;
@@ -707,6 +987,14 @@ static int __init clusterip_tg_init(void)
 	ret = xt_register_target(&clusterip_tg_reg);
 	if (ret < 0)
 		return ret;
+
+	ret = register_pernet_subsys(&clusterip_net_ops);
+	if (ret < 0)
+		return ret;
+
+	ret = xt_register_target(&clusterip_tg_reg);
+	if (ret < 0)
+		goto cleanup_subsys;
 
 	ret = nf_register_hook(&cip_arp_ops);
 	if (ret < 0)
@@ -731,6 +1019,15 @@ cleanup_hook:
 #endif /* CONFIG_PROC_FS */
 cleanup_target:
 	xt_unregister_target(&clusterip_tg_reg);
+	pr_info("ClusterIP Version %s loaded successfully\n",
+		CLUSTERIP_VERSION);
+
+	return 0;
+
+cleanup_target:
+	xt_unregister_target(&clusterip_tg_reg);
+cleanup_subsys:
+	unregister_pernet_subsys(&clusterip_net_ops);
 	return ret;
 }
 
@@ -743,6 +1040,14 @@ static void __exit clusterip_tg_exit(void)
 #endif
 	nf_unregister_hook(&cip_arp_ops);
 	xt_unregister_target(&clusterip_tg_reg);
+	pr_info("ClusterIP Version %s unloading\n", CLUSTERIP_VERSION);
+
+	nf_unregister_hook(&cip_arp_ops);
+	xt_unregister_target(&clusterip_tg_reg);
+	unregister_pernet_subsys(&clusterip_net_ops);
+
+	/* Wait for completion of call_rcu_bh()'s (clusterip_config_rcu_free) */
+	rcu_barrier_bh();
 }
 
 module_init(clusterip_tg_init);

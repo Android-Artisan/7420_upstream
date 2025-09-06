@@ -19,12 +19,21 @@ int init_pagetables(struct page **switcher_page, unsigned int pages);
 struct pgdir
 {
 	unsigned long gpgdir;
+#include <linux/slab.h>
+
+#include <asm/lguest.h>
+
+struct pgdir {
+	unsigned long gpgdir;
+	bool switcher_mapped;
+	int last_host_cpu;
 	pgd_t *pgdir;
 };
 
 /* We have two pages shared with guests, per cpu.  */
 struct lguest_pages
 {
+struct lguest_pages {
 	/* This is the stack page mapped rw in guest */
 	char spare[PAGE_SIZE - sizeof(struct lguest_regs)];
 	struct lguest_regs regs;
@@ -50,6 +59,7 @@ struct lg_cpu {
 	int ts;
 	u32 esp1;
 	u8 ss1;
+	u16 ss1;
 
 	/* Bitmap of what has changed: see CHANGED_* above. */
 	int changed;
@@ -57,12 +67,21 @@ struct lg_cpu {
 	unsigned long pending_notify; /* pfn from LHCALL_NOTIFY */
 
 	/* At end of a page shared mapped over lguest_pages in guest.  */
+	/* Pending operation. */
+	struct lguest_pending pending;
+
+	unsigned long *reg_read; /* register from LHREQ_GETREG */
+
+	/* At end of a page shared mapped over lguest_pages in guest. */
 	unsigned long regs_page;
 	struct lguest_regs *regs;
 
 	struct lguest_pages *last_pages;
 
 	int cpu_pgd; /* which pgd this cpu is currently using */
+	/* Initialization mode: linear map everything. */
+	bool linear_pages;
+	int cpu_pgd; /* Which pgd this cpu is currently using */
 
 	/* If a hypercall was asked for, this points to the arguments. */
 	struct hcall_args *hcall;
@@ -74,6 +93,7 @@ struct lg_cpu {
 	/* Do we need to stop what we're doing and return to userspace? */
 	int break_out;
 	wait_queue_head_t break_wq;
+	/* Did the Guest tell us to halt? */
 	int halted;
 
 	/* Pending virtual interrupts */
@@ -85,6 +105,7 @@ struct lg_cpu {
 /* The private info the thread maintains about the guest. */
 struct lguest
 {
+struct lguest {
 	struct lguest_data __user *lguest_data;
 	struct lg_cpu cpus[NR_CPUS];
 	unsigned int nr_cpus;
@@ -92,12 +113,23 @@ struct lguest
 	u32 pfn_limit;
 	/* This provides the offset to the base of guest-physical
 	 * memory in the Launcher. */
+	/* Valid guest memory pages must be < this. */
+	u32 pfn_limit;
+
+	/* Device memory is >= pfn_limit and < device_limit. */
+	u32 device_limit;
+
+	/*
+	 * This provides the offset to the base of guest-physical memory in the
+	 * Launcher.
+	 */
 	void __user *mem_base;
 	unsigned long kernel_address;
 
 	struct pgdir pgdirs[4];
 
 	unsigned long noirq_start, noirq_end;
+	unsigned long noirq_iret;
 
 	unsigned int stack_pages;
 	u32 tsc_khz;
@@ -119,6 +151,19 @@ void __lgwrite(struct lg_cpu *, unsigned long, const void *, unsigned);
  * an unsigned long).
  *
  * This reads into a variable of the given type then returns that. */
+bool lguest_address_ok(const struct lguest *lg,
+		       unsigned long addr, unsigned long len);
+void __lgread(struct lg_cpu *, void *, unsigned long, unsigned);
+void __lgwrite(struct lg_cpu *, unsigned long, const void *, unsigned);
+extern struct page **lg_switcher_pages;
+
+/*H:035
+ * Using memory-copy operations like that is usually inconvient, so we
+ * have the following helper macros which read and write a specific type (often
+ * an unsigned long).
+ *
+ * This reads into a variable of the given type then returns that.
+ */
 #define lgread(cpu, addr, type)						\
 	({ type _v; __lgread((cpu), &_v, (addr), sizeof(_v)); _v; })
 
@@ -141,6 +186,21 @@ int run_guest(struct lg_cpu *cpu, unsigned long __user *user);
 /* interrupts_and_traps.c: */
 void maybe_do_interrupt(struct lg_cpu *cpu);
 int deliver_trap(struct lg_cpu *cpu, unsigned int num);
+/*
+ * Helper macros to obtain the first 12 or the last 20 bits, this is only the
+ * first step in the migration to the kernel types.  pte_pfn is already defined
+ * in the kernel.
+ */
+#define pgd_flags(x)	(pgd_val(x) & ~PAGE_MASK)
+#define pgd_pfn(x)	(pgd_val(x) >> PAGE_SHIFT)
+#define pmd_flags(x)    (pmd_val(x) & ~PAGE_MASK)
+#define pmd_pfn(x)	(pmd_val(x) >> PAGE_SHIFT)
+
+/* interrupts_and_traps.c: */
+unsigned int interrupt_pending(struct lg_cpu *cpu, bool *more);
+void try_deliver_interrupt(struct lg_cpu *cpu, unsigned int irq, bool more);
+void set_interrupt(struct lg_cpu *cpu, unsigned int irq);
+bool deliver_trap(struct lg_cpu *cpu, unsigned int num);
 void load_guest_idt_entry(struct lg_cpu *cpu, unsigned int i,
 			  u32 low, u32 hi);
 void guest_set_stack(struct lg_cpu *cpu, u32 seg, u32 esp, unsigned int pages);
@@ -150,6 +210,7 @@ void setup_default_idt_entries(struct lguest_ro_state *state,
 void copy_traps(const struct lg_cpu *cpu, struct desc_struct *idt,
 		const unsigned long *def);
 void guest_set_clockevent(struct lg_cpu *cpu, unsigned long delta);
+bool send_notify_to_eventfd(struct lg_cpu *cpu);
 void init_clockdev(struct lg_cpu *cpu);
 bool check_syscall_vector(struct lguest *lg);
 int init_interrupts(void);
@@ -159,6 +220,8 @@ void free_interrupts(void);
 void setup_default_gdt_entries(struct lguest_ro_state *state);
 void setup_guest_gdt(struct lg_cpu *cpu);
 void load_guest_gdt(struct lg_cpu *cpu, unsigned long table, u32 num);
+void load_guest_gdt_entry(struct lg_cpu *cpu, unsigned int i,
+			  u32 low, u32 hi);
 void guest_load_tls(struct lg_cpu *cpu, unsigned long tls_array);
 void copy_gdt(const struct lg_cpu *cpu, struct desc_struct *gdt);
 void copy_gdt_tls(const struct lg_cpu *cpu, struct desc_struct *gdt);
@@ -168,6 +231,13 @@ int init_guest_pagetable(struct lguest *lg, unsigned long pgtable);
 void free_guest_pagetable(struct lguest *lg);
 void guest_new_pagetable(struct lg_cpu *cpu, unsigned long pgtable);
 void guest_set_pmd(struct lguest *lg, unsigned long gpgdir, u32 i);
+int init_guest_pagetable(struct lguest *lg);
+void free_guest_pagetable(struct lguest *lg);
+void guest_new_pagetable(struct lg_cpu *cpu, unsigned long pgtable);
+void guest_set_pgd(struct lguest *lg, unsigned long gpgdir, u32 i);
+#ifdef CONFIG_X86_PAE
+void guest_set_pmd(struct lguest *lg, unsigned long gpgdir, u32 i);
+#endif
 void guest_pagetable_clear_all(struct lg_cpu *cpu);
 void guest_pagetable_flush_user(struct lg_cpu *cpu);
 void guest_set_pte(struct lg_cpu *cpu, unsigned long gpgdir,
@@ -175,6 +245,10 @@ void guest_set_pte(struct lg_cpu *cpu, unsigned long gpgdir,
 void map_switcher_in_guest(struct lg_cpu *cpu, struct lguest_pages *pages);
 int demand_page(struct lg_cpu *cpu, unsigned long cr2, int errcode);
 void pin_page(struct lg_cpu *cpu, unsigned long vaddr);
+bool demand_page(struct lg_cpu *cpu, unsigned long cr2, int errcode,
+		 unsigned long *iomem);
+void pin_page(struct lg_cpu *cpu, unsigned long vaddr);
+bool __guest_pa(struct lg_cpu *cpu, unsigned long vaddr, unsigned long *paddr);
 unsigned long guest_pa(struct lg_cpu *cpu, unsigned long vaddr);
 void page_table_guest_data_init(struct lg_cpu *cpu);
 
@@ -186,6 +260,7 @@ void lguest_arch_handle_trap(struct lg_cpu *cpu);
 int lguest_arch_init_hypercalls(struct lg_cpu *cpu);
 int lguest_arch_do_hcall(struct lg_cpu *cpu, struct hcall_args *args);
 void lguest_arch_setup_regs(struct lg_cpu *cpu, unsigned long start);
+unsigned long *lguest_arch_regptr(struct lg_cpu *cpu, size_t reg_off, bool any);
 
 /* <arch>/switcher.S: */
 extern char start_switcher_text[], end_switcher_text[], switch_to_guest[];

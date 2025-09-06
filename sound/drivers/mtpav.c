@@ -56,6 +56,11 @@
 #include <linux/platform_device.h>
 #include <linux/slab.h>
 #include <linux/ioport.h>
+#include <linux/module.h>
+#include <linux/err.h>
+#include <linux/platform_device.h>
+#include <linux/ioport.h>
+#include <linux/io.h>
 #include <linux/moduleparam.h>
 #include <sound/core.h>
 #include <sound/initval.h>
@@ -305,6 +310,10 @@ static void snd_mtpav_output_port_write(struct mtpav *mtp_card,
 		snd_mtpav_send_byte(mtp_card, portp->hwport);
 		//snd_printk("new outport: 0x%x\n", (unsigned int) portp->hwport);
 
+		/*
+		snd_printk(KERN_DEBUG "new outport: 0x%x\n",
+			   (unsigned int) portp->hwport);
+		*/
 		if (!(outbyte & 0x80) && portp->running_status)
 			snd_mtpav_send_byte(mtp_card, portp->running_status);
 	}
@@ -415,6 +424,7 @@ static void snd_mtpav_output_timer(unsigned long data)
 	/* reprogram timer */
 	chip->timer.expires = 1 + jiffies;
 	add_timer(&chip->timer);
+	mod_timer(&chip->timer, 1 + jiffies);
 	/* process each port */
 	for (p = 0; p <= chip->num_ports * 2 + MTPAV_PIDX_BROADCAST; p++) {
 		struct mtpav_port *portp = &chip->ports[p];
@@ -429,6 +439,7 @@ static void snd_mtpav_add_output_timer(struct mtpav *chip)
 {
 	chip->timer.expires = 1 + jiffies;
 	add_timer(&chip->timer);
+	mod_timer(&chip->timer, 1 + jiffies);
 }
 
 /* spinlock held! */
@@ -541,6 +552,7 @@ static void snd_mtpav_read_bytes(struct mtpav *mcrd)
 	u8 sbyt = snd_mtpav_getreg(mcrd, SREG);
 
 	//printk("snd_mtpav_read_bytes() sbyt: 0x%x\n", sbyt);
+	/* printk(KERN_DEBUG "snd_mtpav_read_bytes() sbyt: 0x%x\n", sbyt); */
 
 	if (!(sbyt & SIGS_BYTE))
 		return;
@@ -591,6 +603,15 @@ static int __devinit snd_mtpav_get_ISA(struct mtpav * mcard)
 	mcard->port = port;
 	if (request_irq(irq, snd_mtpav_irqh, IRQF_DISABLED, "MOTU MTPAV", mcard)) {
 		snd_printk("MTVAP IRQ %d busy\n", irq);
+static int snd_mtpav_get_ISA(struct mtpav *mcard)
+{
+	if ((mcard->res_port = request_region(port, 3, "MotuMTPAV MIDI")) == NULL) {
+		snd_printk(KERN_ERR "MTVAP port 0x%lx is busy\n", port);
+		return -EBUSY;
+	}
+	mcard->port = port;
+	if (request_irq(irq, snd_mtpav_irqh, 0, "MOTU MTPAV", mcard)) {
+		snd_printk(KERN_ERR "MTVAP IRQ %d busy\n", irq);
 		return -EBUSY;
 	}
 	mcard->irq = irq;
@@ -620,6 +641,8 @@ static struct snd_rawmidi_ops snd_mtpav_input = {
 
 static void __devinit snd_mtpav_set_name(struct mtpav *chip,
 				      struct snd_rawmidi_substream *substream)
+static void snd_mtpav_set_name(struct mtpav *chip,
+			       struct snd_rawmidi_substream *substream)
 {
 	if (substream->number >= 0 && substream->number < chip->num_ports)
 		sprintf(substream->name, "MTP direct %d", (substream->number % chip->num_ports) + 1);
@@ -634,6 +657,7 @@ static void __devinit snd_mtpav_set_name(struct mtpav *chip,
 }
 
 static int __devinit snd_mtpav_get_RAWMIDI(struct mtpav *mcard)
+static int snd_mtpav_get_RAWMIDI(struct mtpav *mcard)
 {
 	int rval;
 	struct snd_rawmidi *rawmidi;
@@ -691,6 +715,7 @@ static void snd_mtpav_free(struct snd_card *card)
 /*
  */
 static int __devinit snd_mtpav_probe(struct platform_device *dev)
+static int snd_mtpav_probe(struct platform_device *dev)
 {
 	struct snd_card *card;
 	int err;
@@ -715,6 +740,29 @@ static int __devinit snd_mtpav_probe(struct platform_device *dev)
 
 	card->private_free = snd_mtpav_free;
 
+	err = snd_card_new(&dev->dev, index, id, THIS_MODULE,
+			   sizeof(*mtp_card), &card);
+	if (err < 0)
+		return err;
+
+	mtp_card = card->private_data;
+	spin_lock_init(&mtp_card->spinlock);
+	mtp_card->card = card;
+	mtp_card->irq = -1;
+	mtp_card->share_irq = 0;
+	mtp_card->inmidistate = 0;
+	mtp_card->outmidihwport = 0xffffffff;
+	setup_timer(&mtp_card->timer, snd_mtpav_output_timer,
+		    (unsigned long) mtp_card);
+
+	card->private_free = snd_mtpav_free;
+
+	err = snd_mtpav_get_RAWMIDI(mtp_card);
+	if (err < 0)
+		goto __error;
+
+	mtp_card->inmidiport = mtp_card->num_ports + MTPAV_PIDX_BROADCAST;
+
 	err = snd_mtpav_get_ISA(mtp_card);
 	if (err < 0)
 		goto __error;
@@ -731,6 +779,8 @@ static int __devinit snd_mtpav_probe(struct platform_device *dev)
 	snd_mtpav_portscan(mtp_card);
 
 	snd_card_set_dev(card, &dev->dev);
+	snd_mtpav_portscan(mtp_card);
+
 	err = snd_card_register(mtp_card->card);
 	if (err < 0)
 		goto __error;
@@ -748,6 +798,9 @@ static int __devexit snd_mtpav_remove(struct platform_device *devptr)
 {
 	snd_card_free(platform_get_drvdata(devptr));
 	platform_set_drvdata(devptr, NULL);
+static int snd_mtpav_remove(struct platform_device *devptr)
+{
+	snd_card_free(platform_get_drvdata(devptr));
 	return 0;
 }
 
@@ -758,6 +811,9 @@ static struct platform_driver snd_mtpav_driver = {
 	.remove		= __devexit_p(snd_mtpav_remove),
 	.driver		= {
 		.name	= SND_MTPAV_DRIVER
+	.remove		= snd_mtpav_remove,
+	.driver		= {
+		.name	= SND_MTPAV_DRIVER,
 	},
 };
 

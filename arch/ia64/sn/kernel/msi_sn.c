@@ -11,6 +11,7 @@
 #include <linux/pci.h>
 #include <linux/cpumask.h>
 #include <linux/msi.h>
+#include <linux/slab.h>
 
 #include <asm/sn/addrs.h>
 #include <asm/sn/intr.h>
@@ -146,12 +147,17 @@ int sn_setup_msi_irq(struct pci_dev *pdev, struct msi_desc *entry)
 	set_irq_msi(irq, entry);
 	write_msi_msg(irq, &msg);
 	set_irq_chip_and_handler(irq, &sn_msi_chip, handle_edge_irq);
+	irq_set_msi_desc(irq, entry);
+	pci_write_msi_msg(irq, &msg);
+	irq_set_chip_and_handler(irq, &sn_msi_chip, handle_edge_irq);
 
 	return 0;
 }
 
 #ifdef CONFIG_SMP
 static void sn_set_msi_irq_affinity(unsigned int irq, cpumask_t cpu_mask)
+static int sn_set_msi_irq_affinity(struct irq_data *data,
+				   const struct cpumask *cpu_mask, bool force)
 {
 	struct msi_msg msg;
 	int slice;
@@ -168,6 +174,12 @@ static void sn_set_msi_irq_affinity(unsigned int irq, cpumask_t cpu_mask)
 	sn_irq_info = sn_msi_info[irq].sn_irq_info;
 	if (sn_irq_info == NULL || sn_irq_info->irq_int_bit >= 0)
 		return;
+	unsigned int cpu, irq = data->irq;
+
+	cpu = cpumask_first_and(cpu_mask, cpu_online_mask);
+	sn_irq_info = sn_msi_info[irq].sn_irq_info;
+	if (sn_irq_info == NULL || sn_irq_info->irq_int_bit >= 0)
+		return -1;
 
 	/*
 	 * Release XIO resources for the old MSI PCI address
@@ -175,6 +187,8 @@ static void sn_set_msi_irq_affinity(unsigned int irq, cpumask_t cpu_mask)
 
 	read_msi_msg(irq, &msg);
         sn_pdev = (struct pcidev_info *)sn_irq_info->irq_pciioinfo;
+	__get_cached_msi_msg(irq_data_get_msi_desc(data), &msg);
+	sn_pdev = (struct pcidev_info *)sn_irq_info->irq_pciioinfo;
 	pdev = sn_pdev->pdi_linux_pcidev;
 	provider = SN_PCIDEV_BUSPROVIDER(pdev);
 
@@ -189,6 +203,7 @@ static void sn_set_msi_irq_affinity(unsigned int irq, cpumask_t cpu_mask)
 	sn_msi_info[irq].sn_irq_info = new_irq_info;
 	if (new_irq_info == NULL)
 		return;
+		return -1;
 
 	/*
 	 * Map the xio address into bus space
@@ -217,6 +232,22 @@ static void sn_ack_msi_irq(unsigned int irq)
 static int sn_msi_retrigger_irq(unsigned int irq)
 {
 	unsigned int vector = irq;
+	pci_write_msi_msg(irq, &msg);
+	cpumask_copy(irq_data_get_affinity_mask(data), cpu_mask);
+
+	return 0;
+}
+#endif /* CONFIG_SMP */
+
+static void sn_ack_msi_irq(struct irq_data *data)
+{
+	irq_move_irq(data);
+	ia64_eoi();
+}
+
+static int sn_msi_retrigger_irq(struct irq_data *data)
+{
+	unsigned int vector = data->irq;
 	ia64_resend_irq(vector);
 
 	return 1;
@@ -231,4 +262,12 @@ static struct irq_chip sn_msi_chip = {
 	.set_affinity	= sn_set_msi_irq_affinity,
 #endif
 	.retrigger	= sn_msi_retrigger_irq,
+	.name			= "PCI-MSI",
+	.irq_mask		= pci_msi_mask_irq,
+	.irq_unmask		= pci_msi_unmask_irq,
+	.irq_ack		= sn_ack_msi_irq,
+#ifdef CONFIG_SMP
+	.irq_set_affinity	= sn_set_msi_irq_affinity,
+#endif
+	.irq_retrigger		= sn_msi_retrigger_irq,
 };

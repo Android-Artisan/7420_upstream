@@ -3,6 +3,8 @@
  *
  *      Based on acquirewdt.c by Alan Cox,
  *           and sbc60xxwdt.c by Jakob Oestergaard <jakob@unthought.net>
+ *	Based on acquirewdt.c by Alan Cox,
+ *	     and sbc60xxwdt.c by Jakob Oestergaard <jakob@unthought.net>
  *
  *	This program is free software; you can redistribute it and/or
  *	modify it under the terms of the GNU General Public License
@@ -12,6 +14,7 @@
  *	The authors do NOT admit liability nor provide warranty for
  *	any of this software. This material is provided "AS-IS" in
  *      the hope that it may be useful for others.
+ *	the hope that it may be useful for others.
  *
  *	(c) Copyright 2001    Scott Jennings <linuxdrivers@oro.net>
  *           9/27 - 2001      [Initial release]
@@ -51,6 +54,8 @@
  *
  *  This driver uses memory mapped IO, and spinlock.
  */
+
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/module.h>
 #include <linux/moduleparam.h>
@@ -100,6 +105,8 @@ MODULE_PARM_DESC(timeout,
 
 static int nowayout = WATCHDOG_NOWAYOUT;
 module_param(nowayout, int, 0);
+static bool nowayout = WATCHDOG_NOWAYOUT;
+module_param(nowayout, bool, 0);
 MODULE_PARM_DESC(nowayout,
 		"Watchdog cannot be stopped once started (default="
 				__MODULE_STRING(WATCHDOG_NOWAYOUT) ")");
@@ -153,6 +160,7 @@ static void wdt_timer_ping(unsigned long data)
 	} else
 		printk(KERN_WARNING PFX
 			"Heartbeat lost! Will not ping the watchdog\n");
+		pr_warn("Heartbeat lost! Will not ping the watchdog\n");
 }
 
 /*
@@ -167,6 +175,7 @@ static void wdt_config(int writeval)
 	/* buy some time (ping) */
 	spin_lock_irqsave(&wdt_spinlock, flags);
 	dummy = readw(wdtmrctl);	/* ensure write synchronization */
+	readw(wdtmrctl);	/* ensure write synchronization */
 	writew(0xAAAA, wdtmrctl);
 	writew(0x5555, wdtmrctl);
 	/* unlock WDT = make WDT configuration register writable one time */
@@ -188,18 +197,20 @@ static int wdt_startup(void)
 	wdt_config(WDT_ENB | WDT_WRST_ENB | WDT_EXP_SEL_04);
 
 	printk(KERN_INFO PFX "Watchdog timer is now enabled.\n");
+	pr_info("Watchdog timer is now enabled\n");
 	return 0;
 }
 
 static int wdt_turnoff(void)
 {
 	/* Stop the timer */
-	del_timer(&timer);
+	del_timer_sync(&timer);
 
 	/* Stop the watchdog */
 	wdt_config(0);
 
 	printk(KERN_INFO PFX "Watchdog timer is now disabled...\n");
+	pr_info("Watchdog timer is now disabled...\n");
 	return 0;
 }
 
@@ -272,6 +283,7 @@ static int fop_close(struct inode *inode, struct file *file)
 	else {
 		printk(KERN_CRIT PFX
 			"Unexpected close, not stopping watchdog!\n");
+		pr_crit("Unexpected close, not stopping watchdog!\n");
 		wdt_keepalive();
 	}
 	clear_bit(0, &wdt_is_open);
@@ -401,6 +413,13 @@ static int __init sc520_wdt_init(void)
 	wdtmrctl = ioremap((unsigned long)(MMCR_BASE + OFFS_WDTMRCTL), 2);
 	if (!wdtmrctl) {
 		printk(KERN_ERR PFX "Unable to remap memory\n");
+		pr_info("timeout value must be 1 <= timeout <= 3600, using %d\n",
+			WATCHDOG_TIMEOUT);
+	}
+
+	wdtmrctl = ioremap(MMCR_BASE + OFFS_WDTMRCTL, 2);
+	if (!wdtmrctl) {
+		pr_err("Unable to remap memory\n");
 		rc = -ENOMEM;
 		goto err_out_region2;
 	}
@@ -409,6 +428,7 @@ static int __init sc520_wdt_init(void)
 	if (rc) {
 		printk(KERN_ERR PFX
 			"cannot register reboot notifier (err=%d)\n", rc);
+		pr_err("cannot register reboot notifier (err=%d)\n", rc);
 		goto err_out_ioremap;
 	}
 
@@ -423,6 +443,13 @@ static int __init sc520_wdt_init(void)
 	printk(KERN_INFO PFX
 	   "WDT driver for SC520 initialised. timeout=%d sec (nowayout=%d)\n",
 							timeout, nowayout);
+		pr_err("cannot register miscdev on minor=%d (err=%d)\n",
+		       WATCHDOG_MINOR, rc);
+		goto err_out_notifier;
+	}
+
+	pr_info("WDT driver for SC520 initialised. timeout=%d sec (nowayout=%d)\n",
+		timeout, nowayout);
 
 	return 0;
 
@@ -441,3 +468,6 @@ MODULE_AUTHOR("Scott and Bill Jennings");
 MODULE_DESCRIPTION("Driver for watchdog timer in AMD \"Elan\" SC520 uProcessor");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS_MISCDEV(WATCHDOG_MINOR);
+MODULE_DESCRIPTION(
+	"Driver for watchdog timer in AMD \"Elan\" SC520 uProcessor");
+MODULE_LICENSE("GPL");

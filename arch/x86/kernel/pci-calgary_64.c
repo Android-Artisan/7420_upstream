@@ -22,6 +22,8 @@
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
  */
 
+#define pr_fmt(fmt) "Calgary: " fmt
+
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/types.h>
@@ -32,6 +34,7 @@
 #include <linux/crash_dump.h>
 #include <linux/dma-mapping.h>
 #include <linux/bitops.h>
+#include <linux/bitmap.h>
 #include <linux/pci_ids.h>
 #include <linux/pci.h>
 #include <linux/delay.h>
@@ -46,6 +49,11 @@
 #include <asm/dma.h>
 #include <asm/rio.h>
 #include <asm/bios_ebda.h>
+#include <asm/dma.h>
+#include <asm/rio.h>
+#include <asm/bios_ebda.h>
+#include <asm/x86_init.h>
+#include <asm/iommu_table.h>
 
 #ifdef CONFIG_CALGARY_IOMMU_ENABLED_BY_DEFAULT
 int use_calgary __read_mostly = 1;
@@ -107,6 +115,16 @@ int use_calgary __read_mostly = 0;
 /* MAX_PHB_BUS_NUM is the maximal possible dev->bus->number */
 #define MAX_PHB_BUS_NUM		(MAX_NUM_OF_PHBS * MAX_NUM_CHASSIS * 2)
 #define PHBS_PER_CALGARY	4
+/*
+ * The maximum PHB bus number.
+ * x3950M2 (rare): 8 chassis, 48 PHBs per chassis = 384
+ * x3950M2: 4 chassis, 48 PHBs per chassis        = 192
+ * x3950 (PCIE): 8 chassis, 32 PHBs per chassis   = 256
+ * x3950 (PCIX): 8 chassis, 16 PHBs per chassis   = 128
+ */
+#define MAX_PHB_BUS_NUM		256
+
+#define PHBS_PER_CALGARY	  4
 
 /* register offsets in Calgary's internal register space */
 static const unsigned long tar_offsets[] = {
@@ -262,6 +280,7 @@ static void iommu_range_reserve(struct iommu_table *tbl,
 	}
 
 	set_bit_string(tbl->it_map, index, npages);
+	bitmap_set(tbl->it_map, index, npages);
 
 	spin_unlock_irqrestore(&tbl->it_lock, flags);
 }
@@ -290,11 +309,13 @@ static unsigned long iommu_range_alloc(struct device *dev,
 					  npages, 0, boundary_size, 0);
 		if (offset == ~0UL) {
 			printk(KERN_WARNING "Calgary: IOMMU full.\n");
+			pr_warn("IOMMU full\n");
 			spin_unlock_irqrestore(&tbl->it_lock, flags);
 			if (panic_on_overflow)
 				panic("Calgary: fix the allocator.\n");
 			else
 				return bad_dma_address;
+				return DMA_ERROR_CODE;
 		}
 	}
 
@@ -316,6 +337,15 @@ static dma_addr_t iommu_alloc(struct device *dev, struct iommu_table *tbl,
 
 	if (unlikely(entry == bad_dma_address))
 		goto error;
+	dma_addr_t ret;
+
+	entry = iommu_range_alloc(dev, tbl, npages);
+
+	if (unlikely(entry == DMA_ERROR_CODE)) {
+		pr_warn("failed to allocate %u pages in iommu %p\n",
+			npages, tbl);
+		return DMA_ERROR_CODE;
+	}
 
 	/* set the return dma address */
 	ret = (entry << PAGE_SHIFT) | ((unsigned long)vaddr & ~PAGE_MASK);
@@ -330,6 +360,7 @@ error:
 	printk(KERN_WARNING "Calgary: failed to allocate %u pages in "
 	       "iommu %p\n", npages, tbl);
 	return bad_dma_address;
+	return ret;
 }
 
 static void iommu_free(struct iommu_table *tbl, dma_addr_t dma_addr,
@@ -343,6 +374,8 @@ static void iommu_free(struct iommu_table *tbl, dma_addr_t dma_addr,
 	/* were we called with bad_dma_address? */
 	badend = bad_dma_address + (EMERGENCY_PAGES * PAGE_SIZE);
 	if (unlikely((dma_addr >= bad_dma_address) && (dma_addr < badend))) {
+	badend = DMA_ERROR_CODE + (EMERGENCY_PAGES * PAGE_SIZE);
+	if (unlikely(dma_addr < badend)) {
 		WARN(1, KERN_ERR "Calgary: driver tried unmapping bad DMA "
 		       "address 0x%Lx\n", dma_addr);
 		return;
@@ -365,6 +398,7 @@ static void iommu_free(struct iommu_table *tbl, dma_addr_t dma_addr,
 	}
 
 	iommu_area_free(tbl->it_map, entry, npages);
+	bitmap_clear(tbl->it_map, entry, npages);
 
 	spin_unlock_irqrestore(&tbl->it_lock, flags);
 }
@@ -384,6 +418,15 @@ static inline struct iommu_table *find_iommu_table(struct device *dev)
 		pbus = pbus->parent;
 
 	tbl = pci_iommu(pbus);
+	/* search up the device tree for an iommu */
+	pbus = pdev->bus;
+	do {
+		tbl = pci_iommu(pbus);
+		if (tbl && tbl->it_busno == pbus->number)
+			break;
+		tbl = NULL;
+		pbus = pbus->parent;
+	} while (pbus);
 
 	BUG_ON(tbl && (tbl->it_busno != pbus->number));
 
@@ -392,6 +435,9 @@ static inline struct iommu_table *find_iommu_table(struct device *dev)
 
 static void calgary_unmap_sg(struct device *dev,
 	struct scatterlist *sglist, int nelems, int direction)
+static void calgary_unmap_sg(struct device *dev, struct scatterlist *sglist,
+			     int nelems,enum dma_data_direction dir,
+			     struct dma_attrs *attrs)
 {
 	struct iommu_table *tbl = find_iommu_table(dev);
 	struct scatterlist *s;
@@ -409,12 +455,15 @@ static void calgary_unmap_sg(struct device *dev,
 			break;
 
 		npages = num_dma_pages(dma, dmalen);
+		npages = iommu_num_pages(dma, dmalen, PAGE_SIZE);
 		iommu_free(tbl, dma, npages);
 	}
 }
 
 static int calgary_map_sg(struct device *dev, struct scatterlist *sg,
 	int nelems, int direction)
+			  int nelems, enum dma_data_direction dir,
+			  struct dma_attrs *attrs)
 {
 	struct iommu_table *tbl = find_iommu_table(dev);
 	struct scatterlist *s;
@@ -431,6 +480,10 @@ static int calgary_map_sg(struct device *dev, struct scatterlist *sg,
 
 		entry = iommu_range_alloc(dev, tbl, npages);
 		if (entry == bad_dma_address) {
+		npages = iommu_num_pages(vaddr, s->length, PAGE_SIZE);
+
+		entry = iommu_range_alloc(dev, tbl, npages);
+		if (entry == DMA_ERROR_CODE) {
 			/* makes sure unmap knows to stop */
 			s->dma_length = 0;
 			goto error;
@@ -441,6 +494,7 @@ static int calgary_map_sg(struct device *dev, struct scatterlist *sg,
 		/* insert into HW table */
 		tce_build(tbl, entry, npages, vaddr & PAGE_MASK,
 			  direction);
+		tce_build(tbl, entry, npages, vaddr & PAGE_MASK, dir);
 
 		s->dma_length = s->length;
 	}
@@ -450,6 +504,9 @@ error:
 	calgary_unmap_sg(dev, sg, nelems, direction);
 	for_each_sg(sg, s, nelems, i) {
 		sg->dma_address = bad_dma_address;
+	calgary_unmap_sg(dev, sg, nelems, dir, NULL);
+	for_each_sg(sg, s, nelems, i) {
+		sg->dma_address = DMA_ERROR_CODE;
 		sg->dma_length = 0;
 	}
 	return 0;
@@ -459,6 +516,12 @@ static dma_addr_t calgary_map_single(struct device *dev, phys_addr_t paddr,
 	size_t size, int direction)
 {
 	void *vaddr = phys_to_virt(paddr);
+static dma_addr_t calgary_map_page(struct device *dev, struct page *page,
+				   unsigned long offset, size_t size,
+				   enum dma_data_direction dir,
+				   struct dma_attrs *attrs)
+{
+	void *vaddr = page_address(page) + offset;
 	unsigned long uaddr;
 	unsigned int npages;
 	struct iommu_table *tbl = find_iommu_table(dev);
@@ -471,6 +534,14 @@ static dma_addr_t calgary_map_single(struct device *dev, phys_addr_t paddr,
 
 static void calgary_unmap_single(struct device *dev, dma_addr_t dma_handle,
 	size_t size, int direction)
+	npages = iommu_num_pages(uaddr, size, PAGE_SIZE);
+
+	return iommu_alloc(dev, tbl, vaddr, npages, dir);
+}
+
+static void calgary_unmap_page(struct device *dev, dma_addr_t dma_addr,
+			       size_t size, enum dma_data_direction dir,
+			       struct dma_attrs *attrs)
 {
 	struct iommu_table *tbl = find_iommu_table(dev);
 	unsigned int npages;
@@ -481,6 +552,12 @@ static void calgary_unmap_single(struct device *dev, dma_addr_t dma_handle,
 
 static void* calgary_alloc_coherent(struct device *dev, size_t size,
 	dma_addr_t *dma_handle, gfp_t flag)
+	npages = iommu_num_pages(dma_addr, size, PAGE_SIZE);
+	iommu_free(tbl, dma_addr, npages);
+}
+
+static void* calgary_alloc_coherent(struct device *dev, size_t size,
+	dma_addr_t *dma_handle, gfp_t flag, struct dma_attrs *attrs)
 {
 	void *ret = NULL;
 	dma_addr_t mapping;
@@ -491,6 +568,8 @@ static void* calgary_alloc_coherent(struct device *dev, size_t size,
 	npages = size >> PAGE_SHIFT;
 	order = get_order(size);
 
+	flag &= ~(__GFP_DMA | __GFP_HIGHMEM | __GFP_DMA32);
+
 	/* alloc enough pages (and possibly more) */
 	ret = (void *)__get_free_pages(flag, order);
 	if (!ret)
@@ -500,6 +579,7 @@ static void* calgary_alloc_coherent(struct device *dev, size_t size,
 	/* set up tces to cover the allocated range */
 	mapping = iommu_alloc(dev, tbl, ret, npages, DMA_BIDIRECTIONAL);
 	if (mapping == bad_dma_address)
+	if (mapping == DMA_ERROR_CODE)
 		goto free;
 	*dma_handle = mapping;
 	return ret;
@@ -516,6 +596,27 @@ static struct dma_mapping_ops calgary_dma_ops = {
 	.unmap_single = calgary_unmap_single,
 	.map_sg = calgary_map_sg,
 	.unmap_sg = calgary_unmap_sg,
+static void calgary_free_coherent(struct device *dev, size_t size,
+				  void *vaddr, dma_addr_t dma_handle,
+				  struct dma_attrs *attrs)
+{
+	unsigned int npages;
+	struct iommu_table *tbl = find_iommu_table(dev);
+
+	size = PAGE_ALIGN(size);
+	npages = size >> PAGE_SHIFT;
+
+	iommu_free(tbl, dma_handle, npages);
+	free_pages((unsigned long)vaddr, get_order(size));
+}
+
+static struct dma_map_ops calgary_dma_ops = {
+	.alloc = calgary_alloc_coherent,
+	.free = calgary_free_coherent,
+	.map_sg = calgary_map_sg,
+	.unmap_sg = calgary_unmap_sg,
+	.map_page = calgary_map_page,
+	.unmap_page = calgary_unmap_page,
 };
 
 static inline void __iomem * busno_to_bbar(unsigned char num)
@@ -596,6 +697,7 @@ static void calgary_tce_cache_blast(struct iommu_table *tbl)
 	if (i == 100)
 		printk(KERN_WARNING "Calgary: PCI bus not quiesced, "
 		       "continuing anyway\n");
+		pr_warn("PCI bus not quiesced, continuing anyway\n");
 
 	/* invalidate TCE cache */
 	target = calgary_reg(bbar, tar_offset(tbl->it_busno));
@@ -639,6 +741,7 @@ begin:
 	if (i == 100)
 		printk(KERN_WARNING "CalIOC2: PCI bus not quiesced, "
 		       "continuing anyway\n");
+		pr_warn("CalIOC2: PCI bus not quiesced, continuing anyway\n");
 
 	/* 3. poll Page Migration DEBUG for SoftStopFault */
 	target = calgary_reg(bbar, phb_offset(bus) | PHB_PAGE_MIG_DEBUG);
@@ -652,6 +755,7 @@ begin:
 		else {
 			printk(KERN_WARNING "CalIOC2: too many SoftStopFaults, "
 			       "aborting TCE cache flush sequence!\n");
+			pr_warn("CalIOC2: too many SoftStopFaults, aborting TCE cache flush sequence!\n");
 			return; /* pray for the best */
 		}
 	}
@@ -767,6 +871,7 @@ static void __init calgary_reserve_regions(struct pci_dev *dev)
 
 	/* reserve EMERGENCY_PAGES from bad_dma_address and up */
 	iommu_range_reserve(tbl, bad_dma_address, EMERGENCY_PAGES);
+	iommu_range_reserve(tbl, DMA_ERROR_CODE, EMERGENCY_PAGES);
 
 	/* avoid the BIOS/VGA first 640KB-1MB region */
 	/* for CalIOC2 - avoid the entire first MB */
@@ -875,6 +980,8 @@ static void calgary_dump_error_regs(struct iommu_table *tbl)
 	/* If no error, the agent ID in the CSR is not valid */
 	printk(KERN_EMERG "Calgary: DMA error on Calgary PHB 0x%x, "
 	       "0x%08x@CSR 0x%08x@PLSSR\n", tbl->it_busno, csr, plssr);
+	pr_emerg("DMA error on Calgary PHB 0x%x, 0x%08x@CSR 0x%08x@PLSSR\n",
+		 tbl->it_busno, csr, plssr);
 }
 
 static void calioc2_dump_error_regs(struct iommu_table *tbl)
@@ -908,6 +1015,13 @@ static void calioc2_dump_error_regs(struct iommu_table *tbl)
 
 	/* dump rest of error regs */
 	printk(KERN_EMERG "Calgary: ");
+	pr_emerg("DMA error on CalIOC2 PHB 0x%x\n", tbl->it_busno);
+
+	pr_emerg("0x%08x@CSR 0x%08x@PLSSR 0x%08x@CSMR 0x%08x@MCK\n",
+		 csr, plssr, csmr, mck);
+
+	/* dump rest of error regs */
+	pr_emerg("");
 	for (i = 0; i < ARRAY_SIZE(errregs); i++) {
 		/* err regs are at 0x810 - 0x870 */
 		erroff = (0x810 + (i * 0x10));
@@ -916,6 +1030,9 @@ static void calioc2_dump_error_regs(struct iommu_table *tbl)
 		printk("0x%08x@0x%lx ", errregs[i], erroff);
 	}
 	printk("\n");
+		pr_cont("0x%08x@0x%lx ", errregs[i], erroff);
+	}
+	pr_cont("\n");
 
 	/* root complex status */
 	target = calgary_reg(bbar, phboff | PHB_ROOT_COMPLEX_STATUS);
@@ -1245,6 +1362,7 @@ error:
 }
 
 static inline int __init determine_tce_table_size(u64 ram)
+static inline int __init determine_tce_table_size(void)
 {
 	int ret;
 
@@ -1261,6 +1379,24 @@ static inline int __init determine_tce_table_size(u64 ram)
 	ret = get_order(ram >> 13);
 	if (ret > TCE_TABLE_SIZE_8M)
 		ret = TCE_TABLE_SIZE_8M;
+	if (is_kdump_kernel() && saved_max_pfn) {
+		/*
+		 * Table sizes are from 0 to 7 (TCE_TABLE_SIZE_64K to
+		 * TCE_TABLE_SIZE_8M). Table size 0 has 8K entries and each
+		 * larger table size has twice as many entries, so shift the
+		 * max ram address by 13 to divide by 8K and then look at the
+		 * order of the result to choose between 0-7.
+		 */
+		ret = get_order((saved_max_pfn * PAGE_SIZE) >> 13);
+		if (ret > TCE_TABLE_SIZE_8M)
+			ret = TCE_TABLE_SIZE_8M;
+	} else {
+		/*
+		 * Use 8M by default (suggested by Muli) if it's not
+		 * kdump kernel and saved_max_pfn isn't set.
+		 */
+		ret = TCE_TABLE_SIZE_8M;
+	}
 
 	return ret;
 }
@@ -1315,6 +1451,7 @@ static int __init calgary_bus_has_devices(int bus, unsigned short pci_dev)
 	if (pci_dev == PCI_DEVICE_ID_IBM_CALIOC2) {
 		/*
 		 * FIXME: properly scan for devices accross the
+		 * FIXME: properly scan for devices across the
 		 * PCI-to-PCI bridge on every CalIOC2 port.
 		 */
 		return 1;
@@ -1331,6 +1468,7 @@ static int __init calgary_bus_has_devices(int bus, unsigned short pci_dev)
 /*
  * calgary_init_bitmap_from_tce_table():
  * Funtion for kdump case. In the second/kdump kernel initialize
+ * Function for kdump case. In the second/kdump kernel initialize
  * the bitmap based on the tce table entries obtained from first kernel
  */
 static void calgary_init_bitmap_from_tce_table(struct iommu_table *tbl)
@@ -1349,6 +1487,7 @@ static void calgary_init_bitmap_from_tce_table(struct iommu_table *tbl)
  * get_tce_space_from_tar():
  * Function for kdump case. Get the tce tables from first kernel
  * by reading the contents of the base adress register of calgary iommu
+ * by reading the contents of the base address register of calgary iommu
  */
 static void __init get_tce_space_from_tar(void)
 {
@@ -1384,6 +1523,24 @@ static void __init get_tce_space_from_tar(void)
 }
 
 void __init detect_calgary(void)
+static int __init calgary_iommu_init(void)
+{
+	int ret;
+
+	/* ok, we're trying to use Calgary - let's roll */
+	printk(KERN_INFO "PCI-DMA: Using Calgary IOMMU\n");
+
+	ret = calgary_init();
+	if (ret) {
+		printk(KERN_ERR "PCI-DMA: Calgary init failed %d, "
+		       "falling back to no_iommu\n", ret);
+		return ret;
+	}
+
+	return 0;
+}
+
+int __init detect_calgary(void)
 {
 	int bus;
 	void *tbl;
@@ -1404,6 +1561,14 @@ void __init detect_calgary(void)
 
 	if (!early_pci_allowed())
 		return;
+	if (no_iommu || iommu_detected)
+		return -ENODEV;
+
+	if (!use_calgary)
+		return -ENODEV;
+
+	if (!early_pci_allowed())
+		return -ENODEV;
 
 	printk(KERN_DEBUG "Calgary: detecting Calgary via BIOS EBDA area\n");
 
@@ -1430,6 +1595,7 @@ void __init detect_calgary(void)
 		printk(KERN_DEBUG "Calgary: Unable to locate Rio Grande table "
 		       "in EBDA - bailing!\n");
 		return;
+		return -ENODEV;
 	}
 
 	ret = build_detail_arrays();
@@ -1440,6 +1606,10 @@ void __init detect_calgary(void)
 
 	specified_table_size = determine_tce_table_size((is_kdump_kernel() ?
 					saved_max_pfn : max_pfn) * PAGE_SIZE);
+		return -ENOMEM;
+	}
+
+	specified_table_size = determine_tce_table_size();
 
 	for (bus = 0; bus < MAX_PHB_BUS_NUM; bus++) {
 		struct calgary_bus_info *info = &bus_info[bus];
@@ -1487,6 +1657,12 @@ void __init detect_calgary(void)
 			swiotlb = 1;
 	}
 	return;
+		printk(KERN_INFO "PCI-DMA: Calgary TCE table spec is %d\n",
+		       specified_table_size);
+
+		x86_init.iommu.iommu_init = calgary_iommu_init;
+	}
+	return calgary_found;
 
 cleanup:
 	for (--bus; bus >= 0; --bus) {
@@ -1524,6 +1700,7 @@ int __init calgary_iommu_init(void)
 		dma_ops = &nommu_dma_ops;
 
 	return 0;
+	return -ENOMEM;
 }
 
 static int __init calgary_parse_options(char *p)
@@ -1531,6 +1708,9 @@ static int __init calgary_parse_options(char *p)
 	unsigned int bridge;
 	size_t len;
 	char* endp;
+	unsigned long val;
+	size_t len;
+	ssize_t ret;
 
 	while (*p) {
 		if (!strncmp(p, "64k", 3))
@@ -1565,6 +1745,11 @@ static int __init calgary_parse_options(char *p)
 			if (p == endp)
 				break;
 
+			ret = kstrtoul(p, 0, &val);
+			if (ret)
+				break;
+
+			bridge = val;
 			if (bridge < MAX_PHB_BUS_NUM) {
 				printk(KERN_INFO "Calgary: disabling "
 				       "translation for PHB %#x\n", bridge);
@@ -1603,6 +1788,7 @@ static void __init calgary_fixup_one_tce_space(struct pci_dev *dev)
 
 		/* cover the whole region */
 		npages = (r->end - r->start) >> PAGE_SHIFT;
+		npages = resource_size(r) >> PAGE_SHIFT;
 		npages++;
 
 		iommu_range_reserve(tbl, r->start, npages);
@@ -1645,3 +1831,5 @@ static int __init calgary_fixup_tce_spaces(void)
  * and before device_initcall.
  */
 rootfs_initcall(calgary_fixup_tce_spaces);
+
+IOMMU_INIT_POST(detect_calgary);

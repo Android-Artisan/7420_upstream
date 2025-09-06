@@ -22,6 +22,11 @@
 #include <linux/module.h>
 #include <linux/pci.h>
 #include <linux/of.h>
+#include <linux/export.h>
+#include <linux/pci.h>
+#include <linux/slab.h>
+#include <linux/of.h>
+#include <linux/sched.h>
 
 #include <asm/pasemi_dma.h>
 
@@ -381,6 +386,9 @@ EXPORT_SYMBOL(pasemi_dma_free_buf);
 /* pasemi_dma_alloc_flag - Allocate a flag (event) for channel syncronization
  *
  * Allocates a flag for use with channel syncronization (event descriptors).
+/* pasemi_dma_alloc_flag - Allocate a flag (event) for channel synchronization
+ *
+ * Allocates a flag for use with channel synchronization (event descriptors).
  * Returns allocated flag (0-63), < 0 on error.
  */
 int pasemi_dma_alloc_flag(void)
@@ -510,6 +518,7 @@ fallback:
 int pasemi_dma_init(void)
 {
 	static spinlock_t init_lock = SPIN_LOCK_UNLOCKED;
+	static DEFINE_SPINLOCK(init_lock);
 	struct pci_dev *iob_pdev;
 	struct pci_dev *pdev;
 	struct resource res;
@@ -576,6 +585,7 @@ int pasemi_dma_init(void)
 		res.end = res.start + 0x1000;
 	}
 	dma_status = __ioremap(res.start, res.end-res.start, 0);
+	dma_status = __ioremap(res.start, resource_size(&res), 0);
 	pci_dev_put(iob_pdev);
 
 	for (i = 0; i < MAX_TXCH; i++)

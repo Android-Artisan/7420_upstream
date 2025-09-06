@@ -43,6 +43,7 @@
 #include <asm/setup.h>
 #include <asm/io.h>
 #include <linux/log2.h>
+#include <linux/export.h>
 
 extern struct atomic_notifier_head panic_notifier_list;
 static int alpha_panic_event(struct notifier_block *, unsigned long, void *);
@@ -79,6 +80,11 @@ int alpha_l3_cacheshape;
 unsigned long alpha_verbose_mcheck = CONFIG_VERBOSE_MCHECK_ON;
 #endif
 
+#ifdef CONFIG_NUMA
+struct cpumask node_to_cpumask_map[MAX_NUMNODES] __read_mostly;
+EXPORT_SYMBOL(node_to_cpumask_map);
+#endif
+
 /* Which processor we booted from.  */
 int boot_cpuid;
 
@@ -110,8 +116,16 @@ unsigned long alpha_agpgart_size = DEFAULT_AGP_APER_SIZE;
 
 #ifdef CONFIG_ALPHA_GENERIC
 struct alpha_machine_vector alpha_mv;
+EXPORT_SYMBOL(alpha_mv);
+#endif
+
+#ifndef alpha_using_srm
 int alpha_using_srm;
 EXPORT_SYMBOL(alpha_using_srm);
+#endif
+
+#ifndef alpha_using_qemu
+int alpha_using_qemu;
 #endif
 
 static struct alpha_machine_vector *get_sysvec(unsigned long, unsigned long,
@@ -250,6 +264,9 @@ reserve_std_resources(void)
 #define for_each_mem_cluster(memdesc, cluster, i)		\
 	for ((cluster) = (memdesc)->cluster, (i) = 0;		\
 	     (i) < (memdesc)->numclusters; (i)++, (cluster)++)
+#define for_each_mem_cluster(memdesc, _cluster, i)		\
+	for ((_cluster) = (memdesc)->cluster, (i) = 0;		\
+	     (i) < (memdesc)->numclusters; (i)++, (_cluster)++)
 
 static unsigned long __init
 get_mem_size_limit(char *s)
@@ -455,8 +472,7 @@ setup_memory(void *kernel_end)
 extern void setup_memory(void *);
 #endif /* !CONFIG_DISCONTIGMEM */
 
-int __init
-page_is_ram(unsigned long pfn)
+int page_is_ram(unsigned long pfn)
 {
 	struct memclust_struct * cluster;
 	struct memdesc_struct * memdesc;
@@ -525,9 +541,14 @@ setup_arch(char **cmdline_p)
 			&alpha_panic_block);
 
 #ifdef CONFIG_ALPHA_GENERIC
+#ifndef alpha_using_srm
 	/* Assume that we've booted from SRM if we haven't booted from MILO.
 	   Detect the later by looking for "MILO" in the system serial nr.  */
 	alpha_using_srm = strncmp((const char *)hwrpb->ssn, "MILO", 4) != 0;
+#endif
+#ifndef alpha_using_qemu
+	/* Similarly, look for QEMU.  */
+	alpha_using_qemu = strstr((const char *)hwrpb->ssn, "QEMU") != 0;
 #endif
 
 	/* If we are using SRM, we want to allow callbacks
@@ -1202,6 +1223,7 @@ show_cpuinfo(struct seq_file *f, void *slot)
 	char *systype_name;
 	char *sysvariation_name;
 	int nr_processors;
+	unsigned long timer_freq;
 
 	cpu_index = (unsigned) (cpu->type - 1);
 	cpu_name = "Unknown";
@@ -1212,6 +1234,12 @@ show_cpuinfo(struct seq_file *f, void *slot)
 		     cpu->type, &systype_name, &sysvariation_name);
 
 	nr_processors = get_nr_processors(cpu, hwrpb->nr_processors);
+
+#if CONFIG_HZ == 1024 || CONFIG_HZ == 1200
+	timer_freq = (100UL * hwrpb->intr_freq) / 4096;
+#else
+	timer_freq = 100UL * CONFIG_HZ;
+#endif
 
 	seq_printf(f, "cpu\t\t\t: Alpha\n"
 		      "cpu model\t\t: %s\n"
@@ -1240,6 +1268,7 @@ show_cpuinfo(struct seq_file *f, void *slot)
 		       est_cycle_freq ? "est." : "",
 		       hwrpb->intr_freq / 4096,
 		       (100 * hwrpb->intr_freq / 4096) % 100,
+		       timer_freq / 100, timer_freq % 100,
 		       hwrpb->pagesize,
 		       hwrpb->pa_bits,
 		       hwrpb->max_asn,
@@ -1253,6 +1282,9 @@ show_cpuinfo(struct seq_file *f, void *slot)
 	seq_printf(f, "cpus active\t\t: %d\n"
 		      "cpu active mask\t\t: %016lx\n",
 		       num_online_cpus(), cpus_addr(cpu_possible_map)[0]);
+	seq_printf(f, "cpus active\t\t: %u\n"
+		      "cpu active mask\t\t: %016lx\n",
+		       num_online_cpus(), cpumask_bits(cpu_possible_mask)[0]);
 #endif
 
 	show_cache_size (f, "L1 Icache", alpha_l1i_cacheshape);
@@ -1414,6 +1446,12 @@ determine_cpu_caches (unsigned int cpu_type)
 		size = 512*1024 * (1 << ((cbox_config >> 12) & 3));
 
 #if 0
+#if 0
+		unsigned long cbox_config, size;
+
+		cbox_config = *(vulp) phys_to_virt (0xfffff00008UL);
+		size = 512*1024 * (1 << ((cbox_config >> 12) & 3));
+
 		L2 = ((cbox_config >> 31) & 1 ? CSHAPE (size, 6, 1) : -1);
 #else
 		L2 = external_cache_probe(512*1024, 6);

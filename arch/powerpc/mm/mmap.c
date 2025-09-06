@@ -24,6 +24,7 @@
 
 #include <linux/personality.h>
 #include <linux/mm.h>
+#include <linux/random.h>
 #include <linux/sched.h>
 
 /*
@@ -37,6 +38,45 @@
 static inline unsigned long mmap_base(void)
 {
 	unsigned long gap = current->signal->rlim[RLIMIT_STACK].rlim_cur;
+ * Leave at least a ~128 MB hole on 32bit applications.
+ *
+ * On 64bit applications we randomise the stack by 1GB so we need to
+ * space our mmap start address by a further 1GB, otherwise there is a
+ * chance the mmap area will end up closer to the stack than our ulimit
+ * requires.
+ */
+#define MIN_GAP32 (128*1024*1024)
+#define MIN_GAP64 ((128 + 1024)*1024*1024UL)
+#define MIN_GAP ((is_32bit_task()) ? MIN_GAP32 : MIN_GAP64)
+#define MAX_GAP (TASK_SIZE/6*5)
+
+static inline int mmap_is_legacy(void)
+{
+	if (current->personality & ADDR_COMPAT_LAYOUT)
+		return 1;
+
+	if (rlimit(RLIMIT_STACK) == RLIM_INFINITY)
+		return 1;
+
+	return sysctl_legacy_va_layout;
+}
+
+unsigned long arch_mmap_rnd(void)
+{
+	unsigned long rnd;
+
+	/* 8MB for 32bit, 1GB for 64bit */
+	if (is_32bit_task())
+		rnd = get_random_long() % (1<<(23-PAGE_SHIFT));
+	else
+		rnd = get_random_long() % (1UL<<(30-PAGE_SHIFT));
+
+	return rnd << PAGE_SHIFT;
+}
+
+static inline unsigned long mmap_base(unsigned long rnd)
+{
+	unsigned long gap = rlimit(RLIMIT_STACK);
 
 	if (gap < MIN_GAP)
 		gap = MIN_GAP;
@@ -61,6 +101,7 @@ static inline int mmap_is_legacy(void)
 		return 1;
 
 	return sysctl_legacy_va_layout;
+	return PAGE_ALIGN(TASK_SIZE - gap - rnd);
 }
 
 /*
@@ -69,6 +110,11 @@ static inline int mmap_is_legacy(void)
  */
 void arch_pick_mmap_layout(struct mm_struct *mm)
 {
+	unsigned long random_factor = 0UL;
+
+	if (current->flags & PF_RANDOMIZE)
+		random_factor = arch_mmap_rnd();
+
 	/*
 	 * Fall back to the standard layout if the personality
 	 * bit is set, or if the expected stack growth is unlimited:
@@ -81,5 +127,8 @@ void arch_pick_mmap_layout(struct mm_struct *mm)
 		mm->mmap_base = mmap_base();
 		mm->get_unmapped_area = arch_get_unmapped_area_topdown;
 		mm->unmap_area = arch_unmap_area_topdown;
+	} else {
+		mm->mmap_base = mmap_base(random_factor);
+		mm->get_unmapped_area = arch_get_unmapped_area_topdown;
 	}
 }

@@ -8,6 +8,7 @@ config INFINIBAND_MTHCA
 
 config INFINIBAND_MTHCA_DEBUG
 	bool "Verbose debugging output" if EMBEDDED
+	bool "Verbose debugging output" if EXPERT
 	depends on INFINIBAND_MTHCA
 	default y
 	---help---

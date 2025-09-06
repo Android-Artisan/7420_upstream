@@ -22,6 +22,9 @@
 #include <linux/init.h>
 #include <linux/smp.h>
 #include <linux/sched.h>
+#include <linux/interrupt.h>
+#include <linux/sched.h>
+#include <linux/spinlock.h>
 #include <linux/completion.h>
 #include <linux/delay.h>
 #include <linux/string.h>
@@ -36,12 +39,19 @@
 #include <asm/mach-types.h>
 
 #include "ucb1x00.h"
+#include <linux/mfd/ucb1x00.h>
+
+#include <mach/collie.h>
+#include <asm/mach-types.h>
+
 
 
 struct ucb1x00_ts {
 	struct input_dev	*idev;
 	struct ucb1x00		*ucb;
 
+	spinlock_t		irq_lock;
+	unsigned		irq_disabled;
 	wait_queue_head_t	irq_wait;
 	struct task_struct	*rtask;
 	u16			x_res;
@@ -60,6 +70,7 @@ static inline void ucb1x00_ts_evt_add(struct ucb1x00_ts *ts, u16 pressure, u16 x
 	input_report_abs(idev, ABS_X, x);
 	input_report_abs(idev, ABS_Y, y);
 	input_report_abs(idev, ABS_PRESSURE, pressure);
+	input_report_key(idev, BTN_TOUCH, 1);
 	input_sync(idev);
 }
 
@@ -68,6 +79,7 @@ static inline void ucb1x00_ts_event_release(struct ucb1x00_ts *ts)
 	struct input_dev *idev = ts->idev;
 
 	input_report_abs(idev, ABS_PRESSURE, 0);
+	input_report_key(idev, BTN_TOUCH, 0);
 	input_sync(idev);
 }
 
@@ -205,6 +217,7 @@ static int ucb1x00_thread(void *_ts)
 {
 	struct ucb1x00_ts *ts = _ts;
 	DECLARE_WAITQUEUE(wait, current);
+	bool frozen, ignore = false;
 	int valid = 0;
 
 	set_freezable();
@@ -214,6 +227,12 @@ static int ucb1x00_thread(void *_ts)
 		signed long timeout;
 
 		ts->restart = 0;
+	while (!kthread_freezable_should_stop(&frozen)) {
+		unsigned int x, y, p;
+		signed long timeout;
+
+		if (frozen)
+			ignore = true;
 
 		ucb1x00_adc_enable(ts->ucb);
 
@@ -236,6 +255,12 @@ static int ucb1x00_thread(void *_ts)
 			set_current_state(TASK_INTERRUPTIBLE);
 
 			ucb1x00_enable_irq(ts->ucb, UCB_IRQ_TSPX, machine_is_collie() ? UCB_RISING : UCB_FALLING);
+			spin_lock_irq(&ts->irq_lock);
+			if (ts->irq_disabled) {
+				ts->irq_disabled = 0;
+				enable_irq(ts->ucb->irq_base + UCB_IRQ_TSPX);
+			}
+			spin_unlock_irq(&ts->irq_lock);
 			ucb1x00_disable(ts->ucb);
 
 			/*
@@ -257,6 +282,7 @@ static int ucb1x00_thread(void *_ts)
 			 * to do any filtering they please.
 			 */
 			if (!ts->restart) {
+			if (!ignore) {
 				ucb1x00_ts_evt_add(ts, p, x, y);
 				valid = 1;
 			}
@@ -286,17 +312,39 @@ static void ucb1x00_ts_irq(int idx, void *id)
 
 	ucb1x00_disable_irq(ts->ucb, UCB_IRQ_TSPX, UCB_FALLING);
 	wake_up(&ts->irq_wait);
+static irqreturn_t ucb1x00_ts_irq(int irq, void *id)
+{
+	struct ucb1x00_ts *ts = id;
+
+	spin_lock(&ts->irq_lock);
+	ts->irq_disabled = 1;
+	disable_irq_nosync(ts->ucb->irq_base + UCB_IRQ_TSPX);
+	spin_unlock(&ts->irq_lock);
+	wake_up(&ts->irq_wait);
+
+	return IRQ_HANDLED;
 }
 
 static int ucb1x00_ts_open(struct input_dev *idev)
 {
 	struct ucb1x00_ts *ts = input_get_drvdata(idev);
+	unsigned long flags = 0;
 	int ret = 0;
 
 	BUG_ON(ts->rtask);
 
 	init_waitqueue_head(&ts->irq_wait);
 	ret = ucb1x00_hook_irq(ts->ucb, UCB_IRQ_TSPX, ucb1x00_ts_irq, ts);
+	if (machine_is_collie())
+		flags = IRQF_TRIGGER_RISING;
+	else
+		flags = IRQF_TRIGGER_FALLING;
+
+	ts->irq_disabled = 0;
+
+	init_waitqueue_head(&ts->irq_wait);
+	ret = request_irq(ts->ucb->irq_base + UCB_IRQ_TSPX, ucb1x00_ts_irq,
+			  flags, "ucb1x00-ts", ts);
 	if (ret < 0)
 		goto out;
 
@@ -314,6 +362,7 @@ static int ucb1x00_ts_open(struct input_dev *idev)
 		ret = 0;
 	} else {
 		ucb1x00_free_irq(ts->ucb, UCB_IRQ_TSPX, ts);
+		free_irq(ts->ucb->irq_base + UCB_IRQ_TSPX, ts);
 		ts->rtask = NULL;
 		ret = -EFAULT;
 	}
@@ -334,6 +383,7 @@ static void ucb1x00_ts_close(struct input_dev *idev)
 
 	ucb1x00_enable(ts->ucb);
 	ucb1x00_free_irq(ts->ucb, UCB_IRQ_TSPX, ts);
+	free_irq(ts->ucb->irq_base + UCB_IRQ_TSPX, ts);
 	ucb1x00_reg_write(ts->ucb, UCB_TS_CR, 0);
 	ucb1x00_disable(ts->ucb);
 }
@@ -378,6 +428,7 @@ static int ucb1x00_ts_add(struct ucb1x00_dev *dev)
 	ts->ucb = dev->ucb;
 	ts->idev = idev;
 	ts->adcsync = adcsync ? UCB_SYNC : UCB_NOSYNC;
+	spin_lock_init(&ts->irq_lock);
 
 	idev->name       = "Touchscreen panel";
 	idev->id.product = ts->ucb->id;
@@ -390,6 +441,22 @@ static int ucb1x00_ts_add(struct ucb1x00_dev *dev)
 	__set_bit(ABS_PRESSURE, idev->absbit);
 
 	input_set_drvdata(idev, ts);
+
+	idev->dev.parent = &ts->ucb->dev;
+
+	idev->evbit[0]   = BIT_MASK(EV_ABS) | BIT_MASK(EV_KEY);
+	idev->keybit[BIT_WORD(BTN_TOUCH)] = BIT_MASK(BTN_TOUCH);
+
+	input_set_drvdata(idev, ts);
+
+	ucb1x00_adc_enable(ts->ucb);
+	ts->x_res = ucb1x00_ts_read_xres(ts);
+	ts->y_res = ucb1x00_ts_read_yres(ts);
+	ucb1x00_adc_disable(ts->ucb);
+
+	input_set_abs_params(idev, ABS_X, 0, ts->x_res, 0, 0);
+	input_set_abs_params(idev, ABS_Y, 0, ts->y_res, 0, 0);
+	input_set_abs_params(idev, ABS_PRESSURE, 0, 0, 0, 0);
 
 	err = input_register_device(idev);
 	if (err)

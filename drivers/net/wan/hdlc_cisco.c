@@ -38,6 +38,7 @@ struct hdlc_header {
 	u8 control;
 	__be16 protocol;
 }__attribute__ ((packed));
+}__packed;
 
 
 struct cisco_packet {
@@ -47,6 +48,7 @@ struct cisco_packet {
 	__be16 rel;		/* reliability */
 	__be32 time;
 }__attribute__ ((packed));
+}__packed;
 #define	CISCO_PACKET_LEN	18
 #define	CISCO_BIG_PACKET_LEN	20
 
@@ -60,6 +62,7 @@ struct cisco_state {
 	int up;
 	int request_sent;
 	u32 txseq; /* TX sequence number */
+	u32 txseq; /* TX sequence number, 0 = none */
 	u32 rxseq; /* RX sequence number */
 };
 
@@ -108,6 +111,7 @@ static void cisco_keepalive_send(struct net_device *dev, u32 type,
 		printk(KERN_WARNING
 		       "%s: Memory squeeze on cisco_keepalive_send()\n",
 		       dev->name);
+		netdev_warn(dev, "Memory squeeze on cisco_keepalive_send()\n");
 		return;
 	}
 	skb_reserve(skb, 4);
@@ -118,12 +122,14 @@ static void cisco_keepalive_send(struct net_device *dev, u32 type,
 	data->par1 = par1;
 	data->par2 = par2;
 	data->rel = __constant_htons(0xFFFF);
+	data->rel = cpu_to_be16(0xFFFF);
 	/* we will need do_div here if 1000 % HZ != 0 */
 	data->time = htonl((jiffies - INITIAL_JIFFIES) * (1000 / HZ));
 
 	skb_put(skb, sizeof(struct cisco_packet));
 	skb->priority = TC_PRIO_CONTROL;
 	skb->dev = dev;
+	skb->protocol = htons(ETH_P_HDLC);
 	skb_reset_network_header(skb);
 
 	dev_queue_xmit(skb);
@@ -150,6 +156,20 @@ static __be16 cisco_type_trans(struct sk_buff *skb, struct net_device *dev)
 		return data->protocol;
 	default:
 		return __constant_htons(ETH_P_HDLC);
+		return cpu_to_be16(ETH_P_HDLC);
+
+	if (data->address != CISCO_MULTICAST &&
+	    data->address != CISCO_UNICAST)
+		return cpu_to_be16(ETH_P_HDLC);
+
+	switch (data->protocol) {
+	case cpu_to_be16(ETH_P_IP):
+	case cpu_to_be16(ETH_P_IPX):
+	case cpu_to_be16(ETH_P_IPV6):
+		skb_pull(skb, sizeof(struct hdlc_header));
+		return data->protocol;
+	default:
+		return cpu_to_be16(ETH_P_HDLC);
 	}
 }
 
@@ -163,6 +183,7 @@ static int cisco_rx(struct sk_buff *skb)
 	struct cisco_packet *cisco_data;
 	struct in_device *in_dev;
 	__be32 addr, mask;
+	u32 ack;
 
 	if (skb->len < sizeof(struct hdlc_header))
 		goto rx_error;
@@ -184,6 +205,8 @@ static int cisco_rx(struct sk_buff *skb)
 		     CISCO_BIG_PACKET_LEN)) {
 			printk(KERN_INFO "%s: Invalid length of Cisco control"
 			       " packet (%d bytes)\n", dev->name, skb->len);
+			netdev_info(dev, "Invalid length of Cisco control packet (%d bytes)\n",
+				    skb->len);
 			goto rx_error;
 		}
 
@@ -195,6 +218,12 @@ static int cisco_rx(struct sk_buff *skb)
 			in_dev = dev->ip_ptr;
 			addr = 0;
 			mask = __constant_htonl(~0); /* is the mask correct? */
+		switch (ntohl (cisco_data->type)) {
+		case CISCO_ADDR_REQ: /* Stolen from syncppp.c :-) */
+			rcu_read_lock();
+			in_dev = __in_dev_get_rcu(dev);
+			addr = 0;
+			mask = ~cpu_to_be32(0); /* is the mask correct? */
 
 			if (in_dev != NULL) {
 				struct in_ifaddr **ifap = &in_dev->ifa_list;
@@ -212,12 +241,14 @@ static int cisco_rx(struct sk_buff *skb)
 				cisco_keepalive_send(dev, CISCO_ADDR_REPLY,
 						     addr, mask);
 			}
+			rcu_read_unlock();
 			dev_kfree_skb_any(skb);
 			return NET_RX_SUCCESS;
 
 		case CISCO_ADDR_REPLY:
 			printk(KERN_INFO "%s: Unexpected Cisco IP address "
 			       "reply\n", dev->name);
+			netdev_info(dev, "Unexpected Cisco IP address reply\n");
 			goto rx_error;
 
 		case CISCO_KEEPALIVE_REQ:
@@ -225,6 +256,10 @@ static int cisco_rx(struct sk_buff *skb)
 			st->rxseq = ntohl(cisco_data->par1);
 			if (st->request_sent &&
 			    ntohl(cisco_data->par2) == st->txseq) {
+			ack = ntohl(cisco_data->par2);
+			if (ack && (ack == st->txseq ||
+				    /* our current REQ may be in transit */
+				    ack == st->txseq - 1)) {
 				st->last_poll = jiffies;
 				if (!st->up) {
 					u32 sec, min, hrs, days;
@@ -235,6 +270,8 @@ static int cisco_rx(struct sk_buff *skb)
 					printk(KERN_INFO "%s: Link up (peer "
 					       "uptime %ud%uh%um%us)\n",
 					       dev->name, days, hrs, min, sec);
+					netdev_info(dev, "Link up (peer uptime %ud%uh%um%us)\n",
+						    days, hrs, min, sec);
 					netif_dormant_off(dev);
 					st->up = 1;
 				}
@@ -248,6 +285,10 @@ static int cisco_rx(struct sk_buff *skb)
 
 	printk(KERN_INFO "%s: Unsupported protocol %x\n", dev->name,
 	       ntohs(data->protocol));
+		} /* switch (keepalive type) */
+	} /* switch (protocol) */
+
+	netdev_info(dev, "Unsupported protocol %x\n", ntohs(data->protocol));
 	dev_kfree_skb_any(skb);
 	return NET_RX_DROP;
 
@@ -270,6 +311,7 @@ static void cisco_timer(unsigned long arg)
 	    time_after(jiffies, st->last_poll + st->settings.timeout * HZ)) {
 		st->up = 0;
 		printk(KERN_INFO "%s: Link down\n", dev->name);
+		netdev_info(dev, "Link down\n");
 		netif_dormant_on(dev);
 	}
 
@@ -296,6 +338,7 @@ static void cisco_start(struct net_device *dev)
 	st->up = 0;
 	st->request_sent = 0;
 	st->txseq = st->rxseq = 0;
+	st->up = st->txseq = st->rxseq = 0;
 	spin_unlock_irqrestore(&st->lock, flags);
 
 	init_timer(&st->timer);
@@ -319,6 +362,7 @@ static void cisco_stop(struct net_device *dev)
 	netif_dormant_on(dev);
 	st->up = 0;
 	st->request_sent = 0;
+	st->up = st->txseq = 0;
 	spin_unlock_irqrestore(&st->lock, flags);
 }
 
@@ -384,6 +428,7 @@ static int cisco_ioctl(struct net_device *dev, struct ifreq *ifr)
 		spin_lock_init(&state(hdlc)->lock);
 		dev->hard_start_xmit = hdlc->xmit;
 		dev->header_ops = &cisco_header_ops;
+		dev->hard_header_len = sizeof(struct hdlc_header);
 		dev->type = ARPHRD_CISCO;
 		netif_dormant_on(dev);
 		return 0;

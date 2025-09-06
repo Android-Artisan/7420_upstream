@@ -12,7 +12,6 @@
 *		modify it under the terms of the GNU General Public License
 *		as published by the Free Software Foundation; either version
 *		2 of the License, or (at your option) any later version.
-* ============================================================================
 * Please look at the bitkeeper changelog (or any other scm tool that ends up
 * importing bitkeeper changelog or that replaces bitkeeper in the future as
 * main tool for linux development).

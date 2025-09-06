@@ -8,10 +8,18 @@
  *
  *  S390 version
  *    Copyright (C) 1999 IBM Deutschland Entwicklung GmbH, IBM Corporation
+/*
+ *    S390 fast network checksum routines
+ *
+ *  S390 version
+ *    Copyright IBM Corp. 1999
  *    Author(s): Ulrich Hild        (first version)
  *               Martin Schwidefsky (heavily optimized CKSM version)
  *               D.J. Barrow        (third attempt) 
  */
+
+#ifndef _S390_CHECKSUM_H
+#define _S390_CHECKSUM_H
 
 #include <asm/uaccess.h>
 
@@ -48,6 +56,7 @@ csum_partial(const void *buff, int len, __wsum sum)
  *
  * Copy from userspace and compute checksum.  If we catch an exception
  * then zero the rest of the buffer.
+ * Copy from userspace and compute checksum.
  */
 static inline __wsum
 csum_partial_copy_from_user(const void __user *src, void *dst,
@@ -62,6 +71,8 @@ csum_partial_copy_from_user(const void __user *src, void *dst,
 		*err_ptr = -EFAULT;
 	}
 		
+	if (unlikely(copy_from_user(dst, src, len)))
+		*err_ptr = -EFAULT;
 	return csum_partial(dst, len, sum);
 }
 
@@ -100,6 +111,11 @@ static inline __sum16 csum_fold(__wsum sum)
 		: "+&d" (sum) : : "cc", "2", "3");
 #endif /* __s390x__ */
 	return (__force __sum16) ~sum;
+	u32 csum = (__force u32) sum;
+
+	csum += (csum >> 16) + (csum << 16);
+	csum >>= 16;
+	return (__force __sum16) ~csum;
 }
 
 /*

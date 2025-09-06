@@ -48,6 +48,7 @@ struct crunch_sigframe {
 
 #ifdef CONFIG_IWMMXT
 /* iwmmxt_area is 0x98 bytes long, preceeded by 8 bytes of signature */
+/* iwmmxt_area is 0x98 bytes long, preceded by 8 bytes of signature */
 #define IWMMXT_MAGIC		0x12ef842a
 #define IWMMXT_STORAGE_SIZE	(IWMMXT_SIZE + 8)
 
@@ -69,6 +70,7 @@ struct iwmmxt_sigframe {
 #define VFP_MAGIC		0x56465002
 #define VFP_STORAGE_SIZE	144
 #endif
+#define VFP_MAGIC		0x56465001
 
 struct vfp_sigframe
 {
@@ -76,6 +78,16 @@ struct vfp_sigframe
 	unsigned long		size;
 	union vfp_state		storage;
 };
+	struct user_vfp		ufp;
+	struct user_vfp_exc	ufp_exc;
+} __attribute__((__aligned__(8)));
+
+/*
+ *  8 byte for magic and size, 264 byte for ufp, 12 bytes for ufp_exc,
+ *  4 bytes padding.
+ */
+#define VFP_STORAGE_SIZE	sizeof(struct vfp_sigframe)
+
 #endif /* CONFIG_VFP */
 
 /*
@@ -92,6 +104,7 @@ struct aux_sigframe {
 	struct iwmmxt_sigframe	iwmmxt;
 #endif
 #if 0 && defined CONFIG_VFP /* Not yet saved.  */
+#ifdef CONFIG_VFP
 	struct vfp_sigframe	vfp;
 #endif
 	/* Something that isn't a valid magic number for any coprocessor.  */

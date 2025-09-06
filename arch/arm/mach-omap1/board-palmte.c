@@ -17,6 +17,7 @@
  * published by the Free Software Foundation.
  */
 
+#include <linux/gpio.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/input.h>
@@ -64,6 +65,59 @@ static const int palmte_keymap[] = {
 	KEY(1, 3, KEY_RIGHT),
 	KEY(1, 4, KEY_ENTER),
 	0,
+#include <linux/mtd/physmap.h>
+#include <linux/spi/spi.h>
+#include <linux/interrupt.h>
+#include <linux/apm-emulation.h>
+#include <linux/omapfb.h>
+#include <linux/platform_data/omap1_bl.h>
+
+#include <asm/mach-types.h>
+#include <asm/mach/arch.h>
+#include <asm/mach/map.h>
+
+#include <mach/flash.h>
+#include <mach/mux.h>
+#include <mach/tc.h>
+#include <linux/omap-dma.h>
+#include <linux/platform_data/keypad-omap.h>
+
+#include <mach/hardware.h>
+#include <mach/usb.h>
+
+#include "common.h"
+
+#define PALMTE_USBDETECT_GPIO	0
+#define PALMTE_USB_OR_DC_GPIO	1
+#define PALMTE_TSC_GPIO		4
+#define PALMTE_PINTDAV_GPIO	6
+#define PALMTE_MMC_WP_GPIO	8
+#define PALMTE_MMC_POWER_GPIO	9
+#define PALMTE_HDQ_GPIO		11
+#define PALMTE_HEADPHONES_GPIO	14
+#define PALMTE_SPEAKER_GPIO	15
+#define PALMTE_DC_GPIO		OMAP_MPUIO(2)
+#define PALMTE_MMC_SWITCH_GPIO	OMAP_MPUIO(4)
+#define PALMTE_MMC1_GPIO	OMAP_MPUIO(6)
+#define PALMTE_MMC2_GPIO	OMAP_MPUIO(7)
+#define PALMTE_MMC3_GPIO	OMAP_MPUIO(11)
+
+static const unsigned int palmte_keymap[] = {
+	KEY(0, 0, KEY_F1),		/* Calendar */
+	KEY(1, 0, KEY_F2),		/* Contacts */
+	KEY(2, 0, KEY_F3),		/* Tasks List */
+	KEY(3, 0, KEY_F4),		/* Note Pad */
+	KEY(4, 0, KEY_POWER),
+	KEY(0, 1, KEY_LEFT),
+	KEY(1, 1, KEY_DOWN),
+	KEY(2, 1, KEY_UP),
+	KEY(3, 1, KEY_RIGHT),
+	KEY(4, 1, KEY_ENTER),
+};
+
+static const struct matrix_keymap_data palmte_keymap_data = {
+	.keymap		= palmte_keymap,
+	.keymap_size	= ARRAY_SIZE(palmte_keymap),
 };
 
 static struct omap_kp_platform_data palmte_kp_data = {
@@ -71,6 +125,8 @@ static struct omap_kp_platform_data palmte_kp_data = {
 	.cols	= 8,
 	.keymap = (int *) palmte_keymap,
 	.rep	= 1,
+	.keymap_data = &palmte_keymap_data,
+	.rep	= true,
 	.delay	= 12,
 };
 
@@ -116,6 +172,9 @@ static struct mtd_partition palmte_rom_partitions[] = {
 static struct flash_platform_data palmte_rom_data = {
 	.map_name	= "map_rom",
 	.width		= 2,
+static struct physmap_flash_data palmte_rom_data = {
+	.width		= 2,
+	.set_vpp	= omap1_set_vpp,
 	.parts		= palmte_rom_partitions,
 	.nr_parts	= ARRAY_SIZE(palmte_rom_partitions),
 };
@@ -128,6 +187,7 @@ static struct resource palmte_rom_resource = {
 
 static struct platform_device palmte_rom_device = {
 	.name		= "omapflash",
+	.name		= "physmap-flash",
 	.id		= -1,
 	.dev		= {
 		.platform_data	= &palmte_rom_data,
@@ -359,6 +419,21 @@ static void __init palmte_misc_gpio_setup(void)
 		return;
 	}
 	omap_set_gpio_direction(PALMTE_USB_OR_DC_GPIO, 1);
+static void __init palmte_misc_gpio_setup(void)
+{
+	/* Set TSC2102 PINTDAV pin as input (used by TSC2102 driver) */
+	if (gpio_request(PALMTE_PINTDAV_GPIO, "TSC2102 PINTDAV") < 0) {
+		printk(KERN_ERR "Could not reserve PINTDAV GPIO!\n");
+		return;
+	}
+	gpio_direction_input(PALMTE_PINTDAV_GPIO);
+
+	/* Set USB-or-DC-IN pin as input (unused) */
+	if (gpio_request(PALMTE_USB_OR_DC_GPIO, "USB/DC-IN") < 0) {
+		printk(KERN_ERR "Could not reserve cable signal GPIO!\n");
+		return;
+	}
+	gpio_direction_input(PALMTE_USB_OR_DC_GPIO);
 }
 
 static void __init omap_palmte_init(void)
@@ -387,4 +462,34 @@ MACHINE_START(OMAP_PALMTE, "OMAP310 based Palm Tungsten E")
 	.init_irq	= omap_palmte_init_irq,
 	.init_machine	= omap_palmte_init,
 	.timer		= &omap_timer,
+	/* mux pins for uarts */
+	omap_cfg_reg(UART1_TX);
+	omap_cfg_reg(UART1_RTS);
+	omap_cfg_reg(UART2_TX);
+	omap_cfg_reg(UART2_RTS);
+	omap_cfg_reg(UART3_TX);
+	omap_cfg_reg(UART3_RX);
+
+	platform_add_devices(palmte_devices, ARRAY_SIZE(palmte_devices));
+
+	palmte_spi_info[0].irq = gpio_to_irq(PALMTE_PINTDAV_GPIO);
+	spi_register_board_info(palmte_spi_info, ARRAY_SIZE(palmte_spi_info));
+	palmte_misc_gpio_setup();
+	omap_serial_init();
+	omap1_usb_init(&palmte_usb_config);
+	omap_register_i2c_bus(1, 100, NULL, 0);
+
+	omapfb_set_lcd_config(&palmte_lcd_config);
+}
+
+MACHINE_START(OMAP_PALMTE, "OMAP310 based Palm Tungsten E")
+	.atag_offset	= 0x100,
+	.map_io		= omap15xx_map_io,
+	.init_early     = omap1_init_early,
+	.init_irq	= omap1_init_irq,
+	.handle_irq	= omap1_handle_irq,
+	.init_machine	= omap_palmte_init,
+	.init_late	= omap1_init_late,
+	.init_time	= omap1_timer_init,
+	.restart	= omap1_restart,
 MACHINE_END

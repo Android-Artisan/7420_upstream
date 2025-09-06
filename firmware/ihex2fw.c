@@ -57,12 +57,16 @@ static int sort_records = 0;
 static int wide_records = 0;
 
 int usage(void)
+static int include_jump = 0;
+
+static int usage(void)
 {
 	fprintf(stderr, "ihex2fw: Convert ihex files into binary "
 		"representation for use by Linux kernel\n");
 	fprintf(stderr, "usage: ihex2fw [<options>] <src.HEX> <dst.fw>\n");
 	fprintf(stderr, "       -w: wide records (16-bit length)\n");
 	fprintf(stderr, "       -s: sort records by address\n");
+	fprintf(stderr, "       -j: include records for CS:IP/EIP address\n");
 	return 1;
 }
 
@@ -74,12 +78,16 @@ int main(int argc, char **argv)
 	int opt;
 
 	while ((opt = getopt(argc, argv, "ws")) != -1) {
+	while ((opt = getopt(argc, argv, "wsj")) != -1) {
 		switch (opt) {
 		case 'w':
 			wide_records = 1;
 			break;
 		case 's':
 			sort_records = 1;
+			break;
+		case 'j':
+			include_jump = 1;
 			break;
 		default:
 			return usage();
@@ -122,12 +130,14 @@ int main(int argc, char **argv)
 
 	output_records(outfd);
 	return 0;
+	return output_records(outfd);
 }
 
 static int process_ihex(uint8_t *data, ssize_t size)
 {
 	struct ihex_binrec *record;
 	uint32_t offset = 0;
+	uint32_t data32;
 	uint8_t type, crc = 0, crcbyte = 0;
 	int i, j;
 	int line = 1;
@@ -225,6 +235,14 @@ next_record:
 
 		/* These records contain the CS/IP or EIP where execution
 		 * starts. Don't really know what to do with them. */
+		memcpy(&data32, &record->data[0], sizeof(data32));
+		data32 = htonl(data32);
+		memcpy(&record->data[0], &data32, sizeof(data32));
+
+		/* These records contain the CS/IP or EIP where execution
+		 * starts. If requested output this as a record. */
+		if (include_jump)
+			file_record(record);
 		goto next_record;
 
 	default:
@@ -259,10 +277,14 @@ static int output_records(int outfd)
 		p->addr = htonl(p->addr);
 		p->len = htons(p->len);
 		write(outfd, &p->addr, writelen);
+		if (write(outfd, &p->addr, writelen) != writelen)
+			return 1;
 		p = p->next;
 	}
 	/* EOF record is zero length, since we don't bother to represent
 	   the type field in the binary version */
 	write(outfd, zeroes, 6);
+	if (write(outfd, zeroes, 6) != 6)
+		return 1;
 	return 0;
 }

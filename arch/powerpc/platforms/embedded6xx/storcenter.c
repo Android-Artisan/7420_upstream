@@ -18,6 +18,8 @@
 #include <linux/of_platform.h>
 
 #include <asm/system.h>
+#include <linux/of_platform.h>
+
 #include <asm/time.h>
 #include <asm/prom.h>
 #include <asm/mpic.h>
@@ -53,6 +55,7 @@ static struct mtd_partition storcenter_physmap_partitions[] = {
 
 
 static __initdata struct of_device_id storcenter_of_bus[] = {
+static const struct of_device_id storcenter_of_bus[] __initconst = {
 	{ .name = "soc", },
 	{},
 };
@@ -110,6 +113,7 @@ static void __init storcenter_setup_arch(void)
 
 /*
  * Interrupt setup and service.  Interrrupts on the turbostation come
+ * Interrupt setup and service.  Interrupts on the turbostation come
  * from the four PCI slots plus onboard 8241 devices: I2C, DUART.
  */
 static void __init storcenter_init_IRQ(void)
@@ -136,6 +140,8 @@ static void __init storcenter_init_IRQ(void)
 
 	of_node_put(dnp);
 
+
+	mpic = mpic_alloc(NULL, 0, 0, 16, 0, " OpenPIC  ");
 	BUG_ON(mpic == NULL);
 
 	/*
@@ -144,6 +150,8 @@ static void __init storcenter_init_IRQ(void)
 	 */
 	mpic_assign_isu(mpic, 0, paddr + 0x10200);
 	mpic_assign_isu(mpic, 1, paddr + 0x11000);
+	mpic_assign_isu(mpic, 0, mpic->paddr + 0x10200);
+	mpic_assign_isu(mpic, 1, mpic->paddr + 0x11000);
 
 	mpic_init(mpic);
 }

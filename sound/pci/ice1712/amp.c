@@ -26,6 +26,9 @@
 #include <linux/interrupt.h>
 #include <linux/init.h>
 #include <linux/slab.h>
+#include <linux/delay.h>
+#include <linux/interrupt.h>
+#include <linux/init.h>
 #include <sound/core.h>
 
 #include "ice1712.h"
@@ -40,6 +43,7 @@ static void wm_put(struct snd_ice1712 *ice, int reg, unsigned short val)
 }
 
 static int __devinit snd_vt1724_amp_init(struct snd_ice1712 *ice)
+static int snd_vt1724_amp_init(struct snd_ice1712 *ice)
 {
 	static const unsigned short wm_inits[] = {
 		WM_ATTEN_L,	0x0000,	/* 0 db */
@@ -57,6 +61,13 @@ static int __devinit snd_vt1724_amp_init(struct snd_ice1712 *ice)
 
 	/* Chaintech AV-710 has another codecs, which need initialization */
 	/* initialize WM8728 codec */
+	/* VT1616 6ch codec connected to PSDOUT0 using packed mode */
+	ice->num_total_dacs = 6;
+	ice->num_total_adcs = 2;
+
+	/* Chaintech AV-710 has another WM8728 codec connected to PSDOUT4
+	   (shared with the SPDIF output). Mixer control for this codec
+	   is not yet supported. */
 	if (ice->eeprom.subvendor == VT1724_SUBDEVICE_AV710) {
 		for (i = 0; i < ARRAY_SIZE(wm_inits); i += 2)
 			wm_put(ice, wm_inits[i], wm_inits[i+1]);
@@ -69,12 +80,20 @@ static int __devinit snd_vt1724_amp_add_controls(struct snd_ice1712 *ice)
 {
 	/* we use pins 39 and 41 of the VT1616 for left and right read outputs */
 	snd_ac97_write_cache(ice->ac97, 0x5a, snd_ac97_read(ice->ac97, 0x5a) & ~0x8000);
+static int snd_vt1724_amp_add_controls(struct snd_ice1712 *ice)
+{
+	if (ice->ac97)
+		/* we use pins 39 and 41 of the VT1616 for left and right
+		read outputs */
+		snd_ac97_write_cache(ice->ac97, 0x5a,
+			snd_ac97_read(ice->ac97, 0x5a) & ~0x8000);
 	return 0;
 }
 
 
 /* entry point */
 struct snd_ice1712_card_info snd_vt1724_amp_cards[] __devinitdata = {
+struct snd_ice1712_card_info snd_vt1724_amp_cards[] = {
 	{
 		.subvendor = VT1724_SUBDEVICE_AV710,
 		.name = "Chaintech AV-710",

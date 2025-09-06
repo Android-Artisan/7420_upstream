@@ -1,4 +1,3 @@
-=================================================================================
 MO_OUTPUT_FORMAT (0x310164)
 
   Previous default from DScaler: 0x1c1f0008
@@ -38,4 +37,3 @@ MO_OUTPUT_FORMAT (0x310164)
 Datasheet incorrectly states to use 47 decimal. 188 is the length.
 All DVB compliant frontends output packets with this start code.
 
-=================================================================================

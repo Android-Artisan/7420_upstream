@@ -51,6 +51,9 @@ struct pci_channel board_pci_channels[] = {
 };
 EXPORT_SYMBOL(board_pci_channels);
 
+#include <linux/io.h>
+#include <mach/pci.h>
+
 /*
  * The !gapspci_config_access case really shouldn't happen, ever, unless
  * someone implicitly messes around with the last devfn value.. otherwise we
@@ -89,6 +92,10 @@ static int gapspci_read(struct pci_bus *bus, unsigned int devfn, int where, int 
 		case 2: *val = inw(GAPSPCI_BBA_CONFIG+where); break;
 		case 4: *val = inl(GAPSPCI_BBA_CONFIG+where); break;
 	}	
+	case 1: *val = inb(GAPSPCI_BBA_CONFIG+where); break;
+	case 2: *val = inw(GAPSPCI_BBA_CONFIG+where); break;
+	case 4: *val = inl(GAPSPCI_BBA_CONFIG+where); break;
+	}
 
         return PCIBIOS_SUCCESSFUL;
 }
@@ -102,6 +109,9 @@ static int gapspci_write(struct pci_bus *bus, unsigned int devfn, int where, int
 		case 1: outb(( u8)val, GAPSPCI_BBA_CONFIG+where); break;
 		case 2: outw((u16)val, GAPSPCI_BBA_CONFIG+where); break;
 		case 4: outl((u32)val, GAPSPCI_BBA_CONFIG+where); break;
+	case 1: outb(( u8)val, GAPSPCI_BBA_CONFIG+where); break;
+	case 2: outw((u16)val, GAPSPCI_BBA_CONFIG+where); break;
+	case 4: outl((u32)val, GAPSPCI_BBA_CONFIG+where); break;
 	}
 
         return PCIBIOS_SUCCESSFUL;
@@ -168,3 +178,7 @@ char * __devinit pcibios_setup(char *str)
 {
 	return str;
 }
+struct pci_ops gapspci_pci_ops = {
+	.read	= gapspci_read,
+	.write	= gapspci_write,
+};

@@ -671,7 +671,6 @@ set_imstt_regvals (struct fb_info *info, u_int bpp)
    * correction (byte swapping).  These bits must be set according
    * to the color depth as follows:
    *     Color depth    Bit 9   Bit 8
-   *     ==========     =====   =====
    *        8bpp          0       0
    *       16bpp          0       1
    *       32bpp          1       1

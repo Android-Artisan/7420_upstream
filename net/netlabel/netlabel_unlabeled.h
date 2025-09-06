@@ -6,6 +6,7 @@
  * mappings for network protocols such as CIPSO and RIPSO.
  *
  * Author: Paul Moore <paul.moore@hp.com>
+ * Author: Paul Moore <paul@paul-moore.com>
  *
  */
 
@@ -25,6 +26,7 @@
  * You should have received a copy of the GNU General Public License
  * along with this program;  if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+ * along with this program;  if not, see <http://www.gnu.org/licenses/>.
  *
  */
 
@@ -220,6 +222,21 @@ int netlbl_unlabel_genl_init(void);
 
 /* General Unlabeled init function */
 int netlbl_unlabel_init(u32 size);
+
+/* Static/Fallback label management functions */
+int netlbl_unlhsh_add(struct net *net,
+		      const char *dev_name,
+		      const void *addr,
+		      const void *mask,
+		      u32 addr_len,
+		      u32 secid,
+		      struct netlbl_audit *audit_info);
+int netlbl_unlhsh_remove(struct net *net,
+			 const char *dev_name,
+			 const void *addr,
+			 const void *mask,
+			 u32 addr_len,
+			 struct netlbl_audit *audit_info);
 
 /* Process Unlabeled incoming network packets */
 int netlbl_unlabel_getattr(const struct sk_buff *skb,

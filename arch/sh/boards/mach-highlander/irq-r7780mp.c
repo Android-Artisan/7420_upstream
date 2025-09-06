@@ -13,6 +13,7 @@
 #include <linux/irq.h>
 #include <linux/io.h>
 #include <asm/r7780rp.h>
+#include <mach/highlander.h>
 
 enum {
 	UNUSED = 0,
@@ -65,6 +66,7 @@ static DECLARE_INTC_DESC(intc_desc, "r7780mp", vectors,
 unsigned char * __init highlander_plat_irq_setup(void)
 {
 	if ((ctrl_inw(0xa4000700) & 0xf000) == 0x2000) {
+	if ((__raw_readw(0xa4000700) & 0xf000) == 0x2000) {
 		printk(KERN_INFO "Using r7780mp interrupt controller.\n");
 		register_intc_controller(&intc_desc);
 		return irl2irq;

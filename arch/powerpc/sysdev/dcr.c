@@ -20,6 +20,7 @@
 #undef DEBUG
 
 #include <linux/kernel.h>
+#include <linux/export.h>
 #include <asm/prom.h>
 #include <asm/dcr.h>
 
@@ -54,6 +55,7 @@ bool dcr_map_ok_generic(dcr_host_t host)
 		return dcr_map_ok_mmio(host.host.mmio);
 	else
 		return 0;
+		return false;
 }
 EXPORT_SYMBOL_GPL(dcr_map_ok_generic);
 
@@ -125,6 +127,8 @@ EXPORT_SYMBOL_GPL(dcr_write_generic);
 #endif /* defined(CONFIG_PPC_DCR_NATIVE) && defined(CONFIG_PPC_DCR_MMIO) */
 
 unsigned int dcr_resource_start(struct device_node *np, unsigned int index)
+unsigned int dcr_resource_start(const struct device_node *np,
+				unsigned int index)
 {
 	unsigned int ds;
 	const u32 *dr = of_get_property(np, "dcr-reg", &ds);
@@ -137,6 +141,7 @@ unsigned int dcr_resource_start(struct device_node *np, unsigned int index)
 EXPORT_SYMBOL_GPL(dcr_resource_start);
 
 unsigned int dcr_resource_len(struct device_node *np, unsigned int index)
+unsigned int dcr_resource_len(const struct device_node *np, unsigned int index)
 {
 	unsigned int ds;
 	const u32 *dr = of_get_property(np, "dcr-reg", &ds);
@@ -153,6 +158,9 @@ EXPORT_SYMBOL_GPL(dcr_resource_len);
 u64 of_translate_dcr_address(struct device_node *dev,
 			     unsigned int dcr_n,
 			     unsigned int *out_stride)
+static u64 of_translate_dcr_address(struct device_node *dev,
+				    unsigned int dcr_n,
+				    unsigned int *out_stride)
 {
 	struct device_node *dp;
 	const u32 *p;
@@ -228,5 +236,6 @@ EXPORT_SYMBOL_GPL(dcr_unmap_mmio);
 
 #ifdef CONFIG_PPC_DCR_NATIVE
 DEFINE_SPINLOCK(dcr_ind_lock);
+EXPORT_SYMBOL_GPL(dcr_ind_lock);
 #endif	/* defined(CONFIG_PPC_DCR_NATIVE) */
 

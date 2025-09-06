@@ -12,6 +12,7 @@
 #include <linux/stddef.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
+#include <linux/stat.h>
 #include <linux/pci.h>
 
 #include <asm/prom.h>
@@ -25,6 +26,7 @@
 #define MV64X60_PCICFG_CPCI_HOTSWAP	0x68
 
 static ssize_t mv64x60_hs_reg_read(struct kobject *kobj,
+static ssize_t mv64x60_hs_reg_read(struct file *filp, struct kobject *kobj,
 				   struct bin_attribute *attr, char *buf,
 				   loff_t off, size_t count)
 {
@@ -46,6 +48,7 @@ static ssize_t mv64x60_hs_reg_read(struct kobject *kobj,
 }
 
 static ssize_t mv64x60_hs_reg_write(struct kobject *kobj,
+static ssize_t mv64x60_hs_reg_write(struct file *filp, struct kobject *kobj,
 				    struct bin_attribute *attr, char *buf,
 				    loff_t off, size_t count)
 {
@@ -105,6 +108,7 @@ subsys_initcall(mv64x60_sysfs_init);
 #endif /* CONFIG_SYSFS */
 
 static void __init mv64x60_pci_fixup_early(struct pci_dev *dev)
+static void mv64x60_pci_fixup_early(struct pci_dev *dev)
 {
 	/*
 	 * Set the host bridge hdr_type to an invalid value so that

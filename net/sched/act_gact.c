@@ -1,5 +1,6 @@
 /*
  * net/sched/gact.c	Generic actions
+ * net/sched/act_gact.c		Generic actions
  *
  *		This program is free software; you can redistribute it and/or
  *		modify it under the terms of the GNU General Public License
@@ -38,6 +39,8 @@ static struct tcf_hashinfo gact_hash_info = {
 static int gact_net_rand(struct tcf_gact *gact)
 {
 	if (!gact->tcfg_pval || net_random() % gact->tcfg_pval)
+	smp_rmb(); /* coupled with smp_wmb() in tcf_gact_init() */
+	if (prandom_u32() % gact->tcfg_pval)
 		return gact->tcf_action;
 	return gact->tcfg_paction;
 }
@@ -45,12 +48,17 @@ static int gact_net_rand(struct tcf_gact *gact)
 static int gact_determ(struct tcf_gact *gact)
 {
 	if (!gact->tcfg_pval || gact->tcf_bstats.packets % gact->tcfg_pval)
+	u32 pack = atomic_inc_return(&gact->packets);
+
+	smp_rmb(); /* coupled with smp_wmb() in tcf_gact_init() */
+	if (pack % gact->tcfg_pval)
 		return gact->tcf_action;
 	return gact->tcfg_paction;
 }
 
 typedef int (*g_rand)(struct tcf_gact *gact);
 static g_rand gact_rand[MAX_RAND]= { NULL, gact_net_rand, gact_determ };
+static g_rand gact_rand[MAX_RAND] = { NULL, gact_net_rand, gact_determ };
 #endif /* CONFIG_GACT_PROB */
 
 static const struct nla_policy gact_policy[TCA_GACT_MAX + 1] = {
@@ -60,6 +68,9 @@ static const struct nla_policy gact_policy[TCA_GACT_MAX + 1] = {
 
 static int tcf_gact_init(struct nlattr *nla, struct nlattr *est,
 			 struct tc_action *a, int ovr, int bind)
+static int tcf_gact_init(struct net *net, struct nlattr *nla,
+			 struct nlattr *est, struct tc_action *a,
+			 int ovr, int bind)
 {
 	struct nlattr *tb[TCA_GACT_MAX + 1];
 	struct tc_gact *parm;
@@ -67,6 +78,11 @@ static int tcf_gact_init(struct nlattr *nla, struct nlattr *est,
 	struct tcf_common *pc;
 	int ret = 0;
 	int err;
+	int ret = 0;
+	int err;
+#ifdef CONFIG_GACT_PROB
+	struct tc_gact_p *p_parm = NULL;
+#endif
 
 	if (nla == NULL)
 		return -EINVAL;
@@ -145,6 +161,67 @@ static int tcf_gact(struct sk_buff *skb, struct tc_action *a, struct tcf_result 
 		gact->tcf_qstats.drops++;
 	gact->tcf_tm.lastuse = jiffies;
 	spin_unlock(&gact->tcf_lock);
+#else
+	if (tb[TCA_GACT_PROB]) {
+		p_parm = nla_data(tb[TCA_GACT_PROB]);
+		if (p_parm->ptype >= MAX_RAND)
+			return -EINVAL;
+	}
+#endif
+
+	if (!tcf_hash_check(parm->index, a, bind)) {
+		ret = tcf_hash_create(parm->index, est, a, sizeof(*gact),
+				      bind, true);
+		if (ret)
+			return ret;
+		ret = ACT_P_CREATED;
+	} else {
+		if (bind)/* dont override defaults */
+			return 0;
+		tcf_hash_release(a, bind);
+		if (!ovr)
+			return -EEXIST;
+	}
+
+	gact = to_gact(a);
+
+	ASSERT_RTNL();
+	gact->tcf_action = parm->action;
+#ifdef CONFIG_GACT_PROB
+	if (p_parm) {
+		gact->tcfg_paction = p_parm->paction;
+		gact->tcfg_pval    = max_t(u16, 1, p_parm->pval);
+		/* Make sure tcfg_pval is written before tcfg_ptype
+		 * coupled with smp_rmb() in gact_net_rand() & gact_determ()
+		 */
+		smp_wmb();
+		gact->tcfg_ptype   = p_parm->ptype;
+	}
+#endif
+	if (ret == ACT_P_CREATED)
+		tcf_hash_insert(a);
+	return ret;
+}
+
+static int tcf_gact(struct sk_buff *skb, const struct tc_action *a,
+		    struct tcf_result *res)
+{
+	struct tcf_gact *gact = a->priv;
+	int action = READ_ONCE(gact->tcf_action);
+
+#ifdef CONFIG_GACT_PROB
+	{
+	u32 ptype = READ_ONCE(gact->tcfg_ptype);
+
+	if (ptype)
+		action = gact_rand[ptype](gact);
+	}
+#endif
+	bstats_cpu_update(this_cpu_ptr(gact->common.cpu_bstats), skb);
+	if (action == TC_ACT_SHOT)
+		qstats_drop_inc(this_cpu_ptr(gact->common.cpu_qstats));
+
+	tcf_lastuse_update(&gact->tcf_tm);
 
 	return action;
 }
@@ -168,12 +245,35 @@ static int tcf_gact_dump(struct sk_buff *skb, struct tc_action *a, int bind, int
 		p_opt.pval = gact->tcfg_pval;
 		p_opt.ptype = gact->tcfg_ptype;
 		NLA_PUT(skb, TCA_GACT_PROB, sizeof(p_opt), &p_opt);
+	struct tcf_gact *gact = a->priv;
+	struct tc_gact opt = {
+		.index   = gact->tcf_index,
+		.refcnt  = gact->tcf_refcnt - ref,
+		.bindcnt = gact->tcf_bindcnt - bind,
+		.action  = gact->tcf_action,
+	};
+	struct tcf_t t;
+
+	if (nla_put(skb, TCA_GACT_PARMS, sizeof(opt), &opt))
+		goto nla_put_failure;
+#ifdef CONFIG_GACT_PROB
+	if (gact->tcfg_ptype) {
+		struct tc_gact_p p_opt = {
+			.paction = gact->tcfg_paction,
+			.pval    = gact->tcfg_pval,
+			.ptype   = gact->tcfg_ptype,
+		};
+
+		if (nla_put(skb, TCA_GACT_PROB, sizeof(p_opt), &p_opt))
+			goto nla_put_failure;
 	}
 #endif
 	t.install = jiffies_to_clock_t(jiffies - gact->tcf_tm.install);
 	t.lastuse = jiffies_to_clock_t(jiffies - gact->tcf_tm.lastuse);
 	t.expires = jiffies_to_clock_t(gact->tcf_tm.expires);
 	NLA_PUT(skb, TCA_GACT_TM, sizeof(t), &t);
+	if (nla_put(skb, TCA_GACT_TM, sizeof(t), &t))
+		goto nla_put_failure;
 	return skb->len;
 
 nla_put_failure:
@@ -193,6 +293,11 @@ static struct tc_action_ops act_gact_ops = {
 	.lookup		=	tcf_hash_search,
 	.init		=	tcf_gact_init,
 	.walk		=	tcf_generic_walker
+	.type		=	TCA_ACT_GACT,
+	.owner		=	THIS_MODULE,
+	.act		=	tcf_gact,
+	.dump		=	tcf_gact_dump,
+	.init		=	tcf_gact_init,
 };
 
 MODULE_AUTHOR("Jamal Hadi Salim(2002-4)");
@@ -207,6 +312,11 @@ static int __init gact_init_module(void)
 	printk("GACT probability NOT on\n");
 #endif
 	return tcf_register_action(&act_gact_ops);
+	pr_info("GACT probability on\n");
+#else
+	pr_info("GACT probability NOT on\n");
+#endif
+	return tcf_register_action(&act_gact_ops, GACT_TAB_MASK);
 }
 
 static void __exit gact_cleanup_module(void)

@@ -21,6 +21,7 @@
 
 
 #include <asm/io.h>
+#include <linux/io.h>
 #include <asm/irq.h>
 #include <linux/init.h>
 #include <linux/delay.h>
@@ -28,6 +29,8 @@
 #include <linux/interrupt.h>
 #include <linux/pci.h>
 #include <linux/dma-mapping.h>
+#include <linux/of_address.h>
+#include <linux/of_irq.h>
 #include <sound/core.h>
 #include "pmac.h"
 #include <sound/pcm_params.h>
@@ -239,6 +242,7 @@ static int snd_pmac_pcm_prepare(struct snd_pmac *chip, struct pmac_stream *rec, 
 	spin_lock_irq(&chip->reg_lock);
 	snd_pmac_dma_stop(rec);
 	st_le16(&chip->extra_dma.cmds->command, DBDMA_STOP);
+	chip->extra_dma.cmds->command = cpu_to_le16(DBDMA_STOP);
 	snd_pmac_dma_set_command(rec, &chip->extra_dma);
 	snd_pmac_dma_run(rec, RUN);
 	spin_unlock_irq(&chip->reg_lock);
@@ -258,6 +262,15 @@ static int snd_pmac_pcm_prepare(struct snd_pmac *chip, struct pmac_stream *rec, 
 	/* make loop */
 	st_le16(&cp->command, DBDMA_NOP + BR_ALWAYS);
 	st_le32(&cp->cmd_dep, rec->cmd.addr);
+		cp->phy_addr = cpu_to_le32(offset);
+		cp->req_count = cpu_to_le16(rec->period_size);
+		/*cp->res_count = cpu_to_le16(0);*/
+		cp->xfer_status = cpu_to_le16(0);
+		offset += rec->period_size;
+	}
+	/* make loop */
+	cp->command = cpu_to_le16(DBDMA_NOP + BR_ALWAYS);
+	cp->cmd_dep = cpu_to_le32(rec->cmd.addr);
 
 	snd_pmac_dma_stop(rec);
 	snd_pmac_dma_set_command(rec, &rec->cmd);
@@ -300,6 +313,7 @@ static int snd_pmac_pcm_trigger(struct snd_pmac *chip, struct pmac_stream *rec,
 		spin_lock(&chip->reg_lock);
 		rec->running = 0;
 		/*printk("stopped!!\n");*/
+		/*printk(KERN_DEBUG "stopped!!\n");*/
 		snd_pmac_dma_stop(rec);
 		for (i = 0, cp = rec->cmd.cmds; i < rec->nperiods; i++, cp++)
 			out_le16(&cp->command, DBDMA_STOP);
@@ -327,6 +341,7 @@ static snd_pcm_uframes_t snd_pmac_pcm_pointer(struct snd_pmac *chip,
 	int stat;
 	volatile struct dbdma_cmd __iomem *cp = &rec->cmd.cmds[rec->cur_period];
 	stat = ld_le16(&cp->xfer_status);
+	stat = le16_to_cpu(cp->xfer_status);
 	if (stat & (ACTIVE|DEAD)) {
 		count = in_le16(&cp->res_count);
 		if (count)
@@ -335,6 +350,7 @@ static snd_pcm_uframes_t snd_pmac_pcm_pointer(struct snd_pmac *chip,
 #endif
 	count += rec->cur_period * rec->period_size;
 	/*printk("pointer=%d\n", count);*/
+	/*printk(KERN_DEBUG "pointer=%d\n", count);*/
 	return bytes_to_frames(subs->runtime, count);
 }
 
@@ -427,6 +443,8 @@ static inline void snd_pmac_pcm_dead_xfer(struct pmac_stream *rec,
 		emergency_in_use = 1;
 		st_le16(&cp->xfer_status, 0);
 		st_le16(&cp->req_count, rec->period_size);
+		cp->xfer_status = cpu_to_le16(0);
+		cp->req_count = cpu_to_le16(rec->period_size);
 		cp = emergency_dbdma.cmds;
 	}
 
@@ -445,6 +463,19 @@ static inline void snd_pmac_pcm_dead_xfer(struct pmac_stream *rec,
 		+ sizeof(struct dbdma_cmd)*((rec->cur_period+1)%rec->nperiods));
 
 	st_le16(&cp->command, OUTPUT_MORE | BR_ALWAYS | INTR_ALWAYS);
+	req = le16_to_cpu(cp->req_count);
+	res = le16_to_cpu(cp->res_count);
+	phy = le32_to_cpu(cp->phy_addr);
+	phy += (req - res);
+	cp->req_count = cpu_to_le16(res);
+	cp->res_count = cpu_to_le16(0);
+	cp->xfer_status = cpu_to_le16(0);
+	cp->phy_addr = cpu_to_le32(phy);
+
+	cp->cmd_dep = cpu_to_le32(rec->cmd.addr
+		+ sizeof(struct dbdma_cmd)*((rec->cur_period+1)%rec->nperiods));
+
+	cp->command = cpu_to_le16(OUTPUT_MORE | BR_ALWAYS | INTR_ALWAYS);
 
 	/* point at our patched up command block */
 	out_le32(&rec->dma->cmdptr, emergency_dbdma.addr);
@@ -474,6 +505,7 @@ static void snd_pmac_pcm_update(struct snd_pmac *chip, struct pmac_stream *rec)
 				cp = &rec->cmd.cmds[rec->cur_period];
 
 			stat = ld_le16(&cp->xfer_status);
+			stat = le16_to_cpu(cp->xfer_status);
 
 			if (stat & DEAD) {
 				snd_pmac_pcm_dead_xfer(rec, cp);
@@ -490,6 +522,10 @@ static void snd_pmac_pcm_update(struct snd_pmac *chip, struct pmac_stream *rec)
 			st_le16(&cp->xfer_status, 0);
 			st_le16(&cp->req_count, rec->period_size);
 			/*st_le16(&cp->res_count, 0);*/
+			/*printk(KERN_DEBUG "update frag %d\n", rec->cur_period);*/
+			cp->xfer_status = cpu_to_le16(0);
+			cp->req_count = cpu_to_le16(rec->period_size);
+			/*cp->res_count = cpu_to_le16(0);*/
 			rec->cur_period++;
 			if (rec->cur_period >= rec->nperiods) {
 				rec->cur_period = 0;
@@ -703,6 +739,7 @@ static struct snd_pcm_ops snd_pmac_capture_ops = {
 };
 
 int __init snd_pmac_pcm_new(struct snd_pmac *chip)
+int snd_pmac_pcm_new(struct snd_pmac *chip)
 {
 	struct snd_pcm *pcm;
 	int err;
@@ -763,6 +800,11 @@ void snd_pmac_beep_dma_start(struct snd_pmac *chip, int bytes, unsigned long add
 	st_le32(&chip->extra_dma.cmds->cmd_dep, chip->extra_dma.addr);
 	st_le32(&chip->extra_dma.cmds->phy_addr, addr);
 	st_le16(&chip->extra_dma.cmds->command, OUTPUT_MORE + BR_ALWAYS);
+	chip->extra_dma.cmds->req_count = cpu_to_le16(bytes);
+	chip->extra_dma.cmds->xfer_status = cpu_to_le16(0);
+	chip->extra_dma.cmds->cmd_dep = cpu_to_le32(chip->extra_dma.addr);
+	chip->extra_dma.cmds->phy_addr = cpu_to_le32(addr);
+	chip->extra_dma.cmds->command = cpu_to_le16(OUTPUT_MORE + BR_ALWAYS);
 	out_le32(&chip->awacs->control,
 		 (in_le32(&chip->awacs->control) & ~0x1f00)
 		 | (speed << 8));
@@ -775,6 +817,7 @@ void snd_pmac_beep_dma_stop(struct snd_pmac *chip)
 {
 	snd_pmac_dma_stop(&chip->playback);
 	st_le16(&chip->extra_dma.cmds->command, DBDMA_STOP);
+	chip->extra_dma.cmds->command = cpu_to_le16(DBDMA_STOP);
 	snd_pmac_pcm_set_format(chip); /* reset format */
 }
 
@@ -807,6 +850,7 @@ snd_pmac_ctrl_intr(int irq, void *devid)
 	int ctrl = in_le32(&chip->awacs->control);
 
 	/*printk("pmac: control interrupt.. 0x%x\n", ctrl);*/
+	/*printk(KERN_DEBUG "pmac: control interrupt.. 0x%x\n", ctrl);*/
 	if (ctrl & MASK_PORTCHG) {
 		/* do something when headphone is plugged/unplugged? */
 		if (chip->update_automute)
@@ -875,6 +919,11 @@ static int snd_pmac_free(struct snd_pmac *chip)
 		iounmap(chip->playback.dma);
 	if (chip->capture.dma)
 		iounmap(chip->capture.dma);
+	iounmap(chip->macio_base);
+	iounmap(chip->latch_base);
+	iounmap(chip->awacs);
+	iounmap(chip->playback.dma);
+	iounmap(chip->capture.dma);
 
 	if (chip->node) {
 		int i;
@@ -888,6 +937,11 @@ static int snd_pmac_free(struct snd_pmac *chip)
 
 	if (chip->pdev)
 		pci_dev_put(chip->pdev);
+						   resource_size(&chip->rsrc[i]));
+		}
+	}
+
+	pci_dev_put(chip->pdev);
 	of_node_put(chip->node);
 	kfree(chip);
 	return 0;
@@ -909,6 +963,7 @@ static int snd_pmac_dev_free(struct snd_device *device)
  */
 
 static void __init detect_byte_swap(struct snd_pmac *chip)
+static void detect_byte_swap(struct snd_pmac *chip)
 {
 	struct device_node *mio;
 
@@ -927,6 +982,11 @@ static void __init detect_byte_swap(struct snd_pmac *chip)
 		chip->can_byte_swap = 0 ;
 
 	if (machine_is_compatible("PowerBook2,1"))
+	if (of_machine_is_compatible("PowerBook3,1") ||
+	    of_machine_is_compatible("PowerBook2,1"))
+		chip->can_byte_swap = 0 ;
+
+	if (of_machine_is_compatible("PowerBook2,1"))
 		chip->can_duplex = 0;
 }
 
@@ -935,6 +995,7 @@ static void __init detect_byte_swap(struct snd_pmac *chip)
  * detect a sound chip
  */
 static int __init snd_pmac_detect(struct snd_pmac *chip)
+static int snd_pmac_detect(struct snd_pmac *chip)
 {
 	struct device_node *sound;
 	struct device_node *dn;
@@ -964,6 +1025,11 @@ static int __init snd_pmac_detect(struct snd_pmac *chip)
 		chip->is_pbook_3400 = 1;
 	else if (machine_is_compatible("PowerBook1,1")
 		 || machine_is_compatible("AAPL,PowerBook1998"))
+	if (of_machine_is_compatible("AAPL,3400/2400")
+	    || of_machine_is_compatible("AAPL,3500"))
+		chip->is_pbook_3400 = 1;
+	else if (of_machine_is_compatible("PowerBook1,1")
+		 || of_machine_is_compatible("AAPL,PowerBook1998"))
 		chip->is_pbook_G3 = 1;
 	chip->node = of_find_node_by_name(NULL, "awacs");
 	sound = of_node_get(chip->node);
@@ -994,6 +1060,9 @@ static int __init snd_pmac_detect(struct snd_pmac *chip)
 		sound = of_find_node_by_name(NULL, "sound");
 		while (sound && sound->parent != chip->node)
 			sound = of_find_node_by_name(sound, "sound");
+		for_each_node_by_name(sound, "sound")
+			if (sound->parent == chip->node)
+				break;
 	}
 	if (! sound) {
 		of_node_put(chip->node);
@@ -1034,6 +1103,12 @@ static int __init snd_pmac_detect(struct snd_pmac *chip)
 	if (of_device_is_compatible(sound, "tumbler")) {
 		chip->model = PMAC_TUMBLER;
 		chip->can_capture = 0;  /* no capture */
+		chip->can_capture = of_machine_is_compatible("PowerMac4,2")
+				|| of_machine_is_compatible("PowerBook3,2")
+				|| of_machine_is_compatible("PowerBook3,3")
+				|| of_machine_is_compatible("PowerBook4,1")
+				|| of_machine_is_compatible("PowerBook4,2")
+				|| of_machine_is_compatible("PowerBook4,3");
 		chip->can_duplex = 0;
 		// chip->can_byte_swap = 0; /* FIXME: check this */
 		chip->num_freqs = ARRAY_SIZE(tumbler_freqs);
@@ -1143,6 +1218,7 @@ static int pmac_hp_detect_get(struct snd_kcontrol *kcontrol,
 }
 
 static struct snd_kcontrol_new auto_mute_controls[] __initdata = {
+static struct snd_kcontrol_new auto_mute_controls[] = {
 	{ .iface = SNDRV_CTL_ELEM_IFACE_MIXER,
 	  .name = "Auto Mute Switch",
 	  .info = snd_pmac_boolean_mono_info,
@@ -1158,6 +1234,7 @@ static struct snd_kcontrol_new auto_mute_controls[] __initdata = {
 };
 
 int __init snd_pmac_add_automute(struct snd_pmac *chip)
+int snd_pmac_add_automute(struct snd_pmac *chip)
 {
 	int err;
 	chip->auto_mute = 1;
@@ -1175,6 +1252,7 @@ int __init snd_pmac_add_automute(struct snd_pmac *chip)
  * create and detect a pmac chip record
  */
 int __init snd_pmac_new(struct snd_card *card, struct snd_pmac **chip_return)
+int snd_pmac_new(struct snd_card *card, struct snd_pmac **chip_return)
 {
 	struct snd_pmac *chip;
 	struct device_node *np;
@@ -1231,6 +1309,11 @@ int __init snd_pmac_new(struct snd_card *card, struct snd_pmac **chip_return)
 				       i, rnames[i],
 				       (unsigned long long)chip->rsrc[i].start,
 				       (unsigned long long)chip->rsrc[i].end);
+					       resource_size(&chip->rsrc[i]),
+					       rnames[i]) == NULL) {
+				printk(KERN_ERR "snd: can't request rsrc "
+				       " %d (%s: %pR)\n",
+				       i, rnames[i], &chip->rsrc[i]);
 				err = -ENODEV;
 				goto __error;
 			}
@@ -1259,6 +1342,11 @@ int __init snd_pmac_new(struct snd_card *card, struct snd_pmac **chip_return)
 				       i, rnames[i],
 				       (unsigned long long)chip->rsrc[i].start,
 				       (unsigned long long)chip->rsrc[i].end);
+					       resource_size(&chip->rsrc[i]),
+					       rnames[i]) == NULL) {
+				printk(KERN_ERR "snd: can't request rsrc "
+				       " %d (%s: %pR)\n",
+				       i, rnames[i], &chip->rsrc[i]);
 				err = -ENODEV;
 				goto __error;
 			}

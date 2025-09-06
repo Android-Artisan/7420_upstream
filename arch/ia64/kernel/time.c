@@ -20,6 +20,8 @@
 #include <linux/efi.h>
 #include <linux/timex.h>
 #include <linux/clocksource.h>
+#include <linux/timekeeper_internal.h>
+#include <linux/platform_device.h>
 
 #include <asm/machvec.h>
 #include <asm/delay.h>
@@ -37,6 +39,15 @@ static cycle_t itc_get_cycles(void);
 struct fsyscall_gtod_data_t fsyscall_gtod_data = {
 	.lock = SEQLOCK_UNLOCKED,
 };
+#include <asm/ptrace.h>
+#include <asm/sal.h>
+#include <asm/sections.h>
+
+#include "fsyscall_gtod_data.h"
+
+static cycle_t itc_get_cycles(struct clocksource *cs);
+
+struct fsyscall_gtod_data_t fsyscall_gtod_data;
 
 struct itc_jitter_data_t itc_jitter_data;
 
@@ -73,10 +84,27 @@ static struct clocksource clocksource_itc = {
 static struct clocksource *itc_clocksource;
 
 #ifdef CONFIG_VIRT_CPU_ACCOUNTING
+	.flags          = CLOCK_SOURCE_IS_CONTINUOUS,
+};
+static struct clocksource *itc_clocksource;
+
+#ifdef CONFIG_VIRT_CPU_ACCOUNTING_NATIVE
 
 #include <linux/kernel_stat.h>
 
 extern cputime_t cycle_to_cputime(u64 cyc);
+
+void vtime_account_user(struct task_struct *tsk)
+{
+	cputime_t delta_utime;
+	struct thread_info *ti = task_thread_info(tsk);
+
+	if (ti->ac_utime) {
+		delta_utime = cycle_to_cputime(ti->ac_utime);
+		account_user_time(tsk, delta_utime, delta_utime);
+		ti->ac_utime = 0;
+	}
+}
 
 /*
  * Called from the context switch with interrupts disabled, to charge all
@@ -103,6 +131,12 @@ void ia64_account_on_switch(struct task_struct *prev, struct task_struct *next)
 	}
 
 	pi->ac_stamp = ni->ac_stamp = now;
+void arch_vtime_task_switch(struct task_struct *prev)
+{
+	struct thread_info *pi = task_thread_info(prev);
+	struct thread_info *ni = task_thread_info(current);
+
+	pi->ac_stamp = ni->ac_stamp;
 	ni->ac_stime = ni->ac_utime = 0;
 }
 
@@ -118,6 +152,13 @@ void account_system_vtime(struct task_struct *tsk)
 	__u64 now;
 
 	local_irq_save(flags);
+static cputime_t vtime_delta(struct task_struct *tsk)
+{
+	struct thread_info *ti = task_thread_info(tsk);
+	cputime_t delta_stime;
+	__u64 now;
+
+	WARN_ON_ONCE(!irqs_disabled());
 
 	now = ia64_get_itc();
 
@@ -150,6 +191,26 @@ void account_process_tick(struct task_struct *p, int user_tick)
 }
 
 #endif /* CONFIG_VIRT_CPU_ACCOUNTING */
+	ti->ac_stime = 0;
+	ti->ac_stamp = now;
+
+	return delta_stime;
+}
+
+void vtime_account_system(struct task_struct *tsk)
+{
+	cputime_t delta = vtime_delta(tsk);
+
+	account_system_time(tsk, 0, delta, delta);
+}
+EXPORT_SYMBOL_GPL(vtime_account_system);
+
+void vtime_account_idle(struct task_struct *tsk)
+{
+	account_idle_time(vtime_delta(tsk));
+}
+
+#endif /* CONFIG_VIRT_CPU_ACCOUNTING_NATIVE */
 
 static irqreturn_t
 timer_interrupt (int irq, void *dev_id)
@@ -157,6 +218,7 @@ timer_interrupt (int irq, void *dev_id)
 	unsigned long new_itm;
 
 	if (unlikely(cpu_is_offline(smp_processor_id()))) {
+	if (cpu_is_offline(smp_processor_id())) {
 		return IRQ_HANDLED;
 	}
 
@@ -191,6 +253,10 @@ timer_interrupt (int irq, void *dev_id)
 			write_sequnlock(&xtime_lock);
 		} else
 			local_cpu_data->itm_next = new_itm;
+		if (smp_processor_id() == time_keeper_id)
+			xtime_update(1);
+
+		local_cpu_data->itm_next = new_itm;
 
 		if (time_after(new_itm, ia64_get_itc()))
 			break;
@@ -211,6 +277,7 @@ skip_process_time_accounting:
 		 * intentionally dropping the next tick(s).  We do NOT
 		 * update itm.next because that would force us to call
 		 * do_timer() which in turn would let our clock run
+		 * xtime_update() which in turn would let our clock run
 		 * too fast (with the potentially devastating effect
 		 * of losing monotony of time).
 		 */
@@ -261,6 +328,7 @@ __setup("nojitter", nojitter_setup);
 
 void __devinit
 ia64_init_itm (void)
+void ia64_init_itm(void)
 {
 	unsigned long platform_base_freq, itc_freq;
 	struct pal_freq_ratio itc_ratio, proc_ratio;
@@ -367,6 +435,8 @@ ia64_init_itm (void)
 			clocksource_hz2mult(local_cpu_data->itc_freq,
 						clocksource_itc.shift);
 		clocksource_register(&clocksource_itc);
+		clocksource_register_hz(&clocksource_itc,
+						local_cpu_data->itc_freq);
 		itc_clocksource = &clocksource_itc;
 	}
 }
@@ -374,6 +444,9 @@ ia64_init_itm (void)
 static cycle_t itc_get_cycles(void)
 {
 	u64 lcycle, now, ret;
+static cycle_t itc_get_cycles(struct clocksource *cs)
+{
+	unsigned long lcycle, now, ret;
 
 	if (!itc_jitter_data.itc_jitter)
 		return get_cycles();
@@ -403,6 +476,15 @@ static struct irqaction timer_irqaction = {
 	.name =		"timer"
 };
 
+	.flags =	IRQF_IRQPOLL,
+	.name =		"timer"
+};
+
+void read_persistent_clock(struct timespec *ts)
+{
+	efi_gettimeofday(ts);
+}
+
 void __init
 time_init (void)
 {
@@ -415,6 +497,7 @@ time_init (void)
 	 * tv_nsec field must be normalized (i.e., 0 <= nsec < NSEC_PER_SEC).
 	 */
 	set_normalized_timespec(&wall_to_monotonic, -xtime.tv_sec, -xtime.tv_nsec);
+	ia64_init_itm();
 }
 
 /*
@@ -458,6 +541,17 @@ void update_vsyscall(struct timespec *wall, struct clocksource *c)
         fsyscall_gtod_data.clk_shift = c->shift;
         fsyscall_gtod_data.clk_fsys_mmio = c->fsys_mmio;
         fsyscall_gtod_data.clk_cycle_last = c->cycle_last;
+void update_vsyscall_old(struct timespec *wall, struct timespec *wtm,
+			 struct clocksource *c, u32 mult, cycle_t cycle_last)
+{
+	write_seqcount_begin(&fsyscall_gtod_data.seq);
+
+        /* copy fsyscall clock data */
+        fsyscall_gtod_data.clk_mask = c->mask;
+        fsyscall_gtod_data.clk_mult = mult;
+        fsyscall_gtod_data.clk_shift = c->shift;
+        fsyscall_gtod_data.clk_fsys_mmio = c->archdata.fsys_mmio;
+        fsyscall_gtod_data.clk_cycle_last = cycle_last;
 
 	/* copy kernel time structures */
         fsyscall_gtod_data.wall_time.tv_sec = wall->tv_sec;
@@ -465,6 +559,9 @@ void update_vsyscall(struct timespec *wall, struct clocksource *c)
         fsyscall_gtod_data.monotonic_time.tv_sec = wall_to_monotonic.tv_sec
 							+ wall->tv_sec;
         fsyscall_gtod_data.monotonic_time.tv_nsec = wall_to_monotonic.tv_nsec
+	fsyscall_gtod_data.monotonic_time.tv_sec = wtm->tv_sec
+							+ wall->tv_sec;
+	fsyscall_gtod_data.monotonic_time.tv_nsec = wtm->tv_nsec
 							+ wall->tv_nsec;
 
 	/* normalize */
@@ -474,5 +571,6 @@ void update_vsyscall(struct timespec *wall, struct clocksource *c)
 	}
 
         write_sequnlock_irqrestore(&fsyscall_gtod_data.lock, flags);
+	write_seqcount_end(&fsyscall_gtod_data.seq);
 }
 

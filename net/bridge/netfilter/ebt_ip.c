@@ -18,6 +18,9 @@
 #include <net/ip.h>
 #include <linux/in.h>
 #include <linux/module.h>
+#include <linux/netfilter/x_tables.h>
+#include <linux/netfilter_bridge/ebtables.h>
+#include <linux/netfilter_bridge/ebt_ip.h>
 
 struct tcpudphdr {
 	__be16 src;
@@ -29,6 +32,10 @@ static int ebt_filter_ip(const struct sk_buff *skb, const struct net_device *in,
    unsigned int datalen)
 {
 	const struct ebt_ip_info *info = data;
+static bool
+ebt_ip_mt(const struct sk_buff *skb, struct xt_action_param *par)
+{
+	const struct ebt_ip_info *info = par->matchinfo;
 	const struct iphdr *ih;
 	struct iphdr _iph;
 	const struct tcpudphdr *pptr;
@@ -60,12 +67,37 @@ static int ebt_filter_ip(const struct sk_buff *skb, const struct net_device *in,
 					  sizeof(_ports), &_ports);
 		if (pptr == NULL)
 			return EBT_NOMATCH;
+		return false;
+	if (info->bitmask & EBT_IP_TOS &&
+	   FWINV(info->tos != ih->tos, EBT_IP_TOS))
+		return false;
+	if (info->bitmask & EBT_IP_SOURCE &&
+	   FWINV((ih->saddr & info->smsk) !=
+	   info->saddr, EBT_IP_SOURCE))
+		return false;
+	if ((info->bitmask & EBT_IP_DEST) &&
+	   FWINV((ih->daddr & info->dmsk) !=
+	   info->daddr, EBT_IP_DEST))
+		return false;
+	if (info->bitmask & EBT_IP_PROTO) {
+		if (FWINV(info->protocol != ih->protocol, EBT_IP_PROTO))
+			return false;
+		if (!(info->bitmask & EBT_IP_DPORT) &&
+		    !(info->bitmask & EBT_IP_SPORT))
+			return true;
+		if (ntohs(ih->frag_off) & IP_OFFSET)
+			return false;
+		pptr = skb_header_pointer(skb, ih->ihl*4,
+					  sizeof(_ports), &_ports);
+		if (pptr == NULL)
+			return false;
 		if (info->bitmask & EBT_IP_DPORT) {
 			u32 dst = ntohs(pptr->dst);
 			if (FWINV(dst < info->dport[0] ||
 				  dst > info->dport[1],
 				  EBT_IP_DPORT))
 			return EBT_NOMATCH;
+			return false;
 		}
 		if (info->bitmask & EBT_IP_SPORT) {
 			u32 src = ntohs(pptr->src);
@@ -85,6 +117,17 @@ static int ebt_ip_check(const char *tablename, unsigned int hookmask,
 
 	if (datalen != EBT_ALIGN(sizeof(struct ebt_ip_info)))
 		return -EINVAL;
+			return false;
+		}
+	}
+	return true;
+}
+
+static int ebt_ip_mt_check(const struct xt_mtchk_param *par)
+{
+	const struct ebt_ip_info *info = par->matchinfo;
+	const struct ebt_entry *e = par->entryinfo;
+
 	if (e->ethproto != htons(ETH_P_IP) ||
 	   e->invflags & EBT_IPROTO)
 		return -EINVAL;
@@ -111,17 +154,26 @@ static struct ebt_match filter_ip __read_mostly = {
 	.name		= EBT_IP_MATCH,
 	.match		= ebt_filter_ip,
 	.check		= ebt_ip_check,
+static struct xt_match ebt_ip_mt_reg __read_mostly = {
+	.name		= "ip",
+	.revision	= 0,
+	.family		= NFPROTO_BRIDGE,
+	.match		= ebt_ip_mt,
+	.checkentry	= ebt_ip_mt_check,
+	.matchsize	= sizeof(struct ebt_ip_info),
 	.me		= THIS_MODULE,
 };
 
 static int __init ebt_ip_init(void)
 {
 	return ebt_register_match(&filter_ip);
+	return xt_register_match(&ebt_ip_mt_reg);
 }
 
 static void __exit ebt_ip_fini(void)
 {
 	ebt_unregister_match(&filter_ip);
+	xt_unregister_match(&ebt_ip_mt_reg);
 }
 
 module_init(ebt_ip_init);

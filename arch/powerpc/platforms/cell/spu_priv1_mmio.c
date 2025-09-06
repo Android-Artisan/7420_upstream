@@ -23,6 +23,7 @@
 #include <linux/module.h>
 #include <linux/ptrace.h>
 #include <linux/slab.h>
+#include <linux/ptrace.h>
 #include <linux/wait.h>
 #include <linux/mm.h>
 #include <linux/io.h>
@@ -84,6 +85,10 @@ static void cpu_affinity_set(struct spu *spu, int cpu)
 		cpumask_t cpumask = node_to_cpumask(cpu_to_node(cpu));
 
 		if (!cpus_intersects(spumask, cpumask))
+		const struct cpumask *spumask = cpumask_of_node(spu->node),
+			*cpumask = cpumask_of_node(cpu_to_node(cpu));
+
+		if (!cpumask_intersects(spumask, cpumask))
 			return;
 	}
 

@@ -215,6 +215,7 @@ static void md4_final_ascii(struct md4_ctx *mctx, char *out, unsigned int len)
 	mctx->block[15] = mctx->byte_count >> 29;
 	le32_to_cpu_array(mctx->block, (sizeof(mctx->block) -
 	                  sizeof(uint64_t)) / sizeof(uint32_t));
+			  sizeof(uint64_t)) / sizeof(uint32_t));
 	md4_transform(mctx->hash, mctx->block);
 	cpu_to_le32_array(mctx->hash, sizeof(mctx->hash) / sizeof(uint32_t));
 
@@ -293,6 +294,18 @@ static int parse_file(const char *fname, struct md4_ctx *md)
 
 /* We have dir/file.o.  Open dir/.file.o.cmd, look for deps_ line to
  * figure out source file. */
+/* Check whether the file is a static library or not */
+static int is_static_library(const char *objfile)
+{
+	int len = strlen(objfile);
+	if (objfile[len - 2] == '.' && objfile[len - 1] == 'a')
+		return 1;
+	else
+		return 0;
+}
+
+/* We have dir/file.o.  Open dir/.file.o.cmd, look for source_ and deps_ line
+ * to figure out source files. */
 static int parse_source_files(const char *objfile, struct md4_ctx *md)
 {
 	char *cmd, *file, *line, *dir;
@@ -333,6 +346,21 @@ static int parse_source_files(const char *objfile, struct md4_ctx *md)
 	*/
 	while ((line = get_next_line(&pos, file, flen)) != NULL) {
 		char* p = line;
+
+		if (strncmp(line, "source_", sizeof("source_")-1) == 0) {
+			p = strrchr(line, ' ');
+			if (!p) {
+				warn("malformed line: %s\n", line);
+				goto out_file;
+			}
+			p++;
+			if (!parse_file(p, md)) {
+				warn("could not open %s: %s\n",
+				     p, strerror(errno));
+				goto out_file;
+			}
+			continue;
+		}
 		if (strncmp(line, "deps_", sizeof("deps_")-1) == 0) {
 			check_files = 1;
 			continue;
@@ -346,6 +374,7 @@ static int parse_source_files(const char *objfile, struct md4_ctx *md)
 		/* Terminate line at first space, to get rid of final ' \' */
 		while (*p) {
                        if (isspace(*p)) {
+			if (isspace(*p)) {
 				*p = '\0';
 				break;
 			}
@@ -395,6 +424,7 @@ void get_src_version(const char *modname, char sum[], unsigned sumlen)
 	else
 		basename = modname;
 	sprintf(filelist, "%s/%.*s.mod", modverdir,
+	snprintf(filelist, sizeof(filelist), "%s/%.*s.mod", modverdir,
 		(int) strlen(basename) - 2, basename);
 
 	file = grab_file(filelist, &len);
@@ -421,6 +451,8 @@ void get_src_version(const char *modname, char sum[], unsigned sumlen)
 		if (!*fname)
 			continue;
 		if (!parse_source_files(fname, &md))
+		if (!(is_static_library(fname)) &&
+				!parse_source_files(fname, &md))
 			goto release;
 	}
 

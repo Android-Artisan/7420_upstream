@@ -19,6 +19,7 @@
 #include <linux/mtd/nand.h>
 #include <linux/mtd/partitions.h>
 #include <asm/arch/memmap.h>
+#include <arch/memmap.h>
 #include <hwregs/reg_map.h>
 #include <hwregs/reg_rdwr.h>
 #include <hwregs/pio_defs.h>
@@ -166,6 +167,9 @@ struct mtd_info *__init crisv32_nand_flash_probe(void)
 	/* this->options = NAND_USE_FLASH_BBT; */
 
 	/* Scan to find existance of the device */
+	/* this->bbt_options = NAND_BBT_USE_FLASH; */
+
+	/* Scan to find existence of the device */
 	if (nand_scan(crisv32_mtd, 1)) {
 		err = -ENXIO;
 		goto out_mtd;

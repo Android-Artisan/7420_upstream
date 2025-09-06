@@ -38,6 +38,10 @@ struct spi_transport_attrs {
 	unsigned int iu:1;	/* Information Units enabled */
 	unsigned int dt:1;	/* DT clocking enabled */
 	unsigned int qas:1;	/* Quick Arbitration and Selection enabled */
+	unsigned int max_iu:1;
+	unsigned int dt:1;	/* DT clocking enabled */
+	unsigned int qas:1;	/* Quick Arbitration and Selection enabled */
+	unsigned int max_qas:1;
 	unsigned int wr_flow:1;	/* Write Flow control enabled */
 	unsigned int rd_strm:1;	/* Read streaming enabled */
 	unsigned int rti:1;	/* Retain Training Information */
@@ -79,6 +83,10 @@ struct spi_host_attrs {
 #define spi_iu(x)	(((struct spi_transport_attrs *)&(x)->starget_data)->iu)
 #define spi_dt(x)	(((struct spi_transport_attrs *)&(x)->starget_data)->dt)
 #define spi_qas(x)	(((struct spi_transport_attrs *)&(x)->starget_data)->qas)
+#define spi_max_iu(x)	(((struct spi_transport_attrs *)&(x)->starget_data)->max_iu)
+#define spi_dt(x)	(((struct spi_transport_attrs *)&(x)->starget_data)->dt)
+#define spi_qas(x)	(((struct spi_transport_attrs *)&(x)->starget_data)->qas)
+#define spi_max_qas(x)	(((struct spi_transport_attrs *)&(x)->starget_data)->max_qas)
 #define spi_wr_flow(x)	(((struct spi_transport_attrs *)&(x)->starget_data)->wr_flow)
 #define spi_rd_strm(x)	(((struct spi_transport_attrs *)&(x)->starget_data)->rd_strm)
 #define spi_rti(x)	(((struct spi_transport_attrs *)&(x)->starget_data)->rti)
@@ -153,5 +161,6 @@ int spi_populate_width_msg(unsigned char *msg, int width);
 int spi_populate_sync_msg(unsigned char *msg, int period, int offset);
 int spi_populate_ppr_msg(unsigned char *msg, int period, int offset, int width,
 		int options);
+int spi_populate_tag_msg(unsigned char *msg, struct scsi_cmnd *cmd);
 
 #endif /* SCSI_TRANSPORT_SPI_H */

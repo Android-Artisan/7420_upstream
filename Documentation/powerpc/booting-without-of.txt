@@ -9,7 +9,6 @@
     Flash chip node definition
 
 Table of Contents
-=================
 
   I - Introduction
     1) Entry point for arch/powerpc
@@ -100,7 +99,6 @@ Table of Contents
 
 
 Revision Information
-====================
 
    May 18, 2005: Rev 0.1 - Initial draft, no chapter III yet.
 
@@ -160,7 +158,6 @@ Revision Information
 
 
 I - Introduction
-================
 
 During the recent development of the Linux/ppc64 kernel, and more
 specifically, the addition of new platform types outside of the old
@@ -317,7 +314,6 @@ point to setup_32.c
 
 
 II - The DT block format
-========================
 
 
 This chapter defines the actual format of the flattened device-tree
@@ -683,7 +679,6 @@ strings block.
 
 
 III - Required content of the device tree
-=========================================
 
 WARNING: All "linux,*" properties defined in this document apply only
 to a flattened device-tree. If your platform uses a real
@@ -1056,7 +1051,6 @@ compatibility.
 
 
 IV - "dtc", the device tree compiler
-====================================
 
 
 dtc source code can be found at
@@ -1172,7 +1166,6 @@ definitions to the compiler...
 
 
 V - Recommendations for a bootloader
-====================================
 
 
 Here are some various ideas/recommendations that have been proposed
@@ -1204,7 +1197,6 @@ while all this has been defined and implemented.
 
 
 VI - System-on-a-chip devices and nodes
-=======================================
 
 Many companies are now starting to develop system-on-a-chip
 processors, where the processor core (CPU) and many peripheral devices
@@ -1941,7 +1933,6 @@ platforms are moved over to use the flattened-device-tree model.
 		};
 
 VII - Marvell Discovery mv64[345]6x System Controller chips
-===========================================================
 
 The Marvell mv64[345]60 series of system controller chips contain
 many of the peripherals needed to implement a complete computer
@@ -2462,7 +2453,6 @@ prefixed with the string "marvell,", for Marvell Technology Group Ltd.
 
 
 VIII - Specifying interrupt information for devices
-===================================================
 
 The device tree represents the busses and devices of a hardware
 system in a form similar to the physical bus topology of the
@@ -2548,7 +2538,6 @@ encodings listed below:
 	3 =  low to high edge sensitive type enabled
 
 IX - Specifying GPIO information for devices
-============================================
 
 1) gpios property
 -----------------
@@ -2597,7 +2586,6 @@ Example of two SOC GPIO banks defined as gpio-controller nodes:
 	};
 
 X - Specifying Device Power Management Information (sleep property)
-===================================================================
 
 Devices on SOCs often have mechanisms for placing devices into low-power
 states that are decoupled from the devices' own register blocks.  Sometimes,
@@ -2628,7 +2616,6 @@ reasonably grouped in this manner, then create a virtual sleep controller
 sleep-map should wait until its necessity is demonstrated).
 
 Appendix A - Sample SOC node for MPC8540
-========================================
 
 	soc@e0000000 {
 		#address-cells = <1>;

@@ -59,3 +59,13 @@ void selinux_secmark_refcount_dec(void)
 	atomic_dec(&selinux_secmark_refcount);
 }
 EXPORT_SYMBOL_GPL(selinux_secmark_refcount_dec);
+#include <linux/module.h>
+#include <linux/selinux.h>
+
+#include "security.h"
+
+bool selinux_is_enabled(void)
+{
+	return selinux_enabled;
+}
+EXPORT_SYMBOL_GPL(selinux_is_enabled);

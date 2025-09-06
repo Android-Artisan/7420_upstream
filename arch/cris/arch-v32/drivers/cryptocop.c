@@ -18,6 +18,7 @@
 #include <asm/uaccess.h>
 #include <asm/io.h>
 #include <asm/atomic.h>
+#include <linux/atomic.h>
 
 #include <linux/list.h>
 #include <linux/interrupt.h>
@@ -218,6 +219,7 @@ static int cryptocop_open(struct inode *, struct file *);
 static int cryptocop_release(struct inode *, struct file *);
 
 static int cryptocop_ioctl(struct inode *inode, struct file *file,
+static long cryptocop_ioctl(struct file *file,
 			   unsigned int cmd, unsigned long arg);
 
 static void cryptocop_start_job(void);
@@ -283,6 +285,11 @@ const struct file_operations cryptocop_fops = {
 	.open =		cryptocop_open,
 	.release =	cryptocop_release,
 	.ioctl =	cryptocop_ioctl
+	.owner		= THIS_MODULE,
+	.open		= cryptocop_open,
+	.release	= cryptocop_release,
+	.unlocked_ioctl = cryptocop_ioctl,
+	.llseek		= noop_llseek,
 };
 
 
@@ -631,6 +638,9 @@ static int create_output_descriptors(struct cryptocop_operation *operation, int 
 		desc_len -= dlength;
 		*iniov_offset += dlength;
 		assert(desc_len >= 0);
+		assert(desc_len >= dlength);
+		desc_len -= dlength;
+		*iniov_offset += dlength;
 		if (*iniov_offset >= operation->tfrm_op.indata[*iniov_ix].iov_len) {
 			*iniov_offset = 0;
 			++(*iniov_ix);
@@ -1399,6 +1409,10 @@ static int create_md5_pad(int alloc_flag, unsigned long long hashed_length, char
 
 	*p = 0x80;
 	memset(p+1, 0, padlen - 1);
+	p = kzalloc(padlen, alloc_flag);
+	if (!p) return -ENOMEM;
+
+	*p = 0x80;
 
 	DEBUG(printk("create_md5_pad: hashed_length=%lld bits == %lld bytes\n", bit_length, hashed_length));
 
@@ -1431,6 +1445,10 @@ static int create_sha1_pad(int alloc_flag, unsigned long long hashed_length, cha
 
 	*p = 0x80;
 	memset(p+1, 0, padlen - 1);
+	p = kzalloc(padlen, alloc_flag);
+	if (!p) return -ENOMEM;
+
+	*p = 0x80;
 
 	DEBUG(printk("create_sha1_pad: hashed_length=%lld bits == %lld bytes\n", bit_length, hashed_length));
 
@@ -2727,7 +2745,6 @@ static int cryptocop_ioctl_process(struct inode *inode, struct file *filp, unsig
 			     (unsigned long int)(oper.indata + prev_ix),
 			     noinpages,
 			     0,  /* read access only for in data */
-			     0, /* no force */
 			     inpages,
 			     NULL);
 
@@ -2743,8 +2760,7 @@ static int cryptocop_ioctl_process(struct inode *inode, struct file *filp, unsig
 				     current->mm,
 				     (unsigned long int)oper.cipher_outdata,
 				     nooutpages,
-				     1, /* write access for out data */
-				     0, /* no force */
+				     FOLL_WRITE, /* write access for out data */
 				     outpages,
 				     NULL);
 		up_read(&current->mm->mmap_sem);
@@ -3103,6 +3119,8 @@ static int cryptocop_ioctl_create_session(struct inode *inode, struct file *filp
 }
 
 static int cryptocop_ioctl(struct inode *inode, struct file *filp, unsigned int cmd, unsigned long arg)
+static long cryptocop_ioctl_unlocked(struct inode *inode,
+	struct file *filp, unsigned int cmd, unsigned long arg)
 {
 	int err = 0;
 	if (_IOC_TYPE(cmd) != ETRAXCRYPTOCOP_IOCTYPE) {
@@ -3132,6 +3150,18 @@ static int cryptocop_ioctl(struct inode *inode, struct file *filp, unsigned int 
 		return -ENOTTY;
 	}
 	return 0;
+}
+
+static long
+cryptocop_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+{
+       long ret;
+
+       mutex_lock(&cryptocop_mutex);
+       ret = cryptocop_ioctl_unlocked(file_inode(filp), filp, cmd, arg);
+       mutex_unlock(&cryptocop_mutex);
+
+       return ret;
 }
 
 
@@ -3323,7 +3353,6 @@ static void print_cryptocop_operation(struct cryptocop_operation *cop)
 		}
 		d = cop->tfrm_op.desc;
 		while (d){
-			printk("\n======================desc, 0x%p\n"
 			       "length=%d\n"
 			       "cfg=0x%p\n"
 			       "next=0x%p\n",
@@ -3333,7 +3362,6 @@ static void print_cryptocop_operation(struct cryptocop_operation *cop)
 			       d->next);
 			dc = d->cfg;
 			while (dc){
-				printk("=========desc_cfg, 0x%p\n"
 				       "tid=%d\n"
 				       "src=%d\n"
 				       "last=%d\n"

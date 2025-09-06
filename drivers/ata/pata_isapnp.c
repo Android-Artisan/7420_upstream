@@ -2,6 +2,7 @@
 /*
  *   pata-isapnp.c - ISA PnP PATA controller driver.
  *   Copyright 2005/2006 Red Hat Inc <alan@redhat.com>, all rights reserved.
+ *   Copyright 2005/2006 Red Hat Inc, all rights reserved.
  *
  *   Based in part on ide-pnp.c by Andrey Panin <pazke@donpac.ru>
  */
@@ -18,6 +19,7 @@
 
 #define DRV_NAME "pata_isapnp"
 #define DRV_VERSION "0.2.2"
+#define DRV_VERSION "0.2.5"
 
 static struct scsi_host_template isapnp_sht = {
 	ATA_PIO_SHT(DRV_NAME),
@@ -26,6 +28,13 @@ static struct scsi_host_template isapnp_sht = {
 static struct ata_port_operations isapnp_port_ops = {
 	.inherits	= &ata_sff_port_ops,
 	.cable_detect	= ata_cable_40wire,
+};
+
+static struct ata_port_operations isapnp_noalt_port_ops = {
+	.inherits	= &ata_sff_port_ops,
+	.cable_detect	= ata_cable_40wire,
+	/* No altstatus so we don't want to use the lost interrupt poll */
+	.lost_interrupt = ATA_OP_NULL,
 };
 
 /**
@@ -67,15 +76,22 @@ static int isapnp_init_one(struct pnp_dev *idev, const struct pnp_device_id *dev
 
 	ap->ops = &isapnp_port_ops;
 	ap->pio_mask = 1;
+	ap->ops = &isapnp_noalt_port_ops;
+	ap->pio_mask = ATA_PIO0;
 	ap->flags |= ATA_FLAG_SLAVE_POSS;
 
 	ap->ioaddr.cmd_addr = cmd_addr;
 
 	if (pnp_port_valid(idev, 1) == 0) {
+	if (pnp_port_valid(idev, 1)) {
 		ctl_addr = devm_ioport_map(&idev->dev,
 					   pnp_port_start(idev, 1), 1);
+		if (!ctl_addr)
+			return -ENOMEM;
+
 		ap->ioaddr.altstatus_addr = ctl_addr;
 		ap->ioaddr.ctl_addr = ctl_addr;
+		ap->ops = &isapnp_port_ops;
 	}
 
 	ata_sff_std_ports(&ap->ioaddr);
@@ -130,6 +146,7 @@ static void __exit isapnp_exit(void)
 	pnp_unregister_driver(&isapnp_driver);
 }
 
+module_pnp_driver(isapnp_driver);
 MODULE_AUTHOR("Alan Cox");
 MODULE_DESCRIPTION("low-level driver for ISA PnP ATA");
 MODULE_LICENSE("GPL");

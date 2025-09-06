@@ -59,14 +59,12 @@ static DEFINE_RWLOCK(Dl_spinlock);
 //* Code *
 //********
 
-//=======================================================
 // Initialization Routines
 //
 // iiSetAddress
 // iiReset
 // iiResetDelay
 // iiInitialize
-//=======================================================
 
 //******************************************************************************
 // Function:   iiEllisInit()
@@ -676,11 +674,9 @@ ii2Nop(void)
 	return;	// no mystery here
 }
 
-//=======================================================
 // Routines which are available in 8/16-bit versions, or
 // in different fifo styles. These are ALL called
 // indirectly through the board structure.
-//=======================================================
 
 //******************************************************************************
 // Function:   iiWriteBuf16(pB, address, count)

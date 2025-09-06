@@ -13,6 +13,7 @@
 #include "kern_constants.h"
 #include "mconsole.h"
 #include "user.h"
+#include "mconsole.h"
 
 static struct mconsole_command commands[] = {
 	/*

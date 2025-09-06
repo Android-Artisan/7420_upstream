@@ -217,6 +217,15 @@ struct atm_cirange {
 #include <linux/uio.h>
 #include <net/sock.h>
 #include <asm/atomic.h>
+#include <linux/wait.h> /* wait_queue_head_t */
+#include <linux/time.h> /* struct timeval */
+#include <linux/net.h>
+#include <linux/bug.h>
+#include <linux/skbuff.h> /* struct sk_buff */
+#include <linux/uio.h>
+#include <net/sock.h>
+#include <linux/atomic.h>
+#include <uapi/linux/atmdev.h>
 
 #ifdef CONFIG_PROC_FS
 #include <linux/proc_fs.h>
@@ -224,6 +233,13 @@ struct atm_cirange {
 extern struct proc_dir_entry *atm_proc_root;
 #endif
 
+#ifdef CONFIG_COMPAT
+#include <linux/compat.h>
+struct compat_atm_iobuf {
+	int length;
+	compat_uptr_t buffer;
+};
+#endif
 
 struct k_atm_aal_stats {
 #define __HANDLE_ITEM(i) atomic_t i
@@ -238,6 +254,7 @@ struct k_atm_dev_stats {
 	struct k_atm_aal_stats aal5;
 };
 
+struct device;
 
 enum {
 	ATM_VF_ADDR,		/* Address is in use. Set by anybody, cleared
@@ -296,6 +313,7 @@ struct atm_vcc {
 	struct atm_dev	*dev;		/* device back pointer */
 	struct atm_qos	qos;		/* QOS */
 	struct atm_sap	sap;		/* SAP */
+	void (*release_cb)(struct atm_vcc *vcc); /* release_sock callback */
 	void (*push)(struct atm_vcc *vcc,struct sk_buff *skb);
 	void (*pop)(struct atm_vcc *vcc,struct sk_buff *skb); /* optional */
 	int (*push_oam)(struct atm_vcc *vcc,void *cell);
@@ -303,6 +321,7 @@ struct atm_vcc {
 	void		*dev_data;	/* per-device data */
 	void		*proto_data;	/* per-protocol data */
 	struct k_atm_aal_stats *stats;	/* pointer to AAL stats group */
+	struct module *owner;		/* owner of ->push function */
 	/* SVC part --- may move later ------------------------------------- */
 	short		itf;		/* interface number */
 	struct sockaddr_atmsvc local;
@@ -383,6 +402,14 @@ struct atmdev_ops { /* only send is required */
 	    void __user *optval,int optlen);
 	int (*setsockopt)(struct atm_vcc *vcc,int level,int optname,
 	    void __user *optval,int optlen);
+#ifdef CONFIG_COMPAT
+	int (*compat_ioctl)(struct atm_dev *dev,unsigned int cmd,
+			    void __user *arg);
+#endif
+	int (*getsockopt)(struct atm_vcc *vcc,int level,int optname,
+	    void __user *optval,int optlen);
+	int (*setsockopt)(struct atm_vcc *vcc,int level,int optname,
+	    void __user *optval,unsigned int optlen);
 	int (*send)(struct atm_vcc *vcc,struct sk_buff *skb);
 	int (*send_oam)(struct atm_vcc *vcc,void *cell,int flags);
 	void (*phy_put)(struct atm_dev *dev,unsigned char value,
@@ -428,6 +455,23 @@ static inline int atm_guess_pdu2truesize(int size)
 {
 	return (SKB_DATA_ALIGN(size) + sizeof(struct skb_shared_info));
 }
+struct atm_dev *atm_dev_register(const char *type, struct device *parent,
+				 const struct atmdev_ops *ops,
+				 int number, /* -1 == pick first available */
+				 unsigned long *flags);
+struct atm_dev *atm_dev_lookup(int number);
+void atm_dev_deregister(struct atm_dev *dev);
+
+/* atm_dev_signal_change
+ *
+ * Propagate lower layer signal change in atm_dev->signal to netdevice.
+ * The event will be sent via a notifier call chain.
+ */
+void atm_dev_signal_change(struct atm_dev *dev, char signal);
+
+void vcc_insert_socket(struct sock *sk);
+
+void atm_dev_release_vccs(struct atm_dev *dev);
 
 
 static inline void atm_force_charge(struct atm_vcc *vcc,int truesize)
@@ -496,5 +540,13 @@ void register_atm_ioctl(struct atm_ioctl *);
 void deregister_atm_ioctl(struct atm_ioctl *);
 
 #endif /* __KERNEL__ */
+
+/* register_atmdevice_notifier - register atm_dev notify events
+ *
+ * Clients like br2684 will register notify events
+ * Currently we notify of signal found/lost
+ */
+int register_atmdevice_notifier(struct notifier_block *nb);
+void unregister_atmdevice_notifier(struct notifier_block *nb);
 
 #endif

@@ -21,6 +21,7 @@
 
 #include <linux/kernel.h>
 #include <linux/sched.h>
+#include <linux/module.h>
 #include <linux/errno.h>
 #include <linux/fcntl.h>
 #include <linux/net.h>
@@ -42,6 +43,7 @@
 #include <net/tcp_states.h>
 #include <asm/uaccess.h>
 #include <asm/ioctls.h>
+#include <trace/events/skb.h>
 
 #include <linux/sunrpc/types.h>
 #include <linux/sunrpc/clnt.h>
@@ -49,6 +51,9 @@
 #include <linux/sunrpc/msg_prot.h>
 #include <linux/sunrpc/svcsock.h>
 #include <linux/sunrpc/stats.h>
+#include <linux/sunrpc/xprt.h>
+
+#include "sunrpc.h"
 
 #define RPCDBG_FACILITY	RPCDBG_SVCXPRT
 
@@ -63,6 +68,24 @@ static void		svc_sock_free(struct svc_xprt *);
 
 static struct svc_xprt *svc_create_socket(struct svc_serv *, int,
 					  struct sockaddr *, int, int);
+					 int flags);
+static void		svc_udp_data_ready(struct sock *);
+static int		svc_udp_recvfrom(struct svc_rqst *);
+static int		svc_udp_sendto(struct svc_rqst *);
+static void		svc_sock_detach(struct svc_xprt *);
+static void		svc_tcp_sock_detach(struct svc_xprt *);
+static void		svc_sock_free(struct svc_xprt *);
+
+static struct svc_xprt *svc_create_socket(struct svc_serv *, int,
+					  struct net *, struct sockaddr *,
+					  int, int);
+#if defined(CONFIG_SUNRPC_BACKCHANNEL)
+static struct svc_xprt *svc_bc_create_socket(struct svc_serv *, int,
+					     struct net *, struct sockaddr *,
+					     int, int);
+static void svc_bc_sock_free(struct svc_xprt *xprt);
+#endif /* CONFIG_SUNRPC_BACKCHANNEL */
+
 #ifdef CONFIG_DEBUG_LOCK_ALLOC
 static struct lock_class_key svc_key[2];
 static struct lock_class_key svc_slock_key[2];
@@ -71,6 +94,11 @@ static void svc_reclassify_socket(struct socket *sock)
 {
 	struct sock *sk = sock->sk;
 	BUG_ON(sock_owned_by_user(sk));
+
+	WARN_ON_ONCE(sock_owned_by_user(sk));
+	if (sock_owned_by_user(sk))
+		return;
+
 	switch (sk->sk_family) {
 	case AF_INET:
 		sock_lock_init_class_and_name(sk, "slock-AF_INET-NFSD",
@@ -115,6 +143,7 @@ static void svc_release_skb(struct svc_rqst *rqstp)
 	if (dr) {
 		rqstp->rq_deferred = NULL;
 		kfree(dr);
+		skb_free_datagram_locked(svsk->sk_sk, skb);
 	}
 }
 
@@ -137,6 +166,8 @@ static void svc_set_cmsg_data(struct svc_rqst *rqstp, struct cmsghdr *cmh)
 			cmh->cmsg_type = IP_PKTINFO;
 			pki->ipi_ifindex = 0;
 			pki->ipi_spec_dst.s_addr = rqstp->rq_daddr.addr.s_addr;
+			pki->ipi_spec_dst.s_addr =
+				 svc_daddr_in(rqstp)->sin_addr.s_addr;
 			cmh->cmsg_len = CMSG_LEN(sizeof(*pki));
 		}
 		break;
@@ -149,6 +180,12 @@ static void svc_set_cmsg_data(struct svc_rqst *rqstp, struct cmsghdr *cmh)
 			pki->ipi6_ifindex = 0;
 			ipv6_addr_copy(&pki->ipi6_addr,
 					&rqstp->rq_daddr.addr6);
+			struct sockaddr_in6 *daddr = svc_daddr_in6(rqstp);
+
+			cmh->cmsg_level = SOL_IPV6;
+			cmh->cmsg_type = IPV6_PKTINFO;
+			pki->ipi6_ifindex = daddr->sin6_scope_id;
+			pki->ipi6_addr = daddr->sin6_addr;
 			cmh->cmsg_len = CMSG_LEN(sizeof(*pki));
 		}
 		break;
@@ -171,6 +208,15 @@ static int svc_sendto(struct svc_rqst *rqstp, struct xdr_buf *xdr)
 	} buffer;
 	struct cmsghdr *cmh = &buffer.hdr;
 	int		len = 0;
+}
+
+/*
+ * send routine intended to be shared by the fore- and back-channel
+ */
+int svc_send_common(struct socket *sock, struct xdr_buf *xdr,
+		    struct page *headpage, unsigned long headoffset,
+		    struct page *tailpage, unsigned long tailoffset)
+{
 	int		result;
 	int		size;
 	struct page	**ppage = xdr->pages;
@@ -200,6 +246,16 @@ static int svc_sendto(struct svc_rqst *rqstp, struct xdr_buf *xdr)
 	if (slen == xdr->head[0].iov_len)
 		flags = 0;
 	len = kernel_sendpage(sock, rqstp->rq_respages[0], 0,
+	unsigned int	flags = MSG_MORE | MSG_SENDPAGE_NOTLAST;
+	int		slen;
+	int		len = 0;
+
+	slen = xdr->len;
+
+	/* send head */
+	if (slen == xdr->head[0].iov_len)
+		flags = 0;
+	len = kernel_sendpage(sock, headpage, headoffset,
 				  xdr->head[0].iov_len, flags);
 	if (len != xdr->head[0].iov_len)
 		goto out;
@@ -233,6 +289,58 @@ static int svc_sendto(struct svc_rqst *rqstp, struct xdr_buf *xdr)
 		if (result > 0)
 			len += result;
 	}
+
+	/* send tail */
+	if (xdr->tail[0].iov_len) {
+		result = kernel_sendpage(sock, tailpage, tailoffset,
+				   xdr->tail[0].iov_len, 0);
+		if (result > 0)
+			len += result;
+	}
+
+out:
+	return len;
+}
+
+
+/*
+ * Generic sendto routine
+ */
+static int svc_sendto(struct svc_rqst *rqstp, struct xdr_buf *xdr)
+{
+	struct svc_sock	*svsk =
+		container_of(rqstp->rq_xprt, struct svc_sock, sk_xprt);
+	struct socket	*sock = svsk->sk_sock;
+	union {
+		struct cmsghdr	hdr;
+		long		all[SVC_PKTINFO_SPACE / sizeof(long)];
+	} buffer;
+	struct cmsghdr *cmh = &buffer.hdr;
+	int		len = 0;
+	unsigned long tailoff;
+	unsigned long headoff;
+	RPC_IFDEBUG(char buf[RPC_MAX_ADDRBUFLEN]);
+
+	if (rqstp->rq_prot == IPPROTO_UDP) {
+		struct msghdr msg = {
+			.msg_name	= &rqstp->rq_addr,
+			.msg_namelen	= rqstp->rq_addrlen,
+			.msg_control	= cmh,
+			.msg_controllen	= sizeof(buffer),
+			.msg_flags	= MSG_MORE,
+		};
+
+		svc_set_cmsg_data(rqstp, cmh);
+
+		if (sock_sendmsg(sock, &msg) < 0)
+			goto out;
+	}
+
+	tailoff = ((unsigned long)xdr->tail[0].iov_base) & (PAGE_SIZE-1);
+	headoff = 0;
+	len = svc_send_common(sock, xdr, rqstp->rq_respages[0], headoff,
+			       rqstp->rq_respages[0], tailoff);
+
 out:
 	dprintk("svc: socket %p sendto([%p %Zu... ], %d) = %d (addr %s)\n",
 		svsk, xdr->head[0].iov_base, xdr->head[0].iov_len,
@@ -259,6 +367,36 @@ static int one_sock_name(char *buf, struct svc_sock *svsk)
 	default:
 		len = sprintf(buf, "*unknown-%d*\n",
 			       svsk->sk_sk->sk_family);
+static int svc_one_sock_name(struct svc_sock *svsk, char *buf, int remaining)
+{
+	const struct sock *sk = svsk->sk_sk;
+	const char *proto_name = sk->sk_protocol == IPPROTO_UDP ?
+							"udp" : "tcp";
+	int len;
+
+	switch (sk->sk_family) {
+	case PF_INET:
+		len = snprintf(buf, remaining, "ipv4 %s %pI4 %d\n",
+				proto_name,
+				&inet_sk(sk)->inet_rcv_saddr,
+				inet_sk(sk)->inet_num);
+		break;
+#if IS_ENABLED(CONFIG_IPV6)
+	case PF_INET6:
+		len = snprintf(buf, remaining, "ipv6 %s %pI6 %d\n",
+				proto_name,
+				&sk->sk_v6_rcv_saddr,
+				inet_sk(sk)->inet_num);
+		break;
+#endif
+	default:
+		len = snprintf(buf, remaining, "*unknown-%d*\n",
+				sk->sk_family);
+	}
+
+	if (len >= remaining) {
+		*buf = '\0';
+		return -ENAMETOOLONG;
 	}
 	return len;
 }
@@ -321,10 +459,45 @@ static int svc_recvfrom(struct svc_rqst *rqstp, struct kvec *iov, int nr,
 
 	len = kernel_recvmsg(svsk->sk_sock, &msg, iov, nr, buflen,
 				msg.msg_flags);
+	clear_bit(XPT_DATA, &svsk->sk_xprt.xpt_flags);
+	len = kernel_recvmsg(svsk->sk_sock, &msg, iov, nr, buflen,
+				msg.msg_flags);
+	/* If we read a full record, then assume there may be more
+	 * data to read (stream based sockets only!)
+	 */
+	if (len == buflen)
+		set_bit(XPT_DATA, &svsk->sk_xprt.xpt_flags);
 
 	dprintk("svc: socket %p recvfrom(%p, %Zu) = %d\n",
 		svsk, iov[0].iov_base, iov[0].iov_len, len);
 	return len;
+}
+
+static int svc_partial_recvfrom(struct svc_rqst *rqstp,
+				struct kvec *iov, int nr,
+				int buflen, unsigned int base)
+{
+	size_t save_iovlen;
+	void *save_iovbase;
+	unsigned int i;
+	int ret;
+
+	if (base == 0)
+		return svc_recvfrom(rqstp, iov, nr, buflen);
+
+	for (i = 0; i < nr; i++) {
+		if (iov[i].iov_len > base)
+			break;
+		base -= iov[i].iov_len;
+	}
+	save_iovlen = iov[i].iov_len;
+	save_iovbase = iov[i].iov_base;
+	iov[i].iov_len -= base;
+	iov[i].iov_base += base;
+	ret = svc_recvfrom(rqstp, &iov[i], nr - i, buflen);
+	iov[i].iov_len = save_iovlen;
+	iov[i].iov_base = save_iovbase;
+	return ret;
 }
 
 /*
@@ -363,12 +536,60 @@ static void svc_udp_data_ready(struct sock *sk, int count)
 	if (svsk) {
 		dprintk("svc: socket %p(inet %p), count=%d, busy=%d\n",
 			svsk, sk, count,
+	sock->sk->sk_write_space(sock->sk);
+	release_sock(sock->sk);
+#endif
+}
+
+static int svc_sock_secure_port(struct svc_rqst *rqstp)
+{
+	return svc_port_is_privileged(svc_addr(rqstp));
+}
+
+static bool sunrpc_waitqueue_active(wait_queue_head_t *wq)
+{
+	if (!wq)
+		return false;
+	/*
+	 * There should normally be a memory * barrier here--see
+	 * wq_has_sleeper().
+	 *
+	 * It appears that isn't currently necessary, though, basically
+	 * because callers all appear to have sufficient memory barriers
+	 * between the time the relevant change is made and the
+	 * time they call these callbacks.
+	 *
+	 * The nfsd code itself doesn't actually explicitly wait on
+	 * these waitqueues, but it may wait on them for example in
+	 * sendpage() or sendmsg() calls.  (And those may be the only
+	 * places, since it it uses nonblocking reads.)
+	 *
+	 * Maybe we should add the memory barriers anyway, but these are
+	 * hot paths so we'd need to be convinced there's no sigificant
+	 * penalty.
+	 */
+	return waitqueue_active(wq);
+}
+
+/*
+ * INET callback when data has been received on the socket.
+ */
+static void svc_udp_data_ready(struct sock *sk)
+{
+	struct svc_sock	*svsk = (struct svc_sock *)sk->sk_user_data;
+	wait_queue_head_t *wq = sk_sleep(sk);
+
+	if (svsk) {
+		dprintk("svc: socket %p(inet %p), busy=%d\n",
+			svsk, sk,
 			test_bit(XPT_BUSY, &svsk->sk_xprt.xpt_flags));
 		set_bit(XPT_DATA, &svsk->sk_xprt.xpt_flags);
 		svc_xprt_enqueue(&svsk->sk_xprt);
 	}
 	if (sk->sk_sleep && waitqueue_active(sk->sk_sleep))
 		wake_up_interruptible(sk->sk_sleep);
+	if (sunrpc_waitqueue_active(wq))
+		wake_up_interruptible(wq);
 }
 
 /*
@@ -377,6 +598,7 @@ static void svc_udp_data_ready(struct sock *sk, int count)
 static void svc_write_space(struct sock *sk)
 {
 	struct svc_sock	*svsk = (struct svc_sock *)(sk->sk_user_data);
+	wait_queue_head_t *wq = sk_sleep(sk);
 
 	if (svsk) {
 		dprintk("svc: socket %p(inet %p), write_space busy=%d\n",
@@ -389,6 +611,85 @@ static void svc_write_space(struct sock *sk)
 		       svsk);
 		wake_up_interruptible(sk->sk_sleep);
 	}
+}
+
+	if (sunrpc_waitqueue_active(wq)) {
+		dprintk("RPC svc_write_space: someone sleeping on %p\n",
+		       svsk);
+		wake_up_interruptible(wq);
+	}
+}
+
+static int svc_tcp_has_wspace(struct svc_xprt *xprt)
+{
+	struct svc_sock *svsk =	container_of(xprt, struct svc_sock, sk_xprt);
+	struct svc_serv *serv = svsk->sk_xprt.xpt_server;
+	int required;
+
+	if (test_bit(XPT_LISTENER, &xprt->xpt_flags))
+		return 1;
+	required = atomic_read(&xprt->xpt_reserved) + serv->sv_max_mesg;
+	if (sk_stream_wspace(svsk->sk_sk) >= required ||
+	    (sk_stream_min_wspace(svsk->sk_sk) == 0 &&
+	     atomic_read(&xprt->xpt_reserved) == 0))
+		return 1;
+	set_bit(SOCK_NOSPACE, &svsk->sk_sock->flags);
+	return 0;
+}
+
+static void svc_tcp_write_space(struct sock *sk)
+{
+	struct svc_sock *svsk = (struct svc_sock *)(sk->sk_user_data);
+	struct socket *sock = sk->sk_socket;
+
+	if (!sk_stream_is_writeable(sk) || !sock)
+		return;
+	if (!svsk || svc_tcp_has_wspace(&svsk->sk_xprt))
+		clear_bit(SOCK_NOSPACE, &sock->flags);
+	svc_write_space(sk);
+}
+
+static void svc_tcp_adjust_wspace(struct svc_xprt *xprt)
+{
+	struct svc_sock *svsk = container_of(xprt, struct svc_sock, sk_xprt);
+
+	if (svc_tcp_has_wspace(xprt))
+		clear_bit(SOCK_NOSPACE, &svsk->sk_sock->flags);
+}
+
+/*
+ * See net/ipv6/ip_sockglue.c : ip_cmsg_recv_pktinfo
+ */
+static int svc_udp_get_dest_address4(struct svc_rqst *rqstp,
+				     struct cmsghdr *cmh)
+{
+	struct in_pktinfo *pki = CMSG_DATA(cmh);
+	struct sockaddr_in *daddr = svc_daddr_in(rqstp);
+
+	if (cmh->cmsg_type != IP_PKTINFO)
+		return 0;
+
+	daddr->sin_family = AF_INET;
+	daddr->sin_addr.s_addr = pki->ipi_spec_dst.s_addr;
+	return 1;
+}
+
+/*
+ * See net/ipv6/datagram.c : ip6_datagram_recv_ctl
+ */
+static int svc_udp_get_dest_address6(struct svc_rqst *rqstp,
+				     struct cmsghdr *cmh)
+{
+	struct in6_pktinfo *pki = CMSG_DATA(cmh);
+	struct sockaddr_in6 *daddr = svc_daddr_in6(rqstp);
+
+	if (cmh->cmsg_type != IPV6_PKTINFO)
+		return 0;
+
+	daddr->sin6_family = AF_INET6;
+	daddr->sin6_addr = pki->ipi6_addr;
+	daddr->sin6_scope_id = pki->ipi6_ifindex;
+	return 1;
 }
 
 /*
@@ -415,6 +716,17 @@ static void svc_udp_get_dest_address(struct svc_rqst *rqstp,
 		break;
 		}
 	}
+static int svc_udp_get_dest_address(struct svc_rqst *rqstp,
+				    struct cmsghdr *cmh)
+{
+	switch (cmh->cmsg_level) {
+	case SOL_IP:
+		return svc_udp_get_dest_address4(rqstp, cmh);
+	case SOL_IPV6:
+		return svc_udp_get_dest_address6(rqstp, cmh);
+	}
+
+	return 0;
 }
 
 /*
@@ -438,6 +750,8 @@ static int svc_udp_recvfrom(struct svc_rqst *rqstp)
 		.msg_controllen = sizeof(buffer),
 		.msg_flags = MSG_DONTWAIT,
 	};
+	size_t len;
+	int err;
 
 	if (test_and_clear_bit(XPT_CHNGBUF, &svsk->sk_xprt.xpt_flags))
 	    /* udp sockets need large rcvbuf as all pending
@@ -471,13 +785,16 @@ static int svc_udp_recvfrom(struct svc_rqst *rqstp)
 	len = svc_addr_len(svc_addr(rqstp));
 	if (len < 0)
 		return len;
+		return 0;
+	}
+	len = svc_addr_len(svc_addr(rqstp));
 	rqstp->rq_addrlen = len;
 	if (skb->tstamp.tv64 == 0) {
 		skb->tstamp = ktime_get_real();
 		/* Don't enable netstamp, sunrpc doesn't
 		   need that much accuracy */
 	}
-	svsk->sk_sk->sk_stamp = skb->tstamp;
+	sock_write_timestamp(svsk->sk_sk, skb->tstamp);
 	set_bit(XPT_DATA, &svsk->sk_xprt.xpt_flags); /* there may be more data... */
 
 	/*
@@ -500,6 +817,12 @@ static int svc_udp_recvfrom(struct svc_rqst *rqstp)
 		return 0;
 	}
 	svc_udp_get_dest_address(rqstp, cmh);
+	if (!svc_udp_get_dest_address(rqstp, cmh)) {
+		net_warn_ratelimited("svc: received unknown control message %d/%d; dropping RPC reply datagram\n",
+				     cmh->cmsg_level, cmh->cmsg_type);
+		goto out_free;
+	}
+	rqstp->rq_daddrlen = svc_addr_len(svc_daddr(rqstp));
 
 	if (skb_is_nonlinear(skb)) {
 		/* we have to copy */
@@ -512,6 +835,10 @@ static int svc_udp_recvfrom(struct svc_rqst *rqstp)
 		}
 		local_bh_enable();
 		skb_free_datagram(svsk->sk_sk, skb);
+			goto out_free;
+		}
+		local_bh_enable();
+		skb_free_datagram_locked(svsk->sk_sk, skb);
 	} else {
 		/* we can use it in-place */
 		rqstp->rq_arg.head[0].iov_base = skb->data +
@@ -521,6 +848,8 @@ static int svc_udp_recvfrom(struct svc_rqst *rqstp)
 			skb_free_datagram(svsk->sk_sk, skb);
 			return 0;
 		}
+		if (skb_checksum_complete(skb))
+			goto out_free;
 		rqstp->rq_xprt_ctxt = skb;
 	}
 
@@ -534,11 +863,16 @@ static int svc_udp_recvfrom(struct svc_rqst *rqstp)
 		rqstp->rq_respages = rqstp->rq_pages + 1 +
 			DIV_ROUND_UP(rqstp->rq_arg.page_len, PAGE_SIZE);
 	}
+	rqstp->rq_next_page = rqstp->rq_respages+1;
 
 	if (serv->sv_stats)
 		serv->sv_stats->netudpcnt++;
 
 	return len;
+out_free:
+	trace_kfree_skb(skb, svc_udp_recvfrom);
+	skb_free_datagram_locked(svsk->sk_sk, skb);
+	return 0;
 }
 
 static int
@@ -587,6 +921,11 @@ static struct svc_xprt *svc_udp_create(struct svc_serv *serv,
 				       int flags)
 {
 	return svc_create_socket(serv, IPPROTO_UDP, sa, salen, flags);
+				       struct net *net,
+				       struct sockaddr *sa, int salen,
+				       int flags)
+{
+	return svc_create_socket(serv, IPPROTO_UDP, net, sa, salen, flags);
 }
 
 static struct svc_xprt_ops svc_udp_ops = {
@@ -599,6 +938,7 @@ static struct svc_xprt_ops svc_udp_ops = {
 	.xpo_prep_reply_hdr = svc_udp_prep_reply_hdr,
 	.xpo_has_wspace = svc_udp_has_wspace,
 	.xpo_accept = svc_udp_accept,
+	.xpo_secure_port = svc_sock_secure_port,
 };
 
 static struct svc_xprt_class svc_udp_class = {
@@ -606,6 +946,7 @@ static struct svc_xprt_class svc_udp_class = {
 	.xcl_owner = THIS_MODULE,
 	.xcl_ops = &svc_udp_ops,
 	.xcl_max_payload = RPCSVC_MAXPAYLOAD_UDP,
+	.xcl_ident = XPRT_TRANSPORT_UDP,
 };
 
 static void svc_udp_init(struct svc_sock *svsk, struct svc_serv *serv)
@@ -614,6 +955,10 @@ static void svc_udp_init(struct svc_sock *svsk, struct svc_serv *serv)
 	mm_segment_t oldfs;
 
 	svc_xprt_init(&svc_udp_class, &svsk->sk_xprt, serv);
+	int err, level, optname, one = 1;
+
+	svc_xprt_init(sock_net(svsk->sk_sock->sk), &svc_udp_class,
+		      &svsk->sk_xprt, serv);
 	clear_bit(XPT_CACHE_AUTH, &svsk->sk_xprt.xpt_flags);
 	svsk->sk_sk->sk_data_ready = svc_udp_data_ready;
 	svsk->sk_sk->sk_write_space = svc_write_space;
@@ -636,6 +981,22 @@ static void svc_udp_init(struct svc_sock *svsk, struct svc_serv *serv)
 	svsk->sk_sock->ops->setsockopt(svsk->sk_sock, IPPROTO_IP, IP_PKTINFO,
 				       (char __user *)&one, sizeof(one));
 	set_fs(oldfs);
+	/* make sure we get destination address info */
+	switch (svsk->sk_sk->sk_family) {
+	case AF_INET:
+		level = SOL_IP;
+		optname = IP_PKTINFO;
+		break;
+	case AF_INET6:
+		level = SOL_IPV6;
+		optname = IPV6_RECVPKTINFO;
+		break;
+	default:
+		BUG();
+	}
+	err = kernel_setsockopt(svsk->sk_sock, level, optname,
+					(char *)&one, sizeof(one));
+	dprintk("svc: kernel_setsockopt returned %d\n", err);
 }
 
 /*
@@ -645,6 +1006,10 @@ static void svc_udp_init(struct svc_sock *svsk, struct svc_serv *serv)
 static void svc_tcp_listen_data_ready(struct sock *sk, int count_unused)
 {
 	struct svc_sock	*svsk = (struct svc_sock *)sk->sk_user_data;
+static void svc_tcp_listen_data_ready(struct sock *sk)
+{
+	struct svc_sock	*svsk = (struct svc_sock *)sk->sk_user_data;
+	wait_queue_head_t *wq;
 
 	dprintk("svc: socket %p TCP (listen) state change %d\n",
 		sk, sk->sk_state);
@@ -669,6 +1034,9 @@ static void svc_tcp_listen_data_ready(struct sock *sk, int count_unused)
 
 	if (sk->sk_sleep && waitqueue_active(sk->sk_sleep))
 		wake_up_interruptible_all(sk->sk_sleep);
+	wq = sk_sleep(sk);
+	if (sunrpc_waitqueue_active(wq))
+		wake_up_interruptible_all(wq);
 }
 
 /*
@@ -677,6 +1045,7 @@ static void svc_tcp_listen_data_ready(struct sock *sk, int count_unused)
 static void svc_tcp_state_change(struct sock *sk)
 {
 	struct svc_sock	*svsk = (struct svc_sock *)sk->sk_user_data;
+	wait_queue_head_t *wq = sk_sleep(sk);
 
 	dprintk("svc: socket %p TCP (connected) state change %d (svsk %p)\n",
 		sk, sk->sk_state, sk->sk_user_data);
@@ -694,6 +1063,14 @@ static void svc_tcp_state_change(struct sock *sk)
 static void svc_tcp_data_ready(struct sock *sk, int count)
 {
 	struct svc_sock *svsk = (struct svc_sock *)sk->sk_user_data;
+	if (sunrpc_waitqueue_active(wq))
+		wake_up_interruptible_all(wq);
+}
+
+static void svc_tcp_data_ready(struct sock *sk)
+{
+	struct svc_sock *svsk = (struct svc_sock *)sk->sk_user_data;
+	wait_queue_head_t *wq = sk_sleep(sk);
 
 	dprintk("svc: socket %p TCP data ready (svsk %p)\n",
 		sk, sk->sk_user_data);
@@ -703,6 +1080,8 @@ static void svc_tcp_data_ready(struct sock *sk, int count)
 	}
 	if (sk->sk_sleep && waitqueue_active(sk->sk_sleep))
 		wake_up_interruptible(sk->sk_sleep);
+	if (sunrpc_waitqueue_active(wq))
+		wake_up_interruptible(wq);
 }
 
 /*
@@ -733,6 +1112,9 @@ static struct svc_xprt *svc_tcp_accept(struct svc_xprt *xprt)
 		else if (err != -EAGAIN && net_ratelimit())
 			printk(KERN_WARNING "%s: accept failed (err %d)!\n",
 				   serv->sv_name, -err);
+		else if (err != -EAGAIN)
+			net_warn_ratelimited("%s: accept failed (err %d)!\n",
+					     serv->sv_name, -err);
 		return NULL;
 	}
 	set_bit(XPT_CONN, &svsk->sk_xprt.xpt_flags);
@@ -742,6 +1124,8 @@ static struct svc_xprt *svc_tcp_accept(struct svc_xprt *xprt)
 		if (net_ratelimit())
 			printk(KERN_WARNING "%s: peername failed (err %d)!\n",
 				   serv->sv_name, -err);
+		net_warn_ratelimited("%s: peername failed (err %d)!\n",
+				     serv->sv_name, -err);
 		goto failed;		/* aborted connection or whatever */
 	}
 
@@ -752,6 +1136,7 @@ static struct svc_xprt *svc_tcp_accept(struct svc_xprt *xprt)
 	if (!svc_port_is_privileged(sin)) {
 		dprintk(KERN_WARNING
 			"%s: connect from unprivileged port: %s\n",
+		dprintk("%s: connect from unprivileged port: %s\n",
 			serv->sv_name,
 			__svc_print_addr(sin, buf, sizeof(buf)));
 	}
@@ -765,6 +1150,9 @@ static struct svc_xprt *svc_tcp_accept(struct svc_xprt *xprt)
 
 	if (!(newsvsk = svc_setup_socket(serv, newsock, &err,
 				 (SVC_SOCK_ANONYMOUS | SVC_SOCK_TEMPORARY))))
+	newsvsk = svc_setup_socket(serv, newsock,
+				 (SVC_SOCK_ANONYMOUS | SVC_SOCK_TEMPORARY));
+	if (IS_ERR(newsvsk))
 		goto failed;
 	svc_xprt_set_remote(&newsvsk->sk_xprt, sin, slen);
 	err = kernel_getsockname(newsock, sin, &slen);
@@ -774,6 +1162,10 @@ static struct svc_xprt *svc_tcp_accept(struct svc_xprt *xprt)
 	}
 	svc_xprt_set_local(&newsvsk->sk_xprt, sin, slen);
 
+	if (sock_is_loopback(newsock->sk))
+		set_bit(XPT_LOCAL, &newsvsk->sk_xprt.xpt_flags);
+	else
+		clear_bit(XPT_LOCAL, &newsvsk->sk_xprt.xpt_flags);
 	if (serv->sv_stats)
 		serv->sv_stats->nettcpconn++;
 
@@ -782,6 +1174,173 @@ static struct svc_xprt *svc_tcp_accept(struct svc_xprt *xprt)
 failed:
 	sock_release(newsock);
 	return NULL;
+}
+
+static unsigned int svc_tcp_restore_pages(struct svc_sock *svsk, struct svc_rqst *rqstp)
+{
+	unsigned int i, len, npages;
+
+	if (svsk->sk_datalen == 0)
+		return 0;
+	len = svsk->sk_datalen;
+	npages = (len + PAGE_SIZE - 1) >> PAGE_SHIFT;
+	for (i = 0; i < npages; i++) {
+		if (rqstp->rq_pages[i] != NULL)
+			put_page(rqstp->rq_pages[i]);
+		BUG_ON(svsk->sk_pages[i] == NULL);
+		rqstp->rq_pages[i] = svsk->sk_pages[i];
+		svsk->sk_pages[i] = NULL;
+	}
+	rqstp->rq_arg.head[0].iov_base = page_address(rqstp->rq_pages[0]);
+	return len;
+}
+
+static void svc_tcp_save_pages(struct svc_sock *svsk, struct svc_rqst *rqstp)
+{
+	unsigned int i, len, npages;
+
+	if (svsk->sk_datalen == 0)
+		return;
+	len = svsk->sk_datalen;
+	npages = (len + PAGE_SIZE - 1) >> PAGE_SHIFT;
+	for (i = 0; i < npages; i++) {
+		svsk->sk_pages[i] = rqstp->rq_pages[i];
+		rqstp->rq_pages[i] = NULL;
+	}
+}
+
+static void svc_tcp_clear_pages(struct svc_sock *svsk)
+{
+	unsigned int i, len, npages;
+
+	if (svsk->sk_datalen == 0)
+		goto out;
+	len = svsk->sk_datalen;
+	npages = (len + PAGE_SIZE - 1) >> PAGE_SHIFT;
+	for (i = 0; i < npages; i++) {
+		if (svsk->sk_pages[i] == NULL) {
+			WARN_ON_ONCE(1);
+			continue;
+		}
+		put_page(svsk->sk_pages[i]);
+		svsk->sk_pages[i] = NULL;
+	}
+out:
+	svsk->sk_tcplen = 0;
+	svsk->sk_datalen = 0;
+}
+
+/*
+ * Receive fragment record header.
+ * If we haven't gotten the record length yet, get the next four bytes.
+ */
+static int svc_tcp_recv_record(struct svc_sock *svsk, struct svc_rqst *rqstp)
+{
+	struct svc_serv	*serv = svsk->sk_xprt.xpt_server;
+	unsigned int want;
+	int len;
+
+	if (svsk->sk_tcplen < sizeof(rpc_fraghdr)) {
+		struct kvec	iov;
+
+		want = sizeof(rpc_fraghdr) - svsk->sk_tcplen;
+		iov.iov_base = ((char *) &svsk->sk_reclen) + svsk->sk_tcplen;
+		iov.iov_len  = want;
+		if ((len = svc_recvfrom(rqstp, &iov, 1, want)) < 0)
+			goto error;
+		svsk->sk_tcplen += len;
+
+		if (len < want) {
+			dprintk("svc: short recvfrom while reading record "
+				"length (%d of %d)\n", len, want);
+			return -EAGAIN;
+		}
+
+		dprintk("svc: TCP record, %d bytes\n", svc_sock_reclen(svsk));
+		if (svc_sock_reclen(svsk) + svsk->sk_datalen >
+							serv->sv_max_mesg) {
+			net_notice_ratelimited("RPC: fragment too large: %d\n",
+					svc_sock_reclen(svsk));
+			goto err_delete;
+		}
+	}
+
+	return svc_sock_reclen(svsk);
+error:
+	dprintk("RPC: TCP recv_record got %d\n", len);
+	return len;
+err_delete:
+	set_bit(XPT_CLOSE, &svsk->sk_xprt.xpt_flags);
+	return -EAGAIN;
+}
+
+static int receive_cb_reply(struct svc_sock *svsk, struct svc_rqst *rqstp)
+{
+	struct rpc_xprt *bc_xprt = svsk->sk_xprt.xpt_bc_xprt;
+	struct rpc_rqst *req = NULL;
+	struct kvec *src, *dst;
+	__be32 *p = (__be32 *)rqstp->rq_arg.head[0].iov_base;
+	__be32 xid;
+	__be32 calldir;
+
+	xid = *p++;
+	calldir = *p;
+
+	if (!bc_xprt)
+		return -EAGAIN;
+	spin_lock_bh(&bc_xprt->transport_lock);
+	req = xprt_lookup_rqst(bc_xprt, xid);
+	if (!req)
+		goto unlock_notfound;
+
+	memcpy(&req->rq_private_buf, &req->rq_rcv_buf, sizeof(struct xdr_buf));
+	/*
+	 * XXX!: cheating for now!  Only copying HEAD.
+	 * But we know this is good enough for now (in fact, for any
+	 * callback reply in the forseeable future).
+	 */
+	dst = &req->rq_private_buf.head[0];
+	src = &rqstp->rq_arg.head[0];
+	if (dst->iov_len < src->iov_len)
+		goto unlock_eagain; /* whatever; just giving up. */
+	memcpy(dst->iov_base, src->iov_base, src->iov_len);
+	xprt_complete_rqst(req->rq_task, rqstp->rq_arg.len);
+	rqstp->rq_arg.len = 0;
+	spin_unlock_bh(&bc_xprt->transport_lock);
+	return 0;
+unlock_notfound:
+	printk(KERN_NOTICE
+		"%s: Got unrecognized reply: "
+		"calldir 0x%x xpt_bc_xprt %p xid %08x\n",
+		__func__, ntohl(calldir),
+		bc_xprt, ntohl(xid));
+unlock_eagain:
+	spin_unlock_bh(&bc_xprt->transport_lock);
+	return -EAGAIN;
+}
+
+static int copy_pages_to_kvecs(struct kvec *vec, struct page **pages, int len)
+{
+	int i = 0;
+	int t = 0;
+
+	while (t < len) {
+		vec[i].iov_base = page_address(pages[i]);
+		vec[i].iov_len = PAGE_SIZE;
+		i++;
+		t += PAGE_SIZE;
+	}
+	return i;
+}
+
+static void svc_tcp_fragment_received(struct svc_sock *svsk)
+{
+	/* If we have more data, signal svc_xprt_enqueue() to try again */
+	dprintk("svc: TCP %s record (%d bytes)\n",
+		svc_sock_final_rec(svsk) ? "final" : "nonfinal",
+		svc_sock_reclen(svsk));
+	svsk->sk_tcplen = 0;
+	svsk->sk_reclen = 0;
 }
 
 /*
@@ -795,6 +1354,10 @@ static int svc_tcp_recvfrom(struct svc_rqst *rqstp)
 	int		len;
 	struct kvec *vec;
 	int pnum, vlen;
+	unsigned int want, base;
+	__be32 *p;
+	__be32 calldir;
+	int pnum;
 
 	dprintk("svc: tcp_recv %p data %d conn %d close %d\n",
 		svsk, test_bit(XPT_DATA, &svsk->sk_xprt.xpt_flags),
@@ -934,6 +1497,89 @@ static int svc_tcp_recvfrom(struct svc_rqst *rqstp)
 	}
 
 	return len;
+	len = svc_tcp_recv_record(svsk, rqstp);
+	if (len < 0)
+		goto error;
+
+	base = svc_tcp_restore_pages(svsk, rqstp);
+	want = svc_sock_reclen(svsk) - (svsk->sk_tcplen - sizeof(rpc_fraghdr));
+
+	vec = rqstp->rq_vec;
+
+	pnum = copy_pages_to_kvecs(&vec[0], &rqstp->rq_pages[0],
+						svsk->sk_datalen + want);
+
+	rqstp->rq_respages = &rqstp->rq_pages[pnum];
+	rqstp->rq_next_page = rqstp->rq_respages + 1;
+
+	/* Now receive data */
+	len = svc_partial_recvfrom(rqstp, vec, pnum, want, base);
+	if (len >= 0) {
+		svsk->sk_tcplen += len;
+		svsk->sk_datalen += len;
+	}
+	if (len != want || !svc_sock_final_rec(svsk)) {
+		svc_tcp_save_pages(svsk, rqstp);
+		if (len < 0 && len != -EAGAIN)
+			goto err_delete;
+		if (len == want)
+			svc_tcp_fragment_received(svsk);
+		else
+			dprintk("svc: incomplete TCP record (%d of %d)\n",
+				(int)(svsk->sk_tcplen - sizeof(rpc_fraghdr)),
+				svc_sock_reclen(svsk));
+		goto err_noclose;
+	}
+
+	if (svsk->sk_datalen < 8) {
+		svsk->sk_datalen = 0;
+		goto err_delete; /* client is nuts. */
+	}
+
+	rqstp->rq_arg.len = svsk->sk_datalen;
+	rqstp->rq_arg.page_base = 0;
+	if (rqstp->rq_arg.len <= rqstp->rq_arg.head[0].iov_len) {
+		rqstp->rq_arg.head[0].iov_len = rqstp->rq_arg.len;
+		rqstp->rq_arg.page_len = 0;
+	} else
+		rqstp->rq_arg.page_len = rqstp->rq_arg.len - rqstp->rq_arg.head[0].iov_len;
+
+	rqstp->rq_xprt_ctxt   = NULL;
+	rqstp->rq_prot	      = IPPROTO_TCP;
+	if (test_bit(XPT_LOCAL, &svsk->sk_xprt.xpt_flags))
+		set_bit(RQ_LOCAL, &rqstp->rq_flags);
+	else
+		clear_bit(RQ_LOCAL, &rqstp->rq_flags);
+
+	p = (__be32 *)rqstp->rq_arg.head[0].iov_base;
+	calldir = p[1];
+	if (calldir)
+		len = receive_cb_reply(svsk, rqstp);
+
+	/* Reset TCP read info */
+	svsk->sk_datalen = 0;
+	svc_tcp_fragment_received(svsk);
+
+	if (len < 0)
+		goto error;
+
+	svc_xprt_copy_addrs(rqstp, &svsk->sk_xprt);
+	if (serv->sv_stats)
+		serv->sv_stats->nettcpcnt++;
+
+	return rqstp->rq_arg.len;
+
+error:
+	if (len != -EAGAIN)
+		goto err_delete;
+	dprintk("RPC: TCP recvfrom got EAGAIN\n");
+	return 0;
+err_delete:
+	printk(KERN_NOTICE "%s: recvfrom returned errno %d\n",
+	       svsk->sk_xprt.xpt_server->sv_name, -len);
+	set_bit(XPT_CLOSE, &svsk->sk_xprt.xpt_flags);
+err_noclose:
+	return 0;	/* record not complete */
 }
 
 /*
@@ -973,7 +1619,7 @@ static int svc_tcp_sendto(struct svc_rqst *rqstp)
 /*
  * Setup response header. TCP has a 4B record length field.
  */
-static void svc_tcp_prep_reply_hdr(struct svc_rqst *rqstp)
+void svc_tcp_prep_reply_hdr(struct svc_rqst *rqstp)
 {
 	struct kvec *resv = &rqstp->rq_res.head[0];
 
@@ -1012,16 +1658,79 @@ static struct svc_xprt *svc_tcp_create(struct svc_serv *serv,
 	return svc_create_socket(serv, IPPROTO_TCP, sa, salen, flags);
 }
 
+static struct svc_xprt *svc_tcp_create(struct svc_serv *serv,
+				       struct net *net,
+				       struct sockaddr *sa, int salen,
+				       int flags)
+{
+	return svc_create_socket(serv, IPPROTO_TCP, net, sa, salen, flags);
+}
+
+#if defined(CONFIG_SUNRPC_BACKCHANNEL)
+static struct svc_xprt *svc_bc_create_socket(struct svc_serv *, int,
+					     struct net *, struct sockaddr *,
+					     int, int);
+static void svc_bc_sock_free(struct svc_xprt *xprt);
+
+static struct svc_xprt *svc_bc_tcp_create(struct svc_serv *serv,
+				       struct net *net,
+				       struct sockaddr *sa, int salen,
+				       int flags)
+{
+	return svc_bc_create_socket(serv, IPPROTO_TCP, net, sa, salen, flags);
+}
+
+static void svc_bc_tcp_sock_detach(struct svc_xprt *xprt)
+{
+}
+
+static struct svc_xprt_ops svc_tcp_bc_ops = {
+	.xpo_create = svc_bc_tcp_create,
+	.xpo_detach = svc_bc_tcp_sock_detach,
+	.xpo_free = svc_bc_sock_free,
+	.xpo_prep_reply_hdr = svc_tcp_prep_reply_hdr,
+	.xpo_secure_port = svc_sock_secure_port,
+};
+
+static struct svc_xprt_class svc_tcp_bc_class = {
+	.xcl_name = "tcp-bc",
+	.xcl_owner = THIS_MODULE,
+	.xcl_ops = &svc_tcp_bc_ops,
+	.xcl_max_payload = RPCSVC_MAXPAYLOAD_TCP,
+};
+
+static void svc_init_bc_xprt_sock(void)
+{
+	svc_reg_xprt_class(&svc_tcp_bc_class);
+}
+
+static void svc_cleanup_bc_xprt_sock(void)
+{
+	svc_unreg_xprt_class(&svc_tcp_bc_class);
+}
+#else /* CONFIG_SUNRPC_BACKCHANNEL */
+static void svc_init_bc_xprt_sock(void)
+{
+}
+
+static void svc_cleanup_bc_xprt_sock(void)
+{
+}
+#endif /* CONFIG_SUNRPC_BACKCHANNEL */
+
 static struct svc_xprt_ops svc_tcp_ops = {
 	.xpo_create = svc_tcp_create,
 	.xpo_recvfrom = svc_tcp_recvfrom,
 	.xpo_sendto = svc_tcp_sendto,
 	.xpo_release_rqst = svc_release_skb,
 	.xpo_detach = svc_sock_detach,
+	.xpo_detach = svc_tcp_sock_detach,
 	.xpo_free = svc_sock_free,
 	.xpo_prep_reply_hdr = svc_tcp_prep_reply_hdr,
 	.xpo_has_wspace = svc_tcp_has_wspace,
 	.xpo_accept = svc_tcp_accept,
+	.xpo_secure_port = svc_sock_secure_port,
+	.xpo_adjust_wspace = svc_tcp_adjust_wspace,
 };
 
 static struct svc_xprt_class svc_tcp_class = {
@@ -1029,18 +1738,21 @@ static struct svc_xprt_class svc_tcp_class = {
 	.xcl_owner = THIS_MODULE,
 	.xcl_ops = &svc_tcp_ops,
 	.xcl_max_payload = RPCSVC_MAXPAYLOAD_TCP,
+	.xcl_ident = XPRT_TRANSPORT_TCP,
 };
 
 void svc_init_xprt_sock(void)
 {
 	svc_reg_xprt_class(&svc_tcp_class);
 	svc_reg_xprt_class(&svc_udp_class);
+	svc_init_bc_xprt_sock();
 }
 
 void svc_cleanup_xprt_sock(void)
 {
 	svc_unreg_xprt_class(&svc_tcp_class);
 	svc_unreg_xprt_class(&svc_udp_class);
+	svc_cleanup_bc_xprt_sock();
 }
 
 static void svc_tcp_init(struct svc_sock *svsk, struct svc_serv *serv)
@@ -1048,6 +1760,8 @@ static void svc_tcp_init(struct svc_sock *svsk, struct svc_serv *serv)
 	struct sock	*sk = svsk->sk_sk;
 
 	svc_xprt_init(&svc_tcp_class, &svsk->sk_xprt, serv);
+	svc_xprt_init(sock_net(svsk->sk_sock->sk), &svc_tcp_class,
+		      &svsk->sk_xprt, serv);
 	set_bit(XPT_CACHE_AUTH, &svsk->sk_xprt.xpt_flags);
 	if (sk->sk_state == TCP_LISTEN) {
 		dprintk("setting up TCP socket for listening\n");
@@ -1074,6 +1788,15 @@ static void svc_tcp_init(struct svc_sock *svsk, struct svc_serv *serv)
 				    3 * svsk->sk_xprt.xpt_server->sv_max_mesg);
 
 		set_bit(XPT_CHNGBUF, &svsk->sk_xprt.xpt_flags);
+		sk->sk_write_space = svc_tcp_write_space;
+
+		svsk->sk_reclen = 0;
+		svsk->sk_tcplen = 0;
+		svsk->sk_datalen = 0;
+		memset(&svsk->sk_pages[0], 0, sizeof(svsk->sk_pages));
+
+		tcp_sk(sk)->nonagle |= TCP_NAGLE_OFF;
+
 		set_bit(XPT_DATA, &svsk->sk_xprt.xpt_flags);
 		if (sk->sk_state != TCP_ESTABLISHED)
 			set_bit(XPT_CLOSE, &svsk->sk_xprt.xpt_flags);
@@ -1110,6 +1833,21 @@ EXPORT_SYMBOL(svc_sock_update_bufs);
 static struct svc_sock *svc_setup_socket(struct svc_serv *serv,
 						struct socket *sock,
 						int *errp, int flags)
+	struct svc_sock *svsk;
+
+	spin_lock_bh(&serv->sv_lock);
+	list_for_each_entry(svsk, &serv->sv_permsocks, sk_xprt.xpt_list)
+		set_bit(XPT_CHNGBUF, &svsk->sk_xprt.xpt_flags);
+	spin_unlock_bh(&serv->sv_lock);
+}
+EXPORT_SYMBOL_GPL(svc_sock_update_bufs);
+
+/*
+ * Initialize socket for RPC use and create svc_sock struct
+ */
+static struct svc_sock *svc_setup_socket(struct svc_serv *serv,
+						struct socket *sock,
+						int flags)
 {
 	struct svc_sock	*svsk;
 	struct sock	*inet;
@@ -1120,6 +1858,12 @@ static struct svc_sock *svc_setup_socket(struct svc_serv *serv,
 		*errp = -ENOMEM;
 		return NULL;
 	}
+	int		err = 0;
+
+	dprintk("svc: svc_setup_socket %p\n", sock);
+	svsk = kzalloc(sizeof(*svsk), GFP_KERNEL);
+	if (!svsk)
+		return ERR_PTR(-ENOMEM);
 
 	inet = sock->sk;
 
@@ -1131,6 +1875,14 @@ static struct svc_sock *svc_setup_socket(struct svc_serv *serv,
 	if (*errp < 0) {
 		kfree(svsk);
 		return NULL;
+	if (pmap_register)
+		err = svc_register(serv, sock_net(sock->sk), inet->sk_family,
+				     inet->sk_protocol,
+				     ntohs(inet_sk(inet)->inet_sport));
+
+	if (err < 0) {
+		kfree(svsk);
+		return ERR_PTR(err);
 	}
 
 	inet->sk_user_data = svsk;
@@ -1145,6 +1897,14 @@ static struct svc_sock *svc_setup_socket(struct svc_serv *serv,
 		svc_udp_init(svsk, serv);
 	else
 		svc_tcp_init(svsk, serv);
+	else {
+		/* initialise setting must have enough space to
+		 * receive and respond to one request.
+		 */
+		svc_sock_setbufsize(svsk->sk_sock, 4 * serv->sv_max_mesg,
+					4 * serv->sv_max_mesg);
+		svc_tcp_init(svsk, serv);
+	}
 
 	dprintk("svc: svc_setup_socket created %p (inet %p)\n",
 				svsk, svsk->sk_sk);
@@ -1156,6 +1916,35 @@ int svc_addsock(struct svc_serv *serv,
 		int fd,
 		char *name_return,
 		int *proto)
+bool svc_alien_sock(struct net *net, int fd)
+{
+	int err;
+	struct socket *sock = sockfd_lookup(fd, &err);
+	bool ret = false;
+
+	if (!sock)
+		goto out;
+	if (sock_net(sock->sk) != net)
+		ret = true;
+	sockfd_put(sock);
+out:
+	return ret;
+}
+EXPORT_SYMBOL_GPL(svc_alien_sock);
+
+/**
+ * svc_addsock - add a listener socket to an RPC service
+ * @serv: pointer to RPC service to which to add a new listener
+ * @fd: file descriptor of the new listener
+ * @name_return: pointer to buffer to fill in with name of listener
+ * @len: size of the buffer
+ *
+ * Fills in socket name and returns positive length of name if successful.
+ * Name is terminated with '\n'.  On error, returns a negative errno
+ * value.
+ */
+int svc_addsock(struct svc_serv *serv, const int fd, char *name_return,
+		const size_t len)
 {
 	int err = 0;
 	struct socket *so = sockfd_lookup(fd, &err);
@@ -1192,6 +1981,38 @@ int svc_addsock(struct svc_serv *serv,
 	}
 	if (proto) *proto = so->sk->sk_protocol;
 	return one_sock_name(name_return, svsk);
+	struct sockaddr_storage addr;
+	struct sockaddr *sin = (struct sockaddr *)&addr;
+	int salen;
+
+	if (!so)
+		return err;
+	err = -EAFNOSUPPORT;
+	if ((so->sk->sk_family != PF_INET) && (so->sk->sk_family != PF_INET6))
+		goto out;
+	err =  -EPROTONOSUPPORT;
+	if (so->sk->sk_protocol != IPPROTO_TCP &&
+	    so->sk->sk_protocol != IPPROTO_UDP)
+		goto out;
+	err = -EISCONN;
+	if (so->state > SS_UNCONNECTED)
+		goto out;
+	err = -ENOENT;
+	if (!try_module_get(THIS_MODULE))
+		goto out;
+	svsk = svc_setup_socket(serv, so, SVC_SOCK_DEFAULTS);
+	if (IS_ERR(svsk)) {
+		module_put(THIS_MODULE);
+		err = PTR_ERR(svsk);
+		goto out;
+	}
+	if (kernel_getsockname(svsk->sk_sock, sin, &salen) == 0)
+		svc_xprt_set_local(&svsk->sk_xprt, sin, salen);
+	svc_add_new_perm_xprt(serv, &svsk->sk_xprt);
+	return svc_one_sock_name(svsk, name_return, len);
+out:
+	sockfd_put(so);
+	return err;
 }
 EXPORT_SYMBOL_GPL(svc_addsock);
 
@@ -1200,6 +2021,7 @@ EXPORT_SYMBOL_GPL(svc_addsock);
  */
 static struct svc_xprt *svc_create_socket(struct svc_serv *serv,
 					  int protocol,
+					  struct net *net,
 					  struct sockaddr *sin, int len,
 					  int flags)
 {
@@ -1210,6 +2032,8 @@ static struct svc_xprt *svc_create_socket(struct svc_serv *serv,
 	struct sockaddr_storage addr;
 	struct sockaddr *newsin = (struct sockaddr *)&addr;
 	int		newlen;
+	int		family;
+	int		val;
 	RPC_IFDEBUG(char buf[RPC_MAX_ADDRBUFLEN]);
 
 	dprintk("svc: svc_create_socket(%s, %d, %s)\n",
@@ -1224,6 +2048,20 @@ static struct svc_xprt *svc_create_socket(struct svc_serv *serv,
 	type = (protocol == IPPROTO_UDP)? SOCK_DGRAM : SOCK_STREAM;
 
 	error = sock_create_kern(sin->sa_family, type, protocol, &sock);
+
+	type = (protocol == IPPROTO_UDP)? SOCK_DGRAM : SOCK_STREAM;
+	switch (sin->sa_family) {
+	case AF_INET6:
+		family = PF_INET6;
+		break;
+	case AF_INET:
+		family = PF_INET;
+		break;
+	default:
+		return ERR_PTR(-EINVAL);
+	}
+
+	error = __sock_create(net, family, type, protocol, &sock, 1);
 	if (error < 0)
 		return ERR_PTR(error);
 
@@ -1231,6 +2069,18 @@ static struct svc_xprt *svc_create_socket(struct svc_serv *serv,
 
 	if (type == SOCK_STREAM)
 		sock->sk->sk_reuse = 1;		/* allow address reuse */
+	/*
+	 * If this is an PF_INET6 listener, we want to avoid
+	 * getting requests from IPv4 remotes.  Those should
+	 * be shunted to a PF_INET listener via rpcbind.
+	 */
+	val = 1;
+	if (family == PF_INET6)
+		kernel_setsockopt(sock, SOL_IPV6, IPV6_V6ONLY,
+					(char *)&val, sizeof(val));
+
+	if (type == SOCK_STREAM)
+		sock->sk->sk_reuse = SK_CAN_REUSE; /* allow address reuse */
 	error = kernel_bind(sock, sin, len);
 	if (error < 0)
 		goto bummer;
@@ -1250,6 +2100,13 @@ static struct svc_xprt *svc_create_socket(struct svc_serv *serv,
 		return (struct svc_xprt *)svsk;
 	}
 
+	svsk = svc_setup_socket(serv, sock, flags);
+	if (IS_ERR(svsk)) {
+		error = PTR_ERR(svsk);
+		goto bummer;
+	}
+	svc_xprt_set_local(&svsk->sk_xprt, newsin, newlen);
+	return (struct svc_xprt *)svsk;
 bummer:
 	dprintk("svc: svc_create_socket error = %d\n", -error);
 	sock_release(sock);
@@ -1264,6 +2121,7 @@ static void svc_sock_detach(struct svc_xprt *xprt)
 {
 	struct svc_sock *svsk = container_of(xprt, struct svc_sock, sk_xprt);
 	struct sock *sk = svsk->sk_sk;
+	wait_queue_head_t *wq;
 
 	dprintk("svc: svc_sock_detach(%p)\n", svsk);
 
@@ -1271,6 +2129,27 @@ static void svc_sock_detach(struct svc_xprt *xprt)
 	sk->sk_state_change = svsk->sk_ostate;
 	sk->sk_data_ready = svsk->sk_odata;
 	sk->sk_write_space = svsk->sk_owspace;
+
+	wq = sk_sleep(sk);
+	if (sunrpc_waitqueue_active(wq))
+		wake_up_interruptible(wq);
+}
+
+/*
+ * Disconnect the socket, and reset the callbacks
+ */
+static void svc_tcp_sock_detach(struct svc_xprt *xprt)
+{
+	struct svc_sock *svsk = container_of(xprt, struct svc_sock, sk_xprt);
+
+	dprintk("svc: svc_tcp_sock_detach(%p)\n", svsk);
+
+	svc_sock_detach(xprt);
+
+	if (!test_bit(XPT_LISTENER, &xprt->xpt_flags)) {
+		svc_tcp_clear_pages(svsk);
+		kernel_sock_shutdown(svsk->sk_sock, SHUT_RDWR);
+	}
 }
 
 /*
@@ -1287,3 +2166,44 @@ static void svc_sock_free(struct svc_xprt *xprt)
 		sock_release(svsk->sk_sock);
 	kfree(svsk);
 }
+
+#if defined(CONFIG_SUNRPC_BACKCHANNEL)
+/*
+ * Create a back channel svc_xprt which shares the fore channel socket.
+ */
+static struct svc_xprt *svc_bc_create_socket(struct svc_serv *serv,
+					     int protocol,
+					     struct net *net,
+					     struct sockaddr *sin, int len,
+					     int flags)
+{
+	struct svc_sock *svsk;
+	struct svc_xprt *xprt;
+
+	if (protocol != IPPROTO_TCP) {
+		printk(KERN_WARNING "svc: only TCP sockets"
+			" supported on shared back channel\n");
+		return ERR_PTR(-EINVAL);
+	}
+
+	svsk = kzalloc(sizeof(*svsk), GFP_KERNEL);
+	if (!svsk)
+		return ERR_PTR(-ENOMEM);
+
+	xprt = &svsk->sk_xprt;
+	svc_xprt_init(net, &svc_tcp_bc_class, xprt, serv);
+
+	serv->sv_bc_xprt = xprt;
+
+	return xprt;
+}
+
+/*
+ * Free a back channel svc_sock.
+ */
+static void svc_bc_sock_free(struct svc_xprt *xprt)
+{
+	if (xprt)
+		kfree(container_of(xprt, struct svc_sock, sk_xprt));
+}
+#endif /* CONFIG_SUNRPC_BACKCHANNEL */

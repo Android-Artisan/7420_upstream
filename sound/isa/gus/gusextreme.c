@@ -25,6 +25,7 @@
 #include <linux/delay.h>
 #include <linux/time.h>
 #include <linux/moduleparam.h>
+#include <linux/module.h>
 #include <asm/dma.h>
 #include <sound/core.h>
 #include <sound/gus.h>
@@ -47,6 +48,7 @@ MODULE_SUPPORTED_DEVICE("{{Gravis,UltraSound Extreme}}");
 static int index[SNDRV_CARDS] = SNDRV_DEFAULT_IDX;	/* Index 0-MAX */
 static char *id[SNDRV_CARDS] = SNDRV_DEFAULT_STR;	/* ID for this card */
 static int enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE;	/* Enable this card */
+static bool enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE;	/* Enable this card */
 static long port[SNDRV_CARDS] = SNDRV_DEFAULT_PORT;	/* 0x220,0x240,0x260 */
 static long gf1_port[SNDRV_CARDS] = {[0 ... (SNDRV_CARDS) - 1] = -1}; /* 0x210,0x220,0x230,0x240,0x250,0x260,0x270 */
 static long mpu_port[SNDRV_CARDS] = {[0 ... (SNDRV_CARDS) - 1] = -1}; /* 0x300,0x310,0x320 */
@@ -90,12 +92,16 @@ module_param_array(pcm_channels, int, NULL, 0444);
 MODULE_PARM_DESC(pcm_channels, "Reserved PCM channels for " CRD_NAME " driver.");
 
 static int __devinit snd_gusextreme_match(struct device *dev, unsigned int n)
+static int snd_gusextreme_match(struct device *dev, unsigned int n)
 {
 	return enable[n];
 }
 
 static int __devinit snd_gusextreme_es1688_create(struct snd_card *card,
 		struct device *dev, unsigned int n, struct snd_es1688 **rchip)
+static int snd_gusextreme_es1688_create(struct snd_card *card,
+					struct snd_es1688 *chip,
+					struct device *dev, unsigned int n)
 {
 	static long possible_ports[] = {0x220, 0x240, 0x260};
 	static int possible_irqs[] = {5, 9, 10, 7, -1};
@@ -108,6 +114,7 @@ static int __devinit snd_gusextreme_es1688_create(struct snd_card *card,
 		if (irq[n] < 0) {
 			snd_printk(KERN_ERR "%s: unable to find a free IRQ "
 				"for ES1688\n", dev->bus_id);
+			dev_err(dev, "unable to find a free IRQ for ES1688\n");
 			return -EBUSY;
 		}
 	}
@@ -116,6 +123,7 @@ static int __devinit snd_gusextreme_es1688_create(struct snd_card *card,
 		if (dma8[n] < 0) {
 			snd_printk(KERN_ERR "%s: unable to find a free DMA "
 				"for ES1688\n", dev->bus_id);
+			dev_err(dev, "unable to find a free DMA for ES1688\n");
 			return -EBUSY;
 		}
 	}
@@ -123,12 +131,16 @@ static int __devinit snd_gusextreme_es1688_create(struct snd_card *card,
 	if (port[n] != SNDRV_AUTO_PORT)
 		return snd_es1688_create(card, port[n], mpu_port[n], irq[n],
 				mpu_irq[n], dma8[n], ES1688_HW_1688, rchip);
+		return snd_es1688_create(card, chip, port[n], mpu_port[n],
+				irq[n], mpu_irq[n], dma8[n], ES1688_HW_1688);
 
 	i = 0;
 	do {
 		port[n] = possible_ports[i];
 		error = snd_es1688_create(card, port[n], mpu_port[n], irq[n],
 				mpu_irq[n], dma8[n], ES1688_HW_1688, rchip);
+		error = snd_es1688_create(card, chip, port[n], mpu_port[n],
+				irq[n], mpu_irq[n], dma8[n], ES1688_HW_1688);
 	} while (error < 0 && ++i < ARRAY_SIZE(possible_ports));
 
 	return error;
@@ -136,6 +148,9 @@ static int __devinit snd_gusextreme_es1688_create(struct snd_card *card,
 
 static int __devinit snd_gusextreme_gus_card_create(struct snd_card *card,
 		struct device *dev, unsigned int n, struct snd_gus_card **rgus)
+static int snd_gusextreme_gus_card_create(struct snd_card *card,
+					  struct device *dev, unsigned int n,
+					  struct snd_gus_card **rgus)
 {
 	static int possible_irqs[] = {11, 12, 15, 9, 5, 7, 3, -1};
 	static int possible_dmas[] = {5, 6, 7, 3, 1, -1};
@@ -145,6 +160,7 @@ static int __devinit snd_gusextreme_gus_card_create(struct snd_card *card,
 		if (gf1_irq[n] < 0) {
 			snd_printk(KERN_ERR "%s: unable to find a free IRQ "
 				"for GF1\n", dev->bus_id);
+			dev_err(dev, "unable to find a free IRQ for GF1\n");
 			return -EBUSY;
 		}
 	}
@@ -153,6 +169,7 @@ static int __devinit snd_gusextreme_gus_card_create(struct snd_card *card,
 		if (dma1[n] < 0) {
 			snd_printk(KERN_ERR "%s: unable to find a free DMA "
 				"for GF1\n", dev->bus_id);
+			dev_err(dev, "unable to find a free DMA for GF1\n");
 			return -EBUSY;
 		}
 	}
@@ -162,6 +179,8 @@ static int __devinit snd_gusextreme_gus_card_create(struct snd_card *card,
 
 static int __devinit snd_gusextreme_detect(struct snd_gus_card *gus,
 	struct snd_es1688 *es1688)
+static int snd_gusextreme_detect(struct snd_gus_card *gus,
+				 struct snd_es1688 *es1688)
 {
 	unsigned long flags;
 	unsigned char d;
@@ -213,6 +232,8 @@ static int __devinit snd_gusextreme_detect(struct snd_gus_card *gus,
 static int __devinit snd_gusextreme_mixer(struct snd_es1688 *chip)
 {
 	struct snd_card *card = chip->card;
+static int snd_gusextreme_mixer(struct snd_card *card)
+{
 	struct snd_ctl_elem_id id1, id2;
 	int error;
 
@@ -238,6 +259,7 @@ static int __devinit snd_gusextreme_mixer(struct snd_es1688 *chip)
 }
 
 static int __devinit snd_gusextreme_probe(struct device *dev, unsigned int n)
+static int snd_gusextreme_probe(struct device *dev, unsigned int n)
 {
 	struct snd_card *card;
 	struct snd_gus_card *gus;
@@ -248,6 +270,12 @@ static int __devinit snd_gusextreme_probe(struct device *dev, unsigned int n)
 	card = snd_card_new(index[n], id[n], THIS_MODULE, 0);
 	if (!card)
 		return -EINVAL;
+	error = snd_card_new(dev, index[n], id[n], THIS_MODULE,
+			     sizeof(struct snd_es1688), &card);
+	if (error < 0)
+		return error;
+
+	es1688 = card->private_data;
 
 	if (mpu_port[n] == SNDRV_AUTO_PORT)
 		mpu_port[n] = 0;
@@ -256,6 +284,7 @@ static int __devinit snd_gusextreme_probe(struct device *dev, unsigned int n)
 		mpu_irq[n] = -1;
 
 	error = snd_gusextreme_es1688_create(card, dev, n, &es1688);
+	error = snd_gusextreme_es1688_create(card, es1688, dev, n);
 	if (error < 0)
 		goto out;
 
@@ -280,6 +309,8 @@ static int __devinit snd_gusextreme_probe(struct device *dev, unsigned int n)
 	if (!gus->ess_flag) {
 		snd_printk(KERN_ERR "%s: GUS Extreme soundcard was not "
 			"detected at 0x%lx\n", dev->bus_id, gus->gf1.port);
+		dev_err(dev, "GUS Extreme soundcard was not "
+			"detected at 0x%lx\n", gus->gf1.port);
 		goto out;
 	}
 	gus->codec_flag = 1;
@@ -289,6 +320,11 @@ static int __devinit snd_gusextreme_probe(struct device *dev, unsigned int n)
 		goto out;
 
 	error = snd_es1688_mixer(es1688);
+	error = snd_es1688_pcm(card, es1688, 0);
+	if (error < 0)
+		goto out;
+
+	error = snd_es1688_mixer(card, es1688);
 	if (error < 0)
 		goto out;
 
@@ -296,6 +332,7 @@ static int __devinit snd_gusextreme_probe(struct device *dev, unsigned int n)
 
 	if (pcm_channels[n] > 0) {
 		error = snd_gf1_pcm_new(gus, 1, 1, NULL);
+		error = snd_gf1_pcm_new(gus, 1, 1);
 		if (error < 0)
 			goto out;
 	}
@@ -305,6 +342,7 @@ static int __devinit snd_gusextreme_probe(struct device *dev, unsigned int n)
 		goto out;
 
 	error = snd_gusextreme_mixer(es1688);
+	error = snd_gusextreme_mixer(card);
 	if (error < 0)
 		goto out;
 
@@ -312,6 +350,7 @@ static int __devinit snd_gusextreme_probe(struct device *dev, unsigned int n)
 			OPL3_HW_OPL3, 0, &opl3) < 0)
 		printk(KERN_ERR "%s: opl3 not detected at 0x%lx\n",
 			dev->bus_id, es1688->port);
+		dev_warn(dev, "opl3 not detected at 0x%lx\n", es1688->port);
 	else {
 		error = snd_opl3_hwdep_new(opl3, 0, 2, NULL);
 		if (error < 0)
@@ -322,6 +361,7 @@ static int __devinit snd_gusextreme_probe(struct device *dev, unsigned int n)
 		error = snd_mpu401_uart_new(card, 0, MPU401_HW_ES1688,
 				es1688->mpu_port, 0,
 				mpu_irq[n], IRQF_DISABLED, NULL);
+				es1688->mpu_port, 0, mpu_irq[n], NULL);
 		if (error < 0)
 			goto out;
 	}
@@ -347,6 +387,9 @@ static int __devexit snd_gusextreme_remove(struct device *dev, unsigned int n)
 {
 	snd_card_free(dev_get_drvdata(dev));
 	dev_set_drvdata(dev, NULL);
+static int snd_gusextreme_remove(struct device *dev, unsigned int n)
+{
+	snd_card_free(dev_get_drvdata(dev));
 	return 0;
 }
 

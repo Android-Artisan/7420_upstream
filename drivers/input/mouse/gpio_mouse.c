@@ -19,6 +19,16 @@
 /*
  * Timer function which is run every scan_ms ms when the device is opened.
  * The dev input varaible is set to the the input_dev pointer.
+#include <linux/module.h>
+#include <linux/platform_device.h>
+#include <linux/input-polldev.h>
+#include <linux/gpio.h>
+#include <linux/gpio_mouse.h>
+
+
+/*
+ * Timer function which is run every scan_ms ms when the device is opened.
+ * The dev input variable is set to the the input_dev pointer.
  */
 static void gpio_mouse_scan(struct input_polled_dev *dev)
 {
@@ -49,6 +59,9 @@ static void gpio_mouse_scan(struct input_polled_dev *dev)
 static int __init gpio_mouse_probe(struct platform_device *pdev)
 {
 	struct gpio_mouse_platform_data *pdata = pdev->dev.platform_data;
+static int gpio_mouse_probe(struct platform_device *pdev)
+{
+	struct gpio_mouse_platform_data *pdata = dev_get_platdata(&pdev->dev);
 	struct input_polled_dev *input_poll;
 	struct input_dev *input;
 	int pin, i;
@@ -151,6 +164,7 @@ static int __init gpio_mouse_probe(struct platform_device *pdev)
 }
 
 static int __devexit gpio_mouse_remove(struct platform_device *pdev)
+static int gpio_mouse_remove(struct platform_device *pdev)
 {
 	struct input_polled_dev *input = platform_get_drvdata(pdev);
 	struct gpio_mouse_platform_data *pdata = input->private;
@@ -197,3 +211,20 @@ module_exit(gpio_mouse_exit);
 MODULE_AUTHOR("Hans-Christian Egtvedt <hcegtvedt@atmel.com>");
 MODULE_DESCRIPTION("GPIO mouse driver");
 MODULE_LICENSE("GPL");
+	return 0;
+}
+
+static struct platform_driver gpio_mouse_device_driver = {
+	.probe		= gpio_mouse_probe,
+	.remove		= gpio_mouse_remove,
+	.driver		= {
+		.name	= "gpio_mouse",
+	}
+};
+module_platform_driver(gpio_mouse_device_driver);
+
+MODULE_AUTHOR("Hans-Christian Egtvedt <egtvedt@samfundet.no>");
+MODULE_DESCRIPTION("GPIO mouse driver");
+MODULE_LICENSE("GPL");
+MODULE_ALIAS("platform:gpio_mouse"); /* work with hotplug and coldplug */
+

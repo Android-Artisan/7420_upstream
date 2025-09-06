@@ -26,6 +26,7 @@
  *     along with this program; if not, write to the Free Software
  *     Foundation, Inc., 59 Temple Place, Suite 330, Boston,
  *     MA 02111-1307 USA
+ *     along with this program; if not, see <http://www.gnu.org/licenses/>.
  *
  ********************************************************************/
 
@@ -94,6 +95,7 @@ int ircomm_open_tsap(struct ircomm_cb *self)
 				     &notify);
 	if (!self->tsap) {
 		IRDA_DEBUG(0, "%sfailed to allocate tsap\n", __func__ );
+		pr_debug("%sfailed to allocate tsap\n", __func__);
 		return -1;
 	}
 	self->slsap_sel = self->tsap->stsap_sel;
@@ -174,6 +176,7 @@ static int ircomm_ttp_data_request(struct ircomm_cb *self,
 	IRDA_ASSERT(skb != NULL, return -1;);
 
 	IRDA_DEBUG(2, "%s(), clen=%d\n", __func__ , clen);
+	pr_debug("%s(), clen=%d\n", __func__ , clen);
 
 	/*
 	 * Insert clen field, currently we either send data only, or control
@@ -191,6 +194,7 @@ static int ircomm_ttp_data_request(struct ircomm_cb *self,
 	ret = irttp_data_request(self->tsap, skb);
 	if (ret) {
 		IRDA_ERROR("%s(), failed\n", __func__);
+		net_err_ratelimited("%s(), failed\n", __func__);
 		/* irttp_data_request already free the packet */
 	}
 
@@ -241,6 +245,8 @@ static void ircomm_ttp_connect_confirm(void *instance, void *sap,
 	if (max_sdu_size != TTP_SAR_DISABLE) {
 		IRDA_ERROR("%s(), SAR not allowed for IrCOMM!\n",
 			   __func__);
+		net_err_ratelimited("%s(), SAR not allowed for IrCOMM!\n",
+				    __func__);
 		goto out;
 	}
 
@@ -282,6 +288,8 @@ static void ircomm_ttp_connect_indication(void *instance, void *sap,
 	if (max_sdu_size != TTP_SAR_DISABLE) {
 		IRDA_ERROR("%s(), SAR not allowed for IrCOMM!\n",
 			   __func__);
+		net_err_ratelimited("%s(), SAR not allowed for IrCOMM!\n",
+				    __func__);
 		goto out;
 	}
 

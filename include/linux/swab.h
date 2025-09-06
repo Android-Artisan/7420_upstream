@@ -289,6 +289,8 @@ static inline void __swahb32s(__u32 *p)
 }
 
 #ifdef __KERNEL__
+#include <uapi/linux/swab.h>
+
 # define swab16 __swab16
 # define swab32 __swab32
 # define swab64 __swab64

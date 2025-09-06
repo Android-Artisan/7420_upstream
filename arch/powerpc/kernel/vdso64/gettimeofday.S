@@ -45,6 +45,11 @@ V_FUNCTION_BEGIN(__kernel_gettimeofday)
 					 */
 	rldicl  r0,r0,44,20
 	std	r0,TVAL64_TV_USEC(r11)	/* store usec in tv */
+	lis	r7,1000000@ha		/* load up USEC_PER_SEC */
+	addi	r7,r7,1000000@l
+	bl	V_LOCAL_FUNC(__do_get_tspec) /* get sec/us from tb & kernel */
+	std	r4,TVAL64_TV_SEC(r11)	/* store sec in tv */
+	std	r5,TVAL64_TV_USEC(r11)	/* store usec in tv */
 2:	cmpldi	r10,0			/* check if tz is NULL */
 	beq	1f
 	lwz	r4,CFG_TZ_MINUTEWEST(r3)/* fill tz */
@@ -103,6 +108,12 @@ V_FUNCTION_BEGIN(__kernel_clock_gettime)
 	crclr	cr0*4+so
 	li	r3,0
 	blr
+	mr	r11,r4			/* r11 saves tp */
+	bl	V_LOCAL_FUNC(__get_datapage)	/* get data page */
+	lis	r7,NSEC_PER_SEC@h	/* want nanoseconds */
+	ori	r7,r7,NSEC_PER_SEC@l
+50:	bl	V_LOCAL_FUNC(__do_get_tspec)	/* get time from tb & kernel */
+	bne	cr1,80f			/* if not monotonic, all done */
 
 	/*
 	 * CLOCK_MONOTONIC
@@ -136,6 +147,20 @@ V_FUNCTION_BEGIN(__kernel_clock_gettime)
 	 */
 	or	r9,r4,r7
 	xor	r0,r9,r9
+	/* now we must fixup using wall to monotonic. We need to snapshot
+	 * that value and do the counter trick again. Fortunately, we still
+	 * have the counter value in r8 that was returned by __do_get_tspec.
+	 * At this point, r4,r5 contain our sec/nsec values.
+	 */
+
+	lwa	r6,WTOM_CLOCK_SEC(r3)
+	lwa	r9,WTOM_CLOCK_NSEC(r3)
+
+	/* We now have our result in r6,r9. We create a fake dependency
+	 * on that result and re-check the counter
+	 */
+	or	r0,r6,r9
+	xor	r0,r0,r0
 	add	r3,r3,r0
 	ld	r0,CFG_TB_UPDATE_COUNT(r3)
         cmpld   cr0,r0,r8		/* check if updated */
@@ -159,6 +184,21 @@ V_FUNCTION_BEGIN(__kernel_clock_gettime)
 	add	r7,r7,r9
 1:	std	r4,TSPC64_TV_SEC(r11)
 	std	r7,TSPC64_TV_NSEC(r11)
+	/* Add wall->monotonic offset and check for overflow or underflow.
+	 */
+	add	r4,r4,r6
+	add	r5,r5,r9
+	cmpd	cr0,r5,r7
+	cmpdi	cr1,r5,0
+	blt	1f
+	subf	r5,r7,r5
+	addi	r4,r4,1
+1:	bge	cr1,80f
+	addi	r4,r4,-1
+	add	r5,r5,r7
+
+80:	std	r4,TSPC64_TV_SEC(r11)
+	std	r5,TSPC64_TV_NSEC(r11)
 
 	mtlr	r12
 	crclr	cr0*4+so
@@ -174,6 +214,7 @@ V_FUNCTION_BEGIN(__kernel_clock_gettime)
 	mr	r4,r11
 99:
 	li	r0,__NR_clock_gettime
+  .cfi_restore lr
 	sc
 	blr
   .cfi_endproc
@@ -194,12 +235,15 @@ V_FUNCTION_BEGIN(__kernel_clock_getres)
 	cror	cr0*4+eq,cr0*4+eq,cr1*4+eq
 	bne	cr0,99f
 
+	mflr	r12
+  .cfi_register lr,r12
+	bl	V_LOCAL_FUNC(__get_datapage)
+	lwz	r5, CLOCK_HRTIMER_RES(r3)
+	mtlr	r12
 	li	r3,0
-	cmpli	cr0,r4,0
+	cmpldi	cr0,r4,0
 	crclr	cr0*4+so
 	beqlr
-	lis	r5,CLOCK_REALTIME_RES@h
-	ori	r5,r5,CLOCK_REALTIME_RES@l
 	std	r3,TSPC64_TV_SEC(r4)
 	std	r5,TSPC64_TV_NSEC(r4)
 	blr
@@ -222,6 +266,44 @@ V_FUNCTION_END(__kernel_clock_getres)
  * When returning, r8 contains the counter value that can be reused
  */
 V_FUNCTION_BEGIN(__do_get_xsec)
+/*
+ * Exact prototype of time()
+ *
+ * time_t time(time *t);
+ *
+ */
+V_FUNCTION_BEGIN(__kernel_time)
+  .cfi_startproc
+	mflr	r12
+  .cfi_register lr,r12
+
+	mr	r11,r3			/* r11 holds t */
+	bl	V_LOCAL_FUNC(__get_datapage)
+
+	ld	r4,STAMP_XTIME+TSPC64_TV_SEC(r3)
+
+	cmpldi	r11,0			/* check if t is NULL */
+	beq	2f
+	std	r4,0(r11)		/* store result at *t */
+2:	mtlr	r12
+	crclr	cr0*4+so
+	mr	r3,r4
+	blr
+  .cfi_endproc
+V_FUNCTION_END(__kernel_time)
+
+
+/*
+ * This is the core of clock_gettime() and gettimeofday(),
+ * it returns the current time in r4 (seconds) and r5.
+ * On entry, r7 gives the resolution of r5, either USEC_PER_SEC
+ * or NSEC_PER_SEC, giving r5 in microseconds or nanoseconds.
+ * It expects the datapage ptr in r3 and doesn't clobber it.
+ * It clobbers r0, r6 and r9.
+ * On return, r8 contains the counter value that can be reused.
+ * This clobbers cr0 but not any other cr field.
+ */
+V_FUNCTION_BEGIN(__do_get_tspec)
   .cfi_startproc
 	/* check for update count & load values */
 1:	ld	r8,CFG_TB_UPDATE_COUNT(r3)
@@ -253,3 +335,32 @@ V_FUNCTION_BEGIN(__do_get_xsec)
 	blr
   .cfi_endproc
 V_FUNCTION_END(__do_get_xsec)
+	MFTB(r6)
+	ld	r9,CFG_TB_ORIG_STAMP(r3)
+	subf	r6,r9,r6
+
+	/* Scale result */
+	ld	r5,CFG_TB_TO_XS(r3)
+	sldi	r6,r6,12		/* compute time since stamp_xtime */
+	mulhdu	r6,r6,r5		/* in units of 2^-32 seconds */
+
+	/* Add stamp since epoch */
+	ld	r4,STAMP_XTIME+TSPC64_TV_SEC(r3)
+	lwz	r5,STAMP_SEC_FRAC(r3)
+	or	r0,r4,r5
+	or	r0,r0,r6
+	xor	r0,r0,r0
+	add	r3,r3,r0
+	ld	r0,CFG_TB_UPDATE_COUNT(r3)
+	cmpld   r0,r8			/* check if updated */
+	bne-	1b			/* reload if so */
+
+	/* convert to seconds & nanoseconds and add to stamp */
+	add	r6,r6,r5		/* add on fractional seconds of xtime */
+	mulhwu	r5,r6,r7		/* compute micro or nanoseconds and */
+	srdi	r6,r6,32		/* seconds since stamp_xtime */
+	clrldi	r5,r5,32
+	add	r4,r4,r6
+	blr
+  .cfi_endproc
+V_FUNCTION_END(__do_get_tspec)

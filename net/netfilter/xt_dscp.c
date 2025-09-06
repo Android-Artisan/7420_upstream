@@ -7,6 +7,7 @@
  * published by the Free Software Foundation.
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 #include <linux/module.h>
 #include <linux/skbuff.h>
 #include <linux/ip.h>
@@ -31,6 +32,9 @@ dscp_mt(const struct sk_buff *skb, const struct net_device *in,
         const void *matchinfo, int offset, unsigned int protoff, bool *hotdrop)
 {
 	const struct xt_dscp_info *info = matchinfo;
+dscp_mt(const struct sk_buff *skb, struct xt_action_param *par)
+{
+	const struct xt_dscp_info *info = par->matchinfo;
 	u_int8_t dscp = ipv4_get_dsfield(ip_hdr(skb)) >> XT_DSCP_SHIFT;
 
 	return (dscp == info->dscp) ^ !!info->invert;
@@ -43,6 +47,9 @@ dscp_mt6(const struct sk_buff *skb, const struct net_device *in,
          bool *hotdrop)
 {
 	const struct xt_dscp_info *info = matchinfo;
+dscp_mt6(const struct sk_buff *skb, struct xt_action_param *par)
+{
+	const struct xt_dscp_info *info = par->matchinfo;
 	u_int8_t dscp = ipv6_get_dsfield(ipv6_hdr(skb)) >> XT_DSCP_SHIFT;
 
 	return (dscp == info->dscp) ^ !!info->invert;
@@ -81,6 +88,23 @@ static bool tos_mt(const struct sk_buff *skb, const struct net_device *in,
 	const struct xt_tos_match_info *info = matchinfo;
 
 	if (match->family == AF_INET)
+static int dscp_mt_check(const struct xt_mtchk_param *par)
+{
+	const struct xt_dscp_info *info = par->matchinfo;
+
+	if (info->dscp > XT_DSCP_MAX) {
+		pr_info("dscp %x out of range\n", info->dscp);
+		return -EDOM;
+	}
+
+	return 0;
+}
+
+static bool tos_mt(const struct sk_buff *skb, struct xt_action_param *par)
+{
+	const struct xt_tos_match_info *info = par->matchinfo;
+
+	if (par->family == NFPROTO_IPV4)
 		return ((ip_hdr(skb)->tos & info->tos_mask) ==
 		       info->tos_value) ^ !!info->invert;
 	else
@@ -92,6 +116,7 @@ static struct xt_match dscp_mt_reg[] __read_mostly = {
 	{
 		.name		= "dscp",
 		.family		= AF_INET,
+		.family		= NFPROTO_IPV4,
 		.checkentry	= dscp_mt_check,
 		.match		= dscp_mt,
 		.matchsize	= sizeof(struct xt_dscp_info),
@@ -100,6 +125,7 @@ static struct xt_match dscp_mt_reg[] __read_mostly = {
 	{
 		.name		= "dscp",
 		.family		= AF_INET6,
+		.family		= NFPROTO_IPV6,
 		.checkentry	= dscp_mt_check,
 		.match		= dscp_mt6,
 		.matchsize	= sizeof(struct xt_dscp_info),
@@ -117,6 +143,8 @@ static struct xt_match dscp_mt_reg[] __read_mostly = {
 		.name		= "tos",
 		.revision	= 1,
 		.family		= AF_INET,
+		.revision	= 1,
+		.family		= NFPROTO_IPV4,
 		.match		= tos_mt,
 		.matchsize	= sizeof(struct xt_tos_match_info),
 		.me		= THIS_MODULE,
@@ -125,6 +153,7 @@ static struct xt_match dscp_mt_reg[] __read_mostly = {
 		.name		= "tos",
 		.revision	= 1,
 		.family		= AF_INET6,
+		.family		= NFPROTO_IPV6,
 		.match		= tos_mt,
 		.matchsize	= sizeof(struct xt_tos_match_info),
 		.me		= THIS_MODULE,

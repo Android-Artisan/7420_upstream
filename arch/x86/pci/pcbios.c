@@ -9,6 +9,12 @@
 #include "pci.h"
 #include "pci-functions.h"
 
+#include <linux/slab.h>
+#include <linux/module.h>
+#include <linux/uaccess.h>
+#include <asm/pci_x86.h>
+#include <asm/pci-functions.h>
+#include <asm/cacheflush.h>
 
 /* BIOS32 signature: "_32_" */
 #define BIOS32_SIGNATURE	(('_' << 0) + ('3' << 8) + ('2' << 16) + ('_' << 24))
@@ -24,6 +30,27 @@
 #define PCIBIOS_HW_TYPE2		0x02
 #define PCIBIOS_HW_TYPE1_SPEC		0x10
 #define PCIBIOS_HW_TYPE2_SPEC		0x20
+
+int pcibios_enabled;
+
+/* According to the BIOS specification at:
+ * http://members.datafast.net.au/dft0802/specs/bios21.pdf, we could
+ * restrict the x zone to some pages and make it ro. But this may be
+ * broken on some bios, complex to handle with static_protections.
+ * We could make the 0xe0000-0x100000 range rox, but this can break
+ * some ISA mapping.
+ *
+ * So we let's an rw and x hole when pcibios is used. This shouldn't
+ * happen for modern system with mmconfig, and if you don't want it
+ * you could disable pcibios...
+ */
+static inline void set_bios_x(void)
+{
+	pcibios_enabled = 1;
+	set_memory_x(PAGE_OFFSET + BIOS_BEGIN, (BIOS_END - BIOS_BEGIN) >> PAGE_SHIFT);
+	if (__supported_pte_mask & _PAGE_NX)
+		printk(KERN_INFO "PCI : PCI BIOS area is rw and x. Use pci=nobios if you want it NX.\n");
+}
 
 /*
  * This is the standard structure used to identify the entry point
@@ -58,12 +85,14 @@ static struct {
 	unsigned long address;
 	unsigned short segment;
 } bios32_indirect = { 0, __KERNEL_CS };
+} bios32_indirect __initdata = { 0, __KERNEL_CS };
 
 /*
  * Returns the entry point for the given service, NULL on error
  */
 
 static unsigned long bios32_service(unsigned long service)
+static unsigned long __init bios32_service(unsigned long service)
 {
 	unsigned char return_code;	/* %al */
 	unsigned long address;		/* %ebx */
@@ -103,6 +132,7 @@ static struct {
 static int pci_bios_present;
 
 static int __devinit check_pcibios(void)
+static int __init check_pcibios(void)
 {
 	u32 signature, eax, ebx, ecx;
 	u8 status, major_ver, minor_ver, hw_mech;
@@ -163,6 +193,11 @@ static int pci_bios_read(unsigned int seg, unsigned int bus,
 		return -EINVAL;
 
 	spin_lock_irqsave(&pci_config_lock, flags);
+	WARN_ON(seg);
+	if (!value || (bus > 255) || (devfn > 255) || (reg > 255))
+		return -EINVAL;
+
+	raw_spin_lock_irqsave(&pci_config_lock, flags);
 
 	switch (len) {
 	case 1:
@@ -214,6 +249,7 @@ static int pci_bios_read(unsigned int seg, unsigned int bus,
 	}
 
 	spin_unlock_irqrestore(&pci_config_lock, flags);
+	raw_spin_unlock_irqrestore(&pci_config_lock, flags);
 
 	return (int)((result & 0xff00) >> 8);
 }
@@ -229,6 +265,11 @@ static int pci_bios_write(unsigned int seg, unsigned int bus,
 		return -EINVAL;
 
 	spin_lock_irqsave(&pci_config_lock, flags);
+	WARN_ON(seg);
+	if ((bus > 255) || (devfn > 255) || (reg > 255)) 
+		return -EINVAL;
+
+	raw_spin_lock_irqsave(&pci_config_lock, flags);
 
 	switch (len) {
 	case 1:
@@ -270,6 +311,7 @@ static int pci_bios_write(unsigned int seg, unsigned int bus,
 	}
 
 	spin_unlock_irqrestore(&pci_config_lock, flags);
+	raw_spin_unlock_irqrestore(&pci_config_lock, flags);
 
 	return (int)((result & 0xff00) >> 8);
 }
@@ -280,6 +322,7 @@ static int pci_bios_write(unsigned int seg, unsigned int bus,
  */
 
 static struct pci_raw_ops pci_bios_access = {
+static const struct pci_raw_ops pci_bios_access = {
 	.read =		pci_bios_read,
 	.write =	pci_bios_write
 };
@@ -289,6 +332,7 @@ static struct pci_raw_ops pci_bios_access = {
  */
 
 static struct pci_raw_ops * __devinit pci_find_bios(void)
+static const struct pci_raw_ops *__init pci_find_bios(void)
 {
 	union bios32 *check;
 	unsigned char sum;
@@ -332,6 +376,7 @@ static struct pci_raw_ops * __devinit pci_find_bios(void)
 			DBG("PCI: BIOS32 Service Directory entry at 0x%lx\n",
 					bios32_entry);
 			bios32_indirect.address = bios32_entry + PAGE_OFFSET;
+			set_bios_x();
 			if (check_pcibios())
 				return &pci_bios_access;
 		}

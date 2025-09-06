@@ -29,6 +29,9 @@
 #include <linux/moduleparam.h>
 #include <sound/core.h>
 #include <sound/ad1848.h>
+#include <linux/module.h>
+#include <sound/core.h>
+#include <sound/wss.h>
 #include <sound/initval.h>
 
 #define CRD_NAME "Generic AD1848/AD1847/CS4248"
@@ -48,6 +51,11 @@ static long port[SNDRV_CARDS] = SNDRV_DEFAULT_PORT;	/* PnP setup */
 static int irq[SNDRV_CARDS] = SNDRV_DEFAULT_IRQ;	/* 5,7,9,11,12,15 */
 static int dma1[SNDRV_CARDS] = SNDRV_DEFAULT_DMA;	/* 0,1,3,5,6,7 */
 static int thinkpad[SNDRV_CARDS];			/* Thinkpad special case */
+static bool enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE;	/* Enable this card */
+static long port[SNDRV_CARDS] = SNDRV_DEFAULT_PORT;	/* PnP setup */
+static int irq[SNDRV_CARDS] = SNDRV_DEFAULT_IRQ;	/* 5,7,9,11,12,15 */
+static int dma1[SNDRV_CARDS] = SNDRV_DEFAULT_DMA;	/* 0,1,3,5,6,7 */
+static bool thinkpad[SNDRV_CARDS];			/* Thinkpad special case */
 
 module_param_array(index, int, NULL, 0444);
 MODULE_PARM_DESC(index, "Index value for " CRD_NAME " soundcard.");
@@ -65,6 +73,7 @@ module_param_array(thinkpad, bool, NULL, 0444);
 MODULE_PARM_DESC(thinkpad, "Enable only for the onboard CS4248 of IBM Thinkpad 360/750/755 series.");
 
 static int __devinit snd_ad1848_match(struct device *dev, unsigned int n)
+static int snd_ad1848_match(struct device *dev, unsigned int n)
 {
 	if (!enable[n])
 		return 0;
@@ -79,6 +88,15 @@ static int __devinit snd_ad1848_match(struct device *dev, unsigned int n)
 	}
 	if (dma1[n] == SNDRV_AUTO_DMA) {
 		snd_printk(KERN_ERR "%s: please specify dma1\n", dev->bus_id);
+		dev_err(dev, "please specify port\n");
+		return 0;
+	}
+	if (irq[n] == SNDRV_AUTO_IRQ) {
+		dev_err(dev, "please specify irq\n");
+		return 0;	
+	}
+	if (dma1[n] == SNDRV_AUTO_DMA) {
+		dev_err(dev, "please specify dma1\n");
 		return 0;
 	}
 	return 1;
@@ -97,6 +115,19 @@ static int __devinit snd_ad1848_probe(struct device *dev, unsigned int n)
 
 	error = snd_ad1848_create(card, port[n], irq[n], dma1[n],
 			thinkpad[n] ? AD1848_HW_THINKPAD : AD1848_HW_DETECT, &chip);
+static int snd_ad1848_probe(struct device *dev, unsigned int n)
+{
+	struct snd_card *card;
+	struct snd_wss *chip;
+	int error;
+
+	error = snd_card_new(dev, index[n], id[n], THIS_MODULE, 0, &card);
+	if (error < 0)
+		return error;
+
+	error = snd_wss_create(card, port[n], -1, irq[n], dma1[n], -1,
+			thinkpad[n] ? WSS_HW_THINKPAD : WSS_HW_DETECT,
+			0, &chip);
 	if (error < 0)
 		goto out;
 
@@ -107,6 +138,11 @@ static int __devinit snd_ad1848_probe(struct device *dev, unsigned int n)
 		goto out;
 
 	error = snd_ad1848_mixer(chip);
+	error = snd_wss_pcm(chip, 0);
+	if (error < 0)
+		goto out;
+
+	error = snd_wss_mixer(chip);
 	if (error < 0)
 		goto out;
 
@@ -119,6 +155,13 @@ static int __devinit snd_ad1848_probe(struct device *dev, unsigned int n)
 		strcat(card->longname, " [Thinkpad]");
 
 	snd_card_set_dev(card, dev);
+
+	strcpy(card->shortname, chip->pcm->name);
+
+	sprintf(card->longname, "%s at 0x%lx, irq %d, dma %d",
+		chip->pcm->name, chip->port, irq[n], dma1[n]);
+	if (thinkpad[n])
+		strcat(card->longname, " [Thinkpad]");
 
 	error = snd_card_register(card);
 	if (error < 0)
@@ -135,6 +178,9 @@ static int __devexit snd_ad1848_remove(struct device *dev, unsigned int n)
 {
 	snd_card_free(dev_get_drvdata(dev));
 	dev_set_drvdata(dev, NULL);
+static int snd_ad1848_remove(struct device *dev, unsigned int n)
+{
+	snd_card_free(dev_get_drvdata(dev));
 	return 0;
 }
 
@@ -143,6 +189,7 @@ static int snd_ad1848_suspend(struct device *dev, unsigned int n, pm_message_t s
 {
 	struct snd_card *card = dev_get_drvdata(dev);
 	struct snd_ad1848 *chip = card->private_data;
+	struct snd_wss *chip = card->private_data;
 
 	snd_power_change_state(card, SNDRV_CTL_POWER_D3hot);
 	chip->suspend(chip);
@@ -153,6 +200,7 @@ static int snd_ad1848_resume(struct device *dev, unsigned int n)
 {
 	struct snd_card *card = dev_get_drvdata(dev);
 	struct snd_ad1848 *chip = card->private_data;
+	struct snd_wss *chip = card->private_data;
 
 	chip->resume(chip);
 	snd_power_change_state(card, SNDRV_CTL_POWER_D0);
@@ -164,6 +212,7 @@ static struct isa_driver snd_ad1848_driver = {
 	.match		= snd_ad1848_match,
 	.probe		= snd_ad1848_probe,
 	.remove		= __devexit_p(snd_ad1848_remove),
+	.remove		= snd_ad1848_remove,
 #ifdef CONFIG_PM
 	.suspend	= snd_ad1848_suspend,
 	.resume		= snd_ad1848_resume,

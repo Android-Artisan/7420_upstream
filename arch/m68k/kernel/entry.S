@@ -51,6 +51,48 @@
 .globl user_irqvec_fixup, user_irqhandler_fixup
 
 .text
+#include <asm/asm-offsets.h>
+#include <asm/entry.h>
+
+.globl system_call, buserr, trap, resume
+.globl sys_call_table
+.globl __sys_fork, __sys_clone, __sys_vfork
+.globl bad_interrupt
+.globl auto_irqhandler_fixup
+.globl user_irqvec_fixup
+
+.text
+ENTRY(__sys_fork)
+	SAVE_SWITCH_STACK
+	jbsr	sys_fork
+	lea     %sp@(24),%sp
+	rts
+
+ENTRY(__sys_clone)
+	SAVE_SWITCH_STACK
+	pea	%sp@(SWITCH_STACK_SIZE)
+	jbsr	m68k_clone
+	lea     %sp@(28),%sp
+	rts
+
+ENTRY(__sys_vfork)
+	SAVE_SWITCH_STACK
+	jbsr	sys_vfork
+	lea     %sp@(24),%sp
+	rts
+
+ENTRY(sys_sigreturn)
+	SAVE_SWITCH_STACK
+	jbsr	do_sigreturn
+	RESTORE_SWITCH_STACK
+	rts
+
+ENTRY(sys_rt_sigreturn)
+	SAVE_SWITCH_STACK
+	jbsr	do_rt_sigreturn
+	RESTORE_SWITCH_STACK
+	rts
+
 ENTRY(buserr)
 	SAVE_ALL_INT
 	GET_CURRENT(%d0)
@@ -58,6 +100,9 @@ ENTRY(buserr)
 	bsrl	buserr_c
 	addql	#4,%sp
 	jra	.Lret_from_exception
+	jbsr	buserr_c
+	addql	#4,%sp
+	jra	ret_from_exception
 
 ENTRY(trap)
 	SAVE_ALL_INT
@@ -66,6 +111,9 @@ ENTRY(trap)
 	bsrl	trap_c
 	addql	#4,%sp
 	jra	.Lret_from_exception
+	jbsr	trap_c
+	addql	#4,%sp
+	jra	ret_from_exception
 
 	| After a fork we jump here directly from resume,
 	| so that %d1 contains the previous task
@@ -78,6 +126,51 @@ ENTRY(ret_from_fork)
 
 do_trace_entry:
 	movel	#-ENOSYS,%sp@(PT_D0)	| needed for strace
+	jra	ret_from_exception
+
+ENTRY(ret_from_kernel_thread)
+	| a3 contains the kernel thread payload, d7 - its argument
+	movel	%d1,%sp@-
+	jsr	schedule_tail
+	movel	%d7,(%sp)
+	jsr	%a3@
+	addql	#4,%sp
+	jra	ret_from_exception
+
+#if defined(CONFIG_COLDFIRE) || !defined(CONFIG_MMU)
+
+#ifdef TRAP_DBG_INTERRUPT
+
+.globl dbginterrupt
+ENTRY(dbginterrupt)
+	SAVE_ALL_INT
+	GET_CURRENT(%d0)
+	movel	%sp,%sp@- 		/* stack frame pointer argument */
+	jsr	dbginterrupt_c
+	addql	#4,%sp
+	jra	ret_from_exception
+#endif
+
+ENTRY(reschedule)
+	/* save top of frame */
+	pea	%sp@
+	jbsr	set_esp0
+	addql	#4,%sp
+	pea	ret_from_exception
+	jmp	schedule
+
+ENTRY(ret_from_user_signal)
+	moveq #__NR_sigreturn,%d0
+	trap #0
+
+ENTRY(ret_from_user_rt_signal)
+	movel #__NR_rt_sigreturn,%d0
+	trap #0
+
+#else
+
+do_trace_entry:
+	movel	#-ENOSYS,%sp@(PT_OFF_D0)| needed for strace
 	subql	#4,%sp
 	SAVE_SWITCH_STACK
 	jbsr	syscall_trace
@@ -88,6 +181,14 @@ do_trace_entry:
 	jcs	syscall
 badsys:
 	movel	#-ENOSYS,%sp@(PT_D0)
+	addql	#1,%d0			| optimization for cmpil #-1,%d0
+	jeq	ret_from_syscall
+	movel	%sp@(PT_OFF_ORIG_D0),%d0
+	cmpl	#NR_syscalls,%d0
+	jcs	syscall
+	jra	ret_from_syscall
+badsys:
+	movel	#-ENOSYS,%sp@(PT_OFF_D0)
 	jra	ret_from_syscall
 
 do_trace_exit:
@@ -104,6 +205,17 @@ ENTRY(ret_from_signal)
 /* on 68040 complete pending writebacks if any */
 #ifdef CONFIG_M68040
 	bfextu	%sp@(PT_VECTOR){#0,#4},%d0
+	movel	%curptr@(TASK_STACK),%a1
+	tstb	%a1@(TINFO_FLAGS+2)
+	jge	1f
+	lea	%sp@(SWITCH_STACK_SIZE),%a1
+	movel	%a1,%curptr@(TASK_THREAD+THREAD_ESP0)
+	jbsr	syscall_trace
+1:	RESTORE_SWITCH_STACK
+	addql	#4,%sp
+/* on 68040 complete pending writebacks if any */
+#ifdef CONFIG_M68040
+	bfextu	%sp@(PT_OFF_FORMATVEC){#0,#4},%d0
 	subql	#7,%d0				| bus error frame ?
 	jbne	1f
 	movel	%sp,%sp@-
@@ -117,11 +229,14 @@ ENTRY(system_call)
 	SAVE_ALL_SYS
 
 	GET_CURRENT(%d1)
+	movel	%d1,%a1
+
 	| save top of frame
 	movel	%sp,%curptr@(TASK_THREAD+THREAD_ESP0)
 
 	| syscall trace?
 	tstb	%curptr@(TASK_INFO+TINFO_FLAGS+2)
+	tstb	%a1@(TINFO_FLAGS+2)
 	jmi	do_trace_entry
 	cmpl	#NR_syscalls,%d0
 	jcc	badsys
@@ -131,17 +246,24 @@ syscall:
 ret_from_syscall:
 	|oriw	#0x0700,%sr
 	movew	%curptr@(TASK_INFO+TINFO_FLAGS+2),%d0
+	movel	%d0,%sp@(PT_OFF_D0)	| save the return value
+ret_from_syscall:
+	|oriw	#0x0700,%sr
+	movel	%curptr@(TASK_STACK),%a1
+	movew	%a1@(TINFO_FLAGS+2),%d0
 	jne	syscall_exit_work
 1:	RESTORE_ALL
 
 syscall_exit_work:
 	btst	#5,%sp@(PT_SR)		| check if returning to kernel
+	btst	#5,%sp@(PT_OFF_SR)	| check if returning to kernel
 	bnes	1b			| if so, skip resched, signals
 	lslw	#1,%d0
 	jcs	do_trace_exit
 	jmi	do_delayed_trace
 	lslw	#8,%d0
 	jmi	do_signal_return
+	jne	do_signal_return
 	pea	resume_userspace
 	jra	schedule
 
@@ -149,6 +271,7 @@ syscall_exit_work:
 ENTRY(ret_from_exception)
 .Lret_from_exception:
 	btst	#5,%sp@(PT_SR)		| check if returning to kernel
+	btst	#5,%sp@(PT_OFF_SR)	| check if returning to kernel
 	bnes	1f			| if so, skip resched, signals
 	| only allow interrupts when we are really the last one on the
 	| kernel stack, otherwise stack overflow can occur during
@@ -157,6 +280,8 @@ ENTRY(ret_from_exception)
 
 resume_userspace:
 	moveb	%curptr@(TASK_INFO+TINFO_FLAGS+3),%d0
+	movel	%curptr@(TASK_STACK),%a1
+	moveb	%a1@(TINFO_FLAGS+3),%d0
 	jne	exit_work
 1:	RESTORE_ALL
 
@@ -165,6 +290,7 @@ exit_work:
 	movel	%sp,%curptr@(TASK_THREAD+THREAD_ESP0)
 	lslb	#1,%d0
 	jmi	do_signal_return
+	jne	do_signal_return
 	pea	resume_userspace
 	jra	schedule
 
@@ -177,12 +303,15 @@ do_signal_return:
 	clrl	%sp@-
 	bsrl	do_signal
 	addql	#8,%sp
+	bsrl	do_notify_resume
+	addql	#4,%sp
 	RESTORE_SWITCH_STACK
 	addql	#4,%sp
 	jbra	resume_userspace
 
 do_delayed_trace:
 	bclr	#7,%sp@(PT_SR)		| clear trace bit in SR
+	bclr	#7,%sp@(PT_OFF_SR)	| clear trace bit in SR
 	pea	1			| send SIGTRAP
 	movel	%curptr,%sp@-
 	pea	LSIGTRAP
@@ -200,6 +329,8 @@ ENTRY(auto_inthandler)
 	addqb	#1,%curptr@(TASK_INFO+TINFO_PREEMPT+1)
 					|  put exception # in d0
 	bfextu	%sp@(PT_VECTOR){#4,#10},%d0
+					|  put exception # in d0
+	bfextu	%sp@(PT_OFF_FORMATVEC){#4,#10},%d0
 	subw	#VEC_SPUR,%d0
 
 	movel	%sp,%sp@-
@@ -224,6 +355,9 @@ ret_from_last_interrupt:
 	jeq	.Lret_from_exception
 	pea	ret_from_exception
 	jra	do_softirq
+	jsr	do_IRQ			|  process the IRQ
+	addql	#8,%sp			|  pop parameters off stack
+	jra	ret_from_exception
 
 /* Handler for user defined interrupt vectors */
 
@@ -233,6 +367,8 @@ ENTRY(user_inthandler)
 	addqb	#1,%curptr@(TASK_INFO+TINFO_PREEMPT+1)
 					|  put exception # in d0
 	bfextu	%sp@(PT_VECTOR){#4,#10},%d0
+					|  put exception # in d0
+	bfextu	%sp@(PT_OFF_FORMATVEC){#4,#10},%d0
 user_irqvec_fixup = . + 2
 	subw	#VEC_USER,%d0
 
@@ -245,6 +381,9 @@ user_irqhandler_fixup = . + 2
 	subqb	#1,%curptr@(TASK_INFO+TINFO_PREEMPT+1)
 	jeq	ret_from_last_interrupt
 	RESTORE_ALL
+	jsr	do_IRQ			|  process the IRQ
+	addql	#8,%sp			|  pop parameters off stack
+	jra	ret_from_exception
 
 /* Handler for uninitialized and spurious interrupts */
 
@@ -313,6 +452,7 @@ ENTRY(sys_rt_sigreturn)
 	jbsr	do_rt_sigreturn
 	RESTORE_SWITCH_STACK
 	rts
+	jra	ret_from_exception
 
 resume:
 	/*
@@ -417,7 +557,9 @@ resume:
 	movec	%a0,%dfc
 
 	/* restore status register */
-	movew	%a1@(TASK_THREAD+THREAD_SR),%sr
+	movew	%a1@(TASK_THREAD+THREAD_SR),%d0
+	oriw	#0x0700,%d0
+	movew	%d0,%sr
 
 	rts
 
@@ -754,3 +896,4 @@ sys_call_table:
 	.long sys_pipe2
 	.long sys_inotify_init1
 
+#endif /* CONFIG_MMU && !CONFIG_COLDFIRE */

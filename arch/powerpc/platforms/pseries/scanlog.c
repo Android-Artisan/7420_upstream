@@ -14,6 +14,7 @@
  * /chosen/ibm,scan-log-data property exists.
  *
  * This driver exports /proc/ppc64/scan-log-dump which can be read.
+ * This driver exports /proc/powerpc/scan-log-dump which can be read.
  * The driver supports only sequential reads.
  *
  * The driver looks at a write to the driver for the single word "reset".
@@ -26,6 +27,7 @@
 #include <linux/proc_fs.h>
 #include <linux/init.h>
 #include <linux/delay.h>
+#include <linux/slab.h>
 #include <asm/uaccess.h>
 #include <asm/rtas.h>
 #include <asm/prom.h>
@@ -41,6 +43,7 @@
 
 static unsigned int ibm_scan_log_dump;			/* RTAS token */
 static struct proc_dir_entry *proc_ppc64_scan_log_dump;	/* The proc file */
+static unsigned int *scanlog_buffer;			/* The data buffer */
 
 static ssize_t scanlog_read(struct file *file, char __user *buf,
 			    size_t count, loff_t *ppos)
@@ -48,6 +51,7 @@ static ssize_t scanlog_read(struct file *file, char __user *buf,
         struct inode * inode = file->f_path.dentry->d_inode;
 	struct proc_dir_entry *dp;
 	unsigned int *data;
+	unsigned int *data = scanlog_buffer;
 	int status;
 	unsigned long len, off;
 	unsigned int wait_time;
@@ -140,6 +144,7 @@ static int scanlog_open(struct inode * inode, struct file * file)
 {
 	struct proc_dir_entry *dp = PDE(inode);
 	unsigned int *data = (unsigned int *)dp->data;
+	unsigned int *data = scanlog_buffer;
 
 	if (data[0] != 0) {
 		/* This imperfect test stops a second copy of the
@@ -160,6 +165,9 @@ static int scanlog_release(struct inode * inode, struct file * file)
 
 	data[0] = 0;
 
+	unsigned int *data = scanlog_buffer;
+
+	data[0] = 0;
 	return 0;
 }
 
@@ -169,6 +177,7 @@ const struct file_operations scanlog_fops = {
 	.write		= scanlog_write,
 	.open		= scanlog_open,
 	.release	= scanlog_release,
+	.llseek		= noop_llseek,
 };
 
 static int __init scanlog_init(void)
@@ -196,6 +205,17 @@ static int __init scanlog_init(void)
 	return 0;
 err:
 	kfree(data);
+	scanlog_buffer = kzalloc(RTAS_DATA_BUF_SIZE, GFP_KERNEL);
+	if (!scanlog_buffer)
+		goto err;
+
+	ent = proc_create("powerpc/rtas/scan-log-dump", S_IRUSR, NULL,
+			  &scanlog_fops);
+	if (!ent)
+		goto err;
+	return 0;
+err:
+	kfree(scanlog_buffer);
 	return err;
 }
 
@@ -205,6 +225,8 @@ static void __exit scanlog_cleanup(void)
 		kfree(proc_ppc64_scan_log_dump->data);
 		remove_proc_entry("scan-log-dump", proc_ppc64_scan_log_dump->parent);
 	}
+	remove_proc_entry("powerpc/rtas/scan-log-dump", NULL);
+	kfree(scanlog_buffer);
 }
 
 module_init(scanlog_init);

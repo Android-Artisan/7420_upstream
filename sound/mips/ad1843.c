@@ -277,6 +277,7 @@ static void ad1843_write_multi(struct snd_ad1843 *ad1843, int argcount, ...)
 			reg = fp->reg;
 		else
 			BUG_ON(reg != fp->reg);
+			WARN_ON(reg != fp->reg);
 		m = ((1 << fp->nbits) - 1) << fp->lo_bit;
 		mask |= m;
 		bits |= (value << fp->lo_bit) & m;

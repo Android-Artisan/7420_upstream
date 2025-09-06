@@ -28,6 +28,11 @@
 #include <asm/hvcall.h>
 #include <asm/hvconsole.h>
 #include "plpar_wrappers.h"
+#include <linux/export.h>
+#include <linux/errno.h>
+#include <asm/hvcall.h>
+#include <asm/hvconsole.h>
+#include <asm/plpar_wrappers.h>
 
 /**
  * hvc_get_chars - retrieve characters from firmware for denoted vterm adatper
@@ -43,6 +48,16 @@ int hvc_get_chars(uint32_t vtermno, char *buf, int count)
 
 	if (plpar_get_term_char(vtermno, &got, buf) == H_SUCCESS)
 		return got;
+	long ret;
+	unsigned long retbuf[PLPAR_HCALL_BUFSIZE];
+	unsigned long *lbuf = (unsigned long *)buf;
+
+	ret = plpar_hcall(H_GET_TERM_CHAR, retbuf, vtermno);
+	lbuf[0] = be64_to_cpu(retbuf[1]);
+	lbuf[1] = be64_to_cpu(retbuf[2]);
+
+	if (ret == H_SUCCESS)
+		return retbuf[0];
 
 	return 0;
 }
@@ -55,7 +70,7 @@ EXPORT_SYMBOL(hvc_get_chars);
  * @vtermno: The vtermno or unit_address of the adapter from which the data
  *	originated.
  * @buf: The character buffer that contains the character data to send to
- *	firmware.
+ *	firmware. Must be at least 16 bytes, even if count is less than 16.
  * @count: Send this number of characters.
  */
 int hvc_put_chars(uint32_t vtermno, const char *buf, int count)
@@ -74,6 +89,13 @@ int hvc_put_chars(uint32_t vtermno, const char *buf, int count)
 		return count;
 	if (ret == H_BUSY)
 		return 0;
+	ret = plpar_hcall_norets(H_PUT_TERM_CHAR, vtermno, count,
+				 cpu_to_be64(lbuf[0]),
+				 cpu_to_be64(lbuf[1]));
+	if (ret == H_SUCCESS)
+		return count;
+	if (ret == H_BUSY)
+		return -EAGAIN;
 	return -EIO;
 }
 

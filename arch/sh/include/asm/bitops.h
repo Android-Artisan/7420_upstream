@@ -25,6 +25,21 @@
 #define smp_mb__after_clear_bit()	barrier()
 
 #include <asm-generic/bitops/non-atomic.h>
+/* For __swab32 */
+#include <asm/byteorder.h>
+#include <asm/barrier.h>
+
+#ifdef CONFIG_GUSA_RB
+#include <asm/bitops-grb.h>
+#elif defined(CONFIG_CPU_SH2A)
+#include <asm-generic/bitops/atomic.h>
+#include <asm/bitops-op32.h>
+#elif defined(CONFIG_CPU_SH4A)
+#include <asm/bitops-llsc.h>
+#else
+#include <asm-generic/bitops/atomic.h>
+#include <asm-generic/bitops/non-atomic.h>
+#endif
 
 #ifdef CONFIG_SUPERH32
 static inline unsigned long ffz(unsigned long word)
@@ -94,6 +109,8 @@ static inline unsigned long ffz(unsigned long word)
 #include <asm-generic/bitops/ext2-non-atomic.h>
 #include <asm-generic/bitops/ext2-atomic.h>
 #include <asm-generic/bitops/minix.h>
+#include <asm-generic/bitops/le.h>
+#include <asm-generic/bitops/ext2-atomic.h>
 #include <asm-generic/bitops/fls.h>
 #include <asm-generic/bitops/__fls.h>
 #include <asm-generic/bitops/fls64.h>

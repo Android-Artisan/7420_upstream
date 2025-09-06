@@ -20,6 +20,12 @@
 #include <linux/init.h>
 #include <linux/time.h>
 #include <linux/wait.h>
+#include <linux/io.h>
+#include <linux/init.h>
+#include <linux/time.h>
+#include <linux/wait.h>
+#include <linux/slab.h>
+#include <linux/module.h>
 #include <linux/firmware.h>
 #include <sound/core.h>
 #include <sound/snd_wavefront.h>
@@ -86,12 +92,14 @@ wavefront_fx_memset (snd_wavefront_t *dev,
 		snd_printk ("FX memset: "
 			"page must be >= 0 and <= 7\n");
 		return -(EINVAL);
+		return -EINVAL;
 	}
 
 	if (addr < 0 || addr > 0x7f) {
 		snd_printk ("FX memset: "
 			"addr must be >= 0 and <= 7f\n");
 		return -(EINVAL);
+		return -EINVAL;
 	}
 
 	if (cnt == 1) {
@@ -125,6 +133,7 @@ wavefront_fx_memset (snd_wavefront_t *dev,
 				    "(0x%x, 0x%x, 0x%lx, %d) incomplete\n",
 				    page, addr, (unsigned long) data, cnt);
 			return -(EIO);
+			return -EIO;
 		}
 	}
 
@@ -185,6 +194,11 @@ snd_wavefront_fx_ioctl (struct snd_hwdep *sdev, struct file *file,
 	card = sdev->card;
 
 	snd_assert(card->private_data != NULL, return -ENODEV);
+	card = sdev->card;
+	if (snd_BUG_ON(!card))
+		return -ENODEV;
+	if (snd_BUG_ON(!card->private_data))
+		return -ENODEV;
 
 	acard = card->private_data;
 	dev = &acard->wavefront;
@@ -219,6 +233,11 @@ snd_wavefront_fx_ioctl (struct snd_hwdep *sdev, struct file *file,
 				kfree(page_data);
 				return -EFAULT;
 			}
+			page_data = memdup_user((unsigned char __user *)
+						r.data[3],
+						r.data[2] * sizeof(short));
+			if (IS_ERR(page_data))
+				return PTR_ERR(page_data);
 			pd = page_data;
 		}
 
@@ -251,6 +270,7 @@ snd_wavefront_fx_ioctl (struct snd_hwdep *sdev, struct file *file,
 */
 
 int __devinit
+int
 snd_wavefront_fx_start (snd_wavefront_t *dev)
 {
 	unsigned int i;
@@ -301,3 +321,8 @@ out:
 #ifndef CONFIG_SND_WAVEFRONT_FIRMWARE_IN_KERNEL
 MODULE_FIRMWARE("yamaha/yss225_registers.bin");
 #endif
+	release_firmware(firmware);
+	return err;
+}
+
+MODULE_FIRMWARE("yamaha/yss225_registers.bin");

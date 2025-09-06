@@ -5,6 +5,9 @@ please mail me.
 
 00-INDEX
 	- this file
+	- this file.
+api.txt
+	- The frame buffer API between applications and buffer devices.
 arkfb.txt
 	- info on the fbdev driver for ARK Logic chips.
 aty128fb.txt
@@ -15,12 +18,22 @@ cyblafb/
 	- directory with documentation files related to the cyblafb driver.
 deferred_io.txt
 	- an introduction to deferred IO.
+cmap_xfbdev.txt
+	- an introduction to fbdev's cmap structures.
+deferred_io.txt
+	- an introduction to deferred IO.
+efifb.txt
+	- info on the EFI platform driver for Intel based Apple computers.
+ep93xx-fb.txt
+	- info on the driver for EP93xx LCD controller.
 fbcon.txt
 	- intro to and usage guide for the framebuffer console (fbcon).
 framebuffer.txt
 	- introduction to frame buffer devices.
 imacfb.txt
 	- info on the generic EFI platform driver for Intel based Macs.
+gxfb.txt
+	- info on the framebuffer driver for AMD Geode GX2 based processors.
 intel810.txt
 	- documentation for the Intel 810/815 framebuffer driver.
 intelfb.txt
@@ -33,6 +46,14 @@ modedb.txt
 	- info on the video mode database.
 matroxfb.txt
 	- info on the Matrox frame buffer driver.
+lxfb.txt
+	- info on the framebuffer driver for AMD Geode LX based processors.
+matroxfb.txt
+	- info on the Matrox framebuffer driver for Alpha, Intel and PPC.
+metronomefb.txt
+	- info on the driver for the Metronome display controller.
+modedb.txt
+	- info on the video mode database.
 pvr2fb.txt
 	- info on the PowerVR 2 frame buffer driver.
 pxafb.txt
@@ -49,5 +70,27 @@ tgafb.txt
 	- info on the TGA (DECChip 21030) frame buffer driver
 vesafb.txt
 	- info on the VESA frame buffer device
+sh7760fb.txt
+	- info on the SH7760/SH7763 integrated LCDC Framebuffer driver.
+sisfb.txt
+	- info on the framebuffer device driver for various SiS chips.
+sm501.txt
+	- info on the framebuffer device driver for sm501 videoframebuffer.
+sstfb.txt
+	- info on the frame buffer driver for 3dfx' Voodoo Graphics boards.
+tgafb.txt
+	- info on the TGA (DECChip 21030) frame buffer driver.
+tridentfb.txt
+	info on the framebuffer driver for some Trident chip based cards.
+udlfb.txt
+	- Driver for DisplayLink USB 2.0 chips.
+uvesafb.txt
+	- info on the userspace VESA (VBE2+ compliant) frame buffer device.
+vesafb.txt
+	- info on the VESA frame buffer device.
+viafb.modes
+	- list of modes for VIA Integration Graphic Chip.
+viafb.txt
+	- info on the VIA Integration Graphic Chip console framebuffer driver.
 vt8623fb.txt
 	- info on the fb driver for the graphics core in VIA VT8623 chipsets.

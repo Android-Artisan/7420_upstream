@@ -35,5 +35,10 @@ static inline void __iomem *___mem_pci(void __iomem *p)
 
 #define __mem_pci(a)		___mem_pci(a)
 #endif
+/*
+ * Translation of various i/o addresses to host addresses for !CONFIG_MMU
+ */
+#define PCIO_BASE       0x7c000000
+#define __io(a)			((void __iomem *)(PCIO_BASE + (a)))
 
 #endif

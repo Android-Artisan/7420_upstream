@@ -32,6 +32,11 @@
 #include <asm/uaccess.h>
 #include <asm/io.h>
 #include <asm/atomic.h>
+#include <linux/export.h>
+#include <asm/processor.h>
+#include <linux/uaccess.h>
+#include <asm/io.h>
+#include <linux/atomic.h>
 #include <asm/smp.h>
 #include <asm/pgalloc.h>
 #include <asm/cacheflush.h>
@@ -41,6 +46,11 @@
 #include <asm/fpu.h>
 #include <asm/gdb-stub.h>
 #include <asm/sections.h>
+#include <unit/leds.h>
+#include <asm/fpu.h>
+#include <asm/sections.h>
+#include <asm/debugger.h>
+#include "internal.h"
 
 #if (CONFIG_INTERRUPT_VECTOR_BASE & 0xffffff)
 #error "INTERRUPT_VECTOR_BASE not aligned to 16MiB boundary!"
@@ -112,6 +122,170 @@ DO_ERROR(SIGTRAP,
 #endif
 	 "single step", istep);
 
+struct exception_to_signal_map {
+	u8	signo;
+	u32	si_code;
+};
+
+static const struct exception_to_signal_map exception_to_signal_map[256] = {
+	/* MMU exceptions */
+	[EXCEP_ITLBMISS >> 3]	= { 0, 0 },
+	[EXCEP_DTLBMISS >> 3]	= { 0, 0 },
+	[EXCEP_IAERROR >> 3]	= { 0, 0 },
+	[EXCEP_DAERROR >> 3]	= { 0, 0 },
+
+	/* system exceptions */
+	[EXCEP_TRAP >> 3]	= { SIGTRAP,	TRAP_BRKPT },
+	[EXCEP_ISTEP >> 3]	= { SIGTRAP,	TRAP_TRACE },	/* Monitor */
+	[EXCEP_IBREAK >> 3]	= { SIGTRAP,	TRAP_HWBKPT },	/* Monitor */
+	[EXCEP_OBREAK >> 3]	= { SIGTRAP,	TRAP_HWBKPT },	/* Monitor */
+	[EXCEP_PRIVINS >> 3]	= { SIGILL,	ILL_PRVOPC },
+	[EXCEP_UNIMPINS >> 3]	= { SIGILL,	ILL_ILLOPC },
+	[EXCEP_UNIMPEXINS >> 3]	= { SIGILL,	ILL_ILLOPC },
+	[EXCEP_MEMERR >> 3]	= { SIGSEGV,	SEGV_ACCERR },
+	[EXCEP_MISALIGN >> 3]	= { SIGBUS,	BUS_ADRALN },
+	[EXCEP_BUSERROR >> 3]	= { SIGBUS,	BUS_ADRERR },
+	[EXCEP_ILLINSACC >> 3]	= { SIGSEGV,	SEGV_ACCERR },
+	[EXCEP_ILLDATACC >> 3]	= { SIGSEGV,	SEGV_ACCERR },
+	[EXCEP_IOINSACC >> 3]	= { SIGSEGV,	SEGV_ACCERR },
+	[EXCEP_PRIVINSACC >> 3]	= { SIGSEGV,	SEGV_ACCERR }, /* userspace */
+	[EXCEP_PRIVDATACC >> 3]	= { SIGSEGV,	SEGV_ACCERR }, /* userspace */
+	[EXCEP_DATINSACC >> 3]	= { SIGSEGV,	SEGV_ACCERR },
+	[EXCEP_DOUBLE_FAULT >> 3] = { SIGILL,	ILL_BADSTK },
+
+	/* FPU exceptions */
+	[EXCEP_FPU_DISABLED >> 3] = { SIGILL,	ILL_COPROC },
+	[EXCEP_FPU_UNIMPINS >> 3] = { SIGILL,	ILL_COPROC },
+	[EXCEP_FPU_OPERATION >> 3] = { SIGFPE,	FPE_INTDIV },
+
+	/* interrupts */
+	[EXCEP_WDT >> 3]	= { SIGALRM,	0 },
+	[EXCEP_NMI >> 3]	= { SIGQUIT,	0 },
+	[EXCEP_IRQ_LEVEL0 >> 3]	= { SIGINT,	0 },
+	[EXCEP_IRQ_LEVEL1 >> 3]	= { 0, 0 },
+	[EXCEP_IRQ_LEVEL2 >> 3]	= { 0, 0 },
+	[EXCEP_IRQ_LEVEL3 >> 3]	= { 0, 0 },
+	[EXCEP_IRQ_LEVEL4 >> 3]	= { 0, 0 },
+	[EXCEP_IRQ_LEVEL5 >> 3]	= { 0, 0 },
+	[EXCEP_IRQ_LEVEL6 >> 3]	= { 0, 0 },
+
+	/* system calls */
+	[EXCEP_SYSCALL0 >> 3]	= { 0, 0 },
+	[EXCEP_SYSCALL1 >> 3]	= { SIGILL,	ILL_ILLTRP },
+	[EXCEP_SYSCALL2 >> 3]	= { SIGILL,	ILL_ILLTRP },
+	[EXCEP_SYSCALL3 >> 3]	= { SIGILL,	ILL_ILLTRP },
+	[EXCEP_SYSCALL4 >> 3]	= { SIGILL,	ILL_ILLTRP },
+	[EXCEP_SYSCALL5 >> 3]	= { SIGILL,	ILL_ILLTRP },
+	[EXCEP_SYSCALL6 >> 3]	= { SIGILL,	ILL_ILLTRP },
+	[EXCEP_SYSCALL7 >> 3]	= { SIGILL,	ILL_ILLTRP },
+	[EXCEP_SYSCALL8 >> 3]	= { SIGILL,	ILL_ILLTRP },
+	[EXCEP_SYSCALL9 >> 3]	= { SIGILL,	ILL_ILLTRP },
+	[EXCEP_SYSCALL10 >> 3]	= { SIGILL,	ILL_ILLTRP },
+	[EXCEP_SYSCALL11 >> 3]	= { SIGILL,	ILL_ILLTRP },
+	[EXCEP_SYSCALL12 >> 3]	= { SIGILL,	ILL_ILLTRP },
+	[EXCEP_SYSCALL13 >> 3]	= { SIGILL,	ILL_ILLTRP },
+	[EXCEP_SYSCALL14 >> 3]	= { SIGILL,	ILL_ILLTRP },
+	[EXCEP_SYSCALL15 >> 3]	= { SIGABRT,	0 },
+};
+
+/*
+ * Handle kernel exceptions.
+ *
+ * See if there's a fixup handler we can force a jump to when an exception
+ * happens due to something kernel code did
+ */
+int die_if_no_fixup(const char *str, struct pt_regs *regs,
+		    enum exception_code code)
+{
+	u8 opcode;
+	int signo, si_code;
+
+	if (user_mode(regs))
+		return 0;
+
+	peripheral_leds_display_exception(code);
+
+	signo = exception_to_signal_map[code >> 3].signo;
+	si_code = exception_to_signal_map[code >> 3].si_code;
+
+	switch (code) {
+		/* see if we can fixup the kernel accessing memory */
+	case EXCEP_ITLBMISS:
+	case EXCEP_DTLBMISS:
+	case EXCEP_IAERROR:
+	case EXCEP_DAERROR:
+	case EXCEP_MEMERR:
+	case EXCEP_MISALIGN:
+	case EXCEP_BUSERROR:
+	case EXCEP_ILLDATACC:
+	case EXCEP_IOINSACC:
+	case EXCEP_PRIVINSACC:
+	case EXCEP_PRIVDATACC:
+	case EXCEP_DATINSACC:
+		if (fixup_exception(regs))
+			return 1;
+		break;
+
+	case EXCEP_TRAP:
+	case EXCEP_UNIMPINS:
+		if (probe_kernel_read(&opcode, (u8 *)regs->pc, 1) < 0)
+			break;
+		if (opcode == 0xff) {
+			if (notify_die(DIE_BREAKPOINT, str, regs, code, 0, 0))
+				return 1;
+			if (at_debugger_breakpoint(regs))
+				regs->pc++;
+			signo = SIGTRAP;
+			si_code = TRAP_BRKPT;
+		}
+		break;
+
+	case EXCEP_SYSCALL1 ... EXCEP_SYSCALL14:
+		/* syscall return addr is _after_ the instruction */
+		regs->pc -= 2;
+		break;
+
+	case EXCEP_SYSCALL15:
+		if (report_bug(regs->pc, regs) == BUG_TRAP_TYPE_WARN)
+			return 1;
+
+		/* syscall return addr is _after_ the instruction */
+		regs->pc -= 2;
+		break;
+
+	default:
+		break;
+	}
+
+	if (debugger_intercept(code, signo, si_code, regs) == 0)
+		return 1;
+
+	if (notify_die(DIE_GPF, str, regs, code, 0, 0))
+		return 1;
+
+	/* make the process die as the last resort */
+	die(str, regs, code);
+}
+
+/*
+ * General exception handler
+ */
+asmlinkage void handle_exception(struct pt_regs *regs, u32 intcode)
+{
+	siginfo_t info;
+
+	/* deal with kernel exceptions here */
+	if (die_if_no_fixup(NULL, regs, intcode))
+		return;
+
+	/* otherwise it's a userspace exception */
+	info.si_signo = exception_to_signal_map[intcode >> 3].signo;
+	info.si_code = exception_to_signal_map[intcode >> 3].si_code;
+	info.si_errno = 0;
+	info.si_addr = (void *) regs->pc;
+	force_sig_info(info.si_signo, &info, current);
+}
+
 /*
  * handle NMI
  */
@@ -122,6 +296,8 @@ asmlinkage void nmi(struct pt_regs *regs, enum exception_code code)
 	if (gdbstub_intercept(regs, code))
 		return;
 #endif
+	if (debugger_intercept(code, SIGQUIT, 0, regs))
+		return;
 
 	printk(KERN_WARNING "--- Register Dump ---\n");
 	show_registers(regs);
@@ -157,6 +333,36 @@ void show_trace(unsigned long *sp)
 			printk("[<%08lx>] ", addr);
 			i++;
 #endif
+	unsigned long bottom, stack, addr, fp, raslot;
+
+	printk(KERN_EMERG "\nCall Trace:\n");
+
+	//stack = (unsigned long)sp;
+	asm("mov sp,%0" : "=a"(stack));
+	asm("mov a3,%0" : "=r"(fp));
+
+	raslot = ULONG_MAX;
+	bottom = (stack + THREAD_SIZE) & ~(THREAD_SIZE - 1);
+	for (; stack < bottom; stack += sizeof(addr)) {
+		addr = *(unsigned long *)stack;
+		if (stack == fp) {
+			if (addr > stack && addr < bottom) {
+				fp = addr;
+				raslot = stack + sizeof(addr);
+				continue;
+			}
+			fp = 0;
+			raslot = ULONG_MAX;
+		}
+
+		if (__kernel_text_address(addr)) {
+			printk(" [<%08lx>]", addr);
+			if (stack >= raslot)
+				raslot = ULONG_MAX;
+			else
+				printk(" ?");
+			print_symbol(" %s", addr);
+			printk("\n");
 		}
 	}
 
@@ -181,6 +387,7 @@ void show_stack(struct task_struct *task, unsigned long *sp)
 			break;
 		if ((i % 8) == 0)
 			printk("\n" KERN_EMERG "  ");
+			printk(KERN_EMERG "  ");
 		printk("%08lx ", *stack++);
 	}
 
@@ -229,6 +436,14 @@ void show_registers_only(struct pt_regs *regs)
 		printk(KERN_EMERG "Process %s (pid: %d)\n",
 		       current->comm, current->pid);
 
+	if ((unsigned long) current >= PAGE_OFFSET &&
+	    (unsigned long) current < (unsigned long)high_memory)
+		printk(KERN_EMERG "Process %s (pid: %d)\n",
+		       current->comm, current->pid);
+
+#ifdef CONFIG_SMP
+	printk(KERN_EMERG "CPUID:  %08x\n", CPUID);
+#endif
 	printk(KERN_EMERG "CPUP:   %04hx\n", CPUP);
 	printk(KERN_EMERG "TBR:    %08x\n", TBR);
 	printk(KERN_EMERG "DEAR:   %08x\n", DEAR);
@@ -266,6 +481,7 @@ void show_registers(struct pt_regs *regs)
 #if 0
 		printk(KERN_EMERG "\n"
 		       KERN_EMERG "Code: ");
+		printk(KERN_EMERG "\nCode: ");
 		if (regs->pc < PAGE_OFFSET)
 			goto bad;
 
@@ -313,6 +529,7 @@ void die(const char *str, struct pt_regs *regs, enum exception_code code)
 	spin_lock_irq(&die_lock);
 	printk(KERN_EMERG "\n"
 	       KERN_EMERG "%s: %04x\n",
+	printk(KERN_EMERG "\n%s: %04x\n",
 	       str, code & 0xffff);
 	show_registers(regs);
 
@@ -321,6 +538,7 @@ void die(const char *str, struct pt_regs *regs, enum exception_code code)
 		printk(KERN_EMERG "Exception in usermode interrupt handler\n");
 		printk(KERN_EMERG "\n"
 		       KERN_EMERG "  Please connect to kernel debugger !!\n");
+		printk(KERN_EMERG "\nPlease connect to kernel debugger !!\n");
 		asm volatile ("0: bra 0b");
 	}
 
@@ -431,7 +649,7 @@ asmlinkage void io_bus_error(u32 bcberr, u32 bcbear, struct pt_regs *regs)
 
 	printk(KERN_EMERG "\n"
 	       KERN_EMERG "Asynchronous I/O Bus Error\n"
-	       KERN_EMERG "==========================\n");
+	printk(KERN_EMERG "Asynchronous I/O Bus Error\n");
 
 	if (bcberr & BCBERR_BEME)
 		printk(KERN_EMERG "- Multiple recorded errors\n");
@@ -492,6 +710,8 @@ asmlinkage void uninitialised_exception(struct pt_regs *regs,
 	if (gdbstub_intercept(regs, code))
 		return;
 #endif
+	if (debugger_intercept(code, SIGSYS, 0, regs) == 0)
+		return;
 
 	peripheral_leds_display_exception(code);
 	printk(KERN_EMERG "Uninitialised Exception 0x%04x\n", code & 0xFFFF);
@@ -530,6 +750,12 @@ void __init set_intr_stub(enum exception_code code, void *handler)
 	u8 *vector = (u8 *)(CONFIG_INTERRUPT_VECTOR_BASE + code);
 
 	addr = (unsigned long) handler - (unsigned long) vector;
+	unsigned long flags;
+
+	addr = (unsigned long) handler - (unsigned long) vector;
+
+	flags = arch_local_cli_save();
+
 	vector[0] = 0xdc;		/* JMP handler */
 	vector[1] = addr;
 	vector[2] = addr >> 8;
@@ -563,6 +789,12 @@ void __init set_jtag_stub(enum exception_code code, void *handler)
 
 	mn10300_dcache_flush_inv();
 	flush_icache_range((unsigned long) vector, (unsigned long) vector + 8);
+	arch_local_irq_restore(flags);
+
+#ifndef CONFIG_MN10300_CACHE_SNOOP
+	mn10300_dcache_flush_inv();
+	mn10300_icache_inv();
+#endif
 }
 
 /*
@@ -589,6 +821,24 @@ void __init trap_init(void)
 	set_excp_vector(EXCEP_DATINSACC,	insn_acc_error);
 	set_excp_vector(EXCEP_FPU_DISABLED,	fpu_disabled);
 	set_excp_vector(EXCEP_FPU_UNIMPINS,	fpu_invalid_op);
+	set_excp_vector(EXCEP_TRAP,		handle_exception);
+	set_excp_vector(EXCEP_ISTEP,		handle_exception);
+	set_excp_vector(EXCEP_IBREAK,		handle_exception);
+	set_excp_vector(EXCEP_OBREAK,		handle_exception);
+
+	set_excp_vector(EXCEP_PRIVINS,		handle_exception);
+	set_excp_vector(EXCEP_UNIMPINS,		handle_exception);
+	set_excp_vector(EXCEP_UNIMPEXINS,	handle_exception);
+	set_excp_vector(EXCEP_MEMERR,		handle_exception);
+	set_excp_vector(EXCEP_MISALIGN,		misalignment);
+	set_excp_vector(EXCEP_BUSERROR,		handle_exception);
+	set_excp_vector(EXCEP_ILLINSACC,	handle_exception);
+	set_excp_vector(EXCEP_ILLDATACC,	handle_exception);
+	set_excp_vector(EXCEP_IOINSACC,		handle_exception);
+	set_excp_vector(EXCEP_PRIVINSACC,	handle_exception);
+	set_excp_vector(EXCEP_PRIVDATACC,	handle_exception);
+	set_excp_vector(EXCEP_DATINSACC,	handle_exception);
+	set_excp_vector(EXCEP_FPU_UNIMPINS,	handle_exception);
 	set_excp_vector(EXCEP_FPU_OPERATION,	fpu_exception);
 
 	set_excp_vector(EXCEP_NMI,		nmi);
@@ -608,6 +858,21 @@ void __init trap_init(void)
 	set_excp_vector(EXCEP_SYSCALL13,	unsupported_syscall);
 	set_excp_vector(EXCEP_SYSCALL14,	unsupported_syscall);
 	set_excp_vector(EXCEP_SYSCALL15,	unsupported_syscall);
+	set_excp_vector(EXCEP_SYSCALL1,		handle_exception);
+	set_excp_vector(EXCEP_SYSCALL2,		handle_exception);
+	set_excp_vector(EXCEP_SYSCALL3,		handle_exception);
+	set_excp_vector(EXCEP_SYSCALL4,		handle_exception);
+	set_excp_vector(EXCEP_SYSCALL5,		handle_exception);
+	set_excp_vector(EXCEP_SYSCALL6,		handle_exception);
+	set_excp_vector(EXCEP_SYSCALL7,		handle_exception);
+	set_excp_vector(EXCEP_SYSCALL8,		handle_exception);
+	set_excp_vector(EXCEP_SYSCALL9,		handle_exception);
+	set_excp_vector(EXCEP_SYSCALL10,	handle_exception);
+	set_excp_vector(EXCEP_SYSCALL11,	handle_exception);
+	set_excp_vector(EXCEP_SYSCALL12,	handle_exception);
+	set_excp_vector(EXCEP_SYSCALL13,	handle_exception);
+	set_excp_vector(EXCEP_SYSCALL14,	handle_exception);
+	set_excp_vector(EXCEP_SYSCALL15,	handle_exception);
 }
 
 /*

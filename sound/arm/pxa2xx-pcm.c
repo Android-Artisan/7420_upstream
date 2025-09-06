@@ -104,6 +104,22 @@ static int pxa2xx_pcm_prepare(struct snd_pcm_substream *substream)
 	DCSR(rtd->dma_ch) = 0;
 	DCMD(rtd->dma_ch) = 0;
 	*rtd->params->drcmr = rtd->dma_ch | DRCMR_MAPVLD;
+#include <linux/dma-mapping.h>
+#include <linux/dmaengine.h>
+
+#include <mach/dma.h>
+
+#include <sound/core.h>
+#include <sound/pxa2xx-lib.h>
+#include <sound/dmaengine_pcm.h>
+
+#include "pxa2xx-pcm.h"
+
+static int pxa2xx_pcm_prepare(struct snd_pcm_substream *substream)
+{
+	struct pxa2xx_pcm_client *client = substream->private_data;
+
+	__pxa2xx_pcm_prepare(substream);
 
 	return client->prepare(substream);
 }
@@ -241,6 +257,23 @@ static int pxa2xx_pcm_open(struct snd_pcm_substream *substream)
 			      rtd->dma_desc_array, rtd->dma_desc_array_phys);
  err1:
 	kfree(rtd);
+	ret = __pxa2xx_pcm_open(substream);
+	if (ret)
+		goto out;
+
+	rtd = runtime->private_data;
+
+	rtd->params = (substream->stream == SNDRV_PCM_STREAM_PLAYBACK) ?
+		      client->playback_params : client->capture_params;
+
+	ret = client->startup(substream);
+	if (!ret)
+		goto err2;
+
+	return 0;
+
+ err2:
+	__pxa2xx_pcm_close(substream);
  out:
 	return ret;
 }
@@ -266,6 +299,10 @@ pxa2xx_pcm_mmap(struct snd_pcm_substream *substream, struct vm_area_struct *vma)
 				     runtime->dma_area,
 				     runtime->dma_addr,
 				     runtime->dma_bytes);
+
+	client->shutdown(substream);
+
+	return __pxa2xx_pcm_close(substream);
 }
 
 static struct snd_pcm_ops pxa2xx_pcm_ops = {
@@ -274,6 +311,8 @@ static struct snd_pcm_ops pxa2xx_pcm_ops = {
 	.ioctl		= snd_pcm_lib_ioctl,
 	.hw_params	= pxa2xx_pcm_hw_params,
 	.hw_free	= pxa2xx_pcm_hw_free,
+	.hw_params	= __pxa2xx_pcm_hw_params,
+	.hw_free	= __pxa2xx_pcm_hw_free,
 	.prepare	= pxa2xx_pcm_prepare,
 	.trigger	= pxa2xx_pcm_trigger,
 	.pointer	= pxa2xx_pcm_pointer,
@@ -336,6 +375,9 @@ int pxa2xx_pcm_new(struct snd_card *card, struct pxa2xx_pcm_client *client,
 		card->dev->dma_mask = &pxa2xx_pcm_dmamask;
 	if (!card->dev->coherent_dma_mask)
 		card->dev->coherent_dma_mask = 0xffffffff;
+	ret = dma_coerce_mask_and_coherent(card->dev, DMA_BIT_MASK(32));
+	if (ret)
+		goto out;
 
 	if (play) {
 		int stream = SNDRV_PCM_STREAM_PLAYBACK;

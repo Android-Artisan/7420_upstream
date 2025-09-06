@@ -110,6 +110,7 @@ typedef struct {
 #else
 #define ELF_EXEC_PAGESIZE	8192
 #endif
+#define ELF_EXEC_PAGESIZE	4096
 
 
 /* This is the location that an ET_DYN program is loaded if exec'ed.  Typical
@@ -133,6 +134,9 @@ typedef struct {
 			    srmmu_modtype != Cypress_vE && \
 			    srmmu_modtype != Cypress_vD) ? \
 			   HWCAP_SPARC_MULDIV : 0)))
+/* Most sun4m's have them all.  */
+#define ELF_HWCAP	(HWCAP_SPARC_FLUSH | HWCAP_SPARC_STBAR | \
+			 HWCAP_SPARC_SWAP | HWCAP_SPARC_MULDIV)
 
 /* This yields a string that ld.so will use to load implementation
    specific libraries for optimization.  This is more specific in

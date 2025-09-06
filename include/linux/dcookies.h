@@ -17,6 +17,10 @@
 #include <linux/types.h>
  
 struct dcookie_user;
+#include <linux/types.h>
+ 
+struct dcookie_user;
+struct path;
  
 /**
  * dcookie_register - register a user of dcookies

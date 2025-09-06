@@ -3,6 +3,8 @@
 static struct pci_device_id snd_vortex_ids[] = {
 	{PCI_VENDOR_ID_AUREAL, PCI_DEVICE_ID_AUREAL_VORTEX_2,
 	 PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0,},
+static const struct pci_device_id snd_vortex_ids[] = {
+	{PCI_VDEVICE(AUREAL, PCI_DEVICE_ID_AUREAL_VORTEX_2), 0,},
 	{0,}
 };
 

@@ -481,7 +481,6 @@ int copy_thread(int nr, unsigned long clone_flags, unsigned long sp,
 	 *  p->thread_info         new_stack   childregs
 	 *  !                      !           !             {if(PSR_PS) }
 	 *  V                      V (stk.fr.) V  (pt_regs)  { (stk.fr.) }
-	 *  +----- - - - - - ------+===========+============={+==========}+
 	 */
 	new_stack = task_stack_page(p) + THREAD_SIZE;
 	if (regs->psr & PSR_PS)

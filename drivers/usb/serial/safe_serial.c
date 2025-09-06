@@ -1,6 +1,7 @@
 /*
  * Safe Encapsulated USB Serial Driver
  *
+ *      Copyright (C) 2010 Johan Hovold <jhovold@gmail.com>
  *      Copyright (C) 2001 Lineo
  *      Copyright (C) 2001 Hewlett-Packard
  *
@@ -66,6 +67,11 @@
 #include <linux/errno.h>
 #include <linux/init.h>
 #include <linux/slab.h>
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
+#include <linux/kernel.h>
+#include <linux/errno.h>
+#include <linux/gfp.h>
 #include <linux/tty.h>
 #include <linux/tty_driver.h>
 #include <linux/tty_flip.h>
@@ -86,6 +92,10 @@ static int padded = CONFIG_USB_SERIAL_SAFE_PADDED;
 
 #define DRIVER_VERSION "v0.0b"
 #define DRIVER_AUTHOR "sl@lineo.com, tbr@lineo.com"
+static bool safe = 1;
+static bool padded = CONFIG_USB_SERIAL_SAFE_PADDED;
+
+#define DRIVER_AUTHOR "sl@lineo.com, tbr@lineo.com, Johan Hovold <jhovold@gmail.com>"
 #define DRIVER_DESC "USB Safe Encapsulated Serial"
 
 MODULE_AUTHOR(DRIVER_AUTHOR);
@@ -136,6 +146,7 @@ MODULE_PARM_DESC(padded, "Pad to full wMaxPacketSize On/Off");
 	.bInterfaceSubClass = (isc),
 
 static struct usb_device_id id_table[] = {
+static const struct usb_device_id id_table[] = {
 	{MY_USB_DEVICE(0x49f, 0xffff, CDC_DEVICE_CLASS, LINEO_INTERFACE_CLASS, LINEO_INTERFACE_SUBCLASS_SAFESERIAL)},	/* Itsy */
 	{MY_USB_DEVICE(0x3f0, 0x2101, CDC_DEVICE_CLASS, LINEO_INTERFACE_CLASS, LINEO_INTERFACE_SUBCLASS_SAFESERIAL)},	/* Calypso */
 	{MY_USB_DEVICE(0x4dd, 0x8001, CDC_DEVICE_CLASS, LINEO_INTERFACE_CLASS, LINEO_INTERFACE_SUBCLASS_SAFESERIAL)},	/* Iris */
@@ -391,11 +402,96 @@ static int safe_write_room(struct tty_struct *tty)
 	if (room)
 		dbg("safe_write_room returns %d", room);
 	return room;
+static void safe_process_read_urb(struct urb *urb)
+{
+	struct usb_serial_port *port = urb->context;
+	unsigned char *data = urb->transfer_buffer;
+	unsigned char length = urb->actual_length;
+	int actual_length;
+	__u16 fcs;
+
+	if (!length)
+		return;
+
+	if (!safe)
+		goto out;
+
+	if (length < 2) {
+		dev_err(&port->dev, "malformed packet\n");
+		return;
+	}
+
+	fcs = fcs_compute10(data, length, CRC10_INITFCS);
+	if (fcs) {
+		dev_err(&port->dev, "%s - bad CRC %x\n", __func__, fcs);
+		return;
+	}
+
+	actual_length = data[length - 2] >> 2;
+	if (actual_length > (length - 2)) {
+		dev_err(&port->dev, "%s - inconsistent lengths %d:%d\n",
+				__func__, actual_length, length);
+		return;
+	}
+	dev_info(&urb->dev->dev, "%s - actual: %d\n", __func__, actual_length);
+	length = actual_length;
+out:
+	tty_insert_flip_string(&port->port, data, length);
+	tty_flip_buffer_push(&port->port);
+}
+
+static int safe_prepare_write_buffer(struct usb_serial_port *port,
+						void *dest, size_t size)
+{
+	unsigned char *buf = dest;
+	int count;
+	int trailer_len;
+	int pkt_len;
+	__u16 fcs;
+
+	trailer_len = safe ? 2 : 0;
+
+	count = kfifo_out_locked(&port->write_fifo, buf, size - trailer_len,
+								&port->lock);
+	if (!safe)
+		return count;
+
+	/* pad if necessary */
+	if (padded) {
+		pkt_len = size;
+		memset(buf + count, '0', pkt_len - count - trailer_len);
+	} else {
+		pkt_len = count + trailer_len;
+	}
+
+	/* set count */
+	buf[pkt_len - 2] = count << 2;
+	buf[pkt_len - 1] = 0;
+
+	/* compute fcs and insert into trailer */
+	fcs = fcs_compute10(buf, pkt_len, CRC10_INITFCS);
+	buf[pkt_len - 2] |= fcs >> 8;
+	buf[pkt_len - 1] |= fcs & 0xff;
+
+	return pkt_len;
 }
 
 static int safe_startup(struct usb_serial *serial)
 {
 	switch (serial->interface->cur_altsetting->desc.bInterfaceProtocol) {
+	struct usb_interface_descriptor	*desc;
+
+	if (serial->dev->descriptor.bDeviceClass != CDC_DEVICE_CLASS)
+		return -ENODEV;
+
+	desc = &serial->interface->cur_altsetting->desc;
+
+	if (desc->bInterfaceClass != LINEO_INTERFACE_CLASS)
+		return -ENODEV;
+	if (desc->bInterfaceSubClass != LINEO_INTERFACE_SUBCLASS_SAFESERIAL)
+		return -ENODEV;
+
+	switch (desc->bInterfaceProtocol) {
 	case LINEO_SAFESERIAL_CRC:
 		break;
 	case LINEO_SAFESERIAL_CRC_PADDED:
@@ -465,3 +561,14 @@ static void __exit safe_exit(void)
 
 module_init(safe_init);
 module_exit(safe_exit);
+	.num_ports =		1,
+	.process_read_urb =	safe_process_read_urb,
+	.prepare_write_buffer =	safe_prepare_write_buffer,
+	.attach =		safe_startup,
+};
+
+static struct usb_serial_driver * const serial_drivers[] = {
+	&safe_device, NULL
+};
+
+module_usb_serial_driver(serial_drivers, id_table);

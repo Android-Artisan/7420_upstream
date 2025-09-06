@@ -17,6 +17,8 @@
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2
  */
+#ifndef _VIDEOBUF_DMA_SG_H
+#define _VIDEOBUF_DMA_SG_H
 
 #include <media/videobuf-core.h>
 
@@ -50,6 +52,7 @@ struct scatterlist* videobuf_pages_to_sg(struct page **pages, int nr_pages,
  *
  * videobuf_dma_*()
  *	see Documentation/DMA-mapping.txt, these functions to
+ *	see Documentation/DMA-API-HOWTO.txt, these functions to
  *	basically the same.  The map function does also build a
  *	scatterlist for the buffer (and unmap frees it ...)
  *
@@ -67,6 +70,14 @@ struct videobuf_dmabuf {
 
 	/* for kernel buffers */
 	void                *vmalloc;
+	size_t		    size;
+	struct page         **pages;
+
+	/* for kernel buffers */
+	void                *vaddr;
+	struct page         **vaddr_pages;
+	dma_addr_t          *dma_addr;
+	struct device       *dev;
 
 	/* for overlay buffers (pci-pci dma) */
 	dma_addr_t          bus_addr;
@@ -80,6 +91,7 @@ struct videobuf_dmabuf {
 
 struct videobuf_dma_sg_memory
 {
+struct videobuf_dma_sg_memory {
 	u32                 magic;
 
 	/* for mmap'ed buffers */
@@ -104,6 +116,25 @@ void *videobuf_sg_alloc(size_t size);
 
 void videobuf_queue_sg_init(struct videobuf_queue* q,
 			 struct videobuf_queue_ops *ops,
+/*
+ * Scatter-gather DMA buffer API.
+ *
+ * These functions provide a simple way to create a page list and a
+ * scatter-gather list from a kernel, userspace of physical address and map the
+ * memory for DMA operation.
+ *
+ * Despite the name, this is totally unrelated to videobuf, except that
+ * videobuf-dma-sg uses the same API internally.
+ */
+int videobuf_dma_free(struct videobuf_dmabuf *dma);
+
+int videobuf_dma_unmap(struct device *dev, struct videobuf_dmabuf *dma);
+struct videobuf_dmabuf *videobuf_to_dma(struct videobuf_buffer *buf);
+
+void *videobuf_sg_alloc(size_t size);
+
+void videobuf_queue_sg_init(struct videobuf_queue *q,
+			 const struct videobuf_queue_ops *ops,
 			 struct device *dev,
 			 spinlock_t *irqlock,
 			 enum v4l2_buf_type type,
@@ -116,4 +147,8 @@ void videobuf_queue_sg_init(struct videobuf_queue* q,
 	 */
 int videobuf_sg_dma_map(struct device *dev, struct videobuf_dmabuf *dma);
 int videobuf_sg_dma_unmap(struct device *dev, struct videobuf_dmabuf *dma);
+			 void *priv,
+			 struct mutex *ext_lock);
+
+#endif /* _VIDEOBUF_DMA_SG_H */
 

@@ -20,6 +20,12 @@
 #include <linux/coda_linux.h>
 #include <linux/coda_psdev.h>
 #include <linux/coda_fs_i.h>
+#include <linux/uaccess.h>
+#include <linux/string.h>
+
+#include <linux/coda.h>
+#include <linux/coda_psdev.h>
+#include "coda_linux.h"
 
 /* initialize the debugging variables */
 int coda_fake_statfs;
@@ -106,6 +112,11 @@ void coda_vattr_to_iattr(struct inode *inode, struct coda_vattr *attr)
 	        inode->i_gid = (gid_t) attr->va_gid;
 	if (attr->va_nlink != -1)
 	        inode->i_nlink = attr->va_nlink;
+	        inode->i_uid = make_kuid(&init_user_ns, (uid_t) attr->va_uid);
+        if (attr->va_gid != -1)
+	        inode->i_gid = make_kgid(&init_user_ns, (gid_t) attr->va_gid);
+	if (attr->va_nlink != -1)
+		set_nlink(inode, attr->va_nlink);
 	if (attr->va_size != -1)
 	        inode->i_size = attr->va_size;
 	if (attr->va_size != -1)
@@ -176,6 +187,10 @@ void coda_iattr_to_vattr(struct iattr *iattr, struct coda_vattr *vattr)
 	}
         if ( valid & ATTR_GID ) {
                 vattr->va_gid = (vgid_t) iattr->ia_gid;
+                vattr->va_uid = (vuid_t) from_kuid(&init_user_ns, iattr->ia_uid);
+	}
+        if ( valid & ATTR_GID ) {
+                vattr->va_gid = (vgid_t) from_kgid(&init_user_ns, iattr->ia_gid);
 	}
         if ( valid & ATTR_SIZE ) {
                 vattr->va_size = iattr->ia_size;

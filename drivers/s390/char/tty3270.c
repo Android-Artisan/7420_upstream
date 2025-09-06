@@ -6,6 +6,7 @@
  *    Original 3270 Code for 2.4 written by Richard Hitt (UTS Global)
  *    Rewritten for 2.5 by Martin Schwidefsky <schwidefsky@de.ibm.com>
  *	-- Copyright (C) 2003 IBM Deutschland Entwicklung GmbH, IBM Corporation
+ *	-- Copyright IBM Corp. 2003
  */
 
 #include <linux/module.h>
@@ -19,6 +20,11 @@
 
 #include <linux/slab.h>
 #include <linux/bootmem.h>
+#include <linux/workqueue.h>
+
+#include <linux/slab.h>
+#include <linux/bootmem.h>
+#include <linux/compat.h>
 
 #include <asm/ccwdev.h>
 #include <asm/cio.h>
@@ -61,6 +67,7 @@ struct tty3270_line {
 struct tty3270 {
 	struct raw3270_view view;
 	struct tty_struct *tty;		/* Pointer to tty structure */
+	struct tty_port port;
 	void **freemem_pages;		/* Array of pages used for freemem. */
 	struct list_head freemem;	/* List of free memory for strings. */
 
@@ -80,6 +87,8 @@ struct tty3270 {
 	unsigned int highlight;		/* Blink/reverse/underscore */
 	unsigned int f_color;		/* Foreground color */
 	struct tty3270_line *screen;
+	unsigned int n_model, n_cols, n_rows;	/* New model & size */
+	struct work_struct resize_work;
 
 	/* Input stuff. */
 	struct string *prompt;		/* Output string for input area. */
@@ -115,6 +124,10 @@ struct tty3270 {
 #define TTY_UPDATE_ALL		15
 
 static void tty3270_update(struct tty3270 *);
+#define TTY_UPDATE_ALL		16	/* Recreate screen. */
+
+static void tty3270_update(struct tty3270 *);
+static void tty3270_resize_work(struct work_struct *work);
 
 /*
  * Setup timeout for a device. On timeout trigger an update.
@@ -134,6 +147,7 @@ static void tty3270_set_timer(struct tty3270 *tp, int expires)
 	tp->timer.data = (unsigned long) tp;
 	tp->timer.expires = jiffies + expires;
 	add_timer(&tp->timer);
+	mod_timer(&tp->timer, jiffies + expires);
 }
 
 /*
@@ -338,6 +352,10 @@ tty3270_write_callback(struct raw3270_request *rq, void *data)
 	if (rq->rc != 0) {
 		/* Write wasn't successfull. Refresh all. */
 		tty3270_rebuild_update(tp);
+	struct tty3270 *tp = container_of(rq->view, struct tty3270, view);
+
+	if (rq->rc != 0) {
+		/* Write wasn't successful. Refresh all. */
 		tp->update_flags = TTY_UPDATE_ALL;
 		tty3270_set_timer(tp, 1);
 	}
@@ -366,6 +384,12 @@ tty3270_update(struct tty3270 *tp)
 
 	spin_lock(&tp->view.lock);
 	updated = 0;
+	if (tp->update_flags & TTY_UPDATE_ALL) {
+		tty3270_rebuild_update(tp);
+		tty3270_update_status(tp);
+		tp->update_flags = TTY_UPDATE_ERASE | TTY_UPDATE_LIST |
+			TTY_UPDATE_INPUT | TTY_UPDATE_STATUS;
+	}
 	if (tp->update_flags & TTY_UPDATE_ERASE) {
 		/* Use erase write alternate to erase display. */
 		raw3270_request_set_cmd(wrq, TC_EWRITEA);
@@ -458,6 +482,9 @@ tty3270_rcl_backward(struct kbd_data *kbd)
 	struct string *s;
 
 	tp = kbd->tty->driver_data;
+	struct tty3270 *tp = container_of(kbd->port, struct tty3270, port);
+	struct string *s;
+
 	spin_lock_bh(&tp->view.lock);
 	if (tp->inattr == TF_INPUT) {
 		if (tp->rcl_walk && tp->rcl_walk->prev != &tp->rcl_lines)
@@ -485,6 +512,8 @@ tty3270_exit_tty(struct kbd_data *kbd)
 	struct tty3270 *tp;
 
 	tp = kbd->tty->driver_data;
+	struct tty3270 *tp = container_of(kbd->port, struct tty3270, port);
+
 	raw3270_deactivate_view(&tp->view);
 }
 
@@ -498,6 +527,9 @@ tty3270_scroll_forward(struct kbd_data *kbd)
 	int nr_up;
 
 	tp = kbd->tty->driver_data;
+	struct tty3270 *tp = container_of(kbd->port, struct tty3270, port);
+	int nr_up;
+
 	spin_lock_bh(&tp->view.lock);
 	nr_up = tp->nr_up - tp->view.rows + 2;
 	if (nr_up < 0)
@@ -521,6 +553,9 @@ tty3270_scroll_backward(struct kbd_data *kbd)
 	int nr_up;
 
 	tp = kbd->tty->driver_data;
+	struct tty3270 *tp = container_of(kbd->port, struct tty3270, port);
+	int nr_up;
+
 	spin_lock_bh(&tp->view.lock);
 	nr_up = tp->nr_up + tp->view.rows - 2;
 	if (nr_up + tp->view.rows - 2 > tp->nr_lines)
@@ -546,6 +581,10 @@ tty3270_read_tasklet(struct raw3270_request *rrq)
 	int len;
 
 	tp = (struct tty3270 *) rrq->view;
+	struct tty3270 *tp = container_of(rrq->view, struct tty3270, view);
+	char *input;
+	int len;
+
 	spin_lock_bh(&tp->view.lock);
 	/*
 	 * Two AID keys are special: For 0x7d (enter) the input line
@@ -589,6 +628,10 @@ tty3270_read_tasklet(struct raw3270_request *rrq)
 		/* Emit keycode for AID byte. */
 		kbd_keycode(tp->kbd, 256 + tp->input->string[0]);
 	}
+	while (len-- > 0)
+		kbd_keycode(tp->kbd, *input++);
+	/* Emit keycode for AID byte. */
+	kbd_keycode(tp->kbd, 256 + tp->input->string[0]);
 
 	raw3270_request_reset(rrq);
 	xchg(&tp->read, rrq);
@@ -604,6 +647,10 @@ tty3270_read_callback(struct raw3270_request *rq, void *data)
 	raw3270_get_view(rq->view);
 	/* Schedule tasklet to pass input to tty. */
 	tasklet_schedule(&((struct tty3270 *) rq->view)->readlet);
+	struct tty3270 *tp = container_of(rq->view, struct tty3270, view);
+	raw3270_get_view(rq->view);
+	/* Schedule tasklet to pass input to tty. */
+	tasklet_schedule(&tp->readlet);
 }
 
 /*
@@ -651,12 +698,19 @@ tty3270_activate(struct raw3270_view *view)
 	tp->update_flags = TTY_UPDATE_ALL;
 	tty3270_set_timer(tp, 1);
 	spin_unlock_irqrestore(&tp->view.lock, flags);
+	struct tty3270 *tp = container_of(view, struct tty3270, view);
+
+	tp->update_flags = TTY_UPDATE_ALL;
+	tty3270_set_timer(tp, 1);
 	return 0;
 }
 
 static void
 tty3270_deactivate(struct raw3270_view *view)
 {
+	struct tty3270 *tp = container_of(view, struct tty3270, view);
+
+	del_timer(&tp->timer);
 }
 
 static int
@@ -676,6 +730,10 @@ tty3270_irq(struct tty3270 *tp, struct raw3270_request *rq, struct irb *irb)
 		else
 			/* Normal end. Copy residual count. */
 			rq->rescnt = irb->scsw.cmd.count;
+	} else if (irb->scsw.cmd.dstat & DEV_STAT_DEV_END) {
+		/* Interrupt without an outstanding request -> update all */
+		tp->update_flags = TTY_UPDATE_ALL;
+		tty3270_set_timer(tp, 1);
 	}
 	return RAW3270_IO_DONE;
 }
@@ -697,6 +755,11 @@ tty3270_alloc_view(void)
 	if (!tp->freemem_pages)
 		goto out_tp;
 	INIT_LIST_HEAD(&tp->freemem);
+	INIT_LIST_HEAD(&tp->lines);
+	INIT_LIST_HEAD(&tp->update);
+	INIT_LIST_HEAD(&tp->rcl_lines);
+	tp->rcl_max = 20;
+
 	for (pages = 0; pages < TTY3270_STRING_PAGES; pages++) {
 		tp->freemem_pages[pages] = (void *)
 			__get_free_pages(GFP_KERNEL|GFP_DMA, 0);
@@ -717,6 +780,15 @@ tty3270_alloc_view(void)
 	tp->kbd = kbd_alloc();
 	if (!tp->kbd)
 		goto out_reset;
+
+	tty_port_init(&tp->port);
+	setup_timer(&tp->timer, (void (*)(unsigned long)) tty3270_update,
+		    (unsigned long) tp);
+	tasklet_init(&tp->readlet,
+		     (void (*)(unsigned long)) tty3270_read_tasklet,
+		     (unsigned long) tp->read);
+	INIT_WORK(&tp->resize_work, tty3270_resize_work);
+
 	return tp;
 
 out_reset:
@@ -729,6 +801,7 @@ out_pages:
 	while (pages--)
 		free_pages((unsigned long) tp->freemem_pages[pages], 0);
 	kfree(tp->freemem_pages);
+	tty_port_destroy(&tp->port);
 out_tp:
 	kfree(tp);
 out_err:
@@ -750,6 +823,7 @@ tty3270_free_view(struct tty3270 *tp)
 	for (pages = 0; pages < TTY3270_STRING_PAGES; pages++)
 		free_pages((unsigned long) tp->freemem_pages[pages], 0);
 	kfree(tp->freemem_pages);
+	tty_port_destroy(&tp->port);
 	kfree(tp);
 }
 
@@ -779,6 +853,30 @@ out_screen:
 	kfree(tp->screen);
 out_err:
 	return -ENOMEM;
+static struct tty3270_line *
+tty3270_alloc_screen(unsigned int rows, unsigned int cols)
+{
+	struct tty3270_line *screen;
+	unsigned long size;
+	int lines;
+
+	size = sizeof(struct tty3270_line) * (rows - 2);
+	screen = kzalloc(size, GFP_KERNEL);
+	if (!screen)
+		goto out_err;
+	for (lines = 0; lines < rows - 2; lines++) {
+		size = sizeof(struct tty3270_cell) * cols;
+		screen[lines].cells = kzalloc(size, GFP_KERNEL);
+		if (!screen[lines].cells)
+			goto out_screen;
+	}
+	return screen;
+out_screen:
+	while (lines--)
+		kfree(screen[lines].cells);
+	kfree(screen);
+out_err:
+	return ERR_PTR(-ENOMEM);
 }
 
 /*
@@ -792,6 +890,66 @@ tty3270_free_screen(struct tty3270 *tp)
 	for (lines = 0; lines < tp->view.rows - 2; lines++)
 		kfree(tp->screen[lines].cells);
 	kfree(tp->screen);
+tty3270_free_screen(struct tty3270_line *screen, unsigned int rows)
+{
+	int lines;
+
+	for (lines = 0; lines < rows - 2; lines++)
+		kfree(screen[lines].cells);
+	kfree(screen);
+}
+
+/*
+ * Resize tty3270 screen
+ */
+static void tty3270_resize_work(struct work_struct *work)
+{
+	struct tty3270 *tp = container_of(work, struct tty3270, resize_work);
+	struct tty3270_line *screen, *oscreen;
+	struct tty_struct *tty;
+	unsigned int orows;
+	struct winsize ws;
+
+	screen = tty3270_alloc_screen(tp->n_rows, tp->n_cols);
+	if (IS_ERR(screen))
+		return;
+	/* Switch to new output size */
+	spin_lock_bh(&tp->view.lock);
+	oscreen = tp->screen;
+	orows = tp->view.rows;
+	tp->view.model = tp->n_model;
+	tp->view.rows = tp->n_rows;
+	tp->view.cols = tp->n_cols;
+	tp->screen = screen;
+	free_string(&tp->freemem, tp->prompt);
+	free_string(&tp->freemem, tp->status);
+	tty3270_create_prompt(tp);
+	tty3270_create_status(tp);
+	tp->nr_up = 0;
+	while (tp->nr_lines < tp->view.rows - 2)
+		tty3270_blank_line(tp);
+	tp->update_flags = TTY_UPDATE_ALL;
+	spin_unlock_bh(&tp->view.lock);
+	tty3270_free_screen(oscreen, orows);
+	tty3270_set_timer(tp, 1);
+	/* Informat tty layer about new size */
+	tty = tty_port_tty_get(&tp->port);
+	if (!tty)
+		return;
+	ws.ws_row = tp->view.rows - 2;
+	ws.ws_col = tp->view.cols;
+	tty_do_resize(tty, &ws);
+}
+
+static void
+tty3270_resize(struct raw3270_view *view, int model, int rows, int cols)
+{
+	struct tty3270 *tp = container_of(view, struct tty3270, view);
+
+	tp->n_model = model;
+	tp->n_rows = rows;
+	tp->n_cols = cols;
+	schedule_work(&tp->resize_work);
 }
 
 /*
@@ -810,6 +968,15 @@ tty3270_release(struct raw3270_view *view)
 		tp->tty = tp->kbd->tty = NULL;
 		tty_hangup(tty);
 		raw3270_put_view(&tp->view);
+	struct tty3270 *tp = container_of(view, struct tty3270, view);
+	struct tty_struct *tty = tty_port_tty_get(&tp->port);
+
+	if (tty) {
+		tty->driver_data = NULL;
+		tty_port_tty_set(&tp->port, NULL);
+		tty_hangup(tty);
+		raw3270_put_view(&tp->view);
+		tty_kref_put(tty);
 	}
 }
 
@@ -821,6 +988,11 @@ tty3270_free(struct raw3270_view *view)
 {
 	tty3270_free_screen((struct tty3270 *) view);
 	tty3270_free_view((struct tty3270 *) view);
+	struct tty3270 *tp = container_of(view, struct tty3270, view);
+
+	del_timer_sync(&tp->timer);
+	tty3270_free_screen(tp->screen, tp->view.rows);
+	tty3270_free_view(tp);
 }
 
 /*
@@ -837,6 +1009,12 @@ tty3270_del_views(void)
 			raw3270_find_view(&tty3270_fn, i + RAW3270_FIRSTMINOR);
 		if (!IS_ERR(tp))
 			raw3270_del_view(&tp->view);
+	int i;
+
+	for (i = RAW3270_FIRSTMINOR; i <= tty3270_max_index; i++) {
+		struct raw3270_view *view = raw3270_find_view(&tty3270_fn, i);
+		if (!IS_ERR(view))
+			raw3270_del_view(view);
 	}
 }
 
@@ -872,6 +1050,31 @@ tty3270_open(struct tty_struct *tty, struct file * filp)
 		tp->kbd->tty = tty;
 		tp->inattr = TF_INPUT;
 		return 0;
+	.free = tty3270_free,
+	.resize = tty3270_resize
+};
+
+/*
+ * This routine is called whenever a 3270 tty is opened first time.
+ */
+static int tty3270_install(struct tty_driver *driver, struct tty_struct *tty)
+{
+	struct raw3270_view *view;
+	struct tty3270 *tp;
+	int i, rc;
+
+	/* Check if the tty3270 is already there. */
+	view = raw3270_find_view(&tty3270_fn, tty->index + RAW3270_FIRSTMINOR);
+	if (!IS_ERR(view)) {
+		tp = container_of(view, struct tty3270, view);
+		tty->driver_data = tp;
+		tty->winsize.ws_row = tp->view.rows - 2;
+		tty->winsize.ws_col = tp->view.cols;
+		tp->port.low_latency = 0;
+		/* why to reassign? */
+		tty_port_tty_set(&tp->port, tty);
+		tp->inattr = TF_INPUT;
+		return tty_port_install(&tp->port, driver, tty);
 	}
 	if (tty3270_max_index < tty->index + 1)
 		tty3270_max_index = tty->index + 1;
@@ -895,7 +1098,8 @@ tty3270_open(struct tty_struct *tty, struct file * filp)
 		     (unsigned long) tp->read);
 
 	rc = raw3270_add_view(&tp->view, &tty3270_fn,
-			      tty->index + RAW3270_FIRSTMINOR);
+			      tty->index + RAW3270_FIRSTMINOR,
+			      RAW3270_VIEW_LOCK_BH);
 	if (rc) {
 		tty3270_free_view(tp);
 		return rc;
@@ -911,6 +1115,17 @@ tty3270_open(struct tty_struct *tty, struct file * filp)
 	tp->tty = tty;
 	tty->low_latency = 0;
 	tty->driver_data = tp;
+	tp->screen = tty3270_alloc_screen(tp->view.rows, tp->view.cols);
+	if (IS_ERR(tp->screen)) {
+		rc = PTR_ERR(tp->screen);
+		raw3270_put_view(&tp->view);
+		raw3270_del_view(&tp->view);
+		tty3270_free_view(tp);
+		return rc;
+	}
+
+	tty_port_tty_set(&tp->port, tty);
+	tp->port.low_latency = 0;
 	tty->winsize.ws_row = tp->view.rows - 2;
 	tty->winsize.ws_col = tp->view.cols;
 
@@ -923,6 +1138,7 @@ tty3270_open(struct tty_struct *tty, struct file * filp)
 		tty3270_blank_line(tp);
 
 	tp->kbd->tty = tty;
+	tp->kbd->port = &tp->port;
 	tp->kbd->fn_handler[KVAL(K_INCRCONSOLE)] = tty3270_exit_tty;
 	tp->kbd->fn_handler[KVAL(K_SCROLLBACK)] = tty3270_scroll_backward;
 	tp->kbd->fn_handler[KVAL(K_SCROLLFORW)] = tty3270_scroll_forward;
@@ -930,6 +1146,29 @@ tty3270_open(struct tty_struct *tty, struct file * filp)
 	kbd_ascebc(tp->kbd, tp->view.ascebc);
 
 	raw3270_activate_view(&tp->view);
+
+	rc = tty_port_install(&tp->port, driver, tty);
+	if (rc) {
+		raw3270_put_view(&tp->view);
+		return rc;
+	}
+
+	tty->driver_data = tp;
+
+	return 0;
+}
+
+/*
+ * This routine is called whenever a 3270 tty is opened.
+ */
+static int
+tty3270_open(struct tty_struct *tty, struct file *filp)
+{
+	struct tty3270 *tp = tty->driver_data;
+	struct tty_port *port = &tp->port;
+
+	port->count++;
+	tty_port_tty_set(port, tty);
 	return 0;
 }
 
@@ -950,6 +1189,24 @@ tty3270_close(struct tty_struct *tty, struct file * filp)
 		tp->tty = tp->kbd->tty = NULL;
 		raw3270_put_view(&tp->view);
 	}
+}
+
+	struct tty3270 *tp = tty->driver_data;
+
+	if (tty->count > 1)
+		return;
+	if (tp) {
+		tty->driver_data = NULL;
+		tty_port_tty_set(&tp->port, NULL);
+	}
+}
+
+static void tty3270_cleanup(struct tty_struct *tty)
+{
+	struct tty3270 *tp = tty->driver_data;
+
+	if (tp)
+		raw3270_put_view(&tp->view);
 }
 
 /*
@@ -1397,6 +1654,7 @@ tty3270_escape_sequence(struct tty3270 *tp, char ch)
 			break;
 		case 'Z':		/* Respond ID. */
 			kbd_puts_queue(tp->tty, "\033[?6c");
+			kbd_puts_queue(&tp->port, "\033[?6c");
 			break;
 		case '7':		/* Save cursor position. */
 			tp->saved_cx = tp->cx;
@@ -1447,6 +1705,11 @@ tty3270_escape_sequence(struct tty3270 *tp, char ch)
 			char buf[40];
 			sprintf(buf, "\033[%d;%dR", tp->cy + 1, tp->cx + 1);
 			kbd_puts_queue(tp->tty, buf);
+			kbd_puts_queue(&tp->port, "\033[0n");
+		else if (tp->esc_par[0] == 6) {	/* Cursor report. */
+			char buf[40];
+			sprintf(buf, "\033[%d;%dR", tp->cy + 1, tp->cx + 1);
+			kbd_puts_queue(&tp->port, buf);
 		}
 		return;
 	}
@@ -1519,11 +1782,14 @@ tty3270_escape_sequence(struct tty3270 *tp, char ch)
  */
 static void
 tty3270_do_write(struct tty3270 *tp, const unsigned char *buf, int count)
+tty3270_do_write(struct tty3270 *tp, struct tty_struct *tty,
+		const unsigned char *buf, int count)
 {
 	int i_msg, i;
 
 	spin_lock_bh(&tp->view.lock);
 	for (i_msg = 0; !tp->tty->stopped && i_msg < count; i_msg++) {
+	for (i_msg = 0; !tty->stopped && i_msg < count; i_msg++) {
 		if (tp->esc_state != 0) {
 			/* Continue escape sequence. */
 			tty3270_escape_sequence(tp, buf[i_msg]);
@@ -1604,6 +1870,10 @@ tty3270_write(struct tty_struct * tty,
 		tp->char_count = 0;
 	}
 	tty3270_do_write(tp, buf, count);
+		tty3270_do_write(tp, tty, tp->char_buf, tp->char_count);
+		tp->char_count = 0;
+	}
+	tty3270_do_write(tp, tty, buf, count);
 	return count;
 }
 
@@ -1635,6 +1905,7 @@ tty3270_flush_chars(struct tty_struct *tty)
 		return;
 	if (tp->char_count > 0) {
 		tty3270_do_write(tp, tp->char_buf, tp->char_count);
+		tty3270_do_write(tp, tty, tp->char_buf, tp->char_count);
 		tp->char_count = 0;
 	}
 }
@@ -1726,6 +1997,8 @@ tty3270_wait_until_sent(struct tty_struct *tty, int timeout)
 static int
 tty3270_ioctl(struct tty_struct *tty, struct file *file,
 	      unsigned int cmd, unsigned long arg)
+static int tty3270_ioctl(struct tty_struct *tty, unsigned int cmd,
+			 unsigned long arg)
 {
 	struct tty3270 *tp;
 
@@ -1738,6 +2011,27 @@ tty3270_ioctl(struct tty_struct *tty, struct file *file,
 }
 
 static const struct tty_operations tty3270_ops = {
+	return kbd_ioctl(tp->kbd, cmd, arg);
+}
+
+#ifdef CONFIG_COMPAT
+static long tty3270_compat_ioctl(struct tty_struct *tty,
+				 unsigned int cmd, unsigned long arg)
+{
+	struct tty3270 *tp;
+
+	tp = tty->driver_data;
+	if (!tp)
+		return -ENODEV;
+	if (tty->flags & (1 << TTY_IO_ERROR))
+		return -EIO;
+	return kbd_ioctl(tp->kbd, cmd, (unsigned long)compat_ptr(arg));
+}
+#endif
+
+static const struct tty_operations tty3270_ops = {
+	.install = tty3270_install,
+	.cleanup = tty3270_cleanup,
 	.open = tty3270_open,
 	.close = tty3270_close,
 	.write = tty3270_write,
@@ -1762,6 +2056,28 @@ static void tty3270_notifier(int index, int active)
 		tty_unregister_device(tty3270_driver, index);
 }
 
+#ifdef CONFIG_COMPAT
+	.compat_ioctl = tty3270_compat_ioctl,
+#endif
+	.set_termios = tty3270_set_termios
+};
+
+static void tty3270_create_cb(int minor)
+{
+	tty_register_device(tty3270_driver, minor - RAW3270_FIRSTMINOR, NULL);
+}
+
+static void tty3270_destroy_cb(int minor)
+{
+	tty_unregister_device(tty3270_driver, minor - RAW3270_FIRSTMINOR);
+}
+
+static struct raw3270_notifier tty3270_notifier =
+{
+	.create = tty3270_create_cb,
+	.destroy = tty3270_destroy_cb,
+};
+
 /*
  * 3270 tty registration code called from tty_init().
  * Most kernel services (incl. kmalloc) are available at this poimt.
@@ -1774,6 +2090,12 @@ static int __init tty3270_init(void)
 	driver = alloc_tty_driver(RAW3270_MAXDEVS);
 	if (!driver)
 		return -ENOMEM;
+	driver = tty_alloc_driver(RAW3270_MAXDEVS,
+				  TTY_DRIVER_REAL_RAW |
+				  TTY_DRIVER_DYNAMIC_DEV |
+				  TTY_DRIVER_RESET_TERMIOS);
+	if (IS_ERR(driver))
+		return PTR_ERR(driver);
 
 	/*
 	 * Initialize the tty_driver structure
@@ -1789,6 +2111,14 @@ static int __init tty3270_init(void)
 	driver->subtype = SYSTEM_TYPE_TTY;
 	driver->init_termios = tty_std_termios;
 	driver->flags = TTY_DRIVER_RESET_TERMIOS | TTY_DRIVER_DYNAMIC_DEV;
+	driver->driver_name = "tty3270";
+	driver->name = "3270/tty";
+	driver->major = IBM_TTY3270_MAJOR;
+	driver->minor_start = RAW3270_FIRSTMINOR;
+	driver->name_base = RAW3270_FIRSTMINOR;
+	driver->type = TTY_DRIVER_TYPE_SYSTEM;
+	driver->subtype = SYSTEM_TYPE_TTY;
+	driver->init_termios = tty_std_termios;
 	tty_set_operations(driver, &tty3270_ops);
 	ret = tty_register_driver(driver);
 	if (ret) {
@@ -1802,6 +2132,7 @@ static int __init tty3270_init(void)
 		return ret;
 
 	}
+	raw3270_register_notifier(&tty3270_notifier);
 	return 0;
 }
 
@@ -1814,6 +2145,11 @@ tty3270_exit(void)
 	driver = tty3270_driver;
 	tty3270_driver = NULL;
 	tty_unregister_driver(driver);
+	raw3270_unregister_notifier(&tty3270_notifier);
+	driver = tty3270_driver;
+	tty3270_driver = NULL;
+	tty_unregister_driver(driver);
+	put_tty_driver(driver);
 	tty3270_del_views();
 }
 

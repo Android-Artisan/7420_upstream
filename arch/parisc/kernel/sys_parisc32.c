@@ -4,6 +4,7 @@
  * Copyright (C) 2000-2001 Hewlett Packard Company
  * Copyright (C) 2000 John Marvin
  * Copyright (C) 2001 Matthew Wilcox
+ * Copyright (C) 2014 Helge Deller <deller@gmx.de>
  *
  * These routines maintain argument size conversion between 32bit and 64bit
  * environment. Based heavily on sys_ia32.c and sys_sparc32.c.
@@ -87,6 +88,8 @@ out:
 
 	return error;
 }
+#include <linux/syscalls.h>
+
 
 asmlinkage long sys32_unimplemented(int r26, int r25, int r24, int r23,
 	int r22, int r21, int r20)
@@ -478,4 +481,11 @@ asmlinkage long compat_sys_fallocate(int fd, int mode, u32 offhi, u32 offlo,
 {
         return sys_fallocate(fd, mode, ((loff_t)offhi << 32) | offlo,
                              ((loff_t)lenhi << 32) | lenlo);
+asmlinkage long sys32_fanotify_mark(compat_int_t fanotify_fd, compat_uint_t flags,
+	compat_uint_t mask0, compat_uint_t mask1, compat_int_t dfd,
+	const char  __user * pathname)
+{
+	return sys_fanotify_mark(fanotify_fd, flags,
+			((__u64)mask1 << 32) | mask0,
+			 dfd, pathname);
 }

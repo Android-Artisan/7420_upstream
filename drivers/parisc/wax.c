@@ -70,6 +70,7 @@ wax_init_irq(struct gsc_asic *wax)
 
 int __init
 wax_init_chip(struct parisc_device *dev)
+static int __init wax_init_chip(struct parisc_device *dev)
 {
 	struct gsc_asic *wax;
 	struct parisc_device *parent;

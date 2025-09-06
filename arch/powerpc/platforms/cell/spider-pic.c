@@ -63,6 +63,7 @@ enum {
 
 struct spider_pic {
 	struct irq_host		*host;
+	struct irq_domain		*host;
 	void __iomem		*regs;
 	unsigned int		node_id;
 };
@@ -71,6 +72,9 @@ static struct spider_pic spider_pics[SPIDER_CHIP_COUNT];
 static struct spider_pic *spider_virq_to_pic(unsigned int virq)
 {
 	return irq_map[virq].host->host_data;
+static struct spider_pic *spider_irq_data_to_pic(struct irq_data *d)
+{
+	return irq_data_get_irq_chip_data(d);
 }
 
 static void __iomem *spider_get_irq_config(struct spider_pic *pic,
@@ -83,6 +87,10 @@ static void spider_unmask_irq(unsigned int virq)
 {
 	struct spider_pic *pic = spider_virq_to_pic(virq);
 	void __iomem *cfg = spider_get_irq_config(pic, irq_map[virq].hwirq);
+static void spider_unmask_irq(struct irq_data *d)
+{
+	struct spider_pic *pic = spider_irq_data_to_pic(d);
+	void __iomem *cfg = spider_get_irq_config(pic, irqd_to_hwirq(d));
 
 	out_be32(cfg, in_be32(cfg) | 0x30000000u);
 }
@@ -91,6 +99,10 @@ static void spider_mask_irq(unsigned int virq)
 {
 	struct spider_pic *pic = spider_virq_to_pic(virq);
 	void __iomem *cfg = spider_get_irq_config(pic, irq_map[virq].hwirq);
+static void spider_mask_irq(struct irq_data *d)
+{
+	struct spider_pic *pic = spider_irq_data_to_pic(d);
+	void __iomem *cfg = spider_get_irq_config(pic, irqd_to_hwirq(d));
 
 	out_be32(cfg, in_be32(cfg) & ~0x30000000u);
 }
@@ -103,6 +115,14 @@ static void spider_ack_irq(unsigned int virq)
 	/* Reset edge detection logic if necessary
 	 */
 	if (get_irq_desc(virq)->status & IRQ_LEVEL)
+static void spider_ack_irq(struct irq_data *d)
+{
+	struct spider_pic *pic = spider_irq_data_to_pic(d);
+	unsigned int src = irqd_to_hwirq(d);
+
+	/* Reset edge detection logic if necessary
+	 */
+	if (irqd_is_level_type(d))
 		return;
 
 	/* Only interrupts 47 to 50 can be set to edge */
@@ -120,6 +140,12 @@ static int spider_set_irq_type(unsigned int virq, unsigned int type)
 	unsigned int hw = irq_map[virq].hwirq;
 	void __iomem *cfg = spider_get_irq_config(pic, hw);
 	struct irq_desc *desc = get_irq_desc(virq);
+static int spider_set_irq_type(struct irq_data *d, unsigned int type)
+{
+	unsigned int sense = type & IRQ_TYPE_SENSE_MASK;
+	struct spider_pic *pic = spider_irq_data_to_pic(d);
+	unsigned int hw = irqd_to_hwirq(d);
+	void __iomem *cfg = spider_get_irq_config(pic, hw);
 	u32 old_mask;
 	u32 ic;
 
@@ -156,6 +182,9 @@ static int spider_set_irq_type(unsigned int virq, unsigned int type)
 	/* Configure the source. One gross hack that was there before and
 	 * that I've kept around is the priority to the BE which I set to
 	 * be the same as the interrupt source number. I don't know wether
+	/* Configure the source. One gross hack that was there before and
+	 * that I've kept around is the priority to the BE which I set to
+	 * be the same as the interrupt source number. I don't know whether
 	 * that's supposed to make any kind of sense however, we'll have to
 	 * decide that, but for now, I'm not changing the behaviour.
 	 */
@@ -182,12 +211,29 @@ static int spider_host_map(struct irq_host *h, unsigned int virq,
 
 	/* Set default irq type */
 	set_irq_type(virq, IRQ_TYPE_NONE);
+	.name = "SPIDER",
+	.irq_unmask = spider_unmask_irq,
+	.irq_mask = spider_mask_irq,
+	.irq_ack = spider_ack_irq,
+	.irq_set_type = spider_set_irq_type,
+};
+
+static int spider_host_map(struct irq_domain *h, unsigned int virq,
+			irq_hw_number_t hw)
+{
+	irq_set_chip_data(virq, h->host_data);
+	irq_set_chip_and_handler(virq, &spider_pic, handle_level_irq);
+
+	/* Set default irq type */
+	irq_set_irq_type(virq, IRQ_TYPE_NONE);
 
 	return 0;
 }
 
 static int spider_host_xlate(struct irq_host *h, struct device_node *ct,
 			   u32 *intspec, unsigned int intsize,
+static int spider_host_xlate(struct irq_domain *h, struct device_node *ct,
+			   const u32 *intspec, unsigned int intsize,
 			   irq_hw_number_t *out_hwirq, unsigned int *out_flags)
 
 {
@@ -201,6 +247,7 @@ static int spider_host_xlate(struct irq_host *h, struct device_node *ct,
 }
 
 static struct irq_host_ops spider_host_ops = {
+static const struct irq_domain_ops spider_host_ops = {
 	.map = spider_host_map,
 	.xlate = spider_host_xlate,
 };
@@ -208,6 +255,10 @@ static struct irq_host_ops spider_host_ops = {
 static void spider_irq_cascade(unsigned int irq, struct irq_desc *desc)
 {
 	struct spider_pic *pic = desc->handler_data;
+static void spider_irq_cascade(struct irq_desc *desc)
+{
+	struct irq_chip *chip = irq_desc_get_chip(desc);
+	struct spider_pic *pic = irq_desc_get_handler_data(desc);
 	unsigned int cs, virq;
 
 	cs = in_be32(pic->regs + TIR_CS) >> 24;
@@ -218,12 +269,18 @@ static void spider_irq_cascade(unsigned int irq, struct irq_desc *desc)
 	if (virq != NO_IRQ)
 		generic_handle_irq(virq);
 	desc->chip->eoi(irq);
+
+	if (virq != NO_IRQ)
+		generic_handle_irq(virq);
+
+	chip->irq_eoi(&desc->irq_data);
 }
 
 /* For hooking up the cascace we have a problem. Our device-tree is
  * crap and we don't know on which BE iic interrupt we are hooked on at
  * least not the "standard" way. We can reconstitute it based on two
  * informations though: which BE node we are connected to and wether
+ * informations though: which BE node we are connected to and whether
  * we are connected to IOIF0 or IOIF1. Right now, we really only care
  * about the IBM cell blade and we know that its firmware gives us an
  * interrupt-map property which is pretty strange.
@@ -251,6 +308,23 @@ static unsigned int __init spider_find_cascade_and_node(struct spider_pic *pic)
 		return NO_IRQ;
 	intsize = *tmp;
 	imap = of_get_property(pic->host->of_node, "interrupt-map", &imaplen);
+	struct device_node *of_node;
+
+	of_node = irq_domain_get_of_node(pic->host);
+
+	/* First, we check whether we have a real "interrupts" in the device
+	 * tree in case the device-tree is ever fixed
+	 */
+	virq = irq_of_parse_and_map(of_node, 0);
+	if (virq)
+		return virq;
+
+	/* Now do the horrible hacks */
+	tmp = of_get_property(of_node, "#interrupt-cells", NULL);
+	if (tmp == NULL)
+		return NO_IRQ;
+	intsize = *tmp;
+	imap = of_get_property(of_node, "interrupt-map", &imaplen);
 	if (imap == NULL || imaplen < (intsize + 1))
 		return NO_IRQ;
 	iic = of_find_node_by_phandle(imap[intsize]);
@@ -260,6 +334,10 @@ static unsigned int __init spider_find_cascade_and_node(struct spider_pic *pic)
 	tmp = of_get_property(iic, "#interrupt-cells", NULL);
 	if (tmp == NULL)
 		return NO_IRQ;
+	if (tmp == NULL) {
+		of_node_put(iic);
+		return NO_IRQ;
+	}
 	intsize = *tmp;
 	/* Assume unit is last entry of interrupt specifier */
 	unit = imap[intsize - 1];
@@ -306,6 +384,10 @@ static void __init spider_init_one(struct device_node *of_node, int chip,
 	if (pic->host == NULL)
 		panic("spider_pic: can't allocate irq host !");
 	pic->host->host_data = pic;
+	pic->host = irq_domain_add_linear(of_node, SPIDER_SRC_COUNT,
+					  &spider_host_ops, pic);
+	if (pic->host == NULL)
+		panic("spider_pic: can't allocate irq host !");
 
 	/* Go through all sources and disable them */
 	for (i = 0; i < SPIDER_SRC_COUNT; i++) {
@@ -325,6 +407,8 @@ static void __init spider_init_one(struct device_node *of_node, int chip,
 		return;
 	set_irq_data(virq, pic);
 	set_irq_chained_handler(virq, spider_irq_cascade);
+	irq_set_handler_data(virq, pic);
+	irq_set_chained_handler(virq, spider_irq_cascade);
 
 	printk(KERN_INFO "spider_pic: node %d, addr: 0x%lx %s\n",
 	       pic->node_id, addr, of_node->full_name);

@@ -46,6 +46,11 @@ int dialog_inputbox(const char *title, const char *prompt, int height, int width
 {
 	int i, x, y, box_y, box_x, box_width;
 	int input_x = 0, scroll = 0, key = 0, button = -1;
+		    const char *init)
+{
+	int i, x, y, box_y, box_x, box_width;
+	int input_x = 0, key = 0, button = -1;
+	int show_x, len, pos;
 	char *instr = dialog_input_result;
 	WINDOW *dialog;
 
@@ -63,6 +68,14 @@ do_resize:
 	/* center dialog box on screen */
 	x = (COLS - width) / 2;
 	y = (LINES - height) / 2;
+	if (getmaxy(stdscr) <= (height - INPUTBOX_HEIGTH_MIN))
+		return -ERRDISPLAYTOOSMALL;
+	if (getmaxx(stdscr) <= (width - INPUTBOX_WIDTH_MIN))
+		return -ERRDISPLAYTOOSMALL;
+
+	/* center dialog box on screen */
+	x = (getmaxx(stdscr) - width) / 2;
+	y = (getmaxy(stdscr) - height) / 2;
 
 	draw_shadow(stdscr, y, x, height, width);
 
@@ -105,6 +118,17 @@ do_resize:
 		for (i = 0; i < box_width - 1; i++)
 			waddch(dialog, instr[scroll + i]);
 	} else {
+	len = strlen(instr);
+	pos = len;
+
+	if (len >= box_width) {
+		show_x = len - box_width + 1;
+		input_x = box_width - 1;
+		for (i = 0; i < box_width - 1; i++)
+			waddch(dialog, instr[show_x + i]);
+	} else {
+		show_x = 0;
+		input_x = len;
 		waddstr(dialog, instr);
 	}
 
@@ -141,6 +165,33 @@ do_resize:
 						input_x--;
 					instr[scroll + input_x] = '\0';
 					mvwaddch(dialog, box_y, input_x + box_x, ' ');
+			case KEY_BACKSPACE:
+			case 8:   /* ^H */
+			case 127: /* ^? */
+				if (pos) {
+					wattrset(dialog, dlg.inputbox.atr);
+					if (input_x == 0) {
+						show_x--;
+					} else
+						input_x--;
+
+					if (pos < len) {
+						for (i = pos - 1; i < len; i++) {
+							instr[i] = instr[i+1];
+						}
+					}
+
+					pos--;
+					len--;
+					instr[len] = '\0';
+					wmove(dialog, box_y, box_x);
+					for (i = 0; i < box_width; i++) {
+						if (!instr[show_x + i]) {
+							waddch(dialog, ' ');
+							break;
+						}
+						waddch(dialog, instr[show_x + i]);
+					}
 					wmove(dialog, box_y, input_x + box_x);
 					wrefresh(dialog);
 				}
@@ -160,6 +211,74 @@ do_resize:
 							wmove(dialog, box_y, input_x++ + box_x);
 							waddch(dialog, key);
 						}
+			case KEY_LEFT:
+				if (pos > 0) {
+					if (input_x > 0) {
+						wmove(dialog, box_y, --input_x + box_x);
+					} else if (input_x == 0) {
+						show_x--;
+						wmove(dialog, box_y, box_x);
+						for (i = 0; i < box_width; i++) {
+							if (!instr[show_x + i]) {
+								waddch(dialog, ' ');
+								break;
+							}
+							waddch(dialog, instr[show_x + i]);
+						}
+						wmove(dialog, box_y, box_x);
+					}
+					pos--;
+				}
+				continue;
+			case KEY_RIGHT:
+				if (pos < len) {
+					if (input_x < box_width - 1) {
+						wmove(dialog, box_y, ++input_x + box_x);
+					} else if (input_x == box_width - 1) {
+						show_x++;
+						wmove(dialog, box_y, box_x);
+						for (i = 0; i < box_width; i++) {
+							if (!instr[show_x + i]) {
+								waddch(dialog, ' ');
+								break;
+							}
+							waddch(dialog, instr[show_x + i]);
+						}
+						wmove(dialog, box_y, input_x + box_x);
+					}
+					pos++;
+				}
+				continue;
+			default:
+				if (key < 0x100 && isprint(key)) {
+					if (len < MAX_LEN) {
+						wattrset(dialog, dlg.inputbox.atr);
+						if (pos < len) {
+							for (i = len; i > pos; i--)
+								instr[i] = instr[i-1];
+							instr[pos] = key;
+						} else {
+							instr[len] = key;
+						}
+						pos++;
+						len++;
+						instr[len] = '\0';
+
+						if (input_x == box_width - 1) {
+							show_x++;
+						} else {
+							input_x++;
+						}
+
+						wmove(dialog, box_y, box_x);
+						for (i = 0; i < box_width; i++) {
+							if (!instr[show_x + i]) {
+								waddch(dialog, ' ');
+								break;
+							}
+							waddch(dialog, instr[show_x + i]);
+						}
+						wmove(dialog, box_y, input_x + box_x);
 						wrefresh(dialog);
 					} else
 						flash();	/* Alarm user about overflow */
@@ -181,6 +300,7 @@ do_resize:
 			switch (button) {
 			case -1:
 				button = 1;	/* Indicates "Cancel" button is selected */
+				button = 1;	/* Indicates "Help" button is selected */
 				print_buttons(dialog, height, width, 1);
 				break;
 			case 0:
@@ -205,6 +325,7 @@ do_resize:
 				break;
 			case 0:
 				button = 1;	/* Indicates "Cancel" button is selected */
+				button = 1;	/* Indicates "Help" button is selected */
 				print_buttons(dialog, height, width, 1);
 				break;
 			case 1:

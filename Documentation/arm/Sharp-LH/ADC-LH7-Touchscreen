@@ -1,5 +1,4 @@
 README on the ADC/Touchscreen Controller
-========================================
 
 The LH79524 and LH7A404 include a built-in Analog to Digital
 controller (ADC) that is used to process input from a touchscreen.

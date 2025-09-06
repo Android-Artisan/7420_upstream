@@ -80,6 +80,43 @@ dma_set_mask (struct device *dev, u64 mask)
 }
 
 extern int dma_get_cache_alignment(void);
+#include <asm/swiotlb.h>
+#include <linux/dma-debug.h>
+
+#define ARCH_HAS_DMA_GET_REQUIRED_MASK
+
+#define DMA_ERROR_CODE 0
+
+extern struct dma_map_ops *dma_ops;
+extern struct ia64_machine_vector ia64_mv;
+extern void set_iommu_machvec(void);
+
+extern void machvec_dma_sync_single(struct device *, dma_addr_t, size_t,
+				    enum dma_data_direction);
+extern void machvec_dma_sync_sg(struct device *, struct scatterlist *, int,
+				enum dma_data_direction);
+
+#define get_dma_ops(dev) platform_dma_get_ops(dev)
+
+#include <asm-generic/dma-mapping-common.h>
+
+static inline bool dma_capable(struct device *dev, dma_addr_t addr, size_t size)
+{
+	if (!dev->dma_mask)
+		return 0;
+
+	return addr + size - 1 <= *dev->dma_mask;
+}
+
+static inline dma_addr_t phys_to_dma(struct device *dev, phys_addr_t paddr)
+{
+	return paddr;
+}
+
+static inline phys_addr_t dma_to_phys(struct device *dev, dma_addr_t daddr)
+{
+	return daddr;
+}
 
 static inline void
 dma_cache_sync (struct device *dev, void *vaddr, size_t size,

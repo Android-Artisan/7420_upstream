@@ -12,6 +12,7 @@
 
 #include <linux/dccp.h>
 #include <linux/skbuff.h>
+#include <linux/export.h>
 
 #include "dccp.h"
 
@@ -39,6 +40,7 @@ static int dccp_write_timeout(struct sock *sk)
 	if (sk->sk_state == DCCP_REQUESTING || sk->sk_state == DCCP_PARTOPEN) {
 		if (icsk->icsk_retransmits != 0)
 			dst_negative_advice(&sk->sk_dst_cache);
+			dst_negative_advice(sk);
 		retry_until = icsk->icsk_syn_retries ?
 			    : sysctl_dccp_request_retries;
 	} else {
@@ -64,6 +66,7 @@ static int dccp_write_timeout(struct sock *sk)
 		   */
 
 			dst_negative_advice(&sk->sk_dst_cache);
+			dst_negative_advice(sk);
 		}
 
 		retry_until = sysctl_dccp_retries2;
@@ -199,6 +202,7 @@ static void dccp_keepalive_timer(unsigned long data)
 	}
 out:
 	bh_unlock_sock(sk);
+	pr_err("dccp should not use a keepalive timer !\n");
 	sock_put(sk);
 }
 
@@ -270,11 +274,36 @@ static void dccp_init_write_xmit_timer(struct sock *sk)
 
 	setup_timer(&dp->dccps_xmit_timer, dccp_write_xmit_timer,
 			(unsigned long)sk);
+/**
+ * dccp_write_xmitlet  -  Workhorse for CCID packet dequeueing interface
+ * See the comments above %ccid_dequeueing_decision for supported modes.
+ */
+static void dccp_write_xmitlet(unsigned long data)
+{
+	struct sock *sk = (struct sock *)data;
+
+	bh_lock_sock(sk);
+	if (sock_owned_by_user(sk))
+		sk_reset_timer(sk, &dccp_sk(sk)->dccps_xmit_timer, jiffies + 1);
+	else
+		dccp_write_xmit(sk);
+	bh_unlock_sock(sk);
+	sock_put(sk);
+}
+
+static void dccp_write_xmit_timer(unsigned long data)
+{
+	dccp_write_xmitlet(data);
 }
 
 void dccp_init_xmit_timers(struct sock *sk)
 {
 	dccp_init_write_xmit_timer(sk);
+	struct dccp_sock *dp = dccp_sk(sk);
+
+	tasklet_init(&dp->dccps_xmitlet, dccp_write_xmitlet, (unsigned long)sk);
+	setup_timer(&dp->dccps_xmit_timer, dccp_write_xmit_timer,
+							     (unsigned long)sk);
 	inet_csk_init_xmit_timers(sk, &dccp_write_timer, &dccp_delack_timer,
 				  &dccp_keepalive_timer);
 }
@@ -289,6 +318,7 @@ static ktime_t dccp_timestamp_seed;
 u32 dccp_timestamp(void)
 {
 	s64 delta = ktime_us_delta(ktime_get_real(), dccp_timestamp_seed);
+	u64 delta = (u64)ktime_us_delta(ktime_get_real(), dccp_timestamp_seed);
 
 	do_div(delta, 10);
 	return delta;

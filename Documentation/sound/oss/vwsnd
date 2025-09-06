@@ -14,13 +14,11 @@ The Visual Workstation has an Analog Devices AD1843 "SoundComm" audio
 codec chip.  The AD1843 is accessed through the Cobalt I/O ASIC, also
 known as Lithium.  This driver programs both chips.
 
-==============================================================================
 QUICK CONFIGURATION
 
 	# insmod soundcore
 	# insmod vwsnd
 
-==============================================================================
 I/O CONNECTIONS
 
 On the Visual Workstation, only three of the AD1843 inputs are hooked
@@ -42,7 +40,6 @@ The AD1843's PCM input channel and one of its output channels (DAC1)
 are connected to Lithium.  The other output channel (DAC2) is not
 connected.
 
-==============================================================================
 CAPABILITIES
 
 The AD1843 has PCM input and output (Pulse Code Modulation, also known
@@ -63,7 +60,6 @@ but this driver does not export that function.
 The hardware can sync audio to the video clock, but this driver does
 not have a way to specify syncing to video.
 
-==============================================================================
 PROGRAMMING
 
 This section explains the API supported by the driver.  Also see the
@@ -73,7 +69,6 @@ This section assumes familiarity with that document.
 The driver has two interfaces, an I/O interface and a mixer interface.
 There is no MIDI or sequencer capability.
 
-==============================================================================
 PROGRAMMING PCM I/O
 
 The I/O interface is usually accessed as /dev/audio or /dev/dsp.
@@ -106,7 +101,6 @@ output, it may produce an audible click.  This is unavoidable.  To
 prevent clicking, use signed 16-bit mode instead, and convert from
 mu-Law or A-Law format in software.
 
-==============================================================================
 PROGRAMMING THE MIXER INTERFACE
 
 The mixer interface is usually accessed as /dev/mixer.  It is accessed
@@ -202,7 +196,6 @@ SOUND_MIXER_OUTSRC	DEFAULT: SOUND_MASK_LINE|SOUND_MASK_MIC|SOUND_MASK_CD
 This is a mask of sources that are currently passed through to the
 outputs.  Those sources whose bits are not set are muted.
 
-==============================================================================
 GAIN CONTROL
 
 There are five gain controls listed above.  Each has 16, 32, or 64

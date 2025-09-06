@@ -13,6 +13,7 @@ config IP_MULTICAST
 	  capabilities of the various network cards is contained in
 	  <file:Documentation/networking/multicast.txt>. For most people, it's
 	  safe to say N.
+	  <http://www.savetz.com/mbone/>. For most people, it's safe to say N.
 
 config IP_ADVANCED_ROUTER
 	bool "IP: advanced router"
@@ -36,6 +37,7 @@ config IP_ADVANCED_ROUTER
 	  at boot time after the /proc file system has been mounted.
 
 	  If you turn on IP forwarding, you will also get the rp_filter, which
+	  If you turn on IP forwarding, you should consider the rp_filter, which
 	  automatically rejects incoming packets if the routing table entry
 	  for their source address doesn't match the network interface they're
 	  arriving on. This has security advantages because it prevents the
@@ -88,6 +90,18 @@ config IP_FIB_HASH
 config IP_FIB_TRIE_STATS
 	bool "FIB TRIE statistics"
 	depends on IP_FIB_TRIE
+	   or
+	  echo 1 > /proc/sys/net/ipv4/conf/all/rp_filter
+
+	  Note that some distributions enable it in startup scripts.
+	  For details about rp_filter strict and loose mode read
+	  <file:Documentation/networking/ip-sysctl.txt>.
+
+	  If unsure, say N here.
+
+config IP_FIB_TRIE_STATS
+	bool "FIB TRIE statistics"
+	depends on IP_ADVANCED_ROUTER
 	---help---
 	  Keep track of statistics on structure of FIB TRIE table.
 	  Useful for testing and measuring TRIE performance.
@@ -134,6 +148,9 @@ config IP_ROUTE_VERBOSE
 	  handled by the klogd daemon which is responsible for kernel messages
 	  ("man klogd").
 
+config IP_ROUTE_CLASSID
+	bool
+
 config IP_PNP
 	bool "IP: kernel level autoconfiguration"
 	help
@@ -161,6 +178,7 @@ config IP_PNP_DHCP
 	  If unsure, say Y. Note that if you want to use DHCP, a DHCP server
 	  must be operating on your network.  Read
 	  <file:Documentation/filesystems/nfsroot.txt> for details.
+	  <file:Documentation/filesystems/nfs/nfsroot.txt> for details.
 
 config IP_PNP_BOOTP
 	bool "IP: BOOTP support"
@@ -176,6 +194,7 @@ config IP_PNP_BOOTP
 	  command line, you can say N here. If unsure, say Y. Note that if you
 	  want to use BOOTP, a BOOTP server must be operating on your network.
 	  Read <file:Documentation/filesystems/nfsroot.txt> for details.
+	  Read <file:Documentation/filesystems/nfs/nfsroot.txt> for details.
 
 config IP_PNP_RARP
 	bool "IP: RARP support"
@@ -195,6 +214,12 @@ config IP_PNP_RARP
 config NET_IPIP
 	tristate "IP: tunneling"
 	select INET_TUNNEL
+	  <file:Documentation/filesystems/nfs/nfsroot.txt> for details.
+
+config NET_IPIP
+	tristate "IP: tunneling"
+	select INET_TUNNEL
+	select NET_IP_TUNNEL
 	---help---
 	  Tunneling means encapsulating data of one protocol type within
 	  another protocol and sending it over a channel that understands the
@@ -211,6 +236,21 @@ config NET_IPIP
 
 config NET_IPGRE
 	tristate "IP: GRE tunnels over IP"
+config NET_IPGRE_DEMUX
+	tristate "IP: GRE demultiplexer"
+	help
+	 This is helper module to demultiplex GRE packets on GRE version field criteria.
+	 Required by ip_gre and pptp modules.
+
+config NET_IP_TUNNEL
+	tristate
+	select DST_CACHE
+	default n
+
+config NET_IPGRE
+	tristate "IP: GRE tunnels over IP"
+	depends on (IPV6 || IPV6=n) && NET_IPGRE_DEMUX
+	select NET_IP_TUNNEL
 	help
 	  Tunneling means encapsulating data of one protocol type within
 	  another protocol and sending it over a channel that understands the
@@ -243,6 +283,22 @@ config IP_MROUTE
 	  capabilities of the various network cards is contained in
 	  <file:Documentation/networking/multicast.txt>. If you haven't heard
 	  about it, you don't need it.
+	  likely run the program mrouted. If you haven't heard about it, you
+	  don't need it.
+
+config IP_MROUTE_MULTIPLE_TABLES
+	bool "IP: multicast policy routing"
+	depends on IP_MROUTE && IP_ADVANCED_ROUTER
+	select FIB_RULES
+	help
+	  Normally, a multicast router runs a userspace daemon and decides
+	  what to do with a multicast packet based on the source and
+	  destination addresses. If you say Y here, the multicast router
+	  will also be able to take interfaces and packet marks into
+	  account and run multiple instances of userspace daemons
+	  simultaneously, each one handling a single table.
+
+	  If unsure, say N.
 
 config IP_PIMSM_V1
 	bool "IP: PIM-SM version 1 support"
@@ -293,6 +349,8 @@ config ARPD
 
 config SYN_COOKIES
 	bool "IP: TCP syncookie support (disabled per default)"
+config SYN_COOKIES
+	bool "IP: TCP syncookie support"
 	---help---
 	  Normal TCP/IP networking is open to an attack known as "SYN
 	  flooding". This denial-of-service attack prevents legitimate remote
@@ -330,6 +388,56 @@ config SYN_COOKIES
 config INET_AH
 	tristate "IP: AH transformation"
 	select XFRM
+	  If you say Y here, you can disable SYN cookies at run time by
+	  saying Y to "/proc file system support" and
+	  "Sysctl support" below and executing the command
+
+	  echo 0 > /proc/sys/net/ipv4/tcp_syncookies
+
+	  after the /proc file system has been mounted.
+
+	  If unsure, say N.
+
+config NET_IPVTI
+	tristate "Virtual (secure) IP: tunneling"
+	depends on IPV6 || IPV6=n
+	select INET_TUNNEL
+	select NET_IP_TUNNEL
+	depends on INET_XFRM_MODE_TUNNEL
+	---help---
+	  Tunneling means encapsulating data of one protocol type within
+	  another protocol and sending it over a channel that understands the
+	  encapsulating protocol. This can be used with xfrm mode tunnel to give
+	  the notion of a secure tunnel for IPSEC and then use routing protocol
+	  on top.
+
+config NET_UDP_TUNNEL
+	tristate
+	select NET_IP_TUNNEL
+	default n
+
+config NET_FOU
+	tristate "IP: Foo (IP protocols) over UDP"
+	select XFRM
+	select NET_UDP_TUNNEL
+	---help---
+	  Foo over UDP allows any IP protocol to be directly encapsulated
+	  over UDP include tunnels (IPIP, GRE, SIT). By encapsulating in UDP
+	  network mechanisms and optimizations for UDP (such as ECMP
+	  and RSS) can be leveraged to provide better service.
+
+config NET_FOU_IP_TUNNELS
+	bool "IP: FOU encapsulation of IP tunnels"
+	depends on NET_IPIP || NET_IPGRE || IPV6_SIT
+	select NET_FOU
+	---help---
+	  Allow configuration of FOU or GUE encapsulation for IP tunnels.
+	  When this option is enabled IP tunnels can be configured to use
+	  FOU or GUE encapsulation.
+
+config INET_AH
+	tristate "IP: AH transformation"
+	select XFRM_ALGO
 	select CRYPTO
 	select CRYPTO_HMAC
 	select CRYPTO_MD5
@@ -342,6 +450,7 @@ config INET_AH
 config INET_ESP
 	tristate "IP: ESP transformation"
 	select XFRM
+	select XFRM_ALGO
 	select CRYPTO
 	select CRYPTO_AUTHENC
 	select CRYPTO_HMAC
@@ -349,6 +458,7 @@ config INET_ESP
 	select CRYPTO_CBC
 	select CRYPTO_SHA1
 	select CRYPTO_DES
+	select CRYPTO_ECHAINIV
 	---help---
 	  Support for IPsec ESP.
 
@@ -362,7 +472,18 @@ config INET_IPCOMP
 	  Support for IP Payload Compression Protocol (IPComp) (RFC3173),
 	  typically needed for IPsec.
 	  
+
 	  If unsure, say Y.
+
+config INET_TABLE_PERTURB_ORDER
+	int "INET: Source port perturbation table size (as power of 2)" if EXPERT
+	default 16
+	help
+	  Source port perturbation table size (as power of 2) for
+	  RFC 6056 3.3.4.  Algorithm 4: Double-Hash Port Selection Algorithm.
+
+	  The default is almost always what you want.
+	  Only change this if you know what you are doing.
 
 config INET_XFRM_TUNNEL
 	tristate
@@ -403,6 +524,7 @@ config INET_XFRM_MODE_BEET
 config INET_LRO
 	tristate "Large Receive Offload (ipv4/tcp)"
 
+	default y
 	---help---
 	  Support for Large Receive Offload (ipv4/tcp).
 
@@ -416,11 +538,23 @@ config INET_DIAG
 	  native Linux tools such as ss. ss is included in iproute2, currently
 	  downloadable at <http://linux-net.osdl.org/index.php/Iproute2>.
 	  
+	  downloadable at:
+	  
+	    http://www.linuxfoundation.org/collaborate/workgroups/networking/iproute2
+
 	  If unsure, say Y.
 
 config INET_TCP_DIAG
 	depends on INET_DIAG
 	def_tristate INET_DIAG
+
+config INET_UDP_DIAG
+	tristate "UDP: socket monitoring interface"
+	depends on INET_DIAG && (IPV6 || IPV6=n)
+	default n
+	---help---
+	  Support for UDP socket monitoring interface used by the ss tool.
+	  If unsure, say Y.
 
 menuconfig TCP_CONG_ADVANCED
 	bool "TCP: advanced congestion control"
@@ -549,6 +683,10 @@ config TCP_CONG_VENO
 config TCP_CONG_YEAH
 	tristate "YeAH TCP"
 	depends on EXPERIMENTAL
+	See <http://ieeexplore.ieee.org/xpl/freeabs_all.jsp?arnumber=1177186> 
+
+config TCP_CONG_YEAH
+	tristate "YeAH TCP"
 	select TCP_CONG_VEGAS
 	default n
 	---help---
@@ -573,6 +711,43 @@ config TCP_CONG_ILLINOIS
 
 	For further details see:
 	  http://www.ews.uiuc.edu/~shaoliu/tcpillinois/index.html
+
+config TCP_CONG_DCTCP
+	tristate "DataCenter TCP (DCTCP)"
+	default n
+	---help---
+	DCTCP leverages Explicit Congestion Notification (ECN) in the network to
+	provide multi-bit feedback to the end hosts. It is designed to provide:
+
+	- High burst tolerance (incast due to partition/aggregate),
+	- Low latency (short flows, queries),
+	- High throughput (continuous data updates, large file transfers) with
+	  commodity, shallow-buffered switches.
+
+	All switches in the data center network running DCTCP must support
+	ECN marking and be configured for marking when reaching defined switch
+	buffer thresholds. The default ECN marking threshold heuristic for
+	DCTCP on switches is 20 packets (30KB) at 1Gbps, and 65 packets
+	(~100KB) at 10Gbps, but might need further careful tweaking.
+
+	For further details see:
+	  http://simula.stanford.edu/~alizade/Site/DCTCP_files/dctcp-final.pdf
+
+config TCP_CONG_CDG
+	tristate "CAIA Delay-Gradient (CDG)"
+	default n
+	---help---
+	CAIA Delay-Gradient (CDG) is a TCP congestion control that modifies
+	the TCP sender in order to:
+
+	  o Use the delay gradient as a congestion signal.
+	  o Back off with an average probability that is independent of the RTT.
+	  o Coexist with flows that use loss-based congestion control.
+	  o Tolerate packet loss unrelated to congestion.
+
+	For further details see:
+	  D.A. Hayes and G. Armitage. "Revisiting TCP congestion control using
+	  delay gradients." In Networking 2011. Preprint: http://goo.gl/No3vdg
 
 choice
 	prompt "Default TCP congestion control"
@@ -599,6 +774,26 @@ choice
 	config DEFAULT_RENO
 		bool "Reno"
 
+	config DEFAULT_HYBLA
+		bool "Hybla" if TCP_CONG_HYBLA=y
+
+	config DEFAULT_VEGAS
+		bool "Vegas" if TCP_CONG_VEGAS=y
+
+	config DEFAULT_VENO
+		bool "Veno" if TCP_CONG_VENO=y
+
+	config DEFAULT_WESTWOOD
+		bool "Westwood" if TCP_CONG_WESTWOOD=y
+
+	config DEFAULT_DCTCP
+		bool "DCTCP" if TCP_CONG_DCTCP=y
+
+	config DEFAULT_CDG
+		bool "CDG" if TCP_CONG_CDG=y
+
+	config DEFAULT_RENO
+		bool "Reno"
 endchoice
 
 endif
@@ -621,6 +816,17 @@ config DEFAULT_TCP_CONG
 config TCP_MD5SIG
 	bool "TCP: MD5 Signature Option support (RFC2385) (EXPERIMENTAL)"
 	depends on EXPERIMENTAL
+	default "hybla" if DEFAULT_HYBLA
+	default "vegas" if DEFAULT_VEGAS
+	default "westwood" if DEFAULT_WESTWOOD
+	default "veno" if DEFAULT_VENO
+	default "reno" if DEFAULT_RENO
+	default "dctcp" if DEFAULT_DCTCP
+	default "cdg" if DEFAULT_CDG
+	default "cubic"
+
+config TCP_MD5SIG
+	bool "TCP: MD5 Signature Option support (RFC2385)"
 	select CRYPTO
 	select CRYPTO_MD5
 	---help---

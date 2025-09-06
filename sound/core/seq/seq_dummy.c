@@ -21,6 +21,7 @@
 #include <linux/init.h>
 #include <linux/slab.h>
 #include <linux/moduleparam.h>
+#include <linux/module.h>
 #include <sound/core.h>
 #include "seq_clientmgr.h"
 #include <sound/initval.h>
@@ -51,6 +52,11 @@
 	option snd-seq-dummy ports=4
 
   The modle option "duplex=1" enables duplex operation to the port.
+  following option in a configuration file under /etc/modprobe.d/:
+
+	option snd-seq-dummy ports=4
+
+  The model option "duplex=1" enables duplex operation to the port.
   In duplex mode, a pair of ports are created instead of single port,
   and events are tunneled between pair-ports.  For example, input to
   port A is sent to output port of another port B and vice versa.
@@ -66,6 +72,7 @@ MODULE_ALIAS("snd-seq-client-" __stringify(SNDRV_SEQ_CLIENT_DUMMY));
 
 static int ports = 1;
 static int duplex;
+static bool duplex;
 
 module_param(ports, int, 0444);
 MODULE_PARM_DESC(ports, "number of ports to be created");
@@ -199,6 +206,7 @@ register_client(void)
 
 	if (ports < 1) {
 		snd_printk(KERN_ERR "invalid number of ports %d\n", ports);
+		pr_err("ALSA: seq_dummy: invalid number of ports %d\n", ports);
 		return -EINVAL;
 	}
 
@@ -250,6 +258,7 @@ static int __init alsa_seq_dummy_init(void)
 	err = register_client();
 	snd_seq_autoload_unlock();
 	return err;
+	return register_client();
 }
 
 static void __exit alsa_seq_dummy_exit(void)

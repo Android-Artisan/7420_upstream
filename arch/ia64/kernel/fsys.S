@@ -25,6 +25,10 @@
 #include <asm/unistd.h>
 
 #include "entry.h"
+#include <asm/unistd.h>
+
+#include "entry.h"
+#include <asm/native/inst.h>
 
 /*
  * See Documentation/ia64/fsys.txt for details on fsyscalls.
@@ -174,6 +178,7 @@ ENTRY(fsys_set_tid_address)
 END(fsys_set_tid_address)
 
 #if IA64_GTOD_LOCK_OFFSET !=0
+#if IA64_GTOD_SEQ_OFFSET !=0
 #error fsys_gettimeofday incompatible with changes to struct fsyscall_gtod_data_t
 #endif
 #if IA64_ITC_JITTER_OFFSET !=0
@@ -280,6 +285,7 @@ ENTRY(fsys_gettimeofday)
 	;;
 	.pred.rel.mutex p8,p9
 (p8)	mov r2 = ar.itc		// CPU_TIMER. 36 clocks latency!!!
+	MOV_FROM_ITC(p8, p6, r2, r10)	// CPU_TIMER. 36 clocks latency!!!
 (p9)	ld8 r2 = [r30]		// MMIO_TIMER. Could also have latency issues..
 (p13)	ld8 r25 = [r19]		// get itc_lastcycle value
 	ld8 r9 = [r22],IA64_TIMESPEC_TV_NSEC_OFFSET	// tv_sec
@@ -552,6 +558,15 @@ ENTRY(fsys_getcpu)
 	;;
 EX(.fail_efault, probe.w.fault r32, 3)		// M This takes 5 cycles
 EX(.fail_efault, probe.w.fault r33, 3)		// M This takes 5 cycles
+	;;
+	cmp.ne p6,p0=r32,r0
+	cmp.ne p7,p0=r33,r0
+	;;
+#ifdef CONFIG_NUMA
+	movl r17=cpu_to_node_map
+	;;
+EX(.fail_efault, (p6) probe.w.fault r32, 3)		// M This takes 5 cycles
+EX(.fail_efault, (p7) probe.w.fault r33, 3)		// M This takes 5 cycles
 	shladd r18=r3,1,r17
 	;;
 	ld2 r20=[r18]				// r20 = cpu_to_node_map[cpu]
@@ -568,6 +583,13 @@ EX(.fail_efault, st2 [r33] = r20)
 #else
 EX(.fail_efault, probe.w.fault r32, 3)		// M This takes 5 cycles
 EX(.fail_efault, probe.w.fault r33, 3)		// M This takes 5 cycles
+EX(.fail_efault, (p6) st4 [r32] = r3)
+EX(.fail_efault, (p7) st2 [r33] = r20)
+	mov r8=0
+	;;
+#else
+EX(.fail_efault, (p6) probe.w.fault r32, 3)		// M This takes 5 cycles
+EX(.fail_efault, (p7) probe.w.fault r33, 3)		// M This takes 5 cycles
 	and r2 = TIF_ALLWORK_MASK,r2
 	;;
 	cmp.ne p8,p0=0,r2
@@ -575,6 +597,8 @@ EX(.fail_efault, probe.w.fault r33, 3)		// M This takes 5 cycles
 	;;
 EX(.fail_efault, st4 [r32] = r3)
 EX(.fail_efault, st2 [r33] = r0)
+EX(.fail_efault, (p6) st4 [r32] = r3)
+EX(.fail_efault, (p7) st2 [r33] = r0)
 	mov r8=0
 	;;
 #endif
@@ -597,6 +621,11 @@ ENTRY(fsys_fallback_syscall)
 	;;
 	ld8 r18=[r18]				// load normal (heavy-weight) syscall entry-point
 	mov r29=psr				// read psr (12 cyc load latency)
+	RSM_PSR_I(p0, r26, r27)
+	shladd r18=r17,3,r14
+	;;
+	ld8 r18=[r18]				// load normal (heavy-weight) syscall entry-point
+	MOV_FROM_PSR(p0, r29, r26)		// read psr (12 cyc load latency)
 	mov r27=ar.rsc
 	mov r21=ar.fpsr
 	mov r26=ar.pfs
@@ -684,6 +713,8 @@ GLOBAL_ENTRY(fsys_bubble_down)
 	mov ar.rsc=0				// M2   set enforced lazy mode, pl 0, LE, loadrs=0
 #ifdef CONFIG_VIRT_CPU_ACCOUNTING
 	mov.m r30=ar.itc			// M    get cycle for accounting
+#ifdef CONFIG_VIRT_CPU_ACCOUNTING_NATIVE
+	MOV_FROM_ITC(p0, p6, r30, r23)		// M    get cycle for accounting
 #else
 	nop.m 0
 #endif
@@ -709,6 +740,7 @@ GLOBAL_ENTRY(fsys_bubble_down)
 	br.call.sptk.many b7=ia64_syscall_setup	// B
 	;;
 #ifdef CONFIG_VIRT_CPU_ACCOUNTING
+#ifdef CONFIG_VIRT_CPU_ACCOUNTING_NATIVE
 	// mov.m r30=ar.itc is called in advance
 	add r16=TI_AC_STAMP+IA64_TASK_SIZE,r2
 	add r17=TI_AC_LEAVE+IA64_TASK_SIZE,r2
@@ -735,6 +767,7 @@ GLOBAL_ENTRY(fsys_bubble_down)
 	and r3=_TIF_SYSCALL_TRACEAUDIT,r3	// A
 	;;
 	ssm psr.i				// M2   we're on kernel stacks now, reenable irqs
+	SSM_PSR_I(p0, p6, r22)			// M2   we're on kernel stacks now, reenable irqs
 	cmp.eq p8,p0=r3,r0			// A
 (p10)	br.cond.spnt.many ia64_ret_from_syscall	// B    return if bad call-frame or r15 is a NaT
 
@@ -768,6 +801,7 @@ fsyscall_table:
 	data8 0				// lseek		// 1040
 	data8 fsys_getpid		// getpid
 	data8 fsys_getppid		// getppid
+	data8 0				// getppid
 	data8 0				// mount
 	data8 0				// umount
 	data8 0				// setuid		// 1045
@@ -905,6 +939,7 @@ fsyscall_table:
 	data8 0				// rt_sigaction
 	data8 0				// rt_sigpending
 	data8 fsys_rt_sigprocmask	// rt_sigprocmask
+	data8 0				// rt_sigprocmask
 	data8 0				// rt_sigqueueinfo	// 1180
 	data8 0				// rt_sigreturn
 	data8 0				// rt_sigsuspend

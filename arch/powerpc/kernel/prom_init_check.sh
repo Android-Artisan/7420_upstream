@@ -21,6 +21,8 @@ _end enter_prom memcpy memset reloc_offset __secondary_hold
 __secondary_hold_acknowledge __secondary_hold_spinloop __start
 strcmp strcpy strlcpy strlen strncmp strstr logo_linux_clut224
 reloc_got2 kernstart_addr"
+reloc_got2 kernstart_addr memstart_addr linux_banner _stext
+__prom_init_toc_start __prom_init_toc_end btext_setup_display TOC."
 
 NM="$1"
 OBJ="$2"
@@ -61,6 +63,14 @@ do
 	if [ "${UNDEF:0:11}" = "_save32gpr_" ]; then
 		OK=1
 	fi
+	case $UNDEF in
+	_restgpr_*|_restgpr0_*|_rest32gpr_*)
+		OK=1
+		;;
+	_savegpr_*|_savegpr0_*|_save32gpr_*)
+		OK=1
+		;;
+	esac
 
 	if [ $OK -eq 0 ]; then
 		ERROR=1

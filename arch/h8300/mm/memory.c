@@ -32,6 +32,10 @@
 #include <asm/io.h>
 
 void cache_clear (unsigned long paddr, int len)
+#include <asm/traps.h>
+#include <asm/io.h>
+
+void cache_clear(unsigned long paddr, int len)
 {
 }
 
@@ -54,3 +58,20 @@ unsigned long kernel_map(unsigned long paddr, unsigned long size,
 	return paddr;
 }
 
+void cache_push(unsigned long paddr, int len)
+{
+}
+
+void cache_push_v(unsigned long vaddr, int len)
+{
+}
+
+/*
+ * Map some physical address range into the kernel address space.
+ */
+
+unsigned long kernel_map(unsigned long paddr, unsigned long size,
+			 int nocacheflag, unsigned long *memavailp)
+{
+	return paddr;
+}

@@ -1,5 +1,4 @@
 TechnoTrend/Hauppauge DEC USB Driver
-====================================
 
 Driver Status
 -------------

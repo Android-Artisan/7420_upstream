@@ -2,6 +2,7 @@
  *    pata_oldpiix.c - Intel PATA/SATA controllers
  *
  *	(C) 2005 Red Hat <alan@redhat.com>
+ *	(C) 2005 Red Hat
  *
  *    Some parts based on ata_piix.c by Jeff Garzik and others.
  *
@@ -202,6 +203,7 @@ static unsigned int oldpiix_qc_issue(struct ata_queued_cmd *qc)
 			oldpiix_set_dmamode(ap, adev);
 	}
 	return ata_sff_qc_issue(qc);
+	return ata_bmdma_qc_issue(qc);
 }
 
 
@@ -241,6 +243,10 @@ static int oldpiix_init_one (struct pci_dev *pdev, const struct pci_device_id *e
 		.flags		= ATA_FLAG_SLAVE_POSS,
 		.pio_mask	= 0x1f,	/* pio0-4 */
 		.mwdma_mask	= 0x07, /* mwdma1-2 */
+	static const struct ata_port_info info = {
+		.flags		= ATA_FLAG_SLAVE_POSS,
+		.pio_mask	= ATA_PIO4,
+		.mwdma_mask	= ATA_MWDMA12_ONLY,
 		.port_ops	= &oldpiix_pata_ops,
 	};
 	const struct ata_port_info *ppi[] = { &info, NULL };
@@ -250,6 +256,9 @@ static int oldpiix_init_one (struct pci_dev *pdev, const struct pci_device_id *e
 			   "version " DRV_VERSION "\n");
 
 	return ata_pci_sff_init_one(pdev, ppi, &oldpiix_sht, NULL);
+	ata_print_version_once(&pdev->dev, DRV_VERSION);
+
+	return ata_pci_bmdma_init_one(pdev, ppi, &oldpiix_sht, NULL, 0);
 }
 
 static const struct pci_device_id oldpiix_pci_tbl[] = {
@@ -264,6 +273,7 @@ static struct pci_driver oldpiix_pci_driver = {
 	.probe			= oldpiix_init_one,
 	.remove			= ata_pci_remove_one,
 #ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 	.suspend		= ata_pci_device_suspend,
 	.resume			= ata_pci_device_resume,
 #endif
@@ -281,6 +291,7 @@ static void __exit oldpiix_exit(void)
 
 module_init(oldpiix_init);
 module_exit(oldpiix_exit);
+module_pci_driver(oldpiix_pci_driver);
 
 MODULE_AUTHOR("Alan Cox");
 MODULE_DESCRIPTION("SCSI low-level driver for early PIIX series controllers");

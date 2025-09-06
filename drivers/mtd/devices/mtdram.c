@@ -43,6 +43,32 @@ static int ram_erase(struct mtd_info *mtd, struct erase_info *instr)
 	instr->state = MTD_ERASE_DONE;
 	mtd_erase_callback(instr);
 
+static int check_offs_len(struct mtd_info *mtd, loff_t ofs, uint64_t len)
+{
+	int ret = 0;
+
+	/* Start address must align on block boundary */
+	if (mtd_mod_by_eb(ofs, mtd)) {
+		pr_debug("%s: unaligned address\n", __func__);
+		ret = -EINVAL;
+	}
+
+	/* Length must align on block boundary */
+	if (mtd_mod_by_eb(len, mtd)) {
+		pr_debug("%s: length not block aligned\n", __func__);
+		ret = -EINVAL;
+	}
+
+	return ret;
+}
+
+static int ram_erase(struct mtd_info *mtd, struct erase_info *instr)
+{
+	if (check_offs_len(mtd, instr->addr, instr->len))
+		return -EINVAL;
+	memset((char *)mtd->priv + instr->addr, 0xff, instr->len);
+	instr->state = MTD_ERASE_DONE;
+	mtd_erase_callback(instr);
 	return 0;
 }
 
@@ -63,6 +89,22 @@ static int ram_point(struct mtd_info *mtd, loff_t from, size_t len,
 
 static void ram_unpoint(struct mtd_info *mtd, loff_t from, size_t len)
 {
+static int ram_unpoint(struct mtd_info *mtd, loff_t from, size_t len)
+{
+	return 0;
+}
+
+/*
+ * Allow NOMMU mmap() to directly map the device (if not NULL)
+ * - return the address to which the offset maps
+ * - return -ENOSYS to indicate refusal to do the mapping
+ */
+static unsigned long ram_get_unmapped_area(struct mtd_info *mtd,
+					   unsigned long len,
+					   unsigned long offset,
+					   unsigned long flags)
+{
+	return (unsigned long) mtd->priv + offset;
 }
 
 static int ram_read(struct mtd_info *mtd, loff_t from, size_t len,
@@ -73,6 +115,7 @@ static int ram_read(struct mtd_info *mtd, loff_t from, size_t len,
 
 	memcpy(buf, mtd->priv + from, len);
 
+	memcpy(buf, mtd->priv + from, len);
 	*retlen = len;
 	return 0;
 }
@@ -85,6 +128,7 @@ static int ram_write(struct mtd_info *mtd, loff_t to, size_t len,
 
 	memcpy((char *)mtd->priv + to, buf, len);
 
+	memcpy((char *)mtd->priv + to, buf, len);
 	*retlen = len;
 	return 0;
 }
@@ -93,6 +137,7 @@ static void __exit cleanup_mtdram(void)
 {
 	if (mtd_info) {
 		del_mtd_device(mtd_info);
+		mtd_device_unregister(mtd_info);
 		vfree(mtd_info->priv);
 		kfree(mtd_info);
 	}
@@ -100,6 +145,7 @@ static void __exit cleanup_mtdram(void)
 
 int mtdram_init_device(struct mtd_info *mtd, void *mapped_address,
 		unsigned long size, char *name)
+		unsigned long size, const char *name)
 {
 	memset(mtd, 0, sizeof(*mtd));
 
@@ -109,6 +155,7 @@ int mtdram_init_device(struct mtd_info *mtd, void *mapped_address,
 	mtd->flags = MTD_CAP_RAM;
 	mtd->size = size;
 	mtd->writesize = 1;
+	mtd->writebufsize = 64; /* Mimic CFI NOR flashes */
 	mtd->erasesize = MTDRAM_ERASE_SIZE;
 	mtd->priv = mapped_address;
 
@@ -122,6 +169,15 @@ int mtdram_init_device(struct mtd_info *mtd, void *mapped_address,
 	if (add_mtd_device(mtd)) {
 		return -EIO;
 	}
+	mtd->_erase = ram_erase;
+	mtd->_point = ram_point;
+	mtd->_unpoint = ram_unpoint;
+	mtd->_get_unmapped_area = ram_get_unmapped_area;
+	mtd->_read = ram_read;
+	mtd->_write = ram_write;
+
+	if (mtd_device_register(mtd, NULL, 0))
+		return -EIO;
 
 	return 0;
 }

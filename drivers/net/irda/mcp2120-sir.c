@@ -156,6 +156,8 @@ static int mcp2120_change_speed(struct sir_dev *dev, unsigned speed)
 
 	default:
 		IRDA_ERROR("%s(), undefine state %d\n", __func__, state);
+		net_err_ratelimited("%s(), undefine state %d\n",
+				    __func__, state);
 		ret = -EINVAL;
 		break;
 	}
@@ -214,6 +216,8 @@ static int mcp2120_reset(struct sir_dev *dev)
 
 	default:
 		IRDA_ERROR("%s(), undefined state %d\n", __func__, state);
+		net_err_ratelimited("%s(), undefined state %d\n",
+				    __func__, state);
 		ret = -EINVAL;
 		break;
 	}

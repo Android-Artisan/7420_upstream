@@ -26,6 +26,8 @@
 #ifndef __SAVAGE_DRV_H__
 #define __SAVAGE_DRV_H__
 
+#include <drm/drm_legacy.h>
+
 #define DRIVER_AUTHOR	"Felix Kuehling"
 
 #define DRIVER_NAME	"savage"
@@ -105,6 +107,7 @@ enum savage_family {
 };
 
 extern struct drm_ioctl_desc savage_ioctls[];
+extern const struct drm_ioctl_desc savage_ioctls[];
 extern int savage_max_ioctl;
 
 #define S3_SAVAGE3D_SERIES(chip)  ((chip>=S3_SAVAGE3D) && (chip<=S3_SAVAGE_MX))
@@ -164,6 +167,7 @@ typedef struct drm_savage_private {
 		int handle;
 		unsigned long base, size;
 	} mtrr[3];
+	int mtrr_handles[3];
 
 	/* BCI and status-related stuff */
 	volatile uint32_t *status_ptr, *bci_ptr;

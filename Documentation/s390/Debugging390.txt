@@ -6,9 +6,18 @@
                               Best viewed with fixed width fonts 
 
 Overview of Document:
-=====================
 This document is intended to give a good overview of how to debug
 Linux for s/390 & z/Architecture. It isn't intended as a complete reference & not a
+
+		  Debugging on Linux for s/390 & z/Architecture
+				       by
+	  Denis Joseph Barrow (djbarrow@de.ibm.com,barrow_dj@yahoo.com)
+    Copyright (C) 2000-2001 IBM Deutschland Entwicklung GmbH, IBM Corporation
+			Best viewed with fixed width fonts
+
+Overview of Document:
+This document is intended to give a good overview of how to debug Linux for
+s/390 and z/Architecture. It is not intended as a complete reference and not a
 tutorial on the fundamentals of C & assembly. It doesn't go into
 390 IO in any detail. It is intended to complement the documents in the
 reference section below & any other worthwhile references you get.
@@ -18,7 +27,6 @@ to be printed out & used as a quick cheat sheet self help style reference when
 problems occur.
 
 Contents
-========
 Register Set
 Address Spaces on Intel Linux
 Address Spaces on Linux for s/390 & z/Architecture
@@ -47,7 +55,6 @@ References
 Special Thanks
 
 Register Set
-============
 The current architectures have the following registers.
  
 16  General propose registers, 32 bit on s/390 64 bit on z/Architecture, r0-r15 or gpr0-gpr15 used for arithmetic & addressing. 
@@ -62,6 +69,20 @@ association with general purpose registers and are used in
 the kernel for copying data between kernel & user address spaces.
 Access register 0 ( & access register 1 on z/Architecture ( needs 64 bit 
 pointer ) ) is currently used by the pthread library as a pointer to
+16 General propose registers, 32 bit on s/390 and 64 bit on z/Architecture,
+r0-r15 (or gpr0-gpr15), used for arithmetic and addressing.
+
+16 Control registers, 32 bit on s/390 and 64 bit on z/Architecture, cr0-cr15,
+kernel usage only, used for memory management, interrupt control, debugging
+control etc.
+
+16 Access registers (ar0-ar15), 32 bit on both s/390 and z/Architecture,
+normally not used by normal programs but potentially could be used as
+temporary storage. These registers have a 1:1 association with general
+purpose registers and are designed to be used in the so-called access
+register mode to select different address spaces.
+Access register 0 (and access register 1 on z/Architecture, which needs a
+64 bit pointer) is currently used by the pthread library as a pointer to
 the current running threads private area.
 
 16 64 bit floating point registers (fp0-fp15 ) IEEE & HFP floating 
@@ -100,6 +121,11 @@ s/390 z/Architecture
 	      clock interrupts.
 
 8-11  8-11    PSW Key used for complex memory protection mechanism not used under linux
+7	7     External interrupt Mask used primarily for interprocessor
+	      signalling and clock interrupts.
+
+8-11  8-11    PSW Key used for complex memory protection mechanism
+	      (not used under linux)
 
 12      12    1 on s/390 0 on z/Architecture
 
@@ -108,6 +134,9 @@ s/390 z/Architecture
 14      14    Wait State set this to 1 to stop the processor except for interrupts & give 
 	      time to other LPARS used in CPU idle in the kernel to increase overall 
 	      usage of processor resources.
+14	14    Wait State. Set this to 1 to stop the processor except for
+	      interrupts and give  time to other LPARS. Used in CPU idle in
+	      the kernel to increase overall usage of processor resources.
 
 15      15    Problem state ( if set to 1 certain instructions are disabled )
 	      all linux user programs run with this bit 1 
@@ -137,6 +166,25 @@ s/390 z/Architecture
 
 	      11 Home Space Mode all user programs run in this mode.
 	      it is affiliated with CR13.
+	      00 Primary Space Mode:
+	      The register CR1 contains the primary address-space control ele-
+	      ment (PASCE), which points to the primary space region/segment
+	      table origin.
+
+	      01 Access register mode
+
+	      10 Secondary Space Mode:
+	      The register CR7 contains the secondary address-space control
+	      element (SASCE), which points to the secondary space region or
+	      segment table origin.
+
+	      11 Home Space Mode:
+	      The register CR13 contains the home space address-space control
+	      element (HASCE), which points to the home space region/segment
+	      table origin.
+
+	      See "Address Spaces on Linux for s/390 & z/Architecture" below
+	      for more information about address space usage in Linux.
 
 18-19 18-19   Condition codes (CC)
 
@@ -189,6 +237,23 @@ are used by the processor itself for holding such information as exception indic
 entry points for exceptions.
 Bytes after 0xc00 hex are used by linux for per processor globals on s/390 & z/Architecture 
 ( there is a gap on z/Architecture too currently between 0xc00 & 1000 which linux uses ).
+
+
+Prefix Page(s)
+--------------
+This per cpu memory area is too intimately tied to the processor not to mention.
+It exists between the real addresses 0-4096 on s/390 and between 0-8192 on
+z/Architecture and is exchanged with one page on s/390 or two pages on
+z/Architecture in absolute storage by the set prefix instruction during Linux
+startup.
+This page is mapped to a different prefix for each processor in an SMP
+configuration (assuming the OS designer is sane of course).
+Bytes 0-512 (200 hex) on s/390 and 0-512, 4096-4544, 4604-5119 currently on
+z/Architecture are used by the processor itself for holding such information
+as exception indications and entry points for exceptions.
+Bytes after 0xc00 hex are used by linux for per processor globals on s/390 and
+z/Architecture (there is a gap on z/Architecture currently between 0xc00 and
+0x1000, too, which is used by Linux).
 The closest thing to this on traditional architectures is the interrupt
 vector table. This is a good thing & does simplify some of the kernel coding
 however it means that we now cannot catch stray NULL pointers in the
@@ -197,7 +262,6 @@ kernel without hard coded checks.
 
 
 Address Spaces on Intel Linux
-=============================
 
 The traditional Intel Linux is approximately mapped as follows forgive
 the ascii art.
@@ -221,6 +285,26 @@ Now it is easy to see that on Intel it is quite easy to recognise a kernel addre
 as being one greater than user space himem ( in this case 0xC0000000).
 & addresses of less than this are the ones in the current running program on this
 processor ( if an smp box ).
+0xFFFFFFFF 4GB Himem		*****************
+				*		*
+				* Kernel Space	*
+				*		*
+				*****************	  ****************
+User Space Himem		*  User Stack	*	  *		 *
+(typically 0xC0000000 3GB )	*****************	  *		 *
+				*  Shared Libs	*	  * Next Process *
+				*****************	  *	to	 *
+				*		*   <==   *	Run	 *  <==
+				*  User Program *	  *		 *
+				*   Data BSS	*	  *		 *
+				*    Text	*	  *		 *
+				*   Sections	*	  *		 *
+0x00000000			*****************	  ****************
+
+Now it is easy to see that on Intel it is quite easy to recognise a kernel
+address as being one greater than user space himem (in this case 0xC0000000),
+and addresses of less than this are the ones in the current running program on
+this processor (if an smp box).
 If using the virtual machine ( VM ) as a debugger it is quite difficult to
 know which user process is running as the address space you are looking at
 could be from any process in the run queue.
@@ -248,7 +332,6 @@ currently 4TB of physical memory currently on z/Architecture.
 
 
 Address Spaces on Linux for s/390 & z/Architecture
-==================================================
 
 Our addressing scheme is as follows
 
@@ -258,6 +341,14 @@ currently 0x3ffffffffff (2^42)-1 *  User Stack   *          *              *
 on z/Architecture.		 *****************          *              *
 		                 *  Shared Libs  *          *              *      
                                  *****************          *              *  
+Our addressing scheme is basically as follows:
+
+				   Primary Space	       Home Space
+Himem 0x7fffffff 2GB on s/390    *****************          ****************
+currently 0x3ffffffffff (2^42)-1 *  User Stack   *          *              *
+on z/Architecture.		 *****************          *              *
+				 *  Shared Libs  *	    *		   *
+				 *****************	    *		   *
 			         *               *          *    Kernel    *  
 		                 *  User Program *          *              *
 		                 *   Data BSS    *          *              *
@@ -268,15 +359,58 @@ on z/Architecture.		 *****************          *              *
 This also means that we need to look at the PSW problem state bit
 or the addressing mode to decide whether we are looking at
 user or kernel space.
+This also means that we need to look at the PSW problem state bit and the
+addressing mode to decide whether we are looking at user or kernel space.
+
+User space runs in primary address mode (or access register mode within
+the vdso code).
+
+The kernel usually also runs in home space mode, however when accessing
+user space the kernel switches to primary or secondary address mode if
+the mvcos instruction is not available or if a compare-and-swap (futex)
+instruction on a user space address is performed.
+
+When also looking at the ASCE control registers, this means:
+
+User space:
+- runs in primary or access register mode
+- cr1 contains the user asce
+- cr7 contains the user asce
+- cr13 contains the kernel asce
+
+Kernel space:
+- runs in home space mode
+- cr1 contains the user or kernel asce
+  -> the kernel asce is loaded when a uaccess requires primary or
+     secondary address mode
+- cr7 contains the user or kernel asce, (changed with set_fs())
+- cr13 contains the kernel asce
+
+In case of uaccess the kernel changes to:
+- primary space mode in case of a uaccess (copy_to_user) and uses
+  e.g. the mvcp instruction to access user space. However the kernel
+  will stay in home space mode if the mvcos instruction is available
+- secondary space mode in case of futex atomic operations, so that the
+  instructions come from primary address space and data from secondary
+  space
+
+In case of KVM, the kernel runs in home space mode, but cr1 gets switched
+to contain the gmap asce before the SIE instruction gets executed. When
+the SIE instruction is finished, cr1 will be switched back to contain the
+user asce.
+
 
 Virtual Addresses on s/390 & z/Architecture
-===========================================
 
 A virtual address on s/390 is made up of 3 parts
 The SX ( segment index, roughly corresponding to the PGD & PMD in linux terminology ) 
 being bits 1-11.
 The PX ( page index, corresponding to the page table entry (pte) in linux terminology )
 being bits 12-19. 
+The SX (segment index, roughly corresponding to the PGD & PMD in Linux
+terminology) being bits 1-11.
+The PX (page index, corresponding to the page table entry (pte) in Linux
+terminology) being bits 12-19.
 The remaining bits BX (the byte index are the offset in the page )
 i.e. bits 20 to 31.
 
@@ -312,7 +446,6 @@ our address space control registers.
  
 
 The Linux for s/390 & z/Architecture Kernel Task Structure
-==========================================================
 Each process/thread under Linux for S390 has its own kernel task_struct
 defined in linux/include/linux/sched.h
 The S390 on initialisation & resuming of a process on a cpu sets
@@ -343,6 +476,9 @@ each processor as follows.
 What this means is that we don't need to dedicate any register or global variable
 to point to the current running process & can retrieve it with the following
 very simple construct for s/390 & one very similar for z/Architecture.
+What this means is that we don't need to dedicate any register or global
+variable to point to the current running process & can retrieve it with the
+following very simple construct for s/390 & one very similar for z/Architecture.
 
 static inline struct task_struct * get_current(void)
 {
@@ -362,7 +498,6 @@ short amounts of time we don't need a separate stack for interrupts.
 
 
 Register Usage & Stackframes on Linux for s/390 & z/Architecture
-=================================================================
 Overview:
 ---------
 This is the code that gcc produces at the top & the bottom of
@@ -377,6 +512,8 @@ limited knowledge of one assembly language.
 It should be noted that there are some differences between the
 s/390 & z/Architecture stack layouts as the z/Architecture stack layout didn't have
 to maintain compatibility with older linkage formats.
+s/390 and z/Architecture stack layouts as the z/Architecture stack layout
+didn't have to maintain compatibility with older linkage formats.
 
 Glossary:
 ---------
@@ -413,6 +550,7 @@ The code generated by the compiler to return to the caller.
 frameless-function
 A frameless function in Linux for s390 & z/Architecture is one which doesn't 
 need more than the register save area ( 96 bytes on s/390, 160 on z/Architecture )
+need more than the register save area (96 bytes on s/390, 160 on z/Architecture)
 given to it by the caller.
 A frameless function never:
 1) Sets up a back chain.
@@ -473,7 +611,6 @@ int FunctionA(int a)
 
 
 s/390 & z/Architecture Register usage
-=====================================
 r0       used by syscalls/assembly                  call-clobbered
 r1	 used by syscalls/assembly                  call-clobbered
 r2       argument 0 / return value 0                call-clobbered
@@ -556,12 +693,13 @@ s/390     z/Architecture
 0                       back-chain
 
 A sample program with comments.
-===============================
 
 Comments on the function test
 -----------------------------
 1) It didn't need to set up a pointer to the constant pool gpr13 as it isn't used
 ( :-( ).
+1) It didn't need to set up a pointer to the constant pool gpr13 as it is not
+used ( :-( ).
 2) This is a frameless function & no stack is bought.
 3) The compiler was clever enough to recognise that it could return the
 value in r2 as well as use it for the passed in parameter ( :-) ).
@@ -683,7 +821,6 @@ main(int argc,char *argv[])
 
 
 Compiling programs for debugging on Linux for s/390 & z/Architecture
-====================================================================
 -gdwarf-2 now works it should be considered the default debugging
 format for s/390 & z/Architecture as it is more reliable for debugging
 shared libraries,  normal -g debugging works much better now
@@ -708,7 +845,6 @@ some bugs, please make sure you are using gdb-5.0 or later developed
 after Nov'2000.
 
 Figuring out gcc compile errors
-===============================
 If you are getting a lot of syntax errors compiling a program & the problem
 isn't blatantly obvious from the source.
 It often helps to just preprocess the file, this is done with the -E
@@ -826,10 +962,8 @@ rlimit_max starts at bit offset 32 & is 32 bits in size.
 
 
 Debugging Tools:
-================
 
 objdump
-=======
 This is a tool with many options the most useful being ( if compiled with -g).
 objdump --source <victim program or object file> > <victims debug listing >
 
@@ -1036,7 +1170,6 @@ e.g. man strace, man alarm, man socket.
 
 
 Performance Debugging
-=====================
 gcc is capable of compiling in profiling code just add the -p option
 to the CFLAGS, this obviously affects program size & performance.
 This can be used by the gprof gnu profiling tool or the
@@ -1078,8 +1211,8 @@ real	0m4.054s
 user	0m0.010s
 sys	0m0.010s
 
+
 Debugging under VM
-==================
 
 Notes
 -----
@@ -1106,6 +1239,27 @@ of them as all the operands are nibble ( half byte aligned ) & if you have an ob
 also it is quite easy to follow, if you don't have an objdump listing keep a copy of
 the s/390 Reference Summary & look at between pages 2 & 7 or alternatively the
 s/390 principles of operation.
+Address ranges are of the format <HexValue1>-<HexValue2> or
+<HexValue1>.<HexValue2>
+For example, the address range	0x2000 to 0x3000 can be described as 2000-3000
+or 2000.1000
+
+The VM Debugger is case insensitive.
+
+VM's strengths are usually other debuggers weaknesses you can get at any
+resource no matter how sensitive e.g. memory management resources, change
+address translation in the PSW. For kernel hacking you will reap dividends if
+you get good at it.
+
+The VM Debugger displays operators but not operands, and also the debugger
+displays useful information on the same line as the author of the code probably
+felt that it was a good idea not to go over the 80 columns on the screen.
+This isn't as unintuitive as it may seem as the s/390 instructions are easy to
+decode mentally and you can make a good guess at a lot of them as all the
+operands are nibble (half byte aligned).
+So if you have an objdump listing by hand, it is quite easy to follow, and if
+you don't have an objdump listing keep a copy of the s/390 Reference Summary
+or alternatively the s/390 principles of operation next to you.
 e.g. even I can guess that 
 0001AFF8' LR    180F        CC 0
 is a ( load register ) lr r0,r15 
@@ -1113,6 +1267,9 @@ is a ( load register ) lr r0,r15
 Also it is very easy to tell the length of a 390 instruction from the 2 most significant
 bits in the instruction ( not that this info is really useful except if you are trying to
 make sense of a hexdump of code ).
+Also it is very easy to tell the length of a 390 instruction from the 2 most
+significant bits in the instruction (not that this info is really useful except
+if you are trying to make sense of a hexdump of code).
 Here is a table
 Bits                    Instruction Length
 ------------------------------------------
@@ -1196,6 +1353,8 @@ D G will display all the gprs
 Adding a extra G to all the commands is necessary to access the full 64 bit 
 content in VM on z/Architecture obviously this isn't required for access registers
 as these are still 32 bit.
+content in VM on z/Architecture. Obviously this isn't required for access
+registers as these are still 32 bit.
 e.g. DGG instead of DG 
 D X will display all the control registers
 D AR will display all the access registers
@@ -1215,6 +1374,11 @@ To make VM display a message each time it hits a particular address & continue t
 D I<range> will disassemble/display a range of instructions.
 ST addr 32 bit word will store a 32 bit aligned address
 D T<range> will display the EBCDIC in an address ( if you are that way inclined )
+To make VM display a message each time it hits a particular address and
+continue try
+D I<range> will disassemble/display a range of instructions.
+ST addr 32 bit word will store a 32 bit aligned address
+D T<range> will display the EBCDIC in an address (if you are that way inclined)
 D R<range> will display real addresses ( without DAT ) but with prefixing.
 There are other complex options to display if you need to get at say home space
 but are in primary space the easiest thing to do is to temporarily
@@ -1227,6 +1391,8 @@ Hints
 -----
 If you want to issue a debugger command without halting your virtual machine with the
 PA1 key try prefixing the command with #CP e.g.
+If you want to issue a debugger command without halting your virtual machine
+with the PA1 key try prefixing the command with #CP e.g.
 #cp tr i pswa 2000
 also suffixing most debugger commands with RUN will cause them not
 to stop just display the mnemonic at the current instruction on the console.
@@ -1247,6 +1413,10 @@ at a time so you nearly had to spend as long pruning the file down as you would
 entering the msg's by hand ),however, the trick might be useful for a single object file.
 On linux'es 3270 emulator x3270 there is a very useful option under the file ment
 Save Screens In File this is very good of keeping a copy of traces. 
+entering the msgs by hand), however, the trick might be useful for a single
+object file. In the 3270 terminal emulator x3270 there is a very useful option
+in the file menu called "Save Screen In File" - this is very good for keeping a
+copy of traces.
 
 From CMS help <command name> will give you online help on a particular command. 
 e.g. 
@@ -1262,6 +1432,8 @@ This does a single step in VM on pressing F8.
 SET PF10  ^
 This sets up the ^ key.
 which can be used for ^c (ctrl-c),^z (ctrl-z) which can't be typed directly into some 3270 consoles.
+which can be used for ^c (ctrl-c),^z (ctrl-z) which can't be typed directly
+into some 3270 consoles.
 SET PF11 ^-
 This types the starting keystrokes for a sysrq see SysRq below.
 SET PF12 RETRIEVE
@@ -1357,6 +1529,8 @@ If you get a crash which says something like
 illegal operation or specification exception followed by a register dump
 You can restart linux & trace these using the tr prog <range or value> trace option.
 
+You can restart linux & trace these using the tr prog <range or value> trace
+option.
 
 
 The most common ones you will normally be tracing for is
@@ -1403,6 +1577,12 @@ possibilities of these as the instruction is made up of a  0xA opcode & the seco
 the syscall number. They are traced using the simple command.
 TR SVC  <Optional value or range>
 the syscalls are defined in linux/include/asm-s390/unistd.h
+Syscalls are implemented on Linux for S390 by the Supervisor call instruction
+(SVC). There 256 possibilities of these as the instruction is made up of a 0xA
+opcode and the second byte being the syscall number. They are traced using the
+simple command:
+TR SVC  <Optional value or range>
+the syscalls are defined in linux/arch/s390/include/asm/unistd.h
 e.g. to trace all file opens just do
 TR SVC 5 ( as this is the syscall number of open )
 
@@ -1417,6 +1597,12 @@ CPU <desired cpu no>
 
 On a SMP guest issue a command to all CPUs try prefixing the command with cpu all.
 To issue a command to a particular cpu try cpu <cpu number> e.g.
+To find the cpu that the current cpu VM debugger commands are being directed at
+do Q CPU to change the current cpu VM debugger commands are being directed at do
+CPU <desired cpu no>
+
+On a SMP guest issue a command to all CPUs try prefixing the command with cpu
+all. To issue a command to a particular cpu try cpu <cpu number> e.g.
 CPU 01 TR I R 2000.3000
 If you are running on a guest with several cpus & you have a IO related problem
 & cannot follow the flow of code but you know it isn't smp related.
@@ -1441,11 +1627,14 @@ e.g.
 D TX0.100
 
 Alternatively
-=============
 Under older VM debuggers ( I love EBDIC too ) you can use this little program I wrote which
 will convert a command line of hex digits to ascii text which can be compiled under linux & 
 you can copy the hex digits from your x3270 terminal to your xterm if you are debugging
 from a linuxbox.
+Under older VM debuggers (I love EBDIC too) you can use following little
+program which converts a command line of hex digits to ascii text. It can be
+compiled under linux and you can copy the hex digits from your x3270 terminal
+to your xterm if you are debugging from a linuxbox.
 
 This is quite useful when looking at a parameter passed in as a text string
 under VM ( unless you are good at decoding ASCII in your head ).
@@ -1463,6 +1652,14 @@ The problem state bit wasn't set &  it's also too early in the boot sequence
 for it to be a userspace SVC if it was we would have to temporarily switch the 
 psw to user space addressing so we could get at the first parameter of the open in
 gpr2.
+D 20.8 to check the SVC old psw in the prefix area and see was it from userspace
+(for the layout of the prefix area consult the "Fixed Storage Locations"
+chapter of the s/390 Reference Summary if you have it available).
+V00000020  070C2000 800151B2
+The problem state bit wasn't set &  it's also too early in the boot sequence
+for it to be a userspace SVC if it was we would have to temporarily switch the 
+psw to user space addressing so we could get at the first parameter of the open
+in gpr2.
 Next do a 
 D G2
 GPR  2 =  00014CB4
@@ -1552,6 +1749,9 @@ When your backchain reaches a dead end
 This can happen when an exception happens in the kernel & the kernel is entered twice
 if you reach the NULL pointer at the end of the back chain you should be
 able to sniff further back if you follow the following tricks.
+This can happen when an exception happens in the kernel and the kernel is
+entered twice. If you reach the NULL pointer at the end of the back chain you
+should be able to sniff further back if you follow the following tricks.
 1) A kernel address should be easy to recognise since it is in
 primary space & the problem state bit isn't set & also
 The Hi bit of the address is set.
@@ -1603,6 +1803,8 @@ our 3rd return address is 8001085A
 
 as the 04B52002 looks suspiciously like rubbish it is fair to assume that the kernel entry routines
 for the sake of optimisation don't set up a backchain.
+as the 04B52002 looks suspiciously like rubbish it is fair to assume that the
+kernel entry routines for the sake of optimisation don't set up a backchain.
 
 now look at System.map to see if the addresses make any sense.
 
@@ -1628,7 +1830,6 @@ Congrats you've done your first backchain.
 
 
 s/390 & z/Architecture IO Overview
-==================================
 
 I am not going to give a course in 390 IO architecture as this would take me quite a
 while & I'm no expert. Instead I'll give a 390 IO architecture summary for Dummies if you have 
@@ -1691,6 +1892,75 @@ Other IO related Terms:
 Sysplex: S390's Clustering Technology
 QDIO: S390's new high speed IO architecture to support devices such as gigabit ethernet,
 this architecture is also designed to be forward compatible with up & coming 64 bit machines.
+I am not going to give a course in 390 IO architecture as this would take me
+quite a while and I'm no expert. Instead I'll give a 390 IO architecture
+summary for Dummies. If you have the s/390 principles of operation available
+read this instead. If nothing else you may find a few useful keywords in here
+and be able to use them on a web search engine to find more useful information.
+
+Unlike other bus architectures modern 390 systems do their IO using mostly
+fibre optics and devices such as tapes and disks can be shared between several
+mainframes. Also S390 can support up to 65536 devices while a high end PC based
+system might be choking with around 64.
+
+Here is some of the common IO terminology:
+
+Subchannel:
+This is the logical number most IO commands use to talk to an IO device. There
+can be up to 0x10000 (65536) of these in a configuration, typically there are a
+few hundred. Under VM for simplicity they are allocated contiguously, however
+on the native hardware they are not. They typically stay consistent between
+boots provided no new hardware is inserted or removed.
+Under Linux for s390 we use these as IRQ's and also when issuing an IO command
+(CLEAR SUBCHANNEL, HALT SUBCHANNEL, MODIFY SUBCHANNEL, RESUME SUBCHANNEL,
+START SUBCHANNEL, STORE SUBCHANNEL and TEST SUBCHANNEL). We use this as the ID
+of the device we wish to talk to. The most important of these instructions are
+START SUBCHANNEL (to start IO), TEST SUBCHANNEL (to check whether the IO
+completed successfully) and HALT SUBCHANNEL (to kill IO). A subchannel can have
+up to 8 channel paths to a device, this offers redundancy if one is not
+available.
+
+Device Number:
+This number remains static and is closely tied to the hardware. There are 65536
+of these, made up of a CHPID (Channel Path ID, the most significant 8 bits) and
+another lsb 8 bits. These remain static even if more devices are inserted or
+removed from the hardware. There is a 1 to 1 mapping between subchannels and
+device numbers, provided devices aren't inserted or removed.
+
+Channel Control Words:
+CCWs are linked lists of instructions initially pointed to by an operation
+request block (ORB), which is initially given to Start Subchannel (SSCH)
+command along with the subchannel number for the IO subsystem to process
+while the CPU continues executing normal code.
+CCWs come in two flavours, Format 0 (24 bit for backward compatibility) and
+Format 1 (31 bit). These are typically used to issue read and write (and many
+other) instructions. They consist of a length field and an absolute address
+field.
+Each IO typically gets 1 or 2 interrupts, one for channel end (primary status)
+when the channel is idle, and the second for device end (secondary status).
+Sometimes you get both concurrently. You check how the IO went on by issuing a
+TEST SUBCHANNEL at each interrupt, from which you receive an Interruption
+response block (IRB). If you get channel and device end status in the IRB
+without channel checks etc. your IO probably went okay. If you didn't you
+probably need to examine the IRB, extended status word etc.
+If an error occurs, more sophisticated control units have a facility known as
+concurrent sense. This means that if an error occurs Extended sense information
+will be presented in the Extended status word in the IRB. If not you have to
+issue a subsequent SENSE CCW command after the test subchannel.
+
+
+TPI (Test pending interrupt) can also be used for polled IO, but in
+multitasking multiprocessor systems it isn't recommended except for
+checking special cases (i.e. non looping checks for pending IO etc.).
+
+Store Subchannel and Modify Subchannel can be used to examine and modify
+operating characteristics of a subchannel (e.g. channel paths).
+
+Other IO related Terms:
+Sysplex: S390's Clustering Technology
+QDIO: S390's new high speed IO architecture to support devices such as gigabit
+ethernet, this architecture is also designed to be forward compatible with
+upcoming 64 bit machines.
 
 
 General Concepts 
@@ -1724,7 +1994,6 @@ controllers or a control unit which connects to 1000 3270 terminals ).
     ----------------------------------------------------------------
          ||                                              ||
          ||  Bus & Tag Channel Path                      || ESCON
-         ||  ======================                      || Channel
          ||  ||                  ||                      || Path
     +----------+               +----------+         +----------+
     |          |               |          |         |          |
@@ -1754,6 +2023,14 @@ about one inch in diameter. The maximum unextended length supported by these cab
 125 Meters but this can be extended up to 2km with a fibre optic channel extended 
 such as a 3044. The maximum burst speed supported is 4.5 megabytes per second however
 some really old processors support only transfer rates of 3.0, 2.0 & 1.0 MB/sec.
+and control lines on the "Tag" cable. These can operate in byte multiplex mode
+for sharing between several slow devices or burst mode and monopolize the
+channel for the whole burst. Up to 256 devices can be addressed on one of these
+cables. These cables are about one inch in diameter. The maximum unextended
+length supported by these cables is 125 Meters but this can be extended up to
+2km with a fibre optic channel extended such as a 3044. The maximum burst speed
+supported is 4.5 megabytes per second. However, some really old processors
+support only transfer rates of 3.0, 2.0 & 1.0 MB/sec.
 One of these paths can be daisy chained to up to 8 control units.
 
 
@@ -1773,15 +2050,32 @@ unit that uses one of these interfaces.
 Common 390 Devices include:
 Network adapters typically OSA2,3172's,2116's & OSA-E gigabit ethernet adapters,
 Consoles 3270 & 3215 ( a teletype emulated under linux for a line mode console ).
+Was introduced by IBM in 1990. Has 2 fibre optic cables and uses either leds or
+lasers for communication at a signaling rate of up to 200 megabits/sec. As
+10bits are transferred for every 8 bits info this drops to 160 megabits/sec
+and to 18.6 Megabytes/sec once control info and CRC are added. ESCON only
+operates in burst mode.
+ 
+ESCONs typical max cable length is 3km for the led version and 20km for the
+laser version known as XDF (extended distance facility). This can be further
+extended by using an ESCON director which triples the above mentioned ranges.
+Unlike Bus & Tag as ESCON is serial it uses a packet switching architecture,
+the standard Bus & Tag control protocol is however present within the packets.
+Up to 256 devices can be attached to each control unit that uses one of these
+interfaces.
+
+Common 390 Devices include:
+Network adapters typically OSA2,3172's,2116's & OSA-E gigabit ethernet adapters,
+Consoles 3270 & 3215 (a teletype emulated under linux for a line mode console).
 DASD's direct access storage devices ( otherwise known as hard disks ).
 Tape Drives.
 CTC ( Channel to Channel Adapters ),
 ESCON or Parallel Cables used as a very high speed serial link
 between 2 machines. We use 2 cables under linux to do a bi-directional serial link.
+between 2 machines.
 
 
 Debugging IO on s/390 & z/Architecture under VM
-===============================================
 
 Now we are ready to go on with IO tracing commands under VM
 
@@ -1819,6 +2113,9 @@ MSCH's ,STSCH's I think you can guess the rest
 Ingo's favourite trick is tracing all the IO's & CCWS & spooling them into the reader of another
 VM guest so he can ftp the logfile back to his own machine.I'll do a small bit of this & give you
  a look at the output.
+A good trick is tracing all the IO's and CCWS and spooling them into the reader
+of another VM guest so he can ftp the logfile back to his own machine. I'll do
+a small bit of this and give you a look at the output.
 
 1) Spool stdout to VM reader
 SP PRT TO (another vm guest ) or * for the local vm guest
@@ -1894,7 +2191,6 @@ LINK userid devno1 devno2 mode password
 
 
 GDB on S390
-===========
 N.B. if compiling for debugging gdb works better without optimisation 
 ( see Compiling programs for debugging )
 
@@ -1936,6 +2232,8 @@ info breakpoints: shows all current breakpoints
 
 info stack: shows stack back trace ( if this doesn't work too well, I'll show you the
 stacktrace by hand below ).
+info stack: shows stack back trace (if this doesn't work too well, I'll show
+you the stacktrace by hand below).
 
 info locals: displays local variables.
 
@@ -1961,6 +2259,8 @@ stepi: steps a single machine code instruction.
 e.g. stepi 100
 
 nexti: steps a single machine code instruction but will not step into subroutines.
+nexti: steps a single machine code instruction but will not step into
+subroutines.
 
 finish: will run until exit of the current routine
 
@@ -1985,6 +2285,7 @@ break *$pc
 break *0x400618
 
 heres a really useful one for large programs
+Here's a really useful one for large programs
 rbr
 Set a breakpoint for all functions matching REGEXP
 e.g.
@@ -2063,6 +2364,8 @@ outputs:
 $1 = 11 
 
 You might now be thinking that the line above didn't work, something extra had to be done.
+You might now be thinking that the line above didn't work, something extra had
+to be done.
 (gdb) call fflush(stdout)
 hello world$2 = 0
 As an aside the debugger also calls malloc & free under the hood 
@@ -2165,6 +2468,17 @@ will do the following.
 5) A few more difficult things I haven't thought of.
 
 
+A core dump is a file generated by the kernel (if allowed) which contains the
+registers and all active pages of the program which has crashed.
+From this file gdb will allow you to look at the registers, stack trace and
+memory of the program as if it just crashed on your system. It is usually
+called core and created in the current working directory.
+This is very useful in that a customer can mail a core dump to a technical
+support department and the technical support department can reconstruct what
+happened. Provided they have an identical copy of this program with debugging
+symbols compiled in and the source base of this build is available.
+In short it is far more useful than something like a crash log could ever hope
+to be.
 
 Why have I never seen one ?.
 Probably because you haven't used the command 
@@ -2212,6 +2526,9 @@ Breakpoint 2 at 0x4d87a4: file top.c, line 2609.
 #6  0x5164fe in readline (prompt=0x7ffff810 "\177ÿøx\177ÿ÷Ø\177ÿøxÀ")
     at readline.c:349
 #7  0x4d7a8a in command_line_input (prrompt=0x564420 "(gdb) ", repeat=1,
+#6  0x5164fe in readline (prompt=0x7ffff810)
+    at readline.c:349
+#7  0x4d7a8a in command_line_input (prompt=0x564420 "(gdb) ", repeat=1,
     annotation_suffix=0x4d6b44 "prompt") at top.c:2091
 #8  0x4d6cf0 in command_loop () at top.c:1345
 #9  0x4e25bc in main (argc=1, argv=0x7ffffdf4) at main.c:635
@@ -2232,7 +2549,6 @@ libc.so.6 => /lib/libc.so.6 (0x40084000)
 
 
 Debugging shared libraries
-==========================
 Most programs use shared libraries, however it can be very painful
 when you single step instruction into a function like printf for the 
 first time & you end up in functions like _dl_runtime_resolve this is
@@ -2246,13 +2562,11 @@ the program in question.
 
 
 Debugging modules
-=================
 As modules are dynamically loaded into the kernel their address can be
 anywhere to get around this use the -m option with insmod to emit a load
 map which can be piped into a file if required.
 
 The proc file system
-====================
 What is it ?.
 It is a filesystem created by the kernel with files which are created on demand
 by the kernel if read, or can be used to modify kernel parameters,
@@ -2274,6 +2588,10 @@ There is a lot of useful info in here best found by going in & having a look aro
 so I'll take you through some entries I consider important.
 
 All the processes running on the machine have there own entry defined by
+There is a lot of useful info in here best found by going in and having a look
+around, so I'll take you through some entries I consider important.
+
+All the processes running on the machine have their own entry defined by
 /proc/<pid>
 So lets have a look at the init process
 cd /proc/1
@@ -2364,7 +2682,6 @@ as well as a backchain which may be useful if a process crashes
 in the kernel for some unknown reason.
 
 Some driver debugging techniques
-================================
 debug feature
 -------------
 Some of our drivers now support a "debug feature" in
@@ -2402,6 +2719,8 @@ try
 /etc/rc.d/init.d/network start 
 ( this starts the network stack & hopefully calls ifconfig tr0 up ).
 ifconfig looks at the output of /proc/net/dev & presents it in a more presentable form
+ifconfig looks at the output of /proc/net/dev and presents it in a more
+presentable form.
 Now ping the device from a machine in the same subnet.
 if the RX packets count & TX packets counts don't increment you probably
 have problems.
@@ -2429,7 +2748,6 @@ See the manpage chandev.8 &type cat /proc/chandev for more info.
 
 
 Starting points for debugging scripting languages etc.
-======================================================
 
 bash/sh
 
@@ -2456,7 +2774,6 @@ jdb <filename> another fully interactive gdb style debugger.
 
 
 Dumptool & Lcrash ( lkcd )
-==========================
 Michael Holzheu & others here at IBM have a fairly mature port of 
 SGI's lcrash tool which allows one to look at kernel structures in a
 running kernel.
@@ -2512,7 +2829,6 @@ if the machine gets partially hung.
 Read Documentation/sysrq.txt for more info
 
 References:
-===========
 Enterprise Systems Architecture Reference Summary
 Enterprise Systems Architecture Principles of Operation
 Hartmut Penners s390 stack frame sheet.
@@ -2528,8 +2844,8 @@ Enterprise Systems Architecture/390 Reference Summary SA22-7209-01 & the
 Enterprise Systems Architecture/390 Principles of Operation SA22-7201-05
 
 Special Thanks
-==============
 Special thanks to Neale Ferguson who maintains a much
 prettier HTML version of this page at
 http://penguinvm.princeton.edu/notes.html#Debug390
+http://linuxvm.org/penguinvm/
 Bob Grainger Stefan Bader & others for reporting bugs

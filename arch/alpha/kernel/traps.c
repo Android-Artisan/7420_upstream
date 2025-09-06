@@ -17,6 +17,9 @@
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/kallsyms.h>
+#include <linux/module.h>
+#include <linux/kallsyms.h>
+#include <linux/ratelimit.h>
 
 #include <asm/gentrap.h>
 #include <asm/uaccess.h>
@@ -24,6 +27,7 @@
 #include <asm/sysinfo.h>
 #include <asm/hwrpb.h>
 #include <asm/mmu_context.h>
+#include <asm/special_insns.h>
 
 #include "proto.h"
 
@@ -32,6 +36,7 @@
 static int opDEC_fix;
 
 static void __init
+static void
 opDEC_check(void)
 {
 	__asm__ __volatile__ (
@@ -67,6 +72,8 @@ dik_show_regs(struct pt_regs *regs, unsigned long *r9_15)
 	       regs->pc, regs->r26, regs->ps, print_tainted());
 	print_symbol("pc is at %s\n", regs->pc);
 	print_symbol("ra is at %s\n", regs->r26 );
+	printk("pc is at %pSR\n", (void *)regs->pc);
+	printk("ra is at %pSR\n", (void *)regs->r26);
 	printk("v0 = %016lx  t0 = %016lx  t1 = %016lx\n",
 	       regs->r0, regs->r1, regs->r2);
 	printk("t2 = %016lx  t3 = %016lx  t4 = %016lx\n",
@@ -134,6 +141,7 @@ dik_show_trace(unsigned long *sp)
 		printk("[<%lx>]", tmp);
 		print_symbol(" %s", tmp);
 		printk("\n");
+		printk("[<%lx>] %pSR\n", tmp, (void *)tmp);
 		if (i > 40) {
 			printk(" ...");
 			break;
@@ -186,6 +194,7 @@ die_if_kernel(char * str, struct pt_regs *regs, long err, unsigned long *r9_15)
 	printk("%s(%d): %s %ld\n", current->comm, task_pid_nr(current), str, err);
 	dik_show_regs(regs, r9_15);
 	add_taint(TAINT_DIE);
+	add_taint(TAINT_DIE, LOCKDEP_NOW_UNRELIABLE);
 	dik_show_trace((unsigned long *)(regs+1));
 	dik_show_code((unsigned int *)regs->pc);
 
@@ -241,7 +250,21 @@ do_entIF(unsigned long type, struct pt_regs *regs)
 	siginfo_t info;
 	int signo, code;
 
-	if ((regs->ps & ~IPL_MAX) == 0) {
+	if (type == 3) { /* FEN fault */
+		/* Irritating users can call PAL_clrfen to disable the
+		   FPU for the process.  The kernel will then trap in
+		   do_switch_stack and undo_switch_stack when we try
+		   to save and restore the FP registers.
+
+		   Given that GCC by default generates code that uses the
+		   FP registers, PAL_clrfen is not useful except for DoS
+		   attacks.  So turn the bleeding FPU back on and be done
+		   with it.  */
+		current_thread_info()->pcb.flags |= 1;
+		__reload_thread(&current_thread_info()->pcb);
+		return;
+	}
+	if (!user_mode(regs)) {
 		if (type == 1) {
 			const unsigned int *data
 			  = (const unsigned int *) regs->pc;
@@ -249,6 +272,21 @@ do_entIF(unsigned long type, struct pt_regs *regs)
 			       (const char *)(data[1] | (long)data[2] << 32), 
 			       data[0]);
 		}
+#ifdef CONFIG_ALPHA_WTINT
+		if (type == 4) {
+			/* If CALL_PAL WTINT is totally unsupported by the
+			   PALcode, e.g. MILO, "emulate" it by overwriting
+			   the insn.  */
+			unsigned int *pinsn
+			  = (unsigned int *) regs->pc - 1;
+			if (*pinsn == PAL_wtint) {
+				*pinsn = 0x47e01400; /* mov 0,$0 */
+				imb();
+				regs->r0 = 0;
+				return;
+			}
+		}
+#endif /* ALPHA_WTINT */
 		die_if_kernel((type == 1 ? "Kernel Bug" : "Instruction fault"),
 			      regs, type, NULL);
 	}
@@ -374,20 +412,6 @@ do_entIF(unsigned long type, struct pt_regs *regs)
 			}
 		}
 		break;
-
-	      case 3: /* FEN fault */
-		/* Irritating users can call PAL_clrfen to disable the
-		   FPU for the process.  The kernel will then trap in
-		   do_switch_stack and undo_switch_stack when we try
-		   to save and restore the FP registers.
-
-		   Given that GCC by default generates code that uses the
-		   FP registers, PAL_clrfen is not useful except for DoS
-		   attacks.  So turn the bleeding FPU back on and be done
-		   with it.  */
-		current_thread_info()->pcb.flags |= 1;
-		__reload_thread(&current_thread_info()->pcb);
-		return;
 
 	      case 5: /* illoc */
 	      default: /* unexpected instruction-fault type */
@@ -624,6 +648,7 @@ do_entUna(void * va, unsigned long opcode, unsigned long reg,
 
 	lock_kernel();
 	printk("Bad unaligned kernel access at %016lx: %p %lx %ld\n",
+	printk("Bad unaligned kernel access at %016lx: %p %lx %lu\n",
 		pc, va, opcode, reg);
 	do_exit(SIGSEGV);
 
@@ -758,7 +783,7 @@ s_reg_to_mem (unsigned long s_reg)
 static int unauser_reg_offsets[32] = {
 	R(r0), R(r1), R(r2), R(r3), R(r4), R(r5), R(r6), R(r7), R(r8),
 	/* r9 ... r15 are stored in front of regs.  */
-	-56, -48, -40, -32, -24, -16, -8,
+	-64, -56, -48, -40, -32, -24, -16,	/* padding at -8 */
 	R(r16), R(r17), R(r18),
 	R(r19), R(r20), R(r21), R(r22), R(r23), R(r24), R(r25), R(r26),
 	R(r27), R(r28), R(gp),
@@ -773,6 +798,7 @@ do_entUnaUser(void __user * va, unsigned long opcode,
 {
 	static int cnt = 0;
 	static unsigned long last_time;
+	static DEFINE_RATELIMIT_STATE(ratelimit, 5 * HZ, 5);
 
 	unsigned long tmp1, tmp2, tmp3, tmp4;
 	unsigned long fake_reg, *reg_addr = &fake_reg;
@@ -787,6 +813,8 @@ do_entUnaUser(void __user * va, unsigned long opcode,
 			cnt = 0;
 		}
 		if (++cnt < 5) {
+	if (!(current_thread_info()->status & TS_UAC_NOPRINT)) {
+		if (__ratelimit(&ratelimit)) {
 			printk("%s(%d): unaligned trap at %016lx: %p %lx %ld\n",
 			       current->comm, task_pid_nr(current),
 			       regs->pc - 4, va, opcode, reg);
@@ -797,6 +825,11 @@ do_entUnaUser(void __user * va, unsigned long opcode,
 		goto give_sigbus;
 	/* Not sure why you'd want to use this, but... */
 	if (test_thread_flag (TIF_UAC_NOFIX))
+	}
+	if ((current_thread_info()->status & TS_UAC_SIGBUS))
+		goto give_sigbus;
+	/* Not sure why you'd want to use this, but... */
+	if ((current_thread_info()->status & TS_UAC_NOFIX))
 		return;
 
 	/* Don't bother reading ds in the access check since we already
@@ -1073,6 +1106,7 @@ give_sigbus:
 }
 
 void __init
+void
 trap_init(void)
 {
 	/* Tell PAL-code what global pointer we want in the kernel.  */

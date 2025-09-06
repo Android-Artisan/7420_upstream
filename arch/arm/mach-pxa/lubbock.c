@@ -16,6 +16,15 @@
 #include <linux/init.h>
 #include <linux/platform_device.h>
 #include <linux/sysdev.h>
+#include <linux/clkdev.h>
+#include <linux/gpio.h>
+#include <linux/gpio/machine.h>
+#include <linux/module.h>
+#include <linux/kernel.h>
+#include <linux/init.h>
+#include <linux/io.h>
+#include <linux/platform_device.h>
+#include <linux/syscore_ops.h>
 #include <linux/major.h>
 #include <linux/fb.h>
 #include <linux/interrupt.h>
@@ -26,6 +35,12 @@
 #include <linux/spi/spi.h>
 #include <linux/spi/ads7846.h>
 #include <mach/pxa2xx_spi.h>
+#include <linux/slab.h>
+#include <linux/leds.h>
+
+#include <linux/spi/spi.h>
+#include <linux/spi/ads7846.h>
+#include <linux/spi/pxa2xx_spi.h>
 
 #include <asm/setup.h>
 #include <asm/memory.h>
@@ -53,16 +68,39 @@
 
 #include "generic.h"
 #include "clock.h"
+#include <mach/pxa25x.h>
+#include <mach/audio.h>
+#include <mach/lubbock.h>
+#include <mach/udc.h>
+#include <linux/platform_data/irda-pxaficp.h>
+#include <linux/platform_data/video-pxafb.h>
+#include <linux/platform_data/mmc-pxamci.h>
+#include <mach/pm.h>
+#include <mach/smemc.h>
+
+#include "generic.h"
 #include "devices.h"
 
 static unsigned long lubbock_pin_config[] __initdata = {
 	GPIO15_nCS_1,	/* CS1 - Flash */
 	GPIO79_nCS_3,	/* CS3 - SMC ethernet */
+	GPIO78_nCS_2,	/* CS2 - Baseboard FGPA */
+	GPIO79_nCS_3,	/* CS3 - SMC ethernet */
+	GPIO80_nCS_4,	/* CS4 - SA1111 */
 
 	/* SSP data pins */
 	GPIO23_SSP1_SCLK,
 	GPIO25_SSP1_TXD,
 	GPIO26_SSP1_RXD,
+
+	/* AC97 */
+	GPIO28_AC97_BITCLK,
+	GPIO29_AC97_SDATA_IN_0,
+	GPIO30_AC97_SDATA_OUT,
+	GPIO31_AC97_SYNC,
+
+	/* LCD - 16bpp DSTN */
+	GPIOxx_LCD_DSTN_16BPP,
 
 	/* BTUART */
 	GPIO42_BTUART_RXD,
@@ -86,11 +124,22 @@ static unsigned long lubbock_pin_config[] __initdata = {
 	GPIO6_MMC_CLK,
 	GPIO8_MMC_CS0,
 
+	/* SA1111 chip */
+	GPIO11_3_6MHz,
+
 	/* wakeup */
 	GPIO1_GPIO | WAKEUP_ON_EDGE_RISE,
 };
 
 #define LUB_MISC_WR		__LUB_REG(LUBBOCK_FPGA_PHYS + 0x080)
+
+#define LUB_HEXLED		__LUB_REG(LUBBOCK_FPGA_PHYS + 0x010)
+#define LUB_MISC_WR		__LUB_REG(LUBBOCK_FPGA_PHYS + 0x080)
+
+void lubbock_set_hexled(uint32_t value)
+{
+	LUB_HEXLED = value;
+}
 
 void lubbock_set_misc_wr(unsigned int mask, unsigned int set)
 {
@@ -212,11 +261,19 @@ static struct resource sa1111_resources[] = {
 	},
 };
 
+static struct sa1111_platform_data sa1111_info = {
+	.irq_base	= LUBBOCK_SA1111_IRQ_BASE,
+	.disable_devs	= SA1111_DEVID_SAC,
+};
+
 static struct platform_device sa1111_device = {
 	.name		= "sa1111",
 	.id		= -1,
 	.num_resources	= ARRAY_SIZE(sa1111_resources),
 	.resource	= sa1111_resources,
+	.dev		= {
+		.platform_data	= &sa1111_info,
+	},
 };
 
 /* ADS7846 is connected through SSP ... and if your board has J5 populated,
@@ -363,11 +420,38 @@ static struct platform_device lubbock_flash_device[2] = {
 	},
 };
 
+static struct resource lubbock_cplds_resources[] = {
+	[0] = {
+		.start	= LUBBOCK_FPGA_PHYS + 0xc0,
+		.end	= LUBBOCK_FPGA_PHYS + 0xe0 - 1,
+		.flags	= IORESOURCE_MEM,
+	},
+	[1] = {
+		.start	= PXA_GPIO_TO_IRQ(0),
+		.end	= PXA_GPIO_TO_IRQ(0),
+		.flags	= IORESOURCE_IRQ | IORESOURCE_IRQ_LOWEDGE,
+	},
+	[2] = {
+		.start	= LUBBOCK_IRQ(0),
+		.end	= LUBBOCK_IRQ(6),
+		.flags	= IORESOURCE_IRQ,
+	},
+};
+
+static struct platform_device lubbock_cplds_device = {
+	.name		= "pxa_cplds_irqs",
+	.id		= -1,
+	.resource	= &lubbock_cplds_resources[0],
+	.num_resources	= 3,
+};
+
+
 static struct platform_device *devices[] __initdata = {
 	&sa1111_device,
 	&smc91x_device,
 	&lubbock_flash_device[0],
 	&lubbock_flash_device[1],
+	&lubbock_cplds_device,
 };
 
 static struct pxafb_mode_info sharp_lm8v31_mode = {
@@ -440,6 +524,7 @@ static int lubbock_mci_init(struct device *dev,
 	mmc_timer.data = (unsigned long) data;
 	return request_irq(LUBBOCK_SD_IRQ, lubbock_detect_int,
 			IRQF_SAMPLE_RANDOM, "lubbock-sd-detect", data);
+			   0, "lubbock-sd-detect", data);
 }
 
 static int lubbock_mci_get_ro(struct device *dev)
@@ -459,6 +544,14 @@ static struct pxamci_platform_data lubbock_mci_platform_data = {
 	.init 		= lubbock_mci_init,
 	.get_ro		= lubbock_mci_get_ro,
 	.exit 		= lubbock_mci_exit,
+	.ocr_mask		= MMC_VDD_32_33|MMC_VDD_33_34,
+	.detect_delay_ms	= 10,
+	.init 			= lubbock_mci_init,
+	.get_ro			= lubbock_mci_get_ro,
+	.exit 			= lubbock_mci_exit,
+	.gpio_card_detect	= -1,
+	.gpio_card_ro		= -1,
+	.gpio_power		= -1,
 };
 
 static void lubbock_irda_transceiver_mode(struct device *dev, int mode)
@@ -478,6 +571,9 @@ static void lubbock_irda_transceiver_mode(struct device *dev, int mode)
 static struct pxaficp_platform_data lubbock_ficp_platform_data = {
 	.transceiver_cap  = IR_SIRMODE | IR_FIRMODE,
 	.transceiver_mode = lubbock_irda_transceiver_mode,
+	.gpio_pwdown		= -1,
+	.transceiver_cap	= IR_SIRMODE | IR_FIRMODE,
+	.transceiver_mode	= lubbock_irda_transceiver_mode,
 };
 
 static void __init lubbock_init(void)
@@ -489,12 +585,20 @@ static void __init lubbock_init(void)
 	clk_add_alias("SA1111_CLK", NULL, "GPIO11_CLK", NULL);
 	pxa_set_udc_info(&udc_info);
 	set_pxa_fb_info(&sharp_lm8v31);
+	pxa_set_ffuart_info(NULL);
+	pxa_set_btuart_info(NULL);
+	pxa_set_stuart_info(NULL);
+
+	clk_add_alias("SA1111_CLK", NULL, "GPIO11_CLK", NULL);
+	pxa_set_udc_info(&udc_info);
+	pxa_set_fb_info(NULL, &sharp_lm8v31);
 	pxa_set_mci_info(&lubbock_mci_platform_data);
 	pxa_set_ficp_info(&lubbock_ficp_platform_data);
 	pxa_set_ac97_info(NULL);
 
 	lubbock_flash_data[0].width = lubbock_flash_data[1].width =
 		(BOOT_DEF & 1) ? 2 : 4;
+		(__raw_readl(BOOT_DEF) & 1) ? 2 : 4;
 	/* Compensate for the nROMBT switch which swaps the flash banks */
 	printk(KERN_NOTICE "Lubbock configured to boot from %s (bank %d)\n",
 	       flashboot?"Flash":"ROM", flashboot);
@@ -519,6 +623,7 @@ static struct map_desc lubbock_io_desc[] __initdata = {
 static void __init lubbock_map_io(void)
 {
 	pxa_map_io();
+	pxa25x_map_io();
 	iotable_init(lubbock_io_desc, ARRAY_SIZE(lubbock_io_desc));
 
 	PCFR |= PCFR_OPDE;
@@ -532,4 +637,105 @@ MACHINE_START(LUBBOCK, "Intel DBPXA250 Development Platform (aka Lubbock)")
 	.init_irq	= lubbock_init_irq,
 	.timer		= &pxa_timer,
 	.init_machine	= lubbock_init,
+/*
+ * Driver for the 8 discrete LEDs available for general use:
+ * Note: bits [15-8] are used to enable/blank the 8 7 segment hex displays
+ * so be sure to not monkey with them here.
+ */
+
+#if defined(CONFIG_NEW_LEDS) && defined(CONFIG_LEDS_CLASS)
+struct lubbock_led {
+	struct led_classdev	cdev;
+	u8			mask;
+};
+
+/*
+ * The triggers lines up below will only be used if the
+ * LED triggers are compiled in.
+ */
+static const struct {
+	const char *name;
+	const char *trigger;
+} lubbock_leds[] = {
+	{ "lubbock:D28", "default-on", },
+	{ "lubbock:D27", "cpu0", },
+	{ "lubbock:D26", "heartbeat" },
+	{ "lubbock:D25", },
+	{ "lubbock:D24", },
+	{ "lubbock:D23", },
+	{ "lubbock:D22", },
+	{ "lubbock:D21", },
+};
+
+static void lubbock_led_set(struct led_classdev *cdev,
+			      enum led_brightness b)
+{
+	struct lubbock_led *led = container_of(cdev,
+					 struct lubbock_led, cdev);
+	u32 reg = LUB_DISC_BLNK_LED;
+
+	if (b != LED_OFF)
+		reg |= led->mask;
+	else
+		reg &= ~led->mask;
+
+	LUB_DISC_BLNK_LED = reg;
+}
+
+static enum led_brightness lubbock_led_get(struct led_classdev *cdev)
+{
+	struct lubbock_led *led = container_of(cdev,
+					 struct lubbock_led, cdev);
+	u32 reg = LUB_DISC_BLNK_LED;
+
+	return (reg & led->mask) ? LED_FULL : LED_OFF;
+}
+
+static int __init lubbock_leds_init(void)
+{
+	int i;
+
+	if (!machine_is_lubbock())
+		return -ENODEV;
+
+	/* All ON */
+	LUB_DISC_BLNK_LED |= 0xff;
+	for (i = 0; i < ARRAY_SIZE(lubbock_leds); i++) {
+		struct lubbock_led *led;
+
+		led = kzalloc(sizeof(*led), GFP_KERNEL);
+		if (!led)
+			break;
+
+		led->cdev.name = lubbock_leds[i].name;
+		led->cdev.brightness_set = lubbock_led_set;
+		led->cdev.brightness_get = lubbock_led_get;
+		led->cdev.default_trigger = lubbock_leds[i].trigger;
+		led->mask = BIT(i);
+
+		if (led_classdev_register(NULL, &led->cdev) < 0) {
+			kfree(led);
+			break;
+		}
+	}
+
+	return 0;
+}
+
+/*
+ * Since we may have triggers on any subsystem, defer registration
+ * until after subsystem_init.
+ */
+fs_initcall(lubbock_leds_init);
+#endif
+
+MACHINE_START(LUBBOCK, "Intel DBPXA250 Development Platform (aka Lubbock)")
+	/* Maintainer: MontaVista Software Inc. */
+	.map_io		= lubbock_map_io,
+	.nr_irqs	= LUBBOCK_NR_IRQS,
+	.init_irq	= pxa25x_init_irq,
+	.handle_irq	= pxa25x_handle_irq,
+	.init_time	= pxa_timer_init,
+	.init_machine	= lubbock_init,
+	.restart	= pxa_restart,
 MACHINE_END

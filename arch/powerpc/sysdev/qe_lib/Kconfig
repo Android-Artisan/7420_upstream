@@ -33,3 +33,6 @@ config QE_GPIO
 	help
 	  Say Y here if you're going to use hardware that connects to the
 	  QE GPIOs.
+	default y if USB_FSL_QE
+	help
+	  QE USB Controller support

@@ -80,6 +80,22 @@ static struct hw_interrupt_type rx164_irq_type = {
 	.disable	= rx164_disable_irq,
 	.ack		= rx164_disable_irq,
 	.end		= rx164_end_irq,
+rx164_enable_irq(struct irq_data *d)
+{
+	rx164_update_irq_hw(cached_irq_mask |= 1UL << (d->irq - 16));
+}
+
+static void
+rx164_disable_irq(struct irq_data *d)
+{
+	rx164_update_irq_hw(cached_irq_mask &= ~(1UL << (d->irq - 16)));
+}
+
+static struct irq_chip rx164_irq_type = {
+	.name		= "RX164",
+	.irq_unmask	= rx164_enable_irq,
+	.irq_mask	= rx164_disable_irq,
+	.irq_mask_ack	= rx164_disable_irq,
 };
 
 static void 
@@ -118,6 +134,8 @@ rx164_init_irq(void)
 	for (i = 16; i < 40; ++i) {
 		irq_desc[i].status = IRQ_DISABLED | IRQ_LEVEL;
 		irq_desc[i].chip = &rx164_irq_type;
+		irq_set_chip_and_handler(i, &rx164_irq_type, handle_level_irq);
+		irq_set_status_flags(i, IRQ_LEVEL);
 	}
 
 	init_i8259a_irqs();
@@ -162,6 +180,7 @@ rx164_init_irq(void)
 
 static int __init
 rx164_map_irq(struct pci_dev *dev, u8 slot, u8 pin)
+rx164_map_irq(const struct pci_dev *dev, u8 slot, u8 pin)
 {
 #if 0
 	static char irq_tab_pass1[6][5] __initdata = {

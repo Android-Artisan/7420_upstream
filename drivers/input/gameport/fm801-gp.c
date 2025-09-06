@@ -79,6 +79,7 @@ static int fm801_gp_open(struct gameport *gameport, int mode)
 }
 
 static int __devinit fm801_gp_probe(struct pci_dev *pci, const struct pci_device_id *id)
+static int fm801_gp_probe(struct pci_dev *pci, const struct pci_device_id *id)
 {
 	struct fm801_gp *gp;
 	struct gameport *port;
@@ -144,6 +145,22 @@ static struct pci_device_id fm801_gp_id_table[] = {
 	{ PCI_VENDOR_ID_FORTEMEDIA, PCI_DEVICE_ID_FM801_GP, PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0  },
 	{ 0 }
 };
+static void fm801_gp_remove(struct pci_dev *pci)
+{
+	struct fm801_gp *gp = pci_get_drvdata(pci);
+
+	gameport_unregister_port(gp->gameport);
+	release_resource(gp->res_port);
+	kfree(gp);
+
+	pci_disable_device(pci);
+}
+
+static const struct pci_device_id fm801_gp_id_table[] = {
+	{ PCI_VENDOR_ID_FORTEMEDIA, PCI_DEVICE_ID_FM801_GP, PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0  },
+	{ 0 }
+};
+MODULE_DEVICE_TABLE(pci, fm801_gp_id_table);
 
 static struct pci_driver fm801_gp_driver = {
 	.name =		"FM801_gameport",
@@ -167,5 +184,11 @@ module_exit(fm801_gp_exit);
 
 MODULE_DEVICE_TABLE(pci, fm801_gp_id_table);
 
+	.remove =	fm801_gp_remove,
+};
+
+module_pci_driver(fm801_gp_driver);
+
+MODULE_DESCRIPTION("FM801 gameport driver");
 MODULE_AUTHOR("Takashi Iwai <tiwai@suse.de>");
 MODULE_LICENSE("GPL");

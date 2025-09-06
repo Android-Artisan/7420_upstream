@@ -27,6 +27,11 @@
 
 #include <linux/kernel.h>
 #include <linux/slab.h>
+ * Vendor documentation is available at:
+ * http://home.eeti.com.tw/web20/drivers/Software%20Programming%20Guide_v2.0.pdf 
+ */
+
+#include <linux/kernel.h>
 
 #include <linux/input.h>
 #include <linux/serio.h>
@@ -68,6 +73,7 @@ static psmouse_ret_t touchkit_ps2_process_byte(struct psmouse *psmouse)
 }
 
 int touchkit_ps2_detect(struct psmouse *psmouse, int set_properties)
+int touchkit_ps2_detect(struct psmouse *psmouse, bool set_properties)
 {
 	struct input_dev *dev = psmouse->dev;
 	unsigned char param[3];
@@ -87,6 +93,8 @@ int touchkit_ps2_detect(struct psmouse *psmouse, int set_properties)
 	if (set_properties) {
 		dev->evbit[0] = BIT_MASK(EV_KEY) | BIT_MASK(EV_ABS);
 		set_bit(BTN_TOUCH, dev->keybit);
+		dev->keybit[BIT_WORD(BTN_MOUSE)] = 0;
+		dev->keybit[BIT_WORD(BTN_TOUCH)] = BIT_MASK(BTN_TOUCH);
 		input_set_abs_params(dev, ABS_X, 0, TOUCHKIT_MAX_XC, 0, 0);
 		input_set_abs_params(dev, ABS_Y, 0, TOUCHKIT_MAX_YC, 0, 0);
 

@@ -9,6 +9,10 @@
 #include <linux/delay.h>
 #include <linux/kernel.h>
 #include <linux/spinlock.h>
+#include <linux/delay.h>
+#include <linux/kernel.h>
+#include <linux/spinlock.h>
+#include <linux/slab.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
 
@@ -686,6 +690,7 @@ static int pmf_add_functions(struct pmf_device *dev, void *driverdata)
 
 	for (pp = dev->node->properties; pp != 0; pp = pp->next) {
 		char *name;
+		const char *name;
 		if (strncmp(pp->name, PP_PREFIX, plen) != 0)
 			continue;
 		name = pp->name + plen;
@@ -838,11 +843,16 @@ struct pmf_function *__pmf_find_function(struct device_node *target,
 	dev = pmf_find_device(actor);
 	if (dev == NULL)
 		return NULL;
+	if (dev == NULL) {
+		result = NULL;
+		goto out;
+	}
 
 	list_for_each_entry(func, &dev->functions, link) {
 		if (name && strcmp(name, func->name))
 			continue;
 		if (func->phandle && target->node != func->phandle)
+		if (func->phandle && target->phandle != func->phandle)
 			continue;
 		if ((func->flags & flags) == 0)
 			continue;
@@ -851,6 +861,9 @@ struct pmf_function *__pmf_find_function(struct device_node *target,
 	}
 	of_node_put(actor);
 	pmf_put_device(dev);
+	pmf_put_device(dev);
+out:
+	of_node_put(actor);
 	return result;
 }
 

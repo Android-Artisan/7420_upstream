@@ -27,6 +27,9 @@
  * along with this program; see the file COPYING.
  * If not, write to the Free Software Foundation,
  * 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+ * Copyright 2005-2010 Analog Devices Inc.
+ *
+ * Licensed under the GPL-2 or later.
  */
 
 #ifndef _MACH_BLACKFIN_H_
@@ -161,5 +164,25 @@
 #define CCLK_DIV2 CSEL_DIV2	/*          CCLK = VCO / 2                                  */
 #define CCLK_DIV4 CSEL_DIV4	/*          CCLK = VCO / 4                                  */
 #define CCLK_DIV8 CSEL_DIV8	/*          CCLK = VCO / 8                                  */
+
+#include "anomaly.h"
+
+#include <asm/def_LPBlackfin.h>
+#ifdef CONFIG_BF534
+# include "defBF534.h"
+#endif
+#if defined(CONFIG_BF537) || defined(CONFIG_BF536)
+# include "defBF537.h"
+#endif
+
+#if !defined(__ASSEMBLY__)
+# include <asm/cdef_LPBlackfin.h>
+# ifdef CONFIG_BF534
+#  include "cdefBF534.h"
+# endif
+# if defined(CONFIG_BF537) || defined(CONFIG_BF536)
+#  include "cdefBF537.h"
+# endif
+#endif
 
 #endif

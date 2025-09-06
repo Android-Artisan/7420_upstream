@@ -24,7 +24,6 @@ Known bugs:
    older chips.
 
 How to use it?
-==============
 
 When booting you can pass the video parameter.
 video=tridentfb

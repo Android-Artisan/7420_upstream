@@ -302,7 +302,6 @@ int meth_reset(struct net_device *dev)
 	return 0;
 }
 
-/*============End Helper Routines=====================*/
 
 /*
  * Open and close

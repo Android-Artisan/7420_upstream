@@ -10,6 +10,7 @@
 
 #include <linux/module.h>
 #include <linux/types.h>
+#include <linux/slab.h>
 #include <linux/acpi.h>
 
 #include <asm/acpi-ext.h>
@@ -72,6 +73,10 @@ static acpi_status find_csr_space(struct acpi_resource *resource, void *data)
 	    addr.producer_consumer == ACPI_CONSUMER) {
 		space->base = addr.minimum;
 		space->length = addr.address_length;
+	    addr.address.address_length &&
+	    addr.producer_consumer == ACPI_CONSUMER) {
+		space->base = addr.address.minimum;
+		space->length = addr.address.address_length;
 		return AE_CTRL_TERMINATE;
 	}
 	return AE_OK;		/* keep looking */

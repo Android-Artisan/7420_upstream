@@ -102,6 +102,8 @@ struct mspro_param_register {
 
 	unsigned short data_count;
 	unsigned int   data_address;
+	__be16 data_count;
+	__be32 data_address;
 	unsigned char  tpc_param;
 } __attribute__((packed));
 

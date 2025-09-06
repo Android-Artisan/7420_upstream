@@ -132,6 +132,7 @@ ENDPROC(lclear_user)
 	.section __ex_table,"aw"
 	ASM_ULONG_INSN 1b,2b
 	.previous
+	ASM_EXCEPTIONTABLE_ENTRY(1b,2b)
 
 	.procend
 
@@ -174,6 +175,8 @@ ENDPROC(lstrnlen_user)
 	ASM_ULONG_INSN 1b,3b
 	ASM_ULONG_INSN 2b,3b
 	.previous
+	ASM_EXCEPTIONTABLE_ENTRY(1b,3b)
+	ASM_EXCEPTIONTABLE_ENTRY(2b,3b)
 
 	.procend
 

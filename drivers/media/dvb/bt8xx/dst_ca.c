@@ -159,11 +159,9 @@ static int ca_get_app_info(struct dst_state *state)
 		return -1;
 	}
 	dprintk(verbose, DST_CA_INFO, 1, " -->dst_put_ci SUCCESS !");
-	dprintk(verbose, DST_CA_INFO, 1, " ================================ CI Module Application Info ======================================");
 	dprintk(verbose, DST_CA_INFO, 1, " Application Type=[%d], Application Vendor=[%d], Vendor Code=[%d]\n%s: Application info=[%s]",
 		state->messages[7], (state->messages[8] << 8) | state->messages[9],
 		(state->messages[10] << 8) | state->messages[11], __func__, (char *)(&state->messages[12]));
-	dprintk(verbose, DST_CA_INFO, 1, " ==================================================================================================");
 
 	// Transform dst message to correct application_info message
 	length = state->messages[5];
@@ -246,7 +244,6 @@ static int ca_get_slot_caps(struct dst_state *state, struct ca_caps *p_ca_caps, 
 	/*	Will implement the rest soon		*/
 
 	dprintk(verbose, DST_CA_INFO, 1, " Slot cap = [%d]", slot_cap[7]);
-	dprintk(verbose, DST_CA_INFO, 0, "===================================\n");
 	for (i = 0; i < slot_cap[0] + 1; i++)
 		dprintk(verbose, DST_CA_INFO, 0, " %d", slot_cap[i]);
 	dprintk(verbose, DST_CA_INFO, 0, "\n");
@@ -286,7 +283,6 @@ static int ca_get_slot_info(struct dst_state *state, struct ca_slot_info *p_ca_s
 	/*	Will implement the rest soon		*/
 
 	dprintk(verbose, DST_CA_INFO, 1, " Slot info = [%d]", slot_info[3]);
-	dprintk(verbose, DST_CA_INFO, 0, "===================================\n");
 	for (i = 0; i < 8; i++)
 		dprintk(verbose, DST_CA_INFO, 0, " %d", slot_info[i]);
 	dprintk(verbose, DST_CA_INFO, 0, "\n");

@@ -7,6 +7,11 @@
 #include <linux/blkpg.h>
 #include <linux/cdrom.h>
 #include <linux/delay.h>
+#include <linux/module.h>
+#include <linux/blkpg.h>
+#include <linux/cdrom.h>
+#include <linux/delay.h>
+#include <linux/slab.h>
 #include <asm/io.h>
 #include <asm/uaccess.h>
 
@@ -186,17 +191,9 @@ int sr_do_ioctl(Scsi_CD *cd, struct packet_command *cgc)
 	struct scsi_device *SDev;
 	struct scsi_sense_hdr sshdr;
 	int result, err = 0, retries = 0;
-	struct request_sense *sense = cgc->sense;
+	unsigned char sense_buffer[SCSI_SENSE_BUFFERSIZE];
 
 	SDev = cd->device;
-
-	if (!sense) {
-		sense = kmalloc(SCSI_SENSE_BUFFERSIZE, GFP_KERNEL);
-		if (!sense) {
-			err = -ENOMEM;
-			goto out;
-		}
-	}
 
       retry:
 	if (!scsi_block_when_processing_errors(SDev)) {
@@ -204,12 +201,17 @@ int sr_do_ioctl(Scsi_CD *cd, struct packet_command *cgc)
 		goto out;
 	}
 
-	memset(sense, 0, sizeof(*sense));
+	memset(sense_buffer, 0, sizeof(sense_buffer));
 	result = scsi_execute(SDev, cgc->cmd, cgc->data_direction,
 			      cgc->buffer, cgc->buflen, (char *)sense,
 			      cgc->timeout, IOCTL_RETRIES, 0);
+			      cgc->buffer, cgc->buflen, sense_buffer,
+			      cgc->timeout, IOCTL_RETRIES, 0, NULL);
 
-	scsi_normalize_sense((char *)sense, sizeof(*sense), &sshdr);
+	scsi_normalize_sense(sense_buffer, sizeof(sense_buffer), &sshdr);
+
+	if (cgc->sense)
+		memcpy(cgc->sense, sense_buffer, sizeof(*cgc->sense));
 
 	/* Minimal error checking.  Ignore cases we know about, and report the rest. */
 	if (driver_byte(result) != 0) {
@@ -218,6 +220,8 @@ int sr_do_ioctl(Scsi_CD *cd, struct packet_command *cgc)
 			SDev->changed = 1;
 			if (!cgc->quiet)
 				printk(KERN_INFO "%s: disc change detected.\n", cd->cdi.name);
+				sr_printk(KERN_INFO, cd,
+					  "disc change detected.\n");
 			if (retries++ < 10)
 				goto retry;
 			err = -ENOMEDIUM;
@@ -228,6 +232,8 @@ int sr_do_ioctl(Scsi_CD *cd, struct packet_command *cgc)
 				/* sense: Logical unit is in process of becoming ready */
 				if (!cgc->quiet)
 					printk(KERN_INFO "%s: CDROM not ready yet.\n", cd->cdi.name);
+					sr_printk(KERN_INFO, cd,
+						  "CDROM not ready yet.\n");
 				if (retries++ < 10) {
 					/* sleep 2 sec and try again */
 					ssleep(2);
@@ -243,6 +249,9 @@ int sr_do_ioctl(Scsi_CD *cd, struct packet_command *cgc)
 #ifdef DEBUG
 			scsi_print_sense_hdr("sr", &sshdr);
 #endif
+				sr_printk(KERN_INFO, cd,
+					  "CDROM not ready.  Make sure there "
+					  "is a disc in the drive.\n");
 			err = -ENOMEDIUM;
 			break;
 		case ILLEGAL_REQUEST:
@@ -260,14 +269,14 @@ int sr_do_ioctl(Scsi_CD *cd, struct packet_command *cgc)
 			printk(KERN_ERR "%s: CDROM (ioctl) error, command: ", cd->cdi.name);
 			__scsi_print_command(cgc->cmd);
 			scsi_print_sense_hdr("sr", &sshdr);
+			break;
+		default:
 			err = -EIO;
 		}
 	}
 
 	/* Wake up a process waiting for device */
       out:
-	if (!cgc->sense)
-		kfree(sense);
 	cgc->stat = err;
 	return err;
 }
@@ -309,6 +318,14 @@ int sr_drive_status(struct cdrom_device_info *cdi, int slot)
 	if (0 == sr_test_unit_ready(cd->device, &sshdr))
 		return CDS_DISC_OK;
 
+	if (!scsi_test_unit_ready(cd->device, SR_TIMEOUT, MAX_RETRIES, &sshdr))
+		return CDS_DISC_OK;
+
+	/* SK/ASC/ASCQ of 2/4/1 means "unit is becoming ready" */
+	if (scsi_sense_valid(&sshdr) && sshdr.sense_key == NOT_READY
+			&& sshdr.asc == 0x04 && sshdr.ascq == 0x01)
+		return CDS_DRIVE_NOT_READY;
+
 	if (!cdrom_get_media_event(cdi, &med)) {
 		if (med.media_present)
 			return CDS_DISC_OK;
@@ -317,6 +334,15 @@ int sr_drive_status(struct cdrom_device_info *cdi, int slot)
 		else
 			return CDS_NO_DISC;
 	}
+
+	/*
+	 * SK/ASC/ASCQ of 2/4/2 means "initialization required"
+	 * Using CD_TRAY_OPEN results in an START_STOP_UNIT to close
+	 * the tray, which resolves the initialization requirement.
+	 */
+	if (scsi_sense_valid(&sshdr) && sshdr.sense_key == NOT_READY
+			&& sshdr.asc == 0x04 && sshdr.ascq == 0x02)
+		return CDS_TRAY_OPEN;
 
 	/*
 	 * 0x04 is format in progress .. but there must be a disc present!
@@ -477,6 +503,8 @@ static int sr_read_cd(Scsi_CD *cd, unsigned char *dest, int lba, int format, int
 #ifdef DEBUG
 	printk("%s: sr_read_cd lba=%d format=%d blksize=%d\n",
 	       cd->cdi.name, lba, format, blksize);
+	sr_printk(KERN_INFO, cd, "sr_read_cd lba=%d format=%d blksize=%d\n",
+		  lba, format, blksize);
 #endif
 
 	memset(&cgc, 0, sizeof(struct packet_command));
@@ -524,6 +552,8 @@ static int sr_read_sector(Scsi_CD *cd, int lba, int blksize, unsigned char *dest
 			return rc;
 		cd->readcd_known = 0;
 		printk("CDROM does'nt support READ CD (0xbe) command\n");
+		sr_printk(KERN_INFO, cd,
+			  "CDROM does'nt support READ CD (0xbe) command\n");
 		/* fall & retry the other way */
 	}
 	/* ... if this fails, we switch the blocksize using MODE SELECT */
@@ -533,6 +563,8 @@ static int sr_read_sector(Scsi_CD *cd, int lba, int blksize, unsigned char *dest
 	}
 #ifdef DEBUG
 	printk("%s: sr_read_sector lba=%d blksize=%d\n", cd->cdi.name, lba, blksize);
+	sr_printk(KERN_INFO, cd, "sr_read_sector lba=%d blksize=%d\n",
+		  lba, blksize);
 #endif
 
 	memset(&cgc, 0, sizeof(struct packet_command));
@@ -577,6 +609,7 @@ int sr_is_xa(Scsi_CD *cd)
 	kfree(raw_sector);
 #ifdef DEBUG
 	printk("%s: sr_is_xa: %d\n", cd->cdi.name, is_xa);
+	sr_printk(KERN_INFO, cd, "sr_is_xa: %d\n", is_xa);
 #endif
 	return is_xa;
 }

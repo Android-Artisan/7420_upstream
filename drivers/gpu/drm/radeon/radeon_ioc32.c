@@ -32,6 +32,8 @@
 #include "drmP.h"
 #include "drm.h"
 #include "radeon_drm.h"
+#include <drm/drmP.h>
+#include <drm/radeon_drm.h>
 #include "radeon_drv.h"
 
 typedef struct drm_radeon_init32 {
@@ -94,6 +96,7 @@ static int compat_radeon_cp_init(struct file *file, unsigned int cmd,
 
 	return drm_ioctl(file->f_path.dentry->d_inode, file,
 			 DRM_IOCTL_RADEON_CP_INIT, (unsigned long)init);
+	return drm_ioctl(file, DRM_IOCTL_RADEON_CP_INIT, (unsigned long)init);
 }
 
 typedef struct drm_radeon_clear32 {
@@ -127,6 +130,7 @@ static int compat_radeon_cp_clear(struct file *file, unsigned int cmd,
 
 	return drm_ioctl(file->f_path.dentry->d_inode, file,
 			 DRM_IOCTL_RADEON_CLEAR, (unsigned long)clr);
+	return drm_ioctl(file, DRM_IOCTL_RADEON_CLEAR, (unsigned long)clr);
 }
 
 typedef struct drm_radeon_stipple32 {
@@ -151,6 +155,7 @@ static int compat_radeon_cp_stipple(struct file *file, unsigned int cmd,
 
 	return drm_ioctl(file->f_path.dentry->d_inode, file,
 			 DRM_IOCTL_RADEON_STIPPLE, (unsigned long)request);
+	return drm_ioctl(file, DRM_IOCTL_RADEON_STIPPLE, (unsigned long)request);
 }
 
 typedef struct drm_radeon_tex_image32 {
@@ -206,6 +211,7 @@ static int compat_radeon_cp_texture(struct file *file, unsigned int cmd,
 
 	return drm_ioctl(file->f_path.dentry->d_inode, file,
 			 DRM_IOCTL_RADEON_TEXTURE, (unsigned long)request);
+	return drm_ioctl(file, DRM_IOCTL_RADEON_TEXTURE, (unsigned long)request);
 }
 
 typedef struct drm_radeon_vertex2_32 {
@@ -240,6 +246,7 @@ static int compat_radeon_cp_vertex2(struct file *file, unsigned int cmd,
 
 	return drm_ioctl(file->f_path.dentry->d_inode, file,
 			 DRM_IOCTL_RADEON_VERTEX2, (unsigned long)request);
+	return drm_ioctl(file, DRM_IOCTL_RADEON_VERTEX2, (unsigned long)request);
 }
 
 typedef struct drm_radeon_cmd_buffer32 {
@@ -270,6 +277,7 @@ static int compat_radeon_cp_cmdbuf(struct file *file, unsigned int cmd,
 
 	return drm_ioctl(file->f_path.dentry->d_inode, file,
 			 DRM_IOCTL_RADEON_CMDBUF, (unsigned long)request);
+	return drm_ioctl(file, DRM_IOCTL_RADEON_CMDBUF, (unsigned long)request);
 }
 
 typedef struct drm_radeon_getparam32 {
@@ -295,6 +303,7 @@ static int compat_radeon_cp_getparam(struct file *file, unsigned int cmd,
 
 	return drm_ioctl(file->f_path.dentry->d_inode, file,
 			 DRM_IOCTL_RADEON_GETPARAM, (unsigned long)request);
+	return drm_ioctl(file, DRM_IOCTL_RADEON_GETPARAM, (unsigned long)request);
 }
 
 typedef struct drm_radeon_mem_alloc32 {
@@ -324,6 +333,7 @@ static int compat_radeon_mem_alloc(struct file *file, unsigned int cmd,
 
 	return drm_ioctl(file->f_path.dentry->d_inode, file,
 			 DRM_IOCTL_RADEON_ALLOC, (unsigned long)request);
+	return drm_ioctl(file, DRM_IOCTL_RADEON_ALLOC, (unsigned long)request);
 }
 
 typedef struct drm_radeon_irq_emit32 {
@@ -347,6 +357,7 @@ static int compat_radeon_irq_emit(struct file *file, unsigned int cmd,
 
 	return drm_ioctl(file->f_path.dentry->d_inode, file,
 			 DRM_IOCTL_RADEON_IRQ_EMIT, (unsigned long)request);
+	return drm_ioctl(file, DRM_IOCTL_RADEON_IRQ_EMIT, (unsigned long)request);
 }
 
 /* The two 64-bit arches where alignof(u64)==4 in 32-bit code */
@@ -374,12 +385,14 @@ static int compat_radeon_cp_setparam(struct file *file, unsigned int cmd,
 
 	return drm_ioctl(file->f_dentry->d_inode, file,
 			 DRM_IOCTL_RADEON_SETPARAM, (unsigned long) request);
+	return drm_ioctl(file, DRM_IOCTL_RADEON_SETPARAM, (unsigned long) request);
 }
 #else
 #define compat_radeon_cp_setparam NULL
 #endif /* X86_64 || IA64 */
 
 drm_ioctl_compat_t *radeon_compat_ioctls[] = {
+static drm_ioctl_compat_t *radeon_compat_ioctls[] = {
 	[DRM_RADEON_CP_INIT] = compat_radeon_cp_init,
 	[DRM_RADEON_CLEAR] = compat_radeon_cp_clear,
 	[DRM_RADEON_STIPPLE] = compat_radeon_cp_stipple,
@@ -419,6 +432,26 @@ long radeon_compat_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	else
 		ret = drm_ioctl(filp->f_path.dentry->d_inode, filp, cmd, arg);
 	unlock_kernel();
+	if (nr < DRM_COMMAND_BASE + ARRAY_SIZE(radeon_compat_ioctls))
+		fn = radeon_compat_ioctls[nr - DRM_COMMAND_BASE];
+
+	if (fn != NULL)
+		ret = (*fn) (filp, cmd, arg);
+	else
+		ret = drm_ioctl(filp, cmd, arg);
+
+	return ret;
+}
+
+long radeon_kms_compat_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+{
+	unsigned int nr = DRM_IOCTL_NR(cmd);
+	int ret;
+
+	if (nr < DRM_COMMAND_BASE)
+		return drm_compat_ioctl(filp, cmd, arg);
+
+	ret = radeon_drm_ioctl(filp, cmd, arg);
 
 	return ret;
 }

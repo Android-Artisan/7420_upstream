@@ -87,6 +87,13 @@ static int r9701_get_datetime(struct device *dev, struct rtc_time *dt)
 	dt->tm_mday = BCD2BIN(buf[3]); /* RDAYCNT */
 	dt->tm_mon = BCD2BIN(buf[4]) - 1; /* RMONCNT */
 	dt->tm_year = BCD2BIN(buf[5]) + 100; /* RYRCNT */
+	dt->tm_sec = bcd2bin(buf[0]); /* RSECCNT */
+	dt->tm_min = bcd2bin(buf[1]); /* RMINCNT */
+	dt->tm_hour = bcd2bin(buf[2]); /* RHRCNT */
+
+	dt->tm_mday = bcd2bin(buf[3]); /* RDAYCNT */
+	dt->tm_mon = bcd2bin(buf[4]) - 1; /* RMONCNT */
+	dt->tm_year = bcd2bin(buf[5]) + 100; /* RYRCNT */
 
 	/* the rtc device may contain illegal values on power up
 	 * according to the data sheet. make sure they are valid.
@@ -109,6 +116,12 @@ static int r9701_set_datetime(struct device *dev, struct rtc_time *dt)
 	ret = ret ? ret : write_reg(dev, RDAYCNT, BIN2BCD(dt->tm_mday));
 	ret = ret ? ret : write_reg(dev, RMONCNT, BIN2BCD(dt->tm_mon + 1));
 	ret = ret ? ret : write_reg(dev, RYRCNT, BIN2BCD(dt->tm_year - 100));
+	ret = write_reg(dev, RHRCNT, bin2bcd(dt->tm_hour));
+	ret = ret ? ret : write_reg(dev, RMINCNT, bin2bcd(dt->tm_min));
+	ret = ret ? ret : write_reg(dev, RSECCNT, bin2bcd(dt->tm_sec));
+	ret = ret ? ret : write_reg(dev, RDAYCNT, bin2bcd(dt->tm_mday));
+	ret = ret ? ret : write_reg(dev, RMONCNT, bin2bcd(dt->tm_mon + 1));
+	ret = ret ? ret : write_reg(dev, RYRCNT, bin2bcd(dt->tm_year - 100));
 	ret = ret ? ret : write_reg(dev, RWKCNT, 1 << dt->tm_wday);
 
 	return ret;
@@ -147,6 +160,53 @@ static int __devexit r9701_remove(struct spi_device *spi)
 	struct rtc_device *rtc = dev_get_drvdata(&spi->dev);
 
 	rtc_device_unregister(rtc);
+static int r9701_probe(struct spi_device *spi)
+{
+	struct rtc_device *rtc;
+	struct rtc_time dt;
+	unsigned char tmp;
+	int res;
+
+	tmp = R100CNT;
+	res = read_regs(&spi->dev, &tmp, 1);
+	if (res || tmp != 0x20) {
+		dev_err(&spi->dev, "cannot read RTC register\n");
+		return -ENODEV;
+	}
+
+	/*
+	 * The device seems to be present. Now check if the registers
+	 * contain invalid values. If so, try to write a default date:
+	 * 2000/1/1 00:00:00
+	 */
+	if (r9701_get_datetime(&spi->dev, &dt)) {
+		dev_info(&spi->dev, "trying to repair invalid date/time\n");
+		dt.tm_sec  = 0;
+		dt.tm_min  = 0;
+		dt.tm_hour = 0;
+		dt.tm_mday = 1;
+		dt.tm_mon  = 0;
+		dt.tm_year = 100;
+
+		if (r9701_set_datetime(&spi->dev, &dt) ||
+				r9701_get_datetime(&spi->dev, &dt)) {
+			dev_err(&spi->dev, "cannot repair RTC register\n");
+			return -ENODEV;
+		}
+	}
+
+	rtc = devm_rtc_device_register(&spi->dev, "r9701",
+				&r9701_rtc_ops, THIS_MODULE);
+	if (IS_ERR(rtc))
+		return PTR_ERR(rtc);
+
+	spi_set_drvdata(spi, rtc);
+
+	return 0;
+}
+
+static int r9701_remove(struct spi_device *spi)
+{
 	return 0;
 }
 
@@ -170,7 +230,14 @@ static __exit void r9701_exit(void)
 	spi_unregister_driver(&r9701_driver);
 }
 module_exit(r9701_exit);
+	},
+	.probe	= r9701_probe,
+	.remove = r9701_remove,
+};
+
+module_spi_driver(r9701_driver);
 
 MODULE_DESCRIPTION("r9701 spi RTC driver");
 MODULE_AUTHOR("Magnus Damm <damm@opensource.se>");
 MODULE_LICENSE("GPL");
+MODULE_ALIAS("spi:rtc-r9701");

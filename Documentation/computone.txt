@@ -325,7 +325,6 @@ else
   $echo 'failed to create lock directory'
   exit 1
 fi
-# ============= ip2mkdev ==============
 if test -f 'ip2mkdev' && test "$first_param" != -c; then
   $echo 'x -' SKIPPING 'ip2mkdev' '(file already exists)'
 else

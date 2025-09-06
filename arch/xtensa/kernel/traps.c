@@ -12,6 +12,7 @@
  * Essentially rewritten for the Xtensa architecture port.
  *
  * Copyright (C) 2001 - 2005 Tensilica Inc.
+ * Copyright (C) 2001 - 2013 Tensilica Inc.
  *
  * Joe Taylor	<joe@tensilica.com, joetylr@yahoo.com>
  * Chris Zankel	<chris@zankel.net>
@@ -31,11 +32,15 @@
 #include <linux/kallsyms.h>
 #include <linux/delay.h>
 
+#include <linux/hardirq.h>
+
+#include <asm/stacktrace.h>
 #include <asm/ptrace.h>
 #include <asm/timex.h>
 #include <asm/uaccess.h>
 #include <asm/pgtable.h>
 #include <asm/processor.h>
+#include <asm/traps.h>
 
 #ifdef CONFIG_KGDB
 extern int gdb_enter;
@@ -59,6 +64,7 @@ extern void fast_coprocessor(void);
 
 extern void do_illegal_instruction (struct pt_regs*);
 extern void do_interrupt (struct pt_regs*);
+extern void do_nmi(struct pt_regs *);
 extern void do_unaligned_user (struct pt_regs*);
 extern void do_multihit (struct pt_regs*, unsigned long);
 extern void do_page_fault (struct pt_regs*, unsigned long);
@@ -103,6 +109,13 @@ static dispatch_init_table_t __initdata dispatch_init_table[] = {
 #endif
 { EXCCAUSE_UNALIGNED,		KRNL,	   fast_unaligned },
 #endif
+#ifdef CONFIG_XTENSA_UNALIGNED_USER
+{ EXCCAUSE_UNALIGNED,		USER,	   fast_unaligned },
+#endif
+{ EXCCAUSE_UNALIGNED,		0,	   do_unaligned_user },
+{ EXCCAUSE_UNALIGNED,		KRNL,	   fast_unaligned },
+#endif
+#ifdef CONFIG_MMU
 { EXCCAUSE_ITLB_MISS,		0,	   do_page_fault },
 { EXCCAUSE_ITLB_MISS,		USER|KRNL, fast_second_level_miss},
 { EXCCAUSE_ITLB_MULTIHIT,		0,	   do_multihit },
@@ -117,6 +130,7 @@ static dispatch_init_table_t __initdata dispatch_init_table[] = {
 { EXCCAUSE_STORE_CACHE_ATTRIBUTE,	USER|KRNL, fast_store_prohibited },
 { EXCCAUSE_STORE_CACHE_ATTRIBUTE,	0,	   do_page_fault },
 { EXCCAUSE_LOAD_CACHE_ATTRIBUTE,	0,	   do_page_fault },
+#endif /* CONFIG_MMU */
 /* XCCHAL_EXCCAUSE_FLOATING_POINT unhandled */
 #if XTENSA_HAVE_COPROCESSOR(0)
 COPROCESSOR(0),
@@ -142,6 +156,9 @@ COPROCESSOR(6),
 #if XTENSA_HAVE_COPROCESSOR(7)
 COPROCESSOR(7),
 #endif
+#if XTENSA_FAKE_NMI
+{ EXCCAUSE_MAPPED_NMI,			0,		do_nmi },
+#endif
 { EXCCAUSE_MAPPED_DEBUG,		0,		do_debug },
 { -1, -1, 0 }
 
@@ -153,6 +170,7 @@ COPROCESSOR(7),
  */
 
 unsigned long exc_table[EXC_TABLE_SIZE/4];
+DEFINE_PER_CPU(unsigned long, exc_table[EXC_TABLE_SIZE/4]);
 
 void die(const char*, struct pt_regs*, long);
 
@@ -214,6 +232,73 @@ void do_interrupt (struct pt_regs *regs)
 			do_IRQ (i,regs);
 		}
 	}
+ * IRQ handler.
+ */
+
+extern void do_IRQ(int, struct pt_regs *);
+
+#if XTENSA_FAKE_NMI
+
+irqreturn_t xtensa_pmu_irq_handler(int irq, void *dev_id);
+
+DEFINE_PER_CPU(unsigned long, nmi_count);
+
+void do_nmi(struct pt_regs *regs)
+{
+	struct pt_regs *old_regs;
+
+	if ((regs->ps & PS_INTLEVEL_MASK) < LOCKLEVEL)
+		trace_hardirqs_off();
+
+	old_regs = set_irq_regs(regs);
+	nmi_enter();
+	++*this_cpu_ptr(&nmi_count);
+	xtensa_pmu_irq_handler(0, NULL);
+	nmi_exit();
+	set_irq_regs(old_regs);
+}
+#endif
+
+void do_interrupt(struct pt_regs *regs)
+{
+	static const unsigned int_level_mask[] = {
+		0,
+		XCHAL_INTLEVEL1_MASK,
+		XCHAL_INTLEVEL2_MASK,
+		XCHAL_INTLEVEL3_MASK,
+		XCHAL_INTLEVEL4_MASK,
+		XCHAL_INTLEVEL5_MASK,
+		XCHAL_INTLEVEL6_MASK,
+		XCHAL_INTLEVEL7_MASK,
+	};
+	struct pt_regs *old_regs;
+
+	trace_hardirqs_off();
+
+	old_regs = set_irq_regs(regs);
+	irq_enter();
+
+	for (;;) {
+		unsigned intread = get_sr(interrupt);
+		unsigned intenable = get_sr(intenable);
+		unsigned int_at_level = intread & intenable;
+		unsigned level;
+
+		for (level = LOCKLEVEL; level > 0; --level) {
+			if (int_at_level & int_level_mask[level]) {
+				int_at_level &= int_level_mask[level];
+				break;
+			}
+		}
+
+		if (level == 0)
+			break;
+
+		do_IRQ(__ffs(int_at_level), regs);
+	}
+
+	irq_exit();
+	set_irq_regs(old_regs);
 }
 
 /*
@@ -259,7 +344,7 @@ do_unaligned_user (struct pt_regs *regs)
 	info.si_errno = 0;
 	info.si_code = BUS_ADRALN;
 	info.si_addr = (void *) regs->excvaddr;
-	force_sig_info(SIGSEGV, &info, current);
+	force_sig_info(SIGBUS, &info, current);
 
 }
 #endif
@@ -289,6 +374,31 @@ do_debug(struct pt_regs *regs)
 	force_sig(SIGTRAP, current);
 }
 
+
+static void set_handler(int idx, void *handler)
+{
+	unsigned int cpu;
+
+	for_each_possible_cpu(cpu)
+		per_cpu(exc_table, cpu)[idx] = (unsigned long)handler;
+}
+
+/* Set exception C handler - for temporary use when probing exceptions */
+
+void * __init trap_set_handler(int cause, void *handler)
+{
+	void *previous = (void *)per_cpu(exc_table, 0)[
+		EXC_TABLE_DEFAULT / 4 + cause];
+	set_handler(EXC_TABLE_DEFAULT / 4 + cause, handler);
+	return previous;
+}
+
+
+static void trap_init_excsave(void)
+{
+	unsigned long excsave1 = (unsigned long)this_cpu_ptr(exc_table);
+	__asm__ __volatile__("wsr  %0, excsave1\n" : : "a" (excsave1));
+}
 
 /*
  * Initialize dispatch tables.
@@ -339,6 +449,16 @@ void __init trap_init(void)
 	__asm__ __volatile__("wsr  %0, "__stringify(EXCSAVE_1)"\n" : : "a" (i));
 }
 
+	trap_init_excsave();
+}
+
+#ifdef CONFIG_SMP
+void secondary_trap_init(void)
+{
+	trap_init_excsave();
+}
+#endif
+
 /*
  * This function dumps the current valid window frame and other base registers.
  */
@@ -346,6 +466,8 @@ void __init trap_init(void)
 void show_regs(struct pt_regs * regs)
 {
 	int i, wmask;
+
+	show_regs_print_info(KERN_DEFAULT);
 
 	wmask = regs->wmask & ~1;
 
@@ -355,6 +477,10 @@ void show_regs(struct pt_regs * regs)
 		printk("%08lx ", regs->areg[i]);
 	}
 	printk("\n");
+			printk(KERN_INFO "a%02d:", i);
+		printk(KERN_CONT " %08lx", regs->areg[i]);
+	}
+	printk(KERN_CONT "\n");
 
 	printk("pc: %08lx, ps: %08lx, depc: %08lx, excvaddr: %08lx\n",
 	       regs->pc, regs->ps, regs->depc, regs->excvaddr);
@@ -379,6 +505,19 @@ void show_trace(struct task_struct *task, unsigned long *sp)
 
 	sp_start = a1 & ~(THREAD_SIZE-1);
 	sp_end = sp_start + THREAD_SIZE;
+static int show_trace_cb(struct stackframe *frame, void *data)
+{
+	if (kernel_text_address(frame->pc)) {
+		printk(" [<%08lx>] ", frame->pc);
+		print_symbol("%s\n", frame->pc);
+	}
+	return 0;
+}
+
+void show_trace(struct task_struct *task, unsigned long *sp)
+{
+	if (!sp)
+		sp = stack_pointer(task);
 
 	printk("Call Trace:");
 #ifdef CONFIG_KALLSYMS
@@ -402,6 +541,7 @@ void show_trace(struct task_struct *task, unsigned long *sp)
 			print_symbol("%s\n", pc);
 		}
 	}
+	walk_stackframe(sp, show_trace_cb, NULL);
 	printk("\n");
 }
 
@@ -421,6 +561,9 @@ void show_stack(struct task_struct *task, unsigned long *sp)
 		__asm__ __volatile__ ("mov %0, a1\n" : "=a"(sp));
 
  	stack = sp;
+	if (!sp)
+		sp = stack_pointer(task);
+	stack = sp;
 
 	printk("\nStack: ");
 
@@ -481,6 +624,7 @@ void die(const char * str, struct pt_regs * regs, long err)
 		show_stack(NULL, (unsigned long*)regs->areg[1]);
 
 	add_taint(TAINT_DIE);
+	add_taint(TAINT_DIE, LOCKDEP_NOW_UNRELIABLE);
 	spin_unlock_irq(&die_lock);
 
 	if (in_interrupt())

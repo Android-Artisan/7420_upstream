@@ -16,6 +16,8 @@
 #include <linux/fb.h>
 #include <linux/backlight.h>
 #include <linux/lcd.h>
+#include <linux/of.h>
+#include <linux/slab.h>
 
 #include <video/platform_lcd.h>
 
@@ -26,6 +28,7 @@ struct platform_lcd {
 
 	unsigned int		 power;
 	unsigned int		 suspended : 1;
+	unsigned int		 suspended:1;
 };
 
 static inline struct platform_lcd *to_our_lcd(struct lcd_device *lcd)
@@ -72,6 +75,7 @@ static struct lcd_ops platform_lcd_ops = {
 };
 
 static int __devinit platform_lcd_probe(struct platform_device *pdev)
+static int platform_lcd_probe(struct platform_device *pdev)
 {
 	struct plat_lcd_data *pdata;
 	struct platform_lcd *plcd;
@@ -79,6 +83,7 @@ static int __devinit platform_lcd_probe(struct platform_device *pdev)
 	int err;
 
 	pdata = pdev->dev.platform_data;
+	pdata = dev_get_platdata(&pdev->dev);
 	if (!pdata) {
 		dev_err(dev, "no platform data supplied\n");
 		return -EINVAL;
@@ -98,6 +103,24 @@ static int __devinit platform_lcd_probe(struct platform_device *pdev)
 		dev_err(dev, "cannot register lcd device\n");
 		err = PTR_ERR(plcd->lcd);
 		goto err_mem;
+	if (pdata->probe) {
+		err = pdata->probe(pdata);
+		if (err)
+			return err;
+	}
+
+	plcd = devm_kzalloc(&pdev->dev, sizeof(struct platform_lcd),
+			    GFP_KERNEL);
+	if (!plcd)
+		return -ENOMEM;
+
+	plcd->us = dev;
+	plcd->pdata = pdata;
+	plcd->lcd = devm_lcd_device_register(&pdev->dev, dev_name(dev), dev,
+						plcd, &platform_lcd_ops);
+	if (IS_ERR(plcd->lcd)) {
+		dev_err(dev, "cannot register lcd device\n");
+		return PTR_ERR(plcd->lcd);
 	}
 
 	platform_set_drvdata(pdev, plcd);
@@ -124,6 +147,12 @@ static int __devexit platform_lcd_remove(struct platform_device *pdev)
 static int platform_lcd_suspend(struct platform_device *pdev, pm_message_t st)
 {
 	struct platform_lcd *plcd = platform_get_drvdata(pdev);
+}
+
+#ifdef CONFIG_PM_SLEEP
+static int platform_lcd_suspend(struct device *dev)
+{
+	struct platform_lcd *plcd = dev_get_drvdata(dev);
 
 	plcd->suspended = 1;
 	platform_lcd_set_power(plcd->lcd, plcd->power);
@@ -134,6 +163,9 @@ static int platform_lcd_suspend(struct platform_device *pdev, pm_message_t st)
 static int platform_lcd_resume(struct platform_device *pdev)
 {
 	struct platform_lcd *plcd = platform_get_drvdata(pdev);
+static int platform_lcd_resume(struct device *dev)
+{
+	struct platform_lcd *plcd = dev_get_drvdata(dev);
 
 	plcd->suspended = 0;
 	platform_lcd_set_power(plcd->lcd, plcd->power);
@@ -143,6 +175,17 @@ static int platform_lcd_resume(struct platform_device *pdev)
 #else
 #define platform_lcd_suspend NULL
 #define platform_lcd_resume NULL
+#endif
+
+static SIMPLE_DEV_PM_OPS(platform_lcd_pm_ops, platform_lcd_suspend,
+			platform_lcd_resume);
+
+#ifdef CONFIG_OF
+static const struct of_device_id platform_lcd_of_match[] = {
+	{ .compatible = "platform-lcd" },
+	{},
+};
+MODULE_DEVICE_TABLE(of, platform_lcd_of_match);
 #endif
 
 static struct platform_driver platform_lcd_driver = {
@@ -168,6 +211,13 @@ static void __exit platform_lcd_cleanup(void)
 
 module_init(platform_lcd_init);
 module_exit(platform_lcd_cleanup);
+		.pm	= &platform_lcd_pm_ops,
+		.of_match_table = of_match_ptr(platform_lcd_of_match),
+	},
+	.probe		= platform_lcd_probe,
+};
+
+module_platform_driver(platform_lcd_driver);
 
 MODULE_AUTHOR("Ben Dooks <ben-linux@fluff.org>");
 MODULE_LICENSE("GPL v2");

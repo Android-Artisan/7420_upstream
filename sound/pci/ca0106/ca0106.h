@@ -52,6 +52,7 @@
  *
  *
  *  This code was initally based on code from ALSA's emu10k1x.c which is:
+ *  This code was initially based on code from ALSA's emu10k1x.c which is:
  *  Copyright (c) by Francisco Moraes <fmoraes@nc.rr.com>
  *
  *   This program is free software; you can redistribute it and/or modify
@@ -176,6 +177,7 @@
 /********************************************************************************************************/
                                                                                                                            
 /* Initally all registers from 0x00 to 0x3f have zero contents. */
+/* Initially all registers from 0x00 to 0x3f have zero contents. */
 #define PLAYBACK_LIST_ADDR	0x00		/* Base DMA address of a list of pointers to each period/size */
 						/* One list entry: 4 bytes for DMA address, 
 						 * 4 bytes for period_size << 16.
@@ -189,6 +191,7 @@
 						/* PTR[5:0], Default: 0x0 */
 #define PLAYBACK_UNKNOWN3	0x03		/* Not used ?? */
 #define PLAYBACK_DMA_ADDR	0x04		/* Playback DMA addresss */
+#define PLAYBACK_DMA_ADDR	0x04		/* Playback DMA address */
 						/* DMA[31:0], Default: 0x0 */
 #define PLAYBACK_PERIOD_SIZE	0x05		/* Playback period size. win2000 uses 0x04000000 */
 						/* SIZE[31:16], Default: 0x0 */
@@ -224,6 +227,7 @@
  * For Analogue: 1 -> Center Speaker, 2 -> Sub Woofer, 3 -> Ground, 4 -> Ground
  * For Digital: 1 -> Front SPDIF, 2 -> Rear SPDIF, 3 -> Center/Subwoofer SPDIF, 4 -> Ground.
  * Standard 4 pole Video A/V cable with RCA outputs: 1 -> White, 2 -> Yellow, 3 -> Sheild on all three, 4 -> Red.
+ * Standard 4 pole Video A/V cable with RCA outputs: 1 -> White, 2 -> Yellow, 3 -> Shield on all three, 4 -> Red.
  * So, from this you can see that you cannot use a Standard 4 pole Video A/V cable with the SB Audigy LS card.
  */
 /* The Front SPDIF PCM gets mixed with samples from the AC97 codec, so can only work for Stereo PCM and not AC3/DTS
@@ -582,7 +586,7 @@
 #define SPI_PL_BIT_R_R		(2<<7)	/* right channel = right */
 #define SPI_PL_BIT_R_C		(3<<7)	/* right channel = (L+R)/2 */
 #define SPI_IZD_REG		2
-#define SPI_IZD_BIT		(1<<4)	/* infinite zero detect */
+#define SPI_IZD_BIT		(0<<4)	/* infinite zero detect */
 
 #define SPI_FMT_REG		3
 #define SPI_FMT_BIT_RJ		(0<<0)	/* right justified mode */
@@ -668,6 +672,15 @@ struct snd_ca0106_details {
 	int gpio_type;
 	int i2c_adc;
 	int spi_dac;
+	int ac97;	/* ac97 = 0 -> Select MIC, Line in, TAD in, AUX in.
+			   ac97 = 1 -> Default to AC97 in. */
+	int gpio_type;	/* gpio_type = 1 -> shared mic-in/line-in
+			   gpio_type = 2 -> shared side-out/line-in. */
+	int i2c_adc;	/* with i2c_adc=1, the driver adds some capture volume
+			   controls, phone, mic, line-in and aux. */
+	u16 spi_dac;	/* spi_dac = 0 -> no spi interface for DACs
+			   spi_dac = 0x<front><rear><center-lfe><side>
+			   -> specifies DAC id for each channel pair. */
 };
 
 // definition of the chip-specific record
@@ -691,6 +704,12 @@ struct snd_ca0106 {
 	struct snd_ca0106_channel playback_channels[4];
 	struct snd_ca0106_channel capture_channels[4];
 	u32 spdif_bits[4];             /* s/pdif out setup */
+	struct snd_pcm *pcm[4];
+
+	struct snd_ca0106_channel playback_channels[4];
+	struct snd_ca0106_channel capture_channels[4];
+	u32 spdif_bits[4];             /* s/pdif out default setup */
+	u32 spdif_str_bits[4];         /* s/pdif out per-stream setup */
 	int spdif_enable;
 	int capture_source;
 	int i2c_capture_source;
@@ -703,6 +722,11 @@ struct snd_ca0106 {
 	struct snd_ca_midi midi2;
 
 	u16 spi_dac_reg[16];
+
+#ifdef CONFIG_PM_SLEEP
+#define NUM_SAVED_VOLUMES	9
+	unsigned int saved_vol[NUM_SAVED_VOLUMES];
+#endif
 };
 
 int snd_ca0106_mixer(struct snd_ca0106 *emu);
@@ -721,3 +745,11 @@ int snd_ca0106_i2c_write(struct snd_ca0106 *emu, u32 reg, u32 value);
 
 int snd_ca0106_spi_write(struct snd_ca0106 * emu,
 				   unsigned int data);
+
+#ifdef CONFIG_PM_SLEEP
+void snd_ca0106_mixer_suspend(struct snd_ca0106 *chip);
+void snd_ca0106_mixer_resume(struct snd_ca0106 *chip);
+#else
+#define snd_ca0106_mixer_suspend(chip)	do { } while (0)
+#define snd_ca0106_mixer_resume(chip)	do { } while (0)
+#endif

@@ -2,6 +2,10 @@
 #include <linux/linkage.h>
 #include <asm/segment.h>
 #include <asm/page.h>
+	.text
+#include <linux/linkage.h>
+#include <asm/segment.h>
+#include <asm/page_types.h>
 
 # Copyright 2003, 2008 Pavel Machek <pavel@suse.cz>, distribute under GPLv2
 
@@ -19,6 +23,14 @@ wakeup_pmode_return:
 
 	# reload the gdt, as we need the full 32 bit address
 	lgdt	saved_gdt
+	movw	%ax, %fs
+	movw	%ax, %gs
+
+	movw	$__USER_DS, %ax
+	movw	%ax, %ds
+	movw	%ax, %es
+
+	# reload the gdt, as we need the full 32 bit address
 	lidt	saved_idt
 	lldt	saved_ldt
 	ljmp	$(__KERNEL_CS), $1f
@@ -76,6 +88,7 @@ ENTRY(do_suspend_lowlevel)
 	call	save_registers
 	pushl	$3
 	call	acpi_enter_sleep_state
+	call	x86_acpi_enter_sleep_state
 	addl	$4, %esp
 
 #	In case of S3 failure, we'll emerge here.  Jump

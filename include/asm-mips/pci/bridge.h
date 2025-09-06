@@ -39,7 +39,6 @@
 #define BRIDGE_SSRAM_64K	0x00010000	/* 64kB */
 #define BRIDGE_SSRAM_0K		0x00000000	/* 0kB */
 
-/* ========================================================================
  *    Bridge address map
  */
 
@@ -384,7 +383,6 @@ typedef struct bridge_err_cmdword_s {
 
 #define BRIDGE_EXTERNAL_FLASH	0x00C00000	/* External Flash PROMS */
 
-/* ========================================================================
  *    Bridge register bit field definitions
  */
 
@@ -709,7 +707,6 @@ typedef struct bridge_err_cmdword_s {
 #define XBOX_RPS_EXISTS		1 << 6	 /* RPS bit in status register */
 #define XBOX_RPS_FAIL		1 << 4	 /* RPS status bit in register */
 
-/* ========================================================================
  */
 /*
  * Macros for Xtalk to Bridge bus (PCI/GIO) PIO

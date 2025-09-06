@@ -16,6 +16,7 @@
 #include "string.h"
 
 #define	COMMAND_LINE_SIZE	512
+#define	BOOT_COMMAND_LINE_SIZE	2048
 #define	MAX_PATH_LEN		256
 #define	MAX_PROP_LEN		256 /* What should this be? */
 
@@ -40,6 +41,7 @@ struct dt_ops {
 			const int buflen);
 	int	(*setprop)(const void *phandle, const char *name,
 			const void *buf, const int buflen);
+	int (*del_node)(const void *phandle);
 	void *(*get_parent)(const void *phandle);
 	/* The node must not already exist. */
 	void *(*create_node)(const void *parent, const char *name);
@@ -58,6 +60,7 @@ struct console_ops {
 	int	(*open)(void);
 	void	(*write)(const char *buf, int len);
 	void	(*edit_cmdline)(char *buf, int len);
+	void	(*edit_cmdline)(char *buf, int len, unsigned int getline_timeout);
 	void	(*close)(void);
 	void	*data;
 };
@@ -124,6 +127,11 @@ static inline int setprop_str(void *devp, const char *name, const char *buf)
 		return dt_ops.setprop(devp, name, buf, strlen(buf) + 1);
 
 	return -1;
+}
+
+static inline int del_node(const void *devp)
+{
+	return dt_ops.del_node ? dt_ops.del_node(devp) : -1;
 }
 
 static inline void *get_parent(const char *devp)

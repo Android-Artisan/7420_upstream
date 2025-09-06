@@ -75,6 +75,12 @@
 #include <linux/pci.h>
 #include <linux/slab.h>
 #include <linux/moduleparam.h>
+#include <linux/gfp.h>
+#include <linux/init.h>
+#include <linux/interrupt.h>
+#include <linux/pci.h>
+#include <linux/module.h>
+#include <linux/io.h>
 
 #include <sound/core.h>
 #include <sound/info.h>
@@ -91,6 +97,10 @@ static int index[SNDRV_CARDS] = SNDRV_DEFAULT_IDX;	/* Index 0-MAX */
 static char *id[SNDRV_CARDS] = SNDRV_DEFAULT_STR;	/* ID for this card */
 static int enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE_PNP;	/* Enable this card */
 static int fullduplex[SNDRV_CARDS]; // = {[0 ... (SNDRV_CARDS - 1)] = 1};
+static int index[SNDRV_CARDS] = SNDRV_DEFAULT_IDX;	/* Index 0-MAX */
+static char *id[SNDRV_CARDS] = SNDRV_DEFAULT_STR;	/* ID for this card */
+static bool enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE_PNP;	/* Enable this card */
+static bool fullduplex[SNDRV_CARDS]; // = {[0 ... (SNDRV_CARDS - 1)] = 1};
 
 module_param_array(index, int, NULL, 0444);
 MODULE_PARM_DESC(index, "Index value for RME Digi32 soundcard.");
@@ -233,6 +243,10 @@ static struct pci_device_id snd_rme32_ids[] = {
 	 PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0,},
 	{PCI_VENDOR_ID_XILINX_RME, PCI_DEVICE_ID_RME_DIGI32_PRO,
 	 PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0,},
+static const struct pci_device_id snd_rme32_ids[] = {
+	{PCI_VDEVICE(XILINX_RME, PCI_DEVICE_ID_RME_DIGI32), 0,},
+	{PCI_VDEVICE(XILINX_RME, PCI_DEVICE_ID_RME_DIGI32_8), 0,},
+	{PCI_VDEVICE(XILINX_RME, PCI_DEVICE_ID_RME_DIGI32_PRO), 0,},
 	{0,}
 };
 
@@ -636,6 +650,7 @@ snd_rme32_setframelog(struct rme32 * rme32, int n_channels, int is_playback)
 }
 
 static int snd_rme32_setformat(struct rme32 * rme32, int format)
+static int snd_rme32_setformat(struct rme32 *rme32, snd_pcm_format_t format)
 {
 	switch (format) {
 	case SNDRV_PCM_FORMAT_S16_LE:
@@ -838,6 +853,9 @@ static void snd_rme32_set_buffer_constraint(struct rme32 *rme32, struct snd_pcm_
 		snd_pcm_hw_constraint_minmax(runtime,
 					     SNDRV_PCM_HW_PARAM_BUFFER_BYTES,
 					     RME32_BUFFER_SIZE, RME32_BUFFER_SIZE);
+		snd_pcm_hw_constraint_single(runtime,
+					     SNDRV_PCM_HW_PARAM_BUFFER_BYTES,
+					     RME32_BUFFER_SIZE);
 		snd_pcm_hw_constraint_list(runtime, 0,
 					   SNDRV_PCM_HW_PARAM_PERIOD_BYTES,
 					   &hw_constraints_period_bytes);
@@ -1021,6 +1039,7 @@ static int snd_rme32_capture_close(struct snd_pcm_substream *substream)
 	rme32->capture_substream = NULL;
 	rme32->capture_periodsize = 0;
 	spin_unlock(&rme32->lock);
+	spin_unlock_irq(&rme32->lock);
 	return 0;
 }
 
@@ -1336,6 +1355,7 @@ snd_rme32_free_adat_pcm(struct snd_pcm *pcm)
 }
 
 static int __devinit snd_rme32_create(struct rme32 * rme32)
+static int snd_rme32_create(struct rme32 *rme32)
 {
 	struct pci_dev *pci = rme32->pci;
 	int err;
@@ -1353,6 +1373,8 @@ static int __devinit snd_rme32_create(struct rme32 * rme32)
 	rme32->iobase = ioremap_nocache(rme32->port, RME32_IO_SIZE);
 	if (!rme32->iobase) {
 		snd_printk(KERN_ERR "unable to remap memory region 0x%lx-0x%lx\n",
+		dev_err(rme32->card->dev,
+			"unable to remap memory region 0x%lx-0x%lx\n",
 			   rme32->port, rme32->port + RME32_IO_SIZE - 1);
 		return -ENOMEM;
 	}
@@ -1360,6 +1382,8 @@ static int __devinit snd_rme32_create(struct rme32 * rme32)
 	if (request_irq(pci->irq, snd_rme32_interrupt, IRQF_SHARED,
 			"RME32", rme32)) {
 		snd_printk(KERN_ERR "unable to grab IRQ %d\n", pci->irq);
+			KBUILD_MODNAME, rme32)) {
+		dev_err(rme32->card->dev, "unable to grab IRQ %d\n", pci->irq);
 		return -EBUSY;
 	}
 	rme32->irq = pci->irq;
@@ -1558,6 +1582,7 @@ snd_rme32_proc_read(struct snd_info_entry * entry, struct snd_info_buffer *buffe
 }
 
 static void __devinit snd_rme32_proc_init(struct rme32 * rme32)
+static void snd_rme32_proc_init(struct rme32 *rme32)
 {
 	struct snd_info_entry *entry;
 
@@ -1634,6 +1659,24 @@ snd_rme32_info_inputtype_control(struct snd_kcontrol *kcontrol,
 	strcpy(uinfo->value.enumerated.name,
 	       texts[uinfo->value.enumerated.item]);
 	return 0;
+	static const char * const texts[4] = {
+		"Optical", "Coaxial", "Internal", "XLR"
+	};
+	int num_items;
+
+	switch (rme32->pci->device) {
+	case PCI_DEVICE_ID_RME_DIGI32:
+	case PCI_DEVICE_ID_RME_DIGI32_8:
+		num_items = 3;
+		break;
+	case PCI_DEVICE_ID_RME_DIGI32_PRO:
+		num_items = 4;
+		break;
+	default:
+		snd_BUG();
+		return -EINVAL;
+	}
+	return snd_ctl_enum_info(uinfo, 1, num_items, texts);
 }
 static int
 snd_rme32_get_inputtype_control(struct snd_kcontrol *kcontrol,
@@ -1698,6 +1741,7 @@ snd_rme32_info_clockmode_control(struct snd_kcontrol *kcontrol,
 				 struct snd_ctl_elem_info *uinfo)
 {
 	static char *texts[4] = { "AutoSync", 
+	static const char * const texts[4] = { "AutoSync",
 				  "Internal 32.0kHz", 
 				  "Internal 44.1kHz", 
 				  "Internal 48.0kHz" };
@@ -1711,6 +1755,7 @@ snd_rme32_info_clockmode_control(struct snd_kcontrol *kcontrol,
 	strcpy(uinfo->value.enumerated.name,
 	       texts[uinfo->value.enumerated.item]);
 	return 0;
+	return snd_ctl_enum_info(uinfo, 1, 4, texts);
 }
 static int
 snd_rme32_get_clockmode_control(struct snd_kcontrol *kcontrol,
@@ -1926,6 +1971,7 @@ static void snd_rme32_card_free(struct snd_card *card)
 }
 
 static int __devinit
+static int
 snd_rme32_probe(struct pci_dev *pci, const struct pci_device_id *pci_id)
 {
 	static int dev;
@@ -1944,6 +1990,10 @@ snd_rme32_probe(struct pci_dev *pci, const struct pci_device_id *pci_id)
 	if ((card = snd_card_new(index[dev], id[dev], THIS_MODULE,
 				 sizeof(struct rme32))) == NULL)
 		return -ENOMEM;
+	err = snd_card_new(&pci->dev, index[dev], id[dev], THIS_MODULE,
+			   sizeof(struct rme32), &card);
+	if (err < 0)
+		return err;
 	card->private_free = snd_rme32_card_free;
 	rme32 = (struct rme32 *) card->private_data;
 	rme32->card = card;
@@ -2005,3 +2055,16 @@ static void __exit alsa_card_rme32_exit(void)
 
 module_init(alsa_card_rme32_init)
 module_exit(alsa_card_rme32_exit)
+static void snd_rme32_remove(struct pci_dev *pci)
+{
+	snd_card_free(pci_get_drvdata(pci));
+}
+
+static struct pci_driver rme32_driver = {
+	.name =		KBUILD_MODNAME,
+	.id_table =	snd_rme32_ids,
+	.probe =	snd_rme32_probe,
+	.remove =	snd_rme32_remove,
+};
+
+module_pci_driver(rme32_driver);

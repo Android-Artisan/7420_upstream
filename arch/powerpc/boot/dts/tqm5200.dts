@@ -17,6 +17,7 @@
 	compatible = "tqc,tqm5200";
 	#address-cells = <1>;
 	#size-cells = <1>;
+	interrupt-parent = <&mpc5200_pic>;
 
 	cpus {
 		#address-cells = <1>;
@@ -35,7 +36,7 @@
 		};
 	};
 
-	memory {
+	memory@0 {
 		device_type = "memory";
 		reg = <0x00000000 0x04000000>;	// 64MB
 	};
@@ -89,6 +90,15 @@
 			reg = <0xb00 0x40>;
 			interrupts = <1 7 0>;
 			interrupt-parent = <&mpc5200_pic>;
+			reg = <0x980 0x80>;
+		};
+
+		gpio_simple: gpio@b00 {
+			compatible = "fsl,mpc5200-gpio";
+			reg = <0xb00 0x40>;
+			interrupts = <1 7 0>;
+			gpio-controller;
+			#gpio-cells = <2>;
 		};
 
 		usb@1000 {
@@ -142,6 +152,24 @@
 
 		ethernet@3000 {
 			device_type = "network";
+			compatible = "fsl,mpc5200-psc-uart";
+			reg = <0x2000 0x100>;
+			interrupts = <2 1 0>;
+		};
+
+		serial@2200 {		// PSC2
+			compatible = "fsl,mpc5200-psc-uart";
+			reg = <0x2200 0x100>;
+			interrupts = <2 2 0>;
+		};
+
+		serial@2400 {		// PSC3
+			compatible = "fsl,mpc5200-psc-uart";
+			reg = <0x2400 0x100>;
+			interrupts = <2 3 0>;
+		};
+
+		ethernet@3000 {
 			compatible = "fsl,mpc5200-fec";
 			reg = <0x3000 0x400>;
 			local-mac-address = [ 00 00 00 00 00 00 ];
@@ -160,6 +188,8 @@
 
 			phy0: ethernet-phy@0 {
 				device_type = "ethernet-phy";
+
+			phy0: ethernet-phy@0 {
 				reg = <0>;
 			};
 		};
@@ -182,6 +212,8 @@
 
 			 rtc@68 {
 				device_type = "rtc";
+
+			 rtc@68 {
 				compatible = "dallas,ds1307";
 				reg = <0x68>;
 			};
@@ -196,6 +228,8 @@
 	lpb {
 		model = "fsl,lpb";
 		compatible = "fsl,lpb";
+	localbus {
+		compatible = "fsl,mpc5200-lpb","simple-bus";
 		#address-cells = <2>;
 		#size-cells = <1>;
 		ranges = <0 0 0xfc000000 0x02000000>;

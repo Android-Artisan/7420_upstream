@@ -2,6 +2,10 @@
  * uctrl.c: TS102 Microcontroller interface on Tadpole Sparcbook 3
  *
  * Copyright 1999 Derrick J Brashear (shadow@dementia.org)
+/* uctrl.c: TS102 Microcontroller interface on Tadpole Sparcbook 3
+ *
+ * Copyright 1999 Derrick J Brashear (shadow@dementia.org)
+ * Copyright 2008 David S. Miller (davem@davemloft.net)
  */
 
 #include <linux/module.h>
@@ -22,6 +26,18 @@
 #include <asm/io.h>
 #include <asm/pgtable.h>
 #include <asm/sbus.h>
+#include <linux/mutex.h>
+#include <linux/ioport.h>
+#include <linux/miscdevice.h>
+#include <linux/mm.h>
+#include <linux/of.h>
+#include <linux/of_device.h>
+
+#include <asm/openprom.h>
+#include <asm/oplib.h>
+#include <asm/irq.h>
+#include <asm/io.h>
+#include <asm/pgtable.h>
 
 #define UCTRL_MINOR	174
 
@@ -53,6 +69,26 @@ struct ts102_regs {
 	volatile u32 uctrl_stat;
 	volatile u32 uctrl_xxx;
 	volatile u32 ts102_xxx[4];
+	u32 uctrl_intr;
+	u32 uctrl_data;
+	u32 uctrl_stat;
+	u32 uctrl_xxx[5];
+};
+
+struct ts102_regs {
+	u32 card_a_intr;
+	u32 card_a_stat;
+	u32 card_a_ctrl;
+	u32 card_a_xxx;
+	u32 card_b_intr;
+	u32 card_b_stat;
+	u32 card_b_ctrl;
+	u32 card_b_xxx;
+	u32 uctrl_intr;
+	u32 uctrl_data;
+	u32 uctrl_stat;
+	u32 uctrl_xxx;
+	u32 ts102_xxx[4];
 };
 
 /* Bits for uctrl_intr register */
@@ -71,6 +107,7 @@ struct ts102_regs {
 #define UCTRL_STAT_RXNE_STA        0x04    /* receive FIFO not empty status */
 #define UCTRL_STAT_RXO_STA         0x08    /* receive FIFO overflow status */
 
+static DEFINE_MUTEX(uctrl_mutex);
 static const char *uctrl_extstatus[16] = {
         "main power available",
         "internal battery attached",
@@ -201,6 +238,18 @@ static void uctrl_get_external_status(void);
 static int
 uctrl_ioctl(struct inode *inode, struct file *file,
 	      unsigned int cmd, unsigned long arg)
+static struct uctrl_driver {
+	struct uctrl_regs __iomem *regs;
+	int irq;
+	int pending;
+	struct uctrl_status status;
+} *global_driver;
+
+static void uctrl_get_event_status(struct uctrl_driver *);
+static void uctrl_get_external_status(struct uctrl_driver *);
+
+static long
+uctrl_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
 	switch (cmd) {
 		default:
@@ -216,6 +265,10 @@ uctrl_open(struct inode *inode, struct file *file)
 	uctrl_get_event_status();
 	uctrl_get_external_status();
 	unlock_kernel();
+	mutex_lock(&uctrl_mutex);
+	uctrl_get_event_status(global_driver);
+	uctrl_get_external_status(global_driver);
+	mutex_unlock(&uctrl_mutex);
 	return 0;
 }
 
@@ -230,6 +283,7 @@ static const struct file_operations uctrl_fops = {
 	.owner =	THIS_MODULE,
 	.llseek =	no_llseek,
 	.ioctl =	uctrl_ioctl,
+	.unlocked_ioctl =	uctrl_ioctl,
 	.open =		uctrl_open,
 };
 
@@ -249,6 +303,11 @@ static struct miscdevice uctrl_dev = {
   } \
   dprintk(("write data 0x%02x\n", value)); \
   driver->regs->uctrl_data = value; \
+      if (UCTRL_STAT_TXNF_STA & sbus_readl(&driver->regs->uctrl_stat)) \
+      break; \
+  } \
+  dprintk(("write data 0x%02x\n", value)); \
+  sbus_writel(value, &driver->regs->uctrl_data); \
 }
 
 /* Wait for something to read, read it, then clear the bit */
@@ -275,6 +334,23 @@ static void uctrl_do_txn(struct uctrl_txn *txn)
 	stat = driver->regs->uctrl_stat;
 	intr = driver->regs->uctrl_intr;
 	driver->regs->uctrl_stat = stat;
+      if ((UCTRL_STAT_RXNE_STA & sbus_readl(&driver->regs->uctrl_stat)) == 0) \
+      break; \
+    udelay(1); \
+  } \
+  value = sbus_readl(&driver->regs->uctrl_data); \
+  dprintk(("read data 0x%02x\n", value)); \
+  sbus_writel(UCTRL_STAT_RXNE_STA, &driver->regs->uctrl_stat); \
+}
+
+static void uctrl_do_txn(struct uctrl_driver *driver, struct uctrl_txn *txn)
+{
+	int stat, incnt, outcnt, bytecnt, intr;
+	u32 byte;
+
+	stat = sbus_readl(&driver->regs->uctrl_stat);
+	intr = sbus_readl(&driver->regs->uctrl_intr);
+	sbus_writel(stat, &driver->regs->uctrl_stat);
 
 	dprintk(("interrupt stat 0x%x int 0x%x\n", stat, intr));
 
@@ -308,6 +384,8 @@ static void uctrl_do_txn(struct uctrl_txn *txn)
 static void uctrl_get_event_status(void)
 {
 	struct uctrl_driver *driver = &drv;
+static void uctrl_get_event_status(struct uctrl_driver *driver)
+{
 	struct uctrl_txn txn;
 	u8 outbits[2];
 
@@ -318,6 +396,7 @@ static void uctrl_get_event_status(void)
 	txn.outbuf = outbits;
 
 	uctrl_do_txn(&txn);
+	uctrl_do_txn(driver, &txn);
 
 	dprintk(("bytes %x %x\n", (outbits[0] & 0xff), (outbits[1] & 0xff)));
 	driver->status.event_status = 
@@ -328,6 +407,8 @@ static void uctrl_get_event_status(void)
 static void uctrl_get_external_status(void)
 {
 	struct uctrl_driver *driver = &drv;
+static void uctrl_get_external_status(struct uctrl_driver *driver)
+{
 	struct uctrl_txn txn;
 	u8 outbits[2];
 	int i, v;
@@ -339,6 +420,7 @@ static void uctrl_get_external_status(void)
 	txn.outbuf = outbits;
 
 	uctrl_do_txn(&txn);
+	uctrl_do_txn(driver, &txn);
 
 	dprintk(("bytes %x %x\n", (outbits[0] & 0xff), (outbits[1] & 0xff)));
 	driver->status.external_status = 
@@ -421,4 +503,92 @@ static void __exit ts102_uctrl_cleanup(void)
 
 module_init(ts102_uctrl_init);
 module_exit(ts102_uctrl_cleanup);
+static int uctrl_probe(struct platform_device *op)
+{
+	struct uctrl_driver *p;
+	int err = -ENOMEM;
+
+	p = kzalloc(sizeof(*p), GFP_KERNEL);
+	if (!p) {
+		printk(KERN_ERR "uctrl: Unable to allocate device struct.\n");
+		goto out;
+	}
+
+	p->regs = of_ioremap(&op->resource[0], 0,
+			     resource_size(&op->resource[0]),
+			     "uctrl");
+	if (!p->regs) {
+		printk(KERN_ERR "uctrl: Unable to map registers.\n");
+		goto out_free;
+	}
+
+	p->irq = op->archdata.irqs[0];
+	err = request_irq(p->irq, uctrl_interrupt, 0, "uctrl", p);
+	if (err) {
+		printk(KERN_ERR "uctrl: Unable to register irq.\n");
+		goto out_iounmap;
+	}
+
+	err = misc_register(&uctrl_dev);
+	if (err) {
+		printk(KERN_ERR "uctrl: Unable to register misc device.\n");
+		goto out_free_irq;
+	}
+
+	sbus_writel(UCTRL_INTR_RXNE_REQ|UCTRL_INTR_RXNE_MSK, &p->regs->uctrl_intr);
+	printk(KERN_INFO "%s: uctrl regs[0x%p] (irq %d)\n",
+	       op->dev.of_node->full_name, p->regs, p->irq);
+	uctrl_get_event_status(p);
+	uctrl_get_external_status(p);
+
+	dev_set_drvdata(&op->dev, p);
+	global_driver = p;
+
+out:
+	return err;
+
+out_free_irq:
+	free_irq(p->irq, p);
+
+out_iounmap:
+	of_iounmap(&op->resource[0], p->regs, resource_size(&op->resource[0]));
+
+out_free:
+	kfree(p);
+	goto out;
+}
+
+static int uctrl_remove(struct platform_device *op)
+{
+	struct uctrl_driver *p = dev_get_drvdata(&op->dev);
+
+	if (p) {
+		misc_deregister(&uctrl_dev);
+		free_irq(p->irq, p);
+		of_iounmap(&op->resource[0], p->regs, resource_size(&op->resource[0]));
+		kfree(p);
+	}
+	return 0;
+}
+
+static const struct of_device_id uctrl_match[] = {
+	{
+		.name = "uctrl",
+	},
+	{},
+};
+MODULE_DEVICE_TABLE(of, uctrl_match);
+
+static struct platform_driver uctrl_driver = {
+	.driver = {
+		.name = "uctrl",
+		.of_match_table = uctrl_match,
+	},
+	.probe		= uctrl_probe,
+	.remove		= uctrl_remove,
+};
+
+
+module_platform_driver(uctrl_driver);
+
 MODULE_LICENSE("GPL");

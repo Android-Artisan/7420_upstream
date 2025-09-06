@@ -9,6 +9,7 @@ from the windriver disk into this directory.
 Then run
 
 ./get_dvb_firware opera1
+./get_dvb_firmware opera1
 
 and after that you have 2 files:
 
@@ -24,4 +25,5 @@ After that the driver can load the firmware
 in kernel config and have hotplug running).
 
 
+Marco Gittler <g.marco@freenet.de>
 Marco Gittler <g.marco@freenet.de>

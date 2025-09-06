@@ -38,12 +38,22 @@ static int __devinit cobalt_qube_led_probe(struct platform_device *pdev)
 {
 	struct resource *res;
 	int retval;
+	.name			= "qube::front",
+	.brightness		= LED_FULL,
+	.brightness_set		= qube_front_led_set,
+	.default_trigger	= "default-on",
+};
+
+static int cobalt_qube_led_probe(struct platform_device *pdev)
+{
+	struct resource *res;
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (!res)
 		return -EBUSY;
 
 	led_port = ioremap(res->start, res->end - res->start + 1);
+	led_port = devm_ioremap(&pdev->dev, res->start, resource_size(res));
 	if (!led_port)
 		return -ENOMEM;
 
@@ -99,7 +109,19 @@ static void __exit cobalt_qube_led_exit(void)
 
 module_init(cobalt_qube_led_init);
 module_exit(cobalt_qube_led_exit);
+	return devm_led_classdev_register(&pdev->dev, &qube_front_led);
+}
+
+static struct platform_driver cobalt_qube_led_driver = {
+	.probe	= cobalt_qube_led_probe,
+	.driver	= {
+		.name	= "cobalt-qube-leds",
+	},
+};
+
+module_platform_driver(cobalt_qube_led_driver);
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Front LED support for Cobalt Server");
 MODULE_AUTHOR("Florian Fainelli <florian@openwrt.org>");
+MODULE_ALIAS("platform:cobalt-qube-leds");

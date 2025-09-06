@@ -1,5 +1,4 @@
 Kernel driver smsc47b397
-========================
 
 Supported chips:
   * SMSC LPC47B397-NC

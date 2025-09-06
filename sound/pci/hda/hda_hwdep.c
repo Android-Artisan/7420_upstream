@@ -23,10 +23,13 @@
 #include <linux/pci.h>
 #include <linux/compat.h>
 #include <linux/mutex.h>
+#include <linux/compat.h>
+#include <linux/nospec.h>
 #include <sound/core.h>
 #include "hda_codec.h"
 #include "hda_local.h"
 #include <sound/hda_hwdep.h>
+#include <sound/minors.h>
 
 /*
  * write/read an out-of-bound verb
@@ -52,7 +55,16 @@ static int get_wcap_ioctl(struct hda_codec *codec,
 	
 	if (get_user(verb, &arg->verb))
 		return -EFAULT;
-	res = get_wcaps(codec, verb >> 24);
+	/* open-code get_wcaps(verb>>24) with nospec */
+	verb >>= 24;
+	if (verb < codec->core.start_nid ||
+	    verb >= codec->core.start_nid + codec->core.num_nodes) {
+		res = 0;
+	} else {
+		verb -= codec->core.start_nid;
+		verb = array_index_nospec(verb, codec->core.num_nodes);
+		res = codec->wcaps[verb];
+	}
 	if (put_user(res, &arg->res))
 		return -EFAULT;
 	return 0;
@@ -96,6 +108,7 @@ static int hda_hwdep_open(struct snd_hwdep *hw, struct file *file)
 }
 
 int __devinit snd_hda_create_hwdep(struct hda_codec *codec)
+int snd_hda_create_hwdep(struct hda_codec *codec)
 {
 	char hwname[16];
 	struct snd_hwdep *hwdep;
@@ -103,6 +116,7 @@ int __devinit snd_hda_create_hwdep(struct hda_codec *codec)
 
 	sprintf(hwname, "HDA Codec %d", codec->addr);
 	err = snd_hwdep_new(codec->bus->card, hwname, codec->addr, &hwdep);
+	err = snd_hwdep_new(codec->card, hwname, codec->addr, &hwdep);
 	if (err < 0)
 		return err;
 	codec->hwdep = hwdep;
@@ -116,6 +130,10 @@ int __devinit snd_hda_create_hwdep(struct hda_codec *codec)
 #ifdef CONFIG_COMPAT
 	hwdep->ops.ioctl_compat = hda_hwdep_ioctl_compat;
 #endif
+
+	/* for sysfs */
+	hwdep->dev.groups = snd_hda_dev_attr_groups;
+	dev_set_drvdata(&hwdep->dev, codec);
 
 	return 0;
 }

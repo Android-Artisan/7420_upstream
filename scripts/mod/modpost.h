@@ -11,6 +11,12 @@
 
 #include "elfconfig.h"
 
+/* On BSD-alike OSes elf.h defines these according to host's word size */
+#undef ELF_ST_BIND
+#undef ELF_ST_TYPE
+#undef ELF_R_SYM
+#undef ELF_R_TYPE
+
 #if KERNEL_ELFCLASS == ELFCLASS32
 
 #define Elf_Ehdr    Elf32_Ehdr
@@ -115,6 +121,8 @@ struct module {
 	char **markers;
 	size_t nmarkers;
 	char	     srcversion[25];
+	char	     srcversion[25];
+	int is_dot_o;
 };
 
 struct elf_info {
@@ -133,6 +141,43 @@ struct elf_info {
 	char	     *modinfo;
 	unsigned int modinfo_len;
 };
+
+	char         *strtab;
+	char	     *modinfo;
+	unsigned int modinfo_len;
+
+	/* support for 32bit section numbers */
+
+	unsigned int num_sections; /* max_secindex + 1 */
+	unsigned int secindex_strings;
+	/* if Nth symbol table entry has .st_shndx = SHN_XINDEX,
+	 * take shndx from symtab_shndx_start[N] instead */
+	Elf32_Word   *symtab_shndx_start;
+	Elf32_Word   *symtab_shndx_stop;
+};
+
+static inline int is_shndx_special(unsigned int i)
+{
+	return i != SHN_XINDEX && i >= SHN_LORESERVE && i <= SHN_HIRESERVE;
+}
+
+/*
+ * Move reserved section indices SHN_LORESERVE..SHN_HIRESERVE out of
+ * the way to -256..-1, to avoid conflicting with real section
+ * indices.
+ */
+#define SPECIAL(i) ((i) - (SHN_HIRESERVE + 1))
+
+/* Accessor for sym->st_shndx, hides ugliness of "64k sections" */
+static inline unsigned int get_secindex(const struct elf_info *info,
+					const Elf_Sym *sym)
+{
+	if (is_shndx_special(sym->st_shndx))
+		return SPECIAL(sym->st_shndx);
+	if (sym->st_shndx != SHN_XINDEX)
+		return sym->st_shndx;
+	return info->symtab_shndx_start[sym - info->symtab_start];
+}
 
 /* file2alias.c */
 extern unsigned int cross_build;

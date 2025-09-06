@@ -305,9 +305,7 @@ typedef struct {
 } dc390_cmd_scp_t;
 
 /*
-;==========================================================
 ; EEPROM byte offset
-;==========================================================
 */
 typedef  struct  _EEprom
 {
@@ -349,14 +347,10 @@ u8	xx2;
 #define EEPROM_READ	0x80
 
 /*
-;==========================================================
 ;	AMD 53C974 Registers bit Definition
-;==========================================================
 */
 /*
-;====================
 ; SCSI Register
-;====================
 */
 
 /*; Command Reg.(+0CH) (rw) */
@@ -449,9 +443,7 @@ u8	xx2;
 #define NS_TO_GLITCH(y) (((~y<<7) | ~((y<<6) ^ ((y<<5 & 1<<6) | ~0x40))) & 0xc0)
 
 /*
-;====================
 ; DMA Register
-;====================
 */
 /*; DMA Command Reg.(+40H) (rw) */
 #define READ_DIRECTION		BIT7
@@ -484,9 +476,7 @@ u8	xx2;
 #define SCSI_LINES		0x0003ffff
 
 /*
-;==========================================================
 ; SCSI Chip register address offset
-;==========================================================
 ;Registers are rw unless declared otherwise 
 */
 #define CtcReg_Low	0x00	/* r	curr. transfer count */

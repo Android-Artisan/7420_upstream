@@ -27,12 +27,18 @@
  * along with this program; see the file copying.
  * if not, write to the free software foundation,
  * 59 temple place - suite 330, boston, ma 02111-1307, usa.
+/* mach/dma.h - arch-specific DMA defines
+ *
+ * Copyright 2004-2008 Analog Devices Inc.
+ *
+ * Licensed under the GPL-2 or later.
  */
 
 #ifndef _MACH_DMA_H_
 #define _MACH_DMA_H_
 
 #define MAX_BLACKFIN_DMA_CHANNEL 16
+#define MAX_DMA_CHANNELS 16
 
 #define CH_PPI 			0	/* PPI receive/transmit or NFC */
 #define CH_EMAC_RX 		1	/* Ethernet MAC receive or HOSTDP */

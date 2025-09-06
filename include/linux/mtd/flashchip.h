@@ -5,6 +5,24 @@
  * Contains information about the location and state of a given flash device
  *
  * (C) 2000 Red Hat. GPLd.
+/*
+ * Copyright © 2000      Red Hat UK Limited
+ * Copyright © 2000-2010 David Woodhouse <dwmw2@infradead.org>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+ *
  */
 
 #ifndef __MTD_FLASHCHIP_H__
@@ -15,6 +33,7 @@
  * has asm/spinlock.h, or 2.4, which has linux/spinlock.h
  */
 #include <linux/sched.h>
+#include <linux/mutex.h>
 
 typedef enum {
 	FL_READY,
@@ -38,6 +57,15 @@ typedef enum {
 	FL_XIP_WHILE_ERASING,
 	FL_XIP_WHILE_WRITING,
 	FL_SHUTDOWN,
+	/* These 2 come from nand_state_t, which has been unified here */
+	FL_READING,
+	FL_CACHEDPRG,
+	/* These 4 come from onenand_state_t, which has been unified here */
+	FL_RESETING,
+	FL_OTPING,
+	FL_PREPARING_ERASE,
+	FL_VERIFYING_ERASE,
+
 	FL_UNKNOWN
 } flstate_t;
 
@@ -64,14 +92,20 @@ struct flchip {
 	unsigned int write_suspended:1;
 	unsigned int erase_suspended:1;
 	unsigned long in_progress_block_addr;
+	unsigned long in_progress_block_mask;
 
 	spinlock_t *mutex;
 	spinlock_t _spinlock; /* We do it like this because sometimes they'll be shared. */
+	struct mutex mutex;
 	wait_queue_head_t wq; /* Wait on here when we're waiting for the chip
 			     to be ready */
 	int word_write_time;
 	int buffer_write_time;
 	int erase_time;
+
+	int word_write_time_max;
+	int buffer_write_time_max;
+	int erase_time_max;
 
 	void *priv;
 };
@@ -80,6 +114,7 @@ struct flchip {
    between partitions of the same physical chip. */
 struct flchip_shared {
 	spinlock_t lock;
+	struct mutex lock;
 	struct flchip *writing;
 	struct flchip *erasing;
 };

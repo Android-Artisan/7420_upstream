@@ -2,7 +2,6 @@
             ---------------------------------------
                                                         20020126
 Introduction
-============
 The SCSI Generic driver (sg) is one of the four "high level" SCSI device
 drivers along with sd, st and sr (disk, tape and CDROM respectively). Sg
 is more generalized (but lower level) than its siblings and tends to be
@@ -16,7 +15,6 @@ and examples.
 
 
 Major versions of the sg driver
-===============================
 There are three major versions of sg found in the linux kernel (lk):
       - sg version 1 (original) from 1992 to early 1999 (lk 2.2.5) . 
 	It is based in the sg_header interface structure.
@@ -27,7 +25,6 @@ There are three major versions of sg found in the linux kernel (lk):
 
 
 Sg driver documentation
-=======================
 The most recent documentation of the sg driver is kept at the Linux
 Documentation Project's (LDP) site: 
 http://www.tldp.org/HOWTO/SCSI-Generic-HOWTO
@@ -39,6 +36,11 @@ http://www.torque.net/sg/p/sg_v3_ho.html
 Documentation for the version 2 sg driver found in the lk 2.2 series can
 be found at http://www.torque.net/sg/p/scsi-generic.txt . A larger version
 is at:  http://www.torque.net/sg/p/scsi-generic_long.txt .
+http://sg.danny.cz/sg/p/sg_v3_ho.html
+
+Documentation for the version 2 sg driver found in the lk 2.2 series can
+be found at http://sg.danny.cz/sg/. A larger version
+is at: http://sg.danny.cz/sg/p/scsi-generic_long.txt.
 
 The original documentation for the sg driver (prior to lk 2.2.6) can be
 found at http://www.torque.net/sg/p/original/SCSI-Programming-HOWTO.txt
@@ -55,7 +57,6 @@ part can be found at http://www.tldp.org/HOWTO/SCSI-2.4-HOWTO .
 
 
 Example code and utilities
-==========================
 There are two packages of sg utilities:
   - sg3_utils   for the sg version 3 driver found in lk 2.4
   - sg_utils    for the sg version 2 (and original) driver found in lk 2.2
@@ -63,13 +64,14 @@ There are two packages of sg utilities:
 Both packages will work in the lk 2.4 series however sg3_utils offers more
 capabilities. They can be found at: http://www.torque.net/sg and 
 freshmeat.net
+capabilities. They can be found at: http://sg.danny.cz/sg/sg3_utils.html and 
+freecode.com
 
 Another approach is to look at the applications that use the sg driver.
 These include cdrecord, cdparanoia, SANE and cdrdao.
 
 
 Mapping of Linux kernel versions to sg driver versions
-======================================================
 Here is a list of linux kernels in the 2.4 series that had new version
 of the sg driver:
       lk 2.4.0 : sg version 3.1.17

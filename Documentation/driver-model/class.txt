@@ -43,6 +43,7 @@ struct device_class {
 	devclass_add		add_device;
 	devclass_remove		remove_device;
 };
+See the kerneldoc for the struct class.
 
 A typical device class definition would look like: 
 

@@ -1,5 +1,4 @@
 Runtime locking correctness validator
-=====================================
 
 started by Ingo Molnar <mingo@redhat.com>
 additions by Arjan van de Ven <arjan@linux.intel.com>

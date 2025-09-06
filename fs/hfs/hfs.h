@@ -81,7 +81,6 @@
 #define HFS_FLG_LOCKED		0x1000
 #define HFS_FLG_INVISIBLE	0x4000
 
-/*======== HFS structures as they appear on the disk ========*/
 
 /* Pascal-style string of up to 31 characters */
 struct hfs_name {
@@ -278,7 +277,6 @@ struct hfs_mdb {
 	hfs_extent_rec drCTExtRec;	/* catalog B-tree's first 3 extents */
 } __packed;
 
-/*======== Data structures kept in memory ========*/
 
 struct hfs_readdir_data {
 	struct list_head list;

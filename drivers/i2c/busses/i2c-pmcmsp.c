@@ -34,6 +34,7 @@
 #include <linux/mutex.h>
 #include <linux/delay.h>
 #include <asm/io.h>
+#include <linux/io.h>
 
 #define DRV_NAME	"pmcmsptwi"
 
@@ -271,6 +272,7 @@ static irqreturn_t pmcmsptwi_interrupt(int irq, void *ptr)
  * Probe for and register the device and return 0 if there is one.
  */
 static int __devinit pmcmsptwi_probe(struct platform_device *pldev)
+static int pmcmsptwi_probe(struct platform_device *pldev)
 {
 	struct resource *res;
 	int rc = -ENODEV;
@@ -284,6 +286,7 @@ static int __devinit pmcmsptwi_probe(struct platform_device *pldev)
 
 	/* reserve the memory region */
 	if (!request_mem_region(res->start, res->end - res->start + 1,
+	if (!request_mem_region(res->start, resource_size(res),
 				pldev->name)) {
 		dev_err(&pldev->dev,
 			"Unable to get memory/io address region 0x%08x\n",
@@ -295,6 +298,7 @@ static int __devinit pmcmsptwi_probe(struct platform_device *pldev)
 	/* remap the memory */
 	pmcmsptwi_data.iobase = ioremap_nocache(res->start,
 						res->end - res->start + 1);
+						resource_size(res));
 	if (!pmcmsptwi_data.iobase) {
 		dev_err(&pldev->dev,
 			"Unable to ioremap address 0x%08x\n", res->start);
@@ -308,6 +312,7 @@ static int __devinit pmcmsptwi_probe(struct platform_device *pldev)
 		rc = request_irq(pmcmsptwi_data.irq, &pmcmsptwi_interrupt,
 			IRQF_SHARED | IRQF_DISABLED | IRQF_SAMPLE_RANDOM,
 			pldev->name, &pmcmsptwi_data);
+				 IRQF_SHARED, pldev->name, &pmcmsptwi_data);
 		if (rc == 0) {
 			/*
 			 * Enable 'DONE' interrupt only.
@@ -361,6 +366,7 @@ ret_unmap:
 
 ret_unreserve:
 	release_mem_region(res->start, res->end - res->start + 1);
+	release_mem_region(res->start, resource_size(res));
 
 ret_err:
 	return rc;
@@ -370,6 +376,7 @@ ret_err:
  * Release the device and return 0 if there is one.
  */
 static int __devexit pmcmsptwi_remove(struct platform_device *pldev)
+static int pmcmsptwi_remove(struct platform_device *pldev)
 {
 	struct resource *res;
 
@@ -386,6 +393,7 @@ static int __devexit pmcmsptwi_remove(struct platform_device *pldev)
 
 	res = platform_get_resource(pldev, IORESOURCE_MEM, 0);
 	release_mem_region(res->start, res->end - res->start + 1);
+	release_mem_region(res->start, resource_size(res));
 
 	return 0;
 }
@@ -487,6 +495,7 @@ static enum pmcmsptwi_xfer_result pmcmsptwi_xfer_cmd(
 	if (cmd->type == MSP_TWI_CMD_WRITE ||
 	    cmd->type == MSP_TWI_CMD_WRITE_READ) {
 		__be64 tmp = cpu_to_be64p((u64 *)cmd->write_data);
+		u64 tmp = be64_to_cpup((__be64 *)cmd->write_data);
 		tmp >>= (MSP_MAX_BYTES_PER_RW - cmd->write_len) * 8;
 		dev_dbg(&pmcmsptwi_adapter.dev, "Writing 0x%016llx\n", tmp);
 		pmcmsptwi_writel(tmp & 0x00000000ffffffffLL,
@@ -554,6 +563,14 @@ static int pmcmsptwi_master_xfer(struct i2c_adapter *adap,
 				"Non write-read dual messages unsupported\n");
 			return -EINVAL;
 		}
+	if (num == 2) {
+		struct i2c_msg *nextmsg = msg + 1;
+
+		cmd.type = MSP_TWI_CMD_WRITE_READ;
+		cmd.write_len = msg->len;
+		cmd.write_data = msg->buf;
+		cmd.read_len = nextmsg->len;
+		cmd.read_data = nextmsg->buf;
 	} else if (msg->flags & I2C_M_RD) {
 		cmd.type = MSP_TWI_CMD_READ;
 		cmd.read_len = msg->len;
@@ -613,6 +630,14 @@ static u32 pmcmsptwi_i2c_func(struct i2c_adapter *adapter)
 		I2C_FUNC_SMBUS_WORD_DATA | I2C_FUNC_SMBUS_PROC_CALL;
 }
 
+static struct i2c_adapter_quirks pmcmsptwi_i2c_quirks = {
+	.flags = I2C_AQ_COMB_WRITE_THEN_READ,
+	.max_write_len = MSP_MAX_BYTES_PER_RW,
+	.max_read_len = MSP_MAX_BYTES_PER_RW,
+	.max_comb_1st_msg_len = MSP_MAX_BYTES_PER_RW,
+	.max_comb_2nd_msg_len = MSP_MAX_BYTES_PER_RW,
+};
+
 /* -- Initialization -- */
 
 static struct i2c_algorithm pmcmsptwi_algo = {
@@ -654,3 +679,20 @@ MODULE_LICENSE("GPL");
 
 module_init(pmcmsptwi_init);
 module_exit(pmcmsptwi_exit);
+	.quirks		= &pmcmsptwi_i2c_quirks,
+	.name		= DRV_NAME,
+};
+
+static struct platform_driver pmcmsptwi_driver = {
+	.probe  = pmcmsptwi_probe,
+	.remove	= pmcmsptwi_remove,
+	.driver = {
+		.name	= DRV_NAME,
+	},
+};
+
+module_platform_driver(pmcmsptwi_driver);
+
+MODULE_DESCRIPTION("PMC MSP TWI/SMBus/I2C driver");
+MODULE_LICENSE("GPL");
+MODULE_ALIAS("platform:" DRV_NAME);

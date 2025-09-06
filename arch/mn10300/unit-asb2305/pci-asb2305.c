@@ -34,6 +34,11 @@
 void pcibios_align_resource(void *data, struct resource *res,
 			    resource_size_t size, resource_size_t align)
 {
+resource_size_t pcibios_align_resource(void *data, const struct resource *res,
+				resource_size_t size, resource_size_t align)
+{
+	resource_size_t start = res->start;
+
 #if 0
 	struct pci_dev *dev = data;
 
@@ -55,6 +60,10 @@ void pcibios_align_resource(void *data, struct resource *res,
 			res->start = start;
 		}
 	}
+	if ((res->flags & IORESOURCE_IO) && (start & 0x300))
+		start = (start + 0x3ff) & ~0x3ff;
+
+	return start;
 }
 
 
@@ -96,6 +105,7 @@ static void __init pcibios_allocate_bus_resources(struct list_head *bus_list)
 	struct pci_dev *dev;
 	int idx;
 	struct resource *r, *pr;
+	struct resource *r;
 
 	/* Depth-First Search on bus tree */
 	list_for_each_entry(bus, bus_list, node) {
@@ -111,6 +121,8 @@ static void __init pcibios_allocate_bus_resources(struct list_head *bus_list)
 				if (!r->start ||
 				    !pr ||
 				    request_resource(pr, r) < 0) {
+				if (!r->start ||
+				    pci_claim_bridge_resource(dev, idx) < 0) {
 					printk(KERN_ERR "PCI:"
 					       " Cannot allocate resource"
 					       " region %d of bridge %s\n",
@@ -119,6 +131,7 @@ static void __init pcibios_allocate_bus_resources(struct list_head *bus_list)
 					 * Invalidate the resource to prevent
 					 * child resource allocations in this
 					 * range. */
+					r->start = r->end = 0;
 					r->flags = 0;
 				}
 			}
@@ -133,6 +146,7 @@ static void __init pcibios_allocate_resources(int pass)
 	int idx, disabled;
 	u16 command;
 	struct resource *r, *pr;
+	struct resource *r;
 
 	for_each_pci_dev(dev) {
 		pci_read_config_word(dev, PCI_COMMAND, &command);
@@ -153,6 +167,7 @@ static void __init pcibios_allocate_resources(int pass)
 				    disabled, pass);
 				pr = pci_find_parent_resource(dev, r);
 				if (!pr || request_resource(pr, r) < 0) {
+				if (pci_claim_resource(dev, idx) < 0) {
 					printk(KERN_ERR "PCI:"
 					       " Cannot allocate resource"
 					       " region %d of device %s\n",
@@ -200,6 +215,18 @@ static int __init pcibios_assign_resources(void)
 				r->end -= r->start;
 				r->start = 0;
 			}
+	struct resource *r;
+
+	/* Try to use BIOS settings for ROMs, otherwise let
+	   pci_assign_unassigned_resources() allocate the new
+	   addresses. */
+	for_each_pci_dev(dev) {
+		r = &dev->resource[PCI_ROM_RESOURCE];
+		if (!r->flags || !r->start)
+			continue;
+		if (pci_claim_resource(dev, PCI_ROM_RESOURCE) < 0) {
+			r->end -= r->start;
+			r->start = 0;
 		}
 	}
 
@@ -288,6 +315,7 @@ int pci_mmap_page_range(struct pci_dev *dev, struct vm_area_struct *vma,
 	 * address on this platform.
 	 */
 	vma->vm_flags |= VM_LOCKED | VM_IO;
+	vma->vm_flags |= VM_LOCKED;
 
 	prot = pgprot_val(vma->vm_page_prot);
 	prot &= ~_PAGE_CACHE;

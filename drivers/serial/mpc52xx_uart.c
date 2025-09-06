@@ -131,9 +131,7 @@ static irqreturn_t mpc52xx_uart_int(int irq, void *dev_id);
 #define uart_console(port)	(0)
 #endif
 
-/* ======================================================================== */
 /* PSC fifo operations for isolating differences between 52xx and 512x      */
-/* ======================================================================== */
 
 struct psc_ops {
 	void		(*fifo_init)(struct uart_port *port);
@@ -427,9 +425,7 @@ static struct psc_ops mpc512x_psc_ops = {
 
 static struct psc_ops *psc_ops;
 
-/* ======================================================================== */
 /* UART operations                                                          */
-/* ======================================================================== */
 
 static unsigned int
 mpc52xx_uart_tx_empty(struct uart_port *port)
@@ -725,9 +721,7 @@ static struct uart_ops mpc52xx_uart_ops = {
 };
 
 
-/* ======================================================================== */
 /* Interrupt handling                                                       */
-/* ======================================================================== */
 
 static inline int
 mpc52xx_uart_int_rx_chars(struct uart_port *port)
@@ -865,9 +859,7 @@ mpc52xx_uart_int(int irq, void *dev_id)
 }
 
 
-/* ======================================================================== */
 /* Console ( if applicable )                                                */
-/* ======================================================================== */
 
 #ifdef CONFIG_SERIAL_MPC52xx_CONSOLE
 
@@ -1087,9 +1079,7 @@ console_initcall(mpc52xx_console_init);
 #endif
 
 
-/* ======================================================================== */
 /* UART Driver                                                              */
-/* ======================================================================== */
 
 static struct uart_driver mpc52xx_uart_driver = {
 	.driver_name	= "mpc52xx_psc_uart",
@@ -1102,9 +1092,7 @@ static struct uart_driver mpc52xx_uart_driver = {
 
 
 #if !defined(CONFIG_PPC_MERGE)
-/* ======================================================================== */
 /* Platform Driver                                                          */
-/* ======================================================================== */
 
 static int __devinit
 mpc52xx_uart_probe(struct platform_device *dev)
@@ -1209,9 +1197,7 @@ static struct platform_driver mpc52xx_uart_platform_driver = {
 
 
 #if defined(CONFIG_PPC_MERGE)
-/* ======================================================================== */
 /* OF Platform Driver                                                       */
-/* ======================================================================== */
 
 static struct of_device_id mpc52xx_uart_of_match[] = {
 #ifdef CONFIG_PPC_MPC52xx
@@ -1405,9 +1391,7 @@ static struct of_platform_driver mpc52xx_uart_of_driver = {
 #endif /* defined(CONFIG_PPC_MERGE) */
 
 
-/* ======================================================================== */
 /* Module                                                                   */
-/* ======================================================================== */
 
 static int __init
 mpc52xx_uart_init(void)

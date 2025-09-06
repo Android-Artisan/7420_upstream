@@ -4,6 +4,10 @@
  *
  *  S390 version
  *    Copyright (C) 1999 IBM Deutschland Entwicklung GmbH, IBM Corporation
+ *    SCLP line mode terminal driver.
+ *
+ *  S390 version
+ *    Copyright IBM Corp. 1999
  *    Author(s): Martin Peschke <mpeschke@de.ibm.com>
  *		 Martin Schwidefsky <schwidefsky@de.ibm.com>
  */
@@ -17,6 +21,10 @@
 #include <linux/err.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
+#include <linux/err.h>
+#include <linux/init.h>
+#include <linux/interrupt.h>
+#include <linux/gfp.h>
 #include <asm/uaccess.h>
 
 #include "ctrlchar.h"
@@ -49,6 +57,7 @@ static struct sclp_buffer *sclp_ttybuf;
 static struct timer_list sclp_tty_timer;
 
 static struct tty_struct *sclp_tty;
+static struct tty_port sclp_port;
 static unsigned char sclp_tty_chars[SCLP_TTY_BUF_SIZE];
 static unsigned short int sclp_tty_chars_count;
 
@@ -67,6 +76,9 @@ sclp_tty_open(struct tty_struct *tty, struct file *filp)
 	sclp_tty = tty;
 	tty->driver_data = NULL;
 	tty->low_latency = 0;
+	tty_port_tty_set(&sclp_port, tty);
+	tty->driver_data = NULL;
+	sclp_port.low_latency = 0;
 	return 0;
 }
 
@@ -77,6 +89,7 @@ sclp_tty_close(struct tty_struct *tty, struct file *filp)
 	if (tty->count > 1)
 		return;
 	sclp_tty = NULL;
+	tty_port_tty_set(&sclp_port, NULL);
 }
 
 /*
@@ -87,6 +100,8 @@ sclp_tty_close(struct tty_struct *tty, struct file *filp)
  * character needs the same space in the sccb. The worst case is
  * a string of newlines. Every newlines creates a new mto which
  * needs 8 bytes.
+ * a string of newlines. Every newline creates a new message which
+ * needs 82 bytes.
  */
 static int
 sclp_tty_write_room (struct tty_struct *tty)
@@ -101,6 +116,9 @@ sclp_tty_write_room (struct tty_struct *tty)
 		count = sclp_buffer_space(sclp_ttybuf) / sizeof(struct mto);
 	list_for_each(l, &sclp_tty_pages)
 		count += NR_EMPTY_MTO_PER_SCCB;
+		count = sclp_buffer_space(sclp_ttybuf) / sizeof(struct msg_buf);
+	list_for_each(l, &sclp_tty_pages)
+		count += NR_EMPTY_MSG_PER_SCCB;
 	spin_unlock_irqrestore(&sclp_tty_lock, flags);
 	return count;
 }
@@ -129,6 +147,8 @@ sclp_ttybuf_callback(struct sclp_buffer *buffer, int rc)
 	if (sclp_tty != NULL) {
 		tty_wakeup(sclp_tty);
 	}
+
+	tty_port_tty_wakeup(&sclp_port);
 }
 
 static inline void
@@ -326,6 +346,7 @@ sclp_tty_flush_buffer(struct tty_struct *tty)
 static void
 sclp_tty_input(unsigned char* buf, unsigned int count)
 {
+	struct tty_struct *tty = tty_port_tty_get(&sclp_port);
 	unsigned int cchar;
 
 	/*
@@ -335,12 +356,17 @@ sclp_tty_input(unsigned char* buf, unsigned int count)
 	if (sclp_tty == NULL)
 		return;
 	cchar = ctrlchar_handle(buf, count, sclp_tty);
+	if (tty == NULL)
+		return;
+	cchar = ctrlchar_handle(buf, count, tty);
 	switch (cchar & CTRLCHAR_MASK) {
 	case CTRLCHAR_SYSRQ:
 		break;
 	case CTRLCHAR_CTRL:
 		tty_insert_flip_char(sclp_tty, cchar, TTY_NORMAL);
 		tty_flip_buffer_push(sclp_tty);
+		tty_insert_flip_char(&sclp_port, cchar, TTY_NORMAL);
+		tty_flip_buffer_push(&sclp_port);
 		break;
 	case CTRLCHAR_NONE:
 		/* send (normal) input to line discipline */
@@ -355,6 +381,14 @@ sclp_tty_input(unsigned char* buf, unsigned int count)
 		tty_flip_buffer_push(sclp_tty);
 		break;
 	}
+			tty_insert_flip_string(&sclp_port, buf, count);
+			tty_insert_flip_char(&sclp_port, '\n', TTY_NORMAL);
+		} else
+			tty_insert_flip_string(&sclp_port, buf, count - 2);
+		tty_flip_buffer_push(&sclp_port);
+		break;
+	}
+	tty_kref_put(tty);
 }
 
 /*
@@ -520,6 +554,72 @@ sclp_tty_receiver(struct evbuf_header *evbuf)
 	vec = find_gds_vector(start, end, GDS_ID_MDSMU);
 	if (vec)
 		sclp_eval_mdsmu(vec + 1, (void *) vec + vec->length);
+static void sclp_get_input(struct gds_subvector *sv)
+{
+	unsigned char *str;
+	int count;
+
+	str = (unsigned char *) (sv + 1);
+	count = sv->length - sizeof(*sv);
+	if (sclp_tty_tolower)
+		EBC_TOLOWER(str, count);
+	count = sclp_switch_cases(str, count);
+	/* convert EBCDIC to ASCII (modify original input in SCCB) */
+	sclp_ebcasc_str(str, count);
+
+	/* transfer input to high level driver */
+	sclp_tty_input(str, count);
+}
+
+static inline void sclp_eval_selfdeftextmsg(struct gds_subvector *sv)
+{
+	void *end;
+
+	end = (void *) sv + sv->length;
+	for (sv = sv + 1; (void *) sv < end; sv = (void *) sv + sv->length)
+		if (sv->key == 0x30)
+			sclp_get_input(sv);
+}
+
+static inline void sclp_eval_textcmd(struct gds_vector *v)
+{
+	struct gds_subvector *sv;
+	void *end;
+
+	end = (void *) v + v->length;
+	for (sv = (struct gds_subvector *) (v + 1);
+	     (void *) sv < end; sv = (void *) sv + sv->length)
+		if (sv->key == GDS_KEY_SELFDEFTEXTMSG)
+			sclp_eval_selfdeftextmsg(sv);
+
+}
+
+static inline void sclp_eval_cpmsu(struct gds_vector *v)
+{
+	void *end;
+
+	end = (void *) v + v->length;
+	for (v = v + 1; (void *) v < end; v = (void *) v + v->length)
+		if (v->gds_id == GDS_ID_TEXTCMD)
+			sclp_eval_textcmd(v);
+}
+
+
+static inline void sclp_eval_mdsmu(struct gds_vector *v)
+{
+	v = sclp_find_gds_vector(v + 1, (void *) v + v->length, GDS_ID_CPMSU);
+	if (v)
+		sclp_eval_cpmsu(v);
+}
+
+static void sclp_tty_receiver(struct evbuf_header *evbuf)
+{
+	struct gds_vector *v;
+
+	v = sclp_find_gds_vector(evbuf + 1, (void *) evbuf + evbuf->length,
+				 GDS_ID_MDSMU);
+	if (v)
+		sclp_eval_mdsmu(v);
 }
 
 static void
@@ -598,6 +698,8 @@ sclp_tty_init(void)
 	}
 
 	driver->owner = THIS_MODULE;
+	tty_port_init(&sclp_port);
+
 	driver->driver_name = "sclp_line";
 	driver->name = "sclp_line";
 	driver->major = TTY_MAJOR;
@@ -613,6 +715,15 @@ sclp_tty_init(void)
 	rc = tty_register_driver(driver);
 	if (rc) {
 		put_tty_driver(driver);
+	driver->init_termios.c_oflag = ONLCR;
+	driver->init_termios.c_lflag = ISIG | ECHO;
+	driver->flags = TTY_DRIVER_REAL_RAW;
+	tty_set_operations(driver, &sclp_ops);
+	tty_port_link_device(&sclp_port, driver, 0);
+	rc = tty_register_driver(driver);
+	if (rc) {
+		put_tty_driver(driver);
+		tty_port_destroy(&sclp_port);
 		return rc;
 	}
 	sclp_tty_driver = driver;

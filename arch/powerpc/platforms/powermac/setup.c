@@ -34,6 +34,8 @@
 #include <linux/slab.h>
 #include <linux/user.h>
 #include <linux/a.out.h>
+#include <linux/export.h>
+#include <linux/user.h>
 #include <linux/tty.h>
 #include <linux/string.h>
 #include <linux/delay.h>
@@ -54,6 +56,7 @@
 #include <linux/of_device.h>
 #include <linux/of_platform.h>
 #include <linux/lmb.h>
+#include <linux/memblock.h>
 
 #include <asm/reg.h>
 #include <asm/sections.h>
@@ -62,6 +65,8 @@
 #include <asm/pgtable.h>
 #include <asm/io.h>
 #include <asm/kexec.h>
+#include <asm/pgtable.h>
+#include <asm/io.h>
 #include <asm/pci-bridge.h>
 #include <asm/ohare.h>
 #include <asm/mediabay.h>
@@ -314,6 +319,7 @@ static void __init pmac_setup_arch(void)
 	for (ic = NULL; (ic = of_find_all_nodes(ic)) != NULL; )
 		if (of_get_property(ic, "interrupt-controller", NULL))
 			break;
+	ic = of_find_node_with_property(NULL, "interrupt-controller");
 	if (ic) {
 		pmac_newworld = 1;
 		of_node_put(ic);
@@ -375,6 +381,8 @@ static void __init pmac_setup_arch(void)
 
 #ifdef CONFIG_ADB
 	if (strstr(cmd_line, "adb_sync")) {
+#ifdef CONFIG_ADB
+	if (strstr(boot_command_line, "adb_sync")) {
 		extern int __adb_probe_sync;
 		__adb_probe_sync = 1;
 	}
@@ -400,6 +408,7 @@ static int pmac_late_init(void)
 }
 machine_late_initcall(powermac, pmac_late_init);
 
+void note_bootable_part(dev_t dev, int part, int goodness);
 /*
  * This is __init_refok because we check for "initializing" before
  * touching any of the __init sensitive things and "initializing"
@@ -502,6 +511,7 @@ static void __init pmac_init_early(void)
 {
 	/* Enable early btext debug if requested */
 	if (strstr(cmd_line, "btextdbg")) {
+	if (strstr(boot_command_line, "btextdbg")) {
 		udbg_adb_init_early();
 		register_early_udbg_console();
 	}
@@ -515,6 +525,19 @@ static void __init pmac_init_early(void)
 
 #ifdef CONFIG_PPC64
 	iommu_init_early_dart();
+	udbg_scc_init(!!strstr(boot_command_line, "sccdbg"));
+	udbg_adb_init(!!strstr(boot_command_line, "btextdbg"));
+
+#ifdef CONFIG_PPC64
+	iommu_init_early_dart(&pmac_pci_controller_ops);
+#endif
+
+	/* SMP Init has to be done early as we need to patch up
+	 * cpu_possible_mask before interrupt stacks are allocated
+	 * or kaboom...
+	 */
+#ifdef CONFIG_SMP
+	pmac_setup_smp();
 #endif
 }
 
@@ -531,9 +554,27 @@ static int __init pmac_declare_of_platform_devices(void)
 	np = of_find_node_by_name(NULL, "platinum");
 	if (np)
 		of_platform_device_create(np, "platinum", NULL);
+	if (np) {
+		of_platform_device_create(np, "valkyrie", NULL);
+		of_node_put(np);
+	}
+	np = of_find_node_by_name(NULL, "platinum");
+	if (np) {
+		of_platform_device_create(np, "platinum", NULL);
+		of_node_put(np);
+	}
         np = of_find_node_by_type(NULL, "smu");
         if (np) {
 		of_platform_device_create(np, "smu", NULL);
+		of_node_put(np);
+	}
+	np = of_find_node_by_type(NULL, "fcu");
+	if (np == NULL) {
+		/* Some machines have strangely broken device-tree */
+		np = of_find_node_by_path("/u3@0,f8000000/i2c@f8001000/fan@15e");
+	}
+	if (np) {
+		of_platform_device_create(np, "temperature", NULL);
 		of_node_put(np);
 	}
 
@@ -718,6 +759,14 @@ static void pmac_cpu_die(void)
 
 #endif /* CONFIG_PPC64 */
 
+	smu_cmdbuf_abs = memblock_alloc_base(4096, 4096, 0x80000000UL);
+#endif /* CONFIG_PMAC_SMU */
+
+	pm_power_off = pmac_power_off;
+
+	return 1;
+}
+
 define_machine(powermac) {
 	.name			= "PowerMac",
 	.probe			= pmac_probe,
@@ -754,5 +803,12 @@ define_machine(powermac) {
 #endif
 #if defined(CONFIG_HOTPLUG_CPU) && defined(CONFIG_PPC64)
 	.cpu_die		= pmac_cpu_die,
+#endif
+	.power_save		= power4_idle,
+	.enable_pmcs		= power4_enable_pmcs,
+#endif /* CONFIG_PPC64 */
+#ifdef CONFIG_PPC32
+	.pcibios_after_init	= pmac_pcibios_after_init,
+	.phys_mem_access_prot	= pci_phys_mem_access_prot,
 #endif
 };

@@ -14,12 +14,14 @@
 #include <linux/cpu.h>
 #include <linux/bitmap.h>
 #include <linux/sysdev.h>
+#include <linux/device.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/vmalloc.h>
 #include <linux/mm.h>
 #include <linux/io.h>
+#include <linux/prefetch.h>
 #include <asm/page.h>
 #include <asm/cacheflush.h>
 #include <cpu/sq.h>
@@ -46,6 +48,9 @@ do {						\
 	(void)ctrl_inl(P4SEG_STORE_QUE);	\
 	ctrl_outl(0, P4SEG_STORE_QUE + 0);	\
 	ctrl_outl(0, P4SEG_STORE_QUE + 8);	\
+	(void)__raw_readl(P4SEG_STORE_QUE);	\
+	__raw_writel(0, P4SEG_STORE_QUE + 0);	\
+	__raw_writel(0, P4SEG_STORE_QUE + 8);	\
 } while (0);
 
 /**
@@ -101,6 +106,7 @@ static inline void sq_mapping_list_del(struct sq_mapping *map)
 }
 
 static int __sq_remap(struct sq_mapping *map, unsigned long flags)
+static int __sq_remap(struct sq_mapping *map, pgprot_t prot)
 {
 #if defined(CONFIG_MMU)
 	struct vm_struct *vma;
@@ -114,6 +120,7 @@ static int __sq_remap(struct sq_mapping *map, unsigned long flags)
 	if (ioremap_page_range((unsigned long)vma->addr,
 			       (unsigned long)vma->addr + map->size,
 			       vma->phys_addr, __pgprot(flags))) {
+			       vma->phys_addr, prot)) {
 		vunmap(vma->addr);
 		return -EAGAIN;
 	}
@@ -125,6 +132,8 @@ static int __sq_remap(struct sq_mapping *map, unsigned long flags)
 	 */
 	ctrl_outl(((map->addr >> 26) << 2) & 0x1c, SQ_QACR0);
 	ctrl_outl(((map->addr >> 26) << 2) & 0x1c, SQ_QACR1);
+	__raw_writel(((map->addr >> 26) << 2) & 0x1c, SQ_QACR0);
+	__raw_writel(((map->addr >> 26) << 2) & 0x1c, SQ_QACR1);
 #endif
 
 	return 0;
@@ -136,6 +145,7 @@ static int __sq_remap(struct sq_mapping *map, unsigned long flags)
  * @size: Length of mapping.
  * @name: User invoking mapping.
  * @flags: Protection flags.
+ * @prot: Protection bits.
  *
  * Remaps the physical address @phys through the next available store queue
  * address of @size length. @name is logged at boot time as well as through
@@ -143,6 +153,7 @@ static int __sq_remap(struct sq_mapping *map, unsigned long flags)
  */
 unsigned long sq_remap(unsigned long phys, unsigned int size,
 		       const char *name, unsigned long flags)
+		       const char *name, pgprot_t prot)
 {
 	struct sq_mapping *map;
 	unsigned long end;
@@ -178,6 +189,7 @@ unsigned long sq_remap(unsigned long phys, unsigned int size,
 	map->sq_addr = P4SEG_STORE_QUE + (page << PAGE_SHIFT);
 
 	ret = __sq_remap(map, pgprot_val(PAGE_KERNEL_NOCACHE) | flags);
+	ret = __sq_remap(map, prot);
 	if (unlikely(ret != 0))
 		goto out;
 
@@ -311,6 +323,7 @@ static ssize_t mapping_store(const char *buf, size_t count)
 	if (likely(len)) {
 		int ret = sq_remap(base, len, "Userspace",
 				   pgprot_val(PAGE_SHARED));
+		int ret = sq_remap(base, len, "Userspace", PAGE_SHARED);
 		if (ret < 0)
 			return ret;
 	} else
@@ -328,6 +341,7 @@ static struct attribute *sq_sysfs_attrs[] = {
 };
 
 static struct sysfs_ops sq_sysfs_ops = {
+static const struct sysfs_ops sq_sysfs_ops = {
 	.show	= sq_sysfs_show,
 	.store	= sq_sysfs_store,
 };
@@ -340,6 +354,9 @@ static struct kobj_type ktype_percpu_entry = {
 static int __devinit sq_sysdev_add(struct sys_device *sysdev)
 {
 	unsigned int cpu = sysdev->id;
+static int sq_dev_add(struct device *dev, struct subsys_interface *sif)
+{
+	unsigned int cpu = dev->id;
 	struct kobject *kobj;
 	int error;
 
@@ -349,6 +366,7 @@ static int __devinit sq_sysdev_add(struct sys_device *sysdev)
 
 	kobj = sq_kobject[cpu];
 	error = kobject_init_and_add(kobj, &ktype_percpu_entry, &sysdev->kobj,
+	error = kobject_init_and_add(kobj, &ktype_percpu_entry, &dev->kobj,
 				     "%s", "sq");
 	if (!error)
 		kobject_uevent(kobj, KOBJ_ADD);
@@ -367,6 +385,19 @@ static int __devexit sq_sysdev_remove(struct sys_device *sysdev)
 static struct sysdev_driver sq_sysdev_driver = {
 	.add		= sq_sysdev_add,
 	.remove		= __devexit_p(sq_sysdev_remove),
+static void sq_dev_remove(struct device *dev, struct subsys_interface *sif)
+{
+	unsigned int cpu = dev->id;
+	struct kobject *kobj = sq_kobject[cpu];
+
+	kobject_put(kobj);
+}
+
+static struct subsys_interface sq_interface = {
+	.name		= "sq",
+	.subsys		= &cpu_subsys,
+	.add_dev	= sq_dev_add,
+	.remove_dev	= sq_dev_remove,
 };
 
 static int __init sq_api_init(void)
@@ -382,11 +413,12 @@ static int __init sq_api_init(void)
 	if (unlikely(!sq_cache))
 		return ret;
 
-	sq_bitmap = kzalloc(size, GFP_KERNEL);
+	sq_bitmap = kcalloc(size, sizeof(long), GFP_KERNEL);
 	if (unlikely(!sq_bitmap))
 		goto out;
 
 	ret = sysdev_driver_register(&cpu_sysdev_class, &sq_sysdev_driver);
+	ret = subsys_interface_register(&sq_interface);
 	if (unlikely(ret != 0))
 		goto out;
 
@@ -402,6 +434,7 @@ out:
 static void __exit sq_api_exit(void)
 {
 	sysdev_driver_unregister(&cpu_sysdev_class, &sq_sysdev_driver);
+	subsys_interface_unregister(&sq_interface);
 	kfree(sq_bitmap);
 	kmem_cache_destroy(sq_cache);
 }

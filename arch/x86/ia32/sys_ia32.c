@@ -86,6 +86,18 @@ int cp_compat_stat(struct kstat *kbuf, struct compat_stat __user *ubuf)
 }
 
 asmlinkage long sys32_truncate64(char __user *filename,
+#include <linux/slab.h>
+#include <asm/mman.h>
+#include <asm/types.h>
+#include <asm/uaccess.h>
+#include <linux/atomic.h>
+#include <asm/vgtod.h>
+#include <asm/sys_ia32.h>
+
+#define AA(__x)		((unsigned long)(__x))
+
+
+asmlinkage long sys32_truncate64(const char __user *filename,
 				 unsigned long offset_low,
 				 unsigned long offset_high)
 {
@@ -108,6 +120,8 @@ static int cp_stat64(struct stat64 __user *ubuf, struct kstat *stat)
 	typeof(ubuf->st_gid) gid = 0;
 	SET_UID(uid, stat->uid);
 	SET_GID(gid, stat->gid);
+	SET_UID(uid, from_kuid_munged(current_user_ns(), stat->uid));
+	SET_GID(gid, from_kgid_munged(current_user_ns(), stat->gid));
 	if (!access_ok(VERIFY_WRITE, ubuf, sizeof(struct stat64)) ||
 	    __put_user(huge_encode_dev(stat->dev), &ubuf->st_dev) ||
 	    __put_user(stat->ino, &ubuf->__st_ino) ||
@@ -131,6 +145,7 @@ static int cp_stat64(struct stat64 __user *ubuf, struct kstat *stat)
 }
 
 asmlinkage long sys32_stat64(char __user *filename,
+asmlinkage long sys32_stat64(const char __user *filename,
 			     struct stat64 __user *statbuf)
 {
 	struct kstat stat;
@@ -142,6 +157,7 @@ asmlinkage long sys32_stat64(char __user *filename,
 }
 
 asmlinkage long sys32_lstat64(char __user *filename,
+asmlinkage long sys32_lstat64(const char __user *filename,
 			      struct stat64 __user *statbuf)
 {
 	struct kstat stat;
@@ -179,6 +195,16 @@ asmlinkage long sys32_fstatat(unsigned int dfd, char __user *filename,
 
 out:
 	return error;
+asmlinkage long sys32_fstatat(unsigned int dfd, const char __user *filename,
+			      struct stat64 __user *statbuf, int flag)
+{
+	struct kstat stat;
+	int error;
+
+	error = vfs_fstatat(dfd, filename, &stat, flag);
+	if (error)
+		return error;
+	return cp_stat64(statbuf, &stat);
 }
 
 /*
@@ -188,6 +214,7 @@ out:
  */
 
 struct mmap_arg_struct {
+struct mmap_arg_struct32 {
 	unsigned int addr;
 	unsigned int len;
 	unsigned int prot;
@@ -202,6 +229,9 @@ asmlinkage long sys32_mmap(struct mmap_arg_struct __user *arg)
 	struct file *file = NULL;
 	unsigned long retval;
 	struct mm_struct *mm ;
+asmlinkage long sys32_mmap(struct mmap_arg_struct32 __user *arg)
+{
+	struct mmap_arg_struct32 a;
 
 	if (copy_from_user(&a, arg, sizeof(a)))
 		return -EFAULT;
@@ -490,6 +520,11 @@ asmlinkage long sys32_old_select(struct sel_arg_struct __user *arg)
 }
 
 asmlinkage long sys32_waitpid(compat_pid_t pid, unsigned int *stat_addr,
+	return sys_mmap_pgoff(a.addr, a.len, a.prot, a.flags, a.fd,
+			       a.offset>>PAGE_SHIFT);
+}
+
+asmlinkage long sys32_waitpid(compat_pid_t pid, unsigned int __user *stat_addr,
 			      int options)
 {
 	return compat_sys_wait4(pid, stat_addr, options, NULL);
@@ -631,6 +666,8 @@ asmlinkage long sys32_pread(unsigned int fd, char __user *ubuf, u32 count,
 
 asmlinkage long sys32_pwrite(unsigned int fd, char __user *ubuf, u32 count,
 			     u32 poslo, u32 poshi)
+asmlinkage long sys32_pwrite(unsigned int fd, const char __user *ubuf,
+			     u32 count, u32 poslo, u32 poshi)
 {
 	return sys_pwrite64(fd, ubuf, count,
 			  ((loff_t)AA(poshi) << 32) | AA(poslo));

@@ -8,6 +8,8 @@
  * published by the Free Software Foundation.
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/bitops.h>
 #include <linux/errno.h>
 #include <linux/fs.h>
@@ -22,12 +24,27 @@
 #include <linux/io.h>
 #include <linux/uaccess.h>
 #include <mach/regs-timer.h>
+#include <mach/hardware.h>
+
+#define KS8695_TMR_OFFSET	(0xF0000 + 0xE400)
+#define KS8695_TMR_VA		(KS8695_IO_VA + KS8695_TMR_OFFSET)
+
+/*
+ * Timer registers
+ */
+#define KS8695_TMCON		(0x00)		/* Timer Control Register */
+#define KS8695_T0TC		(0x08)		/* Timer 0 Timeout Count Register */
+#define TMCON_T0EN		(1 << 0)	/* Timer 0 Enable */
+
+/* Timer0 Timeout Counter Register */
+#define T0TC_WATCHDOG		(0xff)		/* Enable watchdog mode */
 
 #define WDT_DEFAULT_TIME	5	/* seconds */
 #define WDT_MAX_TIME		171	/* seconds */
 
 static int wdt_time = WDT_DEFAULT_TIME;
 static int nowayout = WATCHDOG_NOWAYOUT;
+static bool nowayout = WATCHDOG_NOWAYOUT;
 
 module_param(wdt_time, int, 0);
 MODULE_PARM_DESC(wdt_time, "Watchdog time in seconds. (default="
@@ -35,6 +52,7 @@ MODULE_PARM_DESC(wdt_time, "Watchdog time in seconds. (default="
 
 #ifdef CONFIG_WATCHDOG_NOWAYOUT
 module_param(nowayout, int, 0);
+module_param(nowayout, bool, 0);
 MODULE_PARM_DESC(nowayout, "Watchdog cannot be stopped once started (default="
 				__MODULE_STRING(WATCHDOG_NOWAYOUT) ")");
 #endif
@@ -42,6 +60,7 @@ MODULE_PARM_DESC(nowayout, "Watchdog cannot be stopped once started (default="
 
 static unsigned long ks8695wdt_busy;
 static spinlock_t ks8695_lock;
+static DEFINE_SPINLOCK(ks8695_lock);
 
 /* ......................................................................... */
 
@@ -66,6 +85,7 @@ static inline void ks8695_wdt_start(void)
 {
 	unsigned long tmcon;
 	unsigned long tval = wdt_time * CLOCK_TICK_RATE;
+	unsigned long tval = wdt_time * KS8695_CLOCK_RATE;
 
 	spin_lock(&ks8695_lock);
 	/* disable timer0 */
@@ -103,6 +123,7 @@ static int ks8695_wdt_settimeout(int new_time)
 {
 	/*
 	 * All counting occurs at SLOW_CLOCK / 128 = 0.256 Hz
+	 * All counting occurs at KS8695_CLOCK_RATE / 128 = 0.256 Hz
 	 *
 	 * Since WDV is a 16-bit counter, the maximum period is
 	 * 65536 / 0.256 = 256 seconds.
@@ -145,6 +166,7 @@ static int ks8695_wdt_close(struct inode *inode, struct file *file)
 }
 
 static struct watchdog_info ks8695_wdt_info = {
+static const struct watchdog_info ks8695_wdt_info = {
 	.identity	= "ks8695 watchdog",
 	.options	= WDIOF_SETTIMEOUT | WDIOF_KEEPALIVEPING,
 };
@@ -221,6 +243,7 @@ static struct miscdevice ks8695wdt_miscdev = {
 };
 
 static int __init ks8695wdt_probe(struct platform_device *pdev)
+static int ks8695wdt_probe(struct platform_device *pdev)
 {
 	int res;
 
@@ -246,6 +269,17 @@ static int __exit ks8695wdt_remove(struct platform_device *pdev)
 		ks8695wdt_miscdev.parent = NULL;
 
 	return res;
+	pr_info("KS8695 Watchdog Timer enabled (%d seconds%s)\n",
+		wdt_time, nowayout ? ", nowayout" : "");
+	return 0;
+}
+
+static int ks8695wdt_remove(struct platform_device *pdev)
+{
+	misc_deregister(&ks8695wdt_miscdev);
+	ks8695wdt_miscdev.parent = NULL;
+
+	return 0;
 }
 
 static void ks8695wdt_shutdown(struct platform_device *pdev)
@@ -276,6 +310,7 @@ static int ks8695wdt_resume(struct platform_device *pdev)
 static struct platform_driver ks8695wdt_driver = {
 	.probe		= ks8695wdt_probe,
 	.remove		= __exit_p(ks8695wdt_remove),
+	.remove		= ks8695wdt_remove,
 	.shutdown	= ks8695wdt_shutdown,
 	.suspend	= ks8695wdt_suspend,
 	.resume		= ks8695wdt_resume,
@@ -294,6 +329,8 @@ static int __init ks8695_wdt_init(void)
 		ks8695_wdt_settimeout(WDT_DEFAULT_TIME);
 		pr_info("ks8695_wdt: wdt_time value must be 1 <= wdt_time <= %i, using %d\n",
 							wdt_time, WDT_MAX_TIME);
+		pr_info("ks8695_wdt: wdt_time value must be 1 <= wdt_time <= %i"
+					", using %d\n", wdt_time, WDT_MAX_TIME);
 	}
 	return platform_driver_register(&ks8695wdt_driver);
 }

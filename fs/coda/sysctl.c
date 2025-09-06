@@ -16,6 +16,11 @@ static struct ctl_table_header *fs_table_header;
 static ctl_table coda_table[] = {
 	{
 		.ctl_name	= CTL_UNNUMBERED,
+#ifdef CONFIG_SYSCTL
+static struct ctl_table_header *fs_table_header;
+
+static struct ctl_table coda_table[] = {
+	{
 		.procname	= "timeout",
 		.data		= &coda_timeout,
 		.maxlen		= sizeof(int),
@@ -24,6 +29,9 @@ static ctl_table coda_table[] = {
 	},
 	{
 		.ctl_name	= CTL_UNNUMBERED,
+		.proc_handler	= proc_dointvec
+	},
+	{
 		.procname	= "hard",
 		.data		= &coda_hard,
 		.maxlen		= sizeof(int),
@@ -32,11 +40,15 @@ static ctl_table coda_table[] = {
 	},
 	{
 		.ctl_name	= CTL_UNNUMBERED,
+		.proc_handler	= proc_dointvec
+	},
+	{
 		.procname	= "fake_statfs",
 		.data		= &coda_fake_statfs,
 		.maxlen		= sizeof(int),
 		.mode		= 0600,
 		.proc_handler	= &proc_dointvec
+		.proc_handler	= proc_dointvec
 	},
 	{}
 };
@@ -44,6 +56,8 @@ static ctl_table coda_table[] = {
 static ctl_table fs_table[] = {
 	{
 		.ctl_name	= CTL_UNNUMBERED,
+static struct ctl_table fs_table[] = {
+	{
 		.procname	= "coda",
 		.mode		= 0555,
 		.child		= coda_table
@@ -58,6 +72,10 @@ void coda_sysctl_init(void)
 	if ( !fs_table_header )
 		fs_table_header = register_sysctl_table(fs_table);
 #endif
+void coda_sysctl_init(void)
+{
+	if ( !fs_table_header )
+		fs_table_header = register_sysctl_table(fs_table);
 }
 
 void coda_sysctl_clean(void)
@@ -69,3 +87,14 @@ void coda_sysctl_clean(void)
 	}
 #endif
 }
+}
+
+#else
+void coda_sysctl_init(void)
+{
+}
+
+void coda_sysctl_clean(void)
+{
+}
+#endif

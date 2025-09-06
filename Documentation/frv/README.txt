@@ -1,6 +1,4 @@
-		       ================================
 		       Fujitsu FR-V LINUX DOCUMENTATION
-		       ================================
 
 This directory contains documentation for the Fujitsu FR-V CPU architecture
 port of Linux.

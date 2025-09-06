@@ -25,6 +25,15 @@
 #include <asm/mach/arch.h>
 #include <asm/mach/flash.h>
 
+#define COYOTE_IDE_BASE_PHYS	IXP4XX_EXP_BUS_BASE(3)
+#define COYOTE_IDE_BASE_VIRT	0xFFFE1000
+#define COYOTE_IDE_REGION_SIZE	0x1000
+
+#define COYOTE_IDE_DATA_PORT	0xFFFE10E0
+#define COYOTE_IDE_CTRL_PORT	0xFFFE10FC
+#define COYOTE_IDE_ERROR_PORT	0xFFFE10E2
+#define IRQ_COYOTE_IDE		IRQ_IXP4XX_GPIO5
+
 static struct flash_platform_data coyote_flash_data = {
 	.map_name	= "cfi_probe",
 	.width		= 2,
@@ -108,6 +117,16 @@ MACHINE_START(ADI_COYOTE, "ADI Engineering Coyote")
 	.timer		= &ixp4xx_timer,
 	.boot_params	= 0x0100,
 	.init_machine	= coyote_init,
+	.map_io		= ixp4xx_map_io,
+	.init_early	= ixp4xx_init_early,
+	.init_irq	= ixp4xx_init_irq,
+	.init_time	= ixp4xx_timer_init,
+	.atag_offset	= 0x100,
+	.init_machine	= coyote_init,
+#if defined(CONFIG_PCI)
+	.dma_zone_size	= SZ_64M,
+#endif
+	.restart	= ixp4xx_restart,
 MACHINE_END
 #endif
 
@@ -125,6 +144,13 @@ MACHINE_START(IXDPG425, "Intel IXDPG425")
 	.timer		= &ixp4xx_timer,
 	.boot_params	= 0x0100,
 	.init_machine	= coyote_init,
+	.map_io		= ixp4xx_map_io,
+	.init_early	= ixp4xx_init_early,
+	.init_irq	= ixp4xx_init_irq,
+	.init_time	= ixp4xx_timer_init,
+	.atag_offset	= 0x100,
+	.init_machine	= coyote_init,
+	.restart	= ixp4xx_restart,
 MACHINE_END
 #endif
 

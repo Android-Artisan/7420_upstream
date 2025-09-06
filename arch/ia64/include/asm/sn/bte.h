@@ -40,6 +40,7 @@
 #define BTE_LEN_BITS (16)
 #define BTE_LEN_MASK ((1 << BTE_LEN_BITS) - 1)
 #define BTE_MAX_XFER ((1 << BTE_LEN_BITS) * L1_CACHE_BYTES)
+#define BTE_MAX_XFER (BTE_LEN_MASK << L1_CACHE_SHIFT)
 
 
 /* Define hardware */
@@ -217,6 +218,7 @@ extern void bte_error_handler(unsigned long);
 
 /*
  * The following is the prefered way of calling bte_unaligned_copy
+ * The following is the preferred way of calling bte_unaligned_copy
  * If the copy is fully cache line aligned, then bte_copy is
  * used instead.  Since bte_copy is inlined, this saves a call
  * stack.  NOTE: bte_copy is called synchronously and does block

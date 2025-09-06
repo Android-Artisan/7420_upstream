@@ -20,6 +20,14 @@
 #include <linux/delayacct.h>
 
 int delayacct_on __read_mostly = 1;	/* Delay accounting turned on/off */
+#include <linux/taskstats.h>
+#include <linux/time.h>
+#include <linux/sysctl.h>
+#include <linux/delayacct.h>
+#include <linux/module.h>
+
+int delayacct_on __read_mostly = 1;	/* Delay accounting turned on/off */
+EXPORT_SYMBOL_GPL(delayacct_on);
 struct kmem_cache *delayacct_cache;
 
 static int __init delayacct_setup_disable(char *str)
@@ -74,11 +82,26 @@ static void delayacct_end(struct timespec *start, struct timespec *end,
 	*total += ns;
 	(*count)++;
 	spin_unlock_irqrestore(&current->delays->lock, flags);
+ * Finish delay accounting for a statistic using its timestamps (@start),
+ * accumalator (@total) and @count
+ */
+static void delayacct_end(u64 *start, u64 *total, u32 *count)
+{
+	s64 ns = ktime_get_ns() - *start;
+	unsigned long flags;
+
+	if (ns > 0) {
+		spin_lock_irqsave(&current->delays->lock, flags);
+		*total += ns;
+		(*count)++;
+		spin_unlock_irqrestore(&current->delays->lock, flags);
+	}
 }
 
 void __delayacct_blkio_start(void)
 {
 	delayacct_start(&current->delays->blkio_start);
+	current->delays->blkio_start = ktime_get_ns();
 }
 
 void __delayacct_blkio_end(void)
@@ -118,6 +141,19 @@ int __delayacct_add_tsk(struct taskstats *d, struct task_struct *tsk)
 	tmp = (s64)d->cpu_scaled_run_real_total;
 	cputime_to_timespec(tsk->utimescaled + tsk->stimescaled, &ts);
 	tmp += timespec_to_ns(&ts);
+	cputime_t utime, stime, stimescaled, utimescaled;
+	unsigned long long t2, t3;
+	unsigned long flags, t1;
+	s64 tmp;
+
+	task_cputime(tsk, &utime, &stime);
+	tmp = (s64)d->cpu_run_real_total;
+	tmp += cputime_to_nsecs(utime + stime);
+	d->cpu_run_real_total = (tmp < (s64)d->cpu_run_real_total) ? 0 : tmp;
+
+	task_cputime_scaled(tsk, &utimescaled, &stimescaled);
+	tmp = (s64)d->cpu_scaled_run_real_total;
+	tmp += cputime_to_nsecs(utimescaled + stimescaled);
 	d->cpu_scaled_run_real_total =
 		(tmp < (s64)d->cpu_scaled_run_real_total) ? 0 : tmp;
 
@@ -128,6 +164,7 @@ int __delayacct_add_tsk(struct taskstats *d, struct task_struct *tsk)
 	t1 = tsk->sched_info.pcount;
 	t2 = tsk->sched_info.run_delay;
 	t3 = tsk->sched_info.cpu_time;
+	t3 = tsk->se.sum_exec_runtime;
 
 	d->cpu_count += t1;
 
@@ -171,6 +208,7 @@ __u64 __delayacct_blkio_ticks(struct task_struct *tsk)
 void __delayacct_freepages_start(void)
 {
 	delayacct_start(&current->delays->freepages_start);
+	current->delays->freepages_start = ktime_get_ns();
 }
 
 void __delayacct_freepages_end(void)

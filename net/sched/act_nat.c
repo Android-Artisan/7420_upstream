@@ -45,6 +45,7 @@ static const struct nla_policy nat_policy[TCA_NAT_MAX + 1] = {
 };
 
 static int tcf_nat_init(struct nlattr *nla, struct nlattr *est,
+static int tcf_nat_init(struct net *net, struct nlattr *nla, struct nlattr *est,
 			struct tc_action *a, int ovr, int bind)
 {
 	struct nlattr *tb[TCA_NAT_MAX + 1];
@@ -79,6 +80,20 @@ static int tcf_nat_init(struct nlattr *nla, struct nlattr *est,
 			return -EEXIST;
 		}
 	}
+	if (!tcf_hash_check(parm->index, a, bind)) {
+		ret = tcf_hash_create(parm->index, est, a, sizeof(*p),
+				      bind, false);
+		if (ret)
+			return ret;
+		ret = ACT_P_CREATED;
+	} else {
+		if (bind)
+			return 0;
+		tcf_hash_release(a, bind);
+		if (!ovr)
+			return -EEXIST;
+	}
+	p = to_tcf_nat(a);
 
 	spin_lock_bh(&p->tcf_lock);
 	p->old_addr = parm->old_addr;
@@ -91,6 +106,7 @@ static int tcf_nat_init(struct nlattr *nla, struct nlattr *est,
 
 	if (ret == ACT_P_CREATED)
 		tcf_hash_insert(pc, &nat_hash_info);
+		tcf_hash_insert(a);
 
 	return ret;
 }
@@ -103,6 +119,7 @@ static int tcf_nat_cleanup(struct tc_action *a, int bind)
 }
 
 static int tcf_nat(struct sk_buff *skb, struct tc_action *a,
+static int tcf_nat(struct sk_buff *skb, const struct tc_action *a,
 		   struct tcf_result *res)
 {
 	struct tcf_nat *p = a->priv;
@@ -114,6 +131,7 @@ static int tcf_nat(struct sk_buff *skb, struct tc_action *a,
 	int egress;
 	int action;
 	int ihl;
+	int noff;
 
 	spin_lock(&p->tcf_lock);
 
@@ -126,6 +144,7 @@ static int tcf_nat(struct sk_buff *skb, struct tc_action *a,
 
 	p->tcf_bstats.bytes += qdisc_pkt_len(skb);
 	p->tcf_bstats.packets++;
+	bstats_update(&p->tcf_bstats, skb);
 
 	spin_unlock(&p->tcf_lock);
 
@@ -133,6 +152,8 @@ static int tcf_nat(struct sk_buff *skb, struct tc_action *a,
 		goto drop;
 
 	if (!pskb_may_pull(skb, sizeof(*iph)))
+	noff = skb_network_offset(skb);
+	if (!pskb_may_pull(skb, sizeof(*iph) + noff))
 		goto drop;
 
 	iph = ip_hdr(skb);
@@ -145,7 +166,9 @@ static int tcf_nat(struct sk_buff *skb, struct tc_action *a,
 	if (!((old_addr ^ addr) & mask)) {
 		if (skb_cloned(skb) &&
 		    !skb_clone_writable(skb, sizeof(*iph)) &&
+		    !skb_clone_writable(skb, sizeof(*iph) + noff) &&
 		    pskb_expand_head(skb, 0, 0, GFP_ATOMIC))
+		if (skb_try_make_writable(skb, sizeof(*iph) + noff))
 			goto drop;
 
 		new_addr &= mask;
@@ -159,6 +182,9 @@ static int tcf_nat(struct sk_buff *skb, struct tc_action *a,
 			iph->daddr = new_addr;
 
 		csum_replace4(&iph->check, addr, new_addr);
+	} else if ((iph->frag_off & htons(IP_OFFSET)) ||
+		   iph->protocol != IPPROTO_ICMP) {
+		goto out;
 	}
 
 	ihl = iph->ihl * 4;
@@ -172,11 +198,14 @@ static int tcf_nat(struct sk_buff *skb, struct tc_action *a,
 		if (!pskb_may_pull(skb, ihl + sizeof(*tcph)) ||
 		    (skb_cloned(skb) &&
 		     !skb_clone_writable(skb, ihl + sizeof(*tcph)) &&
-		     pskb_expand_head(skb, 0, 0, GFP_ATOMIC)))
+		if (!pskb_may_pull(skb, ihl + sizeof(*tcph) + noff) ||
+		    skb_try_make_writable(skb, ihl + sizeof(*tcph) + noff))
 			goto drop;
 
 		tcph = (void *)(skb_network_header(skb) + ihl);
 		inet_proto_csum_replace4(&tcph->check, skb, addr, new_addr, 1);
+		inet_proto_csum_replace4(&tcph->check, skb, addr, new_addr,
+					 true);
 		break;
 	}
 	case IPPROTO_UDP:
@@ -186,13 +215,15 @@ static int tcf_nat(struct sk_buff *skb, struct tc_action *a,
 		if (!pskb_may_pull(skb, ihl + sizeof(*udph)) ||
 		    (skb_cloned(skb) &&
 		     !skb_clone_writable(skb, ihl + sizeof(*udph)) &&
-		     pskb_expand_head(skb, 0, 0, GFP_ATOMIC)))
+		if (!pskb_may_pull(skb, ihl + sizeof(*udph) + noff) ||
+		    skb_try_make_writable(skb, ihl + sizeof(*udph) + noff))
 			goto drop;
 
 		udph = (void *)(skb_network_header(skb) + ihl);
 		if (udph->check || skb->ip_summed == CHECKSUM_PARTIAL) {
 			inet_proto_csum_replace4(&udph->check, skb, addr,
 						 new_addr, 1);
+						 new_addr, true);
 			if (!udph->check)
 				udph->check = CSUM_MANGLED_0;
 		}
@@ -203,6 +234,7 @@ static int tcf_nat(struct sk_buff *skb, struct tc_action *a,
 		struct icmphdr *icmph;
 
 		if (!pskb_may_pull(skb, ihl + sizeof(*icmph) + sizeof(*iph)))
+		if (!pskb_may_pull(skb, ihl + sizeof(*icmph) + noff))
 			goto drop;
 
 		icmph = (void *)(skb_network_header(skb) + ihl);
@@ -212,6 +244,11 @@ static int tcf_nat(struct sk_buff *skb, struct tc_action *a,
 		    (icmph->type != ICMP_PARAMETERPROB))
 			break;
 
+		if (!pskb_may_pull(skb, ihl + sizeof(*icmph) + sizeof(*iph) +
+					noff))
+			goto drop;
+
+		icmph = (void *)(skb_network_header(skb) + ihl);
 		iph = (void *)(icmph + 1);
 		if (egress)
 			addr = iph->daddr;
@@ -224,7 +261,11 @@ static int tcf_nat(struct sk_buff *skb, struct tc_action *a,
 		if (skb_cloned(skb) &&
 		    !skb_clone_writable(skb,
 					ihl + sizeof(*icmph) + sizeof(*iph)) &&
+		    !skb_clone_writable(skb, ihl + sizeof(*icmph) +
+					     sizeof(*iph) + noff) &&
 		    pskb_expand_head(skb, 0, 0, GFP_ATOMIC))
+		if (skb_try_make_writable(skb, ihl + sizeof(*icmph) +
+					  sizeof(*iph) + noff))
 			goto drop;
 
 		icmph = (void *)(skb_network_header(skb) + ihl);
@@ -241,12 +282,14 @@ static int tcf_nat(struct sk_buff *skb, struct tc_action *a,
 
 		inet_proto_csum_replace4(&icmph->checksum, skb, addr, new_addr,
 					 1);
+					 false);
 		break;
 	}
 	default:
 		break;
 	}
 
+out:
 	return action;
 
 drop:
@@ -289,6 +332,26 @@ static int tcf_nat_dump(struct sk_buff *skb, struct tc_action *a,
 	NLA_PUT(skb, TCA_NAT_TM, sizeof(t), &t);
 
 	kfree(opt);
+	struct tc_nat opt = {
+		.old_addr = p->old_addr,
+		.new_addr = p->new_addr,
+		.mask     = p->mask,
+		.flags    = p->flags,
+
+		.index    = p->tcf_index,
+		.action   = p->tcf_action,
+		.refcnt   = p->tcf_refcnt - ref,
+		.bindcnt  = p->tcf_bindcnt - bind,
+	};
+	struct tcf_t t;
+
+	if (nla_put(skb, TCA_NAT_PARMS, sizeof(opt), &opt))
+		goto nla_put_failure;
+	t.install = jiffies_to_clock_t(jiffies - p->tcf_tm.install);
+	t.lastuse = jiffies_to_clock_t(jiffies - p->tcf_tm.lastuse);
+	t.expires = jiffies_to_clock_t(p->tcf_tm.expires);
+	if (nla_put(skb, TCA_NAT_TM, sizeof(t), &t))
+		goto nla_put_failure;
 
 	return skb->len;
 
@@ -310,6 +373,11 @@ static struct tc_action_ops act_nat_ops = {
 	.lookup		=	tcf_hash_search,
 	.init		=	tcf_nat_init,
 	.walk		=	tcf_generic_walker
+	.type		=	TCA_ACT_NAT,
+	.owner		=	THIS_MODULE,
+	.act		=	tcf_nat,
+	.dump		=	tcf_nat_dump,
+	.init		=	tcf_nat_init,
 };
 
 MODULE_DESCRIPTION("Stateless NAT actions");
@@ -318,6 +386,7 @@ MODULE_LICENSE("GPL");
 static int __init nat_init_module(void)
 {
 	return tcf_register_action(&act_nat_ops);
+	return tcf_register_action(&act_nat_ops, NAT_TAB_MASK);
 }
 
 static void __exit nat_cleanup_module(void)

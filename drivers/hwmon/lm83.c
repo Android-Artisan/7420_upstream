@@ -2,6 +2,7 @@
  * lm83.c - Part of lm_sensors, Linux kernel modules for hardware
  *          monitoring
  * Copyright (C) 2003-2008  Jean Delvare <khali@linux-fr.org>
+ * Copyright (C) 2003-2009  Jean Delvare <jdelvare@suse.de>
  *
  * Heavily inspired from the lm78, lm75 and adm1021 drivers. The LM83 is
  * a sensor chip made by National Semiconductor. It reports up to four
@@ -56,6 +57,7 @@ static const unsigned short normal_i2c[] = {
  */
 
 I2C_CLIENT_INSMOD_2(lm83, lm82);
+enum chips { lm83, lm82 };
 
 /*
  * The LM83 registers
@@ -154,6 +156,8 @@ static struct i2c_driver lm83_driver = {
 
 struct lm83_data {
 	struct device *hwmon_dev;
+	struct i2c_client *client;
+	const struct attribute_group *groups[3];
 	struct mutex update_lock;
 	char valid; /* zero until following fields are valid */
 	unsigned long last_updated; /* in jiffies */
@@ -164,6 +168,36 @@ struct lm83_data {
 			   8   : critical limit */
 	u16 alarms; /* bitvector, combined */
 };
+
+static struct lm83_data *lm83_update_device(struct device *dev)
+{
+	struct lm83_data *data = dev_get_drvdata(dev);
+	struct i2c_client *client = data->client;
+
+	mutex_lock(&data->update_lock);
+
+	if (time_after(jiffies, data->last_updated + HZ * 2) || !data->valid) {
+		int nr;
+
+		dev_dbg(&client->dev, "Updating lm83 data.\n");
+		for (nr = 0; nr < 9; nr++) {
+			data->temp[nr] =
+			    i2c_smbus_read_byte_data(client,
+			    LM83_REG_R_TEMP[nr]);
+		}
+		data->alarms =
+		    i2c_smbus_read_byte_data(client, LM83_REG_R_STATUS1)
+		    + (i2c_smbus_read_byte_data(client, LM83_REG_R_STATUS2)
+		    << 8);
+
+		data->last_updated = jiffies;
+		data->valid = 1;
+	}
+
+	mutex_unlock(&data->update_lock);
+
+	return data;
+}
 
 /*
  * Sysfs stuff
@@ -185,6 +219,15 @@ static ssize_t set_temp(struct device *dev, struct device_attribute *devattr,
 	struct lm83_data *data = i2c_get_clientdata(client);
 	long val = simple_strtol(buf, NULL, 10);
 	int nr = attr->index;
+	struct lm83_data *data = dev_get_drvdata(dev);
+	struct i2c_client *client = data->client;
+	long val;
+	int nr = attr->index;
+	int err;
+
+	err = kstrtol(buf, 10, &val);
+	if (err < 0)
+		return err;
 
 	mutex_lock(&data->update_lock);
 	data->temp[nr] = TEMP_TO_REG(val);
@@ -296,6 +339,12 @@ static int lm83_detect(struct i2c_client *new_client, int kind,
 {
 	struct i2c_adapter *adapter = new_client->adapter;
 	const char *name = "";
+static int lm83_detect(struct i2c_client *new_client,
+		       struct i2c_board_info *info)
+{
+	struct i2c_adapter *adapter = new_client->adapter;
+	const char *name;
+	u8 man_id, chip_id;
 
 	if (!i2c_check_functionality(adapter, I2C_FUNC_SMBUS_BYTE_DATA))
 		return -ENODEV;
@@ -358,6 +407,34 @@ static int lm83_detect(struct i2c_client *new_client, int kind,
 	} else
 	if (kind == lm82) {
 		name = "lm82";
+	/* Detection */
+	if ((i2c_smbus_read_byte_data(new_client, LM83_REG_R_STATUS1) & 0xA8) ||
+	    (i2c_smbus_read_byte_data(new_client, LM83_REG_R_STATUS2) & 0x48) ||
+	    (i2c_smbus_read_byte_data(new_client, LM83_REG_R_CONFIG) & 0x41)) {
+		dev_dbg(&adapter->dev, "LM83 detection failed at 0x%02x\n",
+			new_client->addr);
+		return -ENODEV;
+	}
+
+	/* Identification */
+	man_id = i2c_smbus_read_byte_data(new_client, LM83_REG_R_MAN_ID);
+	if (man_id != 0x01)	/* National Semiconductor */
+		return -ENODEV;
+
+	chip_id = i2c_smbus_read_byte_data(new_client, LM83_REG_R_CHIP_ID);
+	switch (chip_id) {
+	case 0x03:
+		name = "lm83";
+		break;
+	case 0x01:
+		name = "lm82";
+		break;
+	default:
+		/* identification failed */
+		dev_info(&adapter->dev,
+			 "Unsupported chip (man_id=0x%02X, chip_id=0x%02X)\n",
+			 man_id, chip_id);
+		return -ENODEV;
 	}
 
 	strlcpy(info->type, name, I2C_NAME_SIZE);
@@ -379,6 +456,15 @@ static int lm83_probe(struct i2c_client *new_client,
 
 	i2c_set_clientdata(new_client, data);
 	data->valid = 0;
+	struct device *hwmon_dev;
+	struct lm83_data *data;
+
+	data = devm_kzalloc(&new_client->dev, sizeof(struct lm83_data),
+			    GFP_KERNEL);
+	if (!data)
+		return -ENOMEM;
+
+	data->client = new_client;
 	mutex_init(&data->update_lock);
 
 	/*
@@ -472,3 +558,40 @@ MODULE_LICENSE("GPL");
 
 module_init(sensors_lm83_init);
 module_exit(sensors_lm83_exit);
+	data->groups[0] = &lm83_group;
+	if (id->driver_data == lm83)
+		data->groups[1] = &lm83_group_opt;
+
+	hwmon_dev = devm_hwmon_device_register_with_groups(&new_client->dev,
+							   new_client->name,
+							   data, data->groups);
+	return PTR_ERR_OR_ZERO(hwmon_dev);
+}
+
+/*
+ * Driver data (common to all clients)
+ */
+
+static const struct i2c_device_id lm83_id[] = {
+	{ "lm83", lm83 },
+	{ "lm82", lm82 },
+	{ }
+};
+MODULE_DEVICE_TABLE(i2c, lm83_id);
+
+static struct i2c_driver lm83_driver = {
+	.class		= I2C_CLASS_HWMON,
+	.driver = {
+		.name	= "lm83",
+	},
+	.probe		= lm83_probe,
+	.id_table	= lm83_id,
+	.detect		= lm83_detect,
+	.address_list	= normal_i2c,
+};
+
+module_i2c_driver(lm83_driver);
+
+MODULE_AUTHOR("Jean Delvare <jdelvare@suse.de>");
+MODULE_DESCRIPTION("LM83 driver");
+MODULE_LICENSE("GPL");

@@ -52,6 +52,8 @@ struct sg_io_v4 {
 };
 
 #ifdef __KERNEL__
+#include <uapi/linux/bsg.h>
+
 
 #if defined(CONFIG_BLK_DEV_BSG)
 struct bsg_class_device {

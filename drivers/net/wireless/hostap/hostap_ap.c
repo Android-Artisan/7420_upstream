@@ -19,6 +19,14 @@
 #include <linux/proc_fs.h>
 #include <linux/delay.h>
 #include <linux/random.h>
+#include <linux/seq_file.h>
+#include <linux/delay.h>
+#include <linux/random.h>
+#include <linux/if_arp.h>
+#include <linux/slab.h>
+#include <linux/export.h>
+#include <linux/moduleparam.h>
+#include <linux/etherdevice.h>
 
 #include "hostap_wlan.h"
 #include "hostap.h"
@@ -82,6 +90,32 @@ static int ap_debug_proc_read(char *page, char **start, off_t off,
 
 	return (p - page);
 }
+static int ap_debug_proc_show(struct seq_file *m, void *v)
+{
+	struct ap_data *ap = m->private;
+
+	seq_printf(m, "BridgedUnicastFrames=%u\n", ap->bridged_unicast);
+	seq_printf(m, "BridgedMulticastFrames=%u\n", ap->bridged_multicast);
+	seq_printf(m, "max_inactivity=%u\n", ap->max_inactivity / HZ);
+	seq_printf(m, "bridge_packets=%u\n", ap->bridge_packets);
+	seq_printf(m, "nullfunc_ack=%u\n", ap->nullfunc_ack);
+	seq_printf(m, "autom_ap_wds=%u\n", ap->autom_ap_wds);
+	seq_printf(m, "auth_algs=%u\n", ap->local->auth_algs);
+	seq_printf(m, "tx_drop_nonassoc=%u\n", ap->tx_drop_nonassoc);
+	return 0;
+}
+
+static int ap_debug_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, ap_debug_proc_show, PDE_DATA(inode));
+}
+
+static const struct file_operations ap_debug_proc_fops = {
+	.open		= ap_debug_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
 #endif /* PRISM2_NO_PROCFS_DEBUG */
 
 
@@ -99,12 +133,17 @@ static void ap_sta_hash_del(struct ap_data *ap, struct sta_info *sta)
 	s = ap->sta_hash[STA_HASH(sta->addr)];
 	if (s == NULL) return;
 	if (memcmp(s->addr, sta->addr, ETH_ALEN) == 0) {
+
+	s = ap->sta_hash[STA_HASH(sta->addr)];
+	if (s == NULL) return;
+	if (ether_addr_equal(s->addr, sta->addr)) {
 		ap->sta_hash[STA_HASH(sta->addr)] = s->hnext;
 		return;
 	}
 
 	while (s->hnext != NULL && memcmp(s->hnext->addr, sta->addr, ETH_ALEN)
 	       != 0)
+	while (s->hnext != NULL && !ether_addr_equal(s->hnext->addr, sta->addr))
 		s = s->hnext;
 	if (s->hnext != NULL)
 		s->hnext = s->hnext->hnext;
@@ -112,6 +151,8 @@ static void ap_sta_hash_del(struct ap_data *ap, struct sta_info *sta)
 		printk("AP: could not remove STA %s"
 		       " from hash table\n",
 		       print_mac(mac, sta->addr));
+		printk("AP: could not remove STA %pM from hash table\n",
+		       sta->addr);
 }
 
 static void ap_free_sta(struct ap_data *ap, struct sta_info *sta)
@@ -123,6 +164,7 @@ static void ap_free_sta(struct ap_data *ap, struct sta_info *sta)
 	if (ap->proc != NULL) {
 		char name[20];
 		sprintf(name, "%s", print_mac(mac, sta->addr));
+		sprintf(name, "%pM", sta->addr);
 		remove_proc_entry(name, ap->proc);
 	}
 
@@ -142,6 +184,9 @@ static void ap_free_sta(struct ap_data *ap, struct sta_info *sta)
 	if (!sta->ap && sta->u.sta.challenge)
 		kfree(sta->u.sta.challenge);
 	del_timer(&sta->timer);
+	if (!sta->ap)
+		kfree(sta->u.sta.challenge);
+	del_timer_sync(&sta->timer);
 #endif /* PRISM2_NO_KERNEL_IEEE80211_MGMT */
 
 	kfree(sta);
@@ -244,6 +289,8 @@ static void ap_handle_timer(unsigned long data)
 			PDEBUG(DEBUG_AP, "%s: removing automatic WDS "
 			       "connection to AP %s\n",
 			       local->dev->name, print_mac(mac, sta->addr));
+			       "connection to AP %pM\n",
+			       local->dev->name, sta->addr);
 			hostap_wds_link_oper(local, sta->addr, WDS_DEL);
 		}
 	} else if (sta->timeout_next == STA_NULLFUNC) {
@@ -264,6 +311,11 @@ static void ap_handle_timer(unsigned long data)
 		       local->dev->name,
 		       deauth ? "deauthentication" : "disassociation",
 		       print_mac(mac, sta->addr), sta->last_rx, jiffies);
+		PDEBUG(DEBUG_AP, "%s: sending %s info to STA %pM"
+		       "(last=%lu, jiffies=%lu)\n",
+		       local->dev->name,
+		       deauth ? "deauthentication" : "disassociation",
+		       sta->addr, sta->last_rx, jiffies);
 
 		resp = cpu_to_le16(deauth ? WLAN_REASON_PREV_AUTH_NOT_VALID :
 				   WLAN_REASON_DISASSOC_DUE_TO_INACTIVITY);
@@ -279,6 +331,10 @@ static void ap_handle_timer(unsigned long data)
 			       " would have been removed, "
 			       "but it has 'perm' flag\n",
 			       local->dev->name, print_mac(mac, sta->addr));
+			PDEBUG(DEBUG_AP, "%s: STA %pM"
+			       " would have been removed, "
+			       "but it has 'perm' flag\n",
+			       local->dev->name, sta->addr);
 		} else
 			ap_free_sta(ap, sta);
 		return;
@@ -305,6 +361,7 @@ void hostap_deauth_all_stas(struct net_device *dev, struct ap_data *ap,
 
 	PDEBUG(DEBUG_AP, "%s: Deauthenticate all stations\n", dev->name);
 	memset(addr, 0xff, ETH_ALEN);
+	eth_broadcast_addr(addr);
 
 	resp = cpu_to_le16(WLAN_REASON_PREV_AUTH_NOT_VALID);
 
@@ -370,6 +427,81 @@ static int ap_control_proc_read(char *page, char **start, off_t off,
 	return (p - page);
 }
 
+static int ap_control_proc_show(struct seq_file *m, void *v)
+{
+	struct ap_data *ap = m->private;
+	char *policy_txt;
+	struct mac_entry *entry;
+
+	if (v == SEQ_START_TOKEN) {
+		switch (ap->mac_restrictions.policy) {
+		case MAC_POLICY_OPEN:
+			policy_txt = "open";
+			break;
+		case MAC_POLICY_ALLOW:
+			policy_txt = "allow";
+			break;
+		case MAC_POLICY_DENY:
+			policy_txt = "deny";
+			break;
+		default:
+			policy_txt = "unknown";
+			break;
+		}
+		seq_printf(m, "MAC policy: %s\n", policy_txt);
+		seq_printf(m, "MAC entries: %u\n", ap->mac_restrictions.entries);
+		seq_puts(m, "MAC list:\n");
+		return 0;
+	}
+
+	entry = v;
+	seq_printf(m, "%pM\n", entry->addr);
+	return 0;
+}
+
+static void *ap_control_proc_start(struct seq_file *m, loff_t *_pos)
+{
+	struct ap_data *ap = m->private;
+	spin_lock_bh(&ap->mac_restrictions.lock);
+	return seq_list_start_head(&ap->mac_restrictions.mac_list, *_pos);
+}
+
+static void *ap_control_proc_next(struct seq_file *m, void *v, loff_t *_pos)
+{
+	struct ap_data *ap = m->private;
+	return seq_list_next(v, &ap->mac_restrictions.mac_list, _pos);
+}
+
+static void ap_control_proc_stop(struct seq_file *m, void *v)
+{
+	struct ap_data *ap = m->private;
+	spin_unlock_bh(&ap->mac_restrictions.lock);
+}
+
+static const struct seq_operations ap_control_proc_seqops = {
+	.start	= ap_control_proc_start,
+	.next	= ap_control_proc_next,
+	.stop	= ap_control_proc_stop,
+	.show	= ap_control_proc_show,
+};
+
+static int ap_control_proc_open(struct inode *inode, struct file *file)
+{
+	int ret = seq_open(file, &ap_control_proc_seqops);
+	if (ret == 0) {
+		struct seq_file *m = file->private_data;
+		m->private = PDE_DATA(inode);
+	}
+	return ret;
+}
+
+static const struct file_operations ap_control_proc_fops = {
+	.open		= ap_control_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= seq_release,
+};
+
 
 int ap_control_add_mac(struct mac_restrictions *mac_restrictions, u8 *mac)
 {
@@ -378,6 +510,7 @@ int ap_control_add_mac(struct mac_restrictions *mac_restrictions, u8 *mac)
 	entry = kmalloc(sizeof(struct mac_entry), GFP_KERNEL);
 	if (entry == NULL)
 		return -1;
+		return -ENOMEM;
 
 	memcpy(entry->addr, mac, ETH_ALEN);
 
@@ -401,6 +534,7 @@ int ap_control_del_mac(struct mac_restrictions *mac_restrictions, u8 *mac)
 		entry = list_entry(ptr, struct mac_entry, list);
 
 		if (memcmp(entry->addr, mac, ETH_ALEN) == 0) {
+		if (ether_addr_equal(entry->addr, mac)) {
 			list_del(ptr);
 			kfree(entry);
 			mac_restrictions->entries--;
@@ -425,6 +559,7 @@ static int ap_control_mac_deny(struct mac_restrictions *mac_restrictions,
 	spin_lock_bh(&mac_restrictions->lock);
 	list_for_each_entry(entry, &mac_restrictions->mac_list, list) {
 		if (memcmp(entry->addr, mac, ETH_ALEN) == 0) {
+		if (ether_addr_equal(entry->addr, mac)) {
 			found = 1;
 			break;
 		}
@@ -567,6 +702,84 @@ static int prism2_ap_proc_read(char *page, char **start, off_t off,
 
 	return (p - page - off);
 }
+static int prism2_ap_proc_show(struct seq_file *m, void *v)
+{
+	struct sta_info *sta = v;
+	int i;
+
+	if (v == SEQ_START_TOKEN) {
+		seq_printf(m, "# BSSID CHAN SIGNAL NOISE RATE SSID FLAGS\n");
+		return 0;
+	}
+
+	if (!sta->ap)
+		return 0;
+
+	seq_printf(m, "%pM %d %d %d %d '",
+		   sta->addr,
+		   sta->u.ap.channel, sta->last_rx_signal,
+		   sta->last_rx_silence, sta->last_rx_rate);
+
+	for (i = 0; i < sta->u.ap.ssid_len; i++) {
+		if (sta->u.ap.ssid[i] >= 32 && sta->u.ap.ssid[i] < 127)
+			seq_putc(m, sta->u.ap.ssid[i]);
+		else
+			seq_printf(m, "<%02x>", sta->u.ap.ssid[i]);
+	}
+
+	seq_putc(m, '\'');
+	if (sta->capability & WLAN_CAPABILITY_ESS)
+		seq_puts(m, " [ESS]");
+	if (sta->capability & WLAN_CAPABILITY_IBSS)
+		seq_puts(m, " [IBSS]");
+	if (sta->capability & WLAN_CAPABILITY_PRIVACY)
+		seq_puts(m, " [WEP]");
+	seq_putc(m, '\n');
+	return 0;
+}
+
+static void *prism2_ap_proc_start(struct seq_file *m, loff_t *_pos)
+{
+	struct ap_data *ap = m->private;
+	spin_lock_bh(&ap->sta_table_lock);
+	return seq_list_start_head(&ap->sta_list, *_pos);
+}
+
+static void *prism2_ap_proc_next(struct seq_file *m, void *v, loff_t *_pos)
+{
+	struct ap_data *ap = m->private;
+	return seq_list_next(v, &ap->sta_list, _pos);
+}
+
+static void prism2_ap_proc_stop(struct seq_file *m, void *v)
+{
+	struct ap_data *ap = m->private;
+	spin_unlock_bh(&ap->sta_table_lock);
+}
+
+static const struct seq_operations prism2_ap_proc_seqops = {
+	.start	= prism2_ap_proc_start,
+	.next	= prism2_ap_proc_next,
+	.stop	= prism2_ap_proc_stop,
+	.show	= prism2_ap_proc_show,
+};
+
+static int prism2_ap_proc_open(struct inode *inode, struct file *file)
+{
+	int ret = seq_open(file, &prism2_ap_proc_seqops);
+	if (ret == 0) {
+		struct seq_file *m = file->private_data;
+		m->private = PDE_DATA(inode);
+	}
+	return ret;
+}
+
+static const struct file_operations prism2_ap_proc_fops = {
+	.open		= prism2_ap_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= seq_release,
+};
 #endif /* PRISM2_NO_KERNEL_IEEE80211_MGMT */
 
 
@@ -596,6 +809,7 @@ static void hostap_ap_tx_cb(struct sk_buff *skb, int ok, void *data)
 	struct ap_data *ap = data;
 	u16 fc;
 	struct ieee80211_hdr_4addr *hdr;
+	struct ieee80211_hdr *hdr;
 
 	if (!ap->local->hostapd || !ap->local->apdev) {
 		dev_kfree_skb(skb);
@@ -616,6 +830,17 @@ static void hostap_ap_tx_cb(struct sk_buff *skb, int ok, void *data)
 	skb_pull(skb, hostap_80211_get_hdrlen(fc));
 	skb->pkt_type = PACKET_OTHERHOST;
 	skb->protocol = __constant_htons(ETH_P_802_2);
+	/* Pass the TX callback frame to the hostapd; use 802.11 header version
+	 * 1 to indicate failure (no ACK) and 2 success (frame ACKed) */
+
+	hdr = (struct ieee80211_hdr *) skb->data;
+	hdr->frame_control &= cpu_to_le16(~IEEE80211_FCTL_VERS);
+	hdr->frame_control |= cpu_to_le16(ok ? BIT(1) : BIT(0));
+
+	skb->dev = ap->local->apdev;
+	skb_pull(skb, hostap_80211_get_hdrlen(hdr->frame_control));
+	skb->pkt_type = PACKET_OTHERHOST;
+	skb->protocol = cpu_to_be16(ETH_P_802_2);
 	memset(skb->cb, 0, sizeof(skb->cb));
 	netif_rx(skb);
 }
@@ -629,6 +854,8 @@ static void hostap_ap_tx_cb_auth(struct sk_buff *skb, int ok, void *data)
 	struct net_device *dev = ap->local->dev;
 	struct ieee80211_hdr_4addr *hdr;
 	u16 fc, auth_alg, auth_transaction, status;
+	struct ieee80211_hdr *hdr;
+	u16 auth_alg, auth_transaction, status;
 	__le16 *pos;
 	struct sta_info *sta = NULL;
 	char *txt = NULL;
@@ -642,6 +869,8 @@ static void hostap_ap_tx_cb_auth(struct sk_buff *skb, int ok, void *data)
 	fc = le16_to_cpu(hdr->frame_ctl);
 	if (WLAN_FC_GET_TYPE(fc) != IEEE80211_FTYPE_MGMT ||
 	    WLAN_FC_GET_STYPE(fc) != IEEE80211_STYPE_AUTH ||
+	hdr = (struct ieee80211_hdr *) skb->data;
+	if (!ieee80211_is_auth(hdr->frame_control) ||
 	    skb->len < IEEE80211_MGMT_HDR_LEN + 6) {
 		printk(KERN_DEBUG "%s: hostap_ap_tx_cb_auth received invalid "
 		       "frame\n", dev->name);
@@ -688,6 +917,9 @@ static void hostap_ap_tx_cb_auth(struct sk_buff *skb, int ok, void *data)
 		       dev->name,
 		       hdr->addr1[0], hdr->addr1[1], hdr->addr1[2],
 		       hdr->addr1[3], hdr->addr1[4], hdr->addr1[5],
+		PDEBUG(DEBUG_AP, "%s: %pM auth_cb - alg=%d "
+		       "trans#=%d status=%d - %s\n",
+		       dev->name, hdr->addr1,
 		       auth_alg, auth_transaction, status, txt);
 	}
 	dev_kfree_skb(skb);
@@ -701,6 +933,8 @@ static void hostap_ap_tx_cb_assoc(struct sk_buff *skb, int ok, void *data)
 	struct net_device *dev = ap->local->dev;
 	struct ieee80211_hdr_4addr *hdr;
 	u16 fc, status;
+	struct ieee80211_hdr *hdr;
+	u16 status;
 	__le16 *pos;
 	struct sta_info *sta = NULL;
 	char *txt = NULL;
@@ -715,6 +949,9 @@ static void hostap_ap_tx_cb_assoc(struct sk_buff *skb, int ok, void *data)
 	if (WLAN_FC_GET_TYPE(fc) != IEEE80211_FTYPE_MGMT ||
 	    (WLAN_FC_GET_STYPE(fc) != IEEE80211_STYPE_ASSOC_RESP &&
 	     WLAN_FC_GET_STYPE(fc) != IEEE80211_STYPE_REASSOC_RESP) ||
+	hdr = (struct ieee80211_hdr *) skb->data;
+	if ((!ieee80211_is_assoc_resp(hdr->frame_control) &&
+	     !ieee80211_is_reassoc_resp(hdr->frame_control)) ||
 	    skb->len < IEEE80211_MGMT_HDR_LEN + 4) {
 		printk(KERN_DEBUG "%s: hostap_ap_tx_cb_assoc received invalid "
 		       "frame\n", dev->name);
@@ -759,6 +996,8 @@ static void hostap_ap_tx_cb_assoc(struct sk_buff *skb, int ok, void *data)
 		       hdr->addr1[0], hdr->addr1[1], hdr->addr1[2],
 		       hdr->addr1[3], hdr->addr1[4], hdr->addr1[5],
 		       txt);
+		PDEBUG(DEBUG_AP, "%s: %pM assoc_cb - %s\n",
+		       dev->name, hdr->addr1, txt);
 	}
 	dev_kfree_skb(skb);
 }
@@ -769,11 +1008,13 @@ static void hostap_ap_tx_cb_poll(struct sk_buff *skb, int ok, void *data)
 {
 	struct ap_data *ap = data;
 	struct ieee80211_hdr_4addr *hdr;
+	struct ieee80211_hdr *hdr;
 	struct sta_info *sta;
 
 	if (skb->len < 24)
 		goto fail;
 	hdr = (struct ieee80211_hdr_4addr *) skb->data;
+	hdr = (struct ieee80211_hdr *) skb->data;
 	if (ok) {
 		spin_lock(&ap->sta_table_lock);
 		sta = ap_get_sta(ap, hdr->addr1);
@@ -786,6 +1027,9 @@ static void hostap_ap_tx_cb_poll(struct sk_buff *skb, int ok, void *data)
 		       ap->local->dev->name,
 		       hdr->addr1[0], hdr->addr1[1], hdr->addr1[2],
 		       hdr->addr1[3], hdr->addr1[4], hdr->addr1[5]);
+		PDEBUG(DEBUG_AP,
+		       "%s: STA %pM did not ACK activity poll frame\n",
+		       ap->local->dev->name, hdr->addr1);
 	}
 
  fail:
@@ -862,6 +1106,12 @@ void hostap_init_ap_proc(local_info_t *local)
 			       ap_control_proc_read, ap);
 	create_proc_read_entry("ap", 0, ap->proc,
 			       prism2_ap_proc_read, ap);
+	proc_create_data("ap_debug", 0, ap->proc, &ap_debug_proc_fops, ap);
+#endif /* PRISM2_NO_PROCFS_DEBUG */
+
+#ifndef PRISM2_NO_KERNEL_IEEE80211_MGMT
+	proc_create_data("ap_control", 0, ap->proc, &ap_control_proc_fops, ap);
+	proc_create_data("ap", 0, ap->proc, &prism2_ap_proc_fops, ap);
 #endif /* PRISM2_NO_KERNEL_IEEE80211_MGMT */
 
 }
@@ -878,6 +1128,10 @@ void hostap_free_data(struct ap_data *ap)
 	}
 
 #ifndef PRISM2_NO_KERNEL_IEEE80211_MGMT
+	flush_work(&ap->add_sta_proc_queue);
+
+#ifndef PRISM2_NO_KERNEL_IEEE80211_MGMT
+	flush_work(&ap->wds_oper_queue);
 	if (ap->crypt)
 		ap->crypt->deinit(ap->crypt_priv);
 	ap->crypt = ap->crypt_priv = NULL;
@@ -916,6 +1170,7 @@ static struct sta_info* ap_get_sta(struct ap_data *ap, u8 *sta)
 
 	s = ap->sta_hash[STA_HASH(sta)];
 	while (s != NULL && memcmp(s->addr, sta, ETH_ALEN) != 0)
+	while (s != NULL && !ether_addr_equal(s->addr, sta))
 		s = s->hnext;
 	return s;
 }
@@ -931,6 +1186,7 @@ static void prism2_send_mgmt(struct net_device *dev,
 	struct hostap_interface *iface;
 	local_info_t *local;
 	struct ieee80211_hdr_4addr *hdr;
+	struct ieee80211_hdr *hdr;
 	u16 fc;
 	struct sk_buff *skb;
 	struct hostap_skb_tx_data *meta;
@@ -957,6 +1213,8 @@ static void prism2_send_mgmt(struct net_device *dev,
 	fc = type_subtype;
 	hdrlen = hostap_80211_get_hdrlen(fc);
 	hdr = (struct ieee80211_hdr_4addr *) skb_put(skb, hdrlen);
+	hdrlen = hostap_80211_get_hdrlen(cpu_to_le16(type_subtype));
+	hdr = (struct ieee80211_hdr *) skb_put(skb, hdrlen);
 	if (body)
 		memcpy(skb_put(skb, body_len), body, body_len);
 
@@ -975,12 +1233,21 @@ static void prism2_send_mgmt(struct net_device *dev,
 		/* control:ACK does not have addr2 or addr3 */
 		memset(hdr->addr2, 0, ETH_ALEN);
 		memset(hdr->addr3, 0, ETH_ALEN);
+	if (ieee80211_is_data(hdr->frame_control)) {
+		fc |= IEEE80211_FCTL_FROMDS;
+		memcpy(hdr->addr2, dev->dev_addr, ETH_ALEN); /* BSSID */
+		memcpy(hdr->addr3, dev->dev_addr, ETH_ALEN); /* SA */
+	} else if (ieee80211_is_ctl(hdr->frame_control)) {
+		/* control:ACK does not have addr2 or addr3 */
+		eth_zero_addr(hdr->addr2);
+		eth_zero_addr(hdr->addr3);
 	} else {
 		memcpy(hdr->addr2, dev->dev_addr, ETH_ALEN); /* SA */
 		memcpy(hdr->addr3, dev->dev_addr, ETH_ALEN); /* BSSID */
 	}
 
 	hdr->frame_ctl = cpu_to_le16(fc);
+	hdr->frame_control = cpu_to_le16(fc);
 
 	meta = (struct hostap_skb_tx_data *) skb->cb;
 	memset(meta, 0, sizeof(*meta));
@@ -1003,6 +1270,10 @@ static int prism2_sta_proc_read(char *page, char **start, off_t off,
 	struct sta_info *sta = (struct sta_info *) data;
 	int i;
 	DECLARE_MAC_BUF(mac);
+static int prism2_sta_proc_show(struct seq_file *m, void *v)
+{
+	struct sta_info *sta = m->private;
+	int i;
 
 	/* FIX: possible race condition.. the STA data could have just expired,
 	 * but proc entry was still here so that the read could have started;
@@ -1070,6 +1341,77 @@ static int prism2_sta_proc_read(char *page, char **start, off_t off,
 	return (p - page);
 }
 
+	seq_printf(m,
+		   "%s=%pM\nusers=%d\naid=%d\n"
+		   "flags=0x%04x%s%s%s%s%s%s%s\n"
+		   "capability=0x%02x\nlisten_interval=%d\nsupported_rates=",
+		   sta->ap ? "AP" : "STA",
+		   sta->addr, atomic_read(&sta->users), sta->aid,
+		   sta->flags,
+		   sta->flags & WLAN_STA_AUTH ? " AUTH" : "",
+		   sta->flags & WLAN_STA_ASSOC ? " ASSOC" : "",
+		   sta->flags & WLAN_STA_PS ? " PS" : "",
+		   sta->flags & WLAN_STA_TIM ? " TIM" : "",
+		   sta->flags & WLAN_STA_PERM ? " PERM" : "",
+		   sta->flags & WLAN_STA_AUTHORIZED ? " AUTHORIZED" : "",
+		   sta->flags & WLAN_STA_PENDING_POLL ? " POLL" : "",
+		   sta->capability, sta->listen_interval);
+	/* supported_rates: 500 kbit/s units with msb ignored */
+	for (i = 0; i < sizeof(sta->supported_rates); i++)
+		if (sta->supported_rates[i] != 0)
+			seq_printf(m, "%d%sMbps ",
+				   (sta->supported_rates[i] & 0x7f) / 2,
+				   sta->supported_rates[i] & 1 ? ".5" : "");
+	seq_printf(m,
+		   "\njiffies=%lu\nlast_auth=%lu\nlast_assoc=%lu\n"
+		   "last_rx=%lu\nlast_tx=%lu\nrx_packets=%lu\n"
+		   "tx_packets=%lu\n"
+		   "rx_bytes=%lu\ntx_bytes=%lu\nbuffer_count=%d\n"
+		   "last_rx: silence=%d dBm signal=%d dBm rate=%d%s Mbps\n"
+		   "tx_rate=%d\ntx[1M]=%d\ntx[2M]=%d\ntx[5.5M]=%d\n"
+		   "tx[11M]=%d\n"
+		   "rx[1M]=%d\nrx[2M]=%d\nrx[5.5M]=%d\nrx[11M]=%d\n",
+		   jiffies, sta->last_auth, sta->last_assoc, sta->last_rx,
+		   sta->last_tx,
+		   sta->rx_packets, sta->tx_packets, sta->rx_bytes,
+		   sta->tx_bytes, skb_queue_len(&sta->tx_buf),
+		   sta->last_rx_silence,
+		   sta->last_rx_signal, sta->last_rx_rate / 10,
+		   sta->last_rx_rate % 10 ? ".5" : "",
+		   sta->tx_rate, sta->tx_count[0], sta->tx_count[1],
+		   sta->tx_count[2], sta->tx_count[3],  sta->rx_count[0],
+		   sta->rx_count[1], sta->rx_count[2], sta->rx_count[3]);
+	if (sta->crypt && sta->crypt->ops && sta->crypt->ops->print_stats)
+		sta->crypt->ops->print_stats(m, sta->crypt->priv);
+#ifndef PRISM2_NO_KERNEL_IEEE80211_MGMT
+	if (sta->ap) {
+		if (sta->u.ap.channel >= 0)
+			seq_printf(m, "channel=%d\n", sta->u.ap.channel);
+		seq_puts(m, "ssid=");
+		for (i = 0; i < sta->u.ap.ssid_len; i++) {
+			if (sta->u.ap.ssid[i] >= 32 && sta->u.ap.ssid[i] < 127)
+				seq_putc(m, sta->u.ap.ssid[i]);
+			else
+				seq_printf(m, "<%02x>", sta->u.ap.ssid[i]);
+		}
+		seq_putc(m, '\n');
+	}
+#endif /* PRISM2_NO_KERNEL_IEEE80211_MGMT */
+
+	return 0;
+}
+
+static int prism2_sta_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, prism2_sta_proc_show, PDE_DATA(inode));
+}
+
+static const struct file_operations prism2_sta_proc_fops = {
+	.open		= prism2_sta_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
 
 static void handle_add_proc_queue(struct work_struct *work)
 {
@@ -1095,6 +1437,10 @@ static void handle_add_proc_queue(struct work_struct *work)
 			sta->proc = create_proc_read_entry(
 				name, 0, ap->proc,
 				prism2_sta_proc_read, sta);
+			sprintf(name, "%pM", sta->addr);
+			sta->proc = proc_create_data(
+				name, 0, ap->proc,
+				&prism2_sta_proc_fops, sta);
 
 			atomic_dec(&sta->users);
 		}
@@ -1222,6 +1568,7 @@ static void prism2_check_tx_rates(struct sta_info *sta)
 static void ap_crypt_init(struct ap_data *ap)
 {
 	ap->crypt = ieee80211_get_crypto_ops("WEP");
+	ap->crypt = lib80211_get_crypto_ops("WEP");
 
 	if (ap->crypt) {
 		if (ap->crypt->init) {
@@ -1240,12 +1587,14 @@ static void ap_crypt_init(struct ap_data *ap)
 	if (ap->crypt == NULL) {
 		printk(KERN_WARNING "AP could not initialize WEP: load module "
 		       "ieee80211_crypt_wep.ko\n");
+		       "lib80211_crypt_wep.ko\n");
 	}
 }
 
 
 /* Generate challenge data for shared key authentication. IEEE 802.11 specifies
  * that WEP algorithm is used for generating challange. This should be unique,
+ * that WEP algorithm is used for generating challenge. This should be unique,
  * but otherwise there is not really need for randomness etc. Initialize WEP
  * with pseudo random key and then use increasing IV to get unique challenge
  * streams.
@@ -1300,6 +1649,7 @@ static void handle_authen(local_info_t *local, struct sk_buff *skb,
 {
 	struct net_device *dev = local->dev;
 	struct ieee80211_hdr_4addr *hdr = (struct ieee80211_hdr_4addr *) skb->data;
+	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *) skb->data;
 	size_t hdrlen;
 	struct ap_data *ap = local->ap;
 	char body[8 + WLAN_AUTH_CHALLENGE_LEN], *challenge = NULL;
@@ -1309,6 +1659,9 @@ static void handle_authen(local_info_t *local, struct sk_buff *skb,
 	u16 resp = WLAN_STATUS_SUCCESS, fc;
 	struct sta_info *sta = NULL;
 	struct ieee80211_crypt_data *crypt;
+	u16 resp = WLAN_STATUS_SUCCESS;
+	struct sta_info *sta = NULL;
+	struct lib80211_crypt_data *crypt;
 	char *txt = "";
 
 	len = skb->len - IEEE80211_MGMT_HDR_LEN;
@@ -1321,6 +1674,11 @@ static void handle_authen(local_info_t *local, struct sk_buff *skb,
 		       "(len=%d) from " MAC_FMT "\n", dev->name, len,
 		       hdr->addr2[0], hdr->addr2[1], hdr->addr2[2],
 		       hdr->addr2[3], hdr->addr2[4], hdr->addr2[5]);
+	hdrlen = hostap_80211_get_hdrlen(hdr->frame_control);
+
+	if (len < 6) {
+		PDEBUG(DEBUG_AP, "%s: handle_authen - too short payload "
+		       "(len=%d) from %pM\n", dev->name, len, hdr->addr2);
 		return;
 	}
 
@@ -1337,6 +1695,7 @@ static void handle_authen(local_info_t *local, struct sk_buff *skb,
 		if (skb->len >= hdrlen + 3)
 			idx = skb->data[hdrlen + 3] >> 6;
 		crypt = local->crypt[idx];
+		crypt = local->crypt_info.crypt[idx];
 	}
 
 	pos = (__le16 *) (skb->data + IEEE80211_MGMT_HDR_LEN);
@@ -1348,6 +1707,7 @@ static void handle_authen(local_info_t *local, struct sk_buff *skb,
 	pos++;
 
 	if (memcmp(dev->dev_addr, hdr->addr2, ETH_ALEN) == 0 ||
+	if (ether_addr_equal(dev->dev_addr, hdr->addr2) ||
 	    ap_control_mac_deny(&ap->mac_restrictions, hdr->addr2)) {
 		txt = "authentication denied";
 		resp = WLAN_STATUS_UNSPECIFIED_FAILURE;
@@ -1389,6 +1749,8 @@ static void handle_authen(local_info_t *local, struct sk_buff *skb,
 			       dev->name,
 			       sta->addr[0], sta->addr[1], sta->addr[2],
 			       sta->addr[3], sta->addr[4], sta->addr[5]);
+			       " assuming AP %pM is now STA\n",
+			       dev->name, sta->addr);
 			sta->ap = 0;
 			sta->flags = 0;
 			sta->u.sta.challenge = NULL;
@@ -1455,6 +1817,7 @@ static void handle_authen(local_info_t *local, struct sk_buff *skb,
 			    memcmp(sta->u.sta.challenge, challenge,
 				   WLAN_AUTH_CHALLENGE_LEN) != 0 ||
 			    !(fc & IEEE80211_FCTL_PROTECTED)) {
+			    !ieee80211_has_protected(hdr->frame_control)) {
 				txt = "challenge response incorrect";
 				resp = WLAN_STATUS_CHALLENGE_FAIL;
 				goto fail;
@@ -1510,6 +1873,11 @@ static void handle_authen(local_info_t *local, struct sk_buff *skb,
 		       hdr->addr2[3], hdr->addr2[4], hdr->addr2[5],
 		       auth_alg, auth_transaction, status_code, len,
 		       fc, resp, txt);
+		PDEBUG(DEBUG_AP, "%s: %pM auth (alg=%d "
+		       "trans#=%d stat=%d len=%d fc=%04x) ==> %d (%s)\n",
+		       dev->name, hdr->addr2,
+		       auth_alg, auth_transaction, status_code, len,
+		       le16_to_cpu(hdr->frame_control), resp, txt);
 	}
 }
 
@@ -1520,6 +1888,7 @@ static void handle_assoc(local_info_t *local, struct sk_buff *skb,
 {
 	struct net_device *dev = local->dev;
 	struct ieee80211_hdr_4addr *hdr = (struct ieee80211_hdr_4addr *) skb->data;
+	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *) skb->data;
 	char body[12], *p, *lpos;
 	int len, left;
 	__le16 *pos;
@@ -1537,6 +1906,8 @@ static void handle_assoc(local_info_t *local, struct sk_buff *skb,
 		       dev->name, len, reassoc,
 		       hdr->addr2[0], hdr->addr2[1], hdr->addr2[2],
 		       hdr->addr2[3], hdr->addr2[4], hdr->addr2[5]);
+		       "(len=%d, reassoc=%d) from %pM\n",
+		       dev->name, len, reassoc, hdr->addr2);
 		return;
 	}
 
@@ -1564,6 +1935,7 @@ static void handle_assoc(local_info_t *local, struct sk_buff *skb,
 		pos++; pos++; pos++; left -= 6;
 	} else
 		memset(prev_ap, 0, ETH_ALEN);
+		eth_zero_addr(prev_ap);
 
 	if (left >= 2) {
 		unsigned int ileft;
@@ -1619,6 +1991,9 @@ static void handle_assoc(local_info_t *local, struct sk_buff *skb,
 			       hdr->addr2[0], hdr->addr2[1], hdr->addr2[2],
 			       hdr->addr2[3], hdr->addr2[4], hdr->addr2[5],
 			       left);
+			PDEBUG(DEBUG_AP, "%s: assoc from %pM"
+			       " with extra data (%d bytes) [",
+			       dev->name, hdr->addr2, left);
 			while (left > 0) {
 				PDEBUG2(DEBUG_AP, "<%02x>", *u);
 				u++; left--;
@@ -1725,6 +2100,12 @@ static void handle_assoc(local_info_t *local, struct sk_buff *skb,
 	       reassoc ? "re" : "", len,
 	       prev_ap[0], prev_ap[1], prev_ap[2],
 	       prev_ap[3], prev_ap[4], prev_ap[5],
+	PDEBUG(DEBUG_AP, "%s: %pM %sassoc (len=%d "
+	       "prev_ap=%pM) => %d(%d) (%s)\n",
+	       dev->name,
+	       hdr->addr2,
+	       reassoc ? "re" : "", len,
+	       prev_ap,
 	       resp, send_deauth, txt);
 #endif
 }
@@ -1736,6 +2117,7 @@ static void handle_deauth(local_info_t *local, struct sk_buff *skb,
 {
 	struct net_device *dev = local->dev;
 	struct ieee80211_hdr_4addr *hdr = (struct ieee80211_hdr_4addr *) skb->data;
+	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *) skb->data;
 	char *body = (char *) (skb->data + IEEE80211_MGMT_HDR_LEN);
 	int len;
 	u16 reason_code;
@@ -1757,6 +2139,8 @@ static void handle_deauth(local_info_t *local, struct sk_buff *skb,
 	       "reason_code=%d\n", dev->name,
 	       hdr->addr2[0], hdr->addr2[1], hdr->addr2[2],
 	       hdr->addr2[3], hdr->addr2[4], hdr->addr2[5],
+	PDEBUG(DEBUG_AP, "%s: deauthentication: %pM len=%d, "
+	       "reason_code=%d\n", dev->name, hdr->addr2,
 	       len, reason_code);
 
 	spin_lock_bh(&local->ap->sta_table_lock);
@@ -1773,6 +2157,9 @@ static void handle_deauth(local_info_t *local, struct sk_buff *skb,
 		       hdr->addr2[0], hdr->addr2[1], hdr->addr2[2],
 		       hdr->addr2[3], hdr->addr2[4], hdr->addr2[5],
 		       reason_code);
+		printk("%s: deauthentication from %pM, "
+	       "reason_code=%d, but STA not authenticated\n", dev->name,
+		       hdr->addr2, reason_code);
 	}
 }
 
@@ -1783,6 +2170,7 @@ static void handle_disassoc(local_info_t *local, struct sk_buff *skb,
 {
 	struct net_device *dev = local->dev;
 	struct ieee80211_hdr_4addr *hdr = (struct ieee80211_hdr_4addr *) skb->data;
+	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *) skb->data;
 	char *body = skb->data + IEEE80211_MGMT_HDR_LEN;
 	int len;
 	u16 reason_code;
@@ -1803,6 +2191,8 @@ static void handle_disassoc(local_info_t *local, struct sk_buff *skb,
 	       "reason_code=%d\n", dev->name,
 	       hdr->addr2[0], hdr->addr2[1], hdr->addr2[2],
 	       hdr->addr2[3], hdr->addr2[4], hdr->addr2[5],
+	PDEBUG(DEBUG_AP, "%s: disassociation: %pM len=%d, "
+	       "reason_code=%d\n", dev->name, hdr->addr2,
 	       len, reason_code);
 
 	spin_lock_bh(&local->ap->sta_table_lock);
@@ -1820,6 +2210,9 @@ static void handle_disassoc(local_info_t *local, struct sk_buff *skb,
 		       hdr->addr2[0], hdr->addr2[1], hdr->addr2[2],
 		       hdr->addr2[3], hdr->addr2[4], hdr->addr2[5],
 		       reason_code);
+		printk("%s: disassociation from %pM, "
+		       "reason_code=%d, but STA not authenticated\n",
+		       dev->name, hdr->addr2, reason_code);
 	}
 }
 
@@ -1827,6 +2220,7 @@ static void handle_disassoc(local_info_t *local, struct sk_buff *skb,
 /* Called only as a scheduled task for pending AP frames. */
 static void ap_handle_data_nullfunc(local_info_t *local,
 				    struct ieee80211_hdr_4addr *hdr)
+				    struct ieee80211_hdr *hdr)
 {
 	struct net_device *dev = local->dev;
 
@@ -1844,6 +2238,7 @@ static void ap_handle_data_nullfunc(local_info_t *local,
 /* Called only as a scheduled task for pending AP frames. */
 static void ap_handle_dropped_data(local_info_t *local,
 				   struct ieee80211_hdr_4addr *hdr)
+				   struct ieee80211_hdr *hdr)
 {
 	struct net_device *dev = local->dev;
 	struct sta_info *sta;
@@ -1902,6 +2297,7 @@ static void pspoll_send_buffered(local_info_t *local, struct sta_info *sta,
 /* Called only as a scheduled task for pending AP frames. */
 static void handle_pspoll(local_info_t *local,
 			  struct ieee80211_hdr_4addr *hdr,
+			  struct ieee80211_hdr *hdr,
 			  struct hostap_80211_rx_status *rx_stats)
 {
 	struct net_device *dev = local->dev;
@@ -1922,6 +2318,13 @@ static void handle_pspoll(local_info_t *local,
 		       " not own MAC\n",
 		       hdr->addr1[0], hdr->addr1[1], hdr->addr1[2],
 		       hdr->addr1[3], hdr->addr1[4], hdr->addr1[5]);
+	PDEBUG(DEBUG_PS2, "handle_pspoll: BSSID=%pM, TA=%pM PWRMGT=%d\n",
+	       hdr->addr1, hdr->addr2, !!ieee80211_has_pm(hdr->frame_control));
+
+	if (!ether_addr_equal(hdr->addr1, dev->dev_addr)) {
+		PDEBUG(DEBUG_AP,
+		       "handle_pspoll - addr1(BSSID)=%pM not own MAC\n",
+		       hdr->addr1);
 		return;
 	}
 
@@ -2012,6 +2415,10 @@ static void handle_wds_oper_queue(struct work_struct *work)
 		       entry->type == WDS_ADD ? "adding" : "removing",
 		       entry->addr[0], entry->addr[1], entry->addr[2],
 		       entry->addr[3], entry->addr[4], entry->addr[5]);
+		       "to AP %pM\n",
+		       local->dev->name,
+		       entry->type == WDS_ADD ? "adding" : "removing",
+		       entry->addr);
 		if (entry->type == WDS_ADD)
 			prism2_wds_add(local, entry->addr, 0);
 		else if (entry->type == WDS_DEL)
@@ -2029,6 +2436,7 @@ static void handle_beacon(local_info_t *local, struct sk_buff *skb,
 			  struct hostap_80211_rx_status *rx_stats)
 {
 	struct ieee80211_hdr_4addr *hdr = (struct ieee80211_hdr_4addr *) skb->data;
+	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *) skb->data;
 	char *body = skb->data + IEEE80211_MGMT_HDR_LEN;
 	int len, left;
 	u16 beacon_int, capability;
@@ -2195,6 +2603,14 @@ static void handle_ap_item(local_info_t *local, struct sk_buff *skb,
 	fc = le16_to_cpu(hdr->frame_ctl);
 	type = WLAN_FC_GET_TYPE(fc);
 	stype = WLAN_FC_GET_STYPE(fc);
+	struct ieee80211_hdr *hdr;
+
+	/* FIX: should give skb->len to handler functions and check that the
+	 * buffer is long enough */
+	hdr = (struct ieee80211_hdr *) skb->data;
+	fc = le16_to_cpu(hdr->frame_control);
+	type = fc & IEEE80211_FCTL_FTYPE;
+	stype = fc & IEEE80211_FCTL_STYPE;
 
 #ifndef PRISM2_NO_KERNEL_IEEE80211_MGMT
 	if (!local->hostapd && type == IEEE80211_FTYPE_DATA) {
@@ -2219,6 +2635,9 @@ static void handle_ap_item(local_info_t *local, struct sk_buff *skb,
 			       MAC_FMT " not own MAC\n",
 			       hdr->addr1[0], hdr->addr1[1], hdr->addr1[2],
 			       hdr->addr1[3], hdr->addr1[4], hdr->addr1[5]);
+		if (!ether_addr_equal(hdr->addr1, dev->dev_addr)) {
+			PDEBUG(DEBUG_AP, "handle_ap_item - addr1(BSSID)=%pM"
+			       " not own MAC\n", hdr->addr1);
 			goto done;
 		}
 
@@ -2266,6 +2685,15 @@ static void handle_ap_item(local_info_t *local, struct sk_buff *skb,
 		       " not own MAC\n",
 		       hdr->addr3[0], hdr->addr3[1], hdr->addr3[2],
 		       hdr->addr3[3], hdr->addr3[4], hdr->addr3[5]);
+	if (!ether_addr_equal(hdr->addr1, dev->dev_addr)) {
+		PDEBUG(DEBUG_AP, "handle_ap_item - addr1(DA)=%pM"
+		       " not own MAC\n", hdr->addr1);
+		goto done;
+	}
+
+	if (!ether_addr_equal(hdr->addr3, dev->dev_addr)) {
+		PDEBUG(DEBUG_AP, "handle_ap_item - addr3(BSSID)=%pM"
+		       " not own MAC\n", hdr->addr3);
 		goto done;
 	}
 
@@ -2314,6 +2742,7 @@ void hostap_rx(struct net_device *dev, struct sk_buff *skb,
 	local_info_t *local;
 	u16 fc;
 	struct ieee80211_hdr_4addr *hdr;
+	struct ieee80211_hdr *hdr;
 
 	iface = netdev_priv(dev);
 	local = iface->local;
@@ -2332,6 +2761,15 @@ void hostap_rx(struct net_device *dev, struct sk_buff *skb,
 		goto drop;
 
 	skb->protocol = __constant_htons(ETH_P_HOSTAP);
+	dev->stats.rx_packets++;
+
+	hdr = (struct ieee80211_hdr *) skb->data;
+
+	if (local->ap->ap_policy == AP_OTHER_AP_SKIP_ALL &&
+	    ieee80211_is_beacon(hdr->frame_control))
+		goto drop;
+
+	skb->protocol = cpu_to_be16(ETH_P_HOSTAP);
 	handle_ap_item(local, skb, rx_stats);
 	return;
 
@@ -2345,6 +2783,7 @@ static void schedule_packet_send(local_info_t *local, struct sta_info *sta)
 {
 	struct sk_buff *skb;
 	struct ieee80211_hdr_4addr *hdr;
+	struct ieee80211_hdr *hdr;
 	struct hostap_80211_rx_status rx_stats;
 
 	if (skb_queue_empty(&sta->tx_buf))
@@ -2361,6 +2800,10 @@ static void schedule_packet_send(local_info_t *local, struct sta_info *sta)
 
 	/* Generate a fake pspoll frame to start packet delivery */
 	hdr->frame_ctl = __constant_cpu_to_le16(
+	hdr = (struct ieee80211_hdr *) skb_put(skb, 16);
+
+	/* Generate a fake pspoll frame to start packet delivery */
+	hdr->frame_control = cpu_to_le16(
 		IEEE80211_FTYPE_CTL | IEEE80211_STYPE_PSPOLL);
 	memcpy(hdr->addr1, local->dev->dev_addr, ETH_ALEN);
 	memcpy(hdr->addr2, sta->addr, ETH_ALEN);
@@ -2370,6 +2813,9 @@ static void schedule_packet_send(local_info_t *local, struct sta_info *sta)
 	       MAC_FMT "\n", local->dev->name,
 	       sta->addr[0], sta->addr[1], sta->addr[2],
 	       sta->addr[3], sta->addr[4], sta->addr[5]);
+	PDEBUG(DEBUG_PS2,
+	       "%s: Scheduling buffered packet delivery for STA %pM\n",
+	       local->dev->name, sta->addr);
 
 	skb->dev = local->dev;
 
@@ -2419,6 +2865,7 @@ int prism2_ap_get_sta_qual(local_info_t *local, struct sockaddr addr[],
 
 
 /* Translate our list of Access Points & Stations to a card independant
+/* Translate our list of Access Points & Stations to a card independent
  * format that the Wireless Tools will understand - Jean II */
 int prism2_ap_translate_scan(struct net_device *dev,
 			     struct iw_request_info *info, char *buffer)
@@ -2564,7 +3011,7 @@ static int prism2_hostapd_add_sta(struct ap_data *ap,
 		sta->supported_rates[0] = 2;
 	if (sta->tx_supp_rates & WLAN_RATE_2M)
 		sta->supported_rates[1] = 4;
- 	if (sta->tx_supp_rates & WLAN_RATE_5M5)
+	if (sta->tx_supp_rates & WLAN_RATE_5M5)
 		sta->supported_rates[2] = 11;
 	if (sta->tx_supp_rates & WLAN_RATE_11M)
 		sta->supported_rates[3] = 22;
@@ -2729,6 +3176,8 @@ static int ap_update_sta_tx_rate(struct sta_info *sta, struct net_device *dev)
 			       sta->addr[0], sta->addr[1], sta->addr[2],
 			       sta->addr[3], sta->addr[4], sta->addr[5],
 			       sta->tx_rate);
+			PDEBUG(DEBUG_AP, "%s: STA %pM TX rate raised to %d\n",
+			       dev->name, sta->addr, sta->tx_rate);
 		}
 		sta->tx_since_last_failure = 0;
 	}
@@ -2745,6 +3194,7 @@ ap_tx_ret hostap_handle_sta_tx(local_info_t *local, struct hostap_tx_data *tx)
 	struct sk_buff *skb = tx->skb;
 	int set_tim, ret;
 	struct ieee80211_hdr_4addr *hdr;
+	struct ieee80211_hdr *hdr;
 	struct hostap_skb_tx_data *meta;
 
 	meta = (struct hostap_skb_tx_data *) skb->cb;
@@ -2754,6 +3204,7 @@ ap_tx_ret hostap_handle_sta_tx(local_info_t *local, struct hostap_tx_data *tx)
 		goto out;
 
 	hdr = (struct ieee80211_hdr_4addr *) skb->data;
+	hdr = (struct ieee80211_hdr *) skb->data;
 
 	if (hdr->addr1[0] & 0x01) {
 		/* broadcast/multicast frame - no AP related processing */
@@ -2784,6 +3235,7 @@ ap_tx_ret hostap_handle_sta_tx(local_info_t *local, struct hostap_tx_data *tx)
 			       "STA " MAC_FMT "\n",
 			       hdr->addr1[0], hdr->addr1[1], hdr->addr1[2],
 			       hdr->addr1[3], hdr->addr1[4], hdr->addr1[5]);
+			       "STA %pM\n", hdr->addr1);
 		}
 #endif
 		local->ap->tx_drop_nonassoc++;
@@ -2812,6 +3264,8 @@ ap_tx_ret hostap_handle_sta_tx(local_info_t *local, struct hostap_tx_data *tx)
 		/* indicate to STA that more frames follow */
 		hdr->frame_ctl |=
 			__constant_cpu_to_le16(IEEE80211_FCTL_MOREDATA);
+		hdr->frame_control |=
+			cpu_to_le16(IEEE80211_FCTL_MOREDATA);
 	}
 
 	if (meta->flags & HOSTAP_TX_FLAGS_BUFFERED_FRAME) {
@@ -2826,6 +3280,9 @@ ap_tx_ret hostap_handle_sta_tx(local_info_t *local, struct hostap_tx_data *tx)
 		       local->dev->name,
 		       sta->addr[0], sta->addr[1], sta->addr[2],
 		       sta->addr[3], sta->addr[4], sta->addr[5]);
+		PDEBUG(DEBUG_PS, "%s: No more space in STA (%pM)'s"
+		       "PS mode buffer\n",
+		       local->dev->name, sta->addr);
 		/* Make sure that TIM is set for the station (it might not be
 		 * after AP wlan hw reset). */
 		/* FIX: should fix hw reset to restore bits based on STA
@@ -2891,6 +3348,10 @@ void hostap_handle_sta_tx_exc(local_info_t *local, struct sk_buff *skb)
 	struct hostap_skb_tx_data *meta;
 
 	hdr = (struct ieee80211_hdr_4addr *) skb->data;
+	struct ieee80211_hdr *hdr;
+	struct hostap_skb_tx_data *meta;
+
+	hdr = (struct ieee80211_hdr *) skb->data;
 	meta = (struct hostap_skb_tx_data *) skb->cb;
 
 	spin_lock(&local->ap->sta_table_lock);
@@ -2903,6 +3364,9 @@ void hostap_handle_sta_tx_exc(local_info_t *local, struct sk_buff *skb)
 		       hdr->addr1[0], hdr->addr1[1], hdr->addr1[2],
 		       hdr->addr1[3], hdr->addr1[4], hdr->addr1[5],
 		       jiffies);
+		PDEBUG(DEBUG_AP, "%s: Could not find STA %pM"
+		       " for this TX error (@%lu)\n",
+		       local->dev->name, hdr->addr1, jiffies);
 		return;
 	}
 
@@ -2935,6 +3399,9 @@ void hostap_handle_sta_tx_exc(local_info_t *local, struct sk_buff *skb)
 			       sta->addr[0], sta->addr[1], sta->addr[2],
 			       sta->addr[3], sta->addr[4], sta->addr[5],
 			       sta->tx_rate);
+			PDEBUG(DEBUG_AP,
+			       "%s: STA %pM TX rate lowered to %d\n",
+			       local->dev->name, sta->addr, sta->tx_rate);
 		}
 		sta->tx_consecutive_exc = 0;
 	}
@@ -2956,6 +3423,16 @@ static void hostap_update_sta_ps2(local_info_t *local, struct sta_info *sta,
 		PDEBUG(DEBUG_PS2, "STA %s changed to not use "
 		       "PS mode (type=0x%02X, stype=0x%02X)\n",
 		       print_mac(mac, sta->addr), type >> 2, stype >> 4);
+	if (pwrmgt && !(sta->flags & WLAN_STA_PS)) {
+		sta->flags |= WLAN_STA_PS;
+		PDEBUG(DEBUG_PS2, "STA %pM changed to use PS "
+		       "mode (type=0x%02X, stype=0x%02X)\n",
+		       sta->addr, type >> 2, stype >> 4);
+	} else if (!pwrmgt && (sta->flags & WLAN_STA_PS)) {
+		sta->flags &= ~WLAN_STA_PS;
+		PDEBUG(DEBUG_PS2, "STA %pM changed to not use "
+		       "PS mode (type=0x%02X, stype=0x%02X)\n",
+		       sta->addr, type >> 2, stype >> 4);
 		if (type != IEEE80211_FTYPE_CTL ||
 		    stype != IEEE80211_STYPE_PSPOLL)
 			schedule_packet_send(local, sta);
@@ -2966,6 +3443,8 @@ static void hostap_update_sta_ps2(local_info_t *local, struct sta_info *sta,
 /* Called only as a tasklet (software IRQ). Called for each RX frame to update
  * STA power saving state. pwrmgt is a flag from 802.11 frame_ctl field. */
 int hostap_update_sta_ps(local_info_t *local, struct ieee80211_hdr_4addr *hdr)
+ * STA power saving state. pwrmgt is a flag from 802.11 frame_control field. */
+int hostap_update_sta_ps(local_info_t *local, struct ieee80211_hdr *hdr)
 {
 	struct sta_info *sta;
 	u16 fc;
@@ -2982,6 +3461,10 @@ int hostap_update_sta_ps(local_info_t *local, struct ieee80211_hdr_4addr *hdr)
 	fc = le16_to_cpu(hdr->frame_ctl);
 	hostap_update_sta_ps2(local, sta, fc & IEEE80211_FCTL_PM,
 			      WLAN_FC_GET_TYPE(fc), WLAN_FC_GET_STYPE(fc));
+	fc = le16_to_cpu(hdr->frame_control);
+	hostap_update_sta_ps2(local, sta, fc & IEEE80211_FCTL_PM,
+			      fc & IEEE80211_FCTL_FTYPE,
+			      fc & IEEE80211_FCTL_STYPE);
 
 	atomic_dec(&sta->users);
 	return 0;
@@ -2999,6 +3482,7 @@ ap_rx_ret hostap_handle_sta_rx(local_info_t *local, struct net_device *dev,
 	struct sta_info *sta;
 	u16 fc, type, stype;
 	struct ieee80211_hdr_4addr *hdr;
+	struct ieee80211_hdr *hdr;
 
 	if (local->ap == NULL)
 		return AP_RX_CONTINUE;
@@ -3008,6 +3492,11 @@ ap_rx_ret hostap_handle_sta_rx(local_info_t *local, struct net_device *dev,
 	fc = le16_to_cpu(hdr->frame_ctl);
 	type = WLAN_FC_GET_TYPE(fc);
 	stype = WLAN_FC_GET_STYPE(fc);
+	hdr = (struct ieee80211_hdr *) skb->data;
+
+	fc = le16_to_cpu(hdr->frame_control);
+	type = fc & IEEE80211_FCTL_FTYPE;
+	stype = fc & IEEE80211_FCTL_STYPE;
 
 	spin_lock(&local->ap->sta_table_lock);
 	sta = ap_get_sta(local->ap, hdr->addr2);
@@ -3036,6 +3525,9 @@ ap_rx_ret hostap_handle_sta_rx(local_info_t *local, struct net_device *dev,
 				       hdr->addr2[0], hdr->addr2[1],
 				       hdr->addr2[2], hdr->addr2[3],
 				       hdr->addr2[4], hdr->addr2[5],
+				       " from non-associated STA %pM"
+				       " (type=0x%02x, subtype=0x%02x)\n",
+				       dev->name, hdr->addr2,
 				       type >> 2, stype >> 4);
 				hostap_rx(dev, skb, rx_stats);
 #endif /* PRISM2_NO_KERNEL_IEEE80211_MGMT */
@@ -3048,6 +3540,7 @@ ap_rx_ret hostap_handle_sta_rx(local_info_t *local, struct net_device *dev,
 			/* FromDS frame - not for us; probably
 			 * broadcast/multicast in another BSS - drop */
 			if (memcmp(hdr->addr1, dev->dev_addr, ETH_ALEN) == 0) {
+			if (ether_addr_equal(hdr->addr1, dev->dev_addr)) {
 				printk(KERN_DEBUG "Odd.. FromDS packet "
 				       "received with own BSSID\n");
 				hostap_dump_rx_80211(dev->name, skb, rx_stats);
@@ -3057,6 +3550,7 @@ ap_rx_ret hostap_handle_sta_rx(local_info_t *local, struct net_device *dev,
 		}
 	} else if (stype == IEEE80211_STYPE_NULLFUNC && sta == NULL &&
 		   memcmp(hdr->addr1, dev->dev_addr, ETH_ALEN) == 0) {
+		   ether_addr_equal(hdr->addr1, dev->dev_addr)) {
 
 		if (local->hostapd) {
 			prism2_rx_80211(local->apdev, skb, rx_stats,
@@ -3075,6 +3569,9 @@ ap_rx_ret hostap_handle_sta_rx(local_info_t *local, struct net_device *dev,
 			       hdr->addr2[0], hdr->addr2[1],
 			       hdr->addr2[2], hdr->addr2[3],
 			       hdr->addr2[4], hdr->addr2[5]);
+			printk(KERN_DEBUG "%s: rejected received nullfunc frame"
+			       " without ToDS from not associated STA %pM\n",
+			       dev->name, hdr->addr2);
 			hostap_rx(dev, skb, rx_stats);
 #endif /* PRISM2_NO_KERNEL_IEEE80211_MGMT */
 		}
@@ -3097,6 +3594,11 @@ ap_rx_ret hostap_handle_sta_rx(local_info_t *local, struct net_device *dev,
 			       hdr->addr2[2], hdr->addr2[3],
 			       hdr->addr2[4], hdr->addr2[5],
 			       type >> 2, stype >> 4);
+		if (ether_addr_equal(hdr->addr3, dev->dev_addr)) {
+			printk(KERN_DEBUG "%s: dropped received packet from %pM"
+			       " with no ToDS flag "
+			       "(type=0x%02x, subtype=0x%02x)\n", dev->name,
+			       hdr->addr2, type >> 2, stype >> 4);
 			hostap_dump_rx_80211(dev->name, skb, rx_stats);
 		}
 		ret = AP_RX_DROP;
@@ -3143,6 +3645,8 @@ ap_rx_ret hostap_handle_sta_rx(local_info_t *local, struct net_device *dev,
 int hostap_handle_sta_crypto(local_info_t *local,
 			     struct ieee80211_hdr_4addr *hdr,
 			     struct ieee80211_crypt_data **crypt,
+			     struct ieee80211_hdr *hdr,
+			     struct lib80211_crypt_data **crypt,
 			     void **sta_ptr)
 {
 	struct sta_info *sta;
@@ -3244,6 +3748,7 @@ int hostap_add_sta(struct ap_data *ap, u8 *sta_addr)
 /* Called only as a tasklet (software IRQ) */
 int hostap_update_rx_stats(struct ap_data *ap,
 			   struct ieee80211_hdr_4addr *hdr,
+			   struct ieee80211_hdr *hdr,
 			   struct hostap_80211_rx_status *rx_stats)
 {
 	struct sta_info *sta;
@@ -3291,6 +3796,7 @@ void hostap_update_rates(local_info_t *local)
 
 void * ap_crypt_get_ptrs(struct ap_data *ap, u8 *addr, int permanent,
 			 struct ieee80211_crypt_data ***crypt)
+			 struct lib80211_crypt_data ***crypt)
 {
 	struct sta_info *sta;
 

@@ -22,6 +22,7 @@
 #define _LINUX_NFS_IOSTAT
 
 #define NFS_IOSTAT_VERS		"1.0"
+#define NFS_IOSTAT_VERS		"1.1"
 
 /*
  * NFS byte counters
@@ -114,6 +115,23 @@ enum nfs_stat_eventcounters {
 	NFSIOS_SHORTWRITE,
 	NFSIOS_DELAY,
 	__NFSIOS_COUNTSMAX,
+};
+
+	NFSIOS_PNFS_READ,
+	NFSIOS_PNFS_WRITE,
+	__NFSIOS_COUNTSMAX,
+};
+
+/*
+ * NFS local caching servicing counters
+ */
+enum nfs_stat_fscachecounters {
+	NFSIOS_FSCACHE_PAGES_READ_OK,
+	NFSIOS_FSCACHE_PAGES_READ_FAIL,
+	NFSIOS_FSCACHE_PAGES_WRITTEN_OK,
+	NFSIOS_FSCACHE_PAGES_WRITTEN_FAIL,
+	NFSIOS_FSCACHE_PAGES_UNCACHED,
+	__NFSIOS_FSCACHEMAX,
 };
 
 #endif	/* _LINUX_NFS_IOSTAT */

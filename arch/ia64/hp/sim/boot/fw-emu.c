@@ -13,6 +13,7 @@
 #include <asm/io.h>
 #include <asm/pal.h>
 #include <asm/sal.h>
+#include <asm/setup.h>
 
 #include "ssc.h"
 
@@ -166,6 +167,9 @@ sal_emulator (long index, unsigned long in1, unsigned long in2,
 			break;
 
 		      case SAL_FREQ_BASE_INTERVAL_TIMER:
+		if (in1 == SAL_FREQ_BASE_PLATFORM)
+			r9 = 200000000;
+		else if (in1 == SAL_FREQ_BASE_INTERVAL_TIMER) {
 			/*
 			 * Is this supposed to be the cr.itc frequency
 			 * or something platform specific?  The SAL
@@ -182,6 +186,10 @@ sal_emulator (long index, unsigned long in1, unsigned long in2,
 			status = -1;
 			break;
 		}
+		} else if (in1 == SAL_FREQ_BASE_REALTIME_CLOCK)
+			r9 = 1;
+		else
+			status = -1;
 	} else if (index == SAL_SET_VECTORS) {
 		;
 	} else if (index == SAL_GET_STATE_INFO) {
@@ -308,6 +316,16 @@ sys_fw_init (const char *args, int arglen)
 	efi_runtime->set_variable = __pa(&efi_unimplemented);
 	efi_runtime->get_next_high_mono_count = __pa(&efi_unimplemented);
 	efi_runtime->reset_system = __pa(&efi_reset_system);
+	efi_runtime->get_time = (void *)__pa(&fw_efi_get_time);
+	efi_runtime->set_time = (void *)__pa(&efi_unimplemented);
+	efi_runtime->get_wakeup_time = (void *)__pa(&efi_unimplemented);
+	efi_runtime->set_wakeup_time = (void *)__pa(&efi_unimplemented);
+	efi_runtime->set_virtual_address_map = (void *)__pa(&efi_unimplemented);
+	efi_runtime->get_variable = (void *)__pa(&efi_unimplemented);
+	efi_runtime->get_next_variable = (void *)__pa(&efi_unimplemented);
+	efi_runtime->set_variable = (void *)__pa(&efi_unimplemented);
+	efi_runtime->get_next_high_mono_count = (void *)__pa(&efi_unimplemented);
+	efi_runtime->reset_system = (void *)__pa(&efi_reset_system);
 
 	efi_tables->guid = SAL_SYSTEM_TABLE_GUID;
 	efi_tables->table = __pa(sal_systab);

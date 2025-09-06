@@ -26,6 +26,12 @@
 
 #include <mach/hardware.h>
 #include <asm/io.h>
+#include <linux/amba/bus.h>
+#include <linux/amba/pl061.h>
+#include <linux/amba/mmci.h>
+#include <linux/io.h>
+
+#include <mach/hardware.h>
 #include <asm/irq.h>
 #include <asm/mach-types.h>
 
@@ -59,6 +65,16 @@ static struct mmc_platform_data mmc1_plat_data = {
 #define GPIO2_DMA	{ 0, 0 }
 #define GPIO3_IRQ	{ IRQ_GPIOINT3, NO_IRQ }
 #define GPIO3_DMA	{ 0, 0 }
+static struct mmci_platform_data mmc1_plat_data = {
+	.ocr_mask	= MMC_VDD_32_33|MMC_VDD_33_34,
+	.status		= mmc_status,
+	.gpio_wp	= -1,
+	.gpio_cd	= -1,
+};
+
+#define UART3_IRQ	{ IRQ_SIC_UART3 }
+#define SCI1_IRQ	{ IRQ_SIC_SCI3 }
+#define MMCI1_IRQ	{ IRQ_MMCI1A, IRQ_SIC_MMCI1B }
 
 /*
  * These devices are connected via the DMA APB bridge
@@ -77,6 +93,13 @@ static struct amba_device *amba_devs[] __initdata = {
 	&uart3_device,
 	&gpio2_device,
 	&gpio3_device,
+APB_DEVICE(uart3, "fpga:09", UART3,    NULL);
+APB_DEVICE(sci1,  "fpga:0a", SCI1,     NULL);
+APB_DEVICE(mmc1,  "fpga:0b", MMCI1,    &mmc1_plat_data);
+
+
+static struct amba_device *amba_devs[] __initdata = {
+	&uart3_device,
 	&sci1_device,
 	&mmc1_device,
 };
@@ -102,4 +125,11 @@ MACHINE_START(VERSATILE_PB, "ARM-Versatile PB")
 	.init_irq	= versatile_init_irq,
 	.timer		= &versatile_timer,
 	.init_machine	= versatile_pb_init,
+	.atag_offset	= 0x100,
+	.map_io		= versatile_map_io,
+	.init_early	= versatile_init_early,
+	.init_irq	= versatile_init_irq,
+	.init_time	= versatile_timer_init,
+	.init_machine	= versatile_pb_init,
+	.restart	= versatile_restart,
 MACHINE_END

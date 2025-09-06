@@ -33,9 +33,7 @@ MODULE_DESCRIPTION("REX-CFU1U PCMCIA driver for 2.6");
 MODULE_LICENSE("GPL");
 
 
-/*====================================================================*/
 /* MACROS                                                             */
-/*====================================================================*/
 
 #if defined(DEBUG) || defined(PCMCIA_DEBUG)
 
@@ -59,24 +57,26 @@ module_param(pc_debug, int, 0644);
 			goto cs_failed; \
 	} while (0)
 
-/*====================================================================*/
+#define INFO(args...) printk(KERN_INFO "sl811_cs: " args)
+
 /* VARIABLES                                                          */
-/*====================================================================*/
 
 static const char driver_name[DEV_NAME_LEN]  = "sl811_cs";
 
 typedef struct local_info_t {
 	struct pcmcia_device	*p_dev;
 	dev_node_t		node;
+typedef struct local_info_t {
+	struct pcmcia_device	*p_dev;
 } local_info_t;
 
 static void sl811_cs_release(struct pcmcia_device * link);
 
-/*====================================================================*/
 
 static void release_platform_dev(struct device * dev)
 {
 	DBG(0, "sl811_cs platform_dev release\n");
+	dev_dbg(dev, "sl811_cs platform_dev release\n");
 	dev->parent = NULL;
 }
 
@@ -113,6 +113,8 @@ static struct platform_device platform_dev = {
 };
 
 static int sl811_hc_init(struct device *parent, ioaddr_t base_addr, int irq)
+static int sl811_hc_init(struct device *parent, resource_size_t base_addr,
+			 int irq)
 {
 	if (platform_dev.dev.parent)
 		return -EBUSY;
@@ -135,11 +137,11 @@ static int sl811_hc_init(struct device *parent, ioaddr_t base_addr, int irq)
 	return platform_device_register(&platform_dev);
 }
 
-/*====================================================================*/
 
 static void sl811_cs_detach(struct pcmcia_device *link)
 {
 	DBG(0, "sl811_cs_detach(0x%p)\n", link);
+	dev_dbg(&link->dev, "sl811_cs_detach\n");
 
 	sl811_cs_release(link);
 
@@ -150,6 +152,7 @@ static void sl811_cs_detach(struct pcmcia_device *link)
 static void sl811_cs_release(struct pcmcia_device * link)
 {
 	DBG(0, "sl811_cs_release(0x%p)\n", link);
+	dev_dbg(&link->dev, "sl811_cs_release\n");
 
 	pcmcia_disable_device(link);
 	platform_device_unregister(&platform_dev);
@@ -268,6 +271,43 @@ next_entry:
 cs_failed:
 		printk("sl811_cs_config failed\n");
 		cs_error(link, last_fn, last_ret);
+static int sl811_cs_config_check(struct pcmcia_device *p_dev, void *priv_data)
+{
+	if (p_dev->config_index == 0)
+		return -EINVAL;
+
+	return pcmcia_request_io(p_dev);
+}
+
+
+static int sl811_cs_config(struct pcmcia_device *link)
+{
+	struct device		*parent = &link->dev;
+	int			ret;
+
+	dev_dbg(&link->dev, "sl811_cs_config\n");
+
+	link->config_flags |= CONF_ENABLE_IRQ |	CONF_AUTO_SET_VPP |
+		CONF_AUTO_CHECK_VCC | CONF_AUTO_SET_IO;
+
+	if (pcmcia_loop_config(link, sl811_cs_config_check, NULL))
+		goto failed;
+
+	/* require an IRQ and two registers */
+	if (resource_size(link->resource[0]) < 2)
+		goto failed;
+
+	if (!link->irq)
+		goto failed;
+
+	ret = pcmcia_enable_device(link);
+	if (ret)
+		goto failed;
+
+	if (sl811_hc_init(parent, link->resource[0]->start, link->irq)
+			< 0) {
+failed:
+		printk(KERN_WARNING "sl811_cs_config failed\n");
 		sl811_cs_release(link);
 		return  -ENODEV;
 	}
@@ -296,6 +336,10 @@ static int sl811_cs_probe(struct pcmcia_device *link)
 }
 
 static struct pcmcia_device_id sl811_ids[] = {
+	return sl811_cs_config(link);
+}
+
+static const struct pcmcia_device_id sl811_ids[] = {
 	PCMCIA_DEVICE_MANF_CARD(0xc015, 0x0001), /* RATOC USB HOST CF+ Card */
 	PCMCIA_DEVICE_NULL,
 };
@@ -306,12 +350,12 @@ static struct pcmcia_driver sl811_cs_driver = {
 	.drv		= {
 		.name	= (char *)driver_name,
 	},
+	.name		= "sl811_cs",
 	.probe		= sl811_cs_probe,
 	.remove		= sl811_cs_detach,
 	.id_table	= sl811_ids,
 };
 
-/*====================================================================*/
 
 static int __init init_sl811_cs(void)
 {
@@ -324,3 +368,4 @@ static void __exit exit_sl811_cs(void)
 	pcmcia_unregister_driver(&sl811_cs_driver);
 }
 module_exit(exit_sl811_cs);
+module_pcmcia_driver(sl811_cs_driver);

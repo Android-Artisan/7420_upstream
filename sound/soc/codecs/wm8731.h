@@ -41,4 +41,9 @@ struct wm8731_setup_data {
 extern struct snd_soc_dai wm8731_dai;
 extern struct snd_soc_codec_device soc_codec_dev_wm8731;
 
+#define WM8731_SYSCLK_XTAL 1
+#define WM8731_SYSCLK_MCLK 2
+
+#define WM8731_DAI		0
+
 #endif

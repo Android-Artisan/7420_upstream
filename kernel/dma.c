@@ -1,4 +1,5 @@
 /* $Id: dma.c,v 1.7 1994/12/28 03:35:33 root Exp root $
+/*
  * linux/kernel/dma.c: A DMA channel allocator. Inspired by linux/kernel/irq.c.
  *
  * Written by Hennus Bergman, 1992.
@@ -10,6 +11,7 @@
  *   assumption introduced because of those /proc/dma patches. -- Hennus]
  */
 #include <linux/module.h>
+#include <linux/export.h>
 #include <linux/kernel.h>
 #include <linux/errno.h>
 #include <linux/spinlock.h>

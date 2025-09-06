@@ -86,6 +86,8 @@ struct elf_prpsinfo32
  */
 
 #define SET_PERSONALITY(ex, ibcs2) \
+#undef SET_PERSONALITY
+#define SET_PERSONALITY(ex) \
 	set_thread_flag(TIF_32BIT); \
 	current->thread.map_base = DEFAULT_MAP_BASE32; \
 	current->thread.task_size = DEFAULT_TASK_SIZE32 \

@@ -32,6 +32,12 @@
 
 /* This is only called on sync() and umount(), when s_dirt=1. */
 static void sysv_write_super(struct super_block *sb)
+#include <linux/writeback.h>
+#include <linux/namei.h>
+#include <asm/byteorder.h>
+#include "sysv.h"
+
+static int sysv_sync_fs(struct super_block *sb, int wait)
 {
 	struct sysv_sb_info *sbi = SYSV_SB(sb);
 	unsigned long time = get_seconds(), old_time;
@@ -39,6 +45,7 @@ static void sysv_write_super(struct super_block *sb)
 	lock_kernel();
 	if (sb->s_flags & MS_RDONLY)
 		goto clean;
+	mutex_lock(&sbi->s_lock);
 
 	/*
 	 * If we are going to write out the super block,
@@ -55,6 +62,10 @@ static void sysv_write_super(struct super_block *sb)
 clean:
 	sb->s_dirt = 0;
 	unlock_kernel();
+
+	mutex_unlock(&sbi->s_lock);
+
+	return 0;
 }
 
 static int sysv_remount(struct super_block *sb, int *flags, char *data)
@@ -64,6 +75,10 @@ static int sysv_remount(struct super_block *sb, int *flags, char *data)
 		*flags |= MS_RDONLY;
 	if (!(*flags & MS_RDONLY))
 		sb->s_dirt = 1;
+
+	sync_filesystem(sb);
+	if (sbi->s_forced_ro)
+		*flags |= MS_RDONLY;
 	return 0;
 }
 
@@ -89,6 +104,7 @@ static int sysv_statfs(struct dentry *dentry, struct kstatfs *buf)
 {
 	struct super_block *sb = dentry->d_sb;
 	struct sysv_sb_info *sbi = SYSV_SB(sb);
+	u64 id = huge_encode_dev(sb->s_bdev->bd_dev);
 
 	buf->f_type = sb->s_magic;
 	buf->f_bsize = sb->s_blocksize;
@@ -97,6 +113,8 @@ static int sysv_statfs(struct dentry *dentry, struct kstatfs *buf)
 	buf->f_files = sbi->s_ninodes;
 	buf->f_ffree = sysv_count_free_inodes(sb);
 	buf->f_namelen = SYSV_NAMELEN;
+	buf->f_fsid.val[0] = (u32)id;
+	buf->f_fsid.val[1] = (u32)(id >> 32);
 	return 0;
 }
 
@@ -165,6 +183,8 @@ void sysv_set_inode(struct inode *inode, dev_t rdev)
 			inode->i_mapping->a_ops = &sysv_aops;
 		} else
 			inode->i_op = &sysv_fast_symlink_inode_operations;
+		inode->i_op = &sysv_symlink_inode_operations;
+		inode->i_mapping->a_ops = &sysv_aops;
 	} else
 		init_special_inode(inode, inode->i_mode, rdev);
 }
@@ -201,6 +221,9 @@ struct inode *sysv_iget(struct super_block *sb, unsigned int ino)
 	inode->i_uid = (uid_t)fs16_to_cpu(sbi, raw_inode->i_uid);
 	inode->i_gid = (gid_t)fs16_to_cpu(sbi, raw_inode->i_gid);
 	inode->i_nlink = fs16_to_cpu(sbi, raw_inode->i_nlink);
+	i_uid_write(inode, (uid_t)fs16_to_cpu(sbi, raw_inode->i_uid));
+	i_gid_write(inode, (gid_t)fs16_to_cpu(sbi, raw_inode->i_gid));
+	set_nlink(inode, fs16_to_cpu(sbi, raw_inode->i_nlink));
 	inode->i_size = fs32_to_cpu(sbi, raw_inode->i_size);
 	inode->i_atime.tv_sec = fs32_to_cpu(sbi, raw_inode->i_atime);
 	inode->i_mtime.tv_sec = fs32_to_cpu(sbi, raw_inode->i_mtime);
@@ -230,6 +253,7 @@ bad_inode:
 }
 
 static struct buffer_head * sysv_update_inode(struct inode * inode)
+static int __sysv_write_inode(struct inode *inode, int wait)
 {
 	struct super_block * sb = inode->i_sb;
 	struct sysv_sb_info * sbi = SYSV_SB(sb);
@@ -237,12 +261,14 @@ static struct buffer_head * sysv_update_inode(struct inode * inode)
 	struct sysv_inode * raw_inode;
 	struct sysv_inode_info * si;
 	unsigned int ino, block;
+	int err = 0;
 
 	ino = inode->i_ino;
 	if (!ino || ino > sbi->s_ninodes) {
 		printk("Bad inode number on dev %s: %d is out of range\n",
 		       inode->i_sb->s_id, ino);
 		return NULL;
+		return -EIO;
 	}
 	raw_inode = sysv_raw_inode(sb, ino, &bh);
 	if (!raw_inode) {
@@ -253,6 +279,12 @@ static struct buffer_head * sysv_update_inode(struct inode * inode)
 	raw_inode->i_mode = cpu_to_fs16(sbi, inode->i_mode);
 	raw_inode->i_uid = cpu_to_fs16(sbi, fs_high2lowuid(inode->i_uid));
 	raw_inode->i_gid = cpu_to_fs16(sbi, fs_high2lowgid(inode->i_gid));
+		return -EIO;
+	}
+
+	raw_inode->i_mode = cpu_to_fs16(sbi, inode->i_mode);
+	raw_inode->i_uid = cpu_to_fs16(sbi, fs_high2lowuid(i_uid_read(inode)));
+	raw_inode->i_gid = cpu_to_fs16(sbi, fs_high2lowgid(i_gid_read(inode)));
 	raw_inode->i_nlink = cpu_to_fs16(sbi, inode->i_nlink);
 	raw_inode->i_size = cpu_to_fs32(sbi, inode->i_size);
 	raw_inode->i_atime = cpu_to_fs32(sbi, inode->i_atime.tv_sec);
@@ -307,6 +339,39 @@ static void sysv_delete_inode(struct inode *inode)
 	lock_kernel();
 	sysv_free_inode(inode);
 	unlock_kernel();
+	if (wait) {
+                sync_dirty_buffer(bh);
+                if (buffer_req(bh) && !buffer_uptodate(bh)) {
+                        printk ("IO error syncing sysv inode [%s:%08x]\n",
+                                sb->s_id, ino);
+                        err = -EIO;
+                }
+        }
+	brelse(bh);
+	return err;
+}
+
+int sysv_write_inode(struct inode *inode, struct writeback_control *wbc)
+{
+	return __sysv_write_inode(inode, wbc->sync_mode == WB_SYNC_ALL);
+}
+
+int sysv_sync_inode(struct inode *inode)
+{
+	return __sysv_write_inode(inode, 1);
+}
+
+static void sysv_evict_inode(struct inode *inode)
+{
+	truncate_inode_pages_final(&inode->i_data);
+	if (!inode->i_nlink) {
+		inode->i_size = 0;
+		sysv_truncate(inode);
+	}
+	invalidate_inode_buffers(inode);
+	clear_inode(inode);
+	if (!inode->i_nlink)
+		sysv_free_inode(inode);
 }
 
 static struct kmem_cache *sysv_inode_cachep;
@@ -324,6 +389,15 @@ static struct inode *sysv_alloc_inode(struct super_block *sb)
 static void sysv_destroy_inode(struct inode *inode)
 {
 	kmem_cache_free(sysv_inode_cachep, SYSV_I(inode));
+static void sysv_i_callback(struct rcu_head *head)
+{
+	struct inode *inode = container_of(head, struct inode, i_rcu);
+	kmem_cache_free(sysv_inode_cachep, SYSV_I(inode));
+}
+
+static void sysv_destroy_inode(struct inode *inode)
+{
+	call_rcu(&inode->i_rcu, sysv_i_callback);
 }
 
 static void init_once(void *p)
@@ -340,6 +414,9 @@ const struct super_operations sysv_sops = {
 	.delete_inode	= sysv_delete_inode,
 	.put_super	= sysv_put_super,
 	.write_super	= sysv_write_super,
+	.evict_inode	= sysv_evict_inode,
+	.put_super	= sysv_put_super,
+	.sync_fs	= sysv_sync_fs,
 	.remount_fs	= sysv_remount,
 	.statfs		= sysv_statfs,
 };
@@ -357,5 +434,10 @@ int __init sysv_init_icache(void)
 
 void sysv_destroy_icache(void)
 {
+	/*
+	 * Make sure all delayed rcu free inodes are flushed before we
+	 * destroy cache.
+	 */
+	rcu_barrier();
 	kmem_cache_destroy(sysv_inode_cachep);
 }

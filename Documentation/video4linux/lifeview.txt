@@ -1,6 +1,5 @@
 collecting data about the lifeview models and the config coding on
 gpio pins 0-9 ...
-==================================================================
 
 bt878:
  LR50 rev. Q ("PARTS: 7031505116), Tuner wurde als Nr. 5 erkannt, Eingänge

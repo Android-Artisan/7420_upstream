@@ -33,3 +33,17 @@ zImage: vmlinux $(OBJS) $(LIBS)
 	$(OBJCOPY) -S -O binary $@.elf arch/$(ARCH)/boot/$@.redboot
 	rm -f $@.tmp $@.elf vmlinux.tmp.gz
 
+$(obj)/zImage.o: vmlinux.bin.gz $(OBJS)
+	$(Q)$(OBJCOPY) $(OBJCOPY_ARGS) -R .comment \
+		--add-section image=vmlinux.bin.gz \
+		--set-section-flags image=contents,alloc,load,load,data \
+		$(OBJS) $@
+
+$(obj)/zImage.elf: $(obj)/zImage.o $(LIBS)
+	$(Q)$(LD) $(LD_ARGS) -o $@ $^ -L/xtensa-elf/lib $(LIBGCC)
+
+$(obj)/../zImage.redboot: $(obj)/zImage.elf
+	$(Q)$(OBJCOPY) -S -O binary $< $@
+	$(Q)$(kecho) '  Kernel: $@ is ready'
+
+zImage: $(obj)/../zImage.redboot

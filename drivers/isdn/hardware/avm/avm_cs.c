@@ -23,6 +23,7 @@
 
 #include <pcmcia/cs_types.h>
 #include <pcmcia/cs.h>
+
 #include <pcmcia/cistpl.h>
 #include <pcmcia/ciscode.h>
 #include <pcmcia/ds.h>
@@ -33,13 +34,11 @@
 #include <linux/b1lli.h>
 #include <linux/b1pcmcia.h>
 
-/*====================================================================*/
 
 MODULE_DESCRIPTION("CAPI4Linux: PCMCIA client driver for AVM B1/M1/M2");
 MODULE_AUTHOR("Carsten Paeth");
 MODULE_LICENSE("GPL");
 
-/*====================================================================*/
 
 /*
    The event() function is this driver's Card Services event handler.
@@ -86,7 +85,6 @@ typedef struct local_info_t {
     dev_node_t	node;
 } local_info_t;
 
-/*======================================================================
 
     avmcs_attach() creates an "instance" of the driver, allocating
     local data structures for one device.  The device is registered
@@ -96,7 +94,6 @@ typedef struct local_info_t {
     configure the card at this point -- we wait until we receive a
     card insertion event.
     
-======================================================================*/
 
 static int avmcs_probe(struct pcmcia_device *p_dev)
 {
@@ -131,14 +128,26 @@ static int avmcs_probe(struct pcmcia_device *p_dev)
     return -ENOMEM;
 } /* avmcs_attach */
 
-/*======================================================================
 
     This deletes a driver "instance".  The device is de-registered
     with Card Services.  If it has been released, all local data
     structures are freed.  Otherwise, the structures will be freed
     when the device is released.
 
-======================================================================*/
+static int avmcs_config(struct pcmcia_device *link);
+static void avmcs_release(struct pcmcia_device *link);
+static void avmcs_detach(struct pcmcia_device *p_dev);
+
+static int avmcs_probe(struct pcmcia_device *p_dev)
+{
+	/* General socket configuration */
+	p_dev->config_flags |= CONF_ENABLE_IRQ | CONF_AUTO_SET_IO;
+	p_dev->config_index = 1;
+	p_dev->config_regs = PRESENT_OPTION;
+
+	return avmcs_config(p_dev);
+} /* avmcs_attach */
+
 
 static void avmcs_detach(struct pcmcia_device *link)
 {
@@ -146,13 +155,11 @@ static void avmcs_detach(struct pcmcia_device *link)
 	kfree(link->priv);
 } /* avmcs_detach */
 
-/*======================================================================
 
     avmcs_config() is scheduled to run after a CARD_INSERTION event
     is received, to configure the PCMCIA socket, and to make the
     ethernet device available to the system.
     
-======================================================================*/
 
 static int get_tuple(struct pcmcia_device *handle, tuple_t *tuple,
 		     cisparse_t *parse)
@@ -176,6 +183,15 @@ static int next_tuple(struct pcmcia_device *handle, tuple_t *tuple,
     int i = pcmcia_get_next_tuple(handle, tuple);
     if (i != CS_SUCCESS) return i;
     return get_tuple(handle, tuple, parse);
+} /* avmcs_detach */
+
+static int avmcs_configcheck(struct pcmcia_device *p_dev, void *priv_data)
+{
+	p_dev->resource[0]->end = 16;
+	p_dev->resource[0]->flags &= ~IO_DATA_PATH_WIDTH;
+	p_dev->resource[0]->flags |= IO_DATA_PATH_WIDTH_8;
+
+	return pcmcia_request_io(p_dev);
 }
 
 static int avmcs_config(struct pcmcia_device *link)
@@ -193,6 +209,11 @@ static int avmcs_config(struct pcmcia_device *link)
     dev = link->priv;
 
     do {
+	int i = -1;
+	char devname[128];
+	int cardtype;
+	int (*addcard)(unsigned int port, unsigned irq);
+
 	devname[0] = 0;
 	if (link->prod_id[1])
 		strlcpy(devname, link->prod_id[1], sizeof(devname));
@@ -298,22 +319,87 @@ found_port:
 
 } /* avmcs_config */
 
-/*======================================================================
 
     After a card is removed, avmcs_release() will unregister the net
     device, and release the PCMCIA configuration.  If the device is
     still open, this will be postponed until it is closed.
     
-======================================================================*/
 
 static void avmcs_release(struct pcmcia_device *link)
 {
 	b1pcmcia_delcard(link->io.BasePort1, link->irq.AssignedIRQ);
+	 * find IO port
+	 */
+	if (pcmcia_loop_config(link, avmcs_configcheck, NULL))
+		return -ENODEV;
+
+	do {
+		if (!link->irq) {
+			/* undo */
+			pcmcia_disable_device(link);
+			break;
+		}
+
+		/*
+		 * configure the PCMCIA socket
+		 */
+		i = pcmcia_enable_device(link);
+		if (i != 0) {
+			pcmcia_disable_device(link);
+			break;
+		}
+
+	} while (0);
+
+	if (devname[0]) {
+		char *s = strrchr(devname, ' ');
+		if (!s)
+			s = devname;
+		else s++;
+		if (strcmp("M1", s) == 0) {
+			cardtype = AVM_CARDTYPE_M1;
+		} else if (strcmp("M2", s) == 0) {
+			cardtype = AVM_CARDTYPE_M2;
+		} else {
+			cardtype = AVM_CARDTYPE_B1;
+		}
+	} else
+		cardtype = AVM_CARDTYPE_B1;
+
+	/* If any step failed, release any partially configured state */
+	if (i != 0) {
+		avmcs_release(link);
+		return -ENODEV;
+	}
+
+
+	switch (cardtype) {
+	case AVM_CARDTYPE_M1: addcard = b1pcmcia_addcard_m1; break;
+	case AVM_CARDTYPE_M2: addcard = b1pcmcia_addcard_m2; break;
+	default:
+	case AVM_CARDTYPE_B1: addcard = b1pcmcia_addcard_b1; break;
+	}
+	if ((i = (*addcard)(link->resource[0]->start, link->irq)) < 0) {
+		dev_err(&link->dev,
+			"avm_cs: failed to add AVM-Controller at i/o %#x, irq %d\n",
+			(unsigned int) link->resource[0]->start, link->irq);
+		avmcs_release(link);
+		return -ENODEV;
+	}
+	return 0;
+
+} /* avmcs_config */
+
+
+static void avmcs_release(struct pcmcia_device *link)
+{
+	b1pcmcia_delcard(link->resource[0]->start, link->irq);
 	pcmcia_disable_device(link);
 } /* avmcs_release */
 
 
 static struct pcmcia_device_id avmcs_ids[] = {
+static const struct pcmcia_device_id avmcs_ids[] = {
 	PCMCIA_DEVICE_PROD_ID12("AVM", "ISDN-Controller B1", 0x95d42008, 0x845dc335),
 	PCMCIA_DEVICE_PROD_ID12("AVM", "Mobile ISDN-Controller M1", 0x95d42008, 0x81e10430),
 	PCMCIA_DEVICE_PROD_ID12("AVM", "Mobile ISDN-Controller M2", 0x95d42008, 0x18e8558a),
@@ -326,6 +412,7 @@ static struct pcmcia_driver avmcs_driver = {
 	.drv	= {
 		.name	= "avm_cs",
 	},
+	.name		= "avm_cs",
 	.probe = avmcs_probe,
 	.remove	= avmcs_detach,
 	.id_table = avmcs_ids,
@@ -343,3 +430,4 @@ static void __exit avmcs_exit(void)
 
 module_init(avmcs_init);
 module_exit(avmcs_exit);
+module_pcmcia_driver(avmcs_driver);

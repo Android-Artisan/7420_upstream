@@ -29,6 +29,11 @@
 #include <linux/moduleparam.h>
 #include <sound/core.h>
 #include <sound/cs4231.h>
+#include <linux/pnp.h>
+#include <linux/module.h>
+#include <linux/io.h>
+#include <sound/core.h>
+#include <sound/wss.h>
 #include <sound/mpu401.h>
 #include <sound/opl3.h>
 #include <sound/initval.h>
@@ -50,6 +55,9 @@ static char *id[SNDRV_CARDS] = SNDRV_DEFAULT_STR;	/* ID for this card */
 static int enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE_ISAPNP; /* Enable this card */
 #ifdef CONFIG_PNP
 static int isapnp[SNDRV_CARDS] = {[0 ... (SNDRV_CARDS - 1)] = 1};
+static bool enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE_ISAPNP; /* Enable this card */
+#ifdef CONFIG_PNP
+static bool isapnp[SNDRV_CARDS] = {[0 ... (SNDRV_CARDS - 1)] = 1};
 #endif
 static long port[SNDRV_CARDS] = SNDRV_DEFAULT_PORT;	/* 0xf86,0x370,0x100 */
 static long sb_port[SNDRV_CARDS] = SNDRV_DEFAULT_PORT;	/* 0x220,0x240,0x260 */
@@ -134,6 +142,7 @@ struct snd_opl3sa2 {
 	struct snd_hwdep *synth;
 	struct snd_rawmidi *rmidi;
 	struct snd_cs4231 *cs4231;
+	struct snd_wss *wss;
 	unsigned char ctlregs[0x20];
 	int ymode;		/* SL added */
 	struct snd_kcontrol *master_switch;
@@ -181,11 +190,14 @@ static unsigned char __snd_opl3sa2_read(struct snd_opl3sa2 *chip, unsigned char 
 #if 0
 	outb(0x1d, port);	/* password */
 	printk("read [0x%lx] = 0x%x\n", port, inb(port));
+	printk(KERN_DEBUG "read [0x%lx] = 0x%x\n", port, inb(port));
 #endif
 	outb(reg, chip->port);	/* register */
 	result = inb(chip->port + 1);
 #if 0
 	printk("read [0x%lx] = 0x%x [0x%x]\n", port, result, inb(port));
+	printk(KERN_DEBUG "read [0x%lx] = 0x%x [0x%x]\n",
+	       port, result, inb(port));
 #endif
 	return result;
 }
@@ -225,6 +237,9 @@ static void snd_opl3sa2_write(struct snd_opl3sa2 *chip, unsigned char reg, unsig
 static int __devinit snd_opl3sa2_detect(struct snd_opl3sa2 *chip)
 {
 	struct snd_card *card;
+static int snd_opl3sa2_detect(struct snd_card *card)
+{
+	struct snd_opl3sa2 *chip = card->private_data;
 	unsigned long port;
 	unsigned char tmp, tmp1;
 	char str[2];
@@ -236,6 +251,10 @@ static int __devinit snd_opl3sa2_detect(struct snd_opl3sa2 *chip)
 		return -EBUSY;
 	}
 	// snd_printk("REG 0A = 0x%x\n", snd_opl3sa2_read(chip, 0x0a));
+	/*
+	snd_printk(KERN_DEBUG "REG 0A = 0x%x\n",
+		   snd_opl3sa2_read(chip, 0x0a));
+	*/
 	chip->version = 0;
 	tmp = snd_opl3sa2_read(chip, OPL3SA2_MISC);
 	if (tmp == 0xff) {
@@ -264,6 +283,7 @@ static int __devinit snd_opl3sa2_detect(struct snd_opl3sa2 *chip)
 		return -ENODEV;
 	}
 	/* try if the MIC register is accesible */
+	/* try if the MIC register is accessible */
 	tmp = snd_opl3sa2_read(chip, OPL3SA2_MIC);
 	snd_opl3sa2_write(chip, OPL3SA2_MIC, 0x8a);
 	if (((tmp1 = snd_opl3sa2_read(chip, OPL3SA2_MIC)) & 0x9f) != 0x8a) {
@@ -304,6 +324,14 @@ static irqreturn_t snd_opl3sa2_interrupt(int irq, void *dev_id)
 	if (chip == NULL || chip->card == NULL)
 		return IRQ_NONE;
 
+	struct snd_card *card = dev_id;
+	struct snd_opl3sa2 *chip;
+	int handled = 0;
+
+	if (card == NULL)
+		return IRQ_NONE;
+
+	chip = card->private_data;
 	status = snd_opl3sa2_read(chip, OPL3SA2_IRQ_STATUS);
 
 	if (status & 0x20) {
@@ -319,6 +347,7 @@ static irqreturn_t snd_opl3sa2_interrupt(int irq, void *dev_id)
 	if (status & 0x07) {	/* TI,CI,PI */
 		handled = 1;
 		snd_cs4231_interrupt(irq, chip->cs4231);
+		snd_wss_interrupt(irq, chip->wss);
 	}
 
 	if (status & 0x40) { /* hardware volume change */
@@ -329,6 +358,10 @@ static irqreturn_t snd_opl3sa2_interrupt(int irq, void *dev_id)
 		if (chip->master_switch && chip->master_volume) {
 			snd_ctl_notify(chip->card, SNDRV_CTL_EVENT_MASK_VALUE, &chip->master_switch->id);
 			snd_ctl_notify(chip->card, SNDRV_CTL_EVENT_MASK_VALUE, &chip->master_volume->id);
+			snd_ctl_notify(card, SNDRV_CTL_EVENT_MASK_VALUE,
+					&chip->master_switch->id);
+			snd_ctl_notify(card, SNDRV_CTL_EVENT_MASK_VALUE,
+					&chip->master_volume->id);
 		}
 	}
 	return IRQ_RETVAL(handled);
@@ -337,6 +370,7 @@ static irqreturn_t snd_opl3sa2_interrupt(int irq, void *dev_id)
 #define OPL3SA2_SINGLE(xname, xindex, reg, shift, mask, invert) \
 { .iface = SNDRV_CTL_ELEM_IFACE_MIXER, .name = xname, .index = xindex, \
   .info = snd_opl3sa2_info_single, \
+  .info = snd_wss_info_single, \
   .get = snd_opl3sa2_get_single, .put = snd_opl3sa2_put_single, \
   .private_value = reg | (shift << 8) | (mask << 16) | (invert << 24) }
 #define OPL3SA2_SINGLE_TLV(xname, xindex, reg, shift, mask, invert, xtlv) \
@@ -344,6 +378,7 @@ static irqreturn_t snd_opl3sa2_interrupt(int irq, void *dev_id)
   .access = SNDRV_CTL_ELEM_ACCESS_READWRITE | SNDRV_CTL_ELEM_ACCESS_TLV_READ, \
   .name = xname, .index = xindex, \
   .info = snd_opl3sa2_info_single, \
+  .info = snd_wss_info_single, \
   .get = snd_opl3sa2_get_single, .put = snd_opl3sa2_put_single, \
   .private_value = reg | (shift << 8) | (mask << 16) | (invert << 24), \
   .tlv = { .p = (xtlv) } }
@@ -403,6 +438,7 @@ static int snd_opl3sa2_put_single(struct snd_kcontrol *kcontrol, struct snd_ctl_
 #define OPL3SA2_DOUBLE(xname, xindex, left_reg, right_reg, shift_left, shift_right, mask, invert) \
 { .iface = SNDRV_CTL_ELEM_IFACE_MIXER, .name = xname, .index = xindex, \
   .info = snd_opl3sa2_info_double, \
+  .info = snd_wss_info_double, \
   .get = snd_opl3sa2_get_double, .put = snd_opl3sa2_put_double, \
   .private_value = left_reg | (right_reg << 8) | (shift_left << 16) | (shift_right << 19) | (mask << 24) | (invert << 22) }
 #define OPL3SA2_DOUBLE_TLV(xname, xindex, left_reg, right_reg, shift_left, shift_right, mask, invert, xtlv) \
@@ -410,6 +446,7 @@ static int snd_opl3sa2_put_single(struct snd_kcontrol *kcontrol, struct snd_ctl_
   .access = SNDRV_CTL_ELEM_ACCESS_READWRITE | SNDRV_CTL_ELEM_ACCESS_TLV_READ, \
   .name = xname, .index = xindex, \
   .info = snd_opl3sa2_info_double, \
+  .info = snd_wss_info_double, \
   .get = snd_opl3sa2_get_double, .put = snd_opl3sa2_put_double, \
   .private_value = left_reg | (right_reg << 8) | (shift_left << 16) | (shift_right << 19) | (mask << 24) | (invert << 22), \
   .tlv = { .p = (xtlv) } }
@@ -497,6 +534,7 @@ OPL3SA2_DOUBLE_TLV("Master Playback Volume", 0, 0x07, 0x08, 0, 0, 15, 1,
 OPL3SA2_SINGLE("Mic Playback Switch", 0, 0x09, 7, 1, 1),
 OPL3SA2_SINGLE_TLV("Mic Playback Volume", 0, 0x09, 0, 31, 1,
 		   db_scale_5bit_12db_max),
+OPL3SA2_SINGLE("ZV Port Switch", 0, 0x02, 0, 1, 0),
 };
 
 static struct snd_kcontrol_new snd_opl3sa2_tone_controls[] = {
@@ -515,6 +553,9 @@ static void snd_opl3sa2_master_free(struct snd_kcontrol *kcontrol)
 static int __devinit snd_opl3sa2_mixer(struct snd_opl3sa2 *chip)
 {
 	struct snd_card *card = chip->card;
+static int snd_opl3sa2_mixer(struct snd_card *card)
+{
+	struct snd_opl3sa2 *chip = card->private_data;
 	struct snd_ctl_elem_id id1, id2;
 	struct snd_kcontrol *kctl;
 	unsigned int idx;
@@ -576,6 +617,14 @@ static int snd_opl3sa2_suspend(struct snd_card *card, pm_message_t state)
 	chip->cs4231->suspend(chip->cs4231);
 	/* power down */
 	snd_opl3sa2_write(chip, OPL3SA2_PM_CTRL, OPL3SA2_PM_D3);
+	if (card) {
+		struct snd_opl3sa2 *chip = card->private_data;
+
+		snd_power_change_state(card, SNDRV_CTL_POWER_D3hot);
+		chip->wss->suspend(chip->wss);
+		/* power down */
+		snd_opl3sa2_write(chip, OPL3SA2_PM_CTRL, OPL3SA2_PM_D3);
+	}
 
 	return 0;
 }
@@ -585,6 +634,13 @@ static int snd_opl3sa2_resume(struct snd_card *card)
 	struct snd_opl3sa2 *chip = card->private_data;
 	int i;
 
+	struct snd_opl3sa2 *chip;
+	int i;
+
+	if (!card)
+		return 0;
+
+	chip = card->private_data;
 	/* power up */
 	snd_opl3sa2_write(chip, OPL3SA2_PM_CTRL, OPL3SA2_PM_D0);
 
@@ -599,6 +655,8 @@ static int snd_opl3sa2_resume(struct snd_card *card)
 	}
 	/* restore cs4231 */
 	chip->cs4231->resume(chip->cs4231);
+	/* restore wss */
+	chip->wss->resume(chip->wss);
 
 	snd_power_change_state(card, SNDRV_CTL_POWER_D0);
 	return 0;
@@ -608,6 +666,8 @@ static int snd_opl3sa2_resume(struct snd_card *card)
 #ifdef CONFIG_PNP
 static int __devinit snd_opl3sa2_pnp(int dev, struct snd_opl3sa2 *chip,
 				     struct pnp_dev *pdev)
+static int snd_opl3sa2_pnp(int dev, struct snd_opl3sa2 *chip,
+			   struct pnp_dev *pdev)
 {
 	if (pnp_activate_dev(pdev) < 0) {
 		snd_printk(KERN_ERR "PnP configure failure (out of resources?)\n");
@@ -660,6 +720,36 @@ static int __devinit snd_opl3sa2_probe(struct snd_card *card, int dev)
 	int xirq, xdma1, xdma2;
 	struct snd_opl3sa2 *chip;
 	struct snd_cs4231 *cs4231;
+		free_irq(chip->irq, card);
+	release_and_free_resource(chip->res_port);
+}
+
+static int snd_opl3sa2_card_new(struct device *pdev, int dev,
+				struct snd_card **cardp)
+{
+	struct snd_card *card;
+	struct snd_opl3sa2 *chip;
+	int err;
+
+	err = snd_card_new(pdev, index[dev], id[dev], THIS_MODULE,
+			   sizeof(struct snd_opl3sa2), &card);
+	if (err < 0)
+		return err;
+	strcpy(card->driver, "OPL3SA2");
+	strcpy(card->shortname, "Yamaha OPL3-SA");
+	chip = card->private_data;
+	spin_lock_init(&chip->reg_lock);
+	chip->irq = -1;
+	card->private_free = snd_opl3sa2_free;
+	*cardp = card;
+	return 0;
+}
+
+static int snd_opl3sa2_probe(struct snd_card *card, int dev)
+{
+	int xirq, xdma1, xdma2;
+	struct snd_opl3sa2 *chip;
+	struct snd_wss *wss;
 	struct snd_opl3 *opl3;
 	int err;
 
@@ -675,6 +765,12 @@ static int __devinit snd_opl3sa2_probe(struct snd_card *card, int dev)
 	if ((err = snd_opl3sa2_detect(chip)) < 0)
 		return err;
 	if (request_irq(xirq, snd_opl3sa2_interrupt, IRQF_DISABLED, "OPL3-SA2", chip)) {
+	err = snd_opl3sa2_detect(card);
+	if (err < 0)
+		return err;
+	err = request_irq(xirq, snd_opl3sa2_interrupt, 0,
+			  "OPL3-SA2", card);
+	if (err) {
 		snd_printk(KERN_ERR PFX "can't grab IRQ %d\n", xirq);
 		return -ENODEV;
 	}
@@ -696,6 +792,26 @@ static int __devinit snd_opl3sa2_probe(struct snd_card *card, int dev)
 	if ((err = snd_opl3sa2_mixer(chip)) < 0)
 		return err;
 	if ((err = snd_cs4231_timer(cs4231, 0, NULL)) < 0)
+	err = snd_wss_create(card,
+			     wss_port[dev] + 4, -1,
+			     xirq, xdma1, xdma2,
+			     WSS_HW_OPL3SA2, WSS_HWSHARE_IRQ, &wss);
+	if (err < 0) {
+		snd_printd("Oops, WSS not detected at 0x%lx\n", wss_port[dev] + 4);
+		return err;
+	}
+	chip->wss = wss;
+	err = snd_wss_pcm(wss, 0);
+	if (err < 0)
+		return err;
+	err = snd_wss_mixer(wss);
+	if (err < 0)
+		return err;
+	err = snd_opl3sa2_mixer(card);
+	if (err < 0)
+		return err;
+	err = snd_wss_timer(wss, 0);
+	if (err < 0)
 		return err;
 	if (fm_port[dev] >= 0x340 && fm_port[dev] < 0x400) {
 		if ((err = snd_opl3_create(card, fm_port[dev],
@@ -711,6 +827,9 @@ static int __devinit snd_opl3sa2_probe(struct snd_card *card, int dev)
 		if ((err = snd_mpu401_uart_new(card, 0, MPU401_HW_OPL3SA2,
 					       midi_port[dev], 0,
 					       xirq, 0, &chip->rmidi)) < 0)
+					       midi_port[dev],
+					       MPU401_INFO_IRQ_HOOK, -1,
+					       &chip->rmidi)) < 0)
 			return err;
 	}
 	sprintf(card->longname, "%s at 0x%lx, irq %d, dma %d",
@@ -724,6 +843,8 @@ static int __devinit snd_opl3sa2_probe(struct snd_card *card, int dev)
 #ifdef CONFIG_PNP
 static int __devinit snd_opl3sa2_pnp_detect(struct pnp_dev *pdev,
 					    const struct pnp_device_id *id)
+static int snd_opl3sa2_pnp_detect(struct pnp_dev *pdev,
+				  const struct pnp_device_id *id)
 {
 	static int dev;
 	int err;
@@ -741,6 +862,9 @@ static int __devinit snd_opl3sa2_pnp_detect(struct pnp_dev *pdev,
 	card = snd_opl3sa2_card_new(dev);
 	if (! card)
 		return -ENOMEM;
+	err = snd_opl3sa2_card_new(&pdev->dev, dev, &card);
+	if (err < 0)
+		return err;
 	if ((err = snd_opl3sa2_pnp(dev, card->private_data, pdev)) < 0) {
 		snd_card_free(card);
 		return err;
@@ -759,6 +883,9 @@ static void __devexit snd_opl3sa2_pnp_remove(struct pnp_dev * pdev)
 {
 	snd_card_free(pnp_get_drvdata(pdev));
 	pnp_set_drvdata(pdev, NULL);
+static void snd_opl3sa2_pnp_remove(struct pnp_dev *pdev)
+{
+	snd_card_free(pnp_get_drvdata(pdev));
 }
 
 #ifdef CONFIG_PM
@@ -777,6 +904,7 @@ static struct pnp_driver opl3sa2_pnp_driver = {
 	.id_table = snd_opl3sa2_pnpbiosids,
 	.probe = snd_opl3sa2_pnp_detect,
 	.remove = __devexit_p(snd_opl3sa2_pnp_remove),
+	.remove = snd_opl3sa2_pnp_remove,
 #ifdef CONFIG_PM
 	.suspend = snd_opl3sa2_pnp_suspend,
 	.resume = snd_opl3sa2_pnp_resume,
@@ -785,6 +913,8 @@ static struct pnp_driver opl3sa2_pnp_driver = {
 
 static int __devinit snd_opl3sa2_pnp_cdetect(struct pnp_card_link *pcard,
 					     const struct pnp_card_device_id *id)
+static int snd_opl3sa2_pnp_cdetect(struct pnp_card_link *pcard,
+				   const struct pnp_card_device_id *id)
 {
 	static int dev;
 	struct pnp_dev *pdev;
@@ -807,6 +937,9 @@ static int __devinit snd_opl3sa2_pnp_cdetect(struct pnp_card_link *pcard,
 	card = snd_opl3sa2_card_new(dev);
 	if (! card)
 		return -ENOMEM;
+	err = snd_opl3sa2_card_new(&pdev->dev, dev, &card);
+	if (err < 0)
+		return err;
 	if ((err = snd_opl3sa2_pnp(dev, card->private_data, pdev)) < 0) {
 		snd_card_free(card);
 		return err;
@@ -822,6 +955,7 @@ static int __devinit snd_opl3sa2_pnp_cdetect(struct pnp_card_link *pcard,
 }
 
 static void __devexit snd_opl3sa2_pnp_cremove(struct pnp_card_link * pcard)
+static void snd_opl3sa2_pnp_cremove(struct pnp_card_link *pcard)
 {
 	snd_card_free(pnp_get_card_drvdata(pcard));
 	pnp_set_card_drvdata(pcard, NULL);
@@ -844,6 +978,7 @@ static struct pnp_card_driver opl3sa2_pnpc_driver = {
 	.id_table = snd_opl3sa2_pnpids,
 	.probe = snd_opl3sa2_pnp_cdetect,
 	.remove = __devexit_p(snd_opl3sa2_pnp_cremove),
+	.remove = snd_opl3sa2_pnp_cremove,
 #ifdef CONFIG_PM
 	.suspend = snd_opl3sa2_pnp_csuspend,
 	.resume = snd_opl3sa2_pnp_cresume,
@@ -853,6 +988,8 @@ static struct pnp_card_driver opl3sa2_pnpc_driver = {
 
 static int __devinit snd_opl3sa2_isa_match(struct device *pdev,
 					   unsigned int dev)
+static int snd_opl3sa2_isa_match(struct device *pdev,
+				 unsigned int dev)
 {
 	if (!enable[dev])
 		return 0;
@@ -881,6 +1018,8 @@ static int __devinit snd_opl3sa2_isa_match(struct device *pdev,
 
 static int __devinit snd_opl3sa2_isa_probe(struct device *pdev,
 					   unsigned int dev)
+static int snd_opl3sa2_isa_probe(struct device *pdev,
+				 unsigned int dev)
 {
 	struct snd_card *card;
 	int err;
@@ -889,6 +1028,9 @@ static int __devinit snd_opl3sa2_isa_probe(struct device *pdev,
 	if (! card)
 		return -ENOMEM;
 	snd_card_set_dev(card, pdev);
+	err = snd_opl3sa2_card_new(pdev, dev, &card);
+	if (err < 0)
+		return err;
 	if ((err = snd_opl3sa2_probe(card, dev)) < 0) {
 		snd_card_free(card);
 		return err;
@@ -902,6 +1044,10 @@ static int __devexit snd_opl3sa2_isa_remove(struct device *devptr,
 {
 	snd_card_free(dev_get_drvdata(devptr));
 	dev_set_drvdata(devptr, NULL);
+static int snd_opl3sa2_isa_remove(struct device *devptr,
+				  unsigned int dev)
+{
+	snd_card_free(dev_get_drvdata(devptr));
 	return 0;
 }
 
@@ -924,6 +1070,7 @@ static struct isa_driver snd_opl3sa2_isa_driver = {
 	.match		= snd_opl3sa2_isa_match,
 	.probe		= snd_opl3sa2_isa_probe,
 	.remove		= __devexit_p(snd_opl3sa2_isa_remove),
+	.remove		= snd_opl3sa2_isa_remove,
 #ifdef CONFIG_PM
 	.suspend	= snd_opl3sa2_isa_suspend,
 	.resume		= snd_opl3sa2_isa_resume,

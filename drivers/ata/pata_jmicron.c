@@ -5,6 +5,7 @@
  *			this driver can handle other setups if we need it.
  *
  *	(c) 2006 Red Hat  <alan@redhat.com>
+ *	(c) 2006 Red Hat
  */
 
 #include <linux/kernel.h>
@@ -138,6 +139,8 @@ static int jmicron_init_one (struct pci_dev *pdev, const struct pci_device_id *i
 
 		.pio_mask	= 0x1f,
 		.mwdma_mask	= 0x07,
+		.pio_mask	= ATA_PIO4,
+		.mwdma_mask	= ATA_MWDMA2,
 		.udma_mask 	= ATA_UDMA5,
 
 		.port_ops	= &jmicron_ops,
@@ -145,6 +148,7 @@ static int jmicron_init_one (struct pci_dev *pdev, const struct pci_device_id *i
 	const struct ata_port_info *ppi[] = { &info, NULL };
 
 	return ata_pci_sff_init_one(pdev, ppi, &jmicron_sht, NULL);
+	return ata_pci_bmdma_init_one(pdev, ppi, &jmicron_sht, NULL, 0);
 }
 
 static const struct pci_device_id jmicron_pci_tbl[] = {
@@ -159,6 +163,7 @@ static struct pci_driver jmicron_pci_driver = {
 	.probe			= jmicron_init_one,
 	.remove			= ata_pci_remove_one,
 #ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 	.suspend		= ata_pci_device_suspend,
 	.resume			= ata_pci_device_resume,
 #endif
@@ -176,6 +181,7 @@ static void __exit jmicron_exit(void)
 
 module_init(jmicron_init);
 module_exit(jmicron_exit);
+module_pci_driver(jmicron_pci_driver);
 
 MODULE_AUTHOR("Alan Cox");
 MODULE_DESCRIPTION("SCSI low-level driver for Jmicron PATA ports");

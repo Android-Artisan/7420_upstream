@@ -27,6 +27,8 @@
 
 #include <asm/bootinfo.h>
 #include <asm/system.h>
+#include <asm/bootinfo-vme.h>
+#include <asm/byteorder.h>
 #include <asm/pgtable.h>
 #include <asm/setup.h>
 #include <asm/irq.h>
@@ -44,12 +46,19 @@ extern int mvme147_hwclk (int, struct rtc_time *);
 extern int mvme147_set_clock_mmss (unsigned long);
 extern void mvme147_reset (void);
 extern void mvme147_waitbut(void);
+extern void mvme147_sched_init(irq_handler_t handler);
+extern u32 mvme147_gettimeoffset(void);
+extern int mvme147_hwclk (int, struct rtc_time *);
+extern int mvme147_set_clock_mmss (unsigned long);
+extern void mvme147_reset (void);
 
 
 static int bcd2int (unsigned char b);
 
 /* Save tick handler routine pointer, will point to do_timer() in
  * kernel/sched.c, called via mvme147_process_int() */
+/* Save tick handler routine pointer, will point to xtime_update() in
+ * kernel/time/timekeeping.c, called via mvme147_process_int() */
 
 irq_handler_t tick_handler;
 
@@ -57,6 +66,10 @@ irq_handler_t tick_handler;
 int mvme147_parse_bootinfo(const struct bi_record *bi)
 {
 	if (bi->tag == BI_VME_TYPE || bi->tag == BI_VME_BRDINFO)
+int __init mvme147_parse_bootinfo(const struct bi_record *bi)
+{
+	uint16_t tag = be16_to_cpu(bi->tag);
+	if (tag == BI_VME_TYPE || tag == BI_VME_BRDINFO)
 		return 0;
 	else
 		return 1;
@@ -92,6 +105,7 @@ static int mvme147_get_hardware_list(char *buffer)
 void __init mvme147_init_IRQ(void)
 {
 	m68k_setup_user_interrupt(VEC_USER, 192, NULL);
+	m68k_setup_user_interrupt(VEC_USER, 192);
 }
 
 void __init config_mvme147(void)
@@ -100,6 +114,7 @@ void __init config_mvme147(void)
 	mach_sched_init		= mvme147_sched_init;
 	mach_init_IRQ		= mvme147_init_IRQ;
 	mach_gettimeoffset	= mvme147_gettimeoffset;
+	arch_gettimeoffset	= mvme147_gettimeoffset;
 	mach_hwclk		= mvme147_hwclk;
 	mach_set_clock_mmss	= mvme147_set_clock_mmss;
 	mach_reset		= mvme147_reset;
@@ -116,9 +131,16 @@ void __init config_mvme147(void)
 
 static irqreturn_t mvme147_timer_int (int irq, void *dev_id)
 {
+	irq_handler_t timer_routine = dev_id;
+	unsigned long flags;
+
+	local_irq_save(flags);
 	m147_pcc->t1_int_cntrl = PCC_TIMER_INT_CLR;
 	m147_pcc->t1_int_cntrl = PCC_INT_ENAB|PCC_LEVEL_TIMER1;
-	return tick_handler(irq, dev_id);
+	timer_routine(0, NULL);
+	local_irq_restore(flags);
+
+	return IRQ_HANDLED;
 }
 
 
@@ -127,6 +149,10 @@ void mvme147_sched_init (irq_handler_t timer_routine)
 	tick_handler = timer_routine;
 	request_irq (PCC_IRQ_TIMER1, mvme147_timer_int,
 		IRQ_FLG_REPLACE, "timer 1", NULL);
+	if (request_irq(PCC_IRQ_TIMER1, mvme147_timer_int, 0, "timer 1", NULL))
+	if (request_irq(PCC_IRQ_TIMER1, mvme147_timer_int, 0, "timer 1",
+			timer_routine))
+		pr_err("Couldn't register timer interrupt\n");
 
 	/* Init the clock with a value */
 	/* our clock goes off every 6.25us */
@@ -140,6 +166,7 @@ void mvme147_sched_init (irq_handler_t timer_routine)
 /* This is always executed with interrupts disabled.  */
 /* XXX There are race hazards in this code XXX */
 unsigned long mvme147_gettimeoffset (void)
+u32 mvme147_gettimeoffset(void)
 {
 	volatile unsigned short *cp = (volatile unsigned short *)0xfffe1012;
 	unsigned short n;
@@ -150,6 +177,7 @@ unsigned long mvme147_gettimeoffset (void)
 
 	n -= PCC_TIMER_PRELOAD;
 	return (unsigned long)n * 25 / 4;
+	return ((unsigned long)n * 25 / 4) * 1000;
 }
 
 static int bcd2int (unsigned char b)

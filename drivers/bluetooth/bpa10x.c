@@ -43,6 +43,11 @@
 #define VERSION "0.10"
 
 static struct usb_device_id bpa10x_table[] = {
+#include "hci_uart.h"
+
+#define VERSION "0.11"
+
+static const struct usb_device_id bpa10x_table[] = {
 	/* Tektronix BPA 100/105 (Digianswer) */
 	{ USB_DEVICE(0x08fd, 0x0002) },
 
@@ -195,6 +200,26 @@ static void bpa10x_rx_complete(struct urb *urb)
 {
 	struct hci_dev *hdev = urb->context;
 	struct bpa10x_data *data = hdev->driver_data;
+#define HCI_VENDOR_HDR_SIZE 5
+
+#define HCI_RECV_VENDOR \
+	.type = HCI_VENDOR_PKT, \
+	.hlen = HCI_VENDOR_HDR_SIZE, \
+	.loff = 3, \
+	.lsize = 2, \
+	.maxlen = HCI_MAX_FRAME_SIZE
+
+static const struct h4_recv_pkt bpa10x_recv_pkts[] = {
+	{ H4_RECV_ACL,     .recv = hci_recv_frame },
+	{ H4_RECV_SCO,     .recv = hci_recv_frame },
+	{ H4_RECV_EVENT,   .recv = hci_recv_frame },
+	{ HCI_RECV_VENDOR, .recv = hci_recv_diag  },
+};
+
+static void bpa10x_rx_complete(struct urb *urb)
+{
+	struct hci_dev *hdev = urb->context;
+	struct bpa10x_data *data = hci_get_drvdata(hdev);
 	int err;
 
 	BT_DBG("%s urb %p status %d count %d", hdev->name,
@@ -209,6 +234,17 @@ static void bpa10x_rx_complete(struct urb *urb)
 						urb->actual_length) < 0) {
 			BT_ERR("%s corrupted event packet", hdev->name);
 			hdev->stat.err_rx++;
+		bool idx = usb_pipebulk(urb->pipe);
+
+		data->rx_skb[idx] = h4_recv_buf(hdev, data->rx_skb[idx],
+						urb->transfer_buffer,
+						urb->actual_length,
+						bpa10x_recv_pkts,
+						ARRAY_SIZE(bpa10x_recv_pkts));
+		if (IS_ERR(data->rx_skb[idx])) {
+			BT_ERR("%s corrupted event packet", hdev->name);
+			hdev->stat.err_rx++;
+			data->rx_skb[idx] = NULL;
 		}
 	}
 
@@ -225,6 +261,7 @@ static void bpa10x_rx_complete(struct urb *urb)
 static inline int bpa10x_submit_intr_urb(struct hci_dev *hdev)
 {
 	struct bpa10x_data *data = hdev->driver_data;
+	struct bpa10x_data *data = hci_get_drvdata(hdev);
 	struct urb *urb;
 	unsigned char *buf;
 	unsigned int pipe;
@@ -266,6 +303,7 @@ static inline int bpa10x_submit_intr_urb(struct hci_dev *hdev)
 static inline int bpa10x_submit_bulk_urb(struct hci_dev *hdev)
 {
 	struct bpa10x_data *data = hdev->driver_data;
+	struct bpa10x_data *data = hci_get_drvdata(hdev);
 	struct urb *urb;
 	unsigned char *buf;
 	unsigned int pipe;
@@ -307,6 +345,7 @@ static inline int bpa10x_submit_bulk_urb(struct hci_dev *hdev)
 static int bpa10x_open(struct hci_dev *hdev)
 {
 	struct bpa10x_data *data = hdev->driver_data;
+	struct bpa10x_data *data = hci_get_drvdata(hdev);
 	int err;
 
 	BT_DBG("%s", hdev->name);
@@ -341,6 +380,10 @@ static int bpa10x_close(struct hci_dev *hdev)
 	if (!test_and_clear_bit(HCI_RUNNING, &hdev->flags))
 		return 0;
 
+	struct bpa10x_data *data = hci_get_drvdata(hdev);
+
+	BT_DBG("%s", hdev->name);
+
 	usb_kill_anchored_urbs(&data->rx_anchor);
 
 	return 0;
@@ -349,6 +392,7 @@ static int bpa10x_close(struct hci_dev *hdev)
 static int bpa10x_flush(struct hci_dev *hdev)
 {
 	struct bpa10x_data *data = hdev->driver_data;
+	struct bpa10x_data *data = hci_get_drvdata(hdev);
 
 	BT_DBG("%s", hdev->name);
 
@@ -361,6 +405,27 @@ static int bpa10x_send_frame(struct sk_buff *skb)
 {
 	struct hci_dev *hdev = (struct hci_dev *) skb->dev;
 	struct bpa10x_data *data = hdev->driver_data;
+static int bpa10x_setup(struct hci_dev *hdev)
+{
+	const u8 req[] = { 0x07 };
+	struct sk_buff *skb;
+
+	BT_DBG("%s", hdev->name);
+
+	/* Read revision string */
+	skb = __hci_cmd_sync(hdev, 0xfc0e, sizeof(req), req, HCI_INIT_TIMEOUT);
+	if (IS_ERR(skb))
+		return PTR_ERR(skb);
+
+	BT_INFO("%s: %s", hdev->name, (char *)(skb->data + 1));
+
+	kfree_skb(skb);
+	return 0;
+}
+
+static int bpa10x_send_frame(struct hci_dev *hdev, struct sk_buff *skb)
+{
+	struct bpa10x_data *data = hci_get_drvdata(hdev);
 	struct usb_ctrlrequest *dr;
 	struct urb *urb;
 	unsigned int pipe;
@@ -370,6 +435,7 @@ static int bpa10x_send_frame(struct sk_buff *skb)
 
 	if (!test_bit(HCI_RUNNING, &hdev->flags))
 		return -EBUSY;
+	skb->dev = (void *) hdev;
 
 	urb = usb_alloc_urb(0, GFP_ATOMIC);
 	if (!urb)
@@ -446,6 +512,23 @@ static void bpa10x_destruct(struct hci_dev *hdev)
 	kfree(data->rx_skb[0]);
 	kfree(data->rx_skb[1]);
 	kfree(data);
+static int bpa10x_set_diag(struct hci_dev *hdev, bool enable)
+{
+	const u8 req[] = { 0x00, enable };
+	struct sk_buff *skb;
+
+	BT_DBG("%s", hdev->name);
+
+	if (!test_bit(HCI_RUNNING, &hdev->flags))
+		return -ENETDOWN;
+
+	/* Enable sniffer operation */
+	skb = __hci_cmd_sync(hdev, 0xfc0e, sizeof(req), req, HCI_INIT_TIMEOUT);
+	if (IS_ERR(skb))
+		return PTR_ERR(skb);
+
+	kfree_skb(skb);
+	return 0;
 }
 
 static int bpa10x_probe(struct usb_interface *intf, const struct usb_device_id *id)
@@ -460,6 +543,7 @@ static int bpa10x_probe(struct usb_interface *intf, const struct usb_device_id *
 		return -ENODEV;
 
 	data = kzalloc(sizeof(*data), GFP_KERNEL);
+	data = devm_kzalloc(&intf->dev, sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 
@@ -476,6 +560,11 @@ static int bpa10x_probe(struct usb_interface *intf, const struct usb_device_id *
 
 	hdev->type = HCI_USB;
 	hdev->driver_data = data;
+	if (!hdev)
+		return -ENOMEM;
+
+	hdev->bus = HCI_USB;
+	hci_set_drvdata(hdev, data);
 
 	data->hdev = hdev;
 
@@ -488,6 +577,11 @@ static int bpa10x_probe(struct usb_interface *intf, const struct usb_device_id *
 	hdev->destruct = bpa10x_destruct;
 
 	hdev->owner = THIS_MODULE;
+	hdev->setup    = bpa10x_setup;
+	hdev->send     = bpa10x_send_frame;
+	hdev->set_diag = bpa10x_set_diag;
+
+	set_bit(HCI_QUIRK_RESET_ON_CLOSE, &hdev->quirks);
 
 	err = hci_register_dev(hdev);
 	if (err < 0) {
@@ -515,6 +609,8 @@ static void bpa10x_disconnect(struct usb_interface *intf)
 	hci_unregister_dev(data->hdev);
 
 	hci_free_dev(data->hdev);
+	kfree_skb(data->rx_skb[0]);
+	kfree_skb(data->rx_skb[1]);
 }
 
 static struct usb_driver bpa10x_driver = {
@@ -538,6 +634,10 @@ static void __exit bpa10x_exit(void)
 
 module_init(bpa10x_init);
 module_exit(bpa10x_exit);
+	.disable_hub_initiated_lpm = 1,
+};
+
+module_usb_driver(bpa10x_driver);
 
 MODULE_AUTHOR("Marcel Holtmann <marcel@holtmann.org>");
 MODULE_DESCRIPTION("Digianswer Bluetooth USB driver ver " VERSION);

@@ -13,6 +13,8 @@
 #include <linux/irq.h>
 #include <linux/platform_device.h>
 #include <linux/sysdev.h>
+#include <linux/syscore_ops.h>
+#include <linux/export.h>
 
 #include <asm/io.h>
 
@@ -35,11 +37,13 @@ extern struct platform_device at32_intc0_device;
  * in the status register.
  */
 static void intc_mask_irq(unsigned int irq)
+static void intc_mask_irq(struct irq_data *d)
 {
 
 }
 
 static void intc_unmask_irq(unsigned int irq)
+static void intc_unmask_irq(struct irq_data *d)
 {
 
 }
@@ -49,6 +53,8 @@ static struct intc intc0 = {
 		.name		= "intc",
 		.mask		= intc_mask_irq,
 		.unmask		= intc_unmask_irq,
+		.irq_mask	= intc_mask_irq,
+		.irq_unmask	= intc_unmask_irq,
 	},
 };
 
@@ -71,6 +77,7 @@ asmlinkage void do_IRQ(int level, struct pt_regs *regs)
 	irq = intc_readl(&intc0, INTCAUSE0 - 4 * level);
 	desc = irq_desc + irq;
 	desc->handle_irq(irq, desc);
+	generic_handle_irq(irq);
 
 	/*
 	 * Clear all interrupt level masks so that we may handle
@@ -111,6 +118,7 @@ void __init init_IRQ(void)
 	clk_enable(pclk);
 
 	intc0.regs = ioremap(regs->start, regs->end - regs->start + 1);
+	intc0.regs = ioremap(regs->start, resource_size(regs));
 	if (!intc0.regs) {
 		printk(KERN_EMERG "intc: failed to map registers (0x%08lx)\n",
 		       (unsigned long)regs->start);
@@ -129,6 +137,7 @@ void __init init_IRQ(void)
 		readback = intc_readl(&intc0, INTPR0 + 4 * i);
 		if (readback == offset)
 			set_irq_chip_and_handler(i, &intc0.chip,
+			irq_set_chip_and_handler(i, &intc0.chip,
 						 handle_simple_irq);
 	}
 
@@ -151,6 +160,8 @@ void intc_set_suspend_handler(unsigned long offset)
 static int intc_suspend(struct sys_device *sdev, pm_message_t state)
 {
 	struct intc *intc = container_of(sdev, struct intc, sysdev);
+static int intc_suspend(void)
+{
 	int i;
 
 	if (unlikely(!irqs_disabled())) {
@@ -159,6 +170,7 @@ static int intc_suspend(struct sys_device *sdev, pm_message_t state)
 	}
 
 	if (unlikely(!intc->suspend_ipr)) {
+	if (unlikely(!intc0.suspend_ipr)) {
 		pr_err("intc_suspend: suspend_ipr not initialized\n");
 		return -EINVAL;
 	}
@@ -166,6 +178,8 @@ static int intc_suspend(struct sys_device *sdev, pm_message_t state)
 	for (i = 0; i < 64; i++) {
 		intc->saved_ipr[i] = intc_readl(intc, INTPR0 + 4 * i);
 		intc_writel(intc, INTPR0 + 4 * i, intc->suspend_ipr);
+		intc0.saved_ipr[i] = intc_readl(&intc0, INTPR0 + 4 * i);
+		intc_writel(&intc0, INTPR0 + 4 * i, intc0.suspend_ipr);
 	}
 
 	return 0;
@@ -182,6 +196,12 @@ static int intc_resume(struct sys_device *sdev)
 		intc_writel(intc, INTPR0 + 4 * i, intc->saved_ipr[i]);
 
 	return 0;
+static void intc_resume(void)
+{
+	int i;
+
+	for (i = 0; i < 64; i++)
+		intc_writel(&intc0, INTPR0 + 4 * i, intc0.saved_ipr[i]);
 }
 #else
 #define intc_suspend	NULL
@@ -190,6 +210,7 @@ static int intc_resume(struct sys_device *sdev)
 
 static struct sysdev_class intc_class = {
 	.name		= "intc",
+static struct syscore_ops intc_syscore_ops = {
 	.suspend	= intc_suspend,
 	.resume		= intc_resume,
 };
@@ -209,6 +230,13 @@ static int __init intc_init_sysdev(void)
 	return ret;
 }
 device_initcall(intc_init_sysdev);
+static int __init intc_init_syscore(void)
+{
+	register_syscore_ops(&intc_syscore_ops);
+
+	return 0;
+}
+device_initcall(intc_init_syscore);
 
 unsigned long intc_get_pending(unsigned int group)
 {

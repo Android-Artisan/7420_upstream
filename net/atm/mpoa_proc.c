@@ -1,3 +1,4 @@
+#define pr_fmt(fmt) KBUILD_MODNAME ":%s: " fmt, __func__
 
 #ifdef CONFIG_PROC_FS
 #include <linux/errno.h>
@@ -11,6 +12,10 @@
 #include <asm/uaccess.h>
 #include <linux/atmmpc.h>
 #include <linux/atm.h>
+#include <linux/uaccess.h>
+#include <linux/atmmpc.h>
+#include <linux/atm.h>
+#include <linux/gfp.h>
 #include "mpc.h"
 #include "mpoa_caches.h"
 
@@ -23,6 +28,23 @@
 #define dprintk printk   /* debug */
 #else
 #define dprintk(format,args...)
+#define dprintk(format, args...)					\
+	printk(KERN_DEBUG "mpoa:%s: " format, __FILE__, ##args)  /* debug */
+#else
+#define dprintk(format, args...)					\
+	do { if (0)							\
+		printk(KERN_DEBUG "mpoa:%s: " format, __FILE__, ##args);\
+	} while (0)
+#endif
+
+#if 0
+#define ddprintk(format, args...)					\
+	printk(KERN_DEBUG "mpoa:%s: " format, __FILE__, ##args)  /* debug */
+#else
+#define ddprintk(format, args...)					\
+	do { if (0)							\
+		printk(KERN_DEBUG "mpoa:%s: " format, __FILE__, ##args);\
+	} while (0)
 #endif
 
 #define STAT_FILE_NAME "mpc"     /* Our statistic file's name */
@@ -68,6 +90,20 @@ static const char *ingress_state_string(int state){
 	default:
 	       return "";
 	}
+static const char *ingress_state_string(int state)
+{
+	switch (state) {
+	case INGRESS_RESOLVING:
+		return "resolving  ";
+	case INGRESS_RESOLVED:
+		return "resolved   ";
+	case INGRESS_INVALID:
+		return "invalid    ";
+	case INGRESS_REFRESHING:
+		return "refreshing ";
+	}
+
+	return "";
 }
 
 /*
@@ -87,6 +123,18 @@ static const char *egress_state_string(int state){
 	default:
 	       return "";
 	}
+static const char *egress_state_string(int state)
+{
+	switch (state) {
+	case EGRESS_RESOLVED:
+		return "resolved   ";
+	case EGRESS_PURGE:
+		return "purge      ";
+	case EGRESS_INVALID:
+		return "invalid    ";
+	}
+
+	return "";
 }
 
 /*
@@ -149,6 +197,17 @@ static int mpc_show(struct seq_file *m, void *v)
 			      in_entry->packets_fwded);
 		if (in_entry->shortcut)
 			seq_printf(m, "   %-3d  %-3d",in_entry->shortcut->vpi,in_entry->shortcut->vci);
+		sprintf(ip_string, "%pI4", &in_entry->ctrl_info.in_dst_ip);
+		seq_printf(m, "%-16s%s%-14lu%-12u",
+			   ip_string,
+			   ingress_state_string(in_entry->entry_state),
+			   in_entry->ctrl_info.holding_time -
+			   (now.tv_sec-in_entry->tv.tv_sec),
+			   in_entry->packets_fwded);
+		if (in_entry->shortcut)
+			seq_printf(m, "   %-3d  %-3d",
+				   in_entry->shortcut->vpi,
+				   in_entry->shortcut->vci);
 		seq_printf(m, "\n");
 	}
 
@@ -157,6 +216,7 @@ static int mpc_show(struct seq_file *m, void *v)
 	for (eg_entry = mpc->eg_cache; eg_entry; eg_entry = eg_entry->next) {
 		unsigned char *p = eg_entry->ctrl_info.in_MPC_data_ATM_addr;
 		for(i = 0; i < ATM_ESA_LEN; i++)
+		for (i = 0; i < ATM_ESA_LEN; i++)
 			seq_printf(m, "%02x", p[i]);
 		seq_printf(m, "\n%-16lu%s%-14lu%-15u",
 			   (unsigned long)ntohl(eg_entry->ctrl_info.cache_id),
@@ -171,6 +231,18 @@ static int mpc_show(struct seq_file *m, void *v)
 
 		if (eg_entry->shortcut)
 			seq_printf(m, " %-3d %-3d",eg_entry->shortcut->vpi,eg_entry->shortcut->vci);
+			   (eg_entry->ctrl_info.holding_time -
+			    (now.tv_sec-eg_entry->tv.tv_sec)),
+			   eg_entry->packets_rcvd);
+
+		/* latest IP address */
+		sprintf(ip_string, "%pI4", &eg_entry->latest_ip_addr);
+		seq_printf(m, "%-16s", ip_string);
+
+		if (eg_entry->shortcut)
+			seq_printf(m, " %-3d %-3d",
+				   eg_entry->shortcut->vpi,
+				   eg_entry->shortcut->vci);
 		seq_printf(m, "\n");
 	}
 	seq_printf(m, "\n");
@@ -194,6 +266,7 @@ static ssize_t proc_mpc_write(struct file *file, const char __user *buff,
 {
 	char *page, *p;
 	unsigned len;
+	unsigned int len;
 
 	if (nbytes == 0)
 		return 0;
@@ -205,11 +278,12 @@ static ssize_t proc_mpc_write(struct file *file, const char __user *buff,
 	if (!page)
 		return -ENOMEM;
 
-	for (p = page, len = 0; len < nbytes; p++, len++) {
+	for (p = page, len = 0; len < nbytes; p++) {
 		if (get_user(*p, buff++)) {
 			free_page((unsigned long)page);
 			return -EFAULT;
 		}
+		len += 1;
 		if (*p == '\0' || *p == '\n')
 			break;
 	}
@@ -264,6 +338,9 @@ static int parse_qos(const char *buff)
 		qos.rxtp.max_pcr,
 		qos.rxtp.max_sdu
 		);
+	dprintk("parse_qos(): setting qos parameters to tx=%d,%d rx=%d,%d\n",
+		qos.txtp.max_pcr, qos.txtp.max_sdu,
+		qos.rxtp.max_pcr, qos.rxtp.max_sdu);
 
 	atm_mpoa_add_qos(ipaddr, &qos);
 	return 1;
@@ -282,6 +359,9 @@ int mpc_proc_init(void)
 		return -ENOMEM;
 	}
 	p->owner = THIS_MODULE;
+		pr_err("Unable to initialize /proc/atm/%s\n", STAT_FILE_NAME);
+		return -ENOMEM;
+	}
 	return 0;
 }
 
@@ -293,6 +373,9 @@ void mpc_proc_clean(void)
 	remove_proc_entry(STAT_FILE_NAME,atm_proc_root);
 }
 
+
+	remove_proc_entry(STAT_FILE_NAME, atm_proc_root);
+}
 
 #endif /* CONFIG_PROC_FS */
 

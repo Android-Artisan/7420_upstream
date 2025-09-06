@@ -102,6 +102,7 @@
 
 #include <linux/fs.h>
 #include <linux/quotaops.h>
+#include <linux/slab.h>
 #include "jfs_incore.h"
 #include "jfs_superblock.h"
 #include "jfs_filsys.h"
@@ -138,6 +139,22 @@ struct dtsplit {
 		}\
 	}\
 }
+#define DT_GETPAGE(IP, BN, MP, SIZE, P, RC)				\
+do {									\
+	BT_GETPAGE(IP, BN, MP, dtpage_t, SIZE, P, RC, i_dtroot);	\
+	if (!(RC)) {							\
+		if (((P)->header.nextindex >				\
+		     (((BN) == 0) ? DTROOTMAXSLOT : (P)->header.maxslot)) || \
+		    ((BN) && (((P)->header.maxslot > DTPAGEMAXSLOT) ||	\
+		    ((P)->header.stblindex >= DTPAGEMAXSLOT)))) {	\
+			BT_PUTPAGE(MP);					\
+			jfs_error((IP)->i_sb,				\
+				  "DT_GETPAGE: dtree page corrupt\n");	\
+			MP = NULL;					\
+			RC = -EIO;					\
+		}							\
+	}								\
+} while (0)
 
 /* for consistency */
 #define DT_PUTPAGE(MP) BT_PUTPAGE(MP)
@@ -385,6 +402,10 @@ static u32 add_index(tid_t tid, struct inode *ip, s64 bn, int slot)
 			goto clean_up;
 		if (dbAlloc(ip, 0, sbi->nbperpage, &xaddr)) {
 			DQUOT_FREE_BLOCK(ip, sbi->nbperpage);
+		if (dquot_alloc_block(ip, sbi->nbperpage))
+			goto clean_up;
+		if (dbAlloc(ip, 0, sbi->nbperpage, &xaddr)) {
+			dquot_free_block(ip, sbi->nbperpage);
 			goto clean_up;
 		}
 
@@ -409,6 +430,7 @@ static u32 add_index(tid_t tid, struct inode *ip, s64 bn, int slot)
 			       sizeof (temp_table));
 			dbFree(ip, xaddr, sbi->nbperpage);
 			DQUOT_FREE_BLOCK(ip, sbi->nbperpage);
+			dquot_free_block(ip, sbi->nbperpage);
 			goto clean_up;
 		}
 		ip->i_size = PSIZE;
@@ -644,6 +666,11 @@ int dtSearch(struct inode *ip, struct component_name * key, ino_t * data,
 		for (base = 0, lim = p->header.nextindex; lim; lim >>= 1) {
 			index = base + (lim >> 1);
 
+			if (stbl[index] < 0) {
+				rc = -EIO;
+				goto out;
+			}
+
 			if (p->header.flag & BT_LEAF) {
 				/* uppercase leaf name to compare */
 				cmp =
@@ -776,6 +803,7 @@ int dtSearch(struct inode *ip, struct component_name * key, ino_t * data,
 			 * chkdsk will fix it.
 			 */
 			jfs_error(sb, "stack overrun in dtSearch!");
+			jfs_error(sb, "stack overrun!\n");
 			BT_STACK_DUMP(btstack);
 			rc = -EIO;
 			goto out;
@@ -1031,6 +1059,9 @@ static int dtSplitUp(tid_t tid,
 			rc = -EDQUOT;
 			goto extendOut;
 		}
+		rc = dquot_alloc_block(ip, n);
+		if (rc)
+			goto extendOut;
 		quota_allocation += n;
 
 		if ((rc = dbReAlloc(sbi->ipbmap, xaddr, (s64) xlen,
@@ -1042,6 +1073,8 @@ static int dtSplitUp(tid_t tid,
 		pxd = &pxdlist.pxd[0];
 		PXDaddress(pxd, nxaddr)
 		    PXDlength(pxd, xlen + n);
+		PXDaddress(pxd, nxaddr);
+		PXDlength(pxd, xlen + n);
 		split->pxdlist = &pxdlist;
 		if ((rc = dtExtendPage(tid, ip, split, btstack))) {
 			nxaddr = addressPXD(pxd);
@@ -1309,6 +1342,7 @@ static int dtSplitUp(tid_t tid,
 	/* Rollback quota allocation */
 	if (rc && quota_allocation)
 		DQUOT_FREE_BLOCK(ip, quota_allocation);
+		dquot_free_block(ip, quota_allocation);
 
       dtSplitUp_Exit:
 
@@ -1372,6 +1406,10 @@ static int dtSplitPage(tid_t tid, struct inode *ip, struct dtsplit * split,
 	if (DQUOT_ALLOC_BLOCK(ip, lengthPXD(pxd))) {
 		release_metapage(rmp);
 		return -EDQUOT;
+	rc = dquot_alloc_block(ip, lengthPXD(pxd));
+	if (rc) {
+		release_metapage(rmp);
+		return rc;
 	}
 
 	jfs_info("dtSplitPage: ip:0x%p smp:0x%p rmp:0x%p", ip, smp, rmp);
@@ -1892,6 +1930,7 @@ static int dtSplitRoot(tid_t tid,
 	struct dt_lock *dtlck;
 	struct tlock *tlck;
 	struct lv *lv;
+	int rc;
 
 	/* get split root page */
 	smp = split->mp;
@@ -1919,6 +1958,10 @@ static int dtSplitRoot(tid_t tid,
 	if (DQUOT_ALLOC_BLOCK(ip, lengthPXD(pxd))) {
 		release_metapage(rmp);
 		return -EDQUOT;
+	rc = dquot_alloc_block(ip, lengthPXD(pxd));
+	if (rc) {
+		release_metapage(rmp);
+		return rc;
 	}
 
 	BT_MARK_DIRTY(rmp, ip);
@@ -1979,7 +2022,7 @@ static int dtSplitRoot(tid_t tid,
 		do {
 			f = &rp->slot[fsi];
 			fsi = f->next;
-		} while (fsi != -1);
+		} while (fsi >= 0);
 
 		f->next = n;
 	}
@@ -2288,6 +2331,7 @@ static int dtDeleteUp(tid_t tid, struct inode *ip,
 
 	/* Free quota allocation. */
 	DQUOT_FREE_BLOCK(ip, xlen);
+	dquot_free_block(ip, xlen);
 
 	/* free/invalidate its buffer page */
 	discard_metapage(fmp);
@@ -2364,6 +2408,7 @@ static int dtDeleteUp(tid_t tid, struct inode *ip,
 
 				/* Free quota allocation */
 				DQUOT_FREE_BLOCK(ip, xlen);
+				dquot_free_block(ip, xlen);
 
 				/* free/invalidate its buffer page */
 				discard_metapage(mp);
@@ -3002,6 +3047,9 @@ static inline struct jfs_dirent *next_jfs_dirent(struct jfs_dirent *dirent)
 int jfs_readdir(struct file *filp, void *dirent, filldir_t filldir)
 {
 	struct inode *ip = filp->f_path.dentry->d_inode;
+int jfs_readdir(struct file *file, struct dir_context *ctx)
+{
+	struct inode *ip = file_inode(file);
 	struct nls_table *codepage = JFS_SBI(ip->i_sb)->nls_tab;
 	int rc = 0;
 	loff_t dtpos;	/* legacy OS/2 style position */
@@ -3031,6 +3079,7 @@ int jfs_readdir(struct file *filp, void *dirent, filldir_t filldir)
 	static int unique_pos = 2;	/* If we can't fix broken index */
 
 	if (filp->f_pos == DIREND)
+	if (ctx->pos == DIREND)
 		return 0;
 
 	if (DO_INDEX(ip)) {
@@ -3043,6 +3092,15 @@ int jfs_readdir(struct file *filp, void *dirent, filldir_t filldir)
 		do_index = 1;
 
 		dir_index = (u32) filp->f_pos;
+		dir_index = (u32) ctx->pos;
+
+		/*
+		 * NFSv4 reserves cookies 1 and 2 for . and .. so the value
+		 * we return to the vfs is one greater than the one we use
+		 * internally.
+		 */
+		if (dir_index)
+			dir_index--;
 
 		if (dir_index > 1) {
 			struct dir_table_slot dirtab_slot;
@@ -3051,12 +3109,14 @@ int jfs_readdir(struct file *filp, void *dirent, filldir_t filldir)
 			    (dir_index >= JFS_IP(ip)->next_index)) {
 				/* Stale position.  Directory has shrunk */
 				filp->f_pos = DIREND;
+				ctx->pos = DIREND;
 				return 0;
 			}
 		      repeat:
 			rc = read_index(ip, dir_index, &dirtab_slot);
 			if (rc) {
 				filp->f_pos = DIREND;
+				ctx->pos = DIREND;
 				return rc;
 			}
 			if (dirtab_slot.flag == DIR_INDEX_FREE) {
@@ -3064,11 +3124,13 @@ int jfs_readdir(struct file *filp, void *dirent, filldir_t filldir)
 					jfs_err("jfs_readdir detected "
 						   "infinite loop!");
 					filp->f_pos = DIREND;
+					ctx->pos = DIREND;
 					return 0;
 				}
 				dir_index = le32_to_cpu(dirtab_slot.addr2);
 				if (dir_index == -1) {
 					filp->f_pos = DIREND;
+					ctx->pos = DIREND;
 					return 0;
 				}
 				goto repeat;
@@ -3078,12 +3140,14 @@ int jfs_readdir(struct file *filp, void *dirent, filldir_t filldir)
 			DT_GETPAGE(ip, bn, mp, PSIZE, p, rc);
 			if (rc) {
 				filp->f_pos = DIREND;
+				ctx->pos = DIREND;
 				return 0;
 			}
 			if (p->header.flag & BT_INTERNAL) {
 				jfs_err("jfs_readdir: bad index table");
 				DT_PUTPAGE(mp);
 				filp->f_pos = -1;
+				ctx->pos = DIREND;
 				return 0;
 			}
 		} else {
@@ -3094,6 +3158,8 @@ int jfs_readdir(struct file *filp, void *dirent, filldir_t filldir)
 				filp->f_pos = 0;
 				if (filldir(dirent, ".", 1, 0, ip->i_ino,
 					    DT_DIR))
+				ctx->pos = 1;
+				if (!dir_emit(ctx, ".", 1, ip->i_ino, DT_DIR))
 					return 0;
 			}
 			/*
@@ -3101,6 +3167,8 @@ int jfs_readdir(struct file *filp, void *dirent, filldir_t filldir)
 			 */
 			filp->f_pos = 1;
 			if (filldir(dirent, "..", 2, 1, PARENT(ip), DT_DIR))
+			ctx->pos = 2;
+			if (!dir_emit(ctx, "..", 2, PARENT(ip), DT_DIR))
 				return 0;
 
 			/*
@@ -3108,6 +3176,7 @@ int jfs_readdir(struct file *filp, void *dirent, filldir_t filldir)
 			 */
 			if (dtEmpty(ip)) {
 				filp->f_pos = DIREND;
+				ctx->pos = DIREND;
 				return 0;
 			}
 
@@ -3142,6 +3211,25 @@ int jfs_readdir(struct file *filp, void *dirent, filldir_t filldir)
 
 				if (filldir(dirent, "..", 2, filp->f_pos,
 					    PARENT(ip), DT_DIR))
+		 * pn = 0; index = 1:	First entry "."
+		 * pn = 0; index = 2:	Second entry ".."
+		 * pn > 0:		Real entries, pn=1 -> leftmost page
+		 * pn = index = -1:	No more entries
+		 */
+		dtpos = ctx->pos;
+		if (dtpos < 2) {
+			/* build "." entry */
+			ctx->pos = 1;
+			if (!dir_emit(ctx, ".", 1, ip->i_ino, DT_DIR))
+				return 0;
+			dtoffset->index = 2;
+			ctx->pos = dtpos;
+		}
+
+		if (dtoffset->pn == 0) {
+			if (dtoffset->index == 2) {
+				/* build ".." entry */
+				if (!dir_emit(ctx, "..", 2, PARENT(ip), DT_DIR))
 					return 0;
 			} else {
 				jfs_err("jfs_readdir called with "
@@ -3161,6 +3249,18 @@ int jfs_readdir(struct file *filp, void *dirent, filldir_t filldir)
 			jfs_err("jfs_readdir: unexpected rc = %d "
 				"from dtReadNext", rc);
 			filp->f_pos = DIREND;
+			ctx->pos = dtpos;
+		}
+
+		if (dtEmpty(ip)) {
+			ctx->pos = DIREND;
+			return 0;
+		}
+
+		if ((rc = dtReadNext(ip, &ctx->pos, &btstack))) {
+			jfs_err("jfs_readdir: unexpected rc = %d "
+				"from dtReadNext", rc);
+			ctx->pos = DIREND;
 			return 0;
 		}
 		/* get start leaf page and index */
@@ -3169,6 +3269,7 @@ int jfs_readdir(struct file *filp, void *dirent, filldir_t filldir)
 		/* offset beyond directory eof ? */
 		if (bn < 0) {
 			filp->f_pos = DIREND;
+			ctx->pos = DIREND;
 			return 0;
 		}
 	}
@@ -3178,6 +3279,7 @@ int jfs_readdir(struct file *filp, void *dirent, filldir_t filldir)
 		DT_PUTPAGE(mp);
 		jfs_warn("jfs_readdir: __get_free_page failed!");
 		filp->f_pos = DIREND;
+		ctx->pos = DIREND;
 		return -ENOMEM;
 	}
 
@@ -3189,6 +3291,14 @@ int jfs_readdir(struct file *filp, void *dirent, filldir_t filldir)
 		stbl = DT_GETSTBL(p);
 
 		for (i = index; i < p->header.nextindex; i++) {
+			if (stbl[i] < 0 || stbl[i] > 127) {
+				jfs_err("JFS: Invalid stbl[%d] = %d for inode %ld, block = %lld",
+					i, stbl[i], (long)ip->i_ino, (long long)bn);
+				free_page(dirent_buf);
+				DT_PUTPAGE(mp);
+				return -EIO;
+			}
+
 			d = (struct ldtentry *) & p->slot[stbl[i]];
 
 			if (((long) jfs_dirent + d->namlen + 1) >
@@ -3230,6 +3340,12 @@ int jfs_readdir(struct file *filp, void *dirent, filldir_t filldir)
 					}
 					jfs_dirent->position = unique_pos++;
 				}
+				/*
+				 * We add 1 to the index because we may
+				 * use a value of 2 internally, and NFSv4
+				 * doesn't like that.
+				 */
+				jfs_dirent->position++;
 			} else {
 				jfs_dirent->position = dtpos;
 				len = min(d_namleft, DTLHDRDATALEN_LEGACY);
@@ -3251,6 +3367,7 @@ int jfs_readdir(struct file *filp, void *dirent, filldir_t filldir)
 					jfs_error(ip->i_sb,
 						  "JFS:Dtree error: ino = "
 						  "%ld, bn=%Ld, index = %d",
+						  "JFS:Dtree error: ino = %ld, bn=%lld, index = %d\n",
 						  (long)ip->i_ino,
 						  (long long)bn,
 						  i);
@@ -3295,6 +3412,9 @@ skip_one:
 			filp->f_pos = jfs_dirent->position;
 			if (filldir(dirent, jfs_dirent->name,
 				    jfs_dirent->name_len, filp->f_pos,
+			ctx->pos = jfs_dirent->position;
+			if (!dir_emit(ctx, jfs_dirent->name,
+				    jfs_dirent->name_len,
 				    jfs_dirent->ino, DT_UNKNOWN))
 				goto out;
 			jfs_dirent = next_jfs_dirent(jfs_dirent);
@@ -3307,6 +3427,7 @@ skip_one:
 
 		if (!overflow && (bn == 0)) {
 			filp->f_pos = DIREND;
+			ctx->pos = DIREND;
 			break;
 		}
 
@@ -3371,6 +3492,7 @@ static int dtReadFirst(struct inode *ip, struct btstack * btstack)
 		if (BT_STACK_FULL(btstack)) {
 			DT_PUTPAGE(mp);
 			jfs_error(ip->i_sb, "dtReadFirst: btstack overrun");
+			jfs_error(ip->i_sb, "btstack overrun\n");
 			BT_STACK_DUMP(btstack);
 			return -EIO;
 		}
@@ -3379,6 +3501,13 @@ static int dtReadFirst(struct inode *ip, struct btstack * btstack)
 
 		/* get the leftmost entry */
 		stbl = DT_GETSTBL(p);
+
+		if (stbl[0] < 0 || stbl[0] > 127) {
+			DT_PUTPAGE(mp);
+			jfs_error(ip->i_sb, "stbl[0] out of bound\n");
+			return -EIO;
+		}
+
 		xd = (pxd_t *) & p->slot[stbl[0]];
 
 		/* get the child page block address */

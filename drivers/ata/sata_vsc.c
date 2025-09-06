@@ -103,6 +103,12 @@ static int vsc_sata_scr_read(struct ata_port *ap, unsigned int sc_reg, u32 *val)
 	if (sc_reg > SCR_CONTROL)
 		return -EINVAL;
 	*val = readl(ap->ioaddr.scr_addr + (sc_reg * 4));
+static int vsc_sata_scr_read(struct ata_link *link,
+			     unsigned int sc_reg, u32 *val)
+{
+	if (sc_reg > SCR_CONTROL)
+		return -EINVAL;
+	*val = readl(link->ap->ioaddr.scr_addr + (sc_reg * 4));
 	return 0;
 }
 
@@ -112,6 +118,12 @@ static int vsc_sata_scr_write(struct ata_port *ap, unsigned int sc_reg, u32 val)
 	if (sc_reg > SCR_CONTROL)
 		return -EINVAL;
 	writel(val, ap->ioaddr.scr_addr + (sc_reg * 4));
+static int vsc_sata_scr_write(struct ata_link *link,
+			      unsigned int sc_reg, u32 val)
+{
+	if (sc_reg > SCR_CONTROL)
+		return -EINVAL;
+	writel(val, link->ap->ioaddr.scr_addr + (sc_reg * 4));
 	return 0;
 }
 
@@ -244,6 +256,7 @@ static void vsc_port_intr(u8 port_status, struct ata_port *ap)
 	qc = ata_qc_from_tag(ap, ap->link.active_tag);
 	if (qc && likely(!(qc->tf.flags & ATA_TFLAG_POLLING)))
 		handled = ata_sff_host_intr(ap, qc);
+		handled = ata_bmdma_port_intr(ap, qc);
 
 	/* We received an interrupt during a polled command,
 	 * or some other spurious condition.  Interrupt reporting
@@ -274,6 +287,8 @@ static irqreturn_t vsc_sata_interrupt(int irq, void *dev_instance)
 			dev_printk(KERN_ERR, host->dev,
 				": IRQ status == 0xffffffff, "
 				"PCI fault or device removal?\n");
+			dev_err(host->dev,
+				": IRQ status == 0xffffffff, PCI fault or device removal?\n");
 		goto out;
 	}
 
@@ -290,6 +305,8 @@ static irqreturn_t vsc_sata_interrupt(int irq, void *dev_instance)
 			} else
 				dev_printk(KERN_ERR, host->dev,
 					"interrupt from disabled port %d\n", i);
+			vsc_port_intr(port_status, host->ports[i]);
+			handled++;
 		}
 	}
 
@@ -306,6 +323,9 @@ static struct scsi_host_template vsc_sata_sht = {
 
 static struct ata_port_operations vsc_sata_ops = {
 	.inherits		= &ata_bmdma_port_ops,
+	/* The IRQ handling is not quite standard SFF behaviour so we
+	   cannot use the default lost interrupt handler */
+	.lost_interrupt		= ATA_OP_NULL,
 	.sff_tf_load		= vsc_sata_tf_load,
 	.sff_tf_read		= vsc_sata_tf_read,
 	.freeze			= vsc_freeze,
@@ -316,6 +336,7 @@ static struct ata_port_operations vsc_sata_ops = {
 
 static void __devinit vsc_sata_setup_port(struct ata_ioports *port,
 					  void __iomem *base)
+static void vsc_sata_setup_port(struct ata_ioports *port, void __iomem *base)
 {
 	port->cmd_addr		= base + VSC_SATA_TF_CMD_OFFSET;
 	port->data_addr		= base + VSC_SATA_TF_DATA_OFFSET;
@@ -345,6 +366,13 @@ static int __devinit vsc_sata_init_one(struct pci_dev *pdev,
 				  ATA_FLAG_MMIO,
 		.pio_mask	= 0x1f,
 		.mwdma_mask	= 0x07,
+static int vsc_sata_init_one(struct pci_dev *pdev,
+			     const struct pci_device_id *ent)
+{
+	static const struct ata_port_info pi = {
+		.flags		= ATA_FLAG_SATA,
+		.pio_mask	= ATA_PIO4,
+		.mwdma_mask	= ATA_MWDMA2,
 		.udma_mask	= ATA_UDMA6,
 		.port_ops	= &vsc_sata_ops,
 	};
@@ -357,6 +385,7 @@ static int __devinit vsc_sata_init_one(struct pci_dev *pdev,
 
 	if (!printed_version++)
 		dev_printk(KERN_DEBUG, &pdev->dev, "version " DRV_VERSION "\n");
+	ata_print_version_once(&pdev->dev, DRV_VERSION);
 
 	/* allocate host */
 	host = ata_host_alloc_pinfo(&pdev->dev, ppi, 4);
@@ -372,6 +401,7 @@ static int __devinit vsc_sata_init_one(struct pci_dev *pdev,
 		return -ENODEV;
 
 	/* map IO regions and intialize host accordingly */
+	/* map IO regions and initialize host accordingly */
 	rc = pcim_iomap_regions(pdev, 1 << VSC_MMIO_BAR, DRV_NAME);
 	if (rc == -EBUSY)
 		pcim_pin_device(pdev);
@@ -398,6 +428,10 @@ static int __devinit vsc_sata_init_one(struct pci_dev *pdev,
 	if (rc)
 		return rc;
 	rc = pci_set_consistent_dma_mask(pdev, DMA_32BIT_MASK);
+	rc = dma_set_mask(&pdev->dev, DMA_BIT_MASK(32));
+	if (rc)
+		return rc;
+	rc = dma_set_coherent_mask(&pdev->dev, DMA_BIT_MASK(32));
 	if (rc)
 		return rc;
 
@@ -450,6 +484,7 @@ static void __exit vsc_sata_exit(void)
 {
 	pci_unregister_driver(&vsc_sata_pci_driver);
 }
+module_pci_driver(vsc_sata_pci_driver);
 
 MODULE_AUTHOR("Jeremy Higdon");
 MODULE_DESCRIPTION("low-level driver for Vitesse VSC7174 SATA controller");

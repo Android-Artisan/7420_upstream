@@ -13,6 +13,7 @@
 #include "avtab.h"
 #include "symtab.h"
 #include "policydb.h"
+#include "../include/conditional.h"
 
 #define COND_EXPR_MAXDEPTH 10
 
@@ -29,6 +30,7 @@ struct cond_expr {
 #define COND_EQ		6 /* bool == bool */
 #define COND_NEQ	7 /* bool != bool */
 #define COND_LAST	8
+#define COND_LAST	COND_NEQ
 	__u32 expr_type;
 	__u32 bool;
 	struct cond_expr *next;
@@ -72,6 +74,13 @@ int cond_read_list(struct policydb *p, void *fp);
 
 void cond_compute_av(struct avtab *ctab, struct avtab_key *key, struct av_decision *avd);
 
+int cond_write_bool(void *key, void *datum, void *ptr);
+int cond_write_list(struct policydb *p, struct cond_node *list, void *fp);
+
+void cond_compute_av(struct avtab *ctab, struct avtab_key *key,
+		struct av_decision *avd, struct extended_perms *xperms);
+void cond_compute_xperms(struct avtab *ctab, struct avtab_key *key,
+		struct extended_perms_decision *xpermd);
 int evaluate_cond_node(struct policydb *p, struct cond_node *node);
 
 #endif /* _CONDITIONAL_H_ */

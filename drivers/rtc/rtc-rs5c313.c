@@ -39,6 +39,8 @@
  *	1.13	Nobuhiro Iwamatsu: Updata driver.
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/module.h>
 #include <linux/err.h>
 #include <linux/rtc.h>
@@ -49,6 +51,10 @@
 
 #define DRV_NAME	"rs5c313"
 #define DRV_VERSION 	"1.13"
+#include <linux/io.h>
+
+#define DRV_NAME	"rs5c313"
+#define DRV_VERSION	"1.13"
 
 #ifdef CONFIG_SH_LANDISK
 /*****************************************************/
@@ -83,6 +89,9 @@ unsigned char scsptr1_data;
 #define RS5C313_CEENABLE    ctrl_outb(RS5C313_CE_RTCCE, RS5C313_CE);
 #define RS5C313_CEDISABLE   ctrl_outb(0x00, RS5C313_CE)
 #define RS5C313_MISCOP      ctrl_outb(0x02, 0xB0000008)
+#define RS5C313_CEENABLE    __raw_writeb(RS5C313_CE_RTCCE, RS5C313_CE);
+#define RS5C313_CEDISABLE   __raw_writeb(0x00, RS5C313_CE)
+#define RS5C313_MISCOP      __raw_writeb(0x02, 0xB0000008)
 
 static void rs5c313_init_port(void)
 {
@@ -95,6 +104,14 @@ static void rs5c313_init_port(void)
 	ctrl_outb(scsptr1_data, SCSPTR1);
 	scsptr1_data = ctrl_inb(SCSPTR1) | SCL_OEN;	/* SCL output enable */
 	ctrl_outb(scsptr1_data, SCSPTR1);
+	__raw_writeb(__raw_readb(SCSMR1) & ~SCSMR1_CA, SCSMR1);
+	__raw_writeb(__raw_readb(SCSCR1) & ~SCSCR1_CKE, SCSCR1);
+
+	/* And Initialize SCL for RS5C313 clock */
+	scsptr1_data = __raw_readb(SCSPTR1) | SCL;	/* SCL:H */
+	__raw_writeb(scsptr1_data, SCSPTR1);
+	scsptr1_data = __raw_readb(SCSPTR1) | SCL_OEN;	/* SCL output enable */
+	__raw_writeb(scsptr1_data, SCSPTR1);
 	RS5C313_CEDISABLE;	/* CE:L */
 }
 
@@ -121,6 +138,21 @@ static void rs5c313_write_data(unsigned char data)
 
 	scsptr1_data &= ~SDA_OEN;	/* SDA:output disable */
 	ctrl_outb(scsptr1_data, SCSPTR1);
+		__raw_writeb(scsptr1_data, SCSPTR1);
+		if (i == 0) {
+			scsptr1_data |= SDA_OEN;	/* SDA:output enable */
+			__raw_writeb(scsptr1_data, SCSPTR1);
+		}
+		ndelay(700);
+		scsptr1_data &= ~SCL;	/* SCL:L */
+		__raw_writeb(scsptr1_data, SCSPTR1);
+		ndelay(700);
+		scsptr1_data |= SCL;	/* SCL:H */
+		__raw_writeb(scsptr1_data, SCSPTR1);
+	}
+
+	scsptr1_data &= ~SDA_OEN;	/* SDA:output disable */
+	__raw_writeb(scsptr1_data, SCSPTR1);
 }
 
 static unsigned char rs5c313_read_data(void)
@@ -137,6 +169,12 @@ static unsigned char rs5c313_read_data(void)
 		ndelay(700);
 		scsptr1_data |= SCL;	/* SCL:H */
 		ctrl_outb(scsptr1_data, SCSPTR1);
+		data |= ((__raw_readb(SCSPTR1) & SDA) >> 2) << (7 - i);
+		scsptr1_data &= ~SCL;	/* SCL:L */
+		__raw_writeb(scsptr1_data, SCSPTR1);
+		ndelay(700);
+		scsptr1_data |= SCL;	/* SCL:H */
+		__raw_writeb(scsptr1_data, SCSPTR1);
 	}
 	return data & 0x0F;
 }
@@ -256,12 +294,34 @@ static int rs5c313_rtc_read_time(struct device *dev, struct rtc_time *tm)
 	data = rs5c313_read_reg(RS5C313_ADDR_YEAR);
 	data |= (rs5c313_read_reg(RS5C313_ADDR_YEAR10) << 4);
 	tm->tm_year = BCD2BIN(data);
+	tm->tm_sec = bcd2bin(data);
+
+	data = rs5c313_read_reg(RS5C313_ADDR_MIN);
+	data |= (rs5c313_read_reg(RS5C313_ADDR_MIN10) << 4);
+	tm->tm_min = bcd2bin(data);
+
+	data = rs5c313_read_reg(RS5C313_ADDR_HOUR);
+	data |= (rs5c313_read_reg(RS5C313_ADDR_HOUR10) << 4);
+	tm->tm_hour = bcd2bin(data);
+
+	data = rs5c313_read_reg(RS5C313_ADDR_DAY);
+	data |= (rs5c313_read_reg(RS5C313_ADDR_DAY10) << 4);
+	tm->tm_mday = bcd2bin(data);
+
+	data = rs5c313_read_reg(RS5C313_ADDR_MON);
+	data |= (rs5c313_read_reg(RS5C313_ADDR_MON10) << 4);
+	tm->tm_mon = bcd2bin(data) - 1;
+
+	data = rs5c313_read_reg(RS5C313_ADDR_YEAR);
+	data |= (rs5c313_read_reg(RS5C313_ADDR_YEAR10) << 4);
+	tm->tm_year = bcd2bin(data);
 
 	if (tm->tm_year < 70)
 		tm->tm_year += 100;
 
 	data = rs5c313_read_reg(RS5C313_ADDR_WEEK);
 	tm->tm_wday = BCD2BIN(data);
+	tm->tm_wday = bcd2bin(data);
 
 	RS5C313_CEDISABLE;
 	ndelay(700);		/* CE:L */
@@ -319,6 +379,31 @@ static int rs5c313_rtc_set_time(struct device *dev, struct rtc_time *tm)
 	rs5c313_write_reg(RS5C313_ADDR_YEAR10, (data >> 4));
 
 	data = BIN2BCD(tm->tm_wday);
+	data = bin2bcd(tm->tm_sec);
+	rs5c313_write_reg(RS5C313_ADDR_SEC, data);
+	rs5c313_write_reg(RS5C313_ADDR_SEC10, (data >> 4));
+
+	data = bin2bcd(tm->tm_min);
+	rs5c313_write_reg(RS5C313_ADDR_MIN, data);
+	rs5c313_write_reg(RS5C313_ADDR_MIN10, (data >> 4));
+
+	data = bin2bcd(tm->tm_hour);
+	rs5c313_write_reg(RS5C313_ADDR_HOUR, data);
+	rs5c313_write_reg(RS5C313_ADDR_HOUR10, (data >> 4));
+
+	data = bin2bcd(tm->tm_mday);
+	rs5c313_write_reg(RS5C313_ADDR_DAY, data);
+	rs5c313_write_reg(RS5C313_ADDR_DAY10, (data >> 4));
+
+	data = bin2bcd(tm->tm_mon + 1);
+	rs5c313_write_reg(RS5C313_ADDR_MON, data);
+	rs5c313_write_reg(RS5C313_ADDR_MON10, (data >> 4));
+
+	data = bin2bcd(tm->tm_year % 100);
+	rs5c313_write_reg(RS5C313_ADDR_YEAR, data);
+	rs5c313_write_reg(RS5C313_ADDR_YEAR10, (data >> 4));
+
+	data = bin2bcd(tm->tm_wday);
 	rs5c313_write_reg(RS5C313_ADDR_WEEK, data);
 
 	RS5C313_CEDISABLE;	/* CE:H */
@@ -354,6 +439,12 @@ static void rs5c313_check_xstp_bit(void)
 		rs5c313_rtc_set_time(NULL, &tm);
 		printk(KERN_ERR "RICHO RS5C313: invalid value, resetting to "
 				"1 Jan 2000\n");
+		tm.tm_mday	= 1;
+		tm.tm_mon	= 1 - 1;
+		tm.tm_year	= 2000 - 1900;
+
+		rs5c313_rtc_set_time(NULL, &tm);
+		pr_err("invalid value, resetting to 1 Jan 2000\n");
 	}
 	RS5C313_CEDISABLE;
 	ndelay(700);		/* CE:L */
@@ -367,6 +458,7 @@ static const struct rtc_class_ops rs5c313_rtc_ops = {
 static int rs5c313_rtc_probe(struct platform_device *pdev)
 {
 	struct rtc_device *rtc = rtc_device_register("rs5c313", &pdev->dev,
+	struct rtc_device *rtc = devm_rtc_device_register(&pdev->dev, "rs5c313",
 				&rs5c313_rtc_ops, THIS_MODULE);
 
 	if (IS_ERR(rtc))
@@ -393,6 +485,11 @@ static struct platform_driver rs5c313_rtc_platform_driver = {
 	},
 	.probe 	= rs5c313_rtc_probe,
 	.remove = __devexit_p( rs5c313_rtc_remove ),
+static struct platform_driver rs5c313_rtc_platform_driver = {
+	.driver         = {
+		.name   = DRV_NAME,
+	},
+	.probe	= rs5c313_rtc_probe,
 };
 
 static int __init rs5c313_rtc_init(void)
@@ -412,6 +509,7 @@ static int __init rs5c313_rtc_init(void)
 static void __exit rs5c313_rtc_exit(void)
 {
 	platform_driver_unregister( &rs5c313_rtc_platform_driver );
+	platform_driver_unregister(&rs5c313_rtc_platform_driver);
 }
 
 module_init(rs5c313_rtc_init);

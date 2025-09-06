@@ -5,6 +5,9 @@
 #define __ASM_ARCH_BOARD_H
 
 #include <linux/types.h>
+#include <linux/serial.h>
+#include <linux/platform_data/macb.h>
+#include <linux/platform_data/atmel.h>
 
 #define GPIO_PIN_NONE	(-1)
 
@@ -35,6 +38,28 @@ struct eth_platform_data {
 struct platform_device *
 at32_add_device_eth(unsigned int id, struct eth_platform_data *data);
 
+/*
+ * This used to add essential system devices, but this is now done
+ * automatically. Please don't use it in new board code.
+ */
+static inline void __deprecated at32_add_system_devices(void)
+{
+
+}
+
+extern struct platform_device *atmel_default_console_device;
+
+/* Flags for selecting USART extra pins */
+#define	ATMEL_USART_RTS		0x01
+#define	ATMEL_USART_CTS		0x02
+#define	ATMEL_USART_CLK		0x04
+
+void at32_map_usart(unsigned int hw_id, unsigned int line, int flags);
+struct platform_device *at32_add_device_usart(unsigned int id);
+
+struct platform_device *
+at32_add_device_eth(unsigned int id, struct macb_platform_data *data);
+
 struct spi_board_info;
 struct platform_device *
 at32_add_device_spi(unsigned int id, struct spi_board_info *b, unsigned int n);
@@ -44,6 +69,13 @@ struct platform_device *
 at32_add_device_lcdc(unsigned int id, struct atmel_lcdfb_info *data,
 		     unsigned long fbmem_start, unsigned long fbmem_len,
 		     unsigned int pin_config);
+void at32_spi_setup_slaves(unsigned int bus_num, struct spi_board_info *b, unsigned int n);
+
+struct atmel_lcdfb_pdata;
+struct platform_device *
+at32_add_device_lcdc(unsigned int id, struct atmel_lcdfb_pdata *data,
+		     unsigned long fbmem_start, unsigned long fbmem_len,
+		     u64 pin_mask);
 
 struct usba_platform_data;
 struct platform_device *
@@ -92,6 +124,15 @@ struct platform_device *
 at32_add_device_ac97c(unsigned int id, struct ac97c_platform_data *data);
 
 struct platform_device *at32_add_device_abdac(unsigned int id);
+struct ac97c_platform_data;
+struct platform_device *
+at32_add_device_ac97c(unsigned int id, struct ac97c_platform_data *data,
+		      unsigned int flags);
+
+struct atmel_abdac_pdata;
+struct platform_device *
+at32_add_device_abdac(unsigned int id, struct atmel_abdac_pdata *data);
+
 struct platform_device *at32_add_device_psif(unsigned int id);
 
 struct cf_platform_data {

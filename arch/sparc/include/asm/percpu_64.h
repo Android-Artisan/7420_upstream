@@ -13,6 +13,10 @@ extern unsigned long __per_cpu_base;
 extern unsigned long __per_cpu_shift;
 #define __per_cpu_offset(__cpu) \
 	(__per_cpu_base + ((unsigned long)(__cpu) << __per_cpu_shift))
+#include <asm/trap_block.h>
+
+#define __per_cpu_offset(__cpu) \
+	(trap_block[(__cpu)].__per_cpu_base)
 #define per_cpu_offset(x) (__per_cpu_offset(x))
 
 #define __my_cpu_offset __local_per_cpu_offset

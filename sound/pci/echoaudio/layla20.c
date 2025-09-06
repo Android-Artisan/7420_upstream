@@ -27,6 +27,7 @@
 #define ECHOCARD_HAS_DIGITAL_IO
 #define ECHOCARD_HAS_EXTERNAL_CLOCK
 #define ECHOCARD_HAS_ADAT	FALSE
+#define ECHOCARD_HAS_ADAT	false
 #define ECHOCARD_HAS_OUTPUT_CLOCK_SWITCH
 #define ECHOCARD_HAS_MIDI
 
@@ -52,6 +53,10 @@
 #include <linux/slab.h>
 #include <linux/moduleparam.h>
 #include <linux/firmware.h>
+#include <linux/module.h>
+#include <linux/firmware.h>
+#include <linux/slab.h>
+#include <linux/io.h>
 #include <sound/core.h>
 #include <sound/info.h>
 #include <sound/control.h>
@@ -63,6 +68,7 @@
 #include <sound/rawmidi.h>
 #include <asm/io.h>
 #include <asm/atomic.h>
+#include <linux/atomic.h>
 #include "echoaudio.h"
 
 MODULE_FIRMWARE("ea/layla20_dsp.fw");
@@ -77,6 +83,7 @@ static const struct firmware card_fw[] = {
 };
 
 static struct pci_device_id snd_echo_ids[] = {
+static const struct pci_device_id snd_echo_ids[] = {
 	{0x1057, 0x1801, 0xECC0, 0x0030, 0, 0, 0},	/* DSP 56301 Layla20 rev.0 */
 	{0x1057, 0x1801, 0xECC0, 0x0031, 0, 0, 0},	/* DSP 56301 Layla20 rev.1 */
 	{0,}

@@ -1,8 +1,6 @@
-====================================================================
 =    Adaptec Aic7xxx Fast -> Ultra160 Family Manager Set v7.0      =
 =                            README for                            =
 =                     The Linux Operating System                   =
-====================================================================
 
 The following information is available in this file:
 
@@ -191,6 +189,7 @@ The following information is available in this file:
                  USE THEM WITH CAUTION. 
 
    Edit the file "modprobe.conf" in the directory /etc and add/edit a
+   Put a .conf file in the /etc/modprobe.d directory and add/edit a
    line containing 'options aic7xxx aic7xxx=[command[,command...]]' where
    'command' is one or more of the following:
    -----------------------------------------------------------------
@@ -345,6 +344,7 @@ The following information is available in this file:
 
    Europe
     - Visit our Web site at http://www.adaptec-europe.com/.
+    - Visit our Web site at http://www.adaptec.com/en-US/_common/world_index.
     - To speak with a Technical Support Specialist, call, or email,
       * German:  +49 89 4366 5522, Monday-Friday, 9:00-17:00 CET,
         http://ask-de.adaptec.com/.

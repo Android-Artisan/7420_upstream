@@ -8,6 +8,26 @@
 	ALIGN
 clear_page_c:
 	CFI_STARTPROC
+#include <asm/cpufeature.h>
+#include <asm/cpufeatures.h>
+#include <asm/alternative-asm.h>
+
+/*
+ * Most CPUs support enhanced REP MOVSB/STOSB instructions. It is
+ * recommended to use this when possible and we do use them by default.
+ * If enhanced REP MOVSB/STOSB is not available, try to use fast string.
+ * Otherwise, use original.
+ */
+
+/*
+ * Zero a page.
+ * %rdi	- page
+ */
+ENTRY(clear_page)
+
+	ALTERNATIVE_2 "jmp clear_page_orig", "", X86_FEATURE_REP_GOOD, \
+		      "jmp clear_page_c_e", X86_FEATURE_ERMS
+
 	movl $4096/8,%ecx
 	xorl %eax,%eax
 	rep stosq
@@ -17,6 +37,10 @@ ENDPROC(clear_page)
 
 ENTRY(clear_page)
 	CFI_STARTPROC
+ENDPROC(clear_page)
+
+ENTRY(clear_page_orig)
+
 	xorl   %eax,%eax
 	movl   $4096/64,%ecx
 	.p2align 4
@@ -57,3 +81,11 @@ ENDPROC(clear_page)
 	.byte .Lclear_page_end - clear_page
 	.byte 2b - 1b
 	.previous
+ENDPROC(clear_page_orig)
+
+ENTRY(clear_page_c_e)
+	movl $4096,%ecx
+	xorl %eax,%eax
+	rep stosb
+	ret
+ENDPROC(clear_page_c_e)

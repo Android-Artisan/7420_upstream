@@ -174,6 +174,11 @@ typedef union {
 #define PMU_MAX_PMDS		256	/* maximum architected number of PMD registers */
 
 #ifdef __KERNEL__
+#ifndef _ASM_IA64_PERFMON_H
+#define _ASM_IA64_PERFMON_H
+
+#include <uapi/asm/perfmon.h>
+
 
 extern long perfmonctl(int fd, int cmd, void *arg, int narg);
 

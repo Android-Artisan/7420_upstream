@@ -35,16 +35,23 @@
 #include <asm/pgtable.h>
 #include <asm/uaccess.h>
 #include <asm/system.h>
+#include <linux/slab.h>
+#include <linux/rcupdate.h>
+
+#include <asm/pgtable.h>
+#include <asm/uaccess.h>
 #include <asm/io.h>
 #include <asm/processor.h>
 #include <asm/platform.h>
 #include <asm/mmu.h>
 #include <asm/irq.h>
 #include <asm/atomic.h>
+#include <linux/atomic.h>
 #include <asm/asm-offsets.h>
 #include <asm/regs.h>
 
 extern void ret_from_fork(void);
+extern void ret_from_kernel_thread(void);
 
 struct task_struct *current_set[NR_CPUS] = {&init_task, };
 
@@ -82,18 +89,21 @@ void coprocessor_release_all(struct thread_info *ti)
 
 void coprocessor_flush_all(struct thread_info *ti)
 {
-	unsigned long cpenable;
+	unsigned long cpenable, old_cpenable;
 	int i;
 
 	preempt_disable();
 
+	RSR_CPENABLE(old_cpenable);
 	cpenable = ti->cpenable;
+	WSR_CPENABLE(cpenable);
 
 	for (i = 0; i < XCHAL_CP_MAX; i++) {
 		if ((cpenable & 1) != 0 && coprocessor_owner[i] == ti)
 			coprocessor_flush(ti, i);
 		cpenable >>= 1;
 	}
+	WSR_CPENABLE(old_cpenable);
 
 	preempt_enable();
 }
@@ -117,6 +127,9 @@ void cpu_idle(void)
 		schedule();
 		preempt_disable();
 	}
+void arch_cpu_idle(void)
+{
+	platform_idle();
 }
 
 /*
@@ -150,6 +163,16 @@ void prepare_to_copy(struct task_struct *tsk)
 #if XTENSA_HAVE_COPROCESSORS
 	coprocessor_flush_all(task_thread_info(tsk));
 #endif
+ * this gets called so that we can store coprocessor state into memory and
+ * copy the current task into the new thread.
+ */
+int arch_dup_task_struct(struct task_struct *dst, struct task_struct *src)
+{
+#if XTENSA_HAVE_COPROCESSORS
+	coprocessor_flush_all(task_thread_info(src));
+#endif
+	*dst = *src;
+	return 0;
 }
 
 /*
@@ -158,6 +181,19 @@ void prepare_to_copy(struct task_struct *tsk)
  * The stack layout for the new thread looks like this:
  *
  *	+------------------------+ <- sp in childregs (= tos)
+ * There are two modes in which this function is called:
+ * 1) Userspace thread creation,
+ *    regs != NULL, usp_thread_fn is userspace stack pointer.
+ *    It is expected to copy parent regs (in case CLONE_VM is not set
+ *    in the clone_flags) and set up passed usp in the childregs.
+ * 2) Kernel thread creation,
+ *    regs == NULL, usp_thread_fn is the function to run in the new thread
+ *    and thread_fn_arg is its parameter.
+ *    childregs are not used for the kernel threads.
+ *
+ * The stack layout for the new thread looks like this:
+ *
+ *	+------------------------+
  *	|       childregs        |
  *	+------------------------+ <- thread.sp = sp in dummy-frame
  *	|      dummy-frame       |    (saved in dummy-frame spill-area)
@@ -189,6 +225,35 @@ int copy_thread(int nr, unsigned long clone_flags, unsigned long usp,
 		childregs = (struct pt_regs*)tos - 1;
 
 	*childregs = *regs;
+ * We create a dummy frame to return to either ret_from_fork or
+ *   ret_from_kernel_thread:
+ *   a0 points to ret_from_fork/ret_from_kernel_thread (simulating a call4)
+ *   sp points to itself (thread.sp)
+ *   a2, a3 are unused for userspace threads,
+ *   a2 points to thread_fn, a3 holds thread_fn arg for kernel threads.
+ *
+ * Note: This is a pristine frame, so we don't need any spill region on top of
+ *       childregs.
+ *
+ * The fun part:  if we're keeping the same VM (i.e. cloning a thread,
+ * not an entire process), we're normally given a new usp, and we CANNOT share
+ * any live address register windows.  If we just copy those live frames over,
+ * the two threads (parent and child) will overflow the same frames onto the
+ * parent stack at different times, likely corrupting the parent stack (esp.
+ * if the parent returns from functions that called clone() and calls new
+ * ones, before the child overflows its now old copies of its parent windows).
+ * One solution is to spill windows to the parent stack, but that's fairly
+ * involved.  Much simpler to just not copy those live frames across.
+ */
+
+int copy_thread(unsigned long clone_flags, unsigned long usp_thread_fn,
+		unsigned long thread_fn_arg, struct task_struct *p)
+{
+	struct pt_regs *childregs = task_pt_regs(p);
+
+#if (XTENSA_HAVE_COPROCESSORS || XTENSA_HAVE_IO_PORTS)
+	struct thread_info *ti;
+#endif
 
 	/* Create a call4 dummy-frame: a0 = 0, a1 = childregs. */
 	*((int*)childregs - 3) = (unsigned long)childregs;
@@ -213,6 +278,71 @@ int copy_thread(int nr, unsigned long clone_flags, unsigned long usp,
 	} else {
 		/* In kernel space, we start a new thread with a new stack. */
 		childregs->wmask = 1;
+	p->thread.sp = (unsigned long)childregs;
+
+	if (!(p->flags & PF_KTHREAD)) {
+		struct pt_regs *regs = current_pt_regs();
+		unsigned long usp = usp_thread_fn ?
+			usp_thread_fn : regs->areg[1];
+
+		p->thread.ra = MAKE_RA_FOR_CALL(
+				(unsigned long)ret_from_fork, 0x1);
+
+		/* This does not copy all the regs.
+		 * In a bout of brilliance or madness,
+		 * ARs beyond a0-a15 exist past the end of the struct.
+		 */
+		*childregs = *regs;
+		childregs->areg[1] = usp;
+		childregs->areg[2] = 0;
+
+		/* When sharing memory with the parent thread, the child
+		   usually starts on a pristine stack, so we have to reset
+		   windowbase, windowstart and wmask.
+		   (Note that such a new thread is required to always create
+		   an initial call4 frame)
+		   The exception is vfork, where the new thread continues to
+		   run on the parent's stack until it calls execve. This could
+		   be a call8 or call12, which requires a legal stack frame
+		   of the previous caller for the overflow handlers to work.
+		   (Note that it's always legal to overflow live registers).
+		   In this case, ensure to spill at least the stack pointer
+		   of that frame. */
+
+		if (clone_flags & CLONE_VM) {
+			/* check that caller window is live and same stack */
+			int len = childregs->wmask & ~0xf;
+			if (regs->areg[1] == usp && len != 0) {
+				int callinc = (regs->areg[0] >> 30) & 3;
+				int caller_ars = XCHAL_NUM_AREGS - callinc * 4;
+				put_user(regs->areg[caller_ars+1],
+					 (unsigned __user*)(usp - 12));
+			}
+			childregs->wmask = 1;
+			childregs->windowstart = 1;
+			childregs->windowbase = 0;
+		} else {
+			int len = childregs->wmask & ~0xf;
+			memcpy(&childregs->areg[XCHAL_NUM_AREGS - len/4],
+			       &regs->areg[XCHAL_NUM_AREGS - len/4], len);
+		}
+
+		/* The thread pointer is passed in the '4th argument' (= a5) */
+		if (clone_flags & CLONE_SETTLS)
+			childregs->threadptr = childregs->areg[5];
+	} else {
+		p->thread.ra = MAKE_RA_FOR_CALL(
+				(unsigned long)ret_from_kernel_thread, 1);
+
+		/* pass parameters to ret_from_kernel_thread:
+		 * a2 = thread_fn, a3 = thread_fn arg
+		 */
+		*((int *)childregs - 1) = thread_fn_arg;
+		*((int *)childregs - 2) = usp_thread_fn;
+
+		/* Childregs are only used when we're going to userspace
+		 * in which case start_thread will set them up.
+		 */
 	}
 
 #if (XTENSA_HAVE_COPROCESSORS || XTENSA_HAVE_IO_PORTS)
@@ -278,6 +408,7 @@ void xtensa_elf_core_copy_regs (xtensa_gregset_t *elfregs, struct pt_regs *regs)
 	/* Don't leak any random bits. */
 
 	memset(elfregs, 0, sizeof (elfregs));
+	memset(elfregs, 0, sizeof(*elfregs));
 
 	/* Note:  PS.EXCM is not set while user task is running; its
 	 * being set in regs->ps is for exception handling convenience.

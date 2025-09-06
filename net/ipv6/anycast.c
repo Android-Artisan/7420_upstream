@@ -29,6 +29,7 @@
 #include <linux/init.h>
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
+#include <linux/slab.h>
 
 #include <net/net_namespace.h>
 #include <net/sock.h>
@@ -48,12 +49,14 @@ static int ipv6_dev_ac_dec(struct net_device *dev, struct in6_addr *addr);
 /* Big ac list lock for all the sockets */
 static DEFINE_RWLOCK(ipv6_sk_ac_lock);
 
+static int ipv6_dev_ac_dec(struct net_device *dev, const struct in6_addr *addr);
 
 /*
  *	socket join an anycast group
  */
 
 int ipv6_sock_ac_join(struct sock *sk, int ifindex, struct in6_addr *addr)
+int ipv6_sock_ac_join(struct sock *sk, int ifindex, const struct in6_addr *addr)
 {
 	struct ipv6_pinfo *np = inet6_sk(sk);
 	struct net_device *dev = NULL;
@@ -64,6 +67,9 @@ int ipv6_sock_ac_join(struct sock *sk, int ifindex, struct in6_addr *addr)
 	int	err = 0;
 
 	if (!capable(CAP_NET_ADMIN))
+	ASSERT_RTNL();
+
+	if (!ns_capable(net->user_ns, CAP_NET_ADMIN))
 		return -EPERM;
 	if (ipv6_addr_is_multicast(addr))
 		return -EINVAL;
@@ -75,6 +81,10 @@ int ipv6_sock_ac_join(struct sock *sk, int ifindex, struct in6_addr *addr)
 		return -ENOMEM;
 	pac->acl_next = NULL;
 	ipv6_addr_copy(&pac->acl_addr, addr);
+	if (!pac)
+		return -ENOMEM;
+	pac->acl_next = NULL;
+	pac->acl_addr = *addr;
 
 	if (ifindex == 0) {
 		struct rt6_info *rt;
@@ -101,6 +111,25 @@ int ipv6_sock_ac_join(struct sock *sk, int ifindex, struct in6_addr *addr)
 	}
 
 	idev = in6_dev_get(dev);
+			dev = rt->dst.dev;
+			ip6_rt_put(rt);
+		} else if (ishost) {
+			err = -EADDRNOTAVAIL;
+			goto error;
+		} else {
+			/* router, no matching interface: just pick one */
+			dev = __dev_get_by_flags(net, IFF_UP,
+						 IFF_UP | IFF_LOOPBACK);
+		}
+	} else
+		dev = __dev_get_by_index(net, ifindex);
+
+	if (!dev) {
+		err = -ENODEV;
+		goto error;
+	}
+
+	idev = __in6_dev_get(dev);
 	if (!idev) {
 		if (ifindex)
 			err = -ENODEV;
@@ -111,6 +140,10 @@ int ipv6_sock_ac_join(struct sock *sk, int ifindex, struct in6_addr *addr)
 	/* reset ishost, now that we have a specific device */
 	ishost = !idev->cnf.forwarding;
 	in6_dev_put(idev);
+		goto error;
+	}
+	/* reset ishost, now that we have a specific device */
+	ishost = !idev->cnf.forwarding;
 
 	pac->acl_ifindex = dev->ifindex;
 
@@ -143,6 +176,19 @@ out_dev_put:
 	dev_put(dev);
 out_free_pac:
 	sock_kfree_s(sk, pac, sizeof(*pac));
+			goto error;
+	}
+
+	err = __ipv6_dev_ac_inc(idev, addr);
+	if (!err) {
+		pac->acl_next = np->ipv6_ac_list;
+		np->ipv6_ac_list = pac;
+		pac = NULL;
+	}
+
+error:
+	if (pac)
+		sock_kfree_s(sk, pac, sizeof(*pac));
 	return err;
 }
 
@@ -150,6 +196,7 @@ out_free_pac:
  *	socket leave an anycast group
  */
 int ipv6_sock_ac_drop(struct sock *sk, int ifindex, struct in6_addr *addr)
+int ipv6_sock_ac_drop(struct sock *sk, int ifindex, const struct in6_addr *addr)
 {
 	struct ipv6_pinfo *np = inet6_sk(sk);
 	struct net_device *dev;
@@ -157,6 +204,8 @@ int ipv6_sock_ac_drop(struct sock *sk, int ifindex, struct in6_addr *addr)
 	struct net *net = sock_net(sk);
 
 	write_lock_bh(&ipv6_sk_ac_lock);
+	ASSERT_RTNL();
+
 	prev_pac = NULL;
 	for (pac = np->ipv6_ac_list; pac; pac = pac->acl_next) {
 		if ((ifindex == 0 || pac->acl_ifindex == ifindex) &&
@@ -168,6 +217,8 @@ int ipv6_sock_ac_drop(struct sock *sk, int ifindex, struct in6_addr *addr)
 		write_unlock_bh(&ipv6_sk_ac_lock);
 		return -ENOENT;
 	}
+	if (!pac)
+		return -ENOENT;
 	if (prev_pac)
 		prev_pac->acl_next = pac->acl_next;
 	else
@@ -180,11 +231,15 @@ int ipv6_sock_ac_drop(struct sock *sk, int ifindex, struct in6_addr *addr)
 		ipv6_dev_ac_dec(dev, &pac->acl_addr);
 		dev_put(dev);
 	}
+	dev = __dev_get_by_index(net, pac->acl_ifindex);
+	if (dev)
+		ipv6_dev_ac_dec(dev, &pac->acl_addr);
+
 	sock_kfree_s(sk, pac, sizeof(*pac));
 	return 0;
 }
 
-void ipv6_sock_ac_close(struct sock *sk)
+void __ipv6_sock_ac_close(struct sock *sk)
 {
 	struct ipv6_pinfo *np = inet6_sk(sk);
 	struct net_device *dev = NULL;
@@ -196,6 +251,13 @@ void ipv6_sock_ac_close(struct sock *sk)
 	pac = np->ipv6_ac_list;
 	np->ipv6_ac_list = NULL;
 	write_unlock_bh(&ipv6_sk_ac_lock);
+	if (!np->ipv6_ac_list)
+		return;
+
+	rtnl_lock();
+	ASSERT_RTNL();
+	pac = np->ipv6_ac_list;
+	np->ipv6_ac_list = NULL;
 
 	prev_index = 0;
 	while (pac) {
@@ -205,6 +267,7 @@ void ipv6_sock_ac_close(struct sock *sk)
 			if (dev)
 				dev_put(dev);
 			dev = dev_get_by_index(net, pac->acl_ifindex);
+			dev = __dev_get_by_index(net, pac->acl_ifindex);
 			prev_index = pac->acl_ifindex;
 		}
 		if (dev)
@@ -245,11 +308,30 @@ int inet6_ac_check(struct sock *sk, struct in6_addr *addr, int ifindex)
 
 #endif
 
+}
+
+void ipv6_sock_ac_close(struct sock *sk)
+{
+	struct ipv6_pinfo *np = inet6_sk(sk);
+
+	if (!np->ipv6_ac_list)
+		return;
+	rtnl_lock();
+	__ipv6_sock_ac_close(sk);
+	rtnl_unlock();
+}
+
+static void aca_get(struct ifacaddr6 *aca)
+{
+	atomic_inc(&aca->aca_refcnt);
+}
+
 static void aca_put(struct ifacaddr6 *ac)
 {
 	if (atomic_dec_and_test(&ac->aca_refcnt)) {
 		in6_dev_put(ac->aca_idev);
 		dst_release(&ac->aca_rt->u.dst);
+		dst_release(&ac->aca_rt->dst);
 		kfree(ac);
 	}
 }
@@ -268,6 +350,38 @@ int ipv6_dev_ac_inc(struct net_device *dev, struct in6_addr *addr)
 
 	if (idev == NULL)
 		return -EINVAL;
+static struct ifacaddr6 *aca_alloc(struct rt6_info *rt,
+				   const struct in6_addr *addr)
+{
+	struct inet6_dev *idev = rt->rt6i_idev;
+	struct ifacaddr6 *aca;
+
+	aca = kzalloc(sizeof(*aca), GFP_ATOMIC);
+	if (!aca)
+		return NULL;
+
+	aca->aca_addr = *addr;
+	in6_dev_hold(idev);
+	aca->aca_idev = idev;
+	aca->aca_rt = rt;
+	aca->aca_users = 1;
+	/* aca_tstamp should be updated upon changes */
+	aca->aca_cstamp = aca->aca_tstamp = jiffies;
+	atomic_set(&aca->aca_refcnt, 1);
+
+	return aca;
+}
+
+/*
+ *	device anycast group inc (add if not found)
+ */
+int __ipv6_dev_ac_inc(struct inet6_dev *idev, const struct in6_addr *addr)
+{
+	struct ifacaddr6 *aca;
+	struct rt6_info *rt;
+	int err;
+
+	ASSERT_RTNL();
 
 	write_lock_bh(&idev->lock);
 	if (idev->dead) {
@@ -290,6 +404,14 @@ int ipv6_dev_ac_inc(struct net_device *dev, struct in6_addr *addr)
 	aca = kzalloc(sizeof(struct ifacaddr6), GFP_ATOMIC);
 
 	if (aca == NULL) {
+	rt = addrconf_dst_alloc(idev, addr, true);
+	if (IS_ERR(rt)) {
+		err = PTR_ERR(rt);
+		goto out;
+	}
+	aca = aca_alloc(rt, addr);
+	if (!aca) {
+		ip6_rt_put(rt);
 		err = -ENOMEM;
 		goto out;
 	}
@@ -312,11 +434,19 @@ int ipv6_dev_ac_inc(struct net_device *dev, struct in6_addr *addr)
 
 	aca->aca_next = idev->ac_list;
 	idev->ac_list = aca;
+	aca->aca_next = idev->ac_list;
+	idev->ac_list = aca;
+
+	/* Hold this for addrconf_join_solict() below before we unlock,
+	 * it is already exposed via idev->ac_list.
+	 */
+	aca_get(aca);
 	write_unlock_bh(&idev->lock);
 
 	ip6_ins_rt(rt);
 
 	addrconf_join_solict(dev, &aca->aca_addr);
+	addrconf_join_solict(idev->dev, &aca->aca_addr);
 
 	aca_put(aca);
 	return 0;
@@ -332,6 +462,12 @@ out:
 int __ipv6_dev_ac_dec(struct inet6_dev *idev, struct in6_addr *addr)
 {
 	struct ifacaddr6 *aca, *prev_aca;
+
+int __ipv6_dev_ac_dec(struct inet6_dev *idev, const struct in6_addr *addr)
+{
+	struct ifacaddr6 *aca, *prev_aca;
+
+	ASSERT_RTNL();
 
 	write_lock_bh(&idev->lock);
 	prev_aca = NULL;
@@ -356,6 +492,7 @@ int __ipv6_dev_ac_dec(struct inet6_dev *idev, struct in6_addr *addr)
 	addrconf_leave_solict(idev, &aca->aca_addr);
 
 	dst_hold(&aca->aca_rt->u.dst);
+	dst_hold(&aca->aca_rt->dst);
 	ip6_del_rt(aca->aca_rt);
 
 	aca_put(aca);
@@ -371,17 +508,50 @@ static int ipv6_dev_ac_dec(struct net_device *dev, struct in6_addr *addr)
 	ret = __ipv6_dev_ac_dec(idev, addr);
 	in6_dev_put(idev);
 	return ret;
+/* called with rtnl_lock() */
+static int ipv6_dev_ac_dec(struct net_device *dev, const struct in6_addr *addr)
+{
+	struct inet6_dev *idev = __in6_dev_get(dev);
+
+	if (!idev)
+		return -ENODEV;
+	return __ipv6_dev_ac_dec(idev, addr);
+}
+
+void ipv6_ac_destroy_dev(struct inet6_dev *idev)
+{
+	struct ifacaddr6 *aca;
+
+	write_lock_bh(&idev->lock);
+	while ((aca = idev->ac_list) != NULL) {
+		idev->ac_list = aca->aca_next;
+		write_unlock_bh(&idev->lock);
+
+		addrconf_leave_solict(idev, &aca->aca_addr);
+
+		dst_hold(&aca->aca_rt->dst);
+		ip6_del_rt(aca->aca_rt);
+
+		aca_put(aca);
+
+		write_lock_bh(&idev->lock);
+	}
+	write_unlock_bh(&idev->lock);
 }
 
 /*
  *	check if the interface has this anycast address
  */
 static int ipv6_chk_acast_dev(struct net_device *dev, struct in6_addr *addr)
+ *	called with rcu_read_lock()
+ */
+static bool ipv6_chk_acast_dev(struct net_device *dev, const struct in6_addr *addr)
 {
 	struct inet6_dev *idev;
 	struct ifacaddr6 *aca;
 
 	idev = in6_dev_get(dev);
+	idev = __in6_dev_get(dev);
 	if (idev) {
 		read_lock_bh(&idev->lock);
 		for (aca = idev->ac_list; aca; aca = aca->aca_next)
@@ -392,6 +562,9 @@ static int ipv6_chk_acast_dev(struct net_device *dev, struct in6_addr *addr)
 		return aca != NULL;
 	}
 	return 0;
+		return aca != NULL;
+	}
+	return false;
 }
 
 /*
@@ -414,6 +587,35 @@ int ipv6_chk_acast_addr(struct net *net, struct net_device *dev,
 	return found;
 }
 
+bool ipv6_chk_acast_addr(struct net *net, struct net_device *dev,
+			 const struct in6_addr *addr)
+{
+	bool found = false;
+
+	rcu_read_lock();
+	if (dev)
+		found = ipv6_chk_acast_dev(dev, addr);
+	else
+		for_each_netdev_rcu(net, dev)
+			if (ipv6_chk_acast_dev(dev, addr)) {
+				found = true;
+				break;
+			}
+	rcu_read_unlock();
+	return found;
+}
+
+/*	check if this anycast address is link-local on given interface or
+ *	is global
+ */
+bool ipv6_chk_acast_addr_src(struct net *net, struct net_device *dev,
+			     const struct in6_addr *addr)
+{
+	return ipv6_chk_acast_addr(net,
+				   (ipv6_addr_type(addr) & IPV6_ADDR_LINKLOCAL ?
+				    dev : NULL),
+				   addr);
+}
 
 #ifdef CONFIG_PROC_FS
 struct ac6_iter_state {
@@ -434,6 +636,9 @@ static inline struct ifacaddr6 *ac6_get_first(struct seq_file *seq)
 	for_each_netdev(net, state->dev) {
 		struct inet6_dev *idev;
 		idev = in6_dev_get(state->dev);
+	for_each_netdev_rcu(net, state->dev) {
+		struct inet6_dev *idev;
+		idev = __in6_dev_get(state->dev);
 		if (!idev)
 			continue;
 		read_lock_bh(&idev->lock);
@@ -459,11 +664,16 @@ static struct ifacaddr6 *ac6_get_next(struct seq_file *seq, struct ifacaddr6 *im
 			in6_dev_put(state->idev);
 		}
 		state->dev = next_net_device(state->dev);
+		if (likely(state->idev != NULL))
+			read_unlock_bh(&state->idev->lock);
+
+		state->dev = next_net_device_rcu(state->dev);
 		if (!state->dev) {
 			state->idev = NULL;
 			break;
 		}
 		state->idev = in6_dev_get(state->dev);
+		state->idev = __in6_dev_get(state->dev);
 		if (!state->idev)
 			continue;
 		read_lock_bh(&state->idev->lock);
@@ -485,6 +695,9 @@ static void *ac6_seq_start(struct seq_file *seq, loff_t *pos)
 	__acquires(dev_base_lock)
 {
 	read_lock(&dev_base_lock);
+	__acquires(RCU)
+{
+	rcu_read_lock();
 	return ac6_get_idx(seq, *pos);
 }
 
@@ -492,6 +705,8 @@ static void *ac6_seq_next(struct seq_file *seq, void *v, loff_t *pos)
 {
 	struct ifacaddr6 *im;
 	im = ac6_get_next(seq, v);
+	struct ifacaddr6 *im = ac6_get_next(seq, v);
+
 	++*pos;
 	return im;
 }
@@ -505,6 +720,15 @@ static void ac6_seq_stop(struct seq_file *seq, void *v)
 		in6_dev_put(state->idev);
 	}
 	read_unlock(&dev_base_lock);
+	__releases(RCU)
+{
+	struct ac6_iter_state *state = ac6_seq_private(seq);
+
+	if (likely(state->idev != NULL)) {
+		read_unlock_bh(&state->idev->lock);
+		state->idev = NULL;
+	}
+	rcu_read_unlock();
 }
 
 static int ac6_seq_show(struct seq_file *seq, void *v)
@@ -517,6 +741,9 @@ static int ac6_seq_show(struct seq_file *seq, void *v)
 		   state->dev->ifindex, state->dev->name,
 		   NIP6(im->aca_addr),
 		   im->aca_users);
+	seq_printf(seq, "%-4d %-15s %pi6 %5d\n",
+		   state->dev->ifindex, state->dev->name,
+		   &im->aca_addr, im->aca_users);
 	return 0;
 }
 
@@ -544,6 +771,9 @@ static const struct file_operations ac6_seq_fops = {
 int ac6_proc_init(struct net *net)
 {
 	if (!proc_net_fops_create(net, "anycast6", S_IRUGO, &ac6_seq_fops))
+int __net_init ac6_proc_init(struct net *net)
+{
+	if (!proc_create("anycast6", S_IRUGO, net->proc_net, &ac6_seq_fops))
 		return -ENOMEM;
 
 	return 0;
@@ -552,6 +782,7 @@ int ac6_proc_init(struct net *net)
 void ac6_proc_exit(struct net *net)
 {
 	proc_net_remove(net, "anycast6");
+	remove_proc_entry("anycast6", net->proc_net);
 }
 #endif
 

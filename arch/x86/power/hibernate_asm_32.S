@@ -17,21 +17,37 @@
 
 ENTRY(swsusp_arch_suspend)
 
+#include <asm/page_types.h>
+#include <asm/asm-offsets.h>
+#include <asm/processor-flags.h>
+
+.text
+
+ENTRY(swsusp_arch_suspend)
 	movl %esp, saved_context_esp
 	movl %ebx, saved_context_ebx
 	movl %ebp, saved_context_ebp
 	movl %esi, saved_context_esi
 	movl %edi, saved_context_edi
 	pushfl ; popl saved_context_eflags
+	pushfl
+	popl saved_context_eflags
 
 	call swsusp_save
 	ret
 
 ENTRY(restore_image)
+	movl	mmu_cr4_features, %ecx
 	movl	resume_pg_dir, %eax
 	subl	$__PAGE_OFFSET, %eax
 	movl	%eax, %cr3
 
+	jecxz	1f	# cr4 Pentium and higher, skip if zero
+	andl	$~(X86_CR4_PGE), %ecx
+	movl	%ecx, %cr4;  # turn off PGE
+	movl	%cr3, %eax;  # flush TLB
+	movl	%eax, %cr3
+1:
 	movl	restore_pblist, %edx
 	.p2align 4,,7
 
@@ -65,6 +81,8 @@ done:
 	movl	%cr3, %eax;  # flush TLB
 	movl	%eax, %cr3
 	jecxz	1f	# cr4 Pentium and higher, skip if zero
+	movl	mmu_cr4_features, %ecx
+	jecxz	1f	# cr4 Pentium and higher, skip if zero
 	movl	%ecx, %cr4;  # turn PGE back on
 1:
 
@@ -75,6 +93,12 @@ done:
 	movl saved_context_edi, %edi
 
 	pushl saved_context_eflags ; popfl
+	pushl saved_context_eflags
+	popfl
+
+	/* Saved in save_processor_state. */
+	movl $saved_context, %eax
+	lgdt saved_context_gdt_desc(%eax)
 
 	xorl	%eax, %eax
 

@@ -16,6 +16,8 @@
 #include <linux/init.h>
 #include <asm/thread_notify.h>
 #include <asm/io.h>
+#include <linux/io.h>
+#include <asm/thread_notify.h>
 
 static inline void dsp_save_state(u32 *state)
 {
@@ -71,6 +73,7 @@ static int iwmmxt_do(struct notifier_block *self, unsigned long cmd, void *t)
 		 */
 
 	case THREAD_NOTIFY_RELEASE:
+	case THREAD_NOTIFY_EXIT:
 		iwmmxt_task_release(thread);
 		break;
 
@@ -162,11 +165,15 @@ static int __init xscale_cp0_init(void)
 			"detected, but kernel support is missing.\n");
 #else
 		printk(KERN_INFO "XScale iWMMXt coprocessor detected.\n");
+		pr_warn("CAUTION: XScale iWMMXt coprocessor detected, but kernel support is missing.\n");
+#else
+		pr_info("XScale iWMMXt coprocessor detected.\n");
 		elf_hwcap |= HWCAP_IWMMXT;
 		thread_register_notifier(&iwmmxt_notifier_block);
 #endif
 	} else {
 		printk(KERN_INFO "XScale DSP coprocessor detected.\n");
+		pr_info("XScale DSP coprocessor detected.\n");
 		thread_register_notifier(&dsp_notifier_block);
 		cp_access |= 1;
 	}

@@ -27,6 +27,7 @@
 #include <asm/axisflashmap.h>
 #include <asm/mmu.h>
 #include <asm/arch/sv_addr_ag.h>
+#include <arch/sv_addr_ag.h>
 
 #ifdef CONFIG_CRIS_LOW_MAP
 #define FLASH_UNCACHED_ADDR  KSEG_8
@@ -379,6 +380,7 @@ static int __init init_axis_flash(void)
 	if (mymtd) {
 		main_partition.size = mymtd->size;
 		err = add_mtd_partitions(mymtd, &main_partition, 1);
+		err = mtd_device_register(mymtd, &main_partition, 1);
 		if (err)
 			panic("axisflashmap: Could not initialize "
 			      "partition for whole main mtd device!\n");
@@ -392,6 +394,12 @@ static int __init init_axis_flash(void)
 						 NUM_DEFAULT_PARTITIONS);
 		} else {
 			err = add_mtd_partitions(mymtd, axis_partitions, pidx);
+			err = mtd_device_register(mymtd,
+						  axis_default_partitions,
+						  NUM_DEFAULT_PARTITIONS);
+		} else {
+			err = mtd_device_register(mymtd, axis_partitions,
+						  pidx);
 		}
 
 		if (err)

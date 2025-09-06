@@ -1,4 +1,5 @@
 /*
+ * Copyright (C) 2015 Thomas Meyer (thomas@m3y3r.de)
  * Copyright (C) 2002 - 2007 Jeff Dike (jdike@{addtoit,linux.intel}.com)
  * Licensed under the GPL
  */
@@ -12,6 +13,15 @@
 #include "skas.h"
 
 extern int __syscall_stub_start;
+#include <linux/mm.h>
+#include <linux/sched.h>
+#include <linux/slab.h>
+#include <asm/pgalloc.h>
+#include <asm/pgtable.h>
+#include <asm/sections.h>
+#include <as-layout.h>
+#include <os.h>
+#include <skas.h>
 
 static int init_stub_pte(struct mm_struct *mm, unsigned long proc,
 			 unsigned long kernel)
@@ -31,6 +41,7 @@ static int init_stub_pte(struct mm_struct *mm, unsigned long proc,
 		goto out_pmd;
 
 	pte = pte_alloc_map(mm, pmd, proc);
+	pte = pte_alloc_map(mm, NULL, pmd, proc);
 	if (!pte)
 		goto out_pte;
 
@@ -42,6 +53,10 @@ static int init_stub_pte(struct mm_struct *mm, unsigned long proc,
 	pud_free(mm, pud);
  out_pte:
 	pmd_free(mm, pmd);
+ out_pte:
+	pmd_free(mm, pmd);
+ out_pmd:
+	pud_free(mm, pud);
  out:
 	return -ENOMEM;
 }
@@ -58,6 +73,9 @@ int init_new_context(struct task_struct *task, struct mm_struct *mm)
 		if (stack == 0)
 			goto out;
 	}
+	stack = get_zeroed_page(GFP_KERNEL);
+	if (stack == 0)
+		goto out;
 
 	to_mm->id.stack = stack;
 	if (current->mm != NULL && current->mm != &init_mm)
@@ -82,6 +100,16 @@ int init_new_context(struct task_struct *task, struct mm_struct *mm)
 			ret = to_mm->id.u.pid;
 			goto out_free;
 		}
+	block_signals();
+	if (from_mm)
+		to_mm->id.u.pid = copy_context_skas0(stack,
+						     from_mm->id.u.pid);
+	else to_mm->id.u.pid = start_userspace(stack);
+	unblock_signals();
+
+	if (to_mm->id.u.pid < 0) {
+		ret = to_mm->id.u.pid;
+		goto out_free;
 	}
 
 	ret = init_new_ldt(to_mm, from_mm);
@@ -112,6 +140,12 @@ void arch_dup_mmap(struct mm_struct *oldmm, struct mm_struct *mm)
 
 	ret = init_stub_pte(mm, STUB_CODE,
 			    (unsigned long) &__syscall_stub_start);
+void uml_setup_stubs(struct mm_struct *mm)
+{
+	int err, ret;
+
+	ret = init_stub_pte(mm, STUB_CODE,
+			    (unsigned long) __syscall_stub_start);
 	if (ret)
 		goto out;
 
@@ -129,6 +163,8 @@ void arch_dup_mmap(struct mm_struct *oldmm, struct mm_struct *mm)
 	pages[0] = virt_to_page(&__syscall_stub_start);
 	pages[1] = virt_to_page(mm->context.id.stack);
 	mm->context.stub_pages = pages;
+	mm->context.stub_pages[0] = virt_to_page(__syscall_stub_start);
+	mm->context.stub_pages[1] = virt_to_page(mm->context.id.stack);
 
 	/* dup_mmap already holds mmap_sem */
 	err = install_special_mapping(mm, STUB_START, STUB_END - STUB_START,
@@ -142,6 +178,14 @@ void arch_dup_mmap(struct mm_struct *oldmm, struct mm_struct *mm)
 
 out_free:
 	kfree(pages);
+				      VM_MAYEXEC | VM_DONTCOPY | VM_PFNMAP,
+				      mm->context.stub_pages);
+	if (err) {
+		printk(KERN_ERR "install_special_mapping returned %d\n", err);
+		goto out;
+	}
+	return;
+
 out:
 	force_sigsegv(SIGSEGV, current);
 }
@@ -187,5 +231,19 @@ void destroy_context(struct mm_struct *mm)
 	if (skas_needs_stub)
 		free_page(mmu->id.stack);
 
+	/*
+	 * If init_new_context wasn't called, this will be
+	 * zero, resulting in a kill(0), which will result in the
+	 * whole UML suddenly dying.  Also, cover negative and
+	 * 1 cases, since they shouldn't happen either.
+	 */
+	if (mmu->id.u.pid < 2) {
+		printk(KERN_ERR "corrupt mm_context - pid = %d\n",
+		       mmu->id.u.pid);
+		return;
+	}
+	os_kill_ptraced_process(mmu->id.u.pid, 1);
+
+	free_page(mmu->id.stack);
 	free_ldt(mmu);
 }

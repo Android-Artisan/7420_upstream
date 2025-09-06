@@ -28,6 +28,9 @@
 #include <linux/moduleparam.h>
 #include <sound/core.h>
 #include <sound/cs4231.h>
+#include <linux/module.h>
+#include <sound/core.h>
+#include <sound/wss.h>
 #include <sound/mpu401.h>
 #include <sound/initval.h>
 
@@ -42,6 +45,7 @@ MODULE_SUPPORTED_DEVICE("{{Crystal Semiconductors,CS4231}}");
 static int index[SNDRV_CARDS] = SNDRV_DEFAULT_IDX;	/* Index 0-MAX */
 static char *id[SNDRV_CARDS] = SNDRV_DEFAULT_STR;	/* ID for this card */
 static int enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE;	/* Enable this card */
+static bool enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE;	/* Enable this card */
 static long port[SNDRV_CARDS] = SNDRV_DEFAULT_PORT;	/* PnP setup */
 static long mpu_port[SNDRV_CARDS] = SNDRV_DEFAULT_PORT;	/* PnP setup */
 static int irq[SNDRV_CARDS] = SNDRV_DEFAULT_IRQ;	/* 5,7,9,11,12,15 */
@@ -69,6 +73,7 @@ module_param_array(dma2, int, NULL, 0444);
 MODULE_PARM_DESC(dma2, "DMA2 # for " CRD_NAME " driver.");
 
 static int __devinit snd_cs4231_match(struct device *dev, unsigned int n)
+static int snd_cs4231_match(struct device *dev, unsigned int n)
 {
 	if (!enable[n])
 		return 0;
@@ -83,6 +88,15 @@ static int __devinit snd_cs4231_match(struct device *dev, unsigned int n)
 	}
 	if (dma1[n] == SNDRV_AUTO_DMA) {
 		snd_printk(KERN_ERR "%s: please specify dma1\n", dev->bus_id);
+		dev_err(dev, "please specify port\n");
+		return 0;
+	}
+	if (irq[n] == SNDRV_AUTO_IRQ) {
+		dev_err(dev, "please specify irq\n");
+		return 0;
+	}
+	if (dma1[n] == SNDRV_AUTO_DMA) {
+		dev_err(dev, "please specify dma1\n");
 		return 0;
 	}
 	return 1;
@@ -101,12 +115,25 @@ static int __devinit snd_cs4231_probe(struct device *dev, unsigned int n)
 
 	error = snd_cs4231_create(card, port[n], -1, irq[n], dma1[n], dma2[n],
 			CS4231_HW_DETECT, 0, &chip);
+static int snd_cs4231_probe(struct device *dev, unsigned int n)
+{
+	struct snd_card *card;
+	struct snd_wss *chip;
+	int error;
+
+	error = snd_card_new(dev, index[n], id[n], THIS_MODULE, 0, &card);
+	if (error < 0)
+		return error;
+
+	error = snd_wss_create(card, port[n], -1, irq[n], dma1[n], dma2[n],
+			WSS_HW_DETECT, 0, &chip);
 	if (error < 0)
 		goto out;
 
 	card->private_data = chip;
 
 	error = snd_cs4231_pcm(chip, 0, &pcm);
+	error = snd_wss_pcm(chip, 0);
 	if (error < 0)
 		goto out;
 
@@ -123,6 +150,18 @@ static int __devinit snd_cs4231_probe(struct device *dev, unsigned int n)
 		goto out;
 
 	error = snd_cs4231_timer(chip, 0, NULL);
+	strcpy(card->shortname, chip->pcm->name);
+
+	sprintf(card->longname, "%s at 0x%lx, irq %d, dma %d",
+		chip->pcm->name, chip->port, irq[n], dma1[n]);
+	if (dma2[n] >= 0)
+		sprintf(card->longname + strlen(card->longname), "&%d", dma2[n]);
+
+	error = snd_wss_mixer(chip);
+	if (error < 0)
+		goto out;
+
+	error = snd_wss_timer(chip, 0);
 	if (error < 0)
 		goto out;
 
@@ -137,6 +176,10 @@ static int __devinit snd_cs4231_probe(struct device *dev, unsigned int n)
 	}
 
 	snd_card_set_dev(card, dev);
+
+					NULL) < 0)
+			dev_warn(dev, "MPU401 not detected\n");
+	}
 
 	error = snd_card_register(card);
 	if (error < 0)
@@ -153,6 +196,9 @@ static int __devexit snd_cs4231_remove(struct device *dev, unsigned int n)
 {
 	snd_card_free(dev_get_drvdata(dev));
 	dev_set_drvdata(dev, NULL);
+static int snd_cs4231_remove(struct device *dev, unsigned int n)
+{
+	snd_card_free(dev_get_drvdata(dev));
 	return 0;
 }
 
@@ -161,6 +207,7 @@ static int snd_cs4231_suspend(struct device *dev, unsigned int n, pm_message_t s
 {
 	struct snd_card *card = dev_get_drvdata(dev);
 	struct snd_cs4231 *chip = card->private_data;
+	struct snd_wss *chip = card->private_data;
 
 	snd_power_change_state(card, SNDRV_CTL_POWER_D3hot);
 	chip->suspend(chip);
@@ -171,6 +218,7 @@ static int snd_cs4231_resume(struct device *dev, unsigned int n)
 {
 	struct snd_card *card = dev_get_drvdata(dev);
 	struct snd_cs4231 *chip = card->private_data;
+	struct snd_wss *chip = card->private_data;
 
 	chip->resume(chip);
 	snd_power_change_state(card, SNDRV_CTL_POWER_D0);
@@ -182,6 +230,7 @@ static struct isa_driver snd_cs4231_driver = {
 	.match		= snd_cs4231_match,
 	.probe		= snd_cs4231_probe,
 	.remove		= __devexit_p(snd_cs4231_remove),
+	.remove		= snd_cs4231_remove,
 #ifdef CONFIG_PM
 	.suspend	= snd_cs4231_suspend,
 	.resume		= snd_cs4231_resume,

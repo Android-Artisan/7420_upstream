@@ -38,6 +38,7 @@ void rxrpc_UDP_error_report(struct sock *sk)
 	_enter("%p{%d}", sk, local->debug_id);
 
 	skb = skb_dequeue(&sk->sk_error_queue);
+	skb = sock_dequeue_err_skb(sk);
 	if (!skb) {
 		_leave("UDP socket errqueue empty");
 		return;
@@ -51,6 +52,19 @@ void rxrpc_UDP_error_report(struct sock *sk)
 
 	_net("Rx UDP Error from "NIPQUAD_FMT":%hu",
 	     NIPQUAD(addr), ntohs(port));
+	serr = SKB_EXT_ERR(skb);
+	if (!skb->len && serr->ee.ee_origin == SO_EE_ORIGIN_TIMESTAMPING) {
+		_leave("UDP empty message");
+		kfree_skb(skb);
+		return;
+	}
+
+	rxrpc_new_skb(skb);
+
+	addr = *(__be32 *)(skb_network_header(skb) + serr->addr_offset);
+	port = serr->port;
+
+	_net("Rx UDP Error from %pI4:%hu", &addr, ntohs(port));
 	_debug("Msg l:%d d:%d", skb->len, skb->data_len);
 
 	peer = rxrpc_find_peer(local, addr, port);
@@ -88,6 +102,9 @@ void rxrpc_UDP_error_report(struct sock *sk)
 
 		if (mtu == 0) {
 			/* they didn't give us a size, estimate one */
+		if (mtu == 0) {
+			/* they didn't give us a size, estimate one */
+			mtu = peer->if_mtu;
 			if (mtu > 1500) {
 				mtu >>= 1;
 				if (mtu < 1500)
@@ -141,6 +158,7 @@ void rxrpc_UDP_error_handler(struct work_struct *work)
 		container_of(work, struct rxrpc_transport, error_handler);
 	struct sk_buff *skb;
 	int local, err;
+	int err;
 
 	_enter("");
 

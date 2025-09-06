@@ -18,6 +18,8 @@
 #include <asm/mmu_context.h>
 #include <asm/arch/hwregs/asm/mmu_defs_asm.h>
 #include <asm/arch/hwregs/supp_reg.h>
+#include <arch/hwregs/asm/mmu_defs_asm.h>
+#include <arch/hwregs/supp_reg.h>
 
 extern void tlb_init(void);
 
@@ -29,6 +31,7 @@ extern void tlb_init(void);
  */
 void __init
 cris_mmu_init(void)
+void __init cris_mmu_init(void)
 {
 	unsigned long mmu_config;
 	unsigned long mmu_kbase_hi;
@@ -56,6 +59,13 @@ cris_mmu_init(void)
 	tlb_init();
 
 	/* Enable exceptions and initialize the kernel segments. */
+	/* Initialise the TLB. Function found in tlb.c. */
+	tlb_init();
+
+	/*
+	 * Enable exceptions and initialize the kernel segments.
+	 * See head.S for differences between ARTPEC-3 and ETRAX FS.
+	 */
 	mmu_config = ( REG_STATE(mmu, rw_mm_cfg, we, on)        |
 		       REG_STATE(mmu, rw_mm_cfg, acc, on)       |
 		       REG_STATE(mmu, rw_mm_cfg, ex, on)        |
@@ -70,6 +80,18 @@ cris_mmu_init(void)
 #else
 		       REG_STATE(mmu, rw_mm_cfg, seg_a, linear) |
 #endif
+#ifdef CONFIG_CRIS_MACH_ARTPEC3
+		       REG_STATE(mmu, rw_mm_cfg, seg_f, page)   |
+		       REG_STATE(mmu, rw_mm_cfg, seg_e, page)   |
+		       REG_STATE(mmu, rw_mm_cfg, seg_d, linear) |
+#else
+		       REG_STATE(mmu, rw_mm_cfg, seg_f, linear) |
+		       REG_STATE(mmu, rw_mm_cfg, seg_e, linear) |
+		       REG_STATE(mmu, rw_mm_cfg, seg_d, page)   |
+#endif
+		       REG_STATE(mmu, rw_mm_cfg, seg_c, linear) |
+		       REG_STATE(mmu, rw_mm_cfg, seg_b, linear) |
+                       REG_STATE(mmu, rw_mm_cfg, seg_a, page)   |
 		       REG_STATE(mmu, rw_mm_cfg, seg_9, page)   |
 		       REG_STATE(mmu, rw_mm_cfg, seg_8, page)   |
 		       REG_STATE(mmu, rw_mm_cfg, seg_7, page)   |
@@ -91,6 +113,18 @@ cris_mmu_init(void)
 #else
                          REG_FIELD(mmu, rw_mm_kbase_hi, base_a, 0xa) |
 #endif
+	/* See head.S for differences between ARTPEC-3 and ETRAX FS. */
+	mmu_kbase_hi = ( REG_FIELD(mmu, rw_mm_kbase_hi, base_f, 0x0) |
+#ifdef CONFIG_CRIS_MACH_ARTPEC3
+			 REG_FIELD(mmu, rw_mm_kbase_hi, base_e, 0x0) |
+			 REG_FIELD(mmu, rw_mm_kbase_hi, base_d, 0x5) |
+#else
+			 REG_FIELD(mmu, rw_mm_kbase_hi, base_e, 0x8) |
+			 REG_FIELD(mmu, rw_mm_kbase_hi, base_d, 0x0) |
+#endif
+                         REG_FIELD(mmu, rw_mm_kbase_hi, base_c, 0x4) |
+			 REG_FIELD(mmu, rw_mm_kbase_hi, base_b, 0xb) |
+			 REG_FIELD(mmu, rw_mm_kbase_hi, base_a, 0x0) |
 			 REG_FIELD(mmu, rw_mm_kbase_hi, base_9, 0x0) |
 			 REG_FIELD(mmu, rw_mm_kbase_hi, base_8, 0x0));
 
@@ -131,6 +165,7 @@ cris_mmu_init(void)
 
 void __init
 paging_init(void)
+void __init paging_init(void)
 {
 	int i;
 	unsigned long zones_size[MAX_NR_ZONES];

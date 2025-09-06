@@ -43,6 +43,9 @@ typedef struct scsi_fctargaddress {
 extern int scsi_ioctl(struct scsi_device *, int, void __user *);
 extern int scsi_nonblockable_ioctl(struct scsi_device *sdev, int cmd,
 				   void __user *arg, struct file *filp);
+int scsi_ioctl_block_when_processing_errors(struct scsi_device *sdev,
+		int cmd, bool ndelay);
+extern int scsi_ioctl(struct scsi_device *, int, void __user *);
 
 #endif /* __KERNEL__ */
 #endif /* _SCSI_IOCTL_H */

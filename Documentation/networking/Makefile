@@ -6,3 +6,4 @@ hostprogs-y := ifenslave
 
 # Tell kbuild to always build the programs
 always := $(hostprogs-y)
+subdir-y := timestamping

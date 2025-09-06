@@ -27,6 +27,9 @@
  * along with this program; see the file copying.
  * if not, write to the free software foundation,
  * 59 temple place - suite 330, boston, ma 02111-1307, usa.
+ * Copyright 2007-2008 Analog Devices Inc.
+ *
+ * Licensed under the GPL-2 or later
  */
 
 #ifndef _BF527_IRQ_H_
@@ -64,6 +67,9 @@
 #define IRQ_CORETMR		6	/* Core timer */
 
 #define BFIN_IRQ(x)		((x) + 7)
+#include <mach-common/irq.h>
+
+#define NR_PERI_INTS		(2 * 32)
 
 #define IRQ_PLL_WAKEUP		BFIN_IRQ(0)	/* PLL Wakeup Interrupt */
 #define IRQ_DMA0_ERROR		BFIN_IRQ(1)	/* DMA Error 0 (generic) */
@@ -79,6 +85,7 @@
 #define IRQ_UART1_ERROR		BFIN_IRQ(13)	/* UART1 Status */
 #define IRQ_RTC			BFIN_IRQ(14)	/* RTC */
 #define IRQ_PPI      		BFIN_IRQ(15)	/* DMA Channel 0 (PPI/NAND) */
+#define IRQ_PPI			BFIN_IRQ(15)	/* DMA Channel 0 (PPI/NAND) */
 #define IRQ_SPORT0_RX		BFIN_IRQ(16)	/* DMA 3 Channel (SPORT0 RX) */
 #define IRQ_SPORT0_TX		BFIN_IRQ(17)	/* DMA 4 Channel (SPORT0 TX) */
 #define IRQ_SPORT1_RX		BFIN_IRQ(18)	/* DMA 5 Channel (SPORT1 RX) */
@@ -104,6 +111,27 @@
 #define IRQ_TMR5		BFIN_IRQ(37)	/* Timer 5 */
 #define IRQ_TMR6		BFIN_IRQ(38)	/* Timer 6 */
 #define IRQ_TMR7		BFIN_IRQ(39)	/* Timer 7 */
+#define IRQ_TWI			BFIN_IRQ(20)	/* TWI */
+#define IRQ_SPI			BFIN_IRQ(21)	/* DMA 7 Channel (SPI) */
+#define IRQ_UART0_RX		BFIN_IRQ(22)	/* DMA8 Channel (UART0 RX) */
+#define IRQ_UART0_TX		BFIN_IRQ(23)	/* DMA9 Channel (UART0 TX) */
+#define IRQ_UART1_RX		BFIN_IRQ(24)	/* DMA10 Channel (UART1 RX) */
+#define IRQ_UART1_TX		BFIN_IRQ(25)	/* DMA11 Channel (UART1 TX) */
+#define IRQ_OPTSEC		BFIN_IRQ(26)	/* OTPSEC Interrupt */
+#define IRQ_CNT			BFIN_IRQ(27)	/* GP Counter */
+#define IRQ_MAC_RX		BFIN_IRQ(28)	/* DMA1 Channel (MAC RX/HDMA) */
+#define IRQ_PORTH_INTA		BFIN_IRQ(29)	/* Port H Interrupt A */
+#define IRQ_MAC_TX		BFIN_IRQ(30)	/* DMA2 Channel (MAC TX/NAND) */
+#define IRQ_NFC			BFIN_IRQ(30)	/* DMA2 Channel (MAC TX/NAND) */
+#define IRQ_PORTH_INTB		BFIN_IRQ(31)	/* Port H Interrupt B */
+#define IRQ_TIMER0		BFIN_IRQ(32)	/* Timer 0 */
+#define IRQ_TIMER1		BFIN_IRQ(33)	/* Timer 1 */
+#define IRQ_TIMER2		BFIN_IRQ(34)	/* Timer 2 */
+#define IRQ_TIMER3		BFIN_IRQ(35)	/* Timer 3 */
+#define IRQ_TIMER4		BFIN_IRQ(36)	/* Timer 4 */
+#define IRQ_TIMER5		BFIN_IRQ(37)	/* Timer 5 */
+#define IRQ_TIMER6		BFIN_IRQ(38)	/* Timer 6 */
+#define IRQ_TIMER7		BFIN_IRQ(39)	/* Timer 7 */
 #define IRQ_PORTG_INTA		BFIN_IRQ(40)	/* Port G Interrupt A */
 #define IRQ_PORTG_INTB		BFIN_IRQ(41)	/* Port G Interrupt B */
 #define IRQ_MEM_DMA0		BFIN_IRQ(42)	/* MDMA Stream 0 */
@@ -187,6 +215,71 @@
 #define IVG13           13
 #define IVG14           14
 #define IVG15           15
+#define SYS_IRQS		BFIN_IRQ(63)	/* 70 */
+
+#define IRQ_PF0			71
+#define IRQ_PF1			72
+#define IRQ_PF2			73
+#define IRQ_PF3			74
+#define IRQ_PF4			75
+#define IRQ_PF5			76
+#define IRQ_PF6			77
+#define IRQ_PF7			78
+#define IRQ_PF8			79
+#define IRQ_PF9			80
+#define IRQ_PF10		81
+#define IRQ_PF11		82
+#define IRQ_PF12		83
+#define IRQ_PF13		84
+#define IRQ_PF14		85
+#define IRQ_PF15		86
+
+#define IRQ_PG0			87
+#define IRQ_PG1			88
+#define IRQ_PG2			89
+#define IRQ_PG3			90
+#define IRQ_PG4			91
+#define IRQ_PG5			92
+#define IRQ_PG6			93
+#define IRQ_PG7			94
+#define IRQ_PG8			95
+#define IRQ_PG9			96
+#define IRQ_PG10		97
+#define IRQ_PG11		98
+#define IRQ_PG12		99
+#define IRQ_PG13		100
+#define IRQ_PG14		101
+#define IRQ_PG15		102
+
+#define IRQ_PH0			103
+#define IRQ_PH1			104
+#define IRQ_PH2			105
+#define IRQ_PH3			106
+#define IRQ_PH4			107
+#define IRQ_PH5			108
+#define IRQ_PH6			109
+#define IRQ_PH7			110
+#define IRQ_PH8			111
+#define IRQ_PH9			112
+#define IRQ_PH10		113
+#define IRQ_PH11		114
+#define IRQ_PH12		115
+#define IRQ_PH13		116
+#define IRQ_PH14		117
+#define IRQ_PH15		118
+
+#define GPIO_IRQ_BASE		IRQ_PF0
+
+#define IRQ_MAC_PHYINT		119	/* PHY_INT Interrupt */
+#define IRQ_MAC_MMCINT		120	/* MMC Counter Interrupt */
+#define IRQ_MAC_RXFSINT		121	/* RX Frame-Status Interrupt */
+#define IRQ_MAC_TXFSINT		122	/* TX Frame-Status Interrupt */
+#define IRQ_MAC_WAKEDET		123	/* Wake-Up Interrupt */
+#define IRQ_MAC_RXDMAERR	124	/* RX DMA Direction Error Interrupt */
+#define IRQ_MAC_TXDMAERR	125	/* TX DMA Direction Error Interrupt */
+#define IRQ_MAC_STMDONE		126	/* Station Mgt. Transfer Done Interrupt */
+
+#define NR_MACH_IRQS		(IRQ_MAC_STMDONE + 1)
 
 /* IAR0 BIT FIELDS */
 #define IRQ_PLL_WAKEUP_POS	0
@@ -197,6 +290,12 @@
 #define IRQ_DMAR1_OVR_POS 	20
 #define IRQ_PPI_ERROR_POS 	24
 #define IRQ_MAC_ERROR_POS 	28
+#define IRQ_DMAR0_BLK_POS	8
+#define IRQ_DMAR1_BLK_POS	12
+#define IRQ_DMAR0_OVR_POS	16
+#define IRQ_DMAR1_OVR_POS	20
+#define IRQ_PPI_ERROR_POS	24
+#define IRQ_MAC_ERROR_POS	28
 
 /* IAR1 BIT FIELDS */
 #define IRQ_SPORT0_ERROR_POS	0
@@ -205,6 +304,10 @@
 #define IRQ_UART1_ERROR_POS 	20
 #define IRQ_RTC_POS         	24
 #define IRQ_PPI_POS         	28
+#define IRQ_UART0_ERROR_POS	16
+#define IRQ_UART1_ERROR_POS	20
+#define IRQ_RTC_POS		24
+#define IRQ_PPI_POS		28
 
 /* IAR2 BIT FIELDS */
 #define IRQ_SPORT0_RX_POS	0
@@ -235,6 +338,30 @@
 #define IRQ_TMR5_POS		20
 #define IRQ_TMR6_POS		24
 #define IRQ_TMR7_POS		28
+#define IRQ_TWI_POS		16
+#define IRQ_SPI_POS		20
+#define IRQ_UART0_RX_POS	24
+#define IRQ_UART0_TX_POS	28
+
+/* IAR3 BIT FIELDS */
+#define IRQ_UART1_RX_POS	0
+#define IRQ_UART1_TX_POS	4
+#define IRQ_OPTSEC_POS		8
+#define IRQ_CNT_POS		12
+#define IRQ_MAC_RX_POS		16
+#define IRQ_PORTH_INTA_POS	20
+#define IRQ_MAC_TX_POS		24
+#define IRQ_PORTH_INTB_POS	28
+
+/* IAR4 BIT FIELDS */
+#define IRQ_TIMER0_POS		0
+#define IRQ_TIMER1_POS		4
+#define IRQ_TIMER2_POS		8
+#define IRQ_TIMER3_POS		12
+#define IRQ_TIMER4_POS		16
+#define IRQ_TIMER5_POS		20
+#define IRQ_TIMER6_POS		24
+#define IRQ_TIMER7_POS		28
 
 /* IAR5 BIT FIELDS */
 #define IRQ_PORTG_INTA_POS	0
@@ -257,3 +384,21 @@
 #define IRQ_USB_DMA_POS    	28
 
 #endif				/* _BF527_IRQ_H_ */
+#define IRQ_MEM_DMA0_POS	8
+#define IRQ_MEM_DMA1_POS	12
+#define IRQ_WATCH_POS		16
+#define IRQ_PORTF_INTA_POS	20
+#define IRQ_PORTF_INTB_POS	24
+#define IRQ_SPI_ERROR_POS	28
+
+/* IAR6 BIT FIELDS */
+#define IRQ_NFC_ERROR_POS	0
+#define IRQ_HDMA_ERROR_POS	4
+#define IRQ_HDMA_POS		8
+#define IRQ_USB_EINT_POS	12
+#define IRQ_USB_INT0_POS	16
+#define IRQ_USB_INT1_POS	20
+#define IRQ_USB_INT2_POS	24
+#define IRQ_USB_DMA_POS		28
+
+#endif

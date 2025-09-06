@@ -63,6 +63,7 @@ Scott Hill shill@gtcocalcomp.com
 #include <asm/unaligned.h>
 #include <asm/byteorder.h>
 
+#include <linux/bitops.h>
 
 #include <linux/usb/input.h>
 
@@ -81,6 +82,7 @@ Scott Hill shill@gtcocalcomp.com
 
 /* Max size of a single report */
 #define REPORT_MAX_SIZE       10
+#define MAX_COLLECTION_LEVELS  10
 
 
 /* Bitmask whether pen is in range */
@@ -93,6 +95,7 @@ Scott Hill shill@gtcocalcomp.com
 
 /* Device table */
 static struct usb_device_id gtco_usbid_table [] = {
+static const struct usb_device_id gtco_usbid_table[] = {
 	{ USB_DEVICE(VENDOR_ID_GTCO, PID_400) },
 	{ USB_DEVICE(VENDOR_ID_GTCO, PID_401) },
 	{ USB_DEVICE(VENDOR_ID_GTCO, PID_1000) },
@@ -108,6 +111,7 @@ struct gtco {
 
 	struct input_dev  *inputdevice; /* input device struct pointer  */
 	struct usb_device *usbdev; /* the usb device for this device */
+	struct usb_interface *intf;	/* the usb interface for this device */
 	struct urb        *urbinfo;	 /* urb for incoming reports      */
 	dma_addr_t        buf_dma;  /* dma addr of the data buffer*/
 	unsigned char *   buffer;   /* databuffer for reports */
@@ -202,6 +206,7 @@ struct hid_descriptor
 static void parse_hid_report_descriptor(struct gtco *device, char * report,
 					int length)
 {
+	struct device *ddev = &device->intf->dev;
 	int   x, i = 0;
 
 	/* Tag primitive vars */
@@ -225,20 +230,24 @@ static void parse_hid_report_descriptor(struct gtco *device, char * report,
 	char  maintype = 'x';
 	char  globtype[12];
 	int   indent = 0;
-	char  indentstr[10] = "";
-
+	char  indentstr[MAX_COLLECTION_LEVELS + 1] = { 0 };
 
 	dbg("======>>>>>>PARSE<<<<<<======");
+	dev_dbg(ddev, "======>>>>>>PARSE<<<<<<======\n");
 
 	/* Walk  this report and pull out the info we need */
 	while (i < length) {
-		prefix = report[i];
-
-		/* Skip over prefix */
-		i++;
+		prefix = report[i++];
 
 		/* Determine data size and save the data in the proper variable */
-		size = PREF_SIZE(prefix);
+		size = (1U << PREF_SIZE(prefix)) >> 1;
+		if (i + size > length) {
+			dev_err(ddev,
+				"Not enough data (need %d, have %d)\n",
+				i + size, length);
+			break;
+		}
+
 		switch (size) {
 		case 1:
 			data = report[i];
@@ -246,8 +255,7 @@ static void parse_hid_report_descriptor(struct gtco *device, char * report,
 		case 2:
 			data16 = get_unaligned_le16(&report[i]);
 			break;
-		case 3:
-			size = 4;
+		case 4:
 			data32 = get_unaligned_le32(&report[i]);
 			break;
 		}
@@ -282,6 +290,11 @@ static void parse_hid_report_descriptor(struct gtco *device, char * report,
 				    globalval[TAG_GLOB_LOG_MAX], globalval[TAG_GLOB_LOG_MAX],
 				    globalval[TAG_GLOB_LOG_MIN], globalval[TAG_GLOB_LOG_MIN],
 				    globalval[TAG_GLOB_REPORT_SZ] * globalval[TAG_GLOB_REPORT_CNT]);
+				dev_dbg(ddev, "::::: Saving Report: %d input #%d Max: 0x%X(%d) Min:0x%X(%d) of %d bits\n",
+					globalval[TAG_GLOB_REPORT_ID], inputnum,
+					globalval[TAG_GLOB_LOG_MAX], globalval[TAG_GLOB_LOG_MAX],
+					globalval[TAG_GLOB_LOG_MIN], globalval[TAG_GLOB_LOG_MIN],
+					globalval[TAG_GLOB_REPORT_SZ] * globalval[TAG_GLOB_REPORT_CNT]);
 
 
 				/*
@@ -293,6 +306,7 @@ static void parse_hid_report_descriptor(struct gtco *device, char * report,
 				switch (inputnum) {
 				case 0:  /* X coord */
 					dbg("GER: X Usage: 0x%x", usage);
+					dev_dbg(ddev, "GER: X Usage: 0x%x\n", usage);
 					if (device->max_X == 0) {
 						device->max_X = globalval[TAG_GLOB_LOG_MAX];
 						device->min_X = globalval[TAG_GLOB_LOG_MIN];
@@ -301,6 +315,7 @@ static void parse_hid_report_descriptor(struct gtco *device, char * report,
 
 				case 1:  /* Y coord */
 					dbg("GER: Y Usage: 0x%x", usage);
+					dev_dbg(ddev, "GER: Y Usage: 0x%x\n", usage);
 					if (device->max_Y == 0) {
 						device->max_Y = globalval[TAG_GLOB_LOG_MAX];
 						device->min_Y = globalval[TAG_GLOB_LOG_MIN];
@@ -349,11 +364,22 @@ static void parse_hid_report_descriptor(struct gtco *device, char * report,
 			case TAG_MAIN_COL_START:
 				maintype = 'S';
 
+				if (indent == MAX_COLLECTION_LEVELS) {
+					dev_err(ddev, "Collection level %d would exceed limit of %d\n",
+						indent + 1,
+						MAX_COLLECTION_LEVELS);
+					break;
+				}
+
 				if (data == 0) {
 					dbg("======>>>>>> Physical");
 					strcpy(globtype, "Physical");
 				} else
 					dbg("======>>>>>>");
+					dev_dbg(ddev, "======>>>>>> Physical\n");
+					strcpy(globtype, "Physical");
+				} else
+					dev_dbg(ddev, "======>>>>>>\n");
 
 				/* Indent the debug output */
 				indent++;
@@ -369,7 +395,16 @@ static void parse_hid_report_descriptor(struct gtco *device, char * report,
 
 			case TAG_MAIN_COL_END:
 				dbg("<<<<<<======");
+				dev_dbg(ddev, "<<<<<<======\n");
 				maintype = 'E';
+
+				if (indent == 0) {
+					dev_err(ddev, "Collection level already at zero\n");
+					break;
+				}
+
+				dev_dbg(ddev, "<<<<<<======\n");
+
 				indent--;
 				for (x = 0; x < indent; x++)
 					indentstr[x] = '-';
@@ -396,6 +431,18 @@ static void parse_hid_report_descriptor(struct gtco *device, char * report,
 			case 4:
 				dbg("%sMAINTAG:(%d) %c SIZE: %d Data: %s 0x%x",
 				    indentstr, tag, maintype, size, globtype, data32);
+				dev_dbg(ddev, "%sMAINTAG:(%d) %c SIZE: %d Data: %s 0x%x\n",
+					indentstr, tag, maintype, size, globtype, data);
+				break;
+
+			case 2:
+				dev_dbg(ddev, "%sMAINTAG:(%d) %c SIZE: %d Data: %s 0x%x\n",
+					indentstr, tag, maintype, size, globtype, data16);
+				break;
+
+			case 4:
+				dev_dbg(ddev, "%sMAINTAG:(%d) %c SIZE: %d Data: %s 0x%x\n",
+					indentstr, tag, maintype, size, globtype, data32);
 				break;
 			}
 			break;
@@ -467,24 +514,32 @@ static void parse_hid_report_descriptor(struct gtco *device, char * report,
 				case 1:
 					dbg("%sGLOBALTAG:%s(%d) SIZE: %d Data: 0x%x",
 					    indentstr, globtype, tag, size, data);
+					dev_dbg(ddev, "%sGLOBALTAG:%s(%d) SIZE: %d Data: 0x%x\n",
+						indentstr, globtype, tag, size, data);
 					globalval[tag] = data;
 					break;
 
 				case 2:
 					dbg("%sGLOBALTAG:%s(%d) SIZE: %d Data: 0x%x",
 					    indentstr, globtype, tag, size, data16);
+					dev_dbg(ddev, "%sGLOBALTAG:%s(%d) SIZE: %d Data: 0x%x\n",
+						indentstr, globtype, tag, size, data16);
 					globalval[tag] = data16;
 					break;
 
 				case 4:
 					dbg("%sGLOBALTAG:%s(%d) SIZE: %d Data: 0x%x",
 					    indentstr, globtype, tag, size, data32);
+					dev_dbg(ddev, "%sGLOBALTAG:%s(%d) SIZE: %d Data: 0x%x\n",
+						indentstr, globtype, tag, size, data32);
 					globalval[tag] = data32;
 					break;
 				}
 			} else {
 				dbg("%sGLOBALTAG: ILLEGAL TAG:%d SIZE: %d ",
 				    indentstr, tag, size);
+				dev_dbg(ddev, "%sGLOBALTAG: ILLEGAL TAG:%d SIZE: %d\n",
+					indentstr, tag, size);
 			}
 			break;
 
@@ -523,6 +578,18 @@ static void parse_hid_report_descriptor(struct gtco *device, char * report,
 			case 4:
 				dbg("%sLOCALTAG:(%d) %s SIZE: %d Data: 0x%x",
 				    indentstr, tag, globtype, size, data32);
+				dev_dbg(ddev, "%sLOCALTAG:(%d) %s SIZE: %d Data: 0x%x\n",
+					indentstr, tag, globtype, size, data);
+				break;
+
+			case 2:
+				dev_dbg(ddev, "%sLOCALTAG:(%d) %s SIZE: %d Data: 0x%x\n",
+					indentstr, tag, globtype, size, data16);
+				break;
+
+			case 4:
+				dev_dbg(ddev, "%sLOCALTAG:(%d) %s SIZE: %d Data: 0x%x\n",
+					indentstr, tag, globtype, size, data32);
 				break;
 			}
 
@@ -680,6 +747,11 @@ static void gtco_urb_callback(struct urb *urbinfo)
 
 			valsigned = (device->buffer[7]);
 			input_report_abs(inputdev, ABS_TILT_Y, (s32)valsigned);
+			input_report_abs(inputdev, ABS_TILT_X,
+					 sign_extend32(device->buffer[6], 6));
+
+			input_report_abs(inputdev, ABS_TILT_Y,
+					 sign_extend32(device->buffer[7], 6));
 
 			/* Fall thru */
 		case 2:
@@ -716,6 +788,9 @@ static void gtco_urb_callback(struct urb *urbinfo)
 				val = device->buffer[5] & MASK_BUTTON;
 				dbg("======>>>>>>REPORT 1: val 0x%X(%d)",
 				    val, val);
+				dev_dbg(&device->intf->dev,
+					"======>>>>>>REPORT 1: val 0x%X(%d)\n",
+					val, val);
 
 				/*
 				 * We don't apply any meaning to the button
@@ -809,6 +884,8 @@ static void gtco_urb_callback(struct urb *urbinfo)
 	rc = usb_submit_urb(urbinfo, GFP_ATOMIC);
 	if (rc != 0)
 		err("usb_submit_urb failed rc=0x%x", rc);
+		dev_err(&device->intf->dev,
+			"usb_submit_urb failed rc=0x%x\n", rc);
 }
 
 /*
@@ -839,6 +916,7 @@ static int gtco_probe(struct usb_interface *usbinterface,
 	input_dev = input_allocate_device();
 	if (!gtco || !input_dev) {
 		err("No more memory");
+		dev_err(&usbinterface->dev, "No more memory\n");
 		error = -ENOMEM;
 		goto err_free_devs;
 	}
@@ -854,6 +932,14 @@ static int gtco_probe(struct usb_interface *usbinterface,
 					GFP_KERNEL, &gtco->buf_dma);
 	if (!gtco->buffer) {
 		err("No more memory for us buffers");
+	gtco->usbdev = interface_to_usbdev(usbinterface);
+	gtco->intf = usbinterface;
+
+	/* Allocate some data for incoming reports */
+	gtco->buffer = usb_alloc_coherent(gtco->usbdev, REPORT_MAX_SIZE,
+					  GFP_KERNEL, &gtco->buf_dma);
+	if (!gtco->buffer) {
+		dev_err(&usbinterface->dev, "No more memory for us buffers\n");
 		error = -ENOMEM;
 		goto err_free_devs;
 	}
@@ -862,15 +948,20 @@ static int gtco_probe(struct usb_interface *usbinterface,
 	gtco->urbinfo = usb_alloc_urb(0, GFP_KERNEL);
 	if (!gtco->urbinfo) {
 		err("Failed to allocate URB");
+		dev_err(&usbinterface->dev, "Failed to allocate URB\n");
 		error = -ENOMEM;
 		goto err_free_buf;
 	}
 
-	/*
-	 * The endpoint is always altsetting 0, we know this since we know
-	 * this device only has one interrupt endpoint
-	 */
-	endpoint = &usbinterface->altsetting[0].endpoint[0].desc;
+	/* Sanity check that a device has an endpoint */
+	if (usbinterface->cur_altsetting->desc.bNumEndpoints < 1) {
+		dev_err(&usbinterface->dev,
+			"Invalid number of endpoints\n");
+		error = -EINVAL;
+		goto err_free_urb;
+	}
+
+	endpoint = &usbinterface->cur_altsetting->endpoint[0].desc;
 
 	/* Some debug */
 	dbg("gtco # interfaces: %d", usbinterface->num_altsetting);
@@ -881,6 +972,14 @@ static int gtco_probe(struct usb_interface *usbinterface,
 		dbg("endpoint: we have interrupt endpoint\n");
 
 	dbg("endpoint extra len:%d ", usbinterface->altsetting[0].extralen);
+	dev_dbg(&usbinterface->dev, "gtco # interfaces: %d\n", usbinterface->num_altsetting);
+	dev_dbg(&usbinterface->dev, "num endpoints:     %d\n", usbinterface->cur_altsetting->desc.bNumEndpoints);
+	dev_dbg(&usbinterface->dev, "interface class:   %d\n", usbinterface->cur_altsetting->desc.bInterfaceClass);
+	dev_dbg(&usbinterface->dev, "endpoint: attribute:0x%x type:0x%x\n", endpoint->bmAttributes, endpoint->bDescriptorType);
+	if (usb_endpoint_xfer_int(endpoint))
+		dev_dbg(&usbinterface->dev, "endpoint: we have interrupt endpoint\n");
+
+	dev_dbg(&usbinterface->dev, "endpoint extra len:%d\n", usbinterface->altsetting[0].extralen);
 
 	/*
 	 * Find the HID descriptor so we can find out the size of the
@@ -889,6 +988,9 @@ static int gtco_probe(struct usb_interface *usbinterface,
 	if (usb_get_extra_descriptor(usbinterface->cur_altsetting,
 				     HID_DEVICE_TYPE, &hid_desc) != 0){
 		err("Can't retrieve exta USB descriptor to get hid report descriptor length");
+				     HID_DEVICE_TYPE, &hid_desc) != 0) {
+		dev_err(&usbinterface->dev,
+			"Can't retrieve exta USB descriptor to get hid report descriptor length\n");
 		error = -EIO;
 		goto err_free_urb;
 	}
@@ -899,6 +1001,13 @@ static int gtco_probe(struct usb_interface *usbinterface,
 	report = kzalloc(le16_to_cpu(hid_desc->wDescriptorLength), GFP_KERNEL);
 	if (!report) {
 		err("No more memory for report");
+	dev_dbg(&usbinterface->dev,
+		"Extra descriptor success: type:%d  len:%d\n",
+		hid_desc->bDescriptorType,  hid_desc->wDescriptorLength);
+
+	report = kzalloc(le16_to_cpu(hid_desc->wDescriptorLength), GFP_KERNEL);
+	if (!report) {
+		dev_err(&usbinterface->dev, "No more memory for report\n");
 		error = -ENOMEM;
 		goto err_free_urb;
 	}
@@ -916,6 +1025,7 @@ static int gtco_probe(struct usb_interface *usbinterface,
 					 5000); /* 5 secs */
 
 		dbg("usb_control_msg result: %d", result);
+		dev_dbg(&usbinterface->dev, "usb_control_msg result: %d\n", result);
 		if (result == le16_to_cpu(hid_desc->wDescriptorLength)) {
 			parse_hid_report_descriptor(gtco, report, result);
 			break;
@@ -928,6 +1038,9 @@ static int gtco_probe(struct usb_interface *usbinterface,
 	if (result != le16_to_cpu(hid_desc->wDescriptorLength)) {
 		err("Failed to get HID Report Descriptor of size: %d",
 		    hid_desc->wDescriptorLength);
+		dev_err(&usbinterface->dev,
+			"Failed to get HID Report Descriptor of size: %d\n",
+			hid_desc->wDescriptorLength);
 		error = -EIO;
 		goto err_free_urb;
 	}
@@ -954,7 +1067,7 @@ static int gtco_probe(struct usb_interface *usbinterface,
 	input_dev->dev.parent = &usbinterface->dev;
 
 	/* Setup the URB, it will be posted later on open of input device */
-	endpoint = &usbinterface->altsetting[0].endpoint[0].desc;
+	endpoint = &usbinterface->cur_altsetting->endpoint[0].desc;
 
 	usb_fill_int_urb(gtco->urbinfo,
 			 gtco->usbdev,
@@ -984,6 +1097,8 @@ static int gtco_probe(struct usb_interface *usbinterface,
  err_free_buf:
 	usb_buffer_free(gtco->usbdev, REPORT_MAX_SIZE,
 			gtco->buffer, gtco->buf_dma);
+	usb_free_coherent(gtco->usbdev, REPORT_MAX_SIZE,
+			  gtco->buffer, gtco->buf_dma);
  err_free_devs:
 	input_free_device(input_dev);
 	kfree(gtco);
@@ -1011,6 +1126,12 @@ static void gtco_disconnect(struct usb_interface *interface)
 	}
 
 	info("gtco driver disconnected");
+		usb_free_coherent(gtco->usbdev, REPORT_MAX_SIZE,
+				  gtco->buffer, gtco->buf_dma);
+		kfree(gtco);
+	}
+
+	dev_info(&interface->dev, "gtco driver disconnected\n");
 }
 
 /*   STANDARD MODULE LOAD ROUTINES  */
@@ -1050,4 +1171,7 @@ static void __exit gtco_exit(void)
 module_init(gtco_init);
 module_exit(gtco_exit);
 
+module_usb_driver(gtco_driverinfo_table);
+
+MODULE_DESCRIPTION("GTCO digitizer USB driver");
 MODULE_LICENSE("GPL");

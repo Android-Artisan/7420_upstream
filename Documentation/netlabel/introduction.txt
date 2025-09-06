@@ -1,5 +1,4 @@
 NetLabel Introduction
-==============================================================================
 Paul Moore, paul.moore@hp.com
 
 August 2, 2006

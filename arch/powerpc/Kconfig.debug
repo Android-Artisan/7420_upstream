@@ -30,6 +30,43 @@ config DEBUG_PAGEALLOC
 config HCALL_STATS
 	bool "Hypervisor call instrumentation"
 	depends on PPC_PSERIES && DEBUG_FS
+config PPC_DISABLE_WERROR
+	bool "Don't build arch/powerpc code with -Werror"
+	default n
+	help
+	  This option tells the compiler NOT to build the code under
+	  arch/powerpc with the -Werror flag (which means warnings
+	  are treated as errors).
+
+	  Only enable this if you are hitting a build failure in the
+	  arch/powerpc code caused by a warning, and you don't feel
+	  inclined to fix it.
+
+config PPC_WERROR
+	bool
+	depends on !PPC_DISABLE_WERROR
+	default y
+
+config STRICT_MM_TYPECHECKS
+	bool "Do extra type checking on mm types"
+	default n
+	help
+	  This option turns on extra type checking for some mm related types.
+
+	  If you don't know what this means, say N.
+
+config PRINT_STACK_DEPTH
+	int "Stack depth to print" if DEBUG_KERNEL
+	default 64
+	help
+	  This option allows you to set the stack depth that the kernel
+	  prints in stack traces. This can be useful if your display is
+	  too small and stack traces cause important information to
+	  scroll off the screen.
+
+config HCALL_STATS
+	bool "Hypervisor call instrumentation"
+	depends on PPC_PSERIES && DEBUG_FS && TRACEPOINTS
 	help
 	  Adds code to keep track of the number of hypervisor calls made and
 	  the amount of time spent in hypervisor calls.  Wall time spent in
@@ -41,6 +78,19 @@ config HCALL_STATS
 	  This option will add a small amount of overhead to all hypervisor
 	  calls.
 
+config PPC_EMULATED_STATS
+	bool "Emulated instructions tracking"
+	depends on DEBUG_FS
+	help
+	  Adds code to keep track of the number of instructions that are
+	  emulated by the in-kernel emulator. Counters for the various classes
+	  of emulated instructions are available under
+	  powerpc/emulated_instructions/ in the root of the debugfs file
+	  system. Optionally (controlled by
+	  powerpc/emulated_instructions/do_warn in debugfs), rate-limited
+	  warnings can be printed to the console when instructions are
+	  emulated.
+
 config CODE_PATCHING_SELFTEST
 	bool "Run self-tests of the code-patching code."
 	depends on DEBUG_KERNEL
@@ -48,6 +98,11 @@ config CODE_PATCHING_SELFTEST
 
 config FTR_FIXUP_SELFTEST
 	bool "Run self-tests of the feature-fixup code."
+	depends on DEBUG_KERNEL
+	default n
+
+config MSI_BITMAP_SELFTEST
+	bool "Run self-tests of the MSI bitmap code."
 	depends on DEBUG_KERNEL
 	default n
 
@@ -116,6 +171,7 @@ config BDI_SWITCH
 config BOOTX_TEXT
 	bool "Support for early boot text console (BootX or OpenFirmware only)"
 	depends on PPC_OF && PPC_MULTIPLATFORM
+	depends on PPC_BOOK3S
 	help
 	  Say Y here to see progress messages from the boot firmware in text
 	  mode. Requires either BootX or Open Firmware.
@@ -141,12 +197,26 @@ choice
 	  enable debugging for the wrong type of machine your kernel
 	  _will not boot_.
 
+config PPC_EARLY_DEBUG_BOOTX
+	bool "BootX or OpenFirmware"
+	depends on BOOTX_TEXT
+	help
+	  Select this to enable early debugging for a machine using BootX
+	  or OpenFirmware.
+
 config PPC_EARLY_DEBUG_LPAR
 	bool "LPAR HV Console"
 	depends on PPC_PSERIES
 	help
 	  Select this to enable early debugging for a machine with a HVC
 	  console on vterm 0.
+
+config PPC_EARLY_DEBUG_LPAR_HVSI
+	bool "LPAR HVSI Console"
+	depends on PPC_PSERIES
+	help
+	  Select this to enable early debugging for a machine with a HVSI
+	  console on a specified vterm.
 
 config PPC_EARLY_DEBUG_G5
 	bool "Apple G5"
@@ -221,6 +291,85 @@ config PPC_EARLY_DEBUG_CPM
 
 endchoice
 
+config PPC_EARLY_DEBUG_USBGECKO
+	bool "Early debugging through the USB Gecko adapter"
+	depends on GAMECUBE_COMMON
+	select USBGECKO_UDBG
+	help
+	  Select this to enable early debugging for Nintendo GameCube/Wii
+	  consoles via an external USB Gecko adapter.
+
+config PPC_EARLY_DEBUG_PS3GELIC
+	bool "Early debugging through the PS3 Ethernet port"
+	depends on PPC_PS3
+	select PS3GELIC_UDBG
+	help
+	  Select this to enable early debugging for the PlayStation3 via
+	  UDP broadcasts sent out through the Ethernet port.
+
+config PPC_EARLY_DEBUG_OPAL_RAW
+	bool "OPAL raw console"
+	depends on HVC_OPAL
+	help
+	  Select this to enable early debugging for the PowerNV platform
+	  using a "raw" console
+
+config PPC_EARLY_DEBUG_OPAL_HVSI
+	bool "OPAL hvsi console"
+	depends on HVC_OPAL
+	help
+	  Select this to enable early debugging for the PowerNV platform
+	  using an "hvsi" console
+
+config PPC_EARLY_DEBUG_MEMCONS
+	bool "In memory console"
+	help
+	  Select this to enable early debugging using an in memory console.
+	  This console provides input and output buffers stored within the
+	  kernel BSS and should be safe to select on any system. A debugger
+	  can then be used to read kernel output or send input to the console.
+endchoice
+
+config PPC_MEMCONS_OUTPUT_SIZE
+	int "In memory console output buffer size"
+	depends on PPC_EARLY_DEBUG_MEMCONS
+	default 4096
+	help
+	  Selects the size of the output buffer (in bytes) of the in memory
+	  console.
+
+config PPC_MEMCONS_INPUT_SIZE
+	int "In memory console input buffer size"
+	depends on PPC_EARLY_DEBUG_MEMCONS
+	default 128
+	help
+	  Selects the size of the input buffer (in bytes) of the in memory
+	  console.
+
+config PPC_EARLY_DEBUG_OPAL
+	def_bool y
+	depends on PPC_EARLY_DEBUG_OPAL_RAW || PPC_EARLY_DEBUG_OPAL_HVSI
+
+
+config PPC_EARLY_DEBUG_HVSI_VTERMNO
+	hex "vterm number to use with early debug HVSI"
+	depends on PPC_EARLY_DEBUG_LPAR_HVSI
+	default "0x30000000"
+	help
+	  You probably want 0x30000000 for your first serial port and
+	  0x30000001 for your second one
+
+config PPC_EARLY_DEBUG_OPAL_VTERMNO
+	hex "vterm number to use with OPAL early debug"
+	depends on PPC_EARLY_DEBUG_OPAL
+	default "0"
+	help
+	  This correspond to which /dev/hvcN you want to use for early
+	  debug.
+
+	  On OPAL v2, this will be 0 for network console and 1 or 2 for
+	  the machine built-in serial ports.
+
 config PPC_EARLY_DEBUG_44x_PHYSLOW
 	hex "Low 32 bits of early debug UART physical address"
 	depends on PPC_EARLY_DEBUG_44x
@@ -250,5 +399,27 @@ config PPC_EARLY_DEBUG_CPM_ADDR
 	  used for early debug output.  Because it is needed before
 	  platform probing is done, all platforms selected must
 	  share the same address.
+
+config STRICT_DEVMEM
+	def_bool y
+	prompt "Filter access to /dev/mem"
+	help
+	  This option restricts access to /dev/mem.  If this option is
+	  disabled, you allow userspace access to all memory, including
+	  kernel and userspace memory. Accidental memory access is likely
+	  to be disastrous.
+	  Memory access is required for experts who want to debug the kernel.
+
+	  If you are unsure, say Y.
+
+config FAIL_IOMMU
+	bool "Fault-injection capability for IOMMU"
+	depends on FAULT_INJECTION
+	depends on PCI || IBMVIO
+	help
+	  Provide fault-injection capability for IOMMU. Each device can
+	  be selectively enabled via the fail_iommu property.
+
+	  If you are unsure, say N.
 
 endmenu

@@ -28,6 +28,7 @@
 #include <linux/page-flags.h>
 #include <linux/mm.h>
 #include "agp.h"
+#include "intel-agp.h"
 
 /*
  * The real differences to the generic AGP code is
@@ -67,6 +68,9 @@ static const struct gatt_mask efficeon_generic_masks[] =
 /* This function does the same thing as mask_memory() for this chipset... */
 static inline unsigned long efficeon_mask_memory(unsigned long addr)
 {
+static inline unsigned long efficeon_mask_memory(struct page *page)
+{
+	unsigned long addr = page_to_phys(page);
 	return addr | 0x00000001;
 }
 
@@ -141,6 +145,8 @@ static int efficeon_configure(void)
 	/* address to map to */
 	pci_read_config_dword(agp_bridge->dev, AGP_APBASE, &temp);
 	agp_bridge->gart_bus_addr = (temp & PCI_BASE_ADDRESS_MEM_MASK);
+	agp_bridge->gart_bus_addr = pci_bus_address(agp_bridge->dev,
+						    AGP_APERTURE_BAR);
 
 	/* agpctrl */
 	pci_write_config_dword(agp_bridge->dev, INTEL_AGPCTRL, 0x2280);
@@ -226,6 +232,7 @@ static int efficeon_create_gatt_table(struct agp_bridge_data *bridge)
 		efficeon_private.l1_table[index] = page;
 
 		value = virt_to_gart((unsigned long *)page) | pati | present | index;
+		value = virt_to_phys((unsigned long *)page) | pati | present | index;
 
 		pci_write_config_dword(agp_bridge->dev,
 			EFFICEON_ATTPAGE, value);
@@ -258,6 +265,7 @@ static int efficeon_insert_memory(struct agp_memory * mem, off_t pg_start, int t
 	for (i = 0; i < count; i++) {
 		int index = pg_start + i;
 		unsigned long insert = efficeon_mask_memory(mem->memory[i]);
+		unsigned long insert = efficeon_mask_memory(mem->pages[i]);
 
 		page = (unsigned int *) efficeon_private.l1_table[index >> 10];
 
@@ -341,6 +349,14 @@ static const struct agp_bridge_driver efficeon_driver = {
 
 static int __devinit agp_efficeon_probe(struct pci_dev *pdev,
 				     const struct pci_device_id *ent)
+	.agp_alloc_pages	= agp_generic_alloc_pages,
+	.agp_destroy_page	= agp_generic_destroy_page,
+	.agp_destroy_pages	= agp_generic_destroy_pages,
+	.agp_type_to_mask_type  = agp_generic_type_to_mask_type,
+};
+
+static int agp_efficeon_probe(struct pci_dev *pdev,
+			      const struct pci_device_id *ent)
 {
 	struct agp_bridge_data *bridge;
 	u8 cap_ptr;
@@ -366,6 +382,17 @@ static int __devinit agp_efficeon_probe(struct pci_dev *pdev,
 	bridge->driver = &efficeon_driver;
 	bridge->dev = pdev;
 	bridge->capndx = cap_ptr;
+
+	/*
+	* If the device has not been properly setup, the following will catch
+	* the problem and should stop the system from crashing.
+	* 20030610 - hamish@zot.org
+	*/
+	if (pci_enable_device(pdev)) {
+		printk(KERN_ERR PFX "Unable to Enable PCI device\n");
+		agp_put_bridge(bridge);
+		return -ENODEV;
+	}
 
 	/*
 	* The following fixes the case where the BIOS has "forgotten" to
@@ -404,6 +431,7 @@ static int __devinit agp_efficeon_probe(struct pci_dev *pdev,
 }
 
 static void __devexit agp_efficeon_remove(struct pci_dev *pdev)
+static void agp_efficeon_remove(struct pci_dev *pdev)
 {
 	struct agp_bridge_data *bridge = pci_get_drvdata(pdev);
 

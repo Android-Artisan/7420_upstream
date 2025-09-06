@@ -27,6 +27,13 @@ int ieee80211_wep_encrypt(struct ieee80211_local *local, struct sk_buff *skb,
 int ieee80211_wep_decrypt(struct ieee80211_local *local, struct sk_buff *skb,
 			  struct ieee80211_key *key);
 u8 *ieee80211_wep_is_weak_iv(struct sk_buff *skb, struct ieee80211_key *key);
+int ieee80211_wep_encrypt_data(struct crypto_cipher *tfm, u8 *rc4key,
+				size_t klen, u8 *data, size_t data_len);
+int ieee80211_wep_encrypt(struct ieee80211_local *local,
+			  struct sk_buff *skb,
+			  const u8 *key, int keylen, int keyidx);
+int ieee80211_wep_decrypt_data(struct crypto_cipher *tfm, u8 *rc4key,
+			       size_t klen, u8 *data, size_t data_len);
 
 ieee80211_rx_result
 ieee80211_crypto_wep_decrypt(struct ieee80211_rx_data *rx);

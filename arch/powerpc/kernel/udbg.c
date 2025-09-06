@@ -18,6 +18,7 @@
 #include <asm/udbg.h>
 
 void (*udbg_putc)(char c);
+void (*udbg_flush)(void);
 int (*udbg_getc)(void);
 int (*udbg_getc_poll)(void);
 
@@ -30,6 +31,9 @@ void __init udbg_early_init(void)
 #if defined(CONFIG_PPC_EARLY_DEBUG_LPAR)
 	/* For LPAR machines that have an HVC console on vterm 0 */
 	udbg_init_debug_lpar();
+#elif defined(CONFIG_PPC_EARLY_DEBUG_LPAR_HVSI)
+	/* For LPAR machines that have an HVSI console on vterm 0 */
+	udbg_init_debug_lpar_hvsi();
 #elif defined(CONFIG_PPC_EARLY_DEBUG_G5)
 	/* For use on Apple G5 machines */
 	udbg_init_pmac_realmode();
@@ -50,6 +54,9 @@ void __init udbg_early_init(void)
 #elif defined(CONFIG_PPC_EARLY_DEBUG_PAS_REALMODE)
 	udbg_init_pas_realmode();
 #elif defined(CONFIG_BOOTX_TEXT)
+#elif defined(CONFIG_PPC_EARLY_DEBUG_PAS_REALMODE)
+	udbg_init_pas_realmode();
+#elif defined(CONFIG_PPC_EARLY_DEBUG_BOOTX)
 	udbg_init_btext();
 #elif defined(CONFIG_PPC_EARLY_DEBUG_44x)
 	/* PPC44x debug */
@@ -59,10 +66,25 @@ void __init udbg_early_init(void)
 	udbg_init_40x_realmode();
 #elif defined(CONFIG_PPC_EARLY_DEBUG_CPM)
 	udbg_init_cpm();
+#elif defined(CONFIG_PPC_EARLY_DEBUG_USBGECKO)
+	udbg_init_usbgecko();
+#elif defined(CONFIG_PPC_EARLY_DEBUG_MEMCONS)
+	/* In memory console */
+	udbg_init_memcons();
+#elif defined(CONFIG_PPC_EARLY_DEBUG_EHV_BC)
+	udbg_init_ehv_bc();
+#elif defined(CONFIG_PPC_EARLY_DEBUG_PS3GELIC)
+	udbg_init_ps3gelic();
+#elif defined(CONFIG_PPC_EARLY_DEBUG_OPAL_RAW)
+	udbg_init_debug_opal_raw();
+#elif defined(CONFIG_PPC_EARLY_DEBUG_OPAL_HVSI)
+	udbg_init_debug_opal_hvsi();
 #endif
 
 #ifdef CONFIG_PPC_EARLY_DEBUG
 	console_loglevel = 10;
+
+	register_early_udbg_console();
 #endif
 }
 
@@ -76,6 +98,9 @@ void udbg_puts(const char *s)
 			while ((c = *s++) != '\0')
 				udbg_putc(c);
 		}
+
+		if (udbg_flush)
+			udbg_flush();
 	}
 #if 0
 	else {
@@ -124,6 +149,12 @@ int udbg_read(char *buf, int buflen)
 	return i;
 }
 
+	if (udbg_flush)
+		udbg_flush();
+
+	return n - remain;
+}
+
 #define UDBG_BUFSIZE 256
 void udbg_printf(const char *fmt, ...)
 {
@@ -167,6 +198,7 @@ static int early_console_initialized;
 void __init register_early_udbg_console(void)
 {
 	if (early_console_initialized)
+	if (early_console)
 		return;
 
 	if (!udbg_putc)
@@ -177,6 +209,7 @@ void __init register_early_udbg_console(void)
 		udbg_console.flags &= ~CON_BOOT;
 	}
 	early_console_initialized = 1;
+	early_console = &udbg_console;
 	register_console(&udbg_console);
 }
 

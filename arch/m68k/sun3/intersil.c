@@ -27,6 +27,9 @@
 unsigned long sun3_gettimeoffset(void)
 {
   return 1;
+u32 sun3_gettimeoffset(void)
+{
+  return 1000;
 }
 
 

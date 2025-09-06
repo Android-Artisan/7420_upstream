@@ -34,6 +34,10 @@
 #include <linux/usb.h>
 #include <linux/mutex.h>
 #include <linux/workqueue.h>
+#include <linux/usb/hcd.h>
+#include <linux/mutex.h>
+#include <linux/workqueue.h>
+#include <linux/debugfs.h>
 
 #include <asm/io.h>
 #include <linux/scatterlist.h>
@@ -52,6 +56,25 @@ static int nousb;	/* Disable USB when built into kernel image */
 struct workqueue_struct *ksuspend_usb_wq;
 
 #ifdef	CONFIG_USB_SUSPEND
+static bool nousb;	/* Disable USB when built into kernel image */
+
+/* To disable USB, kernel command line is 'nousb' not 'usbcore.nousb' */
+#ifdef MODULE
+module_param(nousb, bool, 0444);
+#else
+core_param(nousb, nousb, bool, 0444);
+#endif
+
+/*
+ * for external read access to <nousb>
+ */
+int usb_disabled(void)
+{
+	return nousb;
+}
+EXPORT_SYMBOL_GPL(usb_disabled);
+
+#ifdef	CONFIG_PM
 static int usb_autosuspend_delay = 2;		/* Default delay value,
 						 * in seconds */
 module_param_named(autosuspend, usb_autosuspend_delay, int, 0644);
@@ -63,6 +86,206 @@ MODULE_PARM_DESC(autosuspend, "default autosuspend delay");
 
 
 /**
+ * usb_find_common_endpoints() -- look up common endpoint descriptors
+ * @alt:	alternate setting to search
+ * @bulk_in:	pointer to descriptor pointer, or NULL
+ * @bulk_out:	pointer to descriptor pointer, or NULL
+ * @int_in:	pointer to descriptor pointer, or NULL
+ * @int_out:	pointer to descriptor pointer, or NULL
+ *
+ * Search the alternate setting's endpoint descriptors for the first bulk-in,
+ * bulk-out, interrupt-in and interrupt-out endpoints and return them in the
+ * provided pointers (unless they are NULL).
+ *
+ * If a requested endpoint is not found, the corresponding pointer is set to
+ * NULL.
+ *
+ * Return: Zero if all requested descriptors were found, or -ENXIO otherwise.
+ */
+int usb_find_common_endpoints(struct usb_host_interface *alt,
+		struct usb_endpoint_descriptor **bulk_in,
+		struct usb_endpoint_descriptor **bulk_out,
+		struct usb_endpoint_descriptor **int_in,
+		struct usb_endpoint_descriptor **int_out)
+{
+	struct usb_endpoint_descriptor *epd;
+	int i;
+
+	if (bulk_in)
+		*bulk_in = NULL;
+	if (bulk_out)
+		*bulk_out = NULL;
+	if (int_in)
+		*int_in = NULL;
+	if (int_out)
+		*int_out = NULL;
+
+	for (i = 0; i < alt->desc.bNumEndpoints; ++i) {
+		epd = &alt->endpoint[i].desc;
+
+		switch (usb_endpoint_type(epd)) {
+		case USB_ENDPOINT_XFER_BULK:
+			if (usb_endpoint_dir_in(epd)) {
+				if (bulk_in && !*bulk_in) {
+					*bulk_in = epd;
+					break;
+				}
+			} else {
+				if (bulk_out && !*bulk_out) {
+					*bulk_out = epd;
+					break;
+				}
+			}
+
+			continue;
+		case USB_ENDPOINT_XFER_INT:
+			if (usb_endpoint_dir_in(epd)) {
+				if (int_in && !*int_in) {
+					*int_in = epd;
+					break;
+				}
+			} else {
+				if (int_out && !*int_out) {
+					*int_out = epd;
+					break;
+				}
+			}
+
+			continue;
+		default:
+			continue;
+		}
+
+		if ((!bulk_in || *bulk_in) &&
+				(!bulk_out || *bulk_out) &&
+				(!int_in || *int_in) &&
+				(!int_out || *int_out)) {
+			return 0;
+		}
+	}
+
+	return -ENXIO;
+}
+EXPORT_SYMBOL_GPL(usb_find_common_endpoints);
+
+/**
+ * usb_find_endpoint() - Given an endpoint address, search for the endpoint's
+ * usb_host_endpoint structure in an interface's current altsetting.
+ * @intf: the interface whose current altsetting should be searched
+ * @ep_addr: the endpoint address (number and direction) to find
+ *
+ * Search the altsetting's list of endpoints for one with the specified address.
+ *
+ * Return: Pointer to the usb_host_endpoint if found, %NULL otherwise.
+ */
+static const struct usb_host_endpoint *usb_find_endpoint(
+		const struct usb_interface *intf, unsigned int ep_addr)
+{
+	int n;
+	const struct usb_host_endpoint *ep;
+
+	n = intf->cur_altsetting->desc.bNumEndpoints;
+	ep = intf->cur_altsetting->endpoint;
+	for (; n > 0; (--n, ++ep)) {
+		if (ep->desc.bEndpointAddress == ep_addr)
+			return ep;
+	}
+	return NULL;
+}
+
+/**
+ * usb_check_bulk_endpoints - Check whether an interface's current altsetting
+ * contains a set of bulk endpoints with the given addresses.
+ * @intf: the interface whose current altsetting should be searched
+ * @ep_addrs: 0-terminated array of the endpoint addresses (number and
+ * direction) to look for
+ *
+ * Search for endpoints with the specified addresses and check their types.
+ *
+ * Return: %true if all the endpoints are found and are bulk, %false otherwise.
+ */
+bool usb_check_bulk_endpoints(
+		const struct usb_interface *intf, const u8 *ep_addrs)
+{
+	const struct usb_host_endpoint *ep;
+
+	for (; *ep_addrs; ++ep_addrs) {
+		ep = usb_find_endpoint(intf, *ep_addrs);
+		if (!ep || !usb_endpoint_xfer_bulk(&ep->desc))
+			return false;
+	}
+	return true;
+}
+EXPORT_SYMBOL_GPL(usb_check_bulk_endpoints);
+
+/**
+ * usb_check_int_endpoints - Check whether an interface's current altsetting
+ * contains a set of interrupt endpoints with the given addresses.
+ * @intf: the interface whose current altsetting should be searched
+ * @ep_addrs: 0-terminated array of the endpoint addresses (number and
+ * direction) to look for
+ *
+ * Search for endpoints with the specified addresses and check their types.
+ *
+ * Return: %true if all the endpoints are found and are interrupt,
+ * %false otherwise.
+ */
+bool usb_check_int_endpoints(
+		const struct usb_interface *intf, const u8 *ep_addrs)
+{
+	const struct usb_host_endpoint *ep;
+
+	for (; *ep_addrs; ++ep_addrs) {
+		ep = usb_find_endpoint(intf, *ep_addrs);
+		if (!ep || !usb_endpoint_xfer_int(&ep->desc))
+			return false;
+	}
+	return true;
+}
+EXPORT_SYMBOL_GPL(usb_check_int_endpoints);
+
+/**
+ * usb_find_alt_setting() - Given a configuration, find the alternate setting
+ * for the given interface.
+ * @config: the configuration to search (not necessarily the current config).
+ * @iface_num: interface number to search in
+ * @alt_num: alternate interface setting number to search for.
+ *
+ * Search the configuration's interface cache for the given alt setting.
+ *
+ * Return: The alternate setting, if found. %NULL otherwise.
+ */
+struct usb_host_interface *usb_find_alt_setting(
+		struct usb_host_config *config,
+		unsigned int iface_num,
+		unsigned int alt_num)
+{
+	struct usb_interface_cache *intf_cache = NULL;
+	int i;
+
+	if (!config)
+		return NULL;
+	for (i = 0; i < config->desc.bNumInterfaces; i++) {
+		if (config->intf_cache[i]->altsetting[0].desc.bInterfaceNumber
+				== iface_num) {
+			intf_cache = config->intf_cache[i];
+			break;
+		}
+	}
+	if (!intf_cache)
+		return NULL;
+	for (i = 0; i < intf_cache->num_altsetting; i++)
+		if (intf_cache->altsetting[i].desc.bAlternateSetting == alt_num)
+			return &intf_cache->altsetting[i];
+
+	printk(KERN_DEBUG "Did not find alt setting %u for intf %u, "
+			"config %u\n", alt_num, iface_num,
+			config->desc.bConfigurationValue);
+	return NULL;
+}
+EXPORT_SYMBOL_GPL(usb_find_alt_setting);
+
+/**
  * usb_ifnum_to_if - get the interface object with a given interface number
  * @dev: the device whose current configuration is considered
  * @ifnum: the desired interface
@@ -70,6 +293,7 @@ MODULE_PARM_DESC(autosuspend, "default autosuspend delay");
  * This walks the device descriptor for the currently active configuration
  * and returns a pointer to the interface with that particular interface
  * number, or null.
+ * to find the interface object with the particular interface number.
  *
  * Note that configuration descriptors are not required to assign interface
  * numbers sequentially, so that it would be incorrect to assume that
@@ -80,6 +304,9 @@ MODULE_PARM_DESC(autosuspend, "default autosuspend delay");
  *
  * Don't call this function unless you are bound to one of the interfaces
  * on this device or you have locked the device!
+ *
+ * Return: A pointer to the interface that has @ifnum as interface number,
+ * if found. %NULL otherwise.
  */
 struct usb_interface *usb_ifnum_to_if(const struct usb_device *dev,
 				      unsigned ifnum)
@@ -106,6 +333,7 @@ EXPORT_SYMBOL_GPL(usb_ifnum_to_if);
  * This searches the altsetting array of the specified interface for
  * an entry with the correct bAlternateSetting value and returns a pointer
  * to that entry, or null.
+ * an entry with the correct bAlternateSetting value.
  *
  * Note that altsettings need not be stored sequentially by number, so
  * it would be incorrect to assume that the first altsetting entry in
@@ -114,6 +342,9 @@ EXPORT_SYMBOL_GPL(usb_ifnum_to_if);
  *
  * Don't call this function unless you are bound to the intf interface
  * or you have locked the device!
+ *
+ * Return: A pointer to the entry of the altsetting array of @intf that
+ * has @altnum as the alternate setting number. %NULL if not found.
  */
 struct usb_host_interface *usb_altnum_to_altsetting(
 					const struct usb_interface *intf,
@@ -132,6 +363,7 @@ EXPORT_SYMBOL_GPL(usb_altnum_to_altsetting);
 struct find_interface_arg {
 	int minor;
 	struct usb_interface *interface;
+	struct device_driver *drv;
 };
 
 static int __find_interface(struct device *dev, void *data)
@@ -149,6 +381,13 @@ static int __find_interface(struct device *dev, void *data)
 		return 1;
 	}
 	return 0;
+	if (!is_usb_interface(dev))
+		return 0;
+
+	if (dev->driver != arg->drv)
+		return 0;
+	intf = to_usb_interface(dev);
+	return intf->minor == arg->minor;
 }
 
 /**
@@ -159,6 +398,11 @@ static int __find_interface(struct device *dev, void *data)
  * This walks the driver device list and returns a pointer to the interface
  * with the matching minor.  Note, this only works for devices that share the
  * USB major number.
+ * This walks the bus device list and returns a pointer to the interface
+ * with the matching minor and driver.  Note, this only works for devices
+ * that share the USB major number.
+ *
+ * Return: A pointer to the interface with the matching major and @minor.
  */
 struct usb_interface *usb_find_interface(struct usb_driver *drv, int minor)
 {
@@ -173,6 +417,53 @@ struct usb_interface *usb_find_interface(struct usb_driver *drv, int minor)
 	return argb.interface;
 }
 EXPORT_SYMBOL_GPL(usb_find_interface);
+
+	struct device *dev;
+
+	argb.minor = minor;
+	argb.drv = &drv->drvwrap.driver;
+
+	dev = bus_find_device(&usb_bus_type, NULL, &argb, __find_interface);
+
+	/* Drop reference count from bus_find_device */
+	put_device(dev);
+
+	return dev ? to_usb_interface(dev) : NULL;
+}
+EXPORT_SYMBOL_GPL(usb_find_interface);
+
+struct each_dev_arg {
+	void *data;
+	int (*fn)(struct usb_device *, void *);
+};
+
+static int __each_dev(struct device *dev, void *data)
+{
+	struct each_dev_arg *arg = (struct each_dev_arg *)data;
+
+	/* There are struct usb_interface on the same bus, filter them out */
+	if (!is_usb_device(dev))
+		return 0;
+
+	return arg->fn(container_of(dev, struct usb_device, dev), arg->data);
+}
+
+/**
+ * usb_for_each_dev - iterate over all USB devices in the system
+ * @data: data pointer that will be handed to the callback function
+ * @fn: callback function to be called for each USB device
+ *
+ * Iterate over all USB devices and call @fn for each, passing it @data. If it
+ * returns anything other than 0, we break the iteration prematurely and return
+ * that value.
+ */
+int usb_for_each_dev(void *data, int (*fn)(struct usb_device *, void *))
+{
+	struct each_dev_arg arg = {data, fn};
+
+	return bus_for_each_dev(&usb_bus_type, NULL, &arg, __each_dev);
+}
+EXPORT_SYMBOL_GPL(usb_for_each_dev);
 
 /**
  * usb_release_dev - free a usb device structure when all users of it are finished.
@@ -189,6 +480,14 @@ static void usb_release_dev(struct device *dev)
 
 	usb_destroy_configuration(udev);
 	usb_put_hcd(bus_to_hcd(udev->bus));
+	struct usb_hcd *hcd;
+
+	udev = to_usb_device(dev);
+	hcd = bus_to_hcd(udev->bus);
+
+	usb_destroy_configuration(udev);
+	usb_release_bos_descriptor(udev);
+	usb_put_hcd(hcd);
 	kfree(udev->product);
 	kfree(udev->manufacturer);
 	kfree(udev->serial);
@@ -238,6 +537,8 @@ static void ksuspend_usb_cleanup(void)
 	destroy_workqueue(ksuspend_usb_wq);
 }
 
+#ifdef	CONFIG_PM
+
 /* USB device Power-Management thunks.
  * There's no need to distinguish here between quiescing a USB device
  * and powering it down; the generic_suspend() routine takes care of
@@ -254,6 +555,7 @@ static void usb_dev_complete(struct device *dev)
 {
 	/* Currently used only for rebinding interfaces */
 	usb_resume(dev);	/* Implement eventually? */
+	usb_resume_complete(dev);
 }
 
 static int usb_dev_suspend(struct device *dev)
@@ -264,6 +566,7 @@ static int usb_dev_suspend(struct device *dev)
 static int usb_dev_resume(struct device *dev)
 {
 	return usb_resume(dev);
+	return usb_resume(dev, PMSG_RESUME);
 }
 
 static int usb_dev_freeze(struct device *dev)
@@ -274,6 +577,7 @@ static int usb_dev_freeze(struct device *dev)
 static int usb_dev_thaw(struct device *dev)
 {
 	return usb_resume(dev);
+	return usb_resume(dev, PMSG_THAW);
 }
 
 static int usb_dev_poweroff(struct device *dev)
@@ -287,6 +591,10 @@ static int usb_dev_restore(struct device *dev)
 }
 
 static struct pm_ops usb_device_pm_ops = {
+	return usb_resume(dev, PMSG_RESTORE);
+}
+
+static const struct dev_pm_ops usb_device_pm_ops = {
 	.prepare =	usb_dev_prepare,
 	.complete =	usb_dev_complete,
 	.suspend =	usb_dev_suspend,
@@ -305,11 +613,33 @@ static struct pm_ops usb_device_pm_ops = {
 
 #endif	/* CONFIG_PM */
 
+	.runtime_suspend =	usb_runtime_suspend,
+	.runtime_resume =	usb_runtime_resume,
+	.runtime_idle =		usb_runtime_idle,
+};
+
+#endif	/* CONFIG_PM */
+
+
+static char *usb_devnode(struct device *dev,
+			 umode_t *mode, kuid_t *uid, kgid_t *gid)
+{
+	struct usb_device *usb_dev;
+
+	usb_dev = to_usb_device(dev);
+	return kasprintf(GFP_KERNEL, "bus/usb/%03d/%03d",
+			 usb_dev->bus->busnum, usb_dev->devnum);
+}
+
 struct device_type usb_device_type = {
 	.name =		"usb_device",
 	.release =	usb_release_dev,
 	.uevent =	usb_dev_uevent,
 	.pm =		&usb_device_pm_ops,
+	.devnode = 	usb_devnode,
+#ifdef CONFIG_PM
+	.pm =		&usb_device_pm_ops,
+#endif
 };
 
 
@@ -332,12 +662,16 @@ static unsigned usb_bus_is_wusb(struct usb_bus *bus)
  * controllers) should ever call this.
  *
  * This call may not be used in a non-sleeping context.
+ *
+ * Return: On success, a pointer to the allocated usb device. %NULL on
+ * failure.
  */
 struct usb_device *usb_alloc_dev(struct usb_device *parent,
 				 struct usb_bus *bus, unsigned port1)
 {
 	struct usb_device *dev;
 	struct usb_hcd *usb_hcd = container_of(bus, struct usb_hcd, self);
+	struct usb_hcd *usb_hcd = bus_to_hcd(bus);
 	unsigned root_hub = 0;
 
 	dev = kzalloc(sizeof(*dev), GFP_KERNEL);
@@ -345,6 +679,14 @@ struct usb_device *usb_alloc_dev(struct usb_device *parent,
 		return NULL;
 
 	if (!usb_get_hcd(bus_to_hcd(bus))) {
+	if (!usb_get_hcd(usb_hcd)) {
+		kfree(dev);
+		return NULL;
+	}
+	/* Root hubs aren't true devices, so don't allocate HCD resources */
+	if (usb_hcd->driver->alloc_dev && parent &&
+		!usb_hcd->driver->alloc_dev(usb_hcd, dev)) {
+		usb_put_hcd(bus_to_hcd(bus));
 		kfree(dev);
 		return NULL;
 	}
@@ -356,6 +698,7 @@ struct usb_device *usb_alloc_dev(struct usb_device *parent,
 	dev->dev.dma_mask = bus->controller->dma_mask;
 	set_dev_node(&dev->dev, dev_to_node(bus->controller));
 	dev->state = USB_STATE_ATTACHED;
+	dev->lpm_disable_count = 1;
 	atomic_set(&dev->urbnum, 0);
 
 	INIT_LIST_HEAD(&dev->ep0.urb_list);
@@ -363,6 +706,7 @@ struct usb_device *usb_alloc_dev(struct usb_device *parent,
 	dev->ep0.desc.bDescriptorType = USB_DT_ENDPOINT;
 	/* ep0 maxpacket comes later, from device descriptor */
 	usb_enable_endpoint(dev, &dev->ep0);
+	usb_enable_endpoint(dev, &dev->ep0, false);
 	dev->can_submit = 1;
 
 	/* Save readable and stable topology id, distinguishing devices
@@ -375,6 +719,7 @@ struct usb_device *usb_alloc_dev(struct usb_device *parent,
 	 */
 	if (unlikely(!parent)) {
 		dev->devpath[0] = '0';
+		dev->route = 0;
 
 		dev->dev.parent = bus->controller;
 		dev_set_name(&dev->dev, "usb%d", bus->busnum);
@@ -387,6 +732,22 @@ struct usb_device *usb_alloc_dev(struct usb_device *parent,
 		else
 			snprintf(dev->devpath, sizeof dev->devpath,
 				"%s.%d", parent->devpath, port1);
+		if (parent->devpath[0] == '0') {
+			snprintf(dev->devpath, sizeof dev->devpath,
+				"%d", port1);
+			/* Root ports are not counted in route string */
+			dev->route = 0;
+		} else {
+			snprintf(dev->devpath, sizeof dev->devpath,
+				"%s.%d", parent->devpath, port1);
+			/* Route string assumes hubs have less than 16 ports */
+			if (port1 < 15)
+				dev->route = parent->route +
+					(port1 << ((parent->level - 1)*4));
+			else
+				dev->route = parent->route +
+					(15 << ((parent->level - 1)*4));
+		}
 
 		dev->dev.parent = &parent->dev;
 		dev_set_name(&dev->dev, "%d-%s", bus->busnum, dev->devpath);
@@ -403,6 +764,8 @@ struct usb_device *usb_alloc_dev(struct usb_device *parent,
 	mutex_init(&dev->pm_mutex);
 	INIT_DELAYED_WORK(&dev->autosuspend, usb_autosuspend_work);
 	dev->autosuspend_delay = usb_autosuspend_delay * HZ;
+	pm_runtime_set_autosuspend_delay(&dev->dev,
+			usb_autosuspend_delay * 1000);
 	dev->connect_time = jiffies;
 	dev->active_duration = -jiffies;
 #endif
@@ -414,6 +777,12 @@ struct usb_device *usb_alloc_dev(struct usb_device *parent,
 	}
 	return dev;
 }
+		dev->authorized = !!HCD_DEV_AUTHORIZED(usb_hcd);
+		dev->wusb = usb_bus_is_wusb(bus) ? 1 : 0;
+	}
+	return dev;
+}
+EXPORT_SYMBOL_GPL(usb_alloc_dev);
 
 /**
  * usb_get_dev - increments the reference count of the usb device structure
@@ -426,6 +795,7 @@ struct usb_device *usb_alloc_dev(struct usb_device *parent,
  * them by calling usb_put_dev(), in their disconnect() methods.
  *
  * A pointer to the device with the incremented reference counter is returned.
+ * Return: A pointer to the device with the incremented reference counter.
  */
 struct usb_device *usb_get_dev(struct usb_device *dev)
 {
@@ -461,6 +831,7 @@ EXPORT_SYMBOL_GPL(usb_put_dev);
  *
  * A pointer to the interface with the incremented reference counter is
  * returned.
+ * Return: A pointer to the interface with the incremented reference counter.
  */
 struct usb_interface *usb_get_intf(struct usb_interface *intf)
 {
@@ -517,6 +888,7 @@ EXPORT_SYMBOL_GPL(usb_put_intf);
  * that the device will or will not have to be unlocked.  (0 can be
  * returned when an interface is given and is BINDING, because in that
  * case the driver already owns the device lock.)
+ * Return: A negative error code for failure, otherwise 0.
  */
 int usb_lock_device_for_reset(struct usb_device *udev,
 			      const struct usb_interface *iface)
@@ -539,6 +911,11 @@ int usb_lock_device_for_reset(struct usb_device *udev,
 	}
 
 	while (usb_trylock_device(udev) != 0) {
+	if (iface && (iface->condition == USB_INTERFACE_UNBINDING ||
+			iface->condition == USB_INTERFACE_UNBOUND))
+		return -EINTR;
+
+	while (!usb_trylock_device(udev)) {
 
 		/* If we can't acquire the lock after waiting one second,
 		 * we're probably deadlocked */
@@ -627,6 +1004,14 @@ exit:
 	return dev;
 }
 
+		if (iface && (iface->condition == USB_INTERFACE_UNBINDING ||
+				iface->condition == USB_INTERFACE_UNBOUND))
+			return -EINTR;
+	}
+	return 0;
+}
+EXPORT_SYMBOL_GPL(usb_lock_device_for_reset);
+
 /**
  * usb_get_current_frame_number - return current bus frame number
  * @dev: the device whose bus is being queried
@@ -639,6 +1024,15 @@ exit:
  * "scheduling horizons".  While one type might support scheduling only
  * 32 frames into the future, others could support scheduling up to
  * 1024 frames into the future.
+ * Return: The current frame number for the USB host controller used
+ * with the given USB device. This can be used when scheduling
+ * isochronous requests.
+ *
+ * Note: Different kinds of host controller have different "scheduling
+ * horizons". While one type might support scheduling only 32 frames
+ * into the future, others could support scheduling up to 1024 frames
+ * into the future.
+ *
  */
 int usb_get_current_frame_number(struct usb_device *dev)
 {
@@ -653,14 +1047,14 @@ EXPORT_SYMBOL_GPL(usb_get_current_frame_number);
  */
 
 int __usb_get_extra_descriptor(char *buffer, unsigned size,
-			       unsigned char type, void **ptr)
+			       unsigned char type, void **ptr, size_t minsize)
 {
 	struct usb_descriptor_header *header;
 
 	while (size >= sizeof(struct usb_descriptor_header)) {
 		header = (struct usb_descriptor_header *)buffer;
 
-		if (header->bLength < 2) {
+		if (header->bLength < 2 || header->bLength > size) {
 			printk(KERN_ERR
 				"%s: bogus descriptor, type %d length %d\n",
 				usbcore_name,
@@ -669,7 +1063,7 @@ int __usb_get_extra_descriptor(char *buffer, unsigned size,
 			return -1;
 		}
 
-		if (header->bDescriptorType == type) {
+		if (header->bDescriptorType == type && header->bLength >= minsize) {
 			*ptr = header;
 			return 0;
 		}
@@ -683,6 +1077,7 @@ EXPORT_SYMBOL_GPL(__usb_get_extra_descriptor);
 
 /**
  * usb_buffer_alloc - allocate dma-consistent buffer for URB_NO_xxx_DMA_MAP
+ * usb_alloc_coherent - allocate dma-consistent buffer for URB_NO_xxx_DMA_MAP
  * @dev: device the buffer will be used with
  * @size: requested buffer size
  * @mem_flags: affect whether allocation may block
@@ -693,6 +1088,12 @@ EXPORT_SYMBOL_GPL(__usb_get_extra_descriptor);
  * specified device.  Such cpu-space buffers are returned along with the DMA
  * address (through the pointer provided).
  *
+ * Return: Either null (indicating no buffer could be allocated), or the
+ * cpu-space pointer to a buffer that may be used to perform DMA to the
+ * specified device.  Such cpu-space buffers are returned along with the DMA
+ * address (through the pointer provided).
+ *
+ * Note:
  * These buffers are used with URB_NO_xxx_DMA_MAP set in urb->transfer_flags
  * to avoid behaviors like using "DMA bounce buffers", or thrashing IOMMU
  * hardware during URB completion/resubmit.  The implementation varies between
@@ -705,6 +1106,10 @@ EXPORT_SYMBOL_GPL(__usb_get_extra_descriptor);
  */
 void *usb_buffer_alloc(struct usb_device *dev, size_t size, gfp_t mem_flags,
 		       dma_addr_t *dma)
+ * When the buffer is no longer used, free it with usb_free_coherent().
+ */
+void *usb_alloc_coherent(struct usb_device *dev, size_t size, gfp_t mem_flags,
+			 dma_addr_t *dma)
 {
 	if (!dev || !dev->bus)
 		return NULL;
@@ -714,6 +1119,10 @@ EXPORT_SYMBOL_GPL(usb_buffer_alloc);
 
 /**
  * usb_buffer_free - free memory allocated with usb_buffer_alloc()
+EXPORT_SYMBOL_GPL(usb_alloc_coherent);
+
+/**
+ * usb_free_coherent - free memory allocated with usb_alloc_coherent()
  * @dev: device the buffer was used with
  * @size: requested buffer size
  * @addr: CPU address of buffer
@@ -725,6 +1134,11 @@ EXPORT_SYMBOL_GPL(usb_buffer_alloc);
  */
 void usb_buffer_free(struct usb_device *dev, size_t size, void *addr,
 		     dma_addr_t dma)
+ * been allocated using usb_alloc_coherent(), and the parameters must match
+ * those provided in that allocation request.
+ */
+void usb_free_coherent(struct usb_device *dev, size_t size, void *addr,
+		       dma_addr_t dma)
 {
 	if (!dev || !dev->bus)
 		return;
@@ -733,6 +1147,7 @@ void usb_buffer_free(struct usb_device *dev, size_t size, void *addr,
 	hcd_buffer_free(dev->bus, size, addr, dma);
 }
 EXPORT_SYMBOL_GPL(usb_buffer_free);
+EXPORT_SYMBOL_GPL(usb_free_coherent);
 
 /**
  * usb_buffer_map - create DMA mapping(s) for an urb
@@ -743,12 +1158,18 @@ EXPORT_SYMBOL_GPL(usb_buffer_free);
  * added to urb->transfer_flags if the operation succeeds.  If the device
  * is connected to this system through a non-DMA controller, this operation
  * always succeeds.
+ * URB_NO_TRANSFER_DMA_MAP is added to urb->transfer_flags if the operation
+ * succeeds. If the device is connected to this system through a non-DMA
+ * controller, this operation always succeeds.
  *
  * This call would normally be used for an urb which is reused, perhaps
  * as the target of a large periodic transfer, with usb_buffer_dmasync()
  * calls to synchronize memory and dma state.
  *
  * Reverse the effect of this call with usb_buffer_unmap().
+ *
+ * Return: Either %NULL (indicating no buffer could be mapped), or @urb.
+ *
  */
 #if 0
 struct urb *usb_buffer_map(struct urb *urb)
@@ -778,6 +1199,7 @@ struct urb *usb_buffer_map(struct urb *urb)
 		urb->transfer_dma = ~0;
 	urb->transfer_flags |= (URB_NO_TRANSFER_DMA_MAP
 				| URB_NO_SETUP_DMA_MAP);
+	urb->transfer_flags |= URB_NO_TRANSFER_DMA_MAP;
 	return urb;
 }
 EXPORT_SYMBOL_GPL(usb_buffer_map);
@@ -808,11 +1230,13 @@ void usb_buffer_dmasync(struct urb *urb)
 
 	if (controller->dma_mask) {
 		dma_sync_single(controller,
+		dma_sync_single_for_cpu(controller,
 			urb->transfer_dma, urb->transfer_buffer_length,
 			usb_pipein(urb->pipe)
 				? DMA_FROM_DEVICE : DMA_TO_DEVICE);
 		if (usb_pipecontrol(urb->pipe))
 			dma_sync_single(controller,
+			dma_sync_single_for_cpu(controller,
 					urb->setup_dma,
 					sizeof(struct usb_ctrlrequest),
 					DMA_TO_DEVICE);
@@ -853,10 +1277,13 @@ void usb_buffer_unmap(struct urb *urb)
 	}
 	urb->transfer_flags &= ~(URB_NO_TRANSFER_DMA_MAP
 				| URB_NO_SETUP_DMA_MAP);
+	}
+	urb->transfer_flags &= ~URB_NO_TRANSFER_DMA_MAP;
 }
 EXPORT_SYMBOL_GPL(usb_buffer_unmap);
 #endif  /*  0  */
 
+#if 0
 /**
  * usb_buffer_map_sg - create scatterlist DMA mapping(s) for an endpoint
  * @dev: device to which the scatterlist will be mapped
@@ -867,6 +1294,10 @@ EXPORT_SYMBOL_GPL(usb_buffer_unmap);
  * Return value is either < 0 (indicating no buffers could be mapped), or
  * the number of DMA mapping array entries in the scatterlist.
  *
+ * Return: Either < 0 (indicating no buffers could be mapped), or the
+ * number of DMA mapping array entries in the scatterlist.
+ *
+ * Note:
  * The caller is responsible for placing the resulting DMA addresses from
  * the scatterlist into URB transfer buffer pointers, and for setting the
  * URB_NO_TRANSFER_DMA_MAP transfer flag in each of those URBs.
@@ -900,6 +1331,14 @@ int usb_buffer_map_sg(const struct usb_device *dev, int is_in,
 			is_in ? DMA_FROM_DEVICE : DMA_TO_DEVICE);
 }
 EXPORT_SYMBOL_GPL(usb_buffer_map_sg);
+		return -EINVAL;
+
+	/* FIXME generic api broken like pci, can't report errors */
+	return dma_map_sg(controller, sg, nents,
+			is_in ? DMA_FROM_DEVICE : DMA_TO_DEVICE) ? : -ENOMEM;
+}
+EXPORT_SYMBOL_GPL(usb_buffer_map_sg);
+#endif
 
 /* XXX DISABLED, no users currently.  If you wish to re-enable this
  * XXX please determine whether the sync is to transfer ownership of
@@ -932,10 +1371,13 @@ void usb_buffer_dmasync_sg(const struct usb_device *dev, int is_in,
 
 	dma_sync_sg(controller, sg, n_hw_ents,
 			is_in ? DMA_FROM_DEVICE : DMA_TO_DEVICE);
+	dma_sync_sg_for_cpu(controller, sg, n_hw_ents,
+			    is_in ? DMA_FROM_DEVICE : DMA_TO_DEVICE);
 }
 EXPORT_SYMBOL_GPL(usb_buffer_dmasync_sg);
 #endif
 
+#if 0
 /**
  * usb_buffer_unmap_sg - free DMA mapping(s) for a scatterlist
  * @dev: device to which the scatterlist will be mapped
@@ -973,6 +1415,66 @@ int usb_disabled(void)
 	return nousb;
 }
 EXPORT_SYMBOL_GPL(usb_disabled);
+#endif
+
+/*
+ * Notifications of device and interface registration
+ */
+static int usb_bus_notify(struct notifier_block *nb, unsigned long action,
+		void *data)
+{
+	struct device *dev = data;
+
+	switch (action) {
+	case BUS_NOTIFY_ADD_DEVICE:
+		if (dev->type == &usb_device_type)
+			(void) usb_create_sysfs_dev_files(to_usb_device(dev));
+		else if (dev->type == &usb_if_device_type)
+			usb_create_sysfs_intf_files(to_usb_interface(dev));
+		break;
+
+	case BUS_NOTIFY_DEL_DEVICE:
+		if (dev->type == &usb_device_type)
+			usb_remove_sysfs_dev_files(to_usb_device(dev));
+		else if (dev->type == &usb_if_device_type)
+			usb_remove_sysfs_intf_files(to_usb_interface(dev));
+		break;
+	}
+	return 0;
+}
+
+static struct notifier_block usb_bus_nb = {
+	.notifier_call = usb_bus_notify,
+};
+
+struct dentry *usb_debug_root;
+EXPORT_SYMBOL_GPL(usb_debug_root);
+
+static struct dentry *usb_debug_devices;
+
+static int usb_debugfs_init(void)
+{
+	usb_debug_root = debugfs_create_dir("usb", NULL);
+	if (!usb_debug_root)
+		return -ENOENT;
+
+	usb_debug_devices = debugfs_create_file("devices", 0444,
+						usb_debug_root, NULL,
+						&usbfs_devices_fops);
+	if (!usb_debug_devices) {
+		debugfs_remove(usb_debug_root);
+		usb_debug_root = NULL;
+		return -ENOENT;
+	}
+
+	return 0;
+}
+
+static void usb_debugfs_cleanup(void)
+{
+	debugfs_remove(usb_debug_devices);
+	debugfs_remove(usb_debug_root);
+}
 
 /*
  * Init
@@ -994,6 +1496,23 @@ static int __init usb_init(void)
 	retval = usb_host_init();
 	if (retval)
 		goto host_init_failed;
+	if (usb_disabled()) {
+		pr_info("%s: USB support disabled\n", usbcore_name);
+		return 0;
+	}
+	usb_init_pool_max();
+
+	retval = usb_debugfs_init();
+	if (retval)
+		goto out;
+
+	usb_acpi_register();
+	retval = bus_register(&usb_bus_type);
+	if (retval)
+		goto bus_register_failed;
+	retval = bus_register_notifier(&usb_bus_type, &usb_bus_nb);
+	if (retval)
+		goto bus_notifier_failed;
 	retval = usb_major_init();
 	if (retval)
 		goto major_init_failed;
@@ -1028,6 +1547,12 @@ host_init_failed:
 	bus_unregister(&usb_bus_type);
 bus_register_failed:
 	ksuspend_usb_cleanup();
+	bus_unregister_notifier(&usb_bus_type, &usb_bus_nb);
+bus_notifier_failed:
+	bus_unregister(&usb_bus_type);
+bus_register_failed:
+	usb_acpi_unregister();
+	usb_debugfs_cleanup();
 out:
 	return retval;
 }
@@ -1039,6 +1564,7 @@ static void __exit usb_exit(void)
 {
 	/* This will matter if shutdown/reboot does exitcalls. */
 	if (nousb)
+	if (usb_disabled())
 		return;
 
 	usb_deregister_device_driver(&usb_generic_driver);
@@ -1050,6 +1576,13 @@ static void __exit usb_exit(void)
 	usb_host_cleanup();
 	bus_unregister(&usb_bus_type);
 	ksuspend_usb_cleanup();
+	usb_deregister(&usbfs_driver);
+	usb_devio_cleanup();
+	usb_hub_cleanup();
+	bus_unregister_notifier(&usb_bus_type, &usb_bus_nb);
+	bus_unregister(&usb_bus_type);
+	usb_acpi_unregister();
+	usb_debugfs_cleanup();
 }
 
 subsys_initcall(usb_init);

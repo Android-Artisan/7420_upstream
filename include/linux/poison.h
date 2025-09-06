@@ -2,6 +2,18 @@
 #define _LINUX_POISON_H
 
 /********** include/linux/list.h **********/
+
+/*
+ * Architectures might want to move the poison pointer offset
+ * into some well-recognized area such as 0xdead000000000000,
+ * that is also not mappable by user-space exploits:
+ */
+#ifdef CONFIG_ILLEGAL_POINTER_VALUE
+# define POISON_POINTER_DELTA _AC(CONFIG_ILLEGAL_POINTER_VALUE, UL)
+#else
+# define POISON_POINTER_DELTA 0
+#endif
+
 /*
  * These are non-NULL pointers that will result in page faults
  * under normal circumstances, used to verify that nobody uses
@@ -9,6 +21,8 @@
  */
 #define LIST_POISON1  ((void *) 0x00100100)
 #define LIST_POISON2  ((void *) 0x00200200)
+#define LIST_POISON1  ((void *) 0x100 + POISON_POINTER_DELTA)
+#define LIST_POISON2  ((void *) 0x200 + POISON_POINTER_DELTA)
 
 /********** include/linux/timer.h **********/
 /*
@@ -16,6 +30,13 @@
  * for the object debugging code.
  */
 #define TIMER_ENTRY_STATIC	((void *) 0x74737461)
+
+/********** mm/debug-pagealloc.c **********/
+#ifdef CONFIG_PAGE_POISONING_ZERO
+#define PAGE_POISON 0x00
+#else
+#define PAGE_POISON 0xaa
+#endif
 
 /********** mm/slab.c **********/
 /*
@@ -67,5 +88,11 @@
 
 /********** sound/oss/ **********/
 #define OSS_POISON_FREE		0xAB
+
+/********** lib/flex_array.c **********/
+#define FLEX_ARRAY_FREE	0x6c	/* for use-after-free poisoning */
+
+/********** security/ **********/
+#define KEY_DESTROY		0xbd
 
 #endif

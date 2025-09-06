@@ -31,6 +31,7 @@
 #include <linux/irq.h>
 #include <linux/module.h>
 #include <linux/spinlock.h>
+#include <linux/slab.h>
 #include <asm/page.h>
 #include <asm/pgtable.h>
 #include <asm/8xx_immap.h>
@@ -58,6 +59,11 @@ static struct irq_host *cpm_pic_host;
 static void cpm_mask_irq(unsigned int irq)
 {
 	unsigned int cpm_vec = (unsigned int)irq_map[irq].hwirq;
+static struct irq_domain *cpm_pic_host;
+
+static void cpm_mask_irq(struct irq_data *d)
+{
+	unsigned int cpm_vec = (unsigned int)irqd_to_hwirq(d);
 
 	clrbits32(&cpic_reg->cpic_cimr, (1 << cpm_vec));
 }
@@ -65,6 +71,9 @@ static void cpm_mask_irq(unsigned int irq)
 static void cpm_unmask_irq(unsigned int irq)
 {
 	unsigned int cpm_vec = (unsigned int)irq_map[irq].hwirq;
+static void cpm_unmask_irq(struct irq_data *d)
+{
+	unsigned int cpm_vec = (unsigned int)irqd_to_hwirq(d);
 
 	setbits32(&cpic_reg->cpic_cimr, (1 << cpm_vec));
 }
@@ -72,6 +81,9 @@ static void cpm_unmask_irq(unsigned int irq)
 static void cpm_end_irq(unsigned int irq)
 {
 	unsigned int cpm_vec = (unsigned int)irq_map[irq].hwirq;
+static void cpm_end_irq(struct irq_data *d)
+{
+	unsigned int cpm_vec = (unsigned int)irqd_to_hwirq(d);
 
 	out_be32(&cpic_reg->cpic_cisr, (1 << cpm_vec));
 }
@@ -81,6 +93,10 @@ static struct irq_chip cpm_pic = {
 	.mask = cpm_mask_irq,
 	.unmask = cpm_unmask_irq,
 	.eoi = cpm_end_irq,
+	.name = "CPM PIC",
+	.irq_mask = cpm_mask_irq,
+	.irq_unmask = cpm_unmask_irq,
+	.irq_eoi = cpm_end_irq,
 };
 
 int cpm_get_irq(void)
@@ -98,12 +114,15 @@ int cpm_get_irq(void)
 }
 
 static int cpm_pic_host_map(struct irq_host *h, unsigned int virq,
+static int cpm_pic_host_map(struct irq_domain *h, unsigned int virq,
 			  irq_hw_number_t hw)
 {
 	pr_debug("cpm_pic_host_map(%d, 0x%lx)\n", virq, hw);
 
 	get_irq_desc(virq)->status |= IRQ_LEVEL;
 	set_irq_chip_and_handler(virq, &cpm_pic, handle_fasteoi_irq);
+	irq_set_status_flags(virq, IRQ_LEVEL);
+	irq_set_chip_and_handler(virq, &cpm_pic, handle_fasteoi_irq);
 	return 0;
 }
 
@@ -124,6 +143,11 @@ static struct irqaction cpm_error_irqaction = {
 };
 
 static struct irq_host_ops cpm_pic_host_ops = {
+	.flags = IRQF_NO_THREAD,
+	.name = "error",
+};
+
+static const struct irq_domain_ops cpm_pic_host_ops = {
 	.map = cpm_pic_host_map,
 };
 
@@ -149,6 +173,7 @@ unsigned int cpm_pic_init(void)
 		goto end;
 
 	cpic_reg = ioremap(res.start, res.end - res.start + 1);
+	cpic_reg = ioremap(res.start, resource_size(&res));
 	if (cpic_reg == NULL)
 		goto end;
 
@@ -158,6 +183,7 @@ unsigned int cpm_pic_init(void)
 
 	/* Initialize the CPM interrupt controller. */
 	hwirq = (unsigned int)irq_map[sirq].hwirq;
+	hwirq = (unsigned int)virq_to_hw(sirq);
 	out_be32(&cpic_reg->cpic_cicr,
 	    (CICR_SCD_SCC4 | CICR_SCC_SCC3 | CICR_SCB_SCC2 | CICR_SCA_SCC1) |
 		((hwirq/2) << 13) | CICR_HP_MASK);
@@ -166,6 +192,7 @@ unsigned int cpm_pic_init(void)
 
 	cpm_pic_host = irq_alloc_host(np, IRQ_HOST_MAP_LINEAR,
 				      64, &cpm_pic_host_ops, 64);
+	cpm_pic_host = irq_domain_add_linear(np, 64, &cpm_pic_host_ops, NULL);
 	if (cpm_pic_host == NULL) {
 		printk(KERN_ERR "CPM2 PIC: failed to allocate irq host!\n");
 		sirq = NO_IRQ;
@@ -224,6 +251,7 @@ void __init cpm_reset(void)
 	/* Set SDMA Bus Request priority 5.
 	 * On 860T, this also enables FEC priority 6.  I am not sure
 	 * this is what we realy want for some applications, but the
+	 * this is what we really want for some applications, but the
 	 * manual recommends it.
 	 * Bit 25, FAM can also be set to use FEC aggressive mode (860T).
 	 */
@@ -289,6 +317,7 @@ cpm_setbrg(uint brg, uint rate)
 		out_be32(bp, (((BRG_UART_CLK_DIV16 / rate) - 1) << 1) |
 			      CPM_BRG_EN | CPM_BRG_DIV16);
 }
+EXPORT_SYMBOL(cpm_setbrg);
 
 struct cpm_ioport16 {
 	__be16 dir, par, odr_sor, dat, intr;
@@ -503,6 +532,17 @@ int cpm1_clk_setup(enum cpm_clk_target target, int clock, int mode)
 
 	bits <<= shift;
 	mask <<= shift;
+
+	if (reg == &mpc8xx_immr->im_cpm.cp_sicr) {
+		if (mode == CPM_CLK_RTX) {
+			bits |= bits << 3;
+			mask |= mask << 3;
+		} else if (mode == CPM_CLK_RX) {
+			bits <<= 3;
+			mask <<= 3;
+		}
+	}
+
 	out_be32(reg, (in_be32(reg) & ~mask) | bits);
 
 	return 0;
@@ -546,7 +586,35 @@ static int cpm1_gpio16_get(struct gpio_chip *gc, unsigned int gpio)
 	return !!(in_be16(&iop->dat) & pin_mask);
 }
 
+static void __cpm1_gpio16_set(struct of_mm_gpio_chip *mm_gc, u16 pin_mask,
+	int value)
+{
+	struct cpm1_gpio16_chip *cpm1_gc = to_cpm1_gpio16_chip(mm_gc);
+	struct cpm_ioport16 __iomem *iop = mm_gc->regs;
+
+	if (value)
+		cpm1_gc->cpdata |= pin_mask;
+	else
+		cpm1_gc->cpdata &= ~pin_mask;
+
+	out_be16(&iop->dat, cpm1_gc->cpdata);
+}
+
 static void cpm1_gpio16_set(struct gpio_chip *gc, unsigned int gpio, int value)
+{
+	struct of_mm_gpio_chip *mm_gc = to_of_mm_gpio_chip(gc);
+	struct cpm1_gpio16_chip *cpm1_gc = to_cpm1_gpio16_chip(mm_gc);
+	unsigned long flags;
+	u16 pin_mask = 1 << (15 - gpio);
+
+	spin_lock_irqsave(&cpm1_gc->lock, flags);
+
+	__cpm1_gpio16_set(mm_gc, pin_mask, value);
+
+	spin_unlock_irqrestore(&cpm1_gc->lock, flags);
+}
+
+static int cpm1_gpio16_dir_out(struct gpio_chip *gc, unsigned int gpio, int val)
 {
 	struct of_mm_gpio_chip *mm_gc = to_of_mm_gpio_chip(gc);
 	struct cpm1_gpio16_chip *cpm1_gc = to_cpm1_gpio16_chip(mm_gc);
@@ -577,6 +645,10 @@ static int cpm1_gpio16_dir_out(struct gpio_chip *gc, unsigned int gpio, int val)
 	setbits16(&iop->dir, pin_mask);
 
 	cpm1_gpio16_set(gc, gpio, val);
+	setbits16(&iop->dir, pin_mask);
+	__cpm1_gpio16_set(mm_gc, pin_mask, val);
+
+	spin_unlock_irqrestore(&cpm1_gc->lock, flags);
 
 	return 0;
 }
@@ -590,6 +662,17 @@ static int cpm1_gpio16_dir_in(struct gpio_chip *gc, unsigned int gpio)
 	pin_mask = 1 << (15 - gpio);
 
 	clrbits16(&iop->dir, pin_mask);
+
+	struct cpm1_gpio16_chip *cpm1_gc = to_cpm1_gpio16_chip(mm_gc);
+	struct cpm_ioport16 __iomem *iop = mm_gc->regs;
+	unsigned long flags;
+	u16 pin_mask = 1 << (15 - gpio);
+
+	spin_lock_irqsave(&cpm1_gc->lock, flags);
+
+	clrbits16(&iop->dir, pin_mask);
+
+	spin_unlock_irqrestore(&cpm1_gc->lock, flags);
 
 	return 0;
 }
@@ -613,6 +696,9 @@ int cpm1_gpiochip_add16(struct device_node *np)
 
 	mm_gc->save_regs = cpm1_gpio16_save_regs;
 	of_gc->gpio_cells = 2;
+	gc = &mm_gc->gc;
+
+	mm_gc->save_regs = cpm1_gpio16_save_regs;
 	gc->ngpio = 16;
 	gc->direction_input = cpm1_gpio16_dir_in;
 	gc->direction_output = cpm1_gpio16_dir_out;
@@ -655,7 +741,35 @@ static int cpm1_gpio32_get(struct gpio_chip *gc, unsigned int gpio)
 	return !!(in_be32(&iop->dat) & pin_mask);
 }
 
+static void __cpm1_gpio32_set(struct of_mm_gpio_chip *mm_gc, u32 pin_mask,
+	int value)
+{
+	struct cpm1_gpio32_chip *cpm1_gc = to_cpm1_gpio32_chip(mm_gc);
+	struct cpm_ioport32b __iomem *iop = mm_gc->regs;
+
+	if (value)
+		cpm1_gc->cpdata |= pin_mask;
+	else
+		cpm1_gc->cpdata &= ~pin_mask;
+
+	out_be32(&iop->dat, cpm1_gc->cpdata);
+}
+
 static void cpm1_gpio32_set(struct gpio_chip *gc, unsigned int gpio, int value)
+{
+	struct of_mm_gpio_chip *mm_gc = to_of_mm_gpio_chip(gc);
+	struct cpm1_gpio32_chip *cpm1_gc = to_cpm1_gpio32_chip(mm_gc);
+	unsigned long flags;
+	u32 pin_mask = 1 << (31 - gpio);
+
+	spin_lock_irqsave(&cpm1_gc->lock, flags);
+
+	__cpm1_gpio32_set(mm_gc, pin_mask, value);
+
+	spin_unlock_irqrestore(&cpm1_gc->lock, flags);
+}
+
+static int cpm1_gpio32_dir_out(struct gpio_chip *gc, unsigned int gpio, int val)
 {
 	struct of_mm_gpio_chip *mm_gc = to_of_mm_gpio_chip(gc);
 	struct cpm1_gpio32_chip *cpm1_gc = to_cpm1_gpio32_chip(mm_gc);
@@ -686,6 +800,10 @@ static int cpm1_gpio32_dir_out(struct gpio_chip *gc, unsigned int gpio, int val)
 	setbits32(&iop->dir, pin_mask);
 
 	cpm1_gpio32_set(gc, gpio, val);
+	setbits32(&iop->dir, pin_mask);
+	__cpm1_gpio32_set(mm_gc, pin_mask, val);
+
+	spin_unlock_irqrestore(&cpm1_gc->lock, flags);
 
 	return 0;
 }
@@ -699,6 +817,17 @@ static int cpm1_gpio32_dir_in(struct gpio_chip *gc, unsigned int gpio)
 	pin_mask = 1 << (31 - gpio);
 
 	clrbits32(&iop->dir, pin_mask);
+
+	struct cpm1_gpio32_chip *cpm1_gc = to_cpm1_gpio32_chip(mm_gc);
+	struct cpm_ioport32b __iomem *iop = mm_gc->regs;
+	unsigned long flags;
+	u32 pin_mask = 1 << (31 - gpio);
+
+	spin_lock_irqsave(&cpm1_gc->lock, flags);
+
+	clrbits32(&iop->dir, pin_mask);
+
+	spin_unlock_irqrestore(&cpm1_gc->lock, flags);
 
 	return 0;
 }
@@ -722,6 +851,9 @@ int cpm1_gpiochip_add32(struct device_node *np)
 
 	mm_gc->save_regs = cpm1_gpio32_save_regs;
 	of_gc->gpio_cells = 2;
+	gc = &mm_gc->gc;
+
+	mm_gc->save_regs = cpm1_gpio32_save_regs;
 	gc->ngpio = 32;
 	gc->direction_input = cpm1_gpio32_dir_in;
 	gc->direction_output = cpm1_gpio32_dir_out;

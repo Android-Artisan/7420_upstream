@@ -9,6 +9,15 @@
 
 #include <asm/iommu.h>
 #include <asm/processor.h>
+#include <linux/dma-mapping.h>
+#include <linux/scatterlist.h>
+#include <linux/string.h>
+#include <linux/gfp.h>
+#include <linux/pci.h>
+#include <linux/mm.h>
+
+#include <asm/processor.h>
+#include <asm/iommu.h>
 #include <asm/dma.h>
 
 static int
@@ -16,6 +25,8 @@ check_addr(char *name, struct device *hwdev, dma_addr_t bus, size_t size)
 {
 	if (hwdev && bus + size > *hwdev->dma_mask) {
 		if (*hwdev->dma_mask >= DMA_32BIT_MASK)
+	if (hwdev && !dma_capable(hwdev, bus, size)) {
+		if (*hwdev->dma_mask >= DMA_BIT_MASK(32))
 			printk(KERN_ERR
 			    "nommu_%s: overflow %Lx+%zu of device mask %Lx\n",
 				name, (long long)bus, size,
@@ -33,6 +44,15 @@ nommu_map_single(struct device *hwdev, phys_addr_t paddr, size_t size,
 	WARN_ON(size == 0);
 	if (!check_addr("map_single", hwdev, bus, size))
 				return bad_dma_address;
+static dma_addr_t nommu_map_page(struct device *dev, struct page *page,
+				 unsigned long offset, size_t size,
+				 enum dma_data_direction dir,
+				 struct dma_attrs *attrs)
+{
+	dma_addr_t bus = page_to_phys(page) + offset;
+	WARN_ON(size == 0);
+	if (!check_addr("map_single", dev, bus, size))
+		return DMA_ERROR_CODE;
 	flush_write_buffers();
 	return bus;
 }
@@ -55,6 +75,8 @@ nommu_map_single(struct device *hwdev, phys_addr_t paddr, size_t size,
  */
 static int nommu_map_sg(struct device *hwdev, struct scatterlist *sg,
 	       int nents, int direction)
+			int nents, enum dma_data_direction dir,
+			struct dma_attrs *attrs)
 {
 	struct scatterlist *s;
 	int i;
@@ -86,3 +108,27 @@ void __init no_iommu_init(void)
 	force_iommu = 0; /* no HW IOMMU */
 	dma_ops = &nommu_dma_ops;
 }
+static void nommu_sync_single_for_device(struct device *dev,
+			dma_addr_t addr, size_t size,
+			enum dma_data_direction dir)
+{
+	flush_write_buffers();
+}
+
+
+static void nommu_sync_sg_for_device(struct device *dev,
+			struct scatterlist *sg, int nelems,
+			enum dma_data_direction dir)
+{
+	flush_write_buffers();
+}
+
+struct dma_map_ops nommu_dma_ops = {
+	.alloc			= dma_generic_alloc_coherent,
+	.free			= dma_generic_free_coherent,
+	.map_sg			= nommu_map_sg,
+	.map_page		= nommu_map_page,
+	.sync_single_for_device = nommu_sync_single_for_device,
+	.sync_sg_for_device	= nommu_sync_sg_for_device,
+	.is_phys		= 1,
+};

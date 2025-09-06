@@ -98,7 +98,6 @@ earlier 3Com products.
 #include <asm/io.h>
 #include <asm/system.h>
 
-/*====================================================================*/
 
 /* Module parameters */
 
@@ -126,7 +125,6 @@ static char *version =
 #define DEBUG(n, args...)
 #endif
 
-/*====================================================================*/
 
 /* Time in jiffies before concluding the transmitter is hung. */
 #define TX_TIMEOUT  ((800*HZ)/1000)

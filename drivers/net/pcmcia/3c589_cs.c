@@ -1,4 +1,3 @@
-/*======================================================================
 
     A PCMCIA ethernet driver for the 3com 3c589 card.
     
@@ -17,7 +16,6 @@
     
     Updated for 2.5.x by Alan Cox <alan@redhat.com>
 
-======================================================================*/
 
 #define DRV_NAME	"3c589_cs"
 #define DRV_VERSION	"1.162-ac"
@@ -117,7 +115,6 @@ struct el3_private {
 
 static const char *if_names[] = { "auto", "10baseT", "10base2", "AUI" };
 
-/*====================================================================*/
 
 /* Module parameters */
 
@@ -139,7 +136,6 @@ DRV_NAME ".c " DRV_VERSION " 2001/10/13 00:08:50 (David Hinds)";
 #define DEBUG(n, args...)
 #endif
 
-/*====================================================================*/
 
 static int tc589_config(struct pcmcia_device *link);
 static void tc589_release(struct pcmcia_device *link);
@@ -161,13 +157,11 @@ static const struct ethtool_ops netdev_ethtool_ops;
 
 static void tc589_detach(struct pcmcia_device *p_dev);
 
-/*======================================================================
 
     tc589_attach() creates an "instance" of the driver, allocating
     local data structures for one device.  The device is registered
     with Card Services.
 
-======================================================================*/
 
 static int tc589_probe(struct pcmcia_device *link)
 {
@@ -211,14 +205,12 @@ static int tc589_probe(struct pcmcia_device *link)
     return tc589_config(link);
 } /* tc589_attach */
 
-/*======================================================================
 
     This deletes a driver "instance".  The device is de-registered
     with Card Services.  If it has been released, all local data
     structures are freed.  Otherwise, the structures will be freed
     when the device is released.
 
-======================================================================*/
 
 static void tc589_detach(struct pcmcia_device *link)
 {
@@ -234,13 +226,11 @@ static void tc589_detach(struct pcmcia_device *link)
     free_netdev(dev);
 } /* tc589_detach */
 
-/*======================================================================
 
     tc589_config() is scheduled to run after a CARD_INSERTION event
     is received, to configure the PCMCIA socket, and to make the
     ethernet device available to the system.
     
-======================================================================*/
 
 #define CS_CHECK(fn, ret) \
 do { last_fn = (fn); if ((last_ret = (ret)) != 0) goto cs_failed; } while (0)
@@ -347,13 +337,11 @@ failed:
     return -ENODEV;
 } /* tc589_config */
 
-/*======================================================================
 
     After a card is removed, tc589_release() will unregister the net
     device, and release the PCMCIA configuration.  If the device is
     still open, this will be postponed until it is closed.
     
-======================================================================*/
 
 static void tc589_release(struct pcmcia_device *link)
 {
@@ -382,7 +370,6 @@ static int tc589_resume(struct pcmcia_device *link)
 	return 0;
 }
 
-/*====================================================================*/
 
 /*
   Use this for commands that may take time to finish

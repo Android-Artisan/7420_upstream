@@ -43,6 +43,7 @@ static const char *sas_phye_str[] = {
 	[1] = "PHYE_OOB_DONE",
 	[2] = "PHYE_OOB_ERROR",
 	[3] = "PHYE_SPINUP_HOLD",
+	[4] = "PHYE_RESUME_TIMEOUT",
 };
 
 void sas_dprint_porte(int phyid, enum port_event pe)
@@ -57,6 +58,7 @@ void sas_dprint_phye(int phyid, enum phy_event pe)
 void sas_dprint_hae(struct sas_ha_struct *sas_ha, enum ha_event he)
 {
 	SAS_DPRINTK("ha %s: %s event\n", sas_ha->dev->bus_id,
+	SAS_DPRINTK("ha %s: %s event\n", dev_name(sas_ha->dev),
 		    sas_hae_str[he]);
 }
 

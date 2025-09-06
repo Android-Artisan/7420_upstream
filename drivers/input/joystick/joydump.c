@@ -172,3 +172,4 @@ static void __exit joydump_exit(void)
 
 module_init(joydump_init);
 module_exit(joydump_exit);
+module_gameport_driver(joydump_drv);

@@ -1,21 +1,17 @@
 Version 0.92 (2002-03-29)
-==========
 * Minor cleanup. Ran Lindent on the sources.
 
 Version 0.92 (2002-03-27)
-==========
 * Fixed module makefile problem. It was not compiling all the correct 
     source files!
 * Removed duplicated function definition
 * Fixed potential null pointer dereference when reporting an error
 
 Version 0.91 (2002-03-26)
-==========
 * Oy! Fixed stupid bug that would cause an unresolved symbol error.
 	Thanks to Laszlo Boszormenyi for pointing this out to me.
 
 Version 0.9 (2002-03-14)
-==========
 * Added Sergey S. Kostyliov's patch to eliminate memcpy() overhead
 	from b+tree operations. Changes the befs_read_datastream() interface.
 
@@ -23,8 +19,8 @@ Version 0.9 (2002-03-14)
 	interface into their own file called linuxvfs.c. [WD]
 
 Version 0.64 (2002-02-07)
-==========
 * Did the string comparision really right this time (btree.c) [WD]
+* Did the string comparison really right this time (btree.c) [WD]
 
 * Fixed up some places where I assumed that a long int could hold
 	a pointer value. (btree.c) [WD]
@@ -42,7 +38,6 @@ Version 0.64 (2002-02-07)
 
 
 Version 0.63 (2002-01-31)
-==========
 * Fixed bug in befs_find_brun_indirect() that would result in the wrong
 	block being read. It was introduced when adding byteswapping in 
 	0.61. (datastream.c) [WD]
@@ -67,12 +62,10 @@ Version 0.63 (2002-01-31)
 
 
 Version 0.62
-==========
 * Fixed makefile for module install [WD]
 
 
 Version 0.61 (2002-01-20)
-==========
 * Made functions in endian.h to do the correct byteswapping, no matter
 	the arch. [WD]
 
@@ -90,7 +83,6 @@ Version 0.61 (2002-01-20)
  
 
 Version 0.6 (2001-12-15)
-==========
 * Cleanup of NLS functions (util.c) [WD]
 
 * Make directory lookup/read use the NLS if an iocharset is provided. [WD]
@@ -115,13 +107,13 @@ Version 0.6 (2001-12-15)
 	(see TODO). [WD]
 
 * Rewrote datastream positon lookups.
+* Rewrote datastream position lookups.
 	(datastream.c) [WD]
 
 * Moved the TODO list to its own file.
 
 
 Version 0.50 (2001-11-13)
-==========
 * Added workaround for mis-understanding of the nature of the b+trees used 
 	in directories. A cleaner solution will come after I've thought about it 
 	for a while. Thanks to Brent Miszalaski for finding and reporting this bug. 
@@ -151,6 +143,7 @@ Version 0.50 (2001-11-13)
 	the page size in linux, which is 4k i386. Oops. Added a test for 
 	(blocksize > PAGE_SIZE), and refuse to mount in that case. What this 
 	practicaly means is that 8k blocksize volumes won't work without a major
+	practically means is that 8k blocksize volumes won't work without a major
 	restructuring of the driver (or an alpha or other 64bit hardware). [WD]
 
 * Cleaned up the befs_count_blocks() function. Much smarter now. 
@@ -174,7 +167,6 @@ Version 0.50 (2001-11-13)
 	in inode.c [WD]
 
 Version 0.45 (2001-10-29)
-==========
 * Added functions to get the private superblock and inode structures from 
 	their enclosing public structures. Switched all references to the 
 	private portions to use them. (many files) [WD]
@@ -184,6 +176,7 @@ Version 0.45 (2001-10-29)
 	with kmalloc(). put_super and put_inode free them. This allows us not 
 	to have to touch the definitions of the public structures in 
 	include/linux/fs.h. Also, befs_inode_info is huge (becuase of the 
+	include/linux/fs.h. Also, befs_inode_info is huge (because of the 
 	symlink string). (super.c, inode.c, befs_fs.h) [WD]
 
 * Fixed a thinko that was corrupting file reads after the first block_run 
@@ -202,7 +195,6 @@ Version 0.45 (2001-10-29)
 
 
 Version 0.4 (2001-10-28)
-==========
 * Made it an option to use the old non-pagecache befs_file_read() for 
 	testing purposes. (fs/Config.in)
 
@@ -221,7 +213,6 @@ Version 0.4 (2001-10-28)
 
 
 2001-10-26
-==========
 * Fixed date format in this file. Was I smoking crack?
 
 * Removed old datastream code from file.c, since it is nolonger used.
@@ -245,7 +236,6 @@ Version 0.4 (2001-10-28)
 	sizes (such as cdroms) on linux 2.4.10 and up.
 
 2001-10-24
-==========
 * Fix nasty bug in converting block numbers to struct befs_inode_addr. 
 	Subtle, because the old version was only sometimes wrong. 
 	Probably responsible for lots of problems. (inode.c)
@@ -255,7 +245,6 @@ Version 0.4 (2001-10-28)
 * This one looks good. Release patch version 10
 
 2001-10-23
-==========
 * Added btree searching function.
 
 * Use befs_btree_find in befs_lookup (namei.c)
@@ -263,12 +252,10 @@ Version 0.4 (2001-10-28)
 * Additional comments in btree.c
 
 2001-10-22
-==========
 * Added B+tree reading functions (in btree.c). 
 	Made befs_readdir() use them them instead of the cruft in index.c.
 
 2001-09-11
-==========
 * Converted befs_read_file() to use the new datastream code.
 
 * Finally updated the README file.
@@ -283,7 +270,6 @@ Version 0.4 (2001-10-28)
 	native byteorder works 100%.
 
 2001-09-10
-==========
 * Finished implementing read_datastream()
 
 * made befs_read_brun() more general
@@ -291,7 +277,6 @@ Version 0.4 (2001-10-28)
 	Added a wrapper function to give the old call
 
 2001-09-30
-==========
 * Discovered that the datastream handleing code in file.c is quite deficient 
 	in several respects. For one thing, it doesn't deal with indirect blocks
 
@@ -303,13 +288,11 @@ Version 0.4 (2001-10-28)
 
 
 2001-09-07
-==========
 * Made a function to actually count the number of fs blocks used by a file.
 	And helper functions.
 	(fs/befs/inode.c)
 
 2001-09-05
-==========
 * Fixed a misunderstanding of the inode fields. 
 	This fixed the problmem with wrong file sizes from du and others.
 	The i_blocks field of the inode struct is not the number of blocks for the
@@ -335,7 +318,6 @@ Version 0.4 (2001-10-28)
 	(fs/befs/super.c) (fs/befs/inode.c)
 
 2001-09-01
-==========
 * Fixed the problem with statfs where it would always claim the disk was 
 	half full, due to improper understanding of the statfs fields.
 	(fs/befs/super.c)
@@ -343,7 +325,6 @@ Version 0.4 (2001-10-28)
 * Posted verion 4 of the patch
 
 2001-09-01
-==========
 * Changed the macros in befs_fs.h to inline functions.
 	More readable. Typesafe. Better
 	(include/linux/befs_fs.h)
@@ -356,7 +337,6 @@ Version 0.4 (2001-10-28)
 	(include/linux/befs_fs.h)
 
 2001-08-30
-==========
 * Cleaned up some wording.
 
 * Added additional consitency checks on mount
@@ -382,7 +362,6 @@ Version 0.4 (2001-10-28)
 	(everwhere)
 
 2001-08-27
-==========
 * Cleaned up the fs/Config.in entries a bit, now slightly more descriptive.
 
 * BeFS depends on NLS, so I made activating BeFS enable the NLS questions
@@ -392,12 +371,10 @@ Version 0.4 (2001-10-28)
 	(Documentation/Configure.help)
 
 2001-08-??
-==========
 * Removed superblock locking calls in befs_read_super(). In 2.4, the VFS 
 	hands us a super_block struct that is already locked.
 
 2001-08-13
-==========
 * Will Dyson <will_dyson@pobox.com> is now attempting to maintain this module
 	Makoto Kato <m_kato@ga2.so-net.ne.jp> is original author.Daniel Berlin 
 	also did some work on it (fixing it up for the later 2.3.x kernels, IIRC).
@@ -405,6 +382,7 @@ Version 0.4 (2001-10-28)
 * Fixed compile errors on 2.4.1 kernel (WD)
 	Resolve rejected patches
 	Accomodate changed NLS interface (util.h)
+	Accommodate changed NLS interface (util.h)
 	Needed to include <linux/slab.h> in most files
 	Makefile changes
 	fs/Config.in changes

@@ -22,6 +22,8 @@
 #define AVR32_PERFCTR_IRQ_GROUP	0
 #define AVR32_PERFCTR_IRQ_LINE	1
 
+void avr32_backtrace(struct pt_regs * const regs, unsigned int depth);
+
 enum { PCCNT, PCNT0, PCNT1, NR_counter };
 
 struct avr32_perf_counter {
@@ -98,6 +100,7 @@ static irqreturn_t avr32_perf_counter_interrupt(int irq, void *dev_id)
 
 static int avr32_perf_counter_create_files(struct super_block *sb,
 		struct dentry *root)
+static int avr32_perf_counter_create_files(struct dentry *root)
 {
 	struct dentry *dir;
 	unsigned int i;
@@ -120,6 +123,21 @@ static int avr32_perf_counter_create_files(struct super_block *sb,
 		oprofilefs_create_ulong(sb, dir, "user",
 				&counter[i].user);
 		oprofilefs_create_ulong(sb, dir, "unit_mask",
+		dir = oprofilefs_mkdir(root, filename);
+
+		oprofilefs_create_ulong(dir, "enabled",
+				&counter[i].enabled);
+		oprofilefs_create_ulong(dir, "event",
+				&counter[i].event);
+		oprofilefs_create_ulong(dir, "count",
+				&counter[i].count);
+
+		/* Dummy entries */
+		oprofilefs_create_ulong(dir, "kernel",
+				&counter[i].kernel);
+		oprofilefs_create_ulong(dir, "user",
+				&counter[i].user);
+		oprofilefs_create_ulong(dir, "unit_mask",
 				&counter[i].unit_mask);
 	}
 
@@ -222,6 +240,8 @@ int __init oprofile_arch_init(struct oprofile_operations *ops)
 
 	memcpy(ops, &avr32_perf_counter_ops,
 			sizeof(struct oprofile_operations));
+
+	ops->backtrace = avr32_backtrace;
 
 	printk(KERN_INFO "oprofile: using AVR32 performance monitoring.\n");
 

@@ -5,6 +5,7 @@
   debugfs driver debugging code
 
   Copyright (c) 2005-2007 Michael Buesch <mb@bu3sch.de>
+  Copyright (c) 2005-2007 Michael Buesch <m@bues.ch>
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -53,6 +54,11 @@ struct b43_debugfs_fops {
 static inline
 struct b43_dfs_file * fops_to_dfs_file(struct b43_wldev *dev,
 				       const struct b43_debugfs_fops *dfops)
+};
+
+static inline
+struct b43_dfs_file *fops_to_dfs_file(struct b43_wldev *dev,
+				      const struct b43_debugfs_fops *dfops)
 {
 	void *p;
 
@@ -153,6 +159,13 @@ static int shm16write__write_file(struct b43_wldev *dev,
 	val |= set;
 	__b43_shm_write16(dev, routing, addr, val);
 	spin_unlock_irqrestore(&dev->wl->shm_lock, flags);
+	if (mask == 0)
+		val = 0;
+	else
+		val = b43_shm_read16(dev, routing, addr);
+	val &= mask;
+	val |= set;
+	b43_shm_write16(dev, routing, addr, val);
 
 	return 0;
 }
@@ -232,6 +245,13 @@ static int shm32write__write_file(struct b43_wldev *dev,
 	val |= set;
 	__b43_shm_write32(dev, routing, addr, val);
 	spin_unlock_irqrestore(&dev->wl->shm_lock, flags);
+	if (mask == 0)
+		val = 0;
+	else
+		val = b43_shm_read32(dev, routing, addr);
+	val &= mask;
+	val |= set;
+	b43_shm_write32(dev, routing, addr, val);
 
 	return 0;
 }
@@ -408,6 +428,12 @@ static ssize_t txstat_read_file(struct b43_wldev *dev,
 	if (log->end < 0) {
 		fappend("Nothing transmitted, yet\n");
 		goto out_unlock;
+	int i, idx;
+	struct b43_txstatus *stat;
+
+	if (log->end < 0) {
+		fappend("Nothing transmitted, yet\n");
+		goto out;
 	}
 	fappend("b43 TX status reports:\n\n"
 		"index | cookie | seq | phy_stat | frame_count | "
@@ -514,6 +540,11 @@ static int txpower_g_write_file(struct b43_wldev *dev,
 }
 
 /* wl->irq_lock is locked */
+out:
+
+	return count;
+}
+
 static int restart_write_file(struct b43_wldev *dev,
 			      const char *buf, size_t count)
 {
@@ -561,6 +592,7 @@ static ssize_t loctls_read_file(struct b43_wldev *dev,
 		goto out;
 	}
 	lo = phy->lo_control;
+	lo = phy->g->lo_control;
 	fappend("-- Local Oscillator calibration data --\n\n");
 	fappend("HW-power-control enabled: %d\n",
 		dev->phy.hardware_power_control);
@@ -580,6 +612,8 @@ static ssize_t loctls_read_file(struct b43_wldev *dev,
 
 		active = (b43_compare_bbatt(&cal->bbatt, &phy->bbatt) &&
 			  b43_compare_rfatt(&cal->rfatt, &phy->rfatt));
+		active = (b43_compare_bbatt(&cal->bbatt, &phy->g->bbatt) &&
+			  b43_compare_rfatt(&cal->rfatt, &phy->g->rfatt));
 		fappend("BB(%d), RF(%d,%d)  ->  I=%d, Q=%d  "
 			"(expires in %lu sec)%s\n",
 			cal->bbatt.att,
@@ -660,6 +694,7 @@ static ssize_t b43_debugfs_read(struct file *file, char __user *userbuf,
 			spin_unlock_irq(&dev->wl->irq_lock);
 		} else
 			ret = dfops->read(dev, buf, bufsize);
+		ret = dfops->read(dev, buf, bufsize);
 		if (ret <= 0) {
 			free_pages((unsigned long)buf, buforder);
 			err = ret;
@@ -727,6 +762,7 @@ static ssize_t b43_debugfs_write(struct file *file,
 		spin_unlock_irq(&dev->wl->irq_lock);
 	} else
 		err = dfops->write(dev, buf, count);
+	err = dfops->write(dev, buf, count);
 	if (err)
 		goto out_freepage;
 
@@ -740,6 +776,7 @@ out_unlock:
 
 
 #define B43_DEBUGFS_FOPS(name, _read, _write, _take_irqlock)	\
+#define B43_DEBUGFS_FOPS(name, _read, _write)			\
 	static struct b43_debugfs_fops fops_##name = {		\
 		.read	= _read,				\
 		.write	= _write,				\
@@ -771,6 +808,40 @@ B43_DEBUGFS_FOPS(loctls, loctls_read_file, NULL, 0);
 int b43_debug(struct b43_wldev *dev, enum b43_dyndbg feature)
 {
 	return !!(dev->dfsentry && dev->dfsentry->dyn_debug[feature]);
+			.open	= simple_open,			\
+			.read	= b43_debugfs_read,		\
+			.write	= b43_debugfs_write,		\
+			.llseek = generic_file_llseek,		\
+		},						\
+		.file_struct_offset = offsetof(struct b43_dfsentry, \
+					       file_##name),	\
+	}
+
+B43_DEBUGFS_FOPS(shm16read, shm16read__read_file, shm16read__write_file);
+B43_DEBUGFS_FOPS(shm16write, NULL, shm16write__write_file);
+B43_DEBUGFS_FOPS(shm32read, shm32read__read_file, shm32read__write_file);
+B43_DEBUGFS_FOPS(shm32write, NULL, shm32write__write_file);
+B43_DEBUGFS_FOPS(mmio16read, mmio16read__read_file, mmio16read__write_file);
+B43_DEBUGFS_FOPS(mmio16write, NULL, mmio16write__write_file);
+B43_DEBUGFS_FOPS(mmio32read, mmio32read__read_file, mmio32read__write_file);
+B43_DEBUGFS_FOPS(mmio32write, NULL, mmio32write__write_file);
+B43_DEBUGFS_FOPS(txstat, txstat_read_file, NULL);
+B43_DEBUGFS_FOPS(restart, NULL, restart_write_file);
+B43_DEBUGFS_FOPS(loctls, loctls_read_file, NULL);
+
+
+bool b43_debug(struct b43_wldev *dev, enum b43_dyndbg feature)
+{
+	bool enabled;
+
+	enabled = (dev->dfsentry && dev->dfsentry->dyn_debug[feature]);
+	if (unlikely(enabled)) {
+		/* Force full debugging messages, if the user enabled
+		 * some dynamic debugging feature. */
+		b43_modparam_verbose = B43_VERBOSITY_MAX;
+	}
+
+	return enabled;
 }
 
 static void b43_remove_dynamic_debug(struct b43_wldev *dev)
@@ -802,6 +873,15 @@ static void b43_add_dynamic_debug(struct b43_wldev *dev)
 	add_dyn_dbg("debug_pwork_stop", B43_DBG_PWORK_STOP, 0);
 	add_dyn_dbg("debug_lo", B43_DBG_LO, 0);
 	add_dyn_dbg("debug_firmware", B43_DBG_FIRMWARE, 0);
+	add_dyn_dbg("debug_xmitpower", B43_DBG_XMITPOWER, false);
+	add_dyn_dbg("debug_dmaoverflow", B43_DBG_DMAOVERFLOW, false);
+	add_dyn_dbg("debug_dmaverbose", B43_DBG_DMAVERBOSE, false);
+	add_dyn_dbg("debug_pwork_fast", B43_DBG_PWORK_FAST, false);
+	add_dyn_dbg("debug_pwork_stop", B43_DBG_PWORK_STOP, false);
+	add_dyn_dbg("debug_lo", B43_DBG_LO, false);
+	add_dyn_dbg("debug_firmware", B43_DBG_FIRMWARE, false);
+	add_dyn_dbg("debug_keys", B43_DBG_KEYS, false);
+	add_dyn_dbg("debug_verbose_stats", B43_DBG_VERBOSESTATS, false);
 
 #undef add_dyn_dbg
 }
@@ -878,6 +958,7 @@ void b43_debugfs_add_device(struct b43_wldev *dev)
 	ADD_FILE(tsf, 0600);
 	ADD_FILE(txstat, 0400);
 	ADD_FILE(txpower_g, 0600);
+	ADD_FILE(txstat, 0400);
 	ADD_FILE(restart, 0200);
 	ADD_FILE(loctls, 0400);
 
@@ -908,6 +989,7 @@ void b43_debugfs_remove_device(struct b43_wldev *dev)
 	debugfs_remove(e->file_tsf.dentry);
 	debugfs_remove(e->file_txstat.dentry);
 	debugfs_remove(e->file_txpower_g.dentry);
+	debugfs_remove(e->file_txstat.dentry);
 	debugfs_remove(e->file_restart.dentry);
 	debugfs_remove(e->file_loctls.dentry);
 

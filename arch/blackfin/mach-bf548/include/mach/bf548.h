@@ -25,6 +25,9 @@
  * along with this program; if not, see the file COPYING, or write
  * to the Free Software Foundation, Inc.,
  * 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+ * Copyright 2007-2009 Analog Devices Inc.
+ *
+ * Licensed under the GPL-2 or later.
  */
 
 #ifndef __MACH_BF548_H__
@@ -122,6 +125,23 @@
 #else
 # define CPU "UNKNOWN"
 # define CPUID 0x0
+# define CPUID 0x27de
+#elif defined(CONFIG_BF544)
+# define CPU   "BF544"
+# define CPUID 0x27de
+#elif defined(CONFIG_BF547)
+# define CPU   "BF547"
+# define CPUID 0x27de
+#elif defined(CONFIG_BF548)
+# define CPU   "BF548"
+# define CPUID 0x27de
+#elif defined(CONFIG_BF549)
+# define CPU   "BF549"
+# define CPUID 0x27de
+#endif
+
+#ifndef CPU
+#error "Unknown CPU type - This kernel doesn't seem to be configured properly"
 #endif
 
 #endif	/* __MACH_BF48_H__  */

@@ -16,6 +16,7 @@
 #include <asm/io.h>
 #include <asm/irq.h>
 #include <asm/sh7763rdp.h>
+#include <mach/sh7763rdp.h>
 
 #define INTC_BASE		(0xFFD00000)
 #define INTC_INT2PRI7   (INTC_BASE+0x4001C)
@@ -42,4 +43,18 @@ void __init init_sh7763rdp_IRQ(void)
 
 	/* DMAC enabled */
 	ctrl_outl(1 << 8, INTC_INT2MSKCR);
+	__raw_writel(1 << 25, INTC_INT2MSKCR);
+
+	/* enable GPIO interrupts */
+	__raw_writel((__raw_readl(INTC_INT2PRI7) & 0xFF00FFFF) | 0x000F0000,
+		  INTC_INT2PRI7);
+
+	/* USBH enabled */
+	__raw_writel(1 << 17, INTC_INT2MSKCR1);
+
+	/* GETHER enabled */
+	__raw_writel(1 << 16, INTC_INT2MSKCR1);
+
+	/* DMAC enabled */
+	__raw_writel(1 << 8, INTC_INT2MSKCR);
 }

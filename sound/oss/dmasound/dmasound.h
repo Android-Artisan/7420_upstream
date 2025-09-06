@@ -130,6 +130,7 @@ typedef struct {
     int (*write_sq_setup)(void);	/* optional */
     int (*read_sq_setup)(void);		/* optional */
     int (*sq_open)(mode_t);		/* optional */
+    int (*sq_open)(fmode_t);		/* optional */
     int (*state_info)(char *, size_t);	/* optional */
     void (*abort_read)(void);		/* optional */
     int min_dsp_speed;
@@ -240,6 +241,10 @@ struct sound_queue {
 };
 
 #define SLEEP(queue)		interruptible_sleep_on_timeout(&queue, HZ)
+    int non_blocking;
+    int busy, syncing, xruns, died;
+};
+
 #define WAKE_UP(queue)		(wake_up_interruptible(&queue))
 
 extern struct sound_queue dmasound_write_sq;

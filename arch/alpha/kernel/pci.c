@@ -49,6 +49,10 @@ const char pci_hae0_name[] = "HAE0";
  * whether we probed only or not.
  */
 int pci_probe_only;
+/*
+ * If PCI_PROBE_ONLY in pci_flags is set, we don't change any PCI resource
+ * assignments.
+ */
 
 /*
  * The PCI controller list.
@@ -63,6 +67,7 @@ struct pci_controller *pci_isa_hose;
 
 static void __init
 quirk_isa_bridge(struct pci_dev *dev)
+static void quirk_isa_bridge(struct pci_dev *dev)
 {
 	dev->class = PCI_CLASS_BRIDGE_ISA << 8;
 }
@@ -70,6 +75,7 @@ DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_82378, quirk_i
 
 static void __init
 quirk_cypress(struct pci_dev *dev)
+static void quirk_cypress(struct pci_dev *dev)
 {
 	/* The Notorious Cy82C693 chip.  */
 
@@ -110,6 +116,7 @@ DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_CONTAQ, PCI_DEVICE_ID_CONTAQ_82C693, quir
 /* Called for each device after PCI setup is done. */
 static void __init
 pcibios_fixup_final(struct pci_dev *dev)
+static void pcibios_fixup_final(struct pci_dev *dev)
 {
 	unsigned int class = dev->class >> 8;
 
@@ -128,6 +135,8 @@ DECLARE_PCI_FIXUP_FINAL(PCI_ANY_ID, PCI_ANY_ID, pcibios_fixup_final);
 
 void
 pcibios_align_resource(void *data, struct resource *res,
+resource_size_t
+pcibios_align_resource(void *data, const struct resource *res,
 		       resource_size_t size, resource_size_t align)
 {
 	struct pci_dev *dev = data;
@@ -169,6 +178,7 @@ pcibios_align_resource(void *data, struct resource *res,
 
 		/* Align to multiple of size of minimum base.  */
 		alignto = max(0x1000UL, align);
+		alignto = max_t(resource_size_t, 0x1000, align);
 		start = ALIGN(start, alignto);
 		if (hose->sparse_mem_base && size <= 7 * 16*MB) {
 			if (((start / (16*MB)) & 0x7) == 0) {
@@ -185,6 +195,7 @@ pcibios_align_resource(void *data, struct resource *res,
 	}
 
 	res->start = start;
+	return start;
 }
 #undef KB
 #undef MB
@@ -211,11 +222,16 @@ static struct pdev_srm_saved_conf *srm_saved_configs;
 
 void __devinit
 pdev_save_srm_config(struct pci_dev *dev)
+#ifdef ALPHA_RESTORE_SRM_SETUP
+static struct pdev_srm_saved_conf *srm_saved_configs;
+
+void pdev_save_srm_config(struct pci_dev *dev)
 {
 	struct pdev_srm_saved_conf *tmp;
 	static int printed = 0;
 
 	if (!alpha_using_srm || pci_probe_only)
+	if (!alpha_using_srm || pci_has_flag(PCI_PROBE_ONLY))
 		return;
 
 	if (!printed) {
@@ -243,6 +259,7 @@ pci_restore_srm_config(void)
 
 	/* No need to restore if probed only. */
 	if (pci_probe_only)
+	if (pci_has_flag(PCI_PROBE_ONLY))
 		return;
 
 	/* Restore SRM config. */
@@ -380,6 +397,20 @@ pcibios_enable_device(struct pci_dev *dev, int mask)
 	return pci_enable_resources(dev, mask);
 }
 
+void pcibios_fixup_bus(struct pci_bus *bus)
+{
+	struct pci_dev *dev = bus->self;
+
+	if (pci_has_flag(PCI_PROBE_ONLY) && dev &&
+	    (dev->class >> 8) == PCI_CLASS_BRIDGE_PCI) {
+		pci_read_bridge_bases(bus);
+	}
+
+	list_for_each_entry(dev, &bus->devices, bus_list) {
+		pdev_save_srm_config(dev);
+	}
+}
+
 /*
  *  If we set up a device for bus mastering, we need to check the latency
  *  timer as certain firmware forgets to set it properly, as seen
@@ -412,6 +443,13 @@ pcibios_claim_one_bus(struct pci_bus *b)
 				continue;
 			if (pci_probe_only || (r->flags & IORESOURCE_PCI_FIXED))
 				pci_claim_resource(dev, i);
+			if (pci_has_flag(PCI_PROBE_ONLY) ||
+			    (r->flags & IORESOURCE_PCI_FIXED)) {
+				if (pci_claim_resource(dev, i) == 0)
+					continue;
+
+				pci_claim_bridge_resource(dev, i);
+			}
 		}
 	}
 
@@ -442,6 +480,38 @@ common_init_pci(void)
 		hose->bus = bus;
 		hose->need_domain_info = need_domain_info;
 		next_busno = bus->subordinate + 1;
+	struct list_head resources;
+	struct pci_bus *bus;
+	int next_busno;
+	int need_domain_info = 0;
+	u32 pci_mem_end;
+	u32 sg_base;
+	unsigned long end;
+
+	/* Scan all of the recorded PCI controllers.  */
+	for (next_busno = 0, hose = hose_head; hose; hose = hose->next) {
+		sg_base = hose->sg_pci ? hose->sg_pci->dma_base : ~0;
+
+		/* Adjust hose mem_space limit to prevent PCI allocations
+		   in the iommu windows. */
+		pci_mem_end = min((u32)__direct_map_base, sg_base) - 1;
+		end = hose->mem_space->start + pci_mem_end;
+		if (hose->mem_space->end > end)
+			hose->mem_space->end = end;
+
+		INIT_LIST_HEAD(&resources);
+		pci_add_resource_offset(&resources, hose->io_space,
+					hose->io_space->start);
+		pci_add_resource_offset(&resources, hose->mem_space,
+					hose->mem_space->start);
+
+		bus = pci_scan_root_bus(NULL, next_busno, alpha_mv.pci_ops,
+					hose, &resources);
+		if (!bus)
+			continue;
+		hose->bus = bus;
+		hose->need_domain_info = need_domain_info;
+		next_busno = bus->busn_res.end + 1;
 		/* Don't allow 8-bit bus number overflow inside the hose -
 		   reserve some space for bridges. */ 
 		if (next_busno > 224) {
@@ -454,6 +524,11 @@ common_init_pci(void)
 
 	pci_assign_unassigned_resources();
 	pci_fixup_irqs(alpha_mv.pci_swizzle, alpha_mv.pci_map_irq);
+	for (hose = hose_head; hose; hose = hose->next) {
+		bus = hose->bus;
+		if (bus)
+			pci_bus_add_devices(bus);
+	}
 }
 
 
@@ -550,6 +625,7 @@ void __iomem *pci_iomap(struct pci_dev *dev, int bar, unsigned long maxlen)
 }
 
 /* Destroy that token.  Not copied from lib/iomap.c.  */
+/* Destroy an __iomem token.  Not copied from lib/iomap.c.  */
 
 void pci_iounmap(struct pci_dev *dev, void __iomem * addr)
 {

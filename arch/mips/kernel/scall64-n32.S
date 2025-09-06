@@ -29,6 +29,7 @@
 #endif
 
 	.align  5
+	.align	5
 NESTED(handle_sysn32, PT_SIZE, sp)
 #ifndef CONFIG_MIPS32_O32
 	.set	noat
@@ -40,6 +41,7 @@ NESTED(handle_sysn32, PT_SIZE, sp)
 
 	dsubu	t0, v0, __NR_N32_Linux	# check syscall number
 	sltiu	t0, t0,	__NR_N32_Linux_syscalls + 1
+	sltiu	t0, t0, __NR_N32_Linux_syscalls + 1
 
 #ifndef CONFIG_MIPS32_O32
 	ld	t1, PT_EPC(sp)		# skip syscall on return
@@ -48,15 +50,17 @@ NESTED(handle_sysn32, PT_SIZE, sp)
 #endif
 	beqz	t0, not_n32_scall
 
-	dsll	t0, v0, 3		# offset into table
-	ld	t2, (sysn32_call_table - (__NR_N32_Linux * 8))(t0)
-
 	sd	a3, PT_R26(sp)		# save a3 for syscall restarting
 
 	li	t1, _TIF_SYSCALL_TRACE | _TIF_SYSCALL_AUDIT
+	li	t1, _TIF_WORK_SYSCALL_ENTRY
 	LONG_L	t0, TI_FLAGS($28)	# syscall tracing enabled?
 	and	t0, t1, t0
 	bnez	t0, n32_syscall_trace_entry
+
+syscall_common:
+	dsll	t0, v0, 3		# offset into table
+	ld	t2, (sysn32_call_table - (__NR_N32_Linux * 8))(t0)
 
 	jalr	t2			# Do The Real Thing (TM)
 
@@ -81,18 +85,29 @@ NESTED(handle_sysn32, PT_SIZE, sp)
 
 n32_syscall_exit_work:
 	j	syscall_exit_work_partial
+	ld	t1, PT_R2(sp)		# syscall number
+	dnegu	v0			# error
+	sd	t1, PT_R0(sp)		# save it for syscall restarting
+1:	sd	v0, PT_R2(sp)		# result
+
+	j	syscall_exit_partial
 
 /* ------------------------------------------------------------------------ */
 
 n32_syscall_trace_entry:
 	SAVE_STATIC
-	move	s0, t2
 	move	a0, sp
 	li	a1, 0
 	jal	do_syscall_trace
 
 	move	t0, s0
+	move	a1, v0
+	jal	syscall_trace_enter
+
+	bltz	v0, 1f			# seccomp failed? Skip syscall
+
 	RESTORE_STATIC
+	ld	v0, PT_R2(sp)		# Restore syscall (maybe modified)
 	ld	a0, PT_R4(sp)		# Restore argument registers
 	ld	a1, PT_R5(sp)
 	ld	a2, PT_R6(sp)
@@ -112,6 +127,14 @@ n32_syscall_trace_entry:
 
 	j	syscall_exit
 
+	dsubu	t2, v0, __NR_N32_Linux	# check (new) syscall number
+	sltiu   t0, t2, __NR_N32_Linux_syscalls + 1
+	beqz	t0, not_n32_scall
+
+	j	syscall_common
+
+1:	j	syscall_exit
+
 not_n32_scall:
 	/* This is not an n32 compatibility syscall, pass it on to
 	   the n64 syscall handlers.  */
@@ -119,6 +142,7 @@ not_n32_scall:
 
 	END(handle_sysn32)
 
+	.type	sysn32_call_table, @object
 EXPORT(sysn32_call_table)
 	PTR	sys_read			/* 6000 */
 	PTR	sys_write
@@ -135,6 +159,12 @@ EXPORT(sysn32_call_table)
 	PTR	sys_brk
 	PTR	sys32_rt_sigaction
 	PTR	sys32_rt_sigprocmask
+	PTR	sys_mips_mmap
+	PTR	sys_mprotect			/* 6010 */
+	PTR	sys_munmap
+	PTR	sys_brk
+	PTR	compat_sys_rt_sigaction
+	PTR	compat_sys_rt_sigprocmask
 	PTR	compat_sys_ioctl		/* 6015 */
 	PTR	sys_pread64
 	PTR	sys_pwrite64
@@ -160,11 +190,13 @@ EXPORT(sysn32_call_table)
 	PTR	sys_alarm
 	PTR	sys_getpid
 	PTR	sys32_sendfile
+	PTR	compat_sys_sendfile
 	PTR	sys_socket			/* 6040 */
 	PTR	sys_connect
 	PTR	sys_accept
 	PTR	sys_sendto
 	PTR	sys_recvfrom
+	PTR	compat_sys_recvfrom
 	PTR	compat_sys_sendmsg		/* 6045 */
 	PTR	compat_sys_recvmsg
 	PTR	sys_shutdown
@@ -189,6 +221,21 @@ EXPORT(sysn32_call_table)
 	PTR	sys_msgget
 	PTR	sysn32_msgsnd
 	PTR	sysn32_msgrcv
+	PTR	compat_sys_getsockopt
+	PTR	__sys_clone			/* 6055 */
+	PTR	__sys_fork
+	PTR	compat_sys_execve
+	PTR	sys_exit
+	PTR	compat_sys_wait4
+	PTR	sys_kill			/* 6060 */
+	PTR	sys_newuname
+	PTR	sys_semget
+	PTR	sys_semop
+	PTR	compat_sys_semctl
+	PTR	sys_shmdt			/* 6065 */
+	PTR	sys_msgget
+	PTR	compat_sys_msgsnd
+	PTR	compat_sys_msgrcv
 	PTR	compat_sys_msgctl
 	PTR	compat_sys_fcntl		/* 6070 */
 	PTR	sys_flock
@@ -215,11 +262,13 @@ EXPORT(sysn32_call_table)
 	PTR	sys_lchown
 	PTR	sys_umask
 	PTR	sys32_gettimeofday
+	PTR	compat_sys_gettimeofday
 	PTR	compat_sys_getrlimit		/* 6095 */
 	PTR	compat_sys_getrusage
 	PTR	compat_sys_sysinfo
 	PTR	compat_sys_times
 	PTR	sys32_ptrace
+	PTR	compat_sys_ptrace
 	PTR	sys_getuid			/* 6100 */
 	PTR	sys_syslog
 	PTR	sys_getgid
@@ -254,6 +303,15 @@ EXPORT(sysn32_call_table)
 	PTR	sys_mknod
 	PTR	sys32_personality
 	PTR	sys32_ustat
+	PTR	compat_sys_rt_sigpending	/* 6125 */
+	PTR	compat_sys_rt_sigtimedwait
+	PTR	compat_sys_rt_sigqueueinfo
+	PTR	compat_sys_rt_sigsuspend
+	PTR	compat_sys_sigaltstack
+	PTR	compat_sys_utime		/* 6130 */
+	PTR	sys_mknod
+	PTR	sys_32_personality
+	PTR	compat_sys_ustat
 	PTR	compat_sys_statfs
 	PTR	compat_sys_fstatfs		/* 6135 */
 	PTR	sys_sysfs
@@ -266,6 +324,7 @@ EXPORT(sysn32_call_table)
 	PTR	sys_sched_get_priority_max
 	PTR	sys_sched_get_priority_min
 	PTR	sys32_sched_rr_get_interval	/* 6145 */
+	PTR	compat_sys_sched_rr_get_interval	/* 6145 */
 	PTR	sys_mlock
 	PTR	sys_munlock
 	PTR	sys_mlockall
@@ -273,6 +332,7 @@ EXPORT(sysn32_call_table)
 	PTR	sys_vhangup			/* 6150 */
 	PTR	sys_pivot_root
 	PTR	sys32_sysctl
+	PTR	compat_sys_sysctl
 	PTR	sys_prctl
 	PTR	compat_sys_adjtimex
 	PTR	compat_sys_setrlimit		/* 6155 */
@@ -280,6 +340,7 @@ EXPORT(sysn32_call_table)
 	PTR	sys_sync
 	PTR	sys_acct
 	PTR	sys32_settimeofday
+	PTR	compat_sys_settimeofday
 	PTR	compat_sys_mount		/* 6160 */
 	PTR	sys_umount
 	PTR	sys_swapon
@@ -296,6 +357,9 @@ EXPORT(sysn32_call_table)
 	PTR	compat_sys_nfsservctl
 	PTR	sys_ni_syscall			/* res. for getpmsg */
 	PTR	sys_ni_syscall			/* 6175  for putpmsg */
+	PTR	sys_ni_syscall			/* was nfsservctl */
+	PTR	sys_ni_syscall			/* res. for getpmsg */
+	PTR	sys_ni_syscall			/* 6175	 for putpmsg */
 	PTR	sys_ni_syscall			/* res. for afs_syscall */
 	PTR	sys_ni_syscall			/* res. for security */
 	PTR	sys_gettid
@@ -324,6 +388,11 @@ EXPORT(sysn32_call_table)
 	PTR	sys_io_destroy
 	PTR	sys_io_getevents
 	PTR	sys_io_submit
+	PTR	__sys_sysmips
+	PTR	compat_sys_io_setup			/* 6200 */
+	PTR	sys_io_destroy
+	PTR	compat_sys_io_getevents
+	PTR	compat_sys_io_submit
 	PTR	sys_io_cancel
 	PTR	sys_exit_group			/* 6205 */
 	PTR	sys_lookup_dcookie
@@ -354,6 +423,9 @@ EXPORT(sysn32_call_table)
 	PTR	sys_ni_syscall			/* sys_mbind */
 	PTR	sys_ni_syscall			/* sys_get_mempolicy */
 	PTR	sys_ni_syscall			/* sys_set_mempolicy */
+	PTR	compat_sys_mbind
+	PTR	compat_sys_get_mempolicy
+	PTR	compat_sys_set_mempolicy
 	PTR	compat_sys_mq_open
 	PTR	sys_mq_unlink			/* 6235 */
 	PTR	compat_sys_mq_timedsend
@@ -365,12 +437,13 @@ EXPORT(sysn32_call_table)
 	PTR	sys_ni_syscall			/* available, was setaltroot */
 	PTR	sys_add_key
 	PTR	sys_request_key
-	PTR	sys_keyctl			/* 6245 */
+	PTR	compat_sys_keyctl		/* 6245 */
 	PTR	sys_set_thread_area
 	PTR	sys_inotify_init
 	PTR	sys_inotify_add_watch
 	PTR	sys_inotify_rm_watch
 	PTR	sys_migrate_pages		/* 6250 */
+	PTR	compat_sys_migrate_pages	/* 6250 */
 	PTR	sys_openat
 	PTR	sys_mkdirat
 	PTR	sys_mknodat
@@ -386,12 +459,15 @@ EXPORT(sysn32_call_table)
 	PTR	sys_faccessat
 	PTR	compat_sys_pselect6
 	PTR	sys_ppoll			/* 6265 */
+	PTR	compat_sys_ppoll		/* 6265 */
 	PTR	sys_unshare
 	PTR	sys_splice
 	PTR	sys_sync_file_range
 	PTR	sys_tee
 	PTR	sys_vmsplice			/* 6270 */
 	PTR	sys_move_pages
+	PTR	compat_sys_vmsplice		/* 6270 */
+	PTR	compat_sys_move_pages
 	PTR	compat_sys_set_robust_list
 	PTR	compat_sys_get_robust_list
 	PTR	compat_sys_kexec_load
@@ -413,4 +489,48 @@ EXPORT(sysn32_call_table)
 	PTR	sys_dup3			/* 5290 */
 	PTR	sys_pipe2
 	PTR	sys_inotify_init1
+	PTR	compat_sys_signalfd		/* 6280 */
+	PTR	sys_ni_syscall			/* was timerfd */
+	PTR	sys_eventfd
+	PTR	sys_fallocate
+	PTR	sys_timerfd_create
+	PTR	compat_sys_timerfd_gettime	/* 6285 */
+	PTR	compat_sys_timerfd_settime
+	PTR	compat_sys_signalfd4
+	PTR	sys_eventfd2
+	PTR	sys_epoll_create1
+	PTR	sys_dup3			/* 6290 */
+	PTR	sys_pipe2
+	PTR	sys_inotify_init1
+	PTR	compat_sys_preadv
+	PTR	compat_sys_pwritev
+	PTR	compat_sys_rt_tgsigqueueinfo	/* 6295 */
+	PTR	sys_perf_event_open
+	PTR	sys_accept4
+	PTR	compat_sys_recvmmsg
+	PTR	sys_getdents64
+	PTR	sys_fanotify_init		/* 6300 */
+	PTR	sys_fanotify_mark
+	PTR	sys_prlimit64
+	PTR	sys_name_to_handle_at
+	PTR	sys_open_by_handle_at
+	PTR	compat_sys_clock_adjtime	/* 6305 */
+	PTR	sys_syncfs
+	PTR	compat_sys_sendmmsg
+	PTR	sys_setns
+	PTR	compat_sys_process_vm_readv
+	PTR	compat_sys_process_vm_writev	/* 6310 */
+	PTR	sys_kcmp
+	PTR	sys_finit_module
+	PTR	sys_sched_setattr
+	PTR	sys_sched_getattr
+	PTR	sys_renameat2			/* 6315 */
+	PTR	sys_seccomp
+	PTR	sys_getrandom
+	PTR	sys_memfd_create
+	PTR	sys_bpf
+	PTR	compat_sys_execveat		/* 6320 */
+	PTR	sys_userfaultfd
+	PTR	sys_membarrier
+	PTR	sys_mlock2
 	.size	sysn32_call_table,.-sysn32_call_table

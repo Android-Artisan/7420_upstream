@@ -30,6 +30,7 @@
 #include <linux/i2c.h>
 
 static __initdata struct of_device_id sam440ep_of_bus[] = {
+static const struct of_device_id sam440ep_of_bus[] __initconst = {
 	{ .compatible = "ibm,plb4", },
 	{ .compatible = "ibm,opb", },
 	{ .compatible = "ibm,ebc", },
@@ -52,6 +53,7 @@ static int __init sam440ep_probe(void)
 		return 0;
 
 	ppc_pci_flags = PPC_PCI_REASSIGN_ALL_RSRC;
+	pci_set_flags(PCI_REASSIGN_ALL_RSRC);
 
 	return 1;
 }

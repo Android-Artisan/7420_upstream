@@ -42,6 +42,8 @@ struct nlmclnt_initdata {
 	size_t			addrlen;
 	unsigned short		protocol;
 	u32			nfs_version;
+	int			noresvport;
+	struct net		*net;
 };
 
 /*
@@ -63,5 +65,7 @@ unsigned long get_nfs4_grace_period(void);
 #else
 static inline unsigned long get_nfs4_grace_period(void) {return 0;}
 #endif
+extern int	lockd_up(struct net *net);
+extern void	lockd_down(struct net *net);
 
 #endif /* LINUX_LOCKD_BIND_H */

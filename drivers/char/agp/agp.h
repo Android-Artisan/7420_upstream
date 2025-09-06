@@ -108,6 +108,7 @@ struct agp_bridge_driver {
 	void (*cleanup)(void);
 	void (*tlb_flush)(struct agp_memory *);
 	unsigned long (*mask_memory)(struct agp_bridge_data *, unsigned long, int);
+	unsigned long (*mask_memory)(struct agp_bridge_data *, dma_addr_t, int);
 	void (*cache_flush)(void);
 	int (*create_gatt_table)(struct agp_bridge_data *);
 	int (*free_gatt_table)(struct agp_bridge_data *);
@@ -119,12 +120,18 @@ struct agp_bridge_driver {
 	void (*agp_destroy_page)(void *, int flags);
 	int (*agp_type_to_mask_type) (struct agp_bridge_data *, int);
 	void (*chipset_flush)(struct agp_bridge_data *);
+	struct page *(*agp_alloc_page)(struct agp_bridge_data *);
+	int (*agp_alloc_pages)(struct agp_bridge_data *, struct agp_memory *, size_t);
+	void (*agp_destroy_page)(struct page *, int flags);
+	void (*agp_destroy_pages)(struct agp_memory *);
+	int (*agp_type_to_mask_type) (struct agp_bridge_data *, int);
 };
 
 struct agp_bridge_data {
 	const struct agp_version *version;
 	const struct agp_bridge_driver *driver;
 	struct vm_operations_struct *vm_ops;
+	const struct vm_operations_struct *vm_ops;
 	void *previous_size;
 	void *current_size;
 	void *dev_private_data;
@@ -133,6 +140,8 @@ struct agp_bridge_data {
 	u32 *gatt_table_real;
 	unsigned long scratch_page;
 	unsigned long scratch_page_real;
+	struct page *scratch_page_page;
+	dma_addr_t scratch_page_dma;
 	unsigned long gart_bus_addr;
 	unsigned long gatt_bus_addr;
 	u32 mode;
@@ -278,6 +287,11 @@ struct agp_memory *agp_generic_alloc_by_type(size_t page_count, int type);
 void agp_generic_free_by_type(struct agp_memory *curr);
 void *agp_generic_alloc_page(struct agp_bridge_data *bridge);
 void agp_generic_destroy_page(void *addr, int flags);
+struct page *agp_generic_alloc_page(struct agp_bridge_data *bridge);
+int agp_generic_alloc_pages(struct agp_bridge_data *agp_bridge,
+			    struct agp_memory *memory, size_t page_count);
+void agp_generic_destroy_page(struct page *page, int flags);
+void agp_generic_destroy_pages(struct agp_memory *memory);
 void agp_free_key(int key);
 int agp_num_entries(void);
 u32 agp_collect_device_status(struct agp_bridge_data *bridge, u32 mode, u32 command);
@@ -287,6 +301,7 @@ void global_cache_flush(void);
 void get_agp_version(struct agp_bridge_data *bridge);
 unsigned long agp_generic_mask_memory(struct agp_bridge_data *bridge,
 	unsigned long addr, int type);
+				      dma_addr_t phys, int type);
 int agp_generic_type_to_mask_type(struct agp_bridge_data *bridge,
 				  int type);
 struct agp_bridge_data *agp_generic_find_bridge(struct pci_dev *pdev);
@@ -295,6 +310,10 @@ struct agp_bridge_data *agp_generic_find_bridge(struct pci_dev *pdev);
 struct agp_memory *agp_generic_alloc_user(size_t page_count, int type);
 void agp_alloc_page_array(size_t size, struct agp_memory *mem);
 void agp_free_page_array(struct agp_memory *mem);
+static inline void agp_free_page_array(struct agp_memory *mem)
+{
+	kvfree(mem->pages);
+}
 
 
 /* generic routines for agp>=3 */
@@ -317,6 +336,9 @@ long compat_agp_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
 
 /* Chipset independant registers (from AGP Spec) */
 #define AGP_APBASE	0x10
+/* Chipset independent registers (from AGP Spec) */
+#define AGP_APBASE	0x10
+#define AGP_APERTURE_BAR	0
 
 #define AGPSTAT		0x4
 #define AGPCMD		0x8

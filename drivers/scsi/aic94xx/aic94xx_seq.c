@@ -27,6 +27,7 @@
  */
 
 #include <linux/delay.h>
+#include <linux/gfp.h>
 #include <linux/pci.h>
 #include <linux/module.h>
 #include <linux/firmware.h>
@@ -588,6 +589,7 @@ static void asd_init_cseq_mdp(struct asd_ha_struct *asd_ha)
  * @asd_ha: pointer to host adapter structure
  *
  * Setup and initialize Central sequencers. Initialiaze the mode
+ * Setup and initialize Central sequencers. Initialize the mode
  * independent and dependent scratch page to the default settings.
  */
 static void asd_init_cseq_scratch(struct asd_ha_struct *asd_ha)
@@ -782,6 +784,7 @@ static void asd_init_lseq_mdp(struct asd_ha_struct *asd_ha,  int lseq)
 	/*
 	 * Set the desired interval between transmissions of the NOTIFY
 	 * (ENABLE SPINUP) primitive.  Must be initilized to val - 1.
+	 * (ENABLE SPINUP) primitive.  Must be initialized to val - 1.
 	 */
 	asd_write_reg_word(asd_ha, LmSEQ_NOTIFY_TIMER_TIMEOUT(lseq),
 			   ASD_NOTIFY_TIMEOUT - 1);
@@ -797,6 +800,7 @@ static void asd_init_lseq_mdp(struct asd_ha_struct *asd_ha,  int lseq)
 		/* Start from Page 1 of Mode 0 and 1. */
 		moffs = LSEQ_PAGE_SIZE + i*LSEQ_MODE_SCRATCH_SIZE;
 		/* All the fields of page 1 can be intialized to 0. */
+		/* All the fields of page 1 can be initialized to 0. */
 		for (j = 0; j < LSEQ_PAGE_SIZE; j += 4)
 			asd_write_reg_dword(asd_ha, LmSCRATCH(lseq)+moffs+j,0);
 	}
@@ -938,6 +942,7 @@ static void asd_init_cseq_cio(struct asd_ha_struct *asd_ha)
 	asd_write_reg_dword(asd_ha, CSEQCON, 0);
 
 	/* Intialize CSEQ Mode 11 Interrupt Vectors.
+	/* Initialize CSEQ Mode 11 Interrupt Vectors.
 	 * The addresses are 16 bit wide and in dword units.
 	 * The values of their macros are in byte units.
 	 * Thus we have to divide by 4. */
@@ -961,6 +966,7 @@ static void asd_init_cseq_cio(struct asd_ha_struct *asd_ha)
 
 	for (i = 0; i < 8; i++) {
 		/* Intialize Mode n Link m Interrupt Enable. */
+		/* Initialize Mode n Link m Interrupt Enable. */
 		asd_write_reg_dword(asd_ha, CMnINTEN(i), EN_CMnRSPMBXF);
 		/* Initialize Mode n Request Mailbox. */
 		asd_write_reg_dword(asd_ha, CMnREQMBX(i), 0);
@@ -1229,6 +1235,7 @@ int asd_release_firmware(void)
 {
 	if (sequencer_fw)
 		release_firmware(sequencer_fw);
+	release_firmware(sequencer_fw);
 	return 0;
 }
 

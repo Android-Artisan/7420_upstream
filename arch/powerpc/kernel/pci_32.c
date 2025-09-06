@@ -11,15 +11,19 @@
 #include <linux/sched.h>
 #include <linux/errno.h>
 #include <linux/bootmem.h>
+#include <linux/syscalls.h>
 #include <linux/irq.h>
 #include <linux/list.h>
 #include <linux/of.h>
+#include <linux/slab.h>
+#include <linux/export.h>
 
 #include <asm/processor.h>
 #include <asm/io.h>
 #include <asm/prom.h>
 #include <asm/sections.h>
 #include <asm/pci-bridge.h>
+#include <asm/ppc-pci.h>
 #include <asm/byteorder.h>
 #include <asm/uaccess.h>
 #include <asm/machdep.h>
@@ -43,6 +47,8 @@ static void fixup_cpc710_pci64(struct pci_dev* dev);
 #ifdef CONFIG_PPC_OF
 static u8* pci_to_OF_bus_map;
 #endif
+static void fixup_cpc710_pci64(struct pci_dev* dev);
+static u8* pci_to_OF_bus_map;
 
 /* By default, we don't re-assign bus numbers. We do this only on
  * some pmacs
@@ -80,6 +86,13 @@ fixup_broken_pcnet32(struct pci_dev* dev)
 	}
 }
 DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_TRIDENT,	PCI_ANY_ID,			fixup_broken_pcnet32);
+static int pci_bus_count;
+
+/* This will remain NULL for now, until isa-bridge.c is made common
+ * to both 32-bit and 64-bit.
+ */
+struct pci_dev *isa_bridge_pcidev;
+EXPORT_SYMBOL_GPL(isa_bridge_pcidev);
 
 static void
 fixup_cpc710_pci64(struct pci_dev* dev)
@@ -322,6 +335,22 @@ pci_device_from_OF_node(struct device_node* node, u8* bus, u8* devfn)
 		return -ENODEV;
 	*bus = (reg[0] >> 16) & 0xff;
 	*devfn = ((reg[0] >> 8) & 0xff);
+int pci_device_from_OF_node(struct device_node *node, u8 *bus, u8 *devfn)
+{
+	struct pci_dev *dev = NULL;
+	const __be32 *reg;
+	int size;
+
+	/* Check if it might have a chance to be a PCI device */
+	if (!pci_find_hose_for_OF_device(node))
+		return -ENODEV;
+
+	reg = of_get_property(node, "reg", &size);
+	if (!reg || size < 5 * sizeof(u32))
+		return -ENODEV;
+
+	*bus = (be32_to_cpup(&reg[0]) >> 16) & 0xff;
+	*devfn = (be32_to_cpup(&reg[0]) >> 8) & 0xff;
 
 	/* Ok, here we need some tweak. If we have already renumbered
 	 * all busses, we can't rely on the OF bus number any more.
@@ -355,6 +384,7 @@ pci_create_OF_bus_map(void)
 	of_prop = (struct property*) alloc_bootmem(sizeof(struct property) + 256);
 	if (!of_prop)
 		return;
+	of_prop = memblock_virt_alloc(sizeof(struct property) + 256, 0);
 	dn = of_find_node_by_path("/");
 	if (dn) {
 		memset(of_prop, -1, sizeof(struct property) + 256);
@@ -362,6 +392,7 @@ pci_create_OF_bus_map(void)
 		of_prop->length = 256;
 		of_prop->value = &of_prop[1];
 		prom_add_property(dn, of_prop);
+		of_add_property(dn, of_prop);
 		of_node_put(dn);
 	}
 }
@@ -371,6 +402,16 @@ void pcibios_make_OF_bus_map(void)
 {
 }
 #endif /* CONFIG_PPC_OF */
+void pcibios_setup_phb_io_space(struct pci_controller *hose)
+{
+	unsigned long io_offset;
+	struct resource *res = &hose->io_resource;
+
+	/* Fixup IO space offset */
+	io_offset = pcibios_io_space_offset(hose);
+	res->start += io_offset;
+	res->end += io_offset;
+}
 
 static int __init pcibios_init(void)
 {
@@ -381,6 +422,7 @@ static int __init pcibios_init(void)
 	printk(KERN_INFO "PCI: Probing PCI hardware\n");
 
 	if (ppc_pci_flags & PPC_PCI_REASSIGN_ALL_BUS)
+	if (pci_has_flag(PCI_REASSIGN_ALL_BUS))
 		pci_assign_all_buses = 1;
 
 	/* Scan all of the recorded PCI controllers.  */
@@ -394,6 +436,8 @@ static int __init pcibios_init(void)
 			pci_bus_add_devices(bus);
 			hose->last_busno = bus->subordinate;
 		}
+		pcibios_scan_phb(hose);
+		pci_bus_add_devices(hose->bus);
 		if (pci_assign_all_buses || next_busno <= hose->last_busno)
 			next_busno = hose->last_busno + pcibios_assign_bus_offset;
 	}
@@ -404,6 +448,7 @@ static int __init pcibios_init(void)
 	 * remap them.
 	 */
 	if (pci_assign_all_buses && have_of)
+	if (pci_assign_all_buses)
 		pcibios_make_OF_bus_map();
 
 	/* Call common code to handle resource allocation */
@@ -498,6 +543,7 @@ long sys_pciconfig_iobase(long which, unsigned long bus, unsigned long devfn)
 		return (long)hose->first_busno;
 	case IOBASE_MEMORY:
 		return (long)hose->pci_mem_offset;
+		return (long)hose->mem_offset[0];
 	case IOBASE_IO:
 		return (long)hose->io_base_phys;
 	case IOBASE_ISA_IO:
@@ -599,3 +645,4 @@ int early_find_capability(struct pci_controller *hose, int bus, int devfn,
 {
 	return pci_bus_find_capability(fake_pci_bus(hose, bus), devfn, cap);
 }
+

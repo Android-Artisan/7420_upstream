@@ -49,6 +49,8 @@ static struct irqaction cascade = {
 	.handler	= no_action,
 	.mask		= CPU_MASK_NONE,
 	.name		= "cascade",
+	.name		= "cascade",
+	.flags		= IRQF_NO_THREAD,
 };
 
 void __init arch_init_irq(void)

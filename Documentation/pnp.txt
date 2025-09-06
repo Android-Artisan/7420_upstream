@@ -58,6 +58,7 @@ PC standard floppy disk controller
 DISABLED
 
 - Notice the string "DISABLED".  THis means the device is not active.
+- Notice the string "DISABLED".  This means the device is not active.
 
 3.) check the device's possible configurations (optional)
 # cat options
@@ -140,6 +141,7 @@ Plug and Play but it is planned to be in the near future.
 Requirements for a Linux PnP protocol:
 1.) the protocol must use EISA IDs
 2.) the protocol must inform the PnP Layer of a devices current configuration
+2.) the protocol must inform the PnP Layer of a device's current configuration
 - the ability to set resources is optional but preferred.
 
 The following are PnP protocol related functions:
@@ -159,6 +161,7 @@ pnp_remove_device
 
 pnp_add_id
 - adds a EISA ID to the list of supported IDs for the specified device
+- adds an EISA ID to the list of supported IDs for the specified device
 
 For more information consult the source of a protocol such as
 /drivers/pnp/pnpbios/core.c.
@@ -168,6 +171,7 @@ For more information consult the source of a protocol such as
 Linux Plug and Play Drivers
 ---------------------------
 	This section contains information for linux PnP driver developers.
+	This section contains information for Linux PnP driver developers.
 
 The New Way
 ...........
@@ -240,6 +244,10 @@ a series of compatibility functions have been created to make it easy to convert
 ISAPNP drivers.  They should serve as a temporary solution only.
 
 they are as follows:
+A series of compatibility functions have been created to make it easy to convert
+ISAPNP drivers.  They should serve as a temporary solution only.
+
+They are as follows:
 
 struct pnp_card *pnp_find_card(unsigned short vendor,
 				 unsigned short device,

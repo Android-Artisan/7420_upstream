@@ -11,6 +11,11 @@
  *	   : r2-r8 = corrupted
  *	   : r9 = preserved
  *	   : sp = pointer to registers
+ * Params  : r2 = pt_regs
+ *	   : r4 = aborted context pc
+ *	   : r5 = aborted context psr
+ *
+ * Returns : r4 - r11, r13 preserved
  *
  * Purpose : obtain information about current aborted instruction.
  * Note: we read user space.  This means we might cause a data
@@ -28,3 +33,9 @@ ENTRY(v4_early_abort)
 	mov	pc, lr
 
 
+	ldr	r3, [r4]			@ read aborted ARM instruction
+	uaccess_disable ip			@ disable userspace access
+	bic	r1, r1, #1 << 11 | 1 << 10	@ clear bits 11 and 10 of FSR
+	tst	r3, #1 << 20			@ L = 1 -> write?
+	orreq	r1, r1, #1 << 11		@ yes.
+	b	do_DataAbort

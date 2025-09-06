@@ -14,6 +14,17 @@
 #include "sclp.h"
 
 #define TAG	"sclp_config: "
+#define KMSG_COMPONENT "sclp_config"
+#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
+
+#include <linux/init.h>
+#include <linux/errno.h>
+#include <linux/cpu.h>
+#include <linux/device.h>
+#include <linux/workqueue.h>
+#include <asm/smp.h>
+
+#include "sclp.h"
 
 struct conf_mgm_data {
 	u8 reserved;
@@ -36,13 +47,23 @@ static void sclp_cpu_capability_notify(struct work_struct *work)
 	for_each_online_cpu(cpu) {
 		sysdev = get_cpu_sysdev(cpu);
 		kobject_uevent(&sysdev->kobj, KOBJ_CHANGE);
+	struct device *dev;
+
+	s390_adjust_jiffies();
+	pr_info("CPU capability may have changed\n");
+	get_online_cpus();
+	for_each_online_cpu(cpu) {
+		dev = get_cpu_device(cpu);
+		kobject_uevent(&dev->kobj, KOBJ_CHANGE);
 	}
 	put_online_cpus();
 }
 
 static void __ref sclp_cpu_change_notify(struct work_struct *work)
 {
+	lock_device_hotplug();
 	smp_rescan_cpus();
+	unlock_device_hotplug();
 }
 
 static void sclp_conf_receiver_fn(struct evbuf_header *evbuf)
@@ -83,6 +104,9 @@ static int __init sclp_conf_init(void)
 		rc = -ENOSYS;
 	}
 	return rc;
+	INIT_WORK(&sclp_cpu_capability_work, sclp_cpu_capability_notify);
+	INIT_WORK(&sclp_cpu_change_work, sclp_cpu_change_notify);
+	return sclp_register(&sclp_conf_register);
 }
 
 __initcall(sclp_conf_init);

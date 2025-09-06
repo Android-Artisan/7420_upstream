@@ -12,6 +12,8 @@
 #define WRITE_PAUSE      nop; nop; nop; /* Have to do this after %wim/%psr chg */
 #define NOP_INSN         0x01000000     /* Used to patch sparc_save_state */
 
+#define WRITE_PAUSE      nop; nop; nop; /* Have to do this after %wim/%psr chg */
+
 /* Here are some trap goodies */
 
 /* Generic trap entry. */
@@ -21,6 +23,7 @@
 /* Data/text faults. Defaults to sun4c version at boot time. */
 #define SPARC_TFAULT rd %psr, %l0; rd %wim, %l3; b sun4c_fault; mov 1, %l7;
 #define SPARC_DFAULT rd %psr, %l0; rd %wim, %l3; b sun4c_fault; mov 0, %l7;
+/* Data/text faults */
 #define SRMMU_TFAULT rd %psr, %l0; rd %wim, %l3; b srmmu_fault; mov 1, %l7;
 #define SRMMU_DFAULT rd %psr, %l0; rd %wim, %l3; b srmmu_fault; mov 0, %l7;
 
@@ -73,6 +76,15 @@
 /* The Get PSR software trap for userland. */
 #define GETPSR_TRAP \
 	mov %psr, %i0; jmp %l2; rett %l2 + 4; nop;
+        b getcc_trap_handler; rd %psr, %l0; nop; nop;
+
+/* The Set Condition Codes software trap for userland. */
+#define SETCC_TRAP \
+        b setcc_trap_handler; rd %psr, %l0; nop; nop;
+
+/* The Get PSR software trap for userland. */
+#define GETPSR_TRAP \
+	rd %psr, %i0; jmp %l2; rett %l2 + 4; nop;
 
 /* This is for hard interrupts from level 1-14, 15 is non-maskable (nmi) and
  * gets handled with another macro.

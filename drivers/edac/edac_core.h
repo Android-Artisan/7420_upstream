@@ -44,6 +44,18 @@
 #define PAGES_TO_MiB( pages )	( ( pages ) >> ( 20 - PAGE_SHIFT ) )
 #else				/* PAGE_SHIFT > 20 */
 #define PAGES_TO_MiB( pages )	( ( pages ) << ( PAGE_SHIFT - 20 ) )
+#include <linux/workqueue.h>
+#include <linux/edac.h>
+
+#define EDAC_DEVICE_NAME_LEN	31
+#define EDAC_ATTRIB_VALUE_LEN	15
+
+#if PAGE_SHIFT < 20
+#define PAGES_TO_MiB(pages)	((pages) >> (20 - PAGE_SHIFT))
+#define MiB_TO_PAGES(mb)	((mb) << (20 - PAGE_SHIFT))
+#else				/* PAGE_SHIFT > 20 */
+#define PAGES_TO_MiB(pages)	((pages) << (PAGE_SHIFT - 20))
+#define MiB_TO_PAGES(mb)	((mb) >> (PAGE_SHIFT - 20))
 #endif
 
 #define edac_printk(level, prefix, fmt, arg...) \
@@ -60,6 +72,9 @@
 	printk(level "EDAC DEVICE%d: " fmt, ctl->dev_idx, ##arg)
 
 /* edac_pci printk */
+#define edac_device_printk(ctl, level, fmt, arg...) \
+	printk(level "EDAC DEVICE%d: " fmt, ctl->dev_idx, ##arg)
+
 #define edac_pci_printk(ctl, level, fmt, arg...) \
 	printk(level "EDAC PCI%d: " fmt, ctl->pci_idx, ##arg)
 
@@ -90,6 +105,26 @@ extern int edac_debug_level;
 #define debugf2( ... )
 #define debugf3( ... )
 #define debugf4( ... )
+extern const char * const edac_mem_types[];
+
+#ifdef CONFIG_EDAC_DEBUG
+extern int edac_debug_level;
+
+#define edac_dbg(level, fmt, ...)					\
+do {									\
+	if (level <= edac_debug_level)					\
+		edac_printk(KERN_DEBUG, EDAC_DEBUG,			\
+			    "%s: " fmt, __func__, ##__VA_ARGS__);	\
+} while (0)
+
+#else				/* !CONFIG_EDAC_DEBUG */
+
+#define edac_dbg(level, fmt, ...)					\
+do {									\
+	if (0)								\
+		edac_printk(KERN_DEBUG, EDAC_DEBUG,			\
+			    "%s: " fmt, __func__, ##__VA_ARGS__);	\
+} while (0)
 
 #endif				/* !CONFIG_EDAC_DEBUG */
 
@@ -423,6 +458,7 @@ struct mem_ctl_info {
 	/* the internal state of this controller instance */
 	int op_state;
 };
+#define to_mci(k) container_of(k, struct mem_ctl_info, dev)
 
 /*
  * The following are the structures to provide for a generic
@@ -433,12 +469,14 @@ struct mem_ctl_info {
  * CPU caches (L1 and L2)
  * DMA engines
  * Core CPU swithces
+ * Core CPU switches
  * Fabric switch units
  * PCIe interface controllers
  * other EDAC/ECC type devices that can be monitored for
  * errors, etc.
  *
  * It allows for a 2 level set of hiearchry. For example:
+ * It allows for a 2 level set of hierarchy. For example:
  *
  * cache could be composed of L1, L2 and L3 levels of cache.
  * Each CPU core would have its own L1 cache, while sharing
@@ -569,6 +607,8 @@ struct edac_device_ctl_info {
 
 	/* pointer to main 'edac' class in sysfs */
 	struct sysdev_class *edac_class;
+	/* pointer to main 'edac' subsys in sysfs */
+	struct bus_type *edac_subsys;
 
 	/* the internal state of this controller instance */
 	int op_state;
@@ -671,6 +711,7 @@ struct edac_pci_ctl_info {
 	int pci_idx;
 
 	struct sysdev_class *edac_class;	/* pointer to class */
+	struct bus_type *edac_subsys;	/* pointer to subsystem */
 
 	/* the internal state of this controller instance */
 	int op_state;
@@ -759,6 +800,19 @@ static inline void pci_write_bits32(struct pci_dev *pdev, int offset,
 				    u32 value, u32 mask)
 {
 	if (mask != 0xffff) {
+/*
+ * pci_write_bits32
+ *
+ * edac local routine to do pci_write_config_dword, but adds
+ * a mask parameter. If mask is all ones, ignore the mask.
+ * Otherwise utilize the mask to isolate specified bits
+ *
+ * write all or some bits in a dword-register
+ */
+static inline void pci_write_bits32(struct pci_dev *pdev, int offset,
+				    u32 value, u32 mask)
+{
+	if (mask != 0xffffffff) {
 		u32 buf;
 
 		pci_read_config_dword(pdev, offset, &buf);
@@ -777,6 +831,16 @@ extern struct mem_ctl_info *edac_mc_alloc(unsigned sz_pvt, unsigned nr_csrows,
 extern int edac_mc_add_mc(struct mem_ctl_info *mci);
 extern void edac_mc_free(struct mem_ctl_info *mci);
 extern struct mem_ctl_info *edac_mc_find(int idx);
+struct mem_ctl_info *edac_mc_alloc(unsigned mc_num,
+				   unsigned n_layers,
+				   struct edac_mc_layer *layers,
+				   unsigned sz_pvt);
+extern int edac_mc_add_mc_with_groups(struct mem_ctl_info *mci,
+				      const struct attribute_group **groups);
+#define edac_mc_add_mc(mci)	edac_mc_add_mc_with_groups(mci, NULL)
+extern void edac_mc_free(struct mem_ctl_info *mci);
+extern struct mem_ctl_info *edac_mc_find(int idx);
+extern struct mem_ctl_info *find_mci_by_dev(struct device *dev);
 extern struct mem_ctl_info *edac_mc_del_mc(struct device *dev);
 extern int edac_mc_find_csrow_by_page(struct mem_ctl_info *mci,
 				      unsigned long page);
@@ -809,6 +873,21 @@ extern void edac_mc_handle_fbd_ue(struct mem_ctl_info *mci, unsigned int csrow,
 				  char *msg);
 extern void edac_mc_handle_fbd_ce(struct mem_ctl_info *mci, unsigned int csrow,
 				  unsigned int channel, char *msg);
+void edac_raw_mc_handle_error(const enum hw_event_mc_err_type type,
+			      struct mem_ctl_info *mci,
+			      struct edac_raw_error_desc *e);
+
+void edac_mc_handle_error(const enum hw_event_mc_err_type type,
+			  struct mem_ctl_info *mci,
+			  const u16 error_count,
+			  const unsigned long page_frame_number,
+			  const unsigned long offset_in_page,
+			  const unsigned long syndrome,
+			  const int top_layer,
+			  const int mid_layer,
+			  const int low_layer,
+			  const char *msg,
+			  const char *other_detail);
 
 /*
  * edac_device APIs
@@ -819,6 +898,8 @@ extern void edac_device_handle_ue(struct edac_device_ctl_info *edac_dev,
 				int inst_nr, int block_nr, const char *msg);
 extern void edac_device_handle_ce(struct edac_device_ctl_info *edac_dev,
 				int inst_nr, int block_nr, const char *msg);
+extern int edac_device_alloc_index(void);
+extern const char *edac_layer_name[];
 
 /*
  * edac_pci APIs
@@ -831,6 +912,7 @@ extern void edac_pci_free_ctl_info(struct edac_pci_ctl_info *pci);
 extern void edac_pci_reset_delay_period(struct edac_pci_ctl_info *pci,
 				unsigned long value);
 
+extern int edac_pci_alloc_index(void);
 extern int edac_pci_add_device(struct edac_pci_ctl_info *pci, int edac_idx);
 extern struct edac_pci_ctl_info *edac_pci_del_device(struct device *dev);
 

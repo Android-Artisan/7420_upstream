@@ -25,6 +25,11 @@
  * along with this program; if not, see the file COPYING, or write
  * to the Free Software Foundation, Inc.,
  * 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+ * the simple DMA Implementation for Blackfin
+ *
+ * Copyright 2007-2009 Analog Devices Inc.
+ *
+ * Licensed under the GPL-2 or later.
  */
 
 #include <linux/module.h>
@@ -33,6 +38,7 @@
 #include <asm/dma.h>
 
 struct dma_register *dma_io_base_addr[MAX_BLACKFIN_DMA_CHANNEL] = {
+struct dma_register * const dma_io_base_addr[MAX_DMA_CHANNELS] = {
 	(struct dma_register *) DMA0_NEXT_DESC_PTR,
 	(struct dma_register *) DMA1_NEXT_DESC_PTR,
 	(struct dma_register *) DMA2_NEXT_DESC_PTR,
@@ -84,6 +90,7 @@ int channel2irq(unsigned int channel)
 		break;
 	case CH_SPORT1_TX:
 		ret_irq = IRQ_SPORT1_TX;
+		break;
 	case CH_SPI0:
 		ret_irq = IRQ_SPI0;
 		break;
@@ -101,6 +108,16 @@ int channel2irq(unsigned int channel)
 		break;
 	case CH_UART1_TX:
 		ret_irq = IRQ_UART_TX;
+		ret_irq = IRQ_UART0_RX;
+		break;
+	case CH_UART0_TX:
+		ret_irq = IRQ_UART0_TX;
+		break;
+	case CH_UART1_RX:
+		ret_irq = IRQ_UART1_RX;
+		break;
+	case CH_UART1_TX:
+		ret_irq = IRQ_UART1_TX;
 		break;
 	case CH_EPPI0:
 		ret_irq = IRQ_EPPI0;

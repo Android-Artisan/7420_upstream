@@ -53,51 +53,76 @@ static u32 esp_debug;
 #define esp_log_intr(f, a...) \
 do {	if (esp_debug & ESP_DEBUG_INTR) \
 		printk(f, ## a); \
+#define ESP_DEBUG_EVENT		0x00000800
+#define ESP_DEBUG_COMMAND	0x00001000
+
+#define esp_log_intr(f, a...) \
+do {	if (esp_debug & ESP_DEBUG_INTR) \
+		shost_printk(KERN_DEBUG, esp->host, f, ## a);	\
 } while (0)
 
 #define esp_log_reset(f, a...) \
 do {	if (esp_debug & ESP_DEBUG_RESET) \
 		printk(f, ## a); \
+		shost_printk(KERN_DEBUG, esp->host, f, ## a);	\
 } while (0)
 
 #define esp_log_msgin(f, a...) \
 do {	if (esp_debug & ESP_DEBUG_MSGIN) \
 		printk(f, ## a); \
+		shost_printk(KERN_DEBUG, esp->host, f, ## a);	\
 } while (0)
 
 #define esp_log_msgout(f, a...) \
 do {	if (esp_debug & ESP_DEBUG_MSGOUT) \
 		printk(f, ## a); \
+		shost_printk(KERN_DEBUG, esp->host, f, ## a);	\
 } while (0)
 
 #define esp_log_cmddone(f, a...) \
 do {	if (esp_debug & ESP_DEBUG_CMDDONE) \
 		printk(f, ## a); \
+		shost_printk(KERN_DEBUG, esp->host, f, ## a);	\
 } while (0)
 
 #define esp_log_disconnect(f, a...) \
 do {	if (esp_debug & ESP_DEBUG_DISCONNECT) \
 		printk(f, ## a); \
+		shost_printk(KERN_DEBUG, esp->host, f, ## a);	\
 } while (0)
 
 #define esp_log_datastart(f, a...) \
 do {	if (esp_debug & ESP_DEBUG_DATASTART) \
 		printk(f, ## a); \
+		shost_printk(KERN_DEBUG, esp->host, f, ## a);	\
 } while (0)
 
 #define esp_log_datadone(f, a...) \
 do {	if (esp_debug & ESP_DEBUG_DATADONE) \
 		printk(f, ## a); \
+		shost_printk(KERN_DEBUG, esp->host, f, ## a);	\
 } while (0)
 
 #define esp_log_reconnect(f, a...) \
 do {	if (esp_debug & ESP_DEBUG_RECONNECT) \
 		printk(f, ## a); \
+		shost_printk(KERN_DEBUG, esp->host, f, ## a);	\
 } while (0)
 
 #define esp_log_autosense(f, a...) \
 do {	if (esp_debug & ESP_DEBUG_AUTOSENSE) \
 		printk(f, ## a); \
+		shost_printk(KERN_DEBUG, esp->host, f, ## a);	\
+} while (0)
+
+#define esp_log_event(f, a...) \
+do {   if (esp_debug & ESP_DEBUG_EVENT)	\
+		shost_printk(KERN_DEBUG, esp->host, f, ## a);	\
+} while (0)
+
+#define esp_log_command(f, a...) \
+do {   if (esp_debug & ESP_DEBUG_COMMAND)	\
+		shost_printk(KERN_DEBUG, esp->host, f, ## a);	\
 } while (0)
 
 #define esp_read8(REG)		esp->ops->esp_read8(esp, REG)
@@ -126,9 +151,28 @@ void scsi_esp_cmd(struct esp *esp, u8 val)
 
 	esp->esp_event_cur = (idx + 1) & (ESP_EVENT_LOG_SZ - 1);
 
+	esp_log_command("cmd[%02x]\n", val);
 	esp_write8(val, ESP_CMD);
 }
 EXPORT_SYMBOL(scsi_esp_cmd);
+
+static void esp_send_dma_cmd(struct esp *esp, int len, int max_len, int cmd)
+{
+	if (esp->flags & ESP_FLAG_USE_FIFO) {
+		int i;
+
+		scsi_esp_cmd(esp, ESP_CMD_FLUSH);
+		for (i = 0; i < len; i++)
+			esp_write8(esp->command_block[i], ESP_FDATA);
+		scsi_esp_cmd(esp, cmd);
+	} else {
+		if (esp->rev == FASHME)
+			scsi_esp_cmd(esp, ESP_CMD_FLUSH);
+		cmd |= ESP_CMD_DMA;
+		esp->ops->send_dma_cmd(esp, esp->command_block_dma,
+				       len, max_len, 0, cmd);
+	}
+}
 
 static void esp_event(struct esp *esp, u8 val)
 {
@@ -163,6 +207,17 @@ static void esp_dump_cmd_log(struct esp *esp)
 		       "sreg2[%02x] ireg[%02x] ss[%02x] event[%02x]\n",
 		       p->val, p->sreg, p->seqreg,
 		       p->sreg2, p->ireg, p->select_state, p->event);
+	shost_printk(KERN_INFO, esp->host, "Dumping command log\n");
+	do {
+		struct esp_event_ent *p = &esp->esp_event_log[idx];
+
+		shost_printk(KERN_INFO, esp->host,
+			     "ent[%d] %s val[%02x] sreg[%02x] seqreg[%02x] "
+			     "sreg2[%02x] ireg[%02x] ss[%02x] event[%02x]\n",
+			     idx,
+			     p->type == ESP_EVENT_TYPE_CMD ? "CMD" : "EVENT",
+			     p->val, p->sreg, p->seqreg,
+			     p->sreg2, p->ireg, p->select_state, p->event);
 
 		idx = (idx + 1) & (ESP_EVENT_LOG_SZ - 1);
 	} while (idx != stop);
@@ -179,6 +234,8 @@ static void esp_flush_fifo(struct esp *esp)
 				printk(KERN_ALERT PFX "esp%d: ESP_FF_BYTES "
 				       "will not clear!\n",
 				       esp->host->unique_id);
+				shost_printk(KERN_ALERT, esp->host,
+					     "ESP_FF_BYTES will not clear!\n");
 				break;
 			}
 			udelay(1);
@@ -240,6 +297,19 @@ static void esp_reset_esp(struct esp *esp)
 	} else {
 		esp->min_period = ((5 * esp->ccycle) / 1000);
 	}
+	if (esp->rev == FAS236) {
+		/*
+		 * The AM53c974 chip returns the same ID as FAS236;
+		 * try to configure glitch eater.
+		 */
+		u8 config4 = ESP_CONFIG4_GE1;
+		esp_write8(config4, ESP_CFG4);
+		config4 = esp_read8(ESP_CFG4);
+		if (config4 & ESP_CONFIG4_GE1) {
+			esp->rev = PCSCSI;
+			esp_write8(esp->config4, ESP_CFG4);
+		}
+	}
 	esp->max_period = (esp->max_period + 3)>>2;
 	esp->min_period = (esp->min_period + 3)>>2;
 
@@ -266,6 +336,8 @@ static void esp_reset_esp(struct esp *esp)
 
 	case FAS236:
 		/* Fast 236 or HME */
+	case PCSCSI:
+		/* Fast 236, AM53c974 or HME */
 		esp_write8(esp->config2, ESP_CFG2);
 		if (esp->rev == FASHME) {
 			u8 cfg3 = esp->target[0].esp_config3;
@@ -389,6 +461,11 @@ static void esp_advance_dma(struct esp *esp, struct esp_cmd_entry *ent,
 		       "len[%u]\n",
 		       esp->host->unique_id,
 		       p->cur_residue, p->tot_residue, len);
+		shost_printk(KERN_ERR, esp->host,
+			     "Data transfer overflow.\n");
+		shost_printk(KERN_ERR, esp->host,
+			     "cur_residue[%d] tot_residue[%d] len[%u]\n",
+			     p->cur_residue, p->tot_residue, len);
 		p->cur_residue = 0;
 		p->tot_residue = 0;
 	}
@@ -531,6 +608,7 @@ static int esp_alloc_lun_tag(struct esp_cmd_entry *ent,
 			     struct esp_lun_data *lp)
 {
 	if (!ent->tag[0]) {
+	if (!ent->orig_tag[0]) {
 		/* Non-tagged, slot already taken?  */
 		if (lp->non_tagged_cmd)
 			return -EBUSY;
@@ -567,6 +645,9 @@ static int esp_alloc_lun_tag(struct esp_cmd_entry *ent,
 	BUG_ON(lp->tagged_cmds[ent->tag[1]]);
 
 	lp->tagged_cmds[ent->tag[1]] = ent;
+	BUG_ON(lp->tagged_cmds[ent->orig_tag[1]]);
+
+	lp->tagged_cmds[ent->orig_tag[1]] = ent;
 	lp->num_tagged++;
 
 	return 0;
@@ -578,6 +659,9 @@ static void esp_free_lun_tag(struct esp_cmd_entry *ent,
 	if (ent->tag[0]) {
 		BUG_ON(lp->tagged_cmds[ent->tag[1]] != ent);
 		lp->tagged_cmds[ent->tag[1]] = NULL;
+	if (ent->orig_tag[0]) {
+		BUG_ON(lp->tagged_cmds[ent->orig_tag[1]] != ent);
+		lp->tagged_cmds[ent->orig_tag[1]] = NULL;
 		lp->num_tagged--;
 	} else {
 		BUG_ON(lp->non_tagged_cmd != ent);
@@ -607,6 +691,8 @@ static void esp_autosense(struct esp *esp, struct esp_cmd_entry *ent)
 		esp_log_autosense("esp%d: Doing auto-sense for "
 				  "tgt[%d] lun[%d]\n",
 				  esp->host->unique_id, tgt, lun);
+		esp_log_autosense("Doing auto-sense for tgt[%d] lun[%d]\n",
+				  tgt, lun);
 
 		ent->sense_ptr = cmd->sense_buffer;
 		ent->sense_dma = esp->ops->map_single(esp,
@@ -646,6 +732,7 @@ static void esp_autosense(struct esp *esp, struct esp_cmd_entry *ent)
 		scsi_esp_cmd(esp, ESP_CMD_FLUSH);
 	esp->ops->send_dma_cmd(esp, esp->command_block_dma,
 			       val, 16, 0, ESP_CMD_DMA | ESP_CMD_SELA);
+	esp_send_dma_cmd(esp, val, 16, ESP_CMD_SELA);
 }
 
 static struct esp_cmd_entry *find_and_prep_issuable_command(struct esp *esp)
@@ -667,6 +754,12 @@ static struct esp_cmd_entry *find_and_prep_issuable_command(struct esp *esp)
 			ent->tag[0] = 0;
 			ent->tag[1] = 0;
 		}
+		if (!spi_populate_tag_msg(&ent->tag[0], cmd)) {
+			ent->tag[0] = 0;
+			ent->tag[1] = 0;
+		}
+		ent->orig_tag[0] = ent->tag[0];
+		ent->orig_tag[1] = ent->tag[1];
 
 		if (esp_alloc_lun_tag(ent, lp) < 0)
 			continue;
@@ -710,6 +803,7 @@ static void esp_maybe_execute_command(struct esp *esp)
 
 	list_del(&ent->list);
 	list_add(&ent->list, &esp->active_cmds);
+	list_move(&ent->list, &esp->active_cmds);
 
 	esp->active_cmd = ent;
 
@@ -781,11 +875,13 @@ build_identify:
 
 	if (!(esp->flags & ESP_FLAG_DOING_SLOWCMD)) {
 		start_cmd = ESP_CMD_DMA | ESP_CMD_SELA;
+		start_cmd = ESP_CMD_SELA;
 		if (ent->tag[0]) {
 			*p++ = ent->tag[0];
 			*p++ = ent->tag[1];
 
 			start_cmd = ESP_CMD_DMA | ESP_CMD_SA3;
+			start_cmd = ESP_CMD_SA3;
 		}
 
 		for (i = 0; i < cmd->cmd_len; i++)
@@ -806,6 +902,7 @@ build_identify:
 		}
 
 		start_cmd = ESP_CMD_DMA | ESP_CMD_SELAS;
+		start_cmd = ESP_CMD_SELAS;
 		esp->select_state = ESP_SELECT_MSGOUT;
 	}
 	val = tgt;
@@ -829,6 +926,7 @@ build_identify:
 		scsi_esp_cmd(esp, ESP_CMD_FLUSH);
 	esp->ops->send_dma_cmd(esp, esp->command_block_dma,
 			       val, 16, 0, start_cmd);
+	esp_send_dma_cmd(esp, val, 16, start_cmd);
 }
 
 static struct esp_cmd_entry *esp_get_ent(struct esp *esp)
@@ -917,6 +1015,7 @@ static void esp_event_queue_full(struct esp *esp, struct esp_cmd_entry *ent)
 }
 
 static int esp_queuecommand(struct scsi_cmnd *cmd, void (*done)(struct scsi_cmnd *))
+static int esp_queuecommand_lck(struct scsi_cmnd *cmd, void (*done)(struct scsi_cmnd *))
 {
 	struct scsi_device *dev = cmd->device;
 	struct esp *esp = shost_priv(dev->host);
@@ -941,6 +1040,8 @@ static int esp_queuecommand(struct scsi_cmnd *cmd, void (*done)(struct scsi_cmnd
 	return 0;
 }
 
+static DEF_SCSI_QCMD(esp_queuecommand)
+
 static int esp_check_gross_error(struct esp *esp)
 {
 	if (esp->sreg & ESP_STAT_SPAM) {
@@ -952,6 +1053,8 @@ static int esp_check_gross_error(struct esp *esp)
 		 */
 		printk(KERN_ERR PFX "esp%d: Gross error sreg[%02x]\n",
 		       esp->host->unique_id, esp->sreg);
+		shost_printk(KERN_ERR, esp->host,
+			     "Gross error sreg[%02x]\n", esp->sreg);
 		/* XXX Reset the chip. XXX */
 		return 1;
 	}
@@ -987,6 +1090,13 @@ static int esp_check_spur_intr(struct esp *esp)
 
 			printk(KERN_ERR PFX "esp%d: DMA error\n",
 			       esp->host->unique_id);
+				shost_printk(KERN_ERR, esp->host,
+					     "Spurious irq, sreg=%02x.\n",
+					     esp->sreg);
+				return -1;
+			}
+
+			shost_printk(KERN_ERR, esp->host, "DMA error\n");
 
 			/* XXX Reset the chip. XXX */
 			return -1;
@@ -1000,6 +1110,7 @@ static int esp_check_spur_intr(struct esp *esp)
 static void esp_schedule_reset(struct esp *esp)
 {
 	esp_log_reset("ESP: esp_schedule_reset() from %p\n",
+	esp_log_reset("esp_schedule_reset() from %pf\n",
 		      __builtin_return_address(0));
 	esp->flags |= ESP_FLAG_RESETTING;
 	esp_event(esp, ESP_EVENT_RESET);
@@ -1022,6 +1133,12 @@ static struct esp_cmd_entry *esp_reconnect_with_tag(struct esp *esp,
 	}
 
 	esp_log_reconnect("ESP: reconnect tag, ");
+		shost_printk(KERN_ERR, esp->host,
+			     "Reconnect w/num_tagged==0\n");
+		return NULL;
+	}
+
+	esp_log_reconnect("reconnect tag, ");
 
 	for (i = 0; i < ESP_QUICKIRQ_LIMIT; i++) {
 		if (esp->ops->irq_pending(esp))
@@ -1030,6 +1147,8 @@ static struct esp_cmd_entry *esp_reconnect_with_tag(struct esp *esp,
 	if (i == ESP_QUICKIRQ_LIMIT) {
 		printk(KERN_ERR PFX "esp%d: Reconnect IRQ1 timeout\n",
 		       esp->host->unique_id);
+		shost_printk(KERN_ERR, esp->host,
+			     "Reconnect IRQ1 timeout\n");
 		return NULL;
 	}
 
@@ -1042,12 +1161,16 @@ static struct esp_cmd_entry *esp_reconnect_with_tag(struct esp *esp,
 	if (esp->ireg & ESP_INTR_DC) {
 		printk(KERN_ERR PFX "esp%d: Reconnect, got disconnect.\n",
 		       esp->host->unique_id);
+		shost_printk(KERN_ERR, esp->host,
+			     "Reconnect, got disconnect.\n");
 		return NULL;
 	}
 
 	if ((esp->sreg & ESP_STAT_PMASK) != ESP_MIP) {
 		printk(KERN_ERR PFX "esp%d: Reconnect, not MIP sreg[%02x].\n",
 		       esp->host->unique_id, esp->sreg);
+		shost_printk(KERN_ERR, esp->host,
+			     "Reconnect, not MIP sreg[%02x].\n", esp->sreg);
 		return NULL;
 	}
 
@@ -1058,6 +1181,7 @@ static struct esp_cmd_entry *esp_reconnect_with_tag(struct esp *esp,
 			       2, 2, 1, ESP_CMD_DMA | ESP_CMD_TI);
 
 	/* ACK the msssage.  */
+	/* ACK the message.  */
 	scsi_esp_cmd(esp, ESP_CMD_MOK);
 
 	for (i = 0; i < ESP_RESELECT_TAG_LIMIT; i++) {
@@ -1072,6 +1196,7 @@ static struct esp_cmd_entry *esp_reconnect_with_tag(struct esp *esp,
 	if (i == ESP_RESELECT_TAG_LIMIT) {
 		printk(KERN_ERR PFX "esp%d: Reconnect IRQ2 timeout\n",
 		       esp->host->unique_id);
+		shost_printk(KERN_ERR, esp->host, "Reconnect IRQ2 timeout\n");
 		return NULL;
 	}
 	esp->ops->dma_drain(esp);
@@ -1087,6 +1212,9 @@ static struct esp_cmd_entry *esp_reconnect_with_tag(struct esp *esp,
 		printk(KERN_ERR PFX "esp%d: Reconnect, bad tag "
 		       "type %02x.\n",
 		       esp->host->unique_id, esp->command_block[0]);
+		shost_printk(KERN_ERR, esp->host,
+			     "Reconnect, bad tag type %02x.\n",
+			     esp->command_block[0]);
 		return NULL;
 	}
 
@@ -1095,6 +1223,9 @@ static struct esp_cmd_entry *esp_reconnect_with_tag(struct esp *esp,
 		printk(KERN_ERR PFX "esp%d: Reconnect, no entry for "
 		       "tag %02x.\n",
 		       esp->host->unique_id, esp->command_block[1]);
+		shost_printk(KERN_ERR, esp->host,
+			     "Reconnect, no entry for tag %02x.\n",
+			     esp->command_block[1]);
 		return NULL;
 	}
 
@@ -1163,6 +1294,9 @@ static int esp_reconnect(struct esp *esp)
 		printk(KERN_ERR PFX "esp%d: Reconnect, no lp "
 		       "tgt[%u] lun[%u]\n",
 		       esp->host->unique_id, target, lun);
+		shost_printk(KERN_ERR, esp->host,
+			     "Reconnect, no lp tgt[%u] lun[%u]\n",
+			     target, lun);
 		goto do_reset;
 	}
 	lp = dev->hostdata;
@@ -1244,6 +1378,7 @@ static int esp_finish_select(struct esp *esp)
 		 */
 		list_del(&ent->list);
 		list_add(&ent->list, &esp->queued_cmds);
+		list_move(&ent->list, &esp->queued_cmds);
 		esp->active_cmd = NULL;
 
 		/* Return value ignored by caller, it directly invokes
@@ -1291,6 +1426,8 @@ static int esp_finish_select(struct esp *esp)
 
 	printk("ESP: Unexpected selection completion ireg[%x].\n",
 	       esp->ireg);
+	shost_printk(KERN_INFO, esp->host,
+		     "Unexpected selection completion ireg[%x]\n", esp->ireg);
 	esp_schedule_reset(esp);
 	return 0;
 }
@@ -1310,11 +1447,43 @@ static int esp_data_bytes_sent(struct esp *esp, struct esp_cmd_entry *ent,
 			  (((unsigned int)esp_read8(ESP_TCMED)) << 8));
 		if (esp->rev == FASHME)
 			ecount |= ((unsigned int)esp_read8(FAS_RLO)) << 16;
+		if (esp->rev == PCSCSI && (esp->config2 & ESP_CONFIG2_FENAB))
+			ecount |= ((unsigned int)esp_read8(ESP_TCHI)) << 16;
 	}
 
 	bytes_sent = esp->data_dma_len;
 	bytes_sent -= ecount;
+	bytes_sent -= esp->send_cmd_residual;
 
+	/*
+	 * The am53c974 has a DMA 'pecularity'. The doc states:
+	 * In some odd byte conditions, one residual byte will
+	 * be left in the SCSI FIFO, and the FIFO Flags will
+	 * never count to '0 '. When this happens, the residual
+	 * byte should be retrieved via PIO following completion
+	 * of the BLAST operation.
+	 */
+	if (fifo_cnt == 1 && ent->flags & ESP_CMD_FLAG_RESIDUAL) {
+		size_t count = 1;
+		size_t offset = bytes_sent;
+		u8 bval = esp_read8(ESP_FDATA);
+
+		if (ent->flags & ESP_CMD_FLAG_AUTOSENSE)
+			ent->sense_ptr[bytes_sent] = bval;
+		else {
+			struct esp_cmd_priv *p = ESP_CMD_PRIV(cmd);
+			u8 *ptr;
+
+			ptr = scsi_kmap_atomic_sg(p->cur_sg, p->u.num_sg,
+						  &offset, &count);
+			if (likely(ptr)) {
+				*(ptr + offset) = bval;
+				scsi_kunmap_atomic_sg(ptr);
+			}
+		}
+		bytes_sent += fifo_cnt;
+		ent->flags &= ~ESP_CMD_FLAG_RESIDUAL;
+	}
 	if (!(ent->flags & ESP_CMD_FLAG_WRITE))
 		bytes_sent -= fifo_cnt;
 
@@ -1454,6 +1623,8 @@ static void esp_msgin_sdtr(struct esp *esp, struct esp_target_data *tp)
 
 	if (offset) {
 		int rounded_up, one_clock;
+	if (offset) {
+		int one_clock;
 
 		if (period > esp->max_period) {
 			period = offset = 0;
@@ -1466,6 +1637,7 @@ static void esp_msgin_sdtr(struct esp *esp, struct esp_target_data *tp)
 		rounded_up = (period << 2);
 		rounded_up = (rounded_up + one_clock - 1) / one_clock;
 		stp = rounded_up;
+		stp = DIV_ROUND_UP(period << 2, one_clock);
 		if (stp && esp->rev >= FAS236) {
 			if (stp >= 50)
 				stp--;
@@ -1561,6 +1733,8 @@ static void esp_msgin_extended(struct esp *esp)
 
 	printk("ESP: Unexpected extended msg type %x\n",
 	       esp->msg_in[2]);
+	shost_printk(KERN_INFO, esp->host,
+		     "Unexpected extended msg type %x\n", esp->msg_in[2]);
 
 	esp->msg_out[0] = ABORT_TASK_SET;
 	esp->msg_out_len = 1;
@@ -1578,6 +1752,8 @@ static int esp_msgin_process(struct esp *esp)
 	if (msg0 & 0x80) {
 		/* Identify */
 		printk("ESP: Unexpected msgin identify\n");
+		shost_printk(KERN_INFO, esp->host,
+			     "Unexpected msgin identify\n");
 		return 0;
 	}
 
@@ -1647,6 +1823,12 @@ static int esp_process_event(struct esp *esp)
 
 again:
 	write = 0;
+	int write, i;
+
+again:
+	write = 0;
+	esp_log_event("process event %d phase %x\n",
+		      esp->event, esp->sreg & ESP_STAT_PMASK);
 	switch (esp->event) {
 	case ESP_EVENT_CHECK_PHASE:
 		switch (esp->sreg & ESP_STAT_PMASK) {
@@ -1678,6 +1860,9 @@ again:
 		default:
 			printk("ESP: Unexpected phase, sreg=%02x\n",
 			       esp->sreg);
+			shost_printk(KERN_INFO, esp->host,
+				     "Unexpected phase, sreg=%02x\n",
+				     esp->sreg);
 			esp_schedule_reset(esp);
 			return 0;
 		}
@@ -1717,12 +1902,19 @@ again:
 			       esp->host->unique_id,
 			       (unsigned long long)esp_cur_dma_addr(ent, cmd),
 			       esp_cur_dma_len(ent, cmd));
+			shost_printk(KERN_ERR, esp->host,
+				     "DMA length is zero!\n");
+			shost_printk(KERN_ERR, esp->host,
+				     "cur adr[%08llx] len[%08x]\n",
+				     (unsigned long long)esp_cur_dma_addr(ent, cmd),
+				     esp_cur_dma_len(ent, cmd));
 			esp_schedule_reset(esp);
 			return 0;
 		}
 
 		esp_log_datastart("ESP: start data addr[%08llx] len[%u] "
 				  "write(%d)\n",
+		esp_log_datastart("start data addr[%08llx] len[%u] write(%d)\n",
 				  (unsigned long long)dma_addr, dma_len, write);
 
 		esp->ops->send_dma_cmd(esp, dma_addr, dma_len, dma_len,
@@ -1737,6 +1929,8 @@ again:
 
 		if (esp->ops->dma_error(esp)) {
 			printk("ESP: data done, DMA error, resetting\n");
+			shost_printk(KERN_INFO, esp->host,
+				     "data done, DMA error, resetting\n");
 			esp_schedule_reset(esp);
 			return 0;
 		}
@@ -1753,6 +1947,8 @@ again:
 			 * interrupt at the end of a successful transfer.
 			 */
 			printk("ESP: data done, not BSERV, resetting\n");
+			shost_printk(KERN_INFO, esp->host,
+				     "data done, not BSERV, resetting\n");
 			esp_schedule_reset(esp);
 			return 0;
 		}
@@ -1760,6 +1956,7 @@ again:
 		bytes_sent = esp_data_bytes_sent(esp, ent, cmd);
 
 		esp_log_datadone("ESP: data done flgs[%x] sent[%d]\n",
+		esp_log_datadone("data done flgs[%x] sent[%d]\n",
 				 ent->flags, bytes_sent);
 
 		if (bytes_sent < 0) {
@@ -1790,6 +1987,9 @@ again:
 		if (ent->message != COMMAND_COMPLETE) {
 			printk("ESP: Unexpected message %x in status\n",
 			       ent->message);
+			shost_printk(KERN_INFO, esp->host,
+				     "Unexpected message %x in status\n",
+				     ent->message);
 			esp_schedule_reset(esp);
 			return 0;
 		}
@@ -1809,6 +2009,7 @@ again:
 		if (ent->message == COMMAND_COMPLETE) {
 			esp_log_cmddone("ESP: Command done status[%x] "
 					"message[%x]\n",
+			esp_log_cmddone("Command done status[%x] message[%x]\n",
 					ent->status, ent->message);
 			if (ent->status == SAM_STAT_TASK_SET_FULL)
 				esp_event_queue_full(esp, ent);
@@ -1826,6 +2027,7 @@ again:
 		} else if (ent->message == DISCONNECT) {
 			esp_log_disconnect("ESP: Disconnecting tgt[%d] "
 					   "tag[%x:%x]\n",
+			esp_log_disconnect("Disconnecting tgt[%d] tag[%x:%x]\n",
 					   cmd->device->id,
 					   ent->tag[0], ent->tag[1]);
 
@@ -1834,6 +2036,9 @@ again:
 		} else {
 			printk("ESP: Unexpected message %x in freebus\n",
 			       ent->message);
+			shost_printk(KERN_INFO, esp->host,
+				     "Unexpected message %x in freebus\n",
+				     ent->message);
 			esp_schedule_reset(esp);
 			return 0;
 		}
@@ -1864,6 +2069,10 @@ again:
 		} else {
 			if (esp->msg_out_len == 1) {
 				esp_write8(esp->msg_out[0], ESP_FDATA);
+				scsi_esp_cmd(esp, ESP_CMD_TI);
+			} else if (esp->flags & ESP_FLAG_USE_FIFO) {
+				for (i = 0; i < esp->msg_out_len; i++)
+					esp_write8(esp->msg_out[i], ESP_FDATA);
 				scsi_esp_cmd(esp, ESP_CMD_TI);
 			} else {
 				/* Use DMA. */
@@ -1921,6 +2130,7 @@ again:
 			esp->msg_in[esp->msg_in_len++] = val;
 
 			esp_log_msgin("ESP: Got msgin byte %x\n", val);
+			esp_log_msgin("Got msgin byte %x\n", val);
 
 			if (!esp_msgin_process(esp))
 				esp->msg_in_len = 0;
@@ -1934,6 +2144,8 @@ again:
 				esp_event(esp, ESP_EVENT_CHECK_PHASE);
 		} else {
 			printk("ESP: MSGIN neither BSERV not FDON, resetting");
+			shost_printk(KERN_INFO, esp->host,
+				     "MSGIN neither BSERV not FDON, resetting");
 			esp_schedule_reset(esp);
 			return 0;
 		}
@@ -1946,6 +2158,7 @@ again:
 		esp->ops->send_dma_cmd(esp, esp->command_block_dma,
 				       esp->cmd_bytes_left, 16, 0,
 				       ESP_CMD_DMA | ESP_CMD_TI);
+		esp_send_dma_cmd(esp, esp->cmd_bytes_left, 16, ESP_CMD_TI);
 		esp_event(esp, ESP_EVENT_CMD_DONE);
 		esp->flags |= ESP_FLAG_QUICKIRQ_CHECK;
 		break;
@@ -1966,6 +2179,8 @@ again:
 	default:
 		printk("ESP: Unexpected event %x, resetting\n",
 		       esp->event);
+		shost_printk(KERN_INFO, esp->host,
+			     "Unexpected event %x, resetting\n", esp->event);
 		esp_schedule_reset(esp);
 		return 0;
 		break;
@@ -2048,6 +2263,12 @@ static void __esp_interrupt(struct esp *esp)
 	u8 phase;
 
 	esp->sreg = esp_read8(ESP_STATUS);
+       /*
+	* Once INTRPT is read STATUS and SSTEP are cleared.
+	*/
+	esp->sreg = esp_read8(ESP_STATUS);
+	esp->seqreg = esp_read8(ESP_SSTEP);
+	esp->ireg = esp_read8(ESP_INTRPT);
 
 	if (esp->flags & ESP_FLAG_RESETTING) {
 		finish_reset = 1;
@@ -2089,6 +2310,7 @@ static void __esp_interrupt(struct esp *esp)
 	}
 
 	esp_log_intr("ESP: intr sreg[%02x] seqreg[%02x] "
+	esp_log_intr("intr sreg[%02x] seqreg[%02x] "
 		     "sreg2[%02x] ireg[%02x]\n",
 		     esp->sreg, esp->seqreg, esp->sreg2, esp->ireg);
 
@@ -2096,6 +2318,8 @@ static void __esp_interrupt(struct esp *esp)
 
 	if (esp->ireg & (ESP_INTR_S | ESP_INTR_SATN | ESP_INTR_IC)) {
 		printk("ESP: unexpected IREG %02x\n", esp->ireg);
+		shost_printk(KERN_INFO, esp->host,
+			     "unexpected IREG %02x\n", esp->ireg);
 		if (esp->ireg & ESP_INTR_IC)
 			esp_dump_cmd_log(esp);
 
@@ -2192,6 +2416,50 @@ static void esp_get_revision(struct esp *esp)
 			}
 			esp->config2 = 0;
 			esp_write8(esp->config2, ESP_CFG2);
+	if (esp->config2 == 0) {
+		esp->config2 = (ESP_CONFIG2_SCSI2ENAB | ESP_CONFIG2_REGPARITY);
+		esp_write8(esp->config2, ESP_CFG2);
+
+		val = esp_read8(ESP_CFG2);
+		val &= ~ESP_CONFIG2_MAGIC;
+
+		esp->config2 = 0;
+		if (val != (ESP_CONFIG2_SCSI2ENAB | ESP_CONFIG2_REGPARITY)) {
+			/*
+			 * If what we write to cfg2 does not come back,
+			 * cfg2 is not implemented.
+			 * Therefore this must be a plain esp100.
+			 */
+			esp->rev = ESP100;
+			return;
+		}
+	}
+
+	esp_set_all_config3(esp, 5);
+	esp->prev_cfg3 = 5;
+	esp_write8(esp->config2, ESP_CFG2);
+	esp_write8(0, ESP_CFG3);
+	esp_write8(esp->prev_cfg3, ESP_CFG3);
+
+	val = esp_read8(ESP_CFG3);
+	if (val != 5) {
+		/* The cfg2 register is implemented, however
+		 * cfg3 is not, must be esp100a.
+		 */
+		esp->rev = ESP100A;
+	} else {
+		esp_set_all_config3(esp, 0);
+		esp->prev_cfg3 = 0;
+		esp_write8(esp->prev_cfg3, ESP_CFG3);
+
+		/* All of cfg{1,2,3} implemented, must be one of
+		 * the fas variants, figure out which one.
+		 */
+		if (esp->cfact == 0 || esp->cfact > ESP_CCF_F5) {
+			esp->rev = FAST;
+			esp->sync_defp = SYNC_DEFP_FAST;
+		} else {
+			esp->rev = ESP236;
 		}
 	}
 }
@@ -2311,6 +2579,7 @@ static const char *esp_chip_names[] = {
 	"FAS100A",
 	"FAST",
 	"FASHME",
+	"AM53C974",
 };
 
 static struct scsi_transport_template *esp_transport_template;
@@ -2320,6 +2589,8 @@ int scsi_esp_register(struct esp *esp, struct device *dev)
 	static int instance;
 	int err;
 
+	if (!esp->num_tags)
+		esp->num_tags = ESP_DEFAULT_TAGS;
 	esp->host->transportt = esp_transport_template;
 	esp->host->max_lun = ESP_MAX_LUN;
 	esp->host->cmd_per_lun = 2;
@@ -2339,6 +2610,13 @@ int scsi_esp_register(struct esp *esp, struct device *dev)
 	printk(KERN_INFO PFX "esp%u is a %s, %u MHz (ccf=%u), SCSI ID %u\n",
 	       esp->host->unique_id, esp_chip_names[esp->rev],
 	       esp->cfreq / 1000000, esp->cfact, esp->scsi_id);
+	dev_printk(KERN_INFO, dev, "esp%u: regs[%1p:%1p] irq[%u]\n",
+		   esp->host->unique_id, esp->regs, esp->dma_regs,
+		   esp->host->irq);
+	dev_printk(KERN_INFO, dev,
+		   "esp%u: is a %s, %u MHz (ccf=%u), SCSI ID %u\n",
+		   esp->host->unique_id, esp_chip_names[esp->rev],
+		   esp->cfreq / 1000000, esp->cfact, esp->scsi_id);
 
 	/* Let the SCSI bus reset settle. */
 	ssleep(esp_bus_reset_settle);
@@ -2433,6 +2711,10 @@ static int esp_slave_configure(struct scsi_device *dev)
 	} else {
 		scsi_deactivate_tcq(dev, queue_depth);
 	}
+
+	if (dev->tagged_supported)
+		scsi_change_queue_depth(dev, esp->num_tags);
+
 	tp->flags |= ESP_TGT_DISCONNECT;
 
 	if (!spi_initial_dv(dev->sdev_target))
@@ -2473,6 +2755,20 @@ static int esp_eh_abort_handler(struct scsi_cmnd *cmd)
 	list_for_each_entry(ent, &esp->active_cmds, list) {
 		printk(KERN_ERR PFX "esp%d: Active command [%p:%02x]\n",
 		       esp->host->unique_id, ent->cmd, ent->cmd->cmnd[0]);
+	shost_printk(KERN_ERR, esp->host, "Aborting command [%p:%02x]\n",
+		     cmd, cmd->cmnd[0]);
+	ent = esp->active_cmd;
+	if (ent)
+		shost_printk(KERN_ERR, esp->host,
+			     "Current command [%p:%02x]\n",
+			     ent->cmd, ent->cmd->cmnd[0]);
+	list_for_each_entry(ent, &esp->queued_cmds, list) {
+		shost_printk(KERN_ERR, esp->host, "Queued command [%p:%02x]\n",
+			     ent->cmd, ent->cmd->cmnd[0]);
+	}
+	list_for_each_entry(ent, &esp->active_cmds, list) {
+		shost_printk(KERN_ERR, esp->host, " Active command [%p:%02x]\n",
+			     ent->cmd, ent->cmd->cmnd[0]);
 	}
 	esp_dump_cmd_log(esp);
 	spin_unlock_irqrestore(esp->host->host_lock, flags);
@@ -2663,6 +2959,10 @@ static void esp_set_offset(struct scsi_target *target, int offset)
 	struct esp_target_data *tp = &esp->target[target->id];
 
 	tp->nego_goal_offset = offset;
+	if (esp->flags & ESP_FLAG_DISABLE_SYNC)
+		tp->nego_goal_offset = 0;
+	else
+		tp->nego_goal_offset = offset;
 	tp->flags |= ESP_TGT_CHECK_NEGO;
 }
 

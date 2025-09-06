@@ -119,6 +119,7 @@ Following are the RCU equivalents for these two functions:
 			if (!audit_compare_rule(rule, &e->rule)) {
 				list_del_rcu(&e->list);
 				call_rcu(&e->rcu, audit_free_rule, e);
+				call_rcu(&e->rcu, audit_free_rule);
 				return 0;
 			}
 		}
@@ -207,6 +208,8 @@ RCU ("read-copy update") its name.  The RCU code is as follows:
 				ne->rule.file_count = newfield_count;
 				list_replace_rcu(e, ne);
 				call_rcu(&e->rcu, audit_free_rule, e);
+				list_replace_rcu(&e->list, &ne->list);
+				call_rcu(&e->rcu, audit_free_rule);
 				return 0;
 			}
 		}
@@ -284,6 +287,7 @@ flag under the spinlock as follows:
 				e->deleted = 1;
 				spin_unlock(&e->lock);
 				call_rcu(&e->rcu, audit_free_rule, e);
+				call_rcu(&e->rcu, audit_free_rule);
 				return 0;
 			}
 		}

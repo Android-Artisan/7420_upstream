@@ -28,6 +28,7 @@ static void TEA_transform(__u32 buf[4], __u32 const in[])
 		b0 += ((b1 << 4)+a) ^ (b1+sum) ^ ((b1 >> 5)+b);
 		b1 += ((b0 << 4)+c) ^ (b0+sum) ^ ((b0 >> 5)+d);
 	} while(--n);
+	} while (--n);
 
 	buf[0] += b0;
 	buf[1] += b1;
@@ -52,6 +53,43 @@ static void str2hashbuf(const char *msg, int len, __u32 *buf, int num)
 {
 	__u32	pad, val;
 	int	i;
+static __u32 dx_hack_hash_unsigned(const char *name, int len)
+{
+	__u32 hash, hash0 = 0x12a3fe2d, hash1 = 0x37abe8f9;
+	const unsigned char *ucp = (const unsigned char *) name;
+
+	while (len--) {
+		hash = hash1 + (hash0 ^ (((int) *ucp++) * 7152373));
+
+		if (hash & 0x80000000)
+			hash -= 0x7fffffff;
+		hash1 = hash0;
+		hash0 = hash;
+	}
+	return hash0 << 1;
+}
+
+static __u32 dx_hack_hash_signed(const char *name, int len)
+{
+	__u32 hash, hash0 = 0x12a3fe2d, hash1 = 0x37abe8f9;
+	const signed char *scp = (const signed char *) name;
+
+	while (len--) {
+		hash = hash1 + (hash0 ^ (((int) *scp++) * 7152373));
+
+		if (hash & 0x80000000)
+			hash -= 0x7fffffff;
+		hash1 = hash0;
+		hash0 = hash;
+	}
+	return hash0 << 1;
+}
+
+static void str2hashbuf_signed(const char *msg, int len, __u32 *buf, int num)
+{
+	__u32	pad, val;
+	int	i;
+	const signed char *scp = (const signed char *) msg;
 
 	pad = (__u32)len | ((__u32)len << 8);
 	pad |= pad << 16;
@@ -63,6 +101,38 @@ static void str2hashbuf(const char *msg, int len, __u32 *buf, int num)
 		if ((i % 4) == 0)
 			val = pad;
 		val = msg[i] + (val << 8);
+	for (i = 0; i < len; i++) {
+		if ((i % 4) == 0)
+			val = pad;
+		val = ((int) scp[i]) + (val << 8);
+		if ((i % 4) == 3) {
+			*buf++ = val;
+			val = pad;
+			num--;
+		}
+	}
+	if (--num >= 0)
+		*buf++ = val;
+	while (--num >= 0)
+		*buf++ = pad;
+}
+
+static void str2hashbuf_unsigned(const char *msg, int len, __u32 *buf, int num)
+{
+	__u32	pad, val;
+	int	i;
+	const unsigned char *ucp = (const unsigned char *) msg;
+
+	pad = (__u32)len | ((__u32)len << 8);
+	pad |= pad << 16;
+
+	val = pad;
+	if (len > num*4)
+		len = num * 4;
+	for (i = 0; i < len; i++) {
+		if ((i % 4) == 0)
+			val = pad;
+		val = ((int) ucp[i]) + (val << 8);
 		if ((i % 4) == 3) {
 			*buf++ = val;
 			val = pad;
@@ -95,6 +165,8 @@ int ext4fs_dirhash(const char *name, int len, struct dx_hash_info *hinfo)
 	const char	*p;
 	int		i;
 	__u32		in[8], buf[4];
+	void		(*str2hashbuf)(const char *, int, __u32 *, int) =
+				str2hashbuf_signed;
 
 	/* Initialize the default seed for the hash checksum functions */
 	buf[0] = 0x67452301;
@@ -120,6 +192,27 @@ int ext4fs_dirhash(const char *name, int len, struct dx_hash_info *hinfo)
 		p = name;
 		while (len > 0) {
 			str2hashbuf(p, len, in, 8);
+		for (i = 0; i < 4; i++) {
+			if (hinfo->seed[i]) {
+				memcpy(buf, hinfo->seed, sizeof(buf));
+				break;
+			}
+		}
+	}
+
+	switch (hinfo->hash_version) {
+	case DX_HASH_LEGACY_UNSIGNED:
+		hash = dx_hack_hash_unsigned(name, len);
+		break;
+	case DX_HASH_LEGACY:
+		hash = dx_hack_hash_signed(name, len);
+		break;
+	case DX_HASH_HALF_MD4_UNSIGNED:
+		str2hashbuf = str2hashbuf_unsigned;
+	case DX_HASH_HALF_MD4:
+		p = name;
+		while (len > 0) {
+			(*str2hashbuf)(p, len, in, 8);
 			half_md4_transform(buf, in);
 			len -= 32;
 			p += 32;
@@ -131,6 +224,12 @@ int ext4fs_dirhash(const char *name, int len, struct dx_hash_info *hinfo)
 		p = name;
 		while (len > 0) {
 			str2hashbuf(p, len, in, 4);
+	case DX_HASH_TEA_UNSIGNED:
+		str2hashbuf = str2hashbuf_unsigned;
+	case DX_HASH_TEA:
+		p = name;
+		while (len > 0) {
+			(*str2hashbuf)(p, len, in, 4);
 			TEA_transform(buf, in);
 			len -= 16;
 			p += 16;
@@ -145,6 +244,8 @@ int ext4fs_dirhash(const char *name, int len, struct dx_hash_info *hinfo)
 	hash = hash & ~1;
 	if (hash == (EXT4_HTREE_EOF << 1))
 		hash = (EXT4_HTREE_EOF-1) << 1;
+	if (hash == (EXT4_HTREE_EOF_32BIT << 1))
+		hash = (EXT4_HTREE_EOF_32BIT - 1) << 1;
 	hinfo->hash = hash;
 	hinfo->minor_hash = minor_hash;
 	return 0;

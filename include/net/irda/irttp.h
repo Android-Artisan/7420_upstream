@@ -98,6 +98,7 @@
 
 /*
  *  This structure contains all data assosiated with one instance of a TTP 
+ *  This structure contains all data associated with one instance of a TTP 
  *  connection.
  */
 struct tsap_cb {
@@ -186,6 +187,7 @@ static inline __u32 irttp_get_max_seg_size(struct tsap_cb *self)
 
 /* After doing a irttp_dup(), this get one of the two socket back into
  * a state where it's waiting incomming connections.
+ * a state where it's waiting incoming connections.
  * Note : this can be used *only* if the socket is not yet connected
  * (i.e. NO irttp_connect_response() done on this socket).
  * - Jean II */
@@ -205,6 +207,7 @@ static inline int irttp_is_primary(struct tsap_cb *self)
 	    (self->lsap->lap->irlap == NULL))
 		return -2;
 	return(irlap_is_primary(self->lsap->lap->irlap));
+	return irlap_is_primary(self->lsap->lap->irlap);
 }
 
 #endif /* IRTTP_H */

@@ -165,6 +165,8 @@ static inline unsigned long do_mmap2(unsigned long addr, size_t len,
 	up_write(&current->mm->mmap_sem);
 	if (file)
 		fput(file);
+
+	ret = sys_mmap_pgoff(addr, len, prot, flags, fd, off);
 out:
 	return ret;
 }
@@ -219,6 +221,11 @@ long ppc64_personality(unsigned long personality)
 	ret = sys_personality(personality);
 	if (ret == PER_LINUX32)
 		ret = PER_LINUX;
+	    && personality(personality) == PER_LINUX)
+		personality = (personality & ~PER_MASK) | PER_LINUX32;
+	ret = sys_personality(personality);
+	if (personality(ret) == PER_LINUX32)
+		ret = (ret & ~PER_MASK) | PER_LINUX;
 	return ret;
 }
 #endif
@@ -312,4 +319,19 @@ void do_show_syscall(unsigned long r3, unsigned long r4, unsigned long r5,
 void do_show_syscall_exit(unsigned long r3)
 {
 	printk(" -> %lx, current=%p cpu=%d\n", r3, current, smp_processor_id());
+long sys_switch_endian(void)
+{
+	struct thread_info *ti;
+
+	current->thread.regs->msr ^= MSR_LE;
+
+	/*
+	 * Set TIF_RESTOREALL so that r3 isn't clobbered on return to
+	 * userspace. That also has the effect of restoring the non-volatile
+	 * GPRs, so we saved them on the way in here.
+	 */
+	ti = current_thread_info();
+	ti->flags |= _TIF_RESTOREALL;
+
+	return 0;
 }

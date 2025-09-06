@@ -222,5 +222,15 @@ static struct early_params __early_##fn __used			\
 __attribute__((__section__(".early_param.init"))) = { name, fn }
 
 #endif  /*  __KERNEL__  */
+#include <uapi/asm/setup.h>
+
+
+#define __tag __used __attribute__((__section__(".taglist.init")))
+#define __tagtable(tag, fn) \
+static const struct tagtable __tagtable_##fn __tag = { tag, fn }
+
+extern int arm_add_memory(u64 start, u64 size);
+extern void early_print(const char *str, ...);
+extern void dump_machine_table(void);
 
 #endif

@@ -70,6 +70,30 @@ static struct hw_interrupt_type oaks32r_irq_type =
 	.disable = disable_oaks32r_irq,
 	.ack = mask_and_ack_mappi,
 	.end = end_oaks32r_irq
+static void mask_oaks32r(struct irq_data *data)
+{
+	disable_oaks32r_irq(data->irq);
+}
+
+static void unmask_oaks32r(struct irq_data *data)
+{
+	enable_oaks32r_irq(data->irq);
+}
+
+static void shutdown_oaks32r(struct irq_data *data)
+{
+	unsigned long port;
+
+	port = irq2port(data->irq);
+	outl(M32R_ICUCR_ILEVEL7, port);
+}
+
+static struct irq_chip oaks32r_irq_type =
+{
+	.name		= "OAKS32R-IRQ",
+	.irq_shutdown	= shutdown_oaks32r,
+	.irq_mask	= mask_oaks32r,
+	.irq_unmask	= unmask_oaks32r,
 };
 
 void __init init_IRQ(void)
@@ -87,6 +111,8 @@ void __init init_IRQ(void)
 	irq_desc[M32R_IRQ_INT3].chip = &oaks32r_irq_type;
 	irq_desc[M32R_IRQ_INT3].action = 0;
 	irq_desc[M32R_IRQ_INT3].depth = 1;
+	irq_set_chip_and_handler(M32R_IRQ_INT3, &oaks32r_irq_type,
+				 handle_level_irq);
 	icu_data[M32R_IRQ_INT3].icucr = M32R_ICUCR_IEN|M32R_ICUCR_ISMOD10;
 	disable_oaks32r_irq(M32R_IRQ_INT3);
 #endif /* CONFIG_M32R_NE2000 */
@@ -96,6 +122,8 @@ void __init init_IRQ(void)
 	irq_desc[M32R_IRQ_MFT2].chip = &oaks32r_irq_type;
 	irq_desc[M32R_IRQ_MFT2].action = 0;
 	irq_desc[M32R_IRQ_MFT2].depth = 1;
+	irq_set_chip_and_handler(M32R_IRQ_MFT2, &oaks32r_irq_type,
+				 handle_level_irq);
 	icu_data[M32R_IRQ_MFT2].icucr = M32R_ICUCR_IEN;
 	disable_oaks32r_irq(M32R_IRQ_MFT2);
 
@@ -105,6 +133,8 @@ void __init init_IRQ(void)
 	irq_desc[M32R_IRQ_SIO0_R].chip = &oaks32r_irq_type;
 	irq_desc[M32R_IRQ_SIO0_R].action = 0;
 	irq_desc[M32R_IRQ_SIO0_R].depth = 1;
+	irq_set_chip_and_handler(M32R_IRQ_SIO0_R, &oaks32r_irq_type,
+				 handle_level_irq);
 	icu_data[M32R_IRQ_SIO0_R].icucr = 0;
 	disable_oaks32r_irq(M32R_IRQ_SIO0_R);
 
@@ -113,6 +143,8 @@ void __init init_IRQ(void)
 	irq_desc[M32R_IRQ_SIO0_S].chip = &oaks32r_irq_type;
 	irq_desc[M32R_IRQ_SIO0_S].action = 0;
 	irq_desc[M32R_IRQ_SIO0_S].depth = 1;
+	irq_set_chip_and_handler(M32R_IRQ_SIO0_S, &oaks32r_irq_type,
+				 handle_level_irq);
 	icu_data[M32R_IRQ_SIO0_S].icucr = 0;
 	disable_oaks32r_irq(M32R_IRQ_SIO0_S);
 
@@ -121,6 +153,8 @@ void __init init_IRQ(void)
 	irq_desc[M32R_IRQ_SIO1_R].chip = &oaks32r_irq_type;
 	irq_desc[M32R_IRQ_SIO1_R].action = 0;
 	irq_desc[M32R_IRQ_SIO1_R].depth = 1;
+	irq_set_chip_and_handler(M32R_IRQ_SIO1_R, &oaks32r_irq_type,
+				 handle_level_irq);
 	icu_data[M32R_IRQ_SIO1_R].icucr = 0;
 	disable_oaks32r_irq(M32R_IRQ_SIO1_R);
 
@@ -129,6 +163,8 @@ void __init init_IRQ(void)
 	irq_desc[M32R_IRQ_SIO1_S].chip = &oaks32r_irq_type;
 	irq_desc[M32R_IRQ_SIO1_S].action = 0;
 	irq_desc[M32R_IRQ_SIO1_S].depth = 1;
+	irq_set_chip_and_handler(M32R_IRQ_SIO1_S, &oaks32r_irq_type,
+				 handle_level_irq);
 	icu_data[M32R_IRQ_SIO1_S].icucr = 0;
 	disable_oaks32r_irq(M32R_IRQ_SIO1_S);
 #endif /* CONFIG_SERIAL_M32R_SIO */

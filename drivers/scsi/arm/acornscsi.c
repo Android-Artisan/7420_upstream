@@ -101,6 +101,7 @@
 #define TIMEOUT_TIME 10
 /*
  * Define this if you want to have verbose explaination of SCSI
+ * Define this if you want to have verbose explanation of SCSI
  * status/messages.
  */
 #undef CONFIG_ACORNSCSI_CONSTANTS
@@ -111,7 +112,6 @@
 #define USE_DMAC
 
 /*
- * ====================================================================================
  */
 
 #ifdef DEBUG_TARGET
@@ -194,7 +194,6 @@ static int acornscsi_reconnect_finish(AS_Host *host);
 static void acornscsi_dma_cleanup(AS_Host *host);
 static void acornscsi_abortcmd(AS_Host *host, unsigned char tag);
 
-/* ====================================================================================
  * Miscellaneous
  */
 
@@ -408,7 +407,6 @@ void acornscsi_resetcard(AS_Host *host)
     acornscsi_csdelay(25);
 }
 
-/*=============================================================================================
  * Utility routines (eg. debug)
  */
 #ifdef CONFIG_ACORNSCSI_CONSTANTS
@@ -695,7 +693,6 @@ unsigned char calc_sync_xfer(unsigned int period, unsigned int offset)
 		((offset < SDTR_SIZE) ? offset : SDTR_SIZE);
 }
 
-/* ====================================================================================
  * Command functions
  */
 /*
@@ -773,6 +770,8 @@ intr_ret_t acornscsi_kick(AS_Host *host)
 	} else
 #endif
 	    set_bit(SCpnt->device->id * 8 + SCpnt->device->lun, host->busyluns);
+	    set_bit(SCpnt->device->id * 8 +
+		    (u8)(SCpnt->device->lun & 0x07), host->busyluns);
 
 	host->stats.removes += 1;
 
@@ -868,6 +867,13 @@ static void acornscsi_done(AS_Host *host, struct scsi_cmnd **SCpntp,
 		 	acornscsi_dumplog(host, SCpnt->device->id);
 			SCpnt->result &= 0xffff;
 			SCpnt->result |= DID_ERROR << 16;
+			scmd_printk(KERN_ERR, SCpnt,
+				    "incomplete data transfer detected: "
+				    "result=%08X", SCpnt->result);
+			scsi_print_command(SCpnt);
+			acornscsi_dumpdma(host, "done");
+			acornscsi_dumplog(host, SCpnt->device->id);
+			set_host_byte(SCpnt, DID_ERROR);
 		    }
 		}
 	}
@@ -876,6 +882,8 @@ static void acornscsi_done(AS_Host *host, struct scsi_cmnd **SCpntp,
 	    panic("scsi%d.H: null scsi_done function in acornscsi_done", host->host->host_no);
 
 	clear_bit(SCpnt->device->id * 8 + SCpnt->device->lun, host->busyluns);
+	clear_bit(SCpnt->device->id * 8 +
+		  (u8)(SCpnt->device->lun & 0x7), host->busyluns);
 
 	SCpnt->scsi_done(SCpnt);
     } else
@@ -884,7 +892,6 @@ static void acornscsi_done(AS_Host *host, struct scsi_cmnd **SCpntp,
     host->scsi.phase = PHASE_IDLE;
 }
 
-/* ====================================================================================
  * DMA routines
  */
 /*
@@ -991,7 +998,6 @@ void acornscsi_data_write(AS_Host *host, char *ptr,
     writeb(host->card.page_reg, host->fast + PAGE_REG);
 }
 
-/* =========================================================================================
  * On-board DMA routines
  */
 #ifdef USE_DMAC
@@ -1279,7 +1285,6 @@ void acornscsi_dma_adjust(AS_Host *host)
 }
 #endif
 
-/* =========================================================================================
  * Data I/O
  */
 static int
@@ -1562,6 +1567,7 @@ void acornscsi_message(AS_Host *host)
 	 * If we were negociating sync transfer, we don't yet know if
 	 * this REJECT is for the sync transfer or for the tagged queue/wide
 	 * transfer.  Re-initiate sync transfer negociation now, and if
+	 * transfer.  Re-initiate sync transfer negotiation now, and if
 	 * we got a REJECT in response to SDTR, then it'll be set to DONE.
 	 */
 	if (host->device[host->SCpnt->device->id].sync_state == SYNC_SENT_REQUEST)
@@ -1589,6 +1595,8 @@ void acornscsi_message(AS_Host *host)
 		    host->host->host_no, acornscsi_target(host));
 	    host->SCpnt->device->simple_tags = 0;
 	    set_bit(host->SCpnt->device->id * 8 + host->SCpnt->device->lun, host->busyluns);
+	    set_bit(host->SCpnt->device->id * 8 +
+		    (u8)(host->SCpnt->device->lun & 0x7), host->busyluns);
 	    break;
 #endif
 	case EXTENDED_MESSAGE | (EXTENDED_SDTR << 8):
@@ -1797,7 +1805,6 @@ int acornscsi_starttransfer(AS_Host *host)
     return 1;
 }
 
-/* =========================================================================================
  * Connection & Disconnection
  */
 /*
@@ -1960,7 +1967,6 @@ void acornscsi_abortcmd(AS_Host *host, unsigned char tag)
 	msgqueue_addmsg(&host->scsi.msgs, 1, ABORT);
 }
 
-/* ==========================================================================================
  * Interrupt routines.
  */
 /*
@@ -2500,7 +2506,6 @@ acornscsi_intr(int irq, void *dev_id)
     return IRQ_HANDLED;
 }
 
-/*=============================================================================================
  * Interfaces between interrupt handler and rest of scsi code
  */
 
@@ -2512,6 +2517,7 @@ acornscsi_intr(int irq, void *dev_id)
  * Returns  : 0, or < 0 on error.
  */
 int acornscsi_queuecmd(struct scsi_cmnd *SCpnt,
+static int acornscsi_queuecmd_lck(struct scsi_cmnd *SCpnt,
 		       void (*done)(struct scsi_cmnd *))
 {
     AS_Host *host = (AS_Host *)SCpnt->device->host->hostdata;
@@ -2560,6 +2566,8 @@ int acornscsi_queuecmd(struct scsi_cmnd *SCpnt,
     }
     return 0;
 }
+
+DEF_SCSI_QCMD(acornscsi_queuecmd)
 
 /*
  * Prototype: void acornscsi_reportstatus(struct scsi_cmnd **SCpntp1, struct scsi_cmnd **SCpntp2, int result)
@@ -2718,6 +2726,8 @@ int acornscsi_abort(struct scsi_cmnd *SCpnt)
 		printk("clear ");
 //#endif
 		clear_bit(SCpnt->device->id * 8 + SCpnt->device->lun, host->busyluns);
+		clear_bit(SCpnt->device->id * 8 +
+			  (u8)(SCpnt->device->lun & 0x7), host->busyluns);
 
 	/*
 	 * We found the command, and cleared it out.  Either
@@ -2800,7 +2810,6 @@ int acornscsi_bus_reset(struct scsi_cmnd *SCpnt)
     return SUCCESS;
 }
 
-/*==============================================================================================
  * initialisation & miscellaneous support
  */
 
@@ -2849,6 +2858,15 @@ int acornscsi_proc_info(struct Scsi_Host *instance, char *buffer, char **start, 
     host  = (AS_Host *)instance->hostdata;
     
     p += sprintf(p, "AcornSCSI driver v%d.%d.%d"
+static int acornscsi_show_info(struct seq_file *m, struct Scsi_Host *instance)
+{
+    int devidx;
+    struct scsi_device *scd;
+    AS_Host *host;
+
+    host  = (AS_Host *)instance->hostdata;
+    
+    seq_printf(m, "AcornSCSI driver v%d.%d.%d"
 #ifdef CONFIG_SCSI_ACORNSCSI_SYNC
     " SYNC"
 #endif
@@ -2871,6 +2889,14 @@ int acornscsi_proc_info(struct Scsi_Host *instance, char *buffer, char **start, 
 #endif
 
     p += sprintf(p,	"Statistics:\n"
+    seq_printf(m,	"SBIC: WD33C93A  Address: %p    IRQ : %d\n",
+			host->base + SBIC_REGIDX, host->scsi.irq);
+#ifdef USE_DMAC
+    seq_printf(m,	"DMAC: uPC71071  Address: %p  IRQ : %d\n\n",
+			host->base + DMAC_OFFSET, host->scsi.irq);
+#endif
+
+    seq_printf(m,	"Statistics:\n"
 			"Queued commands: %-10u    Issued commands: %-10u\n"
 			"Done commands  : %-10u    Reads          : %-10u\n"
 			"Writes         : %-10u    Others         : %-10u\n"
@@ -2886,6 +2912,7 @@ int acornscsi_proc_info(struct Scsi_Host *instance, char *buffer, char **start, 
 	unsigned int statptr, prev;
 
 	p += sprintf(p, "\n%c:", devidx == 8 ? 'H' : ('0' + devidx));
+	seq_printf(m, "\n%c:", devidx == 8 ? 'H' : ('0' + devidx));
 	statptr = host->status_ptr[devidx] - 10;
 
 	if ((signed int)statptr < 0)
@@ -2896,6 +2923,7 @@ int acornscsi_proc_info(struct Scsi_Host *instance, char *buffer, char **start, 
 	for (; statptr != host->status_ptr[devidx]; statptr = (statptr + 1) & (STATUS_BUFFER_SIZE - 1)) {
 	    if (host->status[devidx][statptr].when) {
 		p += sprintf(p, "%c%02X:%02X+%2ld",
+		seq_printf(m, "%c%02X:%02X+%2ld",
 			host->status[devidx][statptr].irq ? '-' : ' ',
 			host->status[devidx][statptr].ph,
 			host->status[devidx][statptr].ssr,
@@ -2946,11 +2974,33 @@ int acornscsi_proc_info(struct Scsi_Host *instance, char *buffer, char **start, 
 	pos = length;
 
     return pos;
+    seq_printf(m, "\nAttached devices:\n");
+
+    shost_for_each_device(scd, instance) {
+	seq_printf(m, "Device/Lun TaggedQ      Sync\n");
+	seq_printf(m, "     %d/%llu   ", scd->id, scd->lun);
+	if (scd->tagged_supported)
+		seq_printf(m, "%3sabled(%3d) ",
+			     scd->simple_tags ? "en" : "dis",
+			     scd->current_tag);
+	else
+		seq_printf(m, "unsupported  ");
+
+	if (host->device[scd->id].sync_xfer & 15)
+		seq_printf(m, "offset %d, %d ns\n",
+			     host->device[scd->id].sync_xfer & 15,
+			     acornscsi_getperiod(host->device[scd->id].sync_xfer));
+	else
+		seq_printf(m, "async\n");
+
+    }
+    return 0;
 }
 
 static struct scsi_host_template acornscsi_template = {
 	.module			= THIS_MODULE,
 	.proc_info		= acornscsi_proc_info,
+	.show_info		= acornscsi_show_info,
 	.name			= "AcornSCSI",
 	.info			= acornscsi_info,
 	.queuecommand		= acornscsi_queuecmd,
@@ -2966,6 +3016,7 @@ static struct scsi_host_template acornscsi_template = {
 
 static int __devinit
 acornscsi_probe(struct expansion_card *ec, const struct ecard_id *id)
+static int acornscsi_probe(struct expansion_card *ec, const struct ecard_id *id)
 {
 	struct Scsi_Host *host;
 	AS_Host *ashost;
@@ -2985,8 +3036,10 @@ acornscsi_probe(struct expansion_card *ec, const struct ecard_id *id)
 
 	ashost->base = ecardm_iomap(ec, ECARD_RES_MEMC, 0, 0);
 	ashost->fast = ecardm_iomap(ec, ECARD_RES_IOCFAST, 0, 0);
-	if (!ashost->base || !ashost->fast)
+	if (!ashost->base || !ashost->fast) {
+		ret = -ENOMEM;
 		goto out_put;
+	}
 
 	host->irq = ec->irq;
 	ashost->host = host;
@@ -2996,6 +3049,7 @@ acornscsi_probe(struct expansion_card *ec, const struct ecard_id *id)
 	ec->irqmask	= 0x0a;
 
 	ret = request_irq(host->irq, acornscsi_intr, IRQF_DISABLED, "acornscsi", ashost);
+	ret = request_irq(host->irq, acornscsi_intr, 0, "acornscsi", ashost);
 	if (ret) {
 		printk(KERN_CRIT "scsi%d: IRQ%d not free: %d\n",
 			host->host_no, ashost->scsi.irq, ret);
@@ -3032,6 +3086,7 @@ acornscsi_probe(struct expansion_card *ec, const struct ecard_id *id)
 }
 
 static void __devexit acornscsi_remove(struct expansion_card *ec)
+static void acornscsi_remove(struct expansion_card *ec)
 {
 	struct Scsi_Host *host = ecard_get_drvdata(ec);
 	AS_Host *ashost = (AS_Host *)host->hostdata;
@@ -3063,6 +3118,7 @@ static const struct ecard_id acornscsi_cids[] = {
 static struct ecard_driver acornscsi_driver = {
 	.probe		= acornscsi_probe,
 	.remove		= __devexit_p(acornscsi_remove),
+	.remove		= acornscsi_remove,
 	.id_table	= acornscsi_cids,
 	.drv = {
 		.name		= "acornscsi",

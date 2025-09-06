@@ -29,6 +29,8 @@
  *
  * Please read Documentation/filesystems/configfs.txt before using the
  * configfs interface, ESPECIALLY the parts about reference counts and
+ * Please read Documentation/filesystems/configfs/configfs.txt before using
+ * the configfs interface, ESPECIALLY the parts about reference counts and
  * item destructors.
  */
 
@@ -43,6 +45,7 @@
 #include <linux/err.h>
 
 #include <asm/atomic.h>
+#include <linux/atomic.h>
 
 #define CONFIGFS_ITEM_NAME_LEN	20
 
@@ -65,6 +68,8 @@ struct config_item {
 };
 
 extern int config_item_set_name(struct config_item *, const char *, ...);
+extern __printf(2, 3)
+int config_item_set_name(struct config_item *, const char *, ...);
 
 static inline char *config_item_name(struct config_item * item)
 {
@@ -205,6 +210,34 @@ static ssize_t _item##_attr_store(struct config_item *item,		\
 	if (_item##_attr->store)					\
 		ret = _item##_attr->store(_item, page, count);		\
 	return ret;							\
+	umode_t			ca_mode;
+	ssize_t (*show)(struct config_item *, char *);
+	ssize_t (*store)(struct config_item *, const char *, size_t);
+};
+
+#define CONFIGFS_ATTR(_pfx, _name)			\
+static struct configfs_attribute _pfx##attr_##_name = {	\
+	.ca_name	= __stringify(_name),		\
+	.ca_mode	= S_IRUGO | S_IWUSR,		\
+	.ca_owner	= THIS_MODULE,			\
+	.show		= _pfx##_name##_show,		\
+	.store		= _pfx##_name##_store,		\
+}
+
+#define CONFIGFS_ATTR_RO(_pfx, _name)			\
+static struct configfs_attribute _pfx##attr_##_name = {	\
+	.ca_name	= __stringify(_name),		\
+	.ca_mode	= S_IRUGO,			\
+	.ca_owner	= THIS_MODULE,			\
+	.show		= _pfx##_name##_show,		\
+}
+
+#define CONFIGFS_ATTR_WO(_pfx, _name)			\
+static struct configfs_attribute _pfx##attr_##_name = {	\
+	.ca_name	= __stringify(_name),		\
+	.ca_mode	= S_IWUSR,			\
+	.ca_owner	= THIS_MODULE,			\
+	.store		= _pfx##_name##_store,		\
 }
 
 /*
@@ -219,6 +252,7 @@ static ssize_t _item##_attr_store(struct config_item *item,		\
  * make_item(), but if the group wishes to have only default_groups
  * children (disallowing mkdir(2)), it need not provide either function.
  * If the group has commit(), it supports pending and commited (active)
+ * If the group has commit(), it supports pending and committed (active)
  * items.
  */
 struct configfs_item_operations {
@@ -251,6 +285,16 @@ static inline struct configfs_subsystem *to_configfs_subsystem(struct config_gro
 
 int configfs_register_subsystem(struct configfs_subsystem *subsys);
 void configfs_unregister_subsystem(struct configfs_subsystem *subsys);
+
+int configfs_register_group(struct config_group *parent_group,
+			    struct config_group *group);
+void configfs_unregister_group(struct config_group *group);
+
+struct config_group *
+configfs_register_default_group(struct config_group *parent_group,
+				const char *name,
+				struct config_item_type *item_type);
+void configfs_unregister_default_group(struct config_group *group);
 
 /* These functions can sleep and can alloc with GFP_KERNEL */
 /* WARNING: These cannot be called underneath configfs callbacks!! */

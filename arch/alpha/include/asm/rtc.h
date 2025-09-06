@@ -8,3 +8,4 @@
 #include <asm-generic/rtc.h>
 
 #endif
+#include <asm-generic/rtc.h>

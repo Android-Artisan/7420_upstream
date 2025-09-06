@@ -583,3 +583,6 @@ static struct scsi_host_template driver_template = {
 #include "scsi_module.c"
 
 MODULE_LICENSE("GPL");
+#define SUN3_SCSI_VME
+
+#include "sun3_scsi.c"

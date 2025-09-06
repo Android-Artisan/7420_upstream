@@ -23,6 +23,7 @@
 #include <linux/dcache.h>
 #include <linux/exportfs.h>
 #include <linux/security.h>
+#include <linux/slab.h>
 
 #include "attrib.h"
 #include "debug.h"
@@ -35,6 +36,7 @@
  * @dir_ino:	directory inode in which to look for the inode
  * @dent:	dentry representing the inode to look for
  * @nd:		lookup nameidata
+ * @flags:	lookup flags
  *
  * In short, ntfs_lookup() looks for the inode represented by the dentry @dent
  * in the directory inode @dir_ino and if found attaches the inode to the
@@ -101,6 +103,7 @@
  */
 static struct dentry *ntfs_lookup(struct inode *dir_ino, struct dentry *dent,
 		struct nameidata *nd)
+		unsigned int flags)
 {
 	ntfs_volume *vol = NTFS_SB(dir_ino->i_sb);
 	struct inode *dent_inode;
@@ -112,6 +115,8 @@ static struct dentry *ntfs_lookup(struct inode *dir_ino, struct dentry *dent,
 
 	ntfs_debug("Looking up %s in directory inode 0x%lx.",
 			dent->d_name.name, dir_ino->i_ino);
+	ntfs_debug("Looking up %pd in directory inode 0x%lx.",
+			dent, dir_ino->i_ino);
 	/* Convert the name of the dentry to Unicode. */
 	uname_len = ntfs_nlstoucs(vol, dent->d_name.name, dent->d_name.len,
 			&uname);
@@ -292,6 +297,7 @@ const struct inode_operations ntfs_dir_inode_ops = {
  * fs/ext3/namei.c::ext3_get_parent().
  *
  * Note: ntfs_get_parent() is called with @child_dent->d_inode->i_mutex down.
+ * Note: ntfs_get_parent() is called with @d_inode(child_dent)->i_mutex down.
  *
  * Return the dentry of the parent directory on success or the error code on
  * error (IS_ERR() is true).
@@ -299,6 +305,7 @@ const struct inode_operations ntfs_dir_inode_ops = {
 static struct dentry *ntfs_get_parent(struct dentry *child_dent)
 {
 	struct inode *vi = child_dent->d_inode;
+	struct inode *vi = d_inode(child_dent);
 	ntfs_inode *ni = NTFS_I(vi);
 	MFT_RECORD *mrec;
 	ntfs_attr_search_ctx *ctx;
@@ -363,6 +370,8 @@ try_next:
 	}
 	ntfs_debug("Done for inode 0x%lx.", vi->i_ino);
 	return parent_dent;
+
+	return d_obtain_alias(ntfs_iget(vi->i_sb, parent_ino));
 }
 
 static struct inode *ntfs_nfs_get_inode(struct super_block *sb,

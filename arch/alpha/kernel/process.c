@@ -20,6 +20,7 @@
 #include <linux/slab.h>
 #include <linux/user.h>
 #include <linux/utsname.h>
+#include <linux/user.h>
 #include <linux/time.h>
 #include <linux/major.h>
 #include <linux/stat.h>
@@ -33,6 +34,11 @@
 #include <asm/reg.h>
 #include <asm/uaccess.h>
 #include <asm/system.h>
+#include <linux/slab.h>
+#include <linux/rcupdate.h>
+
+#include <asm/reg.h>
+#include <asm/uaccess.h>
 #include <asm/io.h>
 #include <asm/pgtable.h>
 #include <asm/hwrpb.h>
@@ -62,6 +68,22 @@ cpu_idle(void)
 	}
 }
 
+#ifdef CONFIG_ALPHA_WTINT
+/*
+ * Sleep the CPU.
+ * EV6, LCA45 and QEMU know how to power down, skipping N timer interrupts.
+ */
+void arch_cpu_idle(void)
+{
+	wtint(0);
+	local_irq_enable();
+}
+
+void arch_cpu_idle_dead(void)
+{
+	wtint(INT_MAX);
+}
+#endif /* ALPHA_WTINT */
 
 struct halt_info {
 	int mode;
@@ -94,6 +116,8 @@ common_shutdown_1(void *generic_ptr)
 		flags |= 0x00040000UL; /* "remain halted" */
 		*pflags = flags;
 		cpu_clear(cpuid, cpu_present_map);
+		set_cpu_present(cpuid, false);
+		set_cpu_possible(cpuid, false);
 		halt();
 	}
 #endif
@@ -121,6 +145,9 @@ common_shutdown_1(void *generic_ptr)
 	/* Wait for the secondaries to halt. */
 	cpu_clear(boot_cpuid, cpu_present_map);
 	while (cpus_weight(cpu_present_map))
+	set_cpu_present(boot_cpuid, false);
+	set_cpu_possible(boot_cpuid, false);
+	while (cpumask_weight(cpu_present_mask))
 		barrier();
 #endif
 
@@ -133,6 +160,9 @@ common_shutdown_1(void *generic_ptr)
 			irq_exit();
 		/* This has the effect of resetting the VGA video origin.  */
 		take_over_console(&dummy_con, 0, MAX_NR_CONSOLES-1, 1);
+		console_lock();
+		do_take_over_console(&dummy_con, 0, MAX_NR_CONSOLES-1, 1);
+		console_unlock();
 #endif
 		pci_restore_srm_config();
 		set_hae(srm_hae);
@@ -190,6 +220,7 @@ machine_power_off(void)
 void
 show_regs(struct pt_regs *regs)
 {
+	show_regs_print_info(KERN_DEFAULT);
 	dik_show_regs(regs, NULL);
 }
 
@@ -305,6 +336,36 @@ copy_thread(int nr, unsigned long clone_flags, unsigned long usp,
 	   syscall arguments that we saved on syscall entry.  Oops,
 	   except we'd have clobbered it with the parent/child set
 	   of r20.  Read the saved copy.  */
+ * Copy architecture-specific thread state
+ */
+int
+copy_thread(unsigned long clone_flags, unsigned long usp,
+	    unsigned long kthread_arg,
+	    struct task_struct *p)
+{
+	extern void ret_from_fork(void);
+	extern void ret_from_kernel_thread(void);
+
+	struct thread_info *childti = task_thread_info(p);
+	struct pt_regs *childregs = task_pt_regs(p);
+	struct pt_regs *regs = current_pt_regs();
+	struct switch_stack *childstack, *stack;
+
+	childstack = ((struct switch_stack *) childregs) - 1;
+	childti->pcb.ksp = (unsigned long) childstack;
+	childti->pcb.flags = 1;	/* set FEN, clear everything else */
+
+	if (unlikely(p->flags & PF_KTHREAD)) {
+		/* kernel thread */
+		memset(childstack, 0,
+			sizeof(struct switch_stack) + sizeof(struct pt_regs));
+		childstack->r26 = (unsigned long) ret_from_kernel_thread;
+		childstack->r9 = usp;	/* function */
+		childstack->r10 = kthread_arg;
+		childregs->hae = alpha_mv.hae_cache,
+		childti->pcb.usp = 0;
+		return 0;
+	}
 	/* Note: if CLONE_SETTLS is not set, then we must inherit the
 	   value from the parent, which will have been set by the block
 	   copy in dup_task_struct.  This is non-intuitive, but is
@@ -313,6 +374,17 @@ copy_thread(int nr, unsigned long clone_flags, unsigned long usp,
 	if (clone_flags & CLONE_SETTLS)
 		childti->pcb.unique = settls;
 
+		childti->pcb.unique = regs->r20;
+	else
+		regs->r20 = 0;	/* OSF/1 has some strange fork() semantics.  */
+	childti->pcb.usp = usp ?: rdusp();
+	*childregs = *regs;
+	childregs->r0 = 0;
+	childregs->r19 = 0;
+	childregs->r20 = 1;	/* OSF/1 has some strange fork() semantics.  */
+	stack = ((struct switch_stack *) regs) - 1;
+	*childstack = *stack;
+	childstack->r26 = (unsigned long) ret_from_fork;
 	return 0;
 }
 
@@ -356,6 +428,7 @@ dump_elf_thread(elf_greg_t *dest, struct pt_regs *pt, struct thread_info *ti)
 	dest[28] = pt->r28;
 	dest[29] = pt->gp;
 	dest[30] = rdusp();
+	dest[30] = ti == current_thread_info() ? rdusp() : ti->pcb.usp;
 	dest[31] = pt->pc;
 
 	/* Once upon a time this was the PS value.  Which is stupid

@@ -22,6 +22,8 @@
 
 #include "emu10k1.h"
 #include "emux_synth.h"
+#include <sound/emu10k1.h>
+#include <sound/emux_synth.h>
 
 /* sequencer device id */
 #define SNDRV_SEQ_DEV_ID_EMU10K1_SYNTH	"emu10k1-synth"

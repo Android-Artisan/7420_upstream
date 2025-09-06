@@ -14,7 +14,6 @@
 *		modify it under the terms of the GNU General Public License
 *		as published by the Free Software Foundation; either version
 *		2 of the License, or (at your option) any later version.
-* ============================================================================
 * 1999/11/11	acme		set_current_state(TASK_INTERRUPTIBLE), code
 *				cleanup
 * 1999/11/08	acme		init_cyc2x deleted, doing nothing

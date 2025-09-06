@@ -11,6 +11,7 @@
 
 struct sparc64_tick_ops {
 	unsigned long (*get_tick)(void);
+	unsigned long long (*get_tick)(void);
 	int (*add_compare)(unsigned long);
 	unsigned long softint_mask;
 	void (*disable_irq)(void);
@@ -26,5 +27,8 @@ extern struct sparc64_tick_ops *tick_ops;
 extern unsigned long sparc64_get_clock_tick(unsigned int cpu);
 extern void __devinit setup_sparc64_timer(void);
 extern void __init time_init(void);
+unsigned long sparc64_get_clock_tick(unsigned int cpu);
+void setup_sparc64_timer(void);
+void __init time_init(void);
 
 #endif /* _SPARC64_TIMER_H */

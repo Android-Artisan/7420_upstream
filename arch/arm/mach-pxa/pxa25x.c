@@ -16,6 +16,8 @@
  * initialization stuff for PXA machines which can be overridden later if
  * need be.
  */
+#include <linux/gpio.h>
+#include <linux/gpio-pxa.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
@@ -35,6 +37,21 @@
 #include "generic.h"
 #include "devices.h"
 #include "clock.h"
+#include <linux/syscore_ops.h>
+#include <linux/irq.h>
+
+#include <asm/mach/map.h>
+#include <asm/suspend.h>
+#include <mach/hardware.h>
+#include <mach/irqs.h>
+#include <mach/pxa25x.h>
+#include <mach/reset.h>
+#include <mach/pm.h>
+#include <mach/dma.h>
+#include <mach/smemc.h>
+
+#include "generic.h"
+#include "devices.h"
 
 /*
  * Various clock factors driven by the CCCR register.
@@ -213,6 +230,8 @@ enum {	SLEEP_SAVE_PGSR0, SLEEP_SAVE_PGSR1, SLEEP_SAVE_PGSR2,
 
 	SLEEP_SAVE_CKEN,
 
+enum {
+	SLEEP_SAVE_PSTR,
 	SLEEP_SAVE_COUNT
 };
 
@@ -230,6 +249,7 @@ static void pxa25x_cpu_pm_save(unsigned long *sleep_save)
 
 	/* Clear GPIO transition detect bits */
 	GEDR0 = GEDR0; GEDR1 = GEDR1; GEDR2 = GEDR2;
+	SAVE(PSTR);
 }
 
 static void pxa25x_cpu_pm_restore(unsigned long *sleep_save)
@@ -259,8 +279,22 @@ static void pxa25x_cpu_pm_enter(suspend_state_t state)
 		/* set resume return address */
 		PSPR = virt_to_phys(pxa_cpu_resume);
 		pxa25x_cpu_suspend(PWRMODE_SLEEP);
+		cpu_suspend(PWRMODE_SLEEP, pxa25x_finish_suspend);
 		break;
 	}
+}
+
+static int pxa25x_cpu_pm_prepare(void)
+{
+	/* set resume return address */
+	PSPR = virt_to_phys(cpu_resume);
+	return 0;
+}
+
+static void pxa25x_cpu_pm_finish(void)
+{
+	/* ensure not to come back here if it wasn't intended */
+	PSPR = 0;
 }
 
 static struct pxa_cpu_pm_fns pxa25x_cpu_pm_fns = {
@@ -269,6 +303,8 @@ static struct pxa_cpu_pm_fns pxa25x_cpu_pm_fns = {
 	.save		= pxa25x_cpu_pm_save,
 	.restore	= pxa25x_cpu_pm_restore,
 	.enter		= pxa25x_cpu_pm_enter,
+	.prepare	= pxa25x_cpu_pm_prepare,
+	.finish		= pxa25x_cpu_pm_finish,
 };
 
 static void __init pxa25x_init_pm(void)
@@ -285,12 +321,16 @@ static inline void pxa25x_init_pm(void) {}
 static int pxa25x_set_wake(unsigned int irq, unsigned int on)
 {
 	int gpio = IRQ_TO_GPIO(irq);
+static int pxa25x_set_wake(struct irq_data *d, unsigned int on)
+{
+	int gpio = pxa_irq_to_gpio(d->irq);
 	uint32_t mask = 0;
 
 	if (gpio >= 0 && gpio < 85)
 		return gpio_set_wake(gpio, on);
 
 	if (irq == IRQ_RTCAlrm) {
+	if (d->irq == IRQ_RTCAlrm) {
 		mask = PWER_RTC;
 		goto set_pwer;
 	}
@@ -319,6 +359,46 @@ static struct platform_device *pxa25x_devices[] __initdata = {
 	&pxa_device_stuart,
 	&pxa_device_i2s,
 	&pxa_device_rtc,
+}
+
+#ifdef CONFIG_CPU_PXA26x
+void __init pxa26x_init_irq(void)
+{
+	pxa_init_irq(32, pxa25x_set_wake);
+}
+#endif
+
+static struct map_desc pxa25x_io_desc[] __initdata = {
+	{	/* Mem Ctl */
+		.virtual	= (unsigned long)SMEMC_VIRT,
+		.pfn		= __phys_to_pfn(PXA2XX_SMEMC_BASE),
+		.length		= SMEMC_SIZE,
+		.type		= MT_DEVICE
+	}, {	/* UNCACHED_PHYS_0 */
+		.virtual	= UNCACHED_PHYS_0,
+		.pfn		= __phys_to_pfn(0x00000000),
+		.length		= UNCACHED_PHYS_0_SIZE,
+		.type		= MT_DEVICE
+	},
+};
+
+void __init pxa25x_map_io(void)
+{
+	pxa_map_io();
+	iotable_init(ARRAY_AND_SIZE(pxa25x_io_desc));
+	pxa25x_get_clk_frequency_khz(1);
+}
+
+static struct pxa_gpio_platform_data pxa25x_gpio_info __initdata = {
+	.irq_base	= PXA_GPIO_TO_IRQ(0),
+	.gpio_set_wake	= gpio_set_wake,
+};
+
+static struct platform_device *pxa25x_devices[] __initdata = {
+	&pxa25x_device_udc,
+	&pxa_device_pmu,
+	&pxa_device_i2s,
+	&sa1100_device_rtc,
 	&pxa25x_device_ssp,
 	&pxa25x_device_nssp,
 	&pxa25x_device_assp,
@@ -332,6 +412,7 @@ static struct sys_device pxa25x_sysdev[] = {
 	}, {
 		.cls	= &pxa_gpio_sysclass,
 	},
+	&pxa_device_asoc_platform,
 };
 
 static int __init pxa25x_init(void)
@@ -349,6 +430,13 @@ static int __init pxa25x_init(void)
 		clks_register(pxa25x_clks, ARRAY_SIZE(pxa25x_clks));
 
 		if ((ret = pxa_init_dma(16)))
+	int ret = 0;
+
+	if (cpu_is_pxa25x()) {
+
+		reset_status = RCSR;
+
+		if ((ret = pxa_init_dma(IRQ_DMA, 16)))
 			return ret;
 
 		pxa25x_init_pm();
@@ -359,6 +447,11 @@ static int __init pxa25x_init(void)
 				pr_err("failed to register sysdev[%d]\n", i);
 		}
 
+		register_syscore_ops(&pxa_irq_syscore_ops);
+		register_syscore_ops(&pxa2xx_mfp_syscore_ops);
+
+		pxa2xx_set_dmac_info(16, 40);
+		pxa_register_device(&pxa25x_device_gpio, &pxa25x_gpio_info);
 		ret = platform_add_devices(pxa25x_devices,
 					   ARRAY_SIZE(pxa25x_devices));
 		if (ret)

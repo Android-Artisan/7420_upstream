@@ -25,6 +25,9 @@
 #include <linux/types.h>
 #include <linux/device.h>
 #include "cell-pmu.h"
+#include <linux/types.h>
+#include <linux/device.h>
+#include <asm/cell-pmu.h>
 
 union ps3_firmware_version {
 	u64 raw;
@@ -50,6 +53,16 @@ enum ps3_param_av_multi_out {
 
 enum ps3_param_av_multi_out ps3_os_area_get_av_multi_out(void);
 
+extern u64 ps3_os_area_get_rtc_diff(void);
+extern void ps3_os_area_set_rtc_diff(u64 rtc_diff);
+
+struct ps3_os_area_flash_ops {
+	ssize_t (*read)(void *buf, size_t count, loff_t pos);
+	ssize_t (*write)(const void *buf, size_t count, loff_t pos);
+};
+
+extern void ps3_os_area_flash_register(const struct ps3_os_area_flash_ops *ops);
+
 /* dma routines */
 
 enum ps3_dma_page_size {
@@ -74,6 +87,7 @@ struct ps3_dma_region_ops;
  * @bus_addr: The 'translated' bus address of the region.
  * @len: The length in bytes of the region.
  * @offset: The offset from the start of memory of the region.
+ * @dma_mask: Device dma_mask.
  * @ioid: The IOID of the device who owns this region
  * @chunk_list: Opaque variable used by the ioc page manager.
  * @region_ops: struct ps3_dma_region_ops - dma region operations
@@ -88,6 +102,7 @@ struct ps3_dma_region {
 	enum ps3_dma_region_type region_type;
 	unsigned long len;
 	unsigned long offset;
+	u64 dma_mask;
 
 	/* driver variables  (set by ps3_dma_region_create) */
 	unsigned long bus_addr;
@@ -107,6 +122,10 @@ struct ps3_dma_region_ops {
 		   u64 iopte_pp);
 	int (*unmap)(struct ps3_dma_region *,
 		     unsigned long bus_addr,
+		   dma_addr_t *bus_addr,
+		   u64 iopte_pp);
+	int (*unmap)(struct ps3_dma_region *,
+		     dma_addr_t bus_addr,
 		     unsigned long len);
 };
 /**
@@ -127,6 +146,9 @@ int ps3_dma_map(struct ps3_dma_region *r, unsigned long virt_addr,
 	unsigned long len, unsigned long *bus_addr,
 	u64 iopte_pp);
 int ps3_dma_unmap(struct ps3_dma_region *r, unsigned long bus_addr,
+	unsigned long len, dma_addr_t *bus_addr,
+	u64 iopte_pp);
+int ps3_dma_unmap(struct ps3_dma_region *r, dma_addr_t bus_addr,
 	unsigned long len);
 
 /* mmio routines */
@@ -236,6 +258,7 @@ enum lv1_result {
 static inline const char* ps3_result(int result)
 {
 #if defined(DEBUG)
+#if defined(DEBUG) || defined(PS3_VERBOSE_RESULT)
 	switch (result) {
 	case LV1_SUCCESS:
 		return "LV1_SUCCESS (0)";
@@ -329,6 +352,36 @@ enum ps3_match_id {
 #define PS3_MODULE_ALIAS_SOUND          "ps3:9"
 #define PS3_MODULE_ALIAS_GRAPHICS       "ps3:10"
 #define PS3_MODULE_ALIAS_LPM            "ps3:11"
+	PS3_MATCH_ID_EHCI		= 1,
+	PS3_MATCH_ID_OHCI		= 2,
+	PS3_MATCH_ID_GELIC		= 3,
+	PS3_MATCH_ID_AV_SETTINGS	= 4,
+	PS3_MATCH_ID_SYSTEM_MANAGER	= 5,
+	PS3_MATCH_ID_STOR_DISK		= 6,
+	PS3_MATCH_ID_STOR_ROM		= 7,
+	PS3_MATCH_ID_STOR_FLASH		= 8,
+	PS3_MATCH_ID_SOUND		= 9,
+	PS3_MATCH_ID_GPU		= 10,
+	PS3_MATCH_ID_LPM		= 11,
+};
+
+enum ps3_match_sub_id {
+	PS3_MATCH_SUB_ID_GPU_FB		= 1,
+	PS3_MATCH_SUB_ID_GPU_RAMDISK	= 2,
+};
+
+#define PS3_MODULE_ALIAS_EHCI		"ps3:1:0"
+#define PS3_MODULE_ALIAS_OHCI		"ps3:2:0"
+#define PS3_MODULE_ALIAS_GELIC		"ps3:3:0"
+#define PS3_MODULE_ALIAS_AV_SETTINGS	"ps3:4:0"
+#define PS3_MODULE_ALIAS_SYSTEM_MANAGER	"ps3:5:0"
+#define PS3_MODULE_ALIAS_STOR_DISK	"ps3:6:0"
+#define PS3_MODULE_ALIAS_STOR_ROM	"ps3:7:0"
+#define PS3_MODULE_ALIAS_STOR_FLASH	"ps3:8:0"
+#define PS3_MODULE_ALIAS_SOUND		"ps3:9:0"
+#define PS3_MODULE_ALIAS_GPU_FB		"ps3:10:1"
+#define PS3_MODULE_ALIAS_GPU_RAMDISK	"ps3:10:2"
+#define PS3_MODULE_ALIAS_LPM		"ps3:11:0"
 
 enum ps3_system_bus_device_type {
 	PS3_DEVICE_TYPE_IOC0 = 1,
@@ -423,6 +476,15 @@ static inline void *ps3_system_bus_get_driver_data(
 	struct ps3_system_bus_device *dev)
 {
 	return dev->core.driver_data;
+static inline void ps3_system_bus_set_drvdata(
+	struct ps3_system_bus_device *dev, void *data)
+{
+	dev_set_drvdata(&dev->core, data);
+}
+static inline void *ps3_system_bus_get_drvdata(
+	struct ps3_system_bus_device *dev)
+{
+	return dev_get_drvdata(&dev->core);
 }
 
 /* These two need global scope for get_dma_ops(). */

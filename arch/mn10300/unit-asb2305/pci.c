@@ -18,6 +18,9 @@
 #include <linux/ioport.h>
 #include <linux/delay.h>
 #include <asm/io.h>
+#include <linux/irq.h>
+#include <asm/io.h>
+#include <asm/irq.h>
 #include "pci-asb2305.h"
 
 unsigned int pci_probe = 1;
@@ -25,6 +28,31 @@ unsigned int pci_probe = 1;
 int pcibios_last_bus = -1;
 struct pci_bus *pci_root_bus;
 struct pci_ops *pci_root_ops;
+
+/*
+struct pci_ops *pci_root_ops;
+
+/*
+ * The accessible PCI window does not cover the entire CPU address space, but
+ * there are devices we want to access outside of that window, so we need to
+ * insert specific PCI bus resources instead of using the platform-level bus
+ * resources directly for the PCI root bus.
+ *
+ * These are configured and inserted by pcibios_init().
+ */
+static struct resource pci_ioport_resource = {
+	.name	= "PCI IO",
+	.start	= 0xbe000000,
+	.end	= 0xbe03ffff,
+	.flags	= IORESOURCE_IO,
+};
+
+static struct resource pci_iomem_resource = {
+	.name	= "PCI mem",
+	.start	= 0xb8000000,
+	.end	= 0xbbffffff,
+	.flags	= IORESOURCE_MEM,
+};
 
 /*
  * Functions for accessing PCI configuration space
@@ -174,6 +202,7 @@ static int pci_ampci_write_config_byte(struct pci_bus *bus, unsigned int devfn,
 	} else {
 		if (bus->number == 0 &&
 		    (devfn == PCI_DEVFN(2, 0) && devfn == PCI_DEVFN(3, 0))
+		    (devfn == PCI_DEVFN(2, 0) || devfn == PCI_DEVFN(3, 0))
 		    )
 			__pcidebug("<= %02x", bus, devfn, where, value);
 		CONFIG_ADDRESS = CONFIG_CMD(bus, devfn, where);
@@ -254,6 +283,8 @@ static int pci_ampci_write_config(struct pci_bus *bus, unsigned int devfn,
 static struct pci_ops pci_direct_ampci = {
 	pci_ampci_read_config,
 	pci_ampci_write_config,
+	.read = pci_ampci_read_config,
+	.write = pci_ampci_write_config,
 };
 
 /*
@@ -280,6 +311,7 @@ static int __init pci_sanity_check(struct pci_ops *o)
 		return 1;
 
 	printk(KERN_ERROR "PCI: Sanity check failed\n");
+	printk(KERN_ERR "PCI: Sanity check failed\n");
 	return 0;
 }
 
@@ -297,6 +329,7 @@ static int __init pci_check_direct(void)
 		printk(KERN_INFO "PCI: Using configuration ampci\n");
 		request_mem_region(0xBE040000, 256, "AMPCI bridge");
 		request_mem_region(0xBFFFFFF4, 12, "PCI ampci");
+		request_mem_region(0xBC000000, 32 * 1024 * 1024, "PCI SRAM");
 		return 0;
 	}
 
@@ -347,6 +380,37 @@ static void __devinit pcibios_fixup_device_resources(struct pci_dev *dev)
 		pcibios_bus_to_resource(dev, &dev->resource[i], &region);
 		if (is_valid_resource(dev, i))
 			pci_claim_resource(dev, i);
+static void pcibios_fixup_device_resources(struct pci_dev *dev)
+{
+	int idx;
+
+	if (!dev->bus)
+		return;
+
+	for (idx = 0; idx < PCI_BRIDGE_RESOURCES; idx++) {
+		struct resource *r = &dev->resource[idx];
+
+		if (!r->flags || r->parent || !r->start)
+			continue;
+
+		pci_claim_resource(dev, idx);
+	}
+}
+
+static void pcibios_fixup_bridge_resources(struct pci_dev *dev)
+{
+	int idx;
+
+	if (!dev->bus)
+		return;
+
+	for (idx = PCI_BRIDGE_RESOURCES; idx < PCI_NUM_RESOURCES; idx++) {
+		struct resource *r = &dev->resource[idx];
+
+		if (!r->flags || r->parent || !r->start)
+			continue;
+
+		pci_claim_bridge_resource(dev, idx);
 	}
 }
 
@@ -355,12 +419,14 @@ static void __devinit pcibios_fixup_device_resources(struct pci_dev *dev)
  *  are examined.
  */
 void __devinit pcibios_fixup_bus(struct pci_bus *bus)
+void pcibios_fixup_bus(struct pci_bus *bus)
 {
 	struct pci_dev *dev;
 
 	if (bus->self) {
 		pci_read_bridge_bases(bus);
 		pcibios_fixup_device_resources(bus->self);
+		pcibios_fixup_bridge_resources(bus->self);
 	}
 
 	list_for_each_entry(dev, &bus->devices, bus_list)
@@ -375,10 +441,19 @@ void __devinit pcibios_fixup_bus(struct pci_bus *bus)
  */
 static int __init pcibios_init(void)
 {
+	resource_size_t io_offset, mem_offset;
+	LIST_HEAD(resources);
+	struct pci_bus *bus;
+
 	ioport_resource.start	= 0xA0000000;
 	ioport_resource.end	= 0xDFFFFFFF;
 	iomem_resource.start	= 0xA0000000;
 	iomem_resource.end	= 0xDFFFFFFF;
+
+	if (insert_resource(&iomem_resource, &pci_iomem_resource) < 0)
+		panic("Unable to insert PCI IOMEM resource\n");
+	if (insert_resource(&ioport_resource, &pci_ioport_resource) < 0)
+		panic("Unable to insert PCI IOPORT resource\n");
 
 	if (!pci_probe)
 		return 0;
@@ -417,6 +492,21 @@ static int __init pcibios_init(void)
 #if 0
 	pcibios_resource_survey();
 #endif
+	io_offset = pci_ioport_resource.start -
+	    (pci_ioport_resource.start & 0x00ffffff);
+	mem_offset = pci_iomem_resource.start -
+	    ((pci_iomem_resource.start & 0x03ffffff) | MEM_PAGING_REG);
+
+	pci_add_resource_offset(&resources, &pci_ioport_resource, io_offset);
+	pci_add_resource_offset(&resources, &pci_iomem_resource, mem_offset);
+	bus = pci_scan_root_bus(NULL, 0, &pci_direct_ampci, NULL, &resources);
+	if (!bus)
+		return 0;
+
+	pcibios_irq_init();
+	pcibios_fixup_irqs();
+	pcibios_resource_survey();
+	pci_bus_add_devices(bus);
 	return 0;
 }
 
@@ -441,6 +531,7 @@ int pcibios_enable_device(struct pci_dev *dev, int mask)
 	int err;
 
 	err = pcibios_enable_resources(dev, mask);
+	err = pci_enable_resources(dev, mask);
 	if (err == 0)
 		pcibios_enable_irq(dev);
 	return err;
@@ -455,6 +546,7 @@ static void __init unit_disable_pcnet(struct pci_bus *bus, struct pci_ops *o)
 
 	bus->number = 0;
 
+	o->read (bus, PCI_DEVFN(2, 0), PCI_VENDOR_ID,		4, &x);
 	o->read (bus, PCI_DEVFN(2, 0), PCI_COMMAND,		2, &x);
 	x |= PCI_COMMAND_MASTER |
 		PCI_COMMAND_IO | PCI_COMMAND_MEMORY |
@@ -492,6 +584,7 @@ asmlinkage void __init unit_pci_init(void)
 	u32 x;
 
 	set_intr_level(XIRQ1, GxICR_LEVEL_3);
+	set_intr_level(XIRQ1, NUM2GxICR_LEVEL(CONFIG_PCI_IRQ_LEVEL));
 
 	memset(&bus, 0, sizeof(bus));
 

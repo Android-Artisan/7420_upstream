@@ -28,6 +28,13 @@
  */
 
 
+ * Copyright 2007-2009 Analog Devices Inc.
+ * Licensed under the GPL-2 or later.
+ */
+
+
+#ifndef _MACH_GPIO_H_
+#define _MACH_GPIO_H_
 
 #define GPIO_PA0	0
 #define GPIO_PA1	1
@@ -206,6 +213,26 @@ struct gpio_port_t {
 	unsigned short port_dir_clear;
 	unsigned short dummy6;
 	unsigned short port_inen;
+#define BFIN_GPIO_PINT 1
+#define NR_PINT_SYS_IRQS        4
+#define NR_PINTS                160
+
+#ifndef __ASSEMBLY__
+
+struct gpio_port_t {
+	unsigned short port_fer;
+	unsigned short dummy1;
+	unsigned short data;
+	unsigned short dummy2;
+	unsigned short data_set;
+	unsigned short dummy3;
+	unsigned short data_clear;
+	unsigned short dummy4;
+	unsigned short dir_set;
+	unsigned short dummy5;
+	unsigned short dir_clear;
+	unsigned short dummy6;
+	unsigned short inen;
 	unsigned short dummy7;
 	unsigned int port_mux;
 };
@@ -217,3 +244,17 @@ struct gpio_port_s {
 	unsigned short inen;
 	unsigned int mux;
 };
+#endif
+
+#include <mach-common/ports-a.h>
+#include <mach-common/ports-b.h>
+#include <mach-common/ports-c.h>
+#include <mach-common/ports-d.h>
+#include <mach-common/ports-e.h>
+#include <mach-common/ports-f.h>
+#include <mach-common/ports-g.h>
+#include <mach-common/ports-h.h>
+#include <mach-common/ports-i.h>
+#include <mach-common/ports-j.h>
+
+#endif /* _MACH_GPIO_H_ */

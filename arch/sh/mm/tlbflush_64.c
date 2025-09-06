@@ -4,6 +4,7 @@
  * Copyright (C) 2000, 2001  Paolo Alberelli
  * Copyright (C) 2003  Richard Curnow (/proc/tlb, bug fixes)
  * Copyright (C) 2003  Paul Mundt
+ * Copyright (C) 2003 - 2012 Paul Mundt
  *
  * This file is subject to the terms and conditions of the GNU General Public
  * License.  See the file "COPYING" in the main directory of this archive
@@ -22,6 +23,8 @@
 #include <linux/smp.h>
 #include <linux/interrupt.h>
 #include <asm/system.h>
+#include <linux/perf_event.h>
+#include <linux/interrupt.h>
 #include <asm/io.h>
 #include <asm/tlb.h>
 #include <asm/uaccess.h>
@@ -345,6 +348,7 @@ void local_flush_tlb_one(unsigned long asid, unsigned long page)
 	 * Sign-extend based on neff.
 	 */
 	lpage = (page & NEFF_SIGN) ? (page | NEFF_MASK) : page;
+	lpage = neff_sign_extend(page);
 	match = (asid << PTEH_ASID_SHIFT) | PTEH_VALID;
 	match |= lpage;
 
@@ -472,4 +476,9 @@ void local_flush_tlb_kernel_range(unsigned long start, unsigned long end)
 {
         /* FIXME: Optimize this later.. */
         flush_tlb_all();
+}
+
+void __flush_tlb_global(void)
+{
+	flush_tlb_all();
 }

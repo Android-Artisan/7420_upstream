@@ -28,6 +28,7 @@
 !     bytes memory chunk to b copied, the rest of the word can be read
 !     without side effects.
 !     This could be easily changed by increasing the minumum size of
+!     This could be easily changed by increasing the minimum size of
 !     a fast memcpy and the amount subtracted from r7 before L_2l_loop be 2,
 !     however, this would cost a few extra cyles on average.
 !     For SHmedia, the assumption is that any quadword can be read in its

@@ -2,6 +2,7 @@
  *
  *   Copyright (C) 1991, 1992 Linus Torvalds
  *   Copyright 2007 rPath, Inc. - All Rights Reserved
+ *   Copyright 2009 Intel Corporation; author H. Peter Anvin
  *
  *   This file is part of the Linux kernel, and is made available under
  *   the terms of the GNU General Public License version 2.
@@ -15,7 +16,7 @@
 #ifndef BOOT_BOOT_H
 #define BOOT_BOOT_H
 
-#define STACK_SIZE	512	/* Minimum number of bytes for stack */
+#define STACK_SIZE	1024	/* Minimum number of bytes for stack */
 
 #ifndef __ASSEMBLY__
 
@@ -26,6 +27,10 @@
 #include <asm/setup.h>
 #include "bitops.h"
 #include <asm/cpufeature.h>
+#include <asm/setup.h>
+#include "bitops.h"
+#include "ctype.h"
+#include "cpuflags.h"
 
 /* Useful macros */
 #define BUILD_BUG_ON(condition) ((void)sizeof(char[1 - 2*!!(condition)]))
@@ -34,6 +39,8 @@
 
 extern struct setup_header hdr;
 extern struct boot_params boot_params;
+
+#define cpu_relax()	asm volatile("rep; nop")
 
 /* Basic port I/O */
 static inline void outb(u8 v, u16 port)
@@ -63,6 +70,7 @@ static inline void outl(u32 v, u16 port)
 	asm volatile("outl %0,%1" : : "a" (v), "dN" (port));
 }
 static inline u32 inl(u32 port)
+static inline u32 inl(u16 port)
 {
 	u32 v;
 	asm volatile("inl %1,%0" : "=a" (v) : "dN" (port));
@@ -110,66 +118,78 @@ typedef unsigned int addr_t;
 
 static inline u8 rdfs8(addr_t addr)
 {
+	u8 *ptr = (u8 *)absolute_pointer(addr);
 	u8 v;
-	asm volatile("movb %%fs:%1,%0" : "=q" (v) : "m" (*(u8 *)addr));
+	asm volatile("movb %%fs:%1,%0" : "=q" (v) : "m" (*ptr));
 	return v;
 }
 static inline u16 rdfs16(addr_t addr)
 {
+	u16 *ptr = (u16 *)absolute_pointer(addr);
 	u16 v;
-	asm volatile("movw %%fs:%1,%0" : "=r" (v) : "m" (*(u16 *)addr));
+	asm volatile("movw %%fs:%1,%0" : "=r" (v) : "m" (*ptr));
 	return v;
 }
 static inline u32 rdfs32(addr_t addr)
 {
+	u32 *ptr = (u32 *)absolute_pointer(addr);
 	u32 v;
-	asm volatile("movl %%fs:%1,%0" : "=r" (v) : "m" (*(u32 *)addr));
+	asm volatile("movl %%fs:%1,%0" : "=r" (v) : "m" (*ptr));
 	return v;
 }
 
 static inline void wrfs8(u8 v, addr_t addr)
 {
-	asm volatile("movb %1,%%fs:%0" : "+m" (*(u8 *)addr) : "qi" (v));
+	u8 *ptr = (u8 *)absolute_pointer(addr);
+	asm volatile("movb %1,%%fs:%0" : "+m" (*ptr) : "qi" (v));
 }
 static inline void wrfs16(u16 v, addr_t addr)
 {
-	asm volatile("movw %1,%%fs:%0" : "+m" (*(u16 *)addr) : "ri" (v));
+	u16 *ptr = (u16 *)absolute_pointer(addr);
+	asm volatile("movw %1,%%fs:%0" : "+m" (*ptr) : "ri" (v));
 }
 static inline void wrfs32(u32 v, addr_t addr)
 {
-	asm volatile("movl %1,%%fs:%0" : "+m" (*(u32 *)addr) : "ri" (v));
+	u32 *ptr = (u32 *)absolute_pointer(addr);
+	asm volatile("movl %1,%%fs:%0" : "+m" (*ptr) : "ri" (v));
 }
 
 static inline u8 rdgs8(addr_t addr)
 {
+	u8 *ptr = (u8 *)absolute_pointer(addr);
 	u8 v;
-	asm volatile("movb %%gs:%1,%0" : "=q" (v) : "m" (*(u8 *)addr));
+	asm volatile("movb %%gs:%1,%0" : "=q" (v) : "m" (*ptr));
 	return v;
 }
 static inline u16 rdgs16(addr_t addr)
 {
+	u16 *ptr = (u16 *)absolute_pointer(addr);
 	u16 v;
-	asm volatile("movw %%gs:%1,%0" : "=r" (v) : "m" (*(u16 *)addr));
+	asm volatile("movw %%gs:%1,%0" : "=r" (v) : "m" (*ptr));
 	return v;
 }
 static inline u32 rdgs32(addr_t addr)
 {
+	u32 *ptr = (u32 *)absolute_pointer(addr);
 	u32 v;
-	asm volatile("movl %%gs:%1,%0" : "=r" (v) : "m" (*(u32 *)addr));
+	asm volatile("movl %%gs:%1,%0" : "=r" (v) : "m" (*ptr));
 	return v;
 }
 
 static inline void wrgs8(u8 v, addr_t addr)
 {
-	asm volatile("movb %1,%%gs:%0" : "+m" (*(u8 *)addr) : "qi" (v));
+	u8 *ptr = (u8 *)absolute_pointer(addr);
+	asm volatile("movb %1,%%gs:%0" : "+m" (*ptr) : "qi" (v));
 }
 static inline void wrgs16(u16 v, addr_t addr)
 {
-	asm volatile("movw %1,%%gs:%0" : "+m" (*(u16 *)addr) : "ri" (v));
+	u16 *ptr = (u16 *)absolute_pointer(addr);
+	asm volatile("movw %1,%%gs:%0" : "+m" (*ptr) : "ri" (v));
 }
 static inline void wrgs32(u32 v, addr_t addr)
 {
-	asm volatile("movl %1,%%gs:%0" : "+m" (*(u32 *)addr) : "ri" (v));
+	u32 *ptr = (u32 *)absolute_pointer(addr);
+	asm volatile("movl %1,%%gs:%0" : "+m" (*ptr) : "ri" (v));
 }
 
 /* Note: these only return true/false, not a signed return value! */
@@ -255,6 +275,80 @@ extern struct cpu_features cpu;
 int check_cpu(int *cpu_level_ptr, int *req_level_ptr, u32 **err_flags_ptr);
 int validate_cpu(void);
 
+/* bioscall.c */
+struct biosregs {
+	union {
+		struct {
+			u32 edi;
+			u32 esi;
+			u32 ebp;
+			u32 _esp;
+			u32 ebx;
+			u32 edx;
+			u32 ecx;
+			u32 eax;
+			u32 _fsgs;
+			u32 _dses;
+			u32 eflags;
+		};
+		struct {
+			u16 di, hdi;
+			u16 si, hsi;
+			u16 bp, hbp;
+			u16 _sp, _hsp;
+			u16 bx, hbx;
+			u16 dx, hdx;
+			u16 cx, hcx;
+			u16 ax, hax;
+			u16 gs, fs;
+			u16 es, ds;
+			u16 flags, hflags;
+		};
+		struct {
+			u8 dil, dih, edi2, edi3;
+			u8 sil, sih, esi2, esi3;
+			u8 bpl, bph, ebp2, ebp3;
+			u8 _spl, _sph, _esp2, _esp3;
+			u8 bl, bh, ebx2, ebx3;
+			u8 dl, dh, edx2, edx3;
+			u8 cl, ch, ecx2, ecx3;
+			u8 al, ah, eax2, eax3;
+		};
+	};
+};
+void intcall(u8 int_no, const struct biosregs *ireg, struct biosregs *oreg);
+
+/* cmdline.c */
+int __cmdline_find_option(unsigned long cmdline_ptr, const char *option, char *buffer, int bufsize);
+int __cmdline_find_option_bool(unsigned long cmdline_ptr, const char *option);
+static inline int cmdline_find_option(const char *option, char *buffer, int bufsize)
+{
+	unsigned long cmd_line_ptr = boot_params.hdr.cmd_line_ptr;
+
+	if (cmd_line_ptr >= 0x100000)
+		return -1;      /* inaccessible */
+
+	return __cmdline_find_option(cmd_line_ptr, option, buffer, bufsize);
+}
+
+static inline int cmdline_find_option_bool(const char *option)
+{
+	unsigned long cmd_line_ptr = boot_params.hdr.cmd_line_ptr;
+
+	if (cmd_line_ptr >= 0x100000)
+		return -1;      /* inaccessible */
+
+	return __cmdline_find_option_bool(cmd_line_ptr, option);
+}
+
+/* cpu.c, cpucheck.c */
+int check_cpu(int *cpu_level_ptr, int *req_level_ptr, u32 **err_flags_ptr);
+int validate_cpu(void);
+
+/* early_serial_console.c */
+extern int early_serial_base;
+void console_init(void);
+
 /* edd.c */
 void query_edd(void);
 
@@ -283,6 +377,16 @@ int printf(const char *fmt, ...);
 int strcmp(const char *str1, const char *str2);
 size_t strnlen(const char *s, size_t maxlen);
 unsigned int atou(const char *s);
+/* regs.c */
+void initregs(struct biosregs *regs);
+
+/* string.c */
+int strcmp(const char *str1, const char *str2);
+int strncmp(const char *cs, const char *ct, size_t count);
+size_t strnlen(const char *s, size_t maxlen);
+unsigned int atou(const char *s);
+unsigned long long simple_strtoull(const char *cp, char **endp, unsigned int base);
+size_t strlen(const char *s);
 
 /* tty.c */
 void puts(const char *);

@@ -27,6 +27,11 @@
  * along with this program; if not, see the file COPYING, or write
  * to the Free Software Foundation, Inc.,
  * 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+/* Blackfin KGDB header
+ *
+ * Copyright 2005-2009 Analog Devices Inc.
+ *
+ * Licensed under the GPL-2 or later.
  */
 
 #ifndef __ASM_BLACKFIN_KGDB_H__
@@ -48,6 +53,18 @@
  *  the register image that Linux produces at interrupt time.
  *  
  *  Linux's register image is defined by struct pt_regs in ptrace.h.
+/*
+ * BUFMAX defines the maximum number of characters in inbound/outbound buffers.
+ * At least NUMREGBYTES*2 are needed for register packets.
+ * Longer buffer is needed to list all threads.
+ */
+#define BUFMAX 2048
+
+/*
+ * Note that this register image is different from
+ * the register image that Linux produces at interrupt time.
+ *
+ * Linux's register image is defined by struct pt_regs in ptrace.h.
  */
 enum regnames {
   /* Core Registers */
@@ -105,6 +122,7 @@ enum regnames {
   BFIN_RETN,
   BFIN_RETE,
   
+
   /* Pseudo Registers */
   BFIN_PC,
   BFIN_CC,
@@ -112,6 +130,7 @@ enum regnames {
   BFIN_EXTRA2,		/* Address of .data section.  */
   BFIN_EXTRA3,		/* Address of .bss section.  */
   BFIN_FDPIC_EXEC, 
+  BFIN_FDPIC_EXEC,
   BFIN_FDPIC_INTERP,
 
   /* MMRs */
@@ -127,6 +146,22 @@ enum regnames {
 #define BREAKPOINT() asm("   EXCPT 2;");
 #define BREAK_INSTR_SIZE       2
 #define HW_BREAKPOINT_NUM		6
+static inline void arch_kgdb_breakpoint(void)
+{
+	asm("EXCPT 2;");
+}
+#define BREAK_INSTR_SIZE	2
+#ifdef CONFIG_SMP
+# define CACHE_FLUSH_IS_SAFE	0
+#else
+# define CACHE_FLUSH_IS_SAFE	1
+#endif
+#define GDB_ADJUSTS_BREAK_OFFSET
+#define GDB_SKIP_HW_WATCH_TEST
+#define HW_INST_WATCHPOINT_NUM	6
+#define HW_WATCHPOINT_NUM	8
+#define TYPE_INST_WATCHPOINT	0
+#define TYPE_DATA_WATCHPOINT	1
 
 /* Instruction watchpoint address control register bits mask */
 #define WPPWR		0x1
@@ -167,6 +202,11 @@ enum regnames {
 #define WPDACC0		0x300
 #define WPDSRC1		0xc00
 #define WPDACC1		0x3000
+
+#define WPDSRC0		0xc0
+#define WPDACC0_OFFSET	8
+#define WPDSRC1		0xc00
+#define WPDACC1_OFFSET	12
 
 /* Watchpoint status register bits mask */
 #define STATIA0		0x1

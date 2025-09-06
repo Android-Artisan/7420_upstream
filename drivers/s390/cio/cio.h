@@ -45,6 +45,19 @@ struct pmcw {
 				/*  ... in an operand exception.       */
 } __attribute__ ((packed));
 
+/* Target SCHIB configuration. */
+struct schib_config {
+	u64 mba;
+	u32 intparm;
+	u16 mbi;
+	u32 isc:3;
+	u32 ena:1;
+	u32 mme:2;
+	u32 mp:1;
+	u32 csense:1;
+	u32 mbfc:1;
+} __attribute__ ((packed));
+
 /*
  * subchannel information block
  */
@@ -54,6 +67,16 @@ struct schib {
 	__u64 mba;               /* measurement block address */
 	__u8 mda[4];		 /* model dependent area */
 } __attribute__ ((packed,aligned(4)));
+
+/*
+ * When rescheduled, todo's with higher values will overwrite those
+ * with lower values.
+ */
+enum sch_todo {
+	SCH_TODO_NOTHING,
+	SCH_TODO_EVAL,
+	SCH_TODO_UNREG,
+};
 
 /* subchannel data structure used by I/O subroutines */
 struct subchannel {
@@ -85,6 +108,12 @@ struct subchannel {
 } __attribute__ ((aligned(8)));
 
 #define IO_INTERRUPT_TYPE	   0 /* I/O interrupt type */
+	enum sch_todo todo;
+	struct work_struct todo_work;
+	struct schib_config config;
+} __attribute__ ((aligned(8)));
+
+DECLARE_PER_CPU_ALIGNED(struct irb, cio_irb);
 
 #define to_subchannel(n) container_of(n, struct subchannel, dev)
 
@@ -101,6 +130,8 @@ extern int cio_cancel (struct subchannel *);
 extern int cio_set_options (struct subchannel *, int);
 extern int cio_get_options (struct subchannel *);
 extern int cio_modify (struct subchannel *);
+extern int cio_update_schib(struct subchannel *sch);
+extern int cio_commit_config(struct subchannel *sch);
 
 int cio_tm_start_key(struct subchannel *sch, struct tcw *tcw, u8 lpm, u8 key);
 int cio_tm_intrg(struct subchannel *sch);
@@ -122,6 +153,15 @@ extern void *cio_get_console_priv(void);
 #define cio_get_console_subchannel() NULL
 #define cio_get_console_lock() NULL
 #define cio_get_console_priv() NULL
+/* Use with care. */
+#ifdef CONFIG_CCW_CONSOLE
+extern struct subchannel *cio_probe_console(void);
+extern int cio_is_console(struct subchannel_id);
+extern void cio_register_early_subchannels(void);
+extern void cio_tsch(struct subchannel *sch);
+#else
+#define cio_is_console(schid) 0
+static inline void cio_register_early_subchannels(void) {}
 #endif
 
 #endif

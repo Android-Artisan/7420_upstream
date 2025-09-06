@@ -9,6 +9,7 @@
  * Authors:	Thomas Graf <tgraf@suug.ch>
  */
 
+#include <linux/slab.h>
 #include <linux/module.h>
 #include <linux/types.h>
 #include <linux/kernel.h>
@@ -20,6 +21,7 @@
 
 struct text_match
 {
+struct text_match {
 	u16			from_offset;
 	u16			to_offset;
 	u8			from_layer;
@@ -46,6 +48,10 @@ static int em_text_match(struct sk_buff *skb, struct tcf_ematch *m,
 }
 
 static int em_text_change(struct tcf_proto *tp, void *data, int len,
+	return skb_find_text(skb, from, to, tm->config) != UINT_MAX;
+}
+
+static int em_text_change(struct net *net, void *data, int len,
 			  struct tcf_ematch *m)
 {
 	struct text_match *tm;
@@ -103,6 +109,12 @@ retry:
 static void em_text_destroy(struct tcf_proto *tp, struct tcf_ematch *m)
 {
 	textsearch_destroy(EM_TEXT_PRIV(m)->config);
+static void em_text_destroy(struct tcf_ematch *m)
+{
+	if (EM_TEXT_PRIV(m) && EM_TEXT_PRIV(m)->config) {
+		textsearch_destroy(EM_TEXT_PRIV(m)->config);
+		kfree(EM_TEXT_PRIV(m));
+	}
 }
 
 static int em_text_dump(struct sk_buff *skb, struct tcf_ematch *m)

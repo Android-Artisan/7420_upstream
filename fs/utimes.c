@@ -25,6 +25,7 @@
  * Else, update from *times, must be owner or super user.
  */
 asmlinkage long sys_utime(char __user *filename, struct utimbuf __user *times)
+SYSCALL_DEFINE2(utime, char __user *, filename, struct utimbuf __user *, times)
 {
 	struct timespec tv[2];
 
@@ -53,6 +54,7 @@ static int utimes_common(struct path *path, struct timespec *times)
 	int error;
 	struct iattr newattrs;
 	struct inode *inode = path->dentry->d_inode;
+	struct inode *delegated_inode = NULL;
 
 	error = mnt_want_write(path->mnt);
 	if (error)
@@ -96,16 +98,26 @@ static int utimes_common(struct path *path, struct timespec *times)
 			goto mnt_drop_write_and_out;
 
 		if (!is_owner_or_cap(inode)) {
+		if (!inode_owner_or_capable(inode)) {
 			error = inode_permission(inode, MAY_WRITE);
 			if (error)
 				goto mnt_drop_write_and_out;
 		}
+		newattrs.ia_valid |= ATTR_TOUCH;
 	}
 	mutex_lock(&inode->i_mutex);
 	error = notify_change(path->dentry, &newattrs);
 	mutex_unlock(&inode->i_mutex);
+retry_deleg:
+	mutex_lock(&inode->i_mutex);
+	error = notify_change(path->dentry, &newattrs, &delegated_inode);
+	mutex_unlock(&inode->i_mutex);
+	if (delegated_inode) {
+		error = break_deleg_wait(&delegated_inode);
+		if (!error)
+			goto retry_deleg;
+	}
 
-mnt_drop_write_and_out:
 	mnt_drop_write(path->mnt);
 out:
 	return error;
@@ -127,6 +139,8 @@ out:
  * Else, update from *times, must be owner or super user.
  */
 long do_utimes(int dfd, char __user *filename, struct timespec *times, int flags)
+long do_utimes(int dfd, const char __user *filename, struct timespec *times,
+	       int flags)
 {
 	int error = -EINVAL;
 
@@ -140,6 +154,7 @@ long do_utimes(int dfd, char __user *filename, struct timespec *times, int flags
 
 	if (filename == NULL && dfd != AT_FDCWD) {
 		struct file *file;
+		struct fd f;
 
 		if (flags & AT_SYMLINK_NOFOLLOW)
 			goto out;
@@ -151,6 +166,13 @@ long do_utimes(int dfd, char __user *filename, struct timespec *times, int flags
 
 		error = utimes_common(&file->f_path, times);
 		fput(file);
+		f = fdget(dfd);
+		error = -EBADF;
+		if (!f.file)
+			goto out;
+
+		error = utimes_common(&f.file->f_path, times);
+		fdput(f);
 	} else {
 		struct path path;
 		int lookup_flags = 0;
@@ -158,12 +180,17 @@ long do_utimes(int dfd, char __user *filename, struct timespec *times, int flags
 		if (!(flags & AT_SYMLINK_NOFOLLOW))
 			lookup_flags |= LOOKUP_FOLLOW;
 
+retry:
 		error = user_path_at(dfd, filename, lookup_flags, &path);
 		if (error)
 			goto out;
 
 		error = utimes_common(&path, times);
 		path_put(&path);
+		if (retry_estale(error, lookup_flags)) {
+			lookup_flags |= LOOKUP_REVAL;
+			goto retry;
+		}
 	}
 
 out:
@@ -171,6 +198,8 @@ out:
 }
 
 asmlinkage long sys_utimensat(int dfd, char __user *filename, struct timespec __user *utimes, int flags)
+SYSCALL_DEFINE4(utimensat, int, dfd, const char __user *, filename,
+		struct timespec __user *, utimes, int, flags)
 {
 	struct timespec tstimes[2];
 
@@ -188,6 +217,8 @@ asmlinkage long sys_utimensat(int dfd, char __user *filename, struct timespec __
 }
 
 asmlinkage long sys_futimesat(int dfd, char __user *filename, struct timeval __user *utimes)
+SYSCALL_DEFINE3(futimesat, int, dfd, const char __user *, filename,
+		struct timeval __user *, utimes)
 {
 	struct timeval times[2];
 	struct timespec tstimes[2];
@@ -215,6 +246,8 @@ asmlinkage long sys_futimesat(int dfd, char __user *filename, struct timeval __u
 }
 
 asmlinkage long sys_utimes(char __user *filename, struct timeval __user *utimes)
+SYSCALL_DEFINE2(utimes, char __user *, filename,
+		struct timeval __user *, utimes)
 {
 	return sys_futimesat(AT_FDCWD, filename, utimes);
 }

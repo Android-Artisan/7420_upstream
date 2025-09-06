@@ -18,3 +18,8 @@ obj-$(CONFIG_SND_EMU10K1) += snd-util-mem.o
 obj-$(CONFIG_SND_TRIDENT) += snd-util-mem.o
 obj-$(call sequencer,$(CONFIG_SND_SBAWE)) += snd-util-mem.o
 obj-$(call sequencer,$(CONFIG_SND)) += emux/
+# Toplevel Module Dependency
+obj-$(CONFIG_SND_EMU10K1) += snd-util-mem.o
+obj-$(CONFIG_SND_TRIDENT) += snd-util-mem.o
+obj-$(CONFIG_SND_SBAWE_SEQ) += snd-util-mem.o
+obj-$(CONFIG_SND_SEQUENCER) += emux/

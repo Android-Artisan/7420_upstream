@@ -4,6 +4,8 @@
 #include <asm/errno.h>
 
 #ifdef __KERNEL__
+#include <uapi/linux/errno.h>
+
 
 /*
  * These should never be seen by user programs.  To return one of ERESTART*
@@ -16,6 +18,8 @@
 #define ERESTARTNOHAND	514	/* restart if no handler.. */
 #define ENOIOCTLCMD	515	/* No ioctl command */
 #define ERESTART_RESTARTBLOCK 516 /* restart by calling sys_restart_syscall */
+#define EPROBE_DEFER	517	/* Driver requests probe retry */
+#define EOPENSTALE	518	/* open found a stale dentry */
 
 /* Defined for the NFSv3 protocol */
 #define EBADHANDLE	521	/* Illegal NFS file handle */

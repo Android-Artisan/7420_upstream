@@ -23,6 +23,7 @@
 #define ALI_IRCC_H
 
 #include <linux/time.h>
+#include <linux/ktime.h>
 
 #include <linux/spinlock.h>
 #include <linux/pm.h>
@@ -212,6 +213,7 @@ struct ali_ircc_cb {
 		
 	struct timeval stamp;
 	struct timeval now;
+	ktime_t stamp;
 
 	spinlock_t lock;           /* For serializing operations */
 	

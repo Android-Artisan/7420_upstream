@@ -30,6 +30,13 @@
 #include <linux/kprobes.h>
 #include <linux/kdebug.h>
 
+#include <linux/perf_event.h>
+#include <linux/ratelimit.h>
+#include <linux/context_tracking.h>
+#include <linux/hugetlb.h>
+#include <linux/uaccess.h>
+
+#include <asm/firmware.h>
 #include <asm/page.h>
 #include <asm/pgtable.h>
 #include <asm/mmu.h>
@@ -39,6 +46,11 @@
 #include <asm/tlbflush.h>
 #include <asm/siginfo.h>
 
+#include <asm/tlbflush.h>
+#include <asm/siginfo.h>
+#include <asm/debug.h>
+
+#include "icswx.h"
 
 #ifdef CONFIG_KPROBES
 static inline int notify_page_fault(struct pt_regs *regs)
@@ -99,6 +111,95 @@ static int store_updates_sp(struct pt_regs *regs)
 	}
 	return 0;
 }
+/*
+ * do_page_fault error handling helpers
+ */
+
+#define MM_FAULT_RETURN		0
+#define MM_FAULT_CONTINUE	-1
+#define MM_FAULT_ERR(sig)	(sig)
+
+static int do_sigbus(struct pt_regs *regs, unsigned long address,
+		     unsigned int fault)
+{
+	siginfo_t info;
+	unsigned int lsb = 0;
+
+	up_read(&current->mm->mmap_sem);
+
+	if (!user_mode(regs))
+		return MM_FAULT_ERR(SIGBUS);
+
+	current->thread.trap_nr = BUS_ADRERR;
+	info.si_signo = SIGBUS;
+	info.si_errno = 0;
+	info.si_code = BUS_ADRERR;
+	info.si_addr = (void __user *)address;
+#ifdef CONFIG_MEMORY_FAILURE
+	if (fault & (VM_FAULT_HWPOISON|VM_FAULT_HWPOISON_LARGE)) {
+		pr_err("MCE: Killing %s:%d due to hardware memory corruption fault at %lx\n",
+			current->comm, current->pid, address);
+		info.si_code = BUS_MCEERR_AR;
+	}
+
+	if (fault & VM_FAULT_HWPOISON_LARGE)
+		lsb = hstate_index_to_shift(VM_FAULT_GET_HINDEX(fault));
+	if (fault & VM_FAULT_HWPOISON)
+		lsb = PAGE_SHIFT;
+#endif
+	info.si_addr_lsb = lsb;
+	force_sig_info(SIGBUS, &info, current);
+	return MM_FAULT_RETURN;
+}
+
+static int mm_fault_error(struct pt_regs *regs, unsigned long addr, int fault)
+{
+	/*
+	 * Pagefault was interrupted by SIGKILL. We have no reason to
+	 * continue the pagefault.
+	 */
+	if (fatal_signal_pending(current)) {
+		/*
+		 * If we have retry set, the mmap semaphore will have
+		 * alrady been released in __lock_page_or_retry(). Else
+		 * we release it now.
+		 */
+		if (!(fault & VM_FAULT_RETRY))
+			up_read(&current->mm->mmap_sem);
+		/* Coming from kernel, we need to deal with uaccess fixups */
+		if (user_mode(regs))
+			return MM_FAULT_RETURN;
+		return MM_FAULT_ERR(SIGKILL);
+	}
+
+	/* No fault: be happy */
+	if (!(fault & VM_FAULT_ERROR))
+		return MM_FAULT_CONTINUE;
+
+	/* Out of memory */
+	if (fault & VM_FAULT_OOM) {
+		up_read(&current->mm->mmap_sem);
+
+		/*
+		 * We ran out of memory, or some other thing happened to us that
+		 * made us unable to handle the page fault gracefully.
+		 */
+		if (!user_mode(regs))
+			return MM_FAULT_ERR(SIGKILL);
+		pagefault_out_of_memory();
+		return MM_FAULT_RETURN;
+	}
+
+	if (fault & (VM_FAULT_SIGBUS|VM_FAULT_HWPOISON|VM_FAULT_HWPOISON_LARGE))
+		return do_sigbus(regs, addr, fault);
+
+	/* We don't understand the fault code, this is fatal */
+	BUG();
+	return MM_FAULT_CONTINUE;
+}
+
+// This comes from 64-bit struct rt_sigframe + __SIGNAL_FRAMESIZE
+#define SIGFRAME_MAX_SIZE	(4096 + 128)
 
 /*
  * For 600- and 800-family processors, the error_code parameter is DSISR
@@ -123,6 +224,16 @@ int __kprobes do_page_fault(struct pt_regs *regs, unsigned long address,
 	int is_write = 0, ret;
 	int trap = TRAP(regs);
  	int is_exec = trap == 0x400;
+	enum ctx_state prev_state = exception_enter();
+	struct vm_area_struct * vma;
+	struct mm_struct *mm = current->mm;
+	unsigned int flags = FAULT_FLAG_ALLOW_RETRY | FAULT_FLAG_KILLABLE;
+	int code = SEGV_MAPERR;
+	int is_write = 0;
+	int trap = TRAP(regs);
+ 	int is_exec = trap == 0x400;
+	int fault;
+	int rc = 0, store_update_sp = 0;
 
 #if !(defined(CONFIG_4xx) || defined(CONFIG_BOOKE))
 	/*
@@ -164,10 +275,71 @@ int __kprobes do_page_fault(struct pt_regs *regs, unsigned long address,
 		   as is current->mm == NULL. */
 		printk(KERN_EMERG "Page fault in user mode with "
 		       "in_atomic() = %d mm = %p\n", in_atomic(), mm);
+#ifdef CONFIG_PPC_ICSWX
+	/*
+	 * we need to do this early because this "data storage
+	 * interrupt" does not update the DAR/DEAR so we don't want to
+	 * look at it
+	 */
+	if (error_code & ICSWX_DSI_UCT) {
+		rc = acop_handle_fault(regs, address, error_code);
+		if (rc)
+			goto bail;
+	}
+#endif /* CONFIG_PPC_ICSWX */
+
+	if (notify_page_fault(regs))
+		goto bail;
+
+	if (unlikely(debugger_fault_handler(regs)))
+		goto bail;
+
+	/* On a kernel SLB miss we can only check for a valid exception entry */
+	if (!user_mode(regs) && (address >= TASK_SIZE)) {
+		rc = SIGSEGV;
+		goto bail;
+	}
+
+#if !(defined(CONFIG_4xx) || defined(CONFIG_BOOKE) || \
+			     defined(CONFIG_PPC_BOOK3S_64))
+  	if (error_code & DSISR_DABRMATCH) {
+		/* breakpoint match */
+		do_break(regs, address, error_code);
+		goto bail;
+	}
+#endif
+
+	/* We restore the interrupt state now */
+	if (!arch_irq_disabled_regs(regs))
+		local_irq_enable();
+
+	if (faulthandler_disabled() || mm == NULL) {
+		if (!user_mode(regs)) {
+			rc = SIGSEGV;
+			goto bail;
+		}
+		/* faulthandler_disabled() in user mode is really bad,
+		   as is current->mm == NULL. */
+		printk(KERN_EMERG "Page fault in user mode with "
+		       "faulthandler_disabled() = %d mm = %p\n",
+		       faulthandler_disabled(), mm);
 		printk(KERN_EMERG "NIP = %lx  MSR = %lx\n",
 		       regs->nip, regs->msr);
 		die("Weird page fault", regs, SIGSEGV);
 	}
+
+	perf_sw_event(PERF_COUNT_SW_PAGE_FAULTS, 1, regs, address);
+
+	/*
+	 * We want to do this outside mmap_sem, because reading code around nip
+	 * can result in fault, which will cause a deadlock when called with
+	 * mmap_sem held
+	 */
+	if (!is_exec && user_mode(regs))
+		store_update_sp = store_updates_sp(regs);
+
+	if (user_mode(regs))
+		flags |= FAULT_FLAG_USER;
 
 	/* When running in the kernel we expect faults to occur only to
 	 * addresses in user space.  All other faults represent errors in the
@@ -189,6 +361,15 @@ int __kprobes do_page_fault(struct pt_regs *regs, unsigned long address,
 			goto bad_area_nosemaphore;
 
 		down_read(&mm->mmap_sem);
+retry:
+		down_read(&mm->mmap_sem);
+	} else {
+		/*
+		 * The above down_read_trylock() might have succeeded in
+		 * which case we'll have missed the might_sleep() from
+		 * down_read():
+		 */
+		might_sleep();
 	}
 
 	vma = find_vma(mm, address);
@@ -202,7 +383,7 @@ int __kprobes do_page_fault(struct pt_regs *regs, unsigned long address,
 	/*
 	 * N.B. The POWER/Open ABI allows programs to access up to
 	 * 288 bytes below the stack pointer.
-	 * The kernel signal delivery code writes up to about 1.5kB
+	 * The kernel signal delivery code writes up to about 4kB
 	 * below the stack pointer (r1) before decrementing it.
 	 * The exec code can write slightly over 640kB to the stack
 	 * before setting the user r1.  Thus we allow the stack to
@@ -228,6 +409,8 @@ int __kprobes do_page_fault(struct pt_regs *regs, unsigned long address,
 		 */
 		if (address + 2048 < uregs->gpr[1]
 		    && (!user_mode(regs) || !store_updates_sp(regs)))
+		if (address + 2048 < uregs->gpr[1] && !store_update_sp)
+		if (address + SIGFRAME_MAX_SIZE < uregs->gpr[1] && !store_update_sp)
 			goto bad_area;
 	}
 	if (expand_stack(vma, address))
@@ -259,6 +442,15 @@ good_area:
 		/*
 		 * Allow execution from readable areas if the MMU does not
 		 * provide separate controls over reading and executing.
+		/*
+		 * Allow execution from readable areas if the MMU does not
+		 * provide separate controls over reading and executing.
+		 *
+		 * Note: That code used to not be enabled for 4xx/BookE.
+		 * It is now as I/D cache coherency for these is done at
+		 * set_pte_at() time and I see no reason why the test
+		 * below wouldn't be valid on those processors. This -may-
+		 * break programs compiled with a really old ABI though.
 		 */
 		if (!(vma->vm_flags & VM_EXEC) &&
 		    (cpu_has_feature(CPU_FTR_NOEXECUTE) ||
@@ -291,6 +483,14 @@ good_area:
 			pte_unmap_unlock(ptep, ptl);
 		}
 #endif
+#ifdef CONFIG_PPC_STD_MMU
+		/*
+		 * protfault should only happen due to us
+		 * mapping a region readonly temporarily. PROT_NONE
+		 * is also covered by the VMA check above.
+		 */
+		WARN_ON_ONCE(error_code & DSISR_PROTFAULT);
+#endif /* CONFIG_PPC_STD_MMU */
 	/* a write */
 	} else if (is_write) {
 		if (!(vma->vm_flags & VM_WRITE))
@@ -302,6 +502,12 @@ good_area:
 			goto bad_area;
 		if (!(vma->vm_flags & (VM_READ | VM_EXEC | VM_WRITE)))
 			goto bad_area;
+		flags |= FAULT_FLAG_WRITE;
+	/* a read */
+	} else {
+		if (!(vma->vm_flags & (VM_READ | VM_EXEC | VM_WRITE)))
+			goto bad_area;
+		WARN_ON_ONCE(error_code & DSISR_PROTFAULT);
 	}
 
 	/*
@@ -324,6 +530,54 @@ good_area:
 		current->min_flt++;
 	up_read(&mm->mmap_sem);
 	return 0;
+	fault = handle_mm_fault(mm, vma, address, flags);
+	if (unlikely(fault & (VM_FAULT_RETRY|VM_FAULT_ERROR))) {
+		if (fault & VM_FAULT_SIGSEGV)
+			goto bad_area;
+		rc = mm_fault_error(regs, address, fault);
+		if (rc >= MM_FAULT_RETURN)
+			goto bail;
+		else
+			rc = 0;
+	}
+
+	/*
+	 * Major/minor page fault accounting is only done on the
+	 * initial attempt. If we go through a retry, it is extremely
+	 * likely that the page will be found in page cache at that point.
+	 */
+	if (flags & FAULT_FLAG_ALLOW_RETRY) {
+		if (fault & VM_FAULT_MAJOR) {
+			current->maj_flt++;
+			perf_sw_event(PERF_COUNT_SW_PAGE_FAULTS_MAJ, 1,
+				      regs, address);
+#ifdef CONFIG_PPC_SMLPAR
+			if (firmware_has_feature(FW_FEATURE_CMO)) {
+				u32 page_ins;
+
+				preempt_disable();
+				page_ins = be32_to_cpu(get_lppaca()->page_ins);
+				page_ins += 1 << PAGE_FACTOR;
+				get_lppaca()->page_ins = cpu_to_be32(page_ins);
+				preempt_enable();
+			}
+#endif /* CONFIG_PPC_SMLPAR */
+		} else {
+			current->min_flt++;
+			perf_sw_event(PERF_COUNT_SW_PAGE_FAULTS_MIN, 1,
+				      regs, address);
+		}
+		if (fault & VM_FAULT_RETRY) {
+			/* Clear FAULT_FLAG_ALLOW_RETRY to avoid any risk
+			 * of starvation. */
+			flags &= ~FAULT_FLAG_ALLOW_RETRY;
+			flags |= FAULT_FLAG_TRIED;
+			goto retry;
+		}
+	}
+
+	up_read(&mm->mmap_sem);
+	goto bail;
 
 bad_area:
 	up_read(&mm->mmap_sem);
@@ -370,6 +624,20 @@ do_sigbus:
 		return 0;
 	}
 	return SIGBUS;
+		goto bail;
+	}
+
+	if (is_exec && (error_code & DSISR_PROTFAULT))
+		printk_ratelimited(KERN_CRIT "kernel tried to execute NX-protected"
+				   " page (%lx) - exploit attempt? (uid: %d)\n",
+				   address, from_kuid(&init_user_ns, current_uid()));
+
+	rc = SIGSEGV;
+
+bail:
+	exception_exit(prev_state);
+	return rc;
+
 }
 
 /*
@@ -392,21 +660,29 @@ void bad_page_fault(struct pt_regs *regs, unsigned long address, int sig)
 	switch (regs->trap) {
 	case 0x300:
 	case 0x380:
-		printk(KERN_ALERT "Unable to handle kernel paging request for "
-			"data at address 0x%08lx\n", regs->dar);
+		pr_alert("BUG: %s at 0x%08lx\n",
+			 regs->dar < PAGE_SIZE ? "Kernel NULL pointer dereference" :
+			 "Unable to handle kernel data access", regs->dar);
 		break;
 	case 0x400:
 	case 0x480:
-		printk(KERN_ALERT "Unable to handle kernel paging request for "
-			"instruction fetch\n");
+		pr_alert("BUG: Unable to handle kernel instruction fetch%s",
+			 regs->nip < PAGE_SIZE ? " (NULL pointer?)\n" : "\n");
+		break;
+	case 0x600:
+		pr_alert("BUG: Unable to handle kernel unaligned access at 0x%08lx\n",
+			 regs->dar);
 		break;
 	default:
-		printk(KERN_ALERT "Unable to handle kernel paging request for "
-			"unknown fault\n");
+		pr_alert("BUG: Unable to handle unknown paging fault at 0x%08lx\n",
+			 regs->dar);
 		break;
 	}
 	printk(KERN_ALERT "Faulting instruction address: 0x%08lx\n",
 		regs->nip);
+
+	if (task_stack_end_corrupted(current))
+		printk(KERN_ALERT "Thread overran stack, or stack corrupted\n");
 
 	die("Kernel access of bad area", regs, sig);
 }

@@ -218,7 +218,6 @@ static struct mt352_config avermedia_xc3028_mt352_dev = {
 	.demod_init      = mt352_avermedia_xc3028_init,
 };
 
-/* ==================================================================
  * tda1004x based DVB-T cards, helper functions
  */
 
@@ -840,7 +839,6 @@ static struct tda1004x_config ads_tech_duo_config = {
 	.request_firmware = philips_tda1004x_request_firmware
 };
 
-/* ==================================================================
  * tda10086 based DVB-S cards, helper functions
  */
 
@@ -915,7 +913,6 @@ static int md8800_set_high_voltage2(struct dvb_frontend *fe, long arg)
 	return -EIO;
 }
 
-/* ==================================================================
  * nxt200x based ATSC cards, helper functions
  */
 
@@ -927,7 +924,6 @@ static struct nxt200x_config kworldatsc110 = {
 	.demod_address    = 0x0a,
 };
 
-/* ==================================================================
  * Core code
  */
 

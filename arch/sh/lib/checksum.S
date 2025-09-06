@@ -38,6 +38,7 @@
 /*	
  * unsigned int csum_partial(const unsigned char *buf, int len,
  *                           unsigned int sum);
+ * asmlinkage __wsum csum_partial(const void *buf, int len, __wsum sum);
  */
 
 .text
@@ -50,6 +51,10 @@ ENTRY(csum_partial)
 	   * alignment for the unrolled loop.
 	   */
 	mov	r5, r1
+	mov	r4, r0
+	tst	#2, r0		! Check alignment.
+	bt	2f		! Jump if alignment is ok.
+	!
 	mov	r4, r0
 	tst	#2, r0		! Check alignment.
 	bt	2f		! Jump if alignment is ok.
@@ -68,6 +73,11 @@ ENTRY(csum_partial)
 	bf	2f
 	add	#1, r6
 2:
+	mov	#-5, r0
+	shld	r0, r5
+	tst	r5, r5
+	! buf is 4 byte aligned (len could be 0)
+	mov	r5, r1
 	mov	#-5, r0
 	shld	r0, r5
 	tst	r5, r5
@@ -104,12 +114,31 @@ ENTRY(csum_partial)
 	bt/s	6f
 	 mov	r0, r5
 	shlr2	r5
+	dt	r1
+	bf/s	3b
+	 cmp/eq	#1, r0
+	! here, we know r5==0
+	addc	r5, r6			! add carry to r6
+4:
+	mov	r1, r0
+	and	#0x1c, r0
+	tst	r0, r0
+	bt/s	6f
+	 mov	r0, r5
+	shlr2	r5
 	mov	#0, r2
 5:
 	addc	r2, r6
 	mov.l	@r4+, r2
 	movt	r0
 	dt	r5
+	bf/s	5b
+	 cmp/eq	#1, r0
+	addc	r2, r6
+	addc	r5, r6		! r5==0 here, so it means add carry-bit
+6:
+	mov	r1, r5
+	dt	r1
 	bf/s	5b
 	 cmp/eq	#1, r0
 	addc	r2, r6
@@ -140,6 +169,8 @@ ENTRY(csum_partial)
 	addc	r0, r6
 	mov	#0, r0
 	addc	r0, r6 
+9:
+	addc	r0, r6
 9:
 	rts
 	 mov	r6, r0

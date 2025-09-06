@@ -2,6 +2,7 @@
  * SH7206 Setup
  *
  *  Copyright (C) 2006  Yoshinori Sato
+ *  Copyright (C) 2009  Paul Mundt
  *
  * This file is subject to the terms and conditions of the GNU General Public
  * License.  See the file "COPYING" in the main directory of this archive
@@ -11,6 +12,8 @@
 #include <linux/init.h>
 #include <linux/serial.h>
 #include <linux/serial_sci.h>
+#include <linux/sh_timer.h>
+#include <linux/io.h>
 
 enum {
 	UNUSED = 0,
@@ -47,6 +50,23 @@ enum {
 	MTU0_ABCD, MTU0_VEF, MTU1_AB, MTU1_VU, MTU2_AB, MTU2_VU,
 	MTU3_ABCD, MTU4_ABCD, MTU5, POE2_12, MTU3S_ABCD, MTU4S_ABCD, MTU5S,
 	IIC3, SCIF0, SCIF1, SCIF2, SCIF3,
+
+	DMAC0, DMAC1, DMAC2, DMAC3, DMAC4, DMAC5, DMAC6, DMAC7,
+
+	MTU0_ABCD, MTU0_VEF, MTU1_AB, MTU1_VU, MTU2_AB, MTU2_VU,
+	MTU3_ABCD, MTU4_ABCD, MTU5, POE2_12, MTU3S_ABCD, MTU4S_ABCD, MTU5S,
+	IIC3,
+
+	CMT0, CMT1, BSC, WDT,
+
+	MTU2_TCI3V, MTU2_TCI4V, MTU2S_TCI3V, MTU2S_TCI4V,
+
+	POE2_OEI3,
+
+	SCIF0, SCIF1, SCIF2, SCIF3,
+
+	/* interrupt groups */
+	PINT,
 };
 
 static struct intc_vect vectors[] __initdata = {
@@ -106,6 +126,53 @@ static struct intc_vect vectors[] __initdata = {
 	INTC_IRQ(SCIF2_RXI, 250), INTC_IRQ(SCIF2_TXI, 251),
 	INTC_IRQ(SCIF3_BRI, 252), INTC_IRQ(SCIF3_ERI, 253),
 	INTC_IRQ(SCIF3_RXI, 254), INTC_IRQ(SCIF3_TXI, 255),
+	INTC_IRQ(DMAC0, 108), INTC_IRQ(DMAC0, 109),
+	INTC_IRQ(DMAC1, 112), INTC_IRQ(DMAC1, 113),
+	INTC_IRQ(DMAC2, 116), INTC_IRQ(DMAC2, 117),
+	INTC_IRQ(DMAC3, 120), INTC_IRQ(DMAC3, 121),
+	INTC_IRQ(DMAC4, 124), INTC_IRQ(DMAC4, 125),
+	INTC_IRQ(DMAC5, 128), INTC_IRQ(DMAC5, 129),
+	INTC_IRQ(DMAC6, 132), INTC_IRQ(DMAC6, 133),
+	INTC_IRQ(DMAC7, 136), INTC_IRQ(DMAC7, 137),
+	INTC_IRQ(CMT0, 140), INTC_IRQ(CMT1, 144),
+	INTC_IRQ(BSC, 148), INTC_IRQ(WDT, 152),
+	INTC_IRQ(MTU0_ABCD, 156), INTC_IRQ(MTU0_ABCD, 157),
+	INTC_IRQ(MTU0_ABCD, 158), INTC_IRQ(MTU0_ABCD, 159),
+	INTC_IRQ(MTU0_VEF, 160), INTC_IRQ(MTU0_VEF, 161),
+	INTC_IRQ(MTU0_VEF, 162),
+	INTC_IRQ(MTU1_AB, 164), INTC_IRQ(MTU1_AB, 165),
+	INTC_IRQ(MTU1_VU, 168), INTC_IRQ(MTU1_VU, 169),
+	INTC_IRQ(MTU2_AB, 172), INTC_IRQ(MTU2_AB, 173),
+	INTC_IRQ(MTU2_VU, 176), INTC_IRQ(MTU2_VU, 177),
+	INTC_IRQ(MTU3_ABCD, 180), INTC_IRQ(MTU3_ABCD, 181),
+	INTC_IRQ(MTU3_ABCD, 182), INTC_IRQ(MTU3_ABCD, 183),
+	INTC_IRQ(MTU2_TCI3V, 184),
+	INTC_IRQ(MTU4_ABCD, 188), INTC_IRQ(MTU4_ABCD, 189),
+	INTC_IRQ(MTU4_ABCD, 190), INTC_IRQ(MTU4_ABCD, 191),
+	INTC_IRQ(MTU2_TCI4V, 192),
+	INTC_IRQ(MTU5, 196), INTC_IRQ(MTU5, 197),
+	INTC_IRQ(MTU5, 198),
+	INTC_IRQ(POE2_12, 200), INTC_IRQ(POE2_12, 201),
+	INTC_IRQ(MTU3S_ABCD, 204), INTC_IRQ(MTU3S_ABCD, 205),
+	INTC_IRQ(MTU3S_ABCD, 206), INTC_IRQ(MTU3S_ABCD, 207),
+	INTC_IRQ(MTU2S_TCI3V, 208),
+	INTC_IRQ(MTU4S_ABCD, 212), INTC_IRQ(MTU4S_ABCD, 213),
+	INTC_IRQ(MTU4S_ABCD, 214), INTC_IRQ(MTU4S_ABCD, 215),
+	INTC_IRQ(MTU2S_TCI4V, 216),
+	INTC_IRQ(MTU5S, 220), INTC_IRQ(MTU5S, 221),
+	INTC_IRQ(MTU5S, 222),
+	INTC_IRQ(POE2_OEI3, 224),
+	INTC_IRQ(IIC3, 228), INTC_IRQ(IIC3, 229),
+	INTC_IRQ(IIC3, 230), INTC_IRQ(IIC3, 231),
+	INTC_IRQ(IIC3, 232),
+	INTC_IRQ(SCIF0, 240), INTC_IRQ(SCIF0, 241),
+	INTC_IRQ(SCIF0, 242), INTC_IRQ(SCIF0, 243),
+	INTC_IRQ(SCIF1, 244), INTC_IRQ(SCIF1, 245),
+	INTC_IRQ(SCIF1, 246), INTC_IRQ(SCIF1, 247),
+	INTC_IRQ(SCIF2, 248), INTC_IRQ(SCIF2, 249),
+	INTC_IRQ(SCIF2, 250), INTC_IRQ(SCIF2, 251),
+	INTC_IRQ(SCIF3, 252), INTC_IRQ(SCIF3, 253),
+	INTC_IRQ(SCIF3, 254), INTC_IRQ(SCIF3, 255),
 };
 
 static struct intc_group groups[] __initdata = {
@@ -205,6 +272,131 @@ static struct platform_device sci_device = {
 
 static struct platform_device *sh7206_devices[] __initdata = {
 	&sci_device,
+static struct plat_sci_port scif0_platform_data = {
+	.flags		= UPF_BOOT_AUTOCONF,
+	.scscr		= SCSCR_RE | SCSCR_TE | SCSCR_REIE,
+	.type		= PORT_SCIF,
+};
+
+static struct resource scif0_resources[] = {
+	DEFINE_RES_MEM(0xfffe8000, 0x100),
+	DEFINE_RES_IRQ(240),
+};
+
+static struct platform_device scif0_device = {
+	.name		= "sh-sci",
+	.id		= 0,
+	.resource	= scif0_resources,
+	.num_resources	= ARRAY_SIZE(scif0_resources),
+	.dev		= {
+		.platform_data	= &scif0_platform_data,
+	},
+};
+
+static struct plat_sci_port scif1_platform_data = {
+	.flags		= UPF_BOOT_AUTOCONF,
+	.scscr		= SCSCR_RE | SCSCR_TE | SCSCR_REIE,
+	.type		= PORT_SCIF,
+};
+
+static struct resource scif1_resources[] = {
+	DEFINE_RES_MEM(0xfffe8800, 0x100),
+	DEFINE_RES_IRQ(244),
+};
+
+static struct platform_device scif1_device = {
+	.name		= "sh-sci",
+	.id		= 1,
+	.resource	= scif1_resources,
+	.num_resources	= ARRAY_SIZE(scif1_resources),
+	.dev		= {
+		.platform_data	= &scif1_platform_data,
+	},
+};
+
+static struct plat_sci_port scif2_platform_data = {
+	.flags		= UPF_BOOT_AUTOCONF,
+	.scscr		= SCSCR_RE | SCSCR_TE | SCSCR_REIE,
+	.type		= PORT_SCIF,
+};
+
+static struct resource scif2_resources[] = {
+	DEFINE_RES_MEM(0xfffe9000, 0x100),
+	DEFINE_RES_IRQ(248),
+};
+
+static struct platform_device scif2_device = {
+	.name		= "sh-sci",
+	.id		= 2,
+	.resource	= scif2_resources,
+	.num_resources	= ARRAY_SIZE(scif2_resources),
+	.dev		= {
+		.platform_data	= &scif2_platform_data,
+	},
+};
+
+static struct plat_sci_port scif3_platform_data = {
+	.flags		= UPF_BOOT_AUTOCONF,
+	.scscr		= SCSCR_RE | SCSCR_TE | SCSCR_REIE,
+	.type		= PORT_SCIF,
+};
+
+static struct resource scif3_resources[] = {
+	DEFINE_RES_MEM(0xfffe9800, 0x100),
+	DEFINE_RES_IRQ(252),
+};
+
+static struct platform_device scif3_device = {
+	.name		= "sh-sci",
+	.id		= 3,
+	.resource	= scif3_resources,
+	.num_resources	= ARRAY_SIZE(scif3_resources),
+	.dev		= {
+		.platform_data	= &scif3_platform_data,
+	},
+};
+
+static struct sh_timer_config cmt_platform_data = {
+	.channels_mask = 3,
+};
+
+static struct resource cmt_resources[] = {
+	DEFINE_RES_MEM(0xfffec000, 0x10),
+	DEFINE_RES_IRQ(140),
+	DEFINE_RES_IRQ(144),
+};
+
+static struct platform_device cmt_device = {
+	.name		= "sh-cmt-16",
+	.id		= 0,
+	.dev = {
+		.platform_data	= &cmt_platform_data,
+	},
+	.resource	= cmt_resources,
+	.num_resources	= ARRAY_SIZE(cmt_resources),
+};
+
+static struct resource mtu2_resources[] = {
+	DEFINE_RES_MEM(0xfffe4000, 0x400),
+	DEFINE_RES_IRQ_NAMED(156, "tgi0a"),
+	DEFINE_RES_IRQ_NAMED(164, "tgi1a"),
+	DEFINE_RES_IRQ_NAMED(180, "tgi2a"),
+};
+
+static struct platform_device mtu2_device = {
+	.name		= "sh-mtu2s",
+	.id		= -1,
+	.resource	= mtu2_resources,
+	.num_resources	= ARRAY_SIZE(mtu2_resources),
+};
+
+static struct platform_device *sh7206_devices[] __initdata = {
+	&scif0_device,
+	&scif1_device,
+	&scif2_device,
+	&scif3_device,
+	&cmt_device,
+	&mtu2_device,
 };
 
 static int __init sh7206_devices_setup(void)
@@ -213,8 +405,33 @@ static int __init sh7206_devices_setup(void)
 				    ARRAY_SIZE(sh7206_devices));
 }
 __initcall(sh7206_devices_setup);
+arch_initcall(sh7206_devices_setup);
 
 void __init plat_irq_setup(void)
 {
 	register_intc_controller(&intc_desc);
+}
+
+static struct platform_device *sh7206_early_devices[] __initdata = {
+	&scif0_device,
+	&scif1_device,
+	&scif2_device,
+	&scif3_device,
+	&cmt_device,
+	&mtu2_device,
+};
+
+#define STBCR3 0xfffe0408
+#define STBCR4 0xfffe040c
+
+void __init plat_early_device_setup(void)
+{
+	/* enable CMT clock */
+	__raw_writeb(__raw_readb(STBCR4) & ~0x04, STBCR4);
+
+	/* enable MTU2 clock */
+	__raw_writeb(__raw_readb(STBCR3) & ~0x20, STBCR3);
+
+	early_platform_add_devices(sh7206_early_devices,
+				   ARRAY_SIZE(sh7206_early_devices));
 }

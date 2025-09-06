@@ -51,6 +51,10 @@
 #include <linux/slab.h>
 #include <linux/moduleparam.h>
 #include <linux/firmware.h>
+#include <linux/module.h>
+#include <linux/firmware.h>
+#include <linux/slab.h>
+#include <linux/io.h>
 #include <sound/core.h>
 #include <sound/info.h>
 #include <sound/control.h>
@@ -61,6 +65,7 @@
 #include <sound/initval.h>
 #include <asm/io.h>
 #include <asm/atomic.h>
+#include <linux/atomic.h>
 #include "echoaudio.h"
 
 MODULE_FIRMWARE("ea/loader_dsp.fw");
@@ -93,6 +98,7 @@ static const struct firmware card_fw[] = {
 };
 
 static struct pci_device_id snd_echo_ids[] = {
+static const struct pci_device_id snd_echo_ids[] = {
 	{0x1057, 0x1801, 0xECC0, 0x0070, 0, 0, 0},	/* DSP 56301 Mona rev.0 */
 	{0x1057, 0x1801, 0xECC0, 0x0071, 0, 0, 0},	/* DSP 56301 Mona rev.1 */
 	{0x1057, 0x1801, 0xECC0, 0x0072, 0, 0, 0},	/* DSP 56301 Mona rev.2 */

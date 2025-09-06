@@ -115,6 +115,8 @@
 
 /* Kernel definitions */
 #ifdef __KERNEL__
+#include <uapi/asm/ioctls.h>
+
 #define TIOCGETC __TIOCGETC
 #define TIOCGETP __TIOCGETP
 #define TIOCGLTC __TIOCGLTC

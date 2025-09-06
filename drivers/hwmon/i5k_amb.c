@@ -4,6 +4,7 @@
  * Copyright (C) 2007 IBM
  *
  * Author: Darrick J. Wong <djwong@us.ibm.com>
+ * Author: Darrick J. Wong <darrick.wong@oracle.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -30,6 +31,10 @@
 #include <linux/log2.h>
 #include <linux/pci.h>
 #include <linux/platform_device.h>
+#include <linux/log2.h>
+#include <linux/pci.h>
+#include <linux/platform_device.h>
+#include <linux/slab.h>
 
 #define DRVNAME "i5k_amb"
 
@@ -161,6 +166,12 @@ static ssize_t store_amb_min(struct device *dev,
 	struct i5k_amb_data *data = dev_get_drvdata(dev);
 	unsigned long temp = simple_strtoul(buf, NULL, 10) / 500;
 
+	unsigned long temp;
+	int ret = kstrtoul(buf, 10, &temp);
+	if (ret < 0)
+		return ret;
+
+	temp = temp / 500;
 	if (temp > 255)
 		temp = 255;
 
@@ -177,6 +188,12 @@ static ssize_t store_amb_mid(struct device *dev,
 	struct i5k_amb_data *data = dev_get_drvdata(dev);
 	unsigned long temp = simple_strtoul(buf, NULL, 10) / 500;
 
+	unsigned long temp;
+	int ret = kstrtoul(buf, 10, &temp);
+	if (ret < 0)
+		return ret;
+
+	temp = temp / 500;
 	if (temp > 255)
 		temp = 255;
 
@@ -193,6 +210,12 @@ static ssize_t store_amb_max(struct device *dev,
 	struct i5k_amb_data *data = dev_get_drvdata(dev);
 	unsigned long temp = simple_strtoul(buf, NULL, 10) / 500;
 
+	unsigned long temp;
+	int ret = kstrtoul(buf, 10, &temp);
+	if (ret < 0)
+		return ret;
+
+	temp = temp / 500;
 	if (temp > 255)
 		temp = 255;
 
@@ -251,6 +274,7 @@ static ssize_t show_label(struct device *dev,
 }
 
 static int __devinit i5k_amb_hwmon_init(struct platform_device *pdev)
+static int i5k_amb_hwmon_init(struct platform_device *pdev)
 {
 	int i, j, k, d = 0;
 	u16 c;
@@ -288,6 +312,7 @@ static int __devinit i5k_amb_hwmon_init(struct platform_device *pdev)
 			iattr->s_attr.dev_attr.attr.mode = S_IRUGO;
 			iattr->s_attr.dev_attr.show = show_label;
 			iattr->s_attr.index = k;
+			sysfs_attr_init(&iattr->s_attr.dev_attr.attr);
 			res = device_create_file(&pdev->dev,
 						 &iattr->s_attr.dev_attr);
 			if (res)
@@ -302,6 +327,7 @@ static int __devinit i5k_amb_hwmon_init(struct platform_device *pdev)
 			iattr->s_attr.dev_attr.attr.mode = S_IRUGO;
 			iattr->s_attr.dev_attr.show = show_amb_temp;
 			iattr->s_attr.index = k;
+			sysfs_attr_init(&iattr->s_attr.dev_attr.attr);
 			res = device_create_file(&pdev->dev,
 						 &iattr->s_attr.dev_attr);
 			if (res)
@@ -317,6 +343,7 @@ static int __devinit i5k_amb_hwmon_init(struct platform_device *pdev)
 			iattr->s_attr.dev_attr.show = show_amb_min;
 			iattr->s_attr.dev_attr.store = store_amb_min;
 			iattr->s_attr.index = k;
+			sysfs_attr_init(&iattr->s_attr.dev_attr.attr);
 			res = device_create_file(&pdev->dev,
 						 &iattr->s_attr.dev_attr);
 			if (res)
@@ -332,6 +359,7 @@ static int __devinit i5k_amb_hwmon_init(struct platform_device *pdev)
 			iattr->s_attr.dev_attr.show = show_amb_mid;
 			iattr->s_attr.dev_attr.store = store_amb_mid;
 			iattr->s_attr.index = k;
+			sysfs_attr_init(&iattr->s_attr.dev_attr.attr);
 			res = device_create_file(&pdev->dev,
 						 &iattr->s_attr.dev_attr);
 			if (res)
@@ -347,6 +375,7 @@ static int __devinit i5k_amb_hwmon_init(struct platform_device *pdev)
 			iattr->s_attr.dev_attr.show = show_amb_max;
 			iattr->s_attr.dev_attr.store = store_amb_max;
 			iattr->s_attr.index = k;
+			sysfs_attr_init(&iattr->s_attr.dev_attr.attr);
 			res = device_create_file(&pdev->dev,
 						 &iattr->s_attr.dev_attr);
 			if (res)
@@ -361,6 +390,7 @@ static int __devinit i5k_amb_hwmon_init(struct platform_device *pdev)
 			iattr->s_attr.dev_attr.attr.mode = S_IRUGO;
 			iattr->s_attr.dev_attr.show = show_amb_alarm;
 			iattr->s_attr.index = k;
+			sysfs_attr_init(&iattr->s_attr.dev_attr.attr);
 			res = device_create_file(&pdev->dev,
 						 &iattr->s_attr.dev_attr);
 			if (res)
@@ -391,6 +421,7 @@ exit_remove:
 }
 
 static int __devinit i5k_amb_add(void)
+static int i5k_amb_add(void)
 {
 	int res = -ENODEV;
 
@@ -410,6 +441,7 @@ err:
 }
 
 static int __devinit i5k_find_amb_registers(struct i5k_amb_data *data,
+static int i5k_find_amb_registers(struct i5k_amb_data *data,
 					    unsigned long devid)
 {
 	struct pci_dev *pcidev;
@@ -446,6 +478,7 @@ out:
 }
 
 static int __devinit i5k_channel_probe(u16 *amb_present, unsigned long dev_id)
+static int i5k_channel_probe(u16 *amb_present, unsigned long dev_id)
 {
 	struct pci_dev *pcidev;
 	u16 val16;
@@ -496,6 +529,29 @@ static int __devinit i5k_amb_probe(struct platform_device *pdev)
 	struct resource *reso;
 	int i;
 	int res = -ENODEV;
+static struct {
+	unsigned long err;
+	unsigned long fbd0;
+} chipset_ids[]  = {
+	{ PCI_DEVICE_ID_INTEL_5000_ERR, PCI_DEVICE_ID_INTEL_5000_FBD0 },
+	{ PCI_DEVICE_ID_INTEL_5400_ERR, PCI_DEVICE_ID_INTEL_5400_FBD0 },
+	{ 0, 0 }
+};
+
+#ifdef MODULE
+static struct pci_device_id i5k_amb_ids[] = {
+	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_5000_ERR) },
+	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_5400_ERR) },
+	{ 0, }
+};
+MODULE_DEVICE_TABLE(pci, i5k_amb_ids);
+#endif
+
+static int i5k_amb_probe(struct platform_device *pdev)
+{
+	struct i5k_amb_data *data;
+	struct resource *reso;
+	int i, res;
 
 	data = kzalloc(sizeof(*data), GFP_KERNEL);
 	if (!data)
@@ -507,6 +563,11 @@ static int __devinit i5k_amb_probe(struct platform_device *pdev)
 		res = i5k_find_amb_registers(data, chipset_ids[i]);
 		i++;
 	} while (res && chipset_ids[i]);
+		res = i5k_find_amb_registers(data, chipset_ids[i].err);
+		if (res == 0)
+			break;
+		i++;
+	} while (chipset_ids[i].err);
 
 	if (res)
 		goto err;
@@ -514,12 +575,14 @@ static int __devinit i5k_amb_probe(struct platform_device *pdev)
 	/* Copy the DIMM presence map for the first two channels */
 	res = i5k_channel_probe(&data->amb_present[0],
 				i5k_channel_pci_id(data, 0));
+	res = i5k_channel_probe(&data->amb_present[0], chipset_ids[i].fbd0);
 	if (res)
 		goto err;
 
 	/* Copy the DIMM presence map for the optional second two channels */
 	i5k_channel_probe(&data->amb_present[2],
 			  i5k_channel_pci_id(data, 1));
+	i5k_channel_probe(&data->amb_present[2], chipset_ids[i].fbd0 + 1);
 
 	/* Set up resource regions */
 	reso = request_mem_region(data->amb_base, data->amb_len, DRVNAME);
@@ -553,6 +616,7 @@ err:
 }
 
 static int __devexit i5k_amb_remove(struct platform_device *pdev)
+static int i5k_amb_remove(struct platform_device *pdev)
 {
 	int i;
 	struct i5k_amb_data *data = platform_get_drvdata(pdev);
@@ -576,6 +640,10 @@ static struct platform_driver i5k_amb_driver = {
 	},
 	.probe = i5k_amb_probe,
 	.remove = __devexit_p(i5k_amb_remove),
+		.name = DRVNAME,
+	},
+	.probe = i5k_amb_probe,
+	.remove = i5k_amb_remove,
 };
 
 static int __init i5k_amb_init(void)
@@ -600,6 +668,7 @@ static void __exit i5k_amb_exit(void)
 }
 
 MODULE_AUTHOR("Darrick J. Wong <djwong@us.ibm.com>");
+MODULE_AUTHOR("Darrick J. Wong <darrick.wong@oracle.com>");
 MODULE_DESCRIPTION("Intel 5000 chipset FB-DIMM AMB temperature sensor");
 MODULE_LICENSE("GPL");
 

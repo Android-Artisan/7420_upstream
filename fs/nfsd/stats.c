@@ -11,6 +11,7 @@
  *	fh <stale> <total-lookups> <anonlookups> <dir-not-in-dcache> <nondir-not-in-dcache>
  *			statistics for filehandle lookup
  *	io <bytes-read> <bytes-writtten>
+ *	io <bytes-read> <bytes-written>
  *			statistics for IO throughput
  *	th <threads> <fullcnt> <10%-20%> <20%-30%> ... <90%-100%> <100%> 
  *			time (seconds) when nfsd thread usage above thresholds
@@ -34,6 +35,12 @@
 #include <linux/sunrpc/stats.h>
 #include <linux/nfsd/nfsd.h>
 #include <linux/nfsd/stats.h>
+#include <linux/seq_file.h>
+#include <linux/module.h>
+#include <linux/sunrpc/stats.h>
+#include <net/net_namespace.h>
+
+#include "nfsd.h"
 
 struct nfsd_stats	nfsdstats;
 struct svc_stat		nfsd_svcstats = {
@@ -102,10 +109,12 @@ void
 nfsd_stat_init(void)
 {
 	svc_proc_register(&nfsd_svcstats, &nfsd_proc_fops);
+	svc_proc_register(&init_net, &nfsd_svcstats, &nfsd_proc_fops);
 }
 
 void
 nfsd_stat_shutdown(void)
 {
 	svc_proc_unregister("nfsd");
+	svc_proc_unregister(&init_net, "nfsd");
 }

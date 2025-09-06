@@ -23,6 +23,17 @@ void create_prof_cpu_mask(struct proc_dir_entry *de);
 static inline void create_prof_cpu_mask(struct proc_dir_entry *de)
 {
 }
+void create_prof_cpu_mask(void);
+int create_proc_profile(void);
+#else
+static inline void create_prof_cpu_mask(void)
+{
+}
+
+static inline int create_proc_profile(void)
+{
+	return 0;
+}
 #endif
 
 enum profile_type {
@@ -37,6 +48,10 @@ extern int prof_on __read_mostly;
 /* init basic kernel profiler */
 void __init profile_init(void);
 void profile_tick(int type);
+int profile_init(void);
+int profile_setup(char *str);
+void profile_tick(int type);
+int setup_profiling_timer(unsigned int multiplier);
 
 /*
  * Add multiple profiler hits to a given address:
@@ -87,6 +102,9 @@ struct pt_regs;
 static inline void profile_init(void)
 {
 	return;
+static inline int profile_init(void)
+{
+	return 0;
 }
 
 static inline void profile_tick(int type)

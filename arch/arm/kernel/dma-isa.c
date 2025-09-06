@@ -30,6 +30,11 @@
 #define ISA_DMA_MODE_CASCADE	0xc0
 #define ISA_DMA_AUTOINIT	0x10
 
+#include <linux/io.h>
+
+#include <asm/dma.h>
+#include <asm/mach/dma.h>
+
 #define ISA_DMA_MASK		0
 #define ISA_DMA_MODE		1
 #define ISA_DMA_CLRFF		2
@@ -53,6 +58,9 @@ static unsigned int isa_dma_port[8][7] = {
 static int isa_get_dma_residue(dmach_t channel, dma_t *dma)
 {
 	unsigned int io_port = isa_dma_port[channel][ISA_DMA_COUNT];
+static int isa_get_dma_residue(unsigned int chan, dma_t *dma)
+{
+	unsigned int io_port = isa_dma_port[chan][ISA_DMA_COUNT];
 	int count;
 
 	count = 1 + inb(io_port);
@@ -62,6 +70,10 @@ static int isa_get_dma_residue(dmach_t channel, dma_t *dma)
 }
 
 static void isa_enable_dma(dmach_t channel, dma_t *dma)
+	return chan < 4 ? count : (count << 1);
+}
+
+static void isa_enable_dma(unsigned int chan, dma_t *dma)
 {
 	if (dma->invalid) {
 		unsigned long address, length;
@@ -72,6 +84,9 @@ static void isa_enable_dma(dmach_t channel, dma_t *dma)
 		switch (dma->dma_mode & DMA_MODE_MASK) {
 		case DMA_MODE_READ:
 			mode |= ISA_DMA_MODE_READ;
+		mode = (chan & 3) | dma->dma_mode;
+		switch (dma->dma_mode & DMA_MODE_MASK) {
+		case DMA_MODE_READ:
 			direction = DMA_FROM_DEVICE;
 			break;
 
@@ -110,6 +125,10 @@ static void isa_enable_dma(dmach_t channel, dma_t *dma)
 		outb(address >> 24, isa_dma_port[channel][ISA_DMA_PGHI]);
 
 		if (channel >= 4) {
+		outb(address >> 16, isa_dma_port[chan][ISA_DMA_PGLO]);
+		outb(address >> 24, isa_dma_port[chan][ISA_DMA_PGHI]);
+
+		if (chan >= 4) {
 			address >>= 1;
 			length >>= 1;
 		}
@@ -134,6 +153,23 @@ static void isa_enable_dma(dmach_t channel, dma_t *dma)
 static void isa_disable_dma(dmach_t channel, dma_t *dma)
 {
 	outb(channel | 4, isa_dma_port[channel][ISA_DMA_MASK]);
+		outb(0, isa_dma_port[chan][ISA_DMA_CLRFF]);
+
+		outb(address, isa_dma_port[chan][ISA_DMA_ADDR]);
+		outb(address >> 8, isa_dma_port[chan][ISA_DMA_ADDR]);
+
+		outb(length, isa_dma_port[chan][ISA_DMA_COUNT]);
+		outb(length >> 8, isa_dma_port[chan][ISA_DMA_COUNT]);
+
+		outb(mode, isa_dma_port[chan][ISA_DMA_MODE]);
+		dma->invalid = 0;
+	}
+	outb(chan & 3, isa_dma_port[chan][ISA_DMA_MASK]);
+}
+
+static void isa_disable_dma(unsigned int chan, dma_t *dma)
+{
+	outb(chan | 4, isa_dma_port[chan][ISA_DMA_MASK]);
 }
 
 static struct dma_ops isa_dma_ops = {
@@ -162,6 +198,12 @@ static struct resource dma_resources[] = { {
 } };
 
 void __init isa_init_dma(dma_t *dma)
+static dma_t isa_dma[8];
+
+/*
+ * ISA DMA always starts at channel 0
+ */
+void __init isa_init_dma(void)
 {
 	/*
 	 * Try to autodetect presence of an ISA DMA controller.
@@ -184,6 +226,11 @@ void __init isa_init_dma(dma_t *dma)
 		for (channel = 0; channel < 8; channel++) {
 			dma[channel].d_ops = &isa_dma_ops;
 			isa_disable_dma(channel, NULL);
+		unsigned int chan, i;
+
+		for (chan = 0; chan < 8; chan++) {
+			isa_dma[chan].d_ops = &isa_dma_ops;
+			isa_disable_dma(chan, NULL);
 		}
 
 		outb(0x40, 0x0b);
@@ -218,5 +265,16 @@ void __init isa_init_dma(dma_t *dma)
 
 		for (i = 0; i < ARRAY_SIZE(dma_resources); i++)
 			request_resource(&ioport_resource, dma_resources + i);
+		for (i = 0; i < ARRAY_SIZE(dma_resources); i++)
+			request_resource(&ioport_resource, dma_resources + i);
+
+		for (chan = 0; chan < 8; chan++) {
+			int ret = isa_dma_add(chan, &isa_dma[chan]);
+			if (ret)
+				pr_err("ISADMA%u: unable to register: %d\n",
+				       chan, ret);
+		}
+
+		request_dma(DMA_ISA_CASCADE, "cascade");
 	}
 }

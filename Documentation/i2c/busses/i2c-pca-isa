@@ -5,6 +5,10 @@ This driver supports ISA boards using the Philips PCA 9564
 Parallel bus to I2C bus controller 
 
 Author: Ian Campbell <icampbell@arcom.com>, Arcom Control Systems 
+This driver supports ISA boards using the Philips PCA 9564
+Parallel bus to I2C bus controller
+
+Author: Ian Campbell <icampbell@arcom.com>, Arcom Control Systems
 
 Module Parameters
 -----------------
@@ -14,6 +18,8 @@ Module Parameters
 * irq int
  IRQ interrupt 
 * clock int 
+ IRQ interrupt
+* clock int
  Clock rate as described in table 1 of PCA9564 datasheet
 
 Description
@@ -21,3 +27,5 @@ Description
 
 This driver supports ISA boards using the Philips PCA 9564 
 Parallel bus to I2C bus controller 
+This driver supports ISA boards using the Philips PCA 9564
+Parallel bus to I2C bus controller

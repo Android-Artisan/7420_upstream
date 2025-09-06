@@ -1,7 +1,6 @@
 This page describes how to make calls to the firmware api.
 
 How to call
-===========
 
 The preferred calling convention is known as the firmware mailbox. The
 mailboxes are basically a fixed length array that serves as the call-stack.

@@ -1,12 +1,10 @@
 NetWinder specific documentation
-================================
 
 The NetWinder is a small low-power computer, primarily designed
 to run Linux.  It is based around the StrongARM RISC processor,
 DC21285 PCI bridge, with PC-type hardware glued around it.
 
 Port usage
-==========
 
 Min    - Max	Description
 ---------------------------
@@ -42,7 +40,6 @@ Min    - Max	Description
 
 
 Interrupt usage
-===============
 
 IRQ	type	Description
 ---------------------------
@@ -64,7 +61,6 @@ IRQ	type	Description
 15	ISA
 
 DMA usage
-=========
 
 DMA	type	Description
 ---------------------------

@@ -14,6 +14,10 @@
 #include <linux/dma-mapping.h>
 #include <linux/list.h>
 #include <linux/pci.h>
+#include <linux/dma-mapping.h>
+#include <linux/list.h>
+#include <linux/pci.h>
+#include <linux/export.h>
 #include <linux/highmem.h>
 #include <linux/scatterlist.h>
 #include <asm/io.h>
@@ -50,6 +54,10 @@ dma_addr_t dma_map_single(struct device *dev, void *ptr, size_t size,
 {
 	if (direction == DMA_NONE)
                 BUG();
+dma_addr_t dma_map_single(struct device *dev, void *ptr, size_t size,
+			  enum dma_data_direction direction)
+{
+	BUG_ON(direction == DMA_NONE);
 
 	frv_cache_wback_inv((unsigned long) ptr, (unsigned long) ptr + size);
 
@@ -75,6 +83,7 @@ EXPORT_SYMBOL(dma_map_single);
  * the same here.
  */
 int dma_map_sg(struct device *dev, struct scatterlist *sg, int nents,
+int dma_map_sg(struct device *dev, struct scatterlist *sglist, int nents,
 	       enum dma_data_direction direction)
 {
 	unsigned long dampr2;
@@ -88,6 +97,14 @@ int dma_map_sg(struct device *dev, struct scatterlist *sg, int nents,
 
 	for (i = 0; i < nents; i++) {
 		vaddr = kmap_atomic(sg_page(&sg[i]), __KM_CACHE);
+	struct scatterlist *sg;
+
+	BUG_ON(direction == DMA_NONE);
+
+	dampr2 = __get_DAMPR(2);
+
+	for_each_sg(sglist, sg, nents, i) {
+		vaddr = kmap_atomic_primary(sg_page(sg));
 
 		frv_dcache_writeback((unsigned long) vaddr,
 				     (unsigned long) vaddr + PAGE_SIZE);
@@ -95,6 +112,7 @@ int dma_map_sg(struct device *dev, struct scatterlist *sg, int nents,
 	}
 
 	kunmap_atomic(vaddr, __KM_CACHE);
+	kunmap_atomic_primary(vaddr);
 	if (dampr2) {
 		__set_DAMPR(2, dampr2);
 		__set_IAMPR(2, dampr2);

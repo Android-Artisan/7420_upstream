@@ -10,6 +10,9 @@
 
 #include "irnet_irda.h"		/* Private header */
 #include <linux/seq_file.h>
+#include <linux/sched.h>
+#include <linux/seq_file.h>
+#include <linux/slab.h>
 #include <asm/unaligned.h>
 
 /*
@@ -237,6 +240,7 @@ irnet_ias_to_tsap(irnet_socket *	self,
 
   /* Return the TSAP */
   return(dtsap_sel);
+  return dtsap_sel;
 }
 
 /*------------------------------------------------------------------*/
@@ -300,6 +304,7 @@ irnet_connect_tsap(irnet_socket *	self)
       clear_bit(0, &self->ttp_connect);
       DERROR(IRDA_SR_ERROR, "connect aborted!\n");
       return(err);
+      return err;
     }
 
   /* Connect to remote device */
@@ -311,6 +316,7 @@ irnet_connect_tsap(irnet_socket *	self)
       clear_bit(0, &self->ttp_connect);
       DERROR(IRDA_SR_ERROR, "connect aborted!\n");
       return(err);
+      return err;
     }
 
   /* The above call is non-blocking.
@@ -320,6 +326,7 @@ irnet_connect_tsap(irnet_socket *	self)
 
   DEXIT(IRDA_SR_TRACE, "\n");
   return(err);
+  return err;
 }
 
 /*------------------------------------------------------------------*/
@@ -364,6 +371,10 @@ irnet_discover_next_daddr(irnet_socket *	self)
     }
   else
     return(1);
+      return 0;
+    }
+  else
+    return 1;
 }
 
 /*------------------------------------------------------------------*/
@@ -435,6 +446,7 @@ irnet_discover_daddr_and_lsap_sel(irnet_socket *	self)
 
   DEXIT(IRDA_SR_TRACE, "\n");
   return(0);
+  return 0;
 }
 
 /*------------------------------------------------------------------*/
@@ -484,6 +496,7 @@ irnet_dname_to_daddr(irnet_socket *	self)
   DEBUG(IRDA_SR_INFO, "cannot discover device ``%s'' !!!\n", self->rname);
   kfree(discoveries);
   return(-EADDRNOTAVAIL);
+  return -EADDRNOTAVAIL;
 }
 
 
@@ -526,6 +539,7 @@ irda_irnet_create(irnet_socket *	self)
 
   DEXIT(IRDA_SOCK_TRACE, "\n");
   return(0);
+  return 0;
 }
 
 /*------------------------------------------------------------------*/
@@ -600,6 +614,7 @@ irda_irnet_connect(irnet_socket *	self)
    */
   DEXIT(IRDA_SOCK_TRACE, "\n");
   return(0);
+  return 0;
 }
 
 /*------------------------------------------------------------------*/
@@ -733,6 +748,7 @@ irnet_daddr_to_dname(irnet_socket *	self)
   DEXIT(IRDA_SERV_INFO, ": cannot discover device 0x%08x !!!\n", self->daddr);
   kfree(discoveries);
   return(-EADDRNOTAVAIL);
+  return -EADDRNOTAVAIL;
 }
 
 /*------------------------------------------------------------------*/
@@ -1404,6 +1420,8 @@ irnet_connect_indication(void *		instance,
 #ifdef ALLOW_SIMULT_CONNECT
      || ((irttp_is_primary(server->tsap) == 1)	/* primary */
 	 && (test_and_clear_bit(0, &new->ttp_connect)))
+     || ((irttp_is_primary(server->tsap) == 1) &&	/* primary */
+	 (test_and_clear_bit(0, &new->ttp_connect)))
 #endif /* ALLOW_SIMULT_CONNECT */
      )
     {

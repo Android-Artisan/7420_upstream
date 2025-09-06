@@ -5,6 +5,7 @@
  * Author       Fritz Elfert
  * Copyright    by Fritz Elfert      <fritz@isdn4linux.de>
  * 
+ *
  * This software may be used and distributed according to the terms
  * of the GNU General Public License, incorporated herein by reference.
  *
@@ -50,6 +51,10 @@ typedef  union actcapi_infonr {              /* info number                  */
 		unsigned  rsvd  : 5;         /* reserved                     */
 		unsigned  svind : 1;         /* single, variable length ind. */
 		unsigned  wtype : 7;         /* W-element type               */
+		unsigned  codes:3;           /* code set                     */
+		unsigned  rsvd:5;            /* reserved                     */
+		unsigned  svind:1;           /* single, variable length ind. */
+		unsigned  wtype:7;           /* W-element type               */
 	} bmask;
 } actcapi_infonr;
 
@@ -66,6 +71,13 @@ typedef union  actcapi_infoel {              /* info element                 */
 		unsigned ext1  : 1;          /* extension                    */
 		unsigned cval  : 7;          /* Cause value                  */
 	} cause;                     
+		unsigned ext2:1;             /* extension                    */
+		unsigned cod:2;              /* coding standard              */
+		unsigned spare:1;            /* spare                        */
+		unsigned loc:4;              /* location                     */
+		unsigned ext1:1;             /* extension                    */
+		unsigned cval:7;             /* Cause value                  */
+	} cause;
 	struct charge {                      /* Charging information         */
 		__u8 toc;                    /* type of charging info        */
 		__u8 unit[10];               /* charging units               */
@@ -119,6 +131,14 @@ typedef struct actcapi_ncpd {
 	contr = (fakencci >> 5) & 0x7; \
 	ncci  = (fakencci >> 8) & 0xff; \
 }
+#define MAKE_NCCI(plci, contr, ncci)					\
+	((plci & 0x1f) | ((contr & 0x7) << 5) | ((ncci & 0xff) << 8))
+
+#define EVAL_NCCI(fakencci, plci, contr, ncci) {	\
+		plci  = fakencci & 0x1f;		\
+		contr = (fakencci >> 5) & 0x7;		\
+		ncci  = (fakencci >> 8) & 0xff;		\
+	}
 
 /*
  * Layout of PLCI field in a B3 DATA CAPI message is different from
@@ -135,6 +155,13 @@ typedef struct actcapi_ncpd {
 	plci  = fakeplci & 0x1f; \
 	contr = (fakeplci >> 5) & 0x7; \
 }
+#define MAKE_PLCI(plci, contr)			\
+	((plci & 0x1f) | ((contr & 0x7) << 5))
+
+#define EVAL_PLCI(fakeplci, plci, contr) {	\
+		plci  = fakeplci & 0x1f;	\
+		contr = (fakeplci >> 5) & 0x7;	\
+	}
 
 typedef struct actcapi_msg {
 	actcapi_msghdr hdr;

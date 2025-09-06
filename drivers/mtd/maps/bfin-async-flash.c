@@ -7,6 +7,7 @@
  * board resources file.
  *
  * Copyright 2000 Nicolas Pitre <nico@cam.org>
+ * Copyright 2000 Nicolas Pitre <nico@fluxnic.net>
  * Copyright 2005-2008 Analog Devices Inc.
  *
  * Enter bugs at http://blackfin.uclinux.org/
@@ -22,6 +23,7 @@
 #include <linux/mtd/partitions.h>
 #include <linux/mtd/physmap.h>
 #include <linux/platform_device.h>
+#include <linux/slab.h>
 #include <linux/types.h>
 
 #include <asm/blackfin.h>
@@ -30,6 +32,8 @@
 #include <asm/unaligned.h>
 
 #define pr_devinit(fmt, args...) ({ static const __devinitconst char __fmt[] = fmt; printk(__fmt, ## args); })
+#define pr_devinit(fmt, args...) \
+		({ static const char __fmt[] = fmt; printk(__fmt, ## args); })
 
 #define DRIVER_NAME "bfin-async-flash"
 
@@ -67,6 +71,7 @@ static void switch_back(struct async_state *state)
 }
 
 static map_word bfin_read(struct map_info *map, unsigned long ofs)
+static map_word bfin_flash_read(struct map_info *map, unsigned long ofs)
 {
 	struct async_state *state = (struct async_state *)map->map_priv_1;
 	uint16_t word;
@@ -83,6 +88,7 @@ static map_word bfin_read(struct map_info *map, unsigned long ofs)
 }
 
 static void bfin_copy_from(struct map_info *map, void *to, unsigned long from, ssize_t len)
+static void bfin_flash_copy_from(struct map_info *map, void *to, unsigned long from, ssize_t len)
 {
 	struct async_state *state = (struct async_state *)map->map_priv_1;
 
@@ -94,6 +100,7 @@ static void bfin_copy_from(struct map_info *map, void *to, unsigned long from, s
 }
 
 static void bfin_write(struct map_info *map, map_word d1, unsigned long ofs)
+static void bfin_flash_write(struct map_info *map, map_word d1, unsigned long ofs)
 {
 	struct async_state *state = (struct async_state *)map->map_priv_1;
 	uint16_t d;
@@ -109,6 +116,7 @@ static void bfin_write(struct map_info *map, map_word d1, unsigned long ofs)
 }
 
 static void bfin_copy_to(struct map_info *map, unsigned long to, const void *from, ssize_t len)
+static void bfin_flash_copy_to(struct map_info *map, unsigned long to, const void *from, ssize_t len)
 {
 	struct async_state *state = (struct async_state *)map->map_priv_1;
 
@@ -128,6 +136,12 @@ static int __devinit bfin_flash_probe(struct platform_device *pdev)
 {
 	int ret;
 	struct physmap_flash_data *pdata = pdev->dev.platform_data;
+static const char * const part_probe_types[] = {
+	"cmdlinepart", "RedBoot", NULL };
+
+static int bfin_flash_probe(struct platform_device *pdev)
+{
+	struct physmap_flash_data *pdata = dev_get_platdata(&pdev->dev);
 	struct resource *memory = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	struct resource *flash_ambctl = platform_get_resource(pdev, IORESOURCE_MEM, 1);
 	struct async_state *state;
@@ -143,6 +157,12 @@ static int __devinit bfin_flash_probe(struct platform_device *pdev)
 	state->map.copy_to    = bfin_copy_to;
 	state->map.bankwidth  = pdata->width;
 	state->map.size       = memory->end - memory->start + 1;
+	state->map.read       = bfin_flash_read;
+	state->map.copy_from  = bfin_flash_copy_from;
+	state->map.write      = bfin_flash_write;
+	state->map.copy_to    = bfin_flash_copy_to;
+	state->map.bankwidth  = pdata->width;
+	state->map.size       = resource_size(memory);
 	state->map.virt       = (void __iomem *)memory->start;
 	state->map.phys       = memory->start;
 	state->map.map_priv_1 = (unsigned long)state;
@@ -152,6 +172,7 @@ static int __devinit bfin_flash_probe(struct platform_device *pdev)
 
 	if (gpio_request(state->enet_flash_pin, DRIVER_NAME)) {
 		pr_devinit(KERN_ERR DRIVER_NAME ": Failed to request gpio %d\n", state->enet_flash_pin);
+		kfree(state);
 		return -EBUSY;
 	}
 	gpio_direction_output(state->enet_flash_pin, 1);
@@ -178,6 +199,15 @@ static int __devinit bfin_flash_probe(struct platform_device *pdev)
 		add_mtd_device(state->mtd);
 	}
 
+	if (!state->mtd) {
+		gpio_free(state->enet_flash_pin);
+		kfree(state);
+		return -ENXIO;
+	}
+
+	mtd_device_parse_register(state->mtd, part_probe_types, NULL,
+				  pdata->parts, pdata->nr_parts);
+
 	platform_set_drvdata(pdev, state);
 
 	return 0;
@@ -190,6 +220,11 @@ static int __devexit bfin_flash_remove(struct platform_device *pdev)
 #ifdef CONFIG_MTD_PARTITIONS
 	del_mtd_partitions(state->mtd);
 #endif
+static int bfin_flash_remove(struct platform_device *pdev)
+{
+	struct async_state *state = platform_get_drvdata(pdev);
+	gpio_free(state->enet_flash_pin);
+	mtd_device_unregister(state->mtd);
 	map_destroy(state->mtd);
 	kfree(state);
 	return 0;
@@ -198,6 +233,7 @@ static int __devexit bfin_flash_remove(struct platform_device *pdev)
 static struct platform_driver bfin_flash_driver = {
 	.probe		= bfin_flash_probe,
 	.remove		= __devexit_p(bfin_flash_remove),
+	.remove		= bfin_flash_remove,
 	.driver		= {
 		.name	= DRIVER_NAME,
 	},
@@ -214,6 +250,7 @@ static void __exit bfin_flash_exit(void)
 	platform_driver_unregister(&bfin_flash_driver);
 }
 module_exit(bfin_flash_exit);
+module_platform_driver(bfin_flash_driver);
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("MTD map driver for Blackfins with flash/ethernet on same async bank");

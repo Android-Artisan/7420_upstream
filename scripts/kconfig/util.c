@@ -5,6 +5,8 @@
  * Released under the terms of the GNU GPL v2.0.
  */
 
+#include <stdarg.h>
+#include <stdlib.h>
 #include <string.h>
 #include "lkc.h"
 
@@ -21,6 +23,18 @@ struct file *file_lookup(const char *name)
 	file = malloc(sizeof(*file));
 	memset(file, 0, sizeof(*file));
 	file->name = strdup(name);
+	const char *file_name = sym_expand_string_value(name);
+
+	for (file = file_list; file; file = file->next) {
+		if (!strcmp(name, file->name)) {
+			free((void *)file_name);
+			return file;
+		}
+	}
+
+	file = xmalloc(sizeof(*file));
+	memset(file, 0, sizeof(*file));
+	file->name = file_name;
 	file->next = file_list;
 	file_list = file;
 	return file;
@@ -48,6 +62,8 @@ int file_write_dep(const char *name)
 	}
 	fprintf(out, "\ninclude/config/auto.conf: \\\n"
 		     "\t$(deps_config)\n\n");
+	fprintf(out, "\n%s: \\\n"
+		     "\t$(deps_config)\n\n", conf_get_autoconfig_name());
 
 	expr_list_for_each_sym(sym_env_list, e, sym) {
 		struct property *prop;
@@ -62,6 +78,7 @@ int file_write_dep(const char *name)
 			value = "";
 		fprintf(out, "ifneq \"$(%s)\" \"%s\"\n", env_sym->name, value);
 		fprintf(out, "include/config/auto.conf: FORCE\n");
+		fprintf(out, "%s: FORCE\n", conf_get_autoconfig_name());
 		fprintf(out, "endif\n");
 	}
 
@@ -78,6 +95,13 @@ struct gstr str_new(void)
 	struct gstr gs;
 	gs.s = malloc(sizeof(char) * 64);
 	gs.len = 64;
+/* Allocate initial growable string */
+struct gstr str_new(void)
+{
+	struct gstr gs;
+	gs.s = xmalloc(sizeof(char) * 64);
+	gs.len = 64;
+	gs.max_width = 0;
 	strcpy(gs.s, "\0");
 	return gs;
 }
@@ -131,3 +155,20 @@ const char *str_get(struct gstr *gs)
 	return gs->s;
 }
 
+void *xmalloc(size_t size)
+{
+	void *p = malloc(size);
+	if (p)
+		return p;
+	fprintf(stderr, "Out of memory.\n");
+	exit(1);
+}
+
+void *xcalloc(size_t nmemb, size_t size)
+{
+	void *p = calloc(nmemb, size);
+	if (p)
+		return p;
+	fprintf(stderr, "Out of memory.\n");
+	exit(1);
+}

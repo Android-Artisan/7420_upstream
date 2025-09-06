@@ -127,6 +127,8 @@
 #include <linux/wait.h>
 #include <linux/jiffies.h>
 #include <linux/smp_lock.h>
+#include <linux/mutex.h>
+#include <linux/compat.h>
 
 #include <linux/parport.h>
 #undef LP_STATS
@@ -139,6 +141,7 @@
 /* if you have more than 8 printers, remember to increase LP_NO */
 #define LP_NO 8
 
+static DEFINE_MUTEX(lp_mutex);
 static struct lp_struct lp_table[LP_NO];
 
 static unsigned int lp_count = 0;
@@ -294,6 +297,7 @@ static ssize_t lp_write(struct file * file, const char __user * buf,
 		        size_t count, loff_t *ppos)
 {
 	unsigned int minor = iminor(file->f_path.dentry->d_inode);
+	unsigned int minor = iminor(file_inode(file));
 	struct parport *port = lp_table[minor].dev->port;
 	char *kbuf = lp_table[minor].lp_buffer;
 	ssize_t retv = 0;
@@ -413,6 +417,7 @@ static ssize_t lp_read(struct file * file, char __user * buf,
 {
 	DEFINE_WAIT(wait);
 	unsigned int minor=iminor(file->f_path.dentry->d_inode);
+	unsigned int minor=iminor(file_inode(file));
 	struct parport *port = lp_table[minor].dev->port;
 	ssize_t retval = 0;
 	char *kbuf = lp_table[minor].lp_buffer;
@@ -493,6 +498,7 @@ static int lp_open(struct inode * inode, struct file * file)
 	int ret = 0;
 
 	lock_kernel();
+	mutex_lock(&lp_mutex);
 	if (minor >= LP_NO) {
 		ret = -ENXIO;
 		goto out;
@@ -554,6 +560,7 @@ static int lp_open(struct inode * inode, struct file * file)
 	lp_table[minor].current_mode = IEEE1284_MODE_COMPAT;
 out:
 	unlock_kernel();
+	mutex_unlock(&lp_mutex);
 	return ret;
 }
 
@@ -578,6 +585,11 @@ static int lp_ioctl(struct inode *inode, struct file *file,
 	int status;
 	int retval = 0;
 	void __user *argp = (void __user *)arg;
+static int lp_do_ioctl(unsigned int minor, unsigned int cmd,
+	unsigned long arg, void __user *argp)
+{
+	int status;
+	int retval = 0;
 
 #ifdef LP_DEBUG
 	printk(KERN_DEBUG "lp%d ioctl, cmd: 0x%x, arg: 0x%lx\n", minor, cmd, arg);
@@ -591,6 +603,9 @@ static int lp_ioctl(struct inode *inode, struct file *file,
 		long to_jiffies;
 
 		case LPTIME:
+		case LPTIME:
+			if (arg > UINT_MAX / HZ)
+				return -EINVAL;
 			LP_TIME(minor) = arg * HZ/100;
 			break;
 		case LPCHAR:
@@ -629,6 +644,12 @@ static int lp_ioctl(struct inode *inode, struct file *file,
 			lp_claim_parport_or_block (&lp_table[minor]);
 			status = r_str(minor);
 			lp_release_parport (&lp_table[minor]);
+			if (mutex_lock_interruptible(&lp_table[minor].port_mutex))
+				return -EINTR;
+			lp_claim_parport_or_block (&lp_table[minor]);
+			status = r_str(minor);
+			lp_release_parport (&lp_table[minor]);
+			mutex_unlock(&lp_table[minor].port_mutex);
 
 			if (copy_to_user(argp, &status, sizeof(int)))
 				return -EFAULT;
@@ -680,11 +701,98 @@ static const struct file_operations lp_fops = {
 	.owner		= THIS_MODULE,
 	.write		= lp_write,
 	.ioctl		= lp_ioctl,
+static int lp_set_timeout(unsigned int minor, struct timeval *par_timeout)
+{
+	long to_jiffies;
+
+	/* Convert to jiffies, place in lp_table */
+	if ((par_timeout->tv_sec < 0) ||
+	    (par_timeout->tv_usec < 0)) {
+		return -EINVAL;
+	}
+	to_jiffies = DIV_ROUND_UP(par_timeout->tv_usec, 1000000/HZ);
+	to_jiffies += par_timeout->tv_sec * (long) HZ;
+	if (to_jiffies <= 0) {
+		return -EINVAL;
+	}
+	lp_table[minor].timeout = to_jiffies;
+	return 0;
+}
+
+static long lp_ioctl(struct file *file, unsigned int cmd,
+			unsigned long arg)
+{
+	unsigned int minor;
+	struct timeval par_timeout;
+	int ret;
+
+	minor = iminor(file_inode(file));
+	mutex_lock(&lp_mutex);
+	switch (cmd) {
+	case LPSETTIMEOUT:
+		if (copy_from_user(&par_timeout, (void __user *)arg,
+					sizeof (struct timeval))) {
+			ret = -EFAULT;
+			break;
+		}
+		ret = lp_set_timeout(minor, &par_timeout);
+		break;
+	default:
+		ret = lp_do_ioctl(minor, cmd, arg, (void __user *)arg);
+		break;
+	}
+	mutex_unlock(&lp_mutex);
+
+	return ret;
+}
+
+#ifdef CONFIG_COMPAT
+static long lp_compat_ioctl(struct file *file, unsigned int cmd,
+			unsigned long arg)
+{
+	unsigned int minor;
+	struct timeval par_timeout;
+	int ret;
+
+	minor = iminor(file_inode(file));
+	mutex_lock(&lp_mutex);
+	switch (cmd) {
+	case LPSETTIMEOUT:
+		if (compat_get_timeval(&par_timeout, compat_ptr(arg))) {
+			ret = -EFAULT;
+			break;
+		}
+		ret = lp_set_timeout(minor, &par_timeout);
+		break;
+#ifdef LP_STATS
+	case LPGETSTATS:
+		/* FIXME: add an implementation if you set LP_STATS */
+		ret = -EINVAL;
+		break;
+#endif
+	default:
+		ret = lp_do_ioctl(minor, cmd, arg, compat_ptr(arg));
+		break;
+	}
+	mutex_unlock(&lp_mutex);
+
+	return ret;
+}
+#endif
+
+static const struct file_operations lp_fops = {
+	.owner		= THIS_MODULE,
+	.write		= lp_write,
+	.unlocked_ioctl	= lp_ioctl,
+#ifdef CONFIG_COMPAT
+	.compat_ioctl	= lp_compat_ioctl,
+#endif
 	.open		= lp_open,
 	.release	= lp_release,
 #ifdef CONFIG_PARPORT_1284
 	.read		= lp_read,
 #endif
+	.llseek		= noop_llseek,
 };
 
 /* --- support for console on the line printer ----------------- */
@@ -765,6 +873,7 @@ static struct console lpcons = {
 static int parport_nr[LP_NO] = { [0 ... LP_NO-1] = LP_PARPORT_UNSPEC };
 static char *parport[LP_NO];
 static int reset;
+static bool reset;
 
 module_param_array(parport, charp, NULL, 0);
 module_param(reset, bool, 0);
@@ -793,7 +902,11 @@ static int __init lp_setup (char *str)
 	} else if (!strcmp(str, "auto")) {
 		parport_nr[0] = LP_PARPORT_AUTO;
 	} else if (!strcmp(str, "none")) {
-		parport_nr[parport_ptr++] = LP_PARPORT_NONE;
+		if (parport_ptr < LP_NO)
+			parport_nr[parport_ptr++] = LP_PARPORT_NONE;
+		else
+			printk(KERN_INFO "lp: too many ports, %s ignored.\n",
+			       str);
 	} else if (!strcmp(str, "reset")) {
 		reset = 1;
 	}
@@ -815,6 +928,8 @@ static int lp_register(int nr, struct parport *port)
 
 	device_create_drvdata(lp_class, port->dev, MKDEV(LP_MAJOR, nr), NULL,
 			      "lp%d", nr);
+	device_create(lp_class, port->dev, MKDEV(LP_MAJOR, nr), NULL,
+		      "lp%d", nr);
 
 	printk(KERN_INFO "lp%d: using %s (%s).\n", nr, port->name, 
 	       (port->irq == PARPORT_IRQ_NONE)?"polling":"interrupt-driven");

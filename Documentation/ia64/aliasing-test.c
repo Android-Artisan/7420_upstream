@@ -25,6 +25,7 @@
 int sum;
 
 int map_mem(char *path, off_t offset, size_t length, int touch)
+static int map_mem(char *path, off_t offset, size_t length, int touch)
 {
 	int fd, rc;
 	void *addr;
@@ -63,6 +64,7 @@ int map_mem(char *path, off_t offset, size_t length, int touch)
 }
 
 int scan_tree(char *path, char *file, off_t offset, size_t length, int touch)
+static int scan_tree(char *path, char *file, off_t offset, size_t length, int touch)
 {
 	struct dirent **namelist;
 	char *name, *path2;
@@ -120,6 +122,7 @@ skip:
 char buf[1024];
 
 int read_rom(char *path)
+static int read_rom(char *path)
 {
 	int fd, rc;
 	size_t size = 0;
@@ -132,6 +135,7 @@ int read_rom(char *path)
 
 	rc = write(fd, "1", 2);
 	if (rc <= 0) {
+		close(fd);
 		perror("write");
 		return -1;
 	}
@@ -147,6 +151,7 @@ int read_rom(char *path)
 }
 
 int scan_rom(char *path, char *file)
+static int scan_rom(char *path, char *file)
 {
 	struct dirent **namelist;
 	char *name, *path2;
@@ -178,6 +183,7 @@ int scan_rom(char *path, char *file)
 			/*
 			 * It's OK if the ROM is unreadable.  Maybe there
 			 * is no ROM, or some other error ocurred.  The
+			 * is no ROM, or some other error occurred.  The
 			 * important thing is that no MCA happened.
 			 */
 			if (rc > 0)

@@ -28,6 +28,10 @@
 #include <asm/system.h>
 #include <asm/irq.h>
 #include <asm/arch/io_interface_mux.h>
+#include <arch/svinto.h>
+#include <asm/io.h>
+#include <asm/irq.h>
+#include <arch/io_interface_mux.h>
 
 #define GPIO_MAJOR 120  /* experimental MAJOR number */
 
@@ -48,6 +52,7 @@ static wait_queue_head_t *gpio_wq;
 
 static int gpio_ioctl(struct inode *inode, struct file *file,
 	unsigned int cmd, unsigned long arg);
+static long gpio_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
 static ssize_t gpio_write(struct file *file, const char __user *buf,
 	size_t count, loff_t *off);
 static int gpio_open(struct inode *inode, struct file *filp);
@@ -507,6 +512,7 @@ gpio_leds_ioctl(unsigned int cmd, unsigned long arg);
 static int
 gpio_ioctl(struct inode *inode, struct file *file,
 	   unsigned int cmd, unsigned long arg)
+static long gpio_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
 	unsigned long flags;
 	unsigned long val;
@@ -521,6 +527,10 @@ gpio_ioctl(struct inode *inode, struct file *file,
 	switch (_IOC_NR(cmd)) {
 	case IO_READBITS: /* Use IO_READ_INBITS and IO_READ_OUTBITS instead */
 		// read the port
+	switch (_IOC_NR(cmd)) {
+	case IO_READBITS: /* Use IO_READ_INBITS and IO_READ_OUTBITS instead */
+		// read the port
+		spin_lock_irqsave(&gpio_lock, flags);
 		if (USE_PORTS(priv)) {
 			ret =  *priv->port;
 		} else if (priv->minor == GPIO_MINOR_G) {
@@ -531,6 +541,15 @@ gpio_ioctl(struct inode *inode, struct file *file,
 		// set changeable bits with a 1 in arg
 		if (USE_PORTS(priv)) {
 			*priv->port = *priv->shadow |= 
+		spin_unlock_irqrestore(&gpio_lock, flags);
+
+		break;
+	case IO_SETBITS:
+		// set changeable bits with a 1 in arg
+		spin_lock_irqsave(&gpio_lock, flags);
+
+		if (USE_PORTS(priv)) {
+			*priv->port = *priv->shadow |=
 			  ((unsigned char)arg & priv->changeable_bits);
 		} else if (priv->minor == GPIO_MINOR_G) {
 			*R_PORT_G_DATA = port_g_data_shadow |= (arg & dir_g_out_bits);
@@ -540,6 +559,14 @@ gpio_ioctl(struct inode *inode, struct file *file,
 		// clear changeable bits with a 1 in arg
 		if (USE_PORTS(priv)) {
 			*priv->port = *priv->shadow &= 
+		spin_unlock_irqrestore(&gpio_lock, flags);
+
+		break;
+	case IO_CLRBITS:
+		// clear changeable bits with a 1 in arg
+		spin_lock_irqsave(&gpio_lock, flags);
+		if (USE_PORTS(priv)) {
+			*priv->port = *priv->shadow &=
 			 ~((unsigned char)arg & priv->changeable_bits);
 		} else if (priv->minor == GPIO_MINOR_G) {
 			*R_PORT_G_DATA = port_g_data_shadow &= ~((unsigned long)arg & dir_g_out_bits);
@@ -557,6 +584,25 @@ gpio_ioctl(struct inode *inode, struct file *file,
 		break;
 	case IO_CLRALARM:
 		// clear alarm for bits with 1 in arg
+		spin_unlock_irqrestore(&gpio_lock, flags);
+		break;
+	case IO_HIGHALARM:
+		// set alarm when bits with 1 in arg go high
+		spin_lock_irqsave(&gpio_lock, flags);
+		priv->highalarm |= arg;
+		gpio_some_alarms = 1;
+		spin_unlock_irqrestore(&gpio_lock, flags);
+		break;
+	case IO_LOWALARM:
+		// set alarm when bits with 1 in arg go low
+		spin_lock_irqsave(&gpio_lock, flags);
+		priv->lowalarm |= arg;
+		gpio_some_alarms = 1;
+		spin_unlock_irqrestore(&gpio_lock, flags);
+		break;
+	case IO_CLRALARM:
+		/* clear alarm for bits with 1 in arg */
+		spin_lock_irqsave(&gpio_lock, flags);
 		priv->highalarm &= ~arg;
 		priv->lowalarm  &= ~arg;
 		{
@@ -579,6 +625,12 @@ gpio_ioctl(struct inode *inode, struct file *file,
 		break;
 	case IO_READDIR: /* Use IO_SETGET_INPUT/OUTPUT instead! */
 		/* Read direction 0=input 1=output */
+		}
+		spin_unlock_irqrestore(&gpio_lock, flags);
+		break;
+	case IO_READDIR: /* Use IO_SETGET_INPUT/OUTPUT instead! */
+		/* Read direction 0=input 1=output */
+		spin_lock_irqsave(&gpio_lock, flags);
 		if (USE_PORTS(priv)) {
 			ret = *priv->dir_shadow;
 		} else if (priv->minor == GPIO_MINOR_G) {
@@ -604,6 +656,31 @@ gpio_ioctl(struct inode *inode, struct file *file,
 		SOFT_SHUTDOWN();
 		break;
 	case IO_GET_PWR_BT:
+		spin_unlock_irqrestore(&gpio_lock, flags);
+		break;
+	case IO_SETINPUT: /* Use IO_SETGET_INPUT instead! */
+		/* Set direction 0=unchanged 1=input,
+		 * return mask with 1=input
+		 */
+		spin_lock_irqsave(&gpio_lock, flags);
+		ret = setget_input(priv, arg) & 0x7FFFFFFF;
+		spin_unlock_irqrestore(&gpio_lock, flags);
+		break;
+	case IO_SETOUTPUT: /* Use IO_SETGET_OUTPUT instead! */
+		/* Set direction 0=unchanged 1=output,
+		 * return mask with 1=output
+		 */
+		spin_lock_irqsave(&gpio_lock, flags);
+		ret =  setget_output(priv, arg) & 0x7FFFFFFF;
+		spin_unlock_irqrestore(&gpio_lock, flags);
+		break;
+	case IO_SHUTDOWN:
+		spin_lock_irqsave(&gpio_lock, flags);
+		SOFT_SHUTDOWN();
+		spin_unlock_irqrestore(&gpio_lock, flags);
+		break;
+	case IO_GET_PWR_BT:
+		spin_lock_irqsave(&gpio_lock, flags);
 #if defined (CONFIG_ETRAX_SOFT_SHUTDOWN)
 		ret = (*R_PORT_G_DATA & ( 1 << CONFIG_ETRAX_POWERBUTTON_BIT));
 #else
@@ -611,6 +688,10 @@ gpio_ioctl(struct inode *inode, struct file *file,
 #endif
 		break;
 	case IO_CFG_WRITE_MODE:
+		spin_unlock_irqrestore(&gpio_lock, flags);
+		break;
+	case IO_CFG_WRITE_MODE:
+		spin_lock_irqsave(&gpio_lock, flags);
 		priv->clk_mask = arg & 0xFF;
 		priv->data_mask = (arg >> 8) & 0xFF;
 		priv->write_msb = (arg >> 16) & 0x01;
@@ -629,16 +710,23 @@ gpio_ioctl(struct inode *inode, struct file *file,
 		break;
 	case IO_READ_INBITS: 
 		/* *arg is result of reading the input pins */
+		spin_unlock_irqrestore(&gpio_lock, flags);
+		break;
+	case IO_READ_INBITS:
+		/* *arg is result of reading the input pins */
+		spin_lock_irqsave(&gpio_lock, flags);
 		if (USE_PORTS(priv)) {
 			val = *priv->port;
 		} else if (priv->minor == GPIO_MINOR_G) {
 			val = *R_PORT_G_DATA;
 		}
+		spin_unlock_irqrestore(&gpio_lock, flags);
 		if (copy_to_user((void __user *)arg, &val, sizeof(val)))
 			ret = -EFAULT;
 		break;
 	case IO_READ_OUTBITS:
 		 /* *arg is result of reading the output shadow */
+		spin_lock_irqsave(&gpio_lock, flags);
 		if (USE_PORTS(priv)) {
 			val = *priv->shadow;
 		} else if (priv->minor == GPIO_MINOR_G) {
@@ -648,6 +736,11 @@ gpio_ioctl(struct inode *inode, struct file *file,
 			ret = -EFAULT;
 		break;
 	case IO_SETGET_INPUT: 
+		spin_unlock_irqrestore(&gpio_lock, flags);
+		if (copy_to_user((void __user *)arg, &val, sizeof(val)))
+			ret = -EFAULT;
+		break;
+	case IO_SETGET_INPUT:
 		/* bits set in *arg is set to input,
 		 * *arg updated with current input pins.
 		 */
@@ -657,6 +750,9 @@ gpio_ioctl(struct inode *inode, struct file *file,
 			break;
 		}
 		val = setget_input(priv, val);
+		spin_lock_irqsave(&gpio_lock, flags);
+		val = setget_input(priv, val);
+		spin_unlock_irqrestore(&gpio_lock, flags);
 		if (copy_to_user((void __user *)arg, &val, sizeof(val)))
 			ret = -EFAULT;
 		break;
@@ -669,10 +765,14 @@ gpio_ioctl(struct inode *inode, struct file *file,
 			break;
 		}
 		val = setget_output(priv, val);
+		spin_lock_irqsave(&gpio_lock, flags);
+		val = setget_output(priv, val);
+		spin_unlock_irqrestore(&gpio_lock, flags);
 		if (copy_to_user((void __user *)arg, &val, sizeof(val)))
 			ret = -EFAULT;
 		break;
 	default:
+		spin_lock_irqsave(&gpio_lock, flags);
 		if (priv->minor == GPIO_MINOR_LEDS)
 			ret = gpio_leds_ioctl(cmd, arg);
 		else
@@ -680,6 +780,9 @@ gpio_ioctl(struct inode *inode, struct file *file,
 	} /* switch */
 
 	spin_unlock_irqrestore(&gpio_lock, flags);
+		spin_unlock_irqrestore(&gpio_lock, flags);
+	} /* switch */
+
 	return ret;
 }
 
@@ -719,6 +822,13 @@ static const struct file_operations gpio_fops = {
 	.write       = gpio_write,
 	.open        = gpio_open,
 	.release     = gpio_release,
+	.owner          = THIS_MODULE,
+	.poll           = gpio_poll,
+	.unlocked_ioctl = gpio_ioctl,
+	.write          = gpio_write,
+	.open           = gpio_open,
+	.release        = gpio_release,
+	.llseek		= noop_llseek,
 };
 
 static void ioif_watcher(const unsigned int gpio_in_available,
@@ -813,12 +923,19 @@ static int __init gpio_init(void)
 	 */
 	res = request_irq(TIMER0_IRQ_NBR, gpio_poll_timer_interrupt,
 		IRQF_SHARED | IRQF_DISABLED, "gpio poll", gpio_name);
+	 * from default_idle() in kernel/process.c
+	 * The check in default_idle() reduces latency from ~15 ms to ~6 ms
+	 * in some tests.
+	 */
+	res = request_irq(TIMER0_IRQ_NBR, gpio_poll_timer_interrupt,
+		IRQF_SHARED, "gpio poll", gpio_name);
 	if (res) {
 		printk(KERN_CRIT "err: timer0 irq for gpio\n");
 		return res;
 	}
 	res = request_irq(PA_IRQ_NBR, gpio_interrupt,
 		IRQF_SHARED | IRQF_DISABLED, "gpio PA", gpio_name);
+		IRQF_SHARED, "gpio PA", gpio_name);
 	if (res)
 		printk(KERN_CRIT "err: PA irq for gpio\n");
 

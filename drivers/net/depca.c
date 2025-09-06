@@ -39,7 +39,6 @@
 
     The author may be reached at davies@maniac.ultranet.com
 
-    =========================================================================
 
     The  driver was originally based  on   the 'lance.c' driver from  Donald
     Becker   which  is included with  the  standard  driver distribution for
@@ -232,7 +231,6 @@
       			   by Matt_Domsch@dell.com
       0.55    01-Mar-03   Use EISA/sysfs framework <maz@wild-wind.fr.eu.org>
 
-    =========================================================================
 */
 
 #include <linux/module.h>

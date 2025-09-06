@@ -76,11 +76,16 @@ extern void microdev_heartbeat(void);
 
 	/* assume a Keyboard Controller is present */
 int microdev_kbd_controller_present = 1;
+#include <mach/microdev.h>
+#include <asm/io.h>
+#include <asm/machvec.h>
+#include <asm/sizes.h>
 
 static struct resource smc91x_resources[] = {
 	[0] = {
 		.start		= 0x300,
 		.end		= 0x300 + 0x0001000 - 1,
+		.end		= 0x300 + SZ_4K - 1,
 		.flags		= IORESOURCE_MEM,
 	},
 	[1] = {
@@ -217,11 +222,13 @@ static struct resource s1d13806_resources[] = {
 	[0] = {
 		.start		= 0x07200000,
 		.end		= 0x07200000 + 0x00200000 - 1,
+		.end		= 0x07200000 + SZ_2M - 1,
 		.flags		= IORESOURCE_MEM,
 	},
 	[1] = {
 		.start		= 0x07000000,
 		.end		= 0x07000000 + 0x00200000 - 1,
+		.end		= 0x07000000 + SZ_2M - 1,
 		.flags		= IORESOURCE_MEM,
 	},
 };
@@ -243,6 +250,10 @@ static struct platform_device *microdev_devices[] __initdata = {
 #ifdef CONFIG_FB_S1D13XXX
 	&s1d13806_device,
 #endif
+
+static struct platform_device *microdev_devices[] __initdata = {
+	&smc91x_device,
+	&s1d13806_device,
 };
 
 static int __init microdev_devices_setup(void)
@@ -367,6 +378,7 @@ static void __init microdev_setup(char **cmdline_p)
 	printk("SuperH %s board (FPGA rev: 0x%0x, CCR: 0x%0x)\n",
 		get_system_type(), fpgaRevision, *CacheControlRegister);
 }
+device_initcall(microdev_devices_setup);
 
 /*
  * The Machine Vector
@@ -402,4 +414,6 @@ static struct sh_machine_vector mv_sh4202_microdev __initmv = {
 #ifdef CONFIG_HEARTBEAT
 	.mv_heartbeat		= microdev_heartbeat,
 #endif
+	.mv_ioport_map		= microdev_ioport_map,
+	.mv_init_irq		= init_microdev_irq,
 };

@@ -7,6 +7,7 @@
  */
 
 #include <linux/module.h>
+#include <linux/slab.h>
 #include <linux/types.h>
 #include <linux/errno.h>
 #include <linux/fs.h>
@@ -59,6 +60,7 @@ static void nlm_put_lockowner(struct nlm_lockowner *lockowner)
 	list_del(&lockowner->list);
 	spin_unlock(&lockowner->host->h_lock);
 	nlm_release_host(lockowner->host);
+	nlmclnt_release_host(lockowner->host);
 	kfree(lockowner);
 }
 
@@ -134,6 +136,15 @@ static void nlmclnt_setlockargs(struct nlm_rqst *req, struct file_lock *fl)
 	lock->oh.len  = snprintf(req->a_owner, sizeof(req->a_owner), "%u@%s",
 				(unsigned int)fl->fl_u.nfs_fl.owner->pid,
 				utsname()->nodename);
+	char *nodename = req->a_host->h_rpcclnt->cl_nodename;
+
+	nlmclnt_next_cookie(&argp->cookie);
+	memcpy(&lock->fh, NFS_FH(file_inode(fl->fl_file)), sizeof(struct nfs_fh));
+	lock->caller  = nodename;
+	lock->oh.data = req->a_owner;
+	lock->oh.len  = snprintf(req->a_owner, sizeof(req->a_owner), "%u@%s",
+				(unsigned int)fl->fl_u.nfs_fl.owner->pid,
+				nodename);
 	lock->svid = fl->fl_u.nfs_fl.owner->pid;
 	lock->fl.fl_start = fl->fl_start;
 	lock->fl.fl_end = fl->fl_end;
@@ -143,6 +154,7 @@ static void nlmclnt_setlockargs(struct nlm_rqst *req, struct file_lock *fl)
 static void nlmclnt_release_lockargs(struct nlm_rqst *req)
 {
 	BUG_ON(req->a_args.lock.fl.fl_ops != NULL);
+	WARN_ON_ONCE(req->a_args.lock.fl.fl_ops != NULL);
 }
 
 /**
@@ -163,6 +175,11 @@ int nlmclnt_proc(struct nlm_host *host, int cmd, struct file_lock *fl)
 		return -ENOMEM;
 
 	nlmclnt_locks_init_private(fl, host);
+	if (!fl->fl_u.nfs_fl.owner) {
+		/* lockowner allocation has failed */
+		nlmclnt_release_call(call);
+		return -ENOMEM;
+	}
 	/* Set up the argument struct */
 	nlmclnt_setlockargs(call, fl);
 
@@ -202,6 +219,7 @@ struct nlm_rqst *nlm_alloc_call(struct nlm_host *host)
 			locks_init_lock(&call->a_args.lock.fl);
 			locks_init_lock(&call->a_res.lock.fl);
 			call->a_host = host;
+			call->a_host = nlm_get_host(host);
 			return call;
 		}
 		if (signalled())
@@ -218,6 +236,14 @@ void nlm_release_call(struct nlm_rqst *call)
 	if (!atomic_dec_and_test(&call->a_count))
 		return;
 	nlm_release_host(call->a_host);
+	return NULL;
+}
+
+void nlmclnt_release_call(struct nlm_rqst *call)
+{
+	if (!atomic_dec_and_test(&call->a_count))
+		return;
+	nlmclnt_release_host(call->a_host);
 	nlmclnt_release_lockargs(call);
 	kfree(call);
 }
@@ -227,6 +253,7 @@ static void nlmclnt_rpc_release(void *data)
 	lock_kernel();
 	nlm_release_call(data);
 	unlock_kernel();
+	nlmclnt_release_call(data);
 }
 
 static int nlm_wait_on_grace(wait_queue_head_t *queue)
@@ -307,6 +334,8 @@ nlmclnt_call(struct rpc_cred *cred, struct nlm_rqst *req, u32 proc)
 				wake_up_all(&host->h_gracewait);
 			}
 			dprintk("lockd: server returns status %d\n", resp->status);
+			dprintk("lockd: server returns status %d\n",
+				ntohl(resp->status));
 			return 0;	/* Okay, call complete */
 		}
 
@@ -441,6 +470,7 @@ nlmclnt_test(struct nlm_rqst *req, struct file_lock *fl)
 	}
 out:
 	nlm_release_call(req);
+	nlmclnt_release_call(req);
 	return status;
 }
 
@@ -449,6 +479,11 @@ static void nlmclnt_locks_copy_lock(struct file_lock *new, struct file_lock *fl)
 	new->fl_u.nfs_fl.state = fl->fl_u.nfs_fl.state;
 	new->fl_u.nfs_fl.owner = nlm_get_lockowner(fl->fl_u.nfs_fl.owner);
 	list_add_tail(&new->fl_u.nfs_fl.list, &fl->fl_u.nfs_fl.owner->host->h_granted);
+	spin_lock(&fl->fl_u.nfs_fl.owner->host->h_lock);
+	new->fl_u.nfs_fl.state = fl->fl_u.nfs_fl.state;
+	new->fl_u.nfs_fl.owner = nlm_get_lockowner(fl->fl_u.nfs_fl.owner);
+	list_add_tail(&new->fl_u.nfs_fl.list, &fl->fl_u.nfs_fl.owner->host->h_granted);
+	spin_unlock(&fl->fl_u.nfs_fl.owner->host->h_lock);
 }
 
 static void nlmclnt_locks_release_private(struct file_lock *fl)
@@ -458,6 +493,13 @@ static void nlmclnt_locks_release_private(struct file_lock *fl)
 }
 
 static struct file_lock_operations nlmclnt_lock_ops = {
+	spin_lock(&fl->fl_u.nfs_fl.owner->host->h_lock);
+	list_del(&fl->fl_u.nfs_fl.list);
+	spin_unlock(&fl->fl_u.nfs_fl.owner->host->h_lock);
+	nlm_put_lockowner(fl->fl_u.nfs_fl.owner);
+}
+
+static const struct file_lock_operations nlmclnt_lock_ops = {
 	.fl_copy_lock = nlmclnt_locks_copy_lock,
 	.fl_release_private = nlmclnt_locks_release_private,
 };
@@ -485,6 +527,7 @@ static int do_vfs_lock(struct file_lock *fl)
 			BUG();
 	}
 	return res;
+	return locks_lock_file_wait(fl->fl_file, fl);
 }
 
 /*
@@ -523,6 +566,10 @@ nlmclnt_lock(struct nlm_rqst *req, struct file_lock *fl)
 					host->h_name);
 		goto out;
 	}
+	if (nsm_monitor(host) < 0)
+		goto out;
+	req->a_args.state = nsm_local_state;
+
 	fl->fl_flags |= FL_ACCESS;
 	status = do_vfs_lock(fl);
 	fl->fl_flags = fl_flags;
@@ -595,6 +642,7 @@ out_unblock:
 	nlmclnt_finish_block(block);
 out:
 	nlm_release_call(req);
+	nlmclnt_release_call(req);
 	return status;
 out_unlock:
 	/* Fatal error: ensure that we remove the lock altogether */
@@ -622,6 +670,11 @@ nlmclnt_reclaim(struct nlm_host *host, struct file_lock *fl)
 	int		status;
 
 	req = &reqst;
+nlmclnt_reclaim(struct nlm_host *host, struct file_lock *fl,
+		struct nlm_rqst *req)
+{
+	int		status;
+
 	memset(req, 0, sizeof(*req));
 	locks_init_lock(&req->a_args.lock.fl);
 	locks_init_lock(&req->a_res.lock.fl);
@@ -696,6 +749,12 @@ nlmclnt_unlock(struct nlm_rqst *req, struct file_lock *fl)
 	status = -ENOLCK;
 out:
 	nlm_release_call(req);
+		printk("lockd: unexpected unlock status: %d\n",
+			ntohl(resp->status));
+	/* What to do now? I'm out of my depth... */
+	status = -ENOLCK;
+out:
+	nlmclnt_release_call(req);
 	return status;
 }
 
@@ -710,6 +769,13 @@ static void nlmclnt_unlock_callback(struct rpc_task *task, void *data)
 	if (task->tk_status < 0) {
 		dprintk("lockd: unlock failed (err = %d)\n", -task->tk_status);
 		goto retry_rebind;
+		switch (task->tk_status) {
+		case -EACCES:
+		case -EIO:
+			goto die;
+		default:
+			goto retry_rebind;
+		}
 	}
 	if (status == NLM_LCK_DENIED_GRACE_PERIOD) {
 		rpc_delay(task, NLMCLNT_GRACE_WAIT);
@@ -723,6 +789,7 @@ die:
 	lock_kernel();
 	nlm_rebind_host(req->a_host);
 	unlock_kernel();
+	nlm_rebind_host(req->a_host);
  retry_unlock:
 	rpc_restart_call(task);
 }
@@ -746,6 +813,7 @@ static int nlmclnt_cancel(struct nlm_host *host, int block, struct file_lock *fl
 		"       Attempting to cancel lock.\n");
 
 	req = nlm_alloc_call(nlm_get_host(host));
+	req = nlm_alloc_call(host);
 	if (!req)
 		return -ENOMEM;
 	req->a_flags = RPC_TASK_ASYNC;
@@ -759,6 +827,7 @@ static int nlmclnt_cancel(struct nlm_host *host, int block, struct file_lock *fl
 	if (status == 0 && req->a_res.status == nlm_lck_denied)
 		status = -ENOLCK;
 	nlm_release_call(req);
+	nlmclnt_release_call(req);
 	return status;
 }
 
@@ -803,6 +872,7 @@ retry_cancel:
 	lock_kernel();
 	nlm_rebind_host(req->a_host);
 	unlock_kernel();
+	nlm_rebind_host(req->a_host);
 	rpc_restart_call(task);
 	rpc_delay(task, 30 * HZ);
 }
@@ -843,5 +913,7 @@ nlm_stat_to_errno(__be32 status)
 #endif
 	}
 	printk(KERN_NOTICE "lockd: unexpected server status %d\n", status);
+	printk(KERN_NOTICE "lockd: unexpected server status %d\n",
+		 ntohl(status));
 	return -ENOLCK;
 }

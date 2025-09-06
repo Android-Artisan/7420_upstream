@@ -10,6 +10,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/mca.h>
+#include <linux/slab.h>
 #include <linux/types.h>
 #include <linux/init.h>
 #include <linux/delay.h>
@@ -351,6 +352,7 @@ static struct mca_driver NCR_Q720_driver = {
 		.bus		= &mca_bus_type,
 		.probe		= NCR_Q720_probe,
 		.remove		= __devexit_p(NCR_Q720_remove),
+		.remove		= NCR_Q720_remove,
 	},
 };
 

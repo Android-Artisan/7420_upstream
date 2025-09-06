@@ -79,6 +79,7 @@
  *
  * 	The IRWave IR320ST-2 is a simple dongle based on the Vishay/Temic
  * 	TOIM3232 SIR Endec and the Vishay/Temic TFDS4500 SIR IRDA transciever.
+ * 	TOIM3232 SIR Endec and the Vishay/Temic TFDS4500 SIR IRDA transceiver.
  * 	It uses a hex inverter and some discrete components to buffer and
  * 	line convert the RS232 down to 5V.
  *
@@ -120,6 +121,7 @@
 #include <linux/module.h>
 #include <linux/delay.h>
 #include <linux/init.h>
+#include <linux/sched.h>
 
 #include <net/irda/irda.h>
 
@@ -169,6 +171,8 @@ static int __init toim3232_sir_init(void)
 		toim3232delay = 200;
 	IRDA_DEBUG(1, "%s - using %d ms delay\n",
 		toim3232.driver_name, toim3232delay);
+	pr_debug("%s - using %d ms delay\n",
+		 toim3232.driver_name, toim3232delay);
 	return irda_register_dongle(&toim3232);
 }
 

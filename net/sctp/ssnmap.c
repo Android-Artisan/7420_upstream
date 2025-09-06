@@ -42,6 +42,22 @@
 
 #define MAX_KMALLOC_SIZE	131072
 
+ * along with GNU CC; see the file COPYING.  If not, see
+ * <http://www.gnu.org/licenses/>.
+ *
+ * Please send any bug reports or fixes you make to the
+ * email address(es):
+ *    lksctp developers <linux-sctp@vger.kernel.org>
+ *
+ * Written or modified by:
+ *    Jon Grimm             <jgrimm@us.ibm.com>
+ */
+
+#include <linux/types.h>
+#include <linux/slab.h>
+#include <net/sctp/sctp.h>
+#include <net/sctp/sm.h>
+
 static struct sctp_ssnmap *sctp_ssnmap_init(struct sctp_ssnmap *map, __u16 in,
 					    __u16 out);
 
@@ -65,6 +81,7 @@ struct sctp_ssnmap *sctp_ssnmap_new(__u16 in, __u16 out,
 
 	size = sctp_ssnmap_size(in, out);
 	if (size <= MAX_KMALLOC_SIZE)
+	if (size <= KMALLOC_MAX_SIZE)
 		retval = kmalloc(size, gfp);
 	else
 		retval = (struct sctp_ssnmap *)
@@ -82,6 +99,7 @@ struct sctp_ssnmap *sctp_ssnmap_new(__u16 in, __u16 out,
 
 fail_map:
 	if (size <= MAX_KMALLOC_SIZE)
+	if (size <= KMALLOC_MAX_SIZE)
 		kfree(retval);
 	else
 		free_pages((unsigned long)retval, get_order(size));
@@ -129,4 +147,16 @@ void sctp_ssnmap_free(struct sctp_ssnmap *map)
 			free_pages((unsigned long)map, get_order(size));
 		SCTP_DBG_OBJCNT_DEC(ssnmap);
 	}
+	int size;
+
+	if (unlikely(!map))
+		return;
+
+	size = sctp_ssnmap_size(map->in.len, map->out.len);
+	if (size <= KMALLOC_MAX_SIZE)
+		kfree(map);
+	else
+		free_pages((unsigned long)map, get_order(size));
+
+	SCTP_DBG_OBJCNT_DEC(ssnmap);
 }

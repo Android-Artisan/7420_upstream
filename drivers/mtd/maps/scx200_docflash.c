@@ -169,6 +169,8 @@ static int __init init_scx200_docflash(void)
        	printk(KERN_INFO NAME ": DOCCS mapped at 0x%llx-0x%llx, width %d\n",
 			(unsigned long long)docmem.start,
 			(unsigned long long)docmem.end, width);
+	printk(KERN_INFO NAME ": DOCCS mapped at %pR, width %d\n",
+	       &docmem, width);
 
 	scx200_docflash_map.size = size;
 	if (width == 8)
@@ -206,6 +208,10 @@ static int __init init_scx200_docflash(void)
 #else
 	add_mtd_device(mymtd);
 #endif
+	partition_info[3].offset = mymtd->size-partition_info[3].size;
+	partition_info[2].size = partition_info[3].offset-partition_info[2].offset;
+	mtd_device_register(mymtd, partition_info, NUM_PARTITIONS);
+
 	return 0;
 }
 
@@ -217,6 +223,7 @@ static void __exit cleanup_scx200_docflash(void)
 #else
 		del_mtd_device(mymtd);
 #endif
+		mtd_device_unregister(mymtd);
 		map_destroy(mymtd);
 	}
 	if (scx200_docflash_map.virt) {

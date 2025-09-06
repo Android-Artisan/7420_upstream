@@ -200,6 +200,7 @@ static int act200l_reset(struct sir_dev *dev)
 	unsigned state = dev->fsm.substate;
 	unsigned delay = 0;
 	u8 control[9] = {
+	static const u8 control[9] = {
 		ACT200L_REG15,
 		ACT200L_REG13 | ACT200L_SHDW,
 		ACT200L_REG21 | ACT200L_EXCK | ACT200L_OSCL,
@@ -241,6 +242,8 @@ static int act200l_reset(struct sir_dev *dev)
 		break;
 	default:
 		IRDA_ERROR("%s(), unknown state %d\n", __func__, state);
+		net_err_ratelimited("%s(), unknown state %d\n",
+				    __func__, state);
 		ret = -1;
 		break;
 	}

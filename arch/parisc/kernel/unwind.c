@@ -13,6 +13,7 @@
 #include <linux/sched.h>
 #include <linux/slab.h>
 #include <linux/kallsyms.h>
+#include <linux/sort.h>
 
 #include <asm/uaccess.h>
 #include <asm/assembly.h>
@@ -29,6 +30,7 @@
 #endif
 
 #define KERNEL_START (KERNEL_BINARY_TEXT_START - 0x1000)
+#define KERNEL_START (KERNEL_BINARY_TEXT_START)
 
 extern struct unwind_table_entry __start___unwind[];
 extern struct unwind_table_entry __stop___unwind[];
@@ -81,6 +83,11 @@ find_unwind_entry(unsigned long addr)
 				e = find_unwind_entry_in_table(table, addr);
 			if (e)
 				break;
+			if (e) {
+				/* Move-to-front to exploit common traces */
+				list_move(&table->list, &unwind_tables);
+				break;
+			}
 		}
 
 	return e;
@@ -115,6 +122,12 @@ unwind_table_init(struct unwind_table *table, const char *name,
 	}
 }
 
+static int cmp_unwind_table_entry(const void *a, const void *b)
+{
+	return ((const struct unwind_table_entry *)a)->region_start
+	     - ((const struct unwind_table_entry *)b)->region_start;
+}
+
 static void
 unwind_table_sort(struct unwind_table_entry *start,
 		  struct unwind_table_entry *finish)
@@ -133,6 +146,8 @@ unwind_table_sort(struct unwind_table_entry *start,
 			*q = el;
 		}
 	}
+	sort(start, finish - start, sizeof(struct unwind_table_entry),
+	     cmp_unwind_table_entry, NULL);
 }
 
 struct unwind_table *
@@ -171,6 +186,7 @@ void unwind_table_remove(struct unwind_table *table)
 
 /* Called from setup_arch to import the kernel unwind info */
 static int unwind_init(void)
+int __init unwind_init(void)
 {
 	long start, stop;
 	register unsigned long gp __asm__ ("r27");
@@ -285,6 +301,7 @@ static void unwind_frame_regs(struct unwind_frame_info *info)
 			sp = info->prev_sp;
 		} while (info->prev_ip < (unsigned long)_stext ||
 			 info->prev_ip > (unsigned long)_etext);
+		} while (!kernel_text_address(info->prev_ip));
 
 		info->rp = 0;
 
@@ -373,6 +390,7 @@ void unwind_frame_init_from_blocked_task(struct unwind_frame_info *info, struct 
 	struct pt_regs *r2;
 
 	r2 = kmalloc(sizeof(struct pt_regs), GFP_KERNEL);
+	r2 = kmalloc(sizeof(struct pt_regs), GFP_ATOMIC);
 	if (!r2)
 		return;
 	*r2 = *r;
@@ -419,3 +437,28 @@ int unwind_to_user(struct unwind_frame_info *info)
 }
 
 module_init(unwind_init);
+unsigned long return_address(unsigned int level)
+{
+	struct unwind_frame_info info;
+	struct pt_regs r;
+	unsigned long sp;
+
+	/* initialize unwind info */
+	asm volatile ("copy %%r30, %0" : "=r"(sp));
+	memset(&r, 0, sizeof(struct pt_regs));
+	r.iaoq[0] = (unsigned long) current_text_addr();
+	r.gr[2] = (unsigned long) __builtin_return_address(0);
+	r.gr[30] = sp;
+	unwind_frame_init(&info, current, &r);
+
+	/* unwind stack */
+	++level;
+	do {
+		if (unwind_once(&info) < 0 || info.ip == 0)
+			return 0;
+		if (!kernel_text_address(info.ip))
+			return 0;
+	} while (info.ip && level--);
+
+	return info.ip;
+}

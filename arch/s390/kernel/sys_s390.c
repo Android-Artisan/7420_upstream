@@ -3,6 +3,8 @@
  *
  *  S390 version
  *    Copyright (C) 1999,2000 IBM Deutschland Entwicklung GmbH, IBM Corporation
+ *  S390 version
+ *    Copyright IBM Corp. 1999, 2000
  *    Author(s): Martin Schwidefsky (schwidefsky@de.ibm.com),
  *               Thomas Spatzier (tspat@de.ibm.com)
  *
@@ -66,6 +68,13 @@ out:
  */
 
 struct mmap_arg_struct {
+/*
+ * Perform the mmap() system call. Linux for S/390 isn't able to handle more
+ * than 5 system call parameters, so this system call uses a memory block
+ * for parameter passing.
+ */
+
+struct s390_mmap_arg_struct {
 	unsigned long addr;
 	unsigned long len;
 	unsigned long prot;
@@ -77,11 +86,15 @@ struct mmap_arg_struct {
 asmlinkage long sys_mmap2(struct mmap_arg_struct __user  *arg)
 {
 	struct mmap_arg_struct a;
+SYSCALL_DEFINE1(mmap2, struct s390_mmap_arg_struct __user *, arg)
+{
+	struct s390_mmap_arg_struct a;
 	int error = -EFAULT;
 
 	if (copy_from_user(&a, arg, sizeof(a)))
 		goto out;
 	error = do_mmap2(a.addr, a.len, a.prot, a.flags, a.fd, a.offset);
+	error = sys_mmap_pgoff(a.addr, a.len, a.prot, a.flags, a.fd, a.offset);
 out:
 	return error;
 }
@@ -269,3 +282,35 @@ asmlinkage long s390_fallocate(int fd, int mode, loff_t offset,
 	return sys_fallocate(fd, mode, offset, ((u64)len_high << 32) | len_low);
 }
 #endif
+/*
+ * sys_ipc() is the de-multiplexer for the SysV IPC calls.
+ */
+SYSCALL_DEFINE5(s390_ipc, uint, call, int, first, unsigned long, second,
+		unsigned long, third, void __user *, ptr)
+{
+	if (call >> 16)
+		return -EINVAL;
+	/* The s390 sys_ipc variant has only five parameters instead of six
+	 * like the generic variant. The only difference is the handling of
+	 * the SEMTIMEDOP subcall where on s390 the third parameter is used
+	 * as a pointer to a struct timespec where the generic variant uses
+	 * the fifth parameter.
+	 * Therefore we can call the generic variant by simply passing the
+	 * third parameter also as fifth parameter.
+	 */
+	return sys_ipc(call, first, second, third, ptr, third);
+}
+
+SYSCALL_DEFINE1(s390_personality, unsigned int, personality)
+{
+	unsigned int ret;
+
+	if (personality(current->personality) == PER_LINUX32 &&
+	    personality(personality) == PER_LINUX)
+		personality |= PER_LINUX32;
+	ret = sys_personality(personality);
+	if (personality(ret) == PER_LINUX32)
+		ret &= ~PER_LINUX32;
+
+	return ret;
+}

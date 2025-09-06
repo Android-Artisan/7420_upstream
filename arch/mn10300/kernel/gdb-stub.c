@@ -65,9 +65,7 @@
  * $m0,10#2a               +$00010203040506070809101112131415#42
  *
  *
- *  ==============
  *  MORE EXAMPLES:
- *  ==============
  *
  *  For reference -- the following are the steps that one
  *  company took (RidgeRun Inc) to get remote gdb debugging
@@ -138,6 +136,13 @@
 #include <asm/busctl-regs.h>
 #include <asm/unit/leds.h>
 #include <asm/unit/serial.h>
+#include <asm/gdb-stub.h>
+#include <asm/exceptions.h>
+#include <asm/debugger.h>
+#include <asm/serial-regs.h>
+#include <asm/busctl-regs.h>
+#include <unit/leds.h>
+#include <unit/serial.h>
 
 /* define to use F7F7 rather than FF which is subverted by JTAG debugger */
 #undef GDBSTUB_USE_F7F7_AS_BREAKPOINT
@@ -405,6 +410,7 @@ static int hexToInt(char **ptr, int *intValue)
 	return (numChars);
 }
 
+#ifdef CONFIG_GDBSTUB_ALLOW_SINGLE_STEP
 /*
  * We single-step by setting breakpoints. When an exception
  * is handled, we need to restore the instructions hoisted
@@ -449,6 +455,11 @@ static int __gdbstub_mark_bp(u8 *addr, int ix)
 		return 0;
 	/* 8c000000-93ffffff: SRAM, SDRAM */
 	if (addr < (u8 *) 0x94000000UL)
+	/* vmalloc area */
+	if (((u8 *) VMALLOC_START <= addr) && (addr < (u8 *) VMALLOC_END))
+		goto okay;
+	/* SRAM, SDRAM */
+	if (((u8 *) 0x80000000UL <= addr) && (addr < (u8 *) 0xa0000000UL))
 		goto okay;
 	return 0;
 
@@ -533,6 +544,7 @@ static int gdbstub_single_step(struct pt_regs *regs)
 		case 0xc8:
 		case 0xc9:
 		case 0xca:
+		case 0xc0 ... 0xca:
 			if (gdbstub_read_byte(pc + 1, (u8 *) &x) < 0)
 				goto fault;
 			if (!__gdbstub_mark_bp(pc + 2, 0))
@@ -554,6 +566,7 @@ static int gdbstub_single_step(struct pt_regs *regs)
 		case 0xd8:
 		case 0xd9:
 		case 0xda:
+		case 0xd0 ... 0xda:
 			if (!__gdbstub_mark_bp(pc + 1, 0))
 				goto fault;
 			if (regs->pc != regs->lar &&
@@ -753,6 +766,7 @@ static int gdbstub_single_step(struct pt_regs *regs)
 	__gdbstub_restore_bp();
 	return -EFAULT;
 }
+#endif /* CONFIG_GDBSTUB_ALLOW_SINGLE_STEP */
 
 #ifdef CONFIG_GDBSTUB_CONSOLE
 
@@ -821,6 +835,7 @@ unsigned char *mem2hex(const void *_mem, char *buf, int count, int may_fault)
 		if (gdbstub_read_byte(mem, ch) != 0)
 			return 0;
 		buf = pack_hex_byte(buf, ch[0]);
+		buf = hex_byte_pack(buf, ch[0]);
 		mem++;
 		count--;
 	}
@@ -830,6 +845,8 @@ unsigned char *mem2hex(const void *_mem, char *buf, int count, int may_fault)
 			return 0;
 		buf = pack_hex_byte(buf, ch[0]);
 		buf = pack_hex_byte(buf, ch[1]);
+		buf = hex_byte_pack(buf, ch[0]);
+		buf = hex_byte_pack(buf, ch[1]);
 		mem += 2;
 		count -= 2;
 	}
@@ -841,6 +858,10 @@ unsigned char *mem2hex(const void *_mem, char *buf, int count, int may_fault)
 		buf = pack_hex_byte(buf, ch[1]);
 		buf = pack_hex_byte(buf, ch[2]);
 		buf = pack_hex_byte(buf, ch[3]);
+		buf = hex_byte_pack(buf, ch[0]);
+		buf = hex_byte_pack(buf, ch[1]);
+		buf = hex_byte_pack(buf, ch[2]);
+		buf = hex_byte_pack(buf, ch[3]);
 		mem += 4;
 		count -= 4;
 	}
@@ -850,6 +871,8 @@ unsigned char *mem2hex(const void *_mem, char *buf, int count, int may_fault)
 			return 0;
 		buf = pack_hex_byte(buf, ch[0]);
 		buf = pack_hex_byte(buf, ch[1]);
+		buf = hex_byte_pack(buf, ch[0]);
+		buf = hex_byte_pack(buf, ch[1]);
 		mem += 2;
 		count -= 2;
 	}
@@ -858,6 +881,7 @@ unsigned char *mem2hex(const void *_mem, char *buf, int count, int may_fault)
 		if (gdbstub_read_byte(mem, ch) != 0)
 			return 0;
 		buf = pack_hex_byte(buf, ch[0]);
+		buf = hex_byte_pack(buf, ch[0]);
 	}
 
 	*buf = 0;
@@ -1196,6 +1220,7 @@ int gdbstub_clear_breakpoint(u8 *addr, int len)
 /*
  * This function does all command processing for interfacing to gdb
  * - returns 1 if the exception should be skipped, 0 otherwise.
+ * - returns 0 if the exception should be skipped, -ERROR otherwise.
  */
 static int gdbstub(struct pt_regs *regs, enum exception_code excep)
 {
@@ -1211,6 +1236,7 @@ static int gdbstub(struct pt_regs *regs, enum exception_code excep)
 
 	if (excep == EXCEP_FPU_DISABLED)
 		return 0;
+		return -ENOTSUPP;
 
 	gdbstub_flush_caches = 0;
 
@@ -1220,6 +1246,9 @@ static int gdbstub(struct pt_regs *regs, enum exception_code excep)
 	asm volatile("mov epsw,%0" : "=d"(epsw));
 	asm volatile("mov %0,epsw"
 		     :: "d"((epsw & ~EPSW_IM) | EPSW_IE | EPSW_IM_1));
+	local_save_flags(epsw);
+	arch_local_change_intr_mask_level(
+		NUM2EPSW_IM(CONFIG_DEBUGGER_IRQ_LEVEL + 1));
 
 	gdbstub_store_fpu();
 
@@ -1232,11 +1261,13 @@ static int gdbstub(struct pt_regs *regs, enum exception_code excep)
 	/* if we were single stepping, restore the opcodes hoisted for the
 	 * breakpoint[s] */
 	broke = 0;
+#ifdef CONFIG_GDBSTUB_ALLOW_SINGLE_STEP
 	if ((step_bp[0].addr && step_bp[0].addr == (u8 *) regs->pc) ||
 	    (step_bp[1].addr && step_bp[1].addr == (u8 *) regs->pc))
 		broke = 1;
 
 	__gdbstub_restore_bp();
+#endif
 
 	if (gdbstub_rx_unget) {
 		sigval = SIGINT;
@@ -1300,6 +1331,13 @@ static int gdbstub(struct pt_regs *regs, enum exception_code excep)
 		ptr = pack_hex_byte(ptr, hx);
 		hx = hex_asc_lo(excep);
 		ptr = pack_hex_byte(ptr, hx);
+		ptr = hex_byte_pack(ptr, hx);
+		hx = hex_asc_lo(excep >> 8);
+		ptr = hex_byte_pack(ptr, hx);
+		hx = hex_asc_hi(excep);
+		ptr = hex_byte_pack(ptr, hx);
+		hx = hex_asc_lo(excep);
+		ptr = hex_byte_pack(ptr, hx);
 
 		ptr = mem2hex(crlf, ptr, sizeof(crlf) - 1, 0);
 		*ptr = 0;
@@ -1326,6 +1364,21 @@ static int gdbstub(struct pt_regs *regs, enum exception_code excep)
 		ptr = pack_hex_byte(ptr, hx);
 		hx = hex_asc_lo(bcberr);
 		ptr = pack_hex_byte(ptr, hx);
+		ptr = hex_byte_pack(ptr, hx);
+		hx = hex_asc_lo(bcberr >> 24);
+		ptr = hex_byte_pack(ptr, hx);
+		hx = hex_asc_hi(bcberr >> 16);
+		ptr = hex_byte_pack(ptr, hx);
+		hx = hex_asc_lo(bcberr >> 16);
+		ptr = hex_byte_pack(ptr, hx);
+		hx = hex_asc_hi(bcberr >> 8);
+		ptr = hex_byte_pack(ptr, hx);
+		hx = hex_asc_lo(bcberr >> 8);
+		ptr = hex_byte_pack(ptr, hx);
+		hx = hex_asc_hi(bcberr);
+		ptr = hex_byte_pack(ptr, hx);
+		hx = hex_asc_lo(bcberr);
+		ptr = hex_byte_pack(ptr, hx);
 
 		ptr = mem2hex(crlf, ptr, sizeof(crlf) - 1, 0);
 		*ptr = 0;
@@ -1342,11 +1395,13 @@ static int gdbstub(struct pt_regs *regs, enum exception_code excep)
 	 */
 	*ptr++ = 'T';
 	ptr = pack_hex_byte(ptr, sigval);
+	ptr = hex_byte_pack(ptr, sigval);
 
 	/*
 	 * Send Error PC
 	 */
 	ptr = pack_hex_byte(ptr, GDB_REGID_PC);
+	ptr = hex_byte_pack(ptr, GDB_REGID_PC);
 	*ptr++ = ':';
 	ptr = mem2hex(&regs->pc, ptr, 4, 0);
 	*ptr++ = ';';
@@ -1355,6 +1410,7 @@ static int gdbstub(struct pt_regs *regs, enum exception_code excep)
 	 * Send frame pointer
 	 */
 	ptr = pack_hex_byte(ptr, GDB_REGID_FP);
+	ptr = hex_byte_pack(ptr, GDB_REGID_FP);
 	*ptr++ = ':';
 	ptr = mem2hex(&regs->a3, ptr, 4, 0);
 	*ptr++ = ';';
@@ -1364,6 +1420,7 @@ static int gdbstub(struct pt_regs *regs, enum exception_code excep)
 	 */
 	ssp = (unsigned long) (regs + 1);
 	ptr = pack_hex_byte(ptr, GDB_REGID_SP);
+	ptr = hex_byte_pack(ptr, GDB_REGID_SP);
 	*ptr++ = ':';
 	ptr = mem2hex(&ssp, ptr, 4, 0);
 	*ptr++ = ';';
@@ -1574,15 +1631,21 @@ packet_waiting:
 		case 's':
 			/*
 			 * using the T flag doesn't seem to perform single
+			/* Using the T flag doesn't seem to perform single
 			 * stepping (it seems to wind up being caught by the
 			 * JTAG unit), so we have to use breakpoints and
 			 * continue instead.
 			 */
+#ifdef CONFIG_GDBSTUB_ALLOW_SINGLE_STEP
 			if (gdbstub_single_step(regs) < 0)
 				/* ignore any fault error for now */
 				gdbstub_printk("unable to set single-step"
 					       " bp\n");
 			goto done;
+#else
+			gdbstub_strcpy(output_buffer, "E01");
+			break;
+#endif
 
 			/*
 			 * Set baud rate (bBB)
@@ -1682,6 +1745,7 @@ done:
 	 */
 	if (gdbstub_flush_caches)
 		gdbstub_purge_cache();
+		debugger_local_cache_flushinv();
 
 	gdbstub_load_fpu();
 	mn10300_set_gdbleds(0);
@@ -1692,6 +1756,16 @@ done:
 
 	local_irq_restore(epsw);
 	return 1;
+	return 0;
+}
+
+/*
+ * Determine if we hit a debugger special breakpoint that needs skipping over
+ * automatically.
+ */
+int at_debugger_breakpoint(struct pt_regs *regs)
+{
+	return 0;
 }
 
 /*
@@ -1699,6 +1773,8 @@ done:
  */
 asmlinkage int gdbstub_intercept(struct pt_regs *regs,
 				 enum exception_code excep)
+asmlinkage int debugger_intercept(enum exception_code excep,
+				  int signo, int si_code, struct pt_regs *regs)
 {
 	static u8 notfirst = 1;
 	int ret;
@@ -1713,6 +1789,7 @@ asmlinkage int gdbstub_intercept(struct pt_regs *regs,
 
 		gdbstub_entry(
 			"--> gdbstub_intercept(%p,%04x) [MDR=%lx PC=%lx]\n",
+			"--> debugger_intercept(%p,%04x) [MDR=%lx PC=%lx]\n",
 			regs, excep, mdr, regs->pc);
 
 		gdbstub_entry(
@@ -1747,6 +1824,7 @@ asmlinkage int gdbstub_intercept(struct pt_regs *regs,
 	ret = gdbstub(regs, excep);
 
 	gdbstub_entry("<-- gdbstub_intercept()\n");
+	gdbstub_entry("<-- debugger_intercept()\n");
 	gdbstub_busy = 0;
 	return ret;
 }

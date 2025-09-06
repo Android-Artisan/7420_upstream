@@ -20,6 +20,10 @@
 #include <asm/page.h>
 #include <asm/hwtest.h>
 #include <linux/proc_fs.h>
+#include <linux/slab.h>
+#include <asm/setup.h>
+#include <asm/page.h>
+#include <asm/hwtest.h>
 #include <asm/mac_via.h>
 #include <asm/mac_oss.h>
 
@@ -127,6 +131,7 @@ static void nubus_advance(unsigned char **ptr, int len, int map)
 		while(not_useful(p,map))
 			p++;
 			p++;
+		p++;
 		len--;
 	}
 	*ptr = p;
@@ -475,6 +480,7 @@ static struct nubus_dev* __init
 		dir.base += 1;
 	
 	if (console_loglevel >= 10)
+	if (console_loglevel >= CONSOLE_LOGLEVEL_DEBUG)
 		printk(KERN_DEBUG "nubus_get_functional_resource: parent is 0x%p, dir is 0x%p\n",
 		       parent->base, dir.base);
 
@@ -570,6 +576,7 @@ static int __init nubus_get_vidnames(struct nubus_board* board,
 	printk(KERN_INFO "    video modes supported:\n");
 	nubus_get_subdir(parent, &dir);
 	if (console_loglevel >= 10)
+	if (console_loglevel >= CONSOLE_LOGLEVEL_DEBUG)
 		printk(KERN_DEBUG "nubus_get_vidnames: parent is 0x%p, dir is 0x%p\n",
 		       parent->base, dir.base);
 
@@ -631,6 +638,7 @@ static int __init nubus_get_vendorinfo(struct nubus_board* board,
 	printk(KERN_INFO "    vendor info:\n");
 	nubus_get_subdir(parent, &dir);
 	if (console_loglevel >= 10)
+	if (console_loglevel >= CONSOLE_LOGLEVEL_DEBUG)
 		printk(KERN_DEBUG "nubus_get_vendorinfo: parent is 0x%p, dir is 0x%p\n",
 		       parent->base, dir.base);
 
@@ -656,6 +664,7 @@ static int __init nubus_get_board_resource(struct nubus_board* board, int slot,
 	
 	nubus_get_subdir(parent, &dir);
 	if (console_loglevel >= 10)
+	if (console_loglevel >= CONSOLE_LOGLEVEL_DEBUG)
 		printk(KERN_DEBUG "nubus_get_board_resource: parent is 0x%p, dir is 0x%p\n",
 		       parent->base, dir.base);
 
@@ -755,11 +764,13 @@ static void __init nubus_find_rom_dir(struct nubus_board* board)
 		goto badrom;
 
 	if (console_loglevel >= 10)
+	if (console_loglevel >= CONSOLE_LOGLEVEL_DEBUG)
 		printk(KERN_INFO "nubus_get_rom_dir: entry %02x %06x\n", ent.type, ent.data);
 	/* This one takes us to where we want to go. */
 	if (nubus_readdir(&dir, &ent) == -1) 
 		goto badrom;
 	if (console_loglevel >= 10)
+	if (console_loglevel >= CONSOLE_LOGLEVEL_DEBUG)
 		printk(KERN_DEBUG "nubus_get_rom_dir: entry %02x %06x\n", ent.type, ent.data);
 	nubus_get_subdir(&ent, &dir);
 
@@ -767,6 +778,7 @@ static void __init nubus_find_rom_dir(struct nubus_board* board)
 	if (nubus_readdir(&dir, &ent) == -1) 
 		goto badrom;
 	if (console_loglevel >= 10)
+	if (console_loglevel >= CONSOLE_LOGLEVEL_DEBUG)
 		printk(KERN_DEBUG "nubus_get_rom_dir: entry %02x %06x\n", ent.type, ent.data);
 
 	/* FIXME: the first one is *not* always the right one.  We
@@ -782,6 +794,7 @@ static void __init nubus_find_rom_dir(struct nubus_board* board)
 	if (nubus_readdir(&dir, &ent) == -1)
 		goto badrom;
 	if (console_loglevel >= 10)
+	if (console_loglevel >= CONSOLE_LOGLEVEL_DEBUG)
 		printk(KERN_DEBUG "nubus_get_rom_dir: entry %02x %06x\n", ent.type, ent.data);
 	
 	/* Bwahahahaha... */
@@ -818,6 +831,7 @@ static struct nubus_board* __init nubus_add_board(int slot, int bytelanes)
 
 	/* Dump the format block for debugging purposes */
 	if (console_loglevel >= 10) {
+	if (console_loglevel >= CONSOLE_LOGLEVEL_DEBUG) {
 		int i;
 		printk(KERN_DEBUG "Slot %X, format block at 0x%p\n",
 		       slot, rp);
@@ -929,6 +943,10 @@ void __init nubus_probe_slot(int slot)
 		card_present = hwreg_present(rp);
 		local_irq_restore(flags);
 	       
+		int card_present;
+
+		rp--;
+		card_present = hwreg_present(rp);
 		if (!card_present)
 			continue;
 
@@ -1046,6 +1064,7 @@ static int __init nubus_init(void)
 	create_proc_read_entry("nubus", 0, NULL, nubus_read_proc, NULL);
 	nubus_proc_init();
 #endif
+	nubus_proc_init();
 	return 0;
 }
 

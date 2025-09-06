@@ -1,10 +1,9 @@
 Linux* Base Driver for the Intel(R) PRO/100 Family of Adapters
-==============================================================
 
 November 15, 2005
+March 15, 2011
 
 Contents
-========
 
 - In This Release
 - Identifying Your Adapter
@@ -16,7 +15,6 @@ Contents
 
 
 In This Release
-===============
 
 This file describes the Linux* Base Driver for the Intel(R) PRO/100 Family of
 Adapters. This driver includes support for Itanium(R)2-based systems.
@@ -34,7 +32,6 @@ Channel Bonding documentation can be found in the Linux kernel source:
 
 
 Identifying Your Adapter
-========================
 
 For more information on how to identify your adapter, go to the Adapter &
 Driver ID Guide at:
@@ -48,7 +45,6 @@ networking link on the left to search for your adapter:
   http://downloadfinder.intel.com/scripts-df/support_intel.asp
 
 Driver Configuration Parameters
-===============================
 
 The default value for each parameter is generally the recommended setting,
 unless otherwise noted.
@@ -73,6 +69,7 @@ Tx Descriptors: Number of transmit descriptors. A transmit descriptor is a data
 
 Speed/Duplex: The driver auto-negotiates the link speed and duplex settings by
    default. Ethtool can be used as follows to force speed/duplex.
+   default. The ethtool utility can be used as follows to force speed/duplex.
 
    ethtool -s eth?  autoneg off speed {10|100} duplex {full|half}
 
@@ -87,7 +84,6 @@ Event Log Message Level:  The driver uses the message level flag to log events
 
 
 Additional Configurations
-=========================
 
   Configuring the Driver on Different Distributions
   -------------------------------------------------
@@ -96,6 +92,8 @@ Additional Configurations
   distribution dependent. Typically, the configuration process involves adding
   an alias line to /etc/modules.conf or /etc/modprobe.conf as well as editing
   other system startup scripts and/or configuration files.  Many popular Linux
+  an alias line to /etc/modprobe.d/*.conf as well as editing other system
+  startup scripts and/or configuration files.  Many popular Linux
   distributions ship with tools to make these changes for you. To learn the
   proper way to configure a network device for your system, refer to your
   distribution documentation.  If during this process you are asked for the
@@ -104,6 +102,7 @@ Additional Configurations
 
   As an example, if you install the e100 driver for two PRO/100 adapters
   (eth0 and eth1), add the following to modules.conf or modprobe.conf:
+  (eth0 and eth1), add the following to a configuration file in /etc/modprobe.d/
 
        alias eth0 e100
        alias eth1 e100
@@ -144,6 +143,20 @@ Additional Configurations
   the following website: http://sourceforge.net/projects/gkernel.
 
   For instructions on enabling WoL with Ethtool, refer to the Ethtool man page.
+  ethtool
+  -------
+
+  The driver utilizes the ethtool interface for driver configuration and
+  diagnostics, as well as displaying statistical information.  The ethtool
+  version 1.6 or later is required for this functionality.
+
+  The latest release of ethtool can be found from
+  http://ftp.kernel.org/pub/software/network/ethtool/
+
+  Enabling Wake on LAN* (WoL)
+  ---------------------------
+  WoL is provided through the ethtool* utility.  For instructions on enabling
+  WoL with ethtool, refer to the ethtool man page.
 
   WoL will be enabled on the system during the next shut down or reboot. For
   this driver version, in order to enable WoL, the e100 driver must be
@@ -177,7 +190,6 @@ Additional Configurations
 
 
 Support
-=======
 
 For general information, go to the Intel support website at:
 
@@ -193,7 +205,6 @@ issue to e1000-devel@lists.sourceforge.net.
 
 
 License
-=======
 
 This software program is released under the terms of a license agreement
 between you ('Licensee') and Intel. Do not use or load this software or any

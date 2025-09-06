@@ -16,6 +16,9 @@
 #define _IPTABLES_H
 
 #ifdef __KERNEL__
+#ifndef _IPTABLES_H
+#define _IPTABLES_H
+
 #include <linux/if.h>
 #include <linux/in.h>
 #include <linux/ip.h>
@@ -266,6 +269,26 @@ struct ipt_error
 {
 	struct ipt_entry entry;
 	struct ipt_error_target target;
+
+#include <linux/init.h>
+#include <uapi/linux/netfilter_ipv4/ip_tables.h>
+
+extern void ipt_init(void) __init;
+
+extern struct xt_table *ipt_register_table(struct net *net,
+					   const struct xt_table *table,
+					   const struct ipt_replace *repl);
+extern void ipt_unregister_table(struct net *net, struct xt_table *table);
+
+/* Standard entry. */
+struct ipt_standard {
+	struct ipt_entry entry;
+	struct xt_standard_target target;
+};
+
+struct ipt_error {
+	struct ipt_entry entry;
+	struct xt_error_target target;
 };
 
 #define IPT_ENTRY_INIT(__size)						       \
@@ -278,6 +301,7 @@ struct ipt_error
 {									       \
 	.entry		= IPT_ENTRY_INIT(sizeof(struct ipt_standard)),	       \
 	.target		= XT_TARGET_INIT(IPT_STANDARD_TARGET,		       \
+	.target		= XT_TARGET_INIT(XT_STANDARD_TARGET,		       \
 					 sizeof(struct xt_standard_target)),   \
 	.target.verdict	= -(__verdict) - 1,				       \
 }
@@ -307,6 +331,24 @@ struct compat_ipt_entry
 	compat_uint_t nfcache;
 	u_int16_t target_offset;
 	u_int16_t next_offset;
+	.target		= XT_TARGET_INIT(XT_ERROR_TARGET,		       \
+					 sizeof(struct xt_error_target)),      \
+	.target.errorname = "ERROR",					       \
+}
+
+extern void *ipt_alloc_initial_table(const struct xt_table *);
+extern unsigned int ipt_do_table(struct sk_buff *skb,
+				 const struct nf_hook_state *state,
+				 struct xt_table *table);
+
+#ifdef CONFIG_COMPAT
+#include <net/compat.h>
+
+struct compat_ipt_entry {
+	struct ipt_ip ip;
+	compat_uint_t nfcache;
+	__u16 target_offset;
+	__u16 next_offset;
 	compat_uint_t comefrom;
 	struct compat_xt_counters counters;
 	unsigned char elems[0];
@@ -314,6 +356,7 @@ struct compat_ipt_entry
 
 /* Helper functions */
 static inline struct ipt_entry_target *
+static inline struct xt_entry_target *
 compat_ipt_get_target(struct compat_ipt_entry *e)
 {
 	return (void *)e + e->target_offset;
@@ -336,4 +379,5 @@ compat_ipt_get_target(struct compat_ipt_entry *e)
 
 #endif /* CONFIG_COMPAT */
 #endif /*__KERNEL__*/
+#endif /* CONFIG_COMPAT */
 #endif /* _IPTABLES_H */

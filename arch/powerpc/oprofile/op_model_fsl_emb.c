@@ -3,6 +3,7 @@
  * Copyright (C) 2004 Anton Blanchard <anton@au.ibm.com>, IBM
  *
  * Copyright (c) 2004 Freescale Semiconductor, Inc
+ * Copyright (c) 2004, 2010 Freescale Semiconductor, Inc
  *
  * Author: Andy Fleming
  * Maintainer: Kumar Gala <galak@kernel.crashing.org>
@@ -18,6 +19,8 @@
 #include <linux/smp.h>
 #include <asm/ptrace.h>
 #include <asm/system.h>
+#include <linux/smp.h>
+#include <asm/ptrace.h>
 #include <asm/processor.h>
 #include <asm/cputable.h>
 #include <asm/reg_fsl_emb.h>
@@ -47,6 +50,12 @@ static inline u32 get_pmlca(int ctr)
 		case 3:
 			pmlca = mfpmr(PMRN_PMLCA3);
 			break;
+		case 4:
+			pmlca = mfpmr(PMRN_PMLCA4);
+			break;
+		case 5:
+			pmlca = mfpmr(PMRN_PMLCA5);
+			break;
 		default:
 			panic("Bad ctr number\n");
 	}
@@ -69,6 +78,12 @@ static inline void set_pmlca(int ctr, u32 pmlca)
 		case 3:
 			mtpmr(PMRN_PMLCA3, pmlca);
 			break;
+		case 4:
+			mtpmr(PMRN_PMLCA4, pmlca);
+			break;
+		case 5:
+			mtpmr(PMRN_PMLCA5, pmlca);
+			break;
 		default:
 			panic("Bad ctr number\n");
 	}
@@ -85,6 +100,10 @@ static inline unsigned int ctr_read(unsigned int i)
 			return mfpmr(PMRN_PMC2);
 		case 3:
 			return mfpmr(PMRN_PMC3);
+		case 4:
+			return mfpmr(PMRN_PMC4);
+		case 5:
+			return mfpmr(PMRN_PMC5);
 		default:
 			return 0;
 	}
@@ -104,6 +123,12 @@ static inline void ctr_write(unsigned int i, unsigned int val)
 			break;
 		case 3:
 			mtpmr(PMRN_PMC3, val);
+			break;
+		case 4:
+			mtpmr(PMRN_PMC4, val);
+			break;
+		case 5:
+			mtpmr(PMRN_PMC5, val);
 			break;
 		default:
 			break;
@@ -133,6 +158,14 @@ static void init_pmc_stop(int ctr)
 		case 3:
 			mtpmr(PMRN_PMLCA3, pmlca);
 			mtpmr(PMRN_PMLCB3, pmlcb);
+			break;
+		case 4:
+			mtpmr(PMRN_PMLCA4, pmlca);
+			mtpmr(PMRN_PMLCB4, pmlcb);
+			break;
+		case 5:
+			mtpmr(PMRN_PMLCA5, pmlca);
+			mtpmr(PMRN_PMLCB5, pmlcb);
 			break;
 		default:
 			panic("Bad ctr number!\n");
@@ -357,6 +390,13 @@ static void fsl_emb_handle_interrupt(struct pt_regs *regs,
 	/* Clear the freeze bit, and reenable the interrupt.
 	 * The counters won't actually start until the rfi clears
 	 * the PMM bit */
+	/* Clear the freeze bit, and reenable the interrupt.  The
+	 * counters won't actually start until the rfi clears the PMM
+	 * bit.  The PMM bit should not be set until after the interrupt
+	 * is cleared to avoid it getting lost in some hypervisor
+	 * environments.
+	 */
+	mtmsr(mfmsr() | MSR_PMM);
 	pmc_start_ctrs(1);
 }
 

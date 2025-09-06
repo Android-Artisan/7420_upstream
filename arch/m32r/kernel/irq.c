@@ -79,6 +79,7 @@ asmlinkage unsigned int do_IRQ(int irq, struct pt_regs *regs)
 	/* FIXME M32R */
 #endif
 	__do_IRQ(irq);
+	generic_handle_irq(irq);
 	irq_exit();
 	set_irq_regs(old_regs);
 

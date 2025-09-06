@@ -18,6 +18,7 @@
  *  You should have received a copy of the GNU General Public License along
  *  with this program; if not, write to the Free Software Foundation, Inc.,
  *  59 Temple Place - Suite 330, Boston MA 02111-1307, USA.
+ *  51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA.
  *
  *  Nov 7, 2000
  *  Modified to build and operate in Linux kernel environment.
@@ -58,6 +59,13 @@
 #define DPMANT(dp)	(dp.parts.mant)
 
 ieee754dp ieee754dp_dump(char *m, ieee754dp x)
+#include <linux/types.h>
+#include <linux/printk.h>
+#include "ieee754.h"
+#include "ieee754sp.h"
+#include "ieee754dp.h"
+
+union ieee754dp ieee754dp_dump(char *m, union ieee754dp x)
 {
 	int i;
 
@@ -98,6 +106,7 @@ ieee754dp ieee754dp_dump(char *m, ieee754dp x)
 }
 
 ieee754sp ieee754sp_dump(char *m, ieee754sp x)
+union ieee754sp ieee754sp_dump(char *m, union ieee754sp x)
 {
 	int i;
 

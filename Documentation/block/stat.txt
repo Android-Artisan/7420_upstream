@@ -1,5 +1,4 @@
 Block layer statistics in /sys/block/<dev>/stat
-===============================================
 
 This file documents the contents of the /sys/block/<dev>/stat file.
 
@@ -33,18 +32,15 @@ io_ticks        milliseconds  total time this block device has been active
 time_in_queue   milliseconds  total wait time for all requests
 
 read I/Os, write I/Os
-=====================
 
 These values increment when an I/O request completes.
 
 read merges, write merges
-=========================
 
 These values increment when an I/O request is merged with an
 already-queued I/O request.
 
 read sectors, write sectors
-===========================
 
 These values count the number of sectors read from or written to this
 block device.  The "sectors" in question are the standard UNIX 512-byte
@@ -52,7 +48,6 @@ sectors, not any device- or filesystem-specific block size.  The
 counters are incremented when the I/O completes.
 
 read ticks, write ticks
-=======================
 
 These values count the number of milliseconds that I/O requests have
 waited on this block device.  If there are multiple I/O requests waiting,
@@ -61,20 +56,17 @@ example, if 60 read requests wait for an average of 30 ms, the read_ticks
 field will increase by 60*30 = 1800.
 
 in_flight
-=========
 
 This value counts the number of I/O requests that have been issued to
 the device driver but have not yet completed.  It does not include I/O
 requests that are in the queue but not yet issued to the device driver.
 
 io_ticks
-========
 
 This value counts the number of milliseconds during which the device has
 had I/O requests queued.
 
 time_in_queue
-=============
 
 This value counts the number of milliseconds that I/O requests have waited
 on this block device.  If there are multiple I/O requests waiting, this

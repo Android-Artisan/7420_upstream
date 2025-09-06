@@ -133,6 +133,7 @@
   * At this point, the OF driver seems to have a limitation on transfer
   * sizes of 0xd bytes on reads and 0x5 bytes on writes. I do not know
   * wether this is just an OF limit due to some temporary buffer size
+  * whether this is just an OF limit due to some temporary buffer size
   * or if this is an SMU imposed limit. This driver has the same limitation
   * for now as I use a 0x10 bytes temporary buffer as well
   *
@@ -237,6 +238,7 @@
  *
  * Returns:
  *   If parameter 2 is 0x00 and parameter 3 is not specified, returns wether
+ *   If parameter 2 is 0x00 and parameter 3 is not specified, returns whether
  *   NMI is enabled. Otherwise unknown.
  */
 #define   SMU_CMD_MISC_df_NMI_OPTION		0x04
@@ -459,6 +461,8 @@ extern int smu_init(void);
 extern int smu_present(void);
 struct of_device;
 extern struct of_device *smu_get_ofdev(void);
+struct platform_device;
+extern struct platform_device *smu_get_ofdev(void);
 
 
 /*
@@ -479,6 +483,7 @@ extern unsigned long smu_cmdbuf_abs;
 
 /*
  * Kenrel asynchronous i2c interface
+ * Kernel asynchronous i2c interface
  */
 
 #define SMU_I2C_READ_MAX	0x1d
@@ -548,6 +553,7 @@ struct smu_sdbp_header {
  * (0x12)
  */
 #define SMU_U16_MIX(x)	le16_to_cpu(x);
+#define SMU_U16_MIX(x)	le16_to_cpu(x)
 #define SMU_U32_MIX(x)  ((((x) & 0xff00ff00u) >> 8)|(((x) & 0x00ff00ffu) << 8))
 
 

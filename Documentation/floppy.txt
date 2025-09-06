@@ -1,14 +1,12 @@
 This file describes the floppy driver.
 
 FAQ list:
-=========
 
  A FAQ list may be found in the fdutils package (see below), and also
 at <http://fdutils.linux.lu/faq.html>.
 
 
 LILO configuration options (Thinkpad users, read this)
-======================================================
 
  The floppy driver is configured using the 'floppy=' option in
 lilo. This option can be typed at the boot prompt, or entered in the
@@ -36,7 +34,6 @@ restore the default behavior.
 
 
 Module configuration options
-============================
 
  If you use the floppy driver as a module, use the following syntax:
 modprobe floppy <options>
@@ -206,7 +203,6 @@ in /etc/modprobe.conf.
 
 
 Supporting utilities and additional documentation:
-==================================================
 
  Additional parameters of the floppy driver can be configured at
 runtime. Utilities which do this can be found in the fdutils package.
@@ -223,7 +219,6 @@ The fdutils releases can be found at:
  ftp://metalab.unc.edu/pub/Linux/utils/disk-management/
 
 Reporting problems about the floppy driver
-==========================================
 
  If you have a question or a bug report about the floppy driver, mail
 me at Alain.Knaff@poboxes.com . If you post to Usenet, preferably use
@@ -237,7 +232,6 @@ sure to mention also the type of the filesystem in the subject line.
  Alain
 
 Changelog
-=========
 
 10-30-2004 :	Cleanup, updating, add reference to module configuration.
 		James Nelson <james4765@gmail.com>

@@ -4,10 +4,12 @@
 #define PIPEFS_MAGIC 0x50495045
 
 #define PIPE_BUFFERS (16)
+#define PIPE_DEF_BUFFERS	16
 
 #define PIPE_BUF_FLAG_LRU	0x01	/* page is on the LRU */
 #define PIPE_BUF_FLAG_ATOMIC	0x02	/* was atomically mapped */
 #define PIPE_BUF_FLAG_GIFT	0x04	/* page is a gift */
+#define PIPE_BUF_FLAG_PACKET	0x08	/* read() as a packet */
 
 /**
  *	struct pipe_buffer - a linux kernel pipe buffer
@@ -30,10 +32,15 @@ struct pipe_buffer {
  *	struct pipe_inode_info - a linux kernel pipe
  *	@wait: reader/writer wait point in case of empty/full pipe
  *	@nrbufs: the number of non-empty pipe buffers in this pipe
+ *	@mutex: mutex protecting the whole thing
+ *	@wait: reader/writer wait point in case of empty/full pipe
+ *	@nrbufs: the number of non-empty pipe buffers in this pipe
+ *	@buffers: total number of buffers (should be a power of 2)
  *	@curbuf: the current pipe buffer entry
  *	@tmp_page: cached released page
  *	@readers: number of current readers of this pipe
  *	@writers: number of current writers of this pipe
+ *	@files: number of struct file referring this pipe (protected by ->i_lock)
  *	@waiting_writers: number of writers blocked waiting for room
  *	@r_counter: reader counter
  *	@w_counter: writer counter
@@ -55,6 +62,24 @@ struct pipe_inode_info {
 	struct fasync_struct *fasync_writers;
 	struct inode *inode;
 	struct pipe_buffer bufs[PIPE_BUFFERS];
+ *	@bufs: the circular array of pipe buffers
+ *	@user: the user who created this pipe
+ **/
+struct pipe_inode_info {
+	struct mutex mutex;
+	wait_queue_head_t wait;
+	unsigned int nrbufs, curbuf, buffers;
+	unsigned int readers;
+	unsigned int writers;
+	unsigned int files;
+	unsigned int waiting_writers;
+	unsigned int r_counter;
+	unsigned int w_counter;
+	struct page *tmp_page;
+	struct fasync_struct *fasync_readers;
+	struct fasync_struct *fasync_writers;
+	struct pipe_buffer *bufs;
+	struct user_struct *user;
 };
 
 /*
@@ -127,8 +152,21 @@ struct pipe_buf_operations {
 	/*
 	 * Get a reference to the pipe buffer.
 	 */
-	void (*get)(struct pipe_inode_info *, struct pipe_buffer *);
+	bool (*get)(struct pipe_inode_info *, struct pipe_buffer *);
 };
+
+/**
+ * pipe_buf_get - get a reference to a pipe_buffer
+ * @pipe:	the pipe that the buffer belongs to
+ * @buf:	the buffer to get a reference to
+ *
+ * Return: %true if the reference was successfully obtained.
+ */
+static inline __must_check bool pipe_buf_get(struct pipe_inode_info *pipe,
+				struct pipe_buffer *buf)
+{
+	return buf->ops->get(pipe, buf);
+}
 
 /* Differs from PIPE_BUF in that PIPE_SIZE is the length of the actual
    memory allocation, whereas PIPE_BUF makes atomicity guarantees.  */
@@ -147,5 +185,35 @@ void generic_pipe_buf_unmap(struct pipe_inode_info *, struct pipe_buffer *, void
 void generic_pipe_buf_get(struct pipe_inode_info *, struct pipe_buffer *);
 int generic_pipe_buf_confirm(struct pipe_inode_info *, struct pipe_buffer *);
 int generic_pipe_buf_steal(struct pipe_inode_info *, struct pipe_buffer *);
+/* Pipe lock and unlock operations */
+void pipe_lock(struct pipe_inode_info *);
+void pipe_unlock(struct pipe_inode_info *);
+void pipe_double_lock(struct pipe_inode_info *, struct pipe_inode_info *);
+
+extern unsigned int pipe_max_size, pipe_min_size;
+extern unsigned long pipe_user_pages_hard;
+extern unsigned long pipe_user_pages_soft;
+int pipe_proc_fn(struct ctl_table *, int, void __user *, size_t *, loff_t *);
+
+
+/* Drop the inode semaphore and wait for a pipe event, atomically */
+void pipe_wait(struct pipe_inode_info *pipe);
+
+struct pipe_inode_info *alloc_pipe_info(void);
+void free_pipe_info(struct pipe_inode_info *);
+
+/* Generic pipe buffer ops functions */
+bool generic_pipe_buf_get(struct pipe_inode_info *, struct pipe_buffer *);
+int generic_pipe_buf_confirm(struct pipe_inode_info *, struct pipe_buffer *);
+int generic_pipe_buf_steal(struct pipe_inode_info *, struct pipe_buffer *);
+void generic_pipe_buf_release(struct pipe_inode_info *, struct pipe_buffer *);
+
+extern const struct pipe_buf_operations nosteal_pipe_buf_ops;
+
+/* for F_SETPIPE_SZ and F_GETPIPE_SZ */
+long pipe_fcntl(struct file *, unsigned int, unsigned long arg);
+struct pipe_inode_info *get_pipe_info(struct file *file);
+
+int create_pipe_files(struct file **, int);
 
 #endif

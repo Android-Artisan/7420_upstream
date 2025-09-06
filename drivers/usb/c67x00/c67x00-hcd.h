@@ -29,12 +29,14 @@
 #include <linux/list.h>
 #include <linux/usb.h>
 #include "../core/hcd.h"
+#include <linux/usb/hcd.h>
 #include "c67x00.h"
 
 /*
  * The following parameters depend on the CPU speed, bus speed, ...
  * These can be tuned for specific use cases, e.g. if isochronous transfers
  * are very important, bandwith can be sacrificed to guarantee that the
+ * are very important, bandwidth can be sacrificed to guarantee that the
  * 1ms deadline will be met.
  * If bulk transfers are important, the MAX_FRAME_BW can be increased,
  * but some (or many) isochronous deadlines might not be met.
@@ -46,6 +48,7 @@
  * The current implementation switches between _STD (default) and _ISO (when
  * isochronous transfers are scheduled), in order to optimize the throughput
  * in normal cicrumstances, but also provide good isochronous behaviour.
+ * in normal circumstances, but also provide good isochronous behaviour.
  *
  * Bandwidth is described in bit time so with a 12MHz USB clock and 1ms
  * frames; there are 12000 bit times per frame.

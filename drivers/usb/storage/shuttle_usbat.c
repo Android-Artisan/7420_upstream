@@ -42,6 +42,7 @@
  */
 
 #include <linux/errno.h>
+#include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/cdrom.h>
 
@@ -53,6 +54,103 @@
 #include "protocol.h"
 #include "debug.h"
 #include "shuttle_usbat.h"
+#include "scsiglue.h"
+
+#define DRV_NAME "ums-usbat"
+
+MODULE_DESCRIPTION("Driver for SCM Microsystems (a.k.a. Shuttle) USB-ATAPI cable");
+MODULE_AUTHOR("Daniel Drake <dsd@gentoo.org>, Robert Baruch <autophile@starband.net>");
+MODULE_LICENSE("GPL");
+
+/* Supported device types */
+#define USBAT_DEV_HP8200	0x01
+#define USBAT_DEV_FLASH		0x02
+
+#define USBAT_EPP_PORT		0x10
+#define USBAT_EPP_REGISTER	0x30
+#define USBAT_ATA		0x40
+#define USBAT_ISA		0x50
+
+/* Commands (need to be logically OR'd with an access type */
+#define USBAT_CMD_READ_REG		0x00
+#define USBAT_CMD_WRITE_REG		0x01
+#define USBAT_CMD_READ_BLOCK	0x02
+#define USBAT_CMD_WRITE_BLOCK	0x03
+#define USBAT_CMD_COND_READ_BLOCK	0x04
+#define USBAT_CMD_COND_WRITE_BLOCK	0x05
+#define USBAT_CMD_WRITE_REGS	0x07
+
+/* Commands (these don't need an access type) */
+#define USBAT_CMD_EXEC_CMD	0x80
+#define USBAT_CMD_SET_FEAT	0x81
+#define USBAT_CMD_UIO		0x82
+
+/* Methods of accessing UIO register */
+#define USBAT_UIO_READ	1
+#define USBAT_UIO_WRITE	0
+
+/* Qualifier bits */
+#define USBAT_QUAL_FCQ	0x20	/* full compare */
+#define USBAT_QUAL_ALQ	0x10	/* auto load subcount */
+
+/* USBAT Flash Media status types */
+#define USBAT_FLASH_MEDIA_NONE	0
+#define USBAT_FLASH_MEDIA_CF	1
+
+/* USBAT Flash Media change types */
+#define USBAT_FLASH_MEDIA_SAME	0
+#define USBAT_FLASH_MEDIA_CHANGED	1
+
+/* USBAT ATA registers */
+#define USBAT_ATA_DATA      0x10  /* read/write data (R/W) */
+#define USBAT_ATA_FEATURES  0x11  /* set features (W) */
+#define USBAT_ATA_ERROR     0x11  /* error (R) */
+#define USBAT_ATA_SECCNT    0x12  /* sector count (R/W) */
+#define USBAT_ATA_SECNUM    0x13  /* sector number (R/W) */
+#define USBAT_ATA_LBA_ME    0x14  /* cylinder low (R/W) */
+#define USBAT_ATA_LBA_HI    0x15  /* cylinder high (R/W) */
+#define USBAT_ATA_DEVICE    0x16  /* head/device selection (R/W) */
+#define USBAT_ATA_STATUS    0x17  /* device status (R) */
+#define USBAT_ATA_CMD       0x17  /* device command (W) */
+#define USBAT_ATA_ALTSTATUS 0x0E  /* status (no clear IRQ) (R) */
+
+/* USBAT User I/O Data registers */
+#define USBAT_UIO_EPAD		0x80 /* Enable Peripheral Control Signals */
+#define USBAT_UIO_CDT		0x40 /* Card Detect (Read Only) */
+				     /* CDT = ACKD & !UI1 & !UI0 */
+#define USBAT_UIO_1		0x20 /* I/O 1 */
+#define USBAT_UIO_0		0x10 /* I/O 0 */
+#define USBAT_UIO_EPP_ATA	0x08 /* 1=EPP mode, 0=ATA mode */
+#define USBAT_UIO_UI1		0x04 /* Input 1 */
+#define USBAT_UIO_UI0		0x02 /* Input 0 */
+#define USBAT_UIO_INTR_ACK	0x01 /* Interrupt (ATA/ISA)/Acknowledge (EPP) */
+
+/* USBAT User I/O Enable registers */
+#define USBAT_UIO_DRVRST	0x80 /* Reset Peripheral */
+#define USBAT_UIO_ACKD		0x40 /* Enable Card Detect */
+#define USBAT_UIO_OE1		0x20 /* I/O 1 set=output/clr=input */
+				     /* If ACKD=1, set OE1 to 1 also. */
+#define USBAT_UIO_OE0		0x10 /* I/O 0 set=output/clr=input */
+#define USBAT_UIO_ADPRST	0x01 /* Reset SCM chip */
+
+/* USBAT Features */
+#define USBAT_FEAT_ETEN	0x80	/* External trigger enable */
+#define USBAT_FEAT_U1	0x08
+#define USBAT_FEAT_U0	0x04
+#define USBAT_FEAT_ET1	0x02
+#define USBAT_FEAT_ET2	0x01
+
+struct usbat_info {
+	int devicetype;
+
+	/* Used for Flash readers only */
+	unsigned long sectors;     /* total sector count */
+	unsigned long ssize;       /* sector size in bytes */
+
+	unsigned char sense_key;
+	unsigned long sense_asc;   /* additional sense code */
+	unsigned long sense_ascq;  /* additional sense code qualifier */
+};
 
 #define short_pack(LSB,MSB) ( ((u16)(LSB)) | ( ((u16)(MSB))<<8 ) )
 #define LSB_of(s) ((s)&0xFF)
@@ -62,6 +160,48 @@ static int transferred = 0;
 
 static int usbat_flash_transport(struct scsi_cmnd * srb, struct us_data *us);
 static int usbat_hp8200e_transport(struct scsi_cmnd *srb, struct us_data *us);
+
+static int init_usbat_cd(struct us_data *us);
+static int init_usbat_flash(struct us_data *us);
+
+
+/*
+ * The table of devices
+ */
+#define UNUSUAL_DEV(id_vendor, id_product, bcdDeviceMin, bcdDeviceMax, \
+		    vendorName, productName, useProtocol, useTransport, \
+		    initFunction, flags) \
+{ USB_DEVICE_VER(id_vendor, id_product, bcdDeviceMin, bcdDeviceMax), \
+  .driver_info = (flags) }
+
+static struct usb_device_id usbat_usb_ids[] = {
+#	include "unusual_usbat.h"
+	{ }		/* Terminating entry */
+};
+MODULE_DEVICE_TABLE(usb, usbat_usb_ids);
+
+#undef UNUSUAL_DEV
+
+/*
+ * The flags table
+ */
+#define UNUSUAL_DEV(idVendor, idProduct, bcdDeviceMin, bcdDeviceMax, \
+		    vendor_name, product_name, use_protocol, use_transport, \
+		    init_function, Flags) \
+{ \
+	.vendorName = vendor_name,	\
+	.productName = product_name,	\
+	.useProtocol = use_protocol,	\
+	.useTransport = use_transport,	\
+	.initFunction = init_function,	\
+}
+
+static struct us_unusual_dev usbat_unusual_dev_list[] = {
+#	include "unusual_usbat.h"
+	{ }		/* Terminating entry */
+};
+
+#undef UNUSUAL_DEV
 
 /*
  * Convenience function to produce an ATA read/write sectors command
@@ -136,6 +276,7 @@ static int usbat_bulk_read(struct us_data *us,
 		return USB_STOR_XFER_GOOD;
 
 	US_DEBUGP("usbat_bulk_read: len = %d\n", len);
+	usb_stor_dbg(us, "len = %d\n", len);
 	return usb_stor_bulk_transfer_sg(us, us->recv_bulk_pipe, buf, len, use_sg, NULL);
 }
 
@@ -151,6 +292,7 @@ static int usbat_bulk_write(struct us_data *us,
 		return USB_STOR_XFER_GOOD;
 
 	US_DEBUGP("usbat_bulk_write:  len = %d\n", len);
+	usb_stor_dbg(us, "len = %d\n", len);
 	return usb_stor_bulk_transfer_sg(us, us->send_bulk_pipe, buf, len, use_sg, NULL);
 }
 
@@ -177,6 +319,7 @@ static int usbat_get_status(struct us_data *us, unsigned char *status)
 	rc = usbat_read(us, USBAT_ATA, USBAT_ATA_STATUS, status);
 
 	US_DEBUGP("usbat_get_status: 0x%02X\n", (unsigned short) (*status));
+	usb_stor_dbg(us, "0x%02X\n", *status);
 	return rc;
 }
 
@@ -205,6 +348,7 @@ static int usbat_check_status(struct us_data *us)
 
 /*
  * Stores critical information in internal registers in prepartion for the execution
+ * Stores critical information in internal registers in preparation for the execution
  * of a conditional usbat_read_blocks or usbat_write_blocks call.
  */
 static int usbat_set_shuttle_features(struct us_data *us,
@@ -290,6 +434,7 @@ static int usbat_wait_not_busy(struct us_data *us, int minutes)
 
 		if ((*status & 0x80)==0x00) { /* not busy */
 			US_DEBUGP("Waited not busy for %d steps\n", i);
+			usb_stor_dbg(us, "Waited not busy for %d steps\n", i);
 			return USB_STOR_TRANSPORT_GOOD;
 		}
 
@@ -305,6 +450,8 @@ static int usbat_wait_not_busy(struct us_data *us, int minutes)
 
 	US_DEBUGP("Waited not busy for %d minutes, timing out.\n",
 		minutes);
+	usb_stor_dbg(us, "Waited not busy for %d minutes, timing out\n",
+		     minutes);
 	return USB_STOR_TRANSPORT_FAILED;
 }
 
@@ -523,6 +670,9 @@ static int usbat_hp8200e_rw_block_test(struct us_data *us,
 
 			US_DEBUGP("Redoing %s\n",
 			  direction==DMA_TO_DEVICE ? "write" : "read");
+			usb_stor_dbg(us, "Redoing %s\n",
+				     direction == DMA_TO_DEVICE
+				     ? "write" : "read");
 
 		} else if (result != USB_STOR_XFER_GOOD)
 			return USB_STOR_TRANSPORT_ERROR;
@@ -533,6 +683,8 @@ static int usbat_hp8200e_rw_block_test(struct us_data *us,
 
 	US_DEBUGP("Bummer! %s bulk data 20 times failed.\n",
 		direction==DMA_TO_DEVICE ? "Writing" : "Reading");
+	usb_stor_dbg(us, "Bummer! %s bulk data 20 times failed\n",
+		     direction == DMA_TO_DEVICE ? "Writing" : "Reading");
 
 	return USB_STOR_TRANSPORT_FAILED;
 }
@@ -692,6 +844,7 @@ static int usbat_read_user_io(struct us_data *us, unsigned char *data_flags)
 		USBAT_UIO_READ);
 
 	US_DEBUGP("usbat_read_user_io: UIO register reads %02X\n", (unsigned short) (*data_flags));
+	usb_stor_dbg(us, "UIO register reads %02X\n", *data_flags);
 
 	return result;
 }
@@ -768,6 +921,11 @@ static int usbat_flash_check_media_present(unsigned char *uio)
 {
 	if (*uio & USBAT_UIO_UI0) {
 		US_DEBUGP("usbat_flash_check_media_present: no media detected\n");
+static int usbat_flash_check_media_present(struct us_data *us,
+					   unsigned char *uio)
+{
+	if (*uio & USBAT_UIO_UI0) {
+		usb_stor_dbg(us, "no media detected\n");
 		return USBAT_FLASH_MEDIA_NONE;
 	}
 
@@ -781,6 +939,11 @@ static int usbat_flash_check_media_changed(unsigned char *uio)
 {
 	if (*uio & USBAT_UIO_0) {
 		US_DEBUGP("usbat_flash_check_media_changed: media change detected\n");
+static int usbat_flash_check_media_changed(struct us_data *us,
+					   unsigned char *uio)
+{
+	if (*uio & USBAT_UIO_0) {
+		usb_stor_dbg(us, "media change detected\n");
 		return USBAT_FLASH_MEDIA_CHANGED;
 	}
 
@@ -802,6 +965,7 @@ static int usbat_flash_check_media(struct us_data *us,
 
 	/* Check for media existence */
 	rc = usbat_flash_check_media_present(uio);
+	rc = usbat_flash_check_media_present(us, uio);
 	if (rc == USBAT_FLASH_MEDIA_NONE) {
 		info->sense_key = 0x02;
 		info->sense_asc = 0x3A;
@@ -811,6 +975,7 @@ static int usbat_flash_check_media(struct us_data *us,
 
 	/* Check for media change */
 	rc = usbat_flash_check_media_changed(uio);
+	rc = usbat_flash_check_media_changed(us, uio);
 	if (rc == USBAT_FLASH_MEDIA_CHANGED) {
 
 		/* Reset and re-enable card detect */
@@ -877,6 +1042,11 @@ static int usbat_identify_device(struct us_data *us,
 	} else {
 		/* Device is a CompactFlash reader/writer */
 		US_DEBUGP("usbat_identify_device: Detected Flash reader/writer\n");
+		usb_stor_dbg(us, "Detected HP8200 CDRW\n");
+		info->devicetype = USBAT_DEV_HP8200;
+	} else {
+		/* Device is a CompactFlash reader/writer */
+		usb_stor_dbg(us, "Detected Flash reader/writer\n");
 		info->devicetype = USBAT_DEV_FLASH;
 	}
 
@@ -940,6 +1110,7 @@ static int usbat_flash_get_sector_count(struct us_data *us,
 	rc = usbat_multiple_write(us, registers, command, 3);
 	if (rc != USB_STOR_XFER_GOOD) {
 		US_DEBUGP("usbat_flash_get_sector_count: Gah! identify_device failed\n");
+		usb_stor_dbg(us, "Gah! identify_device failed\n");
 		rc = USB_STOR_TRANSPORT_ERROR;
 		goto leave;
 	}
@@ -1043,6 +1214,7 @@ static int usbat_flash_read_data(struct us_data *us,
 			goto leave;
   	 
 		US_DEBUGP("usbat_flash_read_data:  %d bytes\n", len);
+		usb_stor_dbg(us, "%d bytes\n", len);
 	
 		/* Store the data in the transfer buffer */
 		usb_stor_access_xfer_buf(buffer, len, us->srb,
@@ -1167,6 +1339,7 @@ static int usbat_hp8200e_handle_read10(struct us_data *us,
 
 	US_DEBUGP("handle_read10: transfersize %d\n",
 		srb->transfersize);
+	usb_stor_dbg(us, "transfersize %d\n", srb->transfersize);
 
 	if (scsi_bufflen(srb) < 0x10000) {
 
@@ -1194,6 +1367,7 @@ static int usbat_hp8200e_handle_read10(struct us_data *us,
 		len <<= 16;
 		len |= data[7+7];
 		US_DEBUGP("handle_read10: GPCMD_READ_CD: len %d\n", len);
+		usb_stor_dbg(us, "GPCMD_READ_CD: len %d\n", len);
 		srb->transfersize = scsi_bufflen(srb)/len;
 	}
 
@@ -1201,6 +1375,8 @@ static int usbat_hp8200e_handle_read10(struct us_data *us,
 		srb->transfersize = 2048; /* A guess */
 		US_DEBUGP("handle_read10: transfersize 0, forcing %d\n",
 			srb->transfersize);
+		usb_stor_dbg(us, "transfersize 0, forcing %d\n",
+			     srb->transfersize);
 	}
 
 	/*
@@ -1211,6 +1387,7 @@ static int usbat_hp8200e_handle_read10(struct us_data *us,
 
 	len = (65535/srb->transfersize) * srb->transfersize;
 	US_DEBUGP("Max read is %d bytes\n", len);
+	usb_stor_dbg(us, "Max read is %d bytes\n", len);
 	len = min(len, scsi_bufflen(srb));
 	buffer = kmalloc(len, GFP_NOIO);
 	if (buffer == NULL) /* bloody hell! */
@@ -1328,6 +1505,9 @@ static int init_usbat(struct us_data *us, int devicetype)
 		US_DEBUGP("init_usbat: Gah! Can't allocate storage for usbat info struct!\n");
 		return 1;
 	}
+	if (!us->extra)
+		return 1;
+
 	info = (struct usbat_info *) (us->extra);
 
 	/* Enable peripheral control signals */
@@ -1338,6 +1518,7 @@ static int init_usbat(struct us_data *us, int devicetype)
 		return USB_STOR_TRANSPORT_ERROR;
 
 	US_DEBUGP("INIT 1\n");
+	usb_stor_dbg(us, "INIT 1\n");
 
 	msleep(2000);
 
@@ -1346,6 +1527,7 @@ static int init_usbat(struct us_data *us, int devicetype)
 		return rc;
 
 	US_DEBUGP("INIT 2\n");
+	usb_stor_dbg(us, "INIT 2\n");
 
 	rc = usbat_read_user_io(us, status);
 	if (rc != USB_STOR_XFER_GOOD)
@@ -1356,18 +1538,21 @@ static int init_usbat(struct us_data *us, int devicetype)
 		return USB_STOR_TRANSPORT_ERROR;
 
 	US_DEBUGP("INIT 3\n");
+	usb_stor_dbg(us, "INIT 3\n");
 
 	rc = usbat_select_and_test_registers(us);
 	if (rc != USB_STOR_TRANSPORT_GOOD)
 		return rc;
 
 	US_DEBUGP("INIT 4\n");
+	usb_stor_dbg(us, "INIT 4\n");
 
 	rc = usbat_read_user_io(us, status);
 	if (rc != USB_STOR_XFER_GOOD)
 		return USB_STOR_TRANSPORT_ERROR;
 
 	US_DEBUGP("INIT 5\n");
+	usb_stor_dbg(us, "INIT 5\n");
 
 	/* Enable peripheral control signals and card detect */
 	rc = usbat_device_enable_cdt(us);
@@ -1375,12 +1560,14 @@ static int init_usbat(struct us_data *us, int devicetype)
 		return rc;
 
 	US_DEBUGP("INIT 6\n");
+	usb_stor_dbg(us, "INIT 6\n");
 
 	rc = usbat_read_user_io(us, status);
 	if (rc != USB_STOR_XFER_GOOD)
 		return USB_STOR_TRANSPORT_ERROR;
 
 	US_DEBUGP("INIT 7\n");
+	usb_stor_dbg(us, "INIT 7\n");
 
 	msleep(1400);
 
@@ -1389,18 +1576,21 @@ static int init_usbat(struct us_data *us, int devicetype)
 		return USB_STOR_TRANSPORT_ERROR;
 
 	US_DEBUGP("INIT 8\n");
+	usb_stor_dbg(us, "INIT 8\n");
 
 	rc = usbat_select_and_test_registers(us);
 	if (rc != USB_STOR_TRANSPORT_GOOD)
 		return rc;
 
 	US_DEBUGP("INIT 9\n");
+	usb_stor_dbg(us, "INIT 9\n");
 
 	/* At this point, we need to detect which device we are using */
 	if (usbat_set_transport(us, info, devicetype))
 		return USB_STOR_TRANSPORT_ERROR;
 
 	US_DEBUGP("INIT 10\n");
+	usb_stor_dbg(us, "INIT 10\n");
 
 	if (usbat_get_device_type(us) == USBAT_DEV_FLASH) { 
 		subcountH = 0x02;
@@ -1412,6 +1602,7 @@ static int init_usbat(struct us_data *us, int devicetype)
 		return USB_STOR_TRANSPORT_ERROR;
 
 	US_DEBUGP("INIT 11\n");
+	usb_stor_dbg(us, "INIT 11\n");
 
 	return USB_STOR_TRANSPORT_GOOD;
 }
@@ -1457,6 +1648,7 @@ static int usbat_hp8200e_transport(struct scsi_cmnd *srb, struct us_data *us)
 
 	result = usbat_get_status(us, status);
 	US_DEBUGP("Status = %02X\n", *status);
+	usb_stor_dbg(us, "Status = %02X\n", *status);
 	if (result != USB_STOR_XFER_GOOD)
 		return USB_STOR_TRANSPORT_ERROR;
 	if (srb->cmnd[0] == TEST_UNIT_READY)
@@ -1475,6 +1667,7 @@ static int usbat_hp8200e_transport(struct scsi_cmnd *srb, struct us_data *us)
 		if (result == USB_STOR_TRANSPORT_GOOD) {
 			transferred += len;
 			US_DEBUGP("Wrote %08X bytes\n", transferred);
+			usb_stor_dbg(us, "Wrote %08X bytes\n", transferred);
 		}
 
 		return result;
@@ -1496,6 +1689,15 @@ static int usbat_hp8200e_transport(struct scsi_cmnd *srb, struct us_data *us)
 			registers, data, 7)) != USB_STOR_TRANSPORT_GOOD) {
 		return result;
 	}
+		usb_stor_dbg(us, "Error: len = %08X... what do I do now?\n",
+			     len);
+		return USB_STOR_TRANSPORT_ERROR;
+	}
+
+	result = usbat_multiple_write(us, registers, data, 7);
+
+	if (result != USB_STOR_TRANSPORT_GOOD)
+		return result;
 
 	/*
 	 * Write the 12-byte command header.
@@ -1513,6 +1715,11 @@ static int usbat_hp8200e_transport(struct scsi_cmnd *srb, struct us_data *us)
 			     USB_STOR_TRANSPORT_GOOD)) {
 		return result;
 	}
+	result = usbat_write_block(us, USBAT_ATA, srb->cmnd, 12,
+				   srb->cmnd[0] == GPCMD_BLANK ? 75 : 10, 0);
+
+	if (result != USB_STOR_TRANSPORT_GOOD)
+		return result;
 
 	/* If there is response data to be read in then do it here. */
 
@@ -1559,6 +1766,7 @@ static int usbat_flash_transport(struct scsi_cmnd * srb, struct us_data *us)
 
 	if (srb->cmnd[0] == INQUIRY) {
 		US_DEBUGP("usbat_flash_transport: INQUIRY. Returning bogus response.\n");
+		usb_stor_dbg(us, "INQUIRY - Returning bogus response\n");
 		memcpy(ptr, inquiry_response, sizeof(inquiry_response));
 		fill_inquiry_response(us, ptr, 36);
 		return USB_STOR_TRANSPORT_GOOD;
@@ -1577,6 +1785,8 @@ static int usbat_flash_transport(struct scsi_cmnd * srb, struct us_data *us)
 		info->ssize = 0x200;
 		US_DEBUGP("usbat_flash_transport: READ_CAPACITY: %ld sectors, %ld bytes per sector\n",
 			  info->sectors, info->ssize);
+		usb_stor_dbg(us, "READ_CAPACITY: %ld sectors, %ld bytes per sector\n",
+			     info->sectors, info->ssize);
 
 		/*
 		 * build the reply
@@ -1592,6 +1802,7 @@ static int usbat_flash_transport(struct scsi_cmnd * srb, struct us_data *us)
 
 	if (srb->cmnd[0] == MODE_SELECT_10) {
 		US_DEBUGP("usbat_flash_transport:  Gah! MODE_SELECT_10.\n");
+		usb_stor_dbg(us, "Gah! MODE_SELECT_10\n");
 		return USB_STOR_TRANSPORT_ERROR;
 	}
 
@@ -1602,6 +1813,8 @@ static int usbat_flash_transport(struct scsi_cmnd * srb, struct us_data *us)
 		blocks = ((u32)(srb->cmnd[7]) << 8) | ((u32)(srb->cmnd[8]));
 
 		US_DEBUGP("usbat_flash_transport:  READ_10: read block 0x%04lx  count %ld\n", block, blocks);
+		usb_stor_dbg(us, "READ_10: read block 0x%04lx  count %ld\n",
+			     block, blocks);
 		return usbat_flash_read_data(us, info, block, blocks);
 	}
 
@@ -1616,6 +1829,8 @@ static int usbat_flash_transport(struct scsi_cmnd * srb, struct us_data *us)
 		         ((u32)(srb->cmnd[8]) <<  8) | ((u32)(srb->cmnd[9]));
 
 		US_DEBUGP("usbat_flash_transport: READ_12: read block 0x%04lx  count %ld\n", block, blocks);
+		usb_stor_dbg(us, "READ_12: read block 0x%04lx  count %ld\n",
+			     block, blocks);
 		return usbat_flash_read_data(us, info, block, blocks);
 	}
 
@@ -1626,6 +1841,8 @@ static int usbat_flash_transport(struct scsi_cmnd * srb, struct us_data *us)
 		blocks = ((u32)(srb->cmnd[7]) << 8) | ((u32)(srb->cmnd[8]));
 
 		US_DEBUGP("usbat_flash_transport: WRITE_10: write block 0x%04lx  count %ld\n", block, blocks);
+		usb_stor_dbg(us, "WRITE_10: write block 0x%04lx  count %ld\n",
+			     block, blocks);
 		return usbat_flash_write_data(us, info, block, blocks);
 	}
 
@@ -1640,12 +1857,15 @@ static int usbat_flash_transport(struct scsi_cmnd * srb, struct us_data *us)
 		         ((u32)(srb->cmnd[8]) <<  8) | ((u32)(srb->cmnd[9]));
 
 		US_DEBUGP("usbat_flash_transport: WRITE_12: write block 0x%04lx  count %ld\n", block, blocks);
+		usb_stor_dbg(us, "WRITE_12: write block 0x%04lx  count %ld\n",
+			     block, blocks);
 		return usbat_flash_write_data(us, info, block, blocks);
 	}
 
 
 	if (srb->cmnd[0] == TEST_UNIT_READY) {
 		US_DEBUGP("usbat_flash_transport: TEST_UNIT_READY.\n");
+		usb_stor_dbg(us, "TEST_UNIT_READY\n");
 
 		rc = usbat_flash_check_media(us, info);
 		if (rc != USB_STOR_TRANSPORT_GOOD)
@@ -1656,6 +1876,7 @@ static int usbat_flash_transport(struct scsi_cmnd * srb, struct us_data *us)
 
 	if (srb->cmnd[0] == REQUEST_SENSE) {
 		US_DEBUGP("usbat_flash_transport: REQUEST_SENSE.\n");
+		usb_stor_dbg(us, "REQUEST_SENSE\n");
 
 		memset(ptr, 0, 18);
 		ptr[0] = 0xF0;
@@ -1678,6 +1899,8 @@ static int usbat_flash_transport(struct scsi_cmnd * srb, struct us_data *us)
 
 	US_DEBUGP("usbat_flash_transport: Gah! Unknown command: %d (0x%x)\n",
 			  srb->cmnd[0], srb->cmnd[0]);
+	usb_stor_dbg(us, "Gah! Unknown command: %d (0x%x)\n",
+		     srb->cmnd[0], srb->cmnd[0]);
 	info->sense_key = 0x05;
 	info->sense_asc = 0x20;
 	info->sense_ascq = 0x00;
@@ -1685,12 +1908,14 @@ static int usbat_flash_transport(struct scsi_cmnd * srb, struct us_data *us)
 }
 
 int init_usbat_cd(struct us_data *us)
+static int init_usbat_cd(struct us_data *us)
 {
 	return init_usbat(us, USBAT_DEV_HP8200);
 }
 
 
 int init_usbat_flash(struct us_data *us)
+static int init_usbat_flash(struct us_data *us)
 {
 	return init_usbat(us, USBAT_DEV_FLASH);
 }
@@ -1718,3 +1943,44 @@ int usbat_transport(struct scsi_cmnd *srb, struct us_data *us)
 
 	return us->transport(srb, us);	
 }
+static struct scsi_host_template usbat_host_template;
+
+static int usbat_probe(struct usb_interface *intf,
+			 const struct usb_device_id *id)
+{
+	struct us_data *us;
+	int result;
+
+	result = usb_stor_probe1(&us, intf, id,
+			(id - usbat_usb_ids) + usbat_unusual_dev_list,
+			&usbat_host_template);
+	if (result)
+		return result;
+
+	/* The actual transport will be determined later by the
+	 * initialization routine; this is just a placeholder.
+	 */
+	us->transport_name = "Shuttle USBAT";
+	us->transport = usbat_flash_transport;
+	us->transport_reset = usb_stor_CB_reset;
+	us->max_lun = 0;
+
+	result = usb_stor_probe2(us);
+	return result;
+}
+
+static struct usb_driver usbat_driver = {
+	.name =		DRV_NAME,
+	.probe =	usbat_probe,
+	.disconnect =	usb_stor_disconnect,
+	.suspend =	usb_stor_suspend,
+	.resume =	usb_stor_resume,
+	.reset_resume =	usb_stor_reset_resume,
+	.pre_reset =	usb_stor_pre_reset,
+	.post_reset =	usb_stor_post_reset,
+	.id_table =	usbat_usb_ids,
+	.soft_unbind =	1,
+	.no_dynamic_id = 1,
+};
+
+module_usb_stor_driver(usbat_driver, usbat_host_template, DRV_NAME);

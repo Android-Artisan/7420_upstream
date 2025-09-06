@@ -15,6 +15,11 @@
 #include <linux/mm.h>
 
 #include <asm/system.h>
+#include <linux/slab.h>
+#include <linux/string.h>
+#include <generated/utsrelease.h>
+#include <linux/mm.h>
+
 #include <asm/console.h>
 #include <asm/hwrpb.h>
 #include <asm/pgtable.h>

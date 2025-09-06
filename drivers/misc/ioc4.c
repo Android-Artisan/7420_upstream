@@ -30,6 +30,7 @@
 #include <linux/pci.h>
 #include <linux/ioc4.h>
 #include <linux/ktime.h>
+#include <linux/slab.h>
 #include <linux/mutex.h>
 #include <linux/time.h>
 #include <asm/io.h>
@@ -147,6 +148,9 @@ ioc4_clock_calibrate(struct ioc4_driver_data *idd)
 	struct timespec start_ts, end_ts;
 	uint64_t start, end, period;
 	unsigned int count = 0;
+	unsigned int state, last_state;
+	uint64_t start, end, period;
+	unsigned int count;
 
 	/* Enable output */
 	gpcr.raw = 0;
@@ -180,6 +184,20 @@ ioc4_clock_calibrate(struct ioc4_driver_data *idd)
 		}
 		last_state = state;
 	} while (1);
+	start = ktime_get_ns();
+	state = 1; /* make sure the first read isn't a rising edge */
+	for (count = 0; count <= IOC4_CALIBRATE_END; count++) {
+		do { /* wait for a rising edge */
+			last_state = state;
+			int_out.raw = readl(&idd->idd_misc_regs->int_out.raw);
+			state = int_out.fields.int_out;
+		} while (last_state || !state);
+
+		/* discard the first few cycles */
+		if (count == IOC4_CALIBRATE_DISCARD)
+			start = ktime_get_ns();
+	}
+	end = ktime_get_ns();
 
 	/* Calculation rearranged to preserve intermediate precision.
 	 * Logically:
@@ -268,6 +286,14 @@ ioc4_variant(struct ioc4_driver_data *idd)
 	/* PCI-RT: No SCSI/SATA controller will be present */
 	return IOC4_VARIANT_PCI_RT;
 }
+
+static void
+ioc4_load_modules(struct work_struct *work)
+{
+	request_module("sgiioc4");
+}
+
+static DECLARE_WORK(ioc4_load_modules_work, ioc4_load_modules);
 
 /* Adds a new instance of an IOC4 card */
 static int
@@ -378,6 +404,21 @@ ioc4_probe(struct pci_dev *pdev, const struct pci_device_id *pci_id)
 	}
 	mutex_unlock(&ioc4_mutex);
 
+	/* Request sgiioc4 IDE driver on boards that bring that functionality
+	 * off of IOC4.  The root filesystem may be hosted on a drive connected
+	 * to IOC4, so we need to make sure the sgiioc4 driver is loaded as it
+	 * won't be picked up by modprobes due to the ioc4 module owning the
+	 * PCI device.
+	 */
+	if (idd->idd_variant != IOC4_VARIANT_PCI_RT) {
+		/* Request the module from a work procedure as the modprobe
+		 * goes out to a userland helper and that will hang if done
+		 * directly from ioc4_probe().
+		 */
+		printk(KERN_INFO "IOC4 loading sgiioc4 submodule\n");
+		schedule_work(&ioc4_load_modules_work);
+	}
+
 	return 0;
 
 out_misc_region:
@@ -453,6 +494,7 @@ MODULE_DEVICE_TABLE(pci, ioc4_id_table);
 
 /* Module load */
 static int __devinit
+static int __init
 ioc4_init(void)
 {
 	return pci_register_driver(&ioc4_driver);
@@ -462,6 +504,11 @@ ioc4_init(void)
 static void __devexit
 ioc4_exit(void)
 {
+static void __exit
+ioc4_exit(void)
+{
+	/* Ensure ioc4_load_modules() has completed before exiting */
+	flush_work(&ioc4_load_modules_work);
 	pci_unregister_driver(&ioc4_driver);
 }
 

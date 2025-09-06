@@ -16,6 +16,7 @@
 #include <linux/types.h>
 #include <linux/spi/spi.h>
 #include <linux/spi/at73c213.h>
+#include <linux/atmel-mci.h>
 
 #include <video/atmel_lcdc.h>
 
@@ -102,6 +103,9 @@ static struct atmel_nand_data atstk1006_nand_data __initdata = {
 	.rdy_pin	= GPIO_PIN_PB(30),
 	.enable_pin	= GPIO_PIN_PB(29),
 	.partition_info	= nand_part_info,
+	.ecc_mode	= NAND_ECC_SOFT,
+	.parts		= nand_partitions,
+	.num_parts	= ARRAY_SIZE(nand_partitions),
 };
 #endif
 
@@ -111,6 +115,7 @@ struct eth_addr {
 
 static struct eth_addr __initdata hw_addr[2];
 static struct eth_platform_data __initdata eth_data[2] = {
+static struct macb_platform_data __initdata eth_data[2] = {
 	{
 		/*
 		 * The MDIO pullups on STK1000 are a bit too weak for
@@ -204,6 +209,7 @@ static void __init set_hw_addr(struct platform_device *pdev)
 	regs = (void __iomem __force *)res->start;
 	pclk = clk_get(&pdev->dev, "pclk");
 	if (!pclk)
+	if (IS_ERR(pclk))
 		return;
 
 	clk_enable(pclk);
@@ -233,6 +239,7 @@ static void __init atstk1002_setup_extdac(void)
 	}
 
 	at32_select_periph(GPIO_PIN_PA(30), GPIO_PERIPH_A, 0);
+	at32_select_periph(GPIO_PIOA_BASE, (1 << 30), GPIO_PERIPH_A, 0);
 	at73c213_data.dac_clk = gclk;
 
 err_set_clk:
@@ -258,6 +265,12 @@ void __init setup_board(void)
 #endif
 	/* USART 2/unused: expansion connector */
 	at32_map_usart(3, 2);	/* USART 3/C: /dev/ttyS2, DB9 */
+	at32_map_usart(0, 1, 0);	/* USART 0/B: /dev/ttyS1, IRDA */
+#else
+	at32_map_usart(1, 0, 0);	/* USART 1/A: /dev/ttyS0, DB9 */
+#endif
+	/* USART 2/unused: expansion connector */
+	at32_map_usart(3, 2, 0);	/* USART 3/C: /dev/ttyS2, DB9 */
 
 	at32_setup_serial_console(0);
 }
@@ -274,6 +287,20 @@ static struct mci_platform_data __initdata mci0_data = {
 #else
 #define MCI_PDATA	NULL
 #endif	/* SW6 for sd{cd,wp} routing */
+static struct mci_platform_data __initdata mci0_data = {
+	.slot[0] = {
+		.bus_width	= 4,
+
+/* MMC card detect requires MACB0 *NOT* be used */
+#ifdef CONFIG_BOARD_ATSTK1002_SW6_CUSTOM
+		.detect_pin	= GPIO_PIN_PC(14), /* gpio30/sdcd */
+		.wp_pin		= GPIO_PIN_PC(15), /* gpio31/sdwp */
+#else
+		.detect_pin	= -ENODEV,
+		.wp_pin		= -ENODEV,
+#endif	/* SW6 for sd{cd,wp} routing */
+	},
+};
 
 #endif	/* SW2 for MMC signal routing */
 
@@ -302,6 +329,7 @@ static int __init atstk1002_init(void)
 	at32_reserve_pin(GPIO_PIN_PE(26));	/* SDCS		*/
 
 	at32_add_system_devices();
+	at32_reserve_pin(GPIO_PIOE_BASE, ATMEL_EBI_PE_DATA_ALL);
 
 #ifdef CONFIG_BOARD_ATSTK1006
 	smc_set_timing(&nand_config, &nand_timing);
@@ -327,12 +355,15 @@ static int __init atstk1002_init(void)
 #endif
 #ifndef CONFIG_BOARD_ATSTK100X_SW2_CUSTOM
 	at32_add_device_mci(0, MCI_PDATA);
+	at32_add_device_mci(0, &mci0_data);
 #endif
 #ifdef CONFIG_BOARD_ATSTK1002_SW5_CUSTOM
 	set_hw_addr(at32_add_device_eth(1, &eth_data[1]));
 #else
 	at32_add_device_lcdc(0, &atstk1000_lcdc_data,
 			     fbmem_start, fbmem_size, 0);
+			     fbmem_start, fbmem_size,
+			     ATMEL_LCDC_PRI_24BIT | ATMEL_LCDC_PRI_CONTROL);
 #endif
 	at32_add_device_usba(0, NULL);
 #ifndef CONFIG_BOARD_ATSTK100X_SW3_CUSTOM

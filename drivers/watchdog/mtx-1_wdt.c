@@ -6,6 +6,7 @@
  *                              http://www.4g-systems.biz
  *
  * 	(C) Copyright 2007 OpenWrt.org, Florian Fainelli <florian@openwrt.org>
+ *	(C) Copyright 2007 OpenWrt.org, Florian Fainelli <florian@openwrt.org>
  *
  *      This program is free software; you can redistribute it and/or
  *      modify it under the terms of the GNU General Public License
@@ -66,6 +67,7 @@ static struct {
 	int default_ticks;
 	unsigned long inuse;
 	unsigned gpio;
+	unsigned int gstate;
 } mtx1_wdt_device;
 
 static void mtx1_wdt_trigger(unsigned long unused)
@@ -82,6 +84,13 @@ static void mtx1_wdt_trigger(unsigned long unused)
 	tmp = (tmp & ~(1 << mtx1_wdt_device.gpio)) |
 	      ((~tmp) & (1 << mtx1_wdt_device.gpio));
 	au_writel(tmp, GPIO2_DIR);
+	spin_lock(&mtx1_wdt_device.lock);
+	if (mtx1_wdt_device.running)
+		ticks--;
+
+	/* toggle wdt gpio */
+	mtx1_wdt_device.gstate = !mtx1_wdt_device.gstate;
+	gpio_set_value(mtx1_wdt_device.gpio, mtx1_wdt_device.gstate);
 
 	if (mtx1_wdt_device.queue && ticks)
 		mod_timer(&mtx1_wdt_device.timer, jiffies + MTX1_WDT_INTERVAL);
@@ -101,6 +110,12 @@ static void mtx1_wdt_start(void)
 	spin_lock_irqsave(&mtx1_wdt_device.lock, flags);
 	if (!mtx1_wdt_device.queue) {
 		mtx1_wdt_device.queue = 1;
+	unsigned long flags;
+
+	spin_lock_irqsave(&mtx1_wdt_device.lock, flags);
+	if (!mtx1_wdt_device.queue) {
+		mtx1_wdt_device.queue = 1;
+		mtx1_wdt_device.gstate = 1;
 		gpio_set_value(mtx1_wdt_device.gpio, 1);
 		mod_timer(&mtx1_wdt_device.timer, jiffies + MTX1_WDT_INTERVAL);
 	}
@@ -113,6 +128,12 @@ static int mtx1_wdt_stop(void)
 	spin_lock_irqsave(&mtx1_wdt_device.lock, flags);
 	if (mtx1_wdt_device.queue) {
 		mtx1_wdt_device.queue = 0;
+	unsigned long flags;
+
+	spin_lock_irqsave(&mtx1_wdt_device.lock, flags);
+	if (mtx1_wdt_device.queue) {
+		mtx1_wdt_device.queue = 0;
+		mtx1_wdt_device.gstate = 0;
 		gpio_set_value(mtx1_wdt_device.gpio, 0);
 	}
 	ticks = mtx1_wdt_device.default_ticks;
@@ -192,6 +213,12 @@ static const struct file_operations mtx1_wdt_fops = {
 	.open 		= mtx1_wdt_open,
 	.write 		= mtx1_wdt_write,
 	.release 	= mtx1_wdt_release,
+	.owner		= THIS_MODULE,
+	.llseek		= no_llseek,
+	.unlocked_ioctl	= mtx1_wdt_ioctl,
+	.open		= mtx1_wdt_open,
+	.write		= mtx1_wdt_write,
+	.release	= mtx1_wdt_release,
 };
 
 
@@ -199,6 +226,9 @@ static struct miscdevice mtx1_wdt_misc = {
 	.minor 	= WATCHDOG_MINOR,
 	.name 	= "watchdog",
 	.fops 	= &mtx1_wdt_fops,
+	.minor	= WATCHDOG_MINOR,
+	.name	= "watchdog",
+	.fops	= &mtx1_wdt_fops,
 };
 
 
@@ -207,6 +237,12 @@ static int mtx1_wdt_probe(struct platform_device *pdev)
 	int ret;
 
 	mtx1_wdt_device.gpio = pdev->resource[0].start;
+	ret = devm_gpio_request_one(&pdev->dev, mtx1_wdt_device.gpio,
+				GPIOF_OUT_INIT_HIGH, "mtx1-wdt");
+	if (ret < 0) {
+		dev_err(&pdev->dev, "failed to request gpio");
+		return ret;
+	}
 
 	spin_lock_init(&mtx1_wdt_device.lock);
 	init_completion(&mtx1_wdt_device.stop);
@@ -222,6 +258,11 @@ static int mtx1_wdt_probe(struct platform_device *pdev)
 	}
 	mtx1_wdt_start();
 	printk(KERN_INFO "MTX-1 Watchdog driver\n");
+		dev_err(&pdev->dev, "failed to register\n");
+		return ret;
+	}
+	mtx1_wdt_start();
+	dev_info(&pdev->dev, "MTX-1 Watchdog driver\n");
 	return 0;
 }
 
@@ -232,11 +273,13 @@ static int mtx1_wdt_remove(struct platform_device *pdev)
 		mtx1_wdt_device.queue = 0;
 		wait_for_completion(&mtx1_wdt_device.stop);
 	}
+
 	misc_deregister(&mtx1_wdt_misc);
 	return 0;
 }
 
 static struct platform_driver mtx1_wdt = {
+static struct platform_driver mtx1_wdt_driver = {
 	.probe = mtx1_wdt_probe,
 	.remove = mtx1_wdt_remove,
 	.driver.name = "mtx1-wdt",
@@ -255,6 +298,7 @@ static void __exit mtx1_wdt_exit(void)
 
 module_init(mtx1_wdt_init);
 module_exit(mtx1_wdt_exit);
+module_platform_driver(mtx1_wdt_driver);
 
 MODULE_AUTHOR("Michael Stickel, Florian Fainelli");
 MODULE_DESCRIPTION("Driver for the MTX-1 watchdog");

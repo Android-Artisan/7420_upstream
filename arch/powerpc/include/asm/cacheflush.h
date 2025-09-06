@@ -25,6 +25,7 @@
 #define flush_cache_vmap(start, end)		do { } while (0)
 #define flush_cache_vunmap(start, end)		do { } while (0)
 
+#define ARCH_IMPLEMENTS_FLUSH_DCACHE_PAGE 1
 extern void flush_dcache_page(struct page *page);
 #define flush_dcache_mmap_lock(mapping)		do { } while (0)
 #define flush_dcache_mmap_unlock(mapping)	do { } while (0)
@@ -36,6 +37,9 @@ static inline void flush_icache_range(unsigned long start, unsigned long stop)
 		__flush_icache_range(start, stop);
 }
 
+extern void __flush_disable_L1(void);
+
+extern void flush_icache_range(unsigned long, unsigned long);
 extern void flush_icache_user_range(struct vm_area_struct *vma,
 				    struct page *page, unsigned long addr,
 				    int len);
@@ -44,6 +48,12 @@ extern void flush_dcache_icache_page(struct page *page);
 #if defined(CONFIG_PPC32) && !defined(CONFIG_BOOKE)
 extern void __flush_dcache_icache_phys(unsigned long physaddr);
 #endif /* CONFIG_PPC32 && !CONFIG_BOOKE */
+#else
+static inline void __flush_dcache_icache_phys(unsigned long physaddr)
+{
+	BUG();
+}
+#endif
 
 extern void flush_dcache_range(unsigned long start, unsigned long stop);
 #ifdef CONFIG_PPC32

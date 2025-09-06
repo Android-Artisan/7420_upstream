@@ -27,6 +27,10 @@
 #include <linux/interrupt.h>
 #include <linux/completion.h>
 #include <linux/spinlock.h>
+#include <linux/slab.h>
+#include <linux/completion.h>
+#include <linux/spinlock.h>
+#include <linux/module.h>
 #include <linux/workqueue.h>
 #include <linux/of_device.h>
 #include <linux/of_platform.h>
@@ -43,6 +47,7 @@ struct pmi_data {
 	pmi_message_t		msg;
 	struct completion	*completion;
 	struct of_device	*dev;
+	struct platform_device	*dev;
 	int			irq;
 	u8 __iomem		*pmi_reg;
 	struct work_struct	work;
@@ -51,6 +56,7 @@ struct pmi_data {
 static struct pmi_data *data;
 
 static int pmi_irq_handler(int irq, void *dev_id)
+static irqreturn_t pmi_irq_handler(int irq, void *dev_id)
 {
 	u8 type;
 	int rc;
@@ -100,6 +106,7 @@ out:
 
 
 static struct of_device_id pmi_match[] = {
+static const struct of_device_id pmi_match[] = {
 	{ .type = "ibm,pmi", .name = "ibm,pmi" },
 	{ .type = "ibm,pmi" },
 	{},
@@ -114,6 +121,7 @@ static void pmi_notify_handlers(struct work_struct *work)
 	spin_lock(&data->handler_spinlock);
 	list_for_each_entry(handler, &data->handler, node) {
 		pr_debug(KERN_INFO "pmi: notifying handler %p\n", handler);
+		pr_debug("pmi: notifying handler %p\n", handler);
 		if (handler->type == data->msg.type)
 			handler->handle_pmi_message(data->msg);
 	}
@@ -124,6 +132,9 @@ static int pmi_of_probe(struct of_device *dev,
 			const struct of_device_id *match)
 {
 	struct device_node *np = dev->node;
+static int pmi_of_probe(struct platform_device *dev)
+{
+	struct device_node *np = dev->dev.of_node;
 	int rc;
 
 	if (data) {
@@ -185,6 +196,7 @@ out:
 }
 
 static int pmi_of_remove(struct of_device *dev)
+static int pmi_of_remove(struct platform_device *dev)
 {
 	struct pmi_handler *handler, *tmp;
 
@@ -224,6 +236,15 @@ static void __exit pmi_module_exit(void)
 	of_unregister_platform_driver(&pmi_of_platform_driver);
 }
 module_exit(pmi_module_exit);
+static struct platform_driver pmi_of_platform_driver = {
+	.probe		= pmi_of_probe,
+	.remove		= pmi_of_remove,
+	.driver = {
+		.name = "pmi",
+		.of_match_table = pmi_match,
+	},
+};
+module_platform_driver(pmi_of_platform_driver);
 
 int pmi_send_message(pmi_message_t msg)
 {

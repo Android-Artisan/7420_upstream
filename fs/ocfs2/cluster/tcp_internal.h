@@ -36,6 +36,10 @@
  * This version number represents quite a lot, unfortunately.  It not
  * only represents the raw network message protocol on the wire but also
  * locking semantics of the file system using the protocol.  It should 
+/*
+ * This version number represents quite a lot, unfortunately.  It not
+ * only represents the raw network message protocol on the wire but also
+ * locking semantics of the file system using the protocol.  It should
  * be somewhere else, I'm sure, but right now it isn't.
  *
  * With version 11, we separate out the filesystem locking portion.  The
@@ -113,6 +117,12 @@ struct o2net_node {
 	 * connect attempt fails and so can be self-arming.  shutdown is
 	 * careful to first mark the nn such that no connects will be attempted
 	 * before canceling delayed connect work and flushing the queue. */
+	 * goes down, the node is unconfigured, or a connect succeeds.
+	 * connect_work is queued from set_nn_state both from hb up and from
+	 * itself if a connect attempt fails and so can be self-arming.
+	 * shutdown is careful to first mark the nn such that no connects will
+	 * be attempted before canceling delayed connect work and flushing the
+	 * queue. */
 	struct delayed_work		nn_connect_work;
 	unsigned long			nn_last_connect_attempt;
 
@@ -130,6 +140,7 @@ struct o2net_node {
 struct o2net_sock_container {
 	struct kref		sc_kref;
 	/* the next two are vaild for the life time of the sc */
+	/* the next two are valid for the life time of the sc */
 	struct socket		*sc_sock;
 	struct o2nm_node	*sc_node;
 
@@ -178,6 +189,28 @@ struct o2net_sock_container {
 	u32			sc_msg_key;
 	u16			sc_msg_type;
 
+	void			(*sc_data_ready)(struct sock *sk);
+
+	u32			sc_msg_key;
+	u16			sc_msg_type;
+
+#ifdef CONFIG_DEBUG_FS
+	struct list_head        sc_net_debug_item;
+	ktime_t			sc_tv_timer;
+	ktime_t			sc_tv_data_ready;
+	ktime_t			sc_tv_advance_start;
+	ktime_t			sc_tv_advance_stop;
+	ktime_t			sc_tv_func_start;
+	ktime_t			sc_tv_func_stop;
+#endif
+#ifdef CONFIG_OCFS2_FS_STATS
+	ktime_t			sc_tv_acquiry_total;
+	ktime_t			sc_tv_send_total;
+	ktime_t			sc_tv_status_total;
+	u32			sc_send_count;
+	u32			sc_recv_count;
+	ktime_t			sc_tv_process_total;
+#endif
 	struct mutex		sc_send_lock;
 };
 
@@ -223,6 +256,9 @@ struct o2net_send_tracking {
 	struct timeval			st_sock_time;
 	struct timeval			st_send_time;
 	struct timeval			st_status_time;
+	ktime_t				st_sock_time;
+	ktime_t				st_send_time;
+	ktime_t				st_status_time;
 };
 #else
 struct o2net_send_tracking {

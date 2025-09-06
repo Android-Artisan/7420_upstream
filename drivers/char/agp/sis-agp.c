@@ -19,6 +19,8 @@
 
 static int __devinitdata agp_sis_force_delay = 0;
 static int __devinitdata agp_sis_agp_spec = -1;
+static bool agp_sis_force_delay = 0;
+static int agp_sis_agp_spec = -1;
 
 static int sis_fetch_size(void)
 {
@@ -57,6 +59,8 @@ static int sis_configure(void)
 	pci_write_config_byte(agp_bridge->dev, SIS_TLBCNTRL, 0x05);
 	pci_read_config_dword(agp_bridge->dev, AGP_APBASE, &temp);
 	agp_bridge->gart_bus_addr = (temp & PCI_BASE_ADDRESS_MEM_MASK);
+	agp_bridge->gart_bus_addr = pci_bus_address(agp_bridge->dev,
+						    AGP_APERTURE_BAR);
 	pci_write_config_dword(agp_bridge->dev, SIS_ATTBASE,
 			       agp_bridge->gatt_bus_addr);
 	pci_write_config_byte(agp_bridge->dev, SIS_APSIZE,
@@ -125,6 +129,7 @@ static struct agp_bridge_driver sis_driver = {
 	.aperture_sizes		= sis_generic_sizes,
 	.size_type		= U8_APER_SIZE,
 	.num_aperture_sizes	= 7,
+	.needs_scratch_page	= true,
 	.configure		= sis_configure,
 	.fetch_size		= sis_fetch_size,
 	.cleanup		= sis_cleanup,
@@ -141,17 +146,22 @@ static struct agp_bridge_driver sis_driver = {
 	.free_by_type		= agp_generic_free_by_type,
 	.agp_alloc_page		= agp_generic_alloc_page,
 	.agp_destroy_page	= agp_generic_destroy_page,
+	.agp_alloc_pages	= agp_generic_alloc_pages,
+	.agp_destroy_page	= agp_generic_destroy_page,
+	.agp_destroy_pages	= agp_generic_destroy_pages,
 	.agp_type_to_mask_type  = agp_generic_type_to_mask_type,
 };
 
 // chipsets that require the 'delay hack'
 static int sis_broken_chipsets[] __devinitdata = {
+static int sis_broken_chipsets[] = {
 	PCI_DEVICE_ID_SI_648,
 	PCI_DEVICE_ID_SI_746,
 	0 // terminator
 };
 
 static void __devinit sis_get_driver(struct agp_bridge_data *bridge)
+static void sis_get_driver(struct agp_bridge_data *bridge)
 {
 	int i;
 
@@ -179,6 +189,7 @@ static void __devinit sis_get_driver(struct agp_bridge_data *bridge)
 
 static int __devinit agp_sis_probe(struct pci_dev *pdev,
 				   const struct pci_device_id *ent)
+static int agp_sis_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 {
 	struct agp_bridge_data *bridge;
 	u8 cap_ptr;
@@ -209,6 +220,7 @@ static int __devinit agp_sis_probe(struct pci_dev *pdev,
 }
 
 static void __devexit agp_sis_remove(struct pci_dev *pdev)
+static void agp_sis_remove(struct pci_dev *pdev)
 {
 	struct agp_bridge_data *bridge = pci_get_drvdata(pdev);
 

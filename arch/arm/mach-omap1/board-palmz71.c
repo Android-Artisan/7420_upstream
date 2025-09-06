@@ -15,6 +15,7 @@
  */
 
 #include <linux/delay.h>
+#include <linux/gpio.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/platform_device.h>
@@ -68,6 +69,54 @@ static int palmz71_keymap[] = {
 	KEY(1, 4, KEY_ENTER),
 	KEY(2, 0, KEY_CAMERA),
 	0,
+#include <linux/mtd/physmap.h>
+#include <linux/omapfb.h>
+#include <linux/spi/spi.h>
+#include <linux/spi/ads7846.h>
+#include <linux/platform_data/omap1_bl.h>
+
+#include <asm/mach-types.h>
+#include <asm/mach/arch.h>
+#include <asm/mach/map.h>
+
+#include <mach/flash.h>
+#include <mach/mux.h>
+#include <linux/omap-dma.h>
+#include <mach/tc.h>
+#include <linux/platform_data/keypad-omap.h>
+
+#include <mach/hardware.h>
+#include <mach/usb.h>
+
+#include "common.h"
+
+#define PALMZ71_USBDETECT_GPIO	0
+#define PALMZ71_PENIRQ_GPIO	6
+#define PALMZ71_MMC_WP_GPIO	8
+#define PALMZ71_HDQ_GPIO 	11
+
+#define PALMZ71_HOTSYNC_GPIO	OMAP_MPUIO(1)
+#define PALMZ71_CABLE_GPIO	OMAP_MPUIO(2)
+#define PALMZ71_SLIDER_GPIO	OMAP_MPUIO(3)
+#define PALMZ71_MMC_IN_GPIO	OMAP_MPUIO(4)
+
+static const unsigned int palmz71_keymap[] = {
+	KEY(0, 0, KEY_F1),
+	KEY(1, 0, KEY_F2),
+	KEY(2, 0, KEY_F3),
+	KEY(3, 0, KEY_F4),
+	KEY(4, 0, KEY_POWER),
+	KEY(0, 1, KEY_LEFT),
+	KEY(1, 1, KEY_DOWN),
+	KEY(2, 1, KEY_UP),
+	KEY(3, 1, KEY_RIGHT),
+	KEY(4, 1, KEY_ENTER),
+	KEY(0, 2, KEY_CAMERA),
+};
+
+static const struct matrix_keymap_data palmz71_keymap_data = {
+	.keymap		= palmz71_keymap,
+	.keymap_size	= ARRAY_SIZE(palmz71_keymap),
 };
 
 static struct omap_kp_platform_data palmz71_kp_data = {
@@ -75,6 +124,8 @@ static struct omap_kp_platform_data palmz71_kp_data = {
 	.cols	= 8,
 	.keymap	= palmz71_keymap,
 	.rep	= 1,
+	.keymap_data	= &palmz71_keymap_data,
+	.rep	= true,
 	.delay	= 80,
 };
 
@@ -121,6 +172,9 @@ static struct flash_platform_data palmz71_rom_data = {
 	.map_name	= "map_rom",
 	.name		= "onboardrom",
 	.width		= 2,
+static struct physmap_flash_data palmz71_rom_data = {
+	.width		= 2,
+	.set_vpp	= omap1_set_vpp,
 	.parts		= palmz71_rom_partitions,
 	.nr_parts	= ARRAY_SIZE(palmz71_rom_partitions),
 };
@@ -133,6 +187,7 @@ static struct resource palmz71_rom_resource = {
 
 static struct platform_device palmz71_rom_device = {
 	.name	= "omapflash",
+	.name	= "physmap-flash",
 	.id	= -1,
 	.dev = {
 		.platform_data = &palmz71_rom_data,
@@ -232,6 +287,7 @@ static struct platform_device *devices[] __initdata = {
 	&palmz71_mcbsp1_device,
 	&palmz71_lcd_device,
 	&palmz71_irda_device,
+	&palmz71_lcd_device,
 	&palmz71_spi_device,
 	&palmz71_backlight_device,
 };
@@ -240,6 +296,7 @@ static int
 palmz71_get_pendown_state(void)
 {
 	return !omap_get_gpio_datain(PALMZ71_PENIRQ_GPIO);
+	return !gpio_get_value(PALMZ71_PENIRQ_GPIO);
 }
 
 static const struct ads7846_platform_data palmz71_ts_info = {
@@ -303,6 +360,17 @@ palmz71_powercable(int irq, void *dev_id)
 		printk(KERN_INFO "PM: Power cable disconnected\n");
 		set_irq_type(OMAP_GPIO_IRQ(PALMZ71_USBDETECT_GPIO),
 				IRQ_TYPE_EDGE_RISING);
+static irqreturn_t
+palmz71_powercable(int irq, void *dev_id)
+{
+	if (gpio_get_value(PALMZ71_USBDETECT_GPIO)) {
+		printk(KERN_INFO "PM: Power cable connected\n");
+		irq_set_irq_type(gpio_to_irq(PALMZ71_USBDETECT_GPIO),
+				 IRQ_TYPE_EDGE_FALLING);
+	} else {
+		printk(KERN_INFO "PM: Power cable disconnected\n");
+		irq_set_irq_type(gpio_to_irq(PALMZ71_USBDETECT_GPIO),
+				 IRQ_TYPE_EDGE_RISING);
 	}
 	return IRQ_HANDLED;
 }
@@ -335,6 +403,17 @@ palmz71_gpio_setup(int early)
 
 		/* Monitor the Power-cable-connected signal */
 		if (omap_request_gpio(PALMZ71_USBDETECT_GPIO)) {
+		gpio_direction_output(1, 1);
+	} else {
+		/* Set MMC/SD host WP pin as input */
+		if (gpio_request(PALMZ71_MMC_WP_GPIO, "MMC WP") < 0) {
+			printk(KERN_ERR "Could not reserve WP GPIO!\n");
+			return;
+		}
+		gpio_direction_input(PALMZ71_MMC_WP_GPIO);
+
+		/* Monitor the Power-cable-connected signal */
+		if (gpio_request(PALMZ71_USBDETECT_GPIO, "USB detect") < 0) {
 			printk(KERN_ERR
 				"Could not reserve cable signal GPIO!\n");
 			return;
@@ -346,6 +425,12 @@ palmz71_gpio_setup(int early)
 			printk(KERN_ERR
 					"IRQ request for power cable failed!\n");
 		palmz71_powercable(OMAP_GPIO_IRQ(PALMZ71_USBDETECT_GPIO), 0);
+		gpio_direction_input(PALMZ71_USBDETECT_GPIO);
+		if (request_irq(gpio_to_irq(PALMZ71_USBDETECT_GPIO),
+				palmz71_powercable, 0, "palmz71-cable", NULL))
+			printk(KERN_ERR
+					"IRQ request for power cable failed!\n");
+		palmz71_powercable(gpio_to_irq(PALMZ71_USBDETECT_GPIO), NULL);
 	}
 }
 
@@ -380,4 +465,38 @@ MACHINE_START(OMAP_PALMZ71, "OMAP310 based Palm Zire71")
 	.init_irq = omap_palmz71_init_irq,
 	.init_machine = omap_palmz71_init,
 	.timer = &omap_timer,
+	/* mux pins for uarts */
+	omap_cfg_reg(UART1_TX);
+	omap_cfg_reg(UART1_RTS);
+	omap_cfg_reg(UART2_TX);
+	omap_cfg_reg(UART2_RTS);
+	omap_cfg_reg(UART3_TX);
+	omap_cfg_reg(UART3_RX);
+
+	palmz71_gpio_setup(1);
+	omap_mpu_wdt_mode(0);
+
+	platform_add_devices(devices, ARRAY_SIZE(devices));
+
+	palmz71_boardinfo[0].irq = gpio_to_irq(PALMZ71_PENIRQ_GPIO);
+	spi_register_board_info(palmz71_boardinfo,
+				ARRAY_SIZE(palmz71_boardinfo));
+	omap1_usb_init(&palmz71_usb_config);
+	omap_serial_init();
+	omap_register_i2c_bus(1, 100, NULL, 0);
+	palmz71_gpio_setup(0);
+
+	omapfb_set_lcd_config(&palmz71_lcd_config);
+}
+
+MACHINE_START(OMAP_PALMZ71, "OMAP310 based Palm Zire71")
+	.atag_offset	= 0x100,
+	.map_io		= omap15xx_map_io,
+	.init_early     = omap1_init_early,
+	.init_irq	= omap1_init_irq,
+	.handle_irq	= omap1_handle_irq,
+	.init_machine	= omap_palmz71_init,
+	.init_late	= omap1_init_late,
+	.init_time	= omap1_timer_init,
+	.restart	= omap1_restart,
 MACHINE_END

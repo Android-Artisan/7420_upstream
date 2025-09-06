@@ -15,6 +15,10 @@
 #include <linux/kref.h>
 #include <linux/notifier.h>
 #include <linux/proc_fs.h>
+#include <linux/notifier.h>
+#include <linux/proc_fs.h>
+#include <linux/slab.h>
+#include <linux/of.h>
 
 #include <asm/prom.h>
 #include <asm/machdep.h>
@@ -106,6 +110,9 @@ void pSeries_reconfig_notifier_unregister(struct notifier_block *nb)
 {
 	blocking_notifier_chain_unregister(&pSeries_reconfig_chain, nb);
 }
+#include <asm/mmu.h>
+
+#include "of_helpers.h"
 
 static int pSeries_reconfig_add_node(const char *path, struct property *proplist)
 {
@@ -127,6 +134,15 @@ static int pSeries_reconfig_add_node(const char *path, struct property *proplist
 	kref_init(&np->kref);
 
 	np->parent = derive_parent(path);
+	np->full_name = kstrdup(path, GFP_KERNEL);
+	if (!np->full_name)
+		goto out_err;
+
+	np->properties = proplist;
+	of_node_set_flag(np, OF_DYNAMIC);
+	of_node_init(np);
+
+	np->parent = pseries_of_derive_parent(path);
 	if (IS_ERR(np->parent)) {
 		err = PTR_ERR(np->parent);
 		goto out_err;
@@ -143,6 +159,12 @@ static int pSeries_reconfig_add_node(const char *path, struct property *proplist
 	of_attach_node(np);
 
 	add_node_proc_entries(np);
+
+	err = of_attach_node(np);
+	if (err) {
+		printk(KERN_ERR "Failed to add device node %s\n", path);
+		goto out_err;
+	}
 
 	of_node_put(np->parent);
 
@@ -177,13 +199,14 @@ static int pSeries_reconfig_remove_node(struct device_node *np)
 			    PSERIES_RECONFIG_REMOVE, np);
 	of_detach_node(np);
 
+	of_detach_node(np);
 	of_node_put(parent);
-	of_node_put(np); /* Must decrement the refcount */
 	return 0;
 }
 
 /*
  * /proc/ppc64/ofdt - yucky binary interface for adding and removing
+ * /proc/powerpc/ofdt - yucky binary interface for adding and removing
  * OF device nodes.  Should be deprecated as soon as we get an
  * in-kernel wrapper for the RTAS ibm,configure-connector call.
  */
@@ -275,6 +298,7 @@ static struct property *new_property(const char *name, const int length,
 		return NULL;
 
 	if (!(new->name = kmalloc(strlen(name) + 1, GFP_KERNEL)))
+	if (!(new->name = kstrdup(name, GFP_KERNEL)))
 		goto cleanup;
 	if (!(new->value = kmalloc(length + 1, GFP_KERNEL)))
 		goto cleanup;
@@ -392,6 +416,7 @@ static int do_add_property(char *buf, size_t bufsize)
 		return -ENOMEM;
 
 	prom_add_property(np, prop);
+	of_add_property(np, prop);
 
 	return 0;
 }
@@ -416,6 +441,7 @@ static int do_remove_property(char *buf, size_t bufsize)
 	prop = of_find_property(np, buf, NULL);
 
 	return prom_remove_property(np, prop);
+	return of_remove_property(np, prop);
 }
 
 static int do_update_property(char *buf, size_t bufsize)
@@ -425,6 +451,8 @@ static int do_update_property(char *buf, size_t bufsize)
 	char *name, *end, *next_prop;
 	int rc, length;
 	struct property *newprop, *oldprop;
+	int length;
+	struct property *newprop;
 	buf = parse_node(buf, bufsize, &np);
 	end = buf + bufsize;
 
@@ -434,6 +462,9 @@ static int do_update_property(char *buf, size_t bufsize)
 	next_prop = parse_next_property(buf, end, &name, &length, &value);
 	if (!next_prop)
 		return -EINVAL;
+
+	if (!strlen(name))
+		return -ENODEV;
 
 	newprop = new_property(name, length, value, NULL);
 	if (!newprop)
@@ -471,6 +502,10 @@ static int do_update_property(char *buf, size_t bufsize)
 	}
 
 	return 0;
+	if (!strcmp(name, "slb-size") || !strcmp(name, "ibm,slb-size"))
+		slb_set_size(*(int *)value);
+
+	return of_update_property(np, newprop);
 }
 
 /**
@@ -533,6 +568,11 @@ static const struct file_operations ofdt_fops = {
 };
 
 /* create /proc/ppc64/ofdt write-only by root */
+	.write = ofdt_write,
+	.llseek = noop_llseek,
+};
+
+/* create /proc/powerpc/ofdt write-only by root */
 static int proc_ppc64_create_ofdt(void)
 {
 	struct proc_dir_entry *ent;
@@ -547,3 +587,10 @@ static int proc_ppc64_create_ofdt(void)
 	return 0;
 }
 __initcall(proc_ppc64_create_ofdt);
+	ent = proc_create("powerpc/ofdt", S_IWUSR, NULL, &ofdt_fops);
+	if (ent)
+		proc_set_size(ent, 0);
+
+	return 0;
+}
+machine_device_initcall(pseries, proc_ppc64_create_ofdt);

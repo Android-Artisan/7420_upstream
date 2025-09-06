@@ -3,6 +3,8 @@
  *
  * Copyright (C) 2005 Ville Syrjala <syrjala@sci.fi>
  * Copyright (C) 2007 Peter Stokes <linux@dadeos.freeserve.co.uk>
+ * Copyright (C) 2005-2008 Ville Syrjala <syrjala@sci.fi>
+ * Copyright (C) 2007-2008 Peter Stokes <linux@dadeos.co.uk>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2
@@ -13,6 +15,11 @@
 
 #define DRIVER_DESC    "ATI/Philips USB RF remote driver"
 #define DRIVER_VERSION "0.2"
+#include <linux/slab.h>
+#include <linux/module.h>
+
+#define DRIVER_DESC    "ATI/Philips USB RF remote driver"
+#define DRIVER_VERSION "0.3"
 
 MODULE_DESCRIPTION(DRIVER_DESC);
 MODULE_VERSION(DRIVER_VERSION);
@@ -37,6 +44,85 @@ MODULE_PARM_DESC(channel_mask, "Bitmask of channels to accept <15:Channel16>...<
 
 static unsigned int mode_mask = 0x1F;
 module_param(mode_mask, uint, 0644);
+ * 16 and then press the "PC" button again, the button will slowly flash the count of the
+ * newly configured "channel".
+ */
+
+enum {
+	ATI_REMOTE2_MAX_CHANNEL_MASK = 0xFFFF,
+	ATI_REMOTE2_MAX_MODE_MASK = 0x1F,
+};
+
+static int ati_remote2_set_mask(const char *val,
+				const struct kernel_param *kp,
+				unsigned int max)
+{
+	unsigned int mask;
+	int ret;
+
+	if (!val)
+		return -EINVAL;
+
+	ret = kstrtouint(val, 0, &mask);
+	if (ret)
+		return ret;
+
+	if (mask & ~max)
+		return -EINVAL;
+
+	*(unsigned int *)kp->arg = mask;
+
+	return 0;
+}
+
+static int ati_remote2_set_channel_mask(const char *val,
+					const struct kernel_param *kp)
+{
+	pr_debug("%s()\n", __func__);
+
+	return ati_remote2_set_mask(val, kp, ATI_REMOTE2_MAX_CHANNEL_MASK);
+}
+
+static int ati_remote2_get_channel_mask(char *buffer,
+					const struct kernel_param *kp)
+{
+	pr_debug("%s()\n", __func__);
+
+	return sprintf(buffer, "0x%04x", *(unsigned int *)kp->arg);
+}
+
+static int ati_remote2_set_mode_mask(const char *val,
+				     const struct kernel_param *kp)
+{
+	pr_debug("%s()\n", __func__);
+
+	return ati_remote2_set_mask(val, kp, ATI_REMOTE2_MAX_MODE_MASK);
+}
+
+static int ati_remote2_get_mode_mask(char *buffer,
+				     const struct kernel_param *kp)
+{
+	pr_debug("%s()\n", __func__);
+
+	return sprintf(buffer, "0x%02x", *(unsigned int *)kp->arg);
+}
+
+static unsigned int channel_mask = ATI_REMOTE2_MAX_CHANNEL_MASK;
+#define param_check_channel_mask(name, p) __param_check(name, p, unsigned int)
+static const struct kernel_param_ops param_ops_channel_mask = {
+	.set = ati_remote2_set_channel_mask,
+	.get = ati_remote2_get_channel_mask,
+};
+module_param(channel_mask, channel_mask, 0644);
+MODULE_PARM_DESC(channel_mask, "Bitmask of channels to accept <15:Channel16>...<1:Channel2><0:Channel1>");
+
+static unsigned int mode_mask = ATI_REMOTE2_MAX_MODE_MASK;
+#define param_check_mode_mask(name, p) __param_check(name, p, unsigned int)
+static const struct kernel_param_ops param_ops_mode_mask = {
+	.set = ati_remote2_set_mode_mask,
+	.get = ati_remote2_get_mode_mask,
+};
+module_param(mode_mask, mode_mask, 0644);
 MODULE_PARM_DESC(mode_mask, "Bitmask of modes to accept <4:PC><3:AUX4><2:AUX3><1:AUX2><0:AUX1>");
 
 static struct usb_device_id ati_remote2_id_table[] = {
@@ -48,6 +134,25 @@ MODULE_DEVICE_TABLE(usb, ati_remote2_id_table);
 static struct {
 	int hw_code;
 	int key_code;
+static DEFINE_MUTEX(ati_remote2_mutex);
+
+enum {
+	ATI_REMOTE2_OPENED = 0x1,
+	ATI_REMOTE2_SUSPENDED = 0x2,
+};
+
+enum {
+	ATI_REMOTE2_AUX1,
+	ATI_REMOTE2_AUX2,
+	ATI_REMOTE2_AUX3,
+	ATI_REMOTE2_AUX4,
+	ATI_REMOTE2_PC,
+	ATI_REMOTE2_MODES,
+};
+
+static const struct {
+	u8  hw_code;
+	u16 keycode;
 } ati_remote2_key_table[] = {
 	{ 0x00, KEY_0 },
 	{ 0x01, KEY_1 },
@@ -73,6 +178,7 @@ static struct {
 	{ 0x37, KEY_RECORD },
 	{ 0x38, KEY_DVD },
 	{ 0x39, KEY_TV },
+	{ 0x3f, KEY_PROG1 }, /* AUX1-AUX4 and PC */
 	{ 0x54, KEY_MENU },
 	{ 0x58, KEY_UP },
 	{ 0x59, KEY_DOWN },
@@ -100,6 +206,9 @@ static struct {
 	{ (0x03 << 8) | 0x3f, KEY_PROG4 },
 	{ (0x04 << 8) | 0x3f, KEY_PC },
 	{ 0, KEY_RESERVED }
+	{ 0xd0, KEY_EDIT },
+	{ 0xd5, KEY_FRONT },
+	{ 0xf9, KEY_INFO },
 };
 
 struct ati_remote2 {
@@ -117,10 +226,23 @@ struct ati_remote2 {
 
 	char name[64];
 	char phys[64];
+
+	/* Each mode (AUX1-AUX4 and PC) can have an independent keymap. */
+	u16 keycode[ATI_REMOTE2_MODES][ARRAY_SIZE(ati_remote2_key_table)];
+
+	unsigned int flags;
+
+	unsigned int channel_mask;
+	unsigned int mode_mask;
 };
 
 static int ati_remote2_probe(struct usb_interface *interface, const struct usb_device_id *id);
 static void ati_remote2_disconnect(struct usb_interface *interface);
+static int ati_remote2_suspend(struct usb_interface *interface, pm_message_t message);
+static int ati_remote2_resume(struct usb_interface *interface);
+static int ati_remote2_reset_resume(struct usb_interface *interface);
+static int ati_remote2_pre_reset(struct usb_interface *interface);
+static int ati_remote2_post_reset(struct usb_interface *interface);
 
 static struct usb_driver ati_remote2_driver = {
 	.name       = "ati_remote2",
@@ -132,12 +254,23 @@ static struct usb_driver ati_remote2_driver = {
 static int ati_remote2_open(struct input_dev *idev)
 {
 	struct ati_remote2 *ar2 = input_get_drvdata(idev);
+	.suspend    = ati_remote2_suspend,
+	.resume     = ati_remote2_resume,
+	.reset_resume = ati_remote2_reset_resume,
+	.pre_reset  = ati_remote2_pre_reset,
+	.post_reset = ati_remote2_post_reset,
+	.supports_autosuspend = 1,
+};
+
+static int ati_remote2_submit_urbs(struct ati_remote2 *ar2)
+{
 	int r;
 
 	r = usb_submit_urb(ar2->urb[0], GFP_KERNEL);
 	if (r) {
 		dev_err(&ar2->intf[0]->dev,
 			"%s: usb_submit_urb() = %d\n", __func__, r);
+			"%s(): usb_submit_urb() = %d\n", __func__, r);
 		return r;
 	}
 	r = usb_submit_urb(ar2->urb[1], GFP_KERNEL);
@@ -145,10 +278,54 @@ static int ati_remote2_open(struct input_dev *idev)
 		usb_kill_urb(ar2->urb[0]);
 		dev_err(&ar2->intf[1]->dev,
 			"%s: usb_submit_urb() = %d\n", __func__, r);
+			"%s(): usb_submit_urb() = %d\n", __func__, r);
 		return r;
 	}
 
 	return 0;
+}
+
+static void ati_remote2_kill_urbs(struct ati_remote2 *ar2)
+{
+	usb_kill_urb(ar2->urb[1]);
+	usb_kill_urb(ar2->urb[0]);
+}
+
+static int ati_remote2_open(struct input_dev *idev)
+{
+	struct ati_remote2 *ar2 = input_get_drvdata(idev);
+	int r;
+
+	dev_dbg(&ar2->intf[0]->dev, "%s()\n", __func__);
+
+	r = usb_autopm_get_interface(ar2->intf[0]);
+	if (r) {
+		dev_err(&ar2->intf[0]->dev,
+			"%s(): usb_autopm_get_interface() = %d\n", __func__, r);
+		goto fail1;
+	}
+
+	mutex_lock(&ati_remote2_mutex);
+
+	if (!(ar2->flags & ATI_REMOTE2_SUSPENDED)) {
+		r = ati_remote2_submit_urbs(ar2);
+		if (r)
+			goto fail2;
+	}
+
+	ar2->flags |= ATI_REMOTE2_OPENED;
+
+	mutex_unlock(&ati_remote2_mutex);
+
+	usb_autopm_put_interface(ar2->intf[0]);
+
+	return 0;
+
+ fail2:
+	mutex_unlock(&ati_remote2_mutex);
+	usb_autopm_put_interface(ar2->intf[0]);
+ fail1:
+	return r;
 }
 
 static void ati_remote2_close(struct input_dev *idev)
@@ -157,6 +334,16 @@ static void ati_remote2_close(struct input_dev *idev)
 
 	usb_kill_urb(ar2->urb[0]);
 	usb_kill_urb(ar2->urb[1]);
+	dev_dbg(&ar2->intf[0]->dev, "%s()\n", __func__);
+
+	mutex_lock(&ati_remote2_mutex);
+
+	if (!(ar2->flags & ATI_REMOTE2_SUSPENDED))
+		ati_remote2_kill_urbs(ar2);
+
+	ar2->flags &= ~ATI_REMOTE2_OPENED;
+
+	mutex_unlock(&ati_remote2_mutex);
 }
 
 static void ati_remote2_input_mouse(struct ati_remote2 *ar2)
@@ -168,11 +355,13 @@ static void ati_remote2_input_mouse(struct ati_remote2 *ar2)
 	channel = data[0] >> 4;
 
 	if (!((1 << channel) & channel_mask))
+	if (!((1 << channel) & ar2->channel_mask))
 		return;
 
 	mode = data[0] & 0x0F;
 
 	if (mode > 4) {
+	if (mode > ATI_REMOTE2_PC) {
 		dev_err(&ar2->intf[0]->dev,
 			"Unknown mode byte (%02x %02x %02x %02x)\n",
 			data[3], data[2], data[1], data[0]);
@@ -180,6 +369,7 @@ static void ati_remote2_input_mouse(struct ati_remote2 *ar2)
 	}
 
 	if (!((1 << mode) & mode_mask))
+	if (!((1 << mode) & ar2->mode_mask))
 		return;
 
 	input_event(idev, EV_REL, REL_X, (s8) data[1]);
@@ -192,6 +382,7 @@ static int ati_remote2_lookup(unsigned int hw_code)
 	int i;
 
 	for (i = 0; ati_remote2_key_table[i].key_code != KEY_RESERVED; i++)
+	for (i = 0; i < ARRAY_SIZE(ati_remote2_key_table); i++)
 		if (ati_remote2_key_table[i].hw_code == hw_code)
 			return i;
 
@@ -207,11 +398,13 @@ static void ati_remote2_input_key(struct ati_remote2 *ar2)
 	channel = data[0] >> 4;
 
 	if (!((1 << channel) & channel_mask))
+	if (!((1 << channel) & ar2->channel_mask))
 		return;
 
 	mode = data[0] & 0x0F;
 
 	if (mode > 4) {
+	if (mode > ATI_REMOTE2_PC) {
 		dev_err(&ar2->intf[1]->dev,
 			"Unknown mode byte (%02x %02x %02x %02x)\n",
 			data[3], data[2], data[1], data[0]);
@@ -241,6 +434,9 @@ static void ati_remote2_input_key(struct ati_remote2 *ar2)
 	}
 
 	if (!((1 << mode) & mode_mask))
+	}
+
+	if (!((1 << mode) & ar2->mode_mask))
 		return;
 
 	index = ati_remote2_lookup(hw_code);
@@ -262,6 +458,8 @@ static void ati_remote2_input_key(struct ati_remote2 *ar2)
 		/* No repeat for mouse buttons. */
 		if (ati_remote2_key_table[index].key_code == BTN_LEFT ||
 		    ati_remote2_key_table[index].key_code == BTN_RIGHT)
+		if (ar2->keycode[mode][index] == BTN_LEFT ||
+		    ar2->keycode[mode][index] == BTN_RIGHT)
 			return;
 
 		if (!time_after_eq(jiffies, ar2->jiffies))
@@ -277,6 +475,7 @@ static void ati_remote2_input_key(struct ati_remote2 *ar2)
 	}
 
 	input_event(idev, EV_KEY, ati_remote2_key_table[index].key_code, data[1]);
+	input_event(idev, EV_KEY, ar2->keycode[mode][index], data[1]);
 	input_sync(idev);
 }
 
@@ -287,6 +486,7 @@ static void ati_remote2_complete_mouse(struct urb *urb)
 
 	switch (urb->status) {
 	case 0:
+		usb_mark_last_busy(ar2->udev);
 		ati_remote2_input_mouse(ar2);
 		break;
 	case -ENOENT:
@@ -297,6 +497,7 @@ static void ati_remote2_complete_mouse(struct urb *urb)
 			"%s(): urb status = %d\n", __func__, urb->status);
 		return;
 	default:
+		usb_mark_last_busy(ar2->udev);
 		dev_err(&ar2->intf[0]->dev,
 			"%s(): urb status = %d\n", __func__, urb->status);
 	}
@@ -314,6 +515,7 @@ static void ati_remote2_complete_key(struct urb *urb)
 
 	switch (urb->status) {
 	case 0:
+		usb_mark_last_busy(ar2->udev);
 		ati_remote2_input_key(ar2);
 		break;
 	case -ENOENT:
@@ -324,6 +526,7 @@ static void ati_remote2_complete_key(struct urb *urb)
 			"%s(): urb status = %d\n", __func__, urb->status);
 		return;
 	default:
+		usb_mark_last_busy(ar2->udev);
 		dev_err(&ar2->intf[1]->dev,
 			"%s(): urb status = %d\n", __func__, urb->status);
 	}
@@ -338,6 +541,97 @@ static int ati_remote2_input_init(struct ati_remote2 *ar2)
 {
 	struct input_dev *idev;
 	int i, retval;
+static int ati_remote2_getkeycode(struct input_dev *idev,
+				  struct input_keymap_entry *ke)
+{
+	struct ati_remote2 *ar2 = input_get_drvdata(idev);
+	unsigned int mode;
+	int offset;
+	unsigned int index;
+	unsigned int scancode;
+
+	if (ke->flags & INPUT_KEYMAP_BY_INDEX) {
+		index = ke->index;
+		if (index >= ATI_REMOTE2_MODES *
+				ARRAY_SIZE(ati_remote2_key_table))
+			return -EINVAL;
+
+		mode = ke->index / ARRAY_SIZE(ati_remote2_key_table);
+		offset = ke->index % ARRAY_SIZE(ati_remote2_key_table);
+		scancode = (mode << 8) + ati_remote2_key_table[offset].hw_code;
+	} else {
+		if (input_scancode_to_scalar(ke, &scancode))
+			return -EINVAL;
+
+		mode = scancode >> 8;
+		if (mode > ATI_REMOTE2_PC)
+			return -EINVAL;
+
+		offset = ati_remote2_lookup(scancode & 0xff);
+		if (offset < 0)
+			return -EINVAL;
+
+		index = mode * ARRAY_SIZE(ati_remote2_key_table) + offset;
+	}
+
+	ke->keycode = ar2->keycode[mode][offset];
+	ke->len = sizeof(scancode);
+	memcpy(&ke->scancode, &scancode, sizeof(scancode));
+	ke->index = index;
+
+	return 0;
+}
+
+static int ati_remote2_setkeycode(struct input_dev *idev,
+				  const struct input_keymap_entry *ke,
+				  unsigned int *old_keycode)
+{
+	struct ati_remote2 *ar2 = input_get_drvdata(idev);
+	unsigned int mode;
+	int offset;
+	unsigned int index;
+	unsigned int scancode;
+
+	if (ke->flags & INPUT_KEYMAP_BY_INDEX) {
+		if (ke->index >= ATI_REMOTE2_MODES *
+				ARRAY_SIZE(ati_remote2_key_table))
+			return -EINVAL;
+
+		mode = ke->index / ARRAY_SIZE(ati_remote2_key_table);
+		offset = ke->index % ARRAY_SIZE(ati_remote2_key_table);
+	} else {
+		if (input_scancode_to_scalar(ke, &scancode))
+			return -EINVAL;
+
+		mode = scancode >> 8;
+		if (mode > ATI_REMOTE2_PC)
+			return -EINVAL;
+
+		offset = ati_remote2_lookup(scancode & 0xff);
+		if (offset < 0)
+			return -EINVAL;
+	}
+
+	*old_keycode = ar2->keycode[mode][offset];
+	ar2->keycode[mode][offset] = ke->keycode;
+	__set_bit(ke->keycode, idev->keybit);
+
+	for (mode = 0; mode < ATI_REMOTE2_MODES; mode++) {
+		for (index = 0; index < ARRAY_SIZE(ati_remote2_key_table); index++) {
+			if (ar2->keycode[mode][index] == *old_keycode)
+				return 0;
+		}
+	}
+
+	__clear_bit(*old_keycode, idev->keybit);
+
+	return 0;
+}
+
+static int ati_remote2_input_init(struct ati_remote2 *ar2)
+{
+	struct input_dev *idev;
+	int index, mode, retval;
 
 	idev = input_allocate_device();
 	if (!idev)
@@ -353,11 +647,34 @@ static int ati_remote2_input_init(struct ati_remote2 *ar2)
 	for (i = 0; ati_remote2_key_table[i].key_code != KEY_RESERVED; i++)
 		set_bit(ati_remote2_key_table[i].key_code, idev->keybit);
 
+	for (mode = 0; mode < ATI_REMOTE2_MODES; mode++) {
+		for (index = 0; index < ARRAY_SIZE(ati_remote2_key_table); index++) {
+			ar2->keycode[mode][index] = ati_remote2_key_table[index].keycode;
+			__set_bit(ar2->keycode[mode][index], idev->keybit);
+		}
+	}
+
+	/* AUX1-AUX4 and PC generate the same scancode. */
+	index = ati_remote2_lookup(0x3f);
+	ar2->keycode[ATI_REMOTE2_AUX1][index] = KEY_PROG1;
+	ar2->keycode[ATI_REMOTE2_AUX2][index] = KEY_PROG2;
+	ar2->keycode[ATI_REMOTE2_AUX3][index] = KEY_PROG3;
+	ar2->keycode[ATI_REMOTE2_AUX4][index] = KEY_PROG4;
+	ar2->keycode[ATI_REMOTE2_PC][index] = KEY_PC;
+	__set_bit(KEY_PROG1, idev->keybit);
+	__set_bit(KEY_PROG2, idev->keybit);
+	__set_bit(KEY_PROG3, idev->keybit);
+	__set_bit(KEY_PROG4, idev->keybit);
+	__set_bit(KEY_PC, idev->keybit);
+
 	idev->rep[REP_DELAY]  = 250;
 	idev->rep[REP_PERIOD] = 33;
 
 	idev->open = ati_remote2_open;
 	idev->close = ati_remote2_close;
+
+	idev->getkeycode = ati_remote2_getkeycode;
+	idev->setkeycode = ati_remote2_setkeycode;
 
 	idev->name = ar2->name;
 	idev->phys = ar2->phys;
@@ -379,6 +696,7 @@ static int ati_remote2_urb_init(struct ati_remote2 *ar2)
 
 	for (i = 0; i < 2; i++) {
 		ar2->buf[i] = usb_buffer_alloc(udev, 4, GFP_KERNEL, &ar2->buf_dma[i]);
+		ar2->buf[i] = usb_alloc_coherent(udev, 4, GFP_KERNEL, &ar2->buf_dma[i]);
 		if (!ar2->buf[i])
 			return -ENOMEM;
 
@@ -411,6 +729,11 @@ static void ati_remote2_urb_cleanup(struct ati_remote2 *ar2)
 }
 
 static int ati_remote2_setup(struct ati_remote2 *ar2)
+		usb_free_coherent(ar2->udev, 4, ar2->buf[i], ar2->buf_dma[i]);
+	}
+}
+
+static int ati_remote2_setup(struct ati_remote2 *ar2, unsigned int ch_mask)
 {
 	int r, i, channel;
 
@@ -427,6 +750,8 @@ static int ati_remote2_setup(struct ati_remote2 *ar2)
 	for (i = 0; i < 16; i++) {
 		if ((1 << i) & channel_mask) {
 			if (!(~(1 << i) & 0xFFFF & channel_mask))
+		if ((1 << i) & ch_mask) {
+			if (!(~(1 << i) & ch_mask))
 				channel = i + 1;
 			break;
 		}
@@ -445,6 +770,105 @@ static int ati_remote2_setup(struct ati_remote2 *ar2)
 	return 0;
 }
 
+static ssize_t ati_remote2_show_channel_mask(struct device *dev,
+					     struct device_attribute *attr,
+					     char *buf)
+{
+	struct usb_device *udev = to_usb_device(dev);
+	struct usb_interface *intf = usb_ifnum_to_if(udev, 0);
+	struct ati_remote2 *ar2 = usb_get_intfdata(intf);
+
+	return sprintf(buf, "0x%04x\n", ar2->channel_mask);
+}
+
+static ssize_t ati_remote2_store_channel_mask(struct device *dev,
+					      struct device_attribute *attr,
+					      const char *buf, size_t count)
+{
+	struct usb_device *udev = to_usb_device(dev);
+	struct usb_interface *intf = usb_ifnum_to_if(udev, 0);
+	struct ati_remote2 *ar2 = usb_get_intfdata(intf);
+	unsigned int mask;
+	int r;
+
+	r = kstrtouint(buf, 0, &mask);
+	if (r)
+		return r;
+
+	if (mask & ~ATI_REMOTE2_MAX_CHANNEL_MASK)
+		return -EINVAL;
+
+	r = usb_autopm_get_interface(ar2->intf[0]);
+	if (r) {
+		dev_err(&ar2->intf[0]->dev,
+			"%s(): usb_autopm_get_interface() = %d\n", __func__, r);
+		return r;
+	}
+
+	mutex_lock(&ati_remote2_mutex);
+
+	if (mask != ar2->channel_mask) {
+		r = ati_remote2_setup(ar2, mask);
+		if (!r)
+			ar2->channel_mask = mask;
+	}
+
+	mutex_unlock(&ati_remote2_mutex);
+
+	usb_autopm_put_interface(ar2->intf[0]);
+
+	return r ? r : count;
+}
+
+static ssize_t ati_remote2_show_mode_mask(struct device *dev,
+					  struct device_attribute *attr,
+					  char *buf)
+{
+	struct usb_device *udev = to_usb_device(dev);
+	struct usb_interface *intf = usb_ifnum_to_if(udev, 0);
+	struct ati_remote2 *ar2 = usb_get_intfdata(intf);
+
+	return sprintf(buf, "0x%02x\n", ar2->mode_mask);
+}
+
+static ssize_t ati_remote2_store_mode_mask(struct device *dev,
+					   struct device_attribute *attr,
+					   const char *buf, size_t count)
+{
+	struct usb_device *udev = to_usb_device(dev);
+	struct usb_interface *intf = usb_ifnum_to_if(udev, 0);
+	struct ati_remote2 *ar2 = usb_get_intfdata(intf);
+	unsigned int mask;
+	int err;
+
+	err = kstrtouint(buf, 0, &mask);
+	if (err)
+		return err;
+
+	if (mask & ~ATI_REMOTE2_MAX_MODE_MASK)
+		return -EINVAL;
+
+	ar2->mode_mask = mask;
+
+	return count;
+}
+
+static DEVICE_ATTR(channel_mask, 0644, ati_remote2_show_channel_mask,
+		   ati_remote2_store_channel_mask);
+
+static DEVICE_ATTR(mode_mask, 0644, ati_remote2_show_mode_mask,
+		   ati_remote2_store_mode_mask);
+
+static struct attribute *ati_remote2_attrs[] = {
+	&dev_attr_channel_mask.attr,
+	&dev_attr_mode_mask.attr,
+	NULL,
+};
+
+static struct attribute_group ati_remote2_attr_group = {
+	.attrs = ati_remote2_attrs,
+};
+
 static int ati_remote2_probe(struct usb_interface *interface, const struct usb_device_id *id)
 {
 	struct usb_device *udev = interface_to_usbdev(interface);
@@ -461,23 +885,50 @@ static int ati_remote2_probe(struct usb_interface *interface, const struct usb_d
 
 	ar2->udev = udev;
 
+	/* Sanity check, first interface must have an endpoint */
+	if (alt->desc.bNumEndpoints < 1 || !alt->endpoint) {
+		dev_err(&interface->dev,
+			"%s(): interface 0 must have an endpoint\n", __func__);
+		r = -ENODEV;
+		goto fail1;
+	}
 	ar2->intf[0] = interface;
 	ar2->ep[0] = &alt->endpoint[0].desc;
 
+	/* Sanity check, the device must have two interfaces */
 	ar2->intf[1] = usb_ifnum_to_if(udev, 1);
+	if ((udev->actconfig->desc.bNumInterfaces < 2) || !ar2->intf[1]) {
+		dev_err(&interface->dev, "%s(): need 2 interfaces, found %d\n",
+			__func__, udev->actconfig->desc.bNumInterfaces);
+		r = -ENODEV;
+		goto fail1;
+	}
+
 	r = usb_driver_claim_interface(&ati_remote2_driver, ar2->intf[1], ar2);
 	if (r)
 		goto fail1;
+
+	/* Sanity check, second interface must have an endpoint */
 	alt = ar2->intf[1]->cur_altsetting;
+	if (alt->desc.bNumEndpoints < 1 || !alt->endpoint) {
+		dev_err(&interface->dev,
+			"%s(): interface 1 must have an endpoint\n", __func__);
+		r = -ENODEV;
+		goto fail2;
+	}
 	ar2->ep[1] = &alt->endpoint[0].desc;
 
 	r = ati_remote2_urb_init(ar2);
 	if (r)
-		goto fail2;
+		goto fail3;
 
 	r = ati_remote2_setup(ar2);
+	ar2->channel_mask = channel_mask;
+	ar2->mode_mask = mode_mask;
+
+	r = ati_remote2_setup(ar2, ar2->channel_mask);
 	if (r)
-		goto fail2;
+		goto fail3;
 
 	usb_make_path(udev, ar2->phys, sizeof(ar2->phys));
 	strlcat(ar2->phys, "/input0", sizeof(ar2->phys));
@@ -495,6 +946,25 @@ static int ati_remote2_probe(struct usb_interface *interface, const struct usb_d
  fail2:
 	ati_remote2_urb_cleanup(ar2);
 
+	r = sysfs_create_group(&udev->dev.kobj, &ati_remote2_attr_group);
+	if (r)
+		goto fail3;
+
+	r = ati_remote2_input_init(ar2);
+	if (r)
+		goto fail4;
+
+	usb_set_intfdata(interface, ar2);
+
+	interface->needs_remote_wakeup = 1;
+
+	return 0;
+
+ fail4:
+	sysfs_remove_group(&udev->dev.kobj, &ati_remote2_attr_group);
+ fail3:
+	ati_remote2_urb_cleanup(ar2);
+ fail2:
 	usb_driver_release_interface(&ati_remote2_driver, ar2->intf[1]);
  fail1:
 	kfree(ar2);
@@ -515,6 +985,8 @@ static void ati_remote2_disconnect(struct usb_interface *interface)
 
 	input_unregister_device(ar2->idev);
 
+	sysfs_remove_group(&ar2->udev->dev.kobj, &ati_remote2_attr_group);
+
 	ati_remote2_urb_cleanup(ar2);
 
 	usb_driver_release_interface(&ati_remote2_driver, ar2->intf[1]);
@@ -531,6 +1003,53 @@ static int __init ati_remote2_init(void)
 		printk(KERN_ERR "ati_remote2: usb_register() = %d\n", r);
 	else
 		printk(KERN_INFO "ati_remote2: " DRIVER_DESC " " DRIVER_VERSION "\n");
+static int ati_remote2_suspend(struct usb_interface *interface,
+			       pm_message_t message)
+{
+	struct ati_remote2 *ar2;
+	struct usb_host_interface *alt = interface->cur_altsetting;
+
+	if (alt->desc.bInterfaceNumber)
+		return 0;
+
+	ar2 = usb_get_intfdata(interface);
+
+	dev_dbg(&ar2->intf[0]->dev, "%s()\n", __func__);
+
+	mutex_lock(&ati_remote2_mutex);
+
+	if (ar2->flags & ATI_REMOTE2_OPENED)
+		ati_remote2_kill_urbs(ar2);
+
+	ar2->flags |= ATI_REMOTE2_SUSPENDED;
+
+	mutex_unlock(&ati_remote2_mutex);
+
+	return 0;
+}
+
+static int ati_remote2_resume(struct usb_interface *interface)
+{
+	struct ati_remote2 *ar2;
+	struct usb_host_interface *alt = interface->cur_altsetting;
+	int r = 0;
+
+	if (alt->desc.bInterfaceNumber)
+		return 0;
+
+	ar2 = usb_get_intfdata(interface);
+
+	dev_dbg(&ar2->intf[0]->dev, "%s()\n", __func__);
+
+	mutex_lock(&ati_remote2_mutex);
+
+	if (ar2->flags & ATI_REMOTE2_OPENED)
+		r = ati_remote2_submit_urbs(ar2);
+
+	if (!r)
+		ar2->flags &= ~ATI_REMOTE2_SUSPENDED;
+
+	mutex_unlock(&ati_remote2_mutex);
 
 	return r;
 }
@@ -542,3 +1061,76 @@ static void __exit ati_remote2_exit(void)
 
 module_init(ati_remote2_init);
 module_exit(ati_remote2_exit);
+static int ati_remote2_reset_resume(struct usb_interface *interface)
+{
+	struct ati_remote2 *ar2;
+	struct usb_host_interface *alt = interface->cur_altsetting;
+	int r = 0;
+
+	if (alt->desc.bInterfaceNumber)
+		return 0;
+
+	ar2 = usb_get_intfdata(interface);
+
+	dev_dbg(&ar2->intf[0]->dev, "%s()\n", __func__);
+
+	mutex_lock(&ati_remote2_mutex);
+
+	r = ati_remote2_setup(ar2, ar2->channel_mask);
+	if (r)
+		goto out;
+
+	if (ar2->flags & ATI_REMOTE2_OPENED)
+		r = ati_remote2_submit_urbs(ar2);
+
+	if (!r)
+		ar2->flags &= ~ATI_REMOTE2_SUSPENDED;
+
+ out:
+	mutex_unlock(&ati_remote2_mutex);
+
+	return r;
+}
+
+static int ati_remote2_pre_reset(struct usb_interface *interface)
+{
+	struct ati_remote2 *ar2;
+	struct usb_host_interface *alt = interface->cur_altsetting;
+
+	if (alt->desc.bInterfaceNumber)
+		return 0;
+
+	ar2 = usb_get_intfdata(interface);
+
+	dev_dbg(&ar2->intf[0]->dev, "%s()\n", __func__);
+
+	mutex_lock(&ati_remote2_mutex);
+
+	if (ar2->flags == ATI_REMOTE2_OPENED)
+		ati_remote2_kill_urbs(ar2);
+
+	return 0;
+}
+
+static int ati_remote2_post_reset(struct usb_interface *interface)
+{
+	struct ati_remote2 *ar2;
+	struct usb_host_interface *alt = interface->cur_altsetting;
+	int r = 0;
+
+	if (alt->desc.bInterfaceNumber)
+		return 0;
+
+	ar2 = usb_get_intfdata(interface);
+
+	dev_dbg(&ar2->intf[0]->dev, "%s()\n", __func__);
+
+	if (ar2->flags == ATI_REMOTE2_OPENED)
+		r = ati_remote2_submit_urbs(ar2);
+
+	mutex_unlock(&ati_remote2_mutex);
+
+	return r;
+}
+
+module_usb_driver(ati_remote2_driver);

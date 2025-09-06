@@ -1,5 +1,6 @@
 /*
  *  acpi_button.c - ACPI Button Driver ($Revision: 30 $)
+ *  button.c - ACPI Button Driver
  *
  *  Copyright (C) 2001, 2002 Andy Grover <andrew.grover@intel.com>
  *  Copyright (C) 2001, 2002 Paul Diefenbaugh <paul.s.diefenbaugh@intel.com>
@@ -34,6 +35,12 @@
 #include <acpi/acpi_drivers.h>
 
 #define ACPI_BUTTON_COMPONENT		0x00080000
+#include <linux/slab.h>
+#include <linux/acpi.h>
+#include <acpi/button.h>
+
+#define PREFIX "ACPI: "
+
 #define ACPI_BUTTON_CLASS		"button"
 #define ACPI_BUTTON_FILE_INFO		"info"
 #define ACPI_BUTTON_FILE_STATE		"state"
@@ -53,6 +60,13 @@
 #define ACPI_BUTTON_DEVICE_NAME_SLEEPF	"Sleep Button (FF)"
 #define ACPI_BUTTON_TYPE_SLEEP		0x03
 #define ACPI_BUTTON_TYPE_SLEEPF		0x04
+#define ACPI_BUTTON_DEVICE_NAME_POWER	"Power Button"
+#define ACPI_BUTTON_TYPE_POWER		0x01
+
+#define ACPI_BUTTON_SUBCLASS_SLEEP	"sleep"
+#define ACPI_BUTTON_HID_SLEEP		"PNP0C0E"
+#define ACPI_BUTTON_DEVICE_NAME_SLEEP	"Sleep Button"
+#define ACPI_BUTTON_TYPE_SLEEP		0x03
 
 #define ACPI_BUTTON_SUBCLASS_LID	"lid"
 #define ACPI_BUTTON_HID_LID		"PNP0C0D"
@@ -81,6 +95,17 @@ static int acpi_button_remove(struct acpi_device *device, int type);
 static int acpi_button_resume(struct acpi_device *device);
 static int acpi_button_info_open_fs(struct inode *inode, struct file *file);
 static int acpi_button_state_open_fs(struct inode *inode, struct file *file);
+static int acpi_button_remove(struct acpi_device *device);
+static void acpi_button_notify(struct acpi_device *device, u32 event);
+
+#ifdef CONFIG_PM_SLEEP
+static int acpi_button_suspend(struct device *dev);
+static int acpi_button_resume(struct device *dev);
+#else
+#define acpi_button_suspend NULL
+#define acpi_button_resume NULL
+#endif
+static SIMPLE_DEV_PM_OPS(acpi_button_pm, acpi_button_suspend, acpi_button_resume);
 
 static struct acpi_driver acpi_button_driver = {
 	.name = "button",
@@ -95,6 +120,13 @@ static struct acpi_driver acpi_button_driver = {
 
 struct acpi_button {
 	struct acpi_device *device;	/* Fixed button kludge */
+		.remove = acpi_button_remove,
+		.notify = acpi_button_notify,
+	},
+	.drv.pm = &acpi_button_pm,
+};
+
+struct acpi_button {
 	unsigned int type;
 	struct input_dev *input;
 	char phys[32];			/* for input device */
@@ -108,6 +140,36 @@ static const struct file_operations acpi_button_info_fops = {
 	.llseek = seq_lseek,
 	.release = single_release,
 };
+	bool suspended;
+};
+
+static BLOCKING_NOTIFIER_HEAD(acpi_lid_notifier);
+static struct acpi_device *lid_device;
+
+/* --------------------------------------------------------------------------
+                              FS Interface (/proc)
+   -------------------------------------------------------------------------- */
+
+static struct proc_dir_entry *acpi_button_dir;
+static struct proc_dir_entry *acpi_lid_dir;
+
+static int acpi_button_state_seq_show(struct seq_file *seq, void *offset)
+{
+	struct acpi_device *device = seq->private;
+	acpi_status status;
+	unsigned long long state;
+
+	status = acpi_evaluate_integer(device->handle, "_LID", NULL, &state);
+	seq_printf(seq, "state:      %s\n",
+		   ACPI_FAILURE(status) ? "unsupported" :
+			(state ? "open" : "closed"));
+	return 0;
+}
+
+static int acpi_button_state_open_fs(struct inode *inode, struct file *file)
+{
+	return single_open(file, acpi_button_state_seq_show, PDE_DATA(inode));
+}
 
 static const struct file_operations acpi_button_state_fops = {
 	.owner = THIS_MODULE,
@@ -227,6 +289,61 @@ static int acpi_button_add_fs(struct acpi_device *device)
 	}
 
 	return 0;
+static int acpi_button_add_fs(struct acpi_device *device)
+{
+	struct acpi_button *button = acpi_driver_data(device);
+	struct proc_dir_entry *entry = NULL;
+	int ret = 0;
+
+	/* procfs I/F for ACPI lid device only */
+	if (button->type != ACPI_BUTTON_TYPE_LID)
+		return 0;
+
+	if (acpi_button_dir || acpi_lid_dir) {
+		printk(KERN_ERR PREFIX "More than one Lid device found!\n");
+		return -EEXIST;
+	}
+
+	/* create /proc/acpi/button */
+	acpi_button_dir = proc_mkdir(ACPI_BUTTON_CLASS, acpi_root_dir);
+	if (!acpi_button_dir)
+		return -ENODEV;
+
+	/* create /proc/acpi/button/lid */
+	acpi_lid_dir = proc_mkdir(ACPI_BUTTON_SUBCLASS_LID, acpi_button_dir);
+	if (!acpi_lid_dir) {
+		ret = -ENODEV;
+		goto remove_button_dir;
+	}
+
+	/* create /proc/acpi/button/lid/LID/ */
+	acpi_device_dir(device) = proc_mkdir(acpi_device_bid(device), acpi_lid_dir);
+	if (!acpi_device_dir(device)) {
+		ret = -ENODEV;
+		goto remove_lid_dir;
+	}
+
+	/* create /proc/acpi/button/lid/LID/state */
+	entry = proc_create_data(ACPI_BUTTON_FILE_STATE,
+				 S_IRUGO, acpi_device_dir(device),
+				 &acpi_button_state_fops, device);
+	if (!entry) {
+		ret = -ENODEV;
+		goto remove_dev_dir;
+	}
+
+done:
+	return ret;
+
+remove_dev_dir:
+	remove_proc_entry(acpi_device_bid(device),
+			  acpi_lid_dir);
+	acpi_device_dir(device) = NULL;
+remove_lid_dir:
+	remove_proc_entry(ACPI_BUTTON_SUBCLASS_LID, acpi_button_dir);
+remove_button_dir:
+	remove_proc_entry(ACPI_BUTTON_CLASS, acpi_root_dir);
+	goto done;
 }
 
 static int acpi_button_remove_fs(struct acpi_device *device)
@@ -244,6 +361,16 @@ static int acpi_button_remove_fs(struct acpi_device *device)
 				  acpi_device_dir(device)->parent);
 		acpi_device_dir(device) = NULL;
 	}
+	if (button->type != ACPI_BUTTON_TYPE_LID)
+		return 0;
+
+	remove_proc_entry(ACPI_BUTTON_FILE_STATE,
+			  acpi_device_dir(device));
+	remove_proc_entry(acpi_device_bid(device),
+			  acpi_lid_dir);
+	acpi_device_dir(device) = NULL;
+	remove_proc_entry(ACPI_BUTTON_SUBCLASS_LID, acpi_button_dir);
+	remove_proc_entry(ACPI_BUTTON_CLASS, acpi_root_dir);
 
 	return 0;
 }
@@ -290,6 +417,99 @@ static void acpi_button_notify(acpi_handle handle, u32 event, void *data)
 
 		acpi_bus_generate_proc_event(button->device, event,
 					++button->pushed);
+int acpi_lid_notifier_register(struct notifier_block *nb)
+{
+	return blocking_notifier_chain_register(&acpi_lid_notifier, nb);
+}
+EXPORT_SYMBOL(acpi_lid_notifier_register);
+
+int acpi_lid_notifier_unregister(struct notifier_block *nb)
+{
+	return blocking_notifier_chain_unregister(&acpi_lid_notifier, nb);
+}
+EXPORT_SYMBOL(acpi_lid_notifier_unregister);
+
+int acpi_lid_open(void)
+{
+	acpi_status status;
+	unsigned long long state;
+
+	if (!lid_device)
+		return -ENODEV;
+
+	status = acpi_evaluate_integer(lid_device->handle, "_LID", NULL,
+				       &state);
+	if (ACPI_FAILURE(status))
+		return -ENODEV;
+
+	return !!state;
+}
+EXPORT_SYMBOL(acpi_lid_open);
+
+static int acpi_lid_send_state(struct acpi_device *device)
+{
+	struct acpi_button *button = acpi_driver_data(device);
+	unsigned long long state;
+	acpi_status status;
+	int ret;
+
+	status = acpi_evaluate_integer(device->handle, "_LID", NULL, &state);
+	if (ACPI_FAILURE(status))
+		return -ENODEV;
+
+	/* input layer checks if event is redundant */
+	input_report_switch(button->input, SW_LID, !state);
+	input_sync(button->input);
+
+	if (state)
+		pm_wakeup_event(&device->dev, 0);
+
+	ret = blocking_notifier_call_chain(&acpi_lid_notifier, state, device);
+	if (ret == NOTIFY_DONE)
+		ret = blocking_notifier_call_chain(&acpi_lid_notifier, state,
+						   device);
+	if (ret == NOTIFY_DONE || ret == NOTIFY_OK) {
+		/*
+		 * It is also regarded as success if the notifier_chain
+		 * returns NOTIFY_OK or NOTIFY_DONE.
+		 */
+		ret = 0;
+	}
+	return ret;
+}
+
+static void acpi_button_notify(struct acpi_device *device, u32 event)
+{
+	struct acpi_button *button = acpi_driver_data(device);
+	struct input_dev *input;
+
+	switch (event) {
+	case ACPI_FIXED_HARDWARE_EVENT:
+		event = ACPI_BUTTON_NOTIFY_STATUS;
+		/* fall through */
+	case ACPI_BUTTON_NOTIFY_STATUS:
+		input = button->input;
+		if (button->type == ACPI_BUTTON_TYPE_LID) {
+			acpi_lid_send_state(device);
+		} else {
+			int keycode;
+
+			pm_wakeup_event(&device->dev, 0);
+			if (button->suspended)
+				break;
+
+			keycode = test_bit(KEY_SLEEP, input->keybit) ?
+						KEY_SLEEP : KEY_POWER;
+			input_report_key(input, keycode, 1);
+			input_sync(input);
+			input_report_key(input, keycode, 0);
+			input_sync(input);
+
+			acpi_bus_generate_netlink_event(
+					device->pnp.device_class,
+					dev_name(&device->dev),
+					event, ++button->pushed);
+		}
 		break;
 	default:
 		ACPI_DEBUG_PRINT((ACPI_DB_INFO,
@@ -378,6 +598,37 @@ static int acpi_button_add(struct acpi_device *device)
 
 	if (!device)
 		return -EINVAL;
+}
+
+#ifdef CONFIG_PM_SLEEP
+static int acpi_button_suspend(struct device *dev)
+{
+	struct acpi_device *device = to_acpi_device(dev);
+	struct acpi_button *button = acpi_driver_data(device);
+
+	button->suspended = true;
+	return 0;
+}
+
+static int acpi_button_resume(struct device *dev)
+{
+	struct acpi_device *device = to_acpi_device(dev);
+	struct acpi_button *button = acpi_driver_data(device);
+
+	button->suspended = false;
+	if (button->type == ACPI_BUTTON_TYPE_LID)
+		return acpi_lid_send_state(device);
+	return 0;
+}
+#endif
+
+static int acpi_button_add(struct acpi_device *device)
+{
+	struct acpi_button *button;
+	struct input_dev *input;
+	const char *hid = acpi_device_hid(device);
+	char *name, *class;
+	int error;
 
 	button = kzalloc(sizeof(struct acpi_button), GFP_KERNEL);
 	if (!button)
@@ -385,6 +636,7 @@ static int acpi_button_add(struct acpi_device *device)
 
 	button->device = device;
 	acpi_driver_data(device) = button;
+	device->driver_data = button;
 
 	button->input = input = input_allocate_device();
 	if (!input) {
@@ -426,6 +678,28 @@ static int acpi_button_add(struct acpi_device *device)
 	} else {
 		printk(KERN_ERR PREFIX "Unsupported hid [%s]\n",
 			    acpi_device_hid(device));
+	name = acpi_device_name(device);
+	class = acpi_device_class(device);
+
+	if (!strcmp(hid, ACPI_BUTTON_HID_POWER) ||
+	    !strcmp(hid, ACPI_BUTTON_HID_POWERF)) {
+		button->type = ACPI_BUTTON_TYPE_POWER;
+		strcpy(name, ACPI_BUTTON_DEVICE_NAME_POWER);
+		sprintf(class, "%s/%s",
+			ACPI_BUTTON_CLASS, ACPI_BUTTON_SUBCLASS_POWER);
+	} else if (!strcmp(hid, ACPI_BUTTON_HID_SLEEP) ||
+		   !strcmp(hid, ACPI_BUTTON_HID_SLEEPF)) {
+		button->type = ACPI_BUTTON_TYPE_SLEEP;
+		strcpy(name, ACPI_BUTTON_DEVICE_NAME_SLEEP);
+		sprintf(class, "%s/%s",
+			ACPI_BUTTON_CLASS, ACPI_BUTTON_SUBCLASS_SLEEP);
+	} else if (!strcmp(hid, ACPI_BUTTON_HID_LID)) {
+		button->type = ACPI_BUTTON_TYPE_LID;
+		strcpy(name, ACPI_BUTTON_DEVICE_NAME_LID);
+		sprintf(class, "%s/%s",
+			ACPI_BUTTON_CLASS, ACPI_BUTTON_SUBCLASS_LID);
+	} else {
+		printk(KERN_ERR PREFIX "Unsupported hid [%s]\n", hid);
 		error = -ENODEV;
 		goto err_free_input;
 	}
@@ -442,6 +716,9 @@ static int acpi_button_add(struct acpi_device *device)
 		 "%s/button/input0", acpi_device_hid(device));
 
 	input->name = acpi_device_name(device);
+	snprintf(button->phys, sizeof(button->phys), "%s/button/input0", hid);
+
+	input->name = name;
 	input->phys = button->phys;
 	input->id.bustype = BUS_HOST;
 	input->id.product = button->type;
@@ -463,6 +740,15 @@ static int acpi_button_add(struct acpi_device *device)
 	case ACPI_BUTTON_TYPE_LID:
 		input->evbit[0] = BIT_MASK(EV_SW);
 		set_bit(SW_LID, input->swbit);
+		input_set_capability(input, EV_KEY, KEY_POWER);
+		break;
+
+	case ACPI_BUTTON_TYPE_SLEEP:
+		input_set_capability(input, EV_KEY, KEY_SLEEP);
+		break;
+
+	case ACPI_BUTTON_TYPE_LID:
+		input_set_capability(input, EV_SW, SW_LID);
 		break;
 	}
 
@@ -489,6 +775,19 @@ static int acpi_button_add(struct acpi_device *device)
 
  err_remove_handlers:
 	acpi_button_remove_notify_handlers(button);
+		goto err_remove_fs;
+	if (button->type == ACPI_BUTTON_TYPE_LID) {
+		acpi_lid_send_state(device);
+		/*
+		 * This assumes there's only one lid device, or if there are
+		 * more we only care about the last one...
+		 */
+		lid_device = device;
+	}
+
+	printk(KERN_INFO PREFIX "%s [%s]\n", name, acpi_device_bid(device));
+	return 0;
+
  err_remove_fs:
 	acpi_button_remove_fs(device);
  err_free_input:
@@ -547,3 +846,14 @@ static void __exit acpi_button_exit(void)
 
 module_init(acpi_button_init);
 module_exit(acpi_button_exit);
+static int acpi_button_remove(struct acpi_device *device)
+{
+	struct acpi_button *button = acpi_driver_data(device);
+
+	acpi_button_remove_fs(device);
+	input_unregister_device(button->input);
+	kfree(button);
+	return 0;
+}
+
+module_acpi_driver(acpi_button_driver);

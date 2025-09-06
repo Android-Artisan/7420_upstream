@@ -3,6 +3,8 @@
 #include <asm/uaccess.h>
 
 #include "soft-fp.h"
+#include <asm/sfp-machine.h>
+#include <math-emu/soft-fp.h>
 
 int
 mtfsb1(int crbD)

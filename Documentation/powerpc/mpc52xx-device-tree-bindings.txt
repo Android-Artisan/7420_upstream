@@ -11,7 +11,6 @@ Grant Likely <grant.likely at secretlab.ca>
 ********** DRAFT ***********
 
 I - Introduction
-================
 Boards supported by the arch/powerpc architecture require device tree be
 passed by the boot loader to the kernel at boot time.  The device tree
 describes what devices are present on the board and how they are
@@ -29,7 +28,6 @@ cases where this document is not sufficient to support a new board port,
 this document should be updated as part of adding the new board support.
 
 II - Philosophy
-===============
 The core of this document is naming convention.  The whole point of
 defining this convention is to reduce or eliminate the number of
 special cases required to support a 5200 board.  If all 5200 boards
@@ -114,7 +112,6 @@ At the time of writing, exact chip may be either 'mpc5200' or
 Device drivers should always try to match as generically as possible.
 
 III - Structure
-===============
 The device tree for an mpc5200 board follows the structure defined in
 booting-without-of.txt with the following additional notes:
 
@@ -249,7 +246,6 @@ the MII link:
 "phy-handle"      - Contains a phandle to an Ethernet PHY.
 
 IV - Extra Notes
-================
 
 1. Interrupt mapping
 --------------------

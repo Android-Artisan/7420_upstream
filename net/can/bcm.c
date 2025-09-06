@@ -46,6 +46,11 @@
 #include <linux/hrtimer.h>
 #include <linux/list.h>
 #include <linux/proc_fs.h>
+#include <linux/interrupt.h>
+#include <linux/hrtimer.h>
+#include <linux/list.h>
+#include <linux/proc_fs.h>
+#include <linux/seq_file.h>
 #include <linux/uio.h>
 #include <linux/net.h>
 #include <linux/netdevice.h>
@@ -57,6 +62,22 @@
 #include <linux/can/bcm.h>
 #include <net/sock.h>
 #include <net/net_namespace.h>
+
+#include <linux/can/skb.h>
+#include <linux/can/bcm.h>
+#include <linux/slab.h>
+#include <net/sock.h>
+#include <net/net_namespace.h>
+
+/*
+ * To send multiple CAN frame content within TX_SETUP or to filter
+ * CAN messages with multiplex index within RX_SETUP, the number of
+ * different filters is limited to 256 due to the one byte index value.
+ */
+#define MAX_NFRAMES 256
+
+/* limit timers to 400 days for sending/timeouts */
+#define BCM_TIMER_SEC_MAX (400 * 24 * 60 * 60)
 
 /* use of last_frames[index].can_dlc */
 #define RX_RECV    0x40 /* received data for this element */
@@ -70,10 +91,16 @@
 #define CAN_BCM_VERSION "20080415"
 static __initdata const char banner[] = KERN_INFO
 	"can: broadcast manager protocol (rev " CAN_BCM_VERSION ")\n";
+#define REGMASK(id) ((id & CAN_EFF_FLAG) ? \
+		     (CAN_EFF_MASK | CAN_EFF_FLAG | CAN_RTR_FLAG) : \
+		     (CAN_SFF_MASK | CAN_EFF_FLAG | CAN_RTR_FLAG))
+
+#define CAN_BCM_VERSION CAN_VERSION
 
 MODULE_DESCRIPTION("PF_CAN broadcast manager protocol");
 MODULE_LICENSE("Dual BSD/GPL");
 MODULE_AUTHOR("Oliver Hartkopp <oliver.hartkopp@volkswagen.de>");
+MODULE_ALIAS("can-proto-2");
 
 /* easy access to can_frame payload */
 static inline u64 GET_U64(const struct can_frame *cp)
@@ -94,6 +121,16 @@ struct bcm_op {
 	int count;
 	int nframes;
 	int currframe;
+	u32 flags;
+	unsigned long frames_abs, frames_filtered;
+	struct bcm_timeval ival1, ival2;
+	struct hrtimer timer, thrtimer;
+	struct tasklet_struct tsklet, thrtsklet;
+	ktime_t rx_stamp, kt_ival1, kt_ival2, kt_lastmsg;
+	int rx_ifindex;
+	u32 count;
+	u32 nframes;
+	u32 currframe;
 	struct can_frame *frames;
 	struct can_frame *last_frames;
 	struct can_frame sframe;
@@ -108,17 +145,43 @@ struct bcm_sock {
 	struct sock sk;
 	int bound;
 	int ifindex;
-	struct notifier_block notifier;
+	struct list_head notifier;
 	struct list_head rx_ops;
 	struct list_head tx_ops;
 	unsigned long dropped_usr_msgs;
 	struct proc_dir_entry *bcm_proc_read;
 	char procname [9]; /* pointer printed in ASCII with \0 */
+	char procname [32]; /* inode number in decimal with \0 */
 };
+
+static LIST_HEAD(bcm_notifier_list);
+static DEFINE_SPINLOCK(bcm_notifier_lock);
+static struct bcm_sock *bcm_busy_notifier;
 
 static inline struct bcm_sock *bcm_sk(const struct sock *sk)
 {
 	return (struct bcm_sock *)sk;
+}
+
+static inline ktime_t bcm_timeval_to_ktime(struct bcm_timeval tv)
+{
+	return ktime_set(tv.tv_sec, tv.tv_usec * NSEC_PER_USEC);
+}
+
+/* check limitations for timeval provided by user */
+static bool bcm_is_invalid_tv(struct bcm_msg_head *msg_head)
+{
+	if ((msg_head->ival1.tv_sec < 0) ||
+	    (msg_head->ival1.tv_sec > BCM_TIMER_SEC_MAX) ||
+	    (msg_head->ival1.tv_usec < 0) ||
+	    (msg_head->ival1.tv_usec >= USEC_PER_SEC) ||
+	    (msg_head->ival2.tv_sec < 0) ||
+	    (msg_head->ival2.tv_sec > BCM_TIMER_SEC_MAX) ||
+	    (msg_head->ival2.tv_usec < 0) ||
+	    (msg_head->ival2.tv_usec >= USEC_PER_SEC))
+		return true;
+
+	return false;
 }
 
 #define CFSIZ sizeof(struct can_frame)
@@ -129,6 +192,7 @@ static inline struct bcm_sock *bcm_sk(const struct sock *sk)
  * procfs functions
  */
 static char *bcm_proc_getifname(int ifindex)
+static char *bcm_proc_getifname(char *result, int ifindex)
 {
 	struct net_device *dev;
 
@@ -160,6 +224,30 @@ static int bcm_read_proc(char *page, char **start, off_t off,
 	len += snprintf(page + len, PAGE_SIZE - len, " / bound %s",
 			bcm_proc_getifname(bo->ifindex));
 	len += snprintf(page + len, PAGE_SIZE - len, " <<<\n");
+	rcu_read_lock();
+	dev = dev_get_by_index_rcu(&init_net, ifindex);
+	if (dev)
+		strcpy(result, dev->name);
+	else
+		strcpy(result, "???");
+	rcu_read_unlock();
+
+	return result;
+}
+
+static int bcm_proc_show(struct seq_file *m, void *v)
+{
+	char ifname[IFNAMSIZ];
+	struct sock *sk = (struct sock *)m->private;
+	struct bcm_sock *bo = bcm_sk(sk);
+	struct bcm_op *op;
+
+	seq_printf(m, ">>> socket %pK", sk->sk_socket);
+	seq_printf(m, " / sk %pK", sk);
+	seq_printf(m, " / bo %pK", bo);
+	seq_printf(m, " / dropped %lu", bo->dropped_usr_msgs);
+	seq_printf(m, " / bound %s", bcm_proc_getifname(ifname, bo->ifindex));
+	seq_printf(m, " <<<\n");
 
 	list_for_each_entry(op, &bo->rx_ops, list) {
 
@@ -178,6 +266,12 @@ static int bcm_read_proc(char *page, char **start, off_t off,
 		if (op->kt_ival1.tv64)
 			len += snprintf(page + len, PAGE_SIZE - len,
 					"timeo=%lld ",
+		seq_printf(m, "rx_op: %03X %-5s ",
+				op->can_id, bcm_proc_getifname(ifname, op->ifindex));
+		seq_printf(m, "[%u]%c ", op->nframes,
+				(op->flags & RX_CHECK_DLC)?'d':' ');
+		if (op->kt_ival1.tv64)
+			seq_printf(m, "timeo=%lld ",
 					(long long)
 					ktime_to_us(op->kt_ival1));
 
@@ -189,6 +283,11 @@ static int bcm_read_proc(char *page, char **start, off_t off,
 
 		len += snprintf(page + len, PAGE_SIZE - len,
 				"# recv %ld (%ld) => reduction: ",
+			seq_printf(m, "thr=%lld ",
+					(long long)
+					ktime_to_us(op->kt_ival2));
+
+		seq_printf(m, "# recv %ld (%ld) => reduction: ",
 				op->frames_filtered, op->frames_abs);
 
 		reduction = 100 - (op->frames_filtered * 100) / op->frames_abs;
@@ -201,6 +300,8 @@ static int bcm_read_proc(char *page, char **start, off_t off,
 			len += snprintf(page + len, PAGE_SIZE - len, "(..)\n");
 			break;
 		}
+		seq_printf(m, "%s%ld%%\n",
+				(reduction == 100)?"near ":"", reduction);
 	}
 
 	list_for_each_entry(op, &bo->tx_ops, list) {
@@ -234,6 +335,38 @@ static int bcm_read_proc(char *page, char **start, off_t off,
 	return len;
 }
 
+		seq_printf(m, "tx_op: %03X %s [%u] ",
+				op->can_id,
+				bcm_proc_getifname(ifname, op->ifindex),
+				op->nframes);
+
+		if (op->kt_ival1.tv64)
+			seq_printf(m, "t1=%lld ",
+					(long long) ktime_to_us(op->kt_ival1));
+
+		if (op->kt_ival2.tv64)
+			seq_printf(m, "t2=%lld ",
+					(long long) ktime_to_us(op->kt_ival2));
+
+		seq_printf(m, "# sent %ld\n", op->frames_abs);
+	}
+	seq_putc(m, '\n');
+	return 0;
+}
+
+static int bcm_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, bcm_proc_show, PDE_DATA(inode));
+}
+
+static const struct file_operations bcm_proc_fops = {
+	.owner		= THIS_MODULE,
+	.open		= bcm_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
 /*
  * bcm_can_tx - send the (next) CAN frame to the appropriate CAN interface
  *              of the given bcm tx op
@@ -243,6 +376,7 @@ static void bcm_can_tx(struct bcm_op *op)
 	struct sk_buff *skb;
 	struct net_device *dev;
 	struct can_frame *cf = &op->frames[op->currframe];
+	int err;
 
 	/* no target device? => exit */
 	if (!op->ifindex)
@@ -258,16 +392,25 @@ static void bcm_can_tx(struct bcm_op *op)
 	if (!skb)
 		goto out;
 
+	skb = alloc_skb(CFSIZ + sizeof(struct can_skb_priv), gfp_any());
+	if (!skb)
+		goto out;
+
+	can_skb_reserve(skb);
+	can_skb_prv(skb)->ifindex = dev->ifindex;
+	can_skb_prv(skb)->skbcnt = 0;
+
 	memcpy(skb_put(skb, CFSIZ), cf, CFSIZ);
 
 	/* send with loopback */
 	skb->dev = dev;
 	skb->sk = op->sk;
-	can_send(skb, 1);
+	can_skb_set_owner(skb, op->sk);
+	err = can_send(skb, 1);
+	if (!err)
+		op->frames_abs++;
 
-	/* update statistics */
 	op->currframe++;
-	op->frames_abs++;
 
 	/* reached last frame? */
 	if (op->currframe >= op->nframes)
@@ -288,6 +431,7 @@ static void bcm_send_to_user(struct bcm_op *op, struct bcm_msg_head *head,
 	struct sockaddr_can *addr;
 	struct sock *sk = op->sk;
 	int datalen = head->nframes * CFSIZ;
+	unsigned int datalen = head->nframes * CFSIZ;
 	int err;
 
 	skb = alloc_skb(sizeof(*head) + datalen, gfp_any());
@@ -325,6 +469,7 @@ static void bcm_send_to_user(struct bcm_op *op, struct bcm_msg_head *head,
 	 */
 
 	BUILD_BUG_ON(sizeof(skb->cb) < sizeof(struct sockaddr_can));
+	sock_skb_cb_check_size(sizeof(struct sockaddr_can));
 	addr = (struct sockaddr_can *)skb->cb;
 	memset(addr, 0, sizeof(*addr));
 	addr->can_family  = AF_CAN;
@@ -347,6 +492,22 @@ static enum hrtimer_restart bcm_tx_timeout_handler(struct hrtimer *hrtimer)
 {
 	struct bcm_op *op = container_of(hrtimer, struct bcm_op, timer);
 	enum hrtimer_restart ret = HRTIMER_NORESTART;
+static void bcm_tx_start_timer(struct bcm_op *op)
+{
+	if (op->kt_ival1.tv64 && op->count)
+		hrtimer_start(&op->timer,
+			      ktime_add(ktime_get(), op->kt_ival1),
+			      HRTIMER_MODE_ABS);
+	else if (op->kt_ival2.tv64)
+		hrtimer_start(&op->timer,
+			      ktime_add(ktime_get(), op->kt_ival2),
+			      HRTIMER_MODE_ABS);
+}
+
+static void bcm_tx_timeout_tsklet(unsigned long data)
+{
+	struct bcm_op *op = (struct bcm_op *)data;
+	struct bcm_msg_head msg_head;
 
 	if (op->kt_ival1.tv64 && (op->count > 0)) {
 
@@ -355,6 +516,7 @@ static enum hrtimer_restart bcm_tx_timeout_handler(struct hrtimer *hrtimer)
 			struct bcm_msg_head msg_head;
 
 			/* create notification to user */
+			memset(&msg_head, 0, sizeof(msg_head));
 			msg_head.opcode  = TX_EXPIRED;
 			msg_head.flags   = op->flags;
 			msg_head.count   = op->count;
@@ -385,6 +547,24 @@ static enum hrtimer_restart bcm_tx_timeout_handler(struct hrtimer *hrtimer)
 	}
 
 	return ret;
+		bcm_can_tx(op);
+
+	} else if (op->kt_ival2.tv64)
+		bcm_can_tx(op);
+
+	bcm_tx_start_timer(op);
+}
+
+/*
+ * bcm_tx_timeout_handler - performs cyclic CAN frame transmissions
+ */
+static enum hrtimer_restart bcm_tx_timeout_handler(struct hrtimer *hrtimer)
+{
+	struct bcm_op *op = container_of(hrtimer, struct bcm_op, timer);
+
+	tasklet_schedule(&op->tsklet);
+
+	return HRTIMER_NORESTART;
 }
 
 /*
@@ -401,6 +581,10 @@ static void bcm_rx_changed(struct bcm_op *op, struct can_frame *data)
 	if (op->frames_filtered > ULONG_MAX/100)
 		op->frames_filtered = op->frames_abs = 0;
 
+	/* this element is not throttled anymore */
+	data->can_dlc &= (BCM_CAN_DLC_MASK|RX_RECV);
+
+	memset(&head, 0, sizeof(head));
 	head.opcode  = RX_CHANGED;
 	head.flags   = op->flags;
 	head.count   = op->count;
@@ -450,6 +634,32 @@ static void bcm_rx_update_and_send(struct bcm_op *op,
 	    ktime_to_us(op->kt_ival2)) {
 		/* mark as 'throttled' and start timer */
 		lastdata->can_dlc |= RX_THR;
+				   const struct can_frame *rxdata)
+{
+	memcpy(lastdata, rxdata, CFSIZ);
+
+	/* mark as used and throttled by default */
+	lastdata->can_dlc |= (RX_RECV|RX_THR);
+
+	/* throttling mode inactive ? */
+	if (!op->kt_ival2.tv64) {
+		/* send RX_CHANGED to the user immediately */
+		bcm_rx_changed(op, lastdata);
+		return;
+	}
+
+	/* with active throttling timer we are just done here */
+	if (hrtimer_active(&op->thrtimer))
+		return;
+
+	/* first reception with enabled throttling mode */
+	if (!op->kt_lastmsg.tv64)
+		goto rx_changed_settime;
+
+	/* got a second frame inside a potential throttle period? */
+	if (ktime_us_delta(ktime_get(), op->kt_lastmsg) <
+	    ktime_to_us(op->kt_ival2)) {
+		/* do not send the saved data - only start throttle timer */
 		hrtimer_start(&op->thrtimer,
 			      ktime_add(op->kt_lastmsg, op->kt_ival2),
 			      HRTIMER_MODE_ABS);
@@ -458,6 +668,8 @@ static void bcm_rx_update_and_send(struct bcm_op *op,
 
 	/* the gap was that big, that throttling was not needed here */
 	bcm_rx_changed(op, rxdata);
+rx_changed_settime:
+	bcm_rx_changed(op, lastdata);
 	op->kt_lastmsg = ktime_get();
 }
 
@@ -470,6 +682,11 @@ static void bcm_rx_cmp_to_index(struct bcm_op *op, int index,
 {
 	/*
 	 * no one uses the MSBs of can_dlc for comparation,
+static void bcm_rx_cmp_to_index(struct bcm_op *op, unsigned int index,
+				const struct can_frame *rxdata)
+{
+	/*
+	 * no one uses the MSBs of can_dlc for comparison,
 	 * so we use it here to detect the first time of reception
 	 */
 
@@ -500,6 +717,7 @@ static void bcm_rx_cmp_to_index(struct bcm_op *op, int index,
 
 /*
  * bcm_rx_starttimer - enable timeout monitoring for CAN frame receiption
+ * bcm_rx_starttimer - enable timeout monitoring for CAN frame reception
  */
 static void bcm_rx_starttimer(struct bcm_op *op)
 {
@@ -518,6 +736,13 @@ static enum hrtimer_restart bcm_rx_timeout_handler(struct hrtimer *hrtimer)
 	struct bcm_op *op = container_of(hrtimer, struct bcm_op, timer);
 	struct bcm_msg_head msg_head;
 
+static void bcm_rx_timeout_tsklet(unsigned long data)
+{
+	struct bcm_op *op = (struct bcm_op *)data;
+	struct bcm_msg_head msg_head;
+
+	/* create notification to user */
+	memset(&msg_head, 0, sizeof(msg_head));
 	msg_head.opcode  = RX_TIMEOUT;
 	msg_head.flags   = op->flags;
 	msg_head.count   = op->count;
@@ -527,6 +752,17 @@ static enum hrtimer_restart bcm_rx_timeout_handler(struct hrtimer *hrtimer)
 	msg_head.nframes = 0;
 
 	bcm_send_to_user(op, &msg_head, NULL, 0);
+}
+
+/*
+ * bcm_rx_timeout_handler - when the (cyclic) CAN frame reception timed out
+ */
+static enum hrtimer_restart bcm_rx_timeout_handler(struct hrtimer *hrtimer)
+{
+	struct bcm_op *op = container_of(hrtimer, struct bcm_op, timer);
+
+	/* schedule before NET_RX_SOFTIRQ */
+	tasklet_hi_schedule(&op->tsklet);
 
 	/* no restart of the timer is done here! */
 
@@ -543,6 +779,26 @@ static enum hrtimer_restart bcm_rx_timeout_handler(struct hrtimer *hrtimer)
  * bcm_rx_thr_flush - Check for throttled data and send it to the userspace
  */
 static int bcm_rx_thr_flush(struct bcm_op *op)
+ * bcm_rx_do_flush - helper for bcm_rx_thr_flush
+ */
+static inline int bcm_rx_do_flush(struct bcm_op *op, int update,
+				  unsigned int index)
+{
+	if ((op->last_frames) && (op->last_frames[index].can_dlc & RX_THR)) {
+		if (update)
+			bcm_rx_changed(op, &op->last_frames[index]);
+		return 1;
+	}
+	return 0;
+}
+
+/*
+ * bcm_rx_thr_flush - Check for throttled data and send it to the userspace
+ *
+ * update == 0 : just check if throttled data is available  (any irq context)
+ * update == 1 : check and send throttled data to userspace (soft_irq context)
+ */
+static int bcm_rx_thr_flush(struct bcm_op *op, int update)
 {
 	int updated = 0;
 
@@ -566,9 +822,26 @@ static int bcm_rx_thr_flush(struct bcm_op *op)
 			bcm_rx_changed(op, &op->last_frames[0]);
 			updated++;
 		}
+		unsigned int i;
+
+		/* for MUX filter we start at index 1 */
+		for (i = 1; i < op->nframes; i++)
+			updated += bcm_rx_do_flush(op, update, i);
+
+	} else {
+		/* for RX_FILTER_ID and simple filter */
+		updated += bcm_rx_do_flush(op, update, 0);
 	}
 
 	return updated;
+}
+
+static void bcm_rx_thr_tsklet(unsigned long data)
+{
+	struct bcm_op *op = (struct bcm_op *)data;
+
+	/* push the changed data to the userspace */
+	bcm_rx_thr_flush(op, 1);
 }
 
 /*
@@ -580,6 +853,9 @@ static enum hrtimer_restart bcm_rx_thr_handler(struct hrtimer *hrtimer)
 	struct bcm_op *op = container_of(hrtimer, struct bcm_op, thrtimer);
 
 	if (bcm_rx_thr_flush(op)) {
+	tasklet_schedule(&op->thrtsklet);
+
+	if (bcm_rx_thr_flush(op, 0)) {
 		hrtimer_forward(hrtimer, ktime_get(), op->kt_ival2);
 		return HRTIMER_RESTART;
 	} else {
@@ -591,12 +867,15 @@ static enum hrtimer_restart bcm_rx_thr_handler(struct hrtimer *hrtimer)
 
 /*
  * bcm_rx_handler - handle a CAN frame receiption
+ * bcm_rx_handler - handle a CAN frame reception
  */
 static void bcm_rx_handler(struct sk_buff *skb, void *data)
 {
 	struct bcm_op *op = (struct bcm_op *)data;
 	struct can_frame rxframe;
 	int i;
+	const struct can_frame *rxframe = (struct can_frame *)skb->data;
+	unsigned int i;
 
 	/* disable timeout */
 	hrtimer_cancel(&op->timer);
@@ -618,6 +897,15 @@ static void bcm_rx_handler(struct sk_buff *skb, void *data)
 
 	if (op->can_id != rxframe.can_id)
 		return;
+	if (op->can_id != rxframe->can_id)
+		return;
+
+	/* save rx timestamp */
+	op->rx_stamp = skb->tstamp;
+	/* save originator for recvfrom() */
+	op->rx_ifindex = skb->dev->ifindex;
+	/* update statistics */
+	op->frames_abs++;
 
 	if (op->flags & RX_RTR_FRAME) {
 		/* send reply for RTR-request (placed in op->frames[0]) */
@@ -630,6 +918,8 @@ static void bcm_rx_handler(struct sk_buff *skb, void *data)
 		bcm_rx_update_and_send(op, &op->last_frames[0], &rxframe);
 		bcm_rx_starttimer(op);
 		return;
+		bcm_rx_update_and_send(op, &op->last_frames[0], rxframe);
+		goto rx_starttimer;
 	}
 
 	if (op->nframes == 1) {
@@ -637,6 +927,8 @@ static void bcm_rx_handler(struct sk_buff *skb, void *data)
 		bcm_rx_cmp_to_index(op, 0, &rxframe);
 		bcm_rx_starttimer(op);
 		return;
+		bcm_rx_cmp_to_index(op, 0, rxframe);
+		goto rx_starttimer;
 	}
 
 	if (op->nframes > 1) {
@@ -657,6 +949,17 @@ static void bcm_rx_handler(struct sk_buff *skb, void *data)
 		}
 		bcm_rx_starttimer(op);
 	}
+			if ((GET_U64(&op->frames[0]) & GET_U64(rxframe)) ==
+			    (GET_U64(&op->frames[0]) &
+			     GET_U64(&op->frames[i]))) {
+				bcm_rx_cmp_to_index(op, i, rxframe);
+				break;
+			}
+		}
+	}
+
+rx_starttimer:
+	bcm_rx_starttimer(op);
 }
 
 /*
@@ -677,8 +980,23 @@ static struct bcm_op *bcm_find_op(struct list_head *ops, canid_t can_id,
 
 static void bcm_remove_op(struct bcm_op *op)
 {
-	hrtimer_cancel(&op->timer);
-	hrtimer_cancel(&op->thrtimer);
+	if (op->tsklet.func) {
+		do {
+			tasklet_kill(&op->tsklet);
+			hrtimer_cancel(&op->timer);
+		} while (test_bit(TASKLET_STATE_SCHED, &op->tsklet.state) ||
+			 test_bit(TASKLET_STATE_RUN, &op->tsklet.state) ||
+			 hrtimer_active(&op->timer));
+	}
+
+	if (op->thrtsklet.func) {
+		do {
+			tasklet_kill(&op->thrtsklet);
+			hrtimer_cancel(&op->thrtimer);
+		} while (test_bit(TASKLET_STATE_SCHED, &op->thrtsklet.state) ||
+			 test_bit(TASKLET_STATE_RUN, &op->thrtsklet.state) ||
+			 hrtimer_active(&op->thrtimer));
+	}
 
 	if ((op->frames) && (op->frames != &op->sframe))
 		kfree(op->frames);
@@ -741,6 +1059,7 @@ static int bcm_delete_rx_op(struct list_head *ops, canid_t can_id, int ifindex)
 						  bcm_rx_handler, op);
 
 			list_del(&op->list);
+			synchronize_rcu();
 			bcm_remove_op(op);
 			return 1; /* done */
 		}
@@ -799,6 +1118,8 @@ static int bcm_tx_setup(struct bcm_msg_head *msg_head, struct msghdr *msg,
 	struct bcm_sock *bo = bcm_sk(sk);
 	struct bcm_op *op;
 	int i, err;
+	unsigned int i;
+	int err;
 
 	/* we need a real device to send frames */
 	if (!ifindex)
@@ -806,6 +1127,12 @@ static int bcm_tx_setup(struct bcm_msg_head *msg_head, struct msghdr *msg,
 
 	/* we need at least one can_frame */
 	if (msg_head->nframes < 1)
+	/* check nframes boundaries - we need at least one can_frame */
+	if (msg_head->nframes < 1 || msg_head->nframes > MAX_NFRAMES)
+		return -EINVAL;
+
+	/* check timeval limitations */
+	if ((msg_head->flags & SETTIMER) && bcm_is_invalid_tv(msg_head))
 		return -EINVAL;
 
 	/* check the given can_id */
@@ -826,6 +1153,7 @@ static int bcm_tx_setup(struct bcm_msg_head *msg_head, struct msghdr *msg,
 		for (i = 0; i < msg_head->nframes; i++) {
 			err = memcpy_fromiovec((u8 *)&op->frames[i],
 					       msg->msg_iov, CFSIZ);
+			err = memcpy_from_msg((u8 *)&op->frames[i], msg, CFSIZ);
 
 			if (op->frames[i].can_dlc > 8)
 				err = -EINVAL;
@@ -862,6 +1190,7 @@ static int bcm_tx_setup(struct bcm_msg_head *msg_head, struct msghdr *msg,
 		for (i = 0; i < msg_head->nframes; i++) {
 			err = memcpy_fromiovec((u8 *)&op->frames[i],
 					       msg->msg_iov, CFSIZ);
+			err = memcpy_from_msg((u8 *)&op->frames[i], msg, CFSIZ);
 
 			if (op->frames[i].can_dlc > 8)
 				err = -EINVAL;
@@ -889,6 +1218,10 @@ static int bcm_tx_setup(struct bcm_msg_head *msg_head, struct msghdr *msg,
 		/* initialize uninitialized (kzalloc) structure */
 		hrtimer_init(&op->timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 		op->timer.function = bcm_tx_timeout_handler;
+
+		/* initialize tasklet for tx countevent notification */
+		tasklet_init(&op->tsklet, bcm_tx_timeout_tsklet,
+			     (unsigned long) op);
 
 		/* currently unused in tx_ops */
 		hrtimer_init(&op->thrtimer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
@@ -920,6 +1253,8 @@ static int bcm_tx_setup(struct bcm_msg_head *msg_head, struct msghdr *msg,
 		op->ival2 = msg_head->ival2;
 		op->kt_ival1 = timeval_to_ktime(msg_head->ival1);
 		op->kt_ival2 = timeval_to_ktime(msg_head->ival2);
+		op->kt_ival1 = bcm_timeval_to_ktime(msg_head->ival1);
+		op->kt_ival2 = bcm_timeval_to_ktime(msg_head->ival2);
 
 		/* disable an active timer due to zero values? */
 		if (!op->kt_ival1.tv64 && !op->kt_ival2.tv64)
@@ -943,6 +1278,20 @@ static int bcm_tx_setup(struct bcm_msg_head *msg_head, struct msghdr *msg,
 
 	if (op->flags & TX_ANNOUNCE)
 		bcm_can_tx(op);
+	if (op->flags & STARTTIMER) {
+		hrtimer_cancel(&op->timer);
+		/* spec: send can_frame when starting timer */
+		op->flags |= TX_ANNOUNCE;
+	}
+
+	if (op->flags & TX_ANNOUNCE) {
+		bcm_can_tx(op);
+		if (op->count)
+			op->count--;
+	}
+
+	if (op->flags & STARTTIMER)
+		bcm_tx_start_timer(op);
 
 	return msg_head->nframes * CFSIZ + MHSIZ;
 }
@@ -965,9 +1314,17 @@ static int bcm_rx_setup(struct bcm_msg_head *msg_head, struct msghdr *msg,
 		msg_head->nframes = 0;
 	}
 
+	/* the first element contains the mux-mask => MAX_NFRAMES + 1  */
+	if (msg_head->nframes > MAX_NFRAMES + 1)
+		return -EINVAL;
+
 	if ((msg_head->flags & RX_RTR_FRAME) &&
 	    ((msg_head->nframes != 1) ||
 	     (!(msg_head->can_id & CAN_RTR_FLAG))))
+		return -EINVAL;
+
+	/* check timeval limitations */
+	if ((msg_head->flags & SETTIMER) && bcm_is_invalid_tv(msg_head))
 		return -EINVAL;
 
 	/* check the given can_id */
@@ -988,6 +1345,8 @@ static int bcm_rx_setup(struct bcm_msg_head *msg_head, struct msghdr *msg,
 			err = memcpy_fromiovec((u8 *)op->frames,
 					       msg->msg_iov,
 					       msg_head->nframes * CFSIZ);
+			err = memcpy_from_msg((u8 *)op->frames, msg,
+					      msg_head->nframes * CFSIZ);
 			if (err < 0)
 				return err;
 
@@ -1035,6 +1394,8 @@ static int bcm_rx_setup(struct bcm_msg_head *msg_head, struct msghdr *msg,
 		if (msg_head->nframes) {
 			err = memcpy_fromiovec((u8 *)op->frames, msg->msg_iov,
 					       msg_head->nframes * CFSIZ);
+			err = memcpy_from_msg((u8 *)op->frames, msg,
+					      msg_head->nframes * CFSIZ);
 			if (err < 0) {
 				if (op->frames != &op->sframe)
 					kfree(op->frames);
@@ -1049,12 +1410,26 @@ static int bcm_rx_setup(struct bcm_msg_head *msg_head, struct msghdr *msg,
 		op->sk = sk;
 		op->ifindex = ifindex;
 
+		/* ifindex for timeout events w/o previous frame reception */
+		op->rx_ifindex = ifindex;
+
 		/* initialize uninitialized (kzalloc) structure */
 		hrtimer_init(&op->timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 		op->timer.function = bcm_rx_timeout_handler;
 
 		hrtimer_init(&op->thrtimer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 		op->thrtimer.function = bcm_rx_thr_handler;
+
+		/* initialize tasklet for rx timeout notification */
+		tasklet_init(&op->tsklet, bcm_rx_timeout_tsklet,
+			     (unsigned long) op);
+
+		hrtimer_init(&op->thrtimer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
+		op->thrtimer.function = bcm_rx_thr_handler;
+
+		/* initialize tasklet for rx throttle handling */
+		tasklet_init(&op->thrtsklet, bcm_rx_thr_tsklet,
+			     (unsigned long) op);
 
 		/* add this bcm_op to the list of the rx_ops */
 		list_add(&op->list, &bo->rx_ops);
@@ -1090,6 +1465,8 @@ static int bcm_rx_setup(struct bcm_msg_head *msg_head, struct msghdr *msg,
 			op->ival2 = msg_head->ival2;
 			op->kt_ival1 = timeval_to_ktime(msg_head->ival1);
 			op->kt_ival2 = timeval_to_ktime(msg_head->ival2);
+			op->kt_ival1 = bcm_timeval_to_ktime(msg_head->ival1);
+			op->kt_ival2 = bcm_timeval_to_ktime(msg_head->ival2);
 
 			/* disable an active timer due to zero value? */
 			if (!op->kt_ival1.tv64)
@@ -1102,6 +1479,7 @@ static int bcm_rx_setup(struct bcm_msg_head *msg_head, struct msghdr *msg,
 			op->kt_lastmsg = ktime_set(0, 0);
 			hrtimer_cancel(&op->thrtimer);
 			bcm_rx_thr_flush(op);
+			bcm_rx_thr_flush(op, 1);
 		}
 
 		if ((op->flags & STARTTIMER) && op->kt_ival1.tv64)
@@ -1119,7 +1497,7 @@ static int bcm_rx_setup(struct bcm_msg_head *msg_head, struct msghdr *msg,
 				err = can_rx_register(dev, op->can_id,
 						      REGMASK(op->can_id),
 						      bcm_rx_handler, op,
-						      "bcm");
+						      "bcm", sk);
 
 				op->rx_reg_dev = dev;
 				dev_put(dev);
@@ -1128,7 +1506,7 @@ static int bcm_rx_setup(struct bcm_msg_head *msg_head, struct msghdr *msg,
 		} else
 			err = can_rx_register(NULL, op->can_id,
 					      REGMASK(op->can_id),
-					      bcm_rx_handler, op, "bcm");
+					      bcm_rx_handler, op, "bcm", sk);
 		if (err) {
 			/* this bcm rx op is broken -> remove it */
 			list_del(&op->list);
@@ -1159,6 +1537,13 @@ static int bcm_tx_send(struct msghdr *msg, int ifindex, struct sock *sk)
 		return -ENOMEM;
 
 	err = memcpy_fromiovec(skb_put(skb, CFSIZ), msg->msg_iov, CFSIZ);
+	skb = alloc_skb(CFSIZ + sizeof(struct can_skb_priv), GFP_KERNEL);
+	if (!skb)
+		return -ENOMEM;
+
+	can_skb_reserve(skb);
+
+	err = memcpy_from_msg(skb_put(skb, CFSIZ), msg, CFSIZ);
 	if (err < 0) {
 		kfree_skb(skb);
 		return err;
@@ -1172,6 +1557,10 @@ static int bcm_tx_send(struct msghdr *msg, int ifindex, struct sock *sk)
 
 	skb->dev = dev;
 	skb->sk  = sk;
+	can_skb_prv(skb)->ifindex = dev->ifindex;
+	can_skb_prv(skb)->skbcnt = 0;
+	skb->dev = dev;
+	can_skb_set_owner(skb, sk);
 	err = can_send(skb, 1); /* send with loopback */
 	dev_put(dev);
 
@@ -1186,6 +1575,7 @@ static int bcm_tx_send(struct msghdr *msg, int ifindex, struct sock *sk)
  */
 static int bcm_sendmsg(struct kiocb *iocb, struct socket *sock,
 		       struct msghdr *msg, size_t size)
+static int bcm_sendmsg(struct socket *sock, struct msghdr *msg, size_t size)
 {
 	struct sock *sk = sock->sk;
 	struct bcm_sock *bo = bcm_sk(sk);
@@ -1206,6 +1596,10 @@ static int bcm_sendmsg(struct kiocb *iocb, struct socket *sock,
 		/* no bound device as default => check msg_name */
 		struct sockaddr_can *addr =
 			(struct sockaddr_can *)msg->msg_name;
+		DECLARE_SOCKADDR(struct sockaddr_can *, addr, msg->msg_name);
+
+		if (msg->msg_namelen < sizeof(*addr))
+			return -EINVAL;
 
 		if (addr->can_family != AF_CAN)
 			return -EINVAL;
@@ -1232,6 +1626,7 @@ static int bcm_sendmsg(struct kiocb *iocb, struct socket *sock,
 	/* read message head information */
 
 	ret = memcpy_fromiovec((u8 *)&msg_head, msg->msg_iov, MHSIZ);
+	ret = memcpy_from_msg((u8 *)&msg_head, msg, MHSIZ);
 	if (ret < 0)
 		return ret;
 
@@ -1298,16 +1693,16 @@ static int bcm_notifier(struct notifier_block *nb, unsigned long msg,
 			void *data)
 {
 	struct net_device *dev = (struct net_device *)data;
-	struct bcm_sock *bo = container_of(nb, struct bcm_sock, notifier);
+			void *ptr)
+static void bcm_notify(struct bcm_sock *bo, unsigned long msg,
+		       struct net_device *dev)
+{
 	struct sock *sk = &bo->sk;
 	struct bcm_op *op;
 	int notify_enodev = 0;
 
 	if (!net_eq(dev_net(dev), &init_net))
-		return NOTIFY_DONE;
-
-	if (dev->type != ARPHRD_CAN)
-		return NOTIFY_DONE;
+		return;
 
 	switch (msg) {
 
@@ -1342,7 +1737,28 @@ static int bcm_notifier(struct notifier_block *nb, unsigned long msg,
 				sk->sk_error_report(sk);
 		}
 	}
+}
 
+static int bcm_notifier(struct notifier_block *nb, unsigned long msg,
+			void *ptr)
+{
+	struct net_device *dev = netdev_notifier_info_to_dev(ptr);
+
+	if (dev->type != ARPHRD_CAN)
+		return NOTIFY_DONE;
+	if (msg != NETDEV_UNREGISTER && msg != NETDEV_DOWN)
+		return NOTIFY_DONE;
+	if (unlikely(bcm_busy_notifier)) /* Check for reentrant bug. */
+		return NOTIFY_DONE;
+
+	spin_lock(&bcm_notifier_lock);
+	list_for_each_entry(bcm_busy_notifier, &bcm_notifier_list, notifier) {
+		spin_unlock(&bcm_notifier_lock);
+		bcm_notify(bcm_busy_notifier, msg, dev);
+		spin_lock(&bcm_notifier_lock);
+	}
+	bcm_busy_notifier = NULL;
+	spin_unlock(&bcm_notifier_lock);
 	return NOTIFY_DONE;
 }
 
@@ -1362,9 +1778,9 @@ static int bcm_init(struct sock *sk)
 	INIT_LIST_HEAD(&bo->rx_ops);
 
 	/* set notifier */
-	bo->notifier.notifier_call = bcm_notifier;
-
-	register_netdevice_notifier(&bo->notifier);
+	spin_lock(&bcm_notifier_lock);
+	list_add_tail(&bo->notifier, &bcm_notifier_list);
+	spin_unlock(&bcm_notifier_lock);
 
 	return 0;
 }
@@ -1378,11 +1794,30 @@ static int bcm_release(struct socket *sock)
 	struct bcm_sock *bo = bcm_sk(sk);
 	struct bcm_op *op, *next;
 
+	struct bcm_sock *bo;
+	struct bcm_op *op, *next;
+
+	if (sk == NULL)
+		return 0;
+
+	bo = bcm_sk(sk);
+
 	/* remove bcm_ops, timer, rx_unregister(), etc. */
 
-	unregister_netdevice_notifier(&bo->notifier);
+	spin_lock(&bcm_notifier_lock);
+	while (bcm_busy_notifier == bo) {
+		spin_unlock(&bcm_notifier_lock);
+		schedule_timeout_uninterruptible(1);
+		spin_lock(&bcm_notifier_lock);
+	}
+	list_del(&bo->notifier);
+	spin_unlock(&bcm_notifier_lock);
 
 	lock_sock(sk);
+
+	/* remove procfs entry */
+	if (proc_dir && bo->bcm_proc_read)
+		remove_proc_entry(bo->procname, proc_dir);
 
 	list_for_each_entry_safe(op, next, &bo->tx_ops, list)
 		bcm_remove_op(op);
@@ -1412,18 +1847,21 @@ static int bcm_release(struct socket *sock)
 					  REGMASK(op->can_id),
 					  bcm_rx_handler, op);
 
-		bcm_remove_op(op);
 	}
 
-	/* remove procfs entry */
-	if (proc_dir && bo->bcm_proc_read)
-		remove_proc_entry(bo->procname, proc_dir);
+	synchronize_rcu();
+
+	list_for_each_entry_safe(op, next, &bo->rx_ops, list)
+		bcm_remove_op(op);
 
 	/* remove device reference */
 	if (bo->bound) {
 		bo->bound   = 0;
 		bo->ifindex = 0;
 	}
+
+	sock_orphan(sk);
+	sock->sk = NULL;
 
 	release_sock(sk);
 	sock_put(sk);
@@ -1437,21 +1875,31 @@ static int bcm_connect(struct socket *sock, struct sockaddr *uaddr, int len,
 	struct sockaddr_can *addr = (struct sockaddr_can *)uaddr;
 	struct sock *sk = sock->sk;
 	struct bcm_sock *bo = bcm_sk(sk);
+	int ret = 0;
 
-	if (bo->bound)
-		return -EISCONN;
+	if (len < sizeof(*addr))
+		return -EINVAL;
+
+	lock_sock(sk);
+
+	if (bo->bound) {
+		ret = -EISCONN;
+		goto fail;
+	}
 
 	/* bind a device to this socket */
 	if (addr->can_ifindex) {
 		struct net_device *dev;
 
 		dev = dev_get_by_index(&init_net, addr->can_ifindex);
-		if (!dev)
-			return -ENODEV;
-
+		if (!dev) {
+			ret = -ENODEV;
+			goto fail;
+		}
 		if (dev->type != ARPHRD_CAN) {
 			dev_put(dev);
-			return -ENODEV;
+			ret = -ENODEV;
+			goto fail;
 		}
 
 		bo->ifindex = dev->ifindex;
@@ -1462,21 +1910,34 @@ static int bcm_connect(struct socket *sock, struct sockaddr *uaddr, int len,
 		bo->ifindex = 0;
 	}
 
-	bo->bound = 1;
-
 	if (proc_dir) {
 		/* unique socket address as filename */
 		sprintf(bo->procname, "%p", sock);
 		bo->bcm_proc_read = create_proc_read_entry(bo->procname, 0644,
 							   proc_dir,
 							   bcm_read_proc, sk);
+		sprintf(bo->procname, "%lu", sock_i_ino(sk));
+		bo->bcm_proc_read = proc_create_data(bo->procname, 0644,
+						     proc_dir,
+						     &bcm_proc_fops, sk);
+		if (!bo->bcm_proc_read) {
+			ret = -ENOMEM;
+			goto fail;
+		}
 	}
 
-	return 0;
+	bo->bound = 1;
+
+fail:
+	release_sock(sk);
+
+	return ret;
 }
 
 static int bcm_recvmsg(struct kiocb *iocb, struct socket *sock,
 		       struct msghdr *msg, size_t size, int flags)
+static int bcm_recvmsg(struct socket *sock, struct msghdr *msg, size_t size,
+		       int flags)
 {
 	struct sock *sk = sock->sk;
 	struct sk_buff *skb;
@@ -1494,6 +1955,7 @@ static int bcm_recvmsg(struct kiocb *iocb, struct socket *sock,
 		size = skb->len;
 
 	err = memcpy_toiovec(msg->msg_iov, skb->data, size);
+	err = memcpy_to_msg(msg, skb->data, size);
 	if (err < 0) {
 		skb_free_datagram(sk, skb);
 		return err;
@@ -1502,6 +1964,10 @@ static int bcm_recvmsg(struct kiocb *iocb, struct socket *sock,
 	sock_recv_timestamp(msg, sk, skb);
 
 	if (msg->msg_name) {
+	sock_recv_ts_and_drops(msg, sk, skb);
+
+	if (msg->msg_name) {
+		__sockaddr_check_size(sizeof(struct sockaddr_can));
 		msg->msg_namelen = sizeof(struct sockaddr_can);
 		memcpy(msg->msg_name, skb->cb, msg->msg_namelen);
 	}
@@ -1512,6 +1978,7 @@ static int bcm_recvmsg(struct kiocb *iocb, struct socket *sock,
 }
 
 static struct proto_ops bcm_ops __read_mostly = {
+static const struct proto_ops bcm_ops = {
 	.family        = PF_CAN,
 	.release       = bcm_release,
 	.bind          = sock_no_bind,
@@ -1521,6 +1988,7 @@ static struct proto_ops bcm_ops __read_mostly = {
 	.getname       = sock_no_getname,
 	.poll          = datagram_poll,
 	.ioctl         = NULL,		/* use can_ioctl() from af_can.c */
+	.ioctl         = can_ioctl,	/* use can_ioctl() from af_can.c */
 	.listen        = sock_no_listen,
 	.shutdown      = sock_no_shutdown,
 	.setsockopt    = sock_no_setsockopt,
@@ -1542,8 +2010,15 @@ static struct can_proto bcm_can_proto __read_mostly = {
 	.type       = SOCK_DGRAM,
 	.protocol   = CAN_BCM,
 	.capability = -1,
+static const struct can_proto bcm_can_proto = {
+	.type       = SOCK_DGRAM,
+	.protocol   = CAN_BCM,
 	.ops        = &bcm_ops,
 	.prot       = &bcm_proto,
+};
+
+static struct notifier_block canbcm_notifier = {
+	.notifier_call = bcm_notifier
 };
 
 static int __init bcm_module_init(void)
@@ -1551,6 +2026,7 @@ static int __init bcm_module_init(void)
 	int err;
 
 	printk(banner);
+	pr_info("can: broadcast manager protocol (rev " CAN_BCM_VERSION " t)\n");
 
 	err = can_proto_register(&bcm_can_proto);
 	if (err < 0) {
@@ -1563,6 +2039,7 @@ static int __init bcm_module_init(void)
 
 	if (proc_dir)
 		proc_dir->owner = THIS_MODULE;
+	register_netdevice_notifier(&canbcm_notifier);
 
 	return 0;
 }
@@ -1573,6 +2050,9 @@ static void __exit bcm_module_exit(void)
 
 	if (proc_dir)
 		proc_net_remove(&init_net, "can-bcm");
+		remove_proc_entry("can-bcm", init_net.proc_net);
+
+	unregister_netdevice_notifier(&canbcm_notifier);
 }
 
 module_init(bcm_module_init);

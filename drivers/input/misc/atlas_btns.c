@@ -28,6 +28,14 @@
 #include <linux/types.h>
 #include <asm/uaccess.h>
 #include <acpi/acpi_drivers.h>
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
+#include <linux/kernel.h>
+#include <linux/module.h>
+#include <linux/input.h>
+#include <linux/types.h>
+#include <linux/acpi.h>
+#include <asm/uaccess.h>
 
 #define ACPI_ATLAS_NAME		"Atlas ACPI"
 #define ACPI_ATLAS_CLASS	"Atlas"
@@ -48,6 +56,7 @@ static acpi_status acpi_atlas_button_setup(acpi_handle region_handle,
 static acpi_status acpi_atlas_button_handler(u32 function,
 		      acpi_physical_address address,
 		      u32 bit_width, acpi_integer *value,
+		      u32 bit_width, u64 *value,
 		      void *handler_context, void *region_context)
 {
 	acpi_status status;
@@ -66,6 +75,11 @@ static acpi_status acpi_atlas_button_handler(u32 function,
 			":function=%x,address=%lx,value=%x\n",
 			function, (unsigned long)address, (u32)*value);
 		status = -EINVAL;
+		status = AE_OK;
+	} else {
+		pr_warn("shrugged on unexpected function: function=%x,address=%lx,value=%x\n",
+			function, (unsigned long)address, (u32)*value);
+		status = AE_BAD_PARAMETER;
 	}
 
 	return status;
@@ -80,6 +94,7 @@ static int atlas_acpi_button_add(struct acpi_device *device)
 	input_dev = input_allocate_device();
 	if (!input_dev) {
 		printk(KERN_ERR "atlas: unable to allocate input device\n");
+		pr_err("unable to allocate input device\n");
 		return -ENOMEM;
 	}
 
@@ -103,6 +118,7 @@ static int atlas_acpi_button_add(struct acpi_device *device)
 	err = input_register_device(input_dev);
 	if (err) {
 		printk(KERN_ERR "atlas: couldn't register input device\n");
+		pr_err("couldn't register input device\n");
 		input_free_device(input_dev);
 		return err;
 	}
@@ -121,6 +137,15 @@ static int atlas_acpi_button_add(struct acpi_device *device)
 }
 
 static int atlas_acpi_button_remove(struct acpi_device *device, int type)
+		pr_err("error installing addr spc handler\n");
+		input_unregister_device(input_dev);
+		err = -EINVAL;
+	}
+
+	return err;
+}
+
+static int atlas_acpi_button_remove(struct acpi_device *device)
 {
 	acpi_status status;
 
@@ -134,6 +159,12 @@ static int atlas_acpi_button_remove(struct acpi_device *device, int type)
 	input_unregister_device(input_dev);
 
 	return status;
+	if (ACPI_FAILURE(status))
+		pr_err("error removing addr spc handler\n");
+
+	input_unregister_device(input_dev);
+
+	return 0;
 }
 
 static const struct acpi_device_id atlas_device_ids[] = {
@@ -145,6 +176,7 @@ MODULE_DEVICE_TABLE(acpi, atlas_device_ids);
 static struct acpi_driver atlas_acpi_driver = {
 	.name	= ACPI_ATLAS_NAME,
 	.class	= ACPI_ATLAS_CLASS,
+	.owner	= THIS_MODULE,
 	.ids	= atlas_device_ids,
 	.ops	= {
 		.add	= atlas_acpi_button_add,
@@ -175,6 +207,7 @@ static void __exit atlas_acpi_exit(void)
 
 module_init(atlas_acpi_init);
 module_exit(atlas_acpi_exit);
+module_acpi_driver(atlas_acpi_driver);
 
 MODULE_AUTHOR("Jaya Kumar");
 MODULE_LICENSE("GPL");

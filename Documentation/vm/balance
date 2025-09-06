@@ -7,6 +7,15 @@ There are two reasons to be requesting non __GFP_WAIT allocations:
 the caller can not sleep (typically intr context), or does not want
 to incur cost overheads of page stealing and possible swap io for
 whatever reasons.
+Memory balancing is needed for !__GFP_ATOMIC and !__GFP_KSWAPD_RECLAIM as
+well as for non __GFP_IO allocations.
+
+The first reason why a caller may avoid reclaim is that the caller can not
+sleep due to holding a spinlock or is in interrupt context. The second may
+be that the caller is willing to fail the allocation without incurring the
+overhead of page reclaim. This may happen for opportunistic high-order
+allocation requests that have order-0 fallback options. In such cases,
+the caller may also wish to avoid waking kswapd.
 
 __GFP_IO allocation requests are made to prevent file system deadlocks.
 
@@ -84,6 +93,15 @@ pages in the zone (providing GFP_WAIT is set in the request). Orthogonal
 to this, is the decision to poke kswapd to free some zone pages. That
 decision is not hysteresis based, and is done when the number of free
 pages is below pages_low; in which case zone_wake_kswapd is also set.
+watemark[WMARK_MIN/WMARK_LOW/WMARK_HIGH]/low_on_memory/zone_wake_kswapd: These
+are per-zone fields, used to determine when a zone needs to be balanced. When
+the number of pages falls below watermark[WMARK_MIN], the hysteric field
+low_on_memory gets set. This stays set till the number of free pages becomes
+watermark[WMARK_HIGH]. When low_on_memory is set, page allocation requests will
+try to free some pages in the zone (providing GFP_WAIT is set in the request).
+Orthogonal to this, is the decision to poke kswapd to free some zone pages.
+That decision is not hysteresis based, and is done when the number of free
+pages is below watermark[WMARK_LOW]; in which case zone_wake_kswapd is also set.
 
 
 (Good) Ideas that I have heard:

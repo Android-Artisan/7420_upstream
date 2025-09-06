@@ -726,7 +726,6 @@ extern int ivtv_cards_active;
 extern int ivtv_first_minor;
 extern spinlock_t ivtv_cards_lock;
 
-/*==============Prototypes==================*/
 
 /* Hardware/IRQ */
 void ivtv_set_irq_mask(struct ivtv *itv, u32 mask);

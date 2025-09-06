@@ -2,6 +2,12 @@
  * Definitions for the FTDI USB Single Port Serial Converter -
  * known as FTDI_SIO (Serial Input/Output application of the chipset)
  *
+ * Driver definitions for the FTDI USB Single Port Serial Converter -
+ * known as FTDI_SIO (Serial Input/Output application of the chipset)
+ *
+ * For USB vendor/product IDs (VID/PID), please see ftdi_sio_ids.h
+ *
+ *
  * The example I have is known as the USC-1000 which is available from
  * http://www.dse.co.nz - cat no XH4214 It looks similar to this:
  * http://www.dansdata.com/usbser.htm but I can't be sure There are other
@@ -11,6 +17,7 @@
  * USB on the other.
  *
  * Thanx to FTDI (http://www.ftdi.co.uk) for so kindly providing details
+ * Thanx to FTDI (http://www.ftdichip.com) for so kindly providing details
  * of the protocol required to talk to the device and ongoing assistence
  * during development.
  *
@@ -868,6 +875,28 @@
  */
 #define RATOC_VENDOR_ID		0x0584
 #define RATOC_PRODUCT_ID_USB60F	0xb020
+ */
+
+/* Commands */
+#define FTDI_SIO_RESET			0 /* Reset the port */
+#define FTDI_SIO_MODEM_CTRL		1 /* Set the modem control register */
+#define FTDI_SIO_SET_FLOW_CTRL		2 /* Set flow control register */
+#define FTDI_SIO_SET_BAUD_RATE		3 /* Set baud rate */
+#define FTDI_SIO_SET_DATA		4 /* Set the data characteristics of
+					     the port */
+#define FTDI_SIO_GET_MODEM_STATUS	5 /* Retrieve current value of modem
+					     status register */
+#define FTDI_SIO_SET_EVENT_CHAR		6 /* Set the event character */
+#define FTDI_SIO_SET_ERROR_CHAR		7 /* Set the error character */
+#define FTDI_SIO_SET_LATENCY_TIMER	9 /* Set the latency timer */
+#define FTDI_SIO_GET_LATENCY_TIMER	10 /* Get the latency timer */
+
+/* Interface indices for FT2232, FT2232H and FT4232H devices */
+#define INTERFACE_A		1
+#define INTERFACE_B		2
+#define INTERFACE_C		3
+#define INTERFACE_D		4
+
 
 /*
  *   BmRequestType:  1100 0000b
@@ -881,6 +910,7 @@
 
 /* Port Identifier Table */
 #define PIT_DEFAULT 		0 /* SIOA */
+#define PIT_DEFAULT		0 /* SIOA */
 #define PIT_SIOA		1 /* SIOA */
 /* The device this driver is tested with one has only one port */
 #define PIT_SIOB		2 /* SIOB */
@@ -933,6 +963,8 @@
  * The BaudDivisor values are calculated as follows:
  * - BaseClock is either 12000000 or 48000000 depending on the device. FIXME: I wish
  *   I knew how to detect old chips to select proper base clock!
+ * - BaseClock is either 12000000 or 48000000 depending on the device.
+ *   FIXME: I wish I knew how to detect old chips to select proper base clock!
  * - BaudDivisor is a fixed point number encoded in a funny way.
  *   (--WRONG WAY OF THINKING--)
  *   BaudDivisor is a fixed point number encoded with following bit weighs:
@@ -945,6 +977,13 @@
  *   and Flow Control Consideration for USB to RS232".
  * - BaudDivisor = (BaseClock / 16) / BaudRate, where the (=) operation should
  *   automagically re-encode the resulting value to take fractions into consideration.
+ *   The both-bits-set has quite different meaning from 0.75 - the chip
+ *   designers have decided it to mean 0.125 instead of 0.75.
+ *   This info looked up in FTDI application note "FT8U232 DEVICES \ Data Rates
+ *   and Flow Control Consideration for USB to RS232".
+ * - BaudDivisor = (BaseClock / 16) / BaudRate, where the (=) operation should
+ *   automagically re-encode the resulting value to take fractions into
+ *   consideration.
  * As all values are integers, some bit twiddling is in order:
  *   BaudDivisor = (BaseClock / 16 / BaudRate) |
  *   (((BaseClock / 2 / BaudRate) & 4) ? 0x4000    // 0.5
@@ -975,6 +1014,7 @@
  */
 
 typedef enum {
+enum ftdi_chip_type {
 	SIO = 1,
 	FT8U232AM = 2,
 	FT232BM = 3,
@@ -1011,6 +1051,40 @@ typedef enum {
 #define FTDI_SIO_SET_DATA_STOP_BITS_15 (0x1 << 11)
 #define FTDI_SIO_SET_DATA_STOP_BITS_2 (0x2 << 11)
 #define FTDI_SIO_SET_BREAK (0x1 << 14)
+	FT2232H = 6,
+	FT4232H = 7,
+	FT232H  = 8,
+	FTX     = 9,
+};
+
+enum ftdi_sio_baudrate {
+	ftdi_sio_b300 = 0,
+	ftdi_sio_b600 = 1,
+	ftdi_sio_b1200 = 2,
+	ftdi_sio_b2400 = 3,
+	ftdi_sio_b4800 = 4,
+	ftdi_sio_b9600 = 5,
+	ftdi_sio_b19200 = 6,
+	ftdi_sio_b38400 = 7,
+	ftdi_sio_b57600 = 8,
+	ftdi_sio_b115200 = 9
+};
+
+/*
+ * The ftdi_8U232AM_xxMHz_byyy constants have been removed. The encoded divisor
+ * values are calculated internally.
+ */
+#define FTDI_SIO_SET_DATA_REQUEST	FTDI_SIO_SET_DATA
+#define FTDI_SIO_SET_DATA_REQUEST_TYPE	0x40
+#define FTDI_SIO_SET_DATA_PARITY_NONE	(0x0 << 8)
+#define FTDI_SIO_SET_DATA_PARITY_ODD	(0x1 << 8)
+#define FTDI_SIO_SET_DATA_PARITY_EVEN	(0x2 << 8)
+#define FTDI_SIO_SET_DATA_PARITY_MARK	(0x3 << 8)
+#define FTDI_SIO_SET_DATA_PARITY_SPACE	(0x4 << 8)
+#define FTDI_SIO_SET_DATA_STOP_BITS_1	(0x0 << 11)
+#define FTDI_SIO_SET_DATA_STOP_BITS_15	(0x1 << 11)
+#define FTDI_SIO_SET_DATA_STOP_BITS_2	(0x2 << 11)
+#define FTDI_SIO_SET_BREAK		(0x1 << 14)
 /* FTDI_SIO_SET_DATA */
 
 /*
@@ -1097,6 +1171,7 @@ typedef enum {
  *   bRequest:       FTDI_SIO_SET_FLOW_CTRL
  *   wValue:         Xoff/Xon
  *   wIndex:         Protocol/Port - hIndex is protocl / lIndex is port
+ *   wIndex:         Protocol/Port - hIndex is protocol / lIndex is port
  *   wLength:        0
  *   Data:           None
  *
@@ -1115,6 +1190,8 @@ typedef enum {
  *
  * If Xon/Xoff handshaking is specified, the hValue field should contain the XOFF character
  * and the lValue field contains the XON character.
+ * If Xon/Xoff handshaking is specified, the hValue field should contain the
+ * XOFF character and the lValue field contains the XON character.
  */
 
 /*
@@ -1200,6 +1277,10 @@ typedef enum {
 /* FTDI_SIO_SET_ERROR_CHAR */
 
 /* Set the parity error replacement character for the specified communications port */
+/*
+ * Set the parity error replacement character for the specified communications
+ * port
+ */
 
 /*
  *  BmRequestType:  0100 0000b
@@ -1325,6 +1406,10 @@ typedef enum {
  * The device reserves the first two bytes of data on this endpoint to contain the current
  * values of the modem and line status registers. In the absence of data, the device 
  * generates a message consisting of these two status bytes every 40 ms
+ * The device reserves the first two bytes of data on this endpoint to contain
+ * the current values of the modem and line status registers. In the absence of
+ * data, the device generates a message consisting of these two status bytes
+ * every 40 ms
  *
  * Byte 0: Modem Status
  *
@@ -1364,6 +1449,14 @@ typedef enum {
 #define FTDI_RS_THRE (1<<5)
 #define FTDI_RS_TEMT (1<<6)
 #define FTDI_RS_FIFO  (1<<7)
+#define FTDI_RS_DR	1
+#define FTDI_RS_OE	(1<<1)
+#define FTDI_RS_PE	(1<<2)
+#define FTDI_RS_FE	(1<<3)
+#define FTDI_RS_BI	(1<<4)
+#define FTDI_RS_THRE	(1<<5)
+#define FTDI_RS_TEMT	(1<<6)
+#define FTDI_RS_FIFO	(1<<7)
 
 /*
  * OUT Endpoint
@@ -1371,6 +1464,9 @@ typedef enum {
  * This device reserves the first bytes of data on this endpoint contain the length
  * and port identifier of the message. For the FTDI USB Serial converter the port 
  * identifier is always 1.
+ * This device reserves the first bytes of data on this endpoint contain the
+ * length and port identifier of the message. For the FTDI USB Serial converter
+ * the port identifier is always 1.
  *
  * Byte 0: Line Status
  *

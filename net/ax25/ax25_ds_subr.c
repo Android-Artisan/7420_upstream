@@ -17,6 +17,7 @@
 #include <linux/sockios.h>
 #include <linux/spinlock.h>
 #include <linux/net.h>
+#include <linux/gfp.h>
 #include <net/ax25.h>
 #include <linux/inet.h>
 #include <linux/netdevice.h>
@@ -81,6 +82,7 @@ void ax25_ds_enquiry_response(ax25_cb *ax25)
 
 	spin_lock(&ax25_list_lock);
 	ax25_for_each(ax25o, node, &ax25_list) {
+	ax25_for_each(ax25o, &ax25_list) {
 		if (ax25o == ax25)
 			continue;
 
@@ -163,6 +165,9 @@ static int ax25_check_dama_slave(ax25_dev *ax25_dev)
 
 	spin_lock(&ax25_list_lock);
 	ax25_for_each(ax25, node, &ax25_list)
+
+	spin_lock(&ax25_list_lock);
+	ax25_for_each(ax25, &ax25_list)
 		if (ax25->ax25_dev == ax25_dev && (ax25->condition & AX25_COND_DAMA_MODE) && ax25->state > AX25_STATE_1) {
 			res = 1;
 			break;

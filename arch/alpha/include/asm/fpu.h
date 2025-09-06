@@ -119,6 +119,8 @@ ieee_fpcr_to_swcr(unsigned long fp)
 }
 
 #ifdef __KERNEL__
+#include <asm/special_insns.h>
+#include <uapi/asm/fpu.h>
 
 /* The following two functions don't need trapb/excb instructions
    around the mf_fpcr/mt_fpcr instructions because (a) the kernel

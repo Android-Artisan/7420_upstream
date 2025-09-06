@@ -20,5 +20,7 @@ struct xt_physdev_info {
 	u_int8_t invert;
 	u_int8_t bitmask;
 };
+#include <linux/if.h>
+#include <uapi/linux/netfilter/xt_physdev.h>
 
 #endif /*_XT_PHYSDEV_H*/

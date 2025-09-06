@@ -20,6 +20,12 @@
 #define DRIVER_NAME "jmb38x_ms"
 
 static int no_dma;
+#include <linux/slab.h>
+#include <linux/module.h>
+
+#define DRIVER_NAME "jmb38x_ms"
+
+static bool no_dma;
 module_param(no_dma, bool, 0644);
 
 enum {
@@ -60,6 +66,7 @@ struct jmb38x_ms_host {
 	struct memstick_request *req;
 	unsigned char           cmd_flags;
 	unsigned char           io_pos;
+	unsigned char           ifmode;
 	unsigned int            io_word[2];
 };
 
@@ -144,6 +151,14 @@ struct jmb38x_ms {
 #define PCI_CTL_CLOCK_DLY_ADDR   0x000000b0
 #define PCI_CTL_CLOCK_DLY_MASK_A 0x00000f00
 #define PCI_CTL_CLOCK_DLY_MASK_B 0x0000f000
+#define CLOCK_CONTROL_BY_MMIO 0x00000008
+#define CLOCK_CONTROL_40MHZ   0x00000001
+#define CLOCK_CONTROL_50MHZ   0x00000002
+#define CLOCK_CONTROL_60MHZ   0x00000010
+#define CLOCK_CONTROL_62_5MHZ 0x00000004
+#define CLOCK_CONTROL_OFF     0x00000000
+
+#define PCI_CTL_CLOCK_DLY_ADDR   0x000000b0
 
 enum {
 	CMD_READY    = 0x01,
@@ -324,6 +339,7 @@ static int jmb38x_ms_transfer_data(struct jmb38x_ms_host *host)
 
 			local_irq_save(flags);
 			buf = kmap_atomic(pg, KM_BIO_SRC_IRQ) + p_off;
+			buf = kmap_atomic(pg) + p_off;
 		} else {
 			buf = host->req->data + host->block_pos;
 			p_cnt = host->req->data_len - host->block_pos;
@@ -340,6 +356,7 @@ static int jmb38x_ms_transfer_data(struct jmb38x_ms_host *host)
 
 		if (host->req->long_data) {
 			kunmap_atomic(buf - p_off, KM_BIO_SRC_IRQ);
+			kunmap_atomic(buf - p_off);
 			local_irq_restore(flags);
 		}
 
@@ -392,6 +409,13 @@ static int jmb38x_ms_issue_cmd(struct memstick_host *msh)
 	if (host->req->need_card_int)
 		cmd |= TPC_WAIT_INT;
 
+	if (host->req->need_card_int) {
+		if (host->ifmode == MEMSTICK_SERIAL)
+			cmd |= TPC_GET_INT;
+		else
+			cmd |= TPC_WAIT_INT;
+	}
+
 	data = host->req->data;
 
 	if (!no_dma)
@@ -416,6 +440,10 @@ static int jmb38x_ms_issue_cmd(struct memstick_host *msh)
 				    host->req->data_dir == READ
 				    ? PCI_DMA_FROMDEVICE
 				    : PCI_DMA_TODEVICE)) {
+		if (1 != dma_map_sg(&host->chip->pdev->dev, &host->req->sg, 1,
+				    host->req->data_dir == READ
+				    ? DMA_FROM_DEVICE
+				    : DMA_TO_DEVICE)) {
 			host->req->error = -ENOMEM;
 			return host->req->error;
 		}
@@ -483,6 +511,9 @@ static void jmb38x_ms_complete_cmd(struct memstick_host *msh, int last)
 		pci_unmap_sg(host->chip->pdev, &host->req->sg, 1,
 			     host->req->data_dir == READ
 			     ? PCI_DMA_FROMDEVICE : PCI_DMA_TODEVICE);
+		dma_unmap_sg(&host->chip->pdev->dev, &host->req->sg, 1,
+			     host->req->data_dir == READ
+			     ? DMA_FROM_DEVICE : DMA_TO_DEVICE);
 	} else {
 		t_val = readl(host->addr + INT_STATUS_ENABLE);
 		if (host->req->data_dir == READ)
@@ -529,6 +560,10 @@ static irqreturn_t jmb38x_ms_isr(int irq, void *dev_id)
 			if (irq_status & INT_STATUS_CRC_ERR)
 				host->req->error = -EILSEQ;
 			else
+			else if (irq_status & INT_STATUS_TPC_ERR) {
+				dev_dbg(&host->chip->pdev->dev, "TPC_ERR\n");
+				jmb38x_ms_complete_cmd(msh, 0);
+			} else
 				host->req->error = -ETIME;
 		} else {
 			if (host->cmd_flags & DMA_DATA) {
@@ -675,6 +710,7 @@ static int jmb38x_ms_set_param(struct memstick_host *msh,
 	struct jmb38x_ms_host *host = memstick_priv(msh);
 	unsigned int host_ctl = readl(host->addr + HOST_CONTROL);
 	unsigned int clock_ctl = CLOCK_CONTROL_40MHZ, clock_delay = 0;
+	unsigned int clock_ctl = CLOCK_CONTROL_BY_MMIO, clock_delay = 0;
 	int rc = 0;
 
 	switch (param) {
@@ -689,6 +725,7 @@ static int jmb38x_ms_set_param(struct memstick_host *msh,
 				    | HOST_CONTROL_CLOCK_EN
 				    | HOST_CONTROL_HW_OC_P
 				    | HOST_CONTROL_TDELAY_EN;
+				 | HOST_CONTROL_CLOCK_EN;
 			writel(host_ctl, host->addr + HOST_CONTROL);
 
 			writel(host->id ? PAD_PU_PD_ON_MS_SOCK1
@@ -732,12 +769,34 @@ static int jmb38x_ms_set_param(struct memstick_host *msh,
 			host_ctl &= ~HOST_CONTROL_REI;
 			clock_ctl = CLOCK_CONTROL_40MHZ;
 			clock_delay |= host->id ? (4 << 12) : (4 << 8);
+		dev_dbg(&host->chip->pdev->dev,
+			"Set Host Interface Mode to %d\n", value);
+		host_ctl &= ~(HOST_CONTROL_FAST_CLK | HOST_CONTROL_REI |
+			      HOST_CONTROL_REO);
+		host_ctl |= HOST_CONTROL_TDELAY_EN | HOST_CONTROL_HW_OC_P;
+		host_ctl &= ~(3 << HOST_CONTROL_IF_SHIFT);
+
+		if (value == MEMSTICK_SERIAL) {
+			host_ctl |= HOST_CONTROL_IF_SERIAL
+				    << HOST_CONTROL_IF_SHIFT;
+			host_ctl |= HOST_CONTROL_REI;
+			clock_ctl |= CLOCK_CONTROL_40MHZ;
+			clock_delay = 0;
+		} else if (value == MEMSTICK_PAR4) {
+			host_ctl |= HOST_CONTROL_FAST_CLK;
+			host_ctl |= HOST_CONTROL_IF_PAR4
+				    << HOST_CONTROL_IF_SHIFT;
+			host_ctl |= HOST_CONTROL_REO;
+			clock_ctl |= CLOCK_CONTROL_40MHZ;
+			clock_delay = 4;
 		} else if (value == MEMSTICK_PAR8) {
 			host_ctl |= HOST_CONTROL_FAST_CLK;
 			host_ctl |= HOST_CONTROL_IF_PAR8
 				    << HOST_CONTROL_IF_SHIFT;
 			host_ctl &= ~(HOST_CONTROL_REI | HOST_CONTROL_REO);
 			clock_ctl = CLOCK_CONTROL_50MHZ;
+			clock_ctl |= CLOCK_CONTROL_50MHZ;
+			clock_delay = 0;
 		} else
 			return -EINVAL;
 
@@ -746,9 +805,56 @@ static int jmb38x_ms_set_param(struct memstick_host *msh,
 		pci_write_config_dword(host->chip->pdev,
 				       PCI_CTL_CLOCK_DLY_ADDR,
 				       clock_delay);
+		writel(CLOCK_CONTROL_OFF, host->addr + CLOCK_CONTROL);
+		writel(clock_ctl, host->addr + CLOCK_CONTROL);
+		pci_write_config_byte(host->chip->pdev,
+				      PCI_CTL_CLOCK_DLY_ADDR + 1,
+				      clock_delay);
+		host->ifmode = value;
 		break;
 	};
 	return 0;
+}
+
+#define PCI_PMOS0_CONTROL		0xae
+#define  PMOS0_ENABLE			0x01
+#define  PMOS0_OVERCURRENT_LEVEL_2_4V	0x06
+#define  PMOS0_EN_OVERCURRENT_DEBOUNCE	0x40
+#define  PMOS0_SW_LED_POLARITY_ENABLE	0x80
+#define  PMOS0_ACTIVE_BITS (PMOS0_ENABLE | PMOS0_EN_OVERCURRENT_DEBOUNCE | \
+			    PMOS0_OVERCURRENT_LEVEL_2_4V)
+#define PCI_PMOS1_CONTROL		0xbd
+#define  PMOS1_ACTIVE_BITS		0x4a
+#define PCI_CLOCK_CTL			0xb9
+
+static int jmb38x_ms_pmos(struct pci_dev *pdev, int flag)
+{
+	unsigned char val;
+
+	pci_read_config_byte(pdev, PCI_PMOS0_CONTROL, &val);
+	if (flag)
+		val |= PMOS0_ACTIVE_BITS;
+	else
+		val &= ~PMOS0_ACTIVE_BITS;
+	pci_write_config_byte(pdev, PCI_PMOS0_CONTROL, val);
+	dev_dbg(&pdev->dev, "JMB38x: set PMOS0 val 0x%x\n", val);
+
+	if (pci_resource_flags(pdev, 1)) {
+		pci_read_config_byte(pdev, PCI_PMOS1_CONTROL, &val);
+		if (flag)
+			val |= PMOS1_ACTIVE_BITS;
+		else
+			val &= ~PMOS1_ACTIVE_BITS;
+		pci_write_config_byte(pdev, PCI_PMOS1_CONTROL, val);
+		dev_dbg(&pdev->dev, "JMB38x: set PMOS1 val 0x%x\n", val);
+	}
+
+	pci_read_config_byte(pdev, PCI_CLOCK_CTL, &val);
+	pci_write_config_byte(pdev, PCI_CLOCK_CTL, val & ~0x0f);
+	pci_write_config_byte(pdev, PCI_CLOCK_CTL, val | 0x01);
+	dev_dbg(&pdev->dev, "Clock Control by PCI config is disabled!\n");
+
+        return 0;
 }
 
 #ifdef CONFIG_PM
@@ -785,6 +891,7 @@ static int jmb38x_ms_resume(struct pci_dev *dev)
 
 	pci_read_config_dword(dev, 0xac, &rc);
 	pci_write_config_dword(dev, 0xac, rc | 0x00470000);
+	jmb38x_ms_pmos(dev, 1);
 
 	for (rc = 0; rc < jm->host_cnt; ++rc) {
 		if (!jm->hosts[rc])
@@ -857,7 +964,7 @@ static struct memstick_host *jmb38x_ms_alloc_host(struct jmb38x_ms *jm, int cnt)
 
 	iounmap(host->addr);
 err_out_free:
-	kfree(msh);
+	memstick_free_host(msh);
 	return NULL;
 }
 
@@ -878,6 +985,7 @@ static int jmb38x_ms_probe(struct pci_dev *pdev,
 	int rc, cnt;
 
 	rc = pci_set_dma_mask(pdev, DMA_32BIT_MASK);
+	rc = dma_set_mask(&pdev->dev, DMA_BIT_MASK(32));
 	if (rc)
 		return rc;
 
@@ -895,12 +1003,13 @@ static int jmb38x_ms_probe(struct pci_dev *pdev,
 
 	pci_read_config_dword(pdev, 0xac, &rc);
 	pci_write_config_dword(pdev, 0xac, rc | 0x00470000);
+	jmb38x_ms_pmos(pdev, 1);
 
 	cnt = jmb38x_ms_count_slots(pdev);
 	if (!cnt) {
 		rc = -ENODEV;
 		pci_dev_busy = 1;
-		goto err_out;
+		goto err_out_int;
 	}
 
 	jm = kzalloc(sizeof(struct jmb38x_ms)
@@ -975,6 +1084,8 @@ static void jmb38x_ms_remove(struct pci_dev *dev)
 		jmb38x_ms_free_host(jm->hosts[cnt]);
 	}
 
+	jmb38x_ms_pmos(dev, 0);
+
 	pci_set_drvdata(dev, NULL);
 	pci_release_regions(dev);
 	pci_disable_device(dev);
@@ -984,6 +1095,9 @@ static void jmb38x_ms_remove(struct pci_dev *dev)
 static struct pci_device_id jmb38x_ms_id_tbl [] = {
 	{ PCI_VENDOR_ID_JMICRON, PCI_DEVICE_ID_JMICRON_JMB38X_MS, PCI_ANY_ID,
 	  PCI_ANY_ID, 0, 0, 0 },
+	{ PCI_VDEVICE(JMICRON, PCI_DEVICE_ID_JMICRON_JMB38X_MS) },
+	{ PCI_VDEVICE(JMICRON, PCI_DEVICE_ID_JMICRON_JMB385_MS) },
+	{ PCI_VDEVICE(JMICRON, PCI_DEVICE_ID_JMICRON_JMB390_MS) },
 	{ }
 };
 
@@ -1005,6 +1119,7 @@ static void __exit jmb38x_ms_exit(void)
 {
 	pci_unregister_driver(&jmb38x_ms_driver);
 }
+module_pci_driver(jmb38x_ms_driver);
 
 MODULE_AUTHOR("Alex Dubov");
 MODULE_DESCRIPTION("JMicron jmb38x MemoryStick driver");

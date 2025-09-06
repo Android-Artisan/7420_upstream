@@ -15,6 +15,8 @@
  *	2000-10-29	Henner Eisen	lapb_data_indication() return status.
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/module.h>
 #include <linux/errno.h>
 #include <linux/types.h>
@@ -32,6 +34,9 @@
 #include <net/sock.h>
 #include <asm/uaccess.h>
 #include <asm/system.h>
+#include <linux/slab.h>
+#include <net/sock.h>
+#include <asm/uaccess.h>
 #include <linux/fcntl.h>
 #include <linux/mm.h>
 #include <linux/interrupt.h>
@@ -71,6 +76,7 @@ static void __lapb_remove_cb(struct lapb_cb *lapb)
 		lapb_put(lapb);
 	}
 }
+EXPORT_SYMBOL(lapb_register);
 
 /*
  *	Add a socket to the bound sockets list.
@@ -139,6 +145,8 @@ out:
 }
 
 int lapb_register(struct net_device *dev, struct lapb_register_struct *callbacks)
+int lapb_register(struct net_device *dev,
+		  const struct lapb_register_struct *callbacks)
 {
 	struct lapb_cb *lapb;
 	int rc = LAPB_BADTOKEN;
@@ -158,6 +166,7 @@ int lapb_register(struct net_device *dev, struct lapb_register_struct *callbacks
 
 	lapb->dev       = dev;
 	lapb->callbacks = *callbacks;
+	lapb->callbacks = callbacks;
 
 	__lapb_insert_cb(lapb);
 
@@ -178,6 +187,7 @@ int lapb_unregister(struct net_device *dev)
 	lapb = __lapb_devtostruct(dev);
 	if (!lapb)
 		goto out;
+	lapb_put(lapb);
 
 	lapb_stop_t1timer(lapb);
 	lapb_stop_t2timer(lapb);
@@ -192,6 +202,7 @@ out:
 	write_unlock_bh(&lapb_list_lock);
 	return rc;
 }
+EXPORT_SYMBOL(lapb_unregister);
 
 int lapb_getparms(struct net_device *dev, struct lapb_parms_struct *parms)
 {
@@ -224,6 +235,7 @@ int lapb_getparms(struct net_device *dev, struct lapb_parms_struct *parms)
 out:
 	return rc;
 }
+EXPORT_SYMBOL(lapb_getparms);
 
 int lapb_setparms(struct net_device *dev, struct lapb_parms_struct *parms)
 {
@@ -259,6 +271,7 @@ out_put:
 out:
 	return rc;
 }
+EXPORT_SYMBOL(lapb_setparms);
 
 int lapb_connect_request(struct net_device *dev)
 {
@@ -281,6 +294,7 @@ int lapb_connect_request(struct net_device *dev)
 #if LAPB_DEBUG > 0
 	printk(KERN_DEBUG "lapb: (%p) S0 -> S1\n", lapb->dev);
 #endif
+	lapb_dbg(0, "(%p) S0 -> S1\n", lapb->dev);
 	lapb->state = LAPB_STATE_1;
 
 	rc = LAPB_OK;
@@ -289,6 +303,7 @@ out_put:
 out:
 	return rc;
 }
+EXPORT_SYMBOL(lapb_connect_request);
 
 int lapb_disconnect_request(struct net_device *dev)
 {
@@ -319,6 +334,22 @@ int lapb_disconnect_request(struct net_device *dev)
 		case LAPB_STATE_2:
 			rc = LAPB_OK;
 			goto out_put;
+	case LAPB_STATE_0:
+		rc = LAPB_NOTCONNECTED;
+		goto out_put;
+
+	case LAPB_STATE_1:
+		lapb_dbg(1, "(%p) S1 TX DISC(1)\n", lapb->dev);
+		lapb_dbg(0, "(%p) S1 -> S0\n", lapb->dev);
+		lapb_send_control(lapb, LAPB_DISC, LAPB_POLLON, LAPB_COMMAND);
+		lapb->state = LAPB_STATE_0;
+		lapb_start_t1timer(lapb);
+		rc = LAPB_NOTCONNECTED;
+		goto out_put;
+
+	case LAPB_STATE_2:
+		rc = LAPB_OK;
+		goto out_put;
 	}
 
 	lapb_clear_queues(lapb);
@@ -334,6 +365,8 @@ int lapb_disconnect_request(struct net_device *dev)
 #if LAPB_DEBUG > 0
 	printk(KERN_DEBUG "lapb: (%p) S3 -> S2\n", lapb->dev);
 #endif
+	lapb_dbg(1, "(%p) S3 DISC(1)\n", lapb->dev);
+	lapb_dbg(0, "(%p) S3 -> S2\n", lapb->dev);
 
 	rc = LAPB_OK;
 out_put:
@@ -341,6 +374,7 @@ out_put:
 out:
 	return rc;
 }
+EXPORT_SYMBOL(lapb_disconnect_request);
 
 int lapb_data_request(struct net_device *dev, struct sk_buff *skb)
 {
@@ -362,6 +396,7 @@ out_put:
 out:
 	return rc;
 }
+EXPORT_SYMBOL(lapb_data_request);
 
 int lapb_data_received(struct net_device *dev, struct sk_buff *skb)
 {
@@ -381,24 +416,36 @@ void lapb_connect_confirmation(struct lapb_cb *lapb, int reason)
 {
 	if (lapb->callbacks.connect_confirmation)
 		lapb->callbacks.connect_confirmation(lapb->dev, reason);
+EXPORT_SYMBOL(lapb_data_received);
+
+void lapb_connect_confirmation(struct lapb_cb *lapb, int reason)
+{
+	if (lapb->callbacks->connect_confirmation)
+		lapb->callbacks->connect_confirmation(lapb->dev, reason);
 }
 
 void lapb_connect_indication(struct lapb_cb *lapb, int reason)
 {
 	if (lapb->callbacks.connect_indication)
 		lapb->callbacks.connect_indication(lapb->dev, reason);
+	if (lapb->callbacks->connect_indication)
+		lapb->callbacks->connect_indication(lapb->dev, reason);
 }
 
 void lapb_disconnect_confirmation(struct lapb_cb *lapb, int reason)
 {
 	if (lapb->callbacks.disconnect_confirmation)
 		lapb->callbacks.disconnect_confirmation(lapb->dev, reason);
+	if (lapb->callbacks->disconnect_confirmation)
+		lapb->callbacks->disconnect_confirmation(lapb->dev, reason);
 }
 
 void lapb_disconnect_indication(struct lapb_cb *lapb, int reason)
 {
 	if (lapb->callbacks.disconnect_indication)
 		lapb->callbacks.disconnect_indication(lapb->dev, reason);
+	if (lapb->callbacks->disconnect_indication)
+		lapb->callbacks->disconnect_indication(lapb->dev, reason);
 }
 
 int lapb_data_indication(struct lapb_cb *lapb, struct sk_buff *skb)
@@ -408,6 +455,11 @@ int lapb_data_indication(struct lapb_cb *lapb, struct sk_buff *skb)
 
 	kfree_skb(skb);
 	return NET_RX_CN_HIGH; /* For now; must be != NET_RX_DROP */
+	if (lapb->callbacks->data_indication)
+		return lapb->callbacks->data_indication(lapb->dev, skb);
+
+	kfree_skb(skb);
+	return NET_RX_SUCCESS; /* For now; must be != NET_RX_DROP */
 }
 
 int lapb_data_transmit(struct lapb_cb *lapb, struct sk_buff *skb)
@@ -416,6 +468,8 @@ int lapb_data_transmit(struct lapb_cb *lapb, struct sk_buff *skb)
 
 	if (lapb->callbacks.data_transmit) {
 		lapb->callbacks.data_transmit(lapb->dev, skb);
+	if (lapb->callbacks->data_transmit) {
+		lapb->callbacks->data_transmit(lapb->dev, skb);
 		used = 1;
 	}
 

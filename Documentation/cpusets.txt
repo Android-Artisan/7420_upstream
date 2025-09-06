@@ -11,7 +11,6 @@ Modified by Paul Menage <menage@google.com>
 Modified by Hidetoshi Seto <seto.hidetoshi@jp.fujitsu.com>
 
 CONTENTS:
-=========
 
 1. Cpusets
   1.1 What are cpusets ?
@@ -32,7 +31,6 @@ CONTENTS:
 4. Contact
 
 1. Cpusets
-==========
 
 1.1 What are cpusets ?
 ----------------------
@@ -692,7 +690,6 @@ calls can be done at the shell prompt using the numactl command
 (part of Andi Kleen's numa package).
 
 2. Usage Examples and Syntax
-============================
 
 2.1 Basic Usage
 ---------------
@@ -791,7 +788,6 @@ If you have several tasks to attach, you have to do it one after another:
 
 
 3. Questions
-============
 
 Q: what's up with this '/bin/echo' ?
 A: bash's builtin 'echo' command does not check calls to write() against
@@ -803,6 +799,5 @@ A: We can only return one error code per call to write(). So you should also
    put only ONE pid.
 
 4. Contact
-==========
 
 Web: http://www.bullopensource.org/cpuset

@@ -17,6 +17,7 @@
 #include "isac.h"
 #include "isdnl1.h"
 #include <linux/pci.h>
+#include <linux/slab.h>
 #include <linux/isapnp.h>
 #include <linux/interrupt.h>
 
@@ -95,6 +96,7 @@ WriteISAC(struct IsdnCardState *cs, u_char offset, u_char value)
 
 static void
 ReadISACfifo(struct IsdnCardState *cs, u_char * data, int size)
+ReadISACfifo(struct IsdnCardState *cs, u_char *data, int size)
 {
 	outb(AVM_ISAC_FIFO, cs->hw.avm.cfg_reg + 4);
 	insb(cs->hw.avm.isac, data, size);
@@ -102,6 +104,7 @@ ReadISACfifo(struct IsdnCardState *cs, u_char * data, int size)
 
 static void
 WriteISACfifo(struct IsdnCardState *cs, u_char * data, int size)
+WriteISACfifo(struct IsdnCardState *cs, u_char *data, int size)
 {
 	outb(AVM_ISAC_FIFO, cs->hw.avm.cfg_reg + 4);
 	outsb(cs->hw.avm.isac, data, size);
@@ -151,6 +154,7 @@ static u_char
 ReadHDLC_s(struct IsdnCardState *cs, int chan, u_char offset)
 {
 	return(0xff & ReadHDLCPCI(cs, chan, offset));
+	return (0xff & ReadHDLCPCI(cs, chan, offset));
 }
 
 static void
@@ -168,6 +172,11 @@ struct BCState *Sel_BCS(struct IsdnCardState *cs, int channel)
 		return(&cs->bcs[1]);
 	else
 		return(NULL);
+		return (&cs->bcs[0]);
+	else if (cs->bcs[1].mode && (cs->bcs[1].channel == channel))
+		return (&cs->bcs[1]);
+	else
+		return (NULL);
 }
 
 static void
@@ -188,6 +197,13 @@ write_ctrl(struct BCState *bcs, int which) {
 		if (which & 1)
 			WriteHDLCPnP(bcs->cs, bcs->channel, HDLC_STATUS,
 				bcs->hw.hdlc.ctrl.sr.cmd);
+				     bcs->hw.hdlc.ctrl.sr.mode);
+		if (which & 2)
+			WriteHDLCPnP(bcs->cs, bcs->channel, HDLC_STATUS + 1,
+				     bcs->hw.hdlc.ctrl.sr.xml);
+		if (which & 1)
+			WriteHDLCPnP(bcs->cs, bcs->channel, HDLC_STATUS,
+				     bcs->hw.hdlc.ctrl.sr.cmd);
 	}
 }
 
@@ -237,6 +253,41 @@ modehdlc(struct BCState *bcs, int mode, int bc)
 			bcs->hw.hdlc.ctrl.sr.cmd = 0;
 			schedule_event(bcs, B_XMTBUFREADY);
 			break;
+	case (-1): /* used for init */
+		bcs->mode = 1;
+		bcs->channel = bc;
+		bc = 0;
+	case (L1_MODE_NULL):
+		if (bcs->mode == L1_MODE_NULL)
+			return;
+		bcs->hw.hdlc.ctrl.sr.cmd  = HDLC_CMD_XRS | HDLC_CMD_RRS;
+		bcs->hw.hdlc.ctrl.sr.mode = HDLC_MODE_TRANS;
+		write_ctrl(bcs, 5);
+		bcs->mode = L1_MODE_NULL;
+		bcs->channel = bc;
+		break;
+	case (L1_MODE_TRANS):
+		bcs->mode = mode;
+		bcs->channel = bc;
+		bcs->hw.hdlc.ctrl.sr.cmd  = HDLC_CMD_XRS | HDLC_CMD_RRS;
+		bcs->hw.hdlc.ctrl.sr.mode = HDLC_MODE_TRANS;
+		write_ctrl(bcs, 5);
+		bcs->hw.hdlc.ctrl.sr.cmd = HDLC_CMD_XRS;
+		write_ctrl(bcs, 1);
+		bcs->hw.hdlc.ctrl.sr.cmd = 0;
+		schedule_event(bcs, B_XMTBUFREADY);
+		break;
+	case (L1_MODE_HDLC):
+		bcs->mode = mode;
+		bcs->channel = bc;
+		bcs->hw.hdlc.ctrl.sr.cmd  = HDLC_CMD_XRS | HDLC_CMD_RRS;
+		bcs->hw.hdlc.ctrl.sr.mode = HDLC_MODE_ITF_FLG;
+		write_ctrl(bcs, 5);
+		bcs->hw.hdlc.ctrl.sr.cmd = HDLC_CMD_XRS;
+		write_ctrl(bcs, 1);
+		bcs->hw.hdlc.ctrl.sr.cmd = 0;
+		schedule_event(bcs, B_XMTBUFREADY);
+		break;
 	}
 }
 
@@ -247,6 +298,7 @@ hdlc_empty_fifo(struct BCState *bcs, int count)
 	u_char *p;
 	u_char idx = bcs->channel ? AVM_HDLC_2 : AVM_HDLC_1;
 	int cnt=0;
+	int cnt = 0;
 	struct IsdnCardState *cs = bcs->cs;
 
 	if ((cs->debug & L1_DEB_HSCX) && !(cs->debug & L1_DEB_HSCX_FIFO))
@@ -264,6 +316,7 @@ hdlc_empty_fifo(struct BCState *bcs, int count)
 		while (cnt < count) {
 #ifdef __powerpc__
 			*ptr++ = in_be32((unsigned *)(cs->hw.avm.isac +_IO_BASE));
+			*ptr++ = in_be32((unsigned *)(cs->hw.avm.isac + _IO_BASE));
 #else
 			*ptr++ = inl(cs->hw.avm.isac);
 #endif /* __powerpc__ */
@@ -285,6 +338,7 @@ hdlc_empty_fifo(struct BCState *bcs, int count)
 			     bcs->channel ? 'B' : 'A', count);
 		QuickHex(t, p, count);
 		debugl1(cs, bcs->blog);
+		debugl1(cs, "%s", bcs->blog);
 	}
 }
 
@@ -293,6 +347,7 @@ hdlc_fill_fifo(struct BCState *bcs)
 {
 	struct IsdnCardState *cs = bcs->cs;
 	int count, cnt =0;
+	int count, cnt = 0;
 	int fifo_size = 32;
 	u_char *p;
 	u_int *ptr;
@@ -314,6 +369,7 @@ hdlc_fill_fifo(struct BCState *bcs)
 	}
 	if ((cs->debug & L1_DEB_HSCX) && !(cs->debug & L1_DEB_HSCX_FIFO))
 		debugl1(cs, "hdlc_fill_fifo %d/%ld", count, bcs->tx_skb->len);
+		debugl1(cs, "hdlc_fill_fifo %d/%u", count, bcs->tx_skb->len);
 	p = bcs->tx_skb->data;
 	ptr = (u_int *)p;
 	skb_pull(bcs->tx_skb, count);
@@ -325,6 +381,9 @@ hdlc_fill_fifo(struct BCState *bcs)
 		while (cnt<count) {
 #ifdef __powerpc__
 			out_be32((unsigned *)(cs->hw.avm.isac +_IO_BASE), *ptr++);
+		while (cnt < count) {
+#ifdef __powerpc__
+			out_be32((unsigned *)(cs->hw.avm.isac + _IO_BASE), *ptr++);
 #else
 			outl(*ptr++, cs->hw.avm.isac);
 #endif /* __powerpc__ */
@@ -332,6 +391,7 @@ hdlc_fill_fifo(struct BCState *bcs)
 		}
 	} else {
 		while (cnt<count) {
+		while (cnt < count) {
 			outb(*p++, cs->hw.avm.isac);
 			cnt++;
 		}
@@ -345,6 +405,7 @@ hdlc_fill_fifo(struct BCState *bcs)
 			     bcs->channel ? 'B' : 'A', count);
 		QuickHex(t, p, count);
 		debugl1(cs, bcs->blog);
+		debugl1(cs, "%s", bcs->blog);
 	}
 }
 
@@ -374,11 +435,18 @@ HDLC_irq(struct BCState *bcs, u_int stat) {
 			if ((stat & HDLC_STAT_RME) || (bcs->mode == L1_MODE_TRANS)) {
 				if (((stat & HDLC_STAT_CRCVFRRAB)==HDLC_STAT_CRCVFR) ||
 					(bcs->mode == L1_MODE_TRANS)) {
+			if (!(len = (stat & HDLC_STAT_RML_MASK) >> 8))
+				len = 32;
+			hdlc_empty_fifo(bcs, len);
+			if ((stat & HDLC_STAT_RME) || (bcs->mode == L1_MODE_TRANS)) {
+				if (((stat & HDLC_STAT_CRCVFRRAB) == HDLC_STAT_CRCVFR) ||
+				    (bcs->mode == L1_MODE_TRANS)) {
 					if (!(skb = dev_alloc_skb(bcs->hw.hdlc.rcvidx)))
 						printk(KERN_WARNING "HDLC: receive out of memory\n");
 					else {
 						memcpy(skb_put(skb, bcs->hw.hdlc.rcvidx),
 							bcs->hw.hdlc.rcvbuf, bcs->hw.hdlc.rcvidx);
+						       bcs->hw.hdlc.rcvbuf, bcs->hw.hdlc.rcvidx);
 						skb_queue_tail(&bcs->rqueue, skb);
 					}
 					bcs->hw.hdlc.rcvidx = 0;
@@ -420,6 +488,9 @@ HDLC_irq(struct BCState *bcs, u_int stat) {
 				if (test_bit(FLG_LLI_L1WAKEUP,&bcs->st->lli.flag) &&
 					(PACKET_NOACK != bcs->tx_skb->pkt_type)) {
 					u_long	flags;
+				if (test_bit(FLG_LLI_L1WAKEUP, &bcs->st->lli.flag) &&
+				    (PACKET_NOACK != bcs->tx_skb->pkt_type)) {
+					u_long flags;
 					spin_lock_irqsave(&bcs->aclock, flags);
 					bcs->ackcnt += bcs->hw.hdlc.count;
 					spin_unlock_irqrestore(&bcs->aclock, flags);
@@ -453,6 +524,7 @@ HDLC_irq_main(struct IsdnCardState *cs)
 		stat = ReadHDLCPnP(cs, 0, HDLC_STATUS);
 		if (stat & HDLC_INT_RPR)
 			stat |= (ReadHDLCPnP(cs, 0, HDLC_STATUS+1))<<8;
+			stat |= (ReadHDLCPnP(cs, 0, HDLC_STATUS + 1)) << 8;
 	}
 	if (stat & HDLC_INT_MASK) {
 		if (!(bcs = Sel_BCS(cs, 0))) {
@@ -467,6 +539,7 @@ HDLC_irq_main(struct IsdnCardState *cs)
 		stat = ReadHDLCPnP(cs, 1, HDLC_STATUS);
 		if (stat & HDLC_INT_RPR)
 			stat |= (ReadHDLCPnP(cs, 1, HDLC_STATUS+1))<<8;
+			stat |= (ReadHDLCPnP(cs, 1, HDLC_STATUS + 1)) << 8;
 	}
 	if (stat & HDLC_INT_MASK) {
 		if (!(bcs = Sel_BCS(cs, 1))) {
@@ -534,6 +607,55 @@ hdlc_l2l1(struct PStack *st, int pr, void *arg)
 			spin_unlock_irqrestore(&bcs->cs->lock, flags);
 			st->l1.l1l2(st, PH_DEACTIVATE | CONFIRM, NULL);
 			break;
+	case (PH_DATA | REQUEST):
+		spin_lock_irqsave(&bcs->cs->lock, flags);
+		if (bcs->tx_skb) {
+			skb_queue_tail(&bcs->squeue, skb);
+		} else {
+			bcs->tx_skb = skb;
+			test_and_set_bit(BC_FLG_BUSY, &bcs->Flag);
+			bcs->hw.hdlc.count = 0;
+			bcs->cs->BC_Send_Data(bcs);
+		}
+		spin_unlock_irqrestore(&bcs->cs->lock, flags);
+		break;
+	case (PH_PULL | INDICATION):
+		spin_lock_irqsave(&bcs->cs->lock, flags);
+		if (bcs->tx_skb) {
+			printk(KERN_WARNING "hdlc_l2l1: this shouldn't happen\n");
+		} else {
+			test_and_set_bit(BC_FLG_BUSY, &bcs->Flag);
+			bcs->tx_skb = skb;
+			bcs->hw.hdlc.count = 0;
+			bcs->cs->BC_Send_Data(bcs);
+		}
+		spin_unlock_irqrestore(&bcs->cs->lock, flags);
+		break;
+	case (PH_PULL | REQUEST):
+		if (!bcs->tx_skb) {
+			test_and_clear_bit(FLG_L1_PULL_REQ, &st->l1.Flags);
+			st->l1.l1l2(st, PH_PULL | CONFIRM, NULL);
+		} else
+			test_and_set_bit(FLG_L1_PULL_REQ, &st->l1.Flags);
+		break;
+	case (PH_ACTIVATE | REQUEST):
+		spin_lock_irqsave(&bcs->cs->lock, flags);
+		test_and_set_bit(BC_FLG_ACTIV, &bcs->Flag);
+		modehdlc(bcs, st->l1.mode, st->l1.bc);
+		spin_unlock_irqrestore(&bcs->cs->lock, flags);
+		l1_msg_b(st, pr, arg);
+		break;
+	case (PH_DEACTIVATE | REQUEST):
+		l1_msg_b(st, pr, arg);
+		break;
+	case (PH_DEACTIVATE | CONFIRM):
+		spin_lock_irqsave(&bcs->cs->lock, flags);
+		test_and_clear_bit(BC_FLG_ACTIV, &bcs->Flag);
+		test_and_clear_bit(BC_FLG_BUSY, &bcs->Flag);
+		modehdlc(bcs, 0, st->l1.bc);
+		spin_unlock_irqrestore(&bcs->cs->lock, flags);
+		st->l1.l1l2(st, PH_DEACTIVATE | CONFIRM, NULL);
+		break;
 	}
 }
 
@@ -568,6 +690,7 @@ open_hdlcstate(struct IsdnCardState *cs, struct BCState *bcs)
 		if (!(bcs->blog = kmalloc(MAX_BLOG_SPACE, GFP_ATOMIC))) {
 			printk(KERN_WARNING
 				"HiSax: No memory for bcs->blog\n");
+			       "HiSax: No memory for bcs->blog\n");
 			test_and_clear_bit(BC_FLG_INIT, &bcs->Flag);
 			kfree(bcs->hw.hdlc.rcvbuf);
 			bcs->hw.hdlc.rcvbuf = NULL;
@@ -718,12 +841,44 @@ AVM_card_msg(struct IsdnCardState *cs, int mt, void *arg)
 }
 
 static int __devinit avm_setup_rest(struct IsdnCardState *cs)
+	case CARD_RESET:
+		spin_lock_irqsave(&cs->lock, flags);
+		reset_avmpcipnp(cs);
+		spin_unlock_irqrestore(&cs->lock, flags);
+		return (0);
+	case CARD_RELEASE:
+		outb(0, cs->hw.avm.cfg_reg + 2);
+		release_region(cs->hw.avm.cfg_reg, 32);
+		return (0);
+	case CARD_INIT:
+		spin_lock_irqsave(&cs->lock, flags);
+		reset_avmpcipnp(cs);
+		clear_pending_isac_ints(cs);
+		initisac(cs);
+		inithdlc(cs);
+		outb(AVM_STATUS0_DIS_TIMER | AVM_STATUS0_RES_TIMER,
+		     cs->hw.avm.cfg_reg + 2);
+		WriteISAC(cs, ISAC_MASK, 0);
+		outb(AVM_STATUS0_DIS_TIMER | AVM_STATUS0_RES_TIMER |
+		     AVM_STATUS0_ENA_IRQ, cs->hw.avm.cfg_reg + 2);
+		/* RESET Receiver and Transmitter */
+		WriteISAC(cs, ISAC_CMDR, 0x41);
+		spin_unlock_irqrestore(&cs->lock, flags);
+		return (0);
+	case CARD_TEST:
+		return (0);
+	}
+	return (0);
+}
+
+static int avm_setup_rest(struct IsdnCardState *cs)
 {
 	u_int val, ver;
 
 	cs->hw.avm.isac = cs->hw.avm.cfg_reg + 0x10;
 	if (!request_region(cs->hw.avm.cfg_reg, 32,
 		(cs->subtyp == AVM_FRITZ_PCI) ? "avm PCI" : "avm PnP")) {
+			    (cs->subtyp == AVM_FRITZ_PCI) ? "avm PCI" : "avm PnP")) {
 		printk(KERN_WARNING
 		       "HiSax: Fritz!PCI/PNP config port %x-%x already in use\n",
 		       cs->hw.avm.cfg_reg,
@@ -740,6 +895,15 @@ static int __devinit avm_setup_rest(struct IsdnCardState *cs)
 		cs->BC_Write_Reg = &WriteHDLC_s;
 		break;
 	  case AVM_FRITZ_PNP:
+	case AVM_FRITZ_PCI:
+		val = inl(cs->hw.avm.cfg_reg);
+		printk(KERN_INFO "AVM PCI: stat %#x\n", val);
+		printk(KERN_INFO "AVM PCI: Class %X Rev %d\n",
+		       val & 0xff, (val >> 8) & 0xff);
+		cs->BC_Read_Reg = &ReadHDLC_s;
+		cs->BC_Write_Reg = &WriteHDLC_s;
+		break;
+	case AVM_FRITZ_PNP:
 		val = inb(cs->hw.avm.cfg_reg);
 		ver = inb(cs->hw.avm.cfg_reg + 1);
 		printk(KERN_INFO "AVM PnP: Class %X Rev %d\n", val, ver);
@@ -753,6 +917,13 @@ static int __devinit avm_setup_rest(struct IsdnCardState *cs)
 	printk(KERN_INFO "HiSax: %s config irq:%d base:0x%X\n",
 		(cs->subtyp == AVM_FRITZ_PCI) ? "AVM Fritz!PCI" : "AVM Fritz!PnP",
 		cs->irq, cs->hw.avm.cfg_reg);
+	default:
+		printk(KERN_WARNING "AVM unknown subtype %d\n", cs->subtyp);
+		return (0);
+	}
+	printk(KERN_INFO "HiSax: %s config irq:%d base:0x%X\n",
+	       (cs->subtyp == AVM_FRITZ_PCI) ? "AVM Fritz!PCI" : "AVM Fritz!PnP",
+	       cs->irq, cs->hw.avm.cfg_reg);
 
 	setup_isac(cs);
 	cs->readisac = &ReadISAC;
@@ -772,6 +943,9 @@ static int __devinit avm_setup_rest(struct IsdnCardState *cs)
 static int __devinit avm_pnp_setup(struct IsdnCardState *cs)
 {
 	return(1);	/* no-op: success */
+static int avm_pnp_setup(struct IsdnCardState *cs)
+{
+	return (1);	/* no-op: success */
 }
 
 #else
@@ -779,6 +953,9 @@ static int __devinit avm_pnp_setup(struct IsdnCardState *cs)
 static struct pnp_card *pnp_avm_c __devinitdata = NULL;
 
 static int __devinit avm_pnp_setup(struct IsdnCardState *cs)
+static struct pnp_card *pnp_avm_c = NULL;
+
+static int avm_pnp_setup(struct IsdnCardState *cs)
 {
 	struct pnp_dev *pnp_avm_d = NULL;
 
@@ -791,6 +968,14 @@ static int __devinit avm_pnp_setup(struct IsdnCardState *cs)
 		if ((pnp_avm_d = pnp_find_dev(pnp_avm_c,
 			ISAPNP_VENDOR('A', 'V', 'M'),
 			ISAPNP_FUNCTION(0x0900), pnp_avm_d))) {
+		return (1);	/* no-op: success */
+
+	if ((pnp_avm_c = pnp_find_card(
+		     ISAPNP_VENDOR('A', 'V', 'M'),
+		     ISAPNP_FUNCTION(0x0900), pnp_avm_c))) {
+		if ((pnp_avm_d = pnp_find_dev(pnp_avm_c,
+					      ISAPNP_VENDOR('A', 'V', 'M'),
+					      ISAPNP_FUNCTION(0x0900), pnp_avm_d))) {
 			int err;
 
 			pnp_disable_dev(pnp_avm_d);
@@ -799,6 +984,10 @@ static int __devinit avm_pnp_setup(struct IsdnCardState *cs)
 				printk(KERN_WARNING "%s: pnp_activate_dev ret(%d)\n",
 					__func__, err);
 				return(0);
+			if (err < 0) {
+				printk(KERN_WARNING "%s: pnp_activate_dev ret(%d)\n",
+				       __func__, err);
+				return (0);
 			}
 			cs->hw.avm.cfg_reg =
 				pnp_port_start(pnp_avm_d, 0);
@@ -810,6 +999,11 @@ static int __devinit avm_pnp_setup(struct IsdnCardState *cs)
 			if (!cs->hw.avm.cfg_reg) {
 				printk(KERN_ERR "FritzPnP:No IO address\n");
 				return(0);
+				return (0);
+			}
+			if (!cs->hw.avm.cfg_reg) {
+				printk(KERN_ERR "FritzPnP:No IO address\n");
+				return (0);
 			}
 			cs->subtyp = AVM_FRITZ_PNP;
 
@@ -827,6 +1021,11 @@ static int __devinit avm_pnp_setup(struct IsdnCardState *cs)
 static int __devinit avm_pci_setup(struct IsdnCardState *cs)
 {
 	return(1);	/* no-op: success */
+#ifndef CONFIG_PCI
+
+static int avm_pci_setup(struct IsdnCardState *cs)
+{
+	return (1);	/* no-op: success */
 }
 
 #else
@@ -840,23 +1039,35 @@ static int __devinit avm_pci_setup(struct IsdnCardState *cs)
 
 		if (pci_enable_device(dev_avm))
 			return(0);
+static struct pci_dev *dev_avm = NULL;
+
+static int avm_pci_setup(struct IsdnCardState *cs)
+{
+	if ((dev_avm = hisax_find_pci_device(PCI_VENDOR_ID_AVM,
+					     PCI_DEVICE_ID_AVM_A1, dev_avm))) {
+
+		if (pci_enable_device(dev_avm))
+			return (0);
 
 		cs->irq = dev_avm->irq;
 		if (!cs->irq) {
 			printk(KERN_ERR "FritzPCI: No IRQ for PCI card found\n");
 			return(0);
+			return (0);
 		}
 
 		cs->hw.avm.cfg_reg = pci_resource_start(dev_avm, 1);
 		if (!cs->hw.avm.cfg_reg) {
 			printk(KERN_ERR "FritzPCI: No IO-Adr for PCI card found\n");
 			return(0);
+			return (0);
 		}
 
 		cs->subtyp = AVM_FRITZ_PCI;
 	} else {
 		printk(KERN_WARNING "FritzPCI: No PCI card found\n");
 		return(0);
+		return (0);
 	}
 
 	cs->irq_flags |= IRQF_SHARED;
@@ -868,6 +1079,9 @@ static int __devinit avm_pci_setup(struct IsdnCardState *cs)
 
 int __devinit
 setup_avm_pcipnp(struct IsdnCard *card)
+#endif /* CONFIG_PCI */
+
+int setup_avm_pcipnp(struct IsdnCard *card)
 {
 	struct IsdnCardState *cs = card->cs;
 	char tmp[64];

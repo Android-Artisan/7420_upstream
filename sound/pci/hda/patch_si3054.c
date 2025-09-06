@@ -29,6 +29,10 @@
 #include "hda_codec.h"
 #include "hda_local.h"
 #include "hda_patch.h"
+#include <linux/module.h>
+#include <sound/core.h>
+#include "hda_codec.h"
+#include "hda_local.h"
 
 /* si3054 verbs */
 #define SI3054_VERB_READ_NODE  0x900
@@ -123,6 +127,7 @@ static int si3054_switch_put(struct snd_kcontrol *kcontrol,
 #define SI3054_KCONTROL(kname,reg,mask) { \
 	.iface = SNDRV_CTL_ELEM_IFACE_MIXER, \
 	.name = kname, \
+	.subdevice = HDA_SUBDEV_NID_FLAG | reg, \
 	.info = si3054_switch_info, \
 	.get  = si3054_switch_get, \
 	.put  = si3054_switch_put, \
@@ -131,6 +136,7 @@ static int si3054_switch_put(struct snd_kcontrol *kcontrol,
 		
 
 static struct snd_kcontrol_new si3054_modem_mixer[] = {
+static const struct snd_kcontrol_new si3054_modem_mixer[] = {
 	SI3054_KCONTROL("Off-hook Switch", SI3054_GPIO_CONTROL, SI3054_GPIO_OH),
 	SI3054_KCONTROL("Caller ID Switch", SI3054_GPIO_CONTROL, SI3054_GPIO_CID),
 	{}
@@ -182,6 +188,7 @@ static int si3054_pcm_open(struct hda_pcm_stream *hinfo,
 
 
 static struct hda_pcm_stream si3054_pcm = {
+static const struct hda_pcm_stream si3054_pcm = {
 	.substreams = 1,
 	.channels_min = 1,
 	.channels_max = 1,
@@ -206,6 +213,15 @@ static int si3054_build_pcms(struct hda_codec *codec)
 	info->name = "Si3054 Modem";
 	info->stream[SNDRV_PCM_STREAM_PLAYBACK] = si3054_pcm;
 	info->stream[SNDRV_PCM_STREAM_CAPTURE]  = si3054_pcm;
+	struct hda_pcm *info;
+
+	info = snd_hda_codec_pcm_new(codec, "Si3054 Modem");
+	if (!info)
+		return -ENOMEM;
+	info->stream[SNDRV_PCM_STREAM_PLAYBACK] = si3054_pcm;
+	info->stream[SNDRV_PCM_STREAM_CAPTURE]  = si3054_pcm;
+	info->stream[SNDRV_PCM_STREAM_PLAYBACK].nid = codec->core.mfg;
+	info->stream[SNDRV_PCM_STREAM_CAPTURE].nid = codec->core.mfg;
 	info->pcm_type = HDA_PCM_TYPE_MODEM;
 	return 0;
 }
@@ -223,6 +239,12 @@ static int si3054_init(struct hda_codec *codec)
 
 	snd_hda_codec_write(codec, AC_NODE_ROOT, 0, AC_VERB_SET_CODEC_RESET, 0);
 	snd_hda_codec_write(codec, codec->mfg, 0, AC_VERB_SET_STREAM_FORMAT, 0);
+	if (snd_hdac_regmap_add_vendor_verb(&codec->core,
+					    SI3054_VERB_WRITE_NODE))
+		return -ENOMEM;
+
+	snd_hda_codec_write(codec, AC_NODE_ROOT, 0, AC_VERB_SET_CODEC_RESET, 0);
+	snd_hda_codec_write(codec, codec->core.mfg, 0, AC_VERB_SET_STREAM_FORMAT, 0);
 	SET_REG(codec, SI3054_LINE_RATE, 9600);
 	SET_REG(codec, SI3054_LINE_LEVEL, SI3054_DTAG_MASK|SI3054_ATAG_MASK);
 	SET_REG(codec, SI3054_EXTENDED_MID, 0);
@@ -235,6 +257,7 @@ static int si3054_init(struct hda_codec *codec)
 
 	if((val&SI3054_MEI_READY) != SI3054_MEI_READY) {
 		snd_printk(KERN_ERR "si3054: cannot initialize. EXT MID = %04x\n", val);
+		codec_err(codec, "si3054: cannot initialize. EXT MID = %04x\n", val);
 		/* let's pray that this is no fatal error */
 		/* return -EACCES; */
 	}
@@ -246,6 +269,8 @@ static int si3054_init(struct hda_codec *codec)
 
 	if((GET_REG(codec,SI3054_LINE_STATUS) & (1<<6)) == 0) {
 		snd_printd("Link Frame Detect(FDT) is not ready (line status: %04x)\n",
+		codec_dbg(codec,
+			  "Link Frame Detect(FDT) is not ready (line status: %04x)\n",
 				GET_REG(codec,SI3054_LINE_STATUS));
 	}
 
@@ -264,6 +289,7 @@ static void si3054_free(struct hda_codec *codec)
  */
 
 static struct hda_codec_ops si3054_patch_ops = {
+static const struct hda_codec_ops si3054_patch_ops = {
 	.build_controls = si3054_build_controls,
 	.build_pcms = si3054_build_pcms,
 	.init = si3054_init,
@@ -301,3 +327,30 @@ struct hda_codec_preset snd_hda_preset_si3054[] = {
 	{}
 };
 
+static const struct hda_device_id snd_hda_id_si3054[] = {
+	HDA_CODEC_ENTRY(0x163c3055, "Si3054", patch_si3054),
+	HDA_CODEC_ENTRY(0x163c3155, "Si3054", patch_si3054),
+	HDA_CODEC_ENTRY(0x11c13026, "Si3054", patch_si3054),
+	HDA_CODEC_ENTRY(0x11c13055, "Si3054", patch_si3054),
+	HDA_CODEC_ENTRY(0x11c13155, "Si3054", patch_si3054),
+	HDA_CODEC_ENTRY(0x10573055, "Si3054", patch_si3054),
+	HDA_CODEC_ENTRY(0x10573057, "Si3054", patch_si3054),
+	HDA_CODEC_ENTRY(0x10573155, "Si3054", patch_si3054),
+	/* VIA HDA on Clevo m540 */
+	HDA_CODEC_ENTRY(0x11063288, "Si3054", patch_si3054),
+	/* Asus A8J Modem (SM56) */
+	HDA_CODEC_ENTRY(0x15433155, "Si3054", patch_si3054),
+	/* LG LW20 modem */
+	HDA_CODEC_ENTRY(0x18540018, "Si3054", patch_si3054),
+	{}
+};
+MODULE_DEVICE_TABLE(hdaudio, snd_hda_id_si3054);
+
+MODULE_LICENSE("GPL");
+MODULE_DESCRIPTION("Si3054 HD-audio modem codec");
+
+static struct hda_codec_driver si3054_driver = {
+	.id = snd_hda_id_si3054,
+};
+
+module_hda_codec_driver(si3054_driver);

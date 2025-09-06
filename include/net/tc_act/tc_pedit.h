@@ -11,5 +11,7 @@ struct tcf_pedit {
 };
 #define to_pedit(pc) \
 	container_of(pc, struct tcf_pedit, common)
+#define to_pedit(a) \
+	container_of(a->priv, struct tcf_pedit, common)
 
 #endif /* __NET_TC_PED_H */

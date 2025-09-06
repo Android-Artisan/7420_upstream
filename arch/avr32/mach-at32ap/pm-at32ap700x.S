@@ -54,6 +54,7 @@ cpu_enter_idle:
 	unmask_interrupts
 	sleep	CPU_SLEEP_IDLE
 	.size	cpu_idle_sleep, . - cpu_idle_sleep
+	.size	cpu_enter_idle, . - cpu_enter_idle
 
 	/*
 	 * Common return path for PM functions that don't run from

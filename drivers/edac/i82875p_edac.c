@@ -22,6 +22,10 @@
 #include "edac_core.h"
 
 #define I82875P_REVISION	" Ver: 2.0.2 " __DATE__
+#include <linux/edac.h>
+#include "edac_core.h"
+
+#define I82875P_REVISION	" Ver: 2.0.2"
 #define EDAC_MOD_STR		"i82875p_edac"
 
 #define i82875p_printk(level, fmt, arg...) \
@@ -40,6 +44,8 @@
 
 /* four csrows in dual channel, eight in single channel */
 #define I82875P_NR_CSROWS(nr_chans) (8/(nr_chans))
+#define I82875P_NR_DIMMS		8
+#define I82875P_NR_CSROWS(nr_chans)	(I82875P_NR_DIMMS / (nr_chans))
 
 /* Intel 82875p register addresses - device 0 function 0 - DRAM Controller */
 #define I82875P_EAP		0x58	/* Error Address Pointer (32b)
@@ -192,6 +198,7 @@ static void i82875p_get_error_info(struct mem_ctl_info *mci,
 	struct pci_dev *pdev;
 
 	pdev = to_pci_dev(mci->dev);
+	pdev = to_pci_dev(mci->pdev);
 
 	/*
 	 * This is a mess because there is no atomic way to read all the
@@ -230,6 +237,7 @@ static int i82875p_process_error_info(struct mem_ctl_info *mci,
 	int row, multi_chan;
 
 	multi_chan = mci->csrows[0].nr_channels - 1;
+	multi_chan = mci->csrows[0]->nr_channels - 1;
 
 	if (!(info->errsts & 0x0081))
 		return 0;
@@ -239,6 +247,9 @@ static int i82875p_process_error_info(struct mem_ctl_info *mci,
 
 	if ((info->errsts ^ info->errsts2) & 0x0081) {
 		edac_mc_handle_ce_no_info(mci, "UE overwrote CE");
+		edac_mc_handle_error(HW_EVENT_ERR_UNCORRECTED, mci, 1, 0, 0, 0,
+				     -1, -1, -1,
+				     "UE overwrote CE", "");
 		info->errsts = info->errsts2;
 	}
 
@@ -251,6 +262,15 @@ static int i82875p_process_error_info(struct mem_ctl_info *mci,
 		edac_mc_handle_ce(mci, info->eap, 0, info->derrsyn, row,
 				multi_chan ? (info->des & 0x1) : 0,
 				"i82875p CE");
+		edac_mc_handle_error(HW_EVENT_ERR_UNCORRECTED, mci, 1,
+				     info->eap, 0, 0,
+				     row, -1, -1,
+				     "i82875p UE", "");
+	else
+		edac_mc_handle_error(HW_EVENT_ERR_CORRECTED, mci, 1,
+				     info->eap, 0, info->derrsyn,
+				     row, multi_chan ? (info->des & 0x1) : 0,
+				     -1, "i82875p CE", "");
 
 	return 1;
 }
@@ -260,6 +280,7 @@ static void i82875p_check(struct mem_ctl_info *mci)
 	struct i82875p_error_info info;
 
 	debugf1("MC%d: %s()\n", mci->mc_idx, __func__);
+	edac_dbg(1, "MC%d\n", mci->mc_idx);
 	i82875p_get_error_info(mci, &info);
 	i82875p_process_error_info(mci, &info, 1);
 }
@@ -295,6 +316,8 @@ static int i82875p_setup_overfl_dev(struct pci_dev *pdev,
 				"%s(): pci_bus_add_device() Failed\n",
 				__func__);
 		}
+		pci_bus_assign_resources(dev->bus);
+		pci_bus_add_device(dev);
 	}
 
 	*ovrfl_pdev = dev;
@@ -315,6 +338,7 @@ static int i82875p_setup_overfl_dev(struct pci_dev *pdev,
 	window = ioremap_nocache(pci_resource_start(dev, 0),
 				 pci_resource_len(dev, 0));
 
+	window = pci_ioremap_bar(dev, 0);
 	if (window == NULL) {
 		i82875p_printk(KERN_ERR, "%s(): Failed to ioremap bar6\n",
 			__func__);
@@ -351,6 +375,13 @@ static void i82875p_init_csrows(struct mem_ctl_info *mci,
 	u32 drc_ddim;		/* DRAM Data Integrity Mode 0=none,2=edac */
 	u32 cumul_size;
 	int index;
+	struct dimm_info *dimm;
+	unsigned nr_chans = dual_channel_active(drc) + 1;
+	unsigned long last_cumul_size;
+	u8 value;
+	u32 drc_ddim;		/* DRAM Data Integrity Mode 0=none,2=edac */
+	u32 cumul_size, nr_pages;
+	int index, j;
 
 	drc_ddim = (drc >> 18) & 0x1;
 	last_cumul_size = 0;
@@ -368,6 +399,11 @@ static void i82875p_init_csrows(struct mem_ctl_info *mci,
 		cumul_size = value << (I82875P_DRB_SHIFT - PAGE_SHIFT);
 		debugf3("%s(): (%d) cumul_size 0x%x\n", __func__, index,
 			cumul_size);
+		csrow = mci->csrows[index];
+
+		value = readb(ovrfl_window + I82875P_DRB + index);
+		cumul_size = value << (I82875P_DRB_SHIFT - PAGE_SHIFT);
+		edac_dbg(3, "(%d) cumul_size 0x%x\n", index, cumul_size);
 		if (cumul_size == last_cumul_size)
 			continue;	/* not populated */
 
@@ -379,6 +415,18 @@ static void i82875p_init_csrows(struct mem_ctl_info *mci,
 		csrow->mtype = MEM_DDR;
 		csrow->dtype = DEV_UNKNOWN;
 		csrow->edac_mode = drc_ddim ? EDAC_SECDED : EDAC_NONE;
+		nr_pages = cumul_size - last_cumul_size;
+		last_cumul_size = cumul_size;
+
+		for (j = 0; j < nr_chans; j++) {
+			dimm = csrow->channels[j]->dimm;
+
+			dimm->nr_pages = nr_pages / nr_chans;
+			dimm->grain = 1 << 12;	/* I82875P_EAP has 4KiB reolution */
+			dimm->mtype = MEM_DDR;
+			dimm->dtype = DEV_UNKNOWN;
+			dimm->edac_mode = drc_ddim ? EDAC_SECDED : EDAC_NONE;
+		}
 	}
 }
 
@@ -386,6 +434,7 @@ static int i82875p_probe1(struct pci_dev *pdev, int dev_idx)
 {
 	int rc = -ENODEV;
 	struct mem_ctl_info *mci;
+	struct edac_mc_layer layers[2];
 	struct i82875p_pvt *pvt;
 	struct pci_dev *ovrfl_pdev;
 	void __iomem *ovrfl_window;
@@ -396,6 +445,7 @@ static int i82875p_probe1(struct pci_dev *pdev, int dev_idx)
 	debugf0("%s()\n", __func__);
 
 	ovrfl_pdev = pci_get_device(PCI_VEND_DEV(INTEL, 82875_6), NULL);
+	edac_dbg(0, "\n");
 
 	if (i82875p_setup_overfl_dev(pdev, &ovrfl_pdev, &ovrfl_window))
 		return -ENODEV;
@@ -404,6 +454,14 @@ static int i82875p_probe1(struct pci_dev *pdev, int dev_idx)
 	mci = edac_mc_alloc(sizeof(*pvt), I82875P_NR_CSROWS(nr_chans),
 			nr_chans, 0);
 
+
+	layers[0].type = EDAC_MC_LAYER_CHIP_SELECT;
+	layers[0].size = I82875P_NR_CSROWS(nr_chans);
+	layers[0].is_virt_csrow = true;
+	layers[1].type = EDAC_MC_LAYER_CHANNEL;
+	layers[1].size = nr_chans;
+	layers[1].is_virt_csrow = false;
+	mci = edac_mc_alloc(0, ARRAY_SIZE(layers), layers, sizeof(*pvt));
 	if (!mci) {
 		rc = -ENOMEM;
 		goto fail0;
@@ -411,6 +469,8 @@ static int i82875p_probe1(struct pci_dev *pdev, int dev_idx)
 
 	debugf3("%s(): init mci\n", __func__);
 	mci->dev = &pdev->dev;
+	edac_dbg(3, "init mci\n");
+	mci->pdev = &pdev->dev;
 	mci->mtype_cap = MEM_FLAG_DDR;
 	mci->edac_ctl_cap = EDAC_FLAG_NONE | EDAC_FLAG_SECDED;
 	mci->edac_cap = EDAC_FLAG_UNKNOWN;
@@ -421,6 +481,7 @@ static int i82875p_probe1(struct pci_dev *pdev, int dev_idx)
 	mci->edac_check = i82875p_check;
 	mci->ctl_page_to_phys = NULL;
 	debugf3("%s(): init pvt\n", __func__);
+	edac_dbg(3, "init pvt\n");
 	pvt = (struct i82875p_pvt *)mci->pvt_info;
 	pvt->ovrfl_pdev = ovrfl_pdev;
 	pvt->ovrfl_window = ovrfl_window;
@@ -432,6 +493,7 @@ static int i82875p_probe1(struct pci_dev *pdev, int dev_idx)
 	 */
 	if (edac_mc_add_mc(mci)) {
 		debugf3("%s(): failed edac_mc_add_mc()\n", __func__);
+		edac_dbg(3, "failed edac_mc_add_mc()\n");
 		goto fail1;
 	}
 
@@ -448,6 +510,7 @@ static int i82875p_probe1(struct pci_dev *pdev, int dev_idx)
 
 	/* get this far and it's successful */
 	debugf3("%s(): success\n", __func__);
+	edac_dbg(3, "success\n");
 	return 0;
 
 fail1:
@@ -469,6 +532,12 @@ static int __devinit i82875p_init_one(struct pci_dev *pdev,
 	int rc;
 
 	debugf0("%s()\n", __func__);
+static int i82875p_init_one(struct pci_dev *pdev,
+			    const struct pci_device_id *ent)
+{
+	int rc;
+
+	edac_dbg(0, "\n");
 	i82875p_printk(KERN_INFO, "i82875p init one\n");
 
 	if (pci_enable_device(pdev) < 0)
@@ -483,11 +552,13 @@ static int __devinit i82875p_init_one(struct pci_dev *pdev,
 }
 
 static void __devexit i82875p_remove_one(struct pci_dev *pdev)
+static void i82875p_remove_one(struct pci_dev *pdev)
 {
 	struct mem_ctl_info *mci;
 	struct i82875p_pvt *pvt = NULL;
 
 	debugf0("%s()\n", __func__);
+	edac_dbg(0, "\n");
 
 	if (i82875p_pci)
 		edac_pci_release_generic_ctl(i82875p_pci);
@@ -512,6 +583,7 @@ static void __devexit i82875p_remove_one(struct pci_dev *pdev)
 }
 
 static const struct pci_device_id i82875p_pci_tbl[] __devinitdata = {
+static const struct pci_device_id i82875p_pci_tbl[] = {
 	{
 	 PCI_VEND_DEV(INTEL, 82875_0), PCI_ANY_ID, PCI_ANY_ID, 0, 0,
 	 I82875P},
@@ -526,6 +598,7 @@ static struct pci_driver i82875p_driver = {
 	.name = EDAC_MOD_STR,
 	.probe = i82875p_init_one,
 	.remove = __devexit_p(i82875p_remove_one),
+	.remove = i82875p_remove_one,
 	.id_table = i82875p_pci_tbl,
 };
 
@@ -534,6 +607,7 @@ static int __init i82875p_init(void)
 	int pci_rc;
 
 	debugf3("%s()\n", __func__);
+	edac_dbg(3, "\n");
 
        /* Ensure that the OPSTATE is set correctly for POLL or NMI */
        opstate_init();
@@ -549,6 +623,7 @@ static int __init i82875p_init(void)
 
 		if (!mci_pdev) {
 			debugf0("875p pci_get_device fail\n");
+			edac_dbg(0, "875p pci_get_device fail\n");
 			pci_rc = -ENODEV;
 			goto fail1;
 		}
@@ -557,6 +632,7 @@ static int __init i82875p_init(void)
 
 		if (pci_rc < 0) {
 			debugf0("875p init fail\n");
+			edac_dbg(0, "875p init fail\n");
 			pci_rc = -ENODEV;
 			goto fail1;
 		}
@@ -571,6 +647,7 @@ fail0:
 	if (mci_pdev != NULL)
 		pci_dev_put(mci_pdev);
 
+	pci_dev_put(mci_pdev);
 	return pci_rc;
 }
 
@@ -584,6 +661,13 @@ static void __exit i82875p_exit(void)
 		i82875p_remove_one(mci_pdev);
 		pci_dev_put(mci_pdev);
 	}
+	edac_dbg(3, "\n");
+
+	i82875p_remove_one(mci_pdev);
+	pci_dev_put(mci_pdev);
+
+	pci_unregister_driver(&i82875p_driver);
+
 }
 
 module_init(i82875p_init);

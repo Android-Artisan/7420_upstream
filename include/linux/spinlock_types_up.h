@@ -25,6 +25,15 @@ typedef struct {
 typedef struct { } raw_spinlock_t;
 
 #define __RAW_SPIN_LOCK_UNLOCKED { }
+} arch_spinlock_t;
+
+#define __ARCH_SPIN_LOCK_UNLOCKED { 1 }
+
+#else
+
+typedef struct { } arch_spinlock_t;
+
+#define __ARCH_SPIN_LOCK_UNLOCKED { }
 
 #endif
 
@@ -33,5 +42,8 @@ typedef struct {
 } raw_rwlock_t;
 
 #define __RAW_RW_LOCK_UNLOCKED { }
+} arch_rwlock_t;
+
+#define __ARCH_RW_LOCK_UNLOCKED { }
 
 #endif /* __LINUX_SPINLOCK_TYPES_UP_H */

@@ -14,6 +14,7 @@
  *  You should have received a copy of the GNU General Public License
  *  along with this program; if not, write to the Free Software
  *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ *  along with this program; if not, see <http://www.gnu.org/licenses/>.
  *
  */
 
@@ -23,6 +24,10 @@
 
 #include <asm/io.h>
 #include <asm/system.h>
+#include <linux/sched.h>
+#include <linux/slab.h>
+
+#include <asm/io.h>
 #include <linux/if_arp.h>
 
 #include "prismcompat.h"
@@ -113,6 +118,7 @@ islpci_mgmt_rx_fill(struct net_device *ndev)
 
 #if VERBOSE > SHOW_ERROR_MESSAGES
 	DEBUG(SHOW_FUNCTION_CALLS, "islpci_mgmt_rx_fill \n");
+	DEBUG(SHOW_FUNCTION_CALLS, "islpci_mgmt_rx_fill\n");
 #endif
 
 	while (curr - priv->index_mgmt_rx < ISL38XX_CB_MGMT_QSIZE) {
@@ -127,6 +133,8 @@ islpci_mgmt_rx_fill(struct net_device *ndev)
 				       "Error allocating management frame.\n");
 				return -ENOMEM;
 			}
+			if (!buf->mem)
+				return -ENOMEM;
 			buf->size = MGMT_FRAME_SIZE;
 		}
 		if (buf->pci_addr == 0) {
@@ -195,6 +203,9 @@ islpci_mgt_transmit(struct net_device *ndev, int operation, unsigned long oid,
 		       ndev->name);
 		goto error;
 	}
+	if (!buf.mem)
+		goto error;
+
 	buf.size = frag_len;
 
 	/* create the header directly in the fragment data area */
@@ -211,6 +222,7 @@ islpci_mgt_transmit(struct net_device *ndev, int operation, unsigned long oid,
 		pimfor_header_t *h = buf.mem;
 		DEBUG(SHOW_PIMFOR_FRAMES,
 		      "PIMFOR: op %i, oid 0x%08lx, device %i, flags 0x%x length 0x%x \n",
+		      "PIMFOR: op %i, oid 0x%08lx, device %i, flags 0x%x length 0x%x\n",
 		      h->operation, oid, h->device_id, h->flags, length);
 
 		/* display the buffer contents for debugging */
@@ -279,6 +291,7 @@ islpci_mgt_receive(struct net_device *ndev)
 
 #if VERBOSE > SHOW_ERROR_MESSAGES
 	DEBUG(SHOW_FUNCTION_CALLS, "islpci_mgt_receive \n");
+	DEBUG(SHOW_FUNCTION_CALLS, "islpci_mgt_receive\n");
 #endif
 
 	/* Only once per interrupt, determine fragment range to
@@ -338,6 +351,7 @@ islpci_mgt_receive(struct net_device *ndev)
 #if VERBOSE > SHOW_ERROR_MESSAGES
 		DEBUG(SHOW_PIMFOR_FRAMES,
 		      "PIMFOR: op %i, oid 0x%08x, device %i, flags 0x%x length 0x%x \n",
+		      "PIMFOR: op %i, oid 0x%08x, device %i, flags 0x%x length 0x%x\n",
 		      header->operation, header->oid, header->device_id,
 		      header->flags, header->length);
 
@@ -365,6 +379,11 @@ islpci_mgt_receive(struct net_device *ndev)
 			       ndev->name, header->oid);
 			continue;
 		}
+		frame = kmalloc(sizeof(struct islpci_mgmtframe) + size,
+				GFP_ATOMIC);
+		if (!frame)
+			continue;
+
 		frame->ndev = ndev;
 		memcpy(&frame->buf, header, size);
 		frame->header = (pimfor_header_t *) frame->buf;

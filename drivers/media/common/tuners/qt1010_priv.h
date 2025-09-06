@@ -24,7 +24,6 @@
 
 /*
 reg def meaning
-=== === =======
 00  00  ?
 01  a0  ? operation start/stop; start=80, stop=00
 02  00  ?

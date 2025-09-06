@@ -1,6 +1,11 @@
 /*
  * Common header file for blackfin family of processors.
  *
+ * Common header file for Blackfin family of processors.
+ *
+ * Copyright 2004-2009 Analog Devices Inc.
+ *
+ * Licensed under the GPL-2 or later.
  */
 
 #ifndef _BLACKFIN_H_
@@ -20,8 +25,10 @@ static inline void SSYNC(void)
 {
 	int _tmp;
 	if (ANOMALY_05000312)
+	if (ANOMALY_05000312 || ANOMALY_05000244)
 		__asm__ __volatile__(
 			"cli %0;"
+			"nop;"
 			"nop;"
 			"nop;"
 			"ssync;"
@@ -44,8 +51,10 @@ static inline void CSYNC(void)
 {
 	int _tmp;
 	if (ANOMALY_05000312)
+	if (ANOMALY_05000312 || ANOMALY_05000244)
 		__asm__ __volatile__(
 			"cli %0;"
+			"nop;"
 			"nop;"
 			"nop;"
 			"csync;"
@@ -65,6 +74,11 @@ static inline void CSYNC(void)
 
 #else  /* __ASSEMBLY__ */
 
+#define LO(con32) ((con32) & 0xFFFF)
+#define lo(con32) ((con32) & 0xFFFF)
+#define HI(con32) (((con32) >> 16) & 0xFFFF)
+#define hi(con32) (((con32) >> 16) & 0xFFFF)
+
 /* SSYNC & CSYNC implementations for assembly files */
 
 #define ssync(x) SSYNC(x)
@@ -77,6 +91,18 @@ static inline void CSYNC(void)
 #elif ANOMALY_05000244
 #define SSYNC(scratch) nop; nop; nop; SSYNC;
 #define CSYNC(scratch) nop; nop; nop; CSYNC;
+#if ANOMALY_05000312 || ANOMALY_05000244
+#define SSYNC(scratch)	\
+	cli scratch;	\
+	nop; nop; nop;	\
+	SSYNC;		\
+	sti scratch;
+
+#define CSYNC(scratch)	\
+	cli scratch;	\
+	nop; nop; nop;	\
+	CSYNC;		\
+	sti scratch;
 
 #else
 #define SSYNC(scratch) SSYNC;
@@ -86,6 +112,7 @@ static inline void CSYNC(void)
 
 #endif /* __ASSEMBLY__ */
 
+#include <asm/mem_map.h>
 #include <mach/blackfin.h>
 #include <asm/bfin-global.h>
 

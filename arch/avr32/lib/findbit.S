@@ -124,6 +124,7 @@ ENTRY(find_next_bit)
 	retal	r11
 
 ENTRY(generic_find_next_le_bit)
+ENTRY(find_next_bit_le)
 	lsr	r8, r10, 5
 	sub	r9, r11, r10
 	retle	r11
@@ -154,6 +155,7 @@ ENTRY(generic_find_next_le_bit)
 	retal	r11
 
 ENTRY(generic_find_next_zero_le_bit)
+ENTRY(find_next_zero_bit_le)
 	lsr	r8, r10, 5
 	sub	r9, r11, r10
 	retle	r11

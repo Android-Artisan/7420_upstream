@@ -15,6 +15,8 @@
  * Stack layout in 'ret_from_system_call':
  * 	ptrace needs to have all regs on the stack.
  *	if the order here is changed, it needs to be 
+ *	ptrace needs to have all regs on the stack.
+ *	if the order here is changed, it needs to be
  *	updated in fork.c:copy_process, signal.c:do_signal,
  *	ptrace.c and ptrace.h
  *
@@ -24,6 +26,7 @@
 #include <linux/sys.h>
 #include <asm/unistd.h>
 #include <asm/arch/sv_addr_ag.h>
+#include <arch/sv_addr_ag.h>
 #include <asm/errno.h>
 #include <asm/thread_info.h>
 #include <asm/asm-offsets.h>
@@ -35,6 +38,11 @@
 	.globl system_call
 	.globl ret_from_intr
 	.globl ret_from_fork
+
+	.globl system_call
+	.globl ret_from_intr
+	.globl ret_from_fork
+	.globl ret_from_kernel_thread
 	.globl resume
 	.globl multiple_interrupt
 	.globl hwbreakpoint
@@ -49,6 +57,10 @@
 	;; below are various parts of system_call which are not in the fast-path
 	
 #ifdef CONFIG_PREEMPT	
+
+	;; below are various parts of system_call which are not in the fast-path
+
+#ifdef CONFIG_PREEMPT
 	; Check if preemptive kernel scheduling should be done
 _resume_kernel:
 	di
@@ -74,6 +86,7 @@ _need_resched:
 #else
 #define _resume_kernel _Rexit
 #endif	
+#endif
 
 	; Called at exit from fork. schedule_tail must be called to drop
 	; spinlock if CONFIG_PREEMPT
@@ -93,6 +106,25 @@ ret_from_intr:
 	bpl     _resume_kernel
 	; Note that di below is in delay slot 
 	
+
+ret_from_kernel_thread:
+	jsr schedule_tail
+	move.d	$r2, $r10	; argument is here
+	jsr	$r1		; call the payload
+	moveq	0, $r9		; no syscall restarts, TYVM...
+	ba  ret_from_sys_call
+
+ret_from_intr:
+	;; check for resched if preemptive kernel or if we're going back to user-mode
+	;; this test matches the user_regs(regs) macro
+	;; we cannot simply test $dccr, because that does not necessarily
+	;; reflect what mode we'll return into.
+
+	move.d	[$sp + PT_dccr], $r0; regs->dccr
+	btstq	8, $r0		; U-flag
+	bpl     _resume_kernel
+	; Note that di below is in delay slot
+
 _resume_userspace:
 	di			; so need_resched and sigpending don't change
 
@@ -106,6 +138,7 @@ _resume_userspace:
 	ba	_Rexit
 	nop
 	
+
 	;; The system_call is called by a BREAK instruction, which works like
 	;; an interrupt call but it stores the return PC in BRP instead of IRP.
 	;; Since we dont really want to have two epilogues (one for system calls
@@ -116,6 +149,7 @@ _resume_userspace:
 	;; Since we can't have system calls inside interrupts, it should not matter
 	;; that we don't stack IRP.
 	;; 
+	;;
 	;; In r9 we have the wanted syscall number. Arguments come in r10,r11,r12,r13,mof,srp
 	;;
 	;; This function looks on the _surface_ like spaghetti programming, but it's
@@ -133,6 +167,7 @@ system_call:
 	push	$r10		; push orig_r10
 	clear.d [$sp=$sp-4]	; frametype == 0, normal stackframe
 	
+
 	movs.w	-ENOSYS, $r0
 	move.d	$r0, [$sp+PT_r10]	; put the default return value in r10 in the frame
 
@@ -151,6 +186,17 @@ _syscall_traced:
 	;; check for sanity in the requested syscall number
 	
 	cmpu.w	NR_syscalls, $r9	
+
+	move.d	[$r0+TI_flags], $r0
+	btstq   TIF_SYSCALL_TRACE, $r0
+	bmi	_syscall_trace_entry
+	nop
+
+_syscall_traced:
+
+	;; check for sanity in the requested syscall number
+
+	cmpu.w	NR_syscalls, $r9
 	bcc	ret_from_sys_call
 	lslq	2, $r9		;  multiply by 4, in the delay slot
 
@@ -161,11 +207,15 @@ _syscall_traced:
 	
 	;; the parameter carrying registers r10, r11, r12 and 13 are intact.
 	;; the fifth and sixth parameters (if any) was in mof and srp 
+
+	;; the parameter carrying registers r10, r11, r12 and 13 are intact.
+	;; the fifth and sixth parameters (if any) was in mof and srp
 	;; respectively, and we need to put them on the stack.
 
 	push	$srp
 	push	$mof
 	
+
 	jsr	[$r9+sys_call_table]	; actually do the system call
 	addq	3*4, $sp		; pop the mof, srp and regs parameters
 	move.d	$r10, [$sp+PT_r10]	; save the return value
@@ -180,6 +230,15 @@ ret_from_sys_call:
 	;; get the current task-struct pointer (see top for defs)
 
 	movs.w	-8192, $r0	; THREAD_SIZE == 8192 
+
+	;; fall through into ret_from_sys_call to return
+
+ret_from_sys_call:
+	;; r9 is a parameter - if >=1 we came from a syscall, if 0, from an irq
+
+	;; get the current task-struct pointer (see top for defs)
+
+	movs.w	-8192, $r0	; THREAD_SIZE == 8192
 	and.d	$sp, $r0
 
 	di			; make sure need_resched and sigpending don't change
@@ -195,6 +254,7 @@ _Rexit:
 	addq	4, $sp		; skip orig_r10, in delayslot
 	movem	[$sp+], $r13	; registers r0-r13
 	pop	$mof		; multiply overflow register 
+	pop	$mof		; multiply overflow register
 	pop	$dccr		; condition codes
 	pop	$srp		; subroutine return pointer
 	;; now we have a 4-word SBFS frame which we do not want to restore
@@ -209,6 +269,7 @@ _Rexit:
 _RBFexit:
 	movem	[$sp+], $r13	; registers r0-r13, in delay slot
 	pop	$mof		; multiply overflow register 
+	pop	$mof		; multiply overflow register
 	pop	$dccr		; condition codes
 	pop	$srp		; subroutine return pointer
 	rbf	[$sp+]		; return by popping the CPU status
@@ -216,6 +277,7 @@ _RBFexit:
 	;; We get here after doing a syscall if extra work might need to be done
 	;; perform syscall exit tracing if needed
 	
+
 _syscall_exit_work:
 	;; $r0 contains current at this point and irq's are disabled
 
@@ -224,6 +286,7 @@ _syscall_exit_work:
 	bpl	_work_pending
 	nop
 	
+
 	ei
 
 	move.d	$r9, $r1	; preserve r9
@@ -233,12 +296,17 @@ _syscall_exit_work:
 	ba	_resume_userspace
 	nop
 	
+
+	ba	_resume_userspace
+	nop
+
 _work_pending:
 	move.d  [$r0+TI_flags], $r1
 	btstq   TIF_NEED_RESCHED, $r1
 	bpl	_work_notifysig	; was neither trace nor sched, must be signal/notify
 	nop
 	
+
 _work_resched:
 	move.d	$r9, $r1	; preserve r9
 	jsr	schedule
@@ -261,6 +329,7 @@ _work_notifysig:
 	move.d  $r1, $r12	; the thread_info_flags parameter
 	jsr	do_notify_resume
 	
+
 	ba _Rexit
 	nop
 
@@ -271,6 +340,10 @@ _work_notifysig:
 _syscall_trace_entry:
 	;; PT_r10 in the frame contains -ENOSYS as required, at this point
 	
+
+_syscall_trace_entry:
+	;; PT_r10 in the frame contains -ENOSYS as required, at this point
+
 	jsr	do_syscall_trace
 
 	;; now re-enter the syscall code to do the syscall itself
@@ -288,6 +361,10 @@ _syscall_trace_entry:
 	ba	_syscall_traced
 	nop
 	
+
+	ba	_syscall_traced
+	nop
+
 	;; resume performs the actual task-switching, by switching stack pointers
 	;; input arguments: r10 = prev, r11 = next, r12 = thread offset in task struct
 	;; returns old current in r10
@@ -297,6 +374,8 @@ _syscall_trace_entry:
 
 resume:	
 	push	$srp		         ; we keep the old/new PC on the stack 
+resume:
+	push	$srp		         ; we keep the old/new PC on the stack
 	add.d	$r12, $r10		 ; r10 = current tasks tss
 	move	$dccr, [$r10+THREAD_dccr]; save irq enable state
 	di
@@ -311,6 +390,15 @@ resume:
 	move.d	$sp, $r10		 ; return last running task in r10
 	and.d   -8192, $r10	         ; get thread_info from stackpointer
 	move.d  [$r10+TI_task], $r10     ; get task  
+
+	;; See copy_thread for the reason why register R9 is saved.
+	subq	10*4, $sp
+	movem	$r9, [$sp]		 ; save non-scratch registers and R9.
+
+	move.d	$sp, [$r10+THREAD_ksp]	 ; save the kernel stack pointer for the old task
+	move.d	$sp, $r10		 ; return last running task in r10
+	and.d   -8192, $r10	         ; get thread_info from stackpointer
+	move.d  [$r10+TI_task], $r10     ; get task
 	add.d	$r12, $r11		 ; find the new tasks tss
 	move.d	[$r11+THREAD_ksp], $sp	 ; switch into the new stackframe by restoring kernel sp
 
@@ -318,6 +406,7 @@ resume:
 
 	move	[$r11+THREAD_usp], $usp ; restore user-mode stackpointer
 	
+
 	move	[$r11+THREAD_dccr], $dccr ; restore irq enable status
 	jump	[$sp+]		         ; restore PC
 
@@ -359,6 +448,7 @@ mmu_bus_fault:
 	bpl	2f
 	lsrq	24, $r1     ; Get PGD index (bit 24-31)
 	move.d  [per_cpu__current_pgd], $r0 ; PGD for the current process
+	move.d  [current_pgd], $r0 ; PGD for the current process
 	move.d	[$r0+$r1.d], $r0   ; Get PMD
 	beq	2f
 	nop
@@ -394,6 +484,7 @@ mmu_bus_fault:
 
 	move.d	$sp, $r10	; pt_regs argument to handle_mmu_bus_fault
 		
+
 	jsr	handle_mmu_bus_fault  ; in arch/cris/arch-v10/mm/fault.c
 
 	;; now we need to return through the normal path, we cannot just
@@ -406,6 +497,10 @@ mmu_bus_fault:
 	ba	ret_from_intr
 	nop
 		
+
+	ba	ret_from_intr
+	nop
+
 	;; special handlers for breakpoint and NMI
 hwbreakpoint:
 	push	$dccr
@@ -422,6 +517,7 @@ hwbreakpoint:
 	retb
 	nop
 	
+
 IRQ1_interrupt:
 	;; this prologue MUST match the one in irq.h and the struct in ptregs.h!!!
 	move	$brp,[$sp=$sp-16]; instruction pointer and room for a fake SBFS frame
@@ -450,6 +546,7 @@ IRQ1_interrupt:
 	nop
 wdog:
 #if defined(CONFIG_ETRAX_WATCHDOG) && !defined(CONFIG_SVINTO_SIM)
+#if defined(CONFIG_ETRAX_WATCHDOG)
 ;; Check if we're waiting for reset to happen, as signalled by
 ;; hard_reset_now setting cause_of_death to a magic value.  If so, just
 ;; get stuck until reset happens.
@@ -493,6 +590,7 @@ Watchdog_bite:
 
 #endif
 	
+
 ;; Note that we don't do "setf m" here (or after two necessary NOPs),
 ;; since *not* doing that saves us from re-entrancy checks.  We don't want
 ;; to get here again due to possible subsequent NMIs; we want the watchdog
@@ -518,6 +616,9 @@ _watchdogmsg:
 #endif /* CONFIG_ETRAX_WATCHDOG and not CONFIG_SVINTO_SIM */
 
 spurious_interrupt:	
+#endif /* CONFIG_ETRAX_WATCHDOG */
+
+spurious_interrupt:
 	di
 	jump hard_reset_now
 
@@ -525,6 +626,7 @@ spurious_interrupt:
 	;; we jump to the first set interrupt bit in a priority fashion
 	;; the hardware will call the unserved interrupts after the handler finishes
 	
+
 multiple_interrupt:
 	;; this prologue MUST match the one in irq.h and the struct in ptregs.h!!!
 	move	$irp,[$sp=$sp-16]; instruction pointer and room for a fake SBFS frame
@@ -544,6 +646,14 @@ multiple_interrupt:
 
 do_sigtrap:
 	;; 
+
+	move.d  $sp, $r10
+	jsr	do_multiple_IRQ
+
+	jump    ret_from_intr
+
+do_sigtrap:
+	;;
 	;; SIGTRAP the process that executed the break instruction.
 	;; Make a frame that Rexit in entry.S expects.
 	;;
@@ -592,6 +702,31 @@ kernel_execve:
 	break 13
 	ret
 	nop
+	move.d  [$r10+TASK_pid], $r10	; current->pid as arg1.
+	moveq	5, $r11			; SIGTRAP as arg2.
+	jsr	sys_kill
+	jump	ret_from_intr		; Use the return routine for interrupts.
+
+gdb_handle_breakpoint:
+	push	$dccr
+	push	$r0
+#ifdef CONFIG_ETRAX_KGDB
+	move	$dccr, $r0		; U-flag not affected by previous insns.
+	btstq	8, $r0			; Test the U-flag.
+	bmi	_ugdb_handle_breakpoint	; Go to user mode debugging.
+	nop				; Empty delay slot (cannot pop r0 here).
+	pop	$r0			; Restore r0.
+	ba	kgdb_handle_breakpoint	; Go to kernel debugging.
+	pop	$dccr			; Restore dccr in delay slot.
+#endif
+
+_ugdb_handle_breakpoint:
+	move	$brp, $r0		; Use r0 temporarily for calculation.
+	subq	2, $r0			; Set to address of previous instruction.
+	move	$r0, $brp
+	pop	$r0			; Restore r0.
+	ba	do_sigtrap		; SIGTRAP the offending process.
+	pop	$dccr			; Restore dccr in delay slot.
 
 	.data
 
@@ -602,6 +737,7 @@ hw_bp_trig_ptr:
 
 	.section .rodata,"a"
 sys_call_table:	
+sys_call_table:
 	.long sys_restart_syscall	/* 0 - old "setup()" system call, used for restarting */
 	.long sys_exit
 	.long sys_fork
@@ -693,6 +829,8 @@ sys_call_table:
 	.long sys_reboot
 	.long old_readdir
 	.long old_mmap		/* 90 */
+	.long sys_old_readdir
+	.long sys_old_mmap	/* 90 */
 	.long sys_munmap
 	.long sys_truncate
 	.long sys_ftruncate
@@ -713,6 +851,7 @@ sys_call_table:
 	.long sys_newfstat
 	.long sys_ni_syscall	/* old sys_uname holder */
 	.long sys_ni_syscall	/* sys_iopl in i386 */
+	.long sys_ni_syscall	/* 110 */ /* sys_iopl in i386 */
 	.long sys_vhangup
 	.long sys_ni_syscall	/* old "idle" system call */
 	.long sys_ni_syscall	/* vm86old in i386 */
@@ -730,6 +869,7 @@ sys_call_table:
 	.long sys_mprotect	/* 125 */
 	.long sys_sigprocmask
 	.long sys_ni_syscall	/* old "create_module" */ 
+	.long sys_ni_syscall	/* old "create_module" */
 	.long sys_init_module
 	.long sys_delete_module
 	.long sys_ni_syscall	/* 130:	old "get_kernel_syms" */
@@ -772,6 +912,7 @@ sys_call_table:
 	.long sys_ni_syscall	/* Old sys_query_module */
 	.long sys_poll
 	.long sys_nfsservctl
+	.long sys_ni_syscall    /* old nfsservctl */
 	.long sys_setresgid16	/* 170 */
 	.long sys_getresgid16
 	.long sys_prctl
@@ -795,6 +936,7 @@ sys_call_table:
 	.long sys_vfork		/* 190 */
 	.long sys_getrlimit
 	.long sys_mmap2
+	.long sys_mmap2		/* mmap_pgoff */
 	.long sys_truncate64
 	.long sys_ftruncate64
 	.long sys_stat64	/* 195 */
@@ -875,6 +1017,21 @@ sys_call_table:
 	.long sys_tgkill	/* 270 */
 	.long sys_utimes
  	.long sys_fadvise64_64
+	.long sys_set_tid_address
+	.long sys_timer_create
+	.long sys_timer_settime		/* 260 */
+	.long sys_timer_gettime
+	.long sys_timer_getoverrun
+	.long sys_timer_delete
+	.long sys_clock_settime
+	.long sys_clock_gettime		/* 265 */
+	.long sys_clock_getres
+	.long sys_clock_nanosleep
+	.long sys_statfs64
+	.long sys_fstatfs64
+	.long sys_tgkill		/* 270 */
+	.long sys_utimes
+	.long sys_fadvise64_64
 	.long sys_ni_syscall	/* sys_vserver */
 	.long sys_ni_syscall	/* sys_mbind */
 	.long sys_ni_syscall	/* 275 sys_get_mempolicy */
@@ -886,6 +1043,7 @@ sys_call_table:
 	.long sys_mq_notify
 	.long sys_mq_getsetattr
 	.long sys_ni_syscall		/* reserved for kexec */
+	.long sys_ni_syscall
 	.long sys_waitid
 	.long sys_ni_syscall		/* 285 */ /* available */
 	.long sys_add_key
@@ -929,6 +1087,39 @@ sys_call_table:
 	.long sys_fallocate
 	.long sys_timerfd_settime	/* 325 */
 	.long sys_timerfd_gettime
+	.long sys_signalfd4
+	.long sys_eventfd2
+	.long sys_epoll_create1
+	.long sys_dup3			/* 330 */
+	.long sys_pipe2
+	.long sys_inotify_init1
+	.long sys_preadv
+	.long sys_pwritev
+	.long sys_setns			/* 335 */
+	.long sys_name_to_handle_at
+	.long sys_open_by_handle_at
+	.long sys_rt_tgsigqueueinfo
+	.long sys_perf_event_open
+	.long sys_recvmmsg		/* 340 */
+	.long sys_accept4
+	.long sys_fanotify_init
+	.long sys_fanotify_mark
+	.long sys_prlimit64
+	.long sys_clock_adjtime		/* 345 */
+	.long sys_syncfs
+	.long sys_sendmmsg
+	.long sys_process_vm_readv
+	.long sys_process_vm_writev
+	.long sys_kcmp			/* 350 */
+	.long sys_finit_module
+	.long sys_sched_setattr
+	.long sys_sched_getattr
+	.long sys_renameat2
+	.long sys_seccomp		/* 355 */
+	.long sys_getrandom
+	.long sys_memfd_create
+	.long sys_bpf
+	.long sys_execveat
 
         /*
          * NOTE!! This doesn't have to be exact - we just have
@@ -941,3 +1132,4 @@ sys_call_table:
 		.long sys_ni_syscall
 	.endr
 	
+

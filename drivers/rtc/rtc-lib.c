@@ -34,6 +34,7 @@ static const unsigned short rtc_ydays[2][13] = {
 int rtc_month_days(unsigned int month, unsigned int year)
 {
 	return rtc_days_in_month[month] + (LEAP_YEAR(year) && month == 1);
+	return rtc_days_in_month[month] + (is_leap_year(year) && month == 1);
 }
 EXPORT_SYMBOL(rtc_month_days);
 
@@ -56,6 +57,22 @@ void rtc_time_to_tm(unsigned long time, struct rtc_time *tm)
 
 	days = time / 86400;
 	time -= (unsigned int) days * 86400;
+	return rtc_ydays[is_leap_year(year)][month] + day-1;
+}
+EXPORT_SYMBOL(rtc_year_days);
+
+
+/*
+ * rtc_time_to_tm64 - Converts time64_t to rtc_time.
+ * Convert seconds since 01-01-1970 00:00:00 to Gregorian date.
+ */
+void rtc_time64_to_tm(time64_t time, struct rtc_time *tm)
+{
+	unsigned int month, year, secs;
+	int days;
+
+	/* time must be positive */
+	days = div_s64_rem(time, 86400, &secs);
 
 	/* day of the week, 1970-01-01 was a Thursday */
 	tm->tm_wday = (days + 4) % 7;
@@ -67,6 +84,7 @@ void rtc_time_to_tm(unsigned long time, struct rtc_time *tm)
 	if (days < 0) {
 		year -= 1;
 		days += 365 + LEAP_YEAR(year);
+		days += 365 + is_leap_year(year);
 	}
 	tm->tm_year = year - 1900;
 	tm->tm_yday = days + 1;
@@ -88,6 +106,14 @@ void rtc_time_to_tm(unsigned long time, struct rtc_time *tm)
 	tm->tm_sec = time - tm->tm_min * 60;
 }
 EXPORT_SYMBOL(rtc_time_to_tm);
+	tm->tm_hour = secs / 3600;
+	secs -= tm->tm_hour * 3600;
+	tm->tm_min = secs / 60;
+	tm->tm_sec = secs - tm->tm_min * 60;
+
+	tm->tm_isdst = 0;
+}
+EXPORT_SYMBOL(rtc_time64_to_tm);
 
 /*
  * Does the rtc_time represent a valid date/time?
@@ -117,5 +143,40 @@ int rtc_tm_to_time(struct rtc_time *tm, unsigned long *time)
 	return 0;
 }
 EXPORT_SYMBOL(rtc_tm_to_time);
+ * rtc_tm_to_time64 - Converts rtc_time to time64_t.
+ * Convert Gregorian date to seconds since 01-01-1970 00:00:00.
+ */
+time64_t rtc_tm_to_time64(struct rtc_time *tm)
+{
+	return mktime64(tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday,
+			tm->tm_hour, tm->tm_min, tm->tm_sec);
+}
+EXPORT_SYMBOL(rtc_tm_to_time64);
+
+/*
+ * Convert rtc_time to ktime
+ */
+ktime_t rtc_tm_to_ktime(struct rtc_time tm)
+{
+	return ktime_set(rtc_tm_to_time64(&tm), 0);
+}
+EXPORT_SYMBOL_GPL(rtc_tm_to_ktime);
+
+/*
+ * Convert ktime to rtc_time
+ */
+struct rtc_time rtc_ktime_to_tm(ktime_t kt)
+{
+	struct timespec64 ts;
+	struct rtc_time ret;
+
+	ts = ktime_to_timespec64(kt);
+	/* Round up any ns */
+	if (ts.tv_nsec)
+		ts.tv_sec++;
+	rtc_time64_to_tm(ts.tv_sec, &ret);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(rtc_ktime_to_tm);
 
 MODULE_LICENSE("GPL");

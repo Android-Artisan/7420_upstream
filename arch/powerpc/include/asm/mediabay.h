@@ -37,6 +37,31 @@ static inline int check_media_bay(struct device_node *which_bay, int what)
 	return -ENODEV;
 }
 
+struct macio_dev;
+
+#ifdef CONFIG_PMAC_MEDIABAY
+
+/* Check the content type of the bay, returns MB_NO if the bay is still
+ * transitionning
+ */
+extern int check_media_bay(struct macio_dev *bay);
+
+/* The ATA driver uses the calls below to temporarily hold on the
+ * media bay callbacks while initializing the interface
+ */
+extern void lock_media_bay(struct macio_dev *bay);
+extern void unlock_media_bay(struct macio_dev *bay);
+
+#else
+
+static inline int check_media_bay(struct macio_dev *bay)
+{
+	return MB_NO;
+}
+
+static inline void lock_media_bay(struct macio_dev *bay) { }
+static inline void unlock_media_bay(struct macio_dev *bay) { }
+
 #endif
 
 #endif /* __KERNEL__ */

@@ -4,6 +4,7 @@
  * serial port.
  *
  * Copyright (C) 2007 Jean Delvare <khali@linux-fr.org>
+ * Copyright (C) 2007 Jean Delvare <jdelvare@suse.de>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -36,6 +37,12 @@
 #define TAOS_STATE_RECV		3
 
 #define TAOS_CMD_RESET		0x12
+#define TAOS_STATE_EOFF		2
+#define TAOS_STATE_RECV		3
+
+#define TAOS_CMD_RESET		0x12
+#define TAOS_CMD_ECHO_ON	'+'
+#define TAOS_CMD_ECHO_OFF	'-'
 
 static DECLARE_WAIT_QUEUE_HEAD(wq);
 
@@ -113,6 +120,9 @@ static int taos_smbus_xfer(struct i2c_adapter *adapter, u16 addr,
 		taos->addr = 0;
 		return -EIO;
 	}
+	for (p = taos->buffer; *p; p++)
+		serio_write(serio, *p);
+
 	taos->addr = addr;
 
 	/* Start the transaction and read the answer */
@@ -123,6 +133,7 @@ static int taos_smbus_xfer(struct i2c_adapter *adapter, u16 addr,
 					 msecs_to_jiffies(150));
 	if (taos->state != TAOS_STATE_IDLE
 	 || taos->pos != 6) {
+	 || taos->pos != 5) {
 		dev_err(&adapter->dev, "Transaction timeout (pos=%d)\n",
 			taos->pos);
 		return -EIO;
@@ -131,6 +142,7 @@ static int taos_smbus_xfer(struct i2c_adapter *adapter, u16 addr,
 
 	/* Interpret the returned string */
 	p = taos->buffer + 2;
+	p = taos->buffer + 1;
 	p[3] = '\0';
 	if (!strcmp(p, "NAK"))
 		return -ENODEV;
@@ -180,6 +192,9 @@ static irqreturn_t taos_interrupt(struct serio *serio, unsigned char data,
 			taos->state = TAOS_STATE_IDLE;
 			wake_up_interruptible(&wq);
 		}
+	case TAOS_STATE_EOFF:
+		taos->state = TAOS_STATE_IDLE;
+		wake_up_interruptible(&wq);
 		break;
 	case TAOS_STATE_RECV:
 		taos->buffer[taos->pos++] = data;
@@ -245,6 +260,7 @@ static int taos_connect(struct serio *serio, struct serio_driver *drv)
 	if (taos->state != TAOS_STATE_IDLE) {
 		err = -ENODEV;
 		dev_dbg(&serio->dev, "TAOS EVM reset failed (state=%d, "
+		dev_err(&serio->dev, "TAOS EVM reset failed (state=%d, "
 			"pos=%d)\n", taos->state, taos->pos);
 		goto exit_close;
 	}
@@ -261,6 +277,23 @@ static int taos_connect(struct serio *serio, struct serio_driver *drv)
 	if (err)
 		goto exit_close;
 	dev_dbg(&serio->dev, "Connected to TAOS EVM\n");
+	/* Turn echo off for better performance */
+	taos->state = TAOS_STATE_EOFF;
+	serio_write(serio, TAOS_CMD_ECHO_OFF);
+
+	wait_event_interruptible_timeout(wq, taos->state == TAOS_STATE_IDLE,
+					 msecs_to_jiffies(250));
+	if (taos->state != TAOS_STATE_IDLE) {
+		err = -ENODEV;
+		dev_err(&serio->dev, "TAOS EVM echo off failed "
+			"(state=%d)\n", taos->state);
+		goto exit_close;
+	}
+
+	err = i2c_add_adapter(adapter);
+	if (err)
+		goto exit_close;
+	dev_info(&serio->dev, "Connected to TAOS EVM\n");
 
 	taos->client = taos_instantiate_device(adapter);
 	return 0;
@@ -286,6 +319,9 @@ static void taos_disconnect(struct serio *serio)
 	kfree(taos);
 
 	dev_dbg(&serio->dev, "Disconnected from TAOS EVM\n");
+	kfree(taos);
+
+	dev_info(&serio->dev, "Disconnected from TAOS EVM\n");
 }
 
 static struct serio_device_id taos_serio_ids[] = {
@@ -326,3 +362,8 @@ MODULE_LICENSE("GPL");
 
 module_init(taos_init);
 module_exit(taos_exit);
+module_serio_driver(taos_drv);
+
+MODULE_AUTHOR("Jean Delvare <jdelvare@suse.de>");
+MODULE_DESCRIPTION("TAOS evaluation module driver");
+MODULE_LICENSE("GPL");

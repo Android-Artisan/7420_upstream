@@ -12,7 +12,6 @@ fork. So if you have any comments or updates of this file, please try
 to update the original English file first.
 
 Last Updated: 2007/07/18
-==================================
 これは、
 linux-2.6.22-rc4/Documentation/stable_api_nonsense.txt の和訳
 です。
@@ -22,7 +21,6 @@ linux-2.6.22-rc4/Documentation/stable_api_nonsense.txt の和訳
 翻訳者 ： 池田 宗広 < m-ikeda at ds dot jp dot nec dot com >
 校正者 ： Masanori Kobayashi さん < zap03216 at nifty dot ne dot jp >
           Seiji Kaneko さん < skaneko at a2 dot mbn dot or dot jp >
-==================================
 
 
 

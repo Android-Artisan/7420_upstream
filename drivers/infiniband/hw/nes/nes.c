@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2006 - 2008 NetEffect, Inc. All rights reserved.
+ * Copyright (c) 2006 - 2011 Intel Corporation.  All rights reserved.
  * Copyright (c) 2005 Open Grid Computing, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -44,6 +45,7 @@
 #include <linux/init.h>
 #include <linux/if_arp.h>
 #include <linux/highmem.h>
+#include <linux/slab.h>
 #include <asm/io.h>
 #include <asm/irq.h>
 #include <asm/byteorder.h>
@@ -71,6 +73,9 @@ int interrupt_mod_interval = 0;
 /* Interoperability */
 int mpa_version = 1;
 module_param(mpa_version, int, 0);
+/* Interoperability */
+int mpa_version = 1;
+module_param(mpa_version, int, 0644);
 MODULE_PARM_DESC(mpa_version, "MPA version to be used int MPA Req/Resp (0 or 1)");
 
 /* Interoperability */
@@ -85,11 +90,24 @@ MODULE_PARM_DESC(send_first, "Send RDMA Message First on Active Connection");
 
 unsigned int nes_drv_opt = 0;
 module_param(nes_drv_opt, int, 0);
+module_param(disable_mpa_crc, int, 0644);
+MODULE_PARM_DESC(disable_mpa_crc, "Disable checking of MPA CRC");
+
+unsigned int nes_drv_opt = NES_DRV_OPT_DISABLE_INT_MOD | NES_DRV_OPT_ENABLE_PAU;
+module_param(nes_drv_opt, int, 0644);
 MODULE_PARM_DESC(nes_drv_opt, "Driver option parameters");
 
 unsigned int nes_debug_level = 0;
 module_param_named(debug_level, nes_debug_level, uint, 0644);
 MODULE_PARM_DESC(debug_level, "Enable debug output level");
+
+unsigned int wqm_quanta = 0x10000;
+module_param(wqm_quanta, int, 0644);
+MODULE_PARM_DESC(wqm_quanta, "WQM quanta");
+
+static bool limit_maxrdreqsz;
+module_param(limit_maxrdreqsz, bool, 0644);
+MODULE_PARM_DESC(limit_maxrdreqsz, "Limit max read request size to 256 Bytes");
 
 LIST_HEAD(nes_adapter_list);
 static LIST_HEAD(nes_dev_list);
@@ -102,10 +120,23 @@ static unsigned int sysfs_idx_addr;
 
 static struct pci_device_id nes_pci_table[] = {
 	{PCI_VENDOR_ID_NETEFFECT, PCI_DEVICE_ID_NETEFFECT_NE020, PCI_ANY_ID, PCI_ANY_ID},
+	{ PCI_VDEVICE(NETEFFECT, PCI_DEVICE_ID_NETEFFECT_NE020), },
+	{ PCI_VDEVICE(NETEFFECT, PCI_DEVICE_ID_NETEFFECT_NE020_KR), },
 	{0}
 };
 
 MODULE_DEVICE_TABLE(pci, nes_pci_table);
+
+/* registered nes netlink callbacks */
+static struct ibnl_client_cbs nes_nl_cb_table[] = {
+	[RDMA_NL_IWPM_REG_PID] = {.dump = iwpm_register_pid_cb},
+	[RDMA_NL_IWPM_ADD_MAPPING] = {.dump = iwpm_add_mapping_cb},
+	[RDMA_NL_IWPM_QUERY_MAPPING] = {.dump = iwpm_add_and_query_mapping_cb},
+	[RDMA_NL_IWPM_REMOTE_INFO] = {.dump = iwpm_remote_info_cb},
+	[RDMA_NL_IWPM_HANDLE_ERR] = {.dump = iwpm_mapping_error_cb},
+	[RDMA_NL_IWPM_MAPINFO] = {.dump = iwpm_mapping_info_cb},
+	[RDMA_NL_IWPM_MAPINFO_NUM] = {.dump = iwpm_ack_mapping_info_cb}
+};
 
 static int nes_inetaddr_event(struct notifier_block *, unsigned long, void *);
 static int nes_net_event(struct notifier_block *, unsigned long, void *);
@@ -142,12 +173,22 @@ static int nes_inetaddr_event(struct notifier_block *notifier,
 	nes_debug(NES_DBG_NETDEV, "nes_inetaddr_event: ip address " NIPQUAD_FMT
 		  ", netmask " NIPQUAD_FMT ".\n",
 		  HIPQUAD(addr), HIPQUAD(mask));
+	struct net_device *upper_dev;
+	struct nes_vnic *nesvnic;
+	unsigned int is_bonded;
+
+	nes_debug(NES_DBG_NETDEV, "nes_inetaddr_event: ip address %pI4, netmask %pI4.\n",
+		  &ifa->ifa_address, &ifa->ifa_mask);
 	list_for_each_entry(nesdev, &nes_dev_list, list) {
 		nes_debug(NES_DBG_NETDEV, "Nesdev list entry = 0x%p. (%s)\n",
 				nesdev, nesdev->netdev[0]->name);
 		netdev = nesdev->netdev[0];
 		nesvnic = netdev_priv(netdev);
 		if (netdev == event_netdev) {
+		upper_dev = netdev_master_upper_dev_get(netdev);
+		is_bonded = netif_is_bond_slave(netdev) &&
+			    (upper_dev == event_netdev);
+		if ((netdev == event_netdev) || is_bonded) {
 			if (nesvnic->rdma_enabled == 0) {
 				nes_debug(NES_DBG_NETDEV, "Returning without processing event for %s since"
 						" RDMA is not enabled.\n",
@@ -165,6 +206,10 @@ static int nes_inetaddr_event(struct notifier_block *notifier,
 							ntohl(nesvnic->local_ipaddr), NES_ARP_DELETE);
 					nesvnic->local_ipaddr = 0;
 					return NOTIFY_OK;
+					if (is_bonded)
+						continue;
+					else
+						return NOTIFY_OK;
 					break;
 				case NETDEV_UP:
 					nes_debug(NES_DBG_NETDEV, "event:UP\n");
@@ -182,6 +227,24 @@ static int nes_inetaddr_event(struct notifier_block *notifier,
 					nes_manage_arp_cache(netdev, netdev->dev_addr,
 							ntohl(nesvnic->local_ipaddr), NES_ARP_ADD);
 					return NOTIFY_OK;
+					/* fall through */
+				case NETDEV_CHANGEADDR:
+					/* Add the address to the IP table */
+					if (upper_dev)
+						nesvnic->local_ipaddr =
+							((struct in_device *)upper_dev->ip_ptr)->ifa_list->ifa_address;
+					else
+						nesvnic->local_ipaddr = ifa->ifa_address;
+
+					nes_write_indexed(nesdev,
+							NES_IDX_DST_IP_ADDR+(0x10*PCI_FUNC(nesdev->pcidev->devfn)),
+							ntohl(nesvnic->local_ipaddr));
+					nes_manage_arp_cache(netdev, netdev->dev_addr,
+							ntohl(nesvnic->local_ipaddr), NES_ARP_ADD);
+					if (is_bonded)
+						continue;
+					else
+						return NOTIFY_OK;
 					break;
 				default:
 					break;
@@ -303,6 +366,9 @@ void nes_rem_ref(struct ib_qp *ibqp)
 	}
 
 	if (atomic_dec_and_test(&nesqp->refcount)) {
+		if (nesqp->pau_mode)
+			nes_destroy_pau_qp(nesdev, nesqp);
+
 		/* Destroy the QP */
 		cqp_request = nes_get_cqp_request(nesdev);
 		if (cqp_request == NULL) {
@@ -356,6 +422,8 @@ static void nes_print_macaddr(struct net_device *netdev)
 
 	nes_debug(NES_DBG_INIT, "%s: %s, IRQ %u\n",
 		  netdev->name, print_mac(mac, netdev->dev_addr), netdev->irq);
+	nes_debug(NES_DBG_INIT, "%s: %pM, IRQ %u\n",
+		  netdev->name, netdev->dev_addr, netdev->irq);
 }
 
 /**
@@ -434,6 +502,7 @@ static irqreturn_t nes_interrupt(int irq, void *dev_id)
  * nes_probe - Device initialization
  */
 static int __devinit nes_probe(struct pci_dev *pcidev, const struct pci_device_id *ent)
+static int nes_probe(struct pci_dev *pcidev, const struct pci_device_id *ent)
 {
 	struct net_device *netdev = NULL;
 	struct nes_device *nesdev = NULL;
@@ -478,22 +547,26 @@ static int __devinit nes_probe(struct pci_dev *pcidev, const struct pci_device_i
 
 	if ((sizeof(dma_addr_t) > 4)) {
 		ret = pci_set_dma_mask(pcidev, DMA_64BIT_MASK);
+		ret = pci_set_dma_mask(pcidev, DMA_BIT_MASK(64));
 		if (ret < 0) {
 			printk(KERN_ERR PFX "64b DMA mask configuration failed\n");
 			goto bail2;
 		}
 		ret = pci_set_consistent_dma_mask(pcidev, DMA_64BIT_MASK);
+		ret = pci_set_consistent_dma_mask(pcidev, DMA_BIT_MASK(64));
 		if (ret) {
 			printk(KERN_ERR PFX "64b DMA consistent mask configuration failed\n");
 			goto bail2;
 		}
 	} else {
 		ret = pci_set_dma_mask(pcidev, DMA_32BIT_MASK);
+		ret = pci_set_dma_mask(pcidev, DMA_BIT_MASK(32));
 		if (ret < 0) {
 			printk(KERN_ERR PFX "32b DMA mask configuration failed\n");
 			goto bail2;
 		}
 		ret = pci_set_consistent_dma_mask(pcidev, DMA_32BIT_MASK);
+		ret = pci_set_consistent_dma_mask(pcidev, DMA_BIT_MASK(32));
 		if (ret) {
 			printk(KERN_ERR PFX "32b DMA consistent mask configuration failed\n");
 			goto bail2;
@@ -521,6 +594,8 @@ static int __devinit nes_probe(struct pci_dev *pcidev, const struct pci_device_i
 
 	/* Remap the PCI registers in adapter BAR0 to kernel VA space */
 	mmio_regs = ioremap_nocache(pci_resource_start(pcidev, BAR_0), sizeof(mmio_regs));
+	mmio_regs = ioremap_nocache(pci_resource_start(pcidev, BAR_0),
+				    pci_resource_len(pcidev, BAR_0));
 	if (mmio_regs == NULL) {
 		printk(KERN_ERR PFX "Unable to remap BAR0\n");
 		ret = -EIO;
@@ -557,12 +632,45 @@ static int __devinit nes_probe(struct pci_dev *pcidev, const struct pci_device_i
 		goto bail5;
 	}
 	nesdev->nesadapter->et_rx_coalesce_usecs_irq = interrupt_mod_interval;
+	nesdev->nesadapter->wqm_quanta = wqm_quanta;
 
 	/* nesdev->base_doorbell_index =
 			nesdev->nesadapter->pd_config_base[PCI_FUNC(nesdev->pcidev->devfn)]; */
 	nesdev->base_doorbell_index = 1;
 	nesdev->doorbell_start = nesdev->nesadapter->doorbell_start;
 	nesdev->mac_index = PCI_FUNC(nesdev->pcidev->devfn) % nesdev->nesadapter->port_count;
+	if (nesdev->nesadapter->phy_type[0] == NES_PHY_TYPE_PUMA_1G) {
+		switch (PCI_FUNC(nesdev->pcidev->devfn) %
+			nesdev->nesadapter->port_count) {
+		case 1:
+			nesdev->mac_index = 2;
+			break;
+		case 2:
+			nesdev->mac_index = 1;
+			break;
+		case 3:
+			nesdev->mac_index = 3;
+			break;
+		case 0:
+		default:
+			nesdev->mac_index = 0;
+		}
+	} else {
+		nesdev->mac_index = PCI_FUNC(nesdev->pcidev->devfn) %
+						nesdev->nesadapter->port_count;
+	}
+
+	if ((limit_maxrdreqsz ||
+	     ((nesdev->nesadapter->phy_type[0] == NES_PHY_TYPE_GLADIUS) &&
+	      (hw_rev == NE020_REV1))) &&
+	    (pcie_get_readrq(pcidev) > 256)) {
+		if (pcie_set_readrq(pcidev, 256))
+			printk(KERN_ERR PFX "Unable to set max read request"
+				" to 256 bytes\n");
+		else
+			nes_debug(NES_DBG_INIT, "Max read request size set"
+				" to 256 bytes\n");
+	}
 
 	tasklet_init(&nesdev->dpc_tasklet, nes_dpc, (unsigned long)nesdev);
 
@@ -582,6 +690,7 @@ static int __devinit nes_probe(struct pci_dev *pcidev, const struct pci_device_i
 			(1 << (PCI_FUNC(nesdev->pcidev->devfn)+16));
 	if (PCI_FUNC(nesdev->pcidev->devfn) < 4) {
 		nesdev->int_req |= (1 << (PCI_FUNC(nesdev->pcidev->devfn)+24));
+		nesdev->int_req |= (1 << (PCI_FUNC(nesdev->mac_index)+24));
 	}
 
 	/* TODO: This really should be the first driver to load, not function 0 */
@@ -649,6 +758,40 @@ static int __devinit nes_probe(struct pci_dev *pcidev, const struct pci_device_i
 
 
 	printk(KERN_ERR PFX "%s: NetEffect RNIC driver successfully loaded.\n",
+	if (ibnl_add_client(RDMA_NL_NES, RDMA_NL_IWPM_NUM_OPS, nes_nl_cb_table))
+		printk(KERN_ERR PFX "%s[%u]: Failed to add netlink callback\n",
+			__func__, __LINE__);
+
+	ret = iwpm_init(RDMA_NL_NES);
+	if (ret) {
+		printk(KERN_ERR PFX "%s: port mapper initialization failed\n",
+				pci_name(pcidev));
+		goto bail7;
+	}
+
+	INIT_DELAYED_WORK(&nesdev->work, nes_recheck_link_status);
+
+	/* Initialize network devices */
+	netdev = nes_netdev_init(nesdev, mmio_regs);
+	if (netdev == NULL) {
+		ret = -ENOMEM;
+		goto bail7;
+	}
+
+	/* Register network device */
+	ret = register_netdev(netdev);
+	if (ret) {
+		printk(KERN_ERR PFX "Unable to register netdev, ret = %d\n", ret);
+		nes_netdev_destroy(netdev);
+		goto bail7;
+	}
+
+	nes_print_macaddr(netdev);
+
+	nesdev->netdev_count++;
+	nesdev->nesadapter->netdev_count++;
+
+	printk(KERN_INFO PFX "%s: NetEffect RNIC driver successfully loaded.\n",
 			pci_name(pcidev));
 	return 0;
 
@@ -664,6 +807,7 @@ static int __devinit nes_probe(struct pci_dev *pcidev, const struct pci_device_i
 
 	nes_debug(NES_DBG_INIT, "netdev_count=%d, nesadapter->netdev_count=%d\n",
 			nesdev->netdev_count, nesdev->nesadapter->netdev_count);
+	ibnl_remove_client(RDMA_NL_NES);
 
 	nes_notifiers_registered--;
 	if (nes_notifiers_registered == 0) {
@@ -709,10 +853,12 @@ static int __devinit nes_probe(struct pci_dev *pcidev, const struct pci_device_i
  * nes_remove - unload from kernel
  */
 static void __devexit nes_remove(struct pci_dev *pcidev)
+static void nes_remove(struct pci_dev *pcidev)
 {
 	struct nes_device *nesdev = pci_get_drvdata(pcidev);
 	struct net_device *netdev;
 	int netdev_index = 0;
+	unsigned long flags;
 
 		if (nesdev->netdev_count) {
 			netdev = nesdev->netdev[netdev_index];
@@ -726,6 +872,8 @@ static void __devexit nes_remove(struct pci_dev *pcidev)
 				nesdev->nesadapter->netdev_count--;
 			}
 		}
+	ibnl_remove_client(RDMA_NL_NES);
+	iwpm_exit(RDMA_NL_NES);
 
 	nes_notifiers_registered--;
 	if (nes_notifiers_registered == 0) {
@@ -738,6 +886,14 @@ static void __devexit nes_remove(struct pci_dev *pcidev)
 
 	free_irq(pcidev->irq, nesdev);
 	tasklet_kill(&nesdev->dpc_tasklet);
+
+	spin_lock_irqsave(&nesdev->nesadapter->phy_lock, flags);
+	if (nesdev->link_recheck) {
+		spin_unlock_irqrestore(&nesdev->nesadapter->phy_lock, flags);
+		cancel_delayed_work_sync(&nesdev->work);
+	} else {
+		spin_unlock_irqrestore(&nesdev->nesadapter->phy_lock, flags);
+	}
 
 	/* Deallocate the Adapter Structure */
 	nes_destroy_adapter(nesdev->nesadapter);
@@ -761,6 +917,7 @@ static struct pci_driver nes_pci_driver = {
 	.id_table = nes_pci_table,
 	.probe = nes_probe,
 	.remove = __devexit_p(nes_remove),
+	.remove = nes_remove,
 };
 
 static ssize_t nes_show_adapter(struct device_driver *ddp, char *buf)
@@ -774,12 +931,15 @@ static ssize_t nes_show_adapter(struct device_driver *ddp, char *buf)
 		if (i == ee_flsh_adapter) {
 			devfn      = nesdev->nesadapter->devfn;
 			bus_number = nesdev->nesadapter->bus_number;
+			devfn = nesdev->pcidev->devfn;
+			bus_number = nesdev->pcidev->bus->number;
 			break;
 		}
 		i++;
 	}
 
 	return snprintf(buf, PAGE_SIZE, "%x:%x", bus_number, devfn);
+	return snprintf(buf, PAGE_SIZE, "%x:%x\n", bus_number, devfn);
 }
 
 static ssize_t nes_store_adapter(struct device_driver *ddp,
@@ -1050,6 +1210,57 @@ static ssize_t nes_store_idx_data(struct device_driver *ddp,
 	return strnlen(buf, count);
 }
 
+
+/**
+ * nes_show_wqm_quanta
+ */
+static ssize_t nes_show_wqm_quanta(struct device_driver *ddp, char *buf)
+{
+	u32 wqm_quanta_value = 0xdead;
+	u32 i = 0;
+	struct nes_device *nesdev;
+
+	list_for_each_entry(nesdev, &nes_dev_list, list) {
+		if (i == ee_flsh_adapter) {
+			wqm_quanta_value = nesdev->nesadapter->wqm_quanta;
+			break;
+		}
+		i++;
+	}
+
+	return  snprintf(buf, PAGE_SIZE, "0x%X\n", wqm_quanta_value);
+}
+
+
+/**
+ * nes_store_wqm_quanta
+ */
+static ssize_t nes_store_wqm_quanta(struct device_driver *ddp,
+					const char *buf, size_t count)
+{
+	unsigned long wqm_quanta_value;
+	u32 wqm_config1;
+	u32 i = 0;
+	struct nes_device *nesdev;
+
+	if (kstrtoul(buf, 0, &wqm_quanta_value) < 0)
+		return -EINVAL;
+
+	list_for_each_entry(nesdev, &nes_dev_list, list) {
+		if (i == ee_flsh_adapter) {
+			nesdev->nesadapter->wqm_quanta = wqm_quanta_value;
+			wqm_config1 = nes_read_indexed(nesdev,
+						NES_IDX_WQM_CONFIG1);
+			nes_write_indexed(nesdev, NES_IDX_WQM_CONFIG1,
+					((wqm_quanta_value << 1) |
+					(wqm_config1 & 0x00000001)));
+			break;
+		}
+		i++;
+	}
+	return strnlen(buf, count);
+}
+
 static DRIVER_ATTR(adapter, S_IRUSR | S_IWUSR,
 		   nes_show_adapter, nes_store_adapter);
 static DRIVER_ATTR(eeprom_cmd, S_IRUSR | S_IWUSR,
@@ -1068,6 +1279,8 @@ static DRIVER_ATTR(idx_addr, S_IRUSR | S_IWUSR,
 		   nes_show_idx_addr, nes_store_idx_addr);
 static DRIVER_ATTR(idx_data, S_IRUSR | S_IWUSR,
 		   nes_show_idx_data, nes_store_idx_data);
+static DRIVER_ATTR(wqm_quanta, S_IRUSR | S_IWUSR,
+		   nes_show_wqm_quanta, nes_store_wqm_quanta);
 
 static int nes_create_driver_sysfs(struct pci_driver *drv)
 {
@@ -1081,6 +1294,7 @@ static int nes_create_driver_sysfs(struct pci_driver *drv)
 	error |= driver_create_file(&drv->driver, &driver_attr_nonidx_data);
 	error |= driver_create_file(&drv->driver, &driver_attr_idx_addr);
 	error |= driver_create_file(&drv->driver, &driver_attr_idx_data);
+	error |= driver_create_file(&drv->driver, &driver_attr_wqm_quanta);
 	return error;
 }
 
@@ -1095,6 +1309,7 @@ static void nes_remove_driver_sysfs(struct pci_driver *drv)
 	driver_remove_file(&drv->driver, &driver_attr_nonidx_data);
 	driver_remove_file(&drv->driver, &driver_attr_idx_addr);
 	driver_remove_file(&drv->driver, &driver_attr_idx_data);
+	driver_remove_file(&drv->driver, &driver_attr_wqm_quanta);
 }
 
 /**

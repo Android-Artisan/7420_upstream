@@ -55,4 +55,6 @@ panic_handler(unsigned long panicPC, unsigned long panicSSR,
 	/* Never return from the panic handler */
 	for (;;) ;
 
+	/* Never return from the panic handler */
+	for (;;) ;
 }

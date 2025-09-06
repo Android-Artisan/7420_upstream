@@ -50,6 +50,12 @@
 
 #define devp_offset_find(devp)	(((int)(devp))-1)
 #define devp_offset(devp)	(devp ? ((int)(devp))-1 : 0)
+		unsigned long _offset = (off); \
+		check_err(_offset) ? NULL : (void *)(_offset+1); \
+	})
+
+#define devp_offset_find(devp)	(((unsigned long)(devp))-1)
+#define devp_offset(devp)	(devp ? ((unsigned long)(devp))-1 : 0)
 
 static void *fdt;
 static void *buf; /* = NULL */
@@ -103,6 +109,11 @@ static int fdt_wrapper_setprop(const void *devp, const char *name,
 	}
 
 	return check_err(rc);
+}
+
+static int fdt_wrapper_del_node(const void *devp)
+{
+	return fdt_del_node(fdt, devp_offset(devp));
 }
 
 static void *fdt_wrapper_get_parent(const void *devp)
@@ -165,6 +176,7 @@ static unsigned long fdt_wrapper_finalize(void)
 void fdt_init(void *blob)
 {
 	int err;
+	int bufsize;
 
 	dt_ops.finddevice = fdt_wrapper_finddevice;
 	dt_ops.getprop = fdt_wrapper_getprop;
@@ -173,6 +185,7 @@ void fdt_init(void *blob)
 	dt_ops.create_node = fdt_wrapper_create_node;
 	dt_ops.find_node_by_prop_value = fdt_wrapper_find_node_by_prop_value;
 	dt_ops.find_node_by_compatible = fdt_wrapper_find_node_by_compatible;
+	dt_ops.del_node = fdt_wrapper_del_node;
 	dt_ops.get_path = fdt_wrapper_get_path;
 	dt_ops.finalize = fdt_wrapper_finalize;
 
@@ -184,10 +197,17 @@ void fdt_init(void *blob)
 		buf = malloc(bufsize);
 		err = fdt_open_into(fdt, buf, bufsize);
 	}
+	bufsize = fdt_totalsize(fdt) + EXPAND_GRANULARITY;
+	buf = malloc(bufsize);
+	if(!buf)
+		fatal("malloc failed. can't relocate the device tree\n\r");
+
+	err = fdt_open_into(fdt, buf, bufsize);
 
 	if (err != 0)
 		fatal("fdt_init(): %s\n\r", fdt_strerror(err));
 
 	if (buf)
 		fdt = buf;
+	fdt = buf;
 }

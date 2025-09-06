@@ -27,12 +27,15 @@ static struct ctl_table_header *rose_table_header;
 static ctl_table rose_table[] = {
 	{
 		.ctl_name	= NET_ROSE_RESTART_REQUEST_TIMEOUT,
+static struct ctl_table rose_table[] = {
+	{
 		.procname	= "restart_request_timeout",
 		.data		= &sysctl_rose_restart_request_timeout,
 		.maxlen		= sizeof(int),
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec_minmax,
 		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &min_timer,
 		.extra2		= &max_timer
 	},
@@ -44,6 +47,7 @@ static ctl_table rose_table[] = {
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec_minmax,
 		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &min_timer,
 		.extra2		= &max_timer
 	},
@@ -55,6 +59,7 @@ static ctl_table rose_table[] = {
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec_minmax,
 		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &min_timer,
 		.extra2		= &max_timer
 	},
@@ -66,6 +71,7 @@ static ctl_table rose_table[] = {
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec_minmax,
 		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &min_timer,
 		.extra2		= &max_timer
 	},
@@ -77,6 +83,7 @@ static ctl_table rose_table[] = {
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec_minmax,
 		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &min_idle,
 		.extra2		= &max_idle
 	},
@@ -88,6 +95,7 @@ static ctl_table rose_table[] = {
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec_minmax,
 		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &min_timer,
 		.extra2		= &max_timer
 	},
@@ -99,6 +107,7 @@ static ctl_table rose_table[] = {
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec_minmax,
 		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &min_route,
 		.extra2		= &max_route
 	},
@@ -110,6 +119,7 @@ static ctl_table rose_table[] = {
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec_minmax,
 		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &min_ftimer,
 		.extra2		= &max_ftimer
 	},
@@ -121,6 +131,7 @@ static ctl_table rose_table[] = {
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec_minmax,
 		.strategy	= &sysctl_intvec,
+		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &min_maxvcs,
 		.extra2		= &max_maxvcs
 	},
@@ -141,15 +152,21 @@ static ctl_table rose_table[] = {
 static struct ctl_path rose_path[] = {
 	{ .procname = "net", .ctl_name = CTL_NET, },
 	{ .procname = "rose", .ctl_name = NET_ROSE, },
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= &min_window,
+		.extra2		= &max_window
+	},
 	{ }
 };
 
 void __init rose_register_sysctl(void)
 {
 	rose_table_header = register_sysctl_paths(rose_path, rose_table);
+	rose_table_header = register_net_sysctl(&init_net, "net/rose", rose_table);
 }
 
 void rose_unregister_sysctl(void)
 {
 	unregister_sysctl_table(rose_table_header);
+	unregister_net_sysctl_table(rose_table_header);
 }

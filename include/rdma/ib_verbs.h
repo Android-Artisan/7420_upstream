@@ -51,6 +51,16 @@
 #include <asm/atomic.h>
 #include <asm/uaccess.h>
 
+#include <linux/workqueue.h>
+#include <linux/socket.h>
+#include <uapi/linux/if_ether.h>
+
+#include <linux/atomic.h>
+#include <linux/mmu_notifier.h>
+#include <asm/uaccess.h>
+
+extern struct workqueue_struct *ib_wq;
+
 union ib_gid {
 	u8	raw[16];
 	struct {
@@ -59,12 +69,21 @@ union ib_gid {
 	} global;
 };
 
+extern union ib_gid zgid;
+
+struct ib_gid_attr {
+	struct net_device	*ndev;
+};
+
 enum rdma_node_type {
 	/* IB values map to NodeInfo:NodeType. */
 	RDMA_NODE_IB_CA 	= 1,
 	RDMA_NODE_IB_SWITCH,
 	RDMA_NODE_IB_ROUTER,
 	RDMA_NODE_RNIC
+	RDMA_NODE_RNIC,
+	RDMA_NODE_USNIC,
+	RDMA_NODE_USNIC_UDP,
 };
 
 enum rdma_transport_type {
@@ -74,6 +93,26 @@ enum rdma_transport_type {
 
 enum rdma_transport_type
 rdma_node_get_transport(enum rdma_node_type node_type) __attribute_const__;
+	RDMA_TRANSPORT_IWARP,
+	RDMA_TRANSPORT_USNIC,
+	RDMA_TRANSPORT_USNIC_UDP
+};
+
+enum rdma_protocol_type {
+	RDMA_PROTOCOL_IB,
+	RDMA_PROTOCOL_IBOE,
+	RDMA_PROTOCOL_IWARP,
+	RDMA_PROTOCOL_USNIC_UDP
+};
+
+__attribute_const__ enum rdma_transport_type
+rdma_node_get_transport(enum rdma_node_type node_type);
+
+enum rdma_link_layer {
+	IB_LINK_LAYER_UNSPECIFIED,
+	IB_LINK_LAYER_INFINIBAND,
+	IB_LINK_LAYER_ETHERNET,
+};
 
 enum ib_device_cap_flags {
 	IB_DEVICE_RESIZE_MAX_WR		= 1,
@@ -105,12 +144,64 @@ enum ib_device_cap_flags {
 	IB_DEVICE_UD_TSO		= (1<<19),
 	IB_DEVICE_MEM_MGT_EXTENSIONS	= (1<<21),
 	IB_DEVICE_BLOCK_MULTICAST_LOOPBACK = (1<<22),
+	IB_DEVICE_XRC			= (1<<20),
+	IB_DEVICE_MEM_MGT_EXTENSIONS	= (1<<21),
+	IB_DEVICE_BLOCK_MULTICAST_LOOPBACK = (1<<22),
+	IB_DEVICE_MEM_WINDOW_TYPE_2A	= (1<<23),
+	IB_DEVICE_MEM_WINDOW_TYPE_2B	= (1<<24),
+	IB_DEVICE_RC_IP_CSUM		= (1<<25),
+	IB_DEVICE_RAW_IP_CSUM		= (1<<26),
+	IB_DEVICE_MANAGED_FLOW_STEERING = (1<<29),
+	IB_DEVICE_SIGNATURE_HANDOVER	= (1<<30),
+	IB_DEVICE_ON_DEMAND_PAGING	= (1<<31),
+};
+
+enum ib_signature_prot_cap {
+	IB_PROT_T10DIF_TYPE_1 = 1,
+	IB_PROT_T10DIF_TYPE_2 = 1 << 1,
+	IB_PROT_T10DIF_TYPE_3 = 1 << 2,
+};
+
+enum ib_signature_guard_cap {
+	IB_GUARD_T10DIF_CRC	= 1,
+	IB_GUARD_T10DIF_CSUM	= 1 << 1,
 };
 
 enum ib_atomic_cap {
 	IB_ATOMIC_NONE,
 	IB_ATOMIC_HCA,
 	IB_ATOMIC_GLOB
+};
+
+enum ib_odp_general_cap_bits {
+	IB_ODP_SUPPORT = 1 << 0,
+};
+
+enum ib_odp_transport_cap_bits {
+	IB_ODP_SUPPORT_SEND	= 1 << 0,
+	IB_ODP_SUPPORT_RECV	= 1 << 1,
+	IB_ODP_SUPPORT_WRITE	= 1 << 2,
+	IB_ODP_SUPPORT_READ	= 1 << 3,
+	IB_ODP_SUPPORT_ATOMIC	= 1 << 4,
+};
+
+struct ib_odp_caps {
+	uint64_t general_caps;
+	struct {
+		uint32_t  rc_odp_caps;
+		uint32_t  uc_odp_caps;
+		uint32_t  ud_odp_caps;
+	} per_transport_caps;
+};
+
+enum ib_cq_creation_flags {
+	IB_CQ_FLAGS_TIMESTAMP_COMPLETION   = 1 << 0,
+};
+
+struct ib_cq_init_attr {
+	unsigned int	cqe;
+	int		comp_vector;
+	u32		flags;
 };
 
 struct ib_device_attr {
@@ -136,6 +227,7 @@ struct ib_device_attr {
 	int			max_qp_init_rd_atom;
 	int			max_ee_init_rd_atom;
 	enum ib_atomic_cap	atomic_cap;
+	enum ib_atomic_cap	masked_atomic_cap;
 	int			max_ee;
 	int			max_rdd;
 	int			max_mw;
@@ -153,6 +245,11 @@ struct ib_device_attr {
 	unsigned int		max_fast_reg_page_list_len;
 	u16			max_pkeys;
 	u8			local_ca_ack_delay;
+	int			sig_prot_cap;
+	int			sig_guard_cap;
+	struct ib_odp_caps	odp_caps;
+	uint64_t		timestamp_mask;
+	uint64_t		hca_core_clock; /* in KHZ */
 };
 
 enum ib_mtu {
@@ -197,6 +294,7 @@ enum ib_port_cap_flags {
 	IB_PORT_SM_DISABLED			= 1 << 10,
 	IB_PORT_SYS_IMAGE_GUID_SUP		= 1 << 11,
 	IB_PORT_PKEY_SW_EXT_PORT_TRAP_SUP	= 1 << 12,
+	IB_PORT_EXTENDED_SPEEDS_SUP             = 1 << 14,
 	IB_PORT_CM_SUP				= 1 << 16,
 	IB_PORT_SNMP_TUNNEL_SUP			= 1 << 17,
 	IB_PORT_REINIT_SUP			= 1 << 18,
@@ -207,6 +305,8 @@ enum ib_port_cap_flags {
 	IB_PORT_BOOT_MGMT_SUP			= 1 << 23,
 	IB_PORT_LINK_LATENCY_SUP		= 1 << 24,
 	IB_PORT_CLIENT_REG_SUP			= 1 << 25
+	IB_PORT_CLIENT_REG_SUP			= 1 << 25,
+	IB_PORT_IP_BASED_GIDS			= 1 << 26,
 };
 
 enum ib_port_width {
@@ -226,6 +326,15 @@ static inline int ib_width_enum_to_int(enum ib_port_width width)
 	default: 	  return -1;
 	}
 }
+
+enum ib_port_speed {
+	IB_SPEED_SDR	= 1,
+	IB_SPEED_DDR	= 2,
+	IB_SPEED_QDR	= 4,
+	IB_SPEED_FDR10	= 8,
+	IB_SPEED_FDR	= 16,
+	IB_SPEED_EDR	= 32
+};
 
 struct ib_protocol_stats {
 	/* TBD... */
@@ -277,6 +386,42 @@ union rdma_protocol_stats {
 	struct ib_protocol_stats	ib;
 	struct iw_protocol_stats	iw;
 };
+
+/* Define bits for the various functionality this port needs to be supported by
+ * the core.
+ */
+/* Management                           0x00000FFF */
+#define RDMA_CORE_CAP_IB_MAD            0x00000001
+#define RDMA_CORE_CAP_IB_SMI            0x00000002
+#define RDMA_CORE_CAP_IB_CM             0x00000004
+#define RDMA_CORE_CAP_IW_CM             0x00000008
+#define RDMA_CORE_CAP_IB_SA             0x00000010
+#define RDMA_CORE_CAP_OPA_MAD           0x00000020
+
+/* Address format                       0x000FF000 */
+#define RDMA_CORE_CAP_AF_IB             0x00001000
+#define RDMA_CORE_CAP_ETH_AH            0x00002000
+
+/* Protocol                             0xFFF00000 */
+#define RDMA_CORE_CAP_PROT_IB           0x00100000
+#define RDMA_CORE_CAP_PROT_ROCE         0x00200000
+#define RDMA_CORE_CAP_PROT_IWARP        0x00400000
+
+#define RDMA_CORE_PORT_IBA_IB          (RDMA_CORE_CAP_PROT_IB  \
+					| RDMA_CORE_CAP_IB_MAD \
+					| RDMA_CORE_CAP_IB_SMI \
+					| RDMA_CORE_CAP_IB_CM  \
+					| RDMA_CORE_CAP_IB_SA  \
+					| RDMA_CORE_CAP_AF_IB)
+#define RDMA_CORE_PORT_IBA_ROCE        (RDMA_CORE_CAP_PROT_ROCE \
+					| RDMA_CORE_CAP_IB_MAD  \
+					| RDMA_CORE_CAP_IB_CM   \
+					| RDMA_CORE_CAP_AF_IB   \
+					| RDMA_CORE_CAP_ETH_AH)
+#define RDMA_CORE_PORT_IWARP           (RDMA_CORE_CAP_PROT_IWARP \
+					| RDMA_CORE_CAP_IW_CM)
+#define RDMA_CORE_PORT_INTEL_OPA       (RDMA_CORE_PORT_IBA_IB  \
+					| RDMA_CORE_CAP_OPA_MAD)
 
 struct ib_port_attr {
 	enum ib_port_state	state;
@@ -343,6 +488,12 @@ enum ib_event_type {
 	IB_EVENT_CLIENT_REREGISTER
 };
 
+	IB_EVENT_CLIENT_REREGISTER,
+	IB_EVENT_GID_CHANGE,
+};
+
+const char *__attribute_const__ ib_event_msg(enum ib_event_type event);
+
 struct ib_event {
 	struct ib_device	*device;
 	union {
@@ -389,6 +540,7 @@ enum {
 };
 
 #define IB_LID_PERMISSIVE	__constant_htons(0xFFFF)
+#define IB_LID_PERMISSIVE	cpu_to_be16(0xFFFF)
 
 enum ib_ah_flags {
 	IB_AH_GRH	= 1
@@ -405,6 +557,15 @@ enum ib_rate {
 	IB_RATE_60_GBPS  = 8,
 	IB_RATE_80_GBPS  = 9,
 	IB_RATE_120_GBPS = 10
+	IB_RATE_120_GBPS = 10,
+	IB_RATE_14_GBPS  = 11,
+	IB_RATE_56_GBPS  = 12,
+	IB_RATE_112_GBPS = 13,
+	IB_RATE_168_GBPS = 14,
+	IB_RATE_25_GBPS  = 15,
+	IB_RATE_100_GBPS = 16,
+	IB_RATE_200_GBPS = 17,
+	IB_RATE_300_GBPS = 18
 };
 
 /**
@@ -414,6 +575,132 @@ enum ib_rate {
  * @rate: rate to convert.
  */
 int ib_rate_to_mult(enum ib_rate rate) __attribute_const__;
+__attribute_const__ int ib_rate_to_mult(enum ib_rate rate);
+
+/**
+ * ib_rate_to_mbps - Convert the IB rate enum to Mbps.
+ * For example, IB_RATE_2_5_GBPS will be converted to 2500.
+ * @rate: rate to convert.
+ */
+__attribute_const__ int ib_rate_to_mbps(enum ib_rate rate);
+
+
+/**
+ * enum ib_mr_type - memory region type
+ * @IB_MR_TYPE_MEM_REG:       memory region that is used for
+ *                            normal registration
+ * @IB_MR_TYPE_SIGNATURE:     memory region that is used for
+ *                            signature operations (data-integrity
+ *                            capable regions)
+ */
+enum ib_mr_type {
+	IB_MR_TYPE_MEM_REG,
+	IB_MR_TYPE_SIGNATURE,
+};
+
+/**
+ * Signature types
+ * IB_SIG_TYPE_NONE: Unprotected.
+ * IB_SIG_TYPE_T10_DIF: Type T10-DIF
+ */
+enum ib_signature_type {
+	IB_SIG_TYPE_NONE,
+	IB_SIG_TYPE_T10_DIF,
+};
+
+/**
+ * Signature T10-DIF block-guard types
+ * IB_T10DIF_CRC: Corresponds to T10-PI mandated CRC checksum rules.
+ * IB_T10DIF_CSUM: Corresponds to IP checksum rules.
+ */
+enum ib_t10_dif_bg_type {
+	IB_T10DIF_CRC,
+	IB_T10DIF_CSUM
+};
+
+/**
+ * struct ib_t10_dif_domain - Parameters specific for T10-DIF
+ *     domain.
+ * @bg_type: T10-DIF block guard type (CRC|CSUM)
+ * @pi_interval: protection information interval.
+ * @bg: seed of guard computation.
+ * @app_tag: application tag of guard block
+ * @ref_tag: initial guard block reference tag.
+ * @ref_remap: Indicate wethear the reftag increments each block
+ * @app_escape: Indicate to skip block check if apptag=0xffff
+ * @ref_escape: Indicate to skip block check if reftag=0xffffffff
+ * @apptag_check_mask: check bitmask of application tag.
+ */
+struct ib_t10_dif_domain {
+	enum ib_t10_dif_bg_type bg_type;
+	u16			pi_interval;
+	u16			bg;
+	u16			app_tag;
+	u32			ref_tag;
+	bool			ref_remap;
+	bool			app_escape;
+	bool			ref_escape;
+	u16			apptag_check_mask;
+};
+
+/**
+ * struct ib_sig_domain - Parameters for signature domain
+ * @sig_type: specific signauture type
+ * @sig: union of all signature domain attributes that may
+ *     be used to set domain layout.
+ */
+struct ib_sig_domain {
+	enum ib_signature_type sig_type;
+	union {
+		struct ib_t10_dif_domain dif;
+	} sig;
+};
+
+/**
+ * struct ib_sig_attrs - Parameters for signature handover operation
+ * @check_mask: bitmask for signature byte check (8 bytes)
+ * @mem: memory domain layout desciptor.
+ * @wire: wire domain layout desciptor.
+ */
+struct ib_sig_attrs {
+	u8			check_mask;
+	struct ib_sig_domain	mem;
+	struct ib_sig_domain	wire;
+};
+
+enum ib_sig_err_type {
+	IB_SIG_BAD_GUARD,
+	IB_SIG_BAD_REFTAG,
+	IB_SIG_BAD_APPTAG,
+};
+
+/**
+ * struct ib_sig_err - signature error descriptor
+ */
+struct ib_sig_err {
+	enum ib_sig_err_type	err_type;
+	u32			expected;
+	u32			actual;
+	u64			sig_err_offset;
+	u32			key;
+};
+
+enum ib_mr_status_check {
+	IB_MR_CHECK_SIG_STATUS = 1,
+};
+
+/**
+ * struct ib_mr_status - Memory region status container
+ *
+ * @fail_status: Bitmask of MR checks status. For each
+ *     failed check a corresponding status bit is set.
+ * @sig_err: Additional info for IB_MR_CEHCK_SIG_STATUS
+ *     failure.
+ */
+struct ib_mr_status {
+	u32		    fail_status;
+	struct ib_sig_err   sig_err;
+};
 
 /**
  * mult_to_ib_rate - Convert a multiple of 2.5 Gbit/sec to an IB rate
@@ -421,6 +708,7 @@ int ib_rate_to_mult(enum ib_rate rate) __attribute_const__;
  * @mult: multiple to convert.
  */
 enum ib_rate mult_to_ib_rate(int mult) __attribute_const__;
+__attribute_const__ enum ib_rate mult_to_ib_rate(int mult);
 
 struct ib_ah_attr {
 	struct ib_global_route	grh;
@@ -430,6 +718,7 @@ struct ib_ah_attr {
 	u8			static_rate;
 	u8			ah_flags;
 	u8			port_num;
+	u8			dmac[ETH_ALEN];
 };
 
 enum ib_wc_status {
@@ -457,6 +746,8 @@ enum ib_wc_status {
 	IB_WC_GENERAL_ERR
 };
 
+const char *__attribute_const__ ib_wc_status_msg(enum ib_wc_status status);
+
 enum ib_wc_opcode {
 	IB_WC_SEND,
 	IB_WC_RDMA_WRITE,
@@ -467,6 +758,9 @@ enum ib_wc_opcode {
 	IB_WC_LSO,
 	IB_WC_LOCAL_INV,
 	IB_WC_FAST_REG_MR,
+	IB_WC_REG_MR,
+	IB_WC_MASKED_COMP_SWAP,
+	IB_WC_MASKED_FETCH_ADD,
 /*
  * Set value of IB_WC_RECV so consumers can test if a completion is a
  * receive by testing (opcode & IB_WC_RECV).
@@ -479,6 +773,9 @@ enum ib_wc_flags {
 	IB_WC_GRH		= 1,
 	IB_WC_WITH_IMM		= (1<<1),
 	IB_WC_WITH_INVALIDATE	= (1<<2),
+	IB_WC_IP_CSUM_OK	= (1<<3),
+	IB_WC_WITH_SMAC		= (1<<4),
+	IB_WC_WITH_VLAN		= (1<<5),
 };
 
 struct ib_wc {
@@ -500,6 +797,8 @@ struct ib_wc {
 	u8			dlid_path_bits;
 	u8			port_num;	/* valid only for DR SMPs on switches */
 	int			csum_ok;
+	u8			smac[ETH_ALEN];
+	u16			vlan_id;
 };
 
 enum ib_cq_notify_flags {
@@ -507,6 +806,11 @@ enum ib_cq_notify_flags {
 	IB_CQ_NEXT_COMP			= 1 << 1,
 	IB_CQ_SOLICITED_MASK		= IB_CQ_SOLICITED | IB_CQ_NEXT_COMP,
 	IB_CQ_REPORT_MISSED_EVENTS	= 1 << 2,
+};
+
+enum ib_srq_type {
+	IB_SRQT_BASIC,
+	IB_SRQT_XRC
 };
 
 enum ib_srq_attr_mask {
@@ -524,6 +828,14 @@ struct ib_srq_init_attr {
 	void		      (*event_handler)(struct ib_event *, void *);
 	void		       *srq_context;
 	struct ib_srq_attr	attr;
+	enum ib_srq_type	srq_type;
+
+	union {
+		struct {
+			struct ib_xrcd *xrcd;
+			struct ib_cq   *cq;
+		} xrc;
+	} ext;
 };
 
 struct ib_qp_cap {
@@ -553,6 +865,25 @@ enum ib_qp_type {
 	IB_QPT_UD,
 	IB_QPT_RAW_IPV6,
 	IB_QPT_RAW_ETY
+	IB_QPT_RAW_ETHERTYPE,
+	IB_QPT_RAW_PACKET = 8,
+	IB_QPT_XRC_INI = 9,
+	IB_QPT_XRC_TGT,
+	IB_QPT_MAX,
+	/* Reserve a range for qp types internal to the low level driver.
+	 * These qp types will not be visible at the IB core layer, so the
+	 * IB_QPT_MAX usages should not be affected in the core layer
+	 */
+	IB_QPT_RESERVED1 = 0x1000,
+	IB_QPT_RESERVED2,
+	IB_QPT_RESERVED3,
+	IB_QPT_RESERVED4,
+	IB_QPT_RESERVED5,
+	IB_QPT_RESERVED6,
+	IB_QPT_RESERVED7,
+	IB_QPT_RESERVED8,
+	IB_QPT_RESERVED9,
+	IB_QPT_RESERVED10,
 };
 
 enum ib_qp_create_flags {
@@ -560,17 +891,38 @@ enum ib_qp_create_flags {
 	IB_QP_CREATE_BLOCK_MULTICAST_LOOPBACK	= 1 << 1,
 };
 
+	IB_QP_CREATE_NETIF_QP			= 1 << 5,
+	IB_QP_CREATE_SIGNATURE_EN		= 1 << 6,
+	IB_QP_CREATE_USE_GFP_NOIO		= 1 << 7,
+	/* reserve bits 26-31 for low level drivers' internal use */
+	IB_QP_CREATE_RESERVED_START		= 1 << 26,
+	IB_QP_CREATE_RESERVED_END		= 1 << 31,
+};
+
+/*
+ * Note: users may not call ib_close_qp or ib_destroy_qp from the event_handler
+ * callback to destroy the passed in QP.
+ */
+
 struct ib_qp_init_attr {
 	void                  (*event_handler)(struct ib_event *, void *);
 	void		       *qp_context;
 	struct ib_cq	       *send_cq;
 	struct ib_cq	       *recv_cq;
 	struct ib_srq	       *srq;
+	struct ib_xrcd	       *xrcd;     /* XRC TGT QPs only */
 	struct ib_qp_cap	cap;
 	enum ib_sig_type	sq_sig_type;
 	enum ib_qp_type		qp_type;
 	enum ib_qp_create_flags	create_flags;
 	u8			port_num; /* special QP types only */
+};
+
+struct ib_qp_open_attr {
+	void                  (*event_handler)(struct ib_event *, void *);
+	void		       *qp_context;
+	u32			qp_num;
+	enum ib_qp_type		qp_type;
 };
 
 enum ib_rnr_timeout {
@@ -630,6 +982,11 @@ enum ib_qp_attr_mask {
 	IB_QP_PATH_MIG_STATE		= (1<<18),
 	IB_QP_CAP			= (1<<19),
 	IB_QP_DEST_QPN			= (1<<20)
+	IB_QP_DEST_QPN			= (1<<20),
+	IB_QP_RESERVED1			= (1<<21),
+	IB_QP_RESERVED2			= (1<<22),
+	IB_QP_RESERVED3			= (1<<23),
+	IB_QP_RESERVED4			= (1<<24),
 };
 
 enum ib_qp_state {
@@ -646,6 +1003,11 @@ enum ib_mig_state {
 	IB_MIG_MIGRATED,
 	IB_MIG_REARM,
 	IB_MIG_ARMED
+};
+
+enum ib_mw_type {
+	IB_MW_TYPE_1 = 1,
+	IB_MW_TYPE_2 = 2
 };
 
 struct ib_qp_attr {
@@ -689,6 +1051,24 @@ enum ib_wr_opcode {
 	IB_WR_RDMA_READ_WITH_INV,
 	IB_WR_LOCAL_INV,
 	IB_WR_FAST_REG_MR,
+	IB_WR_REG_MR,
+	IB_WR_MASKED_ATOMIC_CMP_AND_SWP,
+	IB_WR_MASKED_ATOMIC_FETCH_AND_ADD,
+	IB_WR_BIND_MW,
+	IB_WR_REG_SIG_MR,
+	/* reserve values for low level drivers' internal use.
+	 * These values will not be used at all in the ib core layer.
+	 */
+	IB_WR_RESERVED1 = 0xf0,
+	IB_WR_RESERVED2,
+	IB_WR_RESERVED3,
+	IB_WR_RESERVED4,
+	IB_WR_RESERVED5,
+	IB_WR_RESERVED6,
+	IB_WR_RESERVED7,
+	IB_WR_RESERVED8,
+	IB_WR_RESERVED9,
+	IB_WR_RESERVED10,
 };
 
 enum ib_send_flags {
@@ -697,6 +1077,11 @@ enum ib_send_flags {
 	IB_SEND_SOLICITED	= (1<<2),
 	IB_SEND_INLINE		= (1<<3),
 	IB_SEND_IP_CSUM		= (1<<4)
+	IB_SEND_IP_CSUM		= (1<<4),
+
+	/* reserve bits 26-31 for low level drivers' internal use */
+	IB_SEND_RESERVED_START	= (1 << 26),
+	IB_SEND_RESERVED_END	= (1 << 31),
 };
 
 struct ib_sge {
@@ -709,6 +1094,21 @@ struct ib_fast_reg_page_list {
 	struct ib_device       *device;
 	u64		       *page_list;
 	unsigned int		max_page_list_len;
+/**
+ * struct ib_mw_bind_info - Parameters for a memory window bind operation.
+ * @mr: A memory region to bind the memory window to.
+ * @addr: The address where the memory window should begin.
+ * @length: The length of the memory window, in bytes.
+ * @mw_access_flags: Access flags from enum ib_access_flags for the window.
+ *
+ * This struct contains the shared parameters for type 1 and type 2
+ * memory window bind operations.
+ */
+struct ib_mw_bind_info {
+	struct ib_mr   *mr;
+	u64		addr;
+	u64		length;
+	int		mw_access_flags;
 };
 
 struct ib_send_wr {
@@ -755,6 +1155,89 @@ struct ib_send_wr {
 	} wr;
 };
 
+};
+
+struct ib_rdma_wr {
+	struct ib_send_wr	wr;
+	u64			remote_addr;
+	u32			rkey;
+};
+
+static inline struct ib_rdma_wr *rdma_wr(struct ib_send_wr *wr)
+{
+	return container_of(wr, struct ib_rdma_wr, wr);
+}
+
+struct ib_atomic_wr {
+	struct ib_send_wr	wr;
+	u64			remote_addr;
+	u64			compare_add;
+	u64			swap;
+	u64			compare_add_mask;
+	u64			swap_mask;
+	u32			rkey;
+};
+
+static inline struct ib_atomic_wr *atomic_wr(struct ib_send_wr *wr)
+{
+	return container_of(wr, struct ib_atomic_wr, wr);
+}
+
+struct ib_ud_wr {
+	struct ib_send_wr	wr;
+	struct ib_ah		*ah;
+	void			*header;
+	int			hlen;
+	int			mss;
+	u32			remote_qpn;
+	u32			remote_qkey;
+	u16			pkey_index; /* valid for GSI only */
+	u8			port_num;   /* valid for DR SMPs on switch only */
+};
+
+static inline struct ib_ud_wr *ud_wr(struct ib_send_wr *wr)
+{
+	return container_of(wr, struct ib_ud_wr, wr);
+}
+
+struct ib_reg_wr {
+	struct ib_send_wr	wr;
+	struct ib_mr		*mr;
+	u32			key;
+	int			access;
+};
+
+static inline struct ib_reg_wr *reg_wr(struct ib_send_wr *wr)
+{
+	return container_of(wr, struct ib_reg_wr, wr);
+}
+
+struct ib_bind_mw_wr {
+	struct ib_send_wr	wr;
+	struct ib_mw		*mw;
+	/* The new rkey for the memory window. */
+	u32			rkey;
+	struct ib_mw_bind_info	bind_info;
+};
+
+static inline struct ib_bind_mw_wr *bind_mw_wr(struct ib_send_wr *wr)
+{
+	return container_of(wr, struct ib_bind_mw_wr, wr);
+}
+
+struct ib_sig_handover_wr {
+	struct ib_send_wr	wr;
+	struct ib_sig_attrs    *sig_attrs;
+	struct ib_mr	       *sig_mr;
+	int			access_flags;
+	struct ib_sge	       *prot;
+};
+
+static inline struct ib_sig_handover_wr *sig_handover_wr(struct ib_send_wr *wr)
+{
+	return container_of(wr, struct ib_sig_handover_wr, wr);
+}
+
 struct ib_recv_wr {
 	struct ib_recv_wr      *next;
 	u64			wr_id;
@@ -768,6 +1251,9 @@ enum ib_access_flags {
 	IB_ACCESS_REMOTE_READ	= (1<<2),
 	IB_ACCESS_REMOTE_ATOMIC	= (1<<3),
 	IB_ACCESS_MW_BIND	= (1<<4)
+	IB_ACCESS_MW_BIND	= (1<<4),
+	IB_ZERO_BASED		= (1<<5),
+	IB_ACCESS_ON_DEMAND     = (1<<6),
 };
 
 struct ib_phys_buf {
@@ -797,6 +1283,20 @@ struct ib_mw_bind {
 	u32		length;
 	int		send_flags;
 	int		mw_access_flags;
+	IB_MR_REREG_ACCESS	= (1<<2),
+	IB_MR_REREG_SUPPORTED	= ((IB_MR_REREG_ACCESS << 1) - 1)
+};
+
+/**
+ * struct ib_mw_bind - Parameters for a type 1 memory window bind operation.
+ * @wr_id:      Work request id.
+ * @send_flags: Flags from ib_send_flags enum.
+ * @bind_info:  More parameters of the bind operation.
+ */
+struct ib_mw_bind {
+	u64                    wr_id;
+	int                    send_flags;
+	struct ib_mw_bind_info bind_info;
 };
 
 struct ib_fmr_attr {
@@ -804,6 +1304,8 @@ struct ib_fmr_attr {
 	int	max_maps;
 	u8	page_shift;
 };
+
+struct ib_umem;
 
 struct ib_ucontext {
 	struct ib_device       *device;
@@ -815,6 +1317,27 @@ struct ib_ucontext {
 	struct list_head	srq_list;
 	struct list_head	ah_list;
 	int			closing;
+	struct list_head	xrcd_list;
+	struct list_head	rule_list;
+	int			closing;
+
+	struct pid             *tgid;
+#ifdef CONFIG_INFINIBAND_ON_DEMAND_PAGING
+	struct rb_root      umem_tree;
+	/*
+	 * Protects .umem_rbroot and tree, as well as odp_mrs_count and
+	 * mmu notifiers registration.
+	 */
+	struct rw_semaphore	umem_rwsem;
+	void (*invalidate_range)(struct ib_umem *umem,
+				 unsigned long start, unsigned long end);
+
+	struct mmu_notifier	mn;
+	atomic_t		notifier_count;
+	/* A list of umems that don't have private mmu notifier counters yet. */
+	struct list_head	no_private_counters;
+	int                     odp_mrs_count;
+#endif
 };
 
 struct ib_uobject {
@@ -825,11 +1348,13 @@ struct ib_uobject {
 	int			id;		/* index into kernel idr */
 	struct kref		ref;
 	struct rw_semaphore	mutex;		/* protects .live */
+	struct rcu_head		rcu;		/* kfree_rcu() overhead */
 	int			live;
 };
 
 struct ib_udata {
 	void __user *inbuf;
+	const void __user *inbuf;
 	void __user *outbuf;
 	size_t       inlen;
 	size_t       outlen;
@@ -839,6 +1364,20 @@ struct ib_pd {
 	struct ib_device       *device;
 	struct ib_uobject      *uobject;
 	atomic_t          	usecnt; /* count all resources */
+	u32			local_dma_lkey;
+	struct ib_device       *device;
+	struct ib_uobject      *uobject;
+	atomic_t          	usecnt; /* count all resources */
+	struct ib_mr	       *local_mr;
+};
+
+struct ib_xrcd {
+	struct ib_device       *device;
+	atomic_t		usecnt; /* count all exposed resources */
+	struct inode	       *inode;
+
+	struct mutex		tgt_qp_mutex;
+	struct list_head	tgt_qp_list;
 };
 
 struct ib_ah {
@@ -866,6 +1405,16 @@ struct ib_srq {
 	void		      (*event_handler)(struct ib_event *, void *);
 	void		       *srq_context;
 	atomic_t		usecnt;
+	enum ib_srq_type	srq_type;
+	atomic_t		usecnt;
+
+	union {
+		struct {
+			struct ib_xrcd *xrcd;
+			struct ib_cq   *cq;
+			u32		srq_num;
+		} xrc;
+	} ext;
 };
 
 struct ib_qp {
@@ -874,6 +1423,12 @@ struct ib_qp {
 	struct ib_cq	       *send_cq;
 	struct ib_cq	       *recv_cq;
 	struct ib_srq	       *srq;
+	struct ib_xrcd	       *xrcd; /* XRC TGT QPs only */
+	struct list_head	xrcd_list;
+	/* count times opened, mcast attaches, flow attaches */
+	atomic_t		usecnt;
+	struct list_head	open_list;
+	struct ib_qp           *real_qp;
 	struct ib_uobject      *uobject;
 	void                  (*event_handler)(struct ib_event *, void *);
 	void		       *qp_context;
@@ -887,6 +1442,9 @@ struct ib_mr {
 	struct ib_uobject *uobject;
 	u32		   lkey;
 	u32		   rkey;
+	u64		   iova;
+	u32		   length;
+	unsigned int	   page_size;
 	atomic_t	   usecnt; /* count number of MWs */
 };
 
@@ -895,6 +1453,7 @@ struct ib_mw {
 	struct ib_pd		*pd;
 	struct ib_uobject	*uobject;
 	u32			rkey;
+	enum ib_mw_type         type;
 };
 
 struct ib_fmr {
@@ -906,6 +1465,127 @@ struct ib_fmr {
 };
 
 struct ib_mad;
+/* Supported steering options */
+enum ib_flow_attr_type {
+	/* steering according to rule specifications */
+	IB_FLOW_ATTR_NORMAL		= 0x0,
+	/* default unicast and multicast rule -
+	 * receive all Eth traffic which isn't steered to any QP
+	 */
+	IB_FLOW_ATTR_ALL_DEFAULT	= 0x1,
+	/* default multicast rule -
+	 * receive all Eth multicast traffic which isn't steered to any QP
+	 */
+	IB_FLOW_ATTR_MC_DEFAULT		= 0x2,
+	/* sniffer rule - receive all port traffic */
+	IB_FLOW_ATTR_SNIFFER		= 0x3
+};
+
+/* Supported steering header types */
+enum ib_flow_spec_type {
+	/* L2 headers*/
+	IB_FLOW_SPEC_ETH	= 0x20,
+	IB_FLOW_SPEC_IB		= 0x22,
+	/* L3 header*/
+	IB_FLOW_SPEC_IPV4	= 0x30,
+	/* L4 headers*/
+	IB_FLOW_SPEC_TCP	= 0x40,
+	IB_FLOW_SPEC_UDP	= 0x41
+};
+#define IB_FLOW_SPEC_LAYER_MASK	0xF0
+#define IB_FLOW_SPEC_SUPPORT_LAYERS 4
+
+/* Flow steering rule priority is set according to it's domain.
+ * Lower domain value means higher priority.
+ */
+enum ib_flow_domain {
+	IB_FLOW_DOMAIN_USER,
+	IB_FLOW_DOMAIN_ETHTOOL,
+	IB_FLOW_DOMAIN_RFS,
+	IB_FLOW_DOMAIN_NIC,
+	IB_FLOW_DOMAIN_NUM /* Must be last */
+};
+
+struct ib_flow_eth_filter {
+	u8	dst_mac[6];
+	u8	src_mac[6];
+	__be16	ether_type;
+	__be16	vlan_tag;
+};
+
+struct ib_flow_spec_eth {
+	enum ib_flow_spec_type	  type;
+	u16			  size;
+	struct ib_flow_eth_filter val;
+	struct ib_flow_eth_filter mask;
+};
+
+struct ib_flow_ib_filter {
+	__be16 dlid;
+	__u8   sl;
+};
+
+struct ib_flow_spec_ib {
+	enum ib_flow_spec_type	 type;
+	u16			 size;
+	struct ib_flow_ib_filter val;
+	struct ib_flow_ib_filter mask;
+};
+
+struct ib_flow_ipv4_filter {
+	__be32	src_ip;
+	__be32	dst_ip;
+};
+
+struct ib_flow_spec_ipv4 {
+	enum ib_flow_spec_type	   type;
+	u16			   size;
+	struct ib_flow_ipv4_filter val;
+	struct ib_flow_ipv4_filter mask;
+};
+
+struct ib_flow_tcp_udp_filter {
+	__be16	dst_port;
+	__be16	src_port;
+};
+
+struct ib_flow_spec_tcp_udp {
+	enum ib_flow_spec_type	      type;
+	u16			      size;
+	struct ib_flow_tcp_udp_filter val;
+	struct ib_flow_tcp_udp_filter mask;
+};
+
+union ib_flow_spec {
+	struct {
+		enum ib_flow_spec_type	type;
+		u16			size;
+	};
+	struct ib_flow_spec_eth		eth;
+	struct ib_flow_spec_ib		ib;
+	struct ib_flow_spec_ipv4        ipv4;
+	struct ib_flow_spec_tcp_udp	tcp_udp;
+};
+
+struct ib_flow_attr {
+	enum ib_flow_attr_type type;
+	u16	     size;
+	u16	     priority;
+	u32	     flags;
+	u8	     num_of_specs;
+	u8	     port;
+	/* Following are the optional layers according to user request
+	 * struct ib_flow_spec_xxx
+	 * struct ib_flow_spec_yyy
+	 */
+};
+
+struct ib_flow {
+	struct ib_qp		*qp;
+	struct ib_uobject	*uobject;
+};
+
+struct ib_mad_hdr;
 struct ib_grh;
 
 enum ib_process_mad_flags {
@@ -928,6 +1608,7 @@ struct ib_cache {
 	struct ib_event_handler event_handler;
 	struct ib_pkey_cache  **pkey_cache;
 	struct ib_gid_cache   **gid_cache;
+	struct ib_gid_table   **gid_cache;
 	u8                     *lmc_cache;
 };
 
@@ -976,6 +1657,13 @@ struct ib_dma_mapping_ops {
 
 struct iw_cm_verbs;
 
+struct ib_port_immutable {
+	int                           pkey_tbl_len;
+	int                           gid_tbl_len;
+	u32                           core_cap_flags;
+	u32                           max_mad_size;
+};
+
 struct ib_device {
 	struct device                *dma_device;
 
@@ -991,6 +1679,17 @@ struct ib_device {
 	struct ib_cache               cache;
 	int                          *pkey_tbl_len;
 	int                          *gid_tbl_len;
+	spinlock_t                    client_data_lock;
+	struct list_head              core_list;
+	/* Access to the client_data_list is protected by the client_data_lock
+	 * spinlock and the lists_rwsem read-write semaphore */
+	struct list_head              client_data_list;
+
+	struct ib_cache               cache;
+	/**
+	 * port_immutable is indexed by port number
+	 */
+	struct ib_port_immutable     *port_immutable;
 
 	int			      num_comp_vectors;
 
@@ -1006,6 +1705,54 @@ struct ib_device {
 	int		           (*query_gid)(struct ib_device *device,
 						u8 port_num, int index,
 						union ib_gid *gid);
+						   struct ib_device_attr *device_attr,
+						   struct ib_udata *udata);
+	int		           (*query_port)(struct ib_device *device,
+						 u8 port_num,
+						 struct ib_port_attr *port_attr);
+	enum rdma_link_layer	   (*get_link_layer)(struct ib_device *device,
+						     u8 port_num);
+	/* When calling get_netdev, the HW vendor's driver should return the
+	 * net device of device @device at port @port_num or NULL if such
+	 * a net device doesn't exist. The vendor driver should call dev_hold
+	 * on this net device. The HW vendor's device driver must guarantee
+	 * that this function returns NULL before the net device reaches
+	 * NETDEV_UNREGISTER_FINAL state.
+	 */
+	struct net_device	  *(*get_netdev)(struct ib_device *device,
+						 u8 port_num);
+	int		           (*query_gid)(struct ib_device *device,
+						u8 port_num, int index,
+						union ib_gid *gid);
+	/* When calling add_gid, the HW vendor's driver should
+	 * add the gid of device @device at gid index @index of
+	 * port @port_num to be @gid. Meta-info of that gid (for example,
+	 * the network device related to this gid is available
+	 * at @attr. @context allows the HW vendor driver to store extra
+	 * information together with a GID entry. The HW vendor may allocate
+	 * memory to contain this information and store it in @context when a
+	 * new GID entry is written to. Params are consistent until the next
+	 * call of add_gid or delete_gid. The function should return 0 on
+	 * success or error otherwise. The function could be called
+	 * concurrently for different ports. This function is only called
+	 * when roce_gid_table is used.
+	 */
+	int		           (*add_gid)(struct ib_device *device,
+					      u8 port_num,
+					      unsigned int index,
+					      const union ib_gid *gid,
+					      const struct ib_gid_attr *attr,
+					      void **context);
+	/* When calling del_gid, the HW vendor's driver should delete the
+	 * gid of device @device at gid index @index of port @port_num.
+	 * Upon the deletion of a GID entry, the HW vendor must free any
+	 * allocated memory. The caller will clear @context afterwards.
+	 * This function is only called when roce_gid_table is used.
+	 */
+	int		           (*del_gid)(struct ib_device *device,
+					      u8 port_num,
+					      unsigned int index,
+					      void **context);
 	int		           (*query_pkey)(struct ib_device *device,
 						 u8 port_num, u16 index, u16 *pkey);
 	int		           (*modify_device)(struct ib_device *device,
@@ -1063,6 +1810,8 @@ struct ib_device {
 						struct ib_recv_wr **bad_recv_wr);
 	struct ib_cq *             (*create_cq)(struct ib_device *device, int cqe,
 						int comp_vector,
+	struct ib_cq *             (*create_cq)(struct ib_device *device,
+						const struct ib_cq_init_attr *attr,
 						struct ib_ucontext *context,
 						struct ib_udata *udata);
 	int                        (*modify_cq)(struct ib_cq *cq, u16 cq_count,
@@ -1097,6 +1846,22 @@ struct ib_device {
 	struct ib_fast_reg_page_list * (*alloc_fast_reg_page_list)(struct ib_device *device,
 								   int page_list_len);
 	void			   (*free_fast_reg_page_list)(struct ib_fast_reg_page_list *page_list);
+	int			   (*rereg_user_mr)(struct ib_mr *mr,
+						    int flags,
+						    u64 start, u64 length,
+						    u64 virt_addr,
+						    int mr_access_flags,
+						    struct ib_pd *pd,
+						    struct ib_udata *udata);
+	int                        (*query_mr)(struct ib_mr *mr,
+					       struct ib_mr_attr *mr_attr);
+	int                        (*dereg_mr)(struct ib_mr *mr);
+	struct ib_mr *		   (*alloc_mr)(struct ib_pd *pd,
+					       enum ib_mr_type mr_type,
+					       u32 max_num_sg);
+	int                        (*map_mr_sg)(struct ib_mr *mr,
+						struct scatterlist *sg,
+						int sg_nents);
 	int                        (*rereg_phys_mr)(struct ib_mr *mr,
 						    int mr_rereg_mask,
 						    struct ib_pd *pd,
@@ -1105,6 +1870,8 @@ struct ib_device {
 						    int mr_access_flags,
 						    u64 *iova_start);
 	struct ib_mw *             (*alloc_mw)(struct ib_pd *pd);
+	struct ib_mw *             (*alloc_mw)(struct ib_pd *pd,
+					       enum ib_mw_type type);
 	int                        (*bind_mw)(struct ib_qp *qp,
 					      struct ib_mw *mw,
 					      struct ib_mw_bind *mw_bind);
@@ -1130,6 +1897,25 @@ struct ib_device {
 						  struct ib_grh *in_grh,
 						  struct ib_mad *in_mad,
 						  struct ib_mad *out_mad);
+						  const struct ib_wc *in_wc,
+						  const struct ib_grh *in_grh,
+						  const struct ib_mad_hdr *in_mad,
+						  size_t in_mad_size,
+						  struct ib_mad_hdr *out_mad,
+						  size_t *out_mad_size,
+						  u16 *out_mad_pkey_index);
+	struct ib_xrcd *	   (*alloc_xrcd)(struct ib_device *device,
+						 struct ib_ucontext *ucontext,
+						 struct ib_udata *udata);
+	int			   (*dealloc_xrcd)(struct ib_xrcd *xrcd);
+	struct ib_flow *	   (*create_flow)(struct ib_qp *qp,
+						  struct ib_flow_attr
+						  *flow_attr,
+						  int domain);
+	int			   (*destroy_flow)(struct ib_flow *flow_id);
+	int			   (*check_mr_status)(struct ib_mr *mr, u32 check_mask,
+						      struct ib_mr_status *mr_status);
+	void			   (*disassociate_ucontext)(struct ib_ucontext *ibcontext);
 
 	struct ib_dma_mapping_ops   *dma_ops;
 
@@ -1146,12 +1932,26 @@ struct ib_device {
 
 	u64			     uverbs_cmd_mask;
 	int			     uverbs_abi_ver;
+	int			     uverbs_abi_ver;
+	u64			     uverbs_cmd_mask;
+	u64			     uverbs_ex_cmd_mask;
 
 	char			     node_desc[64];
 	__be64			     node_guid;
 	u32			     local_dma_lkey;
 	u8                           node_type;
 	u8                           phys_port_cnt;
+	u16                          is_switch:1;
+	u8                           node_type;
+	u8                           phys_port_cnt;
+
+	/**
+	 * The following mandatory functions are used only at device
+	 * registration.  Keep functions such as these at the end of this
+	 * structure to avoid cache line misses when accessing struct ib_device
+	 * in fast paths.
+	 */
+	int (*get_port_immutable)(struct ib_device *, u8, struct ib_port_immutable *);
 };
 
 struct ib_client {
@@ -1159,6 +1959,30 @@ struct ib_client {
 	void (*add)   (struct ib_device *);
 	void (*remove)(struct ib_device *);
 
+	void (*remove)(struct ib_device *, void *client_data);
+
+	/* Returns the net_dev belonging to this ib_client and matching the
+	 * given parameters.
+	 * @dev:	 An RDMA device that the net_dev use for communication.
+	 * @port:	 A physical port number on the RDMA device.
+	 * @pkey:	 P_Key that the net_dev uses if applicable.
+	 * @gid:	 A GID that the net_dev uses to communicate.
+	 * @addr:	 An IP address the net_dev is configured with.
+	 * @client_data: The device's client data set by ib_set_client_data().
+	 *
+	 * An ib_client that implements a net_dev on top of RDMA devices
+	 * (such as IP over IB) should implement this callback, allowing the
+	 * rdma_cm module to find the right net_dev for a given request.
+	 *
+	 * The caller is responsible for calling dev_put on the returned
+	 * netdev. */
+	struct net_device *(*get_net_dev_by_params)(
+			struct ib_device *dev,
+			u8 port,
+			u16 pkey,
+			const union ib_gid *gid,
+			const struct sockaddr *addr,
+			void *client_data);
 	struct list_head list;
 };
 
@@ -1166,6 +1990,9 @@ struct ib_device *ib_alloc_device(size_t size);
 void ib_dealloc_device(struct ib_device *device);
 
 int ib_register_device   (struct ib_device *device);
+int ib_register_device(struct ib_device *device,
+		       int (*port_callback)(struct ib_device *,
+					    u8, struct kobject *));
 void ib_unregister_device(struct ib_device *device);
 
 int ib_register_client   (struct ib_client *client);
@@ -1193,6 +2020,7 @@ static inline int ib_copy_to_udata(struct ib_udata *udata, void *src, size_t len
  * @next_state: Next QP state
  * @type: QP type
  * @mask: Mask of supplied QP attributes
+ * @ll : link layer of port
  *
  * This function is a helper function that a low-level driver's
  * modify_qp method can use to validate the consumer's input.  It
@@ -1202,6 +2030,8 @@ static inline int ib_copy_to_udata(struct ib_udata *udata, void *src, size_t len
  */
 int ib_modify_qp_is_ok(enum ib_qp_state cur_state, enum ib_qp_state next_state,
 		       enum ib_qp_type type, enum ib_qp_attr_mask mask);
+		       enum ib_qp_type type, enum ib_qp_attr_mask mask,
+		       enum rdma_link_layer ll);
 
 int ib_register_event_handler  (struct ib_event_handler *event_handler);
 int ib_unregister_event_handler(struct ib_event_handler *event_handler);
@@ -1215,6 +2045,295 @@ int ib_query_port(struct ib_device *device,
 
 int ib_query_gid(struct ib_device *device,
 		 u8 port_num, int index, union ib_gid *gid);
+enum rdma_link_layer rdma_port_get_link_layer(struct ib_device *device,
+					       u8 port_num);
+
+/**
+ * rdma_cap_ib_switch - Check if the device is IB switch
+ * @device: Device to check
+ *
+ * Device driver is responsible for setting is_switch bit on
+ * in ib_device structure at init time.
+ *
+ * Return: true if the device is IB switch.
+ */
+static inline bool rdma_cap_ib_switch(const struct ib_device *device)
+{
+	return device->is_switch;
+}
+
+/**
+ * rdma_start_port - Return the first valid port number for the device
+ * specified
+ *
+ * @device: Device to be checked
+ *
+ * Return start port number
+ */
+static inline u8 rdma_start_port(const struct ib_device *device)
+{
+	return rdma_cap_ib_switch(device) ? 0 : 1;
+}
+
+/**
+ * rdma_end_port - Return the last valid port number for the device
+ * specified
+ *
+ * @device: Device to be checked
+ *
+ * Return last port number
+ */
+static inline u8 rdma_end_port(const struct ib_device *device)
+{
+	return rdma_cap_ib_switch(device) ? 0 : device->phys_port_cnt;
+}
+
+static inline bool rdma_protocol_ib(const struct ib_device *device, u8 port_num)
+{
+	return device->port_immutable[port_num].core_cap_flags & RDMA_CORE_CAP_PROT_IB;
+}
+
+static inline bool rdma_protocol_roce(const struct ib_device *device, u8 port_num)
+{
+	return device->port_immutable[port_num].core_cap_flags & RDMA_CORE_CAP_PROT_ROCE;
+}
+
+static inline bool rdma_protocol_iwarp(const struct ib_device *device, u8 port_num)
+{
+	return device->port_immutable[port_num].core_cap_flags & RDMA_CORE_CAP_PROT_IWARP;
+}
+
+static inline bool rdma_ib_or_roce(const struct ib_device *device, u8 port_num)
+{
+	return device->port_immutable[port_num].core_cap_flags &
+		(RDMA_CORE_CAP_PROT_IB | RDMA_CORE_CAP_PROT_ROCE);
+}
+
+/**
+ * rdma_cap_ib_mad - Check if the port of a device supports Infiniband
+ * Management Datagrams.
+ * @device: Device to check
+ * @port_num: Port number to check
+ *
+ * Management Datagrams (MAD) are a required part of the InfiniBand
+ * specification and are supported on all InfiniBand devices.  A slightly
+ * extended version are also supported on OPA interfaces.
+ *
+ * Return: true if the port supports sending/receiving of MAD packets.
+ */
+static inline bool rdma_cap_ib_mad(const struct ib_device *device, u8 port_num)
+{
+	return device->port_immutable[port_num].core_cap_flags & RDMA_CORE_CAP_IB_MAD;
+}
+
+/**
+ * rdma_cap_opa_mad - Check if the port of device provides support for OPA
+ * Management Datagrams.
+ * @device: Device to check
+ * @port_num: Port number to check
+ *
+ * Intel OmniPath devices extend and/or replace the InfiniBand Management
+ * datagrams with their own versions.  These OPA MADs share many but not all of
+ * the characteristics of InfiniBand MADs.
+ *
+ * OPA MADs differ in the following ways:
+ *
+ *    1) MADs are variable size up to 2K
+ *       IBTA defined MADs remain fixed at 256 bytes
+ *    2) OPA SMPs must carry valid PKeys
+ *    3) OPA SMP packets are a different format
+ *
+ * Return: true if the port supports OPA MAD packet formats.
+ */
+static inline bool rdma_cap_opa_mad(struct ib_device *device, u8 port_num)
+{
+	return (device->port_immutable[port_num].core_cap_flags & RDMA_CORE_CAP_OPA_MAD)
+		== RDMA_CORE_CAP_OPA_MAD;
+}
+
+/**
+ * rdma_cap_ib_smi - Check if the port of a device provides an Infiniband
+ * Subnet Management Agent (SMA) on the Subnet Management Interface (SMI).
+ * @device: Device to check
+ * @port_num: Port number to check
+ *
+ * Each InfiniBand node is required to provide a Subnet Management Agent
+ * that the subnet manager can access.  Prior to the fabric being fully
+ * configured by the subnet manager, the SMA is accessed via a well known
+ * interface called the Subnet Management Interface (SMI).  This interface
+ * uses directed route packets to communicate with the SM to get around the
+ * chicken and egg problem of the SM needing to know what's on the fabric
+ * in order to configure the fabric, and needing to configure the fabric in
+ * order to send packets to the devices on the fabric.  These directed
+ * route packets do not need the fabric fully configured in order to reach
+ * their destination.  The SMI is the only method allowed to send
+ * directed route packets on an InfiniBand fabric.
+ *
+ * Return: true if the port provides an SMI.
+ */
+static inline bool rdma_cap_ib_smi(const struct ib_device *device, u8 port_num)
+{
+	return device->port_immutable[port_num].core_cap_flags & RDMA_CORE_CAP_IB_SMI;
+}
+
+/**
+ * rdma_cap_ib_cm - Check if the port of device has the capability Infiniband
+ * Communication Manager.
+ * @device: Device to check
+ * @port_num: Port number to check
+ *
+ * The InfiniBand Communication Manager is one of many pre-defined General
+ * Service Agents (GSA) that are accessed via the General Service
+ * Interface (GSI).  It's role is to facilitate establishment of connections
+ * between nodes as well as other management related tasks for established
+ * connections.
+ *
+ * Return: true if the port supports an IB CM (this does not guarantee that
+ * a CM is actually running however).
+ */
+static inline bool rdma_cap_ib_cm(const struct ib_device *device, u8 port_num)
+{
+	return device->port_immutable[port_num].core_cap_flags & RDMA_CORE_CAP_IB_CM;
+}
+
+/**
+ * rdma_cap_iw_cm - Check if the port of device has the capability IWARP
+ * Communication Manager.
+ * @device: Device to check
+ * @port_num: Port number to check
+ *
+ * Similar to above, but specific to iWARP connections which have a different
+ * managment protocol than InfiniBand.
+ *
+ * Return: true if the port supports an iWARP CM (this does not guarantee that
+ * a CM is actually running however).
+ */
+static inline bool rdma_cap_iw_cm(const struct ib_device *device, u8 port_num)
+{
+	return device->port_immutable[port_num].core_cap_flags & RDMA_CORE_CAP_IW_CM;
+}
+
+/**
+ * rdma_cap_ib_sa - Check if the port of device has the capability Infiniband
+ * Subnet Administration.
+ * @device: Device to check
+ * @port_num: Port number to check
+ *
+ * An InfiniBand Subnet Administration (SA) service is a pre-defined General
+ * Service Agent (GSA) provided by the Subnet Manager (SM).  On InfiniBand
+ * fabrics, devices should resolve routes to other hosts by contacting the
+ * SA to query the proper route.
+ *
+ * Return: true if the port should act as a client to the fabric Subnet
+ * Administration interface.  This does not imply that the SA service is
+ * running locally.
+ */
+static inline bool rdma_cap_ib_sa(const struct ib_device *device, u8 port_num)
+{
+	return device->port_immutable[port_num].core_cap_flags & RDMA_CORE_CAP_IB_SA;
+}
+
+/**
+ * rdma_cap_ib_mcast - Check if the port of device has the capability Infiniband
+ * Multicast.
+ * @device: Device to check
+ * @port_num: Port number to check
+ *
+ * InfiniBand multicast registration is more complex than normal IPv4 or
+ * IPv6 multicast registration.  Each Host Channel Adapter must register
+ * with the Subnet Manager when it wishes to join a multicast group.  It
+ * should do so only once regardless of how many queue pairs it subscribes
+ * to this group.  And it should leave the group only after all queue pairs
+ * attached to the group have been detached.
+ *
+ * Return: true if the port must undertake the additional adminstrative
+ * overhead of registering/unregistering with the SM and tracking of the
+ * total number of queue pairs attached to the multicast group.
+ */
+static inline bool rdma_cap_ib_mcast(const struct ib_device *device, u8 port_num)
+{
+	return rdma_cap_ib_sa(device, port_num);
+}
+
+/**
+ * rdma_cap_af_ib - Check if the port of device has the capability
+ * Native Infiniband Address.
+ * @device: Device to check
+ * @port_num: Port number to check
+ *
+ * InfiniBand addressing uses a port's GUID + Subnet Prefix to make a default
+ * GID.  RoCE uses a different mechanism, but still generates a GID via
+ * a prescribed mechanism and port specific data.
+ *
+ * Return: true if the port uses a GID address to identify devices on the
+ * network.
+ */
+static inline bool rdma_cap_af_ib(const struct ib_device *device, u8 port_num)
+{
+	return device->port_immutable[port_num].core_cap_flags & RDMA_CORE_CAP_AF_IB;
+}
+
+/**
+ * rdma_cap_eth_ah - Check if the port of device has the capability
+ * Ethernet Address Handle.
+ * @device: Device to check
+ * @port_num: Port number to check
+ *
+ * RoCE is InfiniBand over Ethernet, and it uses a well defined technique
+ * to fabricate GIDs over Ethernet/IP specific addresses native to the
+ * port.  Normally, packet headers are generated by the sending host
+ * adapter, but when sending connectionless datagrams, we must manually
+ * inject the proper headers for the fabric we are communicating over.
+ *
+ * Return: true if we are running as a RoCE port and must force the
+ * addition of a Global Route Header built from our Ethernet Address
+ * Handle into our header list for connectionless packets.
+ */
+static inline bool rdma_cap_eth_ah(const struct ib_device *device, u8 port_num)
+{
+	return device->port_immutable[port_num].core_cap_flags & RDMA_CORE_CAP_ETH_AH;
+}
+
+/**
+ * rdma_max_mad_size - Return the max MAD size required by this RDMA Port.
+ *
+ * @device: Device
+ * @port_num: Port number
+ *
+ * This MAD size includes the MAD headers and MAD payload.  No other headers
+ * are included.
+ *
+ * Return the max MAD size required by the Port.  Will return 0 if the port
+ * does not support MADs
+ */
+static inline size_t rdma_max_mad_size(const struct ib_device *device, u8 port_num)
+{
+	return device->port_immutable[port_num].max_mad_size;
+}
+
+/**
+ * rdma_cap_roce_gid_table - Check if the port of device uses roce_gid_table
+ * @device: Device to check
+ * @port_num: Port number to check
+ *
+ * RoCE GID table mechanism manages the various GIDs for a device.
+ *
+ * NOTE: if allocating the port's GID table has failed, this call will still
+ * return true, but any RoCE GID table API will fail.
+ *
+ * Return: true if the port uses RoCE GID table mechanism in order to manage
+ * its GIDs.
+ */
+static inline bool rdma_cap_roce_gid_table(const struct ib_device *device,
+					   u8 port_num)
+{
+	return rdma_protocol_roce(device, port_num) &&
+		device->add_gid && device->del_gid;
+}
+
+int ib_query_gid(struct ib_device *device,
+		 u8 port_num, int index, union ib_gid *gid,
+		 struct ib_gid_attr *attr);
 
 int ib_query_pkey(struct ib_device *device,
 		  u8 port_num, u16 index, u16 *pkey);
@@ -1229,6 +2348,7 @@ int ib_modify_port(struct ib_device *device,
 
 int ib_find_gid(struct ib_device *device, union ib_gid *gid,
 		u8 *port_num, u16 *index);
+		struct net_device *ndev, u8 *port_num, u16 *index);
 
 int ib_find_pkey(struct ib_device *device,
 		 u8 port_num, u16 pkey, u16 *index);
@@ -1247,6 +2367,9 @@ struct ib_pd *ib_alloc_pd(struct ib_device *device);
  * @pd: The protection domain to deallocate.
  */
 int ib_dealloc_pd(struct ib_pd *pd);
+struct ib_pd *ib_alloc_pd(struct ib_device *device);
+
+void ib_dealloc_pd(struct ib_pd *pd);
 
 /**
  * ib_create_ah - Creates an address handle for the given address vector.
@@ -1271,6 +2394,9 @@ struct ib_ah *ib_create_ah(struct ib_pd *pd, struct ib_ah_attr *ah_attr);
  */
 int ib_init_ah_from_wc(struct ib_device *device, u8 port_num, struct ib_wc *wc,
 		       struct ib_grh *grh, struct ib_ah_attr *ah_attr);
+int ib_init_ah_from_wc(struct ib_device *device, u8 port_num,
+		       const struct ib_wc *wc, const struct ib_grh *grh,
+		       struct ib_ah_attr *ah_attr);
 
 /**
  * ib_create_ah_from_wc - Creates an address handle associated with the
@@ -1286,6 +2412,8 @@ int ib_init_ah_from_wc(struct ib_device *device, u8 port_num, struct ib_wc *wc,
  */
 struct ib_ah *ib_create_ah_from_wc(struct ib_pd *pd, struct ib_wc *wc,
 				   struct ib_grh *grh, u8 port_num);
+struct ib_ah *ib_create_ah_from_wc(struct ib_pd *pd, const struct ib_wc *wc,
+				   const struct ib_grh *grh, u8 port_num);
 
 /**
  * ib_modify_ah - Modifies the address vector associated with an address
@@ -1419,12 +2547,36 @@ int ib_query_qp(struct ib_qp *qp,
 int ib_destroy_qp(struct ib_qp *qp);
 
 /**
+ * ib_open_qp - Obtain a reference to an existing sharable QP.
+ * @xrcd - XRC domain
+ * @qp_open_attr: Attributes identifying the QP to open.
+ *
+ * Returns a reference to a sharable QP.
+ */
+struct ib_qp *ib_open_qp(struct ib_xrcd *xrcd,
+			 struct ib_qp_open_attr *qp_open_attr);
+
+/**
+ * ib_close_qp - Release an external reference to a QP.
+ * @qp: The QP handle to release
+ *
+ * The opened QP handle is released by the caller.  The underlying
+ * shared QP is not destroyed until all internal references are released.
+ */
+int ib_close_qp(struct ib_qp *qp);
+
+/**
  * ib_post_send - Posts a list of work requests to the send queue of
  *   the specified QP.
  * @qp: The QP to post the work request on.
  * @send_wr: A list of work requests to post on the send queue.
  * @bad_send_wr: On an immediate failure, this parameter will reference
  *   the work request that failed to be posted on the QP.
+ *
+ * While IBA Vol. 1 section 11.4.1.1 specifies that if an immediate
+ * error is returned, the QP state shall not be affected,
+ * ib_post_send() will return an immediate error after queueing any
+ * earlier work requests in the list.
  */
 static inline int ib_post_send(struct ib_qp *qp,
 			       struct ib_send_wr *send_wr,
@@ -1460,6 +2612,7 @@ static inline int ib_post_recv(struct ib_qp *qp,
  * @cqe: The minimum size of the CQ.
  * @comp_vector - Completion vector used to signal completion events.
  *     Must be >= 0 and < context->num_comp_vectors.
+ * @cq_attr: The attributes the CQ should be created upon.
  *
  * Users can examine the cq structure to determine the actual CQ size.
  */
@@ -1467,6 +2620,8 @@ struct ib_cq *ib_create_cq(struct ib_device *device,
 			   ib_comp_handler comp_handler,
 			   void (*event_handler)(struct ib_event *, void *),
 			   void *cq_context, int cqe, int comp_vector);
+			   void *cq_context,
+			   const struct ib_cq_init_attr *cq_attr);
 
 /**
  * ib_resize_cq - Modifies the capacity of the CQ.
@@ -1732,6 +2887,9 @@ static inline void ib_dma_unmap_sg_attrs(struct ib_device *dev,
  * ib_sg_dma_address - Return the DMA address from a scatter/gather entry
  * @dev: The device for which the DMA addresses were created
  * @sg: The scatter/gather entry
+ *
+ * Note: this function is obsolete. To do: change all occurrences of
+ * ib_sg_dma_address() into sg_dma_address().
  */
 static inline u64 ib_sg_dma_address(struct ib_device *dev,
 				    struct scatterlist *sg)
@@ -1745,6 +2903,9 @@ static inline u64 ib_sg_dma_address(struct ib_device *dev,
  * ib_sg_dma_len - Return the DMA length from a scatter/gather entry
  * @dev: The device for which the DMA addresses were created
  * @sg: The scatter/gather entry
+ *
+ * Note: this function is obsolete. To do: change all occurrences of
+ * ib_sg_dma_len() into sg_dma_len().
  */
 static inline unsigned int ib_sg_dma_len(struct ib_device *dev,
 					 struct scatterlist *sg)
@@ -1926,6 +3087,14 @@ struct ib_fast_reg_page_list *ib_alloc_fast_reg_page_list(
  * @page_list - struct ib_fast_reg_page_list pointer to be deallocated.
  */
 void ib_free_fast_reg_page_list(struct ib_fast_reg_page_list *page_list);
+ *
+ * This function can fail, if the memory region has memory windows bound to it.
+ */
+int ib_dereg_mr(struct ib_mr *mr);
+
+struct ib_mr *ib_alloc_mr(struct ib_pd *pd,
+			  enum ib_mr_type mr_type,
+			  u32 max_num_sg);
 
 /**
  * ib_update_fast_reg_key - updates the key portion of the fast_reg MR
@@ -1944,6 +3113,22 @@ static inline void ib_update_fast_reg_key(struct ib_mr *mr, u8 newkey)
  * @pd: The protection domain associated with the memory window.
  */
 struct ib_mw *ib_alloc_mw(struct ib_pd *pd);
+ * ib_inc_rkey - increments the key portion of the given rkey. Can be used
+ * for calculating a new rkey for type 2 memory windows.
+ * @rkey - the rkey to increment.
+ */
+static inline u32 ib_inc_rkey(u32 rkey)
+{
+	const u32 mask = 0x000000ff;
+	return ((rkey + 1) & mask) | (rkey & ~mask);
+}
+
+/**
+ * ib_alloc_mw - Allocates a memory window.
+ * @pd: The protection domain associated with the memory window.
+ * @type: The type of the memory window (1 or 2).
+ */
+struct ib_mw *ib_alloc_mw(struct ib_pd *pd, enum ib_mw_type type);
 
 /**
  * ib_bind_mw - Posts a work request to the send queue of the specified
@@ -1953,6 +3138,10 @@ struct ib_mw *ib_alloc_mw(struct ib_pd *pd);
  * @mw: The memory window to bind.
  * @mw_bind: Specifies information about the memory window, including
  *   its address range, remote access rights, and associated memory region.
+ *
+ * If there is no immediate error, the function will update the rkey member
+ * of the mw parameter to its new value. The bind operation can still fail
+ * asynchronously.
  */
 static inline int ib_bind_mw(struct ib_qp *qp,
 			     struct ib_mw *mw,
@@ -2030,5 +3219,91 @@ int ib_attach_mcast(struct ib_qp *qp, union ib_gid *gid, u16 lid);
  * @lid: Multicast group LID in host byte order.
  */
 int ib_detach_mcast(struct ib_qp *qp, union ib_gid *gid, u16 lid);
+
+/**
+ * ib_alloc_xrcd - Allocates an XRC domain.
+ * @device: The device on which to allocate the XRC domain.
+ */
+struct ib_xrcd *ib_alloc_xrcd(struct ib_device *device);
+
+/**
+ * ib_dealloc_xrcd - Deallocates an XRC domain.
+ * @xrcd: The XRC domain to deallocate.
+ */
+int ib_dealloc_xrcd(struct ib_xrcd *xrcd);
+
+struct ib_flow *ib_create_flow(struct ib_qp *qp,
+			       struct ib_flow_attr *flow_attr, int domain);
+int ib_destroy_flow(struct ib_flow *flow_id);
+
+static inline int ib_check_mr_access(int flags)
+{
+	/*
+	 * Local write permission is required if remote write or
+	 * remote atomic permission is also requested.
+	 */
+	if (flags & (IB_ACCESS_REMOTE_ATOMIC | IB_ACCESS_REMOTE_WRITE) &&
+	    !(flags & IB_ACCESS_LOCAL_WRITE))
+		return -EINVAL;
+
+	return 0;
+}
+
+static inline bool ib_access_writable(int access_flags)
+{
+	/*
+	 * We have writable memory backing the MR if any of the following
+	 * access flags are set.  "Local write" and "remote write" obviously
+	 * require write access.  "Remote atomic" can do things like fetch and
+	 * add, which will modify memory, and "MW bind" can change permissions
+	 * by binding a window.
+	 */
+	return access_flags &
+		(IB_ACCESS_LOCAL_WRITE   | IB_ACCESS_REMOTE_WRITE |
+		 IB_ACCESS_REMOTE_ATOMIC | IB_ACCESS_MW_BIND);
+}
+
+/**
+ * ib_check_mr_status: lightweight check of MR status.
+ *     This routine may provide status checks on a selected
+ *     ib_mr. first use is for signature status check.
+ *
+ * @mr: A memory region.
+ * @check_mask: Bitmask of which checks to perform from
+ *     ib_mr_status_check enumeration.
+ * @mr_status: The container of relevant status checks.
+ *     failed checks will be indicated in the status bitmask
+ *     and the relevant info shall be in the error item.
+ */
+int ib_check_mr_status(struct ib_mr *mr, u32 check_mask,
+		       struct ib_mr_status *mr_status);
+
+struct net_device *ib_get_net_dev_by_params(struct ib_device *dev, u8 port,
+					    u16 pkey, const union ib_gid *gid,
+					    const struct sockaddr *addr);
+
+int ib_map_mr_sg(struct ib_mr *mr,
+		 struct scatterlist *sg,
+		 int sg_nents,
+		 unsigned int page_size);
+
+static inline int
+ib_map_mr_sg_zbva(struct ib_mr *mr,
+		  struct scatterlist *sg,
+		  int sg_nents,
+		  unsigned int page_size)
+{
+	int n;
+
+	n = ib_map_mr_sg(mr, sg, sg_nents, page_size);
+	mr->iova = 0;
+
+	return n;
+}
+
+int ib_sg_to_pages(struct ib_mr *mr,
+		   struct scatterlist *sgl,
+		   int sg_nents,
+		   int (*set_page)(struct ib_mr *, u64));
 
 #endif /* IB_VERBS_H */

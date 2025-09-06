@@ -7,6 +7,7 @@
 #ifndef _ASM_S390_IPL_H
 #define _ASM_S390_IPL_H
 
+#include <asm/lowcore.h>
 #include <asm/types.h>
 #include <asm/cio.h>
 #include <asm/setup.h>
@@ -17,11 +18,13 @@
 			      sizeof(struct ipl_block_fcp))
 
 #define IPL_PARM_BLK0_FCP_LEN (sizeof(struct ipl_block_fcp) + 8)
+#define IPL_PARM_BLK0_FCP_LEN (sizeof(struct ipl_block_fcp) + 16)
 
 #define IPL_PARM_BLK_CCW_LEN (sizeof(struct ipl_list_hdr) + \
 			      sizeof(struct ipl_block_ccw))
 
 #define IPL_PARM_BLK0_CCW_LEN (sizeof(struct ipl_block_ccw) + 8)
+#define IPL_PARM_BLK0_CCW_LEN (sizeof(struct ipl_block_ccw) + 16)
 
 #define IPL_MAX_SUPPORTED_VERSION (0)
 
@@ -41,6 +44,11 @@ struct ipl_list_hdr {
 
 struct ipl_block_fcp {
 	u8  reserved1[313-1];
+	u8  loadparm[8];
+} __attribute__((packed));
+
+struct ipl_block_fcp {
+	u8  reserved1[305-1];
 	u8  opt;
 	u8  reserved2[3];
 	u16 reserved3;
@@ -62,6 +70,13 @@ struct ipl_block_ccw {
 	u8  load_parm[8];
 	u8  reserved1[84];
 	u8  reserved2[2];
+#define DIAG308_SCPDATA_SIZE	(PAGE_SIZE - (sizeof(struct ipl_list_hdr) + \
+				 offsetof(struct ipl_block_fcp, scp_data)))
+
+struct ipl_block_ccw {
+	u8  reserved1[84];
+	u16 reserved2 : 13;
+	u8  ssid : 3;
 	u16 devno;
 	u8  vm_flags;
 	u8  reserved3[3];
@@ -86,12 +101,21 @@ extern u32 ipl_flags;
 extern u32 dump_prefix_page;
 extern unsigned int zfcpdump_prefix_array[];
 
+struct dump_save_areas {
+	struct save_area_ext **areas;
+	int count;
+};
+
+extern struct dump_save_areas dump_save_areas;
+
 extern void do_reipl(void);
 extern void do_halt(void);
 extern void do_poff(void);
 extern void ipl_save_parameters(void);
 extern void ipl_update_parameters(void);
 extern void get_ipl_vmparm(char *);
+extern size_t append_ipl_vmparm(char *, size_t);
+extern size_t append_ipl_scpdata(char *, size_t);
 
 enum {
 	IPL_DEVNO_VALID		= 1,
@@ -164,5 +188,8 @@ enum diag308_rc {
 };
 
 extern int diag308(unsigned long subcode, void *addr);
+extern void diag308_reset(void);
+extern void store_status(void);
+extern void lgr_info_log(void);
 
 #endif /* _ASM_S390_IPL_H */

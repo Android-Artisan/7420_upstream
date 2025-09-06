@@ -6,7 +6,6 @@
  *
  * MVME166/7 work by Richard Hirst [richard@sleepie.demon.co.uk]
  *
- * ==============================================================
  *
  * static char rcsid[] =
  * "$Revision: 1.36.1.4 $$Date: 1995/03/29 06:14:14 $";

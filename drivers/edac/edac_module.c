@@ -21,6 +21,32 @@
 /* Values of 0 to 4 will generate output */
 int edac_debug_level = 2;
 EXPORT_SYMBOL_GPL(edac_debug_level);
+#define EDAC_VERSION "Ver: 3.0.0"
+
+#ifdef CONFIG_EDAC_DEBUG
+
+static int edac_set_debug_level(const char *buf, struct kernel_param *kp)
+{
+	unsigned long val;
+	int ret;
+
+	ret = kstrtoul(buf, 0, &val);
+	if (ret)
+		return ret;
+
+	if (val > 4)
+		return -EINVAL;
+
+	return param_set_int(buf, kp);
+}
+
+/* Values of 0 to 4 will generate output */
+int edac_debug_level = 2;
+EXPORT_SYMBOL_GPL(edac_debug_level);
+
+module_param_call(edac_debug_level, edac_set_debug_level, param_get_int,
+		  &edac_debug_level, 0644);
+MODULE_PARM_DESC(edac_debug_level, "EDAC debug level: [0-4], default: 2");
 #endif
 
 /* scope is to module level only */
@@ -175,6 +201,16 @@ static int __init edac_init(void)
 	if (err) {
 		edac_printk(KERN_ERR, EDAC_MC, "init WorkQueue failure\n");
 		goto workq_fail;
+	err = edac_mc_sysfs_init();
+	if (err)
+		goto err_sysfs;
+
+	edac_debugfs_init();
+
+	err = edac_workqueue_setup();
+	if (err) {
+		edac_printk(KERN_ERR, EDAC_MC, "Failure initializing workqueue\n");
+		goto err_wq;
 	}
 
 	return 0;
@@ -187,6 +223,11 @@ sysfs_setup_fail:
 	edac_unregister_sysfs_edac_name();
 
 error:
+err_wq:
+	edac_debugfs_exit();
+	edac_mc_sysfs_exit();
+
+err_sysfs:
 	return err;
 }
 
@@ -202,12 +243,19 @@ static void __exit edac_exit(void)
 	edac_workqueue_teardown();
 	edac_sysfs_teardown_mc_kset();
 	edac_unregister_sysfs_edac_name();
+	edac_dbg(0, "\n");
+
+	/* tear down the various subsystems */
+	edac_workqueue_teardown();
+	edac_mc_sysfs_exit();
+	edac_debugfs_exit();
 }
 
 /*
  * Inform the kernel of our entry and exit points
  */
 module_init(edac_init);
+subsys_initcall(edac_init);
 module_exit(edac_exit);
 
 MODULE_LICENSE("GPL");

@@ -112,6 +112,10 @@ static int fd_request_irq(void)
 	else
 		return request_irq(FLOPPY_IRQ, floppy_interrupt,
 				   IRQF_DISABLED, "floppy", NULL);
+				   0, "floppy", NULL);
+	else
+		return request_irq(FLOPPY_IRQ, floppy_interrupt,
+				   0, "floppy", NULL);
 }
 
 static int vdma_dma_setup(char *addr, unsigned long size, int mode, int io)

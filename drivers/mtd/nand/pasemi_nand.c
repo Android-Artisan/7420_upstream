@@ -28,6 +28,8 @@
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/nand.h>
 #include <linux/mtd/nand_ecc.h>
+#include <linux/of_address.h>
+#include <linux/of_irq.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
 #include <linux/pci.h>
@@ -94,6 +96,10 @@ static int __devinit pasemi_nand_probe(struct of_device *ofdev,
 {
 	struct pci_dev *pdev;
 	struct device_node *np = ofdev->node;
+static int pasemi_nand_probe(struct platform_device *ofdev)
+{
+	struct pci_dev *pdev;
+	struct device_node *np = ofdev->dev.of_node;
 	struct resource res;
 	struct nand_chip *chip;
 	int err = 0;
@@ -108,6 +114,7 @@ static int __devinit pasemi_nand_probe(struct of_device *ofdev,
 		return -ENODEV;
 
 	pr_debug("pasemi_nand at %lx-%lx\n", res.start, res.end);
+	pr_debug("pasemi_nand at %pR\n", &res);
 
 	/* Allocate memory for MTD device structure and private data */
 	pasemi_nand_mtd = kzalloc(sizeof(struct mtd_info) +
@@ -125,6 +132,7 @@ static int __devinit pasemi_nand_probe(struct of_device *ofdev,
 	/* Link the private data with the MTD structure */
 	pasemi_nand_mtd->priv = chip;
 	pasemi_nand_mtd->owner = THIS_MODULE;
+	pasemi_nand_mtd->dev.parent = &ofdev->dev;
 
 	chip->IO_ADDR_R = of_iomap(np, 0);
 	chip->IO_ADDR_W = chip->IO_ADDR_R;
@@ -141,6 +149,7 @@ static int __devinit pasemi_nand_probe(struct of_device *ofdev,
 	}
 
 	lpcctl = pci_resource_start(pdev, 0);
+	pci_dev_put(pdev);
 
 	if (!request_region(lpcctl, 4, driver_name)) {
 		err = -EBUSY;
@@ -158,22 +167,29 @@ static int __devinit pasemi_nand_probe(struct of_device *ofdev,
 	chip->options = NAND_USE_FLASH_BBT | NAND_NO_AUTOINCR;
 
 	/* Scan to find existance of the device */
+	chip->bbt_options = NAND_BBT_USE_FLASH;
+
+	/* Scan to find existence of the device */
 	if (nand_scan(pasemi_nand_mtd, 1)) {
 		err = -ENXIO;
 		goto out_lpc;
 	}
 
 	if (add_mtd_device(pasemi_nand_mtd)) {
+	if (mtd_device_register(pasemi_nand_mtd, NULL, 0)) {
 		printk(KERN_ERR "pasemi_nand: Unable to register MTD device\n");
 		err = -ENODEV;
-		goto out_lpc;
+		goto out_cleanup_nand;
 	}
 
 	printk(KERN_INFO "PA Semi NAND flash at %08lx, control at I/O %x\n",
+	printk(KERN_INFO "PA Semi NAND flash at %08llx, control at I/O %x\n",
 	       res.start, lpcctl);
 
 	return 0;
 
+ out_cleanup_nand:
+	nand_cleanup(chip);
  out_lpc:
 	release_region(lpcctl, 4);
  out_ior:
@@ -185,6 +201,7 @@ static int __devinit pasemi_nand_probe(struct of_device *ofdev,
 }
 
 static int __devexit pasemi_nand_remove(struct of_device *ofdev)
+static int pasemi_nand_remove(struct platform_device *ofdev)
 {
 	struct nand_chip *chip;
 
@@ -209,6 +226,7 @@ static int __devexit pasemi_nand_remove(struct of_device *ofdev)
 }
 
 static struct of_device_id pasemi_nand_match[] =
+static const struct of_device_id pasemi_nand_match[] =
 {
 	{
 		.compatible   = "pasemi,localbus-nand",
@@ -222,6 +240,12 @@ static struct of_platform_driver pasemi_nand_driver =
 {
 	.name		= (char*)driver_name,
 	.match_table	= pasemi_nand_match,
+static struct platform_driver pasemi_nand_driver =
+{
+	.driver = {
+		.name = driver_name,
+		.of_match_table = pasemi_nand_match,
+	},
 	.probe		= pasemi_nand_probe,
 	.remove		= pasemi_nand_remove,
 };
@@ -237,6 +261,7 @@ static void __exit pasemi_nand_exit(void)
 	of_unregister_platform_driver(&pasemi_nand_driver);
 }
 module_exit(pasemi_nand_exit);
+module_platform_driver(pasemi_nand_driver);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Egor Martovetsky <egor@pasemi.com>");

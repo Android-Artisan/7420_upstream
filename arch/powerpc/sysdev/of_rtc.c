@@ -12,6 +12,9 @@
 #include <linux/of.h>
 #include <linux/init.h>
 #include <linux/of_platform.h>
+#include <linux/of_address.h>
+#include <linux/of_platform.h>
+#include <linux/slab.h>
 
 static __initdata struct {
 	const char *compatible;

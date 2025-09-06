@@ -2,6 +2,7 @@
 #define _SPARC64_TTABLE_H
 
 #include <asm/utrap.h>
+#include <asm/pil.h>
 
 #ifdef __ASSEMBLY__
 #include <asm/thread_info.h>
@@ -124,6 +125,7 @@
 #define TRAP_IRQ(routine, level)			\
 	rdpr	%pil, %g2;				\
 	wrpr	%g0, 15, %pil;				\
+	wrpr	%g0, PIL_NORMAL_MAX, %pil;		\
 	sethi	%hi(1f-4), %g7;				\
 	ba,pt	%xcc, etrap_irq;			\
 	 or	%g7, %lo(1f-4), %g7;			\
@@ -144,6 +146,7 @@
 #define TRAP_IRQ(routine, level)			\
 	rdpr	%pil, %g2;				\
 	wrpr	%g0, 15, %pil;				\
+	wrpr	%g0, PIL_NORMAL_MAX, %pil;		\
 	ba,pt	%xcc, etrap_irq;			\
 	 rd	%pc, %g7;				\
 	mov	level, %o0;				\
@@ -152,6 +155,16 @@
 	ba,a,pt	%xcc, rtrap_irq;
 
 #endif
+
+#define TRAP_NMI_IRQ(routine, level)			\
+	rdpr	%pil, %g2;				\
+	wrpr	%g0, PIL_NMI, %pil;			\
+	ba,pt	%xcc, etrap_irq;			\
+	 rd	%pc, %g7;				\
+	mov	level, %o0;				\
+	call	routine;				\
+	 add	%sp, PTREGS_OFF, %o1;			\
+	ba,a,pt	%xcc, rtrap_nmi;
 
 #define TRAP_IVEC TRAP_NOSAVE(do_ivec)
 
@@ -362,6 +375,9 @@ etrap_spill_fixup_64bit:				\
 /* Normal 32bit spill */
 #define SPILL_2_GENERIC(ASI)				\
 	srl	%sp, 0, %sp;				\
+	and	%sp, 1, %g3;				\
+	brnz,pn	%g3, (. - (128 + 4));			\
+	 srl	%sp, 0, %sp;				\
 	stwa	%l0, [%sp + %g0] ASI;			\
 	mov	0x04, %g3;				\
 	stwa	%l1, [%sp + %g3] ASI;			\
@@ -388,6 +404,7 @@ etrap_spill_fixup_64bit:				\
 	stwa	%i7, [%g1 + %g3] ASI;			\
 	saved;						\
         retry; nop; nop;				\
+        retry;						\
 	b,a,pt	%xcc, spill_fixup_dax;			\
 	b,a,pt	%xcc, spill_fixup_mna;			\
 	b,a,pt	%xcc, spill_fixup;
@@ -395,6 +412,9 @@ etrap_spill_fixup_64bit:				\
 #define SPILL_2_GENERIC_ETRAP		\
 etrap_user_spill_32bit:			\
 	srl	%sp, 0, %sp;		\
+	and	%sp, 1, %g3;		\
+	brnz,pn	%g3, etrap_user_spill_64bit;	\
+	 srl	%sp, 0, %sp;		\
 	stwa	%l0, [%sp + 0x00] %asi;	\
 	stwa	%l1, [%sp + 0x04] %asi;	\
 	stwa	%l2, [%sp + 0x08] %asi;	\
@@ -417,6 +437,7 @@ etrap_user_spill_32bit:			\
 	 wrpr	%g1, %cwp;		\
 	nop; nop; nop; nop;		\
 	nop; nop; nop; nop;		\
+	nop; nop;			\
 	ba,a,pt	%xcc, etrap_spill_fixup_32bit; \
 	ba,a,pt	%xcc, etrap_spill_fixup_32bit; \
 	ba,a,pt	%xcc, etrap_spill_fixup_32bit;
@@ -574,14 +595,17 @@ user_rtt_fill_64bit:					\
 	 restored;					\
 	nop; nop; nop; nop; nop; nop;			\
 	nop; nop; nop; nop; nop;			\
-	ba,a,pt	%xcc, user_rtt_fill_fixup;		\
-	ba,a,pt	%xcc, user_rtt_fill_fixup;		\
+	ba,a,pt	%xcc, user_rtt_fill_fixup_dax;		\
+	ba,a,pt	%xcc, user_rtt_fill_fixup_mna;		\
 	ba,a,pt	%xcc, user_rtt_fill_fixup;
 
 
 /* Normal 32bit fill */
 #define FILL_2_GENERIC(ASI)				\
 	srl	%sp, 0, %sp;				\
+	and	%sp, 1, %g3;				\
+	brnz,pn	%g3, (. - (128 + 4));			\
+	 srl	%sp, 0, %sp;				\
 	lduwa	[%sp + %g0] ASI, %l0;			\
 	mov	0x04, %g2;				\
 	mov	0x08, %g3;				\
@@ -606,6 +630,7 @@ user_rtt_fill_64bit:					\
 	lduwa	[%g1 + %g5] ASI, %i7;			\
 	restored;					\
 	retry; nop; nop; nop; nop;			\
+	retry; nop; nop;				\
 	b,a,pt	%xcc, fill_fixup_dax;			\
 	b,a,pt	%xcc, fill_fixup_mna;			\
 	b,a,pt	%xcc, fill_fixup;
@@ -613,6 +638,9 @@ user_rtt_fill_64bit:					\
 #define FILL_2_GENERIC_RTRAP				\
 user_rtt_fill_32bit:					\
 	srl	%sp, 0, %sp;				\
+	and	%sp, 1, %g3;				\
+	brnz,pn	%g3, user_rtt_fill_64bit;		\
+	 srl	%sp, 0, %sp;				\
 	lduwa	[%sp + 0x00] %asi, %l0;			\
 	lduwa	[%sp + 0x04] %asi, %l1;			\
 	lduwa	[%sp + 0x08] %asi, %l2;			\
@@ -633,8 +661,9 @@ user_rtt_fill_32bit:					\
 	 restored;					\
 	nop; nop; nop; nop; nop;			\
 	nop; nop; nop; nop; nop;			\
-	ba,a,pt	%xcc, user_rtt_fill_fixup;		\
-	ba,a,pt	%xcc, user_rtt_fill_fixup;		\
+	nop; nop; nop;					\
+	ba,a,pt	%xcc, user_rtt_fill_fixup_dax;		\
+	ba,a,pt	%xcc, user_rtt_fill_fixup_mna;		\
 	ba,a,pt	%xcc, user_rtt_fill_fixup;
 
 

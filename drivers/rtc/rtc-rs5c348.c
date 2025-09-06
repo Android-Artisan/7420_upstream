@@ -22,6 +22,11 @@
 #include <linux/rtc.h>
 #include <linux/workqueue.h>
 #include <linux/spi/spi.h>
+#include <linux/slab.h>
+#include <linux/rtc.h>
+#include <linux/workqueue.h>
+#include <linux/spi/spi.h>
+#include <linux/module.h>
 
 #define DRV_VERSION "0.2"
 
@@ -63,6 +68,7 @@ rs5c348_rtc_set_time(struct device *dev, struct rtc_time *tm)
 {
 	struct spi_device *spi = to_spi_device(dev);
 	struct rs5c348_plat_data *pdata = spi->dev.platform_data;
+	struct rs5c348_plat_data *pdata = dev_get_platdata(&spi->dev);
 	u8 txbuf[5+7], *txp;
 	int ret;
 
@@ -88,6 +94,20 @@ rs5c348_rtc_set_time(struct device *dev, struct rtc_time *tm)
 	txp[RS5C348_REG_MONTH] = BIN2BCD(tm->tm_mon + 1) |
 		(tm->tm_year >= 100 ? RS5C348_BIT_Y2K : 0);
 	txp[RS5C348_REG_YEAR] = BIN2BCD(tm->tm_year % 100);
+	txp[RS5C348_REG_SECS] = bin2bcd(tm->tm_sec);
+	txp[RS5C348_REG_MINS] = bin2bcd(tm->tm_min);
+	if (pdata->rtc_24h) {
+		txp[RS5C348_REG_HOURS] = bin2bcd(tm->tm_hour);
+	} else {
+		/* hour 0 is AM12, noon is PM12 */
+		txp[RS5C348_REG_HOURS] = bin2bcd((tm->tm_hour + 11) % 12 + 1) |
+			(tm->tm_hour >= 12 ? RS5C348_BIT_PM : 0);
+	}
+	txp[RS5C348_REG_WDAY] = bin2bcd(tm->tm_wday);
+	txp[RS5C348_REG_DAY] = bin2bcd(tm->tm_mday);
+	txp[RS5C348_REG_MONTH] = bin2bcd(tm->tm_mon + 1) |
+		(tm->tm_year >= 100 ? RS5C348_BIT_Y2K : 0);
+	txp[RS5C348_REG_YEAR] = bin2bcd(tm->tm_year % 100);
 	/* write in one transfer to avoid data inconsistency */
 	ret = spi_write_then_read(spi, txbuf, sizeof(txbuf), NULL, 0);
 	udelay(62);	/* Tcsr 62us */
@@ -99,6 +119,7 @@ rs5c348_rtc_read_time(struct device *dev, struct rtc_time *tm)
 {
 	struct spi_device *spi = to_spi_device(dev);
 	struct rs5c348_plat_data *pdata = spi->dev.platform_data;
+	struct rs5c348_plat_data *pdata = dev_get_platdata(&spi->dev);
 	u8 txbuf[5], rxbuf[7];
 	int ret;
 
@@ -130,6 +151,23 @@ rs5c348_rtc_read_time(struct device *dev, struct rtc_time *tm)
 		BCD2BIN(rxbuf[RS5C348_REG_MONTH] & RS5C348_MONTH_MASK) - 1;
 	/* year is 1900 + tm->tm_year */
 	tm->tm_year = BCD2BIN(rxbuf[RS5C348_REG_YEAR]) +
+	tm->tm_sec = bcd2bin(rxbuf[RS5C348_REG_SECS] & RS5C348_SECS_MASK);
+	tm->tm_min = bcd2bin(rxbuf[RS5C348_REG_MINS] & RS5C348_MINS_MASK);
+	tm->tm_hour = bcd2bin(rxbuf[RS5C348_REG_HOURS] & RS5C348_HOURS_MASK);
+	if (!pdata->rtc_24h) {
+		if (rxbuf[RS5C348_REG_HOURS] & RS5C348_BIT_PM) {
+			tm->tm_hour -= 20;
+			tm->tm_hour %= 12;
+			tm->tm_hour += 12;
+		} else
+			tm->tm_hour %= 12;
+	}
+	tm->tm_wday = bcd2bin(rxbuf[RS5C348_REG_WDAY] & RS5C348_WDAY_MASK);
+	tm->tm_mday = bcd2bin(rxbuf[RS5C348_REG_DAY] & RS5C348_DAY_MASK);
+	tm->tm_mon =
+		bcd2bin(rxbuf[RS5C348_REG_MONTH] & RS5C348_MONTH_MASK) - 1;
+	/* year is 1900 + tm->tm_year */
+	tm->tm_year = bcd2bin(rxbuf[RS5C348_REG_YEAR]) +
 		((rxbuf[RS5C348_REG_MONTH] & RS5C348_BIT_Y2K) ? 100 : 0);
 
 	if (rtc_valid_tm(tm) < 0) {
@@ -148,12 +186,15 @@ static const struct rtc_class_ops rs5c348_rtc_ops = {
 static struct spi_driver rs5c348_driver;
 
 static int __devinit rs5c348_probe(struct spi_device *spi)
+static int rs5c348_probe(struct spi_device *spi)
 {
 	int ret;
 	struct rtc_device *rtc;
 	struct rs5c348_plat_data *pdata;
 
 	pdata = kzalloc(sizeof(struct rs5c348_plat_data), GFP_KERNEL);
+	pdata = devm_kzalloc(&spi->dev, sizeof(struct rs5c348_plat_data),
+				GFP_KERNEL);
 	if (!pdata)
 		return -ENOMEM;
 	spi->dev.platform_data = pdata;
@@ -198,6 +239,7 @@ static int __devinit rs5c348_probe(struct spi_device *spi)
 		pdata->rtc_24h = 1;
 
 	rtc = rtc_device_register(rs5c348_driver.driver.name, &spi->dev,
+	rtc = devm_rtc_device_register(&spi->dev, rs5c348_driver.driver.name,
 				  &rs5c348_rtc_ops, THIS_MODULE);
 
 	if (IS_ERR(rtc)) {
@@ -246,8 +288,20 @@ static __exit void rs5c348_exit(void)
 
 module_init(rs5c348_init);
 module_exit(rs5c348_exit);
+	return ret;
+}
+
+static struct spi_driver rs5c348_driver = {
+	.driver = {
+		.name	= "rtc-rs5c348",
+	},
+	.probe	= rs5c348_probe,
+};
+
+module_spi_driver(rs5c348_driver);
 
 MODULE_AUTHOR("Atsushi Nemoto <anemo@mba.ocn.ne.jp>");
 MODULE_DESCRIPTION("Ricoh RS5C348 RTC driver");
 MODULE_LICENSE("GPL");
 MODULE_VERSION(DRV_VERSION);
+MODULE_ALIAS("spi:rtc-rs5c348");

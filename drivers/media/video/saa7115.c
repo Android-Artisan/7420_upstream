@@ -275,7 +275,6 @@ static const unsigned char saa7115_cfg_reset_scaler[] = {
 	0x00, 0x00
 };
 
-/* ============== SAA7715 VIDEO templates =============  */
 
 static const unsigned char saa7115_cfg_60hz_video[] = {
 	R_80_GLOBAL_CNTL_1, 0x00,			/* reset tasks */
@@ -428,7 +427,6 @@ static const unsigned char saa7115_cfg_50hz_video[] = {
 	0x00, 0x00
 };
 
-/* ============== SAA7715 VIDEO templates (end) =======  */
 
 static const unsigned char saa7115_cfg_vbi_on[] = {
 	R_80_GLOBAL_CNTL_1, 0x00,			/* reset tasks */
@@ -1228,7 +1226,6 @@ static void saa711x_decode_vbi_line(struct i2c_client *client,
 	}
 }
 
-/* ============ SAA7115 AUDIO settings (end) ============= */
 
 static int saa7115_command(struct i2c_client *client, unsigned int cmd, void *arg)
 {

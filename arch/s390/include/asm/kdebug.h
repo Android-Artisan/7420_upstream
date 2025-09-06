@@ -23,5 +23,6 @@ enum die_val {
 };
 
 extern void die(const char *, struct pt_regs *, long);
+extern void die(struct pt_regs *, const char *);
 
 #endif

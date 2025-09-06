@@ -25,6 +25,7 @@
  *     along with this program; if not, write to the Free Software
  *     Foundation, Inc., 59 Temple Place, Suite 330, Boston,
  *     MA 02111-1307 USA
+ *     along with this program; if not, see <http://www.gnu.org/licenses/>.
  *
  ********************************************************************/
 
@@ -63,6 +64,16 @@ static void ircomm_tty_change_speed(struct ircomm_tty_cb *self)
 		return;
 
 	cflag = self->tty->termios->c_cflag;
+static void ircomm_tty_change_speed(struct ircomm_tty_cb *self,
+		struct tty_struct *tty)
+{
+	unsigned int cflag, cval;
+	int baud;
+
+	if (!self->ircomm)
+		return;
+
+	cflag = tty->termios.c_cflag;
 
 	/*  byte size and parity */
 	switch (cflag & CSIZE) {
@@ -82,6 +93,7 @@ static void ircomm_tty_change_speed(struct ircomm_tty_cb *self)
 
 	/* Determine divisor based on baud rate */
 	baud = tty_get_baud_rate(self->tty);
+	baud = tty_get_baud_rate(tty);
 	if (!baud)
 		baud = 9600;	/* B0 transition handled in rs_set_termios */
 
@@ -103,6 +115,20 @@ static void ircomm_tty_change_speed(struct ircomm_tty_cb *self)
 		self->flags &= ~ASYNC_CHECK_CD;
 	else
 		self->flags |= ASYNC_CHECK_CD;
+		self->port.flags |= ASYNC_CTS_FLOW;
+		self->settings.flow_control |= IRCOMM_RTS_CTS_IN;
+		/* This got me. Bummer. Jean II */
+		if (self->service_type == IRCOMM_3_WIRE_RAW)
+			net_warn_ratelimited("%s(), enabling RTS/CTS on link that doesn't support it (3-wire-raw)\n",
+					     __func__);
+	} else {
+		self->port.flags &= ~ASYNC_CTS_FLOW;
+		self->settings.flow_control &= ~IRCOMM_RTS_CTS_IN;
+	}
+	if (cflag & CLOCAL)
+		self->port.flags &= ~ASYNC_CHECK_CD;
+	else
+		self->port.flags |= ASYNC_CHECK_CD;
 #if 0
 	/*
 	 * Set up parity check flag
@@ -154,12 +180,17 @@ void ircomm_tty_set_termios(struct tty_struct *tty,
 
 	if ((cflag == old_termios->c_cflag) &&
 	    (RELEVANT_IFLAG(tty->termios->c_iflag) ==
+	unsigned int cflag = tty->termios.c_cflag;
+
+	if ((cflag == old_termios->c_cflag) &&
+	    (RELEVANT_IFLAG(tty->termios.c_iflag) ==
 	     RELEVANT_IFLAG(old_termios->c_iflag)))
 	{
 		return;
 	}
 
 	ircomm_tty_change_speed(self);
+	ircomm_tty_change_speed(self, tty);
 
 	/* Handle transition to B0 status */
 	if ((old_termios->c_cflag & CBAUD) &&
@@ -173,6 +204,7 @@ void ircomm_tty_set_termios(struct tty_struct *tty,
 	    (cflag & CBAUD)) {
 		self->settings.dte |= IRCOMM_DTR;
 		if (!(tty->termios->c_cflag & CRTSCTS) ||
+		if (!(tty->termios.c_cflag & CRTSCTS) ||
 		    !test_bit(TTY_THROTTLED, &tty->flags)) {
 			self->settings.dte |= IRCOMM_RTS;
 		}
@@ -182,6 +214,7 @@ void ircomm_tty_set_termios(struct tty_struct *tty,
 	/* Handle turning off CRTSCTS */
 	if ((old_termios->c_cflag & CRTSCTS) &&
 	    !(tty->termios->c_cflag & CRTSCTS))
+	    !(tty->termios.c_cflag & CRTSCTS))
 	{
 		tty->hw_stopped = 0;
 		ircomm_tty_start(tty);
@@ -190,11 +223,13 @@ void ircomm_tty_set_termios(struct tty_struct *tty,
 
 /*
  * Function ircomm_tty_tiocmget (tty, file)
+ * Function ircomm_tty_tiocmget (tty)
  *
  *
  *
  */
 int ircomm_tty_tiocmget(struct tty_struct *tty, struct file *file)
+int ircomm_tty_tiocmget(struct tty_struct *tty)
 {
 	struct ircomm_tty_cb *self = (struct ircomm_tty_cb *) tty->driver_data;
 	unsigned int result;
@@ -215,11 +250,13 @@ int ircomm_tty_tiocmget(struct tty_struct *tty, struct file *file)
 
 /*
  * Function ircomm_tty_tiocmset (tty, file, set, clear)
+ * Function ircomm_tty_tiocmset (tty, set, clear)
  *
  *
  *
  */
 int ircomm_tty_tiocmset(struct tty_struct *tty, struct file *file,
+int ircomm_tty_tiocmset(struct tty_struct *tty,
 			unsigned int set, unsigned int clear)
 {
 	struct ircomm_tty_cb *self = (struct ircomm_tty_cb *) tty->driver_data;
@@ -274,6 +311,12 @@ static int ircomm_tty_get_serial_info(struct ircomm_tty_cb *self,
 	info.baud_base = self->settings.data_rate;
 	info.close_delay = self->close_delay;
 	info.closing_wait = self->closing_wait;
+	memset(&info, 0, sizeof(info));
+	info.line = self->line;
+	info.flags = self->port.flags;
+	info.baud_base = self->settings.data_rate;
+	info.close_delay = self->port.close_delay;
+	info.closing_wait = self->port.closing_wait;
 
 	/* For compatibility  */
 	info.type = PORT_16550A;
@@ -366,11 +409,13 @@ static int ircomm_tty_set_serial_info(struct ircomm_tty_cb *self,
 
 /*
  * Function ircomm_tty_ioctl (tty, file, cmd, arg)
+ * Function ircomm_tty_ioctl (tty, cmd, arg)
  *
  *
  *
  */
 int ircomm_tty_ioctl(struct tty_struct *tty, struct file *file,
+int ircomm_tty_ioctl(struct tty_struct *tty,
 		     unsigned int cmd, unsigned long arg)
 {
 	struct ircomm_tty_cb *self = (struct ircomm_tty_cb *) tty->driver_data;
@@ -398,6 +443,11 @@ int ircomm_tty_ioctl(struct tty_struct *tty, struct file *file,
 
 	case TIOCGICOUNT:
 		IRDA_DEBUG(0, "%s(), TIOCGICOUNT not impl!\n", __func__ );
+		pr_debug("(), TIOCMIWAIT, not impl!\n");
+		break;
+
+	case TIOCGICOUNT:
+		pr_debug("%s(), TIOCGICOUNT not impl!\n", __func__);
 #if 0
 		save_flags(flags); cli();
 		cnow = driver->icount;

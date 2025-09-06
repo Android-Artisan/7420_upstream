@@ -75,6 +75,7 @@ hypersparc_flush_cache_mm_out:
 	/* The things we do for performance... */
 hypersparc_flush_cache_range:
 	ld	[%o0 + 0x0], %o0		/* XXX vma->vm_mm, GROSS XXX */
+	ld	[%o0 + VMA_VM_MM], %o0
 #ifndef CONFIG_SMP
 	ld	[%o0 + AOFF_mm_context], %g1
 	cmp	%g1, -1
@@ -164,6 +165,7 @@ hypersparc_flush_cache_range_out:
 	/* Verified, my ass... */
 hypersparc_flush_cache_page:
 	ld	[%o0 + 0x0], %o0		/* XXX vma->vm_mm, GROSS XXX */
+	ld	[%o0 + VMA_VM_MM], %o0
 	ld	[%o0 + AOFF_mm_context], %g2
 #ifndef CONFIG_SMP
 	cmp	%g2, -1
@@ -285,6 +287,7 @@ hypersparc_flush_tlb_mm_out:
 
 hypersparc_flush_tlb_range:
 	ld	[%o0 + 0x00], %o0	/* XXX vma->vm_mm GROSS XXX */
+	ld	[%o0 + VMA_VM_MM], %o0
 	mov	SRMMU_CTX_REG, %g1
 	ld	[%o0 + AOFF_mm_context], %o3
 	lda	[%g1] ASI_M_MMUREGS, %g5
@@ -308,6 +311,7 @@ hypersparc_flush_tlb_range_out:
 
 hypersparc_flush_tlb_page:
 	ld	[%o0 + 0x00], %o0	/* XXX vma->vm_mm GROSS XXX */
+	ld	[%o0 + VMA_VM_MM], %o0
 	mov	SRMMU_CTX_REG, %g1
 	ld	[%o0 + AOFF_mm_context], %o3
 	andn	%o1, (PAGE_SIZE - 1), %o1

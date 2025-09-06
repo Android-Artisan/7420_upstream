@@ -13,6 +13,7 @@
 #undef DEBUG
 
 #include <linux/module.h>
+#include <linux/export.h>
 #include <linux/string.h>
 #include <linux/sched.h>
 #include <linux/init.h>
@@ -36,6 +37,10 @@
 #include <linux/percpu.h>
 #include <linux/lmb.h>
 #include <asm/io.h>
+#include <linux/memblock.h>
+#include <linux/of_platform.h>
+#include <asm/io.h>
+#include <asm/paca.h>
 #include <asm/prom.h>
 #include <asm/processor.h>
 #include <asm/vdso_datapage.h>
@@ -61,6 +66,8 @@
 #include <asm/cputhreads.h>
 
 #include "setup.h"
+#include <mm/mmu_decl.h>
+#include <asm/fadump.h>
 
 #ifdef DEBUG
 #include <asm/udbg.h>
@@ -79,6 +86,10 @@ EXPORT_SYMBOL(machine_id);
 unsigned long klimit = (unsigned long) _end;
 
 char cmd_line[COMMAND_LINE_SIZE];
+int boot_cpuid = -1;
+EXPORT_SYMBOL_GPL(boot_cpuid);
+
+unsigned long klimit = (unsigned long) _end;
 
 /*
  * This still seems to be needed... -- paulus
@@ -91,6 +102,15 @@ struct screen_info screen_info = {
 	.orig_video_isVGA = 1,
 	.orig_video_points = 16
 };
+#if defined(CONFIG_FB_VGA16_MODULE)
+EXPORT_SYMBOL(screen_info);
+#endif
+
+/* Variables required to store legacy IO irq routing */
+int of_i8042_kbd_irq;
+EXPORT_SYMBOL_GPL(of_i8042_kbd_irq);
+int of_i8042_aux_irq;
+EXPORT_SYMBOL_GPL(of_i8042_aux_irq);
 
 #ifdef __DO_IRQ_CANON
 /* XXX should go elsewhere eventually */
@@ -101,6 +121,14 @@ EXPORT_SYMBOL(ppc_do_canonicalize_irqs);
 /* also used by kexec */
 void machine_shutdown(void)
 {
+#ifdef CONFIG_FA_DUMP
+	/*
+	 * if fadump is active, cleanup the fadump registration before we
+	 * shutdown.
+	 */
+	fadump_cleanup();
+#endif
+
 	if (ppc_md.machine_shutdown)
 		ppc_md.machine_shutdown();
 }
@@ -123,6 +151,8 @@ void machine_power_off(void)
 	machine_shutdown();
 	if (ppc_md.power_off)
 		ppc_md.power_off();
+	if (pm_power_off)
+		pm_power_off();
 #ifdef CONFIG_SMP
 	smp_send_stop();
 #endif
@@ -134,6 +164,7 @@ void machine_power_off(void)
 EXPORT_SYMBOL_GPL(machine_power_off);
 
 void (*pm_power_off)(void) = machine_power_off;
+void (*pm_power_off)(void);
 EXPORT_SYMBOL_GPL(pm_power_off);
 
 void machine_halt(void)
@@ -158,6 +189,41 @@ extern u32 cpu_temp_both(unsigned long cpu);
 #ifdef CONFIG_SMP
 DEFINE_PER_CPU(unsigned int, pvr);
 #endif
+
+DEFINE_PER_CPU(unsigned int, cpu_pvr);
+#endif
+
+static void show_cpuinfo_summary(struct seq_file *m)
+{
+	struct device_node *root;
+	const char *model = NULL;
+#if defined(CONFIG_SMP) && defined(CONFIG_PPC32)
+	unsigned long bogosum = 0;
+	int i;
+	for_each_online_cpu(i)
+		bogosum += loops_per_jiffy;
+	seq_printf(m, "total bogomips\t: %lu.%02lu\n",
+		   bogosum/(500000/HZ), bogosum/(5000/HZ) % 100);
+#endif /* CONFIG_SMP && CONFIG_PPC32 */
+	seq_printf(m, "timebase\t: %lu\n", ppc_tb_freq);
+	if (ppc_md.name)
+		seq_printf(m, "platform\t: %s\n", ppc_md.name);
+	root = of_find_node_by_path("/");
+	if (root)
+		model = of_get_property(root, "model", NULL);
+	if (model)
+		seq_printf(m, "model\t\t: %s\n", model);
+	of_node_put(root);
+
+	if (ppc_md.show_cpuinfo != NULL)
+		ppc_md.show_cpuinfo(m);
+
+#ifdef CONFIG_PPC32
+	/* Display the amount of memory */
+	seq_printf(m, "Memory\t\t: %d MB\n",
+		   (unsigned int)(total_memory / (1024 * 1024)));
+#endif
+}
 
 static int show_cpuinfo(struct seq_file *m, void *v)
 {
@@ -193,16 +259,13 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 		return 0;
 	}
 
-	/* We only show online cpus: disable preempt (overzealous, I
-	 * knew) to prevent cpu going down. */
-	preempt_disable();
-	if (!cpu_online(cpu_id)) {
-		preempt_enable();
-		return 0;
-	}
+	unsigned long proc_freq;
+	unsigned short maj;
+	unsigned short min;
 
 #ifdef CONFIG_SMP
 	pvr = per_cpu(pvr, cpu_id);
+	pvr = per_cpu(cpu_pvr, cpu_id);
 #else
 	pvr = mfspr(SPRN_PVR);
 #endif
@@ -247,6 +310,19 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 	if (ppc_proc_freq)
 		seq_printf(m, "clock\t\t: %lu.%06luMHz\n",
 			   ppc_proc_freq / 1000000, ppc_proc_freq % 1000000);
+	 * Platforms that have variable clock rates, should implement
+	 * the method ppc_md.get_proc_freq() that reports the clock
+	 * rate of a given cpu. The rest can use ppc_proc_freq to
+	 * report the clock rate that is same across all cpus.
+	 */
+	if (ppc_md.get_proc_freq)
+		proc_freq = ppc_md.get_proc_freq(cpu_id);
+	else
+		proc_freq = ppc_proc_freq;
+
+	if (proc_freq)
+		seq_printf(m, "clock\t\t: %lu.%06luMHz\n",
+			   proc_freq / 1000000, proc_freq % 1000000);
 
 	if (ppc_md.show_percpuinfo != NULL)
 		ppc_md.show_percpuinfo(m, cpu_id);
@@ -256,6 +332,21 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 	if (PVR_VER(pvr) & 0x8000) {
 		maj = PVR_MAJ(pvr);
 		min = PVR_MIN(pvr);
+		switch (PVR_VER(pvr)) {
+		case 0x8000:	/* 7441/7450/7451, Voyager */
+		case 0x8001:	/* 7445/7455, Apollo 6 */
+		case 0x8002:	/* 7447/7457, Apollo 7 */
+		case 0x8003:	/* 7447A, Apollo 7 PM */
+		case 0x8004:	/* 7448, Apollo 8 */
+		case 0x800c:	/* 7410, Nitro */
+			maj = ((pvr >> 8) & 0xF);
+			min = PVR_MIN(pvr);
+			break;
+		default:	/* e500/book-e */
+			maj = PVR_MAJ(pvr);
+			min = PVR_MIN(pvr);
+			break;
+		}
 	} else {
 		switch (PVR_VER(pvr)) {
 			case 0x0020:	/* 403 family */
@@ -285,8 +376,10 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 #ifdef CONFIG_SMP
 	seq_printf(m, "\n");
 #endif
+	/* If this is the last cpu, print the summary */
+	if (cpumask_next(cpu_id, cpu_online_mask) >= nr_cpu_ids)
+		show_cpuinfo_summary(m);
 
-	preempt_enable();
 	return 0;
 }
 
@@ -295,11 +388,19 @@ static void *c_start(struct seq_file *m, loff_t *pos)
 	unsigned long i = *pos;
 
 	return i <= NR_CPUS ? (void *)(i + 1) : NULL;
+	if (*pos == 0)	/* just in case, cpu 0 is not the first */
+		*pos = cpumask_first(cpu_online_mask);
+	else
+		*pos = cpumask_next(*pos - 1, cpu_online_mask);
+	if ((*pos) < nr_cpu_ids)
+		return (void *)(unsigned long)(*pos + 1);
+	return NULL;
 }
 
 static void *c_next(struct seq_file *m, void *v, loff_t *pos)
 {
 	++*pos;
+	(*pos)++;
 	return c_start(m, pos);
 }
 
@@ -308,6 +409,7 @@ static void c_stop(struct seq_file *m, void *v)
 }
 
 struct seq_operations cpuinfo_op = {
+const struct seq_operations cpuinfo_op = {
 	.start =c_start,
 	.next =	c_next,
 	.stop =	c_stop,
@@ -331,6 +433,7 @@ void __init check_for_initrd(void)
 
 	if (initrd_start)
 		printk("Found initrd at 0x%lx:0x%lx\n", initrd_start, initrd_end);
+		pr_info("Found initrd at 0x%lx:0x%lx\n", initrd_start, initrd_end);
 
 	DBG(" <- check_for_initrd()\n");
 #endif /* CONFIG_BLK_DEV_INITRD */
@@ -340,6 +443,12 @@ void __init check_for_initrd(void)
 
 int threads_per_core, threads_shift;
 cpumask_t threads_core_mask;
+int threads_per_core, threads_per_subcore, threads_shift;
+cpumask_t threads_core_mask;
+EXPORT_SYMBOL_GPL(threads_per_core);
+EXPORT_SYMBOL_GPL(threads_per_subcore);
+EXPORT_SYMBOL_GPL(threads_shift);
+EXPORT_SYMBOL_GPL(threads_core_mask);
 
 static void __init cpu_init_thread_core_maps(int tpc)
 {
@@ -347,6 +456,8 @@ static void __init cpu_init_thread_core_maps(int tpc)
 
 	threads_per_core = tpc;
 	threads_core_mask = CPU_MASK_NONE;
+	threads_per_subcore = tpc;
+	cpumask_clear(&threads_core_mask);
 
 	/* This implementation only supports power of 2 number of threads
 	 * for simplicity and performance
@@ -356,6 +467,7 @@ static void __init cpu_init_thread_core_maps(int tpc)
 
 	for (i = 0; i < tpc; i++)
 		cpu_set(i, threads_core_mask);
+		cpumask_set_cpu(i, &threads_core_mask);
 
 	printk(KERN_INFO "CPU maps initialized for %d thread%s per core\n",
 	       tpc, tpc > 1 ? "s" : "");
@@ -373,6 +485,14 @@ static void __init cpu_init_thread_core_maps(int tpc)
  *
  * We do not initialize the online map here; cpus set their own bits in
  * cpu_online_map as they come up.
+ *                  cpu_possible_mask
+ *                  cpu_present_mask
+ *
+ * Having the possible map set up early allows us to restrict allocations
+ * of things like irqstacks to nr_cpu_ids rather than NR_CPUS.
+ *
+ * We do not initialize the online map here; cpus set their own bits in
+ * cpu_online_mask as they come up.
  *
  * This function is valid only for Open Firmware systems.  finish_device_tree
  * must be called before using this.
@@ -391,6 +511,9 @@ void __init smp_setup_cpu_maps(void)
 
 	while ((dn = of_find_node_by_type(dn, "cpu")) && cpu < NR_CPUS) {
 		const int *intserv;
+	while ((dn = of_find_node_by_type(dn, "cpu")) && cpu < nr_cpu_ids) {
+		const __be32 *intserv;
+		__be32 cpu_be;
 		int j, len;
 
 		DBG("  * %s...\n", dn->full_name);
@@ -414,6 +537,30 @@ void __init smp_setup_cpu_maps(void)
 			cpu_set(cpu, cpu_present_map);
 			set_hard_smp_processor_id(cpu, intserv[j]);
 			cpu_set(cpu, cpu_possible_map);
+			intserv = of_get_property(dn, "reg", &len);
+			if (!intserv) {
+				cpu_be = cpu_to_be32(cpu);
+				intserv = &cpu_be;	/* assume logical == phys */
+				len = 4;
+			}
+		}
+
+		nthreads = len / sizeof(int);
+
+		for (j = 0; j < nthreads && cpu < nr_cpu_ids; j++) {
+			bool avail;
+
+			DBG("    thread %d -> cpu %d (hard id %d)\n",
+			    j, cpu, be32_to_cpu(intserv[j]));
+
+			avail = of_device_is_available(dn);
+			if (!avail)
+				avail = !of_property_match_string(dn,
+						"enable-method", "spin-table");
+
+			set_cpu_present(cpu, avail);
+			set_hard_smp_processor_id(cpu, be32_to_cpu(intserv[j]));
+			set_cpu_possible(cpu, true);
 			cpu++;
 		}
 	}
@@ -433,6 +580,7 @@ void __init smp_setup_cpu_maps(void)
 	    (dn = of_find_node_by_path("/rtas"))) {
 		int num_addr_cell, num_size_cell, maxcpus;
 		const unsigned int *ireg;
+		const __be32 *ireg;
 
 		num_addr_cell = of_n_addr_cells(dn);
 		num_size_cell = of_n_size_cells(dn);
@@ -443,6 +591,7 @@ void __init smp_setup_cpu_maps(void)
 			goto out;
 
 		maxcpus = ireg[num_addr_cell + num_size_cell];
+		maxcpus = be32_to_cpup(ireg + num_addr_cell + num_size_cell);
 
 		/* Double maxcpus for processors which have SMT capability */
 		if (cpu_has_feature(CPU_FTR_SMT))
@@ -454,12 +603,19 @@ void __init smp_setup_cpu_maps(void)
 			       "operating system maximum is %d.\n",
 			       maxcpus, NR_CPUS);
 			maxcpus = NR_CPUS;
+		if (maxcpus > nr_cpu_ids) {
+			printk(KERN_WARNING
+			       "Partition configured for %d cpus, "
+			       "operating system maximum is %d.\n",
+			       maxcpus, nr_cpu_ids);
+			maxcpus = nr_cpu_ids;
 		} else
 			printk(KERN_INFO "Partition configured for %d cpus.\n",
 			       maxcpus);
 
 		for (cpu = 0; cpu < maxcpus; cpu++)
 			cpu_set(cpu, cpu_possible_map);
+			set_cpu_possible(cpu, true);
 	out:
 		of_node_put(dn);
 	}
@@ -473,6 +629,11 @@ void __init smp_setup_cpu_maps(void)
 	 * here will have to be reworked
 	 */
 	cpu_init_thread_core_maps(nthreads);
+
+	/* Now that possible cpus are set, set nr_cpu_ids for later use */
+	setup_nr_cpu_ids();
+
+	free_unused_pacas();
 }
 #endif /* CONFIG_SMP */
 
@@ -544,6 +705,15 @@ int check_legacy_ioport(unsigned long base_port)
 			np = of_find_compatible_node(NULL, NULL, "pnpPNP,f03");
 		if (np) {
 			parent = of_get_parent(np);
+
+			of_i8042_kbd_irq = irq_of_parse_and_map(parent, 0);
+			if (!of_i8042_kbd_irq)
+				of_i8042_kbd_irq = 1;
+
+			of_i8042_aux_irq = irq_of_parse_and_map(parent, 1);
+			if (!of_i8042_aux_irq)
+				of_i8042_aux_irq = 12;
+
 			of_node_put(np);
 			np = parent;
 			break;
@@ -553,6 +723,10 @@ int check_legacy_ioport(unsigned long base_port)
 		 * name instead */
 		if (!np)
 			np = of_find_node_by_name(NULL, "8042");
+		if (np) {
+			of_i8042_kbd_irq = 1;
+			of_i8042_aux_irq = 12;
+		}
 		break;
 	case FDC_BASE: /* FDC1 */
 		np = of_find_node_by_type(NULL, "fdc");
@@ -583,6 +757,11 @@ EXPORT_SYMBOL(check_legacy_ioport);
 static int ppc_panic_event(struct notifier_block *this,
                              unsigned long event, void *ptr)
 {
+	/*
+	 * If firmware-assisted dump has been registered then trigger
+	 * firmware-assisted dump and let firmware handle everything else.
+	 */
+	crash_fadump(NULL, ptr);
 	ppc_md.panic(ptr);  /* May not return */
 	return NOTIFY_DONE;
 }
@@ -640,6 +819,7 @@ late_initcall(check_cache_coherency);
 
 #ifdef CONFIG_DEBUG_FS
 struct dentry *powerpc_debugfs_root;
+EXPORT_SYMBOL(powerpc_debugfs_root);
 
 static int powerpc_debugfs_init(void)
 {
@@ -649,3 +829,15 @@ static int powerpc_debugfs_init(void)
 }
 arch_initcall(powerpc_debugfs_init);
 #endif
+
+void ppc_printk_progress(char *s, unsigned short hex)
+{
+	pr_info("%s\n", s);
+}
+
+void arch_setup_pdev_archdata(struct platform_device *pdev)
+{
+	pdev->archdata.dma_mask = DMA_BIT_MASK(32);
+	pdev->dev.dma_mask = &pdev->archdata.dma_mask;
+ 	set_dma_ops(&pdev->dev, &dma_direct_ops);
+}

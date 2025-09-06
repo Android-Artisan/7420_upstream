@@ -24,6 +24,8 @@
 #include <linux/platform_device.h>
 #include <mach/hardware.h>
 #include <asm/io.h>
+#include <linux/io.h>
+#include <mach/hardware.h>
 #include <asm/irq.h>
 #include <asm/mach/arch.h>
 #include <asm/mach/map.h>
@@ -57,6 +59,7 @@ static struct sys_timer iq80332_timer = {
  */
 static int __init
 iq80332_pci_map_irq(struct pci_dev *dev, u8 slot, u8 pin)
+iq80332_pci_map_irq(const struct pci_dev *dev, u8 slot, u8 pin)
 {
 	int irq;
 
@@ -91,6 +94,10 @@ static struct hw_pci iq80332_pci __initdata = {
 	.setup		= iop3xx_pci_setup,
 	.preinit	= iop3xx_pci_preinit_cond,
 	.scan		= iop3xx_pci_scan_bus,
+	.nr_controllers = 1,
+	.ops		= &iop3xx_ops,
+	.setup		= iop3xx_pci_setup,
+	.preinit	= iop3xx_pci_preinit_cond,
 	.map_irq	= iq80332_pci_map_irq,
 };
 
@@ -131,6 +138,15 @@ static struct platform_device iq80332_flash_device = {
 
 static void __init iq80332_init_machine(void)
 {
+static struct resource iq80332_gpio_res[] = {
+	DEFINE_RES_MEM((IOP3XX_PERIPHERAL_PHYS_BASE + 0x1780), 0x10),
+};
+
+static void __init iq80332_init_machine(void)
+{
+	platform_device_register_simple("gpio-iop", 0,
+					iq80332_gpio_res,
+					ARRAY_SIZE(iq80332_gpio_res));
 	platform_device_register(&iop3xx_i2c0_device);
 	platform_device_register(&iop3xx_i2c1_device);
 	platform_device_register(&iop33x_uart0_device);
@@ -150,4 +166,10 @@ MACHINE_START(IQ80332, "Intel IQ80332")
 	.init_irq	= iop33x_init_irq,
 	.timer		= &iq80332_timer,
 	.init_machine	= iq80332_init_machine,
+	.atag_offset	= 0x100,
+	.map_io		= iop3xx_map_io,
+	.init_irq	= iop33x_init_irq,
+	.init_time	= iq80332_timer_init,
+	.init_machine	= iq80332_init_machine,
+	.restart	= iop3xx_restart,
 MACHINE_END

@@ -1,6 +1,7 @@
 /* IRC extension for IP connection tracking, Version 1.21
  * (C) 2000-2002 by Harald Welte <laforge@gnumonks.org>
  * based on RR's ip_conntrack_ftp.c
+ * (C) 2006-2012 Patrick McHardy <kaber@trash.net>
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -15,6 +16,7 @@
 #include <linux/ip.h>
 #include <linux/tcp.h>
 #include <linux/netfilter.h>
+#include <linux/slab.h>
 
 #include <net/netfilter/nf_conntrack.h>
 #include <net/netfilter/nf_conntrack_expect.h>
@@ -32,6 +34,7 @@ static DEFINE_SPINLOCK(irc_buffer_lock);
 
 unsigned int (*nf_nat_irc_hook)(struct sk_buff *skb,
 				enum ip_conntrack_info ctinfo,
+				unsigned int protoff,
 				unsigned int matchoff,
 				unsigned int matchlen,
 				struct nf_conntrack_expect *exp) __read_mostly;
@@ -41,6 +44,7 @@ MODULE_AUTHOR("Harald Welte <laforge@netfilter.org>");
 MODULE_DESCRIPTION("IRC (DCC) connection tracking helper");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS("ip_conntrack_irc");
+MODULE_ALIAS_NFCT_HELPER("irc");
 
 module_param_array(ports, ushort, &ports_c, 0400);
 MODULE_PARM_DESC(ports, "port numbers of IRC servers");
@@ -66,6 +70,7 @@ static const char *const dccprotos[] = {
  *	ad_end_p	returns pointer to last byte of addr data
  */
 static int parse_dcc(char *data, const char *data_end, u_int32_t *ip,
+static int parse_dcc(char *data, const char *data_end, __be32 *ip,
 		     u_int16_t *port, char **ad_beg_p, char **ad_end_p)
 {
 	char *tmp;
@@ -85,6 +90,7 @@ static int parse_dcc(char *data, const char *data_end, u_int32_t *ip,
 
 	*ad_beg_p = data;
 	*ip = simple_strtoul(data, &data, 10);
+	*ip = cpu_to_be32(simple_strtoul(data, &data, 10));
 
 	/* skip blanks between ip and port */
 	while (*data == ' ') {
@@ -112,6 +118,7 @@ static int help(struct sk_buff *skb, unsigned int protoff,
 	struct nf_conntrack_expect *exp;
 	struct nf_conntrack_tuple *tuple;
 	u_int32_t dcc_ip;
+	__be32 dcc_ip;
 	u_int16_t dcc_port;
 	__be16 port;
 	int i, ret = NF_ACCEPT;
@@ -125,6 +132,7 @@ static int help(struct sk_buff *skb, unsigned int protoff,
 	/* Until there's been traffic both ways, don't look in packets. */
 	if (ctinfo != IP_CT_ESTABLISHED &&
 	    ctinfo != IP_CT_ESTABLISHED + IP_CT_IS_REPLY)
+	if (ctinfo != IP_CT_ESTABLISHED && ctinfo != IP_CT_ESTABLISHED_REPLY)
 		return NF_ACCEPT;
 
 	/* Not a full tcp header? */
@@ -145,20 +153,45 @@ static int help(struct sk_buff *skb, unsigned int protoff,
 	data = ib_ptr;
 	data_limit = ib_ptr + skb->len - dataoff;
 
-	/* strlen("\1DCC SENT t AAAAAAAA P\1\n")=24
-	 * 5+MINMATCHLEN+strlen("t AAAAAAAA P\1\n")=14 */
-	while (data < data_limit - (19 + MINMATCHLEN)) {
-		if (memcmp(data, "\1DCC ", 5)) {
+	/* Skip any whitespace */
+	while (data < data_limit - 10) {
+		if (*data == ' ' || *data == '\r' || *data == '\n')
+			data++;
+		else
+			break;
+	}
+
+	/* strlen("PRIVMSG x ")=10 */
+	if (data < data_limit - 10) {
+		if (strncasecmp("PRIVMSG ", data, 8))
+			goto out;
+		data += 8;
+	}
+
+	/* strlen(" :\1DCC SENT t AAAAAAAA P\1\n")=26
+	 * 7+MINMATCHLEN+strlen("t AAAAAAAA P\1\n")=26
+	 */
+	while (data < data_limit - (21 + MINMATCHLEN)) {
+		/* Find first " :", the start of message */
+		if (memcmp(data, " :", 2)) {
 			data++;
 			continue;
 		}
+		data += 2;
+
+		/* then check that place only for the DCC command */
+		if (memcmp(data, "\1DCC ", 5))
+			goto out;
 		data += 5;
-		/* we have at least (19+MINMATCHLEN)-5 bytes valid data left */
+		/* we have at least (21+MINMATCHLEN)-(2+5) bytes valid data left */
 
 		iph = ip_hdr(skb);
 		pr_debug("DCC found in master %u.%u.%u.%u:%u %u.%u.%u.%u:%u\n",
 			 NIPQUAD(iph->saddr), ntohs(th->source),
 			 NIPQUAD(iph->daddr), ntohs(th->dest));
+		pr_debug("DCC found in master %pI4:%u %pI4:%u\n",
+			 &iph->saddr, ntohs(th->source),
+			 &iph->daddr, ntohs(th->dest));
 
 		for (i = 0; i < ARRAY_SIZE(dccprotos); i++) {
 			if (memcmp(data, dccprotos[i], strlen(dccprotos[i]))) {
@@ -169,7 +202,7 @@ static int help(struct sk_buff *skb, unsigned int protoff,
 			pr_debug("DCC %s detected\n", dccprotos[i]);
 
 			/* we have at least
-			 * (19+MINMATCHLEN)-5-dccprotos[i].matchlen bytes valid
+			 * (21+MINMATCHLEN)-7-dccprotos[i].matchlen bytes valid
 			 * data left (== 14/13 bytes) */
 			if (parse_dcc(data, data_limit, &dcc_ip,
 				       &dcc_port, &addr_beg_p, &addr_end_p)) {
@@ -189,11 +222,25 @@ static int help(struct sk_buff *skb, unsigned int protoff,
 						"%u.%u.%u.%u: %u.%u.%u.%u:%u\n",
 						NIPQUAD(tuple->src.u3.ip),
 						HIPQUAD(dcc_ip), dcc_port);
+
+			pr_debug("DCC bound ip/port: %pI4:%u\n",
+				 &dcc_ip, dcc_port);
+
+			/* dcc_ip can be the internal OR external (NAT'ed) IP */
+			tuple = &ct->tuplehash[dir].tuple;
+			if ((tuple->src.u3.ip != dcc_ip &&
+			     ct->tuplehash[!dir].tuple.dst.u3.ip != dcc_ip) ||
+			    dcc_port == 0) {
+				net_warn_ratelimited("Forged DCC command from %pI4: %pI4:%u\n",
+						     &tuple->src.u3.ip,
+						     &dcc_ip, dcc_port);
 				continue;
 			}
 
 			exp = nf_ct_expect_alloc(ct);
 			if (exp == NULL) {
+				nf_ct_helper_log(skb, ct,
+						 "cannot alloc expectation");
 				ret = NF_DROP;
 				goto out;
 			}
@@ -212,6 +259,15 @@ static int help(struct sk_buff *skb, unsigned int protoff,
 						 exp);
 			else if (nf_ct_expect_related(exp) != 0)
 				ret = NF_DROP;
+				ret = nf_nat_irc(skb, ctinfo, protoff,
+						 addr_beg_p - ib_ptr,
+						 addr_end_p - addr_beg_p,
+						 exp);
+			else if (nf_ct_expect_related(exp) != 0) {
+				nf_ct_helper_log(skb, ct,
+						 "cannot add expectation");
+				ret = NF_DROP;
+			}
 			nf_ct_expect_put(exp);
 			goto out;
 		}
@@ -234,6 +290,9 @@ static int __init nf_conntrack_irc_init(void)
 
 	if (max_dcc_channels < 1) {
 		printk("nf_ct_irc: max_dcc_channels must not be zero\n");
+
+	if (max_dcc_channels < 1) {
+		printk(KERN_ERR "nf_ct_irc: max_dcc_channels must not be zero\n");
 		return -EINVAL;
 	}
 
@@ -266,6 +325,14 @@ static int __init nf_conntrack_irc_init(void)
 		ret = nf_conntrack_helper_register(&irc[i]);
 		if (ret) {
 			printk("nf_ct_irc: failed to register helper "
+		if (ports[i] == IRC_PORT)
+			sprintf(irc[i].name, "irc");
+		else
+			sprintf(irc[i].name, "irc-%u", i);
+
+		ret = nf_conntrack_helper_register(&irc[i]);
+		if (ret) {
+			printk(KERN_ERR "nf_ct_irc: failed to register helper "
 			       "for pf: %u port: %u\n",
 			       irc[i].tuple.src.l3num, ports[i]);
 			nf_conntrack_irc_fini();

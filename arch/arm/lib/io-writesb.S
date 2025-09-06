@@ -46,6 +46,7 @@
 ENTRY(__raw_writesb)
 		teq	r2, #0		@ do we have to check for the zero len?
 		moveq	pc, lr
+		reteq	lr
 		ands	ip, r1, #3
 		bne	.Loutsb_align
 
@@ -91,3 +92,4 @@ ENTRY(__raw_writesb)
 		strgtb	r3, [r0]
 
 		ldmfd	sp!, {r4, r5, pc}
+ENDPROC(__raw_writesb)

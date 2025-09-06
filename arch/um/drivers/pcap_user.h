@@ -4,6 +4,7 @@
  */
 
 #include "net_user.h"
+#include <net_user.h>
 
 struct pcap_data {
 	char *host_if;

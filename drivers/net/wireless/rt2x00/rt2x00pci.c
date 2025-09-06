@@ -1,5 +1,6 @@
 /*
 	Copyright (C) 2004 - 2008 rt2x00 SourceForge Project
+	Copyright (C) 2004 - 2009 Ivo van Doorn <IvDoorn@gmail.com>
 	<http://rt2x00.serialmonkey.com>
 
 	This program is free software; you can redistribute it and/or modify
@@ -16,6 +17,7 @@
 	along with this program; if not, write to the
 	Free Software Foundation, Inc.,
 	59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+	along with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
 /*
@@ -27,6 +29,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/pci.h>
+#include <linux/slab.h>
 
 #include "rt2x00.h"
 #include "rt2x00pci.h"
@@ -224,6 +227,7 @@ static int rt2x00pci_alloc_reg(struct rt2x00_dev *rt2x00dev)
 
 	rt2x00dev->csr.base = ioremap(pci_resource_start(pci_dev, 0),
 				      pci_resource_len(pci_dev, 0));
+	rt2x00dev->csr.base = pci_ioremap_bar(pci_dev, 0);
 	if (!rt2x00dev->csr.base)
 		goto exit;
 
@@ -239,6 +243,7 @@ static int rt2x00pci_alloc_reg(struct rt2x00_dev *rt2x00dev)
 
 exit:
 	ERROR_PROBE("Failed to allocate registers.\n");
+	rt2x00_probe_err("Failed to allocate registers\n");
 
 	rt2x00pci_free_reg(rt2x00dev);
 
@@ -262,6 +267,23 @@ int rt2x00pci_probe(struct pci_dev *pci_dev, const struct pci_device_id *id)
 	if (retval) {
 		ERROR_PROBE("Enable device failed.\n");
 		goto exit_release_regions;
+int rt2x00pci_probe(struct pci_dev *pci_dev, const struct rt2x00_ops *ops)
+{
+	struct ieee80211_hw *hw;
+	struct rt2x00_dev *rt2x00dev;
+	int retval;
+	u16 chip;
+
+	retval = pci_enable_device(pci_dev);
+	if (retval) {
+		rt2x00_probe_err("Enable device failed\n");
+		return retval;
+	}
+
+	retval = pci_request_regions(pci_dev, pci_name(pci_dev));
+	if (retval) {
+		rt2x00_probe_err("PCI request regions failed\n");
+		goto exit_disable_device;
 	}
 
 	pci_set_master(pci_dev);
@@ -273,6 +295,12 @@ int rt2x00pci_probe(struct pci_dev *pci_dev, const struct pci_device_id *id)
 		ERROR_PROBE("PCI DMA not supported.\n");
 		retval = -EIO;
 		goto exit_disable_device;
+		rt2x00_probe_err("MWI not available\n");
+
+	if (dma_set_mask(&pci_dev->dev, DMA_BIT_MASK(32))) {
+		rt2x00_probe_err("PCI DMA not supported\n");
+		retval = -EIO;
+		goto exit_release_regions;
 	}
 
 	hw = ieee80211_alloc_hw(sizeof(struct rt2x00_dev), ops->hw);
@@ -280,6 +308,9 @@ int rt2x00pci_probe(struct pci_dev *pci_dev, const struct pci_device_id *id)
 		ERROR_PROBE("Failed to allocate hardware.\n");
 		retval = -ENOMEM;
 		goto exit_disable_device;
+		rt2x00_probe_err("Failed to allocate hardware\n");
+		retval = -ENOMEM;
+		goto exit_release_regions;
 	}
 
 	pci_set_drvdata(pci_dev, hw);
@@ -288,10 +319,25 @@ int rt2x00pci_probe(struct pci_dev *pci_dev, const struct pci_device_id *id)
 	rt2x00dev->dev = &pci_dev->dev;
 	rt2x00dev->ops = ops;
 	rt2x00dev->hw = hw;
+	rt2x00dev->irq = pci_dev->irq;
+	rt2x00dev->name = ops->name;
+
+	if (pci_is_pcie(pci_dev))
+		rt2x00_set_chip_intf(rt2x00dev, RT2X00_CHIP_INTF_PCIE);
+	else
+		rt2x00_set_chip_intf(rt2x00dev, RT2X00_CHIP_INTF_PCI);
 
 	retval = rt2x00pci_alloc_reg(rt2x00dev);
 	if (retval)
 		goto exit_free_device;
+
+	/*
+	 * Because rt3290 chip use different efuse offset to read efuse data.
+	 * So before read efuse it need to indicate it is the
+	 * rt3290 or not.
+	 */
+	pci_read_config_word(pci_dev, PCI_DEVICE_ID, &chip);
+	rt2x00dev->chip.rt = chip;
 
 	retval = rt2x00lib_probe_dev(rt2x00dev);
 	if (retval)
@@ -313,6 +359,11 @@ exit_release_regions:
 	pci_release_regions(pci_dev);
 
 	pci_set_drvdata(pci_dev, NULL);
+exit_release_regions:
+	pci_release_regions(pci_dev);
+
+exit_disable_device:
+	pci_disable_device(pci_dev);
 
 	return retval;
 }
@@ -385,6 +436,15 @@ exit_free_reg:
 	rt2x00pci_free_reg(rt2x00dev);
 
 	return retval;
+
+	if (pci_set_power_state(pci_dev, PCI_D0) ||
+	    pci_enable_device(pci_dev)) {
+		rt2x00_err(rt2x00dev, "Failed to resume device\n");
+		return -EIO;
+	}
+
+	pci_restore_state(pci_dev);
+	return rt2x00lib_resume(rt2x00dev);
 }
 EXPORT_SYMBOL_GPL(rt2x00pci_resume);
 #endif /* CONFIG_PM */

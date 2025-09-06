@@ -13,6 +13,7 @@
 
 #include "ext2.h"
 #include <linux/quotaops.h>
+#include <linux/slab.h>
 #include <linux/sched.h>
 #include <linux/buffer_head.h>
 #include <linux/capability.h>
@@ -45,10 +46,9 @@ struct ext2_group_desc * ext2_get_group_desc(struct super_block * sb,
 	struct ext2_sb_info *sbi = EXT2_SB(sb);
 
 	if (block_group >= sbi->s_groups_count) {
-		ext2_error (sb, "ext2_get_group_desc",
-			    "block_group >= groups_count - "
-			    "block_group = %d, groups_count = %lu",
-			    block_group, sbi->s_groups_count);
+		WARN(1, "block_group >= groups_count - "
+		     "block_group = %d, groups_count = %lu",
+		     block_group, sbi->s_groups_count);
 
 		return NULL;
 	}
@@ -56,10 +56,9 @@ struct ext2_group_desc * ext2_get_group_desc(struct super_block * sb,
 	group_desc = block_group >> EXT2_DESC_PER_BLOCK_BITS(sb);
 	offset = block_group & (EXT2_DESC_PER_BLOCK(sb) - 1);
 	if (!sbi->s_group_desc[group_desc]) {
-		ext2_error (sb, "ext2_get_group_desc",
-			    "Group descriptor not loaded - "
-			    "block_group = %d, group_desc = %lu, desc = %lu",
-			     block_group, group_desc, offset);
+		WARN(1, "Group descriptor not loaded - "
+		     "block_group = %d, group_desc = %lu, desc = %lu",
+		      block_group, group_desc, offset);
 		return NULL;
 	}
 
@@ -421,6 +420,7 @@ void ext2_init_block_alloc_info(struct inode *inode)
 {
 	struct ext2_inode_info *ei = EXT2_I(inode);
 	struct ext2_block_alloc_info *block_i = ei->i_block_alloc_info;
+	struct ext2_block_alloc_info *block_i;
 	struct super_block *sb = inode->i_sb;
 
 	block_i = kmalloc(sizeof(*block_i), GFP_NOFS);
@@ -481,6 +481,9 @@ void ext2_discard_reservation(struct inode *inode)
  * ext2_free_blocks_sb() -- Free given blocks and update quota and i_blocks
  * @inode:		inode
  * @block:		start physcial block to free
+ * ext2_free_blocks() -- Free given blocks and update quota and i_blocks
+ * @inode:		inode
+ * @block:		start physical block to free
  * @count:		number of blocks to free
  */
 void ext2_free_blocks (struct inode * inode, unsigned long block,
@@ -571,6 +574,11 @@ error_return:
 	brelse(bitmap_bh);
 	release_blocks(sb, freed);
 	DQUOT_FREE_BLOCK(inode, freed);
+	if (freed) {
+		percpu_counter_add(&sbi->s_freeblocks_counter, freed);
+		dquot_free_block_nodirty(inode, freed);
+		mark_inode_dirty(inode);
+	}
 }
 
 /**
@@ -649,6 +657,9 @@ find_next_usable_block(int start, struct buffer_head *bh, int maxblocks)
  * ext2_try_to_allocate()
  * @sb:			superblock
  * @handle:		handle to this transaction
+/**
+ * ext2_try_to_allocate()
+ * @sb:			superblock
  * @group:		given allocation block group
  * @bitmap_bh:		bufferhead holds the block bitmap
  * @grp_goal:		given target block within the group
@@ -851,6 +862,7 @@ static int find_next_reservable_window(
 
 	/*
 	 * Let's book the whole avaliable window for now.  We will check the
+	 * Let's book the whole available window for now.  We will check the
 	 * disk bitmap later and then, if there are free blocks then we adjust
 	 * the window size if it's larger than requested.
 	 * Otherwise, we will remove this node from the tree next time
@@ -1195,6 +1207,9 @@ static int ext2_has_free_blocks(struct ext2_sb_info *sbi)
 	if (free_blocks < root_blocks + 1 && !capable(CAP_SYS_RESOURCE) &&
 		sbi->s_resuid != current->fsuid &&
 		(sbi->s_resgid == 0 || !in_group_p (sbi->s_resgid))) {
+		!uid_eq(sbi->s_resuid, current_fsuid()) &&
+		(gid_eq(sbi->s_resgid, GLOBAL_ROOT_GID) ||
+		 !in_group_p (sbi->s_resgid))) {
 		return 0;
 	}
 	return 1;
@@ -1243,12 +1258,19 @@ ext2_fsblk_t ext2_new_blocks(struct inode *inode, ext2_fsblk_t goal,
 		printk("ext2_new_blocks: nonexistent device");
 		return 0;
 	}
+	int ret;
+
+	*errp = -ENOSPC;
+	sb = inode->i_sb;
 
 	/*
 	 * Check quota for allocation of this block.
 	 */
 	if (DQUOT_ALLOC_BLOCK(inode, num)) {
 		*errp = -EDQUOT;
+	ret = dquot_alloc_block(inode, num);
+	if (ret) {
+		*errp = ret;
 		return 0;
 	}
 
@@ -1295,6 +1317,7 @@ retry_alloc:
 	 * turn off reservation for this allocation
 	 */
 	if (my_rsv && (free_blocks < windowsz)
+		&& (free_blocks > 0)
 		&& (rsv_is_empty(&my_rsv->rsv_window)))
 		my_rsv = NULL;
 
@@ -1328,11 +1351,18 @@ retry_alloc:
 
 		free_blocks = le16_to_cpu(gdp->bg_free_blocks_count);
 		/*
+		 * skip this group (and avoid loading bitmap) if there
+		 * are no free blocks
+		 */
+		if (!free_blocks)
+			continue;
+		/*
 		 * skip this group if the number of
 		 * free blocks is less than half of the reservation
 		 * window size.
 		 */
 		if (free_blocks <= (windowsz/2))
+		if (my_rsv && (free_blocks <= (windowsz/2)))
 			continue;
 
 		brelse(bitmap_bh);
@@ -1351,6 +1381,9 @@ retry_alloc:
 	 * We may end up a bogus ealier ENOSPC error due to
 	 * filesystem is "full" of reservations, but
 	 * there maybe indeed free blocks avaliable on disk
+	 * We may end up a bogus earlier ENOSPC error due to
+	 * filesystem is "full" of reservations, but
+	 * there maybe indeed free blocks available on disk
 	 * In this case, we just forget about the reservations
 	 * just do block allocation as without reservations.
 	 */
@@ -1410,6 +1443,11 @@ allocated:
 	brelse(bitmap_bh);
 	DQUOT_FREE_BLOCK(inode, *count-num);
 	*count = num;
+	if (num < *count) {
+		dquot_free_block_nodirty(inode, *count-num);
+		mark_inode_dirty(inode);
+		*count = num;
+	}
 	return ret_block;
 
 io_error:
@@ -1420,6 +1458,10 @@ out:
 	 */
 	if (!performed_allocation)
 		DQUOT_FREE_BLOCK(inode, *count);
+	if (!performed_allocation) {
+		dquot_free_block_nodirty(inode, *count);
+		mark_inode_dirty(inode);
+	}
 	brelse(bitmap_bh);
 	return 0;
 }
@@ -1446,6 +1488,9 @@ unsigned long ext2_count_free (struct buffer_head * map, unsigned int numchars)
 		sum += nibblemap[map->b_data[i] & 0xf] +
 			nibblemap[(map->b_data[i] >> 4) & 0xf];
 	return (sum);
+unsigned long ext2_count_free(struct buffer_head *map, unsigned int numchars)
+{
+	return numchars * BITS_PER_BYTE - memweight(map->b_data, numchars);
 }
 
 #endif  /*  EXT2FS_DEBUG  */

@@ -40,6 +40,7 @@ extern int cpci_debug;
 		if (cpci_debug)					\
 			printk (KERN_DEBUG "%s: " format "\n",	\
 				MY_NAME , ## arg); 		\
+				MY_NAME , ## arg);		\
 	} while (0)
 #define err(format, arg...) printk(KERN_ERR "%s: " format "\n", MY_NAME , ## arg)
 #define info(format, arg...) printk(KERN_INFO "%s: " format "\n", MY_NAME , ## arg)
@@ -47,6 +48,7 @@ extern int cpci_debug;
 
 
 u8 cpci_get_attention_status(struct slot* slot)
+u8 cpci_get_attention_status(struct slot *slot)
 {
 	int hs_cap;
 	u16 hs_csr;
@@ -67,6 +69,7 @@ u8 cpci_get_attention_status(struct slot* slot)
 }
 
 int cpci_set_attention_status(struct slot* slot, int status)
+int cpci_set_attention_status(struct slot *slot, int status)
 {
 	int hs_cap;
 	u16 hs_csr;
@@ -94,6 +97,7 @@ int cpci_set_attention_status(struct slot* slot, int status)
 }
 
 u16 cpci_get_hs_csr(struct slot* slot)
+u16 cpci_get_hs_csr(struct slot *slot)
 {
 	int hs_cap;
 	u16 hs_csr;
@@ -112,6 +116,7 @@ u16 cpci_get_hs_csr(struct slot* slot)
 }
 
 int cpci_check_and_clear_ins(struct slot* slot)
+int cpci_check_and_clear_ins(struct slot *slot)
 {
 	int hs_cap;
 	u16 hs_csr;
@@ -141,6 +146,7 @@ int cpci_check_and_clear_ins(struct slot* slot)
 }
 
 int cpci_check_ext(struct slot* slot)
+int cpci_check_ext(struct slot *slot)
 {
 	int hs_cap;
 	u16 hs_csr;
@@ -162,6 +168,7 @@ int cpci_check_ext(struct slot* slot)
 }
 
 int cpci_clear_ext(struct slot* slot)
+int cpci_clear_ext(struct slot *slot)
 {
 	int hs_cap;
 	u16 hs_csr;
@@ -188,6 +195,7 @@ int cpci_clear_ext(struct slot* slot)
 }
 
 int cpci_led_on(struct slot* slot)
+int cpci_led_on(struct slot *slot)
 {
 	int hs_cap;
 	u16 hs_csr;
@@ -210,6 +218,7 @@ int cpci_led_on(struct slot* slot)
 					      hs_csr)) {
 			err("Could not set LOO for slot %s",
 			    slot->hotplug_slot->name);
+			    hotplug_slot_name(slot->hotplug_slot));
 			return -ENODEV;
 		}
 	}
@@ -217,6 +226,7 @@ int cpci_led_on(struct slot* slot)
 }
 
 int cpci_led_off(struct slot* slot)
+int cpci_led_off(struct slot *slot)
 {
 	int hs_cap;
 	u16 hs_csr;
@@ -239,6 +249,7 @@ int cpci_led_off(struct slot* slot)
 					      hs_csr)) {
 			err("Could not clear LOO for slot %s",
 			    slot->hotplug_slot->name);
+			    hotplug_slot_name(slot->hotplug_slot));
 			return -ENODEV;
 		}
 	}
@@ -256,6 +267,16 @@ int __ref cpci_configure_slot(struct slot *slot)
 	int fn;
 
 	dbg("%s - enter", __func__);
+
+int cpci_configure_slot(struct slot *slot)
+{
+	struct pci_dev *dev;
+	struct pci_bus *parent;
+	int ret = 0;
+
+	dbg("%s - enter", __func__);
+
+	pci_lock_rescan_remove();
 
 	if (slot->dev == NULL) {
 		dbg("pci_dev null, finding %02x:%02x:%x",
@@ -278,6 +299,8 @@ int __ref cpci_configure_slot(struct slot *slot)
 		if (slot->dev == NULL) {
 			err("Could not find PCI device for slot %02x", slot->number);
 			return -ENODEV;
+			ret = -ENODEV;
+			goto out;
 		}
 	}
 	parent = slot->dev->bus;
@@ -330,6 +353,27 @@ int cpci_unconfigure_slot(struct slot* slot)
 {
 	int i;
 	struct pci_dev *dev;
+	list_for_each_entry(dev, &parent->devices, bus_list) {
+		if (PCI_SLOT(dev->devfn) != PCI_SLOT(slot->devfn))
+			continue;
+		if (pci_is_bridge(dev))
+			pci_hp_add_bridge(dev);
+	}
+
+
+	pci_assign_unassigned_bridge_resources(parent->self);
+
+	pci_bus_add_devices(parent);
+
+ out:
+	pci_unlock_rescan_remove();
+	dbg("%s - exit", __func__);
+	return ret;
+}
+
+int cpci_unconfigure_slot(struct slot *slot)
+{
+	struct pci_dev *dev, *temp;
 
 	dbg("%s - enter", __func__);
 	if (!slot->dev) {
@@ -344,9 +388,19 @@ int cpci_unconfigure_slot(struct slot* slot)
 			pci_remove_bus_device(dev);
 			pci_dev_put(dev);
 		}
+	pci_lock_rescan_remove();
+
+	list_for_each_entry_safe(dev, temp, &slot->bus->devices, bus_list) {
+		if (PCI_SLOT(dev->devfn) != PCI_SLOT(slot->devfn))
+			continue;
+		pci_dev_get(dev);
+		pci_stop_and_remove_bus_device(dev);
+		pci_dev_put(dev);
 	}
 	pci_dev_put(slot->dev);
 	slot->dev = NULL;
+
+	pci_unlock_rescan_remove();
 
 	dbg("%s - exit", __func__);
 	return 0;

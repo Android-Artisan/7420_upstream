@@ -15,10 +15,17 @@
 
 #include <asm/io.h>
 #include <asm/sbus.h>
+#include <linux/pm.h>
+#include <linux/of.h>
+#include <linux/of_device.h>
+#include <linux/module.h>
+
+#include <asm/io.h>
 #include <asm/oplib.h>
 #include <asm/uaccess.h>
 #include <asm/auxio.h>
 #include <asm/apc.h>
+#include <asm/processor.h>
 
 /* Debugging
  * 
@@ -34,6 +41,10 @@ static int apc_regsize;
 static int apc_no_idle __initdata = 0;
 
 #define apc_readb(offs)			(sbus_readb(regs+offs))
+static u8 __iomem *regs;
+static int apc_no_idle = 0;
+
+#define apc_readb(offs)		(sbus_readb(regs+offs))
 #define apc_writeb(val, offs) 	(sbus_writeb(val, regs+offs))
 
 /* Specify "apc=noidle" on the kernel command line to 
@@ -72,6 +83,9 @@ static void apc_swift_idle(void)
 static inline void apc_free(void)
 {
 	sbus_iounmap(regs, apc_regsize);
+static inline void apc_free(struct platform_device *op)
+{
+	of_iounmap(&op->resource[0], regs, resource_size(&op->resource[0]));
 }
 
 static int apc_open(struct inode *inode, struct file *f)
@@ -142,6 +156,46 @@ static long apc_ioctl(struct file *f, unsigned int cmd, unsigned long __arg)
 	};
 
 	unlock_kernel();
+	__u8 inarg, __user *arg = (__u8 __user *) __arg;
+
+	switch (cmd) {
+	case APCIOCGFANCTL:
+		if (put_user(apc_readb(APC_FANCTL_REG) & APC_REGMASK, arg))
+			return -EFAULT;
+		break;
+
+	case APCIOCGCPWR:
+		if (put_user(apc_readb(APC_CPOWER_REG) & APC_REGMASK, arg))
+			return -EFAULT;
+		break;
+
+	case APCIOCGBPORT:
+		if (put_user(apc_readb(APC_BPORT_REG) & APC_BPMASK, arg))
+			return -EFAULT;
+		break;
+
+	case APCIOCSFANCTL:
+		if (get_user(inarg, arg))
+			return -EFAULT;
+		apc_writeb(inarg & APC_REGMASK, APC_FANCTL_REG);
+		break;
+
+	case APCIOCSCPWR:
+		if (get_user(inarg, arg))
+			return -EFAULT;
+		apc_writeb(inarg & APC_REGMASK, APC_CPOWER_REG);
+		break;
+
+	case APCIOCSBPORT:
+		if (get_user(inarg, arg))
+			return -EFAULT;
+		apc_writeb(inarg & APC_BPMASK, APC_BPORT_REG);
+		break;
+
+	default:
+		return -EINVAL;
+	}
+
 	return 0;
 }
 
@@ -149,6 +203,7 @@ static const struct file_operations apc_fops = {
 	.unlocked_ioctl =	apc_ioctl,
 	.open =			apc_open,
 	.release =		apc_release,
+	.llseek =		noop_llseek,
 };
 
 static struct miscdevice apc_miscdev = { APC_MINOR, APC_DEVNAME, &apc_fops };
@@ -176,6 +231,13 @@ sbus_done:
 	regs = sbus_ioremap(&sdev->resource[0], 0, 
 				   apc_regsize, APC_OBPNAME);
 	if(!regs) {
+static int apc_probe(struct platform_device *op)
+{
+	int err;
+
+	regs = of_ioremap(&op->resource[0], 0,
+			  resource_size(&op->resource[0]), APC_OBPNAME);
+	if (!regs) {
 		printk(KERN_ERR "%s: unable to map registers\n", APC_DEVNAME);
 		return -ENODEV;
 	}
@@ -184,6 +246,10 @@ sbus_done:
 	if (iTmp != 0) {
 		printk(KERN_ERR "%s: unable to register device\n", APC_DEVNAME);
 		apc_free();
+	err = misc_register(&apc_miscdev);
+	if (err) {
+		printk(KERN_ERR "%s: unable to register device\n", APC_DEVNAME);
+		apc_free(op);
 		return -ENODEV;
 	}
 
@@ -196,9 +262,40 @@ sbus_done:
 	return 0;
 }
 
+	if (!apc_no_idle)
+		sparc_idle = apc_swift_idle;
+
+	printk(KERN_INFO "%s: power management initialized%s\n", 
+	       APC_DEVNAME, apc_no_idle ? " (CPU idle disabled)" : "");
+
+	return 0;
+}
+
+static struct of_device_id apc_match[] = {
+	{
+		.name = APC_OBPNAME,
+	},
+	{},
+};
+MODULE_DEVICE_TABLE(of, apc_match);
+
+static struct platform_driver apc_driver = {
+	.driver = {
+		.name = "apc",
+		.of_match_table = apc_match,
+	},
+	.probe		= apc_probe,
+};
+
+static int __init apc_init(void)
+{
+	return platform_driver_register(&apc_driver);
+}
+
 /* This driver is not critical to the boot process
  * and is easiest to ioremap when SBus is already
  * initialized, so we install ourselves thusly:
  */
 __initcall(apc_probe);
 
+__initcall(apc_init);

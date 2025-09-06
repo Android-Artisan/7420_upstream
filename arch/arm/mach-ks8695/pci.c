@@ -29,6 +29,8 @@
 #include <linux/delay.h>
 
 #include <asm/io.h>
+#include <linux/io.h>
+
 #include <asm/signal.h>
 #include <asm/mach/pci.h>
 #include <mach/hardware.h>
@@ -128,6 +130,11 @@ static int ks8695_pci_writeconfig(struct pci_bus *bus,
 	}
 
 	return PCIBIOS_SUCCESSFUL;
+static void __iomem *ks8695_pci_map_bus(struct pci_bus *bus, unsigned int devfn,
+					int where)
+{
+	ks8695_pci_setupconfig(bus->number, devfn, where);
+	return KS8695_PCI_VA +  KS8695_PBCD;
 }
 
 static void ks8695_local_writeconfig(int where, u32 value)
@@ -145,6 +152,11 @@ static struct pci_bus *ks8695_pci_scan_bus(int nr, struct pci_sys_data *sys)
 {
 	return pci_scan_bus(sys->busnr, &ks8695_pci_ops, sys);
 }
+
+	.map_bus = ks8695_pci_map_bus,
+	.read	= pci_generic_config_read32,
+	.write	= pci_generic_config_write32,
+};
 
 static struct resource pci_mem = {
 	.name	= "PCI Memory space",
@@ -171,6 +183,8 @@ static int __init ks8695_pci_setup(int nr, struct pci_sys_data *sys)
 	sys->resource[0] = &pci_io;
 	sys->resource[1] = &pci_mem;
 	sys->resource[2] = NULL;
+	pci_add_resource_offset(&sys->resources, &pci_io, sys->io_offset);
+	pci_add_resource_offset(&sys->resources, &pci_mem, sys->mem_offset);
 
 	/* Assign and enable processor bridge */
 	ks8695_local_writeconfig(PCI_BASE_ADDRESS_0, KS8695_PCIMEM_PA);
@@ -245,6 +259,9 @@ static int ks8695_pci_fault(unsigned long addr, unsigned int fsr, struct pt_regs
 
 static void __init ks8695_pci_preinit(void)
 {
+	/* make software reset to avoid freeze if PCI bus was messed up */
+	__raw_writel(0x80000000, KS8695_PCI_VA + KS8695_PBCS);
+
 	/* stage 1 initialization, subid, subdevice = 0x0001 */
 	__raw_writel(0x00010001, KS8695_PCI_VA + KS8695_CRCSID);
 
@@ -267,6 +284,8 @@ static void __init ks8695_pci_preinit(void)
 	/* hook in fault handlers */
 	hook_fault_code(8, ks8695_pci_fault, SIGBUS, "external abort on non-linefetch");
 	hook_fault_code(10, ks8695_pci_fault, SIGBUS, "external abort on non-linefetch");
+	hook_fault_code(8, ks8695_pci_fault, SIGBUS, 0, "external abort on non-linefetch");
+	hook_fault_code(10, ks8695_pci_fault, SIGBUS, 0, "external abort on non-linefetch");
 }
 
 static void ks8695_show_pciregs(void)
@@ -304,6 +323,10 @@ static struct hw_pci ks8695_pci __initdata = {
 	.scan		= ks8695_pci_scan_bus,
 	.postinit	= NULL,
 	.swizzle	= pci_std_swizzle,
+	.ops		= &ks8695_pci_ops,
+	.preinit	= ks8695_pci_preinit,
+	.setup		= ks8695_pci_setup,
+	.postinit	= NULL,
 	.map_irq	= NULL,
 };
 
@@ -313,6 +336,9 @@ void __init ks8695_init_pci(struct ks8695_pci_cfg *cfg)
 		printk("PCI: KS8695 in guest mode, not initialising\n");
 		return;
 	}
+
+	pcibios_min_io = 0;
+	pcibios_min_mem = 0;
 
 	printk(KERN_INFO "PCI: Initialising\n");
 	ks8695_show_pciregs();

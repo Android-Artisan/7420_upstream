@@ -118,6 +118,11 @@
 #define RESET_MBOX_STAT			0x0000F0F0
 
 const char *npe_names[] = { "NPE-A", "NPE-B", "NPE-C" };
+#define NPE_A_FIRMWARE "NPE-A"
+#define NPE_B_FIRMWARE "NPE-B"
+#define NPE_C_FIRMWARE "NPE-C"
+
+const char *npe_names[] = { NPE_A_FIRMWARE, NPE_B_FIRMWARE, NPE_C_FIRMWARE };
 
 #define print_npe(pri, npe, fmt, ...)					\
 	printk(pri "%s: " fmt, npe_name(npe), ## __VA_ARGS__)
@@ -577,6 +582,8 @@ int npe_load_firmware(struct npe *npe, const char *name, struct device *dev)
 
 	if (!cpu_is_ixp46x() && ((image->id >> 28) & 0xF /* device ID */)) {
 		print_npe(KERN_INFO, npe, "IXP46x firmware ignored on "
+	if (cpu_is_ixp42x() && ((image->id >> 28) & 0xF /* device ID */)) {
+		print_npe(KERN_INFO, npe, "IXP43x/IXP46x firmware ignored on "
 			  "IXP42x\n");
 		goto err;
 	}
@@ -597,6 +604,7 @@ int npe_load_firmware(struct npe *npe, const char *name, struct device *dev)
 		  (image->id >> 8) & 0xFF, image->id & 0xFF);
 
 	if (!cpu_is_ixp46x()) {
+	if (cpu_is_ixp42x()) {
 		if (!npe->id)
 			instr_size = NPE_A_42X_INSTR_SIZE;
 		else
@@ -675,6 +683,7 @@ err:
 
 
 struct npe *npe_request(int id)
+struct npe *npe_request(unsigned id)
 {
 	if (id < NPE_COUNT)
 		if (npe_tab[id].valid)
@@ -715,6 +724,7 @@ static int __init npe_init_module(void)
 
 	if (!found)
 		return -ENOSYS;
+		return -ENODEV;
 	return 0;
 }
 
@@ -734,6 +744,9 @@ module_exit(npe_cleanup_module);
 
 MODULE_AUTHOR("Krzysztof Halasa");
 MODULE_LICENSE("GPL v2");
+MODULE_FIRMWARE(NPE_A_FIRMWARE);
+MODULE_FIRMWARE(NPE_B_FIRMWARE);
+MODULE_FIRMWARE(NPE_C_FIRMWARE);
 
 EXPORT_SYMBOL(npe_names);
 EXPORT_SYMBOL(npe_running);

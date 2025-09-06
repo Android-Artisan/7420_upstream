@@ -1,6 +1,7 @@
 /* MN10300 Kernel module helper routines
  *
  * Copyright (C) 2007 Red Hat, Inc. All Rights Reserved.
+ * Copyright (C) 2007, 2008, 2009 Red Hat, Inc. All Rights Reserved.
  * Written by Mark Salter (msalter@redhat.com)
  * - Derived from arch/i386/kernel/module.c
  *
@@ -124,6 +125,10 @@ int apply_relocate_add(Elf32_Shdr *sechdrs,
 	Elf32_Rela *rel = (void *)sechdrs[relsec].sh_addr;
 	Elf32_Sym *sym;
 	Elf32_Addr relocation;
+	unsigned int i, sym_diff_seen = 0;
+	Elf32_Rela *rel = (void *)sechdrs[relsec].sh_addr;
+	Elf32_Sym *sym;
+	Elf32_Addr relocation, sym_diff_val = 0;
 	uint8_t *location;
 	uint32_t value;
 
@@ -163,6 +168,36 @@ int apply_relocate_add(Elf32_Shdr *sechdrs,
 			break;
 		case R_MN10300_8:
 			*location += relocation;
+		if (sym_diff_seen) {
+			switch (ELF32_R_TYPE(rel[i].r_info)) {
+			case R_MN10300_32:
+			case R_MN10300_24:
+			case R_MN10300_16:
+			case R_MN10300_8:
+				relocation -= sym_diff_val;
+				sym_diff_seen = 0;
+				break;
+			default:
+				printk(KERN_ERR "module %s: Unexpected SYM_DIFF relocation: %u\n",
+				       me->name, ELF32_R_TYPE(rel[i].r_info));
+				return -ENOEXEC;
+			}
+		}
+
+		switch (ELF32_R_TYPE(rel[i].r_info)) {
+			/* for the first four relocation types, we simply
+			 * store the adjustment at the location given */
+		case R_MN10300_32:
+			reloc_put32(location, relocation);
+			break;
+		case R_MN10300_24:
+			reloc_put24(location, relocation);
+			break;
+		case R_MN10300_16:
+			reloc_put16(location, relocation);
+			break;
+		case R_MN10300_8:
+			*location = relocation;
 			break;
 
 			/* for the next three relocation types, we write the
@@ -179,6 +214,18 @@ int apply_relocate_add(Elf32_Shdr *sechdrs,
 		case R_MN10300_PCREL8:
 			*location = relocation - (uint32_t) location;
 			break;
+
+		case R_MN10300_SYM_DIFF:
+			/* This is used to adjust the next reloc as required
+			 * by relaxation. */
+			sym_diff_seen = 1;
+			sym_diff_val = sym->st_value;
+			break;
+
+		case R_MN10300_ALIGN:
+			/* Just ignore the ALIGN relocs.
+			 * Only interesting if kernel performed relaxation. */
+			continue;
 
 		default:
 			printk(KERN_ERR "module %s: Unknown relocation: %u\n",
@@ -205,4 +252,11 @@ int module_finalize(const Elf_Ehdr *hdr,
 void module_arch_cleanup(struct module *mod)
 {
 	module_bug_cleanup(mod);
+}
+	if (sym_diff_seen) {
+		printk(KERN_ERR "module %s: Nothing follows SYM_DIFF relocation: %u\n",
+				       me->name, ELF32_R_TYPE(rel[i].r_info));
+		return -ENOEXEC;
+	}
+	return 0;
 }

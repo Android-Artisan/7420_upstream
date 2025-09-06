@@ -1,5 +1,4 @@
 			S3C24XX ARM Linux Overview
-			==========================
 
 
 
@@ -11,6 +10,18 @@ Introduction
   S3C2412, S3C2413, S3C2440, S3C2442 and S3C2443 devices are supported.
 
   Support for the S3C2400 and S3C24A0 series are in progress.
+  S3C2412, S3C2413, S3C2416, S3C2440, S3C2442, S3C2443 and S3C2450 devices
+  are supported.
+
+  Support for the S3C2400 and S3C24A0 series was never completed and the
+  corresponding code has been removed after a while.  If someone wishes to
+  revive this effort, partial support can be retrieved from earlier Linux
+  versions.
+
+  The S3C2416 and S3C2450 devices are very similar and S3C2450 support is
+  included under the arch/arm/mach-s3c2416 directory. Note, whilst core
+  support for these SoCs is in, work on some of the extra peripherals
+  and extra interrupts is still ongoing.
 
 
 Configuration
@@ -209,6 +220,13 @@ GPIO
   Newer kernels carry GPIOLIB, and support is being moved towards
   this with some of the older support in line to be removed.
 
+  As of v2.6.34, the move towards using gpiolib support is almost
+  complete, and very little of the old calls are left.
+
+  See Documentation/arm/Samsung-S3C24XX/GPIO.txt for the S3C24XX specific
+  support and Documentation/arm/Samsung/GPIO.txt for the core Samsung
+  implementation.
+
 
 Clock Management
 ----------------
@@ -300,3 +318,4 @@ Document Author
 ---------------
 
 Ben Dooks, (c) 2004-2005,2006 Simtec Electronics
+Ben Dooks, Copyright 2004-2006 Simtec Electronics

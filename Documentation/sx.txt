@@ -43,7 +43,6 @@
 
 
 Introduction
-============
 
 This file contains some random information, that I like to have online
 instead of in a manual that can get lost. Ever misplace your Linux
@@ -51,7 +50,6 @@ kernel sources?  And the manual of one of the boards in your computer?
 
 
 Theory of operation
-===================
 
 An important thing to know is that the driver itself doesn't have the
 firmware for the card. This means that you need the separate package
@@ -80,7 +78,6 @@ problems due to this, please report them: I haven't seen any.
 
 
 Interrupts
-==========
 
 A multi port serial card, would generate a horrendous amount of
 interrupts if it would interrupt the CPU for every received
@@ -109,7 +106,6 @@ more efficient (provided you actually use the card intensively).
 
 
 Allowed Configurations
-======================
 
 Some configurations are disallowed. Even though at a glance they might
 seem to work, they are known to lockup the bus between the host card
@@ -131,7 +127,6 @@ by anybody else.
 
 
 Configuring the driver
-======================
 
 PCI cards are always detected. The driver auto-probes for ISA cards at
 some sensible addresses. Please report if the auto-probe causes trouble
@@ -190,7 +185,6 @@ You can specify several parameters:
 
 
 Baud rates
-==========
 
 Theoretically new SXDCs should be capable of more than 460k
 baud. However the line drivers usually give up before that.  Also the
@@ -208,7 +202,6 @@ against each other, be my guest, and report your findings...... :-)
 
 
 Ports and devices
-=================
 
 Port 0 is the top connector on the module closest to the host
 card. Oh, the ports on the SXDCs and TAs are labelled from 1 to 8

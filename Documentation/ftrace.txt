@@ -1,5 +1,4 @@
 		ftrace - Function Tracer
-		========================
 
 Copyright 2008 Red Hat Inc.
    Author:   Steven Rostedt <srostedt@redhat.com>

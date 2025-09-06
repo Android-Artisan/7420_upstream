@@ -31,6 +31,7 @@
 #include <linux/platform_device.h>
 #include <linux/errno.h>
 #include <linux/init.h>
+#include <linux/slab.h>
 #include <linux/delay.h>
 #include <linux/interrupt.h>
 #include <linux/irq.h>
@@ -113,6 +114,7 @@ static int bfin_cf_get_status(struct pcmcia_socket *s, u_int *sp)
 	if (bfin_cf_present(cf->cd_pfx)) {
 		*sp = SS_READY | SS_DETECT | SS_POWERON | SS_3VCARD;
 		s->irq.AssignedIRQ = 0;
+		s->pcmcia_irq = 0;
 		s->pci_irq = cf->irq;
 
 	} else
@@ -195,6 +197,7 @@ static struct pccard_operations bfin_cf_ops = {
 /*--------------------------------------------------------------------------*/
 
 static int __devinit bfin_cf_probe(struct platform_device *pdev)
+static int bfin_cf_probe(struct platform_device *pdev)
 {
 	struct bfin_cf_socket *cf;
 	struct resource *io_mem, *attr_mem;
@@ -206,6 +209,7 @@ static int __devinit bfin_cf_probe(struct platform_device *pdev)
 
 	irq = platform_get_irq(pdev, 0);
 	if (!irq)
+	if (irq <= 0)
 		return -EINVAL;
 
 	cd_pfx = platform_get_irq(pdev, 1);	/*Card Detect GPIO PIN */
@@ -235,6 +239,7 @@ static int __devinit bfin_cf_probe(struct platform_device *pdev)
 	cf->socket.pci_irq = irq;
 
 	set_irq_type(irq, IRQF_TRIGGER_LOW);
+	irq_set_irq_type(irq, IRQF_TRIGGER_LOW);
 
 	io_mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	attr_mem = platform_get_resource(pdev, IORESOURCE_MEM, 1);
@@ -286,6 +291,7 @@ fail0:
 }
 
 static int __devexit bfin_cf_remove(struct platform_device *pdev)
+static int bfin_cf_remove(struct platform_device *pdev)
 {
 	struct bfin_cf_socket *cf = platform_get_drvdata(pdev);
 
@@ -335,5 +341,16 @@ module_init(bfin_cf_init);
 module_exit(bfin_cf_exit);
 
 MODULE_AUTHOR("Michael Hennerich <hennerich@blackfin.uclinux.org>")
+static struct platform_driver bfin_cf_driver = {
+	.driver = {
+		   .name = driver_name,
+		   },
+	.probe = bfin_cf_probe,
+	.remove = bfin_cf_remove,
+};
+
+module_platform_driver(bfin_cf_driver);
+
+MODULE_AUTHOR("Michael Hennerich <hennerich@blackfin.uclinux.org>");
 MODULE_DESCRIPTION("BFIN CF/PCMCIA Driver");
 MODULE_LICENSE("GPL");

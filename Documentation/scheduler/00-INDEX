@@ -8,11 +8,17 @@ sched-design.txt
 	- goals, design and implementation of the Linux O(1) scheduler.
 sched-design-CFS.txt
 	- goals, design and implementation of the Complete Fair Scheduler.
+sched-bwc.txt
+	- CFS bandwidth control overview.
+sched-design-CFS.txt
+	- goals, design and implementation of the Completely Fair Scheduler.
 sched-domains.txt
 	- information on scheduling domains.
 sched-nice-design.txt
 	- How and why the scheduler's nice levels are implemented.
 sched-rt-group.txt
 	- real-time group scheduling.
+sched-deadline.txt
+	- deadline scheduling.
 sched-stats.txt
 	- information on schedstats (Linux Scheduler Statistics).

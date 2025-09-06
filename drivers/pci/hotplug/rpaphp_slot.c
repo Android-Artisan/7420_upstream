@@ -1,5 +1,6 @@
 /*
  * RPA Virtual I/O device functions 
+ * RPA Virtual I/O device functions
  * Copyright (C) 2004 Linda Xie <lxie@us.ibm.com>
  *
  * All rights reserved.
@@ -44,6 +45,7 @@ void dealloc_slot_struct(struct slot *slot)
 {
 	kfree(slot->hotplug_slot->info);
 	kfree(slot->hotplug_slot->name);
+	kfree(slot->name);
 	kfree(slot->hotplug_slot);
 	kfree(slot);
 }
@@ -53,12 +55,14 @@ struct slot *alloc_slot_struct(struct device_node *dn,
 {
 	struct slot *slot;
 	
+
 	slot = kzalloc(sizeof(struct slot), GFP_KERNEL);
 	if (!slot)
 		goto error_nomem;
 	slot->hotplug_slot = kzalloc(sizeof(struct hotplug_slot), GFP_KERNEL);
 	if (!slot->hotplug_slot)
 		goto error_slot;	
+		goto error_slot;
 	slot->hotplug_slot->info = kzalloc(sizeof(struct hotplug_slot_info),
 					   GFP_KERNEL);
 	if (!slot->hotplug_slot->info)
@@ -68,6 +72,9 @@ struct slot *alloc_slot_struct(struct device_node *dn,
 		goto error_info;	
 	slot->name = slot->hotplug_slot->name;
 	strcpy(slot->name, drc_name);
+	slot->name = kstrdup(drc_name, GFP_KERNEL);
+	if (!slot->name)
+		goto error_info;
 	slot->dn = dn;
 	slot->index = drc_index;
 	slot->power_domain = power_domain;
@@ -75,6 +82,7 @@ struct slot *alloc_slot_struct(struct device_node *dn,
 	slot->hotplug_slot->ops = &rpaphp_hotplug_slot_ops;
 	slot->hotplug_slot->release = &rpaphp_release_slot;
 	
+
 	return (slot);
 
 error_info:
@@ -95,6 +103,7 @@ static int is_registered(struct slot *slot)
 		if (!strcmp(tmp_slot->name, slot->name))
 			return 1;
 	}	
+	}
 	return 0;
 }
 
@@ -108,6 +117,7 @@ int rpaphp_deregister_slot(struct slot *slot)
 
 	list_del(&slot->rpaphp_slot_list);
 	
+
 	retval = pci_hp_deregister(php_slot);
 	if (retval)
 		err("Problem unregistering a slot %s\n", slot->name);
@@ -124,6 +134,7 @@ int rpaphp_register_slot(struct slot *slot)
 	int slotno;
 
 	dbg("%s registering slot:path[%s] index[%x], name[%s] pdomain[%x] type[%d]\n", 
+	dbg("%s registering slot:path[%s] index[%x], name[%s] pdomain[%x] type[%d]\n",
 		__func__, slot->dn->full_name, slot->index, slot->name,
 		slot->power_domain, slot->type);
 
@@ -132,12 +143,14 @@ int rpaphp_register_slot(struct slot *slot)
 		err("rpaphp_register_slot: slot[%s] is already registered\n", slot->name);
 		return -EAGAIN;
 	}	
+	}
 
 	if (slot->dn->child)
 		slotno = PCI_SLOT(PCI_DN(slot->dn->child)->devfn);
 	else
 		slotno = -1;
 	retval = pci_hp_register(php_slot, slot->bus, slotno);
+	retval = pci_hp_register(php_slot, slot->bus, slotno, slot->name);
 	if (retval) {
 		err("pci_hp_register failed with error %d\n", retval);
 		return retval;
@@ -153,3 +166,4 @@ sysfs_fail:
 	return retval;
 }
 
+}

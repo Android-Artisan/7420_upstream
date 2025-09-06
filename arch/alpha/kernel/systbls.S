@@ -13,11 +13,13 @@ sys_call_table:
 	.quad alpha_ni_syscall			/* 0 */
 	.quad sys_exit
 	.quad sys_fork
+	.quad alpha_fork
 	.quad sys_read
 	.quad sys_write
 	.quad alpha_ni_syscall			/* 5 */
 	.quad sys_close
 	.quad osf_wait4
+	.quad sys_osf_wait4
 	.quad alpha_ni_syscall
 	.quad sys_link
 	.quad sys_unlink			/* 10 */
@@ -32,6 +34,11 @@ sys_call_table:
 	.quad sys_lseek
 	.quad sys_getxpid			/* 20 */
 	.quad osf_mount
+	.quad sys_osf_brk
+	.quad alpha_ni_syscall
+	.quad sys_lseek
+	.quad sys_getxpid			/* 20 */
+	.quad sys_osf_mount
 	.quad sys_umount
 	.quad sys_setuid
 	.quad sys_getxuid
@@ -54,11 +61,14 @@ sys_call_table:
 	.quad sys_dup
 	.quad sys_pipe
 	.quad osf_set_program_attributes
+	.quad sys_alpha_pipe
+	.quad sys_osf_set_program_attributes
 	.quad alpha_ni_syscall
 	.quad sys_open				/* 45 */
 	.quad alpha_ni_syscall
 	.quad sys_getxgid
 	.quad osf_sigprocmask
+	.quad sys_osf_sigprocmask
 	.quad alpha_ni_syscall
 	.quad alpha_ni_syscall			/* 50 */
 	.quad sys_acct
@@ -77,11 +87,13 @@ sys_call_table:
 	.quad sys_getpagesize
 	.quad alpha_ni_syscall			/* 65 */
 	.quad sys_vfork
+	.quad alpha_vfork
 	.quad sys_newstat
 	.quad sys_newlstat
 	.quad alpha_ni_syscall
 	.quad alpha_ni_syscall			/* 70 */
 	.quad osf_mmap
+	.quad sys_osf_mmap
 	.quad alpha_ni_syscall
 	.quad sys_munmap
 	.quad sys_mprotect
@@ -98,6 +110,10 @@ sys_call_table:
 	.quad alpha_ni_syscall
 	.quad alpha_ni_syscall			/* 85 */
 	.quad osf_getitimer
+	.quad sys_osf_setitimer
+	.quad alpha_ni_syscall
+	.quad alpha_ni_syscall			/* 85 */
+	.quad sys_osf_getitimer
 	.quad sys_gethostname
 	.quad sys_sethostname
 	.quad sys_getdtablesize
@@ -105,6 +121,7 @@ sys_call_table:
 	.quad sys_newfstat
 	.quad sys_fcntl
 	.quad osf_select
+	.quad sys_osf_select
 	.quad sys_poll
 	.quad sys_fsync				/* 95 */
 	.quad sys_setpriority
@@ -112,6 +129,7 @@ sys_call_table:
 	.quad sys_connect
 	.quad sys_accept
 	.quad osf_getpriority			/* 100 */
+	.quad sys_osf_getpriority			/* 100 */
 	.quad sys_send
 	.quad sys_recv
 	.quad sys_sigreturn
@@ -134,11 +152,23 @@ sys_call_table:
 #ifdef CONFIG_OSF4_COMPAT
 	.quad osf_readv				/* 120 */
 	.quad osf_writev
+	.quad sys_osf_sigstack
+	.quad sys_recvmsg
+	.quad sys_sendmsg
+	.quad alpha_ni_syscall			/* 115 */
+	.quad sys_osf_gettimeofday
+	.quad sys_osf_getrusage
+	.quad sys_getsockopt
+	.quad alpha_ni_syscall
+#ifdef CONFIG_OSF4_COMPAT
+	.quad sys_osf_readv			/* 120 */
+	.quad sys_osf_writev
 #else
 	.quad sys_readv				/* 120 */
 	.quad sys_writev
 #endif
 	.quad osf_settimeofday
+	.quad sys_osf_settimeofday
 	.quad sys_fchown
 	.quad sys_fchmod
 	.quad sys_recvfrom			/* 125 */
@@ -155,6 +185,7 @@ sys_call_table:
 	.quad sys_mkdir
 	.quad sys_rmdir
 	.quad osf_utimes
+	.quad sys_osf_utimes
 	.quad alpha_ni_syscall
 	.quad alpha_ni_syscall			/* 140 */
 	.quad sys_getpeername
@@ -182,6 +213,16 @@ sys_call_table:
 	.quad alpha_ni_syscall
 	.quad alpha_ni_syscall
 	.quad osf_getdomainname			/* 165 */
+	.quad sys_osf_sigaction
+	.quad alpha_ni_syscall
+	.quad alpha_ni_syscall
+	.quad sys_osf_getdirentries
+	.quad sys_osf_statfs			/* 160 */
+	.quad sys_osf_fstatfs
+	.quad alpha_ni_syscall
+	.quad alpha_ni_syscall
+	.quad alpha_ni_syscall
+	.quad sys_osf_getdomainname		/* 165 */
 	.quad sys_setdomainname
 	.quad alpha_ni_syscall
 	.quad alpha_ni_syscall
@@ -225,6 +266,7 @@ sys_call_table:
 	.quad sys_semget			/* 205 */
 	.quad sys_semop
 	.quad osf_utsname
+	.quad sys_osf_utsname
 	.quad sys_lchown
 	.quad sys_shmat
 	.quad sys_shmctl			/* 210 */
@@ -246,6 +288,11 @@ sys_call_table:
 	.quad alpha_ni_syscall
 	.quad alpha_ni_syscall
 	.quad alpha_ni_syscall
+	.quad sys_osf_stat
+	.quad sys_osf_lstat			/* 225 */
+	.quad sys_osf_fstat
+	.quad sys_osf_statfs64
+	.quad sys_osf_fstatfs64
 	.quad alpha_ni_syscall
 	.quad alpha_ni_syscall			/* 230 */
 	.quad alpha_ni_syscall
@@ -262,6 +309,10 @@ sys_call_table:
 	.quad alpha_ni_syscall
 	.quad alpha_ni_syscall
 	.quad osf_proplist_syscall
+	.quad sys_osf_sysinfo
+	.quad alpha_ni_syscall
+	.quad alpha_ni_syscall
+	.quad sys_osf_proplist_syscall
 	.quad alpha_ni_syscall			/* 245 */
 	.quad alpha_ni_syscall
 	.quad alpha_ni_syscall
@@ -269,12 +320,15 @@ sys_call_table:
 	.quad alpha_ni_syscall
 	.quad alpha_ni_syscall			/* 250 */
 	.quad osf_usleep_thread
+	.quad sys_osf_usleep_thread
 	.quad alpha_ni_syscall
 	.quad alpha_ni_syscall
 	.quad sys_sysfs
 	.quad alpha_ni_syscall			/* 255 */
 	.quad osf_getsysinfo
 	.quad osf_setsysinfo
+	.quad sys_osf_getsysinfo
+	.quad sys_osf_setsysinfo
 	.quad alpha_ni_syscall
 	.quad alpha_ni_syscall
 	.quad alpha_ni_syscall			/* 260 */
@@ -331,6 +385,7 @@ sys_call_table:
 	.quad sys_syslog			/* 310 */
 	.quad sys_reboot
 	.quad sys_clone
+	.quad alpha_clone
 	.quad sys_uselib
 	.quad sys_mlock
 	.quad sys_munlock			/* 315 */
@@ -361,6 +416,7 @@ sys_call_table:
 	.quad sys_nanosleep			/* 340 */
 	.quad sys_mremap
 	.quad sys_nfsservctl
+	.quad sys_ni_syscall			/* old nfsservctl */
 	.quad sys_setresuid
 	.quad sys_getresuid
 	.quad sys_pciconfig_read		/* 345 */
@@ -497,6 +553,43 @@ sys_call_table:
 	.quad sys_signalfd
 	.quad sys_ni_syscall
 	.quad sys_eventfd
+	.quad sys_ni_syscall			/* sys_timerfd */
+	.quad sys_eventfd
+	.quad sys_recvmmsg
+	.quad sys_fallocate			/* 480 */
+	.quad sys_timerfd_create
+	.quad sys_timerfd_settime
+	.quad sys_timerfd_gettime
+	.quad sys_signalfd4
+	.quad sys_eventfd2			/* 485 */
+	.quad sys_epoll_create1
+	.quad sys_dup3
+	.quad sys_pipe2
+	.quad sys_inotify_init1
+	.quad sys_preadv			/* 490 */
+	.quad sys_pwritev
+	.quad sys_rt_tgsigqueueinfo
+	.quad sys_perf_event_open
+	.quad sys_fanotify_init
+	.quad sys_fanotify_mark			/* 495 */
+	.quad sys_prlimit64
+	.quad sys_name_to_handle_at
+	.quad sys_open_by_handle_at
+	.quad sys_clock_adjtime
+	.quad sys_syncfs			/* 500 */
+	.quad sys_setns
+	.quad sys_accept4
+	.quad sys_sendmmsg
+	.quad sys_process_vm_readv
+	.quad sys_process_vm_writev		/* 505 */
+	.quad sys_kcmp
+	.quad sys_finit_module
+	.quad sys_sched_setattr
+	.quad sys_sched_getattr
+	.quad sys_renameat2			/* 510 */
+	.quad sys_getrandom
+	.quad sys_memfd_create
+	.quad sys_execveat
 
 	.size sys_call_table, . - sys_call_table
 	.type sys_call_table, @object

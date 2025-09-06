@@ -49,6 +49,7 @@
 #define ASN1_OJI	6	/* Object Identifier  */
 #define ASN1_OJD	7	/* Object Description */
 #define ASN1_EXT	8	/* External */
+#define ASN1_ENUM	10	/* Enumerated */
 #define ASN1_SEQ	16	/* Sequence */
 #define ASN1_SET	17	/* Set */
 #define ASN1_NUMSTR	18	/* Numerical String */
@@ -78,10 +79,12 @@
 #define SPNEGO_OID_LEN 7
 #define NTLMSSP_OID_LEN  10
 #define KRB5_OID_LEN  7
+#define KRB5U2U_OID_LEN  8
 #define MSKRB5_OID_LEN  7
 static unsigned long SPNEGO_OID[7] = { 1, 3, 6, 1, 5, 5, 2 };
 static unsigned long NTLMSSP_OID[10] = { 1, 3, 6, 1, 4, 1, 311, 2, 2, 10 };
 static unsigned long KRB5_OID[7] = { 1, 2, 840, 113554, 1, 2, 2 };
+static unsigned long KRB5U2U_OID[8] = { 1, 2, 840, 113554, 1, 2, 2, 3 };
 static unsigned long MSKRB5_OID[7] = { 1, 2, 840, 48018, 1, 2, 2 };
 
 /*
@@ -121,6 +124,28 @@ asn1_octet_decode(struct asn1_ctx *ctx, unsigned char *ch)
 	*ch = *(ctx->pointer)++;
 	return 1;
 }
+
+#if 0 /* will be needed later by spnego decoding/encoding of ntlmssp */
+static unsigned char
+asn1_enum_decode(struct asn1_ctx *ctx, __le32 *val)
+{
+	unsigned char ch;
+
+	if (ctx->pointer >= ctx->end) {
+		ctx->error = ASN1_ERR_DEC_EMPTY;
+		return 0;
+	}
+
+	ch = *(ctx->pointer)++; /* ch has 0xa, ptr points to length octet */
+	if ((ch) == ASN1_ENUM)  /* if ch value is ENUM, 0xa */
+		*val = *(++(ctx->pointer)); /* value has enum value */
+	else
+		return 0;
+
+	ctx->pointer++;
+	return 1;
+}
+#endif
 
 static unsigned char
 asn1_tag_decode(struct asn1_ctx *ctx, unsigned int *tag)
@@ -468,6 +493,7 @@ compare_oid(unsigned long *oid1, unsigned int oid1len,
 int
 decode_negTokenInit(unsigned char *security_blob, int length,
 		    enum securityEnum *secType)
+		    struct TCP_Server_Info *server)
 {
 	struct asn1_ctx ctx;
 	unsigned char *end;
@@ -491,6 +517,11 @@ decode_negTokenInit(unsigned char *security_blob, int length,
 	} else if ((cls != ASN1_APL) || (con != ASN1_CON)
 		   || (tag != ASN1_EOC)) {
 		cFYI(1, ("cls = %d con = %d tag = %d", cls, con, tag));
+		cifs_dbg(FYI, "Error decoding negTokenInit header\n");
+		return 0;
+	} else if ((cls != ASN1_APL) || (con != ASN1_CON)
+		   || (tag != ASN1_EOC)) {
+		cifs_dbg(FYI, "cls = %d con = %d tag = %d\n", cls, con, tag);
 		return 0;
 	}
 
@@ -565,6 +596,60 @@ decode_negTokenInit(unsigned char *security_blob, int length,
 		if (!rc) {
 			cFYI(1,
 			     ("Error decoding negTokenInit hdr exit2"));
+		cifs_dbg(FYI, "Error decoding negTokenInit header\n");
+		return 0;
+	}
+
+	/* SPNEGO */
+	if (asn1_header_decode(&ctx, &end, &cls, &con, &tag) == 0) {
+		cifs_dbg(FYI, "Error decoding negTokenInit\n");
+		return 0;
+	} else if ((cls != ASN1_CTX) || (con != ASN1_CON)
+		   || (tag != ASN1_EOC)) {
+		cifs_dbg(FYI, "cls = %d con = %d tag = %d end = %p exit 0\n",
+			 cls, con, tag, end);
+		return 0;
+	}
+
+	/* negTokenInit */
+	if (asn1_header_decode(&ctx, &end, &cls, &con, &tag) == 0) {
+		cifs_dbg(FYI, "Error decoding negTokenInit\n");
+		return 0;
+	} else if ((cls != ASN1_UNI) || (con != ASN1_CON)
+		   || (tag != ASN1_SEQ)) {
+		cifs_dbg(FYI, "cls = %d con = %d tag = %d end = %p exit 1\n",
+			 cls, con, tag, end);
+		return 0;
+	}
+
+	/* sequence */
+	if (asn1_header_decode(&ctx, &end, &cls, &con, &tag) == 0) {
+		cifs_dbg(FYI, "Error decoding 2nd part of negTokenInit\n");
+		return 0;
+	} else if ((cls != ASN1_CTX) || (con != ASN1_CON)
+		   || (tag != ASN1_EOC)) {
+		cifs_dbg(FYI, "cls = %d con = %d tag = %d end = %p exit 0\n",
+			 cls, con, tag, end);
+		return 0;
+	}
+
+	/* sequence of */
+	if (asn1_header_decode
+	    (&ctx, &sequence_end, &cls, &con, &tag) == 0) {
+		cifs_dbg(FYI, "Error decoding 2nd part of negTokenInit\n");
+		return 0;
+	} else if ((cls != ASN1_UNI) || (con != ASN1_CON)
+		   || (tag != ASN1_SEQ)) {
+		cifs_dbg(FYI, "cls = %d con = %d tag = %d sequence_end = %p exit 1\n",
+			 cls, con, tag, sequence_end);
+		return 0;
+	}
+
+	/* list of security mechanisms */
+	while (!asn1_eoc_decode(&ctx, sequence_end)) {
+		rc = asn1_header_decode(&ctx, &end, &cls, &con, &tag);
+		if (!rc) {
+			cifs_dbg(FYI, "Error decoding negTokenInit hdr exit2\n");
 			return 0;
 		}
 		if ((tag == ASN1_OJI) && (con == ASN1_PRI)) {
@@ -585,6 +670,22 @@ decode_negTokenInit(unsigned char *security_blob, int length,
 				else if (compare_oid(oid, oidlen, NTLMSSP_OID,
 						     NTLMSSP_OID_LEN))
 					use_ntlmssp = true;
+				cifs_dbg(FYI, "OID len = %d oid = 0x%lx 0x%lx 0x%lx 0x%lx\n",
+					 oidlen, *oid, *(oid + 1), *(oid + 2),
+					 *(oid + 3));
+
+				if (compare_oid(oid, oidlen, MSKRB5_OID,
+						MSKRB5_OID_LEN))
+					server->sec_mskerberos = true;
+				else if (compare_oid(oid, oidlen, KRB5U2U_OID,
+						     KRB5U2U_OID_LEN))
+					server->sec_kerberosu2u = true;
+				else if (compare_oid(oid, oidlen, KRB5_OID,
+						     KRB5_OID_LEN))
+					server->sec_kerberos = true;
+				else if (compare_oid(oid, oidlen, NTLMSSP_OID,
+						     NTLMSSP_OID_LEN))
+					server->sec_ntlmssp = true;
 
 				kfree(oid);
 			}
@@ -638,5 +739,14 @@ decode_negTokenInit(unsigned char *security_blob, int length,
 	else if (use_ntlmssp)
 		*secType = NTLMSSP;
 
+			cifs_dbg(FYI, "Should be an oid what is going on?\n");
+		}
+	}
+
+	/*
+	 * We currently ignore anything at the end of the SPNEGO blob after
+	 * the mechTypes have been parsed, since none of that info is
+	 * used at the moment.
+	 */
 	return 1;
 }

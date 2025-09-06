@@ -6,3 +6,4 @@ oprofile-y		:= $(addprefix ../../../drivers/oprofile/,	\
 				oprofilefs.o oprofile_stats.o		\
 				timer_int.o)
 oprofile-y		+= op_model_avr32.o
+oprofile-y		+= op_model_avr32.o backtrace.o

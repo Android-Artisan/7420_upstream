@@ -20,6 +20,7 @@ _GLOBAL(memset)
 	cmplw	cr1,r5,r0		/* do we get that far? */
 	rldimi	r4,r4,32,0
 	PPC_MTOCRF	1,r0
+	PPC_MTOCRF(1,r0)
 	mr	r6,r3
 	blt	cr1,8f
 	beq+	3f			/* if already 8-byte aligned */
@@ -50,6 +51,7 @@ _GLOBAL(memset)
 5:	srwi.	r0,r5,3
 	clrlwi	r5,r5,29
 	PPC_MTOCRF	1,r0
+	PPC_MTOCRF(1,r0)
 	beq	8f
 	bf	29,6f
 	std	r4,0(r6)
@@ -66,6 +68,7 @@ _GLOBAL(memset)
 	addi	r6,r6,8
 8:	cmpwi	r5,0
 	PPC_MTOCRF	1,r5
+	PPC_MTOCRF(1,r5)
 	beqlr+
 	bf	29,9f
 	stw	r4,0(r6)
@@ -81,6 +84,10 @@ _GLOBAL(memmove)
 	cmplw	0,r3,r4
 	bgt	.backwards_memcpy
 	b	.memcpy
+_GLOBAL_TOC(memmove)
+	cmplw	0,r3,r4
+	bgt	backwards_memcpy
+	b	memcpy
 
 _GLOBAL(backwards_memcpy)
 	rlwinm.	r7,r5,32-3,3,31		/* r0 = r5 >> 3 */

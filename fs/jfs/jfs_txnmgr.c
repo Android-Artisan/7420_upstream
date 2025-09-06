@@ -368,6 +368,11 @@ tid_t txBegin(struct super_block *sb, int flag)
 	jfs_info("txBegin: flag = 0x%x", flag);
 	log = JFS_SBI(sb)->log;
 
+	if (!log) {
+		jfs_error(sb, "read-only filesystem\n");
+		return 0;
+	}
+
 	TXN_LOCK();
 
 	INCREMENT(TxStat.txBegin);
@@ -637,6 +642,7 @@ struct tlock *txLock(tid_t tid, struct inode *ip, struct metapage * mp,
 	 * transactions until txCommit() time at which point
 	 * they are transferred to the transaction tlock list of
 	 * the commiting transaction of the inode)
+	 * the committing transaction of the inode)
 	 */
 	if (xtid == 0) {
 		tlck->tid = tid;
@@ -1280,6 +1286,7 @@ int txCommit(tid_t tid,		/* transaction identifier */
 	 */
 	if (tblk->xflag & COMMIT_DELETE) {
 		atomic_inc(&tblk->u.ip->i_count);
+		ihold(tblk->u.ip);
 		/*
 		 * Avoid a rare deadlock
 		 *
@@ -1293,6 +1300,7 @@ int txCommit(tid_t tid,		/* transaction identifier */
 		/*
 		 * I believe this code is no longer needed.  Splitting I_LOCK
 		 * into two bits, I_LOCK and I_SYNC should prevent this
+		 * into two bits, I_NEW and I_SYNC should prevent this
 		 * deadlock as well.  But since I don't have a JFS testload
 		 * to verify this, only a trivial s/I_LOCK/I_SYNC/ was done.
 		 * Joern
@@ -1311,6 +1319,7 @@ int txCommit(tid_t tid,		/* transaction identifier */
 	lrd->type = cpu_to_le16(LOG_COMMIT);
 	lrd->length = 0;
 	lsn = lmLog(log, tblk, lrd, NULL);
+	lmLog(log, tblk, lrd, NULL);
 
 	lmGroupCommit(log, tblk);
 
@@ -1930,8 +1939,7 @@ static void xtLog(struct jfs_log * log, struct tblock * tblk, struct lrd * lrd,
 	 * header ?
 	 */
 	if (tlck->type & tlckTRUNCATE) {
-		/* This odd declaration suppresses a bogus gcc warning */
-		pxd_t pxd = pxd;	/* truncated extent of xad */
+		pxd_t pxd;	/* truncated extent of xad */
 		int twm;
 
 		/*
@@ -2686,6 +2694,7 @@ void txAbort(tid_t tid, int dirty)
 	 */
 	if (dirty)
 		jfs_error(tblk->sb, "txAbort");
+		jfs_error(tblk->sb, "\n");
 
 	return;
 }
@@ -2802,6 +2811,7 @@ int jfs_lazycommit(void *arg)
 		if (freezing(current)) {
 			LAZY_UNLOCK(flags);
 			refrigerator();
+			try_to_freeze();
 		} else {
 			DECLARE_WAITQUEUE(wq, current);
 
@@ -2962,6 +2972,7 @@ int jfs_sync(void *arg)
 				TXN_UNLOCK();
 				tid = txBegin(ip->i_sb, COMMIT_INODE);
 				rc = txCommit(tid, 1, &ip, 0);
+				txCommit(tid, 1, &ip, 0);
 				txEnd(tid);
 				mutex_unlock(&jfs_ip->commit_mutex);
 
@@ -2985,6 +2996,9 @@ int jfs_sync(void *arg)
 				/* Put on anon_list2 */
 				list_add(&jfs_ip->anon_inode_list,
 					 &TxAnchor.anon_list2);
+				/* Move from anon_list to anon_list2 */
+				list_move(&jfs_ip->anon_inode_list,
+					  &TxAnchor.anon_list2);
 
 				TXN_UNLOCK();
 				iput(ip);
@@ -2997,6 +3011,7 @@ int jfs_sync(void *arg)
 		if (freezing(current)) {
 			TXN_UNLOCK();
 			refrigerator();
+			try_to_freeze();
 		} else {
 			set_current_state(TASK_INTERRUPTIBLE);
 			TXN_UNLOCK();
@@ -3025,7 +3040,6 @@ static int jfs_txanchor_proc_show(struct seq_file *m, void *v)
 
 	seq_printf(m,
 		       "JFS TxAnchor\n"
-		       "============\n"
 		       "freetid = %d\n"
 		       "freewait = %s\n"
 		       "freelock = %d\n"
@@ -3064,7 +3078,6 @@ static int jfs_txstats_proc_show(struct seq_file *m, void *v)
 {
 	seq_printf(m,
 		       "JFS TxStats\n"
-		       "===========\n"
 		       "calls to txBegin = %d\n"
 		       "txBegin blocked by sync barrier = %d\n"
 		       "txBegin blocked by tlocks low = %d\n"

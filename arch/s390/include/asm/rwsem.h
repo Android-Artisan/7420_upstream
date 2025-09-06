@@ -6,6 +6,8 @@
  *
  *  S390 version
  *    Copyright (C) 2002 IBM Deutschland Entwicklung GmbH, IBM Corporation
+ *  S390 version
+ *    Copyright IBM Corp. 2002
  *    Author(s): Martin Schwidefsky (schwidefsky@de.ibm.com)
  *
  *  Based on asm-alpha/semaphore.h and asm-i386/rwsem.h
@@ -139,6 +141,14 @@ static inline void __down_read(struct rw_semaphore *sem)
 		: "=&d" (old), "=&d" (new), "=m" (sem->count)
 		: "a" (&sem->count), "m" (sem->count),
 		  "i" (RWSEM_ACTIVE_READ_BIAS) : "cc", "memory");
+		"	lg	%0,%2\n"
+		"0:	lgr	%1,%0\n"
+		"	aghi	%1,%4\n"
+		"	csg	%0,%1,%2\n"
+		"	jl	0b"
+		: "=&d" (old), "=&d" (new), "=Q" (sem->count)
+		: "Q" (sem->count), "i" (RWSEM_ACTIVE_READ_BIAS)
+		: "cc", "memory");
 	if (old < 0)
 		rwsem_down_read_failed(sem);
 }
@@ -171,6 +181,16 @@ static inline int __down_read_trylock(struct rw_semaphore *sem)
 		: "=&d" (old), "=&d" (new), "=m" (sem->count)
 		: "a" (&sem->count), "m" (sem->count),
 		  "i" (RWSEM_ACTIVE_READ_BIAS) : "cc", "memory");
+		"	lg	%0,%2\n"
+		"0:	ltgr	%1,%0\n"
+		"	jm	1f\n"
+		"	aghi	%1,%4\n"
+		"	csg	%0,%1,%2\n"
+		"	jl	0b\n"
+		"1:"
+		: "=&d" (old), "=&d" (new), "=Q" (sem->count)
+		: "Q" (sem->count), "i" (RWSEM_ACTIVE_READ_BIAS)
+		: "cc", "memory");
 	return old >= 0 ? 1 : 0;
 }
 
@@ -198,6 +218,13 @@ static inline void __down_write_nested(struct rw_semaphore *sem, int subclass)
 #endif /* __s390x__ */
 		: "=&d" (old), "=&d" (new), "=m" (sem->count)
 		: "a" (&sem->count), "m" (sem->count), "m" (tmp)
+		"	lg	%0,%2\n"
+		"0:	lgr	%1,%0\n"
+		"	ag	%1,%4\n"
+		"	csg	%0,%1,%2\n"
+		"	jl	0b"
+		: "=&d" (old), "=&d" (new), "=Q" (sem->count)
+		: "Q" (sem->count), "m" (tmp)
 		: "cc", "memory");
 	if (old != 0)
 		rwsem_down_write_failed(sem);
@@ -233,6 +260,15 @@ static inline int __down_write_trylock(struct rw_semaphore *sem)
 		: "=&d" (old), "=m" (sem->count)
 		: "a" (&sem->count), "m" (sem->count),
 		  "d" (RWSEM_ACTIVE_WRITE_BIAS) : "cc", "memory");
+		"	lg	%0,%1\n"
+		"0:	ltgr	%0,%0\n"
+		"	jnz	1f\n"
+		"	csg	%0,%3,%1\n"
+		"	jl	0b\n"
+		"1:"
+		: "=&d" (old), "=Q" (sem->count)
+		: "Q" (sem->count), "d" (RWSEM_ACTIVE_WRITE_BIAS)
+		: "cc", "memory");
 	return (old == RWSEM_UNLOCKED_VALUE) ? 1 : 0;
 }
 
@@ -260,6 +296,13 @@ static inline void __up_read(struct rw_semaphore *sem)
 		: "=&d" (old), "=&d" (new), "=m" (sem->count)
 		: "a" (&sem->count), "m" (sem->count),
 		  "i" (-RWSEM_ACTIVE_READ_BIAS)
+		"	lg	%0,%2\n"
+		"0:	lgr	%1,%0\n"
+		"	aghi	%1,%4\n"
+		"	csg	%0,%1,%2\n"
+		"	jl	0b"
+		: "=&d" (old), "=&d" (new), "=Q" (sem->count)
+		: "Q" (sem->count), "i" (-RWSEM_ACTIVE_READ_BIAS)
 		: "cc", "memory");
 	if (new < 0)
 		if ((new & RWSEM_ACTIVE_MASK) == 0)
@@ -290,6 +333,13 @@ static inline void __up_write(struct rw_semaphore *sem)
 #endif /* __s390x__ */
 		: "=&d" (old), "=&d" (new), "=m" (sem->count)
 		: "a" (&sem->count), "m" (sem->count), "m" (tmp)
+		"	lg	%0,%2\n"
+		"0:	lgr	%1,%0\n"
+		"	ag	%1,%4\n"
+		"	csg	%0,%1,%2\n"
+		"	jl	0b"
+		: "=&d" (old), "=&d" (new), "=Q" (sem->count)
+		: "Q" (sem->count), "m" (tmp)
 		: "cc", "memory");
 	if (new < 0)
 		if ((new & RWSEM_ACTIVE_MASK) == 0)
@@ -320,6 +370,13 @@ static inline void __downgrade_write(struct rw_semaphore *sem)
 #endif /* __s390x__ */
 		: "=&d" (old), "=&d" (new), "=m" (sem->count)
 		: "a" (&sem->count), "m" (sem->count), "m" (tmp)
+		"	lg	%0,%2\n"
+		"0:	lgr	%1,%0\n"
+		"	ag	%1,%4\n"
+		"	csg	%0,%1,%2\n"
+		"	jl	0b"
+		: "=&d" (old), "=&d" (new), "=Q" (sem->count)
+		: "Q" (sem->count), "m" (tmp)
 		: "cc", "memory");
 	if (new > 1)
 		rwsem_downgrade_wake(sem);
@@ -348,6 +405,13 @@ static inline void rwsem_atomic_add(long delta, struct rw_semaphore *sem)
 #endif /* __s390x__ */
 		: "=&d" (old), "=&d" (new), "=m" (sem->count)
 		: "a" (&sem->count), "m" (sem->count), "d" (delta)
+		"	lg	%0,%2\n"
+		"0:	lgr	%1,%0\n"
+		"	agr	%1,%4\n"
+		"	csg	%0,%1,%2\n"
+		"	jl	0b"
+		: "=&d" (old), "=&d" (new), "=Q" (sem->count)
+		: "Q" (sem->count), "d" (delta)
 		: "cc", "memory");
 }
 
@@ -374,6 +438,13 @@ static inline long rwsem_atomic_update(long delta, struct rw_semaphore *sem)
 #endif /* __s390x__ */
 		: "=&d" (old), "=&d" (new), "=m" (sem->count)
 		: "a" (&sem->count), "m" (sem->count), "d" (delta)
+		"	lg	%0,%2\n"
+		"0:	lgr	%1,%0\n"
+		"	agr	%1,%4\n"
+		"	csg	%0,%1,%2\n"
+		"	jl	0b"
+		: "=&d" (old), "=&d" (new), "=Q" (sem->count)
+		: "Q" (sem->count), "d" (delta)
 		: "cc", "memory");
 	return new;
 }

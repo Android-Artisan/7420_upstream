@@ -25,6 +25,9 @@ static inline int lcs_dbf_passes(debug_info_t *dbf_grp, int level)
 #define LCS_DBF_TEXT_(level,name,text...) \
 	do { \
 		if (lcs_dbf_passes(lcs_dbf_##name, level)) { \
+#define LCS_DBF_TEXT_(level,name,text...) \
+	do { \
+		if (debug_level_enabled(lcs_dbf_##name, level)) { \
 			sprintf(debug_buffer, text); \
 			debug_text_event(lcs_dbf_##name, level, debug_buffer); \
 		} \
@@ -36,6 +39,26 @@ static inline int lcs_dbf_passes(debug_info_t *dbf_grp, int level)
 #define CARD_FROM_DEV(cdev) \
 	(struct lcs_card *) \
 	((struct ccwgroup_device *)cdev->dev.driver_data)->dev.driver_data;
+	(struct lcs_card *) dev_get_drvdata( \
+		&((struct ccwgroup_device *)dev_get_drvdata(&cdev->dev))->dev);
+
+/**
+ * Enum for classifying detected devices.
+ */
+enum lcs_channel_types {
+	/* Device is not a channel  */
+	lcs_channel_type_none,
+
+	/* Device is a 2216 channel */
+	lcs_channel_type_parallel,
+
+	/* Device is a 2216 channel */
+	lcs_channel_type_2216,
+
+	/* Device is a OSA2 card */
+	lcs_channel_type_osa2
+};
+
 /**
  * CCW commands used in this driver
  */

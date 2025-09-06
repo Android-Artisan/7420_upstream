@@ -33,6 +33,9 @@
  * hostap_config.h or they can be added to make command with EXTRA_CFLAGS,
  * e.g.,
  * 'make pccard EXTRA_CFLAGS="-DPRISM2_NO_DEBUG -DPRISM2_NO_PROCFS_DEBUG"'
+ * hostap_config.h or they can be added to make command with ccflags-y,
+ * e.g.,
+ * 'make pccard ccflags-y="-DPRISM2_NO_DEBUG -DPRISM2_NO_PROCFS_DEBUG"'
  */
 
 /* Do not include debug messages into the driver */

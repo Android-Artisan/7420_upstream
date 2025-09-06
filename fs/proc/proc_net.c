@@ -14,6 +14,7 @@
 #include <linux/time.h>
 #include <linux/proc_fs.h>
 #include <linux/stat.h>
+#include <linux/slab.h>
 #include <linux/init.h>
 #include <linux/sched.h>
 #include <linux/module.h>
@@ -26,6 +27,10 @@
 
 #include "internal.h"
 
+static inline struct net *PDE_NET(struct proc_dir_entry *pde)
+{
+	return pde->parent->data;
+}
 
 static struct net *get_proc_net(const struct inode *inode)
 {
@@ -112,6 +117,11 @@ static struct net *get_proc_task_net(struct inode *dir)
 		ns = task_nsproxy(task);
 		if (ns != NULL)
 			net = get_net(ns->net_ns);
+		task_lock(task);
+		ns = task->nsproxy;
+		if (ns != NULL)
+			net = get_net(ns->net_ns);
+		task_unlock(task);
 	}
 	rcu_read_unlock();
 
@@ -120,6 +130,7 @@ static struct net *get_proc_task_net(struct inode *dir)
 
 static struct dentry *proc_tgid_net_lookup(struct inode *dir,
 		struct dentry *dentry, struct nameidata *nd)
+		struct dentry *dentry, unsigned int flags)
 {
 	struct dentry *de;
 	struct net *net;
@@ -137,6 +148,7 @@ static int proc_tgid_net_getattr(struct vfsmount *mnt, struct dentry *dentry,
 		struct kstat *stat)
 {
 	struct inode *inode = dentry->d_inode;
+	struct inode *inode = d_inode(dentry);
 	struct net *net;
 
 	net = get_proc_task_net(inode);
@@ -158,6 +170,7 @@ const struct inode_operations proc_net_inode_operations = {
 
 static int proc_tgid_net_readdir(struct file *filp, void *dirent,
 		filldir_t filldir)
+static int proc_tgid_net_readdir(struct file *file, struct dir_context *ctx)
 {
 	int ret;
 	struct net *net;
@@ -166,6 +179,9 @@ static int proc_tgid_net_readdir(struct file *filp, void *dirent,
 	net = get_proc_task_net(filp->f_path.dentry->d_inode);
 	if (net != NULL) {
 		ret = proc_readdir_de(net->proc_net, filp, dirent, filldir);
+	net = get_proc_task_net(file_inode(file));
+	if (net != NULL) {
+		ret = proc_readdir_de(net->proc_net, file, ctx);
 		put_net(net);
 	}
 	return ret;
@@ -190,6 +206,11 @@ void proc_net_remove(struct net *net, const char *name)
 }
 EXPORT_SYMBOL_GPL(proc_net_remove);
 
+	.llseek		= generic_file_llseek,
+	.read		= generic_read_dir,
+	.iterate	= proc_tgid_net_readdir,
+};
+
 static __net_init int proc_net_ns_init(struct net *net)
 {
 	struct proc_dir_entry *netd, *net_statd;
@@ -205,6 +226,16 @@ static __net_init int proc_net_ns_init(struct net *net)
 	netd->name = "net";
 	netd->namelen = 3;
 	netd->parent = &proc_root;
+	netd = kzalloc(sizeof(*netd) + 4, GFP_KERNEL);
+	if (!netd)
+		goto out;
+
+	netd->subdir = RB_ROOT;
+	netd->data = net;
+	netd->nlink = 2;
+	netd->namelen = 3;
+	netd->parent = &proc_root;
+	memcpy(netd->name, "net", 4);
 
 	err = -EEXIST;
 	net_statd = proc_net_mkdir(net, "stat", netd);

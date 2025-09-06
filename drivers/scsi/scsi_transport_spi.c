@@ -25,12 +25,14 @@
 #include <linux/blkdev.h>
 #include <linux/mutex.h>
 #include <linux/sysfs.h>
+#include <linux/slab.h>
 #include <scsi/scsi.h>
 #include "scsi_priv.h"
 #include <scsi/scsi_device.h>
 #include <scsi/scsi_host.h>
 #include <scsi/scsi_cmnd.h>
 #include <scsi/scsi_eh.h>
+#include <scsi/scsi_tcq.h>
 #include <scsi/scsi_transport.h>
 #include <scsi/scsi_transport_spi.h>
 
@@ -45,6 +47,22 @@
 #define DV_TIMEOUT	(10*HZ)
 #define DV_RETRIES	3	/* should only need at most 
 				 * two cc/ua clears */
+
+/* Our blacklist flags */
+enum {
+	SPI_BLIST_NOIUS = 0x1,
+};
+
+/* blacklist table, modelled on scsi_devinfo.c */
+static struct {
+	char *vendor;
+	char *model;
+	unsigned flags;
+} spi_static_device_list[] __initdata = {
+	{"HP", "Ultrium 3-SCSI", SPI_BLIST_NOIUS },
+	{"IBM", "ULTRIUM-TD3", SPI_BLIST_NOIUS },
+	{NULL, NULL, 0}
+};
 
 /* Private data accessors (keep these out of the header file) */
 #define spi_dv_in_progress(x) (((struct spi_transport_attrs *)&(x)->starget_data)->dv_in_progress)
@@ -111,6 +129,11 @@ static int spi_execute(struct scsi_device *sdev, const void *cmd,
 				      sense, DV_TIMEOUT, /* retries */ 1,
 				      REQ_FAILFAST);
 		if (result & DRIVER_SENSE) {
+				      REQ_FAILFAST_DEV |
+				      REQ_FAILFAST_TRANSPORT |
+				      REQ_FAILFAST_DRIVER,
+				      NULL);
+		if (driver_byte(result) & DRIVER_SENSE) {
 			struct scsi_sense_hdr sshdr_tmp;
 			if (!sshdr)
 				sshdr = &sshdr_tmp;
@@ -204,6 +227,9 @@ static int spi_device_configure(struct transport_container *tc,
 {
 	struct scsi_device *sdev = to_scsi_device(dev);
 	struct scsi_target *starget = sdev->sdev_target;
+	unsigned bflags = scsi_get_device_flags_keyed(sdev, &sdev->inquiry[8],
+						      &sdev->inquiry[16],
+						      SCSI_DEVINFO_SPI);
 
 	/* Populate the target capability fields with the values
 	 * gleaned from the device inquiry */
@@ -213,6 +239,10 @@ static int spi_device_configure(struct transport_container *tc,
 	spi_support_dt(starget) = scsi_device_dt(sdev);
 	spi_support_dt_only(starget) = scsi_device_dt_only(sdev);
 	spi_support_ius(starget) = scsi_device_ius(sdev);
+	if (bflags & SPI_BLIST_NOIUS) {
+		dev_info(dev, "Information Units disabled by blacklist\n");
+		spi_support_ius(starget) = 0;
+	}
 	spi_support_qas(starget) = scsi_device_qas(sdev);
 
 	return 0;
@@ -233,6 +263,10 @@ static int spi_setup_transport_attrs(struct transport_container *tc,
 	spi_iu(starget) = 0;	/* no IU */
 	spi_dt(starget) = 0;	/* ST */
 	spi_qas(starget) = 0;
+	spi_max_iu(starget) = 1;
+	spi_dt(starget) = 0;	/* ST */
+	spi_qas(starget) = 0;
+	spi_max_qas(starget) = 1;
 	spi_wr_flow(starget) = 0;
 	spi_rd_strm(starget) = 0;
 	spi_rti(starget) = 0;
@@ -323,7 +357,7 @@ store_spi_transport_##field(struct device *dev, 			\
 	struct spi_transport_attrs *tp					\
 		= (struct spi_transport_attrs *)&starget->starget_data;	\
 									\
-	if (i->f->set_##field)						\
+	if (!i->f->set_##field)						\
 		return -EINVAL;						\
 	val = simple_strtoul(buf, NULL, 0);				\
 	if (val > tp->max_##field)					\
@@ -360,6 +394,9 @@ spi_transport_max_attr(width, "%d\n");
 spi_transport_rd_attr(iu, "%d\n");
 spi_transport_rd_attr(dt, "%d\n");
 spi_transport_rd_attr(qas, "%d\n");
+spi_transport_max_attr(iu, "%d\n");
+spi_transport_rd_attr(dt, "%d\n");
+spi_transport_max_attr(qas, "%d\n");
 spi_transport_rd_attr(wr_flow, "%d\n");
 spi_transport_rd_attr(rd_strm, "%d\n");
 spi_transport_rd_attr(rti, "%d\n");
@@ -568,6 +605,28 @@ static DEVICE_ATTR(signalling, S_IRUGO,
 		   show_spi_host_signalling,
 		   store_spi_host_signalling);
 
+static ssize_t show_spi_host_width(struct device *cdev,
+				      struct device_attribute *attr,
+				      char *buf)
+{
+	struct Scsi_Host *shost = transport_class_to_shost(cdev);
+
+	return sprintf(buf, "%s\n", shost->max_id == 16 ? "wide" : "narrow");
+}
+static DEVICE_ATTR(host_width, S_IRUGO,
+		   show_spi_host_width, NULL);
+
+static ssize_t show_spi_host_hba_id(struct device *cdev,
+				    struct device_attribute *attr,
+				    char *buf)
+{
+	struct Scsi_Host *shost = transport_class_to_shost(cdev);
+
+	return sprintf(buf, "%d\n", shost->this_id);
+}
+static DEVICE_ATTR(hba_id, S_IRUGO,
+		   show_spi_host_hba_id, NULL);
+
 #define DV_SET(x, y)			\
 	if(i->f->set_##x)		\
 		i->f->set_##x(sdev->sdev_target, y)
@@ -635,10 +694,10 @@ spi_dv_device_echo_buffer(struct scsi_device *sdev, u8 *buffer,
 	for (r = 0; r < retries; r++) {
 		result = spi_execute(sdev, spi_write_buffer, DMA_TO_DEVICE,
 				     buffer, len, &sshdr);
-		if(result || !scsi_device_online(sdev)) {
+		if (result || !scsi_device_online(sdev)) {
 
 			scsi_device_set_state(sdev, SDEV_QUIESCE);
-			if (scsi_sense_valid(&sshdr)
+			if (result > 0 && scsi_sense_valid(&sshdr)
 			    && sshdr.sense_key == ILLEGAL_REQUEST
 			    /* INVALID FIELD IN CDB */
 			    && sshdr.asc == 0x24 && sshdr.ascq == 0x00)
@@ -738,6 +797,10 @@ spi_dv_retrain(struct scsi_device *sdev, u8 *buffer, u8 *ptr,
 			DV_SET(iu, 0);
 		} else if (i->f->set_qas && spi_qas(starget)) {
 			starget_printk(KERN_ERR, starget, "Domain Validation Disabing Quick Arbitration and Selection\n");
+			starget_printk(KERN_ERR, starget, "Domain Validation Disabling Information Units\n");
+			DV_SET(iu, 0);
+		} else if (i->f->set_qas && spi_qas(starget)) {
+			starget_printk(KERN_ERR, starget, "Domain Validation Disabling Quick Arbitration and Selection\n");
 			DV_SET(qas, 0);
 		} else {
 			newperiod = spi_period(starget);
@@ -829,6 +892,7 @@ spi_dv_device_internal(struct scsi_device *sdev, u8 *buffer)
 	}
 
 	if (!scsi_device_wide(sdev)) {
+	if (!spi_support_wide(starget)) {
 		spi_max_width(starget) = 0;
 		max_width = 0;
 	}
@@ -856,6 +920,7 @@ spi_dv_device_internal(struct scsi_device *sdev, u8 *buffer)
 
 	/* device can't handle synchronous */
 	if (!scsi_device_sync(sdev) && !scsi_device_dt(sdev))
+	if (!spi_support_sync(starget) && !spi_support_dt(starget))
 		return;
 
 	/* len == -1 is the signal that we need to ascertain the
@@ -872,12 +937,15 @@ spi_dv_device_internal(struct scsi_device *sdev, u8 *buffer)
 	/* try QAS requests; this should be harmless to set if the
 	 * target supports it */
 	if (scsi_device_qas(sdev)) {
+	if (spi_support_qas(starget) && spi_max_qas(starget)) {
 		DV_SET(qas, 1);
 	} else {
 		DV_SET(qas, 0);
 	}
 
 	if (scsi_device_ius(sdev) && min_period < 9) {
+	if (spi_support_ius(starget) && spi_max_iu(starget) &&
+	    min_period < 9) {
 		/* This u320 (or u640). Set IU transfers */
 		DV_SET(iu, 1);
 		/* Then set the optional parameters */
@@ -898,6 +966,7 @@ spi_dv_device_internal(struct scsi_device *sdev, u8 *buffer)
 	if (spi_signalling(shost) == SPI_SIGNAL_SE ||
 	    spi_signalling(shost) == SPI_SIGNAL_HVD ||
 	    !scsi_device_dt(sdev)) {
+	    !spi_support_dt(starget)) {
 		DV_SET(dt, 0);
 	} else {
 		DV_SET(dt, 1);
@@ -962,6 +1031,10 @@ spi_dv_device(struct scsi_device *sdev)
 		return;
 
 	if (unlikely(spi_dv_in_progress(starget)))
+	if (unlikely(spi_dv_in_progress(starget)))
+		return;
+
+	if (unlikely(scsi_device_get(sdev)))
 		return;
 	spi_dv_in_progress(starget) = 1;
 
@@ -1154,6 +1227,28 @@ int spi_populate_ppr_msg(unsigned char *msg, int period, int offset,
 	return 8;
 }
 EXPORT_SYMBOL_GPL(spi_populate_ppr_msg);
+
+/**
+ * spi_populate_tag_msg - place a tag message in a buffer
+ * @msg:	pointer to the area to place the tag
+ * @cmd:	pointer to the scsi command for the tag
+ *
+ * Notes:
+ *	designed to create the correct type of tag message for the 
+ *	particular request.  Returns the size of the tag message.
+ *	May return 0 if TCQ is disabled for this device.
+ **/
+int spi_populate_tag_msg(unsigned char *msg, struct scsi_cmnd *cmd)
+{
+        if (cmd->flags & SCMD_TAGGED) {
+		*msg++ = SIMPLE_QUEUE_TAG;
+        	*msg++ = cmd->request->tag;
+        	return 2;
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(spi_populate_tag_msg);
 
 #ifdef CONFIG_SCSI_CONSTANTS
 static const char * const one_byte_msgs[] = {
@@ -1350,6 +1445,8 @@ static DECLARE_ANON_TRANSPORT_CLASS(spi_device_class,
 
 static struct attribute *host_attributes[] = {
 	&dev_attr_signalling.attr,
+	&dev_attr_host_width.attr,
+	&dev_attr_hba_id.attr,
 	NULL
 };
 
@@ -1381,6 +1478,7 @@ static int spi_host_configure(struct transport_container *tc,
 	(si->f->set_##name ? S_IWUSR : 0)
 
 static mode_t target_attribute_is_visible(struct kobject *kobj,
+static umode_t target_attribute_is_visible(struct kobject *kobj,
 					  struct attribute *attr, int i)
 {
 	struct device *cdev = container_of(kobj, struct device, kobj);
@@ -1409,10 +1507,16 @@ static mode_t target_attribute_is_visible(struct kobject *kobj,
 	else if (attr == &dev_attr_iu.attr &&
 		 spi_support_ius(starget))
 		return TARGET_ATTRIBUTE_HELPER(iu);
+	else if (attr == &dev_attr_max_iu.attr &&
+		 spi_support_ius(starget))
+		return TARGET_ATTRIBUTE_HELPER(iu);
 	else if (attr == &dev_attr_dt.attr &&
 		 spi_support_dt(starget))
 		return TARGET_ATTRIBUTE_HELPER(dt);
 	else if (attr == &dev_attr_qas.attr &&
+		 spi_support_qas(starget))
+		return TARGET_ATTRIBUTE_HELPER(qas);
+	else if (attr == &dev_attr_max_qas.attr &&
 		 spi_support_qas(starget))
 		return TARGET_ATTRIBUTE_HELPER(qas);
 	else if (attr == &dev_attr_wr_flow.attr &&
@@ -1446,6 +1550,10 @@ static struct attribute *target_attributes[] = {
 	&dev_attr_iu.attr,
 	&dev_attr_dt.attr,
 	&dev_attr_qas.attr,
+	&dev_attr_max_iu.attr,
+	&dev_attr_dt.attr,
+	&dev_attr_qas.attr,
+	&dev_attr_max_qas.attr,
 	&dev_attr_wr_flow.attr,
 	&dev_attr_rd_strm.attr,
 	&dev_attr_rti.attr,
@@ -1511,6 +1619,21 @@ EXPORT_SYMBOL(spi_release_transport);
 static __init int spi_transport_init(void)
 {
 	int error = transport_class_register(&spi_transport_class);
+	int error = scsi_dev_info_add_list(SCSI_DEVINFO_SPI,
+					   "SCSI Parallel Transport Class");
+	if (!error) {
+		int i;
+
+		for (i = 0; spi_static_device_list[i].vendor; i++)
+			scsi_dev_info_list_add_keyed(1,	/* compatible */
+						     spi_static_device_list[i].vendor,
+						     spi_static_device_list[i].model,
+						     NULL,
+						     spi_static_device_list[i].flags,
+						     SCSI_DEVINFO_SPI);
+	}
+
+	error = transport_class_register(&spi_transport_class);
 	if (error)
 		return error;
 	error = anon_transport_class_register(&spi_device_class);
@@ -1522,6 +1645,7 @@ static void __exit spi_transport_exit(void)
 	transport_class_unregister(&spi_transport_class);
 	anon_transport_class_unregister(&spi_device_class);
 	transport_class_unregister(&spi_host_class);
+	scsi_dev_info_remove_list(SCSI_DEVINFO_SPI);
 }
 
 MODULE_AUTHOR("Martin Hicks");

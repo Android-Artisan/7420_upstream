@@ -90,6 +90,8 @@ simscsi_setup (char *s)
 		       simscsi_root);
 	}
 	simscsi_root = s;
+	} else
+		simscsi_root = s;
 	return 1;
 }
 
@@ -203,6 +205,7 @@ simscsi_readwrite10 (struct scsi_cmnd *sc, int mode)
 
 static int
 simscsi_queuecommand (struct scsi_cmnd *sc, void (*done)(struct scsi_cmnd *))
+simscsi_queuecommand_lck (struct scsi_cmnd *sc, void (*done)(struct scsi_cmnd *))
 {
 	unsigned int target_id = sc->device->id;
 	char fname[MAX_ROOT_LEN+16];
@@ -326,6 +329,8 @@ simscsi_queuecommand (struct scsi_cmnd *sc, void (*done)(struct scsi_cmnd *))
 	return 0;
 }
 
+static DEF_SCSI_QCMD(simscsi_queuecommand)
+
 static int
 simscsi_host_reset (struct scsi_cmnd *sc)
 {
@@ -376,3 +381,4 @@ simscsi_exit(void)
 
 module_init(simscsi_init);
 module_exit(simscsi_exit);
+device_initcall(simscsi_init);

@@ -14,6 +14,10 @@
 
 #define HALF_QUEUES	32
 #define QUEUES		64	/* only 32 lower queues currently supported */
+#define DEBUG_QMGR	0
+
+#define HALF_QUEUES	32
+#define QUEUES		64
 #define MAX_QUEUE_LENGTH 4	/* in dwords */
 
 #define QUEUE_STAT1_EMPTY		1 /* queue status bits */
@@ -64,12 +68,37 @@ void qmgr_disable_irq(unsigned int queue);
 int qmgr_request_queue(unsigned int queue, unsigned int len /* dwords */,
 		       unsigned int nearly_empty_watermark,
 		       unsigned int nearly_full_watermark);
+
+#if DEBUG_QMGR
+extern char qmgr_queue_descs[QUEUES][32];
+
+int qmgr_request_queue(unsigned int queue, unsigned int len /* dwords */,
+		       unsigned int nearly_empty_watermark,
+		       unsigned int nearly_full_watermark,
+		       const char *desc_format, const char* name);
+#else
+int __qmgr_request_queue(unsigned int queue, unsigned int len /* dwords */,
+			 unsigned int nearly_empty_watermark,
+			 unsigned int nearly_full_watermark);
+#define qmgr_request_queue(queue, len, nearly_empty_watermark,		\
+			   nearly_full_watermark, desc_format, name)	\
+	__qmgr_request_queue(queue, len, nearly_empty_watermark,	\
+			     nearly_full_watermark)
+#endif
+
 void qmgr_release_queue(unsigned int queue);
 
 
 static inline void qmgr_put_entry(unsigned int queue, u32 val)
 {
 	extern struct qmgr_regs __iomem *qmgr_regs;
+	struct qmgr_regs __iomem *qmgr_regs = IXP4XX_QMGR_BASE_VIRT;
+#if DEBUG_QMGR
+	BUG_ON(!qmgr_queue_descs[queue]); /* not yet requested */
+
+	printk(KERN_DEBUG "Queue %s(%i) put %X\n",
+	       qmgr_queue_descs[queue], queue, val);
+#endif
 	__raw_writel(val, &qmgr_regs->acc[queue][0]);
 }
 
@@ -82,6 +111,21 @@ static inline u32 qmgr_get_entry(unsigned int queue)
 static inline int qmgr_get_stat1(unsigned int queue)
 {
 	extern struct qmgr_regs __iomem *qmgr_regs;
+	u32 val;
+	const struct qmgr_regs __iomem *qmgr_regs = IXP4XX_QMGR_BASE_VIRT;
+	val = __raw_readl(&qmgr_regs->acc[queue][0]);
+#if DEBUG_QMGR
+	BUG_ON(!qmgr_queue_descs[queue]); /* not yet requested */
+
+	printk(KERN_DEBUG "Queue %s(%i) get %X\n",
+	       qmgr_queue_descs[queue], queue, val);
+#endif
+	return val;
+}
+
+static inline int __qmgr_get_stat1(unsigned int queue)
+{
+	const struct qmgr_regs __iomem *qmgr_regs = IXP4XX_QMGR_BASE_VIRT;
 	return (__raw_readl(&qmgr_regs->stat1[queue >> 3])
 		>> ((queue & 7) << 2)) & 0xF;
 }
@@ -89,6 +133,10 @@ static inline int qmgr_get_stat1(unsigned int queue)
 static inline int qmgr_get_stat2(unsigned int queue)
 {
 	extern struct qmgr_regs __iomem *qmgr_regs;
+static inline int __qmgr_get_stat2(unsigned int queue)
+{
+	const struct qmgr_regs __iomem *qmgr_regs = IXP4XX_QMGR_BASE_VIRT;
+	BUG_ON(queue >= HALF_QUEUES);
 	return (__raw_readl(&qmgr_regs->stat2[queue >> 4])
 		>> ((queue & 0xF) << 1)) & 0x3;
 }
@@ -121,6 +169,80 @@ static inline int qmgr_stat_underflow(unsigned int queue)
 static inline int qmgr_stat_overflow(unsigned int queue)
 {
 	return !!(qmgr_get_stat2(queue) & QUEUE_STAT2_OVERFLOW);
+/**
+ * qmgr_stat_empty() - checks if a hardware queue is empty
+ * @queue:	queue number
+ *
+ * Returns non-zero value if the queue is empty.
+ */
+static inline int qmgr_stat_empty(unsigned int queue)
+{
+	BUG_ON(queue >= HALF_QUEUES);
+	return __qmgr_get_stat1(queue) & QUEUE_STAT1_EMPTY;
+}
+
+/**
+ * qmgr_stat_below_low_watermark() - checks if a queue is below low watermark
+ * @queue:	queue number
+ *
+ * Returns non-zero value if the queue is below low watermark.
+ */
+static inline int qmgr_stat_below_low_watermark(unsigned int queue)
+{
+	const struct qmgr_regs __iomem *qmgr_regs = IXP4XX_QMGR_BASE_VIRT;
+	if (queue >= HALF_QUEUES)
+		return (__raw_readl(&qmgr_regs->statne_h) >>
+			(queue - HALF_QUEUES)) & 0x01;
+	return __qmgr_get_stat1(queue) & QUEUE_STAT1_NEARLY_EMPTY;
+}
+
+/**
+ * qmgr_stat_above_high_watermark() - checks if a queue is above high watermark
+ * @queue:	queue number
+ *
+ * Returns non-zero value if the queue is above high watermark
+ */
+static inline int qmgr_stat_above_high_watermark(unsigned int queue)
+{
+	BUG_ON(queue >= HALF_QUEUES);
+	return __qmgr_get_stat1(queue) & QUEUE_STAT1_NEARLY_FULL;
+}
+
+/**
+ * qmgr_stat_full() - checks if a hardware queue is full
+ * @queue:	queue number
+ *
+ * Returns non-zero value if the queue is full.
+ */
+static inline int qmgr_stat_full(unsigned int queue)
+{
+	const struct qmgr_regs __iomem *qmgr_regs = IXP4XX_QMGR_BASE_VIRT;
+	if (queue >= HALF_QUEUES)
+		return (__raw_readl(&qmgr_regs->statf_h) >>
+			(queue - HALF_QUEUES)) & 0x01;
+	return __qmgr_get_stat1(queue) & QUEUE_STAT1_FULL;
+}
+
+/**
+ * qmgr_stat_underflow() - checks if a hardware queue experienced underflow
+ * @queue:	queue number
+ *
+ * Returns non-zero value if the queue experienced underflow.
+ */
+static inline int qmgr_stat_underflow(unsigned int queue)
+{
+	return __qmgr_get_stat2(queue) & QUEUE_STAT2_UNDERFLOW;
+}
+
+/**
+ * qmgr_stat_overflow() - checks if a hardware queue experienced overflow
+ * @queue:	queue number
+ *
+ * Returns non-zero value if the queue experienced overflow.
+ */
+static inline int qmgr_stat_overflow(unsigned int queue)
+{
+	return __qmgr_get_stat2(queue) & QUEUE_STAT2_OVERFLOW;
 }
 
 #endif

@@ -89,6 +89,7 @@ static int __init ide_scan_pcibus(void)
 
 	pre_init = 0;
 	while ((dev = pci_get_device(PCI_ANY_ID, PCI_ANY_ID, dev)))
+	for_each_pci_dev(dev)
 		ide_scan_pcidev(dev);
 
 	/*

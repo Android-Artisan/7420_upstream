@@ -1,8 +1,11 @@
 ASoC Machine Driver
-===================
 
 The ASoC machine (or board) driver is the code that glues together the platform
 and codec drivers.
+The ASoC machine (or board) driver is the code that glues together all the
+component drivers (e.g. codecs, platforms and DAIs). It also describes the
+relationships between each componnent which include audio paths, GPIOs,
+interrupts, clocking, jacks and voltage regulators.
 
 The machine driver can contain codec and platform specific code. It registers
 the audio subsystem with the kernel as a platform device and is represented by
@@ -11,6 +14,11 @@ the following struct:-
 /* SoC machine */
 struct snd_soc_machine {
 	char *name;
+
+struct snd_soc_card {
+	char *name;
+
+	...
 
 	int (*probe)(struct platform_device *pdev);
 	int (*remove)(struct platform_device *pdev);
@@ -24,10 +32,13 @@ struct snd_soc_machine {
 
 	/* machine stream operations */
 	struct snd_soc_ops *ops;
+	...
 
 	/* CPU <--> Codec DAI links  */
 	struct snd_soc_dai_link *dai_link;
 	int num_links;
+
+	...
 };
 
 probe()/remove()
@@ -54,6 +65,7 @@ also be used to set up the DAI system clock and for any machine related DAI
 initialisation e.g. the machine audio map can be connected to the codec audio
 map, unconnected codec pins can be set as such. Please see corgi.c, spitz.c
 for examples.
+map, unconnected codec pins can be set as such.
 
 struct snd_soc_dai_link is used to set up each DAI in your machine. e.g.
 
@@ -63,6 +75,10 @@ static struct snd_soc_dai_link corgi_dai = {
 	.stream_name = "WM8731",
 	.cpu_dai = &pxa_i2s_dai,
 	.codec_dai = &wm8731_dai,
+	.cpu_dai_name = "pxa-is2-dai",
+	.codec_dai_name = "wm8731-hifi",
+	.platform_name = "pxa-pcm-audio",
+	.codec_name = "wm8713-codec.0-001a",
 	.init = corgi_wm8731_init,
 	.ops = &corgi_ops,
 };
@@ -71,6 +87,10 @@ struct snd_soc_machine then sets up the machine with it's DAIs. e.g.
 
 /* corgi audio machine driver */
 static struct snd_soc_machine snd_soc_machine_corgi = {
+struct snd_soc_card then sets up the machine with its DAIs. e.g.
+
+/* corgi audio machine driver */
+static struct snd_soc_card snd_soc_corgi = {
 	.name = "Corgi",
 	.dai_link = &corgi_dai,
 	.num_links = 1,
@@ -105,6 +125,7 @@ audio power map of the audio subsystem. This allows for automatic power up/down
 of speaker/HP amplifiers, etc. Codec pins can be connected to the machines jack
 sockets in the machine init function. See soc/pxa/spitz.c and dapm.txt for
 details.
+sockets in the machine init function.
 
 
 Machine Controls

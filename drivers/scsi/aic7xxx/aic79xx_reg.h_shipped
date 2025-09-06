@@ -475,6 +475,13 @@ ahd_reg_print_t ahd_clrlqiint0_print;
 #endif
 
 #if AIC_DEBUG_REGISTERS
+ahd_reg_print_t ahd_lqimode0_print;
+#else
+#define ahd_lqimode0_print(regvalue, cur_col, wrap) \
+    ahd_print_register(NULL, 0, "LQIMODE0", 0x50, regvalue, cur_col, wrap)
+#endif
+
+#if AIC_DEBUG_REGISTERS
 ahd_reg_print_t ahd_lqimode1_print;
 #else
 #define ahd_lqimode1_print(regvalue, cur_col, wrap) \
@@ -643,6 +650,13 @@ ahd_reg_print_t ahd_currscb_print;
 #endif
 
 #if AIC_DEBUG_REGISTERS
+ahd_reg_print_t ahd_seqimode_print;
+#else
+#define ahd_seqimode_print(regvalue, cur_col, wrap) \
+    ahd_print_register(NULL, 0, "SEQIMODE", 0x5c, regvalue, cur_col, wrap)
+#endif
+
+#if AIC_DEBUG_REGISTERS
 ahd_reg_print_t ahd_mdffstat_print;
 #else
 #define ahd_mdffstat_print(regvalue, cur_col, wrap) \
@@ -759,6 +773,10 @@ ahd_reg_print_t ahd_hcnt_print;
 #else
 #define ahd_hcnt_print(regvalue, cur_col, wrap) \
     ahd_print_register(NULL, 0, "HCNT", 0x78, regvalue, cur_col, wrap)
+ahd_reg_print_t ahd_scbhaddr_print;
+#else
+#define ahd_scbhaddr_print(regvalue, cur_col, wrap) \
+    ahd_print_register(NULL, 0, "SCBHADDR", 0x7c, regvalue, cur_col, wrap)
 #endif
 
 #if AIC_DEBUG_REGISTERS
@@ -794,6 +812,10 @@ ahd_reg_print_t ahd_dff_thrsh_print;
 #else
 #define ahd_dff_thrsh_print(regvalue, cur_col, wrap) \
     ahd_print_register(NULL, 0, "DFF_THRSH", 0x88, regvalue, cur_col, wrap)
+ahd_reg_print_t ahd_sghcnt_print;
+#else
+#define ahd_sghcnt_print(regvalue, cur_col, wrap) \
+    ahd_print_register(NULL, 0, "SGHCNT", 0x84, regvalue, cur_col, wrap)
 #endif
 
 #if AIC_DEBUG_REGISTERS
@@ -1140,6 +1162,13 @@ ahd_reg_print_t ahd_waiting_scb_tails_print;
 #endif
 
 #if AIC_DEBUG_REGISTERS
+ahd_reg_print_t ahd_sram_base_print;
+#else
+#define ahd_sram_base_print(regvalue, cur_col, wrap) \
+    ahd_print_register(NULL, 0, "SRAM_BASE", 0x100, regvalue, cur_col, wrap)
+#endif
+
+#if AIC_DEBUG_REGISTERS
 ahd_reg_print_t ahd_waiting_tid_head_print;
 #else
 #define ahd_waiting_tid_head_print(regvalue, cur_col, wrap) \
@@ -1431,6 +1460,10 @@ ahd_reg_print_t ahd_scb_scsi_status_print;
 #else
 #define ahd_scb_scsi_status_print(regvalue, cur_col, wrap) \
     ahd_print_register(NULL, 0, "SCB_SCSI_STATUS", 0x188, regvalue, cur_col, wrap)
+ahd_reg_print_t ahd_scb_residual_datacnt_print;
+#else
+#define ahd_scb_residual_datacnt_print(regvalue, cur_col, wrap) \
+    ahd_print_register(NULL, 0, "SCB_RESIDUAL_DATACNT", 0x180, regvalue, cur_col, wrap)
 #endif
 
 #if AIC_DEBUG_REGISTERS
@@ -1721,6 +1754,10 @@ ahd_reg_print_t ahd_scb_disconnected_lists_print;
 
 #define	LQIN            		0x20
 
+#define	LQIN            		0x20
+
+#define	TYPEPTR         		0x20
+
 #define	TAGPTR          		0x21
 
 #define	LUNPTR          		0x22
@@ -1780,6 +1817,14 @@ ahd_reg_print_t ahd_scb_disconnected_lists_print;
 #define		SINGLECMD       	0x02
 #define		ABORTPENDING    	0x01
 
+#define	SCSBIST0        		0x39
+#define		GSBISTERR       	0x40
+#define		GSBISTDONE      	0x20
+#define		GSBISTRUN       	0x10
+#define		OSBISTERR       	0x04
+#define		OSBISTDONE      	0x02
+#define		OSBISTRUN       	0x01
+
 #define	LQCTL2          		0x39
 #define		LQIRETRY        	0x80
 #define		LQICONTINUE     	0x40
@@ -1797,6 +1842,10 @@ ahd_reg_print_t ahd_scb_disconnected_lists_print;
 #define		OSBISTERR       	0x04
 #define		OSBISTDONE      	0x02
 #define		OSBISTRUN       	0x01
+#define	SCSBIST1        		0x3a
+#define		NTBISTERR       	0x04
+#define		NTBISTDONE      	0x02
+#define		NTBISTRUN       	0x01
 
 #define	SCSISEQ0        		0x3a
 #define		TEMODEO         	0x80
@@ -1814,6 +1863,8 @@ ahd_reg_print_t ahd_scb_disconnected_lists_print;
 
 #define	BUSINITID       		0x3c
 
+#define	SCSISEQ1        		0x3b
+
 #define	SXFRCTL0        		0x3c
 #define		DFON            	0x80
 #define		DFPEXP          	0x40
@@ -1821,6 +1872,8 @@ ahd_reg_print_t ahd_scb_disconnected_lists_print;
 #define		SPIOEN          	0x08
 
 #define	DLCOUNT         		0x3c
+
+#define	BUSINITID       		0x3c
 
 #define	SXFRCTL1        		0x3d
 #define		BITBUCKET       	0x80
@@ -1857,6 +1910,8 @@ ahd_reg_print_t ahd_scb_disconnected_lists_print;
 #define		BSYO            	0x04
 #define		REQO            	0x02
 #define		ACKO            	0x01
+
+#define	MULTARGID       		0x40
 
 #define	SCSISIGI        		0x41
 #define		ATNI            	0x10
@@ -1904,6 +1959,15 @@ ahd_reg_print_t ahd_scb_disconnected_lists_print;
 #define		ENAB20          	0x04
 #define		SELWIDE         	0x02
 
+#define	CLRSINT0        		0x4b
+#define		CLRSELDO        	0x40
+#define		CLRSELDI        	0x20
+#define		CLRSELINGO      	0x10
+#define		CLRIOERR        	0x08
+#define		CLROVERRUN      	0x04
+#define		CLRSPIORDY      	0x02
+#define		CLRARBDO        	0x01
+
 #define	SSTAT0          		0x4b
 #define		TARGET          	0x80
 #define		SELDO           	0x40
@@ -1931,6 +1995,14 @@ ahd_reg_print_t ahd_scb_disconnected_lists_print;
 #define		CLROVERRUN      	0x04
 #define		CLRSPIORDY      	0x02
 #define		CLRARBDO        	0x01
+#define	CLRSINT1        		0x4c
+#define		CLRSELTIMEO     	0x80
+#define		CLRATNO         	0x40
+#define		CLRSCSIRSTI     	0x20
+#define		CLRBUSFREE      	0x08
+#define		CLRSCSIPERR     	0x04
+#define		CLRSTRB2FAST    	0x02
+#define		CLRREQINIT      	0x01
 
 #define	SSTAT1          		0x4c
 #define		SELTO           	0x80
@@ -2013,6 +2085,14 @@ ahd_reg_print_t ahd_scb_disconnected_lists_print;
 #define		CLRLQIBADLQT    	0x04
 #define		CLRLQIATNLQ     	0x02
 #define		CLRLQIATNCMD    	0x01
+
+#define	LQIMODE0        		0x50
+#define		ENLQIATNQASK    	0x20
+#define		ENLQICRCT1      	0x10
+#define		ENLQICRCT2      	0x08
+#define		ENLQIBADLQT     	0x04
+#define		ENLQIATNLQ      	0x02
+#define		ENLQIATNCMD     	0x01
 
 #define	LQIMODE1        		0x51
 #define		ENLQIPHASE_LQ   	0x80
@@ -2160,6 +2240,8 @@ ahd_reg_print_t ahd_scb_disconnected_lists_print;
 #define		CFG4ICMD        	0x02
 #define		CFG4TCMD        	0x01
 
+#define	CURRSCB         		0x5c
+
 #define	SEQIMODE        		0x5c
 #define		ENCTXTDONE      	0x40
 #define		ENSAVEPTRS      	0x20
@@ -2185,6 +2267,8 @@ ahd_reg_print_t ahd_scb_disconnected_lists_print;
 
 #define	DFFTAG          		0x5e
 
+#define	LASTSCB         		0x5e
+
 #define	SCSITEST        		0x5e
 #define		CNTRTEST        	0x08
 #define		SEL_TXPLL_DEBUG 	0x04
@@ -2207,6 +2291,14 @@ ahd_reg_print_t ahd_scb_disconnected_lists_print;
 #define	NEGOFFSET       		0x62
 
 #define	PACKCRCI        		0x62
+
+#define	DGRPCRCI        		0x60
+
+#define	NEGPERIOD       		0x61
+
+#define	PACKCRCI        		0x62
+
+#define	NEGOFFSET       		0x62
 
 #define	NEGPPROPTS      		0x63
 #define		PPROPT_PACE     	0x08
@@ -2264,6 +2356,8 @@ ahd_reg_print_t ahd_scb_disconnected_lists_print;
 #define		PLL_DLPF        	0x02
 #define		PLL_ENFBM       	0x01
 
+#define	FAIRNESS        		0x6c
+
 #define	PLL400CTL1      		0x6d
 #define		PLL_CNTEN       	0x80
 #define		PLL_CNTCLR      	0x40
@@ -2293,6 +2387,25 @@ ahd_reg_print_t ahd_scb_disconnected_lists_print;
 #define	SGHCNT          		0x84
 
 #define	SCBHCNT         		0x84
+
+#define	PLLDELAY        		0x70
+#define		SPLIT_DROP_REQ  	0x80
+
+#define	HODMAADR        		0x70
+
+#define	HODMACNT        		0x78
+
+#define	HCNT            		0x78
+
+#define	HODMAEN         		0x7a
+
+#define	SCBHADDR        		0x7c
+
+#define	SGHADDR         		0x7c
+
+#define	SCBHCNT         		0x84
+
+#define	SGHCNT          		0x84
 
 #define	DFF_THRSH       		0x88
 #define		WR_DFTHRSH      	0x70
@@ -2344,6 +2457,12 @@ ahd_reg_print_t ahd_scb_disconnected_lists_print;
 
 #define	DCHRXMSG1       		0x91
 
+#define	OVLYRXMSG0      		0x90
+
+#define	DCHRXMSG0       		0x90
+
+#define	OVLYRXMSG1      		0x91
+
 #define	NSENABLE        		0x91
 #define		MSINSEN         	0x20
 #define		OVLYNSEN        	0x10
@@ -2351,6 +2470,10 @@ ahd_reg_print_t ahd_scb_disconnected_lists_print;
 #define		SGNSEN          	0x04
 #define		DCH1NSEN        	0x02
 #define		DCH0NSEN        	0x01
+
+#define	CMCRXMSG1       		0x91
+
+#define	DCHRXMSG1       		0x91
 
 #define	DCHRXMSG2       		0x92
 
@@ -2381,11 +2504,16 @@ ahd_reg_print_t ahd_scb_disconnected_lists_print;
 
 #define	DCHSEQBCNT      		0x94
 
+#define	CMCSEQBCNT      		0x94
+
+#define	CMCSPLTSTAT0    		0x96
+
 #define	DCHSPLTSTAT0    		0x96
 
 #define	OVLYSPLTSTAT0   		0x96
 
 #define	CMCSPLTSTAT0    		0x96
+#define	CMCSPLTSTAT1    		0x97
 
 #define	OVLYSPLTSTAT1   		0x97
 
@@ -2425,9 +2553,17 @@ ahd_reg_print_t ahd_scb_disconnected_lists_print;
 
 #define	SGSEQBCNT       		0x9c
 
+#define	SGSEQBCNT       		0x9c
+
+#define	SLVSPLTOUTATTR0 		0x9c
+#define		LOWER_BCNT      	0xff
+
 #define	SLVSPLTOUTATTR1 		0x9d
 #define		CMPLT_DNUM      	0xf8
 #define		CMPLT_FNUM      	0x07
+
+#define	SLVSPLTOUTATTR2 		0x9e
+#define		CMPLT_BNUM      	0xff
 
 #define	SGSPLTSTAT0     		0x9e
 #define		STAETERM        	0x80
@@ -2501,6 +2637,10 @@ ahd_reg_print_t ahd_scb_disconnected_lists_print;
 
 #define	CCSCBADR_BK     		0xac
 
+#define	CCSCBADR_BK     		0xac
+
+#define	CCSCBADDR       		0xac
+
 #define	CMC_RAMBIST     		0xad
 #define		SG_ELEMENT_SIZE 	0x80
 #define		SCBRAMBIST_FAIL 	0x40
@@ -2557,6 +2697,9 @@ ahd_reg_print_t ahd_scb_disconnected_lists_print;
 #define		SEEOP_EWDS      	0x40
 #define		SEEOP_WALL      	0x40
 #define		SEEOP_EWEN      	0x40
+#define		SEEOP_WALL      	0x40
+#define		SEEOP_EWEN      	0x40
+#define		SEEOP_EWDS      	0x40
 #define		SEEOPCODE       	0x70
 #define		SEERST          	0x02
 #define		SEESTART        	0x01
@@ -2573,6 +2716,8 @@ ahd_reg_print_t ahd_scb_disconnected_lists_print;
 
 #define	SCBCNT          		0xbf
 
+#define	DFWADDR         		0xc0
+
 #define	DSPFLTRCTL      		0xc0
 #define		FLTRDISABLE     	0x20
 #define		EDGESENSE       	0x10
@@ -2585,6 +2730,8 @@ ahd_reg_print_t ahd_scb_disconnected_lists_print;
 #define		DESQDIS         	0x10
 #define		RCVROFFSTDIS    	0x04
 #define		XMITOFFSTDIS    	0x02
+
+#define	DFRADDR         		0xc2
 
 #define	DSPREQCTL       		0xc2
 #define		MANREQCTL       	0xc0
@@ -2619,6 +2766,14 @@ ahd_reg_print_t ahd_scb_disconnected_lists_print;
 #define	DFBKPTR         		0xc9
 
 #define	SKEWCALC        		0xc9
+
+#define	RCVRBIASCALC    		0xc8
+
+#define	DFPTRS          		0xc8
+
+#define	SKEWCALC        		0xc9
+
+#define	DFBKPTR         		0xc9
 
 #define	DFDBCTL         		0xcb
 #define		DFF_CIO_WR_RDY  	0x20
@@ -2704,6 +2859,8 @@ ahd_reg_print_t ahd_scb_disconnected_lists_print;
 
 #define	ACCUM_SAVE      		0xfa
 
+#define	WAITING_SCB_TAILS		0x100
+
 #define	AHD_PCI_CONFIG_BASE		0x100
 
 #define	SRAM_BASE       		0x100
@@ -2740,6 +2897,8 @@ ahd_reg_print_t ahd_scb_disconnected_lists_print;
 #define		SCSIEN          	0x20
 #define		SDMAENACK       	0x10
 #define		SDMAEN          	0x10
+#define		SDMAEN          	0x10
+#define		SDMAENACK       	0x10
 #define		HDMAEN          	0x08
 #define		HDMAENACK       	0x08
 #define		DIRECTION       	0x04
@@ -2836,6 +2995,8 @@ ahd_reg_print_t ahd_scb_disconnected_lists_print;
 #define	MK_MESSAGE_SCB  		0x160
 
 #define	MK_MESSAGE_SCSIID		0x162
+
+#define	SCB_BASE        		0x180
 
 #define	SCB_RESIDUAL_DATACNT		0x180
 #define	SCB_CDB_STORE   		0x180
@@ -2977,6 +3138,39 @@ ahd_reg_print_t ahd_scb_disconnected_lists_print;
 #define	SCB_TRANSFER_SIZE	0x06
 #define	PKT_OVERRUN_BUFOFFSET	0x05
 #define	SG_PREFETCH_ADDR_MASK	0x03
+#define	CMD_GROUP_CODE_SHIFT	0x05
+#define	MAX_OFFSET_PACED_BUG	0x7f
+#define	STIMESEL_BUG_ADJ	0x08
+#define	STIMESEL_MIN	0x18
+#define	STIMESEL_SHIFT	0x03
+#define	CCSGRAM_MAXSEGS	0x10
+#define	INVALID_ADDR	0x80
+#define	SEEOP_ERAL_ADDR	0x80
+#define	AHD_SLEWRATE_DEF_REVB	0x08
+#define	AHD_PRECOMP_CUTBACK_17	0x04
+#define	AHD_PRECOMP_MASK	0x07
+#define	SRC_MODE_SHIFT	0x00
+#define	PKT_OVERRUN_BUFSIZE	0x200
+#define	SCB_TRANSFER_SIZE_1BYTE_LUN	0x30
+#define	TARGET_DATA_IN	0x01
+#define	HOST_MSG	0xff
+#define	MAX_OFFSET	0xfe
+#define	BUS_16_BIT	0x01
+#define	CCSCBADDR_MAX	0x80
+#define	NUMDSPS 	0x14
+#define	SEEOP_EWEN_ADDR	0xc0
+#define	AHD_ANNEXCOL_PER_DEV0	0x04
+#define	DST_MODE_SHIFT	0x04
+
+
+/* Downloaded Constant Definitions */
+#define	CACHELINE_MASK	0x07
+#define	SCB_TRANSFER_SIZE	0x06
+#define	PKT_OVERRUN_BUFOFFSET	0x05
+#define	SG_SIZEOF	0x04
+#define	SG_PREFETCH_ADDR_MASK	0x03
+#define	SG_PREFETCH_ALIGN_MASK	0x02
+#define	SG_PREFETCH_CNT_LIMIT	0x01
 #define	SG_PREFETCH_CNT	0x00
 #define	DOWNLOAD_CONST_COUNT	0x08
 
@@ -2984,3 +3178,5 @@ ahd_reg_print_t ahd_scb_disconnected_lists_print;
 /* Exported Labels */
 #define	LABEL_timer_isr	0x28b
 #define	LABEL_seq_isr 	0x28f
+#define	LABEL_seq_isr 	0x28f
+#define	LABEL_timer_isr	0x28b

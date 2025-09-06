@@ -9,6 +9,10 @@ extra-y:= head.o init_task.o vmlinux.lds
 
 obj-y := $(heads-y) entry.o entry-table.o break.o switch_to.o kernel_thread.o \
 	 kernel_execve.o process.o traps.o ptrace.o signal.o dma.o \
+extra-y:= head.o vmlinux.lds
+
+obj-y := $(heads-y) entry.o entry-table.o break.o switch_to.o \
+	 process.o traps.o ptrace.o signal.o dma.o \
 	 sys_frv.o time.o setup.o frv_ksyms.o \
 	 debug-stub.o irq.o sleep.o uaccess.o
 

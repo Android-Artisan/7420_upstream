@@ -16,6 +16,10 @@
 #include <pcmcia/ss.h>
 #include <pcmcia/cistpl.h>
 #include "cs_internal.h"
+#include <linux/clk.h>
+#include <linux/cpufreq.h>
+#include <pcmcia/ss.h>
+#include <pcmcia/cistpl.h>
 
 
 struct device;
@@ -34,11 +38,14 @@ struct soc_pcmcia_socket {
 	struct device		*dev;
 	unsigned int		nr;
 	unsigned int		irq;
+	unsigned int		nr;
+	struct clk		*clk;
 
 	/*
 	 * Core PCMCIA state
 	 */
 	struct pcmcia_low_level *ops;
+	const struct pcmcia_low_level *ops;
 
 	unsigned int		status;
 	socket_state_t		cs_state;
@@ -53,10 +60,25 @@ struct soc_pcmcia_socket {
 	struct resource		res_attr;
 	void __iomem		*virt_io;
 
+	struct {
+		int		gpio;
+		unsigned int	irq;
+		const char	*name;
+	} stat[4];
+#define SOC_STAT_CD		0	/* Card detect */
+#define SOC_STAT_BVD1		1	/* BATDEAD / IOSTSCHG */
+#define SOC_STAT_BVD2		2	/* BATWARN / IOSPKR */
+#define SOC_STAT_RDY		3	/* Ready / Interrupt */
+
 	unsigned int		irq_state;
 
 	struct timer_list	poll_timer;
 	struct list_head	node;
+};
+
+struct skt_dev_info {
+	int nskt;
+	struct soc_pcmcia_socket skt[0];
 };
 
 struct pcmcia_state {
@@ -138,6 +160,15 @@ extern int soc_common_drv_pcmcia_remove(struct device *dev);
 
 
 #ifdef DEBUG
+extern void soc_common_pcmcia_get_timing(struct soc_pcmcia_socket *, struct soc_pcmcia_timing *);
+
+void soc_pcmcia_init_one(struct soc_pcmcia_socket *skt,
+	struct pcmcia_low_level *ops, struct device *dev);
+void soc_pcmcia_remove_one(struct soc_pcmcia_socket *skt);
+int soc_pcmcia_add_one(struct soc_pcmcia_socket *skt);
+
+
+#ifdef CONFIG_PCMCIA_DEBUG
 
 extern void soc_pcmcia_debug(struct soc_pcmcia_socket *skt, const char *func,
 			     int lvl, const char *fmt, ...);

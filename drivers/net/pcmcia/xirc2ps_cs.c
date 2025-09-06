@@ -247,7 +247,6 @@ module_param(pc_debug, int, 0);
 #define XIR_CM56    12	/* (prodid 5) modem only: not supported here */
 #define XIR_CG	    13	/* (prodid 1) GSM modem only: not supported */
 #define XIR_CBE     14	/* (prodid 1) cardbus ethernet: not supported */
-/*====================================================================*/
 
 /* Module parameters */
 
@@ -261,7 +260,6 @@ INT_MODULE_PARM(full_duplex,	0);
 INT_MODULE_PARM(do_sound, 	1);
 INT_MODULE_PARM(lockup_hack,	0);  /* anti lockup hack */
 
-/*====================================================================*/
 
 /* We do not process more than these number of bytes during one
  * interrupt. (Of course we receive complete packets, so this is not
@@ -369,7 +367,6 @@ static int init_mii(struct net_device *dev);
 static void do_powerdown(struct net_device *dev);
 static int do_stop(struct net_device *dev);
 
-/*=============== Helper functions =========================*/
 static int
 first_tuple(struct pcmcia_device *handle, tuple_t *tuple, cisparse_t *parse)
 {
@@ -398,7 +395,6 @@ next_tuple(struct pcmcia_device *handle, tuple_t *tuple, cisparse_t *parse)
 #define PutByte(reg,value) outb((value), ioaddr+(reg))
 #define PutWord(reg,value) outw((value), ioaddr+(reg))
 
-/*====== Functions used for debugging =================================*/
 #if defined(PCMCIA_DEBUG) && 0 /* reading regs may change system status */
 static void
 PrintRegisters(struct net_device *dev)
@@ -433,7 +429,6 @@ PrintRegisters(struct net_device *dev)
 }
 #endif /* PCMCIA_DEBUG */
 
-/*============== MII Management functions ===============*/
 
 /****************
  * Turn around for read
@@ -544,7 +539,6 @@ mii_wr(unsigned int ioaddr, u_char phyaddr, u_char phyreg, unsigned data,
     mii_idle(ioaddr);
 }
 
-/*============= Main bulk of functions	=========================*/
 
 /****************
  * xirc2ps_attach() creates an "instance" of the driver, allocating
@@ -1067,7 +1061,6 @@ xirc2ps_release(struct pcmcia_device *link)
 	pcmcia_disable_device(link);
 } /* xirc2ps_release */
 
-/*====================================================================*/
 
 
 static int xirc2ps_suspend(struct pcmcia_device *link)
@@ -1095,7 +1088,6 @@ static int xirc2ps_resume(struct pcmcia_device *link)
 }
 
 
-/*====================================================================*/
 
 /****************
  * This is the Interrupt service route.
@@ -1320,7 +1312,6 @@ xirc2ps_interrupt(int irq, void *dev_id)
     return IRQ_HANDLED;
 } /* xirc2ps_interrupt */
 
-/*====================================================================*/
 
 static void
 xirc2ps_tx_timeout_task(struct work_struct *work)

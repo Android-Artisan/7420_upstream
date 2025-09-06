@@ -9,6 +9,7 @@
 #include "hpfs_fn.h"
 
 unsigned *hpfs_map_dnode_bitmap(struct super_block *s, struct quad_buffer_head *qbh)
+__le32 *hpfs_map_dnode_bitmap(struct super_block *s, struct quad_buffer_head *qbh)
 {
 	return hpfs_map_4sectors(s, hpfs_sb(s)->sb_dmap, qbh, 0);
 }
@@ -22,11 +23,39 @@ unsigned int *hpfs_map_bitmap(struct super_block *s, unsigned bmp_block,
 		return NULL;
 	}
 	sec = hpfs_sb(s)->sb_bmp_dir[bmp_block];
+__le32 *hpfs_map_bitmap(struct super_block *s, unsigned bmp_block,
+			 struct quad_buffer_head *qbh, char *id)
+{
+	secno sec;
+	__le32 *ret;
+	unsigned n_bands = (hpfs_sb(s)->sb_fs_size + 0x3fff) >> 14;
+	if (hpfs_sb(s)->sb_chk) if (bmp_block >= n_bands) {
+		hpfs_error(s, "hpfs_map_bitmap called with bad parameter: %08x at %s", bmp_block, id);
+		return NULL;
+	}
+	sec = le32_to_cpu(hpfs_sb(s)->sb_bmp_dir[bmp_block]);
 	if (!sec || sec > hpfs_sb(s)->sb_fs_size-4) {
 		hpfs_error(s, "invalid bitmap block pointer %08x -> %08x at %s", bmp_block, sec, id);
 		return NULL;
 	}
 	return hpfs_map_4sectors(s, sec, qbh, 4);
+	ret = hpfs_map_4sectors(s, sec, qbh, 4);
+	if (ret) hpfs_prefetch_bitmap(s, bmp_block + 1);
+	return ret;
+}
+
+void hpfs_prefetch_bitmap(struct super_block *s, unsigned bmp_block)
+{
+	unsigned to_prefetch, next_prefetch;
+	unsigned n_bands = (hpfs_sb(s)->sb_fs_size + 0x3fff) >> 14;
+	if (unlikely(bmp_block >= n_bands))
+		return;
+	to_prefetch = le32_to_cpu(hpfs_sb(s)->sb_bmp_dir[bmp_block]);
+	if (unlikely(bmp_block + 1 >= n_bands))
+		next_prefetch = 0;
+	else
+		next_prefetch = le32_to_cpu(hpfs_sb(s)->sb_bmp_dir[bmp_block + 1]);
+	hpfs_prefetch_sectors(s, to_prefetch, 4 + 4 * (to_prefetch + 4 == next_prefetch));
 }
 
 /*
@@ -36,6 +65,7 @@ unsigned int *hpfs_map_bitmap(struct super_block *s, unsigned bmp_block,
  */
 
 char *hpfs_load_code_page(struct super_block *s, secno cps)
+unsigned char *hpfs_load_code_page(struct super_block *s, secno cps)
 {
 	struct buffer_head *bh;
 	secno cpds;
@@ -62,6 +92,23 @@ char *hpfs_load_code_page(struct super_block *s, secno cps)
 
 	if (cpi >= 3) {
 		printk("HPFS: Code page index out of array\n");
+	if (le32_to_cpu(cp->magic) != CP_DIR_MAGIC) {
+		pr_err("Code page directory magic doesn't match (magic = %08x)\n",
+			le32_to_cpu(cp->magic));
+		brelse(bh);
+		return NULL;
+	}
+	if (!le32_to_cpu(cp->n_code_pages)) {
+		pr_err("n_code_pages == 0\n");
+		brelse(bh);
+		return NULL;
+	}
+	cpds = le32_to_cpu(cp->array[0].code_page_data);
+	cpi = le16_to_cpu(cp->array[0].index);
+	brelse(bh);
+
+	if (cpi >= 3) {
+		pr_err("Code page index out of array\n");
 		return NULL;
 	}
 	
@@ -74,6 +121,14 @@ char *hpfs_load_code_page(struct super_block *s, secno cps)
 	ptr = (char *)cpd + cpd->offs[cpi] + 6;
 	if (!(cp_table = kmalloc(256, GFP_KERNEL))) {
 		printk("HPFS: out of memory for code page table\n");
+	if (le16_to_cpu(cpd->offs[cpi]) > 0x178) {
+		pr_err("Code page index out of sector\n");
+		brelse(bh);
+		return NULL;
+	}
+	ptr = (unsigned char *)cpd + le16_to_cpu(cpd->offs[cpi]) + 6;
+	if (!(cp_table = kmalloc(256, GFP_KERNEL))) {
+		pr_err("out of memory for code page table\n");
 		brelse(bh);
 		return NULL;
 	}
@@ -90,6 +145,7 @@ char *hpfs_load_code_page(struct super_block *s, secno cps)
 }
 
 secno *hpfs_load_bitmap_directory(struct super_block *s, secno bmp)
+__le32 *hpfs_load_bitmap_directory(struct super_block *s, secno bmp)
 {
 	struct buffer_head *bh;
 	int n = (hpfs_sb(s)->sb_fs_size + 0x200000 - 1) >> 21;
@@ -101,6 +157,13 @@ secno *hpfs_load_bitmap_directory(struct super_block *s, secno bmp)
 	}	
 	for (i=0;i<n;i++) {
 		secno *d = hpfs_map_sector(s, bmp+i, &bh, n - i - 1);
+	__le32 *b;
+	if (!(b = kmalloc(n * 512, GFP_KERNEL))) {
+		pr_err("can't allocate memory for bitmap directory\n");
+		return NULL;
+	}	
+	for (i=0;i<n;i++) {
+		__le32 *d = hpfs_map_sector(s, bmp+i, &bh, n - i - 1);
 		if (!d) {
 			kfree(b);
 			return NULL;
@@ -109,6 +172,32 @@ secno *hpfs_load_bitmap_directory(struct super_block *s, secno bmp)
 		brelse(bh);
 	}
 	return b;
+}
+
+void hpfs_load_hotfix_map(struct super_block *s, struct hpfs_spare_block *spareblock)
+{
+	struct quad_buffer_head qbh;
+	u32 *directory;
+	u32 n_hotfixes, n_used_hotfixes;
+	unsigned i;
+
+	n_hotfixes = le32_to_cpu(spareblock->n_spares);
+	n_used_hotfixes = le32_to_cpu(spareblock->n_spares_used);
+
+	if (n_hotfixes > 256 || n_used_hotfixes > n_hotfixes) {
+		hpfs_error(s, "invalid number of hotfixes: %u, used: %u", n_hotfixes, n_used_hotfixes);
+		return;
+	}
+	if (!(directory = hpfs_map_4sectors(s, le32_to_cpu(spareblock->hotfix_map), &qbh, 0))) {
+		hpfs_error(s, "can't load hotfix map");
+		return;
+	}
+	for (i = 0; i < n_used_hotfixes; i++) {
+		hpfs_sb(s)->hotfix_from[i] = le32_to_cpu(directory[i]);
+		hpfs_sb(s)->hotfix_to[i] = le32_to_cpu(directory[n_hotfixes + i]);
+	}
+	hpfs_sb(s)->n_hotfixes = n_used_hotfixes;
+	hpfs_brelse4(&qbh);
 }
 
 /*
@@ -126,6 +215,7 @@ struct fnode *hpfs_map_fnode(struct super_block *s, ino_t ino, struct buffer_hea
 			struct extended_attribute *ea;
 			struct extended_attribute *ea_end;
 			if (fnode->magic != FNODE_MAGIC) {
+			if (le32_to_cpu(fnode->magic) != FNODE_MAGIC) {
 				hpfs_error(s, "bad magic on fnode %08lx",
 					(unsigned long)ino);
 				goto bail;
@@ -133,6 +223,9 @@ struct fnode *hpfs_map_fnode(struct super_block *s, ino_t ino, struct buffer_hea
 			if (!fnode->dirflag) {
 				if ((unsigned)fnode->btree.n_used_nodes + (unsigned)fnode->btree.n_free_nodes !=
 				    (fnode->btree.internal ? 12 : 8)) {
+			if (!fnode_is_dir(fnode)) {
+				if ((unsigned)fnode->btree.n_used_nodes + (unsigned)fnode->btree.n_free_nodes !=
+				    (bp_internal(&fnode->btree) ? 12 : 8)) {
 					hpfs_error(s,
 					   "bad number of nodes in fnode %08lx",
 					    (unsigned long)ino);
@@ -140,6 +233,8 @@ struct fnode *hpfs_map_fnode(struct super_block *s, ino_t ino, struct buffer_hea
 				}
 				if (fnode->btree.first_free !=
 				    8 + fnode->btree.n_used_nodes * (fnode->btree.internal ? 8 : 12)) {
+				if (le16_to_cpu(fnode->btree.first_free) !=
+				    8 + fnode->btree.n_used_nodes * (bp_internal(&fnode->btree) ? 8 : 12)) {
 					hpfs_error(s,
 					    "bad first_free pointer in fnode %08lx",
 					    (unsigned long)ino);
@@ -152,6 +247,12 @@ struct fnode *hpfs_map_fnode(struct super_block *s, ino_t ino, struct buffer_hea
 					"bad EA info in fnode %08lx: ea_offs == %04x ea_size_s == %04x",
 					(unsigned long)ino,
 					fnode->ea_offs, fnode->ea_size_s);
+			if (le16_to_cpu(fnode->ea_size_s) && (le16_to_cpu(fnode->ea_offs) < 0xc4 ||
+			   le16_to_cpu(fnode->ea_offs) + le16_to_cpu(fnode->acl_size_s) + le16_to_cpu(fnode->ea_size_s) > 0x200)) {
+				hpfs_error(s,
+					"bad EA info in fnode %08lx: ea_offs == %04x ea_size_s == %04x",
+					(unsigned long)ino,
+					le16_to_cpu(fnode->ea_offs), le16_to_cpu(fnode->ea_size_s));
 				goto bail;
 			}
 			ea = fnode_ea(fnode);
@@ -189,6 +290,21 @@ struct anode *hpfs_map_anode(struct super_block *s, anode_secno ano, struct buff
 			}
 			if (anode->btree.first_free !=
 			    8 + anode->btree.n_used_nodes * (anode->btree.internal ? 8 : 12)) {
+			if (le32_to_cpu(anode->magic) != ANODE_MAGIC) {
+				hpfs_error(s, "bad magic on anode %08x", ano);
+				goto bail;
+			}
+			if (le32_to_cpu(anode->self) != ano) {
+				hpfs_error(s, "self pointer invalid on anode %08x", ano);
+				goto bail;
+			}
+			if ((unsigned)anode->btree.n_used_nodes + (unsigned)anode->btree.n_free_nodes !=
+			    (bp_internal(&anode->btree) ? 60 : 40)) {
+				hpfs_error(s, "bad number of nodes in anode %08x", ano);
+				goto bail;
+			}
+			if (le16_to_cpu(anode->btree.first_free) !=
+			    8 + anode->btree.n_used_nodes * (bp_internal(&anode->btree) ? 8 : 12)) {
 				hpfs_error(s, "bad first_free pointer in anode %08x", ano);
 				goto bail;
 			}
@@ -239,6 +355,28 @@ struct dnode *hpfs_map_dnode(struct super_block *s, unsigned secno,
 				}
 				if (((31 + de->namelen + de->down*4 + 3) & ~3) != de->length) {
 					if (((31 + de->namelen + de->down*4 + 3) & ~3) < de->length && s->s_flags & MS_RDONLY) goto ok;
+			unsigned char *d = (unsigned char *)dnode;
+			int b = 0;
+			if (le32_to_cpu(dnode->magic) != DNODE_MAGIC) {
+				hpfs_error(s, "bad magic on dnode %08x", secno);
+				goto bail;
+			}
+			if (le32_to_cpu(dnode->self) != secno)
+				hpfs_error(s, "bad self pointer on dnode %08x self = %08x", secno, le32_to_cpu(dnode->self));
+			/* Check dirents - bad dirents would cause infinite
+			   loops or shooting to memory */
+			if (le32_to_cpu(dnode->first_free) > 2048) {
+				hpfs_error(s, "dnode %08x has first_free == %08x", secno, le32_to_cpu(dnode->first_free));
+				goto bail;
+			}
+			for (p = 20; p < le32_to_cpu(dnode->first_free); p += d[p] + (d[p+1] << 8)) {
+				struct hpfs_dirent *de = (struct hpfs_dirent *)((char *)dnode + p);
+				if (le16_to_cpu(de->length) > 292 || (le16_to_cpu(de->length) < 32) || (le16_to_cpu(de->length) & 3) || p + le16_to_cpu(de->length) > 2048) {
+					hpfs_error(s, "bad dirent size in dnode %08x, dirent %03x, last %03x", secno, p, pp);
+					goto bail;
+				}
+				if (((31 + de->namelen + de->down*4 + 3) & ~3) != le16_to_cpu(de->length)) {
+					if (((31 + de->namelen + de->down*4 + 3) & ~3) < le16_to_cpu(de->length) && s->s_flags & MS_RDONLY) goto ok;
 					hpfs_error(s, "namelen does not match dirent size in dnode %08x, dirent %03x, last %03x", secno, p, pp);
 					goto bail;
 				}
@@ -252,6 +390,7 @@ struct dnode *hpfs_map_dnode(struct super_block *s, unsigned secno,
 				
 			}
 			if (p != dnode->first_free) {
+			if (p != le32_to_cpu(dnode->first_free)) {
 				hpfs_error(s, "size on last dirent does not match first_free; dnode %08x", secno);
 				goto bail;
 			}
@@ -260,6 +399,9 @@ struct dnode *hpfs_map_dnode(struct super_block *s, unsigned secno,
 				goto bail;
 			}
 			if (b == 3) printk("HPFS: warning: unbalanced dnode tree, dnode %08x; see hpfs.txt 4 more info\n", secno);
+			if (b == 3)
+				pr_err("unbalanced dnode tree, dnode %08x; see hpfs.txt 4 more info\n",
+					secno);
 		}
 	return dnode;
 	bail:
@@ -278,6 +420,7 @@ dnode_secno hpfs_fnode_dno(struct super_block *s, ino_t ino)
 		return 0;
 
 	dno = fnode->u.external[0].disk_secno;
+	dno = le32_to_cpu(fnode->u.external[0].disk_secno);
 	brelse(bh);
 	return dno;
 }

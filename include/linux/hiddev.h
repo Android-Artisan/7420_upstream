@@ -206,6 +206,11 @@ struct hiddev_usage_ref_multi {
 
 
 #ifdef __KERNEL__
+#ifndef _HIDDEV_H
+#define _HIDDEV_H
+
+#include <uapi/linux/hiddev.h>
+
 
 /*
  * In-kernel definitions.
@@ -218,6 +223,7 @@ struct hid_report;
 
 #ifdef CONFIG_USB_HIDDEV
 int hiddev_connect(struct hid_device *);
+int hiddev_connect(struct hid_device *hid, unsigned int force);
 void hiddev_disconnect(struct hid_device *);
 void hiddev_hid_event(struct hid_device *hid, struct hid_field *field,
 		      struct hid_usage *usage, __s32 value);
@@ -226,6 +232,10 @@ int __init hiddev_init(void);
 void hiddev_exit(void);
 #else
 static inline int hiddev_connect(struct hid_device *hid) { return -1; }
+#else
+static inline int hiddev_connect(struct hid_device *hid,
+		unsigned int force)
+{ return -1; }
 static inline void hiddev_disconnect(struct hid_device *hid) { }
 static inline void hiddev_hid_event(struct hid_device *hid, struct hid_field *field,
 		      struct hid_usage *usage, __s32 value) { }
@@ -235,4 +245,7 @@ static inline void hiddev_exit(void) { }
 #endif
 
 #endif
+#endif
+#endif
+
 #endif

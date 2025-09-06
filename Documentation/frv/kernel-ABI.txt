@@ -1,6 +1,4 @@
-			=================================
 			INTERNAL KERNEL ABI FOR FR-V ARCH
-			=================================
 
 The internal FRV kernel ABI is not quite the same as the userspace ABI. A
 number of the registers are used for special purposed, and the ABI is not
@@ -24,22 +22,17 @@ This document has the following sections:
  (*) Virtual interrupt handling
 
 
-========================
 SYSTEM CALL REGISTER ABI
-========================
 
 When a system call is made, the following registers are effective:
 
 	REGISTERS	CALL			RETURN
-	===============	=======================	=======================
 	GR7		System call number	Preserved
 	GR8		Syscall arg #1		Return value
 	GR9-GR13	Syscall arg #2-6	Preserved
 
 
-===================
 CPU OPERATING MODES
-===================
 
 The FR-V CPU has three basic operating modes. In order of increasing
 capability:
@@ -77,9 +70,7 @@ capability:
       specific registers.
 
 
-=================================
 INTERNAL KERNEL-MODE REGISTER ABI
-=================================
 
 There are a number of permanent register assignments that are set up by
 entry.S in the exception prologue. Note that there is a complete set of
@@ -89,7 +80,6 @@ prologues.
 
 
 	REGISTER	FLAVOUR	USE
-	===============	=======	==============================================
 	GR1			Supervisor stack pointer
 	GR15			Current thread info pointer
 	GR16			GP-Rel base register for small data
@@ -113,7 +103,6 @@ prologues.
 Certain registers are also used or modified across function calls:
 
 	REGISTER	CALL				RETURN
-	===============	===============================	======================
 	GR0		Fixed Zero			-
 	GR2		Function call frame pointer
 	GR3		Special				Preserved
@@ -132,9 +121,7 @@ Certain registers are also used or modified across function calls:
 	CCR/CCCR	-				Mostly Clobbered
 
 
-================================
 INTERNAL DEBUG-MODE REGISTER ABI
-================================
 
 This is the same as the kernel-mode register ABI for functions calls. The
 difference is that in debug-mode there's a different stack and a different
@@ -142,7 +129,6 @@ exception frame. Almost all the global registers from kernel-mode
 (including the stack pointer) may be changed.
 
 	REGISTER	FLAVOUR	USE
-	===============	=======	==============================================
 	GR1			Debug stack pointer
 	GR16			GP-Rel base register for small data
 	GR31			Current debug exception frame pointer 
@@ -162,9 +148,7 @@ single-stepping will blithely go on stepping into things like interrupts.
 See gdbstub.txt for more information.
 
 
-==========================
 VIRTUAL INTERRUPT HANDLING
-==========================
 
 Because accesses to the PSR is so slow, and to disable interrupts we have
 to access it twice (once to read and once to write), we don't actually

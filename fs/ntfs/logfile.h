@@ -105,6 +105,7 @@ typedef struct {
  * this means that there are no client records preceding or following this one.
  */
 #define LOGFILE_NO_CLIENT	const_cpu_to_le16(0xffff)
+#define LOGFILE_NO_CLIENT	cpu_to_le16(0xffff)
 #define LOGFILE_NO_CLIENT_CPU	0xffff
 
 /*
@@ -114,6 +115,8 @@ typedef struct {
 enum {
 	RESTART_VOLUME_IS_CLEAN	= const_cpu_to_le16(0x0002),
 	RESTART_SPACE_FILLER	= const_cpu_to_le16(0xffff), /* gcc: Force enum bit width to 16. */
+	RESTART_VOLUME_IS_CLEAN	= cpu_to_le16(0x0002),
+	RESTART_SPACE_FILLER	= cpu_to_le16(0xffff), /* gcc: Force enum bit width to 16. */
 } __attribute__ ((__packed__));
 
 typedef le16 RESTART_AREA_FLAGS;
@@ -223,6 +226,7 @@ typedef struct {
 				   restart_area_offset + the offset of the
 				   file_size are > 510 then corruption has
 				   occured.  This is the very first check when
+				   occurred.  This is the very first check when
 				   starting with the restart_area as if it
 				   fails it means that some of the above values
 				   will be corrupted by the multi sector

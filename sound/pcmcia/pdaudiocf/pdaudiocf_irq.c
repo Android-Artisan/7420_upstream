@@ -30,6 +30,7 @@ irqreturn_t pdacf_interrupt(int irq, void *dev)
 {
 	struct snd_pdacf *chip = dev;
 	unsigned short stat;
+	bool wake_thread = false;
 
 	if ((chip->chip_status & (PDAUDIOCF_STAT_IS_STALE|
 				  PDAUDIOCF_STAT_IS_CONFIGURED|
@@ -42,12 +43,14 @@ irqreturn_t pdacf_interrupt(int irq, void *dev)
 			snd_printk(KERN_ERR "PDAUDIOCF SRAM buffer overrun detected!\n");
 		if (chip->pcm_substream)
 			tasklet_hi_schedule(&chip->tq);
+			wake_thread = true;
 		if (!(stat & PDAUDIOCF_IRQAKM))
 			stat |= PDAUDIOCF_IRQAKM;	/* check rate */
 	}
 	if (get_irq_regs() != NULL)
 		snd_ak4117_check_rate_and_errors(chip->ak4117, 0);
 	return IRQ_HANDLED;
+	return wake_thread ? IRQ_WAKE_THREAD : IRQ_HANDLED;
 }
 
 static inline void pdacf_transfer_mono16(u16 *dst, u16 xor, unsigned int size, unsigned long rdp_port)
@@ -270,6 +273,20 @@ void pdacf_tasklet(unsigned long private_data)
 	rdp = inw(chip->port + PDAUDIOCF_REG_RDP);
 	wdp = inw(chip->port + PDAUDIOCF_REG_WDP);
 	// printk("TASKLET: rdp = %x, wdp = %x\n", rdp, wdp);
+irqreturn_t pdacf_threaded_irq(int irq, void *dev)
+{
+	struct snd_pdacf *chip = dev;
+	int size, off, cont, rdp, wdp;
+
+	if ((chip->chip_status & (PDAUDIOCF_STAT_IS_STALE|PDAUDIOCF_STAT_IS_CONFIGURED)) != PDAUDIOCF_STAT_IS_CONFIGURED)
+		return IRQ_HANDLED;
+	
+	if (chip->pcm_substream == NULL || chip->pcm_substream->runtime == NULL || !snd_pcm_running(chip->pcm_substream))
+		return IRQ_HANDLED;
+
+	rdp = inw(chip->port + PDAUDIOCF_REG_RDP);
+	wdp = inw(chip->port + PDAUDIOCF_REG_WDP);
+	/* printk(KERN_DEBUG "TASKLET: rdp = %x, wdp = %x\n", rdp, wdp); */
 	size = wdp - rdp;
 	if (size < 0)
 		size += 0x10000;
@@ -312,6 +329,7 @@ void pdacf_tasklet(unsigned long private_data)
 	}
 #endif
 	spin_lock(&chip->reg_lock);
+	mutex_lock(&chip->reg_lock);
 	while (chip->pcm_tdone >= chip->pcm_period) {
 		chip->pcm_hwptr += chip->pcm_period;
 		chip->pcm_hwptr %= chip->pcm_size;
@@ -322,4 +340,10 @@ void pdacf_tasklet(unsigned long private_data)
 	}
 	spin_unlock(&chip->reg_lock);
 	// printk("TASKLET: end\n");
+		mutex_unlock(&chip->reg_lock);
+		snd_pcm_period_elapsed(chip->pcm_substream);
+		mutex_lock(&chip->reg_lock);
+	}
+	mutex_unlock(&chip->reg_lock);
+	return IRQ_HANDLED;
 }

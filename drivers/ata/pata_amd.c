@@ -13,6 +13,7 @@
  *
  *
  *  Documentation publically available.
+ *  Documentation publicly available.
  */
 
 #include <linux/kernel.h>
@@ -26,6 +27,7 @@
 
 #define DRV_NAME "pata_amd"
 #define DRV_VERSION "0.3.10"
+#define DRV_VERSION "0.4.1"
 
 /**
  *	timing_setup		-	shared timing computation and load
@@ -62,6 +64,7 @@ static void timing_setup(struct ata_port *ap, struct ata_device *adev, int offse
 
 	if (ata_timing_compute(adev, speed, &at, T, UT) < 0) {
 		dev_printk(KERN_ERR, &pdev->dev, "unknown mode %d.\n", speed);
+		dev_err(&pdev->dev, "unknown mode %d\n", speed);
 		return;
 	}
 
@@ -146,6 +149,13 @@ static int amd_pre_reset(struct ata_link *link, unsigned long deadline)
 	return ata_sff_prereset(link, deadline);
 }
 
+/**
+ *	amd_cable_detect	-	report cable type
+ *	@ap: port
+ *
+ *	AMD controller/BIOS setups record the cable type in word 0x42
+ */
+
 static int amd_cable_detect(struct ata_port *ap)
 {
 	static const u32 bitmask[2] = {0x03, 0x0C};
@@ -159,6 +169,40 @@ static int amd_cable_detect(struct ata_port *ap)
 }
 
 /**
+ *	amd_fifo_setup		-	set the PIO FIFO for ATA/ATAPI
+ *	@ap: ATA interface
+ *	@adev: ATA device
+ *
+ *	Set the PCI fifo for this device according to the devices present
+ *	on the bus at this point in time. We need to turn the post write buffer
+ *	off for ATAPI devices as we may need to issue a word sized write to the
+ *	device as the final I/O
+ */
+
+static void amd_fifo_setup(struct ata_port *ap)
+{
+	struct ata_device *adev;
+	struct pci_dev *pdev = to_pci_dev(ap->host->dev);
+	static const u8 fifobit[2] = { 0xC0, 0x30};
+	u8 fifo = fifobit[ap->port_no];
+	u8 r;
+
+
+	ata_for_each_dev(adev, &ap->link, ENABLED) {
+		if (adev->class == ATA_DEV_ATAPI)
+			fifo = 0;
+	}
+	if (pdev->device == PCI_DEVICE_ID_AMD_VIPER_7411) /* FIFO is broken */
+		fifo = 0;
+
+	/* On the later chips the read prefetch bits become no-op bits */
+	pci_read_config_byte(pdev, 0x41, &r);
+	r &= ~fifobit[ap->port_no];
+	r |= fifo;
+	pci_write_config_byte(pdev, 0x41, r);
+}
+
+/**
  *	amd33_set_piomode	-	set initial PIO mode data
  *	@ap: ATA interface
  *	@adev: ATA device
@@ -168,21 +212,25 @@ static int amd_cable_detect(struct ata_port *ap)
 
 static void amd33_set_piomode(struct ata_port *ap, struct ata_device *adev)
 {
+	amd_fifo_setup(ap);
 	timing_setup(ap, adev, 0x40, adev->pio_mode, 1);
 }
 
 static void amd66_set_piomode(struct ata_port *ap, struct ata_device *adev)
 {
+	amd_fifo_setup(ap);
 	timing_setup(ap, adev, 0x40, adev->pio_mode, 2);
 }
 
 static void amd100_set_piomode(struct ata_port *ap, struct ata_device *adev)
 {
+	amd_fifo_setup(ap);
 	timing_setup(ap, adev, 0x40, adev->pio_mode, 3);
 }
 
 static void amd133_set_piomode(struct ata_port *ap, struct ata_device *adev)
 {
+	amd_fifo_setup(ap);
 	timing_setup(ap, adev, 0x40, adev->pio_mode, 4);
 }
 
@@ -265,6 +313,11 @@ static unsigned long nv_mode_filter(struct ata_device *dev,
 		limit |= ATA_MASK_MWDMA | ATA_MASK_UDMA;
 
 	ata_port_printk(ap, KERN_DEBUG, "nv_mode_filter: 0x%lx&0x%lx->0x%lx, "
+	/* PIO4, MWDMA2, UDMA2 should always be supported regardless of
+	   cable detection result */
+	limit |= ata_pack_xfermask(ATA_PIO4, ATA_MWDMA2, ATA_UDMA2);
+
+	ata_port_dbg(ap, "nv_mode_filter: 0x%lx&0x%lx->0x%lx, "
 			"BIOS=0x%lx (0x%x) ACPI=0x%lx%s\n",
 			xfer_mask, limit, xfer_mask & limit, bios_limit,
 			saved_udma, acpi_limit, acpi_str);
@@ -347,6 +400,7 @@ static struct scsi_host_template amd_sht = {
 
 static const struct ata_port_operations amd_base_port_ops = {
 	.inherits	= &ata_bmdma_port_ops,
+	.inherits	= &ata_bmdma32_port_ops,
 	.prereset	= amd_pre_reset,
 };
 
@@ -406,6 +460,24 @@ static int amd_init_one(struct pci_dev *pdev, const struct pci_device_id *id)
 			.pio_mask = 0x1f,
 			.mwdma_mask = 0x07,	/* No SWDMA */
 			.udma_mask = 0x07,	/* UDMA 33 */
+static void amd_clear_fifo(struct pci_dev *pdev)
+{
+	u8 fifo;
+	/* Disable the FIFO, the FIFO logic will re-enable it as
+	   appropriate */
+	pci_read_config_byte(pdev, 0x41, &fifo);
+	fifo &= 0x0F;
+	pci_write_config_byte(pdev, 0x41, fifo);
+}
+
+static int amd_init_one(struct pci_dev *pdev, const struct pci_device_id *id)
+{
+	static const struct ata_port_info info[10] = {
+		{	/* 0: AMD 7401 - no swdma */
+			.flags = ATA_FLAG_SLAVE_POSS,
+			.pio_mask = ATA_PIO4,
+			.mwdma_mask = ATA_MWDMA2,
+			.udma_mask = ATA_UDMA2,
 			.port_ops = &amd33_port_ops
 		},
 		{	/* 1: Early AMD7409 - no swdma */
@@ -420,6 +492,16 @@ static int amd_init_one(struct pci_dev *pdev, const struct pci_device_id *id)
 			.pio_mask = 0x1f,
 			.mwdma_mask = 0x07,
 			.udma_mask = ATA_UDMA4,	/* UDMA 66 */
+			.pio_mask = ATA_PIO4,
+			.mwdma_mask = ATA_MWDMA2,
+			.udma_mask = ATA_UDMA4,
+			.port_ops = &amd66_port_ops
+		},
+		{	/* 2: AMD 7409 */
+			.flags = ATA_FLAG_SLAVE_POSS,
+			.pio_mask = ATA_PIO4,
+			.mwdma_mask = ATA_MWDMA2,
+			.udma_mask = ATA_UDMA4,
 			.port_ops = &amd66_port_ops
 		},
 		{	/* 3: AMD 7411 */
@@ -427,6 +509,9 @@ static int amd_init_one(struct pci_dev *pdev, const struct pci_device_id *id)
 			.pio_mask = 0x1f,
 			.mwdma_mask = 0x07,
 			.udma_mask = ATA_UDMA5,	/* UDMA 100 */
+			.pio_mask = ATA_PIO4,
+			.mwdma_mask = ATA_MWDMA2,
+			.udma_mask = ATA_UDMA5,
 			.port_ops = &amd100_port_ops
 		},
 		{	/* 4: AMD 7441 */
@@ -448,6 +533,23 @@ static int amd_init_one(struct pci_dev *pdev, const struct pci_device_id *id)
 			.pio_mask = 0x1f,
 			.mwdma_mask = 0x07,
 			.udma_mask = ATA_UDMA5,	/* UDMA 100, no swdma */
+			.pio_mask = ATA_PIO4,
+			.mwdma_mask = ATA_MWDMA2,
+			.udma_mask = ATA_UDMA5,
+			.port_ops = &amd100_port_ops
+		},
+		{	/* 5: AMD 8111 - no swdma */
+			.flags = ATA_FLAG_SLAVE_POSS,
+			.pio_mask = ATA_PIO4,
+			.mwdma_mask = ATA_MWDMA2,
+			.udma_mask = ATA_UDMA6,
+			.port_ops = &amd133_port_ops
+		},
+		{	/* 6: AMD 8111 UDMA 100 (Serenade) - no swdma */
+			.flags = ATA_FLAG_SLAVE_POSS,
+			.pio_mask = ATA_PIO4,
+			.mwdma_mask = ATA_MWDMA2,
+			.udma_mask = ATA_UDMA5,
 			.port_ops = &amd133_port_ops
 		},
 		{	/* 7: Nvidia Nforce */
@@ -462,6 +564,16 @@ static int amd_init_one(struct pci_dev *pdev, const struct pci_device_id *id)
 			.pio_mask = 0x1f,
 			.mwdma_mask = 0x07,
 			.udma_mask = ATA_UDMA6,	/* UDMA 133, no swdma */
+			.pio_mask = ATA_PIO4,
+			.mwdma_mask = ATA_MWDMA2,
+			.udma_mask = ATA_UDMA5,
+			.port_ops = &nv100_port_ops
+		},
+		{	/* 8: Nvidia Nforce2 and later - no swdma */
+			.flags = ATA_FLAG_SLAVE_POSS,
+			.pio_mask = ATA_PIO4,
+			.mwdma_mask = ATA_MWDMA2,
+			.udma_mask = ATA_UDMA6,
 			.port_ops = &nv133_port_ops
 		},
 		{	/* 9: AMD CS5536 (Geode companion) */
@@ -469,6 +581,9 @@ static int amd_init_one(struct pci_dev *pdev, const struct pci_device_id *id)
 			.pio_mask = 0x1f,
 			.mwdma_mask = 0x07,
 			.udma_mask = ATA_UDMA5,	/* UDMA 100 */
+			.pio_mask = ATA_PIO4,
+			.mwdma_mask = ATA_MWDMA2,
+			.udma_mask = ATA_UDMA5,
 			.port_ops = &amd100_port_ops
 		}
 	};
@@ -481,6 +596,7 @@ static int amd_init_one(struct pci_dev *pdev, const struct pci_device_id *id)
 
 	if (!printed_version++)
 		dev_printk(KERN_DEBUG, &pdev->dev, "version " DRV_VERSION "\n");
+	ata_print_version_once(&pdev->dev, DRV_VERSION);
 
 	rc = pcim_enable_device(pdev);
 	if (rc)
@@ -512,6 +628,8 @@ static int amd_init_one(struct pci_dev *pdev, const struct pci_device_id *id)
 	else
 		pci_write_config_byte(pdev, 0x41, fifo | 0xF0);
 
+	if (pdev->vendor == PCI_VENDOR_ID_AMD)
+		amd_clear_fifo(pdev);
 	/* Cable detection on Nvidia chips doesn't work too well,
 	 * cache BIOS programmed UDMA mode.
 	 */
@@ -530,6 +648,13 @@ static int amd_init_one(struct pci_dev *pdev, const struct pci_device_id *id)
 static int amd_reinit_one(struct pci_dev *pdev)
 {
 	struct ata_host *host = dev_get_drvdata(&pdev->dev);
+	return ata_pci_bmdma_init_one(pdev, ppi, &amd_sht, hpriv, 0);
+}
+
+#ifdef CONFIG_PM_SLEEP
+static int amd_reinit_one(struct pci_dev *pdev)
+{
+	struct ata_host *host = pci_get_drvdata(pdev);
 	int rc;
 
 	rc = ata_pci_device_do_resume(pdev);
@@ -544,6 +669,7 @@ static int amd_reinit_one(struct pci_dev *pdev)
 			pci_write_config_byte(pdev, 0x41, fifo & 0x0F);
 		else
 			pci_write_config_byte(pdev, 0x41, fifo | 0xF0);
+		amd_clear_fifo(pdev);
 		if (pdev->device == PCI_DEVICE_ID_AMD_VIPER_7409 ||
 		    pdev->device == PCI_DEVICE_ID_AMD_COBRA_7401)
 			ata_pci_bmdma_clear_simplex(pdev);
@@ -575,6 +701,7 @@ static const struct pci_device_id amd[] = {
 	{ PCI_VDEVICE(NVIDIA,	PCI_DEVICE_ID_NVIDIA_NFORCE_MCP73_IDE),	8 },
 	{ PCI_VDEVICE(NVIDIA,	PCI_DEVICE_ID_NVIDIA_NFORCE_MCP77_IDE),	8 },
 	{ PCI_VDEVICE(AMD,	PCI_DEVICE_ID_AMD_CS5536_IDE),		9 },
+	{ PCI_VDEVICE(AMD,	PCI_DEVICE_ID_AMD_CS5536_DEV_IDE),	9 },
 
 	{ },
 };
@@ -585,6 +712,7 @@ static struct pci_driver amd_pci_driver = {
 	.probe 		= amd_init_one,
 	.remove		= ata_pci_remove_one,
 #ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 	.suspend	= ata_pci_device_suspend,
 	.resume		= amd_reinit_one,
 #endif
@@ -599,6 +727,7 @@ static void __exit amd_exit(void)
 {
 	pci_unregister_driver(&amd_pci_driver);
 }
+module_pci_driver(amd_pci_driver);
 
 MODULE_AUTHOR("Alan Cox");
 MODULE_DESCRIPTION("low-level driver for AMD and Nvidia PATA IDE");

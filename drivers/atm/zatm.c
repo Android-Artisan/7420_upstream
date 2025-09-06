@@ -16,6 +16,7 @@
 #include <linux/delay.h>
 #include <linux/uio.h>
 #include <linux/init.h>
+#include <linux/interrupt.h>
 #include <linux/dma-mapping.h>
 #include <linux/atm_zatm.h>
 #include <linux/capability.h>
@@ -26,6 +27,12 @@
 #include <asm/string.h>
 #include <asm/io.h>
 #include <asm/atomic.h>
+#include <linux/slab.h>
+#include <linux/nospec.h>
+#include <asm/byteorder.h>
+#include <asm/string.h>
+#include <asm/io.h>
+#include <linux/atomic.h>
 #include <asm/uaccess.h>
 
 #include "uPD98401.h"
@@ -124,7 +131,7 @@ static unsigned long dummy[2] = {0,0};
 #define zin_n(r) inl(zatm_dev->base+r*4)
 #define zin(r) inl(zatm_dev->base+uPD98401_##r*4)
 #define zout(v,r) outl(v,zatm_dev->base+uPD98401_##r*4)
-#define zwait while (zin(CMR) & uPD98401_BUSY)
+#define zwait() do {} while (zin(CMR) & uPD98401_BUSY)
 
 /* RX0, RX1, TX0, TX1 */
 static const int mbx_entries[NR_MBX] = { 1024,1024,1024,1024 };
@@ -138,7 +145,7 @@ static const int mbx_esize[NR_MBX] = { 16,16,4,4 }; /* entry size in bytes */
 
 static void zpokel(struct zatm_dev *zatm_dev,u32 value,u32 addr)
 {
-	zwait;
+	zwait();
 	zout(value,CER);
 	zout(uPD98401_IND_ACC | uPD98401_IA_BALL |
 	    (uPD98401_IA_TGT_CM << uPD98401_IA_TGT_SHIFT) | addr,CMR);
@@ -147,10 +154,10 @@ static void zpokel(struct zatm_dev *zatm_dev,u32 value,u32 addr)
 
 static u32 zpeekl(struct zatm_dev *zatm_dev,u32 addr)
 {
-	zwait;
+	zwait();
 	zout(uPD98401_IND_ACC | uPD98401_IA_BALL | uPD98401_IA_RW |
 	  (uPD98401_IA_TGT_CM << uPD98401_IA_TGT_SHIFT) | addr,CMR);
-	zwait;
+	zwait();
 	return zin(CER);
 }
 
@@ -239,7 +246,7 @@ static void refill_pool(struct atm_dev *dev,int pool)
 	}
 	if (first) {
 		spin_lock_irqsave(&zatm_dev->lock, flags);
-		zwait;
+		zwait();
 		zout(virt_to_bus(first),CER);
 		zout(uPD98401_ADD_BAT | (pool << uPD98401_POOL_SHIFT) | count,
 		    CMR);
@@ -498,6 +505,8 @@ static int open_rx_first(struct atm_vcc *vcc)
 			   later */
 		cells = (vcc->qos.rxtp.max_sdu+ATM_AAL5_TRAILER+
 		    ATM_CELL_PAYLOAD-1)/ATM_CELL_PAYLOAD;
+		cells = DIV_ROUND_UP(vcc->qos.rxtp.max_sdu + ATM_AAL5_TRAILER,
+				ATM_CELL_PAYLOAD);
 		zatm_vcc->pool = pool_index(cells*ATM_CELL_PAYLOAD);
 	}
 	else {
@@ -506,9 +515,9 @@ static int open_rx_first(struct atm_vcc *vcc)
 	}
 	if (zatm_vcc->pool < 0) return -EMSGSIZE;
 	spin_lock_irqsave(&zatm_dev->lock, flags);
-	zwait;
+	zwait();
 	zout(uPD98401_OPEN_CHAN,CMR);
-	zwait;
+	zwait();
 	DPRINTK("0x%x 0x%x\n",zin(CMR),zin(CER));
 	chan = (zin(CMR) & uPD98401_CHAN_ADDR) >> uPD98401_CHAN_ADDR_SHIFT;
 	spin_unlock_irqrestore(&zatm_dev->lock, flags);
@@ -569,21 +578,21 @@ static void close_rx(struct atm_vcc *vcc)
 		pos = vcc->vci >> 1;
 		shift = (1-(vcc->vci & 1)) << 4;
 		zpokel(zatm_dev,zpeekl(zatm_dev,pos) & ~(0xffff << shift),pos);
-		zwait;
+		zwait();
 		zout(uPD98401_NOP,CMR);
-		zwait;
+		zwait();
 		zout(uPD98401_NOP,CMR);
 		spin_unlock_irqrestore(&zatm_dev->lock, flags);
 	}
 	spin_lock_irqsave(&zatm_dev->lock, flags);
-	zwait;
+	zwait();
 	zout(uPD98401_DEACT_CHAN | uPD98401_CHAN_RT | (zatm_vcc->rx_chan <<
 	    uPD98401_CHAN_ADDR_SHIFT),CMR);
-	zwait;
+	zwait();
 	udelay(10); /* why oh why ... ? */
 	zout(uPD98401_CLOSE_CHAN | uPD98401_CHAN_RT | (zatm_vcc->rx_chan <<
 	    uPD98401_CHAN_ADDR_SHIFT),CMR);
-	zwait;
+	zwait();
 	if (!(zin(CMR) & uPD98401_CHAN_ADDR))
 		printk(KERN_CRIT DEV_LABEL "(itf %d): can't close RX channel "
 		    "%d\n",vcc->dev->number,zatm_vcc->rx_chan);
@@ -696,7 +705,7 @@ printk("NONONONOO!!!!\n");
 	skb_queue_tail(&zatm_vcc->tx_queue,skb);
 	DPRINTK("QRP=0x%08lx\n",zpeekl(zatm_dev,zatm_vcc->tx_chan*VC_SIZE/4+
 	  uPD98401_TXVC_QRP));
-	zwait;
+	zwait();
 	zout(uPD98401_TX_READY | (zatm_vcc->tx_chan <<
 	    uPD98401_CHAN_ADDR_SHIFT),CMR);
 	spin_unlock_irqrestore(&zatm_dev->lock, flags);
@@ -821,6 +830,7 @@ static int alloc_shaper(struct atm_dev *dev,int *pcr,int min,int max,int ubr)
 			else {
 				i = 255;
 				m = (ATM_OC3_PCR*255+max-1)/max;
+				m = DIV_ROUND_UP(ATM_OC3_PCR*255, max);
 			}
 		}
 		if (i > m) {
@@ -888,12 +898,12 @@ static void close_tx(struct atm_vcc *vcc)
 	}
 	spin_lock_irqsave(&zatm_dev->lock, flags);
 #if 0
-	zwait;
+	zwait();
 	zout(uPD98401_DEACT_CHAN | (chan << uPD98401_CHAN_ADDR_SHIFT),CMR);
 #endif
-	zwait;
+	zwait();
 	zout(uPD98401_CLOSE_CHAN | (chan << uPD98401_CHAN_ADDR_SHIFT),CMR);
-	zwait;
+	zwait();
 	if (!(zin(CMR) & uPD98401_CHAN_ADDR))
 		printk(KERN_CRIT DEV_LABEL "(itf %d): can't close TX channel "
 		    "%d\n",vcc->dev->number,chan);
@@ -923,9 +933,9 @@ static int open_tx_first(struct atm_vcc *vcc)
 	zatm_vcc->tx_chan = 0;
 	if (vcc->qos.txtp.traffic_class == ATM_NONE) return 0;
 	spin_lock_irqsave(&zatm_dev->lock, flags);
-	zwait;
+	zwait();
 	zout(uPD98401_OPEN_CHAN,CMR);
-	zwait;
+	zwait();
 	DPRINTK("0x%x 0x%x\n",zin(CMR),zin(CER));
 	chan = (zin(CMR) & uPD98401_CHAN_ADDR) >> uPD98401_CHAN_ADDR_SHIFT;
 	spin_unlock_irqrestore(&zatm_dev->lock, flags);
@@ -1095,6 +1105,8 @@ static irqreturn_t zatm_int(int irq,void *dev_id)
 
 static void __devinit eprom_set(struct zatm_dev *zatm_dev,unsigned long value,
     unsigned short cmd)
+static void eprom_set(struct zatm_dev *zatm_dev, unsigned long value,
+		      unsigned short cmd)
 {
 	int error;
 
@@ -1106,6 +1118,7 @@ static void __devinit eprom_set(struct zatm_dev *zatm_dev,unsigned long value,
 
 static unsigned long __devinit eprom_get(struct zatm_dev *zatm_dev,
     unsigned short cmd)
+static unsigned long eprom_get(struct zatm_dev *zatm_dev, unsigned short cmd)
 {
 	unsigned int value;
 	int error;
@@ -1119,6 +1132,8 @@ static unsigned long __devinit eprom_get(struct zatm_dev *zatm_dev,
 
 static void __devinit eprom_put_bits(struct zatm_dev *zatm_dev,
     unsigned long data,int bits,unsigned short cmd)
+static void eprom_put_bits(struct zatm_dev *zatm_dev, unsigned long data,
+			   int bits, unsigned short cmd)
 {
 	unsigned long value;
 	int i;
@@ -1134,6 +1149,8 @@ static void __devinit eprom_put_bits(struct zatm_dev *zatm_dev,
 
 static void __devinit eprom_get_byte(struct zatm_dev *zatm_dev,
     unsigned char *byte,unsigned short cmd)
+static void eprom_get_byte(struct zatm_dev *zatm_dev, unsigned char *byte,
+			   unsigned short cmd)
 {
 	int i;
 
@@ -1150,6 +1167,10 @@ static void __devinit eprom_get_byte(struct zatm_dev *zatm_dev,
 
 static unsigned char __devinit eprom_try_esi(struct atm_dev *dev,
     unsigned short cmd,int offset,int swap)
+static unsigned char eprom_try_esi(struct atm_dev *dev, unsigned short cmd,
+				   int offset, int swap)
+static int eprom_try_esi(struct atm_dev *dev, unsigned short cmd, int offset,
+			 int swap)
 {
 	unsigned char buf[ZEPROM_SIZE];
 	struct zatm_dev *zatm_dev;
@@ -1170,6 +1191,7 @@ static unsigned char __devinit eprom_try_esi(struct atm_dev *dev,
 
 
 static void __devinit eprom_get_esi(struct atm_dev *dev)
+static void eprom_get_esi(struct atm_dev *dev)
 {
 	if (eprom_try_esi(dev,ZEPROM_V1_REG,ZEPROM_V1_ESI_OFF,1)) return;
 	(void) eprom_try_esi(dev,ZEPROM_V2_REG,ZEPROM_V2_ESI_OFF,0);
@@ -1180,6 +1202,7 @@ static void __devinit eprom_get_esi(struct atm_dev *dev)
 
 
 static int __devinit zatm_init(struct atm_dev *dev)
+static int zatm_init(struct atm_dev *dev)
 {
 	struct zatm_dev *zatm_dev;
 	struct pci_dev *pci_dev;
@@ -1257,6 +1280,7 @@ static int __devinit zatm_init(struct atm_dev *dev)
 
 
 static int __devinit zatm_start(struct atm_dev *dev)
+static int zatm_start(struct atm_dev *dev)
 {
 	struct zatm_dev *zatm_dev = ZATM_DEV(dev);
 	struct pci_dev *pdev = zatm_dev->pci_dev;
@@ -1307,18 +1331,22 @@ static int __devinit zatm_start(struct atm_dev *dev)
 		if (!mbx_entries[i])
 			continue;
 		mbx = pci_alloc_consistent(pdev, 2*MBX_SIZE(i), &mbx_dma);
+		mbx = dma_alloc_coherent(&pdev->dev,
+					 2 * MBX_SIZE(i), &mbx_dma, GFP_KERNEL);
 		if (!mbx) {
 			error = -ENOMEM;
 			goto out;
 		}
 		/*
 		 * Alignment provided by pci_alloc_consistent() isn't enough
+		 * Alignment provided by dma_alloc_coherent() isn't enough
 		 * for this device.
 		 */
 		if (((unsigned long)mbx ^ mbx_dma) & 0xffff) {
 			printk(KERN_ERR DEV_LABEL "(itf %d): system "
 			       "bus incompatible with driver\n", dev->number);
 			pci_free_consistent(pdev, 2*MBX_SIZE(i), mbx, mbx_dma);
+			dma_free_coherent(&pdev->dev, 2*MBX_SIZE(i), mbx, mbx_dma);
 			error = -ENODEV;
 			goto out;
 		}
@@ -1357,6 +1385,9 @@ out:
 		pci_free_consistent(pdev, 2*MBX_SIZE(i), 
 				    (void *)zatm_dev->mbx_start[i],
 				    zatm_dev->mbx_dma[i]);
+		dma_free_coherent(&pdev->dev, 2 * MBX_SIZE(i),
+				  (void *)zatm_dev->mbx_start[i],
+				  zatm_dev->mbx_dma[i]);
 	}
 	free_irq(zatm_dev->irq, dev);
 	goto done;
@@ -1455,6 +1486,8 @@ static int zatm_ioctl(struct atm_dev *dev,unsigned int cmd,void __user *arg)
 					return -EFAULT;
 				if (pool < 0 || pool > ZATM_LAST_POOL)
 					return -EINVAL;
+				pool = array_index_nospec(pool,
+							  ZATM_LAST_POOL + 1);
 				spin_lock_irqsave(&zatm_dev->lock, flags);
 				info = zatm_dev->pool_info[pool];
 				if (cmd == ZATM_GETPOOLZ) {
@@ -1477,6 +1510,8 @@ static int zatm_ioctl(struct atm_dev *dev,unsigned int cmd,void __user *arg)
 					return -EFAULT;
 				if (pool < 0 || pool > ZATM_LAST_POOL)
 					return -EINVAL;
+				pool = array_index_nospec(pool,
+							  ZATM_LAST_POOL + 1);
 				if (copy_from_user(&info,
 				    &((struct zatm_pool_req __user *) arg)->info,
 				    sizeof(info))) return -EFAULT;
@@ -1518,6 +1553,7 @@ static int zatm_getsockopt(struct atm_vcc *vcc,int level,int optname,
 
 static int zatm_setsockopt(struct atm_vcc *vcc,int level,int optname,
     void __user *optval,int optlen)
+    void __user *optval,unsigned int optlen)
 {
 	return -EINVAL;
 }
@@ -1551,7 +1587,7 @@ static void zatm_phy_put(struct atm_dev *dev,unsigned char value,
 	struct zatm_dev *zatm_dev;
 
 	zatm_dev = ZATM_DEV(dev);
-	zwait;
+	zwait();
 	zout(value,CER);
 	zout(uPD98401_IND_ACC | uPD98401_IA_B0 |
 	    (uPD98401_IA_TGT_PHY << uPD98401_IA_TGT_SHIFT) | addr,CMR);
@@ -1563,10 +1599,10 @@ static unsigned char zatm_phy_get(struct atm_dev *dev,unsigned long addr)
 	struct zatm_dev *zatm_dev;
 
 	zatm_dev = ZATM_DEV(dev);
-	zwait;
+	zwait();
 	zout(uPD98401_IND_ACC | uPD98401_IA_B0 | uPD98401_IA_RW |
 	  (uPD98401_IA_TGT_PHY << uPD98401_IA_TGT_SHIFT) | addr,CMR);
-	zwait;
+	zwait();
 	return zin(CER) & 0xff;
 }
 
@@ -1585,6 +1621,8 @@ static const struct atmdev_ops ops = {
 
 static int __devinit zatm_init_one(struct pci_dev *pci_dev,
 				   const struct pci_device_id *ent)
+static int zatm_init_one(struct pci_dev *pci_dev,
+			 const struct pci_device_id *ent)
 {
 	struct atm_dev *dev;
 	struct zatm_dev *zatm_dev;
@@ -1597,6 +1635,7 @@ static int __devinit zatm_init_one(struct pci_dev *pci_dev,
 	}
 
 	dev = atm_dev_register(DEV_LABEL, &ops, -1, NULL);
+	dev = atm_dev_register(DEV_LABEL, &pci_dev->dev, &ops, -1, NULL);
 	if (!dev)
 		goto out_free;
 
@@ -1605,6 +1644,10 @@ static int __devinit zatm_init_one(struct pci_dev *pci_dev,
 		goto out_deregister;
 
 	ret = pci_request_regions(pci_dev, DEV_LABEL);
+	if (ret < 0)
+		goto out_disable;
+
+	ret = dma_set_mask_and_coherent(&pci_dev->dev, DMA_BIT_MASK(32));
 	if (ret < 0)
 		goto out_disable;
 
@@ -1640,6 +1683,9 @@ static struct pci_device_id zatm_pci_tbl[] __devinitdata = {
 		PCI_ANY_ID, PCI_ANY_ID, 0, 0, ZATM_COPPER },
 	{ PCI_VENDOR_ID_ZEITNET, PCI_DEVICE_ID_ZEITNET_1225,
 		PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0 },
+static struct pci_device_id zatm_pci_tbl[] = {
+	{ PCI_VDEVICE(ZEITNET, PCI_DEVICE_ID_ZEITNET_1221), ZATM_COPPER },
+	{ PCI_VDEVICE(ZEITNET, PCI_DEVICE_ID_ZEITNET_1225), 0 },
 	{ 0, }
 };
 MODULE_DEVICE_TABLE(pci, zatm_pci_tbl);

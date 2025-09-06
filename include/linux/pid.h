@@ -2,13 +2,16 @@
 #define _LINUX_PID_H
 
 #include <linux/rcupdate.h>
+#include <linux/atomic.h>
 
 enum pid_type
 {
 	PIDTYPE_PID,
 	PIDTYPE_PGID,
 	PIDTYPE_SID,
-	PIDTYPE_MAX
+	PIDTYPE_MAX,
+	/* only valid to __task_pid_nr_ns() */
+	__PIDTYPE_TGID
 };
 
 /*
@@ -22,6 +25,7 @@ enum pid_type
  * quickly accessed by following pointers from struct pid.
  *
  * Storing pid_t values in the kernel and refering to them later has a
+ * Storing pid_t values in the kernel and referring to them later has a
  * problem.  The process originally with that pid may have exited and the
  * pid allocator wrapped, and another process could have come along
  * and been assigned that pid.
@@ -91,6 +95,9 @@ extern struct pid *get_task_pid(struct task_struct *task, enum pid_type type);
  */
 extern void attach_pid(struct task_struct *task, enum pid_type type,
 			struct pid *pid);
+ * these helpers must be called with the tasklist_lock write-held.
+ */
+extern void attach_pid(struct task_struct *task, enum pid_type);
 extern void detach_pid(struct task_struct *task, enum pid_type);
 extern void change_pid(struct task_struct *task, enum pid_type,
 			struct pid *pid);
@@ -106,6 +113,7 @@ extern struct pid_namespace init_pid_ns;
  *
  * find_pid_ns() finds the pid in the namespace specified
  * find_vpid() finr the pid by its virtual id, i.e. in the current namespace
+ * find_vpid() finds the pid by its virtual id, i.e. in the current namespace
  *
  * see also find_task_by_vpid() set in include/linux/sched.h
  */
@@ -121,6 +129,40 @@ int next_pidmap(struct pid_namespace *pid_ns, int last);
 
 extern struct pid *alloc_pid(struct pid_namespace *ns);
 extern void free_pid(struct pid *pid);
+int next_pidmap(struct pid_namespace *pid_ns, unsigned int last);
+
+extern struct pid *alloc_pid(struct pid_namespace *ns);
+extern void free_pid(struct pid *pid);
+extern void disable_pid_allocation(struct pid_namespace *ns);
+
+/*
+ * ns_of_pid() returns the pid namespace in which the specified pid was
+ * allocated.
+ *
+ * NOTE:
+ * 	ns_of_pid() is expected to be called for a process (task) that has
+ * 	an attached 'struct pid' (see attach_pid(), detach_pid()) i.e @pid
+ * 	is expected to be non-NULL. If @pid is NULL, caller should handle
+ * 	the resulting NULL pid-ns.
+ */
+static inline struct pid_namespace *ns_of_pid(struct pid *pid)
+{
+	struct pid_namespace *ns = NULL;
+	if (pid)
+		ns = pid->numbers[pid->level].ns;
+	return ns;
+}
+
+/*
+ * is_child_reaper returns true if the pid is the init process
+ * of the current namespace. As this one could be checked before
+ * pid_ns->child_reaper is assigned in copy_process, we check
+ * with the pid number.
+ */
+static inline bool is_child_reaper(struct pid *pid)
+{
+	return pid->numbers[pid->level].nr == 1;
+}
 
 /*
  * the helpers to get the pid's id seen from different namespaces
@@ -150,6 +192,9 @@ pid_t pid_vnr(struct pid *pid);
 		if (pid != NULL)					\
 			hlist_for_each_entry_rcu((task), pos___,	\
 				&pid->tasks[type], pids[type].node) {
+		if ((pid) != NULL)					\
+			hlist_for_each_entry_rcu((task),		\
+				&(pid)->tasks[type], pids[type].node) {
 
 			/*
 			 * Both old and new leaders may be attached to

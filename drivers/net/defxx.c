@@ -312,10 +312,8 @@ static struct tc_driver dfx_tc_driver;
 
 
 /*
- * =======================
  * = dfx_port_write_long =
  * = dfx_port_read_long  =
- * =======================
  *
  * Overview:
  *   Routines for reading and writing values from/to adapter
@@ -410,9 +408,7 @@ static void dfx_port_read_long(DFX_board_t *bp, int offset, u32 *data)
 
 
 /*
- * ================
  * = dfx_get_bars =
- * ================
  *
  * Overview:
  *   Retrieves the address range used to access control and status
@@ -478,9 +474,7 @@ static void dfx_get_bars(struct device *bdev,
 }
 
 /*
- * ================
  * = dfx_register =
- * ================
  *
  * Overview:
  *   Initializes a supported FDDI controller
@@ -629,9 +623,7 @@ err_out:
 
 
 /*
- * ================
  * = dfx_bus_init =
- * ================
  *
  * Overview:
  *   Initializes the bus-specific controller logic.
@@ -778,9 +770,7 @@ static void __devinit dfx_bus_init(struct net_device *dev)
 }
 
 /*
- * ==================
  * = dfx_bus_uninit =
- * ==================
  *
  * Overview:
  *   Uninitializes the bus-specific controller logic.
@@ -833,9 +823,7 @@ static void __devexit dfx_bus_uninit(struct net_device *dev)
 
 
 /*
- * ========================
  * = dfx_bus_config_check =
- * ========================
  *
  * Overview:
  *   Checks the configuration (burst size, full-duplex, etc.)  If any parameters
@@ -922,9 +910,7 @@ static void __devinit dfx_bus_config_check(DFX_board_t *bp)
 
 
 /*
- * ===================
  * = dfx_driver_init =
- * ===================
  *
  * Overview:
  *   Initializes remaining adapter board structure information
@@ -1149,9 +1135,7 @@ static int __devinit dfx_driver_init(struct net_device *dev,
 
 
 /*
- * =================
  * = dfx_adap_init =
- * =================
  *
  * Overview:
  *   Brings the adapter to the link avail/link unavailable state.
@@ -1349,9 +1333,7 @@ static int dfx_adap_init(DFX_board_t *bp, int get_buffers)
 
 
 /*
- * ============
  * = dfx_open =
- * ============
  *
  * Overview:
  *   Opens the adapter
@@ -1438,9 +1420,7 @@ static int dfx_open(struct net_device *dev)
 
 
 /*
- * =============
  * = dfx_close =
- * =============
  *
  * Overview:
  *   Closes the device/module.
@@ -1530,9 +1510,7 @@ static int dfx_close(struct net_device *dev)
 
 
 /*
- * ======================
  * = dfx_int_pr_halt_id =
- * ======================
  *
  * Overview:
  *   Displays halt id's in string form.
@@ -1614,9 +1592,7 @@ static void dfx_int_pr_halt_id(DFX_board_t	*bp)
 
 
 /*
- * ==========================
  * = dfx_int_type_0_process =
- * ==========================
  *
  * Overview:
  *   Processes Type 0 interrupts.
@@ -1766,9 +1742,7 @@ static void dfx_int_type_0_process(DFX_board_t	*bp)
 
 
 /*
- * ==================
  * = dfx_int_common =
- * ==================
  *
  * Overview:
  *   Interrupt service routine (ISR)
@@ -1840,9 +1814,7 @@ static void dfx_int_common(struct net_device *dev)
 
 
 /*
- * =================
  * = dfx_interrupt =
- * =================
  *
  * Overview:
  *   Interrupt processing routine
@@ -1961,9 +1933,7 @@ static irqreturn_t dfx_interrupt(int irq, void *dev_id)
 
 
 /*
- * =====================
  * = dfx_ctl_get_stats =
- * =====================
  *
  * Overview:
  *   Get statistics for FDDI adapter
@@ -2148,9 +2118,7 @@ static struct net_device_stats *dfx_ctl_get_stats(struct net_device *dev)
 
 
 /*
- * ==============================
  * = dfx_ctl_set_multicast_list =
- * ==============================
  *
  * Overview:
  *   Enable/Disable LLC frame promiscuous mode reception
@@ -2269,9 +2237,7 @@ static void dfx_ctl_set_multicast_list(struct net_device *dev)
 
 
 /*
- * ===========================
  * = dfx_ctl_set_mac_address =
- * ===========================
  *
  * Overview:
  *   Add node address override (unicast address) to adapter
@@ -2359,9 +2325,7 @@ static int dfx_ctl_set_mac_address(struct net_device *dev, void *addr)
 
 
 /*
- * ======================
  * = dfx_ctl_update_cam =
- * ======================
  *
  * Overview:
  *   Procedure to update adapter CAM (Content Addressable Memory)
@@ -2444,9 +2408,7 @@ static int dfx_ctl_update_cam(DFX_board_t *bp)
 
 
 /*
- * ==========================
  * = dfx_ctl_update_filters =
- * ==========================
  *
  * Overview:
  *   Procedure to update adapter filters with desired
@@ -2510,9 +2472,7 @@ static int dfx_ctl_update_filters(DFX_board_t *bp)
 
 
 /*
- * ======================
  * = dfx_hw_dma_cmd_req =
- * ======================
  *
  * Overview:
  *   Sends PDQ DMA command to adapter firmware
@@ -2631,9 +2591,7 @@ static int dfx_hw_dma_cmd_req(DFX_board_t *bp)
 
 
 /*
- * ========================
  * = dfx_hw_port_ctrl_req =
- * ========================
  *
  * Overview:
  *   Sends PDQ port control command to adapter firmware
@@ -2715,9 +2673,7 @@ static int dfx_hw_port_ctrl_req(
 
 
 /*
- * =====================
  * = dfx_hw_adap_reset =
- * =====================
  *
  * Overview:
  *   Resets adapter
@@ -2769,9 +2725,7 @@ static void dfx_hw_adap_reset(
 
 
 /*
- * ========================
  * = dfx_hw_adap_state_rd =
- * ========================
  *
  * Overview:
  *   Returns current adapter state
@@ -2805,9 +2759,7 @@ static int dfx_hw_adap_state_rd(DFX_board_t *bp)
 
 
 /*
- * =====================
  * = dfx_hw_dma_uninit =
- * =====================
  *
  * Overview:
  *   Brings adapter to DMA_UNAVAILABLE state
@@ -2873,9 +2825,7 @@ static void my_skb_align(struct sk_buff *skb, int n)
 
 
 /*
- * ================
  * = dfx_rcv_init =
- * ================
  *
  * Overview:
  *   Produces buffers to adapter LLC Host receive descriptor block
@@ -2976,9 +2926,7 @@ static int dfx_rcv_init(DFX_board_t *bp, int get_buffers)
 
 
 /*
- * =========================
  * = dfx_rcv_queue_process =
- * =========================
  *
  * Overview:
  *   Process received LLC frames.
@@ -3126,9 +3074,7 @@ static void dfx_rcv_queue_process(
 
 
 /*
- * =====================
  * = dfx_xmt_queue_pkt =
- * =====================
  *
  * Overview:
  *   Queues packets for transmission
@@ -3348,9 +3294,7 @@ static int dfx_xmt_queue_pkt(
 
 
 /*
- * ================
  * = dfx_xmt_done =
- * ================
  *
  * Overview:
  *   Processes all frames that have been transmitted.
@@ -3427,9 +3371,7 @@ static int dfx_xmt_done(DFX_board_t *bp)
 
 
 /*
- * =================
  * = dfx_rcv_flush =
- * =================
  *
  * Overview:
  *   Remove all skb's in the receive ring.
@@ -3475,9 +3417,7 @@ static inline void dfx_rcv_flush( DFX_board_t *bp )
 #endif /* DYNAMIC_BUFFERS */
 
 /*
- * =================
  * = dfx_xmt_flush =
- * =================
  *
  * Overview:
  *   Processes all frames whether they've been transmitted
@@ -3558,9 +3498,7 @@ static void dfx_xmt_flush( DFX_board_t *bp )
 	}
 
 /*
- * ==================
  * = dfx_unregister =
- * ==================
  *
  * Overview:
  *   Shuts down an FDDI controller

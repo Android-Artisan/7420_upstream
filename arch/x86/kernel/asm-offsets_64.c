@@ -26,6 +26,25 @@
 #define __SYSCALL(nr, sym) [nr] = 1,
 static char syscalls[] = {
 #include <asm/unistd.h>
+#ifndef __LINUX_KBUILD_H
+# error "Please do not build this file directly, build asm-offsets.c instead"
+#endif
+
+#include <asm/ia32.h>
+
+#define __SYSCALL_64(nr, sym, compat) [nr] = 1,
+#define __SYSCALL_COMMON(nr, sym, compat) [nr] = 1,
+#ifdef CONFIG_X86_X32_ABI
+# define __SYSCALL_X32(nr, sym, compat) [nr] = 1,
+#else
+# define __SYSCALL_X32(nr, sym, compat) /* nothing */
+#endif
+static char syscalls_64[] = {
+#include <asm/syscalls_64.h>
+};
+#define __SYSCALL_I386(nr, sym, compat) [nr] = 1,
+static char syscalls_ia32[] = {
+#include <asm/syscalls_32.h>
 };
 
 int main(void)
@@ -96,6 +115,15 @@ int main(void)
 	BLANK();
 #define ENTRY(entry) DEFINE(pt_regs_ ## entry, offsetof(struct pt_regs, entry))
 	ENTRY(bx);
+#ifdef CONFIG_PARAVIRT
+	OFFSET(PV_IRQ_adjust_exception_frame, pv_irq_ops, adjust_exception_frame);
+	OFFSET(PV_CPU_usergs_sysret32, pv_cpu_ops, usergs_sysret32);
+	OFFSET(PV_CPU_usergs_sysret64, pv_cpu_ops, usergs_sysret64);
+	OFFSET(PV_CPU_swapgs, pv_cpu_ops, swapgs);
+	BLANK();
+#endif
+
+#define ENTRY(entry) OFFSET(pt_regs_ ## entry, pt_regs, entry)
 	ENTRY(bx);
 	ENTRY(cx);
 	ENTRY(dx);
@@ -115,6 +143,8 @@ int main(void)
 	BLANK();
 #undef ENTRY
 #define ENTRY(entry) DEFINE(saved_context_ ## entry, offsetof(struct saved_context, entry))
+
+#define ENTRY(entry) OFFSET(saved_context_ ## entry, saved_context, entry)
 	ENTRY(cr0);
 	ENTRY(cr2);
 	ENTRY(cr3);
@@ -142,5 +172,19 @@ int main(void)
 	OFFSET(XEN_vcpu_info_pending, vcpu_info, evtchn_upcall_pending);
 #undef ENTRY
 #endif
+	ENTRY(gdt_desc);
+	BLANK();
+#undef ENTRY
+
+	OFFSET(TSS_ist, tss_struct, x86_tss.ist);
+	OFFSET(TSS_sp0, tss_struct, x86_tss.sp0);
+	BLANK();
+
+	DEFINE(__NR_syscall_max, sizeof(syscalls_64) - 1);
+	DEFINE(NR_syscalls, sizeof(syscalls_64));
+
+	DEFINE(__NR_syscall_compat_max, sizeof(syscalls_ia32) - 1);
+	DEFINE(IA32_NR_syscalls, sizeof(syscalls_ia32));
+
 	return 0;
 }

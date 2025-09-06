@@ -2,6 +2,7 @@
  * super.c - NTFS kernel super block handling. Part of the Linux-NTFS project.
  *
  * Copyright (c) 2001-2007 Anton Altaparmakov
+ * Copyright (c) 2001-2012 Anton Altaparmakov and Tuxera Inc.
  * Copyright (c) 2001,2002 Richard Russon
  *
  * This program/include file is free software; you can redistribute it and/or
@@ -19,6 +20,7 @@
  * distribution in the file COPYING); if not, write to the Free Software
  * Foundation,Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/stddef.h>
 #include <linux/init.h>
@@ -26,11 +28,13 @@
 #include <linux/string.h>
 #include <linux/spinlock.h>
 #include <linux/blkdev.h>	/* For bdev_hardsect_size(). */
+#include <linux/blkdev.h>	/* For bdev_logical_block_size(). */
 #include <linux/backing-dev.h>
 #include <linux/buffer_head.h>
 #include <linux/vfs.h>
 #include <linux/moduleparam.h>
 #include <linux/smp_lock.h>
+#include <linux/bitmap.h>
 
 #include "sysctl.h"
 #include "logfile.h"
@@ -39,6 +43,7 @@
 #include "dir.h"
 #include "debug.h"
 #include "index.h"
+#include "inode.h"
 #include "aops.h"
 #include "layout.h"
 #include "malloc.h"
@@ -50,6 +55,8 @@ static unsigned long ntfs_nr_compression_users;
 /* A global default upcase table and a corresponding reference count. */
 static ntfschar *default_upcase = NULL;
 static unsigned long ntfs_nr_upcase_users = 0;
+static ntfschar *default_upcase;
+static unsigned long ntfs_nr_upcase_users;
 
 /* Error constants/strings used in inode.c::ntfs_show_options(). */
 typedef enum {
@@ -104,6 +111,9 @@ static bool parse_options(ntfs_volume *vol, char *opt)
 	uid_t uid = (uid_t)-1;
 	gid_t gid = (gid_t)-1;
 	mode_t fmask = (mode_t)-1, dmask = (mode_t)-1;
+	kuid_t uid = INVALID_UID;
+	kgid_t gid = INVALID_GID;
+	umode_t fmask = (umode_t)-1, dmask = (umode_t)-1;
 	int mft_zone_multiplier = -1, on_errors = -1;
 	int show_sys_files = -1, case_sensitive = -1, disable_sparse = -1;
 	struct nls_table *nls_map = NULL, *old_nls;
@@ -125,6 +135,30 @@ static bool parse_options(ntfs_volume *vol, char *opt)
 			goto needs_arg;					\
 		variable = simple_strtoul(ov = v, &v, 0);		\
 		if (*v)							\
+			goto needs_val;					\
+	}
+#define NTFS_GETOPT_UID(option, variable)				\
+	if (!strcmp(p, option)) {					\
+		uid_t uid_value;					\
+		if (!v || !*v)						\
+			goto needs_arg;					\
+		uid_value = simple_strtoul(ov = v, &v, 0);		\
+		if (*v)							\
+			goto needs_val;					\
+		variable = make_kuid(current_user_ns(), uid_value);	\
+		if (!uid_valid(variable))				\
+			goto needs_val;					\
+	}
+#define NTFS_GETOPT_GID(option, variable)				\
+	if (!strcmp(p, option)) {					\
+		gid_t gid_value;					\
+		if (!v || !*v)						\
+			goto needs_arg;					\
+		gid_value = simple_strtoul(ov = v, &v, 0);		\
+		if (*v)							\
+			goto needs_val;					\
+		variable = make_kgid(current_user_ns(), gid_value);	\
+		if (!gid_valid(variable))				\
 			goto needs_val;					\
 	}
 #define NTFS_GETOPT_OCTAL(option, variable)				\
@@ -166,6 +200,8 @@ static bool parse_options(ntfs_volume *vol, char *opt)
 			*v++ = 0;
 		NTFS_GETOPT("uid", uid)
 		else NTFS_GETOPT("gid", gid)
+		NTFS_GETOPT_UID("uid", uid)
+		else NTFS_GETOPT_GID("gid", gid)
 		else NTFS_GETOPT_OCTAL("umask", fmask = dmask)
 		else NTFS_GETOPT_OCTAL("fmask", fmask)
 		else NTFS_GETOPT_OCTAL("dmask", dmask)
@@ -203,6 +239,7 @@ use_utf8:
 			} else /* nls_map */ {
 				if (old_nls)
 					unload_nls(old_nls);
+				unload_nls(old_nls);
 			}
 		} else if (!strcmp(p, "utf8")) {
 			bool val = false;
@@ -290,6 +327,13 @@ no_mount_options:
 	if (fmask != (mode_t)-1)
 		vol->fmask = fmask;
 	if (dmask != (mode_t)-1)
+	if (uid_valid(uid))
+		vol->uid = uid;
+	if (gid_valid(gid))
+		vol->gid = gid;
+	if (fmask != (umode_t)-1)
+		vol->fmask = fmask;
+	if (dmask != (umode_t)-1)
 		vol->dmask = dmask;
 	if (show_sys_files != -1) {
 		if (show_sys_files)
@@ -443,6 +487,9 @@ static int ntfs_remount(struct super_block *sb, int *flags, char *opt)
 	ntfs_volume *vol = NTFS_SB(sb);
 
 	ntfs_debug("Entering with remount options string: %s", opt);
+
+	sync_filesystem(sb);
+
 #ifndef NTFS_RW
 	/* For read-only compiled driver, enforce read-only flag. */
 	*flags |= MS_RDONLY;
@@ -458,6 +505,7 @@ static int ntfs_remount(struct super_block *sb, int *flags, char *opt)
 	 *
 	 * When remounting read-only, mark the volume clean if no volume errors
 	 * have occured.
+	 * have occurred.
 	 */
 	if ((sb->s_flags & MS_RDONLY) && !(*flags & MS_RDONLY)) {
 		static const char *es = ".  Cannot remount read-write.";
@@ -516,6 +564,7 @@ static int ntfs_remount(struct super_block *sb, int *flags, char *opt)
 		}
 		if (!ntfs_stamp_usnjrnl(vol)) {
 			ntfs_error(sb, "Failed to stamp transation log "
+			ntfs_error(sb, "Failed to stamp transaction log "
 					"($UsnJrnl)%s", es);
 			NVolSetErrors(vol);
 			return -EROFS;
@@ -535,6 +584,7 @@ static int ntfs_remount(struct super_block *sb, int *flags, char *opt)
 
 	if (!parse_options(vol, opt))
 		return -EINVAL;
+
 	ntfs_debug("Done.");
 	return 0;
 }
@@ -619,6 +669,7 @@ static bool is_boot_sector_ntfs(const struct super_block *sb,
 	 * incorrect, so we emit a warning.
 	 */
 	if (!silent && b->end_of_sector_marker != const_cpu_to_le16(0xaa55))
+	if (!silent && b->end_of_sector_marker != cpu_to_le16(0xaa55))
 		ntfs_warning(sb, "Invalid end of sector marker.");
 	return true;
 not_ntfs:
@@ -1022,6 +1073,8 @@ static bool load_and_init_mft_mirror(ntfs_volume *vol)
 	 */
 	/* Set uid and gid to root. */
 	tmp_ino->i_uid = tmp_ino->i_gid = 0;
+	tmp_ino->i_uid = GLOBAL_ROOT_UID;
+	tmp_ino->i_gid = GLOBAL_ROOT_GID;
 	/* Regular file.  No access for anyone. */
 	tmp_ino->i_mode = S_IFREG;
 	/* No VFS initiated operations allowed for $MFTMirr. */
@@ -1249,6 +1302,13 @@ static int check_windows_hibernation_status(ntfs_volume *vol)
 			const_cpu_to_le16('l'), const_cpu_to_le16('.'),
 			const_cpu_to_le16('s'), const_cpu_to_le16('y'),
 			const_cpu_to_le16('s'), 0 };
+	static const ntfschar hiberfil[13] = { cpu_to_le16('h'),
+			cpu_to_le16('i'), cpu_to_le16('b'),
+			cpu_to_le16('e'), cpu_to_le16('r'),
+			cpu_to_le16('f'), cpu_to_le16('i'),
+			cpu_to_le16('l'), cpu_to_le16('.'),
+			cpu_to_le16('s'), cpu_to_le16('y'),
+			cpu_to_le16('s'), 0 };
 
 	ntfs_debug("Entering.");
 	/*
@@ -1268,6 +1328,7 @@ static int check_windows_hibernation_status(ntfs_volume *vol)
 			return 0;
 		}
 		/* A real error occured. */
+		/* A real error occurred. */
 		ntfs_error(vol->sb, "Failed to find inode number for "
 				"hiberfil.sys.");
 		return ret;
@@ -1297,6 +1358,7 @@ static int check_windows_hibernation_status(ntfs_volume *vol)
 	}
 	kaddr = (u32*)page_address(page);
 	if (*(le32*)kaddr == const_cpu_to_le32(0x72626968)/*'hibr'*/) {
+	if (*(le32*)kaddr == cpu_to_le32(0x72626968)/*'hibr'*/) {
 		ntfs_debug("Magic \"hibr\" found in hiberfil.sys.  Windows is "
 				"hibernated on the volume.  This is the "
 				"system volume.");
@@ -1343,6 +1405,12 @@ static bool load_and_init_quota(ntfs_volume *vol)
 			const_cpu_to_le16('a'), 0 };
 	static ntfschar Q[3] = { const_cpu_to_le16('$'),
 			const_cpu_to_le16('Q'), 0 };
+	static const ntfschar Quota[7] = { cpu_to_le16('$'),
+			cpu_to_le16('Q'), cpu_to_le16('u'),
+			cpu_to_le16('o'), cpu_to_le16('t'),
+			cpu_to_le16('a'), 0 };
+	static ntfschar Q[3] = { cpu_to_le16('$'),
+			cpu_to_le16('Q'), 0 };
 
 	ntfs_debug("Entering.");
 	/*
@@ -1369,6 +1437,7 @@ static bool load_and_init_quota(ntfs_volume *vol)
 			return true;
 		}
 		/* A real error occured. */
+		/* A real error occurred. */
 		ntfs_error(vol->sb, "Failed to find inode number for $Quota.");
 		return false;
 	}
@@ -1426,6 +1495,16 @@ static bool load_and_init_usnjrnl(ntfs_volume *vol)
 			const_cpu_to_le16('x'), 0 };
 	static ntfschar J[3] = { const_cpu_to_le16('$'),
 			const_cpu_to_le16('J'), 0 };
+	static const ntfschar UsnJrnl[9] = { cpu_to_le16('$'),
+			cpu_to_le16('U'), cpu_to_le16('s'),
+			cpu_to_le16('n'), cpu_to_le16('J'),
+			cpu_to_le16('r'), cpu_to_le16('n'),
+			cpu_to_le16('l'), 0 };
+	static ntfschar Max[5] = { cpu_to_le16('$'),
+			cpu_to_le16('M'), cpu_to_le16('a'),
+			cpu_to_le16('x'), 0 };
+	static ntfschar J[3] = { cpu_to_le16('$'),
+			cpu_to_le16('J'), 0 };
 
 	ntfs_debug("Entering.");
 	/*
@@ -1453,6 +1532,7 @@ not_enabled:
 			return true;
 		}
 		/* A real error occured. */
+		/* A real error occurred. */
 		ntfs_error(vol->sb, "Failed to find inode number for "
 				"$UsnJrnl.");
 		return false;
@@ -1870,6 +1950,7 @@ get_ctx_vol_failed:
 	ntfs_attr_put_search_ctx(ctx);
 	unmap_mft_record(NTFS_I(vol->vol_ino));
 	printk(KERN_INFO "NTFS volume version %i.%i.\n", vol->major_ver,
+	pr_info("volume version %i.%i.\n", vol->major_ver,
 			vol->minor_ver);
 	if (vol->major_ver < 3 && NVolSparseEnabled(vol)) {
 		ntfs_warning(vol->sb, "Disabling sparse support due to NTFS "
@@ -2080,7 +2161,8 @@ get_ctx_vol_failed:
 	// TODO: Initialize security.
 	/* Get the extended system files' directory inode. */
 	vol->extend_ino = ntfs_iget(sb, FILE_Extend);
-	if (IS_ERR(vol->extend_ino) || is_bad_inode(vol->extend_ino)) {
+	if (IS_ERR(vol->extend_ino) || is_bad_inode(vol->extend_ino) ||
+	    !S_ISDIR(vol->extend_ino->i_mode)) {
 		if (!IS_ERR(vol->extend_ino))
 			iput(vol->extend_ino);
 		ntfs_error(sb, "Failed to load $Extend.");
@@ -2187,6 +2269,12 @@ iput_quota_err_out:
 		iput(vol->quota_q_ino);
 	if (vol->quota_ino)
 		iput(vol->quota_ino);
+	iput(vol->usnjrnl_j_ino);
+	iput(vol->usnjrnl_max_ino);
+	iput(vol->usnjrnl_ino);
+iput_quota_err_out:
+	iput(vol->quota_q_ino);
+	iput(vol->quota_ino);
 	iput(vol->extend_ino);
 #endif /* NTFS_RW */
 iput_sec_err_out:
@@ -2197,6 +2285,7 @@ iput_logfile_err_out:
 #ifdef NTFS_RW
 	if (vol->logfile_ino)
 		iput(vol->logfile_ino);
+	iput(vol->logfile_ino);
 iput_vol_err_out:
 #endif /* NTFS_RW */
 	iput(vol->vol_ino);
@@ -2228,6 +2317,7 @@ iput_mirr_err_out:
 #ifdef NTFS_RW
 	if (vol->mftmirr_ino)
 		iput(vol->mftmirr_ino);
+	iput(vol->mftmirr_ino);
 #endif /* NTFS_RW */
 	return false;
 }
@@ -2246,6 +2336,7 @@ static void ntfs_put_super(struct super_block *sb)
 	ntfs_volume *vol = NTFS_SB(sb);
 
 	ntfs_debug("Entering.");
+
 #ifdef NTFS_RW
 	/*
 	 * Commit all inodes while they are still open in case some of them
@@ -2290,6 +2381,7 @@ static void ntfs_put_super(struct super_block *sb)
 
 	/*
 	 * If a read-write mount and no volume errors have occured, mark the
+	 * If a read-write mount and no volume errors have occurred, mark the
 	 * volume clean.  Also, re-commit all affected inodes.
 	 */
 	if (!(sb->s_flags & MS_RDONLY)) {
@@ -2406,6 +2498,12 @@ static void ntfs_put_super(struct super_block *sb)
 				"that you saw this message.  Thank you.", s1,
 				s2);
 	}
+	 * We should have no dirty inodes left, due to
+	 * mft.c::ntfs_mft_writepage() cleaning all the dirty pages as
+	 * the underlying mft records are written out and cleaned.
+	 */
+	ntfs_commit_inode(vol->mft_ino);
+	write_inode_now(vol->mft_ino, 1);
 #endif /* NTFS_RW */
 
 	iput(vol->mft_ino);
@@ -2445,6 +2543,11 @@ static void ntfs_put_super(struct super_block *sb)
 	sb->s_fs_info = NULL;
 	kfree(vol);
 	return;
+
+	unload_nls(vol->nls_map);
+
+	sb->s_fs_info = NULL;
+	kfree(vol);
 }
 
 /**
@@ -2489,6 +2592,8 @@ static s64 get_nr_free_clusters(ntfs_volume *vol)
 			max_index, PAGE_CACHE_SIZE / 4);
 	for (index = 0; index < max_index; index++) {
 		unsigned int i;
+		unsigned long *kaddr;
+
 		/*
 		 * Read the page from page cache, getting it from backing store
 		 * if necessary, and increment the use count.
@@ -2504,6 +2609,9 @@ static s64 get_nr_free_clusters(ntfs_volume *vol)
 		kaddr = (u32*)kmap_atomic(page, KM_USER0);
 		/*
 		 * For each 4 bytes, subtract the number of set bits. If this
+		kaddr = kmap_atomic(page);
+		/*
+		 * Subtract the number of set bits. If this
 		 * is the last page and it is partial we don't really care as
 		 * it just means we do a little extra work but it won't affect
 		 * the result as all out of range bytes are set to zero by
@@ -2512,6 +2620,9 @@ static s64 get_nr_free_clusters(ntfs_volume *vol)
 	  	for (i = 0; i < PAGE_CACHE_SIZE / 4; i++)
 			nr_free -= (s64)hweight32(kaddr[i]);
 		kunmap_atomic(kaddr, KM_USER0);
+		nr_free -= bitmap_weight(kaddr,
+					PAGE_CACHE_SIZE * BITS_PER_BYTE);
+		kunmap_atomic(kaddr);
 		page_cache_release(page);
 	}
 	ntfs_debug("Finished reading $Bitmap, last index = 0x%lx.", index - 1);
@@ -2523,6 +2634,7 @@ static s64 get_nr_free_clusters(ntfs_volume *vol)
 		nr_free += 64 - (vol->nr_clusters & 63);
 	up_read(&vol->lcnbmp_lock);
 	/* If errors occured we may well have gone below zero, fix this. */
+	/* If errors occurred we may well have gone below zero, fix this. */
 	if (nr_free < 0)
 		nr_free = 0;
 	ntfs_debug("Exiting.");
@@ -2560,6 +2672,8 @@ static unsigned long __get_nr_free_mft_records(ntfs_volume *vol,
 			"0x%lx.", max_index, PAGE_CACHE_SIZE / 4);
 	for (index = 0; index < max_index; index++) {
 		unsigned int i;
+		unsigned long *kaddr;
+
 		/*
 		 * Read the page from page cache, getting it from backing store
 		 * if necessary, and increment the use count.
@@ -2575,6 +2689,9 @@ static unsigned long __get_nr_free_mft_records(ntfs_volume *vol,
 		kaddr = (u32*)kmap_atomic(page, KM_USER0);
 		/*
 		 * For each 4 bytes, subtract the number of set bits. If this
+		kaddr = kmap_atomic(page);
+		/*
+		 * Subtract the number of set bits. If this
 		 * is the last page and it is partial we don't really care as
 		 * it just means we do a little extra work but it won't affect
 		 * the result as all out of range bytes are set to zero by
@@ -2583,11 +2700,15 @@ static unsigned long __get_nr_free_mft_records(ntfs_volume *vol,
 	  	for (i = 0; i < PAGE_CACHE_SIZE / 4; i++)
 			nr_free -= (s64)hweight32(kaddr[i]);
 		kunmap_atomic(kaddr, KM_USER0);
+		nr_free -= bitmap_weight(kaddr,
+					PAGE_CACHE_SIZE * BITS_PER_BYTE);
+		kunmap_atomic(kaddr);
 		page_cache_release(page);
 	}
 	ntfs_debug("Finished reading $MFT/$BITMAP, last index = 0x%lx.",
 			index - 1);
 	/* If errors occured we may well have gone below zero, fix this. */
+	/* If errors occurred we may well have gone below zero, fix this. */
 	if (nr_free < 0)
 		nr_free = 0;
 	ntfs_debug("Exiting.");
@@ -2674,6 +2795,13 @@ static int ntfs_statfs(struct dentry *dentry, struct kstatfs *sfs)
 	return 0;
 }
 
+#ifdef NTFS_RW
+static int ntfs_write_inode(struct inode *vi, struct writeback_control *wbc)
+{
+	return __ntfs_write_inode(vi, wbc->sync_mode == WB_SYNC_ALL);
+}
+#endif
+
 /**
  * The complete super operations.
  */
@@ -2699,6 +2827,8 @@ static const struct super_operations ntfs_sops = {
 	//.sync_fs	= NULL,			/* ? */
 	//.write_super_lockfs	= NULL,		/* ? */
 	//.unlockfs	= NULL,			/* ? */
+	.write_inode	= ntfs_write_inode,	/* VFS: Write dirty inode to
+						   disk. */
 #endif /* NTFS_RW */
 	.put_super	= ntfs_put_super,	/* Syscall: umount. */
 	.statfs		= ntfs_statfs,		/* Syscall: statfs */
@@ -2706,6 +2836,8 @@ static const struct super_operations ntfs_sops = {
 	.clear_inode	= ntfs_clear_big_inode,	/* VFS: Called when an inode is
 						   removed from memory. */
 	//.umount_begin	= NULL,			/* Forced umount. */
+	.evict_inode	= ntfs_evict_big_inode,	/* VFS: Called when an inode is
+						   removed from memory. */
 	.show_options	= ntfs_show_options,	/* Show mount options in
 						   proc. */
 };
@@ -2786,12 +2918,14 @@ static int ntfs_fill_super(struct super_block *sb, void *opt, const int silent)
 
 	/* We support sector sizes up to the PAGE_CACHE_SIZE. */
 	if (bdev_hardsect_size(sb->s_bdev) > PAGE_CACHE_SIZE) {
+	if (bdev_logical_block_size(sb->s_bdev) > PAGE_CACHE_SIZE) {
 		if (!silent)
 			ntfs_error(sb, "Device has unsupported sector size "
 					"(%i).  The maximum supported sector "
 					"size on this architecture is %lu "
 					"bytes.",
 					bdev_hardsect_size(sb->s_bdev),
+					bdev_logical_block_size(sb->s_bdev),
 					PAGE_CACHE_SIZE);
 		goto err_out_now;
 	}
@@ -2934,6 +3068,10 @@ static int ntfs_fill_super(struct super_block *sb, void *opt, const int silent)
 	if ((sb->s_root = d_alloc_root(vol->root_ino))) {
 		/* We increment i_count simulating an ntfs_iget(). */
 		atomic_inc(&vol->root_ino->i_count);
+
+	/* We grab a reference, simulating an ntfs_iget(). */
+	ihold(vol->root_ino);
+	if ((sb->s_root = d_make_root(vol->root_ino))) {
 		ntfs_debug("Exiting, status successful.");
 		/* Release the default upcase if it has no users. */
 		mutex_lock(&ntfs_lock);
@@ -3061,6 +3199,8 @@ iput_tmp_ino_err_out_now:
 	/* Errors at this stage are irrelevant. */
 err_out_now:
 	lock_kernel();
+	/* Errors at this stage are irrelevant. */
+err_out_now:
 	sb->s_fs_info = NULL;
 	kfree(vol);
 	ntfs_debug("Failed, returning -EINVAL.");
@@ -3102,6 +3242,10 @@ static int ntfs_get_sb(struct file_system_type *fs_type,
 {
 	return get_sb_bdev(fs_type, flags, dev_name, data, ntfs_fill_super,
 			   mnt);
+static struct dentry *ntfs_mount(struct file_system_type *fs_type,
+	int flags, const char *dev_name, void *data)
+{
+	return mount_bdev(fs_type, flags, dev_name, data, ntfs_fill_super);
 }
 
 static struct file_system_type ntfs_fs_type = {
@@ -3111,6 +3255,11 @@ static struct file_system_type ntfs_fs_type = {
 	.kill_sb	= kill_block_super,
 	.fs_flags	= FS_REQUIRES_DEV,
 };
+	.mount		= ntfs_mount,
+	.kill_sb	= kill_block_super,
+	.fs_flags	= FS_REQUIRES_DEV,
+};
+MODULE_ALIAS_FS("ntfs");
 
 /* Stable names for the slab caches. */
 static const char ntfs_index_ctx_cache_name[] = "ntfs_index_ctx_cache";
@@ -3125,6 +3274,7 @@ static int __init init_ntfs_fs(void)
 
 	/* This may be ugly but it results in pretty output so who cares. (-8 */
 	printk(KERN_INFO "NTFS driver " NTFS_VERSION " [Flags: R/"
+	pr_info("driver " NTFS_VERSION " [Flags: R/"
 #ifdef NTFS_RW
 			"W"
 #else
@@ -3146,6 +3296,7 @@ static int __init init_ntfs_fs(void)
 	if (!ntfs_index_ctx_cache) {
 		printk(KERN_CRIT "NTFS: Failed to create %s!\n",
 				ntfs_index_ctx_cache_name);
+		pr_crit("Failed to create %s!\n", ntfs_index_ctx_cache_name);
 		goto ictx_err_out;
 	}
 	ntfs_attr_ctx_cache = kmem_cache_create(ntfs_attr_ctx_cache_name,
@@ -3154,6 +3305,8 @@ static int __init init_ntfs_fs(void)
 	if (!ntfs_attr_ctx_cache) {
 		printk(KERN_CRIT "NTFS: Failed to create %s!\n",
 				ntfs_attr_ctx_cache_name);
+		pr_crit("NTFS: Failed to create %s!\n",
+			ntfs_attr_ctx_cache_name);
 		goto actx_err_out;
 	}
 
@@ -3163,6 +3316,7 @@ static int __init init_ntfs_fs(void)
 	if (!ntfs_name_cache) {
 		printk(KERN_CRIT "NTFS: Failed to create %s!\n",
 				ntfs_name_cache_name);
+		pr_crit("Failed to create %s!\n", ntfs_name_cache_name);
 		goto name_err_out;
 	}
 
@@ -3172,6 +3326,7 @@ static int __init init_ntfs_fs(void)
 	if (!ntfs_inode_cache) {
 		printk(KERN_CRIT "NTFS: Failed to create %s!\n",
 				ntfs_inode_cache_name);
+		pr_crit("Failed to create %s!\n", ntfs_inode_cache_name);
 		goto inode_err_out;
 	}
 
@@ -3182,6 +3337,7 @@ static int __init init_ntfs_fs(void)
 	if (!ntfs_big_inode_cache) {
 		printk(KERN_CRIT "NTFS: Failed to create %s!\n",
 				ntfs_big_inode_cache_name);
+		pr_crit("Failed to create %s!\n", ntfs_big_inode_cache_name);
 		goto big_inode_err_out;
 	}
 
@@ -3189,6 +3345,7 @@ static int __init init_ntfs_fs(void)
 	err = ntfs_sysctl(1);
 	if (err) {
 		printk(KERN_CRIT "NTFS: Failed to register NTFS sysctls!\n");
+		pr_crit("Failed to register NTFS sysctls!\n");
 		goto sysctl_err_out;
 	}
 
@@ -3199,6 +3356,10 @@ static int __init init_ntfs_fs(void)
 	}
 	printk(KERN_CRIT "NTFS: Failed to register NTFS filesystem driver!\n");
 
+	pr_crit("Failed to register NTFS filesystem driver!\n");
+
+	/* Unregister the ntfs sysctls. */
+	ntfs_sysctl(0);
 sysctl_err_out:
 	kmem_cache_destroy(ntfs_big_inode_cache);
 big_inode_err_out:
@@ -3213,6 +3374,7 @@ ictx_err_out:
 	if (!err) {
 		printk(KERN_CRIT "NTFS: Aborting NTFS filesystem driver "
 				"registration...\n");
+		pr_crit("Aborting NTFS filesystem driver registration...\n");
 		err = -ENOMEM;
 	}
 	return err;
@@ -3223,6 +3385,12 @@ static void __exit exit_ntfs_fs(void)
 	ntfs_debug("Unregistering NTFS driver.");
 
 	unregister_filesystem(&ntfs_fs_type);
+
+	/*
+	 * Make sure all delayed rcu free inodes are flushed before we
+	 * destroy cache.
+	 */
+	rcu_barrier();
 	kmem_cache_destroy(ntfs_big_inode_cache);
 	kmem_cache_destroy(ntfs_inode_cache);
 	kmem_cache_destroy(ntfs_name_cache);
@@ -3238,6 +3406,12 @@ MODULE_VERSION(NTFS_VERSION);
 MODULE_LICENSE("GPL");
 #ifdef DEBUG
 module_param(debug_msgs, bool, 0);
+MODULE_AUTHOR("Anton Altaparmakov <anton@tuxera.com>");
+MODULE_DESCRIPTION("NTFS 1.2/3.x driver - Copyright (c) 2001-2014 Anton Altaparmakov and Tuxera Inc.");
+MODULE_VERSION(NTFS_VERSION);
+MODULE_LICENSE("GPL");
+#ifdef DEBUG
+module_param(debug_msgs, bint, 0);
 MODULE_PARM_DESC(debug_msgs, "Enable debug messages.");
 #endif
 

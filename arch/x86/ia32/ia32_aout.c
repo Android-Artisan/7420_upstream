@@ -28,6 +28,8 @@
 #include <linux/jiffies.h>
 
 #include <asm/system.h>
+#include <linux/perf_event.h>
+
 #include <asm/uaccess.h>
 #include <asm/pgalloc.h>
 #include <asm/cacheflush.h>
@@ -44,12 +46,25 @@ static int load_aout_library(struct file *);
 static int aout_core_dump(long signr, struct pt_regs *regs, struct file *file,
 			  unsigned long limit);
 
+static int load_aout_binary(struct linux_binprm *);
+static int load_aout_library(struct file *);
+
+#ifdef CONFIG_COREDUMP
+static int aout_core_dump(struct coredump_params *);
+
+static unsigned long get_dr(int n)
+{
+	struct perf_event *bp = current->thread.ptrace_bps[n];
+	return bp ? bp->hw.info.address : 0;
+}
+
 /*
  * fill in the user structure for a core dump..
  */
-static void dump_thread32(struct pt_regs *regs, struct user32 *dump)
+static void fill_dump(struct pt_regs *regs, struct user32 *dump)
 {
 	u32 fs, gs;
+	memset(dump, 0, sizeof(*dump));
 
 /* changed the size calculations - should hopefully work better. lbt */
 	dump->magic = CMAGIC;
@@ -68,6 +83,12 @@ static void dump_thread32(struct pt_regs *regs, struct user32 *dump)
 	dump->u_debugreg[5] = 0;
 	dump->u_debugreg[6] = current->thread.debugreg6;
 	dump->u_debugreg[7] = current->thread.debugreg7;
+	dump->u_debugreg[0] = get_dr(0);
+	dump->u_debugreg[1] = get_dr(1);
+	dump->u_debugreg[2] = get_dr(2);
+	dump->u_debugreg[3] = get_dr(3);
+	dump->u_debugreg[6] = current->thread.debugreg6;
+	dump->u_debugreg[7] = current->thread.ptrace_dr7;
 
 	if (dump->start_stack < 0xc0000000) {
 		unsigned long tmp;
@@ -92,6 +113,24 @@ static void dump_thread32(struct pt_regs *regs, struct user32 *dump)
 	dump->regs.cs = regs->cs;
 	dump->regs.flags = regs->flags;
 	dump->regs.sp = regs->sp;
+	dump->regs.ebx = regs->bx;
+	dump->regs.ecx = regs->cx;
+	dump->regs.edx = regs->dx;
+	dump->regs.esi = regs->si;
+	dump->regs.edi = regs->di;
+	dump->regs.ebp = regs->bp;
+	dump->regs.eax = regs->ax;
+	dump->regs.ds = current->thread.ds;
+	dump->regs.es = current->thread.es;
+	savesegment(fs, fs);
+	dump->regs.fs = fs;
+	savesegment(gs, gs);
+	dump->regs.gs = gs;
+	dump->regs.orig_eax = regs->orig_ax;
+	dump->regs.eip = regs->ip;
+	dump->regs.cs = regs->cs;
+	dump->regs.eflags = regs->flags;
+	dump->regs.esp = regs->sp;
 	dump->regs.ss = regs->ss;
 
 #if 1 /* FIXME */
@@ -108,6 +147,7 @@ static struct linux_binfmt aout_format = {
 	.load_binary	= load_aout_binary,
 	.load_shlib	= load_aout_library,
 #ifdef CORE_DUMP
+#ifdef CONFIG_COREDUMP
 	.core_dump	= aout_core_dump,
 #endif
 	.min_coredump	= PAGE_SIZE
@@ -125,6 +165,10 @@ static void set_brk(unsigned long start, unsigned long end)
 }
 
 #ifdef CORE_DUMP
+	vm_brk(start, end - start);
+}
+
+#ifdef CONFIG_COREDUMP
 /*
  * These are the only things you should do on a core-file: use only these
  * macros to write out all the necessary info.
@@ -147,6 +191,9 @@ static int dump_write(struct file *file, const void *addr, int nr)
 		file->f_pos = (offset)
 
 #define START_DATA()	(u.u_tsize << PAGE_SHIFT)
+#include <linux/coredump.h>
+
+#define START_DATA(u)	(u.u_tsize << PAGE_SHIFT)
 #define START_STACK(u)	(u.start_stack)
 
 /*
@@ -161,6 +208,7 @@ static int dump_write(struct file *file, const void *addr, int nr)
 
 static int aout_core_dump(long signr, struct pt_regs *regs, struct file *file,
 			  unsigned long limit)
+static int aout_core_dump(struct coredump_params *cprm)
 {
 	mm_segment_t fs;
 	int has_dumped = 0;
@@ -176,6 +224,12 @@ static int aout_core_dump(long signr, struct pt_regs *regs, struct file *file,
 	dump.signal = signr;
 	dump_thread32(regs, &dump);
 
+	fill_dump(cprm->regs, &dump);
+
+	strncpy(dump.u_comm, current->comm, sizeof(current->comm));
+	dump.u_ar0 = offsetof(struct user32, regs);
+	dump.signal = cprm->siginfo->si_signo;
+
 	/*
 	 * If the size of the dump file exceeds the rlimit, then see
 	 * what would happen if we wrote the stack, but not the data
@@ -186,6 +240,11 @@ static int aout_core_dump(long signr, struct pt_regs *regs, struct file *file,
 
 	/* Make sure we have enough room to write the stack and data areas. */
 	if ((dump.u_ssize + 1) * PAGE_SIZE > limit)
+	if ((dump.u_dsize + dump.u_ssize + 1) * PAGE_SIZE > cprm->limit)
+		dump.u_dsize = 0;
+
+	/* Make sure we have enough room to write the stack and data areas. */
+	if ((dump.u_ssize + 1) * PAGE_SIZE > cprm->limit)
 		dump.u_ssize = 0;
 
 	/* make sure we actually have a data and stack area to dump */
@@ -202,6 +261,11 @@ static int aout_core_dump(long signr, struct pt_regs *regs, struct file *file,
 	DUMP_WRITE(&dump, sizeof(dump));
 	/* Now dump all of the user data.  Include malloced stuff as well */
 	DUMP_SEEK(PAGE_SIZE);
+	if (!dump_emit(cprm, &dump, sizeof(dump)))
+		goto end_coredump;
+	/* Now dump all of the user data.  Include malloced stuff as well */
+	if (!dump_skip(cprm, PAGE_SIZE - sizeof(dump)))
+		goto end_coredump;
 	/* now we start writing out the user space info */
 	set_fs(USER_DS);
 	/* Dump the data area */
@@ -209,6 +273,8 @@ static int aout_core_dump(long signr, struct pt_regs *regs, struct file *file,
 		dump_start = START_DATA(dump);
 		dump_size = dump.u_dsize << PAGE_SHIFT;
 		DUMP_WRITE(dump_start, dump_size);
+		if (!dump_emit(cprm, (void *)dump_start, dump_size))
+			goto end_coredump;
 	}
 	/* Now prepare to dump the stack area */
 	if (dump.u_ssize != 0) {
@@ -222,6 +288,9 @@ static int aout_core_dump(long signr, struct pt_regs *regs, struct file *file,
 	 */
 	set_fs(KERNEL_DS);
 	DUMP_WRITE(current, sizeof(*current));
+		if (!dump_emit(cprm, (void *)dump_start, dump_size))
+			goto end_coredump;
+	}
 end_coredump:
 	set_fs(fs);
 	return has_dumped;
@@ -277,6 +346,10 @@ static u32 __user *create_aout_tables(char __user *p, struct linux_binprm *bprm)
 static int load_aout_binary(struct linux_binprm *bprm, struct pt_regs *regs)
 {
 	unsigned long error, fd_offset, rlim;
+static int load_aout_binary(struct linux_binprm *bprm)
+{
+	unsigned long error, fd_offset, rlim;
+	struct pt_regs *regs = current_pt_regs();
 	struct exec ex;
 	int retval;
 
@@ -285,6 +358,7 @@ static int load_aout_binary(struct linux_binprm *bprm, struct pt_regs *regs)
 	     N_MAGIC(ex) != QMAGIC && N_MAGIC(ex) != NMAGIC) ||
 	    N_TRSIZE(ex) || N_DRSIZE(ex) ||
 	    i_size_read(bprm->file->f_path.dentry->d_inode) <
+	    i_size_read(file_inode(bprm->file)) <
 	    ex.a_text+ex.a_data+N_SYMSIZE(ex)+N_TXTOFF(ex)) {
 		return -ENOEXEC;
 	}
@@ -296,6 +370,7 @@ static int load_aout_binary(struct linux_binprm *bprm, struct pt_regs *regs)
 	 * arrays in the data or bss.
 	 */
 	rlim = current->signal->rlim[RLIMIT_DATA].rlim_cur;
+	rlim = rlimit(RLIMIT_DATA);
 	if (rlim >= RLIM_INFINITY)
 		rlim = ~0;
 	if (ex.a_data + ex.a_bss > rlim)
@@ -305,6 +380,12 @@ static int load_aout_binary(struct linux_binprm *bprm, struct pt_regs *regs)
 	retval = flush_old_exec(bprm);
 	if (retval)
 		return retval;
+
+	/* OK, This is the point of no return */
+	set_personality(PER_LINUX);
+	set_personality_ia32(false);
+
+	setup_new_exec(bprm);
 
 	regs->cs = __USER32_CS;
 	regs->r8 = regs->r9 = regs->r10 = regs->r11 = regs->r12 =
@@ -355,6 +436,28 @@ static int load_aout_binary(struct linux_binprm *bprm, struct pt_regs *regs)
 		}
 
 		flush_icache_range(text_addr, text_addr+ex.a_text+ex.a_data);
+
+	retval = setup_arg_pages(bprm, IA32_STACK_TOP, EXSTACK_DEFAULT);
+	if (retval < 0)
+		return retval;
+
+	install_exec_creds(bprm);
+
+	if (N_MAGIC(ex) == OMAGIC) {
+		unsigned long text_addr, map_size;
+
+		text_addr = N_TXTADDR(ex);
+		map_size = ex.a_text+ex.a_data;
+
+		error = vm_brk(text_addr & PAGE_MASK, map_size);
+
+		if (error != (text_addr & PAGE_MASK))
+			return error;
+
+		error = read_code(bprm->file, text_addr, 32,
+				  ex.a_text + ex.a_data);
+		if ((signed long)error < 0)
+			return error;
 	} else {
 #ifdef WARN_OLD
 		static unsigned long error_time, error_time2;
@@ -371,6 +474,8 @@ static int load_aout_binary(struct linux_binprm *bprm, struct pt_regs *regs)
 			       "fd_offset is not page aligned. Please convert "
 			       "program: %s\n",
 			       bprm->file->f_path.dentry->d_name.name);
+			       "program: %pD\n",
+			       bprm->file);
 			error_time = jiffies;
 		}
 #endif
@@ -392,6 +497,13 @@ static int load_aout_binary(struct linux_binprm *bprm, struct pt_regs *regs)
 
 		down_write(&current->mm->mmap_sem);
 		error = do_mmap(bprm->file, N_TXTADDR(ex), ex.a_text,
+			vm_brk(N_TXTADDR(ex), ex.a_text+ex.a_data);
+			read_code(bprm->file, N_TXTADDR(ex), fd_offset,
+					ex.a_text+ex.a_data);
+			goto beyond_if;
+		}
+
+		error = vm_mmap(bprm->file, N_TXTADDR(ex), ex.a_text,
 				PROT_READ | PROT_EXEC,
 				MAP_FIXED | MAP_PRIVATE | MAP_DENYWRITE |
 				MAP_EXECUTABLE | MAP_32BIT,
@@ -405,6 +517,11 @@ static int load_aout_binary(struct linux_binprm *bprm, struct pt_regs *regs)
 
 		down_write(&current->mm->mmap_sem);
 		error = do_mmap(bprm->file, N_DATADDR(ex), ex.a_data,
+
+		if (error != N_TXTADDR(ex))
+			return error;
+
+		error = vm_mmap(bprm->file, N_DATADDR(ex), ex.a_data,
 				PROT_READ | PROT_WRITE | PROT_EXEC,
 				MAP_FIXED | MAP_PRIVATE | MAP_DENYWRITE |
 				MAP_EXECUTABLE | MAP_32BIT,
@@ -414,6 +531,8 @@ static int load_aout_binary(struct linux_binprm *bprm, struct pt_regs *regs)
 			send_sig(SIGKILL, current, 0);
 			return error;
 		}
+		if (error != N_DATADDR(ex))
+			return error;
 	}
 beyond_if:
 	set_binfmt(&aout_format);
@@ -432,6 +551,12 @@ beyond_if:
 	/* start thread */
 	asm volatile("movl %0,%%fs" :: "r" (0)); \
 	asm volatile("movl %0,%%es; movl %0,%%ds": :"r" (__USER32_DS));
+	current->mm->start_stack =
+		(unsigned long)create_aout_tables((char __user *)bprm->p, bprm);
+	/* start thread */
+	loadsegment(fs, 0);
+	loadsegment(ds, __USER32_DS);
+	loadsegment(es, __USER32_DS);
 	load_gs_index(0);
 	(regs)->ip = ex.a_entry;
 	(regs)->sp = current->mm->start_stack;
@@ -462,6 +587,7 @@ static int load_aout_library(struct file *file)
 	if ((N_MAGIC(ex) != ZMAGIC && N_MAGIC(ex) != QMAGIC) || N_TRSIZE(ex) ||
 	    N_DRSIZE(ex) || ((ex.a_entry & 0xfff) && N_MAGIC(ex) == ZMAGIC) ||
 	    i_size_read(inode) <
+	    i_size_read(file_inode(file)) <
 	    ex.a_text+ex.a_data+N_SYMSIZE(ex)+N_TXTOFF(ex)) {
 		goto out;
 	}
@@ -497,6 +623,15 @@ static int load_aout_library(struct file *file)
 				   (unsigned long) start_addr + ex.a_text +
 				   ex.a_data);
 
+			       "library: %pD\n",
+			       file);
+			error_time = jiffies;
+		}
+#endif
+		vm_brk(start_addr, ex.a_text + ex.a_data + ex.a_bss);
+
+		read_code(file, start_addr, N_TXTOFF(ex),
+			  ex.a_text + ex.a_data);
 		retval = 0;
 		goto out;
 	}
@@ -507,6 +642,10 @@ static int load_aout_library(struct file *file)
 			MAP_FIXED | MAP_PRIVATE | MAP_DENYWRITE | MAP_32BIT,
 			N_TXTOFF(ex));
 	up_write(&current->mm->mmap_sem);
+	error = vm_mmap(file, start_addr, ex.a_text + ex.a_data,
+			PROT_READ | PROT_WRITE | PROT_EXEC,
+			MAP_FIXED | MAP_PRIVATE | MAP_DENYWRITE | MAP_32BIT,
+			N_TXTOFF(ex));
 	retval = error;
 	if (error != start_addr)
 		goto out;
@@ -517,6 +656,7 @@ static int load_aout_library(struct file *file)
 		down_write(&current->mm->mmap_sem);
 		error = do_brk(start_addr + len, bss - len);
 		up_write(&current->mm->mmap_sem);
+		error = vm_brk(start_addr + len, bss - len);
 		retval = error;
 		if (error != start_addr + len)
 			goto out;
@@ -529,6 +669,8 @@ out:
 static int __init init_aout_binfmt(void)
 {
 	return register_binfmt(&aout_format);
+	register_binfmt(&aout_format);
+	return 0;
 }
 
 static void __exit exit_aout_binfmt(void)

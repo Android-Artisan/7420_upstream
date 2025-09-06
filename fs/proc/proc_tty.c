@@ -14,11 +14,13 @@
 #include <linux/tty.h>
 #include <linux/seq_file.h>
 #include <linux/bitops.h>
+#include "internal.h"
 
 /*
  * The /proc/tty directory inodes...
  */
 static struct proc_dir_entry *proc_tty_ldisc, *proc_tty_driver;
+static struct proc_dir_entry *proc_tty_driver;
 
 /*
  * This is the handler for /proc/tty/drivers
@@ -57,6 +59,27 @@ static void show_tty_range(struct seq_file *m, struct tty_driver *p,
 			seq_printf(m, "pty:slave");
 		else
 			seq_printf(m, "pty");
+		seq_puts(m, "system");
+		if (p->subtype == SYSTEM_TYPE_TTY)
+			seq_puts(m, ":/dev/tty");
+		else if (p->subtype == SYSTEM_TYPE_SYSCONS)
+			seq_puts(m, ":console");
+		else if (p->subtype == SYSTEM_TYPE_CONSOLE)
+			seq_puts(m, ":vtmaster");
+		break;
+	case TTY_DRIVER_TYPE_CONSOLE:
+		seq_puts(m, "console");
+		break;
+	case TTY_DRIVER_TYPE_SERIAL:
+		seq_puts(m, "serial");
+		break;
+	case TTY_DRIVER_TYPE_PTY:
+		if (p->subtype == PTY_TYPE_MASTER)
+			seq_puts(m, "pty:master");
+		else if (p->subtype == PTY_TYPE_SLAVE)
+			seq_puts(m, "pty:slave");
+		else
+			seq_puts(m, "pty");
 		break;
 	default:
 		seq_printf(m, "type:%d.%d", p->type, p->subtype);
@@ -82,11 +105,20 @@ static int show_tty_driver(struct seq_file *m, void *v)
 		seq_printf(m, "%-20s /dev/%-8s ", "/dev/ptmx", "ptmx");
 		seq_printf(m, "%3d %7d ", TTYAUX_MAJOR, 2);
 		seq_printf(m, "system\n");
+		seq_puts(m, "system:/dev/tty\n");
+		seq_printf(m, "%-20s /dev/%-8s ", "/dev/console", "console");
+		seq_printf(m, "%3d %7d ", TTYAUX_MAJOR, 1);
+		seq_puts(m, "system:console\n");
+#ifdef CONFIG_UNIX98_PTYS
+		seq_printf(m, "%-20s /dev/%-8s ", "/dev/ptmx", "ptmx");
+		seq_printf(m, "%3d %7d ", TTYAUX_MAJOR, 2);
+		seq_puts(m, "system\n");
 #endif
 #ifdef CONFIG_VT
 		seq_printf(m, "%-20s /dev/%-8s ", "/dev/vc/0", "vc/0");
 		seq_printf(m, "%3d %7d ", TTY_MAJOR, 0);
 		seq_printf(m, "system:vtmaster\n");
+		seq_puts(m, "system:vtmaster\n");
 #endif
 	}
 
@@ -155,6 +187,12 @@ void proc_tty_register_driver(struct tty_driver *driver)
 	ent->owner = driver->owner;
 	ent->data = driver;
 
+	if (!driver->driver_name || driver->proc_entry ||
+	    !driver->ops->proc_fops)
+		return;
+
+	ent = proc_create_data(driver->driver_name, 0, proc_tty_driver,
+			       driver->ops->proc_fops, driver);
 	driver->proc_entry = ent;
 }
 
@@ -169,7 +207,7 @@ void proc_tty_unregister_driver(struct tty_driver *driver)
 	if (!ent)
 		return;
 		
-	remove_proc_entry(driver->driver_name, proc_tty_driver);
+	remove_proc_entry(ent->name, proc_tty_driver);
 	
 	driver->proc_entry = NULL;
 }
@@ -182,6 +220,7 @@ void __init proc_tty_init(void)
 	if (!proc_mkdir("tty", NULL))
 		return;
 	proc_tty_ldisc = proc_mkdir("tty/ldisc", NULL);
+	proc_mkdir("tty/ldisc", NULL);	/* Preserved: it's userspace visible */
 	/*
 	 * /proc/tty/driver/serial reveals the exact character counts for
 	 * serial links which is just too easy to abuse for inferring

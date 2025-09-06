@@ -43,6 +43,7 @@
  *
  * size = itcw_calc_size(1, 2, 0);
  * buffer = kmalloc(size, GFP_DMA);
+ * buffer = kmalloc(size, GFP_KERNEL | GFP_DMA);
  * if (!buffer)
  *	return -ENOMEM;
  * itcw = itcw_init(buffer, size, ITCW_OP_READ, 1, 2, 0);
@@ -93,6 +94,7 @@ EXPORT_SYMBOL(itcw_get_tcw);
 size_t itcw_calc_size(int intrg, int max_tidaws, int intrg_max_tidaws)
 {
 	size_t len;
+	int cross_count;
 
 	/* Main data. */
 	len = sizeof(struct itcw);
@@ -111,6 +113,27 @@ size_t itcw_calc_size(int intrg, int max_tidaws, int intrg_max_tidaws)
 	if ((max_tidaws > 0) || (intrg_max_tidaws > 0))
 		len += max(max_tidaws, intrg_max_tidaws) *
 		       sizeof(struct tidaw) - 1;
+
+	/* Maximum required alignment padding. */
+	len += /* Initial TCW */ 63 + /* Interrogate TCCB */ 7;
+
+	/* TIDAW lists may not cross a 4k boundary. To cross a
+	 * boundary we need to add a TTIC TIDAW. We need to reserve
+	 * one additional TIDAW for a TTIC that we may need to add due
+	 * to the placement of the data chunk in memory, and a further
+	 * TIDAW for each page boundary that the TIDAW list may cross
+	 * due to it's own size.
+	 */
+	if (max_tidaws) {
+		cross_count = 1 + ((max_tidaws * sizeof(struct tidaw) - 1)
+				   >> PAGE_SHIFT);
+		len += cross_count * sizeof(struct tidaw);
+	}
+	if (intrg_max_tidaws) {
+		cross_count = 1 + ((intrg_max_tidaws * sizeof(struct tidaw) - 1)
+				   >> PAGE_SHIFT);
+		len += cross_count * sizeof(struct tidaw);
+	}
 	return len;
 }
 EXPORT_SYMBOL(itcw_calc_size);
@@ -165,6 +188,7 @@ struct itcw *itcw_init(void *buffer, size_t size, int op, int intrg,
 	void *chunk;
 	addr_t start;
 	addr_t end;
+	int cross_count;
 
 	/* Check for 2G limit. */
 	start = (addr_t) buffer;
@@ -179,6 +203,17 @@ struct itcw *itcw_init(void *buffer, size_t size, int op, int intrg,
 	itcw = chunk;
 	itcw->max_tidaws = max_tidaws;
 	itcw->intrg_max_tidaws = intrg_max_tidaws;
+	/* allow for TTIC tidaws that may be needed to cross a page boundary */
+	cross_count = 0;
+	if (max_tidaws)
+		cross_count = 1 + ((max_tidaws * sizeof(struct tidaw) - 1)
+				   >> PAGE_SHIFT);
+	itcw->max_tidaws = max_tidaws + cross_count;
+	cross_count = 0;
+	if (intrg_max_tidaws)
+		cross_count = 1 + ((intrg_max_tidaws * sizeof(struct tidaw) - 1)
+				   >> PAGE_SHIFT);
+	itcw->intrg_max_tidaws = intrg_max_tidaws + cross_count;
 	/* Main TCW. */
 	chunk = fit_chunk(&start, end, sizeof(struct tcw), 64, 0);
 	if (IS_ERR(chunk))
@@ -199,6 +234,7 @@ struct itcw *itcw_init(void *buffer, size_t size, int op, int intrg,
 	if (max_tidaws > 0) {
 		chunk = fit_chunk(&start, end, sizeof(struct tidaw) *
 				  max_tidaws, 16, 1);
+				  itcw->max_tidaws, 16, 0);
 		if (IS_ERR(chunk))
 			return chunk;
 		tcw_set_data(itcw->tcw, chunk, 1);
@@ -207,6 +243,7 @@ struct itcw *itcw_init(void *buffer, size_t size, int op, int intrg,
 	if (intrg && (intrg_max_tidaws > 0)) {
 		chunk = fit_chunk(&start, end, sizeof(struct tidaw) *
 				  intrg_max_tidaws, 16, 1);
+				  itcw->intrg_max_tidaws, 16, 0);
 		if (IS_ERR(chunk))
 			return chunk;
 		tcw_set_data(itcw->intrg_tcw, chunk, 1);
@@ -290,6 +327,29 @@ struct tidaw *itcw_add_tidaw(struct itcw *itcw, u8 flags, void *addr, u32 count)
 {
 	if (itcw->num_tidaws >= itcw->max_tidaws)
 		return ERR_PTR(-ENOSPC);
+ * Note: TTIC tidaws are automatically added when needed, so explicitly calling
+ * this interface with the TTIC flag is not supported. The last-tidaw flag
+ * for the last tidaw in the list will be set by itcw_finalize.
+ */
+struct tidaw *itcw_add_tidaw(struct itcw *itcw, u8 flags, void *addr, u32 count)
+{
+	struct tidaw *following;
+
+	if (itcw->num_tidaws >= itcw->max_tidaws)
+		return ERR_PTR(-ENOSPC);
+	/*
+	 * Is the tidaw, which follows the one we are about to fill, on the next
+	 * page? Then we have to insert a TTIC tidaw first, that points to the
+	 * tidaw on the new page.
+	 */
+	following = ((struct tidaw *) tcw_get_data(itcw->tcw))
+		+ itcw->num_tidaws + 1;
+	if (itcw->num_tidaws && !((unsigned long) following & ~PAGE_MASK)) {
+		tcw_add_tidaw(itcw->tcw, itcw->num_tidaws++,
+			      TIDAW_FLAGS_TTIC, following, 0);
+		if (itcw->num_tidaws >= itcw->max_tidaws)
+			return ERR_PTR(-ENOSPC);
+	}
 	return tcw_add_tidaw(itcw->tcw, itcw->num_tidaws++, flags, addr, count);
 }
 EXPORT_SYMBOL(itcw_add_tidaw);

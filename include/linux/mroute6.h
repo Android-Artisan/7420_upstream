@@ -118,10 +118,16 @@ struct sioc_mif_req6
 #include <linux/pim.h>
 #include <linux/skbuff.h>	/* for struct sk_buff_head */
 
+#include <linux/pim.h>
+#include <linux/skbuff.h>	/* for struct sk_buff_head */
+#include <net/net_namespace.h>
+#include <uapi/linux/mroute6.h>
+
 #ifdef CONFIG_IPV6_MROUTE
 static inline int ip6_mroute_opt(int opt)
 {
 	return (opt >= MRT6_BASE) && (opt <= MRT6_BASE + 10);
+	return (opt >= MRT6_BASE) && (opt <= MRT6_MAX);
 }
 #else
 static inline int ip6_mroute_opt(int opt)
@@ -137,12 +143,18 @@ extern int ip6_mroute_setsockopt(struct sock *, int, char __user *, int);
 extern int ip6_mroute_getsockopt(struct sock *, int, char __user *, int __user *);
 extern int ip6_mr_input(struct sk_buff *skb);
 extern int ip6mr_ioctl(struct sock *sk, int cmd, void __user *arg);
+extern int ip6_mroute_setsockopt(struct sock *, int, char __user *, unsigned int);
+extern int ip6_mroute_getsockopt(struct sock *, int, char __user *, int __user *);
+extern int ip6_mr_input(struct sk_buff *skb);
+extern int ip6mr_ioctl(struct sock *sk, int cmd, void __user *arg);
+extern int ip6mr_compat_ioctl(struct sock *sk, unsigned int cmd, void __user *arg);
 extern int ip6_mr_init(void);
 extern void ip6_mr_cleanup(void);
 #else
 static inline
 int ip6_mroute_setsockopt(struct sock *sock,
 			  int optname, char __user *optval, int optlen)
+			  int optname, char __user *optval, unsigned int optlen)
 {
 	return -ENOPROTOOPT;
 }
@@ -173,6 +185,7 @@ static inline void ip6_mr_cleanup(void)
 
 struct mif_device
 {
+struct mif_device {
 	struct net_device 	*dev;			/* Device we are using */
 	unsigned long	bytes_in,bytes_out;
 	unsigned long	pkt_in,pkt_out;		/* Statistics 			*/
@@ -187,6 +200,8 @@ struct mif_device
 struct mfc6_cache
 {
 	struct mfc6_cache *next;		/* Next entry on cache line 	*/
+struct mfc6_cache {
+	struct list_head list;
 	struct in6_addr mf6c_mcastgrp;			/* Group the entry belongs to 	*/
 	struct in6_addr mf6c_origin;			/* Source of packet 		*/
 	mifi_t mf6c_parent;			/* Source interface		*/
@@ -259,4 +274,22 @@ struct mrt6msg {
 	struct in6_addr	im6_src, im6_dst;
 };
 
+#endif
+struct rtmsg;
+extern int ip6mr_get_route(struct net *net, struct sk_buff *skb,
+			   struct rtmsg *rtm, int nowait, u32 portid);
+
+#ifdef CONFIG_IPV6_MROUTE
+extern struct sock *mroute6_socket(struct net *net, struct sk_buff *skb);
+extern int ip6mr_sk_done(struct sock *sk);
+#else
+static inline struct sock *mroute6_socket(struct net *net, struct sk_buff *skb)
+{
+	return NULL;
+}
+static inline int ip6mr_sk_done(struct sock *sk)
+{
+	return 0;
+}
+#endif
 #endif

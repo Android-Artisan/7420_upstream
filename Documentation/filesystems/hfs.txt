@@ -1,6 +1,6 @@
+Note: This filesystem doesn't have a maintainer.
 
 Macintosh HFS Filesystem for Linux
-==================================
 
 HFS stands for ``Hierarchical File System'' and is the filesystem used
 by the Mac Plus and all later Macintosh models.  Earlier Macintosh
@@ -11,7 +11,6 @@ to access such filesystems from Linux.
 
 
 Mount options
-=============
 
 When mounting an HFS filesystem, the following options are accepted:
 
@@ -43,7 +42,6 @@ When mounting an HFS filesystem, the following options are accepted:
 
 
 Writing to HFS Filesystems
-==========================
 
 HFS is not a UNIX filesystem, thus it does not have the usual features you'd
 expect:
@@ -66,7 +64,6 @@ the a little strange:
 
 
 Creating HFS filesystems
-===================================
 
 The hfsutils package from Robert Leslie contains a program called
 hformat that can be used to create HFS filesystem. See
@@ -74,10 +71,12 @@ hformat that can be used to create HFS filesystem. See
 
 
 Credits
-=======
 
 The HFS drivers was written by Paul H. Hargrovea (hargrove@sccm.Stanford.EDU)
 and is now maintained by Roman Zippel (roman@ardistech.com) at Ardis
 Technologies.
 Roman rewrote large parts of the code and brought in btree routines derived
 from Brad Boyer's hfsplus driver (also maintained by Roman now).
+The HFS drivers was written by Paul H. Hargrovea (hargrove@sccm.Stanford.EDU).
+Roman Zippel (roman@ardistech.com) rewrote large parts of the code and brought
+in btree routines derived from Brad Boyer's hfsplus driver.

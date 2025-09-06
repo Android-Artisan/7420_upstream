@@ -23,6 +23,21 @@
 #include <asm/desc.h>
 #include <asm/apic.h>
 #include <asm/arch_hooks.h>
+#include <linux/random.h>
+#include <linux/init.h>
+#include <linux/kernel_stat.h>
+#include <linux/syscore_ops.h>
+#include <linux/bitops.h>
+#include <linux/acpi.h>
+#include <linux/io.h>
+#include <linux/delay.h>
+
+#include <linux/atomic.h>
+#include <asm/timer.h>
+#include <asm/hw_irq.h>
+#include <asm/pgtable.h>
+#include <asm/desc.h>
+#include <asm/apic.h>
 #include <asm/i8259.h>
 
 /*
@@ -43,6 +58,11 @@ struct irq_chip i8259A_chip = {
 	.unmask		= enable_8259A_irq,
 	.mask_ack	= mask_and_ack_8259A,
 };
+static void init_8259A(int auto_eoi);
+
+static bool pcat_compat;
+static int i8259A_auto_eoi;
+DEFINE_RAW_SPINLOCK(i8259A_lock);
 
 /*
  * 8259A PIC functions to handle ISA devices:
@@ -65,11 +85,13 @@ unsigned int cached_irq_mask = 0xffff;
 unsigned long io_apic_irqs;
 
 void disable_8259A_irq(unsigned int irq)
+static void mask_8259A_irq(unsigned int irq)
 {
 	unsigned int mask = 1 << irq;
 	unsigned long flags;
 
 	spin_lock_irqsave(&i8259A_lock, flags);
+	raw_spin_lock_irqsave(&i8259A_lock, flags);
 	cached_irq_mask |= mask;
 	if (irq & 8)
 		outb(cached_slave_mask, PIC_SLAVE_IMR);
@@ -79,11 +101,21 @@ void disable_8259A_irq(unsigned int irq)
 }
 
 void enable_8259A_irq(unsigned int irq)
+	raw_spin_unlock_irqrestore(&i8259A_lock, flags);
+}
+
+static void disable_8259A_irq(struct irq_data *data)
+{
+	mask_8259A_irq(data->irq);
+}
+
+static void unmask_8259A_irq(unsigned int irq)
 {
 	unsigned int mask = ~(1 << irq);
 	unsigned long flags;
 
 	spin_lock_irqsave(&i8259A_lock, flags);
+	raw_spin_lock_irqsave(&i8259A_lock, flags);
 	cached_irq_mask &= mask;
 	if (irq & 8)
 		outb(cached_slave_mask, PIC_SLAVE_IMR);
@@ -93,17 +125,28 @@ void enable_8259A_irq(unsigned int irq)
 }
 
 int i8259A_irq_pending(unsigned int irq)
+	raw_spin_unlock_irqrestore(&i8259A_lock, flags);
+}
+
+static void enable_8259A_irq(struct irq_data *data)
+{
+	unmask_8259A_irq(data->irq);
+}
+
+static int i8259A_irq_pending(unsigned int irq)
 {
 	unsigned int mask = 1<<irq;
 	unsigned long flags;
 	int ret;
 
 	spin_lock_irqsave(&i8259A_lock, flags);
+	raw_spin_lock_irqsave(&i8259A_lock, flags);
 	if (irq < 8)
 		ret = inb(PIC_MASTER_CMD) & mask;
 	else
 		ret = inb(PIC_SLAVE_CMD) & (mask >> 8);
 	spin_unlock_irqrestore(&i8259A_lock, flags);
+	raw_spin_unlock_irqrestore(&i8259A_lock, flags);
 
 	return ret;
 }
@@ -114,6 +157,12 @@ void make_8259A_irq(unsigned int irq)
 	io_apic_irqs &= ~(1<<irq);
 	set_irq_chip_and_handler_name(irq, &i8259A_chip, handle_level_irq,
 				      "XT");
+static void make_8259A_irq(unsigned int irq)
+{
+	disable_irq_nosync(irq);
+	io_apic_irqs &= ~(1<<irq);
+	irq_set_chip_and_handler(irq, &i8259A_chip, handle_level_irq);
+	irq_set_status_flags(irq, IRQ_LEVEL);
 	enable_irq(irq);
 }
 
@@ -152,6 +201,13 @@ static void mask_and_ack_8259A(unsigned int irq)
 	unsigned long flags;
 
 	spin_lock_irqsave(&i8259A_lock, flags);
+static void mask_and_ack_8259A(struct irq_data *data)
+{
+	unsigned int irq = data->irq;
+	unsigned int irqmask = 1 << irq;
+	unsigned long flags;
+
+	raw_spin_lock_irqsave(&i8259A_lock, flags);
 	/*
 	 * Lightweight spurious IRQ detection. We do not want
 	 * to overdo spurious IRQ handling - it's usually a sign
@@ -185,6 +241,7 @@ handle_real_irq:
 		outb(0x60+irq, PIC_MASTER_CMD);	/* 'Specific EOI to master */
 	}
 	spin_unlock_irqrestore(&i8259A_lock, flags);
+	raw_spin_unlock_irqrestore(&i8259A_lock, flags);
 	return;
 
 spurious_8259A_irq:
@@ -205,7 +262,7 @@ spurious_8259A_irq:
 		 * lets ACK and report it. [once per IRQ]
 		 */
 		if (!(spurious_irq_mask & irqmask)) {
-			printk(KERN_DEBUG
+			printk_deferred(KERN_DEBUG
 			       "spurious 8259A interrupt: IRQ%d.\n", irq);
 			spurious_irq_mask |= irqmask;
 		}
@@ -218,6 +275,14 @@ spurious_8259A_irq:
 		goto handle_real_irq;
 	}
 }
+
+struct irq_chip i8259A_chip = {
+	.name		= "XT-PIC",
+	.irq_mask	= disable_8259A_irq,
+	.irq_disable	= disable_8259A_irq,
+	.irq_unmask	= enable_8259A_irq,
+	.irq_mask_ack	= mask_and_ack_8259A,
+};
 
 static char irq_trigger[2];
 /**
@@ -244,12 +309,20 @@ static int i8259A_resume(struct sys_device *dev)
 }
 
 static int i8259A_suspend(struct sys_device *dev, pm_message_t state)
+static void i8259A_resume(void)
+{
+	init_8259A(i8259A_auto_eoi);
+	restore_ELCR(irq_trigger);
+}
+
+static int i8259A_suspend(void)
 {
 	save_ELCR(irq_trigger);
 	return 0;
 }
 
 static int i8259A_shutdown(struct sys_device *dev)
+static void i8259A_shutdown(void)
 {
 	/* Put the i8259A into a quiescent state that
 	 * the kernel initialization code can get it
@@ -262,6 +335,10 @@ static int i8259A_shutdown(struct sys_device *dev)
 
 static struct sysdev_class i8259_sysdev_class = {
 	.name = "i8259",
+	outb(0xff, PIC_SLAVE_IMR);	/* mask all of 8259A-2 */
+}
+
+static struct syscore_ops i8259_syscore_ops = {
 	.suspend = i8259A_suspend,
 	.resume = i8259A_resume,
 	.shutdown = i8259A_shutdown,
@@ -283,6 +360,74 @@ static int __init i8259A_init_sysfs(void)
 device_initcall(i8259A_init_sysfs);
 
 void init_8259A(int auto_eoi)
+static void mask_8259A(void)
+{
+	unsigned long flags;
+
+	raw_spin_lock_irqsave(&i8259A_lock, flags);
+
+	outb(0xff, PIC_MASTER_IMR);	/* mask all of 8259A-1 */
+	outb(0xff, PIC_SLAVE_IMR);	/* mask all of 8259A-2 */
+
+	raw_spin_unlock_irqrestore(&i8259A_lock, flags);
+}
+
+static void unmask_8259A(void)
+{
+	unsigned long flags;
+
+	raw_spin_lock_irqsave(&i8259A_lock, flags);
+
+	outb(cached_master_mask, PIC_MASTER_IMR); /* restore master IRQ mask */
+	outb(cached_slave_mask, PIC_SLAVE_IMR);	  /* restore slave IRQ mask */
+
+	raw_spin_unlock_irqrestore(&i8259A_lock, flags);
+}
+
+static int probe_8259A(void)
+{
+	unsigned char new_val, probe_val = ~(1 << PIC_CASCADE_IR);
+	unsigned long flags;
+
+	/*
+	 * If MADT has the PCAT_COMPAT flag set, then do not bother probing
+	 * for the PIC. Some BIOSes leave the PIC uninitialized and probing
+	 * fails.
+	 *
+	 * Right now this causes problems as quite some code depends on
+	 * nr_legacy_irqs() > 0 or has_legacy_pic() == true. This is silly
+	 * when the system has an IO/APIC because then PIC is not required
+	 * at all, except for really old machines where the timer interrupt
+	 * must be routed through the PIC. So just pretend that the PIC is
+	 * there and let legacy_pic->init() initialize it for nothing.
+	 *
+	 * Alternatively this could just try to initialize the PIC and
+	 * repeat the probe, but for cases where there is no PIC that's
+	 * just pointless.
+	 */
+	if (pcat_compat)
+		return nr_legacy_irqs();
+
+	/*
+	 * Check to see if we have a PIC.  Mask all except the cascade and
+	 * read back the value we just wrote. If we don't have a PIC, we
+	 * will read 0xff as opposed to the value we wrote.
+	 */
+	raw_spin_lock_irqsave(&i8259A_lock, flags);
+
+	outb(0xff, PIC_SLAVE_IMR);	/* mask all of 8259A-2 */
+	outb(probe_val, PIC_MASTER_IMR);
+	new_val = inb(PIC_MASTER_IMR);
+	if (new_val != probe_val) {
+		printk(KERN_INFO "Using NULL legacy PIC\n");
+		legacy_pic = &null_legacy_pic;
+	}
+
+	raw_spin_unlock_irqrestore(&i8259A_lock, flags);
+	return nr_legacy_irqs();
+}
+
+static void init_8259A(int auto_eoi)
 {
 	unsigned long flags;
 
@@ -292,6 +437,9 @@ void init_8259A(int auto_eoi)
 
 	outb(0xff, PIC_MASTER_IMR);	/* mask all of 8259A-1 */
 	outb(0xff, PIC_SLAVE_IMR);	/* mask all of 8259A-2 */
+	raw_spin_lock_irqsave(&i8259A_lock, flags);
+
+	outb(0xff, PIC_MASTER_IMR);	/* mask all of 8259A-1 */
 
 	/*
 	 * outb_pic - this has to work on a wide range of PC hardware.
@@ -301,6 +449,8 @@ void init_8259A(int auto_eoi)
 	/* ICW2: 8259A-1 IR0-7 mapped to 0x30-0x37 on x86-64,
 	                       to 0x20-0x27 on i386 */
 	outb_pic(IRQ0_VECTOR, PIC_MASTER_IMR);
+	/* ICW2: 8259A-1 IR0-7 mapped to ISA_IRQ_VECTOR(0) */
+	outb_pic(ISA_IRQ_VECTOR(0), PIC_MASTER_IMR);
 
 	/* 8259A-1 (the master) has a slave on IR2 */
 	outb_pic(1U << PIC_CASCADE_IR, PIC_MASTER_IMR);
@@ -314,6 +464,8 @@ void init_8259A(int auto_eoi)
 
 	/* ICW2: 8259A-2 IR0-7 mapped to IRQ8_VECTOR */
 	outb_pic(IRQ8_VECTOR, PIC_SLAVE_IMR);
+	/* ICW2: 8259A-2 IR0-7 mapped to ISA_IRQ_VECTOR(8) */
+	outb_pic(ISA_IRQ_VECTOR(8), PIC_SLAVE_IMR);
 	/* 8259A-2 is a slave on master's IR2 */
 	outb_pic(PIC_CASCADE_IR, PIC_SLAVE_IMR);
 	/* (slave's support for AEOI in flat mode is to be investigated) */
@@ -327,6 +479,9 @@ void init_8259A(int auto_eoi)
 		i8259A_chip.mask_ack = disable_8259A_irq;
 	else
 		i8259A_chip.mask_ack = mask_and_ack_8259A;
+		i8259A_chip.irq_mask_ack = disable_8259A_irq;
+	else
+		i8259A_chip.irq_mask_ack = mask_and_ack_8259A;
 
 	udelay(100);		/* wait for 8259A to initialize */
 
@@ -334,4 +489,67 @@ void init_8259A(int auto_eoi)
 	outb(cached_slave_mask, PIC_SLAVE_IMR);	  /* restore slave IRQ mask */
 
 	spin_unlock_irqrestore(&i8259A_lock, flags);
+}
+	raw_spin_unlock_irqrestore(&i8259A_lock, flags);
+}
+
+/*
+ * make i8259 a driver so that we can select pic functions at run time. the goal
+ * is to make x86 binary compatible among pc compatible and non-pc compatible
+ * platforms, such as x86 MID.
+ */
+
+static void legacy_pic_noop(void) { };
+static void legacy_pic_uint_noop(unsigned int unused) { };
+static void legacy_pic_int_noop(int unused) { };
+static int legacy_pic_irq_pending_noop(unsigned int irq)
+{
+	return 0;
+}
+static int legacy_pic_probe(void)
+{
+	return 0;
+}
+
+struct legacy_pic null_legacy_pic = {
+	.nr_legacy_irqs = 0,
+	.chip = &dummy_irq_chip,
+	.mask = legacy_pic_uint_noop,
+	.unmask = legacy_pic_uint_noop,
+	.mask_all = legacy_pic_noop,
+	.restore_mask = legacy_pic_noop,
+	.init = legacy_pic_int_noop,
+	.probe = legacy_pic_probe,
+	.irq_pending = legacy_pic_irq_pending_noop,
+	.make_irq = legacy_pic_uint_noop,
+};
+
+struct legacy_pic default_legacy_pic = {
+	.nr_legacy_irqs = NR_IRQS_LEGACY,
+	.chip  = &i8259A_chip,
+	.mask = mask_8259A_irq,
+	.unmask = unmask_8259A_irq,
+	.mask_all = mask_8259A,
+	.restore_mask = unmask_8259A,
+	.init = init_8259A,
+	.probe = probe_8259A,
+	.irq_pending = i8259A_irq_pending,
+	.make_irq = make_8259A_irq,
+};
+
+struct legacy_pic *legacy_pic = &default_legacy_pic;
+EXPORT_SYMBOL(legacy_pic);
+
+static int __init i8259A_init_ops(void)
+{
+	if (legacy_pic == &default_legacy_pic)
+		register_syscore_ops(&i8259_syscore_ops);
+
+	return 0;
+}
+device_initcall(i8259A_init_ops);
+
+void __init legacy_pic_pcat_compat(void)
+{
+	pcat_compat = true;
 }

@@ -18,11 +18,13 @@
 #define PS2_RET_ID		0x00
 #define PS2_RET_ACK		0xfa
 #define PS2_RET_NAK		0xfe
+#define PS2_RET_ERR		0xfc
 
 #define PS2_FLAG_ACK		1	/* Waiting for ACK/NAK */
 #define PS2_FLAG_CMD		2	/* Waiting for command to finish */
 #define PS2_FLAG_CMD1		4	/* Waiting for the first byte of command response */
 #define PS2_FLAG_WAITID		8	/* Command execiting is GET ID */
+#define PS2_FLAG_NAK		16	/* Last transmission was NAKed */
 
 struct ps2dev {
 	struct serio *serio;
@@ -35,6 +37,7 @@ struct ps2dev {
 
 	unsigned long flags;
 	unsigned char cmdbuf[6];
+	unsigned char cmdbuf[8];
 	unsigned char cmdcnt;
 	unsigned char nak;
 };
@@ -42,6 +45,9 @@ struct ps2dev {
 void ps2_init(struct ps2dev *ps2dev, struct serio *serio);
 int ps2_sendbyte(struct ps2dev *ps2dev, unsigned char byte, int timeout);
 void ps2_drain(struct ps2dev *ps2dev, int maxbytes, int timeout);
+void ps2_begin_command(struct ps2dev *ps2dev);
+void ps2_end_command(struct ps2dev *ps2dev);
+int __ps2_command(struct ps2dev *ps2dev, unsigned char *param, int command);
 int ps2_command(struct ps2dev *ps2dev, unsigned char *param, int command);
 int ps2_handle_ack(struct ps2dev *ps2dev, unsigned char data);
 int ps2_handle_response(struct ps2dev *ps2dev, unsigned char data);

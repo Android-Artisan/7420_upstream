@@ -1,6 +1,7 @@
 Kernel driver i2c-parport
 
 Author: Jean Delvare <khali@linux-fr.org> 
+Author: Jean Delvare <jdelvare@suse.de>
 
 This is a unified driver for several i2c-over-parallel-port adapters,
 such as the ones made by Philips, Velleman or ELV. This driver is
@@ -20,6 +21,7 @@ It currently supports the following devices:
  * (type=5) Analog Devices evaluation boards: ADM1025, ADM1030, ADM1031
  * (type=6) Barco LPT->DVI (K5800236) adapter
  * (type=7) One For All JP1 parallel port adapter
+ * (type=8) VCT-jig
 
 These devices use different pinout configurations, so you have to tell
 the driver what you have, using the type module parameter. There is no
@@ -28,6 +30,9 @@ can be easily added when needed.
 
 Earlier kernels defaulted to type=0 (Philips).  But now, if the type
 parameter is missing, the driver will simply fail to initialize.
+
+SMBus alert support is available on adapters which have this line properly
+connected to the parallel port's interrupt pin.
 
 
 Building your own adapter

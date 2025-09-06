@@ -12,6 +12,7 @@
 
 #include <linux/netfilter/x_tables.h>
 #include <linux/netfilter/nf_conntrack_tuple_common.h>
+#include <linux/list_nulls.h>
 
 /* A `tuple' is a structure containing the information to uniquely
   identify a connection.  ie. if two packets have the same tuple, they
@@ -53,6 +54,8 @@ union nf_conntrack_man_proto
 /* The manipulable part of the tuple. */
 struct nf_conntrack_man
 {
+/* The manipulable part of the tuple. */
+struct nf_conntrack_man {
 	union nf_inet_addr u3;
 	union nf_conntrack_man_proto u;
 	/* Layer 3 protocol */
@@ -62,6 +65,7 @@ struct nf_conntrack_man
 /* This contains the information to distinguish a connection. */
 struct nf_conntrack_tuple
 {
+struct nf_conntrack_tuple {
 	struct nf_conntrack_man src;
 
 	/* These are the parts of the tuple which are fixed. */
@@ -101,6 +105,7 @@ struct nf_conntrack_tuple
 
 struct nf_conntrack_tuple_mask
 {
+struct nf_conntrack_tuple_mask {
 	struct {
 		union nf_inet_addr u3;
 		union nf_conntrack_man_proto u;
@@ -116,6 +121,13 @@ static inline void nf_ct_dump_tuple_ip(const struct nf_conntrack_tuple *t)
 	       t, t->dst.protonum,
 	       NIPQUAD(t->src.u3.ip), ntohs(t->src.u.all),
 	       NIPQUAD(t->dst.u3.ip), ntohs(t->dst.u.all));
+static inline void nf_ct_dump_tuple_ip(const struct nf_conntrack_tuple *t)
+{
+#ifdef DEBUG
+	printk("tuple %p: %u %pI4:%hu -> %pI4:%hu\n",
+	       t, t->dst.protonum,
+	       &t->src.u3.ip, ntohs(t->src.u.all),
+	       &t->dst.u3.ip, ntohs(t->dst.u.all));
 #endif
 }
 
@@ -126,6 +138,10 @@ static inline void nf_ct_dump_tuple_ipv6(const struct nf_conntrack_tuple *t)
 	       t, t->dst.protonum,
 	       NIP6(*(struct in6_addr *)t->src.u3.all), ntohs(t->src.u.all),
 	       NIP6(*(struct in6_addr *)t->dst.u3.all), ntohs(t->dst.u.all));
+	printk("tuple %p: %u %pI6 %hu -> %pI6 %hu\n",
+	       t, t->dst.protonum,
+	       t->src.u3.all, ntohs(t->src.u.all),
+	       t->dst.u3.all, ntohs(t->dst.u.all));
 #endif
 }
 
@@ -153,6 +169,11 @@ struct nf_conntrack_tuple_hash
 };
 
 #endif /* __KERNEL__ */
+
+struct nf_conntrack_tuple_hash {
+	struct hlist_nulls_node hnnode;
+	struct nf_conntrack_tuple tuple;
+};
 
 static inline bool __nf_ct_tuple_src_equal(const struct nf_conntrack_tuple *t1,
 					   const struct nf_conntrack_tuple *t2)

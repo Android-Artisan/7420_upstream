@@ -19,6 +19,7 @@ MODULE_LICENSE("GPL");
 static int index[SNDRV_CARDS] = SNDRV_DEFAULT_IDX;
 static char *id[SNDRV_CARDS] = SNDRV_DEFAULT_STR;
 static int enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE;
+static bool enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE;
 static long port[SNDRV_CARDS] = SNDRV_DEFAULT_PORT;
 
 module_param_array(index, int, NULL, 0444);
@@ -31,12 +32,14 @@ module_param_array(port, long, NULL, 0444);
 MODULE_PARM_DESC(port, "Port # for " CRD_NAME " driver.");
 
 static int __devinit snd_adlib_match(struct device *dev, unsigned int n)
+static int snd_adlib_match(struct device *dev, unsigned int n)
 {
 	if (!enable[n])
 		return 0;
 
 	if (port[n] == SNDRV_AUTO_PORT) {
 		snd_printk(KERN_ERR "%s: please specify port\n", dev->bus_id);
+		dev_err(dev, "please specify port\n");
 		return 0;
 	}
 	return 1;
@@ -48,6 +51,7 @@ static void snd_adlib_free(struct snd_card *card)
 }
 
 static int __devinit snd_adlib_probe(struct device *dev, unsigned int n)
+static int snd_adlib_probe(struct device *dev, unsigned int n)
 {
 	struct snd_card *card;
 	struct snd_opl3 *opl3;
@@ -57,11 +61,16 @@ static int __devinit snd_adlib_probe(struct device *dev, unsigned int n)
 	if (!card) {
 		snd_printk(KERN_ERR "%s: could not create card\n", dev->bus_id);
 		return -EINVAL;
+	error = snd_card_new(dev, index[n], id[n], THIS_MODULE, 0, &card);
+	if (error < 0) {
+		dev_err(dev, "could not create card\n");
+		return error;
 	}
 
 	card->private_data = request_region(port[n], 4, CRD_NAME);
 	if (!card->private_data) {
 		snd_printk(KERN_ERR "%s: could not grab ports\n", dev->bus_id);
+		dev_err(dev, "could not grab ports\n");
 		error = -EBUSY;
 		goto out;
 	}
@@ -74,6 +83,7 @@ static int __devinit snd_adlib_probe(struct device *dev, unsigned int n)
 	error = snd_opl3_create(card, port[n], port[n] + 2, OPL3_HW_AUTO, 1, &opl3);
 	if (error < 0) {
 		snd_printk(KERN_ERR "%s: could not create OPL\n", dev->bus_id);
+		dev_err(dev, "could not create OPL\n");
 		goto out;
 	}
 
@@ -88,6 +98,13 @@ static int __devinit snd_adlib_probe(struct device *dev, unsigned int n)
 	error = snd_card_register(card);
 	if (error < 0) {
 		snd_printk(KERN_ERR "%s: could not register card\n", dev->bus_id);
+		dev_err(dev, "could not create FM\n");
+		goto out;
+	}
+
+	error = snd_card_register(card);
+	if (error < 0) {
+		dev_err(dev, "could not register card\n");
 		goto out;
 	}
 
@@ -102,6 +119,9 @@ static int __devexit snd_adlib_remove(struct device *dev, unsigned int n)
 {
 	snd_card_free(dev_get_drvdata(dev));
 	dev_set_drvdata(dev, NULL);
+static int snd_adlib_remove(struct device *dev, unsigned int n)
+{
+	snd_card_free(dev_get_drvdata(dev));
 	return 0;
 }
 
@@ -109,6 +129,7 @@ static struct isa_driver snd_adlib_driver = {
 	.match		= snd_adlib_match,
 	.probe		= snd_adlib_probe,
 	.remove		= __devexit_p(snd_adlib_remove),
+	.remove		= snd_adlib_remove,
 
 	.driver		= {
 		.name	= DEV_NAME

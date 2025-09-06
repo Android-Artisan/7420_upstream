@@ -51,6 +51,9 @@
 #include <linux/timer.h>
 
 #define VERSION_STR "0.9.0"
+#include <linux/hrtimer.h>
+
+#define VERSION_STR "0.9.1"
 
 #define DEFAULT_IOFENCE_MARGIN 60	/* Default fudge factor, in seconds */
 #define DEFAULT_IOFENCE_TICK 180	/* Default timer timeout, in seconds */
@@ -134,6 +137,7 @@ static inline unsigned long long monotonic_clock(void)
 }
 #endif  /* HAVE_MONOTONIC */
 
+#define TIMER_FREQ 1000000000ULL
 
 /* Last time scheduled */
 static unsigned long long hangcheck_tsc, hangcheck_tsc_margin;
@@ -148,6 +152,7 @@ static void hangcheck_fire(unsigned long data)
 	unsigned long long cur_tsc, tsc_diff;
 
 	cur_tsc = monotonic_clock();
+	cur_tsc = ktime_get_ns();
 
 	if (cur_tsc > hangcheck_tsc)
 		tsc_diff = cur_tsc - hangcheck_tsc;
@@ -159,6 +164,7 @@ static void hangcheck_fire(unsigned long data)
 			printk(KERN_CRIT "Hangcheck: Task state:\n");
 #ifdef CONFIG_MAGIC_SYSRQ
 			handle_sysrq('t', NULL);
+			handle_sysrq('t');
 #endif  /* CONFIG_MAGIC_SYSRQ */
 		}
 		if (hangcheck_reboot) {
@@ -170,6 +176,15 @@ static void hangcheck_fire(unsigned long data)
 	}
 	mod_timer(&hangcheck_ticktock, jiffies + (hangcheck_tick*HZ));
 	hangcheck_tsc = monotonic_clock();
+#if 0
+	/*
+	 * Enable to investigate delays in detail
+	 */
+	printk("Hangcheck: called %Ld ns since last time (%Ld ns overshoot)\n",
+			tsc_diff, tsc_diff - hangcheck_tick*TIMER_FREQ);
+#endif
+	mod_timer(&hangcheck_ticktock, jiffies + (hangcheck_tick*HZ));
+	hangcheck_tsc = ktime_get_ns();
 }
 
 
@@ -187,6 +202,11 @@ static int __init hangcheck_init(void)
 	hangcheck_tsc_margin *= (unsigned long long)TIMER_FREQ;
 
 	hangcheck_tsc = monotonic_clock();
+	hangcheck_tsc_margin =
+		(unsigned long long)hangcheck_margin + hangcheck_tick;
+	hangcheck_tsc_margin *= TIMER_FREQ;
+
+	hangcheck_tsc = ktime_get_ns();
 	mod_timer(&hangcheck_ticktock, jiffies + (hangcheck_tick*HZ));
 
 	return 0;

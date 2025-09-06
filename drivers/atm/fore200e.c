@@ -49,6 +49,12 @@
 #ifdef CONFIG_SBUS
 #include <asm/idprom.h>
 #include <asm/sbus.h>
+#include <linux/atomic.h>
+
+#ifdef CONFIG_SBUS
+#include <linux/of.h>
+#include <linux/of_device.h>
+#include <asm/idprom.h>
 #include <asm/openprom.h>
 #include <asm/oplib.h>
 #include <asm/pgtable.h>
@@ -92,6 +98,7 @@
 #define FORE200E_INDEX(virt_addr, type, index)     (&((type *)(virt_addr))[ index ])
 
 #define FORE200E_NEXT_ENTRY(index, modulo)         (index = ++(index) % (modulo))
+#define FORE200E_NEXT_ENTRY(index, modulo)         (index = ((index) + 1) % (modulo))
 
 #if 1
 #define ASSERT(expr)     if (!(expr)) { \
@@ -425,6 +432,7 @@ static u32
 fore200e_pca_dma_map(struct fore200e* fore200e, void* virt_addr, int size, int direction)
 {
     u32 dma_addr = pci_map_single((struct pci_dev*)fore200e->bus_dev, virt_addr, size, direction);
+    u32 dma_addr = dma_map_single(&((struct pci_dev *) fore200e->bus_dev)->dev, virt_addr, size, direction);
 
     DPRINTK(3, "PCI DVMA mapping: virt_addr = 0x%p, size = %d, direction = %d,  --> dma_addr = 0x%08x\n",
 	    virt_addr, size, direction, dma_addr);
@@ -440,6 +448,7 @@ fore200e_pca_dma_unmap(struct fore200e* fore200e, u32 dma_addr, int size, int di
 	    dma_addr, size, direction);
 
     pci_unmap_single((struct pci_dev*)fore200e->bus_dev, dma_addr, size, direction);
+    dma_unmap_single(&((struct pci_dev *) fore200e->bus_dev)->dev, dma_addr, size, direction);
 }
 
 
@@ -449,6 +458,7 @@ fore200e_pca_dma_sync_for_cpu(struct fore200e* fore200e, u32 dma_addr, int size,
     DPRINTK(3, "PCI DVMA sync: dma_addr = 0x%08x, size = %d, direction = %d\n", dma_addr, size, direction);
 
     pci_dma_sync_single_for_cpu((struct pci_dev*)fore200e->bus_dev, dma_addr, size, direction);
+    dma_sync_single_for_cpu(&((struct pci_dev *) fore200e->bus_dev)->dev, dma_addr, size, direction);
 }
 
 static void
@@ -457,6 +467,7 @@ fore200e_pca_dma_sync_for_device(struct fore200e* fore200e, u32 dma_addr, int si
     DPRINTK(3, "PCI DVMA sync: dma_addr = 0x%08x, size = %d, direction = %d\n", dma_addr, size, direction);
 
     pci_dma_sync_single_for_device((struct pci_dev*)fore200e->bus_dev, dma_addr, size, direction);
+    dma_sync_single_for_device(&((struct pci_dev *) fore200e->bus_dev)->dev, dma_addr, size, direction);
 }
 
 
@@ -472,6 +483,10 @@ fore200e_pca_dma_chunk_alloc(struct fore200e* fore200e, struct chunk* chunk,
     chunk->alloc_addr = pci_alloc_consistent((struct pci_dev*)fore200e->bus_dev,
 					     chunk->alloc_size,
 					     &chunk->dma_addr);
+    chunk->alloc_addr = dma_alloc_coherent(&((struct pci_dev *) fore200e->bus_dev)->dev,
+					   chunk->alloc_size,
+					   &chunk->dma_addr,
+					   GFP_KERNEL);
     
     if ((chunk->alloc_addr == NULL) || (chunk->dma_addr == 0))
 	return -ENOMEM;
@@ -488,6 +503,7 @@ static void
 fore200e_pca_dma_chunk_free(struct fore200e* fore200e, struct chunk* chunk)
 {
     pci_free_consistent((struct pci_dev*)fore200e->bus_dev,
+    dma_free_coherent(&((struct pci_dev *) fore200e->bus_dev)->dev,
 			chunk->alloc_size,
 			chunk->alloc_addr,
 			chunk->dma_addr);
@@ -528,6 +544,7 @@ fore200e_pca_reset(struct fore200e* fore200e)
 
 static int __devinit
 fore200e_pca_map(struct fore200e* fore200e)
+static int fore200e_pca_map(struct fore200e* fore200e)
 {
     DPRINTK(2, "device %s being mapped in memory\n", fore200e->name);
 
@@ -562,6 +579,7 @@ fore200e_pca_unmap(struct fore200e* fore200e)
 
 static int __devinit
 fore200e_pca_configure(struct fore200e* fore200e)
+static int fore200e_pca_configure(struct fore200e *fore200e)
 {
     struct pci_dev* pci_dev = (struct pci_dev*)fore200e->bus_dev;
     u8              master_ctrl, latency;
@@ -663,6 +681,7 @@ fore200e_pca_proc_read(struct fore200e* fore200e, char *page)
 
 static u32
 fore200e_sba_read(volatile u32 __iomem *addr)
+static u32 fore200e_sba_read(volatile u32 __iomem *addr)
 {
     return sbus_readl(addr);
 }
@@ -670,6 +689,7 @@ fore200e_sba_read(volatile u32 __iomem *addr)
 
 static void
 fore200e_sba_write(u32 val, volatile u32 __iomem *addr)
+static void fore200e_sba_write(u32 val, volatile u32 __iomem *addr)
 {
     sbus_writel(val, addr);
 }
@@ -904,6 +924,181 @@ fore200e_sba_proc_read(struct fore200e* fore200e, char *page)
     struct sbus_dev* sbus_dev = (struct sbus_dev*)fore200e->bus_dev;
 
     return sprintf(page, "   SBUS slot/device:\t\t%d/'%s'\n", sbus_dev->slot, sbus_dev->prom_name);
+static u32 fore200e_sba_dma_map(struct fore200e *fore200e, void* virt_addr, int size, int direction)
+{
+	struct platform_device *op = fore200e->bus_dev;
+	u32 dma_addr;
+
+	dma_addr = dma_map_single(&op->dev, virt_addr, size, direction);
+
+	DPRINTK(3, "SBUS DVMA mapping: virt_addr = 0x%p, size = %d, direction = %d --> dma_addr = 0x%08x\n",
+		virt_addr, size, direction, dma_addr);
+    
+	return dma_addr;
+}
+
+static void fore200e_sba_dma_unmap(struct fore200e *fore200e, u32 dma_addr, int size, int direction)
+{
+	struct platform_device *op = fore200e->bus_dev;
+
+	DPRINTK(3, "SBUS DVMA unmapping: dma_addr = 0x%08x, size = %d, direction = %d,\n",
+		dma_addr, size, direction);
+
+	dma_unmap_single(&op->dev, dma_addr, size, direction);
+}
+
+static void fore200e_sba_dma_sync_for_cpu(struct fore200e *fore200e, u32 dma_addr, int size, int direction)
+{
+	struct platform_device *op = fore200e->bus_dev;
+
+	DPRINTK(3, "SBUS DVMA sync: dma_addr = 0x%08x, size = %d, direction = %d\n", dma_addr, size, direction);
+    
+	dma_sync_single_for_cpu(&op->dev, dma_addr, size, direction);
+}
+
+static void fore200e_sba_dma_sync_for_device(struct fore200e *fore200e, u32 dma_addr, int size, int direction)
+{
+	struct platform_device *op = fore200e->bus_dev;
+
+	DPRINTK(3, "SBUS DVMA sync: dma_addr = 0x%08x, size = %d, direction = %d\n", dma_addr, size, direction);
+
+	dma_sync_single_for_device(&op->dev, dma_addr, size, direction);
+}
+
+/* Allocate a DVMA consistent chunk of memory intended to act as a communication mechanism
+ * (to hold descriptors, status, queues, etc.) shared by the driver and the adapter.
+ */
+static int fore200e_sba_dma_chunk_alloc(struct fore200e *fore200e, struct chunk *chunk,
+					int size, int nbr, int alignment)
+{
+	struct platform_device *op = fore200e->bus_dev;
+
+	chunk->alloc_size = chunk->align_size = size * nbr;
+
+	/* returned chunks are page-aligned */
+	chunk->alloc_addr = dma_alloc_coherent(&op->dev, chunk->alloc_size,
+					       &chunk->dma_addr, GFP_ATOMIC);
+
+	if ((chunk->alloc_addr == NULL) || (chunk->dma_addr == 0))
+		return -ENOMEM;
+
+	chunk->align_addr = chunk->alloc_addr;
+    
+	return 0;
+}
+
+/* free a DVMA consistent chunk of memory */
+static void fore200e_sba_dma_chunk_free(struct fore200e *fore200e, struct chunk *chunk)
+{
+	struct platform_device *op = fore200e->bus_dev;
+
+	dma_free_coherent(&op->dev, chunk->alloc_size,
+			  chunk->alloc_addr, chunk->dma_addr);
+}
+
+static void fore200e_sba_irq_enable(struct fore200e *fore200e)
+{
+	u32 hcr = fore200e->bus->read(fore200e->regs.sba.hcr) & SBA200E_HCR_STICKY;
+	fore200e->bus->write(hcr | SBA200E_HCR_INTR_ENA, fore200e->regs.sba.hcr);
+}
+
+static int fore200e_sba_irq_check(struct fore200e *fore200e)
+{
+	return fore200e->bus->read(fore200e->regs.sba.hcr) & SBA200E_HCR_INTR_REQ;
+}
+
+static void fore200e_sba_irq_ack(struct fore200e *fore200e)
+{
+	u32 hcr = fore200e->bus->read(fore200e->regs.sba.hcr) & SBA200E_HCR_STICKY;
+	fore200e->bus->write(hcr | SBA200E_HCR_INTR_CLR, fore200e->regs.sba.hcr);
+}
+
+static void fore200e_sba_reset(struct fore200e *fore200e)
+{
+	fore200e->bus->write(SBA200E_HCR_RESET, fore200e->regs.sba.hcr);
+	fore200e_spin(10);
+	fore200e->bus->write(0, fore200e->regs.sba.hcr);
+}
+
+static int __init fore200e_sba_map(struct fore200e *fore200e)
+{
+	struct platform_device *op = fore200e->bus_dev;
+	unsigned int bursts;
+
+	/* gain access to the SBA specific registers  */
+	fore200e->regs.sba.hcr = of_ioremap(&op->resource[0], 0, SBA200E_HCR_LENGTH, "SBA HCR");
+	fore200e->regs.sba.bsr = of_ioremap(&op->resource[1], 0, SBA200E_BSR_LENGTH, "SBA BSR");
+	fore200e->regs.sba.isr = of_ioremap(&op->resource[2], 0, SBA200E_ISR_LENGTH, "SBA ISR");
+	fore200e->virt_base    = of_ioremap(&op->resource[3], 0, SBA200E_RAM_LENGTH, "SBA RAM");
+
+	if (!fore200e->virt_base) {
+		printk(FORE200E "unable to map RAM of device %s\n", fore200e->name);
+		return -EFAULT;
+	}
+
+	DPRINTK(1, "device %s mapped to 0x%p\n", fore200e->name, fore200e->virt_base);
+    
+	fore200e->bus->write(0x02, fore200e->regs.sba.isr); /* XXX hardwired interrupt level */
+
+	/* get the supported DVMA burst sizes */
+	bursts = of_getintprop_default(op->dev.of_node->parent, "burst-sizes", 0x00);
+
+	if (sbus_can_dma_64bit())
+		sbus_set_sbus64(&op->dev, bursts);
+
+	fore200e->state = FORE200E_STATE_MAP;
+	return 0;
+}
+
+static void fore200e_sba_unmap(struct fore200e *fore200e)
+{
+	struct platform_device *op = fore200e->bus_dev;
+
+	of_iounmap(&op->resource[0], fore200e->regs.sba.hcr, SBA200E_HCR_LENGTH);
+	of_iounmap(&op->resource[1], fore200e->regs.sba.bsr, SBA200E_BSR_LENGTH);
+	of_iounmap(&op->resource[2], fore200e->regs.sba.isr, SBA200E_ISR_LENGTH);
+	of_iounmap(&op->resource[3], fore200e->virt_base,    SBA200E_RAM_LENGTH);
+}
+
+static int __init fore200e_sba_configure(struct fore200e *fore200e)
+{
+	fore200e->state = FORE200E_STATE_CONFIGURE;
+	return 0;
+}
+
+static int __init fore200e_sba_prom_read(struct fore200e *fore200e, struct prom_data *prom)
+{
+	struct platform_device *op = fore200e->bus_dev;
+	const u8 *prop;
+	int len;
+
+	prop = of_get_property(op->dev.of_node, "madaddrlo2", &len);
+	if (!prop)
+		return -ENODEV;
+	memcpy(&prom->mac_addr[4], prop, 4);
+
+	prop = of_get_property(op->dev.of_node, "madaddrhi4", &len);
+	if (!prop)
+		return -ENODEV;
+	memcpy(&prom->mac_addr[2], prop, 4);
+
+	prom->serial_number = of_getintprop_default(op->dev.of_node,
+						    "serialnumber", 0);
+	prom->hw_revision = of_getintprop_default(op->dev.of_node,
+						  "promversion", 0);
+    
+	return 0;
+}
+
+static int fore200e_sba_proc_read(struct fore200e *fore200e, char *page)
+{
+	struct platform_device *op = fore200e->bus_dev;
+	const struct linux_prom_registers *regs;
+
+	regs = of_get_property(op->dev.of_node, "reg", NULL);
+
+	return sprintf(page, "   SBUS slot/device:\t\t%d/'%s'\n",
+		       (regs ? regs->which_io : 0), op->dev.of_node->name);
 }
 #endif /* CONFIG_SBUS */
 
@@ -1855,6 +2050,7 @@ fore200e_getsockopt(struct atm_vcc* vcc, int level, int optname, void __user *op
 
 static int
 fore200e_setsockopt(struct atm_vcc* vcc, int level, int optname, void __user *optval, int optlen)
+fore200e_setsockopt(struct atm_vcc* vcc, int level, int optname, void __user *optval, unsigned int optlen)
 {
     /* struct fore200e* fore200e = FORE200E_DEV(vcc->dev); */
     
@@ -2087,6 +2283,7 @@ fore200e_change_qos(struct atm_vcc* vcc,struct atm_qos* qos, int flags)
 
 static int __devinit
 fore200e_irq_request(struct fore200e* fore200e)
+static int fore200e_irq_request(struct fore200e *fore200e)
 {
     if (request_irq(fore200e->irq, fore200e_interrupt, IRQF_SHARED, fore200e->name, fore200e->atm_dev) < 0) {
 
@@ -2110,6 +2307,7 @@ fore200e_irq_request(struct fore200e* fore200e)
 
 static int __devinit
 fore200e_get_esi(struct fore200e* fore200e)
+static int fore200e_get_esi(struct fore200e *fore200e)
 {
     struct prom_data* prom = kzalloc(sizeof(struct prom_data), GFP_KERNEL | GFP_DMA);
     int ok, i;
@@ -2129,6 +2327,10 @@ fore200e_get_esi(struct fore200e* fore200e)
 	   prom->serial_number & 0xFFFF,
 	   prom->mac_addr[ 2 ], prom->mac_addr[ 3 ], prom->mac_addr[ 4 ],
 	   prom->mac_addr[ 5 ], prom->mac_addr[ 6 ], prom->mac_addr[ 7 ]);
+    printk(FORE200E "device %s, rev. %c, S/N: %d, ESI: %pM\n",
+	   fore200e->name, 
+	   (prom->hw_revision & 0xFF) + '@',    /* probably meaningless with SBA boards */
+	   prom->serial_number & 0xFFFF, &prom->mac_addr[2]);
 	
     for (i = 0; i < ESI_LEN; i++) {
 	fore200e->esi[ i ] = fore200e->atm_dev->esi[ i ] = prom->mac_addr[ i + 2 ];
@@ -2142,6 +2344,7 @@ fore200e_get_esi(struct fore200e* fore200e)
 
 static int __devinit
 fore200e_alloc_rx_buf(struct fore200e* fore200e)
+static int fore200e_alloc_rx_buf(struct fore200e *fore200e)
 {
     int scheme, magn, nbr, size, i;
 
@@ -2207,6 +2410,7 @@ fore200e_alloc_rx_buf(struct fore200e* fore200e)
 
 static int __devinit
 fore200e_init_bs_queue(struct fore200e* fore200e)
+static int fore200e_init_bs_queue(struct fore200e *fore200e)
 {
     int scheme, magn, i;
 
@@ -2270,6 +2474,7 @@ fore200e_init_bs_queue(struct fore200e* fore200e)
 
 static int __devinit
 fore200e_init_rx_queue(struct fore200e* fore200e)
+static int fore200e_init_rx_queue(struct fore200e *fore200e)
 {
     struct host_rxq*     rxq =  &fore200e->host_rxq;
     struct cp_rxq_entry __iomem * cp_entry;
@@ -2330,6 +2535,7 @@ fore200e_init_rx_queue(struct fore200e* fore200e)
 
 static int __devinit
 fore200e_init_tx_queue(struct fore200e* fore200e)
+static int fore200e_init_tx_queue(struct fore200e *fore200e)
 {
     struct host_txq*     txq =  &fore200e->host_txq;
     struct cp_txq_entry __iomem * cp_entry;
@@ -2393,6 +2599,7 @@ fore200e_init_tx_queue(struct fore200e* fore200e)
 
 static int __devinit
 fore200e_init_cmd_queue(struct fore200e* fore200e)
+static int fore200e_init_cmd_queue(struct fore200e *fore200e)
 {
     struct host_cmdq*     cmdq =  &fore200e->host_cmdq;
     struct cp_cmdq_entry __iomem * cp_entry;
@@ -2437,6 +2644,10 @@ static void __devinit
 fore200e_param_bs_queue(struct fore200e* fore200e,
 			enum buffer_scheme scheme, enum buffer_magn magn,
 			int queue_length, int pool_size, int supply_blksize)
+static void fore200e_param_bs_queue(struct fore200e *fore200e,
+				    enum buffer_scheme scheme,
+				    enum buffer_magn magn, int queue_length,
+				    int pool_size, int supply_blksize)
 {
     struct bs_spec __iomem * bs_spec = &fore200e->cp_queues->init.bs_spec[ scheme ][ magn ];
 
@@ -2449,6 +2660,7 @@ fore200e_param_bs_queue(struct fore200e* fore200e,
 
 static int __devinit
 fore200e_initialize(struct fore200e* fore200e)
+static int fore200e_initialize(struct fore200e *fore200e)
 {
     struct cp_queues __iomem * cpq;
     int               ok, scheme, magn;
@@ -2501,6 +2713,7 @@ fore200e_initialize(struct fore200e* fore200e)
 
 static void __devinit
 fore200e_monitor_putc(struct fore200e* fore200e, char c)
+static void fore200e_monitor_putc(struct fore200e *fore200e, char c)
 {
     struct cp_monitor __iomem * monitor = fore200e->cp_monitor;
 
@@ -2513,6 +2726,7 @@ fore200e_monitor_putc(struct fore200e* fore200e, char c)
 
 static int __devinit
 fore200e_monitor_getc(struct fore200e* fore200e)
+static int fore200e_monitor_getc(struct fore200e *fore200e)
 {
     struct cp_monitor __iomem * monitor = fore200e->cp_monitor;
     unsigned long      timeout = jiffies + msecs_to_jiffies(50);
@@ -2538,6 +2752,7 @@ fore200e_monitor_getc(struct fore200e* fore200e)
 
 static void __devinit
 fore200e_monitor_puts(struct fore200e* fore200e, char* str)
+static void fore200e_monitor_puts(struct fore200e *fore200e, char *str)
 {
     while (*str) {
 
@@ -2558,6 +2773,7 @@ fore200e_monitor_puts(struct fore200e* fore200e, char* str)
 
 static int __devinit
 fore200e_load_and_start_fw(struct fore200e* fore200e)
+static int fore200e_load_and_start_fw(struct fore200e *fore200e)
 {
     const struct firmware *firmware;
     struct device *device;
@@ -2573,6 +2789,7 @@ fore200e_load_and_start_fw(struct fore200e* fore200e)
 #ifdef CONFIG_SBUS
     else if (strcmp(fore200e->bus->model_name, "SBA-200E") == 0)
 	device = &((struct sbus_dev *) fore200e->bus_dev)->ofdev.dev;
+	device = &((struct platform_device *) fore200e->bus_dev)->dev;
 #endif
     else
 	return err;
@@ -2580,6 +2797,8 @@ fore200e_load_and_start_fw(struct fore200e* fore200e)
     sprintf(buf, "%s%s", fore200e->bus->proc_name, FW_EXT);
     if (request_firmware(&firmware, buf, device) == 1) {
 	printk(FORE200E "missing %s firmware image\n", fore200e->bus->model_name);
+    if ((err = request_firmware(&firmware, buf, device)) < 0) {
+	printk(FORE200E "problem loading firmware image %s\n", fore200e->bus->model_name);
 	return err;
     }
 
@@ -2627,6 +2846,7 @@ release:
 
 static int __devinit
 fore200e_register(struct fore200e* fore200e)
+static int fore200e_register(struct fore200e *fore200e, struct device *parent)
 {
     struct atm_dev* atm_dev;
 
@@ -2634,6 +2854,8 @@ fore200e_register(struct fore200e* fore200e)
 
     atm_dev = atm_dev_register(fore200e->bus->proc_name, &fore200e_ops, -1,
       NULL); 
+    atm_dev = atm_dev_register(fore200e->bus->proc_name, parent, &fore200e_ops,
+                               -1, NULL);
     if (atm_dev == NULL) {
 	printk(FORE200E "unable to register device %s\n", fore200e->name);
 	return -ENODEV;
@@ -2656,6 +2878,9 @@ static int __devinit
 fore200e_init(struct fore200e* fore200e)
 {
     if (fore200e_register(fore200e) < 0)
+static int fore200e_init(struct fore200e *fore200e, struct device *parent)
+{
+    if (fore200e_register(fore200e, parent) < 0)
 	return -ENODEV;
     
     if (fore200e->bus->configure(fore200e) < 0)
@@ -2704,6 +2929,77 @@ fore200e_init(struct fore200e* fore200e)
 #ifdef CONFIG_PCI
 static int __devinit
 fore200e_pca_detect(struct pci_dev *pci_dev, const struct pci_device_id *pci_ent)
+#ifdef CONFIG_SBUS
+static const struct of_device_id fore200e_sba_match[];
+static int fore200e_sba_probe(struct platform_device *op)
+{
+	const struct of_device_id *match;
+	const struct fore200e_bus *bus;
+	struct fore200e *fore200e;
+	static int index = 0;
+	int err;
+
+	match = of_match_device(fore200e_sba_match, &op->dev);
+	if (!match)
+		return -EINVAL;
+	bus = match->data;
+
+	fore200e = kzalloc(sizeof(struct fore200e), GFP_KERNEL);
+	if (!fore200e)
+		return -ENOMEM;
+
+	fore200e->bus = bus;
+	fore200e->bus_dev = op;
+	fore200e->irq = op->archdata.irqs[0];
+	fore200e->phys_base = op->resource[0].start;
+
+	sprintf(fore200e->name, "%s-%d", bus->model_name, index);
+
+	err = fore200e_init(fore200e, &op->dev);
+	if (err < 0) {
+		fore200e_shutdown(fore200e);
+		kfree(fore200e);
+		return err;
+	}
+
+	index++;
+	dev_set_drvdata(&op->dev, fore200e);
+
+	return 0;
+}
+
+static int fore200e_sba_remove(struct platform_device *op)
+{
+	struct fore200e *fore200e = dev_get_drvdata(&op->dev);
+
+	fore200e_shutdown(fore200e);
+	kfree(fore200e);
+
+	return 0;
+}
+
+static const struct of_device_id fore200e_sba_match[] = {
+	{
+		.name = SBA200E_PROM_NAME,
+		.data = (void *) &fore200e_bus[1],
+	},
+	{},
+};
+MODULE_DEVICE_TABLE(of, fore200e_sba_match);
+
+static struct platform_driver fore200e_sba_driver = {
+	.driver = {
+		.name = "fore_200e",
+		.of_match_table = fore200e_sba_match,
+	},
+	.probe		= fore200e_sba_probe,
+	.remove		= fore200e_sba_remove,
+};
+#endif
+
+#ifdef CONFIG_PCI
+static int fore200e_pca_detect(struct pci_dev *pci_dev,
+			       const struct pci_device_id *pci_ent)
 {
     const struct fore200e_bus* bus = (struct fore200e_bus*) pci_ent->driver_data;
     struct fore200e* fore200e;
@@ -2711,6 +3007,11 @@ fore200e_pca_detect(struct pci_dev *pci_dev, const struct pci_device_id *pci_ent
     static int index = 0;
 
     if (pci_enable_device(pci_dev)) {
+	err = -EINVAL;
+	goto out;
+    }
+
+    if (dma_set_mask_and_coherent(&pci_dev->dev, DMA_BIT_MASK(32))) {
 	err = -EINVAL;
 	goto out;
     }
@@ -2737,6 +3038,7 @@ fore200e_pca_detect(struct pci_dev *pci_dev, const struct pci_device_id *pci_ent
     sprintf(fore200e->name, "%s-%d", bus->model_name, index);
 
     err = fore200e_init(fore200e);
+    err = fore200e_init(fore200e, &pci_dev->dev);
     if (err < 0) {
 	fore200e_shutdown(fore200e);
 	goto out_free;
@@ -2757,6 +3059,7 @@ out_disable:
 
 
 static void __devexit fore200e_pca_remove_one(struct pci_dev *pci_dev)
+static void fore200e_pca_remove_one(struct pci_dev *pci_dev)
 {
     struct fore200e *fore200e;
 
@@ -2780,6 +3083,7 @@ static struct pci_driver fore200e_pca_driver = {
     .name =     "fore_200e",
     .probe =    fore200e_pca_detect,
     .remove =   __devexit_p(fore200e_pca_remove_one),
+    .remove =   fore200e_pca_remove_one,
     .id_table = fore200e_pca_tbl,
 };
 #endif
@@ -2844,6 +3148,39 @@ fore200e_module_cleanup(void)
     DPRINTK(1, "module being removed\n");
 }
 
+static int __init fore200e_module_init(void)
+{
+	int err = 0;
+
+	printk(FORE200E "FORE Systems 200E-series ATM driver - version " FORE200E_VERSION "\n");
+
+#ifdef CONFIG_SBUS
+	err = platform_driver_register(&fore200e_sba_driver);
+	if (err)
+		return err;
+#endif
+
+#ifdef CONFIG_PCI
+	err = pci_register_driver(&fore200e_pca_driver);
+#endif
+
+#ifdef CONFIG_SBUS
+	if (err)
+		platform_driver_unregister(&fore200e_sba_driver);
+#endif
+
+	return err;
+}
+
+static void __exit fore200e_module_cleanup(void)
+{
+#ifdef CONFIG_PCI
+	pci_unregister_driver(&fore200e_pca_driver);
+#endif
+#ifdef CONFIG_SBUS
+	platform_driver_unregister(&fore200e_sba_driver);
+#endif
+}
 
 static int
 fore200e_proc_read(struct atm_dev *dev, loff_t* pos, char* page)
@@ -2872,12 +3209,14 @@ fore200e_proc_read(struct atm_dev *dev, loff_t* pos, char* page)
 		"   physical base address:\t0x%p\n"
 		"   virtual base address:\t0x%p\n"
 		"   factory address (ESI):\t%02x:%02x:%02x:%02x:%02x:%02x\n"
+		"   factory address (ESI):\t%pM\n"
 		"   board serial number:\t\t%d\n\n",
 		fore200e_irq_itoa(fore200e->irq),
 		(void*)fore200e->phys_base,
 		fore200e->virt_base,
 		fore200e->esi[0], fore200e->esi[1], fore200e->esi[2],
 		fore200e->esi[3], fore200e->esi[4], fore200e->esi[5],
+		fore200e->esi,
 		fore200e->esi[4] * 256 + fore200e->esi[5]);
 
 	return len;
@@ -2934,6 +3273,8 @@ fore200e_proc_read(struct atm_dev *dev, loff_t* pos, char* page)
 
 	if ((media_index < 0) || (media_index > 4))
 	    media_index = 5;
+	if (media_index > 4)
+		media_index = 5;
 	
 	switch (fore200e->loop_mode) {
 	    case ATM_LM_NONE:    oc3_index = 0;

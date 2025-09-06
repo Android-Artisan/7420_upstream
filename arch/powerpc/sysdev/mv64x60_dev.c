@@ -27,6 +27,14 @@
  */
 
 static struct of_device_id __initdata of_mv64x60_devices[] = {
+#include <linux/of_net.h>
+#include <linux/dma-mapping.h>
+
+#include <asm/prom.h>
+
+/* These functions provide the necessary setup for the mv64x60 drivers. */
+
+static const struct of_device_id of_mv64x60_devices[] __initconst = {
 	{ .compatible = "marvell,mv64306-devctrl", },
 	{}
 };
@@ -189,6 +197,7 @@ static int __init mv64x60_mpsc_device_setup(struct device_node *np, int id)
 	pdev = platform_device_alloc(MPSC_CTLR_NAME, port_number);
 	if (!pdev)
 		return -ENOMEM;
+	pdev->dev.coherent_dma_mask = DMA_BIT_MASK(32);
 
 	err = platform_device_add_resources(pdev, r, 5);
 	if (err)
@@ -217,6 +226,7 @@ static struct platform_device * __init mv64x60_eth_register_shared_pdev(
 {
 	struct platform_device *pdev;
 	struct resource r[1];
+	struct resource r[2];
 	int err;
 
 	err = of_address_to_resource(np, 0, &r[0]);
@@ -225,6 +235,20 @@ static struct platform_device * __init mv64x60_eth_register_shared_pdev(
 
 	pdev = platform_device_register_simple(MV643XX_ETH_SHARED_NAME, id,
 					       r, 1);
+	/* register an orion mdio bus driver */
+	r[1].start = r[0].start + 0x4;
+	r[1].end = r[0].start + 0x84 - 1;
+	r[1].flags = IORESOURCE_MEM;
+
+	if (id == 0) {
+		pdev = platform_device_register_simple("orion-mdio", -1, &r[1], 1);
+		if (IS_ERR(pdev))
+			return pdev;
+	}
+
+	pdev = platform_device_register_simple(MV643XX_ETH_SHARED_NAME, id,
+					       &r[0], 1);
+
 	return pdev;
 }
 
@@ -297,6 +321,8 @@ static int __init mv64x60_eth_device_setup(struct device_node *np, int id,
 		pdata.force_phy_addr = 1;
 		pdata.phy_addr = *prop;
 	}
+	if (prop)
+		pdata.phy_addr = MV643XX_ETH_PHY_ADDR(*prop);
 
 	of_node_put(phy);
 
@@ -304,6 +330,7 @@ static int __init mv64x60_eth_device_setup(struct device_node *np, int id,
 	if (!pdev)
 		return -ENOMEM;
 
+	pdev->dev.coherent_dma_mask = DMA_BIT_MASK(32);
 	err = platform_device_add_resources(pdev, r, 1);
 	if (err)
 		goto error;
@@ -350,6 +377,7 @@ static int __init mv64x60_i2c_device_setup(struct device_node *np, int id)
 		pdata.freq_m = *prop;
 
 	pdata.freq_m = 3;	/* default */
+	pdata.freq_n = 3;	/* default */
 	prop = of_get_property(np, "freq_n", NULL);
 	if (prop)
 		pdata.freq_n = *prop;
@@ -440,6 +468,7 @@ static int __init mv64x60_device_setup(void)
 
 	id = 0;
 	for_each_compatible_node(np, "serial", "marvell,mv64360-mpsc") {
+	for_each_compatible_node(np, NULL, "marvell,mv64360-mpsc") {
 		err = mv64x60_mpsc_device_setup(np, id++);
 		if (err)
 			printk(KERN_ERR "Failed to initialize MV64x60 "

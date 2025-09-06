@@ -3,6 +3,10 @@
  *
  * Copyright (C) 2008 Hewlett-Packard Development Company, L.P.
  *	David Altobelli <david.altobelli@hp.com>
+ * Driver for the HP iLO management processor.
+ *
+ * Copyright (C) 2008 Hewlett-Packard Development Company, L.P.
+ *	David Altobelli <david.altobelli@hpe.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -13,18 +17,24 @@
 #include <linux/module.h>
 #include <linux/fs.h>
 #include <linux/pci.h>
+#include <linux/interrupt.h>
 #include <linux/ioport.h>
 #include <linux/device.h>
 #include <linux/file.h>
 #include <linux/cdev.h>
+#include <linux/sched.h>
 #include <linux/spinlock.h>
 #include <linux/delay.h>
 #include <linux/uaccess.h>
 #include <linux/io.h>
+#include <linux/wait.h>
+#include <linux/poll.h>
+#include <linux/slab.h>
 #include "hpilo.h"
 
 static struct class *ilo_class;
 static unsigned int ilo_major;
+static unsigned int max_ccb = 16;
 static char ilo_hwdev[MAX_ILO_DEV];
 
 static inline int get_entry_id(int entry)
@@ -64,6 +74,10 @@ static int fifo_enqueue(struct ilo_hwinfo *hw, char *fifobar, int entry)
 	int ret = 0;
 
 	spin_lock(&hw->fifo_lock);
+	unsigned long flags;
+	int ret = 0;
+
+	spin_lock_irqsave(&hw->fifo_lock, flags);
 	if (!(fifo_q->fifobar[(fifo_q->tail + 1) & fifo_q->imask]
 	      & ENTRY_MASK_O)) {
 		fifo_q->fifobar[fifo_q->tail & fifo_q->imask] |=
@@ -72,6 +86,7 @@ static int fifo_enqueue(struct ilo_hwinfo *hw, char *fifobar, int entry)
 		ret = 1;
 	}
 	spin_unlock(&hw->fifo_lock);
+	spin_unlock_irqrestore(&hw->fifo_lock, flags);
 
 	return ret;
 }
@@ -83,6 +98,11 @@ static int fifo_dequeue(struct ilo_hwinfo *hw, char *fifobar, int *entry)
 	u64 c;
 
 	spin_lock(&hw->fifo_lock);
+	unsigned long flags;
+	int ret = 0;
+	u64 c;
+
+	spin_lock_irqsave(&hw->fifo_lock, flags);
 	c = fifo_q->fifobar[fifo_q->head & fifo_q->imask];
 	if (c & ENTRY_MASK_C) {
 		if (entry)
@@ -94,6 +114,23 @@ static int fifo_dequeue(struct ilo_hwinfo *hw, char *fifobar, int *entry)
 		ret = 1;
 	}
 	spin_unlock(&hw->fifo_lock);
+	spin_unlock_irqrestore(&hw->fifo_lock, flags);
+
+	return ret;
+}
+
+static int fifo_check_recv(struct ilo_hwinfo *hw, char *fifobar)
+{
+	struct fifo *fifo_q = FIFOBARTOHANDLE(fifobar);
+	unsigned long flags;
+	int ret = 0;
+	u64 c;
+
+	spin_lock_irqsave(&hw->fifo_lock, flags);
+	c = fifo_q->fifobar[fifo_q->head & fifo_q->imask];
+	if (c & ENTRY_MASK_C)
+		ret = 1;
+	spin_unlock_irqrestore(&hw->fifo_lock, flags);
 
 	return ret;
 }
@@ -142,6 +179,13 @@ static int ilo_pkt_dequeue(struct ilo_hwinfo *hw, struct ccb *ccb,
 	return ret;
 }
 
+static int ilo_pkt_recv(struct ilo_hwinfo *hw, struct ccb *ccb)
+{
+	char *fifobar = ccb->ccb_u3.recv_fifobar;
+
+	return fifo_check_recv(hw, fifobar);
+}
+
 static inline void doorbell_set(struct ccb *ccb)
 {
 	iowrite8(1, ccb->ccb_u5.db_base);
@@ -151,6 +195,7 @@ static inline void doorbell_clr(struct ccb *ccb)
 {
 	iowrite8(2, ccb->ccb_u5.db_base);
 }
+
 static inline int ctrl_set(int l2sz, int idxmask, int desclim)
 {
 	int active = 0, go = 1;
@@ -160,6 +205,7 @@ static inline int ctrl_set(int l2sz, int idxmask, int desclim)
 	       active << CTRL_BITPOS_A |
 	       go << CTRL_BITPOS_G;
 }
+
 static void ctrl_setup(struct ccb *ccb, int nr_desc, int l2desc_sz)
 {
 	/* for simplicity, use the same parameters for send and recv ctrls */
@@ -199,6 +245,10 @@ static void ilo_ccb_close(struct pci_dev *pdev, struct ccb_data *data)
 	driver_ccb = &data->driver_ccb;
 	device_ccb = data->mapped_ccb;
 
+	struct ccb *driver_ccb = &data->driver_ccb;
+	struct ccb __iomem *device_ccb = data->mapped_ccb;
+	int retries;
+
 	/* complicated dance to tell the hw we are stopping */
 	doorbell_clr(driver_ccb);
 	iowrite32(ioread32(&device_ccb->send_ctrl) & ~(1 << CTRL_BITPOS_G),
@@ -210,6 +260,9 @@ static void ilo_ccb_close(struct pci_dev *pdev, struct ccb_data *data)
 	for (retries = 1000; retries > 0; retries--) {
 		doorbell_set(driver_ccb);
 		udelay(1);
+	for (retries = MAX_WAIT; retries > 0; retries--) {
+		doorbell_set(driver_ccb);
+		udelay(WAIT_TIME);
 		if (!(ioread32(&device_ccb->send_ctrl) & (1 << CTRL_BITPOS_A))
 		    &&
 		    !(ioread32(&device_ccb->recv_ctrl) & (1 << CTRL_BITPOS_A)))
@@ -235,6 +288,14 @@ static int ilo_ccb_open(struct ilo_hwinfo *hw, struct ccb_data *data, int slot)
 	driver_ccb = &data->driver_ccb;
 	ilo_ccb = &data->ilo_ccb;
 	pdev = hw->ilo_dev;
+static int ilo_ccb_setup(struct ilo_hwinfo *hw, struct ccb_data *data, int slot)
+{
+	char *dma_va;
+	dma_addr_t dma_pa;
+	struct ccb *driver_ccb, *ilo_ccb;
+
+	driver_ccb = &data->driver_ccb;
+	ilo_ccb = &data->ilo_ccb;
 
 	data->dma_size = 2 * fifo_sz(NR_QENTRY) +
 			 2 * desc_mem_sz(NR_QENTRY) +
@@ -248,11 +309,19 @@ static int ilo_ccb_open(struct ilo_hwinfo *hw, struct ccb_data *data, int slot)
 
 	dma_va = (char *)data->dma_va;
 	dma_pa = (char *)data->dma_pa;
+	data->dma_va = pci_alloc_consistent(hw->ilo_dev, data->dma_size,
+					    &data->dma_pa);
+	if (!data->dma_va)
+		return -ENOMEM;
+
+	dma_va = (char *)data->dma_va;
+	dma_pa = data->dma_pa;
 
 	memset(dma_va, 0, data->dma_size);
 
 	dma_va = (char *)roundup((unsigned long)dma_va, ILO_START_ALIGN);
 	dma_pa = (char *)roundup((unsigned long)dma_pa, ILO_START_ALIGN);
+	dma_pa = roundup(dma_pa, ILO_START_ALIGN);
 
 	/*
 	 * Create two ccb's, one with virt addrs, one with phys addrs.
@@ -264,6 +333,7 @@ static int ilo_ccb_open(struct ilo_hwinfo *hw, struct ccb_data *data, int slot)
 	fifo_setup(dma_va, NR_QENTRY);
 	driver_ccb->ccb_u1.send_fifobar = dma_va + FIFOHANDLESIZE;
 	ilo_ccb->ccb_u1.send_fifobar = dma_pa + FIFOHANDLESIZE;
+	ilo_ccb->ccb_u1.send_fifobar_pa = dma_pa + FIFOHANDLESIZE;
 	dma_va += fifo_sz(NR_QENTRY);
 	dma_pa += fifo_sz(NR_QENTRY);
 
@@ -273,16 +343,23 @@ static int ilo_ccb_open(struct ilo_hwinfo *hw, struct ccb_data *data, int slot)
 	fifo_setup(dma_va, NR_QENTRY);
 	driver_ccb->ccb_u3.recv_fifobar = dma_va + FIFOHANDLESIZE;
 	ilo_ccb->ccb_u3.recv_fifobar = dma_pa + FIFOHANDLESIZE;
+	dma_pa = roundup(dma_pa, ILO_CACHE_SZ);
+
+	fifo_setup(dma_va, NR_QENTRY);
+	driver_ccb->ccb_u3.recv_fifobar = dma_va + FIFOHANDLESIZE;
+	ilo_ccb->ccb_u3.recv_fifobar_pa = dma_pa + FIFOHANDLESIZE;
 	dma_va += fifo_sz(NR_QENTRY);
 	dma_pa += fifo_sz(NR_QENTRY);
 
 	driver_ccb->ccb_u2.send_desc = dma_va;
 	ilo_ccb->ccb_u2.send_desc = dma_pa;
+	ilo_ccb->ccb_u2.send_desc_pa = dma_pa;
 	dma_pa += desc_mem_sz(NR_QENTRY);
 	dma_va += desc_mem_sz(NR_QENTRY);
 
 	driver_ccb->ccb_u4.recv_desc = dma_va;
 	ilo_ccb->ccb_u4.recv_desc = dma_pa;
+	ilo_ccb->ccb_u4.recv_desc_pa = dma_pa;
 
 	driver_ccb->channel = slot;
 	ilo_ccb->channel = slot;
@@ -294,6 +371,18 @@ static int ilo_ccb_open(struct ilo_hwinfo *hw, struct ccb_data *data, int slot)
 	data->mapped_ccb = (struct ccb __iomem *)
 				(hw->ram_vaddr + (slot * ILOHW_CCB_SZ));
 	memcpy_toio(data->mapped_ccb, ilo_ccb, sizeof(struct ccb));
+	return 0;
+}
+
+static void ilo_ccb_open(struct ilo_hwinfo *hw, struct ccb_data *data, int slot)
+{
+	int pkt_id, pkt_sz;
+	struct ccb *driver_ccb = &data->driver_ccb;
+
+	/* copy the ccb with physical addrs to device memory */
+	data->mapped_ccb = (struct ccb __iomem *)
+				(hw->ram_vaddr + (slot * ILOHW_CCB_SZ));
+	memcpy_toio(data->mapped_ccb, &data->ilo_ccb, sizeof(struct ccb));
 
 	/* put packets on the send and receive queues */
 	pkt_sz = 0;
@@ -329,6 +418,30 @@ free:
 	pci_free_consistent(pdev, data->dma_size, data->dma_va, data->dma_pa);
 out:
 	return error;
+	/* the ccb is ready to use */
+	doorbell_clr(driver_ccb);
+}
+
+static int ilo_ccb_verify(struct ilo_hwinfo *hw, struct ccb_data *data)
+{
+	int pkt_id, i;
+	struct ccb *driver_ccb = &data->driver_ccb;
+
+	/* make sure iLO is really handling requests */
+	for (i = MAX_WAIT; i > 0; i--) {
+		if (ilo_pkt_dequeue(hw, driver_ccb, SENDQ, &pkt_id, NULL, NULL))
+			break;
+		udelay(WAIT_TIME);
+	}
+
+	if (i == 0) {
+		dev_err(&hw->ilo_dev->dev, "Open could not dequeue a packet\n");
+		return -EBUSY;
+	}
+
+	ilo_pkt_enqueue(hw, driver_ccb, SENDQ, pkt_id, 0);
+	doorbell_set(driver_ccb);
+	return 0;
 }
 
 static inline int is_channel_reset(struct ccb *ccb)
@@ -347,6 +460,25 @@ static inline int is_device_reset(struct ilo_hwinfo *hw)
 {
 	/* check for global reset condition */
 	return ioread32(&hw->mmio_vaddr[DB_OUT]) & (1 << DB_RESET);
+static inline int get_device_outbound(struct ilo_hwinfo *hw)
+{
+	return ioread32(&hw->mmio_vaddr[DB_OUT]);
+}
+
+static inline int is_db_reset(int db_out)
+{
+	return db_out & (1 << DB_RESET);
+}
+
+static inline int is_device_reset(struct ilo_hwinfo *hw)
+{
+	/* check for global reset condition */
+	return is_db_reset(get_device_outbound(hw));
+}
+
+static inline void clear_pending_db(struct ilo_hwinfo *hw, int clr)
+{
+	iowrite32(clr, &hw->mmio_vaddr[DB_OUT]);
 }
 
 static inline void clear_device(struct ilo_hwinfo *hw)
@@ -356,6 +488,21 @@ static inline void clear_device(struct ilo_hwinfo *hw)
 }
 
 static void ilo_locked_reset(struct ilo_hwinfo *hw)
+	clear_pending_db(hw, -1);
+}
+
+static inline void ilo_enable_interrupts(struct ilo_hwinfo *hw)
+{
+	iowrite8(ioread8(&hw->mmio_vaddr[DB_IRQ]) | 1, &hw->mmio_vaddr[DB_IRQ]);
+}
+
+static inline void ilo_disable_interrupts(struct ilo_hwinfo *hw)
+{
+	iowrite8(ioread8(&hw->mmio_vaddr[DB_IRQ]) & ~1,
+		 &hw->mmio_vaddr[DB_IRQ]);
+}
+
+static void ilo_set_reset(struct ilo_hwinfo *hw)
 {
 	int slot;
 
@@ -364,6 +511,7 @@ static void ilo_locked_reset(struct ilo_hwinfo *hw)
 	 * to indicate that this ccb needs to be closed and reopened.
 	 */
 	for (slot = 0; slot < MAX_CCB; slot++) {
+	for (slot = 0; slot < max_ccb; slot++) {
 		if (!hw->ccb_alloc[slot])
 			continue;
 		set_channel_reset(&hw->ccb_alloc[slot]->driver_ccb);
@@ -397,6 +545,12 @@ static ssize_t ilo_read(struct file *fp, char __user *buf,
 	hw = data->ilo_hw;
 
 	if (is_device_reset(hw) || is_channel_reset(driver_ccb)) {
+	struct ccb_data *data = fp->private_data;
+	struct ccb *driver_ccb = &data->driver_ccb;
+	struct ilo_hwinfo *hw = data->ilo_hw;
+	void *pkt;
+
+	if (is_channel_reset(driver_ccb)) {
 		/*
 		 * If the device has been reset, applications
 		 * need to close and reopen all ccbs.
@@ -459,6 +613,13 @@ static ssize_t ilo_write(struct file *fp, const char __user *buf,
 		ilo_reset(hw);
 		return -ENODEV;
 	}
+	struct ccb_data *data = fp->private_data;
+	struct ccb *driver_ccb = &data->driver_ccb;
+	struct ilo_hwinfo *hw = data->ilo_hw;
+	void *pkt;
+
+	if (is_channel_reset(driver_ccb))
+		return -ENODEV;
 
 	/* get a packet to send the user command */
 	if (!ilo_pkt_dequeue(hw, driver_ccb, SENDQ, &pkt_id, &pkt_len, &pkt))
@@ -480,6 +641,21 @@ static ssize_t ilo_write(struct file *fp, const char __user *buf,
 	return err ? -EFAULT : len;
 }
 
+static unsigned int ilo_poll(struct file *fp, poll_table *wait)
+{
+	struct ccb_data *data = fp->private_data;
+	struct ccb *driver_ccb = &data->driver_ccb;
+
+	poll_wait(fp, &data->ccb_waitq, wait);
+
+	if (is_channel_reset(driver_ccb))
+		return POLLERR;
+	else if (ilo_pkt_recv(data->ilo_hw, driver_ccb))
+		return POLLIN | POLLRDNORM;
+
+	return 0;
+}
+
 static int ilo_close(struct inode *ip, struct file *fp)
 {
 	int slot;
@@ -493,6 +669,12 @@ static int ilo_close(struct inode *ip, struct file *fp)
 
 	if (is_device_reset(hw))
 		ilo_locked_reset(hw);
+	unsigned long flags;
+
+	slot = iminor(ip) % max_ccb;
+	hw = container_of(ip->i_cdev, struct ilo_hwinfo, cdev);
+
+	spin_lock(&hw->open_lock);
 
 	if (hw->ccb_alloc[slot]->ccb_cnt == 1) {
 
@@ -506,6 +688,17 @@ static int ilo_close(struct inode *ip, struct file *fp)
 		hw->ccb_alloc[slot]->ccb_cnt--;
 
 	spin_unlock(&hw->alloc_lock);
+		spin_lock_irqsave(&hw->alloc_lock, flags);
+		hw->ccb_alloc[slot] = NULL;
+		spin_unlock_irqrestore(&hw->alloc_lock, flags);
+
+		ilo_ccb_close(hw->ilo_dev, data);
+
+		kfree(data);
+	} else
+		hw->ccb_alloc[slot]->ccb_cnt--;
+
+	spin_unlock(&hw->open_lock);
 
 	return 0;
 }
@@ -517,6 +710,9 @@ static int ilo_open(struct inode *ip, struct file *fp)
 	struct ilo_hwinfo *hw;
 
 	slot = iminor(ip) % MAX_CCB;
+	unsigned long flags;
+
+	slot = iminor(ip) % max_ccb;
 	hw = container_of(ip->i_cdev, struct ilo_hwinfo, cdev);
 
 	/* new ccb allocation */
@@ -528,6 +724,7 @@ static int ilo_open(struct inode *ip, struct file *fp)
 
 	if (is_device_reset(hw))
 		ilo_locked_reset(hw);
+	spin_lock(&hw->open_lock);
 
 	/* each fd private_data holds sw/hw view of ccb */
 	if (hw->ccb_alloc[slot] == NULL) {
@@ -540,6 +737,37 @@ static int ilo_open(struct inode *ip, struct file *fp)
 			hw->ccb_alloc[slot]->ilo_hw = hw;
 		} else
 			kfree(data);
+		error = ilo_ccb_setup(hw, data, slot);
+		if (error) {
+			kfree(data);
+			goto out;
+		}
+
+		data->ccb_cnt = 1;
+		data->ccb_excl = fp->f_flags & O_EXCL;
+		data->ilo_hw = hw;
+		init_waitqueue_head(&data->ccb_waitq);
+
+		/* write the ccb to hw */
+		spin_lock_irqsave(&hw->alloc_lock, flags);
+		ilo_ccb_open(hw, data, slot);
+		hw->ccb_alloc[slot] = data;
+		spin_unlock_irqrestore(&hw->alloc_lock, flags);
+
+		/* make sure the channel is functional */
+		error = ilo_ccb_verify(hw, data);
+		if (error) {
+
+			spin_lock_irqsave(&hw->alloc_lock, flags);
+			hw->ccb_alloc[slot] = NULL;
+			spin_unlock_irqrestore(&hw->alloc_lock, flags);
+
+			ilo_ccb_close(hw->ilo_dev, data);
+
+			kfree(data);
+			goto out;
+		}
+
 	} else {
 		kfree(data);
 		if (fp->f_flags & O_EXCL || hw->ccb_alloc[slot]->ccb_excl) {
@@ -555,6 +783,8 @@ static int ilo_open(struct inode *ip, struct file *fp)
 		}
 	}
 	spin_unlock(&hw->alloc_lock);
+out:
+	spin_unlock(&hw->open_lock);
 
 	if (!error)
 		fp->private_data = hw->ccb_alloc[slot];
@@ -570,6 +800,47 @@ static const struct file_operations ilo_fops = {
 	.release 	= ilo_close,
 };
 
+	.poll		= ilo_poll,
+	.open 		= ilo_open,
+	.release 	= ilo_close,
+	.llseek		= noop_llseek,
+};
+
+static irqreturn_t ilo_isr(int irq, void *data)
+{
+	struct ilo_hwinfo *hw = data;
+	int pending, i;
+
+	spin_lock(&hw->alloc_lock);
+
+	/* check for ccbs which have data */
+	pending = get_device_outbound(hw);
+	if (!pending) {
+		spin_unlock(&hw->alloc_lock);
+		return IRQ_NONE;
+	}
+
+	if (is_db_reset(pending)) {
+		/* wake up all ccbs if the device was reset */
+		pending = -1;
+		ilo_set_reset(hw);
+	}
+
+	for (i = 0; i < max_ccb; i++) {
+		if (!hw->ccb_alloc[i])
+			continue;
+		if (pending & (1 << i))
+			wake_up_interruptible(&hw->ccb_alloc[i]->ccb_waitq);
+	}
+
+	/* clear the device of the channels that have been handled */
+	clear_pending_db(hw, pending);
+
+	spin_unlock(&hw->alloc_lock);
+
+	return IRQ_HANDLED;
+}
+
 static void ilo_unmap_device(struct pci_dev *pdev, struct ilo_hwinfo *hw)
 {
 	pci_iounmap(pdev, hw->db_vaddr);
@@ -578,6 +849,7 @@ static void ilo_unmap_device(struct pci_dev *pdev, struct ilo_hwinfo *hw)
 }
 
 static int __devinit ilo_map_device(struct pci_dev *pdev, struct ilo_hwinfo *hw)
+static int ilo_map_device(struct pci_dev *pdev, struct ilo_hwinfo *hw)
 {
 	int error = -ENOMEM;
 
@@ -590,6 +862,7 @@ static int __devinit ilo_map_device(struct pci_dev *pdev, struct ilo_hwinfo *hw)
 
 	/* map the adapter shared memory region */
 	hw->ram_vaddr = pci_iomap(pdev, 2, MAX_CCB * ILOHW_CCB_SZ);
+	hw->ram_vaddr = pci_iomap(pdev, 2, max_ccb * ILOHW_CCB_SZ);
 	if (hw->ram_vaddr == NULL) {
 		dev_err(&pdev->dev, "Error mapping shared mem\n");
 		goto mmio_free;
@@ -597,6 +870,7 @@ static int __devinit ilo_map_device(struct pci_dev *pdev, struct ilo_hwinfo *hw)
 
 	/* map the doorbell aperture */
 	hw->db_vaddr = pci_iomap(pdev, 3, MAX_CCB * ONE_DB_SIZE);
+	hw->db_vaddr = pci_iomap(pdev, 3, max_ccb * ONE_DB_SIZE);
 	if (hw->db_vaddr == NULL) {
 		dev_err(&pdev->dev, "Error mapping doorbell\n");
 		goto ram_free;
@@ -636,6 +910,47 @@ static int __devinit ilo_probe(struct pci_dev *pdev,
 	int devnum, minor, start, error;
 	struct ilo_hwinfo *ilo_hw;
 
+	if (!ilo_hw)
+		return;
+
+	clear_device(ilo_hw);
+
+	minor = MINOR(ilo_hw->cdev.dev);
+	for (i = minor; i < minor + max_ccb; i++)
+		device_destroy(ilo_class, MKDEV(ilo_major, i));
+
+	cdev_del(&ilo_hw->cdev);
+	ilo_disable_interrupts(ilo_hw);
+	free_irq(pdev->irq, ilo_hw);
+	ilo_unmap_device(pdev, ilo_hw);
+	pci_release_regions(pdev);
+	/*
+	 * pci_disable_device(pdev) used to be here. But this PCI device has
+	 * two functions with interrupt lines connected to a single pin. The
+	 * other one is a USB host controller. So when we disable the PIN here
+	 * e.g. by rmmod hpilo, the controller stops working. It is because
+	 * the interrupt link is disabled in ACPI since it is not refcounted
+	 * yet. See acpi_pci_link_free_irq called from acpi_pci_irq_disable.
+	 */
+	kfree(ilo_hw);
+	ilo_hwdev[(minor / max_ccb)] = 0;
+}
+
+static int ilo_probe(struct pci_dev *pdev,
+			       const struct pci_device_id *ent)
+{
+	int devnum, minor, start, error = 0;
+	struct ilo_hwinfo *ilo_hw;
+
+	/* Ignore subsystem_device = 0x1979 (set by BIOS)  */
+	if (pdev->subsystem_device == 0x1979)
+		return 0;
+
+	if (max_ccb > MAX_CCB)
+		max_ccb = MAX_CCB;
+	else if (max_ccb < MIN_CCB)
+		max_ccb = MIN_CCB;
+
 	/* find a free range for device files */
 	for (devnum = 0; devnum < MAX_ILO_DEV; devnum++) {
 		if (ilo_hwdev[devnum] == 0) {
@@ -658,6 +973,7 @@ static int __devinit ilo_probe(struct pci_dev *pdev,
 	ilo_hw->ilo_dev = pdev;
 	spin_lock_init(&ilo_hw->alloc_lock);
 	spin_lock_init(&ilo_hw->fifo_lock);
+	spin_lock_init(&ilo_hw->open_lock);
 
 	error = pci_enable_device(pdev);
 	if (error)
@@ -686,6 +1002,22 @@ static int __devinit ilo_probe(struct pci_dev *pdev,
 	}
 
 	for (minor = 0 ; minor < MAX_CCB; minor++) {
+	error = request_irq(pdev->irq, ilo_isr, IRQF_SHARED, "hpilo", ilo_hw);
+	if (error)
+		goto unmap;
+
+	ilo_enable_interrupts(ilo_hw);
+
+	cdev_init(&ilo_hw->cdev, &ilo_fops);
+	ilo_hw->cdev.owner = THIS_MODULE;
+	start = devnum * max_ccb;
+	error = cdev_add(&ilo_hw->cdev, MKDEV(ilo_major, start), max_ccb);
+	if (error) {
+		dev_err(&pdev->dev, "Could not add cdev\n");
+		goto remove_isr;
+	}
+
+	for (minor = 0 ; minor < max_ccb; minor++) {
 		struct device *dev;
 		dev = device_create(ilo_class, &pdev->dev,
 				    MKDEV(ilo_major, minor), NULL,
@@ -695,12 +1027,16 @@ static int __devinit ilo_probe(struct pci_dev *pdev,
 	}
 
 	return 0;
+remove_isr:
+	ilo_disable_interrupts(ilo_hw);
+	free_irq(pdev->irq, ilo_hw);
 unmap:
 	ilo_unmap_device(pdev, ilo_hw);
 free_regions:
 	pci_release_regions(pdev);
 disable:
 	pci_disable_device(pdev);
+/*	pci_disable_device(pdev);  see comment in ilo_remove */
 free:
 	kfree(ilo_hw);
 out:
@@ -710,6 +1046,7 @@ out:
 
 static struct pci_device_id ilo_devices[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_COMPAQ, 0xB204) },
+	{ PCI_DEVICE(PCI_VENDOR_ID_HP, 0x3307) },
 	{ }
 };
 MODULE_DEVICE_TABLE(pci, ilo_devices);
@@ -719,6 +1056,7 @@ static struct pci_driver ilo_driver = {
 	.id_table = ilo_devices,
 	.probe 	  = ilo_probe,
 	.remove   = __devexit_p(ilo_remove),
+	.remove   = ilo_remove,
 };
 
 static int __init ilo_init(void)
@@ -763,6 +1101,15 @@ MODULE_ALIAS(ILO_NAME);
 MODULE_DESCRIPTION(ILO_NAME);
 MODULE_AUTHOR("David Altobelli <david.altobelli@hp.com>");
 MODULE_LICENSE("GPL v2");
+
+MODULE_VERSION("1.4.1");
+MODULE_ALIAS(ILO_NAME);
+MODULE_DESCRIPTION(ILO_NAME);
+MODULE_AUTHOR("David Altobelli <david.altobelli@hpe.com>");
+MODULE_LICENSE("GPL v2");
+
+module_param(max_ccb, uint, 0444);
+MODULE_PARM_DESC(max_ccb, "Maximum number of HP iLO channels to attach (8-24)(default=16)");
 
 module_init(ilo_init);
 module_exit(ilo_exit);

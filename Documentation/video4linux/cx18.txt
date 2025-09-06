@@ -12,6 +12,7 @@ encoder chip:
    The symptom is that the eeprom cannot be read and the card is
    unusable. This is probably fixed, but if you have problems
    then post to the video4linux or ivtv-users mailinglist.
+   then post to the video4linux or ivtv-users mailing list.
 
 3) VBI (raw or sliced) has not yet been implemented.
 

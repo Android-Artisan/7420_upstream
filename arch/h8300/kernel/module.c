@@ -61,6 +61,12 @@ int apply_relocate_add(Elf32_Shdr *sechdrs,
 	for (i = 0; i < sechdrs[relsec].sh_size / sizeof(*rela); i++) {
 		/* This is where to make the change */
 		uint32_t *loc = (uint32_t *)(sechdrs[sechdrs[relsec].sh_info].sh_addr
+	pr_debug("Applying relocate section %u to %u\n", relsec,
+	       sechdrs[relsec].sh_info);
+	for (i = 0; i < sechdrs[relsec].sh_size / sizeof(*rela); i++) {
+		/* This is where to make the change */
+		uint32_t *loc =
+			(uint32_t *)(sechdrs[sechdrs[relsec].sh_info].sh_addr
 					     + rela[i].r_offset);
 		/* This is the symbol it is referring to.  Note that all
 		   undefined symbols have been resolved.  */
@@ -87,6 +93,10 @@ int apply_relocate_add(Elf32_Shdr *sechdrs,
 			    (Elf32_Sword)v < -(Elf32_Sword)0x8000)
 				goto overflow;
 			else 
+			if ((Elf32_Sword)v > 0x7fff ||
+			    (Elf32_Sword)v < -(Elf32_Sword)0x8000)
+				goto overflow;
+			else
 				*(unsigned short *)loc = v;
 			break;
 		case R_H8_PCREL8:
@@ -99,6 +109,14 @@ int apply_relocate_add(Elf32_Shdr *sechdrs,
 			break;
 		default:
 			printk(KERN_ERR "module %s: Unknown relocation: %u\n",
+			if ((Elf32_Sword)v > 0x7f ||
+			    (Elf32_Sword)v < -(Elf32_Sword)0x80)
+				goto overflow;
+			else
+				*(unsigned char *)loc = v;
+			break;
+		default:
+			pr_err("module %s: Unknown relocation: %u\n",
 			       me->name, ELF32_R_TYPE(rela[i].r_info));
 			return -ENOEXEC;
 		}
@@ -119,4 +137,8 @@ int module_finalize(const Elf_Ehdr *hdr,
 
 void module_arch_cleanup(struct module *mod)
 {
+}
+	pr_err("module %s: relocation offset overflow: %08x\n",
+	       me->name, rela[i].r_offset);
+	return -ENOEXEC;
 }

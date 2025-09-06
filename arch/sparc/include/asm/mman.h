@@ -22,6 +22,8 @@
 #define MAP_NONBLOCK	0x10000		/* do not block on IO */
 
 #ifdef __KERNEL__
+#include <uapi/asm/mman.h>
+
 #ifndef __ASSEMBLY__
 #define arch_mmap_check(addr,len,flags)	sparc_mmap_check(addr,len)
 int sparc_mmap_check(unsigned long addr, unsigned long len);

@@ -1,5 +1,6 @@
 /*
  * TFRC: main module holding the pieces of the TFRC library together
+ * TFRC library initialisation
  *
  * Copyright (c) 2007 The University of Aberdeen, Scotland, UK
  * Copyright (c) 2007 Arnaldo Carvalho de Melo <acme@redhat.com>
@@ -15,6 +16,12 @@ MODULE_PARM_DESC(tfrc_debug, "Enable debug messages");
 #endif
 
 static int __init tfrc_module_init(void)
+bool tfrc_debug;
+module_param(tfrc_debug, bool, 0644);
+MODULE_PARM_DESC(tfrc_debug, "Enable TFRC debug messages");
+#endif
+
+int __init tfrc_lib_init(void)
 {
 	int rc = tfrc_li_init();
 
@@ -39,6 +46,7 @@ out:
 }
 
 static void __exit tfrc_module_exit(void)
+void tfrc_lib_exit(void)
 {
 	tfrc_rx_packet_history_exit();
 	tfrc_tx_packet_history_exit();

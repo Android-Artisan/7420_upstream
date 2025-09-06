@@ -12,6 +12,7 @@
 #include <linux/platform_device.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
+#include <linux/slab.h>
 #include <asm/bvme6000hw.h>
 #include <scsi/scsi_host.h>
 #include <scsi/scsi_device.h>
@@ -35,6 +36,8 @@ static struct platform_device *bvme6000_scsi_device;
 
 static __devinit int
 bvme6000_probe(struct device *dev)
+static int
+bvme6000_probe(struct platform_device *dev)
 {
 	struct Scsi_Host *host;
 	struct NCR_700_Host_Parameters *hostdata;
@@ -59,6 +62,8 @@ bvme6000_probe(struct device *dev)
 
 	/* and register the chip */
 	host = NCR_700_detect(&bvme6000_scsi_driver_template, hostdata, dev);
+	host = NCR_700_detect(&bvme6000_scsi_driver_template, hostdata,
+			      &dev->dev);
 	if (!host) {
 		printk(KERN_ERR "bvme6000-scsi: No host detected; "
 				"board configuration problem?\n");
@@ -74,6 +79,7 @@ bvme6000_probe(struct device *dev)
 	}
 
 	dev_set_drvdata(dev, host);
+	platform_set_drvdata(dev, host);
 	scsi_scan_host(host);
 
 	return 0;
@@ -90,6 +96,10 @@ static __devexit int
 bvme6000_device_remove(struct device *dev)
 {
 	struct Scsi_Host *host = dev_get_drvdata(dev);
+static int
+bvme6000_device_remove(struct platform_device *dev)
+{
+	struct Scsi_Host *host = platform_get_drvdata(dev);
 	struct NCR_700_Host_Parameters *hostdata = shost_priv(host);
 
 	scsi_remove_host(host);
@@ -105,6 +115,12 @@ static struct device_driver bvme6000_scsi_driver = {
 	.bus	= &platform_bus_type,
 	.probe	= bvme6000_probe,
 	.remove	= __devexit_p(bvme6000_device_remove),
+static struct platform_driver bvme6000_scsi_driver = {
+	.driver = {
+		.name		= "bvme6000-scsi",
+	},
+	.probe		= bvme6000_probe,
+	.remove		= bvme6000_device_remove,
 };
 
 static int __init bvme6000_scsi_init(void)
@@ -112,6 +128,7 @@ static int __init bvme6000_scsi_init(void)
 	int err;
 
 	err = driver_register(&bvme6000_scsi_driver);
+	err = platform_driver_register(&bvme6000_scsi_driver);
 	if (err)
 		return err;
 
@@ -119,6 +136,7 @@ static int __init bvme6000_scsi_init(void)
 							       -1, NULL, 0);
 	if (IS_ERR(bvme6000_scsi_device)) {
 		driver_unregister(&bvme6000_scsi_driver);
+		platform_driver_unregister(&bvme6000_scsi_driver);
 		return PTR_ERR(bvme6000_scsi_device);
 	}
 
@@ -129,6 +147,7 @@ static void __exit bvme6000_scsi_exit(void)
 {
 	platform_device_unregister(bvme6000_scsi_device);
 	driver_unregister(&bvme6000_scsi_driver);
+	platform_driver_unregister(&bvme6000_scsi_driver);
 }
 
 module_init(bvme6000_scsi_init);

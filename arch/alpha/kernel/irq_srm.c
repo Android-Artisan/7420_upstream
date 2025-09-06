@@ -22,6 +22,10 @@ srm_enable_irq(unsigned int irq)
 {
 	spin_lock(&srm_irq_lock);
 	cserve_ena(irq - 16);
+srm_enable_irq(struct irq_data *d)
+{
+	spin_lock(&srm_irq_lock);
+	cserve_ena(d->irq - 16);
 	spin_unlock(&srm_irq_lock);
 }
 
@@ -56,6 +60,19 @@ static struct hw_interrupt_type srm_irq_type = {
 	.disable	= srm_disable_irq,
 	.ack		= srm_disable_irq,
 	.end		= srm_end_irq,
+srm_disable_irq(struct irq_data *d)
+{
+	spin_lock(&srm_irq_lock);
+	cserve_dis(d->irq - 16);
+	spin_unlock(&srm_irq_lock);
+}
+
+/* Handle interrupts from the SRM, assuming no additional weirdness.  */
+static struct irq_chip srm_irq_type = {
+	.name		= "SRM",
+	.irq_unmask	= srm_enable_irq,
+	.irq_mask	= srm_disable_irq,
+	.irq_mask_ack	= srm_disable_irq,
 };
 
 void __init
@@ -68,6 +85,13 @@ init_srm_irqs(long max, unsigned long ignore_mask)
 			continue;
 		irq_desc[i].status = IRQ_DISABLED | IRQ_LEVEL;
 		irq_desc[i].chip = &srm_irq_type;
+	if (NR_IRQS <= 16)
+		return;
+	for (i = 16; i < max; ++i) {
+		if (i < 64 && ((ignore_mask >> i) & 1))
+			continue;
+		irq_set_chip_and_handler(i, &srm_irq_type, handle_level_irq);
+		irq_set_status_flags(i, IRQ_LEVEL);
 	}
 }
 

@@ -1,5 +1,7 @@
 #ifndef _ASM_GENERIC_BITOPS_H_
 #define _ASM_GENERIC_BITOPS_H_
+#ifndef __ASM_GENERIC_BITOPS_H
+#define __ASM_GENERIC_BITOPS_H
 
 /*
  * For the benefit of those who are trying to port Linux to another
@@ -14,6 +16,18 @@
 #include <asm-generic/bitops/__ffs.h>
 #include <asm-generic/bitops/ffz.h>
 #include <asm-generic/bitops/fls.h>
+ *
+ * C language equivalents written by Theodore Ts'o, 9/26/92
+ */
+
+#include <linux/irqflags.h>
+#include <linux/compiler.h>
+#include <asm/barrier.h>
+
+#include <asm-generic/bitops/__ffs.h>
+#include <asm-generic/bitops/ffz.h>
+#include <asm-generic/bitops/fls.h>
+#include <asm-generic/bitops/__fls.h>
 #include <asm-generic/bitops/fls64.h>
 #include <asm-generic/bitops/find.h>
 
@@ -31,3 +45,9 @@
 #include <asm-generic/bitops/minix.h>
 
 #endif /* _ASM_GENERIC_BITOPS_H */
+#include <asm-generic/bitops/atomic.h>
+#include <asm-generic/bitops/non-atomic.h>
+#include <asm-generic/bitops/le.h>
+#include <asm-generic/bitops/ext2-atomic.h>
+
+#endif /* __ASM_GENERIC_BITOPS_H */

@@ -128,6 +128,7 @@ struct yld_ctl_packet {
  */
 
 /* LCD, each segment must be driven seperately.
+/* LCD, each segment must be driven separately.
  *
  * Layout:
  *

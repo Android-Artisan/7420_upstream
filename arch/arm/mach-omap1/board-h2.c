@@ -19,6 +19,7 @@
  * published by the Free Software Foundation.
  */
 
+#include <linux/gpio.h>
 #include <linux/kernel.h>
 #include <linux/platform_device.h>
 #include <linux/delay.h>
@@ -85,6 +86,69 @@ static int h2_keymap[] = {
 	KEY(5, 3, KEY_F16),
 	KEY(5, 4, KEY_SLEEP),
 	0
+#include <linux/mtd/physmap.h>
+#include <linux/input.h>
+#include <linux/i2c/tps65010.h>
+#include <linux/smc91x.h>
+#include <linux/omapfb.h>
+#include <linux/platform_data/gpio-omap.h>
+#include <linux/leds.h>
+
+#include <asm/mach-types.h>
+#include <asm/mach/arch.h>
+#include <asm/mach/map.h>
+
+#include <mach/mux.h>
+#include <linux/omap-dma.h>
+#include <mach/tc.h>
+#include <linux/platform_data/keypad-omap.h>
+#include <mach/flash.h>
+
+#include <mach/hardware.h>
+#include <mach/usb.h>
+
+#include "common.h"
+#include "board-h2.h"
+
+/* At OMAP1610 Innovator the Ethernet is directly connected to CS1 */
+#define OMAP1610_ETHR_START		0x04000300
+
+static const unsigned int h2_keymap[] = {
+	KEY(0, 0, KEY_LEFT),
+	KEY(1, 0, KEY_RIGHT),
+	KEY(2, 0, KEY_3),
+	KEY(3, 0, KEY_F10),
+	KEY(4, 0, KEY_F5),
+	KEY(5, 0, KEY_9),
+	KEY(0, 1, KEY_DOWN),
+	KEY(1, 1, KEY_UP),
+	KEY(2, 1, KEY_2),
+	KEY(3, 1, KEY_F9),
+	KEY(4, 1, KEY_F7),
+	KEY(5, 1, KEY_0),
+	KEY(0, 2, KEY_ENTER),
+	KEY(1, 2, KEY_6),
+	KEY(2, 2, KEY_1),
+	KEY(3, 2, KEY_F2),
+	KEY(4, 2, KEY_F6),
+	KEY(5, 2, KEY_HOME),
+	KEY(0, 3, KEY_8),
+	KEY(1, 3, KEY_5),
+	KEY(2, 3, KEY_F12),
+	KEY(3, 3, KEY_F3),
+	KEY(4, 3, KEY_F8),
+	KEY(5, 3, KEY_END),
+	KEY(0, 4, KEY_7),
+	KEY(1, 4, KEY_4),
+	KEY(2, 4, KEY_F11),
+	KEY(3, 4, KEY_F1),
+	KEY(4, 4, KEY_F4),
+	KEY(5, 4, KEY_ESC),
+	KEY(0, 5, KEY_F13),
+	KEY(1, 5, KEY_F14),
+	KEY(2, 5, KEY_F15),
+	KEY(3, 5, KEY_F16),
+	KEY(4, 5, KEY_SLEEP),
 };
 
 static struct mtd_partition h2_nor_partitions[] = {
@@ -121,6 +185,9 @@ static struct mtd_partition h2_nor_partitions[] = {
 static struct flash_platform_data h2_nor_data = {
 	.map_name	= "cfi_probe",
 	.width		= 2,
+static struct physmap_flash_data h2_nor_data = {
+	.width		= 2,
+	.set_vpp	= omap1_set_vpp,
 	.parts		= h2_nor_partitions,
 	.nr_parts	= ARRAY_SIZE(h2_nor_partitions),
 };
@@ -132,6 +199,7 @@ static struct resource h2_nor_resource = {
 
 static struct platform_device h2_nor_device = {
 	.name		= "omapflash",
+	.name		= "physmap-flash",
 	.id		= 0,
 	.dev		= {
 		.platform_data	= &h2_nor_data,
@@ -181,6 +249,25 @@ static struct omap_nand_platform_data h2_nand_data = {
 	.options	= NAND_SAMSUNG_LP_OPTIONS,
 	.parts		= h2_nand_partitions,
 	.nr_parts	= ARRAY_SIZE(h2_nand_partitions),
+#define H2_NAND_RB_GPIO_PIN	62
+
+static int h2_nand_dev_ready(struct mtd_info *mtd)
+{
+	return gpio_get_value(H2_NAND_RB_GPIO_PIN);
+}
+
+static struct platform_nand_data h2_nand_platdata = {
+	.chip	= {
+		.nr_chips		= 1,
+		.chip_offset		= 0,
+		.nr_partitions		= ARRAY_SIZE(h2_nand_partitions),
+		.partitions		= h2_nand_partitions,
+		.options		= NAND_SAMSUNG_LP_OPTIONS,
+	},
+	.ctrl	= {
+		.cmd_ctrl	= omap1_nand_cmd_ctl,
+		.dev_ready	= h2_nand_dev_ready,
+	},
 };
 
 static struct resource h2_nand_resource = {
@@ -192,9 +279,19 @@ static struct platform_device h2_nand_device = {
 	.id		= 0,
 	.dev		= {
 		.platform_data	= &h2_nand_data,
+	.name		= "gen_nand",
+	.id		= 0,
+	.dev		= {
+		.platform_data	= &h2_nand_platdata,
 	},
 	.num_resources	= 1,
 	.resource	= &h2_nand_resource,
+};
+
+static struct smc91x_platdata h2_smc91x_info = {
+	.flags	= SMC91X_USE_16BIT | SMC91X_NOWAIT,
+	.leda	= RPC_LED_100_10,
+	.ledb	= RPC_LED_TX_RX,
 };
 
 static struct resource h2_smc91x_resources[] = {
@@ -213,6 +310,9 @@ static struct resource h2_smc91x_resources[] = {
 static struct platform_device h2_smc91x_device = {
 	.name		= "smc91x",
 	.id		= 0,
+	.dev	= {
+		.platform_data	= &h2_smc91x_info,
+	},
 	.num_resources	= ARRAY_SIZE(h2_smc91x_resources),
 	.resource	= h2_smc91x_resources,
 };
@@ -233,6 +333,18 @@ static struct omap_kp_platform_data h2_kp_data = {
 	.rep		= 1,
 	.delay		= 9,
 	.dbounce	= 1,
+static const struct matrix_keymap_data h2_keymap_data = {
+	.keymap		= h2_keymap,
+	.keymap_size	= ARRAY_SIZE(h2_keymap),
+};
+
+static struct omap_kp_platform_data h2_kp_data = {
+	.rows		= 8,
+	.cols		= 8,
+	.keymap_data	= &h2_keymap_data,
+	.rep		= true,
+	.delay		= 9,
+	.dbounce	= true,
 };
 
 static struct platform_device h2_kp_device = {
@@ -327,6 +439,29 @@ static struct platform_device h2_mcbsp1_device = {
 	.id	= 1,
 	.dev = {
 		.platform_data	= &alsa_config,
+static struct gpio_led h2_gpio_led_pins[] = {
+	{
+		.name		= "h2:red",
+		.default_trigger = "heartbeat",
+		.gpio		= 3,
+	},
+	{
+		.name		= "h2:green",
+		.default_trigger = "cpu0",
+		.gpio		= OMAP_MPUIO(4),
+	},
+};
+
+static struct gpio_led_platform_data h2_gpio_led_data = {
+	.leds		= h2_gpio_led_pins,
+	.num_leds	= ARRAY_SIZE(h2_gpio_led_pins),
+};
+
+static struct platform_device h2_gpio_leds = {
+	.name	= "leds-gpio",
+	.id	= -1,
+	.dev	= {
+		.platform_data = &h2_gpio_led_data,
 	},
 };
 
@@ -338,11 +473,14 @@ static struct platform_device *h2_devices[] __initdata = {
 	&h2_kp_device,
 	&h2_lcd_device,
 	&h2_mcbsp1_device,
+	&h2_kp_device,
+	&h2_gpio_leds,
 };
 
 static void __init h2_init_smc91x(void)
 {
 	if ((omap_request_gpio(0)) < 0) {
+	if (gpio_request(0, "SMC91x irq") < 0) {
 		printk("Error requesting gpio 0 for smc91x irq\n");
 		return;
 	}
@@ -366,11 +504,38 @@ static void __init h2_init_irq(void)
 	h2_init_smc91x();
 }
 
+static int tps_setup(struct i2c_client *client, void *context)
+{
+	if (!IS_BUILTIN(CONFIG_TPS65010))
+		return -ENOSYS;
+	
+	tps65010_config_vregs1(TPS_LDO2_ENABLE | TPS_VLDO2_3_0V |
+				TPS_LDO1_ENABLE | TPS_VLDO1_3_0V);
+
+	return 0;
+}
+
+static struct tps65010_board tps_board = {
+	.base		= H2_TPS_GPIO_BASE,
+	.outmask	= 0x0f,
+	.setup		= tps_setup,
+};
+
+static struct i2c_board_info __initdata h2_i2c_board_info[] = {
+	{
+		I2C_BOARD_INFO("tps65010", 0x48),
+		.platform_data	= &tps_board,
+	}, {
+		I2C_BOARD_INFO("isp1301_omap", 0x2d),
+	},
+};
+
 static struct omap_usb_config h2_usb_config __initdata = {
 	/* usb1 has a Mini-AB port and external isp1301 transceiver */
 	.otg		= 2,
 
 #ifdef	CONFIG_USB_GADGET_OMAP
+#if IS_ENABLED(CONFIG_USB_OMAP)
 	.hmc_mode	= 19,	/* 0:host(off) 1:dev|otg 2:disabled */
 	/* .hmc_mode	= 21,*/	/* 0:host(off) 1:dev(loopback) 2:host(loopback) */
 #elif	defined(CONFIG_USB_OHCI_HCD) || defined(CONFIG_USB_OHCI_HCD_MODULE)
@@ -414,6 +579,10 @@ static int h2_nand_dev_ready(struct omap_nand_platform_data *data)
 
 static void __init h2_init(void)
 {
+static void __init h2_init(void)
+{
+	h2_init_smc91x();
+
 	/* Here we assume the NOR boot config:  NOR on CS3 (possibly swapped
 	 * to address 0 by a dip switch), NAND on CS2B.  The NAND driver will
 	 * notice whether a NAND chip is enabled at probe time.
@@ -430,6 +599,8 @@ static void __init h2_init(void)
 	h2_nand_resource.end += SZ_4K - 1;
 	if (!(omap_request_gpio(H2_NAND_RB_GPIO_PIN)))
 		h2_nand_data.dev_ready = h2_nand_dev_ready;
+	BUG_ON(gpio_request(H2_NAND_RB_GPIO_PIN, "NAND ready") < 0);
+	gpio_direction_input(H2_NAND_RB_GPIO_PIN);
 
 	omap_cfg_reg(L3_1610_FLASH_CS2B_OE);
 	omap_cfg_reg(M8_1610_FLASH_CS2B_WE);
@@ -459,6 +630,35 @@ static void __init h2_init(void)
 static void __init h2_map_io(void)
 {
 	omap1_map_common_io();
+	/* Mux pins for keypad */
+	omap_cfg_reg(F18_1610_KBC0);
+	omap_cfg_reg(D20_1610_KBC1);
+	omap_cfg_reg(D19_1610_KBC2);
+	omap_cfg_reg(E18_1610_KBC3);
+	omap_cfg_reg(C21_1610_KBC4);
+	omap_cfg_reg(G18_1610_KBR0);
+	omap_cfg_reg(F19_1610_KBR1);
+	omap_cfg_reg(H14_1610_KBR2);
+	omap_cfg_reg(E20_1610_KBR3);
+	omap_cfg_reg(E19_1610_KBR4);
+	omap_cfg_reg(N19_1610_KBR5);
+
+	/* GPIO based LEDs */
+	omap_cfg_reg(P18_1610_GPIO3);
+	omap_cfg_reg(MPUIO4);
+
+	h2_smc91x_resources[1].start = gpio_to_irq(0);
+	h2_smc91x_resources[1].end = gpio_to_irq(0);
+	platform_add_devices(h2_devices, ARRAY_SIZE(h2_devices));
+	omap_serial_init();
+	h2_i2c_board_info[0].irq = gpio_to_irq(58);
+	h2_i2c_board_info[1].irq = gpio_to_irq(2);
+	omap_register_i2c_bus(1, 100, h2_i2c_board_info,
+			      ARRAY_SIZE(h2_i2c_board_info));
+	omap1_usb_init(&h2_usb_config);
+	h2_mmc_init();
+
+	omapfb_set_lcd_config(&h2_lcd_config);
 }
 
 MACHINE_START(OMAP_H2, "TI-H2")
@@ -470,4 +670,13 @@ MACHINE_START(OMAP_H2, "TI-H2")
 	.init_irq	= h2_init_irq,
 	.init_machine	= h2_init,
 	.timer		= &omap_timer,
+	.atag_offset	= 0x100,
+	.map_io		= omap16xx_map_io,
+	.init_early     = omap1_init_early,
+	.init_irq	= omap1_init_irq,
+	.handle_irq	= omap1_handle_irq,
+	.init_machine	= h2_init,
+	.init_late	= omap1_init_late,
+	.init_time	= omap1_timer_init,
+	.restart	= omap1_restart,
 MACHINE_END

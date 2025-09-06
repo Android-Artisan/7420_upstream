@@ -3,6 +3,14 @@
 #include <linux/types.h>
 #include <linux/ethtool.h>
 #include <net/ieee80211_crypt.h>
+#include <linux/slab.h>
+#include <linux/types.h>
+#include <linux/sched.h>
+#include <linux/ethtool.h>
+#include <linux/if_arp.h>
+#include <linux/module.h>
+#include <linux/etherdevice.h>
+#include <net/lib80211.h>
 
 #include "hostap_wlan.h"
 #include "hostap.h"
@@ -150,6 +158,7 @@ static int prism2_ioctl_siwencode(struct net_device *dev,
 	local_info_t *local;
 	int i;
 	struct ieee80211_crypt_data **crypt;
+	struct lib80211_crypt_data **crypt;
 
 	iface = netdev_priv(dev);
 	local = iface->local;
@@ -157,6 +166,7 @@ static int prism2_ioctl_siwencode(struct net_device *dev,
 	i = erq->flags & IW_ENCODE_INDEX;
 	if (i < 1 || i > 4)
 		i = local->tx_keyidx;
+		i = local->crypt_info.tx_keyidx;
 	else
 		i--;
 	if (i < 0 || i >= WEP_KEYS)
@@ -167,6 +177,11 @@ static int prism2_ioctl_siwencode(struct net_device *dev,
 	if (erq->flags & IW_ENCODE_DISABLED) {
 		if (*crypt)
 			prism2_crypt_delayed_deinit(local, crypt);
+	crypt = &local->crypt_info.crypt[i];
+
+	if (erq->flags & IW_ENCODE_DISABLED) {
+		if (*crypt)
+			lib80211_crypt_delayed_deinit(&local->crypt_info, crypt);
 		goto done;
 	}
 
@@ -190,6 +205,23 @@ static int prism2_ioctl_siwencode(struct net_device *dev,
 			new_crypt->ops = ieee80211_get_crypto_ops("WEP");
 		}
 		if (new_crypt->ops)
+		lib80211_crypt_delayed_deinit(&local->crypt_info, crypt);
+	}
+
+	if (*crypt == NULL) {
+		struct lib80211_crypt_data *new_crypt;
+
+		/* take WEP into use */
+		new_crypt = kzalloc(sizeof(struct lib80211_crypt_data),
+				GFP_KERNEL);
+		if (new_crypt == NULL)
+			return -ENOMEM;
+		new_crypt->ops = lib80211_get_crypto_ops("WEP");
+		if (!new_crypt->ops) {
+			request_module("lib80211_crypt_wep");
+			new_crypt->ops = lib80211_get_crypto_ops("WEP");
+		}
+		if (new_crypt->ops && try_module_get(new_crypt->ops->owner))
 			new_crypt->priv = new_crypt->ops->init(i);
 		if (!new_crypt->ops || !new_crypt->priv) {
 			kfree(new_crypt);
@@ -211,6 +243,7 @@ static int prism2_ioctl_siwencode(struct net_device *dev,
 		(*crypt)->ops->set_key(keybuf, len, NULL, (*crypt)->priv);
 		for (j = 0; j < WEP_KEYS; j++) {
 			if (j != i && local->crypt[j]) {
+			if (j != i && local->crypt_info.crypt[j]) {
 				first = 0;
 				break;
 			}
@@ -220,6 +253,10 @@ static int prism2_ioctl_siwencode(struct net_device *dev,
 	} else {
 		/* No key data - just set the default TX key index */
 		local->tx_keyidx = i;
+			local->crypt_info.tx_keyidx = i;
+	} else {
+		/* No key data - just set the default TX key index */
+		local->crypt_info.tx_keyidx = i;
 	}
 
  done:
@@ -253,6 +290,7 @@ static int prism2_ioctl_giwencode(struct net_device *dev,
 	int i, len;
 	u16 val;
 	struct ieee80211_crypt_data *crypt;
+	struct lib80211_crypt_data *crypt;
 
 	iface = netdev_priv(dev);
 	local = iface->local;
@@ -260,12 +298,14 @@ static int prism2_ioctl_giwencode(struct net_device *dev,
 	i = erq->flags & IW_ENCODE_INDEX;
 	if (i < 1 || i > 4)
 		i = local->tx_keyidx;
+		i = local->crypt_info.tx_keyidx;
 	else
 		i--;
 	if (i < 0 || i >= WEP_KEYS)
 		return -EINVAL;
 
 	crypt = local->crypt[i];
+	crypt = local->crypt_info.crypt[i];
 	erq->flags = i + 1;
 
 	if (crypt == NULL || crypt->ops == NULL) {
@@ -547,6 +587,9 @@ static int prism2_ioctl_giwaplist(struct net_device *dev,
 	memcpy(extra, &addr, sizeof(struct sockaddr) * data->length);
 	data->flags = 1; /* has quality information */
 	memcpy(extra + sizeof(struct sockaddr) * data->length, &qual,
+	memcpy(extra, addr, sizeof(struct sockaddr) * data->length);
+	data->flags = 1; /* has quality information */
+	memcpy(extra + sizeof(struct sockaddr) * data->length, qual,
 	       sizeof(struct iw_quality) * data->length);
 
 	kfree(addr);
@@ -678,6 +721,7 @@ static int hostap_join_ap(struct net_device *dev)
 			break;
 		entry = &local->last_scan_results[i];
 		if (memcmp(local->preferred_ap, entry->bssid, ETH_ALEN) == 0) {
+		if (ether_addr_equal(local->preferred_ap, entry->bssid)) {
 			req.channel = entry->chid;
 			break;
 		}
@@ -694,6 +738,13 @@ static int hostap_join_ap(struct net_device *dev)
 
 	printk(KERN_DEBUG "%s: Trying to join BSSID %s\n",
 	       dev->name, print_mac(mac, local->preferred_ap));
+		printk(KERN_DEBUG "%s: JoinRequest %pM failed\n",
+		       dev->name, local->preferred_ap);
+		return -1;
+	}
+
+	printk(KERN_DEBUG "%s: Trying to join BSSID %pM\n",
+	       dev->name, local->preferred_ap);
 
 	return 0;
 }
@@ -1667,6 +1718,7 @@ static int prism2_request_hostscan(struct net_device *dev,
 	scan_req.channel_list = cpu_to_le16(local->channel_mask &
 					    local->scan_channel_mask);
 	scan_req.txrate = __constant_cpu_to_le16(HFA384X_RATES_1MBPS);
+	scan_req.txrate = cpu_to_le16(HFA384X_RATES_1MBPS);
 	if (ssid) {
 		if (ssid_len > 32)
 			return -EINVAL;
@@ -1697,6 +1749,7 @@ static int prism2_request_scan(struct net_device *dev)
 	scan_req.channel_list = cpu_to_le16(local->channel_mask &
 					    local->scan_channel_mask);
 	scan_req.txrate = __constant_cpu_to_le16(HFA384X_RATES_1MBPS);
+	scan_req.txrate = cpu_to_le16(HFA384X_RATES_1MBPS);
 
 	/* FIX:
 	 * It seems to be enough to set roaming mode for a short moment to
@@ -1722,6 +1775,7 @@ static int prism2_request_scan(struct net_device *dev)
 				HFA384X_ROAMING_FIRMWARE);
 
 	return 0;
+	return ret;
 }
 
 #else /* !PRISM2_NO_STATION_MODES */
@@ -1971,6 +2025,7 @@ static char * __prism2_translate_scan(local_info_t *local,
 
 
 /* Translate scan data returned from the card to a card independant
+/* Translate scan data returned from the card to a card independent
  * format that the Wireless Tools will understand - Jean II */
 static inline int prism2_translate_scan(local_info_t *local,
 					struct iw_request_info *info,
@@ -2002,6 +2057,7 @@ static inline int prism2_translate_scan(local_info_t *local,
 			struct hostap_bss_info *bss;
 			bss = list_entry(ptr, struct hostap_bss_info, list);
 			if (memcmp(bss->bssid, scan->bssid, ETH_ALEN) == 0) {
+			if (ether_addr_equal(bss->bssid, scan->bssid)) {
 				bss->included = 1;
 				current_ev = __prism2_translate_scan(
 					local, info, scan, bss, current_ev,
@@ -2069,6 +2125,7 @@ static inline int prism2_ioctl_giwscan_sta(struct net_device *dev,
 		 * First, managing wait queues is complex and racy
 		 * (there may be multiple simultaneous callers).
 		 * Second, we grab some rtnetlink lock before comming
+		 * Second, we grab some rtnetlink lock before coming
 		 * here (in dev_ioctl()).
 		 * Third, the caller can wait on the Wireless Event
 		 * - Jean II */
@@ -2543,6 +2600,7 @@ static int prism2_ioctl_priv_prism2_param(struct net_device *dev,
 
 		memset(&scan_req, 0, sizeof(scan_req));
 		scan_req.channel_list = __constant_cpu_to_le16(0x3fff);
+		scan_req.channel_list = cpu_to_le16(0x3fff);
 		switch (value) {
 		case 1: rate = HFA384X_RATES_1MBPS; break;
 		case 2: rate = HFA384X_RATES_2MBPS; break;
@@ -2591,6 +2649,7 @@ static int prism2_ioctl_priv_prism2_param(struct net_device *dev,
 		if (timer_pending(&local->passive_scan_timer))
 			del_timer(&local->passive_scan_timer);
 		if (value > 0) {
+		if (value > 0 && value < INT_MAX / HZ) {
 			local->passive_scan_timer.expires = jiffies +
 				local->passive_scan_interval * HZ;
 			add_timer(&local->passive_scan_timer);
@@ -3066,6 +3125,7 @@ static int prism2_ioctl_priv_download(local_info_t *local, struct iw_point *p)
 
 	param = (struct prism2_download_param *)
 		kmalloc(p->length, GFP_KERNEL);
+	param = kmalloc(p->length, GFP_KERNEL);
 	if (param == NULL)
 		return -ENOMEM;
 
@@ -3231,6 +3291,8 @@ static int prism2_ioctl_siwencodeext(struct net_device *dev,
 	int i, ret = 0;
 	struct ieee80211_crypto_ops *ops;
 	struct ieee80211_crypt_data **crypt;
+	struct lib80211_crypto_ops *ops;
+	struct lib80211_crypt_data **crypt;
 	void *sta_ptr;
 	u8 *addr;
 	const char *alg, *module;
@@ -3240,6 +3302,7 @@ static int prism2_ioctl_siwencodeext(struct net_device *dev,
 		return -EINVAL;
 	if (i < 1 || i > WEP_KEYS)
 		i = local->tx_keyidx;
+		i = local->crypt_info.tx_keyidx;
 	else
 		i--;
 	if (i < 0 || i >= WEP_KEYS)
@@ -3250,6 +3313,9 @@ static int prism2_ioctl_siwencodeext(struct net_device *dev,
 	    addr[3] == 0xff && addr[4] == 0xff && addr[5] == 0xff) {
 		sta_ptr = NULL;
 		crypt = &local->crypt[i];
+	if (is_broadcast_ether_addr(addr)) {
+		sta_ptr = NULL;
+		crypt = &local->crypt_info.crypt[i];
 	} else {
 		if (i != 0)
 			return -EINVAL;
@@ -3263,6 +3329,7 @@ static int prism2_ioctl_siwencodeext(struct net_device *dev,
 				 */
 				i = 0;
 				crypt = &local->crypt[i];
+				crypt = &local->crypt_info.crypt[i];
 			} else
 				return -EINVAL;
 		}
@@ -3272,6 +3339,7 @@ static int prism2_ioctl_siwencodeext(struct net_device *dev,
 	    ext->alg == IW_ENCODE_ALG_NONE) {
 		if (*crypt)
 			prism2_crypt_delayed_deinit(local, crypt);
+			lib80211_crypt_delayed_deinit(&local->crypt_info, crypt);
 		goto done;
 	}
 
@@ -3287,6 +3355,15 @@ static int prism2_ioctl_siwencodeext(struct net_device *dev,
 	case IW_ENCODE_ALG_CCMP:
 		alg = "CCMP";
 		module = "ieee80211_crypt_ccmp";
+		module = "lib80211_crypt_wep";
+		break;
+	case IW_ENCODE_ALG_TKIP:
+		alg = "TKIP";
+		module = "lib80211_crypt_tkip";
+		break;
+	case IW_ENCODE_ALG_CCMP:
+		alg = "CCMP";
+		module = "lib80211_crypt_ccmp";
 		break;
 	default:
 		printk(KERN_DEBUG "%s: unsupported algorithm %d\n",
@@ -3299,6 +3376,10 @@ static int prism2_ioctl_siwencodeext(struct net_device *dev,
 	if (ops == NULL) {
 		request_module(module);
 		ops = ieee80211_get_crypto_ops(alg);
+	ops = lib80211_get_crypto_ops(alg);
+	if (ops == NULL) {
+		request_module(module);
+		ops = lib80211_get_crypto_ops(alg);
 	}
 	if (ops == NULL) {
 		printk(KERN_DEBUG "%s: unknown crypto alg '%s'\n",
@@ -3322,6 +3403,11 @@ static int prism2_ioctl_siwencodeext(struct net_device *dev,
 		prism2_crypt_delayed_deinit(local, crypt);
 
 		new_crypt = kzalloc(sizeof(struct ieee80211_crypt_data),
+		struct lib80211_crypt_data *new_crypt;
+
+		lib80211_crypt_delayed_deinit(&local->crypt_info, crypt);
+
+		new_crypt = kzalloc(sizeof(struct lib80211_crypt_data),
 				GFP_KERNEL);
 		if (new_crypt == NULL) {
 			ret = -ENOMEM;
@@ -3329,6 +3415,8 @@ static int prism2_ioctl_siwencodeext(struct net_device *dev,
 		}
 		new_crypt->ops = ops;
 		new_crypt->priv = new_crypt->ops->init(i);
+		if (new_crypt->ops && try_module_get(new_crypt->ops->owner))
+			new_crypt->priv = new_crypt->ops->init(i);
 		if (new_crypt->priv == NULL) {
 			kfree(new_crypt);
 			ret = -EINVAL;
@@ -3357,6 +3445,7 @@ static int prism2_ioctl_siwencodeext(struct net_device *dev,
 	if (ext->ext_flags & IW_ENCODE_EXT_SET_TX_KEY) {
 		if (!sta_ptr)
 			local->tx_keyidx = i;
+			local->crypt_info.tx_keyidx = i;
 	}
 
 
@@ -3364,12 +3453,14 @@ static int prism2_ioctl_siwencodeext(struct net_device *dev,
 		int first = 1, j;
 		for (j = 0; j < WEP_KEYS; j++) {
 			if (j != i && local->crypt[j]) {
+			if (j != i && local->crypt_info.crypt[j]) {
 				first = 0;
 				break;
 			}
 		}
 		if (first)
 			local->tx_keyidx = i;
+			local->crypt_info.tx_keyidx = i;
 	}
 
  done:
@@ -3402,6 +3493,7 @@ static int prism2_ioctl_giwencodeext(struct net_device *dev,
 	struct hostap_interface *iface = netdev_priv(dev);
 	local_info_t *local = iface->local;
 	struct ieee80211_crypt_data **crypt;
+	struct lib80211_crypt_data **crypt;
 	void *sta_ptr;
 	int max_key_len, i;
 	struct iw_encode_ext *ext = (struct iw_encode_ext *) extra;
@@ -3414,6 +3506,7 @@ static int prism2_ioctl_giwencodeext(struct net_device *dev,
 	i = erq->flags & IW_ENCODE_INDEX;
 	if (i < 1 || i > WEP_KEYS)
 		i = local->tx_keyidx;
+		i = local->crypt_info.tx_keyidx;
 	else
 		i--;
 
@@ -3422,6 +3515,9 @@ static int prism2_ioctl_giwencodeext(struct net_device *dev,
 	    addr[3] == 0xff && addr[4] == 0xff && addr[5] == 0xff) {
 		sta_ptr = NULL;
 		crypt = &local->crypt[i];
+	if (is_broadcast_ether_addr(addr)) {
+		sta_ptr = NULL;
+		crypt = &local->crypt_info.crypt[i];
 	} else {
 		i = 0;
 		sta_ptr = ap_crypt_get_ptrs(local->ap, addr, 0, &crypt);
@@ -3472,6 +3568,8 @@ static int prism2_ioctl_set_encryption(local_info_t *local,
 	int ret = 0;
 	struct ieee80211_crypto_ops *ops;
 	struct ieee80211_crypt_data **crypt;
+	struct lib80211_crypto_ops *ops;
+	struct lib80211_crypt_data **crypt;
 	void *sta_ptr;
 
 	param->u.crypt.err = 0;
@@ -3489,6 +3587,11 @@ static int prism2_ioctl_set_encryption(local_info_t *local,
 			return -EINVAL;
 		sta_ptr = NULL;
 		crypt = &local->crypt[param->u.crypt.idx];
+	if (is_broadcast_ether_addr(param->sta_addr)) {
+		if (param->u.crypt.idx >= WEP_KEYS)
+			return -EINVAL;
+		sta_ptr = NULL;
+		crypt = &local->crypt_info.crypt[param->u.crypt.idx];
 	} else {
 		if (param->u.crypt.idx)
 			return -EINVAL;
@@ -3519,6 +3622,20 @@ static int prism2_ioctl_set_encryption(local_info_t *local,
 	} else if (ops == NULL && strcmp(param->u.crypt.alg, "CCMP") == 0) {
 		request_module("ieee80211_crypt_ccmp");
 		ops = ieee80211_get_crypto_ops(param->u.crypt.alg);
+			lib80211_crypt_delayed_deinit(&local->crypt_info, crypt);
+		goto done;
+	}
+
+	ops = lib80211_get_crypto_ops(param->u.crypt.alg);
+	if (ops == NULL && strcmp(param->u.crypt.alg, "WEP") == 0) {
+		request_module("lib80211_crypt_wep");
+		ops = lib80211_get_crypto_ops(param->u.crypt.alg);
+	} else if (ops == NULL && strcmp(param->u.crypt.alg, "TKIP") == 0) {
+		request_module("lib80211_crypt_tkip");
+		ops = lib80211_get_crypto_ops(param->u.crypt.alg);
+	} else if (ops == NULL && strcmp(param->u.crypt.alg, "CCMP") == 0) {
+		request_module("lib80211_crypt_ccmp");
+		ops = lib80211_get_crypto_ops(param->u.crypt.alg);
 	}
 	if (ops == NULL) {
 		printk(KERN_DEBUG "%s: unknown crypto alg '%s'\n",
@@ -3538,6 +3655,11 @@ static int prism2_ioctl_set_encryption(local_info_t *local,
 		prism2_crypt_delayed_deinit(local, crypt);
 
 		new_crypt = kzalloc(sizeof(struct ieee80211_crypt_data),
+		struct lib80211_crypt_data *new_crypt;
+
+		lib80211_crypt_delayed_deinit(&local->crypt_info, crypt);
+
+		new_crypt = kzalloc(sizeof(struct lib80211_crypt_data),
 				GFP_KERNEL);
 		if (new_crypt == NULL) {
 			ret = -ENOMEM;
@@ -3571,6 +3693,7 @@ static int prism2_ioctl_set_encryption(local_info_t *local,
 	if (param->u.crypt.flags & HOSTAP_CRYPT_FLAG_SET_TX_KEY) {
 		if (!sta_ptr)
 			local->tx_keyidx = param->u.crypt.idx;
+			local->crypt_info.tx_keyidx = param->u.crypt.idx;
 		else if (param->u.crypt.idx) {
 			printk(KERN_DEBUG "%s: TX key idx setting failed\n",
 			       local->dev->name);
@@ -3607,6 +3730,7 @@ static int prism2_ioctl_get_encryption(local_info_t *local,
 				       int param_len)
 {
 	struct ieee80211_crypt_data **crypt;
+	struct lib80211_crypt_data **crypt;
 	void *sta_ptr;
 	int max_key_len;
 
@@ -3624,6 +3748,11 @@ static int prism2_ioctl_get_encryption(local_info_t *local,
 		if (param->u.crypt.idx >= WEP_KEYS)
 			param->u.crypt.idx = local->tx_keyidx;
 		crypt = &local->crypt[param->u.crypt.idx];
+	if (is_broadcast_ether_addr(param->sta_addr)) {
+		sta_ptr = NULL;
+		if (param->u.crypt.idx >= WEP_KEYS)
+			param->u.crypt.idx = local->crypt_info.tx_keyidx;
+		crypt = &local->crypt_info.crypt[param->u.crypt.idx];
 	} else {
 		param->u.crypt.idx = 0;
 		sta_ptr = ap_crypt_get_ptrs(local->ap, param->sta_addr, 0,
@@ -3705,6 +3834,8 @@ static int prism2_ioctl_set_assoc_ap_addr(local_info_t *local,
 	printk(KERN_DEBUG "%ssta: associated as client with AP "
 	       "%s\n",
 	       local->dev->name, print_mac(mac, param->sta_addr));
+	printk(KERN_DEBUG "%ssta: associated as client with AP %pM\n",
+	       local->dev->name, param->sta_addr);
 	memcpy(local->assoc_ap_addr, param->sta_addr, ETH_ALEN);
 	return 0;
 }
@@ -3900,6 +4031,8 @@ static void prism2_get_drvinfo(struct net_device *dev,
 
 	strncpy(info->driver, "hostap", sizeof(info->driver) - 1);
 	snprintf(info->fw_version, sizeof(info->fw_version) - 1,
+	strlcpy(info->driver, "hostap", sizeof(info->driver));
+	snprintf(info->fw_version, sizeof(info->fw_version),
 		 "%d.%d.%d", (local->sta_fw_ver >> 16) & 0xff,
 		 (local->sta_fw_ver >> 8) & 0xff,
 		 local->sta_fw_ver & 0xff);

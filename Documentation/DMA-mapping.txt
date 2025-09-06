@@ -1,5 +1,4 @@
 			Dynamic DMA mapping
-			===================
 
 		 David S. Miller <davem@redhat.com>
 		 Richard Henderson <rth@cygnus.com>

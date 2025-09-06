@@ -10,6 +10,7 @@
  */
 
 #include <linux/init.h>
+#include <linux/slab.h>
 #include <linux/sched.h>
 #include <linux/circ_buf.h>
 #include "internal.h"
@@ -41,6 +42,8 @@ static void xdr_decode_AFSFetchStatus(const __be32 **_bp,
 	umode_t mode;
 	u64 data_version, size;
 	u32 changed = 0; /* becomes non-zero if ctime-type changes seen */
+	kuid_t owner;
+	kgid_t group;
 
 #define EXTRACT(DST)				\
 	do {					\
@@ -56,6 +59,9 @@ static void xdr_decode_AFSFetchStatus(const __be32 **_bp,
 	data_version = ntohl(*bp++);
 	EXTRACT(status->author);
 	EXTRACT(status->owner);
+	owner = make_kuid(&init_user_ns, ntohl(*bp++));
+	changed |= !uid_eq(owner, status->owner);
+	status->owner = owner;
 	EXTRACT(status->caller_access); /* call ticket dependent */
 	EXTRACT(status->anon_access);
 	EXTRACT(status->mode);
@@ -65,6 +71,9 @@ static void xdr_decode_AFSFetchStatus(const __be32 **_bp,
 	status->mtime_client = ntohl(*bp++);
 	status->mtime_server = ntohl(*bp++);
 	EXTRACT(status->group);
+	group = make_kgid(&init_user_ns, ntohl(*bp++));
+	changed |= !gid_eq(group, status->group);
+	status->group = group;
 	bp++; /* sync counter */
 	data_version |= (u64) ntohl(*bp++) << 32;
 	EXTRACT(status->lock_count);
@@ -90,6 +99,8 @@ static void xdr_decode_AFSFetchStatus(const __be32 **_bp,
 			vnode->vfs_inode.i_gid = status->group;
 			vnode->vfs_inode.i_version = vnode->fid.unique;
 			vnode->vfs_inode.i_nlink = status->nlink;
+			vnode->vfs_inode.i_generation = vnode->fid.unique;
+			set_nlink(&vnode->vfs_inode, status->nlink);
 
 			mode = vnode->vfs_inode.i_mode;
 			mode &= ~S_IALLUGO;
@@ -98,9 +109,10 @@ static void xdr_decode_AFSFetchStatus(const __be32 **_bp,
 			vnode->vfs_inode.i_mode = mode;
 		}
 
-		vnode->vfs_inode.i_ctime.tv_sec	= status->mtime_server;
+		vnode->vfs_inode.i_ctime.tv_sec	= status->mtime_client;
 		vnode->vfs_inode.i_mtime	= vnode->vfs_inode.i_ctime;
 		vnode->vfs_inode.i_atime	= vnode->vfs_inode.i_ctime;
+		vnode->vfs_inode.i_version	= data_version;
 	}
 
 	expected_version = status->data_version;
@@ -131,7 +143,7 @@ static void xdr_decode_AFSCallBack(const __be32 **_bp, struct afs_vnode *vnode)
 	vnode->cb_version	= ntohl(*bp++);
 	vnode->cb_expiry	= ntohl(*bp++);
 	vnode->cb_type		= ntohl(*bp++);
-	vnode->cb_expires	= vnode->cb_expiry + get_seconds();
+	vnode->cb_expires	= vnode->cb_expiry + ktime_get_real_seconds();
 	*_bp = bp;
 }
 
@@ -180,11 +192,13 @@ static void xdr_encode_AFS_StoreStatus(__be32 **_bp, struct iattr *attr)
 	if (attr->ia_valid & ATTR_UID) {
 		mask |= AFS_SET_OWNER;
 		owner = attr->ia_uid;
+		owner = from_kuid(&init_user_ns, attr->ia_uid);
 	}
 
 	if (attr->ia_valid & ATTR_GID) {
 		mask |= AFS_SET_GROUP;
 		group = attr->ia_gid;
+		group = from_kgid(&init_user_ns, attr->ia_gid);
 	}
 
 	if (attr->ia_valid & ATTR_MODE) {
@@ -367,6 +381,10 @@ static int afs_deliver_fs_fetch_data(struct afs_call *call,
 			ret = afs_extract_data(call, skb, last, buffer,
 					       call->count);
 			kunmap_atomic(buffer, KM_USER0);
+			buffer = kmap_atomic(page);
+			ret = afs_extract_data(call, skb, last, buffer,
+					       call->count);
+			kunmap_atomic(buffer);
 			switch (ret) {
 			case 0:		break;
 			case -EAGAIN:	return 0;
@@ -412,6 +430,9 @@ static int afs_deliver_fs_fetch_data(struct afs_call *call,
 		buffer = kmap_atomic(page, KM_USER0);
 		memset(buffer + call->count, 0, PAGE_SIZE - call->count);
 		kunmap_atomic(buffer, KM_USER0);
+		buffer = kmap_atomic(page);
+		memset(buffer + call->count, 0, PAGE_SIZE - call->count);
+		kunmap_atomic(buffer);
 	}
 
 	_leave(" = 0 [done]");
@@ -695,8 +716,8 @@ int afs_fs_create(struct afs_server *server,
 		memset(bp, 0, padsz);
 		bp = (void *) bp + padsz;
 	}
-	*bp++ = htonl(AFS_SET_MODE);
-	*bp++ = 0; /* mtime */
+	*bp++ = htonl(AFS_SET_MODE | AFS_SET_MTIME);
+	*bp++ = htonl(vnode->vfs_inode.i_mtime.tv_sec); /* mtime */
 	*bp++ = 0; /* owner */
 	*bp++ = 0; /* group */
 	*bp++ = htonl(mode & S_IALLUGO); /* unix mode */
@@ -973,8 +994,8 @@ int afs_fs_symlink(struct afs_server *server,
 		memset(bp, 0, c_padsz);
 		bp = (void *) bp + c_padsz;
 	}
-	*bp++ = htonl(AFS_SET_MODE);
-	*bp++ = 0; /* mtime */
+	*bp++ = htonl(AFS_SET_MODE | AFS_SET_MTIME);
+	*bp++ = htonl(vnode->vfs_inode.i_mtime.tv_sec); /* mtime */
 	*bp++ = 0; /* owner */
 	*bp++ = 0; /* group */
 	*bp++ = htonl(S_IRWXUGO); /* unix mode */
@@ -1184,8 +1205,8 @@ static int afs_fs_store_data64(struct afs_server *server,
 	*bp++ = htonl(vnode->fid.vnode);
 	*bp++ = htonl(vnode->fid.unique);
 
-	*bp++ = 0; /* mask */
-	*bp++ = 0; /* mtime */
+	*bp++ = htonl(AFS_SET_MTIME); /* mask */
+	*bp++ = htonl(vnode->vfs_inode.i_mtime.tv_sec); /* mtime */
 	*bp++ = 0; /* owner */
 	*bp++ = 0; /* group */
 	*bp++ = 0; /* unix mode */
@@ -1217,7 +1238,7 @@ int afs_fs_store_data(struct afs_server *server, struct afs_writeback *wb,
 	_enter(",%x,{%x:%u},,",
 	       key_serial(wb->key), vnode->fid.vid, vnode->fid.vnode);
 
-	size = to - offset;
+	size = (loff_t)to - (loff_t)offset;
 	if (first != last)
 		size += (loff_t)(last - first) << PAGE_SHIFT;
 	pos = (loff_t)first << PAGE_SHIFT;
@@ -1261,8 +1282,8 @@ int afs_fs_store_data(struct afs_server *server, struct afs_writeback *wb,
 	*bp++ = htonl(vnode->fid.vnode);
 	*bp++ = htonl(vnode->fid.unique);
 
-	*bp++ = 0; /* mask */
-	*bp++ = 0; /* mtime */
+	*bp++ = htonl(AFS_SET_MTIME); /* mask */
+	*bp++ = htonl(vnode->vfs_inode.i_mtime.tv_sec); /* mtime */
 	*bp++ = 0; /* owner */
 	*bp++ = 0; /* group */
 	*bp++ = 0; /* unix mode */

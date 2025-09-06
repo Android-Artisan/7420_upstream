@@ -11,6 +11,7 @@
 #include <linux/types.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
+#include <linux/slab.h>
 #include <asm/io.h>
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/map.h>
@@ -94,6 +95,7 @@ static void ck804xrom_cleanup(struct ck804xrom_window *window)
 			release_resource(&map->rsrc);
 
 		del_mtd_device(map->mtd);
+		mtd_device_unregister(map->mtd);
 		map_destroy(map->mtd);
 		list_del(&map->list);
 		kfree(map);
@@ -113,6 +115,10 @@ static void ck804xrom_cleanup(struct ck804xrom_window *window)
 
 static int __devinit ck804xrom_init_one (struct pci_dev *pdev,
 					 const struct pci_device_id *ent)
+static int ck804xrom_init_one(struct pci_dev *pdev,
+			      const struct pci_device_id *ent)
+static int __init ck804xrom_init_one(struct pci_dev *pdev,
+				     const struct pci_device_id *ent)
 {
 	static char *rom_probe_types[] = { "cfi_probe", "jedec_probe", NULL };
 	u8 byte;
@@ -182,6 +188,8 @@ static int __devinit ck804xrom_init_one (struct pci_dev *pdev,
 			__func__,
 			(unsigned long long)window->rsrc.start,
 			(unsigned long long)window->rsrc.end);
+		       " %s(): Unable to register resource %pR - kernel bug?\n",
+			__func__, &window->rsrc);
 	}
 
 
@@ -265,6 +273,8 @@ static int __devinit ck804xrom_init_one (struct pci_dev *pdev,
 			printk(KERN_WARNING MOD_NAME
 				" rom(%u) larger than window(%lu). fixing...\n",
 				map->mtd->size, map->map.size);
+				" rom(%llu) larger than window(%lu). fixing...\n",
+				(unsigned long long)map->mtd->size, map->map.size);
 			map->mtd->size = map->map.size;
 		}
 		if (window->rsrc.parent) {
@@ -294,6 +304,7 @@ static int __devinit ck804xrom_init_one (struct pci_dev *pdev,
 		/* Now that the mtd devices is complete claim and export it */
 		map->mtd->owner = THIS_MODULE;
 		if (add_mtd_device(map->mtd)) {
+		if (mtd_device_register(map->mtd, NULL, 0)) {
 			map_destroy(map->mtd);
 			map->mtd = NULL;
 			goto out;
@@ -312,6 +323,7 @@ static int __devinit ck804xrom_init_one (struct pci_dev *pdev,
 	/* Free any left over map structures */
 	if (map)
 		kfree(map);
+	kfree(map);
 
 	/* See if I have any map structures */
 	if (list_empty(&window->maps)) {
@@ -323,6 +335,7 @@ static int __devinit ck804xrom_init_one (struct pci_dev *pdev,
 
 
 static void __devexit ck804xrom_remove_one (struct pci_dev *pdev)
+static void ck804xrom_remove_one(struct pci_dev *pdev)
 {
 	struct ck804xrom_window *window = &ck804xrom_window;
 
@@ -345,6 +358,9 @@ static struct pci_device_id ck804xrom_pci_tbl[] = {
 MODULE_DEVICE_TABLE(pci, ck804xrom_pci_tbl);
 
 #if 0
+#if 0
+MODULE_DEVICE_TABLE(pci, ck804xrom_pci_tbl);
+
 static struct pci_driver ck804xrom_driver = {
 	.name =		MOD_NAME,
 	.id_table =	ck804xrom_pci_tbl,

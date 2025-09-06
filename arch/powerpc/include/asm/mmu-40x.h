@@ -56,8 +56,14 @@
 typedef struct {
 	unsigned long id;
 	unsigned long vdso_base;
+	unsigned int	id;
+	unsigned int	active;
+	unsigned long	vdso_base;
 } mm_context_t;
 
 #endif /* !__ASSEMBLY__ */
+
+#define mmu_virtual_psize	MMU_PAGE_4K
+#define mmu_linear_psize	MMU_PAGE_256M
 
 #endif /* _ASM_POWERPC_MMU_40X_H_ */

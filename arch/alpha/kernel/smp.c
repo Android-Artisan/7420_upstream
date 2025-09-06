@@ -31,6 +31,11 @@
 #include <asm/hwrpb.h>
 #include <asm/ptrace.h>
 #include <asm/atomic.h>
+#include <linux/cpu.h>
+
+#include <asm/hwrpb.h>
+#include <asm/ptrace.h>
+#include <linux/atomic.h>
 
 #include <asm/io.h>
 #include <asm/irq.h>
@@ -73,6 +78,7 @@ static int smp_secondary_alive __devinitdata = 0;
 cpumask_t cpu_online_map;
 
 EXPORT_SYMBOL(cpu_online_map);
+static int smp_secondary_alive = 0;
 
 int smp_num_probed;		/* Internal processor count */
 int smp_num_cpus = 1;		/* Number that came online.  */
@@ -121,6 +127,7 @@ wait_boot_cpu_to_stop(int cpuid)
  * Where secondaries begin a life of C.
  */
 void __init
+void
 smp_callin(void)
 {
 	int cpuid = hard_smp_processor_id();
@@ -129,6 +136,11 @@ smp_callin(void)
 		printk("??, cpu 0x%x already present??\n", cpuid);
 		BUG();
 	}
+	if (cpu_online(cpuid)) {
+		printk("??, cpu 0x%x already present??\n", cpuid);
+		BUG();
+	}
+	set_cpu_online(cpuid, true);
 
 	/* Turn on machine checks.  */
 	wrmces(7);
@@ -144,10 +156,18 @@ smp_callin(void)
 
 	/* Call platform-specific callin, if specified */
 	if (alpha_mv.smp_callin) alpha_mv.smp_callin();
+	init_clockevent();
+
+	/* Call platform-specific callin, if specified */
+	if (alpha_mv.smp_callin)
+		alpha_mv.smp_callin();
 
 	/* All kernel threads share the same mm context.  */
 	atomic_inc(&init_mm.mm_count);
 	current->active_mm = &init_mm;
+
+	/* inform the notifiers about the new cpu */
+	notify_cpu_starting(cpuid);
 
 	/* Must have completely accurate bogos.  */
 	local_irq_enable();
@@ -172,6 +192,12 @@ smp_callin(void)
 
 /* Wait until hwrpb->txrdy is clear for cpu.  Return -1 on timeout.  */
 static int __devinit
+	preempt_disable();
+	cpu_startup_entry(CPUHP_ONLINE);
+}
+
+/* Wait until hwrpb->txrdy is clear for cpu.  Return -1 on timeout.  */
+static int
 wait_for_txrdy (unsigned long cpumask)
 {
 	unsigned long timeout;
@@ -195,6 +221,7 @@ wait_for_txrdy (unsigned long cpumask)
  * interesting message.  ;-)
  */
 static void __init
+static void
 send_secondary_console_msg(char *str, int cpuid)
 {
 	struct percpu_struct *cpu;
@@ -267,6 +294,10 @@ recv_secondary_console_msg(void)
 			cp1 = (char *) &cpu->ipc_buffer[11];
 			cp2 = buf;
 			strcpy(cp2, cp1);
+			cp1 = (char *) &cpu->ipc_buffer[1];
+			cp2 = buf;
+			memcpy(cp2, cp1, cnt);
+			cp2[cnt] = '\0';
 			
 			while ((cp2 = strchr(cp2, '\r')) != 0) {
 				*cp2 = ' ';
@@ -286,6 +317,7 @@ recv_secondary_console_msg(void)
  * Convince the console to have a secondary cpu begin execution.
  */
 static int __init
+static int
 secondary_cpu_start(int cpuid, struct task_struct *idle)
 {
 	struct percpu_struct *cpu;
@@ -375,6 +407,11 @@ smp_boot_one_cpu(int cpuid)
 	DBGS(("smp_boot_one_cpu: CPU %d state 0x%lx flags 0x%lx\n",
 	      cpuid, idle->state, idle->flags));
 
+static int
+smp_boot_one_cpu(int cpuid, struct task_struct *idle)
+{
+	unsigned long timeout;
+
 	/* Signal the secondary to wait a moment.  */
 	smp_secondary_alive = -1;
 
@@ -437,6 +474,8 @@ setup_smp(void)
 			if ((cpu->flags & 0x1cc) == 0x1cc) {
 				smp_num_probed++;
 				cpu_set(i, cpu_present_map);
+				set_cpu_possible(i, true);
+				set_cpu_present(i, true);
 				cpu->pal_revision = boot_cpu_palrev;
 			}
 
@@ -451,6 +490,8 @@ setup_smp(void)
 
 	printk(KERN_INFO "SMP: %d CPUs probed -- cpu_present_map = %lx\n",
 	       smp_num_probed, cpu_present_map.bits[0]);
+	printk(KERN_INFO "SMP: %d CPUs probed -- cpu_present_mask = %lx\n",
+	       smp_num_probed, cpumask_bits(cpu_present_mask)[0]);
 }
 
 /*
@@ -470,6 +511,8 @@ smp_prepare_cpus(unsigned int max_cpus)
 	/* Nothing to do on a UP box, or when told not to.  */
 	if (smp_num_probed == 1 || max_cpus == 0) {
 		cpu_present_map = cpumask_of_cpu(boot_cpuid);
+		init_cpu_possible(cpumask_of(boot_cpuid));
+		init_cpu_present(cpumask_of(boot_cpuid));
 		printk(KERN_INFO "SMP mode deactivated.\n");
 		return;
 	}
@@ -480,6 +523,7 @@ smp_prepare_cpus(unsigned int max_cpus)
 }
 
 void __devinit
+void
 smp_prepare_boot_cpu(void)
 {
 }
@@ -488,6 +532,10 @@ int __cpuinit
 __cpu_up(unsigned int cpu)
 {
 	smp_boot_one_cpu(cpu);
+int
+__cpu_up(unsigned int cpu, struct task_struct *tidle)
+{
+	smp_boot_one_cpu(cpu, tidle);
 
 	return cpu_online(cpu) ? 0 : -ENOSYS;
 }
@@ -547,6 +595,8 @@ setup_profiling_timer(unsigned int multiplier)
 
 static void
 send_ipi_message(cpumask_t to_whom, enum ipi_message_type operation)
+static void
+send_ipi_message(const struct cpumask *to_whom, enum ipi_message_type operation)
 {
 	int i;
 
@@ -556,6 +606,11 @@ send_ipi_message(cpumask_t to_whom, enum ipi_message_type operation)
 
 	mb();
 	for_each_cpu_mask(i, to_whom)
+	for_each_cpu(i, to_whom)
+		set_bit(operation, &ipi_data[i].bits);
+
+	mb();
+	for_each_cpu(i, to_whom)
 		wripir(i);
 }
 
@@ -585,6 +640,7 @@ handle_ipi(struct pt_regs *regs)
 		case IPI_RESCHEDULE:
 			/* Reschedule callback.  Everything to be done
 			   is done by the interrupt return path.  */
+			scheduler_ipi();
 			break;
 
 		case IPI_CALL_FUNC:
@@ -623,6 +679,7 @@ smp_send_reschedule(int cpu)
 		       "smp_send_reschedule: Sending IPI to self.\n");
 #endif
 	send_ipi_message(cpumask_of_cpu(cpu), IPI_RESCHEDULE);
+	send_ipi_message(cpumask_of(cpu), IPI_RESCHEDULE);
 }
 
 void
@@ -630,6 +687,9 @@ smp_send_stop(void)
 {
 	cpumask_t to_whom = cpu_possible_map;
 	cpu_clear(smp_processor_id(), to_whom);
+	cpumask_t to_whom;
+	cpumask_copy(&to_whom, cpu_online_mask);
+	cpumask_clear_cpu(smp_processor_id(), &to_whom);
 #ifdef DEBUG_IPI_MSG
 	if (hard_smp_processor_id() != boot_cpu_id)
 		printk(KERN_WARNING "smp_send_stop: Not on boot cpu.\n");
@@ -638,6 +698,10 @@ smp_send_stop(void)
 }
 
 void arch_send_call_function_ipi(cpumask_t mask)
+	send_ipi_message(&to_whom, IPI_CPU_STOP);
+}
+
+void arch_send_call_function_ipi_mask(const struct cpumask *mask)
 {
 	send_ipi_message(mask, IPI_CALL_FUNC);
 }
@@ -645,6 +709,7 @@ void arch_send_call_function_ipi(cpumask_t mask)
 void arch_send_call_function_single_ipi(int cpu)
 {
 	send_ipi_message(cpumask_of_cpu(cpu), IPI_CALL_FUNC_SINGLE);
+	send_ipi_message(cpumask_of(cpu), IPI_CALL_FUNC);
 }
 
 static void

@@ -51,6 +51,12 @@ snd_emu10k1_sample_new(struct snd_emux *rec, struct snd_sf_sample *sp,
 
 	if (sp->v.size == 0) {
 		snd_printd("emu: rom font for sample %d\n", sp->v.sample);
+	if (snd_BUG_ON(!sp || !hdr))
+		return -EINVAL;
+
+	if (sp->v.size == 0) {
+		dev_dbg(emu->card->dev,
+			"emu: rom font for sample %d\n", sp->v.sample);
 		return 0;
 	}
 
@@ -93,6 +99,8 @@ snd_emu10k1_sample_new(struct snd_emux *rec, struct snd_sf_sample *sp,
 	sp->block = snd_emu10k1_synth_alloc(emu, blocksize);
 	if (sp->block == NULL) {
 		snd_printd("emu10k1: synth malloc failed (size=%d)\n", blocksize);
+		dev_dbg(emu->card->dev,
+			"synth malloc failed (size=%d)\n", blocksize);
 		/* not ENOMEM (for compatibility with OSS) */
 		return -ENOSPC;
 	}
@@ -105,6 +113,8 @@ snd_emu10k1_sample_new(struct snd_emux *rec, struct snd_sf_sample *sp,
 	if (! (sp->v.mode_flags & SNDRV_SFNT_SAMPLE_8BITS))
 		size *= 2;
 	snd_assert(offset + size <= blocksize, return -EINVAL);
+	if (offset + size > blocksize)
+		return -EINVAL;
 	snd_emu10k1_synth_bzero(emu, sp->block, offset, size);
 	offset += size;
 
@@ -113,6 +123,8 @@ snd_emu10k1_sample_new(struct snd_emux *rec, struct snd_sf_sample *sp,
 	if (! (sp->v.mode_flags & SNDRV_SFNT_SAMPLE_8BITS))
 		size *= 2;
 	snd_assert(offset + size <= blocksize, return -EINVAL);
+	if (offset + size > blocksize)
+		return -EINVAL;
 	if (snd_emu10k1_synth_copy_from_user(emu, sp->block, offset, data, size)) {
 		snd_emu10k1_synth_free(emu, sp->block);
 		sp->block = NULL;
@@ -122,6 +134,7 @@ snd_emu10k1_sample_new(struct snd_emux *rec, struct snd_sf_sample *sp,
 	data += size;
 
 #if 0 /* not suppported yet */
+#if 0 /* not supported yet */
 	/* handle reverse (or bidirectional) loop */
 	if (sp->v.mode_flags & (SNDRV_SFNT_SAMPLE_BIDIR_LOOP|SNDRV_SFNT_SAMPLE_REVERSE_LOOP)) {
 		/* copy loop in reverse */
@@ -130,11 +143,15 @@ snd_emu10k1_sample_new(struct snd_emux *rec, struct snd_sf_sample *sp,
 			unsigned short *wblock = (unsigned short*)block;
 			woffset = offset / 2;
 			snd_assert(offset + loopsize*2 <= blocksize, return -EINVAL);
+			if (offset + loopsize * 2 > blocksize)
+				return -EINVAL;
 			for (i = 0; i < loopsize; i++)
 				wblock[woffset + i] = wblock[woffset - i -1];
 			offset += loopsize * 2;
 		} else {
 			snd_assert(offset + loopsize <= blocksize, return -EINVAL);
+			if (offset + loopsize > blocksize)
+				return -EINVAL;
 			for (i = 0; i < loopsize; i++)
 				block[offset + i] = block[offset - i -1];
 			offset += loopsize;
@@ -155,6 +172,8 @@ snd_emu10k1_sample_new(struct snd_emux *rec, struct snd_sf_sample *sp,
 	/* loopend -> sample end */
 	size = sp->v.size - loopend;
 	snd_assert(size >= 0, return -EINVAL);
+	if (size < 0)
+		return -EINVAL;
 	if (! (sp->v.mode_flags & SNDRV_SFNT_SAMPLE_8BITS))
 		size *= 2;
 	if (snd_emu10k1_synth_copy_from_user(emu, sp->block, offset, data, size)) {
@@ -214,6 +233,8 @@ snd_emu10k1_sample_free(struct snd_emux *rec, struct snd_sf_sample *sp,
 	emu = rec->hw;
 	snd_assert(sp != NULL, return -EINVAL);
 	snd_assert(hdr != NULL, return -EINVAL);
+	if (snd_BUG_ON(!sp || !hdr))
+		return -EINVAL;
 
 	if (sp->block) {
 		snd_emu10k1_synth_free(emu, sp->block);

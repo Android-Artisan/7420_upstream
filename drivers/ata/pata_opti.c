@@ -174,6 +174,14 @@ static int opti_init_one(struct pci_dev *dev, const struct pci_device_id *id)
 		dev_printk(KERN_DEBUG, &dev->dev, "version " DRV_VERSION "\n");
 
 	return ata_pci_sff_init_one(dev, ppi, &opti_sht, NULL);
+		.pio_mask = ATA_PIO4,
+		.port_ops = &opti_port_ops
+	};
+	const struct ata_port_info *ppi[] = { &info, NULL };
+
+	ata_print_version_once(&dev->dev, DRV_VERSION);
+
+	return ata_pci_sff_init_one(dev, ppi, &opti_sht, NULL, 0);
 }
 
 static const struct pci_device_id opti[] = {
@@ -189,6 +197,7 @@ static struct pci_driver opti_pci_driver = {
 	.probe 		= opti_init_one,
 	.remove		= ata_pci_remove_one,
 #ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 	.suspend	= ata_pci_device_suspend,
 	.resume		= ata_pci_device_resume,
 #endif
@@ -204,6 +213,7 @@ static void __exit opti_exit(void)
 	pci_unregister_driver(&opti_pci_driver);
 }
 
+module_pci_driver(opti_pci_driver);
 
 MODULE_AUTHOR("Alan Cox");
 MODULE_DESCRIPTION("low-level driver for Opti 621/621X");

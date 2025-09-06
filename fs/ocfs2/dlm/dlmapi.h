@@ -96,6 +96,7 @@ const char *dlm_errname(enum dlm_status err);
 } while (0)
 
 #define DLM_LKSB_UNUSED1           0x01  
+#define DLM_LKSB_UNUSED1           0x01
 #define DLM_LKSB_PUT_LVB           0x02
 #define DLM_LKSB_GET_LVB           0x04
 #define DLM_LKSB_UNUSED2           0x08

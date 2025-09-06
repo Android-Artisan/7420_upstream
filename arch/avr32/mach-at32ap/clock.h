@@ -14,6 +14,13 @@
 #include <linux/clk.h>
 
 struct clk {
+#include <linux/list.h>
+
+
+void at32_clk_register(struct clk *clk);
+
+struct clk {
+	struct list_head list;		/* linking element */
 	const char	*name;		/* Clock name/function */
 	struct device	*dev;		/* Device the clock is used by */
 	struct clk	*parent;	/* Parent clock, if any */
@@ -28,3 +35,5 @@ struct clk {
 
 extern struct clk *at32_clock_list[];
 extern unsigned int at32_nr_clocks;
+unsigned long pba_clk_get_rate(struct clk *clk);
+void pba_clk_mode(struct clk *clk, int enabled);

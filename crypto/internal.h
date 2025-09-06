@@ -7,6 +7,7 @@
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the Free
  * Software Foundation; either version 2 of the License, or (at your option) 
+ * Software Foundation; either version 2 of the License, or (at your option)
  * any later version.
  *
  */
@@ -47,7 +48,7 @@ struct crypto_larval {
 
 extern struct list_head crypto_alg_list;
 extern struct rw_semaphore crypto_alg_sem;
-extern struct blocking_notifier_head crypto_chain;
+extern struct srcu_notifier_head crypto_chain;
 
 #ifdef CONFIG_PROC_FS
 void __init crypto_init_proc(void);
@@ -107,6 +108,44 @@ int crypto_register_instance(struct crypto_template *tmpl,
 
 int crypto_register_notifier(struct notifier_block *nb);
 int crypto_unregister_notifier(struct notifier_block *nb);
+struct crypto_alg *crypto_alg_lookup(const char *name, u32 type, u32 mask);
+struct crypto_alg *crypto_alg_mod_lookup(const char *name, u32 type, u32 mask);
+
+int crypto_init_cipher_ops(struct crypto_tfm *tfm);
+int crypto_init_compress_ops(struct crypto_tfm *tfm);
+
+void crypto_exit_cipher_ops(struct crypto_tfm *tfm);
+void crypto_exit_compress_ops(struct crypto_tfm *tfm);
+
+struct crypto_larval *crypto_larval_alloc(const char *name, u32 type, u32 mask);
+void crypto_larval_kill(struct crypto_alg *alg);
+struct crypto_alg *crypto_larval_lookup(const char *name, u32 type, u32 mask);
+void crypto_alg_tested(const char *name, int err);
+
+void crypto_remove_spawns(struct crypto_alg *alg, struct list_head *list,
+			  struct crypto_alg *nalg);
+void crypto_remove_final(struct list_head *list);
+struct crypto_tfm *__crypto_alloc_tfm(struct crypto_alg *alg, u32 type,
+				      u32 mask);
+void *crypto_create_tfm(struct crypto_alg *alg,
+			const struct crypto_type *frontend);
+struct crypto_alg *crypto_find_alg(const char *alg_name,
+				   const struct crypto_type *frontend,
+				   u32 type, u32 mask);
+void *crypto_alloc_tfm(const char *alg_name,
+		       const struct crypto_type *frontend, u32 type, u32 mask);
+
+int crypto_register_notifier(struct notifier_block *nb);
+int crypto_unregister_notifier(struct notifier_block *nb);
+int crypto_probing_notify(unsigned long val, void *v);
+
+unsigned int crypto_alg_extsize(struct crypto_alg *alg);
+
+static inline struct crypto_alg *crypto_alg_get(struct crypto_alg *alg)
+{
+	atomic_inc(&alg->cra_refcnt);
+	return alg;
+}
 
 static inline void crypto_alg_put(struct crypto_alg *alg)
 {
@@ -142,6 +181,9 @@ static inline int crypto_is_moribund(struct crypto_alg *alg)
 static inline int crypto_notify(unsigned long val, void *v)
 {
 	return blocking_notifier_call_chain(&crypto_chain, val, v);
+static inline void crypto_notify(unsigned long val, void *v)
+{
+	srcu_notifier_call_chain(&crypto_chain, val, v);
 }
 
 #endif	/* _CRYPTO_INTERNAL_H */

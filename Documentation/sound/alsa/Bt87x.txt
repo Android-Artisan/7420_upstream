@@ -24,7 +24,6 @@ with your card.
 
 
 Driver Status
-=============
 
 The driver is now stable.  However, it doesn't know about many TV cards,
 and it refuses to load for cards it doesn't know.
@@ -41,7 +40,6 @@ or not, so that future versions of this driver know about your card.
 
 
 Audio modes
-===========
 
 The chip knows two different modes (digital/analog).  snd-bt87x
 registers two PCM devices, one for each mode.  They cannot be used at
@@ -49,7 +47,6 @@ the same time.
 
 
 Digital audio mode
-==================
 
 The first device (hw:X,0) gives you 16 bit stereo sound.  The sample
 rate depends on the external source which feeds the Bt87x with digital
@@ -57,7 +54,6 @@ sound via I2S interface.
 
 
 Analog audio mode (A/D)
-=======================
 
 The second device (hw:X,1) gives you 8 or 16 bit mono sound.  Supported
 sample rates are between 119466 and 448000 Hz (yes, these numbers are

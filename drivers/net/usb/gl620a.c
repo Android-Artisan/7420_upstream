@@ -16,6 +16,7 @@
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * along with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
 // #define	DEBUG			// error path messages, extra info
@@ -30,6 +31,7 @@
 #include <linux/mii.h>
 #include <linux/usb.h>
 #include <linux/usb/usbnet.h>
+#include <linux/gfp.h>
 
 
 /*
@@ -85,12 +87,19 @@ static int genelink_rx_fixup(struct usbnet *dev, struct sk_buff *skb)
 	u32			size;
 	u32			count;
 
+	/* This check is no longer done by usbnet */
+	if (skb->len < dev->net->hard_header_len)
+		return 0;
+
 	header = (struct gl_header *) skb->data;
 
 	// get the packet count of the received skb
 	count = le32_to_cpu(header->packet_count);
 	if (count > GL_MAX_TRANSMIT_PACKETS) {
 		dbg("genelink: invalid received packet count %u", count);
+		netdev_dbg(dev->net,
+			   "genelink: invalid received packet count %u\n",
+			   count);
 		return 0;
 	}
 
@@ -107,6 +116,8 @@ static int genelink_rx_fixup(struct usbnet *dev, struct sk_buff *skb)
 		// this may be a broken packet
 		if (size > GL_MAX_PACKET_LEN) {
 			dbg("genelink: invalid rx length %d", size);
+			netdev_dbg(dev->net, "genelink: invalid rx length %d\n",
+				   size);
 			return 0;
 		}
 
@@ -133,6 +144,8 @@ static int genelink_rx_fixup(struct usbnet *dev, struct sk_buff *skb)
 
 	if (skb->len > GL_MAX_PACKET_LEN) {
 		dbg("genelink: invalid rx length %d", skb->len);
+		netdev_dbg(dev->net, "genelink: invalid rx length %d\n",
+			   skb->len);
 		return 0;
 	}
 	return 1;
@@ -185,14 +198,13 @@ static int genelink_bind(struct usbnet *dev, struct usb_interface *intf)
 {
 	dev->hard_mtu = GL_RCV_BUF_SIZE;
 	dev->net->hard_header_len += 4;
-	dev->in = usb_rcvbulkpipe(dev->udev, dev->driver_info->in);
-	dev->out = usb_sndbulkpipe(dev->udev, dev->driver_info->out);
-	return 0;
+	return usbnet_get_endpoints(dev, intf);
 }
 
 static const struct driver_info	genelink_info = {
 	.description =	"Genesys GeneLink",
 	.flags =	FLAG_FRAMING_GL | FLAG_NO_SETINT,
+	.flags =	FLAG_POINTTOPOINT | FLAG_FRAMING_GL | FLAG_NO_SETINT,
 	.bind =		genelink_bind,
 	.rx_fixup =	genelink_rx_fixup,
 	.tx_fixup =	genelink_tx_fixup,
@@ -237,6 +249,10 @@ static void __exit usbnet_exit(void)
  	usb_deregister(&gl620a_driver);
 }
 module_exit(usbnet_exit);
+	.disable_hub_initiated_lpm = 1,
+};
+
+module_usb_driver(gl620a_driver);
 
 MODULE_AUTHOR("Jiun-Jie Huang");
 MODULE_DESCRIPTION("GL620-USB-A Host-to-Host Link cables");

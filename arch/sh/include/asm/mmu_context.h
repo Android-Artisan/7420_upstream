@@ -26,6 +26,18 @@
 
 /* ASID is 8-bit value, so it can't be 0x100 */
 #define MMU_NO_ASID			0x100
+#ifdef CONFIG_CPU_HAS_PTEAEX
+#define MMU_CONTEXT_ASID_MASK		0x0000ffff
+#else
+#define MMU_CONTEXT_ASID_MASK		0x000000ff
+#endif
+
+#define MMU_CONTEXT_VERSION_MASK	(~0UL & ~MMU_CONTEXT_ASID_MASK)
+#define MMU_CONTEXT_FIRST_VERSION	(MMU_CONTEXT_ASID_MASK + 1)
+
+/* Impossible ASID value, to differentiate from NO_CONTEXT. */
+#define MMU_NO_ASID			MMU_CONTEXT_FIRST_VERSION
+#define NO_CONTEXT			0UL
 
 #define asid_cache(cpu)		(cpu_data[cpu].asid_cache)
 
@@ -44,6 +56,9 @@
 #include "mmu_context_32.h"
 #else
 #include "mmu_context_64.h"
+#include <asm/mmu_context_32.h>
+#else
+#include <asm/mmu_context_64.h>
 #endif
 
 /*
@@ -65,6 +80,7 @@ static inline void get_mmu_context(struct mm_struct *mm, unsigned int cpu)
 		 * Flush all TLB and start new cycle.
 		 */
 		flush_tlb_all();
+		local_flush_tlb_all();
 
 #ifdef CONFIG_SUPERH64
 		/*
@@ -77,6 +93,7 @@ static inline void get_mmu_context(struct mm_struct *mm, unsigned int cpu)
 		/*
 		 * Fix version; Note that we avoid version #0
 		 * to distingush NO_CONTEXT.
+		 * to distinguish NO_CONTEXT.
 		 */
 		if (!asid)
 			asid = MMU_CONTEXT_FIRST_VERSION;
@@ -95,6 +112,7 @@ static inline int init_new_context(struct task_struct *tsk,
 	int i;
 
 	for (i = 0; i < num_online_cpus(); i++)
+	for_each_online_cpu(i)
 		cpu_context(i, mm) = NO_CONTEXT;
 
 	return 0;
@@ -137,10 +155,30 @@ static inline void switch_mm(struct mm_struct *prev,
 #define activate_context(mm,cpu)	do { } while (0)
 #define switch_mm(prev,next,tsk)	do { } while (0)
 #endif /* CONFIG_MMU */
+		cpumask_set_cpu(cpu, mm_cpumask(next));
+		set_TTB(next->pgd);
+		activate_context(next, cpu);
+	} else
+		if (!cpumask_test_and_set_cpu(cpu, mm_cpumask(next)))
+			activate_context(next, cpu);
+}
 
 #define activate_mm(prev, next)		switch_mm((prev),(next),NULL)
 #define deactivate_mm(tsk,mm)		do { } while (0)
 #define enter_lazy_tlb(mm,tsk)		do { } while (0)
+
+#else
+
+#define set_asid(asid)			do { } while (0)
+#define get_asid()			(0)
+#define cpu_asid(cpu, mm)		({ (void)cpu; NO_CONTEXT; })
+#define switch_and_save_asid(asid)	(0)
+#define set_TTB(pgd)			do { } while (0)
+#define get_TTB()			(0)
+
+#include <asm-generic/mmu_context.h>
+
+#endif /* CONFIG_MMU */
 
 #if defined(CONFIG_CPU_SH3) || defined(CONFIG_CPU_SH4)
 /*
@@ -154,6 +192,7 @@ static inline void enable_mmu(void)
 
 	/* Enable MMU */
 	ctrl_outl(MMU_CONTROL_INIT, MMUCR);
+	__raw_writel(MMU_CONTROL_INIT, MMUCR);
 	ctrl_barrier();
 
 	if (asid_cache(cpu) == NO_CONTEXT)
@@ -169,6 +208,9 @@ static inline void disable_mmu(void)
 	cr = ctrl_inl(MMUCR);
 	cr &= ~MMU_CONTROL_INIT;
 	ctrl_outl(cr, MMUCR);
+	cr = __raw_readl(MMUCR);
+	cr &= ~MMU_CONTROL_INIT;
+	__raw_writel(cr, MMUCR);
 
 	ctrl_barrier();
 }

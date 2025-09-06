@@ -1,11 +1,14 @@
 /*
  *	Adaptec AAC series RAID controller driver
  *	(c) Copyright 2001 Red Hat Inc.	<alan@redhat.com>
+ *	(c) Copyright 2001 Red Hat Inc.
  *
  * based on the old aacraid driver that is..
  * Adaptec aacraid device driver for Linux.
  *
  * Copyright (c) 2000-2007 Adaptec, Inc. (aacraid@adaptec.com)
+ * Copyright (c) 2000-2010 Adaptec, Inc.
+ *               2010 PMC-Sierra, Inc. (aacraid@pmc-sierra.com)
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -66,6 +69,11 @@ static int fib_map_alloc(struct aac_dev *dev)
 	if((dev->hw_fib_va = pci_alloc_consistent(dev->pdev, dev->max_fib_size
 	  * (dev->scsi_host_ptr->can_queue + AAC_NUM_MGT_FIB),
 	  &dev->hw_fib_pa))==NULL)
+	dev->hw_fib_va = pci_alloc_consistent(dev->pdev,
+		(dev->max_fib_size + sizeof(struct aac_fib_xporthdr))
+		* (dev->scsi_host_ptr->can_queue + AAC_NUM_MGT_FIB) + (ALIGN32 - 1),
+		&dev->hw_fib_pa);
+	if (dev->hw_fib_va == NULL)
 		return -ENOMEM;
 	return 0;
 }
@@ -80,11 +88,36 @@ static int fib_map_alloc(struct aac_dev *dev)
 
 void aac_fib_map_free(struct aac_dev *dev)
 {
-	pci_free_consistent(dev->pdev,
-	  dev->max_fib_size * (dev->scsi_host_ptr->can_queue + AAC_NUM_MGT_FIB),
-	  dev->hw_fib_va, dev->hw_fib_pa);
+	if (dev->hw_fib_va && dev->max_fib_size) {
+		pci_free_consistent(dev->pdev,
+		(dev->max_fib_size *
+		(dev->scsi_host_ptr->can_queue + AAC_NUM_MGT_FIB)),
+		dev->hw_fib_va, dev->hw_fib_pa);
+	}
 	dev->hw_fib_va = NULL;
 	dev->hw_fib_pa = 0;
+}
+
+void aac_fib_vector_assign(struct aac_dev *dev)
+{
+	u32 i = 0;
+	u32 vector = 1;
+	struct fib *fibptr = NULL;
+
+	for (i = 0, fibptr = &dev->fibs[i];
+		i < (dev->scsi_host_ptr->can_queue + AAC_NUM_MGT_FIB);
+		i++, fibptr++) {
+		if ((dev->max_msix == 1) ||
+		  (i > ((dev->scsi_host_ptr->can_queue + AAC_NUM_MGT_FIB - 1)
+			- dev->vector_cap))) {
+			fibptr->vector_no = 0;
+		} else {
+			fibptr->vector_no = vector;
+			vector++;
+			if (vector == dev->max_msix)
+				vector = 1;
+		}
+	}
 }
 
 /**
@@ -92,6 +125,7 @@ void aac_fib_map_free(struct aac_dev *dev)
  *	@dev: Adapter to set up
  *
  *	Allocate the PCI space for the fibs, map it and then intialise the
+ *	Allocate the PCI space for the fibs, map it and then initialise the
  *	fib area, the unmapped fib data and also the free list
  */
 
@@ -113,6 +147,22 @@ int aac_fib_setup(struct aac_dev * dev)
 	hw_fib = dev->hw_fib_va;
 	hw_fib_pa = dev->hw_fib_pa;
 	memset(hw_fib, 0, dev->max_fib_size * (dev->scsi_host_ptr->can_queue + AAC_NUM_MGT_FIB));
+	/* 32 byte alignment for PMC */
+	hw_fib_pa = (dev->hw_fib_pa + (ALIGN32 - 1)) & ~(ALIGN32 - 1);
+	dev->hw_fib_va = (struct hw_fib *)((unsigned char *)dev->hw_fib_va +
+		(hw_fib_pa - dev->hw_fib_pa));
+	dev->hw_fib_pa = hw_fib_pa;
+	memset(dev->hw_fib_va, 0,
+		(dev->max_fib_size + sizeof(struct aac_fib_xporthdr)) *
+		(dev->scsi_host_ptr->can_queue + AAC_NUM_MGT_FIB));
+
+	/* add Xport header */
+	dev->hw_fib_va = (struct hw_fib *)((unsigned char *)dev->hw_fib_va +
+		sizeof(struct aac_fib_xporthdr));
+	dev->hw_fib_pa += sizeof(struct aac_fib_xporthdr);
+
+	hw_fib = dev->hw_fib_va;
+	hw_fib_pa = dev->hw_fib_pa;
 	/*
 	 *	Initialise the fibs
 	 */
@@ -120,18 +170,30 @@ int aac_fib_setup(struct aac_dev * dev)
 		i < (dev->scsi_host_ptr->can_queue + AAC_NUM_MGT_FIB);
 		i++, fibptr++)
 	{
+		fibptr->flags = 0;
 		fibptr->dev = dev;
 		fibptr->hw_fib_va = hw_fib;
 		fibptr->data = (void *) fibptr->hw_fib_va->data;
 		fibptr->next = fibptr+1;	/* Forward chain the fibs */
 		init_MUTEX_LOCKED(&fibptr->event_wait);
+		sema_init(&fibptr->event_wait, 0);
 		spin_lock_init(&fibptr->event_lock);
 		hw_fib->header.XferState = cpu_to_le32(0xffffffff);
 		hw_fib->header.SenderSize = cpu_to_le16(dev->max_fib_size);
 		fibptr->hw_fib_pa = hw_fib_pa;
 		hw_fib = (struct hw_fib *)((unsigned char *)hw_fib + dev->max_fib_size);
 		hw_fib_pa = hw_fib_pa + dev->max_fib_size;
+		hw_fib = (struct hw_fib *)((unsigned char *)hw_fib +
+			dev->max_fib_size + sizeof(struct aac_fib_xporthdr));
+		hw_fib_pa = hw_fib_pa +
+			dev->max_fib_size + sizeof(struct aac_fib_xporthdr);
 	}
+
+	/*
+	 *Assign vector numbers to fibs
+	 */
+	aac_fib_vector_assign(dev);
+
 	/*
 	 *	Add the fib chain to the free list
 	 */
@@ -191,6 +253,9 @@ void aac_fib_free(struct fib *fibptr)
 {
 	unsigned long flags;
 
+	if (fibptr->done == 2)
+		return;
+
 	spin_lock_irqsave(&fibptr->dev->fib_lock, flags);
 	if (unlikely(fibptr->flags & FIB_CONTEXT_FLAG_TIMED_OUT))
 		aac_config.fib_timeouts++;
@@ -220,6 +285,11 @@ void aac_fib_init(struct fib *fibptr)
 	hw_fib->header.XferState = cpu_to_le32(HostOwned | FibInitialized | FibEmpty | FastResponseCapable);
 	hw_fib->header.SenderFibAddress = 0; /* Filled in later if needed */
 	hw_fib->header.ReceiverFibAddress = cpu_to_le32(fibptr->hw_fib_pa);
+	memset(&hw_fib->header, 0, sizeof(struct aac_fibhdr));
+	hw_fib->header.StructType = FIB_MAGIC;
+	hw_fib->header.Size = cpu_to_le16(fibptr->dev->max_fib_size);
+	hw_fib->header.XferState = cpu_to_le32(HostOwned | FibInitialized | FibEmpty | FastResponseCapable);
+	hw_fib->header.u.ReceiverFibAddress = cpu_to_le32(fibptr->hw_fib_pa);
 	hw_fib->header.SenderSize = cpu_to_le16(fibptr->dev->max_fib_size);
 }
 
@@ -297,6 +367,7 @@ static int aac_get_entry (struct aac_dev * dev, u32 qid, struct aac_entry **entr
 	if ((*index + 1) == le32_to_cpu(*(q->headers.consumer))) {
 		printk(KERN_WARNING "Queue %d full, %u outstanding.\n",
 				qid, q->numpending);
+				qid, atomic_read(&q->numpending));
 		return 0;
 	} else {
 		*entry = q->base + *index;
@@ -346,6 +417,7 @@ int aac_queue_get(struct aac_dev * dev, u32 * index, u32 qid, struct hw_fib * hw
 		entry->addr = hw_fib->header.SenderFibAddress;
 			/* Restore adapters pointer to the FIB */
 		hw_fib->header.ReceiverFibAddress = hw_fib->header.SenderFibAddress;	/* Let the adapter now where to find its data */
+		hw_fib->header.u.ReceiverFibAddress = hw_fib->header.SenderFibAddress;  /* Let the adapter now where to find its data */
 		map = 0;
 	}
 	/*
@@ -390,11 +462,15 @@ int aac_fib_send(u16 command, struct fib *fibptr, unsigned long size,
 	struct hw_fib * hw_fib = fibptr->hw_fib_va;
 	unsigned long flags = 0;
 	unsigned long qflags;
+	unsigned long mflags = 0;
+	unsigned long sflags = 0;
+
 
 	if (!(hw_fib->header.XferState & cpu_to_le32(HostOwned)))
 		return -EBUSY;
 	/*
 	 *	There are 5 cases with the wait and reponse requested flags.
+	 *	There are 5 cases with the wait and response requested flags.
 	 *	The only invalid cases are if the caller requests to wait and
 	 *	does not request a response and if the caller does not want a
 	 *	response and the Fib is not allocated from pool. If a response
@@ -423,6 +499,7 @@ int aac_fib_send(u16 command, struct fib *fibptr, unsigned long size,
 
 	hw_fib->header.SenderFibAddress = cpu_to_le32(((u32)(fibptr - dev->fibs)) << 2);
 	hw_fib->header.SenderData = (u32)(fibptr - dev->fibs);
+	hw_fib->header.Handle = (u32)(fibptr - dev->fibs) + 1;
 	/*
 	 *	Set FIB state to indicate where it came from and if we want a
 	 *	response from the adapter. Also load the command from the
@@ -474,6 +551,56 @@ int aac_fib_send(u16 command, struct fib *fibptr, unsigned long size,
 	if(wait)
 		spin_lock_irqsave(&fibptr->event_lock, flags);
 	aac_adapter_deliver(fibptr);
+	if (wait) {
+
+		spin_lock_irqsave(&dev->manage_lock, mflags);
+		if (dev->management_fib_count >= AAC_NUM_MGT_FIB) {
+			printk(KERN_INFO "No management Fibs Available:%d\n",
+						dev->management_fib_count);
+			spin_unlock_irqrestore(&dev->manage_lock, mflags);
+			return -EBUSY;
+		}
+		dev->management_fib_count++;
+		spin_unlock_irqrestore(&dev->manage_lock, mflags);
+		spin_lock_irqsave(&fibptr->event_lock, flags);
+	}
+
+	if (dev->sync_mode) {
+		if (wait)
+			spin_unlock_irqrestore(&fibptr->event_lock, flags);
+		spin_lock_irqsave(&dev->sync_lock, sflags);
+		if (dev->sync_fib) {
+			list_add_tail(&fibptr->fiblink, &dev->sync_fib_list);
+			spin_unlock_irqrestore(&dev->sync_lock, sflags);
+		} else {
+			dev->sync_fib = fibptr;
+			spin_unlock_irqrestore(&dev->sync_lock, sflags);
+			aac_adapter_sync_cmd(dev, SEND_SYNCHRONOUS_FIB,
+				(u32)fibptr->hw_fib_pa, 0, 0, 0, 0, 0,
+				NULL, NULL, NULL, NULL, NULL);
+		}
+		if (wait) {
+			fibptr->flags |= FIB_CONTEXT_FLAG_WAIT;
+			if (down_interruptible(&fibptr->event_wait)) {
+				fibptr->flags &= ~FIB_CONTEXT_FLAG_WAIT;
+				return -EFAULT;
+			}
+			return 0;
+		}
+		return -EINPROGRESS;
+	}
+
+	if (aac_adapter_deliver(fibptr) != 0) {
+		printk(KERN_ERR "aac_fib_send: returned -EBUSY\n");
+		if (wait) {
+			spin_unlock_irqrestore(&fibptr->event_lock, flags);
+			spin_lock_irqsave(&dev->manage_lock, mflags);
+			dev->management_fib_count--;
+			spin_unlock_irqrestore(&dev->manage_lock, mflags);
+		}
+		return -EBUSY;
+	}
+
 
 	/*
 	 *	If the caller wanted us to wait for response wait now.
@@ -497,6 +624,12 @@ int aac_fib_send(u16 command, struct fib *fibptr, unsigned long size,
 					spin_lock_irqsave(q->lock, qflags);
 					q->numpending--;
 					spin_unlock_irqrestore(q->lock, qflags);
+			unsigned long timeout = jiffies + (180 * HZ); /* 3 minutes */
+			while (down_trylock(&fibptr->event_wait)) {
+				int blink;
+				if (time_is_before_eq_jiffies(timeout)) {
+					struct aac_queue * q = &dev->queues->queue[AdapNormCmdQueue];
+					atomic_dec(&q->numpending);
 					if (wait == -1) {
 	        				printk(KERN_ERR "aacraid: aac_fib_send: first asynchronous command timed out.\n"
 						  "Usually a result of a PCI interrupt routing problem;\n"
@@ -524,6 +657,25 @@ int aac_fib_send(u16 command, struct fib *fibptr, unsigned long size,
 			fibptr->done = 2; /* Tell interrupt we aborted */
 			spin_unlock_irqrestore(&fibptr->event_lock, flags);
 			return -EINTR;
+				/* We used to udelay() here but that absorbed
+				 * a CPU when a timeout occured. Not very
+				 * useful. */
+				cpu_relax();
+				/*
+				 * Allow other processes / CPUS to use core
+				 */
+				schedule();
+			}
+		} else if (down_interruptible(&fibptr->event_wait)) {
+			/* Do nothing ... satisfy
+			 * down_interruptible must_check */
+		}
+
+		spin_lock_irqsave(&fibptr->event_lock, flags);
+		if (fibptr->done == 0) {
+			fibptr->done = 2; /* Tell interrupt we aborted */
+			spin_unlock_irqrestore(&fibptr->event_lock, flags);
+			return -ERESTARTSYS;
 		}
 		spin_unlock_irqrestore(&fibptr->event_lock, flags);
 		BUG_ON(fibptr->done == 0);
@@ -635,6 +787,15 @@ int aac_fib_adapter_complete(struct fib *fibptr, unsigned short size)
 	if (hw_fib->header.XferState == 0) {
 		if (dev->comm_interface == AAC_COMM_MESSAGE)
 			kfree (hw_fib);
+	if (dev->comm_interface == AAC_COMM_MESSAGE_TYPE1 ||
+	    dev->comm_interface == AAC_COMM_MESSAGE_TYPE2) {
+		kfree(hw_fib);
+		return 0;
+	}
+
+	if (hw_fib->header.XferState == 0) {
+		if (dev->comm_interface == AAC_COMM_MESSAGE)
+			kfree(hw_fib);
 		return 0;
 	}
 	/*
@@ -643,6 +804,11 @@ int aac_fib_adapter_complete(struct fib *fibptr, unsigned short size)
 	if (hw_fib->header.StructType != FIB_MAGIC) {
 		if (dev->comm_interface == AAC_COMM_MESSAGE)
 			kfree (hw_fib);
+	if (hw_fib->header.StructType != FIB_MAGIC &&
+	    hw_fib->header.StructType != FIB_MAGIC2 &&
+	    hw_fib->header.StructType != FIB_MAGIC2_64) {
+		if (dev->comm_interface == AAC_COMM_MESSAGE)
+			kfree(hw_fib);
 		return -EINVAL;
 	}
 	/*
@@ -702,6 +868,9 @@ int aac_fib_complete(struct fib *fibptr)
 	 */
 
 	if (hw_fib->header.StructType != FIB_MAGIC)
+	if (hw_fib->header.StructType != FIB_MAGIC &&
+	    hw_fib->header.StructType != FIB_MAGIC2 &&
+	    hw_fib->header.StructType != FIB_MAGIC2_64)
 		return -EINVAL;
 	/*
 	 *	This block completes a cdb which orginated on the host and we
@@ -709,6 +878,7 @@ int aac_fib_complete(struct fib *fibptr)
 	 *	command is complete that we had sent to the adapter and this
 	 *	cdb could be reused.
 	 */
+
 	if((hw_fib->header.XferState & cpu_to_le32(SentFromHost)) &&
 		(hw_fib->header.XferState & cpu_to_le32(AdapterProcessed)))
 	{
@@ -773,6 +943,7 @@ void aac_printf(struct aac_dev *dev, u32 val)
  */
 
 #define AIF_SNIFF_TIMEOUT	(30*HZ)
+#define AIF_SNIFF_TIMEOUT	(500*HZ)
 static void aac_handle_aif(struct aac_dev * dev, struct fib * fibptr)
 {
 	struct hw_fib * hw_fib = fibptr->hw_fib_va;
@@ -801,6 +972,39 @@ static void aac_handle_aif(struct aac_dev * dev, struct fib * fibptr)
 	switch (le32_to_cpu(aifcmd->command)) {
 	case AifCmdDriverNotify:
 		switch (le32_to_cpu(((__le32 *)aifcmd->data)[0])) {
+		case AifRawDeviceRemove:
+			container = le32_to_cpu(((__le32 *)aifcmd->data)[1]);
+			if ((container >> 28)) {
+				container = (u32)-1;
+				break;
+			}
+			channel = (container >> 24) & 0xF;
+			if (channel >= dev->maximum_num_channels) {
+				container = (u32)-1;
+				break;
+			}
+			id = container & 0xFFFF;
+			if (id >= dev->maximum_num_physicals) {
+				container = (u32)-1;
+				break;
+			}
+			lun = (container >> 16) & 0xFF;
+			container = (u32)-1;
+			channel = aac_phys_to_logical(channel);
+			device_config_needed =
+			  (((__le32 *)aifcmd->data)[0] ==
+			    cpu_to_le32(AifRawDeviceRemove)) ? DELETE : ADD;
+
+			if (device_config_needed == ADD) {
+				device = scsi_device_lookup(
+					dev->scsi_host_ptr,
+					channel, id, lun);
+				if (device) {
+					scsi_remove_device(device);
+					scsi_device_put(device);
+				}
+			}
+			break;
 		/*
 		 *	Morph or Expand complete
 		 */
@@ -926,6 +1130,16 @@ static void aac_handle_aif(struct aac_dev * dev, struct fib * fibptr)
 			device_config_needed =
 			  (((__le32 *)aifcmd->data)[0] ==
 			    cpu_to_le32(AifEnAddJBOD)) ? ADD : DELETE;
+			if (device_config_needed == ADD) {
+				device = scsi_device_lookup(dev->scsi_host_ptr,
+					channel,
+					id,
+					lun);
+				if (device) {
+					scsi_remove_device(device);
+					scsi_device_put(device);
+				}
+			}
 			break;
 
 		case AifEnEnclosureManagement:
@@ -938,6 +1152,8 @@ static void aac_handle_aif(struct aac_dev * dev, struct fib * fibptr)
 			switch (le32_to_cpu(((__le32 *)aifcmd->data)[3])) {
 			case EM_DRIVE_INSERTION:
 			case EM_DRIVE_REMOVAL:
+			case EM_SES_DRIVE_INSERTION:
+			case EM_SES_DRIVE_REMOVAL:
 				container = le32_to_cpu(
 					((__le32 *)aifcmd->data)[2]);
 				if ((container >> 28)) {
@@ -965,6 +1181,10 @@ static void aac_handle_aif(struct aac_dev * dev, struct fib * fibptr)
 				device_config_needed =
 				  (((__le32 *)aifcmd->data)[3]
 				    == cpu_to_le32(EM_DRIVE_INSERTION)) ?
+				  ((((__le32 *)aifcmd->data)[3]
+				    == cpu_to_le32(EM_DRIVE_INSERTION)) ||
+				    (((__le32 *)aifcmd->data)[3]
+				    == cpu_to_le32(EM_SES_DRIVE_INSERTION))) ?
 				  ADD : DELETE;
 				break;
 			}
@@ -1083,6 +1303,9 @@ retry_next:
 	if (device) {
 		switch (device_config_needed) {
 		case DELETE:
+#if (defined(AAC_DEBUG_INSTRUMENT_AIF_DELETE))
+			scsi_remove_device(device);
+#else
 			if (scsi_device_online(device)) {
 				scsi_device_set_state(device, SDEV_OFFLINE);
 				sdev_printk(KERN_INFO, device,
@@ -1091,6 +1314,7 @@ retry_next:
 						"array deleted" :
 						"enclosure services event");
 			}
+#endif
 			break;
 		case ADD:
 			if (!scsi_device_online(device)) {
@@ -1105,12 +1329,16 @@ retry_next:
 		case CHANGE:
 			if ((channel == CONTAINER_CHANNEL)
 			 && (!dev->fsa_dev[container].valid)) {
+#if (defined(AAC_DEBUG_INSTRUMENT_AIF_DELETE))
+				scsi_remove_device(device);
+#else
 				if (!scsi_device_online(device))
 					break;
 				scsi_device_set_state(device, SDEV_OFFLINE);
 				sdev_printk(KERN_INFO, device,
 					"Device offlined - %s\n",
 					"array failed");
+#endif
 				break;
 			}
 			scsi_rescan_device(&device->sdev_gendev);
@@ -1153,9 +1381,10 @@ static int _aac_reset_adapter(struct aac_dev *aac, int forced)
 	host = aac->scsi_host_ptr;
 	scsi_block_requests(host);
 	aac_adapter_disable_int(aac);
-	if (aac->thread->pid != current->pid) {
+	if (aac->thread && aac->thread->pid != current->pid) {
 		spin_unlock_irq(host->host_lock);
 		kthread_stop(aac->thread);
+		aac->thread = NULL;
 		jafo = 1;
 	}
 
@@ -1195,6 +1424,7 @@ static int _aac_reset_adapter(struct aac_dev *aac, int forced)
 	 * will ensure that i/o is queisced and the card is flushed in that
 	 * case.
 	 */
+	aac_free_irq(aac);
 	aac_fib_map_free(aac);
 	pci_free_consistent(aac->pdev, aac->comm_size, aac->comm_addr, aac->comm_phys);
 	aac->comm_addr = NULL;
@@ -1202,6 +1432,7 @@ static int _aac_reset_adapter(struct aac_dev *aac, int forced)
 	kfree(aac->queues);
 	aac->queues = NULL;
 	free_irq(aac->pdev->irq, aac);
+	aac_free_irq(aac);
 	kfree(aac->fsa_dev);
 	aac->fsa_dev = NULL;
 	quirks = aac_get_driver_ident(index)->quirks;
@@ -1212,6 +1443,12 @@ static int _aac_reset_adapter(struct aac_dev *aac, int forced)
 	} else {
 		if (((retval = pci_set_dma_mask(aac->pdev, DMA_32BIT_MASK))) ||
 		  ((retval = pci_set_consistent_dma_mask(aac->pdev, DMA_32BIT_MASK))))
+		if (((retval = pci_set_dma_mask(aac->pdev, DMA_BIT_MASK(31)))) ||
+		  ((retval = pci_set_consistent_dma_mask(aac->pdev, DMA_BIT_MASK(31)))))
+			goto out;
+	} else {
+		if (((retval = pci_set_dma_mask(aac->pdev, DMA_BIT_MASK(32)))) ||
+		  ((retval = pci_set_consistent_dma_mask(aac->pdev, DMA_BIT_MASK(32)))))
 			goto out;
 	}
 	if ((retval = (*(aac_get_driver_ident(index)->init))(aac)))
@@ -1221,8 +1458,14 @@ static int _aac_reset_adapter(struct aac_dev *aac, int forced)
 			goto out;
 	if (jafo) {
 		aac->thread = kthread_run(aac_command_thread, aac, aac->name);
+		if ((retval = pci_set_dma_mask(aac->pdev, DMA_BIT_MASK(32))))
+			goto out;
+	if (jafo) {
+		aac->thread = kthread_run(aac_command_thread, aac, "%s",
+					  aac->name);
 		if (IS_ERR(aac->thread)) {
 			retval = PTR_ERR(aac->thread);
+			aac->thread = NULL;
 			goto out;
 		}
 	}
@@ -1356,6 +1599,10 @@ int aac_reset_adapter(struct aac_dev * aac, int forced)
 			if (status >= 0)
 				aac_fib_complete(fibctx);
 			aac_fib_free(fibctx);
+			/* FIB should be freed only after getting
+			 * the response from the F/W */
+			if (status != -ERESTARTSYS)
+				aac_fib_free(fibctx);
 		}
 	}
 
@@ -1759,6 +2006,7 @@ int aac_command_thread(void *data)
 				struct fib *fibptr;
 
 				if ((fibptr = aac_fib_alloc(dev))) {
+					int status;
 					__le32 *info;
 
 					aac_fib_init(fibptr);
@@ -1770,6 +2018,7 @@ int aac_command_thread(void *data)
 					*info = cpu_to_le32(now.tv_sec);
 
 					(void)aac_fib_send(SendHostTime,
+					status = aac_fib_send(SendHostTime,
 						fibptr,
 						sizeof(*info),
 						FsaNormal,
@@ -1778,6 +2027,14 @@ int aac_command_thread(void *data)
 						NULL);
 					aac_fib_complete(fibptr);
 					aac_fib_free(fibptr);
+					/* Do not set XferState to zero unless
+					 * receives a response from F/W */
+					if (status >= 0)
+						aac_fib_complete(fibptr);
+					/* FIB should be freed only after
+					 * getting the response from the F/W */
+					if (status != -ERESTARTSYS)
+						aac_fib_free(fibptr);
 				}
 				difference = (long)(unsigned)update_interval*HZ;
 			} else {
@@ -1791,6 +2048,10 @@ int aac_command_thread(void *data)
 		if (difference <= 0)
 			difference = 1;
 		set_current_state(TASK_INTERRUPTIBLE);
+
+		if (kthread_should_stop())
+			break;
+
 		schedule_timeout(difference);
 
 		if (kthread_should_stop())
@@ -1800,4 +2061,84 @@ int aac_command_thread(void *data)
 		remove_wait_queue(&dev->queues->queue[HostNormCmdQueue].cmdready, &wait);
 	dev->aif_thread = 0;
 	return 0;
+}
+
+int aac_acquire_irq(struct aac_dev *dev)
+{
+	int i;
+	int j;
+	int ret = 0;
+	int cpu;
+
+	cpu = cpumask_first(cpu_online_mask);
+	if (!dev->sync_mode && dev->msi_enabled && dev->max_msix > 1) {
+		for (i = 0; i < dev->max_msix; i++) {
+			dev->aac_msix[i].vector_no = i;
+			dev->aac_msix[i].dev = dev;
+			if (request_irq(dev->msixentry[i].vector,
+					dev->a_ops.adapter_intr,
+					0, "aacraid", &(dev->aac_msix[i]))) {
+				printk(KERN_ERR "%s%d: Failed to register IRQ for vector %d.\n",
+						dev->name, dev->id, i);
+				for (j = 0 ; j < i ; j++)
+					free_irq(dev->msixentry[j].vector,
+						 &(dev->aac_msix[j]));
+				pci_disable_msix(dev->pdev);
+				ret = -1;
+			}
+			if (irq_set_affinity_hint(dev->msixentry[i].vector,
+							get_cpu_mask(cpu))) {
+				printk(KERN_ERR "%s%d: Failed to set IRQ affinity for cpu %d\n",
+					    dev->name, dev->id, cpu);
+			}
+			cpu = cpumask_next(cpu, cpu_online_mask);
+		}
+	} else {
+		dev->aac_msix[0].vector_no = 0;
+		dev->aac_msix[0].dev = dev;
+
+		if (request_irq(dev->pdev->irq, dev->a_ops.adapter_intr,
+			IRQF_SHARED, "aacraid",
+			&(dev->aac_msix[0])) < 0) {
+			if (dev->msi)
+				pci_disable_msi(dev->pdev);
+			printk(KERN_ERR "%s%d: Interrupt unavailable.\n",
+					dev->name, dev->id);
+			ret = -1;
+		}
+	}
+	return ret;
+}
+
+void aac_free_irq(struct aac_dev *dev)
+{
+	int i;
+	int cpu;
+
+	cpu = cpumask_first(cpu_online_mask);
+	if (dev->pdev->device == PMC_DEVICE_S6 ||
+	    dev->pdev->device == PMC_DEVICE_S7 ||
+	    dev->pdev->device == PMC_DEVICE_S8 ||
+	    dev->pdev->device == PMC_DEVICE_S9) {
+		if (dev->max_msix > 1) {
+			for (i = 0; i < dev->max_msix; i++) {
+				if (irq_set_affinity_hint(
+					dev->msixentry[i].vector, NULL)) {
+					printk(KERN_ERR "%s%d: Failed to reset IRQ affinity for cpu %d\n",
+					    dev->name, dev->id, cpu);
+				}
+				cpu = cpumask_next(cpu, cpu_online_mask);
+				free_irq(dev->msixentry[i].vector,
+						&(dev->aac_msix[i]));
+			}
+		} else {
+			free_irq(dev->pdev->irq, &(dev->aac_msix[0]));
+		}
+	} else {
+		free_irq(dev->pdev->irq, dev);
+	}
+	if (dev->msi)
+		pci_disable_msi(dev->pdev);
+	else if (dev->max_msix > 1)
+		pci_disable_msix(dev->pdev);
 }

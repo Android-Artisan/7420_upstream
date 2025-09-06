@@ -2,6 +2,7 @@
  *  Driver for TANBAC TB0219 base board.
  *
  *  Copyright (C) 2005  Yoichi Yuasa <yoichi_yuasa@tripeaks.co.jp>
+ *  Copyright (C) 2005  Yoichi Yuasa <yuasa@linux-mips.org>
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -29,6 +30,7 @@
 #include <asm/vr41xx/tb0219.h>
 
 MODULE_AUTHOR("Yoichi Yuasa <yoichi_yuasa@tripeaks.co.jp>");
+MODULE_AUTHOR("Yoichi Yuasa <yuasa@linux-mips.org>");
 MODULE_DESCRIPTION("TANBAC TB0219 base board driver");
 MODULE_LICENSE("GPL");
 
@@ -39,6 +41,7 @@ MODULE_PARM_DESC(major, "Major device number");
 static void (*old_machine_restart)(char *command);
 static void __iomem *tb0219_base;
 static spinlock_t tb0219_lock;
+static DEFINE_SPINLOCK(tb0219_lock);
 
 #define tb0219_read(offset)		readw(tb0219_base + (offset))
 #define tb0219_write(offset, value)	writew((value), tb0219_base + (offset))
@@ -166,6 +169,7 @@ static ssize_t tanbac_tb0219_read(struct file *file, char __user *buf, size_t le
 	char value;
 
 	minor = iminor(file->f_path.dentry->d_inode);
+	minor = iminor(file_inode(file));
 	switch (minor) {
 	case 0:
 		value = get_led();
@@ -202,6 +206,7 @@ static ssize_t tanbac_tb0219_write(struct file *file, const char __user *data,
 	char c;
 
 	minor = iminor(file->f_path.dentry->d_inode);
+	minor = iminor(file_inode(file));
 	switch (minor) {
 	case 0:
 		type = TYPE_LED;
@@ -263,6 +268,7 @@ static const struct file_operations tb0219_fops = {
 	.write		= tanbac_tb0219_write,
 	.open		= tanbac_tb0219_open,
 	.release	= tanbac_tb0219_release,
+	.llseek		= no_llseek,
 };
 
 static void tb0219_restart(char *command)
@@ -286,6 +292,7 @@ static void tb0219_pci_irq_init(void)
 }
 
 static int __devinit tb0219_probe(struct platform_device *dev)
+static int tb0219_probe(struct platform_device *dev)
 {
 	int retval;
 
@@ -322,6 +329,7 @@ static int __devinit tb0219_probe(struct platform_device *dev)
 }
 
 static int __devexit tb0219_remove(struct platform_device *dev)
+static int tb0219_remove(struct platform_device *dev)
 {
 	_machine_restart = old_machine_restart;
 
@@ -341,6 +349,9 @@ static struct platform_driver tb0219_device_driver = {
 	.driver		= {
 		.name	= "TB0219",
 		.owner	= THIS_MODULE,
+	.remove		= tb0219_remove,
+	.driver		= {
+		.name	= "TB0219",
 	},
 };
 

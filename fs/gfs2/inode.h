@@ -12,6 +12,16 @@
 
 #include "util.h"
 
+#include <linux/fs.h>
+#include <linux/buffer_head.h>
+#include <linux/mm.h>
+#include "util.h"
+
+extern int gfs2_releasepage(struct page *page, gfp_t gfp_mask);
+extern int gfs2_internal_read(struct gfs2_inode *ip,
+			      char *buf, loff_t *pos, unsigned size);
+extern void gfs2_set_aops(struct inode *inode);
+
 static inline int gfs2_is_stuffed(const struct gfs2_inode *ip)
 {
 	return !ip->i_height;
@@ -20,6 +30,7 @@ static inline int gfs2_is_stuffed(const struct gfs2_inode *ip)
 static inline int gfs2_is_jdata(const struct gfs2_inode *ip)
 {
 	return ip->i_di.di_flags & GFS2_DIF_JDATA;
+	return ip->i_diskflags & GFS2_DIF_JDATA;
 }
 
 static inline int gfs2_is_writeback(const struct gfs2_inode *ip)
@@ -98,6 +109,63 @@ int gfs2_setattr_simple(struct gfs2_inode *ip, struct iattr *attr);
 struct inode *gfs2_lookup_simple(struct inode *dip, const char *name);
 void gfs2_dinode_out(const struct gfs2_inode *ip, void *buf);
 void gfs2_dinode_print(const struct gfs2_inode *ip);
+static inline int gfs2_check_internal_file_size(struct inode *inode,
+						u64 minsize, u64 maxsize)
+{
+	u64 size = i_size_read(inode);
+	if (size < minsize || size > maxsize)
+		goto err;
+	if (size & ((1 << inode->i_blkbits) - 1))
+		goto err;
+	return 0;
+err:
+	gfs2_consist_inode(GFS2_I(inode));
+	return -EIO;
+}
+
+extern struct inode *gfs2_inode_lookup(struct super_block *sb, unsigned type, 
+				       u64 no_addr, u64 no_formal_ino,
+				       int non_block);
+extern struct inode *gfs2_lookup_by_inum(struct gfs2_sbd *sdp, u64 no_addr,
+					 u64 *no_formal_ino,
+					 unsigned int blktype);
+extern struct inode *gfs2_ilookup(struct super_block *sb, u64 no_addr, int nonblock);
+
+extern int gfs2_inode_refresh(struct gfs2_inode *ip);
+
+extern struct inode *gfs2_lookupi(struct inode *dir, const struct qstr *name,
+				  int is_root);
+extern int gfs2_permission(struct inode *inode, int mask);
+extern int gfs2_setattr_simple(struct inode *inode, struct iattr *attr);
+extern struct inode *gfs2_lookup_simple(struct inode *dip, const char *name);
+extern void gfs2_dinode_out(const struct gfs2_inode *ip, void *buf);
+extern int gfs2_open_common(struct inode *inode, struct file *file);
+
+extern const struct inode_operations gfs2_file_iops;
+extern const struct inode_operations gfs2_dir_iops;
+extern const struct inode_operations gfs2_symlink_iops;
+extern const struct file_operations gfs2_file_fops_nolock;
+extern const struct file_operations gfs2_dir_fops_nolock;
+
+extern void gfs2_set_inode_flags(struct inode *inode);
+ 
+#ifdef CONFIG_GFS2_FS_LOCKING_DLM
+extern const struct file_operations gfs2_file_fops;
+extern const struct file_operations gfs2_dir_fops;
+
+static inline int gfs2_localflocks(const struct gfs2_sbd *sdp)
+{
+	return sdp->sd_args.ar_localflocks;
+}
+#else /* Single node only */
+#define gfs2_file_fops gfs2_file_fops_nolock
+#define gfs2_dir_fops gfs2_dir_fops_nolock
+
+static inline int gfs2_localflocks(const struct gfs2_sbd *sdp)
+{
+	return 1;
+}
+#endif /* CONFIG_GFS2_FS_LOCKING_DLM */
 
 #endif /* __INODE_DOT_H__ */
 

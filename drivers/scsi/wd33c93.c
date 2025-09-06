@@ -373,6 +373,8 @@ calc_sync_msg(unsigned int period, unsigned int offset, unsigned int fast,
 
 int
 wd33c93_queuecommand(struct scsi_cmnd *cmd,
+static int
+wd33c93_queuecommand_lck(struct scsi_cmnd *cmd,
 		void (*done)(struct scsi_cmnd *))
 {
 	struct WD33C93_hostdata *hostdata;
@@ -382,6 +384,7 @@ wd33c93_queuecommand(struct scsi_cmnd *cmd,
 
 	DB(DB_QUEUE_COMMAND,
 	   printk("Q-%d-%02x-%ld( ", cmd->device->id, cmd->cmnd[0], cmd->serial_number))
+	   printk("Q-%d-%02x( ", cmd->device->id, cmd->cmnd[0]))
 
 /* Set up a few fields in the scsi_cmnd structure for our own use:
  *  - host_scribble is the pointer to the next cmd in the input queue
@@ -463,10 +466,13 @@ wd33c93_queuecommand(struct scsi_cmnd *cmd,
 	wd33c93_execute(cmd->device->host);
 
 	DB(DB_QUEUE_COMMAND, printk(")Q-%ld ", cmd->serial_number))
+	DB(DB_QUEUE_COMMAND, printk(")Q "))
 
 	spin_unlock_irq(&hostdata->lock);
 	return 0;
 }
+
+DEF_SCSI_QCMD(wd33c93_queuecommand)
 
 /*
  * This routine attempts to start a scsi command. If the host_card is
@@ -501,6 +507,8 @@ wd33c93_execute(struct Scsi_Host *instance)
 	prev = NULL;
 	while (cmd) {
 		if (!(hostdata->busy[cmd->device->id] & (1 << cmd->device->lun)))
+		if (!(hostdata->busy[cmd->device->id] &
+		      (1 << (cmd->device->lun & 0xff))))
 			break;
 		prev = cmd;
 		cmd = (struct scsi_cmnd *) cmd->host_scribble;
@@ -595,6 +603,10 @@ wd33c93_execute(struct Scsi_Host *instance)
 	write_wd33c93(regs, WD_SYNCHRONOUS_TRANSFER,
 		      hostdata->sync_xfer[cmd->device->id]);
 	hostdata->busy[cmd->device->id] |= (1 << cmd->device->lun);
+	write_wd33c93(regs, WD_TARGET_LUN, (u8)cmd->device->lun);
+	write_wd33c93(regs, WD_SYNCHRONOUS_TRANSFER,
+		      hostdata->sync_xfer[cmd->device->id]);
+	hostdata->busy[cmd->device->id] |= (1 << (cmd->device->lun & 0xFF));
 
 	if ((hostdata->level2 == L2_NONE) ||
 	    (hostdata->sync_stat[cmd->device->id] == SS_UNSET)) {
@@ -686,6 +698,7 @@ wd33c93_execute(struct Scsi_Host *instance)
 
 	DB(DB_EXECUTE,
 	   printk("%s%ld)EX-2 ", (cmd->SCp.phase) ? "d:" : "", cmd->serial_number))
+	   printk("%s)EX-2 ", (cmd->SCp.phase) ? "d:" : ""))
 }
 
 static void
@@ -861,6 +874,7 @@ wd33c93_intr(struct Scsi_Host *instance)
 
 		cmd->result = DID_NO_CONNECT << 16;
 		hostdata->busy[cmd->device->id] &= ~(1 << cmd->device->lun);
+		hostdata->busy[cmd->device->id] &= ~(1 << (cmd->device->lun & 0xff));
 		hostdata->state = S_UNCONNECTED;
 		cmd->scsi_done(cmd);
 
@@ -894,6 +908,7 @@ wd33c93_intr(struct Scsi_Host *instance)
 		/* construct an IDENTIFY message with correct disconnect bit */
 
 		hostdata->outgoing_msg[0] = (0x80 | 0x00 | cmd->device->lun);
+		hostdata->outgoing_msg[0] = IDENTIFY(0, cmd->device->lun);
 		if (cmd->SCp.phase)
 			hostdata->outgoing_msg[0] |= 0x40;
 
@@ -962,6 +977,7 @@ wd33c93_intr(struct Scsi_Host *instance)
 	case CSR_UNEXP | PHS_COMMAND:
 	case CSR_SRV_REQ | PHS_COMMAND:
 		DB(DB_INTR, printk("CMND-%02x,%ld", cmd->cmnd[0], cmd->serial_number))
+		DB(DB_INTR, printk("CMND-%02x", cmd->cmnd[0]))
 		    transfer_pio(regs, cmd->cmnd, cmd->cmd_len, DATA_OUT_DIR,
 				 hostdata);
 		hostdata->state = S_CONNECTED;
@@ -1006,6 +1022,7 @@ wd33c93_intr(struct Scsi_Host *instance)
 
 		case COMMAND_COMPLETE:
 			DB(DB_INTR, printk("CCMP-%ld", cmd->serial_number))
+			DB(DB_INTR, printk("CCMP"))
 			    write_wd33c93_cmd(regs, WD_CMD_NEGATE_ACK);
 			hostdata->state = S_PRE_CMP_DISC;
 			break;
@@ -1173,11 +1190,13 @@ wd33c93_intr(struct Scsi_Host *instance)
 		write_wd33c93(regs, WD_SOURCE_ID, SRCID_ER);
 		if (phs == 0x60) {
 			DB(DB_INTR, printk("SX-DONE-%ld", cmd->serial_number))
+			DB(DB_INTR, printk("SX-DONE"))
 			    cmd->SCp.Message = COMMAND_COMPLETE;
 			lun = read_wd33c93(regs, WD_TARGET_LUN);
 			DB(DB_INTR, printk(":%d.%d", cmd->SCp.Status, lun))
 			    hostdata->connected = NULL;
 			hostdata->busy[cmd->device->id] &= ~(1 << cmd->device->lun);
+			hostdata->busy[cmd->device->id] &= ~(1 << (cmd->device->lun & 0xff));
 			hostdata->state = S_UNCONNECTED;
 			if (cmd->SCp.Status == ILLEGAL_STATUS_BYTE)
 				cmd->SCp.Status = lun;
@@ -1200,6 +1219,8 @@ wd33c93_intr(struct Scsi_Host *instance)
 			printk
 			    ("%02x:%02x:%02x-%ld: Unknown SEL_XFER_DONE phase!!---",
 			     asr, sr, phs, cmd->serial_number);
+			    ("%02x:%02x:%02x: Unknown SEL_XFER_DONE phase!!---",
+			     asr, sr, phs);
 			spin_unlock_irqrestore(&hostdata->lock, flags);
 		}
 		break;
@@ -1267,6 +1288,9 @@ wd33c93_intr(struct Scsi_Host *instance)
 		DB(DB_INTR, printk("UNEXP_DISC-%ld", cmd->serial_number))
 		    hostdata->connected = NULL;
 		hostdata->busy[cmd->device->id] &= ~(1 << cmd->device->lun);
+		DB(DB_INTR, printk("UNEXP_DISC"))
+		    hostdata->connected = NULL;
+		hostdata->busy[cmd->device->id] &= ~(1 << (cmd->device->lun & 0xff));
 		hostdata->state = S_UNCONNECTED;
 		if (cmd->cmnd[0] == REQUEST_SENSE && cmd->SCp.Status != GOOD)
 			cmd->result =
@@ -1291,6 +1315,7 @@ wd33c93_intr(struct Scsi_Host *instance)
 
 		write_wd33c93(regs, WD_SOURCE_ID, SRCID_ER);
 		DB(DB_INTR, printk("DISC-%ld", cmd->serial_number))
+		DB(DB_INTR, printk("DISC"))
 		    if (cmd == NULL) {
 			printk(" - Already disconnected! ");
 			hostdata->state = S_UNCONNECTED;
@@ -1299,6 +1324,7 @@ wd33c93_intr(struct Scsi_Host *instance)
 		case S_PRE_CMP_DISC:
 			hostdata->connected = NULL;
 			hostdata->busy[cmd->device->id] &= ~(1 << cmd->device->lun);
+			hostdata->busy[cmd->device->id] &= ~(1 << (cmd->device->lun & 0xff));
 			hostdata->state = S_UNCONNECTED;
 			DB(DB_INTR, printk(":%d", cmd->SCp.Status))
 			    if (cmd->cmnd[0] == REQUEST_SENSE
@@ -1352,6 +1378,7 @@ wd33c93_intr(struct Scsi_Host *instance)
 				cmd = (struct scsi_cmnd *) hostdata->selecting;
 				hostdata->selecting = NULL;
 				hostdata->busy[cmd->device->id] &= ~(1 << cmd->device->lun);
+				hostdata->busy[cmd->device->id] &= ~(1 << (cmd->device->lun & 0xff));
 				cmd->host_scribble =
 				    (uchar *) hostdata->input_Q;
 				hostdata->input_Q = cmd;
@@ -1364,6 +1391,7 @@ wd33c93_intr(struct Scsi_Host *instance)
 				if (phs == 0x00) {
 					hostdata->busy[cmd->device->id] &=
 					    ~(1 << cmd->device->lun);
+						~(1 << (cmd->device->lun & 0xff));
 					cmd->host_scribble =
 					    (uchar *) hostdata->input_Q;
 					hostdata->input_Q = cmd;
@@ -1447,6 +1475,7 @@ wd33c93_intr(struct Scsi_Host *instance)
 		patch = NULL;
 		while (cmd) {
 			if (id == cmd->device->id && lun == cmd->device->lun)
+			if (id == cmd->device->id && lun == (u8)cmd->device->lun)
 				break;
 			patch = cmd;
 			cmd = (struct scsi_cmnd *) cmd->host_scribble;
@@ -1458,6 +1487,7 @@ wd33c93_intr(struct Scsi_Host *instance)
 			printk
 			    ("---TROUBLE: target %d.%d not in disconnect queue---",
 			     id, lun);
+			     id, (u8)lun);
 			spin_unlock_irqrestore(&hostdata->lock, flags);
 			return;
 		}
@@ -1637,6 +1667,8 @@ wd33c93_abort(struct scsi_cmnd * cmd)
 			printk
 			    ("scsi%d: Abort - removing command %ld from input_Q. ",
 			     instance->host_no, cmd->serial_number);
+			    ("scsi%d: Abort - removing command from input_Q. ",
+			     instance->host_no);
 			enable_irq(cmd->device->host->irq);
 			cmd->scsi_done(cmd);
 			return SUCCESS;
@@ -1662,6 +1694,8 @@ wd33c93_abort(struct scsi_cmnd * cmd)
 
 		printk("scsi%d: Aborting connected command %ld - ",
 		       instance->host_no, cmd->serial_number);
+		printk("scsi%d: Aborting connected command - ",
+		       instance->host_no);
 
 		printk("stopping DMA - ");
 		if (hostdata->dma == D_DMA_RUNNING) {
@@ -1705,6 +1739,7 @@ wd33c93_abort(struct scsi_cmnd * cmd)
 		printk("asr=%02x, sr=%02x.", asr, sr);
 
 		hostdata->busy[cmd->device->id] &= ~(1 << cmd->device->lun);
+		hostdata->busy[cmd->device->id] &= ~(1 << (cmd->device->lun & 0xff));
 		hostdata->connected = NULL;
 		hostdata->state = S_UNCONNECTED;
 		cmd->result = DID_ABORT << 16;
@@ -1729,6 +1764,8 @@ wd33c93_abort(struct scsi_cmnd * cmd)
 			printk
 			    ("scsi%d: Abort - command %ld found on disconnected_Q - ",
 			     instance->host_no, cmd->serial_number);
+			    ("scsi%d: Abort - command found on disconnected_Q - ",
+			     instance->host_no);
 			printk("Abort SNOOZE. ");
 			enable_irq(cmd->device->host->irq);
 			return FAILED;
@@ -1842,6 +1879,7 @@ check_setup_args(char *key, int *flags, int *val, char *buf)
  * The original driver used to rely on a fixed sx_table, containing periods
  * for (only) the lower limits of the respective input-clock-frequency ranges
  * (8-10/12-15/16-20 MHz). Although it seems, that no problems ocurred with
+ * (8-10/12-15/16-20 MHz). Although it seems, that no problems occurred with
  * this setting so far, it might be desirable to adjust the transfer periods
  * closer to the really attached, possibly 25% higher, input-clock, since
  * - the wd33c93 may really use a significant shorter period, than it has
@@ -2070,6 +2108,19 @@ wd33c93_proc_info(struct Scsi_Host *instance, char *buf, char **start, off_t off
 	hd = (struct WD33C93_hostdata *) instance->hostdata;
 
 /* If 'in' is TRUE we need to _read_ the proc file. We accept the following
+	printk("           Version %s - %s\n", WD33C93_VERSION, WD33C93_DATE);
+}
+
+int wd33c93_write_info(struct Scsi_Host *instance, char *buf, int len)
+{
+#ifdef PROC_INTERFACE
+	char *bp;
+	struct WD33C93_hostdata *hd;
+	int x;
+
+	hd = (struct WD33C93_hostdata *) instance->hostdata;
+
+/* We accept the following
  * keywords (same format as command-line, but arguments are not optional):
  *    debug
  *    disconnect
@@ -2190,6 +2241,108 @@ wd33c93_proc_info(struct Scsi_Host *instance, char *buf, char **start, off_t off
 			sprintf(tbuf, " %ld-%d:%d(%02x)",
 				cmd->serial_number, cmd->device->id, cmd->device->lun, cmd->cmnd[0]);
 			strcat(bp, tbuf);
+	buf[len] = '\0';
+	for (bp = buf; *bp; ) {
+		while (',' == *bp || ' ' == *bp)
+			++bp;
+	if (!strncmp(bp, "debug:", 6)) {
+			hd->args = simple_strtoul(bp+6, &bp, 0) & DB_MASK;
+	} else if (!strncmp(bp, "disconnect:", 11)) {
+			x = simple_strtoul(bp+11, &bp, 0);
+		if (x < DIS_NEVER || x > DIS_ALWAYS)
+			x = DIS_ADAPTIVE;
+		hd->disconnect = x;
+	} else if (!strncmp(bp, "period:", 7)) {
+		x = simple_strtoul(bp+7, &bp, 0);
+		hd->default_sx_per =
+			hd->sx_table[round_period((unsigned int) x,
+						  hd->sx_table)].period_ns;
+	} else if (!strncmp(bp, "resync:", 7)) {
+			set_resync(hd, (int)simple_strtoul(bp+7, &bp, 0));
+	} else if (!strncmp(bp, "proc:", 5)) {
+			hd->proc = simple_strtoul(bp+5, &bp, 0);
+	} else if (!strncmp(bp, "nodma:", 6)) {
+			hd->no_dma = simple_strtoul(bp+6, &bp, 0);
+	} else if (!strncmp(bp, "level2:", 7)) {
+			hd->level2 = simple_strtoul(bp+7, &bp, 0);
+		} else if (!strncmp(bp, "burst:", 6)) {
+			hd->dma_mode =
+				simple_strtol(bp+6, &bp, 0) ? CTRL_BURST:CTRL_DMA;
+		} else if (!strncmp(bp, "fast:", 5)) {
+			x = !!simple_strtol(bp+5, &bp, 0);
+			if (x != hd->fast)
+				set_resync(hd, 0xff);
+			hd->fast = x;
+		} else if (!strncmp(bp, "nosync:", 7)) {
+			x = simple_strtoul(bp+7, &bp, 0);
+			set_resync(hd, x ^ hd->no_sync);
+			hd->no_sync = x;
+		} else {
+			break; /* unknown keyword,syntax-error,... */
+		}
+	}
+	return len;
+#else
+	return 0;
+#endif
+}
+
+int
+wd33c93_show_info(struct seq_file *m, struct Scsi_Host *instance)
+{
+#ifdef PROC_INTERFACE
+	struct WD33C93_hostdata *hd;
+	struct scsi_cmnd *cmd;
+	int x;
+
+	hd = (struct WD33C93_hostdata *) instance->hostdata;
+
+	spin_lock_irq(&hd->lock);
+	if (hd->proc & PR_VERSION)
+		seq_printf(m, "\nVersion %s - %s.",
+			WD33C93_VERSION, WD33C93_DATE);
+
+	if (hd->proc & PR_INFO) {
+		seq_printf(m, "\nclock_freq=%02x no_sync=%02x no_dma=%d"
+			" dma_mode=%02x fast=%d",
+			hd->clock_freq, hd->no_sync, hd->no_dma, hd->dma_mode, hd->fast);
+		seq_puts(m, "\nsync_xfer[] =       ");
+		for (x = 0; x < 7; x++)
+			seq_printf(m, "\t%02x", hd->sync_xfer[x]);
+		seq_puts(m, "\nsync_stat[] =       ");
+		for (x = 0; x < 7; x++)
+			seq_printf(m, "\t%02x", hd->sync_stat[x]);
+	}
+#ifdef PROC_STATISTICS
+	if (hd->proc & PR_STATISTICS) {
+		seq_puts(m, "\ncommands issued:    ");
+		for (x = 0; x < 7; x++)
+			seq_printf(m, "\t%ld", hd->cmd_cnt[x]);
+		seq_puts(m, "\ndisconnects allowed:");
+		for (x = 0; x < 7; x++)
+			seq_printf(m, "\t%ld", hd->disc_allowed_cnt[x]);
+		seq_puts(m, "\ndisconnects done:   ");
+		for (x = 0; x < 7; x++)
+			seq_printf(m, "\t%ld", hd->disc_done_cnt[x]);
+		seq_printf(m,
+			"\ninterrupts: %ld, DATA_PHASE ints: %ld DMA, %ld PIO",
+			hd->int_cnt, hd->dma_cnt, hd->pio_cnt);
+	}
+#endif
+	if (hd->proc & PR_CONNECTED) {
+		seq_puts(m, "\nconnected:     ");
+		if (hd->connected) {
+			cmd = (struct scsi_cmnd *) hd->connected;
+			seq_printf(m, " %d:%llu(%02x)",
+				cmd->device->id, cmd->device->lun, cmd->cmnd[0]);
+		}
+	}
+	if (hd->proc & PR_INPUTQ) {
+		seq_puts(m, "\ninput_Q:       ");
+		cmd = (struct scsi_cmnd *) hd->input_Q;
+		while (cmd) {
+			seq_printf(m, " %d:%llu(%02x)",
+				cmd->device->id, cmd->device->lun, cmd->cmnd[0]);
 			cmd = (struct scsi_cmnd *) cmd->host_scribble;
 		}
 	}
@@ -2227,6 +2380,18 @@ wd33c93_proc_info(struct Scsi_Host *instance, char *buf, char **start, off_t off
 void
 wd33c93_release(void)
 {
+		seq_puts(m, "\ndisconnected_Q:");
+		cmd = (struct scsi_cmnd *) hd->disconnected_Q;
+		while (cmd) {
+			seq_printf(m, " %d:%llu(%02x)",
+				cmd->device->id, cmd->device->lun, cmd->cmnd[0]);
+			cmd = (struct scsi_cmnd *) cmd->host_scribble;
+		}
+	}
+	seq_putc(m, '\n');
+	spin_unlock_irq(&hd->lock);
+#endif				/* PROC_INTERFACE */
+	return 0;
 }
 
 EXPORT_SYMBOL(wd33c93_host_reset);
@@ -2236,3 +2401,8 @@ EXPORT_SYMBOL(wd33c93_abort);
 EXPORT_SYMBOL(wd33c93_queuecommand);
 EXPORT_SYMBOL(wd33c93_intr);
 EXPORT_SYMBOL(wd33c93_proc_info);
+EXPORT_SYMBOL(wd33c93_abort);
+EXPORT_SYMBOL(wd33c93_queuecommand);
+EXPORT_SYMBOL(wd33c93_intr);
+EXPORT_SYMBOL(wd33c93_show_info);
+EXPORT_SYMBOL(wd33c93_write_info);

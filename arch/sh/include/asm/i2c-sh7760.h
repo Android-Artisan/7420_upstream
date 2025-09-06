@@ -15,6 +15,9 @@
 #define SH7760_I2C1_MMIOEND	0xFE15003B
 #define SH7760_I2C1_IRQ		63
 
+#define SH7760_I2C1_MMIO	0xFE150000
+#define SH7760_I2C1_MMIOEND	0xFE15003B
+
 struct sh7760_i2c_platdata {
 	unsigned int speed_khz;
 };

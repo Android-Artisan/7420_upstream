@@ -24,6 +24,13 @@
 
 #ifdef __KERNEL__
 #define STACK_TOP	((current->personality == PER_LINUX_32BIT) ? \
+#include <asm/hw_breakpoint.h>
+#include <asm/ptrace.h>
+#include <asm/types.h>
+#include <asm/unified.h>
+
+#ifdef __KERNEL__
+#define STACK_TOP	((current->personality & ADDR_LIMIT_32BIT) ? \
 			 TASK_SIZE : TASK_SIZE_26)
 #define STACK_TOP_MAX	TASK_SIZE
 #endif
@@ -41,6 +48,10 @@ struct debug_entry {
 struct debug_info {
 	int			nsaved;
 	struct debug_entry	bp[2];
+struct debug_info {
+#ifdef CONFIG_HAVE_HW_BREAKPOINT
+	struct perf_event	*hbp[ARM_MAX_HBP_SLOTS];
+#endif
 };
 
 struct thread_struct {
@@ -65,6 +76,7 @@ struct thread_struct {
 	unsigned long *stack = (unsigned long *)sp;			\
 	set_fs(USER_DS);						\
 	memzero(regs->uregs, sizeof(regs->uregs));			\
+	memset(regs->uregs, 0, sizeof(regs->uregs));			\
 	if (current->personality & ADDR_LIMIT_32BIT)			\
 		regs->ARM_cpsr = USR_MODE;				\
 	else								\
@@ -76,6 +88,9 @@ struct thread_struct {
 	regs->ARM_r2 = stack[2];	/* r2 (envp) */			\
 	regs->ARM_r1 = stack[1];	/* r1 (argv) */			\
 	regs->ARM_r0 = stack[0];	/* r0 (argc) */			\
+	regs->ARM_cpsr |= PSR_ENDSTATE;					\
+	regs->ARM_pc = pc & ~1;		/* pc */			\
+	regs->ARM_sp = sp;		/* sp */			\
 	nommu_start_thread(regs);					\
 })
 
@@ -96,12 +111,36 @@ unsigned long get_wchan(struct task_struct *p);
  * Create a new kernel thread
  */
 extern int kernel_thread(int (*fn)(void *), void *arg, unsigned long flags);
+unsigned long get_wchan(struct task_struct *p);
+
+#if __LINUX_ARM_ARCH__ == 6 || defined(CONFIG_ARM_ERRATA_754327)
+#define cpu_relax()						\
+	do {							\
+		smp_mb();					\
+		__asm__ __volatile__("nop; nop; nop; nop; nop; nop; nop; nop; nop; nop;");	\
+	} while (0)
+#else
+#define cpu_relax()			barrier()
+#endif
+
+#define cpu_relax_lowlatency()                cpu_relax()
 
 #define task_pt_regs(p) \
 	((struct pt_regs *)(THREAD_START_SP + task_stack_page(p)) - 1)
 
 #define KSTK_EIP(tsk)	task_pt_regs(tsk)->ARM_pc
 #define KSTK_ESP(tsk)	task_pt_regs(tsk)->ARM_sp
+
+#ifdef CONFIG_SMP
+#define __ALT_SMP_ASM(smp, up)						\
+	"9998:	" smp "\n"						\
+	"	.pushsection \".alt.smp.init\", \"a\"\n"		\
+	"	.long	9998b\n"					\
+	"	" up "\n"						\
+	"	.popsection\n"
+#else
+#define __ALT_SMP_ASM(smp, up)	up
+#endif
 
 /*
  * Prefetching support - only ARMv5.
@@ -125,6 +164,25 @@ static inline void prefetch(const void *ptr)
 #define spin_lock_prefetch(x) do { } while (0)
 
 #endif
+		:: "p" (ptr));
+}
+
+#if __LINUX_ARM_ARCH__ >= 7 && defined(CONFIG_SMP)
+#define ARCH_HAS_PREFETCHW
+static inline void prefetchw(const void *ptr)
+{
+	__asm__ __volatile__(
+		".arch_extension	mp\n"
+		__ALT_SMP_ASM(
+			WASM(pldw)		"\t%a0",
+			WASM(pld)		"\t%a0"
+		)
+		:: "p" (ptr));
+}
+#endif
+#endif
+
+#define HAVE_ARCH_PICK_MMAP_LAYOUT
 
 #endif
 

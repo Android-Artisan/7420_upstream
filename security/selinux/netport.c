@@ -6,6 +6,7 @@
  * needed to reduce the lookup overhead.
  *
  * Author: Paul Moore <paul.moore@hp.com>
+ * Author: Paul Moore <paul@paul-moore.com>
  *
  * This code is heavily based on the "netif" concept originally developed by
  * James Morris <jmorris@redhat.com>
@@ -30,6 +31,7 @@
 #include <linux/types.h>
 #include <linux/rcupdate.h>
 #include <linux/list.h>
+#include <linux/slab.h>
 #include <linux/spinlock.h>
 #include <linux/in.h>
 #include <linux/in6.h>
@@ -142,6 +144,12 @@ static void sel_netport_insert(struct sel_netport *port)
 			struct sel_netport, list);
 		list_del_rcu(&tail->list);
 		call_rcu(&tail->rcu, sel_netport_free);
+			rcu_dereference_protected(
+				sel_netport_hash[idx].list.prev,
+				lockdep_is_held(&sel_netport_lock)),
+			struct sel_netport, list);
+		list_del_rcu(&tail->list);
+		kfree_rcu(tail, rcu);
 	} else
 		sel_netport_hash[idx].size++;
 }
@@ -231,6 +239,7 @@ int sel_netport_sid(u8 protocol, u16 pnum, u32 *sid)
  *
  */
 static void sel_netport_flush(void)
+void sel_netport_flush(void)
 {
 	unsigned int idx;
 	struct sel_netport *port, *port_tmp;
@@ -241,6 +250,7 @@ static void sel_netport_flush(void)
 					 &sel_netport_hash[idx].list, list) {
 			list_del_rcu(&port->list);
 			call_rcu(&port->rcu, sel_netport_free);
+			kfree_rcu(port, rcu);
 		}
 		sel_netport_hash[idx].size = 0;
 	}
@@ -261,6 +271,9 @@ static __init int sel_netport_init(void)
 {
 	int iter;
 	int ret;
+static __init int sel_netport_init(void)
+{
+	int iter;
 
 	if (!selinux_enabled)
 		return 0;
@@ -276,6 +289,7 @@ static __init int sel_netport_init(void)
 		panic("avc_add_callback() failed, error %d\n", ret);
 
 	return ret;
+	return 0;
 }
 
 __initcall(sel_netport_init);

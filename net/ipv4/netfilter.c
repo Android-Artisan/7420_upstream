@@ -1,9 +1,17 @@
 /* IPv4 specific functions of netfilter core */
+/*
+ * IPv4 specific functions of netfilter core
+ *
+ * Rusty Russell (C) 2000 -- This code is GPL.
+ * Patrick McHardy (C) 2006-2012
+ */
 #include <linux/kernel.h>
 #include <linux/netfilter.h>
 #include <linux/netfilter_ipv4.h>
 #include <linux/ip.h>
 #include <linux/skbuff.h>
+#include <linux/gfp.h>
+#include <linux/export.h>
 #include <net/route.h>
 #include <net/xfrm.h>
 #include <net/ip.h>
@@ -22,6 +30,22 @@ int ip_route_me_harder(struct sk_buff *skb, unsigned addr_type)
 	type = inet_addr_type(&init_net, iph->saddr);
 	if (addr_type == RTN_UNSPEC)
 		addr_type = type;
+int ip_route_me_harder(struct net *net, struct sk_buff *skb, unsigned int addr_type)
+{
+	const struct iphdr *iph = ip_hdr(skb);
+	struct rtable *rt;
+	struct flowi4 fl4 = {};
+	__be32 saddr = iph->saddr;
+	const struct sock *sk = skb_to_full_sk(skb);
+	__u8 flags = sk ? inet_sk_flowi_flags(sk) : 0;
+	unsigned int hh_len;
+
+	if (addr_type == RTN_UNSPEC)
+		addr_type = inet_addr_type(net, saddr);
+	if (addr_type == RTN_LOCAL || addr_type == RTN_UNICAST)
+		flags |= FLOWI_FLAG_ANYSRC;
+	else
+		saddr = 0;
 
 	/* some non-standard hacks like ipt_REJECT.c:send_reset() can cause
 	 * packets with foreign saddr to appear on the NF_INET_LOCAL_OUT hook.
@@ -71,6 +95,41 @@ int ip_route_me_harder(struct sk_buff *skb, unsigned addr_type)
 	if (skb_headroom(skb) < hh_len &&
 	    pskb_expand_head(skb, hh_len - skb_headroom(skb), 0, GFP_ATOMIC))
 		return -1;
+	fl4.daddr = iph->daddr;
+	fl4.saddr = saddr;
+	fl4.flowi4_tos = RT_TOS(iph->tos);
+	fl4.flowi4_oif = sk ? sk->sk_bound_dev_if : 0;
+	fl4.flowi4_mark = skb->mark;
+	fl4.flowi4_flags = flags;
+	rt = ip_route_output_key(net, &fl4);
+	if (IS_ERR(rt))
+		return PTR_ERR(rt);
+
+	/* Drop old route. */
+	skb_dst_drop(skb);
+	skb_dst_set(skb, &rt->dst);
+
+	if (skb_dst(skb)->error)
+		return skb_dst(skb)->error;
+
+#ifdef CONFIG_XFRM
+	if (!(IPCB(skb)->flags & IPSKB_XFRM_TRANSFORMED) &&
+	    xfrm_decode_session(skb, flowi4_to_flowi(&fl4), AF_INET) == 0) {
+		struct dst_entry *dst = skb_dst(skb);
+		skb_dst_set(skb, NULL);
+		dst = xfrm_lookup(net, dst, flowi4_to_flowi(&fl4), sk, 0);
+		if (IS_ERR(dst))
+			return PTR_ERR(dst);
+		skb_dst_set(skb, dst);
+	}
+#endif
+
+	/* Change in oif may mean change in hh_len. */
+	hh_len = skb_dst(skb)->dev->hard_header_len;
+	if (skb_headroom(skb) < hh_len &&
+	    pskb_expand_head(skb, HH_DATA_ALIGN(hh_len - skb_headroom(skb)),
+				0, GFP_ATOMIC))
+		return -ENOMEM;
 
 	return 0;
 }
@@ -121,6 +180,7 @@ struct ip_rt_info {
 	__be32 daddr;
 	__be32 saddr;
 	u_int8_t tos;
+	u_int32_t mark;
 };
 
 static void nf_ip_saveroute(const struct sk_buff *skb,
@@ -129,6 +189,7 @@ static void nf_ip_saveroute(const struct sk_buff *skb,
 	struct ip_rt_info *rt_info = nf_queue_entry_reroute(entry);
 
 	if (entry->hook == NF_INET_LOCAL_OUT) {
+	if (entry->state.hook == NF_INET_LOCAL_OUT) {
 		const struct iphdr *iph = ip_hdr(skb);
 
 		rt_info->tos = iph->tos;
@@ -138,6 +199,11 @@ static void nf_ip_saveroute(const struct sk_buff *skb,
 }
 
 static int nf_ip_reroute(struct sk_buff *skb,
+		rt_info->mark = skb->mark;
+	}
+}
+
+static int nf_ip_reroute(struct net *net, struct sk_buff *skb,
 			 const struct nf_queue_entry *entry)
 {
 	const struct ip_rt_info *rt_info = nf_queue_entry_reroute(entry);
@@ -149,6 +215,14 @@ static int nf_ip_reroute(struct sk_buff *skb,
 		      && iph->daddr == rt_info->daddr
 		      && iph->saddr == rt_info->saddr))
 			return ip_route_me_harder(skb, RTN_UNSPEC);
+	if (entry->state.hook == NF_INET_LOCAL_OUT) {
+		const struct iphdr *iph = ip_hdr(skb);
+
+		if (!(iph->tos == rt_info->tos &&
+		      skb->mark == rt_info->mark &&
+		      iph->daddr == rt_info->daddr &&
+		      iph->saddr == rt_info->saddr))
+			return ip_route_me_harder(net, skb, RTN_UNSPEC);
 	}
 	return 0;
 }
@@ -203,6 +277,7 @@ static __sum16 nf_ip_checksum_partial(struct sk_buff *skb, unsigned int hook,
 		csum = __skb_checksum_complete_head(skb, dataoff + len);
 		if (!csum)
 			skb->ip_summed = CHECKSUM_UNNECESSARY;
+		return __skb_checksum_complete_head(skb, dataoff + len);
 	}
 	return csum;
 }
@@ -210,6 +285,14 @@ static __sum16 nf_ip_checksum_partial(struct sk_buff *skb, unsigned int hook,
 static int nf_ip_route(struct dst_entry **dst, struct flowi *fl)
 {
 	return ip_route_output_key(&init_net, (struct rtable **)dst, fl);
+static int nf_ip_route(struct net *net, struct dst_entry **dst,
+		       struct flowi *fl, bool strict __always_unused)
+{
+	struct rtable *rt = ip_route_output_key(net, &fl->u.ip4);
+	if (IS_ERR(rt))
+		return PTR_ERR(rt);
+	*dst = &rt->dst;
+	return 0;
 }
 
 static const struct nf_afinfo nf_ip_afinfo = {
@@ -244,3 +327,8 @@ struct ctl_path nf_net_ipv4_netfilter_sysctl_path[] = {
 };
 EXPORT_SYMBOL_GPL(nf_net_ipv4_netfilter_sysctl_path);
 #endif /* CONFIG_SYSCTL */
+static int __init ipv4_netfilter_init(void)
+{
+	return nf_register_afinfo(&nf_ip_afinfo);
+}
+subsys_initcall(ipv4_netfilter_init);

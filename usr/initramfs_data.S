@@ -16,6 +16,7 @@ SECTIONS
 {
        .init.ramfs : { *(.data) }
 }
+  For including the .init.ramfs sections, see include/asm-generic/vmlinux.lds.
 
   The above example is for i386 - the parameters vary from architectures.
   Eventually look up LDFLAGS_BLOB in an older version of the
@@ -28,3 +29,18 @@ SECTIONS
 .section .init.ramfs,"a"
 .incbin "usr/initramfs_data.cpio.gz"
 
+#include <linux/stringify.h>
+#include <asm-generic/vmlinux.lds.h>
+
+.section .init.ramfs,"a"
+__irf_start:
+.incbin __stringify(INITRAMFS_IMAGE)
+__irf_end:
+.section .init.ramfs.info,"a"
+.globl VMLINUX_SYMBOL(__initramfs_size)
+VMLINUX_SYMBOL(__initramfs_size):
+#ifdef CONFIG_64BIT
+	.quad __irf_end - __irf_start
+#else
+	.long __irf_end - __irf_start
+#endif

@@ -81,6 +81,39 @@ static char irq_tab[][5] __initdata = {
 	{0,     0,      0,      0,      0 },    /* 19 (AD[29]): Unused */
 	{0,     IRQ5,   IRQ5,   0,      0 },    /* 20 (AD[30]): slot 1 */
 	{0,     IRQ6,   IRQ6,   0,      0 }     /* 21 (AD[31]): slot 2 */
+	/* INTA	   INTB	   INTC	   INTD */
+	{0,	0,	0,	0,	0 },	/*    (AD[0]): Unused */
+	{0,	0,	0,	0,	0 },	/*    (AD[1]): Unused */
+	{0,	0,	0,	0,	0 },	/*    (AD[2]): Unused */
+	{0,	0,	0,	0,	0 },	/*    (AD[3]): Unused */
+	{0,	0,	0,	0,	0 },	/*    (AD[4]): Unused */
+	{0,	0,	0,	0,	0 },	/*    (AD[5]): Unused */
+	{0,	0,	0,	0,	0 },	/*    (AD[6]): Unused */
+	{0,	0,	0,	0,	0 },	/*    (AD[7]): Unused */
+	{0,	0,	0,	0,	0 },	/*    (AD[8]): Unused */
+	{0,	0,	0,	0,	0 },	/*    (AD[9]): Unused */
+	{0,	0,	0,	0,	0 },	/*  0 (AD[10]): Unused */
+	{0,	0,	0,	0,	0 },	/*  1 (AD[11]): Unused */
+	{0,	0,	0,	0,	0 },	/*  2 (AD[12]): Unused */
+	{0,	0,	0,	0,	0 },	/*  3 (AD[13]): Unused */
+	{0,	0,	0,	0,	0 },	/*  4 (AD[14]): Unused */
+	{0,	0,	0,	0,	0 },	/*  5 (AD[15]): Unused */
+	{0,	0,	0,	0,	0 },	/*  6 (AD[16]): Unused */
+	{0,	0,	0,	0,	0 },	/*  7 (AD[17]): Unused */
+	{0,	0,	0,	0,	0 },	/*  8 (AD[18]): Unused */
+	{0,	0,	0,	0,	0 },	/*  9 (AD[19]): Unused */
+	{0,	0,	0,	0,	0 },	/* 10 (AD[20]): Unused */
+	{0,	0,	0,	0,	0 },	/* 11 (AD[21]): Unused */
+	{0,	0,	0,	0,	0 },	/* 12 (AD[22]): Unused */
+	{0,	0,	0,	0,	0 },	/* 13 (AD[23]): Unused */
+	{0,	0,	0,	0,	0 },	/* 14 (AD[24]): Unused */
+	{0,	0,	0,	0,	0 },	/* 15 (AD[25]): Unused */
+	{0,	0,	0,	0,	0 },	/* 16 (AD[26]): Unused */
+	{0,	0,	0,	0,	0 },	/* 17 (AD[27]): Unused */
+	{0,	IRQ4,	IRQ4,	0,	0 },	/* 18 (AD[28]): slot 0 */
+	{0,	0,	0,	0,	0 },	/* 19 (AD[29]): Unused */
+	{0,	IRQ5,	IRQ5,	0,	0 },	/* 20 (AD[30]): slot 1 */
+	{0,	IRQ6,	IRQ6,	0,	0 }	/* 21 (AD[31]): slot 2 */
 };
 
 #elif defined(CONFIG_PMC_MSP7120_EVAL)
@@ -120,6 +153,39 @@ static char irq_tab[][5] __initdata = {
 	{0,     0,      0,      0,      0 },    /* 19 (AD[29]): Unused */
 	{0,     0,      0,      0,      0 },    /* 20 (AD[30]): Unused */
 	{0,     0,      0,      0,      0 }     /* 21 (AD[31]): Unused */
+	/* INTA	   INTB	   INTC	   INTD */
+	{0,	0,	0,	0,	0 },	/*    (AD[0]): Unused */
+	{0,	0,	0,	0,	0 },	/*    (AD[1]): Unused */
+	{0,	0,	0,	0,	0 },	/*    (AD[2]): Unused */
+	{0,	0,	0,	0,	0 },	/*    (AD[3]): Unused */
+	{0,	0,	0,	0,	0 },	/*    (AD[4]): Unused */
+	{0,	0,	0,	0,	0 },	/*    (AD[5]): Unused */
+	{0,	0,	0,	0,	0 },	/*    (AD[6]): Unused */
+	{0,	0,	0,	0,	0 },	/*    (AD[7]): Unused */
+	{0,	0,	0,	0,	0 },	/*    (AD[8]): Unused */
+	{0,	0,	0,	0,	0 },	/*    (AD[9]): Unused */
+	{0,	0,	0,	0,	0 },	/*  0 (AD[10]): Unused */
+	{0,	0,	0,	0,	0 },	/*  1 (AD[11]): Unused */
+	{0,	0,	0,	0,	0 },	/*  2 (AD[12]): Unused */
+	{0,	0,	0,	0,	0 },	/*  3 (AD[13]): Unused */
+	{0,	0,	0,	0,	0 },	/*  4 (AD[14]): Unused */
+	{0,	0,	0,	0,	0 },	/*  5 (AD[15]): Unused */
+	{0,	IRQ6,	IRQ6,	0,	0 },	/*  6 (AD[16]): slot 3 (mini) */
+	{0,	IRQ5,	IRQ5,	0,	0 },	/*  7 (AD[17]): slot 2 (mini) */
+	{0,	IRQ4,	IRQ4,	IRQ4,	IRQ4},	/*  8 (AD[18]): slot 0 (PCI) */
+	{0,	IRQ5,	IRQ5,	IRQ5,	IRQ5},	/*  9 (AD[19]): slot 1 (PCI) */
+	{0,	0,	0,	0,	0 },	/* 10 (AD[20]): Unused */
+	{0,	0,	0,	0,	0 },	/* 11 (AD[21]): Unused */
+	{0,	0,	0,	0,	0 },	/* 12 (AD[22]): Unused */
+	{0,	0,	0,	0,	0 },	/* 13 (AD[23]): Unused */
+	{0,	0,	0,	0,	0 },	/* 14 (AD[24]): Unused */
+	{0,	0,	0,	0,	0 },	/* 15 (AD[25]): Unused */
+	{0,	0,	0,	0,	0 },	/* 16 (AD[26]): Unused */
+	{0,	0,	0,	0,	0 },	/* 17 (AD[27]): Unused */
+	{0,	0,	0,	0,	0 },	/* 18 (AD[28]): Unused */
+	{0,	0,	0,	0,	0 },	/* 19 (AD[29]): Unused */
+	{0,	0,	0,	0,	0 },	/* 20 (AD[30]): Unused */
+	{0,	0,	0,	0,	0 }	/* 21 (AD[31]): Unused */
 };
 
 #else
@@ -159,6 +225,39 @@ static char irq_tab[][5] __initdata = {
 	{0,     0,      0,      0,      0 },    /* 19 (AD[29]): Unused */
 	{0,     0,      0,      0,      0 },    /* 20 (AD[30]): Unused */
 	{0,     0,      0,      0,      0 }     /* 21 (AD[31]): Unused */
+	/* INTA	   INTB	   INTC	   INTD */
+	{0,	0,	0,	0,	0 },	/*    (AD[0]): Unused */
+	{0,	0,	0,	0,	0 },	/*    (AD[1]): Unused */
+	{0,	0,	0,	0,	0 },	/*    (AD[2]): Unused */
+	{0,	0,	0,	0,	0 },	/*    (AD[3]): Unused */
+	{0,	0,	0,	0,	0 },	/*    (AD[4]): Unused */
+	{0,	0,	0,	0,	0 },	/*    (AD[5]): Unused */
+	{0,	0,	0,	0,	0 },	/*    (AD[6]): Unused */
+	{0,	0,	0,	0,	0 },	/*    (AD[7]): Unused */
+	{0,	0,	0,	0,	0 },	/*    (AD[8]): Unused */
+	{0,	0,	0,	0,	0 },	/*    (AD[9]): Unused */
+	{0,	0,	0,	0,	0 },	/*  0 (AD[10]): Unused */
+	{0,	0,	0,	0,	0 },	/*  1 (AD[11]): Unused */
+	{0,	0,	0,	0,	0 },	/*  2 (AD[12]): Unused */
+	{0,	0,	0,	0,	0 },	/*  3 (AD[13]): Unused */
+	{0,	0,	0,	0,	0 },	/*  4 (AD[14]): Unused */
+	{0,	0,	0,	0,	0 },	/*  5 (AD[15]): Unused */
+	{0,	0,	0,	0,	0 },	/*  6 (AD[16]): Unused */
+	{0,	0,	0,	0,	0 },	/*  7 (AD[17]): Unused */
+	{0,	0,	0,	0,	0 },	/*  8 (AD[18]): Unused */
+	{0,	0,	0,	0,	0 },	/*  9 (AD[19]): Unused */
+	{0,	0,	0,	0,	0 },	/* 10 (AD[20]): Unused */
+	{0,	0,	0,	0,	0 },	/* 11 (AD[21]): Unused */
+	{0,	0,	0,	0,	0 },	/* 12 (AD[22]): Unused */
+	{0,	0,	0,	0,	0 },	/* 13 (AD[23]): Unused */
+	{0,	0,	0,	0,	0 },	/* 14 (AD[24]): Unused */
+	{0,	0,	0,	0,	0 },	/* 15 (AD[25]): Unused */
+	{0,	0,	0,	0,	0 },	/* 16 (AD[26]): Unused */
+	{0,	0,	0,	0,	0 },	/* 17 (AD[27]): Unused */
+	{0,	0,	0,	0,	0 },	/* 18 (AD[28]): Unused */
+	{0,	0,	0,	0,	0 },	/* 19 (AD[29]): Unused */
+	{0,	0,	0,	0,	0 },	/* 20 (AD[30]): Unused */
+	{0,	0,	0,	0,	0 }	/* 21 (AD[31]): Unused */
 };
 #endif
 
@@ -176,6 +275,14 @@ static char irq_tab[][5] __initdata = {
  *  OUTPUTS:     none
  *
  *  RETURNS:     PCIBIOS_SUCCESSFUL
+ *		 pci_enable_device() time.
+ *		 None are needed for the MSP7120 PCI Controller.
+ *
+ *  INPUTS:	 dev	 - structure describing the PCI device
+ *
+ *  OUTPUTS:	 none
+ *
+ *  RETURNS:	 PCIBIOS_SUCCESSFUL
  *
  ****************************************************************************/
 int pcibios_plat_dev_init(struct pci_dev *dev)
@@ -200,6 +307,16 @@ int pcibios_plat_dev_init(struct pci_dev *dev)
  *  OUTPUTS:     none
  *
  *  RETURNS:     IRQ number
+ *  INPUTS:	 dev	 - unused
+ *		 slot	 - PCI slot. Identified by which bit of the AD[] bus
+ *			   drives the IDSEL line. AD[10] is 0, AD[31] is
+ *			   slot 21.
+ *		 pin	 - numbered using the scheme of the PCI_INTERRUPT_PIN
+ *			   field of the config header.
+ *
+ *  OUTPUTS:	 none
+ *
+ *  RETURNS:	 IRQ number
  *
  ****************************************************************************/
 int __init pcibios_map_irq(const struct pci_dev *dev, u8 slot, u8 pin)

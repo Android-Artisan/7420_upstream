@@ -5,7 +5,6 @@ Written by Gerard Roudier <groudier@free.fr>
 95170 DEUIL LA BARRE - FRANCE
 
 29 May 1999
-===============================================================================
 
 1.  Introduction
 2.  Supported chips and SCSI features
@@ -81,7 +80,6 @@ Written by Gerard Roudier <groudier@free.fr>
       18.1 Big Endian CPU
       18.2 NCR chip in Big Endian mode of operations
 
-===============================================================================
 
 1. Introduction
 
@@ -207,6 +205,7 @@ The 896 and the 895A allows handling of the phase mismatch context from
 SCRIPTS (avoids the phase mismatch interrupt that stops the SCSI processor 
 until the C code has saved the context of the transfer).
 Implementing this without using LOAD/STORE instructions would be painfull 
+Implementing this without using LOAD/STORE instructions would be painful 
 and I didn't even want to try it.
 
 The 896 chip supports 64 bit PCI transactions and addressing, while the 
@@ -241,6 +240,7 @@ In order to really gain advantage of this feature, devices must have
 a reasonable cache size (No miracle is to be expected for a low-end 
 hard disk with 128 KB or less).
 Some kown SCSI devices do not properly support tagged command queuing.
+Some known SCSI devices do not properly support tagged command queuing.
 Generally, firmware revisions that fix this kind of problems are available 
 at respective vendor web/ftp sites.
 All I can say is that the hard disks I use on my machines behave well with 
@@ -1096,6 +1096,7 @@ SCSI_NCR_SETUP_MASTER_PARITY	(default: defined)
 	If defined, master parity checking is enabled.
 
 SCSI_NCR_SETUP_MASTER_PARITY	(default: defined)
+SCSI_NCR_SETUP_SCSI_PARITY	(default: defined)
 	If defined, SCSI parity checking is enabled.
 
 SCSI_NCR_PROFILE_SUPPORT	(default: not defined)
@@ -1480,6 +1481,7 @@ Enabling serial NVRAM support enables detection of the serial NVRAM included
 on Symbios and some Symbios compatible host adaptors, and Tekram boards. The 
 serial NVRAM is used by Symbios and Tekram to hold set up parameters for the 
 host adaptor and it's attached drives.
+host adaptor and its attached drives.
 
 The Symbios NVRAM also holds data on the boot order of host adaptors in a
 system with more than one host adaptor. This enables the order of scanning
@@ -1845,5 +1847,4 @@ BigLit to be pulled-up. Using this mode, most of byte reorderings should
 be avoided when the driver is running on a Big Endian CPU.
 Driver version 2.5 is also, in theory, ready for this feature.
 
-===============================================================================
 End of NCR53C8XX driver README file

@@ -19,11 +19,26 @@
 #include "pr_util.h"
 
 #define TRACE_ARRAY_SIZE 1024
+#include <asm/time.h>
+#include "pr_util.h"
+
 #define SCALE_SHIFT 14
 
 static u32 *samples;
 
 static int spu_prof_running;
+/* spu_prof_running is a flag used to indicate if spu profiling is enabled
+ * or not.  It is set by the routines start_spu_profiling_cycles() and
+ * start_spu_profiling_events().  The flag is cleared by the routines
+ * stop_spu_profiling_cycles() and stop_spu_profiling_events().  These
+ * routines are called via global_start() and global_stop() which are called in
+ * op_powerpc_start() and op_powerpc_stop().  These routines are called once
+ * per system as a result of the user starting/stopping oprofile.  Hence, only
+ * one CPU per user at a time will be changing  the value of spu_prof_running.
+ * In general, OProfile does not protect against multiple users trying to run
+ * OProfile at a time.
+ */
+int spu_prof_running;
 static unsigned int profiling_interval;
 
 #define NUM_SPU_BITS_TRBUF 16
@@ -34,6 +49,11 @@ static unsigned int profiling_interval;
 
 static DEFINE_SPINLOCK(sample_array_lock);
 unsigned long sample_array_lock_flags;
+
+#define SPU_PC_MASK	     0xFFFF
+
+DEFINE_SPINLOCK(oprof_spu_smpl_arry_lck);
+unsigned long oprof_spu_smpl_arry_lck_flags;
 
 void set_spu_profiling_frequency(unsigned int freq_khz, unsigned int cycles_reset)
 {
@@ -51,6 +71,7 @@ void set_spu_profiling_frequency(unsigned int freq_khz, unsigned int cycles_rese
 	 *
 	 * The value of the timeout should be small enough that the hw
 	 * trace buffer will not get more then about 1/3 full for the
+	 * trace buffer will not get more than about 1/3 full for the
 	 * maximum user specified (the LFSR value) hw sampling frequency.
 	 * This is to ensure the trace buffer will never fill even if the
 	 * kernel thread scheduling varies under a heavy system load.
@@ -153,6 +174,13 @@ static enum hrtimer_restart profile_spus(struct hrtimer *timer)
 		if (num_samples == 0) {
 			spin_unlock_irqrestore(&sample_array_lock,
 					       sample_array_lock_flags);
+		spin_lock_irqsave(&oprof_spu_smpl_arry_lck,
+				  oprof_spu_smpl_arry_lck_flags);
+		num_samples = cell_spu_pc_collection(cpu);
+
+		if (num_samples == 0) {
+			spin_unlock_irqrestore(&oprof_spu_smpl_arry_lck,
+					       oprof_spu_smpl_arry_lck_flags);
 			continue;
 		}
 
@@ -165,6 +193,8 @@ static enum hrtimer_restart profile_spus(struct hrtimer *timer)
 
 		spin_unlock_irqrestore(&sample_array_lock,
 				       sample_array_lock_flags);
+		spin_unlock_irqrestore(&oprof_spu_smpl_arry_lck,
+				       oprof_spu_smpl_arry_lck_flags);
 
 	}
 	smp_wmb();	/* insure spu event buffer updates are written */
@@ -184,12 +214,14 @@ static enum hrtimer_restart profile_spus(struct hrtimer *timer)
 static struct hrtimer timer;
 /*
  * Entry point for SPU profiling.
+ * Entry point for SPU cycle profiling.
  * NOTE:  SPU profiling is done system-wide, not per-CPU.
  *
  * cycles_reset is the count value specified by the user when
  * setting up OProfile to count SPU_CYCLES.
  */
 int start_spu_profiling(unsigned int cycles_reset)
+int start_spu_profiling_cycles(unsigned int cycles_reset)
 {
 	ktime_t kt;
 
@@ -197,6 +229,7 @@ int start_spu_profiling(unsigned int cycles_reset)
 	kt = ktime_set(0, profiling_interval);
 	hrtimer_init(&timer, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 	timer.expires = kt;
+	hrtimer_set_expires(&timer, kt);
 	timer.function = profile_spus;
 
 	/* Allocate arrays for collecting SPU PC samples */
@@ -208,14 +241,37 @@ int start_spu_profiling(unsigned int cycles_reset)
 
 	spu_prof_running = 1;
 	hrtimer_start(&timer, kt, HRTIMER_MODE_REL);
+	schedule_delayed_work(&spu_work, DEFAULT_TIMER_EXPIRE);
 
 	return 0;
 }
 
 void stop_spu_profiling(void)
+/*
+ * Entry point for SPU event profiling.
+ * NOTE:  SPU profiling is done system-wide, not per-CPU.
+ *
+ * cycles_reset is the count value specified by the user when
+ * setting up OProfile to count SPU_CYCLES.
+ */
+void start_spu_profiling_events(void)
+{
+	spu_prof_running = 1;
+	schedule_delayed_work(&spu_work, DEFAULT_TIMER_EXPIRE);
+
+	return;
+}
+
+void stop_spu_profiling_cycles(void)
 {
 	spu_prof_running = 0;
 	hrtimer_cancel(&timer);
 	kfree(samples);
 	pr_debug("SPU_PROF: stop_spu_profiling issued\n");
+	pr_debug("SPU_PROF: stop_spu_profiling_cycles issued\n");
+}
+
+void stop_spu_profiling_events(void)
+{
+	spu_prof_running = 0;
 }

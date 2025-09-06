@@ -30,6 +30,7 @@
  *
  * Documentation:
  *	Not publically available.
+ *	Not publicly available.
  */
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -132,6 +133,7 @@ static void cs5520_set_dmamode(struct ata_port *ap, struct ata_device *adev)
  *	clocking table. We know pio_mode will equal dma_mode because of the
  *	CS5520 architecture. At least once we turned DMA on and wrote a
  *	mode setter.
+ *	clocking table.
  */
 
 static void cs5520_set_piomode(struct ata_port *ap, struct ata_device *adev)
@@ -153,12 +155,19 @@ static struct ata_port_operations cs5520_port_ops = {
 };
 
 static int __devinit cs5520_init_one(struct pci_dev *pdev, const struct pci_device_id *id)
+	.qc_prep		= ata_bmdma_dumb_qc_prep,
+	.cable_detect		= ata_cable_40wire,
+	.set_piomode		= cs5520_set_piomode,
+};
+
+static int cs5520_init_one(struct pci_dev *pdev, const struct pci_device_id *id)
 {
 	static const unsigned int cmd_port[] = { 0x1F0, 0x170 };
 	static const unsigned int ctl_port[] = { 0x3F6, 0x376 };
 	struct ata_port_info pi = {
 		.flags		= ATA_FLAG_SLAVE_POSS,
 		.pio_mask	= 0x1f,
+		.pio_mask	= ATA_PIO4,
 		.port_ops	= &cs5520_port_ops,
 	};
 	const struct ata_port_info *ppi[2];
@@ -188,6 +197,7 @@ static int __devinit cs5520_init_one(struct pci_dev *pdev, const struct pci_devi
 	if ((pcicfg & 0x40) == 0) {
 		dev_printk(KERN_WARNING, &pdev->dev,
 			   "DMA mode disabled. Enabling.\n");
+		dev_warn(&pdev->dev, "DMA mode disabled. Enabling.\n");
 		pci_write_config_byte(pdev, 0x60, pcicfg | 0x40);
 	}
 
@@ -208,6 +218,11 @@ static int __devinit cs5520_init_one(struct pci_dev *pdev, const struct pci_devi
 		return -ENODEV;
 	}
 	if (pci_set_consistent_dma_mask(pdev, DMA_32BIT_MASK)) {
+	if (dma_set_mask(&pdev->dev, DMA_BIT_MASK(32))) {
+		printk(KERN_ERR DRV_NAME ": unable to configure DMA mask.\n");
+		return -ENODEV;
+	}
+	if (dma_set_coherent_mask(&pdev->dev, DMA_BIT_MASK(32))) {
 		printk(KERN_ERR DRV_NAME ": unable to configure consistent DMA mask.\n");
 		return -ENODEV;
 	}
@@ -259,6 +274,7 @@ static int __devinit cs5520_init_one(struct pci_dev *pdev, const struct pci_devi
 
 		rc = devm_request_irq(&pdev->dev, irq[ap->port_no],
 				      ata_sff_interrupt, 0, DRV_NAME, host);
+				      ata_bmdma_interrupt, 0, DRV_NAME, host);
 		if (rc)
 			return rc;
 
@@ -269,6 +285,7 @@ static int __devinit cs5520_init_one(struct pci_dev *pdev, const struct pci_devi
 }
 
 #ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 /**
  *	cs5520_reinit_one	-	device resume
  *	@pdev: PCI device
@@ -280,6 +297,7 @@ static int __devinit cs5520_init_one(struct pci_dev *pdev, const struct pci_devi
 static int cs5520_reinit_one(struct pci_dev *pdev)
 {
 	struct ata_host *host = dev_get_drvdata(&pdev->dev);
+	struct ata_host *host = pci_get_drvdata(pdev);
 	u8 pcicfg;
 	int rc;
 
@@ -308,6 +326,7 @@ static int cs5520_reinit_one(struct pci_dev *pdev)
 static int cs5520_pci_device_suspend(struct pci_dev *pdev, pm_message_t mesg)
 {
 	struct ata_host *host = dev_get_drvdata(&pdev->dev);
+	struct ata_host *host = pci_get_drvdata(pdev);
 	int rc = 0;
 
 	rc = ata_host_suspend(host, mesg);
@@ -318,6 +337,7 @@ static int cs5520_pci_device_suspend(struct pci_dev *pdev, pm_message_t mesg)
 	return 0;
 }
 #endif /* CONFIG_PM */
+#endif /* CONFIG_PM_SLEEP */
 
 /* For now keep DMA off. We can set it for all but A rev CS5510 once the
    core ATA code can handle it */
@@ -335,6 +355,7 @@ static struct pci_driver cs5520_pci_driver = {
 	.probe 		= cs5520_init_one,
 	.remove		= ata_pci_remove_one,
 #ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 	.suspend	= cs5520_pci_device_suspend,
 	.resume		= cs5520_reinit_one,
 #endif
@@ -349,6 +370,7 @@ static void __exit cs5520_exit(void)
 {
 	pci_unregister_driver(&cs5520_pci_driver);
 }
+module_pci_driver(cs5520_pci_driver);
 
 MODULE_AUTHOR("Alan Cox");
 MODULE_DESCRIPTION("low-level driver for Cyrix CS5510/5520");

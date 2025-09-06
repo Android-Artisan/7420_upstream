@@ -21,6 +21,15 @@ void s390_sha_update(struct crypto_tfm *tfm, const u8 *data, unsigned int len)
 {
 	struct s390_sha_ctx *ctx = crypto_tfm_ctx(tfm);
 	unsigned int bsize = crypto_tfm_alg_blocksize(tfm);
+#include <crypto/internal/hash.h>
+#include <linux/module.h>
+#include "sha.h"
+#include "crypt_s390.h"
+
+int s390_sha_update(struct shash_desc *desc, const u8 *data, unsigned int len)
+{
+	struct s390_sha_ctx *ctx = shash_desc_ctx(desc);
+	unsigned int bsize = crypto_shash_blocksize(desc->tfm);
 	unsigned int index;
 	int ret;
 
@@ -38,6 +47,11 @@ void s390_sha_update(struct crypto_tfm *tfm, const u8 *data, unsigned int len)
 		BUG_ON(ret != bsize);
 		data += bsize - index;
 		len -= bsize - index;
+		if (ret != bsize)
+			return -EIO;
+		data += bsize - index;
+		len -= bsize - index;
+		index = 0;
 	}
 
 	/* process as many blocks as possible */
@@ -45,6 +59,8 @@ void s390_sha_update(struct crypto_tfm *tfm, const u8 *data, unsigned int len)
 		ret = crypt_s390_kimd(ctx->func, ctx->state, data,
 				      len & ~(bsize - 1));
 		BUG_ON(ret != (len & ~(bsize - 1)));
+		if (ret != (len & ~(bsize - 1)))
+			return -EIO;
 		data += ret;
 		len -= ret;
 	}
@@ -58,6 +74,15 @@ void s390_sha_final(struct crypto_tfm *tfm, u8 *out)
 {
 	struct s390_sha_ctx *ctx = crypto_tfm_ctx(tfm);
 	unsigned int bsize = crypto_tfm_alg_blocksize(tfm);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(s390_sha_update);
+
+int s390_sha_final(struct shash_desc *desc, u8 *out)
+{
+	struct s390_sha_ctx *ctx = shash_desc_ctx(desc);
+	unsigned int bsize = crypto_shash_blocksize(desc->tfm);
 	u64 bits;
 	unsigned int index, end, plen;
 	int ret;
@@ -78,6 +103,7 @@ void s390_sha_final(struct crypto_tfm *tfm, u8 *out)
 
 	/*
 	 * Append message length. Well, SHA-512 wants a 128 bit lenght value,
+	 * Append message length. Well, SHA-512 wants a 128 bit length value,
 	 * nevertheless we use u64, should be enough for now...
 	 */
 	bits = ctx->count * 8;
@@ -90,6 +116,15 @@ void s390_sha_final(struct crypto_tfm *tfm, u8 *out)
 	memcpy(out, ctx->state, crypto_hash_digestsize(crypto_hash_cast(tfm)));
 	/* wipe context */
 	memset(ctx, 0, sizeof *ctx);
+	if (ret != end)
+		return -EIO;
+
+	/* copy digest to out */
+	memcpy(out, ctx->state, crypto_shash_digestsize(desc->tfm));
+	/* wipe context */
+	memset(ctx, 0, sizeof *ctx);
+
+	return 0;
 }
 EXPORT_SYMBOL_GPL(s390_sha_final);
 

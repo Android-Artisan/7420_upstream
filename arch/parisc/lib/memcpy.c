@@ -2,6 +2,7 @@
  *    Optimized memory copy routines.
  *
  *    Copyright (C) 2004 Randolph Chung <tausq@debian.org>
+ *    Copyright (C) 2013 Helge Deller <deller@gmx.de>
  *
  *    This program is free software; you can redistribute it and/or modify
  *    it under the terms of the GNU General Public License as published by
@@ -56,6 +57,7 @@
 #include <linux/module.h>
 #include <linux/compiler.h>
 #include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #define s_space "%%sr1"
 #define d_space "%%sr2"
 #else
@@ -69,6 +71,7 @@ DECLARE_PER_CPU(struct exception_data, exception_data);
 
 #define preserve_branch(label)	do {					\
 	volatile int dummy;						\
+	volatile int dummy = 0;						\
 	/* The following branch is never taken, it's just here to  */	\
 	/* prevent gcc from optimizing away our exception code. */ 	\
 	if (unlikely(dummy != dummy))					\
@@ -157,6 +160,15 @@ static inline void prefetch_dst(const void *addr)
  * per loop.  This code is derived from glibc. 
  */
 static inline unsigned long copy_dstaligned(unsigned long dst, unsigned long src, unsigned long len, unsigned long o_dst, unsigned long o_src, unsigned long o_len)
+#define PA_MEMCPY_OK		0
+#define PA_MEMCPY_LOAD_ERROR	1
+#define PA_MEMCPY_STORE_ERROR	2
+
+/* Copy from a not-aligned src to an aligned dst, using shifts. Handles 4 words
+ * per loop.  This code is derived from glibc. 
+ */
+static noinline unsigned long copy_dstaligned(unsigned long dst,
+					unsigned long src, unsigned long len)
 {
 	/* gcc complains that a2 and a3 may be uninitialized, but actually
 	 * they cannot be.  Initialize a2/a3 to shut gcc up.
@@ -198,6 +210,7 @@ static inline unsigned long copy_dstaligned(unsigned long dst, unsigned long src
 		case 0:
 			if (len == 0)
 				return 0;
+				return PA_MEMCPY_OK;
 			/* a3 = ((unsigned int *) src)[0];
 			   a0 = ((unsigned int *) src)[1]; */
 			ldw(s_space, 0, src, a3, cda_ldw_exc);
@@ -276,6 +289,23 @@ handle_store_error:
 
 /* Returns 0 for success, otherwise, returns number of bytes not transferred. */
 unsigned long pa_memcpy(void *dstp, const void *srcp, unsigned long len)
+	return PA_MEMCPY_OK;
+
+handle_load_error:
+	__asm__ __volatile__ ("cda_ldw_exc:\n");
+	return PA_MEMCPY_LOAD_ERROR;
+
+handle_store_error:
+	__asm__ __volatile__ ("cda_stw_exc:\n");
+	return PA_MEMCPY_STORE_ERROR;
+}
+
+
+/* Returns PA_MEMCPY_OK, PA_MEMCPY_LOAD_ERROR or PA_MEMCPY_STORE_ERROR.
+ * In case of an access fault the faulty address can be read from the per_cpu
+ * exception data struct. */
+static noinline unsigned long pa_memcpy_internal(void *dstp, const void *srcp,
+					unsigned long len)
 {
 	register unsigned long src, dst, t1, t2, t3;
 	register unsigned char *pcs, *pcd;
@@ -284,6 +314,7 @@ unsigned long pa_memcpy(void *dstp, const void *srcp, unsigned long len)
 	unsigned long ret = 0;
 	unsigned long o_dst, o_src, o_len;
 	struct exception_data *d;
+	unsigned long ret;
 
 	src = (unsigned long)srcp;
 	dst = (unsigned long)dstp;
@@ -406,6 +437,11 @@ byte_copy:
 unaligned_copy:
 	/* possibly we are aligned on a word, but not on a double... */
 	if (likely(t1 & (sizeof(unsigned int)-1)) == 0) {
+	return PA_MEMCPY_OK;
+
+unaligned_copy:
+	/* possibly we are aligned on a word, but not on a double... */
+	if (likely((t1 & (sizeof(unsigned int)-1)) == 0)) {
 		t2 = src & (sizeof(unsigned int) - 1);
 
 		if (unlikely(t2 != 0)) {
@@ -440,6 +476,7 @@ unaligned_copy:
 
 	ret = copy_dstaligned(dst, src, len / sizeof(unsigned int), 
 		o_dst, o_src, o_len);
+	ret = copy_dstaligned(dst, src, len / sizeof(unsigned int));
 	if (ret)
 		return ret;
 
@@ -465,6 +502,41 @@ handle_store_error:
 	DPRINTF("pmc_store_exc: o_len=%lu fault_addr=%lu o_dst=%lu ret=%lu\n",
 		o_len, d->fault_addr, o_dst, o_len - d->fault_addr + o_dst);
 	return o_len - d->fault_addr + o_dst;
+	return PA_MEMCPY_LOAD_ERROR;
+
+handle_store_error:
+	__asm__ __volatile__ ("pmc_store_exc:\n");
+	return PA_MEMCPY_STORE_ERROR;
+}
+
+
+/* Returns 0 for success, otherwise, returns number of bytes not transferred. */
+static unsigned long pa_memcpy(void *dstp, const void *srcp, unsigned long len)
+{
+	unsigned long ret, fault_addr, reference;
+	struct exception_data *d;
+
+	ret = pa_memcpy_internal(dstp, srcp, len);
+	if (likely(ret == PA_MEMCPY_OK))
+		return 0;
+
+	/* if a load or store fault occured we can get the faulty addr */
+	d = this_cpu_ptr(&exception_data);
+	fault_addr = d->fault_addr;
+
+	/* error in load or store? */
+	if (ret == PA_MEMCPY_LOAD_ERROR)
+		reference = (unsigned long) srcp;
+	else
+		reference = (unsigned long) dstp;
+
+	DPRINTF("pa_memcpy: fault type = %lu, len=%lu fault_addr=%lu ref=%lu\n",
+		ret, len, fault_addr, reference);
+
+	if (fault_addr >= reference)
+		return len - (fault_addr - reference);
+	else
+		return len;
 }
 
 #ifdef __KERNEL__
@@ -476,6 +548,8 @@ unsigned long copy_to_user(void __user *dst, const void *src, unsigned long len)
 }
 
 unsigned long copy_from_user(void *dst, const void __user *src, unsigned long len)
+EXPORT_SYMBOL(__copy_from_user);
+unsigned long __copy_from_user(void *dst, const void __user *src, unsigned long len)
 {
 	mtsp(get_user_space(), 1);
 	mtsp(get_kernel_space(), 2);
@@ -502,4 +576,17 @@ EXPORT_SYMBOL(copy_to_user);
 EXPORT_SYMBOL(copy_from_user);
 EXPORT_SYMBOL(copy_in_user);
 EXPORT_SYMBOL(memcpy);
+
+long probe_kernel_read(void *dst, const void *src, size_t size)
+{
+	unsigned long addr = (unsigned long)src;
+
+	if (addr < PAGE_SIZE)
+		return -EFAULT;
+
+	/* check for I/O space F_EXTEND(0xfff00000) access as well? */
+
+	return __probe_kernel_read(dst, src, size);
+}
+
 #endif

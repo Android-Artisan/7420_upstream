@@ -14,7 +14,6 @@ So take this as is, I'm always searching for more stuff, it's a large
 register space :-).
 
 Memory Map
-==========
 
 The cx2341x exposes its entire 64M memory space to the PCI host via the PCI BAR0
 (Base Address Register 0). The addresses here are offsets relative to the
@@ -35,7 +34,6 @@ address held in BAR0.
 0x02000000-0x0200ffff Register Space
 
 Registers
-=========
 
 The registers occupy the 64k space starting at the 0x02000000 offset from BAR0.
 All of these registers are 32 bits wide.
@@ -113,7 +111,6 @@ Other memory locations:
 
 
 Interrupt Status Register
-=========================
 
 The definition of the bits in the interrupt status register 0x0040, and the
 interrupt mask 0x0048. If a bit is cleared in the mask, then we want our ISR to

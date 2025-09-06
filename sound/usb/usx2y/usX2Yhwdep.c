@@ -21,6 +21,7 @@
  */
 
 #include <linux/interrupt.h>
+#include <linux/slab.h>
 #include <linux/usb.h>
 #include <sound/core.h>
 #include <sound/memalloc.h>
@@ -57,6 +58,7 @@ static int snd_us428ctls_vm_fault(struct vm_area_struct *area,
 }
 
 static struct vm_operations_struct us428ctls_vm_ops = {
+static const struct vm_operations_struct us428ctls_vm_ops = {
 	.fault = snd_us428ctls_vm_fault,
 };
 
@@ -85,6 +87,7 @@ static int snd_us428ctls_mmap(struct snd_hwdep * hw, struct file *filp, struct v
 	}
 	area->vm_ops = &us428ctls_vm_ops;
 	area->vm_flags |= VM_RESERVED | VM_DONTEXPAND;
+	area->vm_flags |= VM_DONTEXPAND | VM_DONTDUMP;
 	area->vm_private_data = hw->private_data;
 	return 0;
 }
@@ -128,6 +131,7 @@ static int snd_usX2Y_hwdep_dsp_status(struct snd_hwdep *hw,
 	int id = -1;
 
 	switch (le16_to_cpu(us428->chip.dev->descriptor.idProduct)) {
+	switch (le16_to_cpu(us428->dev->descriptor.idProduct)) {
 	case USB_ID_US122:
 		id = USX2Y_TYPE_122;
 		break;
@@ -144,7 +148,7 @@ static int snd_usX2Y_hwdep_dsp_status(struct snd_hwdep *hw,
 	info->num_dsps = 2;		// 0: Prepad Data, 1: FPGA Code
 	if (us428->chip_status & USX2Y_STAT_CHIP_INIT)
 		info->chip_ready = 1;
- 	info->version = USX2Y_DRIVER_VERSION; 
+	info->version = USX2Y_DRIVER_VERSION;
 	return 0;
 }
 
@@ -178,6 +182,7 @@ static int usX2Y_create_usbmidi(struct snd_card *card)
 		.data = &quirk_data_2
 	};
 	struct usb_device *dev = usX2Y(card)->chip.dev;
+	struct usb_device *dev = usX2Y(card)->dev;
 	struct usb_interface *iface = usb_ifnum_to_if(dev, 0);
 	struct snd_usb_audio_quirk *quirk =
 		le16_to_cpu(dev->descriptor.idProduct) == USB_ID_US428 ?
@@ -185,6 +190,7 @@ static int usX2Y_create_usbmidi(struct snd_card *card)
 
 	snd_printdd("usX2Y_create_usbmidi \n");
 	return snd_usb_create_midi_interface(&usX2Y(card)->chip, iface, quirk);
+	return snd_usbmidi_create(card, iface, &usX2Y(card)->midi_list, quirk);
 }
 
 static int usX2Y_create_alsa_devices(struct snd_card *card)
@@ -223,6 +229,13 @@ static int snd_usX2Y_hwdep_dsp_load(struct snd_hwdep *hw,
 			kfree(buf);
 			return -EFAULT;
 		}
+		struct usb_device* dev = priv->dev;
+		char *buf;
+
+		buf = memdup_user(dsp->image, dsp->length);
+		if (IS_ERR(buf))
+			return PTR_ERR(buf);
+
 		err = usb_set_interface(dev, 0, 1);
 		if (err)
 			snd_printk(KERN_ERR "usb_set_interface error \n");

@@ -129,6 +129,9 @@ enum nfs_ftype {
 #ifdef __KERNEL__
 #include <linux/sunrpc/msg_prot.h>
 #include <linux/string.h>
+#include <linux/sunrpc/msg_prot.h>
+#include <linux/string.h>
+#include <uapi/linux/nfs.h>
 
 /*
  * This is the kernel NFS client file handle representation
@@ -168,4 +171,9 @@ enum nfs3_stable_how {
 	NFS_FILE_SYNC = 2
 };
 #endif /* __KERNEL__ */
+	NFS_FILE_SYNC = 2,
+
+	/* used by direct.c to mark verf as invalid */
+	NFS_INVALID_STABLE_HOW = -1
+};
 #endif /* _LINUX_NFS_H */

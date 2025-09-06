@@ -31,6 +31,7 @@
 #include <linux/module.h>
 #include <linux/delay.h>
 #include <linux/spinlock.h>
+#include <linux/slab.h>
 
 #include "sound_config.h"
 #include "sound_firmware.h"
@@ -158,6 +159,7 @@ static void sb_intr (sb_devc *devc)
 
 			default:
 				/* printk(KERN_WARN "Sound Blaster: Unexpected interrupt\n"); */
+				/* printk(KERN_WARNING "Sound Blaster: Unexpected interrupt\n"); */
 				;
 		}
 	}
@@ -178,6 +180,7 @@ static void sb_intr (sb_devc *devc)
 
 			default:
 				/* printk(KERN_WARN "Sound Blaster: Unexpected interrupt\n"); */
+				/* printk(KERN_WARNING "Sound Blaster: Unexpected interrupt\n"); */
 				;
 		}
 	}
@@ -626,6 +629,7 @@ int sb_dsp_detect(struct address_info *hw_config, int pci, int pciio, struct sb_
 
 
 	detected_devc = kmalloc(sizeof(sb_devc), GFP_KERNEL);
+	detected_devc = kmemdup(devc, sizeof(sb_devc), GFP_KERNEL);
 	if (detected_devc == NULL)
 	{
 		printk(KERN_ERR "sb: Can't allocate memory for device information\n");

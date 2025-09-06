@@ -35,6 +35,9 @@
 #include <asm/pgtable.h>
 #include <asm/page.h>
 #include <asm/atomic.h>
+#include <asm/pgtable.h>
+#include <asm/page.h>
+#include <linux/atomic.h>
 #include <asm/time.h>
 #include <asm/io.h>
 #include <asm/machdep.h>
@@ -48,6 +51,8 @@
 
 #include <sysdev/fsl_soc.h>
 #include <sysdev/fsl_pci.h>
+
+#include "mpc85xx.h"
 
 static int sbc_rev;
 
@@ -78,6 +83,9 @@ static void __init sbc8548_pic_init(void)
 	/* Return the mpic node */
 	of_node_put(np);
 
+	struct mpic *mpic = mpic_alloc(NULL, 0, MPIC_BIG_ENDIAN,
+			0, 256, " OpenPIC  ");
+	BUG_ON(mpic == NULL);
 	mpic_init(mpic);
 }
 
@@ -130,6 +138,11 @@ static void __init sbc8548_setup_arch(void)
 		}
 	}
 #endif
+	if (ppc_md.progress)
+		ppc_md.progress("sbc8548_setup_arch()", 0);
+
+	fsl_pci_assign_primary();
+
 	sbc_rev = sbc8548_hw_rev();
 }
 
@@ -168,6 +181,9 @@ static int __init declare_of_platform_devices(void)
 	return 0;
 }
 machine_device_initcall(sbc8548, declare_of_platform_devices);
+}
+
+machine_arch_initcall(sbc8548, mpc85xx_common_publish_devices);
 
 /*
  * Called very early, device-tree isn't unflattened
@@ -189,6 +205,7 @@ define_machine(sbc8548) {
 	.restart	= fsl_rstcr_restart,
 #ifdef CONFIG_PCI
 	.pcibios_fixup_bus	= fsl_pcibios_fixup_bus,
+	.pcibios_fixup_phb      = fsl_pcibios_fixup_phb,
 #endif
 	.calibrate_decr = generic_calibrate_decr,
 	.progress	= udbg_progress,

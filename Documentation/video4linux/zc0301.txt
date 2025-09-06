@@ -1,7 +1,6 @@
 
 	      ZC0301 and ZC0301P Image Processor and Control Chip
 				Driver for Linux
-	      ===================================================
 
 			       - Documentation -
 
@@ -22,18 +21,15 @@ Index
 
 
 1. Copyright
-============
 Copyright (C) 2006-2007 by Luca Risolia <luca.risolia@studio.unibo.it>
 
 
 2. Disclaimer
-=============
 This software is not developed or sponsored by Z-Star Microelectronics Corp.
 Trademarks are property of their respective owner.
 
 
 3. License
-==========
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
 the Free Software Foundation; either version 2 of the License, or
@@ -50,7 +46,6 @@ Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 
 
 4. Overview and features
-========================
 This driver supports the video interface of the devices mounting the ZC0301 or
 ZC0301P Image Processors and Control Chips.
 
@@ -76,7 +71,6 @@ Some of the features of the driver are:
 
 
 5. Module dependencies
-======================
 For it to work properly, the driver needs kernel support for Video4Linux and
 USB.
 
@@ -123,7 +117,6 @@ And finally:
 
 
 6. Module loading
-=================
 To use the driver, it is necessary to load the "zc0301" module into memory
 after every other module required: "videodev", "v4l2_common", "compat_ioctl32",
 "usbcore" and, depending on the USB host controller you have, "ehci-hcd",
@@ -140,7 +133,6 @@ analyze kernel messages and verify that the loading process has gone well:
 
 
 7. Module parameters
-====================
 Module parameters are listed below:
 -------------------------------------------------------------------------------
 Name:           video_nr
@@ -192,7 +184,6 @@ Default:        2
 
 
 8. Supported devices
-====================
 None of the names of the companies as well as their products will be mentioned
 here. They have never collaborated with the author, so no advertising.
 
@@ -235,7 +226,6 @@ PB-0330     Photobit Corporation
 
 
 9. Notes for V4L2 application developers
-========================================
 This driver follows the V4L2 API specifications. In particular, it enforces two
 rules:
 
@@ -251,7 +241,6 @@ attempts on them.
 
 
 10. Contact information
-=======================
 The author may be contacted by e-mail at <luca.risolia@studio.unibo.it>.
 
 GPG/PGP encrypted e-mail's are accepted. The GPG key ID of the author is
@@ -260,7 +249,6 @@ the fingerprint is: '88E8 F32F 7244 68BA 3958  5D40 99DA 5D2A FCE6 35A4'.
 
 
 11. Credits
-===========
 - Informations about the chip internals needed to enable the I2C protocol have
   been taken from the documentation of the ZC030x Video4Linux1 driver written
   by Andrew Birkett <andy@nobugs.org>;

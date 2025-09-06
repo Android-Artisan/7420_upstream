@@ -19,6 +19,9 @@
 #include <linux/unistd.h>
 #include <linux/ptrace.h>
 #include <linux/slab.h>
+#include <linux/stddef.h>
+#include <linux/unistd.h>
+#include <linux/ptrace.h>
 #include <linux/user.h>
 #include <linux/interrupt.h>
 #include <linux/delay.h>
@@ -29,6 +32,10 @@
 #include <asm/uaccess.h>
 #include <asm/pgtable.h>
 #include <asm/system.h>
+#include <linux/slab.h>
+#include <linux/rcupdate.h>
+#include <asm/uaccess.h>
+#include <asm/pgtable.h>
 #include <asm/io.h>
 #include <asm/processor.h>
 #include <asm/mmu_context.h>
@@ -98,6 +105,18 @@ void cpu_idle(void)
 		preempt_disable();
 	}
 }
+ * On SMP it's slightly faster (but much more power-consuming!)
+ * to poll the ->work.need_resched flag instead of waiting for the
+ * cross-CPU IPI to arrive. Use this option with caution.
+ *
+ * tglx: No idea why this depends on HOTPLUG_CPU !?!
+ */
+#if !defined(CONFIG_SMP) || defined(CONFIG_HOTPLUG_CPU)
+void arch_cpu_idle(void)
+{
+	safe_halt();
+}
+#endif
 
 void release_segments(struct mm_struct *mm)
 {
@@ -106,6 +125,7 @@ void release_segments(struct mm_struct *mm)
 void machine_restart(char *cmd)
 {
 #ifdef CONFIG_GDBSTUB
+#ifdef CONFIG_KERNEL_DEBUGGER
 	gdbstub_exit(0);
 #endif
 
@@ -119,6 +139,7 @@ void machine_restart(char *cmd)
 void machine_halt(void)
 {
 #ifdef CONFIG_GDBSTUB
+#ifdef CONFIG_KERNEL_DEBUGGER
 	gdbstub_exit(0);
 #endif
 }
@@ -126,6 +147,7 @@ void machine_halt(void)
 void machine_power_off(void)
 {
 #ifdef CONFIG_GDBSTUB
+#ifdef CONFIG_KERNEL_DEBUGGER
 	gdbstub_exit(0);
 #endif
 }
@@ -154,6 +176,10 @@ int kernel_thread(int (*fn)(void *), void *arg, unsigned long flags)
 		       NULL, NULL);
 }
 EXPORT_SYMBOL(kernel_thread);
+
+/*
+	show_regs_print_info(KERN_DEFAULT);
+}
 
 /*
  * free current thread data structures etc..
@@ -187,6 +213,14 @@ void copy_segments(struct task_struct *p, struct mm_struct *new_mm)
 void prepare_to_copy(struct task_struct *tsk)
 {
 	unlazy_fpu(tsk);
+ * this gets called so that we can store lazy state into memory and copy the
+ * current task into the new thread.
+ */
+int arch_dup_task_struct(struct task_struct *dst, struct task_struct *src)
+{
+	unlazy_fpu(src);
+	*dst = *src;
+	return 0;
 }
 
 /*
@@ -201,6 +235,14 @@ int copy_thread(int nr, unsigned long clone_flags,
 	unsigned long c_ksp;
 
 	uregs = current->thread.uregs;
+
+int copy_thread(unsigned long clone_flags,
+		unsigned long c_usp, unsigned long ustk_size,
+		struct task_struct *p)
+{
+	struct thread_info *ti = task_thread_info(p);
+	struct pt_regs *c_regs;
+	unsigned long c_ksp;
 
 	c_ksp = (unsigned long) task_stack_page(p) + THREAD_SIZE;
 
@@ -241,6 +283,36 @@ int copy_thread(int nr, unsigned long clone_flags,
 	p->thread.pc	= (unsigned long) ret_from_fork;
 	p->thread.wchan	= (unsigned long) ret_from_fork;
 	p->thread.usp	= c_usp;
+	c_regs = (struct pt_regs *) c_ksp;
+	c_ksp -= 12; /* allocate function call ABI slack */
+
+	/* set up things up so the scheduler can start the new task */
+	p->thread.uregs = c_regs;
+	ti->frame	= c_regs;
+	p->thread.a3	= (unsigned long) c_regs;
+	p->thread.sp	= c_ksp;
+	p->thread.wchan	= p->thread.pc;
+	p->thread.usp	= c_usp;
+
+	if (unlikely(p->flags & PF_KTHREAD)) {
+		memset(c_regs, 0, sizeof(struct pt_regs));
+		c_regs->a0 = c_usp; /* function */
+		c_regs->d0 = ustk_size; /* argument */
+		local_save_flags(c_regs->epsw);
+		c_regs->epsw |= EPSW_IE | EPSW_IM_7;
+		p->thread.pc	= (unsigned long) ret_from_kernel_thread;
+		return 0;
+	}
+	*c_regs = *current_pt_regs();
+	if (c_usp)
+		c_regs->sp = c_usp;
+	c_regs->epsw &= ~EPSW_FE; /* my FPU */
+
+	/* the new TLS pointer is passed in as arg #5 to sys_clone() */
+	if (clone_flags & CLONE_SETTLS)
+		c_regs->e2 = current_frame()->d3;
+
+	p->thread.pc	= (unsigned long) ret_from_fork;
 
 	return 0;
 }

@@ -34,6 +34,9 @@
  */
 
 #include "drmP.h"
+#include <linux/export.h>
+#include <drm/drmP.h>
+#include "drm_legacy.h"
 
 /**
  * Initialize the DMA data.
@@ -53,6 +56,22 @@ int drm_dma_setup(struct drm_device *dev)
 
 	memset(dev->dma, 0, sizeof(*dev->dma));
 
+int drm_legacy_dma_setup(struct drm_device *dev)
+{
+	int i;
+
+	if (!drm_core_check_feature(dev, DRIVER_HAVE_DMA) ||
+	    drm_core_check_feature(dev, DRIVER_MODESET)) {
+		return 0;
+	}
+
+	dev->buf_use = 0;
+	atomic_set(&dev->buf_alloc, 0);
+
+	dev->dma = kzalloc(sizeof(*dev->dma), GFP_KERNEL);
+	if (!dev->dma)
+		return -ENOMEM;
+
 	for (i = 0; i <= DRM_MAX_ORDER; i++)
 		memset(&dev->dma->bufs[i], 0, sizeof(dev->dma->bufs[0]));
 
@@ -68,9 +87,15 @@ int drm_dma_setup(struct drm_device *dev)
  * finally the drm_device::dma structure itself.
  */
 void drm_dma_takedown(struct drm_device *dev)
+void drm_legacy_dma_takedown(struct drm_device *dev)
 {
 	struct drm_device_dma *dma = dev->dma;
 	int i, j;
+
+	if (!drm_core_check_feature(dev, DRIVER_HAVE_DMA) ||
+	    drm_core_check_feature(dev, DRIVER_MODESET)) {
+		return;
+	}
 
 	if (!dma)
 		return;
@@ -118,6 +143,19 @@ void drm_dma_takedown(struct drm_device *dev)
 			 DRM_MEM_PAGES);
 	}
 	drm_free(dev->dma, sizeof(*dev->dma), DRM_MEM_DRIVER);
+			kfree(dma->bufs[i].seglist);
+		}
+		if (dma->bufs[i].buf_count) {
+			for (j = 0; j < dma->bufs[i].buf_count; j++) {
+				kfree(dma->bufs[i].buflist[j].dev_private);
+			}
+			kfree(dma->bufs[i].buflist);
+		}
+	}
+
+	kfree(dma->buflist);
+	kfree(dma->pagelist);
+	kfree(dev->dma);
 	dev->dma = NULL;
 }
 
@@ -130,6 +168,7 @@ void drm_dma_takedown(struct drm_device *dev)
  * Resets the fields of \p buf.
  */
 void drm_free_buffer(struct drm_device *dev, struct drm_buf * buf)
+void drm_legacy_free_buffer(struct drm_device *dev, struct drm_buf * buf)
 {
 	if (!buf)
 		return;
@@ -154,6 +193,8 @@ void drm_free_buffer(struct drm_device *dev, struct drm_buf * buf)
  */
 void drm_core_reclaim_buffers(struct drm_device *dev,
 			      struct drm_file *file_priv)
+void drm_legacy_reclaim_buffers(struct drm_device *dev,
+				struct drm_file *file_priv)
 {
 	struct drm_device_dma *dma = dev->dma;
 	int i;
@@ -165,6 +206,7 @@ void drm_core_reclaim_buffers(struct drm_device *dev,
 			switch (dma->buflist[i]->list) {
 			case DRM_LIST_NONE:
 				drm_free_buffer(dev, dma->buflist[i]);
+				drm_legacy_free_buffer(dev, dma->buflist[i]);
 				break;
 			case DRM_LIST_WAIT:
 				dma->buflist[i]->list = DRM_LIST_RECLAIM;

@@ -106,7 +106,7 @@ static int setflags(struct inode *inode, int flags)
 	struct ubifs_inode *ui = ubifs_inode(inode);
 	struct ubifs_info *c = inode->i_sb->s_fs_info;
 	struct ubifs_budget_req req = { .dirtied_ino = 1,
-					.dirtied_ino_d = ui->data_len };
+			.dirtied_ino_d = ALIGN(ui->data_len, 8) };
 
 	err = ubifs_budget_space(c, &req);
 	if (err)
@@ -140,6 +140,7 @@ static int setflags(struct inode *inode, int flags)
 
 out_unlock:
 	ubifs_err("can't modify inode %lu attributes", inode->i_ino);
+	ubifs_err(c, "can't modify inode %lu attributes", inode->i_ino);
 	mutex_unlock(&ui->ui_mutex);
 	ubifs_release_budget(c, &req);
 	return err;
@@ -149,11 +150,13 @@ long ubifs_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
 	int flags, err;
 	struct inode *inode = file->f_path.dentry->d_inode;
+	struct inode *inode = file_inode(file);
 
 	switch (cmd) {
 	case FS_IOC_GETFLAGS:
 		flags = ubifs2ioctl(ubifs_inode(inode)->flags);
 
+		dbg_gen("get flags: %#x, i_flags %#x", flags, inode->i_flags);
 		return put_user(flags, (int __user *) arg);
 
 	case FS_IOC_SETFLAGS: {
@@ -161,6 +164,7 @@ long ubifs_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 			return -EROFS;
 
 		if (!is_owner_or_cap(inode))
+		if (!inode_owner_or_capable(inode))
 			return -EACCES;
 
 		if (get_user(flags, (int __user *) arg))
@@ -178,6 +182,12 @@ long ubifs_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 			return err;
 		err = setflags(inode, flags);
 		mnt_drop_write(file->f_path.mnt);
+		err = mnt_want_write_file(file);
+		if (err)
+			return err;
+		dbg_gen("set flags: %#x, i_flags %#x", flags, inode->i_flags);
+		err = setflags(inode, flags);
+		mnt_drop_write_file(file);
 		return err;
 	}
 

@@ -79,6 +79,11 @@ ptrace_disable(struct task_struct *child)
 long arch_ptrace(struct task_struct *child, long request, long addr, long data)
 {
 	int ret;
+long arch_ptrace(struct task_struct *child, long request,
+		 unsigned long addr, unsigned long data)
+{
+	int ret;
+	unsigned int regno = addr >> 2;
 	unsigned long __user *datap = (unsigned long __user *)data;
 
 	switch (request) {
@@ -97,6 +102,10 @@ long arch_ptrace(struct task_struct *child, long request, long addr, long data)
 				break;
 
 			tmp = get_reg(child, addr >> 2);
+			if ((addr & 3) || regno > PT_MAX)
+				break;
+
+			tmp = get_reg(child, regno);
 			ret = put_user(tmp, datap);
 			break;
 		}
@@ -116,6 +125,10 @@ long arch_ptrace(struct task_struct *child, long request, long addr, long data)
 			addr >>= 2;
 
 			if (addr == PT_DCCR) {
+			if ((addr & 3) || regno > PT_MAX)
+				break;
+
+			if (regno == PT_DCCR) {
 				/* don't allow the tracing process to change stuff like
 				 * interrupt enable, kernel/user bit, dma enables etc.
 				 */
@@ -123,6 +136,7 @@ long arch_ptrace(struct task_struct *child, long request, long addr, long data)
 				data |= get_reg(child, PT_DCCR) & ~DCCR_MASK;
 			}
 			if (put_reg(child, addr, data))
+			if (put_reg(child, regno, data))
 				break;
 			ret = 0;
 			break;
@@ -193,6 +207,7 @@ long arch_ptrace(struct task_struct *child, long request, long addr, long data)
 				}
 				
 				data += sizeof(long);
+				datap++;
 			}
 
 			break;
@@ -217,6 +232,7 @@ long arch_ptrace(struct task_struct *child, long request, long addr, long data)
 				
 				put_reg(child, i, tmp);
 				data += sizeof(long);
+				datap++;
 			}
 			
 			break;

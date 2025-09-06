@@ -7,6 +7,9 @@ extern int ldom_domaining_enabled;
 extern void ldom_set_var(const char *var, const char *value);
 extern void ldom_reboot(const char *boot_command);
 extern void ldom_power_off(void);
+void ldom_set_var(const char *var, const char *value);
+void ldom_reboot(const char *boot_command);
+void ldom_power_off(void);
 
 /* The event handler will be evoked when link state changes
  * or data becomes available on the receive side.
@@ -60,6 +63,17 @@ extern void ldc_free(struct ldc_channel *lp);
 
 /* Register TX and RX queues of the link with the hypervisor.  */
 extern int ldc_bind(struct ldc_channel *lp, const char *name);
+struct ldc_channel *ldc_alloc(unsigned long id,
+			      const struct ldc_channel_config *cfgp,
+			      void *event_arg,
+			      const char *name);
+
+/* Shut down and free state for a channel.  */
+void ldc_free(struct ldc_channel *lp);
+
+/* Register TX and RX queues of the link with the hypervisor.  */
+int ldc_bind(struct ldc_channel *lp);
+void ldc_unbind(struct ldc_channel *lp);
 
 /* For non-RAW protocols we need to complete a handshake before
  * communication can proceed.  ldc_connect() does that, if the
@@ -75,6 +89,15 @@ extern int ldc_state(struct ldc_channel *lp);
 extern int ldc_write(struct ldc_channel *lp, const void *buf,
 		     unsigned int size);
 extern int ldc_read(struct ldc_channel *lp, void *buf, unsigned int size);
+int ldc_connect(struct ldc_channel *lp);
+int ldc_disconnect(struct ldc_channel *lp);
+
+int ldc_state(struct ldc_channel *lp);
+
+/* Read and write operations.  Only valid when the link is up.  */
+int ldc_write(struct ldc_channel *lp, const void *buf,
+	      unsigned int size);
+int ldc_read(struct ldc_channel *lp, void *buf, unsigned int size);
 
 #define LDC_MAP_SHADOW	0x01
 #define LDC_MAP_DIRECT	0x02
@@ -108,6 +131,22 @@ extern void ldc_unmap(struct ldc_channel *lp, struct ldc_trans_cookie *cookies,
 extern int ldc_copy(struct ldc_channel *lp, int copy_dir,
 		    void *buf, unsigned int len, unsigned long offset,
 		    struct ldc_trans_cookie *cookies, int ncookies);
+int ldc_map_sg(struct ldc_channel *lp,
+	       struct scatterlist *sg, int num_sg,
+	       struct ldc_trans_cookie *cookies, int ncookies,
+	       unsigned int map_perm);
+
+int ldc_map_single(struct ldc_channel *lp,
+		   void *buf, unsigned int len,
+		   struct ldc_trans_cookie *cookies, int ncookies,
+		   unsigned int map_perm);
+
+void ldc_unmap(struct ldc_channel *lp, struct ldc_trans_cookie *cookies,
+	       int ncookies);
+
+int ldc_copy(struct ldc_channel *lp, int copy_dir,
+	     void *buf, unsigned int len, unsigned long offset,
+	     struct ldc_trans_cookie *cookies, int ncookies);
 
 static inline int ldc_get_dring_entry(struct ldc_channel *lp,
 				      void *buf, unsigned int len,
@@ -134,5 +173,12 @@ extern void *ldc_alloc_exp_dring(struct ldc_channel *lp, unsigned int len,
 extern void ldc_free_exp_dring(struct ldc_channel *lp, void *buf,
 			       unsigned int len,
 			       struct ldc_trans_cookie *cookies, int ncookies);
+void *ldc_alloc_exp_dring(struct ldc_channel *lp, unsigned int len,
+			  struct ldc_trans_cookie *cookies,
+			  int *ncookies, unsigned int map_perm);
+
+void ldc_free_exp_dring(struct ldc_channel *lp, void *buf,
+		        unsigned int len,
+		        struct ldc_trans_cookie *cookies, int ncookies);
 
 #endif /* _SPARC64_LDC_H */

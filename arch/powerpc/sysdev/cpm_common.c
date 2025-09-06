@@ -4,6 +4,7 @@
  * Author: Scott Wood <scottwood@freescale.com>
  *
  * Copyright 2007 Freescale Semiconductor, Inc.
+ * Copyright 2007-2008,2010 Freescale Semiconductor, Inc.
  *
  * Some parts derived from commproc.c/cpm2_common.c, which is:
  * Copyright (c) 1997 Dan error_act (dmalek@jlc.net)
@@ -25,6 +26,13 @@
 #include <asm/udbg.h>
 #include <asm/io.h>
 #include <asm/system.h>
+#include <linux/export.h>
+#include <linux/of.h>
+#include <linux/of_address.h>
+#include <linux/slab.h>
+
+#include <asm/udbg.h>
+#include <asm/io.h>
 #include <asm/rheap.h>
 #include <asm/cpm.h>
 
@@ -57,6 +65,7 @@ void __init udbg_init_cpm(void)
 	if (cpm_udbg_txdesc) {
 #ifdef CONFIG_CPM2
 		setbat(1, 0xf0000000, 0xf0000000, 1024*1024, _PAGE_IO);
+		setbat(1, 0xf0000000, 0xf0000000, 1024*1024, PAGE_KERNEL_NCG);
 #endif
 		udbg_putc = udbg_putc_cpm;
 	}
@@ -73,6 +82,7 @@ static phys_addr_t muram_pbase;
 #define OF_MAX_ADDR_CELLS	4
 
 int __init cpm_muram_init(void)
+int cpm_muram_init(void)
 {
 	struct device_node *np;
 	struct resource r;
@@ -80,6 +90,9 @@ int __init cpm_muram_init(void)
 	resource_size_t max = 0;
 	int i = 0;
 	int ret = 0;
+
+	if (muram_pbase)
+		return 0;
 
 	spin_lock_init(&cpm_muram_lock);
 	/* initialize the info header */
@@ -112,6 +125,7 @@ int __init cpm_muram_init(void)
 
 		rh_attach_region(&cpm_muram_info, r.start - muram_pbase,
 		                 r.end - r.start + 1);
+				 resource_size(&r));
 	}
 
 	muram_vbase = ioremap(muram_pbase, max - muram_pbase + 1);
@@ -142,6 +156,8 @@ unsigned long cpm_muram_alloc(unsigned long size, unsigned long align)
 	spin_lock_irqsave(&cpm_muram_lock, flags);
 	cpm_muram_info.alignment = align;
 	start = rh_alloc(&cpm_muram_info, size, "commproc");
+	if (!IS_ERR_VALUE(start))
+		memset_io(cpm_muram_addr(start), 0, size);
 	spin_unlock_irqrestore(&cpm_muram_lock, flags);
 
 	return start;
@@ -336,6 +352,9 @@ int cpm2_gpiochip_add32(struct device_node *np)
 
 	mm_gc->save_regs = cpm2_gpio32_save_regs;
 	of_gc->gpio_cells = 2;
+	gc = &mm_gc->gc;
+
+	mm_gc->save_regs = cpm2_gpio32_save_regs;
 	gc->ngpio = 32;
 	gc->direction_input = cpm2_gpio32_dir_in;
 	gc->direction_output = cpm2_gpio32_dir_out;

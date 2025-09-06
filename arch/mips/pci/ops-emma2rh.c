@@ -32,6 +32,8 @@
 
 #include <asm/emma2rh/emma2rh.h>
 
+#include <asm/emma/emma2rh.h>
+
 #define RTABORT (0x1<<9)
 #define RMABORT (0x1<<10)
 #define EMMA2RH_PCI_SLOT_NUM 9	/* 0000:09.0 is final PCI device */
@@ -47,6 +49,9 @@ static int check_args(struct pci_bus *bus, u32 devfn, u32 * bus_num)
 		*bus_num = bus->number;
 		db_assert(bus_num != NULL);
 	} else
+	if (bus->parent != NULL)
+		*bus_num = bus->number;
+	else
 		*bus_num = 0;
 
 	if (*bus_num == 0) {

@@ -48,6 +48,7 @@
 static struct usb_driver bfusb_driver;
 
 static struct usb_device_id bfusb_table[] = {
+static const struct usb_device_id bfusb_table[] = {
 	/* AVM BlueFRITZ! USB */
 	{ USB_DEVICE(0x057c, 0x2200) },
 
@@ -138,6 +139,11 @@ static int bfusb_send_bulk(struct bfusb_data *data, struct sk_buff *skb)
 
 	if (!urb && !(urb = usb_alloc_urb(0, GFP_ATOMIC)))
 		return -ENOMEM;
+	if (!urb) {
+		urb = usb_alloc_urb(0, GFP_ATOMIC);
+		if (!urb)
+			return -ENOMEM;
+	}
 
 	pipe = usb_sndbulkpipe(data->udev, data->bulk_out_ep);
 
@@ -225,6 +231,13 @@ static int bfusb_rx_submit(struct bfusb_data *data, struct urb *urb)
 
 	if (!urb && !(urb = usb_alloc_urb(0, GFP_ATOMIC)))
 		return -ENOMEM;
+	BT_DBG("bfusb %p urb %p", data, urb);
+
+	if (!urb) {
+		urb = usb_alloc_urb(0, GFP_ATOMIC);
+		if (!urb)
+			return -ENOMEM;
+	}
 
 	skb = bt_skb_alloc(size, GFP_ATOMIC);
 	if (!skb) {
@@ -264,6 +277,7 @@ static inline int bfusb_recv_block(struct bfusb_data *data, int hdr, unsigned ch
 		BT_ERR("%s error in block", data->hdev->name);
 		if (data->reassembly)
 			kfree_skb(data->reassembly);
+		kfree_skb(data->reassembly);
 		data->reassembly = NULL;
 		return -EIO;
 	}
@@ -340,6 +354,7 @@ static inline int bfusb_recv_block(struct bfusb_data *data, int hdr, unsigned ch
 
 	if (hdr & 0x08) {
 		hci_recv_frame(data->reassembly);
+		hci_recv_frame(data->hdev, data->reassembly);
 		data->reassembly = NULL;
 	}
 
@@ -355,6 +370,7 @@ static void bfusb_rx_complete(struct urb *urb)
 	int err, hdr, len;
 
 	BT_DBG("bfusb %p urb %p skb %p len %d", bfusb, urb, skb, skb->len);
+	BT_DBG("bfusb %p urb %p skb %p len %d", data, urb, skb, skb->len);
 
 	read_lock(&data->lock);
 
@@ -418,6 +434,7 @@ unlock:
 static int bfusb_open(struct hci_dev *hdev)
 {
 	struct bfusb_data *data = hdev->driver_data;
+	struct bfusb_data *data = hci_get_drvdata(hdev);
 	unsigned long flags;
 	int i, err;
 
@@ -444,6 +461,7 @@ static int bfusb_open(struct hci_dev *hdev)
 static int bfusb_flush(struct hci_dev *hdev)
 {
 	struct bfusb_data *data = hdev->driver_data;
+	struct bfusb_data *data = hci_get_drvdata(hdev);
 
 	BT_DBG("hdev %p bfusb %p", hdev, data);
 
@@ -455,6 +473,7 @@ static int bfusb_flush(struct hci_dev *hdev)
 static int bfusb_close(struct hci_dev *hdev)
 {
 	struct bfusb_data *data = hdev->driver_data;
+	struct bfusb_data *data = hci_get_drvdata(hdev);
 	unsigned long flags;
 
 	BT_DBG("hdev %p bfusb %p", hdev, data);
@@ -475,6 +494,9 @@ static int bfusb_send_frame(struct sk_buff *skb)
 {
 	struct hci_dev *hdev = (struct hci_dev *) skb->dev;
 	struct bfusb_data *data;
+static int bfusb_send_frame(struct hci_dev *hdev, struct sk_buff *skb)
+{
+	struct bfusb_data *data = hci_get_drvdata(hdev);
 	struct sk_buff *nskb;
 	unsigned char buf[3];
 	int sent = 0, size, count;
@@ -502,6 +524,7 @@ static int bfusb_send_frame(struct sk_buff *skb)
 		hdev->stat.sco_tx++;
 		break;
 	};
+	}
 
 	/* Prepend skb with frame type */
 	memcpy(skb_push(skb, 1), &bt_cb(skb)->pkt_type, 1);
@@ -574,11 +597,18 @@ static int bfusb_load_firmware(struct bfusb_data *data,
 
 	BT_INFO("BlueFRITZ! USB loading firmware");
 
+	buf = kmalloc(BFUSB_MAX_BLOCK_SIZE + 3, GFP_KERNEL);
+	if (!buf) {
+		BT_ERR("Can't allocate memory chunk for firmware");
+		return -ENOMEM;
+	}
+
 	pipe = usb_sndctrlpipe(data->udev, 0);
 
 	if (usb_control_msg(data->udev, pipe, USB_REQ_SET_CONFIGURATION,
 				0, 1, 0, NULL, 0, USB_CTRL_SET_TIMEOUT) < 0) {
 		BT_ERR("Can't change to loading configuration");
+		kfree(buf);
 		return -EBUSY;
 	}
 
@@ -668,6 +698,7 @@ static int bfusb_probe(struct usb_interface *intf, const struct usb_device_id *i
 
 	/* Initialize control structure and load firmware */
 	data = kzalloc(sizeof(struct bfusb_data), GFP_KERNEL);
+	data = devm_kzalloc(&intf->dev, sizeof(struct bfusb_data), GFP_KERNEL);
 	if (!data) {
 		BT_ERR("Can't allocate memory for control structure");
 		goto done;
@@ -677,6 +708,9 @@ static int bfusb_probe(struct usb_interface *intf, const struct usb_device_id *i
 	data->bulk_in_ep    = bulk_in_ep->desc.bEndpointAddress;
 	data->bulk_out_ep   = bulk_out_ep->desc.bEndpointAddress;
 	data->bulk_pkt_size = le16_to_cpu(bulk_out_ep->desc.wMaxPacketSize);
+
+	if (!data->bulk_pkt_size)
+		goto done;
 
 	rwlock_init(&data->lock);
 
@@ -692,6 +726,10 @@ static int bfusb_probe(struct usb_interface *intf, const struct usb_device_id *i
 	}
 
 	BT_DBG("firmware data %p size %d", firmware->data, firmware->size);
+		goto done;
+	}
+
+	BT_DBG("firmware data %p size %zu", firmware->data, firmware->size);
 
 	if (bfusb_load_firmware(data, firmware->data, firmware->size) < 0) {
 		BT_ERR("Firmware loading failed");
@@ -705,6 +743,7 @@ static int bfusb_probe(struct usb_interface *intf, const struct usb_device_id *i
 	if (!hdev) {
 		BT_ERR("Can't allocate HCI device");
 		goto error;
+		goto done;
 	}
 
 	data->hdev = hdev;
@@ -721,11 +760,22 @@ static int bfusb_probe(struct usb_interface *intf, const struct usb_device_id *i
 	hdev->ioctl    = bfusb_ioctl;
 
 	hdev->owner = THIS_MODULE;
+	hdev->bus = HCI_USB;
+	hci_set_drvdata(hdev, data);
+	SET_HCIDEV_DEV(hdev, &intf->dev);
+
+	hdev->open  = bfusb_open;
+	hdev->close = bfusb_close;
+	hdev->flush = bfusb_flush;
+	hdev->send  = bfusb_send_frame;
+
+	set_bit(HCI_QUIRK_BROKEN_LOCAL_COMMANDS, &hdev->quirks);
 
 	if (hci_register_dev(hdev) < 0) {
 		BT_ERR("Can't register HCI device");
 		hci_free_dev(hdev);
 		goto error;
+		goto done;
 	}
 
 	usb_set_intfdata(intf, data);
@@ -759,6 +809,7 @@ static void bfusb_disconnect(struct usb_interface *intf)
 	if (hci_unregister_dev(hdev) < 0)
 		BT_ERR("Can't unregister HCI device %s", hdev->name);
 
+	hci_unregister_dev(hdev);
 	hci_free_dev(hdev);
 }
 
@@ -789,6 +840,10 @@ static void __exit bfusb_exit(void)
 
 module_init(bfusb_init);
 module_exit(bfusb_exit);
+	.disable_hub_initiated_lpm = 1,
+};
+
+module_usb_driver(bfusb_driver);
 
 MODULE_AUTHOR("Marcel Holtmann <marcel@holtmann.org>");
 MODULE_DESCRIPTION("BlueFRITZ! USB driver ver " VERSION);

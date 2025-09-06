@@ -22,6 +22,7 @@
 #include <linux/blkdev.h>
 #include <linux/cdrom.h>
 #include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
 #include "udf_sb.h"
 
@@ -44,6 +45,10 @@ unsigned int udf_get_last_session(struct super_block *sb)
 #if WE_OBEY_THE_WRITTEN_STANDARDS
 		if (ms_info.xa_flag) /* necessary for a valid ms_info.addr */
 #endif
+	if (i == 0) {
+		udf_debug("XA disk: %s, vol_desc_start=%d\n",
+			  ms_info.xa_flag ? "yes" : "no", ms_info.addr.lba);
+		if (ms_info.xa_flag) /* necessary for a valid ms_info.addr */
 			vol_desc_start = ms_info.addr.lba;
 	} else {
 		udf_debug("CDROMMULTISESSION not supported: rc=%d\n", i);
@@ -57,6 +62,12 @@ unsigned long udf_get_last_block(struct super_block *sb)
 	unsigned long lblock = 0;
 
 	if (ioctl_by_bdev(bdev, CDROM_LAST_WRITTEN, (unsigned long) &lblock))
+	/*
+	 * ioctl failed or returned obviously bogus value?
+	 * Try using the device size...
+	 */
+	if (ioctl_by_bdev(bdev, CDROM_LAST_WRITTEN, (unsigned long) &lblock) ||
+	    lblock == 0)
 		lblock = bdev->bd_inode->i_size >> sb->s_blocksize_bits;
 
 	if (lblock)

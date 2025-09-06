@@ -173,7 +173,6 @@ static inline void nsp_fifo32_write(unsigned int   base,
 }
 
 
-/*====================================================================*/
 
 static inline void nsp_mmio_write(unsigned long base,
 				  unsigned int  index,

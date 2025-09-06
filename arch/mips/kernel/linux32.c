@@ -35,6 +35,7 @@
 #include <linux/compat.h>
 #include <linux/vfs.h>
 #include <linux/ipc.h>
+#include <linux/slab.h>
 
 #include <net/sock.h>
 #include <net/scm.h>
@@ -103,6 +104,10 @@ sys32_mmap2(unsigned long addr, unsigned long len, unsigned long prot,
          unsigned long flags, unsigned long fd, unsigned long pgoff)
 {
 	struct file * file = NULL;
+SYSCALL_DEFINE6(32_mmap2, unsigned long, addr, unsigned long, len,
+	unsigned long, prot, unsigned long, flags, unsigned long, fd,
+	unsigned long, pgoff)
+{
 	unsigned long error;
 
 	error = -EINVAL;
@@ -124,6 +129,8 @@ sys32_mmap2(unsigned long addr, unsigned long len, unsigned long prot,
 	if (file)
 		fput(file);
 
+	error = sys_mmap_pgoff(addr, len, prot, flags, fd,
+			       pgoff >> (PAGE_SHIFT-12));
 out:
 	return error;
 }
@@ -149,6 +156,7 @@ out:
 }
 
 #define RLIM_INFINITY32	0x7fffffff
+#define RLIM_INFINITY32 0x7fffffff
 #define RESOURCE32(x) ((x > RLIM_INFINITY32) ? RLIM_INFINITY32 : x)
 
 struct rlimit32 {
@@ -158,12 +166,16 @@ struct rlimit32 {
 
 asmlinkage long sys32_truncate64(const char __user * path,
 	unsigned long __dummy, int a2, int a3)
+SYSCALL_DEFINE4(32_truncate64, const char __user *, path,
+	unsigned long, __dummy, unsigned long, a2, unsigned long, a3)
 {
 	return sys_truncate(path, merge_64(a2, a3));
 }
 
 asmlinkage long sys32_ftruncate64(unsigned int fd, unsigned long __dummy,
 	int a2, int a3)
+SYSCALL_DEFINE4(32_ftruncate64, unsigned long, fd, unsigned long, __dummy,
+	unsigned long, a2, unsigned long, a3)
 {
 	return sys_ftruncate(fd, merge_64(a2, a3));
 }
@@ -237,6 +249,9 @@ sys32_settimeofday(struct compat_timeval __user *tv, struct timezone __user *tz)
 asmlinkage int sys32_llseek(unsigned int fd, unsigned int offset_high,
 			    unsigned int offset_low, loff_t __user * result,
 			    unsigned int origin)
+SYSCALL_DEFINE5(32_llseek, unsigned int, fd, unsigned int, offset_high,
+		unsigned int, offset_low, loff_t __user *, result,
+		unsigned int, origin)
 {
 	return sys_llseek(fd, offset_high, offset_low, result, origin);
 }
@@ -247,12 +262,18 @@ asmlinkage int sys32_llseek(unsigned int fd, unsigned int offset_high,
 
 asmlinkage ssize_t sys32_pread(unsigned int fd, char __user * buf,
 			       size_t count, u32 unused, u64 a4, u64 a5)
+   non-seekable files.	*/
+
+SYSCALL_DEFINE6(32_pread, unsigned long, fd, char __user *, buf, size_t, count,
+	unsigned long, unused, unsigned long, a4, unsigned long, a5)
 {
 	return sys_pread64(fd, buf, count, merge_64(a4, a5));
 }
 
 asmlinkage ssize_t sys32_pwrite(unsigned int fd, const char __user * buf,
 			        size_t count, u32 unused, u64 a4, u64 a5)
+SYSCALL_DEFINE6(32_pwrite, unsigned int, fd, const char __user *, buf,
+	size_t, count, u32, unused, u64, a4, u64, a5)
 {
 	return sys_pwrite64(fd, buf, count, merge_64(a4, a5));
 }
@@ -499,11 +520,23 @@ asmlinkage int sys32_sendfile(int out_fd, int in_fd, compat_off_t __user *offset
 	if (offset && put_user(of, offset))
 		return -EFAULT;
 
+SYSCALL_DEFINE1(32_personality, unsigned long, personality)
+{
+	unsigned int p = personality & 0xffffffff;
+	int ret;
+
+	if (personality(current->personality) == PER_LINUX32 &&
+	    personality(p) == PER_LINUX)
+		p = (p & ~PER_MASK) | PER_LINUX32;
+	ret = sys_personality(p);
+	if (ret != -1 && personality(ret) == PER_LINUX32)
+		ret = (ret & ~PER_MASK) | PER_LINUX;
 	return ret;
 }
 
 asmlinkage ssize_t sys32_readahead(int fd, u32 pad0, u64 a2, u64 a3,
                                    size_t count)
+				   size_t count)
 {
 	return sys_readahead(fd, merge_64(a2, a3), count);
 }
@@ -554,4 +587,5 @@ _sys32_clone(nabi_no_regargs struct pt_regs regs)
 	child_tidptr = (int __user *) __dummy4;
 	return do_fork(clone_flags, newsp, &regs, 0,
 	               parent_tidptr, child_tidptr);
+			     merge_64(len_a4, len_a5));
 }

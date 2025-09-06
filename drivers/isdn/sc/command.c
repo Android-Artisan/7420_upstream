@@ -71,12 +71,15 @@ int get_card_from_id(int driver)
 
 	for(i = 0 ; i < cinst ; i++) {
 		if(sc_adapter[i]->driverId == driver)
+	for (i = 0; i < cinst; i++) {
+		if (sc_adapter[i]->driverId == driver)
 			return i;
 	}
 	return -ENODEV;
 }
 
 /* 
+/*
  * command
  */
 
@@ -86,6 +89,7 @@ int command(isdn_ctrl *cmd)
 
 	card = get_card_from_id(cmd->driver);
 	if(!IS_VALID_CARD(card)) {
+	if (!IS_VALID_CARD(card)) {
 		pr_debug("Invalid param: %d is not a valid card id\n", card);
 		return -ENODEV;
 	}
@@ -97,6 +101,10 @@ int command(isdn_ctrl *cmd)
 	case ISDN_CMD_IOCTL:
 	{
 		unsigned long 	cmdptr;
+	switch (cmd->command) {
+	case ISDN_CMD_IOCTL:
+	{
+		unsigned long	cmdptr;
 		scs_ioctl	ioc;
 
 		memcpy(&cmdptr, cmd->parm.num, sizeof(unsigned long));
@@ -104,6 +112,7 @@ int command(isdn_ctrl *cmd)
 				   sizeof(scs_ioctl))) {
 			pr_debug("%s: Failed to verify user space 0x%lx\n",
 				sc_adapter[card]->devicename, cmdptr);
+				 sc_adapter[card]->devicename, cmdptr);
 			return -EFAULT;
 		}
 		return sc_ioctl(card, &ioc);
@@ -138,6 +147,11 @@ int startproc(int card)
 	int status;
 
 	if(!IS_VALID_CARD(card)) {
+int startproc(int card)
+{
+	int status;
+
+	if (!IS_VALID_CARD(card)) {
 		pr_debug("Invalid param: %d is not a valid card id\n", card);
 		return -ENODEV;
 	}
@@ -151,12 +165,21 @@ int startproc(int card)
 			  0,0,NULL);
 	pr_debug("%s: Sent startProc\n", sc_adapter[card]->devicename);
 	
+	 * send start msg
+	 */
+	status = sendmessage(card, CMPID, cmReqType2,
+			     cmReqClass0,
+			     cmReqStartProc,
+			     0, 0, NULL);
+	pr_debug("%s: Sent startProc\n", sc_adapter[card]->devicename);
+
 	return status;
 }
 
 
 /*
  * Dials the number passed in 
+ * Dials the number passed in
  */
 static int dial(int card, unsigned long channel, setup_parm setup)
 {
@@ -164,6 +187,8 @@ static int dial(int card, unsigned long channel, setup_parm setup)
 	char Phone[48];
   
 	if(!IS_VALID_CARD(card)) {
+
+	if (!IS_VALID_CARD(card)) {
 		pr_debug("Invalid param: %d is not a valid card id\n", card);
 		return -ENODEV;
 	}
@@ -182,6 +207,20 @@ static int dial(int card, unsigned long channel, setup_parm setup)
 	pr_debug("%s: Dialing %s on channel %lu\n",
 		sc_adapter[card]->devicename, Phone, channel+1);
 	
+	/*extract ISDN number to dial from eaz/msn string*/
+	strcpy(Phone, setup.phone);
+
+	/*send the connection message*/
+	status = sendmessage(card, CEPID, ceReqTypePhy,
+			     ceReqClass1,
+			     ceReqPhyConnect,
+			     (unsigned char)channel + 1,
+			     strlen(Phone),
+			     (unsigned int *)Phone);
+
+	pr_debug("%s: Dialing %s on channel %lu\n",
+		 sc_adapter[card]->devicename, Phone, channel + 1);
+
 	return status;
 }
 
@@ -191,6 +230,11 @@ static int dial(int card, unsigned long channel, setup_parm setup)
 static int answer(int card, unsigned long channel)
 {
 	if(!IS_VALID_CARD(card)) {
+ * Answer an incoming call
+ */
+static int answer(int card, unsigned long channel)
+{
+	if (!IS_VALID_CARD(card)) {
 		pr_debug("Invalid param: %d is not a valid card id\n", card);
 		return -ENODEV;
 	}
@@ -203,6 +247,14 @@ static int answer(int card, unsigned long channel)
 	indicate_status(card, ISDN_STAT_BCONN,channel,NULL);
 	pr_debug("%s: Answered incoming call on channel %lu\n",
 		sc_adapter[card]->devicename, channel+1);
+	if (setup_buffers(card, channel + 1)) {
+		hangup(card, channel + 1);
+		return -ENOBUFS;
+	}
+
+	indicate_status(card, ISDN_STAT_BCONN, channel, NULL);
+	pr_debug("%s: Answered incoming call on channel %lu\n",
+		 sc_adapter[card]->devicename, channel + 1);
 	return 0;
 }
 
@@ -214,6 +266,7 @@ static int hangup(int card, unsigned long channel)
 	int status;
 
 	if(!IS_VALID_CARD(card)) {
+	if (!IS_VALID_CARD(card)) {
 		pr_debug("Invalid param: %d is not a valid card id\n", card);
 		return -ENODEV;
 	}
@@ -226,6 +279,13 @@ static int hangup(int card, unsigned long channel)
 						 NULL);
 	pr_debug("%s: Sent HANGUP message to channel %lu\n",
 		sc_adapter[card]->devicename, channel+1);
+			     ceReqClass1,
+			     ceReqPhyDisconnect,
+			     (unsigned char)channel + 1,
+			     0,
+			     NULL);
+	pr_debug("%s: Sent HANGUP message to channel %lu\n",
+		 sc_adapter[card]->devicename, channel + 1);
 	return status;
 }
 
@@ -238,6 +298,10 @@ static int setl2(int card, unsigned long arg)
 	int protocol,channel;
 
 	if(!IS_VALID_CARD(card)) {
+	int status = 0;
+	int protocol, channel;
+
+	if (!IS_VALID_CARD(card)) {
 		pr_debug("Invalid param: %d is not a valid card id\n", card);
 		return -ENODEV;
 	}
@@ -257,6 +321,14 @@ static int setl2(int card, unsigned long arg)
  				1,
  				(unsigned int *) protocol);
 	if(status) 
+		 sc_adapter[card]->devicename, channel + 1);
+	status = sendmessage(card, CEPID, ceReqTypeCall,
+			     ceReqClass0,
+			     ceReqCallGetFrameFormat,
+			     (unsigned char)channel + 1,
+			     1,
+			     (unsigned int *)protocol);
+	if (status)
 		return status;
 	return 0;
 }
@@ -269,6 +341,7 @@ static int setl3(int card, unsigned long channel)
 	int protocol = channel >> 8;
 
 	if(!IS_VALID_CARD(card)) {
+	if (!IS_VALID_CARD(card)) {
 		pr_debug("Invalid param: %d is not a valid card id\n", card);
 		return -ENODEV;
 	}
@@ -280,6 +353,7 @@ static int setl3(int card, unsigned long channel)
 static int acceptb(int card, unsigned long channel)
 {
 	if(!IS_VALID_CARD(card)) {
+	if (!IS_VALID_CARD(card)) {
 		pr_debug("Invalid param: %d is not a valid card id\n", card);
 		return -ENODEV;
 	}
@@ -287,11 +361,15 @@ static int acceptb(int card, unsigned long channel)
 	if(setup_buffers(card, channel+1))
 	{
 		hangup(card, channel+1);
+	if (setup_buffers(card, channel + 1))
+	{
+		hangup(card, channel + 1);
 		return -ENOBUFS;
 	}
 
 	pr_debug("%s: B-Channel connection accepted on channel %lu\n",
 		sc_adapter[card]->devicename, channel+1);
+		 sc_adapter[card]->devicename, channel + 1);
 	indicate_status(card, ISDN_STAT_BCONN, channel, NULL);
 	return 0;
 }
@@ -299,6 +377,7 @@ static int acceptb(int card, unsigned long channel)
 static int clreaz(int card, unsigned long arg)
 {
 	if(!IS_VALID_CARD(card)) {
+	if (!IS_VALID_CARD(card)) {
 		pr_debug("Invalid param: %d is not a valid card id\n", card);
 		return -ENODEV;
 	}
@@ -307,12 +386,14 @@ static int clreaz(int card, unsigned long arg)
 	sc_adapter[card]->channel[arg].eazclear = 1;
 	pr_debug("%s: EAZ List cleared for channel %lu\n",
 		sc_adapter[card]->devicename, arg+1);
+		 sc_adapter[card]->devicename, arg + 1);
 	return 0;
 }
 
 static int seteaz(int card, unsigned long arg, char *num)
 {
 	if(!IS_VALID_CARD(card)) {
+	if (!IS_VALID_CARD(card)) {
 		pr_debug("Invalid param: %d is not a valid card id\n", card);
 		return -ENODEV;
 	}
@@ -322,6 +403,8 @@ static int seteaz(int card, unsigned long arg, char *num)
 	pr_debug("%s: EAZ list for channel %lu set to: %s\n",
 		sc_adapter[card]->devicename, arg+1,
 		sc_adapter[card]->channel[arg].eazlist);
+		 sc_adapter[card]->devicename, arg + 1,
+		 sc_adapter[card]->channel[arg].eazlist);
 	return 0;
 }
 
@@ -330,6 +413,7 @@ int reset(int card)
 	unsigned long flags;
 
 	if(!IS_VALID_CARD(card)) {
+	if (!IS_VALID_CARD(card)) {
 		pr_debug("Invalid param: %d is not a valid card id\n", card);
 		return -ENODEV;
 	}
@@ -337,6 +421,7 @@ int reset(int card)
 	indicate_status(card, ISDN_STAT_STOP, 0, NULL);
 
 	if(sc_adapter[card]->EngineUp) {
+	if (sc_adapter[card]->EngineUp) {
 		del_timer(&sc_adapter[card]->stat_timer);
 	}
 
@@ -351,6 +436,7 @@ int reset(int card)
 	spin_unlock_irqrestore(&sc_adapter[card]->lock, flags);
 
 	outb(0x1,sc_adapter[card]->ioport[SFT_RESET]);
+	outb(0x1, sc_adapter[card]->ioport[SFT_RESET]);
 
 	pr_debug("%s: Adapter Reset\n", sc_adapter[card]->devicename);
 	return 0;
@@ -359,5 +445,8 @@ int reset(int card)
 void flushreadfifo (int card)
 {
 	while(inb(sc_adapter[card]->ioport[FIFO_STATUS]) & RF_HAS_DATA)
+void flushreadfifo(int card)
+{
+	while (inb(sc_adapter[card]->ioport[FIFO_STATUS]) & RF_HAS_DATA)
 		inb(sc_adapter[card]->ioport[FIFO_READ]);
 }

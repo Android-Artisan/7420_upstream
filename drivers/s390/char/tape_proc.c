@@ -4,12 +4,19 @@
  *
  *  S390 and zSeries version
  *    Copyright (C) 2001 IBM Corporation
+ *    tape device driver for S/390 and zSeries tapes.
+ *
+ *  S390 and zSeries version
+ *    Copyright IBM Corp. 2001
  *    Author(s): Carsten Otte <cotte@de.ibm.com>
  *		 Michael Holzheu <holzheu@de.ibm.com>
  *		 Tuan Ngo-Anh <ngoanh@de.ibm.com>
  *
  * PROCFS Functions
  */
+
+#define KMSG_COMPONENT "tape"
+#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
 
 #include <linux/module.h>
 #include <linux/vmalloc.h>
@@ -48,11 +55,13 @@ static int tape_proc_show(struct seq_file *m, void *v)
 			"DevType/Model\tBlkSize\tState\tOp\tMedState\n");
 	}
 	device = tape_get_device(n);
+	device = tape_find_device(n);
 	if (IS_ERR(device))
 		return 0;
 	spin_lock_irq(get_ccwdev_lock(device->cdev));
 	seq_printf(m, "%d\t", (int) n);
 	seq_printf(m, "%-10.10s ", device->cdev->dev.bus_id);
+	seq_printf(m, "%-10.10s ", dev_name(&device->cdev->dev));
 	seq_printf(m, "%04X/", device->cdev->id.cu_type);
 	seq_printf(m, "%02X\t", device->cdev->id.cu_model);
 	seq_printf(m, "%04X/", device->cdev->id.dev_type);

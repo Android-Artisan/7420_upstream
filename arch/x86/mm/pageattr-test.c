@@ -10,6 +10,7 @@
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/mm.h>
+#include <linux/vmalloc.h>
 
 #include <asm/cacheflush.h>
 #include <asm/pgtable.h>
@@ -37,6 +38,11 @@ enum {
 static int pte_testbit(pte_t pte)
 {
 	return pte_flags(pte) & _PAGE_UNUSED1;
+#define PAGE_CPA_TEST	__pgprot(_PAGE_CPA_TEST)
+
+static int pte_testbit(pte_t pte)
+{
+	return pte_flags(pte) & _PAGE_SOFTW1;
 }
 
 struct split_state {
@@ -69,6 +75,7 @@ static int print_split(struct split_state *s)
 			i += GPS/PAGE_SIZE;
 		} else if (level == PG_LEVEL_2M) {
 			if (!(pte_val(*pte) & _PAGE_PSE)) {
+			if ((pte_val(*pte) & _PAGE_PRESENT) && !(pte_val(*pte) & _PAGE_PSE)) {
 				printk(KERN_ERR
 					"%lx level %d but not PSE %Lx\n",
 					addr, level, (u64)pte_val(*pte));
@@ -118,11 +125,13 @@ static int pageattr_test(void)
 	unsigned int level;
 	int i, k;
 	int err;
+	unsigned long test_addr;
 
 	if (print)
 		printk(KERN_INFO "CPA self-test:\n");
 
 	bm = vmalloc((max_pfn_mapped + 7) / 8);
+	bm = vzalloc((max_pfn_mapped + 7) / 8);
 	if (!bm) {
 		printk(KERN_ERR "CPA Cannot vmalloc bitmap\n");
 		return -ENOMEM;
@@ -137,6 +146,14 @@ static int pageattr_test(void)
 
 		addr[i] = (unsigned long)__va(pfn << PAGE_SHIFT);
 		len[i] = random32() % 100;
+
+	failed += print_split(&sa);
+
+	for (i = 0; i < NTEST; i++) {
+		unsigned long pfn = prandom_u32() % max_pfn_mapped;
+
+		addr[i] = (unsigned long)__va(pfn << PAGE_SHIFT);
+		len[i] = prandom_u32() % 100;
 		len[i] = min_t(unsigned long, len[i], max_pfn_mapped - pfn - 1);
 
 		if (len[i] == 0)
@@ -173,6 +190,8 @@ static int pageattr_test(void)
 		}
 
 		err = change_page_attr_set(addr[i], len[i], PAGE_TESTBIT);
+		test_addr = addr[i];
+		err = change_page_attr_set(&test_addr, len[i], PAGE_CPA_TEST, 0);
 		if (err < 0) {
 			printk(KERN_ERR "CPA %d failed %d\n", i, err);
 			failed++;
@@ -205,6 +224,8 @@ static int pageattr_test(void)
 			continue;
 		}
 		err = change_page_attr_clear(addr[i], len[i], PAGE_TESTBIT);
+		test_addr = addr[i];
+		err = change_page_attr_clear(&test_addr, len[i], PAGE_CPA_TEST, 0);
 		if (err < 0) {
 			printk(KERN_ERR "CPA reverting failed: %d\n", err);
 			failed++;
@@ -257,3 +278,4 @@ static int start_pageattr_test(void)
 }
 
 module_init(start_pageattr_test);
+device_initcall(start_pageattr_test);

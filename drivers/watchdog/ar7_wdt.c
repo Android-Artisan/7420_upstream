@@ -31,6 +31,14 @@
 #include <linux/watchdog.h>
 #include <linux/notifier.h>
 #include <linux/reboot.h>
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
+#include <linux/module.h>
+#include <linux/moduleparam.h>
+#include <linux/errno.h>
+#include <linux/miscdevice.h>
+#include <linux/platform_device.h>
+#include <linux/watchdog.h>
 #include <linux/fs.h>
 #include <linux/ioport.h>
 #include <linux/io.h>
@@ -40,6 +48,11 @@
 #include <asm/ar7/ar7.h>
 
 #define DRVNAME "ar7_wdt"
+#include <linux/clk.h>
+
+#include <asm/addrspace.h>
+#include <asm/mach-ar7/ar7.h>
+
 #define LONGNAME "TI AR7 Watchdog Timer"
 
 MODULE_AUTHOR("Nicolas Thill <nico@openwrt.org>");
@@ -53,6 +66,8 @@ MODULE_PARM_DESC(margin, "Watchdog margin in seconds");
 
 static int nowayout = WATCHDOG_NOWAYOUT;
 module_param(nowayout, int, 0);
+static bool nowayout = WATCHDOG_NOWAYOUT;
+module_param(nowayout, bool, 0);
 MODULE_PARM_DESC(nowayout, "Disable watchdog shutdown on close");
 
 #define READ_REG(x) readl((void __iomem *)&(x))
@@ -72,6 +87,8 @@ struct ar7_wdt {
 static unsigned long wdt_is_open;
 static spinlock_t wdt_lock;
 static unsigned expect_close;
+static unsigned expect_close;
+static DEFINE_SPINLOCK(wdt_lock);
 
 /* XXX currently fixed, allows max margin ~68.72 secs */
 #define prescale_value 0xffff
@@ -94,6 +111,12 @@ static void ar7_wdt_get_regs(void)
 	}
 }
 
+/* Resource of the WDT registers */
+static struct resource *ar7_regs_wdt;
+/* Pointer to the remapped WDT IO space */
+static struct ar7_wdt *ar7_wdt;
+
+static struct clk *vbus_clk;
 
 static void ar7_wdt_kick(u32 value)
 {
@@ -106,6 +129,7 @@ static void ar7_wdt_kick(u32 value)
 		}
 	}
 	printk(KERN_ERR DRVNAME ": failed to unlock WDT kick reg\n");
+	pr_err("failed to unlock WDT kick reg\n");
 }
 
 static void ar7_wdt_prescale(u32 value)
@@ -119,6 +143,7 @@ static void ar7_wdt_prescale(u32 value)
 		}
 	}
 	printk(KERN_ERR DRVNAME ": failed to unlock WDT prescale reg\n");
+	pr_err("failed to unlock WDT prescale reg\n");
 }
 
 static void ar7_wdt_change(u32 value)
@@ -132,6 +157,7 @@ static void ar7_wdt_change(u32 value)
 		}
 	}
 	printk(KERN_ERR DRVNAME ": failed to unlock WDT change reg\n");
+	pr_err("failed to unlock WDT change reg\n");
 }
 
 static void ar7_wdt_disable(u32 value)
@@ -148,6 +174,7 @@ static void ar7_wdt_disable(u32 value)
 		}
 	}
 	printk(KERN_ERR DRVNAME ": failed to unlock WDT disable reg\n");
+	pr_err("failed to unlock WDT disable reg\n");
 }
 
 static void ar7_wdt_update_margin(int new_margin)
@@ -155,6 +182,10 @@ static void ar7_wdt_update_margin(int new_margin)
 	u32 change;
 
 	change = new_margin * (ar7_vbus_freq() / prescale_value);
+	u32 vbus_rate;
+
+	vbus_rate = clk_get_rate(vbus_clk);
+	change = new_margin * (vbus_rate / prescale_value);
 	if (change < 1)
 		change = 1;
 	if (change > 0xffff)
@@ -164,11 +195,15 @@ static void ar7_wdt_update_margin(int new_margin)
 	printk(KERN_INFO DRVNAME
 	       ": timer margin %d seconds (prescale %d, change %d, freq %d)\n",
 	       margin, prescale_value, change, ar7_vbus_freq());
+	margin = change * prescale_value / vbus_rate;
+	pr_info("timer margin %d seconds (prescale %d, change %d, freq %d)\n",
+		margin, prescale_value, change, vbus_rate);
 }
 
 static void ar7_wdt_enable_wdt(void)
 {
 	printk(KERN_DEBUG DRVNAME ": enabling watchdog timer\n");
+	pr_debug("enabling watchdog timer\n");
 	ar7_wdt_disable(1);
 	ar7_wdt_kick(1);
 }
@@ -176,6 +211,7 @@ static void ar7_wdt_enable_wdt(void)
 static void ar7_wdt_disable_wdt(void)
 {
 	printk(KERN_DEBUG DRVNAME ": disabling watchdog timer\n");
+	pr_debug("disabling watchdog timer\n");
 	ar7_wdt_disable(0);
 }
 
@@ -196,6 +232,7 @@ static int ar7_wdt_release(struct inode *inode, struct file *file)
 		printk(KERN_WARNING DRVNAME
 		": watchdog device closed unexpectedly,"
 		"will not disable the watchdog timer\n");
+		pr_warn("watchdog device closed unexpectedly, will not disable the watchdog timer\n");
 	else if (!nowayout)
 		ar7_wdt_disable_wdt();
 	clear_bit(0, &wdt_is_open);
@@ -247,6 +284,11 @@ static long ar7_wdt_ioctl(struct file *file,
 		.identity = LONGNAME,
 		.firmware_version = 1,
 		.options = (WDIOF_SETTIMEOUT | WDIOF_KEEPALIVEPING),
+	static const struct watchdog_info ident = {
+		.identity = LONGNAME,
+		.firmware_version = 1,
+		.options = (WDIOF_SETTIMEOUT | WDIOF_KEEPALIVEPING |
+						WDIOF_MAGICCLOSE),
 	};
 	int new_margin;
 
@@ -290,6 +332,7 @@ static const struct file_operations ar7_wdt_fops = {
 	.unlocked_ioctl	= ar7_wdt_ioctl,
 	.open		= ar7_wdt_open,
 	.release	= ar7_wdt_release,
+	.llseek		= no_llseek,
 };
 
 static struct miscdevice ar7_wdt_miscdev = {
@@ -314,6 +357,22 @@ static int __init ar7_wdt_init(void)
 
 	ar7_wdt = (struct ar7_wdt *)
 			ioremap(ar7_regs_wdt, sizeof(struct ar7_wdt));
+
+static int ar7_wdt_probe(struct platform_device *pdev)
+{
+	int rc;
+
+	ar7_regs_wdt =
+		platform_get_resource_byname(pdev, IORESOURCE_MEM, "regs");
+	ar7_wdt = devm_ioremap_resource(&pdev->dev, ar7_regs_wdt);
+	if (IS_ERR(ar7_wdt))
+		return PTR_ERR(ar7_wdt);
+
+	vbus_clk = clk_get(NULL, "vbus");
+	if (IS_ERR(vbus_clk)) {
+		pr_err("could not get vbus clock\n");
+		return PTR_ERR(vbus_clk);
+	}
 
 	ar7_wdt_disable_wdt();
 	ar7_wdt_prescale(prescale_value);
@@ -352,3 +411,40 @@ static void __exit ar7_wdt_cleanup(void)
 
 module_init(ar7_wdt_init);
 module_exit(ar7_wdt_cleanup);
+	rc = misc_register(&ar7_wdt_miscdev);
+	if (rc) {
+		pr_err("unable to register misc device\n");
+		goto out;
+	}
+	return 0;
+
+out:
+	clk_put(vbus_clk);
+	vbus_clk = NULL;
+	return rc;
+}
+
+static int ar7_wdt_remove(struct platform_device *pdev)
+{
+	misc_deregister(&ar7_wdt_miscdev);
+	clk_put(vbus_clk);
+	vbus_clk = NULL;
+	return 0;
+}
+
+static void ar7_wdt_shutdown(struct platform_device *pdev)
+{
+	if (!nowayout)
+		ar7_wdt_disable_wdt();
+}
+
+static struct platform_driver ar7_wdt_driver = {
+	.probe = ar7_wdt_probe,
+	.remove = ar7_wdt_remove,
+	.shutdown = ar7_wdt_shutdown,
+	.driver = {
+		.name = "ar7_wdt",
+	},
+};
+
+module_platform_driver(ar7_wdt_driver);

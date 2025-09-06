@@ -115,6 +115,13 @@ struct snd_sb_csp_info {
 #include "sb.h"
 #include "hwdep.h"
 #include <linux/firmware.h>
+#ifndef __SOUND_SB16_CSP_H
+#define __SOUND_SB16_CSP_H
+
+#include <sound/sb.h>
+#include <sound/hwdep.h>
+#include <linux/firmware.h>
+#include <uapi/sound/sb16_csp.h>
 
 struct snd_sb_csp;
 

@@ -135,12 +135,14 @@ static int o2micro_override(struct yenta_socket *socket)
 	 * from Eric Still, 02Micro.
 	 */
 	u8 a, b;
+	bool use_speedup;
 
 	if (PCI_FUNC(socket->dev->devfn) == 0) {
 		a = config_readb(socket, O2_RESERVED1);
 		b = config_readb(socket, O2_RESERVED2);
 
 		printk(KERN_INFO "Yenta O2: res at 0x94/0xD4: %02x/%02x\n", a, b);
+		dev_dbg(&socket->dev->dev, "O2: 0x94/0xD4: %02x/%02x\n", a, b);
 
 		switch (socket->dev->device) {
 		/*
@@ -166,6 +168,37 @@ static int o2micro_override(struct yenta_socket *socket)
 			              a | O2_RES_READ_PREFETCH | O2_RES_WRITE_BURST);
 			config_writeb(socket, O2_RESERVED2,
 			              b | O2_RES_READ_PREFETCH | O2_RES_WRITE_BURST);
+		case PCI_DEVICE_ID_O2_6933:
+			use_speedup = false;
+			break;
+		default:
+			use_speedup = true;
+			break;
+		}
+
+		/* the user may override our decision */
+		if (strcasecmp(o2_speedup, "on") == 0)
+			use_speedup = true;
+		else if (strcasecmp(o2_speedup, "off") == 0)
+			use_speedup = false;
+		else if (strcasecmp(o2_speedup, "default") != 0)
+			dev_warn(&socket->dev->dev,
+				"O2: Unknown parameter, using 'default'");
+
+		if (use_speedup) {
+			dev_info(&socket->dev->dev,
+				"O2: enabling read prefetch/write burst. If you experience problems or performance issues, use the yenta_socket parameter 'o2_speedup=off'\n");
+			config_writeb(socket, O2_RESERVED1,
+				      a | O2_RES_READ_PREFETCH | O2_RES_WRITE_BURST);
+			config_writeb(socket, O2_RESERVED2,
+				      b | O2_RES_READ_PREFETCH | O2_RES_WRITE_BURST);
+		} else {
+			dev_info(&socket->dev->dev,
+				"O2: disabling read prefetch/write burst. If you experience problems or performance issues, use the yenta_socket parameter 'o2_speedup=on'\n");
+			config_writeb(socket, O2_RESERVED1,
+				      a & ~(O2_RES_READ_PREFETCH | O2_RES_WRITE_BURST));
+			config_writeb(socket, O2_RESERVED2,
+				      b & ~(O2_RES_READ_PREFETCH | O2_RES_WRITE_BURST));
 		}
 	}
 

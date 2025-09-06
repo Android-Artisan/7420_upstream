@@ -27,7 +27,6 @@
  *
  *
  * ChangeLog
- * =========
  *	20010414	0.1 - created
  *	20010622	0.2 - basic rx and tx.
  *	20010711	0.3 - added duplex and link state detection support.
@@ -69,7 +68,6 @@
  *			     -	removal of dead code from Adrian Bunk
  *			     -	fix half duplex collision behaviour
  * Driver Overview
- * ===============
  *
  * This driver was originally written for the National Semiconductor
  * 83820 chip, a 10/100/1000 Mbps 64 bit PCI ethernet NIC.  Hopefully

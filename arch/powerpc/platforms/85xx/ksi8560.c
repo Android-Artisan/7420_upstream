@@ -35,6 +35,7 @@
 #include <asm/cpm2.h>
 #include <sysdev/cpm2_pic.h>
 
+#include "mpc85xx.h"
 
 #define KSI8560_CPLD_HVR		0x04 /* Hardware Version Register */
 #define KSI8560_CPLD_PVR		0x08 /* PLD Version Register */
@@ -109,6 +110,14 @@ static void __init ksi8560_pic_init(void)
 
 	setup_irq(0, NULL);
 #endif
+static void __init ksi8560_pic_init(void)
+{
+	struct mpic *mpic = mpic_alloc(NULL, 0, MPIC_BIG_ENDIAN,
+			0, 256, " OpenPIC  ");
+	BUG_ON(mpic == NULL);
+	mpic_init(mpic);
+
+	mpc85xx_cpm2_pic_init();
 }
 
 #ifdef CONFIG_CPM2
@@ -235,6 +244,9 @@ static int __init declare_of_platform_devices(void)
 	return 0;
 }
 machine_device_initcall(ksi8560, declare_of_platform_devices);
+}
+
+machine_device_initcall(ksi8560, mpc85xx_common_publish_devices);
 
 /*
  * Called very early, device-tree isn't unflattened

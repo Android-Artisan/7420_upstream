@@ -19,6 +19,9 @@
 
 #define BASE crypto_tfm_ctx_offset
 
+#include <linux/linkage.h>
+#include <asm/asm-offsets.h>
+
 #define R1	%rax
 #define R1E	%eax
 #define R1X	%ax
@@ -57,12 +60,17 @@
 FUNC:	movq	r1,r2;			\
 	movq	r3,r4;			\
 	leaq	BASE+KEY+48+4(r8),r9;	\
+	ENTRY(FUNC);			\
+	movq	r1,r2;			\
+	movq	r3,r4;			\
+	leaq	KEY+48(r8),r9;		\
 	movq	r10,r11;		\
 	movl	(r7),r5 ## E;		\
 	movl	4(r7),r1 ## E;		\
 	movl	8(r7),r6 ## E;		\
 	movl	12(r7),r7 ## E;		\
 	movl	BASE+0(r8),r10 ## E;	\
+	movl	480(r8),r10 ## E;	\
 	xorl	-48(r9),r5 ## E;	\
 	xorl	-44(r9),r1 ## E;	\
 	xorl	-40(r9),r6 ## E;	\
@@ -74,6 +82,7 @@ FUNC:	movq	r1,r2;			\
 	leaq	32(r9),r9;
 
 #define epilogue(r1,r2,r3,r4,r5,r6,r7,r8,r9) \
+#define epilogue(FUNC,r1,r2,r3,r4,r5,r6,r7,r8,r9) \
 	movq	r1,r2;			\
 	movq	r3,r4;			\
 	movl	r5 ## E,(r9);		\
@@ -81,6 +90,8 @@ FUNC:	movq	r1,r2;			\
 	movl	r7 ## E,8(r9);		\
 	movl	r8 ## E,12(r9);		\
 	ret;
+	ret;				\
+	ENDPROC(FUNC);
 
 #define round(TAB,OFFSET,r1,r2,r3,r4,r5,r6,r7,r8,ra,rb,rc,rd) \
 	movzbl	r2 ## H,r5 ## E;	\
@@ -136,6 +147,7 @@ FUNC:	movq	r1,r2;			\
 	prologue(FUNC,KEY,B128,B192,R2,R8,R7,R9,R1,R3,R4,R6,R10,R5,R11)
 
 #define return epilogue(R8,R2,R9,R7,R5,R6,R3,R4,R11)
+#define return(FUNC) epilogue(FUNC,R8,R2,R9,R7,R5,R6,R3,R4,R11)
 
 #define encrypt_round(TAB,OFFSET) \
 	round(TAB,OFFSET,R1,R2,R3,R4,R5,R6,R7,R10,R5,R6,R3,R4) \
@@ -159,6 +171,12 @@ FUNC:	movq	r1,r2;			\
 enc192:	encrypt_round(crypto_ft_tab,-64)
 	encrypt_round(crypto_ft_tab,-48)
 enc128:	encrypt_round(crypto_ft_tab,-32)
+	entry(aes_enc_blk,0,.Le128,.Le192)
+	encrypt_round(crypto_ft_tab,-96)
+	encrypt_round(crypto_ft_tab,-80)
+.Le192:	encrypt_round(crypto_ft_tab,-64)
+	encrypt_round(crypto_ft_tab,-48)
+.Le128:	encrypt_round(crypto_ft_tab,-32)
 	encrypt_round(crypto_ft_tab,-16)
 	encrypt_round(crypto_ft_tab,  0)
 	encrypt_round(crypto_ft_tab, 16)
@@ -178,6 +196,16 @@ enc128:	encrypt_round(crypto_ft_tab,-32)
 dec192:	decrypt_round(crypto_it_tab,-64)
 	decrypt_round(crypto_it_tab,-48)
 dec128:	decrypt_round(crypto_it_tab,-32)
+	return(aes_enc_blk)
+
+/* void aes_dec_blk(struct crypto_tfm *tfm, u8 *out, const u8 *in) */
+
+	entry(aes_dec_blk,240,.Ld128,.Ld192)
+	decrypt_round(crypto_it_tab,-96)
+	decrypt_round(crypto_it_tab,-80)
+.Ld192:	decrypt_round(crypto_it_tab,-64)
+	decrypt_round(crypto_it_tab,-48)
+.Ld128:	decrypt_round(crypto_it_tab,-32)
 	decrypt_round(crypto_it_tab,-16)
 	decrypt_round(crypto_it_tab,  0)
 	decrypt_round(crypto_it_tab, 16)
@@ -188,3 +216,4 @@ dec128:	decrypt_round(crypto_it_tab,-32)
 	decrypt_round(crypto_it_tab, 96)
 	decrypt_final(crypto_il_tab,112)
 	return
+	return(aes_dec_blk)

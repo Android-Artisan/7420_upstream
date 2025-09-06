@@ -191,6 +191,7 @@ cx_device_register(nasid_t nasid, int part_num, int mfg_num,
 		   struct hubdev_info *hubdev, int bt)
 {
 	struct cx_dev *cx_dev;
+	int r;
 
 	cx_dev = kzalloc(sizeof(struct cx_dev), GFP_KERNEL);
 	DBG("cx_dev= 0x%p\n", cx_dev);
@@ -209,6 +210,12 @@ cx_device_register(nasid_t nasid, int part_num, int mfg_num,
 	snprintf(cx_dev->dev.bus_id, BUS_ID_SIZE, "%d",
 		 cx_dev->cx_id.nasid);
 	device_register(&cx_dev->dev);
+	dev_set_name(&cx_dev->dev, "%d", cx_dev->cx_id.nasid);
+	r = device_register(&cx_dev->dev);
+	if (r) {
+		kfree(cx_dev);
+		return r;
+	}
 	get_device(&cx_dev->dev);
 
 	device_create_file(&cx_dev->dev, &dev_attr_cxdev_control);
@@ -370,6 +377,7 @@ static int is_fpga_tio(int nasid, int *bt)
 {
 	u16 uninitialized_var(ioboard_type);	/* GCC be quiet */
 	s64 rc;
+	long rc;
 
 	rc = ia64_sn_sysctl_ioboard_get(nasid, &ioboard_type);
 	if (rc) {
@@ -487,11 +495,15 @@ static int __init tiocx_init(void)
 {
 	cnodeid_t cnodeid;
 	int found_tiocx_device = 0;
+	int err;
 
 	if (!ia64_platform_is("sn2"))
 		return 0;
 
 	bus_register(&tiocx_bus_type);
+	err = bus_register(&tiocx_bus_type);
+	if (err)
+		return err;
 
 	for (cnodeid = 0; cnodeid < num_cnodes; cnodeid++) {
 		nasid_t nasid;

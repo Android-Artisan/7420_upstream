@@ -2,6 +2,7 @@
  *  GT641xx clockevent routines.
  *
  *  Copyright (C) 2007  Yoichi Yuasa <yoichi_yuasa@tripeaks.co.jp>
+ *  Copyright (C) 2007	Yoichi Yuasa <yuasa@linux-mips.org>
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -21,11 +22,13 @@
 #include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/spinlock.h>
+#include <linux/irq.h>
 
 #include <asm/gt64120.h>
 #include <asm/time.h>
 
 static DEFINE_SPINLOCK(gt641xx_timer_lock);
+static DEFINE_RAW_SPINLOCK(gt641xx_timer_lock);
 static unsigned int gt641xx_base_clock;
 
 void gt641xx_set_base_clock(unsigned int clock)
@@ -50,6 +53,7 @@ static int gt641xx_timer0_set_next_event(unsigned long delta,
 	u32 ctrl;
 
 	spin_lock(&gt641xx_timer_lock);
+	raw_spin_lock(&gt641xx_timer_lock);
 
 	ctrl = GT_READ(GT_TC_CONTROL_OFS);
 	ctrl &= ~(GT_TC_CONTROL_ENTC0_MSK | GT_TC_CONTROL_SELTC0_MSK);
@@ -59,6 +63,7 @@ static int gt641xx_timer0_set_next_event(unsigned long delta,
 	GT_WRITE(GT_TC_CONTROL_OFS, ctrl);
 
 	spin_unlock(&gt641xx_timer_lock);
+	raw_spin_unlock(&gt641xx_timer_lock);
 
 	return 0;
 }
@@ -87,6 +92,47 @@ static void gt641xx_timer0_set_mode(enum clock_event_mode mode,
 	GT_WRITE(GT_TC_CONTROL_OFS, ctrl);
 
 	spin_unlock(&gt641xx_timer_lock);
+static int gt641xx_timer0_shutdown(struct clock_event_device *evt)
+{
+	u32 ctrl;
+
+	raw_spin_lock(&gt641xx_timer_lock);
+
+	ctrl = GT_READ(GT_TC_CONTROL_OFS);
+	ctrl &= ~(GT_TC_CONTROL_ENTC0_MSK | GT_TC_CONTROL_SELTC0_MSK);
+	GT_WRITE(GT_TC_CONTROL_OFS, ctrl);
+
+	raw_spin_unlock(&gt641xx_timer_lock);
+	return 0;
+}
+
+static int gt641xx_timer0_set_oneshot(struct clock_event_device *evt)
+{
+	u32 ctrl;
+
+	raw_spin_lock(&gt641xx_timer_lock);
+
+	ctrl = GT_READ(GT_TC_CONTROL_OFS);
+	ctrl &= ~GT_TC_CONTROL_SELTC0_MSK;
+	ctrl |= GT_TC_CONTROL_ENTC0_MSK;
+	GT_WRITE(GT_TC_CONTROL_OFS, ctrl);
+
+	raw_spin_unlock(&gt641xx_timer_lock);
+	return 0;
+}
+
+static int gt641xx_timer0_set_periodic(struct clock_event_device *evt)
+{
+	u32 ctrl;
+
+	raw_spin_lock(&gt641xx_timer_lock);
+
+	ctrl = GT_READ(GT_TC_CONTROL_OFS);
+	ctrl |= GT_TC_CONTROL_ENTC0_MSK | GT_TC_CONTROL_SELTC0_MSK;
+	GT_WRITE(GT_TC_CONTROL_OFS, ctrl);
+
+	raw_spin_unlock(&gt641xx_timer_lock);
+	return 0;
 }
 
 static void gt641xx_timer0_event_handler(struct clock_event_device *dev)
@@ -101,6 +147,16 @@ static struct clock_event_device gt641xx_timer0_clockevent = {
 	.set_next_event	= gt641xx_timer0_set_next_event,
 	.set_mode	= gt641xx_timer0_set_mode,
 	.event_handler	= gt641xx_timer0_event_handler,
+	.name			= "gt641xx-timer0",
+	.features		= CLOCK_EVT_FEAT_PERIODIC |
+				  CLOCK_EVT_FEAT_ONESHOT,
+	.irq			= GT641XX_TIMER0_IRQ,
+	.set_next_event		= gt641xx_timer0_set_next_event,
+	.set_state_shutdown	= gt641xx_timer0_shutdown,
+	.set_state_periodic	= gt641xx_timer0_set_periodic,
+	.set_state_oneshot	= gt641xx_timer0_set_oneshot,
+	.tick_resume		= gt641xx_timer0_shutdown,
+	.event_handler		= gt641xx_timer0_event_handler,
 };
 
 static irqreturn_t gt641xx_timer0_interrupt(int irq, void *dev_id)
@@ -115,6 +171,7 @@ static irqreturn_t gt641xx_timer0_interrupt(int irq, void *dev_id)
 static struct irqaction gt641xx_timer0_irqaction = {
 	.handler	= gt641xx_timer0_interrupt,
 	.flags		= IRQF_DISABLED | IRQF_PERCPU,
+	.flags		= IRQF_PERCPU | IRQF_TIMER,
 	.name		= "gt641xx_timer0",
 };
 
@@ -132,6 +189,7 @@ static int __init gt641xx_timer0_clockevent_init(void)
 	clockevent_set_clock(cd, gt641xx_base_clock);
 	cd->max_delta_ns = clockevent_delta2ns(0x7fffffff, cd);
 	cd->min_delta_ns = clockevent_delta2ns(0x300, cd);
+	cd->cpumask = cpumask_of(0);
 
 	clockevents_register_device(&gt641xx_timer0_clockevent);
 

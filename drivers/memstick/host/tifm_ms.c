@@ -17,11 +17,13 @@
 #include <linux/highmem.h>
 #include <linux/scatterlist.h>
 #include <linux/log2.h>
+#include <linux/module.h>
 #include <asm/io.h>
 
 #define DRIVER_NAME "tifm_ms"
 
 static int no_dma;
+static bool no_dma;
 module_param(no_dma, bool, 0644);
 
 /*
@@ -210,6 +212,7 @@ static unsigned int tifm_ms_transfer_data(struct tifm_ms *host)
 
 			local_irq_save(flags);
 			buf = kmap_atomic(pg, KM_BIO_SRC_IRQ) + p_off;
+			buf = kmap_atomic(pg) + p_off;
 		} else {
 			buf = host->req->data + host->block_pos;
 			p_cnt = host->req->data_len - host->block_pos;
@@ -221,6 +224,7 @@ static unsigned int tifm_ms_transfer_data(struct tifm_ms *host)
 
 		if (host->req->long_data) {
 			kunmap_atomic(buf - p_off, KM_BIO_SRC_IRQ);
+			kunmap_atomic(buf - p_off);
 			local_irq_restore(flags);
 		}
 
@@ -547,6 +551,7 @@ static void tifm_ms_abort(unsigned long data)
 	       "%s : card failed to respond for a long period of time "
 	       "(%x, %x)\n",
 	       host->dev->dev.bus_id, host->req ? host->req->tpc : 0,
+	       dev_name(&host->dev->dev), host->req ? host->req->tpc : 0,
 	       host->cmd_flags);
 
 	tifm_eject(host->dev);
@@ -562,6 +567,7 @@ static int tifm_ms_probe(struct tifm_dev *sock)
 	      & readl(sock->addr + SOCK_PRESENT_STATE))) {
 		printk(KERN_WARNING "%s : card gone, unexpectedly\n",
 		       sock->dev.bus_id);
+		       dev_name(&sock->dev));
 		return rc;
 	}
 

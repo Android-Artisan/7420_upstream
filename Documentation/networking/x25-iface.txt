@@ -21,22 +21,26 @@ Packet Layer to Device Driver
 -----------------------------
 
 First Byte = 0x00
+First Byte = 0x00 (X25_IFACE_DATA)
 
 This indicates that the rest of the skbuff contains data to be transmitted
 over the LAPB link. The LAPB link should already exist before any data is
 passed down.
 
 First Byte = 0x01
+First Byte = 0x01 (X25_IFACE_CONNECT)
 
 Establish the LAPB link. If the link is already established then the connect
 confirmation message should be returned as soon as possible.
 
 First Byte = 0x02
+First Byte = 0x02 (X25_IFACE_DISCONNECT)
 
 Terminate the LAPB link. If it is already disconnected then the disconnect
 confirmation message should be returned as soon as possible.
 
 First Byte = 0x03
+First Byte = 0x03 (X25_IFACE_PARAMS)
 
 LAPB parameters. To be defined.
 
@@ -45,28 +49,31 @@ Device Driver to Packet Layer
 -----------------------------
 
 First Byte = 0x00
+First Byte = 0x00 (X25_IFACE_DATA)
 
 This indicates that the rest of the skbuff contains data that has been
 received over the LAPB link.
 
 First Byte = 0x01
+First Byte = 0x01 (X25_IFACE_CONNECT)
 
 LAPB link has been established. The same message is used for both a LAPB
 link connect_confirmation and a connect_indication.
 
 First Byte = 0x02
+First Byte = 0x02 (X25_IFACE_DISCONNECT)
 
 LAPB link has been terminated. This same message is used for both a LAPB
 link disconnect_confirmation and a disconnect_indication.
 
 First Byte = 0x03
+First Byte = 0x03 (X25_IFACE_PARAMS)
 
 LAPB parameters. To be defined.
 
 
 
 Possible Problems
-=================
 
 (Henner Eisen, 2000-10-28)
 
@@ -106,6 +113,7 @@ reduced by the following measures or a combination thereof:
     The lapb module interface was modified to support this. Its
     data_indication() method should now transparently pass the
     netif_rx() return value to the (lapb mopdule) caller.
+    netif_rx() return value to the (lapb module) caller.
 (2) Drivers for kernel versions 2.2.x should always check the global
     variable netdev_dropping when a new frame is received. The driver
     should only call netif_rx() if netdev_dropping is zero. Otherwise

@@ -22,6 +22,7 @@ static const int tfrc_lh_weights[NINTERVAL] = { 10, 10, 10, 10, 8, 6, 4, 2 };
 static inline u8 LIH_INDEX(const u8 ctr)
 {
 	return (LIH_SIZE - 1 - (ctr % LIH_SIZE));
+	return LIH_SIZE - 1 - (ctr % LIH_SIZE);
 }
 
 /* the `counter' index always points at the next entry to be populated */
@@ -68,6 +69,10 @@ static void tfrc_lh_calc_i_mean(struct tfrc_loss_hist *lh)
 	int i, k = tfrc_lh_length(lh) - 1; /* k is as in rfc3448bis, 5.4 */
 
 	for (i=0; i <= k; i++) {
+	if (k <= 0)
+		return;
+
+	for (i = 0; i <= k; i++) {
 		i_i = tfrc_lh_get_interval(lh, i);
 
 		if (i < k) {
@@ -120,6 +125,8 @@ u8 tfrc_lh_update_i_mean(struct tfrc_loss_hist *lh, struct sk_buff *skb)
 	return (lh->i_mean < old_i_mean);
 }
 EXPORT_SYMBOL_GPL(tfrc_lh_update_i_mean);
+	return lh->i_mean < old_i_mean;
+}
 
 /* Determine if `new_loss' does begin a new loss interval [RFC 4342, 10.2] */
 static inline u8 tfrc_lh_is_new_loss(struct tfrc_loss_interval *cur,
@@ -130,10 +137,13 @@ static inline u8 tfrc_lh_is_new_loss(struct tfrc_loss_interval *cur,
 }
 
 /** tfrc_lh_interval_add  -  Insert new record into the Loss Interval database
+/**
+ * tfrc_lh_interval_add  -  Insert new record into the Loss Interval database
  * @lh:		   Loss Interval database
  * @rh:		   Receive history containing a fresh loss event
  * @calc_first_li: Caller-dependent routine to compute length of first interval
  * @sk:		   Used by @calc_first_li in caller-specific way (subtyping)
+ *
  * Updates I_mean and returns 1 if a new interval has in fact been added to @lh.
  */
 int tfrc_lh_interval_add(struct tfrc_loss_hist *lh, struct tfrc_rx_hist *rh,

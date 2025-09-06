@@ -32,6 +32,7 @@ extern unsigned int prom_rev, prom_prev;
  * initialization is complete.
  */
 extern int prom_root_node;
+extern phandle prom_root_node;
 
 /* Pointer to prom structure containing the device tree traversal
  * and usage utility functions.  Only prom-lib should use these,
@@ -79,6 +80,10 @@ extern int prom_devclose(int device_handle);
  */
 extern void prom_seek(int device_handle, unsigned int seek_hival,
 		      unsigned int seek_lowval);
+void prom_init(struct linux_romvec *rom_ptr);
+
+/* Boot argument acquisition, returns the boot command line string. */
+char *prom_getbootargs(void);
 
 /* Miscellaneous routines, don't really fit in any category per se. */
 
@@ -87,16 +92,22 @@ extern void prom_reboot(char *boot_command);
 
 /* Evaluate the forth string passed. */
 extern void prom_feval(char *forth_string);
+void prom_reboot(char *boot_command);
+
+/* Evaluate the forth string passed. */
+void prom_feval(char *forth_string);
 
 /* Enter the prom, with possibility of continuation with the 'go'
  * command in newer proms.
  */
 extern void prom_cmdline(void);
+void prom_cmdline(void);
 
 /* Enter the prom, with no chance of continuation for the stand-alone
  * which calls this.
  */
 extern void prom_halt(void) __attribute__ ((noreturn));
+void __noreturn prom_halt(void);
 
 /* Set the PROM 'sync' callback function to the passed function pointer.
  * When the user gives the 'sync' command at the prom prompt while the
@@ -106,6 +117,7 @@ extern void prom_halt(void) __attribute__ ((noreturn));
  */
 typedef void (*sync_func_t)(void);
 extern void prom_setsync(sync_func_t func_ptr);
+void prom_setsync(sync_func_t func_ptr);
 
 /* Acquire the IDPROM of the root node in the prom device tree.  This
  * gets passed a buffer where you would like it stuffed.  The return value
@@ -139,6 +151,23 @@ extern void prom_putchar(char character);
 /* Prom's internal routines, don't use in kernel/boot code. */
 extern void prom_printf(char *fmt, ...);
 extern void prom_write(const char *buf, unsigned int len);
+unsigned char prom_get_idprom(char *idp_buffer, int idpbuf_size);
+
+/* Get the prom major version. */
+int prom_version(void);
+
+/* Get the prom plugin revision. */
+int prom_getrev(void);
+
+/* Get the prom firmware revision. */
+int prom_getprev(void);
+
+/* Write a buffer of characters to the console. */
+void prom_console_write_buf(const char *buf, int len);
+
+/* Prom's internal routines, don't use in kernel/boot code. */
+__printf(1, 2) void prom_printf(const char *fmt, ...);
+void prom_write(const char *buf, unsigned int len);
 
 /* Multiprocessor operations... */
 
@@ -191,16 +220,28 @@ extern int __prom_getsibling(int node);
 
 /* Get the child node of the given node, or zero if no child exists. */
 extern int prom_getchild(int parent_node);
+int prom_startcpu(int cpunode, struct linux_prom_registers *context_table,
+		  int context, char *program_counter);
+
+/* Initialize the memory lists based upon the prom version. */
+void prom_meminit(void);
+
+/* PROM device tree traversal functions... */
+
+/* Get the child node of the given node, or zero if no child exists. */
+phandle prom_getchild(phandle parent_node);
 
 /* Get the next sibling node of the given node, or zero if no further
  * siblings exist.
  */
 extern int prom_getsibling(int node);
+phandle prom_getsibling(phandle node);
 
 /* Get the length, at the passed node, of the given property type.
  * Returns -1 on error (ie. no such property at this node).
  */
 extern int prom_getproplen(int thisnode, char *property);
+int prom_getproplen(phandle thisnode, const char *property);
 
 /* Fetch the requested property using the given buffer.  Returns
  * the number of bytes the prom put into your buffer or -1 on error.
@@ -222,6 +263,20 @@ extern void prom_getstring(int node, char *prop, char *buf, int bufsize);
 
 /* Does the passed node have the given "name"? YES=1 NO=0 */
 extern int prom_nodematch(int thisnode, char *name);
+int __must_check prom_getproperty(phandle thisnode, const char *property,
+				  char *prop_buffer, int propbuf_size);
+
+/* Acquire an integer property. */
+int prom_getint(phandle node, char *property);
+
+/* Acquire an integer property, with a default value. */
+int prom_getintdefault(phandle node, char *property, int defval);
+
+/* Acquire a boolean property, 0=FALSE 1=TRUE. */
+int prom_getbool(phandle node, char *prop);
+
+/* Acquire a string property, null string on error. */
+void prom_getstring(phandle node, char *prop, char *buf, int bufsize);
 
 /* Search all siblings starting at the passed node for "name" matching
  * the given string.  Returns the node on success, zero on failure.
@@ -232,6 +287,7 @@ extern int prom_searchsiblings(int node_start, char *name);
  * Returns a null string on error.
  */
 extern char *prom_firstprop(int node, char *buffer);
+phandle prom_searchsiblings(phandle node_start, char *name);
 
 /* Returns the next property after the passed property for the given
  * node.  Returns null string on failure.
@@ -243,6 +299,10 @@ extern int prom_finddevice(char *name);
 
 /* Returns 1 if the specified node has given property. */
 extern int prom_node_has_property(int node, char *property);
+char *prom_nextprop(phandle node, char *prev_property, char *buffer);
+
+/* Returns phandle of the path specified */
+phandle prom_finddevice(char *name);
 
 /* Set the indicated property at the given node with the passed value.
  * Returns the number of bytes of your value that the prom took.
@@ -252,6 +312,10 @@ extern int prom_setprop(int node, char *prop_name, char *prop_value,
 
 extern int prom_pathtoinode(char *path);
 extern int prom_inst2pkg(int);
+int prom_setprop(phandle node, const char *prop_name, char *prop_value,
+		 int value_size);
+
+phandle prom_inst2pkg(int);
 
 /* Dorking with Bus ranges... */
 
@@ -266,6 +330,18 @@ extern void prom_apply_generic_ranges(int node, int parent,
 int cpu_find_by_instance(int instance, int *prom_node, int *mid);
 int cpu_find_by_mid(int mid, int *prom_node);
 int cpu_get_hwmid(int prom_node);
+void prom_apply_obio_ranges(struct linux_prom_registers *obioregs, int nregs);
+
+/* Apply ranges of any prom node (and optionally parent node as well) to registers. */
+void prom_apply_generic_ranges(phandle node, phandle parent,
+			       struct linux_prom_registers *sbusregs, int nregs);
+
+void prom_ranges_init(void);
+
+/* CPU probing helpers.  */
+int cpu_find_by_instance(int instance, phandle *prom_node, int *mid);
+int cpu_find_by_mid(int mid, phandle *prom_node);
+int cpu_get_hwmid(phandle prom_node);
 
 extern spinlock_t prom_lock;
 

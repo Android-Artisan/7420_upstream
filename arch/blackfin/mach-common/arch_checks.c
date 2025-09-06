@@ -25,6 +25,11 @@
  * along with this program; if not, see the file COPYING, or write
  * to the Free Software Foundation, Inc.,
  * 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+ * Do some checking to make sure things are OK
+ *
+ * Copyright 2007-2010 Analog Devices Inc.
+ *
+ * Licensed under the GPL-2 or later.
  */
 
 #include <asm/fixed_code.h>
@@ -61,4 +66,27 @@
 
 #if (CONFIG_BOOT_LOAD & 0x3)
 # error "The kernel load address must be 4 byte aligned"
+#endif
+
+/* The entire kernel must be able to make a 24bit pcrel call to start of L1 */
+#if ((0xffffffff - L1_CODE_START + 1) + CONFIG_BOOT_LOAD) > 0x1000000
+# error "The kernel load address is too high; keep it below 10meg for safety"
+#endif
+
+#if ANOMALY_05000263 && defined(CONFIG_MPU)
+# error the MPU will not function safely while Anomaly 05000263 applies
+#endif
+
+#if ANOMALY_05000448
+# error You are using a part with anomaly 05000448, this issue causes random memory read/write failures - that means random crashes.
+#endif
+
+/* if 220 exists, can not set External Memory WB and L2 not_cached, either External Memory not_cached and L2 WB */
+#if ANOMALY_05000220 && \
+	(defined(CONFIG_BFIN_EXTMEM_WRITEBACK) || defined(CONFIG_BFIN_L2_WRITEBACK))
+# error "Anomaly 05000220 does not allow you to use Write Back cache with L2 or External Memory"
+#endif
+
+#if ANOMALY_05000491 && !defined(CONFIG_ICACHE_FLUSH_L1)
+# error You need IFLUSH in L1 inst while Anomaly 05000491 applies
 #endif

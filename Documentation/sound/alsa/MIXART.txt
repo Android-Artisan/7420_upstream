@@ -3,7 +3,6 @@
 
 
 GENERAL
-=======
 
 The miXart8 is a multichannel audio processing and mixing soundcard
 that has 4 stereo audio inputs and 4 stereo audio outputs.
@@ -21,7 +20,6 @@ Use the mixartloader that can be found in the alsa-tools package.
 
 
 VERSION 0.1.0
-=============
 
 One miXart8 board will be represented as 4 alsa cards, each with 1
 stereo analog capture 'pcm0c' and 1 stereo analog playback 'pcm0p' device.
@@ -60,7 +58,6 @@ and AES volume controls which is set by 219 in the range from 0 to 255
 
 
 NOT YET IMPLEMENTED
-===================
 
 - external clock support (AES/EBU, Word Clock, Time Code, Video Sync)
 - MPEG audio formats
@@ -70,7 +67,6 @@ NOT YET IMPLEMENTED
 
 
 FIRMWARE
-========
 
 [As of 2.6.11, the firmware can be loaded automatically with hotplug
  when CONFIG_FW_LOADER is set.  The mixartloader is necessary only
@@ -79,6 +75,9 @@ FIRMWARE
 For loading the firmware automatically after the module is loaded, use
 the post-install command.  For example, add the following entry to
 /etc/modprobe.conf for miXart driver:
+For loading the firmware automatically after the module is loaded, use a
+install command.  For example, add the following entry to
+/etc/modprobe.d/mixart.conf for miXart driver:
 
 	install snd-mixart /sbin/modprobe --first-time -i snd-mixart && \
 			   /usr/bin/mixartloader
@@ -94,7 +93,6 @@ The firmware files are copyright by Digigram SA
 
 
 COPYRIGHT
-=========
 
 Copyright (c) 2003 Digigram SA <alsa@digigram.com>
 Distributable under GPL.

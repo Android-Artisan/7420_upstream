@@ -615,6 +615,7 @@ static const u32 S8[64] = {
 #define T4(x) pt[2 * (x) + 3]
 
 #define PC2(a, b, c, d) (T4(d) | T3(c) | T2(b) | T1(a))
+#define DES_PC2(a, b, c, d) (T4(d) | T3(c) | T2(b) | T1(a))
 
 /*
  * Encryption key expansion
@@ -655,6 +656,22 @@ unsigned long des_ekey(u32 *pe, const u8 *k)
 	pe[ 2 * 2 + 0] = PC2(a, b, c, d); d = rs[d]; c = rs[c];
 	pe[ 1 * 2 + 0] = PC2(c, d, a, b); b = rs[b];
 	pe[ 0 * 2 + 0] = PC2(b, c, d, a);
+	pe[15 * 2 + 0] = DES_PC2(a, b, c, d); d = rs[d];
+	pe[14 * 2 + 0] = DES_PC2(d, a, b, c); c = rs[c]; b = rs[b];
+	pe[13 * 2 + 0] = DES_PC2(b, c, d, a); a = rs[a]; d = rs[d];
+	pe[12 * 2 + 0] = DES_PC2(d, a, b, c); c = rs[c]; b = rs[b];
+	pe[11 * 2 + 0] = DES_PC2(b, c, d, a); a = rs[a]; d = rs[d];
+	pe[10 * 2 + 0] = DES_PC2(d, a, b, c); c = rs[c]; b = rs[b];
+	pe[ 9 * 2 + 0] = DES_PC2(b, c, d, a); a = rs[a]; d = rs[d];
+	pe[ 8 * 2 + 0] = DES_PC2(d, a, b, c); c = rs[c];
+	pe[ 7 * 2 + 0] = DES_PC2(c, d, a, b); b = rs[b]; a = rs[a];
+	pe[ 6 * 2 + 0] = DES_PC2(a, b, c, d); d = rs[d]; c = rs[c];
+	pe[ 5 * 2 + 0] = DES_PC2(c, d, a, b); b = rs[b]; a = rs[a];
+	pe[ 4 * 2 + 0] = DES_PC2(a, b, c, d); d = rs[d]; c = rs[c];
+	pe[ 3 * 2 + 0] = DES_PC2(c, d, a, b); b = rs[b]; a = rs[a];
+	pe[ 2 * 2 + 0] = DES_PC2(a, b, c, d); d = rs[d]; c = rs[c];
+	pe[ 1 * 2 + 0] = DES_PC2(c, d, a, b); b = rs[b];
+	pe[ 0 * 2 + 0] = DES_PC2(b, c, d, a);
 
 	/* Check if first half is weak */
 	w  = (a ^ c) | (b ^ d) | (rs[a] ^ c) | (b ^ rs[d]);
@@ -686,6 +703,22 @@ unsigned long des_ekey(u32 *pe, const u8 *k)
 	pe[ 2 * 2 + 1] = PC2(a, b, c, d); d = rs[d]; c = rs[c];
 	pe[ 1 * 2 + 1] = PC2(c, d, a, b); b = rs[b];
 	pe[ 0 * 2 + 1] = PC2(b, c, d, a);
+	pe[15 * 2 + 1] = DES_PC2(a, b, c, d); d = rs[d];
+	pe[14 * 2 + 1] = DES_PC2(d, a, b, c); c = rs[c]; b = rs[b];
+	pe[13 * 2 + 1] = DES_PC2(b, c, d, a); a = rs[a]; d = rs[d];
+	pe[12 * 2 + 1] = DES_PC2(d, a, b, c); c = rs[c]; b = rs[b];
+	pe[11 * 2 + 1] = DES_PC2(b, c, d, a); a = rs[a]; d = rs[d];
+	pe[10 * 2 + 1] = DES_PC2(d, a, b, c); c = rs[c]; b = rs[b];
+	pe[ 9 * 2 + 1] = DES_PC2(b, c, d, a); a = rs[a]; d = rs[d];
+	pe[ 8 * 2 + 1] = DES_PC2(d, a, b, c); c = rs[c];
+	pe[ 7 * 2 + 1] = DES_PC2(c, d, a, b); b = rs[b]; a = rs[a];
+	pe[ 6 * 2 + 1] = DES_PC2(a, b, c, d); d = rs[d]; c = rs[c];
+	pe[ 5 * 2 + 1] = DES_PC2(c, d, a, b); b = rs[b]; a = rs[a];
+	pe[ 4 * 2 + 1] = DES_PC2(a, b, c, d); d = rs[d]; c = rs[c];
+	pe[ 3 * 2 + 1] = DES_PC2(c, d, a, b); b = rs[b]; a = rs[a];
+	pe[ 2 * 2 + 1] = DES_PC2(a, b, c, d); d = rs[d]; c = rs[c];
+	pe[ 1 * 2 + 1] = DES_PC2(c, d, a, b); b = rs[b];
+	pe[ 0 * 2 + 1] = DES_PC2(b, c, d, a);
 
 	/* Fixup: 2413 5768 -> 1357 2468 */
 	for (d = 0; d < 16; ++d) {
@@ -738,6 +771,22 @@ static void dkey(u32 *pe, const u8 *k)
 	pe[13 * 2] = PC2(a, b, c, d); d = rs[d]; c = rs[c];
 	pe[14 * 2] = PC2(c, d, a, b); b = rs[b];
 	pe[15 * 2] = PC2(b, c, d, a);
+	pe[ 0 * 2] = DES_PC2(a, b, c, d); d = rs[d];
+	pe[ 1 * 2] = DES_PC2(d, a, b, c); c = rs[c]; b = rs[b];
+	pe[ 2 * 2] = DES_PC2(b, c, d, a); a = rs[a]; d = rs[d];
+	pe[ 3 * 2] = DES_PC2(d, a, b, c); c = rs[c]; b = rs[b];
+	pe[ 4 * 2] = DES_PC2(b, c, d, a); a = rs[a]; d = rs[d];
+	pe[ 5 * 2] = DES_PC2(d, a, b, c); c = rs[c]; b = rs[b];
+	pe[ 6 * 2] = DES_PC2(b, c, d, a); a = rs[a]; d = rs[d];
+	pe[ 7 * 2] = DES_PC2(d, a, b, c); c = rs[c];
+	pe[ 8 * 2] = DES_PC2(c, d, a, b); b = rs[b]; a = rs[a];
+	pe[ 9 * 2] = DES_PC2(a, b, c, d); d = rs[d]; c = rs[c];
+	pe[10 * 2] = DES_PC2(c, d, a, b); b = rs[b]; a = rs[a];
+	pe[11 * 2] = DES_PC2(a, b, c, d); d = rs[d]; c = rs[c];
+	pe[12 * 2] = DES_PC2(c, d, a, b); b = rs[b]; a = rs[a];
+	pe[13 * 2] = DES_PC2(a, b, c, d); d = rs[d]; c = rs[c];
+	pe[14 * 2] = DES_PC2(c, d, a, b); b = rs[b];
+	pe[15 * 2] = DES_PC2(b, c, d, a);
 
 	/* Skip to next table set */
 	pt += 512;
@@ -763,6 +812,22 @@ static void dkey(u32 *pe, const u8 *k)
 	pe[13 * 2 + 1] = PC2(a, b, c, d); d = rs[d]; c = rs[c];
 	pe[14 * 2 + 1] = PC2(c, d, a, b); b = rs[b];
 	pe[15 * 2 + 1] = PC2(b, c, d, a);
+	pe[ 0 * 2 + 1] = DES_PC2(a, b, c, d); d = rs[d];
+	pe[ 1 * 2 + 1] = DES_PC2(d, a, b, c); c = rs[c]; b = rs[b];
+	pe[ 2 * 2 + 1] = DES_PC2(b, c, d, a); a = rs[a]; d = rs[d];
+	pe[ 3 * 2 + 1] = DES_PC2(d, a, b, c); c = rs[c]; b = rs[b];
+	pe[ 4 * 2 + 1] = DES_PC2(b, c, d, a); a = rs[a]; d = rs[d];
+	pe[ 5 * 2 + 1] = DES_PC2(d, a, b, c); c = rs[c]; b = rs[b];
+	pe[ 6 * 2 + 1] = DES_PC2(b, c, d, a); a = rs[a]; d = rs[d];
+	pe[ 7 * 2 + 1] = DES_PC2(d, a, b, c); c = rs[c];
+	pe[ 8 * 2 + 1] = DES_PC2(c, d, a, b); b = rs[b]; a = rs[a];
+	pe[ 9 * 2 + 1] = DES_PC2(a, b, c, d); d = rs[d]; c = rs[c];
+	pe[10 * 2 + 1] = DES_PC2(c, d, a, b); b = rs[b]; a = rs[a];
+	pe[11 * 2 + 1] = DES_PC2(a, b, c, d); d = rs[d]; c = rs[c];
+	pe[12 * 2 + 1] = DES_PC2(c, d, a, b); b = rs[b]; a = rs[a];
+	pe[13 * 2 + 1] = DES_PC2(a, b, c, d); d = rs[d]; c = rs[c];
+	pe[14 * 2 + 1] = DES_PC2(c, d, a, b); b = rs[b];
+	pe[15 * 2 + 1] = DES_PC2(b, c, d, a);
 
 	/* Fixup: 2413 5768 -> 1357 2468 */
 	for (d = 0; d < 16; ++d) {
@@ -871,6 +936,15 @@ static int des3_ede_setkey(struct crypto_tfm *tfm, const u8 *key,
 		     !((K[2] ^ K[4]) | (K[3] ^ K[5]))))
 	{
 		*flags |= CRYPTO_TFM_RES_BAD_KEY_SCHED;
+int __des3_ede_setkey(u32 *expkey, u32 *flags, const u8 *key,
+		      unsigned int keylen)
+{
+	const u32 *K = (const u32 *)key;
+
+	if (unlikely(!((K[0] ^ K[2]) | (K[1] ^ K[3])) ||
+		     !((K[2] ^ K[4]) | (K[3] ^ K[5]))) &&
+		     (*flags & CRYPTO_TFM_REQ_WEAK_KEY)) {
+		*flags |= CRYPTO_TFM_RES_WEAK_KEY;
 		return -EINVAL;
 	}
 
@@ -879,6 +953,17 @@ static int des3_ede_setkey(struct crypto_tfm *tfm, const u8 *key,
 	des_ekey(expkey, key);
 
 	return 0;
+}
+EXPORT_SYMBOL_GPL(__des3_ede_setkey);
+
+static int des3_ede_setkey(struct crypto_tfm *tfm, const u8 *key,
+			   unsigned int keylen)
+{
+	struct des3_ede_ctx *dctx = crypto_tfm_ctx(tfm);
+	u32 *flags = &tfm->crt_flags;
+	u32 *expkey = dctx->expkey;
+
+	return __des3_ede_setkey(expkey, flags, key, keylen);
 }
 
 static void des3_ede_encrypt(struct crypto_tfm *tfm, u8 *dst, const u8 *src)
@@ -945,6 +1030,10 @@ static void des3_ede_decrypt(struct crypto_tfm *tfm, u8 *dst, const u8 *src)
 
 static struct crypto_alg des_alg = {
 	.cra_name		=	"des",
+static struct crypto_alg des_algs[2] = { {
+	.cra_name		=	"des",
+	.cra_driver_name	=	"des-generic",
+	.cra_priority		=	100,
 	.cra_flags		=	CRYPTO_ALG_TYPE_CIPHER,
 	.cra_blocksize		=	DES_BLOCK_SIZE,
 	.cra_ctxsize		=	sizeof(struct des_ctx),
@@ -961,6 +1050,10 @@ static struct crypto_alg des_alg = {
 
 static struct crypto_alg des3_ede_alg = {
 	.cra_name		=	"des3_ede",
+}, {
+	.cra_name		=	"des3_ede",
+	.cra_driver_name	=	"des3_ede-generic",
+	.cra_priority		=	100,
 	.cra_flags		=	CRYPTO_ALG_TYPE_CIPHER,
 	.cra_blocksize		=	DES3_EDE_BLOCK_SIZE,
 	.cra_ctxsize		=	sizeof(struct des3_ede_ctx),
@@ -990,12 +1083,18 @@ static int __init des_generic_mod_init(void)
 		crypto_unregister_alg(&des_alg);
 out:
 	return ret;
+} };
+
+static int __init des_generic_mod_init(void)
+{
+	return crypto_register_algs(des_algs, ARRAY_SIZE(des_algs));
 }
 
 static void __exit des_generic_mod_fini(void)
 {
 	crypto_unregister_alg(&des3_ede_alg);
 	crypto_unregister_alg(&des_alg);
+	crypto_unregister_algs(des_algs, ARRAY_SIZE(des_algs));
 }
 
 module_init(des_generic_mod_init);
@@ -1005,3 +1104,7 @@ MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("DES & Triple DES EDE Cipher Algorithms");
 MODULE_AUTHOR("Dag Arne Osvik <da@osvik.no>");
 MODULE_ALIAS("des");
+MODULE_ALIAS_CRYPTO("des");
+MODULE_ALIAS_CRYPTO("des-generic");
+MODULE_ALIAS_CRYPTO("des3_ede");
+MODULE_ALIAS_CRYPTO("des3_ede-generic");

@@ -1,5 +1,4 @@
 	Notes on the Generic Block Layer Rewrite in Linux 2.5
-	=====================================================
 
 Notes Written on Jan 15, 2002:
 	Jens Axboe <jens.axboe@oracle.com>
@@ -8,6 +7,7 @@ Notes Written on Jan 15, 2002:
 Last Updated May 2, 2002
 September 2003: Updated I/O Scheduler portions
 	Nick Piggin <piggin@cyberone.com.au>
+	Nick Piggin <npiggin@kernel.dk>
 
 Introduction:
 
@@ -50,6 +50,7 @@ Description of Contents:
   1.2 Tuning based on high level requirements/capabilities
 	1.2.1 I/O Barriers
 	1.2.2 Request Priority/Latency
+	1.2.1 Request Priority/Latency
   1.3 Direct access/bypass to lower layers for diagnostics and special
       device operations
 	1.3.1 Pre-built commands
@@ -188,6 +189,9 @@ low-memory pages.
 
 Note: Please refer to DMA-mapping.txt for a discussion on PCI high mem DMA
 aspects and mapping of scatter gather lists, and support for 64 bit PCI.
+Note: Please refer to Documentation/DMA-API-HOWTO.txt for a discussion
+on PCI high mem DMA aspects and mapping of scatter gather lists, and support
+for 64 bit PCI.
 
 Special handling is required only for cases where i/o needs to happen on
 pages at physical memory addresses beyond what the device can support. In these
@@ -277,6 +281,12 @@ driver. For more details regarding I/O barriers, please read barrier.txt
 in this directory.
 
 1.2.2 Request Priority/Latency
+from above e.g indicating that an i/o is just a readahead request, or priority
+settings (currently unused). As far as user applications are concerned they
+would need an additional mechanism either via open flags or ioctls, or some
+other upper level mechanism to communicate such settings to block.
+
+1.2.1 Request Priority/Latency
 
 Todo/Under discussion:
 Arjan's proposed request priority scheme allows higher levels some broad
@@ -454,6 +464,7 @@ struct bio {
 
        unsigned int	bi_vcnt;     /* how may bio_vec's */
        unsigned int	bi_idx;		/* current index into bio_vec array */
+       struct bvec_iter	bi_iter;	/* current index into bio_vec array */
 
        unsigned int	bi_size;     /* total size in bytes */
        unsigned short 	bi_phys_segments; /* segments after physaddr coalesce*/
@@ -481,6 +492,7 @@ With this multipage bio design:
   by using rq_for_each_segment.  This handles the fact that a request
   has multiple bios, each of which can have multiple segments.
 - Drivers which can't process a large bio in one shot can use the bi_idx
+- Drivers which can't process a large bio in one shot can use the bi_iter
   field to keep track of the next bio_vec entry to process.
   (e.g a 1MB bio_vec needs to be handled in max 128kB chunks for IDE)
   [TBD: Should preferably also have a bi_voffset and bi_vlen to avoid modifying
@@ -497,6 +509,7 @@ entries with their corresponding dma address mappings filled in at the
 appropriate time. As an optimization, contiguous physical pages can be
 covered by a single entry where <page> refers to the first page and <len>
 covers the range of pages (upto 16 contiguous pages could be covered this
+covers the range of pages (up to 16 contiguous pages could be covered this
 way). There is a helper routine (blk_rq_map_sg) which drivers can use to build
 the sg list.
 
@@ -565,6 +578,7 @@ struct request {
 	int tag;	/* command tag associated with request */
 	void *special;  /* same as before */
 	char *buffer;   /* valid only for low memory buffers upto
+	char *buffer;   /* valid only for low memory buffers up to
 			 current_nr_sectors */
 	.
 	.
@@ -590,6 +604,7 @@ nr_sectors and current_nr_sectors fields (based on the corresponding
 hard_xxx values and the number of bytes transferred) and updates it on
 every transfer that invokes end_that_request_first. It does the same for the
 buffer, bio, bio->bi_idx fields too.
+buffer, bio, bio->bi_iter fields too.
 
 The buffer field is just a virtual address mapping of the current segment
 of the i/o buffer in cases where the buffer resides in low-memory. For high
@@ -917,6 +932,9 @@ to refer to both parts and I/O scheduler to specific I/O schedulers.
 Block layer implements generic dispatch queue in ll_rw_blk.c and elevator.c.
 The generic dispatch queue is responsible for properly ordering barrier
 requests, requeueing, handling non-fs requests and all other subtleties.
+Block layer implements generic dispatch queue in block/*.c.
+The generic dispatch queue is responsible for requeueing, handling non-fs
+requests and all other subtleties.
 
 Specific I/O schedulers are responsible for ordering normal filesystem
 requests.  They can also choose to delay certain requests to improve
@@ -928,6 +946,8 @@ change to another one dynamically.
 A block layer call to the i/o scheduler follows the convention elv_xxx(). This
 calls elevator_xxx_fn in the elevator switch (drivers/block/elevator.c). Oh,
 xxx and xxx might not match exactly, but use your imagination. If an elevator
+calls elevator_xxx_fn in the elevator switch (block/elevator.c). Oh, xxx
+and xxx might not match exactly, but use your imagination. If an elevator
 doesn't implement a function, the switch does nothing or some minimal house
 keeping work.
 
@@ -954,6 +974,13 @@ elevator_allow_merge_fn		called whenever the block layer determines
 				this hook allows it to do that.
 
 elevator_dispatch_fn		fills the dispatch queue with ready requests.
+				this hook allows it to do that. Note however
+				that two *requests* can still be merged at later
+				time. Currently the io scheduler has no way to
+				prevent that. It can only learn about the fact
+				from elevator_merge_req_fn callback.
+
+elevator_dispatch_fn*		fills the dispatch queue with ready requests.
 				I/O schedulers are free to postpone requests by
 				not filling the dispatch queue unless @force
 				is non-zero.  Once dispatched, I/O schedulers
@@ -966,6 +993,7 @@ elevator_queue_empty_fn		returns true if the merge queue is empty.
 				Drivers shouldn't use this, but rather check
 				if elv_next_request is NULL (without losing the
 				request if one exists!)
+elevator_add_req_fn*		called to add a new request into the scheduler
 
 elevator_former_req_fn
 elevator_latter_req_fn		These return the request before or after the
@@ -991,6 +1019,7 @@ elevator_deactivate_req_fn	Called when device driver decides to delay
 				a request by requeueing it.
 
 elevator_init_fn
+elevator_init_fn*
 elevator_exit_fn		Allocate and free any elevator specific storage
 				for a queue.
 
@@ -1048,6 +1077,7 @@ that it collects up enough requests in the queue to be able to take
 advantage of the sorting/merging logic in the elevator. If the
 queue is empty when a request comes in, then it plugs the request queue
 (sort of like plugging the bottom of a vessel to get fluid to build up)
+(sort of like plugging the bath tub of a vessel to get fluid to build up)
 till it fills up with a few more requests, before starting to service
 the requests. This provides an opportunity to merge/sort the requests before
 passing them down to the device. There are various conditions when the queue is
@@ -1056,6 +1086,11 @@ could be on demand. For example wait_on_buffer sets the unplugging going
 (by running tq_disk) so the read gets satisfied soon. So in the read case,
 the queue gets explicitly unplugged as part of waiting for completion,
 in fact all queues get unplugged as a side-effect.
+through sync_buffer() running blk_run_address_space(mapping). Or the caller
+can do it explicity through blk_unplug(bdev). So in the read case,
+the queue gets explicitly unplugged as part of waiting for completion on that
+buffer. For page driven IO, the address space ->sync_page() takes care of
+doing the blk_run_address_space().
 
 Aside:
   This is kind of controversial territory, as it's not clear if plugging is
@@ -1145,6 +1180,7 @@ as specified.
 
 Now bh->b_end_io is replaced by bio->bi_end_io, but most of the time the
 right thing to use is bio_endio(bio, uptodate) instead.
+right thing to use is bio_endio(bio) instead.
 
 If the driver is dropping the io_request_lock from its request_fn strategy,
 then it just needs to replace that with q->queue_lock instead.
@@ -1170,6 +1206,8 @@ As mentioned, there is no virtual mapping of a bio. For DMA, this is
 not a problem as the driver probably never will need a virtual mapping.
 Instead it needs a bus mapping (pci_map_page for a single segment or
 use blk_rq_map_sg for scatter gather) to be able to ship it to the driver. For
+Instead it needs a bus mapping (dma_map_page for a single segment or
+use dma_map_sg for scatter gather) to be able to ship it to the driver. For
 PIO drivers (or drivers that need to revert to PIO transfer once in a
 while (IDE for example)), where the CPU is doing the actual data
 transfer a virtual mapping is needed. If the driver supports highmem I/O,

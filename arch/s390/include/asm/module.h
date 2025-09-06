@@ -1,5 +1,8 @@
 #ifndef _ASM_S390_MODULE_H
 #define _ASM_S390_MODULE_H
+
+#include <asm-generic/module.h>
+
 /*
  * This file contains the s390 architecture specific module code.
  */

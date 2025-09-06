@@ -11,6 +11,7 @@
 
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/slab.h>
 #include <linux/init.h>
 #include <linux/sched.h>
 #include "internal.h"
@@ -65,6 +66,8 @@ static int afs_vlocation_access_vl_by_name(struct afs_vlocation *vl,
 				goto out;
 			goto rotate;
 		case -ENOMEDIUM:
+		case -EKEYREJECTED:
+		case -EKEYEXPIRED:
 			goto out;
 		default:
 			ret = -EIO;
@@ -284,6 +287,8 @@ static void afs_vlocation_apply_update(struct afs_vlocation *vl,
 #ifdef AFS_CACHING_SUPPORT
 	/* update volume entry in local cache */
 	cachefs_update_cookie(vl->cache);
+#ifdef CONFIG_AFS_FSCACHE
+	fscache_update_cookie(vl->cache);
 #endif
 }
 
@@ -309,6 +314,10 @@ static int afs_vlocation_fill_in_record(struct afs_vlocation *vl,
 			       &afs_volume_cache_index_def,
 			       vlocation,
 			       &vl->cache);
+#ifdef CONFIG_AFS_FSCACHE
+	vl->cache = fscache_acquire_cookie(vl->cell->cache,
+					   &afs_vlocation_cache_index_def, vl,
+					   true);
 #endif
 
 	if (vl->valid) {
@@ -340,7 +349,8 @@ static void afs_vlocation_queue_for_updates(struct afs_vlocation *vl)
 	struct afs_vlocation *xvl;
 
 	/* wait at least 10 minutes before updating... */
-	vl->update_at = get_seconds() + afs_vlocation_update_timeout;
+	vl->update_at = ktime_get_real_seconds() +
+			afs_vlocation_update_timeout;
 
 	spin_lock(&afs_vlocation_updates_lock);
 
@@ -420,6 +430,11 @@ fill_in_record:
 	spin_unlock(&vl->lock);
 	wake_up(&vl->waitq);
 
+	/* update volume entry in local cache */
+#ifdef CONFIG_AFS_FSCACHE
+	fscache_update_cookie(vl->cache);
+#endif
+
 	/* schedule for regular updates */
 	afs_vlocation_queue_for_updates(vl);
 	goto success;
@@ -466,6 +481,7 @@ found_in_memory:
 
 success:
 	_leave(" = %p",vl);
+	_leave(" = %p", vl);
 	return vl;
 
 error_abandon:
@@ -504,6 +520,9 @@ void afs_put_vlocation(struct afs_vlocation *vl)
 		vl->time_of_death = get_seconds();
 		schedule_delayed_work(&afs_vlocation_reap,
 				      afs_vlocation_timeout * HZ);
+		vl->time_of_death = ktime_get_real_seconds();
+		queue_delayed_work(afs_wq, &afs_vlocation_reap,
+				   afs_vlocation_timeout * HZ);
 
 		/* suspend updates on this record */
 		if (!list_empty(&vl->update)) {
@@ -527,6 +546,9 @@ static void afs_vlocation_destroy(struct afs_vlocation *vl)
 	cachefs_relinquish_cookie(vl->cache, 0);
 #endif
 
+#ifdef CONFIG_AFS_FSCACHE
+	fscache_relinquish_cookie(vl->cache, 0);
+#endif
 	afs_put_cell(vl->cell);
 	kfree(vl);
 }
@@ -539,11 +561,11 @@ static void afs_vlocation_reaper(struct work_struct *work)
 	LIST_HEAD(corpses);
 	struct afs_vlocation *vl;
 	unsigned long delay, expiry;
-	time_t now;
+	time64_t now;
 
 	_enter("");
 
-	now = get_seconds();
+	now = ktime_get_real_seconds();
 	spin_lock(&afs_vlocation_graveyard_lock);
 
 	while (!list_empty(&afs_vlocation_graveyard)) {
@@ -563,6 +585,7 @@ static void afs_vlocation_reaper(struct work_struct *work)
 				schedule_delayed_work(&afs_vlocation_reap,
 						      delay);
 			}
+			mod_delayed_work(afs_wq, &afs_vlocation_reap, delay);
 			break;
 		}
 
@@ -617,6 +640,10 @@ void afs_vlocation_purge(void)
 
 	cancel_delayed_work(&afs_vlocation_reap);
 	schedule_delayed_work(&afs_vlocation_reap, 0);
+	mod_delayed_work(afs_vlocation_update_worker, &afs_vlocation_update, 0);
+	destroy_workqueue(afs_vlocation_update_worker);
+
+	mod_delayed_work(afs_wq, &afs_vlocation_reap, 0);
 }
 
 /*
@@ -626,13 +653,13 @@ static void afs_vlocation_updater(struct work_struct *work)
 {
 	struct afs_cache_vlocation vldb;
 	struct afs_vlocation *vl, *xvl;
-	time_t now;
+	time64_t now;
 	long timeout;
 	int ret;
 
 	_enter("");
 
-	now = get_seconds();
+	now = ktime_get_real_seconds();
 
 	/* find a record to update */
 	spin_lock(&afs_vlocation_updates_lock);
@@ -688,7 +715,8 @@ static void afs_vlocation_updater(struct work_struct *work)
 
 	/* and then reschedule */
 	_debug("reschedule");
-	vl->update_at = get_seconds() + afs_vlocation_update_timeout;
+	vl->update_at = ktime_get_real_seconds() +
+			afs_vlocation_update_timeout;
 
 	spin_lock(&afs_vlocation_updates_lock);
 

@@ -15,6 +15,7 @@
  * binaries.
  */
 #include <linux/compiler.h>
+#include <linux/compat.h>
 #include <linux/kernel.h>
 #include <linux/sched.h>
 #include <linux/mm.h>
@@ -41,6 +42,10 @@ int ptrace_setregs(struct task_struct *child, __s64 __user *data);
 
 int ptrace_getfpregs(struct task_struct *child, __u32 __user *data);
 int ptrace_setfpregs(struct task_struct *child, __u32 __user *data);
+
+#include <asm/reg.h>
+#include <asm/uaccess.h>
+#include <asm/bootinfo.h>
 
 /*
  * Tracing a 32-bit process with a 64-bit strace and vice versa will not
@@ -91,6 +96,14 @@ asmlinkage int sys32_ptrace(int request, int pid, int addr, int data)
 		ret = put_user(tmp, (unsigned int __user *) (unsigned long) data);
 		break;
 	}
+long compat_arch_ptrace(struct task_struct *child, compat_long_t request,
+			compat_ulong_t caddr, compat_ulong_t cdata)
+{
+	int addr = caddr;
+	int data = cdata;
+	int ret;
+
+	switch (request) {
 
 	/*
 	 * Read 4 bytes of the other process' storage
@@ -124,6 +137,7 @@ asmlinkage int sys32_ptrace(int request, int pid, int addr, int data)
 	/* Read the word at location addr in the USER area. */
 	case PTRACE_PEEKUSR: {
 		struct pt_regs *regs;
+		union fpureg *fregs;
 		unsigned int tmp;
 
 		regs = task_pt_regs(child);
@@ -137,6 +151,13 @@ asmlinkage int sys32_ptrace(int request, int pid, int addr, int data)
 			if (tsk_used_math(child)) {
 				fpureg_t *fregs = get_fpu_regs(child);
 
+			if (!tsk_used_math(child)) {
+				/* FP not yet used */
+				tmp = -1;
+				break;
+			}
+			fregs = get_fpu_regs(child);
+			if (test_tsk_thread_flag(child, TIF_32BIT_FPREGS)) {
 				/*
 				 * The odd registers are actually the high
 				 * order bits of the values stored in the even
@@ -149,6 +170,11 @@ asmlinkage int sys32_ptrace(int request, int pid, int addr, int data)
 			} else {
 				tmp = -1;	/* FP not yet used  */
 			}
+				tmp = get_fpr32(&fregs[(addr & ~1) - FPR_BASE],
+						addr & 1);
+				break;
+			}
+			tmp = get_fpr64(&fregs[addr - FPR_BASE], 0);
 			break;
 		case PC:
 			tmp = regs->cp0_epc;
@@ -208,6 +234,10 @@ asmlinkage int sys32_ptrace(int request, int pid, int addr, int data)
 			preempt_enable();
 			break;
 		}
+		case FPC_EIR:
+			/* implementation / version register */
+			tmp = boot_cpu_data.fpu_id;
+			break;
 		case DSP_BASE ... DSP_BASE + 5: {
 			dspreg_t *dregs;
 
@@ -215,9 +245,10 @@ asmlinkage int sys32_ptrace(int request, int pid, int addr, int data)
 				tmp = 0;
 				ret = -EIO;
 				goto out_tsk;
+				goto out;
 			}
 			dregs = __get_dsp_regs(child);
-			tmp = (unsigned long) (dregs[addr - DSP_BASE]);
+			tmp = dregs[addr - DSP_BASE];
 			break;
 		}
 		case DSP_CONTROL:
@@ -225,6 +256,7 @@ asmlinkage int sys32_ptrace(int request, int pid, int addr, int data)
 				tmp = 0;
 				ret = -EIO;
 				goto out_tsk;
+				goto out;
 			}
 			tmp = child->thread.dsp.dspcontrol;
 			break;
@@ -232,6 +264,7 @@ asmlinkage int sys32_ptrace(int request, int pid, int addr, int data)
 			tmp = 0;
 			ret = -EIO;
 			goto out_tsk;
+			goto out;
 		}
 		ret = put_user(tmp, (unsigned __user *) (unsigned long) data);
 		break;
@@ -283,6 +316,7 @@ asmlinkage int sys32_ptrace(int request, int pid, int addr, int data)
 			break;
 		case FPR_BASE ... FPR_BASE + 31: {
 			fpureg_t *fregs = get_fpu_regs(child);
+			union fpureg *fregs = get_fpu_regs(child);
 
 			if (!tsk_used_math(child)) {
 				/* FP not yet used  */
@@ -304,6 +338,18 @@ asmlinkage int sys32_ptrace(int request, int pid, int addr, int data)
 				   bits!  */
 				fregs[addr - FPR_BASE] |= (unsigned int)data;
 			}
+			if (test_thread_flag(TIF_32BIT_FPREGS)) {
+			if (test_tsk_thread_flag(child, TIF_32BIT_FPREGS)) {
+				/*
+				 * The odd registers are actually the high
+				 * order bits of the values stored in the even
+				 * registers - unless we're using r2k_switch.S.
+				 */
+				set_fpr32(&fregs[(addr & ~1) - FPR_BASE],
+					  addr & 1, data);
+				break;
+			}
+			set_fpr64(&fregs[addr - FPR_BASE], 0, data);
 			break;
 		}
 		case PC:
@@ -351,6 +397,13 @@ asmlinkage int sys32_ptrace(int request, int pid, int addr, int data)
 
 	case PTRACE_SETREGS:
 		ret = ptrace_setregs(child, (__s64 __user *) (__u64) data);
+		ret = ptrace_getregs(child,
+				(struct user_pt_regs __user *) (__u64) data);
+		break;
+
+	case PTRACE_SETREGS:
+		ret = ptrace_setregs(child,
+				(struct user_pt_regs __user *) (__u64) data);
 		break;
 
 	case PTRACE_GETFPREGS:
@@ -419,5 +472,20 @@ out_tsk:
 	put_task_struct(child);
 out:
 	unlock_kernel();
+	case PTRACE_GET_WATCH_REGS:
+		ret = ptrace_get_watch_regs(child,
+			(struct pt_watch_regs __user *) (unsigned long) addr);
+		break;
+
+	case PTRACE_SET_WATCH_REGS:
+		ret = ptrace_set_watch_regs(child,
+			(struct pt_watch_regs __user *) (unsigned long) addr);
+		break;
+
+	default:
+		ret = compat_ptrace_request(child, request, addr, data);
+		break;
+	}
+out:
 	return ret;
 }

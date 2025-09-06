@@ -38,16 +38,23 @@
 
 static irqreturn_t hp300_tick(int irq, void *dev_id)
 {
+	irq_handler_t timer_routine = dev_id;
+	unsigned long flags;
 	unsigned long tmp;
-	irq_handler_t vector = dev_id;
+
+	local_irq_save(flags);
 	in_8(CLOCKBASE + CLKSR);
 	asm volatile ("movpw %1@(5),%0" : "=d" (tmp) : "a" (CLOCKBASE));
+	timer_routine(0, NULL);
+	local_irq_restore(flags);
+
 	/* Turn off the network and SCSI leds */
 	blinken_leds(0, 0xe0);
-	return vector(irq, NULL);
+	return IRQ_HANDLED;
 }
 
 unsigned long hp300_gettimeoffset(void)
+u32 hp300_gettimeoffset(void)
 {
   /* Read current timer 1 value */
   unsigned char lsb, msb1, msb2;
@@ -61,6 +68,7 @@ unsigned long hp300_gettimeoffset(void)
     lsb = in_8(CLOCKBASE + 7);
   ticks = INTVAL - ((msb2 << 8) | lsb);
   return (USECS_PER_JIFFY * ticks) / INTVAL;
+  return ((USECS_PER_JIFFY * ticks) / INTVAL) * 1000;
 }
 
 void __init hp300_sched_init(irq_handler_t vector)
@@ -71,6 +79,8 @@ void __init hp300_sched_init(irq_handler_t vector)
   asm volatile(" movpw %0,%1@(5)" : : "d" (INTVAL), "a" (CLOCKBASE));
 
   request_irq(IRQ_AUTO_6, hp300_tick, IRQ_FLG_STD, "timer tick", vector);
+  if (request_irq(IRQ_AUTO_6, hp300_tick, 0, "timer tick", vector))
+    pr_err("Couldn't register timer interrupt\n");
 
   out_8(CLOCKBASE + CLKCR2, 0x1);		/* select CR1 */
   out_8(CLOCKBASE + CLKCR1, 0x40);		/* enable irq */

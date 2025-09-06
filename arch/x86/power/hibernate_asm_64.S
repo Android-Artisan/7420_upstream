@@ -19,6 +19,7 @@
 #include <linux/linkage.h>
 #include <asm/segment.h>
 #include <asm/page.h>
+#include <asm/page_types.h>
 #include <asm/asm-offsets.h>
 #include <asm/processor-flags.h>
 
@@ -81,6 +82,9 @@ ENTRY(core_restore_code)
 loop:
 	testq	%rdx, %rdx
 	jz	done
+.Lloop:
+	testq	%rdx, %rdx
+	jz	.Ldone
 
 	/* get addresses from the pbe and copy the page */
 	movq	pbe_address(%rdx), %rsi
@@ -93,6 +97,8 @@ loop:
 	movq	pbe_next(%rdx), %rdx
 	jmp	loop
 done:
+	jmp	.Lloop
+.Ldone:
 	/* jump to the restore_registers address from the image header */
 	jmpq	*%rax
 	/*
@@ -138,6 +144,9 @@ ENTRY(restore_registers)
 	movq	pt_regs_r15(%rax), %r15
 	pushq	pt_regs_flags(%rax)
 	popfq
+
+	/* Saved in save_processor_state. */
+	lgdt	saved_context_gdt_desc(%rax)
 
 	xorq	%rax, %rax
 

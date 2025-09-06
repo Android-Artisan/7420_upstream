@@ -10,6 +10,8 @@
  *
  */
  
+
+#include <linux/sched.h>
 #include "hisax.h"
 #include "isdnl1.h"
 #include "isac.h"
@@ -24,6 +26,9 @@ add_arcofi_timer(struct IsdnCardState *cs) {
 	}	
 	init_timer(&cs->dc.isac.arcofitimer);
 	cs->dc.isac.arcofitimer.expires = jiffies + ((ARCOFI_TIMER_VALUE * HZ)/1000);
+	}
+	init_timer(&cs->dc.isac.arcofitimer);
+	cs->dc.isac.arcofitimer.expires = jiffies + ((ARCOFI_TIMER_VALUE * HZ) / 1000);
 	add_timer(&cs->dc.isac.arcofitimer);
 }
 
@@ -40,11 +45,17 @@ send_arcofi(struct IsdnCardState *cs) {
 		case 1: cs->dc.isac.mon_tx[1] |= 0x40;
 			break;
 		default: break;
+	switch (cs->dc.isac.arcofi_bc) {
+	case 0: break;
+	case 1: cs->dc.isac.mon_tx[1] |= 0x40;
+		break;
+	default: break;
 	}
 	cs->dc.isac.mocr &= 0x0f;
 	cs->dc.isac.mocr |= 0xa0;
 	cs->writeisac(cs, ISAC_MOCR, cs->dc.isac.mocr);
 	val = cs->readisac(cs, ISAC_MOSR);
+	(void) cs->readisac(cs, ISAC_MOSR);
 	cs->writeisac(cs, ISAC_MOX1, cs->dc.isac.mon_tx[cs->dc.isac.mon_txp++]);
 	cs->dc.isac.mocr |= 0x10;
 	cs->writeisac(cs, ISAC_MOCR, cs->dc.isac.mocr);
@@ -95,6 +106,25 @@ arcofi_fsm(struct IsdnCardState *cs, int event, void *data) {
 					cs->dc.isac.arcofi_list =
 						cs->dc.isac.arcofi_list->next;
 					cs->dc.isac.arcofi_state = ARCOFI_TRANSMIT;
+		return (1);
+	}
+	switch (cs->dc.isac.arcofi_state) {
+	case ARCOFI_NOP:
+		if (event == ARCOFI_START) {
+			cs->dc.isac.arcofi_list = data;
+			cs->dc.isac.arcofi_state = ARCOFI_TRANSMIT;
+			send_arcofi(cs);
+		}
+		break;
+	case ARCOFI_TRANSMIT:
+		if (event == ARCOFI_TX_END) {
+			if (cs->dc.isac.arcofi_list->receive) {
+				add_arcofi_timer(cs);
+				cs->dc.isac.arcofi_state = ARCOFI_RECEIVE;
+			} else {
+				if (cs->dc.isac.arcofi_list->next) {
+					cs->dc.isac.arcofi_list =
+						cs->dc.isac.arcofi_list->next;
 					send_arcofi(cs);
 				} else {
 					if (test_and_clear_bit(FLG_ARCOFI_TIMER, &cs->HW_Flags)) {
@@ -110,6 +140,29 @@ arcofi_fsm(struct IsdnCardState *cs, int event, void *data) {
 			return(2);
 	}
 	return(0);
+		}
+		break;
+	case ARCOFI_RECEIVE:
+		if (event == ARCOFI_RX_END) {
+			if (cs->dc.isac.arcofi_list->next) {
+				cs->dc.isac.arcofi_list =
+					cs->dc.isac.arcofi_list->next;
+				cs->dc.isac.arcofi_state = ARCOFI_TRANSMIT;
+				send_arcofi(cs);
+			} else {
+				if (test_and_clear_bit(FLG_ARCOFI_TIMER, &cs->HW_Flags)) {
+					del_timer(&cs->dc.isac.arcofitimer);
+				}
+				cs->dc.isac.arcofi_state = ARCOFI_NOP;
+				wake_up(&cs->dc.isac.arcofi_wait);
+			}
+		}
+		break;
+	default:
+		debugl1(cs, "Arcofi unknown state %x", cs->dc.isac.arcofi_state);
+		return (2);
+	}
+	return (0);
 }
 
 static void

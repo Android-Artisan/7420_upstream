@@ -70,6 +70,11 @@
  * For history of changes, see Documentation/ChangeLog.megaraid
  */
 
+ * For history of changes, see Documentation/scsi/ChangeLog.megaraid
+ */
+
+#include <linux/slab.h>
+#include <linux/module.h>
 #include "megaraid_mbox.h"
 
 static int megaraid_init(void);
@@ -114,6 +119,7 @@ static void megaraid_mbox_setup_device_map(adapter_t *);
 
 static int megaraid_queue_command(struct scsi_cmnd *,
 		void (*)(struct scsi_cmnd *));
+static int megaraid_queue_command(struct Scsi_Host *, struct scsi_cmnd *);
 static scb_t *megaraid_mbox_build_cmd(adapter_t *, struct scsi_cmnd *, int *);
 static void megaraid_mbox_runpendq(adapter_t *, scb_t *);
 static void megaraid_mbox_prepare_pthru(adapter_t *, scb_t *,
@@ -305,6 +311,7 @@ static struct pci_driver megaraid_pci_driver = {
 	.id_table	= pci_id_table_g,
 	.probe		= megaraid_probe_one,
 	.remove		= __devexit_p(megaraid_detach_one),
+	.remove		= megaraid_detach_one,
 	.shutdown	= megaraid_mbox_shutdown,
 };
 
@@ -361,6 +368,9 @@ static struct scsi_host_template megaraid_template_g = {
 	.eh_host_reset_handler		= megaraid_reset_handler,
 	.change_queue_depth		= megaraid_change_queue_depth,
 	.use_clustering			= ENABLE_CLUSTERING,
+	.change_queue_depth		= scsi_change_queue_depth,
+	.use_clustering			= ENABLE_CLUSTERING,
+	.no_write_same			= 1,
 	.sdev_attrs			= megaraid_sdev_attrs,
 	.shost_attrs			= megaraid_shost_attrs,
 };
@@ -429,6 +439,7 @@ megaraid_exit(void)
  * PCI hotplug susbsystem.
  */
 static int __devinit
+static int
 megaraid_probe_one(struct pci_dev *pdev, const struct pci_device_id *id)
 {
 	adapter_t	*adapter;
@@ -474,6 +485,7 @@ megaraid_probe_one(struct pci_dev *pdev, const struct pci_device_id *id)
 	// Setup the default DMA mask. This would be changed later on
 	// depending on hardware capabilities
 	if (pci_set_dma_mask(adapter->pdev, DMA_32BIT_MASK) != 0) {
+	if (pci_set_dma_mask(adapter->pdev, DMA_BIT_MASK(32)) != 0) {
 
 		con_log(CL_ANN, (KERN_WARNING
 			"megaraid: pci_set_dma_mask failed:%d\n", __LINE__));
@@ -544,6 +556,7 @@ out_probe_one:
 /**
  * megaraid_detach_one - release framework resources and call LLD release routine
  * @pdev	: handle for our PCI cofiguration space
+ * @pdev	: handle for our PCI configuration space
  *
  * This routine is called during driver unload. We free all the allocated
  * resources and call the corresponding LLD so that it can also release all
@@ -730,6 +743,7 @@ megaraid_io_detach(adapter_t *adapter)
  * - Use internal library of FW routines, build up complete soft state
  */
 static int __devinit
+static int
 megaraid_init_mbox(adapter_t *adapter)
 {
 	struct pci_dev		*pdev;
@@ -905,6 +919,11 @@ megaraid_init_mbox(adapter_t *adapter)
 				"megaraid: DMA mask for 64-bit failed\n"));
 
 			if (pci_set_dma_mask (adapter->pdev, DMA_32BIT_MASK)) {
+		if (pci_set_dma_mask(adapter->pdev, DMA_BIT_MASK(64))) {
+			con_log(CL_ANN, (KERN_WARNING
+				"megaraid: DMA mask for 64-bit failed\n"));
+
+			if (pci_set_dma_mask (adapter->pdev, DMA_BIT_MASK(32))) {
 				con_log(CL_ANN, (KERN_WARNING
 					"megaraid: 32-bit DMA mask failed\n"));
 				goto out_free_sysfs_res;
@@ -974,6 +993,7 @@ megaraid_fini_mbox(adapter_t *adapter)
  *
  * Allocate and align the shared mailbox. This maibox is used to issue
  * all the commands. For IO based controllers, the mailbox is also regsitered
+ * all the commands. For IO based controllers, the mailbox is also registered
  * with the FW. Allocate memory for all commands as well.
  * This is our big allocator.
  */
@@ -999,6 +1019,9 @@ megaraid_alloc_cmd_packets(adapter_t *adapter)
 	 */
 	raid_dev->una_mbox64 = pci_alloc_consistent(adapter->pdev,
 			sizeof(mbox64_t), &raid_dev->una_mbox64_dma);
+	raid_dev->una_mbox64 = pci_zalloc_consistent(adapter->pdev,
+						     sizeof(mbox64_t),
+						     &raid_dev->una_mbox64_dma);
 
 	if (!raid_dev->una_mbox64) {
 		con_log(CL_ANN, (KERN_WARNING
@@ -1027,6 +1050,8 @@ megaraid_alloc_cmd_packets(adapter_t *adapter)
 	// Allocate memory for commands issued internally
 	adapter->ibuf = pci_alloc_consistent(pdev, MBOX_IBUF_SIZE,
 				&adapter->ibuf_dma_h);
+	adapter->ibuf = pci_zalloc_consistent(pdev, MBOX_IBUF_SIZE,
+					      &adapter->ibuf_dma_h);
 	if (!adapter->ibuf) {
 
 		con_log(CL_ANN, (KERN_WARNING
@@ -1479,6 +1504,7 @@ mbox_post_cmd(adapter_t *adapter, scb_t *scb)
  */
 static int
 megaraid_queue_command(struct scsi_cmnd *scp, void (*done)(struct scsi_cmnd *))
+megaraid_queue_command_lck(struct scsi_cmnd *scp, void (*done)(struct scsi_cmnd *))
 {
 	adapter_t	*adapter;
 	scb_t		*scb;
@@ -1506,6 +1532,8 @@ megaraid_queue_command(struct scsi_cmnd *scp, void (*done)(struct scsi_cmnd *))
 	megaraid_mbox_runpendq(adapter, scb);
 	return if_busy;
 }
+
+static DEF_SCSI_QCMD(megaraid_queue_command)
 
 /**
  * megaraid_mbox_build_cmd - transform the mid-layer scsi commands
@@ -2020,6 +2048,7 @@ megaraid_mbox_prepare_pthru(adapter_t *adapter, scb_t *scb,
  * @scp		: scsi command from the mid-layer
  *
  * Prepare a command for the scsi physical devices. This rountine prepares
+ * Prepare a command for the scsi physical devices. This routine prepares
  * commands for devices which can take extended CDBs (>10 bytes).
  */
 static void
@@ -2310,6 +2339,8 @@ megaraid_mbox_dpc(unsigned long devp)
 			con_log(CL_ANN, (KERN_NOTICE
 			"megaraid: aborted cmd %lx[%x] completed\n",
 				scp->serial_number, scb->sno));
+			"megaraid: aborted cmd [%x] completed\n",
+				scb->sno));
 		}
 
 		/*
@@ -2467,6 +2498,8 @@ megaraid_abort_handler(struct scsi_cmnd *scp)
 	con_log(CL_ANN, (KERN_WARNING
 		"megaraid: aborting-%ld cmd=%x <c=%d t=%d l=%d>\n",
 		scp->serial_number, scp->cmnd[0], SCP2CHANNEL(scp),
+		"megaraid: aborting cmd=%x <c=%d t=%d l=%d>\n",
+		scp->cmnd[0], SCP2CHANNEL(scp),
 		SCP2TARGET(scp), SCP2LUN(scp)));
 
 	// If FW has stopped responding, simply return failure
@@ -2492,6 +2525,8 @@ megaraid_abort_handler(struct scsi_cmnd *scp)
 			"megaraid: %ld:%d[%d:%d], abort from completed list\n",
 				scp->serial_number, scb->sno,
 				scb->dev_channel, scb->dev_target));
+			"megaraid: %d[%d:%d], abort from completed list\n",
+				scb->sno, scb->dev_channel, scb->dev_target));
 
 			scp->result = (DID_ABORT << 16);
 			scp->scsi_done(scp);
@@ -2523,6 +2558,8 @@ megaraid_abort_handler(struct scsi_cmnd *scp)
 				"megaraid abort: %ld[%d:%d], driver owner\n",
 				scp->serial_number, scb->dev_channel,
 				scb->dev_target));
+				"megaraid abort: [%d:%d], driver owner\n",
+				scb->dev_channel, scb->dev_target));
 
 			scp->result = (DID_ABORT << 16);
 			scp->scsi_done(scp);
@@ -2556,6 +2593,8 @@ megaraid_abort_handler(struct scsi_cmnd *scp)
 				"megaraid abort: %ld%d[%d:%d], invalid state\n",
 				scp->serial_number, scb->sno, scb->dev_channel,
 				scb->dev_target));
+				"megaraid abort: %d[%d:%d], invalid state\n",
+				scb->sno, scb->dev_channel, scb->dev_target));
 				BUG();
 			}
 			else {
@@ -2563,6 +2602,8 @@ megaraid_abort_handler(struct scsi_cmnd *scp)
 				"megaraid abort: %ld:%d[%d:%d], fw owner\n",
 				scp->serial_number, scb->sno, scb->dev_channel,
 				scb->dev_target));
+				"megaraid abort: %d[%d:%d], fw owner\n",
+				scb->sno, scb->dev_channel, scb->dev_target));
 			}
 		}
 	}
@@ -2572,6 +2613,7 @@ megaraid_abort_handler(struct scsi_cmnd *scp)
 		con_log(CL_ANN, (KERN_WARNING
 			"megaraid abort: scsi cmd:%ld, do now own\n",
 			scp->serial_number));
+		con_log(CL_ANN, (KERN_WARNING "megaraid abort: do now own\n"));
 
 		// FIXME: Should there be a callback for this command?
 		return SUCCESS;
@@ -2585,6 +2627,7 @@ megaraid_abort_handler(struct scsi_cmnd *scp)
 
 /**
  * megaraid_reset_handler - device reset hadler for mailbox based driver
+ * megaraid_reset_handler - device reset handler for mailbox based driver
  * @scp		: reference command
  *
  * Reset handler for the mailbox based controller. First try to find out if
@@ -2645,6 +2688,8 @@ megaraid_reset_handler(struct scsi_cmnd *scp)
 					"megaraid: %ld:%d[%d:%d], reset from pending list\n",
 					scp->serial_number, scb->sno,
 					scb->dev_channel, scb->dev_target));
+					"megaraid: %d[%d:%d], reset from pending list\n",
+					scb->sno, scb->dev_channel, scb->dev_target));
 			} else {
 				con_log(CL_ANN, (KERN_WARNING
 				"megaraid: IO packet with %d[%d:%d] being reset\n",
@@ -2683,6 +2728,7 @@ megaraid_reset_handler(struct scsi_cmnd *scp)
 		}
 
 		// bailout if no recovery happended in reset time
+		// bailout if no recovery happened in reset time
 		if (adapter->outstanding_cmds == 0) {
 			break;
 		}
@@ -2705,6 +2751,7 @@ megaraid_reset_handler(struct scsi_cmnd *scp)
 	else {
 		con_log(CL_ANN, (KERN_NOTICE
 		"megaraid mbox: reset sequence completed sucessfully\n"));
+		"megaraid mbox: reset sequence completed successfully\n"));
 	}
 
 
@@ -2731,6 +2778,7 @@ megaraid_reset_handler(struct scsi_cmnd *scp)
 
  out:
 	spin_unlock_irq(&adapter->lock);
+	spin_unlock(&adapter->lock);
 	return rval;
 }
 
@@ -2978,6 +3026,8 @@ megaraid_mbox_product_info(adapter_t *adapter)
 	 */
 	pinfo = pci_alloc_consistent(adapter->pdev, sizeof(mraid_pinfo_t),
 			&pinfo_dma_h);
+	pinfo = pci_zalloc_consistent(adapter->pdev, sizeof(mraid_pinfo_t),
+				      &pinfo_dma_h);
 
 	if (pinfo == NULL) {
 		con_log(CL_ANN, (KERN_WARNING
@@ -3446,6 +3496,7 @@ megaraid_mbox_display_scb(adapter_t *adapter, scb_t *scb)
  * @adapter	: Driver's soft state
  *
  * Manange the device ids to have an appropraite mapping between the kernel
+ * Manage the device ids to have an appropriate mapping between the kernel
  * scsi addresses and megaraid scsi and logical drive addresses. We export
  * scsi devices on their actual addresses, whereas the logical drives are
  * exported on a virtual scsi channel.
@@ -3967,6 +4018,7 @@ megaraid_sysfs_get_ldmap_timeout(unsigned long data)
  * implemented in context of "get ld map" command only. If required, the
  * command issuance logical can be trivially pulled out and implemented as a
  * standalone libary. For now, this should suffice since there is no other
+ * standalone library. For now, this should suffice since there is no other
  * user of this interface.
  *
  * Return 0 on success.

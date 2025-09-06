@@ -9,6 +9,31 @@ source "drivers/char/agp/Kconfig"
 
 source "drivers/gpu/drm/Kconfig"
 
+config HAVE_FB_ATMEL
+	bool
+
+config SH_MIPI_DSI
+	tristate
+	depends on (SUPERH || ARCH_SHMOBILE) && HAVE_CLK
+
+config SH_LCD_MIPI_DSI
+	bool
+
+source "drivers/char/agp/Kconfig"
+
+source "drivers/gpu/vga/Kconfig"
+
+source "drivers/gpu/host1x/Kconfig"
+source "drivers/gpu/ipu-v3/Kconfig"
+
+source "drivers/gpu/drm/Kconfig"
+
+menu "Frame buffer Devices"
+source "drivers/video/fbdev/Kconfig"
+endmenu
+
+source "drivers/video/backlight/Kconfig"
+
 config VGASTATE
        tristate
        default n
@@ -2045,6 +2070,11 @@ source "drivers/video/omap/Kconfig"
 
 source "drivers/video/backlight/Kconfig"
 source "drivers/video/display/Kconfig"
+config VIDEOMODE_HELPERS
+	bool
+
+config HDMI
+	bool
 
 if VT
 	source "drivers/video/console/Kconfig"
@@ -2053,5 +2083,9 @@ endif
 if FB || SGI_NEWPORT_CONSOLE
 	source "drivers/video/logo/Kconfig"
 endif
+
+
+endif
+
 
 endmenu

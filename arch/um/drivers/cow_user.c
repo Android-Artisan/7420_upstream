@@ -13,6 +13,10 @@
 #include <string.h>
 #include <arpa/inet.h>
 #include <asm/types.h>
+#include <errno.h>
+#include <string.h>
+#include <arpa/inet.h>
+#include <endian.h>
 #include "cow.h"
 #include "cow_sys.h"
 
@@ -187,6 +191,11 @@ static int absolutize(char *to, int size, char *from)
 		strcat(to, from);
 	}
 	chdir(save_cwd);
+	if (chdir(save_cwd)) {
+		cow_printf("absolutize : Can't cd to '%s' - "
+			   "errno = %d\n", save_cwd, errno);
+		return -1;
+	}
 	return 0;
 }
 
@@ -212,6 +221,8 @@ int write_cow_header(char *cow_file, int fd, char *backing_file,
 	}
 	header->magic = htonl(COW_MAGIC);
 	header->version = htonl(COW_VERSION);
+	header->magic = htobe32(COW_MAGIC);
+	header->version = htobe32(COW_VERSION);
 
 	err = -EINVAL;
 	if (strlen(backing_file) > sizeof(header->backing_file) - 1) {
@@ -246,6 +257,10 @@ int write_cow_header(char *cow_file, int fd, char *backing_file,
 	header->size = htonll(*size);
 	header->sectorsize = htonl(sectorsize);
 	header->alignment = htonl(alignment);
+	header->mtime = htobe32(modtime);
+	header->size = htobe64(*size);
+	header->sectorsize = htobe32(sectorsize);
+	header->alignment = htobe32(alignment);
 	header->cow_format = COW_BITMAP;
 
 	err = cow_write_file(fd, header, sizeof(*header));
@@ -299,6 +314,8 @@ int read_cow_header(int (*reader)(__u64, char *, int, void *), void *arg,
 		version = header->v1.version;
 	else if (magic == ntohl(COW_MAGIC))
 		version = ntohl(header->v1.version);
+	else if (magic == be32toh(COW_MAGIC))
+		version = be32toh(header->v1.version);
 	/* No error printed because the non-COW case comes through here */
 	else goto out;
 
@@ -326,6 +343,9 @@ int read_cow_header(int (*reader)(__u64, char *, int, void *), void *arg,
 		*mtime_out = ntohl(header->v2.mtime);
 		*size_out = ntohll(header->v2.size);
 		*sectorsize_out = ntohl(header->v2.sectorsize);
+		*mtime_out = be32toh(header->v2.mtime);
+		*size_out = be64toh(header->v2.size);
+		*sectorsize_out = be32toh(header->v2.sectorsize);
 		*bitmap_offset_out = sizeof(header->v2);
 		*align_out = *sectorsize_out;
 		file = header->v2.backing_file;
@@ -341,6 +361,10 @@ int read_cow_header(int (*reader)(__u64, char *, int, void *), void *arg,
 		*size_out = ntohll(header->v3.size);
 		*sectorsize_out = ntohl(header->v3.sectorsize);
 		*align_out = ntohl(header->v3.alignment);
+		*mtime_out = be32toh(header->v3.mtime);
+		*size_out = be64toh(header->v3.size);
+		*sectorsize_out = be32toh(header->v3.sectorsize);
+		*align_out = be32toh(header->v3.alignment);
 		if (*align_out == 0) {
 			cow_printf("read_cow_header - invalid COW header, "
 				   "align == 0\n");
@@ -363,6 +387,7 @@ int read_cow_header(int (*reader)(__u64, char *, int, void *), void *arg,
 		 * 2038+. I.e. we can safely do this truncating cast.
 		 *
 		 * Additionally, we must use ntohl() instead of ntohll(), since
+		 * Additionally, we must use be32toh() instead of be64toh(), since
 		 * the program used to use the former (tested - I got mtime
 		 * mismatch "0 vs whatever").
 		 *
@@ -372,6 +397,11 @@ int read_cow_header(int (*reader)(__u64, char *, int, void *), void *arg,
 		*size_out = ntohll(header->v3_b.size);
 		*sectorsize_out = ntohl(header->v3_b.sectorsize);
 		*align_out = ntohl(header->v3_b.alignment);
+		*mtime_out = (time32_t) be32toh(header->v3_b.mtime);
+
+		*size_out = be64toh(header->v3_b.size);
+		*sectorsize_out = be32toh(header->v3_b.sectorsize);
+		*align_out = be32toh(header->v3_b.alignment);
 		if (*align_out == 0) {
 			cow_printf("read_cow_header - invalid COW header, "
 				   "align == 0\n");

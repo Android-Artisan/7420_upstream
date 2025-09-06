@@ -14,6 +14,9 @@
 #include <linux/acpi.h>
 #include <asm/e820.h>
 #include "pci.h"
+#include <linux/rcupdate.h>
+#include <asm/e820.h>
+#include <asm/pci_x86.h>
 
 /* Assume systems with more busses have correct MCFG */
 #define mmcfg_virt_addr ((void __iomem *) fix_to_virt(FIX_PCIE_MCFG))
@@ -39,6 +42,10 @@ static u32 get_base_addr(unsigned int seg, int bus, unsigned devfn)
 	}
 
 	/* Fall back to type 0 */
+	struct pci_mmcfg_region *cfg = pci_mmconfig_lookup(seg, bus);
+
+	if (cfg)
+		return cfg->address;
 	return 0;
 }
 
@@ -48,6 +55,7 @@ static u32 get_base_addr(unsigned int seg, int bus, unsigned devfn)
 static void pci_exp_set_dev_base(unsigned int base, int bus, int devfn)
 {
 	u32 dev_base = base | (bus << 20) | (devfn << 12);
+	u32 dev_base = base | PCI_MMCFG_BUS_OFFSET(bus) | (devfn << 12);
 	int cpu = smp_processor_id();
 	if (dev_base != mmcfg_last_accessed_device ||
 	    cpu != mmcfg_last_accessed_cpu) {
@@ -73,6 +81,14 @@ err:		*value = -1;
 		goto err;
 
 	spin_lock_irqsave(&pci_config_lock, flags);
+	rcu_read_lock();
+	base = get_base_addr(seg, bus, devfn);
+	if (!base) {
+		rcu_read_unlock();
+		goto err;
+	}
+
+	raw_spin_lock_irqsave(&pci_config_lock, flags);
 
 	pci_exp_set_dev_base(base, bus, devfn);
 
@@ -88,6 +104,8 @@ err:		*value = -1;
 		break;
 	}
 	spin_unlock_irqrestore(&pci_config_lock, flags);
+	raw_spin_unlock_irqrestore(&pci_config_lock, flags);
+	rcu_read_unlock();
 
 	return 0;
 }
@@ -106,6 +124,14 @@ static int pci_mmcfg_write(unsigned int seg, unsigned int bus,
 		return -EINVAL;
 
 	spin_lock_irqsave(&pci_config_lock, flags);
+	rcu_read_lock();
+	base = get_base_addr(seg, bus, devfn);
+	if (!base) {
+		rcu_read_unlock();
+		return -EINVAL;
+	}
+
+	raw_spin_lock_irqsave(&pci_config_lock, flags);
 
 	pci_exp_set_dev_base(base, bus, devfn);
 
@@ -121,11 +147,14 @@ static int pci_mmcfg_write(unsigned int seg, unsigned int bus,
 		break;
 	}
 	spin_unlock_irqrestore(&pci_config_lock, flags);
+	raw_spin_unlock_irqrestore(&pci_config_lock, flags);
+	rcu_read_unlock();
 
 	return 0;
 }
 
 static struct pci_raw_ops pci_mmcfg = {
+const struct pci_raw_ops pci_mmcfg = {
 	.read =		pci_mmcfg_read,
 	.write =	pci_mmcfg_write,
 };
@@ -139,4 +168,19 @@ int __init pci_mmcfg_arch_init(void)
 
 void __init pci_mmcfg_arch_free(void)
 {
+}
+
+int pci_mmcfg_arch_map(struct pci_mmcfg_region *cfg)
+{
+	return 0;
+}
+
+void pci_mmcfg_arch_unmap(struct pci_mmcfg_region *cfg)
+{
+	unsigned long flags;
+
+	/* Invalidate the cached mmcfg map entry. */
+	raw_spin_lock_irqsave(&pci_config_lock, flags);
+	mmcfg_last_accessed_device = 0;
+	raw_spin_unlock_irqrestore(&pci_config_lock, flags);
 }

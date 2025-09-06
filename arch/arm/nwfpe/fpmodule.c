@@ -24,6 +24,7 @@
 #include "fpa11.h"
 
 #include <linux/module.h>
+#include <linux/moduleparam.h>
 
 /* XXX */
 #include <linux/errno.h>
@@ -86,11 +87,13 @@ static int __init fpe_init(void)
 {
 	if (sizeof(FPA11) > sizeof(union fp_state)) {
 		printk(KERN_ERR "nwfpe: bad structure size\n");
+		pr_err("nwfpe: bad structure size\n");
 		return -EINVAL;
 	}
 
 	if (sizeof(FPREG) != 12) {
 		printk(KERN_ERR "nwfpe: bad register size\n");
+		pr_err("nwfpe: bad register size\n");
 		return -EINVAL;
 	}
 	if (fpe_type[0] && strcmp(fpe_type, "nwfpe"))
@@ -99,6 +102,8 @@ static int __init fpe_init(void)
 	/* Display title, version and copyright information. */
 	printk(KERN_WARNING "NetWinder Floating Point Emulator V0.97 ("
 	       NWFPE_BITS " precision)\n");
+	pr_info("NetWinder Floating Point Emulator V0.97 ("
+	        NWFPE_BITS " precision)\n");
 
 	thread_register_notifier(&nwfpe_notifier_block);
 
@@ -134,6 +139,11 @@ a SIGFPE exception if necessary.  If not the relevant bits in the
 cumulative exceptions flag byte are set and we return.
 */
 
+#ifdef CONFIG_DEBUG_USER
+/* By default, ignore inexact errors as there are far too many of them to log */
+static int debug = ~BIT_IXC;
+#endif
+
 void float_raise(signed char flags)
 {
 	register unsigned int fpsr, cumulativeTraps;
@@ -143,6 +153,9 @@ void float_raise(signed char flags)
  	if (flags & ~BIT_IXC)
  		printk(KERN_DEBUG
 		       "NWFPE: %s[%d] takes exception %08x at %p from %08lx\n",
+	if (flags & debug)
+ 		printk(KERN_DEBUG
+		       "NWFPE: %s[%d] takes exception %08x at %pf from %08lx\n",
 		       current->comm, current->pid, flags,
 		       __builtin_return_address(0), GET_USERREG()->ARM_pc);
 #endif
@@ -179,3 +192,7 @@ module_exit(fpe_exit);
 MODULE_AUTHOR("Scott Bambrough <scottb@rebel.com>");
 MODULE_DESCRIPTION("NWFPE floating point emulator (" NWFPE_BITS " precision)");
 MODULE_LICENSE("GPL");
+
+#ifdef CONFIG_DEBUG_USER
+module_param(debug, int, 0644);
+#endif

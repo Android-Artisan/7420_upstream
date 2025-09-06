@@ -60,9 +60,7 @@
  * $m0,10#2a               +$00010203040506070809101112131415#42
  *
  *
- *  ==============
  *  MORE EXAMPLES:
- *  ==============
  *
  *  For reference -- the following are the steps that one
  *  company took (RidgeRun Inc) to get remote gdb debugging
@@ -673,6 +671,7 @@ static unsigned char *mem2hex(const void *_mem, char *buf, int count, int may_fa
 		if (!gdbstub_read_byte(mem,ch))
 			return NULL;
 		buf = pack_hex_byte(buf, ch[0]);
+		buf = hex_byte_pack(buf, ch[0]);
 		mem++;
 		count--;
 	}
@@ -682,6 +681,8 @@ static unsigned char *mem2hex(const void *_mem, char *buf, int count, int may_fa
 			return NULL;
 		buf = pack_hex_byte(buf, ch[0]);
 		buf = pack_hex_byte(buf, ch[1]);
+		buf = hex_byte_pack(buf, ch[0]);
+		buf = hex_byte_pack(buf, ch[1]);
 		mem += 2;
 		count -= 2;
 	}
@@ -693,6 +694,10 @@ static unsigned char *mem2hex(const void *_mem, char *buf, int count, int may_fa
 		buf = pack_hex_byte(buf, ch[1]);
 		buf = pack_hex_byte(buf, ch[2]);
 		buf = pack_hex_byte(buf, ch[3]);
+		buf = hex_byte_pack(buf, ch[0]);
+		buf = hex_byte_pack(buf, ch[1]);
+		buf = hex_byte_pack(buf, ch[2]);
+		buf = hex_byte_pack(buf, ch[3]);
 		mem += 4;
 		count -= 4;
 	}
@@ -702,6 +707,8 @@ static unsigned char *mem2hex(const void *_mem, char *buf, int count, int may_fa
 			return NULL;
 		buf = pack_hex_byte(buf, ch[0]);
 		buf = pack_hex_byte(buf, ch[1]);
+		buf = hex_byte_pack(buf, ch[0]);
+		buf = hex_byte_pack(buf, ch[1]);
 		mem += 2;
 		count -= 2;
 	}
@@ -710,6 +717,7 @@ static unsigned char *mem2hex(const void *_mem, char *buf, int count, int may_fa
 		if (!gdbstub_read_byte(mem,ch))
 			return NULL;
 		buf = pack_hex_byte(buf, ch[0]);
+		buf = hex_byte_pack(buf, ch[0]);
 	}
 
 	*buf = 0;
@@ -1344,6 +1352,44 @@ void gdbstub_get_mmu_state(void)
 
 } /* end gdbstub_get_mmu_state() */
 
+/*
+ * handle general query commands of the form 'qXXXXX'
+ */
+static void gdbstub_handle_query(void)
+{
+	if (strcmp(input_buffer, "qAttached") == 0) {
+		/* return current thread ID */
+		sprintf(output_buffer, "1");
+		return;
+	}
+
+	if (strcmp(input_buffer, "qC") == 0) {
+		/* return current thread ID */
+		sprintf(output_buffer, "QC 0");
+		return;
+	}
+
+	if (strcmp(input_buffer, "qOffsets") == 0) {
+		/* return relocation offset of text and data segments */
+		sprintf(output_buffer, "Text=0;Data=0;Bss=0");
+		return;
+	}
+
+	if (strcmp(input_buffer, "qSymbol::") == 0) {
+		sprintf(output_buffer, "OK");
+		return;
+	}
+
+	if (strcmp(input_buffer, "qSupported") == 0) {
+		/* query of supported features */
+		sprintf(output_buffer, "PacketSize=%u;ReverseContinue-;ReverseStep-",
+			sizeof(input_buffer));
+		return;
+	}
+
+	gdbstub_strcpy(output_buffer,"E01");
+}
+
 /*****************************************************************************/
 /*
  * handle event interception and GDB remote protocol processing
@@ -1475,6 +1521,21 @@ void gdbstub(int sigval)
 		ptr = pack_hex_byte(ptr, hx);
 		hx = hex_asc_lo(brr);
 		ptr = pack_hex_byte(ptr, hx);
+		ptr = hex_byte_pack(ptr, hx);
+		hx = hex_asc_lo(brr >> 24);
+		ptr = hex_byte_pack(ptr, hx);
+		hx = hex_asc_hi(brr >> 16);
+		ptr = hex_byte_pack(ptr, hx);
+		hx = hex_asc_lo(brr >> 16);
+		ptr = hex_byte_pack(ptr, hx);
+		hx = hex_asc_hi(brr >> 8);
+		ptr = hex_byte_pack(ptr, hx);
+		hx = hex_asc_lo(brr >> 8);
+		ptr = hex_byte_pack(ptr, hx);
+		hx = hex_asc_hi(brr);
+		ptr = hex_byte_pack(ptr, hx);
+		hx = hex_asc_lo(brr);
+		ptr = hex_byte_pack(ptr, hx);
 
 		ptr = mem2hex(crlf, ptr, sizeof(crlf) - 1, 0);
 		*ptr = 0;
@@ -1492,6 +1553,10 @@ void gdbstub(int sigval)
 
 	/* Send Error PC */
 	ptr = pack_hex_byte(ptr, GDB_REG_PC);
+	ptr = hex_byte_pack(ptr, sigval);
+
+	/* Send Error PC */
+	ptr = hex_byte_pack(ptr, GDB_REG_PC);
 	*ptr++ = ':';
 	ptr = mem2hex(&__debug_frame->pc, ptr, 4, 0);
 	*ptr++ = ';';
@@ -1500,6 +1565,7 @@ void gdbstub(int sigval)
 	 * Send frame pointer
 	 */
 	ptr = pack_hex_byte(ptr, GDB_REG_FP);
+	ptr = hex_byte_pack(ptr, GDB_REG_FP);
 	*ptr++ = ':';
 	ptr = mem2hex(&__debug_frame->fp, ptr, 4, 0);
 	*ptr++ = ';';
@@ -1508,6 +1574,7 @@ void gdbstub(int sigval)
 	 * Send stack pointer
 	 */
 	ptr = pack_hex_byte(ptr, GDB_REG_SP);
+	ptr = hex_byte_pack(ptr, GDB_REG_SP);
 	*ptr++ = ':';
 	ptr = mem2hex(&__debug_frame->sp, ptr, 4, 0);
 	*ptr++ = ';';
@@ -1751,6 +1818,12 @@ void gdbstub(int sigval)
 			flush_cache = 1;
 			break;
 
+			/* pNN: Read value of reg N and return it */
+		case 'p':
+			/* return no value, indicating that we don't support
+			 * this command and that gdb should use 'g' instead */
+			break;
+
 			/* PNN,=RRRRRRRR: Write value R to reg N return OK */
 		case 'P':
 			ptr = &input_buffer[1];
@@ -1840,6 +1913,10 @@ void gdbstub(int sigval)
 		case 'k' :
 			goto done;	/* just continue */
 
+			/* detach */
+		case 'D':
+			gdbstub_strcpy(output_buffer, "OK");
+			break;
 
 			/* reset the whole machine (FIXME: system dependent) */
 		case 'r':
@@ -1851,6 +1928,14 @@ void gdbstub(int sigval)
 			__debug_regs->dcr |= DCR_SE;
 			__debug_status.dcr |= DCR_SE;
 			goto done;
+
+			/* extended command */
+		case 'v':
+			if (strcmp(input_buffer, "vCont?") == 0) {
+				output_buffer[0] = 0;
+				break;
+			}
+			goto unsupported_cmd;
 
 			/* set baud rate (bBB) */
 		case 'b':
@@ -1925,6 +2010,19 @@ void gdbstub(int sigval)
 
 		default:
 			gdbstub_proto("### GDB Unsupported Cmd '%s'\n",input_buffer);
+			/* Thread-setting packet */
+		case 'H':
+			gdbstub_strcpy(output_buffer, "OK");
+			break;
+
+		case 'q':
+			gdbstub_handle_query();
+			break;
+
+		default:
+		unsupported_cmd:
+			gdbstub_proto("### GDB Unsupported Cmd '%s'\n",input_buffer);
+			gdbstub_strcpy(output_buffer,"E01");
 			break;
 		}
 

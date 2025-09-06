@@ -1,5 +1,4 @@
 Kernel driver lm92
-==================
 
 Supported chips:
   * National Semiconductor LM92
@@ -20,6 +19,7 @@ Supported chips:
 Authors:
         Abraham van der Merwe <abraham@2d3d.co.za>
         Jean Delvare <khali@linux-fr.org>
+        Jean Delvare <jdelvare@suse.de>
 
 
 Description

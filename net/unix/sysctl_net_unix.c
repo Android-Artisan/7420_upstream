@@ -10,6 +10,7 @@
  */
 
 #include <linux/mm.h>
+#include <linux/slab.h>
 #include <linux/sysctl.h>
 
 #include <net/af_unix.h>
@@ -17,6 +18,8 @@
 static ctl_table unix_table[] = {
 	{
 		.ctl_name	= NET_UNIX_MAX_DGRAM_QLEN,
+static struct ctl_table unix_table[] = {
+	{
 		.procname	= "max_dgram_qlen",
 		.data		= &init_net.unx.sysctl_max_dgram_qlen,
 		.maxlen		= sizeof(int),
@@ -33,6 +36,12 @@ static struct ctl_path unix_path[] = {
 };
 
 int unix_sysctl_register(struct net *net)
+		.proc_handler	= proc_dointvec
+	},
+	{ }
+};
+
+int __net_init unix_sysctl_register(struct net *net)
 {
 	struct ctl_table *table;
 
@@ -42,6 +51,12 @@ int unix_sysctl_register(struct net *net)
 
 	table[0].data = &net->unx.sysctl_max_dgram_qlen;
 	net->unx.ctl = register_net_sysctl_table(net, unix_path, table);
+	/* Don't export sysctls to unprivileged users */
+	if (net->user_ns != &init_user_ns)
+		table[0].procname = NULL;
+
+	table[0].data = &net->unx.sysctl_max_dgram_qlen;
+	net->unx.ctl = register_net_sysctl(net, "net/unix", table);
 	if (net->unx.ctl == NULL)
 		goto err_reg;
 
@@ -62,3 +77,6 @@ void unix_sysctl_unregister(struct net *net)
 	kfree(table);
 }
 
+	unregister_net_sysctl_table(net->unx.ctl);
+	kfree(table);
+}

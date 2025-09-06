@@ -1,6 +1,4 @@
-		   =========================================
 		   PART-SPECIFIC SOURCE COMPARTMENTALISATION
-		   =========================================
 
 The sources for various parts are compartmentalised at two different levels:
 
@@ -43,9 +41,7 @@ The sources for various parts are compartmentalised at two different levels:
      from the "Unit type" choice menu in the arch/mn10300/Kconfig file.
 
 
-============
 COMPILE TIME
-============
 
 When the kernel is compiled, symbolic links will be made in the asm header file
 directory for this arch:

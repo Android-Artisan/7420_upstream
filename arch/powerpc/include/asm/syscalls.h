@@ -12,6 +12,8 @@ struct pt_regs;
 struct rtas_args;
 struct sigaction;
 
+struct rtas_args;
+
 asmlinkage unsigned long sys_mmap(unsigned long addr, size_t len,
 		unsigned long prot, unsigned long flags,
 		unsigned long fd, off_t offset);
@@ -47,6 +49,8 @@ asmlinkage long sys_rt_sigsuspend(sigset_t __user *unewset,
 asmlinkage long sys_sigaltstack(const stack_t __user *uss,
 		stack_t __user *uoss, unsigned long r5, unsigned long r6,
 		unsigned long r7, unsigned long r8, struct pt_regs *regs);
+asmlinkage long ppc64_personality(unsigned long personality);
+asmlinkage int ppc_rtas(struct rtas_args __user *uargs);
 
 #endif /* __KERNEL__ */
 #endif /* __ASM_POWERPC_SYSCALLS_H */

@@ -334,6 +334,7 @@ static inline void fatwchar_to16(__u8 *dst, const wchar_t *src, size_t len)
 	memcpy(dst, src, len * 2);
 #endif
 }
+#include <uapi/linux/msdos_fs.h>
 
 /* media of boot sector */
 static inline int fat_valid_media(u8 media)
@@ -446,3 +447,4 @@ void fat_cache_destroy(void);
 #endif /* __KERNEL__ */
 
 #endif
+#endif /* !_LINUX_MSDOS_FS_H */

@@ -6,6 +6,7 @@
  * as published by the Free Software Foundation; either version
  * 2 of the License, or (at your option) any later version.
  */
+#include <linux/context_tracking.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/ptrace.h>
@@ -17,6 +18,7 @@
 #include <asm/fpu.h>
 #include <asm/mipsregs.h>
 #include <asm/system.h>
+#include <asm/setup.h>
 
 static char bug64hit[] __initdata =
 	"reliable operation impossible!\n%s";
@@ -74,6 +76,7 @@ static inline void mult_sh_align_mod(long *v1, long *v2, long *w,
 	align_mod(align, mod);
 	/*
 	 * The trailing nop is needed to fullfill the two-instruction
+	 * The trailing nop is needed to fulfill the two-instruction
 	 * requirement between reading hi/lo and staring a mult/div.
 	 * Leaving it out may cause gas insert a nop itself breaking
 	 * the desired alignment of the next chunk.
@@ -87,6 +90,9 @@ static inline void mult_sh_align_mod(long *v1, long *v2, long *w,
 		"dsll32	%0, %4, %5\n\t"
 		"mflo	$0\n\t"
 		"dsll32	%1, %4, %5\n\t"
+		"dsll32 %0, %4, %5\n\t"
+		"mflo	$0\n\t"
+		"dsll32 %1, %4, %5\n\t"
 		"nop\n\t"
 		".set	pop"
 		: "=&r" (lv1), "=r" (lw)
@@ -173,6 +179,16 @@ asmlinkage void __init do_daddi_ov(struct pt_regs *regs)
 {
 	daddi_ov = 1;
 	regs->cp0_epc += 4;
+static volatile int daddi_ov;
+
+asmlinkage void __init do_daddi_ov(struct pt_regs *regs)
+{
+	enum ctx_state prev_state;
+
+	prev_state = exception_enter();
+	daddi_ov = 1;
+	regs->cp0_epc += 4;
+	exception_exit(prev_state);
 }
 
 static inline void check_daddi(void)
@@ -240,6 +256,7 @@ static inline void check_daddi(void)
 }
 
 int daddiu_bug __cpuinitdata = -1;
+int daddiu_bug	= config_enabled(CONFIG_CPU_MIPSR6) ? 0 : -1;
 
 static inline void check_daddiu(void)
 {
@@ -274,6 +291,7 @@ static inline void check_daddiu(void)
 		".set	daddi\n\t"
 #endif
 		"daddiu	%0, %2, %4\n\t"
+		"daddiu %0, %2, %4\n\t"
 		"addiu	%1, $0, %4\n\t"
 		"daddu	%1, %2\n\t"
 		".set	pop"
@@ -293,6 +311,7 @@ static inline void check_daddiu(void)
 		"addiu	%2, $0, %3\n\t"
 		"dsrl	%2, %2, 1\n\t"
 		"daddiu	%0, %2, %4\n\t"
+		"daddiu %0, %2, %4\n\t"
 		"addiu	%1, $0, %4\n\t"
 		"daddu	%1, %2"
 		: "=&r" (v), "=&r" (w), "=&r" (tmp)
@@ -311,9 +330,15 @@ void __init check_bugs64_early(void)
 {
 	check_mult_sh();
 	check_daddiu();
+	if (!config_enabled(CONFIG_CPU_MIPSR6)) {
+		check_mult_sh();
+		check_daddiu();
+	}
 }
 
 void __init check_bugs64(void)
 {
 	check_daddi();
+	if (!config_enabled(CONFIG_CPU_MIPSR6))
+		check_daddi();
 }

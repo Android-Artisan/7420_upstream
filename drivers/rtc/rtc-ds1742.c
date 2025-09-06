@@ -22,6 +22,18 @@
 #include <linux/io.h>
 
 #define DRV_VERSION "0.3"
+#include <linux/kernel.h>
+#include <linux/gfp.h>
+#include <linux/delay.h>
+#include <linux/jiffies.h>
+#include <linux/rtc.h>
+#include <linux/of.h>
+#include <linux/of_device.h>
+#include <linux/platform_device.h>
+#include <linux/io.h>
+#include <linux/module.h>
+
+#define DRV_VERSION "0.4"
 
 #define RTC_SIZE		8
 
@@ -57,6 +69,11 @@ struct rtc_plat_data {
 	size_t size;
 	resource_size_t baseaddr;
 	unsigned long last_jiffies;
+	void __iomem *ioaddr_nvram;
+	void __iomem *ioaddr_rtc;
+	size_t size_nvram;
+	unsigned long last_jiffies;
+	struct bin_attribute nvram_attr;
 };
 
 static int ds1742_rtc_set_time(struct device *dev, struct rtc_time *tm)
@@ -77,6 +94,17 @@ static int ds1742_rtc_set_time(struct device *dev, struct rtc_time *tm)
 	writeb(BIN2BCD(tm->tm_hour), ioaddr + RTC_HOURS);
 	writeb(BIN2BCD(tm->tm_min), ioaddr + RTC_MINUTES);
 	writeb(BIN2BCD(tm->tm_sec) & RTC_SECONDS_MASK, ioaddr + RTC_SECONDS);
+	century = bin2bcd((tm->tm_year + 1900) / 100);
+
+	writeb(RTC_WRITE, ioaddr + RTC_CONTROL);
+
+	writeb(bin2bcd(tm->tm_year % 100), ioaddr + RTC_YEAR);
+	writeb(bin2bcd(tm->tm_mon + 1), ioaddr + RTC_MONTH);
+	writeb(bin2bcd(tm->tm_wday) & RTC_DAY_MASK, ioaddr + RTC_DAY);
+	writeb(bin2bcd(tm->tm_mday), ioaddr + RTC_DATE);
+	writeb(bin2bcd(tm->tm_hour), ioaddr + RTC_HOURS);
+	writeb(bin2bcd(tm->tm_min), ioaddr + RTC_MINUTES);
+	writeb(bin2bcd(tm->tm_sec) & RTC_SECONDS_MASK, ioaddr + RTC_SECONDS);
 
 	/* RTC_CENTURY and RTC_CONTROL share same register */
 	writeb(RTC_WRITE | (century & RTC_CENTURY_MASK), ioaddr + RTC_CENTURY);
@@ -120,6 +148,16 @@ static int ds1742_rtc_read_time(struct device *dev, struct rtc_time *tm)
 		rtc_time_to_tm(0, tm);
 	}
 	return 0;
+	tm->tm_sec = bcd2bin(second);
+	tm->tm_min = bcd2bin(minute);
+	tm->tm_hour = bcd2bin(hour);
+	tm->tm_mday = bcd2bin(day);
+	tm->tm_wday = bcd2bin(week);
+	tm->tm_mon = bcd2bin(month) - 1;
+	/* year is 1900 + tm->tm_year */
+	tm->tm_year = bcd2bin(year) + bcd2bin(century) * 100 - 1900;
+
+	return rtc_valid_tm(tm);
 }
 
 static const struct rtc_class_ops ds1742_rtc_ops = {
@@ -133,11 +171,18 @@ static ssize_t ds1742_nvram_read(struct kobject *kobj,
 {
 	struct platform_device *pdev =
 		to_platform_device(container_of(kobj, struct device, kobj));
+static ssize_t ds1742_nvram_read(struct file *filp, struct kobject *kobj,
+				 struct bin_attribute *bin_attr,
+				 char *buf, loff_t pos, size_t size)
+{
+	struct device *dev = container_of(kobj, struct device, kobj);
+	struct platform_device *pdev = to_platform_device(dev);
 	struct rtc_plat_data *pdata = platform_get_drvdata(pdev);
 	void __iomem *ioaddr = pdata->ioaddr_nvram;
 	ssize_t count;
 
 	for (count = 0; size > 0 && pos < pdata->size_nvram; count++, size--)
+	for (count = 0; count < size; count++)
 		*buf++ = readb(ioaddr + pos++);
 	return count;
 }
@@ -148,11 +193,18 @@ static ssize_t ds1742_nvram_write(struct kobject *kobj,
 {
 	struct platform_device *pdev =
 		to_platform_device(container_of(kobj, struct device, kobj));
+static ssize_t ds1742_nvram_write(struct file *filp, struct kobject *kobj,
+				  struct bin_attribute *bin_attr,
+				  char *buf, loff_t pos, size_t size)
+{
+	struct device *dev = container_of(kobj, struct device, kobj);
+	struct platform_device *pdev = to_platform_device(dev);
 	struct rtc_plat_data *pdata = platform_get_drvdata(pdev);
 	void __iomem *ioaddr = pdata->ioaddr_nvram;
 	ssize_t count;
 
 	for (count = 0; size > 0 && pos < pdata->size_nvram; count++, size--)
+	for (count = 0; count < size; count++)
 		writeb(*buf++, ioaddr + pos++);
 	return count;
 }
@@ -170,6 +222,7 @@ static struct bin_attribute ds1742_nvram_attr = {
 };
 
 static int __devinit ds1742_rtc_probe(struct platform_device *pdev)
+static int ds1742_rtc_probe(struct platform_device *pdev)
 {
 	struct rtc_device *rtc;
 	struct resource *res;
@@ -198,6 +251,30 @@ static int __devinit ds1742_rtc_probe(struct platform_device *pdev)
 	pdata->ioaddr_nvram = ioaddr;
 	pdata->size_nvram = pdata->size - RTC_SIZE;
 	pdata->ioaddr_rtc = ioaddr + pdata->size_nvram;
+
+	struct rtc_plat_data *pdata;
+	void __iomem *ioaddr;
+	int ret = 0;
+
+	pdata = devm_kzalloc(&pdev->dev, sizeof(*pdata), GFP_KERNEL);
+	if (!pdata)
+		return -ENOMEM;
+
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	ioaddr = devm_ioremap_resource(&pdev->dev, res);
+	if (IS_ERR(ioaddr))
+		return PTR_ERR(ioaddr);
+
+	pdata->ioaddr_nvram = ioaddr;
+	pdata->size_nvram = resource_size(res) - RTC_SIZE;
+	pdata->ioaddr_rtc = ioaddr + pdata->size_nvram;
+
+	sysfs_bin_attr_init(&pdata->nvram_attr);
+	pdata->nvram_attr.attr.name = "nvram";
+	pdata->nvram_attr.attr.mode = S_IRUGO | S_IWUSR;
+	pdata->nvram_attr.read = ds1742_nvram_read;
+	pdata->nvram_attr.write = ds1742_nvram_write;
+	pdata->nvram_attr.size = pdata->size_nvram;
 
 	/* turn RTC on if it was not on */
 	ioaddr = pdata->ioaddr_rtc;
@@ -271,6 +348,45 @@ static __exit void ds1742_exit(void)
 
 module_init(ds1742_init);
 module_exit(ds1742_exit);
+	pdata->last_jiffies = jiffies;
+	platform_set_drvdata(pdev, pdata);
+	rtc = devm_rtc_device_register(&pdev->dev, pdev->name,
+				  &ds1742_rtc_ops, THIS_MODULE);
+	if (IS_ERR(rtc))
+		return PTR_ERR(rtc);
+
+	ret = sysfs_create_bin_file(&pdev->dev.kobj, &pdata->nvram_attr);
+	if (ret)
+		dev_err(&pdev->dev, "Unable to create sysfs entry: %s\n",
+			pdata->nvram_attr.attr.name);
+
+	return 0;
+}
+
+static int ds1742_rtc_remove(struct platform_device *pdev)
+{
+	struct rtc_plat_data *pdata = platform_get_drvdata(pdev);
+
+	sysfs_remove_bin_file(&pdev->dev.kobj, &pdata->nvram_attr);
+	return 0;
+}
+
+static const struct of_device_id __maybe_unused ds1742_rtc_of_match[] = {
+	{ .compatible = "maxim,ds1742", },
+	{ }
+};
+MODULE_DEVICE_TABLE(of, ds1742_rtc_of_match);
+
+static struct platform_driver ds1742_rtc_driver = {
+	.probe		= ds1742_rtc_probe,
+	.remove		= ds1742_rtc_remove,
+	.driver		= {
+		.name	= "rtc-ds1742",
+		.of_match_table = of_match_ptr(ds1742_rtc_of_match),
+	},
+};
+
+module_platform_driver(ds1742_rtc_driver);
 
 MODULE_AUTHOR("Atsushi Nemoto <anemo@mba.ocn.ne.jp>");
 MODULE_DESCRIPTION("Dallas DS1742 RTC driver");

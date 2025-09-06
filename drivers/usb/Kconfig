@@ -2,6 +2,23 @@
 # USB device configuration
 #
 
+config USB_OHCI_BIG_ENDIAN_DESC
+	bool
+
+config USB_OHCI_BIG_ENDIAN_MMIO
+	bool
+
+config USB_OHCI_LITTLE_ENDIAN
+	bool
+	default n if STB03xxx || PPC_MPC52xx
+	default y
+
+config USB_EHCI_BIG_ENDIAN_MMIO
+	bool
+
+config USB_EHCI_BIG_ENDIAN_DESC
+	bool
+
 menuconfig USB_SUPPORT
 	bool "USB support"
 	depends on HAS_IOMEM
@@ -56,11 +73,19 @@ config USB_ARCH_HAS_EHCI
 	default y if SOC_AU1200
 	default y if ARCH_IXP4XX
 	default PCI
+config USB_COMMON
+	tristate
+	default y
+	depends on USB || USB_GADGET
+
+config USB_ARCH_HAS_HCD
+	def_bool y
 
 # ARM SA1111 chips have a non-PCI based "OHCI-compatible" USB host interface.
 config USB
 	tristate "Support for Host-side USB"
 	depends on USB_ARCH_HAS_HCD
+	select NLS  # for UTF-8 strings
 	---help---
 	  Universal Serial Bus (USB) is a specification for a serial bus
 	  subsystem which offers higher speeds and more features than the
@@ -93,6 +118,8 @@ config USB
 	  To compile this driver as a module, choose M here: the
 	  module will be called usbcore.
 
+if USB
+
 source "drivers/usb/core/Kconfig"
 
 source "drivers/usb/mon/Kconfig"
@@ -100,6 +127,11 @@ source "drivers/usb/mon/Kconfig"
 source "drivers/usb/host/Kconfig"
 
 source "drivers/usb/musb/Kconfig"
+source "drivers/usb/wusbcore/Kconfig"
+
+source "drivers/usb/host/Kconfig"
+
+source "drivers/usb/renesas_usbhs/Kconfig"
 
 source "drivers/usb/class/Kconfig"
 
@@ -113,6 +145,27 @@ comment "USB port drivers"
 config USB_USS720
 	tristate "USS720 parport driver"
 	depends on USB && PARPORT
+source "drivers/usb/usbip/Kconfig"
+
+endif
+
+source "drivers/usb/musb/Kconfig"
+
+source "drivers/usb/dwc3/Kconfig"
+
+source "drivers/usb/dwc2/Kconfig"
+
+source "drivers/usb/chipidea/Kconfig"
+
+source "drivers/usb/isp1760/Kconfig"
+
+comment "USB port drivers"
+
+if USB
+
+config USB_USS720
+	tristate "USS720 parport driver"
+	depends on PARPORT
 	select PARPORT_NOT_PC
 	---help---
 	  This driver is for USB parallel port adapters that use the Lucent
@@ -146,5 +199,21 @@ source "drivers/usb/misc/Kconfig"
 source "drivers/usb/atm/Kconfig"
 
 source "drivers/usb/gadget/Kconfig"
+
+endif # USB
+
+source "drivers/usb/phy/Kconfig"
+
+source "drivers/usb/gadget/Kconfig"
+
+config USB_LED_TRIG
+	bool "USB LED Triggers"
+	depends on LEDS_CLASS && USB_COMMON && LEDS_TRIGGERS
+	help
+	  This option adds LED triggers for USB host and/or gadget activity.
+
+	  Say Y here if you are working on a system with led-class supported
+	  LEDs and you want to use them as activity indicators for USB host or
+	  gadget.
 
 endif # USB_SUPPORT

@@ -1,4 +1,3 @@
-/*======================================================================
 
     A PCMCIA ethernet driver for SMC91c92-based cards.
 
@@ -23,7 +22,6 @@
     This software may be used and distributed according to the terms of
     the GNU General Public License, incorporated herein by reference.
 
-======================================================================*/
 
 #include <linux/module.h>
 #include <linux/kernel.h>
@@ -58,7 +56,6 @@
 /* Ositech Seven of Diamonds firmware */
 #include "ositech.h"
 
-/*====================================================================*/
 
 static const char *if_names[] = { "auto", "10baseT", "10base2"};
 
@@ -89,7 +86,6 @@ static const char *version =
 #define DRV_NAME	"smc91c92_cs"
 #define DRV_VERSION	"1.123"
 
-/*====================================================================*/
 
 /* Operational parameter that usually are not changed. */
 
@@ -276,7 +272,6 @@ enum RxCfg { RxAllMulti = 0x0004, RxPromisc = 0x0002,
 #define set_bits(v, p) outw(inw(p)|(v), (p))
 #define mask_bits(v, p) outw(inw(p)&(v), (p))
 
-/*====================================================================*/
 
 static void smc91c92_detach(struct pcmcia_device *p_dev);
 static int smc91c92_config(struct pcmcia_device *link);
@@ -301,13 +296,11 @@ static void mdio_write(struct net_device *dev, int phy_id, int loc, int value);
 static int smc_link_ok(struct net_device *dev);
 static const struct ethtool_ops ethtool_ops;
 
-/*======================================================================
 
   smc91c92_attach() creates an "instance" of the driver, allocating
   local data structures for one device.  The device is registered
   with Card Services.
 
-======================================================================*/
 
 static int smc91c92_probe(struct pcmcia_device *link)
 {
@@ -358,14 +351,12 @@ static int smc91c92_probe(struct pcmcia_device *link)
     return smc91c92_config(link);
 } /* smc91c92_attach */
 
-/*======================================================================
 
     This deletes a driver "instance".  The device is de-registered
     with Card Services.  If it has been released, all local data
     structures are freed.  Otherwise, the structures will be freed
     when the device is released.
 
-======================================================================*/
 
 static void smc91c92_detach(struct pcmcia_device *link)
 {
@@ -381,7 +372,6 @@ static void smc91c92_detach(struct pcmcia_device *link)
     free_netdev(dev);
 } /* smc91c92_detach */
 
-/*====================================================================*/
 
 static int cvt_ascii_address(struct net_device *dev, char *s)
 {
@@ -402,7 +392,6 @@ static int cvt_ascii_address(struct net_device *dev, char *s)
     return 0;
 }
 
-/*====================================================================*/
 
 static int first_tuple(struct pcmcia_device *handle, tuple_t *tuple,
 		cisparse_t *parse)
@@ -426,7 +415,6 @@ static int next_tuple(struct pcmcia_device *handle, tuple_t *tuple,
 	return pcmcia_parse_tuple(handle, tuple, parse);
 }
 
-/*======================================================================
 
     Configuration stuff for Megahertz cards
 
@@ -435,7 +423,6 @@ static int next_tuple(struct pcmcia_device *handle, tuple_t *tuple,
     and 3288) cards.  mhz_setup() gets a card's hardware ethernet
     address.
 
-======================================================================*/
 
 static int mhz_3288_power(struct pcmcia_device *link)
 {
@@ -596,14 +583,12 @@ free_cfg_mem:
    return rc;
 }
 
-/*======================================================================
 
     Configuration stuff for the Motorola Mariner
 
     mot_config() writes directly to the Mariner configuration
     registers because the CIS is just bogus.
 
-======================================================================*/
 
 static void mot_config(struct pcmcia_device *link)
 {
@@ -658,7 +643,6 @@ static int mot_setup(struct pcmcia_device *link)
     return 0;
 }
 
-/*====================================================================*/
 
 static int smc_config(struct pcmcia_device *link)
 {
@@ -757,7 +741,6 @@ free_cfg_mem:
     return rc;
 }
 
-/*====================================================================*/
 
 static int osi_config(struct pcmcia_device *link)
 {
@@ -898,12 +881,10 @@ static int smc91c92_resume(struct pcmcia_device *link)
 }
 
 
-/*======================================================================
 
     This verifies that the chip is some SMC91cXX variant, and returns
     the revision code if successful.  Otherwise, it returns -ENODEV.
 
-======================================================================*/
 
 static int check_sig(struct pcmcia_device *link)
 {
@@ -951,13 +932,11 @@ static int check_sig(struct pcmcia_device *link)
     return -ENODEV;
 }
 
-/*======================================================================
 
     smc91c92_config() is scheduled to run after a CARD_INSERTION event
     is received, to configure the PCMCIA socket, and to make the
     ethernet device available to the system.
 
-======================================================================*/
 
 #define CS_EXIT_TEST(ret, svc, label) \
 if (ret != CS_SUCCESS) { cs_error(link, svc, ret); goto label; }
@@ -1113,13 +1092,11 @@ config_failed:			/* CS_EXIT_TEST() calls jump to here... */
     return -ENODEV;
 } /* smc91c92_config */
 
-/*======================================================================
 
     After a card is removed, smc91c92_release() will unregister the net
     device, and release the PCMCIA configuration.  If the device is
     still open, this will be postponed until it is closed.
 
-======================================================================*/
 
 static void smc91c92_release(struct pcmcia_device *link)
 {
@@ -1132,10 +1109,8 @@ static void smc91c92_release(struct pcmcia_device *link)
 	pcmcia_disable_device(link);
 }
 
-/*======================================================================
 
     MII interface support for SMC91cXX based cards
-======================================================================*/
 
 #define MDIO_SHIFT_CLK		0x04
 #define MDIO_DATA_OUT		0x01
@@ -1191,12 +1166,10 @@ static void mdio_write(struct net_device *dev, int phy_id, int loc, int value)
     }
 }
 
-/*======================================================================
 
     The driver core code, most of which should be common with a
     non-PCMCIA implementation.
 
-======================================================================*/
 
 #ifdef PCMCIA_DEBUG
 static void smc_dump(struct net_device *dev)
@@ -1250,7 +1223,6 @@ static int smc_open(struct net_device *dev)
     return 0;
 } /* smc_open */
 
-/*====================================================================*/
 
 static int smc_close(struct net_device *dev)
 {
@@ -1281,13 +1253,11 @@ static int smc_close(struct net_device *dev)
     return 0;
 } /* smc_close */
 
-/*======================================================================
 
    Transfer a packet to the hardware and trigger the packet send.
    This may be called at either from either the Tx queue code
    or the interrupt handler.
 
-======================================================================*/
 
 static void smc_hardware_send_packet(struct net_device * dev)
 {
@@ -1352,7 +1322,6 @@ static void smc_hardware_send_packet(struct net_device * dev)
     return;
 }
 
-/*====================================================================*/
 
 static void smc_tx_timeout(struct net_device *dev)
 {
@@ -1433,11 +1402,9 @@ static int smc_start_xmit(struct sk_buff *skb, struct net_device *dev)
     return 0;
 }
 
-/*======================================================================
 
     Handle a Tx anomolous event.  Entered while in Window 2.
 
-======================================================================*/
 
 static void smc_tx_err(struct net_device * dev)
 {
@@ -1481,7 +1448,6 @@ static void smc_tx_err(struct net_device * dev)
     return;
 }
 
-/*====================================================================*/
 
 static void smc_eph_irq(struct net_device *dev)
 {
@@ -1515,7 +1481,6 @@ static void smc_eph_irq(struct net_device *dev)
     SMC_SELECT_BANK(2);
 }
 
-/*====================================================================*/
 
 static irqreturn_t smc_interrupt(int irq, void *dev_id)
 {
@@ -1636,7 +1601,6 @@ irq_done:
     return IRQ_RETVAL(handled);
 }
 
-/*====================================================================*/
 
 static void smc_rx(struct net_device *dev)
 {
@@ -1703,7 +1667,6 @@ static void smc_rx(struct net_device *dev)
     return;
 }
 
-/*====================================================================*/
 
 static struct net_device_stats *smc_get_stats(struct net_device *dev)
 {
@@ -1712,11 +1675,9 @@ static struct net_device_stats *smc_get_stats(struct net_device *dev)
     return &smc->stats;
 }
 
-/*======================================================================
 
     Calculate values for the hardware multicast filter hash table.
 
-======================================================================*/
 
 static void fill_multicast_tbl(int count, struct dev_mc_list *addrs,
 			       u_char *multicast_table)
@@ -1733,7 +1694,6 @@ static void fill_multicast_tbl(int count, struct dev_mc_list *addrs,
     }
 }
 
-/*======================================================================
 
     Set the receive mode.
 
@@ -1742,7 +1702,6 @@ static void fill_multicast_tbl(int count, struct dev_mc_list *addrs,
     initialize the Rx registers.  We always set the multicast list and
     leave the receiver running.
 
-======================================================================*/
 
 static void set_rx_mode(struct net_device *dev)
 {
@@ -1777,11 +1736,9 @@ static void set_rx_mode(struct net_device *dev)
     return;
 }
 
-/*======================================================================
 
     Senses when a card's config changes. Here, it's coax or TP.
 
-======================================================================*/
 
 static int s9k_config(struct net_device *dev, struct ifmap *map)
 {
@@ -1799,11 +1756,9 @@ static int s9k_config(struct net_device *dev, struct ifmap *map)
     return 0;
 }
 
-/*======================================================================
 
     Reset the chip, reloading every register that might be corrupted.
 
-======================================================================*/
 
 /*
   Set transceiver type, perhaps to something other than what the user
@@ -1902,11 +1857,9 @@ static void smc_reset(struct net_device *dev)
 	 ioaddr + INTERRUPT);
 }
 
-/*======================================================================
 
     Media selection timer routine
 
-======================================================================*/
 
 static void media_check(u_long arg)
 {

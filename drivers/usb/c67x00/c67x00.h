@@ -37,7 +37,6 @@
 #define HW_REV_REG		0xC004
 
 /* General USB registers */
-/* ===================== */
 
 /* USB Control Register */
 #define USB_CTL_REG(x)		((x) ? 0xC0AA : 0xC08A)
@@ -64,7 +63,6 @@
 #define VBUS_IRQ_FLG		0x8000
 
 /* USB Host only registers */
-/* ======================= */
 
 /* Host n Control Register */
 #define HOST_CTL_REG(x)		((x) ? 0xC0A0 : 0xC080)
@@ -94,7 +92,6 @@
 #define HOST_FRAME_MASK		0x07FF
 
 /* USB Peripheral only registers */
-/* ============================= */
 
 /* Device n Port Sel reg */
 #define DEVICE_N_PORT_SEL(x)	((x) ? 0xC0A4 : 0xC084)
@@ -112,7 +109,6 @@
 #define DEVICE_N_ADDRESS(dev)	((dev) ? (0xC0AE) : (0xC08E))
 
 /* HPI registers */
-/* ============= */
 
 /* HPI Status register */
 #define SOFEOP_FLG(x)		(1 << ((x) ? 12 : 10))

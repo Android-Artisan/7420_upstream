@@ -53,6 +53,7 @@
 #include <asm/prom.h>
 #include <asm/pci-bridge.h>
 #endif /* CONFIG_PPC_OF */
+#include <linux/of.h>
 
 #define DRV_NAME	"sata_svw"
 #define DRV_VERSION	"2.3"
@@ -128,6 +129,12 @@ static int k2_sata_scr_read(struct ata_port *ap, unsigned int sc_reg, u32 *val)
 	if (sc_reg > SCR_CONTROL)
 		return -EINVAL;
 	*val = readl(ap->ioaddr.scr_addr + (sc_reg * 4));
+static int k2_sata_scr_read(struct ata_link *link,
+			    unsigned int sc_reg, u32 *val)
+{
+	if (sc_reg > SCR_CONTROL)
+		return -EINVAL;
+	*val = readl(link->ap->ioaddr.scr_addr + (sc_reg * 4));
 	return 0;
 }
 
@@ -140,6 +147,48 @@ static int k2_sata_scr_write(struct ata_port *ap, unsigned int sc_reg, u32 val)
 	return 0;
 }
 
+static int k2_sata_scr_write(struct ata_link *link,
+			     unsigned int sc_reg, u32 val)
+{
+	if (sc_reg > SCR_CONTROL)
+		return -EINVAL;
+	writel(val, link->ap->ioaddr.scr_addr + (sc_reg * 4));
+	return 0;
+}
+
+static int k2_sata_softreset(struct ata_link *link,
+			     unsigned int *class, unsigned long deadline)
+{
+	u8 dmactl;
+	void __iomem *mmio = link->ap->ioaddr.bmdma_addr;
+
+	dmactl = readb(mmio + ATA_DMA_CMD);
+
+	/* Clear the start bit */
+	if (dmactl & ATA_DMA_START) {
+		dmactl &= ~ATA_DMA_START;
+		writeb(dmactl, mmio + ATA_DMA_CMD);
+	}
+
+	return ata_sff_softreset(link, class, deadline);
+}
+
+static int k2_sata_hardreset(struct ata_link *link,
+			     unsigned int *class, unsigned long deadline)
+{
+	u8 dmactl;
+	void __iomem *mmio = link->ap->ioaddr.bmdma_addr;
+
+	dmactl = readb(mmio + ATA_DMA_CMD);
+
+	/* Clear the start bit */
+	if (dmactl & ATA_DMA_START) {
+		dmactl &= ~ATA_DMA_START;
+		writeb(dmactl, mmio + ATA_DMA_CMD);
+	}
+
+	return sata_sff_hardreset(link, class, deadline);
+}
 
 static void k2_sata_tf_load(struct ata_port *ap, const struct ata_taskfile *tf)
 {
@@ -223,6 +272,7 @@ static void k2_bmdma_setup_mmio(struct ata_queued_cmd *qc)
 	/* load PRD table addr. */
 	mb();	/* make sure PRD table writes are visible to controller */
 	writel(ap->prd_dma, mmio + ATA_DMA_TABLE_OFS);
+	writel(ap->bmdma_prd_dma, mmio + ATA_DMA_TABLE_OFS);
 
 	/* specify data direction, triple-check start bit is clear */
 	dmactl = readb(mmio + ATA_DMA_CMD);
@@ -304,6 +354,11 @@ static int k2_sata_proc_info(struct Scsi_Host *shost, char *page, char **start,
 	struct ata_port *ap;
 	struct device_node *np;
 	int len, index;
+static int k2_sata_show_info(struct seq_file *m, struct Scsi_Host *shost)
+{
+	struct ata_port *ap;
+	struct device_node *np;
+	int index;
 
 	/* Find  the ata_port */
 	ap = ata_shost_to_port(shost);
@@ -339,11 +394,24 @@ static struct scsi_host_template k2_sata_sht = {
 #ifdef CONFIG_PPC_OF
 	.proc_info		= k2_sata_proc_info,
 #endif
+		if (index == *reg) {
+			seq_printf(m, "devspec: %s\n", np->full_name);
+			break;
+		}
+	}
+	return 0;
+}
+
+static struct scsi_host_template k2_sata_sht = {
+	ATA_BMDMA_SHT(DRV_NAME),
+	.show_info		= k2_sata_show_info,
 };
 
 
 static struct ata_port_operations k2_sata_ops = {
 	.inherits		= &ata_bmdma_port_ops,
+	.softreset              = k2_sata_softreset,
+	.hardreset              = k2_sata_hardreset,
 	.sff_tf_load		= k2_sata_tf_load,
 	.sff_tf_read		= k2_sata_tf_read,
 	.sff_check_status	= k2_stat_check_status,
@@ -361,6 +429,9 @@ static const struct ata_port_info k2_port_info[] = {
 				  ATA_FLAG_MMIO | K2_FLAG_NO_ATAPI_DMA,
 		.pio_mask	= 0x1f,
 		.mwdma_mask	= 0x07,
+		.flags		= ATA_FLAG_SATA | K2_FLAG_NO_ATAPI_DMA,
+		.pio_mask	= ATA_PIO4,
+		.mwdma_mask	= ATA_MWDMA2,
 		.udma_mask	= ATA_UDMA6,
 		.port_ops	= &k2_sata_ops,
 	},
@@ -371,6 +442,10 @@ static const struct ata_port_info k2_port_info[] = {
 				  K2_FLAG_SATA_8_PORTS,
 		.pio_mask	= 0x1f,
 		.mwdma_mask	= 0x07,
+		.flags		= ATA_FLAG_SATA | K2_FLAG_NO_ATAPI_DMA |
+				  K2_FLAG_SATA_8_PORTS,
+		.pio_mask	= ATA_PIO4,
+		.mwdma_mask	= ATA_MWDMA2,
 		.udma_mask	= ATA_UDMA6,
 		.port_ops	= &k2_sata_ops,
 	},
@@ -380,6 +455,9 @@ static const struct ata_port_info k2_port_info[] = {
 				  ATA_FLAG_MMIO | K2_FLAG_BAR_POS_3,
 		.pio_mask	= 0x1f,
 		.mwdma_mask	= 0x07,
+		.flags		= ATA_FLAG_SATA | K2_FLAG_BAR_POS_3,
+		.pio_mask	= ATA_PIO4,
+		.mwdma_mask	= ATA_MWDMA2,
 		.udma_mask	= ATA_UDMA6,
 		.port_ops	= &k2_sata_ops,
 	},
@@ -389,6 +467,9 @@ static const struct ata_port_info k2_port_info[] = {
 				  ATA_FLAG_MMIO,
 		.pio_mask	= 0x1f,
 		.mwdma_mask	= 0x07,
+		.flags		= ATA_FLAG_SATA,
+		.pio_mask	= ATA_PIO4,
+		.mwdma_mask	= ATA_MWDMA2,
 		.udma_mask	= ATA_UDMA6,
 		.port_ops	= &k2_sata_ops,
 	},
@@ -425,6 +506,7 @@ static int k2_sata_init_one(struct pci_dev *pdev, const struct pci_device_id *en
 
 	if (!printed_version++)
 		dev_printk(KERN_DEBUG, &pdev->dev, "version " DRV_VERSION "\n");
+	ata_print_version_once(&pdev->dev, DRV_VERSION);
 
 	/* allocate host */
 	n_ports = 4;
@@ -485,6 +567,10 @@ static int k2_sata_init_one(struct pci_dev *pdev, const struct pci_device_id *en
 	if (rc)
 		return rc;
 	rc = pci_set_consistent_dma_mask(pdev, ATA_DMA_MASK);
+	rc = dma_set_mask(&pdev->dev, ATA_DMA_MASK);
+	if (rc)
+		return rc;
+	rc = dma_set_coherent_mask(&pdev->dev, ATA_DMA_MASK);
 	if (rc)
 		return rc;
 
@@ -501,6 +587,7 @@ static int k2_sata_init_one(struct pci_dev *pdev, const struct pci_device_id *en
 
 	pci_set_master(pdev);
 	return ata_host_activate(host, pdev->irq, ata_sff_interrupt,
+	return ata_host_activate(host, pdev->irq, ata_bmdma_interrupt,
 				 IRQF_SHARED, &k2_sata_sht);
 }
 
@@ -538,6 +625,7 @@ static void __exit k2_sata_exit(void)
 {
 	pci_unregister_driver(&k2_sata_pci_driver);
 }
+module_pci_driver(k2_sata_pci_driver);
 
 MODULE_AUTHOR("Benjamin Herrenschmidt");
 MODULE_DESCRIPTION("low-level driver for K2 SATA controller");

@@ -6,6 +6,7 @@
  * protocols such as CIPSO and RIPSO.
  *
  * Author: Paul Moore <paul.moore@hp.com>
+ * Author: Paul Moore <paul@paul-moore.com>
  *
  */
 
@@ -25,6 +26,7 @@
  * You should have received a copy of the GNU General Public License
  * along with this program;  if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+ * along with this program;  if not, see <http://www.gnu.org/licenses/>.
  *
  */
 
@@ -46,11 +48,14 @@
  *     NLBL_CIPSOV4_A_TAGLST
  *
  *   If using CIPSO_V4_MAP_STD the following attributes are required:
+ *   If using CIPSO_V4_MAP_TRANS the following attributes are required:
  *
  *     NLBL_CIPSOV4_A_MLSLVLLST
  *     NLBL_CIPSOV4_A_MLSCATLST
  *
  *   If using CIPSO_V4_MAP_PASS no additional attributes are required.
+ *   If using CIPSO_V4_MAP_PASS or CIPSO_V4_MAP_LOCAL no additional attributes
+ *   are required.
  *
  * o REMOVE:
  *   Sent by an application to remove a specific DOI mapping table from the
@@ -77,11 +82,14 @@
  *     NLBL_CIPSOV4_A_TAGLST
  *
  *   If using CIPSO_V4_MAP_STD the following attributes are required:
+ *   If using CIPSO_V4_MAP_TRANS the following attributes are required:
  *
  *     NLBL_CIPSOV4_A_MLSLVLLST
  *     NLBL_CIPSOV4_A_MLSCATLST
  *
  *   If using CIPSO_V4_MAP_PASS no additional attributes are required.
+ *   If using CIPSO_V4_MAP_PASS or CIPSO_V4_MAP_LOCAL no additional attributes
+ *   are required.
  *
  * o LISTALL:
  *   This message is sent by an application to list the valid DOIs on the

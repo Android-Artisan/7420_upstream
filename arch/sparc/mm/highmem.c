@@ -35,10 +35,43 @@ void *kmap_atomic(struct page *page, enum km_type type)
 	unsigned long vaddr;
 
 	/* even !CONFIG_PREEMPT needs this, for in_atomic in do_page_fault */
+#include <linux/highmem.h>
+#include <linux/export.h>
+#include <linux/mm.h>
+
+#include <asm/cacheflush.h>
+#include <asm/tlbflush.h>
+#include <asm/pgalloc.h>
+#include <asm/vaddrs.h>
+
+pgprot_t kmap_prot;
+
+static pte_t *kmap_pte;
+
+void __init kmap_init(void)
+{
+	unsigned long address;
+	pmd_t *dir;
+
+	address = __fix_to_virt(FIX_KMAP_BEGIN);
+	dir = pmd_offset(pgd_offset_k(address), address);
+
+        /* cache the first kmap pte */
+        kmap_pte = pte_offset_kernel(dir, address);
+        kmap_prot = __pgprot(SRMMU_ET_PTE | SRMMU_PRIV | SRMMU_CACHE);
+}
+
+void *kmap_atomic(struct page *page)
+{
+	unsigned long vaddr;
+	long idx, type;
+
+	preempt_disable();
 	pagefault_disable();
 	if (!PageHighMem(page))
 		return page_address(page);
 
+	type = kmap_atomic_idx_push();
 	idx = type + KM_TYPE_NR*smp_processor_id();
 	vaddr = __fix_to_virt(FIX_KMAP_BEGIN + idx);
 
@@ -116,3 +149,51 @@ struct page *kmap_atomic_to_page(void *ptr)
 	pte = kmap_pte - (idx - FIX_KMAP_BEGIN);
 	return pte_page(*pte);
 }
+EXPORT_SYMBOL(kmap_atomic);
+
+void __kunmap_atomic(void *kvaddr)
+{
+	unsigned long vaddr = (unsigned long) kvaddr & PAGE_MASK;
+	int type;
+
+	if (vaddr < FIXADDR_START) { // FIXME
+		pagefault_enable();
+		preempt_enable();
+		return;
+	}
+
+	type = kmap_atomic_idx();
+
+#ifdef CONFIG_DEBUG_HIGHMEM
+	{
+		unsigned long idx;
+
+		idx = type + KM_TYPE_NR * smp_processor_id();
+		BUG_ON(vaddr != __fix_to_virt(FIX_KMAP_BEGIN+idx));
+
+		/* XXX Fix - Anton */
+#if 0
+		__flush_cache_one(vaddr);
+#else
+		flush_cache_all();
+#endif
+
+		/*
+		 * force other mappings to Oops if they'll try to access
+		 * this pte without first remap it
+		 */
+		pte_clear(&init_mm, vaddr, kmap_pte-idx);
+		/* XXX Fix - Anton */
+#if 0
+		__flush_tlb_one(vaddr);
+#else
+		flush_tlb_all();
+#endif
+	}
+#endif
+
+	kmap_atomic_idx_pop();
+	pagefault_enable();
+	preempt_enable();
+}
+EXPORT_SYMBOL(__kunmap_atomic);

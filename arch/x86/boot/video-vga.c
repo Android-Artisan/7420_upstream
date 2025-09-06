@@ -2,6 +2,7 @@
  *
  *   Copyright (C) 1991, 1992 Linus Torvalds
  *   Copyright 2007 rPath, Inc. - All Rights Reserved
+ *   Copyright 2009 Intel Corporation; author H. Peter Anvin
  *
  *   This file is part of the Linux kernel, and is made available under
  *   the terms of the GNU General Public License version 2.
@@ -35,6 +36,7 @@ static struct mode_info cga_modes[] = {
 };
 
 __videocard video_vga;
+static __videocard video_vga;
 
 /* Set basic 80x25 mode */
 static u8 vga_set_basic_mode(void)
@@ -66,6 +68,15 @@ static u8 vga_set_basic_mode(void)
 	    (rows == 0 || rows == 24))
 		return mode;
 #endif
+	struct biosregs ireg, oreg;
+	u8 mode;
+
+	initregs(&ireg);
+
+	/* Query current mode */
+	ireg.ax = 0x0f00;
+	intcall(0x10, &ireg, &oreg);
+	mode = oreg.al;
 
 	if (mode != 3 && mode != 7)
 		mode = 3;
@@ -75,6 +86,8 @@ static u8 vga_set_basic_mode(void)
 	asm volatile(INT10
 		     : "+a" (ax)
 		     : : "ebx", "ecx", "edx", "esi", "edi");
+	ireg.ax = mode;		/* AH=0: set mode */
+	intcall(0x10, &ireg, NULL);
 	do_restore = 1;
 	return mode;
 }
@@ -94,6 +107,29 @@ static void vga_set_8font(void)
 
 	/* Cursor is scan lines 6-7 */
 	asm volatile(INT10 : : "a" (0x0100), "c" (0x0607));
+	struct biosregs ireg;
+
+	initregs(&ireg);
+
+	/* Set 8x8 font */
+	ireg.ax = 0x1112;
+	/* ireg.bl = 0; */
+	intcall(0x10, &ireg, NULL);
+
+	/* Use alternate print screen */
+	ireg.ax = 0x1200;
+	ireg.bl = 0x20;
+	intcall(0x10, &ireg, NULL);
+
+	/* Turn off cursor emulation */
+	ireg.ax = 0x1201;
+	ireg.bl = 0x34;
+	intcall(0x10, &ireg, NULL);
+
+	/* Cursor is scan lines 6-7 */
+	ireg.ax = 0x0100;
+	ireg.cx = 0x0607;
+	intcall(0x10, &ireg, NULL);
 }
 
 static void vga_set_14font(void)
@@ -108,6 +144,24 @@ static void vga_set_14font(void)
 
 	/* Cursor is scan lines 11-12 */
 	asm volatile(INT10 : : "a" (0x0100), "c" (0x0b0c));
+	struct biosregs ireg;
+
+	initregs(&ireg);
+
+	/* Set 9x14 font */
+	ireg.ax = 0x1111;
+	/* ireg.bl = 0; */
+	intcall(0x10, &ireg, NULL);
+
+	/* Turn off cursor emulation */
+	ireg.ax = 0x1201;
+	ireg.bl = 0x34;
+	intcall(0x10, &ireg, NULL);
+
+	/* Cursor is scan lines 11-12 */
+	ireg.ax = 0x0100;
+	ireg.cx = 0x0b0c;
+	intcall(0x10, &ireg, NULL);
 }
 
 static void vga_set_80x43(void)
@@ -119,6 +173,18 @@ static void vga_set_80x43(void)
 
 	/* Reset video mode */
 	asm volatile(INT10 : : "a" (0x0003));
+	struct biosregs ireg;
+
+	initregs(&ireg);
+
+	/* Set 350 scans */
+	ireg.ax = 0x1201;
+	ireg.bl = 0x30;
+	intcall(0x10, &ireg, NULL);
+
+	/* Reset video mode */
+	ireg.ax = 0x0003;
+	intcall(0x10, &ireg, NULL);
 
 	vga_set_8font();
 }
@@ -133,6 +199,10 @@ static void vga_set_480_scanlines(int end)
 {
 	u16 crtc;
 	u8  csel;
+static void vga_set_480_scanlines(void)
+{
+	u16 crtc;		/* CRTC base address */
+	u8  csel;		/* CRTC miscellaneous output register */
 
 	crtc = vga_crtc();
 
@@ -141,29 +211,53 @@ static void vga_set_480_scanlines(int end)
 	out_idx(0x3e, crtc, 0x07); /* Vertical overflow */
 	out_idx(0xea, crtc, 0x10); /* Vertical sync start */
 	out_idx(end, crtc, 0x12); /* Vertical display end */
+	out_idx(0xdf, crtc, 0x12); /* Vertical display end */
 	out_idx(0xe7, crtc, 0x15); /* Vertical blank start */
 	out_idx(0x04, crtc, 0x16); /* Vertical blank end */
 	csel = inb(0x3cc);
 	csel &= 0x0d;
 	csel |= 0xe2;
 	outb(csel, 0x3cc);
+	outb(csel, 0x3c2);
+}
+
+static void vga_set_vertical_end(int lines)
+{
+	u16 crtc;		/* CRTC base address */
+	u8  ovfw;		/* CRTC overflow register */
+	int end = lines-1;
+
+	crtc = vga_crtc();
+
+	ovfw = 0x3c | ((end >> (8-1)) & 0x02) | ((end >> (9-6)) & 0x40);
+
+	out_idx(ovfw, crtc, 0x07); /* Vertical overflow */
+	out_idx(end,  crtc, 0x12); /* Vertical display end */
 }
 
 static void vga_set_80x30(void)
 {
 	vga_set_480_scanlines(0xdf);
+	vga_set_480_scanlines();
+	vga_set_vertical_end(30*16);
 }
 
 static void vga_set_80x34(void)
 {
 	vga_set_14font();
 	vga_set_480_scanlines(0xdb);
+	vga_set_480_scanlines();
+	vga_set_14font();
+	vga_set_vertical_end(34*14);
 }
 
 static void vga_set_80x60(void)
 {
 	vga_set_8font();
 	vga_set_480_scanlines(0xdf);
+	vga_set_480_scanlines();
+	vga_set_8font();
+	vga_set_vertical_end(60*8);
 }
 
 static int vga_set_mode(struct mode_info *mode)
@@ -243,6 +337,26 @@ static int vga_probe(void)
 		    : "ebx", "ecx", "edx", "esi", "edi");
 
 		if (vga_flag == 0x1a) {
+
+	struct biosregs ireg, oreg;
+
+	initregs(&ireg);
+
+	ireg.ax = 0x1200;
+	ireg.bl = 0x10;		/* Check EGA/VGA */
+	intcall(0x10, &ireg, &oreg);
+
+#ifndef _WAKEUP
+	boot_params.screen_info.orig_video_ega_bx = oreg.bx;
+#endif
+
+	/* If we have MDA/CGA/HGC then BL will be unchanged at 0x10 */
+	if (oreg.bl != 0x10) {
+		/* EGA/VGA */
+		ireg.ax = 0x1a00;
+		intcall(0x10, &ireg, &oreg);
+
+		if (oreg.al == 0x1a) {
 			adapter = ADAPTER_VGA;
 #ifndef _WAKEUP
 			boot_params.screen_info.orig_video_isVGA = 1;
@@ -260,6 +374,7 @@ static int vga_probe(void)
 }
 
 __videocard video_vga = {
+static __videocard video_vga = {
 	.card_name	= "VGA",
 	.probe		= vga_probe,
 	.set_mode	= vga_set_mode,

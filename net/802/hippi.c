@@ -47,6 +47,7 @@
 static int hippi_header(struct sk_buff *skb, struct net_device *dev,
 			unsigned short type,
 			const void *daddr, const void *saddr, unsigned len)
+			const void *daddr, const void *saddr, unsigned int len)
 {
 	struct hippi_hdr *hip = (struct hippi_hdr *)skb_push(skb, HIPPI_HLEN);
 	struct hippi_cb *hcb = (struct hippi_cb *) skb->cb;
@@ -145,6 +146,7 @@ __be16 hippi_type_trans(struct sk_buff *skb, struct net_device *dev)
 EXPORT_SYMBOL(hippi_type_trans);
 
 static int hippi_change_mtu(struct net_device *dev, int new_mtu)
+int hippi_change_mtu(struct net_device *dev, int new_mtu)
 {
 	/*
 	 * HIPPI's got these nice large MTUs.
@@ -154,12 +156,16 @@ static int hippi_change_mtu(struct net_device *dev, int new_mtu)
 	dev->mtu = new_mtu;
 	return(0);
 }
+	return 0;
+}
+EXPORT_SYMBOL(hippi_change_mtu);
 
 /*
  * For HIPPI we will actually use the lower 4 bytes of the hardware
  * address as the I-FIELD rather than the actual hardware address.
  */
 static int hippi_mac_addr(struct net_device *dev, void *p)
+int hippi_mac_addr(struct net_device *dev, void *p)
 {
 	struct sockaddr *addr = p;
 	if (netif_running(dev))
@@ -172,6 +178,12 @@ static int hippi_neigh_setup_dev(struct net_device *dev, struct neigh_parms *p)
 {
 	/* Never send broadcast/multicast ARP messages */
 	p->mcast_probes = 0;
+EXPORT_SYMBOL(hippi_mac_addr);
+
+int hippi_neigh_setup_dev(struct net_device *dev, struct neigh_parms *p)
+{
+	/* Never send broadcast/multicast ARP messages */
+	NEIGH_VAR_INIT(p, MCAST_PROBES, 0);
 
 	/* In IPv6 unicast probes are valid even on NBMA,
 	* because they are encapsulated in normal IPv6 protocol.
@@ -185,6 +197,13 @@ static int hippi_neigh_setup_dev(struct net_device *dev, struct neigh_parms *p)
 static const struct header_ops hippi_header_ops = {
 	.create		= hippi_header,
 	.rebuild	= hippi_rebuild_header,
+		NEIGH_VAR_INIT(p, UCAST_PROBES, 0);
+	return 0;
+}
+EXPORT_SYMBOL(hippi_neigh_setup_dev);
+
+static const struct header_ops hippi_header_ops = {
+	.create		= hippi_header,
 };
 
 
@@ -195,6 +214,7 @@ static void hippi_setup(struct net_device *dev)
 	dev->header_ops			= &hippi_header_ops;
 	dev->set_mac_address 		= hippi_mac_addr;
 	dev->neigh_setup 		= hippi_neigh_setup_dev;
+	dev->header_ops			= &hippi_header_ops;
 
 	/*
 	 * We don't support HIPPI `ARP' for the time being, and probably
@@ -231,6 +251,8 @@ static void hippi_setup(struct net_device *dev)
 struct net_device *alloc_hippi_dev(int sizeof_priv)
 {
 	return alloc_netdev(sizeof_priv, "hip%d", hippi_setup);
+	return alloc_netdev(sizeof_priv, "hip%d", NET_NAME_UNKNOWN,
+			    hippi_setup);
 }
 
 EXPORT_SYMBOL(alloc_hippi_dev);

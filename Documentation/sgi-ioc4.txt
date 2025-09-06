@@ -31,7 +31,6 @@ as PCI device probe and remove operations, but is logically the
 same operation.
 
 sgiioc4
-=======
 This is the IDE driver for IOC4.  Its name isn't very descriptive
 simply for historical reasons (it used to be the only IOC4 driver
 component).  There's not much to say about it other than it hooks
@@ -39,7 +38,6 @@ up to the ioc4 driver via the appropriate registration, probe, and
 remove functions.
 
 ioc4_serial
-===========
 This is the serial driver for IOC4.  There's not much to say about it
 other than it hooks up to the ioc4 driver via the appropriate registration,
 probe, and remove functions.

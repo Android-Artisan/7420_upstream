@@ -2,6 +2,7 @@
  *
  * (C) 2002 by Brian J. Murrell <netfilter@interlinx.bc.ca>
  * based on HW's ip_conntrack_irc.c as well as other modules
+ * (C) 2006 Patrick McHardy <kaber@trash.net>
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -16,6 +17,7 @@
 #include <linux/in.h>
 #include <linux/udp.h>
 #include <linux/netfilter.h>
+#include <linux/gfp.h>
 
 #include <net/netfilter/nf_conntrack.h>
 #include <net/netfilter/nf_conntrack_expect.h>
@@ -30,6 +32,7 @@ MODULE_AUTHOR("Brian J. Murrell <netfilter@interlinx.bc.ca>");
 MODULE_DESCRIPTION("Amanda connection tracking module");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS("ip_conntrack_amanda");
+MODULE_ALIAS_NFCT_HELPER("amanda");
 
 module_param(master_timeout, uint, 0600);
 MODULE_PARM_DESC(master_timeout, "timeout for the master connection");
@@ -38,6 +41,7 @@ MODULE_PARM_DESC(ts_algo, "textsearch algorithm to use (default kmp)");
 
 unsigned int (*nf_nat_amanda_hook)(struct sk_buff *skb,
 				   enum ip_conntrack_info ctinfo,
+				   unsigned int protoff,
 				   unsigned int matchoff,
 				   unsigned int matchlen,
 				   struct nf_conntrack_expect *exp)
@@ -113,6 +117,12 @@ static int amanda_help(struct sk_buff *skb,
 	memset(&ts, 0, sizeof(ts));
 	start = skb_find_text(skb, dataoff, skb->len,
 			      search[SEARCH_CONNECT].ts, &ts);
+		net_err_ratelimited("amanda_help: skblen = %u\n", skb->len);
+		return NF_ACCEPT;
+	}
+
+	start = skb_find_text(skb, dataoff, skb->len,
+			      search[SEARCH_CONNECT].ts);
 	if (start == UINT_MAX)
 		goto out;
 	start += dataoff + search[SEARCH_CONNECT].len;
@@ -120,6 +130,8 @@ static int amanda_help(struct sk_buff *skb,
 	memset(&ts, 0, sizeof(ts));
 	stop = skb_find_text(skb, start, skb->len,
 			     search[SEARCH_NEWLINE].ts, &ts);
+	stop = skb_find_text(skb, start, skb->len,
+			     search[SEARCH_NEWLINE].ts);
 	if (stop == UINT_MAX)
 		goto out;
 	stop += start;
@@ -127,6 +139,7 @@ static int amanda_help(struct sk_buff *skb,
 	for (i = SEARCH_DATA; i <= SEARCH_INDEX; i++) {
 		memset(&ts, 0, sizeof(ts));
 		off = skb_find_text(skb, start, stop, search[i].ts, &ts);
+		off = skb_find_text(skb, start, stop, search[i].ts);
 		if (off == UINT_MAX)
 			continue;
 		off += start + search[i].len;
@@ -143,6 +156,7 @@ static int amanda_help(struct sk_buff *skb,
 
 		exp = nf_ct_expect_alloc(ct);
 		if (exp == NULL) {
+			nf_ct_helper_log(skb, ct, "cannot alloc expectation");
 			ret = NF_DROP;
 			goto out;
 		}
@@ -158,6 +172,12 @@ static int amanda_help(struct sk_buff *skb,
 					    len, exp);
 		else if (nf_ct_expect_related(exp) != 0)
 			ret = NF_DROP;
+			ret = nf_nat_amanda(skb, ctinfo, protoff,
+					    off - dataoff, len, exp);
+		else if (nf_ct_expect_related(exp) != 0) {
+			nf_ct_helper_log(skb, ct, "cannot add expectation");
+			ret = NF_DROP;
+		}
 		nf_ct_expect_put(exp);
 	}
 
@@ -177,6 +197,7 @@ static struct nf_conntrack_helper amanda_helper[2] __read_mostly = {
 		.help			= amanda_help,
 		.tuple.src.l3num	= AF_INET,
 		.tuple.src.u.udp.port	= __constant_htons(10080),
+		.tuple.src.u.udp.port	= cpu_to_be16(10080),
 		.tuple.dst.protonum	= IPPROTO_UDP,
 		.expect_policy		= &amanda_exp_policy,
 	},
@@ -186,6 +207,7 @@ static struct nf_conntrack_helper amanda_helper[2] __read_mostly = {
 		.help			= amanda_help,
 		.tuple.src.l3num	= AF_INET6,
 		.tuple.src.u.udp.port	= __constant_htons(10080),
+		.tuple.src.u.udp.port	= cpu_to_be16(10080),
 		.tuple.dst.protonum	= IPPROTO_UDP,
 		.expect_policy		= &amanda_exp_policy,
 	},

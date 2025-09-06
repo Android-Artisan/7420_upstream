@@ -5,6 +5,7 @@
   Copyright (c) 2005 Martin Langer <martin-langer@gmx.de>,
 		     Stefano Brivio <stefano.brivio@polimi.it>
 		     Michael Buesch <mbuesch@freenet.de>
+		     Michael Buesch <m@bues.ch>
 		     Danny van Dyk <kugelfang@gentoo.org>
 		     Andreas Jaggi <andreas.jaggi@waterwave.ch>
   Copyright (c) 2007 Larry Finger <Larry.Finger@lwfinger.net>
@@ -299,7 +300,7 @@ u8 b43legacy_radio_aci_scan(struct b43legacy_wldev *dev)
 			    & 0x7FFF);
 	b43legacy_set_all_gains(dev, 3, 8, 1);
 
-	start = (channel - 5 > 0) ? channel - 5 : 1;
+	start = (channel > 5) ? channel - 5 : 1;
 	end = (channel + 5 < 14) ? channel + 5 : 13;
 
 	for (i = start; i <= end; i++) {
@@ -1068,6 +1069,7 @@ b43legacy_radio_interference_mitigation_enable(struct b43legacy_wldev *dev,
 			break;
 
 		phy->aci_enable = 1;
+		phy->aci_enable = true;
 
 		phy_stacksave(B43legacy_PHY_RADIO_BITFIELD);
 		phy_stacksave(B43legacy_PHY_G_CRS);
@@ -1280,6 +1282,7 @@ b43legacy_radio_interference_mitigation_disable(struct b43legacy_wldev *dev,
 			break;
 
 		phy->aci_enable = 0;
+		phy->aci_enable = false;
 
 		phy_stackrestore(B43legacy_PHY_RADIO_BITFIELD);
 		phy_stackrestore(B43legacy_PHY_G_CRS);
@@ -1350,6 +1353,10 @@ int b43legacy_radio_set_interference_mitigation(struct b43legacy_wldev *dev,
 	switch (mode) {
 	case B43legacy_RADIO_INTERFMODE_AUTOWLAN:
 		phy->aci_wlan_automatic = 1;
+	phy->aci_wlan_automatic = false;
+	switch (mode) {
+	case B43legacy_RADIO_INTERFMODE_AUTOWLAN:
+		phy->aci_wlan_automatic = true;
 		if (phy->aci_enable)
 			mode = B43legacy_RADIO_INTERFMODE_MANUALWLAN;
 		else
@@ -1373,6 +1380,8 @@ int b43legacy_radio_set_interference_mitigation(struct b43legacy_wldev *dev,
 	if (mode == B43legacy_RADIO_INTERFMODE_NONE) {
 		phy->aci_enable = 0;
 		phy->aci_hw_rssi = 0;
+		phy->aci_enable = false;
+		phy->aci_hw_rssi = false;
 	} else
 		b43legacy_radio_interference_mitigation_enable(dev, mode);
 	phy->interfmode = mode;
@@ -1999,6 +2008,7 @@ u16 b43legacy_default_radio_attenuation(struct b43legacy_wldev *dev)
 				if (is_bcm_board_vendor(dev) &&
 				    dev->dev->bus->boardinfo.type == 0x421 &&
 				    dev->dev->bus->boardinfo.rev >= 30)
+				    dev->dev->bus->sprom.board_rev >= 30)
 					att = 3;
 				else if (is_bcm_board_vendor(dev) &&
 					 dev->dev->bus->boardinfo.type == 0x416)
@@ -2009,6 +2019,7 @@ u16 b43legacy_default_radio_attenuation(struct b43legacy_wldev *dev)
 				if (is_bcm_board_vendor(dev) &&
 				    dev->dev->bus->boardinfo.type == 0x421 &&
 				    dev->dev->bus->boardinfo.rev >= 30)
+				    dev->dev->bus->sprom.board_rev >= 30)
 					att = 7;
 				else
 					att = 6;
@@ -2019,6 +2030,7 @@ u16 b43legacy_default_radio_attenuation(struct b43legacy_wldev *dev)
 				if (is_bcm_board_vendor(dev) &&
 				    dev->dev->bus->boardinfo.type == 0x421 &&
 				    dev->dev->bus->boardinfo.rev >= 30)
+				    dev->dev->bus->sprom.board_rev >= 30)
 					att = 3;
 				else if (is_bcm_board_vendor(dev) &&
 					 dev->dev->bus->boardinfo.type ==
@@ -2055,6 +2067,9 @@ u16 b43legacy_default_radio_attenuation(struct b43legacy_wldev *dev)
 		if (dev->dev->bus->boardinfo.rev < 0x43)
 			att = 2;
 		else if (dev->dev->bus->boardinfo.rev < 0x51)
+		if (dev->dev->bus->sprom.board_rev < 0x43)
+			att = 2;
+		else if (dev->dev->bus->sprom.board_rev < 0x51)
 			att = 3;
 	}
 	if (att == 0xFFFF)
@@ -2103,6 +2118,7 @@ void b43legacy_radio_turn_on(struct b43legacy_wldev *dev)
 			b43legacy_phy_write(dev, B43legacy_PHY_RFOVERVAL,
 					    phy->radio_off_context.rfoverval);
 			phy->radio_off_context.valid = 0;
+			phy->radio_off_context.valid = false;
 		}
 		channel = phy->channel;
 		err = b43legacy_radio_selectchannel(dev,
@@ -2114,6 +2130,7 @@ void b43legacy_radio_turn_on(struct b43legacy_wldev *dev)
 		B43legacy_BUG_ON(1);
 	}
 	phy->radio_on = 1;
+	phy->radio_on = true;
 }
 
 void b43legacy_radio_turn_off(struct b43legacy_wldev *dev, bool force)
@@ -2132,6 +2149,7 @@ void b43legacy_radio_turn_off(struct b43legacy_wldev *dev, bool force)
 			phy->radio_off_context.rfover = rfover;
 			phy->radio_off_context.rfoverval = rfoverval;
 			phy->radio_off_context.valid = 1;
+			phy->radio_off_context.valid = true;
 		}
 		b43legacy_phy_write(dev, B43legacy_PHY_RFOVER, rfover | 0x008C);
 		b43legacy_phy_write(dev, B43legacy_PHY_RFOVERVAL,
@@ -2139,6 +2157,7 @@ void b43legacy_radio_turn_off(struct b43legacy_wldev *dev, bool force)
 	} else
 		b43legacy_phy_write(dev, 0x0015, 0xAA00);
 	phy->radio_on = 0;
+	phy->radio_on = false;
 	b43legacydbg(dev->wl, "Radio initialized\n");
 }
 

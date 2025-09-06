@@ -40,6 +40,26 @@ static inline cpumask_t node_to_cpumask(int node)
 }
 
 #define pcibus_to_cpumask(bus)	(cpu_online_map)
+extern struct cpumask node_to_cpumask_map[];
+/* FIXME: This is dumb, recalculating every time.  But simple. */
+static const struct cpumask *cpumask_of_node(int node)
+{
+	int cpu;
+
+	if (node == -1)
+		return cpu_all_mask;
+
+	cpumask_clear(&node_to_cpumask_map[node]);
+
+	for_each_online_cpu(cpu) {
+		if (cpu_to_node(cpu) == node)
+			cpumask_set_cpu(cpu, node_to_cpumask_map[node]);
+	}
+
+	return &node_to_cpumask_map[node];
+}
+
+#define cpumask_of_pcibus(bus)	(cpu_online_mask)
 
 #endif /* !CONFIG_NUMA */
 # include <asm-generic/topology.h>

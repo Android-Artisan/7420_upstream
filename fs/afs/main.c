@@ -1,6 +1,7 @@
 /* AFS client file system
  *
  * Copyright (C) 2002 Red Hat, Inc. All Rights Reserved.
+ * Copyright (C) 2002,5 Red Hat, Inc. All Rights Reserved.
  * Written by David Howells (dhowells@redhat.com)
  *
  * This program is free software; you can redistribute it and/or
@@ -42,6 +43,8 @@ struct cachefs_netfs afs_cache_netfs = {
 #endif
 
 struct afs_uuid afs_uuid;
+struct afs_uuid afs_uuid;
+struct workqueue_struct *afs_wq;
 
 /*
  * get a client UUID
@@ -67,12 +70,14 @@ static int __init afs_get_client_UUID(void)
 	afs_uuid.time_mid = uuidtime >> 32;
 	afs_uuid.time_hi_and_version = (uuidtime >> 48) & AFS_UUID_TIMEHI_MASK;
 	afs_uuid.time_hi_and_version = AFS_UUID_VERSION_TIME;
+	afs_uuid.time_hi_and_version |= AFS_UUID_VERSION_TIME;
 
 	get_random_bytes(&clockseq, 2);
 	afs_uuid.clock_seq_low = clockseq;
 	afs_uuid.clock_seq_hi_and_reserved =
 		(clockseq >> 8) & AFS_UUID_CLOCKHI_MASK;
 	afs_uuid.clock_seq_hi_and_reserved = AFS_UUID_VARIANT_STD;
+	afs_uuid.clock_seq_hi_and_reserved |= AFS_UUID_VARIANT_STD;
 
 	_debug("AFS UUID: %08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x",
 	       afs_uuid.time_low,
@@ -108,6 +113,20 @@ static int __init afs_init(void)
 	/* we want to be able to cache */
 	ret = cachefs_register_netfs(&afs_cache_netfs,
 				     &afs_cache_cell_index_def);
+	/* create workqueue */
+	ret = -ENOMEM;
+	afs_wq = alloc_workqueue("afs", 0, 0);
+	if (!afs_wq)
+		return ret;
+
+	/* register the /proc stuff */
+	ret = afs_proc_init();
+	if (ret < 0)
+		goto error_proc;
+
+#ifdef CONFIG_AFS_FSCACHE
+	/* we want to be able to cache */
+	ret = fscache_register_netfs(&afs_cache_netfs);
 	if (ret < 0)
 		goto error_cache;
 #endif
@@ -124,6 +143,8 @@ static int __init afs_init(void)
 
 	/* initialise the callback update process */
 	ret = afs_callback_update_init();
+	if (ret < 0)
+		goto error_callback_update_init;
 
 	/* create the RxRPC transport */
 	ret = afs_open_socket();
@@ -150,6 +171,19 @@ error_cache:
 	afs_vlocation_purge();
 	afs_cell_purge();
 	afs_proc_cleanup();
+	afs_callback_update_kill();
+error_callback_update_init:
+	afs_vlocation_purge();
+error_vl_update_init:
+	afs_cell_purge();
+error_cell_init:
+#ifdef CONFIG_AFS_FSCACHE
+	fscache_unregister_netfs(&afs_cache_netfs);
+error_cache:
+#endif
+	afs_proc_cleanup();
+error_proc:
+	destroy_workqueue(afs_wq);
 	rcu_barrier();
 	printk(KERN_ERR "kAFS: failed to register: %d\n", ret);
 	return ret;
@@ -177,6 +211,10 @@ static void __exit afs_exit(void)
 	afs_cell_purge();
 #ifdef AFS_CACHING_SUPPORT
 	cachefs_unregister_netfs(&afs_cache_netfs);
+	destroy_workqueue(afs_wq);
+	afs_cell_purge();
+#ifdef CONFIG_AFS_FSCACHE
+	fscache_unregister_netfs(&afs_cache_netfs);
 #endif
 	afs_proc_cleanup();
 	rcu_barrier();

@@ -53,7 +53,6 @@
 #include "defutil.h"
 
 
-/* ===========================================================================
  *  Function prototypes.
  */
 typedef enum {
@@ -81,7 +80,6 @@ static  void check_match (deflate_state *s, IPos start, IPos match,
                          int length);
 #endif
 
-/* ===========================================================================
  * Local data
  */
 
@@ -133,20 +131,20 @@ static const config configuration_table[10] = {
 #define EQUAL 0
 /* result of memcmp for equal strings */
 
-/* ===========================================================================
  * Update a hash value with the given input byte
  * IN  assertion: all calls to to UPDATE_HASH are made with consecutive
+ * IN  assertion: all calls to UPDATE_HASH are made with consecutive
  *    input characters, so that a running hash key can be computed from the
  *    previous key instead of complete recalculation each time.
  */
 #define UPDATE_HASH(s,h,c) (h = (((h)<<s->hash_shift) ^ (c)) & s->hash_mask)
 
 
-/* ===========================================================================
  * Insert string str in the dictionary and set match_head to the previous head
  * of the hash chain (the most recent string with same hash key). Return
  * the previous length of the hash chain.
  * IN  assertion: all calls to to INSERT_STRING are made with consecutive
+ * IN  assertion: all calls to INSERT_STRING are made with consecutive
  *    input characters and the first MIN_MATCH bytes of str are valid
  *    (except for the last MIN_MATCH-1 bytes of the input file).
  */
@@ -155,7 +153,6 @@ static const config configuration_table[10] = {
     s->prev[(str) & s->w_mask] = match_head = s->head[s->ins_h], \
     s->head[s->ins_h] = (Pos)(str))
 
-/* ===========================================================================
  * Initialize the hash table (avoiding 64K overflow for 16 bit systems).
  * prev[] will be initialized on the fly.
  */
@@ -163,7 +160,6 @@ static const config configuration_table[10] = {
     s->head[s->hash_size-1] = NIL; \
     memset((char *)s->head, 0, (unsigned)(s->hash_size-1)*sizeof(*s->head));
 
-/* ========================================================================= */
 int zlib_deflateInit2(
 	z_streamp strm,
 	int  level,
@@ -176,6 +172,7 @@ int zlib_deflateInit2(
     deflate_state *s;
     int noheader = 0;
     deflate_workspace *mem;
+    char *next;
 
     ush *overlay;
     /* We overlay pending_buf and d_buf+l_buf. This works since the average
@@ -199,6 +196,21 @@ int zlib_deflateInit2(
 	strategy < 0 || strategy > Z_HUFFMAN_ONLY) {
         return Z_STREAM_ERROR;
     }
+
+    /*
+     * Direct the workspace's pointers to the chunks that were allocated
+     * along with the deflate_workspace struct.
+     */
+    next = (char *) mem;
+    next += sizeof(*mem);
+    mem->window_memory = (Byte *) next;
+    next += zlib_deflate_window_memsize(windowBits);
+    mem->prev_memory = (Pos *) next;
+    next += zlib_deflate_prev_memsize(windowBits);
+    mem->head_memory = (Pos *) next;
+    next += zlib_deflate_head_memsize(memLevel);
+    mem->overlay_memory = next;
+
     s = (deflate_state *) &(mem->deflate_memory);
     strm->state = (struct internal_state *)s;
     s->strm = strm;
@@ -233,7 +245,6 @@ int zlib_deflateInit2(
     return zlib_deflateReset(strm);
 }
 
-/* ========================================================================= */
 #if 0
 int zlib_deflateSetDictionary(
 	z_streamp strm,
@@ -279,7 +290,6 @@ int zlib_deflateSetDictionary(
 }
 #endif  /*  0  */
 
-/* ========================================================================= */
 int zlib_deflateReset(
 	z_streamp strm
 )
@@ -310,7 +320,6 @@ int zlib_deflateReset(
     return Z_OK;
 }
 
-/* ========================================================================= */
 #if 0
 int zlib_deflateParams(
 	z_streamp strm,
@@ -349,7 +358,6 @@ int zlib_deflateParams(
 }
 #endif  /*  0  */
 
-/* =========================================================================
  * Put a short in the pending buffer. The 16-bit value is put in MSB order.
  * IN assertion: the stream state is correct and there is enough room in
  * pending_buf.
@@ -363,7 +371,6 @@ static void putShortMSB(
     put_byte(s, (Byte)(b & 0xff));
 }   
 
-/* =========================================================================
  * Flush as much pending output as possible. All deflate() output goes
  * through this function so some applications may wish to modify it
  * to avoid allocating a large strm->next_out buffer and copying into it.
@@ -392,7 +399,6 @@ static void flush_pending(
     }
 }
 
-/* ========================================================================= */
 int zlib_deflate(
 	z_streamp strm,
 	int flush
@@ -530,7 +536,6 @@ int zlib_deflate(
     return s->pending != 0 ? Z_OK : Z_STREAM_END;
 }
 
-/* ========================================================================= */
 int zlib_deflateEnd(
 	z_streamp strm
 )
@@ -552,7 +557,6 @@ int zlib_deflateEnd(
     return status == BUSY_STATE ? Z_DATA_ERROR : Z_OK;
 }
 
-/* =========================================================================
  * Copy the source state to the destination state.
  */
 #if 0
@@ -610,7 +614,6 @@ int zlib_deflateCopy (
 }
 #endif  /*  0  */
 
-/* ===========================================================================
  * Read a new buffer from the current input stream, update the adler32
  * and total number of bytes read.  All deflate() input goes through
  * this function so some applications may wish to modify it to avoid
@@ -640,7 +643,6 @@ static int read_buf(
     return (int)len;
 }
 
-/* ===========================================================================
  * Initialize the "longest match" routines for a new zlib stream
  */
 static void lm_init(
@@ -666,7 +668,6 @@ static void lm_init(
     s->ins_h = 0;
 }
 
-/* ===========================================================================
  * Set match_start to the longest match starting at the given string and
  * return its length. Matches shorter or equal to prev_length are discarded,
  * in which case the result is equal to prev_length and match_start is
@@ -818,7 +819,6 @@ static uInt longest_match(
 }
 
 #ifdef DEBUG_ZLIB
-/* ===========================================================================
  * Check that the match at match_start is indeed a match.
  */
 static void check_match(
@@ -847,7 +847,6 @@ static void check_match(
 #  define check_match(s, start, match, length)
 #endif
 
-/* ===========================================================================
  * Fill the window when the lookahead becomes insufficient.
  * Updates strstart and lookahead.
  *
@@ -947,7 +946,6 @@ static void fill_window(
     } while (s->lookahead < MIN_LOOKAHEAD && s->strm->avail_in != 0);
 }
 
-/* ===========================================================================
  * Flush the current block, with given end-of-file flag.
  * IN assertion: strstart is set to the end of the current match.
  */
@@ -968,7 +966,6 @@ static void fill_window(
    if (s->strm->avail_out == 0) return (eof) ? finish_started : need_more; \
 }
 
-/* ===========================================================================
  * Copy without compression as much as possible from the input stream, return
  * the current block state.
  * This function does not insert new strings in the dictionary since
@@ -1029,7 +1026,6 @@ static block_state deflate_stored(
     return flush == Z_FINISH ? finish_done : block_done;
 }
 
-/* ===========================================================================
  * Compress as much as possible from the input stream, return the current
  * block state.
  * This function does not perform lazy evaluation of matches and inserts
@@ -1125,7 +1121,6 @@ static block_state deflate_fast(
     return flush == Z_FINISH ? finish_done : block_done;
 }
 
-/* ===========================================================================
  * Same as above, but achieves better compression. We use a lazy
  * evaluation for matches: a match is finally adopted only if there is
  * no better match at the next window position.
@@ -1250,4 +1245,18 @@ static block_state deflate_slow(
 int zlib_deflate_workspacesize(void)
 {
     return sizeof(deflate_workspace);
+int zlib_deflate_workspacesize(int windowBits, int memLevel)
+{
+    if (windowBits < 0) /* undocumented feature: suppress zlib header */
+        windowBits = -windowBits;
+
+    /* Since the return value is typically passed to vmalloc() unchecked... */
+    BUG_ON(memLevel < 1 || memLevel > MAX_MEM_LEVEL || windowBits < 9 ||
+							windowBits > 15);
+
+    return sizeof(deflate_workspace)
+        + zlib_deflate_window_memsize(windowBits)
+        + zlib_deflate_prev_memsize(windowBits)
+        + zlib_deflate_head_memsize(memLevel)
+        + zlib_deflate_overlay_memsize(memLevel);
 }

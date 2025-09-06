@@ -65,5 +65,12 @@ typedef u64 cputime64_t;
  * Convert cputime64 to clock.
  */
 #define cputime64_to_clock_t(__ct)	jiffies_64_to_clock_t(__ct)
+#ifndef CONFIG_VIRT_CPU_ACCOUNTING
+# include <asm-generic/cputime_jiffies.h>
+#endif
+
+#ifdef CONFIG_VIRT_CPU_ACCOUNTING_GEN
+# include <asm-generic/cputime_nsecs.h>
+#endif
 
 #endif

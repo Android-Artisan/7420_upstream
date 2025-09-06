@@ -76,13 +76,11 @@ module_param(pcirr, int, 0);
 module_param(memsize, int, 0);
 module_param(verbosity, int, 0);
 
-//=========================================
 //
 // Well, we have to fix the upper layers.
 // Until this has been done, we work around
 // the bugs.
 //
-//=========================================
 
 #if (CYBLAFB_KD_GRAPHICS_QUIRK && CYBLAFB_DEBUG)
 	if (disabled) { \
@@ -100,22 +98,18 @@ module_param(verbosity, int, 0);
 #define KD_GRAPHICS_RETURN(val)
 #endif
 
-//=========================================
 //
 // Port access macros for memory mapped io
 //
-//=========================================
 
 #define out8(r, v) writeb(v, io_virt + r)
 #define out32(r, v) writel(v, io_virt + r)
 #define in8(r) readb(io_virt + r)
 #define in32(r) readl(io_virt + r)
 
-//======================================
 //
 // Hardware access inline functions
 //
-//======================================
 
 static inline u8 read3X4(u32 reg)
 {
@@ -160,11 +154,9 @@ static inline void write3C0(u32 reg, u8 val)
 	out8(0x3C0, val);
 }
 
-//=================================================
 //
 // Enable memory mapped io and unprotect registers
 //
-//=================================================
 
 static void enable_mmio(void)
 {
@@ -187,7 +179,6 @@ static void enable_mmio(void)
 	outb(inb(0x3D5) | 0x01, 0x3D5); // Enable mmio
 }
 
-//=================================================
 //
 // Set pixel clock VCLK1
 // - multipliers set elswhere
@@ -196,7 +187,6 @@ static void enable_mmio(void)
 // Hardware bug: SR18 >= 250 is broken for the
 //		 cyberblade/i1
 //
-//=================================================
 
 static void set_vclk(struct cyblafb_par *par, int freq)
 {
@@ -224,11 +214,9 @@ static void set_vclk(struct cyblafb_par *par, int freq)
 		       freq / 100, freq % 100, (hi & 0xc0) >> 6, hi & 0x3f, lo);
 }
 
-//================================================
 //
 // Cyberblade specific Graphics Engine (GE) setup
 //
-//================================================
 
 static void cyblafb_setup_GE(int pitch, int bpp)
 {
@@ -258,7 +246,6 @@ static void cyblafb_setup_GE(int pitch, int bpp)
 	out32(GE6C, 0); 	// Pattern and Style, p 129, ok
 }
 
-//=====================================================================
 //
 // Cyberblade specific syncing
 //
@@ -272,7 +259,6 @@ static void cyblafb_setup_GE(int pitch, int bpp)
 //   time that will succeed immediately and the enable_mmio()
 //   would only degrade performance.
 //
-//=====================================================================
 
 static int cyblafb_sync(struct fb_info *info)
 {
@@ -316,11 +302,9 @@ static int cyblafb_sync(struct fb_info *info)
 	return 0;
 }
 
-//==============================
 //
 // Cyberblade specific fillrect
 //
-//==============================
 
 static void cyblafb_fillrect(struct fb_info *info, const struct fb_fillrect *fr)
 {
@@ -362,7 +346,6 @@ static void cyblafb_fillrect(struct fb_info *info, const struct fb_fillrect *fr)
 	}
 }
 
-//================================================
 //
 // Cyberblade specific copyarea
 //
@@ -370,7 +353,6 @@ static void cyblafb_fillrect(struct fb_info *info, const struct fb_fillrect *fr)
 // will be called with width or height exceeding
 // 4096.
 //
-//================================================
 
 static void cyblafb_copyarea(struct fb_info *info, const struct fb_copyarea *ca)
 {
@@ -399,7 +381,6 @@ static void cyblafb_copyarea(struct fb_info *info, const struct fb_copyarea *ca)
 	out32(GE0C, direction ? d1 : d2);
 }
 
-//=======================================================================
 //
 // Cyberblade specific imageblit
 //
@@ -411,7 +392,6 @@ static void cyblafb_copyarea(struct fb_info *info, const struct fb_copyarea *ca)
 // the system. We split those blit requests into three blitting
 // operations.
 //
-//=======================================================================
 
 static void cyblafb_imageblit(struct fb_info *info,
 			      const struct fb_image *image)
@@ -513,13 +493,11 @@ static void cyblafb_imageblit(struct fb_info *info,
 	}
 }
 
-//==========================================================
 //
 // Check if video mode is acceptable. We change var->??? if
 // video mode is slightly off or return error otherwise.
 // info->??? must not be changed!
 //
-//==========================================================
 
 static int cyblafb_check_var(struct fb_var_screeninfo *var,
 			     struct fb_info *info)
@@ -642,7 +620,6 @@ static int cyblafb_check_var(struct fb_var_screeninfo *var,
 	return 0;
 }
 
-//=====================================================================
 //
 // Pan the display
 //
@@ -660,7 +637,6 @@ static int cyblafb_check_var(struct fb_var_screeninfo *var,
 // register now.
 //
 //
-//=====================================================================
 
 static int cyblafb_pan_display(struct fb_var_screeninfo *var,
 			       struct fb_info *info)
@@ -674,12 +650,10 @@ static int cyblafb_pan_display(struct fb_var_screeninfo *var,
 	return 0;
 }
 
-//============================================
 //
 // This will really help in case of a bug ...
 // dump most gaphics core registers.
 //
-//============================================
 
 static void regdump(struct cyblafb_par *par)
 {
@@ -743,14 +717,12 @@ static void regdump(struct cyblafb_par *par)
 	return;
 }
 
-//=======================================================================
 //
 // Save State
 //
 // This function is called while a switch to KD_TEXT is in progress,
 // before any of the other functions are called.
 //
-//=======================================================================
 
 static void cyblafb_save_state(struct fb_info *info)
 {
@@ -763,7 +735,6 @@ static void cyblafb_save_state(struct fb_info *info)
 	return;
 }
 
-//=======================================================================
 //
 // Restore State
 //
@@ -771,7 +742,6 @@ static void cyblafb_save_state(struct fb_info *info)
 // We have to turn on vga style panning registers again because the
 // trident driver of X does not know about GE10.
 //
-//=======================================================================
 
 static void cyblafb_restore_state(struct fb_info *info)
 {
@@ -782,11 +752,9 @@ static void cyblafb_restore_state(struct fb_info *info)
 	return;
 }
 
-//======================================
 //
 // Set hardware to requested video mode
 //
-//======================================
 
 static int cyblafb_set_par(struct fb_info *info)
 {
@@ -1044,11 +1012,9 @@ static int cyblafb_set_par(struct fb_info *info)
 	return 0;
 }
 
-//========================
 //
 // Set one color register
 //
-//========================
 
 static int cyblafb_setcolreg(unsigned regno, unsigned red, unsigned green,
 			     unsigned blue, unsigned transp,
@@ -1084,11 +1050,9 @@ static int cyblafb_setcolreg(unsigned regno, unsigned red, unsigned green,
 	return 0;
 }
 
-//==========================================================
 //
 // Try blanking the screen. For flat panels it does nothing
 //
-//==========================================================
 
 static int cyblafb_blank(int blank_mode, struct fb_info *info)
 {
@@ -1148,7 +1112,6 @@ static struct fb_ops cyblafb_ops __devinitdata = {
 	.fb_save_state = cyblafb_save_state,
 };
 
-//==========================================================================
 //
 // getstartupmode() decides about the inital video mode
 //
@@ -1160,7 +1123,6 @@ static struct fb_ops cyblafb_ops __devinitdata = {
 // mode he likes, check_var will not try to alter geometry parameters as
 // it would be necessary otherwise.
 //
-//==========================================================================
 
 static int __devinit getstartupmode(struct fb_info *info)
 {
@@ -1338,12 +1300,10 @@ static int __devinit getstartupmode(struct fb_info *info)
 	return 0;
 }
 
-//========================================================
 //
 // Detect activated memory size. Undefined values require
 // memsize parameter.
 //
-//========================================================
 
 static unsigned int __devinit get_memsize(void)
 {
@@ -1380,13 +1340,11 @@ static unsigned int __devinit get_memsize(void)
 	return k;
 }
 
-//=========================================================
 //
 // Detect if a flat panel monitor connected to the special
 // interface is active. Override is possible by fp and crt
 // parameters.
 //
-//=========================================================
 
 static unsigned int __devinit get_displaytype(void)
 {
@@ -1397,11 +1355,9 @@ static unsigned int __devinit get_displaytype(void)
 	return (read3CE(GR33) & 0x10) ? DISPLAY_FP : DISPLAY_CRT;
 }
 
-//=====================================
 //
 // Get native resolution of flat panel
 //
-//=====================================
 
 static int __devinit get_nativex(void)
 {
@@ -1611,7 +1567,6 @@ static struct pci_driver cyblafb_pci_driver = {
 	.remove = __devexit_p(cybla_pci_remove)
 };
 
-//=============================================================
 //
 // kernel command line example:
 //
@@ -1621,7 +1576,6 @@ static struct pci_driver cyblafb_pci_driver = {
 //
 //	modprobe cyblafb mode=1280x1024 bpp=16 ref=50 ...
 //
-//=============================================================
 
 static int __devinit cyblafb_init(void)
 {

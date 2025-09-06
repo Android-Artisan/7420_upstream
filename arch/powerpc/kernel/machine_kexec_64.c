@@ -14,6 +14,11 @@
 #include <linux/smp.h>
 #include <linux/thread_info.h>
 #include <linux/errno.h>
+#include <linux/init_task.h>
+#include <linux/errno.h>
+#include <linux/kernel.h>
+#include <linux/cpu.h>
+#include <linux/hardirq.h>
 
 #include <asm/page.h>
 #include <asm/current.h>
@@ -25,6 +30,23 @@
 #include <asm/prom.h>
 #include <asm/smp.h>
 
+#include <asm/hw_breakpoint.h>
+
+#ifdef CONFIG_PPC_BOOK3E
+int default_machine_kexec_prepare(struct kimage *image)
+{
+	int i;
+	/*
+	 * Since we use the kernel fault handlers and paging code to
+	 * handle the virtual mode, we must make sure no destination
+	 * overlaps kernel static data or bss.
+	 */
+	for (i = 0; i < image->nr_segments; i++)
+		if (image->segment[i].mem < __pa(_end))
+			return -ETXTBSY;
+	return 0;
+}
+#else
 int default_machine_kexec_prepare(struct kimage *image)
 {
 	int i;
@@ -72,6 +94,7 @@ int default_machine_kexec_prepare(struct kimage *image)
 	/* We also should not overwrite the tce tables */
 	for (node = of_find_node_by_type(NULL, "pci"); node != NULL;
 			node = of_find_node_by_type(node, "pci")) {
+	for_each_node_by_type(node, "pci") {
 		basep = of_get_property(node, "linux,tce-base", NULL);
 		sizep = of_get_property(node, "linux,tce-size", NULL);
 		if (basep == NULL || sizep == NULL)
@@ -93,6 +116,7 @@ int default_machine_kexec_prepare(struct kimage *image)
 }
 
 #define IND_FLAGS (IND_DESTINATION | IND_INDIRECTION | IND_DONE | IND_SOURCE)
+#endif /* !CONFIG_PPC_BOOK3E */
 
 static void copy_segments(unsigned long ind)
 {
@@ -164,6 +188,26 @@ static void kexec_smp_down(void *arg)
 		ppc_md.kexec_cpu_down(0, 1);
 
 	local_irq_disable();
+static int kexec_all_irq_disabled = 0;
+
+static void kexec_smp_down(void *arg)
+{
+	local_irq_disable();
+	hard_irq_disable();
+
+	mb(); /* make sure our irqs are disabled before we say they are */
+	get_paca()->kexec_state = KEXEC_STATE_IRQS_OFF;
+	while(kexec_all_irq_disabled == 0)
+		cpu_relax();
+	mb(); /* make sure all irqs are disabled before this */
+	hw_breakpoint_disable();
+	/*
+	 * Now every CPU has IRQs off, we can clear out any pending
+	 * IPIs and be sure that no more will come in after this.
+	 */
+	if (ppc_md.kexec_cpu_down)
+		ppc_md.kexec_cpu_down(0, 1);
+
 	kexec_smp_wait();
 	/* NOTREACHED */
 }
@@ -202,10 +246,79 @@ static void kexec_prepare_cpus(void)
 				printk( "kexec: waiting for cpu %d (physical"
 						" %d) to go down\n",
 						i, paca[i].hw_cpu_id);
+static void kexec_prepare_cpus_wait(int wait_state)
+{
+	int my_cpu, i, notified=-1;
+
+	hw_breakpoint_disable();
+	my_cpu = get_cpu();
+	/* Make sure each CPU has at least made it to the state we need.
+	 *
+	 * FIXME: There is a (slim) chance of a problem if not all of the CPUs
+	 * are correctly onlined.  If somehow we start a CPU on boot with RTAS
+	 * start-cpu, but somehow that CPU doesn't write callin_cpu_map[] in
+	 * time, the boot CPU will timeout.  If it does eventually execute
+	 * stuff, the secondary will start up (paca[].cpu_start was written) and
+	 * get into a peculiar state.  If the platform supports
+	 * smp_ops->take_timebase(), the secondary CPU will probably be spinning
+	 * in there.  If not (i.e. pseries), the secondary will continue on and
+	 * try to online itself/idle/etc. If it survives that, we need to find
+	 * these possible-but-not-online-but-should-be CPUs and chaperone them
+	 * into kexec_smp_wait().
+	 */
+	for_each_online_cpu(i) {
+		if (i == my_cpu)
+			continue;
+
+		while (paca[i].kexec_state < wait_state) {
+			barrier();
+			if (i != notified) {
+				printk(KERN_INFO "kexec: waiting for cpu %d "
+				       "(physical %d) to enter %i state\n",
+				       i, paca[i].hw_cpu_id, wait_state);
 				notified = i;
 			}
 		}
 	}
+	mb();
+}
+
+/*
+ * We need to make sure each present CPU is online.  The next kernel will scan
+ * the device tree and assume primary threads are online and query secondary
+ * threads via RTAS to online them if required.  If we don't online primary
+ * threads, they will be stuck.  However, we also online secondary threads as we
+ * may be using 'cede offline'.  In this case RTAS doesn't see the secondary
+ * threads as offline -- and again, these CPUs will be stuck.
+ *
+ * So, we online all CPUs that should be running, including secondary threads.
+ */
+static void wake_offline_cpus(void)
+{
+	int cpu = 0;
+
+	for_each_present_cpu(cpu) {
+		if (!cpu_online(cpu)) {
+			printk(KERN_INFO "kexec: Waking offline cpu %d.\n",
+			       cpu);
+			WARN_ON(cpu_up(cpu));
+		}
+	}
+}
+
+static void kexec_prepare_cpus(void)
+{
+	wake_offline_cpus();
+	smp_call_function(kexec_smp_down, NULL, /* wait */0);
+	local_irq_disable();
+	hard_irq_disable();
+
+	mb(); /* make sure IRQs are disabled before we say they are */
+	get_paca()->kexec_state = KEXEC_STATE_IRQS_OFF;
+
+	kexec_prepare_cpus_wait(KEXEC_STATE_IRQS_OFF);
+	/* we are sure every CPU has IRQs off at this point */
+	kexec_all_irq_disabled = 1;
 
 	/* after we tell the others to go down */
 	if (ppc_md.kexec_cpu_down)
@@ -214,6 +327,13 @@ static void kexec_prepare_cpus(void)
 	put_cpu();
 
 	local_irq_disable();
+	/*
+	 * Before removing MMU mappings make sure all CPUs have entered real
+	 * mode:
+	 */
+	kexec_prepare_cpus_wait(KEXEC_STATE_REAL_MODE);
+
+	put_cpu();
 }
 
 #else /* ! SMP */
@@ -233,6 +353,7 @@ static void kexec_prepare_cpus(void)
 	if (ppc_md.kexec_cpu_down)
 		ppc_md.kexec_cpu_down(0, 0);
 	local_irq_disable();
+	hard_irq_disable();
 }
 
 #endif /* SMP */
@@ -256,6 +377,19 @@ static union thread_union kexec_stack
 extern NORET_TYPE void kexec_sequence(void *newstack, unsigned long start,
 					void *image, void *control,
 					void (*clear_all)(void)) ATTRIB_NORET;
+static union thread_union kexec_stack __init_task_data =
+	{ };
+
+/*
+ * For similar reasons to the stack above, the kexecing CPU needs to be on a
+ * static PACA; we switch to kexec_paca.
+ */
+struct paca_struct kexec_paca;
+
+/* Our assembly helper, in misc_64.S */
+extern void kexec_sequence(void *newstack, unsigned long start,
+			   void *image, void *control,
+			   void (*clear_all)(void)) __noreturn;
 
 /* too late to fail here */
 void default_machine_kexec(struct kimage *image)
@@ -274,10 +408,33 @@ void default_machine_kexec(struct kimage *image)
                kexec_prepare_cpus();
 
 	/* switch to a staticly allocated stack.  Based on irq stack code.
+	if (!kdump_in_progress())
+		kexec_prepare_cpus();
+
+	pr_debug("kexec: Starting switchover sequence.\n");
+
+	/* switch to a staticly allocated stack.  Based on irq stack code.
+	 * We setup preempt_count to avoid using VMX in memcpy.
 	 * XXX: the task struct will likely be invalid once we do the copy!
 	 */
 	kexec_stack.thread_info.task = current_thread_info()->task;
 	kexec_stack.thread_info.flags = 0;
+	kexec_stack.thread_info.preempt_count = HARDIRQ_OFFSET;
+	kexec_stack.thread_info.cpu = current_thread_info()->cpu;
+
+	/* We need a static PACA, too; copy this CPU's PACA over and switch to
+	 * it.  Also poison per_cpu_offset to catch anyone using non-static
+	 * data.
+	 */
+	memcpy(&kexec_paca, get_paca(), sizeof(struct paca_struct));
+	kexec_paca.data_offset = 0xedeaddeadeeeeeeeUL;
+	paca = (struct paca_struct *)RELOC_HIDE(&kexec_paca, 0) -
+		kexec_paca.paca_index;
+	setup_paca(&kexec_paca);
+
+	/* XXX: If anyone does 'dynamic lppacas' this will also need to be
+	 * switched to a static version!
+	 */
 
 	/* Some things are best done in assembly.  Finding globals with
 	 * a toc is easier in C, so pass in what we can.
@@ -290,6 +447,10 @@ void default_machine_kexec(struct kimage *image)
 
 /* Values we need to export to the second kernel via the device tree. */
 static unsigned long htab_base, kernel_end;
+#ifndef CONFIG_PPC_BOOK3E
+/* Values we need to export to the second kernel via the device tree. */
+static unsigned long htab_base;
+static unsigned long htab_size;
 
 static struct property htab_base_prop = {
 	.name = "linux,htab-base",
@@ -347,6 +508,10 @@ static struct property crashk_size_prop = {
 };
 
 static void __init export_crashk_values(void)
+	.value = &htab_size,
+};
+
+static int __init export_htab_values(void)
 {
 	struct device_node *node;
 	struct property *prop;
@@ -381,3 +546,29 @@ static int __init kexec_setup(void)
 	return 0;
 }
 __initcall(kexec_setup);
+	/* On machines with no htab htab_address is NULL */
+	if (!htab_address)
+		return -ENODEV;
+
+	node = of_find_node_by_path("/chosen");
+	if (!node)
+		return -ENODEV;
+
+	/* remove any stale propertys so ours can be found */
+	prop = of_find_property(node, htab_base_prop.name, NULL);
+	if (prop)
+		of_remove_property(node, prop);
+	prop = of_find_property(node, htab_size_prop.name, NULL);
+	if (prop)
+		of_remove_property(node, prop);
+
+	htab_base = cpu_to_be64(__pa(htab_address));
+	of_add_property(node, &htab_base_prop);
+	htab_size = cpu_to_be64(htab_size_bytes);
+	of_add_property(node, &htab_size_prop);
+
+	of_node_put(node);
+	return 0;
+}
+late_initcall(export_htab_values);
+#endif /* !CONFIG_PPC_BOOK3E */

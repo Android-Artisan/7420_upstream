@@ -1,5 +1,4 @@
 spi_butterfly - parport-to-butterfly adapter driver
-===================================================
 
 This is a hardware and software project that includes building and using
 a parallel port adapter cable, together with an "AVR Butterfly" to run

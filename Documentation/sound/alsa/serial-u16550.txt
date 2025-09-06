@@ -1,6 +1,5 @@
 
 			Serial UART 16450/16550 MIDI driver
-			===================================
 
 The adaptor module parameter allows you to select either:
 

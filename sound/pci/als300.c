@@ -33,12 +33,14 @@
 #include <linux/delay.h>
 #include <linux/init.h>
 #include <linux/moduleparam.h>
+#include <linux/module.h>
 #include <linux/pci.h>
 #include <linux/dma-mapping.h>
 #include <linux/interrupt.h>
 #include <linux/slab.h>
 
 #include <asm/io.h>
+#include <linux/io.h>
 
 #include <sound/core.h>
 #include <sound/control.h>
@@ -100,6 +102,8 @@
 #define snd_als300_dbgcallleave()
 #endif
 
+#define DEBUG_PLAY_REC	0
+
 #if DEBUG_PLAY_REC
 #define snd_als300_dbgplay(format, args...) printk(KERN_ERR format, ##args)
 #else
@@ -116,6 +120,14 @@ MODULE_SUPPORTED_DEVICE("{{Avance Logic,ALS300},{Avance Logic,ALS300+}}");
 static int index[SNDRV_CARDS] = SNDRV_DEFAULT_IDX;
 static char *id[SNDRV_CARDS] = SNDRV_DEFAULT_STR;
 static int enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE_PNP;
+static bool enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE_PNP;
+
+module_param_array(index, int, NULL, 0444);
+MODULE_PARM_DESC(index, "Index value for ALS300 sound card.");
+module_param_array(id, charp, NULL, 0444);
+MODULE_PARM_DESC(id, "ID string for ALS300 sound card.");
+module_param_array(enable, bool, NULL, 0444);
+MODULE_PARM_DESC(enable, "Enable ALS300 sound card.");
 
 struct snd_als300 {
 	unsigned long port;
@@ -146,6 +158,7 @@ struct snd_als300_substream_data {
 };
 
 static struct pci_device_id snd_als300_ids[] = {
+static const struct pci_device_id snd_als300_ids[] = {
 	{ 0x4005, 0x0300, PCI_ANY_ID, PCI_ANY_ID, 0, 0, DEVICE_ALS300 },
 	{ 0x4005, 0x0308, PCI_ANY_ID, PCI_ANY_ID, 0, 0, DEVICE_ALS300_PLUS },
 	{ 0, }
@@ -277,6 +290,9 @@ static void __devexit snd_als300_remove(struct pci_dev *pci)
 	snd_card_free(pci_get_drvdata(pci));
 	pci_set_drvdata(pci, NULL);
 	snd_als300_dbgcallleave();
+static void snd_als300_remove(struct pci_dev *pci)
+{
+	snd_card_free(pci_get_drvdata(pci));
 }
 
 static unsigned short snd_als300_ac97_read(struct snd_ac97 *ac97,
@@ -388,6 +404,8 @@ static int snd_als300_playback_open(struct snd_pcm_substream *substream)
 								GFP_KERNEL);
 
 	snd_als300_dbgcallenter();
+	if (!data)
+		return -ENOMEM;
 	chip->playback_substream = substream;
 	runtime->hw = snd_als300_playback_hw;
 	runtime->private_data = data;
@@ -408,6 +426,9 @@ static int snd_als300_playback_close(struct snd_pcm_substream *substream)
 	chip->playback_substream = NULL;
 	snd_pcm_lib_free_pages(substream);
 	snd_als300_dbgcallleave();
+	kfree(data);
+	chip->playback_substream = NULL;
+	snd_pcm_lib_free_pages(substream);
 	return 0;
 }
 
@@ -419,6 +440,8 @@ static int snd_als300_capture_open(struct snd_pcm_substream *substream)
 								GFP_KERNEL);
 
 	snd_als300_dbgcallenter();
+	if (!data)
+		return -ENOMEM;
 	chip->capture_substream = substream;
 	runtime->hw = snd_als300_capture_hw;
 	runtime->private_data = data;
@@ -439,6 +462,9 @@ static int snd_als300_capture_close(struct snd_pcm_substream *substream)
 	chip->capture_substream = NULL;
 	snd_pcm_lib_free_pages(substream);
 	snd_als300_dbgcallleave();
+	kfree(data);
+	chip->capture_substream = NULL;
+	snd_pcm_lib_free_pages(substream);
 	return 0;
 }
 
@@ -612,6 +638,7 @@ static struct snd_pcm_ops snd_als300_capture_ops = {
 };
 
 static int __devinit snd_als300_new_pcm(struct snd_als300 *chip)
+static int snd_als300_new_pcm(struct snd_als300 *chip)
 {
 	struct snd_pcm *pcm;
 	int err;
@@ -675,6 +702,11 @@ static void snd_als300_init(struct snd_als300 *chip)
 static int __devinit snd_als300_create(struct snd_card *card,
 				       struct pci_dev *pci, int chip_type,
 				       struct snd_als300 **rchip)
+}
+
+static int snd_als300_create(struct snd_card *card,
+			     struct pci_dev *pci, int chip_type,
+			     struct snd_als300 **rchip)
 {
 	struct snd_als300 *chip;
 	void *irq_handler;
@@ -692,6 +724,12 @@ static int __devinit snd_als300_create(struct snd_card *card,
 	if (pci_set_dma_mask(pci, DMA_28BIT_MASK) < 0 ||
 		pci_set_consistent_dma_mask(pci, DMA_28BIT_MASK) < 0) {
 		printk(KERN_ERR "error setting 28bit DMA mask\n");
+	if ((err = pci_enable_device(pci)) < 0)
+		return err;
+
+	if (dma_set_mask(&pci->dev, DMA_BIT_MASK(28)) < 0 ||
+		dma_set_coherent_mask(&pci->dev, DMA_BIT_MASK(28)) < 0) {
+		dev_err(card->dev, "error setting 28bit DMA mask\n");
 		pci_disable_device(pci);
 		return -ENXIO;
 	}
@@ -724,6 +762,8 @@ static int __devinit snd_als300_create(struct snd_card *card,
 	if (request_irq(pci->irq, irq_handler, IRQF_SHARED,
 			card->shortname, chip)) {
 		snd_printk(KERN_ERR "unable to grab IRQ %d\n", pci->irq);
+			KBUILD_MODNAME, chip)) {
+		dev_err(card->dev, "unable to grab IRQ %d\n", pci->irq);
 		snd_als300_free(chip);
 		return -EBUSY;
 	}
@@ -735,12 +775,14 @@ static int __devinit snd_als300_create(struct snd_card *card,
 	err = snd_als300_ac97(chip);
 	if (err < 0) {
 		snd_printk(KERN_WARNING "Could not create ac97\n");
+		dev_err(card->dev, "Could not create ac97\n");
 		snd_als300_free(chip);
 		return err;
 	}
 
 	if ((err = snd_als300_new_pcm(chip)) < 0) {
 		snd_printk(KERN_WARNING "Could not create PCM\n");
+		dev_err(card->dev, "Could not create PCM\n");
 		snd_als300_free(chip);
 		return err;
 	}
@@ -762,6 +804,14 @@ static int __devinit snd_als300_create(struct snd_card *card,
 static int snd_als300_suspend(struct pci_dev *pci, pm_message_t state)
 {
 	struct snd_card *card = pci_get_drvdata(pci);
+	*rchip = chip;
+	return 0;
+}
+
+#ifdef CONFIG_PM_SLEEP
+static int snd_als300_suspend(struct device *dev)
+{
+	struct snd_card *card = dev_get_drvdata(dev);
 	struct snd_als300 *chip = card->private_data;
 
 	snd_power_change_state(card, SNDRV_CTL_POWER_D3hot);
@@ -789,6 +839,14 @@ static int snd_als300_resume(struct pci_dev *pci)
 	}
 	pci_set_master(pci);
 
+	return 0;
+}
+
+static int snd_als300_resume(struct device *dev)
+{
+	struct snd_card *card = dev_get_drvdata(dev);
+	struct snd_als300 *chip = card->private_data;
+
 	snd_als300_init(chip);
 	snd_ac97_resume(chip->ac97);
 
@@ -798,6 +856,14 @@ static int snd_als300_resume(struct pci_dev *pci)
 #endif
 
 static int __devinit snd_als300_probe(struct pci_dev *pci,
+
+static SIMPLE_DEV_PM_OPS(snd_als300_pm, snd_als300_suspend, snd_als300_resume);
+#define SND_ALS300_PM_OPS	&snd_als300_pm
+#else
+#define SND_ALS300_PM_OPS	NULL
+#endif
+
+static int snd_als300_probe(struct pci_dev *pci,
                              const struct pci_device_id *pci_id)
 {
 	static int dev;
@@ -816,6 +882,11 @@ static int __devinit snd_als300_probe(struct pci_dev *pci,
 
 	if (card == NULL)
 		return -ENOMEM;
+	err = snd_card_new(&pci->dev, index[dev], id[dev], THIS_MODULE,
+			   0, &card);
+
+	if (err < 0)
+		return err;
 
 	chip_type = pci_id->driver_data;
 
@@ -868,3 +939,14 @@ static void __exit alsa_card_als300_exit(void)
 
 module_init(alsa_card_als300_init)
 module_exit(alsa_card_als300_exit)
+static struct pci_driver als300_driver = {
+	.name = KBUILD_MODNAME,
+	.id_table = snd_als300_ids,
+	.probe = snd_als300_probe,
+	.remove = snd_als300_remove,
+	.driver = {
+		.pm = SND_ALS300_PM_OPS,
+	},
+};
+
+module_pci_driver(als300_driver);

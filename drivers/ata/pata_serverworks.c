@@ -2,6 +2,7 @@
  * pata_serverworks.c 	- Serverworks PATA for new ATA layer
  *			  (C) 2005 Red Hat Inc
  *			  Alan Cox <alan@redhat.com>
+ *			  (C) 2010 Bartlomiej Zolnierkiewicz
  *
  * based upon
  *
@@ -66,6 +67,15 @@ static const char *csb_bad_ata100[] = {
  */
 
 static int dell_cable(struct ata_port *ap) {
+ *	oem_cable	-	Dell/Sun serverworks cable detection
+ *	@ap: ATA port to do cable detect
+ *
+ *	Dell PowerEdge and Sun Cobalt 'Alpine' hide the 40/80 pin select
+ *	for their interfaces in the top two bits of the subsystem ID.
+ */
+
+static int oem_cable(struct ata_port *ap)
+{
 	struct pci_dev *pdev = to_pci_dev(ap->host->dev);
 
 	if (pdev->subsystem_device & (1 << (ap->port_no + 14)))
@@ -133,6 +143,15 @@ static struct sv_cable_table cable_detect[] = {
 	{ PCI_DEVICE_ID_SERVERWORKS_CSB6IDE, PCI_ANY_ID, csb_cable },
 	{ PCI_DEVICE_ID_SERVERWORKS_CSB6IDE2, PCI_ANY_ID, csb_cable },
 	{ PCI_DEVICE_ID_SERVERWORKS_HT1000IDE, PCI_ANY_ID, csb_cable },
+static struct sv_cable_table cable_detect[] = {
+	{ PCI_DEVICE_ID_SERVERWORKS_CSB5IDE,   PCI_VENDOR_ID_DELL, oem_cable },
+	{ PCI_DEVICE_ID_SERVERWORKS_CSB6IDE,   PCI_VENDOR_ID_DELL, oem_cable },
+	{ PCI_DEVICE_ID_SERVERWORKS_CSB5IDE,   PCI_VENDOR_ID_SUN,  oem_cable },
+	{ PCI_DEVICE_ID_SERVERWORKS_OSB4IDE,   PCI_ANY_ID, ata_cable_40wire  },
+	{ PCI_DEVICE_ID_SERVERWORKS_CSB5IDE,   PCI_ANY_ID, ata_cable_unknown },
+	{ PCI_DEVICE_ID_SERVERWORKS_CSB6IDE,   PCI_ANY_ID, ata_cable_unknown },
+	{ PCI_DEVICE_ID_SERVERWORKS_CSB6IDE2,  PCI_ANY_ID, ata_cable_unknown },
+	{ PCI_DEVICE_ID_SERVERWORKS_HT1000IDE, PCI_ANY_ID, ata_cable_unknown },
 	{ }
 };
 
@@ -200,6 +219,7 @@ static unsigned long serverworks_osb4_filter(struct ata_device *adev, unsigned l
 	if (adev->class == ATA_DEV_ATA)
 		mask &= ~ATA_MASK_UDMA;
 	return ata_bmdma_mode_filter(adev, mask);
+	return mask;
 }
 
 
@@ -220,6 +240,7 @@ static unsigned long serverworks_csb_filter(struct ata_device *adev, unsigned lo
 	/* Disk, UDMA */
 	if (adev->class != ATA_DEV_ATA)
 		return ata_bmdma_mode_filter(adev, mask);
+		return mask;
 
 	/* Actually do need to check */
 	ata_id_c_string(adev->id, model_num, ATA_ID_PROD, sizeof(model_num));
@@ -229,6 +250,7 @@ static unsigned long serverworks_csb_filter(struct ata_device *adev, unsigned lo
 			mask &= ~(0xE0 << ATA_SHIFT_UDMA);
 	}
 	return ata_bmdma_mode_filter(adev, mask);
+	return mask;
 }
 
 /**
@@ -256,6 +278,7 @@ static void serverworks_set_piomode(struct ata_port *ap, struct ata_device *adev
 		pci_read_config_word(pdev, 0x4A, &csb5_pio);
 		csb5_pio &= ~(0x0F << devbits);
 		pci_write_config_byte(pdev, 0x4A, csb5_pio | (pio << devbits));
+		pci_write_config_word(pdev, 0x4A, csb5_pio | (pio << devbits));
 	}
 }
 
@@ -298,11 +321,18 @@ static void serverworks_set_dmamode(struct ata_port *ap, struct ata_device *adev
 }
 
 static struct scsi_host_template serverworks_sht = {
+static struct scsi_host_template serverworks_osb4_sht = {
+	ATA_BMDMA_SHT(DRV_NAME),
+	.sg_tablesize	= LIBATA_DUMB_MAX_PRD,
+};
+
+static struct scsi_host_template serverworks_csb_sht = {
 	ATA_BMDMA_SHT(DRV_NAME),
 };
 
 static struct ata_port_operations serverworks_osb4_port_ops = {
 	.inherits	= &ata_bmdma_port_ops,
+	.qc_prep	= ata_bmdma_dumb_qc_prep,
 	.cable_detect	= serverworks_cable_detect,
 	.mode_filter	= serverworks_osb4_filter,
 	.set_piomode	= serverworks_set_piomode,
@@ -311,6 +341,7 @@ static struct ata_port_operations serverworks_osb4_port_ops = {
 
 static struct ata_port_operations serverworks_csb_port_ops = {
 	.inherits	= &serverworks_osb4_port_ops,
+	.qc_prep	= ata_bmdma_qc_prep,
 	.mode_filter	= serverworks_csb_filter,
 };
 
@@ -330,6 +361,7 @@ static int serverworks_fixup_osb4(struct pci_dev *pdev)
 		return 0;
 	}
 	printk(KERN_WARNING "ata_serverworks: Unable to find bridge.\n");
+	printk(KERN_WARNING DRV_NAME ": Unable to find bridge.\n");
 	return -ENODEV;
 }
 
@@ -394,6 +426,31 @@ static void serverworks_fixup_ht1000(struct pci_dev *pdev)
 	pci_write_config_byte(pdev, 0x5A, btr);
 }
 
+static int serverworks_fixup(struct pci_dev *pdev)
+{
+	int rc = 0;
+
+	/* Force master latency timer to 64 PCI clocks */
+	pci_write_config_byte(pdev, PCI_LATENCY_TIMER, 0x40);
+
+	switch (pdev->device) {
+	case PCI_DEVICE_ID_SERVERWORKS_OSB4IDE:
+		rc = serverworks_fixup_osb4(pdev);
+		break;
+	case PCI_DEVICE_ID_SERVERWORKS_CSB5IDE:
+		ata_pci_bmdma_clear_simplex(pdev);
+		/* fall through */
+	case PCI_DEVICE_ID_SERVERWORKS_CSB6IDE:
+	case PCI_DEVICE_ID_SERVERWORKS_CSB6IDE2:
+		rc = serverworks_fixup_csb(pdev);
+		break;
+	case PCI_DEVICE_ID_SERVERWORKS_HT1000IDE:
+		serverworks_fixup_ht1000(pdev);
+		break;
+	}
+
+	return rc;
+}
 
 static int serverworks_init_one(struct pci_dev *pdev, const struct pci_device_id *id)
 {
@@ -414,17 +471,34 @@ static int serverworks_init_one(struct pci_dev *pdev, const struct pci_device_id
 			.flags = ATA_FLAG_SLAVE_POSS,
 			.pio_mask = 0x1f,
 			.mwdma_mask = 0x07,
+			.pio_mask = ATA_PIO4,
+			.mwdma_mask = ATA_MWDMA2,
+			.udma_mask = ATA_UDMA2,
+			.port_ops = &serverworks_osb4_port_ops
+		}, { /* OSB4 no UDMA */
+			.flags = ATA_FLAG_SLAVE_POSS,
+			.pio_mask = ATA_PIO4,
+			.mwdma_mask = ATA_MWDMA2,
+			/* No UDMA */
+			.port_ops = &serverworks_osb4_port_ops
+		}, { /* CSB5 */
+			.flags = ATA_FLAG_SLAVE_POSS,
+			.pio_mask = ATA_PIO4,
+			.mwdma_mask = ATA_MWDMA2,
 			.udma_mask = ATA_UDMA4,
 			.port_ops = &serverworks_csb_port_ops
 		}, { /* CSB5 - later revisions*/
 			.flags = ATA_FLAG_SLAVE_POSS,
 			.pio_mask = 0x1f,
 			.mwdma_mask = 0x07,
+			.pio_mask = ATA_PIO4,
+			.mwdma_mask = ATA_MWDMA2,
 			.udma_mask = ATA_UDMA5,
 			.port_ops = &serverworks_csb_port_ops
 		}
 	};
 	const struct ata_port_info *ppi[] = { &info[id->driver_data], NULL };
+	struct scsi_host_template *sht = &serverworks_csb_sht;
 	int rc;
 
 	rc = pcim_enable_device(pdev);
@@ -433,12 +507,16 @@ static int serverworks_init_one(struct pci_dev *pdev, const struct pci_device_id
 
 	/* Force master latency timer to 64 PCI clocks */
 	pci_write_config_byte(pdev, PCI_LATENCY_TIMER, 0x40);
+	rc = serverworks_fixup(pdev);
 
 	/* OSB4 : South Bridge and IDE */
 	if (pdev->device == PCI_DEVICE_ID_SERVERWORKS_OSB4IDE) {
 		/* Select non UDMA capable OSB4 if we can't do fixups */
 		if ( serverworks_fixup_osb4(pdev) < 0)
 			ppi[0] = &info[1];
+		if (rc < 0)
+			ppi[0] = &info[1];
+		sht = &serverworks_osb4_sht;
 	}
 	/* setup CSB5/CSB6 : South Bridge and IDE option RAID */
 	else if ((pdev->device == PCI_DEVICE_ID_SERVERWORKS_CSB5IDE) ||
@@ -448,6 +526,7 @@ static int serverworks_init_one(struct pci_dev *pdev, const struct pci_device_id
 		 /* If the returned btr is the newer revision then
 		    select the right info block */
 		 if (serverworks_fixup_csb(pdev) == 3)
+		 if (rc == 3)
 		 	ppi[0] = &info[3];
 
 		/* Is this the 3rd channel CSB6 IDE ? */
@@ -468,6 +547,14 @@ static int serverworks_init_one(struct pci_dev *pdev, const struct pci_device_id
 static int serverworks_reinit_one(struct pci_dev *pdev)
 {
 	struct ata_host *host = dev_get_drvdata(&pdev->dev);
+
+	return ata_pci_bmdma_init_one(pdev, ppi, sht, NULL, 0);
+}
+
+#ifdef CONFIG_PM_SLEEP
+static int serverworks_reinit_one(struct pci_dev *pdev)
+{
+	struct ata_host *host = pci_get_drvdata(pdev);
 	int rc;
 
 	rc = ata_pci_device_do_resume(pdev);
@@ -492,6 +579,7 @@ static int serverworks_reinit_one(struct pci_dev *pdev)
 			serverworks_fixup_ht1000(pdev);
 			break;
 	}
+	(void)serverworks_fixup(pdev);
 
 	ata_host_resume(host);
 	return 0;
@@ -514,6 +602,7 @@ static struct pci_driver serverworks_pci_driver = {
 	.probe 		= serverworks_init_one,
 	.remove		= ata_pci_remove_one,
 #ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 	.suspend	= ata_pci_device_suspend,
 	.resume		= serverworks_reinit_one,
 #endif
@@ -528,6 +617,7 @@ static void __exit serverworks_exit(void)
 {
 	pci_unregister_driver(&serverworks_pci_driver);
 }
+module_pci_driver(serverworks_pci_driver);
 
 MODULE_AUTHOR("Alan Cox");
 MODULE_DESCRIPTION("low-level driver for Serverworks OSB4/CSB5/CSB6");

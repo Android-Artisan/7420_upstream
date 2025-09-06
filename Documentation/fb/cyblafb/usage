@@ -3,7 +3,6 @@ into the VIA Apollo PLE133 (aka vt8601) south bridge. It is developed and
 tested using a VIA EPIA 5000 board.
 
 Cyblafb - compiled into the kernel or as a module?
-==================================================
 
 You might compile cyblafb either as a module or compile it permanently into the
 kernel.
@@ -14,10 +13,8 @@ developement cycle, but it's useless and will at least block some otherwise
 usefull memory for ordinary users.
 
 Selecting Modes
-===============
 
 	Startup Mode
-	============
 
 	First of all, you might use the "vga=???" boot parameter as it is
 	documented in vesafb.txt and svga.txt. Cyblafb will detect the video
@@ -51,7 +48,6 @@ Selecting Modes
 	values will work, but performace is decreased for a lot of modes.
 
 	Mode changes using fbset
-	========================
 
 	You might use fbset to change the video mode, see "man fbset". Cyblafb
 	generally does assume that you know what you are doing. But it does
@@ -101,7 +97,6 @@ Selecting Modes
 
 
 Other Parameters
-================
 
 
 crt		don't autodetect, assume monitor connected to
@@ -146,7 +141,6 @@ verbosity	0 is the default, increase to at least 2 for every
 		bug report!
 
 Development hints
-=================
 
 It's much faster do compile a module and to load the new version after
 unloading the old module than to compile a new kernel and to reboot. So if you
@@ -160,7 +154,6 @@ system is much higher as you might need a hard reset afterwards. Decide
 yourself.
 
 Module unloading, the vfb method
-================================
 
 If you want to unload/reload cyblafb using the virtual framebuffer, you need
 to enable vfb support in the kernel first. After that, load the modules as
@@ -192,7 +185,6 @@ framebuffer device loaded first from unloading. [If there is a way, then
 please add a description here!]
 
 Module unloading, the vesafb method
-===================================
 
 Configure the kernel:
 

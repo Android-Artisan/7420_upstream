@@ -39,4 +39,7 @@
 				 issecure_mask(SECURE_KEEP_CAPS))
 #define SECURE_ALL_LOCKS	(SECURE_ALL_BITS << 1)
 
+#include <uapi/linux/securebits.h>
+
+#define issecure(X)		(issecure_mask(X) & current_cred_xxx(securebits))
 #endif /* !_LINUX_SECUREBITS_H */

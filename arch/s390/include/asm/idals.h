@@ -5,6 +5,11 @@
  * Bugreports.to..: <Linux390@de.ibm.com>
  * (C) IBM Corporation, IBM Deutschland Entwicklung GmbH, 2000a
  
+ * Author(s)......: Holger Smolinski <Holger.Smolinski@de.ibm.com>
+ *		    Martin Schwidefsky <schwidefsky@de.ibm.com>
+ * Bugreports.to..: <Linux390@de.ibm.com>
+ * Copyright IBM Corp. 2000
+ *
  * History of changes
  * 07/24/00 new file
  * 05/04/02 code restructuring.
@@ -25,6 +30,7 @@
 #else
 #define IDA_SIZE_LOG 11 /* 11 for 2k , 12 for 4k */
 #endif
+#define IDA_SIZE_LOG 12 /* 11 for 2k , 12 for 4k */
 #define IDA_BLOCK_SIZE (1L<<IDA_SIZE_LOG)
 
 /*
@@ -38,6 +44,7 @@ idal_is_needed(void *vaddr, unsigned int length)
 #else
 	return 0;
 #endif
+	return ((__pa(vaddr) + length - 1) >> 31) != 0;
 }
 
 
@@ -53,6 +60,10 @@ idal_nr_words(void *vaddr, unsigned int length)
 			(IDA_BLOCK_SIZE-1)) >> IDA_SIZE_LOG;
 #endif
 	return 0;
+static inline unsigned int idal_nr_words(void *vaddr, unsigned int length)
+{
+	return ((__pa(vaddr) & (IDA_BLOCK_SIZE-1)) + length +
+		(IDA_BLOCK_SIZE-1)) >> IDA_SIZE_LOG;
 }
 
 /*
@@ -62,6 +73,9 @@ static inline unsigned long *
 idal_create_words(unsigned long *idaws, void *vaddr, unsigned int length)
 {
 #ifdef __s390x__
+static inline unsigned long *idal_create_words(unsigned long *idaws,
+					       void *vaddr, unsigned int length)
+{
 	unsigned long paddr;
 	unsigned int cidaw;
 
@@ -195,6 +209,8 @@ __idal_buffer_is_needed(struct idal_buffer *ib)
 #else
 	return ib->size > (4096ul << ib->page_order);
 #endif
+	return ib->size > (4096ul << ib->page_order) ||
+		idal_is_needed(ib->data[0], ib->size);
 }
 
 /*

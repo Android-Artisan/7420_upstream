@@ -4,6 +4,7 @@
 #include <asm/time.h>
 #include <asm/mpc52xx.h>
 #include "mpc52xx_pic.h"
+#include <asm/switch_to.h>
 
 /* defined in lite5200_sleep.S and only used here */
 extern void lite5200_low_power(void __iomem *sram, void __iomem *mbar);
@@ -237,6 +238,7 @@ static void lite5200_pm_end(void)
 }
 
 static struct platform_suspend_ops lite5200_pm_ops = {
+static const struct platform_suspend_ops lite5200_pm_ops = {
 	.valid		= lite5200_pm_valid,
 	.begin		= lite5200_pm_begin,
 	.prepare	= lite5200_pm_prepare,

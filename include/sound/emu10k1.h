@@ -24,6 +24,9 @@
  */
 
 #ifdef __KERNEL__
+#ifndef __SOUND_EMU10K1_H
+#define __SOUND_EMU10K1_H
+
 
 #include <sound/pcm.h>
 #include <sound/rawmidi.h>
@@ -35,12 +38,18 @@
 #include <linux/interrupt.h>
 #include <linux/mutex.h>
 #include <asm/io.h>
+#include <linux/firmware.h>
+#include <linux/io.h>
+
+#include <uapi/sound/emu10k1.h>
 
 /* ------------------- DEFINES -------------------- */
 
 #define EMUPAGESIZE     4096
 #define MAXREQVOICES    8
 #define MAXPAGES        8192
+#define MAXPAGES0       4096	/* 32 bit mode */
+#define MAXPAGES1       8192	/* 31 bit mode */
 #define RESERVED        0
 #define NUM_MIDI        16
 #define NUM_G           64              /* use all channels */
@@ -51,6 +60,7 @@
 #define EMU10K1_DMA_MASK	0x7fffffffUL	/* 31bit */
 #define AUDIGY_DMA_MASK		0x7fffffffUL	/* 31bit FIXME - 32 should work? */
 						/* See ALSA bug #1276 - rlrevell */
+#define AUDIGY_DMA_MASK		0xffffffffUL	/* 32bit mode */
 
 #define TMEMSIZE        256*1024
 #define TMEMSIZEREG     4
@@ -467,6 +477,11 @@
 
 #define MAP_PTE_MASK		0xffffe000	/* The 19 MSBs of the PTE indexed by the PTI		*/
 #define MAP_PTI_MASK		0x00001fff	/* The 13 bit index to one of the 8192 PTE dwords      	*/
+#define MAP_PTE_MASK0		0xfffff000	/* The 20 MSBs of the PTE indexed by the PTI		*/
+#define MAP_PTI_MASK0		0x00000fff	/* The 12 bit index to one of the 4096 PTE dwords      	*/
+
+#define MAP_PTE_MASK1		0xffffe000	/* The 19 MSBs of the PTE indexed by the PTI		*/
+#define MAP_PTI_MASK1		0x00001fff	/* The 13 bit index to one of the 8192 PTE dwords      	*/
 
 /* 0x0e, 0x0f: Not used */
 
@@ -1704,6 +1719,9 @@ struct snd_emu10k1 {
 	unsigned int card_type;			/* EMU10K1_CARD_* */
 	unsigned int ecard_ctrl;		/* ecard control bits */
 	unsigned long dma_mask;			/* PCI DMA mask */
+	unsigned int address_mode;		/* address mode */
+	unsigned long dma_mask;			/* PCI DMA mask */
+	unsigned int delay_pcm_irq;		/* in samples */
 	int max_cache_pages;			/* max memory size / PAGE_SIZE */
 	struct snd_dma_buffer silent_page;	/* silent page */
 	struct snd_dma_buffer ptb_pages;	/* page table pages */
@@ -1783,6 +1801,10 @@ struct snd_emu10k1 {
 	unsigned int next_free_voice;
 
 #ifdef CONFIG_PM
+	const struct firmware *firmware;
+	const struct firmware *dock_fw;
+
+#ifdef CONFIG_PM_SLEEP
 	unsigned int *saved_ptr;
 	unsigned int *saved_gpr;
 	unsigned int *tram_val_saved;
@@ -1790,6 +1812,7 @@ struct snd_emu10k1 {
 	unsigned int *saved_icode;
 	unsigned int *p16v_saved;
 	unsigned int saved_a_iocfg, saved_hcfg;
+	bool suspend;
 #endif
 
 };
@@ -1814,6 +1837,17 @@ int snd_emu10k1_fx8010_pcm(struct snd_emu10k1 * emu, int device, struct snd_pcm 
 int snd_emu10k1_mixer(struct snd_emu10k1 * emu, int pcm_device, int multi_device);
 int snd_emu10k1_timer(struct snd_emu10k1 * emu, int device);
 int snd_emu10k1_fx8010_new(struct snd_emu10k1 *emu, int device, struct snd_hwdep ** rhwdep);
+int snd_emu10k1_pcm(struct snd_emu10k1 *emu, int device);
+int snd_emu10k1_pcm_mic(struct snd_emu10k1 *emu, int device);
+int snd_emu10k1_pcm_efx(struct snd_emu10k1 *emu, int device);
+int snd_p16v_pcm(struct snd_emu10k1 *emu, int device);
+int snd_p16v_free(struct snd_emu10k1 * emu);
+int snd_p16v_mixer(struct snd_emu10k1 * emu);
+int snd_emu10k1_pcm_multi(struct snd_emu10k1 *emu, int device);
+int snd_emu10k1_fx8010_pcm(struct snd_emu10k1 *emu, int device);
+int snd_emu10k1_mixer(struct snd_emu10k1 * emu, int pcm_device, int multi_device);
+int snd_emu10k1_timer(struct snd_emu10k1 * emu, int device);
+int snd_emu10k1_fx8010_new(struct snd_emu10k1 *emu, int device);
 
 irqreturn_t snd_emu10k1_interrupt(int irq, void *dev_id);
 
@@ -1851,6 +1885,7 @@ void snd_emu10k1_ac97_write(struct snd_ac97 *ac97, unsigned short reg, unsigned 
 unsigned int snd_emu10k1_rate_to_pitch(unsigned int rate);
 
 #ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 void snd_emu10k1_suspend_regs(struct snd_emu10k1 *emu);
 void snd_emu10k1_resume_init(struct snd_emu10k1 *emu);
 void snd_emu10k1_resume_regs(struct snd_emu10k1 *emu);

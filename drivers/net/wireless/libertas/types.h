@@ -1,6 +1,9 @@
 /**
   * This header file contains definition for global types
   */
+/*
+ * This header file contains definition for global types
+ */
 #ifndef _LBS_TYPES_H_
 #define _LBS_TYPES_H_
 
@@ -12,6 +15,17 @@
 struct ieeetypes_cfparamset {
 	u8 elementid;
 	u8 len;
+#include <linux/ieee80211.h>
+#include <asm/byteorder.h>
+
+struct ieee_ie_header {
+	u8 id;
+	u8 len;
+} __packed;
+
+struct ieee_ie_cf_param_set {
+	struct ieee_ie_header header;
+
 	u8 cfpcnt;
 	u8 cfpperiod;
 	__le16 cfpmaxduration;
@@ -33,6 +47,23 @@ union IEEEtypes_ssparamset {
 struct ieeetypes_fhparamset {
 	u8 elementid;
 	u8 len;
+} __packed;
+
+
+struct ieee_ie_ibss_param_set {
+	struct ieee_ie_header header;
+
+	__le16 atimwindow;
+} __packed;
+
+union ieee_ss_param_set {
+	struct ieee_ie_cf_param_set cf;
+	struct ieee_ie_ibss_param_set ibss;
+} __packed;
+
+struct ieee_ie_fh_param_set {
+	struct ieee_ie_header header;
+
 	__le16 dwelltime;
 	u8 hopset;
 	u8 hoppattern;
@@ -58,6 +89,20 @@ struct ieeetypes_assocrsp {
 } __attribute__ ((packed));
 
 /** TLV  type ID definition */
+} __packed;
+
+struct ieee_ie_ds_param_set {
+	struct ieee_ie_header header;
+
+	u8 channel;
+} __packed;
+
+union ieee_phy_param_set {
+	struct ieee_ie_fh_param_set fh;
+	struct ieee_ie_ds_param_set ds;
+} __packed;
+
+/* TLV  type ID definition */
 #define PROPRIETARY_TLV_BASE_ID		0x0100
 
 /* Terminating TLV type */
@@ -122,6 +167,36 @@ struct mrvlietypes_wildcardssidparamset {
 	u8 MaxSsidlength;
 	u8 ssid[1];
 } __attribute__ ((packed));
+#define TLV_TYPE_AUTH_TYPE          (PROPRIETARY_TLV_BASE_ID + 31)
+#define TLV_TYPE_MESH_ID            (PROPRIETARY_TLV_BASE_ID + 37)
+#define TLV_TYPE_OLD_MESH_ID        (PROPRIETARY_TLV_BASE_ID + 291)
+
+/* TLV related data structures */
+struct mrvl_ie_header {
+	__le16 type;
+	__le16 len;
+} __packed;
+
+struct mrvl_ie_data {
+	struct mrvl_ie_header header;
+	u8 Data[1];
+} __packed;
+
+struct mrvl_ie_rates_param_set {
+	struct mrvl_ie_header header;
+	u8 rates[1];
+} __packed;
+
+struct mrvl_ie_ssid_param_set {
+	struct mrvl_ie_header header;
+	u8 ssid[1];
+} __packed;
+
+struct mrvl_ie_wildcard_ssid_param_set {
+	struct mrvl_ie_header header;
+	u8 MaxSsidlength;
+	u8 ssid[1];
+} __packed;
 
 struct chanscanmode {
 #ifdef __BIG_ENDIAN_BITFIELD
@@ -134,6 +209,7 @@ struct chanscanmode {
 	u8 reserved_2_7:6;
 #endif
 } __attribute__ ((packed));
+} __packed;
 
 struct chanscanparamset {
 	u8 radiotype;
@@ -149,6 +225,15 @@ struct mrvlietypes_chanlistparamset {
 } __attribute__ ((packed));
 
 struct cfparamset {
+} __packed;
+
+struct mrvl_ie_chanlist_param_set {
+	struct mrvl_ie_header header;
+	struct chanscanparamset chanscanparam[1];
+} __packed;
+
+struct mrvl_ie_cf_param_set {
+	struct mrvl_ie_header header;
 	u8 cfpcnt;
 	u8 cfpperiod;
 	__le16 cfpmaxduration;
@@ -230,6 +315,63 @@ struct mrvlietypes_numssidprobe {
 	struct mrvlietypesheader header;
 	__le16 numssidprobe;
 } __attribute__ ((packed));
+} __packed;
+
+struct mrvl_ie_ds_param_set {
+	struct mrvl_ie_header header;
+	u8 channel;
+} __packed;
+
+struct mrvl_ie_rsn_param_set {
+	struct mrvl_ie_header header;
+	u8 rsnie[1];
+} __packed;
+
+struct mrvl_ie_tsf_timestamp {
+	struct mrvl_ie_header header;
+	__le64 tsftable[1];
+} __packed;
+
+/* v9 and later firmware only */
+struct mrvl_ie_auth_type {
+	struct mrvl_ie_header header;
+	__le16 auth;
+} __packed;
+
+/*  Local Power capability */
+struct mrvl_ie_power_capability {
+	struct mrvl_ie_header header;
+	s8 minpower;
+	s8 maxpower;
+} __packed;
+
+/* used in CMD_802_11_SUBSCRIBE_EVENT for SNR, RSSI and Failure */
+struct mrvl_ie_thresholds {
+	struct mrvl_ie_header header;
+	u8 value;
+	u8 freq;
+} __packed;
+
+struct mrvl_ie_beacons_missed {
+	struct mrvl_ie_header header;
+	u8 beaconmissed;
+	u8 reserved;
+} __packed;
+
+struct mrvl_ie_num_probes {
+	struct mrvl_ie_header header;
+	__le16 numprobes;
+} __packed;
+
+struct mrvl_ie_bcast_probe {
+	struct mrvl_ie_header header;
+	__le16 bcastprobe;
+} __packed;
+
+struct mrvl_ie_num_ssid_probe {
+	struct mrvl_ie_header header;
+	__le16 numssidprobe;
+} __packed;
 
 struct led_pin {
 	u8 led;
@@ -240,6 +382,12 @@ struct mrvlietypes_ledgpio {
 	struct mrvlietypesheader header;
 	struct led_pin ledpin[1];
 } __attribute__ ((packed));
+} __packed;
+
+struct mrvl_ie_ledgpio {
+	struct mrvl_ie_header header;
+	struct led_pin ledpin[1];
+} __packed;
 
 struct led_bhv {
 	uint8_t	firmwarestate;
@@ -259,6 +407,21 @@ struct mrvlietypes_ledbhv {
  * the mesh_id_len */
 struct mrvl_meshie_val {
 	uint8_t oui[P80211_OUI_LEN];
+} __packed;
+
+
+struct mrvl_ie_ledbhv {
+	struct mrvl_ie_header header;
+	struct led_bhv ledbhv[1];
+} __packed;
+
+/*
+ * Meant to be packed as the value member of a struct ieee80211_info_element.
+ * Note that the len member of the ieee80211_info_element varies depending on
+ * the mesh_id_len
+ */
+struct mrvl_meshie_val {
+	uint8_t oui[3];
 	uint8_t type;
 	uint8_t subtype;
 	uint8_t version;
@@ -273,6 +436,13 @@ struct mrvl_meshie {
 	struct ieee80211_info_element hdr;
 	struct mrvl_meshie_val val;
 } __attribute__ ((packed));
+	uint8_t mesh_id[IEEE80211_MAX_SSID_LEN];
+} __packed;
+
+struct mrvl_meshie {
+	u8 id, len;
+	struct mrvl_meshie_val val;
+} __packed;
 
 struct mrvl_mesh_defaults {
 	__le32 bootflag;
@@ -281,5 +451,6 @@ struct mrvl_mesh_defaults {
 	__le16 channel;
 	struct mrvl_meshie meshie;
 } __attribute__ ((packed));
+} __packed;
 
 #endif

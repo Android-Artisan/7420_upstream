@@ -16,6 +16,7 @@
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+ * along with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <linux/errno.h>
@@ -24,6 +25,7 @@
 #include "zd_def.h"
 #include "zd_rf.h"
 #include "zd_ieee80211.h"
+#include "zd_mac.h"
 #include "zd_chip.h"
 
 static const char * const rfs[] = {
@@ -86,6 +88,7 @@ int zd_rf_init_hw(struct zd_rf *rf, u8 type)
 	case AL7230B_RF:
 		r = zd_rf_init_al7230b(rf);
 		break;
+	case MAXIM_NEW_RF:
 	case UW2453_RF:
 		r = zd_rf_init_uw2453(rf);
 		break;

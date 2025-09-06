@@ -1,5 +1,4 @@
 Analog Joystick Support on ALSA Drivers
-=======================================
                           Oct. 14, 2003
            Takashi Iwai <tiwai@suse.de>
 

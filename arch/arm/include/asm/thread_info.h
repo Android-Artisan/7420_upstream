@@ -17,6 +17,10 @@
 
 #define THREAD_SIZE_ORDER	1
 #define THREAD_SIZE		8192
+#include <asm/page.h>
+
+#define THREAD_SIZE_ORDER	1
+#define THREAD_SIZE		(PAGE_SIZE << THREAD_SIZE_ORDER)
 #define THREAD_START_SP		(THREAD_SIZE - 8)
 
 #ifndef __ASSEMBLY__
@@ -26,6 +30,8 @@ struct exec_domain;
 
 #include <asm/types.h>
 #include <asm/domain.h>
+
+#include <asm/types.h>
 
 typedef unsigned long mm_segment_t;
 
@@ -50,6 +56,7 @@ struct cpu_context_save {
 struct thread_info {
 	unsigned long		flags;		/* low level flags */
 	int			preempt_count;	/* 0 => preemptable, <0 => bug */
+	int			preempt_lazy_count; /* 0 => preemptable, <0 => bug */
 	mm_segment_t		addr_limit;	/* address limit */
 	struct task_struct	*task;		/* main task structure */
 	struct exec_domain	*exec_domain;	/* execution domain */
@@ -60,6 +67,10 @@ struct thread_info {
 	__u8			used_cp[16];	/* thread used copro */
 	unsigned long		tp_value;
 	struct crunch_state	crunchstate;
+	unsigned long		tp_value[2];	/* TLS registers */
+#ifdef CONFIG_CRUNCH
+	struct crunch_state	crunchstate;
+#endif
 	union fp_state		fpstate __attribute__((aligned(8)));
 	union vfp_state		vfpstate;
 #ifdef CONFIG_ARM_THUMBEE
@@ -81,10 +92,18 @@ struct thread_info {
 	.restart_block	= {						\
 		.fn	= do_no_restart_syscall,			\
 	},								\
+	.flags		= 0,						\
+	.preempt_count	= INIT_PREEMPT_COUNT,				\
+	.addr_limit	= KERNEL_DS,					\
 }
 
 #define init_thread_info	(init_thread_union.thread_info)
 #define init_stack		(init_thread_union.stack)
+
+/*
+ * how to get the current stack pointer in C
+ */
+register unsigned long current_stack_pointer asm ("sp");
 
 /*
  * how to get the thread information struct from C
@@ -101,6 +120,22 @@ static inline struct thread_info *current_thread_info(void)
 	((unsigned long)(pc_pointer(task_thread_info(tsk)->cpu_context.pc)))
 #define thread_saved_fp(tsk)	\
 	((unsigned long)(task_thread_info(tsk)->cpu_context.fp))
+	return (struct thread_info *)
+		(current_stack_pointer & ~(THREAD_SIZE - 1));
+}
+
+#define thread_saved_pc(tsk)	\
+	((unsigned long)(task_thread_info(tsk)->cpu_context.pc))
+#define thread_saved_sp(tsk)	\
+	((unsigned long)(task_thread_info(tsk)->cpu_context.sp))
+
+#ifndef CONFIG_THUMB2_KERNEL
+#define thread_saved_fp(tsk)	\
+	((unsigned long)(task_thread_info(tsk)->cpu_context.fp))
+#else
+#define thread_saved_fp(tsk)	\
+	((unsigned long)(task_thread_info(tsk)->cpu_context.r7))
+#endif
 
 extern void crunch_task_disable(struct thread_info *);
 extern void crunch_task_copy(struct thread_info *, void *);
@@ -143,11 +178,60 @@ extern void iwmmxt_task_switch(struct thread_info *);
 #define _TIF_POLLING_NRFLAG	(1 << TIF_POLLING_NRFLAG)
 #define _TIF_USING_IWMMXT	(1 << TIF_USING_IWMMXT)
 #define _TIF_FREEZE		(1 << TIF_FREEZE)
+extern void vfp_sync_hwstate(struct thread_info *);
+extern void vfp_flush_hwstate(struct thread_info *);
+
+struct user_vfp;
+struct user_vfp_exc;
+
+extern int vfp_preserve_user_clear_hwstate(struct user_vfp *,
+					   struct user_vfp_exc *);
+extern int vfp_restore_user_hwstate(struct user_vfp *,
+				    struct user_vfp_exc *);
+#endif
+
+/*
+ * thread information flags:
+ *  TIF_USEDFPU		- FPU was used by this task this quantum (SMP)
+ *  TIF_POLLING_NRFLAG	- true if poll_idle() is polling TIF_NEED_RESCHED
+ */
+#define TIF_SIGPENDING		0	/* signal pending */
+#define TIF_NEED_RESCHED	1	/* rescheduling necessary */
+#define TIF_NOTIFY_RESUME	2	/* callback before returning to user */
+#define TIF_UPROBE		3	/* breakpointed or singlestepping */
+#define TIF_SYSCALL_TRACE	4	/* syscall trace active */
+#define TIF_SYSCALL_AUDIT	5	/* syscall auditing active */
+#define TIF_SYSCALL_TRACEPOINT	6	/* syscall tracepoint instrumentation */
+#define TIF_SECCOMP		8	/* seccomp syscall filtering active */
+#define TIF_NEED_RESCHED_LAZY	7
+
+#define TIF_NOHZ		12	/* in adaptive nohz mode */
+#define TIF_USING_IWMMXT	17
+#define TIF_MEMDIE		18	/* is terminating due to OOM killer */
+#define TIF_RESTORE_SIGMASK	20
+
+#define _TIF_SIGPENDING		(1 << TIF_SIGPENDING)
+#define _TIF_NEED_RESCHED	(1 << TIF_NEED_RESCHED)
+#define _TIF_NOTIFY_RESUME	(1 << TIF_NOTIFY_RESUME)
+#define _TIF_NEED_RESCHED_LAZY	(1 << TIF_NEED_RESCHED_LAZY)
+#define _TIF_UPROBE		(1 << TIF_UPROBE)
+#define _TIF_SYSCALL_TRACE	(1 << TIF_SYSCALL_TRACE)
+#define _TIF_SYSCALL_AUDIT	(1 << TIF_SYSCALL_AUDIT)
+#define _TIF_SYSCALL_TRACEPOINT	(1 << TIF_SYSCALL_TRACEPOINT)
+#define _TIF_SECCOMP		(1 << TIF_SECCOMP)
+#define _TIF_USING_IWMMXT	(1 << TIF_USING_IWMMXT)
+
+/* Checks for any syscall work in entry-common.S */
+#define _TIF_SYSCALL_WORK (_TIF_SYSCALL_TRACE | _TIF_SYSCALL_AUDIT | \
+			   _TIF_SYSCALL_TRACEPOINT | _TIF_SECCOMP)
 
 /*
  * Change these and you break ASM code in entry-common.S
  */
 #define _TIF_WORK_MASK		0x000000ff
+#define _TIF_WORK_MASK		(_TIF_NEED_RESCHED | _TIF_SIGPENDING | \
+				 _TIF_NOTIFY_RESUME | _TIF_UPROBE | \
+				 _TIF_NEED_RESCHED_LAZY)
 
 #endif /* __KERNEL__ */
 #endif /* __ASM_ARM_THREAD_INFO_H */

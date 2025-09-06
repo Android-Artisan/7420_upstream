@@ -17,6 +17,11 @@ struct siginfo;
 struct pt_regs;
 
 #ifdef __KERNEL__
+#ifndef _ASMS390_SIGNAL_H
+#define _ASMS390_SIGNAL_H
+
+#include <uapi/asm/signal.h>
+
 /* Most things should be clean enough to redefine this at will, if care
    is taken to make libc match.  */
 #include <asm/sigcontext.h>
@@ -169,4 +174,5 @@ typedef struct sigaltstack {
 } stack_t;
 
 
+#define __ARCH_HAS_SA_RESTORER
 #endif

@@ -31,6 +31,12 @@ extern void __secondary_start_mpc86xx(void);
 extern unsigned long __secondary_hold_acknowledge;
 
 
+#define MCM_PORT_CONFIG_OFFSET	0x10
+
+/* Offset from CCSRBAR */
+#define MPC86xx_MCM_OFFSET      (0x1000)
+#define MPC86xx_MCM_SIZE        (0x1000)
+
 static void __init
 smp_86xx_release_core(int nr)
 {
@@ -52,6 +58,12 @@ smp_86xx_release_core(int nr)
 
 
 static void __init
+
+	iounmap(mcm_vaddr);
+}
+
+
+static int __init
 smp_86xx_kick_cpu(int nr)
 {
 	unsigned int save_vector;
@@ -61,6 +73,7 @@ smp_86xx_kick_cpu(int nr)
 
 	if (nr < 0 || nr >= NR_CPUS)
 		return;
+		return -ENOENT;
 
 	pr_debug("smp_86xx_kick_cpu: kick CPU #%d\n", nr);
 
@@ -87,6 +100,8 @@ smp_86xx_kick_cpu(int nr)
 	local_irq_restore(flags);
 
 	pr_debug("wait CPU #%d for %d msecs.\n", nr, n);
+
+	return 0;
 }
 
 

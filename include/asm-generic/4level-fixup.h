@@ -4,6 +4,7 @@
 #define __ARCH_HAS_4LEVEL_HACK
 #define __PAGETABLE_PUD_FOLDED
 
+#define PUD_SHIFT			PGDIR_SHIFT
 #define PUD_SIZE			PGDIR_SIZE
 #define PUD_MASK			PGDIR_MASK
 #define PTRS_PER_PUD			1
@@ -30,6 +31,9 @@
 #define pud_free_tlb(tlb, x)            do { } while (0)
 #define pud_free(mm, x)			do { } while (0)
 #define __pud_free_tlb(tlb, x)		do { } while (0)
+#define pud_free_tlb(tlb, x, addr)	do { } while (0)
+#define pud_free(mm, x)			do { } while (0)
+#define __pud_free_tlb(tlb, x, addr)	do { } while (0)
 
 #undef  pud_addr_end
 #define pud_addr_end(addr, end)		(end)

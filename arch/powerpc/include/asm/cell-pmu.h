@@ -40,6 +40,11 @@
 #define CBE_PM_COUNT_MODE_SET(count)       (((count) & 0x3) << 18)
 #define CBE_PM_FREEZE_ALL_CTRS             0x00100000
 #define CBE_PM_ENABLE_EXT_TRACE            0x00008000
+#define CBE_PM_TRACE_BUF_OVFLW(bit)        (((bit) & 0x1) << 17)
+#define CBE_PM_COUNT_MODE_SET(count)       (((count) & 0x3) << 18)
+#define CBE_PM_FREEZE_ALL_CTRS             0x00100000
+#define CBE_PM_ENABLE_EXT_TRACE            0x00008000
+#define CBE_PM_SPU_ADDR_TRACE_SET(msk)     (((msk) & 0x3) << 9)
 
 /* Macros for the trace_address register. */
 #define CBE_PM_TRACE_BUF_FULL              0x00000800

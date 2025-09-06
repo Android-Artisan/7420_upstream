@@ -14,6 +14,7 @@
 #include <linux/ata_platform.h>
 #include <asm/machvec.h>
 #include <asm/sdk7780.h>
+#include <mach/sdk7780.h>
 #include <asm/heartbeat.h>
 #include <asm/io.h>
 #include <asm/addrspace.h>
@@ -31,6 +32,11 @@ static struct resource heartbeat_resources[] = {
 		.end    = PA_LED,
 		.flags  = IORESOURCE_MEM,
 	},
+/* Heartbeat */
+static struct resource heartbeat_resource = {
+	.start  = PA_LED,
+	.end    = PA_LED,
+	.flags  = IORESOURCE_MEM | IORESOURCE_MEM_16BIT,
 };
 
 static struct platform_device heartbeat_device = {
@@ -41,6 +47,8 @@ static struct platform_device heartbeat_device = {
 	},
 	.num_resources  = ARRAY_SIZE(heartbeat_resources),
 	.resource       = heartbeat_resources,
+	.num_resources  = 1,
+	.resource       = &heartbeat_resource,
 };
 
 /* SMC91x */
@@ -85,6 +93,8 @@ static void __init sdk7780_setup(char **cmdline_p)
 {
 	u16 ver = ctrl_inw(FPGA_FPVERR);
 	u16 dateStamp = ctrl_inw(FPGA_FPDATER);
+	u16 ver = __raw_readw(FPGA_FPVERR);
+	u16 dateStamp = __raw_readw(FPGA_FPDATER);
 
 	printk(KERN_INFO "Renesas Technology Europe SDK7780 support.\n");
 	printk(KERN_INFO "Board version: %d (revision %d), "
@@ -95,6 +105,7 @@ static void __init sdk7780_setup(char **cmdline_p)
 
 	/* Setup pin mux'ing for PCIC */
 	ctrl_outw(0x0000, GPIO_PECR);
+	__raw_writew(0x0000, GPIO_PECR);
 }
 
 /*

@@ -1,3 +1,13 @@
+/*
+ * Many of the syscalls used in this file expect some of the arguments
+ * to be __user pointers not __kernel pointers.  To limit the sparse
+ * noise, turn off sparse checking for this file.
+ */
+#ifdef __CHECKER__
+#undef __CHECKER__
+#warning "Sparse checking disabled for this file"
+#endif
+
 #include <linux/unistd.h>
 #include <linux/kernel.h>
 #include <linux/fs.h>
@@ -7,6 +17,7 @@
 #include <linux/initrd.h>
 #include <linux/sched.h>
 #include <linux/freezer.h>
+#include <linux/kmod.h>
 
 #include "do_mounts.h"
 
@@ -36,12 +47,29 @@ static int __init do_linuxrc(void * shell)
 	(void) sys_dup(0);
 	(void) sys_dup(0);
 	return kernel_execve(shell, argv, envp_init);
+static int init_linuxrc(struct subprocess_info *info, struct cred *new)
+{
+	sys_unshare(CLONE_FS | CLONE_FILES);
+	/* stdin/stdout/stderr for /linuxrc */
+	sys_open("/dev/console", O_RDWR, 0);
+	sys_dup(0);
+	sys_dup(0);
+	/* move initrd over / and chdir/chroot in initrd root */
+	sys_chdir("/root");
+	sys_mount(".", "/", NULL, MS_MOVE, NULL);
+	sys_chroot(".");
+	sys_setsid();
+	return 0;
 }
 
 static void __init handle_initrd(void)
 {
 	int error;
 	int pid;
+	struct subprocess_info *info;
+	static char *argv[] = { "linuxrc", NULL, };
+	extern char *envp_init[];
+	int error;
 
 	real_root_dev = new_encode_dev(ROOT_DEV);
 	create_dev("/dev/root.old", Root_RAM0);
@@ -54,6 +82,10 @@ static void __init handle_initrd(void)
 	sys_chdir("/root");
 	sys_mount(".", "/", NULL, MS_MOVE, NULL);
 	sys_chroot(".");
+	sys_chdir("/old");
+
+	/* try loading default modules from initrd */
+	load_default_modules();
 
 	/*
 	 * In case that a resume from disk is carried out by linuxrc or one of
@@ -65,6 +97,11 @@ static void __init handle_initrd(void)
 	if (pid > 0)
 		while (pid != sys_wait4(-1, NULL, 0, NULL))
 			yield();
+	info = call_usermodehelper_setup("/linuxrc", argv, envp_init,
+					 GFP_KERNEL, init_linuxrc, NULL, NULL);
+	if (!info)
+		return;
+	call_usermodehelper_exec(info, UMH_WAIT_PROC);
 
 	current->flags &= ~PF_FREEZER_SKIP;
 
@@ -76,12 +113,16 @@ static void __init handle_initrd(void)
 	sys_chroot(".");
 	sys_close(old_fd);
 	sys_close(root_fd);
+	sys_mount("..", ".", NULL, MS_MOVE, NULL);
+	/* switch root and cwd back to / of rootfs */
+	sys_chroot("..");
 
 	if (new_decode_dev(real_root_dev) == Root_RAM0) {
 		sys_chdir("/old");
 		return;
 	}
 
+	sys_chdir("/");
 	ROOT_DEV = new_decode_dev(real_root_dev);
 	mount_root();
 

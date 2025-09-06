@@ -6,6 +6,7 @@
 
 #include <linux/console.h>
 #include <linux/ctype.h>
+#include <linux/string.h>
 #include <linux/interrupt.h>
 #include <linux/list.h>
 #include <linux/mm.h>
@@ -27,6 +28,23 @@
 #include "mconsole.h"
 #include "mconsole_kern.h"
 #include "os.h"
+#include <linux/socket.h>
+#include <linux/un.h>
+#include <linux/workqueue.h>
+#include <linux/mutex.h>
+#include <linux/fs.h>
+#include <linux/mount.h>
+#include <linux/file.h>
+#include <asm/uaccess.h>
+#include <asm/switch_to.h>
+
+#include <init.h>
+#include <irq_kern.h>
+#include <irq_user.h>
+#include <kern_util.h>
+#include "mconsole.h"
+#include "mconsole_kern.h"
+#include <os.h>
 
 static int do_unlink_socket(struct notifier_block *notifier,
 			    unsigned long what, void *data)
@@ -165,6 +183,24 @@ void mconsole_proc(struct mc_request *req)
 		goto out_kill;
 	}
 	/*END*/
+void mconsole_proc(struct mc_request *req)
+{
+	struct vfsmount *mnt = task_active_pid_ns(current)->proc_mnt;
+	char *buf;
+	int len;
+	struct file *file;
+	int first_chunk = 1;
+	char *ptr = req->request.data;
+
+	ptr += strlen("proc");
+	ptr = skip_spaces(ptr);
+
+	file = file_open_root(mnt->mnt_root, mnt, ptr, O_RDONLY, 0);
+	if (IS_ERR(file)) {
+		mconsole_reply(req, "Failed to open file", 1, 0);
+		printk(KERN_ERR "open /proc/%s: %ld\n", ptr, PTR_ERR(file));
+		goto out;
+	}
 
 	buf = kmalloc(PAGE_SIZE, GFP_KERNEL);
 	if (buf == NULL) {
@@ -228,6 +264,13 @@ void mconsole_proc(struct mc_request *req)
 
 	for (;;) {
 		len = sys_read(fd, buf, PAGE_SIZE-1);
+	do {
+		loff_t pos = file->f_pos;
+		mm_segment_t old_fs = get_fs();
+		set_fs(KERNEL_DS);
+		len = vfs_read(file, buf, PAGE_SIZE - 1, &pos);
+		set_fs(old_fs);
+		file->f_pos = pos;
 		if (len < 0) {
 			mconsole_reply(req, "Read of file failed", 1, 0);
 			goto out_free;
@@ -253,6 +296,14 @@ void mconsole_proc(struct mc_request *req)
 	sys_close(fd);
  out:
 	/* nothing */;
+		buf[len] = '\0';
+		mconsole_reply(req, buf, 0, (len > 0));
+	} while (len > 0);
+ out_free:
+	kfree(buf);
+ out_fput:
+	fput(file);
+ out: ;
 }
 
 #define UML_MCONSOLE_HELPTEXT \
@@ -559,6 +610,7 @@ void mconsole_config(struct mc_request *req)
 	ptr += strlen("config");
 	while (isspace(*ptr))
 		ptr++;
+	ptr = skip_spaces(ptr);
 	dev = mconsole_find_dev(ptr);
 	if (dev == NULL) {
 		mconsole_reply(req, "Bad configuration option", 1, 0);
@@ -586,6 +638,7 @@ void mconsole_remove(struct mc_request *req)
 
 	ptr += strlen("remove");
 	while (isspace(*ptr)) ptr++;
+	ptr = skip_spaces(ptr);
 	dev = mconsole_find_dev(ptr);
 	if (dev == NULL) {
 		mconsole_reply(req, "Bad remove option", 1, 0);
@@ -702,6 +755,7 @@ static void sysrq_proc(void *arg)
 {
 	char *op = arg;
 	handle_sysrq(*op, NULL);
+	handle_sysrq(*op);
 }
 
 void mconsole_sysrq(struct mc_request *req)
@@ -710,6 +764,7 @@ void mconsole_sysrq(struct mc_request *req)
 
 	ptr += strlen("sysrq");
 	while (isspace(*ptr)) ptr++;
+	ptr = skip_spaces(ptr);
 
 	/*
 	 * With 'b', the system will shut down without a chance to reply,
@@ -733,6 +788,9 @@ static void stack_proc(void *arg)
 
 	to->thread.saved_task = from;
 	switch_to(from, to, from);
+	struct task_struct *task = arg;
+
+	show_stack(task, NULL);
 }
 
 /*
@@ -756,6 +814,7 @@ void mconsole_stack(struct mc_request *req)
 	ptr += strlen("stack");
 	while (isspace(*ptr))
 		ptr++;
+	ptr = skip_spaces(ptr);
 
 	/*
 	 * Should really check for multiple pids or reject bad args here
@@ -786,6 +845,7 @@ static int __init mconsole_init(void)
 	long sock;
 	int err;
 	char file[256];
+	char file[UNIX_PATH_MAX];
 
 	if (umid_file_name("mconsole", file, sizeof(file)))
 		return -1;
@@ -804,6 +864,7 @@ static int __init mconsole_init(void)
 	err = um_request_irq(MCONSOLE_IRQ, sock, IRQ_READ, mconsole_interrupt,
 			     IRQF_DISABLED | IRQF_SHARED | IRQF_SAMPLE_RANDOM,
 			     "mconsole", (void *)sock);
+			     IRQF_SHARED, "mconsole", (void *)sock);
 	if (err) {
 		printk(KERN_ERR "Failed to get IRQ for management console\n");
 		goto out;
@@ -832,6 +893,8 @@ __initcall(mconsole_init);
 
 static int write_proc_mconsole(struct file *file, const char __user *buffer,
 			       unsigned long count, void *data)
+static ssize_t mconsole_proc_write(struct file *file,
+		const char __user *buffer, size_t count, loff_t *pos)
 {
 	char *buf;
 
@@ -852,6 +915,12 @@ static int write_proc_mconsole(struct file *file, const char __user *buffer,
 	return count;
 }
 
+static const struct file_operations mconsole_proc_fops = {
+	.owner		= THIS_MODULE,
+	.write		= mconsole_proc_write,
+	.llseek		= noop_llseek,
+};
+
 static int create_proc_mconsole(void)
 {
 	struct proc_dir_entry *ent;
@@ -868,6 +937,11 @@ static int create_proc_mconsole(void)
 
 	ent->read_proc = NULL;
 	ent->write_proc = write_proc_mconsole;
+	ent = proc_create("mconsole", 0200, NULL, &mconsole_proc_fops);
+	if (ent == NULL) {
+		printk(KERN_INFO "create_proc_mconsole : proc_create failed\n");
+		return 0;
+	}
 	return 0;
 }
 

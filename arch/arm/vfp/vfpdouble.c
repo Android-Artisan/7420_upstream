@@ -4,7 +4,6 @@
  * This code is derived in part from John R. Housers softfloat library, which
  * carries the following notice:
  *
- * ===========================================================================
  * This C source file is part of the SoftFloat IEC/IEEE Floating-point
  * Arithmetic Package, Release 2.
  *
@@ -28,7 +27,6 @@
  * (1) they include prominent notice that the work is derivative, and (2) they
  * include prominent notice akin to these three paragraphs for those parts of
  * this code that are retained.
- * ===========================================================================
  */
 #include <linux/kernel.h>
 #include <linux/bitops.h>
@@ -866,6 +864,8 @@ vfp_double_multiply_accumulate(int dd, int dn, int dm, u32 fpscr, u32 negate, ch
 		vdp.sign = vfp_sign_negate(vdp.sign);
 
 	vfp_double_unpack(&vdn, vfp_get_double(dd));
+	if (vdn.exponent == 0 && vdn.significand)
+		vfp_double_normalise_denormal(&vdn);
 	if (negate & NEG_SUBTRACT)
 		vdn.sign = vfp_sign_negate(vdn.sign);
 

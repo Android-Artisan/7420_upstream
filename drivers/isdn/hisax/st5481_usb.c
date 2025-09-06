@@ -5,6 +5,7 @@
  * Copyright    2001 by Frode Isaksen      <fisaksen@bewan.com>
  *              2001 by Kai Germaschewski  <kai.germaschewski@gmx.de>
  * 
+ *
  * This software may be used and distributed according to the terms
  * of the GNU General Public License, incorporated herein by reference.
  *
@@ -17,7 +18,6 @@
 
 static int st5481_isoc_flatten(struct urb *urb);
 
-/* ======================================================================
  * control pipe
  */
 
@@ -43,6 +43,13 @@ static void usb_next_ctrl_msg(struct urb *urb,
 		(unsigned char *)&ctrl->msg_fifo.data[r_index];
 	
 	DBG(1,"request=0x%02x,value=0x%04x,index=%x",
+		test_and_clear_bit(0, &ctrl->busy);
+		return;
+	}
+	urb->setup_packet =
+		(unsigned char *)&ctrl->msg_fifo.data[r_index];
+
+	DBG(1, "request=0x%02x,value=0x%04x,index=%x",
 	    ((struct ctrl_msg *)urb->setup_packet)->dr.bRequest,
 	    ((struct ctrl_msg *)urb->setup_packet)->dr.wValue,
 	    ((struct ctrl_msg *)urb->setup_packet)->dr.wIndex);
@@ -65,12 +72,15 @@ static void usb_ctrl_msg(struct st5481_adapter *adapter,
 	int w_index;
 	struct ctrl_msg *ctrl_msg;
 	
+
 	if ((w_index = fifo_add(&ctrl->msg_fifo.f)) < 0) {
 		WARNING("control msg FIFO full");
 		return;
 	}
 	ctrl_msg = &ctrl->msg_fifo.data[w_index]; 
    
+	ctrl_msg = &ctrl->msg_fifo.data[w_index];
+
 	ctrl_msg->dr.bRequestType = requesttype;
 	ctrl_msg->dr.bRequest = request;
 	ctrl_msg->dr.wValue = cpu_to_le16p(&value);
@@ -91,6 +101,11 @@ void st5481_usb_device_ctrl_msg(struct st5481_adapter *adapter,
 {
 	usb_ctrl_msg(adapter, request, 
 		     USB_DIR_OUT | USB_TYPE_VENDOR | USB_RECIP_DEVICE, 
+				u8 request, u16 value,
+				ctrl_complete_t complete, void *context)
+{
+	usb_ctrl_msg(adapter, request,
+		     USB_DIR_OUT | USB_TYPE_VENDOR | USB_RECIP_DEVICE,
 		     value, 0, complete, context);
 }
 
@@ -102,6 +117,10 @@ void st5481_usb_pipe_reset(struct st5481_adapter *adapter,
 		    ctrl_complete_t complete, void *context)
 {
 	DBG(1,"pipe=%02x",pipe);
+			   u_char pipe,
+			   ctrl_complete_t complete, void *context)
+{
+	DBG(1, "pipe=%02x", pipe);
 
 	usb_ctrl_msg(adapter,
 		     USB_REQ_CLEAR_FEATURE, USB_DIR_OUT | USB_RECIP_ENDPOINT,
@@ -116,6 +135,7 @@ void st5481_usb_pipe_reset(struct st5481_adapter *adapter,
 void st5481_ph_command(struct st5481_adapter *adapter, unsigned int command)
 {
 	DBG(8,"command=%s", ST5481_CMD_string(command));
+	DBG(8, "command=%s", ST5481_CMD_string(command));
 
 	st5481_usb_device_ctrl_msg(adapter, TXCI, command, NULL, NULL);
 }
@@ -141,6 +161,17 @@ static void usb_ctrl_complete(struct urb *urb)
 			default: 
 				WARNING("urb status %d",urb->status);
 				break;
+
+	if (unlikely(urb->status < 0)) {
+		switch (urb->status) {
+		case -ENOENT:
+		case -ESHUTDOWN:
+		case -ECONNRESET:
+			DBG(1, "urb killed status %d", urb->status);
+			return; // Give up
+		default:
+			WARNING("urb status %d", urb->status);
+			break;
 		}
 	}
 
@@ -159,17 +190,24 @@ static void usb_ctrl_complete(struct urb *urb)
 
 	}
 	
+
+	if (ctrl_msg->dr.bRequest == USB_REQ_CLEAR_FEATURE) {
+		/* Special case handling for pipe reset */
+		le16_to_cpus(&ctrl_msg->dr.wIndex);
+		usb_reset_endpoint(adapter->usb_dev, ctrl_msg->dr.wIndex);
+	}
+
 	if (ctrl_msg->complete)
 		ctrl_msg->complete(ctrl_msg->context);
 
 	clear_bit(0, &ctrl->busy);
 	
+
 	// Try to send next control message
 	usb_next_ctrl_msg(urb, adapter);
 	return;
 }
 
-/* ======================================================================
  * interrupt pipe
  */
 
@@ -205,6 +243,23 @@ static void usb_int_complete(struct urb *urb)
 	
 	DBG_PACKET(2, data, INT_PKT_SIZE);
 		
+	case 0:
+		/* success */
+		break;
+	case -ECONNRESET:
+	case -ENOENT:
+	case -ESHUTDOWN:
+		/* this urb is terminated, clean up */
+		DBG(2, "urb shutting down with status: %d", urb->status);
+		return;
+	default:
+		WARNING("nonzero urb status received: %d", urb->status);
+		goto exit;
+	}
+
+
+	DBG_PACKET(2, data, INT_PKT_SIZE);
+
 	if (urb->actual_length == 0) {
 		goto exit;
 	}
@@ -222,6 +277,7 @@ static void usb_int_complete(struct urb *urb)
 
 	if (irqbyte & OUT_DOWN)
 ;//		printk("OUT_DOWN\n");
+		;//		printk("OUT_DOWN\n");
 
 	irqbyte = data[MPINT];
 	if (irqbyte & RXCI_INT)
@@ -234,11 +290,11 @@ static void usb_int_complete(struct urb *urb)
 
 exit:
 	status = usb_submit_urb (urb, GFP_ATOMIC);
+	status = usb_submit_urb(urb, GFP_ATOMIC);
 	if (status)
 		WARNING("usb_submit_urb failed with result %d", status);
 }
 
-/* ======================================================================
  * initialization
  */
 
@@ -258,6 +314,11 @@ int st5481_setup_usb(struct st5481_adapter *adapter)
 	
 	if ((status = usb_reset_configuration (dev)) < 0) {
 		WARNING("reset_configuration failed,status=%d",status);
+
+	DBG(2, "");
+
+	if ((status = usb_reset_configuration(dev)) < 0) {
+		WARNING("reset_configuration failed,status=%d", status);
 		return status;
 	}
 
@@ -269,6 +330,7 @@ int st5481_setup_usb(struct st5481_adapter *adapter)
 
 	// Check if the config is sane
 	if ( altsetting->desc.bNumEndpoints != 7 ) {
+	if (altsetting->desc.bNumEndpoints != 7) {
 		WARNING("expecting 7 got %d endpoints!", altsetting->desc.bNumEndpoints);
 		return -EINVAL;
 	}
@@ -280,6 +342,12 @@ int st5481_setup_usb(struct st5481_adapter *adapter)
 	// Use alternative setting 3 on interface 0 to have 2B+D
 	if ((status = usb_set_interface (dev, 0, 3)) < 0) {
 		WARNING("usb_set_interface failed,status=%d",status);
+	altsetting->endpoint[3].desc.wMaxPacketSize = cpu_to_le16(32);
+	altsetting->endpoint[4].desc.wMaxPacketSize = cpu_to_le16(32);
+
+	// Use alternative setting 3 on interface 0 to have 2B+D
+	if ((status = usb_set_interface(dev, 0, 3)) < 0) {
+		WARNING("usb_set_interface failed,status=%d", status);
 		return status;
 	}
 
@@ -296,6 +364,13 @@ int st5481_setup_usb(struct st5481_adapter *adapter)
 			  NULL, NULL, 0, usb_ctrl_complete, adapter);
 
 		
+
+	// Fill the control URB
+	usb_fill_control_urb(urb, dev,
+			     usb_sndctrlpipe(dev, 0),
+			     NULL, NULL, 0, usb_ctrl_complete, adapter);
+
+
 	fifo_init(&ctrl->msg_fifo.f, ARRAY_SIZE(ctrl->msg_fifo.data));
 
 	// Allocate URBs and buffers for interrupt endpoint
@@ -320,6 +395,34 @@ int st5481_setup_usb(struct st5481_adapter *adapter)
 		     endpoint->desc.bInterval);
 		
 	return 0;
+	if (!urb) {
+		goto err1;
+	}
+	intr->urb = urb;
+
+	buf = kmalloc(INT_PKT_SIZE, GFP_KERNEL);
+	if (!buf) {
+		goto err2;
+	}
+
+	endpoint = &altsetting->endpoint[EP_INT-1];
+
+	// Fill the interrupt URB
+	usb_fill_int_urb(urb, dev,
+			 usb_rcvintpipe(dev, endpoint->desc.bEndpointAddress),
+			 buf, INT_PKT_SIZE,
+			 usb_int_complete, adapter,
+			 endpoint->desc.bInterval);
+
+	return 0;
+err2:
+	usb_free_urb(intr->urb);
+	intr->urb = NULL;
+err1:
+	usb_free_urb(ctrl->urb);
+	ctrl->urb = NULL;
+
+	return -ENOMEM;
 }
 
 /*
@@ -332,6 +435,7 @@ void st5481_release_usb(struct st5481_adapter *adapter)
 	struct st5481_ctrl *ctrl = &adapter->ctrl;
 
 	DBG(1,"");
+	DBG(1, "");
 
 	// Stop and free Control and Interrupt URBs
 	usb_kill_urb(ctrl->urb);
@@ -377,6 +481,33 @@ void st5481_start(struct st5481_adapter *adapter)
 
 	// Start receiving on the interrupt endpoint
 	SUBMIT_URB(intr->urb, GFP_KERNEL); 
+	static const u8 init_cmd_table[] = {
+		SET_DEFAULT, 0,
+		STT, 0,
+		SDA_MIN, 0x0d,
+		SDA_MAX, 0x29,
+		SDELAY_VALUE, 0x14,
+		GPIO_DIR, 0x01,
+		GPIO_OUT, RED_LED,
+//		FFCTRL_OUT_D,4,
+//		FFCTRH_OUT_D,12,
+		FFCTRL_OUT_B1, 6,
+		FFCTRH_OUT_B1, 20,
+		FFCTRL_OUT_B2, 6,
+		FFCTRH_OUT_B2, 20,
+		MPMSK, RXCI_INT + DEN_INT + DCOLL_INT,
+		0
+	};
+	struct st5481_intr *intr = &adapter->intr;
+	int i = 0;
+	u8 request, value;
+
+	DBG(8, "");
+
+	adapter->leds = RED_LED;
+
+	// Start receiving on the interrupt endpoint
+	SUBMIT_URB(intr->urb, GFP_KERNEL);
 
 	while ((request = init_cmd_table[i++])) {
 		value = init_cmd_table[i++];
@@ -391,11 +522,11 @@ void st5481_start(struct st5481_adapter *adapter)
 void st5481_stop(struct st5481_adapter *adapter)
 {
 	DBG(8,"");
+	DBG(8, "");
 
 	st5481_usb_device_ctrl_msg(adapter, SET_DEFAULT, 0, NULL, NULL);
 }
 
-/* ======================================================================
  * isochronous USB  helpers
  */
 
@@ -417,6 +548,22 @@ fill_isoc_urb(struct urb *urb, struct usb_device *dev,
 	urb->complete=complete;
 	urb->context=context;
 	urb->transfer_flags=URB_ISO_ASAP;
+	      unsigned int pipe, void *buf, int num_packets,
+	      int packet_size, usb_complete_t complete,
+	      void *context)
+{
+	int k;
+
+	urb->dev = dev;
+	urb->pipe = pipe;
+	urb->interval = 1;
+	urb->transfer_buffer = buf;
+	urb->number_of_packets = num_packets;
+	urb->transfer_buffer_length = num_packets * packet_size;
+	urb->actual_length = 0;
+	urb->complete = complete;
+	urb->context = context;
+	urb->transfer_flags = URB_ISO_ASAP;
 	for (k = 0; k < num_packets; k++) {
 		urb->iso_frame_desc[k].offset = packet_size * k;
 		urb->iso_frame_desc[k].length = packet_size;
@@ -429,6 +576,10 @@ st5481_setup_isocpipes(struct urb* urb[2], struct usb_device *dev,
 			   unsigned int pipe, int num_packets,
 			   int packet_size, int buf_size,
 			   usb_complete_t complete, void *context)
+st5481_setup_isocpipes(struct urb *urb[2], struct usb_device *dev,
+		       unsigned int pipe, int num_packets,
+		       int packet_size, int buf_size,
+		       usb_complete_t complete, void *context)
 {
 	int j, retval;
 	unsigned char *buf;
@@ -446,12 +597,16 @@ st5481_setup_isocpipes(struct urb* urb[2], struct usb_device *dev,
 			
 		// Fill the isochronous URB
 		fill_isoc_urb(urb[j], dev, pipe, buf, 
+
+		// Fill the isochronous URB
+		fill_isoc_urb(urb[j], dev, pipe, buf,
 			      num_packets, packet_size, complete,
 			      context);
 	}
 	return 0;
 
  err:
+err:
 	for (j = 0; j < 2; j++) {
 		if (urb[j]) {
 			kfree(urb[j]->transfer_buffer);
@@ -464,6 +619,7 @@ st5481_setup_isocpipes(struct urb* urb[2], struct usb_device *dev,
 }
 
 void st5481_release_isocpipes(struct urb* urb[2])
+void st5481_release_isocpipes(struct urb *urb[2])
 {
 	int j;
 
@@ -480,6 +636,9 @@ void st5481_release_isocpipes(struct urb* urb[2])
  * Note that this function will be called continously
  * with 64Kbit/s / 16Kbit/s of data and hence it will be 
  * called 50 times per second with 20 ISOC descriptors. 
+ * Note that this function will be called continuously
+ * with 64Kbit/s / 16Kbit/s of data and hence it will be
+ * called 50 times per second with 20 ISOC descriptors.
  * Called at interrupt.
  */
 static void usb_in_complete(struct urb *urb)
@@ -503,6 +662,18 @@ static void usb_in_complete(struct urb *urb)
 	}
 
 	DBG_ISO_PACKET(0x80,urb);
+		case -ENOENT:
+		case -ESHUTDOWN:
+		case -ECONNRESET:
+			DBG(1, "urb killed status %d", urb->status);
+			return; // Give up
+		default:
+			WARNING("urb status %d", urb->status);
+			break;
+		}
+	}
+
+	DBG_ISO_PACKET(0x80, urb);
 
 	len = st5481_isoc_flatten(urb);
 	ptr = urb->transfer_buffer;
@@ -521,6 +692,14 @@ static void usb_in_complete(struct urb *urb)
 		if (status > 0) {
 			// Good frame received
 			DBG(4,"count=%d",status);
+						 in->rcvbuf, in->bufsize);
+			ptr += count;
+			len -= count;
+		}
+
+		if (status > 0) {
+			// Good frame received
+			DBG(4, "count=%d", status);
 			DBG_PACKET(0x400, in->rcvbuf, status);
 			if (!(skb = dev_alloc_skb(status))) {
 				WARNING("receive out of memory\n");
@@ -550,6 +729,7 @@ int st5481_setup_in(struct st5481_in *in)
 	int retval;
 
 	DBG(4,"");
+	DBG(4, "");
 
 	in->rcvbuf = kmalloc(in->bufsize, GFP_KERNEL);
 	retval = -ENOMEM;
@@ -557,6 +737,7 @@ int st5481_setup_in(struct st5481_in *in)
 		goto err;
 
 	retval = st5481_setup_isocpipes(in->urb, dev, 
+	retval = st5481_setup_isocpipes(in->urb, dev,
 					usb_rcvisocpipe(dev, in->ep),
 					in->num_packets,  in->packet_size,
 					in->num_packets * in->packet_size,
@@ -568,12 +749,16 @@ int st5481_setup_in(struct st5481_in *in)
  err_free:
 	kfree(in->rcvbuf);
  err:
+err_free:
+	kfree(in->rcvbuf);
+err:
 	return retval;
 }
 
 void st5481_release_in(struct st5481_in *in)
 {
 	DBG(2,"");
+	DBG(2, "");
 
 	st5481_release_isocpipes(in->urb);
 }
@@ -588,6 +773,14 @@ static int st5481_isoc_flatten(struct urb *urb)
 	unsigned char *src,*dst;
 	unsigned int len;
 	
+ * copying from the iso descriptors if necessary.
+ */
+static int st5481_isoc_flatten(struct urb *urb)
+{
+	struct usb_iso_packet_descriptor *pipd, *pend;
+	unsigned char *src, *dst;
+	unsigned int len;
+
 	if (urb->status < 0) {
 		return urb->status;
 	}
@@ -604,12 +797,24 @@ static int st5481_isoc_flatten(struct urb *urb)
 		len = pipd->actual_length;
 		pipd->actual_length = 0;
 		src = urb->transfer_buffer+pipd->offset;
+		     dst = urb->transfer_buffer;
+	     pipd < pend;
+	     pipd++) {
+
+		if (pipd->status < 0) {
+			return (pipd->status);
+		}
+
+		len = pipd->actual_length;
+		pipd->actual_length = 0;
+		src = urb->transfer_buffer + pipd->offset;
 
 		if (src != dst) {
 			// Need to copy since isoc buffers not full
 			while (len--) {
 				*dst++ = *src++;
 			}			
+			}
 		} else {
 			// No need to copy, just update destination buffer
 			dst += len;
@@ -625,6 +830,7 @@ static void st5481_start_rcv(void *context)
 	struct st5481_adapter *adapter = in->adapter;
 
 	DBG(4,"");
+	DBG(4, "");
 
 	in->urb[0]->dev = adapter->usb_dev;
 	SUBMIT_URB(in->urb[0], GFP_KERNEL);
@@ -648,6 +854,13 @@ void st5481_in_mode(struct st5481_in *in, int mode)
 			isdnhdlc_rcv_init(&in->hdlc_state,
 				in->mode == L1_MODE_HDLC_56K);
 		
+		if (in->mode != L1_MODE_TRANS) {
+			u32 features = HDLC_BITREVERSE;
+
+			if (in->mode == L1_MODE_HDLC_56K)
+				features |= HDLC_56KBIT;
+			isdnhdlc_rcv_init(&in->hdlc_state, features);
+		}
 		st5481_usb_pipe_reset(in->adapter, in->ep, NULL, NULL);
 		st5481_usb_device_ctrl_msg(in->adapter, in->counter,
 					   in->packet_size,

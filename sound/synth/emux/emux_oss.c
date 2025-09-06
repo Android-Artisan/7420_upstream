@@ -26,6 +26,8 @@
 #ifdef CONFIG_SND_SEQUENCER_OSS
 
 #include <asm/uaccess.h>
+#include <linux/export.h>
+#include <linux/uaccess.h>
 #include <sound/core.h>
 #include "emux_voice.h"
 #include <sound/asoundef.h>
@@ -69,6 +71,8 @@ snd_emux_init_seq_oss(struct snd_emux *emu)
 	struct snd_seq_device *dev;
 
 	if (snd_seq_device_new(emu->card, 0, SNDRV_SEQ_DEV_ID_OSS,
+	/* using device#1 here for avoiding conflicts with OPL3 */
+	if (snd_seq_device_new(emu->card, 1, SNDRV_SEQ_DEV_ID_OSS,
 			       sizeof(struct snd_seq_oss_reg), &dev) < 0)
 		return;
 
@@ -122,6 +126,11 @@ snd_emux_open_seq_oss(struct snd_seq_oss_arg *arg, void *closure)
 		mutex_unlock(&emu->register_mutex);
 		return -EFAULT;
 	}
+	if (snd_BUG_ON(!arg || !emu))
+		return -ENXIO;
+
+	if (!snd_emux_inc_count(emu))
+		return -EFAULT;
 
 	memset(&callback, 0, sizeof(callback));
 	callback.owner = THIS_MODULE;
@@ -134,6 +143,8 @@ snd_emux_open_seq_oss(struct snd_seq_oss_arg *arg, void *closure)
 		snd_printk("can't create port\n");
 		snd_emux_dec_count(emu);
 		mutex_unlock(&emu->register_mutex);
+		snd_printk(KERN_ERR "can't create port\n");
+		snd_emux_dec_count(emu);
 		return -ENOMEM;
 	}
 
@@ -191,6 +202,16 @@ snd_emux_close_seq_oss(struct snd_seq_oss_arg *arg)
 	snd_assert(emu != NULL, return -ENXIO);
 
 	mutex_lock(&emu->register_mutex);
+	if (snd_BUG_ON(!arg))
+		return -ENXIO;
+	p = arg->private_data;
+	if (snd_BUG_ON(!p))
+		return -ENXIO;
+
+	emu = p->emu;
+	if (snd_BUG_ON(!emu))
+		return -ENXIO;
+
 	snd_emux_sounds_off_all(p);
 	snd_soundfont_close_check(emu->sflist, SF_CLIENT_NO(p->chset.port));
 	snd_seq_event_port_detach(p->chset.client, p->chset.port);
@@ -218,6 +239,15 @@ snd_emux_load_patch_seq_oss(struct snd_seq_oss_arg *arg, int format,
 
 	emu = p->emu;
 	snd_assert(emu != NULL, return -ENXIO);
+	if (snd_BUG_ON(!arg))
+		return -ENXIO;
+	p = arg->private_data;
+	if (snd_BUG_ON(!p))
+		return -ENXIO;
+
+	emu = p->emu;
+	if (snd_BUG_ON(!emu))
+		return -ENXIO;
 
 	if (format == GUS_PATCH)
 		rc = snd_soundfont_load_guspatch(emu->sflist, buf, count,
@@ -258,6 +288,15 @@ snd_emux_ioctl_seq_oss(struct snd_seq_oss_arg *arg, unsigned int cmd, unsigned l
 
 	emu = p->emu;
 	snd_assert(emu != NULL, return -ENXIO);
+	if (snd_BUG_ON(!arg))
+		return -ENXIO;
+	p = arg->private_data;
+	if (snd_BUG_ON(!p))
+		return -ENXIO;
+
+	emu = p->emu;
+	if (snd_BUG_ON(!emu))
+		return -ENXIO;
 
 	switch (cmd) {
 	case SNDCTL_SEQ_RESETSAMPLES:
@@ -285,6 +324,11 @@ snd_emux_reset_seq_oss(struct snd_seq_oss_arg *arg)
 	snd_assert(arg != NULL, return -ENXIO);
 	p = arg->private_data;
 	snd_assert(p != NULL, return -ENXIO);
+	if (snd_BUG_ON(!arg))
+		return -ENXIO;
+	p = arg->private_data;
+	if (snd_BUG_ON(!p))
+		return -ENXIO;
 	snd_emux_reset_port(p);
 	return 0;
 }
@@ -305,6 +349,11 @@ snd_emux_event_oss_input(struct snd_seq_event *ev, int direct, void *private_dat
 	snd_assert(p != NULL, return -EINVAL);
 	emu = p->emu;
 	snd_assert(emu != NULL, return -EINVAL);
+	if (snd_BUG_ON(!p))
+		return -EINVAL;
+	emu = p->emu;
+	if (snd_BUG_ON(!emu))
+		return -EINVAL;
 	if (ev->type != SNDRV_SEQ_EVENT_OSS)
 		return snd_emux_event_input(ev, direct, private_data, atomic, hop);
 

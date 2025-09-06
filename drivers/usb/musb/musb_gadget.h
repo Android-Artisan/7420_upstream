@@ -37,11 +37,55 @@
 
 struct musb_request {
 	struct usb_request	request;
+#include <linux/list.h>
+
+#if IS_ENABLED(CONFIG_USB_MUSB_GADGET) || IS_ENABLED(CONFIG_USB_MUSB_DUAL_ROLE)
+extern irqreturn_t musb_g_ep0_irq(struct musb *);
+extern void musb_g_tx(struct musb *, u8);
+extern void musb_g_rx(struct musb *, u8);
+extern void musb_g_reset(struct musb *);
+extern void musb_g_suspend(struct musb *);
+extern void musb_g_resume(struct musb *);
+extern void musb_g_wakeup(struct musb *);
+extern void musb_g_disconnect(struct musb *);
+extern void musb_gadget_cleanup(struct musb *);
+extern int musb_gadget_setup(struct musb *);
+
+#else
+static inline irqreturn_t musb_g_ep0_irq(struct musb *musb)
+{
+	return 0;
+}
+
+static inline void musb_g_tx(struct musb *musb, u8 epnum)	{}
+static inline void musb_g_rx(struct musb *musb, u8 epnum)	{}
+static inline void musb_g_reset(struct musb *musb)		{}
+static inline void musb_g_suspend(struct musb *musb)		{}
+static inline void musb_g_resume(struct musb *musb)		{}
+static inline void musb_g_wakeup(struct musb *musb)		{}
+static inline void musb_g_disconnect(struct musb *musb)		{}
+static inline void musb_gadget_cleanup(struct musb *musb)	{}
+static inline int musb_gadget_setup(struct musb *musb)
+{
+	return 0;
+}
+#endif
+
+enum buffer_map_state {
+	UN_MAPPED = 0,
+	PRE_MAPPED,
+	MUSB_MAPPED
+};
+
+struct musb_request {
+	struct usb_request	request;
+	struct list_head	list;
 	struct musb_ep		*ep;
 	struct musb		*musb;
 	u8 tx;			/* endpoint direction */
 	u8 epnum;
 	u8 mapped;
+	enum buffer_map_state map_state;
 };
 
 static inline struct musb_request *to_musb_request(struct usb_request *req)
@@ -77,6 +121,12 @@ struct musb_ep {
 
 	/* true if lock must be dropped but req_list may not be advanced */
 	u8				busy;
+	u8				wedged;
+
+	/* true if lock must be dropped but req_list may not be advanced */
+	u8				busy;
+
+	u8				hb_mult;
 };
 
 static inline struct musb_ep *to_musb_ep(struct usb_ep *ep)
@@ -85,6 +135,7 @@ static inline struct musb_ep *to_musb_ep(struct usb_ep *ep)
 }
 
 static inline struct usb_request *next_request(struct musb_ep *ep)
+static inline struct musb_request *next_request(struct musb_ep *ep)
 {
 	struct list_head	*queue = &ep->req_list;
 
@@ -104,5 +155,13 @@ extern void musb_gadget_cleanup(struct musb *);
 extern void musb_g_giveback(struct musb_ep *, struct usb_request *, int);
 
 extern int musb_gadget_set_halt(struct usb_ep *ep, int value);
+	return container_of(queue->next, struct musb_request, list);
+}
+
+extern const struct usb_ep_ops musb_g_ep0_ops;
+
+extern void musb_g_giveback(struct musb_ep *, struct usb_request *, int);
+
+extern void musb_ep_restart(struct musb *, struct musb_request *);
 
 #endif		/* __MUSB_GADGET_H */

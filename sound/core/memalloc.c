@@ -78,6 +78,11 @@ struct snd_mem_list {
 #else
 #define snd_assert(expr, args...) /**/
 #endif
+#include <linux/slab.h>
+#include <linux/mm.h>
+#include <linux/dma-mapping.h>
+#include <linux/genalloc.h>
+#include <sound/memalloc.h>
 
 /*
  *
@@ -105,6 +110,7 @@ static inline void dec_snd_pages(int order)
  * Allocates the physically contiguous pages with the given size.
  *
  * Returns the pointer of the buffer, or NULL if no enoguh memory.
+ * Return: The pointer of the buffer, or %NULL if no enough memory.
  */
 void *snd_malloc_pages(size_t size, gfp_t gfp_flags)
 {
@@ -118,6 +124,14 @@ void *snd_malloc_pages(size_t size, gfp_t gfp_flags)
 	if ((res = (void *) __get_free_pages(gfp_flags, pg)) != NULL)
 		inc_snd_pages(pg);
 	return res;
+
+	if (WARN_ON(!size))
+		return NULL;
+	if (WARN_ON(!gfp_flags))
+		return NULL;
+	gfp_flags |= __GFP_COMP;	/* compound page lets parts be mapped */
+	pg = get_order(size);
+	return (void *) __get_free_pages(gfp_flags, pg);
 }
 
 /**
@@ -154,6 +168,10 @@ static void *snd_malloc_dev_pages(struct device *dev, size_t size, dma_addr_t *d
 
 	snd_assert(size > 0, return NULL);
 	snd_assert(dma != NULL, return NULL);
+	gfp_t gfp_flags;
+
+	if (WARN_ON(!dma))
+		return NULL;
 	pg = get_order(size);
 	gfp_flags = GFP_KERNEL
 		| __GFP_COMP	/* compound page lets parts be mapped */
@@ -164,6 +182,7 @@ static void *snd_malloc_dev_pages(struct device *dev, size_t size, dma_addr_t *d
 		inc_snd_pages(pg);
 
 	return res;
+	return dma_alloc_coherent(dev, PAGE_SIZE << pg, dma, gfp_flags);
 }
 
 /* free the coherent DMA pages */
@@ -212,6 +231,50 @@ static void snd_free_sbus_pages(struct device *dev, size_t size,
 }
 
 #endif /* CONFIG_SBUS */
+	dma_free_coherent(dev, PAGE_SIZE << pg, ptr, dma);
+}
+
+#ifdef CONFIG_GENERIC_ALLOCATOR
+/**
+ * snd_malloc_dev_iram - allocate memory from on-chip internal ram
+ * @dmab: buffer allocation record to store the allocated data
+ * @size: number of bytes to allocate from the iram
+ *
+ * This function requires iram phandle provided via of_node
+ */
+static void snd_malloc_dev_iram(struct snd_dma_buffer *dmab, size_t size)
+{
+	struct device *dev = dmab->dev.dev;
+	struct gen_pool *pool = NULL;
+
+	dmab->area = NULL;
+	dmab->addr = 0;
+
+	if (dev->of_node)
+		pool = of_gen_pool_get(dev->of_node, "iram", 0);
+
+	if (!pool)
+		return;
+
+	/* Assign the pool into private_data field */
+	dmab->private_data = pool;
+
+	dmab->area = gen_pool_dma_alloc(pool, size, &dmab->addr);
+}
+
+/**
+ * snd_free_dev_iram - free allocated specific memory from on-chip internal ram
+ * @dmab: buffer allocation record to store the allocated data
+ */
+static void snd_free_dev_iram(struct snd_dma_buffer *dmab)
+{
+	struct gen_pool *pool = dmab->private_data;
+
+	if (pool && dmab->area)
+		gen_pool_free(pool, (unsigned long)dmab->area, dmab->bytes);
+}
+#endif /* CONFIG_GENERIC_ALLOCATOR */
+#endif /* CONFIG_HAS_DMA */
 
 /*
  *
@@ -232,13 +295,21 @@ static void snd_free_sbus_pages(struct device *dev, size_t size,
  * 
  * Returns zero if the buffer with the given size is allocated successfuly,
  * other a negative value at error.
+ *
+ * Return: Zero if the buffer with the given size is allocated successfully,
+ * otherwise a negative value on error.
  */
 int snd_dma_alloc_pages(int type, struct device *device, size_t size,
 			struct snd_dma_buffer *dmab)
 {
 	snd_assert(size > 0, return -ENXIO);
 	snd_assert(dmab != NULL, return -ENXIO);
+	if (WARN_ON(!size))
+		return -ENXIO;
+	if (WARN_ON(!dmab))
+		return -ENXIO;
 
+	size = PAGE_ALIGN(size);
 	dmab->dev.type = type;
 	dmab->dev.dev = device;
 	dmab->bytes = 0;
@@ -256,12 +327,33 @@ int snd_dma_alloc_pages(int type, struct device *device, size_t size,
 	case SNDRV_DMA_TYPE_DEV:
 		dmab->area = snd_malloc_dev_pages(device, size, &dmab->addr);
 		break;
+		dmab->area = snd_malloc_pages(size,
+					(__force gfp_t)(unsigned long)device);
+		dmab->addr = 0;
+		break;
+#ifdef CONFIG_HAS_DMA
+#ifdef CONFIG_GENERIC_ALLOCATOR
+	case SNDRV_DMA_TYPE_DEV_IRAM:
+		snd_malloc_dev_iram(dmab, size);
+		if (dmab->area)
+			break;
+		/* Internal memory might have limited size and no enough space,
+		 * so if we fail to malloc, try to fetch memory traditionally.
+		 */
+		dmab->dev.type = SNDRV_DMA_TYPE_DEV;
+#endif /* CONFIG_GENERIC_ALLOCATOR */
+	case SNDRV_DMA_TYPE_DEV:
+		dmab->area = snd_malloc_dev_pages(device, size, &dmab->addr);
+		break;
+#endif
+#ifdef CONFIG_SND_DMA_SGBUF
 	case SNDRV_DMA_TYPE_DEV_SG:
 		snd_malloc_sgbuf_pages(device, size, dmab, NULL);
 		break;
 #endif
 	default:
 		printk(KERN_ERR "snd-malloc: invalid device type %d\n", type);
+		pr_err("snd-malloc: invalid device type %d\n", type);
 		dmab->area = NULL;
 		dmab->addr = 0;
 		return -ENXIO;
@@ -286,6 +378,9 @@ int snd_dma_alloc_pages(int type, struct device *device, size_t size,
  * 
  * Returns zero if the buffer with the given size is allocated successfuly,
  * other a negative value at error.
+ *
+ * Return: Zero if the buffer with the given size is allocated successfully,
+ * otherwise a negative value on error.
  */
 int snd_dma_alloc_pages_fallback(int type, struct device *device, size_t size,
 				 struct snd_dma_buffer *dmab)
@@ -301,6 +396,13 @@ int snd_dma_alloc_pages_fallback(int type, struct device *device, size_t size,
 		size >>= 1;
 		if (size <= PAGE_SIZE)
 			return -ENOMEM;
+	while ((err = snd_dma_alloc_pages(type, device, size, dmab)) < 0) {
+		if (err != -ENOMEM)
+			return err;
+		if (size <= PAGE_SIZE)
+			return -ENOMEM;
+		size >>= 1;
+		size = PAGE_SIZE << get_order(size);
 	}
 	if (! dmab->area)
 		return -ENOMEM;
@@ -329,6 +431,17 @@ void snd_dma_free_pages(struct snd_dma_buffer *dmab)
 	case SNDRV_DMA_TYPE_DEV:
 		snd_free_dev_pages(dmab->dev.dev, dmab->bytes, dmab->area, dmab->addr);
 		break;
+#ifdef CONFIG_HAS_DMA
+#ifdef CONFIG_GENERIC_ALLOCATOR
+	case SNDRV_DMA_TYPE_DEV_IRAM:
+		snd_free_dev_iram(dmab);
+		break;
+#endif /* CONFIG_GENERIC_ALLOCATOR */
+	case SNDRV_DMA_TYPE_DEV:
+		snd_free_dev_pages(dmab->dev.dev, dmab->bytes, dmab->area, dmab->addr);
+		break;
+#endif
+#ifdef CONFIG_SND_DMA_SGBUF
 	case SNDRV_DMA_TYPE_DEV_SG:
 		snd_free_sgbuf_pages(dmab);
 		break;
@@ -585,6 +698,10 @@ static void __exit snd_mem_exit(void)
 module_init(snd_mem_init)
 module_exit(snd_mem_exit)
 
+
+		pr_err("snd-malloc: invalid device type %d\n", dmab->dev.type);
+	}
+}
 
 /*
  * exports

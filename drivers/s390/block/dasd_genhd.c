@@ -6,10 +6,13 @@
  *		    Martin Schwidefsky <schwidefsky@de.ibm.com>
  * Bugreports.to..: <Linux390@de.ibm.com>
  * (C) IBM Corporation, IBM Deutschland Entwicklung GmbH, 1999-2001
+ * Copyright IBM Corp. 1999, 2001
  *
  * gendisk related functions for the dasd driver.
  *
  */
+
+#define KMSG_COMPONENT "dasd"
 
 #include <linux/interrupt.h>
 #include <linux/fs.h>
@@ -71,6 +74,10 @@ int dasd_gendisk_alloc(struct dasd_block *block)
 	if (block->base->features & DASD_FEATURE_READONLY)
 		set_disk_ro(gdp, 1);
 	gdp->private_data = block;
+	if (base->features & DASD_FEATURE_READONLY ||
+	    test_bit(DASD_FLAG_DEVICE_RO, &base->flags))
+		set_disk_ro(gdp, 1);
+	dasd_add_link_to_gendisk(gdp, base);
 	gdp->queue = block->request_queue;
 	block->gdp = gdp;
 	set_capacity(block->gdp, 0);
@@ -86,6 +93,7 @@ void dasd_gendisk_free(struct dasd_block *block)
 	if (block->gdp) {
 		del_gendisk(block->gdp);
 		block->gdp->queue = NULL;
+		block->gdp->private_data = NULL;
 		put_disk(block->gdp);
 		block->gdp = NULL;
 	}
@@ -106,6 +114,28 @@ int dasd_scan_partitions(struct dasd_block *block)
 	 * Can't call rescan_partitions directly. Use ioctl.
 	 */
 	ioctl_by_bdev(bdev, BLKRRPART, 0);
+	int rc;
+
+	bdev = bdget_disk(block->gdp, 0);
+	if (!bdev) {
+		DBF_DEV_EVENT(DBF_ERR, block->base, "%s",
+			      "scan partitions error, bdget returned NULL");
+		return -ENODEV;
+	}
+
+	rc = blkdev_get(bdev, FMODE_READ, NULL);
+	if (rc < 0) {
+		DBF_DEV_EVENT(DBF_ERR, block->base,
+			      "scan partitions error, blkdev_get returned %d",
+			      rc);
+		return -ENODEV;
+	}
+
+	rc = blkdev_reread_part(bdev);
+	if (rc)
+		DBF_DEV_EVENT(DBF_ERR, block->base,
+				"scan partitions error, rc %d", rc);
+
 	/*
 	 * Since the matching blkdev_put call to the blkdev_get in
 	 * this function is not called before dasd_destroy_partitions
@@ -153,6 +183,7 @@ void dasd_destroy_partitions(struct dasd_block *block)
 	invalidate_partition(block->gdp, 0);
 	/* Matching blkdev_put to the blkdev_get in dasd_scan_partitions. */
 	blkdev_put(bdev);
+	blkdev_put(bdev, FMODE_READ);
 	set_capacity(block->gdp, 0);
 }
 
@@ -166,6 +197,8 @@ int dasd_gendisk_init(void)
 		MESSAGE(KERN_WARNING,
 			"Couldn't register successfully to "
 			"major no %d", DASD_MAJOR);
+		pr_warning("Registering the device driver with major number "
+			   "%d failed\n", DASD_MAJOR);
 		return rc;
 	}
 	return 0;

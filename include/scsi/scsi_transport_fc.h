@@ -17,7 +17,6 @@
  *  along with this program; if not, write to the Free Software
  *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  *
- *  ========
  *
  *  Copyright (C) 2004-2007   James Smart, Emulex Corporation
  *    Rewrite for host, target, device, and remote port attributes,
@@ -131,6 +130,16 @@ enum fc_vport_state {
 #define FC_PORTSPEED_10GBIT		8
 #define FC_PORTSPEED_8GBIT		0x10
 #define FC_PORTSPEED_16GBIT		0x20
+#define FC_PORTSPEED_10GBIT		4
+#define FC_PORTSPEED_4GBIT		8
+#define FC_PORTSPEED_8GBIT		0x10
+#define FC_PORTSPEED_16GBIT		0x20
+#define FC_PORTSPEED_32GBIT		0x40
+#define FC_PORTSPEED_20GBIT		0x80
+#define FC_PORTSPEED_40GBIT		0x100
+#define FC_PORTSPEED_50GBIT		0x200
+#define FC_PORTSPEED_100GBIT		0x400
+#define FC_PORTSPEED_25GBIT		0x800
 #define FC_PORTSPEED_NOT_NEGOTIATED	(1 << 15) /* Speed not established */
 
 /*
@@ -167,6 +176,26 @@ enum fc_tgtid_binding_type  {
 struct device_attribute dev_attr_vport_##_name = 	\
 	__ATTR(_name,_mode,_show,_store)
 
+/*
+ * fc_vport_identifiers: This set of data contains all elements
+ * to uniquely identify and instantiate a FC virtual port.
+ *
+ * Notes:
+ *   symbolic_name: The driver is to append the symbolic_name string data
+ *      to the symbolic_node_name data that it generates by default.
+ *      the resulting combination should then be registered with the switch.
+ *      It is expected that things like Xen may stuff a VM title into
+ *      this field.
+ */
+#define FC_VPORT_SYMBOLIC_NAMELEN		64
+struct fc_vport_identifiers {
+	u64 node_name;
+	u64 port_name;
+	u32 roles;
+	bool disable;
+	enum fc_port_type vport_type;	/* only FC_PORTTYPE_NPIV allowed */
+	char symbolic_name[FC_VPORT_SYMBOLIC_NAMELEN];
+};
 
 /*
  * FC Virtual Port Attributes
@@ -176,6 +205,9 @@ struct device_attribute dev_attr_vport_##_name = 	\
  * ports has a unique presense on the SAN, and may be instantiated via
  * NPIV, Virtual Fabrics, or via additional ALPAs. As the vport is a
  * unique presense, each vport has it's own view of the fabric,
+ * ports has a unique presence on the SAN, and may be instantiated via
+ * NPIV, Virtual Fabrics, or via additional ALPAs. As the vport is a
+ * unique presence, each vport has it's own view of the fabric,
  * authentication privilege, and priorities.
  *
  * A virtual port may support 1 or more FC4 roles. Typically it is a
@@ -333,11 +365,14 @@ struct fc_rport {	/* aka fc_starget_attrs */
  	struct delayed_work fail_io_work;
  	struct work_struct stgt_delete_work;
 	struct work_struct rport_delete_work;
+	struct request_queue *rqst_q;	/* bsg support */
 } __attribute__((aligned(sizeof(unsigned long))));
 
 /* bit field values for struct fc_rport "flags" field: */
 #define FC_RPORT_DEVLOSS_PENDING	0x01
 #define FC_RPORT_SCAN_PENDING		0x02
+#define FC_RPORT_FAST_FAIL_TIMEDOUT	0x04
+#define FC_RPORT_DEVLOSS_CALLBK_DONE	0x08
 
 #define	dev_to_rport(d)				\
 	container_of(d, struct fc_rport, dev)
@@ -350,6 +385,7 @@ struct fc_rport {	/* aka fc_starget_attrs */
  * FC SCSI Target Attributes
  *
  * The SCSI Target is considered an extention of a remote port (as
+ * The SCSI Target is considered an extension of a remote port (as
  * a remote port can be more than a SCSI Target). Within the scsi
  * subsystem, we leave the Target as a separate entity. Doing so
  * provides backward compatibility with prior FC transport api's,
@@ -405,6 +441,18 @@ struct fc_host_statistics {
 	u64 fcp_control_requests;
 	u64 fcp_input_megabytes;
 	u64 fcp_output_megabytes;
+	u64 fcp_packet_alloc_failures;	/* fcp packet allocation failures */
+	u64 fcp_packet_aborts;		/* fcp packet aborted */
+	u64 fcp_frame_alloc_failures;	/* fcp frame allocation failures */
+
+	/* fc exches statistics */
+	u64 fc_no_free_exch;		/* no free exch memory */
+	u64 fc_no_free_exch_xid;	/* no free exch id */
+	u64 fc_xid_not_found;		/* exch not found for a response */
+	u64 fc_xid_busy;		/* exch exist for new a request */
+	u64 fc_seq_not_found;		/* seq is not found for exchange */
+	u64 fc_non_bls_resp;		/* a non BLS response frame with
+					   a sequence responder in new exch */
 };
 
 
@@ -465,6 +513,13 @@ struct fc_host_attrs {
 	u32 maxframe_size;
 	u16 max_npiv_vports;
 	char serial_number[FC_SERIAL_NUMBER_SIZE];
+	char manufacturer[FC_SERIAL_NUMBER_SIZE];
+	char model[FC_SYMBOLIC_NAME_SIZE];
+	char model_description[FC_SYMBOLIC_NAME_SIZE];
+	char hardware_version[FC_VERSION_STRING_SIZE];
+	char driver_version[FC_VERSION_STRING_SIZE];
+	char firmware_version[FC_VERSION_STRING_SIZE];
+	char optionrom_version[FC_VERSION_STRING_SIZE];
 
 	/* Dynamic Attributes */
 	u32 port_id;
@@ -475,6 +530,7 @@ struct fc_host_attrs {
 	u64 fabric_name;
 	char symbolic_name[FC_SYMBOLIC_NAME_SIZE];
 	char system_hostname[FC_SYMBOLIC_NAME_SIZE];
+	u32 dev_loss_tmo;
 
 	/* Private (Transport-managed) Attributes */
 	enum fc_tgtid_binding_type  tgtid_bind_type;
@@ -493,6 +549,9 @@ struct fc_host_attrs {
 	struct workqueue_struct *work_q;
 	char devloss_work_q_name[20];
 	struct workqueue_struct *devloss_work_q;
+
+	/* bsg support */
+	struct request_queue *rqst_q;
 };
 
 #define shost_to_fc_host(x) \
@@ -516,6 +575,20 @@ struct fc_host_attrs {
 	(((struct fc_host_attrs *)(x)->shost_data)->max_npiv_vports)
 #define fc_host_serial_number(x)	\
 	(((struct fc_host_attrs *)(x)->shost_data)->serial_number)
+#define fc_host_manufacturer(x)	\
+	(((struct fc_host_attrs *)(x)->shost_data)->manufacturer)
+#define fc_host_model(x)	\
+	(((struct fc_host_attrs *)(x)->shost_data)->model)
+#define fc_host_model_description(x)	\
+	(((struct fc_host_attrs *)(x)->shost_data)->model_description)
+#define fc_host_hardware_version(x)	\
+	(((struct fc_host_attrs *)(x)->shost_data)->hardware_version)
+#define fc_host_driver_version(x)	\
+	(((struct fc_host_attrs *)(x)->shost_data)->driver_version)
+#define fc_host_firmware_version(x)	\
+	(((struct fc_host_attrs *)(x)->shost_data)->firmware_version)
+#define fc_host_optionrom_version(x)	\
+	(((struct fc_host_attrs *)(x)->shost_data)->optionrom_version)
 #define fc_host_port_id(x)	\
 	(((struct fc_host_attrs *)(x)->shost_data)->port_id)
 #define fc_host_port_type(x)	\
@@ -556,6 +629,49 @@ struct fc_host_attrs {
 	(((struct fc_host_attrs *)(x)->shost_data)->devloss_work_q_name)
 #define fc_host_devloss_work_q(x) \
 	(((struct fc_host_attrs *)(x)->shost_data)->devloss_work_q)
+#define fc_host_dev_loss_tmo(x) \
+	(((struct fc_host_attrs *)(x)->shost_data)->dev_loss_tmo)
+
+
+struct fc_bsg_buffer {
+	unsigned int payload_len;
+	int sg_cnt;
+	struct scatterlist *sg_list;
+};
+
+/* Values for fc_bsg_job->state_flags (bitflags) */
+#define FC_RQST_STATE_INPROGRESS	0
+#define FC_RQST_STATE_DONE		1
+
+struct fc_bsg_job {
+	struct Scsi_Host *shost;
+	struct fc_rport *rport;
+	struct device *dev;
+	struct request *req;
+	spinlock_t job_lock;
+	unsigned int state_flags;
+	unsigned int ref_cnt;
+	void (*job_done)(struct fc_bsg_job *);
+
+	struct fc_bsg_request *request;
+	struct fc_bsg_reply *reply;
+	unsigned int request_len;
+	unsigned int reply_len;
+	/*
+	 * On entry : reply_len indicates the buffer size allocated for
+	 * the reply.
+	 *
+	 * Upon completion : the message handler must set reply_len
+	 *  to indicates the size of the reply to be returned to the
+	 *  caller.
+	 */
+
+	/* DMA payloads for the request/response */
+	struct fc_bsg_buffer request_payload;
+	struct fc_bsg_buffer reply_payload;
+
+	void *dd_data;			/* Used for driver-specific storage */
+};
 
 
 /* The functions by which the transport class and the driver communicate */
@@ -596,6 +712,14 @@ struct fc_function_template {
 	/* allocation lengths for host-specific data */
 	u32	 			dd_fcrport_size;
 	u32	 			dd_fcvport_size;
+	/* bsg support */
+	int	(*bsg_request)(struct fc_bsg_job *);
+	int	(*bsg_timeout)(struct fc_bsg_job *);
+
+	/* allocation lengths for host-specific data */
+	u32	 			dd_fcrport_size;
+	u32	 			dd_fcvport_size;
+	u32				dd_bsg_size;
 
 	/*
 	 * The driver sets these to tell the transport class it
@@ -627,6 +751,13 @@ struct fc_function_template {
 	unsigned long	show_host_supported_speeds:1;
 	unsigned long	show_host_maxframe_size:1;
 	unsigned long	show_host_serial_number:1;
+	unsigned long	show_host_manufacturer:1;
+	unsigned long	show_host_model:1;
+	unsigned long	show_host_model_description:1;
+	unsigned long	show_host_hardware_version:1;
+	unsigned long	show_host_driver_version:1;
+	unsigned long	show_host_firmware_version:1;
+	unsigned long	show_host_optionrom_version:1;
 	/* host dynamic attributes */
 	unsigned long	show_host_port_id:1;
 	unsigned long	show_host_port_type:1;
@@ -665,6 +796,10 @@ fc_remote_port_chkready(struct fc_rport *rport)
 		break;
 	case FC_PORTSTATE_BLOCKED:
 		result = DID_IMM_RETRY << 16;
+		if (rport->flags & FC_RPORT_FAST_FAIL_TIMEDOUT)
+			result = DID_TRANSPORT_FAILFAST << 16;
+		else
+			result = DID_IMM_RETRY << 16;
 		break;
 	default:
 		result = DID_NO_CONNECT << 16;
@@ -733,5 +868,9 @@ void fc_host_post_vendor_event(struct Scsi_Host *shost, u32 event_number,
 	 *   specified in scsi_netlink.h
 	 */
 int fc_vport_terminate(struct fc_vport *vport);
+struct fc_vport *fc_vport_create(struct Scsi_Host *shost, int channel,
+		struct fc_vport_identifiers *);
+int fc_vport_terminate(struct fc_vport *vport);
+int fc_block_scsi_eh(struct scsi_cmnd *cmnd);
 
 #endif /* SCSI_TRANSPORT_FC_H */

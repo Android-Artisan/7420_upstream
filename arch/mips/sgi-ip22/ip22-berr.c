@@ -90,6 +90,7 @@ void ip22_be_interrupt(int irq)
 {
 	const int field = 2 * sizeof(unsigned long);
 	const struct pt_regs *regs = get_irq_regs();
+	struct pt_regs *regs = get_irq_regs();
 
 	save_and_clear_buserr();
 	print_buserr();

@@ -9,6 +9,7 @@
 #include <linux/proc_fs.h>
 #include <linux/spinlock.h>
 #include <linux/seq_file.h>
+#include <linux/export.h>
 #include <net/net_namespace.h>
 #include <net/tcp_states.h>
 #include <net/ipx.h>
@@ -40,6 +41,10 @@ static void *ipx_seq_interface_start(struct seq_file *seq, loff_t *pos)
 
 	spin_lock_bh(&ipx_interfaces_lock);
 	return l ? ipx_get_interface_idx(--l) : SEQ_START_TOKEN;
+static void *ipx_seq_interface_start(struct seq_file *seq, loff_t *pos)
+{
+	spin_lock_bh(&ipx_interfaces_lock);
+	return seq_list_start_head(&ipx_interfaces, *pos);
 }
 
 static void *ipx_seq_interface_next(struct seq_file *seq, void *v, loff_t *pos)
@@ -52,6 +57,7 @@ static void *ipx_seq_interface_next(struct seq_file *seq, void *v, loff_t *pos)
 	else
 		i = ipx_interfaces_next(v);
 	return i;
+	return seq_list_next(v, &ipx_interfaces, pos);
 }
 
 static void ipx_seq_interface_stop(struct seq_file *seq, void *v)
@@ -64,6 +70,7 @@ static int ipx_seq_interface_show(struct seq_file *seq, void *v)
 	struct ipx_interface *i;
 
 	if (v == SEQ_START_TOKEN) {
+	if (v == &ipx_interfaces) {
 		seq_puts(seq, "Network    Node_Address   Primary  Device     "
 			      "Frame_Type");
 #ifdef IPX_REFCNT_DEBUG
@@ -75,6 +82,8 @@ static int ipx_seq_interface_show(struct seq_file *seq, void *v)
 
 	i = v;
 	seq_printf(seq, "%08lX   ", (unsigned long int)ntohl(i->if_netnum));
+	i = list_entry(v, struct ipx_interface, node);
+	seq_printf(seq, "%08X   ", ntohl(i->if_netnum));
 	seq_printf(seq, "%02X%02X%02X%02X%02X%02X   ",
 			i->if_node[0], i->if_node[1], i->if_node[2],
 			i->if_node[3], i->if_node[4], i->if_node[5]);
@@ -124,6 +133,10 @@ static void *ipx_seq_route_start(struct seq_file *seq, loff_t *pos)
 	loff_t l = *pos;
 	read_lock_bh(&ipx_routes_lock);
 	return l ? ipx_get_route_idx(--l) : SEQ_START_TOKEN;
+static void *ipx_seq_route_start(struct seq_file *seq, loff_t *pos)
+{
+	read_lock_bh(&ipx_routes_lock);
+	return seq_list_start_head(&ipx_routes, *pos);
 }
 
 static void *ipx_seq_route_next(struct seq_file *seq, void *v, loff_t *pos)
@@ -136,6 +149,7 @@ static void *ipx_seq_route_next(struct seq_file *seq, void *v, loff_t *pos)
 	else
 		r = ipx_routes_next(v);
 	return r;
+	return seq_list_next(v, &ipx_routes, pos);
 }
 
 static void ipx_seq_route_stop(struct seq_file *seq, void *v)
@@ -156,6 +170,17 @@ static int ipx_seq_route_show(struct seq_file *seq, void *v)
 	if (rt->ir_routed)
 		seq_printf(seq, "%08lX     %02X%02X%02X%02X%02X%02X\n",
 			   (long unsigned int)ntohl(rt->ir_intrfc->if_netnum),
+	if (v == &ipx_routes) {
+		seq_puts(seq, "Network    Router_Net   Router_Node\n");
+		goto out;
+	}
+
+	rt = list_entry(v, struct ipx_route, node);
+
+	seq_printf(seq, "%08X   ", ntohl(rt->ir_net));
+	if (rt->ir_routed)
+		seq_printf(seq, "%08X     %02X%02X%02X%02X%02X%02X\n",
+			   ntohl(rt->ir_intrfc->if_netnum),
 			   rt->ir_router_node[0], rt->ir_router_node[1],
 			   rt->ir_router_node[2], rt->ir_router_node[3],
 			   rt->ir_router_node[4], rt->ir_router_node[5]);
@@ -174,6 +199,7 @@ static __inline__ struct sock *ipx_get_socket_idx(loff_t pos)
 	list_for_each_entry(i, &ipx_interfaces, node) {
 		spin_lock_bh(&i->if_sklist_lock);
 		sk_for_each(s, node, &i->if_sklist) {
+		sk_for_each(s, &i->if_sklist) {
 			if (!pos)
 				break;
 			--pos;
@@ -181,6 +207,7 @@ static __inline__ struct sock *ipx_get_socket_idx(loff_t pos)
 		spin_unlock_bh(&i->if_sklist_lock);
 		if (!pos) {
 			if (node)
+			if (s)
 				goto found;
 			break;
 		}
@@ -229,6 +256,9 @@ static void *ipx_seq_socket_next(struct seq_file *seq, void *v, loff_t *pos)
 		i = ipx_interfaces_next(i);
 		if (!i)
 			break;
+		if (i->node.next == &ipx_interfaces)
+			break;
+		i = list_entry(i->node.next, struct ipx_interface, node);
 		spin_lock_bh(&i->if_sklist_lock);
 		if (!hlist_empty(&i->if_sklist)) {
 			sk = sk_head(&i->if_sklist);
@@ -266,6 +296,12 @@ static int ipx_seq_socket_show(struct seq_file *seq, void *v)
 		   ipxs->node[4], ipxs->node[5], ntohs(ipxs->port));
 #else
 	seq_printf(seq, "%08lX:%04X  ", (unsigned long) ntohl(ipxs->intrfc->if_netnum),
+	seq_printf(seq, "%08X:%02X%02X%02X%02X%02X%02X:%04X  ",
+		   ntohl(ipxs->intrfc->if_netnum),
+		   ipxs->node[0], ipxs->node[1], ipxs->node[2], ipxs->node[3],
+		   ipxs->node[4], ipxs->node[5], ntohs(ipxs->port));
+#else
+	seq_printf(seq, "%08X:%04X  ", ntohl(ipxs->intrfc->if_netnum),
 		   ntohs(ipxs->port));
 #endif	/* CONFIG_IPX_INTERN */
 	if (s->sk_state != TCP_ESTABLISHED)
@@ -273,6 +309,8 @@ static int ipx_seq_socket_show(struct seq_file *seq, void *v)
 	else {
 		seq_printf(seq, "%08lX:%02X%02X%02X%02X%02X%02X:%04X  ",
 			   (unsigned long)ntohl(ipxs->dest_addr.net),
+		seq_printf(seq, "%08X:%02X%02X%02X%02X%02X%02X:%04X  ",
+			   ntohl(ipxs->dest_addr.net),
 			   ipxs->dest_addr.node[0], ipxs->dest_addr.node[1],
 			   ipxs->dest_addr.node[2], ipxs->dest_addr.node[3],
 			   ipxs->dest_addr.node[4], ipxs->dest_addr.node[5],
@@ -283,6 +321,11 @@ static int ipx_seq_socket_show(struct seq_file *seq, void *v)
 		   atomic_read(&s->sk_wmem_alloc),
 		   atomic_read(&s->sk_rmem_alloc),
 		   s->sk_state, SOCK_INODE(s->sk_socket)->i_uid);
+	seq_printf(seq, "%08X  %08X  %02X     %03u\n",
+		   sk_wmem_alloc_get(s),
+		   sk_rmem_alloc_get(s),
+		   s->sk_state,
+		   from_kuid_munged(seq_user_ns(seq), sock_i_uid(s)));
 out:
 	return 0;
 }

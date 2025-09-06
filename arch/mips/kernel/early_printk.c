@@ -8,6 +8,9 @@
  *   written by Ralf Baechle (ralf@linux-mips.org)
  */
 #include <linux/console.h>
+#include <linux/kernel.h>
+#include <linux/console.h>
+#include <linux/printk.h>
 #include <linux/init.h>
 
 #include <asm/setup.h>
@@ -16,6 +19,7 @@ extern void prom_putchar(char);
 
 static void __init
 early_console_write(struct console *con, const char *s, unsigned n)
+static void early_console_write(struct console *con, const char *s, unsigned n)
 {
 	while (n-- && *s) {
 		if (*s == '\n')
@@ -26,6 +30,7 @@ early_console_write(struct console *con, const char *s, unsigned n)
 }
 
 static struct console early_console __initdata = {
+static struct console early_console_prom = {
 	.name	= "early",
 	.write	= early_console_write,
 	.flags	= CON_PRINTBUFFER | CON_BOOT,
@@ -41,4 +46,11 @@ void __init setup_early_printk(void)
 	early_console_initialized = 1;
 
 	register_console(&early_console);
+void __init setup_early_printk(void)
+{
+	if (early_console)
+		return;
+	early_console = &early_console_prom;
+
+	register_console(&early_console_prom);
 }

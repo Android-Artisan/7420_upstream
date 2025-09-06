@@ -20,6 +20,7 @@
 #include <linux/delay.h>
 #include <linux/smp.h>
 #include <linux/kernel_stat.h>
+#include <linux/sched.h>
 
 #include <asm/mmu_context.h>
 #include <asm/io.h>
@@ -60,6 +61,7 @@ static void *mailbox_0_regs[] = {
  * SMP init and finish on secondary CPUs
  */
 void __cpuinit bcm1480_smp_init(void)
+void bcm1480_smp_init(void)
 {
 	unsigned int imask = STATUSF_IP4 | STATUSF_IP3 | STATUSF_IP2 |
 		STATUSF_IP1 | STATUSF_IP0;
@@ -87,6 +89,12 @@ static void bcm1480_send_ipi_mask(cpumask_t mask, unsigned int action)
 	unsigned int i;
 
 	for_each_cpu_mask(i, mask)
+static void bcm1480_send_ipi_mask(const struct cpumask *mask,
+				  unsigned int action)
+{
+	unsigned int i;
+
+	for_each_cpu(i, mask)
 		bcm1480_send_ipi_single(i, action);
 }
 
@@ -94,6 +102,7 @@ static void bcm1480_send_ipi_mask(cpumask_t mask, unsigned int action)
  * Code to run on secondary just after probing the CPU
  */
 static void __cpuinit bcm1480_init_secondary(void)
+static void bcm1480_init_secondary(void)
 {
 	extern void bcm1480_smp_init(void);
 
@@ -105,6 +114,7 @@ static void __cpuinit bcm1480_init_secondary(void)
  * loop
  */
 static void __cpuinit bcm1480_smp_finish(void)
+static void bcm1480_smp_finish(void)
 {
 	extern void sb1480_clockevent_init(void);
 
@@ -124,6 +134,10 @@ static void bcm1480_cpus_done(void)
  * running!
  */
 static void __cpuinit bcm1480_boot_secondary(int cpu, struct task_struct *idle)
+ * Setup the PC, SP, and GP of a secondary processor and start it
+ * running!
+ */
+static void bcm1480_boot_secondary(int cpu, struct task_struct *idle)
 {
 	int retval;
 
@@ -137,6 +151,7 @@ static void __cpuinit bcm1480_boot_secondary(int cpu, struct task_struct *idle)
 /*
  * Use CFE to find out how many CPUs are available, setting up
  * phys_cpu_present_map and the logical/physical mappings.
+ * cpu_possible_mask and the logical/physical mappings.
  * XXXKW will the boot CPU ever not be physical 0?
  *
  * Common setup before any secondaries are started
@@ -147,12 +162,14 @@ static void __init bcm1480_smp_setup(void)
 
 	cpus_clear(phys_cpu_present_map);
 	cpu_set(0, phys_cpu_present_map);
+	init_cpu_possible(cpumask_of(0));
 	__cpu_number_map[0] = 0;
 	__cpu_logical_map[0] = 0;
 
 	for (i = 1, num = 0; i < NR_CPUS; i++) {
 		if (cfe_cpu_stop(i) == 0) {
 			cpu_set(i, phys_cpu_present_map);
+			set_cpu_possible(i, true);
 			__cpu_number_map[i] = ++num;
 			__cpu_logical_map[num] = i;
 		}
@@ -181,6 +198,10 @@ void bcm1480_mailbox_interrupt(void)
 	unsigned int action;
 
 	kstat_this_cpu.irqs[K_BCM1480_INT_MBOX_0_0]++;
+	int irq = K_BCM1480_INT_MBOX_0_0;
+	unsigned int action;
+
+	kstat_incr_irq_this_cpu(irq);
 	/* Load the mailbox register to figure out what we're supposed to do */
 	action = (__raw_readq(mailbox_0_regs[cpu]) >> 48) & 0xffff;
 
@@ -194,4 +215,12 @@ void bcm1480_mailbox_interrupt(void)
 
 	if (action & SMP_CALL_FUNCTION)
 		smp_call_function_interrupt();
+	if (action & SMP_RESCHEDULE_YOURSELF)
+		scheduler_ipi();
+
+	if (action & SMP_CALL_FUNCTION) {
+		irq_enter();
+		generic_smp_call_function_interrupt();
+		irq_exit();
+	}
 }

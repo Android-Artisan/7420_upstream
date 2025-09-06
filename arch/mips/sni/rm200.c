@@ -13,6 +13,7 @@
 #include <linux/delay.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
+#include <linux/irq.h>
 #include <linux/platform_device.h>
 #include <linux/serial_8250.h>
 #include <linux/io.h>
@@ -58,6 +59,17 @@ static struct platform_device rm200_ds1216_device = {
         .name           = "rtc-ds1216",
         .num_resources  = ARRAY_SIZE(rm200_ds1216_rsrc),
         .resource       = rm200_ds1216_rsrc
+	{
+		.start = 0x1cd41ffc,
+		.end   = 0x1cd41fff,
+		.flags = IORESOURCE_MEM
+	}
+};
+
+static struct platform_device rm200_ds1216_device = {
+	.name		= "rtc-ds1216",
+	.num_resources	= ARRAY_SIZE(rm200_ds1216_rsrc),
+	.resource	= rm200_ds1216_rsrc
 };
 
 static struct resource snirm_82596_rm200_rsrc[] = {
@@ -90,6 +102,9 @@ static struct platform_device snirm_82596_rm200_pdev = {
 	.name           = "snirm_82596",
 	.num_resources  = ARRAY_SIZE(snirm_82596_rm200_rsrc),
 	.resource       = snirm_82596_rm200_rsrc
+	.name		= "snirm_82596",
+	.num_resources	= ARRAY_SIZE(snirm_82596_rm200_rsrc),
+	.resource	= snirm_82596_rm200_rsrc
 };
 
 static struct resource snirm_53c710_rm200_rsrc[] = {
@@ -109,6 +124,9 @@ static struct platform_device snirm_53c710_rm200_pdev = {
 	.name           = "snirm_53c710",
 	.num_resources  = ARRAY_SIZE(snirm_53c710_rm200_rsrc),
 	.resource       = snirm_53c710_rm200_rsrc
+	.name		= "snirm_53c710",
+	.num_resources	= ARRAY_SIZE(snirm_53c710_rm200_rsrc),
+	.resource	= snirm_53c710_rm200_rsrc
 };
 
 static int __init snirm_setup_devinit(void)
@@ -136,6 +154,10 @@ DEFINE_SPINLOCK(sni_rm200_i8259A_lock);
 #define PIC_CMD    0x00
 #define PIC_IMR    0x01
 #define PIC_ISR    PIC_CMD
+static DEFINE_RAW_SPINLOCK(sni_rm200_i8259A_lock);
+#define PIC_CMD	   0x00
+#define PIC_IMR	   0x01
+#define PIC_ISR	   PIC_CMD
 #define PIC_POLL   PIC_ISR
 #define PIC_OCW3   PIC_ISR
 
@@ -162,6 +184,13 @@ static void sni_rm200_disable_8259A_irq(unsigned int irq)
 	irq -= RM200_I8259A_IRQ_BASE;
 	mask = 1 << irq;
 	spin_lock_irqsave(&sni_rm200_i8259A_lock, flags);
+static void sni_rm200_disable_8259A_irq(struct irq_data *d)
+{
+	unsigned int mask, irq = d->irq - RM200_I8259A_IRQ_BASE;
+	unsigned long flags;
+
+	mask = 1 << irq;
+	raw_spin_lock_irqsave(&sni_rm200_i8259A_lock, flags);
 	rm200_cached_irq_mask |= mask;
 	if (irq & 8)
 		writeb(cached_slave_mask, rm200_pic_slave + PIC_IMR);
@@ -178,12 +207,23 @@ static void sni_rm200_enable_8259A_irq(unsigned int irq)
 	irq -= RM200_I8259A_IRQ_BASE;
 	mask = ~(1 << irq);
 	spin_lock_irqsave(&sni_rm200_i8259A_lock, flags);
+	raw_spin_unlock_irqrestore(&sni_rm200_i8259A_lock, flags);
+}
+
+static void sni_rm200_enable_8259A_irq(struct irq_data *d)
+{
+	unsigned int mask, irq = d->irq - RM200_I8259A_IRQ_BASE;
+	unsigned long flags;
+
+	mask = ~(1 << irq);
+	raw_spin_lock_irqsave(&sni_rm200_i8259A_lock, flags);
 	rm200_cached_irq_mask &= mask;
 	if (irq & 8)
 		writeb(cached_slave_mask, rm200_pic_slave + PIC_IMR);
 	else
 		writeb(cached_master_mask, rm200_pic_master + PIC_IMR);
 	spin_unlock_irqrestore(&sni_rm200_i8259A_lock, flags);
+	raw_spin_unlock_irqrestore(&sni_rm200_i8259A_lock, flags);
 }
 
 static inline int sni_rm200_i8259A_irq_real(unsigned int irq)
@@ -217,6 +257,13 @@ void sni_rm200_mask_and_ack_8259A(unsigned int irq)
 	irq -= RM200_I8259A_IRQ_BASE;
 	irqmask = 1 << irq;
 	spin_lock_irqsave(&sni_rm200_i8259A_lock, flags);
+void sni_rm200_mask_and_ack_8259A(struct irq_data *d)
+{
+	unsigned int irqmask, irq = d->irq - RM200_I8259A_IRQ_BASE;
+	unsigned long flags;
+
+	irqmask = 1 << irq;
+	raw_spin_lock_irqsave(&sni_rm200_i8259A_lock, flags);
 	/*
 	 * Lightweight spurious IRQ detection. We do not want
 	 * to overdo spurious IRQ handling - it's usually a sign
@@ -248,6 +295,7 @@ handle_real_irq:
 		writeb(0x60+irq, rm200_pic_master + PIC_CMD);
 	}
 	spin_unlock_irqrestore(&sni_rm200_i8259A_lock, flags);
+	raw_spin_unlock_irqrestore(&sni_rm200_i8259A_lock, flags);
 	return;
 
 spurious_8259A_irq:
@@ -287,6 +335,9 @@ static struct irq_chip sni_rm200_i8259A_chip = {
 	.mask		= sni_rm200_disable_8259A_irq,
 	.unmask		= sni_rm200_enable_8259A_irq,
 	.mask_ack	= sni_rm200_mask_and_ack_8259A,
+	.irq_mask	= sni_rm200_disable_8259A_irq,
+	.irq_unmask	= sni_rm200_enable_8259A_irq,
+	.irq_mask_ack	= sni_rm200_mask_and_ack_8259A,
 };
 
 /*
@@ -299,6 +350,7 @@ static inline int sni_rm200_i8259_irq(void)
 	int irq;
 
 	spin_lock(&sni_rm200_i8259A_lock);
+	raw_spin_lock(&sni_rm200_i8259A_lock);
 
 	/* Perform an interrupt acknowledge cycle on controller 1. */
 	writeb(0x0C, rm200_pic_master + PIC_CMD);	/* prepare for poll */
@@ -326,6 +378,7 @@ static inline int sni_rm200_i8259_irq(void)
 	}
 
 	spin_unlock(&sni_rm200_i8259A_lock);
+	raw_spin_unlock(&sni_rm200_i8259A_lock);
 
 	return likely(irq >= 0) ? irq + RM200_I8259A_IRQ_BASE : irq;
 }
@@ -335,6 +388,7 @@ void sni_rm200_init_8259A(void)
 	unsigned long flags;
 
 	spin_lock_irqsave(&sni_rm200_i8259A_lock, flags);
+	raw_spin_lock_irqsave(&sni_rm200_i8259A_lock, flags);
 
 	writeb(0xff, rm200_pic_master + PIC_IMR);
 	writeb(0xff, rm200_pic_slave + PIC_IMR);
@@ -353,6 +407,7 @@ void sni_rm200_init_8259A(void)
 	writeb(cached_slave_mask, rm200_pic_slave + PIC_IMR);
 
 	spin_unlock_irqrestore(&sni_rm200_i8259A_lock, flags);
+	raw_spin_unlock_irqrestore(&sni_rm200_i8259A_lock, flags);
 }
 
 /*
@@ -360,6 +415,9 @@ void sni_rm200_init_8259A(void)
  */
 static struct irqaction sni_rm200_irq2 = {
 	no_action, 0, CPU_MASK_NONE, "cascade", NULL, NULL
+	.handler = no_action,
+	.name = "cascade",
+	.flags = IRQF_NO_THREAD,
 };
 
 static struct resource sni_rm200_pic1_resource = {
@@ -404,6 +462,7 @@ void __init sni_rm200_i8259_irqs(void)
 		return;
 	rm200_pic_slave = ioremap_nocache(0x160000a0, 4);
 	if (!rm200_pic_master) {
+	if (!rm200_pic_slave) {
 		iounmap(rm200_pic_master);
 		return;
 	}
@@ -415,6 +474,7 @@ void __init sni_rm200_i8259_irqs(void)
 
 	for (i = RM200_I8259A_IRQ_BASE; i < RM200_I8259A_IRQ_BASE + 16; i++)
 		set_irq_chip_and_handler(i, &sni_rm200_i8259A_chip,
+		irq_set_chip_and_handler(i, &sni_rm200_i8259A_chip,
 					 handle_level_irq);
 
 	setup_irq(RM200_I8259A_IRQ_BASE + PIC_CASCADE_IR, &sni_rm200_irq2);
@@ -423,6 +483,8 @@ void __init sni_rm200_i8259_irqs(void)
 
 #define SNI_RM200_INT_STAT_REG  CKSEG1ADDR(0xbc000000)
 #define SNI_RM200_INT_ENA_REG   CKSEG1ADDR(0xbc080000)
+#define SNI_RM200_INT_STAT_REG	CKSEG1ADDR(0xbc000000)
+#define SNI_RM200_INT_ENA_REG	CKSEG1ADDR(0xbc080000)
 
 #define SNI_RM200_INT_START  24
 #define SNI_RM200_INT_END    28
@@ -430,6 +492,9 @@ void __init sni_rm200_i8259_irqs(void)
 static void enable_rm200_irq(unsigned int irq)
 {
 	unsigned int mask = 1 << (irq - SNI_RM200_INT_START);
+static void enable_rm200_irq(struct irq_data *d)
+{
+	unsigned int mask = 1 << (d->irq - SNI_RM200_INT_START);
 
 	*(volatile u8 *)SNI_RM200_INT_ENA_REG &= ~mask;
 }
@@ -437,6 +502,9 @@ static void enable_rm200_irq(unsigned int irq)
 void disable_rm200_irq(unsigned int irq)
 {
 	unsigned int mask = 1 << (irq - SNI_RM200_INT_START);
+void disable_rm200_irq(struct irq_data *d)
+{
+	unsigned int mask = 1 << (d->irq - SNI_RM200_INT_START);
 
 	*(volatile u8 *)SNI_RM200_INT_ENA_REG |= mask;
 }
@@ -454,6 +522,10 @@ static struct irq_chip rm200_irq_type = {
 	.mask_ack = disable_rm200_irq,
 	.unmask = enable_rm200_irq,
 	.end = end_rm200_irq,
+static struct irq_chip rm200_irq_type = {
+	.name = "RM200",
+	.irq_mask = disable_rm200_irq,
+	.irq_unmask = enable_rm200_irq,
 };
 
 static void sni_rm200_hwint(void)
@@ -488,6 +560,7 @@ void __init sni_rm200_irq_init(void)
 	/* Actually we've got more interrupts to handle ...  */
 	for (i = SNI_RM200_INT_START; i <= SNI_RM200_INT_END; i++)
 		set_irq_chip(i, &rm200_irq_type);
+		irq_set_chip_and_handler(i, &rm200_irq_type, handle_level_irq);
 	sni_hwint = sni_rm200_hwint;
 	change_c0_status(ST0_IM, IE_IRQ0);
 	setup_irq(SNI_RM200_INT_START + 0, &sni_rm200_i8259A_irq);

@@ -27,6 +27,7 @@
 #include "../seq_lock.h"
 #include "../seq_clientmgr.h"
 #include <linux/wait.h>
+#include <linux/slab.h>
 
 
 /*
@@ -140,6 +141,7 @@ snd_seq_oss_writeq_wakeup(struct seq_oss_writeq *q, abstime_t time)
 	if (waitqueue_active(&q->sync_sleep)) {
 		wake_up(&q->sync_sleep);
 	}
+	wake_up(&q->sync_sleep);
 	spin_unlock_irqrestore(&q->sync_lock, flags);
 }
 

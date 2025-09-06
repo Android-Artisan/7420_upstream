@@ -1,6 +1,5 @@
 
 Ext3 Filesystem
-===============
 
 Ext3 was originally released in September 1999. Written by Stephen Tweedie
 for the 2.2 branch, and ported to 2.4 kernels by Peter Braam, Andreas Dilger,
@@ -9,7 +8,6 @@ Andrew Morton, Alexander Viro, Ted Ts'o and Stephen Tweedie.
 Ext3 is the ext2 filesystem enhanced with journalling capabilities.
 
 Options
-=======
 
 When mounting an ext3 filesystem, the following option are accepted:
 (*) == default
@@ -123,7 +121,6 @@ nobh			(a) cache disk block mapping information
 
 
 Specification
-=============
 Ext3 shares all disk implementation with the ext2 filesystem, and adds
 transactions capabilities to ext2.  Journaling is done by the Journaling Block
 Device layer.
@@ -175,7 +172,6 @@ Ext2.
 
 
 External Tools
-==============
 See manual pages to learn more.
 
 tune2fs: 	create a ext3 journal on a ext2 partition with the -j flag.
@@ -185,7 +181,6 @@ ext2online:	online (mounted) ext2 and ext3 filesystem resizer
 
 
 References
-==========
 
 kernel source:	<file:fs/ext3/>
 		<file:fs/jbd/>
@@ -196,3 +191,7 @@ programs: 	http://e2fsprogs.sourceforge.net/
 useful links:	http://www.zip.com.au/~akpm/linux/ext3/ext3-usage.html
 		http://www-106.ibm.com/developerworks/linux/library/l-fs7/
 		http://www-106.ibm.com/developerworks/linux/library/l-fs8/
+Ext3 is the ext2 filesystem enhanced with journalling capabilities. The
+filesystem is a subset of ext4 filesystem so use ext4 driver for accessing
+ext3 filesystems.
+

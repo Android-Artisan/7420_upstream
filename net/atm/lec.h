@@ -36,6 +36,7 @@ struct lecdatahdr_8025 {
  * are used to make the device do things. See spec 3.1.3 and 3.1.4.
  *
  * The third function is intented for the MPOA component sitting on
+ * The third function is intended for the MPOA component sitting on
  * top of the LANE device. The MPOA component assigns it's own function
  * to (*associate_indicator)() and the LANE device will use that
  * function to tell about TLVs it sees floating through.
@@ -60,6 +61,11 @@ struct lane2_ops {
  *    but not padding required to meet the minimum data frame length,
  *    is less than 1536(0x0600) MUST be encoded by placing that length
  *    in the h_type field. The LLC field follows header immediatelly.
+ *    field in h_type field. Data follows immediately after header.
+ * 2. LLC Data frames whose total length, including LLC field and data,
+ *    but not padding required to meet the minimum data frame length,
+ *    is less than ETH_P_802_3_MIN MUST be encoded by placing that length
+ *    in the h_type field. The LLC field follows header immediately.
  * 3. LLC data frames longer than this maximum MUST be encoded by placing
  *    the value 0 in the h_type field.
  *

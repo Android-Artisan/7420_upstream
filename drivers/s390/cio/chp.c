@@ -2,6 +2,7 @@
  *  drivers/s390/cio/chp.c
  *
  *    Copyright IBM Corp. 1999,2007
+ *    Copyright IBM Corp. 1999, 2010
  *    Author(s): Cornelia Huck (cornelia.huck@de.ibm.com)
  *		 Arnd Bergmann (arndb@de.ibm.com)
  *		 Peter Oberparleiter <peter.oberparleiter@de.ibm.com>
@@ -10,6 +11,8 @@
 #include <linux/bug.h>
 #include <linux/workqueue.h>
 #include <linux/spinlock.h>
+#include <linux/export.h>
+#include <linux/sched.h>
 #include <linux/init.h>
 #include <linux/jiffies.h>
 #include <linux/wait.h>
@@ -19,6 +22,11 @@
 #include <asm/sclp.h>
 
 #include "../s390mach.h"
+#include <linux/slab.h>
+#include <asm/chpid.h>
+#include <asm/sclp.h>
+#include <asm/crw.h>
+
 #include "cio.h"
 #include "css.h"
 #include "ioasm.h"
@@ -66,6 +74,7 @@ static void set_chp_logically_online(struct chp_id chpid, int onoff)
 }
 
 /* On succes return 0 if channel-path is varied offline, 1 if it is varied
+/* On success return 0 if channel-path is varied offline, 1 if it is varied
  * online. Return -ENODEV if channel-path is not registered. */
 int chp_get_status(struct chp_id chpid)
 {
@@ -135,6 +144,8 @@ static int s390_vary_chpid(struct chp_id chpid, int on)
  * Channel measurement related functions
  */
 static ssize_t chp_measurement_chars_read(struct kobject *kobj,
+static ssize_t chp_measurement_chars_read(struct file *filp,
+					  struct kobject *kobj,
 					  struct bin_attribute *bin_attr,
 					  char *buf, loff_t off, size_t count)
 {
@@ -143,11 +154,11 @@ static ssize_t chp_measurement_chars_read(struct kobject *kobj,
 
 	device = container_of(kobj, struct device, kobj);
 	chp = to_channelpath(device);
-	if (!chp->cmg_chars)
+	if (chp->cmg == -1)
 		return 0;
 
-	return memory_read_from_buffer(buf, count, &off,
-				chp->cmg_chars, sizeof(struct cmg_chars));
+	return memory_read_from_buffer(buf, count, &off, &chp->cmg_chars,
+				       sizeof(chp->cmg_chars));
 }
 
 static struct bin_attribute chp_measurement_chars_attr = {
@@ -182,6 +193,7 @@ static void chp_measurement_copy_block(struct cmg_entry *buf,
 }
 
 static ssize_t chp_measurement_read(struct kobject *kobj,
+static ssize_t chp_measurement_read(struct file *filp, struct kobject *kobj,
 				    struct bin_attribute *bin_attr,
 				    char *buf, loff_t off, size_t count)
 {
@@ -244,6 +256,13 @@ static ssize_t chp_status_show(struct device *dev,
 		return 0;
 	return (chp_get_status(chp->chpid) ? sprintf(buf, "online\n") :
 		sprintf(buf, "offline\n"));
+	int status;
+
+	mutex_lock(&chp->lock);
+	status = chp->state;
+	mutex_unlock(&chp->lock);
+
+	return status ? sprintf(buf, "online\n") : sprintf(buf, "offline\n");
 }
 
 static ssize_t chp_status_write(struct device *dev,
@@ -267,7 +286,21 @@ static ssize_t chp_status_write(struct device *dev,
 		error = -EINVAL;
 
 	return error < 0 ? error : count;
+	/* Wait until previous actions have settled. */
+	css_wait_for_slow_path();
 
+	if (!strncasecmp(cmd, "on", 2) || !strcmp(cmd, "1")) {
+		mutex_lock(&cp->lock);
+		error = s390_vary_chpid(cp->chpid, 1);
+		mutex_unlock(&cp->lock);
+	} else if (!strncasecmp(cmd, "off", 3) || !strcmp(cmd, "0")) {
+		mutex_lock(&cp->lock);
+		error = s390_vary_chpid(cp->chpid, 0);
+		mutex_unlock(&cp->lock);
+	} else
+		error = -EINVAL;
+
+	return error < 0 ? error : count;
 }
 
 static DEVICE_ATTR(status, 0644, chp_status_show, chp_status_write);
@@ -317,6 +350,12 @@ static ssize_t chp_type_show(struct device *dev, struct device_attribute *attr,
 	if (!chp)
 		return 0;
 	return sprintf(buf, "%x\n", chp->desc.desc);
+	u8 type;
+
+	mutex_lock(&chp->lock);
+	type = chp->desc.desc;
+	mutex_unlock(&chp->lock);
+	return sprintf(buf, "%x\n", type);
 }
 
 static DEVICE_ATTR(type, 0444, chp_type_show, NULL);
@@ -349,6 +388,40 @@ static ssize_t chp_shared_show(struct device *dev,
 
 static DEVICE_ATTR(shared, 0444, chp_shared_show, NULL);
 
+static ssize_t chp_chid_show(struct device *dev, struct device_attribute *attr,
+			     char *buf)
+{
+	struct channel_path *chp = to_channelpath(dev);
+	ssize_t rc;
+
+	mutex_lock(&chp->lock);
+	if (chp->desc_fmt1.flags & 0x10)
+		rc = sprintf(buf, "%04x\n", chp->desc_fmt1.chid);
+	else
+		rc = 0;
+	mutex_unlock(&chp->lock);
+
+	return rc;
+}
+static DEVICE_ATTR(chid, 0444, chp_chid_show, NULL);
+
+static ssize_t chp_chid_external_show(struct device *dev,
+				      struct device_attribute *attr, char *buf)
+{
+	struct channel_path *chp = to_channelpath(dev);
+	ssize_t rc;
+
+	mutex_lock(&chp->lock);
+	if (chp->desc_fmt1.flags & 0x10)
+		rc = sprintf(buf, "%x\n", chp->desc_fmt1.flags & 0x8 ? 1 : 0);
+	else
+		rc = 0;
+	mutex_unlock(&chp->lock);
+
+	return rc;
+}
+static DEVICE_ATTR(chid_external, 0444, chp_chid_external_show, NULL);
+
 static struct attribute *chp_attrs[] = {
 	&dev_attr_status.attr,
 	&dev_attr_configure.attr,
@@ -361,6 +434,17 @@ static struct attribute *chp_attrs[] = {
 static struct attribute_group chp_attr_group = {
 	.attrs = chp_attrs,
 };
+	&dev_attr_chid.attr,
+	&dev_attr_chid_external.attr,
+	NULL,
+};
+static struct attribute_group chp_attr_group = {
+	.attrs = chp_attrs,
+};
+static const struct attribute_group *chp_attr_groups[] = {
+	&chp_attr_group,
+	NULL,
+};
 
 static void chp_release(struct device *dev)
 {
@@ -368,6 +452,29 @@ static void chp_release(struct device *dev)
 
 	cp = to_channelpath(dev);
 	kfree(cp);
+}
+
+/**
+ * chp_update_desc - update channel-path description
+ * @chp - channel-path
+ *
+ * Update the channel-path description of the specified channel-path
+ * including channel measurement related information.
+ * Return zero on success, non-zero otherwise.
+ */
+int chp_update_desc(struct channel_path *chp)
+{
+	int rc;
+
+	rc = chsc_determine_base_channel_path_desc(chp->chpid, &chp->desc);
+	if (rc)
+		return rc;
+
+	rc = chsc_determine_fmt1_channel_path_desc(chp->chpid, &chp->desc_fmt1);
+	if (rc)
+		return rc;
+
+	return chsc_get_channel_measurement_chars(chp);
 }
 
 /**
@@ -398,20 +505,19 @@ int chp_new(struct chp_id chpid)
 
 	/* Obtain channel path description and fill it in. */
 	ret = chsc_determine_base_channel_path_desc(chpid, &chp->desc);
+	chp->dev.groups = chp_attr_groups;
+	chp->dev.release = chp_release;
+	mutex_init(&chp->lock);
+
+	/* Obtain channel path description and fill it in. */
+	ret = chp_update_desc(chp);
 	if (ret)
 		goto out_free;
 	if ((chp->desc.flags & 0x80) == 0) {
 		ret = -ENODEV;
 		goto out_free;
 	}
-	/* Get channel-measurement characteristics. */
-	if (css_chsc_characteristics.scmc && css_chsc_characteristics.secm) {
-		ret = chsc_get_channel_measurement_chars(chp);
-		if (ret)
-			goto out_free;
-	} else {
-		chp->cmg = -1;
-	}
+	dev_set_name(&chp->dev, "chp%x.%02x", chpid.cssid, chpid.id);
 
 	/* make it known to the system */
 	ret = device_register(&chp->dev);
@@ -423,6 +529,7 @@ int chp_new(struct chp_id chpid)
 	ret = sysfs_create_group(&chp->dev.kobj, &chp_attr_group);
 	if (ret) {
 		device_unregister(&chp->dev);
+		put_device(&chp->dev);
 		goto out;
 	}
 	mutex_lock(&channel_subsystems[chpid.cssid]->mutex);
@@ -452,6 +559,7 @@ out:
  * data associated with the given channel-path ID. Return %NULL on error.
  */
 void *chp_get_chp_desc(struct chp_id chpid)
+struct channel_path_desc *chp_get_chp_desc(struct chp_id chpid)
 {
 	struct channel_path *chp;
 	struct channel_path_desc *desc;
@@ -463,6 +571,10 @@ void *chp_get_chp_desc(struct chp_id chpid)
 	if (!desc)
 		return NULL;
 	memcpy(desc, &chp->desc, sizeof(struct channel_path_desc));
+
+	mutex_lock(&chp->lock);
+	memcpy(desc, &chp->desc, sizeof(struct channel_path_desc));
+	mutex_unlock(&chp->lock);
 	return desc;
 }
 
@@ -559,7 +671,8 @@ static int info_update(void)
 	if (time_after(jiffies, chp_info_expires)) {
 		/* Data is too old, update. */
 		rc = sclp_chp_read_info(&chp_info);
-		chp_info_expires = jiffies + CHP_INFO_UPDATE_INTERVAL ;
+		if (!rc)
+			chp_info_expires = jiffies + CHP_INFO_UPDATE_INTERVAL;
 	}
 	mutex_unlock(&info_lock);
 
@@ -708,11 +821,13 @@ static int __init chp_init(void)
 	int ret;
 
 	ret = s390_register_crw_handler(CRW_RSC_CPATH, chp_process_crw);
+	ret = crw_register_handler(CRW_RSC_CPATH, chp_process_crw);
 	if (ret)
 		return ret;
 	chp_wq = create_singlethread_workqueue("cio_chp");
 	if (!chp_wq) {
 		s390_unregister_crw_handler(CRW_RSC_CPATH);
+		crw_unregister_handler(CRW_RSC_CPATH);
 		return -ENOMEM;
 	}
 	INIT_WORK(&cfg_work, cfg_func);

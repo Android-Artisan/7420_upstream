@@ -22,6 +22,7 @@
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/percpu.h>
+#include <linux/slab.h>
 #include <linux/smp.h>
 #include <linux/vmalloc.h>
 #include <net/ip.h>
@@ -31,11 +32,13 @@
 struct ipcomp_tfms {
 	struct list_head list;
 	struct crypto_comp **tfms;
+	struct crypto_comp * __percpu *tfms;
 	int users;
 };
 
 static DEFINE_MUTEX(ipcomp_resource_mutex);
 static void **ipcomp_scratches;
+static void * __percpu *ipcomp_scratches;
 static int ipcomp_scratch_users;
 static LIST_HEAD(ipcomp_tfms_list);
 
@@ -71,6 +74,7 @@ static int ipcomp_decompress(struct xfrm_state *x, struct sk_buff *skb)
 
 	while ((scratch += len, dlen -= len) > 0) {
 		skb_frag_t *frag;
+		struct page *page;
 
 		err = -EMSGSIZE;
 		if (WARN_ON(skb_shinfo(skb)->nr_frags >= MAX_SKB_FRAGS))
@@ -83,6 +87,14 @@ static int ipcomp_decompress(struct xfrm_state *x, struct sk_buff *skb)
 		if (!frag->page)
 			goto out;
 
+		page = alloc_page(GFP_ATOMIC);
+
+		err = -ENOMEM;
+		if (!page)
+			goto out;
+
+		__skb_frag_set_page(frag, page);
+
 		len = PAGE_SIZE;
 		if (dlen < len)
 			len = dlen;
@@ -91,6 +103,10 @@ static int ipcomp_decompress(struct xfrm_state *x, struct sk_buff *skb)
 
 		frag->page_offset = 0;
 		frag->size = len;
+		frag->page_offset = 0;
+		skb_frag_size_set(frag, len);
+		memcpy(skb_frag_address(frag), scratch, len);
+
 		skb->truesize += len;
 		skb->data_len += len;
 		skb->len += len;
@@ -147,6 +163,14 @@ static int ipcomp_compress(struct xfrm_state *x, struct sk_buff *skb)
 	local_bh_disable();
 	err = crypto_comp_compress(tfm, start, plen, scratch, &dlen);
 	local_bh_enable();
+	struct crypto_comp *tfm;
+	u8 *scratch;
+	int err;
+
+	local_bh_disable();
+	scratch = *this_cpu_ptr(ipcomp_scratches);
+	tfm = *this_cpu_ptr(ipcd->tfms);
+	err = crypto_comp_compress(tfm, start, plen, scratch, &dlen);
 	if (err)
 		goto out;
 
@@ -157,12 +181,14 @@ static int ipcomp_compress(struct xfrm_state *x, struct sk_buff *skb)
 
 	memcpy(start + sizeof(struct ip_comp_hdr), scratch, dlen);
 	put_cpu();
+	local_bh_enable();
 
 	pskb_trim(skb, dlen + sizeof(struct ip_comp_hdr));
 	return 0;
 
 out:
 	put_cpu();
+	local_bh_enable();
 	return err;
 }
 
@@ -202,6 +228,7 @@ static void ipcomp_free_scratches(void)
 {
 	int i;
 	void **scratches;
+	void * __percpu *scratches;
 
 	if (--ipcomp_scratch_users)
 		return;
@@ -214,12 +241,17 @@ static void ipcomp_free_scratches(void)
 		vfree(*per_cpu_ptr(scratches, i));
 
 	free_percpu(scratches);
+	ipcomp_scratches = NULL;
 }
 
 static void **ipcomp_alloc_scratches(void)
 {
 	int i;
 	void **scratches;
+static void * __percpu *ipcomp_alloc_scratches(void)
+{
+	void * __percpu *scratches;
+	int i;
 
 	if (ipcomp_scratch_users++)
 		return ipcomp_scratches;
@@ -232,6 +264,9 @@ static void **ipcomp_alloc_scratches(void)
 
 	for_each_possible_cpu(i) {
 		void *scratch = vmalloc(IPCOMP_SCRATCH_SIZE);
+		void *scratch;
+
+		scratch = vmalloc_node(IPCOMP_SCRATCH_SIZE, cpu_to_node(i));
 		if (!scratch)
 			return NULL;
 		*per_cpu_ptr(scratches, i) = scratch;
@@ -241,6 +276,7 @@ static void **ipcomp_alloc_scratches(void)
 }
 
 static void ipcomp_free_tfms(struct crypto_comp **tfms)
+static void ipcomp_free_tfms(struct crypto_comp * __percpu *tfms)
 {
 	struct ipcomp_tfms *pos;
 	int cpu;
@@ -276,6 +312,12 @@ static struct crypto_comp **ipcomp_alloc_tfms(const char *alg_name)
 
 	/* This can be any valid CPU ID so we don't need locking. */
 	cpu = raw_smp_processor_id();
+static struct crypto_comp * __percpu *ipcomp_alloc_tfms(const char *alg_name)
+{
+	struct ipcomp_tfms *pos;
+	struct crypto_comp * __percpu *tfms;
+	int cpu;
+
 
 	list_for_each_entry(pos, &ipcomp_tfms_list, list) {
 		struct crypto_comp *tfm;
@@ -286,6 +328,12 @@ static struct crypto_comp **ipcomp_alloc_tfms(const char *alg_name)
 		if (!strcmp(crypto_comp_name(tfm), alg_name)) {
 			pos->users++;
 			return tfms;
+		/* This can be any valid CPU ID so we don't need locking. */
+		tfm = this_cpu_read(*pos->tfms);
+
+		if (!strcmp(crypto_comp_name(tfm), alg_name)) {
+			pos->users++;
+			return pos->tfms;
 		}
 	}
 

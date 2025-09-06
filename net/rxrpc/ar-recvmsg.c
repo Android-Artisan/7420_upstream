@@ -11,6 +11,7 @@
 
 #include <linux/net.h>
 #include <linux/skbuff.h>
+#include <linux/export.h>
 #include <net/sock.h>
 #include <net/af_rxrpc.h>
 #include "ar-internal.h"
@@ -44,6 +45,8 @@ void rxrpc_remove_user_ID(struct rxrpc_sock *rx, struct rxrpc_call *call)
  */
 int rxrpc_recvmsg(struct kiocb *iocb, struct socket *sock,
 		  struct msghdr *msg, size_t len, int flags)
+int rxrpc_recvmsg(struct socket *sock, struct msghdr *msg, size_t len,
+		  int flags)
 {
 	struct rxrpc_skb_priv *sp;
 	struct rxrpc_call *call = NULL, *continue_call = NULL;
@@ -77,7 +80,7 @@ int rxrpc_recvmsg(struct kiocb *iocb, struct socket *sock,
 				release_sock(&rx->sk);
 				if (continue_call)
 					rxrpc_put_call(continue_call);
-				return -ENODATA;
+				return -EAGAIN;
 			}
 		}
 
@@ -87,11 +90,13 @@ int rxrpc_recvmsg(struct kiocb *iocb, struct socket *sock,
 			/* nothing remains on the queue */
 			if (copied &&
 			    (msg->msg_flags & MSG_PEEK || timeo == 0))
+			    (flags & MSG_PEEK || timeo == 0))
 				goto out;
 
 			/* wait for a message to turn up */
 			release_sock(&rx->sk);
 			prepare_to_wait_exclusive(rx->sk.sk_sleep, &wait,
+			prepare_to_wait_exclusive(sk_sleep(&rx->sk), &wait,
 						  TASK_INTERRUPTIBLE);
 			ret = sock_error(&rx->sk);
 			if (ret)
@@ -103,6 +108,7 @@ int rxrpc_recvmsg(struct kiocb *iocb, struct socket *sock,
 				timeo = schedule_timeout(timeo);
 			}
 			finish_wait(rx->sk.sk_sleep, &wait);
+			finish_wait(sk_sleep(&rx->sk), &wait);
 			lock_sock(&rx->sk);
 			continue;
 		}
@@ -146,6 +152,13 @@ int rxrpc_recvmsg(struct kiocb *iocb, struct socket *sock,
 				memcpy(msg->msg_name,
 				       &call->conn->trans->peer->srx,
 				       sizeof(call->conn->trans->peer->srx));
+			if (msg->msg_name) {
+				size_t len =
+					sizeof(call->conn->trans->peer->srx);
+				memcpy(msg->msg_name,
+				       &call->conn->trans->peer->srx, len);
+				msg->msg_namelen = len;
+			}
 			sock_recv_timestamp(msg, &rx->sk, skb);
 		}
 
@@ -185,6 +198,7 @@ int rxrpc_recvmsg(struct kiocb *iocb, struct socket *sock,
 			if (ret == -EINVAL)
 				goto csum_copy_error;
 		}
+		ret = skb_copy_datagram_msg(skb, offset, msg, copy);
 
 		if (ret < 0)
 			goto copy_error;
@@ -357,6 +371,10 @@ wait_interrupted:
 	ret = sock_intr_errno(timeo);
 wait_error:
 	finish_wait(rx->sk.sk_sleep, &wait);
+wait_interrupted:
+	ret = sock_intr_errno(timeo);
+wait_error:
+	finish_wait(sk_sleep(&rx->sk), &wait);
 	if (continue_call)
 		rxrpc_put_call(continue_call);
 	if (copied)

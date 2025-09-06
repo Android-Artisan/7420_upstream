@@ -534,6 +534,7 @@ static void mdacon_cursor(struct vc_data *c, int mode)
 static int mdacon_scroll(struct vc_data *c, int t, int b, int dir, int lines)
 {
 	u16 eattr = mda_convert_attr(c->vc_scrl_erase_char);
+	u16 eattr = mda_convert_attr(c->vc_video_erase_char);
 
 	if (!lines)
 		return 0;
@@ -590,6 +591,14 @@ int __init mda_console_init(void)
 		return 1;
 
 	return take_over_console(&mda_con, mda_first_vc-1, mda_last_vc-1, 0);
+	int err;
+
+	if (mda_first_vc > mda_last_vc)
+		return 1;
+	console_lock();
+	err = do_take_over_console(&mda_con, mda_first_vc-1, mda_last_vc-1, 0);
+	console_unlock();
+	return err;
 }
 
 static void __exit mda_console_exit(void)

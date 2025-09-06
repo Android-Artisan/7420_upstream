@@ -20,6 +20,7 @@
 
 #include <linux/kernel.h>
 #include <linux/lmb.h>
+#include <linux/memblock.h>
 
 #include <asm/machdep.h>
 #include <asm/prom.h>
@@ -27,6 +28,7 @@
 #include <asm/lv1call.h>
 #include <asm/ps3fb.h>
 
+#define PS3_VERBOSE_RESULT
 #include "platform.h"
 
 /**
@@ -46,6 +48,9 @@ static DEFINE_SPINLOCK(ps3_htab_lock);
 static long ps3_hpte_insert(unsigned long hpte_group, unsigned long va,
 	unsigned long pa, unsigned long rflags, unsigned long vflags,
 	int psize, int ssize)
+static long ps3_hpte_insert(unsigned long hpte_group, unsigned long vpn,
+	unsigned long pa, unsigned long rflags, unsigned long vflags,
+	int psize, int apsize, int ssize)
 {
 	int result;
 	u64 hpte_v, hpte_r;
@@ -63,6 +68,8 @@ static long ps3_hpte_insert(unsigned long hpte_group, unsigned long va,
 
 	hpte_v = hpte_encode_v(va, psize, ssize) | vflags | HPTE_V_VALID;
 	hpte_r = hpte_encode_r(ps3_mm_phys_to_lpar(pa), psize) | rflags;
+	hpte_v = hpte_encode_v(vpn, psize, apsize, ssize) | vflags | HPTE_V_VALID;
+	hpte_r = hpte_encode_r(ps3_mm_phys_to_lpar(pa), psize, apsize) | rflags;
 
 	spin_lock_irqsave(&ps3_htab_lock, flags);
 
@@ -77,6 +84,9 @@ static long ps3_hpte_insert(unsigned long hpte_group, unsigned long va,
 		/* all entries bolted !*/
 		pr_info("%s:result=%d va=%lx pa=%lx ix=%lx v=%lx r=%lx\n",
 			__func__, result, va, pa, hpte_group, hpte_v, hpte_r);
+		pr_info("%s:result=%s vpn=%lx pa=%lx ix=%lx v=%llx r=%llx\n",
+			__func__, ps3_result(result), vpn, pa, hpte_group,
+			hpte_v, hpte_r);
 		BUG();
 	}
 
@@ -108,6 +118,8 @@ static long ps3_hpte_remove(unsigned long hpte_group)
 
 static long ps3_hpte_updatepp(unsigned long slot, unsigned long newpp,
 	unsigned long va, int psize, int ssize, int local)
+			      unsigned long vpn, int psize, int apsize,
+			      int ssize, unsigned long inv_flags)
 {
 	int result;
 	u64 hpte_v, want_v, hpte_rs;
@@ -116,6 +128,7 @@ static long ps3_hpte_updatepp(unsigned long slot, unsigned long newpp,
 	long ret;
 
 	want_v = hpte_encode_v(va, psize, ssize);
+	want_v = hpte_encode_avpn(vpn, psize, ssize);
 
 	spin_lock_irqsave(&ps3_htab_lock, flags);
 
@@ -127,6 +140,8 @@ static long ps3_hpte_updatepp(unsigned long slot, unsigned long newpp,
 	if (result) {
 		pr_info("%s: res=%d read va=%lx slot=%lx psize=%d\n",
 			__func__, result, va, slot, psize);
+		pr_info("%s: result=%s read vpn=%lx slot=%lx psize=%d\n",
+			__func__, ps3_result(result), vpn, slot, psize);
 		BUG();
 	}
 
@@ -137,6 +152,7 @@ static long ps3_hpte_updatepp(unsigned long slot, unsigned long newpp,
 	 * not synthesize the new hpte_r value here, and therefore can
 	 * not update the hpte with lv1_insert_htab_entry(), so we
 	 * insted invalidate it and ask the caller to update it via
+	 * instead invalidate it and ask the caller to update it via
 	 * ps3_hpte_insert() by returning a -1 value.
 	 */
 	if (!HPTE_V_COMPARE(hpte_v, want_v) || !(hpte_v & HPTE_V_VALID)) {
@@ -161,6 +177,8 @@ static void ps3_hpte_updateboltedpp(unsigned long newpp, unsigned long ea,
 
 static void ps3_hpte_invalidate(unsigned long slot, unsigned long va,
 	int psize, int ssize, int local)
+static void ps3_hpte_invalidate(unsigned long slot, unsigned long vpn,
+				int psize, int apsize, int ssize, int local)
 {
 	unsigned long flags;
 	int result;
@@ -172,6 +190,8 @@ static void ps3_hpte_invalidate(unsigned long slot, unsigned long va,
 	if (result) {
 		pr_info("%s: res=%d va=%lx slot=%lx psize=%d\n",
 			__func__, result, va, slot, psize);
+		pr_info("%s: result=%s vpn=%lx slot=%lx psize=%d\n",
+			__func__, ps3_result(result), vpn, slot, psize);
 		BUG();
 	}
 

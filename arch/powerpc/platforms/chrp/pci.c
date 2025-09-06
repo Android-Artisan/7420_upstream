@@ -35,6 +35,7 @@ int gg2_read_config(struct pci_bus *bus, unsigned int devfn, int off,
 {
 	volatile void __iomem *cfg_data;
 	struct pci_controller *hose = bus->sysdata;
+	struct pci_controller *hose = pci_bus_to_host(bus);
 
 	if (bus->number > 7)
 		return PCIBIOS_DEVICE_NOT_FOUND;
@@ -62,6 +63,7 @@ int gg2_write_config(struct pci_bus *bus, unsigned int devfn, int off,
 {
 	volatile void __iomem *cfg_data;
 	struct pci_controller *hose = bus->sysdata;
+	struct pci_controller *hose = pci_bus_to_host(bus);
 
 	if (bus->number > 7)
 		return PCIBIOS_DEVICE_NOT_FOUND;
@@ -97,6 +99,7 @@ int rtas_read_config(struct pci_bus *bus, unsigned int devfn, int offset,
 		     int len, u32 *val)
 {
 	struct pci_controller *hose = bus->sysdata;
+	struct pci_controller *hose = pci_bus_to_host(bus);
 	unsigned long addr = (offset & 0xff) | ((devfn & 0xff) << 8)
 		| (((bus->number - hose->first_busno) & 0xff) << 16)
 		| (hose->global_number << 24);
@@ -112,6 +115,7 @@ int rtas_write_config(struct pci_bus *bus, unsigned int devfn, int offset,
 		      int len, u32 val)
 {
 	struct pci_controller *hose = bus->sysdata;
+	struct pci_controller *hose = pci_bus_to_host(bus);
 	unsigned long addr = (offset & 0xff) | ((devfn & 0xff) << 8)
 		| (((bus->number - hose->first_busno) & 0xff) << 16)
 		| (hose->global_number << 24);
@@ -142,6 +146,8 @@ hydra_init(void)
 		return 0;
 	}
 	Hydra = ioremap(r.start, r.end-r.start);
+	of_node_put(np);
+	Hydra = ioremap(r.start, resource_size(&r));
 	printk("Hydra Mac I/O at %llx\n", (unsigned long long)r.start);
 	printk("Hydra Feature_Control was %x",
 	       in_le32(&Hydra->Feature_Control));
@@ -199,6 +205,7 @@ static void __init setup_peg2(struct pci_controller *hose, struct device_node *d
 			" your firmware\n");
 	}
 	ppc_pci_flags |= PPC_PCI_REASSIGN_ALL_BUS;
+	pci_add_flags(PCI_REASSIGN_ALL_BUS);
 	/* keep the reference to the root node */
 }
 
@@ -261,12 +268,14 @@ chrp_find_bridges(void)
 			continue;
 		}
 		hose->first_busno = bus_range[0];
+		hose->first_busno = hose->self_busno = bus_range[0];
 		hose->last_busno = bus_range[1];
 
 		model = of_get_property(dev, "model", NULL);
 		if (model == NULL)
 			model = "<none>";
 		if (of_device_is_compatible(dev, "IBM,python")) {
+		if (strncmp(model, "IBM, Python", 11) == 0) {
 			setup_python(hose, dev);
 		} else if (is_mot
 			   || strncmp(model, "Motorola, Grackle", 17) == 0) {
@@ -323,6 +332,7 @@ chrp_find_bridges(void)
  * will happen.
  */
 static void __devinit chrp_pci_fixup_winbond_ata(struct pci_dev *sl82c105)
+static void chrp_pci_fixup_winbond_ata(struct pci_dev *sl82c105)
 {
 	u8 progif;
 

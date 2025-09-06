@@ -7,6 +7,7 @@
  * published by the Free Software Foundation.
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 #include <linux/module.h>
 #include <linux/skbuff.h>
 #include <linux/ipv6.h>
@@ -30,6 +31,7 @@ segsleft_match(u_int32_t min, u_int32_t max, u_int32_t id, bool invert)
 {
 	bool r;
 	pr_debug("rt segsleft_match:%c 0x%x <= 0x%x <= 0x%x",
+	pr_debug("segsleft_match:%c 0x%x <= 0x%x <= 0x%x\n",
 		 invert ? '!' : ' ', min, id, max);
 	r = (id >= min && id <= max) ^ invert;
 	pr_debug(" result %s\n", r ? "PASS" : "FAILED");
@@ -46,6 +48,13 @@ rt_mt6(const struct sk_buff *skb, const struct net_device *in,
 	const struct ip6t_rt *rtinfo = matchinfo;
 	unsigned int temp;
 	unsigned int ptr;
+static bool rt_mt6(const struct sk_buff *skb, struct xt_action_param *par)
+{
+	struct ipv6_rt_hdr _route;
+	const struct ipv6_rt_hdr *rh;
+	const struct ip6t_rt *rtinfo = par->matchinfo;
+	unsigned int temp;
+	unsigned int ptr = 0;
 	unsigned int hdrlen = 0;
 	bool ret = false;
 	struct in6_addr _addr;
@@ -56,12 +65,17 @@ rt_mt6(const struct sk_buff *skb, const struct net_device *in,
 	if (err < 0) {
 		if (err != -ENOENT)
 			*hotdrop = true;
+	err = ipv6_find_hdr(skb, &ptr, NEXTHDR_ROUTING, NULL, NULL);
+	if (err < 0) {
+		if (err != -ENOENT)
+			par->hotdrop = true;
 		return false;
 	}
 
 	rh = skb_header_pointer(skb, ptr, sizeof(_route), &_route);
 	if (rh == NULL) {
 		*hotdrop = true;
+		par->hotdrop = true;
 		return false;
 	}
 
@@ -105,6 +119,13 @@ rt_mt6(const struct sk_buff *skb, const struct net_device *in,
 	       ((rtinfo->hdrlen == hdrlen) ^
 		!!(rtinfo->invflags & IP6T_RT_INV_LEN)))
 	      &&
+	ret = (rh != NULL) &&
+	      (segsleft_match(rtinfo->segsleft[0], rtinfo->segsleft[1],
+			      rh->segments_left,
+			      !!(rtinfo->invflags & IP6T_RT_INV_SGS))) &&
+	      (!(rtinfo->flags & IP6T_RT_LEN) ||
+	       ((rtinfo->hdrlen == hdrlen) ^
+		!!(rtinfo->invflags & IP6T_RT_INV_LEN))) &&
 	      (!(rtinfo->flags & IP6T_RT_TYP) ||
 	       ((rtinfo->rt_type == rh->type) ^
 		!!(rtinfo->invflags & IP6T_RT_INV_TYP)));
@@ -200,6 +221,13 @@ rt_mt6_check(const char *tablename, const void *entry,
 	if (rtinfo->invflags & ~IP6T_RT_INV_MASK) {
 		pr_debug("ip6t_rt: unknown flags %X\n", rtinfo->invflags);
 		return false;
+static int rt_mt6_check(const struct xt_mtchk_param *par)
+{
+	const struct ip6t_rt *rtinfo = par->matchinfo;
+
+	if (rtinfo->invflags & ~IP6T_RT_INV_MASK) {
+		pr_debug("unknown flags %X\n", rtinfo->invflags);
+		return -EINVAL;
 	}
 	if ((rtinfo->flags & (IP6T_RT_RES | IP6T_RT_FST_MASK)) &&
 	    (!(rtinfo->flags & IP6T_RT_TYP) ||
@@ -210,11 +238,16 @@ rt_mt6_check(const char *tablename, const void *entry,
 	}
 
 	return true;
+		return -EINVAL;
+	}
+
+	return 0;
 }
 
 static struct xt_match rt_mt6_reg __read_mostly = {
 	.name		= "rt",
 	.family		= AF_INET6,
+	.family		= NFPROTO_IPV6,
 	.match		= rt_mt6,
 	.matchsize	= sizeof(struct ip6t_rt),
 	.checkentry	= rt_mt6_check,

@@ -1,5 +1,4 @@
 Kernel driver w83l786ng
-=====================
 
 Supported chips:
   * Winbond W83L786NG/W83L786NR

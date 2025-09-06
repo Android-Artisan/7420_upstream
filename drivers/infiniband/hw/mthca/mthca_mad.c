@@ -105,6 +105,8 @@ static void update_sm_ah(struct mthca_dev *dev,
 static void smp_snoop(struct ib_device *ibdev,
 		      u8 port_num,
 		      struct ib_mad *mad)
+		      const struct ib_mad *mad,
+		      u16 prev_lid)
 {
 	struct ib_event event;
 
@@ -114,6 +116,7 @@ static void smp_snoop(struct ib_device *ibdev,
 		if (mad->mad_hdr.attr_id == IB_SMP_ATTR_PORT_INFO) {
 			struct ib_port_info *pinfo =
 				(struct ib_port_info *) ((struct ib_smp *) mad)->data;
+			u16 lid = be16_to_cpu(pinfo->lid);
 
 			mthca_update_rate(to_mdev(ibdev), port_num);
 			update_sm_ah(to_mdev(ibdev), port_num,
@@ -129,6 +132,15 @@ static void smp_snoop(struct ib_device *ibdev,
 				event.event    = IB_EVENT_LID_CHANGE;
 
 			ib_dispatch_event(&event);
+			if (pinfo->clientrereg_resv_subnetto & 0x80) {
+				event.event    = IB_EVENT_CLIENT_REREGISTER;
+				ib_dispatch_event(&event);
+			}
+
+			if (prev_lid != lid) {
+				event.event    = IB_EVENT_LID_CHANGE;
+				ib_dispatch_event(&event);
+			}
 		}
 
 		if (mad->mad_hdr.attr_id == IB_SMP_ATTR_PKEY_TABLE) {
@@ -156,6 +168,7 @@ static void node_desc_override(struct ib_device *dev,
 static void forward_trap(struct mthca_dev *dev,
 			 u8 port_num,
 			 struct ib_mad *mad)
+			 const struct ib_mad *mad)
 {
 	int qpn = mad->mad_hdr.mgmt_class != IB_MGMT_CLASS_SUBN_LID_ROUTED;
 	struct ib_mad_send_buf *send_buf;
@@ -166,6 +179,10 @@ static void forward_trap(struct mthca_dev *dev,
 	if (agent) {
 		send_buf = ib_create_send_mad(agent, qpn, 0, 0, IB_MGMT_MAD_HDR,
 					      IB_MGMT_MAD_DATA, GFP_ATOMIC);
+					      IB_MGMT_MAD_DATA, GFP_ATOMIC,
+					      IB_MGMT_BASE_VERSION);
+		if (IS_ERR(send_buf))
+			return;
 		/*
 		 * We rely here on the fact that MLX QPs don't use the
 		 * address handle after the send is posted (this is
@@ -196,6 +213,22 @@ int mthca_process_mad(struct ib_device *ibdev,
 	int err;
 	u8 status;
 	u16 slid = in_wc ? in_wc->slid : be16_to_cpu(IB_LID_PERMISSIVE);
+		      const struct ib_wc *in_wc,
+		      const struct ib_grh *in_grh,
+		      const struct ib_mad_hdr *in, size_t in_mad_size,
+		      struct ib_mad_hdr *out, size_t *out_mad_size,
+		      u16 *out_mad_pkey_index)
+{
+	int err;
+	u16 slid = in_wc ? in_wc->slid : be16_to_cpu(IB_LID_PERMISSIVE);
+	u16 prev_lid = 0;
+	struct ib_port_attr pattr;
+	const struct ib_mad *in_mad = (const struct ib_mad *)in;
+	struct ib_mad *out_mad = (struct ib_mad *)out;
+
+	if (WARN_ON_ONCE(in_mad_size != sizeof(*in_mad) ||
+			 *out_mad_size != sizeof(*out_mad)))
+		return IB_MAD_RESULT_FAILURE;
 
 	/* Forward locally generated traps to the SM */
 	if (in_mad->mad_hdr.method == IB_MGMT_METHOD_TRAP &&
@@ -233,6 +266,12 @@ int mthca_process_mad(struct ib_device *ibdev,
 			return IB_MAD_RESULT_SUCCESS;
 	} else
 		return IB_MAD_RESULT_SUCCESS;
+	if ((in_mad->mad_hdr.mgmt_class == IB_MGMT_CLASS_SUBN_LID_ROUTED ||
+	     in_mad->mad_hdr.mgmt_class == IB_MGMT_CLASS_SUBN_DIRECTED_ROUTE) &&
+	    in_mad->mad_hdr.method == IB_MGMT_METHOD_SET &&
+	    in_mad->mad_hdr.attr_id == IB_SMP_ATTR_PORT_INFO &&
+	    !ib_query_port(ibdev, port_num, &pattr))
+		prev_lid = pattr.lid;
 
 	err = mthca_MAD_IFC(to_mdev(ibdev),
 			    mad_flags & IB_MAD_IGNORE_MKEY,
@@ -248,11 +287,17 @@ int mthca_process_mad(struct ib_device *ibdev,
 	if (status) {
 		mthca_err(to_mdev(ibdev), "MAD_IFC returned status %02x\n",
 			  status);
+			    port_num, in_wc, in_grh, in_mad, out_mad);
+	if (err == -EBADMSG)
+		return IB_MAD_RESULT_SUCCESS;
+	else if (err) {
+		mthca_err(to_mdev(ibdev), "MAD_IFC returned %d\n", err);
 		return IB_MAD_RESULT_FAILURE;
 	}
 
 	if (!out_mad->mad_hdr.status) {
 		smp_snoop(ibdev, port_num, in_mad);
+		smp_snoop(ibdev, port_num, in_mad, prev_lid);
 		node_desc_override(ibdev, out_mad);
 	}
 
@@ -287,6 +332,7 @@ int mthca_create_agents(struct mthca_dev *dev)
 						      q ? IB_QPT_GSI : IB_QPT_SMI,
 						      NULL, 0, send_handler,
 						      NULL, NULL);
+						      NULL, NULL, 0);
 			if (IS_ERR(agent)) {
 				ret = PTR_ERR(agent);
 				goto err;

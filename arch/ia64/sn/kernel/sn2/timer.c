@@ -24,6 +24,7 @@
 extern unsigned long sn_rtc_cycles_per_second;
 
 static cycle_t read_sn2(void)
+static cycle_t read_sn2(struct clocksource *cs)
 {
 	return (cycle_t)readq(RTC_COUNTER_ADDR);
 }
@@ -60,6 +61,8 @@ void __init sn_timer_init(void)
 	clocksource_sn2.mult = clocksource_hz2mult(sn_rtc_cycles_per_second,
 							clocksource_sn2.shift);
 	clocksource_register(&clocksource_sn2);
+	clocksource_sn2.archdata.fsys_mmio = RTC_COUNTER_ADDR;
+	clocksource_register_hz(&clocksource_sn2, sn_rtc_cycles_per_second);
 
 	ia64_udelay = &ia64_sn_udelay;
 }

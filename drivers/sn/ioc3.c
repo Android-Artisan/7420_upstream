@@ -16,6 +16,7 @@
 #include <linux/delay.h>
 #include <linux/ioc3.h>
 #include <linux/rwsem.h>
+#include <linux/slab.h>
 
 #define IOC3_PCI_SIZE 0x100000
 
@@ -577,6 +578,8 @@ void ioc3_unregister_submodule(struct ioc3_submodule *is)
 static char *
 ioc3_class_names[]={"unknown", "IP27 BaseIO", "IP30 system", "MENET 1/2/3",
 			"MENET 4", "CADduo", "Altix Serial"};
+static char *ioc3_class_names[] = { "unknown", "IP27 BaseIO", "IP30 system",
+			"MENET 1/2/3", "MENET 4", "CADduo", "Altix Serial" };
 
 static int ioc3_class(struct ioc3_driver_data *idd)
 {
@@ -620,6 +623,9 @@ static int ioc3_probe(struct pci_dev *pdev, const struct pci_device_id *pci_id)
         ret = pci_set_dma_mask(pdev, DMA_64BIT_MASK);
         if (!ret) {
                 ret = pci_set_consistent_dma_mask(pdev, DMA_64BIT_MASK);
+        ret = pci_set_dma_mask(pdev, DMA_BIT_MASK(64));
+        if (!ret) {
+                ret = pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(64));
                 if (ret < 0) {
                         printk(KERN_WARNING "%s: Unable to obtain 64 bit DMA "
                                "for consistent allocations\n",
@@ -824,6 +830,15 @@ static int __devinit ioc3_init(void)
 
 /* Module unload */
 static void __devexit ioc3_exit(void)
+static int __init ioc3_init(void)
+{
+	if (ia64_platform_is("sn2"))
+		return pci_register_driver(&ioc3_driver);
+	return -ENODEV;
+}
+
+/* Module unload */
+static void __exit ioc3_exit(void)
 {
 	pci_unregister_driver(&ioc3_driver);
 }

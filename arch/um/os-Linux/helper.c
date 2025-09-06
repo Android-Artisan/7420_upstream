@@ -16,6 +16,9 @@
 #include "um_malloc.h"
 #include "user.h"
 #include <linux/limits.h>
+#include <kern_util.h>
+#include <os.h>
+#include <um_malloc.h>
 
 struct helper_data {
 	void (*pre_exec)(void*);
@@ -30,6 +33,7 @@ static int helper_child(void *arg)
 	struct helper_data *data = arg;
 	char **argv = data->argv;
 	int err;
+	int err, ret;
 
 	if (data->pre_exec != NULL)
 		(*data->pre_exec)(data->pre_data);
@@ -37,6 +41,7 @@ static int helper_child(void *arg)
 
 	/* If the exec succeeds, we don't get here */
 	write(data->fd, &err, sizeof(err));
+	CATCH_EINTR(ret = write(data->fd, &err, sizeof(err)));
 
 	return 0;
 }
@@ -48,7 +53,7 @@ int run_helper(void (*pre_exec)(void *), void *pre_data, char **argv)
 	unsigned long stack, sp;
 	int pid, fds[2], ret, n;
 
-	stack = alloc_stack(0, __cant_sleep());
+	stack = alloc_stack(0, __uml_cant_sleep());
 	if (stack == 0)
 		return -ENOMEM;
 
@@ -72,7 +77,7 @@ int run_helper(void (*pre_exec)(void *), void *pre_data, char **argv)
 	data.pre_data = pre_data;
 	data.argv = argv;
 	data.fd = fds[1];
-	data.buf = __cant_sleep() ? uml_kmalloc(PATH_MAX, UM_GFP_ATOMIC) :
+	data.buf = __uml_cant_sleep() ? uml_kmalloc(PATH_MAX, UM_GFP_ATOMIC) :
 					uml_kmalloc(PATH_MAX, UM_GFP_KERNEL);
 	pid = clone(helper_child, (void *) sp, CLONE_VM, &data);
 	if (pid < 0) {
@@ -100,6 +105,7 @@ int run_helper(void (*pre_exec)(void *), void *pre_data, char **argv)
 			ret = n;
 		}
 		CATCH_EINTR(waitpid(pid, NULL, __WCLONE));
+		CATCH_EINTR(waitpid(pid, NULL, __WALL));
 	}
 
 out_free2:
@@ -119,7 +125,7 @@ int run_helper_thread(int (*proc)(void *), void *arg, unsigned int flags,
 	unsigned long stack, sp;
 	int pid, status, err;
 
-	stack = alloc_stack(0, __cant_sleep());
+	stack = alloc_stack(0, __uml_cant_sleep());
 	if (stack == 0)
 		return -ENOMEM;
 
@@ -133,6 +139,7 @@ int run_helper_thread(int (*proc)(void *), void *arg, unsigned int flags,
 	}
 	if (stack_out == NULL) {
 		CATCH_EINTR(pid = waitpid(pid, &status, __WCLONE));
+		CATCH_EINTR(pid = waitpid(pid, &status, __WALL));
 		if (pid < 0) {
 			err = -errno;
 			printk(UM_KERN_ERR "run_helper_thread - wait failed, "
@@ -152,6 +159,7 @@ int helper_wait(int pid)
 {
 	int ret, status;
 	int wflags = __WCLONE;
+	int wflags = __WALL;
 
 	CATCH_EINTR(ret = waitpid(pid, &status, wflags));
 	if (ret < 0) {

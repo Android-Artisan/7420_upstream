@@ -2,6 +2,7 @@
 
 #include <asm-generic/vmlinux.lds.h>
 #include <asm/page.h>
+#include <asm/thread_info.h>
 
 OUTPUT_FORMAT("elf32-m68k", "elf32-m68k", "elf32-m68k")
 OUTPUT_ARCH(m68k)
@@ -13,6 +14,7 @@ SECTIONS
   _text = .;			/* Text and read-only data */
   .text : {
 	*(.text.head)
+	HEAD_TEXT
 	TEXT_TEXT
 	SCHED_TEXT
 	LOCK_TEXT
@@ -38,6 +40,15 @@ SECTIONS
 
   . = ALIGN(16);
   .data.cacheline_aligned : { *(.data.cacheline_aligned) } :data
+  EXCEPTION_TABLE(16)
+
+  _sdata = .;			/* Start of data section */
+
+  RODATA
+
+  RW_DATA_SECTION(16, PAGE_SIZE, THREAD_SIZE)
+
+  BSS_SECTION(0, 0, 0)
 
   _edata = .;			/* End of data section */
 
@@ -62,6 +73,8 @@ SECTIONS
   __con_initcall_start = .;
   .con_initcall.init : { *(.con_initcall.init) }
   __con_initcall_end = .;
+  INIT_TEXT_SECTION(PAGE_SIZE) :data
+  INIT_DATA_SECTION(16)
   .m68k_fixup : {
 	__start_fixup = .;
 	*(.m68k_fixup)
@@ -96,4 +109,19 @@ SECTIONS
   .stab.index 0 : { *(.stab.index) }
   .stab.indexstr 0 : { *(.stab.indexstr) }
   .comment 0 : { *(.comment) }
+  NOTES
+  .init_end : {
+	/* This ALIGN be in a section so that _end is at the end of the
+	   load segment. */
+	. = ALIGN(PAGE_SIZE);
+	__init_end = .;
+  }
+
+  _end = . ;
+
+  STABS_DEBUG
+  .comment 0 : { *(.comment) }
+
+  /* Sections to be discarded */
+  DISCARDS
 }

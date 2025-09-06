@@ -12,6 +12,10 @@
  */
 #include <linux/linkage.h>
 #include <asm/asm-offsets.h>
+#include <linux/init.h>
+#include <linux/linkage.h>
+#include <asm/asm-offsets.h>
+#include <asm/assembler.h>
 #include <asm/page.h>
 #include <asm/tlbflush.h>
 #include "proc-macros.S"
@@ -56,6 +60,8 @@ ENTRY(v6wbi_flush_user_tlb_range)
 	mcr	p15, 0, ip, c7, c5, 6		@ flush BTAC/BTB
 	mcr	p15, 0, ip, c7, c10, 4		@ data synchronization barrier
 	mov	pc, lr
+	mcr	p15, 0, ip, c7, c10, 4		@ data synchronization barrier
+	ret	lr
 
 /*
  *	v6wbi_flush_kern_tlb_range(start,end)
@@ -95,3 +101,11 @@ ENTRY(v6wbi_tlb_fns)
 	.long	v6wbi_flush_kern_tlb_range
 	.long	v6wbi_tlb_flags
 	.size	v6wbi_tlb_fns, . - v6wbi_tlb_fns
+	mcr	p15, 0, r2, c7, c10, 4		@ data synchronization barrier
+	mcr	p15, 0, r2, c7, c5, 4		@ prefetch flush (isb)
+	ret	lr
+
+	__INIT
+
+	/* define struct cpu_tlb_fns (see <asm/tlbflush.h> and proc-macros.S) */
+	define_tlb_functions v6wbi, v6wbi_tlb_flags

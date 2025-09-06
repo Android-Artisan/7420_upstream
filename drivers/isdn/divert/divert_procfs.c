@@ -11,6 +11,7 @@
 
 #include <linux/module.h>
 #include <linux/poll.h>
+#include <linux/slab.h>
 #ifdef CONFIG_PROC_FS
 #include <linux/proc_fs.h>
 #else
@@ -18,6 +19,10 @@
 #endif
 #include <linux/isdnif.h>
 #include <net/net_namespace.h>
+#include <linux/sched.h>
+#include <linux/isdnif.h>
+#include <net/net_namespace.h>
+#include <linux/mutex.h>
 #include "isdn_divert.h"
 
 
@@ -25,6 +30,7 @@
 /* Variables for interface queue */
 /*********************************/
 ulong if_used = 0;		/* number of interface users */
+static DEFINE_MUTEX(isdn_divert_mutex);
 static struct divert_info *divert_info_head = NULL;	/* head of queue */
 static struct divert_info *divert_info_tail = NULL;	/* pointer to last entry */
 static DEFINE_SPINLOCK(divert_info_lock);/* lock for queue */
@@ -50,6 +56,10 @@ put_info_buffer(char *cp)
 	strcpy(ib->info_start, cp);	/* set output string */
 	ib->next = NULL;
 	spin_lock_irqsave( &divert_info_lock, flags );
+		return;	/* no memory */
+	strcpy(ib->info_start, cp);	/* set output string */
+	ib->next = NULL;
+	spin_lock_irqsave(&divert_info_lock, flags);
 	ib->usage_cnt = if_used;
 	if (!divert_info_head)
 		divert_info_head = ib;	/* new head */
@@ -68,6 +78,7 @@ put_info_buffer(char *cp)
 			break;
 	}			/* divert_info_head->next */
 	spin_unlock_irqrestore( &divert_info_lock, flags );
+	spin_unlock_irqrestore(&divert_info_lock, flags);
 	wake_up_interruptible(&(rd_queue));
 }				/* put_info_buffer */
 
@@ -78,6 +89,7 @@ put_info_buffer(char *cp)
 /**********************************/
 static ssize_t
 isdn_divert_read(struct file *file, char __user *buf, size_t count, loff_t * off)
+isdn_divert_read(struct file *file, char __user *buf, size_t count, loff_t *off)
 {
 	struct divert_info *inf;
 	int len;
@@ -88,6 +100,13 @@ isdn_divert_read(struct file *file, char __user *buf, size_t count, loff_t * off
 		interruptible_sleep_on(&(rd_queue));
 	}
 	if (!(inf = *((struct divert_info **) file->private_data)))
+	if (!(inf = *((struct divert_info **) file->private_data))) {
+		if (file->f_flags & O_NONBLOCK)
+			return -EAGAIN;
+		wait_event_interruptible(rd_queue, (inf =
+			*((struct divert_info **) file->private_data)));
+	}
+	if (!inf)
 		return (0);
 
 	inf->usage_cnt--;	/* new usage count */
@@ -106,6 +125,7 @@ isdn_divert_read(struct file *file, char __user *buf, size_t count, loff_t * off
 /**********************************/
 static ssize_t
 isdn_divert_write(struct file *file, const char __user *buf, size_t count, loff_t * off)
+isdn_divert_write(struct file *file, const char __user *buf, size_t count, loff_t *off)
 {
 	return (-ENODEV);
 }				/* isdn_divert_write */
@@ -116,6 +136,7 @@ isdn_divert_write(struct file *file, const char __user *buf, size_t count, loff_
 /***************************************/
 static unsigned int
 isdn_divert_poll(struct file *file, poll_table * wait)
+isdn_divert_poll(struct file *file, poll_table *wait)
 {
 	unsigned int mask = 0;
 
@@ -137,11 +158,14 @@ isdn_divert_open(struct inode *ino, struct file *filep)
 
 	spin_lock_irqsave( &divert_info_lock, flags );
  	if_used++;
+	spin_lock_irqsave(&divert_info_lock, flags);
+	if_used++;
 	if (divert_info_head)
 		filep->private_data = &(divert_info_tail->next);
 	else
 		filep->private_data = &divert_info_head;
 	spin_unlock_irqrestore( &divert_info_lock, flags );
+	spin_unlock_irqrestore(&divert_info_lock, flags);
 	/*  start_divert(); */
 	return nonseekable_open(ino, filep);
 }				/* isdn_divert_open */
@@ -156,6 +180,7 @@ isdn_divert_close(struct inode *ino, struct file *filep)
 	unsigned long flags;
 
 	spin_lock_irqsave( &divert_info_lock, flags );
+	spin_lock_irqsave(&divert_info_lock, flags);
 	if_used--;
 	inf = *((struct divert_info **) filep->private_data);
 	while (inf) {
@@ -169,6 +194,7 @@ isdn_divert_close(struct inode *ino, struct file *filep)
 			kfree(inf);
 		}
 	spin_unlock_irqrestore( &divert_info_lock, flags );
+	spin_unlock_irqrestore(&divert_info_lock, flags);
 	return (0);
 }				/* isdn_divert_close */
 
@@ -178,6 +204,7 @@ isdn_divert_close(struct inode *ino, struct file *filep)
 static int
 isdn_divert_ioctl(struct inode *inode, struct file *file,
 		  uint cmd, ulong arg)
+static int isdn_divert_ioctl_unlocked(struct file *file, uint cmd, ulong arg)
 {
 	divert_ioctl dioctl;
 	int i;
@@ -252,9 +279,89 @@ isdn_divert_ioctl(struct inode *inode, struct file *file,
 
 		default:
 			return (-EINVAL);
+	case IIOCGETVER:
+		dioctl.drv_version = DIVERT_IIOC_VERSION;	/* set version */
+		break;
+
+	case IIOCGETDRV:
+		if ((dioctl.getid.drvid = divert_if.name_to_drv(dioctl.getid.drvnam)) < 0)
+			return (-EINVAL);
+		break;
+
+	case IIOCGETNAM:
+		cp = divert_if.drv_to_name(dioctl.getid.drvid);
+		if (!cp)
+			return (-EINVAL);
+		if (!*cp)
+			return (-EINVAL);
+		strcpy(dioctl.getid.drvnam, cp);
+		break;
+
+	case IIOCGETRULE:
+		if (!(rulep = getruleptr(dioctl.getsetrule.ruleidx)))
+			return (-EINVAL);
+		dioctl.getsetrule.rule = *rulep;	/* copy data */
+		break;
+
+	case IIOCMODRULE:
+		if (!(rulep = getruleptr(dioctl.getsetrule.ruleidx)))
+			return (-EINVAL);
+		spin_lock_irqsave(&divert_lock, flags);
+		*rulep = dioctl.getsetrule.rule;	/* copy data */
+		spin_unlock_irqrestore(&divert_lock, flags);
+		return (0);	/* no copy required */
+		break;
+
+	case IIOCINSRULE:
+		return (insertrule(dioctl.getsetrule.ruleidx, &dioctl.getsetrule.rule));
+		break;
+
+	case IIOCDELRULE:
+		return (deleterule(dioctl.getsetrule.ruleidx));
+		break;
+
+	case IIOCDODFACT:
+		return (deflect_extern_action(dioctl.fwd_ctrl.subcmd,
+					      dioctl.fwd_ctrl.callid,
+					      dioctl.fwd_ctrl.to_nr));
+
+	case IIOCDOCFACT:
+	case IIOCDOCFDIS:
+	case IIOCDOCFINT:
+		if (!divert_if.drv_to_name(dioctl.cf_ctrl.drvid))
+			return (-EINVAL);	/* invalid driver */
+		if (strnlen(dioctl.cf_ctrl.msn, sizeof(dioctl.cf_ctrl.msn)) ==
+		    sizeof(dioctl.cf_ctrl.msn))
+			return -EINVAL;
+		if (strnlen(dioctl.cf_ctrl.fwd_nr, sizeof(dioctl.cf_ctrl.fwd_nr)) ==
+		    sizeof(dioctl.cf_ctrl.fwd_nr))
+			return -EINVAL;
+		if ((i = cf_command(dioctl.cf_ctrl.drvid,
+				    (cmd == IIOCDOCFACT) ? 1 : (cmd == IIOCDOCFDIS) ? 0 : 2,
+				    dioctl.cf_ctrl.cfproc,
+				    dioctl.cf_ctrl.msn,
+				    dioctl.cf_ctrl.service,
+				    dioctl.cf_ctrl.fwd_nr,
+				    &dioctl.cf_ctrl.procid)))
+			return (i);
+		break;
+
+	default:
+		return (-EINVAL);
 	}			/* switch cmd */
 	return copy_to_user((void __user *)arg, &dioctl, sizeof(dioctl)) ? -EFAULT : 0;
 }				/* isdn_divert_ioctl */
+
+static long isdn_divert_ioctl(struct file *file, uint cmd, ulong arg)
+{
+	long ret;
+
+	mutex_lock(&isdn_divert_mutex);
+	ret = isdn_divert_ioctl_unlocked(file, cmd, arg);
+	mutex_unlock(&isdn_divert_mutex);
+
+	return ret;
+}
 
 static const struct file_operations isdn_fops =
 {
@@ -266,6 +373,9 @@ static const struct file_operations isdn_fops =
 	.ioctl          = isdn_divert_ioctl,
 	.open           = isdn_divert_open,
 	.release        = isdn_divert_close,                                      
+	.unlocked_ioctl = isdn_divert_ioctl,
+	.open           = isdn_divert_open,
+	.release        = isdn_divert_close,
 };
 
 /****************************/

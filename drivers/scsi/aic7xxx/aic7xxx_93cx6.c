@@ -215,6 +215,14 @@ ahc_read_seeprom(struct seeprom_descriptor *sd, uint16_t *buf,
 		printf (" 0x%x", buf[k]);
 	}
 	printf ("\n");
+	printk("\nSerial EEPROM:\n\t");
+	for (k = 0; k < count; k = k + 1) {
+		if (((k % 8) == 0) && (k != 0)) {
+			printk(KERN_CONT "\n\t");
+		}
+		printk(KERN_CONT " 0x%x", buf[k]);
+	}
+	printk(KERN_CONT "\n");
 #endif
 	return (1);
 }
@@ -241,6 +249,7 @@ ahc_write_seeprom(struct seeprom_descriptor *sd, uint16_t *buf,
 		ewds = &seeprom_long_ewds;
 	} else {
 		printf("ahc_write_seeprom: unsupported seeprom type %d\n",
+		printk("ahc_write_seeprom: unsupported seeprom type %d\n",
 		       sd->sd_chip);
 		return (0);
 	}

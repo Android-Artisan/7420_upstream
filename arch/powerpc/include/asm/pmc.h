@@ -31,6 +31,22 @@ void release_pmc_hardware(void);
 #ifdef CONFIG_PPC64
 void power4_enable_pmcs(void);
 void pasemi_enable_pmcs(void);
+void ppc_enable_pmcs(void);
+
+#ifdef CONFIG_PPC_BOOK3S_64
+#include <asm/lppaca.h>
+
+static inline void ppc_set_pmu_inuse(int inuse)
+{
+	get_lppaca()->pmcregs_in_use = inuse;
+}
+
+extern void power4_enable_pmcs(void);
+
+#else /* CONFIG_PPC64 */
+
+static inline void ppc_set_pmu_inuse(int inuse) { }
+
 #endif
 
 #endif /* __KERNEL__ */

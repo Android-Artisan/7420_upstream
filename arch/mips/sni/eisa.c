@@ -23,6 +23,7 @@ static struct platform_device eisa_root_dev = {
 
 static struct eisa_root_device eisa_bus_root = {
 	.dev           = &eisa_root_dev.dev,
+	.dev	       = &eisa_root_dev.dev,
 	.bus_base_addr = 0,
 	.res	       = &ioport_resource,
 	.slots	       = EISA_MAX_SLOTS,
@@ -39,6 +40,7 @@ int __init sni_eisa_root_init(void)
 		return r;
 
 	eisa_root_dev.dev.driver_data = &eisa_bus_root;
+	dev_set_drvdata(&eisa_root_dev.dev, &eisa_bus_root);
 
 	if (eisa_root_register(&eisa_bus_root)) {
 		/* A real bridge may have been registered before

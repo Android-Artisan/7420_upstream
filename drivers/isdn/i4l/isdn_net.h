@@ -12,6 +12,7 @@
  */
 
 			      /* Definitions for hupflags:                */
+/* Definitions for hupflags:                */
 #define ISDN_WAITCHARGE  1      /* did not get a charge info yet            */
 #define ISDN_HAVECHARGE  2      /* We know a charge info                    */
 #define ISDN_CHARGEHUP   4      /* We want to use the charge mechanism      */
@@ -56,6 +57,11 @@ extern void isdn_net_write_super(isdn_net_local *lp, struct sk_buff *skb);
 
 #define ISDN_NET_MAX_QUEUE_LENGTH 2
 
+#define ISDN_MASTER_PRIV(lp) ((isdn_net_local *) netdev_priv(lp->master))
+#define ISDN_SLAVE_PRIV(lp) ((isdn_net_local *) netdev_priv(lp->slave))
+#define MASTER_TO_SLAVE(master)					\
+	(((isdn_net_local *) netdev_priv(master))->slave)
+
 /*
  * is this particular channel busy?
  */
@@ -64,6 +70,7 @@ static __inline__ int isdn_net_lp_busy(isdn_net_local *lp)
 	if (atomic_read(&lp->frame_cnt) < ISDN_NET_MAX_QUEUE_LENGTH)
 		return 0;
 	else 
+	else
 		return 1;
 }
 
@@ -72,6 +79,7 @@ static __inline__ int isdn_net_lp_busy(isdn_net_local *lp)
  * corresponding bundle. The returned channel is locked.
  */
 static __inline__ isdn_net_local * isdn_net_get_locked_lp(isdn_net_dev *nd)
+static __inline__ isdn_net_local *isdn_net_get_locked_lp(isdn_net_dev *nd)
 {
 	unsigned long flags;
 	isdn_net_local *lp;
@@ -81,6 +89,7 @@ static __inline__ isdn_net_local * isdn_net_get_locked_lp(isdn_net_dev *nd)
 	spin_lock(&nd->queue->xmit_lock);
 	while (isdn_net_lp_busy(nd->queue)) {
 		spin_unlock(&nd->queue->xmit_lock);
+	while (isdn_net_lp_busy(nd->queue)) {
 		nd->queue = nd->queue->next;
 		if (nd->queue == lp) { /* not found -- should never happen */
 			lp = NULL;
@@ -91,6 +100,13 @@ static __inline__ isdn_net_local * isdn_net_get_locked_lp(isdn_net_dev *nd)
 	lp = nd->queue;
 	nd->queue = nd->queue->next;
 	local_bh_disable();
+	}
+	lp = nd->queue;
+	nd->queue = nd->queue->next;
+	spin_unlock_irqrestore(&nd->queue_lock, flags);
+	spin_lock(&lp->xmit_lock);
+	local_bh_disable();
+	return lp;
 errout:
 	spin_unlock_irqrestore(&nd->queue_lock, flags);
 	return lp;
@@ -127,6 +143,7 @@ static __inline__ void isdn_net_rm_from_bundle(isdn_net_local *lp)
 
 	if (lp->master)
 		master_lp = (isdn_net_local *) lp->master->priv;
+		master_lp = ISDN_MASTER_PRIV(lp);
 
 //	printk(KERN_DEBUG "%s: lp:%s(%p) mlp:%s(%p) last(%p) next(%p) mndq(%p)\n",
 //		__func__, lp->name, lp, master_lp->name, master_lp, lp->last, lp->next, master_lp->netdev->queue);

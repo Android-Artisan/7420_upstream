@@ -92,6 +92,7 @@
  * The implementation goals were as follow :
  *	o Obvious : you should not need a PhD to understand what's happening,
  *		the benefit is easier maintainance.
+ *		the benefit is easier maintenance.
  *	o Flexible : it should accommodate a wide variety of driver
  *		implementations and be as flexible as the old API.
  *	o Lean : it should be efficient memory wise to minimise the impact
@@ -130,6 +131,7 @@
  * Functions prototype uses union iwreq_data
  * -----------------------------------------
  * Some would have prefered functions defined this way :
+ * Some would have preferred functions defined this way :
  *	static int mydriver_ioctl_setrate(struct net_device *dev, 
  *					  long rate, int auto)
  * 1) The kernel code doesn't "validate" the content of iwreq_data, and
@@ -302,6 +304,7 @@
  */
 struct iw_request_info
 {
+struct iw_request_info {
 	__u16		cmd;		/* Wireless Extension command */
 	__u16		flags;		/* More to come ;-) */
 };
@@ -335,6 +338,20 @@ struct iw_handler_def
 	 */
 	const iw_handler *	standard;
 
+struct iw_handler_def {
+
+	/* Array of handlers for standard ioctls
+	 * We will call dev->wireless_handlers->standard[ioctl - SIOCIWFIRST]
+	 */
+	const iw_handler *	standard;
+	/* Number of handlers defined (more precisely, index of the
+	 * last defined handler + 1) */
+	__u16			num_standard;
+
+#ifdef CONFIG_WEXT_PRIV
+	__u16			num_private;
+	/* Number of private arg description */
+	__u16			num_private_args;
 	/* Array of handlers for private ioctls
 	 * Will call dev->wireless_handlers->private[ioctl - SIOCIWFIRSTPRIV]
 	 */
@@ -344,6 +361,7 @@ struct iw_handler_def
 	 * can put it in any order you want and should not leave holes...
 	 * We will automatically export that to user space... */
 	const struct iw_priv_args *	private_args;
+#endif
 
 	/* New location of get_wireless_stats, to de-bloat struct net_device.
 	 * The old pointer in struct net_device will be gradually phased
@@ -372,6 +390,7 @@ struct iw_handler_def
  */
 struct iw_ioctl_description
 {
+struct iw_ioctl_description {
 	__u8	header_type;		/* NULL, iw_point or other */
 	__u8	token_type;		/* Future */
 	__u16	token_size;		/* Granularity of payload */
@@ -395,6 +414,7 @@ struct iw_ioctl_description
  */
 struct iw_spy_data
 {
+struct iw_spy_data {
 	/* --- Standard spy support --- */
 	int			spy_number;
 	u_char			spy_address[IW_MAX_SPY][ETH_ALEN];
@@ -417,12 +437,15 @@ struct iw_spy_data
  */
 /* Forward declaration */
 struct ieee80211_device;
+struct libipw_device;
 /* The struct */
 struct iw_public_data {
 	/* Driver enhanced spy support */
 	struct iw_spy_data *		spy_data;
 	/* Structure managed by the in-kernel IEEE 802.11 layer */
 	struct ieee80211_device *	ieee80211;
+	/* Legacy structure managed by the ipw2x00-specific IEEE 802.11 layer */
+	struct libipw_device *		libipw;
 };
 
 /**************************** PROTOTYPES ****************************/
@@ -436,6 +459,7 @@ struct iw_public_data {
 /* Handle /proc/net/wireless, called in net/code/dev.c */
 extern int dev_get_wireless_info(char * buffer, char **start, off_t offset,
 				 int length);
+int dev_get_wireless_info(char *buffer, char **start, off_t offset, int length);
 
 /* Second : functions that may be called by driver modules */
 
@@ -444,6 +468,14 @@ extern void wireless_send_event(struct net_device *	dev,
 				unsigned int		cmd,
 				union iwreq_data *	wrqu,
 				char *			extra);
+void wireless_send_event(struct net_device *dev, unsigned int cmd,
+			 union iwreq_data *wrqu, const char *extra);
+#ifdef CONFIG_WEXT_CORE
+/* flush all previous wext events - if work is done from netdev notifiers */
+void wireless_nlevent_flush(void);
+#else
+static inline void wireless_nlevent_flush(void) {}
+#endif
 
 /* We may need a function to send a stream of events to user space.
  * More on that later... */
@@ -472,6 +504,20 @@ extern int iw_handler_get_thrspy(struct net_device *	dev,
 extern void wireless_spy_update(struct net_device *	dev,
 				unsigned char *		address,
 				struct iw_quality *	wstats);
+int iw_handler_set_spy(struct net_device *dev, struct iw_request_info *info,
+		       union iwreq_data *wrqu, char *extra);
+/* Standard handler for SIOCGIWSPY */
+int iw_handler_get_spy(struct net_device *dev, struct iw_request_info *info,
+		       union iwreq_data *wrqu, char *extra);
+/* Standard handler for SIOCSIWTHRSPY */
+int iw_handler_set_thrspy(struct net_device *dev, struct iw_request_info *info,
+			  union iwreq_data *wrqu, char *extra);
+/* Standard handler for SIOCGIWTHRSPY */
+int iw_handler_get_thrspy(struct net_device *dev, struct iw_request_info *info,
+			  union iwreq_data *wrqu, char *extra);
+/* Driver call to update spy records */
+void wireless_spy_update(struct net_device *dev, unsigned char *address,
+			 struct iw_quality *wstats);
 
 /************************* INLINE FUNTIONS *************************/
 /*
@@ -533,6 +579,17 @@ iwe_stream_add_event(struct iw_request_info *info, char *stream, char *ends,
 	return stream;
 }
 
+static inline char *
+iwe_stream_add_event_check(struct iw_request_info *info, char *stream,
+			   char *ends, struct iw_event *iwe, int event_len)
+{
+	char *res = iwe_stream_add_event(info, stream, ends, iwe, event_len);
+
+	if (res == stream)
+		return ERR_PTR(-E2BIG);
+	return res;
+}
+
 /*------------------------------------------------------------------*/
 /*
  * Wrapper to add an short Wireless Event containing a pointer to a
@@ -553,10 +610,22 @@ iwe_stream_add_point(struct iw_request_info *info, char *stream, char *ends,
 		memcpy(stream + lcp_len,
 		       ((char *) &iwe->u) + IW_EV_POINT_OFF,
 		       IW_EV_POINT_PK_LEN - IW_EV_LCP_PK_LEN);
-		memcpy(stream + point_len, extra, iwe->u.data.length);
+		if (iwe->u.data.length && extra)
+			memcpy(stream + point_len, extra, iwe->u.data.length);
 		stream += event_len;
 	}
 	return stream;
+}
+
+static inline char *
+iwe_stream_add_point_check(struct iw_request_info *info, char *stream,
+			   char *ends, struct iw_event *iwe, char *extra)
+{
+	char *res = iwe_stream_add_point(info, stream, ends, iwe, extra);
+
+	if (res == stream)
+		return ERR_PTR(-E2BIG);
+	return res;
 }
 
 /*------------------------------------------------------------------*/

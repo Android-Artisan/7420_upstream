@@ -14,12 +14,15 @@
 #define PAGE_SHIFT		12
 #define PAGE_SIZE		(1UL << PAGE_SHIFT)
 #define PAGE_MASK		(~(PAGE_SIZE-1))
+#define PAGE_SIZE		(_AC(1,UL) << PAGE_SHIFT)
+#define PAGE_MASK		(~((1 << PAGE_SHIFT) - 1))
 
 #ifndef __ASSEMBLY__
 
 #ifndef CONFIG_MMU
 
 #include "page-nommu.h"
+#include <asm/page-nommu.h>
 
 #else
 
@@ -27,7 +30,6 @@
 
 /*
  *	User Space Model
- *	================
  *
  *	This section selects the correct set of functions for dealing with
  *	page-based copying and clearing for user space for the particular
@@ -76,6 +78,14 @@
 # endif
 #endif
 
+#ifdef CONFIG_CPU_COPY_FA
+# ifdef _USER
+#  define MULTI_USER 1
+# else
+#  define _USER fa
+# endif
+#endif
+
 #ifdef CONFIG_CPU_SA1100
 # ifdef _USER
 #  define MULTI_USER 1
@@ -112,6 +122,13 @@ struct cpu_user_fns {
 	void (*cpu_clear_user_page)(void *p, unsigned long user);
 	void (*cpu_copy_user_page)(void *to, const void *from,
 				   unsigned long user);
+struct page;
+struct vm_area_struct;
+
+struct cpu_user_fns {
+	void (*cpu_clear_user_highpage)(struct page *page, unsigned long vaddr);
+	void (*cpu_copy_user_highpage)(struct page *to, struct page *from,
+			unsigned long vaddr, struct vm_area_struct *vma);
 };
 
 #ifdef MULTI_USER
@@ -175,10 +192,46 @@ typedef unsigned long pgprot_t;
 #define __pgprot(x)     (x)
 
 #endif /* STRICT_MM_TYPECHECKS */
+#define __cpu_clear_user_highpage	cpu_user.cpu_clear_user_highpage
+#define __cpu_copy_user_highpage	cpu_user.cpu_copy_user_highpage
+
+#else
+
+#define __cpu_clear_user_highpage	__glue(_USER,_clear_user_highpage)
+#define __cpu_copy_user_highpage	__glue(_USER,_copy_user_highpage)
+
+extern void __cpu_clear_user_highpage(struct page *page, unsigned long vaddr);
+extern void __cpu_copy_user_highpage(struct page *to, struct page *from,
+			unsigned long vaddr, struct vm_area_struct *vma);
+#endif
+
+#define clear_user_highpage(page,vaddr)		\
+	 __cpu_clear_user_highpage(page, vaddr)
+
+#define __HAVE_ARCH_COPY_USER_HIGHPAGE
+#define copy_user_highpage(to,from,vaddr,vma)	\
+	__cpu_copy_user_highpage(to, from, vaddr, vma)
+
+#define clear_page(page)	memset((void *)(page), 0, PAGE_SIZE)
+extern void copy_page(void *to, const void *from);
+
+#ifdef CONFIG_KUSER_HELPERS
+#define __HAVE_ARCH_GATE_AREA 1
+#endif
+
+#ifdef CONFIG_ARM_LPAE
+#include <asm/pgtable-3level-types.h>
+#else
+#include <asm/pgtable-2level-types.h>
+#endif
 
 #endif /* CONFIG_MMU */
 
 typedef struct page *pgtable_t;
+
+#ifdef CONFIG_HAVE_ARCH_PFN_VALID
+extern int pfn_valid(unsigned long);
+#endif
 
 #include <asm/memory.h>
 
@@ -195,5 +248,10 @@ typedef struct page *pgtable_t;
 #endif
 
 #include <asm-generic/page.h>
+#define VM_DATA_DEFAULT_FLAGS \
+	(((current->personality & READ_IMPLIES_EXEC) ? VM_EXEC : 0) | \
+	 VM_READ | VM_WRITE | VM_MAYREAD | VM_MAYWRITE | VM_MAYEXEC)
+
+#include <asm-generic/getorder.h>
 
 #endif

@@ -16,6 +16,7 @@
     You should have received a copy of the GNU General Public License
     along with this program; if not, write to the Free Software
     Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.                */
+    GNU General Public License for more details.			     */
 /* ------------------------------------------------------------------------- */
 
 
@@ -98,6 +99,7 @@
 
 struct i2c_algo_iop3xx_data {
 	u32 ioaddr;
+	void __iomem *ioaddr;
 	wait_queue_head_t waitq;
 	spinlock_t lock;
 	u32 SR_enabled, SR_received;

@@ -7,6 +7,8 @@
  * "TCP-Illinois: A Loss and Delay-Based Congestion Control Algorithm
  *  for High-Speed Networks"
  * http://www.ews.uiuc.edu/~shaoliu/papersandslides/liubassri06perf.pdf
+ * http://www.ifp.illinois.edu/~srikant/Papers/liubassri06perf.pdf
+ * http://tamerbasar.csl.illinois.edu/LiuBasarSrikantPerfEvalArtJun2008.pdf
  *
  * Implemented from description in paper and ns-2 simulation.
  * Copyright (C) 2007 Stephen Hemminger <shemminger@linux-foundation.org>
@@ -257,6 +259,7 @@ static void tcp_illinois_state(struct sock *sk, u8 new_state)
  * Increase window in response to successful acknowledgment.
  */
 static void tcp_illinois_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
+static void tcp_illinois_cong_avoid(struct sock *sk, u32 ack, u32 acked)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct illinois *ca = inet_csk_ca(sk);
@@ -271,6 +274,12 @@ static void tcp_illinois_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 	/* In slow start */
 	if (tp->snd_cwnd <= tp->snd_ssthresh)
 		tcp_slow_start(tp);
+	if (!tcp_is_cwnd_limited(sk))
+		return;
+
+	/* In slow start */
+	if (tcp_in_slow_start(tp))
+		tcp_slow_start(tp, acked);
 
 	else {
 		u32 delta;
@@ -286,6 +295,7 @@ static void tcp_illinois_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 		if (delta >= tp->snd_cwnd) {
 			tp->snd_cwnd = min(tp->snd_cwnd + delta / tp->snd_cwnd,
 					   (u32) tp->snd_cwnd_clamp);
+					   (u32)tp->snd_cwnd_clamp);
 			tp->snd_cwnd_cnt = 0;
 		}
 	}
@@ -304,6 +314,9 @@ static u32 tcp_illinois_ssthresh(struct sock *sk)
 /* Extract info for Tcp socket info provided via netlink. */
 static void tcp_illinois_info(struct sock *sk, u32 ext,
 			      struct sk_buff *skb)
+/* Extract info for Tcp socket info provided via netlink. */
+static size_t tcp_illinois_info(struct sock *sk, u32 ext, int *attr,
+				union tcp_cc_info *info)
 {
 	const struct illinois *ca = inet_csk_ca(sk);
 
@@ -327,6 +340,26 @@ static struct tcp_congestion_ops tcp_illinois = {
 	.init		= tcp_illinois_init,
 	.ssthresh	= tcp_illinois_ssthresh,
 	.min_cwnd	= tcp_reno_min_cwnd,
+		info->vegas.tcpv_enabled = 1;
+		info->vegas.tcpv_rttcnt = ca->cnt_rtt;
+		info->vegas.tcpv_minrtt = ca->base_rtt;
+		info->vegas.tcpv_rtt = 0;
+
+		if (info->vegas.tcpv_rttcnt > 0) {
+			u64 t = ca->sum_rtt;
+
+			do_div(t, info->vegas.tcpv_rttcnt);
+			info->vegas.tcpv_rtt = t;
+		}
+		*attr = INET_DIAG_VEGASINFO;
+		return sizeof(struct tcpvegas_info);
+	}
+	return 0;
+}
+
+static struct tcp_congestion_ops tcp_illinois __read_mostly = {
+	.init		= tcp_illinois_init,
+	.ssthresh	= tcp_illinois_ssthresh,
 	.cong_avoid	= tcp_illinois_cong_avoid,
 	.set_state	= tcp_illinois_state,
 	.get_info	= tcp_illinois_info,

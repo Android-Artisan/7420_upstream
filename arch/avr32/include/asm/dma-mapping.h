@@ -220,6 +220,18 @@ dma_map_sg(struct device *dev, struct scatterlist *sg, int nents,
 		sg[i].dma_address = page_to_bus(sg_page(&sg[i])) + sg[i].offset;
 		virt = sg_virt(&sg[i]);
 		dma_cache_sync(dev, virt, sg[i].length, direction);
+dma_map_sg(struct device *dev, struct scatterlist *sglist, int nents,
+	   enum dma_data_direction direction)
+{
+	int i;
+	struct scatterlist *sg;
+
+	for_each_sg(sglist, sg, nents, i) {
+		char *virt;
+
+		sg->dma_address = page_to_bus(sg_page(sg)) + sg->offset;
+		virt = sg_virt(sg);
+		dma_cache_sync(dev, virt, sg->length, direction);
 	}
 
 	return nents;
@@ -329,6 +341,14 @@ dma_sync_sg_for_device(struct device *dev, struct scatterlist *sg,
 	for (i = 0; i < nents; i++) {
 		dma_cache_sync(dev, sg_virt(&sg[i]), sg[i].length, direction);
 	}
+dma_sync_sg_for_device(struct device *dev, struct scatterlist *sglist,
+		       int nents, enum dma_data_direction direction)
+{
+	int i;
+	struct scatterlist *sg;
+
+	for_each_sg(sglist, sg, nents, i)
+		dma_cache_sync(dev, sg_virt(sg), sg->length, direction);
 }
 
 /* Now for the API extensions over the pci_ one */
@@ -345,5 +365,14 @@ static inline int dma_get_cache_alignment(void)
 {
 	return boot_cpu_data.dcache.linesz;
 }
+/* drivers/base/dma-mapping.c */
+extern int dma_common_mmap(struct device *dev, struct vm_area_struct *vma,
+			   void *cpu_addr, dma_addr_t dma_addr, size_t size);
+extern int dma_common_get_sgtable(struct device *dev, struct sg_table *sgt,
+				  void *cpu_addr, dma_addr_t dma_addr,
+				  size_t size);
+
+#define dma_mmap_coherent(d, v, c, h, s) dma_common_mmap(d, v, c, h, s)
+#define dma_get_sgtable(d, t, v, h, s) dma_common_get_sgtable(d, t, v, h, s)
 
 #endif /* __ASM_AVR32_DMA_MAPPING_H */

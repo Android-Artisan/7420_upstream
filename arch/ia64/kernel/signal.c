@@ -11,6 +11,7 @@
 #include <linux/kernel.h>
 #include <linux/mm.h>
 #include <linux/ptrace.h>
+#include <linux/tracehook.h>
 #include <linux/sched.h>
 #include <linux/signal.h>
 #include <linux/smp.h>
@@ -56,6 +57,7 @@ restore_sigcontext (struct sigcontext __user *sc, struct sigscratch *scr)
 
 	/* Always make any pending restarted system calls return -EINTR */
 	current_thread_info()->restart_block.fn = do_no_restart_syscall;
+	current->restart_block.fn = do_no_restart_syscall;
 
 	/* restore scratch that always needs gets updated during signal delivery: */
 	err  = __get_user(flags, &sc->sc_flags);
@@ -115,6 +117,7 @@ restore_sigcontext (struct sigcontext __user *sc, struct sigscratch *scr)
 
 int
 copy_siginfo_to_user (siginfo_t __user *to, siginfo_t *from)
+copy_siginfo_to_user (siginfo_t __user *to, const siginfo_t *from)
 {
 	if (!access_ok(VERIFY_WRITE, to, sizeof(siginfo_t)))
 		return -EFAULT;
@@ -208,6 +211,7 @@ ia64_rt_sigreturn (struct sigscratch *scr)
 		recalc_sigpending();
 	}
 	spin_unlock_irq(&current->sighand->siglock);
+	set_current_blocked(&set);
 
 	if (restore_sigcontext(sc, scr))
 		goto give_sigsegv;
@@ -221,6 +225,8 @@ ia64_rt_sigreturn (struct sigscratch *scr)
 	 * call it and ignore errors.
 	 */
 	do_sigaltstack(&sc->sc_stack, NULL, scr->pt.r12);
+	if (restore_altstack(&sc->sc_stack))
+		goto give_sigsegv;
 	return retval;
 
   give_sigsegv:
@@ -229,6 +235,7 @@ ia64_rt_sigreturn (struct sigscratch *scr)
 	si.si_code = SI_KERNEL;
 	si.si_pid = task_pid_vnr(current);
 	si.si_uid = current->uid;
+	si.si_uid = from_kuid_munged(current_user_ns(), current_uid());
 	si.si_addr = sc;
 	force_sig_info(SIGSEGV, &si, current);
 	return retval;
@@ -334,6 +341,14 @@ force_sigsegv_info (int sig, void __user *addr)
 static long
 setup_frame (int sig, struct k_sigaction *ka, siginfo_t *info, sigset_t *set,
 	     struct sigscratch *scr)
+	si.si_uid = from_kuid_munged(current_user_ns(), current_uid());
+	si.si_addr = addr;
+	force_sig_info(SIGSEGV, &si, current);
+	return 1;
+}
+
+static long
+setup_frame(struct ksignal *ksig, sigset_t *set, struct sigscratch *scr)
 {
 	extern char __kernel_sigtramp[];
 	unsigned long tramp_addr, new_rbs = 0, new_sp;
@@ -343,6 +358,7 @@ setup_frame (int sig, struct k_sigaction *ka, siginfo_t *info, sigset_t *set,
 	new_sp = scr->pt.r12;
 	tramp_addr = (unsigned long) __kernel_sigtramp;
 	if (ka->sa.sa_flags & SA_ONSTACK) {
+	if (ksig->ka.sa.sa_flags & SA_ONSTACK) {
 		int onstack = sas_ss_flags(new_sp);
 
 		if (onstack == 0) {
@@ -367,6 +383,7 @@ setup_frame (int sig, struct k_sigaction *ka, siginfo_t *info, sigset_t *set,
 			check_sp = (new_sp - sizeof(*frame)) & -STACK_ALIGN;
 			if (!likely(on_sig_stack(check_sp)))
 				return force_sigsegv_info(sig, (void __user *)
+				return force_sigsegv_info(ksig->sig, (void __user *)
 							  check_sp);
 		}
 	}
@@ -376,6 +393,9 @@ setup_frame (int sig, struct k_sigaction *ka, siginfo_t *info, sigset_t *set,
 		return force_sigsegv_info(sig, frame);
 
 	err  = __put_user(sig, &frame->arg0);
+		return force_sigsegv_info(ksig->sig, frame);
+
+	err  = __put_user(ksig->sig, &frame->arg0);
 	err |= __put_user(&frame->info, &frame->arg1);
 	err |= __put_user(&frame->sc, &frame->arg2);
 	err |= __put_user(new_rbs, &frame->sc.sc_rbs_base);
@@ -391,6 +411,15 @@ setup_frame (int sig, struct k_sigaction *ka, siginfo_t *info, sigset_t *set,
 
 	if (unlikely(err))
 		return force_sigsegv_info(sig, frame);
+	err |= __put_user(ksig->ka.sa.sa_handler, &frame->handler);
+
+	err |= copy_siginfo_to_user(&frame->info, &ksig->info);
+
+	err |= __save_altstack(&frame->sc.sc_stack, scr->pt.r12);
+	err |= setup_sigcontext(&frame->sc, set, scr);
+
+	if (unlikely(err))
+		return force_sigsegv_info(ksig->sig, frame);
 
 	scr->pt.r12 = (unsigned long) frame - 16;	/* new stack pointer */
 	scr->pt.ar_fpsr = FPSR_DEFAULT;			/* reset fpsr for signal handler */
@@ -440,6 +469,20 @@ handle_signal (unsigned long sig, struct k_sigaction *ka, siginfo_t *info, sigse
 	recalc_sigpending();
 	spin_unlock_irq(&current->sighand->siglock);
 	return 1;
+	       current->comm, current->pid, ksig->sig, scr->pt.r12, frame->sc.sc_ip, frame->handler);
+#endif
+	return 0;
+}
+
+static long
+handle_signal (struct ksignal *ksig, struct sigscratch *scr)
+{
+	int ret = setup_frame(ksig, sigmask_to_save(), scr);
+
+	if (!ret)
+		signal_setup_done(ret, ksig, test_thread_flag(TIF_SINGLESTEP));
+
+	return ret;
 }
 
 /*
@@ -468,6 +511,9 @@ ia64_do_signal (struct sigscratch *scr, long in_syscall)
 		oldset = &current->saved_sigmask;
 	else
 		oldset = &current->blocked;
+	long restart = in_syscall;
+	long errno = scr->pt.r8;
+	struct ksignal ksig;
 
 	/*
 	 * This only loops in the rare cases of handle_signal() failing, in which case we
@@ -475,6 +521,7 @@ ia64_do_signal (struct sigscratch *scr, long in_syscall)
 	 */
 	while (1) {
 		int signr = get_signal_to_deliver(&info, &ka, &scr->pt, NULL);
+		get_signal(&ksig);
 
 		/*
 		 * get_signal_to_deliver() may have run a debugger (via notify_parent())
@@ -490,6 +537,7 @@ ia64_do_signal (struct sigscratch *scr, long in_syscall)
 					errno = -errno;
 			}
 		} else if ((long) scr->pt.r10 != -1)
+		if ((long) scr->pt.r10 != -1)
 			/*
 			 * A system calls has to be restarted only if one of the error codes
 			 * ERESTARTNOHAND, ERESTARTSYS, or ERESTARTNOINTR is returned.  If r10
@@ -499,6 +547,7 @@ ia64_do_signal (struct sigscratch *scr, long in_syscall)
 			restart = 0;
 
 		if (signr <= 0)
+		if (ksig.sig <= 0)
 			break;
 
 		if (unlikely(restart)) {
@@ -506,12 +555,15 @@ ia64_do_signal (struct sigscratch *scr, long in_syscall)
 			      case ERESTART_RESTARTBLOCK:
 			      case ERESTARTNOHAND:
 				scr->pt.r8 = ERR_CODE(EINTR);
+				scr->pt.r8 = EINTR;
 				/* note: scr->pt.r10 is already -1 */
 				break;
 
 			      case ERESTARTSYS:
 				if ((ka.sa.sa_flags & SA_RESTART) == 0) {
 					scr->pt.r8 = ERR_CODE(EINTR);
+				if ((ksig.ka.sa.sa_flags & SA_RESTART) == 0) {
+					scr->pt.r8 = EINTR;
 					/* note: scr->pt.r10 is already -1 */
 					break;
 				}
@@ -521,6 +573,7 @@ ia64_do_signal (struct sigscratch *scr, long in_syscall)
 					scr->pt.cr_iip -= 2;
 				} else
 					ia64_decrement_ip(&scr->pt);
+				ia64_decrement_ip(&scr->pt);
 				restart = 0; /* don't restart twice if handle_signal() fails... */
 			}
 		}
@@ -539,6 +592,8 @@ ia64_do_signal (struct sigscratch *scr, long in_syscall)
 			current_thread_info()->status &= ~TS_RESTORE_SIGMASK;
 			return;
 		}
+		if (handle_signal(&ksig, scr))
+			return;
 	}
 
 	/* Did we come from a system call? */
@@ -562,6 +617,14 @@ ia64_do_signal (struct sigscratch *scr, long in_syscall)
 				if (errno == ERESTART_RESTARTBLOCK)
 					scr->pt.r15 = __NR_restart_syscall;
 			}
+			/*
+			 * Note: the syscall number is in r15 which is saved in
+			 * pt_regs so all we need to do here is adjust ip so that
+			 * the "break" instruction gets re-executed.
+			 */
+			ia64_decrement_ip(&scr->pt);
+			if (errno == ERESTART_RESTARTBLOCK)
+				scr->pt.r15 = __NR_restart_syscall;
 		}
 	}
 
@@ -571,4 +634,5 @@ ia64_do_signal (struct sigscratch *scr, long in_syscall)
 		current_thread_info()->status &= ~TS_RESTORE_SIGMASK;
 		sigprocmask(SIG_SETMASK, &current->saved_sigmask, NULL);
 	}
+	restore_saved_sigmask();
 }

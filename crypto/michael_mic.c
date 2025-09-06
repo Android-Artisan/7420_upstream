@@ -10,6 +10,7 @@
  * published by the Free Software Foundation.
  */
 
+#include <crypto/internal/hash.h>
 #include <asm/byteorder.h>
 #include <linux/init.h>
 #include <linux/module.h>
@@ -19,6 +20,10 @@
 
 
 struct michael_mic_ctx {
+	u32 l, r;
+};
+
+struct michael_mic_desc_ctx {
 	u8 pending[4];
 	size_t pending_len;
 
@@ -56,6 +61,22 @@ static void michael_update(struct crypto_tfm *tfm, const u8 *data,
 			   unsigned int len)
 {
 	struct michael_mic_ctx *mctx = crypto_tfm_ctx(tfm);
+static int michael_init(struct shash_desc *desc)
+{
+	struct michael_mic_desc_ctx *mctx = shash_desc_ctx(desc);
+	struct michael_mic_ctx *ctx = crypto_shash_ctx(desc->tfm);
+	mctx->pending_len = 0;
+	mctx->l = ctx->l;
+	mctx->r = ctx->r;
+
+	return 0;
+}
+
+
+static int michael_update(struct shash_desc *desc, const u8 *data,
+			   unsigned int len)
+{
+	struct michael_mic_desc_ctx *mctx = shash_desc_ctx(desc);
 	const __le32 *src;
 
 	if (mctx->pending_len) {
@@ -69,6 +90,7 @@ static void michael_update(struct crypto_tfm *tfm, const u8 *data,
 
 		if (mctx->pending_len < 4)
 			return;
+			return 0;
 
 		src = (const __le32 *)mctx->pending;
 		mctx->l ^= le32_to_cpup(src);
@@ -94,6 +116,14 @@ static void michael_update(struct crypto_tfm *tfm, const u8 *data,
 static void michael_final(struct crypto_tfm *tfm, u8 *out)
 {
 	struct michael_mic_ctx *mctx = crypto_tfm_ctx(tfm);
+
+	return 0;
+}
+
+
+static int michael_final(struct shash_desc *desc, u8 *out)
+{
+	struct michael_mic_desc_ctx *mctx = shash_desc_ctx(desc);
 	u8 *data = mctx->pending;
 	__le32 *dst = (__le32 *)out;
 
@@ -130,6 +160,20 @@ static int michael_setkey(struct crypto_tfm *tfm, const u8 *key,
 
 	if (keylen != 8) {
 		tfm->crt_flags |= CRYPTO_TFM_RES_BAD_KEY_LEN;
+
+	return 0;
+}
+
+
+static int michael_setkey(struct crypto_shash *tfm, const u8 *key,
+			  unsigned int keylen)
+{
+	struct michael_mic_ctx *mctx = crypto_shash_ctx(tfm);
+
+	const __le32 *data = (const __le32 *)key;
+
+	if (keylen != 8) {
+		crypto_shash_set_flags(tfm, CRYPTO_TFM_RES_BAD_KEY_LEN);
 		return -EINVAL;
 	}
 
@@ -159,12 +203,32 @@ static struct crypto_alg michael_mic_alg = {
 static int __init michael_mic_init(void)
 {
 	return crypto_register_alg(&michael_mic_alg);
+static struct shash_alg alg = {
+	.digestsize		=	8,
+	.setkey			=	michael_setkey,
+	.init			=	michael_init,
+	.update			=	michael_update,
+	.final			=	michael_final,
+	.descsize		=	sizeof(struct michael_mic_desc_ctx),
+	.base			=	{
+		.cra_name		=	"michael_mic",
+		.cra_blocksize		=	8,
+		.cra_alignmask		=	3,
+		.cra_ctxsize		=	sizeof(struct michael_mic_ctx),
+		.cra_module		=	THIS_MODULE,
+	}
+};
+
+static int __init michael_mic_init(void)
+{
+	return crypto_register_shash(&alg);
 }
 
 
 static void __exit michael_mic_exit(void)
 {
 	crypto_unregister_alg(&michael_mic_alg);
+	crypto_unregister_shash(&alg);
 }
 
 
@@ -174,3 +238,4 @@ module_exit(michael_mic_exit);
 MODULE_LICENSE("GPL v2");
 MODULE_DESCRIPTION("Michael MIC");
 MODULE_AUTHOR("Jouni Malinen <j@w1.fi>");
+MODULE_ALIAS_CRYPTO("michael_mic");

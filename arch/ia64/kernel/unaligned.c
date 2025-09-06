@@ -17,6 +17,7 @@
 #include <linux/kernel.h>
 #include <linux/sched.h>
 #include <linux/tty.h>
+#include <linux/ratelimit.h>
 
 #include <asm/intrinsics.h>
 #include <asm/processor.h>
@@ -60,6 +61,7 @@ dump (const char *str, void *vp, size_t len)
  */
 int no_unaligned_warning;
 static int noprint_warning;
+int unaligned_dump_stack;
 
 /*
  * For M-unit:
@@ -1301,6 +1303,9 @@ within_logging_rate_limit (void)
 	return 0;
 
 }
+ * pace it with jiffies.
+ */
+static DEFINE_RATELIMIT_STATE(logging_rate_limit, 5 * HZ, 5);
 
 void
 ia64_handle_unaligned (unsigned long ifa, struct pt_regs *regs)
@@ -1338,6 +1343,7 @@ ia64_handle_unaligned (unsigned long ifa, struct pt_regs *regs)
 		if (!no_unaligned_warning &&
 		    !(current->thread.flags & IA64_THREAD_UAC_NOPRINT) &&
 		    within_logging_rate_limit())
+		    __ratelimit(&logging_rate_limit))
 		{
 			char buf[200];	/* comm[] is at most 16 bytes... */
 			size_t len;
@@ -1359,6 +1365,8 @@ ia64_handle_unaligned (unsigned long ifa, struct pt_regs *regs)
 			if (no_unaligned_warning && !noprint_warning) {
 				noprint_warning = 1;
 				printk(KERN_WARNING "%s(%d) encountered an "
+			if (no_unaligned_warning) {
+				printk_once(KERN_WARNING "%s(%d) encountered an "
 				       "unaligned exception which required\n"
 				       "kernel assistance, which degrades "
 				       "the performance of the application.\n"
@@ -1374,6 +1382,12 @@ ia64_handle_unaligned (unsigned long ifa, struct pt_regs *regs)
 		if (within_logging_rate_limit())
 			printk(KERN_WARNING "kernel unaligned access to 0x%016lx, ip=0x%016lx\n",
 			       ifa, regs->cr_iip + ipsr->ri);
+		if (__ratelimit(&logging_rate_limit)) {
+			printk(KERN_WARNING "kernel unaligned access to 0x%016lx, ip=0x%016lx\n",
+			       ifa, regs->cr_iip + ipsr->ri);
+			if (unaligned_dump_stack)
+				dump_stack();
+		}
 		set_fs(KERNEL_DS);
 	}
 

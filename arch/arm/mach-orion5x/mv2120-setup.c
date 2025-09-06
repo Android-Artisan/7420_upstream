@@ -8,6 +8,7 @@
  * License, or (at your option) any later version.
  */
 
+#include <linux/gpio.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/platform_device.h>
@@ -40,6 +41,7 @@
  ****************************************************************************/
 static struct mv643xx_eth_platform_data mv2120_eth_data = {
 	.phy_addr	= 8,
+	.phy_addr	= MV643XX_ETH_PHY_ADDR(8),
 };
 
 static struct mv_sata_platform_data mv2120_sata_data = {
@@ -130,6 +132,28 @@ static struct orion5x_mpp_mode mv2120_mpp_modes[] __initdata = {
 	{ 18, MPP_GPIO },		/* Power button */
 	{ 19, MPP_GPIO },		/* Power off */
 	{ -1 },
+static unsigned int mv2120_mpp_modes[] __initdata = {
+	MPP0_GPIO,		/* Sys status LED */
+	MPP1_GPIO,		/* Sys error LED */
+	MPP2_GPIO,		/* OverTemp interrupt */
+	MPP3_GPIO,		/* RTC interrupt */
+	MPP4_GPIO,		/* V_LED 5V */
+	MPP5_GPIO,		/* V_LED 3.3V */
+	MPP6_UNUSED,
+	MPP7_UNUSED,
+	MPP8_GPIO,		/* SATA 0 fail LED */
+	MPP9_GPIO,		/* SATA 1 fail LED */
+	MPP10_UNUSED,
+	MPP11_UNUSED,
+	MPP12_SATA_LED,		/* SATA 0 presence */
+	MPP13_SATA_LED,		/* SATA 1 presence */
+	MPP14_SATA_LED,		/* SATA 0 active */
+	MPP15_SATA_LED,		/* SATA 1 active */
+	MPP16_UNUSED,
+	MPP17_GPIO,		/* Reset button */
+	MPP18_GPIO,		/* Power button */
+	MPP19_GPIO,		/* Power off */
+	0,
 };
 
 static struct i2c_board_info __initdata mv2120_i2c_rtc = {
@@ -206,6 +230,10 @@ static void __init mv2120_init(void)
 	orion5x_xor_init();
 
 	orion5x_setup_dev_boot_win(MV2120_NOR_BOOT_BASE, MV2120_NOR_BOOT_SIZE);
+	mvebu_mbus_add_window_by_id(ORION_MBUS_DEVBUS_BOOT_TARGET,
+				    ORION_MBUS_DEVBUS_BOOT_ATTR,
+				    MV2120_NOR_BOOT_BASE,
+				    MV2120_NOR_BOOT_SIZE);
 	platform_device_register(&mv2120_nor_flash);
 
 	platform_device_register(&mv2120_button_device);
@@ -237,4 +265,12 @@ MACHINE_START(MV2120, "HP Media Vault mv2120")
 	.init_irq	= orion5x_init_irq,
 	.timer		= &orion5x_timer,
 	.fixup		= tag_fixup_mem32
+	.atag_offset	= 0x100,
+	.init_machine	= mv2120_init,
+	.map_io		= orion5x_map_io,
+	.init_early	= orion5x_init_early,
+	.init_irq	= orion5x_init_irq,
+	.init_time	= orion5x_timer_init,
+	.fixup		= tag_fixup_mem32,
+	.restart	= orion5x_restart,
 MACHINE_END

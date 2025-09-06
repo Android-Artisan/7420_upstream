@@ -54,3 +54,5 @@ static inline void flush_tlb_kernel_page(unsigned long addr)
 }
 
 #endif
+#include <asm-generic/tlbflush.h>
+#define flush_tlb_kernel_range(s, e) do { } while (0)

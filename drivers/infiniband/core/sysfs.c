@@ -35,6 +35,7 @@
 #include "core_priv.h"
 
 #include <linux/slab.h>
+#include <linux/stat.h>
 #include <linux/string.h>
 
 #include <rdma/ib_mad.h>
@@ -87,6 +88,7 @@ static ssize_t port_attr_show(struct kobject *kobj,
 }
 
 static struct sysfs_ops port_sysfs_ops = {
+static const struct sysfs_ops port_sysfs_ops = {
 	.show = port_attr_show
 };
 
@@ -186,6 +188,7 @@ static ssize_t rate_show(struct ib_port *p, struct port_attribute *unused,
 	struct ib_port_attr attr;
 	char *speed = "";
 	int rate;
+	int rate;		/* in deci-Gb/sec */
 	ssize_t ret;
 
 	ret = ib_query_port(p->ibdev, p->port_num, &attr);
@@ -198,6 +201,33 @@ static ssize_t rate_show(struct ib_port *p, struct port_attribute *unused,
 	}
 
 	rate = 25 * ib_width_enum_to_int(attr.active_width) * attr.active_speed;
+	case IB_SPEED_DDR:
+		speed = " DDR";
+		rate = 50;
+		break;
+	case IB_SPEED_QDR:
+		speed = " QDR";
+		rate = 100;
+		break;
+	case IB_SPEED_FDR10:
+		speed = " FDR10";
+		rate = 100;
+		break;
+	case IB_SPEED_FDR:
+		speed = " FDR";
+		rate = 140;
+		break;
+	case IB_SPEED_EDR:
+		speed = " EDR";
+		rate = 250;
+		break;
+	case IB_SPEED_SDR:
+	default:		/* default to SDR for invalid rates */
+		rate = 25;
+		break;
+	}
+
+	rate *= ib_width_enum_to_int(attr.active_width);
 	if (rate < 0)
 		return -EINVAL;
 
@@ -229,6 +259,19 @@ static ssize_t phys_state_show(struct ib_port *p, struct port_attribute *unused,
 	}
 }
 
+static ssize_t link_layer_show(struct ib_port *p, struct port_attribute *unused,
+			       char *buf)
+{
+	switch (rdma_port_get_link_layer(p->ibdev, p->port_num)) {
+	case IB_LINK_LAYER_INFINIBAND:
+		return sprintf(buf, "%s\n", "InfiniBand");
+	case IB_LINK_LAYER_ETHERNET:
+		return sprintf(buf, "%s\n", "Ethernet");
+	default:
+		return sprintf(buf, "%s\n", "Unknown");
+	}
+}
+
 static PORT_ATTR_RO(state);
 static PORT_ATTR_RO(lid);
 static PORT_ATTR_RO(lid_mask_count);
@@ -237,6 +280,7 @@ static PORT_ATTR_RO(sm_sl);
 static PORT_ATTR_RO(cap_mask);
 static PORT_ATTR_RO(rate);
 static PORT_ATTR_RO(phys_state);
+static PORT_ATTR_RO(link_layer);
 
 static struct attribute *port_default_attrs[] = {
 	&port_attr_state.attr,
@@ -247,6 +291,7 @@ static struct attribute *port_default_attrs[] = {
 	&port_attr_cap_mask.attr,
 	&port_attr_rate.attr,
 	&port_attr_phys_state.attr,
+	&port_attr_link_layer.attr,
 	NULL
 };
 
@@ -271,6 +316,11 @@ static ssize_t show_port_gid(struct ib_port *p, struct port_attribute *attr,
 		       be16_to_cpu(((__be16 *) gid.raw)[5]),
 		       be16_to_cpu(((__be16 *) gid.raw)[6]),
 		       be16_to_cpu(((__be16 *) gid.raw)[7]));
+	ret = ib_query_gid(p->ibdev, p->port_num, tab_attr->index, &gid, NULL);
+	if (ret)
+		return ret;
+
+	return sprintf(buf, "%pI6\n", gid.raw);
 }
 
 static ssize_t show_port_pkey(struct ib_port *p, struct port_attribute *attr,
@@ -303,6 +353,8 @@ static ssize_t show_pma_counter(struct ib_port *p, struct port_attribute *attr,
 	int width  = (tab_attr->index >> 16) & 0xff;
 	struct ib_mad *in_mad  = NULL;
 	struct ib_mad *out_mad = NULL;
+	size_t mad_size = sizeof(*out_mad);
+	u16 out_mad_pkey_index = 0;
 	ssize_t ret;
 
 	if (!p->ibdev->process_mad)
@@ -325,6 +377,10 @@ static ssize_t show_pma_counter(struct ib_port *p, struct port_attribute *attr,
 
 	if ((p->ibdev->process_mad(p->ibdev, IB_MAD_IGNORE_MKEY,
 		 p->port_num, NULL, NULL, in_mad, out_mad) &
+		 p->port_num, NULL, NULL,
+		 (const struct ib_mad_hdr *)in_mad, mad_size,
+		 (struct ib_mad_hdr *)out_mad, &mad_size,
+		 &out_mad_pkey_index) &
 	     (IB_MAD_RESULT_SUCCESS | IB_MAD_RESULT_REPLY)) !=
 	    (IB_MAD_RESULT_SUCCESS | IB_MAD_RESULT_REPLY)) {
 		ret = -EINVAL;
@@ -415,6 +471,19 @@ static void ib_port_release(struct kobject *kobj)
 		kfree(a);
 
 	kfree(p->pkey_group.attrs);
+	if (p->gid_group.attrs) {
+		for (i = 0; (a = p->gid_group.attrs[i]); ++i)
+			kfree(a);
+
+		kfree(p->gid_group.attrs);
+	}
+
+	if (p->pkey_group.attrs) {
+		for (i = 0; (a = p->pkey_group.attrs[i]); ++i)
+			kfree(a);
+
+		kfree(p->pkey_group.attrs);
+	}
 
 	kfree(p);
 }
@@ -476,6 +545,7 @@ alloc_group_attrs(ssize_t (*show)(struct ib_port *,
 		element->attr.attr.mode  = S_IRUGO;
 		element->attr.show       = show;
 		element->index		 = i;
+		sysfs_attr_init(&element->attr.attr);
 
 		tab_attr[i] = &element->attr.attr;
 	}
@@ -490,6 +560,9 @@ err:
 }
 
 static int add_port(struct ib_device *device, int port_num)
+static int add_port(struct ib_device *device, int port_num,
+		    int (*port_callback)(struct ib_device *,
+					 u8, struct kobject *))
 {
 	struct ib_port *p;
 	struct ib_port_attr attr;
@@ -512,6 +585,12 @@ static int add_port(struct ib_device *device, int port_num)
 				   "%d", port_num);
 	if (ret)
 		goto err_put;
+				   device->ports_parent,
+				   "%d", port_num);
+	if (ret) {
+		kfree(p);
+		return ret;
+	}
 
 	ret = sysfs_create_group(&p->kobj, &pma_group);
 	if (ret)
@@ -521,6 +600,10 @@ static int add_port(struct ib_device *device, int port_num)
 	p->gid_group.attrs = alloc_group_attrs(show_port_gid, attr.gid_tbl_len);
 	if (!p->gid_group.attrs)
 		goto err_remove_pma;
+	if (!p->gid_group.attrs) {
+		ret = -ENOMEM;
+		goto err_remove_pma;
+	}
 
 	ret = sysfs_create_group(&p->kobj, &p->gid_group);
 	if (ret)
@@ -531,21 +614,35 @@ static int add_port(struct ib_device *device, int port_num)
 						attr.pkey_tbl_len);
 	if (!p->pkey_group.attrs)
 		goto err_remove_gid;
+	if (!p->pkey_group.attrs) {
+		ret = -ENOMEM;
+		goto err_remove_gid;
+	}
 
 	ret = sysfs_create_group(&p->kobj, &p->pkey_group);
 	if (ret)
 		goto err_free_pkey;
+
+	if (port_callback) {
+		ret = port_callback(device, port_num, &p->kobj);
+		if (ret)
+			goto err_remove_pkey;
+	}
 
 	list_add_tail(&p->kobj.entry, &device->port_list);
 
 	kobject_uevent(&p->kobj, KOBJ_ADD);
 	return 0;
 
+err_remove_pkey:
+	sysfs_remove_group(&p->kobj, &p->pkey_group);
+
 err_free_pkey:
 	for (i = 0; i < attr.pkey_tbl_len; ++i)
 		kfree(p->pkey_group.attrs[i]);
 
 	kfree(p->pkey_group.attrs);
+	p->pkey_group.attrs = NULL;
 
 err_remove_gid:
 	sysfs_remove_group(&p->kobj, &p->gid_group);
@@ -555,6 +652,7 @@ err_free_gid:
 		kfree(p->gid_group.attrs[i]);
 
 	kfree(p->gid_group.attrs);
+	p->gid_group.attrs = NULL;
 
 err_remove_pma:
 	sysfs_remove_group(&p->kobj, &pma_group);
@@ -562,6 +660,7 @@ err_remove_pma:
 err_put:
 	kobject_put(device->ports_parent);
 	kfree(p);
+	kobject_put(&p->kobj);
 	return ret;
 }
 
@@ -576,6 +675,11 @@ static ssize_t show_node_type(struct device *device,
 	switch (dev->node_type) {
 	case RDMA_NODE_IB_CA:	  return sprintf(buf, "%d: CA\n", dev->node_type);
 	case RDMA_NODE_RNIC:	  return sprintf(buf, "%d: RNIC\n", dev->node_type);
+	switch (dev->node_type) {
+	case RDMA_NODE_IB_CA:	  return sprintf(buf, "%d: CA\n", dev->node_type);
+	case RDMA_NODE_RNIC:	  return sprintf(buf, "%d: RNIC\n", dev->node_type);
+	case RDMA_NODE_USNIC:	  return sprintf(buf, "%d: usNIC\n", dev->node_type);
+	case RDMA_NODE_USNIC_UDP: return sprintf(buf, "%d: usNIC UDP\n", dev->node_type);
 	case RDMA_NODE_IB_SWITCH: return sprintf(buf, "%d: switch\n", dev->node_type);
 	case RDMA_NODE_IB_ROUTER: return sprintf(buf, "%d: router\n", dev->node_type);
 	default:		  return sprintf(buf, "%d: <unknown>\n", dev->node_type);
@@ -778,6 +882,25 @@ static struct attribute_group iw_stats_group = {
 };
 
 int ib_device_register_sysfs(struct ib_device *device)
+static void free_port_list_attributes(struct ib_device *device)
+{
+	struct kobject *p, *t;
+
+	list_for_each_entry_safe(p, t, &device->port_list, entry) {
+		struct ib_port *port = container_of(p, struct ib_port, kobj);
+		list_del(&p->entry);
+		sysfs_remove_group(p, &pma_group);
+		sysfs_remove_group(p, &port->pkey_group);
+		sysfs_remove_group(p, &port->gid_group);
+		kobject_put(p);
+	}
+
+	kobject_put(device->ports_parent);
+}
+
+int ib_device_register_sysfs(struct ib_device *device,
+			     int (*port_callback)(struct ib_device *,
+						  u8, struct kobject *))
 {
 	struct device *class_dev = &device->dev;
 	int ret;
@@ -791,6 +914,12 @@ int ib_device_register_sysfs(struct ib_device *device)
 	INIT_LIST_HEAD(&device->port_list);
 
 	ret = device_register(class_dev);
+	device->dev.parent = device->dma_device;
+	ret = dev_set_name(class_dev, "%s", device->name);
+	if (ret)
+		return ret;
+
+	ret = device_add(class_dev);
 	if (ret)
 		goto err;
 
@@ -802,6 +931,7 @@ int ib_device_register_sysfs(struct ib_device *device)
 
 	device->ports_parent = kobject_create_and_add("ports",
 					kobject_get(&class_dev->kobj));
+						      &class_dev->kobj);
 	if (!device->ports_parent) {
 		ret = -ENOMEM;
 		goto err_put;
@@ -809,11 +939,14 @@ int ib_device_register_sysfs(struct ib_device *device)
 
 	if (device->node_type == RDMA_NODE_IB_SWITCH) {
 		ret = add_port(device, 0);
+	if (rdma_cap_ib_switch(device)) {
+		ret = add_port(device, 0, port_callback);
 		if (ret)
 			goto err_put;
 	} else {
 		for (i = 1; i <= device->phys_port_cnt; ++i) {
 			ret = add_port(device, i);
+			ret = add_port(device, i, port_callback);
 			if (ret)
 				goto err_put;
 		}
@@ -843,9 +976,10 @@ err_put:
 	}
 
 	kobject_put(&class_dev->kobj);
+	free_port_list_attributes(device);
 
 err_unregister:
-	device_unregister(class_dev);
+	device_del(class_dev);
 
 err:
 	return ret;
@@ -877,4 +1011,18 @@ int ib_sysfs_setup(void)
 void ib_sysfs_cleanup(void)
 {
 	class_unregister(&ib_class);
+}
+	/* Hold kobject until ib_dealloc_device() */
+	struct kobject *kobj_dev = kobject_get(&device->dev.kobj);
+	int i;
+
+	if (device->node_type == RDMA_NODE_RNIC && device->get_protocol_stats)
+		sysfs_remove_group(kobj_dev, &iw_stats_group);
+
+	free_port_list_attributes(device);
+
+	for (i = 0; i < ARRAY_SIZE(ib_class_attributes); ++i)
+		device_remove_file(&device->dev, ib_class_attributes[i]);
+
+	device_unregister(&device->dev);
 }

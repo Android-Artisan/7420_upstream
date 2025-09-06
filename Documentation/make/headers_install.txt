@@ -1,5 +1,4 @@
 Exporting kernel headers for use by userspace
-=============================================
 
 The "make headers_install" command exports the kernel's header files in a
 form suitable for use by userspace programs.

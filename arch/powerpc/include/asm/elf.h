@@ -163,6 +163,14 @@ typedef elf_fpreg_t elf_vsrreghalf_t32[ELF_NVSRHALFREG];
 #endif
 
 #ifdef __KERNEL__
+#ifndef _ASM_POWERPC_ELF_H
+#define _ASM_POWERPC_ELF_H
+
+#include <linux/sched.h>	/* for task_struct */
+#include <asm/page.h>
+#include <asm/string.h>
+#include <uapi/asm/elf.h>
+
 /*
  * This is used to ensure we don't load something for the wrong architecture.
  */
@@ -179,6 +187,16 @@ typedef elf_fpreg_t elf_vsrreghalf_t32[ELF_NVSRHALFREG];
    that it will "exec", and that there is sufficient room for the brk.  */
 
 #define ELF_ET_DYN_BASE         (0x20000000)
+#define ELF_ET_DYN_BASE	0x20000000
+/*
+ * This is the base location for PIE (ET_DYN with INTERP) loads. On
+ * 64-bit, this is raised to 4GB to leave the entire 32-bit address
+ * space open for things that want to use the area for 32-bit pointers.
+ */
+#define ELF_ET_DYN_BASE		(is_32bit_task() ? 0x000400000UL : \
+						   0x100000000UL)
+
+#define ELF_CORE_EFLAGS (is_elf2_task() ? 2 : 0)
 
 /*
  * Our registers are always unsigned longs, whether we're a 32 bit
@@ -210,6 +228,7 @@ typedef elf_vrregset_t elf_fpxregset_t;
    instruction set this cpu supports.  This could be done in userspace,
    but it's not easy, and we've already done it here.  */
 # define ELF_HWCAP	(cur_cpu_spec->cpu_user_features)
+# define ELF_HWCAP2	(cur_cpu_spec->cpu_user_features2)
 
 /* This yields a string that ld.so will use to load implementation
    specific libraries for optimization.  This is more specific in
@@ -242,6 +261,16 @@ do {								\
 		set_thread_flag(TIF_ABI_PENDING);		\
 	else							\
 		clear_thread_flag(TIF_ABI_PENDING);		\
+# define SET_PERSONALITY(ex)					\
+do {								\
+	if (((ex).e_flags & 0x3) == 2)				\
+		set_thread_flag(TIF_ELF2ABI);			\
+	else							\
+		clear_thread_flag(TIF_ELF2ABI);			\
+	if ((ex).e_ident[EI_CLASS] == ELFCLASS32)		\
+		set_thread_flag(TIF_32BIT);			\
+	else							\
+		clear_thread_flag(TIF_32BIT);			\
 	if (personality(current->personality) != PER_LINUX32)	\
 		set_personality(PER_LINUX |			\
 			(current->personality & (~PER_MASK)));	\
@@ -257,6 +286,10 @@ do {								\
 		(exec_stk != EXSTACK_DISABLE_X) : 0)
 #else 
 # define SET_PERSONALITY(ex, ibcs2) set_personality((ibcs2)?PER_SVR4:PER_LINUX)
+# define elf_read_implies_exec(ex, exec_stk) (is_32bit_task() ? \
+		(exec_stk == EXSTACK_DEFAULT) : 0)
+#else 
+# define elf_read_implies_exec(ex, exec_stk) (exec_stk == EXSTACK_DEFAULT)
 #endif /* __powerpc64__ */
 
 extern int dcache_bsize;
@@ -417,6 +450,13 @@ struct ppc64_opd_entry
 };
 
 #ifdef  __KERNEL__
+				       int uses_interp);
+#define VDSO_AUX_ENT(a,b) NEW_AUX_ENT(a,b)
+
+/* 1GB for 64bit, 8MB for 32bit */
+#define STACK_RND_MASK (is_32bit_task() ? \
+	(0x7ff >> (PAGE_SHIFT - 12)) : \
+	(0x3ffff >> (PAGE_SHIFT - 12)))
 
 #ifdef CONFIG_SPU_BASE
 /* Notes used in ET_CORE. Note name is "SPU/<fd>/<filename>". */

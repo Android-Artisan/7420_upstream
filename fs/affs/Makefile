@@ -3,6 +3,7 @@
 #
 
 #EXTRA_CFLAGS=-DDEBUG=1
+#ccflags-y := -DDEBUG=1
 
 obj-$(CONFIG_AFFS_FS) += affs.o
 

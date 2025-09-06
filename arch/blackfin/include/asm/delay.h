@@ -36,6 +36,7 @@ static inline void __delay(unsigned long loops)
 		);
 	} else
 		__asm__ __volatile__ (
+__asm__ __volatile__ (
 			"LSETUP(1f, 1f) LC0 = %0;"
 			"1: NOP;"
 			:
@@ -58,5 +59,28 @@ static inline void udelay(unsigned long usecs)
 	extern unsigned long loops_per_jiffy;
 	__delay(usecs * loops_per_jiffy / (1000000 / HZ));
 }
+
+ * close approximation borrowed from m68knommu to avoid 64-bit math
+ */
+
+#define	HZSCALE		(268435456 / (1000000/HZ))
+
+static inline unsigned long __to_delay(unsigned long scale)
+{
+	extern unsigned long loops_per_jiffy;
+	return (((scale * HZSCALE) >> 11) * (loops_per_jiffy >> 11)) >> 6;
+}
+
+static inline void udelay(unsigned long usecs)
+{
+	__delay(__to_delay(usecs));
+}
+
+static inline void ndelay(unsigned long nsecs)
+{
+	__delay(__to_delay(1) * nsecs / 1000);
+}
+
+#define ndelay ndelay
 
 #endif

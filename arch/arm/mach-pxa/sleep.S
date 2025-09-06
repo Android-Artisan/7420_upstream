@@ -16,6 +16,7 @@
 #include <mach/hardware.h>
 
 #include <mach/pxa-regs.h>
+#include <mach/smemc.h>
 #include <mach/pxa2xx-regs.h>
 
 #define MDREFR_KDIV	0x200a4000	// all banks
@@ -89,6 +90,11 @@ ENTRY(pxa3xx_cpu_suspend)
 	@ clean data cache
 	bl	xsc3_flush_kern_cache_all
 
+#ifdef CONFIG_PXA3xx
+/*
+ * pxa3xx_finish_suspend() - forces CPU into sleep state (S2D3C4)
+ */
+ENTRY(pxa3xx_finish_suspend)
 	mov	r0, #0x06		@ S2D3C4 mode
 	mcr	p14, 0, r0, c7, c0, 0	@ enter sleep
 
@@ -155,6 +161,7 @@ pxa3xx_resume_after_mmu:
 #ifdef CONFIG_PXA27x
 /*
  * pxa27x_cpu_suspend()
+ * pxa27x_finish_suspend()
  *
  * Forces CPU into sleep state.
  *
@@ -176,11 +183,13 @@ ENTRY(pxa27x_cpu_suspend)
 	@ clean data cache
 	bl	xscale_flush_kern_cache_all
 
+ENTRY(pxa27x_finish_suspend)
 	@ Put the processor to sleep
 	@ (also workaround for sighting 28071)
 
 	@ prepare value for sleep mode
 	mov	r1, r5				@ sleep mode
+	mov	r1, r0				@ sleep mode
 
 	@ prepare pointer to physical address 0 (virtual mapping in generic.c)
 	mov	r2, #UNCACHED_PHYS_0
@@ -213,6 +222,7 @@ ENTRY(pxa27x_cpu_suspend)
 #ifdef CONFIG_PXA25x
 /*
  * pxa25x_cpu_suspend()
+ * pxa25x_finish_suspend()
  *
  * Forces CPU into sleep state.
  *
@@ -232,6 +242,9 @@ ENTRY(pxa25x_cpu_suspend)
 
 	@ prepare value for sleep mode
 	mov	r1, r5				@ sleep mode
+ENTRY(pxa25x_finish_suspend)
+	@ prepare value for sleep mode
+	mov	r1, r0				@ sleep mode
 
 	@ prepare pointer to physical address 0 (virtual mapping in generic.c)
 	mov	r2, #UNCACHED_PHYS_0
@@ -302,6 +315,7 @@ pxa_cpu_do_suspend:
 	@ Intel PXA270 Specification Update notes problems performing
 	@ external accesses after SDRAM is put in self-refresh mode
 	@ (see Errata 39 ...hangs when entering self-refresh mode)
+	@ (see Errata 38 ...hangs when entering self-refresh mode)
 
 	@ force address lines low by reading at physical address 0
 	ldr	r3, [r2]

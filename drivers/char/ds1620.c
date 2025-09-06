@@ -9,6 +9,10 @@
 #include <linux/capability.h>
 #include <linux/init.h>
 #include <linux/smp_lock.h>
+#include <linux/seq_file.h>
+#include <linux/capability.h>
+#include <linux/init.h>
+#include <linux/mutex.h>
 
 #include <mach/hardware.h>
 #include <asm/mach-types.h>
@@ -34,6 +38,7 @@
 #define CFG_CPU			2
 #define CFG_1SHOT		1
 
+static DEFINE_MUTEX(ds1620_mutex);
 static const char *fan_state[] = { "off", "on", "on (hardwired)" };
 
 /*
@@ -49,37 +54,45 @@ extern unsigned int system_rev;
 static inline void netwinder_ds1620_set_clk(int clk)
 {
 	gpio_modify_op(GPIO_DSCLK, clk ? GPIO_DSCLK : 0);
+	nw_gpio_modify_op(GPIO_DSCLK, clk ? GPIO_DSCLK : 0);
 }
 
 static inline void netwinder_ds1620_set_data(int dat)
 {
 	gpio_modify_op(GPIO_DATA, dat ? GPIO_DATA : 0);
+	nw_gpio_modify_op(GPIO_DATA, dat ? GPIO_DATA : 0);
 }
 
 static inline int netwinder_ds1620_get_data(void)
 {
 	return gpio_read() & GPIO_DATA;
+	return nw_gpio_read() & GPIO_DATA;
 }
 
 static inline void netwinder_ds1620_set_data_dir(int dir)
 {
 	gpio_modify_io(GPIO_DATA, dir ? GPIO_DATA : 0);
+	nw_gpio_modify_io(GPIO_DATA, dir ? GPIO_DATA : 0);
 }
 
 static inline void netwinder_ds1620_reset(void)
 {
 	cpld_modify(CPLD_DS_ENABLE, 0);
 	cpld_modify(CPLD_DS_ENABLE, CPLD_DS_ENABLE);
+	nw_cpld_modify(CPLD_DS_ENABLE, 0);
+	nw_cpld_modify(CPLD_DS_ENABLE, CPLD_DS_ENABLE);
 }
 
 static inline void netwinder_lock(unsigned long *flags)
 {
 	spin_lock_irqsave(&gpio_lock, *flags);
+	raw_spin_lock_irqsave(&nw_gpio_lock, *flags);
 }
 
 static inline void netwinder_unlock(unsigned long *flags)
 {
 	spin_unlock_irqrestore(&gpio_lock, *flags);
+	raw_spin_unlock_irqrestore(&nw_gpio_lock, *flags);
 }
 
 static inline void netwinder_set_fan(int i)
@@ -89,6 +102,9 @@ static inline void netwinder_set_fan(int i)
 	spin_lock_irqsave(&gpio_lock, flags);
 	gpio_modify_op(GPIO_FAN, i ? GPIO_FAN : 0);
 	spin_unlock_irqrestore(&gpio_lock, flags);
+	raw_spin_lock_irqsave(&nw_gpio_lock, flags);
+	nw_gpio_modify_op(GPIO_FAN, i ? GPIO_FAN : 0);
+	raw_spin_unlock_irqrestore(&nw_gpio_lock, flags);
 }
 
 static inline int netwinder_get_fan(void)
@@ -97,6 +113,7 @@ static inline int netwinder_get_fan(void)
 		return FAN_ALWAYS_ON;
 
 	return (gpio_read() & GPIO_FAN) ? FAN_ON : FAN_OFF;
+	return (nw_gpio_read() & GPIO_FAN) ? FAN_ON : FAN_OFF;
 }
 
 /*
@@ -234,6 +251,7 @@ ds1620_read(struct file *file, char __user *buf, size_t count, loff_t *ptr)
 
 static int
 ds1620_ioctl(struct inode *inode, struct file *file, unsigned int cmd, unsigned long arg)
+ds1620_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
 	struct therm therm;
 	union {
@@ -321,6 +339,20 @@ ds1620_ioctl(struct inode *inode, struct file *file, unsigned int cmd, unsigned 
 static int
 proc_therm_ds1620_read(char *buf, char **start, off_t offset,
 		       int len, int *eof, void *unused)
+static long
+ds1620_unlocked_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+{
+	int ret;
+
+	mutex_lock(&ds1620_mutex);
+	ret = ds1620_ioctl(file, cmd, arg);
+	mutex_unlock(&ds1620_mutex);
+
+	return ret;
+}
+
+#ifdef THERM_USE_PROC
+static int ds1620_proc_therm_show(struct seq_file *m, void *v)
 {
 	struct therm th;
 	int temp;
@@ -339,6 +371,25 @@ proc_therm_ds1620_read(char *buf, char **start, off_t offset,
 }
 
 static struct proc_dir_entry *proc_therm_ds1620;
+	seq_printf(m, "Thermostat: HI %i.%i, LOW %i.%i; temperature: %i.%i C, fan %s\n",
+		   th.hi >> 1, th.hi & 1 ? 5 : 0,
+		   th.lo >> 1, th.lo & 1 ? 5 : 0,
+		   temp  >> 1, temp  & 1 ? 5 : 0,
+		   fan_state[netwinder_get_fan()]);
+	return 0;
+}
+
+static int ds1620_proc_therm_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, ds1620_proc_therm_show, NULL);
+}
+
+static const struct file_operations ds1620_proc_therm_fops = {
+	.open		= ds1620_proc_therm_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
 #endif
 
 static const struct file_operations ds1620_fops = {
@@ -346,6 +397,8 @@ static const struct file_operations ds1620_fops = {
 	.open		= ds1620_open,
 	.read		= ds1620_read,
 	.ioctl		= ds1620_ioctl,
+	.unlocked_ioctl	= ds1620_unlocked_ioctl,
+	.llseek		= no_llseek,
 };
 
 static struct miscdevice ds1620_miscdev = {
@@ -389,6 +442,7 @@ static int __init ds1620_init(void)
 	if (proc_therm_ds1620)
 		proc_therm_ds1620->read_proc = proc_therm_ds1620_read;
 	else
+	if (!proc_create("therm", 0, NULL, &ds1620_proc_therm_fops))
 		printk(KERN_ERR "therm: unable to register /proc/therm\n");
 #endif
 

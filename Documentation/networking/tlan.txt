@@ -3,6 +3,7 @@
 (C) 1999-2001 Torben Mathiasen <tmm@image.dk, torben.mathiasen@compaq.com>
 
 For driver information/updates visit http://opensource.compaq.com
+For driver information/updates visit http://www.compaq.com
 
 
 TLAN driver for Linux, version 1.14a
@@ -114,4 +115,5 @@ III.  Things to try if you have problems.
 There is also a tlan mailing list which you can join by sending "subscribe tlan"
 in the body of an email to majordomo@vuser.vu.union.edu.
 There is also a tlan website at http://opensource.compaq.com
+There is also a tlan website at http://www.compaq.com
 

@@ -17,6 +17,7 @@
 #include <linux/proc_fs.h>
 #include <linux/errno.h>
 #include <linux/seq_file.h>
+#include <linux/export.h>
 #include <net/net_namespace.h>
 #include <net/sock.h>
 #include <net/llc.h>
@@ -29,6 +30,7 @@ static void llc_ui_format_mac(struct seq_file *seq, u8 *addr)
 {
 	DECLARE_MAC_BUF(mac);
 	seq_printf(seq, "%s", print_mac(mac, addr));
+	seq_printf(seq, "%pM", addr);
 }
 
 static struct sock *llc_get_sk_idx(loff_t pos)
@@ -48,6 +50,23 @@ static struct sock *llc_get_sk_idx(loff_t pos)
 			--pos;
 		}
 		read_unlock_bh(&sap->sk_list.lock);
+	struct llc_sap *sap;
+	struct sock *sk = NULL;
+	int i;
+
+	list_for_each_entry_rcu(sap, &llc_sap_list, node) {
+		spin_lock_bh(&sap->sk_lock);
+		for (i = 0; i < LLC_SK_LADDR_HASH_ENTRIES; i++) {
+			struct hlist_nulls_head *head = &sap->sk_laddr_hash[i];
+			struct hlist_nulls_node *node;
+
+			sk_nulls_for_each(sk, node, head) {
+				if (!pos)
+					goto found; /* keep the lock */
+				--pos;
+			}
+		}
+		spin_unlock_bh(&sap->sk_lock);
 	}
 	sk = NULL;
 found:
@@ -60,6 +79,23 @@ static void *llc_seq_start(struct seq_file *seq, loff_t *pos)
 
 	read_lock_bh(&llc_sap_list_lock);
 	return l ? llc_get_sk_idx(--l) : SEQ_START_TOKEN;
+}
+
+	rcu_read_lock_bh();
+	return l ? llc_get_sk_idx(--l) : SEQ_START_TOKEN;
+}
+
+static struct sock *laddr_hash_next(struct llc_sap *sap, int bucket)
+{
+	struct hlist_nulls_node *node;
+	struct sock *sk = NULL;
+
+	while (++bucket < LLC_SK_LADDR_HASH_ENTRIES)
+		sk_nulls_for_each(sk, node, &sap->sk_laddr_hash[bucket])
+			goto out;
+
+out:
+	return sk;
 }
 
 static void *llc_seq_next(struct seq_file *seq, void *v, loff_t *pos)
@@ -75,6 +111,7 @@ static void *llc_seq_next(struct seq_file *seq, void *v, loff_t *pos)
 	}
 	sk = v;
 	next = sk_next(sk);
+	next = sk_nulls_next(sk);
 	if (next) {
 		sk = next;
 		goto out;
@@ -93,6 +130,16 @@ static void *llc_seq_next(struct seq_file *seq, void *v, loff_t *pos)
 			break;
 		}
 		read_unlock_bh(&sap->sk_list.lock);
+	sk = laddr_hash_next(sap, llc_sk_laddr_hashfn(sap, &llc->laddr));
+	if (sk)
+		goto out;
+	spin_unlock_bh(&sap->sk_lock);
+	list_for_each_entry_continue_rcu(sap, &llc_sap_list, node) {
+		spin_lock_bh(&sap->sk_lock);
+		sk = laddr_hash_next(sap, -1);
+		if (sk)
+			break; /* keep the lock */
+		spin_unlock_bh(&sap->sk_lock);
 	}
 out:
 	return sk;
@@ -108,6 +155,9 @@ static void llc_seq_stop(struct seq_file *seq, void *v)
 		read_unlock_bh(&sap->sk_list.lock);
 	}
 	read_unlock_bh(&llc_sap_list_lock);
+		spin_unlock_bh(&sap->sk_lock);
+	}
+	rcu_read_unlock_bh();
 }
 
 static int llc_seq_socket_show(struct seq_file *seq, void *v)
@@ -139,12 +189,18 @@ static int llc_seq_socket_show(struct seq_file *seq, void *v)
 		   atomic_read(&sk->sk_rmem_alloc) - llc->copied_seq,
 		   sk->sk_state,
 		   sk->sk_socket ? SOCK_INODE(sk->sk_socket)->i_uid : -1,
+	seq_printf(seq, "@%02X %8d %8d %2d %3u %4d\n", llc->daddr.lsap,
+		   sk_wmem_alloc_get(sk),
+		   sk_rmem_alloc_get(sk) - llc->copied_seq,
+		   sk->sk_state,
+		   from_kuid_munged(seq_user_ns(seq), sock_i_uid(sk)),
 		   llc->link);
 out:
 	return 0;
 }
 
 static char *llc_conn_state_names[] = {
+static const char *const llc_conn_state_names[] = {
 	[LLC_CONN_STATE_ADM] =        "adm",
 	[LLC_CONN_STATE_SETUP] =      "setup",
 	[LLC_CONN_STATE_NORMAL] =     "normal",

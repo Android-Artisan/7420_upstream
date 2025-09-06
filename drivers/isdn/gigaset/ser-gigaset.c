@@ -2,12 +2,10 @@
  * DECT base (aka Sinus 45 isdn) using the RS232 DECT data module M101,
  * written as a line discipline.
  *
- * =====================================================================
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License as
  * published by the Free Software Foundation; either version 2 of
  * the License, or (at your option) any later version.
- * =====================================================================
  */
 
 #include "gigaset.h"
@@ -17,6 +15,9 @@
 #include <linux/platform_device.h>
 #include <linux/tty.h>
 #include <linux/poll.h>
+#include <linux/module.h>
+#include <linux/moduleparam.h>
+#include <linux/platform_device.h>
 #include <linux/completion.h>
 
 /* Version Information */
@@ -72,6 +73,7 @@ static int write_modem(struct cardstate *cs)
 
 	if (!tty || !tty->driver || !skb)
 		return -EINVAL;
+	WARN_ON(!tty || !tty->ops || !skb);
 
 	if (!skb->len) {
 		dev_kfree_skb_any(skb);
@@ -114,6 +116,7 @@ static int send_cb(struct cardstate *cs)
 
 	if (!tty || !tty->driver)
 		return -EFAULT;
+	WARN_ON(!tty || !tty->ops);
 
 	cb = cs->cmdbuf;
 	if (!cb)
@@ -168,6 +171,15 @@ static void gigaset_modem_fill(unsigned long data)
 	int sent = 0;
 
 	if (!cs || !(bcs = cs->bcs)) {
+	struct sk_buff *nextskb;
+	int sent = 0;
+
+	if (!cs) {
+		gig_dbg(DEBUG_OUTPUT, "%s: no cardstate", __func__);
+		return;
+	}
+	bcs = cs->bcs;
+	if (!bcs) {
 		gig_dbg(DEBUG_OUTPUT, "%s: no cardstate", __func__);
 		return;
 	}
@@ -183,6 +195,11 @@ static void gigaset_modem_fill(unsigned long data)
 		if (!(bcs->tx_skb = skb_dequeue(&bcs->squeue)))
 			/* no skb either, nothing to do */
 			return;
+		nextskb = skb_dequeue(&bcs->squeue);
+		if (!nextskb)
+			/* no skb either, nothing to do */
+			return;
+		bcs->tx_skb = nextskb;
 
 		gig_dbg(DEBUG_INTR, "Dequeued skb (Adr: %lx)",
 			(unsigned long) bcs->tx_skb);
@@ -224,7 +241,6 @@ static void flush_send_queue(struct cardstate *cs)
 
 
 /* Gigaset Driver Interface */
-/* ======================== */
 
 /*
  * queue an AT command string for transmission to the Gigaset device
@@ -259,6 +275,13 @@ static int gigaset_write_cmd(struct cardstate *cs, const unsigned char *buf,
 	cb->offset = 0;
 	cb->next = NULL;
 	cb->wake_tasklet = wake_tasklet;
+static int gigaset_write_cmd(struct cardstate *cs, struct cmdbuf_t *cb)
+{
+	unsigned long flags;
+
+	gigaset_dbg_buffer(cs->mstate != MS_LOCKED ?
+			   DEBUG_TRANSCMD : DEBUG_LOCKCMD,
+			   "CMD Transmit", cb->len, cb->buf);
 
 	spin_lock_irqsave(&cs->cmdlock, flags);
 	cb->prev = cs->lastcmdbuf;
@@ -269,6 +292,9 @@ static int gigaset_write_cmd(struct cardstate *cs, const unsigned char *buf,
 		cs->curlen = len;
 	}
 	cs->cmdbytes += len;
+		cs->curlen = cb->len;
+	}
+	cs->cmdbytes += cb->len;
 	cs->lastcmdbuf = cb;
 	spin_unlock_irqrestore(&cs->cmdlock, flags);
 
@@ -277,6 +303,7 @@ static int gigaset_write_cmd(struct cardstate *cs, const unsigned char *buf,
 		tasklet_schedule(&cs->write_tasklet);
 	spin_unlock_irqrestore(&cs->lock, flags);
 	return len;
+	return cb->len;
 }
 
 /*
@@ -352,6 +379,7 @@ static int gigaset_initbcshw(struct bc_state *bcs)
 	/* unused */
 	bcs->hw.ser = NULL;
 	return 1;
+	return 0;
 }
 
 /*
@@ -362,6 +390,9 @@ static int gigaset_freebcshw(struct bc_state *bcs)
 {
 	/* unused */
 	return 1;
+static void gigaset_freebcshw(struct bc_state *bcs)
+{
+	/* unused */
 }
 
 /*
@@ -386,6 +417,7 @@ static void gigaset_freecshw(struct cardstate *cs)
 	platform_device_unregister(&cs->hw.ser->dev);
 	kfree(cs->hw.ser);
 	cs->hw.ser = NULL;
+	platform_device_unregister(&cs->hw.ser->dev);
 }
 
 static void gigaset_device_release(struct device *dev)
@@ -397,6 +429,14 @@ static void gigaset_device_release(struct device *dev)
 	//FIXME is this actually necessary?
 	kfree(dev->platform_data);
 	kfree(pdev->resource);
+	struct cardstate *cs = dev_get_drvdata(dev);
+
+	if (!cs)
+		return;
+	dev_set_drvdata(dev, NULL);
+	kfree(cs->hw.ser);
+	cs->hw.ser = NULL;
+	kfree(container_of(dev, struct ser_cardstate, dev.dev));
 }
 
 /*
@@ -411,6 +451,14 @@ static int gigaset_initcshw(struct cardstate *cs)
 		err("%s: out of memory!", __func__);
 		return 0;
 	}
+	struct ser_cardstate *scs;
+
+	scs = kzalloc(sizeof(struct ser_cardstate), GFP_KERNEL);
+	if (!scs) {
+		pr_err("out of memory\n");
+		return -ENOMEM;
+	}
+	cs->hw.ser = scs;
 
 	cs->hw.ser->dev.name = GIGASET_MODULENAME;
 	cs->hw.ser->dev.id = cs->minor_index;
@@ -420,12 +468,19 @@ static int gigaset_initcshw(struct cardstate *cs)
 		kfree(cs->hw.ser);
 		cs->hw.ser = NULL;
 		return 0;
+	rc = platform_device_register(&cs->hw.ser->dev);
+	if (rc != 0) {
+		pr_err("error %d registering platform device\n", rc);
+		kfree(cs->hw.ser);
+		cs->hw.ser = NULL;
+		return rc;
 	}
-	dev_set_drvdata(&cs->hw.ser->dev.dev, cs);
 
 	tasklet_init(&cs->write_tasklet,
 	             &gigaset_modem_fill, (unsigned long) cs);
 	return 1;
+		     gigaset_modem_fill, (unsigned long) cs);
+	return 0;
 }
 
 /*
@@ -437,11 +492,16 @@ static int gigaset_initcshw(struct cardstate *cs)
  * and by "if_lock" and "if_termios" in interface.c
  */
 static int gigaset_set_modem_ctrl(struct cardstate *cs, unsigned old_state, unsigned new_state)
+static int gigaset_set_modem_ctrl(struct cardstate *cs, unsigned old_state,
+				  unsigned new_state)
 {
 	struct tty_struct *tty = cs->hw.ser->tty;
 	unsigned int set, clear;
 
 	if (!tty || !tty->driver || !tty->ops->tiocmset)
+	WARN_ON(!tty || !tty->ops);
+	/* tiocmset is an optional tty driver method */
+	if (!tty->ops->tiocmset)
 		return -EINVAL;
 	set = new_state & ~old_state;
 	clear = old_state & ~new_state;
@@ -449,6 +509,7 @@ static int gigaset_set_modem_ctrl(struct cardstate *cs, unsigned old_state, unsi
 		return 0;
 	gig_dbg(DEBUG_IF, "tiocmset set %x clear %x", set, clear);
 	return tty->ops->tiocmset(tty, NULL, set, clear);
+	return tty->ops->tiocmset(tty, set, clear);
 }
 
 static int gigaset_baud_rate(struct cardstate *cs, unsigned cflag)
@@ -482,7 +543,6 @@ static const struct gigaset_ops ops = {
 
 
 /* Line Discipline Interface */
-/* ========================= */
 
 /* helper functions for cardstate refcounting */
 static struct cardstate *cs_get(struct tty_struct *tty)
@@ -526,6 +586,23 @@ gigaset_tty_open(struct tty_struct *tty)
 	if (!(cs = gigaset_initcs(driver, 1, 1, 0, cidmode,
 				  GIGASET_MODULENAME)))
 		goto error;
+	int rc;
+
+	gig_dbg(DEBUG_INIT, "Starting HLL for Gigaset M101");
+
+	pr_info(DRIVER_DESC "\n");
+
+	if (!driver) {
+		pr_err("%s: no driver structure\n", __func__);
+		return -ENODEV;
+	}
+
+	/* allocate memory for our device state and initialize it */
+	cs = gigaset_initcs(driver, 1, 1, 0, cidmode, GIGASET_MODULENAME);
+	if (!cs) {
+		rc = -ENODEV;
+		goto error;
+	}
 
 	cs->dev = &cs->hw.ser->dev.dev;
 	cs->hw.ser->tty = tty;
@@ -534,12 +611,26 @@ gigaset_tty_open(struct tty_struct *tty)
 
 	tty->disc_data = cs;
 
+	tty->disc_data = cs;
+
+	/* Set the amount of data we're willing to receive per call
+	 * from the hardware driver to half of the input buffer size
+	 * to leave some reserve.
+	 * Note: We don't do flow control towards the hardware driver.
+	 * If more data is received than will fit into the input buffer,
+	 * it will be dropped and an error will be logged. This should
+	 * never happen as the device is slow and the buffer size ample.
+	 */
+	tty->receive_room = RBUFSIZE/2;
+
 	/* OK.. Initialization of the datastructures and the HW is done.. Now
 	 * startup system and notify the LL that we are ready to run
 	 */
 	if (startmode == SM_LOCKED)
 		cs->mstate = MS_LOCKED;
 	if (!gigaset_start(cs)) {
+	rc = gigaset_start(cs);
+	if (rc < 0) {
 		tasklet_kill(&cs->write_tasklet);
 		goto error;
 	}
@@ -552,6 +643,7 @@ error:
 	tty->disc_data = NULL;
 	gigaset_freecs(cs);
 	return -ENODEV;
+	return rc;
 }
 
 /*
@@ -575,6 +667,7 @@ gigaset_tty_close(struct tty_struct *tty)
 
 	if (!cs->hw.ser)
 		err("%s: no hw cardstate", __func__);
+		pr_err("%s: no hw cardstate\n", __func__);
 	else {
 		/* wait for running methods to finish */
 		if (!atomic_dec_and_test(&cs->hw.ser->refcnt))
@@ -646,6 +739,11 @@ gigaset_tty_ioctl(struct tty_struct *tty, struct file *file,
 	case TCGETA:
 		/* pass through to underlying serial device */
 		rc = n_tty_ioctl(tty, file, cmd, arg);
+
+	case FIONREAD:
+		/* unused, always return zero */
+		val = 0;
+		rc = put_user(val, p);
 		break;
 
 	case TCFLSH:
@@ -673,6 +771,13 @@ gigaset_tty_ioctl(struct tty_struct *tty, struct file *file,
 		rc = -ENOIOCTLCMD;
 	}
 
+		/* Pass through */
+
+	default:
+		/* pass through to underlying serial device */
+		rc = n_tty_ioctl_helper(tty, file, cmd, arg);
+		break;
+	}
 	cs_put(cs);
 	return rc;
 }
@@ -710,6 +815,8 @@ gigaset_tty_receive(struct tty_struct *tty, const unsigned char *buf,
 	if (!cs)
 		return;
 	if (!(inbuf = cs->inbuf)) {
+	inbuf = cs->inbuf;
+	if (!inbuf) {
 		dev_err(cs->dev, "%s: no inbuf\n", __func__);
 		cs_put(cs);
 		return;
@@ -777,13 +884,13 @@ static struct tty_ldisc_ops gigaset_ldisc = {
 	.write		= gigaset_tty_write,
 	.ioctl		= gigaset_tty_ioctl,
 	.poll		= gigaset_tty_poll,
+	.ioctl		= gigaset_tty_ioctl,
 	.receive_buf	= gigaset_tty_receive,
 	.write_wakeup	= gigaset_tty_wakeup,
 };
 
 
 /* Initialization / Shutdown */
-/* ========================= */
 
 static int __init ser_gigaset_init(void)
 {
@@ -803,6 +910,24 @@ static int __init ser_gigaset_init(void)
 
 	if ((rc = tty_register_ldisc(N_GIGASET_M101, &gigaset_ldisc)) != 0) {
 		err("error %d registering line discipline", rc);
+	rc = platform_driver_register(&device_driver);
+	if (rc != 0) {
+		pr_err("error %d registering platform driver\n", rc);
+		return rc;
+	}
+
+	/* allocate memory for our driver state and initialize it */
+	driver = gigaset_initdriver(GIGASET_MINOR, GIGASET_MINORS,
+				    GIGASET_MODULENAME, GIGASET_DEVNAME,
+				    &ops, THIS_MODULE);
+	if (!driver) {
+		rc = -ENOMEM;
+		goto error;
+	}
+
+	rc = tty_register_ldisc(N_GIGASET_M101, &gigaset_ldisc);
+	if (rc != 0) {
+		pr_err("error %d registering line discipline\n", rc);
 		goto error;
 	}
 
@@ -830,6 +955,9 @@ static void __exit ser_gigaset_exit(void)
 
 	if ((rc = tty_unregister_ldisc(N_GIGASET_M101)) != 0)
 		err("error %d unregistering line discipline", rc);
+	rc = tty_unregister_ldisc(N_GIGASET_M101);
+	if (rc != 0)
+		pr_err("error %d unregistering line discipline\n", rc);
 
 	platform_driver_unregister(&device_driver);
 }

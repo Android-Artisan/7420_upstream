@@ -53,6 +53,10 @@ static void cpm2_cascade(unsigned int irq, struct irq_desc *desc)
 
 	desc->chip->eoi(irq);
 }
+#include "mpc85xx.h"
+
+#ifdef CONFIG_CPM2
+#include <asm/cpm2.h>
 #endif /* CONFIG_CPM2 */
 
 static void __init stx_gp3_pic_init(void)
@@ -103,6 +107,12 @@ static void __init stx_gp3_pic_init(void)
 	of_node_put(np);
 	set_irq_chained_handler(irq, cpm2_cascade);
 #endif
+	struct mpic *mpic = mpic_alloc(NULL, 0, MPIC_BIG_ENDIAN,
+			0, 256, " OpenPIC  ");
+	BUG_ON(mpic == NULL);
+	mpic_init(mpic);
+
+	mpc85xx_cpm2_pic_init();
 }
 
 /*
@@ -125,6 +135,14 @@ static void __init stx_gp3_setup_arch(void)
 	for_each_compatible_node(np, "pci", "fsl,mpc8540-pci")
 		fsl_add_bridge(np, 1);
 #endif
+	if (ppc_md.progress)
+		ppc_md.progress("stx_gp3_setup_arch()", 0);
+
+	fsl_pci_assign_primary();
+
+#ifdef CONFIG_CPM2
+	cpm2_reset();
+#endif
 }
 
 static void stx_gp3_show_cpuinfo(struct seq_file *m)
@@ -136,6 +154,7 @@ static void stx_gp3_show_cpuinfo(struct seq_file *m)
 	svid = mfspr(SPRN_SVR);
 
 	seq_printf(m, "Vendor\t\t: RPC Electronics STx \n");
+	seq_printf(m, "Vendor\t\t: RPC Electronics STx\n");
 	seq_printf(m, "PVR\t\t: 0x%x\n", pvid);
 	seq_printf(m, "SVR\t\t: 0x%x\n", svid);
 
@@ -159,6 +178,9 @@ static int __init declare_of_platform_devices(void)
 	return 0;
 }
 machine_device_initcall(stx_gp3, declare_of_platform_devices);
+}
+
+machine_arch_initcall(stx_gp3, mpc85xx_common_publish_devices);
 
 /*
  * Called very early, device-tree isn't unflattened

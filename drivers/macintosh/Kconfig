@@ -33,6 +33,7 @@ config ADB_MACII
 config ADB_MACIISI
 	bool "Include Mac IIsi ADB driver"
 	depends on ADB && MAC
+	depends on ADB && MAC && BROKEN
 	help
 	  Say Y here if want your kernel to support Macintosh systems that use
 	  the Mac IIsi style ADB.  This includes the IIsi, IIvi, IIvx, Classic
@@ -87,6 +88,10 @@ config ADB_PMU
 	  this device; you should do so if your machine is one of those
 	  mentioned above.
 
+config ADB_PMU_EVENT
+	def_bool y
+	depends on ADB_PMU && INPUT=y
+
 config ADB_PMU_LED
 	bool "Support for the Power/iBook front LED"
 	depends on ADB_PMU
@@ -102,6 +107,8 @@ config ADB_PMU_LED
 config ADB_PMU_LED_IDE
 	bool "Use front LED as IDE LED by default"
 	depends on ADB_PMU_LED
+	depends on LEDS_CLASS
+	depends on IDE_GD_ATA
 	select LEDS_TRIGGERS
 	select LEDS_TRIGGER_IDE_DISK
 	help
@@ -124,6 +131,7 @@ config PMAC_APM_EMU
 config PMAC_MEDIABAY
 	bool "Support PowerBook hotswap media bay"
 	depends on PPC_PMAC && PPC32
+	depends on PPC_PMAC && PPC32 && BLOCK
 	help
 	  This option adds support for older PowerBook's hotswap media bay
 	  that can contains batteries, floppy drives, or IDE devices. PCI
@@ -139,6 +147,7 @@ config PMAC_BACKLIGHT
 	  backlight code. With this enabled, the brightness keys on older
 	  PowerBooks will be enabled so you can change the screen brightness.
 	  Newer models should use an userspace daemon like pbbuttonsd.
+	  Newer models should use a userspace daemon like pbbuttonsd.
 
 config PMAC_BACKLIGHT_LEGACY
 	bool "Provide legacy ioctl's on /dev/pmu for the backlight"
@@ -167,12 +176,16 @@ config INPUT_ADBHID
 	  the corresponding drivers "Keyboard support" (CONFIG_INPUT_KEYBDEV),
 	  "Mouse Support" (CONFIG_INPUT_MOUSEDEV) and "Event interface
 	  support" (CONFIG_INPUT_EVDEV) as well.
+	  the corresponding drivers "Mouse Support" (CONFIG_INPUT_MOUSEDEV) and
+	  "Event interface support" (CONFIG_INPUT_EVDEV) as well.
 
 	  If unsure, say Y.
 
 config MAC_EMUMOUSEBTN
 	bool "Support for mouse button 2+3 emulation"
 	select INPUT
+	tristate "Support for mouse button 2+3 emulation"
+	depends on SYSCTL && INPUT
 	help
 	  This provides generic support for emulating the 2nd and 3rd mouse
 	  button with keypresses.  If you say Y here, the emulation is still
@@ -183,6 +196,9 @@ config MAC_EMUMOUSEBTN
 	  /proc/sys/dev/mac_hid/mouse_button3_keycode
 
 	  If you have an Apple machine with a 1-button mouse, say Y here.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called mac_hid.
 
 config THERM_WINDTUNNEL
 	tristate "Support for thermal management on Windtunnel G4s"
@@ -216,6 +232,22 @@ config WINDFARM_PM81
 	select I2C_POWERMAC
 	help
 	  This driver provides thermal control for the iMacG5
+
+config WINDFARM_PM72
+	tristate "Support for thermal management on PowerMac G5 (AGP)"
+	depends on WINDFARM && I2C && CPU_FREQ_PMAC64 && ADB_PMU
+	select I2C_POWERMAC
+	help
+	  This driver provides thermal control for the PowerMac G5
+	  "AGP" variants (PowerMac 7,2 and 7,3)
+
+config WINDFARM_RM31
+	tristate "Support for thermal management on Xserve G5"
+	depends on WINDFARM && I2C && CPU_FREQ_PMAC64 && ADB_PMU
+	select I2C_POWERMAC
+	help
+	  This driver provides thermal control for the Xserve G5
+	  (RackMac3,1)
 
 config WINDFARM_PM91
 	tristate "Support for thermal management on PowerMac9,1"
@@ -252,5 +284,31 @@ config PMAC_RACKMETER
 	help
 	  This driver provides some support to control the front panel
           blue LEDs "vu-meter" of the XServer macs.
+
+config SENSORS_AMS
+	tristate "Apple Motion Sensor driver"
+	depends on PPC_PMAC && !PPC64 && INPUT && ((ADB_PMU && I2C = y) || (ADB_PMU && !I2C) || I2C)
+	select INPUT_POLLDEV
+	help
+	  Support for the motion sensor included in PowerBooks. Includes
+	  implementations for PMU and I2C.
+
+	  This driver can also be built as a module. If so, the module
+	  will be called ams.
+
+config SENSORS_AMS_PMU
+	bool "PMU variant"
+	depends on SENSORS_AMS && ADB_PMU
+	default y
+	help
+	  PMU variant of motion sensor, found in late 2005 PowerBooks.
+
+config SENSORS_AMS_I2C
+	bool "I2C variant"
+	depends on SENSORS_AMS && I2C
+	default y
+	help
+	  I2C variant of motion sensor, found in early 2005 PowerBooks and
+	  iBooks.
 
 endif # MACINTOSH_DRIVERS

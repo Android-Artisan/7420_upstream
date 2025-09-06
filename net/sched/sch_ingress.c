@@ -28,6 +28,10 @@ static int ingress_graft(struct Qdisc *sch, unsigned long arg,
 	return -EOPNOTSUPP;
 }
 
+
+#include <net/netlink.h>
+#include <net/pkt_sched.h>
+
 static struct Qdisc *ingress_leaf(struct Qdisc *sch, unsigned long arg)
 {
 	return NULL;
@@ -105,6 +109,32 @@ static void ingress_destroy(struct Qdisc *sch)
 	struct ingress_qdisc_data *p = qdisc_priv(sch);
 
 	tcf_destroy_chain(&p->filter_list);
+static void ingress_walk(struct Qdisc *sch, struct qdisc_walker *walker)
+{
+}
+
+static struct tcf_proto __rcu **ingress_find_tcf(struct Qdisc *sch,
+						 unsigned long cl)
+{
+	struct net_device *dev = qdisc_dev(sch);
+
+	return &dev->ingress_cl_list;
+}
+
+static int ingress_init(struct Qdisc *sch, struct nlattr *opt)
+{
+	net_inc_ingress_queue();
+	sch->flags |= TCQ_F_CPUSTATS;
+
+	return 0;
+}
+
+static void ingress_destroy(struct Qdisc *sch)
+{
+	struct net_device *dev = qdisc_dev(sch);
+
+	tcf_destroy_chain(&dev->ingress_cl_list);
+	net_dec_ingress_queue();
 }
 
 static int ingress_dump(struct Qdisc *sch, struct sk_buff *skb)
@@ -117,6 +147,8 @@ static int ingress_dump(struct Qdisc *sch, struct sk_buff *skb)
 	nla_nest_end(skb, nest);
 	return skb->len;
 
+	return nla_nest_end(skb, nest);
+
 nla_put_failure:
 	nla_nest_cancel(skb, nest);
 	return -1;
@@ -128,6 +160,9 @@ static const struct Qdisc_class_ops ingress_class_ops = {
 	.get		=	ingress_get,
 	.put		=	ingress_put,
 	.change		=	ingress_change,
+	.leaf		=	ingress_leaf,
+	.get		=	ingress_get,
+	.put		=	ingress_put,
 	.walk		=	ingress_walk,
 	.tcf_chain	=	ingress_find_tcf,
 	.bind_tcf	=	ingress_bind_filter,
@@ -139,6 +174,7 @@ static struct Qdisc_ops ingress_qdisc_ops __read_mostly = {
 	.id		=	"ingress",
 	.priv_size	=	sizeof(struct ingress_qdisc_data),
 	.enqueue	=	ingress_enqueue,
+	.init		=	ingress_init,
 	.destroy	=	ingress_destroy,
 	.dump		=	ingress_dump,
 	.owner		=	THIS_MODULE,
@@ -156,4 +192,7 @@ static void __exit ingress_module_exit(void)
 
 module_init(ingress_module_init)
 module_exit(ingress_module_exit)
+module_init(ingress_module_init);
+module_exit(ingress_module_exit);
+
 MODULE_LICENSE("GPL");

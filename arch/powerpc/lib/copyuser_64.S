@@ -11,6 +11,22 @@
 
 	.align	7
 _GLOBAL(__copy_tofrom_user)
+#ifdef __BIG_ENDIAN__
+#define sLd sld		/* Shift towards low-numbered address. */
+#define sHd srd		/* Shift towards high-numbered address. */
+#else
+#define sLd srd		/* Shift towards low-numbered address. */
+#define sHd sld		/* Shift towards high-numbered address. */
+#endif
+
+	.align	7
+_GLOBAL_TOC(__copy_tofrom_user)
+BEGIN_FTR_SECTION
+	nop
+FTR_SECTION_ELSE
+	b	__copy_tofrom_user_power7
+ALT_FTR_SECTION_END_IFCLR(CPU_FTR_VMX_COPY)
+_GLOBAL(__copy_tofrom_user_base)
 	/* first check for a whole page copy on a page boundary */
 	cmpldi	cr1,r5,16
 	cmpdi	cr6,r5,4096
@@ -61,6 +77,75 @@ _GLOBAL(__copy_tofrom_user)
 	addi	r3,r3,2
 2:	bf	cr7*4+3,3f
 	rotldi	r9,r9,8
+	PPC_MTOCRF(0x01,r5)
+	blt	cr1,.Lshort_copy
+/* Below we want to nop out the bne if we're on a CPU that has the
+ * CPU_FTR_UNALIGNED_LD_STD bit set and the CPU_FTR_CP_USE_DCBTZ bit
+ * cleared.
+ * At the time of writing the only CPU that has this combination of bits
+ * set is Power6.
+ */
+BEGIN_FTR_SECTION
+	nop
+FTR_SECTION_ELSE
+	bne	.Ldst_unaligned
+ALT_FTR_SECTION_END(CPU_FTR_UNALIGNED_LD_STD | CPU_FTR_CP_USE_DCBTZ, \
+		    CPU_FTR_UNALIGNED_LD_STD)
+.Ldst_aligned:
+	addi	r3,r3,-16
+BEGIN_FTR_SECTION
+	andi.	r0,r4,7
+	bne	.Lsrc_unaligned
+END_FTR_SECTION_IFCLR(CPU_FTR_UNALIGNED_LD_STD)
+	blt	cr1,.Ldo_tail		/* if < 16 bytes to copy */
+	srdi	r0,r5,5
+	cmpdi	cr1,r0,0
+20:	ld	r7,0(r4)
+220:	ld	r6,8(r4)
+	addi	r4,r4,16
+	mtctr	r0
+	andi.	r0,r5,0x10
+	beq	22f
+	addi	r3,r3,16
+	addi	r4,r4,-16
+	mr	r9,r7
+	mr	r8,r6
+	beq	cr1,72f
+21:	ld	r7,16(r4)
+221:	ld	r6,24(r4)
+	addi	r4,r4,32
+70:	std	r9,0(r3)
+270:	std	r8,8(r3)
+22:	ld	r9,0(r4)
+222:	ld	r8,8(r4)
+71:	std	r7,16(r3)
+271:	std	r6,24(r3)
+	addi	r3,r3,32
+	bdnz	21b
+72:	std	r9,0(r3)
+272:	std	r8,8(r3)
+	andi.	r5,r5,0xf
+	beq+	3f
+	addi	r4,r4,16
+.Ldo_tail:
+	addi	r3,r3,16
+	bf	cr7*4+0,246f
+244:	ld	r9,0(r4)
+	addi	r4,r4,8
+245:	std	r9,0(r3)
+	addi	r3,r3,8
+246:	bf	cr7*4+1,1f
+23:	lwz	r9,0(r4)
+	addi	r4,r4,4
+73:	stw	r9,0(r3)
+	addi	r3,r3,4
+1:	bf	cr7*4+2,2f
+44:	lhz	r9,0(r4)
+	addi	r4,r4,2
+74:	sth	r9,0(r3)
+	addi	r3,r3,2
+2:	bf	cr7*4+3,3f
+45:	lbz	r9,0(r4)
 75:	stb	r9,0(r3)
 3:	li	r3,0
 	blr
@@ -84,6 +169,10 @@ _GLOBAL(__copy_tofrom_user)
 26:	ldu	r9,16(r4)
 	srd	r7,r0,r11
 	sld	r8,r0,r10
+	sLd	r6,r9,r10
+26:	ldu	r9,16(r4)
+	sHd	r7,r0,r11
+	sLd	r8,r0,r10
 	or	r7,r7,r6
 	blt	cr6,79f
 27:	ld	r0,8(r4)
@@ -101,6 +190,16 @@ _GLOBAL(__copy_tofrom_user)
 	or	r12,r8,r12
 	srd	r7,r0,r11
 	sld	r8,r0,r10
+	sLd	r8,r0,r10
+	addi	r3,r3,-8
+	blt	cr6,5f
+30:	ld	r0,8(r4)
+	sHd	r12,r9,r11
+	sLd	r6,r9,r10
+31:	ldu	r9,16(r4)
+	or	r12,r8,r12
+	sHd	r7,r0,r11
+	sLd	r8,r0,r10
 	addi	r3,r3,16
 	beq	cr6,78f
 
@@ -114,12 +213,20 @@ _GLOBAL(__copy_tofrom_user)
 77:	stdu	r7,16(r3)
 	srd	r7,r0,r11
 	sld	r8,r0,r10
+2:	sHd	r12,r9,r11
+	sLd	r6,r9,r10
+33:	ldu	r9,16(r4)
+	or	r12,r8,r12
+77:	stdu	r7,16(r3)
+	sHd	r7,r0,r11
+	sLd	r8,r0,r10
 	bdnz	1b
 
 78:	std	r12,8(r3)
 	or	r7,r7,r6
 79:	std	r7,16(r3)
 5:	srd	r12,r9,r11
+5:	sHd	r12,r9,r11
 	or	r12,r8,r12
 80:	std	r12,24(r3)
 	bne	6f
@@ -139,6 +246,46 @@ _GLOBAL(__copy_tofrom_user)
 	subf	r5,r6,r5
 	li	r7,0
 	cmpldi	r1,r5,16
+	sLd	r9,r9,r10
+	ble	cr1,7f
+34:	ld	r0,8(r4)
+	sHd	r7,r0,r11
+	or	r9,r7,r9
+7:
+	bf	cr7*4+1,1f
+#ifdef __BIG_ENDIAN__
+	rotldi	r9,r9,32
+#endif
+94:	stw	r9,0(r3)
+#ifdef __LITTLE_ENDIAN__
+	rotrdi	r9,r9,32
+#endif
+	addi	r3,r3,4
+1:	bf	cr7*4+2,2f
+#ifdef __BIG_ENDIAN__
+	rotldi	r9,r9,16
+#endif
+95:	sth	r9,0(r3)
+#ifdef __LITTLE_ENDIAN__
+	rotrdi	r9,r9,16
+#endif
+	addi	r3,r3,2
+2:	bf	cr7*4+3,3f
+#ifdef __BIG_ENDIAN__
+	rotldi	r9,r9,8
+#endif
+96:	stb	r9,0(r3)
+#ifdef __LITTLE_ENDIAN__
+	rotrdi	r9,r9,8
+#endif
+3:	li	r3,0
+	blr
+
+.Ldst_unaligned:
+	PPC_MTOCRF(0x01,r6)		/* put #bytes to 8B bdry into cr7 */
+	subf	r5,r6,r5
+	li	r7,0
+	cmpldi	cr1,r5,16
 	bf	cr7*4+3,1f
 35:	lbz	r0,0(r4)
 81:	stb	r0,0(r3)
@@ -151,6 +298,7 @@ _GLOBAL(__copy_tofrom_user)
 37:	lwzx	r0,r7,r4
 83:	stwx	r0,r7,r3
 3:	PPC_MTOCRF	0x01,r5
+3:	PPC_MTOCRF(0x01,r5)
 	add	r4,r6,r4
 	add	r3,r6,r3
 	b	.Ldst_aligned
@@ -194,6 +342,9 @@ _GLOBAL(__copy_tofrom_user)
 	addi	r3,r3,8
 120:
 122:
+320:
+122:
+322:
 124:
 125:
 126:
@@ -206,6 +357,11 @@ _GLOBAL(__copy_tofrom_user)
 132:
 	addi	r3,r3,8
 123:
+132:
+	addi	r3,r3,8
+121:
+321:
+344:
 134:
 135:
 138:
@@ -213,6 +369,9 @@ _GLOBAL(__copy_tofrom_user)
 140:
 141:
 142:
+123:
+144:
+145:
 
 /*
  * here we have had a fault on a load and r3 points to the first
@@ -274,28 +433,37 @@ _GLOBAL(__copy_tofrom_user)
 183:
 	add	r3,r3,r7
 	b	1f
+371:
 180:
 	addi	r3,r3,8
 171:
 177:
+179:
 	addi	r3,r3,8
 170:
 172:
+370:
+372:
 176:
 178:
 	addi	r3,r3,4
 185:
 	addi	r3,r3,4
+170:
+172:
+345:
 173:
 174:
 175:
-179:
 181:
 184:
 186:
 187:
 188:
 189:	
+194:
+195:
+196:
 1:
 	ld	r6,-24(r1)
 	ld	r5,-8(r1)
@@ -317,6 +485,24 @@ _GLOBAL(__copy_tofrom_user)
 	.llong	23b,123b
 	.llong	73b,173b
 	.llong	74b,174b
+	.llong	220b,320b
+	.llong	21b,121b
+	.llong	221b,321b
+	.llong	70b,170b
+	.llong	270b,370b
+	.llong	22b,122b
+	.llong	222b,322b
+	.llong	71b,171b
+	.llong	271b,371b
+	.llong	72b,172b
+	.llong	272b,372b
+	.llong	244b,344b
+	.llong	245b,345b
+	.llong	23b,123b
+	.llong	73b,173b
+	.llong	44b,144b
+	.llong	74b,174b
+	.llong	45b,145b
 	.llong	75b,175b
 	.llong	24b,124b
 	.llong	25b,125b
@@ -334,6 +520,9 @@ _GLOBAL(__copy_tofrom_user)
 	.llong	79b,179b
 	.llong	80b,180b
 	.llong	34b,134b
+	.llong	94b,194b
+	.llong	95b,195b
+	.llong	96b,196b
 	.llong	35b,135b
 	.llong	81b,181b
 	.llong	36b,136b
@@ -363,6 +552,7 @@ _GLOBAL(__copy_tofrom_user)
  * On POWER4 it is more than 50% faster than the simple loop
  * above (following the .Ldst_aligned label) but it runs slightly
  * slower on POWER3.
+ * above (following the .Ldst_aligned label).
  */
 .Lcopy_page_4K:
 	std	r31,-32(1)

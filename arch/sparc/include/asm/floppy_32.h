@@ -13,6 +13,15 @@
 #include <asm/machines.h>
 #include <asm/oplib.h>
 #include <asm/auxio.h>
+#include <linux/of.h>
+#include <linux/of_device.h>
+
+#include <asm/pgtable.h>
+#include <asm/idprom.h>
+#include <asm/oplib.h>
+#include <asm/auxio.h>
+#include <asm/setup.h>
+#include <asm/page.h>
 #include <asm/irq.h>
 
 /* We don't need no stinkin' I/O port allocation crap. */
@@ -112,6 +121,8 @@ static void sun_set_dor(unsigned char value, int fdc_82077)
 	if (fdc_82077) {
 		sun_fdc->dor_82077 = value;
 	}
+	if (fdc_82077)
+		sun_fdc->dor_82077 = value;
 }
 
 static unsigned char sun_read_dir(void)
@@ -120,6 +131,7 @@ static unsigned char sun_read_dir(void)
 		return (get_auxio() & AUXIO_FLPY_DCHG) ? 0x80 : 0;
 	else
 		return sun_fdc->dir_82077;
+	return sun_fdc->dir_82077;
 }
 
 static unsigned char sun_82072_fd_inb(int port)
@@ -136,6 +148,7 @@ static unsigned char sun_82072_fd_inb(int port)
 	case 7: /* FD_DIR */
 		return sun_read_dir();
 	};
+	}
 	panic("sun_82072_fd_inb: How did I get here?");
 }
 
@@ -159,6 +172,7 @@ static void sun_82072_fd_outb(unsigned char value, int port)
 		sun_fdc->status_82072 = value;
 		break;
 	};
+	}
 	return;
 }
 
@@ -184,6 +198,7 @@ static unsigned char sun_82077_fd_inb(int port)
 	case 7: /* FD_DIR */
 		return sun_read_dir();
 	};
+	}
 	panic("sun_82077_fd_inb: How did I get here?");
 }
 
@@ -210,6 +225,7 @@ static void sun_82077_fd_outb(unsigned char value, int port)
 		sun_fdc->tapectl_82077 = value;
 		break;
 	};
+	}
 	return;
 }
 
@@ -244,6 +260,7 @@ static inline void sun_fd_disable_dma(void)
 		mmu_unlockarea(pdma_base, pdma_areasize);
 		pdma_base = NULL;
 	}
+	pdma_base = NULL;
 }
 
 static inline void sun_fd_set_dma_mode(int mode)
@@ -281,6 +298,7 @@ static inline void sun_fd_enable_dma(void)
 /* Our low-level entry point in arch/sparc/kernel/entry.S */
 extern int sparc_floppy_request_irq(int irq, unsigned long flags,
 				    irq_handler_t irq_handler);
+int sparc_floppy_request_irq(unsigned int irq, irq_handler_t irq_handler);
 
 static int sun_fd_request_irq(void)
 {
@@ -294,6 +312,13 @@ static int sun_fd_request_irq(void)
 						 floppy_interrupt);
 		return ((error == 0) ? 0 : -1);
 	} else return 0;
+
+	if (!once) {
+		once = 1;
+		return sparc_floppy_request_irq(FLOPPY_IRQ, floppy_interrupt);
+	} else {
+		return 0;
+	}
 }
 
 static struct linux_prom_registers fd_regs[2];
@@ -313,6 +338,20 @@ static int sun_floppy_init(void)
 	if((sparc_cpu_model != sun4c && sparc_cpu_model != sun4m) ||
 	   ((idprom->id_machtype == (SM_SUN4C | SM_4C_SLC)) ||
 	    (idprom->id_machtype == (SM_SUN4C | SM_4C_ELC)))) {
+	struct platform_device *op;
+	struct device_node *dp;
+	struct resource r;
+	char state[128];
+	phandle fd_node;
+	phandle tnode;
+	int num_regs;
+
+	use_virtual_dma = 1;
+
+	/* Forget it if we aren't on a machine that could possibly
+	 * ever have a floppy drive.
+	 */
+	if (sparc_cpu_model != sun4m) {
 		/* We certainly don't have a floppy controller. */
 		goto no_sun_fdc;
 	}
@@ -320,18 +359,21 @@ static int sun_floppy_init(void)
 	tnode = prom_getchild(prom_root_node);
 	fd_node = prom_searchsiblings(tnode, "obio");
 	if(fd_node != 0) {
+	if (fd_node != 0) {
 		tnode = prom_getchild(fd_node);
 		fd_node = prom_searchsiblings(tnode, "SUNW,fdtwo");
 	} else {
 		fd_node = prom_searchsiblings(tnode, "fd");
 	}
 	if(fd_node == 0) {
+	if (fd_node == 0) {
 		goto no_sun_fdc;
 	}
 
 	/* The sun4m lets us know if the controller is actually usable. */
 	if(sparc_cpu_model == sun4m &&
 	   prom_getproperty(fd_node, "status", state, sizeof(state)) != -1) {
+	if (prom_getproperty(fd_node, "status", state, sizeof(state)) != -1) {
 		if(!strcmp(state, "disabled")) {
 			goto no_sun_fdc;
 		}
@@ -347,6 +389,31 @@ static int sun_floppy_init(void)
 
 	/* Last minute sanity check... */
 	if(sun_fdc->status_82072 == 0xff) {
+	sun_fdc = of_ioremap(&r, 0, fd_regs[0].reg_size, "floppy");
+
+	/* Look up irq in platform_device.
+	 * We try "SUNW,fdtwo" and "fd"
+	 */
+	op = NULL;
+	for_each_node_by_name(dp, "SUNW,fdtwo") {
+		op = of_find_device_by_node(dp);
+		if (op)
+			break;
+	}
+	if (!op) {
+		for_each_node_by_name(dp, "fd") {
+			op = of_find_device_by_node(dp);
+			if (op)
+				break;
+		}
+	}
+	if (!op)
+		goto no_sun_fdc;
+
+	FLOPPY_IRQ = op->archdata.irqs[0];
+
+	/* Last minute sanity check... */
+	if (sun_fdc->status_82072 == 0xff) {
 		sun_fdc = NULL;
 		goto no_sun_fdc;
 	}
@@ -384,5 +451,16 @@ static int sparc_eject(void)
 #define fd_eject(drive) sparc_eject()
 
 #define EXTRA_FLOPPY_PARAMS
+
+static DEFINE_SPINLOCK(dma_spin_lock);
+
+#define claim_dma_lock() \
+({	unsigned long flags; \
+	spin_lock_irqsave(&dma_spin_lock, flags); \
+	flags; \
+})
+
+#define release_dma_lock(__flags) \
+	spin_unlock_irqrestore(&dma_spin_lock, __flags);
 
 #endif /* !(__ASM_SPARC_FLOPPY_H) */

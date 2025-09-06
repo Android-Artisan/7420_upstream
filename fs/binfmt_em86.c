@@ -24,6 +24,7 @@
 #define EM86_I_NAME	"em86"
 
 static int load_em86(struct linux_binprm *bprm,struct pt_regs *regs)
+static int load_em86(struct linux_binprm *bprm)
 {
 	char *interp, *i_name, *i_arg;
 	struct file * file;
@@ -44,6 +45,14 @@ static int load_em86(struct linux_binprm *bprm,struct pt_regs *regs)
 	}
 
 	bprm->sh_bang = 1;	/* Well, the bang-shell is implicit... */
+		!bprm->file->f_op->mmap) {
+			return -ENOEXEC;
+	}
+
+	/* Need to be able to load the file after exec */
+	if (bprm->interp_flags & BINPRM_FLAGS_PATH_INACCESSIBLE)
+		return -ENOENT;
+
 	allow_write_access(bprm->file);
 	fput(bprm->file);
 	bprm->file = NULL;
@@ -92,6 +101,7 @@ static int load_em86(struct linux_binprm *bprm,struct pt_regs *regs)
 		return retval;
 
 	return search_binary_handler(bprm, regs);
+	return search_binary_handler(bprm);
 }
 
 static struct linux_binfmt em86_format = {
@@ -102,6 +112,8 @@ static struct linux_binfmt em86_format = {
 static int __init init_em86_binfmt(void)
 {
 	return register_binfmt(&em86_format);
+	register_binfmt(&em86_format);
+	return 0;
 }
 
 static void __exit exit_em86_binfmt(void)

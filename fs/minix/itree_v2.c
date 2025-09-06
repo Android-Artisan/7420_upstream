@@ -20,6 +20,9 @@ static inline block_t *i_data(struct inode *inode)
 	return (block_t *)minix_i(inode)->u.i2_data;
 }
 
+#define DIRCOUNT 7
+#define INDIRCOUNT(sb) (1 << ((sb)->s_blocksize_bits - 2))
+
 static int block_to_path(struct inode * inode, long block, int offsets[DEPTH])
 {
 	int n = 0;
@@ -30,6 +33,8 @@ static int block_to_path(struct inode * inode, long block, int offsets[DEPTH])
 		printk("MINIX-fs: block_to_path: block %ld < 0 on dev %s\n",
 			block, bdevname(sb->s_bdev, b));
 	} else if (block >= (minix_sb(inode->i_sb)->s_max_size/sb->s_blocksize)) {
+	} else if ((u64)block * (u64)sb->s_blocksize >=
+			minix_sb(sb)->s_max_size) {
 		if (printk_ratelimit())
 			printk("MINIX-fs: block_to_path: "
 			       "block %ld too big on dev %s\n",
@@ -49,6 +54,21 @@ static int block_to_path(struct inode * inode, long block, int offsets[DEPTH])
 		offsets[n++] = block>>16;
 		offsets[n++] = (block>>8) & 255;
 		offsets[n++] = block & 255;
+	} else if (block < DIRCOUNT) {
+		offsets[n++] = block;
+	} else if ((block -= DIRCOUNT) < INDIRCOUNT(sb)) {
+		offsets[n++] = DIRCOUNT;
+		offsets[n++] = block;
+	} else if ((block -= INDIRCOUNT(sb)) < INDIRCOUNT(sb) * INDIRCOUNT(sb)) {
+		offsets[n++] = DIRCOUNT + 1;
+		offsets[n++] = block / INDIRCOUNT(sb);
+		offsets[n++] = block % INDIRCOUNT(sb);
+	} else {
+		block -= INDIRCOUNT(sb) * INDIRCOUNT(sb);
+		offsets[n++] = DIRCOUNT + 2;
+		offsets[n++] = (block / INDIRCOUNT(sb)) / INDIRCOUNT(sb);
+		offsets[n++] = (block / INDIRCOUNT(sb)) % INDIRCOUNT(sb);
+		offsets[n++] = block % INDIRCOUNT(sb);
 	}
 	return n;
 }

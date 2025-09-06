@@ -34,6 +34,7 @@
 #include <asm/page.h>
 #include <asm/pgtable.h>
 #include <asm/system.h>
+#include <asm/switch_to.h>
 
 /*
  * does not yet catch signals sent when the child dies.
@@ -68,6 +69,10 @@ static long compat_ptrace_old(struct task_struct *child, long request,
 #define FPRNUMBER(i) (((i) - PT_FPR0) >> 1)
 #define FPRHALF(i) (((i) - PT_FPR0) & 1)
 #define FPRINDEX(i) TS_FPRWIDTH * FPRNUMBER(i) + FPRHALF(i)
+/* Macros to workout the correct index for the FPR in the thread struct */
+#define FPRNUMBER(i) (((i) - PT_FPR0) >> 1)
+#define FPRHALF(i) (((i) - PT_FPR0) & 1)
+#define FPRINDEX(i) TS_FPRWIDTH * FPRNUMBER(i) * 2 + FPRHALF(i)
 
 long compat_arch_ptrace(struct task_struct *child, compat_long_t request,
 			compat_ulong_t caddr, compat_ulong_t cdata)
@@ -120,6 +125,9 @@ long compat_arch_ptrace(struct task_struct *child, compat_long_t request,
 		CHECK_FULL_REGS(child->thread.regs);
 		if (index < PT_FPR0) {
 			tmp = ptrace_get_reg(child, index);
+			ret = ptrace_get_reg(child, index, &tmp);
+			if (ret)
+				break;
 		} else {
 			flush_fp_to_thread(child);
 			/*
@@ -128,6 +136,7 @@ long compat_arch_ptrace(struct task_struct *child, compat_long_t request,
 			 * index passed in is based on this assumption.
 			 */
 			tmp = ((unsigned int *)child->thread.fpr)
+			tmp = ((unsigned int *)child->thread.fp_state.fpr)
 				[FPRINDEX(index)];
 		}
 		ret = put_user((unsigned int)tmp, (u32 __user *)data);
@@ -172,6 +181,14 @@ long compat_arch_ptrace(struct task_struct *child, compat_long_t request,
 				[FPRINDEX(numReg)];
 		} else { /* register within PT_REGS struct */
 			tmp = ptrace_get_reg(child, numReg);
+			/* get 64 bit FPR */
+			tmp = child->thread.fp_state.fpr[numReg - PT_FPR0][0];
+		} else { /* register within PT_REGS struct */
+			unsigned long tmp2;
+			ret = ptrace_get_reg(child, numReg, &tmp2);
+			if (ret)
+				break;
+			tmp = tmp2;
 		} 
 		reg32bits = ((u32*)&tmp)[part];
 		ret = put_user(reg32bits, (u32 __user *)data);
@@ -225,6 +242,7 @@ long compat_arch_ptrace(struct task_struct *child, compat_long_t request,
 			 * index passed in is based on this assumption.
 			 */
 			((unsigned int *)child->thread.fpr)
+			((unsigned int *)child->thread.fp_state.fpr)
 				[FPRINDEX(index)] = data;
 			ret = 0;
 		}
@@ -256,6 +274,10 @@ long compat_arch_ptrace(struct task_struct *child, compat_long_t request,
 		CHECK_FULL_REGS(child->thread.regs);
 		if (numReg < PT_FPR0) {
 			unsigned long freg = ptrace_get_reg(child, numReg);
+			unsigned long freg;
+			ret = ptrace_get_reg(child, numReg, &freg);
+			if (ret)
+				break;
 			if (index % 2)
 				freg = (freg & ~0xfffffffful) | (data & 0xfffffffful);
 			else
@@ -264,17 +286,34 @@ long compat_arch_ptrace(struct task_struct *child, compat_long_t request,
 		} else {
 			flush_fp_to_thread(child);
 			((unsigned int *)child->thread.regs)[index] = data;
+			u64 *tmp;
+			flush_fp_to_thread(child);
+			/* get 64 bit FPR ... */
+			tmp = &child->thread.fp_state.fpr[numReg - PT_FPR0][0];
+			/* ... write the 32 bit part we want */
+			((u32 *)tmp)[index % 2] = data;
 			ret = 0;
 		}
 		break;
 	}
 
 	case PTRACE_GET_DEBUGREG: {
+#ifndef CONFIG_PPC_ADV_DEBUG_REGS
+		unsigned long dabr_fake;
+#endif
 		ret = -EINVAL;
 		/* We only support one DABR and no IABRS at the moment */
 		if (addr > 0)
 			break;
 		ret = put_user(child->thread.dabr, (u32 __user *)data);
+#ifdef CONFIG_PPC_ADV_DEBUG_REGS
+		ret = put_user(child->thread.debug.dac1, (u32 __user *)data);
+#else
+		dabr_fake = (
+			(child->thread.hw_brk.address & (~HW_BRK_TYPE_DABR)) |
+			(child->thread.hw_brk.type & HW_BRK_TYPE_DABR));
+		ret = put_user(dabr_fake, (u32 __user *)data);
+#endif
 		break;
 	}
 
@@ -313,6 +352,12 @@ long compat_arch_ptrace(struct task_struct *child, compat_long_t request,
 	case PPC_PTRACE_GETREGS: /* Get GPRs 0 - 31. */
 	case PPC_PTRACE_SETREGS: /* Set GPRs 0 - 31. */
 		ret = compat_ptrace_old(child, request, addr, data);
+		break;
+
+	case PPC_PTRACE_GETHWDBGINFO:
+	case PPC_PTRACE_SETHWDEBUG:
+	case PPC_PTRACE_DELHWDEBUG:
+		ret = arch_ptrace(child, request, addr, data);
 		break;
 
 	default:

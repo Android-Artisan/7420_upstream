@@ -44,6 +44,9 @@ struct adfs_discrecord {
 #include <linux/adfs_fs_i.h>
 #include <linux/adfs_fs_sb.h>
 /*
+#include <uapi/linux/adfs_fs.h>
+
+/*
  * Calculate the boot block checksum on an ADFS drive.  Note that this will
  * appear to be correct if the sector contains all zeros, so also check that
  * the disk size is non-zero!!!

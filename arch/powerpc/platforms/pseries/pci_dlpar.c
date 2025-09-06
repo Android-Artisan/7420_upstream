@@ -26,10 +26,13 @@
  */
 
 #include <linux/pci.h>
+#include <linux/export.h>
 #include <asm/pci-bridge.h>
 #include <asm/ppc-pci.h>
 #include <asm/firmware.h>
 #include <asm/eeh.h>
+
+#include "pseries.h"
 
 static struct pci_bus *
 find_bus_among_children(struct pci_bus *bus,
@@ -37,6 +40,7 @@ find_bus_among_children(struct pci_bus *bus,
 {
 	struct pci_bus *child = NULL;
 	struct list_head *tmp;
+	struct pci_bus *tmp;
 	struct device_node *busdn;
 
 	busdn = pci_bus_to_OF_node(bus);
@@ -45,6 +49,8 @@ find_bus_among_children(struct pci_bus *bus,
 
 	list_for_each(tmp, &bus->children) {
 		child = find_bus_among_children(pci_bus_b(tmp), dn);
+	list_for_each_entry(tmp, &bus->children, node) {
+		child = find_bus_among_children(tmp, dn);
 		if (child)
 			break;
 	};
@@ -191,6 +197,12 @@ struct pci_controller * __devinit init_phb_dynamic(struct device_node *dn)
 	int primary;
 
 	primary = list_empty(&hose_list);
+struct pci_controller *init_phb_dynamic(struct device_node *dn)
+{
+	struct pci_controller *phb;
+
+	pr_debug("PCI: Initializing new hotplug PHB %s\n", dn->full_name);
+
 	phb = pcibios_alloc_controller(dn);
 	if (!phb)
 		return NULL;
@@ -206,7 +218,72 @@ struct pci_controller * __devinit init_phb_dynamic(struct device_node *dn)
 	pcibios_fixup_new_pci_devices(phb->bus);
 	pci_bus_add_devices(phb->bus);
 	eeh_add_device_tree_late(phb->bus);
+	phb->controller_ops = pseries_pci_controller_ops;
+
+	pci_devs_phb_init_dynamic(phb);
+
+	/* Create EEH devices for the PHB */
+	eeh_dev_phb_init_dynamic(phb);
+
+	if (dn->child)
+		eeh_add_device_tree_early(PCI_DN(dn));
+
+	pcibios_scan_phb(phb);
+	pcibios_finish_adding_to_bus(phb->bus);
 
 	return phb;
 }
 EXPORT_SYMBOL_GPL(init_phb_dynamic);
+
+/* RPA-specific bits for removing PHBs */
+int remove_phb_dynamic(struct pci_controller *phb)
+{
+	struct pci_bus *b = phb->bus;
+	struct pci_host_bridge *host_bridge = to_pci_host_bridge(b->bridge);
+	struct resource *res;
+	int rc, i;
+
+	pr_debug("PCI: Removing PHB %04x:%02x...\n",
+		 pci_domain_nr(b), b->number);
+
+	/* We cannot to remove a root bus that has children */
+	if (!(list_empty(&b->children) && list_empty(&b->devices)))
+		return -EBUSY;
+
+	/* We -know- there aren't any child devices anymore at this stage
+	 * and thus, we can safely unmap the IO space as it's not in use
+	 */
+	res = &phb->io_resource;
+	if (res->flags & IORESOURCE_IO) {
+		rc = pcibios_unmap_io_space(b);
+		if (rc) {
+			printk(KERN_ERR "%s: failed to unmap IO on bus %s\n",
+			       __func__, b->name);
+			return 1;
+		}
+	}
+
+	/* Remove the PCI bus and unregister the bridge device from sysfs */
+	phb->bus = NULL;
+	pci_remove_bus(b);
+	host_bridge->bus = NULL;
+	device_unregister(&host_bridge->dev);
+
+	/* Now release the IO resource */
+	if (res->flags & IORESOURCE_IO)
+		release_resource(res);
+
+	/* Release memory resources */
+	for (i = 0; i < 3; ++i) {
+		res = &phb->mem_resources[i];
+		if (!(res->flags & IORESOURCE_MEM))
+			continue;
+		release_resource(res);
+	}
+
+	/* Free pci_controller data structure */
+	pcibios_free_controller(phb);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(remove_phb_dynamic);

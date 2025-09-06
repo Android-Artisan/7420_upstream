@@ -41,6 +41,16 @@ static struct xt_table packet_raw = {
 	.lock = __RW_LOCK_UNLOCKED(packet_raw.lock),
 	.me = THIS_MODULE,
 	.af = AF_INET6,
+#include <linux/slab.h>
+
+#define RAW_VALID_HOOKS ((1 << NF_INET_PRE_ROUTING) | (1 << NF_INET_LOCAL_OUT))
+
+static const struct xt_table packet_raw = {
+	.name = "raw",
+	.valid_hooks = RAW_VALID_HOOKS,
+	.me = THIS_MODULE,
+	.af = NFPROTO_IPV6,
+	.priority = NF_IP6_PRI_RAW,
 };
 
 /* The work comes in here from netfilter.c. */
@@ -79,11 +89,31 @@ static int __net_init ip6table_raw_net_init(struct net *net)
 	if (IS_ERR(net->ipv6.ip6table_raw))
 		return PTR_ERR(net->ipv6.ip6table_raw);
 	return 0;
+ip6table_raw_hook(void *priv, struct sk_buff *skb,
+		  const struct nf_hook_state *state)
+{
+	return ip6t_do_table(skb, state, state->net->ipv6.ip6table_raw);
+}
+
+static struct nf_hook_ops *rawtable_ops __read_mostly;
+
+static int __net_init ip6table_raw_net_init(struct net *net)
+{
+	struct ip6t_replace *repl;
+
+	repl = ip6t_alloc_initial_table(&packet_raw);
+	if (repl == NULL)
+		return -ENOMEM;
+	net->ipv6.ip6table_raw =
+		ip6t_register_table(net, &packet_raw, repl);
+	kfree(repl);
+	return PTR_ERR_OR_ZERO(net->ipv6.ip6table_raw);
 }
 
 static void __net_exit ip6table_raw_net_exit(struct net *net)
 {
 	ip6t_unregister_table(net->ipv6.ip6table_raw);
+	ip6t_unregister_table(net, net->ipv6.ip6table_raw);
 }
 
 static struct pernet_operations ip6table_raw_net_ops = {
@@ -103,6 +133,11 @@ static int __init ip6table_raw_init(void)
 	ret = nf_register_hooks(ip6t_ops, ARRAY_SIZE(ip6t_ops));
 	if (ret < 0)
 		goto cleanup_table;
+	rawtable_ops = xt_hook_link(&packet_raw, ip6table_raw_hook);
+	if (IS_ERR(rawtable_ops)) {
+		ret = PTR_ERR(rawtable_ops);
+		goto cleanup_table;
+	}
 
 	return ret;
 
@@ -114,6 +149,7 @@ static int __init ip6table_raw_init(void)
 static void __exit ip6table_raw_fini(void)
 {
 	nf_unregister_hooks(ip6t_ops, ARRAY_SIZE(ip6t_ops));
+	xt_hook_unlink(&packet_raw, rawtable_ops);
 	unregister_pernet_subsys(&ip6table_raw_net_ops);
 }
 

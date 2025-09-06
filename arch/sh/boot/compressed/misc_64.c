@@ -117,7 +117,6 @@ void *memcpy(void *__dest, __const void *__src, size_t __n)
 	return __dest;
 }
 
-/* ===========================================================================
  * Fill the input buffer. This is called only when the buffer is empty
  * and at least one byte is really needed.
  */
@@ -133,7 +132,6 @@ static int fill_inbuf(void)
 	return inbuf[0];
 }
 
-/* ===========================================================================
  * Write the output window window[0..outcnt-1] and update crc and bytes_out.
  * (Used for the decompressed data only.)
  */

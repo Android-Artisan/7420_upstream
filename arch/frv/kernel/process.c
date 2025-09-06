@@ -30,6 +30,10 @@
 #include <asm/asm-offsets.h>
 #include <asm/uaccess.h>
 #include <asm/system.h>
+#include <linux/rcupdate.h>
+
+#include <asm/asm-offsets.h>
+#include <asm/uaccess.h>
 #include <asm/setup.h>
 #include <asm/pgtable.h>
 #include <asm/tlb.h>
@@ -39,6 +43,7 @@
 #include "local.h"
 
 asmlinkage void ret_from_fork(void);
+asmlinkage void ret_from_kernel_thread(void);
 
 #include <asm/pgalloc.h>
 
@@ -100,6 +105,12 @@ void cpu_idle(void)
 		schedule();
 		preempt_disable();
 	}
+void arch_cpu_idle(void)
+{
+	if (!frv_dma_inprogress)
+		core_sleep_idle();
+	else
+		local_irq_enable();
 }
 
 void machine_restart(char * __unused)
@@ -151,6 +162,7 @@ void flush_thread(void)
 	unsigned long zero = 0;
 #endif
 	set_fs(USER_DS);
+	/* nothing */
 }
 
 inline unsigned long user_stack(const struct pt_regs *regs)
@@ -233,6 +245,20 @@ int copy_thread(int nr, unsigned long clone_flags,
 	}
 
 	p->set_child_tid = p->clear_child_tid = NULL;
+/*
+ * set up the kernel stack and exception frames for a new process
+ */
+int copy_thread(unsigned long clone_flags,
+		unsigned long usp, unsigned long arg,
+		struct task_struct *p)
+{
+	struct pt_regs *childregs;
+
+	childregs = (struct pt_regs *)
+		(task_stack_page(p) + THREAD_SIZE - FRV_FRAME0_SIZE);
+
+	/* set up the userspace frame (the only place that the USP is stored) */
+	*childregs = *current_pt_regs();
 
 	p->thread.frame	 = childregs;
 	p->thread.curr	 = p;
@@ -241,6 +267,20 @@ int copy_thread(int nr, unsigned long clone_flags,
 	p->thread.lr	 = 0;
 	p->thread.pc	 = (unsigned long) ret_from_fork;
 	p->thread.frame0 = childregs0;
+	p->thread.frame0 = childregs;
+
+	if (unlikely(p->flags & PF_KTHREAD)) {
+		childregs->gr9 = usp; /* function */
+		childregs->gr8 = arg;
+		p->thread.pc = (unsigned long) ret_from_kernel_thread;
+		save_user_regs(p->thread.user);
+		return 0;
+	}
+	if (usp)
+		childregs->sp = usp;
+	childregs->next_frame	= NULL;
+
+	p->thread.pc = (unsigned long) ret_from_fork;
 
 	/* the new TLS pointer is passed in as arg #5 to sys_clone() */
 	if (clone_flags & CLONE_SETTLS)

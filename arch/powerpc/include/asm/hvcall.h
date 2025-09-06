@@ -29,6 +29,10 @@
 #define H_LONG_BUSY_ORDER_100_SEC	9905  /* Long busy, hint that 100sec \
 						 is a good time to retry */
 #define H_LONG_BUSY_END_RANGE		9905  /* End of long busy range */
+
+/* Internal value used in book3s_hv kvm support; not returned to guests */
+#define H_TOO_HARD	9999
+
 #define H_HARDWARE	-1	/* Hardware error */
 #define H_FUNCTION	-2	/* Function not supported */
 #define H_PRIVILEGE	-3	/* Caller not privileged */
@@ -74,6 +78,27 @@
 #define H_NOT_ENOUGH_RESOURCES -44
 #define H_R_STATE       -45
 #define H_RESCINDEND    -46
+#define H_RESCINDED     -46
+#define H_P2		-55
+#define H_P3		-56
+#define H_P4		-57
+#define H_P5		-58
+#define H_P6		-59
+#define H_P7		-60
+#define H_P8		-61
+#define H_P9		-62
+#define H_TOO_BIG	-64
+#define H_OVERLAP	-68
+#define H_INTERRUPT	-69
+#define H_BAD_DATA	-70
+#define H_NOT_ACTIVE	-71
+#define H_SG_LIST	-72
+#define H_OP_MODE	-73
+#define H_COP_HW	-74
+#define H_UNSUPPORTED_FLAG_START	-256
+#define H_UNSUPPORTED_FLAG_END		-511
+#define H_MULTI_THREADS_ACTIVE	-9005
+#define H_OUTSTANDING_COP_OPS	-9006
 
 
 /* Long Busy is a condition that can be returned by the firmware
@@ -101,11 +126,25 @@
 #define H_ANDCOND		(1UL<<(63-33))
 #define H_ICACHE_INVALIDATE	(1UL<<(63-40))	/* icbi, etc.  (ignored for IO pages) */
 #define H_ICACHE_SYNCHRONIZE	(1UL<<(63-41))	/* dcbst, icbi, etc (ignored for IO pages */
+#define H_LOCAL			(1UL<<(63-35))
+#define H_ICACHE_INVALIDATE	(1UL<<(63-40))	/* icbi, etc.  (ignored for IO pages) */
+#define H_ICACHE_SYNCHRONIZE	(1UL<<(63-41))	/* dcbst, icbi, etc (ignored for IO pages */
+#define H_COALESCE_CAND	(1UL<<(63-42))	/* page is a good candidate for coalescing */
 #define H_ZERO_PAGE		(1UL<<(63-48))	/* zero the page before mapping (ignored for IO pages) */
 #define H_COPY_PAGE		(1UL<<(63-49))
 #define H_N			(1UL<<(63-61))
 #define H_PP1			(1UL<<(63-62))
 #define H_PP2			(1UL<<(63-63))
+
+/* Flags for H_REGISTER_VPA subfunction field */
+#define H_VPA_FUNC_SHIFT	(63-18)	/* Bit posn of subfunction code */
+#define H_VPA_FUNC_MASK		7UL
+#define H_VPA_REG_VPA		1UL	/* Register Virtual Processor Area */
+#define H_VPA_REG_DTL		2UL	/* Register Dispatch Trace Log */
+#define H_VPA_REG_SLB		3UL	/* Register SLB shadow buffer */
+#define H_VPA_DEREG_VPA		5UL	/* Deregister Virtual Processor Area */
+#define H_VPA_DEREG_DTL		6UL	/* Deregister Dispatch Trace Log */
+#define H_VPA_DEREG_SLB		7UL	/* Deregister SLB shadow buffer */
 
 /* VASI States */
 #define H_VASI_INVALID          0
@@ -122,6 +161,7 @@
 #define H_DABRX_USER		(1UL<<(63-63))
 
 /* Each control block has to be on a 4K bondary */
+/* Each control block has to be on a 4K boundary */
 #define H_CB_ALIGNMENT          4096
 
 /* pSeries hypervisor opcodes */
@@ -208,6 +248,7 @@
 #define H_GET_HCA_INFO          0x1B8
 #define H_GET_PERF_COUNT        0x1BC
 #define H_MANAGE_TRACE          0x1C0
+#define H_GET_CPU_CHARACTERISTICS 0x1C8
 #define H_FREE_LOGICAL_LAN_BUFFER 0x1D4
 #define H_QUERY_INT_STATE       0x1E4
 #define H_POLL_PENDING		0x1D8
@@ -218,8 +259,66 @@
 #define H_SET_MPP		0x2D0
 #define H_GET_MPP		0x2D4
 #define MAX_HCALL_OPCODE	H_GET_MPP
+#define H_MODIFY_HEA_QP		0x250
+#define H_QUERY_HEA_QP		0x254
+#define H_QUERY_HEA		0x258
+#define H_QUERY_HEA_PORT	0x25C
+#define H_MODIFY_HEA_PORT	0x260
+#define H_REG_BCMC		0x264
+#define H_DEREG_BCMC		0x268
+#define H_REGISTER_HEA_RPAGES	0x26C
+#define H_DISABLE_AND_GET_HEA	0x270
+#define H_GET_HEA_INFO		0x274
+#define H_ALLOC_HEA_RESOURCE	0x278
+#define H_ADD_CONN		0x284
+#define H_DEL_CONN		0x288
+#define H_JOIN			0x298
+#define H_VASI_STATE            0x2A4
+#define H_ENABLE_CRQ		0x2B0
+#define H_GET_EM_PARMS		0x2B8
+#define H_SET_MPP		0x2D0
+#define H_GET_MPP		0x2D4
+#define H_HOME_NODE_ASSOCIATIVITY 0x2EC
+#define H_BEST_ENERGY		0x2F4
+#define H_XIRR_X		0x2FC
+#define H_RANDOM		0x300
+#define H_COP			0x304
+#define H_GET_MPP_X		0x314
+#define H_SET_MODE		0x31C
+#define MAX_HCALL_OPCODE	H_SET_MODE
+
+/* Platform specific hcalls, used by KVM */
+#define H_RTAS			0xf000
+
+/* "Platform specific hcalls", provided by PHYP */
+#define H_GET_24X7_CATALOG_PAGE	0xF078
+#define H_GET_24X7_DATA		0xF07C
+#define H_GET_PERF_COUNTER_INFO	0xF080
+
+/* Values for 2nd argument to H_SET_MODE */
+#define H_SET_MODE_RESOURCE_SET_CIABR		1
+#define H_SET_MODE_RESOURCE_SET_DAWR		2
+#define H_SET_MODE_RESOURCE_ADDR_TRANS_MODE	3
+#define H_SET_MODE_RESOURCE_LE			4
+
+/* H_GET_CPU_CHARACTERISTICS return values */
+#define H_CPU_CHAR_SPEC_BAR_ORI31	(1ull << 63) // IBM bit 0
+#define H_CPU_CHAR_BCCTRL_SERIALISED	(1ull << 62) // IBM bit 1
+#define H_CPU_CHAR_L1D_FLUSH_ORI30	(1ull << 61) // IBM bit 2
+#define H_CPU_CHAR_L1D_FLUSH_TRIG2	(1ull << 60) // IBM bit 3
+#define H_CPU_CHAR_L1D_THREAD_PRIV	(1ull << 59) // IBM bit 4
+#define H_CPU_CHAR_BRANCH_HINTS_HONORED	(1ull << 58) // IBM bit 5
+#define H_CPU_CHAR_THREAD_RECONFIG_CTRL	(1ull << 57) // IBM bit 6
+#define H_CPU_CHAR_COUNT_CACHE_DISABLED	(1ull << 56) // IBM bit 7
+#define H_CPU_CHAR_BCCTR_FLUSH_ASSIST	(1ull << 54) // IBM bit 9
+
+#define H_CPU_BEHAV_FAVOUR_SECURITY	(1ull << 63) // IBM bit 0
+#define H_CPU_BEHAV_L1D_FLUSH_PR	(1ull << 62) // IBM bit 1
+#define H_CPU_BEHAV_BNDS_CHK_SPEC_BAR	(1ull << 61) // IBM bit 2
+#define H_CPU_BEHAV_FLUSH_COUNT_CACHE	(1ull << 58) // IBM bit 5
 
 #ifndef __ASSEMBLY__
+#include <linux/types.h>
 
 /**
  * plpar_hcall_norets: - Make a pseries hypervisor call with no return arguments
@@ -242,7 +341,7 @@ long plpar_hcall_norets(unsigned long opcode, ...);
  * Used for all but the craziest of phyp interfaces (see plpar_hcall9)
  */
 #define PLPAR_HCALL_BUFSIZE 4
-long plpar_hcall(unsigned long opcode, unsigned long *retbuf, ...);
+long plpar_hcall(unsigned long opcode, unsigned long retbuf[static PLPAR_HCALL_BUFSIZE], ...);
 
 /**
  * plpar_hcall_raw: - Make a hypervisor call without calculating hcall stats
@@ -256,7 +355,7 @@ long plpar_hcall(unsigned long opcode, unsigned long *retbuf, ...);
  * plpar_hcall, but plpar_hcall_raw works in real mode and does not
  * calculate hypervisor call statistics.
  */
-long plpar_hcall_raw(unsigned long opcode, unsigned long *retbuf, ...);
+long plpar_hcall_raw(unsigned long opcode, unsigned long retbuf[static PLPAR_HCALL_BUFSIZE], ...);
 
 /**
  * plpar_hcall9: - Make a pseries hypervisor call with up to 9 return arguments
@@ -267,13 +366,16 @@ long plpar_hcall_raw(unsigned long opcode, unsigned long *retbuf, ...);
  * PLPAR_HCALL9_BUFSIZE to size the return argument buffer.
  */
 #define PLPAR_HCALL9_BUFSIZE 9
-long plpar_hcall9(unsigned long opcode, unsigned long *retbuf, ...);
+long plpar_hcall9(unsigned long opcode, unsigned long retbuf[static PLPAR_HCALL9_BUFSIZE], ...);
+long plpar_hcall9_raw(unsigned long opcode, unsigned long retbuf[static PLPAR_HCALL9_BUFSIZE], ...);
 
 /* For hcall instrumentation.  One structure per-hcall, per-CPU */
 struct hcall_stats {
 	unsigned long	num_calls;	/* number of calls (on this CPU) */
 	unsigned long	tb_total;	/* total wall time (mftb) of calls. */
 	unsigned long	purr_total;	/* total cpu time (PURR) of calls. */
+	unsigned long	tb_start;
+	unsigned long	purr_start;
 };
 #define HCALL_STAT_ARRAY_SIZE	((MAX_HCALL_OPCODE >> 2) + 1)
 
@@ -290,7 +392,37 @@ struct hvcall_mpp_data {
 	unsigned long backing_mem;
 };
 
-int h_get_mpp(struct hvcall_mpp_data *);
+long h_get_mpp(struct hvcall_mpp_data *mpp_data);
+
+struct hvcall_mpp_x_data {
+	unsigned long coalesced_bytes;
+	unsigned long pool_coalesced_bytes;
+	unsigned long pool_purr_cycles;
+	unsigned long pool_spurr_cycles;
+	unsigned long reserved[3];
+};
+
+int h_get_mpp_x(struct hvcall_mpp_x_data *mpp_x_data);
+
+static inline unsigned int get_longbusy_msecs(int longbusy_rc)
+{
+	switch (longbusy_rc) {
+	case H_LONG_BUSY_ORDER_1_MSEC:
+		return 1;
+	case H_LONG_BUSY_ORDER_10_MSEC:
+		return 10;
+	case H_LONG_BUSY_ORDER_100_MSEC:
+		return 100;
+	case H_LONG_BUSY_ORDER_1_SEC:
+		return 1000;
+	case H_LONG_BUSY_ORDER_10_SEC:
+		return 10000;
+	case H_LONG_BUSY_ORDER_100_SEC:
+		return 100000;
+	default:
+		return 1;
+	}
+}
 
 #ifdef CONFIG_PPC_PSERIES
 extern int CMO_PrPSP;
@@ -311,7 +443,23 @@ static inline unsigned long cmo_get_page_size(void)
 {
 	return CMO_PageSize;
 }
+
+extern long pSeries_enable_reloc_on_exc(void);
+extern long pSeries_disable_reloc_on_exc(void);
+
+extern long pseries_big_endian_exceptions(void);
+
+#else
+
+#define pSeries_enable_reloc_on_exc()  do {} while (0)
+#define pSeries_disable_reloc_on_exc() do {} while (0)
+
 #endif /* CONFIG_PPC_PSERIES */
+
+struct h_cpu_char_result {
+	u64 character;
+	u64 behaviour;
+};
 
 #endif /* __ASSEMBLY__ */
 #endif /* __KERNEL__ */

@@ -28,6 +28,9 @@
 static char err_buf[1024];
 static DEFINE_SPINLOCK(err_buf_lock);
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+#include "debug.h"
+
 /**
  * __ntfs_warning - output a warning to the syslog
  * @function:	name of function outputting the warning
@@ -50,6 +53,7 @@ static DEFINE_SPINLOCK(err_buf_lock);
 void __ntfs_warning(const char *function, const struct super_block *sb,
 		const char *fmt, ...)
 {
+	struct va_format vaf;
 	va_list args;
 	int flen = 0;
 
@@ -70,6 +74,15 @@ void __ntfs_warning(const char *function, const struct super_block *sb,
 		printk(KERN_ERR "NTFS-fs warning: %s(): %s\n",
 				flen ? function : "", err_buf);
 	spin_unlock(&err_buf_lock);
+	va_start(args, fmt);
+	vaf.fmt = fmt;
+	vaf.va = &args;
+	if (sb)
+		pr_warn("(device %s): %s(): %pV\n",
+			sb->s_id, flen ? function : "", &vaf);
+	else
+		pr_warn("%s(): %pV\n", flen ? function : "", &vaf);
+	va_end(args);
 }
 
 /**
@@ -94,6 +107,7 @@ void __ntfs_warning(const char *function, const struct super_block *sb,
 void __ntfs_error(const char *function, const struct super_block *sb,
 		const char *fmt, ...)
 {
+	struct va_format vaf;
 	va_list args;
 	int flen = 0;
 
@@ -114,6 +128,15 @@ void __ntfs_error(const char *function, const struct super_block *sb,
 		printk(KERN_ERR "NTFS-fs error: %s(): %s\n",
 				flen ? function : "", err_buf);
 	spin_unlock(&err_buf_lock);
+	va_start(args, fmt);
+	vaf.fmt = fmt;
+	vaf.va = &args;
+	if (sb)
+		pr_err("(device %s): %s(): %pV\n",
+		       sb->s_id, flen ? function : "", &vaf);
+	else
+		pr_err("%s(): %pV\n", flen ? function : "", &vaf);
+	va_end(args);
 }
 
 #ifdef DEBUG
@@ -124,6 +147,10 @@ int debug_msgs = 0;
 void __ntfs_debug (const char *file, int line, const char *function,
 		const char *fmt, ...)
 {
+void __ntfs_debug(const char *file, int line, const char *function,
+		const char *fmt, ...)
+{
+	struct va_format vaf;
 	va_list args;
 	int flen = 0;
 
@@ -138,6 +165,11 @@ void __ntfs_debug (const char *file, int line, const char *function,
 	printk(KERN_DEBUG "NTFS-fs DEBUG (%s, %d): %s(): %s\n", file, line,
 			flen ? function : "", err_buf);
 	spin_unlock(&err_buf_lock);
+	va_start(args, fmt);
+	vaf.fmt = fmt;
+	vaf.va = &args;
+	pr_debug("(%s, %d): %s(): %pV", file, line, flen ? function : "", &vaf);
+	va_end(args);
 }
 
 /* Dump a runlist. Caller has to provide synchronisation for @rl. */
@@ -155,6 +187,12 @@ void ntfs_debug_dump_runlist(const runlist_element *rl)
 		return;
 	}
 	printk(KERN_DEBUG "VCN              LCN               Run length\n");
+	pr_debug("Dumping runlist (values in hex):\n");
+	if (!rl) {
+		pr_debug("Run list not present.\n");
+		return;
+	}
+	pr_debug("VCN              LCN               Run length\n");
 	for (i = 0; ; i++) {
 		LCN lcn = (rl + i)->lcn;
 
@@ -164,12 +202,14 @@ void ntfs_debug_dump_runlist(const runlist_element *rl)
 			if (index > -LCN_ENOENT - 1)
 				index = 3;
 			printk(KERN_DEBUG "%-16Lx %s %-16Lx%s\n",
+			pr_debug("%-16Lx %s %-16Lx%s\n",
 					(long long)(rl + i)->vcn, lcn_str[index],
 					(long long)(rl + i)->length,
 					(rl + i)->length ? "" :
 						" (runlist end)");
 		} else
 			printk(KERN_DEBUG "%-16Lx %-16Lx  %-16Lx%s\n",
+			pr_debug("%-16Lx %-16Lx  %-16Lx%s\n",
 					(long long)(rl + i)->vcn,
 					(long long)(rl + i)->lcn,
 					(long long)(rl + i)->length,

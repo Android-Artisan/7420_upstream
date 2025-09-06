@@ -57,7 +57,6 @@ dhd_customer_gpio_wlan_reset(bool onoff)
 	printk("set GPIO_WLAN_RST_N = LOW \n");
 #endif
 //		WL_ERROR(("%s: call customer specific GPIO to insert WLAN RESET\n", __FUNCTION__));
-//		WL_ERROR(("=========== WLAN placed in RESET ========\n"));
 	}
 	else {
 
@@ -78,6 +77,5 @@ dhd_customer_gpio_wlan_reset(bool onoff)
 #endif
 
 //		WL_ERROR(("%s: callc customer specific GPIO to remove WLAN RESET\n", __FUNCTION__));
-//		WL_ERROR(("=========== WLAN goin back to live  ========\n"));
 	}
 }

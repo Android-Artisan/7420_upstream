@@ -33,6 +33,9 @@ ipv6header_mt6(const struct sk_buff *skb, const struct net_device *in,
                bool *hotdrop)
 {
 	const struct ip6t_ipv6header_info *info = matchinfo;
+ipv6header_mt6(const struct sk_buff *skb, struct xt_action_param *par)
+{
+	const struct ip6t_ipv6header_info *info = par->matchinfo;
 	unsigned int temp;
 	int len;
 	u8 nexthdr;
@@ -61,6 +64,9 @@ ipv6header_mt6(const struct sk_buff *skb, const struct net_device *in,
 			temp |= MASK_NONE;
 			break;
 		}
+		/* Is there enough space for the next ext header? */
+		if (len < (int)sizeof(struct ipv6_opt_hdr))
+			return false;
 		/* ESP -> evaluate */
 		if (nexthdr == NEXTHDR_ESP) {
 			temp |= MASK_ESP;
@@ -127,6 +133,9 @@ ipv6header_mt6_check(const char *tablename, const void *ip,
                      unsigned int hook_mask)
 {
 	const struct ip6t_ipv6header_info *info = matchinfo;
+static int ipv6header_mt6_check(const struct xt_mtchk_param *par)
+{
+	const struct ip6t_ipv6header_info *info = par->matchinfo;
 
 	/* invflags is 0 or 0xff in hard mode */
 	if ((!info->modeflag) && info->invflags != 0x00 &&
@@ -134,11 +143,15 @@ ipv6header_mt6_check(const char *tablename, const void *ip,
 		return false;
 
 	return true;
+		return -EINVAL;
+
+	return 0;
 }
 
 static struct xt_match ipv6header_mt6_reg __read_mostly = {
 	.name		= "ipv6header",
 	.family		= AF_INET6,
+	.family		= NFPROTO_IPV6,
 	.match		= ipv6header_mt6,
 	.matchsize	= sizeof(struct ip6t_ipv6header_info),
 	.checkentry	= ipv6header_mt6_check,

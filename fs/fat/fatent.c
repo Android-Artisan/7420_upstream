@@ -6,6 +6,8 @@
 #include <linux/module.h>
 #include <linux/fs.h>
 #include <linux/msdos_fs.h>
+#include <linux/blkdev.h>
+#include "fat.h"
 
 struct fatent_operations {
 	void (*ent_blocknr)(struct super_block *, int, int *, sector_t *);
@@ -24,7 +26,7 @@ static void fat12_ent_blocknr(struct super_block *sb, int entry,
 {
 	struct msdos_sb_info *sbi = MSDOS_SB(sb);
 	int bytes = entry + (entry >> 1);
-	WARN_ON(entry < FAT_START_ENT || sbi->max_cluster <= entry);
+	WARN_ON(!fat_valid_entry(sbi, entry));
 	*offset = bytes & (sb->s_blocksize - 1);
 	*blocknr = sbi->fat_start + (bytes >> sb->s_blocksize_bits);
 }
@@ -34,7 +36,7 @@ static void fat_ent_blocknr(struct super_block *sb, int entry,
 {
 	struct msdos_sb_info *sbi = MSDOS_SB(sb);
 	int bytes = (entry << sbi->fatent_shift);
-	WARN_ON(entry < FAT_START_ENT || sbi->max_cluster <= entry);
+	WARN_ON(!fat_valid_entry(sbi, entry));
 	*offset = bytes & (sb->s_blocksize - 1);
 	*blocknr = sbi->fat_start + (bytes >> sb->s_blocksize_bits);
 }
@@ -71,6 +73,8 @@ static int fat12_ent_bread(struct super_block *sb, struct fat_entry *fatent,
 	struct buffer_head **bhs = fatent->bhs;
 
 	WARN_ON(blocknr < MSDOS_SB(sb)->fat_start);
+	fatent->fat_inode = MSDOS_SB(sb)->fat_inode;
+
 	bhs[0] = sb_bread(sb, blocknr);
 	if (!bhs[0])
 		goto err;
@@ -93,6 +97,9 @@ err_brelse:
 err:
 	printk(KERN_ERR "FAT: FAT read failed (blocknr %llu)\n",
 	       (unsigned long long)blocknr);
+	fat_msg(sb, KERN_ERR, "FAT read failed (blocknr %llu)", (llu)blocknr);
+	fat_msg_ratelimit(sb, KERN_ERR, "FAT read failed (blocknr %llu)",
+			  (llu)blocknr);
 	return -EIO;
 }
 
@@ -106,6 +113,11 @@ static int fat_ent_bread(struct super_block *sb, struct fat_entry *fatent,
 	if (!fatent->bhs[0]) {
 		printk(KERN_ERR "FAT: FAT read failed (blocknr %llu)\n",
 		       (unsigned long long)blocknr);
+	fatent->fat_inode = MSDOS_SB(sb)->fat_inode;
+	fatent->bhs[0] = sb_bread(sb, blocknr);
+	if (!fatent->bhs[0]) {
+		fat_msg_ratelimit(sb, KERN_ERR, "FAT read failed (blocknr %llu)",
+				  (llu)blocknr);
 		return -EIO;
 	}
 	fatent->nr_bhs = 1;
@@ -169,6 +181,9 @@ static void fat12_ent_put(struct fat_entry *fatent, int new)
 	mark_buffer_dirty(fatent->bhs[0]);
 	if (fatent->nr_bhs == 2)
 		mark_buffer_dirty(fatent->bhs[1]);
+	mark_buffer_dirty_inode(fatent->bhs[0], fatent->fat_inode);
+	if (fatent->nr_bhs == 2)
+		mark_buffer_dirty_inode(fatent->bhs[1], fatent->fat_inode);
 }
 
 static void fat16_ent_put(struct fat_entry *fatent, int new)
@@ -178,6 +193,7 @@ static void fat16_ent_put(struct fat_entry *fatent, int new)
 
 	*fatent->u.ent16_p = cpu_to_le16(new);
 	mark_buffer_dirty(fatent->bhs[0]);
+	mark_buffer_dirty_inode(fatent->bhs[0], fatent->fat_inode);
 }
 
 static void fat32_ent_put(struct fat_entry *fatent, int new)
@@ -189,6 +205,10 @@ static void fat32_ent_put(struct fat_entry *fatent, int new)
 	new |= le32_to_cpu(*fatent->u.ent32_p) & ~0x0fffffff;
 	*fatent->u.ent32_p = cpu_to_le32(new);
 	mark_buffer_dirty(fatent->bhs[0]);
+	WARN_ON(new & 0xf0000000);
+	new |= le32_to_cpu(*fatent->u.ent32_p) & ~0x0fffffff;
+	*fatent->u.ent32_p = cpu_to_le32(new);
+	mark_buffer_dirty_inode(fatent->bhs[0], fatent->fat_inode);
 }
 
 static int fat12_ent_next(struct fat_entry *fatent)
@@ -201,6 +221,10 @@ static int fat12_ent_next(struct fat_entry *fatent)
 	if (fatent->nr_bhs == 1) {
 		WARN_ON(ent12_p[0] > (u8 *)(bhs[0]->b_data + (bhs[0]->b_size - 2)));
 		WARN_ON(ent12_p[1] > (u8 *)(bhs[0]->b_data + (bhs[0]->b_size - 1)));
+		WARN_ON(ent12_p[0] > (u8 *)(bhs[0]->b_data +
+							(bhs[0]->b_size - 2)));
+		WARN_ON(ent12_p[1] > (u8 *)(bhs[0]->b_data +
+							(bhs[0]->b_size - 1)));
 		if (nextp < (u8 *)(bhs[0]->b_data + (bhs[0]->b_size - 1))) {
 			ent12_p[0] = nextp - 1;
 			ent12_p[1] = nextp;
@@ -208,6 +232,8 @@ static int fat12_ent_next(struct fat_entry *fatent)
 		}
 	} else {
 		WARN_ON(ent12_p[0] != (u8 *)(bhs[0]->b_data + (bhs[0]->b_size - 1)));
+		WARN_ON(ent12_p[0] != (u8 *)(bhs[0]->b_data +
+							(bhs[0]->b_size - 1)));
 		WARN_ON(ent12_p[1] != (u8 *)bhs[1]->b_data);
 		ent12_p[0] = nextp - 1;
 		ent12_p[1] = nextp;
@@ -304,6 +330,16 @@ void fat_ent_access_init(struct super_block *sb)
 	}
 }
 
+static void mark_fsinfo_dirty(struct super_block *sb)
+{
+	struct msdos_sb_info *sbi = MSDOS_SB(sb);
+
+	if (sb->s_flags & MS_RDONLY || sbi->fat_bits != 32)
+		return;
+
+	__mark_inode_dirty(sbi->fsinfo_inode, I_DIRTY_SYNC);
+}
+
 static inline int fat_ent_update_ptr(struct super_block *sb,
 				     struct fat_entry *fatent,
 				     int offset, sector_t blocknr)
@@ -319,6 +355,20 @@ static inline int fat_ent_update_ptr(struct super_block *sb,
 	if (sbi->fat_bits == 12 && (offset + 1) >= sb->s_blocksize) {
 		if (fatent->nr_bhs != 2 || bhs[1]->b_blocknr != (blocknr + 1))
 			return 0;
+	if (sbi->fat_bits == 12) {
+		if ((offset + 1) < sb->s_blocksize) {
+			/* This entry is on bhs[0]. */
+			if (fatent->nr_bhs == 2) {
+				brelse(bhs[1]);
+				fatent->nr_bhs = 1;
+			}
+		} else {
+			/* This entry needs the next block. */
+			if (fatent->nr_bhs != 2)
+				return 0;
+			if (bhs[1]->b_blocknr != (blocknr + 1))
+				return 0;
+		}
 	}
 	ops->ent_set_ptr(fatent, offset);
 	return 1;
@@ -332,9 +382,10 @@ int fat_ent_read(struct inode *inode, struct fat_entry *fatent, int entry)
 	int err, offset;
 	sector_t blocknr;
 
-	if (entry < FAT_START_ENT || sbi->max_cluster <= entry) {
+	if (!fat_valid_entry(sbi, entry)) {
 		fatent_brelse(fatent);
 		fat_fs_panic(sb, "invalid access to FAT (entry 0x%08x)", entry);
+		fat_fs_error(sb, "invalid access to FAT (entry 0x%08x)", entry);
 		return -EIO;
 	}
 
@@ -368,9 +419,13 @@ static int fat_mirror_bhs(struct super_block *sb, struct buffer_head **bhs,
 				err = -ENOMEM;
 				goto error;
 			}
+			/* Avoid race with userspace read via bdev */
+			lock_buffer(c_bh);
 			memcpy(c_bh->b_data, bhs[n]->b_data, sb->s_blocksize);
 			set_buffer_uptodate(c_bh);
 			mark_buffer_dirty(c_bh);
+			unlock_buffer(c_bh);
+			mark_buffer_dirty_inode(c_bh, sbi->fat_inode);
 			if (sb->s_flags & MS_SYNCHRONOUS)
 				err = sync_dirty_buffer(c_bh);
 			brelse(c_bh);
@@ -511,6 +566,7 @@ int fat_alloc_clusters(struct inode *inode, int *cluster, int nr_cluster)
 
 out:
 	unlock_fat(sbi);
+	mark_fsinfo_dirty(sb);
 	fatent_brelse(&fatent);
 	if (!err) {
 		if (inode_needs_sync(inode))
@@ -535,6 +591,7 @@ int fat_free_clusters(struct inode *inode, int cluster)
 	struct fat_entry fatent;
 	struct buffer_head *bhs[MAX_BUF_PER_PAGE];
 	int i, err, nr_bhs;
+	int first_cl = cluster, dirty_fsinfo = 0;
 
 	nr_bhs = 0;
 	fatent_init(&fatent);
@@ -546,6 +603,7 @@ int fat_free_clusters(struct inode *inode, int cluster)
 			goto error;
 		} else if (cluster == FAT_ENT_FREE) {
 			fat_fs_panic(sb, "%s: deleting FAT entry beyond EOF",
+			fat_fs_error(sb, "%s: deleting FAT entry beyond EOF",
 				     __func__);
 			err = -EIO;
 			goto error;
@@ -555,6 +613,28 @@ int fat_free_clusters(struct inode *inode, int cluster)
 		if (sbi->free_clusters != -1) {
 			sbi->free_clusters++;
 			sb->s_dirt = 1;
+		if (sbi->options.discard) {
+			/*
+			 * Issue discard for the sectors we no longer
+			 * care about, batching contiguous clusters
+			 * into one request
+			 */
+			if (cluster != fatent.entry + 1) {
+				int nr_clus = fatent.entry - first_cl + 1;
+
+				sb_issue_discard(sb,
+					fat_clus_to_blknr(sbi, first_cl),
+					nr_clus * sbi->sec_per_clus,
+					GFP_NOFS, 0);
+
+				first_cl = cluster;
+			}
+		}
+
+		ops->ent_put(&fatent, FAT_ENT_FREE);
+		if (sbi->free_clusters != -1) {
+			sbi->free_clusters++;
+			dirty_fsinfo = 1;
 		}
 
 		if (nr_bhs + fatent.nr_bhs > MAX_BUF_PER_PAGE) {
@@ -588,6 +668,11 @@ error:
 	return err;
 }
 
+	if (dirty_fsinfo)
+		mark_fsinfo_dirty(sb);
+
+	return err;
+}
 EXPORT_SYMBOL_GPL(fat_free_clusters);
 
 /* 128kb is the whole sectors for FAT12 and FAT16 */
@@ -641,10 +726,12 @@ int fat_count_free_clusters(struct super_block *sb)
 			if (ops->ent_get(&fatent) == FAT_ENT_FREE)
 				free++;
 		} while (fat_ent_next(sbi, &fatent));
+		cond_resched();
 	}
 	sbi->free_clusters = free;
 	sbi->free_clus_valid = 1;
 	sb->s_dirt = 1;
+	mark_fsinfo_dirty(sb);
 	fatent_brelse(&fatent);
 out:
 	unlock_fat(sbi);

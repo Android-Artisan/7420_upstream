@@ -19,6 +19,7 @@
 #include <linux/platform_device.h>
 #include <linux/sched.h>
 #include <linux/slab.h>
+#include <linux/io.h>
 
 #include <mach/hardware.h>
 #include <mach/jornada720.h>
@@ -31,6 +32,7 @@ static unsigned long jornada_ssp_flags;
  * jornada_ssp_reverse - reverses input byte
  *
  * we need to reverse all data we recieve from the mcu due to its physical location
+ * we need to reverse all data we receive from the mcu due to its physical location
  * returns : 01110111 -> 11101110
  */
 u8 inline jornada_ssp_reverse(u8 byte)
@@ -55,6 +57,7 @@ EXPORT_SYMBOL(jornada_ssp_reverse);
  *
  * returns : %mcu output on success
  *	   : %-ETIMEOUT on timeout
+ *	   : %-ETIMEDOUT on timeout
  */
 int jornada_ssp_byte(u8 byte)
 {
@@ -83,6 +86,7 @@ EXPORT_SYMBOL(jornada_ssp_byte);
  *
  * returns : (jornada_ssp_byte(byte)) on success
  *         : %-ETIMEOUT on timeout failure
+ *         : %-ETIMEDOUT on timeout failure
  */
 int jornada_ssp_inout(u8 byte)
 {
@@ -131,6 +135,7 @@ void jornada_ssp_end(void)
 EXPORT_SYMBOL(jornada_ssp_end);
 
 static int __init jornada_ssp_probe(struct platform_device *dev)
+static int jornada_ssp_probe(struct platform_device *dev)
 {
 	int ret;
 
@@ -181,6 +186,7 @@ static int __init jornada_ssp_probe(struct platform_device *dev)
 static int jornada_ssp_remove(struct platform_device *dev)
 {
 	/* Note that this doesnt actually remove the driver, since theres nothing to remove
+	/* Note that this doesn't actually remove the driver, since theres nothing to remove
 	 * It just makes sure everything is turned off */
 	GPSR = GPIO_GPIO25;
 	ssp_exit();
@@ -199,3 +205,5 @@ static int __init jornada_ssp_init(void)
 {
 	return platform_driver_register(&jornadassp_driver);
 }
+
+module_init(jornada_ssp_init);

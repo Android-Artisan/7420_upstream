@@ -22,6 +22,9 @@
 #include <asm/uaccess.h>
 #include <asm/io.h>
 #include <asm/atomic.h>
+#include <asm/uaccess.h>
+#include <asm/io.h>
+#include <linux/atomic.h>
 
 #include <asm/smp.h>
 
@@ -106,6 +109,8 @@ static void set_eit_vector_entries(void)
 	eit_vector[188] = (unsigned long)smp_flush_cache_all_interrupt;
 	eit_vector[189] = (unsigned long)smp_call_function_single_interrupt;
 	eit_vector[190] = 0;
+	eit_vector[189] = 0;	/* CPU_BOOT_IPI */
+	eit_vector[190] = (unsigned long)smp_call_function_single_interrupt;
 	eit_vector[191] = 0;
 #endif
 	_flush_cache_copyback_all();
@@ -137,6 +142,8 @@ static void show_trace(struct task_struct *task, unsigned long *stack)
 			printk("[<%08lx>] ", addr);
 			print_symbol("%s\n", addr);
 		}
+		if (__kernel_text_address(addr))
+			printk("[<%08lx>] %pSR\n", addr, (void *)addr);
 	}
 	printk("\n");
 }

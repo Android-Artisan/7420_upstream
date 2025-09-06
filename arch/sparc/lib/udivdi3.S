@@ -62,6 +62,9 @@ __udivdi3:
 	mov 1,%o0
 	call .udiv,0
 	mov 0,%o1
+	mov 0,%o1
+	wr %g0, 0, %y
+	udiv %o0, %o1, %o0
 	mov %o0,%o3
 	mov %i0,%o2
 .LL77:

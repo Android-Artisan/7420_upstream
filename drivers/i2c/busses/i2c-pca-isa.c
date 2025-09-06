@@ -23,6 +23,7 @@
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/delay.h>
+#include <linux/jiffies.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/wait.h>
@@ -31,6 +32,8 @@
 #include <linux/i2c-algo-pca.h>
 
 #include <asm/io.h>
+#include <linux/io.h>
+
 #include <asm/irq.h>
 
 #define DRIVER "i2c-pca-isa"
@@ -43,6 +46,14 @@ static int irq 	  = 10;
  * in the actual clock rate */
 static int clock  = I2C_PCA_CON_59kHz;
 
+static unsigned long base;
+static int irq = -1;
+
+/* Data sheet recommends 59kHz for 100kHz operation due to variation
+ * in the actual clock rate */
+static int clock  = 59000;
+
+static struct i2c_adapter pca_isa_ops;
 static wait_queue_head_t pca_wait;
 
 static void pca_isa_writebyte(void *pd, int reg, int val)
@@ -50,6 +61,8 @@ static void pca_isa_writebyte(void *pd, int reg, int val)
 #ifdef DEBUG_IO
 	static char *names[] = { "T/O", "DAT", "ADR", "CON" };
 	printk("*** write %s at %#lx <= %#04x\n", names[reg], base+reg, val);
+	printk(KERN_DEBUG "*** write %s at %#lx <= %#04x\n", names[reg],
+	       base+reg, val);
 #endif
 	outb(val, base+reg);
 }
@@ -61,6 +74,7 @@ static int pca_isa_readbyte(void *pd, int reg)
 	{
 		static char *names[] = { "STA", "DAT", "ADR", "CON" };
 		printk("*** read  %s => %#04x\n", names[reg], res);
+		printk(KERN_DEBUG "*** read  %s => %#04x\n", names[reg], res);
 	}
 #endif
 	return res;
@@ -78,6 +92,26 @@ static int pca_isa_waitforcompletion(void *pd)
 			udelay(100);
 	}
 	return ret;
+	unsigned long timeout;
+	long ret;
+
+	if (irq > -1) {
+		ret = wait_event_timeout(pca_wait,
+				pca_isa_readbyte(pd, I2C_PCA_CON)
+				& I2C_PCA_CON_SI, pca_isa_ops.timeout);
+	} else {
+		/* Do polling */
+		timeout = jiffies + pca_isa_ops.timeout;
+		do {
+			ret = time_before(jiffies, timeout);
+			if (pca_isa_readbyte(pd, I2C_PCA_CON)
+					& I2C_PCA_CON_SI)
+				break;
+			udelay(100);
+		} while (ret);
+	}
+
+	return ret > 0;
 }
 
 static void pca_isa_resetchip(void *pd)
@@ -88,6 +122,7 @@ static void pca_isa_resetchip(void *pd)
 
 static irqreturn_t pca_handler(int this_irq, void *dev_id) {
 	wake_up_interruptible(&pca_wait);
+	wake_up(&pca_wait);
 	return IRQ_HANDLED;
 }
 
@@ -108,12 +143,32 @@ static struct i2c_adapter pca_isa_ops = {
 };
 
 static int __devinit pca_isa_probe(struct device *dev, unsigned int id)
+	.algo_data	= &pca_isa_data,
+	.name		= "PCA9564/PCA9665 ISA Adapter",
+	.timeout	= HZ,
+};
+
+static int pca_isa_match(struct device *dev, unsigned int id)
+{
+	int match = base != 0;
+
+	if (match) {
+		if (irq <= -1)
+			dev_warn(dev, "Using polling mode (specify irq)\n");
+	} else
+		dev_err(dev, "Please specify I/O base\n");
+
+	return match;
+}
+
+static int pca_isa_probe(struct device *dev, unsigned int id)
 {
 	init_waitqueue_head(&pca_wait);
 
 	dev_info(dev, "i/o base %#08lx. irq %d\n", base, irq);
 
 #ifdef CONFIG_PPC_MERGE
+#ifdef CONFIG_PPC
 	if (check_legacy_ioport(base)) {
 		dev_err(dev, "I/O address %#08lx is not available\n", base);
 		goto out;
@@ -154,6 +209,11 @@ static int __devexit pca_isa_remove(struct device *dev, unsigned int id)
 	i2c_del_adapter(&pca_isa_ops);
 
 	if (irq > 0) {
+static int pca_isa_remove(struct device *dev, unsigned int id)
+{
+	i2c_del_adapter(&pca_isa_ops);
+
+	if (irq > -1) {
 		disable_irq(irq);
 		free_irq(irq, &pca_isa_ops);
 	}
@@ -165,6 +225,9 @@ static int __devexit pca_isa_remove(struct device *dev, unsigned int id)
 static struct isa_driver pca_isa_driver = {
 	.probe		= pca_isa_probe,
 	.remove		= __devexit_p(pca_isa_remove),
+	.match		= pca_isa_match,
+	.probe		= pca_isa_probe,
+	.remove		= pca_isa_remove,
 	.driver = {
 		.owner	= THIS_MODULE,
 		.name	= DRIVER,
@@ -183,6 +246,7 @@ static void __exit pca_isa_exit(void)
 
 MODULE_AUTHOR("Ian Campbell <icampbell@arcom.com>");
 MODULE_DESCRIPTION("ISA base PCA9564 driver");
+MODULE_DESCRIPTION("ISA base PCA9564/PCA9665 driver");
 MODULE_LICENSE("GPL");
 
 module_param(base, ulong, 0);
@@ -192,6 +256,13 @@ module_param(irq, int, 0);
 MODULE_PARM_DESC(irq, "IRQ");
 module_param(clock, int, 0);
 MODULE_PARM_DESC(clock, "Clock rate as described in table 1 of PCA9564 datasheet");
+MODULE_PARM_DESC(clock, "Clock rate in hertz.\n\t\t"
+		"For PCA9564: 330000,288000,217000,146000,"
+		"88000,59000,44000,36000\n"
+		"\t\tFor PCA9665:\tStandard: 60300 - 100099\n"
+		"\t\t\t\tFast: 100100 - 400099\n"
+		"\t\t\t\tFast+: 400100 - 10000099\n"
+		"\t\t\t\tTurbo: Up to 1265800");
 
 module_init(pca_isa_init);
 module_exit(pca_isa_exit);

@@ -1,7 +1,6 @@
 #ifndef _PPC_REDBOOT_H
 #define _PPC_REDBOOT_H
 
-//=========================================================================
 // include/asm-ppc/redboot.h
 //   Copyright (c) 2002, 2003 Gary Thomas (<gary@mlbassoc.com>
 //   Copyright (c) 1997 Dan Malek (dmalek@jlc.net)

@@ -10,3 +10,6 @@ Related products are linware and mars_nwe, which will give Linux partial
 NetWare server functionality.  Linware's home site is
 klokan.sh.cvut.cz/pub/linux/linware; mars_nwe can be found on
 ftp.gwdg.de/pub/linux/misc/ncpfs.
+NetWare server functionality.
+
+mars_nwe can be found on ftp.gwdg.de/pub/linux/misc/ncpfs.

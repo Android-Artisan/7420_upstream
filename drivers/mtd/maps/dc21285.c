@@ -2,6 +2,7 @@
  * MTD map driver for flash on the DC21285 (the StrongARM-110 companion chip)
  *
  * (C) 2000  Nicolas Pitre <nico@cam.org>
+ * (C) 2000  Nicolas Pitre <nico@fluxnic.net>
  *
  * This code is GPL
  */
@@ -42,6 +43,9 @@ static void nw_en_write(void)
 	spin_lock_irqsave(&gpio_lock, flags);
 	cpld_modify(1, 1);
 	spin_unlock_irqrestore(&gpio_lock, flags);
+	raw_spin_lock_irqsave(&nw_gpio_lock, flags);
+	nw_cpld_modify(CPLD_FLASH_WR_ENABLE, CPLD_FLASH_WR_ENABLE);
+	raw_spin_unlock_irqrestore(&nw_gpio_lock, flags);
 
 	/*
 	 * let the ISA bus to catch on...
@@ -158,6 +162,11 @@ static int __init init_dc21285(void)
 	int nrparts;
 #endif
 
+/* Partition stuff */
+static const char * const probes[] = { "RedBoot", "cmdlinepart", NULL };
+
+static int __init init_dc21285(void)
+{
 	/* Determine bankwidth */
 	switch (*CSR_SA110_CNTL & (3<<14)) {
 		case SA110_CNTL_ROMWIDTH_8:
@@ -212,6 +221,7 @@ static int __init init_dc21285(void)
 	else
 #endif
 		add_mtd_device(dc21285_mtd);
+	mtd_device_parse_register(dc21285_mtd, probes, NULL, NULL, 0);
 
 	if(machine_is_ebsa285()) {
 		/*
@@ -241,6 +251,7 @@ static void __exit cleanup_dc21285(void)
 #endif
 		del_mtd_device(dc21285_mtd);
 
+	mtd_device_unregister(dc21285_mtd);
 	map_destroy(dc21285_mtd);
 	iounmap(dc21285_map.virt);
 }
@@ -251,4 +262,5 @@ module_exit(cleanup_dc21285);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Nicolas Pitre <nico@cam.org>");
+MODULE_AUTHOR("Nicolas Pitre <nico@fluxnic.net>");
 MODULE_DESCRIPTION("MTD map driver for DC21285 boards");

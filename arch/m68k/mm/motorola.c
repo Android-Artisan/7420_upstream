@@ -18,6 +18,7 @@
 #include <linux/types.h>
 #include <linux/init.h>
 #include <linux/bootmem.h>
+#include <linux/gfp.h>
 
 #include <asm/setup.h>
 #include <asm/uaccess.h>
@@ -30,6 +31,7 @@
 #ifdef CONFIG_ATARI
 #include <asm/atari_stram.h>
 #endif
+#include <asm/sections.h>
 
 #undef DEBUG
 
@@ -45,6 +47,7 @@ EXPORT_SYMBOL(mm_cachebits);
 
 /* size of memory already mapped in head.S */
 #define INIT_MAPPED_SIZE	(4UL<<20)
+extern __initdata unsigned long m68k_init_mapped_size;
 
 extern unsigned long availmem;
 
@@ -233,6 +236,7 @@ void __init paging_init(void)
 			m68k_num_memory--;
 			memmove(m68k_memory + i, m68k_memory + i + 1,
 				(m68k_num_memory - i) * sizeof(struct mem_info));
+				(m68k_num_memory - i) * sizeof(struct m68k_mem_info));
 			continue;
 		}
 		addr = m68k_memory[i].addr + m68k_memory[i].size;
@@ -250,6 +254,7 @@ void __init paging_init(void)
 
 	min_low_pfn = availmem >> PAGE_SHIFT;
 	max_low_pfn = max_addr >> PAGE_SHIFT;
+	max_pfn = max_low_pfn = max_addr >> PAGE_SHIFT;
 
 	for (i = 0; i < m68k_num_memory; i++) {
 		addr = m68k_memory[i].addr;
@@ -274,6 +279,12 @@ void __init paging_init(void)
 	map_node(0);
 	if (size > INIT_MAPPED_SIZE)
 		free_bootmem_node(NODE_DATA(0), addr + INIT_MAPPED_SIZE, size - INIT_MAPPED_SIZE);
+	free_bootmem_node(NODE_DATA(0), availmem,
+			  min(m68k_init_mapped_size, size) - (availmem - addr));
+	map_node(0);
+	if (size > m68k_init_mapped_size)
+		free_bootmem_node(NODE_DATA(0), addr + m68k_init_mapped_size,
+				  size - m68k_init_mapped_size);
 
 	for (i = 1; i < m68k_num_memory; i++)
 		map_node(i);
@@ -316,4 +327,9 @@ void free_initmem(void)
 	}
 }
 
+
+		if (node_present_pages(i))
+			node_set_state(i, N_NORMAL_MEMORY);
+	}
+}
 

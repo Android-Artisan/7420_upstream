@@ -30,12 +30,14 @@ struct ibft_table_header {
 	char oem_table_id[8];
 	char reserved[24];
 } __attribute__((__packed__));
+#include <linux/acpi.h>
 
 /*
  * Logical location of iSCSI Boot Format Table.
  * If the value is NULL there is no iBFT on the machine.
  */
 extern struct ibft_table_header *ibft_addr;
+extern struct acpi_table_ibft *ibft_addr;
 
 /*
  * Routine used to find and reserve the iSCSI Boot Format Table. The
@@ -45,6 +47,13 @@ extern struct ibft_table_header *ibft_addr;
 extern void __init reserve_ibft_region(void);
 #else
 static inline void reserve_ibft_region(void) { }
+unsigned long find_ibft_region(unsigned long *sizep);
+#else
+static inline unsigned long find_ibft_region(unsigned long *sizep)
+{
+	*sizep = 0;
+	return 0;
+}
 #endif
 
 #endif /* ISCSI_IBFT_H */

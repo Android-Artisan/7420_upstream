@@ -14,6 +14,8 @@
 #include <linux/console.h>
 
 #include <asm/bootinfo.h>
+#include <asm/bootinfo-hp300.h>
+#include <asm/byteorder.h>
 #include <asm/machdep.h>
 #include <asm/blinken.h>
 #include <asm/io.h>                               /* readb() and writeb() */
@@ -25,6 +27,8 @@
 unsigned long hp300_model;
 unsigned long hp300_uart_scode = -1;
 unsigned char ledstate;
+unsigned char hp300_ledstate;
+EXPORT_SYMBOL(hp300_ledstate);
 
 static char s_hp330[] __initdata = "330";
 static char s_hp340[] __initdata = "340";
@@ -78,6 +82,15 @@ int __init hp300_parse_bootinfo(const struct bi_record *record)
 
 	case BI_HP300_UART_SCODE:
 		hp300_uart_scode = *data;
+	const void *data = record->data;
+
+	switch (be16_to_cpu(record->tag)) {
+	case BI_HP300_MODEL:
+		hp300_model = be32_to_cpup(data);
+		break;
+
+	case BI_HP300_UART_SCODE:
+		hp300_uart_scode = be32_to_cpup(data);
 		break;
 
 	case BI_HP300_UART_ADDR:
@@ -85,6 +98,7 @@ int __init hp300_parse_bootinfo(const struct bi_record *record)
 		break;
 
         default:
+	default:
 		unknown = 1;
 	}
 
@@ -251,6 +265,7 @@ void __init config_hp300(void)
 	mach_init_IRQ        = hp300_init_IRQ;
 	mach_get_model       = hp300_get_model;
 	mach_gettimeoffset   = hp300_gettimeoffset;
+	arch_gettimeoffset   = hp300_gettimeoffset;
 	mach_hwclk	     = hp300_hwclk;
 	mach_get_ss	     = hp300_get_ss;
 	mach_reset           = hp300_reset;
@@ -264,6 +279,12 @@ void __init config_hp300(void)
 		strcat(hp300_model_name, hp300_models[hp300_model-HP_320]);
 	}
 	else {
+	if (hp300_model >= HP_330 && hp300_model <= HP_433S &&
+	    hp300_model != HP_350) {
+		pr_info("Detected HP9000 model %s\n",
+			hp300_models[hp300_model-HP_320]);
+		strcat(hp300_model_name, hp300_models[hp300_model-HP_320]);
+	} else {
 		panic("Unknown HP9000 Model");
 	}
 #ifdef CONFIG_SERIAL_8250_CONSOLE

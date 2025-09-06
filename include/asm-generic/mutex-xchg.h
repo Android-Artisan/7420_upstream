@@ -29,6 +29,13 @@ __mutex_fastpath_lock(atomic_t *count, void (*fail_fn)(atomic_t *))
 		fail_fn(count);
 	else
 		smp_mb();
+		/*
+		 * We failed to acquire the lock, so mark it contended
+		 * to ensure that any waiting tasks are woken up by the
+		 * unlock slow path.
+		 */
+		if (likely(atomic_xchg_acquire(count, -1) != 1))
+			fail_fn(count);
 }
 
 /**
@@ -50,6 +57,17 @@ __mutex_fastpath_lock_retval(atomic_t *count, int (*fail_fn)(atomic_t *))
 		smp_mb();
 		return 0;
 	}
+ *
+ * Change the count from 1 to a value lower than 1. This function returns 0
+ * if the fastpath succeeds, or -1 otherwise.
+ */
+static inline int
+__mutex_fastpath_lock_retval(atomic_t *count)
+{
+	if (unlikely(atomic_xchg_acquire(count, 0) != 1))
+		if (likely(atomic_xchg(count, -1) != 1))
+			return -1;
+	return 0;
 }
 
 /**
@@ -69,6 +87,7 @@ __mutex_fastpath_unlock(atomic_t *count, void (*fail_fn)(atomic_t *))
 {
 	smp_mb();
 	if (unlikely(atomic_xchg(count, 1) != 0))
+	if (unlikely(atomic_xchg_release(count, 1) != 0))
 		fail_fn(count);
 }
 
@@ -93,6 +112,7 @@ static inline int
 __mutex_fastpath_trylock(atomic_t *count, int (*fail_fn)(atomic_t *))
 {
 	int prev = atomic_xchg(count, 0);
+	int prev = atomic_xchg_acquire(count, 0);
 
 	if (unlikely(prev < 0)) {
 		/*
@@ -111,6 +131,10 @@ __mutex_fastpath_trylock(atomic_t *count, int (*fail_fn)(atomic_t *))
 			prev = 0;
 	}
 	smp_mb();
+		prev = atomic_xchg_acquire(count, prev);
+		if (prev < 0)
+			prev = 0;
+	}
 
 	return prev;
 }

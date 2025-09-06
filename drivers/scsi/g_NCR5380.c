@@ -91,6 +91,12 @@
 #define AUTOPROBE_IRQ
 #define AUTOSENSE
 
+/* settings for DTC3181E card with only Mustek scanner attached */
+#define USLEEP_POLL	msecs_to_jiffies(10)
+#define USLEEP_SLEEP	msecs_to_jiffies(200)
+#define USLEEP_WAITLONG	msecs_to_jiffies(5000)
+
+#define AUTOPROBE_IRQ
 
 #ifdef CONFIG_SCSI_GENERIC_NCR53C400
 #define NCR53C400_PSEUDO_DMA 1
@@ -105,6 +111,11 @@
 #include <linux/signal.h>
 #include <linux/blkdev.h>
 #include "scsi.h"
+#endif
+
+#include <asm/io.h>
+#include <linux/signal.h>
+#include <linux/blkdev.h>
 #include <scsi/scsi_host.h>
 #include "g_NCR5380.h"
 #include "NCR5380.h"
@@ -288,6 +299,15 @@ int __init generic_NCR5380_detect(struct scsi_host_template * tpnt)
 	int count, i;
 	unsigned int *ports;
 	unsigned long region_size = 16;
+static int __init generic_NCR5380_detect(struct scsi_host_template *tpnt)
+{
+	static int current_override = 0;
+	int count;
+	unsigned int *ports;
+#ifndef SCSI_G_NCR5380_MEM
+	int i;
+	unsigned long region_size = 16;
+#endif
 	static unsigned int __initdata ncr_53c400a_ports[] = {
 		0x280, 0x290, 0x300, 0x310, 0x330, 0x340, 0x348, 0x350, 0
 	};
@@ -297,6 +317,7 @@ int __init generic_NCR5380_detect(struct scsi_host_template * tpnt)
 	int flags = 0;
 	struct Scsi_Host *instance;
 #ifdef CONFIG_SCSI_G_NCR5380_MEM
+#ifdef SCSI_G_NCR5380_MEM
 	unsigned long base;
 	void __iomem *iomem;
 #endif
@@ -316,6 +337,7 @@ int __init generic_NCR5380_detect(struct scsi_host_template * tpnt)
 	else if (dtc_3181e != NCR_NOT_SET)
 		overrides[0].board = BOARD_DTC3181E;
 
+#ifndef SCSI_G_NCR5380_MEM
 	if (!current_override && isapnp_present()) {
 		struct pnp_dev *dev = NULL;
 		count = 0;
@@ -326,6 +348,8 @@ int __init generic_NCR5380_detect(struct scsi_host_template * tpnt)
 				printk(KERN_ERR "dtc436e probe: attach failed\n");
 				continue;
 			}
+			if (pnp_device_attach(dev) < 0)
+				continue;
 			if (pnp_activate_dev(dev) < 0) {
 				printk(KERN_ERR "dtc436e probe: activate failed\n");
 				pnp_device_detach(dev);
@@ -340,6 +364,7 @@ int __init generic_NCR5380_detect(struct scsi_host_template * tpnt)
 				overrides[count].irq = pnp_irq(dev, 0);
 			else
 				overrides[count].irq = SCSI_IRQ_NONE;
+				overrides[count].irq = NO_IRQ;
 			if (pnp_dma_valid(dev, 0))
 				overrides[count].dma = pnp_dma(dev, 0);
 			else
@@ -350,6 +375,7 @@ int __init generic_NCR5380_detect(struct scsi_host_template * tpnt)
 		}
 	}
 
+#endif
 	tpnt->proc_name = "g_NCR5380";
 
 	for (count = 0; current_override < NO_OVERRIDES; ++current_override) {
@@ -375,6 +401,7 @@ int __init generic_NCR5380_detect(struct scsi_host_template * tpnt)
 		}
 
 #ifndef CONFIG_SCSI_G_NCR5380_MEM
+#ifndef SCSI_G_NCR5380_MEM
 		if (ports) {
 			/* wakeup sequence for the NCR53C400A and DTC3181E */
 
@@ -437,6 +464,7 @@ int __init generic_NCR5380_detect(struct scsi_host_template * tpnt)
 		instance = scsi_register(tpnt, sizeof(struct NCR5380_hostdata));
 		if (instance == NULL) {
 #ifndef CONFIG_SCSI_G_NCR5380_MEM
+#ifndef SCSI_G_NCR5380_MEM
 			release_region(overrides[current_override].NCR5380_map_name, region_size);
 #else
 			iounmap(iomem);
@@ -450,6 +478,10 @@ int __init generic_NCR5380_detect(struct scsi_host_template * tpnt)
 		instance->n_io_port = region_size;
 #else
 		((struct NCR5380_hostdata *)instance->hostdata).iomem = iomem;
+#ifndef SCSI_G_NCR5380_MEM
+		instance->n_io_port = region_size;
+#else
+		((struct NCR5380_hostdata *)instance->hostdata)->iomem = iomem;
 #endif
 
 		NCR5380_init(instance, flags);
@@ -467,6 +499,18 @@ int __init generic_NCR5380_detect(struct scsi_host_template * tpnt)
 			}
 
 		if (instance->irq == SCSI_IRQ_NONE) {
+		/* Compatibility with documented NCR5380 kernel parameters */
+		if (instance->irq == 255)
+			instance->irq = NO_IRQ;
+
+		if (instance->irq != NO_IRQ)
+			if (request_irq(instance->irq, generic_NCR5380_intr,
+					0, "NCR5380", instance)) {
+				printk(KERN_WARNING "scsi%d : IRQ%d not free, interrupts disabled\n", instance->host_no, instance->irq);
+				instance->irq = NO_IRQ;
+			}
+
+		if (instance->irq == NO_IRQ) {
 			printk(KERN_INFO "scsi%d : interrupts not enabled. for better interactive performance,\n", instance->host_no);
 			printk(KERN_INFO "scsi%d : please jumper the board for a free IRQ.\n", instance->host_no);
 		}
@@ -509,6 +553,7 @@ const char *generic_NCR5380_info(struct Scsi_Host *host)
  */
  
 int generic_NCR5380_release_resources(struct Scsi_Host *instance)
+static int generic_NCR5380_release_resources(struct Scsi_Host *instance)
 {
 	NCR5380_local_declare();
 	NCR5380_setup(instance);
@@ -521,6 +566,14 @@ int generic_NCR5380_release_resources(struct Scsi_Host *instance)
 	release_region(instance->NCR5380_instance_name, instance->n_io_port);
 #else
 	iounmap(((struct NCR5380_hostdata *)instance->hostdata).iomem);
+	if (instance->irq != NO_IRQ)
+		free_irq(instance->irq, instance);
+	NCR5380_exit(instance);
+
+#ifndef SCSI_G_NCR5380_MEM
+	release_region(instance->NCR5380_instance_name, instance->n_io_port);
+#else
+	iounmap(((struct NCR5380_hostdata *)instance->hostdata)->iomem);
 	release_mem_region(instance->NCR5380_instance_name, NCR5380_region_size);
 #endif
 
@@ -566,6 +619,7 @@ generic_NCR5380_biosparam(struct scsi_device *sdev, struct block_device *bdev,
  *	@len: buffer length
  *
  *	Perform a psuedo DMA mode read from an NCR53C400 or equivalent
+ *	Perform a pseudo DMA mode read from an NCR53C400 or equivalent
  *	controller
  */
  
@@ -588,9 +642,13 @@ static inline int NCR5380_pread(struct Scsi_Host *instance, unsigned char *dst, 
 			printk(KERN_ERR "53C400r: Got 53C80_IRQ start=%d, blocks=%d\n", start, blocks);
 			return -1;
 		}
-		while (NCR5380_read(C400_CONTROL_STATUS_REG) & CSR_HOST_BUF_NOT_RDY);
+		while (NCR5380_read(C400_CONTROL_STATUS_REG) & CSR_HOST_BUF_NOT_RDY)
+		{
+			// FIXME - no timeout
+		}
 
 #ifndef CONFIG_SCSI_G_NCR5380_MEM
+#ifndef SCSI_G_NCR5380_MEM
 		{
 			int i;
 			for (i = 0; i < 128; i++)
@@ -598,6 +656,7 @@ static inline int NCR5380_pread(struct Scsi_Host *instance, unsigned char *dst, 
 		}
 #else
 		/* implies CONFIG_SCSI_G_NCR5380_MEM */
+		/* implies SCSI_G_NCR5380_MEM */
 		memcpy_fromio(dst + start, iomem + NCR53C400_host_buffer, 128);
 #endif
 		start += 128;
@@ -611,6 +670,7 @@ static inline int NCR5380_pread(struct Scsi_Host *instance, unsigned char *dst, 
 		}
 
 #ifndef CONFIG_SCSI_G_NCR5380_MEM
+#ifndef SCSI_G_NCR5380_MEM
 		{
 			int i;	
 			for (i = 0; i < 128; i++)
@@ -618,6 +678,7 @@ static inline int NCR5380_pread(struct Scsi_Host *instance, unsigned char *dst, 
 		}
 #else
 		/* implies CONFIG_SCSI_G_NCR5380_MEM */
+		/* implies SCSI_G_NCR5380_MEM */
 		memcpy_fromio(dst + start, iomem + NCR53C400_host_buffer, 128);
 #endif
 		start += 128;
@@ -650,6 +711,7 @@ static inline int NCR5380_pread(struct Scsi_Host *instance, unsigned char *dst, 
  *	@len: buffer length
  *
  *	Perform a psuedo DMA mode read from an NCR53C400 or equivalent
+ *	Perform a pseudo DMA mode read from an NCR53C400 or equivalent
  *	controller
  */
 
@@ -677,12 +739,14 @@ static inline int NCR5380_pwrite(struct Scsi_Host *instance, unsigned char *src,
 		while (NCR5380_read(C400_CONTROL_STATUS_REG) & CSR_HOST_BUF_NOT_RDY)
 			; // FIXME - timeout
 #ifndef CONFIG_SCSI_G_NCR5380_MEM
+#ifndef SCSI_G_NCR5380_MEM
 		{
 			for (i = 0; i < 128; i++)
 				NCR5380_write(C400_HOST_BUFFER, src[start + i]);
 		}
 #else
 		/* implies CONFIG_SCSI_G_NCR5380_MEM */
+		/* implies SCSI_G_NCR5380_MEM */
 		memcpy_toio(iomem + NCR53C400_host_buffer, src + start, 128);
 #endif
 		start += 128;
@@ -693,12 +757,14 @@ static inline int NCR5380_pwrite(struct Scsi_Host *instance, unsigned char *src,
 			; // FIXME - no timeout
 
 #ifndef CONFIG_SCSI_G_NCR5380_MEM
+#ifndef SCSI_G_NCR5380_MEM
 		{
 			for (i = 0; i < 128; i++)
 				NCR5380_write(C400_HOST_BUFFER, src[start + i]);
 		}
 #else
 		/* implies CONFIG_SCSI_G_NCR5380_MEM */
+		/* implies SCSI_G_NCR5380_MEM */
 		memcpy_toio(iomem + NCR53C400_host_buffer, src + start, 128);
 #endif
 		start += 128;
@@ -913,6 +979,9 @@ static int generic_NCR5380_proc_info(struct Scsi_Host *scsi_ptr, char *buffer, c
 static struct scsi_host_template driver_template = {
 	.proc_info      	= generic_NCR5380_proc_info,
 	.name           	= "Generic NCR5380/NCR53C400 Scsi Driver",
+static struct scsi_host_template driver_template = {
+	.show_info      	= generic_NCR5380_show_info,
+	.name           	= "Generic NCR5380/NCR53C400 SCSI",
 	.detect         	= generic_NCR5380_detect,
 	.release        	= generic_NCR5380_release_resources,
 	.info           	= generic_NCR5380_info,
@@ -940,6 +1009,8 @@ MODULE_LICENSE("GPL");
 
 
 static struct isapnp_device_id id_table[] __devinitdata = {
+#if !defined(SCSI_G_NCR5380_MEM) && defined(MODULE)
+static struct isapnp_device_id id_table[] = {
 	{
 	 ISAPNP_ANY_ID, ISAPNP_ANY_ID,
 	 ISAPNP_VENDOR('D', 'T', 'C'), ISAPNP_FUNCTION(0x436e),
@@ -949,6 +1020,7 @@ static struct isapnp_device_id id_table[] __devinitdata = {
 
 MODULE_DEVICE_TABLE(isapnp, id_table);
 
+#endif
 
 __setup("ncr5380=", do_NCR5380_setup);
 __setup("ncr53c400=", do_NCR53C400_setup);

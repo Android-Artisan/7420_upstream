@@ -5,6 +5,7 @@
 #include <linux/timex.h>
 #include <linux/clocksource.h>
 #include <asm/io.h>
+#include <linux/io.h>
 
 /* IBM Summit (EXA) Cyclone counter code*/
 #define CYCLONE_CBAR_ADDR 0xFEB00CD0
@@ -22,6 +23,7 @@ void __init cyclone_setup(void)
 static void __iomem *cyclone_mc;
 
 static cycle_t read_cyclone(void)
+static cycle_t read_cyclone(struct clocksource *cs)
 {
 	return (cycle_t)readq((void __iomem *)cyclone_mc);
 }
@@ -59,6 +61,7 @@ int __init init_cyclone_clock(void)
 		return -ENODEV;
 	}
 	base = readq(reg);
+	iounmap(reg);
 	if(!base){
 		printk(KERN_ERR "Summit chipset: Could not find valid CBAR"
 				" value.\n");
@@ -121,6 +124,8 @@ int __init init_cyclone_clock(void)
 	clocksource_cyclone.mult = clocksource_hz2mult(CYCLONE_TIMER_FREQ,
 						clocksource_cyclone.shift);
 	clocksource_register(&clocksource_cyclone);
+	clocksource_cyclone.archdata.fsys_mmio = cyclone_timer;
+	clocksource_register_hz(&clocksource_cyclone, CYCLONE_TIMER_FREQ);
 
 	return 0;
 }

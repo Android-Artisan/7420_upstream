@@ -36,10 +36,13 @@
 
 #include "drmP.h"
 #include "via_drm.h"
+#include <drm/drmP.h>
+#include <drm/via_drm.h>
 #include "via_drv.h"
 #include "via_dmablit.h"
 
 #include <linux/pagemap.h>
+#include <linux/slab.h>
 
 #define VIA_PGDN(x)	     (((unsigned long)(x)) & PAGE_MASK)
 #define VIA_PGOFF(x)	    (((unsigned long)(x)) & ~PAGE_MASK)
@@ -70,6 +73,7 @@ via_unmap_blit_from_device(struct pci_dev *pdev, drm_via_sg_info_t *vsg)
 	dma_addr_t next = vsg->chain_start;
 
 	while(num_desc--) {
+	while (num_desc--) {
 		if (descriptor_this_page-- == 0) {
 			cur_descriptor_page--;
 			descriptor_this_page = vsg->descriptors_per_page - 1;
@@ -186,6 +190,19 @@ via_free_sg_info(struct pci_dev *pdev, drm_via_sg_info_t *vsg)
 		for (i=0; i<vsg->num_pages; ++i) {
 			if ( NULL != (page = vsg->pages[i])) {
 				if (! PageReserved(page) && (DMA_FROM_DEVICE == vsg->direction))
+	switch (vsg->state) {
+	case dr_via_device_mapped:
+		via_unmap_blit_from_device(pdev, vsg);
+	case dr_via_desc_pages_alloc:
+		for (i = 0; i < vsg->num_desc_pages; ++i) {
+			if (vsg->desc_pages[i] != NULL)
+				free_page((unsigned long)vsg->desc_pages[i]);
+		}
+		kfree(vsg->desc_pages);
+	case dr_via_pages_locked:
+		for (i = 0; i < vsg->num_pages; ++i) {
+			if (NULL != (page = vsg->pages[i])) {
+				if (!PageReserved(page) && (DMA_FROM_DEVICE == vsg->direction))
 					SetPageDirty(page);
 				page_cache_release(page);
 			}
@@ -199,6 +216,8 @@ via_free_sg_info(struct pci_dev *pdev, drm_via_sg_info_t *vsg)
 		vfree(vsg->bounce_buffer);
 		vsg->bounce_buffer = NULL;
 	}
+	vfree(vsg->bounce_buffer);
+	vsg->bounce_buffer = NULL;
 	vsg->free_on_sequence = 0;
 }
 
@@ -219,6 +238,7 @@ via_fire_dmablit(struct drm_device *dev, drm_via_sg_info_t *vsg, int engine)
 	VIA_WRITE(VIA_PCI_DMA_BCR0 + engine*0x10, 0);
 	VIA_WRITE(VIA_PCI_DMA_DPR0 + engine*0x10, vsg->chain_start);
 	DRM_WRITEMEMORYBARRIER();
+	wmb();
 	VIA_WRITE(VIA_PCI_DMA_CSR0 + engine*0x04, VIA_DMA_CSR_DE | VIA_DMA_CSR_TS);
 	VIA_READ(VIA_PCI_DMA_CSR0 + engine*0x04);
 }
@@ -239,12 +259,18 @@ via_lock_all_dma_pages(drm_via_sg_info_t *vsg,  drm_via_dmablit_t *xfer)
 	if (NULL == (vsg->pages = vmalloc(sizeof(struct page *) * vsg->num_pages)))
 		return -ENOMEM;
 	memset(vsg->pages, 0, sizeof(struct page *) * vsg->num_pages);
+	vsg->num_pages = VIA_PFN(xfer->mem_addr + (xfer->num_lines * xfer->mem_stride - 1)) -
+		first_pfn + 1;
+
+	vsg->pages = vzalloc(sizeof(struct page *) * vsg->num_pages);
+	if (NULL == vsg->pages)
+		return -ENOMEM;
 	down_read(&current->mm->mmap_sem);
 	ret = get_user_pages(current, current->mm,
 			     (unsigned long)xfer->mem_addr,
 			     vsg->num_pages,
-			     (vsg->direction == DMA_FROM_DEVICE),
-			     0, vsg->pages, NULL);
+			     (vsg->direction == DMA_FROM_DEVICE) ? FOLL_WRITE : 0,
+			     vsg->pages, NULL);
 
 	up_read(&current->mm->mmap_sem);
 	if (ret != vsg->num_pages) {
@@ -262,6 +288,7 @@ via_lock_all_dma_pages(drm_via_sg_info_t *vsg,  drm_via_dmablit_t *xfer)
  * Allocate DMA capable memory for the blit descriptor chain, and an array that keeps track of the
  * pages we allocate. We don't want to use kmalloc for the descriptor chain because it may be
  * quite large for some blits, and pages don't need to be contingous.
+ * quite large for some blits, and pages don't need to be contiguous.
  */
 
 static int
@@ -270,6 +297,7 @@ via_alloc_desc_pages(drm_via_sg_info_t *vsg)
 	int i;
 
 	vsg->descriptors_per_page = PAGE_SIZE / sizeof( drm_via_descriptor_t);
+	vsg->descriptors_per_page = PAGE_SIZE / sizeof(drm_via_descriptor_t);
 	vsg->num_desc_pages = (vsg->num_desc + vsg->descriptors_per_page - 1) /
 		vsg->descriptors_per_page;
 
@@ -278,6 +306,7 @@ via_alloc_desc_pages(drm_via_sg_info_t *vsg)
 
 	vsg->state = dr_via_desc_pages_alloc;
 	for (i=0; i<vsg->num_desc_pages; ++i) {
+	for (i = 0; i < vsg->num_desc_pages; ++i) {
 		if (NULL == (vsg->desc_pages[i] =
 			     (drm_via_descriptor_t *) __get_free_page(GFP_KERNEL)))
 			return -ENOMEM;
@@ -320,6 +349,7 @@ via_dmablit_handler(struct drm_device *dev, int engine, int from_irq)
 	int cur;
 	int done_transfer;
 	unsigned long irqsave=0;
+	unsigned long irqsave = 0;
 	uint32_t status = 0;
 
 	DRM_DEBUG("DMA blit handler called. engine = %d, from_irq = %d, blitq = 0x%lx\n",
@@ -334,6 +364,14 @@ via_dmablit_handler(struct drm_device *dev, int engine, int from_irq)
 	done_transfer = blitq->is_active &&
 	  (( status = VIA_READ(VIA_PCI_DMA_CSR0 + engine*0x04)) & VIA_DMA_CSR_TD);
 	done_transfer = done_transfer || ( blitq->aborting && !(status & VIA_DMA_CSR_DE));
+	if (from_irq)
+		spin_lock(&blitq->blit_lock);
+	else
+		spin_lock_irqsave(&blitq->blit_lock, irqsave);
+
+	done_transfer = blitq->is_active &&
+	  ((status = VIA_READ(VIA_PCI_DMA_CSR0 + engine*0x04)) & VIA_DMA_CSR_TD);
+	done_transfer = done_transfer || (blitq->aborting && !(status & VIA_DMA_CSR_DE));
 
 	cur = blitq->cur;
 	if (done_transfer) {
@@ -341,6 +379,7 @@ via_dmablit_handler(struct drm_device *dev, int engine, int from_irq)
 		blitq->blits[cur]->aborted = blitq->aborting;
 		blitq->done_blit_handle++;
 		DRM_WAKEUP(blitq->blit_queue + cur);
+		wake_up(blitq->blit_queue + cur);
 
 		cur++;
 		if (cur >= VIA_NUM_BLIT_SLOTS)
@@ -366,6 +405,7 @@ via_dmablit_handler(struct drm_device *dev, int engine, int from_irq)
 		via_abort_dmablit(dev, engine);
 		blitq->aborting = 1;
 		blitq->end = jiffies + DRM_HZ;
+		blitq->end = jiffies + HZ;
 	}
 
 	if (!blitq->is_active) {
@@ -381,6 +421,12 @@ via_dmablit_handler(struct drm_device *dev, int engine, int from_irq)
 			if (timer_pending(&blitq->poll_timer)) {
 				del_timer(&blitq->poll_timer);
 			}
+			blitq->end = jiffies + HZ;
+			if (!timer_pending(&blitq->poll_timer))
+				mod_timer(&blitq->poll_timer, jiffies + 1);
+		} else {
+			if (timer_pending(&blitq->poll_timer))
+				del_timer(&blitq->poll_timer);
 			via_dmablit_engine_off(dev, engine);
 		}
 	}
@@ -390,6 +436,10 @@ via_dmablit_handler(struct drm_device *dev, int engine, int from_irq)
 	} else {
 		spin_unlock_irqrestore(&blitq->blit_lock, irqsave);
 	}
+	if (from_irq)
+		spin_unlock(&blitq->blit_lock);
+	else
+		spin_unlock_irqrestore(&blitq->blit_lock, irqsave);
 }
 
 
@@ -419,6 +469,9 @@ via_dmablit_active(drm_via_blitq_t *blitq, int engine, uint32_t handle, wait_que
 		if (slot >= VIA_NUM_BLIT_SLOTS) {
 			slot -= VIA_NUM_BLIT_SLOTS;
 		}
+		slot = handle - blitq->done_blit_handle + blitq->cur - 1;
+		if (slot >= VIA_NUM_BLIT_SLOTS)
+			slot -= VIA_NUM_BLIT_SLOTS;
 		*queue = blitq->blit_queue + slot;
 	}
 
@@ -442,6 +495,7 @@ via_dmablit_sync(struct drm_device *dev, uint32_t handle, int engine)
 
 	if (via_dmablit_active(blitq, engine, handle, &queue)) {
 		DRM_WAIT_ON(ret, *queue, 3 * DRM_HZ,
+		DRM_WAIT_ON(ret, *queue, 3 * HZ,
 			    !via_dmablit_active(blitq, engine, handle, NULL));
 	}
 	DRM_DEBUG("DMA blit sync handle 0x%x engine %d returned %d\n",
@@ -508,11 +562,13 @@ via_dmablit_workqueue(struct work_struct *work)
 
 
 	DRM_DEBUG("Workqueue task called for blit engine %ld\n",(unsigned long)
+	DRM_DEBUG("Workqueue task called for blit engine %ld\n", (unsigned long)
 		  (blitq - ((drm_via_private_t *)dev->dev_private)->blit_queues));
 
 	spin_lock_irqsave(&blitq->blit_lock, irqsave);
 
 	while(blitq->serviced != blitq->cur) {
+	while (blitq->serviced != blitq->cur) {
 
 		cur_released = blitq->serviced++;
 
@@ -527,6 +583,7 @@ via_dmablit_workqueue(struct work_struct *work)
 		spin_unlock_irqrestore(&blitq->blit_lock, irqsave);
 
 		DRM_WAKEUP(&blitq->busy_queue);
+		wake_up(&blitq->busy_queue);
 
 		via_free_sg_info(dev->pdev, cur_sg);
 		kfree(cur_sg);
@@ -547,12 +604,14 @@ void
 via_init_dmablit(struct drm_device *dev)
 {
 	int i,j;
+	int i, j;
 	drm_via_private_t *dev_priv = (drm_via_private_t *)dev->dev_private;
 	drm_via_blitq_t *blitq;
 
 	pci_set_master(dev->pdev);
 
 	for (i=0; i< VIA_NUM_BLIT_ENGINES; ++i) {
+	for (i = 0; i < VIA_NUM_BLIT_ENGINES; ++i) {
 		blitq = dev_priv->blit_queues + i;
 		blitq->dev = dev;
 		blitq->cur_blit_handle = 0;
@@ -569,6 +628,9 @@ via_init_dmablit(struct drm_device *dev)
 			DRM_INIT_WAITQUEUE(blitq->blit_queue + j);
 		}
 		DRM_INIT_WAITQUEUE(&blitq->busy_queue);
+		for (j = 0; j < VIA_NUM_BLIT_SLOTS; ++j)
+			init_waitqueue_head(blitq->blit_queue + j);
+		init_waitqueue_head(&blitq->busy_queue);
 		INIT_WORK(&blitq->wq, via_dmablit_workqueue);
 		setup_timer(&blitq->poll_timer, via_dmablit_timer,
 				(unsigned long)blitq);
@@ -687,6 +749,7 @@ static int
 via_dmablit_grab_slot(drm_via_blitq_t *blitq, int engine)
 {
 	int ret=0;
+	int ret = 0;
 	unsigned long irqsave;
 
 	DRM_DEBUG("Num free is %d\n", blitq->num_free);
@@ -698,6 +761,12 @@ via_dmablit_grab_slot(drm_via_blitq_t *blitq, int engine)
 		if (ret) {
 			return (-EINTR == ret) ? -EAGAIN : ret;
 		}
+	while (blitq->num_free == 0) {
+		spin_unlock_irqrestore(&blitq->blit_lock, irqsave);
+
+		DRM_WAIT_ON(ret, blitq->busy_queue, HZ, blitq->num_free > 0);
+		if (ret)
+			return (-EINTR == ret) ? -EAGAIN : ret;
 
 		spin_lock_irqsave(&blitq->blit_lock, irqsave);
 	}
@@ -721,6 +790,7 @@ via_dmablit_release_slot(drm_via_blitq_t *blitq)
 	blitq->num_free++;
 	spin_unlock_irqrestore(&blitq->blit_lock, irqsave);
 	DRM_WAKEUP( &blitq->busy_queue );
+	wake_up(&blitq->busy_queue);
 }
 
 /*
@@ -748,6 +818,8 @@ via_dmablit(struct drm_device *dev, drm_via_dmablit_t *xfer)
 	if (0 != (ret = via_dmablit_grab_slot(blitq, engine))) {
 		return ret;
 	}
+	if (0 != (ret = via_dmablit_grab_slot(blitq, engine)))
+		return ret;
 	if (NULL == (vsg = kmalloc(sizeof(*vsg), GFP_KERNEL))) {
 		via_dmablit_release_slot(blitq);
 		return -ENOMEM;
@@ -782,6 +854,7 @@ via_dmablit(struct drm_device *dev, drm_via_dmablit_t *xfer)
 
 int
 via_dma_blit_sync( struct drm_device *dev, void *data, struct drm_file *file_priv )
+via_dma_blit_sync(struct drm_device *dev, void *data, struct drm_file *file_priv)
 {
 	drm_via_blitsync_t *sync = data;
 	int err;
@@ -806,6 +879,7 @@ via_dma_blit_sync( struct drm_device *dev, void *data, struct drm_file *file_pri
 
 int
 via_dma_blit( struct drm_device *dev, void *data, struct drm_file *file_priv )
+via_dma_blit(struct drm_device *dev, void *data, struct drm_file *file_priv)
 {
 	drm_via_dmablit_t *xfer = data;
 	int err;

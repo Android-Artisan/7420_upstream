@@ -13,7 +13,6 @@
  */
 
 #ifdef __ASSEMBLY__
-/* =====================================================================
 **
 ** Section 1: acts on assembly sources pre-processed by GPP ( <source.S>).
 **	      Assigns symbolic names to control & target registers.

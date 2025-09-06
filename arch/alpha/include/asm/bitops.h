@@ -406,6 +406,7 @@ static inline int fls(int x)
 #if defined(CONFIG_ALPHA_EV6) && defined(CONFIG_ALPHA_EV67)
 /* Whee.  EV67 can calculate it directly.  */
 static inline unsigned long hweight64(unsigned long w)
+static inline unsigned long __arch_hweight64(unsigned long w)
 {
 	return __kernel_ctpop(w);
 }
@@ -427,6 +428,26 @@ static inline unsigned int hweight8(unsigned int w)
 #else
 #include <asm-generic/bitops/hweight.h>
 #endif
+
+static inline unsigned int __arch_hweight32(unsigned int w)
+{
+	return __arch_hweight64(w);
+}
+
+static inline unsigned int __arch_hweight16(unsigned int w)
+{
+	return __arch_hweight64(w & 0xffff);
+}
+
+static inline unsigned int __arch_hweight8(unsigned int w)
+{
+	return __arch_hweight64(w & 0xff);
+}
+#else
+#include <asm-generic/bitops/arch_hweight.h>
+#endif
+
+#include <asm-generic/bitops/const_hweight.h>
 
 #endif /* __KERNEL__ */
 
@@ -460,6 +481,25 @@ sched_find_first_bit(unsigned long b[3])
 #define ext2_clear_bit_atomic(l,n,a) test_and_clear_bit(n,a)
 
 #include <asm-generic/bitops/minix.h>
+ * way of searching a 100-bit bitmap.  It's guaranteed that at least
+ * one of the 100 bits is cleared.
+ */
+static inline unsigned long
+sched_find_first_bit(const unsigned long b[2])
+{
+	unsigned long b0, b1, ofs, tmp;
+
+	b0 = b[0];
+	b1 = b[1];
+	ofs = (b0 ? 0 : 64);
+	tmp = (b0 ? b0 : b1);
+
+	return __ffs(tmp) + ofs;
+}
+
+#include <asm-generic/bitops/le.h>
+
+#include <asm-generic/bitops/ext2-atomic-setbit.h>
 
 #endif /* __KERNEL__ */
 

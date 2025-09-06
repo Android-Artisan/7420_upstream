@@ -33,6 +33,13 @@
 
 #include <sysdev/fsl_soc.h>
 #include <sysdev/fsl_pci.h>
+#include <asm/swiotlb.h>
+
+#include <sysdev/fsl_soc.h>
+#include <sysdev/fsl_pci.h>
+#include "smp.h"
+
+#include "mpc85xx.h"
 
 #undef DEBUG
 
@@ -45,12 +52,16 @@
 #ifdef CONFIG_PPC_I8259
 static void mpc85xx_8259_cascade(unsigned int irq, struct irq_desc *desc)
 {
+static void mpc85xx_8259_cascade(struct irq_desc *desc)
+{
+	struct irq_chip *chip = irq_desc_get_chip(desc);
 	unsigned int cascade_irq = i8259_irq();
 
 	if (cascade_irq != NO_IRQ) {
 		generic_handle_irq(cascade_irq);
 	}
 	desc->chip->eoi(irq);
+	chip->irq_eoi(&desc->irq_data);
 }
 #endif	/* CONFIG_PPC_I8259 */
 
@@ -83,6 +94,27 @@ void __init mpc85xx_ds_pic_init(void)
 	BUG_ON(mpic == NULL);
 	of_node_put(np);
 
+#ifdef CONFIG_PPC_I8259
+	struct device_node *np;
+	struct device_node *cascade_node = NULL;
+	int cascade_irq;
+#endif
+	unsigned long root = of_get_flat_dt_root();
+
+	if (of_flat_dt_is_compatible(root, "fsl,MPC8572DS-CAMP")) {
+		mpic = mpic_alloc(NULL, 0,
+			MPIC_NO_RESET |
+			MPIC_BIG_ENDIAN |
+			MPIC_SINGLE_DEST_CPU,
+			0, 256, " OpenPIC  ");
+	} else {
+		mpic = mpic_alloc(NULL, 0,
+			  MPIC_BIG_ENDIAN |
+			  MPIC_SINGLE_DEST_CPU,
+			0, 256, " OpenPIC  ");
+	}
+
+	BUG_ON(mpic == NULL);
 	mpic_init(mpic);
 
 #ifdef CONFIG_PPC_I8259
@@ -110,6 +142,7 @@ void __init mpc85xx_ds_pic_init(void)
 	of_node_put(cascade_node);
 
 	set_irq_chained_handler(cascade_irq, mpc85xx_8259_cascade);
+	irq_set_chained_handler(cascade_irq, mpc85xx_8259_cascade);
 #endif	/* CONFIG_PPC_I8259 */
 }
 
@@ -130,10 +163,40 @@ static int mpc85xx_exclude_device(struct pci_controller *hose,
 	if ((rsrc.start & 0xfffff) == primary_phb_addr) {
 		return uli_exclude_device(hose, bus, devfn);
 	}
+extern int uli_exclude_device(struct pci_controller *hose,
+				u_char bus, u_char devfn);
+
+static struct device_node *pci_with_uli;
+
+static int mpc85xx_exclude_device(struct pci_controller *hose,
+				   u_char bus, u_char devfn)
+{
+	if (hose->dn == pci_with_uli)
+		return uli_exclude_device(hose, bus, devfn);
 
 	return PCIBIOS_SUCCESSFUL;
 }
 #endif	/* CONFIG_PCI */
+
+static void __init mpc85xx_ds_uli_init(void)
+{
+#ifdef CONFIG_PCI
+	struct device_node *node;
+
+	/* See if we have a ULI under the primary */
+
+	node = of_find_node_by_name(NULL, "uli1575");
+	while ((pci_with_uli = of_get_parent(node))) {
+		of_node_put(node);
+		node = pci_with_uli;
+
+		if (pci_with_uli == fsl_pci_primary) {
+			ppc_md.pci_exclude_device = mpc85xx_exclude_device;
+			break;
+		}
+	}
+#endif
+}
 
 /*
  * Setup the architecture
@@ -162,6 +225,13 @@ static void __init mpc85xx_ds_setup_arch(void)
 
 	ppc_md.pci_exclude_device = mpc85xx_exclude_device;
 #endif
+	if (ppc_md.progress)
+		ppc_md.progress("mpc85xx_ds_setup_arch()", 0);
+
+	swiotlb_detect_4g();
+	fsl_pci_assign_primary();
+	mpc85xx_ds_uli_init();
+	mpc85xx_smp_init();
 
 	printk("MPC85xx DS board from Freescale Semiconductor\n");
 }
@@ -196,6 +266,16 @@ static int __init mpc85xxds_publish_devices(void)
 }
 machine_device_initcall(mpc8544_ds, mpc85xxds_publish_devices);
 machine_device_initcall(mpc8572_ds, mpc85xxds_publish_devices);
+	return !!of_flat_dt_is_compatible(root, "MPC8544DS");
+}
+
+machine_arch_initcall(mpc8544_ds, mpc85xx_common_publish_devices);
+machine_arch_initcall(mpc8572_ds, mpc85xx_common_publish_devices);
+machine_arch_initcall(p2020_ds, mpc85xx_common_publish_devices);
+
+machine_arch_initcall(mpc8544_ds, swiotlb_setup_bus_notifier);
+machine_arch_initcall(mpc8572_ds, swiotlb_setup_bus_notifier);
+machine_arch_initcall(p2020_ds, swiotlb_setup_bus_notifier);
 
 /*
  * Called very early, device-tree isn't unflattened
@@ -212,6 +292,17 @@ static int __init mpc8572_ds_probe(void)
 	} else {
 		return 0;
 	}
+	return !!of_flat_dt_is_compatible(root, "fsl,MPC8572DS");
+}
+
+/*
+ * Called very early, device-tree isn't unflattened
+ */
+static int __init p2020_ds_probe(void)
+{
+	unsigned long root = of_get_flat_dt_root();
+
+	return !!of_flat_dt_is_compatible(root, "fsl,P2020DS");
 }
 
 define_machine(mpc8544_ds) {
@@ -221,6 +312,7 @@ define_machine(mpc8544_ds) {
 	.init_IRQ		= mpc85xx_ds_pic_init,
 #ifdef CONFIG_PCI
 	.pcibios_fixup_bus	= fsl_pcibios_fixup_bus,
+	.pcibios_fixup_phb      = fsl_pcibios_fixup_phb,
 #endif
 	.get_irq		= mpic_get_irq,
 	.restart		= fsl_rstcr_restart,
@@ -235,6 +327,22 @@ define_machine(mpc8572_ds) {
 	.init_IRQ		= mpc85xx_ds_pic_init,
 #ifdef CONFIG_PCI
 	.pcibios_fixup_bus	= fsl_pcibios_fixup_bus,
+	.pcibios_fixup_phb      = fsl_pcibios_fixup_phb,
+#endif
+	.get_irq		= mpic_get_irq,
+	.restart		= fsl_rstcr_restart,
+	.calibrate_decr		= generic_calibrate_decr,
+	.progress		= udbg_progress,
+};
+
+define_machine(p2020_ds) {
+	.name			= "P2020 DS",
+	.probe			= p2020_ds_probe,
+	.setup_arch		= mpc85xx_ds_setup_arch,
+	.init_IRQ		= mpc85xx_ds_pic_init,
+#ifdef CONFIG_PCI
+	.pcibios_fixup_bus	= fsl_pcibios_fixup_bus,
+	.pcibios_fixup_phb      = fsl_pcibios_fixup_phb,
 #endif
 	.get_irq		= mpic_get_irq,
 	.restart		= fsl_rstcr_restart,

@@ -17,6 +17,13 @@ struct ads7846_platform_data {
 	u16	vref_mv;		/* external vref value, milliVolts */
 	bool	keep_vref_on;		/* set to keep vref on for differential
 					 * measurements as well */
+	u16	model;			/* 7843, 7845, 7846, 7873. */
+	u16	vref_delay_usecs;	/* 0 for external vref; etc */
+	u16	vref_mv;		/* external vref value, milliVolts
+					 * ads7846: if 0, use internal vref */
+	bool	keep_vref_on;		/* set to keep vref on for differential
+					 * measurements as well */
+	bool	swap_xy;		/* swap x and y axes */
 
 	/* Settling time of the analog signals; a function of Vcc and the
 	 * capacitance on the X/Y drivers.  If set to non-zero, two samples
@@ -48,5 +55,17 @@ struct ads7846_platform_data {
 				 void **filter_data);
 	int	(*filter)	(void *filter_data, int data_idx, int *val);
 	void	(*filter_cleanup)(void *filter_data);
+	int	gpio_pendown;		/* the GPIO used to decide the pendown
+					 * state if get_pendown_state == NULL */
+	int	gpio_pendown_debounce;	/* platform specific debounce time for
+					 * the gpio_pendown */
+	int	(*get_pendown_state)(void);
+	int	(*filter_init)	(const struct ads7846_platform_data *pdata,
+				 void **filter_data);
+	int	(*filter)	(void *filter_data, int data_idx, int *val);
+	void	(*filter_cleanup)(void *filter_data);
+	void	(*wait_for_sync)(void);
+	bool	wakeup;
+	unsigned long irq_flags;
 };
 

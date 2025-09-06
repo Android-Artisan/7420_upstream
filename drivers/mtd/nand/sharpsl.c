@@ -2,6 +2,7 @@
  * drivers/mtd/nand/sharpsl.c
  *
  *  Copyright (C) 2004 Richard Purdie
+ *  Copyright (C) 2008 Dmitry Baryshkov
  *
  *  Based on Sharp's NAND driver sharp_sl.c
  *
@@ -20,6 +21,10 @@
 #include <linux/mtd/nand_ecc.h>
 #include <linux/mtd/partitions.h>
 #include <linux/interrupt.h>
+#include <linux/mtd/sharpsl.h>
+#include <linux/interrupt.h>
+#include <linux/platform_device.h>
+
 #include <asm/io.h>
 #include <mach/hardware.h>
 #include <asm/mach-types.h>
@@ -35,6 +40,23 @@ static int sharpsl_phys_base = 0x0C000000;
 #define ECCCLRR	 	sharpsl_io_base+0x10	/* cleare ECC */
 #define FLASHIO	 	sharpsl_io_base+0x14	/* Flash I/O */
 #define FLASHCTL	sharpsl_io_base+0x18	/* Flash Control */
+struct sharpsl_nand {
+	struct mtd_info		mtd;
+	struct nand_chip	chip;
+
+	void __iomem		*io;
+};
+
+#define mtd_to_sharpsl(_mtd)	container_of(_mtd, struct sharpsl_nand, mtd)
+
+/* register offset */
+#define ECCLPLB		0x00	/* line parity 7 - 0 bit */
+#define ECCLPUB		0x04	/* line parity 15 - 8 bit */
+#define ECCCP		0x08	/* column parity 5 - 0 bit */
+#define ECCCNTR		0x0C	/* ECC byte counter */
+#define ECCCLRR		0x10	/* cleare ECC */
+#define FLASHIO		0x14	/* Flash I/O */
+#define FLASHCTL	0x18	/* Flash Control */
 
 /* Flash control bit */
 #define FLRYBY		(1 << 5)
@@ -84,6 +106,7 @@ static struct mtd_partition sharpsl_nand_default_partition_info[] = {
 static void sharpsl_nand_hwcontrol(struct mtd_info *mtd, int cmd,
 				   unsigned int ctrl)
 {
+	struct sharpsl_nand *sharpsl = mtd_to_sharpsl(mtd);
 	struct nand_chip *chip = mtd->priv;
 
 	if (ctrl & NAND_CTRL_CHANGE) {
@@ -94,6 +117,7 @@ static void sharpsl_nand_hwcontrol(struct mtd_info *mtd, int cmd,
 		bits ^= 0x11;
 
 		writeb((readb(FLASHCTL) & ~0x17) | bits, FLASHCTL);
+		writeb((readb(sharpsl->io + FLASHCTL) & ~0x17) | bits, sharpsl->io + FLASHCTL);
 	}
 
 	if (cmd != NAND_CMD_NONE)
@@ -128,11 +152,17 @@ static struct nand_ecclayout akita_oobinfo = {
 static int sharpsl_nand_dev_ready(struct mtd_info *mtd)
 {
 	return !((readb(FLASHCTL) & FLRYBY) == 0);
+static int sharpsl_nand_dev_ready(struct mtd_info *mtd)
+{
+	struct sharpsl_nand *sharpsl = mtd_to_sharpsl(mtd);
+	return !((readb(sharpsl->io + FLASHCTL) & FLRYBY) == 0);
 }
 
 static void sharpsl_nand_enable_hwecc(struct mtd_info *mtd, int mode)
 {
 	writeb(0, ECCCLRR);
+	struct sharpsl_nand *sharpsl = mtd_to_sharpsl(mtd);
+	writeb(0, sharpsl->io + ECCCLRR);
 }
 
 static int sharpsl_nand_calculate_ecc(struct mtd_info *mtd, const u_char * dat, u_char * ecc_code)
@@ -181,6 +211,57 @@ static int __init sharpsl_nand_init(void)
 	/* Link the private data with the MTD structure */
 	sharpsl_mtd->priv = this;
 	sharpsl_mtd->owner = THIS_MODULE;
+	struct sharpsl_nand *sharpsl = mtd_to_sharpsl(mtd);
+	ecc_code[0] = ~readb(sharpsl->io + ECCLPUB);
+	ecc_code[1] = ~readb(sharpsl->io + ECCLPLB);
+	ecc_code[2] = (~readb(sharpsl->io + ECCCP) << 2) | 0x03;
+	return readb(sharpsl->io + ECCCNTR) != 0;
+}
+
+/*
+ * Main initialization routine
+ */
+static int sharpsl_nand_probe(struct platform_device *pdev)
+{
+	struct nand_chip *this;
+	struct resource *r;
+	int err = 0;
+	struct sharpsl_nand *sharpsl;
+	struct sharpsl_nand_platform_data *data = dev_get_platdata(&pdev->dev);
+
+	if (!data) {
+		dev_err(&pdev->dev, "no platform data!\n");
+		return -EINVAL;
+	}
+
+	/* Allocate memory for MTD device structure and private data */
+	sharpsl = kzalloc(sizeof(struct sharpsl_nand), GFP_KERNEL);
+	if (!sharpsl)
+		return -ENOMEM;
+
+	r = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	if (!r) {
+		dev_err(&pdev->dev, "no io memory resource defined!\n");
+		err = -ENODEV;
+		goto err_get_res;
+	}
+
+	/* map physical address */
+	sharpsl->io = ioremap(r->start, resource_size(r));
+	if (!sharpsl->io) {
+		dev_err(&pdev->dev, "ioremap to access Sharp SL NAND chip failed\n");
+		err = -EIO;
+		goto err_ioremap;
+	}
+
+	/* Get pointer to private data */
+	this = (struct nand_chip *)(&sharpsl->chip);
+
+	/* Link the private data with the MTD structure */
+	sharpsl->mtd.priv = this;
+	sharpsl->mtd.dev.parent = &pdev->dev;
+
+	platform_set_drvdata(pdev, sharpsl);
 
 	/*
 	 * PXA initialize
@@ -190,6 +271,11 @@ static int __init sharpsl_nand_init(void)
 	/* Set address of NAND IO lines */
 	this->IO_ADDR_R = FLASHIO;
 	this->IO_ADDR_W = FLASHIO;
+	writeb(readb(sharpsl->io + FLASHCTL) | FLWP, sharpsl->io + FLASHCTL);
+
+	/* Set address of NAND IO lines */
+	this->IO_ADDR_R = sharpsl->io + FLASHIO;
+	this->IO_ADDR_W = sharpsl->io + FLASHIO;
 	/* Set address of hardware control function */
 	this->cmd_ctrl = sharpsl_nand_hwcontrol;
 	this->dev_ready = sharpsl_nand_dev_ready;
@@ -204,6 +290,9 @@ static int __init sharpsl_nand_init(void)
 		this->badblock_pattern = &sharpsl_akita_bbt;
 		this->ecc.layout = &akita_oobinfo;
 	}
+	this->ecc.strength = 1;
+	this->badblock_pattern = data->badblock_pattern;
+	this->ecc.layout = data->ecc_layout;
 	this->ecc.hwctl = sharpsl_nand_enable_hwecc;
 	this->ecc.calculate = sharpsl_nand_calculate_ecc;
 	this->ecc.correct = nand_correct_data;
@@ -245,6 +334,31 @@ static int __init sharpsl_nand_init(void)
 }
 
 module_init(sharpsl_nand_init);
+	err = nand_scan(&sharpsl->mtd, 1);
+	if (err)
+		goto err_scan;
+
+	/* Register the partitions */
+	sharpsl->mtd.name = "sharpsl-nand";
+
+	err = mtd_device_parse_register(&sharpsl->mtd, NULL, NULL,
+					data->partitions, data->nr_partitions);
+	if (err)
+		goto err_add;
+
+	/* Return happy */
+	return 0;
+
+err_add:
+	nand_cleanup(this);
+
+err_scan:
+	iounmap(sharpsl->io);
+err_ioremap:
+err_get_res:
+	kfree(sharpsl);
+	return err;
+}
 
 /*
  * Clean up routine
@@ -261,6 +375,30 @@ static void __exit sharpsl_nand_cleanup(void)
 }
 
 module_exit(sharpsl_nand_cleanup);
+static int sharpsl_nand_remove(struct platform_device *pdev)
+{
+	struct sharpsl_nand *sharpsl = platform_get_drvdata(pdev);
+
+	/* Release resources, unregister device */
+	nand_release(&sharpsl->mtd);
+
+	iounmap(sharpsl->io);
+
+	/* Free the MTD device structure */
+	kfree(sharpsl);
+
+	return 0;
+}
+
+static struct platform_driver sharpsl_nand_driver = {
+	.driver = {
+		.name	= "sharpsl-nand",
+	},
+	.probe		= sharpsl_nand_probe,
+	.remove		= sharpsl_nand_remove,
+};
+
+module_platform_driver(sharpsl_nand_driver);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Richard Purdie <rpurdie@rpsys.net>");

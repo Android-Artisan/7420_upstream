@@ -2,6 +2,7 @@
  *  pc87360.c - Part of lm_sensors, Linux kernel modules
  *              for hardware monitoring
  *  Copyright (C) 2004, 2007 Jean Delvare <khali@linux-fr.org>
+ *  Copyright (C) 2004, 2007 Jean Delvare <jdelvare@suse.de>
  *
  *  Copied from smsc47m1.c:
  *  Copyright (C) 2002 Mark D. Studebaker <mdsxyz123@yahoo.com>
@@ -33,6 +34,8 @@
  *  the standard Super-I/O addresses is used (0x2E/0x2F or 0x4E/0x4F).
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/slab.h>
@@ -44,6 +47,8 @@
 #include <linux/err.h>
 #include <linux/mutex.h>
 #include <asm/io.h>
+#include <linux/acpi.h>
+#include <linux/io.h>
 
 static u8 devid;
 static struct platform_device *pdev;
@@ -58,6 +63,11 @@ MODULE_PARM_DESC(init,
  "*1: Forcibly enable internal voltage and temperature channels, except in9\n"
  " 2: Forcibly enable all voltage and temperature channels, except in9\n"
  " 3: Forcibly enable all voltage and temperature channels, including in9");
+"Chip initialization level:\n"
+" 0: None\n"
+"*1: Forcibly enable internal voltage and temperature channels, except in9\n"
+" 2: Forcibly enable all voltage and temperature channels, except in9\n"
+" 3: Forcibly enable all voltage and temperature channels, including in9");
 
 static unsigned short force_id;
 module_param(force_id, ushort, 0);
@@ -76,6 +86,8 @@ MODULE_PARM_DESC(force_id, "Override the detected device ID");
 #define VLM	0x0d	/* Logical device: voltages */
 #define TMS	0x0e	/* Logical device: temperatures */
 static const u8 logdev[3] = { FSCM, VLM, TMS };
+#define LDNI_MAX 3
+static const u8 logdev[LDNI_MAX] = { FSCM, VLM, TMS };
 
 #define LD_FAN		0
 #define LD_IN		1
@@ -85,18 +97,21 @@ static inline void superio_outb(int sioaddr, int reg, int val)
 {
 	outb(reg, sioaddr);
 	outb(val, sioaddr+1);
+	outb(val, sioaddr + 1);
 }
 
 static inline int superio_inb(int sioaddr, int reg)
 {
 	outb(reg, sioaddr);
 	return inb(sioaddr+1);
+	return inb(sioaddr + 1);
 }
 
 static inline void superio_exit(int sioaddr)
 {
 	outb(0x02, sioaddr);
 	outb(0x02, sioaddr+1);
+	outb(0x02, sioaddr + 1);
 }
 
 /*
@@ -130,6 +145,18 @@ static inline void superio_exit(int sioaddr)
 #define FAN_CONFIG_INVERT(val,nr)	(((val) >> (4 + nr * 3)) & 1)
 
 #define PWM_FROM_REG(val,inv)		((inv) ? 255 - (val) : (val))
+#define FAN_FROM_REG(val, div)		((val) == 0 ? 0 : \
+					 480000 / ((val) * (div)))
+#define FAN_TO_REG(val, div)		((val) <= 100 ? 0 : \
+					 480000 / ((val) * (div)))
+#define FAN_DIV_FROM_REG(val)		(1 << (((val) >> 5) & 0x03))
+#define FAN_STATUS_FROM_REG(val)	((val) & 0x07)
+
+#define FAN_CONFIG_MONITOR(val, nr)	(((val) >> (2 + (nr) * 3)) & 1)
+#define FAN_CONFIG_CONTROL(val, nr)	(((val) >> (3 + (nr) * 3)) & 1)
+#define FAN_CONFIG_INVERT(val, nr)	(((val) >> (4 + (nr) * 3)) & 1)
+
+#define PWM_FROM_REG(val, inv)		((inv) ? 255 - (val) : (val))
 static inline u8 PWM_TO_REG(int val, int inv)
 {
 	if (inv)
@@ -159,6 +186,10 @@ static inline u8 PWM_TO_REG(int val, int inv)
 #define IN_TO_REG(val,ref)		((val) < 0 ? 0 : \
 					 (val)*256 >= (ref)*255 ? 255: \
 					 ((val) * 256 + (ref)/2) / (ref))
+#define IN_FROM_REG(val, ref)		(((val) * (ref) + 128) / 256)
+#define IN_TO_REG(val, ref)		((val) < 0 ? 0 : \
+					 (val) * 256 >= (ref) * 255 ? 255 : \
+					 ((val) * 256 + (ref) / 2) / (ref))
 
 /*
  * Temperature registers and conversions
@@ -225,6 +256,7 @@ struct pc87360_data {
 
 static int pc87360_probe(struct platform_device *pdev);
 static int __devexit pc87360_remove(struct platform_device *pdev);
+static int pc87360_remove(struct platform_device *pdev);
 
 static int pc87360_read_value(struct pc87360_data *data, u8 ldi, u8 bank,
 			      u8 reg);
@@ -245,6 +277,10 @@ static struct platform_driver pc87360_driver = {
 	},
 	.probe		= pc87360_probe,
 	.remove		= __devexit_p(pc87360_remove),
+		.name	= "pc87360",
+	},
+	.probe		= pc87360_probe,
+	.remove		= pc87360_remove,
 };
 
 /*
@@ -252,6 +288,8 @@ static struct platform_driver pc87360_driver = {
  */
 
 static ssize_t show_fan_input(struct device *dev, struct device_attribute *devattr, char *buf)
+static ssize_t show_fan_input(struct device *dev,
+			      struct device_attribute *devattr, char *buf)
 {
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
 	struct pc87360_data *data = pc87360_update_device(dev);
@@ -259,6 +297,8 @@ static ssize_t show_fan_input(struct device *dev, struct device_attribute *devat
 		       FAN_DIV_FROM_REG(data->fan_status[attr->index])));
 }
 static ssize_t show_fan_min(struct device *dev, struct device_attribute *devattr, char *buf)
+static ssize_t show_fan_min(struct device *dev,
+			    struct device_attribute *devattr, char *buf)
 {
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
 	struct pc87360_data *data = pc87360_update_device(dev);
@@ -266,6 +306,8 @@ static ssize_t show_fan_min(struct device *dev, struct device_attribute *devattr
 		       FAN_DIV_FROM_REG(data->fan_status[attr->index])));
 }
 static ssize_t show_fan_div(struct device *dev, struct device_attribute *devattr, char *buf)
+static ssize_t show_fan_div(struct device *dev,
+			    struct device_attribute *devattr, char *buf)
 {
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
 	struct pc87360_data *data = pc87360_update_device(dev);
@@ -273,6 +315,8 @@ static ssize_t show_fan_div(struct device *dev, struct device_attribute *devattr
 		       FAN_DIV_FROM_REG(data->fan_status[attr->index]));
 }
 static ssize_t show_fan_status(struct device *dev, struct device_attribute *devattr, char *buf)
+static ssize_t show_fan_status(struct device *dev,
+			       struct device_attribute *devattr, char *buf)
 {
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
 	struct pc87360_data *data = pc87360_update_device(dev);
@@ -280,6 +324,8 @@ static ssize_t show_fan_status(struct device *dev, struct device_attribute *deva
 		       FAN_STATUS_FROM_REG(data->fan_status[attr->index]));
 }
 static ssize_t set_fan_min(struct device *dev, struct device_attribute *devattr, const char *buf,
+static ssize_t set_fan_min(struct device *dev,
+			   struct device_attribute *devattr, const char *buf,
 	size_t count)
 {
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
@@ -288,6 +334,16 @@ static ssize_t set_fan_min(struct device *dev, struct device_attribute *devattr,
 
 	mutex_lock(&data->update_lock);
 	fan_min = FAN_TO_REG(fan_min, FAN_DIV_FROM_REG(data->fan_status[attr->index]));
+	long fan_min;
+	int err;
+
+	err = kstrtol(buf, 10, &fan_min);
+	if (err)
+		return err;
+
+	mutex_lock(&data->update_lock);
+	fan_min = FAN_TO_REG(fan_min,
+			     FAN_DIV_FROM_REG(data->fan_status[attr->index]));
 
 	/* If it wouldn't fit, change clock divisor */
 	while (fan_min > 255
@@ -302,6 +358,13 @@ static ssize_t set_fan_min(struct device *dev, struct device_attribute *devattr,
 
 	/* Write new divider, preserve alarm bits */
 	pc87360_write_value(data, LD_FAN, NO_BANK, PC87360_REG_FAN_STATUS(attr->index),
+	pc87360_write_value(data, LD_FAN, NO_BANK,
+			    PC87360_REG_FAN_MIN(attr->index),
+			    data->fan_min[attr->index]);
+
+	/* Write new divider, preserve alarm bits */
+	pc87360_write_value(data, LD_FAN, NO_BANK,
+			    PC87360_REG_FAN_STATUS(attr->index),
 			    data->fan_status[attr->index] & 0xF9);
 	mutex_unlock(&data->update_lock);
 
@@ -336,6 +399,16 @@ static struct sensor_device_attribute fan_min[] = {
 	&fan_min[X].dev_attr.attr
 
 static ssize_t show_pwm(struct device *dev, struct device_attribute *devattr, char *buf)
+#define FAN_UNIT_ATTRS(X)		\
+{	&fan_input[X].dev_attr.attr,	\
+	&fan_status[X].dev_attr.attr,	\
+	&fan_div[X].dev_attr.attr,	\
+	&fan_min[X].dev_attr.attr,	\
+	NULL				\
+}
+
+static ssize_t show_pwm(struct device *dev, struct device_attribute *devattr,
+			char *buf)
 {
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
 	struct pc87360_data *data = pc87360_update_device(dev);
@@ -350,6 +423,17 @@ static ssize_t set_pwm(struct device *dev, struct device_attribute *devattr, con
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
 	struct pc87360_data *data = dev_get_drvdata(dev);
 	long val = simple_strtol(buf, NULL, 10);
+static ssize_t set_pwm(struct device *dev, struct device_attribute *devattr,
+		       const char *buf, size_t count)
+{
+	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
+	struct pc87360_data *data = dev_get_drvdata(dev);
+	long val;
+	int err;
+
+	err = kstrtol(buf, 10, &val);
+	if (err)
+		return err;
 
 	mutex_lock(&data->update_lock);
 	data->pwm[attr->index] = PWM_TO_REG(val,
@@ -380,6 +464,20 @@ static const struct attribute_group pc8736x_fan_group = {
 };
 
 static ssize_t show_in_input(struct device *dev, struct device_attribute *devattr, char *buf)
+static struct attribute *pc8736x_fan_attr[][5] = {
+	FAN_UNIT_ATTRS(0),
+	FAN_UNIT_ATTRS(1),
+	FAN_UNIT_ATTRS(2)
+};
+
+static const struct attribute_group pc8736x_fan_attr_group[] = {
+	{ .attrs = pc8736x_fan_attr[0], },
+	{ .attrs = pc8736x_fan_attr[1], },
+	{ .attrs = pc8736x_fan_attr[2], },
+};
+
+static ssize_t show_in_input(struct device *dev,
+			     struct device_attribute *devattr, char *buf)
 {
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
 	struct pc87360_data *data = pc87360_update_device(dev);
@@ -387,6 +485,8 @@ static ssize_t show_in_input(struct device *dev, struct device_attribute *devatt
 		       data->in_vref));
 }
 static ssize_t show_in_min(struct device *dev, struct device_attribute *devattr, char *buf)
+static ssize_t show_in_min(struct device *dev,
+			   struct device_attribute *devattr, char *buf)
 {
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
 	struct pc87360_data *data = pc87360_update_device(dev);
@@ -394,6 +494,8 @@ static ssize_t show_in_min(struct device *dev, struct device_attribute *devattr,
 		       data->in_vref));
 }
 static ssize_t show_in_max(struct device *dev, struct device_attribute *devattr, char *buf)
+static ssize_t show_in_max(struct device *dev,
+			   struct device_attribute *devattr, char *buf)
 {
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
 	struct pc87360_data *data = pc87360_update_device(dev);
@@ -401,6 +503,8 @@ static ssize_t show_in_max(struct device *dev, struct device_attribute *devattr,
 		       data->in_vref));
 }
 static ssize_t show_in_status(struct device *dev, struct device_attribute *devattr, char *buf)
+static ssize_t show_in_status(struct device *dev,
+			      struct device_attribute *devattr, char *buf)
 {
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
 	struct pc87360_data *data = pc87360_update_device(dev);
@@ -412,6 +516,17 @@ static ssize_t set_in_min(struct device *dev, struct device_attribute *devattr, 
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
 	struct pc87360_data *data = dev_get_drvdata(dev);
 	long val = simple_strtol(buf, NULL, 10);
+static ssize_t set_in_min(struct device *dev, struct device_attribute *devattr,
+			  const char *buf, size_t count)
+{
+	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
+	struct pc87360_data *data = dev_get_drvdata(dev);
+	long val;
+	int err;
+
+	err = kstrtol(buf, 10, &val);
+	if (err)
+		return err;
 
 	mutex_lock(&data->update_lock);
 	data->in_min[attr->index] = IN_TO_REG(val, data->in_vref);
@@ -426,6 +541,17 @@ static ssize_t set_in_max(struct device *dev, struct device_attribute *devattr, 
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
 	struct pc87360_data *data = dev_get_drvdata(dev);
 	long val = simple_strtol(buf, NULL, 10);
+static ssize_t set_in_max(struct device *dev, struct device_attribute *devattr,
+			  const char *buf, size_t count)
+{
+	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
+	struct pc87360_data *data = dev_get_drvdata(dev);
+	long val;
+	int err;
+
+	err = kstrtol(buf, 10, &val);
+	if (err)
+		return err;
 
 	mutex_lock(&data->update_lock);
 	data->in_max[attr->index] = IN_TO_REG(val,
@@ -489,6 +615,61 @@ static struct sensor_device_attribute in_max[] = {
 	SENSOR_ATTR(in10_max, S_IWUSR | S_IRUGO, show_in_max, set_in_max, 10),
 };
 
+/* (temp & vin) channel status register alarm bits (pdf sec.11.5.12) */
+#define CHAN_ALM_MIN	0x02	/* min limit crossed */
+#define CHAN_ALM_MAX	0x04	/* max limit exceeded */
+#define TEMP_ALM_CRIT	0x08	/* temp crit exceeded (temp only) */
+
+/*
+ * show_in_min/max_alarm() reads data from the per-channel status
+ * register (sec 11.5.12), not the vin event status registers (sec
+ * 11.5.2) that (legacy) show_in_alarm() resds (via data->in_alarms)
+ */
+
+static ssize_t show_in_min_alarm(struct device *dev,
+			struct device_attribute *devattr, char *buf)
+{
+	struct pc87360_data *data = pc87360_update_device(dev);
+	unsigned nr = to_sensor_dev_attr(devattr)->index;
+
+	return sprintf(buf, "%u\n", !!(data->in_status[nr] & CHAN_ALM_MIN));
+}
+static ssize_t show_in_max_alarm(struct device *dev,
+			struct device_attribute *devattr, char *buf)
+{
+	struct pc87360_data *data = pc87360_update_device(dev);
+	unsigned nr = to_sensor_dev_attr(devattr)->index;
+
+	return sprintf(buf, "%u\n", !!(data->in_status[nr] & CHAN_ALM_MAX));
+}
+
+static struct sensor_device_attribute in_min_alarm[] = {
+	SENSOR_ATTR(in0_min_alarm, S_IRUGO, show_in_min_alarm, NULL, 0),
+	SENSOR_ATTR(in1_min_alarm, S_IRUGO, show_in_min_alarm, NULL, 1),
+	SENSOR_ATTR(in2_min_alarm, S_IRUGO, show_in_min_alarm, NULL, 2),
+	SENSOR_ATTR(in3_min_alarm, S_IRUGO, show_in_min_alarm, NULL, 3),
+	SENSOR_ATTR(in4_min_alarm, S_IRUGO, show_in_min_alarm, NULL, 4),
+	SENSOR_ATTR(in5_min_alarm, S_IRUGO, show_in_min_alarm, NULL, 5),
+	SENSOR_ATTR(in6_min_alarm, S_IRUGO, show_in_min_alarm, NULL, 6),
+	SENSOR_ATTR(in7_min_alarm, S_IRUGO, show_in_min_alarm, NULL, 7),
+	SENSOR_ATTR(in8_min_alarm, S_IRUGO, show_in_min_alarm, NULL, 8),
+	SENSOR_ATTR(in9_min_alarm, S_IRUGO, show_in_min_alarm, NULL, 9),
+	SENSOR_ATTR(in10_min_alarm, S_IRUGO, show_in_min_alarm, NULL, 10),
+};
+static struct sensor_device_attribute in_max_alarm[] = {
+	SENSOR_ATTR(in0_max_alarm, S_IRUGO, show_in_max_alarm, NULL, 0),
+	SENSOR_ATTR(in1_max_alarm, S_IRUGO, show_in_max_alarm, NULL, 1),
+	SENSOR_ATTR(in2_max_alarm, S_IRUGO, show_in_max_alarm, NULL, 2),
+	SENSOR_ATTR(in3_max_alarm, S_IRUGO, show_in_max_alarm, NULL, 3),
+	SENSOR_ATTR(in4_max_alarm, S_IRUGO, show_in_max_alarm, NULL, 4),
+	SENSOR_ATTR(in5_max_alarm, S_IRUGO, show_in_max_alarm, NULL, 5),
+	SENSOR_ATTR(in6_max_alarm, S_IRUGO, show_in_max_alarm, NULL, 6),
+	SENSOR_ATTR(in7_max_alarm, S_IRUGO, show_in_max_alarm, NULL, 7),
+	SENSOR_ATTR(in8_max_alarm, S_IRUGO, show_in_max_alarm, NULL, 8),
+	SENSOR_ATTR(in9_max_alarm, S_IRUGO, show_in_max_alarm, NULL, 9),
+	SENSOR_ATTR(in10_max_alarm, S_IRUGO, show_in_max_alarm, NULL, 10),
+};
+
 #define VIN_UNIT_ATTRS(X) \
 	&in_input[X].dev_attr.attr,	\
 	&in_status[X].dev_attr.attr,	\
@@ -496,6 +677,12 @@ static struct sensor_device_attribute in_max[] = {
 	&in_max[X].dev_attr.attr
 
 static ssize_t show_vid(struct device *dev, struct device_attribute *attr, char *buf)
+	&in_max[X].dev_attr.attr,	\
+	&in_min_alarm[X].dev_attr.attr,	\
+	&in_max_alarm[X].dev_attr.attr
+
+static ssize_t show_vid(struct device *dev, struct device_attribute *attr,
+			char *buf)
 {
 	struct pc87360_data *data = pc87360_update_device(dev);
 	return sprintf(buf, "%u\n", vid_from_reg(data->vid, data->vrm));
@@ -503,6 +690,8 @@ static ssize_t show_vid(struct device *dev, struct device_attribute *attr, char 
 static DEVICE_ATTR(cpu0_vid, S_IRUGO, show_vid, NULL);
 
 static ssize_t show_vrm(struct device *dev, struct device_attribute *attr, char *buf)
+static ssize_t show_vrm(struct device *dev, struct device_attribute *attr,
+			char *buf)
 {
 	struct pc87360_data *data = dev_get_drvdata(dev);
 	return sprintf(buf, "%u\n", data->vrm);
@@ -511,11 +700,28 @@ static ssize_t set_vrm(struct device *dev, struct device_attribute *attr, const 
 {
 	struct pc87360_data *data = dev_get_drvdata(dev);
 	data->vrm = simple_strtoul(buf, NULL, 10);
+static ssize_t set_vrm(struct device *dev, struct device_attribute *attr,
+		       const char *buf, size_t count)
+{
+	struct pc87360_data *data = dev_get_drvdata(dev);
+	unsigned long val;
+	int err;
+
+	err = kstrtoul(buf, 10, &val);
+	if (err)
+		return err;
+
+	if (val > 255)
+		return -EINVAL;
+
+	data->vrm = val;
 	return count;
 }
 static DEVICE_ATTR(vrm, S_IRUGO | S_IWUSR, show_vrm, set_vrm);
 
 static ssize_t show_in_alarms(struct device *dev, struct device_attribute *attr, char *buf)
+static ssize_t show_in_alarms(struct device *dev,
+			      struct device_attribute *attr, char *buf)
 {
 	struct pc87360_data *data = pc87360_update_device(dev);
 	return sprintf(buf, "%u\n", data->in_alarms);
@@ -544,6 +750,8 @@ static const struct attribute_group pc8736x_vin_group = {
 };
 
 static ssize_t show_therm_input(struct device *dev, struct device_attribute *devattr, char *buf)
+static ssize_t show_therm_input(struct device *dev,
+				struct device_attribute *devattr, char *buf)
 {
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
 	struct pc87360_data *data = pc87360_update_device(dev);
@@ -551,6 +759,8 @@ static ssize_t show_therm_input(struct device *dev, struct device_attribute *dev
 		       data->in_vref));
 }
 static ssize_t show_therm_min(struct device *dev, struct device_attribute *devattr, char *buf)
+static ssize_t show_therm_min(struct device *dev,
+			      struct device_attribute *devattr, char *buf)
 {
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
 	struct pc87360_data *data = pc87360_update_device(dev);
@@ -558,6 +768,8 @@ static ssize_t show_therm_min(struct device *dev, struct device_attribute *devat
 		       data->in_vref));
 }
 static ssize_t show_therm_max(struct device *dev, struct device_attribute *devattr, char *buf)
+static ssize_t show_therm_max(struct device *dev,
+			      struct device_attribute *devattr, char *buf)
 {
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
 	struct pc87360_data *data = pc87360_update_device(dev);
@@ -565,6 +777,8 @@ static ssize_t show_therm_max(struct device *dev, struct device_attribute *devat
 		       data->in_vref));
 }
 static ssize_t show_therm_crit(struct device *dev, struct device_attribute *devattr, char *buf)
+static ssize_t show_therm_crit(struct device *dev,
+			       struct device_attribute *devattr, char *buf)
 {
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
 	struct pc87360_data *data = pc87360_update_device(dev);
@@ -572,6 +786,8 @@ static ssize_t show_therm_crit(struct device *dev, struct device_attribute *deva
 		       data->in_vref));
 }
 static ssize_t show_therm_status(struct device *dev, struct device_attribute *devattr, char *buf)
+static ssize_t show_therm_status(struct device *dev,
+				 struct device_attribute *devattr, char *buf)
 {
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
 	struct pc87360_data *data = pc87360_update_device(dev);
@@ -583,6 +799,19 @@ static ssize_t set_therm_min(struct device *dev, struct device_attribute *devatt
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
 	struct pc87360_data *data = dev_get_drvdata(dev);
 	long val = simple_strtol(buf, NULL, 10);
+
+static ssize_t set_therm_min(struct device *dev,
+			     struct device_attribute *devattr,
+			     const char *buf, size_t count)
+{
+	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
+	struct pc87360_data *data = dev_get_drvdata(dev);
+	long val;
+	int err;
+
+	err = kstrtol(buf, 10, &val);
+	if (err)
+		return err;
 
 	mutex_lock(&data->update_lock);
 	data->in_min[attr->index] = IN_TO_REG(val, data->in_vref);
@@ -598,6 +827,19 @@ static ssize_t set_therm_max(struct device *dev, struct device_attribute *devatt
 	struct pc87360_data *data = dev_get_drvdata(dev);
 	long val = simple_strtol(buf, NULL, 10);
 
+static ssize_t set_therm_max(struct device *dev,
+			     struct device_attribute *devattr,
+			     const char *buf, size_t count)
+{
+	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
+	struct pc87360_data *data = dev_get_drvdata(dev);
+	long val;
+	int err;
+
+	err = kstrtol(buf, 10, &val);
+	if (err)
+		return err;
+
 	mutex_lock(&data->update_lock);
 	data->in_max[attr->index] = IN_TO_REG(val, data->in_vref);
 	pc87360_write_value(data, LD_IN, attr->index, PC87365_REG_TEMP_MAX,
@@ -611,6 +853,18 @@ static ssize_t set_therm_crit(struct device *dev, struct device_attribute *devat
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
 	struct pc87360_data *data = dev_get_drvdata(dev);
 	long val = simple_strtol(buf, NULL, 10);
+static ssize_t set_therm_crit(struct device *dev,
+			      struct device_attribute *devattr,
+			      const char *buf, size_t count)
+{
+	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
+	struct pc87360_data *data = dev_get_drvdata(dev);
+	long val;
+	int err;
+
+	err = kstrtol(buf, 10, &val);
+	if (err)
+		return err;
 
 	mutex_lock(&data->update_lock);
 	data->in_crit[attr->index-11] = IN_TO_REG(val, data->in_vref);
@@ -656,6 +910,98 @@ static struct sensor_device_attribute therm_crit[] = {
 		    show_therm_crit, set_therm_crit, 1+11),
 	SENSOR_ATTR(temp6_crit, S_IRUGO | S_IWUSR,
 		    show_therm_crit, set_therm_crit, 2+11),
+/*
+ * the +11 term below reflects the fact that VLM units 11,12,13 are
+ * used in the chip to measure voltage across the thermistors
+ */
+static struct sensor_device_attribute therm_input[] = {
+	SENSOR_ATTR(temp4_input, S_IRUGO, show_therm_input, NULL, 0 + 11),
+	SENSOR_ATTR(temp5_input, S_IRUGO, show_therm_input, NULL, 1 + 11),
+	SENSOR_ATTR(temp6_input, S_IRUGO, show_therm_input, NULL, 2 + 11),
+};
+static struct sensor_device_attribute therm_status[] = {
+	SENSOR_ATTR(temp4_status, S_IRUGO, show_therm_status, NULL, 0 + 11),
+	SENSOR_ATTR(temp5_status, S_IRUGO, show_therm_status, NULL, 1 + 11),
+	SENSOR_ATTR(temp6_status, S_IRUGO, show_therm_status, NULL, 2 + 11),
+};
+static struct sensor_device_attribute therm_min[] = {
+	SENSOR_ATTR(temp4_min, S_IRUGO | S_IWUSR,
+		    show_therm_min, set_therm_min, 0 + 11),
+	SENSOR_ATTR(temp5_min, S_IRUGO | S_IWUSR,
+		    show_therm_min, set_therm_min, 1 + 11),
+	SENSOR_ATTR(temp6_min, S_IRUGO | S_IWUSR,
+		    show_therm_min, set_therm_min, 2 + 11),
+};
+static struct sensor_device_attribute therm_max[] = {
+	SENSOR_ATTR(temp4_max, S_IRUGO | S_IWUSR,
+		    show_therm_max, set_therm_max, 0 + 11),
+	SENSOR_ATTR(temp5_max, S_IRUGO | S_IWUSR,
+		    show_therm_max, set_therm_max, 1 + 11),
+	SENSOR_ATTR(temp6_max, S_IRUGO | S_IWUSR,
+		    show_therm_max, set_therm_max, 2 + 11),
+};
+static struct sensor_device_attribute therm_crit[] = {
+	SENSOR_ATTR(temp4_crit, S_IRUGO | S_IWUSR,
+		    show_therm_crit, set_therm_crit, 0 + 11),
+	SENSOR_ATTR(temp5_crit, S_IRUGO | S_IWUSR,
+		    show_therm_crit, set_therm_crit, 1 + 11),
+	SENSOR_ATTR(temp6_crit, S_IRUGO | S_IWUSR,
+		    show_therm_crit, set_therm_crit, 2 + 11),
+};
+
+/*
+ * show_therm_min/max_alarm() reads data from the per-channel voltage
+ * status register (sec 11.5.12)
+ */
+
+static ssize_t show_therm_min_alarm(struct device *dev,
+				struct device_attribute *devattr, char *buf)
+{
+	struct pc87360_data *data = pc87360_update_device(dev);
+	unsigned nr = to_sensor_dev_attr(devattr)->index;
+
+	return sprintf(buf, "%u\n", !!(data->in_status[nr] & CHAN_ALM_MIN));
+}
+static ssize_t show_therm_max_alarm(struct device *dev,
+				struct device_attribute *devattr, char *buf)
+{
+	struct pc87360_data *data = pc87360_update_device(dev);
+	unsigned nr = to_sensor_dev_attr(devattr)->index;
+
+	return sprintf(buf, "%u\n", !!(data->in_status[nr] & CHAN_ALM_MAX));
+}
+static ssize_t show_therm_crit_alarm(struct device *dev,
+				struct device_attribute *devattr, char *buf)
+{
+	struct pc87360_data *data = pc87360_update_device(dev);
+	unsigned nr = to_sensor_dev_attr(devattr)->index;
+
+	return sprintf(buf, "%u\n", !!(data->in_status[nr] & TEMP_ALM_CRIT));
+}
+
+static struct sensor_device_attribute therm_min_alarm[] = {
+	SENSOR_ATTR(temp4_min_alarm, S_IRUGO,
+		    show_therm_min_alarm, NULL, 0 + 11),
+	SENSOR_ATTR(temp5_min_alarm, S_IRUGO,
+		    show_therm_min_alarm, NULL, 1 + 11),
+	SENSOR_ATTR(temp6_min_alarm, S_IRUGO,
+		    show_therm_min_alarm, NULL, 2 + 11),
+};
+static struct sensor_device_attribute therm_max_alarm[] = {
+	SENSOR_ATTR(temp4_max_alarm, S_IRUGO,
+		    show_therm_max_alarm, NULL, 0 + 11),
+	SENSOR_ATTR(temp5_max_alarm, S_IRUGO,
+		    show_therm_max_alarm, NULL, 1 + 11),
+	SENSOR_ATTR(temp6_max_alarm, S_IRUGO,
+		    show_therm_max_alarm, NULL, 2 + 11),
+};
+static struct sensor_device_attribute therm_crit_alarm[] = {
+	SENSOR_ATTR(temp4_crit_alarm, S_IRUGO,
+		    show_therm_crit_alarm, NULL, 0 + 11),
+	SENSOR_ATTR(temp5_crit_alarm, S_IRUGO,
+		    show_therm_crit_alarm, NULL, 1 + 11),
+	SENSOR_ATTR(temp6_crit_alarm, S_IRUGO,
+		    show_therm_crit_alarm, NULL, 2 + 11),
 };
 
 #define THERM_UNIT_ATTRS(X) \
@@ -666,6 +1012,12 @@ static struct sensor_device_attribute therm_crit[] = {
 	&therm_crit[X].dev_attr.attr
 
 static struct attribute * pc8736x_therm_attr_array[] = {
+	&therm_crit[X].dev_attr.attr,	\
+	&therm_min_alarm[X].dev_attr.attr, \
+	&therm_max_alarm[X].dev_attr.attr, \
+	&therm_crit_alarm[X].dev_attr.attr
+
+static struct attribute *pc8736x_therm_attr_array[] = {
 	THERM_UNIT_ATTRS(0),
 	THERM_UNIT_ATTRS(1),
 	THERM_UNIT_ATTRS(2),
@@ -676,18 +1028,26 @@ static const struct attribute_group pc8736x_therm_group = {
 };
 
 static ssize_t show_temp_input(struct device *dev, struct device_attribute *devattr, char *buf)
+static ssize_t show_temp_input(struct device *dev,
+			       struct device_attribute *devattr, char *buf)
 {
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
 	struct pc87360_data *data = pc87360_update_device(dev);
 	return sprintf(buf, "%d\n", TEMP_FROM_REG(data->temp[attr->index]));
 }
 static ssize_t show_temp_min(struct device *dev, struct device_attribute *devattr, char *buf)
+
+static ssize_t show_temp_min(struct device *dev,
+			     struct device_attribute *devattr, char *buf)
 {
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
 	struct pc87360_data *data = pc87360_update_device(dev);
 	return sprintf(buf, "%d\n", TEMP_FROM_REG(data->temp_min[attr->index]));
 }
 static ssize_t show_temp_max(struct device *dev, struct device_attribute *devattr, char *buf)
+
+static ssize_t show_temp_max(struct device *dev,
+			     struct device_attribute *devattr, char *buf)
 {
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
 	struct pc87360_data *data = pc87360_update_device(dev);
@@ -700,6 +1060,18 @@ static ssize_t show_temp_crit(struct device *dev, struct device_attribute *devat
 	return sprintf(buf, "%d\n", TEMP_FROM_REG(data->temp_crit[attr->index]));
 }
 static ssize_t show_temp_status(struct device *dev, struct device_attribute *devattr, char *buf)
+
+static ssize_t show_temp_crit(struct device *dev,
+			      struct device_attribute *devattr, char *buf)
+{
+	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
+	struct pc87360_data *data = pc87360_update_device(dev);
+	return sprintf(buf, "%d\n",
+		       TEMP_FROM_REG(data->temp_crit[attr->index]));
+}
+
+static ssize_t show_temp_status(struct device *dev,
+				struct device_attribute *devattr, char *buf)
 {
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
 	struct pc87360_data *data = pc87360_update_device(dev);
@@ -711,6 +1083,19 @@ static ssize_t set_temp_min(struct device *dev, struct device_attribute *devattr
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
 	struct pc87360_data *data = dev_get_drvdata(dev);
 	long val = simple_strtol(buf, NULL, 10);
+
+static ssize_t set_temp_min(struct device *dev,
+			    struct device_attribute *devattr,
+			    const char *buf, size_t count)
+{
+	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
+	struct pc87360_data *data = dev_get_drvdata(dev);
+	long val;
+	int err;
+
+	err = kstrtol(buf, 10, &val);
+	if (err)
+		return err;
 
 	mutex_lock(&data->update_lock);
 	data->temp_min[attr->index] = TEMP_TO_REG(val);
@@ -726,6 +1111,19 @@ static ssize_t set_temp_max(struct device *dev, struct device_attribute *devattr
 	struct pc87360_data *data = dev_get_drvdata(dev);
 	long val = simple_strtol(buf, NULL, 10);
 
+static ssize_t set_temp_max(struct device *dev,
+			    struct device_attribute *devattr,
+			    const char *buf, size_t count)
+{
+	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
+	struct pc87360_data *data = dev_get_drvdata(dev);
+	long val;
+	int err;
+
+	err = kstrtol(buf, 10, &val);
+	if (err)
+		return err;
+
 	mutex_lock(&data->update_lock);
 	data->temp_max[attr->index] = TEMP_TO_REG(val);
 	pc87360_write_value(data, LD_TEMP, attr->index, PC87365_REG_TEMP_MAX,
@@ -739,6 +1137,19 @@ static ssize_t set_temp_crit(struct device *dev, struct device_attribute *devatt
 	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
 	struct pc87360_data *data = dev_get_drvdata(dev);
 	long val = simple_strtol(buf, NULL, 10);
+
+static ssize_t set_temp_crit(struct device *dev,
+			     struct device_attribute *devattr, const char *buf,
+			     size_t count)
+{
+	struct sensor_device_attribute *attr = to_sensor_dev_attr(devattr);
+	struct pc87360_data *data = dev_get_drvdata(dev);
+	long val;
+	int err;
+
+	err = kstrtol(buf, 10, &val);
+	if (err)
+		return err;
 
 	mutex_lock(&data->update_lock);
 	data->temp_crit[attr->index] = TEMP_TO_REG(val);
@@ -784,6 +1195,8 @@ static struct sensor_device_attribute temp_crit[] = {
 };
 
 static ssize_t show_temp_alarms(struct device *dev, struct device_attribute *attr, char *buf)
+static ssize_t show_temp_alarms(struct device *dev,
+				struct device_attribute *attr, char *buf)
 {
 	struct pc87360_data *data = pc87360_update_device(dev);
 	return sprintf(buf, "%u\n", data->temp_alarms);
@@ -811,10 +1224,107 @@ static const struct attribute_group pc8736x_temp_group = {
 
 static ssize_t show_name(struct device *dev, struct device_attribute
 			 *devattr, char *buf)
+
+static DEVICE_ATTR(alarms_temp, S_IRUGO, show_temp_alarms, NULL);
+
+/*
+ * show_temp_min/max_alarm() reads data from the per-channel status
+ * register (sec 12.3.7), not the temp event status registers (sec
+ * 12.3.2) that show_temp_alarm() reads (via data->temp_alarms)
+ */
+
+static ssize_t show_temp_min_alarm(struct device *dev,
+			struct device_attribute *devattr, char *buf)
+{
+	struct pc87360_data *data = pc87360_update_device(dev);
+	unsigned nr = to_sensor_dev_attr(devattr)->index;
+
+	return sprintf(buf, "%u\n", !!(data->temp_status[nr] & CHAN_ALM_MIN));
+}
+
+static ssize_t show_temp_max_alarm(struct device *dev,
+			struct device_attribute *devattr, char *buf)
+{
+	struct pc87360_data *data = pc87360_update_device(dev);
+	unsigned nr = to_sensor_dev_attr(devattr)->index;
+
+	return sprintf(buf, "%u\n", !!(data->temp_status[nr] & CHAN_ALM_MAX));
+}
+
+static ssize_t show_temp_crit_alarm(struct device *dev,
+			struct device_attribute *devattr, char *buf)
+{
+	struct pc87360_data *data = pc87360_update_device(dev);
+	unsigned nr = to_sensor_dev_attr(devattr)->index;
+
+	return sprintf(buf, "%u\n", !!(data->temp_status[nr] & TEMP_ALM_CRIT));
+}
+
+static struct sensor_device_attribute temp_min_alarm[] = {
+	SENSOR_ATTR(temp1_min_alarm, S_IRUGO, show_temp_min_alarm, NULL, 0),
+	SENSOR_ATTR(temp2_min_alarm, S_IRUGO, show_temp_min_alarm, NULL, 1),
+	SENSOR_ATTR(temp3_min_alarm, S_IRUGO, show_temp_min_alarm, NULL, 2),
+};
+
+static struct sensor_device_attribute temp_max_alarm[] = {
+	SENSOR_ATTR(temp1_max_alarm, S_IRUGO, show_temp_max_alarm, NULL, 0),
+	SENSOR_ATTR(temp2_max_alarm, S_IRUGO, show_temp_max_alarm, NULL, 1),
+	SENSOR_ATTR(temp3_max_alarm, S_IRUGO, show_temp_max_alarm, NULL, 2),
+};
+
+static struct sensor_device_attribute temp_crit_alarm[] = {
+	SENSOR_ATTR(temp1_crit_alarm, S_IRUGO, show_temp_crit_alarm, NULL, 0),
+	SENSOR_ATTR(temp2_crit_alarm, S_IRUGO, show_temp_crit_alarm, NULL, 1),
+	SENSOR_ATTR(temp3_crit_alarm, S_IRUGO, show_temp_crit_alarm, NULL, 2),
+};
+
+#define TEMP_FAULT	0x40	/* open diode */
+static ssize_t show_temp_fault(struct device *dev,
+			struct device_attribute *devattr, char *buf)
+{
+	struct pc87360_data *data = pc87360_update_device(dev);
+	unsigned nr = to_sensor_dev_attr(devattr)->index;
+
+	return sprintf(buf, "%u\n", !!(data->temp_status[nr] & TEMP_FAULT));
+}
+static struct sensor_device_attribute temp_fault[] = {
+	SENSOR_ATTR(temp1_fault, S_IRUGO, show_temp_fault, NULL, 0),
+	SENSOR_ATTR(temp2_fault, S_IRUGO, show_temp_fault, NULL, 1),
+	SENSOR_ATTR(temp3_fault, S_IRUGO, show_temp_fault, NULL, 2),
+};
+
+#define TEMP_UNIT_ATTRS(X)			\
+{	&temp_input[X].dev_attr.attr,		\
+	&temp_status[X].dev_attr.attr,		\
+	&temp_min[X].dev_attr.attr,		\
+	&temp_max[X].dev_attr.attr,		\
+	&temp_crit[X].dev_attr.attr,		\
+	&temp_min_alarm[X].dev_attr.attr,	\
+	&temp_max_alarm[X].dev_attr.attr,	\
+	&temp_crit_alarm[X].dev_attr.attr,	\
+	&temp_fault[X].dev_attr.attr,		\
+	NULL					\
+}
+
+static struct attribute *pc8736x_temp_attr[][10] = {
+	TEMP_UNIT_ATTRS(0),
+	TEMP_UNIT_ATTRS(1),
+	TEMP_UNIT_ATTRS(2)
+};
+
+static const struct attribute_group pc8736x_temp_attr_group[] = {
+	{ .attrs = pc8736x_temp_attr[0] },
+	{ .attrs = pc8736x_temp_attr[1] },
+	{ .attrs = pc8736x_temp_attr[2] }
+};
+
+static ssize_t show_name(struct device *dev,
+			struct device_attribute *devattr, char *buf)
 {
 	struct pc87360_data *data = dev_get_drvdata(dev);
 	return sprintf(buf, "%s\n", data->name);
 }
+
 static DEVICE_ATTR(name, S_IRUGO, show_name, NULL);
 
 /*
@@ -822,6 +1332,8 @@ static DEVICE_ATTR(name, S_IRUGO, show_name, NULL);
  */
 
 static int __init pc87360_find(int sioaddr, u8 *devid, unsigned short *addresses)
+static int __init pc87360_find(int sioaddr, u8 *devid,
+			       unsigned short *addresses)
 {
 	u16 val;
 	int i;
@@ -856,6 +1368,7 @@ static int __init pc87360_find(int sioaddr, u8 *devid, unsigned short *addresses
 		if (!(val & 0x01)) {
 			printk(KERN_INFO "pc87360: Device 0x%02x not "
 			       "activated\n", logdev[i]);
+			pr_info("Device 0x%02x not activated\n", logdev[i]);
 			continue;
 		}
 
@@ -864,6 +1377,8 @@ static int __init pc87360_find(int sioaddr, u8 *devid, unsigned short *addresses
 		if (!val) {
 			printk(KERN_INFO "pc87360: Base address not set for "
 			       "device 0x%02x\n", logdev[i]);
+			pr_info("Base address not set for device 0x%02x\n",
+				logdev[i]);
 			continue;
 		}
 
@@ -890,6 +1405,27 @@ static int __init pc87360_find(int sioaddr, u8 *devid, unsigned short *addresses
 				/* These registers are not logical-device
 				   specific, just that we won't need them if
 				   we don't use the VLM device */
+		if (i == 0) { /* Fans */
+			confreg[0] = superio_inb(sioaddr, 0xF0);
+			confreg[1] = superio_inb(sioaddr, 0xF1);
+
+			pr_debug("Fan %d: mon=%d ctrl=%d inv=%d\n", 1,
+				 (confreg[0] >> 2) & 1, (confreg[0] >> 3) & 1,
+				 (confreg[0] >> 4) & 1);
+			pr_debug("Fan %d: mon=%d ctrl=%d inv=%d\n", 2,
+				 (confreg[0] >> 5) & 1, (confreg[0] >> 6) & 1,
+				 (confreg[0] >> 7) & 1);
+			pr_debug("Fan %d: mon=%d ctrl=%d inv=%d\n", 3,
+				 confreg[1] & 1, (confreg[1] >> 1) & 1,
+				 (confreg[1] >> 2) & 1);
+		} else if (i == 1) { /* Voltages */
+			/* Are we using thermistors? */
+			if (*devid == 0xE9) { /* PC87366 */
+				/*
+				 * These registers are not logical-device
+				 * specific, just that we won't need them if
+				 * we don't use the VLM device
+				 */
 				confreg[2] = superio_inb(sioaddr, 0x2B);
 				confreg[3] = superio_inb(sioaddr, 0x25);
 
@@ -902,6 +1438,11 @@ static int __init pc87360_find(int sioaddr, u8 *devid, unsigned short *addresses
 					printk(KERN_INFO "pc87360: VID "
 					       "inputs routed (mode %u)\n",
 					       confreg[3] >> 5);
+					pr_info("Using thermistors for temperature monitoring\n");
+				}
+				if (confreg[3] & 0xE0) {
+					pr_info("VID inputs routed (mode %u)\n",
+						confreg[3] >> 5);
 				}
 			}
 		}
@@ -912,6 +1453,23 @@ static int __init pc87360_find(int sioaddr, u8 *devid, unsigned short *addresses
 }
 
 static int __devinit pc87360_probe(struct platform_device *pdev)
+static void pc87360_remove_files(struct device *dev)
+{
+	int i;
+
+	device_remove_file(dev, &dev_attr_name);
+	device_remove_file(dev, &dev_attr_alarms_temp);
+	for (i = 0; i < ARRAY_SIZE(pc8736x_temp_attr_group); i++)
+		sysfs_remove_group(&dev->kobj, &pc8736x_temp_attr_group[i]);
+	for (i = 0; i < ARRAY_SIZE(pc8736x_fan_attr_group); i++) {
+		sysfs_remove_group(&pdev->dev.kobj, &pc8736x_fan_attr_group[i]);
+		device_remove_file(dev, &pwm[i].dev_attr);
+	}
+	sysfs_remove_group(&dev->kobj, &pc8736x_therm_group);
+	sysfs_remove_group(&dev->kobj, &pc8736x_vin_group);
+}
+
+static int pc87360_probe(struct platform_device *pdev)
 {
 	int i;
 	struct pc87360_data *data;
@@ -930,6 +1488,22 @@ static int __devinit pc87360_probe(struct platform_device *pdev)
 	switch (devid) {
 	case 0xe8:
 		name = "pc87363";
+	const char *name;
+	int use_thermistors = 0;
+	struct device *dev = &pdev->dev;
+
+	data = devm_kzalloc(dev, sizeof(struct pc87360_data), GFP_KERNEL);
+	if (!data)
+		return -ENOMEM;
+
+	switch (devid) {
+	default:
+		name = "pc87360";
+		data->fannr = 2;
+		break;
+	case 0xe8:
+		name = "pc87363";
+		data->fannr = 2;
 		break;
 	case 0xe4:
 		name = "pc87364";
@@ -966,6 +1540,15 @@ static int __devinit pc87360_probe(struct platform_device *pdev)
 				release_region(extra_isa[i], PC87360_EXTENT);
 			err = -EBUSY;
 			goto ERROR1;
+	for (i = 0; i < LDNI_MAX; i++) {
+		data->address[i] = extra_isa[i];
+		if (data->address[i]
+		 && !devm_request_region(dev, extra_isa[i], PC87360_EXTENT,
+					 pc87360_driver.driver.name)) {
+			dev_err(dev,
+				"Region 0x%x-0x%x already in use!\n",
+				extra_isa[i], extra_isa[i]+PC87360_EXTENT-1);
+			return -EBUSY;
 		}
 	}
 
@@ -976,6 +1559,11 @@ static int __devinit pc87360_probe(struct platform_device *pdev)
 	/* Use the correct reference voltage
 	   Unless both the VLM and the TMS logical devices agree to
 	   use an external Vref, the internal one is used. */
+	/*
+	 * Use the correct reference voltage
+	 * Unless both the VLM and the TMS logical devices agree to
+	 * use an external Vref, the internal one is used.
+	 */
 	if (data->innr) {
 		i = pc87360_read_value(data, LD_IN, NO_BANK,
 				       PC87365_REG_IN_CONFIG);
@@ -1017,6 +1605,17 @@ static int __devinit pc87360_probe(struct platform_device *pdev)
 	    (err = sysfs_create_group(&dev->kobj,
 				      &pc8736x_therm_group)))
 		goto ERROR3;
+	if (data->innr) {
+		err = sysfs_create_group(&dev->kobj, &pc8736x_vin_group);
+		if (err)
+			goto error;
+	}
+
+	if (data->innr == 14) {
+		err = sysfs_create_group(&dev->kobj, &pc8736x_therm_group);
+		if (err)
+			goto error;
+	}
 
 	/* create device attr-files for varying sysfs groups */
 
@@ -1057,6 +1656,33 @@ static int __devinit pc87360_probe(struct platform_device *pdev)
 
 	if ((err = device_create_file(dev, &dev_attr_name)))
 		goto ERROR3;
+			err = sysfs_create_group(&dev->kobj,
+						 &pc8736x_temp_attr_group[i]);
+			if (err)
+				goto error;
+		}
+		err = device_create_file(dev, &dev_attr_alarms_temp);
+		if (err)
+			goto error;
+	}
+
+	for (i = 0; i < data->fannr; i++) {
+		if (FAN_CONFIG_MONITOR(data->fan_conf, i)) {
+			err = sysfs_create_group(&dev->kobj,
+						 &pc8736x_fan_attr_group[i]);
+			if (err)
+				goto error;
+		}
+		if (FAN_CONFIG_CONTROL(data->fan_conf, i)) {
+			err = device_create_file(dev, &pwm[i].dev_attr);
+			if (err)
+				goto error;
+		}
+	}
+
+	err = device_create_file(dev, &dev_attr_name);
+	if (err)
+		goto error;
 
 	data->hwmon_dev = hwmon_device_register(dev);
 	if (IS_ERR(data->hwmon_dev)) {
@@ -1101,12 +1727,31 @@ static int __devexit pc87360_remove(struct platform_device *pdev)
 		}
 	}
 	kfree(data);
+		goto error;
+	}
+	return 0;
+
+error:
+	pc87360_remove_files(dev);
+	return err;
+}
+
+static int pc87360_remove(struct platform_device *pdev)
+{
+	struct pc87360_data *data = platform_get_drvdata(pdev);
+
+	hwmon_device_unregister(data->hwmon_dev);
+	pc87360_remove_files(&pdev->dev);
 
 	return 0;
 }
 
 /* ldi is the logical device index
    bank is for voltages and temperatures only */
+/*
+ * ldi is the logical device index
+ * bank is for voltages and temperatures only
+ */
 static int pc87360_read_value(struct pc87360_data *data, u8 ldi, u8 bank,
 			      u8 reg)
 {
@@ -1131,6 +1776,16 @@ static void pc87360_write_value(struct pc87360_data *data, u8 ldi, u8 bank,
 	mutex_unlock(&(data->lock));
 }
 
+/* (temp & vin) channel conversion status register flags (pdf sec.11.5.12) */
+#define CHAN_CNVRTD	0x80	/* new data ready */
+#define CHAN_ENA	0x01	/* enabled channel (temp or vin) */
+#define CHAN_ALM_ENA	0x10	/* propagate to alarms-reg ?? (chk val!) */
+#define CHAN_READY	(CHAN_ENA|CHAN_CNVRTD) /* sample ready mask */
+
+#define TEMP_OTS_OE	0x20	/* OTS Output Enable */
+#define VIN_RW1C_MASK	(CHAN_READY|CHAN_ALM_MAX|CHAN_ALM_MIN)   /* 0x87 */
+#define TEMP_RW1C_MASK	(VIN_RW1C_MASK|TEMP_ALM_CRIT|TEMP_FAULT) /* 0xCF */
+
 static void pc87360_init_device(struct platform_device *pdev,
 				int use_thermistors)
 {
@@ -1145,6 +1800,8 @@ static void pc87360_init_device(struct platform_device *pdev,
 					 PC87365_REG_IN_CONVRATE);
 		dev_info(&pdev->dev, "VLM conversion set to "
 			 "1s period, 160us delay\n");
+		dev_info(&pdev->dev,
+			 "VLM conversion set to 1s period, 160us delay\n");
 		pc87360_write_value(data, LD_IN, NO_BANK,
 				    PC87365_REG_IN_CONVRATE,
 				    (reg & 0xC0) | 0x11);
@@ -1159,6 +1816,14 @@ static void pc87360_init_device(struct platform_device *pdev,
 			if (!(reg & 0x01)) {
 				dev_dbg(&pdev->dev, "Forcibly "
 					"enabling in%d\n", i);
+		reg = pc87360_read_value(data, LD_IN, i,
+					 PC87365_REG_IN_STATUS);
+		dev_dbg(&pdev->dev, "bios in%d status:0x%02x\n", i, reg);
+		if (init >= init_in[i]) {
+			/* Forcibly enable voltage channel */
+			if (!(reg & CHAN_ENA)) {
+				dev_dbg(&pdev->dev, "Forcibly enabling in%d\n",
+					i);
 				pc87360_write_value(data, LD_IN, i,
 						    PC87365_REG_IN_STATUS,
 						    (reg & 0x68) | 0x87);
@@ -1183,6 +1848,30 @@ static void pc87360_init_device(struct platform_device *pdev,
 			if (!(reg & 0x01)) {
 				dev_dbg(&pdev->dev, "Forcibly "
 					"enabling temp%d\n", i+1);
+	/*
+	 * We can't blindly trust the Super-I/O space configuration bit,
+	 * most BIOS won't set it properly
+	 */
+	dev_dbg(&pdev->dev, "bios thermistors:%d\n", use_thermistors);
+	for (i = 11; i < data->innr; i++) {
+		reg = pc87360_read_value(data, LD_IN, i,
+					 PC87365_REG_TEMP_STATUS);
+		use_thermistors = use_thermistors || (reg & CHAN_ENA);
+		/* thermistors are temp[4-6], measured on vin[11-14] */
+		dev_dbg(&pdev->dev, "bios temp%d_status:0x%02x\n", i-7, reg);
+	}
+	dev_dbg(&pdev->dev, "using thermistors:%d\n", use_thermistors);
+
+	i = use_thermistors ? 2 : 0;
+	for (; i < data->tempnr; i++) {
+		reg = pc87360_read_value(data, LD_TEMP, i,
+					 PC87365_REG_TEMP_STATUS);
+		dev_dbg(&pdev->dev, "bios temp%d_status:0x%02x\n", i + 1, reg);
+		if (init >= init_temp[i]) {
+			/* Forcibly enable temperature channel */
+			if (!(reg & CHAN_ENA)) {
+				dev_dbg(&pdev->dev,
+					"Forcibly enabling temp%d\n", i + 1);
 				pc87360_write_value(data, LD_TEMP, i,
 						    PC87365_REG_TEMP_STATUS,
 						    0xCF);
@@ -1201,6 +1890,16 @@ static void pc87360_init_device(struct platform_device *pdev,
 					dev_dbg(&pdev->dev, "Skipping "
 						"temp%d, pin already in use "
 						"by temp%d\n", i-7, (i-11)/2);
+				/*
+				 * The pin may already be used by thermal
+				 * diodes
+				 */
+				reg = pc87360_read_value(data, LD_TEMP,
+				      (i - 11) / 2, PC87365_REG_TEMP_STATUS);
+				if (reg & CHAN_ENA) {
+					dev_dbg(&pdev->dev,
+			"Skipping temp%d, pin already in use by temp%d\n",
+						i - 7, (i - 11) / 2);
 					continue;
 				}
 
@@ -1210,6 +1909,10 @@ static void pc87360_init_device(struct platform_device *pdev,
 				if (!(reg & 0x01)) {
 					dev_dbg(&pdev->dev, "Forcibly "
 						"enabling temp%d\n", i-7);
+				if (!(reg & CHAN_ENA)) {
+					dev_dbg(&pdev->dev,
+						"Forcibly enabling temp%d\n",
+						i - 7);
 					pc87360_write_value(data, LD_IN, i,
 						PC87365_REG_TEMP_STATUS,
 						(reg & 0x60) | 0x8F);
@@ -1224,6 +1927,10 @@ static void pc87360_init_device(struct platform_device *pdev,
 		if (reg & 0x01) {
 			dev_dbg(&pdev->dev, "Forcibly "
 				"enabling monitoring (VLM)\n");
+		dev_dbg(&pdev->dev, "bios vin-cfg:0x%02x\n", reg);
+		if (reg & CHAN_ENA) {
+			dev_dbg(&pdev->dev,
+				"Forcibly enabling monitoring (VLM)\n");
 			pc87360_write_value(data, LD_IN, NO_BANK,
 					    PC87365_REG_IN_CONFIG,
 					    reg & 0xFE);
@@ -1236,6 +1943,10 @@ static void pc87360_init_device(struct platform_device *pdev,
 		if (reg & 0x01) {
 			dev_dbg(&pdev->dev, "Forcibly enabling "
 				"monitoring (TMS)\n");
+		dev_dbg(&pdev->dev, "bios temp-cfg:0x%02x\n", reg);
+		if (reg & CHAN_ENA) {
+			dev_dbg(&pdev->dev,
+				"Forcibly enabling monitoring (TMS)\n");
 			pc87360_write_value(data, LD_TEMP, NO_BANK,
 					    PC87365_REG_TEMP_CONFIG,
 					    reg & 0xFE);
@@ -1248,6 +1959,12 @@ static void pc87360_init_device(struct platform_device *pdev,
 			   sequence itself matters. It shouldn't be a problem,
 			   since nobody else is supposed to access the
 			   device at that point. */
+			/*
+			 * We voluntarily omit the bank here, in case the
+			 * sequence itself matters. It shouldn't be a problem,
+			 * since nobody else is supposed to access the
+			 * device at that point.
+			 */
 			pc87360_write_value(data, LD_TEMP, NO_BANK, 0xB, 0x04);
 			pc87360_write_value(data, LD_TEMP, NO_BANK, 0xC, 0x35);
 			pc87360_write_value(data, LD_TEMP, NO_BANK, 0xD, 0x05);
@@ -1271,6 +1988,9 @@ static void pc87360_autodiv(struct device *dev, int nr)
 			dev_dbg(dev, "Increasing "
 				"clock divider to %d for fan %d\n",
 				FAN_DIV_FROM_REG(data->fan_status[nr]), nr+1);
+			dev_dbg(dev,
+				"Increasing clock divider to %d for fan %d\n",
+				FAN_DIV_FROM_REG(data->fan_status[nr]), nr + 1);
 		}
 	} else {
 		/* Decrease clock divider if possible */
@@ -1284,6 +2004,10 @@ static void pc87360_autodiv(struct device *dev, int nr)
 				"clock divider to %d for fan %d\n",
 				FAN_DIV_FROM_REG(data->fan_status[nr]),
 				nr+1);
+			dev_dbg(dev,
+				"Decreasing clock divider to %d for fan %d\n",
+				FAN_DIV_FROM_REG(data->fan_status[nr]),
+				nr + 1);
 		}
 	}
 
@@ -1341,6 +2065,11 @@ static struct pc87360_data *pc87360_update_device(struct device *dev)
 					      i, PC87365_REG_IN);
 			}
 			if (data->in_status[i] & 0x01) {
+			if ((data->in_status[i] & CHAN_READY) == CHAN_READY) {
+				data->in[i] = pc87360_read_value(data, LD_IN,
+					      i, PC87365_REG_IN);
+			}
+			if (data->in_status[i] & CHAN_ENA) {
 				data->in_min[i] = pc87360_read_value(data,
 						  LD_IN, i,
 						  PC87365_REG_IN_MIN);
@@ -1374,11 +2103,13 @@ static struct pc87360_data *pc87360_update_device(struct device *dev)
 					    PC87365_REG_TEMP_STATUS,
 					    data->temp_status[i]);
 			if ((data->temp_status[i] & 0x81) == 0x81) {
+			if ((data->temp_status[i] & CHAN_READY) == CHAN_READY) {
 				data->temp[i] = pc87360_read_value(data,
 						LD_TEMP, i,
 						PC87365_REG_TEMP);
 			}
 			if (data->temp_status[i] & 0x01) {
+			if (data->temp_status[i] & CHAN_ENA) {
 				data->temp_min[i] = pc87360_read_value(data,
 						    LD_TEMP, i,
 						    PC87365_REG_TEMP_MIN);
@@ -1412,6 +2143,8 @@ static int __init pc87360_device_add(unsigned short address)
 		.flags	= IORESOURCE_IO,
 	};
 	int err, i;
+	struct resource res[3];
+	int err, i, res_count;
 
 	pdev = platform_device_alloc("pc87360", address);
 	if (!pdev) {
@@ -1431,12 +2164,38 @@ static int __init pc87360_device_add(unsigned short address)
 			       "addition failed (%d)\n", i, err);
 			goto exit_device_put;
 		}
+		pr_err("Device allocation failed\n");
+		goto exit;
+	}
+
+	memset(res, 0, 3 * sizeof(struct resource));
+	res_count = 0;
+	for (i = 0; i < 3; i++) {
+		if (!extra_isa[i])
+			continue;
+		res[res_count].start = extra_isa[i];
+		res[res_count].end = extra_isa[i] + PC87360_EXTENT - 1;
+		res[res_count].name = "pc87360",
+		res[res_count].flags = IORESOURCE_IO,
+
+		err = acpi_check_resource_conflict(&res[res_count]);
+		if (err)
+			goto exit_device_put;
+
+		res_count++;
+	}
+
+	err = platform_device_add_resources(pdev, res, res_count);
+	if (err) {
+		pr_err("Device resources addition failed (%d)\n", err);
+		goto exit_device_put;
 	}
 
 	err = platform_device_add(pdev);
 	if (err) {
 		printk(KERN_ERR "pc87360: Device addition failed (%d)\n",
 		       err);
+		pr_err("Device addition failed (%d)\n", err);
 		goto exit_device_put;
 	}
 
@@ -1457,6 +2216,7 @@ static int __init pc87360_init(void)
 	 && pc87360_find(0x4e, &devid, extra_isa)) {
 		printk(KERN_WARNING "pc87360: PC8736x not detected, "
 		       "module not inserted.\n");
+		pr_warn("PC8736x not detected, module not inserted\n");
 		return -ENODEV;
 	}
 
@@ -1471,6 +2231,7 @@ static int __init pc87360_init(void)
 	if (address == 0x0000) {
 		printk(KERN_WARNING "pc87360: No active logical device, "
 		       "module not inserted.\n");
+		pr_warn("No active logical device, module not inserted\n");
 		return -ENODEV;
 	}
 
@@ -1499,6 +2260,7 @@ static void __exit pc87360_exit(void)
 
 
 MODULE_AUTHOR("Jean Delvare <khali@linux-fr.org>");
+MODULE_AUTHOR("Jean Delvare <jdelvare@suse.de>");
 MODULE_DESCRIPTION("PC8736x hardware monitor");
 MODULE_LICENSE("GPL");
 

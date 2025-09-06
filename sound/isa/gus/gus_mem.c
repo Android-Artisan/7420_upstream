@@ -128,6 +128,8 @@ static struct snd_gf1_mem_block *snd_gf1_mem_share(struct snd_gf1_mem * alloc,
 		return NULL;
 	for (block = alloc->first; block; block = block->next)
 		if (!memcmp(share_id, block->share_id, sizeof(share_id)))
+		if (!memcmp(share_id, block->share_id,
+				sizeof(block->share_id)))
 			return block;
 	return NULL;
 }

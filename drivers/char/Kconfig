@@ -87,6 +87,16 @@ config VT_HW_CONSOLE_BINDING
 	 See <file:Documentation/console/console.txt> for more
 	 information. For framebuffer console users, please refer to
 	 <file:Documentation/fb/fbcon.txt>.
+source "drivers/tty/Kconfig"
+
+config DEVMEM
+	bool "/dev/mem virtual device support"
+	default y
+	help
+	  Say Y here if you want to support the /dev/mem device.
+	  The /dev/mem device is used to access areas of physical
+	  memory.
+	  When in doubt, say "Y".
 
 config DEVKMEM
 	bool "/dev/kmem virtual device support"
@@ -492,6 +502,26 @@ config BRIQ_PANEL
 config BFIN_OTP
 	tristate "Blackfin On-Chip OTP Memory Support"
 	depends on BLACKFIN && (BF52x || BF54x)
+source "drivers/tty/serial/Kconfig"
+
+config TTY_PRINTK
+	tristate "TTY driver to output user messages via printk"
+	depends on EXPERT && TTY
+	default n
+	---help---
+	  If you say Y here, the support for writing user messages (i.e.
+	  console messages) via printk is available.
+
+	  The feature is useful to inline user messages with kernel
+	  messages.
+	  In order to use this feature, you should output user messages
+	  to /dev/ttyprintk or redirect console to this TTY.
+
+	  If unsure, say N.
+
+config BFIN_OTP
+	tristate "Blackfin On-Chip OTP Memory Support"
+	depends on BLACKFIN && (BF51x || BF52x || BF54x)
 	default y
 	help
 	  If you say Y here, you will get support for a character device
@@ -634,6 +664,11 @@ config HVC_XEN
 config VIRTIO_CONSOLE
 	tristate "Virtio console"
 	depends on VIRTIO
+source "drivers/tty/hvc/Kconfig"
+
+config VIRTIO_CONSOLE
+	tristate "Virtio console"
+	depends on VIRTIO && TTY
 	select HVC_DRIVER
 	help
 	  Virtio console for use with lguest and other hypervisors.
@@ -655,6 +690,14 @@ config HVCS
 	  will depend on arch specific APIs exported from hvcserver.ko
 	  which will also be compiled when this driver is built as a
 	  module.
+	  Also serves as a general-purpose serial device for data
+	  transfer between the guest and host.  Character devices at
+	  /dev/vportNpn will be created when corresponding ports are
+	  found, where N is the device number and n is the port number
+	  within that device.  If specified by the host, a sysfs
+	  attribute called 'name' will be populated with a name for
+	  the port which can be used by udev scripts to create a
+	  symlink to the device.
 
 config IBM_BSR
 	tristate "IBM POWER Barrier Synchronization Register support"
@@ -734,6 +777,7 @@ source "drivers/char/hw_random/Kconfig"
 config NVRAM
 	tristate "/dev/nvram support"
 	depends on ATARI || X86 || ARM || GENERIC_NVRAM
+	depends on ATARI || X86 || (ARM && RTC_DRV_CMOS) || GENERIC_NVRAM
 	---help---
 	  If you say Y here and create a character special file /dev/nvram
 	  with major number 10 and minor number 144 using mknod ("man mknod"),
@@ -767,6 +811,7 @@ config RTC
 	tristate "Enhanced Real Time Clock Support (legacy PC RTC driver)"
 	depends on !PPC && !PARISC && !IA64 && !M68K && !SPARC && !FRV \
 			&& !ARM && !SUPERH && !S390 && !AVR32
+			&& !ARM && !SUPERH && !S390 && !AVR32 && !BLACKFIN && !UML
 	---help---
 	  If you say Y here and create a character special file /dev/rtc with
 	  major number 10 and minor number 135 using mknod ("man mknod"), you
@@ -837,6 +882,9 @@ config SGI_IP27_RTC
 config GEN_RTC
 	tristate "Generic /dev/rtc emulation"
 	depends on RTC!=y && !IA64 && !ARM && !M32R && !MIPS && !SPARC && !FRV && !S390 && !SUPERH && !AVR32
+config GEN_RTC
+	tristate "Generic /dev/rtc emulation"
+	depends on RTC!=y && !IA64 && !ARM && !M32R && !MIPS && !SPARC && !FRV && !S390 && !SUPERH && !AVR32 && !BLACKFIN && !UML
 	---help---
 	  If you say Y here and create a character special file /dev/rtc with
 	  major number 10 and minor number 135 using mknod ("man mknod"), you
@@ -888,6 +936,7 @@ config DTLK
 config XILINX_HWICAP
 	tristate "Xilinx HWICAP Support"
 	depends on XILINX_VIRTEX
+	depends on XILINX_VIRTEX || MICROBLAZE
 	help
 	  This option enables support for Xilinx Internal Configuration
 	  Access Port (ICAP) driver.  The ICAP is used on Xilinx Virtex
@@ -897,6 +946,7 @@ config XILINX_HWICAP
 
 config R3964
 	tristate "Siemens R3964 line discipline"
+	depends on TTY && BROKEN
 	---help---
 	  This driver allows synchronous communication with devices using the
 	  Siemens R3964 packet protocol. Unless you are dealing with special
@@ -925,6 +975,8 @@ config APPLICOM
 config SONYPI
 	tristate "Sony Vaio Programmable I/O Control Device support (EXPERIMENTAL)"
 	depends on EXPERIMENTAL && X86 && PCI && INPUT && !64BIT
+	tristate "Sony Vaio Programmable I/O Control Device support"
+	depends on X86_32 && PCI && INPUT
 	---help---
 	  This driver enables access to the Sony Programmable I/O Control
 	  Device which can be found in many (all ?) Sony Vaio laptops.
@@ -945,6 +997,7 @@ source "drivers/char/pcmcia/Kconfig"
 config MWAVE
 	tristate "ACP Modem (Mwave) support"
 	depends on X86
+	depends on X86 && TTY
 	select SERIAL_8250
 	---help---
 	  The ACP modem (Mwave) for Linux is a WinModem. It is composed of a
@@ -981,6 +1034,7 @@ config SCx200_GPIO
 config PC8736x_GPIO
 	tristate "NatSemi PC8736x GPIO Support"
 	depends on X86
+	depends on X86_32 && !UML
 	default SCx200_GPIO	# mostly N
 	select NSC_GPIO		# needed for support routines
 	help
@@ -1028,6 +1082,9 @@ config RAW_DRIVER
 config MAX_RAW_DEVS
 	int "Maximum number of RAW devices to support (1-8192)"
 	depends on RAW_DRIVER
+	int "Maximum number of RAW devices to support (1-65536)"
+	depends on RAW_DRIVER
+	range 1 65536
 	default "256"
 	help
 	  The maximum number of RAW devices that are supported.
@@ -1064,6 +1121,16 @@ config HPET_MMAP
 	  registers may also contain other things that shouldn't be
 	  exposed to the user.  If this applies to your hardware,
 	  say N here.
+config HPET_MMAP_DEFAULT
+	bool "Enable HPET MMAP access by default"
+	default y
+	depends on HPET_MMAP
+	help
+	  In some hardware implementations, the page containing HPET
+	  registers may also contain other things that shouldn't be
+	  exposed to the user.  This option selects the default (if
+	  kernel parameter hpet_mmap is not set) user access to the
+	  registers for applications that require it.
 
 config HANGCHECK_TIMER
 	tristate "Hangcheck timer"
@@ -1081,11 +1148,20 @@ config MMTIMER
 	  The mmtimer device allows direct userspace access to the
 	  Altix system timer.
 
+config UV_MMTIMER
+	tristate "UV_MMTIMER Memory mapped RTC for SGI UV"
+	depends on X86_UV
+	default m
+	help
+	  The uv_mmtimer device allows direct userspace access to the
+	  UV system timer.
+
 source "drivers/char/tpm/Kconfig"
 
 config TELCLOCK
 	tristate "Telecom clock driver for ATCA SBC"
 	depends on EXPERIMENTAL && X86
+	depends on X86
 	default n
 	help
 	  The telecom clock device is specific to the MPCBL0010 and MPCBL0050
@@ -1097,12 +1173,27 @@ config TELCLOCK
 	  controlling the behavior of this hardware.
 
 config DEVPORT
-	bool
-	depends on !M68K
+	bool "/dev/port character device"
 	depends on ISA || PCI
 	default y
+	help
+	  Say Y here if you want to support the /dev/port device. The /dev/port
+	  device is similar to /dev/mem, but for I/O ports.
 
 source "drivers/s390/char/Kconfig"
+
+config TILE_SROM
+	bool "Character-device access via hypervisor to the Tilera SPI ROM"
+	depends on TILE
+	default y
+	---help---
+	  This device provides character-level read-write access
+	  to the SROM, typically via the "0", "1", and "2" devices
+	  in /dev/srom/.  The Tilera hypervisor makes the flash
+	  device appear much like a simple EEPROM, and knows
+	  how to partition a single ROM for multiple purposes.
+
+source "drivers/char/xillybus/Kconfig"
 
 endmenu
 

@@ -55,6 +55,9 @@ const struct inode_operations vxfs_immed_symlink_iops = {
 };
 
 /*
+static int	vxfs_immed_readpage(struct file *, struct page *);
+
+/*
  * Address space operations for immed files and directories.
  */
 const struct address_space_operations vxfs_immed_aops = {

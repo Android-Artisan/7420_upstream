@@ -74,6 +74,7 @@
  * upon which IrNET is built.
  *
  * Thanks to all my collegues in HP for helping me. In particular,
+ * Thanks to all my colleagues in HP for helping me. In particular,
  * thanks to Salil Pradhan and Bill Serra for W2k testing...
  * Thanks to Luiz Magalhaes for irnetd and much testing...
  *
@@ -250,11 +251,13 @@
 #include <linux/poll.h>
 #include <linux/capability.h>
 #include <linux/ctype.h>	/* isspace() */
+#include <linux/string.h>	/* skip_spaces() */
 #include <asm/uaccess.h>
 #include <linux/init.h>
 
 #include <linux/ppp_defs.h>
 #include <linux/if_ppp.h>
+#include <linux/ppp-ioctl.h>
 #include <linux/ppp_channel.h>
 
 #include <net/irda/irda.h>
@@ -458,6 +461,8 @@ typedef struct irnet_socket
   int			disco_index;	/* Last read in the discovery log */
   int			disco_number;	/* Size of the discovery log */
 
+  struct mutex		lock;
+
 } irnet_socket;
 
 /*
@@ -517,6 +522,11 @@ extern int
 	irda_irnet_init(void);		/* Initialise IrDA part of IrNET */
 extern void
 	irda_irnet_cleanup(void);	/* Teardown IrDA part of IrNET */
+int irda_irnet_create(irnet_socket *);	/* Initialise an IrNET socket */
+int irda_irnet_connect(irnet_socket *);	/* Try to connect over IrDA */
+void irda_irnet_destroy(irnet_socket *);	/* Teardown an IrNET socket */
+int irda_irnet_init(void);		/* Initialise IrDA part of IrNET */
+void irda_irnet_cleanup(void);		/* Teardown IrDA part of IrNET */
 
 /**************************** VARIABLES ****************************/
 

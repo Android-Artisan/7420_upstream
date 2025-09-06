@@ -28,6 +28,7 @@
  *     along with this program; if not, write to the Free Software 
  *     Foundation, Inc., 59 Temple Place, Suite 330, Boston, 
  *     MA 02111-1307 USA
+ *     along with this program; if not, see <http://www.gnu.org/licenses/>.
  *     
  ********************************************************************/
 
@@ -121,11 +122,13 @@ typedef enum { /* FIXME check the two first reason codes */
 } LAP_REASON;
 
 extern const char *irlap_state[];
+extern const char *const irlap_state[];
 
 void irlap_do_event(struct irlap_cb *self, IRLAP_EVENT event, 
 		    struct sk_buff *skb, struct irlap_info *info);
 void irlap_print_event(IRLAP_EVENT event);
 
 extern int irlap_qos_negotiate(struct irlap_cb *self, struct sk_buff *skb);
+int irlap_qos_negotiate(struct irlap_cb *self, struct sk_buff *skb);
 
 #endif

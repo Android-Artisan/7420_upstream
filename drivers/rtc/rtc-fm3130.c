@@ -13,6 +13,7 @@
 #include <linux/i2c.h>
 #include <linux/rtc.h>
 #include <linux/bcd.h>
+#include <linux/slab.h>
 
 #define FM3130_RTC_CONTROL	(0x0)
 #define FM3130_CAL_CONTROL	(0x1)
@@ -47,12 +48,15 @@
 struct fm3130 {
 	u8			reg_addr_time;
 	u8 			reg_addr_alarm;
+	u8			reg_addr_alarm;
 	u8			regs[15];
 	struct i2c_msg		msg[4];
 	struct i2c_client	*client;
 	struct rtc_device	*rtc;
 	int			data_valid;
 	int			alarm;
+	int			alarm_valid;
+	int			data_valid;
 };
 static const struct i2c_device_id fm3130_id[] = {
 	{ "fm3130", 0 },
@@ -91,6 +95,7 @@ static void fm3130_rtc_mode(struct device *dev, int mode)
 		fm3130->alarm = 1;
 		fm3130->regs[FM3130_RTC_CONTROL] &= ~FM3130_RTC_CONTROL_BIT_AF;
 	}
+
 	i2c_smbus_write_byte_data(fm3130->client,
 		 FM3130_RTC_CONTROL, fm3130->regs[FM3130_RTC_CONTROL]);
 }
@@ -104,6 +109,7 @@ static int fm3130_get_time(struct device *dev, struct rtc_time *t)
 		/* We have invalid data in RTC, probably due
 		to battery faults or other problems. Return EIO
 		for now, it will allow us to set data later insted
+		for now, it will allow us to set data later instead
 		of error during probing which disables device */
 		return -EIO;
 	}
@@ -142,6 +148,19 @@ static int fm3130_get_time(struct device *dev, struct rtc_time *t)
 
 	/* assume 20YY not 19YY, and ignore CF bit */
 	t->tm_year = BCD2BIN(fm3130->regs[FM3130_RTC_YEARS]) + 100;
+	dev_dbg(dev, "%s: %15ph\n", "read", fm3130->regs);
+
+	t->tm_sec = bcd2bin(fm3130->regs[FM3130_RTC_SECONDS] & 0x7f);
+	t->tm_min = bcd2bin(fm3130->regs[FM3130_RTC_MINUTES] & 0x7f);
+	tmp = fm3130->regs[FM3130_RTC_HOURS] & 0x3f;
+	t->tm_hour = bcd2bin(tmp);
+	t->tm_wday = bcd2bin(fm3130->regs[FM3130_RTC_DAY] & 0x07) - 1;
+	t->tm_mday = bcd2bin(fm3130->regs[FM3130_RTC_DATE] & 0x3f);
+	tmp = fm3130->regs[FM3130_RTC_MONTHS] & 0x1f;
+	t->tm_mon = bcd2bin(tmp) - 1;
+
+	/* assume 20YY not 19YY, and ignore CF bit */
+	t->tm_year = bcd2bin(fm3130->regs[FM3130_RTC_YEARS]) + 100;
 
 	dev_dbg(dev, "%s secs=%d, mins=%d, "
 		"hours=%d, mday=%d, mon=%d, year=%d, wday=%d\n",
@@ -184,6 +203,18 @@ static int fm3130_set_time(struct device *dev, struct rtc_time *t)
 		buf[4], buf[5], buf[6], buf[7],
 		buf[8], buf[9], buf[0xa], buf[0xb],
 		buf[0xc], buf[0xd], buf[0xe]);
+	buf[FM3130_RTC_SECONDS] = bin2bcd(t->tm_sec);
+	buf[FM3130_RTC_MINUTES] = bin2bcd(t->tm_min);
+	buf[FM3130_RTC_HOURS] = bin2bcd(t->tm_hour);
+	buf[FM3130_RTC_DAY] = bin2bcd(t->tm_wday + 1);
+	buf[FM3130_RTC_DATE] = bin2bcd(t->tm_mday);
+	buf[FM3130_RTC_MONTHS] = bin2bcd(t->tm_mon + 1);
+
+	/* assume 20YY not 19YY */
+	tmp = t->tm_year - 100;
+	buf[FM3130_RTC_YEARS] = bin2bcd(tmp);
+
+	dev_dbg(dev, "%s: %15ph\n", "write", buf);
 
 	fm3130_rtc_mode(dev, FM3130_MODE_WRITE);
 
@@ -207,6 +238,17 @@ static int fm3130_read_alarm(struct device *dev, struct rtc_wkalrm *alrm)
 	struct fm3130 *fm3130 = dev_get_drvdata(dev);
 	int tmp;
 	struct rtc_time *tm = &alrm->time;
+
+	if (!fm3130->alarm_valid) {
+		/*
+		 * We have invalid alarm in RTC, probably due to battery faults
+		 * or other problems. Return EIO for now, it will allow us to
+		 * set alarm value later instead of error during probing which
+		 * disables device
+		 */
+		return -EIO;
+	}
+
 	/* read the RTC alarm registers all at once */
 	tmp = i2c_transfer(to_i2c_adapter(fm3130->client->dev.parent),
 			&fm3130->msg[2], 2);
@@ -229,11 +271,30 @@ static int fm3130_read_alarm(struct device *dev, struct rtc_wkalrm *alrm)
 	tm->tm_mon	= BCD2BIN(fm3130->regs[FM3130_ALARM_MONTHS] & 0x1F);
 	if (tm->tm_mon > 0)
 		tm->tm_mon -= 1; /* RTC is 1-12, tm_mon is 0-11 */
+	tm->tm_sec	= bcd2bin(fm3130->regs[FM3130_ALARM_SECONDS] & 0x7F);
+	tm->tm_min	= bcd2bin(fm3130->regs[FM3130_ALARM_MINUTES] & 0x7F);
+	tm->tm_hour	= bcd2bin(fm3130->regs[FM3130_ALARM_HOURS] & 0x3F);
+	tm->tm_mday	= bcd2bin(fm3130->regs[FM3130_ALARM_DATE] & 0x3F);
+	tm->tm_mon	= bcd2bin(fm3130->regs[FM3130_ALARM_MONTHS] & 0x1F);
+
+	if (tm->tm_mon > 0)
+		tm->tm_mon -= 1; /* RTC is 1-12, tm_mon is 0-11 */
+
 	dev_dbg(dev, "%s secs=%d, mins=%d, "
 		"hours=%d, mday=%d, mon=%d, year=%d, wday=%d\n",
 		"read alarm", tm->tm_sec, tm->tm_min,
 		tm->tm_hour, tm->tm_mday,
 		tm->tm_mon, tm->tm_year, tm->tm_wday);
+
+	/* check if alarm enabled */
+	fm3130->regs[FM3130_RTC_CONTROL] =
+		i2c_smbus_read_byte_data(fm3130->client, FM3130_RTC_CONTROL);
+
+	if ((fm3130->regs[FM3130_RTC_CONTROL] & FM3130_RTC_CONTROL_BIT_AEN) &&
+		(~fm3130->regs[FM3130_RTC_CONTROL] &
+			FM3130_RTC_CONTROL_BIT_CAL)) {
+		alrm->enabled = 1;
+	}
 
 	return 0;
 }
@@ -269,6 +330,20 @@ static int fm3130_set_alarm(struct device *dev, struct rtc_wkalrm *alrm)
 	if (tm->tm_mon != -1)
 		fm3130->regs[FM3130_ALARM_MONTHS] =
 			BIN2BCD(tm->tm_mon + 1) | 0x80;
+	fm3130->regs[FM3130_ALARM_SECONDS] =
+		(tm->tm_sec != -1) ? bin2bcd(tm->tm_sec) : 0x80;
+
+	fm3130->regs[FM3130_ALARM_MINUTES] =
+		(tm->tm_min != -1) ? bin2bcd(tm->tm_min) : 0x80;
+
+	fm3130->regs[FM3130_ALARM_HOURS] =
+		(tm->tm_hour != -1) ? bin2bcd(tm->tm_hour) : 0x80;
+
+	fm3130->regs[FM3130_ALARM_DATE] =
+		(tm->tm_mday != -1) ? bin2bcd(tm->tm_mday) : 0x80;
+
+	fm3130->regs[FM3130_ALARM_MONTHS] =
+		(tm->tm_mon != -1) ? bin2bcd(tm->tm_mon + 1) : 0x80;
 
 	dev_dbg(dev, "alarm write %02x %02x %02x %02x %02x\n",
 			fm3130->regs[FM3130_ALARM_SECONDS],
@@ -289,6 +364,8 @@ static int fm3130_set_alarm(struct device *dev, struct rtc_wkalrm *alrm)
 		fm3130->alarm = 1;
 		fm3130->regs[FM3130_RTC_CONTROL] &= ~FM3130_RTC_CONTROL_BIT_AF;
 	}
+
+	/* enable or disable alarm */
 	if (alrm->enabled) {
 		i2c_smbus_write_byte_data(fm3130->client, FM3130_RTC_CONTROL,
 			(fm3130->regs[FM3130_RTC_CONTROL] &
@@ -302,17 +379,63 @@ static int fm3130_set_alarm(struct device *dev, struct rtc_wkalrm *alrm)
 	return 0;
 }
 
+				~(FM3130_RTC_CONTROL_BIT_CAL) &
+					~(FM3130_RTC_CONTROL_BIT_AEN));
+	}
+
+	/* We assume here that data is valid once written */
+	if (!fm3130->alarm_valid)
+		fm3130->alarm_valid = 1;
+
+	return 0;
+}
+
+static int fm3130_alarm_irq_enable(struct device *dev, unsigned int enabled)
+{
+	struct fm3130 *fm3130 = dev_get_drvdata(dev);
+	int ret = 0;
+
+	fm3130->regs[FM3130_RTC_CONTROL] =
+		i2c_smbus_read_byte_data(fm3130->client, FM3130_RTC_CONTROL);
+
+	dev_dbg(dev, "alarm_irq_enable: enable=%d, FM3130_RTC_CONTROL=%02x\n",
+		enabled, fm3130->regs[FM3130_RTC_CONTROL]);
+
+	switch (enabled) {
+	case 0:		/* alarm off */
+		ret = i2c_smbus_write_byte_data(fm3130->client,
+			FM3130_RTC_CONTROL, fm3130->regs[FM3130_RTC_CONTROL] &
+				~(FM3130_RTC_CONTROL_BIT_CAL) &
+					~(FM3130_RTC_CONTROL_BIT_AEN));
+		break;
+	case 1:		/* alarm on */
+		ret = i2c_smbus_write_byte_data(fm3130->client,
+			FM3130_RTC_CONTROL, (fm3130->regs[FM3130_RTC_CONTROL] &
+				~(FM3130_RTC_CONTROL_BIT_CAL)) |
+					FM3130_RTC_CONTROL_BIT_AEN);
+		break;
+	default:
+		ret = -EINVAL;
+		break;
+	}
+
+	return ret;
+}
+
 static const struct rtc_class_ops fm3130_rtc_ops = {
 	.read_time	= fm3130_get_time,
 	.set_time	= fm3130_set_time,
 	.read_alarm	= fm3130_read_alarm,
 	.set_alarm	= fm3130_set_alarm,
+	.alarm_irq_enable = fm3130_alarm_irq_enable,
 };
 
 static struct i2c_driver fm3130_driver;
 
 static int __devinit fm3130_probe(struct i2c_client *client,
 				  const struct i2c_device_id *id)
+static int fm3130_probe(struct i2c_client *client,
+			const struct i2c_device_id *id)
 {
 	struct fm3130		*fm3130;
 	int			err = -ENODEV;
@@ -324,6 +447,7 @@ static int __devinit fm3130_probe(struct i2c_client *client,
 		return -EIO;
 
 	fm3130 = kzalloc(sizeof(struct fm3130), GFP_KERNEL);
+	fm3130 = devm_kzalloc(&client->dev, sizeof(struct fm3130), GFP_KERNEL);
 
 	if (!fm3130)
 		return -ENOMEM;
@@ -355,11 +479,13 @@ static int __devinit fm3130_probe(struct i2c_client *client,
 	fm3130->msg[3].len = FM3130_ALARM_REGS;
 	fm3130->msg[3].buf = &fm3130->regs[FM3130_ALARM_SECONDS];
 
+	fm3130->alarm_valid = 0;
 	fm3130->data_valid = 0;
 
 	tmp = i2c_transfer(adapter, fm3130->msg, 4);
 	if (tmp != 4) {
 		pr_debug("read error %d\n", tmp);
+		dev_dbg(&client->dev, "read error %d\n", tmp);
 		err = -EIO;
 		goto exit_free;
 	}
@@ -377,6 +503,8 @@ static int __devinit fm3130_probe(struct i2c_client *client,
 
 	/* Disabling calibration mode */
 	if (fm3130->regs[FM3130_RTC_CONTROL] & FM3130_RTC_CONTROL_BIT_CAL)
+	/* Disabling calibration mode */
+	if (fm3130->regs[FM3130_RTC_CONTROL] & FM3130_RTC_CONTROL_BIT_CAL) {
 		i2c_smbus_write_byte_data(client, FM3130_RTC_CONTROL,
 			fm3130->regs[FM3130_RTC_CONTROL] &
 				~(FM3130_RTC_CONTROL_BIT_CAL));
@@ -385,11 +513,17 @@ static int __devinit fm3130_probe(struct i2c_client *client,
 	/* Disabling read and write modes */
 	if (fm3130->regs[FM3130_RTC_CONTROL] & FM3130_RTC_CONTROL_BIT_WRITE ||
 	    fm3130->regs[FM3130_RTC_CONTROL] & FM3130_RTC_CONTROL_BIT_READ)
+	}
+
+	/* Disabling read and write modes */
+	if (fm3130->regs[FM3130_RTC_CONTROL] & FM3130_RTC_CONTROL_BIT_WRITE ||
+	    fm3130->regs[FM3130_RTC_CONTROL] & FM3130_RTC_CONTROL_BIT_READ) {
 		i2c_smbus_write_byte_data(client, FM3130_RTC_CONTROL,
 			fm3130->regs[FM3130_RTC_CONTROL] &
 				~(FM3130_RTC_CONTROL_BIT_READ |
 					FM3130_RTC_CONTROL_BIT_WRITE));
 		dev_warn(&client->dev, "Disabling READ or WRITE mode!\n");
+	}
 
 	/* oscillator off?  turn it on, so clock can tick. */
 	if (fm3130->regs[FM3130_CAL_CONTROL] & FM3130_CAL_CONTROL_BIT_nOSCEN)
@@ -402,11 +536,21 @@ static int __devinit fm3130_probe(struct i2c_client *client,
 		dev_warn(&client->dev, "Low battery!\n");
 
 	/* oscillator fault?  clear flag, and warn */
+	/* low battery?  clear flag, and warn */
+	if (fm3130->regs[FM3130_RTC_CONTROL] & FM3130_RTC_CONTROL_BIT_LB) {
+		i2c_smbus_write_byte_data(client, FM3130_RTC_CONTROL,
+			fm3130->regs[FM3130_RTC_CONTROL] &
+				~(FM3130_RTC_CONTROL_BIT_LB));
+		dev_warn(&client->dev, "Low battery!\n");
+	}
+
+	/* check if Power On Reset bit is set */
 	if (fm3130->regs[FM3130_RTC_CONTROL] & FM3130_RTC_CONTROL_BIT_POR) {
 		i2c_smbus_write_byte_data(client, FM3130_RTC_CONTROL,
 			fm3130->regs[FM3130_RTC_CONTROL] &
 				~FM3130_RTC_CONTROL_BIT_POR);
 		dev_warn(&client->dev, "SET TIME!\n");
+		dev_dbg(&client->dev, "POR bit is set\n");
 	}
 	/* ACS is controlled by alarm */
 	i2c_smbus_write_byte_data(client, FM3130_ALARM_WP_CONTROL, 0x80);
@@ -451,6 +595,67 @@ exit_bad:
 	/* We won't bail out here because we just got invalid data.
 	   Time setting from u-boot doesn't work anyway */
 	fm3130->rtc = rtc_device_register(client->name, &client->dev,
+	/* alarm registers sanity check */
+	tmp = bcd2bin(fm3130->regs[FM3130_RTC_SECONDS] & 0x7f);
+	if (tmp > 59)
+		goto bad_alarm;
+
+	tmp = bcd2bin(fm3130->regs[FM3130_RTC_MINUTES] & 0x7f);
+	if (tmp > 59)
+		goto bad_alarm;
+
+	tmp = bcd2bin(fm3130->regs[FM3130_RTC_HOURS] & 0x3f);
+	if (tmp > 23)
+		goto bad_alarm;
+
+	tmp = bcd2bin(fm3130->regs[FM3130_RTC_DATE] & 0x3f);
+	if (tmp == 0 || tmp > 31)
+		goto bad_alarm;
+
+	tmp = bcd2bin(fm3130->regs[FM3130_RTC_MONTHS] & 0x1f);
+	if (tmp == 0 || tmp > 12)
+		goto bad_alarm;
+
+	fm3130->alarm_valid = 1;
+
+bad_alarm:
+
+	/* clock registers sanity chek */
+	tmp = bcd2bin(fm3130->regs[FM3130_RTC_SECONDS] & 0x7f);
+	if (tmp > 59)
+		goto bad_clock;
+
+	tmp = bcd2bin(fm3130->regs[FM3130_RTC_MINUTES] & 0x7f);
+	if (tmp > 59)
+		goto bad_clock;
+
+	tmp = bcd2bin(fm3130->regs[FM3130_RTC_HOURS] & 0x3f);
+	if (tmp > 23)
+		goto bad_clock;
+
+	tmp = bcd2bin(fm3130->regs[FM3130_RTC_DAY] & 0x7);
+	if (tmp == 0 || tmp > 7)
+		goto bad_clock;
+
+	tmp = bcd2bin(fm3130->regs[FM3130_RTC_DATE] & 0x3f);
+	if (tmp == 0 || tmp > 31)
+		goto bad_clock;
+
+	tmp = bcd2bin(fm3130->regs[FM3130_RTC_MONTHS] & 0x1f);
+	if (tmp == 0 || tmp > 12)
+		goto bad_clock;
+
+	fm3130->data_valid = 1;
+
+bad_clock:
+
+	if (!fm3130->data_valid || !fm3130->alarm_valid)
+		dev_dbg(&client->dev, "%s: %15ph\n", "bogus registers",
+			fm3130->regs);
+
+	/* We won't bail out here because we just got invalid data.
+	   Time setting from u-boot doesn't work anyway */
+	fm3130->rtc = devm_rtc_device_register(&client->dev, client->name,
 				&fm3130_rtc_ops, THIS_MODULE);
 	if (IS_ERR(fm3130->rtc)) {
 		err = PTR_ERR(fm3130->rtc);
@@ -494,6 +699,18 @@ static void __exit fm3130_exit(void)
 	i2c_del_driver(&fm3130_driver);
 }
 module_exit(fm3130_exit);
+	return err;
+}
+
+static struct i2c_driver fm3130_driver = {
+	.driver = {
+		.name	= "rtc-fm3130",
+	},
+	.probe		= fm3130_probe,
+	.id_table	= fm3130_id,
+};
+
+module_i2c_driver(fm3130_driver);
 
 MODULE_DESCRIPTION("RTC driver for FM3130");
 MODULE_AUTHOR("Sergey Lapin <slapin@ossfans.org>");

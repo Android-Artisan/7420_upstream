@@ -18,6 +18,9 @@
 #include <linux/lockd/share.h>
 #include <linux/lockd/sm_inter.h>
 
+#include <linux/lockd/lockd.h>
+#include <linux/lockd/share.h>
+#include <linux/sunrpc/svc_xprt.h>
 
 #define NLMDBG_FACILITY		NLMDBG_CLIENT
 
@@ -59,6 +62,7 @@ nlm4svc_retrieve_args(struct svc_rqst *rqstp, struct nlm_args *argp,
 
 no_locks:
 	nlm_release_host(host);
+	nlmsvc_release_host(host);
  	if (error)
 		return error;	
 	return nlm_lck_denied_nolocks;
@@ -106,6 +110,7 @@ nlm4svc_proc_test(struct svc_rqst *rqstp, struct nlm_args *argp,
 		dprintk("lockd: TEST4        status %d\n", ntohl(resp->status));
 
 	nlm_release_host(host);
+	nlmsvc_release_host(host);
 	nlm_release_file(file);
 	return rc;
 }
@@ -147,12 +152,15 @@ nlm4svc_proc_lock(struct svc_rqst *rqstp, struct nlm_args *argp,
 	/* Now try to lock the file */
 	resp->status = nlmsvc_lock(rqstp, file, host, &argp->lock,
 					argp->block, &argp->cookie);
+					argp->block, &argp->cookie,
+					argp->reclaim);
 	if (resp->status == nlm_drop_reply)
 		rc = rpc_drop_reply;
 	else
 		dprintk("lockd: LOCK         status %d\n", ntohl(resp->status));
 
 	nlm_release_host(host);
+	nlmsvc_release_host(host);
 	nlm_release_file(file);
 	return rc;
 }
@@ -170,6 +178,7 @@ nlm4svc_proc_cancel(struct svc_rqst *rqstp, struct nlm_args *argp,
 
 	/* Don't accept requests during grace period */
 	if (nlmsvc_grace_period) {
+	if (locks_in_grace(SVC_NET(rqstp))) {
 		resp->status = nlm_lck_denied_grace_period;
 		return rpc_success;
 	}
@@ -183,6 +192,10 @@ nlm4svc_proc_cancel(struct svc_rqst *rqstp, struct nlm_args *argp,
 
 	dprintk("lockd: CANCEL        status %d\n", ntohl(resp->status));
 	nlm_release_host(host);
+	resp->status = nlmsvc_cancel_blocked(SVC_NET(rqstp), file, &argp->lock);
+
+	dprintk("lockd: CANCEL        status %d\n", ntohl(resp->status));
+	nlmsvc_release_host(host);
 	nlm_release_file(file);
 	return rpc_success;
 }
@@ -203,6 +216,7 @@ nlm4svc_proc_unlock(struct svc_rqst *rqstp, struct nlm_args *argp,
 
 	/* Don't accept new lock requests during grace period */
 	if (nlmsvc_grace_period) {
+	if (locks_in_grace(SVC_NET(rqstp))) {
 		resp->status = nlm_lck_denied_grace_period;
 		return rpc_success;
 	}
@@ -216,6 +230,10 @@ nlm4svc_proc_unlock(struct svc_rqst *rqstp, struct nlm_args *argp,
 
 	dprintk("lockd: UNLOCK        status %d\n", ntohl(resp->status));
 	nlm_release_host(host);
+	resp->status = nlmsvc_unlock(SVC_NET(rqstp), file, &argp->lock);
+
+	dprintk("lockd: UNLOCK        status %d\n", ntohl(resp->status));
+	nlmsvc_release_host(host);
 	nlm_release_file(file);
 	return rpc_success;
 }
@@ -232,6 +250,7 @@ nlm4svc_proc_granted(struct svc_rqst *rqstp, struct nlm_args *argp,
 
 	dprintk("lockd: GRANTED       called\n");
 	resp->status = nlmclnt_grant(svc_addr_in(rqstp), &argp->lock);
+	resp->status = nlmclnt_grant(svc_addr(rqstp), &argp->lock);
 	dprintk("lockd: GRANTED       status %d\n", ntohl(resp->status));
 	return rpc_success;
 }
@@ -250,6 +269,7 @@ static void nlm4svc_callback_release(void *data)
 	lock_kernel();
 	nlm_release_call(data);
 	unlock_kernel();
+	nlmsvc_release_call(data);
 }
 
 static const struct rpc_call_ops nlm4svc_callback_ops = {
@@ -276,12 +296,14 @@ static __be32 nlm4svc_callback(struct svc_rqst *rqstp, u32 proc, struct nlm_args
 		return rpc_system_err;
 
 	call = nlm_alloc_call(host);
+	nlmsvc_release_host(host);
 	if (call == NULL)
 		return rpc_system_err;
 
 	stat = func(rqstp, argp, &call->a_res);
 	if (stat != 0) {
 		nlm_release_call(call);
+		nlmsvc_release_call(call);
 		return stat;
 	}
 
@@ -342,6 +364,7 @@ nlm4svc_proc_share(struct svc_rqst *rqstp, struct nlm_args *argp,
 
 	/* Don't accept new lock requests during grace period */
 	if (nlmsvc_grace_period && !argp->reclaim) {
+	if (locks_in_grace(SVC_NET(rqstp)) && !argp->reclaim) {
 		resp->status = nlm_lck_denied_grace_period;
 		return rpc_success;
 	}
@@ -355,6 +378,7 @@ nlm4svc_proc_share(struct svc_rqst *rqstp, struct nlm_args *argp,
 
 	dprintk("lockd: SHARE         status %d\n", ntohl(resp->status));
 	nlm_release_host(host);
+	nlmsvc_release_host(host);
 	nlm_release_file(file);
 	return rpc_success;
 }
@@ -375,6 +399,7 @@ nlm4svc_proc_unshare(struct svc_rqst *rqstp, struct nlm_args *argp,
 
 	/* Don't accept requests during grace period */
 	if (nlmsvc_grace_period) {
+	if (locks_in_grace(SVC_NET(rqstp))) {
 		resp->status = nlm_lck_denied_grace_period;
 		return rpc_success;
 	}
@@ -388,6 +413,7 @@ nlm4svc_proc_unshare(struct svc_rqst *rqstp, struct nlm_args *argp,
 
 	dprintk("lockd: UNSHARE       status %d\n", ntohl(resp->status));
 	nlm_release_host(host);
+	nlmsvc_release_host(host);
 	nlm_release_file(file);
 	return rpc_success;
 }
@@ -420,6 +446,7 @@ nlm4svc_proc_free_all(struct svc_rqst *rqstp, struct nlm_args *argp,
 
 	nlmsvc_free_host_resources(host);
 	nlm_release_host(host);
+	nlmsvc_release_host(host);
 	return rpc_success;
 }
 
@@ -437,6 +464,9 @@ nlm4svc_proc_sm_notify(struct svc_rqst *rqstp, struct nlm_reboot *argp,
 	dprintk("lockd: SM_NOTIFY     called\n");
 	if (saddr.sin_addr.s_addr != htonl(INADDR_LOOPBACK)
 	 || ntohs(saddr.sin_port) >= 1024) {
+	dprintk("lockd: SM_NOTIFY     called\n");
+
+	if (!nlm_privileged_requester(rqstp)) {
 		char buf[RPC_MAX_ADDRBUFLEN];
 		printk(KERN_WARNING "lockd: rejected NSM callback from %s\n",
 				svc_print_addr(rqstp, buf, sizeof(buf)));
@@ -450,6 +480,7 @@ nlm4svc_proc_sm_notify(struct svc_rqst *rqstp, struct nlm_reboot *argp,
 	saddr.sin_addr.s_addr = argp->addr;
 	nlm_host_rebooted(&saddr, argp->mon, argp->len, argp->state);
 
+	nlm_host_rebooted(SVC_NET(rqstp), argp);
 	return rpc_success;
 }
 

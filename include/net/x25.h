@@ -10,6 +10,7 @@
 #ifndef _X25_H
 #define _X25_H 
 #include <linux/x25.h>
+#include <linux/slab.h>
 #include <net/sock.h>
 
 #define	X25_ADDR_LEN			16
@@ -112,6 +113,11 @@ enum {
 #define X25_MAX_AE_LEN 		40			/* Max num of semi-octets in AE - OSI Nw */
 #define X25_MAX_DTE_FACIL_LEN	21			/* Max length of DTE facility params */
 
+/* Bitset in x25_sock->flags for misc flags */
+#define X25_Q_BIT_FLAG		0
+#define X25_INTERRUPT_FLAG	1
+#define X25_ACCPT_APPRV_FLAG	2
+
 /**
  *	struct x25_route - x25 routing entry
  *	@node - entry in x25_list_lock
@@ -149,6 +155,11 @@ struct x25_sock {
 	unsigned short		vs, vr, va, vl;
 	unsigned long		t2, t21, t22, t23;
 	unsigned short		fraglen;
+	unsigned char		state, condition;
+	unsigned short		vs, vr, va, vl;
+	unsigned long		t2, t21, t22, t23;
+	unsigned short		fraglen;
+	unsigned long		flags;
 	struct sk_buff_head	ack_queue;
 	struct sk_buff_head	fragment_queue;
 	struct sk_buff_head	interrupt_in_queue;
@@ -229,6 +240,57 @@ extern void x25_transmit_link(struct sk_buff *, struct x25_neigh *);
 extern int  x25_subscr_ioctl(unsigned int, void __user *);
 extern struct x25_neigh *x25_get_neigh(struct net_device *);
 extern void x25_link_free(void);
+int x25_parse_address_block(struct sk_buff *skb,
+			    struct x25_address *called_addr,
+			    struct x25_address *calling_addr);
+
+int x25_addr_ntoa(unsigned char *, struct x25_address *, struct x25_address *);
+int x25_addr_aton(unsigned char *, struct x25_address *, struct x25_address *);
+struct sock *x25_find_socket(unsigned int, struct x25_neigh *);
+void x25_destroy_socket_from_timer(struct sock *);
+int x25_rx_call_request(struct sk_buff *, struct x25_neigh *, unsigned int);
+void x25_kill_by_neigh(struct x25_neigh *);
+
+/* x25_dev.c */
+void x25_send_frame(struct sk_buff *, struct x25_neigh *);
+int x25_lapb_receive_frame(struct sk_buff *, struct net_device *,
+			   struct packet_type *, struct net_device *);
+void x25_establish_link(struct x25_neigh *);
+void x25_terminate_link(struct x25_neigh *);
+
+/* x25_facilities.c */
+int x25_parse_facilities(struct sk_buff *, struct x25_facilities *,
+			 struct x25_dte_facilities *, unsigned long *);
+int x25_create_facilities(unsigned char *, struct x25_facilities *,
+			  struct x25_dte_facilities *, unsigned long);
+int x25_negotiate_facilities(struct sk_buff *, struct sock *,
+			     struct x25_facilities *,
+			     struct x25_dte_facilities *);
+void x25_limit_facilities(struct x25_facilities *, struct x25_neigh *);
+
+/* x25_forward.c */
+void x25_clear_forward_by_lci(unsigned int lci);
+void x25_clear_forward_by_dev(struct net_device *);
+int x25_forward_data(int, struct x25_neigh *, struct sk_buff *);
+int x25_forward_call(struct x25_address *, struct x25_neigh *, struct sk_buff *,
+		     int);
+
+/* x25_in.c */
+int x25_process_rx_frame(struct sock *, struct sk_buff *);
+int x25_backlog_rcv(struct sock *, struct sk_buff *);
+
+/* x25_link.c */
+void x25_link_control(struct sk_buff *, struct x25_neigh *, unsigned short);
+void x25_link_device_up(struct net_device *);
+void x25_link_device_down(struct net_device *);
+void x25_link_established(struct x25_neigh *);
+void x25_link_terminated(struct x25_neigh *);
+void x25_transmit_clear_request(struct x25_neigh *, unsigned int,
+				unsigned char);
+void x25_transmit_link(struct sk_buff *, struct x25_neigh *);
+int x25_subscr_ioctl(unsigned int, void __user *);
+struct x25_neigh *x25_get_neigh(struct net_device *);
+void x25_link_free(void);
 
 /* x25_neigh.c */
 static __inline__ void x25_neigh_hold(struct x25_neigh *nb)
@@ -253,6 +315,16 @@ extern struct net_device *x25_dev_get(char *);
 extern void x25_route_device_down(struct net_device *dev);
 extern int  x25_route_ioctl(unsigned int, void __user *);
 extern void x25_route_free(void);
+int x25_output(struct sock *, struct sk_buff *);
+void x25_kick(struct sock *);
+void x25_enquiry_response(struct sock *);
+
+/* x25_route.c */
+struct x25_route *x25_get_route(struct x25_address *addr);
+struct net_device *x25_dev_get(char *);
+void x25_route_device_down(struct net_device *dev);
+int x25_route_ioctl(unsigned int, void __user *);
+void x25_route_free(void);
 
 static __inline__ void x25_route_hold(struct x25_route *rt)
 {
@@ -291,6 +363,38 @@ extern void x25_register_sysctl(void);
 extern void x25_unregister_sysctl(void);
 struct x25_skb_cb {
 	unsigned flags;
+void x25_clear_queues(struct sock *);
+void x25_frames_acked(struct sock *, unsigned short);
+void x25_requeue_frames(struct sock *);
+int x25_validate_nr(struct sock *, unsigned short);
+void x25_write_internal(struct sock *, int);
+int x25_decode(struct sock *, struct sk_buff *, int *, int *, int *, int *,
+	       int *);
+void x25_disconnect(struct sock *, int, unsigned char, unsigned char);
+
+/* x25_timer.c */
+void x25_init_timers(struct sock *sk);
+void x25_start_heartbeat(struct sock *);
+void x25_start_t2timer(struct sock *);
+void x25_start_t21timer(struct sock *);
+void x25_start_t22timer(struct sock *);
+void x25_start_t23timer(struct sock *);
+void x25_stop_heartbeat(struct sock *);
+void x25_stop_timer(struct sock *);
+unsigned long x25_display_timer(struct sock *);
+void x25_check_rbuf(struct sock *);
+
+/* sysctl_net_x25.c */
+#ifdef CONFIG_SYSCTL
+int x25_register_sysctl(void);
+void x25_unregister_sysctl(void);
+#else
+static inline int x25_register_sysctl(void) { return 0; };
+static inline void x25_unregister_sysctl(void) {};
+#endif /* CONFIG_SYSCTL */
+
+struct x25_skb_cb {
+	unsigned int flags;
 };
 #define X25_SKB_CB(s) ((struct x25_skb_cb *) ((s)->cb))
 
@@ -303,4 +407,9 @@ extern rwlock_t x25_forward_list_lock;
 
 extern int x25_proc_init(void);
 extern void x25_proc_exit(void);
+extern struct list_head x25_neigh_list;
+extern rwlock_t x25_neigh_list_lock;
+
+int x25_proc_init(void);
+void x25_proc_exit(void);
 #endif

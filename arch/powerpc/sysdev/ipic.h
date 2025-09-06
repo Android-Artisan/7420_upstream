@@ -44,6 +44,7 @@ struct ipic {
 
 	/* The remapper for this IPIC */
 	struct irq_host		*irqhost;
+	struct irq_domain		*irqhost;
 };
 
 struct ipic_info {

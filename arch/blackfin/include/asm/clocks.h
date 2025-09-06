@@ -25,10 +25,17 @@
  * along with this program; if not, see the file COPYING, or write
  * to the Free Software Foundation, Inc.,
  * 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+ * Common Clock definitions for various kernel files
+ *
+ * Copyright 2007-2008 Analog Devices Inc.
+ *
+ * Licensed under the GPL-2 or later.
  */
 
 #ifndef _BFIN_CLOCKS_H
 #define _BFIN_CLOCKS_H
+
+#include <asm/dpmc.h>
 
 #ifdef CONFIG_CCLK_DIV_1
 # define CONFIG_CCLK_ACT_DIV   CCLK_DIV1
@@ -67,4 +74,27 @@
 # define CONFIG_VCO_MULT 0
 #endif
 
+#include <linux/clk.h>
+
+struct clk_ops {
+	unsigned long (*get_rate)(struct clk *clk);
+	unsigned long (*round_rate)(struct clk *clk, unsigned long rate);
+	int (*set_rate)(struct clk *clk, unsigned long rate);
+	int (*enable)(struct clk *clk);
+	int (*disable)(struct clk *clk);
+};
+
+struct clk {
+	struct clk		*parent;
+	const char              *name;
+	unsigned long           rate;
+	spinlock_t              lock;
+	u32                     flags;
+	const struct clk_ops    *ops;
+	void __iomem            *reg;
+	u32                     mask;
+	u32                     shift;
+};
+
+int clk_init(void);
 #endif

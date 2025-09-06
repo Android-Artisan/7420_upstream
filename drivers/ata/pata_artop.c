@@ -3,6 +3,8 @@
  *
  *	(C) 2006 Red Hat <alan@redhat.com>
  *	(C) 2007 Bartlomiej Zolnierkiewicz
+ *	(C) 2006 Red Hat
+ *	(C) 2007,2011 Bartlomiej Zolnierkiewicz
  *
  *    Based in part on drivers/ide/pci/aec62xx.c
  *	Copyright (C) 1999-2002	Andre Hedrick <andre@linux-ide.org>
@@ -30,6 +32,7 @@
 
 #define DRV_NAME	"pata_artop"
 #define DRV_VERSION	"0.4.4"
+#define DRV_VERSION	"0.4.6"
 
 /*
  *	The ARTOP has 33 Mhz and "over clocked" timing tables. Until we
@@ -65,6 +68,15 @@ static int artop6210_pre_reset(struct ata_link *link, unsigned long deadline)
  */
 
 static int artop6260_pre_reset(struct ata_link *link, unsigned long deadline)
+/**
+ *	artop62x0_pre_reset	-	probe begin
+ *	@link: link
+ *	@deadline: deadline jiffies for the operation
+ *
+ *	Nothing complicated needed here.
+ */
+
+static int artop62x0_pre_reset(struct ata_link *link, unsigned long deadline)
 {
 	static const struct pci_bits artop_enable_bits[] = {
 		{ 0x4AU, 1U, 0x02UL, 0x02UL },	/* port 0 */
@@ -76,6 +88,9 @@ static int artop6260_pre_reset(struct ata_link *link, unsigned long deadline)
 
 	/* Odd numbered device ids are the units with enable bits (the -R cards) */
 	if (pdev->device % 1 && !pci_test_config_bits(pdev, &artop_enable_bits[ap->port_no]))
+	/* Odd numbered device ids are the units with enable bits. */
+	if ((pdev->device & 1) &&
+	    !pci_test_config_bits(pdev, &artop_enable_bits[ap->port_no]))
 		return -ENOENT;
 
 	return ata_sff_prereset(link, deadline);
@@ -283,6 +298,31 @@ static void artop6260_set_dmamode (struct ata_port *ap, struct ata_device *adev)
 	pci_write_config_byte(pdev, 0x44 + ap->port_no, ultra);
 }
 
+/**
+ *	artop_6210_qc_defer	-	implement serialization
+ *	@qc: command
+ *
+ *	Issue commands per host on this chip.
+ */
+
+static int artop6210_qc_defer(struct ata_queued_cmd *qc)
+{
+	struct ata_host *host = qc->ap->host;
+	struct ata_port *alt = host->ports[1 ^ qc->ap->port_no];
+	int rc;
+
+	/* First apply the usual rules */
+	rc = ata_std_qc_defer(qc);
+	if (rc != 0)
+		return rc;
+
+	/* Now apply serialization rules. Only allow a command if the
+	   other channel state machine is idle */
+	if (alt && alt->qc_active)
+		return	ATA_DEFER_PORT;
+	return 0;
+}
+
 static struct scsi_host_template artop_sht = {
 	ATA_BMDMA_SHT(DRV_NAME),
 };
@@ -293,6 +333,8 @@ static struct ata_port_operations artop6210_ops = {
 	.set_piomode		= artop6210_set_piomode,
 	.set_dmamode		= artop6210_set_dmamode,
 	.prereset		= artop6210_pre_reset,
+	.prereset		= artop62x0_pre_reset,
+	.qc_defer		= artop6210_qc_defer,
 };
 
 static struct ata_port_operations artop6260_ops = {
@@ -303,6 +345,36 @@ static struct ata_port_operations artop6260_ops = {
 	.prereset		= artop6260_pre_reset,
 };
 
+	.prereset		= artop62x0_pre_reset,
+};
+
+static void atp8xx_fixup(struct pci_dev *pdev)
+{
+	if (pdev->device == 0x0005)
+		/* BIOS may have left us in UDMA, clear it before libata probe */
+		pci_write_config_byte(pdev, 0x54, 0);
+	else if (pdev->device == 0x0008 || pdev->device == 0x0009) {
+		u8 reg;
+
+		/* Mac systems come up with some registers not set as we
+		   will need them */
+
+		/* Clear reset & test bits */
+		pci_read_config_byte(pdev, 0x49, &reg);
+		pci_write_config_byte(pdev, 0x49, reg & ~0x30);
+
+		/* PCI latency must be > 0x80 for burst mode, tweak it
+		 * if required.
+		 */
+		pci_read_config_byte(pdev, PCI_LATENCY_TIMER, &reg);
+		if (reg <= 0x80)
+			pci_write_config_byte(pdev, PCI_LATENCY_TIMER, 0x90);
+
+		/* Enable IRQ output and burst mode */
+		pci_read_config_byte(pdev, 0x4a, &reg);
+		pci_write_config_byte(pdev, 0x4a, (reg & ~0x01) | 0x80);
+	}
+}
 
 /**
  *	artop_init_one - Register ARTOP ATA PCI device with kernel services
@@ -325,6 +397,10 @@ static int artop_init_one (struct pci_dev *pdev, const struct pci_device_id *id)
 		.flags		= ATA_FLAG_SLAVE_POSS,
 		.pio_mask	= 0x1f,	/* pio0-4 */
 		.mwdma_mask	= 0x07, /* mwdma0-2 */
+	static const struct ata_port_info info_6210 = {
+		.flags		= ATA_FLAG_SLAVE_POSS,
+		.pio_mask	= ATA_PIO4,
+		.mwdma_mask	= ATA_MWDMA2,
 		.udma_mask 	= ATA_UDMA2,
 		.port_ops	= &artop6210_ops,
 	};
@@ -332,6 +408,8 @@ static int artop_init_one (struct pci_dev *pdev, const struct pci_device_id *id)
 		.flags		= ATA_FLAG_SLAVE_POSS,
 		.pio_mask	= 0x1f,	/* pio0-4 */
 		.mwdma_mask	= 0x07, /* mwdma0-2 */
+		.pio_mask	= ATA_PIO4,
+		.mwdma_mask	= ATA_MWDMA2,
 		.udma_mask 	= ATA_UDMA4,
 		.port_ops	= &artop6260_ops,
 	};
@@ -339,6 +417,8 @@ static int artop_init_one (struct pci_dev *pdev, const struct pci_device_id *id)
 		.flags		= ATA_FLAG_SLAVE_POSS,
 		.pio_mask	= 0x1f,	/* pio0-4 */
 		.mwdma_mask	= 0x07, /* mwdma0-2 */
+		.pio_mask	= ATA_PIO4,
+		.mwdma_mask	= ATA_MWDMA2,
 		.udma_mask 	= ATA_UDMA5,
 		.port_ops	= &artop6260_ops,
 	};
@@ -346,6 +426,8 @@ static int artop_init_one (struct pci_dev *pdev, const struct pci_device_id *id)
 		.flags		= ATA_FLAG_SLAVE_POSS,
 		.pio_mask	= 0x1f,	/* pio0-4 */
 		.mwdma_mask	= 0x07, /* mwdma0-2 */
+		.pio_mask	= ATA_PIO4,
+		.mwdma_mask	= ATA_MWDMA2,
 		.udma_mask 	= ATA_UDMA6,
 		.port_ops	= &artop6260_ops,
 	};
@@ -355,6 +437,7 @@ static int artop_init_one (struct pci_dev *pdev, const struct pci_device_id *id)
 	if (!printed_version++)
 		dev_printk(KERN_DEBUG, &pdev->dev,
 			   "version " DRV_VERSION "\n");
+	ata_print_version_once(&pdev->dev, DRV_VERSION);
 
 	rc = pcim_enable_device(pdev);
 	if (rc)
@@ -369,6 +452,8 @@ static int artop_init_one (struct pci_dev *pdev, const struct pci_device_id *id)
 		printk(KERN_WARNING "ARTOP 6210 requires serialize functionality not yet supported by libata.\n");
 		printk(KERN_WARNING "Secondary ATA ports will not be activated.\n");
 	}
+	if (id->driver_data == 0)	/* 6210 variant */
+		ppi[0] = &info_6210;
 	else if (id->driver_data == 1)	/* 6260 */
 		ppi[0] = &info_626x;
 	else if (id->driver_data == 2)	{ /* 6280 or 6280 + fast */
@@ -401,6 +486,9 @@ static int artop_init_one (struct pci_dev *pdev, const struct pci_device_id *id)
 	BUG_ON(ppi[0] == NULL);
 
 	return ata_pci_sff_init_one(pdev, ppi, &artop_sht, NULL);
+	atp8xx_fixup(pdev);
+
+	return ata_pci_bmdma_init_one(pdev, ppi, &artop_sht, NULL, 0);
 }
 
 static const struct pci_device_id artop_pci_tbl[] = {
@@ -412,6 +500,23 @@ static const struct pci_device_id artop_pci_tbl[] = {
 
 	{ }	/* terminate list */
 };
+
+#ifdef CONFIG_PM_SLEEP
+static int atp8xx_reinit_one(struct pci_dev *pdev)
+{
+	struct ata_host *host = pci_get_drvdata(pdev);
+	int rc;
+
+	rc = ata_pci_device_do_resume(pdev);
+	if (rc)
+		return rc;
+
+	atp8xx_fixup(pdev);
+
+	ata_host_resume(host);
+	return 0;
+}
+#endif
 
 static struct pci_driver artop_pci_driver = {
 	.name			= DRV_NAME,
@@ -434,6 +539,15 @@ module_init(artop_init);
 module_exit(artop_exit);
 
 MODULE_AUTHOR("Alan Cox");
+#ifdef CONFIG_PM_SLEEP
+	.suspend		= ata_pci_device_suspend,
+	.resume			= atp8xx_reinit_one,
+#endif
+};
+
+module_pci_driver(artop_pci_driver);
+
+MODULE_AUTHOR("Alan Cox, Bartlomiej Zolnierkiewicz");
 MODULE_DESCRIPTION("SCSI low-level driver for ARTOP PATA");
 MODULE_LICENSE("GPL");
 MODULE_DEVICE_TABLE(pci, artop_pci_tbl);

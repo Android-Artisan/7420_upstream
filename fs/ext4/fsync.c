@@ -31,6 +31,52 @@
 #include "ext4.h"
 #include "ext4_jbd2.h"
 
+#include <linux/blkdev.h>
+
+#include "ext4.h"
+#include "ext4_jbd2.h"
+
+#include <trace/events/ext4.h>
+
+/*
+ * If we're not journaling and this is a just-created file, we have to
+ * sync our parent directory (if it was freshly created) since
+ * otherwise it will only be written by writeback, leaving a huge
+ * window during which a crash may lose the file.  This may apply for
+ * the parent directory's parent as well, and so on recursively, if
+ * they are also freshly created.
+ */
+static int ext4_sync_parent(struct inode *inode)
+{
+	struct dentry *dentry = NULL;
+	struct inode *next;
+	int ret = 0;
+
+	if (!ext4_test_inode_state(inode, EXT4_STATE_NEWENTRY))
+		return 0;
+	inode = igrab(inode);
+	while (ext4_test_inode_state(inode, EXT4_STATE_NEWENTRY)) {
+		ext4_clear_inode_state(inode, EXT4_STATE_NEWENTRY);
+		dentry = d_find_any_alias(inode);
+		if (!dentry)
+			break;
+		next = igrab(d_inode(dentry->d_parent));
+		dput(dentry);
+		if (!next)
+			break;
+		iput(inode);
+		inode = next;
+		ret = sync_mapping_buffers(inode->i_mapping);
+		if (ret)
+			break;
+		ret = sync_inode_metadata(inode, 1);
+		if (ret)
+			break;
+	}
+	iput(inode);
+	return ret;
+}
+
 /*
  * akpm: A new design for ext4_sync_file().
  *
@@ -60,6 +106,42 @@ int ext4_sync_file(struct file * file, struct dentry *dentry, int datasync)
 	 *  The caller's filemap_fdatawrite() will write the data and
 	 *  sync_inode() will write the inode if it is dirty.  Then the caller's
 	 *  filemap_fdatawait() will wait on the pages.
+int ext4_sync_file(struct file *file, loff_t start, loff_t end, int datasync)
+{
+	struct inode *inode = file->f_mapping->host;
+	struct ext4_inode_info *ei = EXT4_I(inode);
+	journal_t *journal = EXT4_SB(inode->i_sb)->s_journal;
+	int ret = 0, err;
+	tid_t commit_tid;
+	bool needs_barrier = false;
+
+	J_ASSERT(ext4_journal_current_handle() == NULL);
+
+	trace_ext4_sync_file_enter(file, datasync);
+
+	if (inode->i_sb->s_flags & MS_RDONLY) {
+		/* Make sure that we read updated s_mount_flags value */
+		smp_rmb();
+		if (EXT4_SB(inode->i_sb)->s_mount_flags & EXT4_MF_FS_ABORTED)
+			ret = -EROFS;
+		goto out;
+	}
+
+	if (!journal) {
+		ret = generic_file_fsync(file, start, end, datasync);
+		if (!ret && !hlist_empty(&inode->i_dentry))
+			ret = ext4_sync_parent(inode);
+		goto out;
+	}
+
+	ret = filemap_write_and_wait_range(inode->i_mapping, start, end);
+	if (ret)
+		return ret;
+	/*
+	 * data=writeback,ordered:
+	 *  The caller's filemap_fdatawrite()/wait will sync the data.
+	 *  Metadata is in the journal, we wait for proper transaction to
+	 *  commit here.
 	 *
 	 * data=journal:
 	 *  filemap_fdatawrite won't do anything (the buffers are clean).
@@ -91,5 +173,17 @@ int ext4_sync_file(struct file * file, struct dentry *dentry, int datasync)
 			blkdev_issue_flush(inode->i_sb->s_bdev, NULL);
 	}
 out:
+	commit_tid = datasync ? ei->i_datasync_tid : ei->i_sync_tid;
+	if (journal->j_flags & JBD2_BARRIER &&
+	    !jbd2_trans_will_send_data_barrier(journal, commit_tid))
+		needs_barrier = true;
+	ret = jbd2_complete_transaction(journal, commit_tid);
+	if (needs_barrier) {
+		err = blkdev_issue_flush(inode->i_sb->s_bdev, GFP_KERNEL, NULL);
+		if (!ret)
+			ret = err;
+	}
+out:
+	trace_ext4_sync_file_exit(inode, ret);
 	return ret;
 }

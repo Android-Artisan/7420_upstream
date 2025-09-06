@@ -17,6 +17,7 @@
 #   A = Absolute
 #   B = Uninitialised data (.bss)
 #   C = Comon symbol
+#   C = Common symbol
 #   D = Initialised data
 #   G = Initialised data for small objects
 #   I = Indirect reference to another symbol
@@ -43,3 +44,5 @@
 
 $NM -n $1 | grep -v '\( [aNUw] \)\|\(__crc_\)\|\( \$[adt]\)' > $2
 
+$NM -n $1 | grep -v '\( [aNUw] \)\|\(__crc_\)\|\( \$[adt]\)\|\( .L\)' > $2
+$NM -n $1 | grep -v '\( [aNUw] \)\|\(__crc_\)\|\( \$[adt]\)\|\( \.L\)' > $2

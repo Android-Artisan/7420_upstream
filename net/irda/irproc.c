@@ -43,12 +43,22 @@ extern struct file_operations irias_seq_fops;
 struct irda_entry {
 	const char *name;
 	struct file_operations *fops;
+extern const struct file_operations discovery_seq_fops;
+extern const struct file_operations irlap_seq_fops;
+extern const struct file_operations irlmp_seq_fops;
+extern const struct file_operations irttp_seq_fops;
+extern const struct file_operations irias_seq_fops;
+
+struct irda_entry {
+	const char *name;
+	const struct file_operations *fops;
 };
 
 struct proc_dir_entry *proc_irda;
 EXPORT_SYMBOL(proc_irda);
 
 static struct irda_entry irda_dirs[] = {
+static const struct irda_entry irda_dirs[] = {
 	{"discovery",	&discovery_seq_fops},
 	{"irttp",	&irttp_seq_fops},
 	{"irlmp",	&irlmp_seq_fops},
@@ -75,6 +85,10 @@ void __init irda_proc_register(void)
 	for (i = 0; i < ARRAY_SIZE(irda_dirs); i++)
 		d = proc_create(irda_dirs[i].name, 0, proc_irda,
 				irda_dirs[i].fops);
+
+	for (i = 0; i < ARRAY_SIZE(irda_dirs); i++)
+		(void) proc_create(irda_dirs[i].name, 0, proc_irda,
+				   irda_dirs[i].fops);
 }
 
 /*

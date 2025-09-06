@@ -15,6 +15,7 @@
 #include <linux/moduleparam.h>
 #include <linux/types.h>
 #include <linux/ioport.h>
+#include <linux/kernel.h>
 #include <linux/notifier.h>
 #include <linux/reboot.h>
 #include <linux/init.h>
@@ -28,6 +29,9 @@
 #include <asm/io.h>
 #include <asm/uaccess.h>
 #include <asm/system.h>
+#include <linux/slab.h>
+#include <asm/io.h>
+#include <asm/uaccess.h>
 #include <asm/pgtable.h>
 #include <asm/sn/addrs.h>
 #include <asm/sn/intr.h>
@@ -40,6 +44,7 @@
 #else
 #define DBG(fmt...)
 #endif
+static DEFINE_MUTEX(mbcs_mutex);
 static int mbcs_major;
 
 static LIST_HEAD(soft_list);
@@ -384,6 +389,7 @@ static int mbcs_open(struct inode *ip, struct file *fp)
 	int minor;
 
 	lock_kernel();
+	mutex_lock(&mbcs_mutex);
 	minor = iminor(ip);
 
 	/* Nothing protects access to this list... */
@@ -391,11 +397,13 @@ static int mbcs_open(struct inode *ip, struct file *fp)
 		if (soft->nasid == minor) {
 			fp->private_data = soft->cxdev;
 			unlock_kernel();
+			mutex_unlock(&mbcs_mutex);
 			return 0;
 		}
 	}
 
 	unlock_kernel();
+	mutex_unlock(&mbcs_mutex);
 	return -ENODEV;
 }
 
@@ -507,6 +515,7 @@ static int mbcs_gscr_mmap(struct file *fp, struct vm_area_struct *vma)
 	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
 
 	/* Remap-pfn-range will mark the range VM_IO and VM_RESERVED */
+	/* Remap-pfn-range will mark the range VM_IO */
 	if (remap_pfn_range(vma,
 			    vma->vm_start,
 			    __pa(soft->gscr_addr) >> PAGE_SHIFT,
@@ -717,6 +726,8 @@ static ssize_t show_algo(struct device *dev, struct device_attribute *attr, char
 
 	return sprintf(buf, "0x%lx 0x%lx\n",
 		       (debug0 >> 32), (debug0 & 0xffffffff));
+	return sprintf(buf, "0x%x 0x%x\n",
+		       upper_32_bits(debug0), lower_32_bits(debug0));
 }
 
 static ssize_t store_algo(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
@@ -799,6 +810,7 @@ static int mbcs_remove(struct cx_dev *dev)
 }
 
 static const struct cx_device_id __devinitdata mbcs_id_table[] = {
+static const struct cx_device_id mbcs_id_table[] = {
 	{
 	 .part_num = MBCS_PART_NUM,
 	 .mfg_num = MBCS_MFG_NUM,

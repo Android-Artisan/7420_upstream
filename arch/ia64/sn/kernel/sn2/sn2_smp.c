@@ -137,6 +137,10 @@ sn2_ipi_flush_all_tlb(struct mm_struct *mm)
 	itc = ia64_get_itc() - itc;
 	__get_cpu_var(ptcstats).shub_ipi_flushes_itc_clocks += itc;
 	__get_cpu_var(ptcstats).shub_ipi_flushes++;
+	smp_flush_tlb_cpumask(*mm_cpumask(mm));
+	itc = ia64_get_itc() - itc;
+	__this_cpu_add(ptcstats.shub_ipi_flushes_itc_clocks, itc);
+	__this_cpu_inc(ptcstats.shub_ipi_flushes);
 }
 
 /**
@@ -183,6 +187,7 @@ sn2_global_tlb_purge(struct mm_struct *mm, unsigned long start,
 	i = 0;
 
 	for_each_cpu_mask(cpu, mm->cpu_vm_mask) {
+	for_each_cpu(cpu, mm_cpumask(mm)) {
 		cnode = cpu_to_node(cpu);
 		node_set(cnode, nodes_flushed);
 		lcpu = cpu;
@@ -201,6 +206,7 @@ sn2_global_tlb_purge(struct mm_struct *mm, unsigned long start,
 		} while (start < end);
 		ia64_srlz_i();
 		__get_cpu_var(ptcstats).ptc_l++;
+		__this_cpu_inc(ptcstats.ptc_l);
 		preempt_enable();
 		return;
 	}
@@ -208,6 +214,7 @@ sn2_global_tlb_purge(struct mm_struct *mm, unsigned long start,
 	if (atomic_read(&mm->mm_users) == 1 && mymm) {
 		flush_tlb_mm(mm);
 		__get_cpu_var(ptcstats).change_rid++;
+		__this_cpu_inc(ptcstats.change_rid);
 		preempt_enable();
 		return;
 	}
@@ -256,6 +263,11 @@ sn2_global_tlb_purge(struct mm_struct *mm, unsigned long start,
 	__get_cpu_var(ptcstats).nodes_flushed += nix;
 	if (!mymm)
 		 __get_cpu_var(ptcstats).shub_ptc_flushes_not_my_mm++;
+	__this_cpu_add(ptcstats.lock_itc_clocks, itc2 - itc);
+	__this_cpu_inc(ptcstats.shub_ptc_flushes);
+	__this_cpu_add(ptcstats.nodes_flushed, nix);
+	if (!mymm)
+		 __this_cpu_inc(ptcstats.shub_ptc_flushes_not_my_mm);
 
 	if (use_cpu_ptcga && !mymm) {
 		old_rr = ia64_get_rr(start);
@@ -303,6 +315,9 @@ done:
 	__get_cpu_var(ptcstats).shub_itc_clocks += itc2;
 	if (itc2 > __get_cpu_var(ptcstats).shub_itc_clocks_max)
 		__get_cpu_var(ptcstats).shub_itc_clocks_max = itc2;
+	__this_cpu_add(ptcstats.shub_itc_clocks, itc2);
+	if (itc2 > __this_cpu_read(ptcstats.shub_itc_clocks_max))
+		__this_cpu_write(ptcstats.shub_itc_clocks_max, itc2);
 
 	if (old_rr) {
 		ia64_set_rr(start, old_rr);
@@ -313,6 +328,7 @@ done:
 
 	if (flush_opt == 1 && deadlock) {
 		__get_cpu_var(ptcstats).deadlocks++;
+		__this_cpu_inc(ptcstats.deadlocks);
 		sn2_ipi_flush_all_tlb(mm);
 	}
 
@@ -336,6 +352,7 @@ sn2_ptc_deadlock_recovery(short *nasids, short ib, short ie, int mynasid,
 	unsigned long *piows, zeroval, n;
 
 	__get_cpu_var(ptcstats).deadlocks++;
+	__this_cpu_inc(ptcstats.deadlocks);
 
 	piows = (unsigned long *) pda->pio_write_status_addr;
 	zeroval = pda->pio_write_status_val;
@@ -351,6 +368,7 @@ sn2_ptc_deadlock_recovery(short *nasids, short ib, short ie, int mynasid,
 
 		n = sn2_ptc_deadlock_recovery_core(ptc0, data0, ptc1, data1, piows, zeroval);
 		__get_cpu_var(ptcstats).deadlocks2 += n;
+		__this_cpu_add(ptcstats.deadlocks2, n);
 	}
 
 }
@@ -462,6 +480,7 @@ bool sn_cpu_disable_allowed(int cpu)
 static void *sn2_ptc_seq_start(struct seq_file *file, loff_t * offset)
 {
 	if (*offset < NR_CPUS)
+	if (*offset < nr_cpu_ids)
 		return offset;
 	return NULL;
 }
@@ -470,6 +489,7 @@ static void *sn2_ptc_seq_next(struct seq_file *file, void *data, loff_t * offset
 {
 	(*offset)++;
 	if (*offset < NR_CPUS)
+	if (*offset < nr_cpu_ids)
 		return offset;
 	return NULL;
 }
@@ -492,6 +512,7 @@ static int sn2_ptc_seq_show(struct seq_file *file, void *data)
 	}
 
 	if (cpu < NR_CPUS && cpu_online(cpu)) {
+	if (cpu < nr_cpu_ids && cpu_online(cpu)) {
 		stat = &per_cpu(ptcstats, cpu);
 		seq_printf(file, "cpu %d %ld %ld %ld %ld %ld %ld %ld %ld %ld %ld %ld %ld\n", cpu, stat->ptc_l,
 				stat->change_rid, stat->shub_ptc_flushes, stat->nodes_flushed,
@@ -503,6 +524,13 @@ static int sn2_ptc_seq_show(struct seq_file *file, void *data)
 				stat->deadlocks2,
 				stat->shub_ipi_flushes,
 				1000 * stat->shub_ipi_flushes_itc_clocks / per_cpu(cpu_info, cpu).cyc_per_usec);
+				1000 * stat->lock_itc_clocks / per_cpu(ia64_cpu_info, cpu).cyc_per_usec,
+				1000 * stat->shub_itc_clocks / per_cpu(ia64_cpu_info, cpu).cyc_per_usec,
+				1000 * stat->shub_itc_clocks_max / per_cpu(ia64_cpu_info, cpu).cyc_per_usec,
+				stat->shub_ptc_flushes_not_my_mm,
+				stat->deadlocks2,
+				stat->shub_ipi_flushes,
+				1000 * stat->shub_ipi_flushes_itc_clocks / per_cpu(ia64_cpu_info, cpu).cyc_per_usec);
 	}
 	return 0;
 }
@@ -555,6 +583,7 @@ static int __init sn2_ptc_init(void)
 	proc_sn2_ptc = proc_create(PTC_BASENAME, 0444,
 				   NULL, &proc_sn2_ptc_operations);
 	if (!&proc_sn2_ptc_operations) {
+	if (!proc_sn2_ptc) {
 		printk(KERN_ERR "unable to create %s proc entry", PTC_BASENAME);
 		return -EINVAL;
 	}

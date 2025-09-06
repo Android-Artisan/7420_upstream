@@ -55,6 +55,8 @@
  */
 #define PMAC_TYPE_COMET			0x20	/* Beleived to be PowerBook 2400 */
 #define PMAC_TYPE_HOOPER		0x21	/* Beleived to be PowerBook 3400 */
+#define PMAC_TYPE_COMET			0x20	/* Believed to be PowerBook 2400 */
+#define PMAC_TYPE_HOOPER		0x21	/* Believed to be PowerBook 3400 */
 #define PMAC_TYPE_KANGA			0x22	/* PowerBook 3500 (first G3) */
 #define PMAC_TYPE_ALCHEMY		0x23	/* Alchemy motherboard base */
 #define PMAC_TYPE_GAZELLE		0x24	/* Spartacus, some 5xxx/6xxx */
@@ -379,6 +381,7 @@ extern struct macio_chip* macio_find(struct device_node* child, int type);
  * only like the platform function callbacks, do not use directly in drivers
  */
 extern spinlock_t feature_lock;
+extern raw_spinlock_t feature_lock;
 extern struct device_node *uninorth_node;
 extern u32 __iomem *uninorth_base;
 

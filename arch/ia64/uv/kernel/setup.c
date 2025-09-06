@@ -19,6 +19,12 @@ EXPORT_PER_CPU_SYMBOL_GPL(__uv_hub_info);
 
 #ifdef CONFIG_IA64_SGI_UV
 int sn_prom_type;
+long sn_partition_id;
+EXPORT_SYMBOL(sn_partition_id);
+long sn_coherency_id;
+EXPORT_SYMBOL_GPL(sn_coherency_id);
+long sn_region_size;
+EXPORT_SYMBOL(sn_region_size);
 #endif
 
 struct redir_addr {
@@ -99,6 +105,7 @@ void __init uv_setup(char **cmdline_p)
 			lowmem_redir_base + lowmem_redir_size;
 		uv_cpu_hub_info(cpu)->m_val = m_val;
 		uv_cpu_hub_info(cpu)->n_val = m_val;
+		uv_cpu_hub_info(cpu)->n_val = n_val;
 		uv_cpu_hub_info(cpu)->pnode_mask = (1 << n_val) -1;
 		uv_cpu_hub_info(cpu)->gpa_mask = (1 << (m_val + n_val)) - 1;
 		uv_cpu_hub_info(cpu)->gnode_upper = gnode_upper;

@@ -36,6 +36,7 @@
 .file "aes-i586-asm.S"
 .text
 
+#include <linux/linkage.h>
 #include <asm/asm-offsets.h>
 
 #define tlen 1024   // length of each of 4 'xor' arrays (256 32-bit words)
@@ -49,6 +50,14 @@
 #define klen (crypto_tfm_ctx_offset + 0)
 #define ekey (crypto_tfm_ctx_offset + 4)
 #define dkey (crypto_tfm_ctx_offset + 244)
+#define ctx 8
+#define out_blk 12
+#define in_blk 16
+
+/* offsets in crypto_aes_ctx structure */
+#define klen (480)
+#define ekey (0)
+#define dkey (240)
 
 // register mapping for encrypt and decrypt subroutines
 
@@ -220,6 +229,7 @@
 /* void aes_enc_blk(struct crypto_tfm *tfm, u8 *out_blk, const u8 *in_blk) */
 
 .global  aes_enc_blk
+/* void aes_enc_blk(struct crypto_aes_ctx *ctx, u8 *out_blk, const u8 *in_blk) */
 
 .extern  crypto_ft_tab
 .extern  crypto_fl_tab
@@ -229,6 +239,9 @@
 aes_enc_blk:
 	push    %ebp
 	mov     tfm(%esp),%ebp
+ENTRY(aes_enc_blk)
+	push    %ebp
+	mov     ctx(%esp),%ebp
 
 // CAUTION: the order and the values used in these assigns 
 // rely on the register mappings
@@ -295,6 +308,10 @@ aes_enc_blk:
 /* void aes_dec_blk(struct crypto_tfm *tfm, u8 *out_blk, const u8 *in_blk) */
 
 .global  aes_dec_blk
+ENDPROC(aes_enc_blk)
+
+// AES (Rijndael) Decryption Subroutine
+/* void aes_dec_blk(struct crypto_aes_ctx *ctx, u8 *out_blk, const u8 *in_blk) */
 
 .extern  crypto_it_tab
 .extern  crypto_il_tab
@@ -304,6 +321,9 @@ aes_enc_blk:
 aes_dec_blk:
 	push    %ebp
 	mov     tfm(%esp),%ebp
+ENTRY(aes_dec_blk)
+	push    %ebp
+	mov     ctx(%esp),%ebp
 
 // CAUTION: the order and the values used in these assigns 
 // rely on the register mappings
@@ -365,3 +385,4 @@ aes_dec_blk:
 	mov     %r0,(%ebp)
 	pop     %ebp
 	ret
+ENDPROC(aes_dec_blk)

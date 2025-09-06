@@ -30,6 +30,7 @@ extern unsigned long tb_ticks_per_usec;
 extern unsigned long tb_ticks_per_sec;
 extern u64 tb_to_xs;
 extern unsigned      tb_to_us;
+extern struct clock_event_device decrementer_clockevent;
 
 struct rtc_time;
 extern void to_tm(int tim, struct rtc_time * tm);
@@ -39,6 +40,9 @@ extern time_t last_rtc_update;
 extern void generic_calibrate_decr(void);
 extern void wakeup_decrementer(void);
 extern void snapshot_timebase(void);
+extern void tick_broadcast_ipi_handler(void);
+
+extern void generic_calibrate_decr(void);
 
 extern void set_dec_cpu6(unsigned int val);
 
@@ -128,6 +132,15 @@ static inline u64 get_rtc(void)
 			     : "=r" (hi), "=r" (lo), "=r" (hi2));
 	} while (hi2 != hi);
 	return (u64)hi * 1000000000 + lo;
+}
+
+static inline u64 get_vtb(void)
+{
+#ifdef CONFIG_PPC_BOOK3S_64
+	if (cpu_has_feature(CPU_FTR_ARCH_207S))
+		return mfvtb();
+#endif
+	return 0;
 }
 
 #ifdef CONFIG_PPC64
@@ -250,6 +263,12 @@ extern void snapshot_timebases(void);
 
 extern void secondary_cpu_time_init(void);
 extern void iSeries_time_init_early(void);
+extern void secondary_cpu_time_init(void);
+
+DECLARE_PER_CPU(u64, decrementers_next_tb);
+
+/* Convert timebase ticks to nanoseconds */
+unsigned long long tb_to_ns(unsigned long long tb_ticks);
 
 #endif /* __KERNEL__ */
 #endif /* __POWERPC_TIME_H */

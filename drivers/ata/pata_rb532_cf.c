@@ -19,6 +19,7 @@
  *
  */
 
+#include <linux/gfp.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
@@ -26,11 +27,13 @@
 #include <linux/io.h>
 #include <linux/interrupt.h>
 #include <linux/irq.h>
+#include <linux/gpio.h>
 
 #include <linux/libata.h>
 #include <scsi/scsi_host.h>
 
 #include <asm/gpio.h>
+#include <asm/mach-rc32434/rb.h>
 
 #define DRV_NAME	"pata-rb532-cf"
 #define DRV_VERSION	"0.1.0"
@@ -42,6 +45,11 @@
 #define RB500_CF_REG_CMD	0x0800
 #define RB500_CF_REG_CTRL	0x080E
 #define RB500_CF_REG_DATA	0x0C00
+#define RB500_CF_REG_BASE	0x0800
+#define RB500_CF_REG_ERR	0x080D
+#define RB500_CF_REG_CTRL	0x080E
+/* 32bit buffered data register offset */
+#define RB500_CF_REG_DBUF32	0x0C00
 
 struct rb532_cf_info {
 	void __iomem	*iobase;
@@ -114,6 +122,10 @@ static irqreturn_t rb532_pata_irq_handler(int irq, void *dev_instance)
 			ata_sff_interrupt(info->irq, dev_instance);
 	} else {
 		set_irq_type(info->irq, IRQ_TYPE_LEVEL_HIGH);
+		irq_set_irq_type(info->irq, IRQ_TYPE_LEVEL_LOW);
+		ata_sff_interrupt(info->irq, dev_instance);
+	} else {
+		irq_set_irq_type(info->irq, IRQ_TYPE_LEVEL_HIGH);
 	}
 
 	return IRQ_HANDLED;
@@ -125,6 +137,7 @@ static struct ata_port_operations rb532_pata_port_ops = {
 	.sff_data_xfer		= rb532_pata_data_xfer,
 	.freeze			= rb532_pata_freeze,
 	.thaw			= rb532_pata_thaw,
+	.sff_data_xfer		= ata_sff_data_xfer32,
 };
 
 /* ------------------------------------------------------------------------ */
@@ -147,6 +160,9 @@ static void rb532_pata_setup_ports(struct ata_host *ah)
 	ap->flags	= ATA_FLAG_NO_LEGACY | ATA_FLAG_MMIO;
 
 	ap->ioaddr.cmd_addr	= info->iobase + RB500_CF_REG_CMD;
+	ap->pio_mask	= ATA_PIO4;
+
+	ap->ioaddr.cmd_addr	= info->iobase + RB500_CF_REG_BASE;
 	ap->ioaddr.ctl_addr	= info->iobase + RB500_CF_REG_CTRL;
 	ap->ioaddr.altstatus_addr = info->iobase + RB500_CF_REG_CTRL;
 
@@ -158,9 +174,17 @@ static void rb532_pata_setup_ports(struct ata_host *ah)
 static __devinit int rb532_pata_driver_probe(struct platform_device *pdev)
 {
 	unsigned int irq;
+	ap->ioaddr.data_addr	= info->iobase + RB500_CF_REG_DBUF32;
+	ap->ioaddr.error_addr	= info->iobase + RB500_CF_REG_ERR;
+}
+
+static int rb532_pata_driver_probe(struct platform_device *pdev)
+{
+	int irq;
 	int gpio;
 	struct resource *res;
 	struct ata_host *ah;
+	struct cf_device *pdata;
 	struct rb532_cf_info *info;
 	int ret;
 
@@ -171,12 +195,20 @@ static __devinit int rb532_pata_driver_probe(struct platform_device *pdev)
 	}
 
 	irq = platform_get_irq(pdev, 0);
-	if (irq <= 0) {
+	if (irq < 0) {
 		dev_err(&pdev->dev, "no IRQ resource found\n");
-		return -ENOENT;
+		return irq;
+	}
+	if (!irq)
+		return -EINVAL;
+
+	pdata = dev_get_platdata(&pdev->dev);
+	if (!pdata) {
+		dev_err(&pdev->dev, "no platform data specified\n");
+		return -EINVAL;
 	}
 
-	gpio = irq_to_gpio(irq);
+	gpio = pdata->gpio_pin;
 	if (gpio < 0) {
 		dev_err(&pdev->dev, "no GPIO found for irq%d\n", irq);
 		return -ENOENT;
@@ -205,6 +237,7 @@ static __devinit int rb532_pata_driver_probe(struct platform_device *pdev)
 
 	info->iobase = devm_ioremap_nocache(&pdev->dev, res->start,
 				res->end - res->start + 1);
+				resource_size(res));
 	if (!info->iobase)
 		return -ENOMEM;
 
@@ -231,6 +264,7 @@ err_free_gpio:
 }
 
 static __devexit int rb532_pata_driver_remove(struct platform_device *pdev)
+static int rb532_pata_driver_remove(struct platform_device *pdev)
 {
 	struct ata_host *ah = platform_get_drvdata(pdev);
 	struct rb532_cf_info *info = ah->private_data;
@@ -268,6 +302,17 @@ static void __exit rb532_pata_module_exit(void)
 {
 	platform_driver_unregister(&rb532_pata_platform_driver);
 }
+static struct platform_driver rb532_pata_platform_driver = {
+	.probe		= rb532_pata_driver_probe,
+	.remove		= rb532_pata_driver_remove,
+	.driver	 = {
+		.name   = DRV_NAME,
+	},
+};
+
+#define DRV_INFO DRV_DESC " version " DRV_VERSION
+
+module_platform_driver(rb532_pata_platform_driver);
 
 MODULE_AUTHOR("Gabor Juhos <juhosg at openwrt.org>");
 MODULE_AUTHOR("Florian Fainelli <florian@openwrt.org>");
@@ -277,3 +322,4 @@ MODULE_LICENSE("GPL");
 
 module_init(rb532_pata_module_init);
 module_exit(rb532_pata_module_exit);
+MODULE_ALIAS("platform:" DRV_NAME);

@@ -35,6 +35,21 @@
 	} while((lp)->lock)
 
 static inline void __raw_spin_lock(raw_spinlock_t *lock)
+/* Because we play games to save cycles in the non-contention case, we
+ * need to be extra careful about branch targets into the "spinning"
+ * code.  They live in their own section, but the newer V9 branches
+ * have a shorter range than the traditional 32-bit sparc branch
+ * variants.  The rule is that the branches that go into and out of
+ * the spinner sections must be pre-V9 branches.
+ */
+
+#define arch_spin_is_locked(lp)	((lp)->lock != 0)
+
+#define arch_spin_unlock_wait(lp)	\
+	do {	rmb();			\
+	} while((lp)->lock)
+
+static inline void arch_spin_lock(arch_spinlock_t *lock)
 {
 	unsigned long tmp;
 
@@ -56,6 +71,7 @@ static inline void __raw_spin_lock(raw_spinlock_t *lock)
 }
 
 static inline int __raw_spin_trylock(raw_spinlock_t *lock)
+static inline int arch_spin_trylock(arch_spinlock_t *lock)
 {
 	unsigned long result;
 
@@ -73,6 +89,9 @@ static inline void __raw_spin_unlock(raw_spinlock_t *lock)
 {
 	__asm__ __volatile__(
 "	membar		#StoreStore | #LoadStore\n"
+static inline void arch_spin_unlock(arch_spinlock_t *lock)
+{
+	__asm__ __volatile__(
 "	stb		%%g0, [%0]"
 	: /* No outputs */
 	: "r" (lock)
@@ -80,6 +99,7 @@ static inline void __raw_spin_unlock(raw_spinlock_t *lock)
 }
 
 static inline void __raw_spin_lock_flags(raw_spinlock_t *lock, unsigned long flags)
+static inline void arch_spin_lock_flags(arch_spinlock_t *lock, unsigned long flags)
 {
 	unsigned long tmp1, tmp2;
 
@@ -106,6 +126,7 @@ static inline void __raw_spin_lock_flags(raw_spinlock_t *lock, unsigned long fla
 /* Multi-reader locks, these are much saner than the 32-bit Sparc ones... */
 
 static void inline __read_lock(raw_rwlock_t *lock)
+static void inline arch_read_lock(arch_rwlock_t *lock)
 {
 	unsigned long tmp1, tmp2;
 
@@ -131,6 +152,7 @@ static void inline __read_lock(raw_rwlock_t *lock)
 }
 
 static int inline __read_trylock(raw_rwlock_t *lock)
+static int inline arch_read_trylock(arch_rwlock_t *lock)
 {
 	int tmp1, tmp2;
 
@@ -153,6 +175,7 @@ static int inline __read_trylock(raw_rwlock_t *lock)
 }
 
 static void inline __read_unlock(raw_rwlock_t *lock)
+static void inline arch_read_unlock(arch_rwlock_t *lock)
 {
 	unsigned long tmp1, tmp2;
 
@@ -170,6 +193,7 @@ static void inline __read_unlock(raw_rwlock_t *lock)
 }
 
 static void inline __write_lock(raw_rwlock_t *lock)
+static void inline arch_write_lock(arch_rwlock_t *lock)
 {
 	unsigned long mask, tmp1, tmp2;
 
@@ -200,6 +224,9 @@ static void inline __write_unlock(raw_rwlock_t *lock)
 {
 	__asm__ __volatile__(
 "	membar		#LoadStore | #StoreStore\n"
+static void inline arch_write_unlock(arch_rwlock_t *lock)
+{
+	__asm__ __volatile__(
 "	stw		%%g0, [%0]"
 	: /* no outputs */
 	: "r" (lock)
@@ -207,6 +234,7 @@ static void inline __write_unlock(raw_rwlock_t *lock)
 }
 
 static int inline __write_trylock(raw_rwlock_t *lock)
+static int inline arch_write_trylock(arch_rwlock_t *lock)
 {
 	unsigned long mask, tmp1, tmp2, result;
 
@@ -244,6 +272,15 @@ static int inline __write_trylock(raw_rwlock_t *lock)
 #define _raw_spin_relax(lock)	cpu_relax()
 #define _raw_read_relax(lock)	cpu_relax()
 #define _raw_write_relax(lock)	cpu_relax()
+#define arch_read_lock_flags(p, f) arch_read_lock(p)
+#define arch_write_lock_flags(p, f) arch_write_lock(p)
+
+#define arch_read_can_lock(rw)		(!((rw)->lock & 0x80000000UL))
+#define arch_write_can_lock(rw)	(!(rw)->lock)
+
+#define arch_spin_relax(lock)	cpu_relax()
+#define arch_read_relax(lock)	cpu_relax()
+#define arch_write_relax(lock)	cpu_relax()
 
 #endif /* !(__ASSEMBLY__) */
 

@@ -19,6 +19,11 @@
 #include "sigio.h"
 #include "um_malloc.h"
 #include "user.h"
+#include <kern_util.h>
+#include <init.h>
+#include <os.h>
+#include <sigio.h>
+#include <um_malloc.h>
 
 /*
  * Protected by sigio_lock(), also used by sigio_cleanup, which is an
@@ -59,6 +64,7 @@ static int write_sigio_thread(void *unused)
 	char c;
 
 	signal(SIGWINCH, SIG_IGN);
+	os_fix_helper_signals();
 	fds = &current_poll;
 	while (1) {
 		n = poll(fds->poll, fds->used, -1);

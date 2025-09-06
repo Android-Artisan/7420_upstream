@@ -37,6 +37,22 @@ typedef struct {
 } per_struct32;
 
 struct user_regs_struct32
+#include <asm/ptrace.h>    /* needed for NUM_CR_WORDS */
+#include "compat_linux.h"  /* needed for psw_compat_t */
+
+struct compat_per_struct_kernel {
+	__u32 cr9;		/* PER control bits */
+	__u32 cr10;		/* PER starting address */
+	__u32 cr11;		/* PER ending address */
+	__u32 bits;		/* Obsolete software bits */
+	__u32 starting_addr;	/* User specified start address */
+	__u32 ending_addr;	/* User specified end address */
+	__u16 perc_atmid;	/* PER trap ATMID */
+	__u32 address;		/* PER trap instruction address */
+	__u8  access_id;	/* PER trap access identification */
+};
+
+struct compat_user_regs_struct
 {
 	psw_compat_t psw;
 	u32 gprs[NUM_GPRS];
@@ -58,6 +74,14 @@ struct user32 {
 	/* We start with the registers, to mimic the way that "memory"
 	   is returned from the ptrace(3,...) function.  */
 	struct user_regs_struct32 regs; /* Where the registers are actually stored */
+	struct compat_per_struct_kernel per_info;
+	u32  ieee_instruction_pointer;	/* obsolete, always 0 */
+};
+
+struct compat_user {
+	/* We start with the registers, to mimic the way that "memory"
+	   is returned from the ptrace(3,...) function.  */
+	struct compat_user_regs_struct regs;
 	/* The rest of this junk is to help gdb figure out what goes where */
 	u32 u_tsize;		/* Text segment size (pages). */
 	u32 u_dsize;	        /* Data segment size (pages). */
@@ -80,5 +104,6 @@ typedef struct
 	__u32   kernel_addr;
 	__u32   process_addr;
 } ptrace_area_emu31;
+} compat_ptrace_area;
 
 #endif /* _PTRACE32_H */

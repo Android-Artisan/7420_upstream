@@ -4,6 +4,7 @@
  *
  * Basically physmap.c with the addition of partitions and
  * an array of mapping info to accomodate more than one flash type per board.
+ * an array of mapping info to accommodate more than one flash type per board.
  *
  * Copyright 2005-2007 PMC-Sierra, Inc.
  *
@@ -28,6 +29,7 @@
  *  675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
+#include <linux/slab.h>
 #include <linux/module.h>
 #include <linux/types.h>
 #include <linux/kernel.h>
@@ -51,6 +53,9 @@ static int fcnt;
 int __init init_msp_flash(void)
 {
 	int i, j;
+static int __init init_msp_flash(void)
+{
+	int i, j, ret = -ENOMEM;
 	int offset, coff;
 	char *env;
 	int pcnt;
@@ -83,6 +88,17 @@ int __init init_msp_flash(void)
 		kfree(msp_flash);
 		return -ENOMEM;
 	}
+	msp_flash = kcalloc(fcnt, sizeof(*msp_flash), GFP_KERNEL);
+	if (!msp_flash)
+		return -ENOMEM;
+
+	msp_parts = kcalloc(fcnt, sizeof(*msp_parts), GFP_KERNEL);
+	if (!msp_parts)
+		goto free_msp_flash;
+
+	msp_maps = kcalloc(fcnt, sizeof(*msp_maps), GFP_KERNEL);
+	if (!msp_maps)
+		goto free_msp_parts;
 
 	/* loop over the flash devices, initializing each */
 	for (i = 0; i < fcnt; i++) {
@@ -100,6 +116,8 @@ int __init init_msp_flash(void)
 
 		msp_parts[i] = kcalloc(pcnt, sizeof(struct mtd_partition),
 				       GFP_KERNEL);
+		if (!msp_parts[i])
+			goto cleanup_loop;
 
 		/* now initialize the devices proper */
 		flash_name[5] = '0' + i;
@@ -107,6 +125,11 @@ int __init init_msp_flash(void)
 
 		if (sscanf(env, "%x:%x", &addr, &size) < 2)
 			return -ENXIO;
+		if (sscanf(env, "%x:%x", &addr, &size) < 2) {
+			ret = -ENXIO;
+			kfree(msp_parts[i]);
+			goto cleanup_loop;
+		}
 		addr = CPHYSADDR(addr);
 
 		printk(KERN_NOTICE
@@ -130,6 +153,21 @@ int __init init_msp_flash(void)
 		if (msp_maps[i].virt == NULL)
 			return -ENXIO;
 
+		msp_maps[i].virt = ioremap(addr, size);
+		if (msp_maps[i].virt == NULL) {
+			ret = -ENXIO;
+			kfree(msp_parts[i]);
+			goto cleanup_loop;
+		}
+
+		msp_maps[i].bankwidth = 1;
+		msp_maps[i].name = kstrndup(flash_name, 7, GFP_KERNEL);
+		if (!msp_maps[i].name) {
+			iounmap(msp_maps[i].virt);
+			kfree(msp_parts[i]);
+			goto cleanup_loop;
+		}
+
 		for (j = 0; j < pcnt; j++) {
 			part_name[5] = '0' + i;
 			part_name[7] = '0' + j;
@@ -138,6 +176,14 @@ int __init init_msp_flash(void)
 
 			if (sscanf(env, "%x:%x:%n", &offset, &size, &coff) < 2)
 				return -ENXIO;
+			if (sscanf(env, "%x:%x:%n", &offset, &size,
+						&coff) < 2) {
+				ret = -ENXIO;
+				kfree(msp_maps[i].name);
+				iounmap(msp_maps[i].virt);
+				kfree(msp_parts[i]);
+				goto cleanup_loop;
+			}
 
 			msp_parts[i][j].size = size;
 			msp_parts[i][j].offset = offset;
@@ -153,10 +199,33 @@ int __init init_msp_flash(void)
 		} else {
 			printk(KERN_ERR "map probe failed for flash\n");
 			return -ENXIO;
+			mtd_device_register(msp_flash[i], msp_parts[i], pcnt);
+		} else {
+			printk(KERN_ERR "map probe failed for flash\n");
+			ret = -ENXIO;
+			kfree(msp_maps[i].name);
+			iounmap(msp_maps[i].virt);
+			kfree(msp_parts[i]);
+			goto cleanup_loop;
 		}
 	}
 
 	return 0;
+
+cleanup_loop:
+	while (i--) {
+		mtd_device_unregister(msp_flash[i]);
+		map_destroy(msp_flash[i]);
+		kfree(msp_maps[i].name);
+		iounmap(msp_maps[i].virt);
+		kfree(msp_parts[i]);
+	}
+	kfree(msp_maps);
+free_msp_parts:
+	kfree(msp_parts);
+free_msp_flash:
+	kfree(msp_flash);
+	return ret;
 }
 
 static void __exit cleanup_msp_flash(void)
@@ -165,6 +234,8 @@ static void __exit cleanup_msp_flash(void)
 
 	for (i = 0; i < sizeof(msp_flash) / sizeof(struct mtd_info **); i++) {
 		del_mtd_partitions(msp_flash[i]);
+	for (i = 0; i < fcnt; i++) {
+		mtd_device_unregister(msp_flash[i]);
 		map_destroy(msp_flash[i]);
 		iounmap((void *)msp_maps[i].virt);
 

@@ -4,6 +4,7 @@
  *  Copyright (C) 1998  D. Jeff Dionne <jeff@lineo.ca>,
  *                      Kenneth Albanowski <kjahds@kjahds.com>,
  *  Copyright (C) 2000  Lineo, Inc.  (www.lineo.com) 
+ *  Copyright (C) 2000  Lineo, Inc.  (www.lineo.com)
  *
  *  Based on:
  *
@@ -31,6 +32,7 @@
 #include <linux/pagemap.h>
 #include <linux/bootmem.h>
 #include <linux/slab.h>
+#include <linux/gfp.h>
 
 #include <asm/setup.h>
 #include <asm/segment.h>
@@ -39,6 +41,7 @@
 #include <asm/system.h>
 
 #undef DEBUG
+#include <asm/sections.h>
 
 /*
  * BAD_PAGE is the page that is used for page faults when linux
@@ -64,6 +67,9 @@ extern unsigned long rom_length;
 extern unsigned long memory_start;
 extern unsigned long memory_end;
 
+static unsigned long empty_bad_page;
+unsigned long empty_zero_page;
+
 /*
  * paging_init() continues the virtual memory environment setup which
  * was begun by the code in arch/head.S.
@@ -85,6 +91,11 @@ void __init paging_init(void)
 	printk ("start_mem is %#lx\nvirtual_end is %#lx\n",
 		start_mem, end_mem);
 #endif
+	unsigned long start_mem = PAGE_ALIGN(memory_start);
+	unsigned long end_mem   = memory_end & PAGE_MASK;
+
+	pr_debug("start_mem is %#lx\nvirtual_end is %#lx\n",
+		 start_mem, end_mem);
 
 	/*
 	 * Initialize the bad page table and bad page to point
@@ -106,6 +117,12 @@ void __init paging_init(void)
 	printk ("free_area_init -> start_mem is %#lx\nvirtual_end is %#lx\n",
 		start_mem, end_mem);
 #endif
+	set_fs(USER_DS);
+
+	pr_debug("before free_area_init\n");
+
+	pr_debug("free_area_init -> start_mem is %#lx\nvirtual_end is %#lx\n",
+		 start_mem, end_mem);
 
 	{
 		unsigned long zones_size[MAX_NR_ZONES] = {0, };
@@ -115,6 +132,7 @@ void __init paging_init(void)
 #ifdef CONFIG_HIGHMEM
 		zones_size[ZONE_HIGHMEM] = 0;
 #endif
+		zones_size[ZONE_NORMAL] = (end_mem - PAGE_OFFSET) >> PAGE_SHIFT;
 		free_area_init(zones_size);
 	}
 }
@@ -156,6 +174,15 @@ void __init mem_init(void)
 	       codek,
 	       datak
 	       );
+	pr_devel("Mem_init: start=%lx, end=%lx\n", memory_start, memory_end);
+
+	high_memory = (void *) (memory_end & PAGE_MASK);
+	max_mapnr = MAP_NR(high_memory);
+
+	/* this will put all low memory onto the freelists */
+	free_all_bootmem();
+
+	mem_init_print_info(NULL);
 }
 
 
@@ -171,6 +198,7 @@ void free_initrd_mem(unsigned long start, unsigned long end)
 		pages++;
 	}
 	printk ("Freeing initrd memory: %dk freed\n", pages);
+	free_reserved_area((void *)start, (void *)end, -1, "initrd");
 }
 #endif
 
@@ -199,3 +227,5 @@ free_initmem(void)
 #endif
 }
 
+	free_initmem_default(-1);
+}

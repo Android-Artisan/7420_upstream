@@ -22,6 +22,7 @@
  */
 
 #include <linux/kthread.h>
+#include <linux/slab.h>
 
 #include "c67x00.h"
 #include "c67x00-hcd.h"
@@ -100,6 +101,7 @@ struct c67x00_urb_priv {
 #define TD_PIDEPMASK_PID	0xF0
 #define TD_PIDEPMASK_EP		0x0F
 #define TD_PORTLENMASK_DL	0x02FF
+#define TD_PORTLENMASK_DL	0x03FF
 #define TD_PORTLENMASK_PN	0xC000
 
 #define TD_STATUS_OFFSET	0x07
@@ -175,6 +177,8 @@ static inline void
 dbg_td(struct c67x00_hcd *c67x00, struct c67x00_td *td, char *msg) { }
 
 #endif				/* DEBUG */
+	dev_dbg(dev, "data: %*ph\n", td_length(td), td->data);
+}
 
 /* -------------------------------------------------------------------------- */
 /* Helper functions */
@@ -344,6 +348,7 @@ void c67x00_endpoint_disable(struct usb_hcd *hcd, struct usb_host_endpoint *ep)
 		 * somebody was waiting for that completion.  The timeout and
 		 * while loop handle such cases, but this might be improved */
 		INIT_COMPLETION(c67x00->endpoint_disable);
+		reinit_completion(&c67x00->endpoint_disable);
 		c67x00_sched_kick(c67x00);
 		wait_for_completion_timeout(&c67x00->endpoint_disable, 1 * HZ);
 
@@ -370,6 +375,13 @@ int c67x00_urb_enqueue(struct usb_hcd *hcd,
 	struct c67x00_urb_priv *urbp;
 	struct c67x00_hcd *c67x00 = hcd_to_c67x00_hcd(hcd);
 	int port = get_root_port(urb->dev)-1;
+
+	/* Allocate and initialize urb private data */
+	urbp = kzalloc(sizeof(*urbp), mem_flags);
+	if (!urbp) {
+		ret = -ENOMEM;
+		goto err_urbp;
+	}
 
 	spin_lock_irqsave(&c67x00->lock, flags);
 
@@ -457,6 +469,11 @@ err_urbp:
 	usb_hcd_unlink_urb_from_ep(hcd, urb);
 err_not_linked:
 	spin_unlock_irqrestore(&c67x00->lock, flags);
+	usb_hcd_unlink_urb_from_ep(hcd, urb);
+err_not_linked:
+	spin_unlock_irqrestore(&c67x00->lock, flags);
+	kfree(urbp);
+err_urbp:
 
 	return ret;
 }
@@ -509,7 +526,7 @@ c67x00_giveback_urb(struct c67x00_hcd *c67x00, struct urb *urb, int status)
 	c67x00_release_urb(c67x00, urb);
 	usb_hcd_unlink_urb_from_ep(c67x00_hcd_to_hcd(c67x00), urb);
 	spin_unlock(&c67x00->lock);
-	usb_hcd_giveback_urb(c67x00_hcd_to_hcd(c67x00), urb, urbp->status);
+	usb_hcd_giveback_urb(c67x00_hcd_to_hcd(c67x00), urb, status);
 	spin_lock(&c67x00->lock);
 }
 
@@ -590,6 +607,7 @@ static int c67x00_create_td(struct c67x00_hcd *c67x00, struct urb *urb,
 	struct c67x00_td *td;
 	struct c67x00_urb_priv *urbp = urb->hcpriv;
 	const __u8 active_flag = 1, retry_cnt = 1;
+	const __u8 active_flag = 1, retry_cnt = 3;
 	__u8 cmd = 0;
 	int tt = 0;
 
@@ -780,6 +798,8 @@ static int c67x00_add_iso_urb(struct c67x00_hcd *c67x00, struct urb *urb)
 				       urbp->cnt);
 		if (ret) {
 			printk(KERN_DEBUG "create failed: %d\n", ret);
+			dev_dbg(c67x00_hcd_dev(c67x00), "create failed: %d\n",
+				ret);
 			urb->iso_frame_desc[urbp->cnt].actual_length = 0;
 			urb->iso_frame_desc[urbp->cnt].status = ret;
 			if (urbp->cnt + 1 == urb->number_of_packets)
@@ -907,6 +927,7 @@ static inline int c67x00_end_of_data(struct c67x00_td *td)
 /* Remove all td's from the list which come
  * after last_td and are meant for the same pipe.
  * This is used when a short packet has occured */
+ * This is used when a short packet has occurred */
 static inline void c67x00_clear_pipe(struct c67x00_hcd *c67x00,
 				     struct c67x00_td *last_td)
 {

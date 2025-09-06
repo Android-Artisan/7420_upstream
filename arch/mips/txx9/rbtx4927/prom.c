@@ -3,6 +3,7 @@
  *
  * Author: MontaVista Software, Inc.
  *         source@mvista.com
+ *	   source@mvista.com
  *
  * Copyright 2001-2002 MontaVista Software Inc.
  *

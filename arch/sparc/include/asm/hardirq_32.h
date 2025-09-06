@@ -19,5 +19,6 @@ typedef struct {
 #include <linux/irq_cpustat.h>	/* Standard mappings for irq_cpustat_t above */
 
 #define HARDIRQ_BITS    8
+#include <asm-generic/hardirq.h>
 
 #endif /* __SPARC_HARDIRQ_H */

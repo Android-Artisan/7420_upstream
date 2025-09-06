@@ -34,7 +34,6 @@
 
 /*
  * TRM-290 PCI-IDE2 Bus Master Chip
- * ================================
  * The configuration registers are addressed in normal I/O port space
  * and are used as follows:
  *

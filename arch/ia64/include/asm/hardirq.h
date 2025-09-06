@@ -29,6 +29,10 @@
 #if (1 << HARDIRQ_BITS) < NR_IRQS
 # error HARDIRQ_BITS is too low!
 #endif
+#include <linux/threads.h>
+#include <linux/irq.h>
+
+#include <asm/processor.h>
 
 extern void __iomem *ipi_base_addr;
 

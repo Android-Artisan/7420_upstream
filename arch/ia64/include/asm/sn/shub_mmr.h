@@ -10,10 +10,8 @@
 #ifndef _ASM_IA64_SN_SHUB_MMR_H
 #define _ASM_IA64_SN_SHUB_MMR_H
 
-/* ==================================================================== */
 /*                        Register "SH_IPI_INT"                         */
 /*               SHub Inter-Processor Interrupt Registers               */
-/* ==================================================================== */
 #define SH1_IPI_INT			__IA64_UL_CONST(0x0000000110000380)
 #define SH2_IPI_INT			__IA64_UL_CONST(0x0000000010000380)
 
@@ -47,41 +45,31 @@
 #define SH_IPI_INT_SEND_SHFT				63
 #define SH_IPI_INT_SEND_MASK		__IA64_UL_CONST(0x8000000000000000)
 
-/* ==================================================================== */
 /*                     Register "SH_EVENT_OCCURRED"                     */
 /*                    SHub Interrupt Event Occurred                     */
-/* ==================================================================== */
 #define SH1_EVENT_OCCURRED		__IA64_UL_CONST(0x0000000110010000)
 #define SH1_EVENT_OCCURRED_ALIAS	__IA64_UL_CONST(0x0000000110010008)
 #define SH2_EVENT_OCCURRED		__IA64_UL_CONST(0x0000000010010000)
 #define SH2_EVENT_OCCURRED_ALIAS 	__IA64_UL_CONST(0x0000000010010008)
 
-/* ==================================================================== */
 /*                     Register "SH_PI_CAM_CONTROL"                     */
 /*                      CRB CAM MMR Access Control                      */
-/* ==================================================================== */
 #define SH1_PI_CAM_CONTROL		__IA64_UL_CONST(0x0000000120050300)
 
-/* ==================================================================== */
 /*                        Register "SH_SHUB_ID"                         */
 /*                            SHub ID Number                            */
-/* ==================================================================== */
 #define SH1_SHUB_ID			__IA64_UL_CONST(0x0000000110060580)
 #define SH1_SHUB_ID_REVISION_SHFT			28
 #define SH1_SHUB_ID_REVISION_MASK	__IA64_UL_CONST(0x00000000f0000000)
 
-/* ==================================================================== */
 /*                          Register "SH_RTC"                           */
 /*                           Real-time Clock                            */
-/* ==================================================================== */
 #define SH1_RTC				__IA64_UL_CONST(0x00000001101c0000)
 #define SH2_RTC				__IA64_UL_CONST(0x00000002101c0000)
 #define SH_RTC_MASK			__IA64_UL_CONST(0x007fffffffffffff)
 
-/* ==================================================================== */
 /*                   Register "SH_PIO_WRITE_STATUS_0|1"                 */
 /*                      PIO Write Status for CPU 0 & 1                  */
-/* ==================================================================== */
 #define SH1_PIO_WRITE_STATUS_0		__IA64_UL_CONST(0x0000000120070200)
 #define SH1_PIO_WRITE_STATUS_1		__IA64_UL_CONST(0x0000000120070280)
 #define SH2_PIO_WRITE_STATUS_0		__IA64_UL_CONST(0x0000000020070200)
@@ -101,16 +89,12 @@
 #define SH_PIO_WRITE_STATUS_PENDING_WRITE_COUNT_MASK \
 					__IA64_UL_CONST(0x3f00000000000000)
 
-/* ==================================================================== */
 /*                Register "SH_PIO_WRITE_STATUS_0_ALIAS"                */
-/* ==================================================================== */
 #define SH1_PIO_WRITE_STATUS_0_ALIAS	__IA64_UL_CONST(0x0000000120070208)
 #define SH2_PIO_WRITE_STATUS_0_ALIAS	__IA64_UL_CONST(0x0000000020070208)
 
-/* ==================================================================== */
 /*                     Register "SH_EVENT_OCCURRED"                     */
 /*                    SHub Interrupt Event Occurred                     */
-/* ==================================================================== */
 /*   SH_EVENT_OCCURRED_UART_INT                                         */
 /*   Description:  Pending Junk Bus UART Interrupt                      */
 #define SH_EVENT_OCCURRED_UART_INT_SHFT			20
@@ -148,9 +132,7 @@
 	 SH2_EVENT_OCCURRED_EXTIO_INT3_MASK)
 
 
-/* ==================================================================== */
 /*                         LEDS                                         */
-/* ==================================================================== */
 #define SH1_REAL_JUNK_BUS_LED0			0x7fed00000UL
 #define SH1_REAL_JUNK_BUS_LED1			0x7fed10000UL
 #define SH1_REAL_JUNK_BUS_LED2			0x7fed20000UL
@@ -161,10 +143,8 @@
 #define SH2_REAL_JUNK_BUS_LED2			0xf0020000UL
 #define SH2_REAL_JUNK_BUS_LED3			0xf0030000UL
 
-/* ==================================================================== */
 /*                         Register "SH1_PTC_0"                         */
 /*       Puge Translation Cache Message Configuration Information       */
-/* ==================================================================== */
 #define SH1_PTC_0			__IA64_UL_CONST(0x00000001101a0000)
 
 /*   SH1_PTC_0_A                                                        */
@@ -183,20 +163,16 @@
 /*   Description:  Start                                                */
 #define SH1_PTC_0_START_SHFT				63
 
-/* ==================================================================== */
 /*                         Register "SH1_PTC_1"                         */
 /*       Puge Translation Cache Message Configuration Information       */
-/* ==================================================================== */
 #define SH1_PTC_1			__IA64_UL_CONST(0x00000001101a0080)
 
 /*   SH1_PTC_1_START                                                    */
 /*   Description:  PTC_1 Start                                          */
 #define SH1_PTC_1_START_SHFT				63
 
-/* ==================================================================== */
 /*                         Register "SH2_PTC"                           */
 /*       Puge Translation Cache Message Configuration Information       */
-/* ==================================================================== */
 #define SH2_PTC				__IA64_UL_CONST(0x0000000170000000)
 
 /*   SH2_PTC_A                                                          */
@@ -220,10 +196,8 @@
 #define SH2_PTC_ADDR_SHFT				4
 #define SH2_PTC_ADDR_MASK		__IA64_UL_CONST(0x1ffffffffffff000)
 
-/* ==================================================================== */
 /*                    Register "SH_RTC1_INT_CONFIG"                     */
 /*                SHub RTC 1 Interrupt Config Registers                 */
-/* ==================================================================== */
 
 #define SH1_RTC1_INT_CONFIG		__IA64_UL_CONST(0x0000000110001480)
 #define SH2_RTC1_INT_CONFIG		__IA64_UL_CONST(0x0000000010001480)
@@ -255,10 +229,8 @@
 #define SH_RTC1_INT_CONFIG_IDX_SHFT			52
 #define SH_RTC1_INT_CONFIG_IDX_MASK	__IA64_UL_CONST(0x0ff0000000000000)
 
-/* ==================================================================== */
 /*                    Register "SH_RTC1_INT_ENABLE"                     */
 /*                SHub RTC 1 Interrupt Enable Registers                 */
-/* ==================================================================== */
 
 #define SH1_RTC1_INT_ENABLE		__IA64_UL_CONST(0x0000000110001500)
 #define SH2_RTC1_INT_ENABLE		__IA64_UL_CONST(0x0000000010001500)
@@ -271,10 +243,8 @@
 #define SH_RTC1_INT_ENABLE_RTC1_ENABLE_MASK \
 					__IA64_UL_CONST(0x0000000000000001)
 
-/* ==================================================================== */
 /*                    Register "SH_RTC2_INT_CONFIG"                     */
 /*                SHub RTC 2 Interrupt Config Registers                 */
-/* ==================================================================== */
 
 #define SH1_RTC2_INT_CONFIG		__IA64_UL_CONST(0x0000000110001580)
 #define SH2_RTC2_INT_CONFIG		__IA64_UL_CONST(0x0000000010001580)
@@ -306,10 +276,8 @@
 #define SH_RTC2_INT_CONFIG_IDX_SHFT			52
 #define SH_RTC2_INT_CONFIG_IDX_MASK	__IA64_UL_CONST(0x0ff0000000000000)
 
-/* ==================================================================== */
 /*                    Register "SH_RTC2_INT_ENABLE"                     */
 /*                SHub RTC 2 Interrupt Enable Registers                 */
-/* ==================================================================== */
 
 #define SH1_RTC2_INT_ENABLE		__IA64_UL_CONST(0x0000000110001600)
 #define SH2_RTC2_INT_ENABLE		__IA64_UL_CONST(0x0000000010001600)
@@ -322,10 +290,8 @@
 #define SH_RTC2_INT_ENABLE_RTC2_ENABLE_MASK \
 					__IA64_UL_CONST(0x0000000000000001)
 
-/* ==================================================================== */
 /*                    Register "SH_RTC3_INT_CONFIG"                     */
 /*                SHub RTC 3 Interrupt Config Registers                 */
-/* ==================================================================== */
 
 #define SH1_RTC3_INT_CONFIG		__IA64_UL_CONST(0x0000000110001680)
 #define SH2_RTC3_INT_CONFIG		__IA64_UL_CONST(0x0000000010001680)
@@ -357,10 +323,8 @@
 #define SH_RTC3_INT_CONFIG_IDX_SHFT			52
 #define SH_RTC3_INT_CONFIG_IDX_MASK	__IA64_UL_CONST(0x0ff0000000000000)
 
-/* ==================================================================== */
 /*                    Register "SH_RTC3_INT_ENABLE"                     */
 /*                SHub RTC 3 Interrupt Enable Registers                 */
-/* ==================================================================== */
 
 #define SH1_RTC3_INT_ENABLE		__IA64_UL_CONST(0x0000000110001700)
 #define SH2_RTC3_INT_ENABLE		__IA64_UL_CONST(0x0000000010001700)
@@ -388,10 +352,8 @@
 #define SH_EVENT_OCCURRED_RTC3_INT_SHFT			26
 #define SH_EVENT_OCCURRED_RTC3_INT_MASK	__IA64_UL_CONST(0x0000000004000000)
 
-/* ==================================================================== */
 /*                       Register "SH_IPI_ACCESS"                       */
 /*                 CPU interrupt Access Permission Bits                 */
-/* ==================================================================== */
 
 #define SH1_IPI_ACCESS			__IA64_UL_CONST(0x0000000110060480)
 #define SH2_IPI_ACCESS0			__IA64_UL_CONST(0x0000000010060c00)
@@ -399,10 +361,8 @@
 #define SH2_IPI_ACCESS2			__IA64_UL_CONST(0x0000000010060d00)
 #define SH2_IPI_ACCESS3			__IA64_UL_CONST(0x0000000010060d80)
 
-/* ==================================================================== */
 /*                        Register "SH_INT_CMPB"                        */
 /*                  RTC Compare Value for Processor B                   */
-/* ==================================================================== */
 
 #define SH1_INT_CMPB			__IA64_UL_CONST(0x00000001101b0080)
 #define SH2_INT_CMPB			__IA64_UL_CONST(0x00000000101b0080)
@@ -414,10 +374,8 @@
 #define SH_INT_CMPB_REAL_TIME_CMPB_SHFT			0
 #define SH_INT_CMPB_REAL_TIME_CMPB_MASK	__IA64_UL_CONST(0x007fffffffffffff)
 
-/* ==================================================================== */
 /*                        Register "SH_INT_CMPC"                        */
 /*                  RTC Compare Value for Processor C                   */
-/* ==================================================================== */
 
 #define SH1_INT_CMPC			__IA64_UL_CONST(0x00000001101b0100)
 #define SH2_INT_CMPC			__IA64_UL_CONST(0x00000000101b0100)
@@ -429,10 +387,8 @@
 #define SH_INT_CMPC_REAL_TIME_CMPC_SHFT			0
 #define SH_INT_CMPC_REAL_TIME_CMPC_MASK	__IA64_UL_CONST(0x007fffffffffffff)
 
-/* ==================================================================== */
 /*                        Register "SH_INT_CMPD"                        */
 /*                  RTC Compare Value for Processor D                   */
-/* ==================================================================== */
 
 #define SH1_INT_CMPD			__IA64_UL_CONST(0x00000001101b0180)
 #define SH2_INT_CMPD			__IA64_UL_CONST(0x00000000101b0180)
@@ -444,26 +400,21 @@
 #define SH_INT_CMPD_REAL_TIME_CMPD_SHFT			0
 #define SH_INT_CMPD_REAL_TIME_CMPD_MASK	__IA64_UL_CONST(0x007fffffffffffff)
 
-/* ==================================================================== */
 /*                Register "SH_MD_DQLP_MMR_DIR_PRIVEC0"                 */
 /*                      privilege vector for acc=0                      */
-/* ==================================================================== */
 #define SH1_MD_DQLP_MMR_DIR_PRIVEC0	__IA64_UL_CONST(0x0000000100030300)
 
-/* ==================================================================== */
 /*                Register "SH_MD_DQRP_MMR_DIR_PRIVEC0"                 */
 /*                      privilege vector for acc=0                      */
-/* ==================================================================== */
 #define SH1_MD_DQRP_MMR_DIR_PRIVEC0	__IA64_UL_CONST(0x0000000100050300)
 
-/* ==================================================================== */
 /* Some MMRs are functionally identical (or close enough) on both SHUB1 */
 /* and SHUB2 that it makes sense to define a geberic name for the MMR.  */
 /* It is acceptible to use (for example) SH_IPI_INT to reference the    */
+/* It is acceptable to use (for example) SH_IPI_INT to reference the    */
 /* the IPI MMR. The value of SH_IPI_INT is determined at runtime based  */
 /* on the type of the SHUB. Do not use these #defines in performance    */
 /* critical code  or loops - there is a small performance penalty.      */
-/* ==================================================================== */
 #define shubmmr(a,b) 		(is_shub2() ? a##2_##b : a##1_##b)
 
 #define SH_REAL_JUNK_BUS_LED0	shubmmr(SH, REAL_JUNK_BUS_LED0)
@@ -481,19 +432,15 @@
 #define SH_INT_CMPC		shubmmr(SH, INT_CMPC)
 #define SH_INT_CMPD		shubmmr(SH, INT_CMPD)
 
-/* ========================================================================== */
 /*                        Register "SH2_BT_ENG_CSR_0"                         */
 /*                    Engine 0 Control and Status Register                    */
-/* ========================================================================== */
 
 #define SH2_BT_ENG_CSR_0		__IA64_UL_CONST(0x0000000030040000)
 #define SH2_BT_ENG_SRC_ADDR_0		__IA64_UL_CONST(0x0000000030040080)
 #define SH2_BT_ENG_DEST_ADDR_0		__IA64_UL_CONST(0x0000000030040100)
 #define SH2_BT_ENG_NOTIF_ADDR_0		__IA64_UL_CONST(0x0000000030040180)
 
-/* ========================================================================== */
 /*                       BTE interfaces 1-3                                   */
-/* ========================================================================== */
 
 #define SH2_BT_ENG_CSR_1		__IA64_UL_CONST(0x0000000030050000)
 #define SH2_BT_ENG_CSR_2		__IA64_UL_CONST(0x0000000030060000)

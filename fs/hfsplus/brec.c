@@ -46,6 +46,25 @@ u16 hfs_brec_keylen(struct hfs_bnode *node, u16 rec)
 			retval = hfs_bnode_read_u16(node, recoff) + 2;
 		else
 			retval = (hfs_bnode_read_u8(node, recoff) | 1) + 1;
+	   !(node->tree->attributes & HFS_TREE_VARIDXKEYS) &&
+	   (node->tree->cnid != HFSPLUS_ATTR_CNID)) {
+		retval = node->tree->max_key_len + 2;
+	} else {
+		recoff = hfs_bnode_read_u16(node,
+			node->tree->node_size - (rec + 1) * 2);
+		if (!recoff)
+			return 0;
+		if (recoff > node->tree->node_size - 2) {
+			pr_err("recoff %d too large\n", recoff);
+			return 0;
+		}
+
+		retval = hfs_bnode_read_u16(node, recoff) + 2;
+		if (retval > node->tree->max_key_len + 2) {
+			pr_err("keylen %d too large\n",
+				retval);
+			retval = 0;
+		}
 	}
 	return retval;
 }
@@ -82,6 +101,8 @@ again:
 	end_off = hfs_bnode_read_u16(node, end_rec_off);
 	end_rec_off -= 2;
 	dprint(DBG_BNODE_MOD, "insert_rec: %d, %d, %d, %d\n", rec, size, end_off, end_rec_off);
+	hfs_dbg(BNODE_MOD, "insert_rec: %d, %d, %d, %d\n",
+		rec, size, end_off, end_rec_off);
 	if (size > end_rec_off - end_off) {
 		if (new_node)
 			panic("not enough room!\n");
@@ -97,6 +118,9 @@ again:
 	node->num_recs++;
 	/* write new last offset */
 	hfs_bnode_write_u16(node, offsetof(struct hfs_bnode_desc, num_recs), node->num_recs);
+	hfs_bnode_write_u16(node,
+		offsetof(struct hfs_bnode_desc, num_recs),
+		node->num_recs);
 	hfs_bnode_write_u16(node, end_rec_off, end_off + size);
 	data_off = end_off;
 	data_rec_off = end_rec_off + 2;
@@ -126,6 +150,16 @@ skip:
 		if (!rec && new_node != node)
 			hfs_brec_update_parent(fd);
 
+	/*
+	 * update parent key if we inserted a key
+	 * at the start of the node and it is not the new node
+	 */
+	if (!rec && new_node != node) {
+		hfs_bnode_read_key(node, fd->search_key, data_off + size);
+		hfs_brec_update_parent(fd);
+	}
+
+	if (new_node) {
 		hfs_bnode_put(fd->bnode);
 		if (!new_node->parent) {
 			hfs_btree_inc_height(tree);
@@ -141,6 +175,7 @@ skip:
 		/* get index key */
 		hfs_bnode_read_key(new_node, fd->search_key, 14);
 		__hfs_brec_find(fd->bnode, fd);
+		__hfs_brec_find(fd->bnode, fd, hfs_find_rec_by_key);
 
 		hfs_bnode_put(new_node);
 		new_node = NULL;
@@ -149,6 +184,12 @@ skip:
 			key_len = be16_to_cpu(fd->search_key->key_len) + 2;
 		else {
 			fd->search_key->key_len = cpu_to_be16(tree->max_key_len);
+		if ((tree->attributes & HFS_TREE_VARIDXKEYS) ||
+				(tree->cnid == HFSPLUS_ATTR_CNID))
+			key_len = be16_to_cpu(fd->search_key->key_len) + 2;
+		else {
+			fd->search_key->key_len =
+				cpu_to_be16(tree->max_key_len);
 			key_len = tree->max_key_len + 2;
 		}
 		goto again;
@@ -178,6 +219,8 @@ again:
 	}
 	hfs_bnode_dump(node);
 	dprint(DBG_BNODE_MOD, "remove_rec: %d, %d\n", fd->record, fd->keylength + fd->entrylength);
+	hfs_dbg(BNODE_MOD, "remove_rec: %d, %d\n",
+		fd->record, fd->keylength + fd->entrylength);
 	if (!--node->num_recs) {
 		hfs_bnode_unlink(node);
 		if (!node->parent)
@@ -192,6 +235,12 @@ again:
 		goto again;
 	}
 	hfs_bnode_write_u16(node, offsetof(struct hfs_bnode_desc, num_recs), node->num_recs);
+		__hfs_brec_find(node, fd, hfs_find_rec_by_key);
+		goto again;
+	}
+	hfs_bnode_write_u16(node,
+		offsetof(struct hfs_bnode_desc, num_recs),
+		node->num_recs);
 
 	if (rec_off == end_off)
 		goto skip;
@@ -217,6 +266,7 @@ static struct hfs_bnode *hfs_bnode_split(struct hfs_find_data *fd)
 {
 	struct hfs_btree *tree;
 	struct hfs_bnode *node, *new_node;
+	struct hfs_bnode *node, *new_node, *next_node;
 	struct hfs_bnode_desc node_desc;
 	int num_recs, new_rec_off, new_off, old_rec_off;
 	int data_start, data_end, size;
@@ -228,12 +278,24 @@ static struct hfs_bnode *hfs_bnode_split(struct hfs_find_data *fd)
 		return new_node;
 	hfs_bnode_get(node);
 	dprint(DBG_BNODE_MOD, "split_nodes: %d - %d - %d\n",
+	hfs_dbg(BNODE_MOD, "split_nodes: %d - %d - %d\n",
 		node->this, new_node->this, node->next);
 	new_node->next = node->next;
 	new_node->prev = node->this;
 	new_node->parent = node->parent;
 	new_node->type = node->type;
 	new_node->height = node->height;
+
+	if (node->next)
+		next_node = hfs_bnode_find(tree, node->next);
+	else
+		next_node = NULL;
+
+	if (IS_ERR(next_node)) {
+		hfs_bnode_put(node);
+		hfs_bnode_put(new_node);
+		return next_node;
+	}
 
 	size = tree->node_size / 2 - node->num_recs * 2 - 14;
 	old_rec_off = tree->node_size - 4;
@@ -248,6 +310,8 @@ static struct hfs_bnode *hfs_bnode_split(struct hfs_find_data *fd)
 		/* panic? */
 		hfs_bnode_put(node);
 		hfs_bnode_put(new_node);
+		if (next_node)
+			hfs_bnode_put(next_node);
 		return ERR_PTR(-ENOSPC);
 	}
 
@@ -304,6 +368,7 @@ static struct hfs_bnode *hfs_bnode_split(struct hfs_find_data *fd)
 	/* update next bnode header */
 	if (new_node->next) {
 		struct hfs_bnode *next_node = hfs_bnode_find(tree, new_node->next);
+	if (next_node) {
 		next_node->prev = new_node->this;
 		hfs_bnode_read(next_node, &node_desc, 0, sizeof(node_desc));
 		node_desc.prev = cpu_to_be32(next_node->prev);
@@ -341,6 +406,9 @@ again:
 	if (IS_ERR(parent))
 		return PTR_ERR(parent);
 	__hfs_brec_find(parent, fd);
+	__hfs_brec_find(parent, fd, hfs_find_rec_by_key);
+	if (fd->record < 0)
+		return -ENOENT;
 	hfs_bnode_dump(parent);
 	rec = fd->record;
 
@@ -350,6 +418,13 @@ again:
 	else
 		fd->keylength = newkeylen = tree->max_key_len + 2;
 	dprint(DBG_BNODE_MOD, "update_rec: %d, %d, %d\n", rec, fd->keylength, newkeylen);
+	if ((tree->attributes & HFS_TREE_VARIDXKEYS) ||
+				(tree->cnid == HFSPLUS_ATTR_CNID))
+		newkeylen = hfs_bnode_read_u16(node, 14) + 2;
+	else
+		fd->keylength = newkeylen = tree->max_key_len + 2;
+	hfs_dbg(BNODE_MOD, "update_rec: %d, %d, %d\n",
+		rec, fd->keylength, newkeylen);
 
 	rec_off = tree->node_size - (rec + 2) * 2;
 	end_rec_off = tree->node_size - (parent->num_recs + 1) * 2;
@@ -361,6 +436,7 @@ again:
 		if (end_rec_off - end_off < diff) {
 
 			printk(KERN_DEBUG "hfs: splitting index node...\n");
+			hfs_dbg(BNODE_MOD, "splitting index node\n");
 			fd->bnode = parent;
 			new_node = hfs_bnode_split(fd);
 			if (IS_ERR(new_node))
@@ -369,6 +445,8 @@ again:
 			rec = fd->record;
 			rec_off = tree->node_size - (rec + 2) * 2;
 			end_rec_off = tree->node_size - (parent->num_recs + 1) * 2;
+			end_rec_off = tree->node_size -
+				(parent->num_recs + 1) * 2;
 		}
 	}
 
@@ -393,12 +471,17 @@ skip:
 	if (new_node) {
 		__be32 cnid;
 
+		if (!new_node->parent) {
+			hfs_btree_inc_height(tree);
+			new_node->parent = tree->root;
+		}
 		fd->bnode = hfs_bnode_find(tree, new_node->parent);
 		/* create index key and entry */
 		hfs_bnode_read_key(new_node, fd->search_key, 14);
 		cnid = cpu_to_be32(new_node->this);
 
 		__hfs_brec_find(fd->bnode, fd);
+		__hfs_brec_find(fd->bnode, fd, hfs_find_rec_by_key);
 		hfs_brec_insert(fd, &cnid, sizeof(cnid));
 		hfs_bnode_put(fd->bnode);
 		hfs_bnode_put(new_node);
@@ -409,6 +492,7 @@ skip:
 			/* restore search_key */
 			hfs_bnode_read_key(node, fd->search_key, 14);
 		}
+		new_node = NULL;
 	}
 
 	if (!rec && node->parent)
@@ -467,12 +551,16 @@ static int hfs_btree_inc_height(struct hfs_btree *tree)
 		node->parent = tree->root;
 		if (node->type == HFS_NODE_LEAF ||
 		    tree->attributes & HFS_TREE_VARIDXKEYS)
+				tree->attributes & HFS_TREE_VARIDXKEYS ||
+				tree->cnid == HFSPLUS_ATTR_CNID)
 			key_size = hfs_bnode_read_u16(node, 14) + 2;
 		else
 			key_size = tree->max_key_len + 2;
 		hfs_bnode_copy(new_node, 14, node, 14, key_size);
 
 		if (!(tree->attributes & HFS_TREE_VARIDXKEYS)) {
+		if (!(tree->attributes & HFS_TREE_VARIDXKEYS) &&
+				(tree->cnid != HFSPLUS_ATTR_CNID)) {
 			key_size = tree->max_key_len + 2;
 			hfs_bnode_write_u16(new_node, 14, tree->max_key_len);
 		}

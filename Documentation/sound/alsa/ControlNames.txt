@@ -1,6 +1,7 @@
 This document describes standard names of mixer controls.
 
 Syntax: SOURCE [DIRECTION] FUNCTION
+Syntax: [LOCATION] SOURCE [CHANNEL] [DIRECTION] FUNCTION
 
 DIRECTION:
   <nothing>	(both directions)
@@ -14,12 +15,32 @@ FUNCTION:
   Volume
   Route		(route control, hardware specific)
 
+CHANNEL:
+  <nothing>     (channel independent, or applies to all channels)
+  Front
+  Surround      (rear left/right in 4.0/5.1 surround)
+  CLFE
+  Center
+  LFE
+  Side          (side left/right for 7.1 surround)
+
+LOCATION:       (physical location of source)
+  Front
+  Rear
+  Dock          (docking station)
+  Internal
+
 SOURCE:
   Master
   Master Mono
   Hardware Master
   Headphone
   PC Speaker
+  Speaker	(internal speaker)
+  Bass Speaker	(internal LFE speaker)
+  Headphone
+  Line Out
+  Beep		(beep generator)
   Phone
   Phone Input
   Phone Output
@@ -27,6 +48,9 @@ SOURCE:
   FM
   Mic
   Line
+  Headset Mic	(mic part of combined headset jack - 4-pin headphone + mic)
+  Headphone Mic	(mic part of either/or - 3-pin headphone or mic)
+  Line		(input only, use "Line Out" for output)
   CD
   Video
   Zoom Video
@@ -53,6 +77,18 @@ Exceptions:
   [Digital] Capture Volume	(aka input gain volume)
   [Digital] Playback Switch	(aka output gain switch)
   [Digital] Playback Volume	(aka output gain volume)
+  HDMI
+  SPDIF		(output only)
+  SPDIF In
+  Digital In
+  HDMI/DP	(either HDMI or DisplayPort)
+
+Exceptions (deprecated):
+  [Analogue|Digital] Capture Source
+  [Analogue|Digital] Capture Switch	(aka input gain switch)
+  [Analogue|Digital] Capture Volume	(aka input gain volume)
+  [Analogue|Digital] Playback Switch	(aka output gain switch)
+  [Analogue|Digital] Playback Volume	(aka output gain volume)
   Tone Control - Switch
   Tone Control - Bass
   Tone Control - Treble

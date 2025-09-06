@@ -21,6 +21,7 @@
 
 #include <asm/uaccess.h>
 #include <asm/desc.h>
+#include <asm/vm86.h>
 
 #include "fpu_system.h"
 #include "exception.h"
@@ -69,6 +70,43 @@ static int reg_offset_pm[] = {
 
 #define PM_REG_(x) (*(unsigned short *) \
 		      (reg_offset_pm[((unsigned)x)]+(u_char *) FPU_info))
+	offsetof(struct pt_regs, ax),
+	offsetof(struct pt_regs, cx),
+	offsetof(struct pt_regs, dx),
+	offsetof(struct pt_regs, bx),
+	offsetof(struct pt_regs, sp),
+	offsetof(struct pt_regs, bp),
+	offsetof(struct pt_regs, si),
+	offsetof(struct pt_regs, di)
+};
+
+#define REG_(x) (*(long *)(reg_offset[(x)] + (u_char *)FPU_info->regs))
+
+static int reg_offset_vm86[] = {
+	offsetof(struct pt_regs, cs),
+	offsetof(struct kernel_vm86_regs, ds),
+	offsetof(struct kernel_vm86_regs, es),
+	offsetof(struct kernel_vm86_regs, fs),
+	offsetof(struct kernel_vm86_regs, gs),
+	offsetof(struct pt_regs, ss),
+	offsetof(struct kernel_vm86_regs, ds)
+};
+
+#define VM86_REG_(x) (*(unsigned short *) \
+		(reg_offset_vm86[((unsigned)x)] + (u_char *)FPU_info->regs))
+
+static int reg_offset_pm[] = {
+	offsetof(struct pt_regs, cs),
+	offsetof(struct pt_regs, ds),
+	offsetof(struct pt_regs, es),
+	offsetof(struct pt_regs, fs),
+	offsetof(struct pt_regs, ds),	/* dummy, not saved on stack */
+	offsetof(struct pt_regs, ss),
+	offsetof(struct pt_regs, ds)
+};
+
+#define PM_REG_(x) (*(unsigned short *) \
+		(reg_offset_pm[((unsigned)x)] + (u_char *)FPU_info->regs))
 
 /* Decode the SIB byte. This function assumes mod != 0 */
 static int sib(int mod, unsigned long *fpu_eip)
@@ -158,12 +196,16 @@ static long pm_address(u_char FPU_modrm, u_char segment,
 	case PREFIX_GS_ - 1:
 		/* N.B. - movl %seg, mem is a 2 byte write regardless of prefix */
 		savesegment(gs, addr->selector);
+	case PREFIX_GS_ - 1:
+		/* user gs handling can be lazy, use special accessors */
+		addr->selector = get_user_gs(FPU_info->regs);
 		break;
 	default:
 		addr->selector = PM_REG_(segment);
 	}
 
 	descriptor = LDT_DESCRIPTOR(PM_REG_(segment));
+	descriptor = FPU_get_ldt_descriptor(addr->selector);
 	base_address = SEG_BASE_ADDR(descriptor);
 	address = base_address + offset;
 	limit = base_address
@@ -356,11 +398,19 @@ void __user *FPU_get_address_16(u_char FPU_modrm, unsigned long *fpu_eip,
 		break;
 	case 2:
 		address += FPU_info->___ebp + FPU_info->___esi;
+		address += FPU_info->regs->bx + FPU_info->regs->si;
+		break;
+	case 1:
+		address += FPU_info->regs->bx + FPU_info->regs->di;
+		break;
+	case 2:
+		address += FPU_info->regs->bp + FPU_info->regs->si;
 		if (addr_modes.override.segment == PREFIX_DEFAULT)
 			addr_modes.override.segment = PREFIX_SS_;
 		break;
 	case 3:
 		address += FPU_info->___ebp + FPU_info->___edi;
+		address += FPU_info->regs->bp + FPU_info->regs->di;
 		if (addr_modes.override.segment == PREFIX_DEFAULT)
 			addr_modes.override.segment = PREFIX_SS_;
 		break;
@@ -372,11 +422,19 @@ void __user *FPU_get_address_16(u_char FPU_modrm, unsigned long *fpu_eip,
 		break;
 	case 6:
 		address += FPU_info->___ebp;
+		address += FPU_info->regs->si;
+		break;
+	case 5:
+		address += FPU_info->regs->di;
+		break;
+	case 6:
+		address += FPU_info->regs->bp;
 		if (addr_modes.override.segment == PREFIX_DEFAULT)
 			addr_modes.override.segment = PREFIX_SS_;
 		break;
 	case 7:
 		address += FPU_info->___ebx;
+		address += FPU_info->regs->bx;
 		break;
 	}
 

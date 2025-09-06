@@ -159,6 +159,7 @@ static int pnp_dock_thread(void *unused)
 
 	set_freezable();
 	while (!unloading) {
+	while (1) {
 		int status;
 
 		/*
@@ -186,6 +187,8 @@ static int pnp_dock_thread(void *unused)
 		default:
 			pnpbios_print_status("pnp_dock_thread", status);
 			continue;
+			printk(KERN_WARNING "PnPBIOS: disabling dock monitoring.\n");
+			complete_and_exit(&unload_sem, 0);
 		}
 		if (d != docked) {
 			if (pnp_dock_event(d, &now) == 0) {
@@ -212,6 +215,7 @@ static int pnpbios_get_resources(struct pnp_dev *dev)
 		return -EPERM;
 
 	dev_dbg(&dev->dev, "get resources\n");
+	pnp_dbg(&dev->dev, "get resources\n");
 	node = kzalloc(node_info.max_node_size, GFP_KERNEL);
 	if (!node)
 		return -1;
@@ -235,6 +239,7 @@ static int pnpbios_set_resources(struct pnp_dev *dev)
 		return -EPERM;
 
 	dev_dbg(&dev->dev, "set resources\n");
+	pnp_dbg(&dev->dev, "set resources\n");
 	node = kzalloc(node_info.max_node_size, GFP_KERNEL);
 	if (!node)
 		return -1;
@@ -318,18 +323,21 @@ static int __init insert_device(struct pnp_bios_node *node)
 	struct list_head *pos;
 	struct pnp_dev *dev;
 	char id[8];
+	int error;
 
 	/* check if the device is already added */
 	list_for_each(pos, &pnpbios_protocol.devices) {
 		dev = list_entry(pos, struct pnp_dev, protocol_list);
 		if (dev->number == node->handle)
 			return -1;
+			return -EEXIST;
 	}
 
 	pnp_eisa_id_to_string(node->eisa_id & PNP_EISA_ID_MASK, id);
 	dev = pnp_alloc_dev(&pnpbios_protocol, node->handle, id);
 	if (!dev)
 		return -1;
+		return -ENOMEM;
 
 	pnpbios_parse_data_stream(dev, node);
 	dev->active = pnp_is_active(dev);
@@ -349,6 +357,12 @@ static int __init insert_device(struct pnp_bios_node *node)
 		pnp_init_resources(dev);
 
 	pnp_add_device(dev);
+	error = pnp_add_device(dev);
+	if (error) {
+		put_device(&dev->dev);
+		return error;
+	}
+
 	pnpbios_interface_attach_device(node);
 
 	return 0;
@@ -572,6 +586,7 @@ static int __init pnpbios_init(void)
 }
 
 subsys_initcall(pnpbios_init);
+fs_initcall(pnpbios_init);
 
 static int __init pnpbios_thread_init(void)
 {
@@ -589,6 +604,14 @@ static int __init pnpbios_thread_init(void)
 	if (!IS_ERR(task))
 		unloading = 0;
 #endif
+	if (pnpbios_disabled)
+		return 0;
+
+	init_completion(&unload_sem);
+	task = kthread_run(pnp_dock_thread, NULL, "kpnpbiosd");
+	if (IS_ERR(task))
+		return PTR_ERR(task);
+
 	return 0;
 }
 

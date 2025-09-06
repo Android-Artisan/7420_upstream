@@ -18,6 +18,17 @@
 	do { while (__raw_spin_is_locked(lock)) cpu_relax(); } while (0)
 
 static inline void __raw_spin_lock(raw_spinlock_t *lock)
+#ifndef __ASSEMBLY__
+
+#include <asm/psr.h>
+#include <asm/processor.h> /* for cpu_relax */
+
+#define arch_spin_is_locked(lock) (*((volatile unsigned char *)(lock)) != 0)
+
+#define arch_spin_unlock_wait(lock) \
+	do { while (arch_spin_is_locked(lock)) cpu_relax(); } while (0)
+
+static inline void arch_spin_lock(arch_spinlock_t *lock)
 {
 	__asm__ __volatile__(
 	"\n1:\n\t"
@@ -38,6 +49,7 @@ static inline void __raw_spin_lock(raw_spinlock_t *lock)
 }
 
 static inline int __raw_spin_trylock(raw_spinlock_t *lock)
+static inline int arch_spin_trylock(arch_spinlock_t *lock)
 {
 	unsigned int result;
 	__asm__ __volatile__("ldstub [%1], %0"
@@ -48,6 +60,7 @@ static inline int __raw_spin_trylock(raw_spinlock_t *lock)
 }
 
 static inline void __raw_spin_unlock(raw_spinlock_t *lock)
+static inline void arch_spin_unlock(arch_spinlock_t *lock)
 {
 	__asm__ __volatile__("stb %%g0, [%0]" : : "r" (lock) : "memory");
 }
@@ -68,6 +81,7 @@ static inline void __raw_spin_unlock(raw_spinlock_t *lock)
  *
  *	------------------------------------
  *	| 24-bit counter           | wlock |  raw_rwlock_t
+ *	| 24-bit counter           | wlock |  arch_rwlock_t
  *	------------------------------------
  *	 31                       8 7     0
  *
@@ -81,6 +95,9 @@ static inline void __raw_spin_unlock(raw_spinlock_t *lock)
 static inline void __read_lock(raw_rwlock_t *rw)
 {
 	register raw_rwlock_t *lp asm("g1");
+static inline void __arch_read_lock(arch_rwlock_t *rw)
+{
+	register arch_rwlock_t *lp asm("g1");
 	lp = rw;
 	__asm__ __volatile__(
 	"mov	%%o7, %%g4\n\t"
@@ -101,6 +118,16 @@ do {	unsigned long flags; \
 static inline void __read_unlock(raw_rwlock_t *rw)
 {
 	register raw_rwlock_t *lp asm("g1");
+#define arch_read_lock(lock) \
+do {	unsigned long flags; \
+	local_irq_save(flags); \
+	__arch_read_lock(lock); \
+	local_irq_restore(flags); \
+} while(0)
+
+static inline void __arch_read_unlock(arch_rwlock_t *rw)
+{
+	register arch_rwlock_t *lp asm("g1");
 	lp = rw;
 	__asm__ __volatile__(
 	"mov	%%o7, %%g4\n\t"
@@ -121,6 +148,16 @@ do {	unsigned long flags; \
 static inline void __raw_write_lock(raw_rwlock_t *rw)
 {
 	register raw_rwlock_t *lp asm("g1");
+#define arch_read_unlock(lock) \
+do {	unsigned long flags; \
+	local_irq_save(flags); \
+	__arch_read_unlock(lock); \
+	local_irq_restore(flags); \
+} while(0)
+
+static inline void arch_write_lock(arch_rwlock_t *rw)
+{
+	register arch_rwlock_t *lp asm("g1");
 	lp = rw;
 	__asm__ __volatile__(
 	"mov	%%o7, %%g4\n\t"
@@ -133,6 +170,16 @@ static inline void __raw_write_lock(raw_rwlock_t *rw)
 }
 
 static inline int __raw_write_trylock(raw_rwlock_t *rw)
+static void inline arch_write_unlock(arch_rwlock_t *lock)
+{
+	__asm__ __volatile__(
+"	st		%%g0, [%0]"
+	: /* no outputs */
+	: "r" (lock)
+	: "memory");
+}
+
+static inline int arch_write_trylock(arch_rwlock_t *rw)
 {
 	unsigned int val;
 
@@ -155,6 +202,9 @@ static inline int __raw_write_trylock(raw_rwlock_t *rw)
 static inline int __read_trylock(raw_rwlock_t *rw)
 {
 	register raw_rwlock_t *lp asm("g1");
+static inline int __arch_read_trylock(arch_rwlock_t *rw)
+{
+	register arch_rwlock_t *lp asm("g1");
 	register int res asm("o0");
 	lp = rw;
 	__asm__ __volatile__(
@@ -172,6 +222,11 @@ static inline int __read_trylock(raw_rwlock_t *rw)
 	int res; \
 	local_irq_save(flags); \
 	res = __read_trylock(lock); \
+#define arch_read_trylock(lock) \
+({	unsigned long flags; \
+	int res; \
+	local_irq_save(flags); \
+	res = __arch_read_trylock(lock); \
 	local_irq_restore(flags); \
 	res; \
 })
@@ -186,6 +241,16 @@ static inline int __read_trylock(raw_rwlock_t *rw)
 
 #define __raw_read_can_lock(rw) (!((rw)->lock & 0xff))
 #define __raw_write_can_lock(rw) (!(rw)->lock)
+#define arch_spin_lock_flags(lock, flags) arch_spin_lock(lock)
+#define arch_read_lock_flags(rw, flags)   arch_read_lock(rw)
+#define arch_write_lock_flags(rw, flags)  arch_write_lock(rw)
+
+#define arch_spin_relax(lock)	cpu_relax()
+#define arch_read_relax(lock)	cpu_relax()
+#define arch_write_relax(lock)	cpu_relax()
+
+#define arch_read_can_lock(rw) (!((rw)->lock & 0xff))
+#define arch_write_can_lock(rw) (!(rw)->lock)
 
 #endif /* !(__ASSEMBLY__) */
 

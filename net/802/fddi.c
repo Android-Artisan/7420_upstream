@@ -53,6 +53,7 @@
 static int fddi_header(struct sk_buff *skb, struct net_device *dev,
 		       unsigned short type,
 		       const void *daddr, const void *saddr, unsigned len)
+		       const void *daddr, const void *saddr, unsigned int len)
 {
 	int hl = FDDI_K_SNAP_HLEN;
 	struct fddihdr *fddi;
@@ -113,6 +114,12 @@ static int fddi_rebuild_header(struct sk_buff	*skb)
 }
 
 
+		return hl;
+	}
+
+	return -hl;
+}
+
 /*
  * Determine the packet's protocol ID and fill in skb fields.
  * This routine is called before an incoming packet is passed
@@ -163,6 +170,7 @@ __be16 fddi_type_trans(struct sk_buff *skb, struct net_device *dev)
 	/* Assume 802.2 SNAP frames, for now */
 
 	return(type);
+	return type;
 }
 
 EXPORT_SYMBOL(fddi_type_trans);
@@ -185,6 +193,23 @@ static void fddi_setup(struct net_device *dev)
 	dev->change_mtu		= fddi_change_mtu;
 	dev->header_ops		= &fddi_header_ops;
 
+int fddi_change_mtu(struct net_device *dev, int new_mtu)
+{
+	if ((new_mtu < FDDI_K_SNAP_HLEN) || (new_mtu > FDDI_K_SNAP_DLEN))
+		return -EINVAL;
+	dev->mtu = new_mtu;
+	return 0;
+}
+EXPORT_SYMBOL(fddi_change_mtu);
+
+static const struct header_ops fddi_header_ops = {
+	.create		= fddi_header,
+};
+
+
+static void fddi_setup(struct net_device *dev)
+{
+	dev->header_ops		= &fddi_header_ops;
 	dev->type		= ARPHRD_FDDI;
 	dev->hard_header_len	= FDDI_K_SNAP_HLEN+3;	/* Assume 802.2 SNAP hdr len + 3 pad bytes */
 	dev->mtu		= FDDI_K_SNAP_DLEN;	/* Assume max payload of 802.2 SNAP frame */
@@ -211,3 +236,9 @@ struct net_device *alloc_fddidev(int sizeof_priv)
 	return alloc_netdev(sizeof_priv, "fddi%d", fddi_setup);
 }
 EXPORT_SYMBOL(alloc_fddidev);
+	return alloc_netdev(sizeof_priv, "fddi%d", NET_NAME_UNKNOWN,
+			    fddi_setup);
+}
+EXPORT_SYMBOL(alloc_fddidev);
+
+MODULE_LICENSE("GPL");

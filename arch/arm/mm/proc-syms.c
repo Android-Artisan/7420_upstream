@@ -18,6 +18,9 @@
 #ifndef MULTI_CPU
 EXPORT_SYMBOL(cpu_dcache_clean_area);
 EXPORT_SYMBOL(cpu_set_pte_ext);
+#ifdef CONFIG_MMU
+EXPORT_SYMBOL(cpu_set_pte_ext);
+#endif
 #else
 EXPORT_SYMBOL(processor);
 #endif
@@ -27,6 +30,7 @@ EXPORT_SYMBOL(__cpuc_flush_kern_all);
 EXPORT_SYMBOL(__cpuc_flush_user_all);
 EXPORT_SYMBOL(__cpuc_flush_user_range);
 EXPORT_SYMBOL(__cpuc_coherent_kern_range);
+EXPORT_SYMBOL(__cpuc_flush_dcache_area);
 #else
 EXPORT_SYMBOL(cpu_cache);
 #endif
@@ -35,6 +39,8 @@ EXPORT_SYMBOL(cpu_cache);
 #ifndef MULTI_USER
 EXPORT_SYMBOL(__cpu_clear_user_page);
 EXPORT_SYMBOL(__cpu_copy_user_page);
+EXPORT_SYMBOL(__cpu_clear_user_highpage);
+EXPORT_SYMBOL(__cpu_copy_user_highpage);
 #else
 EXPORT_SYMBOL(cpu_user);
 #endif

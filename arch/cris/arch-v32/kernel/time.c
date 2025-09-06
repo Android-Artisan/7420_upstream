@@ -2,18 +2,23 @@
  *  linux/arch/cris/arch-v32/kernel/time.c
  *
  *  Copyright (C) 2003-2007 Axis Communications AB
+ *  Copyright (C) 2003-2010 Axis Communications AB
  *
  */
 
 #include <linux/timex.h>
 #include <linux/time.h>
 #include <linux/jiffies.h>
+#include <linux/clocksource.h>
+#include <linux/clockchips.h>
 #include <linux/interrupt.h>
 #include <linux/swap.h>
 #include <linux/sched.h>
 #include <linux/init.h>
 #include <linux/threads.h>
 #include <linux/cpufreq.h>
+#include <linux/sched_clock.h>
+#include <linux/mm.h>
 #include <asm/types.h>
 #include <asm/signal.h>
 #include <asm/io.h>
@@ -53,6 +58,18 @@ extern int have_rtc;
 static int
 cris_time_freq_notifier(struct notifier_block *nb, unsigned long val,
 			void *data);
+#define CRISV32_TIMER_FREQ	(100000000lu)
+
+unsigned long timer_regs[NR_CPUS] =
+{
+	regi_timer0,
+};
+
+extern int set_rtc_mmss(unsigned long nowtime);
+
+#ifdef CONFIG_CPU_FREQ
+static int cris_time_freq_notifier(struct notifier_block *nb,
+				   unsigned long val, void *data);
 
 static struct notifier_block cris_time_freq_notifier_block = {
 	.notifier_call = cris_time_freq_notifier,
@@ -130,10 +147,20 @@ static short int watchdog_key = 42;  /* arbitrary 7 bit number */
 
 void
 reset_watchdog(void)
+#if defined(CONFIG_ETRAX_WATCHDOG_NICE_DOGGY)
+/* for reliable NICE_DOGGY behaviour */
+static int bite_in_progress;
+#endif
+
+void reset_watchdog(void)
 {
 #if defined(CONFIG_ETRAX_WATCHDOG)
 	reg_timer_rw_wd_ctrl wd_ctrl = { 0 };
 
+#if defined(CONFIG_ETRAX_WATCHDOG_NICE_DOGGY)
+	if (unlikely(bite_in_progress))
+		return;
+#endif
 	/* Only keep watchdog happy as long as we have memory left! */
 	if(nr_free_pages() > WATCHDOG_MIN_FREE_PAGES) {
 		/* Reset the watchdog with the inverse of the old key */
@@ -151,6 +178,7 @@ reset_watchdog(void)
 
 void
 stop_watchdog(void)
+void stop_watchdog(void)
 {
 #if defined(CONFIG_ETRAX_WATCHDOG)
 	reg_timer_rw_wd_ctrl wd_ctrl = { 0 };
@@ -166,11 +194,17 @@ extern void show_registers(struct pt_regs *regs);
 
 void
 handle_watchdog_bite(struct pt_regs* regs)
+void handle_watchdog_bite(struct pt_regs *regs)
 {
 #if defined(CONFIG_ETRAX_WATCHDOG)
 	extern int cause_of_death;
 
 	oops_in_progress = 1;
+	nmi_enter();
+	oops_in_progress = 1;
+#if defined(CONFIG_ETRAX_WATCHDOG_NICE_DOGGY)
+	bite_in_progress = 1;
+#endif
 	printk(KERN_WARNING "Watchdog bite\n");
 
 	/* Check if forced restart or unexpected watchdog */
@@ -192,6 +226,7 @@ handle_watchdog_bite(struct pt_regs* regs)
 	printk(KERN_WARNING "Oops: bitten by watchdog\n");
 	show_registers(regs);
 	oops_in_progress = 0;
+	printk("\n"); /* Flush mtdoops.  */
 #ifndef CONFIG_ETRAX_WATCHDOG_NICE_DOGGY
 	reset_watchdog();
 #endif
@@ -302,6 +337,106 @@ void __init
 time_init(void)
 {
 	reg_intr_vect_rw_mask intr_mask;
+extern void cris_profile_sample(struct pt_regs *regs);
+static void __iomem *timer_base;
+
+static int crisv32_clkevt_switch_state(struct clock_event_device *dev)
+{
+	reg_timer_rw_tmr0_ctrl ctrl = {
+		.op = regk_timer_hold,
+		.freq = regk_timer_f100,
+	};
+
+	REG_WR(timer, timer_base, rw_tmr0_ctrl, ctrl);
+	return 0;
+}
+
+static int crisv32_clkevt_next_event(unsigned long evt,
+				     struct clock_event_device *dev)
+{
+	reg_timer_rw_tmr0_ctrl ctrl = {
+		.op = regk_timer_ld,
+		.freq = regk_timer_f100,
+	};
+
+	REG_WR(timer, timer_base, rw_tmr0_div, evt);
+	REG_WR(timer, timer_base, rw_tmr0_ctrl, ctrl);
+
+	ctrl.op = regk_timer_run;
+	REG_WR(timer, timer_base, rw_tmr0_ctrl, ctrl);
+
+	return 0;
+}
+
+static irqreturn_t crisv32_timer_interrupt(int irq, void *dev_id)
+{
+	struct clock_event_device *evt = dev_id;
+	reg_timer_rw_tmr0_ctrl ctrl = {
+		.op = regk_timer_hold,
+		.freq = regk_timer_f100,
+	};
+	reg_timer_rw_ack_intr ack = { .tmr0 = 1 };
+	reg_timer_r_masked_intr intr;
+
+	intr = REG_RD(timer, timer_base, r_masked_intr);
+	if (!intr.tmr0)
+		return IRQ_NONE;
+
+	REG_WR(timer, timer_base, rw_tmr0_ctrl, ctrl);
+	REG_WR(timer, timer_base, rw_ack_intr, ack);
+
+	reset_watchdog();
+#ifdef CONFIG_SYSTEM_PROFILER
+	cris_profile_sample(get_irq_regs());
+#endif
+
+	evt->event_handler(evt);
+
+	return IRQ_HANDLED;
+}
+
+static struct clock_event_device crisv32_clockevent = {
+	.name = "crisv32-timer",
+	.rating = 300,
+	.features = CLOCK_EVT_FEAT_ONESHOT,
+	.set_state_oneshot = crisv32_clkevt_switch_state,
+	.set_state_shutdown = crisv32_clkevt_switch_state,
+	.tick_resume = crisv32_clkevt_switch_state,
+	.set_next_event = crisv32_clkevt_next_event,
+};
+
+/* Timer is IRQF_SHARED so drivers can add stuff to the timer irq chain. */
+static struct irqaction irq_timer = {
+	.handler = crisv32_timer_interrupt,
+	.flags = IRQF_TIMER | IRQF_SHARED,
+	.name = "crisv32-timer",
+	.dev_id = &crisv32_clockevent,
+};
+
+static u64 notrace crisv32_timer_sched_clock(void)
+{
+	return REG_RD(timer, timer_base, r_time);
+}
+
+static void __init crisv32_timer_init(void)
+{
+	reg_timer_rw_intr_mask timer_intr_mask;
+	reg_timer_rw_tmr0_ctrl ctrl = {
+		.op = regk_timer_hold,
+		.freq = regk_timer_f100,
+	};
+
+	REG_WR(timer, timer_base, rw_tmr0_ctrl, ctrl);
+
+	timer_intr_mask = REG_RD(timer, timer_base, rw_intr_mask);
+	timer_intr_mask.tmr0 = 1;
+	REG_WR(timer, timer_base, rw_intr_mask, timer_intr_mask);
+}
+
+void __init time_init(void)
+{
+	int irq;
+	int ret;
 
 	/* Probe for the RTC and read it if it exists.
 	 * Before the RTC can be probed the loops_per_usec variable needs
@@ -340,6 +475,28 @@ time_init(void)
 	/* Now actually register the timer irq handler that calls
 	 * timer_interrupt(). */
 	setup_irq(TIMER0_INTR_VECT, &irq_timer);
+	irq = TIMER0_INTR_VECT;
+	timer_base = (void __iomem *) regi_timer0;
+
+	crisv32_timer_init();
+
+	sched_clock_register(crisv32_timer_sched_clock, 32,
+			     CRISV32_TIMER_FREQ);
+
+	clocksource_mmio_init(timer_base + REG_RD_ADDR_timer_r_time,
+			      "crisv32-timer", CRISV32_TIMER_FREQ,
+			      300, 32, clocksource_mmio_readl_up);
+
+	crisv32_clockevent.cpumask = cpu_possible_mask;
+	crisv32_clockevent.irq = irq;
+
+	ret = setup_irq(irq, &irq_timer);
+	if (ret)
+		pr_warn("failed to setup irq %d\n", irq);
+
+	clockevents_config_and_register(&crisv32_clockevent,
+					CRISV32_TIMER_FREQ,
+					2, 0xffffffff);
 
 	/* Enable watchdog if we should use one. */
 
@@ -362,6 +519,7 @@ time_init(void)
 #ifdef CONFIG_CPU_FREQ
 	cpufreq_register_notifier(&cris_time_freq_notifier_block,
 		CPUFREQ_TRANSITION_NOTIFIER);
+				  CPUFREQ_TRANSITION_NOTIFIER);
 #endif
 }
 
@@ -369,6 +527,8 @@ time_init(void)
 static int
 cris_time_freq_notifier(struct notifier_block *nb, unsigned long val,
 			void *data)
+static int cris_time_freq_notifier(struct notifier_block *nb,
+				   unsigned long val, void *data)
 {
 	struct cpufreq_freqs *freqs = data;
 	if (val == CPUFREQ_POSTCHANGE) {

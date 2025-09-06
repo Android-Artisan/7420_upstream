@@ -33,6 +33,17 @@ ENTRY(wakeup_start)
 	mov	#-126, k2
    	and	#127, k0
 	mov.b	k0, @k2
+ * For more details, please have a look at entry.S
+ */
+
+#define k0	r0
+#define k1	r1
+
+ENTRY(wakeup_start)
+! clear STBY bit
+	mov	#-126, k1
+   	and	#127, k0
+	mov.b	k0, @k1
 ! enable refresh
 	mov.l	5f, k1
 	mov.w	6f, k0
@@ -51,6 +62,12 @@ ENTRY(wakeup_start)
 2:	.long	INTEVT
 3:	.long	ret_from_irq
 4:	.long	handle_exception
+	mov.l	4f, k1
+	jmp	@k1
+	 nop
+
+	.align	2
+4:	.long	handle_interrupt
 5:	.long	0xffffff68
 6:	.word	0x0524
 

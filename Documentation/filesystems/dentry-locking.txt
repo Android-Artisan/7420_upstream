@@ -1,5 +1,4 @@
 RCU-based dcache locking model
-==============================
 
 On many workloads, the most common operation on dcache is to look up a
 dentry, given a parent dentry and the name of the child. Typically,
@@ -33,7 +32,6 @@ that the dentry has not been *freed*.
 
 
 Dcache locking details
-======================
 
 For many multi-user workloads, open() and stat() on files are very
 frequently occurring operations. Both involve walking of path names to
@@ -46,7 +44,6 @@ path walking lock-free.
 
 
 Safe lock-free look-up of dcache hash table
-===========================================
 
 Dcache is a complex data structure with the hash table entries also
 linked together in other lists. In 2.4 kernel, dcache_lock protected
@@ -105,7 +102,6 @@ changes are :
 
 
 Maintaining POSIX rename semantics
-==================================
 
 Since look-up of dentries is lock-free, it can race against a
 concurrent rename operation. For example, during rename of file A to
@@ -147,7 +143,6 @@ handled as described below :
 
 
 Important guidelines for filesystem developers related to dcache_rcu
-====================================================================
 
 1. Existing dcache interfaces (pre-2.5.62) exported to filesystem
    don't change. Only dcache internal implementation changes. However
@@ -163,7 +158,6 @@ Important guidelines for filesystem developers related to dcache_rcu
 
 
 Papers and other documentation on dcache locking
-================================================
 
 1. Scaling dcache with RCU (http://linuxjournal.com/article.php?sid=7124).
 

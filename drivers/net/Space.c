@@ -33,6 +33,10 @@
 #include <linux/errno.h>
 #include <linux/init.h>
 #include <linux/netlink.h>
+#include <linux/errno.h>
+#include <linux/init.h>
+#include <linux/netlink.h>
+#include <net/Space.h>
 
 /* A unified ethernet device probe.  This is the easiest way to have every
    ethernet adaptor have the name "eth[0123...]".
@@ -155,6 +159,8 @@ static struct devprobe2 mca_probes[] __initdata = {
 /*
  * ISA probes that touch addresses < 0x400 (including those that also
  * look for EISA/PCI/MCA cards in addition to ISA cards).
+ * ISA probes that touch addresses < 0x400 (including those that also
+ * look for EISA/PCI cards in addition to ISA cards).
  */
 static struct devprobe2 isa_probes[] __initdata = {
 #if defined(CONFIG_HP100) && defined(CONFIG_ISA)	/* ISA, EISA */
@@ -183,6 +189,7 @@ static struct devprobe2 isa_probes[] __initdata = {
 #endif
 #if defined(CONFIG_NE2000) || \
     defined(CONFIG_NE_H8300)  /* ISA (use ne2k-pci for PCI cards) */
+#if defined(CONFIG_NE2000) /* ISA (use ne2k-pci for PCI cards) */
 	{ne_probe, 0},
 #endif
 #ifdef CONFIG_LANCE		/* ISA/VLB (use pcnet32 for PCI cards) */
@@ -235,6 +242,14 @@ static struct devprobe2 isa_probes[] __initdata = {
 #endif
 #ifdef CONFIG_NI52
 	{ni52_probe, 0},
+#endif
+#ifdef CONFIG_CS89x0
+#ifndef CONFIG_CS89x0_PLATFORM
+ 	{cs89x0_probe, 0},
+#endif
+#endif
+#if defined(CONFIG_MVME16x_NET) || defined(CONFIG_BVME6000_NET)	/* Intel I82596 */
+	{i82596_probe, 0},
 #endif
 #ifdef CONFIG_NI65
 	{ni65_probe, 0},
@@ -332,6 +347,9 @@ static void __init trif_probe2(int unit)
 }
 #endif
 
+
+		probe_list2(unit, isa_probes, base_addr == 0));
+}
 
 /*  Statically configured drivers -- order matters here. */
 static int __init net_olddevs_init(void)

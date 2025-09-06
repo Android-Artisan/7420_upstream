@@ -2,6 +2,7 @@
  * JFFS2 -- Journalling Flash File System, Version 2.
  *
  * Copyright © 2001-2007 Red Hat, Inc.
+ * Copyright © 2004-2010 David Woodhouse <dwmw2@infradead.org>
  *
  * Created by David Woodhouse <dwmw2@infradead.org>
  *
@@ -50,6 +51,7 @@
  * superseded by nicer dbg_xxx() macros...
  */
 #if CONFIG_JFFS2_FS_DEBUG > 0
+#define DEBUG
 #define D1(x) x
 #else
 #define D1(x)
@@ -105,6 +107,33 @@
 			" (%d) %s: " fmt, task_pid_nr(current),		\
 			__func__ , ##__VA_ARGS__);			\
 	} while(0)
+#define jffs2_dbg(level, fmt, ...)		\
+do {						\
+	if (CONFIG_JFFS2_FS_DEBUG >= level)	\
+		pr_debug(fmt, ##__VA_ARGS__);	\
+} while (0)
+
+/* The prefixes of JFFS2 messages */
+#define JFFS2_DBG		KERN_DEBUG
+#define JFFS2_DBG_PREFIX	"[JFFS2 DBG]"
+#define JFFS2_DBG_MSG_PREFIX	JFFS2_DBG JFFS2_DBG_PREFIX
+
+/* JFFS2 message macros */
+#define JFFS2_ERROR(fmt, ...)					\
+	pr_err("error: (%d) %s: " fmt,				\
+	       task_pid_nr(current), __func__, ##__VA_ARGS__)
+
+#define JFFS2_WARNING(fmt, ...)						\
+	pr_warn("warning: (%d) %s: " fmt,				\
+		task_pid_nr(current), __func__, ##__VA_ARGS__)
+
+#define JFFS2_NOTICE(fmt, ...)						\
+	pr_notice("notice: (%d) %s: " fmt,				\
+		  task_pid_nr(current), __func__, ##__VA_ARGS__)
+
+#define JFFS2_DEBUG(fmt, ...)						\
+	printk(KERN_DEBUG "[JFFS2 DBG] (%d) %s: " fmt,			\
+	       task_pid_nr(current), __func__, ##__VA_ARGS__)
 
 /*
  * We split our debugging messages on several parts, depending on the JFFS2

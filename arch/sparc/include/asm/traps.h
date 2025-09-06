@@ -11,6 +11,12 @@
 
 #ifndef __ASSEMBLY__
 
+#ifndef _SPARC_TRAPS_H
+#define _SPARC_TRAPS_H
+
+#include <uapi/asm/traps.h>
+
+#ifndef __ASSEMBLY__
 /* This is for V8 compliant Sparc CPUS */
 struct tt_entry {
 	unsigned long inst_one;
@@ -137,4 +143,5 @@ static inline unsigned long get_tbr(void)
 			     (level == SP_TRAP_NETBSD) || \
 			     (level == SP_TRAP_LINUX))
 
+#endif /* !(__ASSEMBLY__) */
 #endif /* !(_SPARC_TRAPS_H) */

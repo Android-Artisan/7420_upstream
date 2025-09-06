@@ -36,3 +36,4 @@ of contiguous registers.  Random mode reads or writes random registers with
 a tuple structure containing address/value pairs.  The repeat mode is only
 used by VP4 to load a firmware patch.  It contains a starting address and
 a sequence of bytes to be written into a gpio port.
+a sequence of bytes to be written into a gpio port.

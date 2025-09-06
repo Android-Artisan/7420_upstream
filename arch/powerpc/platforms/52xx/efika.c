@@ -13,6 +13,10 @@
 #include <linux/utsrelease.h>
 #include <linux/pci.h>
 #include <linux/of.h>
+#include <generated/utsrelease.h>
+#include <linux/pci.h>
+#include <linux/of.h>
+#include <asm/dma.h>
 #include <asm/prom.h>
 #include <asm/time.h>
 #include <asm/machdep.h>
@@ -35,6 +39,7 @@ static int rtas_read_config(struct pci_bus *bus, unsigned int devfn, int offset,
 			    int len, u32 * val)
 {
 	struct pci_controller *hose = bus->sysdata;
+	struct pci_controller *hose = pci_bus_to_host(bus);
 	unsigned long addr = (offset & 0xff) | ((devfn & 0xff) << 8)
 	    | (((bus->number - hose->first_busno) & 0xff) << 16)
 	    | (hose->global_number << 24);
@@ -50,6 +55,7 @@ static int rtas_write_config(struct pci_bus *bus, unsigned int devfn,
 			     int offset, int len, u32 val)
 {
 	struct pci_controller *hose = bus->sysdata;
+	struct pci_controller *hose = pci_bus_to_host(bus);
 	unsigned long addr = (offset & 0xff) | ((devfn & 0xff) << 8)
 	    | (((bus->number - hose->first_busno) & 0xff) << 16)
 	    | (hose->global_number << 24);
@@ -100,6 +106,7 @@ static void __init efika_pcisetup(void)
 		printk(KERN_WARNING EFIKA_PLATFORM_NAME
 		       ": Can't get bus-range for %s\n", pcictrl->full_name);
 		return;
+		goto out_put;
 	}
 
 	if (bus_range[1] == bus_range[0])
@@ -112,11 +119,13 @@ static void __init efika_pcisetup(void)
 	printk("\n");
 
 	hose = pcibios_alloc_controller(of_node_get(pcictrl));
+	hose = pcibios_alloc_controller(pcictrl);
 	if (!hose) {
 		printk(KERN_WARNING EFIKA_PLATFORM_NAME
 		       ": Can't allocate PCI controller structure for %s\n",
 		       pcictrl->full_name);
 		return;
+		goto out_put;
 	}
 
 	hose->first_busno = bus_range[0];
@@ -124,6 +133,9 @@ static void __init efika_pcisetup(void)
 	hose->ops = &rtas_pci_ops;
 
 	pci_process_bridge_OF_ranges(hose, pcictrl, 0);
+	return;
+out_put:
+	of_node_put(pcictrl);
 }
 
 #else
@@ -198,6 +210,8 @@ static int __init efika_probe(void)
 {
 	char *model = of_get_flat_dt_prop(of_get_flat_dt_root(),
 					  "model", NULL);
+	const char *model = of_get_flat_dt_prop(of_get_flat_dt_root(),
+						"model", NULL);
 
 	if (model == NULL)
 		return 0;
@@ -207,6 +221,8 @@ static int __init efika_probe(void)
 	ISA_DMA_THRESHOLD = ~0L;
 	DMA_MODE_READ = 0x44;
 	DMA_MODE_WRITE = 0x48;
+
+	pm_power_off = rtas_power_off;
 
 	return 1;
 }

@@ -98,9 +98,6 @@
 #define CX18_PCI_ID_YUAN 		0x12ab
 #define CX18_PCI_ID_CONEXANT		0x14f1
 
-/* ======================================================================== */
-/* ========================== START USER SETTABLE DMA VARIABLES =========== */
-/* ======================================================================== */
 
 /* DMA Buffers, Default size in MB allocated */
 #define CX18_DEFAULT_ENC_TS_BUFFERS  1
@@ -446,7 +443,6 @@ extern int cx18_cards_active;
 extern int cx18_first_minor;
 extern spinlock_t cx18_cards_lock;
 
-/*==============Prototypes==================*/
 
 /* Return non-zero if a signal is pending */
 int cx18_msleep_timeout(unsigned int msecs, int intr);

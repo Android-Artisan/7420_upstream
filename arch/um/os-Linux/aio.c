@@ -15,6 +15,10 @@
 #include "kern_util.h"
 #include "os.h"
 #include "user.h"
+#include <aio.h>
+#include <init.h>
+#include <kern_util.h>
+#include <os.h>
 
 struct aio_thread_req {
 	enum aio_type type;
@@ -108,6 +112,7 @@ static int aio_thread(void *arg)
 
 	signal(SIGWINCH, SIG_IGN);
 
+	os_fix_helper_signals();
 	while (1) {
 		n = io_getevents(ctx, 1, 1, &event, NULL);
 		if (n < 0) {
@@ -176,6 +181,7 @@ static int not_aio_thread(void *arg)
 	int err;
 
 	signal(SIGWINCH, SIG_IGN);
+	os_fix_helper_signals();
 	while (1) {
 		err = read(aio_req_fd_r, &req, sizeof(req));
 		if (err != sizeof(req)) {

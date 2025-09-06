@@ -1,6 +1,9 @@
 #include <linux/module.h>
 #include <linux/spinlock.h>
 #include <asm/atomic.h>
+#include <linux/export.h>
+#include <linux/spinlock.h>
+#include <linux/atomic.h>
 
 /*
  * This is an implementation of the notion of "decrement a
@@ -24,6 +27,10 @@ int _atomic_dec_and_lock(atomic_t *atomic, spinlock_t *lock)
 	if (atomic_add_unless(atomic, -1, 1))
 		return 0;
 #endif
+	/* Subtract 1 from counter unless that drops it to 0 (ie. it was 1) */
+	if (atomic_add_unless(atomic, -1, 1))
+		return 0;
+
 	/* Otherwise do it the slow way */
 	spin_lock(lock);
 	if (atomic_dec_and_test(atomic))

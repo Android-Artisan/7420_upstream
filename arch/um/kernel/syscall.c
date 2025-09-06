@@ -60,6 +60,16 @@ long sys_mmap2(unsigned long addr, unsigned long len,
  out:
 	return error;
 }
+#include <linux/file.h>
+#include <linux/fs.h>
+#include <linux/mm.h>
+#include <linux/sched.h>
+#include <linux/utsname.h>
+#include <linux/syscalls.h>
+#include <asm/current.h>
+#include <asm/mman.h>
+#include <asm/uaccess.h>
+#include <asm/unistd.h>
 
 long old_mmap(unsigned long addr, unsigned long len,
 	      unsigned long prot, unsigned long flags,
@@ -130,4 +140,8 @@ int kernel_execve(const char *filename, char *const argv[], char *const envp[])
 	set_fs(fs);
 
 	return ret;
+}
+	err = sys_mmap_pgoff(addr, len, prot, flags, fd, offset >> PAGE_SHIFT);
+ out:
+	return err;
 }

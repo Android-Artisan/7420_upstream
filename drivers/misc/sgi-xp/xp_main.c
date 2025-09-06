@@ -26,6 +26,7 @@ struct device_driver xp_dbg_name = {
 
 struct device xp_dbg_subname = {
 	.bus_id = {0},		/* set to "" */
+	.init_name = "",		/* set to "" */
 	.driver = &xp_dbg_name
 };
 
@@ -44,12 +45,22 @@ EXPORT_SYMBOL_GPL(xp_region_size);
 unsigned long (*xp_pa) (void *addr);
 EXPORT_SYMBOL_GPL(xp_pa);
 
+unsigned long (*xp_socket_pa) (unsigned long gpa);
+EXPORT_SYMBOL_GPL(xp_socket_pa);
+
 enum xp_retval (*xp_remote_memcpy) (unsigned long dst_gpa,
 				    const unsigned long src_gpa, size_t len);
 EXPORT_SYMBOL_GPL(xp_remote_memcpy);
 
 int (*xp_cpu_to_nasid) (int cpuid);
 EXPORT_SYMBOL_GPL(xp_cpu_to_nasid);
+
+enum xp_retval (*xp_expand_memprotect) (unsigned long phys_addr,
+					unsigned long size);
+EXPORT_SYMBOL_GPL(xp_expand_memprotect);
+enum xp_retval (*xp_restrict_memprotect) (unsigned long phys_addr,
+					  unsigned long size);
+EXPORT_SYMBOL_GPL(xp_restrict_memprotect);
 
 /*
  * xpc_registrations[] keeps track of xpc_connect()'s done by the kernel-level
@@ -241,6 +252,10 @@ xp_init(void)
 	enum xp_retval ret;
 	int ch_number;
 
+	/* initialize the connection registration mutex */
+	for (ch_number = 0; ch_number < XPC_MAX_NCHANNELS; ch_number++)
+		mutex_init(&xpc_registrations[ch_number].mutex);
+
 	if (is_shub())
 		ret = xp_init_sn2();
 	else if (is_uv())
@@ -254,6 +269,10 @@ xp_init(void)
 	/* initialize the connection registration mutex */
 	for (ch_number = 0; ch_number < XPC_MAX_NCHANNELS; ch_number++)
 		mutex_init(&xpc_registrations[ch_number].mutex);
+		ret = 0;
+
+	if (ret != xpSuccess)
+		return ret;
 
 	return 0;
 }

@@ -1,5 +1,8 @@
 #ifndef PRISM54PCI_H
 #define PRISM54PCI_H
+#ifndef P54PCI_H
+#define P54PCI_H
+#include <linux/interrupt.h>
 
 /*
  * Defines for PCI based mac80211 Prism54 driver
@@ -69,12 +72,17 @@ struct p54p_csr {
 
 /* usb backend only needs the register defines above */
 #ifndef PRISM54USB_H
+} __packed;
+
+/* usb backend only needs the register defines above */
+#ifndef P54USB_H
 struct p54p_desc {
 	__le32 host_addr;
 	__le32 device_addr;
 	__le16 len;
 	__le16 flags;
 } __attribute__ ((packed));
+} __packed;
 
 struct p54p_ring_control {
 	__le32 host_idx[4];
@@ -84,6 +92,7 @@ struct p54p_ring_control {
 	struct p54p_desc rx_mgmt[4];
 	struct p54p_desc tx_mgmt[4];
 } __attribute__ ((packed));
+} __packed;
 
 #define P54P_READ(r) (__force __le32)__raw_readl(&priv->map->r)
 #define P54P_WRITE(r, val) __raw_writel((__force u32)(__le32)(val), &priv->map->r)
@@ -104,3 +113,20 @@ struct p54p_priv {
 
 #endif /* PRISM54USB_H */
 #endif /* PRISM54PCI_H */
+	struct tasklet_struct tasklet;
+	const struct firmware *firmware;
+	spinlock_t lock;
+	struct p54p_ring_control *ring_control;
+	dma_addr_t ring_control_dma;
+	u32 rx_idx_data, tx_idx_data;
+	u32 rx_idx_mgmt, tx_idx_mgmt;
+	struct sk_buff *rx_buf_data[8];
+	struct sk_buff *rx_buf_mgmt[4];
+	struct sk_buff *tx_buf_data[32];
+	struct sk_buff *tx_buf_mgmt[4];
+	struct completion boot_comp;
+	struct completion fw_loaded;
+};
+
+#endif /* P54USB_H */
+#endif /* P54PCI_H */

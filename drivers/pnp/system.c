@@ -27,6 +27,11 @@ static void reserve_range(struct pnp_dev *dev, resource_size_t start,
 {
 	char *regionid;
 	const char *pnpid = dev->dev.bus_id;
+static void reserve_range(struct pnp_dev *dev, struct resource *r, int port)
+{
+	char *regionid;
+	const char *pnpid = dev_name(&dev->dev);
+	resource_size_t start = r->start, end = r->end;
 	struct resource *res;
 
 	regionid = kmalloc(16, GFP_KERNEL);
@@ -52,6 +57,8 @@ static void reserve_range(struct pnp_dev *dev, resource_size_t start,
 		port ? "ioport" : "iomem",
 		(unsigned long long) start, (unsigned long long) end,
 		res ? "has been" : "could not be");
+	dev_info(&dev->dev, "%pR %s reserved\n", r,
+		 res ? "has been" : "could not be");
 }
 
 static void reserve_resources_of_dev(struct pnp_dev *dev)
@@ -78,6 +85,7 @@ static void reserve_resources_of_dev(struct pnp_dev *dev)
 			continue;	/* invalid */
 
 		reserve_range(dev, res->start, res->end, 1);
+		reserve_range(dev, res, 1);
 	}
 
 	for (i = 0; (res = pnp_get_resource(dev, IORESOURCE_MEM, i)); i++) {
@@ -85,6 +93,7 @@ static void reserve_resources_of_dev(struct pnp_dev *dev)
 			continue;
 
 		reserve_range(dev, res->start, res->end, 0);
+		reserve_range(dev, res, 0);
 	}
 }
 

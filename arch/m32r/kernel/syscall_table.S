@@ -169,6 +169,7 @@ ENTRY(sys_call_table)
 	.long sys_ni_syscall		/* query_module syscall holder */
 	.long sys_poll
 	.long sys_nfsservctl
+	.long sys_ni_syscall		/* was nfsservctl */
 	.long sys_setresgid		/* 170 */
 	.long sys_getresgid
 	.long sys_prctl
@@ -192,6 +193,7 @@ ENTRY(sys_call_table)
 	.long sys_vfork			/* 190 */
 	.long sys_getrlimit
 	.long sys_mmap2
+	.long sys_mmap_pgoff
 	.long sys_truncate64
 	.long sys_ftruncate64
 	.long sys_stat64		/* 195 */
@@ -324,3 +326,4 @@ ENTRY(sys_call_table)
 	.long sys_ni_syscall
 	.long sys_eventfd
 	.long sys_fallocate
+	.long sys_setns			/* 325 */

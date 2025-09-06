@@ -81,6 +81,9 @@ struct ipc_kludge {
 
 #include <linux/kref.h>
 #include <linux/spinlock.h>
+#include <linux/spinlock.h>
+#include <linux/uidgid.h>
+#include <uapi/linux/ipc.h>
 
 #define IPCMNI 32768  /* <= MAX_INT limit for ipc arrays (including sysctl changes) */
 
@@ -96,6 +99,14 @@ struct kern_ipc_perm
 	uid_t		cuid;
 	gid_t		cgid;
 	mode_t		mode; 
+	bool		deleted;
+	int		id;
+	key_t		key;
+	kuid_t		uid;
+	kgid_t		gid;
+	kuid_t		cuid;
+	kgid_t		cgid;
+	umode_t		mode; 
 	unsigned long	seq;
 	void		*security;
 };

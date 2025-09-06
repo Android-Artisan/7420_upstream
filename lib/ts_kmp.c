@@ -8,7 +8,6 @@
  *
  * Authors:	Thomas Graf <tgraf@suug.ch>
  *
- * ==========================================================================
  * 
  *   Implements a linear-time string-matching algorithm due to Knuth,
  *   Morris, and Pratt [1]. Their algorithm avoids the explicit

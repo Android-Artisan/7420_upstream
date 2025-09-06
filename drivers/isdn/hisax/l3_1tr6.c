@@ -5,6 +5,7 @@
  * Author       Karsten Keil
  * Copyright    by Karsten Keil      <keil@isdn4linux.de>
  * 
+ *
  * This software may be used and distributed according to the terms
  * of the GNU General Public License, incorporated herein by reference.
  *
@@ -25,6 +26,10 @@ static const char *l3_1tr6_revision = "$Revision: 2.15.2.3 $";
 	*ptr++ = dis; \
 	*ptr++ = 0x1; \
 	*ptr++ = cref ^ 0x80; \
+#define MsgHead(ptr, cref, mty, dis)		\
+	*ptr++ = dis;				\
+	*ptr++ = 0x1;				\
+	*ptr++ = cref ^ 0x80;			\
 	*ptr++ = mty
 
 static void
@@ -64,6 +69,7 @@ l3_1tr6_error(struct l3_process *pc, u_char *msg, struct sk_buff *skb)
 	dev_kfree_skb(skb);
 	if (pc->st->l3.debug & L3_DEB_WARN)
 		l3_debug(pc->st, msg);
+		l3_debug(pc->st, "%s", msg);
 	l3_1tr6_release_req(pc, 0, NULL);
 }
 
@@ -100,6 +106,23 @@ l3_1tr6_setup_req(struct l3_process *pc, u_char pr, void *arg)
 				if (pc->st->l3.debug & L3_DEB_WARN)
 					l3_debug(pc->st, "Wrong MSN Code");
 				break;
+		case 'S':
+			pc->para.spv = 1;
+			break;
+		case 'C':
+			channel = 0x08;
+		case 'P':
+			channel |= 0x80;
+			teln++;
+			if (*teln == '1')
+				channel |= 0x01;
+			else
+				channel |= 0x02;
+			break;
+		default:
+			if (pc->st->l3.debug & L3_DEB_WARN)
+				l3_debug(pc->st, "Wrong MSN Code");
+			break;
 		}
 		teln++;
 	}
@@ -169,6 +192,11 @@ l3_1tr6_setup(struct l3_process *pc, u_char pr, void *arg)
 	/* Channel Identification */
 	p = skb->data;
 	if ((p = findie(p, skb->len, WE0_chanID, 0))) {
+	struct sk_buff *skb = arg;
+
+	/* Channel Identification */
+	p = findie(skb->data, skb->len, WE0_chanID, 0);
+	if (p) {
 		if (p[1] != 1) {
 			l3_1tr6_error(pc, "setup wrong chanID len", skb);
 			return;
@@ -179,6 +207,7 @@ l3_1tr6_setup(struct l3_process *pc, u_char pr, void *arg)
 		}
 		if ((pc->para.bchannel = p[2] & 0x3))
 				bcfound++;
+			bcfound++;
 	} else {
 		l3_1tr6_error(pc, "missing setup chanID", skb);
 		return;
@@ -220,6 +249,9 @@ l3_1tr6_setup(struct l3_process *pc, u_char pr, void *arg)
 				pc->para.setup.phone,
 				pc->para.setup.eazmsn);
 			l3_debug(pc->st, tmp);
+			l3_debug(pc->st, "non-digital call: %s -> %s",
+				pc->para.setup.phone,
+				pc->para.setup.eazmsn);
 		}
 		newl3state(pc, 6);
 		pc->st->l3.l3l4(pc->st, CC_SETUP | INDICATION, pc);
@@ -304,6 +336,7 @@ l3_1tr6_info(struct l3_process *pc, u_char pr, void *arg)
 	u_char *p;
 	int i, tmpcharge = 0;
 	char a_charge[8], tmp[32];
+	char a_charge[8];
 	struct sk_buff *skb = arg;
 
 	p = skb->data;
@@ -320,6 +353,8 @@ l3_1tr6_info(struct l3_process *pc, u_char pr, void *arg)
 		if (pc->st->l3.debug & L3_DEB_CHARGE) {
 			sprintf(tmp, "charging info %d", pc->para.chargeinfo);
 			l3_debug(pc->st, tmp);
+			l3_debug(pc->st, "charging info %d",
+				 pc->para.chargeinfo);
 		}
 	} else if (pc->st->l3.debug & L3_DEB_CHARGE)
 		l3_debug(pc->st, "charging info not found");
@@ -402,6 +437,7 @@ l3_1tr6_disc(struct l3_process *pc, u_char pr, void *arg)
 	u_char *p;
 	int i, tmpcharge = 0;
 	char a_charge[8], tmp[32];
+	char a_charge[8];
 
 	StopAllL3Timer(pc);
 	p = skb->data;
@@ -418,6 +454,8 @@ l3_1tr6_disc(struct l3_process *pc, u_char pr, void *arg)
 		if (pc->st->l3.debug & L3_DEB_CHARGE) {
 			sprintf(tmp, "charging info %d", pc->para.chargeinfo);
 			l3_debug(pc->st, tmp);
+			l3_debug(pc->st, "charging info %d",
+				 pc->para.chargeinfo);
 		}
 	} else if (pc->st->l3.debug & L3_DEB_CHARGE)
 		l3_debug(pc->st, "charging info not found");
@@ -536,6 +574,15 @@ l3_1tr6_disconnect_req(struct l3_process *pc, u_char pr, void *arg)
 		case 0x15:
 			cause = CAUSE_CallRejected;
 			break;
+	case 0x10:
+		clen = 0;
+		break;
+	case 0x11:
+		cause = CAUSE_UserBusy;
+		break;
+	case 0x15:
+		cause = CAUSE_CallRejected;
+		break;
 	}
 	StopAllL3Timer(pc);
 	MsgHead(p, pc->callref, MT_N1_DISC, PROTO_DIS_N1);
@@ -596,6 +643,12 @@ l3_1tr6_t305(struct l3_process *pc, u_char pr, void *arg)
 		case 0x15:
 			cause = CAUSE_CallRejected;
 			break;
+	case 0x10:
+		clen = 0;
+		break;
+	case 0x15:
+		cause = CAUSE_CallRejected;
+		break;
 	}
 	MsgHead(p, pc->callref, MT_N1_REL, PROTO_DIS_N1);
 	*p++ = WE0_cause;
@@ -652,6 +705,9 @@ l3_1tr6_dl_reset(struct l3_process *pc, u_char pr, void *arg)
         pc->para.cause = CAUSE_LocalProcErr;
         l3_1tr6_disconnect_req(pc, pr, NULL);
         pc->st->l3.l3l4(pc->st, CC_SETUP_ERR, pc);
+	pc->para.cause = CAUSE_LocalProcErr;
+	l3_1tr6_disconnect_req(pc, pr, NULL);
+	pc->st->l3.l3l4(pc->st, CC_SETUP_ERR, pc);
 }
 
 static void
@@ -662,6 +718,11 @@ l3_1tr6_dl_release(struct l3_process *pc, u_char pr, void *arg)
         pc->para.loc = 0;
         pc->st->l3.l3l4(pc->st, CC_RELEASE | INDICATION, pc);
         release_l3_process(pc);
+	newl3state(pc, 0);
+	pc->para.cause = 0x1b;          /* Destination out of order */
+	pc->para.loc = 0;
+	pc->st->l3.l3l4(pc->st, CC_RELEASE | INDICATION, pc);
+	release_l3_process(pc);
 }
 
 /* *INDENT-OFF* */
@@ -672,6 +733,9 @@ static struct stateentry downstl[] =
    	{SBIT(1) | SBIT(2) | SBIT(3) | SBIT(4) | SBIT(6) | SBIT(7) | SBIT(8) |
     	 SBIT(10),
     	 CC_DISCONNECT | REQUEST, l3_1tr6_disconnect_req},
+	{SBIT(1) | SBIT(2) | SBIT(3) | SBIT(4) | SBIT(6) | SBIT(7) | SBIT(8) |
+	 SBIT(10),
+	 CC_DISCONNECT | REQUEST, l3_1tr6_disconnect_req},
 	{SBIT(12),
 	 CC_RELEASE | REQUEST, l3_1tr6_release_req},
 	{SBIT(6),
@@ -748,6 +812,14 @@ static struct stateentry manstatelist[] =
  
 #define MANSLLEN \
         (sizeof(manstatelist) / sizeof(struct stateentry))
+static struct stateentry manstatelist[] =
+{
+	{SBIT(2),
+	 DL_ESTABLISH | INDICATION, l3_1tr6_dl_reset},
+	{ALL_STATES,
+	 DL_RELEASE | INDICATION, l3_1tr6_dl_release},
+};
+
 /* *INDENT-ON* */
 
 static void
@@ -774,6 +846,22 @@ up1tr6(struct PStack *st, int pr, void *arg)
 		if (st->l3.debug & L3_DEB_PROTERR) {
 			sprintf(tmp, "up1tr6 len only %d", skb->len);
 			l3_debug(st, tmp);
+
+	switch (pr) {
+	case (DL_DATA | INDICATION):
+	case (DL_UNIT_DATA | INDICATION):
+		break;
+	case (DL_ESTABLISH | CONFIRM):
+	case (DL_ESTABLISH | INDICATION):
+	case (DL_RELEASE | INDICATION):
+	case (DL_RELEASE | CONFIRM):
+		l3_msg(st, pr, arg);
+		return;
+		break;
+	}
+	if (skb->len < 4) {
+		if (st->l3.debug & L3_DEB_PROTERR) {
+			l3_debug(st, "up1tr6 len only %d", skb->len);
 		}
 		dev_kfree_skb(skb);
 		return;
@@ -784,6 +872,9 @@ up1tr6(struct PStack *st, int pr, void *arg)
 				(pr == (DL_DATA | INDICATION)) ? " " : "(broadcast) ",
 				skb->data[0], skb->len);
 			l3_debug(st, tmp);
+			l3_debug(st, "up1tr6%sunexpected discriminator %x message len %d",
+				(pr == (DL_DATA | INDICATION)) ? " " : "(broadcast) ",
+				skb->data[0], skb->len);
 		}
 		dev_kfree_skb(skb);
 		return;
@@ -792,6 +883,7 @@ up1tr6(struct PStack *st, int pr, void *arg)
 		if (st->l3.debug & L3_DEB_PROTERR) {
 			sprintf(tmp, "up1tr6 CR len not 1");
 			l3_debug(st, tmp);
+			l3_debug(st, "up1tr6 CR len not 1");
 		}
 		dev_kfree_skb(skb);
 		return;
@@ -813,6 +905,16 @@ up1tr6(struct PStack *st, int pr, void *arg)
 						if (st->l3.debug & L3_DEB_PROTERR) {
 							sprintf(tmp, "up1tr6 no roc mem");
 							l3_debug(st, tmp);
+			l3_debug(st, "up1tr6%s N0 mt %x unhandled",
+				(pr == (DL_DATA | INDICATION)) ? " " : "(broadcast) ", mt);
+		}
+	} else if (skb->data[0] == PROTO_DIS_N1) {
+		if (!(proc = getl3proc(st, cr))) {
+			if (mt == MT_N1_SETUP) {
+				if (cr < 128) {
+					if (!(proc = new_l3_process(st, cr))) {
+						if (st->l3.debug & L3_DEB_PROTERR) {
+							l3_debug(st, "up1tr6 no roc mem");
 						}
 						dev_kfree_skb(skb);
 						return;
@@ -826,6 +928,10 @@ up1tr6(struct PStack *st, int pr, void *arg)
 				(mt == MT_N1_REG_ACK) || (mt == MT_N1_REG_REJ) ||
 				(mt == MT_N1_SUSP_ACK) || (mt == MT_N1_RES_REJ) ||
 				(mt == MT_N1_INFO)) {
+				   (mt == MT_N1_CANC_ACK) || (mt == MT_N1_CANC_REJ) ||
+				   (mt == MT_N1_REG_ACK) || (mt == MT_N1_REG_REJ) ||
+				   (mt == MT_N1_SUSP_ACK) || (mt == MT_N1_RES_REJ) ||
+				   (mt == MT_N1_INFO)) {
 				dev_kfree_skb(skb);
 				return;
 			} else {
@@ -833,6 +939,7 @@ up1tr6(struct PStack *st, int pr, void *arg)
 					if (st->l3.debug & L3_DEB_PROTERR) {
 						sprintf(tmp, "up1tr6 no roc mem");
 						l3_debug(st, tmp);
+						l3_debug(st, "up1tr6 no roc mem");
 					}
 					dev_kfree_skb(skb);
 					return;
@@ -851,6 +958,16 @@ up1tr6(struct PStack *st, int pr, void *arg)
 				  (pr == (DL_DATA | INDICATION)) ? " " : "(broadcast) ",
 					proc->state, mt);
 				l3_debug(st, tmp);
+		for (i = 0; i < ARRAY_SIZE(datastln1); i++)
+			if ((mt == datastln1[i].primitive) &&
+			    ((1 << proc->state) & datastln1[i].state))
+				break;
+		if (i == ARRAY_SIZE(datastln1)) {
+			dev_kfree_skb(skb);
+			if (st->l3.debug & L3_DEB_STATE) {
+				l3_debug(st, "up1tr6%sstate %d mt %x unhandled",
+					(pr == (DL_DATA | INDICATION)) ? " " : "(broadcast) ",
+					proc->state, mt);
 			}
 			return;
 		} else {
@@ -859,6 +976,9 @@ up1tr6(struct PStack *st, int pr, void *arg)
 				  (pr == (DL_DATA | INDICATION)) ? " " : "(broadcast) ",
 					proc->state, mt);
 				l3_debug(st, tmp);
+				l3_debug(st, "up1tr6%sstate %d mt %x",
+					(pr == (DL_DATA | INDICATION)) ? " " : "(broadcast) ",
+					proc->state, mt);
 			}
 			datastln1[i].rout(proc, pr, skb);
 		}
@@ -874,6 +994,8 @@ down1tr6(struct PStack *st, int pr, void *arg)
 	char tmp[80];
 
 	if ((DL_ESTABLISH | REQUEST)== pr) {
+
+	if ((DL_ESTABLISH | REQUEST) == pr) {
 		l3_msg(st, pr, NULL);
 		return;
 	} else if ((CC_SETUP | REQUEST) == pr) {
@@ -907,6 +1029,19 @@ down1tr6(struct PStack *st, int pr, void *arg)
 			sprintf(tmp, "down1tr6 state %d prim %d",
 				proc->state, pr);
 			l3_debug(st, tmp);
+	for (i = 0; i < ARRAY_SIZE(downstl); i++)
+		if ((pr == downstl[i].primitive) &&
+		    ((1 << proc->state) & downstl[i].state))
+			break;
+	if (i == ARRAY_SIZE(downstl)) {
+		if (st->l3.debug & L3_DEB_STATE) {
+			l3_debug(st, "down1tr6 state %d prim %d unhandled",
+				proc->state, pr);
+		}
+	} else {
+		if (st->l3.debug & L3_DEB_STATE) {
+			l3_debug(st, "down1tr6 state %d prim %d",
+				proc->state, pr);
 		}
 		downstl[i].rout(proc, pr, arg);
 	}
@@ -940,6 +1075,31 @@ man1tr6(struct PStack *st, int pr, void *arg)
         }
 }
  
+	int i;
+	struct l3_process *proc = arg;
+
+	if (!proc) {
+		printk(KERN_ERR "HiSax man1tr6 without proc pr=%04x\n", pr);
+		return;
+	}
+	for (i = 0; i < ARRAY_SIZE(manstatelist); i++)
+		if ((pr == manstatelist[i].primitive) &&
+		    ((1 << proc->state) & manstatelist[i].state))
+			break;
+	if (i == ARRAY_SIZE(manstatelist)) {
+		if (st->l3.debug & L3_DEB_STATE) {
+			l3_debug(st, "cr %d man1tr6 state %d prim %d unhandled",
+				 proc->callref & 0x7f, proc->state, pr);
+		}
+	} else {
+		if (st->l3.debug & L3_DEB_STATE) {
+			l3_debug(st, "cr %d man1tr6 state %d prim %d",
+				 proc->callref & 0x7f, proc->state, pr);
+		}
+		manstatelist[i].rout(proc, pr, arg);
+	}
+}
+
 void
 setstack_1tr6(struct PStack *st)
 {

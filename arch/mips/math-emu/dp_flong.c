@@ -28,12 +28,19 @@
 #include "ieee754dp.h"
 
 ieee754dp ieee754dp_flong(s64 x)
+ *  51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA.
+ */
+
+#include "ieee754dp.h"
+
+union ieee754dp ieee754dp_flong(s64 x)
 {
 	u64 xm;
 	int xe;
 	int xs;
 
 	CLEARCX;
+	ieee754_clearcx();
 
 	if (x == 0)
 		return ieee754dp_zero(0);
@@ -57,11 +64,16 @@ ieee754dp ieee754dp_flong(s64 x)
 	if (xm >> (DP_MBITS + 1 + 3)) {
 		/* shunt out overflow bits */
 		while (xm >> (DP_MBITS + 1 + 3)) {
+	xe = DP_FBITS + 3;
+	if (xm >> (DP_FBITS + 1 + 3)) {
+		/* shunt out overflow bits */
+		while (xm >> (DP_FBITS + 1 + 3)) {
 			XDPSRSX1();
 		}
 	} else {
 		/* normalize in grs extended double precision */
 		while ((xm >> (DP_MBITS + 3)) == 0) {
+		while ((xm >> (DP_FBITS + 3)) == 0) {
 			xm <<= 1;
 			xe--;
 		}
@@ -75,4 +87,6 @@ ieee754dp ieee754dp_fulong(u64 u)
 		return ieee754dp_add(ieee754dp_1e63(),
 				     ieee754dp_flong(u & ~(1ULL << 63)));
 	return ieee754dp_flong(u);
+
+	return ieee754dp_format(xs, xe, xm);
 }

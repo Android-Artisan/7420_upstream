@@ -6,6 +6,8 @@
 #include <linux/types.h>
 #include <linux/workqueue.h>
 #include <linux/mutex.h>
+#include <linux/seq_file.h>
+#include <linux/blk-mq.h>
 #include <scsi/scsi.h>
 
 struct request_queue;
@@ -14,6 +16,7 @@ struct completion;
 struct module;
 struct scsi_cmnd;
 struct scsi_device;
+struct scsi_host_cmd_pool;
 struct scsi_target;
 struct Scsi_Host;
 struct scsi_host_cmd_pool;
@@ -151,6 +154,7 @@ struct scsi_host_template {
 	/* TODO: rename */
 	int (* transfer_response)(struct scsi_cmnd *,
 				  void (*done)(struct scsi_cmnd *));
+	int (* queuecommand)(struct Scsi_Host *, struct scsi_cmnd *);
 
 	/*
 	 * This is an error handling strategy routine.  You don't need to
@@ -216,6 +220,7 @@ struct scsi_host_template {
 	 *
 	 * 1.  Setting the device queue depth.  Proper setting of this is
 	 *     described in the comments for scsi_adjust_queue_depth.
+	 *     described in the comments for scsi_change_queue_depth.
 	 * 2.  Determining if the device supports the various synchronous
 	 *     negotiation protocols.  The device struct will already have
 	 *     responded to INQUIRY and the results of the standard items
@@ -328,6 +333,14 @@ struct scsi_host_template {
 			sector_t, int []);
 
 	/*
+	 * This function is called when one or more partitions on the
+	 * device reach beyond the end of the device.
+	 *
+	 * Status: OPTIONAL
+	 */
+	void (*unlock_native_capacity)(struct scsi_device *);
+
+	/*
 	 * Can be used to export driver statistics and other infos to the
 	 * world outside the kernel ie. userspace and it also provides an
 	 * interface to feed the driver with information.
@@ -335,6 +348,8 @@ struct scsi_host_template {
 	 * Status: OBSOLETE
 	 */
 	int (*proc_info)(struct Scsi_Host *, char *, char **, off_t, int, int);
+	int (*show_info)(struct seq_file *, struct Scsi_Host *);
+	int (*write_info)(struct Scsi_Host *, char *, int);
 
 	/*
 	 * This is an optional routine that allows the transport to become
@@ -348,6 +363,20 @@ struct scsi_host_template {
 	 * Status: OPTIONAL
 	 */
 	enum scsi_eh_timer_return (* eh_timed_out)(struct scsi_cmnd *);
+	enum blk_eh_timer_return (*eh_timed_out)(struct scsi_cmnd *);
+
+	/* This is an optional routine that allows transport to initiate
+	 * LLD adapter or firmware reset using sysfs attribute.
+	 *
+	 * Return values: 0 on success, -ve value on failure.
+	 *
+	 * Status: OPTIONAL
+	 */
+
+	int (*host_reset)(struct Scsi_Host *shost, int reset_type);
+#define SCSI_ADAPTER_RESET	1
+#define SCSI_FIRMWARE_RESET	2
+
 
 	/*
 	 * Name of proc directory
@@ -357,6 +386,7 @@ struct scsi_host_template {
 	/*
 	 * Used to store the procfs directory if a driver implements the
 	 * proc_info method.
+	 * show_info method.
 	 */
 	struct proc_dir_entry *proc_dir;
 
@@ -381,11 +411,13 @@ struct scsi_host_template {
 	 * of scatter-gather.
 	 */
 	unsigned short sg_tablesize;
+	unsigned short sg_prot_tablesize;
 
 	/*
 	 * Set this if the host adapter has limitations beside segment count.
 	 */
 	unsigned short max_sectors;
+	unsigned int max_sectors;
 
 	/*
 	 * DMA scatter gather segment boundary limit. A segment crossing this
@@ -417,6 +449,14 @@ struct scsi_host_template {
 	 * type were found when we did the scan.
 	 */
 	unsigned char present;
+
+	/* If use block layer to manage tags, this is tag allocation policy */
+	int tag_alloc_policy;
+
+	/*
+	 * Track QUEUE_FULL events and reduce queue depth on demand.
+	 */
+	unsigned track_queue_depth:1;
 
 	/*
 	 * This specifies the mode that a LLD supports.
@@ -452,6 +492,13 @@ struct scsi_host_template {
 	 * True if we are using ordered write support.
 	 */
 	unsigned ordered_tag:1;
+	/* True if the controller does not support WRITE SAME */
+	unsigned no_write_same:1;
+
+	/*
+	 * True if asynchronous aborts are not supported
+	 */
+	unsigned no_async_abort:1;
 
 	/*
 	 * Countdown for host blocking with no commands outstanding.
@@ -488,6 +535,46 @@ struct scsi_host_template {
 };
 
 /*
+
+	/*
+	 * Vendor Identifier associated with the host
+	 *
+	 * Note: When specifying vendor_id, be sure to read the
+	 *   Vendor Type and ID formatting requirements specified in
+	 *   scsi_netlink.h
+	 */
+	u64 vendor_id;
+
+	/*
+	 * Additional per-command data allocated for the driver.
+	 */
+	unsigned int cmd_size;
+	struct scsi_host_cmd_pool *cmd_pool;
+
+	/* temporary flag to disable blk-mq I/O path */
+	bool disable_blk_mq;
+};
+
+/*
+ * Temporary #define for host lock push down. Can be removed when all
+ * drivers have been updated to take advantage of unlocked
+ * queuecommand.
+ *
+ */
+#define DEF_SCSI_QCMD(func_name) \
+	int func_name(struct Scsi_Host *shost, struct scsi_cmnd *cmd)	\
+	{								\
+		unsigned long irq_flags;				\
+		int rc;							\
+		spin_lock_irqsave(shost->host_lock, irq_flags);		\
+		scsi_cmd_get_serial(shost, cmd);			\
+		rc = func_name##_lck (cmd, cmd->scsi_done);			\
+		spin_unlock_irqrestore(shost->host_lock, irq_flags);	\
+		return rc;						\
+	}
+
+
+/*
  * shost state: If you alter this, you also need to alter scsi_sysfs.c
  * (for the ascii descriptions) and the state model enforcer:
  * scsi_host_set_state()
@@ -508,6 +595,7 @@ struct Scsi_Host {
 	 * usually use scsi_device_lookup / shost_for_each_device
 	 * to access it and don't care about locking yourself.
 	 * In the rare case of beeing in irq context you can use
+	 * In the rare case of being in irq context you can use
 	 * their __ prefixed variants with the lock held. NEVER
 	 * access this list directly from a driver.
 	 */
@@ -560,6 +648,34 @@ struct Scsi_Host {
 	unsigned int max_id;
 	unsigned int max_lun;
 	unsigned int max_channel;
+	union {
+		struct blk_queue_tag	*bqt;
+		struct blk_mq_tag_set	tag_set;
+	};
+
+	atomic_t host_busy;		   /* commands actually active on low-level */
+	atomic_t host_blocked;
+
+	unsigned int host_failed;	   /* commands that failed.
+					      protected by host_lock */
+	unsigned int host_eh_scheduled;    /* EH scheduled without command */
+    
+	unsigned int host_no;  /* Used for IOCTL_GET_IDLUN, /proc/scsi et al. */
+
+	/* next two fields are used to bound the time spent in error handling */
+	int eh_deadline;
+	unsigned long last_reset;
+
+
+	/*
+	 * These three parameters can be used to allow for wide scsi,
+	 * and for host adapters that support multiple busses
+	 * The last two should be set to 1 more than the actual max id
+	 * or lun (e.g. 8 for SCSI parallel systems).
+	 */
+	unsigned int max_channel;
+	unsigned int max_id;
+	u64 max_lun;
 
 	/*
 	 * This is a unique identifier that must be assigned so that we
@@ -585,6 +701,17 @@ struct Scsi_Host {
 	short unsigned int sg_tablesize;
 	short unsigned int max_sectors;
 	unsigned long dma_boundary;
+	short unsigned int sg_prot_tablesize;
+	unsigned int max_sectors;
+	unsigned long dma_boundary;
+	/*
+	 * In scsi-mq mode, the number of hardware queues supported by the LLD.
+	 *
+	 * Note: it is assumed that each hardware queue has a queue depth of
+	 * can_queue. In other words, the total queue depth per host
+	 * is nr_hw_queues * can_queue.
+	 */
+	unsigned nr_hw_queues;
 	/* 
 	 * Used to assign serial numbers to the cmds.
 	 * Protected by the host lock.
@@ -620,6 +747,18 @@ struct Scsi_Host {
 	/* Asynchronous scan in progress */
 	unsigned async_scan:1;
 
+	/* Don't resume host in EH */
+	unsigned eh_noresume:1;
+
+	/* The controller does not support WRITE SAME */
+	unsigned no_write_same:1;
+
+	unsigned use_blk_mq:1;
+	unsigned use_cmd_list:1;
+
+	/* Host responded with short (<36 bytes) INQUIRY result */
+	unsigned short_inquiry:1;
+
 	/*
 	 * Optional work queue to be utilized by the transport
 	 */
@@ -630,6 +769,12 @@ struct Scsi_Host {
 	 * Host has rejected a command because it was busy.
 	 */
 	unsigned int host_blocked;
+	 * Task management function work queue
+	 */
+	struct workqueue_struct *tmf_work_q;
+
+	/* The transport requires the LUN bits NOT to be stored in CDB[1] */
+	unsigned no_scsi2_lun_in_cdb:1;
 
 	/*
 	 * Value host_blocked counts down from
@@ -675,6 +820,12 @@ struct Scsi_Host {
 	void *shost_data;
 
 	/*
+	 * Points to the physical bus device we'd use to do DMA
+	 * Needed just in case we have virtual hosts.
+	 */
+	struct device *dma_dev;
+
+	/*
 	 * We should ensure that this is aligned, both for better performance
 	 * and also because some compilers (m68k) don't automatically force
 	 * alignment to a long boundary.
@@ -714,20 +865,37 @@ static inline int scsi_host_in_recovery(struct Scsi_Host *shost)
 		shost->tmf_in_progress;
 }
 
+extern bool scsi_use_blk_mq;
+
+static inline bool shost_use_blk_mq(struct Scsi_Host *shost)
+{
+	return shost->use_blk_mq;
+}
+
 extern int scsi_queue_work(struct Scsi_Host *, struct work_struct *);
 extern void scsi_flush_work(struct Scsi_Host *);
 
 extern struct Scsi_Host *scsi_host_alloc(struct scsi_host_template *, int);
 extern int __must_check scsi_add_host(struct Scsi_Host *, struct device *);
+extern int __must_check scsi_add_host_with_dma(struct Scsi_Host *,
+					       struct device *,
+					       struct device *);
 extern void scsi_scan_host(struct Scsi_Host *);
 extern void scsi_rescan_device(struct device *);
 extern void scsi_remove_host(struct Scsi_Host *);
 extern struct Scsi_Host *scsi_host_get(struct Scsi_Host *);
 extern void scsi_host_put(struct Scsi_Host *t);
-extern struct Scsi_Host *scsi_host_lookup(unsigned short);
+extern struct Scsi_Host *scsi_host_lookup(unsigned int hostnum);
 extern const char *scsi_host_state_name(enum scsi_host_state);
 
 extern u64 scsi_calculate_bounce_limit(struct Scsi_Host *);
+extern void scsi_cmd_get_serial(struct Scsi_Host *, struct scsi_cmnd *);
+
+static inline int __must_check scsi_add_host(struct Scsi_Host *host,
+					     struct device *dev)
+{
+	return scsi_add_host_with_dma(host, dev, dev);
+}
 
 static inline struct device *scsi_get_device(struct Scsi_Host *shost)
 {
@@ -741,6 +909,8 @@ static inline struct device *scsi_get_device(struct Scsi_Host *shost)
 static inline int scsi_host_scan_allowed(struct Scsi_Host *shost)
 {
 	return shost->shost_state == SHOST_RUNNING;
+	return shost->shost_state == SHOST_RUNNING ||
+	       shost->shost_state == SHOST_RECOVERY;
 }
 
 extern void scsi_unblock_requests(struct Scsi_Host *);
@@ -802,6 +972,22 @@ static inline unsigned int scsi_host_dif_capable(struct Scsi_Host *shost, unsign
 	}
 
 	return 0;
+static inline int scsi_host_prot_dma(struct Scsi_Host *shost)
+{
+	return shost->prot_capabilities >= SHOST_DIX_TYPE0_PROTECTION;
+}
+
+static inline unsigned int scsi_host_dif_capable(struct Scsi_Host *shost, unsigned int target_type)
+{
+	static unsigned char cap[] = { 0,
+				       SHOST_DIF_TYPE1_PROTECTION,
+				       SHOST_DIF_TYPE2_PROTECTION,
+				       SHOST_DIF_TYPE3_PROTECTION };
+
+	if (target_type >= ARRAY_SIZE(cap))
+		return 0;
+
+	return shost->prot_capabilities & cap[target_type] ? target_type : 0;
 }
 
 static inline unsigned int scsi_host_dix_capable(struct Scsi_Host *shost, unsigned int target_type)
@@ -813,6 +999,17 @@ static inline unsigned int scsi_host_dix_capable(struct Scsi_Host *shost, unsign
 	case 3: return shost->prot_capabilities & SHOST_DIX_TYPE3_PROTECTION;
 	}
 
+#if defined(CONFIG_BLK_DEV_INTEGRITY)
+	static unsigned char cap[] = { SHOST_DIX_TYPE0_PROTECTION,
+				       SHOST_DIX_TYPE1_PROTECTION,
+				       SHOST_DIX_TYPE2_PROTECTION,
+				       SHOST_DIX_TYPE3_PROTECTION };
+
+	if (target_type >= ARRAY_SIZE(cap))
+		return 0;
+
+	return shost->prot_capabilities & cap[target_type];
+#endif
 	return 0;
 }
 

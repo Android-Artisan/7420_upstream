@@ -19,6 +19,8 @@
     along with this program; if not, write to the Free Software
     Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 */
+#include <asm/assembler.h>
+#include <asm/opcodes.h>
 
 /* This is the kernel's entry point into the floating point emulator.
 It is called from the kernel with code similar to this:
@@ -86,6 +88,11 @@ emulate:
 
 	@ if condition code failed to match, next insn
 	beq	next			@ get the next instruction;
+	bl	arm_check_condition	@ check the condition
+	cmp	r0, #ARM_OPCODE_CONDTEST_PASS	@ condition passed?
+
+	@ if condition code failed to match, next insn
+	bne	next			@ get the next instruction;
 
 	mov	r0, r6			@ prepare for EmulateAll()
 	bl	EmulateAll		@ emulate the instruction
@@ -96,11 +103,19 @@ next:
 .Lx1:	ldrt	r6, [r5], #4		@ get the next instruction and
 					@ increment PC
 
+	reteq	r4			@ no, return failure
+
+next:
+	uaccess_enable r3
+.Lx1:	ldrt	r6, [r5], #4		@ get the next instruction and
+					@ increment PC
+	uaccess_disable r3
 	and	r2, r6, #0x0F000000	@ test for FP insns
 	teq	r2, #0x0C000000
 	teqne	r2, #0x0D000000
 	teqne	r2, #0x0E000000
 	movne	pc, r9			@ return ok if not a fp insn
+	retne	r9			@ return ok if not a fp insn
 
 	str	r5, [sp, #S_PC]		@ update PC copy in regs
 
@@ -120,3 +135,12 @@ next:
 	.align	3
 	.long	.Lx1, .Lfix
 	.previous
+	.pushsection .text.fixup,"ax"
+	.align	2
+.Lfix:	ret	r9			@ let the user eat segfaults
+	.popsection
+
+	.pushsection __ex_table,"a"
+	.align	3
+	.long	.Lx1, .Lfix
+	.popsection

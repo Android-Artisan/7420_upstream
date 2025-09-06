@@ -4,6 +4,11 @@
  *
  *    Copyright (C) 1991, 1992, 1995  Linus Torvalds
  *    Modifications for PA-RISC (C) 1999 Helge Deller <deller@gmx.de>
+/*
+ *    Initial setup-routines for HP 9000 based hardware.
+ *
+ *    Copyright (C) 1991, 1992, 1995  Linus Torvalds
+ *    Modifications for PA-RISC (C) 1999-2008 Helge Deller <deller@gmx.de>
  *    Modifications copyright 1999 SuSE GmbH (Philipp Rumpf)
  *    Modifications copyright 2000 Martin K. Petersen <mkp@mkp.net>
  *    Modifications copyright 2000 Philipp Rumpf <prumpf@tux.org>
@@ -47,6 +52,7 @@ struct system_cpuinfo_parisc boot_cpu_data __read_mostly;
 EXPORT_SYMBOL(boot_cpu_data);
 
 struct cpuinfo_parisc cpu_data[NR_CPUS] __read_mostly;
+DEFINE_PER_CPU(struct cpuinfo_parisc, cpu_data);
 
 extern int update_cr16_clocksource(void);	/* from time.c */
 
@@ -69,6 +75,23 @@ extern int update_cr16_clocksource(void);	/* from time.c */
 */
 
 /**
+ * init_cpu_profiler - enable/setup per cpu profiling hooks.
+ * @cpunum: The processor instance.
+ *
+ * FIXME: doesn't do much yet...
+ */
+static void
+init_percpu_prof(unsigned long cpunum)
+{
+	struct cpuinfo_parisc *p;
+
+	p = &per_cpu(cpu_data, cpunum);
+	p->prof_counter = 1;
+	p->prof_multiplier = 1;
+}
+
+
+/**
  * processor_probe - Determine if processor driver should claim this device.
  * @dev: The device which has been found.
  *
@@ -77,6 +100,7 @@ extern int update_cr16_clocksource(void);	/* from time.c */
  * they have work to do.
  */
 static int __cpuinit processor_probe(struct parisc_device *dev)
+static int processor_probe(struct parisc_device *dev)
 {
 	unsigned long txn_addr;
 	unsigned long cpuid;
@@ -85,6 +109,8 @@ static int __cpuinit processor_probe(struct parisc_device *dev)
 #ifdef CONFIG_SMP
 	if (num_online_cpus() >= NR_CPUS) {
 		printk(KERN_INFO "num_online_cpus() >= NR_CPUS\n");
+	if (num_online_cpus() >= nr_cpu_ids) {
+		printk(KERN_INFO "num_online_cpus() >= nr_cpu_ids\n");
 		return 1;
 	}
 #else
@@ -105,6 +131,7 @@ static int __cpuinit processor_probe(struct parisc_device *dev)
 		ulong status;
 		unsigned long bytecnt;
 	        pdc_pat_cell_mod_maddr_block_t pa_pdc_cell;
+	        pdc_pat_cell_mod_maddr_block_t *pa_pdc_cell;
 #undef USE_PAT_CPUID
 #ifdef USE_PAT_CPUID
 		struct pdc_pat_cpu_num cpu_info;
@@ -112,6 +139,12 @@ static int __cpuinit processor_probe(struct parisc_device *dev)
 
 		status = pdc_pat_cell_module(&bytecnt, dev->pcell_loc,
 			dev->mod_index, PA_VIEW, &pa_pdc_cell);
+		pa_pdc_cell = kmalloc(sizeof (*pa_pdc_cell), GFP_KERNEL);
+		if (!pa_pdc_cell)
+			panic("couldn't allocate memory for PDC_PAT_CELL!");
+
+		status = pdc_pat_cell_module(&bytecnt, dev->pcell_loc,
+			dev->mod_index, PA_VIEW, pa_pdc_cell);
 
 		BUG_ON(PDC_OK != status);
 
@@ -120,6 +153,12 @@ static int __cpuinit processor_probe(struct parisc_device *dev)
 		BUG_ON(dev->pmod_loc != pa_pdc_cell.mod_location);
 
 		txn_addr = pa_pdc_cell.mod[0];   /* id_eid for IO sapic */
+		BUG_ON(dev->mod_info != pa_pdc_cell->mod_info);
+		BUG_ON(dev->pmod_loc != pa_pdc_cell->mod_location);
+
+		txn_addr = pa_pdc_cell->mod[0];   /* id_eid for IO sapic */
+
+		kfree(pa_pdc_cell);
 
 #ifdef USE_PAT_CPUID
 /* We need contiguous numbers for cpuid. Firmware's notion
@@ -148,13 +187,13 @@ static int __cpuinit processor_probe(struct parisc_device *dev)
 #endif
 
 	p = &cpu_data[cpuid];
+	p = &per_cpu(cpu_data, cpuid);
 	boot_cpu_data.cpu_count++;
 
 	/* initialize counters - CPU 0 gets it_value set in time_init() */
 	if (cpuid)
 		memset(p, 0, sizeof(struct cpuinfo_parisc));
 
-	p->loops_per_jiffy = loops_per_jiffy;
 	p->dev = dev;		/* Save IODC data in case we need it */
 	p->hpa = dev->hpa.start;	/* save CPU hpa */
 	p->cpuid = cpuid;	/* save CPU id */
@@ -168,6 +207,9 @@ static int __cpuinit processor_probe(struct parisc_device *dev)
 	/* stolen from init_percpu_prof() */
 	cpu_data[cpuid].prof_counter = 1;
 	cpu_data[cpuid].prof_multiplier = 1;
+	**	  for boot_cpu by the above memset().
+	*/
+	init_percpu_prof(cpuid);
 #endif
 
 	/*
@@ -201,6 +243,7 @@ static int __cpuinit processor_probe(struct parisc_device *dev)
 #ifdef CONFIG_SMP
 	if (cpuid) {
 		cpu_set(cpuid, cpu_present_map);
+		set_cpu_present(cpuid, true);
 		cpu_up(cpuid);
 	}
 #endif
@@ -294,6 +337,7 @@ init_percpu_prof(int cpunum)
  * o Enable CPU profiling hooks.
  */
 int __init init_per_cpu(int cpunum)
+int init_per_cpu(int cpunum)
 {
 	int ret;
 	struct pdc_coproc_cfg coproc_cfg;
@@ -309,6 +353,8 @@ int __init init_per_cpu(int cpunum)
 		*/
 		cpu_data[cpunum].fp_rev = coproc_cfg.revision;
 		cpu_data[cpunum].fp_model = coproc_cfg.model;
+		per_cpu(cpu_data, cpunum).fp_rev = coproc_cfg.revision;
+		per_cpu(cpu_data, cpunum).fp_model = coproc_cfg.model;
 
 		printk(KERN_INFO  "FP[%d] enabled: Rev %ld Model %ld\n",
 			cpunum, coproc_cfg.revision, coproc_cfg.model);
@@ -354,6 +400,25 @@ show_cpuinfo (struct seq_file *m, void *v)
 		seq_printf(m, "processor\t: %d\n"
 				"cpu family\t: PA-RISC %s\n",
 				 n, boot_cpu_data.family_name);
+	unsigned long cpu;
+	char cpu_name[60], *p;
+
+	/* strip PA path from CPU name to not confuse lscpu */
+	strlcpy(cpu_name, per_cpu(cpu_data, 0).dev->name, sizeof(cpu_name));
+	p = strrchr(cpu_name, '[');
+	if (p)
+		*(--p) = 0;
+
+	for_each_online_cpu(cpu) {
+#ifdef CONFIG_SMP
+		const struct cpuinfo_parisc *cpuinfo = &per_cpu(cpu_data, cpu);
+
+		if (0 == cpuinfo->hpa)
+			continue;
+#endif
+		seq_printf(m, "processor\t: %lu\n"
+				"cpu family\t: PA-RISC %s\n",
+				 cpu, boot_cpu_data.family_name);
 
 		seq_printf(m, "cpu\t\t: %s\n",  boot_cpu_data.cpu_name );
 
@@ -367,6 +432,29 @@ show_cpuinfo (struct seq_file *m, void *v)
 				 boot_cpu_data.pdc.sys_model_name,
 				 cpu_data[n].dev ? 
 				 cpu_data[n].dev->name : "Unknown" );
+		seq_printf(m, "capabilities\t:");
+		if (boot_cpu_data.pdc.capabilities & PDC_MODEL_OS32)
+			seq_puts(m, " os32");
+		if (boot_cpu_data.pdc.capabilities & PDC_MODEL_OS64)
+			seq_puts(m, " os64");
+		if (boot_cpu_data.pdc.capabilities & PDC_MODEL_IOPDIR_FDC)
+			seq_puts(m, " iopdir_fdc");
+		switch (boot_cpu_data.pdc.capabilities & PDC_MODEL_NVA_MASK) {
+		case PDC_MODEL_NVA_SUPPORTED:
+			seq_puts(m, " nva_supported");
+			break;
+		case PDC_MODEL_NVA_SLOW:
+			seq_puts(m, " nva_slow");
+			break;
+		case PDC_MODEL_NVA_UNSUPPORTED:
+			seq_puts(m, " needs_equivalent_aliasing");
+			break;
+		}
+		seq_printf(m, " (0x%02lx)\n", boot_cpu_data.pdc.capabilities);
+
+		seq_printf(m, "model\t\t: %s - %s\n",
+				 boot_cpu_data.pdc.sys_model_name,
+				 cpu_name);
 
 		seq_printf(m, "hversion\t: 0x%08x\n"
 			        "sversion\t: 0x%08x\n",
@@ -379,6 +467,10 @@ show_cpuinfo (struct seq_file *m, void *v)
 		seq_printf(m, "bogomips\t: %lu.%02lu\n",
 			     cpu_data[n].loops_per_jiffy / (500000 / HZ),
 			     (cpu_data[n].loops_per_jiffy / (5000 / HZ)) % 100);
+			     cpuinfo->loops_per_jiffy / (500000 / HZ),
+			     (cpuinfo->loops_per_jiffy / (5000 / HZ)) % 100);
+			     loops_per_jiffy / (500000 / HZ),
+			     loops_per_jiffy / (5000 / HZ) % 100);
 
 		seq_printf(m, "software id\t: %ld\n\n",
 				boot_cpu_data.pdc.model.sw_id);

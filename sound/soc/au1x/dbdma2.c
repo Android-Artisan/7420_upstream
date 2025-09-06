@@ -3,6 +3,7 @@
  *
  * (c) 2007-2008 MSC Vertriebsges.m.b.H.,
  *	Manuel Lauss <mano@roarinelk.homelinux.net>
+ *	Manuel Lauss <manuel.lauss@gmail.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -53,6 +54,8 @@ struct au1xpsc_audio_dmadata {
 	unsigned long q_period;		/* queue period(s) */
 	unsigned long dma_area;		/* address of queued DMA area */
 	unsigned long dma_area_s;	/* start address of DMA area */
+	dma_addr_t dma_area;		/* address of queued DMA area */
+	dma_addr_t dma_area_s;		/* start address of DMA area */
 	unsigned long pos;		/* current byte position being played */
 	unsigned long periods;		/* number of SG segments in total */
 	unsigned long period_bytes;	/* size in bytes of one SG segment */
@@ -84,6 +87,10 @@ static const struct snd_pcm_hardware au1xpsc_pcm_hardware = {
 	.info		  = SNDRV_PCM_INFO_MMAP | SNDRV_PCM_INFO_MMAP_VALID |
 			    SNDRV_PCM_INFO_INTERLEAVED,
 	.formats	  = AU1XPSC_PCM_FMTS,
+/* PCM hardware DMA capabilities - platform specific */
+static const struct snd_pcm_hardware au1xpsc_pcm_hardware = {
+	.info		  = SNDRV_PCM_INFO_MMAP | SNDRV_PCM_INFO_MMAP_VALID |
+			    SNDRV_PCM_INFO_INTERLEAVED | SNDRV_PCM_INFO_BATCH,
 	.period_bytes_min = AU1XPSC_PERIOD_MIN_BYTES,
 	.period_bytes_max = 4096 * 1024 - 1,
 	.periods_min	  = 2,
@@ -96,6 +103,7 @@ static void au1x_pcm_queue_tx(struct au1xpsc_audio_dmadata *cd)
 {
 	au1xxx_dbdma_put_source_flags(cd->ddma_chan,
 				(void *)phys_to_virt(cd->dma_area),
+	au1xxx_dbdma_put_source(cd->ddma_chan, cd->dma_area,
 				cd->period_bytes, DDMA_FLAGS_IE);
 
 	/* update next-to-queue period */
@@ -112,6 +120,8 @@ static void au1x_pcm_queue_rx(struct au1xpsc_audio_dmadata *cd)
 	au1xxx_dbdma_put_dest_flags(cd->ddma_chan,
 				(void *)phys_to_virt(cd->dma_area),
 				cd->period_bytes, DDMA_FLAGS_IE);
+	au1xxx_dbdma_put_dest(cd->ddma_chan, cd->dma_area,
+			      cd->period_bytes, DDMA_FLAGS_IE);
 
 	/* update next-to-queue period */
 	++cd->q_period;
@@ -178,6 +188,7 @@ static int au1x_pcm_dbdma_realloc(struct au1xpsc_audio_dmadata *pcd,
 	au1x_pcm_dbdma_free(pcd);
 
 	if (stype == PCM_RX)
+	if (stype == SNDRV_PCM_STREAM_CAPTURE)
 		pcd->ddma_chan = au1xxx_dbdma_chan_alloc(pcd->ddma_id,
 					DSCR_CMD0_ALWAYS,
 					au1x_pcm_dmarx_cb, (void *)pcd);
@@ -188,6 +199,7 @@ static int au1x_pcm_dbdma_realloc(struct au1xpsc_audio_dmadata *pcd,
 
 	if (!pcd->ddma_chan)
 		return -ENOMEM;;
+		return -ENOMEM;
 
 	au1xxx_dbdma_set_devwidth(pcd->ddma_chan, msbits);
 	au1xxx_dbdma_ring_alloc(pcd->ddma_chan, 2);
@@ -199,6 +211,14 @@ static int au1x_pcm_dbdma_realloc(struct au1xpsc_audio_dmadata *pcd,
 
 out:
 	return 0;
+}
+
+static inline struct au1xpsc_audio_dmadata *to_dmadata(struct snd_pcm_substream *ss)
+{
+	struct snd_soc_pcm_runtime *rtd = ss->private_data;
+	struct au1xpsc_audio_dmadata *pcd =
+				snd_soc_platform_get_drvdata(rtd->platform);
+	return &pcd[ss->stream];
 }
 
 static int au1xpsc_pcm_hw_params(struct snd_pcm_substream *substream,
@@ -214,6 +234,8 @@ static int au1xpsc_pcm_hw_params(struct snd_pcm_substream *substream,
 
 	stype = SUBSTREAM_TYPE(substream);
 	pcd = au1xpsc_audio_pcmdma[stype];
+	stype = substream->stream;
+	pcd = to_dmadata(substream);
 
 	DBG("runtime->dma_area = 0x%08lx dma_addr_t = 0x%08lx dma_size = %d "
 	    "runtime->min_align %d\n",
@@ -234,6 +256,7 @@ static int au1xpsc_pcm_hw_params(struct snd_pcm_substream *substream,
 	pcd->period_bytes = params_period_bytes(params);
 	pcd->periods = params_periods(params);
 	pcd->dma_area_s = pcd->dma_area = (unsigned long)runtime->dma_addr;
+	pcd->dma_area_s = pcd->dma_area = runtime->dma_addr;
 	pcd->q_period = 0;
 	pcd->curr_period = 0;
 	pcd->pos = 0;
@@ -257,6 +280,11 @@ static int au1xpsc_pcm_prepare(struct snd_pcm_substream *substream)
 	au1xxx_dbdma_reset(pcd->ddma_chan);
 
 	if (SUBSTREAM_TYPE(substream) == PCM_RX) {
+	struct au1xpsc_audio_dmadata *pcd = to_dmadata(substream);
+
+	au1xxx_dbdma_reset(pcd->ddma_chan);
+
+	if (substream->stream == SNDRV_PCM_STREAM_CAPTURE) {
 		au1x_pcm_queue_rx(pcd);
 		au1x_pcm_queue_rx(pcd);
 	} else {
@@ -270,6 +298,7 @@ static int au1xpsc_pcm_prepare(struct snd_pcm_substream *substream)
 static int au1xpsc_pcm_trigger(struct snd_pcm_substream *substream, int cmd)
 {
 	u32 c = au1xpsc_audio_pcmdma[SUBSTREAM_TYPE(substream)]->ddma_chan;
+	u32 c = to_dmadata(substream)->ddma_chan;
 
 	switch (cmd) {
 	case SNDRV_PCM_TRIGGER_START:
@@ -291,10 +320,21 @@ au1xpsc_pcm_pointer(struct snd_pcm_substream *substream)
 {
 	return bytes_to_frames(substream->runtime,
 		au1xpsc_audio_pcmdma[SUBSTREAM_TYPE(substream)]->pos);
+	return bytes_to_frames(substream->runtime, to_dmadata(substream)->pos);
 }
 
 static int au1xpsc_pcm_open(struct snd_pcm_substream *substream)
 {
+	struct au1xpsc_audio_dmadata *pcd = to_dmadata(substream);
+	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+	int stype = substream->stream, *dmaids;
+
+	dmaids = snd_soc_dai_get_dma_data(rtd->cpu_dai, substream);
+	if (!dmaids)
+		return -ENODEV;	/* whoa, has ordering changed? */
+
+	pcd->ddma_id = dmaids[stype];
+
 	snd_soc_set_runtime_hwparams(substream, &au1xpsc_pcm_hardware);
 	return 0;
 }
@@ -306,6 +346,11 @@ static int au1xpsc_pcm_close(struct snd_pcm_substream *substream)
 }
 
 struct snd_pcm_ops au1xpsc_pcm_ops = {
+	au1x_pcm_dbdma_free(to_dmadata(substream));
+	return 0;
+}
+
+static struct snd_pcm_ops au1xpsc_pcm_ops = {
 	.open		= au1xpsc_pcm_open,
 	.close		= au1xpsc_pcm_close,
 	.ioctl		= snd_pcm_lib_ioctl,
@@ -325,6 +370,11 @@ static int au1xpsc_pcm_new(struct snd_card *card,
 			   struct snd_soc_dai *dai,
 			   struct snd_pcm *pcm)
 {
+static int au1xpsc_pcm_new(struct snd_soc_pcm_runtime *rtd)
+{
+	struct snd_card *card = rtd->card->snd_card;
+	struct snd_pcm *pcm = rtd->pcm;
+
 	snd_pcm_lib_preallocate_pages_for_all(pcm, SNDRV_DMA_TYPE_DEV,
 		card->dev, AU1XPSC_BUFFER_MIN_BYTES, (4096 * 1024) - 1);
 
@@ -419,3 +469,37 @@ module_exit(au1xpsc_audio_dbdma_exit);
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("Au12x0/Au1550 PSC Audio DMA driver");
 MODULE_AUTHOR("Manuel Lauss <mano@roarinelk.homelinux.net>");
+/* au1xpsc audio platform */
+static struct snd_soc_platform_driver au1xpsc_soc_platform = {
+	.ops		= &au1xpsc_pcm_ops,
+	.pcm_new	= au1xpsc_pcm_new,
+};
+
+static int au1xpsc_pcm_drvprobe(struct platform_device *pdev)
+{
+	struct au1xpsc_audio_dmadata *dmadata;
+
+	dmadata = devm_kzalloc(&pdev->dev,
+			       2 * sizeof(struct au1xpsc_audio_dmadata),
+			       GFP_KERNEL);
+	if (!dmadata)
+		return -ENOMEM;
+
+	platform_set_drvdata(pdev, dmadata);
+
+	return devm_snd_soc_register_platform(&pdev->dev,
+					      &au1xpsc_soc_platform);
+}
+
+static struct platform_driver au1xpsc_pcm_driver = {
+	.driver	= {
+		.name	= "au1xpsc-pcm",
+	},
+	.probe		= au1xpsc_pcm_drvprobe,
+};
+
+module_platform_driver(au1xpsc_pcm_driver);
+
+MODULE_LICENSE("GPL");
+MODULE_DESCRIPTION("Au12x0/Au1550 PSC Audio DMA driver");
+MODULE_AUTHOR("Manuel Lauss");

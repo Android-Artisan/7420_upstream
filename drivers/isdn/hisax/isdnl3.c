@@ -4,6 +4,7 @@
  *              based on the teles driver from Jan den Ouden
  * Copyright    by Karsten Keil      <keil@isdn4linux.de>
  * 
+ *
  * This software may be used and distributed according to the terms
  * of the GNU General Public License, incorporated herein by reference.
  *
@@ -16,6 +17,7 @@
  */
 
 #include <linux/init.h>
+#include <linux/slab.h>
 #include "hisax.h"
 #include "isdnl3.h"
 
@@ -27,11 +29,13 @@ enum {
 	ST_L3_LC_REL,
 	ST_L3_LC_ESTAB_WAIT,
 	ST_L3_LC_REL_DELAY, 
+	ST_L3_LC_REL_DELAY,
 	ST_L3_LC_REL_WAIT,
 	ST_L3_LC_ESTAB,
 };
 
 #define L3_STATE_COUNT (ST_L3_LC_ESTAB+1)
+#define L3_STATE_COUNT (ST_L3_LC_ESTAB + 1)
 
 static char *strL3State[] =
 {
@@ -53,6 +57,7 @@ enum {
 };
 
 #define L3_EVENT_COUNT (EV_TIMEOUT+1)
+#define L3_EVENT_COUNT (EV_TIMEOUT + 1)
 
 static char *strL3Event[] =
 {
@@ -67,6 +72,8 @@ static char *strL3Event[] =
 
 static void
 l3m_debug(struct FsmInst *fi, char *fmt, ...)
+static __printf(2, 3) void
+	l3m_debug(struct FsmInst *fi, char *fmt, ...)
 {
 	va_list args;
 	struct PStack *st = fi->userdata;
@@ -78,6 +85,7 @@ l3m_debug(struct FsmInst *fi, char *fmt, ...)
 
 u_char *
 findie(u_char * p, int size, u_char ie, int wanted_set)
+findie(u_char *p, int size, u_char ie, int wanted_set)
 {
 	int l, codeset, maincodeset;
 	u_char *pend = p + size;
@@ -109,6 +117,14 @@ findie(u_char * p, int size, u_char ie, int wanted_set)
                                     return (p);
                                   }           
                                   
+				{ /* improved length check (Werner Cornelius) */
+					if ((pend - p) < 2)
+						return (NULL);
+					if (*(p + 1) > (pend - (p + 2)))
+						return (NULL);
+					return (p);
+				}
+
 				if (*p > ie)
 					return (NULL);
 			}
@@ -123,6 +139,7 @@ findie(u_char * p, int size, u_char ie, int wanted_set)
 
 int
 getcallref(u_char * p)
+getcallref(u_char *p)
 {
 	int l, cr = 0;
 
@@ -132,6 +149,10 @@ getcallref(u_char * p)
 	l = 0xf & *p++;		/* callref length */
 	if (!l)			/* dummy CallRef */
 		return(-1);
+		return (-2);
+	l = 0xf & *p++;		/* callref length */
+	if (!l)			/* dummy CallRef */
+		return (-1);
 	cr = *p++;
 	return (cr);
 }
@@ -153,6 +174,7 @@ newl3state(struct l3_process *pc, int state)
 {
 	if (pc->debug & L3_DEB_STATE)
 		l3_debug(pc->st, "newstate cr %d %d --> %d", 
+		l3_debug(pc->st, "%s cr %d %d --> %d", __func__,
 			 pc->callref & 0x7F,
 			 pc->state, state);
 	pc->state = state;
@@ -229,6 +251,8 @@ no_l3_proto_spec(struct PStack *st, isdn_ctrl *ic)
 {
 	printk(KERN_WARNING "HiSax: no specific protocol handler for proto %lu\n",ic->arg & 0xFF);
 	return(-1);
+	printk(KERN_WARNING "HiSax: no specific protocol handler for proto %lu\n", ic->arg & 0xFF);
+	return (-1);
 }
 
 struct l3_process
@@ -287,6 +311,7 @@ release_l3_process(struct l3_process *p)
 				pp->next = np->next;
 			else if (!(p->st->l3.proc = np->next) &&
 				!test_bit(FLG_PTP, &p->st->l2.flag)) {
+				 !test_bit(FLG_PTP, &p->st->l2.flag)) {
 				if (p->debug)
 					l3_debug(p->st, "release_l3_process: last process");
 				if (skb_queue_empty(&p->st->l3.squeue)) {
@@ -301,6 +326,7 @@ release_l3_process(struct l3_process *p)
 						l3_debug(p->st, "release_l3_process: not release link");
 				}
 			} 
+			}
 			kfree(p);
 			return;
 		}
@@ -344,6 +370,11 @@ setstack_l3dc(struct PStack *st, struct Channel *chanp)
 	st->lli.l4l3_proto = no_l3_proto_spec;
 
 #ifdef	CONFIG_HISAX_EURO
+	FsmInitTimer(&st->l3.l3m, &st->l3.l3m_timer);
+	strcpy(st->l3.debug_id, "L3DC ");
+	st->lli.l4l3_proto = no_l3_proto_spec;
+
+#ifdef CONFIG_HISAX_EURO
 	if (st->protocol == ISDN_PTYPE_EURO) {
 		setstack_dss1(st);
 	} else
@@ -375,6 +406,33 @@ setstack_l3dc(struct PStack *st, struct Channel *chanp)
 		printk(KERN_WARNING "HiSax: %s\n", tmp);
 		st->protocol = -1;
 	}
+#ifdef CONFIG_HISAX_NI1
+		if (st->protocol == ISDN_PTYPE_NI1) {
+			setstack_ni1(st);
+		} else
+#endif
+#ifdef CONFIG_HISAX_1TR6
+			if (st->protocol == ISDN_PTYPE_1TR6) {
+				setstack_1tr6(st);
+			} else
+#endif
+				if (st->protocol == ISDN_PTYPE_LEASED) {
+					st->lli.l4l3 = no_l3_proto;
+					st->l2.l2l3 = no_l3_proto;
+					st->l3.l3ml3 = no_l3_proto;
+					printk(KERN_INFO "HiSax: Leased line mode\n");
+				} else {
+					st->lli.l4l3 = no_l3_proto;
+					st->l2.l2l3 = no_l3_proto;
+					st->l3.l3ml3 = no_l3_proto;
+					sprintf(tmp, "protocol %s not supported",
+						(st->protocol == ISDN_PTYPE_1TR6) ? "1tr6" :
+						(st->protocol == ISDN_PTYPE_EURO) ? "euro" :
+						(st->protocol == ISDN_PTYPE_NI1) ? "ni1" :
+						"unknown");
+					printk(KERN_WARNING "HiSax: %s\n", tmp);
+					st->protocol = -1;
+				}
 }
 
 static void
@@ -472,6 +530,10 @@ lc_start_delay(struct FsmInst *fi, int event, void *arg)
 
        FsmChangeState(fi, ST_L3_LC_REL_DELAY);
        FsmAddTimer(&st->l3.l3m_timer, DREL_TIMER_VALUE, EV_TIMEOUT, NULL, 50);
+	struct PStack *st = fi->userdata;
+
+	FsmChangeState(fi, ST_L3_LC_REL_DELAY);
+	FsmAddTimer(&st->l3.l3m_timer, DREL_TIMER_VALUE, EV_TIMEOUT, NULL, 50);
 }
 
 static void
@@ -484,6 +546,12 @@ lc_start_delay_check(struct FsmInst *fi, int event, void *arg)
        /* 19/09/00 - GE timer not user for NI-1 */
        if (st->protocol != ISDN_PTYPE_NI1) 
        		FsmAddTimer(&st->l3.l3m_timer, DREL_TIMER_VALUE, EV_TIMEOUT, NULL, 50);
+	struct PStack *st = fi->userdata;
+
+	FsmChangeState(fi, ST_L3_LC_REL_DELAY);
+	/* 19/09/00 - GE timer not user for NI-1 */
+	if (st->protocol != ISDN_PTYPE_NI1)
+		FsmAddTimer(&st->l3.l3m_timer, DREL_TIMER_VALUE, EV_TIMEOUT, NULL, 50);
 }
 
 static void
@@ -538,6 +606,9 @@ static struct FsmNode L3FnList[] __initdata =
         {ST_L3_LC_REL_DELAY,    EV_RELEASE_IND,         lc_release_ind},
         {ST_L3_LC_REL_DELAY,    EV_ESTABLISH_REQ,       lc_connected},
         {ST_L3_LC_REL_DELAY,    EV_TIMEOUT,             lc_release_req},
+	{ST_L3_LC_REL_DELAY,    EV_RELEASE_IND,         lc_release_ind},
+	{ST_L3_LC_REL_DELAY,    EV_ESTABLISH_REQ,       lc_connected},
+	{ST_L3_LC_REL_DELAY,    EV_TIMEOUT,             lc_release_req},
 	{ST_L3_LC_REL_WAIT,	EV_RELEASE_CNF,		lc_release_cnf},
 	{ST_L3_LC_REL_WAIT,	EV_ESTABLISH_REQ,	lc_activate},
 };
@@ -577,6 +648,34 @@ l3_msg(struct PStack *st, int pr, void *arg)
 		case (DL_RELEASE | REQUEST):
 			FsmEvent(&st->l3.l3m, EV_RELEASE_REQ, NULL);
 			break;
+	case (DL_DATA | REQUEST):
+		if (st->l3.l3m.state == ST_L3_LC_ESTAB) {
+			st->l3.l3l2(st, pr, arg);
+		} else {
+			struct sk_buff *skb = arg;
+
+			skb_queue_tail(&st->l3.squeue, skb);
+			FsmEvent(&st->l3.l3m, EV_ESTABLISH_REQ, NULL);
+		}
+		break;
+	case (DL_ESTABLISH | REQUEST):
+		FsmEvent(&st->l3.l3m, EV_ESTABLISH_REQ, NULL);
+		break;
+	case (DL_ESTABLISH | CONFIRM):
+		FsmEvent(&st->l3.l3m, EV_ESTABLISH_CNF, NULL);
+		break;
+	case (DL_ESTABLISH | INDICATION):
+		FsmEvent(&st->l3.l3m, EV_ESTABLISH_IND, NULL);
+		break;
+	case (DL_RELEASE | INDICATION):
+		FsmEvent(&st->l3.l3m, EV_RELEASE_IND, NULL);
+		break;
+	case (DL_RELEASE | CONFIRM):
+		FsmEvent(&st->l3.l3m, EV_RELEASE_CNF, NULL);
+		break;
+	case (DL_RELEASE | REQUEST):
+		FsmEvent(&st->l3.l3m, EV_RELEASE_REQ, NULL);
+		break;
 	}
 }
 
@@ -588,6 +687,7 @@ Isdnl3New(void)
 	l3fsm.strEvent = strL3Event;
 	l3fsm.strState = strL3State;
 	return FsmNew(&l3fsm, L3FnList, L3_FN_COUNT);
+	return FsmNew(&l3fsm, L3FnList, ARRAY_SIZE(L3FnList));
 }
 
 void

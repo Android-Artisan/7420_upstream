@@ -6,6 +6,7 @@
  * Bugreports.to..: <Linux390@de.ibm.com>
  * (C) IBM Corporation, IBM Deutschland Entwicklung GmbH, 1999,2000
  *
+ * Copyright IBM Corp. 1999, 2009
  */
 
 #ifndef DASD_INT_H
@@ -60,6 +61,11 @@
 #include <asm/dasd.h>
 #include <asm/idals.h>
 
+/* DASD discipline magic */
+#define DASD_ECKD_MAGIC 0xC5C3D2C4
+#define DASD_DIAG_MAGIC 0xC4C9C1C7
+#define DASD_FBA_MAGIC 0xC6C2C140
+
 /*
  * SECTION: Type definitions
  */
@@ -76,6 +82,10 @@ struct dasd_block;
 #define DASD_SIM_SENSE 0x0F
 #define DASD_SIM_MSG_TO_OP 0x03
 #define DASD_SIM_LOG 0x0C
+
+/* lock class for nested cdev lock */
+#define CDEV_NESTED_FIRST 1
+#define CDEV_NESTED_SECOND 2
 
 /*
  * SECTION: MACROs for klogd and s390 debug feature (dbf)
@@ -104,6 +114,16 @@ do { \
 			    d_data); \
 } while(0)
 
+#define DBF_EVENT_DEVID(d_level, d_cdev, d_str, d_data...)	\
+do { \
+	struct ccw_dev_id __dev_id;			\
+	ccw_device_get_id(d_cdev, &__dev_id);		\
+	debug_sprintf_event(dasd_debug_area,		\
+			    d_level,					\
+			    "0.%x.%04x " d_str "\n",			\
+			    __dev_id.ssid, __dev_id.devno, d_data);	\
+} while (0)
+
 #define DBF_EXC(d_level, d_str, d_data...)\
 do { \
 	debug_sprintf_exception(dasd_debug_area, \
@@ -111,6 +131,9 @@ do { \
 				d_str "\n", \
 				d_data); \
 } while(0)
+
+/* limit size for an errorstring */
+#define ERRORLENGTH 30
 
 /* definition of dbf debug levels */
 #define	DBF_EMERG	0	/* system is unusable			*/
@@ -127,6 +150,7 @@ do { \
 do { \
 	printk(d_loglevel PRINTK_HEADER " %s: " d_string "\n", \
 	       d_device->cdev->dev.bus_id, d_args); \
+	       dev_name(&d_device->cdev->dev), d_args); \
 	DBF_DEV_EVENT(DBF_ALERT, d_device, d_string, d_args); \
 } while(0)
 
@@ -141,6 +165,7 @@ do { \
 do { \
 	printk(d_loglevel PRINTK_HEADER " %s: " d_string "\n", \
 	       d_device->cdev->dev.bus_id, d_args); \
+	       dev_name(&d_device->cdev->dev), d_args); \
 } while(0)
 
 #define MESSAGE_LOG(d_loglevel,d_string,d_args...)\
@@ -158,6 +183,9 @@ struct dasd_ccw_req {
 	struct dasd_device *memdev;	/* the device used to allocate this */
 	struct dasd_device *startdev;	/* device the request is started on */
 	struct ccw1 *cpaddr;		/* address of channel program */
+	struct dasd_device *basedev;	/* base device if no block->base */
+	void *cpaddr;			/* address of ccw or tcw */
+	unsigned char cpmode;		/* 0 = cmd mode, 1 = itcw */
 	char status;			/* status of this request */
 	short retries;			/* A retry counter */
 	unsigned long flags;        	/* flags of this request */
@@ -165,10 +193,12 @@ struct dasd_ccw_req {
 	/* ... and how */
 	unsigned long starttime;	/* jiffies time of request start */
 	int expires;			/* expiration period in jiffies */
+	unsigned long expires;		/* expiration period in jiffies */
 	char lpm;			/* logical path mask */
 	void *data;			/* pointer to data area */
 
 	/* these are important for recovering erroneous requests          */
+	int intrc;			/* internal error, e.g. from start_IO */
 	struct irb irb;			/* device status in case of an error */
 	struct dasd_ccw_req *refers;	/* ERP-chain queueing. */
 	void *function; 		/* originating ERP action */
@@ -201,13 +231,43 @@ struct dasd_ccw_req {
 #define DASD_CQR_CLEARED	0x84	/* request was cleared */
 #define DASD_CQR_SUCCESS	0x85	/* request was successfull */
 
+#define DASD_CQR_SUCCESS	0x85	/* request was successful */
+
+/* default expiration time*/
+#define DASD_EXPIRES	  300
+#define DASD_EXPIRES_MAX  40000000
+#define DASD_RETRIES	  256
+#define DASD_RETRIES_MAX  32768
 
 /* per dasd_ccw_req flags */
 #define DASD_CQR_FLAGS_USE_ERP   0	/* use ERP for this request */
 #define DASD_CQR_FLAGS_FAILFAST  1	/* FAILFAST */
+#define DASD_CQR_VERIFY_PATH	 2	/* path verification request */
+#define DASD_CQR_ALLOW_SLOCK	 3	/* Try this request even when lock was
+					 * stolen. Should not be combined with
+					 * DASD_CQR_FLAGS_USE_ERP
+					 */
 
 /* Signature for error recovery functions. */
 typedef struct dasd_ccw_req *(*dasd_erp_fn_t) (struct dasd_ccw_req *);
+
+/*
+ * Unique identifier for dasd device.
+ */
+#define UA_NOT_CONFIGURED  0x00
+#define UA_BASE_DEVICE	   0x01
+#define UA_BASE_PAV_ALIAS  0x02
+#define UA_HYPER_PAV_ALIAS 0x03
+
+struct dasd_uid {
+	__u8 type;
+	char vendor[4];
+	char serial[15];
+	__u16 ssid;
+	__u8 real_unit_addr;
+	__u8 base_unit_addr;
+	char vduit[33];
+};
 
 /*
  * the struct dasd_discipline is
@@ -250,6 +310,22 @@ struct dasd_discipline {
 	int (*online_to_ready) (struct dasd_device *);
 
 	/*
+	 * This function is called, when new paths become available.
+	 * Disciplins may use this callback to do necessary setup work,
+	 * e.g. verify that new path is compatible with the current
+	 * configuration.
+	 */
+	int (*verify_path)(struct dasd_device *, __u8);
+
+	/*
+	 * Last things to do when a device is set online, and first things
+	 * when it is set offline.
+	 */
+	int (*basic_to_ready) (struct dasd_device *);
+	int (*online_to_ready) (struct dasd_device *);
+	int (*basic_to_known)(struct dasd_device *);
+
+	/* (struct dasd_device *);
 	 * Device operation functions. build_cp creates a ccw chain for
 	 * a block device request, start_io starts the request and
 	 * term_IO cancels it (e.g. in case of a timeout). format_device
@@ -265,6 +341,8 @@ struct dasd_discipline {
 	void (*handle_terminated_request) (struct dasd_ccw_req *);
 	struct dasd_ccw_req *(*format_device) (struct dasd_device *,
 					       struct format_data_t *);
+	int (*format_device) (struct dasd_device *,
+			      struct format_data_t *, int enable_pav);
 	int (*free_cp) (struct dasd_ccw_req *, struct request *);
 
 	/*
@@ -283,11 +361,26 @@ struct dasd_discipline {
 
 	void (*handle_unsolicited_interrupt) (struct dasd_device *,
 					      struct irb *);
+	void (*dump_sense_dbf) (struct dasd_device *, struct irb *, char *);
+	void (*check_for_device_change) (struct dasd_device *,
+					 struct dasd_ccw_req *,
+					 struct irb *);
 
         /* i/o control functions. */
 	int (*fill_geometry) (struct dasd_block *, struct hd_geometry *);
 	int (*fill_info) (struct dasd_device *, struct dasd_information2_t *);
 	int (*ioctl) (struct dasd_block *, unsigned int, void __user *);
+
+	/* suspend/resume functions */
+	int (*freeze) (struct dasd_device *);
+	int (*restore) (struct dasd_device *);
+
+	/* reload device after state change */
+	int (*reload) (struct dasd_device *);
+
+	int (*get_uid) (struct dasd_device *, struct dasd_uid *);
+	void (*kick_validate) (struct dasd_device *);
+	int (*check_attention)(struct dasd_device *, __u8);
 };
 
 extern struct dasd_discipline *dasd_diag_discipline_pointer;
@@ -326,6 +419,52 @@ struct dasd_uid {
 #define DASD_EER_STATECHANGE 3
 #define DASD_EER_PPRCSUSPEND 4
 
+struct dasd_path {
+	__u8 opm;
+	__u8 tbvpm;
+	__u8 ppm;
+	__u8 npm;
+	/* paths that are not used because of a special condition */
+	__u8 cablepm; /* miss-cabled */
+	__u8 hpfpm;   /* the HPF requirements of the other paths are not met */
+	__u8 cuirpm;  /* CUIR varied offline */
+};
+
+struct dasd_profile_info {
+	/* legacy part of profile data, as in dasd_profile_info_t */
+	unsigned int dasd_io_reqs;	 /* number of requests processed */
+	unsigned int dasd_io_sects;	 /* number of sectors processed */
+	unsigned int dasd_io_secs[32];	 /* histogram of request's sizes */
+	unsigned int dasd_io_times[32];	 /* histogram of requests's times */
+	unsigned int dasd_io_timps[32];	 /* h. of requests's times per sector */
+	unsigned int dasd_io_time1[32];	 /* hist. of time from build to start */
+	unsigned int dasd_io_time2[32];	 /* hist. of time from start to irq */
+	unsigned int dasd_io_time2ps[32]; /* hist. of time from start to irq */
+	unsigned int dasd_io_time3[32];	 /* hist. of time from irq to end */
+	unsigned int dasd_io_nr_req[32]; /* hist. of # of requests in chanq */
+
+	/* new data */
+	struct timespec starttod;	   /* time of start or last reset */
+	unsigned int dasd_io_alias;	   /* requests using an alias */
+	unsigned int dasd_io_tpm;	   /* requests using transport mode */
+	unsigned int dasd_read_reqs;	   /* total number of read  requests */
+	unsigned int dasd_read_sects;	   /* total number read sectors */
+	unsigned int dasd_read_alias;	   /* read request using an alias */
+	unsigned int dasd_read_tpm;	   /* read requests in transport mode */
+	unsigned int dasd_read_secs[32];   /* histogram of request's sizes */
+	unsigned int dasd_read_times[32];  /* histogram of requests's times */
+	unsigned int dasd_read_time1[32];  /* hist. time from build to start */
+	unsigned int dasd_read_time2[32];  /* hist. of time from start to irq */
+	unsigned int dasd_read_time3[32];  /* hist. of time from irq to end */
+	unsigned int dasd_read_nr_req[32]; /* hist. of # of requests in chanq */
+};
+
+struct dasd_profile {
+	struct dentry *dentry;
+	struct dasd_profile_info *data;
+	spinlock_t lock;
+};
+
 struct dasd_device {
 	/* Block device stuff. */
 	struct dasd_block *block;
@@ -344,6 +483,11 @@ struct dasd_device {
 
 	/* Device state and target state. */
 	int state, target;
+	struct dasd_path path_data;
+
+	/* Device state and target state. */
+	int state, target;
+	struct mutex state_mutex;
 	int stopped;		/* device (ccw_device_start) was stopped */
 
 	/* reference count. */
@@ -360,6 +504,9 @@ struct dasd_device {
 	atomic_t tasklet_scheduled;
         struct tasklet_struct tasklet;
 	struct work_struct kick_work;
+	struct work_struct restore_device;
+	struct work_struct reload_device;
+	struct work_struct kick_validate;
 	struct timer_list timer;
 
 	debug_info_t *debug_area;
@@ -368,6 +515,15 @@ struct dasd_device {
 
 	/* hook for alias management */
 	struct list_head alias_list;
+
+	/* default expiration time in s */
+	unsigned long default_expires;
+	unsigned long default_retries;
+
+	unsigned long blk_timeout;
+
+	struct dentry *debugfs_dentry;
+	struct dasd_profile profile;
 };
 
 struct dasd_block {
@@ -379,6 +535,7 @@ struct dasd_block {
 	atomic_t open_count;
 
 	unsigned long blocks;	   /* size of volume in blocks */
+	unsigned long long blocks; /* size of volume in blocks */
 	unsigned int bp_block;	   /* bytes per block */
 	unsigned int s2b_shift;	   /* log2 (bp_block/512) */
 
@@ -396,6 +553,14 @@ struct dasd_block {
 };
 
 
+	struct dentry *debugfs_dentry;
+	struct dasd_profile profile;
+};
+
+struct dasd_attention_data {
+	struct dasd_device *device;
+	__u8 lpum;
+};
 
 /* reasons why device (ccw_device_start) was stopped */
 #define DASD_STOPPED_NOT_ACC 1         /* not accessible */
@@ -403,11 +568,27 @@ struct dasd_block {
 #define DASD_STOPPED_PENDING 4         /* long busy */
 #define DASD_STOPPED_DC_WAIT 8         /* disconnected, wait */
 #define DASD_STOPPED_SU      16        /* summary unit check handling */
+#define DASD_STOPPED_PM      32        /* pm state transition */
+#define DASD_UNRESUMED_PM    64        /* pm resume failed state */
 
 /* per device flags */
 #define DASD_FLAG_OFFLINE	3	/* device is in offline processing */
 #define DASD_FLAG_EER_SNSS	4	/* A SNSS is required */
 #define DASD_FLAG_EER_IN_USE	5	/* A SNSS request is running */
+#define DASD_FLAG_DEVICE_RO	6	/* The device itself is read-only. Don't
+					 * confuse this with the user specified
+					 * read-only feature.
+					 */
+#define DASD_FLAG_IS_RESERVED	7	/* The device is reserved */
+#define DASD_FLAG_LOCK_STOLEN	8	/* The device lock was stolen */
+#define DASD_FLAG_SUSPENDED	9	/* The device was suspended */
+#define DASD_FLAG_SAFE_OFFLINE	10	/* safe offline processing requested*/
+#define DASD_FLAG_SAFE_OFFLINE_RUNNING	11	/* safe offline running */
+#define DASD_FLAG_ABORTALL	12	/* Abort all noretry requests */
+#define DASD_FLAG_PATH_VERIFY	13	/* Path verification worker running */
+
+#define DASD_SLEEPON_START_TAG	((void *) 1)
+#define DASD_SLEEPON_END_TAG	((void *) 2)
 
 void dasd_put_device_wake(struct dasd_device *);
 
@@ -524,6 +705,14 @@ extern debug_info_t *dasd_debug_area;
 extern struct dasd_profile_info_t dasd_global_profile;
 extern unsigned int dasd_profile_level;
 extern struct block_device_operations dasd_device_operations;
+#define DASD_PROFILE_OFF	 0
+#define DASD_PROFILE_ON 	 1
+#define DASD_PROFILE_GLOBAL_ONLY 2
+
+extern debug_info_t *dasd_debug_area;
+extern struct dasd_profile dasd_global_profile;
+extern unsigned int dasd_global_profile_level;
+extern const struct block_device_operations dasd_device_operations;
 
 extern struct kmem_cache *dasd_page_cache;
 
@@ -533,6 +722,12 @@ struct dasd_ccw_req *
 dasd_smalloc_request(char *, int, int, struct dasd_device *);
 void dasd_kfree_request(struct dasd_ccw_req *, struct dasd_device *);
 void dasd_sfree_request(struct dasd_ccw_req *, struct dasd_device *);
+dasd_kmalloc_request(int , int, int, struct dasd_device *);
+struct dasd_ccw_req *
+dasd_smalloc_request(int , int, int, struct dasd_device *);
+void dasd_kfree_request(struct dasd_ccw_req *, struct dasd_device *);
+void dasd_sfree_request(struct dasd_ccw_req *, struct dasd_device *);
+void dasd_wakeup_cb(struct dasd_ccw_req *, void *);
 
 static inline int
 dasd_kmalloc_set_cda(struct ccw1 *ccw, void *cda, struct dasd_device *device)
@@ -549,6 +744,13 @@ void dasd_free_block(struct dasd_block *);
 void dasd_enable_device(struct dasd_device *);
 void dasd_set_target_state(struct dasd_device *, int);
 void dasd_kick_device(struct dasd_device *);
+enum blk_eh_timer_return dasd_times_out(struct request *req);
+
+void dasd_enable_device(struct dasd_device *);
+void dasd_set_target_state(struct dasd_device *, int);
+void dasd_kick_device(struct dasd_device *);
+void dasd_restore_device(struct dasd_device *);
+void dasd_reload_device(struct dasd_device *);
 
 void dasd_add_request_head(struct dasd_ccw_req *);
 void dasd_add_request_tail(struct dasd_ccw_req *);
@@ -557,6 +759,7 @@ int  dasd_term_IO(struct dasd_ccw_req *);
 void dasd_schedule_device_bh(struct dasd_device *);
 void dasd_schedule_block_bh(struct dasd_block *);
 int  dasd_sleep_on(struct dasd_ccw_req *);
+int  dasd_sleep_on_queue(struct list_head *);
 int  dasd_sleep_on_immediatly(struct dasd_ccw_req *);
 int  dasd_sleep_on_interruptible(struct dasd_ccw_req *);
 void dasd_device_set_timer(struct dasd_device *, int);
@@ -573,12 +776,36 @@ int dasd_generic_notify(struct ccw_device *, int);
 void dasd_generic_handle_state_change(struct dasd_device *);
 
 int dasd_generic_read_dev_chars(struct dasd_device *, char *, void **, int);
+int dasd_generic_last_path_gone(struct dasd_device *);
+int dasd_generic_path_operational(struct dasd_device *);
+void dasd_generic_shutdown(struct ccw_device *);
+
+void dasd_generic_handle_state_change(struct dasd_device *);
+int dasd_generic_pm_freeze(struct ccw_device *);
+int dasd_generic_restore_device(struct ccw_device *);
+enum uc_todo dasd_generic_uc_handler(struct ccw_device *, struct irb *);
+void dasd_generic_path_event(struct ccw_device *, int *);
+int dasd_generic_verify_path(struct dasd_device *, __u8);
+
+int dasd_generic_read_dev_chars(struct dasd_device *, int, void *, int);
+char *dasd_get_sense(struct irb *);
+
+void dasd_device_set_stop_bits(struct dasd_device *, int);
+void dasd_device_remove_stop_bits(struct dasd_device *, int);
+
+int dasd_device_is_ro(struct dasd_device *);
+
+void dasd_profile_reset(struct dasd_profile *);
+int dasd_profile_on(struct dasd_profile *);
+void dasd_profile_off(struct dasd_profile *);
+char *dasd_get_user_string(const char __user *, size_t);
 
 /* externals in dasd_devmap.c */
 extern int dasd_max_devindex;
 extern int dasd_probeonly;
 extern int dasd_autodetect;
 extern int dasd_nopav;
+extern int dasd_nofcx;
 
 int dasd_devmap_init(void);
 void dasd_devmap_exit(void);
@@ -598,6 +825,9 @@ struct dasd_device *dasd_device_from_cdev(struct ccw_device *);
 struct dasd_device *dasd_device_from_cdev_locked(struct ccw_device *);
 struct dasd_device *dasd_device_from_devindex(int);
 
+void dasd_add_link_to_gendisk(struct gendisk *, struct dasd_device *);
+struct dasd_device *dasd_device_from_gendisk(struct gendisk *);
+
 int dasd_parse(void);
 int dasd_busid_known(const char *);
 
@@ -612,6 +842,7 @@ void dasd_destroy_partitions(struct dasd_block *);
 /* externals in dasd_ioctl.c */
 int  dasd_ioctl(struct inode *, struct file *, unsigned int, unsigned long);
 long dasd_compat_ioctl(struct file *, unsigned int, unsigned long);
+int  dasd_ioctl(struct block_device *, fmode_t, unsigned int, unsigned long);
 
 /* externals in dasd_proc.c */
 int dasd_proc_init(void);
@@ -624,6 +855,7 @@ struct dasd_ccw_req *dasd_alloc_erp_request(char *, int, int,
 					    struct dasd_device *);
 void dasd_free_erp_request(struct dasd_ccw_req *, struct dasd_device *);
 void dasd_log_sense(struct dasd_ccw_req *, struct irb *);
+void dasd_log_sense_dbf(struct dasd_ccw_req *cqr, struct irb *irb);
 
 /* externals in dasd_3990_erp.c */
 struct dasd_ccw_req *dasd_3990_erp_action(struct dasd_ccw_req *);

@@ -11,6 +11,7 @@
 
 #include <linux/string.h>
 #include <linux/bitops.h>
+#include <linux/bitmap.h>
 
 #include <asm/bitext.h>
 
@@ -82,6 +83,7 @@ int bit_map_string_get(struct bit_map *t, int len, int align)
 			if (i == len) {
 				for (i = 0; i < len; i++)
 					__set_bit(offset + i, t->map);
+				bitmap_set(t->map, offset, len);
 				if (offset == t->first_free)
 					t->first_free = find_next_zero_bit
 							(t->map, t->size,
@@ -125,6 +127,7 @@ void bit_map_init(struct bit_map *t, unsigned long *map, int size)
 		BUG();
 	memset(map, 0, size>>3);
 
+	bitmap_zero(map, size);
 	memset(t, 0, sizeof *t);
 	spin_lock_init(&t->lock);
 	t->map = map;

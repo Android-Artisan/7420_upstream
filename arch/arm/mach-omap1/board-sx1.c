@@ -15,6 +15,7 @@
 * published by the Free Software Foundation.
 */
 
+#include <linux/gpio.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/input.h>
@@ -42,6 +43,28 @@
 #include <mach/mcbsp.h>
 #include <mach/omap-alsa.h>
 #include <mach/keypad.h>
+#include <linux/mtd/physmap.h>
+#include <linux/types.h>
+#include <linux/i2c.h>
+#include <linux/errno.h>
+#include <linux/export.h>
+#include <linux/omapfb.h>
+#include <linux/platform_data/keypad-omap.h>
+
+#include <asm/mach-types.h>
+#include <asm/mach/arch.h>
+#include <asm/mach/map.h>
+
+#include <mach/flash.h>
+#include <mach/mux.h>
+#include <linux/omap-dma.h>
+#include <mach/tc.h>
+#include <mach/board-sx1.h>
+
+#include <mach/hardware.h>
+#include <mach/usb.h>
+
+#include "common.h"
 
 /* Write to I2C device */
 int sx1_i2c_write_byte(u8 devaddr, u8 regoffset, u8 value)
@@ -193,6 +216,35 @@ static int sx1_keymap[] = {
 	KEY(1, 1, GROUP_1 | KEY_BACKSPACE), /* C (clear) */
 	KEY(0, 2, GROUP_1 | KEY_F7),	/* menu Qt::Key_Menu */
 	0
+static const unsigned int sx1_keymap[] = {
+	KEY(3, 5, GROUP_0 | 117), /* camera Qt::Key_F17 */
+	KEY(4, 0, GROUP_0 | 114), /* voice memo Qt::Key_F14 */
+	KEY(4, 1, GROUP_2 | 114), /* voice memo */
+	KEY(4, 2, GROUP_3 | 114), /* voice memo */
+	KEY(0, 0, GROUP_1 | KEY_F12),	/* red button Qt::Key_Hangup */
+	KEY(3, 4, GROUP_1 | KEY_LEFT),
+	KEY(3, 2, GROUP_1 | KEY_DOWN),
+	KEY(3, 1, GROUP_1 | KEY_RIGHT),
+	KEY(3, 0, GROUP_1 | KEY_UP),
+	KEY(3, 3, GROUP_1 | KEY_POWER), /* joystick press or Qt::Key_Select */
+	KEY(0, 5, GROUP_1 | KEY_1),
+	KEY(0, 4, GROUP_1 | KEY_2),
+	KEY(0, 3, GROUP_1 | KEY_3),
+	KEY(4, 3, GROUP_1 | KEY_4),
+	KEY(4, 4, GROUP_1 | KEY_5),
+	KEY(4, 5, GROUP_1 | KEY_KPASTERISK),/* "*" */
+	KEY(1, 4, GROUP_1 | KEY_6),
+	KEY(1, 5, GROUP_1 | KEY_7),
+	KEY(1, 3, GROUP_1 | KEY_8),
+	KEY(2, 3, GROUP_1 | KEY_9),
+	KEY(2, 5, GROUP_1 | KEY_0),
+	KEY(2, 4, GROUP_1 | 113), /* # F13 Toggle input method Qt::Key_F13 */
+	KEY(1, 0, GROUP_1 | KEY_F11),	/* green button Qt::Key_Call */
+	KEY(2, 1, GROUP_1 | KEY_YEN),	/* left soft Qt::Key_Context1 */
+	KEY(2, 2, GROUP_1 | KEY_F8),	/* right soft Qt::Key_Back */
+	KEY(1, 2, GROUP_1 | KEY_LEFTSHIFT), /* shift */
+	KEY(1, 1, GROUP_1 | KEY_BACKSPACE), /* C (clear) */
+	KEY(2, 0, GROUP_1 | KEY_F7),	/* menu Qt::Key_Menu */
 };
 
 static struct resource sx1_kp_resources[] = {
@@ -208,6 +260,15 @@ static struct omap_kp_platform_data sx1_kp_data = {
 	.cols		= 6,
 	.keymap	= sx1_keymap,
 	.keymapsize = ARRAY_SIZE(sx1_keymap),
+static const struct matrix_keymap_data sx1_keymap_data = {
+	.keymap		= sx1_keymap,
+	.keymap_size	= ARRAY_SIZE(sx1_keymap),
+};
+
+static struct omap_kp_platform_data sx1_kp_data = {
+	.rows		= 6,
+	.cols		= 6,
+	.keymap_data	= &sx1_keymap_data,
 	.delay	= 80,
 };
 
@@ -319,6 +380,9 @@ static struct mtd_partition sx1_partitions[] = {
 static struct flash_platform_data sx1_flash_data = {
 	.map_name	= "cfi_probe",
 	.width		= 2,
+static struct physmap_flash_data sx1_flash_data = {
+	.width		= 2,
+	.set_vpp	= omap1_set_vpp,
 	.parts		= sx1_partitions,
 	.nr_parts	= ARRAY_SIZE(sx1_partitions),
 };
@@ -357,6 +421,7 @@ static struct resource sx1_new_flash_resource = {
 
 static struct platform_device sx1_flash_device = {
 	.name		= "omapflash",
+	.name		= "physmap-flash",
 	.id		= 0,
 	.dev		= {
 		.platform_data	= &sx1_flash_data,
@@ -393,6 +458,8 @@ static struct platform_device sx1_lcd_device = {
 	.name		= "lcd_sx1",
 	.id		= -1,
 };
+
+/*----------- LCD -------------------------*/
 
 static struct omap_lcd_config sx1_lcd_config __initdata = {
 	.ctrl_name	= "internal",
@@ -467,4 +534,41 @@ MACHINE_START(SX1, "OMAP310 based Siemens SX1")
 	.init_irq		= omap_sx1_init_irq,
 	.init_machine	= omap_sx1_init,
 	.timer		= &omap_timer,
+	/* mux pins for uarts */
+	omap_cfg_reg(UART1_TX);
+	omap_cfg_reg(UART1_RTS);
+	omap_cfg_reg(UART2_TX);
+	omap_cfg_reg(UART2_RTS);
+	omap_cfg_reg(UART3_TX);
+	omap_cfg_reg(UART3_RX);
+
+	platform_add_devices(sx1_devices, ARRAY_SIZE(sx1_devices));
+
+	omap_serial_init();
+	omap_register_i2c_bus(1, 100, NULL, 0);
+	omap1_usb_init(&sx1_usb_config);
+	sx1_mmc_init();
+
+	/* turn on USB power */
+	/* sx1_setusbpower(1); can't do it here because i2c is not ready */
+	gpio_request(1, "A_IRDA_OFF");
+	gpio_request(11, "A_SWITCH");
+	gpio_request(15, "A_USB_ON");
+	gpio_direction_output(1, 1);	/*A_IRDA_OFF = 1 */
+	gpio_direction_output(11, 0);	/*A_SWITCH = 0 */
+	gpio_direction_output(15, 0);	/*A_USB_ON = 0 */
+
+	omapfb_set_lcd_config(&sx1_lcd_config);
+}
+
+MACHINE_START(SX1, "OMAP310 based Siemens SX1")
+	.atag_offset	= 0x100,
+	.map_io		= omap15xx_map_io,
+	.init_early     = omap1_init_early,
+	.init_irq	= omap1_init_irq,
+	.handle_irq	= omap1_handle_irq,
+	.init_machine	= omap_sx1_init,
+	.init_late	= omap1_init_late,
+	.init_time	= omap1_timer_init,
+	.restart	= omap1_restart,
 MACHINE_END

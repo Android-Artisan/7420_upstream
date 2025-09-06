@@ -208,6 +208,7 @@ Tips & Tricks
   of colours that my display uses it consumes less battery power. I've seen
   this on powerbooks too. I hope that this is a piece of information that
   might be useful to the Laptop Mode patch or it's users."
+  might be useful to the Laptop Mode patch or its users."
 
 * In syslog.conf, you can prefix entries with a dash ``-'' to omit syncing the
   file after every logging. When you're using laptop-mode and your disk doesn't
@@ -265,6 +266,9 @@ MINIMUM_BATTERY_MINUTES=10
 # exceeded, the kernel will wake pdflush which will then reduce the amount
 # of dirty memory to dirty_background_ratio.  Set this nice and low, so once
 # some writeout has commenced, we do a lot of it.
+# exceeded, the kernel will wake flusher threads which will then reduce the
+# amount of dirty memory to dirty_background_ratio.  Set this nice and low,
+# so once some writeout has commenced, we do a lot of it.
 #
 #DIRTY_BACKGROUND_RATIO=5
 
@@ -387,6 +391,9 @@ CPU_MAXFREQ=${CPU_MAXFREQ:-'slowest'}
 # exceeded, the kernel will wake pdflush which will then reduce the amount
 # of dirty memory to dirty_background_ratio.  Set this nice and low, so once
 # some writeout has commenced, we do a lot of it.
+# exceeded, the kernel will wake flusher threads which will then reduce the
+# amount of dirty memory to dirty_background_ratio.  Set this nice and low,
+# so once some writeout has commenced, we do a lot of it.
 #
 DIRTY_BACKGROUND_RATIO=${DIRTY_BACKGROUND_RATIO:-'5'}
 
@@ -948,3 +955,4 @@ int main(int argc, char **argv)
     return 0;
 }
 ---------------------------dslm.c END-------------------------------------------
+spends spun up/down.  See Documentation/laptops/dslm.c

@@ -13,6 +13,7 @@ EXPORT_SYMBOL(memcpy);
 EXPORT_SYMBOL(strlen);
 
 #include<asm/pgtable.h>
+#include <asm/pgtable.h>
 EXPORT_SYMBOL_GPL(empty_zero_page);
 
 #include <asm/checksum.h>
@@ -21,6 +22,7 @@ EXPORT_SYMBOL(csum_ipv6_magic);
 
 #include <asm/page.h>
 EXPORT_SYMBOL(clear_page);
+EXPORT_SYMBOL(copy_page);
 
 #ifdef CONFIG_VIRTUAL_MEM_MAP
 #include <linux/bootmem.h>
@@ -32,6 +34,9 @@ EXPORT_SYMBOL(max_low_pfn);	/* defined by bootmem.c, but not exported by generic
 EXPORT_SYMBOL(per_cpu__cpu_info);
 #ifdef CONFIG_SMP
 EXPORT_SYMBOL(per_cpu__local_per_cpu_offset);
+EXPORT_SYMBOL(ia64_cpu_info);
+#ifdef CONFIG_SMP
+EXPORT_SYMBOL(local_per_cpu_offset);
 #endif
 
 #include <asm/uaccess.h>
@@ -112,3 +117,12 @@ EXPORT_SYMBOL_GPL(esi_call_phys);
 #endif
 extern char ia64_ivt[];
 EXPORT_SYMBOL(ia64_ivt);
+
+#include <asm/ftrace.h>
+#ifdef CONFIG_FUNCTION_TRACER
+/* mcount is defined in assembly */
+EXPORT_SYMBOL(_mcount);
+#endif
+
+#include <asm/cacheflush.h>
+EXPORT_SYMBOL_GPL(flush_icache_range);

@@ -176,6 +176,11 @@ int gdbstub_rx_char(unsigned char *_ch, int nonblock)
 	}
 	else {
 		gdbstub_proto("### GDB Rx %02x (st=%02x) ###\n",ch,st);
+		gdbstub_io("### GDB Rx Error (st=%02x) ###\n",st);
+		return -EIO;
+	}
+	else {
+		gdbstub_io("### GDB Rx %02x (st=%02x) ###\n",ch,st);
 		*_ch = ch & 0x7f;
 		return 0;
 	}

@@ -2,6 +2,7 @@
  *  Registration of Cobalt MTD device.
  *
  *  Copyright (C) 2006  Yoichi Yuasa <yoichi_yuasa@tripeaks.co.jp>
+ *  Copyright (C) 2006  Yoichi Yuasa <yuasa@linux-mips.org>
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -26,6 +27,7 @@ static struct mtd_partition cobalt_mtd_partitions[] = {
 	{
 		.name	= "firmware",
 		.offset	= 0x0,
+		.offset = 0x0,
 		.size	= 0x80000,
 	},
 };
@@ -59,3 +61,4 @@ static int __init cobalt_mtd_init(void)
 }
 
 module_init(cobalt_mtd_init);
+device_initcall(cobalt_mtd_init);

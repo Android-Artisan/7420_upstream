@@ -28,6 +28,12 @@
 #include "ieee754sp.h"
 
 ieee754sp ieee754sp_sqrt(ieee754sp x)
+ *  51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA.
+ */
+
+#include "ieee754sp.h"
+
+union ieee754sp ieee754sp_sqrt(union ieee754sp x)
 {
 	int ix, s, q, m, t, i;
 	unsigned int r;
@@ -37,6 +43,7 @@ ieee754sp ieee754sp_sqrt(ieee754sp x)
 
 	EXPLODEXSP;
 	CLEARCX;
+	ieee754_clearcx();
 	FLUSHXSP;
 
 	/* x == INF or NAN? */
@@ -58,12 +65,34 @@ ieee754sp ieee754sp_sqrt(ieee754sp x)
 		}
 		/* sqrt(+Inf) = Inf */
 		return x;
+	case IEEE754_CLASS_SNAN:
+		return ieee754sp_nanxcpt(x);
+
+	case IEEE754_CLASS_QNAN:
+		/* sqrt(Nan) = Nan */
+		return x;
+
+	case IEEE754_CLASS_ZERO:
+		/* sqrt(0) = 0 */
+		return x;
+
+	case IEEE754_CLASS_INF:
+		if (xs) {
+			/* sqrt(-Inf) = Nan */
+			ieee754_setcx(IEEE754_INVALID_OPERATION);
+			return ieee754sp_indef();
+		}
+		/* sqrt(+Inf) = Inf */
+		return x;
+
 	case IEEE754_CLASS_DNORM:
 	case IEEE754_CLASS_NORM:
 		if (xs) {
 			/* sqrt(-x) = Nan */
 			SETCX(IEEE754_INVALID_OPERATION);
 			return ieee754sp_nanxcpt(ieee754sp_indef(), "sqrt");
+			ieee754_setcx(IEEE754_INVALID_OPERATION);
+			return ieee754sp_indef();
 		}
 		break;
 	}
@@ -106,6 +135,12 @@ ieee754sp ieee754sp_sqrt(ieee754sp x)
 			q += 2;
 			break;
 		case IEEE754_RN:
+		ieee754_setcx(IEEE754_INEXACT);
+		switch (ieee754_csr.rm) {
+		case FPU_CSR_RU:
+			q += 2;
+			break;
+		case FPU_CSR_RN:
 			q += (q & 1);
 			break;
 		}

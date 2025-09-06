@@ -9,12 +9,32 @@
 #include "decl.h"
 #include "dev.h"
 #include "wext.h"
+/*
+ * This file contains the handling of RX in wlan driver.
+ */
+
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
+#include <linux/etherdevice.h>
+#include <linux/hardirq.h>
+#include <linux/slab.h>
+#include <linux/types.h>
+#include <linux/export.h>
+#include <net/cfg80211.h>
+
+#include "defs.h"
+#include "host.h"
+#include "radiotap.h"
+#include "decl.h"
+#include "dev.h"
+#include "mesh.h"
 
 struct eth803hdr {
 	u8 dest_addr[6];
 	u8 src_addr[6];
 	u16 h803_len;
 } __attribute__ ((packed));
+} __packed;
 
 struct rfc1042hdr {
 	u8 llc_dsap;
@@ -29,11 +49,18 @@ struct rxpackethdr {
 	struct eth803hdr eth803_hdr;
 	struct rfc1042hdr rfc1042_hdr;
 } __attribute__ ((packed));
+} __packed;
+
+struct rxpackethdr {
+	struct eth803hdr eth803_hdr;
+	struct rfc1042hdr rfc1042_hdr;
+} __packed;
 
 struct rx80211packethdr {
 	struct rxpd rx_pd;
 	void *eth80211_hdr;
 } __attribute__ ((packed));
+} __packed;
 
 static int process_rxed_802_11_packet(struct lbs_private *priv,
 	struct sk_buff *skb);
@@ -138,6 +165,12 @@ static void lbs_compute_rssi(struct lbs_private *priv, struct rxpd *p_rx_pd)
  *  @param priv    A pointer to struct lbs_private
  *  @param skb     A pointer to skb which includes the received packet
  *  @return 	   0 or -1
+ * lbs_process_rxed_packet - processes received packet and forwards it
+ * to kernel/upper layer
+ *
+ * @priv:	A pointer to &struct lbs_private
+ * @skb:	A pointer to skb which includes the received packet
+ * returns:	0 or -1
  */
 int lbs_process_rxed_packet(struct lbs_private *priv, struct sk_buff *skb)
 {
@@ -148,6 +181,9 @@ int lbs_process_rxed_packet(struct lbs_private *priv, struct sk_buff *skb)
 	int hdrchop;
 	struct ethhdr *p_ethhdr;
 	const u8 rfc1042_eth_hdr[] = { 0xaa, 0xaa, 0x03, 0x00, 0x00, 0x00 };
+	static const u8 rfc1042_eth_hdr[] = {
+		0xaa, 0xaa, 0x03, 0x00, 0x00, 0x00
+	};
 
 	lbs_deb_enter(LBS_DEB_RX);
 
@@ -162,6 +198,16 @@ int lbs_process_rxed_packet(struct lbs_private *priv, struct sk_buff *skb)
 	p_rx_pd = &p_rx_pkt->rx_pd;
 	if (priv->mesh_dev && (p_rx_pd->rx_control & RxPD_MESH_FRAME))
 		dev = priv->mesh_dev;
+	if (priv->wdev->iftype == NL80211_IFTYPE_MONITOR) {
+		ret = process_rxed_802_11_packet(priv, skb);
+		goto done;
+	}
+
+	p_rx_pd = (struct rxpd *) skb->data;
+	p_rx_pkt = (struct rxpackethdr *) ((u8 *)p_rx_pd +
+		le32_to_cpu(p_rx_pd->pkt_ptr));
+
+	dev = lbs_mesh_set_dev(priv, dev, p_rx_pd);
 
 	lbs_deb_hex(LBS_DEB_RX, "RX Data: Before chop rxpd", skb->data,
 		 min_t(unsigned int, skb->len, 100));
@@ -186,6 +232,15 @@ int lbs_process_rxed_packet(struct lbs_private *priv, struct sk_buff *skb)
 
 	lbs_deb_rx("rx data: skb->len-sizeof(RxPd) = %d-%zd = %zd\n",
 	       skb->len, sizeof(struct rxpd), skb->len - sizeof(struct rxpd));
+		dev->stats.rx_length_errors++;
+		ret = -EINVAL;
+		dev_kfree_skb(skb);
+		goto done;
+	}
+
+	lbs_deb_rx("rx data: skb->len - pkt_ptr = %d-%zd = %zd\n",
+		skb->len, (size_t)le32_to_cpu(p_rx_pd->pkt_ptr),
+		skb->len - (size_t)le32_to_cpu(p_rx_pd->pkt_ptr));
 
 	lbs_deb_hex(LBS_DEB_RX, "RX Data: Dest", p_rx_pkt->eth803_hdr.dest_addr,
 		sizeof(p_rx_pkt->eth803_hdr.dest_addr));
@@ -206,6 +261,7 @@ int lbs_process_rxed_packet(struct lbs_private *priv, struct sk_buff *skb)
 		 */
 		p_ethhdr = (struct ethhdr *)
 		    ((u8 *) & p_rx_pkt->eth803_hdr
+		    ((u8 *) &p_rx_pkt->eth803_hdr
 		     + sizeof(p_rx_pkt->eth803_hdr) + sizeof(p_rx_pkt->rfc1042_hdr)
 		     - sizeof(p_rx_pkt->eth803_hdr.dest_addr)
 		     - sizeof(p_rx_pkt->eth803_hdr.src_addr)
@@ -227,6 +283,14 @@ int lbs_process_rxed_packet(struct lbs_private *priv, struct sk_buff *skb)
 
 		/* Chop off the rxpd */
 		hdrchop = (u8 *) & p_rx_pkt->eth803_hdr - (u8 *) p_rx_pkt;
+		hdrchop = (u8 *)p_ethhdr - (u8 *)p_rx_pd;
+	} else {
+		lbs_deb_hex(LBS_DEB_RX, "RX Data: LLC/SNAP",
+			(u8 *) &p_rx_pkt->rfc1042_hdr,
+			sizeof(p_rx_pkt->rfc1042_hdr));
+
+		/* Chop off the rxpd */
+		hdrchop = (u8 *)&p_rx_pkt->eth803_hdr - (u8 *)p_rx_pd;
 	}
 
 	/* Chop off the leading header bytes so the skb points to the start of
@@ -245,6 +309,11 @@ int lbs_process_rxed_packet(struct lbs_private *priv, struct sk_buff *skb)
 	lbs_deb_rx("rx data: size of actual packet %d\n", skb->len);
 	priv->stats.rx_bytes += skb->len;
 	priv->stats.rx_packets++;
+	priv->cur_rate = lbs_fw_index_to_data_rate(p_rx_pd->rx_rate);
+
+	lbs_deb_rx("rx data: size of actual packet %d\n", skb->len);
+	dev->stats.rx_bytes += skb->len;
+	dev->stats.rx_packets++;
 
 	skb->protocol = eth_type_trans(skb, dev);
 	if (in_interrupt())
@@ -265,6 +334,11 @@ EXPORT_SYMBOL_GPL(lbs_process_rxed_packet);
  *
  *  @param rate    Input rate
  *  @return 	   Output Rate (0 if invalid)
+ * convert_mv_rate_to_radiotap - converts Tx/Rx rates from Marvell WLAN format
+ * (see Table 2 in Section 3.1) to IEEE80211_RADIOTAP_RATE units (500 Kb/s)
+ *
+ * @rate:	Input rate
+ * returns:	Output Rate (0 if invalid)
  */
 static u8 convert_mv_rate_to_radiotap(u8 rate)
 {
@@ -296,6 +370,7 @@ static u8 convert_mv_rate_to_radiotap(u8 rate)
 		return 108;
 	}
 	lbs_pr_alert("Invalid Marvell WLAN rate %i\n", rate);
+	pr_alert("Invalid Marvell WLAN rate %i\n", rate);
 	return 0;
 }
 
@@ -306,12 +381,19 @@ static u8 convert_mv_rate_to_radiotap(u8 rate)
  *  @param priv    A pointer to struct lbs_private
  *  @param skb     A pointer to skb which includes the received packet
  *  @return 	   0 or -1
+ * process_rxed_802_11_packet - processes a received 802.11 packet and forwards
+ * it to kernel/upper layer
+ *
+ * @priv:	A pointer to &struct lbs_private
+ * @skb:	A pointer to skb which includes the received packet
+ * returns:	0 or -1
  */
 static int process_rxed_802_11_packet(struct lbs_private *priv,
 	struct sk_buff *skb)
 {
 	int ret = 0;
 
+	struct net_device *dev = priv->dev;
 	struct rx80211packethdr *p_rx_pkt;
 	struct rxpd *prxpd;
 	struct rx_radiotap_hdr radiotap_hdr;
@@ -340,6 +422,16 @@ static int process_rxed_802_11_packet(struct lbs_private *priv,
 		priv->stats.rx_errors++;
 	}
 
+	/* lbs_deb_hex(LBS_DEB_RX, "RX Data: Before chop rxpd", skb->data, min(skb->len, 100)); */
+
+	if (skb->len < (ETH_HLEN + 8 + sizeof(struct rxpd))) {
+		lbs_deb_rx("rx err: frame received with bad length\n");
+		dev->stats.rx_length_errors++;
+		ret = -EINVAL;
+		kfree_skb(skb);
+		goto done;
+	}
+
 	lbs_deb_rx("rx data: skb->len-sizeof(RxPd) = %d-%zd = %zd\n",
 	       skb->len, sizeof(struct rxpd), skb->len - sizeof(struct rxpd));
 
@@ -364,6 +456,13 @@ static int process_rxed_802_11_packet(struct lbs_private *priv,
 	if (!(prxpd->status & cpu_to_le16(MRVDRV_RXPD_STATUS_OK)))
 		radiotap_hdr.rx_flags |= IEEE80211_RADIOTAP_F_RX_BADFCS;
 	//memset(radiotap_hdr.pad, 0x11, IEEE80211_RADIOTAP_HDRLEN - 18);
+	memset(&radiotap_hdr, 0, sizeof(radiotap_hdr));
+	/* XXX must check radiotap_hdr.hdr.it_pad for pad */
+	radiotap_hdr.hdr.it_len = cpu_to_le16 (sizeof(struct rx_radiotap_hdr));
+	radiotap_hdr.hdr.it_present = cpu_to_le32 (RX_RADIOTAP_PRESENT);
+	radiotap_hdr.rate = convert_mv_rate_to_radiotap(prxpd->rx_rate);
+	/* XXX must check no carryout */
+	radiotap_hdr.antsignal = prxpd->snr + prxpd->nf;
 
 	/* chop the rxpd */
 	skb_pull(skb, sizeof(struct rxpd));
@@ -372,6 +471,7 @@ static int process_rxed_802_11_packet(struct lbs_private *priv,
 	if ((skb_headroom(skb) < sizeof(struct rx_radiotap_hdr)) &&
 	    pskb_expand_head(skb, sizeof(struct rx_radiotap_hdr), 0, GFP_ATOMIC)) {
 		lbs_pr_alert("%s: couldn't pskb_expand_head\n", __func__);
+		netdev_alert(dev, "%s: couldn't pskb_expand_head\n", __func__);
 		ret = -ENOMEM;
 		kfree_skb(skb);
 		goto done;
@@ -394,6 +494,18 @@ static int process_rxed_802_11_packet(struct lbs_private *priv,
 
 	skb->protocol = eth_type_trans(skb, priv->rtap_net_dev);
 	netif_rx(skb);
+	priv->cur_rate = lbs_fw_index_to_data_rate(prxpd->rx_rate);
+
+	lbs_deb_rx("rx data: size of actual packet %d\n", skb->len);
+	dev->stats.rx_bytes += skb->len;
+	dev->stats.rx_packets++;
+
+	skb->protocol = eth_type_trans(skb, priv->dev);
+
+	if (in_interrupt())
+		netif_rx(skb);
+	else
+		netif_rx_ni(skb);
 
 	ret = 0;
 

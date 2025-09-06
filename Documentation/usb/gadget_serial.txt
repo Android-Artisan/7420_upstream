@@ -119,6 +119,11 @@ ACM device (recommended for interoperability), do this:
 To load it as a vendor specific bulk in/out device, do this:
 
   modprobe g_serial
+  modprobe g_serial
+
+To load it as a vendor specific bulk in/out device, do this:
+
+  modprobe g_serial use_acm=0
 
 This will also automatically load the underlying gadget peripheral
 controller driver.  This must be done each time you reboot the gadget
@@ -219,6 +224,9 @@ on Windows XP, open a DOS window and run a command like
   expand C:\WINDOWS\Driver~1\i386\driver.cab -F:usbser.sys .
 
 (Thanks to Nishant Kamat for pointing out this DOS command.)
+To use the Windows ACM driver you must have the "linux-cdc-acm.inf"
+file (provided along this document) which supports all recent versions
+of Windows.
 
 When the gadget serial driver is loaded and the USB device connected
 to the Windows host with a USB cable, Windows should recognize the
@@ -233,6 +241,16 @@ enter the path or browse to the folder containing "gserial.inf" and
 "usbser.sys".  Windows will complain that the Gadget Serial driver
 has not passed Windows Logo testing, but select "Continue anyway"
 and finish the driver installation.
+driver in the folder that contains the "linux-cdc-acm.inf" file.
+
+For example, on Windows XP, when the gadget serial device is first
+plugged in, the "Found New Hardware Wizard" starts up.  Select
+"Install from a list or specific location (Advanced)", then on the
+next screen select "Include this location in the search" and enter the
+path or browse to the folder containing the "linux-cdc-acm.inf" file.
+Windows will complain that the Gadget Serial driver has not passed
+Windows Logo testing, but select "Continue anyway" and finish the
+driver installation.
 
 On Windows XP, in the "Device Manager" (under "Control Panel",
 "System", "Hardware") expand the "Ports (COM & LPT)" entry and you
@@ -303,6 +321,12 @@ E:  Ad=02(O) Atr=02(Bulk) MxPS= 512 Ivl=0ms
 
 You must explicitly load the usbserial driver with parameters to
 configure it to recognize the gadget serial device, like this:
+You must load the usbserial driver and explicitly set its parameters
+to configure it to recognize the gadget serial device, like this:
+
+  echo 0x0525 0xA4A6 >/sys/bus/usb-serial/drivers/generic/new_id
+
+The legacy way is to use module parameters:
 
   modprobe usbserial vendor=0x0525 product=0xA4A6
 

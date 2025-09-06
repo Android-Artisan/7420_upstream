@@ -62,6 +62,7 @@
 #include <linux/i2c.h>
 #include <linux/acpi.h>
 #include <asm/io.h>
+#include <linux/io.h>
 
 static int blacklist[] = {
 	PCI_DEVICE_ID_SI_540,
@@ -148,6 +149,7 @@ static int sis5595_setup(struct pci_dev *SIS5595_dev)
 	u8 val;
 	int *i;
 	int retval = -ENODEV;
+	int retval;
 
 	/* Look for imposters */
 	for (i = blacklist; *i != 0; i++) {
@@ -224,6 +226,7 @@ static int sis5595_setup(struct pci_dev *SIS5595_dev)
 error:
 	release_region(sis5595_base + SMB_INDEX, 2);
 	return retval;
+	return -ENODEV;
 }
 
 static int sis5595_transaction(struct i2c_adapter *adap)
@@ -257,6 +260,7 @@ static int sis5595_transaction(struct i2c_adapter *adap)
 
 	/* If the SMBus is still busy, we give up */
 	if (timeout >= MAX_TIMEOUT) {
+	if (timeout > MAX_TIMEOUT) {
 		dev_dbg(&adap->dev, "SMBus Timeout!\n");
 		result = -ETIMEDOUT;
 	}
@@ -371,6 +375,7 @@ static struct i2c_adapter sis5595_adapter = {
 };
 
 static struct pci_device_id sis5595_ids[] __devinitdata = {
+static const struct pci_device_id sis5595_ids[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_SI, PCI_DEVICE_ID_SI_503) }, 
 	{ 0, }
 };
@@ -378,6 +383,7 @@ static struct pci_device_id sis5595_ids[] __devinitdata = {
 MODULE_DEVICE_TABLE (pci, sis5595_ids);
 
 static int __devinit sis5595_probe(struct pci_dev *dev, const struct pci_device_id *id)
+static int sis5595_probe(struct pci_dev *dev, const struct pci_device_id *id)
 {
 	int err;
 
@@ -391,6 +397,8 @@ static int __devinit sis5595_probe(struct pci_dev *dev, const struct pci_device_
 
 	sprintf(sis5595_adapter.name, "SMBus SIS5595 adapter at %04x",
 		sis5595_base + SMB_INDEX);
+	snprintf(sis5595_adapter.name, sizeof(sis5595_adapter.name),
+		 "SMBus SIS5595 adapter at %04x", sis5595_base + SMB_INDEX);
 	err = i2c_add_adapter(&sis5595_adapter);
 	if (err) {
 		release_region(sis5595_base + SMB_INDEX, 2);

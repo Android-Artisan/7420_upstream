@@ -3,6 +3,7 @@
 #
 
 EXTRA_CFLAGS := -Werror
+ccflags-y := -Werror
 
 obj-y	:= init.o fault.o extable.o
 

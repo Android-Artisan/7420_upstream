@@ -29,6 +29,7 @@ _GLOBAL(strcpy)
    just as the libc version does.  -- paulus */
 _GLOBAL(strncpy)
 	cmpwi	0,r5,0
+	PPC_LCMPI 0,r5,0
 	beqlr
 	mtctr	r5
 	addi	r6,r3,-1
@@ -40,6 +41,7 @@ _GLOBAL(strncpy)
 	bnelr			/* if we didn't hit a null char, we're done */
 	mfctr	r5
 	cmpwi	0,r5,0		/* any space left in destination buffer? */
+	PPC_LCMPI 0,r5,0	/* any space left in destination buffer? */
 	beqlr			/* we know r0 == 0 here */
 2:	stbu	r0,1(r6)	/* clear it out if so */
 	bdnz	2b
@@ -72,6 +74,8 @@ _GLOBAL(strcmp)
 _GLOBAL(strncmp)
 	PPC_LCMPI r5,0
 	beqlr
+	PPC_LCMPI 0,r5,0
+	beq-	2f
 	mtctr	r5
 	addi	r5,r3,-1
 	addi	r4,r4,-1
@@ -81,6 +85,8 @@ _GLOBAL(strncmp)
 	subf.	r3,r0,r3
 	beqlr	1
 	bdnzt	eq,1b
+	blr
+2:	li	r3,0
 	blr
 
 _GLOBAL(strlen)
@@ -94,6 +100,10 @@ _GLOBAL(strlen)
 _GLOBAL(memcmp)
 	cmpwi	0,r5,0
 	ble-	2f
+#ifdef CONFIG_PPC32
+_GLOBAL(memcmp)
+	PPC_LCMPI 0,r5,0
+	beq-	2f
 	mtctr	r5
 	addi	r6,r3,-1
 	addi	r4,r4,-1
@@ -108,6 +118,11 @@ _GLOBAL(memcmp)
 _GLOBAL(memchr)
 	cmpwi	0,r5,0
 	ble-	2f
+#endif
+
+_GLOBAL(memchr)
+	PPC_LCMPI 0,r5,0
+	beq-	2f
 	mtctr	r5
 	addi	r3,r3,-1
 1:	lbzu	r0,1(r3)
@@ -117,7 +132,8 @@ _GLOBAL(memchr)
 2:	li	r3,0
 	blr
 
-_GLOBAL(__clear_user)
+#ifdef CONFIG_PPC32
+_GLOBAL(__arch_clear_user)
 	addi	r6,r3,-4
 	li	r3,0
 	li	r5,0
@@ -203,3 +219,4 @@ _GLOBAL(__strnlen_user)
 
 	.section __ex_table,"a"
 	PPC_LONG	1b,99b
+#endif

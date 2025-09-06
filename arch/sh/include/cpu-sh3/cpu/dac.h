@@ -21,6 +21,10 @@ static __inline__ void sh_dac_enable(int channel)
 	if(channel) v |= DACR_DAOE1;
 	else v |= DACR_DAOE0;
 	ctrl_outb(v,DACR);
+	v = __raw_readb(DACR);
+	if(channel) v |= DACR_DAOE1;
+	else v |= DACR_DAOE0;
+	__raw_writeb(v,DACR);
 }
 
 static __inline__ void sh_dac_disable(int channel)
@@ -30,12 +34,18 @@ static __inline__ void sh_dac_disable(int channel)
 	if(channel) v &= ~DACR_DAOE1;
 	else v &= ~DACR_DAOE0;
 	ctrl_outb(v,DACR);
+	v = __raw_readb(DACR);
+	if(channel) v &= ~DACR_DAOE1;
+	else v &= ~DACR_DAOE0;
+	__raw_writeb(v,DACR);
 }
 
 static __inline__ void sh_dac_output(u8 value, int channel)
 {
 	if(channel) ctrl_outb(value,DADR1);
 	else ctrl_outb(value,DADR0);
+	if(channel) __raw_writeb(value,DADR1);
+	else __raw_writeb(value,DADR0);
 }
 
 #endif /* __ASM_CPU_SH3_DAC_H */

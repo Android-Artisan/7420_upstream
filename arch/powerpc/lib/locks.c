@@ -15,6 +15,7 @@
 #include <linux/kernel.h>
 #include <linux/spinlock.h>
 #include <linux/module.h>
+#include <linux/export.h>
 #include <linux/stringify.h>
 #include <linux/smp.h>
 
@@ -26,6 +27,11 @@
 #include <asm/firmware.h>
 
 void __spin_yield(raw_spinlock_t *lock)
+#if defined(CONFIG_PPC_SPLPAR)
+#include <asm/hvcall.h>
+#include <asm/smp.h>
+
+void __spin_yield(arch_spinlock_t *lock)
 {
 	unsigned int lock_value, holder_cpu, yield_count;
 
@@ -35,6 +41,7 @@ void __spin_yield(raw_spinlock_t *lock)
 	holder_cpu = lock_value & 0xffff;
 	BUG_ON(holder_cpu >= NR_CPUS);
 	yield_count = lppaca[holder_cpu].yield_count;
+	yield_count = be32_to_cpu(lppaca_of(holder_cpu).yield_count);
 	if ((yield_count & 1) == 0)
 		return;		/* virtual cpu is currently running */
 	rmb();
@@ -49,6 +56,10 @@ void __spin_yield(raw_spinlock_t *lock)
 			get_hard_smp_processor_id(holder_cpu), yield_count);
 #endif
 }
+	plpar_hcall_norets(H_CONFER,
+		get_hard_smp_processor_id(holder_cpu), yield_count);
+}
+EXPORT_SYMBOL_GPL(__spin_yield);
 
 /*
  * Waiting for a read lock or a write lock on a rwlock...
@@ -56,6 +67,7 @@ void __spin_yield(raw_spinlock_t *lock)
  * we only know the holder if it is write-locked.
  */
 void __rw_yield(raw_rwlock_t *rw)
+void __rw_yield(arch_rwlock_t *rw)
 {
 	int lock_value;
 	unsigned int holder_cpu, yield_count;
@@ -66,6 +78,7 @@ void __rw_yield(raw_rwlock_t *rw)
 	holder_cpu = lock_value & 0xffff;
 	BUG_ON(holder_cpu >= NR_CPUS);
 	yield_count = lppaca[holder_cpu].yield_count;
+	yield_count = be32_to_cpu(lppaca_of(holder_cpu).yield_count);
 	if ((yield_count & 1) == 0)
 		return;		/* virtual cpu is currently running */
 	rmb();
@@ -84,6 +97,15 @@ void __rw_yield(raw_rwlock_t *rw)
 
 void __raw_spin_unlock_wait(raw_spinlock_t *lock)
 {
+	plpar_hcall_norets(H_CONFER,
+		get_hard_smp_processor_id(holder_cpu), yield_count);
+}
+#endif
+
+void arch_spin_unlock_wait(arch_spinlock_t *lock)
+{
+	smp_mb();
+
 	while (lock->slock) {
 		HMT_low();
 		if (SHARED_PROCESSOR)
@@ -93,3 +115,8 @@ void __raw_spin_unlock_wait(raw_spinlock_t *lock)
 }
 
 EXPORT_SYMBOL(__raw_spin_unlock_wait);
+
+	smp_mb();
+}
+
+EXPORT_SYMBOL(arch_spin_unlock_wait);

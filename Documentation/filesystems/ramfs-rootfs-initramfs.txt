@@ -1,7 +1,6 @@
 ramfs, rootfs and initramfs
 October 17, 2005
 Rob Landley <rob@landley.net>
-=============================
 
 What is ramfs?
 --------------
@@ -79,6 +78,10 @@ to just make sure certain lists can't become empty.
 Most systems just mount another filesystem over rootfs and ignore it.  The
 amount of space an empty instance of ramfs takes up is tiny.
 
+If CONFIG_TMPFS is enabled, rootfs will use tmpfs instead of ramfs by
+default.  To force ramfs, add "rootfstype=ramfs" to the kernel command
+line.
+
 What is initramfs?
 ------------------
 
@@ -136,6 +139,12 @@ to specify a source for the initramfs archive, which will automatically be
 incorporated into the resulting binary.  This option can point to an existing
 gzipped cpio archive, a directory containing files to be archived, or a text
 file specification such as the following example:
+The config option CONFIG_INITRAMFS_SOURCE (in General Setup in menuconfig,
+and living in usr/Kconfig) can be used to specify a source for the
+initramfs archive, which will automatically be incorporated into the
+resulting binary.  This option can point to an existing gzipped cpio
+archive, a directory containing files to be archived, or a text file
+specification such as the following example:
 
   dir /dev 755 0 0
   nod /dev/console 644 0 0 c 5 1
@@ -264,6 +273,7 @@ User Mode Linux, like so:
   }
   EOF
   gcc -static hello2.c -o init
+  gcc -static hello.c -o init
   echo init | cpio -o -H newc | gzip > test.cpio.gz
   # Testing external initramfs using the initrd loading mechanism.
   qemu -kernel /boot/vmlinuz -initrd test.cpio.gz /dev/zero
@@ -298,6 +308,7 @@ the above threads) is:
    such as:
 
      http://freshmeat.net/projects/afio/
+     http://freecode.com/projects/afio
 
 2) The cpio archive format chosen by the kernel is simpler and cleaner (and
    thus easier to create and parse) than any of the (literally dozens of)

@@ -1963,7 +1963,6 @@ int s3c_camif_ioctl(struct inode *inode, struct file *file, unsigned int cmd, un
 		if(measure_init_flag)
 		{
 			do_gettimeofday(&t2);
-			printk("[CAM-DRV=INIT-OP=222] =[RECV REQBUFS CMD <-> RECV Init Sensor CMD]==========%4d msec=\n", ((t2.tv_sec*1000000+t2.tv_usec) - (t1.tv_sec*1000000+t1.tv_usec))/1000);
 		}
 #endif
 		ret = s3c_camif_v4l2_s_input(cfg, *((int *) arg));
@@ -1971,7 +1970,6 @@ int s3c_camif_ioctl(struct inode *inode, struct file *file, unsigned int cmd, un
 		if(measure_init_flag)
 		{
 			do_gettimeofday(&t3);
-			printk("[CAM-DRV=INIT-OP=333] =[RECV Init Sensor CMD <-> Init Sensor End]===========%4d msec=\n", ((t3.tv_sec*1000000+t3.tv_usec) - (t2.tv_sec*1000000+t2.tv_usec))/1000);
 		}
 #endif
 		break;
@@ -1997,7 +1995,6 @@ int s3c_camif_ioctl(struct inode *inode, struct file *file, unsigned int cmd, un
 		if(measure_init_flag)
 		{
 			do_gettimeofday(&t1);
-			printk("[CAM-DRV=INIT-OP=111] =[CAMDRV Open End <-> RECV REQ BUFS CMD]==============%4d msec=\n", ((t1.tv_sec*1000000+t1.tv_usec) - (t0.tv_sec*1000000+t0.tv_usec))/1000);
 		}
 #endif
 		ret = s3c_camif_v4l2_reqbufs(cfg, arg);
@@ -2026,8 +2023,6 @@ int s3c_camif_ioctl(struct inode *inode, struct file *file, unsigned int cmd, un
 		if(measure_init_flag)
 		{
 			do_gettimeofday(&end);
-			printk("[CAM-DRV=INIT-OP=666] =[RECV Camif Preview CMD <-> DQBUF CMD End]===========%4d msec=\n", ((end.tv_sec*1000000+end.tv_usec) - (t5.tv_sec*1000000+t5.tv_usec))/1000);
-			printk("[CAM-DRV=INIT-OP=TOT] =[CAMDRV Open Start <-> DQBUF CMD End]================%4d msec=\n", ((end.tv_sec*1000000+end.tv_usec) - (start.tv_sec*1000000+start.tv_usec))/1000);
 			measure_init_flag = 0;
 		}
 #endif
@@ -2266,7 +2261,6 @@ int s3c_camif_open(struct inode *inode, struct file *file)
 #ifdef MEASURE_INIT_OPERATION
 	do_gettimeofday(&t0);
 	measure_init_flag = 1;
-	printk("[CAM-DRV=INIT-OP=000] =[CAMDRV Open Start <-> CAMDRV Open End]==============%4d msec=\n", ((t0.tv_sec*1000000+t0.tv_usec) - (start.tv_sec*1000000+start.tv_usec))/1000);
 #endif
 
 	return 0;

@@ -22,6 +22,7 @@
  *
  */
 
+#include <linux/export.h>
 #include "emux_voice.h"
 #include <sound/asoundef.h>
 
@@ -72,6 +73,12 @@ snd_emux_note_on(void *p, int note, int vel, struct snd_midi_channel *chan)
 	snd_assert(emu != NULL, return);
 	snd_assert(emu->ops.get_voice != NULL, return);
 	snd_assert(emu->ops.trigger != NULL, return);
+	if (snd_BUG_ON(!port || !chan))
+		return;
+
+	emu = port->emu;
+	if (snd_BUG_ON(!emu || !emu->ops.get_voice || !emu->ops.trigger))
+		return;
 
 	key = note; /* remember the original note */
 	nvoices = get_zone(emu, port, &note, vel, chan, table);
@@ -169,6 +176,12 @@ snd_emux_note_off(void *p, int note, int vel, struct snd_midi_channel *chan)
 	emu = port->emu;
 	snd_assert(emu != NULL, return);
 	snd_assert(emu->ops.release != NULL, return);
+	if (snd_BUG_ON(!port || !chan))
+		return;
+
+	emu = port->emu;
+	if (snd_BUG_ON(!emu || !emu->ops.release))
+		return;
 
 	spin_lock_irqsave(&emu->voice_lock, flags);
 	for (ch = 0; ch < emu->max_voices; ch++) {
@@ -186,6 +199,7 @@ snd_emux_note_off(void *p, int note, int vel, struct snd_midi_channel *chan)
 				if (! emu->timer_active) {
 					emu->tlist.expires = jiffies + 1;
 					add_timer(&emu->tlist);
+					mod_timer(&emu->tlist, jiffies + 1);
 					emu->timer_active = 1;
 				}
 			} else
@@ -223,6 +237,7 @@ void snd_emux_timer_callback(unsigned long data)
 	if (do_again) {
 		emu->tlist.expires = jiffies + 1;
 		add_timer(&emu->tlist);
+		mod_timer(&emu->tlist, jiffies + 1);
 		emu->timer_active = 1;
 	} else
 		emu->timer_active = 0;
@@ -247,6 +262,12 @@ snd_emux_key_press(void *p, int note, int vel, struct snd_midi_channel *chan)
 	emu = port->emu;
 	snd_assert(emu != NULL, return);
 	snd_assert(emu->ops.update != NULL, return);
+	if (snd_BUG_ON(!port || !chan))
+		return;
+
+	emu = port->emu;
+	if (snd_BUG_ON(!emu || !emu->ops.update))
+		return;
 
 	spin_lock_irqsave(&emu->voice_lock, flags);
 	for (ch = 0; ch < emu->max_voices; ch++) {
@@ -278,6 +299,8 @@ snd_emux_update_channel(struct snd_emux_port *port, struct snd_midi_channel *cha
 	emu = port->emu;
 	snd_assert(emu != NULL, return);
 	snd_assert(emu->ops.update != NULL, return);
+	if (snd_BUG_ON(!emu || !emu->ops.update))
+		return;
 
 	spin_lock_irqsave(&emu->voice_lock, flags);
 	for (i = 0; i < emu->max_voices; i++) {
@@ -305,6 +328,8 @@ snd_emux_update_port(struct snd_emux_port *port, int update)
 	emu = port->emu;
 	snd_assert(emu != NULL, return);
 	snd_assert(emu->ops.update != NULL, return);
+	if (snd_BUG_ON(!emu || !emu->ops.update))
+		return;
 
 	spin_lock_irqsave(&emu->voice_lock, flags);
 	for (i = 0; i < emu->max_voices; i++) {
@@ -327,6 +352,8 @@ snd_emux_control(void *p, int type, struct snd_midi_channel *chan)
 
 	port = p;
 	snd_assert(port != NULL && chan != NULL, return);
+	if (snd_BUG_ON(!port || !chan))
+		return;
 
 	switch (type) {
 	case MIDI_CTL_MSB_MAIN_VOLUME:
@@ -405,6 +432,12 @@ snd_emux_terminate_note(void *p, int note, struct snd_midi_channel *chan)
 	emu = port->emu;
 	snd_assert(emu != NULL, return);
 	snd_assert(emu->ops.terminate != NULL, return);
+	if (snd_BUG_ON(!port || !chan))
+		return;
+
+	emu = port->emu;
+	if (snd_BUG_ON(!emu || !emu->ops.terminate))
+		return;
 
 	terminate_note1(emu, note, chan, 1);
 }
@@ -455,6 +488,11 @@ snd_emux_sounds_off_all(struct snd_emux_port *port)
 	emu = port->emu;
 	snd_assert(emu != NULL, return);
 	snd_assert(emu->ops.terminate != NULL, return);
+	if (snd_BUG_ON(!port))
+		return;
+	emu = port->emu;
+	if (snd_BUG_ON(!emu || !emu->ops.terminate))
+		return;
 
 	spin_lock_irqsave(&emu->voice_lock, flags);
 	for (i = 0; i < emu->max_voices; i++) {
@@ -952,6 +990,8 @@ void snd_emux_lock_voice(struct snd_emux *emu, int voice)
 		emu->voices[voice].state = SNDRV_EMUX_ST_LOCKED;
 	else
 		snd_printk("invalid voice for lock %d (state = %x)\n",
+		snd_printk(KERN_WARNING
+			   "invalid voice for lock %d (state = %x)\n",
 			   voice, emu->voices[voice].state);
 	spin_unlock_irqrestore(&emu->voice_lock, flags);
 }
@@ -969,6 +1009,8 @@ void snd_emux_unlock_voice(struct snd_emux *emu, int voice)
 		emu->voices[voice].state = SNDRV_EMUX_ST_OFF;
 	else
 		snd_printk("invalid voice for unlock %d (state = %x)\n",
+		snd_printk(KERN_WARNING
+			   "invalid voice for unlock %d (state = %x)\n",
 			   voice, emu->voices[voice].state);
 	spin_unlock_irqrestore(&emu->voice_lock, flags);
 }

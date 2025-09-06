@@ -519,6 +519,29 @@ struct cyclades_card {
     int intr_enabled;		/* FW Interrupt flag - 0 disabled, 1 enabled */
     spinlock_t card_lock;
     struct cyclades_port *ports;
+#ifndef _LINUX_CYCLADES_H
+#define _LINUX_CYCLADES_H
+
+#include <uapi/linux/cyclades.h>
+
+
+/* Per card data structure */
+struct cyclades_card {
+	void __iomem *base_addr;
+	union {
+		void __iomem *p9050;
+		struct RUNTIME_9060 __iomem *p9060;
+	} ctl_addr;
+	struct BOARD_CTRL __iomem *board_ctrl;	/* cyz specific */
+	int irq;
+	unsigned int num_chips;	/* 0 if card absent, -1 if Z/PCI, else Y */
+	unsigned int first_line;	/* minor number of first channel on card */
+	unsigned int nports;	/* Number of ports in the card */
+	int bus_index;		/* address shift - 0 for ISA, 1 for PCI */
+	int intr_enabled;		/* FW Interrupt flag - 0 disabled, 1 enabled */
+	u32 hw_ver;
+	spinlock_t card_lock;
+	struct cyclades_port *ports;
 };
 
 /***************************************
@@ -552,6 +575,15 @@ struct cyclades_port {
 	int                     magic;
 	struct tty_port		port;
 	struct cyclades_card	*card;
+	union {
+		struct {
+			void __iomem *base_addr;
+		} cyy;
+		struct {
+			struct CH_CTRL __iomem	*ch_ctrl;
+			struct BUF_CTRL __iomem	*buf_ctrl;
+		} cyz;
+	} u;
 	int			line;
 	int			flags; 		/* defined in tty.h */
 	int                     type;		/* UART type */

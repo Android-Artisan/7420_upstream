@@ -7,12 +7,14 @@
  *              by Matt Henderson,
  *                 Traverse Technologies P/L www.traverse.com.au
  * 
+ *
  * This software may be used and distributed according to the terms
  * of the GNU General Public License, incorporated herein by reference.
  *
  */
 
 #define byteout(addr,val) outb(val,addr)
+#define byteout(addr, val) outb(val, addr)
 #define bytein(addr) inb(addr)
 
 #define NETJET_CTRL	0x00

@@ -147,6 +147,8 @@ void yyerror(const char *string);
 
 %token T_ACCESS_MODE
 
+%token T_DONT_GENERATE_DEBUG_CODE
+
 %token T_MODES
 
 %token T_DEFINE
@@ -357,6 +359,7 @@ reg_attribute:
 |	size
 |	count
 |	access_mode
+|	dont_generate_debug_code
 |	modes
 |	field_defn
 |	enum_defn
@@ -407,6 +410,13 @@ access_mode:
 	T_ACCESS_MODE T_MODE
 	{
 		cur_symbol->info.rinfo->mode = $2;
+	}
+;
+
+dont_generate_debug_code:
+	T_DONT_GENERATE_DEBUG_CODE
+	{
+		cur_symbol->dont_generate_debug_code = 1;
 	}
 ;
 
@@ -794,6 +804,7 @@ macro_arglist:
 	{
 		if ($1 == 0) {
 			stop("Comma without preceeding argument in arg list",
+			stop("Comma without preceding argument in arg list",
 			     EX_DATAERR);
 			/* NOTREACHED */
 		}
@@ -1311,6 +1322,8 @@ code:
 	/*
 	 * This grammer differs from the one in the aic7xxx
 	 * reference manual since the grammer listed there is
+	 * This grammar differs from the one in the aic7xxx
+	 * reference manual since the grammar listed there is
 	 * ambiguous and causes a shift/reduce conflict.
 	 * It also seems more logical as the "immediate"
 	 * argument is listed as the second arg like the
@@ -1790,6 +1803,7 @@ format_3_instr(int opcode, symbol_ref_t *src,
 	f3_instr = &instr->format.format3;
 	if (address->symbol == NULL) {
 		/* 'dot' referrence.  Use the current instruction pointer */
+		/* 'dot' reference.  Use the current instruction pointer */
 		addr = instruction_ptr + address->offset;
 	} else if (address->symbol->type == UNINITIALIZED) {
 		/* forward reference */

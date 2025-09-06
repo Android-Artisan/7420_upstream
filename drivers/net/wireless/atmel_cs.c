@@ -26,6 +26,8 @@
     You should have received a copy of the GNU General Public License
     along with Atmel wireless lan drivers; if not, write to the Free Software
     Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+    along with Atmel wireless lan drivers; if not, see
+    <http://www.gnu.org/licenses/>.
 
 ******************************************************************************/
 
@@ -72,14 +74,12 @@ static char *version = "$Revision: 1.2 $";
 #define DEBUG(n, args...)
 #endif
 
-/*====================================================================*/
 
 MODULE_AUTHOR("Simon Kelley");
 MODULE_DESCRIPTION("Support for Atmel at76c50x 802.11 wireless ethernet cards.");
 MODULE_LICENSE("GPL");
 MODULE_SUPPORTED_DEVICE("Atmel at76c50x PCMCIA cards");
 
-/*====================================================================*/
 
 /*
    The event() function is this driver's Card Services event handler.
@@ -139,7 +139,6 @@ typedef struct local_info_t {
 	struct net_device *eth_dev;
 } local_info_t;
 
-/*======================================================================
 
   atmel_attach() creates an "instance" of the driver, allocating
   local data structures for one device.  The device is registered
@@ -149,7 +148,6 @@ typedef struct local_info_t {
   configure the card at this point -- we wait until we receive a
   card insertion event.
 
-  ======================================================================*/
 
 static int atmel_probe(struct pcmcia_device *p_dev)
 {
@@ -178,42 +176,72 @@ static int atmel_probe(struct pcmcia_device *p_dev)
 		printk(KERN_ERR "atmel_cs: no memory for new device\n");
 		return -ENOMEM;
 	}
+static int atmel_config(struct pcmcia_device *link);
+static void atmel_release(struct pcmcia_device *link);
+
+static void atmel_detach(struct pcmcia_device *p_dev);
+
+struct local_info {
+	struct net_device *eth_dev;
+};
+
+static int atmel_probe(struct pcmcia_device *p_dev)
+{
+	struct local_info *local;
+	int ret;
+
+	dev_dbg(&p_dev->dev, "atmel_attach()\n");
+
+	/* Allocate space for private device-specific data */
+	local = kzalloc(sizeof(*local), GFP_KERNEL);
+	if (!local)
+		return -ENOMEM;
+
 	p_dev->priv = local;
 
-	return atmel_config(p_dev);
-} /* atmel_attach */
+	ret = atmel_config(p_dev);
+	if (ret)
+		goto err_free_priv;
 
-/*======================================================================
+	return 0;
+
+err_free_priv:
+	kfree(p_dev->priv);
+	return ret;
+}
+
 
   This deletes a driver "instance".  The device is de-registered
   with Card Services.  If it has been released, all local data
   structures are freed.  Otherwise, the structures will be freed
   when the device is released.
 
-  ======================================================================*/
 
 static void atmel_detach(struct pcmcia_device *link)
 {
 	DEBUG(0, "atmel_detach(0x%p)\n", link);
+static void atmel_detach(struct pcmcia_device *link)
+{
+	dev_dbg(&link->dev, "atmel_detach\n");
 
 	atmel_release(link);
 
 	kfree(link->priv);
 }
 
-/*======================================================================
 
   atmel_config() is scheduled to run after a CARD_INSERTION event
   is received, to configure the PCMCIA socket, and to make the
   device available to the system.
 
-  ======================================================================*/
 
 #define CS_CHECK(fn, ret) \
 do { last_fn = (fn); if ((last_ret = (ret)) != 0) goto cs_failed; } while (0)
 
 /* Call-back function to interrogate PCMCIA-specific information
    about the current existance of the card */
+/* Call-back function to interrogate PCMCIA-specific information
+   about the current existence of the card */
 static int card_present(void *arg)
 {
 	struct pcmcia_device *link = (struct pcmcia_device *)arg;
@@ -360,17 +388,63 @@ static int atmel_config(struct pcmcia_device *link)
 
  cs_failed:
 	cs_error(link, last_fn, last_ret);
+static int atmel_config_check(struct pcmcia_device *p_dev, void *priv_data)
+{
+	if (p_dev->config_index == 0)
+		return -EINVAL;
+
+	return pcmcia_request_io(p_dev);
+}
+
+static int atmel_config(struct pcmcia_device *link)
+{
+	struct local_info *dev;
+	int ret;
+	const struct pcmcia_device_id *did;
+
+	dev = link->priv;
+	did = dev_get_drvdata(&link->dev);
+
+	dev_dbg(&link->dev, "atmel_config\n");
+
+	link->config_flags |= CONF_ENABLE_IRQ | CONF_AUTO_SET_VPP |
+		CONF_AUTO_AUDIO | CONF_AUTO_SET_IO;
+
+	if (pcmcia_loop_config(link, atmel_config_check, NULL))
+		goto failed;
+
+	if (!link->irq) {
+		dev_err(&link->dev, "atmel: cannot assign IRQ: check that CONFIG_ISA is set in kernel config.");
+		goto failed;
+	}
+
+	ret = pcmcia_enable_device(link);
+	if (ret)
+		goto failed;
+
+	((struct local_info *)link->priv)->eth_dev =
+		init_atmel_card(link->irq,
+				link->resource[0]->start,
+				did ? did->driver_info : ATMEL_FW_TYPE_NONE,
+				&link->dev,
+				card_present,
+				link);
+	if (!((struct local_info *)link->priv)->eth_dev)
+			goto failed;
+
+
+	return 0;
+
+ failed:
 	atmel_release(link);
 	return -ENODEV;
 }
 
-/*======================================================================
 
   After a card is removed, atmel_release() will unregister the
   device, and release the PCMCIA configuration.  If the device is
   still open, this will be postponed until it is closed.
 
-  ======================================================================*/
 
 static void atmel_release(struct pcmcia_device *link)
 {
@@ -381,6 +455,15 @@ static void atmel_release(struct pcmcia_device *link)
 	if (dev)
 		stop_atmel_card(dev);
 	((local_info_t*)link->priv)->eth_dev = NULL;
+static void atmel_release(struct pcmcia_device *link)
+{
+	struct net_device *dev = ((struct local_info *)link->priv)->eth_dev;
+
+	dev_dbg(&link->dev, "atmel_release\n");
+
+	if (dev)
+		stop_atmel_card(dev);
+	((struct local_info *)link->priv)->eth_dev = NULL;
 
 	pcmcia_disable_device(link);
 }
@@ -388,6 +471,7 @@ static void atmel_release(struct pcmcia_device *link)
 static int atmel_suspend(struct pcmcia_device *link)
 {
 	local_info_t *local = link->priv;
+	struct local_info *local = link->priv;
 
 	netif_device_detach(local->eth_dev);
 
@@ -397,6 +481,7 @@ static int atmel_suspend(struct pcmcia_device *link)
 static int atmel_resume(struct pcmcia_device *link)
 {
 	local_info_t *local = link->priv;
+	struct local_info *local = link->priv;
 
 	atmel_open(local->eth_dev);
 	netif_device_attach(local->eth_dev);
@@ -404,7 +489,6 @@ static int atmel_resume(struct pcmcia_device *link)
 	return 0;
 }
 
-/*====================================================================*/
 /* We use the driver_info field to store the correct firmware type for a card. */
 
 #define PCMCIA_DEVICE_MANF_CARD_INFO(manf, card, info) { \
@@ -422,6 +506,7 @@ static int atmel_resume(struct pcmcia_device *link)
         .driver_info = (kernel_ulong_t)(info), }
 
 static struct pcmcia_device_id atmel_ids[] = {
+static const struct pcmcia_device_id atmel_ids[] = {
 	PCMCIA_DEVICE_MANF_CARD_INFO(0x0101, 0x0620, ATMEL_FW_TYPE_502_3COM),
 	PCMCIA_DEVICE_MANF_CARD_INFO(0x0101, 0x0696, ATMEL_FW_TYPE_502_3COM),
 	PCMCIA_DEVICE_MANF_CARD_INFO(0x01bf, 0x3302, ATMEL_FW_TYPE_502E),
@@ -453,6 +538,7 @@ static struct pcmcia_driver atmel_driver = {
 	.drv		= {
 		.name	= "atmel_cs",
         },
+	.name		= "atmel_cs",
 	.probe          = atmel_probe,
 	.remove		= atmel_detach,
 	.id_table	= atmel_ids,
@@ -469,6 +555,7 @@ static void atmel_cs_cleanup(void)
 {
         pcmcia_unregister_driver(&atmel_driver);
 }
+module_pcmcia_driver(atmel_driver);
 
 /*
     This program is free software; you can redistribute it and/or

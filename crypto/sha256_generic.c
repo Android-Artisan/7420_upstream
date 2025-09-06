@@ -3,6 +3,7 @@
  *
  * SHA-256, as specified in
  * http://csrc.nist.gov/cryptval/shs/sha256-384-512.pdf
+ * http://csrc.nist.gov/groups/STM/cavp/documents/shs/sha256-384-512.pdf
  *
  * SHA-256 code by Jean-Luc Cooke <jlcooke@certainkey.com>.
  *
@@ -30,6 +31,15 @@ struct sha256_ctx {
 	u32 state[8];
 	u8 buf[128];
 };
+#include <crypto/internal/hash.h>
+#include <linux/init.h>
+#include <linux/module.h>
+#include <linux/mm.h>
+#include <linux/types.h>
+#include <crypto/sha.h>
+#include <crypto/sha256_base.h>
+#include <asm/byteorder.h>
+#include <asm/unaligned.h>
 
 static inline u32 Ch(u32 x, u32 y, u32 z)
 {
@@ -49,6 +59,7 @@ static inline u32 Maj(u32 x, u32 y, u32 z)
 static inline void LOAD_OP(int I, u32 *W, const u8 *input)
 {
 	W[I] = __be32_to_cpu( ((__be32*)(input))[I] );
+	W[I] = get_unaligned_be32((__u32 *)input + I);
 }
 
 static inline void BLEND_OP(int I, u32 *W)
@@ -70,6 +81,7 @@ static void sha256_transform(u32 *state, const u8 *input)
 	for (i = 16; i < 64; i++)
 		BLEND_OP(i, W);
     
+
 	/* load the state into our registers */
 	a=state[0];  b=state[1];  c=state[2];  d=state[3];
 	e=state[4];  f=state[5];  g=state[6];  h=state[7];
@@ -368,12 +380,79 @@ static int __init sha256_generic_mod_init(void)
 		crypto_unregister_alg(&sha224);
 
 	return ret;
+	memzero_explicit(W, 64 * sizeof(u32));
+}
+
+static void sha256_generic_block_fn(struct sha256_state *sst, u8 const *src,
+				    int blocks)
+{
+	while (blocks--) {
+		sha256_transform(sst->state, src);
+		src += SHA256_BLOCK_SIZE;
+	}
+}
+
+int crypto_sha256_update(struct shash_desc *desc, const u8 *data,
+			  unsigned int len)
+{
+	return sha256_base_do_update(desc, data, len, sha256_generic_block_fn);
+}
+EXPORT_SYMBOL(crypto_sha256_update);
+
+static int sha256_final(struct shash_desc *desc, u8 *out)
+{
+	sha256_base_do_finalize(desc, sha256_generic_block_fn);
+	return sha256_base_finish(desc, out);
+}
+
+int crypto_sha256_finup(struct shash_desc *desc, const u8 *data,
+			unsigned int len, u8 *hash)
+{
+	sha256_base_do_update(desc, data, len, sha256_generic_block_fn);
+	return sha256_final(desc, hash);
+}
+EXPORT_SYMBOL(crypto_sha256_finup);
+
+static struct shash_alg sha256_algs[2] = { {
+	.digestsize	=	SHA256_DIGEST_SIZE,
+	.init		=	sha256_base_init,
+	.update		=	crypto_sha256_update,
+	.final		=	sha256_final,
+	.finup		=	crypto_sha256_finup,
+	.descsize	=	sizeof(struct sha256_state),
+	.base		=	{
+		.cra_name	=	"sha256",
+		.cra_driver_name=	"sha256-generic",
+		.cra_flags	=	CRYPTO_ALG_TYPE_SHASH,
+		.cra_blocksize	=	SHA256_BLOCK_SIZE,
+		.cra_module	=	THIS_MODULE,
+	}
+}, {
+	.digestsize	=	SHA224_DIGEST_SIZE,
+	.init		=	sha224_base_init,
+	.update		=	crypto_sha256_update,
+	.final		=	sha256_final,
+	.finup		=	crypto_sha256_finup,
+	.descsize	=	sizeof(struct sha256_state),
+	.base		=	{
+		.cra_name	=	"sha224",
+		.cra_driver_name=	"sha224-generic",
+		.cra_flags	=	CRYPTO_ALG_TYPE_SHASH,
+		.cra_blocksize	=	SHA224_BLOCK_SIZE,
+		.cra_module	=	THIS_MODULE,
+	}
+} };
+
+static int __init sha256_generic_mod_init(void)
+{
+	return crypto_register_shashes(sha256_algs, ARRAY_SIZE(sha256_algs));
 }
 
 static void __exit sha256_generic_mod_fini(void)
 {
 	crypto_unregister_alg(&sha224);
 	crypto_unregister_alg(&sha256);
+	crypto_unregister_shashes(sha256_algs, ARRAY_SIZE(sha256_algs));
 }
 
 module_init(sha256_generic_mod_init);
@@ -384,3 +463,7 @@ MODULE_DESCRIPTION("SHA-224 and SHA-256 Secure Hash Algorithm");
 
 MODULE_ALIAS("sha224");
 MODULE_ALIAS("sha256");
+MODULE_ALIAS_CRYPTO("sha224");
+MODULE_ALIAS_CRYPTO("sha224-generic");
+MODULE_ALIAS_CRYPTO("sha256");
+MODULE_ALIAS_CRYPTO("sha256-generic");

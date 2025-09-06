@@ -56,6 +56,8 @@
 
 static int txcrc = 1;
 static int hciextn = 1;
+static bool txcrc = true;
+static bool hciextn = true;
 
 #define BCSP_TXWINSIZE	4
 
@@ -250,6 +252,7 @@ static struct sk_buff *bcsp_prepare_pkt(struct bcsp_struct *bcsp, u8 *data,
 		hdr[0] |= 0x80 + bcsp->msgq_txseq;
 		BT_DBG("Sending packet with seqno %u", bcsp->msgq_txseq);
 		bcsp->msgq_txseq = ++(bcsp->msgq_txseq) & 0x07;
+		bcsp->msgq_txseq = (bcsp->msgq_txseq + 1) & 0x07;
 	}
 
 	if (bcsp->use_crc)
@@ -297,6 +300,8 @@ static struct sk_buff *bcsp_dequeue(struct hci_uart *hu)
 	   since they have priority */
 
 	if ((skb = skb_dequeue(&bcsp->unrel)) != NULL) {
+	skb = skb_dequeue(&bcsp->unrel);
+	if (skb != NULL) {
 		struct sk_buff *nskb = bcsp_prepare_pkt(bcsp, skb->data, skb->len, bt_cb(skb)->pkt_type);
 		if (nskb) {
 			kfree_skb(skb);
@@ -323,6 +328,20 @@ static struct sk_buff *bcsp_dequeue(struct hci_uart *hu)
 		} else {
 			skb_queue_head(&bcsp->rel, skb);
 			BT_ERR("Could not dequeue pkt because alloc_skb failed");
+	if (bcsp->unack.qlen < BCSP_TXWINSIZE) {
+		skb = skb_dequeue(&bcsp->rel);
+		if (skb != NULL) {
+			struct sk_buff *nskb = bcsp_prepare_pkt(bcsp, skb->data, skb->len,
+								bt_cb(skb)->pkt_type);
+			if (nskb) {
+				__skb_queue_tail(&bcsp->unack, skb);
+				mod_timer(&bcsp->tbcsp, jiffies + HZ / 4);
+				spin_unlock_irqrestore(&bcsp->unack.lock, flags);
+				return nskb;
+			} else {
+				skb_queue_head(&bcsp->rel, skb);
+				BT_ERR("Could not dequeue pkt because alloc_skb failed");
+			}
 		}
 	}
 
@@ -354,12 +373,15 @@ static void bcsp_pkt_cull(struct bcsp_struct *bcsp)
 {
 	unsigned long flags;
 	struct sk_buff *skb;
+	struct sk_buff *skb, *tmp;
+	unsigned long flags;
 	int i, pkts_to_be_removed;
 	u8 seqno;
 
 	spin_lock_irqsave(&bcsp->unack.lock, flags);
 
 	pkts_to_be_removed = bcsp->unack.qlen;
+	pkts_to_be_removed = skb_queue_len(&bcsp->unack);
 	seqno = bcsp->msgq_txseq;
 
 	while (pkts_to_be_removed) {
@@ -386,6 +408,20 @@ static void bcsp_pkt_cull(struct bcsp_struct *bcsp)
 	}
 
 	if (bcsp->unack.qlen == 0)
+	       pkts_to_be_removed, skb_queue_len(&bcsp->unack),
+	       (seqno - 1) & 0x07);
+
+	i = 0;
+	skb_queue_walk_safe(&bcsp->unack, skb, tmp) {
+		if (i >= pkts_to_be_removed)
+			break;
+		i++;
+
+		__skb_unlink(skb, &bcsp->unack);
+		dev_kfree_skb_irq(skb);
+	}
+
+	if (skb_queue_empty(&bcsp->unack))
 		del_timer(&bcsp->tbcsp);
 
 	spin_unlock_irqrestore(&bcsp->unack.lock, flags);
@@ -438,6 +474,7 @@ static inline void bcsp_unslip_one_byte(struct bcsp_struct *bcsp, unsigned char 
 		default:
 			memcpy(skb_put(bcsp->rx_skb, 1), &byte, 1);
 			if ((bcsp->rx_skb-> data[0] & 0x40) != 0 && 
+			if ((bcsp->rx_skb->data[0] & 0x40) != 0 &&
 					bcsp->rx_state != BCSP_W4_CRC)
 				bcsp_crc_update(&bcsp->message_crc, byte);
 			bcsp->rx_count--;
@@ -451,6 +488,9 @@ static inline void bcsp_unslip_one_byte(struct bcsp_struct *bcsp, unsigned char 
 			if ((bcsp->rx_skb-> data[0] & 0x40) != 0 && 
 					bcsp->rx_state != BCSP_W4_CRC)
 				bcsp_crc_update(&bcsp-> message_crc, 0xc0);
+			if ((bcsp->rx_skb->data[0] & 0x40) != 0 &&
+					bcsp->rx_state != BCSP_W4_CRC)
+				bcsp_crc_update(&bcsp->message_crc, 0xc0);
 			bcsp->rx_esc_state = BCSP_ESCSTATE_NOESC;
 			bcsp->rx_count--;
 			break;
@@ -460,12 +500,16 @@ static inline void bcsp_unslip_one_byte(struct bcsp_struct *bcsp, unsigned char 
 			if ((bcsp->rx_skb-> data[0] & 0x40) != 0 && 
 					bcsp->rx_state != BCSP_W4_CRC) 
 				bcsp_crc_update(&bcsp-> message_crc, 0xdb);
+			if ((bcsp->rx_skb->data[0] & 0x40) != 0 &&
+					bcsp->rx_state != BCSP_W4_CRC) 
+				bcsp_crc_update(&bcsp->message_crc, 0xdb);
 			bcsp->rx_esc_state = BCSP_ESCSTATE_NOESC;
 			bcsp->rx_count--;
 			break;
 
 		default:
 			BT_ERR ("Invalid byte %02x after esc byte", byte);
+			BT_ERR("Invalid byte %02x after esc byte", byte);
 			kfree_skb(bcsp->rx_skb);
 			bcsp->rx_skb = NULL;
 			bcsp->rx_state = BCSP_W4_PKT_DELIMITER;
@@ -529,6 +573,9 @@ static void bcsp_complete_rx_pkt(struct hci_uart *hu)
 				hci_recv_frame(bcsp->rx_skb);
 			} else {
 				BT_ERR ("Packet for unknown channel (%u %s)",
+				hci_recv_frame(hu->hdev, bcsp->rx_skb);
+			} else {
+				BT_ERR("Packet for unknown channel (%u %s)",
 					bcsp->rx_skb->data[1] & 0x0f,
 					bcsp->rx_skb->data[0] & 0x80 ? 
 					"reliable" : "unreliable");
@@ -541,6 +588,7 @@ static void bcsp_complete_rx_pkt(struct hci_uart *hu)
 		skb_pull(bcsp->rx_skb, 4);
 
 		hci_recv_frame(bcsp->rx_skb);
+		hci_recv_frame(hu->hdev, bcsp->rx_skb);
 	}
 
 	bcsp->rx_state = BCSP_W4_PKT_DELIMITER;
@@ -557,6 +605,10 @@ static int bcsp_recv(struct hci_uart *hu, void *data, int count)
 {
 	struct bcsp_struct *bcsp = hu->priv;
 	register unsigned char *ptr;
+static int bcsp_recv(struct hci_uart *hu, const void *data, int count)
+{
+	struct bcsp_struct *bcsp = hu->priv;
+	const unsigned char *ptr;
 
 	BT_DBG("hu %p count %d rx_state %d rx_count %ld", 
 		hu, count, bcsp->rx_state, bcsp->rx_count);
@@ -567,6 +619,7 @@ static int bcsp_recv(struct hci_uart *hu, void *data, int count)
 			if (*ptr == 0xc0) {
 				BT_ERR("Short BCSP packet");
 				kfree_skb(bcsp->rx_skb);
+				bcsp->rx_skb = NULL;
 				bcsp->rx_state = BCSP_W4_PKT_START;
 				bcsp->rx_count = 0;
 			} else
@@ -582,6 +635,7 @@ static int bcsp_recv(struct hci_uart *hu, void *data, int count)
 					bcsp->rx_skb->data[2])) != bcsp->rx_skb->data[3]) {
 				BT_ERR("Error in BCSP hdr checksum");
 				kfree_skb(bcsp->rx_skb);
+				bcsp->rx_skb = NULL;
 				bcsp->rx_state = BCSP_W4_PKT_DELIMITER;
 				bcsp->rx_count = 0;
 				continue;
@@ -589,6 +643,7 @@ static int bcsp_recv(struct hci_uart *hu, void *data, int count)
 			if (bcsp->rx_skb->data[0] & 0x80	/* reliable pkt */
 			    		&& (bcsp->rx_skb->data[0] & 0x07) != bcsp->rxseq_txack) {
 				BT_ERR ("Out-of-order packet arrived, got %u expected %u",
+				BT_ERR("Out-of-order packet arrived, got %u expected %u",
 					bcsp->rx_skb->data[0] & 0x07, bcsp->rxseq_txack);
 
 				kfree_skb(bcsp->rx_skb);
@@ -616,6 +671,7 @@ static int bcsp_recv(struct hci_uart *hu, void *data, int count)
 					bscp_get_crc(bcsp));
 
 				kfree_skb(bcsp->rx_skb);
+				bcsp->rx_skb = NULL;
 				bcsp->rx_state = BCSP_W4_PKT_DELIMITER;
 				bcsp->rx_count = 0;
 				continue;
@@ -697,6 +753,7 @@ static int bcsp_open(struct hci_uart *hu)
 	BT_DBG("hu %p", hu);
 
 	bcsp = kzalloc(sizeof(*bcsp), GFP_ATOMIC);
+	bcsp = kzalloc(sizeof(*bcsp), GFP_KERNEL);
 	if (!bcsp)
 		return -ENOMEM;
 
@@ -720,6 +777,9 @@ static int bcsp_open(struct hci_uart *hu)
 static int bcsp_close(struct hci_uart *hu)
 {
 	struct bcsp_struct *bcsp = hu->priv;
+
+	del_timer_sync(&bcsp->tbcsp);
+
 	hu->priv = NULL;
 
 	BT_DBG("hu %p", hu);
@@ -729,12 +789,20 @@ static int bcsp_close(struct hci_uart *hu)
 	skb_queue_purge(&bcsp->unrel);
 	del_timer(&bcsp->tbcsp);
 
+	if (bcsp->rx_skb) {
+		kfree_skb(bcsp->rx_skb);
+		bcsp->rx_skb = NULL;
+	}
+
 	kfree(bcsp);
 	return 0;
 }
 
 static struct hci_uart_proto bcsp = {
 	.id		= HCI_UART_BCSP,
+static const struct hci_uart_proto bcsp = {
+	.id		= HCI_UART_BCSP,
+	.name		= "BCSP",
 	.open		= bcsp_open,
 	.close		= bcsp_close,
 	.enqueue	= bcsp_enqueue,
@@ -756,6 +824,12 @@ int bcsp_init(void)
 }
 
 int bcsp_deinit(void)
+int __init bcsp_init(void)
+{
+	return hci_uart_register_proto(&bcsp);
+}
+
+int __exit bcsp_deinit(void)
 {
 	return hci_uart_unregister_proto(&bcsp);
 }

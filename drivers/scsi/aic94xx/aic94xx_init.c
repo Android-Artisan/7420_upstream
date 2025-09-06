@@ -30,6 +30,7 @@
 #include <linux/pci.h>
 #include <linux/delay.h>
 #include <linux/firmware.h>
+#include <linux/slab.h>
 
 #include <scsi/scsi_host.h>
 
@@ -75,6 +76,11 @@ static struct scsi_host_template aic94xx_sht = {
 	.bios_param		= sas_bios_param,
 	.can_queue		= 1,
 	.cmd_per_lun		= 1,
+	.scan_finished		= asd_scan_finished,
+	.scan_start		= asd_scan_start,
+	.change_queue_depth	= sas_change_queue_depth,
+	.bios_param		= sas_bios_param,
+	.can_queue		= 1,
 	.this_id		= -1,
 	.sg_tablesize		= SG_ALL,
 	.max_sectors		= SCSI_DEFAULT_MAX_SECTORS,
@@ -87,6 +93,12 @@ static struct scsi_host_template aic94xx_sht = {
 };
 
 static int __devinit asd_map_memio(struct asd_ha_struct *asd_ha)
+	.target_destroy		= sas_target_destroy,
+	.ioctl			= sas_ioctl,
+	.track_queue_depth	= 1,
+};
+
+static int asd_map_memio(struct asd_ha_struct *asd_ha)
 {
 	int err, i;
 	struct asd_ha_addrspace *io_handle;
@@ -118,6 +130,11 @@ static int __devinit asd_map_memio(struct asd_ha_struct *asd_ha)
 		if (!io_handle->addr) {
 			asd_printk("couldn't map MBAR%d of %s\n", i==0?0:1,
 				   pci_name(asd_ha->pcidev));
+		io_handle->addr = ioremap(io_handle->start, io_handle->len);
+		if (!io_handle->addr) {
+			asd_printk("couldn't map MBAR%d of %s\n", i==0?0:1,
+				   pci_name(asd_ha->pcidev));
+			err = -ENOMEM;
 			goto Err_unreq;
 		}
 	}
@@ -148,6 +165,7 @@ static void asd_unmap_memio(struct asd_ha_struct *asd_ha)
 }
 
 static int __devinit asd_map_ioport(struct asd_ha_struct *asd_ha)
+static int asd_map_ioport(struct asd_ha_struct *asd_ha)
 {
 	int i = PCI_IOBAR_OFFSET, err;
 	struct asd_ha_addrspace *io_handle = &asd_ha->io_handle[0];
@@ -177,6 +195,7 @@ static void asd_unmap_ioport(struct asd_ha_struct *asd_ha)
 }
 
 static int __devinit asd_map_ha(struct asd_ha_struct *asd_ha)
+static int asd_map_ha(struct asd_ha_struct *asd_ha)
 {
 	int err;
 	u16 cmd_reg;
@@ -223,6 +242,7 @@ static const char *asd_dev_rev[30] = {
 };
 
 static int __devinit asd_common_setup(struct asd_ha_struct *asd_ha)
+static int asd_common_setup(struct asd_ha_struct *asd_ha)
 {
 	int err, i;
 
@@ -259,6 +279,7 @@ Err:
 }
 
 static int __devinit asd_aic9410_setup(struct asd_ha_struct *asd_ha)
+static int asd_aic9410_setup(struct asd_ha_struct *asd_ha)
 {
 	int err = asd_common_setup(asd_ha);
 
@@ -274,6 +295,7 @@ static int __devinit asd_aic9410_setup(struct asd_ha_struct *asd_ha)
 }
 
 static int __devinit asd_aic9405_setup(struct asd_ha_struct *asd_ha)
+static int asd_aic9405_setup(struct asd_ha_struct *asd_ha)
 {
 	int err = asd_common_setup(asd_ha);
 
@@ -486,6 +508,7 @@ static ssize_t asd_show_update_bios(struct device *dev,
 }
 
 static DEVICE_ATTR(update_bios, S_IRUGO|S_IWUGO,
+static DEVICE_ATTR(update_bios, S_IRUGO|S_IWUSR,
 	asd_show_update_bios, asd_store_update_bios);
 
 static int asd_create_dev_attrs(struct asd_ha_struct *asd_ha)
@@ -533,6 +556,7 @@ static const struct asd_pcidev_struct {
 	const char * name;
 	int (*setup)(struct asd_ha_struct *asd_ha);
 } asd_pcidev_data[] __devinitconst = {
+} asd_pcidev_data[] = {
 	/* Id 0 is used for dynamic ids. */
 	{ .name  = "Adaptec AIC-94xx SAS/SATA Host Adapter",
 	  .setup = asd_aic9410_setup
@@ -690,6 +714,9 @@ static int asd_register_sas_ha(struct asd_ha_struct *asd_ha)
 		kmalloc(ASD_MAX_PHYS * sizeof(struct asd_sas_phy), GFP_KERNEL);
 	struct asd_sas_port  **sas_ports =
 		kmalloc(ASD_MAX_PHYS * sizeof(struct asd_sas_port), GFP_KERNEL);
+		kcalloc(ASD_MAX_PHYS, sizeof(*sas_phys), GFP_KERNEL);
+	struct asd_sas_port  **sas_ports =
+		kcalloc(ASD_MAX_PHYS, sizeof(*sas_ports), GFP_KERNEL);
 
 	if (!sas_phys || !sas_ports) {
 		kfree(sas_phys);
@@ -724,6 +751,10 @@ static int asd_unregister_sas_ha(struct asd_ha_struct *asd_ha)
 
 	sas_remove_host(asd_ha->sas_ha.core.shost);
 	scsi_remove_host(asd_ha->sas_ha.core.shost);
+	scsi_remove_host(asd_ha->sas_ha.core.shost);
+	err = sas_unregister_ha(&asd_ha->sas_ha);
+
+	sas_remove_host(asd_ha->sas_ha.core.shost);
 	scsi_host_put(asd_ha->sas_ha.core.shost);
 
 	kfree(asd_ha->sas_ha.sas_phy);
@@ -734,6 +765,7 @@ static int asd_unregister_sas_ha(struct asd_ha_struct *asd_ha)
 
 static int __devinit asd_pci_probe(struct pci_dev *dev,
 				   const struct pci_device_id *id)
+static int asd_pci_probe(struct pci_dev *dev, const struct pci_device_id *id)
 {
 	const struct asd_pcidev_struct *asd_dev;
 	unsigned asd_id = (unsigned) id->driver_data;
@@ -795,6 +827,11 @@ static int __devinit asd_pci_probe(struct pci_dev *dev,
 		;
 	else if (!pci_set_dma_mask(dev, DMA_32BIT_MASK)
 		 && !pci_set_consistent_dma_mask(dev, DMA_32BIT_MASK))
+	if (!pci_set_dma_mask(dev, DMA_BIT_MASK(64))
+	    && !pci_set_consistent_dma_mask(dev, DMA_BIT_MASK(64)))
+		;
+	else if (!pci_set_dma_mask(dev, DMA_BIT_MASK(32))
+		 && !pci_set_consistent_dma_mask(dev, DMA_BIT_MASK(32)))
 		;
 	else {
 		asd_printk("no suitable DMA mask for %s\n", pci_name(dev));
@@ -926,6 +963,7 @@ static void asd_turn_off_leds(struct asd_ha_struct *asd_ha)
 }
 
 static void __devexit asd_pci_remove(struct pci_dev *dev)
+static void asd_pci_remove(struct pci_dev *dev)
 {
 	struct asd_ha_struct *asd_ha = pci_get_drvdata(dev);
 
@@ -972,6 +1010,7 @@ static int asd_scan_finished(struct Scsi_Host *shost, unsigned long time)
 		return 0;
 	/* Wait for discovery to finish */
 	scsi_flush_work(shost);
+	sas_drain_work(SHOST_TO_SAS_HA(shost));
 	return 1;
 }
 
@@ -1012,6 +1051,11 @@ static struct sas_domain_function_template aic94xx_transport_functions = {
 };
 
 static const struct pci_device_id aic94xx_pci_table[] __devinitdata = {
+
+	.lldd_ata_set_dmamode	= asd_set_dmamode,
+};
+
+static const struct pci_device_id aic94xx_pci_table[] = {
 	{PCI_DEVICE(PCI_VENDOR_ID_ADAPTEC2, 0x410),0, 0, 1},
 	{PCI_DEVICE(PCI_VENDOR_ID_ADAPTEC2, 0x412),0, 0, 1},
 	{PCI_DEVICE(PCI_VENDOR_ID_ADAPTEC2, 0x416),0, 0, 1},
@@ -1031,6 +1075,7 @@ static struct pci_driver aic94xx_pci_driver = {
 	.id_table	= aic94xx_pci_table,
 	.probe		= asd_pci_probe,
 	.remove		= __devexit_p(asd_pci_remove),
+	.remove		= asd_pci_remove,
 };
 
 static int __init aic94xx_init(void)
@@ -1047,8 +1092,10 @@ static int __init aic94xx_init(void)
 
 	aic94xx_transport_template =
 		sas_domain_attach_transport(&aic94xx_transport_functions);
-	if (!aic94xx_transport_template)
+	if (!aic94xx_transport_template) {
+		err = -ENOMEM;
 		goto out_destroy_caches;
+	}
 
 	err = pci_register_driver(&aic94xx_pci_driver);
 	if (err)

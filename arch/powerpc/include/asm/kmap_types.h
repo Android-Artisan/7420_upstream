@@ -28,6 +28,7 @@ enum km_type {
 	KM_PPC_SYNC_ICACHE,
 	KM_TYPE_NR
 };
+#define KM_TYPE_NR 16
 
 #endif	/* __KERNEL__ */
 #endif	/* _ASM_POWERPC_KMAP_TYPES_H */

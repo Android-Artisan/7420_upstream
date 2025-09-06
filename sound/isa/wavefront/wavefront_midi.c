@@ -48,6 +48,7 @@
  */
 
 #include <asm/io.h>
+#include <linux/io.h>
 #include <linux/init.h>
 #include <linux/time.h>
 #include <linux/wait.h>
@@ -237,6 +238,10 @@ static int snd_wavefront_midi_input_open(struct snd_rawmidi_substream *substream
 
 	snd_assert(substream != NULL && substream->rmidi != NULL, return -EIO);
 	snd_assert(substream->rmidi->private_data != NULL, return -EIO);
+	if (snd_BUG_ON(!substream || !substream->rmidi))
+		return -ENXIO;
+	if (snd_BUG_ON(!substream->rmidi->private_data))
+		return -ENXIO;
 
 	mpu = *((snd_wavefront_mpu_id *) substream->rmidi->private_data);
 
@@ -259,6 +264,10 @@ static int snd_wavefront_midi_output_open(struct snd_rawmidi_substream *substrea
 
 	snd_assert(substream != NULL && substream->rmidi != NULL, return -EIO);
 	snd_assert(substream->rmidi->private_data != NULL, return -EIO);
+	if (snd_BUG_ON(!substream || !substream->rmidi))
+		return -ENXIO;
+	if (snd_BUG_ON(!substream->rmidi->private_data))
+		return -ENXIO;
 
 	mpu = *((snd_wavefront_mpu_id *) substream->rmidi->private_data);
 
@@ -281,6 +290,10 @@ static int snd_wavefront_midi_input_close(struct snd_rawmidi_substream *substrea
 
 	snd_assert(substream != NULL && substream->rmidi != NULL, return -EIO);
 	snd_assert(substream->rmidi->private_data != NULL, return -EIO);
+	if (snd_BUG_ON(!substream || !substream->rmidi))
+		return -ENXIO;
+	if (snd_BUG_ON(!substream->rmidi->private_data))
+		return -ENXIO;
 
 	mpu = *((snd_wavefront_mpu_id *) substream->rmidi->private_data);
 
@@ -302,6 +315,10 @@ static int snd_wavefront_midi_output_close(struct snd_rawmidi_substream *substre
 
 	snd_assert(substream != NULL && substream->rmidi != NULL, return -EIO);
 	snd_assert(substream->rmidi->private_data != NULL, return -EIO);
+	if (snd_BUG_ON(!substream || !substream->rmidi))
+		return -ENXIO;
+	if (snd_BUG_ON(!substream->rmidi->private_data))
+		return -ENXIO;
 
 	mpu = *((snd_wavefront_mpu_id *) substream->rmidi->private_data);
 
@@ -350,6 +367,7 @@ static void snd_wavefront_midi_output_timer(unsigned long data)
 	spin_lock_irqsave (&midi->virtual, flags);
 	midi->timer.expires = 1 + jiffies;
 	add_timer(&midi->timer);
+	mod_timer(&midi->timer, 1 + jiffies);
 	spin_unlock_irqrestore (&midi->virtual, flags);
 	snd_wavefront_midi_output_write(card);
 }
@@ -381,6 +399,10 @@ static void snd_wavefront_midi_output_trigger(struct snd_rawmidi_substream *subs
 				midi->timer.data = (unsigned long) substream->rmidi->card->private_data;
 				midi->timer.expires = 1 + jiffies;
 				add_timer(&midi->timer);
+				setup_timer(&midi->timer,
+					    snd_wavefront_midi_output_timer,
+					    (unsigned long) substream->rmidi->card->private_data);
+				mod_timer(&midi->timer, 1 + jiffies);
 			}
 			midi->istimer++;
 			midi->mode[mpu] |= MPU401_MODE_OUTPUT_TRIGGER;
@@ -474,6 +496,7 @@ snd_wavefront_midi_disable_virtual (snd_wavefront_card_t *card)
 }
 
 int __devinit
+int
 snd_wavefront_midi_start (snd_wavefront_card_t *card)
 
 {
@@ -530,6 +553,7 @@ snd_wavefront_midi_start (snd_wavefront_card_t *card)
 
 	/* Turn on Virtual MIDI, but first *always* turn it off,
 	   since otherwise consectutive reloads of the driver will
+	   since otherwise consecutive reloads of the driver will
 	   never cause the hardware to generate the initial "internal" or 
 	   "external" source bytes in the MIDI data stream. This
 	   is pretty important, since the internal hardware generally will

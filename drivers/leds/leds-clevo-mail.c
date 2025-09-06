@@ -1,3 +1,4 @@
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/module.h>
 
@@ -19,6 +20,7 @@ MODULE_DESCRIPTION("Clevo mail LED driver");
 MODULE_LICENSE("GPL");
 
 static unsigned int __initdata nodetect;
+static bool nodetect;
 module_param_named(nodetect, nodetect, bool, 0);
 MODULE_PARM_DESC(nodetect, "Skip DMI hardware detection");
 
@@ -27,11 +29,13 @@ static struct platform_device *pdev;
 static int __init clevo_mail_led_dmi_callback(const struct dmi_system_id *id)
 {
 	printk(KERN_INFO KBUILD_MODNAME ": '%s' found\n", id->ident);
+	pr_info("'%s' found\n", id->ident);
 	return 1;
 }
 
 /*
  * struct mail_led_whitelist - List of known good models
+ * struct clevo_mail_led_dmi_table - List of known good models
  *
  * Contains the known good models this driver is compatible with.
  * When adding a new model try to be as strict as possible. This
@@ -40,6 +44,7 @@ static int __init clevo_mail_led_dmi_callback(const struct dmi_system_id *id)
  * possible.
  */
 static struct dmi_system_id __initdata mail_led_whitelist[] = {
+static struct dmi_system_id clevo_mail_led_dmi_table[] __initdata = {
 	{
 		.callback = clevo_mail_led_dmi_callback,
 		.ident = "Clevo D410J",
@@ -64,6 +69,10 @@ static struct dmi_system_id __initdata mail_led_whitelist[] = {
 			DMI_MATCH(DMI_BOARD_VENDOR, "CLEVO Co. "),
 			DMI_MATCH(DMI_BOARD_NAME, "M5X0V "),
 			DMI_MATCH(DMI_PRODUCT_NAME, "Positivo Mobile"),
+		.ident = "Clevo M5x0V",
+		.matches = {
+			DMI_MATCH(DMI_BOARD_VENDOR, "CLEVO Co. "),
+			DMI_MATCH(DMI_BOARD_NAME, "M5X0V "),
 			DMI_MATCH(DMI_PRODUCT_VERSION, "VT6198")
 		}
 	},
@@ -89,16 +98,21 @@ static struct dmi_system_id __initdata mail_led_whitelist[] = {
 	},
 	{ }
 };
+MODULE_DEVICE_TABLE(dmi, clevo_mail_led_dmi_table);
 
 static void clevo_mail_led_set(struct led_classdev *led_cdev,
 				enum led_brightness value)
 {
+	i8042_lock_chip();
+
 	if (value == LED_OFF)
 		i8042_command(NULL, CLEVO_MAIL_LED_OFF);
 	else if (value <= LED_HALF)
 		i8042_command(NULL, CLEVO_MAIL_LED_BLINK_0_5HZ);
 	else
 		i8042_command(NULL, CLEVO_MAIL_LED_BLINK_1HZ);
+
+	i8042_unlock_chip();
 
 }
 
@@ -107,6 +121,8 @@ static int clevo_mail_led_blink(struct led_classdev *led_cdev,
 				unsigned long *delay_off)
 {
 	int status = -EINVAL;
+
+	i8042_lock_chip();
 
 	if (*delay_on == 0 /* ms */ && *delay_off == 0 /* ms */) {
 		/* Special case: the leds subsystem requested us to
@@ -131,9 +147,12 @@ static int clevo_mail_led_blink(struct led_classdev *led_cdev,
 	} else {
 		printk(KERN_DEBUG KBUILD_MODNAME
 		       ": clevo_mail_led_blink(..., %lu, %lu),"
+		pr_debug("clevo_mail_led_blink(..., %lu, %lu),"
 		       " returning -EINVAL (unsupported)\n",
 		       *delay_on, *delay_off);
 	}
+
+	i8042_unlock_chip();
 
 	return status;
 }
@@ -142,6 +161,7 @@ static struct led_classdev clevo_mail_led = {
 	.name			= "clevo::mail",
 	.brightness_set		= clevo_mail_led_set,
 	.blink_set		= clevo_mail_led_blink,
+	.flags			= LED_CORE_SUSPENDRESUME,
 };
 
 static int __init clevo_mail_led_probe(struct platform_device *pdev)
@@ -181,6 +201,10 @@ static struct platform_driver clevo_mail_led_driver = {
 	.driver		= {
 		.name		= KBUILD_MODNAME,
 		.owner		= THIS_MODULE,
+static struct platform_driver clevo_mail_led_driver = {
+	.remove		= clevo_mail_led_remove,
+	.driver		= {
+		.name		= KBUILD_MODNAME,
 	},
 };
 
@@ -195,6 +219,10 @@ static int __init clevo_mail_led_init(void)
 	} else {
 		count = 1;
 		printk(KERN_ERR KBUILD_MODNAME ": Skipping DMI detection. "
+		count = dmi_check_system(clevo_mail_led_dmi_table);
+	} else {
+		count = 1;
+		pr_err("Skipping DMI detection. "
 		       "If the driver works on your hardware please "
 		       "report model and the output of dmidecode in tracker "
 		       "at http://sourceforge.net/projects/clevo-mailled/\n");
@@ -210,6 +238,7 @@ static int __init clevo_mail_led_init(void)
 		if (error) {
 			printk(KERN_ERR KBUILD_MODNAME
 			       ": Can't probe platform driver\n");
+			pr_err("Can't probe platform driver\n");
 			platform_device_unregister(pdev);
 		}
 	} else

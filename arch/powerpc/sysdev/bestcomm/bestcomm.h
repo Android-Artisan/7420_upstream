@@ -19,9 +19,7 @@
 struct bcom_bd; /* defined later on ... */
 
 
-/* ======================================================================== */
 /* Generic task management                                                   */
-/* ======================================================================== */
 
 /**
  * struct bcom_task - Structure describing a loaded BestComm task
@@ -80,9 +78,7 @@ bcom_get_task_irq(struct bcom_task *tsk) {
 	return tsk->irq;
 }
 
-/* ======================================================================== */
 /* BD based tasks helpers                                                   */
-/* ======================================================================== */
 
 /**
  * struct bcom_bd - Structure describing a generic BestComm buffer descriptor

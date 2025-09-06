@@ -36,6 +36,7 @@ static int em_u32_match(struct sk_buff *skb, struct tcf_ematch *em,
 		return 0;
 
 	return !(((*(__be32*) ptr)  ^ key->val) & key->mask);
+	return !(((*(__be32 *) ptr)  ^ key->val) & key->mask);
 }
 
 static struct tcf_ematch_ops em_u32_ops = {

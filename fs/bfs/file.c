@@ -28,6 +28,8 @@ const struct file_operations bfs_file_operations = {
 	.aio_read	= generic_file_aio_read,
 	.write		= do_sync_write,
 	.aio_write	= generic_file_aio_write,
+	.read_iter	= generic_file_read_iter,
+	.write_iter	= generic_file_write_iter,
 	.mmap		= generic_file_mmap,
 	.splice_read	= generic_file_splice_read,
 };
@@ -165,6 +167,14 @@ static int bfs_readpage(struct file *file, struct page *page)
 	return block_read_full_page(page, bfs_get_block);
 }
 
+static void bfs_write_failed(struct address_space *mapping, loff_t to)
+{
+	struct inode *inode = mapping->host;
+
+	if (to > inode->i_size)
+		truncate_pagecache(inode, inode->i_size);
+}
+
 static int bfs_write_begin(struct file *file, struct address_space *mapping,
 			loff_t pos, unsigned len, unsigned flags,
 			struct page **pagep, void **fsdata)
@@ -172,6 +182,14 @@ static int bfs_write_begin(struct file *file, struct address_space *mapping,
 	*pagep = NULL;
 	return block_write_begin(file, mapping, pos, len, flags,
 					pagep, fsdata, bfs_get_block);
+	int ret;
+
+	ret = block_write_begin(mapping, pos, len, flags, pagep,
+				bfs_get_block);
+	if (unlikely(ret))
+		bfs_write_failed(mapping, pos + len);
+
+	return ret;
 }
 
 static sector_t bfs_bmap(struct address_space *mapping, sector_t block)

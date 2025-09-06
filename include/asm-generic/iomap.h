@@ -59,6 +59,11 @@ extern void iowrite32_rep(void __iomem *port, const void *buf, unsigned long cou
 /* Create a virtual mapping cookie for an IO port range */
 extern void __iomem *ioport_map(unsigned long port, unsigned int nr);
 extern void ioport_unmap(void __iomem *);
+#ifdef CONFIG_HAS_IOPORT_MAP
+/* Create a virtual mapping cookie for an IO port range */
+extern void __iomem *ioport_map(unsigned long port, unsigned int nr);
+extern void ioport_unmap(void __iomem *);
+#endif
 
 #ifndef ARCH_HAS_IOREMAP_WC
 #define ioremap_wc ioremap_nocache
@@ -68,5 +73,20 @@ extern void ioport_unmap(void __iomem *);
 struct pci_dev;
 extern void __iomem *pci_iomap(struct pci_dev *dev, int bar, unsigned long max);
 extern void pci_iounmap(struct pci_dev *dev, void __iomem *);
+#ifndef ARCH_HAS_IOREMAP_WT
+#define ioremap_wt ioremap_nocache
+#endif
+
+#ifdef CONFIG_PCI
+/* Destroy a virtual mapping cookie for a PCI BAR (memory or IO) */
+struct pci_dev;
+extern void pci_iounmap(struct pci_dev *dev, void __iomem *);
+#elif defined(CONFIG_GENERIC_IOMAP)
+struct pci_dev;
+static inline void pci_iounmap(struct pci_dev *dev, void __iomem *addr)
+{ }
+#endif
+
+#include <asm-generic/pci_iomap.h>
 
 #endif

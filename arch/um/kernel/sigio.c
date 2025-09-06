@@ -7,6 +7,9 @@
 #include "irq_kern.h"
 #include "os.h"
 #include "sigio.h"
+#include <irq_kern.h>
+#include <os.h>
+#include <sigio.h>
 
 /* Protected by sigio_lock() called from write_sigio_workaround */
 static int sigio_irq_fd = -1;
@@ -27,6 +30,7 @@ int write_sigio_irq(int fd)
 	err = um_request_irq(SIGIO_WRITE_IRQ, fd, IRQ_READ, sigio_interrupt,
 			     IRQF_DISABLED|IRQF_SAMPLE_RANDOM, "write sigio",
 			     NULL);
+			     0, "write sigio", NULL);
 	if (err) {
 		printk(KERN_ERR "write_sigio_irq : um_request_irq failed, "
 		       "err = %d\n", err);
@@ -37,14 +41,14 @@ int write_sigio_irq(int fd)
 }
 
 /* These are called from os-Linux/sigio.c to protect its pollfds arrays. */
-static DEFINE_SPINLOCK(sigio_spinlock);
+static DEFINE_MUTEX(sigio_mutex);
 
 void sigio_lock(void)
 {
-	spin_lock(&sigio_spinlock);
+	mutex_lock(&sigio_mutex);
 }
 
 void sigio_unlock(void)
 {
-	spin_unlock(&sigio_spinlock);
+	mutex_unlock(&sigio_mutex);
 }

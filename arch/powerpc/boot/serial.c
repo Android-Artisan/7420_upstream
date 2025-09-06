@@ -34,6 +34,7 @@ static void serial_write(const char *buf, int len)
 }
 
 static void serial_edit_cmdline(char *buf, int len)
+static void serial_edit_cmdline(char *buf, int len, unsigned int timeout)
 {
 	int timer = 0, count;
 	char ch, *cp;
@@ -45,6 +46,7 @@ static void serial_edit_cmdline(char *buf, int len)
 	count++;
 
 	while (timer++ < 5*1000) {
+	do {
 		if (scdp->tstc()) {
 			while (((ch = scdp->getc()) != '\n') && (ch != '\r')) {
 				/* Test for backspace/delete */
@@ -71,6 +73,7 @@ static void serial_edit_cmdline(char *buf, int len)
 		}
 		udelay(1000);  /* 1 msec */
 	}
+	} while (timer++ < timeout);
 	*cp = 0;
 }
 
@@ -118,6 +121,8 @@ int serial_console_init(void)
 		goto err_out;
 
 	if (dt_is_compatible(devp, "ns16550"))
+	if (dt_is_compatible(devp, "ns16550") ||
+	    dt_is_compatible(devp, "pnpPNP,501"))
 		rc = ns16550_console_init(devp, &serial_cd);
 	else if (dt_is_compatible(devp, "marvell,mv64360-mpsc"))
 		rc = mpsc_console_init(devp, &serial_cd);

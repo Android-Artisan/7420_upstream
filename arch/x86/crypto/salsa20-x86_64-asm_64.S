@@ -3,6 +3,10 @@
 .p2align 5
 .globl ECRYPT_encrypt_bytes
 ECRYPT_encrypt_bytes:
+#include <linux/linkage.h>
+
+# enter salsa20_encrypt_bytes
+ENTRY(salsa20_encrypt_bytes)
 	mov	%rsp,%r11
 	and	$31,%r11
 	add	$256,%r11
@@ -807,6 +811,10 @@ ECRYPT_encrypt_bytes:
 .p2align 5
 .globl ECRYPT_keysetup
 ECRYPT_keysetup:
+ENDPROC(salsa20_encrypt_bytes)
+
+# enter salsa20_keysetup
+ENTRY(salsa20_keysetup)
 	mov	%rsp,%r11
 	and	$31,%r11
 	add	$256,%r11
@@ -897,6 +905,10 @@ ECRYPT_keysetup:
 .p2align 5
 .globl ECRYPT_ivsetup
 ECRYPT_ivsetup:
+ENDPROC(salsa20_keysetup)
+
+# enter salsa20_ivsetup
+ENTRY(salsa20_ivsetup)
 	mov	%rsp,%r11
 	and	$31,%r11
 	add	$256,%r11
@@ -918,3 +930,4 @@ ECRYPT_ivsetup:
 	mov	%rdi,%rax
 	mov	%rsi,%rdx
 	ret
+ENDPROC(salsa20_ivsetup)

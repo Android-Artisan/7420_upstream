@@ -25,6 +25,7 @@
  *  This driver programs the PCX-U/PCX-W performance counters
  *  on the PA-RISC 2.0 chips.  The driver keeps all images now
  *  internally to the kernel to hopefully eliminate the possiblity
+ *  internally to the kernel to hopefully eliminate the possibility
  *  of a bad image halting the CPU.  Also, there are different
  *  images for the PCX-W and later chips vs the PCX-U chips.
  *
@@ -39,7 +40,7 @@
  *  the PDC INTRIGUE calls.  This is done to eliminate bugs introduced
  *  in various PDC revisions.  The code is much more maintainable
  *  and reliable this way vs having to debug on every version of PDC
- *  on every box. 
+ *  on every box.
  */
 
 #include <linux/capability.h>
@@ -196,8 +197,8 @@ static int perf_config(uint32_t *image_ptr);
 static int perf_release(struct inode *inode, struct file *file);
 static int perf_open(struct inode *inode, struct file *file);
 static ssize_t perf_read(struct file *file, char __user *buf, size_t cnt, loff_t *ppos);
-static ssize_t perf_write(struct file *file, const char __user *buf, size_t count, 
-	loff_t *ppos);
+static ssize_t perf_write(struct file *file, const char __user *buf,
+	size_t count, loff_t *ppos);
 static long perf_ioctl(struct file *file, unsigned int cmd, unsigned long arg);
 static void perf_start_counters(void);
 static int perf_stop_counters(uint32_t *raddr);
@@ -223,7 +224,7 @@ extern void perf_intrigue_disable_perf_counters (void);
 /*
  * configure:
  *
- * Configure the cpu with a given data image.  First turn off the counters, 
+ * Configure the cpu with a given data image.  First turn off the counters,
  * then download the image, then turn the counters back on.
  */
 static int perf_config(uint32_t *image_ptr)
@@ -235,7 +236,7 @@ static int perf_config(uint32_t *image_ptr)
 	error = perf_stop_counters(raddr);
 	if (error != 0) {
 		printk("perf_config: perf_stop_counters = %ld\n", error);
-		return -EINVAL; 
+		return -EINVAL;
 	}
 
 printk("Preparing to write image\n");
@@ -243,7 +244,7 @@ printk("Preparing to write image\n");
 	error = perf_write_image((uint64_t *)image_ptr);
 	if (error != 0) {
 		printk("perf_config: DOWNLOAD = %ld\n", error);
-		return -EINVAL; 
+		return -EINVAL;
 	}
 
 printk("Preparing to start counters\n");
@@ -255,7 +256,7 @@ printk("Preparing to start counters\n");
 }
 
 /*
- * Open the device and initialize all of its memory.  The device is only 
+ * Open the device and initialize all of its memory.  The device is only
  * opened once, but can be "queried" by multiple processes that know its
  * file descriptor.
  */
@@ -266,6 +267,9 @@ static int perf_open(struct inode *inode, struct file *file)
 	if (perf_enabled) {
 		spin_unlock(&perf_lock);
 		unlock_kernel();
+	spin_lock(&perf_lock);
+	if (perf_enabled) {
+		spin_unlock(&perf_lock);
 		return -EBUSY;
 	}
 	perf_enabled = 1;
@@ -302,8 +306,8 @@ static ssize_t perf_read(struct file *file, char __user *buf, size_t cnt, loff_t
  * called on the processor that the download should happen
  * on.
  */
-static ssize_t perf_write(struct file *file, const char __user *buf, size_t count, 
-	loff_t *ppos)
+static ssize_t perf_write(struct file *file, const char __user *buf,
+	size_t count, loff_t *ppos)
 {
 	int err;
 	size_t image_size;
@@ -311,11 +315,11 @@ static ssize_t perf_write(struct file *file, const char __user *buf, size_t coun
 	uint32_t interface_type;
 	uint32_t test;
 
-	if (perf_processor_interface == ONYX_INTF) 
+	if (perf_processor_interface == ONYX_INTF)
 		image_size = PCXU_IMAGE_SIZE;
-	else if (perf_processor_interface == CUDA_INTF) 
+	else if (perf_processor_interface == CUDA_INTF)
 		image_size = PCXW_IMAGE_SIZE;
-	else 
+	else
 		return -EFAULT;
 
 	if (!capable(CAP_SYS_ADMIN))
@@ -335,22 +339,22 @@ static ssize_t perf_write(struct file *file, const char __user *buf, size_t coun
 
 	/* First check the machine type is correct for
 	   the requested image */
-        if (((perf_processor_interface == CUDA_INTF) &&
-		       (interface_type != CUDA_INTF)) ||
-	    ((perf_processor_interface == ONYX_INTF) &&
-	               (interface_type != ONYX_INTF))) 
+	if (((perf_processor_interface == CUDA_INTF) &&
+			(interface_type != CUDA_INTF)) ||
+		((perf_processor_interface == ONYX_INTF) &&
+			(interface_type != ONYX_INTF)))
 		return -EINVAL;
 
 	/* Next check to make sure the requested image
 	   is valid */
-	if (((interface_type == CUDA_INTF) && 
+	if (((interface_type == CUDA_INTF) &&
 		       (test >= MAX_CUDA_IMAGES)) ||
-	    ((interface_type == ONYX_INTF) && 
-		       (test >= MAX_ONYX_IMAGES))) 
+	    ((interface_type == ONYX_INTF) &&
+		       (test >= MAX_ONYX_IMAGES)))
 		return -EINVAL;
 
 	/* Copy the image into the processor */
-	if (interface_type == CUDA_INTF) 
+	if (interface_type == CUDA_INTF)
 		return perf_config(cuda_images[test]);
 	else
 		return perf_config(onyx_images[test]);
@@ -364,7 +368,7 @@ static ssize_t perf_write(struct file *file, const char __user *buf, size_t coun
 static void perf_patch_images(void)
 {
 #if 0 /* FIXME!! */
-/* 
+/*
  * NOTE:  this routine is VERY specific to the current TLB image.
  * If the image is changed, this routine might also need to be changed.
  */
@@ -372,9 +376,9 @@ static void perf_patch_images(void)
 	extern void $i_dtlb_miss_2_0();
 	extern void PA2_0_iva();
 
-	/* 
+	/*
 	 * We can only use the lower 32-bits, the upper 32-bits should be 0
-	 * anyway given this is in the kernel 
+	 * anyway given this is in the kernel
 	 */
 	uint32_t itlb_addr  = (uint32_t)&($i_itlb_miss_2_0);
 	uint32_t dtlb_addr  = (uint32_t)&($i_dtlb_miss_2_0);
@@ -382,21 +386,21 @@ static void perf_patch_images(void)
 
 	if (perf_processor_interface == ONYX_INTF) {
 		/* clear last 2 bytes */
-		onyx_images[TLBMISS][15] &= 0xffffff00;  
+		onyx_images[TLBMISS][15] &= 0xffffff00;
 		/* set 2 bytes */
 		onyx_images[TLBMISS][15] |= (0x000000ff&((dtlb_addr) >> 24));
 		onyx_images[TLBMISS][16] = (dtlb_addr << 8)&0xffffff00;
 		onyx_images[TLBMISS][17] = itlb_addr;
 
 		/* clear last 2 bytes */
-		onyx_images[TLBHANDMISS][15] &= 0xffffff00;  
+		onyx_images[TLBHANDMISS][15] &= 0xffffff00;
 		/* set 2 bytes */
 		onyx_images[TLBHANDMISS][15] |= (0x000000ff&((dtlb_addr) >> 24));
 		onyx_images[TLBHANDMISS][16] = (dtlb_addr << 8)&0xffffff00;
 		onyx_images[TLBHANDMISS][17] = itlb_addr;
 
 		/* clear last 2 bytes */
-		onyx_images[BIG_CPI][15] &= 0xffffff00;  
+		onyx_images[BIG_CPI][15] &= 0xffffff00;
 		/* set 2 bytes */
 		onyx_images[BIG_CPI][15] |= (0x000000ff&((dtlb_addr) >> 24));
 		onyx_images[BIG_CPI][16] = (dtlb_addr << 8)&0xffffff00;
@@ -409,24 +413,24 @@ static void perf_patch_images(void)
 
 	} else if (perf_processor_interface == CUDA_INTF) {
 		/* Cuda interface */
-		cuda_images[TLBMISS][16] =  
+		cuda_images[TLBMISS][16] =
 			(cuda_images[TLBMISS][16]&0xffff0000) |
 			((dtlb_addr >> 8)&0x0000ffff);
-		cuda_images[TLBMISS][17] = 
+		cuda_images[TLBMISS][17] =
 			((dtlb_addr << 24)&0xff000000) | ((itlb_addr >> 16)&0x000000ff);
 		cuda_images[TLBMISS][18] = (itlb_addr << 16)&0xffff0000;
 
-		cuda_images[TLBHANDMISS][16] = 
+		cuda_images[TLBHANDMISS][16] =
 			(cuda_images[TLBHANDMISS][16]&0xffff0000) |
 			((dtlb_addr >> 8)&0x0000ffff);
-		cuda_images[TLBHANDMISS][17] = 
+		cuda_images[TLBHANDMISS][17] =
 			((dtlb_addr << 24)&0xff000000) | ((itlb_addr >> 16)&0x000000ff);
 		cuda_images[TLBHANDMISS][18] = (itlb_addr << 16)&0xffff0000;
 
-		cuda_images[BIG_CPI][16] = 
+		cuda_images[BIG_CPI][16] =
 			(cuda_images[BIG_CPI][16]&0xffff0000) |
 			((dtlb_addr >> 8)&0x0000ffff);
-		cuda_images[BIG_CPI][17] = 
+		cuda_images[BIG_CPI][17] =
 			((dtlb_addr << 24)&0xff000000) | ((itlb_addr >> 16)&0x000000ff);
 		cuda_images[BIG_CPI][18] = (itlb_addr << 16)&0xffff0000;
 	} else {
@@ -438,7 +442,7 @@ static void perf_patch_images(void)
 
 /*
  * ioctl routine
- * All routines effect the processor that they are executed on.  Thus you 
+ * All routines effect the processor that they are executed on.  Thus you
  * must be running on the processor that you wish to change.
  */
 
@@ -464,7 +468,7 @@ static long perf_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 			}
 
 			/* copy out the Counters */
-			if (copy_to_user((void __user *)arg, raddr, 
+			if (copy_to_user((void __user *)arg, raddr,
 					sizeof (raddr)) != 0) {
 				error =  -EFAULT;
 				break;
@@ -492,7 +496,7 @@ static const struct file_operations perf_fops = {
 	.open = perf_open,
 	.release = perf_release
 };
-	
+
 static struct miscdevice perf_dev = {
 	MISC_DYNAMIC_MINOR,
 	PA_PERF_DEV,
@@ -547,6 +551,13 @@ static int __init perf_init(void)
 
 	return 0;
 }
+	cpu_device = per_cpu(cpu_data, 0).dev;
+	printk("Performance monitoring counters enabled for %s\n",
+		per_cpu(cpu_data, 0).dev->name);
+
+	return 0;
+}
+device_initcall(perf_init);
 
 /*
  * perf_start_counters(void)
@@ -599,7 +610,7 @@ static int perf_stop_counters(uint32_t *raddr)
 		/* OR sticky2 (bit 1496) to counter2 bit 32 */
 		tmp64 |= (userbuf[23] >> 8) & 0x0000000080000000;
 		raddr[2] = (uint32_t)tmp64;
-		
+
 		/* Counter3 is bits 1497 to 1528 */
 		tmp64 =  (userbuf[23] >> 7) & 0x00000000ffffffff;
 		/* OR sticky3 (bit 1529) to counter3 bit 32 */
@@ -621,7 +632,7 @@ static int perf_stop_counters(uint32_t *raddr)
 		userbuf[22] = 0;
 		userbuf[23] = 0;
 
-		/* 
+		/*
 		 * Write back the zeroed bytes + the image given
 		 * the read was destructive.
 		 */
@@ -629,13 +640,13 @@ static int perf_stop_counters(uint32_t *raddr)
 	} else {
 
 		/*
-		 * Read RDR-15 which contains the counters and sticky bits 
+		 * Read RDR-15 which contains the counters and sticky bits
 		 */
 		if (!perf_rdr_read_ubuf(15, userbuf)) {
 			return -13;
 		}
 
-		/* 
+		/*
 		 * Clear out the counters
 		 */
 		perf_rdr_clear(15);
@@ -648,7 +659,7 @@ static int perf_stop_counters(uint32_t *raddr)
 		raddr[2] = (uint32_t)((userbuf[1] >> 32) & 0x00000000ffffffffUL);
 		raddr[3] = (uint32_t)(userbuf[1] & 0x00000000ffffffffUL);
 	}
- 
+
 	return 0;
 }
 
@@ -686,7 +697,7 @@ static int perf_rdr_read_ubuf(uint32_t	rdr_num, uint64_t *buffer)
 	i = tentry->num_words;
 	while (i--) {
 		buffer[i] = 0;
-	}	
+	}
 
 	/* Check for bits an even number of 64 */
 	if ((xbits = width & 0x03f) != 0) {
@@ -812,18 +823,22 @@ static int perf_write_image(uint64_t *memaddr)
 	}
 
 	runway = ioremap_nocache(cpu_device->hpa.start, 4096);
+	if (!runway) {
+		pr_err("perf_write_image: ioremap failed!\n");
+		return -ENOMEM;
+	}
 
 	/* Merge intrigue bits into Runway STATUS 0 */
 	tmp64 = __raw_readq(runway + RUNWAY_STATUS) & 0xffecfffffffffffful;
-	__raw_writeq(tmp64 | (*memaddr++ & 0x0013000000000000ul), 
+	__raw_writeq(tmp64 | (*memaddr++ & 0x0013000000000000ul),
 		     runway + RUNWAY_STATUS);
-	
+
 	/* Write RUNWAY DEBUG registers */
 	for (i = 0; i < 8; i++) {
 		__raw_writeq(*memaddr++, runway + RUNWAY_DEBUG);
 	}
 
-	return 0; 
+	return 0;
 }
 
 /*
@@ -847,7 +862,7 @@ printk("perf_rdr_write\n");
 			perf_rdr_shift_out_U(rdr_num, buffer[i]);
 		} else {
 			perf_rdr_shift_out_W(rdr_num, buffer[i]);
-		}	
+		}
 	}
 printk("perf_rdr_write done\n");
 }

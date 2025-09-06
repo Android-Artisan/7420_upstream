@@ -18,6 +18,11 @@
 #include <linux/wait.h>
 #include <linux/clk.h>
 #include <linux/delay.h>
+#include <linux/io.h>
+#include <linux/module.h>
+#include <linux/platform_device.h>
+#include <linux/dmaengine.h>
+#include <linux/dma/pxa-dma.h>
 
 #include <sound/core.h>
 #include <sound/pcm.h>
@@ -29,6 +34,10 @@
 #include <mach/hardware.h>
 #include <mach/pxa-regs.h>
 #include <mach/pxa2xx-gpio.h>
+#include <sound/pxa2xx-lib.h>
+#include <sound/dmaengine_pcm.h>
+
+#include <mach/regs-ac97.h>
 #include <mach/audio.h>
 
 #include "pxa2xx-pcm.h"
@@ -204,6 +213,13 @@ static irqreturn_t pxa2xx_ac97_irq(int irq, void *dev_id)
 	}
 
 	return IRQ_NONE;
+static void pxa2xx_ac97_reset(struct snd_ac97 *ac97)
+{
+	if (!pxa2xx_ac97_try_cold_reset(ac97)) {
+		pxa2xx_ac97_try_warm_reset(ac97);
+	}
+
+	pxa2xx_ac97_finish_reset(ac97);
 }
 
 static struct snd_ac97_bus_ops pxa2xx_ac97_ops = {
@@ -226,6 +242,28 @@ static struct pxa2xx_pcm_dma_params pxa2xx_ac97_pcm_in = {
 	.drcmr			= &DRCMRRXPCDR,
 	.dcmd			= DCMD_INCTRGADDR | DCMD_FLOWSRC |
 				  DCMD_BURST32 | DCMD_WIDTH4,
+static struct pxad_param pxa2xx_ac97_pcm_out_req = {
+	.prio = PXAD_PRIO_LOWEST,
+	.drcmr = 12,
+};
+
+static struct snd_dmaengine_dai_dma_data pxa2xx_ac97_pcm_out = {
+	.addr		= __PREG(PCDR),
+	.addr_width	= DMA_SLAVE_BUSWIDTH_4_BYTES,
+	.maxburst	= 32,
+	.filter_data	= &pxa2xx_ac97_pcm_out_req,
+};
+
+static struct pxad_param pxa2xx_ac97_pcm_in_req = {
+	.prio = PXAD_PRIO_LOWEST,
+	.drcmr = 11,
+};
+
+static struct snd_dmaengine_dai_dma_data pxa2xx_ac97_pcm_in = {
+	.addr		= __PREG(PCDR),
+	.addr_width	= DMA_SLAVE_BUSWIDTH_4_BYTES,
+	.maxburst	= 32,
+	.filter_data	= &pxa2xx_ac97_pcm_in_req,
 };
 
 static struct snd_pcm *pxa2xx_ac97_pcm;
@@ -280,6 +318,9 @@ static struct pxa2xx_pcm_client pxa2xx_ac97_pcm_client = {
 #ifdef CONFIG_PM
 
 static int pxa2xx_ac97_do_suspend(struct snd_card *card, pm_message_t state)
+#ifdef CONFIG_PM_SLEEP
+
+static int pxa2xx_ac97_do_suspend(struct snd_card *card)
 {
 	pxa2xx_audio_ops_t *platform_ops = card->dev->platform_data;
 
@@ -292,6 +333,8 @@ static int pxa2xx_ac97_do_suspend(struct snd_card *card, pm_message_t state)
 	clk_disable(ac97_clk);
 
 	return 0;
+
+	return pxa2xx_ac97_hw_suspend();
 }
 
 static int pxa2xx_ac97_do_resume(struct snd_card *card)
@@ -299,6 +342,12 @@ static int pxa2xx_ac97_do_resume(struct snd_card *card)
 	pxa2xx_audio_ops_t *platform_ops = card->dev->platform_data;
 
 	clk_enable(ac97_clk);
+	int rc;
+
+	rc = pxa2xx_ac97_hw_resume();
+	if (rc)
+		return rc;
+
 	if (platform_ops && platform_ops->resume)
 		platform_ops->resume(platform_ops->priv);
 	snd_ac97_resume(pxa2xx_ac97_ac97);
@@ -314,6 +363,13 @@ static int pxa2xx_ac97_suspend(struct platform_device *dev, pm_message_t state)
 
 	if (card)
 		ret = pxa2xx_ac97_do_suspend(card, PMSG_SUSPEND);
+static int pxa2xx_ac97_suspend(struct device *dev)
+{
+	struct snd_card *card = dev_get_drvdata(dev);
+	int ret = 0;
+
+	if (card)
+		ret = pxa2xx_ac97_do_suspend(card);
 
 	return ret;
 }
@@ -321,6 +377,9 @@ static int pxa2xx_ac97_suspend(struct platform_device *dev, pm_message_t state)
 static int pxa2xx_ac97_resume(struct platform_device *dev)
 {
 	struct snd_card *card = platform_get_drvdata(dev);
+static int pxa2xx_ac97_resume(struct device *dev)
+{
+	struct snd_card *card = dev_get_drvdata(dev);
 	int ret = 0;
 
 	if (card)
@@ -335,6 +394,10 @@ static int pxa2xx_ac97_resume(struct platform_device *dev)
 #endif
 
 static int __devinit pxa2xx_ac97_probe(struct platform_device *dev)
+static SIMPLE_DEV_PM_OPS(pxa2xx_ac97_pm_ops, pxa2xx_ac97_suspend, pxa2xx_ac97_resume);
+#endif
+
+static int pxa2xx_ac97_probe(struct platform_device *dev)
 {
 	struct snd_card *card;
 	struct snd_ac97_bus *ac97_bus;
@@ -349,6 +412,20 @@ static int __devinit pxa2xx_ac97_probe(struct platform_device *dev)
 
 	card->dev = &dev->dev;
 	strncpy(card->driver, dev->dev.driver->name, sizeof(card->driver));
+	pxa2xx_audio_ops_t *pdata = dev->dev.platform_data;
+
+	if (dev->id >= 0) {
+		dev_err(&dev->dev, "PXA2xx has only one AC97 port.\n");
+		ret = -ENXIO;
+		goto err_dev;
+	}
+
+	ret = snd_card_new(&dev->dev, SNDRV_DEFAULT_IDX1, SNDRV_DEFAULT_STR1,
+			   THIS_MODULE, 0, &card);
+	if (ret < 0)
+		goto err;
+
+	strlcpy(card->driver, dev->dev.driver->name, sizeof(card->driver));
 
 	ret = pxa2xx_pcm_new(card, &pxa2xx_ac97_pcm_client, &pxa2xx_ac97_pcm);
 	if (ret)
@@ -388,6 +465,17 @@ static int __devinit pxa2xx_ac97_probe(struct platform_device *dev)
 	ret = snd_ac97_mixer(ac97_bus, &ac97_template, &pxa2xx_ac97_ac97);
 	if (ret)
 		goto err;
+	ret = pxa2xx_ac97_hw_probe(dev);
+	if (ret)
+		goto err;
+
+	ret = snd_ac97_bus(card, 0, &pxa2xx_ac97_ops, NULL, &ac97_bus);
+	if (ret)
+		goto err_remove;
+	memset(&ac97_template, 0, sizeof(ac97_template));
+	ret = snd_ac97_mixer(ac97_bus, &ac97_template, &pxa2xx_ac97_ac97);
+	if (ret)
+		goto err_remove;
 
 	snprintf(card->shortname, sizeof(card->shortname),
 		 "%s", snd_ac97_get_short_name(pxa2xx_ac97_ac97));
@@ -395,6 +483,8 @@ static int __devinit pxa2xx_ac97_probe(struct platform_device *dev)
 		 "%s (%s)", dev->dev.driver->name, card->mixername);
 
 	snd_card_set_dev(card, &dev->dev);
+	if (pdata && pdata->codec_pdata[0])
+		snd_ac97_dev_add_pdata(ac97_bus->codec[0], pdata->codec_pdata[0]);
 	ret = snd_card_register(card);
 	if (ret == 0) {
 		platform_set_drvdata(dev, card);
@@ -421,6 +511,16 @@ static int __devinit pxa2xx_ac97_probe(struct platform_device *dev)
 }
 
 static int __devexit pxa2xx_ac97_remove(struct platform_device *dev)
+err_remove:
+	pxa2xx_ac97_hw_remove(dev);
+err:
+	if (card)
+		snd_card_free(card);
+err_dev:
+	return ret;
+}
+
+static int pxa2xx_ac97_remove(struct platform_device *dev)
 {
 	struct snd_card *card = platform_get_drvdata(dev);
 
@@ -436,6 +536,7 @@ static int __devexit pxa2xx_ac97_remove(struct platform_device *dev)
 		clk_put(ac97conf_clk);
 		ac97conf_clk = NULL;
 #endif
+		pxa2xx_ac97_hw_remove(dev);
 	}
 
 	return 0;
@@ -464,6 +565,16 @@ static void __exit pxa2xx_ac97_exit(void)
 
 module_init(pxa2xx_ac97_init);
 module_exit(pxa2xx_ac97_exit);
+	.remove		= pxa2xx_ac97_remove,
+	.driver		= {
+		.name	= "pxa2xx-ac97",
+#ifdef CONFIG_PM_SLEEP
+		.pm	= &pxa2xx_ac97_pm_ops,
+#endif
+	},
+};
+
+module_platform_driver(pxa2xx_ac97_driver);
 
 MODULE_AUTHOR("Nicolas Pitre");
 MODULE_DESCRIPTION("AC97 driver for the Intel PXA2xx chip");

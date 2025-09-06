@@ -76,6 +76,7 @@
      * Title: "Conceptual Architecture of the Linux Kernel"
        Author: Ivan T. Bowman.
        URL: http://plg.uwaterloo.ca/~itbowman/papers/CS746G-a1.html
+       URL: http://plg.uwaterloo.ca/
        Keywords: conceptual software architecture, extracted design,
        reverse engineering, system structure.
        Description: Conceptual software architecture of the Linux kernel,
@@ -85,6 +86,7 @@
      * Title: "Concrete Architecture of the Linux Kernel"
        Author: Ivan T. Bowman, Saheem Siddiqi, and Meyer C. Tanuan.
        URL: http://plg.uwaterloo.ca/~itbowman/papers/CS746G-a2.html
+       URL: http://plg.uwaterloo.ca/
        Keywords: concrete architecture, extracted design, reverse
        engineering, system structure, dependencies.
        Description: Concrete architecture of the Linux kernel,
@@ -96,6 +98,7 @@
        Architecture"
        Author: Ivan T. Bowman, Richard C. Holt and Neil V. Brewster.
        URL: http://plg.uwaterloo.ca/~itbowman/papers/linuxcase.html
+       URL: http://plg.uwaterloo.ca/
        Keywords: software architecture, architecture recovery,
        redocumentation.
        Description: Paper appeared at ICSE'99, Los Angeles, May 16-22,
@@ -105,6 +108,7 @@
      * Title: "Overview of the Virtual File System"
        Author: Richard Gooch.
        URL: http://www.atnf.csiro.au/~rgooch/linux/vfs.txt
+       URL: http://www.mjmwired.net/kernel/Documentation/filesystems/vfs.txt
        Keywords: VFS, File System, mounting filesystems, opening files,
        dentries, dcache.
        Description: Brief introduction to the Linux Virtual File System.
@@ -117,6 +121,7 @@
        URL: http://www.linuxjournal.com/article.php?sid=2391
        Keywords: RAID, MD driver.
        Description: Linux Journal Kernel Korner article. Here is it's
+       Description: Linux Journal Kernel Korner article. Here is its
        abstract: "A description of the implementation of the RAID-1,
        RAID-4 and RAID-5 personalities of the MD device driver in the
        Linux kernel, providing users with high performance and reliable,
@@ -128,6 +133,7 @@
        Keywords: device driver, module, loading/unloading modules,
        allocating resources.
        Description: Linux Journal Kernel Korner article. Here is it's
+       Description: Linux Journal Kernel Korner article. Here is its
        abstract: "This is the first of a series of four articles
        co-authored by Alessandro Rubini and Georg Zezchwitz which present
        a practical approach to writing Linux device drivers as kernel
@@ -142,6 +148,7 @@
        autodetection, mayor number, minor number, file operations,
        open(), close().
        Description: Linux Journal Kernel Korner article. Here is it's
+       Description: Linux Journal Kernel Korner article. Here is its
        abstract: "This article, the second of four, introduces part of
        the actual code to create custom module implementing a character
        device driver. It describes the code for module initialization and
@@ -153,6 +160,7 @@
        Keywords: read(), write(), select(), ioctl(), blocking/non
        blocking mode, interrupt handler.
        Description: Linux Journal Kernel Korner article. Here is it's
+       Description: Linux Journal Kernel Korner article. Here is its
        abstract: "This article, the third of four on writing character
        device drivers, introduces concepts of reading, writing, and using
        ioctl-calls".
@@ -162,6 +170,7 @@
        URL: http://www.linuxjournal.com/article.php?sid=1222
        Keywords: interrupts, irqs, DMA, bottom halves, task queues.
        Description: Linux Journal Kernel Korner article. Here is it's
+       Description: Linux Journal Kernel Korner article. Here is its
        abstract: "This is the fourth in a series of articles about
        writing character device drivers as loadable kernel modules. This
        month, we further investigate the field of interrupt handling.
@@ -268,6 +277,7 @@
        Author: Richard Gooch.
        URL:
        http://www.atnf.csiro.au/~rgooch/linux/docs/porting-to-2.2.html
+       http://www.linuxhq.com/guides/LKMPG/node28.html 
        Keywords: 2.2, changes.
        Description: Kernel functions/structures/variables which changed
        from 2.0.x to 2.2.x.
@@ -304,6 +314,7 @@
      * Title: "The Kernel Hacking HOWTO"
        Author: Various Talented People, and Rusty.
        Location: in kernel tree, Documentation/DocBook/kernel-hacking/
+       Location: in kernel tree, Documentation/DocBook/kernel-hacking.tmpl
        (must be built as "make {htmldocs | psdocs | pdfdocs})
        Keywords: HOWTO, kernel contexts, deadlock, locking, modules,
        symbols, return conventions.
@@ -355,6 +366,7 @@
      * Title: "Linux Kernel Locking HOWTO"
        Author: Various Talented People, and Rusty.
        Location: in kernel tree, Documentation/DocBook/kernel-locking/
+       Location: in kernel tree, Documentation/DocBook/kernel-locking.tmpl
        (must be built as "make {htmldocs | psdocs | pdfdocs})
        Keywords: locks, locking, spinlock, semaphore, atomic, race
        condition, bottom halves, tasklets, softirqs.
@@ -387,6 +399,7 @@
      * Title: "Porting Device Drivers To Linux 2.2: part II"
        Author: Alan Cox.
        URL: http://www.linux-mag.com/1999-06/gear_01.html
+       URL: http://www.linux-mag.com/id/238 
        Keywords: ports, porting.
        Description: Second part on porting from 2.0 to 2.2 kernels.
 
@@ -394,42 +407,49 @@
        Macintosh"
        Author: Paul Mackerras.
        URL: http://www.linux-mag.com/1999-07/gear_01.html
+       URL: http://www.linux-mag.com/id/261
        Keywords: Mac, Power Macintosh, porting, drivers, compatibility.
        Description: The title says it all.
 
      * Title: "An Introduction to SCSI Drivers"
        Author: Alan Cox.
        URL: http://www.linux-mag.com/1999-08/gear_01.html
+       URL: http://www.linux-mag.com/id/284
        Keywords: SCSI, device, driver.
        Description: The title says it all.
 
      * Title: "Advanced SCSI Drivers And Other Tales"
        Author: Alan Cox.
        URL: http://www.linux-mag.com/1999-09/gear_01.html
+       URL: http://www.linux-mag.com/id/307
        Keywords: SCSI, device, driver, advanced.
        Description: The title says it all.
 
      * Title: "Writing Linux Mouse Drivers"
        Author: Alan Cox.
        URL: http://www.linux-mag.com/1999-10/gear_01.html
+       URL: http://www.linux-mag.com/id/330
        Keywords: mouse, driver, gpm.
        Description: The title says it all.
 
      * Title: "More on Mouse Drivers"
        Author: Alan Cox.
        URL: http://www.linux-mag.com/1999-11/gear_01.html
+       URL: http://www.linux-mag.com/id/356
        Keywords: mouse, driver, gpm, races, asynchronous I/O.
        Description: The title still says it all.
 
      * Title: "Writing Video4linux Radio Driver"
        Author: Alan Cox.
        URL: http://www.linux-mag.com/1999-12/gear_01.html
+       URL: http://www.linux-mag.com/id/381
        Keywords: video4linux, driver, radio, radio devices.
        Description: The title says it all.
 
      * Title: "Video4linux Drivers, Part 1: Video-Capture Device"
        Author: Alan Cox.
        URL: http://www.linux-mag.com/2000-01/gear_01.html
+       URL: http://www.linux-mag.com/id/406
        Keywords: video4linux, driver, video capture, capture devices,
        camera driver.
        Description: The title says it all.
@@ -437,6 +457,7 @@
      * Title: "Video4linux Drivers, Part 2: Video-capture Devices"
        Author: Alan Cox.
        URL: http://www.linux-mag.com/2000-02/gear_01.html
+       URL: http://www.linux-mag.com/id/429
        Keywords: video4linux, driver, video capture, capture devices,
        camera driver, control, query capabilities, capability, facility.
        Description: The title says it all.
@@ -444,6 +465,7 @@
      * Title: "PCI Management in Linux 2.2"
        Author: Alan Cox.
        URL: http://www.linux-mag.com/2000-03/gear_01.html
+       URL: http://www.linux-mag.com/id/452
        Keywords: PCI, bus, bus-mastering.
        Description: The title says it all.
 
@@ -503,6 +525,7 @@
      * Title: "A Linux vm README"
        Author: Kanoj Sarcar.
        URL: http://reality.sgi.com/kanoj_engr/vm229.html
+       URL: http://kos.enix.org/pub/linux-vmm.html
        Keywords: virtual memory, mm, pgd, vma, page, page flags, page
        cache, swap cache, kswapd.
        Description: Telegraphic, short descriptions and definitions
@@ -541,6 +564,7 @@
        http://www.oreilly.com/catalog/linuxdrive2/
 
      * Title: "Linux Device Drivers, 3nd Edition"
+     * Title: "Linux Device Drivers, 3rd Edition"
        Authors: Jonathan Corbet, Alessandro Rubini, and Greg Kroah-Hartman
        Publisher: O'Reilly & Associates.
        Date: 2005.
@@ -614,6 +638,7 @@
 
      * Title:  "UNIX  Systems  for  Modern Architectures: Symmetric
        Multiprocesssing and Caching for Kernel Programmers"
+       Multiprocessing and Caching for Kernel Programmers"
        Author: Curt Schimmel.
        Publisher: Addison Wesley.
        Date: June, 1994.
@@ -660,6 +685,9 @@
      * Name: "Linux Kernel Source Reference"
        Author: Thomas Graichen.
        URL: http://innominate.org/~graichen/projects/lksr/
+     * Name: "Linux Kernel Source Reference"
+       Author: Thomas Graichen.
+       URL: http://marc.info/?l=linux-kernel&m=96446640102205&w=4
        Keywords: CVS, web, cvsweb, browsing source code.
        Description: Web interface to a CVS server with the kernel
        sources. "Here you can have a look at any file of the Linux kernel
@@ -683,6 +711,7 @@
 
      * Name: "Kernel Traffic"
        URL: http://kt.zork.net/kernel-traffic/
+       URL: http://kt.earth.li/kernel-traffic/index.html
        Keywords: linux-kernel mailing list, weekly kernel news.
        Description: Weekly newsletter covering the most relevant
        discussions of the linux-kernel mailing list.
@@ -745,6 +774,18 @@
        try irc.openprojects.net or irc.<country>.openprojects.net as your
        server and then /join #kernelnewbies". It also hosts articles,
        documents, FAQs...
+     * Name: "Kernel Newbies IRC Channel and Website"
+       URL: http://www.kernelnewbies.org
+       Keywords: IRC, newbies, channel, asking doubts.
+       Description: #kernelnewbies on irc.oftc.net.
+       #kernelnewbies is an IRC network dedicated to the 'newbie'
+       kernel hacker. The audience mostly consists of people who are
+       learning about the kernel, working on kernel projects or
+       professional kernel hackers that want to help less seasoned kernel
+       people.
+       #kernelnewbies is on the OFTC IRC Network.
+       Try irc.oftc.net as your server and then /join #kernelnewbies.
+       The kernelnewbies website also hosts articles, documents, FAQs...
        
      * Name: "linux-kernel mailing list archives and search engines"
        URL: http://vger.kernel.org/vger-lists.html

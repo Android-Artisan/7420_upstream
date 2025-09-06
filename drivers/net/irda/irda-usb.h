@@ -30,6 +30,7 @@
  *****************************************************************************/
 
 #include <linux/time.h>
+#include <linux/ktime.h>
 
 #include <net/irda/irda.h>
 #include <net/irda/irda_device.h>      /* struct irlap_cb */
@@ -126,6 +127,7 @@ struct irda_class_desc {
 	__u8  bIrdaRateSniff;
 	__u8  bMaxUnicastList;
 } __attribute__ ((packed));
+} __packed;
 
 /* class specific interface request to get the IrDA-USB class descriptor
  * (6.2.5, USB-IrDA class spec 1.0) */
@@ -160,6 +162,7 @@ struct irda_usb_cb {
 
 	struct timeval stamp;
 	struct timeval now;
+	ktime_t stamp;
 
 	spinlock_t lock;		/* For serializing Tx operations */
 

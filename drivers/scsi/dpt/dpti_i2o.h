@@ -23,6 +23,7 @@
 
 #include <linux/notifier.h>
 #include <asm/atomic.h>
+#include <linux/atomic.h>
 
 
 /*

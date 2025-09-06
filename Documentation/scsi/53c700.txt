@@ -1,5 +1,4 @@
 General Description
-===================
 
 This driver supports the 53c700 and 53c700-66 chips.  It also supports
 the 53c710 but only in 53c700 emulation mode.  It is full featured and
@@ -14,7 +13,6 @@ fill in to get the driver working.
 
 
 Compile Time Flags
-==================
 
 The driver may be either io mapped or memory mapped.  This is
 selectable by configuration flags:
@@ -30,6 +28,7 @@ define if the driver is to be io mapped.
 One or other of the above flags *must* be defined.
 
 Other flags are:
+A compile time flag is:
 
 CONFIG_53C700_LE_ON_BE
 
@@ -44,7 +43,6 @@ consistent or fully inconsistent architectures should not define this.
 
 
 Using the Chip Core Driver
-==========================
 
 In order to plumb the 53c700 chip core driver into a working SCSI
 driver, you need to know three things about the way the chip is wired
@@ -75,7 +73,6 @@ of an extra clock chip).  The best operation clock speeds are:
 53c710 - 40Mhz
 
 Writing Your Glue Driver
-========================
 
 This will be a standard SCSI driver (I don't know of a good document
 describing this, just copy from some other driver) with at least a

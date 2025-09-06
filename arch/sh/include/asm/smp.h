@@ -3,6 +3,7 @@
 
 #include <linux/bitops.h>
 #include <linux/cpumask.h>
+#include <asm/smp-ops.h>
 
 #ifdef CONFIG_SMP
 
@@ -12,6 +13,11 @@
 
 #define raw_smp_processor_id()	(current_thread_info()->cpu)
 #define hard_smp_processor_id()	plat_smp_processor_id()
+#include <linux/atomic.h>
+#include <asm/current.h>
+#include <asm/percpu.h>
+
+#define raw_smp_processor_id()	(current_thread_info()->cpu)
 
 /* Map from cpu id to sequential logical cpu number. */
 extern int __cpu_number_map[NR_CPUS];
@@ -40,6 +46,52 @@ int plat_register_ipi_handler(unsigned int message,
 			      void (*handler)(void *), void *arg);
 extern void arch_send_call_function_single_ipi(int cpu);
 extern void arch_send_call_function_ipi(cpumask_t mask);
+enum {
+	SMP_MSG_FUNCTION,
+	SMP_MSG_RESCHEDULE,
+	SMP_MSG_FUNCTION_SINGLE,
+	SMP_MSG_TIMER,
+
+	SMP_MSG_NR,	/* must be last */
+};
+
+DECLARE_PER_CPU(int, cpu_state);
+
+void smp_message_recv(unsigned int msg);
+void smp_timer_broadcast(const struct cpumask *mask);
+
+void local_timer_interrupt(void);
+void local_timer_setup(unsigned int cpu);
+void local_timer_stop(unsigned int cpu);
+
+void arch_send_call_function_single_ipi(int cpu);
+void arch_send_call_function_ipi_mask(const struct cpumask *mask);
+
+void native_play_dead(void);
+void native_cpu_die(unsigned int cpu);
+int native_cpu_disable(unsigned int cpu);
+
+#ifdef CONFIG_HOTPLUG_CPU
+void play_dead_common(void);
+extern int __cpu_disable(void);
+
+static inline void __cpu_die(unsigned int cpu)
+{
+	extern struct plat_smp_ops *mp_ops;     /* private */
+
+	mp_ops->cpu_die(cpu);
+}
+#endif
+
+static inline int hard_smp_processor_id(void)
+{
+	extern struct plat_smp_ops *mp_ops;	/* private */
+
+	if (!mp_ops)
+		return 0;	/* boot CPU */
+
+	return mp_ops->smp_processor_id();
+}
 
 #else
 

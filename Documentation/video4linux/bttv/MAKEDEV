@@ -15,6 +15,7 @@ function makedev () {
 }
 
 # see http://roadrunner.swansea.uk.linux.org/v4lapi.shtml
+# see http://linux.bytesex.org/v4l2/API.html
 
 echo "*** new device names ***"
 makedev video 0

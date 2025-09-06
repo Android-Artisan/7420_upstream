@@ -9,6 +9,7 @@
  *
  * s390 Version:
  *   Copyright IBM Corp. 2003,2007
+ *   Copyright IBM Corp. 2003, 2007
  *   Author(s): Thomas Spatzier
  *		Jan Glauber (jan.glauber@de.ibm.com)
  *
@@ -26,6 +27,10 @@
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/crypto.h>
+#include <crypto/internal/hash.h>
+#include <linux/init.h>
+#include <linux/module.h>
+#include <linux/cpufeature.h>
 #include <crypto/sha.h>
 
 #include "crypt_s390.h"
@@ -34,6 +39,9 @@
 static void sha1_init(struct crypto_tfm *tfm)
 {
 	struct s390_sha_ctx *sctx = crypto_tfm_ctx(tfm);
+static int sha1_init(struct shash_desc *desc)
+{
+	struct s390_sha_ctx *sctx = shash_desc_ctx(desc);
 
 	sctx->state[0] = SHA1_H0;
 	sctx->state[1] = SHA1_H1;
@@ -58,6 +66,50 @@ static struct crypto_alg alg = {
 	.dia_init	=	sha1_init,
 	.dia_update	=	s390_sha_update,
 	.dia_final	=	s390_sha_final } }
+
+	return 0;
+}
+
+static int sha1_export(struct shash_desc *desc, void *out)
+{
+	struct s390_sha_ctx *sctx = shash_desc_ctx(desc);
+	struct sha1_state *octx = out;
+
+	octx->count = sctx->count;
+	memcpy(octx->state, sctx->state, sizeof(octx->state));
+	memcpy(octx->buffer, sctx->buf, sizeof(octx->buffer));
+	return 0;
+}
+
+static int sha1_import(struct shash_desc *desc, const void *in)
+{
+	struct s390_sha_ctx *sctx = shash_desc_ctx(desc);
+	const struct sha1_state *ictx = in;
+
+	sctx->count = ictx->count;
+	memcpy(sctx->state, ictx->state, sizeof(ictx->state));
+	memcpy(sctx->buf, ictx->buffer, sizeof(ictx->buffer));
+	sctx->func = KIMD_SHA_1;
+	return 0;
+}
+
+static struct shash_alg alg = {
+	.digestsize	=	SHA1_DIGEST_SIZE,
+	.init		=	sha1_init,
+	.update		=	s390_sha_update,
+	.final		=	s390_sha_final,
+	.export		=	sha1_export,
+	.import		=	sha1_import,
+	.descsize	=	sizeof(struct s390_sha_ctx),
+	.statesize	=	sizeof(struct sha1_state),
+	.base		=	{
+		.cra_name	=	"sha1",
+		.cra_driver_name=	"sha1-s390",
+		.cra_priority	=	CRYPT_S390_PRIORITY,
+		.cra_flags	=	CRYPTO_ALG_TYPE_SHASH,
+		.cra_blocksize	=	SHA1_BLOCK_SIZE,
+		.cra_module	=	THIS_MODULE,
+	}
 };
 
 static int __init sha1_s390_init(void)
@@ -65,6 +117,9 @@ static int __init sha1_s390_init(void)
 	if (!crypt_s390_func_available(KIMD_SHA_1))
 		return -EOPNOTSUPP;
 	return crypto_register_alg(&alg);
+	if (!crypt_s390_func_available(KIMD_SHA_1, CRYPT_S390_MSA))
+		return -EOPNOTSUPP;
+	return crypto_register_shash(&alg);
 }
 
 static void __exit sha1_s390_fini(void)
@@ -76,5 +131,12 @@ module_init(sha1_s390_init);
 module_exit(sha1_s390_fini);
 
 MODULE_ALIAS("sha1");
+	crypto_unregister_shash(&alg);
+}
+
+module_cpu_feature_match(MSA, sha1_s390_init);
+module_exit(sha1_s390_fini);
+
+MODULE_ALIAS_CRYPTO("sha1");
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("SHA1 Secure Hash Algorithm");

@@ -44,6 +44,10 @@ static int pvr2_request_dma(struct dma_channel *chan)
 		return -EBUSY;
 
 	ctrl_outl(0, PVR2_DMA_LMMODE0);
+	if (__raw_readl(PVR2_DMA_MODE) != 0)
+		return -EBUSY;
+
+	__raw_writel(0, PVR2_DMA_LMMODE0);
 
 	return 0;
 }
@@ -63,6 +67,9 @@ static int pvr2_xfer_dma(struct dma_channel *chan)
 	ctrl_outl(chan->dar, PVR2_DMA_ADDR);
 	ctrl_outl(chan->count, PVR2_DMA_COUNT);
 	ctrl_outl(chan->mode & DMA_MODE_MASK, PVR2_DMA_MODE);
+	__raw_writel(chan->dar, PVR2_DMA_ADDR);
+	__raw_writel(chan->count, PVR2_DMA_COUNT);
+	__raw_writel(chan->mode & DMA_MODE_MASK, PVR2_DMA_MODE);
 
 	return 0;
 }

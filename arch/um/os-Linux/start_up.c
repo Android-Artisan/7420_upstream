@@ -25,6 +25,17 @@
 #include "registers.h"
 #include "skas.h"
 #include "skas_ptrace.h"
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <sys/time.h>
+#include <sys/resource.h>
+#include <asm/unistd.h>
+#include <init.h>
+#include <os.h>
+#include <mem_user.h>
+#include <ptrace_user.h>
+#include <registers.h>
+#include <skas.h>
 
 static void ptrace_child(void)
 {
@@ -94,6 +105,8 @@ static void non_fatal(char *fmt, ...)
 static int start_ptraced_child(void)
 {
 	int pid, n, status;
+
+	fflush(stdout);
 
 	pid = fork();
 	if (pid == 0)
@@ -226,6 +239,7 @@ static void __init check_sysemu(void)
 	}
 
 	n = ptrace(PTRACE_POKEUSR, pid, PT_SYSCALL_RET_OFFSET, os_getpid());
+	n = ptrace(PTRACE_POKEUSER, pid, PT_SYSCALL_RET_OFFSET, os_getpid());
 	if (n < 0) {
 		non_fatal("check_sysemu : failed to modify system call "
 			  "return");
@@ -245,6 +259,7 @@ static void __init check_sysemu(void)
 	if ((ptrace(PTRACE_OLDSETOPTIONS, pid, 0,
 		   (void *) PTRACE_O_TRACESYSGOOD) < 0))
 		fatal_perror("check_ptrace: PTRACE_OLDSETOPTIONS failed");
+		fatal_perror("check_sysemu: PTRACE_OLDSETOPTIONS failed");
 
 	while (1) {
 		count++;
@@ -253,6 +268,7 @@ static void __init check_sysemu(void)
 		CATCH_EINTR(n = waitpid(pid, &status, WUNTRACED));
 		if (n < 0)
 			fatal_perror("check_ptrace : wait failed");
+			fatal_perror("check_sysemu: wait failed");
 
 		if (WIFSTOPPED(status) &&
 		    (WSTOPSIG(status) == (SIGTRAP|0x80))) {
@@ -262,6 +278,11 @@ static void __init check_sysemu(void)
 				goto fail;
 			}
 			n = ptrace(PTRACE_POKEUSR, pid, PT_SYSCALL_RET_OFFSET,
+				non_fatal("check_sysemu: SYSEMU_SINGLESTEP "
+					  "doesn't singlestep");
+				goto fail;
+			}
+			n = ptrace(PTRACE_POKEUSER, pid, PT_SYSCALL_RET_OFFSET,
 				   os_getpid());
 			if (n < 0)
 				fatal_perror("check_sysemu : failed to modify "
@@ -272,6 +293,7 @@ static void __init check_sysemu(void)
 			count++;
 		else {
 			non_fatal("check_ptrace : expected SIGTRAP or "
+			non_fatal("check_sysemu: expected SIGTRAP or "
 				  "(SIGTRAP | 0x80), got status = %d\n",
 				  status);
 			goto fail;
@@ -321,6 +343,10 @@ static void __init check_ptrace(void)
 				 0);
 		if (syscall == __NR_getpid) {
 			n = ptrace(PTRACE_POKEUSR, pid, PT_SYSCALL_NR_OFFSET,
+		syscall = ptrace(PTRACE_PEEKUSER, pid, PT_SYSCALL_NR_OFFSET,
+				 0);
+		if (syscall == __NR_getpid) {
+			n = ptrace(PTRACE_POKEUSER, pid, PT_SYSCALL_NR_OFFSET,
 				   __NR_getppid);
 			if (n < 0)
 				fatal_perror("check_ptrace : failed to modify "
@@ -371,7 +397,7 @@ void __init os_early_checks(void)
 	check_tmpexec();
 
 	pid = start_ptraced_child();
-	if (init_registers(pid))
+	if (init_pid_registers(pid))
 		fatal("Failed to initialize default registers");
 	stop_ptraced_child(pid, 1, 1);
 }

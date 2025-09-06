@@ -26,7 +26,6 @@ struct hppa_dma_ops {
 ** to support 4 different coherent dma models with one binary (they will
 ** someday be loadable modules):
 **     I/O MMU        consistent method           dma_sync behavior
-**  =============   ======================       =======================
 **  a) PA-7x00LC    uncachable host memory          flush/purge
 **  b) U2/Uturn      cachable host memory              NOP
 **  c) Ike/Astro     cachable host memory              NOP

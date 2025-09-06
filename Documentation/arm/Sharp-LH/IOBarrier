@@ -1,5 +1,4 @@
 README on the IOBARRIER for CardEngine IO
-=========================================
 
 Due to an unfortunate oversight when the Card Engines were designed,
 the signals that control access to some peripherals, most notably the

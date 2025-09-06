@@ -37,6 +37,13 @@
 
 #include <linux/timer.h>
 #include <linux/spinlock.h>
+#ifndef _LINUX_IF_EQL_H
+#define _LINUX_IF_EQL_H
+
+
+#include <linux/timer.h>
+#include <linux/spinlock.h>
+#include <uapi/linux/if_eql.h>
 
 typedef struct slave {
 	struct list_head	list;

@@ -3,6 +3,8 @@
  *
  *      Based on acquirewdt.c by Alan Cox <alan@redhat.com>
  *       and some other existing drivers
+ *	Based on acquirewdt.c by Alan Cox <alan@lxorguk.ukuu.org.uk>
+ *	and some other existing drivers
  *
  *	This program is free software; you can redistribute it and/or
  *	modify it under the terms of the GNU General Public License
@@ -12,6 +14,7 @@
  *	The authors do NOT admit liability nor provide warranty for
  *	any of this software. This material is provided "AS-IS" in
  *      the hope that it may be useful for others.
+ *	the hope that it may be useful for others.
  *
  *	(C) Copyright 2003-2006  Sven Anders <anders@anduras.de>
  *
@@ -35,6 +38,19 @@
  *      If userspace fails (RAM error, kernel bug, whatever), the
  *      notifications cease to occur, and the hardware watchdog will
  *      reset the system (causing a reboot) after the timeout occurs.
+ *	A Watchdog Timer (WDT) is a hardware circuit that can
+ *	reset the computer system in case of a software fault.
+ *	You probably knew that already.
+ *
+ *	Usually a userspace daemon will notify the kernel WDT driver
+ *	via the /dev/watchdog special device file that userspace is
+ *	still alive, at regular intervals.  When such a notification
+ *	occurs, the driver will usually tell the hardware watchdog
+ *	that everything is in order, and that the watchdog should wait
+ *	for yet another little while to reset the system.
+ *	If userspace fails (RAM error, kernel bug, whatever), the
+ *	notifications cease to occur, and the hardware watchdog will
+ *	reset the system (causing a reboot) after the timeout occurs.
  *
  * Create device with:
  *  mknod /dev/watchdog c 10 130
@@ -42,6 +58,11 @@
  * For an example userspace keep-alive daemon, see:
  *   Documentation/watchdog/watchdog.txt
  */
+
+ *   Documentation/watchdog/wdt.txt
+ */
+
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/module.h>
 #include <linux/moduleparam.h>
@@ -86,6 +107,7 @@ static char expect_close;       /* is the close expected? */
 static DEFINE_SPINLOCK(io_lock);/* to guard the watchdog from io races */
 
 static int nowayout = WATCHDOG_NOWAYOUT;
+static bool nowayout = WATCHDOG_NOWAYOUT;
 
 /* -- Low level function ----------------------------------------*/
 
@@ -192,6 +214,7 @@ static inline void wdt_timer_ctrl(unsigned char reg)
 {
 	/* -- Watchdog timer control --
 	 * Bit 0   Status Bit: 0 = Timer counting, 1 = Timeout occured
+	 * Bit 0   Status Bit: 0 = Timer counting, 1 = Timeout occurred
 	 * Bit 1   Power LED Toggle: 0 = Disable Toggle, 1 = Toggle at 1 Hz
 	 * Bit 2   Force Timeout: 1 = Forces WD timeout event (self-cleaning)
 	 * Bit 3   P20 Force Timeout enabled:
@@ -365,6 +388,7 @@ static int wb_smsc_wdt_open(struct inode *inode, struct file *file)
 
 	printk(KERN_INFO MODNAME
 		"Watchdog enabled. Timeout set to %d %s.\n",
+	pr_info("Watchdog enabled. Timeout set to %d %s\n",
 		timeout, (unit == UNIT_SECOND) ? "second(s)" : "minute(s)");
 
 	return nonseekable_open(inode, file);
@@ -383,6 +407,9 @@ static int wb_smsc_wdt_release(struct inode *inode, struct file *file)
 	} else {
 		printk(KERN_CRIT MODNAME
 				"Unexpected close, not stopping watchdog!\n");
+		pr_info("Watchdog disabled, sleeping again...\n");
+	} else {
+		pr_crit("Unexpected close, not stopping watchdog!\n");
 		wb_smsc_wdt_reset_timer();
 	}
 
@@ -439,6 +466,11 @@ static long wb_smsc_wdt_ioctl(struct file *file,
 					WDIOF_MAGICCLOSE,
 		.firmware_version =	0,
 		.identity = 		"SMsC 37B787 Watchdog",
+		.options =		WDIOF_KEEPALIVEPING |
+					WDIOF_SETTIMEOUT |
+					WDIOF_MAGICCLOSE,
+		.firmware_version =	0,
+		.identity =		"SMsC 37B787 Watchdog",
 	};
 
 	uarg.i = (int __user *)arg;
@@ -486,6 +518,7 @@ static long wb_smsc_wdt_ioctl(struct file *file,
 		new_timeout = timeout;
 		if (unit == UNIT_MINUTE)
 			  new_timeout *= 60;
+			new_timeout *= 60;
 		return put_user(new_timeout, uarg.i);
 	default:
 		return -ENOTTY;
@@ -540,6 +573,11 @@ static int __init wb_smsc_wdt_init(void)
 	if (!request_region(IOPORT, IOPORT_SIZE, "SMsC 37B787 watchdog")) {
 		printk(KERN_ERR MODNAME "Unable to register IO port %#x\n",
 								IOPORT);
+	pr_info("SMsC 37B787 watchdog component driver "
+		VERSION " initialising...\n");
+
+	if (!request_region(IOPORT, IOPORT_SIZE, "SMsC 37B787 watchdog")) {
+		pr_err("Unable to register IO port %#x\n", IOPORT);
 		ret = -EBUSY;
 		goto out_pnp;
 	}
@@ -555,6 +593,7 @@ static int __init wb_smsc_wdt_init(void)
 	if (ret) {
 		printk(KERN_ERR MODNAME
 			"Unable to register reboot notifier err = %d\n", ret);
+		pr_err("Unable to register reboot notifier err = %d\n", ret);
 		goto out_io;
 	}
 
@@ -563,6 +602,8 @@ static int __init wb_smsc_wdt_init(void)
 		printk(KERN_ERR MODNAME
 			"Unable to register miscdev on minor %d\n",
 							WATCHDOG_MINOR);
+		pr_err("Unable to register miscdev on minor %d\n",
+		       WATCHDOG_MINOR);
 		goto out_rbt;
 	}
 
@@ -572,6 +613,10 @@ static int __init wb_smsc_wdt_init(void)
 	printk(KERN_INFO MODNAME
 		"Watchdog initialized and sleeping (nowayout=%d)...\n",
 								nowayout);
+	pr_info("Timeout set to %d %s\n",
+		timeout, (unit == UNIT_SECOND) ? "second(s)" : "minute(s)");
+	pr_info("Watchdog initialized and sleeping (nowayout=%d)...\n",
+		nowayout);
 out_clean:
 	return ret;
 
@@ -593,6 +638,7 @@ static void __exit wb_smsc_wdt_exit(void)
 	if (!nowayout) {
 		wb_smsc_wdt_shutdown();
 		printk(KERN_INFO MODNAME "Watchdog disabled.\n");
+		pr_info("Watchdog disabled\n");
 	}
 
 	misc_deregister(&wb_smsc_wdt_miscdev);
@@ -600,6 +646,7 @@ static void __exit wb_smsc_wdt_exit(void)
 	release_region(IOPORT, IOPORT_SIZE);
 
 	printk(KERN_INFO "SMsC 37B787 watchdog component driver removed.\n");
+	pr_info("SMsC 37B787 watchdog component driver removed\n");
 }
 
 module_init(wb_smsc_wdt_init);
@@ -622,6 +669,7 @@ module_param(timeout, int, 0);
 MODULE_PARM_DESC(timeout, "range is 1-255 units, default is 60");
 
 module_param(nowayout, int, 0);
+module_param(nowayout, bool, 0);
 MODULE_PARM_DESC(nowayout,
 		"Watchdog cannot be stopped once started (default="
 				__MODULE_STRING(WATCHDOG_NOWAYOUT) ")");

@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+#!/usr/bin/python
 #
 # show_deltas: Read list of printk messages instrumented with
 # time data, and format with time deltas.
@@ -14,6 +15,7 @@ import string
 
 def usage():
 	print """usage: show_delta [<options>] <filename>
+	print ("""usage: show_delta [<options>] <filename>
 
 This program parses the output from a set of printk message lines which
 have time data prefixed because the CONFIG_PRINTK_TIME option is set, or
@@ -36,6 +38,7 @@ ex: $ dmesg >timefile
 will show times relative to the line in the kernel output
 starting with "NET4".
 """
+""")
 	sys.exit(1)
 
 # returns a tuple containing the seconds and text for each message line
@@ -99,6 +102,11 @@ def main():
 
 	if base_str:
 		print 'base= "%s"' % base_str
+		print ("Problem opening file: %s" % filein)
+		sys.exit(1)
+
+	if base_str:
+		print ('base= "%s"' % base_str)
 		# assume a numeric base.  If that fails, try searching
 		# for a matching line.
 		try:
@@ -118,6 +126,7 @@ def main():
 					break
 			if not found:
 				print 'Couldn\'t find line matching base pattern "%s"' % base_str
+				print ('Couldn\'t find line matching base pattern "%s"' % base_str)
 				sys.exit(1)
 	else:
 		base_time = 0.0
@@ -127,3 +136,6 @@ def main():
 
 main()
 
+		print (convert_line(line, base_time),)
+
+main()

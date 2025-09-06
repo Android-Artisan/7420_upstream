@@ -85,6 +85,7 @@ static unsigned char
 parport_atari_read_status(struct parport *p)
 {
 	return ((mfp.par_dt_reg & 1 ? 0 : PARPORT_STATUS_BUSY) |
+	return ((st_mfp.par_dt_reg & 1 ? 0 : PARPORT_STATUS_BUSY) |
 		PARPORT_STATUS_SELECT | PARPORT_STATUS_ERROR);
 }
 
@@ -196,6 +197,9 @@ static int __init parport_atari_init(void)
 		mfp.data_dir &= ~1;
 		/* MFP port I0 interrupt on high->low edge. */
 		mfp.active_edge &= ~1;
+		st_mfp.data_dir &= ~1;
+		/* MFP port I0 interrupt on high->low edge. */
+		st_mfp.active_edge &= ~1;
 		p = parport_register_port((unsigned long)&sound_ym.wd_data,
 					  IRQ_MFP_BUSY, PARPORT_DMA_NONE,
 					  &parport_atari_ops);
@@ -203,6 +207,8 @@ static int __init parport_atari_init(void)
 			return -ENODEV;
 		if (request_irq(IRQ_MFP_BUSY, parport_irq_handler,
 				IRQ_TYPE_SLOW, p->name, p)) {
+		if (request_irq(IRQ_MFP_BUSY, parport_irq_handler, 0, p->name,
+				p)) {
 			parport_put_port (p);
 			return -ENODEV;
 		}

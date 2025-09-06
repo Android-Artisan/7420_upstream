@@ -52,6 +52,12 @@ extern int debug;
 		if (debug)					\
 			printk(KERN_DEBUG "%s: " format,	\
 				MY_NAME , ## arg); 		\
+extern bool rpaphp_debug;
+#define dbg(format, arg...)					\
+	do {							\
+		if (rpaphp_debug)				\
+			printk(KERN_DEBUG "%s: " format,	\
+				MY_NAME , ## arg);		\
 	} while (0)
 #define err(format, arg...) printk(KERN_ERR "%s: " format, MY_NAME , ## arg)
 #define info(format, arg...) printk(KERN_INFO "%s: " format, MY_NAME , ## arg)
@@ -100,4 +106,18 @@ extern struct slot *alloc_slot_struct(struct device_node *dn, int drc_index, cha
 extern int rpaphp_register_slot(struct slot *slot);
 extern int rpaphp_deregister_slot(struct slot *slot);
 	
+int rpaphp_enable_slot(struct slot *slot);
+int rpaphp_get_sensor_state(struct slot *slot, int *state);
+
+/* rpaphp_core.c */
+int rpaphp_add_slot(struct device_node *dn);
+int rpaphp_get_drc_props(struct device_node *dn, int *drc_index,
+		char **drc_name, char **drc_type, int *drc_power_domain);
+
+/* rpaphp_slot.c */
+void dealloc_slot_struct(struct slot *slot);
+struct slot *alloc_slot_struct(struct device_node *dn, int drc_index, char *drc_name, int power_domain);
+int rpaphp_register_slot(struct slot *slot);
+int rpaphp_deregister_slot(struct slot *slot);
+
 #endif				/* _PPC64PHP_H */

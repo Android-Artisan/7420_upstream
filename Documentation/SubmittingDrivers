@@ -42,6 +42,7 @@ Linux 2.6:
 	The same rules apply as 2.4 except that you should follow linux-kernel
 	to track changes in API's. The final contact point for Linux 2.6
 	submissions is Andrew Morton <akpm@osdl.org>.
+	submissions is Andrew Morton.
 
 What Criteria Determine Acceptance
 ----------------------------------
@@ -102,6 +103,7 @@ PM support:	Since Linux is used on many portable and desktop systems, your
 		drivers see Documentation/power/devices.txt .
 
 Control:	In general if there is active maintainance of a driver by
+Control:	In general if there is active maintenance of a driver by
 		the author then patches will be redirected to them unless
 		they are totally obvious and without need of checking.
 		If you want to be the contact and update point for the
@@ -129,6 +131,8 @@ Resources
 Linux kernel master tree:
 	ftp.??.kernel.org:/pub/linux/kernel/...
 	?? == your country code, such as "us", "uk", "fr", etc.
+
+	http://git.kernel.org/?p=linux/kernel/git/torvalds/linux.git
 
 Linux kernel mailing list:
 	linux-kernel@vger.kernel.org
@@ -160,3 +164,7 @@ How to NOT write kernel driver by Arjan van de Ven:
 
 Kernel Janitor:
 	http://janitor.kernelnewbies.org/
+	http://kernelnewbies.org/KernelJanitors
+
+GIT, Fast Version Control System:
+	http://git-scm.com/

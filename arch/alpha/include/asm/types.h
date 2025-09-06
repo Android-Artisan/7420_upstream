@@ -30,4 +30,7 @@ typedef u64 dma64_addr_t;
 
 #endif /* __ASSEMBLY__ */
 #endif /* __KERNEL__ */
+#include <asm-generic/int-ll64.h>
+#include <uapi/asm/types.h>
+
 #endif /* _ALPHA_TYPES_H */

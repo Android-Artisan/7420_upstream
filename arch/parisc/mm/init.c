@@ -14,6 +14,7 @@
 #include <linux/module.h>
 #include <linux/mm.h>
 #include <linux/bootmem.h>
+#include <linux/gfp.h>
 #include <linux/delay.h>
 #include <linux/init.h>
 #include <linux/pci.h>		/* for hppa_dma_ops and pcxl_dma_ops */
@@ -22,6 +23,7 @@
 #include <linux/unistd.h>
 #include <linux/nodemask.h>	/* for node_online_map */
 #include <linux/pagemap.h>	/* for release_pages and page_cache_release */
+#include <linux/compat.h>
 
 #include <asm/pgalloc.h>
 #include <asm/pgtable.h>
@@ -37,6 +39,26 @@ extern int  data_start;
 #ifdef CONFIG_DISCONTIGMEM
 struct node_map_data node_data[MAX_NUMNODES] __read_mostly;
 unsigned char pfnnid_map[PFNNID_MAP_MAX] __read_mostly;
+#include <asm/msgbuf.h>
+
+extern int  data_start;
+extern void parisc_kernel_start(void);	/* Kernel entry point in head.S */
+
+#if CONFIG_PGTABLE_LEVELS == 3
+/* NOTE: This layout exactly conforms to the hybrid L2/L3 page table layout
+ * with the first pmd adjacent to the pgd and below it. gcc doesn't actually
+ * guarantee that global objects will be laid out in memory in the same order
+ * as the order of declaration, so put these in different sections and use
+ * the linker script to order them. */
+pmd_t pmd0[PTRS_PER_PMD] __attribute__ ((__section__ (".data..vm0.pmd"), aligned(PAGE_SIZE)));
+#endif
+
+pgd_t swapper_pg_dir[PTRS_PER_PGD] __attribute__ ((__section__ (".data..vm0.pgd"), aligned(PAGE_SIZE)));
+pte_t pg0[PT_INITIAL * PTRS_PER_PTE] __attribute__ ((__section__ (".data..vm0.pte"), aligned(PAGE_SIZE)));
+
+#ifdef CONFIG_DISCONTIGMEM
+struct node_map_data node_data[MAX_NUMNODES] __read_mostly;
+signed char pfnnid_map[PFNNID_MAP_MAX] __read_mostly;
 #endif
 
 static struct resource data_resource = {
@@ -222,6 +244,8 @@ static void __init setup_bootmem(void)
 			break;
 		}
 	    num_physpages += pmem_ranges[i].pages;
+			break;
+		}
 		mem_max += rsize;
 	}
 
@@ -267,6 +291,10 @@ static void __init setup_bootmem(void)
 
 	for (i = 0; i < npmem_ranges; i++)
 		node_set_online(i);
+	for (i = 0; i < npmem_ranges; i++) {
+		node_set_state(i, N_NORMAL_MEMORY);
+		node_set_online(i);
+	}
 #endif
 
 	/*
@@ -308,6 +336,8 @@ static void __init setup_bootmem(void)
 		printk(KERN_WARNING "WARNING! bootmap sizing is messed up!\n");
 		BUG();
 	}
+	/* bootmap sizing messed up? */
+	BUG_ON((bootmap_pfn - bootmap_start_pfn) != bootmap_pages);
 
 	/* reserve PAGE0 pdc memory, kernel text/data/bss & bootmap */
 
@@ -318,6 +348,9 @@ static void __init setup_bootmem(void)
 				PDC_CONSOLE_IO_IODC_SIZE), BOOTMEM_DEFAULT);
 	reserve_bootmem_node(NODE_DATA(0), __pa((unsigned long)_text),
 			(unsigned long)(_end - _text), BOOTMEM_DEFAULT);
+	reserve_bootmem_node(NODE_DATA(0), __pa(KERNEL_BINARY_TEXT_START),
+			(unsigned long)(_end - KERNEL_BINARY_TEXT_START),
+			BOOTMEM_DEFAULT);
 	reserve_bootmem_node(NODE_DATA(0), (bootmap_start_pfn << PAGE_SHIFT),
 			((bootmap_pfn - bootmap_start_pfn) << PAGE_SHIFT),
 			BOOTMEM_DEFAULT);
@@ -412,6 +445,162 @@ void free_initmem(void)
 	pdc_chassis_send_status(PDC_CHASSIS_DIRECT_BCOMPLETE);
 	
 	printk("%luk freed\n", (init_end - init_begin) >> 10);
+static int __init parisc_text_address(unsigned long vaddr)
+{
+	static unsigned long head_ptr __initdata;
+
+	if (!head_ptr)
+		head_ptr = PAGE_MASK & (unsigned long)
+			dereference_function_descriptor(&parisc_kernel_start);
+
+	return core_kernel_text(vaddr) || vaddr == head_ptr;
+}
+
+static void __init map_pages(unsigned long start_vaddr,
+			     unsigned long start_paddr, unsigned long size,
+			     pgprot_t pgprot, int force)
+{
+	pgd_t *pg_dir;
+	pmd_t *pmd;
+	pte_t *pg_table;
+	unsigned long end_paddr;
+	unsigned long start_pmd;
+	unsigned long start_pte;
+	unsigned long tmp1;
+	unsigned long tmp2;
+	unsigned long address;
+	unsigned long vaddr;
+	unsigned long ro_start;
+	unsigned long ro_end;
+	unsigned long kernel_end;
+
+	ro_start = __pa((unsigned long)_text);
+	ro_end   = __pa((unsigned long)&data_start);
+	kernel_end  = __pa((unsigned long)&_end);
+
+	end_paddr = start_paddr + size;
+
+	pg_dir = pgd_offset_k(start_vaddr);
+
+#if PTRS_PER_PMD == 1
+	start_pmd = 0;
+#else
+	start_pmd = ((start_vaddr >> PMD_SHIFT) & (PTRS_PER_PMD - 1));
+#endif
+	start_pte = ((start_vaddr >> PAGE_SHIFT) & (PTRS_PER_PTE - 1));
+
+	address = start_paddr;
+	vaddr = start_vaddr;
+	while (address < end_paddr) {
+#if PTRS_PER_PMD == 1
+		pmd = (pmd_t *)__pa(pg_dir);
+#else
+		pmd = (pmd_t *)pgd_address(*pg_dir);
+
+		/*
+		 * pmd is physical at this point
+		 */
+
+		if (!pmd) {
+			pmd = (pmd_t *) alloc_bootmem_low_pages_node(NODE_DATA(0), PAGE_SIZE << PMD_ORDER);
+			pmd = (pmd_t *) __pa(pmd);
+		}
+
+		pgd_populate(NULL, pg_dir, __va(pmd));
+#endif
+		pg_dir++;
+
+		/* now change pmd to kernel virtual addresses */
+
+		pmd = (pmd_t *)__va(pmd) + start_pmd;
+		for (tmp1 = start_pmd; tmp1 < PTRS_PER_PMD; tmp1++, pmd++) {
+
+			/*
+			 * pg_table is physical at this point
+			 */
+
+			pg_table = (pte_t *)pmd_address(*pmd);
+			if (!pg_table) {
+				pg_table = (pte_t *)
+					alloc_bootmem_low_pages_node(NODE_DATA(0), PAGE_SIZE);
+				pg_table = (pte_t *) __pa(pg_table);
+			}
+
+			pmd_populate_kernel(NULL, pmd, __va(pg_table));
+
+			/* now change pg_table to kernel virtual addresses */
+
+			pg_table = (pte_t *) __va(pg_table) + start_pte;
+			for (tmp2 = start_pte; tmp2 < PTRS_PER_PTE; tmp2++, pg_table++) {
+				pte_t pte;
+
+				if (force)
+					pte =  __mk_pte(address, pgprot);
+				else if (parisc_text_address(vaddr)) {
+					pte = __mk_pte(address, PAGE_KERNEL_EXEC);
+					if (address >= ro_start && address < kernel_end)
+						pte = pte_mkhuge(pte);
+				}
+				else
+#if defined(CONFIG_PARISC_PAGE_SIZE_4KB)
+				if (address >= ro_start && address < ro_end) {
+					pte = __mk_pte(address, PAGE_KERNEL_EXEC);
+					pte = pte_mkhuge(pte);
+				} else
+#endif
+				{
+					pte = __mk_pte(address, pgprot);
+					if (address >= ro_start && address < kernel_end)
+						pte = pte_mkhuge(pte);
+				}
+
+				if (address >= end_paddr)
+					break;
+
+				set_pte(pg_table, pte);
+
+				address += PAGE_SIZE;
+				vaddr += PAGE_SIZE;
+			}
+			start_pte = 0;
+
+			if (address >= end_paddr)
+			    break;
+		}
+		start_pmd = 0;
+	}
+}
+
+void free_initmem(void)
+{
+	unsigned long init_begin = (unsigned long)__init_begin;
+	unsigned long init_end = (unsigned long)__init_end;
+
+	/* The init text pages are marked R-X.  We have to
+	 * flush the icache and mark them RW-
+	 *
+	 * This is tricky, because map_pages is in the init section.
+	 * Do a dummy remap of the data section first (the data
+	 * section is already PAGE_KERNEL) to pull in the TLB entries
+	 * for map_kernel */
+	map_pages(init_begin, __pa(init_begin), init_end - init_begin,
+		  PAGE_KERNEL_RWX, 1);
+	/* now remap at PAGE_KERNEL since the TLB is pre-primed to execute
+	 * map_pages */
+	map_pages(init_begin, __pa(init_begin), init_end - init_begin,
+		  PAGE_KERNEL, 1);
+
+	/* force the kernel to see the new TLB entries */
+	__flush_tlb_range(0, init_begin, init_end);
+
+	/* finally dump all the instructions which were cached, since the
+	 * pages are no-longer executable */
+	flush_icache_range(init_begin, init_end);
+	
+	free_initmem_default(POISON_FREE_INITMEM);
+
+	/* set up a new led state on systems shipped LED State panel */
+	pdc_chassis_send_status(PDC_CHASSIS_DIRECT_BCOMPLETE);
 }
 
 
@@ -449,6 +638,8 @@ void mark_rodata_ro(void)
 
 void *vmalloc_start __read_mostly;
 EXPORT_SYMBOL(vmalloc_start);
+void *parisc_vmalloc_start __read_mostly;
+EXPORT_SYMBOL(parisc_vmalloc_start);
 
 #ifdef CONFIG_PA11
 unsigned long pcxl_dma_start __read_mostly;
@@ -498,6 +689,30 @@ void __init mem_init(void)
 	}
 #endif
 }
+	/* Do sanity checks on IPC (compat) structures */
+	BUILD_BUG_ON(sizeof(struct ipc64_perm) != 48);
+#ifndef CONFIG_64BIT
+	BUILD_BUG_ON(sizeof(struct semid64_ds) != 80);
+	BUILD_BUG_ON(sizeof(struct msqid64_ds) != 104);
+	BUILD_BUG_ON(sizeof(struct shmid64_ds) != 104);
+#endif
+#ifdef CONFIG_COMPAT
+	BUILD_BUG_ON(sizeof(struct compat_ipc64_perm) != sizeof(struct ipc64_perm));
+	BUILD_BUG_ON(sizeof(struct compat_semid64_ds) != 80);
+	BUILD_BUG_ON(sizeof(struct compat_msqid64_ds) != 104);
+	BUILD_BUG_ON(sizeof(struct compat_shmid64_ds) != 104);
+#endif
+
+	/* Do sanity checks on page table constants */
+	BUILD_BUG_ON(PTE_ENTRY_SIZE != sizeof(pte_t));
+	BUILD_BUG_ON(PMD_ENTRY_SIZE != sizeof(pmd_t));
+	BUILD_BUG_ON(PGD_ENTRY_SIZE != sizeof(pgd_t));
+	BUILD_BUG_ON(PAGE_SHIFT + BITS_PER_PTE + BITS_PER_PMD + BITS_PER_PGD
+			> BITS_PER_LONG);
+
+	high_memory = __va((max_pfn << PAGE_SHIFT));
+	set_max_mapnr(max_low_pfn);
+	free_all_bootmem();
 
 #ifdef CONFIG_PA11
 	if (hppa_dma_ops == &pcxl_dma_ops) {
@@ -520,6 +735,17 @@ void __init mem_init(void)
 		initsize >> 10
 	);
 
+		parisc_vmalloc_start = SET_MAP_OFFSET(pcxl_dma_start
+						+ PCXL_DMA_MAP_SIZE);
+	} else {
+		pcxl_dma_start = 0;
+		parisc_vmalloc_start = SET_MAP_OFFSET(MAP_START);
+	}
+#else
+	parisc_vmalloc_start = SET_MAP_OFFSET(MAP_START);
+#endif
+
+	mem_init_print_info(NULL);
 #ifdef CONFIG_DEBUG_KERNEL /* double-sanity-check paranoia */
 	printk("virtual kernel memory layout:\n"
 	       "    vmalloc : 0x%p - 0x%p   (%4ld MB)\n"
@@ -597,6 +823,32 @@ void show_mem(void)
 	printk(KERN_INFO "%d pages shared\n", shared);
 	printk(KERN_INFO "%d pages swap cached\n", cached);
 
+void show_mem(unsigned int filter)
+{
+	int total = 0,reserved = 0;
+	pg_data_t *pgdat;
+
+	printk(KERN_INFO "Mem-info:\n");
+	show_free_areas(filter);
+
+	for_each_online_pgdat(pgdat) {
+		unsigned long flags;
+		int zoneid;
+
+		pgdat_resize_lock(pgdat, &flags);
+		for (zoneid = 0; zoneid < MAX_NR_ZONES; zoneid++) {
+			struct zone *zone = &pgdat->node_zones[zoneid];
+			if (!populated_zone(zone))
+				continue;
+
+			total += zone->present_pages;
+			reserved = zone->present_pages - zone->managed_pages;
+		}
+		pgdat_resize_unlock(pgdat, &flags);
+	}
+
+	printk(KERN_INFO "%d pages of RAM\n", total);
+	printk(KERN_INFO "%d reserved pages\n", reserved);
 
 #ifdef CONFIG_DISCONTIGMEM
 	{
@@ -753,6 +1005,11 @@ static void __init pagetable_init(void)
 
 		map_pages((unsigned long)__va(start_paddr), start_paddr,
 			size, PAGE_KERNEL);
+		size = pmem_ranges[range].pages << PAGE_SHIFT;
+		end_paddr = start_paddr + size;
+
+		map_pages((unsigned long)__va(start_paddr), start_paddr,
+			  size, PAGE_KERNEL, 0);
 	}
 
 #ifdef CONFIG_BLK_DEV_INITRD
@@ -760,6 +1017,7 @@ static void __init pagetable_init(void)
 		printk(KERN_INFO "initrd: mapping %08lx-%08lx\n", initrd_start, initrd_end);
 		map_pages(initrd_start, __pa(initrd_start),
 			initrd_end - initrd_start, PAGE_KERNEL);
+			  initrd_end - initrd_start, PAGE_KERNEL, 0);
 	}
 #endif
 
@@ -858,6 +1116,9 @@ map_hpux_gateway_page(struct task_struct *tsk, struct mm_struct *mm)
 }
 EXPORT_SYMBOL(map_hpux_gateway_page);
 #endif
+
+		  PAGE_SIZE, PAGE_GATEWAY, 1);
+}
 
 void __init paging_init(void)
 {
@@ -1045,6 +1306,7 @@ void flush_tlb_all(void)
 
 	do_recycle = 0;
 	spin_lock(&sid_lock);
+	__inc_irq_stat(irq_tlb_count);
 	if (dirty_space_ids > RECYCLE_THRESHOLD) {
 	    BUG_ON(recycle_inuse);  /* FIXME: Use a semaphore/wait queue here */
 	    get_dirty_sids(&recycle_ndirty,recycle_dirty_array);
@@ -1064,6 +1326,7 @@ void flush_tlb_all(void)
 void flush_tlb_all(void)
 {
 	spin_lock(&sid_lock);
+	__inc_irq_stat(irq_tlb_count);
 	flush_tlb_all_local(NULL);
 	recycle_sids();
 	spin_unlock(&sid_lock);
@@ -1083,5 +1346,6 @@ void free_initrd_mem(unsigned long start, unsigned long end)
 		num_physpages++;
 		totalram_pages++;
 	}
+	free_reserved_area((void *)start, (void *)end, -1, "initrd");
 }
 #endif

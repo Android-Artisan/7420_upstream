@@ -93,11 +93,14 @@ static void to_rtc_time(unsigned long now, struct rtc_time *tm)
 }
 #endif
 
+#if defined(CONFIG_ADB_CUDA) || defined(CONFIG_ADB_PMU) || \
+    defined(CONFIG_PMAC_SMU)
 static unsigned long from_rtc_time(struct rtc_time *tm)
 {
 	return mktime(tm->tm_year+1900, tm->tm_mon+1, tm->tm_mday,
 		      tm->tm_hour, tm->tm_min, tm->tm_sec);
 }
+#endif
 
 #ifdef CONFIG_ADB_CUDA
 static unsigned long cuda_get_time(void)
@@ -269,6 +272,16 @@ int __init via_calibrate_decr(void)
 	if (vias == 0 || of_address_to_resource(vias, 0, &rsrc))
 		return 0;
 	via = ioremap(rsrc.start, rsrc.end - rsrc.start + 1);
+	if (vias == NULL)
+		vias = of_find_node_by_name(NULL, "via-pmu");
+	if (vias == NULL)
+		vias = of_find_node_by_name(NULL, "via");
+	if (vias == NULL || of_address_to_resource(vias, 0, &rsrc)) {
+	        of_node_put(vias);
+		return 0;
+	}
+	of_node_put(vias);
+	via = ioremap(rsrc.start, resource_size(&rsrc));
 	if (via == NULL) {
 		printk(KERN_ERR "Failed to map VIA for timer calibration !\n");
 		return 0;
@@ -295,6 +308,7 @@ int __init via_calibrate_decr(void)
 
 	iounmap(via);
 	
+
 	return 1;
 }
 #endif
@@ -314,6 +328,9 @@ void __init pmac_calibrate_decr(void)
 	if (!machine_is_compatible("MacRISC2") &&
 	    !machine_is_compatible("MacRISC3") &&
 	    !machine_is_compatible("MacRISC4"))
+	if (!of_machine_is_compatible("MacRISC2") &&
+	    !of_machine_is_compatible("MacRISC3") &&
+	    !of_machine_is_compatible("MacRISC4"))
 		if (via_calibrate_decr())
 			return;
 
@@ -323,6 +340,7 @@ void __init pmac_calibrate_decr(void)
 	 * machines anyway... -BenH
 	 */
 	if (machine_is_compatible("PowerMac3,5"))
+	if (of_machine_is_compatible("PowerMac3,5"))
 		if (via_calibrate_decr())
 			return;
 #endif

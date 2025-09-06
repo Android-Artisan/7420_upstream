@@ -41,6 +41,8 @@ struct winsize {
 
 #ifdef __KERNEL__
 #include <linux/module.h>
+#include <uapi/asm/termios.h>
+
 
 /*
  * c_cc characters in the termio structure.  Oh, how I love being

@@ -38,6 +38,7 @@ _F(void, heartbeat, (void), { });
 _F(int,  pcibios_fixup, (void), { return 0; });
 _F(int, get_rtc_time, (time_t* t), { return 0; });
 _F(int, set_rtc_time, (time_t t), { return 0; });
+_F(void, pcibios_init, (void), { });
 
 #ifdef CONFIG_XTENSA_CALIBRATE_CCOUNT
 _F(void, calibrate_ccount, (void),
@@ -47,3 +48,7 @@ _F(void, calibrate_ccount, (void),
 });
 #endif
 
+	pr_err("ERROR: Cannot calibrate cpu frequency! Assuming 10MHz.\n");
+	ccount_freq = 10 * 1000000UL;
+});
+#endif

@@ -36,6 +36,12 @@
 #include "drmP.h"
 
 static int drm_notifier(void *priv);
+#include <linux/export.h>
+#include <drm/drmP.h>
+#include "drm_legacy.h"
+#include "drm_internal.h"
+
+static int drm_lock_take(struct drm_lock_data *lock_data, unsigned int context);
 
 /**
  * Lock ioctl.
@@ -53,6 +59,17 @@ int drm_lock(struct drm_device *dev, void *data, struct drm_file *file_priv)
 	DECLARE_WAITQUEUE(entry, current);
 	struct drm_lock *lock = data;
 	int ret = 0;
+
+int drm_legacy_lock(struct drm_device *dev, void *data,
+		    struct drm_file *file_priv)
+{
+	DECLARE_WAITQUEUE(entry, current);
+	struct drm_lock *lock = data;
+	struct drm_master *master = file_priv->master;
+	int ret = 0;
+
+	if (drm_core_check_feature(dev, DRIVER_MODESET))
+		return -EINVAL;
 
 	++file_priv->lock_count;
 
@@ -85,6 +102,24 @@ int drm_lock(struct drm_device *dev, void *data, struct drm_file *file_priv)
 			dev->lock.file_priv = file_priv;
 			dev->lock.lock_time = jiffies;
 			atomic_inc(&dev->counts[_DRM_STAT_LOCKS]);
+		  master->lock.hw_lock->lock, lock->flags);
+
+	add_wait_queue(&master->lock.lock_queue, &entry);
+	spin_lock_bh(&master->lock.spinlock);
+	master->lock.user_waiters++;
+	spin_unlock_bh(&master->lock.spinlock);
+
+	for (;;) {
+		__set_current_state(TASK_INTERRUPTIBLE);
+		if (!master->lock.hw_lock) {
+			/* Device has been unregistered */
+			send_sig(SIGTERM, current, 0);
+			ret = -EINTR;
+			break;
+		}
+		if (drm_lock_take(&master->lock, lock->context)) {
+			master->lock.file_priv = file_priv;
+			master->lock.lock_time = jiffies;
 			break;	/* Got lock */
 		}
 
@@ -100,6 +135,19 @@ int drm_lock(struct drm_device *dev, void *data, struct drm_file *file_priv)
 	spin_unlock_bh(&dev->lock.spinlock);
 	__set_current_state(TASK_RUNNING);
 	remove_wait_queue(&dev->lock.lock_queue, &entry);
+		mutex_unlock(&drm_global_mutex);
+		schedule();
+		mutex_lock(&drm_global_mutex);
+		if (signal_pending(current)) {
+			ret = -EINTR;
+			break;
+		}
+	}
+	spin_lock_bh(&master->lock.spinlock);
+	master->lock.user_waiters--;
+	spin_unlock_bh(&master->lock.spinlock);
+	__set_current_state(TASK_RUNNING);
+	remove_wait_queue(&master->lock.lock_queue, &entry);
 
 	DRM_DEBUG("%d %s\n", lock->context,
 		  ret ? "interrupted" : "has lock");
@@ -121,6 +169,11 @@ int drm_lock(struct drm_device *dev, void *data, struct drm_file *file_priv)
 
 	if (dev->driver->dma_ready && (lock->flags & _DRM_LOCK_READY))
 		dev->driver->dma_ready(dev);
+
+	if (!file_priv->is_master) {
+		dev->sigdata.context = lock->context;
+		dev->sigdata.lock = master->lock.hw_lock;
+	}
 
 	if (dev->driver->dma_quiescent && (lock->flags & _DRM_LOCK_QUIESCENT))
 	{
@@ -156,6 +209,13 @@ int drm_unlock(struct drm_device *dev, void *data, struct drm_file *file_priv)
 	struct drm_lock *lock = data;
 	unsigned long irqflags;
 	void (*tasklet_func)(struct drm_device *);
+int drm_legacy_unlock(struct drm_device *dev, void *data, struct drm_file *file_priv)
+{
+	struct drm_lock *lock = data;
+	struct drm_master *master = file_priv->master;
+
+	if (drm_core_check_feature(dev, DRIVER_MODESET))
+		return -EINVAL;
 
 	if (lock->context == DRM_KERNEL_CONTEXT) {
 		DRM_ERROR("Process %d using kernel context %d\n",
@@ -184,6 +244,10 @@ int drm_unlock(struct drm_device *dev, void *data, struct drm_file *file_priv)
 	}
 
 	unblock_all_signals();
+	if (drm_legacy_lock_free(&master->lock, lock->context)) {
+		/* FIXME: Should really bail out here. */
+	}
+
 	return 0;
 }
 
@@ -196,6 +260,7 @@ int drm_unlock(struct drm_device *dev, void *data, struct drm_file *file_priv)
  *
  * Attempt to mark the lock as held by the given context, via the \p cmpxchg instruction.
  */
+static
 int drm_lock_take(struct drm_lock_data *lock_data,
 		  unsigned int context)
 {
@@ -272,6 +337,7 @@ static int drm_lock_transfer(struct drm_lock_data *lock_data,
  * waiting on the lock queue.
  */
 int drm_lock_free(struct drm_lock_data *lock_data, unsigned int context)
+int drm_legacy_lock_free(struct drm_lock_data *lock_data, unsigned int context)
 {
 	unsigned int old, new, prev;
 	volatile unsigned int *lock = &lock_data->hw_lock->lock;
@@ -347,6 +413,9 @@ static int drm_notifier(void *priv)
 void drm_idlelock_take(struct drm_lock_data *lock_data)
 {
 	int ret = 0;
+void drm_legacy_idlelock_take(struct drm_lock_data *lock_data)
+{
+	int ret;
 
 	spin_lock_bh(&lock_data->spinlock);
 	lock_data->kernel_waiters++;
@@ -364,6 +433,9 @@ void drm_idlelock_take(struct drm_lock_data *lock_data)
 EXPORT_SYMBOL(drm_idlelock_take);
 
 void drm_idlelock_release(struct drm_lock_data *lock_data)
+EXPORT_SYMBOL(drm_legacy_idlelock_take);
+
+void drm_legacy_idlelock_release(struct drm_lock_data *lock_data)
 {
 	unsigned int old, prev;
 	volatile unsigned int *lock = &lock_data->hw_lock->lock;
@@ -392,3 +464,13 @@ int drm_i_have_hw_lock(struct drm_device *dev, struct drm_file *file_priv)
 }
 
 EXPORT_SYMBOL(drm_i_have_hw_lock);
+EXPORT_SYMBOL(drm_legacy_idlelock_release);
+
+int drm_legacy_i_have_hw_lock(struct drm_device *dev,
+			      struct drm_file *file_priv)
+{
+	struct drm_master *master = file_priv->master;
+	return (file_priv->lock_count && master->lock.hw_lock &&
+		_DRM_LOCK_IS_HELD(master->lock.hw_lock->lock) &&
+		master->lock.file_priv == file_priv);
+}

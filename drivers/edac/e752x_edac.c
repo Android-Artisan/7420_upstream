@@ -5,6 +5,11 @@
  * GNU General Public License.
  *
  * See "enum e752x_chips" below for supported chipsets
+ * Implement support for the e7520, E7525, e7320 and i3100 memory controllers.
+ *
+ * Datasheets:
+ *	http://www.intel.in/content/www/in/en/chipsets/e7525-memory-controller-hub-datasheet.html
+ *	ftp://download.intel.com/design/intarch/datashts/31345803.pdf
  *
  * Written by Tom Zimmerman
  *
@@ -26,6 +31,10 @@
 #include "edac_core.h"
 
 #define E752X_REVISION	" Ver: 2.0.2 " __DATE__
+#include <linux/edac.h>
+#include "edac_core.h"
+
+#define E752X_REVISION	" Ver: 2.0.2"
 #define EDAC_MOD_STR	"e752x_edac"
 
 static int report_non_memory_errors;
@@ -75,6 +84,14 @@ static struct edac_pci_ctl_info *e752x_pci;
 #define E752X_NR_CSROWS		8	/* number of csrows */
 
 /* E752X register addresses - device 0 function 0 */
+#define E752X_MCHSCRB		0x52	/* Memory Scrub register (16b) */
+					/*
+					 * 6:5     Scrub Completion Count
+					 * 3:2     Scrub Rate (i3100 only)
+					 *      01=fast 10=normal
+					 * 1:0     Scrub Mode enable
+					 *      00=off 10=on
+					 */
 #define E752X_DRB		0x60	/* DRAM row boundary register (8b) */
 #define E752X_DRA		0x70	/* DRAM row attribute register (8b) */
 					/*
@@ -182,6 +199,26 @@ enum e752x_chips {
 
 struct e752x_pvt {
 	struct pci_dev *bridge_ck;
+/*
+ * Those chips Support single-rank and dual-rank memories only.
+ *
+ * On e752x chips, the odd rows are present only on dual-rank memories.
+ * Dividing the rank by two will provide the dimm#
+ *
+ * i3100 MC has a different mapping: it supports only 4 ranks.
+ *
+ * The mapping is (from 1 to n):
+ *	slot	   single-ranked	double-ranked
+ *	dimm #1 -> rank #4		NA
+ *	dimm #2 -> rank #3		NA
+ *	dimm #3 -> rank #2		Ranks 2 and 3
+ *	dimm #4 -> rank $1		Ranks 1 and 4
+ *
+ * FIXME: The current mapping for i3100 considers that it supports up to 8
+ *	  ranks/chanel, but datasheet says that the MC supports only 4 ranks.
+ */
+
+struct e752x_pvt {
 	struct pci_dev *dev_d0f0;
 	struct pci_dev *dev_d0f1;
 	u32 tolm;
@@ -240,6 +277,41 @@ static const struct e752x_dev_info e752x_devs[] = {
 		.ctl_name = "3100"},
 };
 
+/* Valid scrub rates for the e752x/3100 hardware memory scrubber. We
+ * map the scrubbing bandwidth to a hardware register value. The 'set'
+ * operation finds the 'matching or higher value'.  Note that scrubbing
+ * on the e752x can only be enabled/disabled.  The 3100 supports
+ * a normal and fast mode.
+ */
+
+#define SDRATE_EOT 0xFFFFFFFF
+
+struct scrubrate {
+	u32 bandwidth;	/* bandwidth consumed by scrubbing in bytes/sec */
+	u16 scrubval;	/* register value for scrub rate */
+};
+
+/* Rate below assumes same performance as i3100 using PC3200 DDR2 in
+ * normal mode.  e752x bridges don't support choosing normal or fast mode,
+ * so the scrubbing bandwidth value isn't all that important - scrubbing is
+ * either on or off.
+ */
+static const struct scrubrate scrubrates_e752x[] = {
+	{0,		0x00},	/* Scrubbing Off */
+	{500000,	0x02},	/* Scrubbing On */
+	{SDRATE_EOT,	0x00}	/* End of Table */
+};
+
+/* Fast mode: 2 GByte PC3200 DDR2 scrubbed in 33s = 63161283 bytes/s
+ * Normal mode: 125 (32000 / 256) times slower than fast mode.
+ */
+static const struct scrubrate scrubrates_i3100[] = {
+	{0,		0x00},	/* Scrubbing Off */
+	{500000,	0x0a},	/* Normal mode - 32k clocks */
+	{62500000,	0x06},	/* Fast mode - 256 clocks */
+	{SDRATE_EOT,	0x00}	/* End of Table */
+};
+
 static unsigned long ctl_page_to_phys(struct mem_ctl_info *mci,
 				unsigned long page)
 {
@@ -247,6 +319,7 @@ static unsigned long ctl_page_to_phys(struct mem_ctl_info *mci,
 	struct e752x_pvt *pvt = (struct e752x_pvt *)mci->pvt_info;
 
 	debugf3("%s()\n", __func__);
+	edac_dbg(3, "\n");
 
 	if (page < pvt->tolm)
 		return page;
@@ -273,6 +346,7 @@ static void do_process_ce(struct mem_ctl_info *mci, u16 error_one,
 	struct e752x_pvt *pvt = (struct e752x_pvt *)mci->pvt_info;
 
 	debugf3("%s()\n", __func__);
+	edac_dbg(3, "\n");
 
 	/* convert the addr to 4k page */
 	page = sec1_add >> (PAGE_SHIFT - 4);
@@ -310,6 +384,10 @@ static void do_process_ce(struct mem_ctl_info *mci, u16 error_one,
 	/* e752x mc reads 34:6 of the DRAM linear address */
 	edac_mc_handle_ce(mci, page, offset_in_page(sec1_add << 4),
 			sec1_syndrome, row, channel, "e752x CE");
+	edac_mc_handle_error(HW_EVENT_ERR_CORRECTED, mci, 1,
+			     page, offset_in_page(sec1_add << 4), sec1_syndrome,
+			     row, channel, -1,
+			     "e752x CE", "");
 }
 
 static inline void process_ce(struct mem_ctl_info *mci, u16 error_one,
@@ -330,6 +408,7 @@ static void do_process_ue(struct mem_ctl_info *mci, u16 error_one,
 	struct e752x_pvt *pvt = (struct e752x_pvt *)mci->pvt_info;
 
 	debugf3("%s()\n", __func__);
+	edac_dbg(3, "\n");
 
 	if (error_one & 0x0202) {
 		error_2b = ded_add;
@@ -346,6 +425,12 @@ static void do_process_ue(struct mem_ctl_info *mci, u16 error_one,
 		edac_mc_handle_ue(mci, block_page,
 				offset_in_page(error_2b << 4),
 				row, "e752x UE from Read");
+		edac_mc_handle_error(HW_EVENT_ERR_UNCORRECTED, mci, 1,
+					block_page,
+					offset_in_page(error_2b << 4), 0,
+					 row, -1, -1,
+					"e752x UE from Read", "");
+
 	}
 	if (error_one & 0x0404) {
 		error_2b = scrb_add;
@@ -362,6 +447,11 @@ static void do_process_ue(struct mem_ctl_info *mci, u16 error_one,
 		edac_mc_handle_ue(mci, block_page,
 				offset_in_page(error_2b << 4),
 				row, "e752x UE from Scruber");
+		edac_mc_handle_error(HW_EVENT_ERR_UNCORRECTED, mci, 1,
+					block_page,
+					offset_in_page(error_2b << 4), 0,
+					row, -1, -1,
+					"e752x UE from Scruber", "");
 	}
 }
 
@@ -385,6 +475,10 @@ static inline void process_ue_no_info_wr(struct mem_ctl_info *mci,
 
 	debugf3("%s()\n", __func__);
 	edac_mc_handle_ue_no_info(mci, "e752x UE log memory write");
+	edac_dbg(3, "\n");
+	edac_mc_handle_error(HW_EVENT_ERR_UNCORRECTED, mci, 1, 0, 0, 0,
+			     -1, -1, -1,
+			     "e752x UE log memory write", "");
 }
 
 static void do_process_ded_retry(struct mem_ctl_info *mci, u16 error,
@@ -820,6 +914,7 @@ static void e752x_get_error_info(struct mem_ctl_info *mci,
 
 		if (info->dram_ferr)
 			pci_write_bits16(pvt->bridge_ck, E752X_DRAM_FERR,
+			pci_write_bits16(pvt->dev_d0f1, E752X_DRAM_FERR,
 					 info->dram_ferr, info->dram_ferr);
 
 		pci_write_config_dword(dev, E752X_FERR_GLOBAL,
@@ -865,6 +960,7 @@ static void e752x_get_error_info(struct mem_ctl_info *mci,
 
 		if (info->dram_nerr)
 			pci_write_bits16(pvt->bridge_ck, E752X_DRAM_NERR,
+			pci_write_bits16(pvt->dev_d0f1, E752X_DRAM_NERR,
 					 info->dram_nerr, info->dram_nerr);
 
 		pci_write_config_dword(dev, E752X_NERR_GLOBAL,
@@ -911,8 +1007,69 @@ static void e752x_check(struct mem_ctl_info *mci)
 	struct e752x_error_info info;
 
 	debugf3("%s()\n", __func__);
+	edac_dbg(3, "\n");
 	e752x_get_error_info(mci, &info);
 	e752x_process_error_info(mci, &info, 1);
+}
+
+/* Program byte/sec bandwidth scrub rate to hardware */
+static int set_sdram_scrub_rate(struct mem_ctl_info *mci, u32 new_bw)
+{
+	const struct scrubrate *scrubrates;
+	struct e752x_pvt *pvt = (struct e752x_pvt *) mci->pvt_info;
+	struct pci_dev *pdev = pvt->dev_d0f0;
+	int i;
+
+	if (pvt->dev_info->ctl_dev == PCI_DEVICE_ID_INTEL_3100_0)
+		scrubrates = scrubrates_i3100;
+	else
+		scrubrates = scrubrates_e752x;
+
+	/* Translate the desired scrub rate to a e752x/3100 register value.
+	 * Search for the bandwidth that is equal or greater than the
+	 * desired rate and program the cooresponding register value.
+	 */
+	for (i = 0; scrubrates[i].bandwidth != SDRATE_EOT; i++)
+		if (scrubrates[i].bandwidth >= new_bw)
+			break;
+
+	if (scrubrates[i].bandwidth == SDRATE_EOT)
+		return -1;
+
+	pci_write_config_word(pdev, E752X_MCHSCRB, scrubrates[i].scrubval);
+
+	return scrubrates[i].bandwidth;
+}
+
+/* Convert current scrub rate value into byte/sec bandwidth */
+static int get_sdram_scrub_rate(struct mem_ctl_info *mci)
+{
+	const struct scrubrate *scrubrates;
+	struct e752x_pvt *pvt = (struct e752x_pvt *) mci->pvt_info;
+	struct pci_dev *pdev = pvt->dev_d0f0;
+	u16 scrubval;
+	int i;
+
+	if (pvt->dev_info->ctl_dev == PCI_DEVICE_ID_INTEL_3100_0)
+		scrubrates = scrubrates_i3100;
+	else
+		scrubrates = scrubrates_e752x;
+
+	/* Find the bandwidth matching the memory scrubber configuration */
+	pci_read_config_word(pdev, E752X_MCHSCRB, &scrubval);
+	scrubval = scrubval & 0x0f;
+
+	for (i = 0; scrubrates[i].bandwidth != SDRATE_EOT; i++)
+		if (scrubrates[i].scrubval == scrubval)
+			break;
+
+	if (scrubrates[i].bandwidth == SDRATE_EOT) {
+		e752x_printk(KERN_WARNING,
+			"Invalid sdram scrub control value: 0x%x\n", scrubval);
+		return -1;
+	}
+	return scrubrates[i].bandwidth;
+
 }
 
 /* Return 1 if dual channel mode is active.  Else return 0. */
@@ -937,12 +1094,14 @@ static void e752x_init_csrows(struct mem_ctl_info *mci, struct pci_dev *pdev,
 			u16 ddrcsr)
 {
 	struct csrow_info *csrow;
+	enum edac_type edac_mode;
 	unsigned long last_cumul_size;
 	int index, mem_dev, drc_chan;
 	int drc_drbg;		/* DRB granularity 0=64mb, 1=128mb */
 	int drc_ddim;		/* DRAM Data Integrity Mode 0=none, 2=edac */
 	u8 value;
 	u32 dra, drc, cumul_size;
+	u32 dra, drc, cumul_size, i, nr_pages;
 
 	dra = 0;
 	for (index = 0; index < 4; index++) {
@@ -952,6 +1111,7 @@ static void e752x_init_csrows(struct mem_ctl_info *mci, struct pci_dev *pdev,
 	}
 	pci_read_config_dword(pdev, E752X_DRC, &drc);
 	drc_chan = dual_channel_active(ddrcsr);
+	drc_chan = dual_channel_active(ddrcsr) ? 1 : 0;
 	drc_drbg = drc_chan + 1;	/* 128 in dual mode, 64 in single */
 	drc_ddim = (drc >> 20) & 0x3;
 
@@ -964,6 +1124,7 @@ static void e752x_init_csrows(struct mem_ctl_info *mci, struct pci_dev *pdev,
 		/* mem_dev 0=x8, 1=x4 */
 		mem_dev = (dra >> (index * 4 + 2)) & 0x3;
 		csrow = &mci->csrows[remap_csrow_index(mci, index)];
+		csrow = mci->csrows[remap_csrow_index(mci, index)];
 
 		mem_dev = (mem_dev == 2);
 		pci_read_config_byte(pdev, E752X_DRB + index, &value);
@@ -971,6 +1132,7 @@ static void e752x_init_csrows(struct mem_ctl_info *mci, struct pci_dev *pdev,
 		cumul_size = value << (25 + drc_drbg - PAGE_SHIFT);
 		debugf3("%s(): (%d) cumul_size 0x%x\n", __func__, index,
 			cumul_size);
+		edac_dbg(3, "(%d) cumul_size 0x%x\n", index, cumul_size);
 		if (cumul_size == last_cumul_size)
 			continue;	/* not populated */
 
@@ -996,6 +1158,33 @@ static void e752x_init_csrows(struct mem_ctl_info *mci, struct pci_dev *pdev,
 			}
 		} else
 			csrow->edac_mode = EDAC_NONE;
+		nr_pages = cumul_size - last_cumul_size;
+		last_cumul_size = cumul_size;
+
+		/*
+		* if single channel or x8 devices then SECDED
+		* if dual channel and x4 then S4ECD4ED
+		*/
+		if (drc_ddim) {
+			if (drc_chan && mem_dev) {
+				edac_mode = EDAC_S4ECD4ED;
+				mci->edac_cap |= EDAC_FLAG_S4ECD4ED;
+			} else {
+				edac_mode = EDAC_SECDED;
+				mci->edac_cap |= EDAC_FLAG_SECDED;
+			}
+		} else
+			edac_mode = EDAC_NONE;
+		for (i = 0; i < csrow->nr_channels; i++) {
+			struct dimm_info *dimm = csrow->channels[i]->dimm;
+
+			edac_dbg(3, "Initializing rank at (%i,%i)\n", index, i);
+			dimm->nr_pages = nr_pages / csrow->nr_channels;
+			dimm->grain = 1 << 12;	/* 4KiB - resolution of CELOG */
+			dimm->mtype = MEM_RDDR;	/* only one type supported */
+			dimm->dtype = mem_dev ? DEV_X4 : DEV_X8;
+			dimm->edac_mode = edac_mode;
+		}
 	}
 }
 
@@ -1048,6 +1237,16 @@ static int e752x_get_devs(struct pci_dev *pdev, int dev_idx,
 							PCI_DEVFN(0, 1));
 
 	if (pvt->bridge_ck == NULL) {
+	pvt->dev_d0f1 = pci_get_device(PCI_VENDOR_ID_INTEL,
+				pvt->dev_info->err_dev, NULL);
+
+	if (pvt->dev_d0f1 == NULL) {
+		pvt->dev_d0f1 = pci_scan_single_device(pdev->bus,
+							PCI_DEVFN(0, 1));
+		pci_dev_get(pvt->dev_d0f1);
+	}
+
+	if (pvt->dev_d0f1 == NULL) {
 		e752x_printk(KERN_ERR, "error reporting device not found:"
 			"vendor %x device 0x%x (broken BIOS?)\n",
 			PCI_VENDOR_ID_INTEL, e752x_devs[dev_idx].err_dev);
@@ -1068,6 +1267,17 @@ static int e752x_get_devs(struct pci_dev *pdev, int dev_idx,
 
 fail:
 	pci_dev_put(pvt->bridge_ck);
+	pvt->dev_d0f0 = pci_get_device(PCI_VENDOR_ID_INTEL,
+				e752x_devs[dev_idx].ctl_dev,
+				NULL);
+
+	if (pvt->dev_d0f0 == NULL)
+		goto fail;
+
+	return 0;
+
+fail:
+	pci_dev_put(pvt->dev_d0f1);
 	return 1;
 }
 
@@ -1077,6 +1287,7 @@ fail:
  *   i3100 + Xeon/Celeron
  * Sysbus parity not supported on:
  *   i3100 + Pentium M/Celeron M/Core Duo/Core2 Duo
+ * e7320/e7520/e7525 + Xeon
  */
 static void e752x_init_sysbus_parity_mask(struct e752x_pvt *pvt)
 {
@@ -1091,6 +1302,10 @@ static void e752x_init_sysbus_parity_mask(struct e752x_pvt *pvt)
 		   ((strstr(cpu_id, "Pentium") && strstr(cpu_id, " M ")) ||
 		    (strstr(cpu_id, "Celeron") && strstr(cpu_id, " M ")) ||
 		    (strstr(cpu_id, "Core") && strstr(cpu_id, "Duo")))) {
+	/* Allow module parameter override, else see if CPU supports parity */
+	if (sysbus_parity != -1) {
+		enable = sysbus_parity;
+	} else if (cpu_id[0] && !strstr(cpu_id, "Xeon")) {
 		e752x_printk(KERN_INFO, "System Bus Parity not "
 			     "supported by CPU, disabling\n");
 		enable = 0;
@@ -1130,6 +1345,7 @@ static int e752x_probe1(struct pci_dev *pdev, int dev_idx)
 	u16 pci_data;
 	u8 stat8;
 	struct mem_ctl_info *mci;
+	struct edac_mc_layer layers[2];
 	struct e752x_pvt *pvt;
 	u16 ddrcsr;
 	int drc_chan;		/* Number of channels 0=1chan,1=2chan */
@@ -1137,6 +1353,8 @@ static int e752x_probe1(struct pci_dev *pdev, int dev_idx)
 
 	debugf0("%s(): mci\n", __func__);
 	debugf0("Starting Probe1\n");
+	edac_dbg(0, "mci\n");
+	edac_dbg(0, "Starting Probe1\n");
 
 	/* check to see if device 0 function 1 is enabled; if it isn't, we
 	 * assume the BIOS has reserved it for a reason and is expecting
@@ -1163,6 +1381,17 @@ static int e752x_probe1(struct pci_dev *pdev, int dev_idx)
 	}
 
 	debugf3("%s(): init mci\n", __func__);
+	layers[0].type = EDAC_MC_LAYER_CHIP_SELECT;
+	layers[0].size = E752X_NR_CSROWS;
+	layers[0].is_virt_csrow = true;
+	layers[1].type = EDAC_MC_LAYER_CHANNEL;
+	layers[1].size = drc_chan + 1;
+	layers[1].is_virt_csrow = false;
+	mci = edac_mc_alloc(0, ARRAY_SIZE(layers), layers, sizeof(*pvt));
+	if (mci == NULL)
+		return -ENOMEM;
+
+	edac_dbg(3, "init mci\n");
 	mci->mtype_cap = MEM_FLAG_RDDR;
 	/* 3100 IMCH supports SECDEC only */
 	mci->edac_ctl_cap = (dev_idx == I3100) ? EDAC_FLAG_SECDED :
@@ -1173,6 +1402,9 @@ static int e752x_probe1(struct pci_dev *pdev, int dev_idx)
 	mci->dev = &pdev->dev;
 
 	debugf3("%s(): init pvt\n", __func__);
+	mci->pdev = &pdev->dev;
+
+	edac_dbg(3, "init pvt\n");
 	pvt = (struct e752x_pvt *)mci->pvt_info;
 	pvt->dev_info = &e752x_devs[dev_idx];
 	pvt->mc_symmetric = ((ddrcsr & 0x10) != 0);
@@ -1183,10 +1415,13 @@ static int e752x_probe1(struct pci_dev *pdev, int dev_idx)
 	}
 
 	debugf3("%s(): more mci init\n", __func__);
+	edac_dbg(3, "more mci init\n");
 	mci->ctl_name = pvt->dev_info->ctl_name;
 	mci->dev_name = pci_name(pdev);
 	mci->edac_check = e752x_check;
 	mci->ctl_page_to_phys = ctl_page_to_phys;
+	mci->set_sdram_scrub_rate = set_sdram_scrub_rate;
+	mci->get_sdram_scrub_rate = get_sdram_scrub_rate;
 
 	/* set the map type.  1 = normal, 0 = reversed
 	 * Must be set before e752x_init_csrows in case csrow mapping
@@ -1203,6 +1438,7 @@ static int e752x_probe1(struct pci_dev *pdev, int dev_idx)
 	else
 		mci->edac_cap |= EDAC_FLAG_NONE;
 	debugf3("%s(): tolm, remapbase, remaplimit\n", __func__);
+	edac_dbg(3, "tolm, remapbase, remaplimit\n");
 
 	/* load the top of low memory, remap base, and remap limit vars */
 	pci_read_config_word(pdev, E752X_TOLM, &pci_data);
@@ -1220,6 +1456,7 @@ static int e752x_probe1(struct pci_dev *pdev, int dev_idx)
 	 */
 	if (edac_mc_add_mc(mci)) {
 		debugf3("%s(): failed edac_mc_add_mc()\n", __func__);
+		edac_dbg(3, "failed edac_mc_add_mc()\n");
 		goto fail;
 	}
 
@@ -1238,6 +1475,7 @@ static int e752x_probe1(struct pci_dev *pdev, int dev_idx)
 
 	/* get this far and it's successful */
 	debugf3("%s(): success\n", __func__);
+	edac_dbg(3, "success\n");
 	return 0;
 
 fail:
@@ -1254,6 +1492,9 @@ static int __devinit e752x_init_one(struct pci_dev *pdev,
 				const struct pci_device_id *ent)
 {
 	debugf0("%s()\n", __func__);
+static int e752x_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
+{
+	edac_dbg(0, "\n");
 
 	/* wake up and enable device */
 	if (pci_enable_device(pdev) < 0)
@@ -1263,11 +1504,13 @@ static int __devinit e752x_init_one(struct pci_dev *pdev,
 }
 
 static void __devexit e752x_remove_one(struct pci_dev *pdev)
+static void e752x_remove_one(struct pci_dev *pdev)
 {
 	struct mem_ctl_info *mci;
 	struct e752x_pvt *pvt;
 
 	debugf0("%s()\n", __func__);
+	edac_dbg(0, "\n");
 
 	if (e752x_pci)
 		edac_pci_release_generic_ctl(e752x_pci);
@@ -1283,6 +1526,10 @@ static void __devexit e752x_remove_one(struct pci_dev *pdev)
 }
 
 static const struct pci_device_id e752x_pci_tbl[] __devinitdata = {
+	edac_mc_free(mci);
+}
+
+static const struct pci_device_id e752x_pci_tbl[] = {
 	{
 	 PCI_VEND_DEV(INTEL, 7520_0), PCI_ANY_ID, PCI_ANY_ID, 0, 0,
 	 E7520},
@@ -1306,6 +1553,7 @@ static struct pci_driver e752x_driver = {
 	.name = EDAC_MOD_STR,
 	.probe = e752x_init_one,
 	.remove = __devexit_p(e752x_remove_one),
+	.remove = e752x_remove_one,
 	.id_table = e752x_pci_tbl,
 };
 
@@ -1314,6 +1562,7 @@ static int __init e752x_init(void)
 	int pci_rc;
 
 	debugf3("%s()\n", __func__);
+	edac_dbg(3, "\n");
 
        /* Ensure that the OPSTATE is set correctly for POLL or NMI */
        opstate_init();
@@ -1325,6 +1574,7 @@ static int __init e752x_init(void)
 static void __exit e752x_exit(void)
 {
 	debugf3("%s()\n", __func__);
+	edac_dbg(3, "\n");
 	pci_unregister_driver(&e752x_driver);
 }
 

@@ -22,6 +22,7 @@
 		".previous\n"					\
 		".section __bug_table,\"a\"\n"			\
 		"3:\t"	S390_LONG "\t1b,2b\n"			\
+		"3:	.long	1b-3b,2b-3b\n"			\
 		"	.short	%0,%1\n"			\
 		"	.org	3b+%2\n"			\
 		".previous\n"					\
@@ -38,6 +39,7 @@
 		"1:\n"					\
 		".section __bug_table,\"a\"\n"		\
 		"2:\t"	S390_LONG "\t1b\n"		\
+		"2:	.long	1b-2b\n"		\
 		"	.short	%0\n"			\
 		"	.org	2b+%1\n"		\
 		".previous\n"				\
@@ -48,6 +50,14 @@
 #endif /* CONFIG_DEBUG_BUGVERBOSE */
 
 #define BUG()	__EMIT_BUG(0)
+#define BUG() do {					\
+	__EMIT_BUG(0);					\
+	unreachable();					\
+} while (0)
+
+#define __WARN_TAINT(taint) do {			\
+	__EMIT_BUG(BUGFLAG_TAINT(taint));		\
+} while (0)
 
 #define WARN_ON(x) ({					\
 	int __ret_warn_on = !!(x);			\
@@ -57,6 +67,10 @@
 	} else {					\
 		if (unlikely(__ret_warn_on))		\
 			__EMIT_BUG(BUGFLAG_WARNING);	\
+			__WARN();			\
+	} else {					\
+		if (unlikely(__ret_warn_on))		\
+			__WARN();			\
 	}						\
 	unlikely(__ret_warn_on);			\
 })

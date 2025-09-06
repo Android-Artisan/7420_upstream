@@ -48,6 +48,12 @@ struct dbdma_cmd {
     unsigned int   cmd_dep;	/* command-dependent field */
     unsigned short res_count;	/* residual count after completion */
     unsigned short xfer_status;	/* transfer status */
+	__le16 req_count;	/* requested byte transfer count */
+	__le16 command;		/* command word (has bit-fields) */
+	__le32 phy_addr;	/* physical data address */
+	__le32 cmd_dep;		/* command-dependent field */
+	__le16 res_count;	/* residual count after completion */
+	__le16 xfer_status;	/* transfer status */
 };
 
 /* DBDMA command values in command field */

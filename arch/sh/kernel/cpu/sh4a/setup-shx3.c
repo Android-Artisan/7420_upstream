@@ -2,6 +2,9 @@
  * SH-X3 Setup
  *
  *  Copyright (C) 2007  Paul Mundt
+ * SH-X3 Prototype Setup
+ *
+ *  Copyright (C) 2007 - 2010  Paul Mundt
  *
  * This file is subject to the terms and conditions of the GNU General Public
  * License.  See the file "COPYING" in the main directory of this archive
@@ -50,6 +53,141 @@ static struct platform_device sci_device = {
 
 static struct platform_device *shx3_devices[] __initdata = {
 	&sci_device,
+#include <linux/gpio.h>
+#include <linux/sh_timer.h>
+#include <linux/sh_intc.h>
+#include <cpu/shx3.h>
+#include <asm/mmzone.h>
+
+/*
+ * This intentionally only registers SCIF ports 0, 1, and 3. SCIF 2
+ * INTEVT values overlap with the FPU EXPEVT ones, requiring special
+ * demuxing in the exception dispatch path.
+ *
+ * As this overlap is something that never should have made it in to
+ * silicon in the first place, we just refuse to deal with the port at
+ * all rather than adding infrastructure to hack around it.
+ */
+static struct plat_sci_port scif0_platform_data = {
+	.flags		= UPF_BOOT_AUTOCONF,
+	.scscr		= SCSCR_RE | SCSCR_TE | SCSCR_REIE,
+	.type		= PORT_SCIF,
+};
+
+static struct resource scif0_resources[] = {
+	DEFINE_RES_MEM(0xffc30000, 0x100),
+	DEFINE_RES_IRQ(evt2irq(0x700)),
+	DEFINE_RES_IRQ(evt2irq(0x720)),
+	DEFINE_RES_IRQ(evt2irq(0x760)),
+	DEFINE_RES_IRQ(evt2irq(0x740)),
+};
+
+static struct platform_device scif0_device = {
+	.name		= "sh-sci",
+	.id		= 0,
+	.resource	= scif0_resources,
+	.num_resources	= ARRAY_SIZE(scif0_resources),
+	.dev		= {
+		.platform_data	= &scif0_platform_data,
+	},
+};
+
+static struct plat_sci_port scif1_platform_data = {
+	.flags		= UPF_BOOT_AUTOCONF,
+	.scscr		= SCSCR_RE | SCSCR_TE | SCSCR_REIE,
+	.type		= PORT_SCIF,
+};
+
+static struct resource scif1_resources[] = {
+	DEFINE_RES_MEM(0xffc40000, 0x100),
+	DEFINE_RES_IRQ(evt2irq(0x780)),
+	DEFINE_RES_IRQ(evt2irq(0x7a0)),
+	DEFINE_RES_IRQ(evt2irq(0x7e0)),
+	DEFINE_RES_IRQ(evt2irq(0x7c0)),
+};
+
+static struct platform_device scif1_device = {
+	.name		= "sh-sci",
+	.id		= 1,
+	.resource	= scif1_resources,
+	.num_resources	= ARRAY_SIZE(scif1_resources),
+	.dev		= {
+		.platform_data	= &scif1_platform_data,
+	},
+};
+
+static struct plat_sci_port scif2_platform_data = {
+	.flags		= UPF_BOOT_AUTOCONF,
+	.scscr		= SCSCR_RE | SCSCR_TE | SCSCR_REIE,
+	.type		= PORT_SCIF,
+};
+
+static struct resource scif2_resources[] = {
+	DEFINE_RES_MEM(0xffc60000, 0x100),
+	DEFINE_RES_IRQ(evt2irq(0x880)),
+	DEFINE_RES_IRQ(evt2irq(0x8a0)),
+	DEFINE_RES_IRQ(evt2irq(0x8e0)),
+	DEFINE_RES_IRQ(evt2irq(0x8c0)),
+};
+
+static struct platform_device scif2_device = {
+	.name		= "sh-sci",
+	.id		= 2,
+	.resource	= scif2_resources,
+	.num_resources	= ARRAY_SIZE(scif2_resources),
+	.dev		= {
+		.platform_data	= &scif2_platform_data,
+	},
+};
+
+static struct sh_timer_config tmu0_platform_data = {
+	.channels_mask = 7,
+};
+
+static struct resource tmu0_resources[] = {
+	DEFINE_RES_MEM(0xffc10000, 0x30),
+	DEFINE_RES_IRQ(evt2irq(0x400)),
+	DEFINE_RES_IRQ(evt2irq(0x420)),
+	DEFINE_RES_IRQ(evt2irq(0x440)),
+};
+
+static struct platform_device tmu0_device = {
+	.name		= "sh-tmu",
+	.id		= 0,
+	.dev = {
+		.platform_data	= &tmu0_platform_data,
+	},
+	.resource	= tmu0_resources,
+	.num_resources	= ARRAY_SIZE(tmu0_resources),
+};
+
+static struct sh_timer_config tmu1_platform_data = {
+	.channels_mask = 7,
+};
+
+static struct resource tmu1_resources[] = {
+	DEFINE_RES_MEM(0xffc20000, 0x2c),
+	DEFINE_RES_IRQ(evt2irq(0x460)),
+	DEFINE_RES_IRQ(evt2irq(0x480)),
+	DEFINE_RES_IRQ(evt2irq(0x4a0)),
+};
+
+static struct platform_device tmu1_device = {
+	.name		= "sh-tmu",
+	.id		= 1,
+	.dev = {
+		.platform_data	= &tmu1_platform_data,
+	},
+	.resource	= tmu1_resources,
+	.num_resources	= ARRAY_SIZE(tmu1_resources),
+};
+
+static struct platform_device *shx3_early_devices[] __initdata = {
+	&scif0_device,
+	&scif1_device,
+	&scif2_device,
+	&tmu0_device,
+	&tmu1_device,
 };
 
 static int __init shx3_devices_setup(void)
@@ -58,6 +196,16 @@ static int __init shx3_devices_setup(void)
 				    ARRAY_SIZE(shx3_devices));
 }
 __initcall(shx3_devices_setup);
+	return platform_add_devices(shx3_early_devices,
+				   ARRAY_SIZE(shx3_early_devices));
+}
+arch_initcall(shx3_devices_setup);
+
+void __init plat_early_device_setup(void)
+{
+	early_platform_add_devices(shx3_early_devices,
+				   ARRAY_SIZE(shx3_early_devices));
+}
 
 enum {
 	UNUSED = 0,
@@ -86,6 +234,7 @@ enum {
 	DTU1_TEND, DTU1_AE, DTU1_TMISS,
 	DTU2_TEND, DTU2_AE, DTU2_TMISS,
 	DTU3_TEND, DTU3_AE, DTU3_TMISS,
+	DTU0, DTU1, DTU2, DTU3,
 	FE0, FE1,
 	GPIO0, GPIO1, GPIO2, GPIO3,
 	PAM, IRM,
@@ -95,6 +244,7 @@ enum {
 	/* interrupt groups */
 	IRL, PCII56789, SCIF0, SCIF1, SCIF2, SCIF3,
 	DMAC0, DMAC1, DTU0, DTU1, DTU2, DTU3,
+	DMAC0, DMAC1,
 };
 
 static struct intc_vect vectors[] __initdata = {
@@ -135,6 +285,14 @@ static struct intc_vect vectors[] __initdata = {
 	INTC_VECT(DTU2_TMISS, 0xd00),
 	INTC_VECT(DTU3_TEND, 0xd20), INTC_VECT(DTU3_AE, 0xd40),
 	INTC_VECT(DTU3_TMISS, 0xd60),
+	INTC_VECT(DTU0, 0xc00), INTC_VECT(DTU0, 0xc20),
+	INTC_VECT(DTU0, 0xc40),
+	INTC_VECT(DTU1, 0xc60), INTC_VECT(DTU1, 0xc80),
+	INTC_VECT(DTU1, 0xca0),
+	INTC_VECT(DTU2, 0xcc0), INTC_VECT(DTU2, 0xce0),
+	INTC_VECT(DTU2, 0xd00),
+	INTC_VECT(DTU3, 0xd20), INTC_VECT(DTU3, 0xd40),
+	INTC_VECT(DTU3, 0xd60),
 	INTC_VECT(FE0, 0xe00), INTC_VECT(FE1, 0xe20),
 	INTC_VECT(GPIO0, 0xe40), INTC_VECT(GPIO1, 0xe60),
 	INTC_VECT(GPIO2, 0xe80), INTC_VECT(GPIO3, 0xea0),
@@ -165,6 +323,12 @@ static struct intc_group groups[] __initdata = {
 	INTC_GROUP(DTU3, DTU3_TEND, DTU3_AE, DTU3_TMISS),
 };
 
+};
+
+#define INT2DISTCR0	0xfe4108a0
+#define INT2DISTCR1	0xfe4108a4
+#define INT2DISTCR2	0xfe4108a8
+
 static struct intc_mask_reg mask_registers[] __initdata = {
 	{ 0xfe410030, 0xfe410050, 32, /* CnINTMSK0 / CnINTMSKCLR0 */
 	  { IRQ0, IRQ1, IRQ2, IRQ3 } },
@@ -175,6 +339,8 @@ static struct intc_mask_reg mask_registers[] __initdata = {
 	    DU, GPIO3, GPIO2, GPIO1, GPIO0, PAM, 0, 0,
 	    0, 0, 0, 0, 0, 0, 0, 0, /* HUDI bits ignored */
 	    0, TMU5, TMU4, TMU3, TMU2, TMU1, TMU0, 0, } },
+	    0, TMU5, TMU4, TMU3, TMU2, TMU1, TMU0, 0, },
+	    INTC_SMP_BALANCING(INT2DISTCR0) },
 	{ 0xfe410830, 0xfe410860, 32, /* CnINT2MSK1 / CnINT2MSKCLR1 */
 	  { 0, 0, 0, 0, DTU3, DTU2, DTU1, DTU0, /* IRM bits ignored */
 	    PCII9, PCII8, PCII7, PCII6, PCII5, PCII4, PCII3, PCII2,
@@ -182,12 +348,16 @@ static struct intc_mask_reg mask_registers[] __initdata = {
 	    DMAC1_DMINT10, DMAC1_DMINT9, DMAC1_DMINT8, DMAC1_DMINT7,
 	    DMAC1_DMINT6, DMAC0_DMAE, DMAC0_DMINT5, DMAC0_DMINT4,
 	    DMAC0_DMINT3, DMAC0_DMINT2, DMAC0_DMINT1, DMAC0_DMINT0 } },
+	    DMAC0_DMINT3, DMAC0_DMINT2, DMAC0_DMINT1, DMAC0_DMINT0 },
+	    INTC_SMP_BALANCING(INT2DISTCR1) },
 	{ 0xfe410840, 0xfe410870, 32, /* CnINT2MSK2 / CnINT2MSKCLR2 */
 	  { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 	    SCIF3_TXI, SCIF3_BRI, SCIF3_RXI, SCIF3_ERI,
 	    SCIF2_TXI, SCIF2_BRI, SCIF2_RXI, SCIF2_ERI,
 	    SCIF1_TXI, SCIF1_BRI, SCIF1_RXI, SCIF1_ERI,
 	    SCIF0_TXI, SCIF0_BRI, SCIF0_RXI, SCIF0_ERI } },
+	    SCIF0_TXI, SCIF0_BRI, SCIF0_RXI, SCIF0_ERI },
+	    INTC_SMP_BALANCING(INT2DISTCR2) },
 };
 
 static struct intc_prio_reg prio_registers[] __initdata = {
@@ -249,6 +419,33 @@ void __init plat_irq_setup_pins(int mode)
 		register_intc_controller(&intc_desc_irq);
 		break;
 	case IRQ_MODE_IRL3210:
+	int ret = 0;
+
+	switch (mode) {
+	case IRQ_MODE_IRQ:
+		ret |= gpio_request(GPIO_FN_IRQ3, intc_desc_irq.name);
+		ret |= gpio_request(GPIO_FN_IRQ2, intc_desc_irq.name);
+		ret |= gpio_request(GPIO_FN_IRQ1, intc_desc_irq.name);
+		ret |= gpio_request(GPIO_FN_IRQ0, intc_desc_irq.name);
+
+		if (unlikely(ret)) {
+			pr_err("Failed to set IRQ mode\n");
+			return;
+		}
+
+		register_intc_controller(&intc_desc_irq);
+		break;
+	case IRQ_MODE_IRL3210:
+		ret |= gpio_request(GPIO_FN_IRL3, intc_desc_irl.name);
+		ret |= gpio_request(GPIO_FN_IRL2, intc_desc_irl.name);
+		ret |= gpio_request(GPIO_FN_IRL1, intc_desc_irl.name);
+		ret |= gpio_request(GPIO_FN_IRL0, intc_desc_irl.name);
+
+		if (unlikely(ret)) {
+			pr_err("Failed to set IRL mode\n");
+			return;
+		}
+
 		register_intc_controller(&intc_desc_irl);
 		break;
 	default:

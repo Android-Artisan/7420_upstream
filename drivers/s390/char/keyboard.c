@@ -4,11 +4,16 @@
  *
  *  S390 version
  *    Copyright (C) 2003 IBM Deutschland Entwicklung GmbH, IBM Corporation
+ *    ebcdic keycode functions for s390 console drivers
+ *
+ *  S390 version
+ *    Copyright IBM Corp. 2003
  *    Author(s): Martin Schwidefsky (schwidefsky@de.ibm.com),
  */
 
 #include <linux/module.h>
 #include <linux/sched.h>
+#include <linux/slab.h>
 #include <linux/sysrq.h>
 
 #include <linux/consolemap.h>
@@ -49,6 +54,7 @@ struct kbd_data *
 kbd_alloc(void) {
 	struct kbd_data *kbd;
 	int i, len;
+	int i;
 
 	kbd = kzalloc(sizeof(struct kbd_data), GFP_KERNEL);
 	if (!kbd)
@@ -64,6 +70,11 @@ kbd_alloc(void) {
 				goto out_maps;
 			memcpy(kbd->key_maps[i], key_maps[i],
 			       sizeof(u_short)*NR_KEYS);
+			kbd->key_maps[i] = kmemdup(key_maps[i],
+						   sizeof(u_short) * NR_KEYS,
+						   GFP_KERNEL);
+			if (!kbd->key_maps[i])
+				goto out_maps;
 		}
 	}
 	kbd->func_table = kzalloc(sizeof(func_table), GFP_KERNEL);
@@ -76,6 +87,10 @@ kbd_alloc(void) {
 			if (!kbd->func_table[i])
 				goto out_func;
 			memcpy(kbd->func_table[i], func_table[i], len);
+			kbd->func_table[i] = kstrdup(func_table[i],
+						     GFP_KERNEL);
+			if (!kbd->func_table[i])
+				goto out_func;
 		}
 	}
 	kbd->fn_handler =
@@ -88,6 +103,11 @@ kbd_alloc(void) {
 		goto out_fn_handler;
 	memcpy(kbd->accent_table, accent_table,
 	       sizeof(struct kbdiacruc)*MAX_DIACR);
+	kbd->accent_table = kmemdup(accent_table,
+				    sizeof(struct kbdiacruc) * MAX_DIACR,
+				    GFP_KERNEL);
+	if (!kbd->accent_table)
+		goto out_fn_handler;
 	kbd->accent_table_size = accent_table_size;
 	return kbd;
 
@@ -202,6 +222,7 @@ handle_diacr(struct kbd_data *kbd, unsigned int ch)
 		return d;
 
 	kbd_put_queue(kbd->tty, d);
+	kbd_put_queue(kbd->port, d);
 	return ch;
 }
 
@@ -224,6 +245,7 @@ k_self(struct kbd_data *kbd, unsigned char value)
 	if (kbd->diacr)
 		value = handle_diacr(kbd, value);
 	kbd_put_queue(kbd->tty, value);
+	kbd_put_queue(kbd->port, value);
 }
 
 /*
@@ -242,6 +264,7 @@ k_fn(struct kbd_data *kbd, unsigned char value)
 {
 	if (kbd->func_table[value])
 		kbd_puts_queue(kbd->tty, kbd->func_table[value]);
+		kbd_puts_queue(kbd->port, kbd->func_table[value]);
 }
 
 static void
@@ -273,6 +296,20 @@ to_utf8(struct tty_struct *tty, ushort c)
 		kbd_put_queue(tty, 0xe0 | (c >> 12));
 		kbd_put_queue(tty, 0x80 | ((c >> 6) & 0x3f));
 		kbd_put_queue(tty, 0x80 | (c & 0x3f));
+to_utf8(struct tty_port *port, ushort c)
+{
+	if (c < 0x80)
+		/*  0******* */
+		kbd_put_queue(port, c);
+	else if (c < 0x800) {
+		/* 110***** 10****** */
+		kbd_put_queue(port, 0xc0 | (c >> 6));
+		kbd_put_queue(port, 0x80 | (c & 0x3f));
+	} else {
+		/* 1110**** 10****** 10****** */
+		kbd_put_queue(port, 0xe0 | (c >> 12));
+		kbd_put_queue(port, 0x80 | ((c >> 6) & 0x3f));
+		kbd_put_queue(port, 0x80 | (c & 0x3f));
 	}
 }
 
@@ -286,6 +323,7 @@ kbd_keycode(struct kbd_data *kbd, unsigned int keycode)
 	unsigned char type, value;
 
 	if (!kbd || !kbd->tty)
+	if (!kbd)
 		return;
 
 	if (keycode >= 384)
@@ -308,6 +346,7 @@ kbd_keycode(struct kbd_data *kbd, unsigned int keycode)
 			if (kbd->sysrq == K(KT_LATIN, '-')) {
 				kbd->sysrq = 0;
 				handle_sysrq(value, kbd->tty);
+				handle_sysrq(value);
 				return;
 			}
 			if (value == '-') {
@@ -326,6 +365,7 @@ kbd_keycode(struct kbd_data *kbd, unsigned int keycode)
 		(*k_handler[type])(kbd, value);
 	} else
 		to_utf8(kbd->tty, keysym);
+		to_utf8(kbd->port, keysym);
 }
 
 /*
@@ -443,6 +483,12 @@ do_kdgkb_ioctl(struct kbd_data *kbd, struct kbsentry __user *u_kbs,
 		if (len > sizeof(u_kbs->kb_string) - 1)
 			return -EINVAL;
 		p = kmalloc(len + 1, GFP_KERNEL);
+		len = strnlen_user(u_kbs->kb_string, sizeof(u_kbs->kb_string));
+		if (!len)
+			return -EFAULT;
+		if (len > sizeof(u_kbs->kb_string))
+			return -EINVAL;
+		p = kmalloc(len, GFP_KERNEL);
 		if (!p)
 			return -ENOMEM;
 		if (copy_from_user(p, u_kbs->kb_string, len)) {
@@ -450,6 +496,11 @@ do_kdgkb_ioctl(struct kbd_data *kbd, struct kbsentry __user *u_kbs,
 			return -EFAULT;
 		}
 		p[len] = 0;
+		/*
+		 * Make sure the string is terminated by 0. User could have
+		 * modified it between us running strnlen_user() and copying it.
+		 */
+		p[len - 1] = 0;
 		kfree(kbd->func_table[kb_func]);
 		kbd->func_table[kb_func] = p;
 		break;
@@ -463,6 +514,12 @@ kbd_ioctl(struct kbd_data *kbd, struct file *file,
 {
 	void __user *argp;
 	int ct, perm;
+int kbd_ioctl(struct kbd_data *kbd, unsigned int cmd, unsigned long arg)
+{
+	struct tty_struct *tty;
+	void __user *argp;
+	unsigned int ct;
+	int perm;
 
 	argp = (void __user *)arg;
 
@@ -471,6 +528,10 @@ kbd_ioctl(struct kbd_data *kbd, struct file *file,
 	 * to be the owner of the tty, or have CAP_SYS_TTY_CONFIG.
 	 */
 	perm = current->signal->tty == kbd->tty || capable(CAP_SYS_TTY_CONFIG);
+	tty = tty_port_tty_get(kbd->port);
+	/* FIXME this test is pretty racy */
+	perm = current->signal->tty == tty || capable(CAP_SYS_TTY_CONFIG);
+	tty_kref_put(tty);
 	switch (cmd) {
 	case KDGKBTYPE:
 		return put_user(KB_101, (char __user *)argp);

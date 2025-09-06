@@ -1,7 +1,6 @@
 
 		       ET61X[12]51 PC Camera Controllers
 				Driver for Linux
-		       =================================
 
 			       - Documentation -
 
@@ -22,18 +21,15 @@ Index
 
 
 1. Copyright
-============
 Copyright (C) 2006-2007 by Luca Risolia <luca.risolia@studio.unibo.it>
 
 
 2. Disclaimer
-=============
 Etoms is a trademark of Etoms Electronics Corp.
 This software is not developed or sponsored by Etoms Electronics.
 
 
 3. License
-==========
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
 the Free Software Foundation; either version 2 of the License, or
@@ -50,7 +46,6 @@ Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 
 
 4. Overview and features
-========================
 This driver supports the video interface of the devices mounting the ET61X151
 or ET61X251 PC Camera Controllers.
 
@@ -95,7 +90,6 @@ Some of the features of the driver are:
 
 
 5. Module dependencies
-======================
 For it to work properly, the driver needs kernel support for Video4Linux and
 USB.
 
@@ -133,7 +127,6 @@ And finally:
 
 
 6. Module loading
-=================
 To use the driver, it is necessary to load the "et61x251" module into memory
 after every other module required: "videodev", "v4l2_common", "compat_ioctl32",
 "usbcore" and, depending on the USB host controller you have, "ehci-hcd",
@@ -150,7 +143,6 @@ analyze kernel messages and verify that the loading process has gone well:
 
 
 7. Module parameters
-====================
 Module parameters are listed below:
 -------------------------------------------------------------------------------
 Name:           video_nr
@@ -202,7 +194,6 @@ Default:        2
 
 
 8. Optional device control through "sysfs"
-==========================================
 If the kernel has been compiled with the CONFIG_VIDEO_ADV_DEBUG option enabled,
 it is possible to read and write both the ET61X[12]51 and the image sensor
 registers by using the "sysfs" filesystem interface.
@@ -228,7 +219,6 @@ To avoid race conditions, all the I/O accesses to the files are serialized.
 
 
 9. Supported devices
-====================
 None of the names of the companies as well as their products will be mentioned
 here. They have never collaborated with the author, so no advertising.
 
@@ -275,7 +265,6 @@ the V4L2 interface.
 
 
 10. Notes for V4L2 application developers
-=========================================
 This driver follows the V4L2 API specifications. In particular, it enforces two
 rules:
 
@@ -307,7 +296,6 @@ V4L2 ioctl's.
 
 
 11. Contact information
-=======================
 The author may be contacted by e-mail at <luca.risolia@studio.unibo.it>.
 
 GPG/PGP encrypted e-mail's are accepted. The GPG key ID of the author is

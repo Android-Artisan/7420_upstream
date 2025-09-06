@@ -355,6 +355,7 @@ int audio_read(int dev, struct file *file, char __user *buf, int count)
 			if(copy_to_user(&(buf)[p], fixit, l))
 				return -EFAULT;
 		};
+		}
 
 		DMAbuf_rmchars(dev, buf_no, l);
 
@@ -434,6 +435,9 @@ int audio_ioctl(int dev, struct file *file, unsigned int cmd, void __user *arg)
 		
 		case SNDCTL_DSP_NONBLOCK:
 			file->f_flags |= O_NONBLOCK;
+			spin_lock(&file->f_lock);
+			file->f_flags |= O_NONBLOCK;
+			spin_unlock(&file->f_lock);
 			return 0;
 
 		case SNDCTL_DSP_GETCAPS:
@@ -513,6 +517,7 @@ int audio_ioctl(int dev, struct file *file, unsigned int cmd, void __user *arg)
 			count += dmap->byte_counter;
 		
 			/* Substract current count from the number of bytes written by app */
+			/* Subtract current count from the number of bytes written by app */
 			count = dmap->user_counter - count;
 			if (count < 0)
 				count = 0;
@@ -837,6 +842,7 @@ static int dma_ioctl(int dev, unsigned int cmd, void __user *arg)
 						     dmap_in->fragment_size, dmap_in->nbufs)) < 0) {
 						spin_unlock_irqrestore(&dmap_in->lock,flags);
 						return -err;
+						return err;
 					}
 					dmap_in->dma_mode = DMODE_INPUT;
 					audio_devs[dev]->enable_bits |= PCM_ENABLE_INPUT;
@@ -930,6 +936,7 @@ static int dma_ioctl(int dev, unsigned int cmd, void __user *arg)
 				count += dmap_out->bytes_in_use;	/* Pointer wrap not handled yet */
 			count += dmap_out->byte_counter;
 			/* Substract current count from the number of bytes written by app */
+			/* Subtract current count from the number of bytes written by app */
 			count = dmap_out->user_counter - count;
 			if (count < 0)
 				count = 0;

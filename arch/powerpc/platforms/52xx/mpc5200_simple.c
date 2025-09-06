@@ -52,6 +52,17 @@ static void __init mpc5200_simple_setup_arch(void)
 static char *board[] __initdata = {
 	"promess,motionpro",
 	"phytec,pcm030",
+static const char *board[] __initdata = {
+	"anonymous,a3m071",
+	"anonymous,a4m072",
+	"anon,charon",
+	"ifm,o2d",
+	"intercontrol,digsy-mtc",
+	"manroland,mucmc52",
+	"manroland,uc101",
+	"phytec,pcm030",
+	"phytec,pcm032",
+	"promess,motionpro",
 	"schindler,cm5200",
 	"tqc,tqm5200",
 	NULL
@@ -72,6 +83,7 @@ static int __init mpc5200_simple_probe(void)
 	}
 	
 	return (board[i] != NULL);
+	return of_flat_dt_match(of_get_flat_dt_root(), board);
 }
 
 define_machine(mpc5200_simple_platform) {

@@ -13,6 +13,12 @@
 #ifdef __KERNEL__
 #include <linux/types.h>
 #include <asm/page.h>
+#ifndef _LINUX_SERIAL_H
+#define _LINUX_SERIAL_H
+
+#include <asm/page.h>
+#include <uapi/linux/serial.h>
+
 
 /*
  * Counters of the input lines (CTS, DSR, RI, CD) interrupts
@@ -178,4 +184,6 @@ struct serial_icounter_struct {
 #include <linux/compiler.h>
 
 #endif /* __KERNEL__ */
+#include <linux/compiler.h>
+
 #endif /* _LINUX_SERIAL_H */

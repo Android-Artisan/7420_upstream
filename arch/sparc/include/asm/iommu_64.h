@@ -16,6 +16,7 @@
 #define IOPTE_WRITE   0x0000000000000002UL
 
 #define IOMMU_NUM_CTXS	4096
+#include <linux/iommu-common.h>
 
 struct iommu_arena {
 	unsigned long	*map;
@@ -29,6 +30,10 @@ struct iommu {
 	void			(*flush_all)(struct iommu *);
 	iopte_t			*page_table;
 	u32			page_table_map_base;
+	struct iommu_map_table	tbl;
+	spinlock_t		lock;
+	u32			dma_addr_mask;
+	iopte_t			*page_table;
 	unsigned long		iommu_control;
 	unsigned long		iommu_tsbbase;
 	unsigned long		iommu_flush;
@@ -48,6 +53,9 @@ struct strbuf {
 	unsigned long		strbuf_control;
 	unsigned long		strbuf_pflush;
 	unsigned long		strbuf_fsync;
+	unsigned long		strbuf_err_stat;
+	unsigned long		strbuf_tag_diag;
+	unsigned long		strbuf_line_diag;
 	unsigned long		strbuf_ctxflush;
 	unsigned long		strbuf_ctxmatch_base;
 	unsigned long		strbuf_flushflag_pa;
@@ -58,5 +66,8 @@ struct strbuf {
 extern int iommu_table_init(struct iommu *iommu, int tsbsize,
 			    u32 dma_offset, u32 dma_addr_mask,
 			    int numa_node);
+int iommu_table_init(struct iommu *iommu, int tsbsize,
+		     u32 dma_offset, u32 dma_addr_mask,
+		     int numa_node);
 
 #endif /* !(_SPARC64_IOMMU_H) */

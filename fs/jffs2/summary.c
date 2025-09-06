@@ -11,6 +11,8 @@
  *
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/kernel.h>
 #include <linux/slab.h>
 #include <linux/mtd/mtd.h>
@@ -24,6 +26,7 @@
 int jffs2_sum_init(struct jffs2_sb_info *c)
 {
 	uint32_t sum_size = max_t(uint32_t, c->sector_size, MAX_SUMMARY_SIZE);
+	uint32_t sum_size = min_t(uint32_t, c->sector_size, MAX_SUMMARY_SIZE);
 
 	c->summary = kzalloc(sizeof(struct jffs2_summary), GFP_KERNEL);
 
@@ -122,6 +125,7 @@ int jffs2_sum_add_inode_mem(struct jffs2_summary *s, struct jffs2_raw_inode *ri,
 	temp->inode = ri->ino;
 	temp->version = ri->version;
 	temp->offset = cpu_to_je32(ofs); /* relative offset from the begining of the jeb */
+	temp->offset = cpu_to_je32(ofs); /* relative offset from the beginning of the jeb */
 	temp->totlen = ri->totlen;
 	temp->next = NULL;
 
@@ -140,6 +144,7 @@ int jffs2_sum_add_dirent_mem(struct jffs2_summary *s, struct jffs2_raw_dirent *r
 	temp->nodetype = rd->nodetype;
 	temp->totlen = rd->totlen;
 	temp->offset = cpu_to_je32(ofs);	/* relative from the begining of the jeb */
+	temp->offset = cpu_to_je32(ofs);	/* relative from the beginning of the jeb */
 	temp->pino = rd->pino;
 	temp->version = rd->version;
 	temp->ino = rd->ino;
@@ -449,6 +454,16 @@ static int jffs2_sum_process_sum_data(struct jffs2_sb_info *c, struct jffs2_eras
 				if (checkedlen < spd->nsize) {
 					printk(KERN_ERR "Dirent at %08x has zeroes in name. Truncating to %d chars\n",
 					       jeb->offset + je32_to_cpu(spd->offset), checkedlen);
+					pr_err("Dirent at %08x has zero at start of name. Aborting mount.\n",
+					       jeb->offset +
+					       je32_to_cpu(spd->offset));
+					return -EIO;
+				}
+				if (checkedlen < spd->nsize) {
+					pr_err("Dirent at %08x has zeroes in name. Truncating to %d chars\n",
+					       jeb->offset +
+					       je32_to_cpu(spd->offset),
+					       checkedlen);
 				}
 
 
@@ -778,6 +793,8 @@ static int jffs2_sum_write_data(struct jffs2_sb_info *c, struct jffs2_eraseblock
 					dbg_summary("Writing unknown RWCOMPAT_COPY node type %x\n",
 						    je16_to_cpu(temp->u.nodetype));
 					jffs2_sum_disable_collecting(c->summary);
+					/* The above call removes the list, nothing more to do */
+					goto bail_rwcompat;
 				} else {
 					BUG();	/* unknown node in summary information */
 				}
@@ -789,6 +806,7 @@ static int jffs2_sum_write_data(struct jffs2_sb_info *c, struct jffs2_eraseblock
 
 		c->summary->sum_num--;
 	}
+ bail_rwcompat:
 
 	jffs2_sum_reset_collected(c->summary);
 
@@ -810,6 +828,7 @@ static int jffs2_sum_write_data(struct jffs2_sb_info *c, struct jffs2_eraseblock
 
 	dbg_summary("JFFS2: writing out data to flash to pos : 0x%08x\n",
 		    sum_ofs);
+	dbg_summary("writing out data to flash to pos : 0x%08x\n", sum_ofs);
 
 	ret = jffs2_flash_writev(c, vecs, 2, sum_ofs, &retlen, 0);
 
@@ -840,6 +859,7 @@ static int jffs2_sum_write_data(struct jffs2_sb_info *c, struct jffs2_eraseblock
 /* Write out summary information - called from jffs2_do_reserve_space */
 
 int jffs2_sum_write_sumnode(struct jffs2_sb_info *c)
+	__must_hold(&c->erase_completion_block)
 {
 	int datasize, infosize, padsize;
 	struct jffs2_eraseblock *jeb;

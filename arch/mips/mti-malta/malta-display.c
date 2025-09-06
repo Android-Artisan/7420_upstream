@@ -23,6 +23,22 @@
 #include <asm/io.h>
 #include <asm/mips-boards/generic.h>
 #include <asm/mips-boards/prom.h>
+ * This file is subject to the terms and conditions of the GNU General Public
+ * License.  See the file "COPYING" in the main directory of this archive
+ * for more details.
+ *
+ * Display routines for display messages in MIPS boards ascii display.
+ *
+ * Copyright (C) 1999,2000,2012  MIPS Technologies, Inc.
+ * All rights reserved.
+ * Authors: Carsten Langgaard <carstenl@mips.com>
+ *          Steven J. Hill <sjhill@mips.com>
+ */
+#include <linux/compiler.h>
+#include <linux/timer.h>
+#include <linux/io.h>
+
+#include <asm/mips-boards/generic.h>
 
 extern const char display_string[];
 static unsigned int display_count;
@@ -41,6 +57,11 @@ void mips_display_message(const char *str)
 		         __raw_writel(*str++, display + i);
 		 else
 		         __raw_writel(' ', display + i);
+	for (i = 0; i <= 14; i += 2) {
+		if (*str)
+			__raw_writel(*str++, display + i);
+		else
+			__raw_writel(' ', display + i);
 	}
 }
 

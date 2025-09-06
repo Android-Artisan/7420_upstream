@@ -27,6 +27,7 @@
 #include "fpmodule.inl"
 
 #include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
 static inline void loadSingle(const unsigned int Fn, const unsigned int __user *pMem)
 {

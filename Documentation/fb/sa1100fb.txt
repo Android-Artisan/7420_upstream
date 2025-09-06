@@ -1,13 +1,11 @@
 [This file is cloned from VesaFB/matroxfb]
 
 What is sa1100fb?
-=================
 
 This is a driver for a graphic framebuffer for the SA-1100 LCD
 controller.
 
 Configuration
-==============
 
 For most common passive displays, giving the option
 

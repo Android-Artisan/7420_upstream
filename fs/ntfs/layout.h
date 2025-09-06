@@ -44,6 +44,8 @@
 
 /* The NTFS oem_id "NTFS    " */
 #define magicNTFS	const_cpu_to_le64(0x202020205346544eULL)
+/* The NTFS oem_id "NTFS    " */
+#define magicNTFS	cpu_to_le64(0x202020205346544eULL)
 
 /*
  * Location of bootsector on partition:
@@ -127,12 +129,26 @@ enum {
 
 	/* Found in all ntfs record containing records. */
 	magic_BAAD = const_cpu_to_le32(0x44414142), /* Failed multi sector
+	magic_FILE = cpu_to_le32(0x454c4946), /* Mft entry. */
+	magic_INDX = cpu_to_le32(0x58444e49), /* Index buffer. */
+	magic_HOLE = cpu_to_le32(0x454c4f48), /* ? (NTFS 3.0+?) */
+
+	/* Found in $LogFile/$DATA. */
+	magic_RSTR = cpu_to_le32(0x52545352), /* Restart page. */
+	magic_RCRD = cpu_to_le32(0x44524352), /* Log record page. */
+
+	/* Found in $LogFile/$DATA.  (May be found in $MFT/$DATA, also?) */
+	magic_CHKD = cpu_to_le32(0x444b4843), /* Modified by chkdsk. */
+
+	/* Found in all ntfs record containing records. */
+	magic_BAAD = cpu_to_le32(0x44414142), /* Failed multi sector
 						       transfer was detected. */
 	/*
 	 * Found in $LogFile/$DATA when a page is full of 0xff bytes and is
 	 * thus not initialized.  Page must be initialized before using it.
 	 */
 	magic_empty = const_cpu_to_le32(0xffffffff) /* Record is empty. */
+	magic_empty = cpu_to_le32(0xffffffff) /* Record is empty. */
 };
 
 typedef le32 NTFS_RECORD_TYPE;
@@ -260,6 +276,8 @@ typedef enum {
 enum {
 	MFT_RECORD_IN_USE	= const_cpu_to_le16(0x0001),
 	MFT_RECORD_IS_DIRECTORY = const_cpu_to_le16(0x0002),
+	MFT_RECORD_IN_USE	= cpu_to_le16(0x0001),
+	MFT_RECORD_IS_DIRECTORY = cpu_to_le16(0x0002),
 } __attribute__ ((__packed__));
 
 typedef le16 MFT_RECORD_FLAGS;
@@ -298,6 +316,7 @@ typedef le16 MFT_RECORD_FLAGS;
  * when the volume's free 88% are used up, the mft zone is shrunk by a factor
  * of 2, thus making more space available for more files/data. This process is
  * repeated everytime there is no more free space except for the mft zone until
+ * repeated every time there is no more free space except for the mft zone until
  * there really is no more free space.
  */
 
@@ -310,6 +329,7 @@ typedef le16 MFT_RECORD_FLAGS;
  */
 #define MFT_REF_MASK_CPU 0x0000ffffffffffffULL
 #define MFT_REF_MASK_LE const_cpu_to_le64(MFT_REF_MASK_CPU)
+#define MFT_REF_MASK_LE cpu_to_le64(MFT_REF_MASK_CPU)
 
 typedef u64 MFT_REF;
 typedef le64 leMFT_REF;
@@ -496,6 +516,25 @@ enum {
 	AT_LOGGED_UTILITY_STREAM	= const_cpu_to_le32(     0x100),
 	AT_FIRST_USER_DEFINED_ATTRIBUTE	= const_cpu_to_le32(    0x1000),
 	AT_END				= const_cpu_to_le32(0xffffffff)
+	AT_UNUSED			= cpu_to_le32(         0),
+	AT_STANDARD_INFORMATION		= cpu_to_le32(      0x10),
+	AT_ATTRIBUTE_LIST		= cpu_to_le32(      0x20),
+	AT_FILE_NAME			= cpu_to_le32(      0x30),
+	AT_OBJECT_ID			= cpu_to_le32(      0x40),
+	AT_SECURITY_DESCRIPTOR		= cpu_to_le32(      0x50),
+	AT_VOLUME_NAME			= cpu_to_le32(      0x60),
+	AT_VOLUME_INFORMATION		= cpu_to_le32(      0x70),
+	AT_DATA				= cpu_to_le32(      0x80),
+	AT_INDEX_ROOT			= cpu_to_le32(      0x90),
+	AT_INDEX_ALLOCATION		= cpu_to_le32(      0xa0),
+	AT_BITMAP			= cpu_to_le32(      0xb0),
+	AT_REPARSE_POINT		= cpu_to_le32(      0xc0),
+	AT_EA_INFORMATION		= cpu_to_le32(      0xd0),
+	AT_EA				= cpu_to_le32(      0xe0),
+	AT_PROPERTY_SET			= cpu_to_le32(      0xf0),
+	AT_LOGGED_UTILITY_STREAM	= cpu_to_le32(     0x100),
+	AT_FIRST_USER_DEFINED_ATTRIBUTE	= cpu_to_le32(    0x1000),
+	AT_END				= cpu_to_le32(0xffffffff)
 };
 
 typedef le32 ATTR_TYPE;
@@ -546,6 +585,13 @@ enum {
 	COLLATION_NTOFS_SID		= const_cpu_to_le32(0x11),
 	COLLATION_NTOFS_SECURITY_HASH	= const_cpu_to_le32(0x12),
 	COLLATION_NTOFS_ULONGS		= const_cpu_to_le32(0x13),
+	COLLATION_BINARY		= cpu_to_le32(0x00),
+	COLLATION_FILE_NAME		= cpu_to_le32(0x01),
+	COLLATION_UNICODE_STRING	= cpu_to_le32(0x02),
+	COLLATION_NTOFS_ULONG		= cpu_to_le32(0x10),
+	COLLATION_NTOFS_SID		= cpu_to_le32(0x11),
+	COLLATION_NTOFS_SECURITY_HASH	= cpu_to_le32(0x12),
+	COLLATION_NTOFS_ULONGS		= cpu_to_le32(0x13),
 };
 
 typedef le32 COLLATION_RULE;
@@ -578,6 +624,25 @@ enum {
 	ATTR_DEF_RESIDENT	= const_cpu_to_le32(0x40), /* Attribute must be
 					resident. */
 	ATTR_DEF_ALWAYS_LOG	= const_cpu_to_le32(0x80), /* Always log
+	ATTR_DEF_INDEXABLE	= cpu_to_le32(0x02), /* Attribute can be
+					indexed. */
+	ATTR_DEF_MULTIPLE	= cpu_to_le32(0x04), /* Attribute type
+					can be present multiple times in the
+					mft records of an inode. */
+	ATTR_DEF_NOT_ZERO	= cpu_to_le32(0x08), /* Attribute value
+					must contain at least one non-zero
+					byte. */
+	ATTR_DEF_INDEXED_UNIQUE	= cpu_to_le32(0x10), /* Attribute must be
+					indexed and the attribute value must be
+					unique for the attribute type in all of
+					the mft records of an inode. */
+	ATTR_DEF_NAMED_UNIQUE	= cpu_to_le32(0x20), /* Attribute must be
+					named and the name must be unique for
+					the attribute type in all of the mft
+					records of an inode. */
+	ATTR_DEF_RESIDENT	= cpu_to_le32(0x40), /* Attribute must be
+					resident. */
+	ATTR_DEF_ALWAYS_LOG	= cpu_to_le32(0x80), /* Always log
 					modifications to this attribute,
 					regardless of whether it is resident or
 					non-resident.  Without this, only log
@@ -620,6 +685,12 @@ enum {
 							      illegal value. */
 	ATTR_IS_ENCRYPTED     = const_cpu_to_le16(0x4000),
 	ATTR_IS_SPARSE	      = const_cpu_to_le16(0x8000),
+	ATTR_IS_COMPRESSED    = cpu_to_le16(0x0001),
+	ATTR_COMPRESSION_MASK = cpu_to_le16(0x00ff), /* Compression method
+							      mask.  Also, first
+							      illegal value. */
+	ATTR_IS_ENCRYPTED     = cpu_to_le16(0x4000),
+	ATTR_IS_SPARSE	      = cpu_to_le16(0x8000),
 } __attribute__ ((__packed__));
 
 typedef le16 ATTR_FLAGS;
@@ -841,6 +912,36 @@ enum {
 	   F_A_DEVICE, F_A_DIRECTORY, F_A_SPARSE_FILE, F_A_REPARSE_POINT,
 	   F_A_COMPRESSED, and F_A_ENCRYPTED and preserves the rest.  This mask
 	   is used to to obtain all flags that are valid for setting. */
+	FILE_ATTR_READONLY		= cpu_to_le32(0x00000001),
+	FILE_ATTR_HIDDEN		= cpu_to_le32(0x00000002),
+	FILE_ATTR_SYSTEM		= cpu_to_le32(0x00000004),
+	/* Old DOS volid. Unused in NT.	= cpu_to_le32(0x00000008), */
+
+	FILE_ATTR_DIRECTORY		= cpu_to_le32(0x00000010),
+	/* Note, FILE_ATTR_DIRECTORY is not considered valid in NT.  It is
+	   reserved for the DOS SUBDIRECTORY flag. */
+	FILE_ATTR_ARCHIVE		= cpu_to_le32(0x00000020),
+	FILE_ATTR_DEVICE		= cpu_to_le32(0x00000040),
+	FILE_ATTR_NORMAL		= cpu_to_le32(0x00000080),
+
+	FILE_ATTR_TEMPORARY		= cpu_to_le32(0x00000100),
+	FILE_ATTR_SPARSE_FILE		= cpu_to_le32(0x00000200),
+	FILE_ATTR_REPARSE_POINT		= cpu_to_le32(0x00000400),
+	FILE_ATTR_COMPRESSED		= cpu_to_le32(0x00000800),
+
+	FILE_ATTR_OFFLINE		= cpu_to_le32(0x00001000),
+	FILE_ATTR_NOT_CONTENT_INDEXED	= cpu_to_le32(0x00002000),
+	FILE_ATTR_ENCRYPTED		= cpu_to_le32(0x00004000),
+
+	FILE_ATTR_VALID_FLAGS		= cpu_to_le32(0x00007fb7),
+	/* Note, FILE_ATTR_VALID_FLAGS masks out the old DOS VolId and the
+	   FILE_ATTR_DEVICE and preserves everything else.  This mask is used
+	   to obtain all flags that are valid for reading. */
+	FILE_ATTR_VALID_SET_FLAGS	= cpu_to_le32(0x000031a7),
+	/* Note, FILE_ATTR_VALID_SET_FLAGS masks out the old DOS VolId, the
+	   F_A_DEVICE, F_A_DIRECTORY, F_A_SPARSE_FILE, F_A_REPARSE_POINT,
+	   F_A_COMPRESSED, and F_A_ENCRYPTED and preserves the rest.  This mask
+	   is used to obtain all flags that are valid for setting. */
 	/*
 	 * The flag FILE_ATTR_DUP_FILENAME_INDEX_PRESENT is present in all
 	 * FILENAME_ATTR attributes but not in the STANDARD_INFORMATION
@@ -851,6 +952,11 @@ enum {
 	   telling us whether this is a directory or not, i.e. whether it has
 	   an index root attribute or not. */
 	FILE_ATTR_DUP_VIEW_INDEX_PRESENT	= const_cpu_to_le32(0x20000000),
+	FILE_ATTR_DUP_FILE_NAME_INDEX_PRESENT	= cpu_to_le32(0x10000000),
+	/* Note, this is a copy of the corresponding bit from the mft record,
+	   telling us whether this is a directory or not, i.e. whether it has
+	   an index root attribute or not. */
+	FILE_ATTR_DUP_VIEW_INDEX_PRESENT	= cpu_to_le32(0x20000000),
 	/* Note, this is a copy of the corresponding bit from the mft record,
 	   telling us whether this file has a view index present (eg. object id
 	   index, quota index, one of the security indexes or the encrypting
@@ -1470,6 +1576,30 @@ enum {
 	FILE_EXECUTE			= const_cpu_to_le32(0x00000020),
 	/* Right to traverse the directory. (DIRECTORY) */
 	FILE_TRAVERSE			= const_cpu_to_le32(0x00000020),
+	FILE_READ_DATA			= cpu_to_le32(0x00000001),
+	/* Right to list contents of a directory. (DIRECTORY) */
+	FILE_LIST_DIRECTORY		= cpu_to_le32(0x00000001),
+
+	/* Right to write data to the file. (FILE) */
+	FILE_WRITE_DATA			= cpu_to_le32(0x00000002),
+	/* Right to create a file in the directory. (DIRECTORY) */
+	FILE_ADD_FILE			= cpu_to_le32(0x00000002),
+
+	/* Right to append data to the file. (FILE) */
+	FILE_APPEND_DATA		= cpu_to_le32(0x00000004),
+	/* Right to create a subdirectory. (DIRECTORY) */
+	FILE_ADD_SUBDIRECTORY		= cpu_to_le32(0x00000004),
+
+	/* Right to read extended attributes. (FILE/DIRECTORY) */
+	FILE_READ_EA			= cpu_to_le32(0x00000008),
+
+	/* Right to write extended attributes. (FILE/DIRECTORY) */
+	FILE_WRITE_EA			= cpu_to_le32(0x00000010),
+
+	/* Right to execute a file. (FILE) */
+	FILE_EXECUTE			= cpu_to_le32(0x00000020),
+	/* Right to traverse the directory. (DIRECTORY) */
+	FILE_TRAVERSE			= cpu_to_le32(0x00000020),
 
 	/*
 	 * Right to delete a directory and all the files it contains (its
@@ -1482,6 +1612,13 @@ enum {
 
 	/* Right to change file attributes. (FILE/DIRECTORY) */
 	FILE_WRITE_ATTRIBUTES		= const_cpu_to_le32(0x00000100),
+	FILE_DELETE_CHILD		= cpu_to_le32(0x00000040),
+
+	/* Right to read file attributes. (FILE/DIRECTORY) */
+	FILE_READ_ATTRIBUTES		= cpu_to_le32(0x00000080),
+
+	/* Right to change file attributes. (FILE/DIRECTORY) */
+	FILE_WRITE_ATTRIBUTES		= cpu_to_le32(0x00000100),
 
 	/*
 	 * The standard rights (bits 16 to 23).  These are independent of the
@@ -1490,6 +1627,7 @@ enum {
 
 	/* Right to delete the object. */
 	DELETE				= const_cpu_to_le32(0x00010000),
+	DELETE				= cpu_to_le32(0x00010000),
 
 	/*
 	 * Right to read the information in the object's security descriptor,
@@ -1503,6 +1641,13 @@ enum {
 
 	/* Right to change the owner in the object's security descriptor. */
 	WRITE_OWNER			= const_cpu_to_le32(0x00080000),
+	READ_CONTROL			= cpu_to_le32(0x00020000),
+
+	/* Right to modify the DACL in the object's security descriptor. */
+	WRITE_DAC			= cpu_to_le32(0x00040000),
+
+	/* Right to change the owner in the object's security descriptor. */
+	WRITE_OWNER			= cpu_to_le32(0x00080000),
 
 	/*
 	 * Right to use the object for synchronization.  Enables a process to
@@ -1510,6 +1655,7 @@ enum {
 	 * do not support this access right.
 	 */
 	SYNCHRONIZE			= const_cpu_to_le32(0x00100000),
+	SYNCHRONIZE			= cpu_to_le32(0x00100000),
 
 	/*
 	 * The following STANDARD_RIGHTS_* are combinations of the above for
@@ -1523,12 +1669,19 @@ enum {
 
 	/* Combines DELETE, READ_CONTROL, WRITE_DAC, and WRITE_OWNER access. */
 	STANDARD_RIGHTS_REQUIRED	= const_cpu_to_le32(0x000f0000),
+	STANDARD_RIGHTS_READ		= cpu_to_le32(0x00020000),
+	STANDARD_RIGHTS_WRITE		= cpu_to_le32(0x00020000),
+	STANDARD_RIGHTS_EXECUTE		= cpu_to_le32(0x00020000),
+
+	/* Combines DELETE, READ_CONTROL, WRITE_DAC, and WRITE_OWNER access. */
+	STANDARD_RIGHTS_REQUIRED	= cpu_to_le32(0x000f0000),
 
 	/*
 	 * Combines DELETE, READ_CONTROL, WRITE_DAC, WRITE_OWNER, and
 	 * SYNCHRONIZE access.
 	 */
 	STANDARD_RIGHTS_ALL		= const_cpu_to_le32(0x001f0000),
+	STANDARD_RIGHTS_ALL		= cpu_to_le32(0x001f0000),
 
 	/*
 	 * The access system ACL and maximum allowed access types (bits 24 to
@@ -1536,6 +1689,8 @@ enum {
 	 */
 	ACCESS_SYSTEM_SECURITY		= const_cpu_to_le32(0x01000000),
 	MAXIMUM_ALLOWED			= const_cpu_to_le32(0x02000000),
+	ACCESS_SYSTEM_SECURITY		= cpu_to_le32(0x01000000),
+	MAXIMUM_ALLOWED			= cpu_to_le32(0x02000000),
 
 	/*
 	 * The generic rights (bits 28 to 31).  These map onto the standard and
@@ -1547,6 +1702,10 @@ enum {
 
 	/* Execute access. */
 	GENERIC_EXECUTE			= const_cpu_to_le32(0x20000000),
+	GENERIC_ALL			= cpu_to_le32(0x10000000),
+
+	/* Execute access. */
+	GENERIC_EXECUTE			= cpu_to_le32(0x20000000),
 
 	/*
 	 * Write access.  For files, this maps onto:
@@ -1556,6 +1715,7 @@ enum {
 	 * above for the descriptions of the rights granted.
 	 */
 	GENERIC_WRITE			= const_cpu_to_le32(0x40000000),
+	GENERIC_WRITE			= cpu_to_le32(0x40000000),
 
 	/*
 	 * Read access.  For files, this maps onto:
@@ -1565,6 +1725,7 @@ enum {
 	 * above for the descriptions of the rights granted.
 	 */
 	GENERIC_READ			= const_cpu_to_le32(0x80000000),
+	GENERIC_READ			= cpu_to_le32(0x80000000),
 };
 
 typedef le32 ACCESS_MASK;
@@ -1606,6 +1767,8 @@ typedef struct {
 enum {
 	ACE_OBJECT_TYPE_PRESENT			= const_cpu_to_le32(1),
 	ACE_INHERITED_OBJECT_TYPE_PRESENT	= const_cpu_to_le32(2),
+	ACE_OBJECT_TYPE_PRESENT			= cpu_to_le32(1),
+	ACE_INHERITED_OBJECT_TYPE_PRESENT	= cpu_to_le32(2),
 };
 
 typedef le32 OBJECT_ACE_FLAGS;
@@ -1669,12 +1832,14 @@ typedef enum {
  *	rather than explicitly provided by the original provider of the
  *	security descriptor.  This may affect the treatment of the SID with
  *	respect to inheritence of an owner.
+ *	respect to inheritance of an owner.
  *
  * SE_GROUP_DEFAULTED - This boolean flag, when set, indicates that the SID in
  *	the Group field was provided by a defaulting mechanism rather than
  *	explicitly provided by the original provider of the security
  *	descriptor.  This may affect the treatment of the SID with respect to
  *	inheritence of a primary group.
+ *	inheritance of a primary group.
  *
  * SE_DACL_PRESENT - This boolean flag, when set, indicates that the security
  *	descriptor contains a discretionary ACL.  If this flag is set and the
@@ -1686,6 +1851,7 @@ typedef enum {
  *	rather than explicitly provided by the original provider of the
  *	security descriptor.  This may affect the treatment of the ACL with
  *	respect to inheritence of an ACL.  This flag is ignored if the
+ *	respect to inheritance of an ACL.  This flag is ignored if the
  *	DaclPresent flag is not set.
  *
  * SE_SACL_PRESENT - This boolean flag, when set,  indicates that the security
@@ -1698,6 +1864,7 @@ typedef enum {
  *	rather than explicitly provided by the original provider of the
  *	security descriptor.  This may affect the treatment of the ACL with
  *	respect to inheritence of an ACL.  This flag is ignored if the
+ *	respect to inheritance of an ACL.  This flag is ignored if the
  *	SaclPresent flag is not set.
  *
  * SE_SELF_RELATIVE - This boolean flag, when set, indicates that the security
@@ -1723,6 +1890,23 @@ enum {
 	SE_SACL_PROTECTED		= const_cpu_to_le16(0x2000),
 	SE_RM_CONTROL_VALID		= const_cpu_to_le16(0x4000),
 	SE_SELF_RELATIVE		= const_cpu_to_le16(0x8000)
+	SE_OWNER_DEFAULTED		= cpu_to_le16(0x0001),
+	SE_GROUP_DEFAULTED		= cpu_to_le16(0x0002),
+	SE_DACL_PRESENT			= cpu_to_le16(0x0004),
+	SE_DACL_DEFAULTED		= cpu_to_le16(0x0008),
+
+	SE_SACL_PRESENT			= cpu_to_le16(0x0010),
+	SE_SACL_DEFAULTED		= cpu_to_le16(0x0020),
+
+	SE_DACL_AUTO_INHERIT_REQ	= cpu_to_le16(0x0100),
+	SE_SACL_AUTO_INHERIT_REQ	= cpu_to_le16(0x0200),
+	SE_DACL_AUTO_INHERITED		= cpu_to_le16(0x0400),
+	SE_SACL_AUTO_INHERITED		= cpu_to_le16(0x0800),
+
+	SE_DACL_PROTECTED		= cpu_to_le16(0x1000),
+	SE_SACL_PROTECTED		= cpu_to_le16(0x2000),
+	SE_RM_CONTROL_VALID		= cpu_to_le16(0x4000),
+	SE_SELF_RELATIVE		= cpu_to_le16(0x8000)
 } __attribute__ ((__packed__));
 
 typedef le16 SECURITY_DESCRIPTOR_CONTROL;
@@ -1925,6 +2109,21 @@ enum {
 
 	/* To make our life easier when checking if we must mount read-only. */
 	VOLUME_MUST_MOUNT_RO_MASK	= const_cpu_to_le16(0xc027),
+	VOLUME_IS_DIRTY			= cpu_to_le16(0x0001),
+	VOLUME_RESIZE_LOG_FILE		= cpu_to_le16(0x0002),
+	VOLUME_UPGRADE_ON_MOUNT		= cpu_to_le16(0x0004),
+	VOLUME_MOUNTED_ON_NT4		= cpu_to_le16(0x0008),
+
+	VOLUME_DELETE_USN_UNDERWAY	= cpu_to_le16(0x0010),
+	VOLUME_REPAIR_OBJECT_ID		= cpu_to_le16(0x0020),
+
+	VOLUME_CHKDSK_UNDERWAY		= cpu_to_le16(0x4000),
+	VOLUME_MODIFIED_BY_CHKDSK	= cpu_to_le16(0x8000),
+
+	VOLUME_FLAGS_MASK		= cpu_to_le16(0xc03f),
+
+	/* To make our life easier when checking if we must mount read-only. */
+	VOLUME_MUST_MOUNT_RO_MASK	= cpu_to_le16(0xc027),
 } __attribute__ ((__packed__));
 
 typedef le16 VOLUME_FLAGS;
@@ -2020,6 +2219,7 @@ typedef struct {
  * When a directory is small enough to fit inside the index root then this
  * is the only attribute describing the directory. When the directory is too
  * large to fit in the index root, on the other hand, two aditional attributes
+ * large to fit in the index root, on the other hand, two additional attributes
  * are present: an index allocation attribute, containing sub-nodes of the B+
  * directory tree (see below), and a bitmap attribute, describing which virtual
  * cluster numbers (vcns) in the index allocation attribute are in use by an
@@ -2027,6 +2227,7 @@ typedef struct {
  *
  * NOTE: The root directory (FILE_root) contains an entry for itself. Other
  * dircetories do not contain entries for themselves, though.
+ * directories do not contain entries for themselves, though.
  */
 typedef struct {
 	ATTR_TYPE type;			/* Type of the indexed attribute. Is
@@ -2114,6 +2315,11 @@ enum {
 	QUOTA_FLAG_ID_DELETED		= const_cpu_to_le32(0x00000004),
 
 	QUOTA_FLAG_USER_MASK		= const_cpu_to_le32(0x00000007),
+	QUOTA_FLAG_DEFAULT_LIMITS	= cpu_to_le32(0x00000001),
+	QUOTA_FLAG_LIMIT_REACHED	= cpu_to_le32(0x00000002),
+	QUOTA_FLAG_ID_DELETED		= cpu_to_le32(0x00000004),
+
+	QUOTA_FLAG_USER_MASK		= cpu_to_le32(0x00000007),
 	/* This is a bit mask for the user quota flags. */
 
 	/*
@@ -2129,6 +2335,15 @@ enum {
 	QUOTA_FLAG_OUT_OF_DATE		= const_cpu_to_le32(0x00000200),
 	QUOTA_FLAG_CORRUPT		= const_cpu_to_le32(0x00000400),
 	QUOTA_FLAG_PENDING_DELETES	= const_cpu_to_le32(0x00000800),
+	QUOTA_FLAG_TRACKING_ENABLED	= cpu_to_le32(0x00000010),
+	QUOTA_FLAG_ENFORCEMENT_ENABLED	= cpu_to_le32(0x00000020),
+	QUOTA_FLAG_TRACKING_REQUESTED	= cpu_to_le32(0x00000040),
+	QUOTA_FLAG_LOG_THRESHOLD	= cpu_to_le32(0x00000080),
+
+	QUOTA_FLAG_LOG_LIMIT		= cpu_to_le32(0x00000100),
+	QUOTA_FLAG_OUT_OF_DATE		= cpu_to_le32(0x00000200),
+	QUOTA_FLAG_CORRUPT		= cpu_to_le32(0x00000400),
+	QUOTA_FLAG_PENDING_DELETES	= cpu_to_le32(0x00000800),
 };
 
 typedef le32 QUOTA_FLAGS;
@@ -2175,6 +2390,9 @@ enum {
 	QUOTA_INVALID_ID	= const_cpu_to_le32(0x00000000),
 	QUOTA_DEFAULTS_ID	= const_cpu_to_le32(0x00000001),
 	QUOTA_FIRST_USER_ID	= const_cpu_to_le32(0x00000100),
+	QUOTA_INVALID_ID	= cpu_to_le32(0x00000000),
+	QUOTA_DEFAULTS_ID	= cpu_to_le32(0x00000001),
+	QUOTA_FIRST_USER_ID	= cpu_to_le32(0x00000100),
 };
 
 /*
@@ -2197,6 +2415,14 @@ enum {
 			represent a file but it can point to a sub-node. */
 
 	INDEX_ENTRY_SPACE_FILLER = const_cpu_to_le16(0xffff), /* gcc: Force
+	INDEX_ENTRY_NODE = cpu_to_le16(1), /* This entry contains a
+			sub-node, i.e. a reference to an index block in form of
+			a virtual cluster number (see below). */
+	INDEX_ENTRY_END  = cpu_to_le16(2), /* This signifies the last
+			entry in an index block.  The index entry does not
+			represent a file but it can point to a sub-node. */
+
+	INDEX_ENTRY_SPACE_FILLER = cpu_to_le16(0xffff), /* gcc: Force
 			enum bit width to 16-bit. */
 } __attribute__ ((__packed__));
 
@@ -2295,6 +2521,7 @@ typedef struct {
 	//		   follows the INDEX_ENTRY_HEADER. Regardless of
 	//		   key_length, the address of the 8-byte boundary
 	//		   alligned vcn of INDEX_ENTRY{_HEADER} *ie is given by
+	//		   aligned vcn of INDEX_ENTRY{_HEADER} *ie is given by
 	//		   (char*)ie + le16_to_cpu(ie*)->length) - sizeof(VCN),
 	//		   where sizeof(VCN) can be hardcoded as 8 if wanted. */
 } __attribute__ ((__packed__)) INDEX_ENTRY;
@@ -2354,6 +2581,26 @@ enum {
 	IO_REPARSE_TAG_SYMBOLIC_LINK	= const_cpu_to_le32(0xe8000000),
 
 	IO_REPARSE_TAG_VALID_VALUES	= const_cpu_to_le32(0xe000ffff),
+	IO_REPARSE_TAG_IS_ALIAS		= cpu_to_le32(0x20000000),
+	IO_REPARSE_TAG_IS_HIGH_LATENCY	= cpu_to_le32(0x40000000),
+	IO_REPARSE_TAG_IS_MICROSOFT	= cpu_to_le32(0x80000000),
+
+	IO_REPARSE_TAG_RESERVED_ZERO	= cpu_to_le32(0x00000000),
+	IO_REPARSE_TAG_RESERVED_ONE	= cpu_to_le32(0x00000001),
+	IO_REPARSE_TAG_RESERVED_RANGE	= cpu_to_le32(0x00000001),
+
+	IO_REPARSE_TAG_NSS		= cpu_to_le32(0x68000005),
+	IO_REPARSE_TAG_NSS_RECOVER	= cpu_to_le32(0x68000006),
+	IO_REPARSE_TAG_SIS		= cpu_to_le32(0x68000007),
+	IO_REPARSE_TAG_DFS		= cpu_to_le32(0x68000008),
+
+	IO_REPARSE_TAG_MOUNT_POINT	= cpu_to_le32(0x88000003),
+
+	IO_REPARSE_TAG_HSM		= cpu_to_le32(0xa8000004),
+
+	IO_REPARSE_TAG_SYMBOLIC_LINK	= cpu_to_le32(0xe8000000),
+
+	IO_REPARSE_TAG_VALID_VALUES	= cpu_to_le32(0xe000ffff),
 };
 
 /*

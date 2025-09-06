@@ -59,11 +59,9 @@ int main(int argc, char *argv[])
 	printf("Not found\n");
     else {
 	printf("Found %ld bytes at 0x%08lx\n", m->size, (u_long)&m->data);
-	puts(">>>>>>>>>>>>>>>>>>>>");
 	fflush(stdout);
 	write(1, &m->data, m->size);
 	fflush(stdout);
-	puts("<<<<<<<<<<<<<<<<<<<<");
     }
     return(0);
 }

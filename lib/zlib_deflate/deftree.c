@@ -35,13 +35,13 @@
 /* #include "deflate.h" */
 
 #include <linux/zutil.h>
+#include <linux/bitrev.h>
 #include "defutil.h"
 
 #ifdef DEBUG_ZLIB
 #  include <ctype.h>
 #endif
 
-/* ===========================================================================
  * Constants
  */
 
@@ -80,7 +80,6 @@ static const uch bl_order[BL_CODES]
  * more than 16 bits on some systems.)
  */
 
-/* ===========================================================================
  * Local data. These are initialized only once.
  */
 
@@ -128,7 +127,6 @@ static static_tree_desc  static_d_desc =
 static static_tree_desc  static_bl_desc =
 {(const ct_data *)0, extra_blbits, 0,   BL_CODES, MAX_BL_BITS};
 
-/* ===========================================================================
  * Local (static) routines in this file.
  */
 
@@ -169,7 +167,6 @@ static void copy_block     (deflate_state *s, char *buf, unsigned len,
  * used.
  */
 
-/* ===========================================================================
  * Send a value on a given number of bits.
  * IN assertion: length <= 16 and value fits in length bits.
  */
@@ -217,7 +214,6 @@ static void send_bits(
 }
 #endif /* DEBUG_ZLIB */
 
-/* ===========================================================================
  * Initialize the various 'constant' tables. In a multi-threaded environment,
  * this function may be called by two threads concurrently, but this is
  * harmless since both invocations do exactly the same thing.
@@ -285,11 +281,11 @@ static void tr_static_init(void)
     for (n = 0; n < D_CODES; n++) {
         static_dtree[n].Len = 5;
         static_dtree[n].Code = bi_reverse((unsigned)n, 5);
+        static_dtree[n].Code = bitrev32((u32)n) >> (32 - 5);
     }
     static_init_done = 1;
 }
 
-/* ===========================================================================
  * Initialize the tree data structures for a new zlib stream.
  */
 void zlib_tr_init(
@@ -320,7 +316,6 @@ void zlib_tr_init(
     init_block(s);
 }
 
-/* ===========================================================================
  * Initialize a new block.
  */
 static void init_block(
@@ -343,7 +338,6 @@ static void init_block(
 /* Index within the heap array of least frequent node in the Huffman tree */
 
 
-/* ===========================================================================
  * Remove the smallest element from the heap and recreate the heap with
  * one less element. Updates heap and heap_len.
  */
@@ -354,7 +348,6 @@ static void init_block(
     pqdownheap(s, tree, SMALLEST); \
 }
 
-/* ===========================================================================
  * Compares to subtrees, using the tree depth as tie breaker when
  * the subtrees have equal frequency. This minimizes the worst case length.
  */
@@ -362,7 +355,6 @@ static void init_block(
    (tree[n].Freq < tree[m].Freq || \
    (tree[n].Freq == tree[m].Freq && depth[n] <= depth[m]))
 
-/* ===========================================================================
  * Restore the heap property by moving down the tree starting at node k,
  * exchanging a node with the smallest of its two sons if necessary, stopping
  * when the heap property is re-established (each father smaller than its
@@ -394,7 +386,6 @@ static void pqdownheap(
     s->heap[k] = v;
 }
 
-/* ===========================================================================
  * Compute the optimal bit lengths for a tree and update the total bit length
  * for the current block.
  * IN assertion: the fields freq and dad are set, heap[heap_max] and
@@ -484,7 +475,6 @@ static void gen_bitlen(
     }
 }
 
-/* ===========================================================================
  * Generate the codes for a given tree and bit counts (which need not be
  * optimal).
  * IN assertion: the array bl_count contains the bit length statistics for
@@ -521,13 +511,13 @@ static void gen_codes(
         if (len == 0) continue;
         /* Now reverse the bits */
         tree[n].Code = bi_reverse(next_code[len]++, len);
+        tree[n].Code = bitrev32((u32)(next_code[len]++)) >> (32 - len);
 
         Tracecv(tree != static_ltree, (stderr,"\nn %3d %c l %2d c %4x (%x) ",
              n, (isgraph(n) ? n : ' '), len, tree[n].Code, next_code[len]-1));
     }
 }
 
-/* ===========================================================================
  * Construct one Huffman tree and assigns the code bit strings and lengths.
  * Update the total bit length for the current block.
  * IN assertion: the field freq is set for all tree elements.
@@ -619,7 +609,6 @@ static void build_tree(
     gen_codes ((ct_data *)tree, max_code, s->bl_count);
 }
 
-/* ===========================================================================
  * Scan a literal or distance tree to determine the frequencies of the codes
  * in the bit length tree.
  */
@@ -665,7 +654,6 @@ static void scan_tree(
     }
 }
 
-/* ===========================================================================
  * Send a literal or distance tree in compressed form, using the codes in
  * bl_tree.
  */
@@ -717,7 +705,6 @@ static void send_tree(
     }
 }
 
-/* ===========================================================================
  * Construct the Huffman tree for the bit lengths and return the index in
  * bl_order of the last bit length code to send.
  */
@@ -752,7 +739,6 @@ static int build_bl_tree(
     return max_blindex;
 }
 
-/* ===========================================================================
  * Send the header for a block using dynamic Huffman trees: the counts, the
  * lengths of the bit length codes, the literal tree and the distance tree.
  * IN assertion: lcodes >= 257, dcodes >= 1, blcodes >= 4.
@@ -786,7 +772,6 @@ static void send_all_trees(
     Tracev((stderr, "\ndist tree: sent %ld", s->bits_sent));
 }
 
-/* ===========================================================================
  * Send a stored block
  */
 void zlib_tr_stored_block(
@@ -815,7 +800,6 @@ void zlib_tr_stored_type_only(
 }
 
 
-/* ===========================================================================
  * Send one empty static block to give enough lookahead for inflate.
  * This takes 10 bits, of which 7 may remain in the bit buffer.
  * The current inflate code requires 9 bits of lookahead. If the
@@ -848,7 +832,6 @@ void zlib_tr_align(
     s->last_eob_len = 7;
 }
 
-/* ===========================================================================
  * Determine the best encoding for the current block: dynamic trees, static
  * trees or store, and output the encoded block to the zip file. This function
  * returns the total compressed length for the file so far.
@@ -962,7 +945,6 @@ ulg zlib_tr_flush_block(
     return s->compressed_len >> 3;
 }
 
-/* ===========================================================================
  * Save the match info and tally the frequency counts. Return true if
  * the current block must be flushed.
  */
@@ -1012,7 +994,6 @@ int zlib_tr_tally(
      */
 }
 
-/* ===========================================================================
  * Send the block data compressed using the given Huffman trees
  */
 static void compress_block(
@@ -1063,7 +1044,6 @@ static void compress_block(
     s->last_eob_len = ltree[END_BLOCK].Len;
 }
 
-/* ===========================================================================
  * Set the data type to ASCII or BINARY, using a crude approximation:
  * binary if more than 20% of the bytes are <= 6 or >= 128, ascii otherwise.
  * IN assertion: the fields freq of dyn_ltree are set and the total of all
@@ -1082,7 +1062,6 @@ static void set_data_type(
     s->data_type = (Byte)(bin_freq > (ascii_freq >> 2) ? Z_BINARY : Z_ASCII);
 }
 
-/* ===========================================================================
  * Copy a stored block, storing first the length and its
  * one's complement if requested.
  */

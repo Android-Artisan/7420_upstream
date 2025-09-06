@@ -9,6 +9,8 @@ document attempts to describe the concepts and APIs of the 2.6 memory policy
 support.
 
 Memory policies should not be confused with cpusets (Documentation/cpusets.txt)
+Memory policies should not be confused with cpusets
+(Documentation/cgroups/cpusets.txt)
 which is an administrative mechanism for restricting the nodes from which
 memory may be allocated by a set of processes. Memory policies are a
 programming interface that a NUMA-aware application can take advantage of.  When
@@ -45,6 +47,7 @@ most general to most specific:
 	executable image that has no awareness of memory policy.  See the
 	MEMORY POLICY APIS section, below, for an overview of the system call
 	that a task may use to set/change it's task/process policy.
+	that a task may use to set/change its task/process policy.
 
 	In a multi-threaded task, task policies apply only to the thread
 	[Linux kernel task] that installs the policy and any threads
@@ -277,6 +280,9 @@ Components of Memory Policies
 	    interleave now occurs over nodes 3,5-6.  If the cpuset's mems
 	    then change to 0,2-3,5, then the interleave occurs over nodes
 	    0,3,5.
+	    interleave now occurs over nodes 3,5-7.  If the cpuset's mems
+	    then change to 0,2-3,5, then the interleave occurs over nodes
+	    0,2-3,5.
 
 	    Thanks to the consistent remapping, applications preparing
 	    nodemasks to specify memory policies using this flag should
@@ -301,6 +307,7 @@ the structure back to the mempolicy kmem cache when the reference count
 goes to zero.
 
 When a new memory policy is allocated, it's reference count is initialized
+When a new memory policy is allocated, its reference count is initialized
 to '1', representing the reference held by the task that is installing the
 new policy.  When a pointer to a memory policy structure is stored in another
 structure, another reference is added, as the task's reference will be dropped
@@ -424,6 +431,7 @@ a command line tool, numactl(8), exists that allows one to:
 + set the shared policy for a shared memory segment via mbind(2)
 
 The numactl(8) tool is packages with the run-time version of the library
+The numactl(8) tool is packaged with the run-time version of the library
 containing the memory policy system call wrappers.  Some distributions
 package the headers and compile-time libraries in a separate development
 package.

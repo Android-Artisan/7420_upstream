@@ -8,6 +8,7 @@
 #ifndef __ASM_AVR32_PGALLOC_H
 #define __ASM_AVR32_PGALLOC_H
 
+#include <linux/mm.h>
 #include <linux/quicklist.h>
 #include <asm/page.h>
 #include <asm/pgtable.h>
@@ -68,6 +69,10 @@ static inline pgtable_t pte_alloc_one(struct mm_struct *mm,
 
 	page = virt_to_page(pg);
 	pgtable_page_ctor(page);
+	if (!pgtable_page_ctor(page)) {
+		quicklist_free(QUICK_PT, NULL, pg);
+		return NULL;
+	}
 
 	return page;
 }
@@ -84,6 +89,7 @@ static inline void pte_free(struct mm_struct *mm, pgtable_t pte)
 }
 
 #define __pte_free_tlb(tlb,pte)				\
+#define __pte_free_tlb(tlb,pte,addr)			\
 do {							\
 	pgtable_page_dtor(pte);				\
 	tlb_remove_page((tlb), pte);			\

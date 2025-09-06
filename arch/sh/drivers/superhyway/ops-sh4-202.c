@@ -136,6 +136,8 @@ static int sh4202_read_vcr(unsigned long base, struct superhyway_vcr_info *vcr)
 	 */
 	vcrh = ctrl_inl(base);
 	vcrl = ctrl_inl(base + sizeof(u32));
+	vcrh = __raw_readl(base);
+	vcrl = __raw_readl(base + sizeof(u32));
 
 	tmp = ((u64)vcrh << 32) | vcrl;
 	memcpy(vcr, &tmp, sizeof(u64));
@@ -149,6 +151,8 @@ static int sh4202_write_vcr(unsigned long base, struct superhyway_vcr_info vcr)
 
 	ctrl_outl((tmp >> 32) & 0xffffffff, base);
 	ctrl_outl(tmp & 0xffffffff, base + sizeof(u32));
+	__raw_writel((tmp >> 32) & 0xffffffff, base);
+	__raw_writel(tmp & 0xffffffff, base + sizeof(u32));
 
 	return 0;
 }

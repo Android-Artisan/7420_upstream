@@ -1039,10 +1039,8 @@ static struct SYM_FWA_SCR SYM_FWA_SCR = {
  *  #define SYM_CONF_MAX_SG parameter,
  *  it is filled in at runtime.
  *
- *  ##===========< i=0; i<SYM_CONF_MAX_SG >=========
  *  ||	SCR_CHMOV_TBL ^ SCR_DATA_IN,
  *  ||		offsetof (struct sym_dsb, data[ i]),
- *  ##==========================================
  */
 0
 }/*-------------------------< DATA_IN2 >-------------------------*/,{
@@ -1056,10 +1054,8 @@ static struct SYM_FWA_SCR SYM_FWA_SCR = {
  *  #define SYM_CONF_MAX_SG parameter,
  *  it is filled in at runtime.
  *
- *  ##===========< i=0; i<SYM_CONF_MAX_SG >=========
  *  ||	SCR_CHMOV_TBL ^ SCR_DATA_OUT,
  *  ||		offsetof (struct sym_dsb, data[ i]),
- *  ##==========================================
  */
 0
 }/*-------------------------< DATA_OUT2 >------------------------*/,{
@@ -1327,6 +1323,7 @@ static struct SYM_FWB_SCR SYM_FWB_SCR = {
 	/*
 	 *  We donnot handle extended messages from SCRIPTS.
 	 *  Read the amount of data correponding to the 
+	 *  Read the amount of data corresponding to the 
 	 *  message length and call the C code.
 	 */
 	SCR_STORE_REL (scratcha, 1),

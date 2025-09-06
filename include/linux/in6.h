@@ -39,6 +39,10 @@ struct in6_addr
 #define s6_addr16		in6_u.u6_addr16
 #define s6_addr32		in6_u.u6_addr32
 };
+#ifndef _LINUX_IN6_H
+#define _LINUX_IN6_H
+
+#include <uapi/linux/in6.h>
 
 /* IPv6 Wildcard Address (::) and Loopback Address (::1) defined in RFC2553
  * NOTE: Be aware the IN6ADDR_* constants and in6addr_* externals are defined
@@ -283,4 +287,13 @@ struct in6_flowlabel_req
  * MRT6_PIM			208
  * (reserved)			209
  */
+extern const struct in6_addr in6addr_interfacelocal_allnodes;
+#define IN6ADDR_INTERFACELOCAL_ALLNODES_INIT \
+		{ { { 0xff,1,0,0,0,0,0,0,0,0,0,0,0,0,0,1 } } }
+extern const struct in6_addr in6addr_interfacelocal_allrouters;
+#define IN6ADDR_INTERFACELOCAL_ALLROUTERS_INIT \
+		{ { { 0xff,1,0,0,0,0,0,0,0,0,0,0,0,0,0,2 } } }
+extern const struct in6_addr in6addr_sitelocal_allrouters;
+#define IN6ADDR_SITELOCAL_ALLROUTERS_INIT \
+		{ { { 0xff,5,0,0,0,0,0,0,0,0,0,0,0,0,0,2 } } }
 #endif

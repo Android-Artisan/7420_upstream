@@ -70,6 +70,12 @@
 
 static __u16 product, vendor;
 static int debug;
+
+#define KP_RETRIES	100
+
+#define DRIVER_AUTHOR "Ganesh Varadarajan <ganesh@veritas.com>"
+#define DRIVER_DESC "USB PocketPC PDA driver"
+
 static int connect_retries = KP_RETRIES;
 static int initial_wait;
 
@@ -95,6 +101,11 @@ static void ipaq_destroy_lists(struct usb_serial_port *port);
 static struct usb_device_id ipaq_id_table [] = {
 	/* The first entry is a placeholder for the insmod-specified device */
 	{ USB_DEVICE(0x049F, 0x0003) },
+			struct usb_serial_port *port);
+static int  ipaq_calc_num_ports(struct usb_serial *serial);
+static int  ipaq_startup(struct usb_serial *serial);
+
+static const struct usb_device_id ipaq_id_table[] = {
 	{ USB_DEVICE(0x0104, 0x00BE) }, /* Socket USB Sync */
 	{ USB_DEVICE(0x03F0, 0x1016) }, /* HP USB Sync */
 	{ USB_DEVICE(0x03F0, 0x1116) }, /* HP USB Sync 1611 */
@@ -672,6 +683,25 @@ static int ipaq_open(struct tty_struct *tty,
 	port->bulk_out_size = port->write_urb->transfer_buffer_length
 							= URBDATA_SIZE;
 
+	.id_table =		ipaq_id_table,
+	.bulk_in_size =		256,
+	.bulk_out_size =	256,
+	.open =			ipaq_open,
+	.attach =		ipaq_startup,
+	.calc_num_ports =	ipaq_calc_num_ports,
+};
+
+static struct usb_serial_driver * const serial_drivers[] = {
+	&ipaq_device, NULL
+};
+
+static int ipaq_open(struct tty_struct *tty,
+			struct usb_serial_port *port)
+{
+	struct usb_serial	*serial = port->serial;
+	int			result = 0;
+	int			retries = connect_retries;
+
 	msleep(1000*initial_wait);
 
 	/*
@@ -683,6 +713,8 @@ static int ipaq_open(struct tty_struct *tty,
 	 */
 
 	while (retries--) {
+	while (retries) {
+		retries--;
 		result = usb_control_msg(serial->dev,
 				usb_sndctrlpipe(serial->dev, 0), 0x22, 0x21,
 				0x1, 0, NULL, 0, 100);
@@ -949,6 +981,38 @@ static void ipaq_destroy_lists(struct usb_serial_port *port)
 		kfree(pkt->data);
 		kfree(pkt);
 	}
+	if (!retries && result) {
+		dev_err(&port->dev, "%s - failed doing control urb, error %d\n",
+							__func__, result);
+		return result;
+	}
+
+	return usb_serial_generic_open(tty, port);
+}
+
+static int ipaq_calc_num_ports(struct usb_serial *serial)
+{
+	/*
+	 * some devices have 3 endpoints, the 3rd of which
+	 * must be ignored as it would make the core
+	 * create a second port which oopses when used
+	 */
+	int ipaq_num_ports = 1;
+
+	dev_dbg(&serial->dev->dev, "%s - numberofendpoints: %d\n", __func__,
+		(int)serial->interface->cur_altsetting->desc.bNumEndpoints);
+
+	/*
+	 * a few devices have 4 endpoints, seemingly Yakuma devices,
+	 * and we need the second pair, so let them have 2 ports
+	 *
+	 * TODO: can we drop port 1 ?
+	 */
+	if (serial->interface->cur_altsetting->desc.bNumEndpoints > 3) {
+		ipaq_num_ports = 2;
+	}
+
+	return ipaq_num_ports;
 }
 
 
@@ -1001,6 +1065,33 @@ static void __exit ipaq_exit(void)
 
 module_init(ipaq_init);
 module_exit(ipaq_exit);
+	/* Some of the devices in ipaq_id_table[] are composite, and we
+	 * shouldn't bind to all the interfaces.  This test will rule out
+	 * some obviously invalid possibilities.
+	 */
+	if (serial->num_bulk_in < serial->num_ports ||
+			serial->num_bulk_out < serial->num_ports)
+		return -ENODEV;
+
+	if (serial->dev->actconfig->desc.bConfigurationValue != 1) {
+		/*
+		 * FIXME: HP iPaq rx3715, possibly others, have 1 config that
+		 * is labeled as 2
+		 */
+
+		dev_err(&serial->dev->dev, "active config #%d != 1 ??\n",
+			serial->dev->actconfig->desc.bConfigurationValue);
+		return -ENODEV;
+	}
+
+	dev_dbg(&serial->dev->dev,
+		"%s - iPAQ module configured for %d ports\n", __func__,
+		serial->num_ports);
+
+	return usb_reset_configuration(serial->dev);
+}
+
+module_usb_serial_driver(serial_drivers, ipaq_id_table);
 
 MODULE_AUTHOR(DRIVER_AUTHOR);
 MODULE_DESCRIPTION(DRIVER_DESC);

@@ -618,6 +618,15 @@ set_val:
 
 EXPORT_SYMBOL(generic_ide_ioctl);
 
+#include <linux/init.h>
+#include <linux/pci.h>
+#include <linux/ide.h>
+#include <linux/hdreg.h>
+#include <linux/completion.h>
+#include <linux/device.h>
+
+struct class *ide_port_class;
+
 /**
  * ide_device_get	-	get an additional reference to a ide_drive_t
  * @drive:	device to get a reference to
@@ -660,6 +669,7 @@ void ide_device_put(ide_drive_t *drive)
 
 	if (module)
 		module_put(module);
+	module_put(module);
 #endif
 	put_device(&drive->gendev);
 }
@@ -744,6 +754,9 @@ static int ide_uevent(struct device *dev, struct kobj_uevent_env *env)
 	add_uevent_var(env, "MEDIA=%s", media_string(drive));
 	add_uevent_var(env, "DRIVENAME=%s", drive->name);
 	add_uevent_var(env, "MODALIAS=ide:m-%s", media_string(drive));
+	add_uevent_var(env, "MEDIA=%s", ide_media_string(drive));
+	add_uevent_var(env, "DRIVENAME=%s", drive->name);
+	add_uevent_var(env, "MODALIAS=ide:m-%s", ide_media_string(drive));
 	return 0;
 }
 
@@ -751,6 +764,7 @@ static int generic_ide_probe(struct device *dev)
 {
 	ide_drive_t *drive = to_ide_device(dev);
 	ide_driver_t *drv = to_ide_driver(dev->driver);
+	struct ide_driver *drv = to_ide_driver(dev->driver);
 
 	return drv->probe ? drv->probe(drive) : -ENODEV;
 }
@@ -759,6 +773,7 @@ static int generic_ide_remove(struct device *dev)
 {
 	ide_drive_t *drive = to_ide_device(dev);
 	ide_driver_t *drv = to_ide_driver(dev->driver);
+	struct ide_driver *drv = to_ide_driver(dev->driver);
 
 	if (drv->remove)
 		drv->remove(drive);
@@ -770,6 +785,7 @@ static void generic_ide_shutdown(struct device *dev)
 {
 	ide_drive_t *drive = to_ide_device(dev);
 	ide_driver_t *drv = to_ide_driver(dev->driver);
+	struct ide_driver *drv = to_ide_driver(dev->driver);
 
 	if (dev->driver && drv->shutdown)
 		drv->shutdown(drive);
@@ -783,6 +799,7 @@ struct bus_type ide_bus_type = {
 	.remove		= generic_ide_remove,
 	.shutdown	= generic_ide_shutdown,
 	.dev_attrs	= ide_dev_attrs,
+	.dev_groups	= ide_dev_groups,
 	.suspend	= generic_ide_suspend,
 	.resume		= generic_ide_resume,
 };
@@ -802,10 +819,12 @@ module_param_named(pci_clock, ide_pci_clk, int, 0);
 MODULE_PARM_DESC(pci_clock, "PCI bus clock frequency (in MHz)");
 
 static int ide_set_dev_param_mask(const char *s, struct kernel_param *kp)
+static int ide_set_dev_param_mask(const char *s, const struct kernel_param *kp)
 {
 	int a, b, i, j = 1;
 	unsigned int *dev_param_mask = (unsigned int *)kp->arg;
 
+	/* controller . device (0 or 1) [ : 1 (set) | 0 (clear) ] */
 	if (sscanf(s, "%d.%d:%d", &a, &b, &j) != 3 &&
 	    sscanf(s, "%d.%d", &a, &b) != 2)
 		return -EINVAL;
@@ -819,6 +838,7 @@ static int ide_set_dev_param_mask(const char *s, struct kernel_param *kp)
 		*dev_param_mask |= (1 << i);
 	else
 		*dev_param_mask &= (1 << i);
+		*dev_param_mask &= ~(1 << i);
 
 	return 0;
 }
@@ -826,6 +846,15 @@ static int ide_set_dev_param_mask(const char *s, struct kernel_param *kp)
 static unsigned int ide_nodma;
 
 module_param_call(nodma, ide_set_dev_param_mask, NULL, &ide_nodma, 0);
+static const struct kernel_param_ops param_ops_ide_dev_mask = {
+	.set = ide_set_dev_param_mask
+};
+
+#define param_check_ide_dev_mask(name, p) param_check_uint(name, p)
+
+static unsigned int ide_nodma;
+
+module_param_named(nodma, ide_nodma, ide_dev_mask, 0);
 MODULE_PARM_DESC(nodma, "disallow DMA for a device");
 
 static unsigned int ide_noflush;
@@ -836,6 +865,17 @@ MODULE_PARM_DESC(noflush, "disable flush requests for a device");
 static unsigned int ide_noprobe;
 
 module_param_call(noprobe, ide_set_dev_param_mask, NULL, &ide_noprobe, 0);
+module_param_named(noflush, ide_noflush, ide_dev_mask, 0);
+MODULE_PARM_DESC(noflush, "disable flush requests for a device");
+
+static unsigned int ide_nohpa;
+
+module_param_named(nohpa, ide_nohpa, ide_dev_mask, 0);
+MODULE_PARM_DESC(nohpa, "disable Host Protected Area for a device");
+
+static unsigned int ide_noprobe;
+
+module_param_named(noprobe, ide_noprobe, ide_dev_mask, 0);
 MODULE_PARM_DESC(noprobe, "skip probing for a device");
 
 static unsigned int ide_nowerr;
@@ -846,6 +886,12 @@ MODULE_PARM_DESC(nowerr, "ignore the WRERR_STAT bit for a device");
 static unsigned int ide_cdroms;
 
 module_param_call(cdrom, ide_set_dev_param_mask, NULL, &ide_cdroms, 0);
+module_param_named(nowerr, ide_nowerr, ide_dev_mask, 0);
+MODULE_PARM_DESC(nowerr, "ignore the ATA_DF bit for a device");
+
+static unsigned int ide_cdroms;
+
+module_param_named(cdrom, ide_cdroms, ide_dev_mask, 0);
 MODULE_PARM_DESC(cdrom, "force device as a CD-ROM");
 
 struct chs_geom {
@@ -861,6 +907,8 @@ static int ide_set_disk_chs(const char *str, struct kernel_param *kp)
 {
 	int a, b, c = 0, h = 0, s = 0, i, j = 1;
 
+	/* controller . device (0 or 1) : Cylinders , Heads , Sectors */
+	/* controller . device (0 or 1) : 1 (use CHS) | 0 (ignore CHS) */
 	if (sscanf(str, "%d.%d:%d,%d,%d", &a, &b, &c, &h, &s) != 5 &&
 	    sscanf(str, "%d.%d:%d", &a, &b, &j) != 3)
 		return -EINVAL;
@@ -877,6 +925,7 @@ static int ide_set_disk_chs(const char *str, struct kernel_param *kp)
 		ide_disks |= (1 << i);
 	else
 		ide_disks &= (1 << i);
+		ide_disks &= ~(1 << i);
 
 	ide_disks_chs[i].cyl  = c;
 	ide_disks_chs[i].head = h;
@@ -895,6 +944,13 @@ static void ide_dev_apply_params(ide_drive_t *drive)
 	if (ide_nodma & (1 << i)) {
 		printk(KERN_INFO "ide: disallowing DMA for %s\n", drive->name);
 		drive->nodma = 1;
+static void ide_dev_apply_params(ide_drive_t *drive, u8 unit)
+{
+	int i = drive->hwif->index * MAX_DRIVES + unit;
+
+	if (ide_nodma & (1 << i)) {
+		printk(KERN_INFO "ide: disallowing DMA for %s\n", drive->name);
+		drive->dev_flags |= IDE_DFLAG_NODMA;
 	}
 	if (ide_noflush & (1 << i)) {
 		printk(KERN_INFO "ide: disabling flush requests for %s\n",
@@ -907,12 +963,26 @@ static void ide_dev_apply_params(ide_drive_t *drive)
 	}
 	if (ide_nowerr & (1 << i)) {
 		printk(KERN_INFO "ide: ignoring the WRERR_STAT bit for %s\n",
+		drive->dev_flags |= IDE_DFLAG_NOFLUSH;
+	}
+	if (ide_nohpa & (1 << i)) {
+		printk(KERN_INFO "ide: disabling Host Protected Area for %s\n",
+				 drive->name);
+		drive->dev_flags |= IDE_DFLAG_NOHPA;
+	}
+	if (ide_noprobe & (1 << i)) {
+		printk(KERN_INFO "ide: skipping probe for %s\n", drive->name);
+		drive->dev_flags |= IDE_DFLAG_NOPROBE;
+	}
+	if (ide_nowerr & (1 << i)) {
+		printk(KERN_INFO "ide: ignoring the ATA_DF bit for %s\n",
 				 drive->name);
 		drive->bad_wstat = BAD_R_STAT;
 	}
 	if (ide_cdroms & (1 << i)) {
 		printk(KERN_INFO "ide: forcing %s as a CD-ROM\n", drive->name);
 		drive->present = 1;
+		drive->dev_flags |= IDE_DFLAG_PRESENT;
 		drive->media = ide_cdrom;
 		/* an ATAPI device ignores DRDY */
 		drive->ready_stat = 0;
@@ -928,6 +998,14 @@ static void ide_dev_apply_params(ide_drive_t *drive)
 		drive->present = 1;
 		drive->media = ide_disk;
 		drive->ready_stat = READY_STAT;
+
+		printk(KERN_INFO "ide: forcing %s as a disk (%d/%d/%d)\n",
+				 drive->name,
+				 drive->cyl, drive->head, drive->sect);
+
+		drive->dev_flags |= IDE_DFLAG_FORCED_GEOM | IDE_DFLAG_PRESENT;
+		drive->media = ide_disk;
+		drive->ready_stat = ATA_DRDY;
 	}
 }
 
@@ -937,6 +1015,8 @@ static int ide_set_ignore_cable(const char *s, struct kernel_param *kp)
 {
 	int i, j = 1;
 
+	/* controller (ignore) */
+	/* controller : 1 (ignore) | 0 (use) */
 	if (sscanf(s, "%d:%d", &i, &j) != 2 && sscanf(s, "%d", &i) != 1)
 		return -EINVAL;
 
@@ -947,6 +1027,7 @@ static int ide_set_ignore_cable(const char *s, struct kernel_param *kp)
 		ide_ignore_cable |= (1 << i);
 	else
 		ide_ignore_cable &= (1 << i);
+		ide_ignore_cable &= ~(1 << i);
 
 	return 0;
 }
@@ -956,6 +1037,7 @@ MODULE_PARM_DESC(ignore_cable, "ignore cable detection");
 
 void ide_port_apply_params(ide_hwif_t *hwif)
 {
+	ide_drive_t *drive;
 	int i;
 
 	if (ide_ignore_cable & (1 << hwif->index)) {
@@ -966,6 +1048,8 @@ void ide_port_apply_params(ide_hwif_t *hwif)
 
 	for (i = 0; i < MAX_DRIVES; i++)
 		ide_dev_apply_params(&hwif->drives[i]);
+	ide_port_for_each_dev(i, drive, hwif)
+		ide_dev_apply_params(drive, i);
 }
 
 /*
@@ -988,6 +1072,8 @@ static int __init ide_init(void)
 		ret = PTR_ERR(ide_port_class);
 		goto out_port_class;
 	}
+
+	ide_acpi_init();
 
 	proc_ide_create();
 

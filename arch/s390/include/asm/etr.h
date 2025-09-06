@@ -150,6 +150,14 @@ static inline int etr_setr(struct etr_eacr *ctrl)
 		"1:\n"
 		EX_TABLE(0b,1b)
 		: "+d" (rc) : "m" (*ctrl), "a" (ctrl));
+	int rc = -EOPNOTSUPP;
+
+	asm volatile(
+		"	.insn	s,0xb2160000,%1\n"
+		"0:	la	%0,0\n"
+		"1:\n"
+		EX_TABLE(0b,1b)
+		: "+d" (rc) : "Q" (*ctrl));
 	return rc;
 }
 
@@ -164,6 +172,14 @@ static inline int etr_stetr(struct etr_aib *aib)
 		"1:\n"
 		EX_TABLE(0b,1b)
 		: "+d" (rc) : "m" (*aib), "a" (aib));
+	int rc = -EOPNOTSUPP;
+
+	asm volatile(
+		"	.insn	s,0xb2170000,%1\n"
+		"0:	la	%0,0\n"
+		"1:\n"
+		EX_TABLE(0b,1b)
+		: "+d" (rc) : "Q" (*aib));
 	return rc;
 }
 
@@ -179,6 +195,14 @@ static inline int etr_steai(struct etr_aib *aib, unsigned int func)
 		"1:\n"
 		EX_TABLE(0b,1b)
 		: "+d" (rc) : "m" (*aib), "a" (aib), "d" (reg0));
+	int rc = -EOPNOTSUPP;
+
+	asm volatile(
+		"	.insn	s,0xb2b30000,%1\n"
+		"0:	la	%0,0\n"
+		"1:\n"
+		EX_TABLE(0b,1b)
+		: "+d" (rc) : "Q" (*aib), "d" (reg0));
 	return rc;
 }
 
@@ -193,6 +217,7 @@ static inline int etr_ptff(void *ptff_block, unsigned int func)
 	register unsigned int reg0 asm("0") = func;
 	register unsigned long reg1 asm("1") = (unsigned long) ptff_block;
 	int rc = -ENOSYS;
+	int rc = -EOPNOTSUPP;
 
 	asm volatile(
 		"	.word	0x0104\n"
@@ -215,6 +240,12 @@ static inline int etr_ptff(void *ptff_block, unsigned int func)
 /* Functions needed by the machine check handler */
 void etr_switch_to_local(void);
 void etr_sync_check(void);
+int etr_switch_to_local(void);
+int etr_sync_check(void);
+void etr_queue_work(void);
+
+/* notifier for syncs */
+extern struct atomic_notifier_head s390_epoch_delta_notifier;
 
 /* STP interruption parameter */
 struct stp_irq_parm {
@@ -254,5 +285,8 @@ struct stp_sstpi {
 /* Functions needed by the machine check handler */
 void stp_sync_check(void);
 void stp_island_check(void);
+int stp_sync_check(void);
+int stp_island_check(void);
+void stp_queue_work(void);
 
 #endif /* __S390_ETR_H */

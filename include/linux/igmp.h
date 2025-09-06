@@ -3,6 +3,7 @@
  *
  *	Authors:
  *		Alan Cox <Alan.Cox@linux.org>
+ *		Alan Cox <alan@lxorguk.ukuu.org.uk>
  *
  *	Extended to talk the BSD extended IGMP protocol of mrouted 3.6
  *
@@ -129,6 +130,13 @@ struct igmpv3_query {
 #include <linux/skbuff.h>
 #include <linux/timer.h>
 #include <linux/in.h>
+#ifndef _LINUX_IGMP_H
+#define _LINUX_IGMP_H
+
+#include <linux/skbuff.h>
+#include <linux/timer.h>
+#include <linux/in.h>
+#include <uapi/linux/igmp.h>
 
 static inline struct igmphdr *igmp_hdr(const struct sk_buff *skb)
 {
@@ -154,6 +162,15 @@ struct ip_sf_socklist
 {
 	unsigned int		sl_max;
 	unsigned int		sl_count;
+extern int sysctl_igmp_llm_reports;
+extern int sysctl_igmp_max_memberships;
+extern int sysctl_igmp_max_msf;
+extern int sysctl_igmp_qrv;
+
+struct ip_sf_socklist {
+	unsigned int		sl_max;
+	unsigned int		sl_count;
+	struct rcu_head		rcu;
 	__be32			sl_addr[0];
 };
 
@@ -176,6 +193,15 @@ struct ip_mc_socklist
 
 struct ip_sf_list
 {
+struct ip_mc_socklist {
+	struct ip_mc_socklist __rcu *next_rcu;
+	struct ip_mreqn		multi;
+	unsigned int		sfmode;		/* MCAST_{INCLUDE,EXCLUDE} */
+	struct ip_sf_socklist __rcu	*sflist;
+	struct rcu_head		rcu;
+};
+
+struct ip_sf_list {
 	struct ip_sf_list	*sf_next;
 	__be32			sf_inaddr;
 	unsigned long		sf_count[2];	/* include/exclude counts */
@@ -193,6 +219,18 @@ struct ip_mc_list
 	unsigned int		sfmode;
 	unsigned long		sfcount[2];
 	struct ip_mc_list	*next;
+struct ip_mc_list {
+	struct in_device	*interface;
+	__be32			multiaddr;
+	unsigned int		sfmode;
+	struct ip_sf_list	*sources;
+	struct ip_sf_list	*tomb;
+	unsigned long		sfcount[2];
+	union {
+		struct ip_mc_list *next;
+		struct ip_mc_list __rcu *next_rcu;
+	};
+	struct ip_mc_list __rcu *next_hash;
 	struct timer_list	timer;
 	int			users;
 	atomic_t		refcnt;
@@ -203,6 +241,7 @@ struct ip_mc_list
 	char			loaded;
 	unsigned char		gsquery;	/* check source marks? */
 	unsigned char		crcount;
+	struct rcu_head		rcu;
 };
 
 /* V3 exponential field decoding */
@@ -216,6 +255,7 @@ struct ip_mc_list
 #define IGMPV3_MRC(value) IGMPV3_EXP(0x80, 4, 3, value)
 
 extern int ip_check_mc(struct in_device *dev, __be32 mc_addr, __be32 src_addr, u16 proto);
+extern int ip_check_mc_rcu(struct in_device *dev, __be32 mc_addr, __be32 src_addr, u8 proto);
 extern int igmp_rcv(struct sk_buff *);
 extern int ip_mc_join_group(struct sock *sk, struct ip_mreqn *imr);
 extern int ip_mc_leave_group(struct sock *sk, struct ip_mreqn *imr);
@@ -237,4 +277,11 @@ extern void ip_mc_inc_group(struct in_device *in_dev, __be32 addr);
 extern void ip_mc_rejoin_group(struct ip_mc_list *im);
 
 #endif
+#endif
+extern void ip_mc_unmap(struct in_device *);
+extern void ip_mc_remap(struct in_device *);
+extern void ip_mc_dec_group(struct in_device *in_dev, __be32 addr);
+extern void ip_mc_inc_group(struct in_device *in_dev, __be32 addr);
+int ip_mc_check_igmp(struct sk_buff *skb, struct sk_buff **skb_trimmed);
+
 #endif

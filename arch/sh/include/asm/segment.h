@@ -24,6 +24,7 @@ typedef struct {
 #endif
 
 #define segment_eq(a,b)	((a).seg == (b).seg)
+#define segment_eq(a, b) ((a).seg == (b).seg)
 
 #define get_ds()	(KERNEL_DS)
 

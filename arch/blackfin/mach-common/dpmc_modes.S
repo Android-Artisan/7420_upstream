@@ -20,6 +20,12 @@ ENTRY(_sleep_mode)
 	R0 = 0xFFFF (Z);
 	call _set_rtc_istat;
 
+ENTRY(_sleep_mode)
+	[--SP] = (R7:4, P5:3);
+	[--SP] = RETS;
+
+	call _set_sic_iwr;
+
 	P0.H = hi(PLL_CTL);
 	P0.L = lo(PLL_CTL);
 	R1 = W[P0](z);
@@ -58,6 +64,32 @@ ENTRY(_hibernate_mode)
 	[--SP] =  RETS;
 
 	R3 = R0;
+
+	bfin_init_pm_bench_cycles;
+
+	call _test_pll_locked;
+
+	RETS = [SP++];
+	(R7:4, P5:3) = [SP++];
+	RTS;
+ENDPROC(_sleep_mode)
+
+/*
+ * This func never returns as it puts the part into hibernate, and
+ * is only called from do_hibernate, so we don't bother saving or
+ * restoring any of the normal C runtime state.  When we wake up,
+ * the entry point will be in do_hibernate and not here.
+ *
+ * We accept just one argument -- the value to write to VR_CTL.
+ */
+
+ENTRY(_hibernate_mode)
+	/* Save/setup the regs we need early for minor pipeline optimization */
+	R4 = R0;
+
+	P3.H = hi(VR_CTL);
+	P3.L = lo(VR_CTL);
+	/* Disable all wakeup sources */
 	R0 = IWR_DISABLE_ALL;
 	R1 = IWR_DISABLE_ALL;
 	R2 = IWR_DISABLE_ALL;
@@ -72,6 +104,11 @@ ENTRY(_hibernate_mode)
 	P0.L = lo(VR_CTL);
 
 	W[P0] = R3.L;
+	/* Finally, we climb into our cave to hibernate */
+	W[P3] = R4.L;
+
+	bfin_init_pm_bench_cycles;
+
 	CLI R2;
 	IDLE;
 .Lforever:
@@ -81,6 +118,8 @@ ENDPROC(_hibernate_mode)
 ENTRY(_sleep_deeper)
 	[--SP] = ( R7:0, P5:0 );
 	[--SP] =  RETS;
+	[--SP] = (R7:4, P5:3);
+	[--SP] = RETS;
 
 	CLI R4;
 
@@ -159,6 +198,8 @@ ENTRY(_sleep_deeper)
 	SSYNC;
 	IDLE;
 
+	bfin_init_pm_bench_cycles;
+
 	call _test_pll_locked;
 
 	P0.H = hi(PLL_DIV);
@@ -177,6 +218,7 @@ ENTRY(_sleep_deeper)
 
 	RETS = [SP++];
 	( R7:0, P5:0 ) = [SP++];
+	(R7:4, P5:3) = [SP++];
 	RTS;
 ENDPROC(_sleep_deeper)
 
@@ -197,6 +239,9 @@ ENTRY(_set_dram_srfs)
 #else 				/* SDRAM */
 	P0.L = lo(EBIU_SDGCTL);
 	P0.H = hi(EBIU_SDGCTL);
+	P1.L = lo(EBIU_SDSTAT);
+	P1.H = hi(EBIU_SDSTAT);
+
 	R2 = [P0];
 	BITSET(R2, 24); /* SRFS enter self-refresh mode */
 	[P0] = R2;
@@ -206,6 +251,8 @@ ENTRY(_set_dram_srfs)
 	P0.H = hi(EBIU_SDSTAT);
 1:
 	R2 = w[P0];
+1:
+	R2 = w[P1];
 	SSYNC;
 	cc = BITTST(R2, 1); /* SDSRA poll self-refresh status */
 	if !cc jump 1b;
@@ -221,6 +268,7 @@ ENDPROC(_set_dram_srfs)
 
 ENTRY(_unset_dram_srfs)
 	/*  set the dram out of self refresh mode */
+
 #if defined(EBIU_RSTCTL)	/* DDR */
 	P0.H = hi(EBIU_RSTCTL);
 	P0.L = lo(EBIU_RSTCTL);
@@ -231,6 +279,10 @@ ENTRY(_unset_dram_srfs)
 
 	P0.L = lo(EBIU_SDGCTL); /* release CLKOUT from self-refresh */
 	P0.H = hi(EBIU_SDGCTL);
+	/* release CLKOUT from self-refresh */
+	P0.L = lo(EBIU_SDGCTL);
+	P0.H = hi(EBIU_SDGCTL);
+
 	R2 = [P0];
 	BITSET(R2, 0); /* SCTLE enable CLKOUT */
 	[P0] = R2
@@ -238,10 +290,12 @@ ENTRY(_unset_dram_srfs)
 
 	P0.L = lo(EBIU_SDGCTL); /* release SDRAM from self-refresh */
 	P0.H = hi(EBIU_SDGCTL);
+	/* release SDRAM from self-refresh */
 	R2 = [P0];
 	BITCLR(R2, 24); /* clear SRFS bit */
 	[P0] = R2
 #endif
+
 	SSYNC;
 	RTS;
 ENDPROC(_unset_dram_srfs)
@@ -263,6 +317,19 @@ ENTRY(_set_sic_iwr)
 	P0.L = lo(SIC_IWR);
 #endif
 	[P0] = R0;
+#ifdef SIC_IWR0
+	P0.H = hi(SYSMMR_BASE);
+	P0.L = lo(SYSMMR_BASE);
+	[P0 + (SIC_IWR0 - SYSMMR_BASE)] = R0;
+	[P0 + (SIC_IWR1 - SYSMMR_BASE)] = R1;
+# ifdef SIC_IWR2
+	[P0 + (SIC_IWR2 - SYSMMR_BASE)] = R2;
+# endif
+#else
+	P0.H = hi(SIC_IWR);
+	P0.L = lo(SIC_IWR);
+	[P0] = R0;
+#endif
 
 	SSYNC;
 	RTS;
@@ -789,6 +856,34 @@ ENTRY(_do_hibernate)
 #ifdef SIC_IMASK0
 	PM_SYS_POP(SIC_IMASK0)
 #endif
+ENTRY(_do_hibernate)
+	bfin_cpu_reg_save;
+	bfin_sys_mmr_save;
+	bfin_core_mmr_save;
+
+	/* Setup args to hibernate mode early for pipeline optimization */
+	R0 = M3;
+	P1.H = _hibernate_mode;
+	P1.L = _hibernate_mode;
+
+	/* Save Magic, return address and Stack Pointer */
+	P0 = 0;
+	R1.H = 0xDEAD;	/* Hibernate Magic */
+	R1.L = 0xBEEF;
+	R2.H = .Lpm_resume_here;
+	R2.L = .Lpm_resume_here;
+	[P0++] = R1;	/* Store Hibernate Magic */
+	[P0++] = R2;	/* Save Return Address */
+	[P0++] = SP;	/* Save Stack Pointer */
+
+	/* Must use an indirect call as we need to jump to L1 */
+	call (P1); /* Goodbye */
+
+.Lpm_resume_here:
+
+	bfin_core_mmr_restore;
+	bfin_sys_mmr_restore;
+	bfin_cpu_reg_restore;
 
 	[--sp] = RETI;	/* Clear Global Interrupt Disable */
 	SP += 4;

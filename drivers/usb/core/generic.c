@@ -20,6 +20,8 @@
 #include <linux/usb.h>
 #include "usb.h"
 #include "hcd.h"
+#include <linux/usb/hcd.h>
+#include "usb.h"
 
 static inline const char *plural(int n)
 {
@@ -46,6 +48,9 @@ int usb_choose_configuration(struct usb_device *udev)
 	int num_configs;
 	int insufficient_power = 0;
 	struct usb_host_config *c, *best;
+
+	if (usb_device_is_owned(udev))
+		return 0;
 
 	best = NULL;
 	c = udev->config;
@@ -98,6 +103,7 @@ int usb_choose_configuration(struct usb_device *udev)
 
 		/* Rule out configs that draw too much bus current */
 		if (c->desc.bMaxPower * 2 > udev->bus_mA) {
+		if (usb_get_max_power(udev, c) > udev->bus_mA) {
 			insufficient_power++;
 			continue;
 		}
@@ -107,6 +113,10 @@ int usb_choose_configuration(struct usb_device *udev)
 		 * this kernel has enabled the necessary host side driver.
 		 */
 		if (i == 0 && desc && (is_rndis(desc) || is_activesync(desc))) {
+		 * But: Don't ignore it if it's the only config.
+		 */
+		if (i == 0 && num_configs > 1 && desc &&
+				(is_rndis(desc) || is_activesync(desc))) {
 #if !defined(CONFIG_USB_NET_RNDIS_HOST) && !defined(CONFIG_USB_NET_RNDIS_HOST_MODULE)
 			continue;
 #else
@@ -121,6 +131,7 @@ int usb_choose_configuration(struct usb_device *udev)
 		else if (udev->descriptor.bDeviceClass !=
 						USB_CLASS_VENDOR_SPEC &&
 				(!desc || desc->bInterfaceClass !=
+				(desc && desc->bInterfaceClass !=
 						USB_CLASS_VENDOR_SPEC)) {
 			best = c;
 			break;
@@ -140,6 +151,7 @@ int usb_choose_configuration(struct usb_device *udev)
 	if (best) {
 		i = best->desc.bConfigurationValue;
 		dev_info(&udev->dev,
+		dev_dbg(&udev->dev,
 			"configuration #%d chosen from %d choice%s\n",
 			i, num_configs, plural(num_configs));
 	} else {
@@ -150,6 +162,7 @@ int usb_choose_configuration(struct usb_device *udev)
 	}
 	return i;
 }
+EXPORT_SYMBOL_GPL(usb_choose_configuration);
 
 static int generic_probe(struct usb_device *udev)
 {
@@ -165,6 +178,7 @@ static int generic_probe(struct usb_device *udev)
 		if (c >= 0) {
 			err = usb_set_configuration(udev, c);
 			if (err) {
+			if (err && err != -ENODEV) {
 				dev_err(&udev->dev, "can't set config #%d, error %d\n",
 					c, err);
 				/* This need not be fatal.  The user can try to
@@ -201,17 +215,25 @@ static int generic_suspend(struct usb_device *udev, pm_message_t msg)
 	 */
 	if (!udev->parent)
 		rc = hcd_bus_suspend(udev);
+		rc = hcd_bus_suspend(udev, msg);
 
-	/* Non-root devices don't need to do anything for FREEZE or PRETHAW */
-	else if (msg.event == PM_EVENT_FREEZE || msg.event == PM_EVENT_PRETHAW)
+	/*
+	 * Non-root USB2 devices don't need to do anything for FREEZE
+	 * or PRETHAW. USB3 devices don't support global suspend and
+	 * needs to be selectively suspended.
+	 */
+	else if ((msg.event == PM_EVENT_FREEZE || msg.event == PM_EVENT_PRETHAW)
+		 && (udev->speed < USB_SPEED_SUPER))
 		rc = 0;
 	else
 		rc = usb_port_suspend(udev);
+		rc = usb_port_suspend(udev, msg);
 
 	return rc;
 }
 
 static int generic_resume(struct usb_device *udev)
+static int generic_resume(struct usb_device *udev, pm_message_t msg)
 {
 	int rc;
 
@@ -224,6 +246,9 @@ static int generic_resume(struct usb_device *udev)
 		rc = hcd_bus_resume(udev);
 	else
 		rc = usb_port_resume(udev);
+		rc = hcd_bus_resume(udev, msg);
+	else
+		rc = usb_port_resume(udev, msg);
 	return rc;
 }
 

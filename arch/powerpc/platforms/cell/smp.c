@@ -29,6 +29,11 @@
 
 #include <asm/ptrace.h>
 #include <asm/atomic.h>
+#include <linux/device.h>
+#include <linux/cpu.h>
+
+#include <asm/ptrace.h>
+#include <linux/atomic.h>
 #include <asm/irq.h>
 #include <asm/page.h>
 #include <asm/pgtable.h>
@@ -43,6 +48,12 @@
 #include <asm/system.h>
 #include <asm/rtas.h>
 #include <asm/cputhreads.h>
+#include <asm/machdep.h>
+#include <asm/cputable.h>
+#include <asm/firmware.h>
+#include <asm/rtas.h>
+#include <asm/cputhreads.h>
+#include <asm/code-patching.h>
 
 #include "interrupt.h"
 #include <asm/udbg.h>
@@ -60,6 +71,11 @@
 static cpumask_t of_spin_map;
 
 extern void generic_secondary_smp_init(unsigned long);
+
+ * The Primary thread of each non-boot processor was started from the OF client
+ * interface by prom_hold_cpus and is spinning on secondary_hold_spinloop.
+ */
+static cpumask_t of_spin_map;
 
 /**
  * smp_startup_cpu() - start the given cpu
@@ -81,6 +97,15 @@ static inline int __devinit smp_startup_cpu(unsigned int lcpu)
 	int start_cpu;
 
 	if (cpu_isset(lcpu, of_spin_map))
+static inline int smp_startup_cpu(unsigned int lcpu)
+{
+	int status;
+	unsigned long start_here =
+			__pa(ppc_function_entry(generic_secondary_smp_init));
+	unsigned int pcpu;
+	int start_cpu;
+
+	if (cpumask_test_cpu(lcpu, &of_spin_map))
 		/* Already started by OF and sitting in spin loop */
 		return 1;
 
@@ -161,11 +186,24 @@ static void __devinit cell_take_timebase(void)
 }
 
 static void __devinit smp_cell_kick_cpu(int nr)
+static void smp_cell_setup_cpu(int cpu)
+{
+	if (cpu != boot_cpuid)
+		iic_setup_cpu();
+
+	/*
+	 * change default DABRX to allow user watchpoints
+	 */
+	mtspr(SPRN_DABRX, DABRX_KERNEL | DABRX_USER);
+}
+
+static int smp_cell_kick_cpu(int nr)
 {
 	BUG_ON(nr < 0 || nr >= NR_CPUS);
 
 	if (!smp_startup_cpu(nr))
 		return;
+		return -ENOENT;
 
 	/*
 	 * The processor is currently spinning, waiting for the
@@ -194,6 +232,16 @@ static struct smp_ops_t bpa_iic_smp_ops = {
 	.kick_cpu	= smp_cell_kick_cpu,
 	.setup_cpu	= smp_iic_setup_cpu,
 	.cpu_bootable	= smp_cell_cpu_bootable,
+
+	return 0;
+}
+
+static struct smp_ops_t bpa_iic_smp_ops = {
+	.message_pass	= iic_message_pass,
+	.probe		= iic_request_IPIs,
+	.kick_cpu	= smp_cell_kick_cpu,
+	.setup_cpu	= smp_cell_setup_cpu,
+	.cpu_bootable	= smp_generic_cpu_bootable,
 };
 
 /* This is called very early */
@@ -225,6 +273,18 @@ void __init smp_init_cell(void)
 	if (rtas_token("freeze-time-base") != RTAS_UNKNOWN_SERVICE) {
 		smp_ops->give_timebase = cell_give_timebase;
 		smp_ops->take_timebase = cell_take_timebase;
+			if (cpu_thread_in_core(i) == 0)
+				cpumask_set_cpu(i, &of_spin_map);
+		}
+	} else
+		cpumask_copy(&of_spin_map, cpu_present_mask);
+
+	cpumask_clear_cpu(boot_cpuid, &of_spin_map);
+
+	/* Non-lpar has additional take/give timebase */
+	if (rtas_token("freeze-time-base") != RTAS_UNKNOWN_SERVICE) {
+		smp_ops->give_timebase = rtas_give_timebase;
+		smp_ops->take_timebase = rtas_take_timebase;
 	}
 
 	DBG(" <- smp_init_cell()\n");

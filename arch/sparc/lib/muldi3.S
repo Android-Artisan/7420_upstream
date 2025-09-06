@@ -69,6 +69,12 @@ __muldi3:
 	mov  %i0, %o0
 	call  .umul
 	mov  %i3, %o1
+	mov  %i2, %o1
+	umul %o0, %o1, %o0
+	mov  %o0, %l0
+	mov  %i0, %o0
+	mov  %i3, %o1
+	umul %o0, %o1, %o0
 	add  %l0, %o0, %l0
 	mov  %l2, %i0
 	add  %l2, %l0, %i0

@@ -18,3 +18,10 @@ sequencer = $(if $(subst y,,$(CONFIG_SND_SEQUENCER)),$(if $(1),m),$(if $(CONFIG_
 # Toplevel Module Dependencies
 obj-$(call sequencer,$(CONFIG_SND_SBAWE)) += snd-emux-synth.o
 obj-$(call sequencer,$(CONFIG_SND_EMU10K1)) += snd-emux-synth.o
+		       emux_effect.o emux_hwdep.o soundfont.o
+snd-emux-synth-$(CONFIG_SND_PROC_FS) += emux_proc.o
+snd-emux-synth-$(CONFIG_SND_SEQUENCER_OSS) += emux_oss.o
+
+# Toplevel Module Dependencies
+obj-$(CONFIG_SND_SBAWE_SEQ) += snd-emux-synth.o
+obj-$(CONFIG_SND_EMU10K1_SEQ) += snd-emux-synth.o

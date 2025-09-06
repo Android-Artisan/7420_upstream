@@ -20,10 +20,14 @@
 #include <linux/types.h>
 #include <linux/compiler.h>
 #include <linux/module.h>
+#include <linux/export.h>
 
 #include <asm/io.h>
 #include <asm/firmware.h>
 #include <asm/bug.h>
+
+/* See definition in io.h */
+bool isa_io_special;
 
 void _insb(const volatile u8 __iomem *port, void *buf, long count)
 {
@@ -162,6 +166,7 @@ void _memcpy_fromio(void *dest, const volatile void __iomem *src,
 		n--;
 	}
 	while(n > 4) {
+	while(n >= 4) {
 		*((u32 *)dest) = *((volatile u32 *)vsrc);
 		eieio();
 		vsrc += 4;
@@ -191,6 +196,7 @@ void _memcpy_toio(volatile void __iomem *dest, const void *src, unsigned long n)
 		n--;
 	}
 	while(n > 4) {
+	while(n >= 4) {
 		*((volatile u32 *)vdest) = *((volatile u32 *)src);
 		src += 4;
 		vdest += 4;

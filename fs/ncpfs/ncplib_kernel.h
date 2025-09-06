@@ -56,6 +56,7 @@ static inline int ncp_read_bounce_size(__u32 size) {
 };
 int ncp_read_bounce(struct ncp_server *, const char *, __u32, __u16, 
 		char __user *, int *, void* bounce, __u32 bouncelen);
+		struct iov_iter *, int *, void *bounce, __u32 bouncelen);
 int ncp_read_kernel(struct ncp_server *, const char *, __u32, __u16, 
 		char *, int *);
 int ncp_write_kernel(struct ncp_server *, const char *, __u32, __u16,
@@ -69,6 +70,11 @@ void ncp_extract_file_info(void* src, struct nw_info_struct* target);
 int ncp_obtain_info(struct ncp_server *server, struct inode *, char *,
 		struct nw_info_struct *target);
 int ncp_obtain_nfs_info(struct ncp_server *server, struct nw_info_struct *target);
+void ncp_extract_file_info(const void* src, struct nw_info_struct* target);
+int ncp_obtain_info(struct ncp_server *server, struct inode *, const char *,
+		struct nw_info_struct *target);
+int ncp_obtain_nfs_info(struct ncp_server *server, struct nw_info_struct *target);
+int ncp_update_known_namespace(struct ncp_server *server, __u8 volume, int *ret_ns);
 int ncp_get_volume_root(struct ncp_server *server, const char *volname,
 			__u32 *volume, __le32 *dirent, __le32 *dosdirent);
 int ncp_lookup_volume(struct ncp_server *, const char *, struct nw_info_struct *);
@@ -82,6 +88,8 @@ int ncp_modify_nfs_info(struct ncp_server *, __u8 volnum, __le32 dirent,
 int ncp_del_file_or_subdir2(struct ncp_server *, struct dentry*);
 int ncp_del_file_or_subdir(struct ncp_server *, struct inode *, char *);
 int ncp_open_create_file_or_subdir(struct ncp_server *, struct inode *, char *,
+int ncp_del_file_or_subdir(struct ncp_server *, struct inode *, const char *);
+int ncp_open_create_file_or_subdir(struct ncp_server *, struct inode *, const char *,
 				int, __le32, __le16, struct ncp_entry_info *);
 
 int ncp_initialize_search(struct ncp_server *, struct inode *,
@@ -94,6 +102,7 @@ int ncp_search_for_fileset(struct ncp_server *server,
 
 int ncp_ren_or_mov_file_or_subdir(struct ncp_server *server,
 			      struct inode *, char *, struct inode *, char *);
+			      struct inode *, const char *, struct inode *, const char *);
 
 
 int
@@ -116,6 +125,7 @@ int ncp_dirhandle_free(struct ncp_server *, __u8 dirhandle);
 
 int ncp_create_new(struct inode *dir, struct dentry *dentry,
                           int mode, dev_t rdev, __le32 attributes);
+                          umode_t mode, dev_t rdev, __le32 attributes);
 
 static inline int ncp_is_nfs_extras(struct ncp_server* server, unsigned int volnum) {
 #ifdef CONFIG_NCPFS_NFS_NS
@@ -135,6 +145,7 @@ int ncp__vol2io(struct ncp_server *, unsigned char *, unsigned int *,
 
 #define NCP_ESC			':'
 #define NCP_IO_TABLE(dentry)	(NCP_SERVER((dentry)->d_inode)->nls_io)
+#define NCP_IO_TABLE(sb)	(NCP_SBP(sb)->nls_io)
 #define ncp_tolower(t, c)	nls_tolower(t, c)
 #define ncp_toupper(t, c)	nls_toupper(t, c)
 #define ncp_strnicmp(t, s1, s2, len) \
@@ -150,6 +161,7 @@ int ncp__vol2io(unsigned char *, unsigned int *,
 				const unsigned char *, unsigned int, int);
 
 #define NCP_IO_TABLE(dentry)	NULL
+#define NCP_IO_TABLE(sb)	NULL
 #define ncp_tolower(t, c)	tolower(c)
 #define ncp_toupper(t, c)	toupper(c)
 #define ncp_io2vol(S,m,i,n,k,U)	ncp__io2vol(m,i,n,k,U)
@@ -158,6 +170,8 @@ int ncp__vol2io(unsigned char *, unsigned int *,
 
 static inline int ncp_strnicmp(struct nls_table *t, const unsigned char *s1,
 		const unsigned char *s2, int len)
+static inline int ncp_strnicmp(const struct nls_table *t,
+		const unsigned char *s1, const unsigned char *s2, int len)
 {
 	while (len--) {
 		if (tolower(*s1++) != tolower(*s2++))
@@ -171,12 +185,14 @@ static inline int ncp_strnicmp(struct nls_table *t, const unsigned char *s1,
 
 #define NCP_GET_AGE(dentry)	(jiffies - (dentry)->d_time)
 #define NCP_MAX_AGE(server)	((server)->dentry_ttl)
+#define NCP_MAX_AGE(server)	atomic_read(&(server)->dentry_ttl)
 #define NCP_TEST_AGE(server,dentry)	(NCP_GET_AGE(dentry) < NCP_MAX_AGE(server))
 
 static inline void
 ncp_age_dentry(struct ncp_server* server, struct dentry* dentry)
 {
 	dentry->d_time = jiffies - server->dentry_ttl;
+	dentry->d_time = jiffies - NCP_MAX_AGE(server);
 }
 
 static inline void

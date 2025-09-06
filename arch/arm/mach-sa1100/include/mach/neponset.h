@@ -2,6 +2,7 @@
  * arch/arm/mach-sa1100/include/mach/neponset.h
  *
  * Created 2000/06/05 by Nicolas Pitre <nico@cam.org>
+ * Created 2000/06/05 by Nicolas Pitre <nico@fluxnic.net>
  *
  * This file contains the hardware specific definitions for Assabet
  * Only include this file from SA1100-specific files.
@@ -70,5 +71,9 @@
 #define NCR_SPI_KB_WK_UP	(1<<4)
 #define NCR_A0VPP		(1<<5)
 #define NCR_A1VPP		(1<<6)
+
+void neponset_ncr_frob(unsigned int, unsigned int);
+#define neponset_ncr_set(v)	neponset_ncr_frob(0, v)
+#define neponset_ncr_clear(v)	neponset_ncr_frob(v, 0)
 
 #endif

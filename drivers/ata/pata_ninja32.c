@@ -46,6 +46,7 @@
 
 #define DRV_NAME "pata_ninja32"
 #define DRV_VERSION "0.0.1"
+#define DRV_VERSION "0.1.5"
 
 
 /**
@@ -89,6 +90,20 @@ static struct ata_port_operations ninja32_port_ops = {
 	.set_piomode	= ninja32_set_piomode,
 };
 
+	.sff_data_xfer	= ata_sff_data_xfer32
+};
+
+static void ninja32_program(void __iomem *base)
+{
+	iowrite8(0x05, base + 0x01);	/* Enable interrupt lines */
+	iowrite8(0xBE, base + 0x02);	/* Burst, ?? setup */
+	iowrite8(0x01, base + 0x03);	/* Unknown */
+	iowrite8(0x20, base + 0x04);	/* WAIT0 */
+	iowrite8(0x8f, base + 0x05);	/* Unknown */
+	iowrite8(0xa4, base + 0x1c);	/* Unknown */
+	iowrite8(0x83, base + 0x1d);	/* BMDMA control: WAIT0 */
+}
+
 static int ninja32_init_one(struct pci_dev *dev, const struct pci_device_id *id)
 {
 	struct ata_host *host;
@@ -116,16 +131,23 @@ static int ninja32_init_one(struct pci_dev *dev, const struct pci_device_id *id)
 	if (rc)
 		return rc;
 	rc = pci_set_consistent_dma_mask(dev, ATA_DMA_MASK);
+	rc = dma_set_mask(&dev->dev, ATA_DMA_MASK);
+	if (rc)
+		return rc;
+	rc = dma_set_coherent_mask(&dev->dev, ATA_DMA_MASK);
 	if (rc)
 		return rc;
 	pci_set_master(dev);
 
 	/* Set up the register mappings */
+	/* Set up the register mappings. We use the I/O mapping as only the
+	   older chips also have MMIO on BAR 1 */
 	base = host->iomap[0];
 	if (!base)
 		return -ENOMEM;
 	ap->ops = &ninja32_port_ops;
 	ap->pio_mask = 0x1F;
+	ap->pio_mask = ATA_PIO4;
 	ap->flags |= ATA_FLAG_SLAVE_POSS;
 
 	ap->ioaddr.cmd_addr = base + 0x10;
@@ -149,6 +171,36 @@ static int ninja32_init_one(struct pci_dev *dev, const struct pci_device_id *id)
 static const struct pci_device_id ninja32[] = {
 	{ 0x1145, 0xf021, PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0 },
 	{ 0x1145, 0xf024, PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0 },
+	ap->pflags = ATA_PFLAG_PIO32 | ATA_PFLAG_PIO32CHANGE;
+
+	ninja32_program(base);
+	/* FIXME: Should we disable them at remove ? */
+	return ata_host_activate(host, dev->irq, ata_bmdma_interrupt,
+				 IRQF_SHARED, &ninja32_sht);
+}
+
+#ifdef CONFIG_PM_SLEEP
+static int ninja32_reinit_one(struct pci_dev *pdev)
+{
+	struct ata_host *host = pci_get_drvdata(pdev);
+	int rc;
+
+	rc = ata_pci_device_do_resume(pdev);
+	if (rc)
+		return rc;
+	ninja32_program(host->iomap[0]);
+	ata_host_resume(host);
+	return 0;
+}
+#endif
+
+static const struct pci_device_id ninja32[] = {
+	{ 0x10FC, 0x0003, PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0 },
+	{ 0x1145, 0x8008, PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0 },
+	{ 0x1145, 0xf008, PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0 },
+	{ 0x1145, 0xf021, PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0 },
+	{ 0x1145, 0xf024, PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0 },
+	{ 0x1145, 0xf02C, PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0 },
 	{ },
 };
 
@@ -168,6 +220,14 @@ static void __exit ninja32_exit(void)
 {
 	pci_unregister_driver(&ninja32_pci_driver);
 }
+	.remove		= ata_pci_remove_one,
+#ifdef CONFIG_PM_SLEEP
+	.suspend	= ata_pci_device_suspend,
+	.resume		= ninja32_reinit_one,
+#endif
+};
+
+module_pci_driver(ninja32_pci_driver);
 
 MODULE_AUTHOR("Alan Cox");
 MODULE_DESCRIPTION("low-level driver for Ninja32 ATA");

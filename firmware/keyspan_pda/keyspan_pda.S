@@ -75,6 +75,7 @@
  *
  * USEFUL DOCS:
  *  EzUSB Technical Reference Manual: <http://www.anchorchips.com>
+ *  EzUSB Technical Reference Manual: <http://www.cypress.com/>
  *  8051 manuals: everywhere, but try www.dalsemi.com because the EzUSB is
  *   basically the Dallas enhanced 8051 code. Remember that the EzUSB IO ports
  *   use totally different registers!
@@ -645,7 +646,6 @@ setup_done:
 	pop dps
 	reti
 
-;;; ==============================================================
 	
 set_baud:			; baud index in r3
 	;; verify a < 10
@@ -679,7 +679,6 @@ set_baud__badbaud:
 	setb c			; c=1: failure
 	ret
 	
-;;; ==================================================
 control_pins:
 	cjne r1, #0x41, control_pins_in
 control_pins_out:
@@ -699,7 +698,6 @@ control_pins_in:
 	xrl a, #0xff
 	ljmp setup_return_one_byte
 
-;;; ========================================
 	
 ISR_Ep2in:
 	push dps
@@ -860,7 +858,6 @@ dump_stat__rx_ring_loop:
 dump_stat__done:	
 	ret
 		
-;;; ============================================================
 	
 maybe_start_tx:
 	;; make sure the tx process is running.

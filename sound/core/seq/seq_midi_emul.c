@@ -32,6 +32,7 @@
 #include <linux/init.h>
 #include <linux/slab.h>
 #include <linux/string.h>
+#include <linux/module.h>
 #include <sound/core.h>
 #include <sound/seq_kernel.h>
 #include <sound/seq_midi_emul.h>
@@ -89,6 +90,7 @@ snd_midi_process_event(struct snd_midi_op *ops,
 
 	if (ev == NULL || chanset == NULL) {
 		snd_printd("ev or chanbase NULL (snd_midi_process_event)\n");
+		pr_debug("ALSA: seq_midi_emul: ev or chanbase NULL (snd_midi_process_event)\n");
 		return;
 	}
 	if (chanset->channels == NULL)
@@ -98,6 +100,7 @@ snd_midi_process_event(struct snd_midi_op *ops,
 		dest_channel = ev->data.note.channel;
 		if (dest_channel >= chanset->max_channels) {
 			snd_printd("dest channel is %d, max is %d\n",
+			pr_debug("ALSA: seq_midi_emul: dest channel is %d, max is %d\n",
 				   dest_channel, chanset->max_channels);
 			return;
 		}
@@ -232,6 +235,7 @@ snd_midi_process_event(struct snd_midi_op *ops,
 	not_yet:
 	default:
 		/*snd_printd("Unimplemented event %d\n", ev->type);*/
+		/*pr_debug("ALSA: seq_midi_emul: Unimplemented event %d\n", ev->type);*/
 		break;
 	}
 }
@@ -267,6 +271,9 @@ do_control(struct snd_midi_op *ops, void *drv, struct snd_midi_channel_set *chse
 	   struct snd_midi_channel *chan, int control, int value)
 {
 	int  i;
+
+	if (control >= ARRAY_SIZE(chan->control))
+		return;
 
 	/* Switches */
 	if ((control >=64 && control <=69) || (control >= 80 && control <= 83)) {

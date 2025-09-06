@@ -71,6 +71,10 @@ char *pnp_resource_type_name(struct resource *res)
 		return "dma";
 	}
 	return NULL;
+	case IORESOURCE_BUS:
+		return "bus";
+	}
+	return "unknown";
 }
 
 void dbg_pnp_show_resources(struct pnp_dev *dev, char *desc)
@@ -119,6 +123,15 @@ void dbg_pnp_show_resources(struct pnp_dev *dev, char *desc)
 		dev_dbg(&dev->dev, "%s\n", buf);
 	}
 #endif
+	struct pnp_resource *pnp_res;
+
+	if (list_empty(&dev->resources))
+		pnp_dbg(&dev->dev, "%s: no current resources\n", desc);
+	else {
+		pnp_dbg(&dev->dev, "%s: current resources:\n", desc);
+		list_for_each_entry(pnp_res, &dev->resources, list)
+			pnp_dbg(&dev->dev, "%pr\n", &pnp_res->res);
+	}
 }
 
 char *pnp_option_priority_name(struct pnp_option *option)
@@ -210,4 +223,5 @@ void dbg_pnp_show_option(struct pnp_dev *dev, struct pnp_option *option)
 	}
 	dev_dbg(&dev->dev, "%s\n", buf);
 #endif
+	pnp_dbg(&dev->dev, "%s\n", buf);
 }

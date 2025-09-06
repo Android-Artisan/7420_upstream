@@ -46,6 +46,12 @@ irqreturn_t snd_emu10k1_interrupt(int irq, void *dev_id)
 		}
 		if (status & IPR_PCIERROR) {
 			snd_printk(KERN_ERR "interrupt: PCI error\n");
+			dev_info(emu->card->dev,
+				 "Suspected sound card removal\n");
+			break;
+		}
+		if (status & IPR_PCIERROR) {
+			dev_err(emu->card->dev, "interrupt: PCI error\n");
 			snd_emu10k1_intr_disable(emu, INTE_PCIERRORENABLE);
 			status &= ~IPR_PCIERROR;
 		}
@@ -158,6 +164,7 @@ irqreturn_t snd_emu10k1_interrupt(int irq, void *dev_id)
 				struct snd_emu10k1_voice *cvoice = &(emu->p16v_capture_voice);
 
 				//printk(KERN_INFO "status2=0x%x\n", status2);
+				/* dev_dbg(emu->card->dev, "status2=0x%x\n", status2); */
 				orig_status2 = status2;
 				if(status2 & mask) {
 					if(pvoice->use) {
@@ -170,6 +177,16 @@ irqreturn_t snd_emu10k1_interrupt(int irq, void *dev_id)
 					//printk(KERN_INFO "capture int found\n");
 					if(cvoice->use) {
 						//printk(KERN_INFO "capture period_elapsed\n");
+						dev_err(emu->card->dev,
+							"p16v: status: 0x%08x, mask=0x%08x, pvoice=%p, use=%d\n",
+							status2, mask, pvoice,
+							pvoice->use);
+					}
+				}
+				if(status2 & 0x110000) {
+					/* dev_info(emu->card->dev, "capture int found\n"); */
+					if(cvoice->use) {
+						/* dev_info(emu->card->dev, "capture period_elapsed\n"); */
 						snd_pcm_period_elapsed(cvoice->epcm->substream);
 					}
 				}
@@ -181,6 +198,8 @@ irqreturn_t snd_emu10k1_interrupt(int irq, void *dev_id)
 		if (status) {
 			unsigned int bits;
 			snd_printk(KERN_ERR "emu10k1: unhandled interrupt: 0x%08x\n", status);
+			dev_err(emu->card->dev,
+				"unhandled interrupt: 0x%08x\n", status);
 			//make sure any interrupts we don't handle are disabled:
 			bits = INTE_FXDSPENABLE |
 				INTE_PCIERRORENABLE |
@@ -203,6 +222,7 @@ irqreturn_t snd_emu10k1_interrupt(int irq, void *dev_id)
 	}
 	if (timeout == 1000)
 		snd_printk(KERN_INFO "emu10k1 irq routine failure\n");
+		dev_info(emu->card->dev, "emu10k1 irq routine failure\n");
 
 	return IRQ_RETVAL(handled);
 }

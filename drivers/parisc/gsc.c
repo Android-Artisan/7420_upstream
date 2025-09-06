@@ -88,6 +88,7 @@ irqreturn_t gsc_asic_intr(int gsc_asic_irq, void *dev)
 		int local_irq = __ffs(irr);
 		unsigned int irq = gsc_asic->global_irq[local_irq];
 		__do_IRQ(irq);
+		generic_handle_irq(irq);
 		irr &= ~(1 << local_irq);
 	} while (irr);
 
@@ -113,6 +114,13 @@ static void gsc_asic_disable_irq(unsigned int irq)
 	u32 imr;
 
 	DEBPRINTK(KERN_DEBUG "%s(%d) %s: IMR 0x%x\n", __func__, irq,
+static void gsc_asic_mask_irq(struct irq_data *d)
+{
+	struct gsc_asic *irq_dev = irq_data_get_irq_chip_data(d);
+	int local_irq = gsc_find_local_irq(d->irq, irq_dev->global_irq, 32);
+	u32 imr;
+
+	DEBPRINTK(KERN_DEBUG "%s(%d) %s: IMR 0x%x\n", __func__, d->irq,
 			irq_dev->name, imr);
 
 	/* Disable the IRQ line by clearing the bit in the IMR */
@@ -128,6 +136,13 @@ static void gsc_asic_enable_irq(unsigned int irq)
 	u32 imr;
 
 	DEBPRINTK(KERN_DEBUG "%s(%d) %s: IMR 0x%x\n", __func__, irq,
+static void gsc_asic_unmask_irq(struct irq_data *d)
+{
+	struct gsc_asic *irq_dev = irq_data_get_irq_chip_data(d);
+	int local_irq = gsc_find_local_irq(d->irq, irq_dev->global_irq, 32);
+	u32 imr;
+
+	DEBPRINTK(KERN_DEBUG "%s(%d) %s: IMR 0x%x\n", __func__, d->irq,
 			irq_dev->name, imr);
 
 	/* Enable the IRQ line by setting the bit in the IMR */
@@ -157,6 +172,13 @@ static struct hw_interrupt_type gsc_asic_interrupt_type = {
 };
 
 int gsc_assign_irq(struct hw_interrupt_type *type, void *data)
+static struct irq_chip gsc_asic_interrupt_type = {
+	.name		=	"GSC-ASIC",
+	.irq_unmask	=	gsc_asic_unmask_irq,
+	.irq_mask	=	gsc_asic_mask_irq,
+};
+
+int gsc_assign_irq(struct irq_chip *type, void *data)
 {
 	static int irq = GSC_IRQ_BASE;
 
@@ -165,6 +187,9 @@ int gsc_assign_irq(struct hw_interrupt_type *type, void *data)
 
 	irq_desc[irq].chip = type;
 	irq_desc[irq].chip_data = data;
+	irq_set_chip_and_handler(irq, type, handle_simple_irq);
+	irq_set_chip_data(irq, data);
+
 	return irq++;
 }
 
@@ -186,6 +211,23 @@ static struct device *next_device(struct klist_iter *i)
 {
 	struct klist_node * n = klist_next(i);
 	return n ? container_of(n, struct device, knode_parent) : NULL;
+struct gsc_fixup_struct {
+	void (*choose_irq)(struct parisc_device *, void *);
+	void *ctrl;
+};
+
+static int gsc_fixup_irqs_callback(struct device *dev, void *data)
+{
+	struct parisc_device *padev = to_parisc_device(dev);
+	struct gsc_fixup_struct *gf = data;
+
+	/* work-around for 715/64 and others which have parent
+	   at path [5] and children at path [5/0/x] */
+	if (padev->id.hw_type == HPHW_FAULTY)
+		gsc_fixup_irqs(padev, gf->ctrl, gf->choose_irq);
+	gf->choose_irq(padev, gf->ctrl);
+
+	return 0;
 }
 
 void gsc_fixup_irqs(struct parisc_device *parent, void *ctrl,
@@ -205,6 +247,12 @@ void gsc_fixup_irqs(struct parisc_device *parent, void *ctrl,
 		choose_irq(padev, ctrl);
 	}
 	klist_iter_exit(&i);
+	struct gsc_fixup_struct data = {
+		.choose_irq	= choose_irq,
+		.ctrl		= ctrl,
+	};
+
+	device_for_each_child(&parent->dev, &data, gsc_fixup_irqs_callback);
 }
 
 int gsc_common_setup(struct parisc_device *parent, struct gsc_asic *gsc_asic)

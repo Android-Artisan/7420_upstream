@@ -20,6 +20,7 @@ KBUILD_CPPFLAGS += -nostdinc -I$(CCDIR)/include
 
 LDFLAGS		:=
 OBJCOPYFLAGS	:= -O binary -R .note -R .comment -S
+OBJCOPYFLAGS	:= -O binary -R .note -R .comment -R .GCC-command-line -R .note.gnu.build-id -S
 #LDFLAGS_vmlinux := -Map linkmap.txt
 CHECKFLAGS	+=
 
@@ -27,6 +28,7 @@ PROCESSOR	:= unset
 UNIT		:= unset
 
 KBUILD_CFLAGS	+= -mam33 -mmem-funcs -DCPU=AM33
+KBUILD_CFLAGS	+= -mam33 -DCPU=AM33 $(call cc-option,-mmem-funcs,)
 KBUILD_AFLAGS	+= -mam33 -DCPU=AM33
 
 ifeq ($(CONFIG_MN10300_CURRENT_IN_E2),y)
@@ -35,6 +37,9 @@ endif
 
 ifeq ($(CONFIG_MN10300_PROC_MN103E010),y)
 PROCESSOR	:= mn103e010
+endif
+ifeq ($(CONFIG_MN10300_PROC_MN2WS0050),y)
+PROCESSOR	:= mn2ws0050
 endif
 
 ifeq ($(CONFIG_MN10300_UNIT_ASB2303),y)
@@ -46,6 +51,12 @@ endif
 
 
 head-y		:= arch/mn10300/kernel/head.o arch/mn10300/kernel/init_task.o
+ifeq ($(CONFIG_MN10300_UNIT_ASB2364),y)
+UNIT		:= asb2364
+endif
+
+
+head-y		:= arch/mn10300/kernel/head.o
 
 core-y		+= arch/mn10300/kernel/ arch/mn10300/mm/
 
@@ -133,3 +144,8 @@ endif
 CLEAN_FILES += include/asm-mn10300/unit include/asm-mn10300/.unit
 
 prepare: include/asm-mn10300/.unit
+#
+# include the appropriate processor- and unit-specific headers
+#
+KBUILD_CPPFLAGS += -I$(srctree)/arch/mn10300/proc-$(PROCESSOR)/include
+KBUILD_CPPFLAGS += -I$(srctree)/arch/mn10300/unit-$(UNIT)/include

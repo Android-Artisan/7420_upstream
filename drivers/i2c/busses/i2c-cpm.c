@@ -43,6 +43,10 @@
 #include <linux/of_device.h>
 #include <linux/of_platform.h>
 #include <linux/of_i2c.h>
+#include <linux/of_address.h>
+#include <linux/of_device.h>
+#include <linux/of_irq.h>
+#include <linux/of_platform.h>
 #include <sysdev/fsl_soc.h>
 #include <asm/cpm.h>
 
@@ -78,6 +82,9 @@ struct i2c_ram {
 	char    res1[4];	/* Reserved */
 	ushort  rpbase;		/* Relocation pointer */
 	char    res2[2];	/* Reserved */
+	/* The following elements are only for CPM2 */
+	char    res3[4];	/* Reserved */
+	uint    sdmatmp;	/* Internal */
 };
 
 #define I2COM_START	0x80
@@ -106,6 +113,7 @@ struct i2c_reg {
 struct cpm_i2c {
 	char *base;
 	struct of_device *ofdev;
+	struct platform_device *ofdev;
 	struct i2c_adapter adap;
 	uint dp_addr;
 	int version; /* CPM1=1, CPM2=2 */
@@ -120,8 +128,8 @@ struct cpm_i2c {
 	cbd_t __iomem *rbase;
 	u_char *txbuf[CPM_MAXBD];
 	u_char *rxbuf[CPM_MAXBD];
-	u32 txdma[CPM_MAXBD];
-	u32 rxdma[CPM_MAXBD];
+	dma_addr_t txdma[CPM_MAXBD];
+	dma_addr_t rxdma[CPM_MAXBD];
 };
 
 static irqreturn_t cpm_i2c_interrupt(int irq, void *dev_id)
@@ -141,6 +149,7 @@ static irqreturn_t cpm_i2c_interrupt(int irq, void *dev_id)
 	dev_dbg(&adap->dev, "Interrupt: %x\n", i);
 
 	wake_up_interruptible(&cpm->i2c_wait);
+	wake_up(&cpm->i2c_wait);
 
 	return i ? IRQ_HANDLED : IRQ_NONE;
 }
@@ -313,6 +322,7 @@ static int cpm_i2c_xfer(struct i2c_adapter *adap, struct i2c_msg *msgs, int num)
 	struct i2c_ram __iomem *i2c_ram = cpm->i2c_ram;
 	struct i2c_msg *pmsg;
 	int ret, i;
+	int ret;
 	int tptr;
 	int rptr;
 	cbd_t __iomem *tbdf;
@@ -337,6 +347,14 @@ static int cpm_i2c_xfer(struct i2c_adapter *adap, struct i2c_msg *msgs, int num)
 
 	tptr = 0;
 	rptr = 0;
+
+	/*
+	 * If there was a collision in the last i2c transaction,
+	 * Set I2COM_MASTER as it was cleared during collision.
+	 */
+	if (in_be16(&tbdf->cbd_sc) & BD_SC_CL) {
+		out_8(&cpm->i2c_reg->i2com, I2COM_MASTER);
+	}
 
 	while (tptr < num) {
 		pmsg = &msgs[tptr];
@@ -369,6 +387,12 @@ static int cpm_i2c_xfer(struct i2c_adapter *adap, struct i2c_msg *msgs, int num)
 				1 * HZ);
 		else
 			ret = wait_event_interruptible_timeout(cpm->i2c_wait,
+			ret = wait_event_timeout(cpm->i2c_wait,
+				(in_be16(&tbdf[tptr].cbd_sc) & BD_SC_NAK) ||
+				!(in_be16(&rbdf[rptr].cbd_sc) & BD_SC_EMPTY),
+				1 * HZ);
+		else
+			ret = wait_event_timeout(cpm->i2c_wait,
 				!(in_be16(&tbdf[tptr].cbd_sc) & BD_SC_READY),
 				1 * HZ);
 		if (ret == 0) {
@@ -419,6 +443,13 @@ static const struct i2c_algorithm cpm_i2c_algo = {
 	.functionality = cpm_i2c_func,
 };
 
+/* CPM_MAX_READ is also limiting writes according to the code! */
+static struct i2c_adapter_quirks cpm_i2c_quirks = {
+	.max_num_msgs = CPM_MAXBD,
+	.max_read_len = CPM_MAX_READ,
+	.max_write_len = CPM_MAX_READ,
+};
+
 static const struct i2c_adapter cpm_ops = {
 	.owner		= THIS_MODULE,
 	.name		= "i2c-cpm",
@@ -429,6 +460,12 @@ static const struct i2c_adapter cpm_ops = {
 static int __devinit cpm_i2c_setup(struct cpm_i2c *cpm)
 {
 	struct of_device *ofdev = cpm->ofdev;
+	.quirks		= &cpm_i2c_quirks,
+};
+
+static int cpm_i2c_setup(struct cpm_i2c *cpm)
+{
+	struct platform_device *ofdev = cpm->ofdev;
 	const u32 *data;
 	int len, ret, i;
 	void __iomem *i2c_base;
@@ -442,6 +479,8 @@ static int __devinit cpm_i2c_setup(struct cpm_i2c *cpm)
 
 	cpm->irq = of_irq_to_resource(ofdev->node, 0, NULL);
 	if (cpm->irq == NO_IRQ)
+	cpm->irq = irq_of_parse_and_map(ofdev->dev.of_node, 0);
+	if (!cpm->irq)
 		return -EINVAL;
 
 	/* Install interrupt handler. */
@@ -452,12 +491,14 @@ static int __devinit cpm_i2c_setup(struct cpm_i2c *cpm)
 
 	/* I2C parameter RAM */
 	i2c_base = of_iomap(ofdev->node, 1);
+	i2c_base = of_iomap(ofdev->dev.of_node, 1);
 	if (i2c_base == NULL) {
 		ret = -EINVAL;
 		goto out_irq;
 	}
 
 	if (of_device_is_compatible(ofdev->node, "fsl,cpm1-i2c")) {
+	if (of_device_is_compatible(ofdev->dev.of_node, "fsl,cpm1-i2c")) {
 
 		/* Check for and use a microcode relocation patch. */
 		cpm->i2c_ram = i2c_base;
@@ -475,6 +516,7 @@ static int __devinit cpm_i2c_setup(struct cpm_i2c *cpm)
 		cpm->version = 1;
 
 	} else if (of_device_is_compatible(ofdev->node, "fsl,cpm2-i2c")) {
+	} else if (of_device_is_compatible(ofdev->dev.of_node, "fsl,cpm2-i2c")) {
 		cpm->i2c_addr = cpm_muram_alloc(sizeof(struct i2c_ram), 64);
 		cpm->i2c_ram = cpm_muram_addr(cpm->i2c_addr);
 		out_be16(i2c_base, cpm->i2c_addr);
@@ -490,12 +532,14 @@ static int __devinit cpm_i2c_setup(struct cpm_i2c *cpm)
 
 	/* I2C control/status registers */
 	cpm->i2c_reg = of_iomap(ofdev->node, 0);
+	cpm->i2c_reg = of_iomap(ofdev->dev.of_node, 0);
 	if (cpm->i2c_reg == NULL) {
 		ret = -EINVAL;
 		goto out_ram;
 	}
 
 	data = of_get_property(ofdev->node, "fsl,cpm-command", &len);
+	data = of_get_property(ofdev->dev.of_node, "fsl,cpm-command", &len);
 	if (!data || len != 4) {
 		ret = -EINVAL;
 		goto out_reg;
@@ -507,6 +551,11 @@ static int __devinit cpm_i2c_setup(struct cpm_i2c *cpm)
 		cpm->adap.class = *data;
 
 	data = of_get_property(ofdev->node, "clock-frequency", &len);
+	data = of_get_property(ofdev->dev.of_node, "linux,i2c-class", &len);
+	if (data && len == 4)
+		cpm->adap.class = *data;
+
+	data = of_get_property(ofdev->dev.of_node, "clock-frequency", &len);
 	if (data && len == 4)
 		cpm->freq = *data;
 	else
@@ -533,6 +582,9 @@ static int __devinit cpm_i2c_setup(struct cpm_i2c *cpm)
 	for (i = 0; i < CPM_MAXBD; i++) {
 		cpm->rxbuf[i] = dma_alloc_coherent(
 			NULL, CPM_MAX_READ + 1, &cpm->rxdma[i], GFP_KERNEL);
+		cpm->rxbuf[i] = dma_alloc_coherent(&cpm->ofdev->dev,
+						   CPM_MAX_READ + 1,
+						   &cpm->rxdma[i], GFP_KERNEL);
 		if (!cpm->rxbuf[i]) {
 			ret = -ENOMEM;
 			goto out_muram;
@@ -541,6 +593,7 @@ static int __devinit cpm_i2c_setup(struct cpm_i2c *cpm)
 
 		cpm->txbuf[i] = (unsigned char *)dma_alloc_coherent(
 			NULL, CPM_MAX_READ + 1, &cpm->txdma[i], GFP_KERNEL);
+		cpm->txbuf[i] = (unsigned char *)dma_alloc_coherent(&cpm->ofdev->dev, CPM_MAX_READ + 1, &cpm->txdma[i], GFP_KERNEL);
 		if (!cpm->txbuf[i]) {
 			ret = -ENOMEM;
 			goto out_muram;
@@ -589,6 +642,10 @@ out_muram:
 				cpm->rxbuf[i], cpm->rxdma[i]);
 		if (cpm->txbuf[i])
 			dma_free_coherent(NULL, CPM_MAX_READ + 1,
+			dma_free_coherent(&cpm->ofdev->dev, CPM_MAX_READ + 1,
+				cpm->rxbuf[i], cpm->rxdma[i]);
+		if (cpm->txbuf[i])
+			dma_free_coherent(&cpm->ofdev->dev, CPM_MAX_READ + 1,
 				cpm->txbuf[i], cpm->txdma[i]);
 	}
 	cpm_muram_free(cpm->dp_addr);
@@ -622,6 +679,9 @@ static void cpm_i2c_shutdown(struct cpm_i2c *cpm)
 		dma_free_coherent(NULL, CPM_MAX_READ + 1,
 			cpm->rxbuf[i], cpm->rxdma[i]);
 		dma_free_coherent(NULL, CPM_MAX_READ + 1,
+		dma_free_coherent(&cpm->ofdev->dev, CPM_MAX_READ + 1,
+			cpm->rxbuf[i], cpm->rxdma[i]);
+		dma_free_coherent(&cpm->ofdev->dev, CPM_MAX_READ + 1,
 			cpm->txbuf[i], cpm->txdma[i]);
 	}
 
@@ -636,6 +696,7 @@ static void cpm_i2c_shutdown(struct cpm_i2c *cpm)
 
 static int __devinit cpm_i2c_probe(struct of_device *ofdev,
 			 const struct of_device_id *match)
+static int cpm_i2c_probe(struct platform_device *ofdev)
 {
 	int result, len;
 	struct cpm_i2c *cpm;
@@ -648,10 +709,12 @@ static int __devinit cpm_i2c_probe(struct of_device *ofdev,
 	cpm->ofdev = ofdev;
 
 	dev_set_drvdata(&ofdev->dev, cpm);
+	platform_set_drvdata(ofdev, cpm);
 
 	cpm->adap = cpm_ops;
 	i2c_set_adapdata(&cpm->adap, cpm);
 	cpm->adap.dev.parent = &ofdev->dev;
+	cpm->adap.dev.of_node = of_node_get(ofdev->dev.of_node);
 
 	result = cpm_i2c_setup(cpm);
 	if (result) {
@@ -667,6 +730,9 @@ static int __devinit cpm_i2c_probe(struct of_device *ofdev,
 		result = i2c_add_numbered_adapter(&cpm->adap);
 	} else
 		result = i2c_add_adapter(&cpm->adap);
+	data = of_get_property(ofdev->dev.of_node, "linux,i2c-index", &len);
+	cpm->adap.nr = (data && len == 4) ? be32_to_cpup(data) : -1;
+	result = i2c_add_numbered_adapter(&cpm->adap);
 
 	if (result < 0) {
 		dev_err(&ofdev->dev, "Unable to register with I2C\n");
@@ -694,6 +760,9 @@ out_free:
 static int __devexit cpm_i2c_remove(struct of_device *ofdev)
 {
 	struct cpm_i2c *cpm = dev_get_drvdata(&ofdev->dev);
+static int cpm_i2c_remove(struct platform_device *ofdev)
+{
+	struct cpm_i2c *cpm = platform_get_drvdata(ofdev);
 
 	i2c_del_adapter(&cpm->adap);
 
@@ -739,6 +808,16 @@ static void __exit cpm_i2c_exit(void)
 
 module_init(cpm_i2c_init);
 module_exit(cpm_i2c_exit);
+static struct platform_driver cpm_i2c_driver = {
+	.probe		= cpm_i2c_probe,
+	.remove		= cpm_i2c_remove,
+	.driver = {
+		.name = "fsl-i2c-cpm",
+		.of_match_table = cpm_i2c_match,
+	},
+};
+
+module_platform_driver(cpm_i2c_driver);
 
 MODULE_AUTHOR("Jochen Friedrich <jochen@scram.de>");
 MODULE_DESCRIPTION("I2C-Bus adapter routines for CPM boards");

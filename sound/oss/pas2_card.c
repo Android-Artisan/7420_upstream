@@ -54,6 +54,19 @@ static int 	symphony;
 static int	broken_bus_clock = 1;
 #else
 static int	broken_bus_clock;
+static bool	joystick;
+#else
+static bool 	joystick = 1;
+#endif
+#ifdef SYMPHONY_PAS
+static bool 	symphony = 1;
+#else
+static bool 	symphony;
+#endif
+#ifdef BROKEN_BUS_CLOCK
+static bool	broken_bus_clock = 1;
+#else
+static bool	broken_bus_clock;
 #endif
 
 static struct address_info cfg;
@@ -159,6 +172,7 @@ static int __init config_pas_hw(struct address_info *hw_config)
 	pas_write(0x80
 		  | joystick?0x40:0
 		  ,0xF388);
+	pas_write(0x80 | (joystick ? 0x40 : 0), 0xF388);
 
 	if (pas_irq < 0 || pas_irq > 15)
 	{
@@ -335,6 +349,11 @@ static void __init attach_pas_card(struct address_info *hw_config)
 		{
 			char            temp[100];
 
+			if (pas_model < 0 ||
+			    pas_model >= ARRAY_SIZE(pas_model_names)) {
+				printk(KERN_ERR "pas2 unrecognized model.\n");
+				return;
+			}
 			sprintf(temp,
 			    "%s rev %d", pas_model_names[(int) pas_model],
 				    pas_read(0x2789));

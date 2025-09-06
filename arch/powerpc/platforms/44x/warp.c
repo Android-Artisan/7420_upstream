@@ -2,6 +2,7 @@
  * PIKA Warp(tm) board specific routines
  *
  * Copyright (c) 2008 PIKA Technologies
+ * Copyright (c) 2008-2009 PIKA Technologies
  *   Sean MacLennan <smaclennan@pikatech.com>
  *
  * This program is free software; you can redistribute  it and/or modify it
@@ -15,6 +16,9 @@
 #include <linux/i2c.h>
 #include <linux/interrupt.h>
 #include <linux/delay.h>
+#include <linux/of_gpio.h>
+#include <linux/slab.h>
+#include <linux/export.h>
 
 #include <asm/machdep.h>
 #include <asm/prom.h>
@@ -24,6 +28,10 @@
 #include <asm/ppc4xx.h>
 
 static __initdata struct of_device_id warp_of_bus[] = {
+#include <asm/dma.h>
+
+
+static const struct of_device_id warp_of_bus[] __initconst = {
 	{ .compatible = "ibm,plb4", },
 	{ .compatible = "ibm,opb", },
 	{ .compatible = "ibm,ebc", },
@@ -42,6 +50,13 @@ static int __init warp_probe(void)
 	unsigned long root = of_get_flat_dt_root();
 
 	return of_flat_dt_is_compatible(root, "pika,warp");
+	if (!of_flat_dt_is_compatible(root, "pika,warp"))
+		return 0;
+
+	/* For __dma_alloc_coherent */
+	ISA_DMA_THRESHOLD = ~0L;
+
+	return 1;
 }
 
 define_machine(warp) {
@@ -92,6 +107,7 @@ machine_late_initcall(warp, warp_post_info);
 static LIST_HEAD(dtm_shutdown_list);
 static void __iomem *dtm_fpga;
 static void __iomem *gpio_base;
+static unsigned green_led, red_led;
 
 
 struct dtm_shutdown {
@@ -137,11 +153,18 @@ static irqreturn_t temp_isr(int irq, void *context)
 
 	local_irq_disable();
 
+	int value = 1;
+
+	local_irq_disable();
+
+	gpio_set_value(green_led, 0);
+
 	/* Run through the shutdown list. */
 	list_for_each_entry(shutdown, &dtm_shutdown_list, list)
 		shutdown->func(shutdown->arg);
 
 	printk(KERN_EMERG "\n\nCritical Temperature Shutdown\n");
+	printk(KERN_EMERG "\n\nCritical Temperature Shutdown\n\n");
 
 	while (1) {
 		if (dtm_fpga) {
@@ -161,6 +184,13 @@ static irqreturn_t temp_isr(int irq, void *context)
 
 		mdelay(500);
 	}
+		gpio_set_value(red_led, value);
+		value ^= 1;
+		mdelay(500);
+	}
+
+	/* Not reached */
+	return IRQ_HANDLED;
 }
 
 static int pika_setup_leds(void)
@@ -195,6 +225,21 @@ static int pika_setup_leds(void)
 		printk(KERN_ERR __FILE__ ": Unable to map gpio");
 		return -ENOMEM;
 	}
+	struct device_node *np, *child;
+
+	np = of_find_compatible_node(NULL, NULL, "gpio-leds");
+	if (!np) {
+		printk(KERN_ERR __FILE__ ": Unable to find leds\n");
+		return -ENOENT;
+	}
+
+	for_each_child_of_node(np, child)
+		if (strcmp(child->name, "green") == 0)
+			green_led = of_get_gpio(child, 0);
+		else if (strcmp(child->name, "red") == 0)
+			red_led = of_get_gpio(child, 0);
+
+	of_node_put(np);
 
 	return 0;
 }
@@ -202,6 +247,9 @@ static int pika_setup_leds(void)
 static void pika_setup_critical_temp(struct i2c_client *client)
 {
 	struct device_node *np;
+static void pika_setup_critical_temp(struct device_node *np,
+				     struct i2c_client *client)
+{
 	int irq, rc;
 
 	/* Do this before enabling critical temp interrupt since we
@@ -221,6 +269,7 @@ static void pika_setup_critical_temp(struct i2c_client *client)
 
 	irq = irq_of_parse_and_map(np, 0);
 	of_node_put(np);
+	irq = irq_of_parse_and_map(np, 0);
 	if (irq  == NO_IRQ) {
 		printk(KERN_ERR __FILE__ ": Unable to get ad7414 irq\n");
 		return;
@@ -275,6 +324,24 @@ found_it:
 	pika_setup_critical_temp(client);
 
 	printk(KERN_INFO "PIKA DTM thread running.\n");
+	struct device_node *np;
+	struct i2c_client *client;
+
+	np = of_find_compatible_node(NULL, NULL, "adi,ad7414");
+	if (np == NULL)
+		return -ENOENT;
+
+	client = of_find_i2c_device_by_node(np);
+	if (client == NULL) {
+		of_node_put(np);
+		return -ENOENT;
+	}
+
+	pika_setup_critical_temp(np, client);
+
+	of_node_put(np);
+
+	printk(KERN_INFO "Warp DTM thread running.\n");
 
 	while (!kthread_should_stop()) {
 		int val;
@@ -311,6 +378,9 @@ static int __init pika_dtm_start(void)
 	if (dtm_fpga == NULL)
 		return -ENOENT;
 
+	/* Must get post info before thread starts. */
+	warp_post_info();
+
 	dtm_thread = kthread_run(pika_dtm_thread, dtm_fpga, "pika-dtm");
 	if (IS_ERR(dtm_thread)) {
 		iounmap(dtm_fpga);
@@ -332,6 +402,8 @@ int pika_dtm_unregister_shutdown(void (*func)(void *arg), void *arg)
 {
 	return 0;
 }
+
+machine_late_initcall(warp, warp_post_info);
 
 #endif
 

@@ -61,6 +61,7 @@
 #define SO_SECURITY_ENCRYPTION_NETWORK		21
 
 #define SO_MARK			36
+#include <uapi/asm/socket.h>
 
 /* O_NONBLOCK clashes with the bits used for socket types.  Therefore we
  * have to define SOCK_NONBLOCK to a different value here.

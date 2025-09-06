@@ -30,6 +30,13 @@ static int __uses_jump_to_uncached cache_seq_show(struct seq_file *file,
 	unsigned int waysize, way, cache_size;
 	unsigned long ccr, base;
 	static unsigned long addrstart = 0;
+static int cache_seq_show(struct seq_file *file, void *iter)
+{
+	unsigned int cache_type = (unsigned int)file->private;
+	struct cache_info *cache;
+	unsigned int waysize, way;
+	unsigned long ccr;
+	unsigned long addrstart = 0;
 
 	/*
 	 * Go uncached immediately so we don't skew the results any
@@ -38,6 +45,7 @@ static int __uses_jump_to_uncached cache_seq_show(struct seq_file *file,
 	jump_to_uncached();
 
 	ccr = ctrl_inl(CCR);
+	ccr = __raw_readl(SH_CCR);
 	if ((ccr & CCR_CACHE_ENABLE) == 0) {
 		back_to_cached();
 
@@ -68,6 +76,13 @@ static int __uses_jump_to_uncached cache_seq_show(struct seq_file *file,
 	     (addrstart & 0x00ffffff) > cache_size)
 		addrstart = base;
 
+		addrstart = CACHE_OC_ADDRESS_ARRAY;
+		cache = &current_cpu_data.dcache;
+	} else {
+		addrstart = CACHE_IC_ADDRESS_ARRAY;
+		cache = &current_cpu_data.icache;
+	}
+
 	waysize = cache->sets;
 
 	/*
@@ -91,6 +106,7 @@ static int __uses_jump_to_uncached cache_seq_show(struct seq_file *file,
 		     addr < addrstart + waysize;
 		     addr += cache->linesz, line++) {
 			unsigned long data = ctrl_inl(addr);
+			unsigned long data = __raw_readl(addr);
 
 			/* Check the V bit, ignore invalid cachelines */
 			if ((data & 1) == 0)
@@ -139,6 +155,18 @@ static int __init cache_debugfs_init(void)
 	if (IS_ERR(icache_dentry)) {
 		debugfs_remove(dcache_dentry);
 		return PTR_ERR(icache_dentry);
+	dcache_dentry = debugfs_create_file("dcache", S_IRUSR, arch_debugfs_dir,
+					    (unsigned int *)CACHE_TYPE_DCACHE,
+					    &cache_debugfs_fops);
+	if (!dcache_dentry)
+		return -ENOMEM;
+
+	icache_dentry = debugfs_create_file("icache", S_IRUSR, arch_debugfs_dir,
+					    (unsigned int *)CACHE_TYPE_ICACHE,
+					    &cache_debugfs_fops);
+	if (!icache_dentry) {
+		debugfs_remove(dcache_dentry);
+		return -ENOMEM;
 	}
 
 	return 0;

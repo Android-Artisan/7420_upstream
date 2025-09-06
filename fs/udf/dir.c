@@ -39,6 +39,11 @@
 static int do_udf_readdir(struct inode *dir, struct file *filp,
 			  filldir_t filldir, void *dirent)
 {
+
+static int udf_readdir(struct file *file, struct dir_context *ctx)
+{
+	struct inode *dir = file_inode(file);
+	struct udf_inode_info *iinfo = UDF_I(dir);
 	struct udf_fileident_bh fibh = { .sbh = NULL, .ebh = NULL};
 	struct fileIdentDesc *fi = NULL;
 	struct fileIdentDesc cfi;
@@ -47,6 +52,10 @@ static int do_udf_readdir(struct inode *dir, struct file *filp,
 	int flen;
 	char *fname = NULL;
 	char *nameptr;
+	loff_t nf_pos;
+	int flen;
+	unsigned char *fname = NULL;
+	unsigned char *nameptr;
 	uint16_t liu;
 	uint8_t lfi;
 	loff_t size = udf_ext0_offset(dir) + dir->i_size;
@@ -59,6 +68,19 @@ static int do_udf_readdir(struct inode *dir, struct file *filp,
 	struct extent_position epos = { NULL, 0, {0, 0} };
 	struct udf_inode_info *iinfo;
 
+	struct kernel_lb_addr eloc;
+	uint32_t elen;
+	sector_t offset;
+	int i, num, ret = 0;
+	struct extent_position epos = { NULL, 0, {0, 0} };
+	struct super_block *sb = dir->i_sb;
+
+	if (ctx->pos == 0) {
+		if (!dir_emit_dot(file, ctx))
+			return 0;
+		ctx->pos = 1;
+	}
+	nf_pos = (ctx->pos - 1) << 2;
 	if (nf_pos >= size)
 		goto out;
 
@@ -75,6 +97,9 @@ static int do_udf_readdir(struct inode *dir, struct file *filp,
 	iinfo = UDF_I(dir);
 	if (iinfo->i_alloc_type != ICBTAG_FLAG_AD_IN_ICB) {
 		if (inode_bmap(dir, nf_pos >> dir->i_sb->s_blocksize_bits,
+	fibh.soffset = fibh.eoffset = nf_pos & (sb->s_blocksize - 1);
+	if (iinfo->i_alloc_type != ICBTAG_FLAG_AD_IN_ICB) {
+		if (inode_bmap(dir, nf_pos >> sb->s_blocksize_bits,
 		    &epos, &eloc, &elen, &offset)
 		    != (EXT_RECORDED_ALLOCATED >> 30)) {
 			ret = -ENOENT;
@@ -87,11 +112,19 @@ static int do_udf_readdir(struct inode *dir, struct file *filp,
 			else if (iinfo->i_alloc_type ==
 					ICBTAG_FLAG_AD_LONG)
 				epos.offset -= sizeof(long_ad);
+		block = udf_get_lb_pblock(sb, &eloc, offset);
+		if ((++offset << sb->s_blocksize_bits) < elen) {
+			if (iinfo->i_alloc_type == ICBTAG_FLAG_AD_SHORT)
+				epos.offset -= sizeof(struct short_ad);
+			else if (iinfo->i_alloc_type ==
+					ICBTAG_FLAG_AD_LONG)
+				epos.offset -= sizeof(struct long_ad);
 		} else {
 			offset = 0;
 		}
 
 		if (!(fibh.sbh = fibh.ebh = udf_tread(dir->i_sb, block))) {
+		if (!(fibh.sbh = fibh.ebh = udf_tread(sb, block))) {
 			ret = -EIO;
 			goto out;
 		}
@@ -103,6 +136,13 @@ static int do_udf_readdir(struct inode *dir, struct file *filp,
 			for (num = 0; i > 0; i--) {
 				block = udf_get_lb_pblock(dir->i_sb, eloc, offset + i);
 				tmp = udf_tgetblk(dir->i_sb, block);
+		if (!(offset & ((16 >> (sb->s_blocksize_bits - 9)) - 1))) {
+			i = 16 >> (sb->s_blocksize_bits - 9);
+			if (i + offset > (elen >> sb->s_blocksize_bits))
+				i = (elen >> sb->s_blocksize_bits) - offset;
+			for (num = 0; i > 0; i--) {
+				block = udf_get_lb_pblock(sb, &eloc, offset + i);
+				tmp = udf_tgetblk(sb, block);
 				if (tmp && !buffer_uptodate(tmp) && !buffer_locked(tmp))
 					bha[num++] = tmp;
 				else
@@ -118,6 +158,9 @@ static int do_udf_readdir(struct inode *dir, struct file *filp,
 
 	while (nf_pos < size) {
 		filp->f_pos = (nf_pos >> 2) + 1;
+		struct kernel_lb_addr tloc;
+
+		ctx->pos = (nf_pos >> 2) + 1;
 
 		fi = udf_fileident_read(dir, &nf_pos, &fibh, &cfi, &epos, &eloc,
 					&elen, &offset);
@@ -147,11 +190,13 @@ static int do_udf_readdir(struct inode *dir, struct file *filp,
 
 		if ((cfi.fileCharacteristics & FID_FILE_CHAR_DELETED) != 0) {
 			if (!UDF_QUERY_FLAG(dir->i_sb, UDF_FLAG_UNDELETE))
+			if (!UDF_QUERY_FLAG(sb, UDF_FLAG_UNDELETE))
 				continue;
 		}
 
 		if ((cfi.fileCharacteristics & FID_FILE_CHAR_HIDDEN) != 0) {
 			if (!UDF_QUERY_FLAG(dir->i_sb, UDF_FLAG_UNHIDE))
+			if (!UDF_QUERY_FLAG(sb, UDF_FLAG_UNHIDE))
 				continue;
 		}
 
@@ -174,6 +219,22 @@ static int do_udf_readdir(struct inode *dir, struct file *filp,
 	} /* end while */
 
 	filp->f_pos = (nf_pos >> 2) + 1;
+			if (!dir_emit_dotdot(file, ctx))
+				goto out;
+			continue;
+		}
+
+		flen = udf_get_filename(sb, nameptr, lfi, fname, UDF_NAME_LEN);
+		if (flen < 0)
+			continue;
+
+		tloc = lelb_to_cpu(cfi.icb.extLocation);
+		iblock = udf_get_lb_pblock(sb, &tloc, 0);
+		if (!dir_emit(ctx, fname, flen, iblock, DT_UNKNOWN))
+			goto out;
+	} /* end while */
+
+	ctx->pos = (nf_pos >> 2) + 1;
 
 out:
 	if (fibh.sbh != fibh.ebh)
@@ -211,4 +272,11 @@ const struct file_operations udf_dir_operations = {
 	.readdir		= udf_readdir,
 	.ioctl			= udf_ioctl,
 	.fsync			= udf_fsync_file,
+/* readdir and lookup functions */
+const struct file_operations udf_dir_operations = {
+	.llseek			= generic_file_llseek,
+	.read			= generic_read_dir,
+	.iterate		= udf_readdir,
+	.unlocked_ioctl		= udf_ioctl,
+	.fsync			= generic_file_fsync,
 };

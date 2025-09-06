@@ -11,6 +11,7 @@
 
 #include <linux/tifm.h>
 #include <linux/dma-mapping.h>
+#include <linux/module.h>
 
 #define DRIVER_NAME "tifm_7xx1"
 #define DRIVER_VERSION "0.8"
@@ -165,6 +166,7 @@ static void tifm_7xx1_switch_media(struct work_struct *work)
 			printk(KERN_INFO
 			       "%s : demand removing card from socket %u:%u\n",
 			       fm->dev.bus_id, fm->id, cnt);
+			       dev_name(&fm->dev), fm->id, cnt);
 			fm->sockets[cnt] = NULL;
 			sock_addr = sock->addr;
 			spin_unlock_irqrestore(&fm->lock, flags);
@@ -193,7 +195,7 @@ static void tifm_7xx1_switch_media(struct work_struct *work)
 				spin_unlock_irqrestore(&fm->lock, flags);
 			}
 			if (sock)
-				tifm_free_device(&sock->dev);
+				put_device(&sock->dev);
 		}
 		spin_lock_irqsave(&fm->lock, flags);
 	}
@@ -235,6 +237,7 @@ static int tifm_7xx1_resume(struct pci_dev *dev)
 {
 	struct tifm_adapter *fm = pci_get_drvdata(dev);
 	int rc;
+	unsigned long timeout;
 	unsigned int good_sockets = 0, bad_sockets = 0;
 	unsigned long flags;
 	unsigned char new_ids[fm->num_sockets];
@@ -273,6 +276,8 @@ static int tifm_7xx1_resume(struct pci_dev *dev)
 		spin_unlock_irqrestore(&fm->lock, flags);
 		rc = wait_for_completion_timeout(&finish_resume, HZ);
 		dev_dbg(&dev->dev, "wait returned %d\n", rc);
+		timeout = wait_for_completion_timeout(&finish_resume, HZ);
+		dev_dbg(&dev->dev, "wait returned %lu\n", timeout);
 		writel(TIFM_IRQ_FIFOMASK(good_sockets)
 		       | TIFM_IRQ_CARDMASK(good_sockets),
 		       fm->addr + FM_CLEAR_INTERRUPT_ENABLE);
@@ -325,6 +330,7 @@ static int tifm_7xx1_probe(struct pci_dev *dev,
 	int rc;
 
 	rc = pci_set_dma_mask(dev, DMA_32BIT_MASK);
+	rc = pci_set_dma_mask(dev, DMA_BIT_MASK(32));
 	if (rc)
 		return rc;
 
@@ -358,6 +364,11 @@ static int tifm_7xx1_probe(struct pci_dev *dev,
 			   pci_resource_len(dev, 0));
 	if (!fm->addr)
 		goto err_out_free;
+	fm->addr = pci_ioremap_bar(dev, 0);
+	if (!fm->addr) {
+		rc = -ENODEV;
+		goto err_out_free;
+	}
 
 	rc = request_irq(dev->irq, tifm_7xx1_isr, IRQF_SHARED, DRIVER_NAME, fm);
 	if (rc)
@@ -444,6 +455,7 @@ static void __exit tifm_7xx1_exit(void)
 	pci_unregister_driver(&tifm_7xx1_driver);
 }
 
+module_pci_driver(tifm_7xx1_driver);
 MODULE_AUTHOR("Alex Dubov");
 MODULE_DESCRIPTION("TI FlashMedia host driver");
 MODULE_LICENSE("GPL");

@@ -18,6 +18,11 @@
 #define dprintk(msg...) \
 	cpufreq_debug_printk(CPUFREQ_DEBUG_GOVERNOR, "performance", msg)
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
+#include <linux/cpufreq.h>
+#include <linux/init.h>
+#include <linux/module.h>
 
 static int cpufreq_governor_performance(struct cpufreq_policy *policy,
 					unsigned int event)
@@ -26,6 +31,7 @@ static int cpufreq_governor_performance(struct cpufreq_policy *policy,
 	case CPUFREQ_GOV_START:
 	case CPUFREQ_GOV_LIMITS:
 		dprintk("setting to %u kHz because of event %u\n",
+		pr_debug("setting to %u kHz because of event %u\n",
 						policy->max, event);
 		__cpufreq_driver_target(policy, policy->max,
 						CPUFREQ_RELATION_H);
@@ -36,6 +42,9 @@ static int cpufreq_governor_performance(struct cpufreq_policy *policy,
 	return 0;
 }
 
+#ifdef CONFIG_CPU_FREQ_GOV_PERFORMANCE_MODULE
+static
+#endif
 struct cpufreq_governor cpufreq_gov_performance = {
 	.name		= "performance",
 	.governor	= cpufreq_governor_performance,

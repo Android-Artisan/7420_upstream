@@ -45,6 +45,7 @@ int rpaphp_get_sensor_state(struct slot *slot, int *state)
 			    __func__);
 
 			/* some slots have to be powered up 
+			/* some slots have to be powered up
 			 * before get-sensor will succeed.
 			 */
 			rc = rtas_set_power_level(slot->power_domain, POWER_ON,
@@ -124,6 +125,7 @@ int rpaphp_enable_slot(struct slot *slot)
 		}
 
 		if (debug) {
+		if (rpaphp_debug) {
 			struct pci_dev *dev;
 			dbg("%s: pci_devs of slot[%s]\n", __func__, slot->dn->full_name);
 			list_for_each_entry (dev, &bus->devices, bus_list)

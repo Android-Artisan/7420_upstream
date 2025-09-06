@@ -28,6 +28,7 @@
 #define __XEN_PUBLIC_CALLBACK_H__
 
 #include "xen.h"
+#include <xen/interface/xen.h>
 
 /*
  * Prototype for this hypercall is:
@@ -37,6 +38,7 @@
  */
 
 /* ia64, x86: Callback for event delivery. */
+/* x86: Callback for event delivery. */
 #define CALLBACKTYPE_event                 0
 
 /* x86: Failsafe callback when guest state cannot be restored by Xen. */

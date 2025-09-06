@@ -1,5 +1,6 @@
 /*
 	Copyright (C) 2004 - 2008 rt2x00 SourceForge Project
+	Copyright (C) 2004 - 2009 Ivo van Doorn <IvDoorn@gmail.com>
 	<http://rt2x00.serialmonkey.com>
 
 	This program is free software; you can redistribute it and/or modify
@@ -16,11 +17,18 @@
 	along with this program; if not, write to the
 	Free Software Foundation, Inc.,
 	59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+	along with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
 /*
 	Module: rt2x00dump
 	Abstract: Data structures for the rt2x00debug & userspace.
+	Abstract:
+		Data structures for the rt2x00debug & userspace.
+
+		The declarations in this file can be used by both rt2x00
+		and userspace and therefore should be kept together in
+		this file.
  */
 
 #ifndef RT2X00DUMP_H
@@ -47,6 +55,7 @@
  *
  * rt2x00dump header: The description of the dumped frame, as well as
  *	additional information usefull for debugging. See &rt2x00dump_hdr.
+ *	additional information useful for debugging. See &rt2x00dump_hdr.
  * hardware descriptor: Descriptor that was used to receive or transmit
  *	the frame.
  * ieee802.11 frame: The actual frame that was received or transmitted.
@@ -62,11 +71,14 @@
  *	the tx event which has either succeeded or failed. A frame
  *	with this type should also have been reported with as a
  *	%DUMP_FRAME_TX frame.
+ * @DUMP_FRAME_BEACON: This beacon frame is queued for transmission to the
+ *	hardware.
  */
 enum rt2x00_dump_type {
 	DUMP_FRAME_RXDONE = 1,
 	DUMP_FRAME_TX = 2,
 	DUMP_FRAME_TXDONE = 3,
+	DUMP_FRAME_BEACON = 4,
 };
 
 /**
@@ -109,6 +121,7 @@ struct rt2x00dump_hdr {
 	__le16 chip_rt;
 	__le16 chip_rf;
 	__le32 chip_rev;
+	__le16 chip_rev;
 
 	__le16 type;
 	__u8 queue_index;

@@ -30,6 +30,9 @@
 
 #include <asm/processor.h>
 #include <asm/system.h>
+#include <linux/gfp.h>
+
+#include <asm/processor.h>
 #include <asm/uaccess.h>
 #include <asm/pgtable.h>
 #include <asm/pgalloc.h>
@@ -40,6 +43,12 @@
 DEFINE_PER_CPU(struct mmu_gather, mmu_gathers);
 
 unsigned long highstart_pfn, highend_pfn;
+
+unsigned long highstart_pfn, highend_pfn;
+
+#ifdef CONFIG_MN10300_HAS_ATOMIC_OPS_UNIT
+static struct vm_struct user_iomap_vm;
+#endif
 
 /*
  * set up paging
@@ -74,6 +83,24 @@ void __init paging_init(void)
 	free_area_init(zones_size);
 
 	__flush_tlb_all();
+#ifdef CONFIG_MN10300_HAS_ATOMIC_OPS_UNIT
+	/* The Atomic Operation Unit registers need to be mapped to userspace
+	 * for all processes.  The following uses vm_area_register_early() to
+	 * reserve the first page of the vmalloc area and sets the pte for that
+	 * page.
+	 *
+	 * glibc hardcodes this virtual mapping, so we're pretty much stuck with
+	 * it from now on.
+	 */
+	user_iomap_vm.flags = VM_USERMAP;
+	user_iomap_vm.size = 1 << PAGE_SHIFT;
+	vm_area_register_early(&user_iomap_vm, PAGE_SIZE);
+	ppte = kernel_vmalloc_ptes;
+	set_pte(ppte, pfn_pte(USER_ATOMIC_OPS_PAGE_ADDR >> PAGE_SHIFT,
+			      PAGE_USERIO));
+#endif
+
+	local_flush_tlb_all();
 }
 
 /*
@@ -86,11 +113,13 @@ void __init mem_init(void)
 
 	if (!mem_map)
 		BUG();
+	BUG_ON(!mem_map);
 
 #define START_PFN	(contig_page_data.bdata->node_min_pfn)
 #define MAX_LOW_PFN	(contig_page_data.bdata->node_low_pfn)
 
 	max_mapnr = num_physpages = MAX_LOW_PFN - START_PFN;
+	max_mapnr = MAX_LOW_PFN - START_PFN;
 	high_memory = (void *) __va(MAX_LOW_PFN * PAGE_SIZE);
 
 	/* clear the zero-page */
@@ -137,6 +166,9 @@ void free_init_pages(char *what, unsigned long begin, unsigned long end)
 		totalram_pages++;
 	}
 	printk(KERN_INFO "Freeing %s: %ldk freed\n", what, (end - begin) >> 10);
+	free_all_bootmem();
+
+	mem_init_print_info(NULL);
 }
 
 /*
@@ -147,6 +179,7 @@ void free_initmem(void)
 	free_init_pages("unused kernel memory",
 			(unsigned long) &__init_begin,
 			(unsigned long) &__init_end);
+	free_initmem_default(POISON_FREE_INITMEM);
 }
 
 /*
@@ -156,5 +189,7 @@ void free_initmem(void)
 void free_initrd_mem(unsigned long start, unsigned long end)
 {
 	free_init_pages("initrd memory", start, end);
+	free_reserved_area((void *)start, (void *)end, POISON_FREE_INITMEM,
+			   "initrd");
 }
 #endif

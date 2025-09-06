@@ -114,6 +114,11 @@ struct acct_v3
 #endif
 
 #ifdef __KERNEL__
+#ifndef _LINUX_ACCT_H
+#define _LINUX_ACCT_H
+
+#include <uapi/linux/acct.h>
+
 
 
 #ifdef CONFIG_BSD_PROCESS_ACCT
@@ -124,6 +129,7 @@ struct pid_namespace;
 extern void acct_auto_close_mnt(struct vfsmount *m);
 extern void acct_auto_close(struct super_block *sb);
 extern void acct_init_pacct(struct pacct_struct *pacct);
+extern int acct_parm[]; /* for sysctl */
 extern void acct_collect(long exitcode, int group_dead);
 extern void acct_process(void);
 extern void acct_exit_ns(struct pid_namespace *);
@@ -146,6 +152,9 @@ extern void acct_exit_ns(struct pid_namespace *);
  * 5: new binary incompatible format (128 bytes, second half)
  *
  */
+
+#undef ACCT_VERSION
+#undef AHZ
 
 #ifdef CONFIG_BSD_PROCESS_ACCT_V3
 #define ACCT_VERSION	3

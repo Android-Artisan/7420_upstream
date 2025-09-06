@@ -36,6 +36,8 @@ static int verbose; /* set this to 1 to see debugging messages and whatnot */
 #include "ppc6lnx.c"
 #include "paride.h"
 
+/* PARAMETERS */
+static bool verbose; /* set this to 1 to see debugging messages and whatnot */
  
 
 #define PPCSTRUCT(pi) ((Interface *)(pi->private))

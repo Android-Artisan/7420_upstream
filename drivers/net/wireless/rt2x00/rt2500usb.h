@@ -1,5 +1,6 @@
 /*
 	Copyright (C) 2004 - 2008 rt2x00 SourceForge Project
+	Copyright (C) 2004 - 2009 Ivo van Doorn <IvDoorn@gmail.com>
 	<http://rt2x00.serialmonkey.com>
 
 	This program is free software; you can redistribute it and/or modify
@@ -16,6 +17,7 @@
 	along with this program; if not, write to the
 	Free Software Foundation, Inc.,
 	59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+	along with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
 /*
@@ -47,6 +49,7 @@
 /*
  * Signal information.
  * Defaul offset is required for RSSI <-> dBm conversion.
+ * Default offset is required for RSSI <-> dBm conversion.
  */
 #define DEFAULT_RSSI_OFFSET		120
 
@@ -59,6 +62,11 @@
 #define EEPROM_SIZE			0x006a
 #define BBP_SIZE			0x0060
 #define RF_SIZE				0x0014
+#define EEPROM_SIZE			0x006e
+#define BBP_BASE			0x0000
+#define BBP_SIZE			0x0060
+#define RF_BASE				0x0004
+#define RF_SIZE				0x0010
 
 /*
  * Number of TX queues.
@@ -187,6 +195,26 @@
  * MAC_CSR19: GPIO control register.
  */
 #define MAC_CSR19			0x0426
+ *	MAC_CSR19_VALx: GPIO value
+ *	MAC_CSR19_DIRx: GPIO direction: 0 = input; 1 = output
+ */
+#define MAC_CSR19			0x0426
+#define MAC_CSR19_VAL0			FIELD16(0x0001)
+#define MAC_CSR19_VAL1			FIELD16(0x0002)
+#define MAC_CSR19_VAL2			FIELD16(0x0004)
+#define MAC_CSR19_VAL3			FIELD16(0x0008)
+#define MAC_CSR19_VAL4			FIELD16(0x0010)
+#define MAC_CSR19_VAL5			FIELD16(0x0020)
+#define MAC_CSR19_VAL6			FIELD16(0x0040)
+#define MAC_CSR19_VAL7			FIELD16(0x0080)
+#define MAC_CSR19_DIR0			FIELD16(0x0100)
+#define MAC_CSR19_DIR1			FIELD16(0x0200)
+#define MAC_CSR19_DIR2			FIELD16(0x0400)
+#define MAC_CSR19_DIR3			FIELD16(0x0800)
+#define MAC_CSR19_DIR4			FIELD16(0x1000)
+#define MAC_CSR19_DIR5			FIELD16(0x2000)
+#define MAC_CSR19_DIR6			FIELD16(0x4000)
+#define MAC_CSR19_DIR7			FIELD16(0x8000)
 
 /*
  * MAC_CSR20: LED control register.
@@ -444,6 +472,9 @@
 #define SEC_CSR29			0x04ba
 #define SEC_CSR30			0x04bc
 #define SEC_CSR31			0x04be
+
+#define KEY_ENTRY(__idx) \
+	( SEC_CSR0 + ((__idx) * 16) )
 
 /*
  * PHY control registers.
@@ -819,6 +850,7 @@
 
 /*
  * Macro's for converting txpower from EEPROM to mac80211 value
+ * Macros for converting txpower from EEPROM to mac80211 value
  * and from mac80211 value to register value.
  */
 #define MIN_TXPOWER	0
@@ -837,5 +869,10 @@
 	(((__txpower) >= MAX_TXPOWER) ? MAX_TXPOWER :	\
 	(__txpower));					\
 })
+#define TXPOWER_FROM_DEV(__txpower) \
+	(((u8)(__txpower)) > MAX_TXPOWER) ? DEFAULT_TXPOWER : (__txpower)
+
+#define TXPOWER_TO_DEV(__txpower) \
+	clamp_t(char, __txpower, MIN_TXPOWER, MAX_TXPOWER)
 
 #endif /* RT2500USB_H */

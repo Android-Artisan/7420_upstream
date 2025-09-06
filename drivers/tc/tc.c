@@ -2,7 +2,7 @@
  *	TURBOchannel bus services.
  *
  *	Copyright (c) Harald Koerfgen, 1998
- *	Copyright (c) 2001, 2003, 2005, 2006  Maciej W. Rozycki
+ *	Copyright (c) 2001, 2003, 2005, 2006, 2018  Maciej W. Rozycki
  *	Copyright (c) 2005  James Simmons
  *
  *	This file is subject to the terms and conditions of the GNU
@@ -10,12 +10,14 @@
  *	directory of this archive for more details.
  */
 #include <linux/compiler.h>
+#include <linux/dma-mapping.h>
 #include <linux/errno.h>
 #include <linux/init.h>
 #include <linux/ioport.h>
 #include <linux/kernel.h>
 #include <linux/list.h>
 #include <linux/module.h>
+#include <linux/slab.h>
 #include <linux/string.h>
 #include <linux/tc.h>
 #include <linux/types.h>
@@ -87,10 +89,19 @@ static void __init tc_bus_add_devices(struct tc_bus *tbus)
 			goto out_err;
 		}
 		sprintf(tdev->dev.bus_id, "tc%x", slot);
+			pr_err("tc%x: unable to allocate tc_dev\n", slot);
+			goto out_err;
+		}
+		dev_set_name(&tdev->dev, "tc%x", slot);
 		tdev->bus = tbus;
 		tdev->dev.parent = &tbus->dev;
 		tdev->dev.bus = &tc_bus_type;
 		tdev->slot = slot;
+
+		/* TURBOchannel has 34-bit DMA addressing (16GiB space). */
+		tdev->dma_mask = DMA_BIT_MASK(34);
+		tdev->dev.dma_mask = &tdev->dma_mask;
+		tdev->dev.coherent_dma_mask = DMA_BIT_MASK(34);
 
 		for (i = 0; i < 8; i++) {
 			tdev->firmware[i] =
@@ -105,6 +116,7 @@ static void __init tc_bus_add_devices(struct tc_bus *tbus)
 		tdev->name[8] = 0;
 
 		pr_info("%s: %s %s %s\n", tdev->dev.bus_id, tdev->vendor,
+		pr_info("%s: %s %s %s\n", dev_name(&tdev->dev), tdev->vendor,
 			tdev->name, tdev->firmware);
 
 		devsize = readb(module + offset + TC_SLOT_SIZE);
@@ -120,6 +132,10 @@ static void __init tc_bus_add_devices(struct tc_bus *tbus)
 			       "(%dMiB required, up to %dMiB supported)\n",
 			       tdev->dev.bus_id, devsize >> 20,
 			       max(slotsize, extslotsize) >> 20);
+			pr_err("%s: Cannot provide slot space "
+			       "(%ldMiB required, up to %ldMiB supported)\n",
+			       dev_name(&tdev->dev), (long)(devsize >> 20),
+			       (long)(max(slotsize, extslotsize) >> 20));
 			kfree(tdev);
 			goto out_err;
 		}
@@ -129,6 +145,10 @@ static void __init tc_bus_add_devices(struct tc_bus *tbus)
 		tc_device_get_irq(tdev);
 
 		device_register(&tdev->dev);
+		if (device_register(&tdev->dev)) {
+			put_device(&tdev->dev);
+			goto out_err;
+		}
 		list_add_tail(&tdev->node, &tbus->devices);
 
 out_err:
@@ -148,6 +168,12 @@ static int __init tc_init(void)
 	INIT_LIST_HEAD(&tc_bus.devices);
 	strcpy(tc_bus.dev.bus_id, "tc");
 	device_register(&tc_bus.dev);
+		goto out_err;
+
+	INIT_LIST_HEAD(&tc_bus.devices);
+	dev_set_name(&tc_bus.dev, "tc");
+	if (device_register(&tc_bus.dev))
+		goto out_err_device;
 
 	if (tc_bus.info.slot_size) {
 		unsigned int tc_clock = tc_get_speed(&tc_bus) / 100000;
@@ -167,6 +193,8 @@ static int __init tc_init(void)
 				     &tc_bus.resource[0]) < 0) {
 			printk(KERN_ERR "tc: Cannot reserve resource\n");
 			return 0;
+			pr_err("tc: Cannot reserve resource\n");
+			goto out_err_device;
 		}
 		if (tc_bus.ext_slot_size) {
 			tc_bus.resource[1].start = tc_bus.ext_slot_base;
@@ -181,12 +209,21 @@ static int __init tc_init(void)
 				       "tc: Cannot reserve resource\n");
 				release_resource(&tc_bus.resource[0]);
 				return 0;
+				pr_err("tc: Cannot reserve resource\n");
+				goto out_err_resource;
 			}
 		}
 
 		tc_bus_add_devices(&tc_bus);
 	}
 
+	return 0;
+
+out_err_resource:
+	release_resource(&tc_bus.resource[0]);
+out_err_device:
+	put_device(&tc_bus.dev);
+out_err:
 	return 0;
 }
 

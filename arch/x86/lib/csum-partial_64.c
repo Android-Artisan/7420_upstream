@@ -85,6 +85,7 @@ static unsigned do_csum(const unsigned char *buff, unsigned len)
 			}
 
 			/* last upto 7 8byte blocks */
+			/* last up to 7 8byte blocks */
 			count %= 8; 
 			while (count) { 
 				asm("addq %1,%0\n\t"

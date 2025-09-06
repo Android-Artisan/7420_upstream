@@ -449,3 +449,4 @@ static void __exit tmdc_exit(void)
 
 module_init(tmdc_init);
 module_exit(tmdc_exit);
+module_gameport_driver(tmdc_drv);

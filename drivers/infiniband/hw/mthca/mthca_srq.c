@@ -267,6 +267,7 @@ int mthca_alloc_srq(struct mthca_dev *dev, struct mthca_pd *pd,
 		mthca_tavor_init_srq_context(dev, pd, srq, mailbox->buf);
 
 	err = mthca_SW2HW_SRQ(dev, mailbox, srq->srqn, &status);
+	err = mthca_SW2HW_SRQ(dev, mailbox, srq->srqn);
 
 	if (err) {
 		mthca_warn(dev, "SW2HW_SRQ failed (%d)\n", err);
@@ -304,6 +305,9 @@ err_out_free_srq:
 		mthca_warn(dev, "HW2SW_SRQ failed (%d)\n", err);
 	else if (status)
 		mthca_warn(dev, "HW2SW_SRQ returned status 0x%02x\n", status);
+	err = mthca_HW2SW_SRQ(dev, mailbox, srq->srqn);
+	if (err)
+		mthca_warn(dev, "HW2SW_SRQ failed (%d)\n", err);
 
 err_out_free_buf:
 	if (!pd->ibpd.uobject)
@@ -353,6 +357,9 @@ void mthca_free_srq(struct mthca_dev *dev, struct mthca_srq *srq)
 		mthca_warn(dev, "HW2SW_SRQ failed (%d)\n", err);
 	else if (status)
 		mthca_warn(dev, "HW2SW_SRQ returned status 0x%02x\n", status);
+	err = mthca_HW2SW_SRQ(dev, mailbox, srq->srqn);
+	if (err)
+		mthca_warn(dev, "HW2SW_SRQ failed (%d)\n", err);
 
 	spin_lock_irq(&dev->srq_table.lock);
 	mthca_array_clear(&dev->srq_table.srq,
@@ -380,6 +387,7 @@ int mthca_modify_srq(struct ib_srq *ibsrq, struct ib_srq_attr *attr,
 	struct mthca_srq *srq = to_msrq(ibsrq);
 	int ret;
 	u8 status;
+	int ret = 0;
 
 	/* We don't support resizing SRQs (yet?) */
 	if (attr_mask & IB_SRQ_MAX_WR)
@@ -401,6 +409,11 @@ int mthca_modify_srq(struct ib_srq *ibsrq, struct ib_srq_attr *attr,
 	}
 
 	return 0;
+		ret = mthca_ARM_SRQ(dev, srq->srqn, attr->srq_limit);
+		mutex_unlock(&srq->mutex);
+	}
+
+	return ret;
 }
 
 int mthca_query_srq(struct ib_srq *ibsrq, struct ib_srq_attr *srq_attr)
@@ -418,6 +431,7 @@ int mthca_query_srq(struct ib_srq *ibsrq, struct ib_srq_attr *srq_attr)
 		return PTR_ERR(mailbox);
 
 	err = mthca_QUERY_SRQ(dev, srq->srqn, mailbox, &status);
+	err = mthca_QUERY_SRQ(dev, srq->srqn, mailbox);
 	if (err)
 		goto out;
 

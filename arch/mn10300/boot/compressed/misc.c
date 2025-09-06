@@ -167,6 +167,7 @@ static uch *high_buffer_start /* = (uch *)(((ulg)&end) + HEAP_SIZE)*/;
 static char *vidmem = (char *)0xb8000;
 static int lines, cols;
 
+#define BOOTLOADER_INFLATE
 #include "../../../../lib/inflate.c"
 
 static inline void scroll(void)
@@ -236,7 +237,6 @@ static void kputs(const char *s)
 #endif /* CONFIG_DEBUG_DECOMPRESS_KERNEL */
 }
 
-/* ===========================================================================
  * Fill the input buffer. This is called only when the buffer is empty
  * and at least one byte is really needed.
  */
@@ -251,7 +251,6 @@ static int fill_inbuf()
 	return inbuf[0];
 }
 
-/* ===========================================================================
  * Write the output window window[0..outcnt-1] and update crc and bytes_out.
  * (Used for the decompressed data only.)
  */

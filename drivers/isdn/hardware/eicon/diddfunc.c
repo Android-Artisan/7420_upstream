@@ -7,6 +7,12 @@
  * Copyright 2002-2003 by Armin Schindler (mac@melware.de) 
  * Copyright 2002-2003 Cytronics & Melware (info@melware.de)
  * 
+ *
+ * Functions are in dadapter.c
+ *
+ * Copyright 2002-2003 by Armin Schindler (mac@melware.de)
+ * Copyright 2002-2003 Cytronics & Melware (info@melware.de)
+ *
  * This software may be used and distributed according to the terms
  * of the GNU General Public License, incorporated herein by reference.
  */
@@ -29,11 +35,13 @@ static DESCRIPTOR _DAdapter;
  * didd callback function
  */
 static void *didd_callback(void *context, DESCRIPTOR * adapter,
+static void *didd_callback(void *context, DESCRIPTOR *adapter,
 			   int removal)
 {
 	if (adapter->type == IDI_DADAPTER) {
 		DBG_ERR(("Notification about IDI_DADAPTER change ! Oops."))
 		return (NULL);
+			return (NULL);
 	} else if (adapter->type == IDI_DIMAINT) {
 		if (removal) {
 			DbgDeregister();
@@ -48,6 +56,7 @@ static void *didd_callback(void *context, DESCRIPTOR * adapter,
  * connect to didd
  */
 static int DIVA_INIT_FUNCTION connect_didd(void)
+static int __init connect_didd(void)
 {
 	int x = 0;
 	int dadapter = 0;
@@ -66,6 +75,10 @@ static int DIVA_INIT_FUNCTION connect_didd(void)
 			req.didd_notify.info.callback = (void *)didd_callback;
 			req.didd_notify.info.context = NULL;
 			_DAdapter.request((ENTITY *) & req);
+				IDI_SYNC_REQ_DIDD_REGISTER_ADAPTER_NOTIFY;
+			req.didd_notify.info.callback = (void *)didd_callback;
+			req.didd_notify.info.context = NULL;
+			_DAdapter.request((ENTITY *)&req);
 			if (req.didd_notify.e.Rc != 0xff)
 				return (0);
 			notify_handle = req.didd_notify.info.handle;
@@ -80,6 +93,7 @@ static int DIVA_INIT_FUNCTION connect_didd(void)
  * disconnect from didd
  */
 static void DIVA_EXIT_FUNCTION disconnect_didd(void)
+static void __exit disconnect_didd(void)
 {
 	IDI_SYNC_REQ req;
 
@@ -87,18 +101,21 @@ static void DIVA_EXIT_FUNCTION disconnect_didd(void)
 	req.didd_notify.e.Rc = IDI_SYNC_REQ_DIDD_REMOVE_ADAPTER_NOTIFY;
 	req.didd_notify.info.handle = notify_handle;
 	_DAdapter.request((ENTITY *) & req);
+	_DAdapter.request((ENTITY *)&req);
 }
 
 /*
  * init
  */
 int DIVA_INIT_FUNCTION diddfunc_init(void)
+int __init diddfunc_init(void)
 {
 	diva_didd_load_time_init();
 
 	if (!connect_didd()) {
 		DBG_ERR(("init: failed to connect to DIDD."))
 		diva_didd_load_time_finit();
+			diva_didd_load_time_finit();
 		return (0);
 	}
 	return (1);
@@ -108,6 +125,7 @@ int DIVA_INIT_FUNCTION diddfunc_init(void)
  * finit
  */
 void DIVA_EXIT_FUNCTION diddfunc_finit(void)
+void __exit diddfunc_finit(void)
 {
 	DbgDeregister();
 	disconnect_didd();

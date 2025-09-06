@@ -5,6 +5,7 @@ Contents:
 	1) Overview
 	2) Features
 	3) smount command
+	3) Setting mount states
 	4) Use-case
 	5) Detailed semantics
 	6) Quiz
@@ -49,6 +50,14 @@ replicas continue to be exactly same.
 	'smount /mnt shared'
 
 	#mount --bind /mnt /tmp
+	Let's say /mnt has a mount that is shared.
+	mount --make-shared /mnt
+
+	Note: mount(8) command now supports the --make-shared flag,
+	so the sample 'smount' program is no longer needed and has been
+	removed.
+
+	# mount --bind /mnt /tmp
 	The above command replicates the mount at /mnt to the mountpoint /tmp
 	and the contents of both the mounts remain identical.
 
@@ -66,6 +75,14 @@ replicas continue to be exactly same.
 
 	#ls /mnt/a
 	t1 t2 t2
+	Now let's say we mount a device at /tmp/a
+	# mount /dev/sd0  /tmp/a
+
+	#ls /tmp/a
+	t1 t2 t3
+
+	#ls /mnt/a
+	t1 t2 t3
 
 	Note that the mount has propagated to the mount at /mnt as well.
 
@@ -85,6 +102,11 @@ replicas continue to be exactly same.
 
 	Lets bind mount /mnt to /tmp
 	#mount --bind /mnt /tmp
+	Let's say /mnt has a mount which is shared.
+	# mount --make-shared /mnt
+
+	Let's bind mount /mnt to /tmp
+	# mount --bind /mnt /tmp
 
 	the new mount at /tmp becomes a shared mount and it is a replica of
 	the mount at /mnt.
@@ -95,6 +117,11 @@ replicas continue to be exactly same.
 
 	lets mount /dev/sd0 on /mnt/a
 	#mount /dev/sd0 /mnt/a
+	Now let's make the mount at /tmp; a slave of /mnt
+	# mount --make-slave /tmp
+
+	let's mount /dev/sd0 on /mnt/a
+	# mount /dev/sd0 /mnt/a
 
 	#ls /mnt/a
 	t1 t2 t3
@@ -107,6 +134,9 @@ replicas continue to be exactly same.
 	However lets see what happens if we mount something on the mount at /tmp
 
 	#mount /dev/sd1 /tmp/b
+	However let's see what happens if we mount something on the mount at /tmp
+
+	# mount /dev/sd1 /tmp/b
 
 	#ls /tmp/b
 	s1 s2 s3
@@ -130,6 +160,11 @@ replicas continue to be exactly same.
 	 [ smount /mnt  unbindable ]
 
 	 Lets try to bind mount this mount somewhere else.
+	let's say we have a mount at /mnt and we make is unbindable
+
+	# mount --make-unbindable /mnt
+
+	 Let's try to bind mount this mount somewhere else.
 	 # mount --bind /mnt /tmp
 	 mount: wrong fs type, bad option, bad superblock on /mnt,
 	        or too many mounted file systems
@@ -280,6 +315,15 @@ replicas continue to be exactly same.
 	 	smount /mnt unbindable
 		the corresponding syntax planned for mount command is
 		mount --make-unbindable /mnt
+3) Setting mount states
+
+	The mount command (util-linux package) can be used to set mount
+	states:
+
+	mount --make-shared mountpoint
+	mount --make-slave mountpoint
+	mount --make-private mountpoint
+	mount --make-unbindable mountpoint
 
 
 4) Use cases
@@ -351,6 +395,7 @@ replicas continue to be exactly same.
 		mount --rbind / /view/v4
 
 		and if /usr has a versioning filesystem mounted, than that
+		and if /usr has a versioning filesystem mounted, then that
 		mount appears at /view/v1/usr, /view/v2/usr, /view/v3/usr and
 		/view/v4/usr too
 
@@ -391,6 +436,7 @@ replicas continue to be exactly same.
 		For example:
 			mount --make-shared /mnt
 			mount --bin /mnt /tmp
+			mount --bind /mnt /tmp
 
 		The mount at /mnt and that at /tmp are both shared and belong
 		to the same peer group. Anything mounted or unmounted under
@@ -559,6 +605,7 @@ replicas continue to be exactly same.
 	location.
 
 	eg: lets say we have the following mount tree.
+	eg: let's say we have the following mount tree.
 
 		A
 	      /   \
@@ -567,6 +614,7 @@ replicas continue to be exactly same.
 	     D E F G
 
 	     Lets say all the mount except the mount C in the tree are
+	     Let's say all the mount except the mount C in the tree are
 	     of a type other than unbindable.
 
 	     If this tree is rbound to say Z
@@ -690,6 +738,13 @@ replicas continue to be exactly same.
 	'B1', 'B2' and 'B3' respectively.
 
 	lets say 'C1', 'C2', 'C3' are next mounted at the same dentry 'b' on
+	Example: Let's say 'B1', 'B2', 'B3' are shared mounts that propagate to
+	each other.
+
+	let's say 'A1', 'A2', 'A3' are first mounted at dentry 'b' on mount
+	'B1', 'B2' and 'B3' respectively.
+
+	let's say 'C1', 'C2', 'C3' are next mounted at the same dentry 'b' on
 	mount 'B1', 'B2' and 'B3' respectively.
 
 	if 'C1' is unmounted, all the mounts that are most-recently-mounted on
@@ -711,6 +766,7 @@ replicas continue to be exactly same.
 	namespace.
 
 	Lets say 'A' and 'B' are the corresponding mounts in the parent and the
+	Let's say 'A' and 'B' are the corresponding mounts in the parent and the
 	child namespace.
 
 	If 'A' is shared, then 'B' is also shared and 'A' and 'B' propagate to
@@ -764,6 +820,11 @@ replicas continue to be exactly same.
 		dentry 2. Lets call this mount 'B'
 		Next we have a third mount at /mnt with root dentry
 		mnt. Lets call this mount 'C'
+		its root dentry is 1. Let's call this mount 'A'
+		And then we have a second mount at /tmp1 with root
+		dentry 2. Let's call this mount 'B'
+		Next we have a third mount at /mnt with root dentry
+		mnt. Let's call this mount 'C'
 
 		'B' is the slave of 'A' and 'C' is a slave of 'B'
 		A -> B -> C
@@ -795,6 +856,7 @@ replicas continue to be exactly same.
 	Q3 Why is unbindable mount needed?
 
 		Lets say we want to replicate the mount tree at multiple
+		Let's say we want to replicate the mount tree at multiple
 		locations within the same subtree.
 
 		if one rbind mounts a tree within the same subtree 'n' times
@@ -804,6 +866,7 @@ replicas continue to be exactly same.
 
 		step 1:
 		   lets say the root tree has just two directories with
+		   let's say the root tree has just two directories with
 		   one vfsmount.
 				    root
 				   /    \
@@ -864,6 +927,7 @@ replicas continue to be exactly same.
 			  mount --rbind /root /tmp/m3
 
 			  I wont' draw the tree..but it has 24 vfsmounts
+			  I won't draw the tree..but it has 24 vfsmounts
 
 
 		at step i the number of vfsmounts is V[i] = i*V[i-1].
@@ -876,6 +940,7 @@ replicas continue to be exactly same.
 
 		step 1:
 		   lets say the root tree has just two directories with
+		   let's say the root tree has just two directories with
 		   one vfsmount.
 				    root
 				   /    \
@@ -973,6 +1038,9 @@ replicas continue to be exactly same.
 	 individual lists does not affect propagation or the way propagation
 	 tree is modified by operations.
 
+	All vfsmounts in a peer group have the same ->mnt_master.  If it is
+	non-NULL, they form a contiguous (ordered) segment of slave list.
+
 	A example propagation tree looks as shown in the figure below.
 	[ NOTE: Though it looks like a forest, if we consider all the shared
 	mounts as a conceptual entity called 'pnode', it becomes a tree]
@@ -1012,6 +1080,19 @@ replicas continue to be exactly same.
 
 
 8B Algorithm:
+8B Locking:
+
+	->mnt_share, ->mnt_slave, ->mnt_slave_list, ->mnt_master are protected
+	by namespace_sem (exclusive for modifications, shared for reading).
+
+	Normally we have ->mnt_flags modifications serialized by vfsmount_lock.
+	There are two exceptions: do_add_mount() and clone_mnt().
+	The former modifies a vfsmount that has not been visible in any shared
+	data structures yet.
+	The latter holds namespace_sem and the only references to vfsmount
+	are in lists that can't be traversed without namespace_sem.
+
+8C Algorithm:
 
 	The crux of the implementation resides in rbind/move operation.
 

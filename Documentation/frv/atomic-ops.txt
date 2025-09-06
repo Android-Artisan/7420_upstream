@@ -1,6 +1,4 @@
-			       =====================================
 			       FUJITSU FR-V KERNEL ATOMIC OPERATIONS
-			       =====================================
 
 On the FR-V CPUs, there is only one atomic Read-Modify-Write operation: the SWAP/SWAPI
 instruction. Unfortunately, this alone can't be used to implement the following operations:
@@ -19,9 +17,7 @@ done twice. This means the CPU runs for a relatively long time with interrupts d
 potentially having a great effect on interrupt latency.
 
 
-=============
 NEW ALGORITHM
-=============
 
 To get around this, the following algorithm has been implemented. It operates in a way similar to
 the LL/SC instruction pairs supported on a number of platforms.
@@ -63,9 +59,7 @@ This algorithm suffers from two problems:
      interrupts coming in, but it's unlikely.
 
 
-=======
 EXAMPLE
-=======
 
 Taking an example from include/asm-frv/atomic.h:
 
@@ -114,9 +108,7 @@ Such that the branch can then be taken if the operation was aborted.
 	}
 
 
-=============
 CONFIGURATION
-=============
 
 The atomic ops implementation can be made inline or out-of-line by changing the
 CONFIG_FRV_OUTOFLINE_ATOMIC_OPS configuration variable. Making it out-of-line has a number of

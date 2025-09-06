@@ -23,6 +23,9 @@
 #include <mach/pxa-regs.h>
 #include <mach/lubbock.h>
 #include <asm/mach/time.h>
+#include <linux/slab.h>
+
+#include <mach/pm.h>
 
 struct pxa_cpu_pm_fns *pxa_cpu_pm_fns;
 static unsigned long *sleep_save;
@@ -40,6 +43,7 @@ int pxa_pm_enter(suspend_state_t state)
 
 	/* skip registers saving for standby */
 	if (state != PM_SUSPEND_STANDBY) {
+	if (state != PM_SUSPEND_STANDBY && pxa_cpu_pm_fns->save) {
 		pxa_cpu_pm_fns->save(sleep_save);
 		/* before sleeping, calculate and save a checksum */
 		for (i = 0; i < pxa_cpu_pm_fns->save_count - 1; i++)
@@ -51,6 +55,8 @@ int pxa_pm_enter(suspend_state_t state)
 	cpu_init();
 
 	if (state != PM_SUSPEND_STANDBY) {
+
+	if (state != PM_SUSPEND_STANDBY && pxa_cpu_pm_fns->restore) {
 		/* after sleeping, validate the checksum */
 		for (i = 0; i < pxa_cpu_pm_fns->save_count - 1; i++)
 			checksum += sleep_save[i];
@@ -60,6 +66,9 @@ int pxa_pm_enter(suspend_state_t state)
 #ifdef CONFIG_ARCH_LUBBOCK
 			LUB_HEXLED = 0xbadbadc5;
 #endif
+
+			lubbock_set_hexled(0xbadbadc5);
+
 			while (1)
 				pxa_cpu_pm_fns->enter(state);
 		}
@@ -89,6 +98,27 @@ static int pxa_pm_valid(suspend_state_t state)
 static struct platform_suspend_ops pxa_pm_ops = {
 	.valid		= pxa_pm_valid,
 	.enter		= pxa_pm_enter,
+int pxa_pm_prepare(void)
+{
+	int ret = 0;
+
+	if (pxa_cpu_pm_fns && pxa_cpu_pm_fns->prepare)
+		ret = pxa_cpu_pm_fns->prepare();
+
+	return ret;
+}
+
+void pxa_pm_finish(void)
+{
+	if (pxa_cpu_pm_fns && pxa_cpu_pm_fns->finish)
+		pxa_cpu_pm_fns->finish();
+}
+
+static const struct platform_suspend_ops pxa_pm_ops = {
+	.valid		= pxa_pm_valid,
+	.enter		= pxa_pm_enter,
+	.prepare	= pxa_pm_prepare,
+	.finish		= pxa_pm_finish,
 };
 
 static int __init pxa_pm_init(void)

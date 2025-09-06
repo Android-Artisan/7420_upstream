@@ -40,16 +40,21 @@ struct nf_ct_tcp_flags {
 
 #ifdef __KERNEL__
 
+#include <uapi/linux/netfilter/nf_conntrack_tcp.h>
+
+
 struct ip_ct_tcp_state {
 	u_int32_t	td_end;		/* max of seq + len */
 	u_int32_t	td_maxend;	/* max of ack + max(win, 1) */
 	u_int32_t	td_maxwin;	/* max(win) */
+	u_int32_t	td_maxack;	/* max of ack */
 	u_int8_t	td_scale;	/* window scale factor */
 	u_int8_t	flags;		/* per direction options */
 };
 
 struct ip_ct_tcp
 {
+struct ip_ct_tcp {
 	struct ip_ct_tcp_state seen[2];	/* connection parameters per direction */
 	u_int8_t	state;		/* state of the connection (enum tcp_conntrack) */
 	/* For detecting stale connections */
@@ -63,5 +68,10 @@ struct ip_ct_tcp
 };
 
 #endif /* __KERNEL__ */
+
+	/* For SYN packets while we may be out-of-sync */
+	u_int8_t	last_wscale;	/* Last window scaling factor seen */
+	u_int8_t	last_flags;	/* Last flags set */
+};
 
 #endif /* _NF_CONNTRACK_TCP_H */

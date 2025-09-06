@@ -1,4 +1,3 @@
-##=============================================================================
 ##
 ##      nand_init.S
 ##
@@ -20,7 +19,6 @@
 ##        switch between normal area and spare area if you do that so we
 ##        can't trust more than the first 256 bytes.
 ##
-##=============================================================================
 
 #include <asm/arch/hwregs/asm/reg_map_asm.h>
 #include <asm/arch/hwregs/asm/gio_defs_asm.h>

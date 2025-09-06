@@ -54,6 +54,7 @@ static void __init pq2_pci_add_bridge(struct device_node *np)
 		goto err;
 
 	ppc_pci_flags |= PPC_PCI_REASSIGN_ALL_BUS;
+	pci_add_flags(PCI_REASSIGN_ALL_BUS);
 
 	hose = pcibios_alloc_controller(np);
 	if (!hose)
@@ -77,6 +78,11 @@ void __init pq2_init_pci(void)
 	ppc_md.pci_exclude_device = pq2_pci_exclude_device;
 
 	while ((np = of_find_compatible_node(np, NULL, "fsl,pq2-pci")))
+	struct device_node *np;
+
+	ppc_md.pci_exclude_device = pq2_pci_exclude_device;
+
+	for_each_compatible_node(np, NULL, "fsl,pq2-pci")
 		pq2_pci_add_bridge(np);
 }
 #endif

@@ -99,6 +99,10 @@ static void empeg_write_bulk_callback(struct urb *urb);
 static void empeg_read_bulk_callback(struct urb *urb);
 
 static struct usb_device_id id_table [] = {
+static int  empeg_startup(struct usb_serial *serial);
+static void empeg_init_termios(struct tty_struct *tty);
+
+static const struct usb_device_id id_table[] = {
 	{ USB_DEVICE(EMPEG_VENDOR_ID, EMPEG_PRODUCT_ID) },
 	{ }					/* Terminating entry */
 };
@@ -421,6 +425,28 @@ static int  empeg_startup(struct usb_serial *serial)
 		return -ENODEV;
 	}
 	dbg("%s - reset config", __func__);
+	.num_ports =		1,
+	.bulk_out_size =	256,
+	.throttle =		usb_serial_generic_throttle,
+	.unthrottle =		usb_serial_generic_unthrottle,
+	.attach =		empeg_startup,
+	.init_termios =		empeg_init_termios,
+};
+
+static struct usb_serial_driver * const serial_drivers[] = {
+	&empeg_device, NULL
+};
+
+static int empeg_startup(struct usb_serial *serial)
+{
+	int r;
+
+	if (serial->dev->actconfig->desc.bConfigurationValue != 1) {
+		dev_err(&serial->dev->dev, "active config #%d != 1 ??\n",
+			serial->dev->actconfig->desc.bConfigurationValue);
+		return -ENODEV;
+	}
+
 	r = usb_reset_configuration(serial->dev);
 
 	/* continue on with initialization */
@@ -440,6 +466,11 @@ static void empeg_set_termios(struct tty_struct *tty,
 {
 	struct ktermios *termios = tty->termios;
 	dbg("%s - port %d", __func__, port->number);
+}
+
+static void empeg_init_termios(struct tty_struct *tty)
+{
+	struct ktermios *termios = &tty->termios;
 
 	/*
 	 * The empeg-car player wants these particular tty settings.
@@ -562,6 +593,10 @@ static void __exit empeg_exit(void)
 
 module_init(empeg_init);
 module_exit(empeg_exit);
+	tty_encode_baud_rate(tty, 115200, 115200);
+}
+
+module_usb_serial_driver(serial_drivers, id_table);
 
 MODULE_AUTHOR(DRIVER_AUTHOR);
 MODULE_DESCRIPTION(DRIVER_DESC);

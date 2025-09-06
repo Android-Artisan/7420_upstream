@@ -29,6 +29,13 @@ static char irq_tab_mace[][5] __initdata = {
 	{0,     INTA0,  INTB,  INTC,  INTD},
 	{0,     INTA1,  INTC,  INTD,  INTB},
 	{0,     INTA2,  INTD,  INTB,  INTC},
+      /* Dummy	INT#A  INT#B  INT#C  INT#D */
+	{0,	    0,	   0,	  0,	 0}, /* This is placeholder row - never used */
+	{0,	SCSI0, SCSI0, SCSI0, SCSI0},
+	{0,	SCSI1, SCSI1, SCSI1, SCSI1},
+	{0,	INTA0,	INTB,  INTC,  INTD},
+	{0,	INTA1,	INTC,  INTD,  INTB},
+	{0,	INTA2,	INTD,  INTB,  INTC},
 };
 
 

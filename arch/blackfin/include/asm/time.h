@@ -26,6 +26,7 @@
 #define TIME_SCALE 1
 #define __bfin_cycles_off (0)
 #define __bfin_cycles_mod (0)
+# define TIME_SCALE 1
 #else
 /*
  * Blackfin CPU frequency scaling supports max Core Clock 1, 1/2 and 1/4 .
@@ -35,6 +36,16 @@
 #define TIME_SCALE 4
 extern unsigned long long __bfin_cycles_off;
 extern unsigned int __bfin_cycles_mod;
+
+# ifdef CONFIG_CYCLES_CLOCKSOURCE
+extern unsigned long long __bfin_cycles_off;
+extern unsigned int __bfin_cycles_mod;
+# endif
+#endif
+
+#if defined(CONFIG_TICKSOURCE_CORETMR)
+extern void bfin_coretmr_init(void);
+extern void bfin_coretmr_clockevent_init(void);
 #endif
 
 #endif

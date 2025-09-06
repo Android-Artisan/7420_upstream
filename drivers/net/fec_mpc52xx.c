@@ -871,9 +871,7 @@ static int mpc52xx_fec_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
 	return mpc52xx_fec_phy_mii_ioctl(priv, if_mii(rq), cmd);
 }
 
-/* ======================================================================== */
 /* OF Driver                                                                */
-/* ======================================================================== */
 
 static int __devinit
 mpc52xx_fec_probe(struct of_device *op, const struct of_device_id *match)
@@ -1127,9 +1125,7 @@ static struct of_platform_driver mpc52xx_fec_driver = {
 };
 
 
-/* ======================================================================== */
 /* Module                                                                   */
-/* ======================================================================== */
 
 static int __init
 mpc52xx_fec_init(void)

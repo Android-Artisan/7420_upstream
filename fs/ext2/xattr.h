@@ -60,6 +60,9 @@ extern struct xattr_handler ext2_xattr_trusted_handler;
 extern struct xattr_handler ext2_xattr_acl_access_handler;
 extern struct xattr_handler ext2_xattr_acl_default_handler;
 extern struct xattr_handler ext2_xattr_security_handler;
+extern const struct xattr_handler ext2_xattr_user_handler;
+extern const struct xattr_handler ext2_xattr_trusted_handler;
+extern const struct xattr_handler ext2_xattr_security_handler;
 
 extern ssize_t ext2_listxattr(struct dentry *, char *, size_t);
 
@@ -73,6 +76,7 @@ extern int init_ext2_xattr(void);
 extern void exit_ext2_xattr(void);
 
 extern struct xattr_handler *ext2_xattr_handlers[];
+extern const struct xattr_handler *ext2_xattr_handlers[];
 
 # else  /* CONFIG_EXT2_FS_XATTR */
 
@@ -119,6 +123,11 @@ exit_ext2_xattr(void)
 extern int ext2_init_security(struct inode *inode, struct inode *dir);
 #else
 static inline int ext2_init_security(struct inode *inode, struct inode *dir)
+extern int ext2_init_security(struct inode *inode, struct inode *dir,
+			      const struct qstr *qstr);
+#else
+static inline int ext2_init_security(struct inode *inode, struct inode *dir,
+				     const struct qstr *qstr)
 {
 	return 0;
 }

@@ -13,6 +13,10 @@
 #include <linux/fs.h>
 #include <linux/kernel.h>
 #include <linux/slab.h>
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
+#include <linux/fs.h>
+#include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/pci.h>
 #include <linux/timer.h>
@@ -62,6 +66,7 @@ enum {
 
 
 static int nowayout = WATCHDOG_NOWAYOUT;
+static bool nowayout = WATCHDOG_NOWAYOUT;
 
 static unsigned long asr_is_open;
 static char asr_expect_close;
@@ -70,6 +75,7 @@ static unsigned int asr_type, asr_base, asr_length;
 static unsigned int asr_read_addr, asr_write_addr;
 static unsigned char asr_toggle_mask, asr_disable_mask;
 static spinlock_t asr_lock;
+static DEFINE_SPINLOCK(asr_lock);
 
 static void __asr_toggle(void)
 {
@@ -241,6 +247,11 @@ static int __init asr_get_base_address(void)
 	}
 
 	printk(KERN_INFO PFX "found %sASR @ addr %#x\n", type, asr_base);
+		pr_err("address %#x already in use\n", asr_base);
+		return -EBUSY;
+	}
+
+	pr_info("found %sASR @ addr %#x\n", type, asr_base);
 
 	return 0;
 }
@@ -335,6 +346,7 @@ static int asr_release(struct inode *inode, struct file *file)
 	else {
 		printk(KERN_CRIT PFX
 				"unexpected close, not stopping watchdog!\n");
+		pr_crit("unexpected close, not stopping watchdog!\n");
 		asr_toggle();
 	}
 	clear_bit(0, &asr_is_open);
@@ -364,6 +376,7 @@ struct ibmasr_id {
 };
 
 static struct ibmasr_id __initdata ibmasr_id_table[] = {
+static struct ibmasr_id ibmasr_id_table[] __initdata = {
 	{ "IBM Automatic Server Restart - eserver xSeries 220", ASMTYPE_TOPAZ },
 	{ "IBM Automatic Server Restart - Machine Type 8673", ASMTYPE_PEARL },
 	{ "IBM Automatic Server Restart - Machine Type 8480", ASMTYPE_JASPER },
@@ -397,6 +410,7 @@ static int __init ibmasr_init(void)
 	if (rc < 0) {
 		release_region(asr_base, asr_length);
 		printk(KERN_ERR PFX "failed to register misc device\n");
+		pr_err("failed to register misc device\n");
 		return rc;
 	}
 
@@ -417,6 +431,7 @@ module_init(ibmasr_init);
 module_exit(ibmasr_exit);
 
 module_param(nowayout, int, 0);
+module_param(nowayout, bool, 0);
 MODULE_PARM_DESC(nowayout,
 	"Watchdog cannot be stopped once started (default="
 				__MODULE_STRING(WATCHDOG_NOWAYOUT) ")");

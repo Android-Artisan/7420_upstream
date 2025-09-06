@@ -92,6 +92,14 @@ struct lxdlist {
 typedef struct {
 	unsigned len:24;
 	unsigned addr1:8;
+ *	physical xd (pxd)
+ *
+ *	The leftmost 24 bits of len_addr are the extent length.
+ *	The rightmost 8 bits of len_addr are the most signficant bits of
+ *	the extent address
+ */
+typedef struct {
+	__le32 len_addr;
 	__le32 addr2;
 } pxd_t;
 
@@ -108,6 +116,30 @@ typedef struct {
 #define	lengthPXD(pxd)	__le24_to_cpu((pxd)->len)
 #define	addressPXD(pxd)\
 	( ((s64)((pxd)->addr1)) << 32 | __le32_to_cpu((pxd)->addr2))
+static inline void PXDlength(pxd_t *pxd, __u32 len)
+{
+	pxd->len_addr = (pxd->len_addr & cpu_to_le32(~0xffffff)) |
+			cpu_to_le32(len & 0xffffff);
+}
+
+static inline void PXDaddress(pxd_t *pxd, __u64 addr)
+{
+	pxd->len_addr = (pxd->len_addr & cpu_to_le32(0xffffff)) |
+			cpu_to_le32((addr >> 32)<<24);
+	pxd->addr2 = cpu_to_le32(addr & 0xffffffff);
+}
+
+/* xd_t field extraction */
+static inline __u32 lengthPXD(pxd_t *pxd)
+{
+	return le32_to_cpu((pxd)->len_addr) & 0xffffff;
+}
+
+static inline __u64 addressPXD(pxd_t *pxd)
+{
+	__u64 n = le32_to_cpu(pxd->len_addr) & ~0xffffff;
+	return (n << 8) + le32_to_cpu(pxd->addr2);
+}
 
 #define MAXTREEHEIGHT 8
 /* pxd list */
@@ -128,6 +160,10 @@ typedef struct {
 	unsigned len:24;	/* 3: length in unit of fsblksize */
 	unsigned addr1:8;	/* 1: address in unit of fsblksize */
 	__le32 addr2;		/* 4: address in unit of fsblksize */
+	__u8 flag;	/* 1: flags */
+	__u8 rsrvd[3];
+	__le32 size;		/* 4: size in byte */
+	pxd_t loc;		/* 8: address and length in unit of fsblksize */
 } dxd_t;			/* - 16 - */
 
 /* dxd_t flags */
@@ -144,6 +180,11 @@ typedef struct {
 #define	DXDaddress	PXDaddress
 #define	lengthDXD	lengthPXD
 #define	addressDXD	addressPXD
+ */
+#define	DXDlength(dxd, len)	PXDlength(&(dxd)->loc, len)
+#define	DXDaddress(dxd, addr)	PXDaddress(&(dxd)->loc, addr)
+#define	lengthDXD(dxd)	lengthPXD(&(dxd)->loc)
+#define	addressDXD(dxd)	addressPXD(&(dxd)->loc)
 #define DXDsize(dxd, size32) ((dxd)->size = cpu_to_le32(size32))
 #define sizeDXD(dxd)	le32_to_cpu((dxd)->size)
 

@@ -10,6 +10,9 @@
 #define _ARPTABLES_H
 
 #ifdef __KERNEL__
+#ifndef _ARPTABLES_H
+#define _ARPTABLES_H
+
 #include <linux/if.h>
 #include <linux/in.h>
 #include <linux/if_arp.h>
@@ -240,6 +243,17 @@ struct arpt_error
 {
 	struct arpt_entry entry;
 	struct arpt_error_target target;
+#include <uapi/linux/netfilter_arp/arp_tables.h>
+
+/* Standard entry. */
+struct arpt_standard {
+	struct arpt_entry entry;
+	struct xt_standard_target target;
+};
+
+struct arpt_error {
+	struct arpt_entry entry;
+	struct xt_error_target target;
 };
 
 #define ARPT_ENTRY_INIT(__size)						       \
@@ -253,6 +267,8 @@ struct arpt_error
 	.entry		= ARPT_ENTRY_INIT(sizeof(struct arpt_standard)),       \
 	.target		= XT_TARGET_INIT(ARPT_STANDARD_TARGET,		       \
 					 sizeof(struct arpt_standard_target)), \
+	.target		= XT_TARGET_INIT(XT_STANDARD_TARGET,		       \
+					 sizeof(struct xt_standard_target)), \
 	.target.verdict	= -(__verdict) - 1,				       \
 }
 
@@ -284,12 +300,34 @@ struct compat_arpt_entry
 	struct arpt_arp arp;
 	u_int16_t target_offset;
 	u_int16_t next_offset;
+	.target		= XT_TARGET_INIT(XT_ERROR_TARGET,		       \
+					 sizeof(struct xt_error_target)),      \
+	.target.errorname = "ERROR",					       \
+}
+
+extern void *arpt_alloc_initial_table(const struct xt_table *);
+extern struct xt_table *arpt_register_table(struct net *net,
+					    const struct xt_table *table,
+					    const struct arpt_replace *repl);
+extern void arpt_unregister_table(struct xt_table *table);
+extern unsigned int arpt_do_table(struct sk_buff *skb,
+				  const struct nf_hook_state *state,
+				  struct xt_table *table);
+
+#ifdef CONFIG_COMPAT
+#include <net/compat.h>
+
+struct compat_arpt_entry {
+	struct arpt_arp arp;
+	__u16 target_offset;
+	__u16 next_offset;
 	compat_uint_t comefrom;
 	struct compat_xt_counters counters;
 	unsigned char elems[0];
 };
 
 static inline struct arpt_entry_target *
+static inline struct xt_entry_target *
 compat_arpt_get_target(struct compat_arpt_entry *e)
 {
 	return (void *)e + e->target_offset;
@@ -307,4 +345,5 @@ compat_arpt_get_target(struct compat_arpt_entry *e)
 
 #endif /* CONFIG_COMPAT */
 #endif /*__KERNEL__*/
+#endif /* CONFIG_COMPAT */
 #endif /* _ARPTABLES_H */

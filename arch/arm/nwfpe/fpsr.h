@@ -31,6 +31,7 @@ one byte.
 	SYSTEM CONTROL BYTE
 	CUMULATIVE EXCEPTION FLAGS BYTE
 	
+
 The FPCR is a 32 bit register consisting of bit flags.
 */
 

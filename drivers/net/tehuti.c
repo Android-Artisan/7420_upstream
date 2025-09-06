@@ -1348,7 +1348,6 @@ static void print_rxdd(struct rxd_desc *rxdd, u32 rxd_val1, u16 len,
 
 static void print_rxfd(struct rxf_desc *rxfd)
 {
-	DBG("=== RxF desc CHIP ORDER/ENDIANESS =============\n"
 	    "info 0x%x va_lo %u pa_lo 0x%x pa_hi 0x%x len 0x%x\n",
 	    rxfd->info, rxfd->va_lo, rxfd->pa_lo, rxfd->pa_hi, rxfd->len);
 }
@@ -1521,9 +1520,6 @@ bdx_tx_map_skb(struct bdx_priv *priv, struct sk_buff *skb,
 	pbl->len = CPU_CHIP_SWAP32(db->wptr->len);
 	pbl->pa_lo = CPU_CHIP_SWAP32(L32_64(db->wptr->addr.dma));
 	pbl->pa_hi = CPU_CHIP_SWAP32(H32_64(db->wptr->addr.dma));
-	DBG("=== pbl   len: 0x%x ================\n", pbl->len);
-	DBG("=== pbl pa_lo: 0x%x ================\n", pbl->pa_lo);
-	DBG("=== pbl pa_hi: 0x%x ================\n", pbl->pa_hi);
 	bdx_tx_db_inc_wptr(db);
 
 	for (i = 0; i < nr_frags; i++) {
@@ -1671,8 +1667,6 @@ static int bdx_tx_transmit(struct sk_buff *skb, struct net_device *ndev)
 	    CPU_CHIP_SWAP32(TXD_W1_VAL
 			    (txd_sizes[nr_frags].qwords, txd_checksum, txd_vtag,
 			     txd_lgsnd, txd_vlan_id));
-	DBG("=== TxD desc =====================\n");
-	DBG("=== w1: 0x%x ================\n", txdd->txd_val1);
 	DBG("=== w2: mss 0x%x len 0x%x\n", txdd->mss, txdd->length);
 
 	bdx_tx_map_skb(priv, skb, txdd);

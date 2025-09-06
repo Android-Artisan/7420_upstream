@@ -26,6 +26,9 @@
  * along with this program; see the file COPYING.
  * If not, write to the Free Software Foundation,
  * 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+ * Copyright 2007-2010 Analog Devices Inc.
+ *
+ * Licensed under the Clear BSD license or the GPL-2 (or later)
  */
 
 #ifndef _DEF_BF54X_H
@@ -59,6 +62,7 @@
 
 /* SIC Registers */
 
+#define                        SIC_RVECT  0xffc00108
 #define                       SIC_IMASK0  0xffc0010c   /* System Interrupt Mask Register 0 */
 #define                       SIC_IMASK1  0xffc00110   /* System Interrupt Mask Register 1 */
 #define                       SIC_IMASK2  0xffc00114   /* System Interrupt Mask Register 2 */
@@ -133,11 +137,16 @@
 #define                  TWI0_SLAVE_STAT  0xffc0070c   /* TWI Slave Mode Status Register */
 #define                  TWI0_SLAVE_ADDR  0xffc00710   /* TWI Slave Mode Address Register */
 #define                 TWI0_MASTER_CTRL  0xffc00714   /* TWI Master Mode Control Register */
+#define                   TWI0_SLAVE_CTL  0xffc00708   /* TWI Slave Mode Control Register */
+#define                  TWI0_SLAVE_STAT  0xffc0070c   /* TWI Slave Mode Status Register */
+#define                  TWI0_SLAVE_ADDR  0xffc00710   /* TWI Slave Mode Address Register */
+#define                  TWI0_MASTER_CTL  0xffc00714   /* TWI Master Mode Control Register */
 #define                 TWI0_MASTER_STAT  0xffc00718   /* TWI Master Mode Status Register */
 #define                 TWI0_MASTER_ADDR  0xffc0071c   /* TWI Master Mode Address Register */
 #define                    TWI0_INT_STAT  0xffc00720   /* TWI Interrupt Status Register */
 #define                    TWI0_INT_MASK  0xffc00724   /* TWI Interrupt Mask Register */
 #define                   TWI0_FIFO_CTRL  0xffc00728   /* TWI FIFO Control Register */
+#define                    TWI0_FIFO_CTL  0xffc00728   /* TWI FIFO Control Register */
 #define                   TWI0_FIFO_STAT  0xffc0072c   /* TWI FIFO Status Register */
 #define                   TWI0_XMT_DATA8  0xffc00780   /* TWI FIFO Transmit Data Single Byte Register */
 #define                  TWI0_XMT_DATA16  0xffc00784   /* TWI FIFO Transmit Data Double Byte Register */
@@ -224,6 +233,8 @@
 
 #define                      DMAC0_TCPER  0xffc00b0c   /* DMA Controller 0 Traffic Control Periods Register */
 #define                      DMAC0_TCCNT  0xffc00b10   /* DMA Controller 0 Current Counts Register */
+#define                     DMAC0_TC_PER  0xffc00b0c   /* DMA Controller 0 Traffic Control Periods Register */
+#define                     DMAC0_TC_CNT  0xffc00b10   /* DMA Controller 0 Current Counts Register */
 
 /* DMA Channel 0 Registers */
 
@@ -714,6 +725,8 @@
 
 #define                      DMAC1_TCPER  0xffc01b0c   /* DMA Controller 1 Traffic Control Periods Register */
 #define                      DMAC1_TCCNT  0xffc01b10   /* DMA Controller 1 Current Counts Register */
+#define                     DMAC1_TC_PER  0xffc01b0c   /* DMA Controller 1 Traffic Control Periods Register */
+#define                     DMAC1_TC_CNT  0xffc01b10   /* DMA Controller 1 Current Counts Register */
 
 /* DMA Channel 12 Registers */
 
@@ -1677,6 +1690,7 @@
 #define                      PMAP  0xf000     /* Peripheral Mapped To This Channel */
 
 /* Bit masks for DMACx_TCPER */
+/* Bit masks for DMACx_TC_PER */
 
 #define        DCB_TRAFFIC_PERIOD  0xf        /* DCB Traffic Control Period */
 #define        DEB_TRAFFIC_PERIOD  0xf0       /* DEB Traffic Control Period */
@@ -1684,6 +1698,7 @@
 #define   MDMA_ROUND_ROBIN_PERIOD  0xf800     /* MDMA Round Robin Period */
 
 /* Bit masks for DMACx_TCCNT */
+/* Bit masks for DMACx_TC_CNT */
 
 #define         DCB_TRAFFIC_COUNT  0xf        /* DCB Traffic Control Count */
 #define         DEB_TRAFFIC_COUNT  0xf0       /* DEB Traffic Control Count */

@@ -7,6 +7,8 @@
  * of the GNU General Public License version 2.
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/slab.h>
 #include <linux/spinlock.h>
 #include <linux/completion.h>
@@ -23,6 +25,23 @@
 #include "sys.h"
 #include "util.h"
 #include "glock.h"
+#include <linux/rcupdate.h>
+#include <linux/rculist_bl.h>
+#include <linux/atomic.h>
+#include <linux/mempool.h>
+
+#include "gfs2.h"
+#include "incore.h"
+#include "super.h"
+#include "sys.h"
+#include "util.h"
+#include "glock.h"
+#include "quota.h"
+#include "recovery.h"
+#include "dir.h"
+#include "glops.h"
+
+struct workqueue_struct *gfs2_control_wq;
 
 static void gfs2_init_inode_once(void *foo)
 {
@@ -31,6 +50,9 @@ static void gfs2_init_inode_once(void *foo)
 	inode_init_once(&ip->i_inode);
 	init_rwsem(&ip->i_rw_mutex);
 	ip->i_alloc = NULL;
+	INIT_LIST_HEAD(&ip->i_trunc_list);
+	ip->i_res = NULL;
+	ip->i_hash_cache = NULL;
 }
 
 static void gfs2_init_glock_once(void *foo)
@@ -45,6 +67,22 @@ static void gfs2_init_glock_once(void *foo)
 	INIT_LIST_HEAD(&gl->gl_reclaim);
 	INIT_LIST_HEAD(&gl->gl_ail_list);
 	atomic_set(&gl->gl_ail_count, 0);
+	INIT_HLIST_BL_NODE(&gl->gl_list);
+	spin_lock_init(&gl->gl_lockref.lock);
+	INIT_LIST_HEAD(&gl->gl_holders);
+	INIT_LIST_HEAD(&gl->gl_lru);
+	INIT_LIST_HEAD(&gl->gl_ail_list);
+	atomic_set(&gl->gl_ail_count, 0);
+	atomic_set(&gl->gl_revokes, 0);
+}
+
+static void gfs2_init_gl_aspace_once(void *foo)
+{
+	struct gfs2_glock *gl = foo;
+	struct address_space *mapping = (struct address_space *)(gl + 1);
+
+	gfs2_init_glock_once(gl);
+	address_space_init_once(mapping);
 }
 
 /**
@@ -57,9 +95,17 @@ static int __init init_gfs2_fs(void)
 {
 	int error;
 
+	gfs2_str2qstr(&gfs2_qdot, ".");
+	gfs2_str2qstr(&gfs2_qdotdot, "..");
+	gfs2_quota_hash_init();
+
 	error = gfs2_sys_init();
 	if (error)
 		return error;
+
+	error = list_lru_init(&gfs2_qd_lru);
+	if (error)
+		goto fail_lru;
 
 	error = gfs2_glock_init();
 	if (error)
@@ -71,6 +117,14 @@ static int __init init_gfs2_fs(void)
 					      0, 0,
 					      gfs2_init_glock_once);
 	if (!gfs2_glock_cachep)
+		goto fail;
+
+	gfs2_glock_aspace_cachep = kmem_cache_create("gfs2_glock(aspace)",
+					sizeof(struct gfs2_glock) +
+					sizeof(struct address_space),
+					0, 0, gfs2_init_gl_aspace_once);
+
+	if (!gfs2_glock_aspace_cachep)
 		goto fail;
 
 	gfs2_inode_cachep = kmem_cache_create("gfs2_inode",
@@ -93,6 +147,20 @@ static int __init init_gfs2_fs(void)
 	if (!gfs2_rgrpd_cachep)
 		goto fail;
 
+	gfs2_quotad_cachep = kmem_cache_create("gfs2_quotad",
+					       sizeof(struct gfs2_quota_data),
+					       0, 0, NULL);
+	if (!gfs2_quotad_cachep)
+		goto fail;
+
+	gfs2_rsrv_cachep = kmem_cache_create("gfs2_mblk",
+					     sizeof(struct gfs2_blkreserv),
+					       0, 0, NULL);
+	if (!gfs2_rsrv_cachep)
+		goto fail;
+
+	register_shrinker(&gfs2_qd_shrinker);
+
 	error = register_filesystem(&gfs2_fs_type);
 	if (error)
 		goto fail;
@@ -112,6 +180,54 @@ fail_unregister:
 fail:
 	gfs2_glock_exit();
 
+	error = -ENOMEM;
+	gfs_recovery_wq = alloc_workqueue("gfs_recovery",
+					  WQ_MEM_RECLAIM | WQ_FREEZABLE, 0);
+	if (!gfs_recovery_wq)
+		goto fail_wq;
+
+	gfs2_control_wq = alloc_workqueue("gfs2_control",
+					  WQ_UNBOUND | WQ_FREEZABLE, 0);
+	if (!gfs2_control_wq)
+		goto fail_recovery;
+
+	gfs2_freeze_wq = alloc_workqueue("freeze_workqueue", 0, 0);
+
+	if (!gfs2_freeze_wq)
+		goto fail_control;
+
+	gfs2_page_pool = mempool_create_page_pool(64, 0);
+	if (!gfs2_page_pool)
+		goto fail_freeze;
+
+	gfs2_register_debugfs();
+
+	pr_info("GFS2 installed\n");
+
+	return 0;
+
+fail_freeze:
+	destroy_workqueue(gfs2_freeze_wq);
+fail_control:
+	destroy_workqueue(gfs2_control_wq);
+fail_recovery:
+	destroy_workqueue(gfs_recovery_wq);
+fail_wq:
+	unregister_filesystem(&gfs2meta_fs_type);
+fail_unregister:
+	unregister_filesystem(&gfs2_fs_type);
+fail:
+	list_lru_destroy(&gfs2_qd_lru);
+fail_lru:
+	unregister_shrinker(&gfs2_qd_shrinker);
+	gfs2_glock_exit();
+
+	if (gfs2_rsrv_cachep)
+		kmem_cache_destroy(gfs2_rsrv_cachep);
+
+	if (gfs2_quotad_cachep)
+		kmem_cache_destroy(gfs2_quotad_cachep);
+
 	if (gfs2_rgrpd_cachep)
 		kmem_cache_destroy(gfs2_rgrpd_cachep);
 
@@ -120,6 +236,9 @@ fail:
 
 	if (gfs2_inode_cachep)
 		kmem_cache_destroy(gfs2_inode_cachep);
+
+	if (gfs2_glock_aspace_cachep)
+		kmem_cache_destroy(gfs2_glock_aspace_cachep);
 
 	if (gfs2_glock_cachep)
 		kmem_cache_destroy(gfs2_glock_cachep);
@@ -135,6 +254,7 @@ fail:
 
 static void __exit exit_gfs2_fs(void)
 {
+	unregister_shrinker(&gfs2_qd_shrinker);
 	gfs2_glock_exit();
 	gfs2_unregister_debugfs();
 	unregister_filesystem(&gfs2_fs_type);
@@ -143,6 +263,20 @@ static void __exit exit_gfs2_fs(void)
 	kmem_cache_destroy(gfs2_rgrpd_cachep);
 	kmem_cache_destroy(gfs2_bufdata_cachep);
 	kmem_cache_destroy(gfs2_inode_cachep);
+	destroy_workqueue(gfs_recovery_wq);
+	destroy_workqueue(gfs2_control_wq);
+	destroy_workqueue(gfs2_freeze_wq);
+	list_lru_destroy(&gfs2_qd_lru);
+
+	rcu_barrier();
+
+	mempool_destroy(gfs2_page_pool);
+	kmem_cache_destroy(gfs2_rsrv_cachep);
+	kmem_cache_destroy(gfs2_quotad_cachep);
+	kmem_cache_destroy(gfs2_rgrpd_cachep);
+	kmem_cache_destroy(gfs2_bufdata_cachep);
+	kmem_cache_destroy(gfs2_inode_cachep);
+	kmem_cache_destroy(gfs2_glock_aspace_cachep);
 	kmem_cache_destroy(gfs2_glock_cachep);
 
 	gfs2_sys_uninit();

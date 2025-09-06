@@ -36,7 +36,6 @@ This gives 2 possible formats:
 
 
     Data header:		0LLLLPPP	LLLLLLLL
-    ============
 
     Where (LLLL,LLLLLLL) is 12-bit length of data that follows for
     port number (PPP). The length is 0-based (0-FFF means 0-4095
@@ -48,7 +47,6 @@ This gives 2 possible formats:
 
 
     Cmd/Status header:		1ccccPPP	[ CCCCCCCC,	 Params ]...
-    ==================
 
     Where (cccc) or (cccc,CCCCCCCC) is the cmd or status identifier.
     Frequently-used values are encoded as (cccc), longer ones using
@@ -93,6 +91,10 @@ struct int_status_pkt {
 						    // be read from Bulk IN pipe
 	__u16      TxCredits[ MAX_RS232_PORTS ];   // Additional space available in
 						    // given port's TxBuffer
+	__u16 RxBytesAvail;			// Additional bytes available to
+						// be read from Bulk IN pipe
+	__u16 TxCredits[MAX_RS232_PORTS];	// Additional space available in
+						// given port's TxBuffer
 };
 
 
@@ -119,6 +121,10 @@ struct int_status_pkt {
 
 #define	IOSP_GET_HDR_PORT(Byte1)		((__u8) ((Byte1) & IOSP_PORT_MASK))
 #define	IOSP_GET_HDR_DATA_LEN(Byte1, Byte2)	((__u16) ( ((__u16)((Byte1) & 0x78)) << 5) | (Byte2))
+#define IS_DATA_HDR(Byte1)		(!IS_CMD_STAT_HDR(Byte1))
+
+#define	IOSP_GET_HDR_PORT(Byte1)		((__u8) ((Byte1) & IOSP_PORT_MASK))
+#define	IOSP_GET_HDR_DATA_LEN(Byte1, Byte2)	((__u16) (((__u16)((Byte1) & 0x78)) << 5) | (Byte2))
 #define	IOSP_GET_STATUS_CODE(Byte1)		((__u8) (((Byte1) &  0x78) >> 3))
 
 
@@ -126,6 +132,7 @@ struct int_status_pkt {
 // These macros build the 1st and 2nd bytes for a data header
 //
 #define	IOSP_BUILD_DATA_HDR1(Port, Len)		((__u8) (((Port) | ((__u8) (((__u16) (Len)) >> 5) & 0x78 ))))
+#define	IOSP_BUILD_DATA_HDR1(Port, Len)		((__u8) (((Port) | ((__u8) (((__u16) (Len)) >> 5) & 0x78))))
 #define	IOSP_BUILD_DATA_HDR2(Port, Len)		((__u8) (Len))
 
 
@@ -133,6 +140,7 @@ struct int_status_pkt {
 // These macros build the 1st and 2nd bytes for a command header
 //
 #define	IOSP_BUILD_CMD_HDR1(Port, Cmd)		((__u8) ( IOSP_CMD_STAT_BIT | (Port) |	((__u8) ((Cmd) << 3)) ))
+#define	IOSP_BUILD_CMD_HDR1(Port, Cmd)		((__u8) (IOSP_CMD_STAT_BIT | (Port) | ((__u8) ((Cmd) << 3))))
 
 
 //--------------------------------------------------------------
@@ -212,6 +220,25 @@ struct int_status_pkt {
 		*ppBuf += 3;									\
 		*pLen  += 3;									\
 	} while (0)
+#define MAKE_CMD_WRITE_REG(ppBuf, pLen, Port, Reg, Val)			\
+do {									\
+	(*(ppBuf))[0] = IOSP_BUILD_CMD_HDR1((Port),			\
+					    IOSP_WRITE_UART_REG(Reg));	\
+	(*(ppBuf))[1] = (Val);						\
+									\
+	*ppBuf += 2;							\
+	*pLen  += 2;							\
+} while (0)
+
+#define MAKE_CMD_EXT_CMD(ppBuf, pLen, Port, ExtCmd, Param)		\
+do {									\
+	(*(ppBuf))[0] = IOSP_BUILD_CMD_HDR1((Port), IOSP_EXT_CMD);	\
+	(*(ppBuf))[1] = (ExtCmd);					\
+	(*(ppBuf))[2] = (Param);					\
+									\
+	*ppBuf += 3;							\
+	*pLen  += 3;							\
+} while (0)
 
 
 
@@ -320,6 +347,16 @@ struct int_status_pkt {
 //	sure that all data has been received from the edgeport and 
 //	may now purge any internal RX buffers.
 //  Note tat the sequence numbers may be used to detect lost 
+//  This command is used to assist in the implementation of the
+//  IOCTL_SERIAL_PURGE Windows IOCTL.
+//  This IOSP command tries to place a marker at the end of the RX
+//  queue in the Edgeport. If the Edgeport RX queue is full then
+//  the Check will be discarded.
+//  It is up to the device driver to timeout waiting for the
+//  RX_CHECK_RSP.  If a RX_CHECK_RSP is received, the driver is
+//	sure that all data has been received from the edgeport and
+//	may now purge any internal RX buffers.
+//  Note tat the sequence numbers may be used to detect lost
 //  CHECK_REQs.
 
 //  Example for Port 0
@@ -342,6 +379,7 @@ struct int_status_pkt {
 //	1ssssPPP P1P1P1P1 [ P2P2P2P2P2 ]...
 //
 // 	ssss:	00-07	2-byte status.	ssss identifies which UART register
+//	ssss:	00-07	2-byte status.	ssss identifies which UART register
 //					has changed value, and the new value is in P1.
 //					Note that the ssss values do not correspond to the
 //					16554 register numbers given in 16554.H. Instead,
@@ -391,6 +429,14 @@ struct int_status_pkt {
 //					0x05	// 
 //					0x06	// 
 //					0x07	// 
+//
+
+//					0x02	// Available for future expansion
+//					0x03	//
+//					0x04	//
+//					0x05	//
+//					0x06	//
+//					0x07	//
 
 
 /****************************************************
@@ -401,6 +447,7 @@ struct int_status_pkt {
 
 // P2 is errored character read from
 //    RxFIFO after LSR reported an error.													
+//    RxFIFO after LSR reported an error.
 
 #define	IOSP_EXT_STATUS			0x09	// P1 is status/response code, param in P2.
 
@@ -409,6 +456,7 @@ struct int_status_pkt {
 
 #define	IOSP_EXT_STATUS_CHASE_RSP	0	// Reply to CHASE_PORT cmd. P2 is outcome:
 #define	IOSP_EXT_STATUS_CHASE_PASS	0	// 	P2 = 0: All Tx data drained successfully
+#define	IOSP_EXT_STATUS_CHASE_PASS	0	//	P2 = 0: All Tx data drained successfully
 #define	IOSP_EXT_STATUS_CHASE_FAIL	1	//	P2 = 1: Timed out (stuck due to flow
 
 //			control from remote device).
@@ -451,4 +499,9 @@ struct int_status_pkt {
 #define	IOSP_STATUS_IS_2BYTE(code)	( (code) < 0x08 )
 #define	IOSP_STATUS_IS_3BYTE(code)	( ((code) >= 0x08) && ((code) <= 0x0B) )
 #define	IOSP_STATUS_IS_4BYTE(code)	( ((code) >= 0x0C) && ((code) <= 0x0D) )
+#define	IOSP_GET_STATUS_LEN(code)	((code) < 8 ? 2 : ((code) < 0x0A ? 3 : 4))
+
+#define	IOSP_STATUS_IS_2BYTE(code)	((code) < 0x08)
+#define	IOSP_STATUS_IS_3BYTE(code)	(((code) >= 0x08) && ((code) <= 0x0B))
+#define	IOSP_STATUS_IS_4BYTE(code)	(((code) >= 0x0C) && ((code) <= 0x0D))
 

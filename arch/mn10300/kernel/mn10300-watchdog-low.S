@@ -16,6 +16,7 @@
 #include <asm/intctl-regs.h>
 #include <asm/timer-regs.h>
 #include <asm/frame.inc>
+#include <linux/threads.h>
 
 	.text
 
@@ -54,6 +55,13 @@ watchdog_handler:
 touch_nmi_watchdog:
 	clr	d0
 	mov	d0,(watchdog_alert_counter)
+	clr	d1
+	mov	watchdog_alert_counter, a0
+	setlb
+	mov	d0, (a0+)
+	inc	d1
+	cmp	NR_CPUS, d1
+	lne
 	ret	[],0
 
 	.size	touch_nmi_watchdog,.-touch_nmi_watchdog

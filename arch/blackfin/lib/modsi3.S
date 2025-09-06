@@ -31,6 +31,14 @@
  * along with this program; if not, see the file COPYING, or write
  * to the Free Software Foundation, Inc.,
  * 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+ * This program computes 32 bit signed remainder. It calls div32 function
+ * for quotient estimation.
+ *   Registers in:  R0, R1 = Numerator/ Denominator
+ *   Registers out: R0     = Remainder
+ *
+ * Copyright 2004-2009 Analog Devices Inc.
+ *
+ * Licensed under the Clear BSD license or the GPL-2 (or later)
  */
 
 .global ___modsi3;

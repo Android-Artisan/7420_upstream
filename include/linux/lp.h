@@ -100,6 +100,13 @@
 
 #include <linux/wait.h>
 #include <linux/mutex.h>
+#ifndef _LINUX_LP_H
+#define _LINUX_LP_H
+
+
+#include <linux/wait.h>
+#include <linux/mutex.h>
+#include <uapi/linux/lp.h>
 
 /* Magic numbers for defining port-device mappings */
 #define LP_PARPORT_UNSPEC -4

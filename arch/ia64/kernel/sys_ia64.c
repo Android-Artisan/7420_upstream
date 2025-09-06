@@ -28,6 +28,9 @@ arch_get_unmapped_area (struct file *filp, unsigned long addr, unsigned long len
 	unsigned long start_addr, align_mask = PAGE_SIZE - 1;
 	struct mm_struct *mm = current->mm;
 	struct vm_area_struct *vma;
+	unsigned long align_mask = 0;
+	struct mm_struct *mm = current->mm;
+	struct vm_unmapped_area_info info;
 
 	if (len > RGN_MAP_LIMIT)
 		return -ENOMEM;
@@ -45,6 +48,7 @@ arch_get_unmapped_area (struct file *filp, unsigned long addr, unsigned long len
 #endif
 	if (!addr)
 		addr = mm->free_area_cache;
+		addr = TASK_UNMAPPED_BASE;
 
 	if (map_shared && (TASK_SIZE > 0xfffffffful))
 		/*
@@ -75,6 +79,15 @@ arch_get_unmapped_area (struct file *filp, unsigned long addr, unsigned long len
 		}
 		addr = (vma->vm_end + align_mask) & ~align_mask;
 	}
+		align_mask = PAGE_MASK & (SHMLBA - 1);
+
+	info.flags = 0;
+	info.length = len;
+	info.low_limit = addr;
+	info.high_limit = TASK_SIZE;
+	info.align_mask = align_mask;
+	info.align_offset = 0;
+	return vm_unmapped_area(&info);
 }
 
 asmlinkage long
@@ -145,6 +158,7 @@ set_brk:
 out:
 	retval = mm->brk;
 	up_write(&mm->mmap_sem);
+	unsigned long retval = sys_brk(brk);
 	force_successful_syscall_return();
 	return retval;
 }
@@ -155,6 +169,7 @@ out:
  */
 asmlinkage long
 sys_pipe (void)
+sys_ia64_pipe (void)
 {
 	struct pt_regs *regs = task_pt_regs(current);
 	int fd[2];
@@ -227,6 +242,7 @@ asmlinkage unsigned long
 sys_mmap2 (unsigned long addr, unsigned long len, int prot, int flags, int fd, long pgoff)
 {
 	addr = do_mmap2(addr, len, prot, flags, fd, pgoff);
+	addr = sys_mmap_pgoff(addr, len, prot, flags, fd, pgoff);
 	if (!IS_ERR((void *) addr))
 		force_successful_syscall_return();
 	return addr;
@@ -239,6 +255,7 @@ sys_mmap (unsigned long addr, unsigned long len, int prot, int flags, int fd, lo
 		return -EINVAL;
 
 	addr = do_mmap2(addr, len, prot, flags, fd, off >> PAGE_SHIFT);
+	addr = sys_mmap_pgoff(addr, len, prot, flags, fd, off >> PAGE_SHIFT);
 	if (!IS_ERR((void *) addr))
 		force_successful_syscall_return();
 	return addr;
@@ -264,6 +281,9 @@ ia64_mremap (unsigned long addr, unsigned long old_len, unsigned long new_len, u
 		return addr;
 
 	force_successful_syscall_return();
+	addr = sys_mremap(addr, old_len, new_len, flags, new_addr);
+	if (!IS_ERR((void *) addr))
+		force_successful_syscall_return();
 	return addr;
 }
 

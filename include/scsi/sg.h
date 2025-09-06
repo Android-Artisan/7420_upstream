@@ -50,7 +50,6 @@ Major new features in SG 3.x driver (cf SG 2.x drivers)
  gather techniques. The context should clarify which "sg" is referred to.
 
  Documentation
- =============
  A web site for the SG device driver can be found at:
 	http://www.torque.net/sg  [alternatively check the MAINTAINERS file]
  The documentation for the sg version 3 driver can be found at:
@@ -72,6 +71,33 @@ Major new features in SG 3.x driver (cf SG 2.x drivers)
 
 
 /* New interface introduced in the 3.x SG drivers follows */
+ * History:
+ *  Started: Aug 9 by Lawrence Foard (entropy@world.std.com), to allow user
+ *   process control of SCSI devices.
+ *  Development Sponsored by Killy Corp. NY NY
+ *
+ * Original driver (sg.h):
+ *       Copyright (C) 1992 Lawrence Foard
+ * Version 2 and 3 extensions to driver:
+ *	Copyright (C) 1998 - 2014 Douglas Gilbert
+ *
+ *  Version: 3.5.36 (20140603)
+ *  This version is for 2.6 and 3 series kernels.
+ *
+ * Documentation
+ * A web site for the SG device driver can be found at:
+ *	http://sg.danny.cz/sg  [alternatively check the MAINTAINERS file]
+ * The documentation for the sg version 3 driver can be found at:
+ *	http://sg.danny.cz/sg/p/sg_v3_ho.html
+ * Also see: <kernel_source>/Documentation/scsi/scsi-generic.txt
+ *
+ * For utility and test programs see: http://sg.danny.cz/sg/sg3_utils.html
+ */
+
+#ifdef __KERNEL__
+extern int sg_big_buff; /* for sysctl */
+#endif
+
 
 typedef struct sg_iovec /* same structure as used by readv() Linux system */
 {                       /* call. It defines one scatter-gather element. */
@@ -85,6 +111,7 @@ typedef struct sg_io_hdr
     int interface_id;           /* [i] 'S' for SCSI generic (required) */
     int dxfer_direction;        /* [i] data transfer direction  */
     unsigned char cmd_len;      /* [i] SCSI command length ( <= 16 bytes) */
+    unsigned char cmd_len;      /* [i] SCSI command length */
     unsigned char mx_sb_len;    /* [i] max length to write to sbp */
     unsigned short iovec_count; /* [i] 0 implies no scatter gather */
     unsigned int dxfer_len;     /* [i] byte count of data transfer */
@@ -126,6 +153,9 @@ typedef struct sg_io_hdr
 #define SG_FLAG_MMAP_IO 4       /* request memory mapped IO */
 #define SG_FLAG_NO_DXFER 0x10000 /* no transfer of kernel buffers to/from */
 				/* user space (debug indirect IO) */
+/* defaults:: for sg driver: Q_AT_HEAD; for block layer: Q_AT_TAIL */
+#define SG_FLAG_Q_AT_TAIL 0x10
+#define SG_FLAG_Q_AT_HEAD 0x20
 
 /* following 'info' values are "or"-ed together */
 #define SG_INFO_OK_MASK 0x1
@@ -202,11 +232,15 @@ typedef struct sg_req_info { /* used by SG_GET_REQUEST_TABLE ioctl() */
 /* Returns -EBUSY if occupied. 3rd argument pointer to int (see next) */
 #define SG_SCSI_RESET 0x2284
 /* Associated values that can be given to SG_SCSI_RESET follow */
+/* Associated values that can be given to SG_SCSI_RESET follow.
+ * SG_SCSI_RESET_NO_ESCALATE may be OR-ed to the _DEVICE, _TARGET, _BUS
+ * or _HOST reset value so only that action is attempted. */
 #define		SG_SCSI_RESET_NOTHING	0
 #define		SG_SCSI_RESET_DEVICE	1
 #define		SG_SCSI_RESET_BUS	2
 #define		SG_SCSI_RESET_HOST	3
 #define		SG_SCSI_RESET_TARGET	4
+#define		SG_SCSI_RESET_NO_ESCALATE	0x100
 
 /* synchronous SCSI command ioctl, (only in version 3 interface) */
 #define SG_IO 0x2285   /* similar effect as write() followed by read() */
@@ -231,7 +265,6 @@ typedef struct sg_req_info { /* used by SG_GET_REQUEST_TABLE ioctl() */
 #define SG_DEFAULT_RETRIES 0
 
 /* Defaults, commented if they differ from original sg driver */
-#define SG_DEF_FORCE_LOW_DMA 0  /* was 1 -> memory below 16MB on i386 */
 #define SG_DEF_FORCE_PACK_ID 0
 #define SG_DEF_KEEP_ORPHAN 0
 #define SG_DEF_RESERVED_SIZE SG_SCATTER_SZ /* load time option */

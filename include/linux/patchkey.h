@@ -25,6 +25,12 @@
 #endif
 
 #if defined(__KERNEL__)
+#ifndef _LINUX_PATCHKEY_H
+#define _LINUX_PATCHKEY_H
+
+#  include <asm/byteorder.h>
+#include <uapi/linux/patchkey.h>
+
 #  if defined(__BIG_ENDIAN)
 #    define _PATCHKEY(id) (0xfd00|id)
 #  elif defined(__LITTLE_ENDIAN)

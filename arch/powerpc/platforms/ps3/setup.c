@@ -24,6 +24,7 @@
 #include <linux/root_dev.h>
 #include <linux/console.h>
 #include <linux/kexec.h>
+#include <linux/export.h>
 #include <linux/bootmem.h>
 
 #include <asm/machdep.h>
@@ -33,6 +34,7 @@
 #include <asm/udbg.h>
 #include <asm/prom.h>
 #include <asm/lv1call.h>
+#include <asm/ps3gpu.h>
 
 #include "platform.h"
 
@@ -45,6 +47,9 @@
 #if !defined(CONFIG_SMP)
 static void smp_send_stop(void) {}
 #endif
+/* mutex synchronizing GPU accesses and video mode changes */
+DEFINE_MUTEX(ps3_gpu_mutex);
+EXPORT_SYMBOL_GPL(ps3_gpu_mutex);
 
 static union ps3_firmware_version ps3_firmware_version;
 
@@ -130,6 +135,7 @@ static void __init prealloc(struct ps3_prealloc *p)
 		       p->name);
 		return;
 	}
+	p->address = memblock_virt_alloc(p->size, p->align);
 
 	printk(KERN_INFO "%s: %lu bytes at %p\n", p->name, p->size,
 	       p->address);
@@ -188,6 +194,15 @@ static int ps3_set_dabr(u64 dabr)
 	enum {DABR_USER = 1, DABR_KERNEL = 2,};
 
 	return lv1_set_dabr(dabr, DABR_KERNEL | DABR_USER) ? -1 : 0;
+static int ps3_set_dabr(unsigned long dabr, unsigned long dabrx)
+{
+	/* Have to set at least one bit in the DABRX */
+	if (dabrx == 0 && dabr == 0)
+		dabrx = DABRX_USER;
+	/* hypervisor only allows us to set BTI, Kernel and user */
+	dabrx &= DABRX_BTI | DABRX_KERNEL | DABRX_USER;
+
+	return lv1_set_dabr(dabr, dabrx) ? -1 : 0;
 }
 
 static void __init ps3_setup_arch(void)
@@ -196,6 +211,12 @@ static void __init ps3_setup_arch(void)
 	DBG(" -> %s:%d\n", __func__, __LINE__);
 
 	lv1_get_version_info(&ps3_firmware_version.raw);
+	u64 tmp;
+
+	DBG(" -> %s:%d\n", __func__, __LINE__);
+
+	lv1_get_version_info(&ps3_firmware_version.raw, &tmp);
+
 	printk(KERN_INFO "PS3 firmware version %u.%u.%u\n",
 	       ps3_firmware_version.major, ps3_firmware_version.minor,
 	       ps3_firmware_version.rev);
@@ -241,6 +262,7 @@ static int __init ps3_probe(void)
 	ps3_mm_init();
 	ps3_mm_vas_create(&htab_size);
 	ps3_hpte_init(htab_size);
+	pm_power_off = ps3_power_off;
 
 	DBG(" <- %s:%d\n", __func__, __LINE__);
 	return 1;
@@ -280,5 +302,8 @@ define_machine(ps3) {
 	.machine_kexec			= default_machine_kexec,
 	.machine_kexec_prepare		= default_machine_kexec_prepare,
 	.machine_crash_shutdown		= default_machine_crash_shutdown,
+	.halt				= ps3_halt,
+#if defined(CONFIG_KEXEC)
+	.kexec_cpu_down			= ps3_kexec_cpu_down,
 #endif
 };

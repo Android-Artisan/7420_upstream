@@ -4,6 +4,7 @@
  * Author: Rickard E. Faith, faith@cs.unc.edu
  * Copyright 1992-1996, 1998 Rickard E. Faith (faith@acm.org)
  * Shared IRQ supported added 7/7/2001  Alan Cox <alan@redhat.com>
+ * Shared IRQ supported added 7/7/2001  Alan Cox <alan@lxorguk.ukuu.org.uk>
 
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the
@@ -175,6 +176,7 @@
  $750, but these required a non-disclosure agreement, so even if I could
  have afforded them, they would *not* have been useful for writing this
  publically distributable driver.  Future Domain technical support has
+ publicly distributable driver.  Future Domain technical support has
  provided some information on the phone and have sent a few useful FAXs.
  They have been much more helpful since they started to recognize that the
  word "Linux" refers to an operating system :-).
@@ -282,6 +284,9 @@
 #include <scsi/scsicam.h>
 
 #include <asm/system.h>
+#include <linux/slab.h>
+#include <scsi/scsicam.h>
+
 
 #include <scsi/scsi.h>
 #include <scsi/scsi_cmnd.h>
@@ -293,6 +298,11 @@
 MODULE_AUTHOR("Rickard E. Faith");
 MODULE_DESCRIPTION("Future domain SCSI driver");
 MODULE_LICENSE("GPL");
+#ifndef PCMCIA
+MODULE_AUTHOR("Rickard E. Faith");
+MODULE_DESCRIPTION("Future domain SCSI driver");
+MODULE_LICENSE("GPL");
+#endif
 
   
 #define VERSION          "$Revision: 5.51 $"
@@ -1417,6 +1427,7 @@ static irqreturn_t do_fdomain_16x0_intr(int irq, void *dev_id)
 }
 
 static int fdomain_16x0_queue(struct scsi_cmnd *SCpnt,
+static int fdomain_16x0_queue_lck(struct scsi_cmnd *SCpnt,
 		void (*done)(struct scsi_cmnd *))
 {
    if (in_command) {
@@ -1465,6 +1476,8 @@ static int fdomain_16x0_queue(struct scsi_cmnd *SCpnt,
 
    return 0;
 }
+
+static DEF_SCSI_QCMD(fdomain_16x0_queue)
 
 #if DEBUG_ABORT
 static void print_info(struct scsi_cmnd *SCpnt)
@@ -1765,9 +1778,10 @@ struct scsi_host_template fdomain_driver_template = {
 };
 
 #ifndef PCMCIA
-#ifdef CONFIG_PCI
+#if defined(CONFIG_PCI) && defined(MODULE)
 
 static struct pci_device_id fdomain_pci_tbl[] __devinitdata = {
+static struct pci_device_id fdomain_pci_tbl[] = {
 	{ PCI_VENDOR_ID_FD, PCI_DEVICE_ID_FD_36C70,
 	  PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0UL },
 	{ }

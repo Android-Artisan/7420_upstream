@@ -3,6 +3,9 @@
  *    standard tape device functions for ibm tapes.
  *
  *    Copyright (C) IBM Corp. 2001,2006
+ *    standard tape device functions for ibm tapes.
+ *
+ *    Copyright IBM Corp. 2001, 2006
  *    Author(s): Carsten Otte <cotte@de.ibm.com>
  *		 Tuan Ngo-Anh <ngoanh@de.ibm.com>
  *		 Martin Schwidefsky <schwidefsky@de.ibm.com>
@@ -106,6 +109,7 @@ void tape_std_free_bread(struct tape_request *);
 void tape_std_check_locate(struct tape_device *, struct tape_request *);
 struct tape_request *tape_std_bwrite(struct request *,
 				     struct tape_device *, int);
+void tape_std_check_locate(struct tape_device *, struct tape_request *);
 
 /* Some non-mtop commands. */
 int tape_std_assign(struct tape_device *);

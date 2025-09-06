@@ -57,6 +57,19 @@ int gdb_bf533vector = -1;
 #endif
 
 void regs_to_gdb_regs(unsigned long *gdb_regs, struct pt_regs *regs)
+ * arch/blackfin/kernel/kgdb.c - Blackfin kgdb pieces
+ *
+ * Copyright 2005-2008 Analog Devices Inc.
+ *
+ * Licensed under the GPL-2 or later.
+ */
+
+#include <linux/ptrace.h>		/* for linux pt_regs struct */
+#include <linux/kgdb.h>
+#include <linux/uaccess.h>
+#include <asm/irq_regs.h>
+
+void pt_regs_to_gdb_regs(unsigned long *gdb_regs, struct pt_regs *regs)
 {
 	gdb_regs[BFIN_R0] = regs->r0;
 	gdb_regs[BFIN_R1] = regs->r1;
@@ -113,6 +126,7 @@ void regs_to_gdb_regs(unsigned long *gdb_regs, struct pt_regs *regs)
 	gdb_regs[BFIN_RETE] = regs->rete;
 	gdb_regs[BFIN_PC] = regs->pc;
 	gdb_regs[BFIN_CC] = 0;
+	gdb_regs[BFIN_CC] = (regs->astat >> 5) & 1;
 	gdb_regs[BFIN_EXTRA1] = 0;
 	gdb_regs[BFIN_EXTRA2] = 0;
 	gdb_regs[BFIN_EXTRA3] = 0;
@@ -124,6 +138,7 @@ void regs_to_gdb_regs(unsigned long *gdb_regs, struct pt_regs *regs)
  * saved by switch_to.
  * thread.esp points to ebp. flags and ebp are pushed in switch_to hence esp
  * prior to entering switch_to is 8 greater then the value that is saved.
+ * prior to entering switch_to is 8 greater than the value that is saved.
  * If switch_to changes, change following code appropriately.
  */
 void sleeping_thread_to_gdb_regs(unsigned long *gdb_regs, struct task_struct *p)
@@ -134,6 +149,7 @@ void sleeping_thread_to_gdb_regs(unsigned long *gdb_regs, struct task_struct *p)
 }
 
 void gdb_regs_to_regs(unsigned long *gdb_regs, struct pt_regs *regs)
+void gdb_regs_to_pt_regs(unsigned long *gdb_regs, struct pt_regs *regs)
 {
 	regs->r0 = gdb_regs[BFIN_R0];
 	regs->r1 = gdb_regs[BFIN_R1];
@@ -180,6 +196,7 @@ void gdb_regs_to_regs(unsigned long *gdb_regs, struct pt_regs *regs)
 	regs->usp = gdb_regs[BFIN_USP];
 	regs->syscfg = gdb_regs[BFIN_SYSCFG];
 	regs->retx = gdb_regs[BFIN_PC];
+	regs->retx = gdb_regs[BFIN_RETX];
 	regs->retn = gdb_regs[BFIN_RETN];
 	regs->rete = gdb_regs[BFIN_RETE];
 	regs->pc = gdb_regs[BFIN_PC];
@@ -192,6 +209,7 @@ void gdb_regs_to_regs(unsigned long *gdb_regs, struct pt_regs *regs)
 }
 
 struct hw_breakpoint {
+static struct hw_breakpoint {
 	unsigned int occupied:1;
 	unsigned int skip:1;
 	unsigned int enabled:1;
@@ -218,6 +236,49 @@ int kgdb_set_hw_break(unsigned long addr)
 			breakinfo[breakno].enabled = 1;
 			breakinfo[breakno].type = 1;
 			breakinfo[breakno].addr = addr;
+} breakinfo[HW_WATCHPOINT_NUM];
+
+static int bfin_set_hw_break(unsigned long addr, int len, enum kgdb_bptype type)
+{
+	int breakno;
+	int bfin_type;
+	int dataacc = 0;
+
+	switch (type) {
+	case BP_HARDWARE_BREAKPOINT:
+		bfin_type = TYPE_INST_WATCHPOINT;
+		break;
+	case BP_WRITE_WATCHPOINT:
+		dataacc = 1;
+		bfin_type = TYPE_DATA_WATCHPOINT;
+		break;
+	case BP_READ_WATCHPOINT:
+		dataacc = 2;
+		bfin_type = TYPE_DATA_WATCHPOINT;
+		break;
+	case BP_ACCESS_WATCHPOINT:
+		dataacc = 3;
+		bfin_type = TYPE_DATA_WATCHPOINT;
+		break;
+	default:
+		return -ENOSPC;
+	}
+
+	/* Because hardware data watchpoint impelemented in current
+	 * Blackfin can not trigger an exception event as the hardware
+	 * instrction watchpoint does, we ignaore all data watch point here.
+	 * They can be turned on easily after future blackfin design
+	 * supports this feature.
+	 */
+	for (breakno = 0; breakno < HW_INST_WATCHPOINT_NUM; breakno++)
+		if (bfin_type == breakinfo[breakno].type
+			&& !breakinfo[breakno].occupied) {
+			breakinfo[breakno].occupied = 1;
+			breakinfo[breakno].skip = 0;
+			breakinfo[breakno].enabled = 1;
+			breakinfo[breakno].addr = addr;
+			breakinfo[breakno].dataacc = dataacc;
+			breakinfo[breakno].count = 0;
 			return 0;
 		}
 
@@ -230,6 +291,30 @@ int kgdb_remove_hw_break(unsigned long addr)
 	for (breakno = 0; breakno < HW_BREAKPOINT_NUM; breakno++)
 		if (breakinfo[breakno].addr == addr)
 			memset(&(breakinfo[breakno]), 0, sizeof(struct hw_breakpoint));
+static int bfin_remove_hw_break(unsigned long addr, int len, enum kgdb_bptype type)
+{
+	int breakno;
+	int bfin_type;
+
+	switch (type) {
+	case BP_HARDWARE_BREAKPOINT:
+		bfin_type = TYPE_INST_WATCHPOINT;
+		break;
+	case BP_WRITE_WATCHPOINT:
+	case BP_READ_WATCHPOINT:
+	case BP_ACCESS_WATCHPOINT:
+		bfin_type = TYPE_DATA_WATCHPOINT;
+		break;
+	default:
+		return 0;
+	}
+	for (breakno = 0; breakno < HW_WATCHPOINT_NUM; breakno++)
+		if (bfin_type == breakinfo[breakno].type
+			&& breakinfo[breakno].occupied
+			&& breakinfo[breakno].addr == addr) {
+			breakinfo[breakno].occupied = 0;
+			breakinfo[breakno].enabled = 0;
+		}
 
 	return 0;
 }
@@ -370,6 +455,138 @@ int kgdb_arch_handle_exception(int exceptionVector, int signo,
 	char *ptr;
 	int newPC;
 	int wp_status;
+static void bfin_remove_all_hw_break(void)
+{
+	int breakno;
+
+	memset(breakinfo, 0, sizeof(struct hw_breakpoint)*HW_WATCHPOINT_NUM);
+
+	for (breakno = 0; breakno < HW_INST_WATCHPOINT_NUM; breakno++)
+		breakinfo[breakno].type = TYPE_INST_WATCHPOINT;
+	for (; breakno < HW_WATCHPOINT_NUM; breakno++)
+		breakinfo[breakno].type = TYPE_DATA_WATCHPOINT;
+}
+
+static void bfin_correct_hw_break(void)
+{
+	int breakno;
+	unsigned int wpiactl = 0;
+	unsigned int wpdactl = 0;
+	int enable_wp = 0;
+
+	for (breakno = 0; breakno < HW_WATCHPOINT_NUM; breakno++)
+		if (breakinfo[breakno].enabled) {
+			enable_wp = 1;
+
+			switch (breakno) {
+			case 0:
+				wpiactl |= WPIAEN0|WPICNTEN0;
+				bfin_write_WPIA0(breakinfo[breakno].addr);
+				bfin_write_WPIACNT0(breakinfo[breakno].count
+					+ breakinfo->skip);
+				break;
+			case 1:
+				wpiactl |= WPIAEN1|WPICNTEN1;
+				bfin_write_WPIA1(breakinfo[breakno].addr);
+				bfin_write_WPIACNT1(breakinfo[breakno].count
+					+ breakinfo->skip);
+				break;
+			case 2:
+				wpiactl |= WPIAEN2|WPICNTEN2;
+				bfin_write_WPIA2(breakinfo[breakno].addr);
+				bfin_write_WPIACNT2(breakinfo[breakno].count
+					+ breakinfo->skip);
+				break;
+			case 3:
+				wpiactl |= WPIAEN3|WPICNTEN3;
+				bfin_write_WPIA3(breakinfo[breakno].addr);
+				bfin_write_WPIACNT3(breakinfo[breakno].count
+					+ breakinfo->skip);
+				break;
+			case 4:
+				wpiactl |= WPIAEN4|WPICNTEN4;
+				bfin_write_WPIA4(breakinfo[breakno].addr);
+				bfin_write_WPIACNT4(breakinfo[breakno].count
+					+ breakinfo->skip);
+				break;
+			case 5:
+				wpiactl |= WPIAEN5|WPICNTEN5;
+				bfin_write_WPIA5(breakinfo[breakno].addr);
+				bfin_write_WPIACNT5(breakinfo[breakno].count
+					+ breakinfo->skip);
+				break;
+			case 6:
+				wpdactl |= WPDAEN0|WPDCNTEN0|WPDSRC0;
+				wpdactl |= breakinfo[breakno].dataacc
+					<< WPDACC0_OFFSET;
+				bfin_write_WPDA0(breakinfo[breakno].addr);
+				bfin_write_WPDACNT0(breakinfo[breakno].count
+					+ breakinfo->skip);
+				break;
+			case 7:
+				wpdactl |= WPDAEN1|WPDCNTEN1|WPDSRC1;
+				wpdactl |= breakinfo[breakno].dataacc
+					<< WPDACC1_OFFSET;
+				bfin_write_WPDA1(breakinfo[breakno].addr);
+				bfin_write_WPDACNT1(breakinfo[breakno].count
+					+ breakinfo->skip);
+				break;
+			}
+		}
+
+	/* Should enable WPPWR bit first before set any other
+	 * WPIACTL and WPDACTL bits */
+	if (enable_wp) {
+		bfin_write_WPIACTL(WPPWR);
+		CSYNC();
+		bfin_write_WPIACTL(wpiactl|WPPWR);
+		bfin_write_WPDACTL(wpdactl);
+		CSYNC();
+	}
+}
+
+static void bfin_disable_hw_debug(struct pt_regs *regs)
+{
+	/* Disable hardware debugging while we are in kgdb */
+	bfin_write_WPIACTL(0);
+	bfin_write_WPDACTL(0);
+	CSYNC();
+}
+
+#ifdef CONFIG_SMP
+void kgdb_passive_cpu_callback(void *info)
+{
+	kgdb_nmicallback(raw_smp_processor_id(), get_irq_regs());
+}
+
+void kgdb_roundup_cpus(unsigned long flags)
+{
+	unsigned int cpu;
+
+	for (cpu = cpumask_first(cpu_online_mask); cpu < nr_cpu_ids;
+		cpu = cpumask_next(cpu, cpu_online_mask))
+		smp_call_function_single(cpu, kgdb_passive_cpu_callback,
+					 NULL, 0);
+}
+
+void kgdb_roundup_cpu(int cpu, unsigned long flags)
+{
+	smp_call_function_single(cpu, kgdb_passive_cpu_callback, NULL, 0);
+}
+#endif
+
+#ifdef CONFIG_IPIPE
+static unsigned long kgdb_arch_imask;
+#endif
+
+int kgdb_arch_handle_exception(int vector, int signo,
+			       int err_code, char *remcom_in_buffer,
+			       char *remcom_out_buffer,
+			       struct pt_regs *regs)
+{
+	long addr;
+	char *ptr;
+	int newPC;
 	int i;
 
 	switch (remcom_in_buffer[0]) {
@@ -423,6 +640,35 @@ int kgdb_arch_handle_exception(int exceptionVector, int signo,
 		kgdb_correct_hw_break();
 
 		bfin_write_WPSTAT(0);
+			regs->retx = addr;
+		}
+		newPC = regs->retx;
+
+		/* clear the trace bit */
+		regs->syscfg &= 0xfffffffe;
+
+		/* set the trace bit if we're stepping */
+		if (remcom_in_buffer[0] == 's') {
+			regs->syscfg |= 0x1;
+			kgdb_single_step = regs->ipend;
+			kgdb_single_step >>= 6;
+			for (i = 10; i > 0; i--, kgdb_single_step >>= 1)
+				if (kgdb_single_step & 1)
+					break;
+			/* i indicate event priority of current stopped instruction
+			 * user space instruction is 0, IVG15 is 1, IVTMR is 10.
+			 * kgdb_single_step > 0 means in single step mode
+			 */
+			kgdb_single_step = i + 1;
+
+			preempt_disable();
+#ifdef CONFIG_IPIPE
+			kgdb_arch_imask = cpu_pda[raw_smp_processor_id()].ex_imask;
+			cpu_pda[raw_smp_processor_id()].ex_imask = 0;
+#endif
+		}
+
+		bfin_correct_hw_break();
 
 		return 0;
 	}			/* switch */
@@ -433,3 +679,58 @@ struct kgdb_arch arch_kgdb_ops = {
 	.gdb_bpt_instr = {0xa1},
 	.flags = KGDB_HW_BREAKPOINT,
 };
+	.set_hw_breakpoint = bfin_set_hw_break,
+	.remove_hw_breakpoint = bfin_remove_hw_break,
+	.disable_hw_break = bfin_disable_hw_debug,
+	.remove_all_hw_break = bfin_remove_all_hw_break,
+	.correct_hw_break = bfin_correct_hw_break,
+};
+
+#define IN_MEM(addr, size, l1_addr, l1_size) \
+({ \
+	unsigned long __addr = (unsigned long)(addr); \
+	(l1_size && __addr >= l1_addr && __addr + (size) <= l1_addr + l1_size); \
+})
+#define ASYNC_BANK_SIZE \
+	(ASYNC_BANK0_SIZE + ASYNC_BANK1_SIZE + \
+	 ASYNC_BANK2_SIZE + ASYNC_BANK3_SIZE)
+
+int kgdb_validate_break_address(unsigned long addr)
+{
+	int cpu = raw_smp_processor_id();
+
+	if (addr >= 0x1000 && (addr + BREAK_INSTR_SIZE) <= physical_mem_end)
+		return 0;
+	if (IN_MEM(addr, BREAK_INSTR_SIZE, ASYNC_BANK0_BASE, ASYNC_BANK_SIZE))
+		return 0;
+	if (cpu == 0 && IN_MEM(addr, BREAK_INSTR_SIZE, L1_CODE_START, L1_CODE_LENGTH))
+		return 0;
+#ifdef CONFIG_SMP
+	else if (cpu == 1 && IN_MEM(addr, BREAK_INSTR_SIZE, COREB_L1_CODE_START, L1_CODE_LENGTH))
+		return 0;
+#endif
+	if (IN_MEM(addr, BREAK_INSTR_SIZE, L2_START, L2_LENGTH))
+		return 0;
+
+	return -EFAULT;
+}
+
+void kgdb_arch_set_pc(struct pt_regs *regs, unsigned long ip)
+{
+	regs->retx = ip;
+}
+
+int kgdb_arch_init(void)
+{
+	kgdb_single_step = 0;
+#ifdef CONFIG_IPIPE
+	kgdb_arch_imask = 0;
+#endif
+
+	bfin_remove_all_hw_break();
+	return 0;
+}
+
+void kgdb_arch_exit(void)
+{
+}

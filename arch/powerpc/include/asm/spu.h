@@ -26,6 +26,10 @@
 
 #include <linux/workqueue.h>
 #include <linux/sysdev.h>
+#include <linux/device.h>
+#include <linux/mutex.h>
+#include <asm/reg.h>
+#include <asm/copro.h>
 
 #define LS_SIZE (256 * 1024)
 #define LS_ADDR_MASK (LS_SIZE - 1)
@@ -129,6 +133,7 @@ struct spu {
 	unsigned int irqs[3];
 	u32 node;
 	u64 flags;
+	unsigned long flags;
 	u64 class_0_pending;
 	u64 class_0_dar;
 	u64 class_1_dar;
@@ -166,6 +171,7 @@ struct spu {
 	u64 shadow_int_mask_RW[3];
 
 	struct sys_device sysdev;
+	struct device dev;
 
 	int has_mem_affinity;
 	struct list_head aff_list;
@@ -245,11 +251,16 @@ struct file;
 struct spufs_calls {
 	long (*create_thread)(const char __user *name,
 					unsigned int flags, mode_t mode,
+struct coredump_params;
+struct spufs_calls {
+	long (*create_thread)(const char __user *name,
+					unsigned int flags, umode_t mode,
 					struct file *neighbor);
 	long (*spu_run)(struct file *filp, __u32 __user *unpc,
 						__u32 __user *ustatus);
 	int (*coredump_extra_notes_size)(void);
 	int (*coredump_extra_notes_write)(struct file *file, loff_t *foffset);
+	int (*coredump_extra_notes_write)(struct coredump_params *cprm);
 	void (*notify_spus_active)(void);
 	struct module *owner;
 };
@@ -285,6 +296,11 @@ void spu_remove_sysdev_attr_group(struct attribute_group *attrs);
 
 int spu_handle_mm_fault(struct mm_struct *mm, unsigned long ea,
 		unsigned long dsisr, unsigned *flt);
+int spu_add_dev_attr(struct device_attribute *attr);
+void spu_remove_dev_attr(struct device_attribute *attr);
+
+int spu_add_dev_attr_group(struct attribute_group *attrs);
+void spu_remove_dev_attr_group(struct attribute_group *attrs);
 
 /*
  * Notifier blocks:

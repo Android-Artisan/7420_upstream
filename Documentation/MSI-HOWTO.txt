@@ -157,9 +157,7 @@ mode on the MSI-capable device function between MSI mode and
 PIN-IRQ assertion mode.
 
 	 ------------   pci_enable_msi 	 ------------------------
-	|	     | <===============	| 			 |
 	| MSI MODE   |	  	     	| PIN-IRQ ASSERTION MODE |
-	| 	     | ===============>	|			 |
  	 ------------	pci_disable_msi  ------------------------
 
 
@@ -295,9 +293,7 @@ mode on the MSI-X capable device function between MSI-X mode and
 PIN-IRQ assertion mode (legacy).
 
 	 ------------   pci_enable_msix(,,n) ------------------------
-	|	     | <===============	    | 			     |
 	| MSI-X MODE |	  	     	    | PIN-IRQ ASSERTION MODE |
-	| 	     | ===============>	    |			     |
  	 ------------	pci_disable_msix     ------------------------
 
 Figure 2. MSI-X Mode vs. Legacy Mode

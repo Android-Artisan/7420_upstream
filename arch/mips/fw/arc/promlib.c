@@ -5,6 +5,7 @@
  *
  * Copyright (C) 1996 David S. Miller (dm@sgi.com)
  * Compability with board caches, Ulf Carlsson
+ * Compatibility with board caches, Ulf Carlsson
  */
 #include <linux/kernel.h>
 #include <asm/sgialib.h>
@@ -12,6 +13,7 @@
 
 /*
  * IP22 boardcache is not compatible with board caches.  Thus we disable it
+ * IP22 boardcache is not compatible with board caches.	 Thus we disable it
  * during romvec action.  Since r4xx0.c is always compiled and linked with your
  * kernel, this shouldn't cause any harm regardless what MIPS processor you
  * have.

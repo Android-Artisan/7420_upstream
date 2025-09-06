@@ -26,6 +26,7 @@
 #include <linux/ip.h>
 #include <linux/netfilter.h>
 #include <net/route.h>
+#include <linux/in.h>
 
 #include <net/netfilter/nf_conntrack.h>
 #include <net/netfilter/nf_conntrack_helper.h>
@@ -97,6 +98,12 @@ out:
 	return NF_ACCEPT;
 }
 
+MODULE_ALIAS_NFCT_HELPER("netbios_ns");
+
+static unsigned int timeout __read_mostly = 3;
+module_param(timeout, uint, S_IRUSR);
+MODULE_PARM_DESC(timeout, "timeout for master connection/replies in seconds");
+
 static struct nf_conntrack_expect_policy exp_policy = {
 	.max_expected	= 1,
 };
@@ -108,6 +115,19 @@ static struct nf_conntrack_helper helper __read_mostly = {
 	.tuple.dst.protonum	= IPPROTO_UDP,
 	.me			= THIS_MODULE,
 	.help			= help,
+static int netbios_ns_help(struct sk_buff *skb, unsigned int protoff,
+		   struct nf_conn *ct, enum ip_conntrack_info ctinfo)
+{
+	return nf_conntrack_broadcast_help(skb, protoff, ct, ctinfo, timeout);
+}
+
+static struct nf_conntrack_helper helper __read_mostly = {
+	.name			= "netbios-ns",
+	.tuple.src.l3num	= NFPROTO_IPV4,
+	.tuple.src.u.udp.port	= cpu_to_be16(NMBD_PORT),
+	.tuple.dst.protonum	= IPPROTO_UDP,
+	.me			= THIS_MODULE,
+	.help			= netbios_ns_help,
 	.expect_policy		= &exp_policy,
 };
 

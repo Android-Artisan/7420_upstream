@@ -17,6 +17,7 @@
 #include <asm/io.h>
 
 int __uses_jump_to_uncached detect_cpu_and_cache_system(void)
+void cpu_probe(void)
 {
 	unsigned long addr0, addr1, data0, data1, data2, data3;
 
@@ -47,6 +48,23 @@ int __uses_jump_to_uncached detect_cpu_and_cache_system(void)
 	/* Lastly, invaliate them. */
 	ctrl_outl(data0&~SH_CACHE_VALID, addr0);
 	ctrl_outl(data2&~SH_CACHE_VALID, addr1);
+	data0  = __raw_readl(addr0);
+	__raw_writel(data0&~(SH_CACHE_VALID|SH_CACHE_UPDATED), addr0);
+	data1  = __raw_readl(addr1);
+	__raw_writel(data1&~(SH_CACHE_VALID|SH_CACHE_UPDATED), addr1);
+
+	/* Next, check if there's shadow or not */
+	data0 = __raw_readl(addr0);
+	data0 ^= SH_CACHE_VALID;
+	__raw_writel(data0, addr0);
+	data1 = __raw_readl(addr1);
+	data2 = data1 ^ SH_CACHE_VALID;
+	__raw_writel(data2, addr1);
+	data3 = __raw_readl(addr0);
+
+	/* Lastly, invaliate them. */
+	__raw_writel(data0&~SH_CACHE_VALID, addr0);
+	__raw_writel(data2&~SH_CACHE_VALID, addr1);
 
 	back_to_cached();
 
@@ -97,6 +115,9 @@ int __uses_jump_to_uncached detect_cpu_and_cache_system(void)
 		ctrl_outl(CCR_CACHE_32KB, CCR3_REG);
 #else
 		ctrl_outl(CCR_CACHE_16KB, CCR3_REG);
+		__raw_writel(CCR_CACHE_32KB, CCR3_REG);
+#else
+		__raw_writel(CCR_CACHE_16KB, CCR3_REG);
 #endif
 #endif
 	}
@@ -108,4 +129,5 @@ int __uses_jump_to_uncached detect_cpu_and_cache_system(void)
 	boot_cpu_data.icache = boot_cpu_data.dcache;
 
 	return 0;
+	boot_cpu_data.family = CPU_FAMILY_SH3;
 }

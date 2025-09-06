@@ -367,3 +367,4 @@ static void __exit sermouse_exit(void)
 
 module_init(sermouse_init);
 module_exit(sermouse_exit);
+module_serio_driver(sermouse_drv);

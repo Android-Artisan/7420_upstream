@@ -390,6 +390,22 @@ There is no queuing in SAS LLDDs.
 struct sas_task {
 	dev -- the device this task is destined to
 	list -- must be initialized (INIT_LIST_HEAD)
+	int (*lldd_execute_task)(struct sas_task *, gfp_t gfp_flags);
+
+Used to queue a task to the SAS LLDD.  @task is the task to be executed.
+@gfp_mask is the gfp_mask defining the context of the caller.
+
+This function should implement the Execute Command SCSI RPC,
+
+That is, when lldd_execute_task() is called, the command
+go out on the transport *immediately*.  There is *no*
+queuing of any sort and at any level in a SAS LLDD.
+
+Returns: -SAS_QUEUE_FULL, -ENOMEM, nothing was queued;
+	 0, the task(s) were queued.
+
+struct sas_task {
+	dev -- the device this task is destined to
 	task_proto -- _one_ of enum sas_proto
 	scatter -- pointer to scatter gather list array
 	num_scatter -- number of elements in scatter

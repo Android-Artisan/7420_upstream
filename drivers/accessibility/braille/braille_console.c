@@ -46,6 +46,7 @@ MODULE_LICENSE("GPL");
 
 /* Emit various sounds */
 static int sound;
+static bool sound;
 module_param(sound, bool, 0);
 MODULE_PARM_DESC(sound, "emit sounds");
 
@@ -255,6 +256,13 @@ static int keyboard_notifier_call(struct notifier_block *blk,
 			case KVAL(K_HOLD):
 				on_off = vc_kbd_led(kbd_table + fg_console,
 						VC_SCROLLOCK);
+				on_off = vt_get_leds(fg_console, VC_CAPSLOCK);
+				break;
+			case KVAL(K_NUM):
+				on_off = vt_get_leds(fg_console, VC_NUMLOCK);
+				break;
+			case KVAL(K_HOLD):
+				on_off = vt_get_leds(fg_console, VC_SCROLLOCK);
 				break;
 			}
 			if (on_off == 1)
@@ -363,6 +371,9 @@ int braille_register_console(struct console *console, int index,
 		char *console_options, char *braille_options)
 {
 	int ret;
+
+	if (!(console->flags & CON_BRL))
+		return 0;
 	if (!console_options)
 		/* Only support VisioBraille for now */
 		console_options = "57600o8";
@@ -379,6 +390,7 @@ int braille_register_console(struct console *console, int index,
 	register_keyboard_notifier(&keyboard_notifier_block);
 	register_vt_notifier(&vt_notifier_block);
 	return 0;
+	return 1;
 }
 
 int braille_unregister_console(struct console *console)
@@ -389,4 +401,10 @@ int braille_unregister_console(struct console *console)
 	unregister_vt_notifier(&vt_notifier_block);
 	braille_co = NULL;
 	return 0;
+	if (!(console->flags & CON_BRL))
+		return 0;
+	unregister_keyboard_notifier(&keyboard_notifier_block);
+	unregister_vt_notifier(&vt_notifier_block);
+	braille_co = NULL;
+	return 1;
 }

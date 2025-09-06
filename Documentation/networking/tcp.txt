@@ -1,16 +1,13 @@
 TCP protocol
-============
 
 Last updated: 9 February 2008
 
 Contents
-========
 
 - Congestion control
 - How the new TCP output machine [nyi] works
 
 Congestion control
-==================
 
 The following variables are used in the tcp_sock for congestion control:
 snd_cwnd		The size of the congestion window
@@ -31,6 +28,7 @@ tcp_cong.c. The functions used by the congestion control mechanism are
 registered via passing a tcp_congestion_ops struct to
 tcp_register_congestion_control. As a minimum name, ssthresh,
 cong_avoid, min_cwnd must be valid.
+cong_avoid must be valid.
 
 Private data for a congestion control mechanism is stored in tp->ca_priv.
 tcp_ca(tp) returns a pointer to this space.  This is preallocated space - it
@@ -66,7 +64,6 @@ available one. Since reno cannot be built as a module, and cannot be
 deleted, it will always be available.
 
 How the new TCP output machine [nyi] works.
-===========================================
 
 Data is kept on a single queue. The skb->users flag tells us if the frame is
 one that has been queued already. To add a frame we throw it on the end. Ack

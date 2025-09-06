@@ -4,6 +4,13 @@
 #include <linux/clockchips.h>
 
 #include <asm/i8253.h>
+#include <linux/i8253.h>
+#include <linux/interrupt.h>
+#include <linux/irq.h>
+#include <linux/smp.h>
+#include <linux/time.h>
+#include <linux/clockchips.h>
+
 #include <asm/sni.h>
 #include <asm/time.h>
 #include <asm-generic/rtc.h>
@@ -50,6 +57,37 @@ static struct clock_event_device a20r_clockevent_device = {
 	.rating		= 300,
 	.irq		= SNI_A20R_IRQ_TIMER,
 	.set_mode	= a20r_set_mode,
+#define SNI_CLOCK_TICK_RATE	3686400
+#define SNI_COUNTER2_DIV	64
+#define SNI_COUNTER0_DIV	((SNI_CLOCK_TICK_RATE / SNI_COUNTER2_DIV) / HZ)
+
+static int a20r_set_periodic(struct clock_event_device *evt)
+{
+	*(volatile u8 *)(A20R_PT_CLOCK_BASE + 12) = 0x34;
+	wmb();
+	*(volatile u8 *)(A20R_PT_CLOCK_BASE + 0) = SNI_COUNTER0_DIV & 0xff;
+	wmb();
+	*(volatile u8 *)(A20R_PT_CLOCK_BASE + 0) = SNI_COUNTER0_DIV >> 8;
+	wmb();
+
+	*(volatile u8 *)(A20R_PT_CLOCK_BASE + 12) = 0xb4;
+	wmb();
+	*(volatile u8 *)(A20R_PT_CLOCK_BASE + 8) = SNI_COUNTER2_DIV & 0xff;
+	wmb();
+	*(volatile u8 *)(A20R_PT_CLOCK_BASE + 8) = SNI_COUNTER2_DIV >> 8;
+	wmb();
+	return 0;
+}
+
+static struct clock_event_device a20r_clockevent_device = {
+	.name			= "a20r-timer",
+	.features		= CLOCK_EVT_FEAT_PERIODIC,
+
+	/* .mult, .shift, .max_delta_ns and .min_delta_ns left uninitialized */
+
+	.rating			= 300,
+	.irq			= SNI_A20R_IRQ_TIMER,
+	.set_state_periodic	= a20r_set_periodic,
 };
 
 static irqreturn_t a20r_interrupt(int irq, void *dev_id)
@@ -67,6 +105,7 @@ static irqreturn_t a20r_interrupt(int irq, void *dev_id)
 static struct irqaction a20r_irqaction = {
 	.handler	= a20r_interrupt,
 	.flags		= IRQF_DISABLED | IRQF_PERCPU,
+	.flags		= IRQF_PERCPU | IRQF_TIMER,
 	.name		= "a20r-timer",
 };
 
@@ -81,6 +120,7 @@ static void __init sni_a20r_timer_setup(void)
 	unsigned int cpu = smp_processor_id();
 
 	cd->cpumask             = cpumask_of_cpu(cpu);
+	cd->cpumask		= cpumask_of(cpu);
 	clockevents_register_device(cd);
 	action->dev_id = cd;
 	setup_irq(SNI_A20R_IRQ_TIMER, &a20r_irqaction);
@@ -89,11 +129,15 @@ static void __init sni_a20r_timer_setup(void)
 #define SNI_8254_TICK_RATE        1193182UL
 
 #define SNI_8254_TCSAMP_COUNTER   ((SNI_8254_TICK_RATE / HZ) + 255)
+#define SNI_8254_TICK_RATE	  1193182UL
+
+#define SNI_8254_TCSAMP_COUNTER	  ((SNI_8254_TICK_RATE / HZ) + 255)
 
 static __init unsigned long dosample(void)
 {
 	u32 ct0, ct1;
 	volatile u8 msb, lsb;
+	volatile u8 msb;
 
 	/* Start the counter. */
 	outb_p(0x34, 0x43);
@@ -107,6 +151,7 @@ static __init unsigned long dosample(void)
 	do {
 		outb(0x00, 0x43);
 		lsb = inb(0x40);
+		(void) inb(0x40);
 		msb = inb(0x40);
 		ct1 = read_c0_count();
 	} while (msb);
@@ -184,4 +229,8 @@ void __init plat_time_init(void)
 unsigned long read_persistent_clock(void)
 {
 	return -1;
+void read_persistent_clock(struct timespec *ts)
+{
+	ts->tv_sec = -1;
+	ts->tv_nsec = 0;
 }

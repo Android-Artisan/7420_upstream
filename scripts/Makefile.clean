@@ -1,6 +1,4 @@
-# ==========================================================================
 # Cleaning up
-# ==========================================================================
 
 src := $(obj)
 
@@ -11,13 +9,13 @@ __clean:
 # Usage:
 # $(Q)$(MAKE) $(clean)=dir
 clean := -f $(if $(KBUILD_SRC),$(srctree)/)scripts/Makefile.clean obj
+include scripts/Kbuild.include
 
 # The filename Kbuild has precedence over Makefile
 kbuild-dir := $(if $(filter /%,$(src)),$(src),$(srctree)/$(src))
 include $(if $(wildcard $(kbuild-dir)/Kbuild), $(kbuild-dir)/Kbuild, $(kbuild-dir)/Makefile)
 
 # Figure out what we need to build from the various variables
-# ==========================================================================
 
 __subdir-y	:= $(patsubst %/,%,$(filter %/, $(obj-y)))
 subdir-y	+= $(__subdir-y)
@@ -32,6 +30,7 @@ subdir-		+= $(__subdir-)
 
 subdir-ym	:= $(sort $(subdir-y) $(subdir-m))
 subdir-ymn      := $(sort $(subdir-ym) $(subdir-n) $(subdir-))
+subdir-ymn      := $(sort $(subdir-ym) $(subdir-))
 
 # Add subdir path
 
@@ -58,8 +57,27 @@ __clean-files   := $(wildcard                                               \
 __clean-dirs    := $(wildcard                                               \
                    $(addprefix $(obj)/, $(filter-out /%, $(clean-dirs)))    \
 		   $(filter /%, $(clean-dirs)))
+__clean-files	:= $(extra-y) $(extra-m) $(extra-)       \
+		   $(always) $(targets) $(clean-files)   \
+		   $(host-progs)                         \
+		   $(hostprogs-y) $(hostprogs-m) $(hostprogs-)
 
-# ==========================================================================
+__clean-files   := $(filter-out $(no-clean-files), $(__clean-files))
+
+# clean-files is given relative to the current directory, unless it
+# starts with $(objtree)/ (which means "./", so do not add "./" unless
+# you want to delete a file from the toplevel object directory).
+
+__clean-files   := $(wildcard                                               \
+		   $(addprefix $(obj)/, $(filter-out $(objtree)/%, $(__clean-files))) \
+		   $(filter $(objtree)/%, $(__clean-files)))
+
+# same as clean-files
+
+__clean-dirs    := $(wildcard                                               \
+		   $(addprefix $(obj)/, $(filter-out $(objtree)/%, $(clean-dirs)))    \
+		   $(filter $(objtree)/%, $(clean-dirs)))
+
 
 quiet_cmd_clean    = CLEAN   $(obj)
       cmd_clean    = rm -f $(__clean-files)
@@ -80,9 +98,7 @@ endif
 	@:
 
 
-# ===========================================================================
 # Generic stuff
-# ===========================================================================
 
 # Descending
 # ---------------------------------------------------------------------------

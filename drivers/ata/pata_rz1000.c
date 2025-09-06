@@ -47,6 +47,13 @@ static int rz1000_set_mode(struct ata_link *link, struct ata_device **unused)
 			dev->flags |= ATA_DFLAG_PIO;
 			ata_dev_printk(dev, KERN_INFO, "configured for PIO\n");
 		}
+	ata_for_each_dev(dev, link, ENABLED) {
+		/* We don't really care */
+		dev->pio_mode = XFER_PIO_0;
+		dev->xfer_mode = XFER_PIO_0;
+		dev->xfer_shift = ATA_SHIFT_PIO;
+		dev->flags |= ATA_DFLAG_PIO;
+		ata_dev_info(dev, "configured for PIO\n");
 	}
 	return 0;
 }
@@ -91,6 +98,9 @@ static int rz1000_init_one (struct pci_dev *pdev, const struct pci_device_id *en
 	static const struct ata_port_info info = {
 		.flags = ATA_FLAG_SLAVE_POSS,
 		.pio_mask = 0x1f,
+	static const struct ata_port_info info = {
+		.flags = ATA_FLAG_SLAVE_POSS,
+		.pio_mask = ATA_PIO4,
 		.port_ops = &rz1000_port_ops
 	};
 	const struct ata_port_info *ppi[] = { &info, NULL };
@@ -100,6 +110,10 @@ static int rz1000_init_one (struct pci_dev *pdev, const struct pci_device_id *en
 
 	if (rz1000_fifo_disable(pdev) == 0)
 		return ata_pci_sff_init_one(pdev, ppi, &rz1000_sht, NULL);
+	ata_print_version_once(&pdev->dev, DRV_VERSION);
+
+	if (rz1000_fifo_disable(pdev) == 0)
+		return ata_pci_sff_init_one(pdev, ppi, &rz1000_sht, NULL, 0);
 
 	printk(KERN_ERR DRV_NAME ": failed to disable read-ahead on chipset..\n");
 	/* Not safe to use so skip */
@@ -114,6 +128,23 @@ static int rz1000_reinit_one(struct pci_dev *pdev)
 	if (rz1000_fifo_disable(pdev))
 		panic("rz1000 fifo");
 	return ata_pci_device_resume(pdev);
+#ifdef CONFIG_PM_SLEEP
+static int rz1000_reinit_one(struct pci_dev *pdev)
+{
+	struct ata_host *host = pci_get_drvdata(pdev);
+	int rc;
+
+	rc = ata_pci_device_do_resume(pdev);
+	if (rc)
+		return rc;
+
+	/* If this fails on resume (which is a "can't happen" case), we
+	   must stop as any progress risks data loss */
+	if (rz1000_fifo_disable(pdev))
+		panic("rz1000 fifo");
+
+	ata_host_resume(host);
+	return 0;
 }
 #endif
 
@@ -130,6 +161,7 @@ static struct pci_driver rz1000_pci_driver = {
 	.probe 		= rz1000_init_one,
 	.remove		= ata_pci_remove_one,
 #ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 	.suspend	= ata_pci_device_suspend,
 	.resume		= rz1000_reinit_one,
 #endif
@@ -144,6 +176,7 @@ static void __exit rz1000_exit(void)
 {
 	pci_unregister_driver(&rz1000_pci_driver);
 }
+module_pci_driver(rz1000_pci_driver);
 
 MODULE_AUTHOR("Alan Cox");
 MODULE_DESCRIPTION("low-level driver for RZ1000 PCI ATA");

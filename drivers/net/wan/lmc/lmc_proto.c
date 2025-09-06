@@ -60,6 +60,7 @@ void lmc_proto_attach(lmc_softc_t *sc) /*FOLD00*/
         break;
     case LMC_NET:
         {
+    if (sc->if_type == LMC_NET) {
             struct net_device *dev = sc->lmc_device;
             /*
 	     * They set a few basics because they don't use HDLC
@@ -75,6 +76,9 @@ void lmc_proto_attach(lmc_softc_t *sc) /*FOLD00*/
     default:
         break;
     }
+            dev->hard_header_len = 0;
+            dev->addr_len = 0;
+        }
     lmc_trace(sc->lmc_device, "lmc_proto_attach out");
 }
 

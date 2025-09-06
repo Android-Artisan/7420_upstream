@@ -71,6 +71,9 @@ struct device_node;
 extern unsigned int dcr_resource_start(struct device_node *np,
 				       unsigned int index);
 extern unsigned int dcr_resource_len(struct device_node *np,
+extern unsigned int dcr_resource_start(const struct device_node *np,
+				       unsigned int index);
+extern unsigned int dcr_resource_len(const struct device_node *np,
 				     unsigned int index);
 #endif /* CONFIG_PPC_DCR */
 #endif /* __ASSEMBLY__ */

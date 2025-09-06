@@ -28,6 +28,14 @@
 
 #include <stdarg.h>
 
+#include <linux/init.h>
+#include <linux/buffer_head.h>
+#include <linux/parser.h>
+#include <linux/mount.h>
+#include <linux/seq_file.h>
+#include <linux/slab.h>
+#include <linux/statfs.h>
+#include <linux/user_namespace.h>
 #include "adfs.h"
 #include "dir_f.h"
 #include "dir_fplus.h"
@@ -147,10 +155,23 @@ static int adfs_show_options(struct seq_file *seq, struct vfsmount *mnt)
 		seq_printf(seq, ",uid=%u", asb->s_uid);
 	if (asb->s_gid != 0)
 		seq_printf(seq, ",gid=%u", asb->s_gid);
+	kfree_rcu(asb, rcu);
+}
+
+static int adfs_show_options(struct seq_file *seq, struct dentry *root)
+{
+	struct adfs_sb_info *asb = ADFS_SB(root->d_sb);
+
+	if (!uid_eq(asb->s_uid, GLOBAL_ROOT_UID))
+		seq_printf(seq, ",uid=%u", from_kuid_munged(&init_user_ns, asb->s_uid));
+	if (!gid_eq(asb->s_gid, GLOBAL_ROOT_GID))
+		seq_printf(seq, ",gid=%u", from_kgid_munged(&init_user_ns, asb->s_gid));
 	if (asb->s_owner_mask != ADFS_DEFAULT_OWNER_MASK)
 		seq_printf(seq, ",ownmask=%o", asb->s_owner_mask);
 	if (asb->s_other_mask != ADFS_DEFAULT_OTHER_MASK)
 		seq_printf(seq, ",othmask=%o", asb->s_other_mask);
+	if (asb->s_ftsuffix != 0)
+		seq_printf(seq, ",ftsuffix=%u", asb->s_ftsuffix);
 
 	return 0;
 }
@@ -158,10 +179,14 @@ static int adfs_show_options(struct seq_file *seq, struct vfsmount *mnt)
 enum {Opt_uid, Opt_gid, Opt_ownmask, Opt_othmask, Opt_err};
 
 static match_table_t tokens = {
+enum {Opt_uid, Opt_gid, Opt_ownmask, Opt_othmask, Opt_ftsuffix, Opt_err};
+
+static const match_table_t tokens = {
 	{Opt_uid, "uid=%u"},
 	{Opt_gid, "gid=%u"},
 	{Opt_ownmask, "ownmask=%o"},
 	{Opt_othmask, "othmask=%o"},
+	{Opt_ftsuffix, "ftsuffix=%u"},
 	{Opt_err, NULL}
 };
 
@@ -186,11 +211,17 @@ static int parse_options(struct super_block *sb, char *options)
 			if (match_int(args, &option))
 				return -EINVAL;
 			asb->s_uid = option;
+			asb->s_uid = make_kuid(current_user_ns(), option);
+			if (!uid_valid(asb->s_uid))
+				return -EINVAL;
 			break;
 		case Opt_gid:
 			if (match_int(args, &option))
 				return -EINVAL;
 			asb->s_gid = option;
+			asb->s_gid = make_kgid(current_user_ns(), option);
+			if (!gid_valid(asb->s_gid))
+				return -EINVAL;
 			break;
 		case Opt_ownmask:
 			if (match_octal(args, &option))
@@ -201,6 +232,11 @@ static int parse_options(struct super_block *sb, char *options)
 			if (match_octal(args, &option))
 				return -EINVAL;
 			asb->s_other_mask = option;
+			break;
+		case Opt_ftsuffix:
+			if (match_int(args, &option))
+				return -EINVAL;
+			asb->s_ftsuffix = option;
 			break;
 		default:
 			printk("ADFS-fs: unrecognised mount option \"%s\" "
@@ -213,6 +249,7 @@ static int parse_options(struct super_block *sb, char *options)
 
 static int adfs_remount(struct super_block *sb, int *flags, char *data)
 {
+	sync_filesystem(sb);
 	*flags |= MS_NODIRATIME;
 	return parse_options(sb, data);
 }
@@ -229,6 +266,20 @@ static int adfs_statfs(struct dentry *dentry, struct kstatfs *buf)
 	buf->f_bavail  =
 	buf->f_bfree   = adfs_map_free(dentry->d_sb);
 	buf->f_ffree   = (long)(buf->f_bfree * buf->f_files) / (long)buf->f_blocks;
+	struct super_block *sb = dentry->d_sb;
+	struct adfs_sb_info *sbi = ADFS_SB(sb);
+	u64 id = huge_encode_dev(sb->s_bdev->bd_dev);
+
+	buf->f_type    = ADFS_SUPER_MAGIC;
+	buf->f_namelen = sbi->s_namelen;
+	buf->f_bsize   = sb->s_blocksize;
+	buf->f_blocks  = sbi->s_size;
+	buf->f_files   = sbi->s_ids_per_zone * sbi->s_map_size;
+	buf->f_bavail  =
+	buf->f_bfree   = adfs_map_free(sb);
+	buf->f_ffree   = (long)(buf->f_bfree * buf->f_files) / (long)buf->f_blocks;
+	buf->f_fsid.val[0] = (u32)id;
+	buf->f_fsid.val[1] = (u32)(id >> 32);
 
 	return 0;
 }
@@ -239,6 +290,7 @@ static struct inode *adfs_alloc_inode(struct super_block *sb)
 {
 	struct adfs_inode_info *ei;
 	ei = (struct adfs_inode_info *)kmem_cache_alloc(adfs_inode_cachep, GFP_KERNEL);
+	ei = kmem_cache_alloc(adfs_inode_cachep, GFP_KERNEL);
 	if (!ei)
 		return NULL;
 	return &ei->vfs_inode;
@@ -247,6 +299,15 @@ static struct inode *adfs_alloc_inode(struct super_block *sb)
 static void adfs_destroy_inode(struct inode *inode)
 {
 	kmem_cache_free(adfs_inode_cachep, ADFS_I(inode));
+static void adfs_i_callback(struct rcu_head *head)
+{
+	struct inode *inode = container_of(head, struct inode, i_rcu);
+	kmem_cache_free(adfs_inode_cachep, ADFS_I(inode));
+}
+
+static void adfs_destroy_inode(struct inode *inode)
+{
+	call_rcu(&inode->i_rcu, adfs_i_callback);
 }
 
 static void init_once(void *foo)
@@ -257,6 +318,7 @@ static void init_once(void *foo)
 }
 
 static int init_inodecache(void)
+static int __init init_inodecache(void)
 {
 	adfs_inode_cachep = kmem_cache_create("adfs_inode_cache",
 					     sizeof(struct adfs_inode_info),
@@ -270,6 +332,11 @@ static int init_inodecache(void)
 
 static void destroy_inodecache(void)
 {
+	/*
+	 * Make sure all delayed rcu free inodes are flushed before we
+	 * destroy cache.
+	 */
+	rcu_barrier();
 	kmem_cache_destroy(adfs_inode_cachep);
 }
 
@@ -302,6 +369,7 @@ static struct adfs_discmap *adfs_read_map(struct super_block *sb, struct adfs_di
 	if (dm == NULL) {
 		adfs_error(sb, "not enough memory");
 		return NULL;
+		return ERR_PTR(-ENOMEM);
 	}
 
 	for (zone = 0; zone < nzones; zone++, map_addr++) {
@@ -335,6 +403,7 @@ error_free:
 
 	kfree(dm);
 	return NULL;
+	return ERR_PTR(-EIO);
 }
 
 static inline unsigned long adfs_discsize(struct adfs_discrecord *dr, int block_bits)
@@ -353,8 +422,10 @@ static int adfs_fill_super(struct super_block *sb, void *data, int silent)
 	struct buffer_head *bh;
 	struct object_info root_obj;
 	unsigned char *b_data;
+	unsigned int blocksize;
 	struct adfs_sb_info *asb;
 	struct inode *root;
+	int ret = -EINVAL;
 
 	sb->s_flags |= MS_NODIRATIME;
 
@@ -368,6 +439,11 @@ static int adfs_fill_super(struct super_block *sb, void *data, int silent)
 	asb->s_gid = 0;
 	asb->s_owner_mask = ADFS_DEFAULT_OWNER_MASK;
 	asb->s_other_mask = ADFS_DEFAULT_OTHER_MASK;
+	asb->s_uid = GLOBAL_ROOT_UID;
+	asb->s_gid = GLOBAL_ROOT_GID;
+	asb->s_owner_mask = ADFS_DEFAULT_OWNER_MASK;
+	asb->s_other_mask = ADFS_DEFAULT_OTHER_MASK;
+	asb->s_ftsuffix = 0;
 
 	if (parse_options(sb, data))
 		goto error;
@@ -375,6 +451,7 @@ static int adfs_fill_super(struct super_block *sb, void *data, int silent)
 	sb_set_blocksize(sb, BLOCK_SIZE);
 	if (!(bh = sb_bread(sb, ADFS_DISCRECORD / BLOCK_SIZE))) {
 		adfs_error(sb, "unable to read superblock");
+		ret = -EIO;
 		goto error;
 	}
 
@@ -384,6 +461,7 @@ static int adfs_fill_super(struct super_block *sb, void *data, int silent)
 		if (!silent)
 			printk("VFS: Can't find an adfs filesystem on dev "
 				"%s.\n", sb->s_id);
+		ret = -EINVAL;
 		goto error_free_bh;
 	}
 
@@ -396,20 +474,25 @@ static int adfs_fill_super(struct super_block *sb, void *data, int silent)
 		if (!silent)
 			printk("VPS: Can't find an adfs filesystem on dev "
 				"%s.\n", sb->s_id);
+		ret = -EINVAL;
 		goto error_free_bh;
 	}
 
+	blocksize = 1 << dr->log2secsize;
 	brelse(bh);
-	if (sb_set_blocksize(sb, 1 << dr->log2secsize)) {
+
+	if (sb_set_blocksize(sb, blocksize)) {
 		bh = sb_bread(sb, ADFS_DISCRECORD / sb->s_blocksize);
 		if (!bh) {
 			adfs_error(sb, "couldn't read superblock on "
 				"2nd try.");
+			ret = -EIO;
 			goto error;
 		}
 		b_data = bh->b_data + (ADFS_DISCRECORD % sb->s_blocksize);
 		if (adfs_checkbblk(b_data)) {
 			adfs_error(sb, "disc record mismatch, very weird!");
+			ret = -EINVAL;
 			goto error_free_bh;
 		}
 		dr = (struct adfs_discrecord *)(b_data + ADFS_DR_OFFSET);
@@ -417,6 +500,7 @@ static int adfs_fill_super(struct super_block *sb, void *data, int silent)
 		if (!silent)
 			printk(KERN_ERR "VFS: Unsupported blocksize on dev "
 				"%s.\n", sb->s_id);
+		ret = -EINVAL;
 		goto error;
 	}
 
@@ -436,6 +520,12 @@ static int adfs_fill_super(struct super_block *sb, void *data, int silent)
 	if (!asb->s_map)
 		goto error_free_bh;
 
+	asb->s_map = adfs_read_map(sb, dr);
+	if (IS_ERR(asb->s_map)) {
+		ret =  PTR_ERR(asb->s_map);
+		goto error_free_bh;
+	}
+
 	brelse(bh);
 
 	/*
@@ -452,6 +542,13 @@ static int adfs_fill_super(struct super_block *sb, void *data, int silent)
 	root_obj.size	   = ADFS_NEWDIR_SIZE;
 	root_obj.attr	   = ADFS_NDA_DIRECTORY   | ADFS_NDA_OWNER_READ |
 			     ADFS_NDA_OWNER_WRITE | ADFS_NDA_PUBLIC_READ;
+	/* Set root object date as 01 Jan 1987 00:00:00 */
+	root_obj.loadaddr  = 0xfff0003f;
+	root_obj.execaddr  = 0xec22c000;
+	root_obj.size	   = ADFS_NEWDIR_SIZE;
+	root_obj.attr	   = ADFS_NDA_DIRECTORY   | ADFS_NDA_OWNER_READ |
+			     ADFS_NDA_OWNER_WRITE | ADFS_NDA_PUBLIC_READ;
+	root_obj.filetype  = -1;
 
 	/*
 	 * If this is a F+ disk with variable length directories,
@@ -471,6 +568,18 @@ static int adfs_fill_super(struct super_block *sb, void *data, int silent)
 	if (!sb->s_root) {
 		int i;
 		iput(root);
+	/*
+	 * ,xyz hex filetype suffix may be added by driver
+	 * to files that have valid RISC OS filetype
+	 */
+	if (asb->s_ftsuffix)
+		asb->s_namelen += 4;
+
+	sb->s_d_op = &adfs_dentry_operations;
+	root = adfs_iget(sb, &root_obj);
+	sb->s_root = d_make_root(root);
+	if (!sb->s_root) {
+		int i;
 		for (i = 0; i < asb->s_map_size; i++)
 			brelse(asb->s_map[i].dm_bh);
 		kfree(asb->s_map);
@@ -478,6 +587,9 @@ static int adfs_fill_super(struct super_block *sb, void *data, int silent)
 		goto error;
 	} else
 		sb->s_root->d_op = &adfs_dentry_operations;
+		ret = -EIO;
+		goto error;
+	}
 	return 0;
 
 error_free_bh:
@@ -493,6 +605,13 @@ static int adfs_get_sb(struct file_system_type *fs_type,
 {
 	return get_sb_bdev(fs_type, flags, dev_name, data, adfs_fill_super,
 			   mnt);
+	return ret;
+}
+
+static struct dentry *adfs_mount(struct file_system_type *fs_type,
+	int flags, const char *dev_name, void *data)
+{
+	return mount_bdev(fs_type, flags, dev_name, data, adfs_fill_super);
 }
 
 static struct file_system_type adfs_fs_type = {
@@ -502,6 +621,11 @@ static struct file_system_type adfs_fs_type = {
 	.kill_sb	= kill_block_super,
 	.fs_flags	= FS_REQUIRES_DEV,
 };
+	.mount		= adfs_mount,
+	.kill_sb	= kill_block_super,
+	.fs_flags	= FS_REQUIRES_DEV,
+};
+MODULE_ALIAS_FS("adfs");
 
 static int __init init_adfs_fs(void)
 {
@@ -526,3 +650,4 @@ static void __exit exit_adfs_fs(void)
 
 module_init(init_adfs_fs)
 module_exit(exit_adfs_fs)
+MODULE_LICENSE("GPL");

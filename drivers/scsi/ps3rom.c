@@ -20,6 +20,8 @@
 
 #include <linux/cdrom.h>
 #include <linux/highmem.h>
+#include <linux/module.h>
+#include <linux/slab.h>
 
 #include <scsi/scsi.h>
 #include <scsi/scsi_cmnd.h>
@@ -77,6 +79,7 @@ static int ps3rom_slave_configure(struct scsi_device *scsi_dev)
 	struct ps3_storage_device *dev = priv->dev;
 
 	dev_dbg(&dev->sbd.core, "%s:%u: id %u, lun %u, channel %u\n", __func__,
+	dev_dbg(&dev->sbd.core, "%s:%u: id %u, lun %llu, channel %u\n", __func__,
 		__LINE__, scsi_dev->id, scsi_dev->lun, scsi_dev->channel);
 
 	/*
@@ -211,6 +214,7 @@ static int ps3rom_write_request(struct ps3_storage_device *dev,
 }
 
 static int ps3rom_queuecommand(struct scsi_cmnd *cmd,
+static int ps3rom_queuecommand_lck(struct scsi_cmnd *cmd,
 			       void (*done)(struct scsi_cmnd *))
 {
 	struct ps3rom_private *priv = shost_priv(cmd->device->host);
@@ -259,6 +263,8 @@ static int ps3rom_queuecommand(struct scsi_cmnd *cmd,
 	return 0;
 }
 
+static DEF_SCSI_QCMD(ps3rom_queuecommand)
+
 static int decode_lv1_status(u64 status, unsigned char *sense_key,
 			     unsigned char *asc, unsigned char *ascq)
 {
@@ -295,11 +301,17 @@ static irqreturn_t ps3rom_interrupt(int irq, void *data)
 
 	if (res) {
 		dev_err(&dev->sbd.core, "%s:%u: res=%d status=0x%lx\n",
+			"%s:%u: tag mismatch, got %llx, expected %llx\n",
+			__func__, __LINE__, tag, dev->tag);
+
+	if (res) {
+		dev_err(&dev->sbd.core, "%s:%u: res=%d status=0x%llx\n",
 			__func__, __LINE__, res, status);
 		return IRQ_HANDLED;
 	}
 
 	host = dev->sbd.core.driver_data;
+	host = ps3_system_bus_get_drvdata(&dev->sbd);
 	priv = shost_priv(host);
 	cmd = priv->curr_cmd;
 
@@ -356,6 +368,7 @@ static struct scsi_host_template ps3rom_host_template = {
 
 
 static int __devinit ps3rom_probe(struct ps3_system_bus_device *_dev)
+static int ps3rom_probe(struct ps3_system_bus_device *_dev)
 {
 	struct ps3_storage_device *dev = to_ps3_storage_device(&_dev->core);
 	int error;
@@ -365,6 +378,7 @@ static int __devinit ps3rom_probe(struct ps3_system_bus_device *_dev)
 	if (dev->blk_size != CD_FRAMESIZE) {
 		dev_err(&dev->sbd.core,
 			"%s:%u: cannot handle block size %lu\n", __func__,
+			"%s:%u: cannot handle block size %llu\n", __func__,
 			__LINE__, dev->blk_size);
 		return -EINVAL;
 	}
@@ -383,11 +397,13 @@ static int __devinit ps3rom_probe(struct ps3_system_bus_device *_dev)
 	if (!host) {
 		dev_err(&dev->sbd.core, "%s:%u: scsi_host_alloc failed\n",
 			__func__, __LINE__);
+		error = -ENOMEM;
 		goto fail_teardown;
 	}
 
 	priv = shost_priv(host);
 	dev->sbd.core.driver_data = host;
+	ps3_system_bus_set_drvdata(&dev->sbd, host);
 	priv->dev = dev;
 
 	/* One device/LUN per SCSI bus */
@@ -408,6 +424,7 @@ static int __devinit ps3rom_probe(struct ps3_system_bus_device *_dev)
 fail_host_put:
 	scsi_host_put(host);
 	dev->sbd.core.driver_data = NULL;
+	ps3_system_bus_set_drvdata(&dev->sbd, NULL);
 fail_teardown:
 	ps3stor_teardown(dev);
 fail_free_bounce:
@@ -419,11 +436,13 @@ static int ps3rom_remove(struct ps3_system_bus_device *_dev)
 {
 	struct ps3_storage_device *dev = to_ps3_storage_device(&_dev->core);
 	struct Scsi_Host *host = dev->sbd.core.driver_data;
+	struct Scsi_Host *host = ps3_system_bus_get_drvdata(&dev->sbd);
 
 	scsi_remove_host(host);
 	ps3stor_teardown(dev);
 	scsi_host_put(host);
 	dev->sbd.core.driver_data = NULL;
+	ps3_system_bus_set_drvdata(&dev->sbd, NULL);
 	kfree(dev->bounce_buf);
 	return 0;
 }

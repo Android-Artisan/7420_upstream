@@ -74,6 +74,9 @@ static const struct file_operations ikconfig_file_ops = {
 /***************************************************/
 /* ikconfig_init: start up everything we need to */
 
+	.llseek = default_llseek,
+};
+
 static int __init ikconfig_init(void)
 {
 	struct proc_dir_entry *entry;
@@ -85,6 +88,7 @@ static int __init ikconfig_init(void)
 		return -ENOMEM;
 
 	entry->size = kernel_config_data_size;
+	proc_set_size(entry, kernel_config_data_size);
 
 	return 0;
 }
@@ -105,3 +109,8 @@ MODULE_AUTHOR("Randy Dunlap");
 MODULE_DESCRIPTION("Echo the kernel .config file used to build the kernel");
 
 #endif /* CONFIG_IKCONFIG_PROC */
+#endif /* CONFIG_IKCONFIG_PROC */
+
+MODULE_LICENSE("GPL");
+MODULE_AUTHOR("Randy Dunlap");
+MODULE_DESCRIPTION("Echo the kernel .config file used to build the kernel");

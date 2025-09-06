@@ -1,4 +1,3 @@
-/*==========================================================================
   NinjaSCSI-3 message handler
       By: YOKOTA Hiroshi <yokota@netlab.is.tsukuba.ac.jp>
 

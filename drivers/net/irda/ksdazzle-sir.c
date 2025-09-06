@@ -84,6 +84,7 @@
 #include <linux/slab.h>
 #include <linux/module.h>
 #include <linux/kref.h>
+#include <linux/slab.h>
 #include <linux/usb.h>
 #include <linux/device.h>
 #include <linux/crc32.h>
@@ -120,6 +121,7 @@ struct ksdazzle_speedparams {
 	__u8 flags;
 	__u8 reserved[3];
 } __attribute__ ((packed));
+} __packed;
 
 #define KS_DATA_5_BITS 0x00
 #define KS_DATA_6_BITS 0x01
@@ -142,6 +144,7 @@ struct ksdazzle_cb {
 	struct net_device *netdev;	/* network layer */
 	struct irlap_cb *irlap;	/* The link layer we are binded to */
 	struct net_device_stats stats;	/* network statistics */
+
 	struct qos_info qos;
 
 	struct urb *tx_urb;
@@ -174,6 +177,10 @@ static void ksdazzle_speed_irq(struct urb *urb)
 		err("ksdazzle_speed_irq: urb asynchronously failed - %d",
 		    urb->status);
 	}
+	if (urb->status != 0)
+		dev_err(&urb->dev->dev,
+			"ksdazzle_speed_irq: urb asynchronously failed - %d\n",
+			urb->status);
 }
 
 /* Send a control request to change speed of the dongle */
@@ -248,6 +255,8 @@ static void ksdazzle_send_irq(struct urb *urb)
 	/* in process of stopping, just drop data */
 	if (!netif_running(kingsun->netdev)) {
 		err("ksdazzle_send_irq: Network not running!");
+		dev_err(&kingsun->usbdev->dev,
+			"ksdazzle_send_irq: Network not running!\n");
 		return;
 	}
 
@@ -255,6 +264,9 @@ static void ksdazzle_send_irq(struct urb *urb)
 	if (urb->status != 0) {
 		err("ksdazzle_send_irq: urb asynchronously failed - %d",
 		    urb->status);
+		dev_err(&kingsun->usbdev->dev,
+			"ksdazzle_send_irq: urb asynchronously failed - %d\n",
+			urb->status);
 		return;
 	}
 
@@ -274,12 +286,16 @@ static void ksdazzle_send_irq(struct urb *urb)
 			/* There is more data to be sent */
 			if ((ret = ksdazzle_submit_tx_fragment(kingsun)) != 0) {
 				err("ksdazzle_send_irq: failed tx_urb submit: %d", ret);
+				dev_err(&kingsun->usbdev->dev,
+					"ksdazzle_send_irq: failed tx_urb submit: %d\n",
+					ret);
 				switch (ret) {
 				case -ENODEV:
 				case -EPIPE:
 					break;
 				default:
 					kingsun->stats.tx_errors++;
+					netdev->stats.tx_errors++;
 					netif_start_queue(netdev);
 				}
 			}
@@ -300,6 +316,8 @@ static void ksdazzle_send_irq(struct urb *urb)
  * Called from net/core when new frame is available.
  */
 static int ksdazzle_hard_xmit(struct sk_buff *skb, struct net_device *netdev)
+static netdev_tx_t ksdazzle_hard_xmit(struct sk_buff *skb,
+					    struct net_device *netdev)
 {
 	struct ksdazzle_cb *kingsun;
 	unsigned int wraplen;
@@ -325,6 +343,8 @@ static int ksdazzle_hard_xmit(struct sk_buff *skb, struct net_device *netdev)
 
 	if ((ret = ksdazzle_submit_tx_fragment(kingsun)) != 0) {
 		err("ksdazzle_hard_xmit: failed tx_urb submit: %d", ret);
+		dev_err(&kingsun->usbdev->dev,
+			"ksdazzle_hard_xmit: failed tx_urb submit: %d\n", ret);
 		switch (ret) {
 		case -ENODEV:
 		case -EPIPE:
@@ -336,6 +356,12 @@ static int ksdazzle_hard_xmit(struct sk_buff *skb, struct net_device *netdev)
 	} else {
 		kingsun->stats.tx_packets++;
 		kingsun->stats.tx_bytes += skb->len;
+			netdev->stats.tx_errors++;
+			netif_start_queue(netdev);
+		}
+	} else {
+		netdev->stats.tx_packets++;
+		netdev->stats.tx_bytes += skb->len;
 
 	}
 
@@ -343,6 +369,7 @@ static int ksdazzle_hard_xmit(struct sk_buff *skb, struct net_device *netdev)
 	spin_unlock(&kingsun->lock);
 
 	return ret;
+	return NETDEV_TX_OK;
 }
 
 /* Receive callback function */
@@ -352,6 +379,10 @@ static void ksdazzle_rcv_irq(struct urb *urb)
 
 	/* in process of stopping, just drop data */
 	if (!netif_running(kingsun->netdev)) {
+	struct net_device *netdev = kingsun->netdev;
+
+	/* in process of stopping, just drop data */
+	if (!netif_running(netdev)) {
 		kingsun->receiving = 0;
 		return;
 	}
@@ -360,6 +391,9 @@ static void ksdazzle_rcv_irq(struct urb *urb)
 	if (urb->status != 0) {
 		err("ksdazzle_rcv_irq: urb asynchronously failed - %d",
 		    urb->status);
+		dev_err(&kingsun->usbdev->dev,
+			"ksdazzle_rcv_irq: urb asynchronously failed - %d\n",
+			urb->status);
 		kingsun->receiving = 0;
 		return;
 	}
@@ -373,6 +407,9 @@ static void ksdazzle_rcv_irq(struct urb *urb)
 					  &kingsun->rx_unwrap_buff, bytes[i]);
 		}
 		kingsun->netdev->last_rx = jiffies;
+			async_unwrap_char(netdev, &netdev->stats,
+					  &kingsun->rx_unwrap_buff, bytes[i]);
+		}
 		kingsun->receiving =
 		    (kingsun->rx_unwrap_buff.state != OUTSIDE_FRAME) ? 1 : 0;
 	}
@@ -435,6 +472,8 @@ static int ksdazzle_net_open(struct net_device *netdev)
 	kingsun->irlap = irlap_open(netdev, &kingsun->qos, hwname);
 	if (!kingsun->irlap) {
 		err("ksdazzle-sir: irlap_open failed");
+		err = -ENOMEM;
+		dev_err(&kingsun->usbdev->dev, "irlap_open failed\n");
 		goto free_mem;
 	}
 
@@ -447,6 +486,7 @@ static int ksdazzle_net_open(struct net_device *netdev)
 	err = usb_submit_urb(kingsun->rx_urb, GFP_KERNEL);
 	if (err) {
 		err("ksdazzle-sir: first urb-submit failed: %d", err);
+		dev_err(&kingsun->usbdev->dev, "first urb-submit failed: %d\n", err);
 		goto close_irlap;
 	}
 
@@ -572,6 +612,12 @@ static struct net_device_stats *ksdazzle_net_get_stats(struct net_device
 	struct ksdazzle_cb *kingsun = netdev_priv(netdev);
 	return &kingsun->stats;
 }
+static const struct net_device_ops ksdazzle_ops = {
+	.ndo_start_xmit	= ksdazzle_hard_xmit,
+	.ndo_open	= ksdazzle_net_open,
+	.ndo_stop	= ksdazzle_net_close,
+	.ndo_do_ioctl	= ksdazzle_net_ioctl,
+};
 
 /*
  * This routine is called by the USB subsystem for each new device
@@ -599,11 +645,15 @@ static int ksdazzle_probe(struct usb_interface *intf,
 	if (interface->desc.bNumEndpoints != 2) {
 		err("ksdazzle: expected 2 endpoints, found %d",
 		    interface->desc.bNumEndpoints);
+		dev_err(&intf->dev, "ksdazzle: expected 2 endpoints, found %d\n",
+			interface->desc.bNumEndpoints);
 		return -ENODEV;
 	}
 	endpoint = &interface->endpoint[KINGSUN_EP_IN].desc;
 	if (!usb_endpoint_is_int_in(endpoint)) {
 		err("ksdazzle: endpoint 0 is not interrupt IN");
+		dev_err(&intf->dev,
+			"ksdazzle: endpoint 0 is not interrupt IN\n");
 		return -ENODEV;
 	}
 
@@ -612,12 +662,17 @@ static int ksdazzle_probe(struct usb_interface *intf,
 	maxp_in = usb_maxpacket(dev, pipe, usb_pipeout(pipe));
 	if (maxp_in > 255 || maxp_in <= 1) {
 		err("ksdazzle: endpoint 0 has max packet size %d not in range [2..255]", maxp_in);
+		dev_err(&intf->dev,
+			"ksdazzle: endpoint 0 has max packet size %d not in range [2..255]\n",
+			maxp_in);
 		return -ENODEV;
 	}
 
 	endpoint = &interface->endpoint[KINGSUN_EP_OUT].desc;
 	if (!usb_endpoint_is_int_out(endpoint)) {
 		err("ksdazzle: endpoint 1 is not interrupt OUT");
+		dev_err(&intf->dev,
+			"ksdazzle: endpoint 1 is not interrupt OUT\n");
 		return -ENODEV;
 	}
 
@@ -700,12 +755,15 @@ static int ksdazzle_probe(struct usb_interface *intf,
 	net->stop = ksdazzle_net_close;
 	net->get_stats = ksdazzle_net_get_stats;
 	net->do_ioctl = ksdazzle_net_ioctl;
+	net->netdev_ops = &ksdazzle_ops;
 
 	ret = register_netdev(net);
 	if (ret != 0)
 		goto free_mem;
 
 	info("IrDA: Registered KingSun/Dazzle device %s", net->name);
+	dev_info(&net->dev, "IrDA: Registered KingSun/Dazzle device %s\n",
+		 net->name);
 
 	usb_set_intfdata(intf, kingsun);
 
@@ -826,6 +884,7 @@ static void __exit ksdazzle_cleanup(void)
 }
 
 module_exit(ksdazzle_cleanup);
+module_usb_driver(irda_driver);
 
 MODULE_AUTHOR("Alex Villacís Lasso <a_villacis@palosanto.com>");
 MODULE_DESCRIPTION("IrDA-USB Dongle Driver for KingSun Dazzle");

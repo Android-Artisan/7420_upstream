@@ -13,10 +13,12 @@
  *  You should have received a copy of the GNU General Public License
  *  along with this program; if not, write to the Free Software
  *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ *  along with this program; if not, see <http://www.gnu.org/licenses/>.
  *
  */
 
 #include <linux/kernel.h>
+#include <linux/slab.h>
 
 #include "prismcompat.h"
 #include "islpci_dev.h"
@@ -682,6 +684,7 @@ mgt_update_addr(islpci_private *priv)
 
 	if ((ret == 0) && res && (res->header->operation != PIMFOR_OP_ERROR))
 		memcpy(priv->ndev->dev_addr, res->data, 6);
+		memcpy(priv->ndev->dev_addr, res->data, ETH_ALEN);
 	else
 		ret = -EIO;
 	if (res)
@@ -699,6 +702,7 @@ mgt_commit(islpci_private *priv)
 {
 	int rvalue;
 	u32 u;
+	enum oid_num_t u;
 
 	if (islpci_get_state(priv) < PRV_STATE_INIT)
 		return 0;
@@ -707,6 +711,10 @@ mgt_commit(islpci_private *priv)
 
 	if (priv->iw_mode != IW_MODE_MONITOR)
 		rvalue |= mgt_commit_list(priv, commit_part2, VEC_SIZE(commit_part2));
+	rvalue = mgt_commit_list(priv, commit_part1, ARRAY_SIZE(commit_part1));
+
+	if (priv->iw_mode != IW_MODE_MONITOR)
+		rvalue |= mgt_commit_list(priv, commit_part2, ARRAY_SIZE(commit_part2));
 
 	u = OID_INL_MODE;
 	rvalue |= mgt_commit_list(priv, &u, 1);
@@ -820,6 +828,7 @@ mgt_response_to_str(enum oid_num_t n, union oid_res_t *r, char *str)
 			for (i = 0; i < list->nr; i++)
 				k += snprintf(str + k, PRIV_STR_SIZE - k,
 					      "bss[%u] : \nage=%u\nchannel=%u\n"
+					      "bss[%u] :\nage=%u\nchannel=%u\n"
 					      "capinfo=0x%X\nrates=0x%X\n"
 					      "basic_rates=0x%X\n",
 					      i, list->bsslist[i].age,

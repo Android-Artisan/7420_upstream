@@ -30,6 +30,7 @@
 
    This program converts an elf executable to an ECOFF executable.
    No symbol table is retained.   This is useful primarily in building
+   No symbol table is retained.	  This is useful primarily in building
    net-bootable kernels for machines (e.g., DECstation and Alpha) which
    only support the ECOFF object file format. */
 
@@ -50,6 +51,8 @@
  * Some extra ELF definitions
  */
 #define PT_MIPS_REGINFO 0x70000000	/* Register usage information */
+#define PT_MIPS_REGINFO 	0x70000000	/* Register usage information */
+#define PT_MIPS_ABIFLAGS	0x70000003	/* Records ABI related flags  */
 
 /* -------------------------------------------------------------------- */
 
@@ -61,6 +64,8 @@ struct sect {
 int *symTypeTable;
 int must_convert_endian = 0;
 int format_bigendian = 0;
+int must_convert_endian;
+int format_bigendian;
 
 static void copy(int out, int in, off_t offset, off_t size)
 {
@@ -342,6 +347,10 @@ int main(int argc, char *argv[])
 	/* Figure out if we can cram the program header into an ECOFF
 	   header...  Basically, we can't handle anything but loadable
 	   segments, but we can ignore some kinds of segments.  We can't
+
+	/* Figure out if we can cram the program header into an ECOFF
+	   header...  Basically, we can't handle anything but loadable
+	   segments, but we can ignore some kinds of segments.	We can't
 	   handle holes in the address space.  Segments may be out of order,
 	   so we sort them first. */
 
@@ -355,6 +364,41 @@ int main(int argc, char *argv[])
 			continue;
 		/* Section types we can't handle... */
 		else if (ph[i].p_type != PT_LOAD) {
+		switch (ph[i].p_type) {
+		case PT_NULL:
+		case PT_NOTE:
+		case PT_PHDR:
+		case PT_MIPS_REGINFO:
+		case PT_MIPS_ABIFLAGS:
+			continue;
+
+		case PT_LOAD:
+			/* Writable (data) segment? */
+			if (ph[i].p_flags & PF_W) {
+				struct sect ndata, nbss;
+
+				ndata.vaddr = ph[i].p_vaddr;
+				ndata.len = ph[i].p_filesz;
+				nbss.vaddr = ph[i].p_vaddr + ph[i].p_filesz;
+				nbss.len = ph[i].p_memsz - ph[i].p_filesz;
+
+				combine(&data, &ndata, 0);
+				combine(&bss, &nbss, 1);
+			} else {
+				struct sect ntxt;
+
+				ntxt.vaddr = ph[i].p_vaddr;
+				ntxt.len = ph[i].p_filesz;
+
+				combine(&text, &ntxt, 0);
+			}
+			/* Remember the lowest segment start address. */
+			if (ph[i].p_vaddr < cur_vma)
+				cur_vma = ph[i].p_vaddr;
+			break;
+
+		default:
+			/* Section types we can't handle... */
 			fprintf(stderr,
 				"Program header %d type %d can't be converted.\n",
 				ex.e_phnum, ph[i].p_type);
@@ -515,6 +559,7 @@ int main(int argc, char *argv[])
 		for (i = 0; i < nosecs; i++) {
 			printf
 			    ("Section %d: %s phys %lx  size %lx  file offset %lx\n",
+			    ("Section %d: %s phys %lx  size %lx	 file offset %lx\n",
 			     i, esecs[i].s_name, esecs[i].s_paddr,
 			     esecs[i].s_size, esecs[i].s_scnptr);
 		}
@@ -552,6 +597,7 @@ int main(int argc, char *argv[])
 
 	/*
 	 * Copy the loadable sections.   Zero-fill any gaps less than 64k;
+	 * Copy the loadable sections.	 Zero-fill any gaps less than 64k;
 	 * complain about any zero-filling, and die if we're asked to zero-fill
 	 * more than 64k.
 	 */

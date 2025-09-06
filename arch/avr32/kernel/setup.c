@@ -283,6 +283,25 @@ static int __init early_parse_fbmem(char *p)
 }
 early_param("fbmem", early_parse_fbmem);
 
+/*
+ * Pick out the memory size.  We look for mem=size@start,
+ * where start and size are "size[KkMmGg]"
+ */
+static int __init early_mem(char *p)
+{
+	resource_size_t size, start;
+
+	start = system_ram->start;
+	size  = memparse(p, &p);
+	if (*p == '@')
+		start = memparse(p + 1, &p);
+
+	system_ram->start = start;
+	system_ram->end = system_ram->start + size - 1;
+	return 0;
+}
+early_param("mem", early_mem);
+
 static int __init parse_tag_core(struct tag *tag)
 {
 	if (tag->hdr.size > 2) {
@@ -372,6 +391,21 @@ static int __init parse_tag_clock(struct tag *tag)
 __tagtable(ATAG_CLOCK, parse_tag_clock);
 
 /*
+ * The board_number correspond to the bd->bi_board_number in U-Boot. This
+ * parameter is only available during initialisation and can be used in some
+ * kind of board identification.
+ */
+u32 __initdata board_number;
+
+static int __init parse_tag_boardinfo(struct tag *tag)
+{
+	board_number = tag->u.boardinfo.board_number;
+
+	return 0;
+}
+__tagtable(ATAG_BOARDINFO, parse_tag_boardinfo);
+
+/*
  * Scan the tag table for this tag, and call its parse function. The
  * tag table is built by the linker from all the __tagtable
  * declarations.
@@ -411,6 +445,7 @@ find_bootmap_pfn(const struct resource *mem)
 {
 	unsigned long bootmap_pages, bootmap_len;
 	unsigned long node_pages = PFN_UP(mem->end - mem->start + 1);
+	unsigned long node_pages = PFN_UP(resource_size(mem));
 	unsigned long bootmap_start;
 
 	bootmap_pages = bootmem_bootmap_pages(node_pages);
@@ -511,6 +546,10 @@ static void __init setup_bootmem(void)
 					NODE_DATA(node), res->start,
 					res->end - res->start + 1,
 					BOOTMEM_DEFAULT);
+				reserve_bootmem_node(NODE_DATA(node),
+						     res->start,
+						     resource_size(res),
+						     BOOTMEM_DEFAULT);
 		}
 
 		node_set_online(node);
@@ -522,6 +561,7 @@ void __init setup_arch (char **cmdline_p)
 	struct clk *cpu_clk;
 
 	init_mm.start_code = (unsigned long)_text;
+	init_mm.start_code = (unsigned long)_stext;
 	init_mm.end_code = (unsigned long)_etext;
 	init_mm.end_data = (unsigned long)_edata;
 	init_mm.brk = (unsigned long)_end;

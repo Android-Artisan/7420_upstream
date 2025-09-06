@@ -20,6 +20,7 @@ Linux system over a sample period:
 - the pid of the task(process) which initialized the timer
 - the name of the process which initialized the timer
 - the function where the timer was intialized
+- the function where the timer was initialized
 - the callback function which is associated to the timer
 - the number of events (callbacks)
 
@@ -42,6 +43,9 @@ The statistics can be retrieved by:
 The readout of /proc/timer_stats automatically disables sampling. The sampled
 information is kept until a new sample period is started. This allows multiple
 readouts.
+While sampling is enabled, each readout from /proc/timer_stats will see
+newly updated statistics. Once sampling is disabled, the sampled information
+is kept until a new sample period is started. This allows multiple readouts.
 
 Sample output of /proc/timer_stats:
 
@@ -63,6 +67,7 @@ Timerstats sample period: 3.888770 s
 The first column is the number of events, the second column the pid, the third
 column is the name of the process. The forth column shows the function which
 initialized the timer and in parantheses the callback function which was
+initialized the timer and in parenthesis the callback function which was
 executed on expiry.
 
     Thomas, Ingo

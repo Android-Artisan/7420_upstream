@@ -51,6 +51,15 @@ extern ia64_mv_dma_mapping_error	sba_dma_mapping_error;
 #define hwiommu_sync_single_for_device	machvec_dma_sync_single
 #define hwiommu_sync_sg_for_device	machvec_dma_sync_sg
 
+#include <linux/dma-mapping.h>
+#include <linux/swiotlb.h>
+#include <linux/export.h>
+#include <asm/machvec.h>
+
+extern struct dma_map_ops sba_dma_ops, swiotlb_dma_ops;
+
+/* swiotlb declarations & definitions: */
+extern int swiotlb_late_init_with_default_size (size_t size);
 
 /*
  * Note: we need to make the determination of whether or not to use
@@ -62,6 +71,20 @@ use_swiotlb (struct device *dev)
 {
 	return dev && dev->dma_mask && !hwiommu_dma_supported(dev, *dev->dma_mask);
 }
+
+static inline int use_swiotlb(struct device *dev)
+{
+	return dev && dev->dma_mask &&
+		!sba_dma_ops.dma_supported(dev, *dev->dma_mask);
+}
+
+struct dma_map_ops *hwsw_dma_get_ops(struct device *dev)
+{
+	if (use_swiotlb(dev))
+		return &swiotlb_dma_ops;
+	return &sba_dma_ops;
+}
+EXPORT_SYMBOL(hwsw_dma_get_ops);
 
 void __init
 hwsw_init (void)

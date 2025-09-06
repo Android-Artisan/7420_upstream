@@ -28,11 +28,48 @@ struct brport_attribute {
 
 #define BRPORT_ATTR(_name,_mode,_show,_store)		        \
 struct brport_attribute brport_attr_##_name = { 	        \
+	int (*store)(struct net_bridge_port *, unsigned long);
+};
+
+#define BRPORT_ATTR(_name, _mode, _show, _store)		\
+const struct brport_attribute brport_attr_##_name = { 	        \
 	.attr = {.name = __stringify(_name), 			\
 		 .mode = _mode },				\
 	.show	= _show,					\
 	.store	= _store,					\
 };
+
+#define BRPORT_ATTR_FLAG(_name, _mask)				\
+static ssize_t show_##_name(struct net_bridge_port *p, char *buf) \
+{								\
+	return sprintf(buf, "%d\n", !!(p->flags & _mask));	\
+}								\
+static int store_##_name(struct net_bridge_port *p, unsigned long v) \
+{								\
+	return store_flag(p, v, _mask);				\
+}								\
+static BRPORT_ATTR(_name, S_IRUGO | S_IWUSR,			\
+		   show_##_name, store_##_name)
+
+static int store_flag(struct net_bridge_port *p, unsigned long v,
+		      unsigned long mask)
+{
+	unsigned long flags;
+
+	flags = p->flags;
+
+	if (v)
+		flags |= mask;
+	else
+		flags &= ~mask;
+
+	if (flags != p->flags) {
+		p->flags = flags;
+		br_port_flags_change(p, mask);
+		br_ifinfo_notify(RTM_NEWLINK, p);
+	}
+	return 0;
+}
 
 static ssize_t show_path_cost(struct net_bridge_port *p, char *buf)
 {
@@ -45,6 +82,9 @@ static ssize_t store_path_cost(struct net_bridge_port *p, unsigned long v)
 }
 static BRPORT_ATTR(path_cost, S_IRUGO | S_IWUSR,
 		   show_path_cost, store_path_cost);
+
+static BRPORT_ATTR(path_cost, S_IRUGO | S_IWUSR,
+		   show_path_cost, br_stp_set_path_cost);
 
 static ssize_t show_priority(struct net_bridge_port *p, char *buf)
 {
@@ -59,6 +99,9 @@ static ssize_t store_priority(struct net_bridge_port *p, unsigned long v)
 }
 static BRPORT_ATTR(priority, S_IRUGO | S_IWUSR,
 			 show_priority, store_priority);
+
+static BRPORT_ATTR(priority, S_IRUGO | S_IWUSR,
+			 show_priority, br_stp_set_port_priority);
 
 static ssize_t show_designated_root(struct net_bridge_port *p, char *buf)
 {
@@ -139,11 +182,40 @@ static BRPORT_ATTR(hold_timer, S_IRUGO, show_hold_timer, NULL);
 static ssize_t store_flush(struct net_bridge_port *p, unsigned long v)
 {
 	br_fdb_delete_by_port(p->br, p, 0); // Don't delete local entry
+static int store_flush(struct net_bridge_port *p, unsigned long v)
+{
+	br_fdb_delete_by_port(p->br, p, 0, 0); // Don't delete local entry
 	return 0;
 }
 static BRPORT_ATTR(flush, S_IWUSR, NULL, store_flush);
 
 static struct brport_attribute *brport_attrs[] = {
+BRPORT_ATTR_FLAG(hairpin_mode, BR_HAIRPIN_MODE);
+BRPORT_ATTR_FLAG(bpdu_guard, BR_BPDU_GUARD);
+BRPORT_ATTR_FLAG(root_block, BR_ROOT_BLOCK);
+BRPORT_ATTR_FLAG(learning, BR_LEARNING);
+BRPORT_ATTR_FLAG(unicast_flood, BR_FLOOD);
+BRPORT_ATTR_FLAG(proxyarp, BR_PROXYARP);
+BRPORT_ATTR_FLAG(proxyarp_wifi, BR_PROXYARP_WIFI);
+
+#ifdef CONFIG_BRIDGE_IGMP_SNOOPING
+static ssize_t show_multicast_router(struct net_bridge_port *p, char *buf)
+{
+	return sprintf(buf, "%d\n", p->multicast_router);
+}
+
+static int store_multicast_router(struct net_bridge_port *p,
+				      unsigned long v)
+{
+	return br_multicast_set_port_router(p, v);
+}
+static BRPORT_ATTR(multicast_router, S_IRUGO | S_IWUSR, show_multicast_router,
+		   store_multicast_router);
+
+BRPORT_ATTR_FLAG(multicast_fast_leave, BR_MULTICAST_FAST_LEAVE);
+#endif
+
+static const struct brport_attribute *brport_attrs[] = {
 	&brport_attr_path_cost,
 	&brport_attr_priority,
 	&brport_attr_port_id,
@@ -159,6 +231,17 @@ static struct brport_attribute *brport_attrs[] = {
 	&brport_attr_forward_delay_timer,
 	&brport_attr_hold_timer,
 	&brport_attr_flush,
+	&brport_attr_hairpin_mode,
+	&brport_attr_bpdu_guard,
+	&brport_attr_root_block,
+	&brport_attr_learning,
+	&brport_attr_unicast_flood,
+#ifdef CONFIG_BRIDGE_IGMP_SNOOPING
+	&brport_attr_multicast_router,
+	&brport_attr_multicast_fast_leave,
+#endif
+	&brport_attr_proxyarp,
+	&brport_attr_proxyarp_wifi,
 	NULL
 };
 
@@ -170,6 +253,14 @@ static ssize_t brport_show(struct kobject * kobj,
 {
 	struct brport_attribute * brport_attr = to_brport_attr(attr);
 	struct net_bridge_port * p = to_brport(kobj);
+static ssize_t brport_show(struct kobject *kobj,
+			   struct attribute *attr, char *buf)
+{
+	struct brport_attribute *brport_attr = to_brport_attr(attr);
+	struct net_bridge_port *p = to_brport(kobj);
+
+	if (!brport_attr->show)
+		return -EINVAL;
 
 	return brport_attr->show(p, buf);
 }
@@ -180,16 +271,25 @@ static ssize_t brport_store(struct kobject * kobj,
 {
 	struct brport_attribute * brport_attr = to_brport_attr(attr);
 	struct net_bridge_port * p = to_brport(kobj);
+static ssize_t brport_store(struct kobject *kobj,
+			    struct attribute *attr,
+			    const char *buf, size_t count)
+{
+	struct brport_attribute *brport_attr = to_brport_attr(attr);
+	struct net_bridge_port *p = to_brport(kobj);
 	ssize_t ret = -EINVAL;
 	char *endp;
 	unsigned long val;
 
 	if (!capable(CAP_NET_ADMIN))
+	if (!ns_capable(dev_net(p->dev)->user_ns, CAP_NET_ADMIN))
 		return -EPERM;
 
 	val = simple_strtoul(buf, &endp, 0);
 	if (endp != buf) {
 		rtnl_lock();
+		if (!rtnl_trylock())
+			return restart_syscall();
 		if (p->dev && p->br && brport_attr->store) {
 			spin_lock_bh(&p->br->lock);
 			ret = brport_attr->store(p, val);
@@ -203,6 +303,7 @@ static ssize_t brport_store(struct kobject * kobj,
 }
 
 struct sysfs_ops brport_sysfs_ops = {
+const struct sysfs_ops brport_sysfs_ops = {
 	.show = brport_show,
 	.store = brport_store,
 };
@@ -211,17 +312,20 @@ struct sysfs_ops brport_sysfs_ops = {
  * Add sysfs entries to ethernet device added to a bridge.
  * Creates a brport subdirectory with bridge attributes.
  * Puts symlink in bridge's brport subdirectory
+ * Puts symlink in bridge's brif subdirectory
  */
 int br_sysfs_addif(struct net_bridge_port *p)
 {
 	struct net_bridge *br = p->br;
 	struct brport_attribute **a;
+	const struct brport_attribute **a;
 	int err;
 
 	err = sysfs_create_link(&p->kobj, &br->dev->dev.kobj,
 				SYSFS_BRIDGE_PORT_LINK);
 	if (err)
 		goto out2;
+		return err;
 
 	for (a = brport_attrs; *a; ++a) {
 		err = sysfs_create_file(&p->kobj, &((*a)->attr));
@@ -231,5 +335,32 @@ int br_sysfs_addif(struct net_bridge_port *p)
 
 	err = sysfs_create_link(br->ifobj, &p->kobj, p->dev->name);
 out2:
+			return err;
+	}
+
+	strlcpy(p->sysfs_name, p->dev->name, IFNAMSIZ);
+	return sysfs_create_link(br->ifobj, &p->kobj, p->sysfs_name);
+}
+
+/* Rename bridge's brif symlink */
+int br_sysfs_renameif(struct net_bridge_port *p)
+{
+	struct net_bridge *br = p->br;
+	int err;
+
+	/* If a rename fails, the rollback will cause another
+	 * rename call with the existing name.
+	 */
+	if (!strncmp(p->sysfs_name, p->dev->name, IFNAMSIZ))
+		return 0;
+
+	err = sysfs_rename_link(br->ifobj, &p->kobj,
+				p->sysfs_name, p->dev->name);
+	if (err)
+		netdev_notice(br->dev, "unable to rename link %s to %s",
+			      p->sysfs_name, p->dev->name);
+	else
+		strlcpy(p->sysfs_name, p->dev->name, IFNAMSIZ);
+
 	return err;
 }

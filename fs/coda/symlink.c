@@ -21,6 +21,11 @@
 #include <linux/coda_psdev.h>
 #include <linux/coda_fs_i.h>
 
+#include <linux/coda.h>
+#include <linux/coda_psdev.h>
+
+#include "coda_linux.h"
+
 static int coda_symlink_filler(struct file *file, struct page *page)
 {
 	struct inode *inode = page->mapping->host;
@@ -34,6 +39,9 @@ static int coda_symlink_filler(struct file *file, struct page *page)
 
 	error = venus_readlink(inode->i_sb, &cii->c_fid, p, &len);
 	unlock_kernel();
+	cii = ITOC(inode);
+
+	error = venus_readlink(inode->i_sb, &cii->c_fid, p, &len);
 	if (error)
 		goto fail;
 	SetPageUptodate(page);

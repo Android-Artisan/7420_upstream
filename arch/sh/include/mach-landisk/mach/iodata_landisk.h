@@ -3,11 +3,13 @@
 
 /*
  * linux/include/asm-sh/landisk/iodata_landisk.h
+ * arch/sh/include/mach-landisk/mach/iodata_landisk.h
  *
  * Copyright (C) 2000  Atom Create Engineering Co., Ltd.
  *
  * IO-DATA LANDISK support
  */
+#include <linux/sh_intc.h>
 
 /* Box specific addresses.  */
 
@@ -34,6 +36,17 @@
 #define IRQ_POWER	11		/* Power Switch IRQ */
 #define IRQ_BUTTON	12		/* USL-5P Button IRQ */
 #define IRQ_FAULT	13		/* USL-5P Fault  IRQ */
+#define IRQ_PCIINTA	evt2irq(0x2a0)	/* PCI INTA IRQ */
+#define IRQ_PCIINTB	evt2irq(0x2c0)	/* PCI INTB IRQ */
+#define IRQ_PCIINTC	evt2irq(0x2e0)	/* PCI INTC IRQ */
+#define IRQ_PCIINTD	evt2irq(0x300)	/* PCI INTD IRQ */
+#define IRQ_ATA		evt2irq(0x320)	/* ATA IRQ */
+#define IRQ_FATA	evt2irq(0x340)	/* FATA IRQ */
+#define IRQ_POWER	evt2irq(0x360)	/* Power Switch IRQ */
+#define IRQ_BUTTON	evt2irq(0x380)	/* USL-5P Button IRQ */
+#define IRQ_FAULT	evt2irq(0x3a0)	/* USL-5P Fault  IRQ */
+
+void init_landisk_IRQ(void);
 
 #define __IO_PREFIX landisk
 #include <asm/io_generic.h>

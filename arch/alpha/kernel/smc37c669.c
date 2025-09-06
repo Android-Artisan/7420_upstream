@@ -2455,9 +2455,7 @@ SMC37c669_dump_registers(void)
     printk("-- CR%02x : %02x\n", i, SMC37c669_read_config(i));
 }
 /*+
- * ============================================================================
  * = SMC_init - SMC37c669 Super I/O controller initialization                 =
- * ============================================================================
  *
  * OVERVIEW:
  *
@@ -2544,6 +2542,8 @@ void __init SMC669_Init ( int index )
 	local_irq_restore(flags);
         printk( "SMC37c669 Super I/O Controller found @ 0x%lx\n",
 		(unsigned long) SMC_base );
+        printk( "SMC37c669 Super I/O Controller found @ 0x%p\n",
+		SMC_base );
     }
     else {
 	local_irq_restore(flags);

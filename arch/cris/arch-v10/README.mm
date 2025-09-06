@@ -39,6 +39,7 @@ map during kernel-mode, so that the kernel easily can access the corresponding
 user-mode process' data.
 
 As a comparision, the Linux/i386 2.0 puts the kernel and physical RAM at
+As a comparison, the Linux/i386 2.0 puts the kernel and physical RAM at
 address 0, overlapping with the user-mode virtual space, so that descriptor
 registers are needed for each memory access to specify which MMU space to
 map through. That changed in 2.2, putting the kernel/physical RAM at 
@@ -57,13 +58,11 @@ EFFFFFFF|                      | => uncached    |                      |
         |    kernel seg_e      |    flash       |                      |
 E0000000|______________________|                |        DRAM          |
 DFFFFFFF|                      |  paged to any  |      Un-cached       | 
-        |    kernel seg_d      |    =======>    |                      |
 D0000000|______________________|                |                      |
 CFFFFFFF|                      |                |                      | 
         |    kernel seg_c      |==\             |                      |
 C0000000|______________________|   \            |______________________|
 BFFFFFFF|                      |  uncached      |                      |
-        |    kernel seg_b      |=====\=========>|       Registers      |
 B0000000|______________________|      \c        |______________________|
 AFFFFFFF|                      |       \a       |                      |
         |                      |        \c      | FLASH/SRAM/Peripheral|
@@ -73,7 +72,6 @@ AFFFFFFF|                      |       \a       |                      |
         | kernel seg_0 - seg_a |            \==>|         DRAM         | 
         |                      |                |        Cached        |
         |                      |  paged to any  |                      |
-        |                      |    =======>    |______________________| 
         |                      |                |                      |
         |                      |                |        Illegal       |
         |                      |                |______________________|

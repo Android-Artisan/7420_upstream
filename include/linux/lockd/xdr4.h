@@ -20,6 +20,11 @@
 #define	nlm4_stale_fh		__constant_htonl(NLM_STALE_FH)
 #define	nlm4_fbig		__constant_htonl(NLM_FBIG)
 #define	nlm4_failed		__constant_htonl(NLM_FAILED)
+#define	nlm4_deadlock		cpu_to_be32(NLM_DEADLCK)
+#define	nlm4_rofs		cpu_to_be32(NLM_ROFS)
+#define	nlm4_stale_fh		cpu_to_be32(NLM_STALE_FH)
+#define	nlm4_fbig		cpu_to_be32(NLM_FBIG)
+#define	nlm4_failed		cpu_to_be32(NLM_FAILED)
 
 
 
@@ -43,5 +48,6 @@ int	nlmclt_encode_cancargs(struct rpc_rqst *, u32 *, struct nlm_args *);
 int	nlmclt_encode_unlockargs(struct rpc_rqst *, u32 *, struct nlm_args *);
  */
 extern struct rpc_version nlm_version4;
+extern const struct rpc_version nlm_version4;
 
 #endif /* LOCKD_XDR4_H */

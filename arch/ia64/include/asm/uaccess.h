@@ -173,6 +173,11 @@ do {									\
 do {												\
 	__st_user("__ex_table", (unsigned long) addr, n, RELOC_TYPE, (unsigned long) (val));	\
 	(err) = ia64_getreg(_IA64_REG_R8);							\
+# define __put_user_size(val, addr, n, err)				\
+do {									\
+	__st_user("__ex_table", (unsigned long) addr, n, RELOC_TYPE,	\
+		  (__force unsigned long) (val));			\
+	(err) = ia64_getreg(_IA64_REG_R8);				\
 } while (0)
 #endif /* !ASM_SUPPORTED */
 
@@ -198,6 +203,7 @@ extern void __get_user_unknown (void);
 		      default: __get_user_unknown(); break;				\
 		}									\
 	(x) = (__typeof__(*(__gu_ptr))) __gu_val;					\
+	(x) = (__force __typeof__(*(__gu_ptr))) __gu_val;				\
 	__gu_err;									\
 })
 
@@ -262,17 +268,15 @@ __copy_from_user (void *to, const void __user *from, unsigned long count)
 	__cu_len;									\
 })
 
-#define copy_from_user(to, from, n)							\
-({											\
-	void *__cu_to = (to);								\
-	const void __user *__cu_from = (from);						\
-	long __cu_len = (n);								\
-											\
-	__chk_user_ptr(__cu_from);							\
-	if (__access_ok(__cu_from, __cu_len, get_fs()))					\
-		__cu_len = __copy_user((__force void __user *) __cu_to, __cu_from, __cu_len);	\
-	__cu_len;									\
-})
+static inline unsigned long
+copy_from_user(void *to, const void __user *from, unsigned long n)
+{
+	if (likely(__access_ok(from, n, get_fs())))
+		n = __copy_user((__force void __user *) to, from, n);
+	else
+		memset(to, 0, n);
+	return n;
+}
 
 #define __copy_in_user(to, from, size)	__copy_user((to), (from), (size))
 
@@ -374,6 +378,15 @@ xlate_dev_mem_ptr (unsigned long p)
 	page = pfn_to_page(p >> PAGE_SHIFT);
 	if (PageUncached(page))
 		ptr = (char *)p + __IA64_UNCACHED_OFFSET;
+static __inline__ void *
+xlate_dev_mem_ptr(phys_addr_t p)
+{
+	struct page *page;
+	void *ptr;
+
+	page = pfn_to_page(p >> PAGE_SHIFT);
+	if (PageUncached(page))
+		ptr = (void *)p + __IA64_UNCACHED_OFFSET;
 	else
 		ptr = __va(p);
 
@@ -392,6 +405,15 @@ xlate_dev_kmem_ptr (char * p)
 	page = virt_to_page((unsigned long)p);
 	if (PageUncached(page))
 		ptr = (char *)__pa(p) + __IA64_UNCACHED_OFFSET;
+static __inline__ void *
+xlate_dev_kmem_ptr(void *p)
+{
+	struct page *page;
+	void *ptr;
+
+	page = virt_to_page((unsigned long)p);
+	if (PageUncached(page))
+		ptr = (void *)__pa(p) + __IA64_UNCACHED_OFFSET;
 	else
 		ptr = p;
 

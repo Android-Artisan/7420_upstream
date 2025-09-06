@@ -65,6 +65,7 @@
 #include <asm/page.h>
 #include <asm/m32r.h>
 #include <asm/mmu_context.h>
+#include <asm/asm-offsets.h>
 
 #if !defined(CONFIG_MMU)
 #define sys_madvise		sys_ni_syscall
@@ -117,6 +118,22 @@
 #define preempt_stop(x)
 #define resume_kernel		restore_all
 #endif
+
+/* how to get the thread information struct from ASM */
+#define GET_THREAD_INFO(reg)	GET_THREAD_INFO reg
+	.macro GET_THREAD_INFO reg
+	ldi	\reg, #-THREAD_SIZE
+	and	\reg, sp
+	.endm
+
+ENTRY(ret_from_kernel_thread)
+	pop	r0
+	bl	schedule_tail
+	GET_THREAD_INFO(r8)
+	ld	r0, R0(r8)
+	ld	r1, R1(r8)
+	jl	r1
+	bra	syscall_exit
 
 ENTRY(ret_from_fork)
 	pop	r0
@@ -173,6 +190,7 @@ need_resched:
 	ldi	r4, #0
 	st	r4, @(TI_PRE_COUNT, r8)
 	DISABLE_INTERRUPTS(r4)
+	bl	preempt_schedule_irq
 	bra	need_resched
 #endif
 
@@ -232,6 +250,9 @@ work_notifysig:				; deal with pending signals and
 	mv	r2, r9			; arg3 : __u32 thread_info_flags
 	bl	do_notify_resume
 	bra	restore_all
+	mv	r1, r9			; arg2 : __u32 thread_info_flags
+	bl	do_notify_resume
+	bra	resume_userspace
 
 	; perform syscall exit tracing
 	ALIGN

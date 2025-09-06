@@ -25,6 +25,13 @@
 
 #include <asm/macints.h>
 #include <asm/macintosh.h>
+#include <linux/slab.h>
+
+#include <asm/irq.h>
+#include <asm/dma.h>
+#include <asm/macints.h>
+#include <asm/macintosh.h>
+#include <asm/mac_via.h>
 
 #include <scsi/scsi_host.h>
 
@@ -54,6 +61,8 @@ struct mac_esp_priv {
 	int error;
 };
 static struct platform_device *internal_esp, *external_esp;
+static struct esp *esp_chips[2];
+static DEFINE_SPINLOCK(esp_chips_lock);
 
 #define MAC_ESP_GET_PRIV(esp) ((struct mac_esp_priv *) \
 			       platform_get_drvdata((struct platform_device *) \
@@ -150,6 +159,7 @@ static inline int mac_esp_wait_for_dreq(struct esp *esp)
 	do {
 		if (mep->pdma_regs == NULL) {
 			if (mac_irq_pending(IRQ_MAC_SCSIDRQ))
+			if (via2_scsi_drq_pending())
 				return 0;
 		} else {
 			if (nubus_readl(mep->pdma_regs) & 0x200)
@@ -171,6 +181,7 @@ static inline int mac_esp_wait_for_dreq(struct esp *esp)
 #define MAC_ESP_PDMA_LOOP(operands) \
 	asm volatile ( \
 	     "       tstw %2                   \n" \
+	     "       tstw %1                   \n" \
 	     "       jbeq 20f                  \n" \
 	     "1:     movew " operands "        \n" \
 	     "2:     movew " operands "        \n" \
@@ -196,6 +207,14 @@ static inline int mac_esp_wait_for_dreq(struct esp *esp)
 	     "       subqw #1,%3               \n" \
 	     "       jbne 21b                  \n" \
 	     "30:    tstw %4                   \n" \
+	     "       subqw #1,%1               \n" \
+	     "       jbne 1b                   \n" \
+	     "20:    tstw %2                   \n" \
+	     "       jbeq 30f                  \n" \
+	     "21:    movew " operands "        \n" \
+	     "       subqw #1,%2               \n" \
+	     "       jbne 21b                  \n" \
+	     "30:    tstw %3                   \n" \
 	     "       jbeq 40f                  \n" \
 	     "31:    moveb " operands "        \n" \
 	     "32:    nop                       \n" \
@@ -225,6 +244,8 @@ static inline int mac_esp_wait_for_dreq(struct esp *esp)
 	     "       .previous                 \n" \
 	     : "+a" (addr) \
 	     : "a" (mep->pdma_io), "r" (count32), "r" (count2), "g" (esp_count))
+	     : "+a" (addr), "+r" (count32), "+r" (count2) \
+	     : "g" (count1), "a" (mep->pdma_io))
 
 static void mac_esp_send_pdma_cmd(struct esp *esp, u32 addr, u32 esp_count,
 				  u32 dma_count, int write, u8 cmd)
@@ -247,6 +268,7 @@ static void mac_esp_send_pdma_cmd(struct esp *esp, u32 addr, u32 esp_count,
 	do {
 		unsigned int count32 = esp_count >> 5;
 		unsigned int count2 = (esp_count & 0x1F) >> 1;
+		unsigned int count1 = esp_count & 1;
 		unsigned int start_addr = addr;
 
 		if (mac_esp_wait_for_dreq(esp))
@@ -254,12 +276,14 @@ static void mac_esp_send_pdma_cmd(struct esp *esp, u32 addr, u32 esp_count,
 
 		if (write) {
 			MAC_ESP_PDMA_LOOP("%1@,%0@+");
+			MAC_ESP_PDMA_LOOP("%4@,%0@+");
 
 			esp_count -= addr - start_addr;
 		} else {
 			unsigned int n;
 
 			MAC_ESP_PDMA_LOOP("%0@+,%1@");
+			MAC_ESP_PDMA_LOOP("%0@+,%4@");
 
 			if (mac_esp_wait_for_empty_fifo(esp))
 				break;
@@ -278,12 +302,17 @@ static void mac_esp_send_pdma_cmd(struct esp *esp, u32 addr, u32 esp_count,
  */
 
 static inline int mac_esp_wait_for_fifo(struct esp *esp)
+static inline unsigned int mac_esp_wait_for_fifo(struct esp *esp)
 {
 	int i = 500000;
 
 	do {
 		if (esp_read8(ESP_FFLAGS) & ESP_FF_FBYTES)
 			return 0;
+		unsigned int fbytes = esp_read8(ESP_FFLAGS) & ESP_FF_FBYTES;
+
+		if (fbytes)
+			return fbytes;
 
 		udelay(2);
 	} while (--i);
@@ -291,10 +320,12 @@ static inline int mac_esp_wait_for_fifo(struct esp *esp)
 	printk(KERN_ERR PFX "FIFO is empty (sreg %02x)\n",
 	       esp_read8(ESP_STATUS));
 	return 1;
+	return 0;
 }
 
 static inline int mac_esp_wait_for_intr(struct esp *esp)
 {
+	struct mac_esp_priv *mep = MAC_ESP_GET_PRIV(esp);
 	int i = 500000;
 
 	do {
@@ -306,6 +337,7 @@ static inline int mac_esp_wait_for_intr(struct esp *esp)
 	} while (--i);
 
 	printk(KERN_ERR PFX "IRQ timeout (sreg %02x)\n", esp->sreg);
+	mep->error = 1;
 	return 1;
 }
 
@@ -351,6 +383,9 @@ static void mac_esp_send_pio_cmd(struct esp *esp, u32 addr, u32 esp_count,
 
 	local_irq_save(flags);
 
+	struct mac_esp_priv *mep = MAC_ESP_GET_PRIV(esp);
+	u8 *fifo = esp->regs + ESP_FDATA * 16;
+
 	cmd &= ~ESP_CMD_DMA;
 	mep->error = 0;
 
@@ -362,6 +397,35 @@ static void mac_esp_send_pio_cmd(struct esp *esp, u32 addr, u32 esp_count,
 				esp_count = 0;
 		} else {
 			esp_count = 0;
+		while (1) {
+			unsigned int n;
+
+			n = mac_esp_wait_for_fifo(esp);
+			if (!n)
+				break;
+
+			if (n > esp_count)
+				n = esp_count;
+			esp_count -= n;
+
+			MAC_ESP_PIO_LOOP("%2@,%0@+", n);
+
+			if (!esp_count)
+				break;
+
+			if (mac_esp_wait_for_intr(esp))
+				break;
+
+			if (((esp->sreg & ESP_STAT_PMASK) != ESP_DIP) &&
+			    ((esp->sreg & ESP_STAT_PMASK) != ESP_MIP))
+				break;
+
+			esp->ireg = esp_read8(ESP_INTRPT);
+			if ((esp->ireg & (ESP_INTR_DC | ESP_INTR_BSERV)) !=
+			    ESP_INTR_BSERV)
+				break;
+
+			scsi_esp_cmd(esp, ESP_CMD_TI);
 		}
 	} else {
 		scsi_esp_cmd(esp, ESP_CMD_FLUSH);
@@ -413,6 +477,24 @@ static void mac_esp_send_pio_cmd(struct esp *esp, u32 addr, u32 esp_count,
 				break;
 
 			n = MAC_ESP_FIFO_SIZE - n;
+
+		while (esp_count) {
+			unsigned int n;
+
+			if (mac_esp_wait_for_intr(esp))
+				break;
+
+			if (((esp->sreg & ESP_STAT_PMASK) != ESP_DOP) &&
+			    ((esp->sreg & ESP_STAT_PMASK) != ESP_MOP))
+				break;
+
+			esp->ireg = esp_read8(ESP_INTRPT);
+			if ((esp->ireg & (ESP_INTR_DC | ESP_INTR_BSERV)) !=
+			    ESP_INTR_BSERV)
+				break;
+
+			n = MAC_ESP_FIFO_SIZE -
+			    (esp_read8(ESP_FFLAGS) & ESP_FF_FBYTES);
 			if (n > esp_count)
 				n = esp_count;
 
@@ -428,6 +510,7 @@ static void mac_esp_send_pio_cmd(struct esp *esp, u32 addr, u32 esp_count,
 	}
 
 	local_irq_restore(flags);
+	esp->send_cmd_residual = esp_count;
 }
 
 static int mac_esp_irq_pending(struct esp *esp)
@@ -440,6 +523,32 @@ static int mac_esp_irq_pending(struct esp *esp)
 static u32 mac_esp_dma_length_limit(struct esp *esp, u32 dma_addr, u32 dma_len)
 {
 	return dma_len > 0xFFFF ? 0xFFFF : dma_len;
+}
+
+static irqreturn_t mac_scsi_esp_intr(int irq, void *dev_id)
+{
+	int got_intr;
+
+	/*
+	 * This is an edge triggered IRQ, so we have to be careful to
+	 * avoid missing a transition when it is shared by two ESP devices.
+	 */
+
+	do {
+		got_intr = 0;
+		if (esp_chips[0] &&
+		    (mac_esp_read8(esp_chips[0], ESP_STATUS) & ESP_STAT_INTR)) {
+			(void)scsi_esp_intr(irq, esp_chips[0]);
+			got_intr = 1;
+		}
+		if (esp_chips[1] &&
+		    (mac_esp_read8(esp_chips[1], ESP_STATUS) & ESP_STAT_INTR)) {
+			(void)scsi_esp_intr(irq, esp_chips[1]);
+			got_intr = 1;
+		}
+	} while (got_intr);
+
+	return IRQ_HANDLED;
 }
 
 static struct esp_driver_ops mac_esp_ops = {
@@ -459,6 +568,7 @@ static struct esp_driver_ops mac_esp_ops = {
 };
 
 static int __devinit esp_mac_probe(struct platform_device *dev)
+static int esp_mac_probe(struct platform_device *dev)
 {
 	struct scsi_host_template *tpnt = &scsi_esp_template;
 	struct Scsi_Host *host;
@@ -487,6 +597,7 @@ static int __devinit esp_mac_probe(struct platform_device *dev)
 	}
 
 	if (dev->id + 1 > chips_present)
+	if (dev->id > 1)
 		return -ENODEV;
 
 	host = scsi_host_alloc(tpnt, sizeof(struct esp));
@@ -560,6 +671,26 @@ static int __devinit esp_mac_probe(struct platform_device *dev)
 			  esp);
 	if (err < 0)
 		goto fail_free_priv;
+	esp_chips[dev->id] = esp;
+	mb();
+	if (esp_chips[!dev->id] == NULL) {
+		err = request_irq(host->irq, mac_scsi_esp_intr, 0, "ESP", NULL);
+		if (err < 0) {
+			esp_chips[dev->id] = NULL;
+			goto fail_free_priv;
+		}
+
+	/* The request_irq() call is intended to succeed for the first device
+	 * and fail for the second device.
+	 */
+	err = request_irq(host->irq, mac_scsi_esp_intr, 0, "ESP", NULL);
+	spin_lock(&esp_chips_lock);
+	if (err < 0 && esp_chips[!dev->id] == NULL) {
+		spin_unlock(&esp_chips_lock);
+		goto fail_free_priv;
+	}
+	esp_chips[dev->id] = esp;
+	spin_unlock(&esp_chips_lock);
 
 	err = scsi_esp_register(esp, &dev->dev);
 	if (err)
@@ -569,6 +700,14 @@ static int __devinit esp_mac_probe(struct platform_device *dev)
 
 fail_free_irq:
 	free_irq(host->irq, esp);
+	if (esp_chips[!dev->id] == NULL)
+	spin_lock(&esp_chips_lock);
+	esp_chips[dev->id] = NULL;
+	if (esp_chips[!dev->id] == NULL) {
+		spin_unlock(&esp_chips_lock);
+		free_irq(host->irq, esp);
+	} else
+		spin_unlock(&esp_chips_lock);
 fail_free_priv:
 	kfree(mep);
 fail_free_command_block:
@@ -580,6 +719,7 @@ fail:
 }
 
 static int __devexit esp_mac_remove(struct platform_device *dev)
+static int esp_mac_remove(struct platform_device *dev)
 {
 	struct mac_esp_priv *mep = platform_get_drvdata(dev);
 	struct esp *esp = mep->esp;
@@ -588,6 +728,13 @@ static int __devexit esp_mac_remove(struct platform_device *dev)
 	scsi_esp_unregister(esp);
 
 	free_irq(irq, esp);
+	spin_lock(&esp_chips_lock);
+	esp_chips[dev->id] = NULL;
+	if (esp_chips[!dev->id] == NULL) {
+		spin_unlock(&esp_chips_lock);
+		free_irq(irq, NULL);
+	} else
+		spin_unlock(&esp_chips_lock);
 
 	kfree(mep);
 
@@ -603,6 +750,9 @@ static struct platform_driver esp_mac_driver = {
 	.remove   = __devexit_p(esp_mac_remove),
 	.driver   = {
 		.name     = DRV_MODULE_NAME,
+	.remove   = esp_mac_remove,
+	.driver   = {
+		.name	= DRV_MODULE_NAME,
 	},
 };
 
@@ -632,6 +782,7 @@ static int __init mac_esp_init(void)
 		platform_driver_unregister(&esp_mac_driver);
 		return -ENOMEM;
 	}
+	return platform_driver_register(&esp_mac_driver);
 }
 
 static void __exit mac_esp_exit(void)
@@ -652,6 +803,7 @@ MODULE_DESCRIPTION("Mac ESP SCSI driver");
 MODULE_AUTHOR("Finn Thain <fthain@telegraphics.com.au>");
 MODULE_LICENSE("GPL v2");
 MODULE_VERSION(DRV_VERSION);
+MODULE_ALIAS("platform:" DRV_MODULE_NAME);
 
 module_init(mac_esp_init);
 module_exit(mac_esp_exit);

@@ -83,6 +83,7 @@ static int irlan_provider_state_idle(struct irlan_cb *self, IRLAN_EVENT event,
 	     break;
 	default:
 		IRDA_DEBUG(4, "%s(), Unknown event %d\n", __func__ , event);
+		pr_debug("%s(), Unknown event %d\n", __func__ , event);
 		break;
 	}
 	if (skb)
@@ -148,6 +149,7 @@ static int irlan_provider_state_info(struct irlan_cb *self, IRLAN_EVENT event,
 		break;
 	default:
 		IRDA_DEBUG( 0, "%s(), Unknown event %d\n", __func__ , event);
+		pr_debug("%s(), Unknown event %d\n", __func__ , event);
 		break;
 	}
 	if (skb)
@@ -187,6 +189,7 @@ static int irlan_provider_state_open(struct irlan_cb *self, IRLAN_EVENT event,
 		break;
 	default:
 		IRDA_DEBUG(2, "%s(), Unknown event %d\n", __func__ , event);
+		pr_debug("%s(), Unknown event %d\n", __func__ , event);
 		break;
 	}
 	if (skb)
@@ -222,6 +225,7 @@ static int irlan_provider_state_data(struct irlan_cb *self, IRLAN_EVENT event,
 		break;
 	default:
 		IRDA_DEBUG( 0, "%s(), Unknown event %d\n", __func__ , event);
+		pr_debug("%s(), Unknown event %d\n", __func__ , event);
 		break;
 	}
 	if (skb)

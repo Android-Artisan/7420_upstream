@@ -7,6 +7,7 @@
  *
  * Pieces of code based on linux-2.4's hp_mouse.c & hp_keyb.c
  * 	Copyright (c) 1999 Alex deVries <alex@onefishtwo.ca>
+ *	Copyright (c) 1999 Alex deVries <alex@onefishtwo.ca>
  *	Copyright (c) 1999-2000 Philipp Rumpf <prumpf@tux.org>
  *	Copyright (c) 2000 Xavier Debacker <debackex@esiee.fr>
  *	Copyright (c) 2000-2001 Thomas Marteau <marteaut@esiee.fr>
@@ -24,6 +25,7 @@
 
 #include <linux/init.h>
 #include <linux/module.h>
+#include <linux/slab.h>
 #include <linux/serio.h>
 #include <linux/input.h>
 #include <linux/interrupt.h>
@@ -327,6 +329,7 @@ static void gscps2_close(struct serio *port)
  */
 
 static int __init gscps2_probe(struct parisc_device *dev)
+static int gscps2_probe(struct parisc_device *dev)
 {
 	struct gscps2port *ps2port;
 	struct serio *serio;
@@ -360,6 +363,9 @@ static int __init gscps2_probe(struct parisc_device *dev)
 	snprintf(serio->name, sizeof(serio->name), "GSC PS/2 %s",
 		 (ps2port->id == GSC_ID_KEYBOARD) ? "keyboard" : "mouse");
 	strlcpy(serio->phys, dev->dev.bus_id, sizeof(serio->phys));
+	snprintf(serio->name, sizeof(serio->name), "gsc-ps2-%s",
+		 (ps2port->id == GSC_ID_KEYBOARD) ? "keyboard" : "mouse");
+	strlcpy(serio->phys, dev_name(&dev->dev), sizeof(serio->phys));
 	serio->id.type		= SERIO_8042;
 	serio->write		= gscps2_write;
 	serio->open		= gscps2_open;
@@ -383,9 +389,9 @@ static int __init gscps2_probe(struct parisc_device *dev)
 		goto fail;
 #endif
 
-	printk(KERN_INFO "serio: %s port at 0x%p irq %d @ %s\n",
+	pr_info("serio: %s port at 0x%08lx irq %d @ %s\n",
 		ps2port->port->name,
-		ps2port->addr,
+		hpa,
 		ps2port->padev->irq,
 		ps2port->port->phys);
 
@@ -414,6 +420,7 @@ fail_nomem:
  */
 
 static int __devexit gscps2_remove(struct parisc_device *dev)
+static int gscps2_remove(struct parisc_device *dev)
 {
 	struct gscps2port *ps2port = dev_get_drvdata(&dev->dev);
 
@@ -438,6 +445,7 @@ static struct parisc_device_id gscps2_device_tbl[] = {
 #endif
 	{ 0, }	/* 0 terminated list */
 };
+MODULE_DEVICE_TABLE(parisc, gscps2_device_tbl);
 
 static struct parisc_driver parisc_ps2_driver = {
 	.name		= "gsc_ps2",

@@ -15,6 +15,9 @@
 #include <asm/mach-types.h>
 #include <asm/irq.h>
 #include <asm/signal.h>
+#include <linux/gpio.h>
+
+#include <asm/mach-types.h>
 #include <mach/assabet.h>
 
 #include "sa1100_generic.h"
@@ -38,6 +41,18 @@ static int assabet_pcmcia_hw_init(struct soc_pcmcia_socket *skt)
 static void assabet_pcmcia_hw_shutdown(struct soc_pcmcia_socket *skt)
 {
 	soc_pcmcia_free_irqs(skt, irqs, ARRAY_SIZE(irqs));
+static int assabet_pcmcia_hw_init(struct soc_pcmcia_socket *skt)
+{
+	skt->stat[SOC_STAT_CD].gpio = ASSABET_GPIO_CF_CD;
+	skt->stat[SOC_STAT_CD].name = "CF CD";
+	skt->stat[SOC_STAT_BVD1].gpio = ASSABET_GPIO_CF_BVD1;
+	skt->stat[SOC_STAT_BVD1].name = "CF BVD1";
+	skt->stat[SOC_STAT_BVD2].gpio = ASSABET_GPIO_CF_BVD2;
+	skt->stat[SOC_STAT_BVD2].name = "CF BVD2";
+	skt->stat[SOC_STAT_RDY].gpio = ASSABET_GPIO_CF_IRQ;
+	skt->stat[SOC_STAT_RDY].name = "CF RDY";
+
+	return 0;
 }
 
 static void
@@ -84,6 +99,15 @@ assabet_pcmcia_configure_socket(struct soc_pcmcia_socket *skt, const socket_stat
 		mask |= ASSABET_BCR_CF_RST;
 
 	ASSABET_BCR_frob(ASSABET_BCR_CF_RST | ASSABET_BCR_CF_PWR, mask);
+	/* Silently ignore Vpp, speaker enable. */
+
+	if (state->flags & SS_RESET)
+		mask |= ASSABET_BCR_CF_RST;
+	if (!(state->flags & SS_OUTPUT_ENA))
+		mask |= ASSABET_BCR_CF_BUS_OFF;
+
+	ASSABET_BCR_frob(ASSABET_BCR_CF_RST | ASSABET_BCR_CF_PWR |
+			ASSABET_BCR_CF_BUS_OFF, mask);
 
 	return 0;
 }
@@ -131,6 +155,13 @@ static struct pcmcia_low_level assabet_pcmcia_ops = {
 };
 
 int __init pcmcia_assabet_init(struct device *dev)
+	.hw_init		= assabet_pcmcia_hw_init,
+	.socket_state		= assabet_pcmcia_socket_state,
+	.configure_socket	= assabet_pcmcia_configure_socket,
+	.socket_suspend		= assabet_pcmcia_socket_suspend,
+};
+
+int pcmcia_assabet_init(struct device *dev)
 {
 	int ret = -ENODEV;
 

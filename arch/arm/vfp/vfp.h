@@ -380,3 +380,4 @@ struct op {
 #ifdef CONFIG_SMP
 extern void vfp_save_state(void *location, u32 fpexc);
 #endif
+extern void vfp_save_state(void *location, u32 fpexc);

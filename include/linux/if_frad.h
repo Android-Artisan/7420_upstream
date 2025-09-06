@@ -127,6 +127,14 @@ struct frad_conf
 
 #ifdef __KERNEL__
 
+#ifndef _FRAD_H_
+#define _FRAD_H_
+
+#include <uapi/linux/if_frad.h>
+
+
+#if defined(CONFIG_DLCI) || defined(CONFIG_DLCI_MODULE)
+
 /* these are the fields of an RFC 1490 header */
 struct frhdr
 {
@@ -141,6 +149,7 @@ struct frhdr
 
 #define IP_NLPID pad 
 } __attribute__((packed));
+} __packed;
 
 /* see RFC 1490 for the definition of the following */
 #define FRAD_I_UI		0x03
@@ -197,5 +206,8 @@ struct frad_local
 #ifdef __KERNEL__
 extern void dlci_ioctl_set(int (*hook)(unsigned int, void __user *));
 #endif
+#endif /* CONFIG_DLCI || CONFIG_DLCI_MODULE */
+
+extern void dlci_ioctl_set(int (*hook)(unsigned int, void __user *));
 
 #endif

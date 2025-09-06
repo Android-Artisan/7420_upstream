@@ -28,6 +28,8 @@ void __init kvm_guest_init(void);
 #else
 #define kvm_guest_init() do { } while (0)
 #endif
+#include <uapi/linux/kvm_para.h>
+
 
 static inline int kvm_para_has_feature(unsigned int feature)
 {
@@ -38,3 +40,4 @@ static inline int kvm_para_has_feature(unsigned int feature)
 #endif /* __KERNEL__ */
 #endif /* __LINUX_KVM_PARA_H */
 
+#endif /* __LINUX_KVM_PARA_H */

@@ -289,6 +289,11 @@ struct gpio_desc {
 #define MGSL_IOCWAITGPIO	_IOWR(MGSL_MAGIC_IOC,18,struct gpio_desc)
 
 #ifdef __KERNEL__
+#ifndef _SYNCLINK_H_
+#define _SYNCLINK_H_
+
+#include <uapi/linux/synclink.h>
+
 /* provide 32 bit ioctl compatibility on 64 bit systems */
 #ifdef CONFIG_COMPAT
 #include <linux/compat.h>

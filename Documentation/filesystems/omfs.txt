@@ -1,7 +1,6 @@
 Optimized MPEG Filesystem (OMFS)
 
 Overview
-========
 
 OMFS is a filesystem created by SonicBlue for use in the ReplayTV DVR
 and Rio Karma MP3 player.  The filesystem is extent-based, utilizing
@@ -25,7 +24,6 @@ omfsprogs, available at:
 Instructions are included in its README.
 
 Options
-=======
 
 OMFS supports the following mount-time options:
 
@@ -36,7 +34,6 @@ OMFS supports the following mount-time options:
     dmask=xxx    - set umask to xxx for directories
 
 Disk format
-===========
 
 OMFS discriminates between "sysblocks" and normal data blocks.  The sysblock
 group consists of super block information, file metadata, directory structures,

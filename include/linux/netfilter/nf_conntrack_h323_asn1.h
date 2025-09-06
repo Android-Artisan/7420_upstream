@@ -41,6 +41,7 @@
  * H.323 Types
  ****************************************************************************/
 #include "nf_conntrack_h323_types.h"
+#include <linux/netfilter/nf_conntrack_h323_types.h>
 
 typedef struct {
 	enum {

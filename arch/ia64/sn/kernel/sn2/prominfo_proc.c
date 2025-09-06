@@ -13,6 +13,8 @@
 #include <linux/proc_fs.h>
 #include <linux/nodemask.h>
 #include <asm/system.h>
+#include <linux/seq_file.h>
+#include <linux/nodemask.h>
 #include <asm/io.h>
 #include <asm/sn/sn_sal.h>
 #include <asm/sn/sn_cpuid.h>
@@ -103,6 +105,7 @@ get_fit_entry(unsigned long nasid, int index, unsigned long *fentry,
  * These two routines display the FIT table for each node.
  */
 static int dump_fit_entry(char *page, unsigned long *fentry)
+static void dump_fit_entry(struct seq_file *m, unsigned long *fentry)
 {
 	unsigned type;
 
@@ -114,6 +117,13 @@ static int dump_fit_entry(char *page, unsigned long *fentry)
 		       fentry[0],
 		       /* mult by sixteen to get size in bytes */
 		       (unsigned)(fentry[1] & 0xffffff) * 16);
+	seq_printf(m, "%02x %-25s %x.%02x %016lx %u\n",
+		   type,
+		   fit_type_name(type),
+		   FIT_MAJOR(fentry[1]), FIT_MINOR(fentry[1]),
+		   fentry[0],
+		   /* mult by sixteen to get size in bytes */
+		   (unsigned)(fentry[1] & 0xffffff) * 16);
 }
 
 
@@ -133,6 +143,12 @@ dump_fit(char *page, unsigned long nasid)
 	char *p;
 
 	p = page;
+static int proc_fit_show(struct seq_file *m, void *v)
+{
+	unsigned long nasid = (unsigned long)m->private;
+	unsigned long fentry[2];
+	int index;
+
 	for (index=0;;index++) {
 		BUG_ON(index * 60 > PAGE_SIZE);
 		if (get_fit_entry(nasid, index, fentry, NULL, 0))
@@ -150,6 +166,29 @@ dump_version(char *page, unsigned long nasid)
 	char banner[128];
 	int index;
 	int len;
+		dump_fit_entry(m, fentry);
+	}
+	return 0;
+}
+
+static int proc_fit_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, proc_fit_show, PDE_DATA(inode));
+}
+
+static const struct file_operations proc_fit_fops = {
+	.open		= proc_fit_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
+static int proc_version_show(struct seq_file *m, void *v)
+{
+	unsigned long nasid = (unsigned long)m->private;
+	unsigned long fentry[2];
+	char banner[128];
+	int index;
 
 	for (index = 0; ; index++) {
 		if (get_fit_entry(nasid, index, fentry, banner,
@@ -209,6 +248,24 @@ read_fit_entry(char *page, char **start, off_t off, int count, int *eof,
 
 	return len;
 }
+	seq_printf(m, "%x.%02x\n", FIT_MAJOR(fentry[1]), FIT_MINOR(fentry[1]));
+
+	if (banner[0])
+		seq_printf(m, "%s\n", banner);
+	return 0;
+}
+
+static int proc_version_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, proc_version_show, PDE_DATA(inode));
+}
+
+static const struct file_operations proc_version_fops = {
+	.open		= proc_version_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
 
 /* module entry points */
 int __init prominfo_init(void);
@@ -230,6 +287,8 @@ int __init prominfo_init(void)
 	unsigned long nasid;
 	int size;
 	char name[NODE_NAME_LEN];
+	struct proc_dir_entry *sgi_prominfo_entry;
+	cnodeid_t cnodeid;
 
 	if (!ia64_platform_is("sn2"))
 		return 0;
@@ -257,6 +316,25 @@ int __init prominfo_init(void)
 		entp++;
 	}
 
+	sgi_prominfo_entry = proc_mkdir("sgi_prominfo", NULL);
+	if (!sgi_prominfo_entry)
+		return -ENOMEM;
+
+	for_each_online_node(cnodeid) {
+		struct proc_dir_entry *dir;
+		unsigned long nasid;
+		char name[NODE_NAME_LEN];
+
+		sprintf(name, "node%d", cnodeid);
+		dir = proc_mkdir(name, sgi_prominfo_entry);
+		if (!dir)
+			continue;
+		nasid = cnodeid_to_nasid(cnodeid);
+		proc_create_data("fit", 0, dir,
+				 &proc_fit_fops, (void *)nasid);
+		proc_create_data("version", 0, dir,
+				 &proc_version_fops, (void *)nasid);
+	}
 	return 0;
 }
 
@@ -276,4 +354,5 @@ void __exit prominfo_exit(void)
 	}
 	remove_proc_entry("sgi_prominfo", NULL);
 	kfree(proc_entries);
+	remove_proc_subtree("sgi_prominfo", NULL);
 }

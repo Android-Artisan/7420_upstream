@@ -19,6 +19,7 @@
  */
 
 #include <linux/delay.h>
+#include <linux/slab.h>
 #include <sound/core.h>
 #include <sound/info.h>
 #include "pdaudiocf.h"
@@ -90,6 +91,21 @@ void pdacf_dump(struct snd_pdacf *chip)
 	printk("ISR         : 0x%x\n", inw(chip->port + PDAUDIOCF_REG_ISR));
 	printk("IER         : 0x%x\n", inw(chip->port + PDAUDIOCF_REG_IER));
 	printk("AK_IFR      : 0x%x\n", inw(chip->port + PDAUDIOCF_REG_AK_IFR));
+	printk(KERN_DEBUG "PDAUDIOCF DUMP (0x%lx):\n", chip->port);
+	printk(KERN_DEBUG "WPD         : 0x%x\n",
+	       inw(chip->port + PDAUDIOCF_REG_WDP));
+	printk(KERN_DEBUG "RDP         : 0x%x\n",
+	       inw(chip->port + PDAUDIOCF_REG_RDP));
+	printk(KERN_DEBUG "TCR         : 0x%x\n",
+	       inw(chip->port + PDAUDIOCF_REG_TCR));
+	printk(KERN_DEBUG "SCR         : 0x%x\n",
+	       inw(chip->port + PDAUDIOCF_REG_SCR));
+	printk(KERN_DEBUG "ISR         : 0x%x\n",
+	       inw(chip->port + PDAUDIOCF_REG_ISR));
+	printk(KERN_DEBUG "IER         : 0x%x\n",
+	       inw(chip->port + PDAUDIOCF_REG_IER));
+	printk(KERN_DEBUG "AK_IFR      : 0x%x\n",
+	       inw(chip->port + PDAUDIOCF_REG_AK_IFR));
 }
 #endif
 
@@ -157,6 +173,8 @@ struct snd_pdacf *snd_pdacf_create(struct snd_card *card)
 	spin_lock_init(&chip->reg_lock);
 	spin_lock_init(&chip->ak4117_lock);
 	tasklet_init(&chip->tq, pdacf_tasklet, (unsigned long)chip);
+	mutex_init(&chip->reg_lock);
+	spin_lock_init(&chip->ak4117_lock);
 	card->private_data = chip;
 
 	pdacf_proc_init(chip);
@@ -172,6 +190,7 @@ static void snd_pdacf_ak4117_change(struct ak4117 *ak4117, unsigned char c0, uns
 	if (!(c0 & AK4117_UNLCK))
 		return;
 	spin_lock_irqsave(&chip->reg_lock, flags);
+	mutex_lock(&chip->reg_lock);
 	val = chip->regmap[PDAUDIOCF_REG_SCR>>1];
 	if (ak4117->rcs0 & AK4117_UNLCK)
 		val |= PDAUDIOCF_BLUE_LED_OFF;
@@ -179,6 +198,7 @@ static void snd_pdacf_ak4117_change(struct ak4117 *ak4117, unsigned char c0, uns
 		val &= ~PDAUDIOCF_BLUE_LED_OFF;
 	pdacf_reg_write(chip, PDAUDIOCF_REG_SCR, val);
 	spin_unlock_irqrestore(&chip->reg_lock, flags);
+	mutex_unlock(&chip->reg_lock);
 }
 
 int snd_pdacf_ak4117_create(struct snd_pdacf *chip)
@@ -255,6 +275,7 @@ void snd_pdacf_powerdown(struct snd_pdacf *chip)
 #ifdef CONFIG_PM
 
 int snd_pdacf_suspend(struct snd_pdacf *chip, pm_message_t state)
+int snd_pdacf_suspend(struct snd_pdacf *chip)
 {
 	u16 val;
 	

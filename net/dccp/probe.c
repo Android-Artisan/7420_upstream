@@ -30,6 +30,8 @@
 #include <linux/module.h>
 #include <linux/kfifo.h>
 #include <linux/vmalloc.h>
+#include <linux/time64.h>
+#include <linux/gfp.h>
 #include <net/net_namespace.h>
 
 #include "dccp.h"
@@ -47,6 +49,10 @@ static struct {
 	spinlock_t	  lock;
 	wait_queue_head_t wait;
 	struct timespec	  tstart;
+	struct kfifo	  fifo;
+	spinlock_t	  lock;
+	wait_queue_head_t wait;
+	struct timespec64 tstart;
 } dccpw;
 
 static void printl(const char *fmt, ...)
@@ -60,6 +66,13 @@ static void printl(const char *fmt, ...)
 	getnstimeofday(&now);
 
 	now = timespec_sub(now, dccpw.tstart);
+	struct timespec64 now;
+	char tbuf[256];
+
+	va_start(args, fmt);
+	getnstimeofday64(&now);
+
+	now = timespec64_sub(now, dccpw.tstart);
 
 	len = sprintf(tbuf, "%lu.%06lu ",
 		      (unsigned long) now.tv_sec,
@@ -98,6 +111,32 @@ static int jdccp_sendmsg(struct kiocb *iocb, struct sock *sk,
 			printl("%d.%d.%d.%d:%u %d.%d.%d.%d:%u %d\n",
 			       NIPQUAD(inet->saddr), ntohs(inet->sport),
 			       NIPQUAD(inet->daddr), ntohs(inet->dport), size);
+	kfifo_in_locked(&dccpw.fifo, tbuf, len, &dccpw.lock);
+	wake_up(&dccpw.wait);
+}
+
+static int jdccp_sendmsg(struct sock *sk, struct msghdr *msg, size_t size)
+{
+	const struct inet_sock *inet = inet_sk(sk);
+	struct ccid3_hc_tx_sock *hc = NULL;
+
+	if (ccid_get_current_tx_ccid(dccp_sk(sk)) == DCCPC_CCID3)
+		hc = ccid3_hc_tx_sk(sk);
+
+	if (port == 0 || ntohs(inet->inet_dport) == port ||
+	    ntohs(inet->inet_sport) == port) {
+		if (hc)
+			printl("%pI4:%u %pI4:%u %d %d %d %d %u %llu %llu %d\n",
+			       &inet->inet_saddr, ntohs(inet->inet_sport),
+			       &inet->inet_daddr, ntohs(inet->inet_dport), size,
+			       hc->tx_s, hc->tx_rtt, hc->tx_p,
+			       hc->tx_x_calc, hc->tx_x_recv >> 6,
+			       hc->tx_x >> 6, hc->tx_t_ipi);
+		else
+			printl("%pI4:%u %pI4:%u %d\n",
+			       &inet->inet_saddr, ntohs(inet->inet_sport),
+			       &inet->inet_daddr, ntohs(inet->inet_dport),
+			       size);
 	}
 
 	jprobe_return();
@@ -115,6 +154,8 @@ static int dccpprobe_open(struct inode *inode, struct file *file)
 {
 	kfifo_reset(dccpw.fifo);
 	getnstimeofday(&dccpw.tstart);
+	kfifo_reset(&dccpw.fifo);
+	getnstimeofday64(&dccpw.tstart);
 	return 0;
 }
 
@@ -140,6 +181,11 @@ static ssize_t dccpprobe_read(struct file *file, char __user *buf,
 		goto out_free;
 
 	cnt = kfifo_get(dccpw.fifo, tbuf, len);
+					 kfifo_len(&dccpw.fifo) != 0);
+	if (error)
+		goto out_free;
+
+	cnt = kfifo_out_locked(&dccpw.fifo, tbuf, len, &dccpw.lock);
 	error = copy_to_user(buf, tbuf, cnt) ? -EFAULT : 0;
 
 out_free:
@@ -152,6 +198,7 @@ static const struct file_operations dccpprobe_fops = {
 	.owner	 = THIS_MODULE,
 	.open	 = dccpprobe_open,
 	.read    = dccpprobe_read,
+	.llseek  = noop_llseek,
 };
 
 static __init int dccpprobe_init(void)
@@ -168,6 +215,18 @@ static __init int dccpprobe_init(void)
 		goto err0;
 
 	ret = register_jprobe(&dccp_send_probe);
+	if (kfifo_alloc(&dccpw.fifo, bufsize, GFP_KERNEL))
+		return ret;
+	if (!proc_create(procname, S_IRUSR, init_net.proc_net, &dccpprobe_fops))
+		goto err0;
+
+	ret = register_jprobe(&dccp_send_probe);
+	if (ret) {
+		ret = request_module("dccp");
+		if (!ret)
+			ret = register_jprobe(&dccp_send_probe);
+	}
+
 	if (ret)
 		goto err1;
 
@@ -177,6 +236,9 @@ err1:
 	proc_net_remove(&init_net, procname);
 err0:
 	kfifo_free(dccpw.fifo);
+	remove_proc_entry(procname, init_net.proc_net);
+err0:
+	kfifo_free(&dccpw.fifo);
 	return ret;
 }
 module_init(dccpprobe_init);
@@ -185,6 +247,8 @@ static __exit void dccpprobe_exit(void)
 {
 	kfifo_free(dccpw.fifo);
 	proc_net_remove(&init_net, procname);
+	kfifo_free(&dccpw.fifo);
+	remove_proc_entry(procname, init_net.proc_net);
 	unregister_jprobe(&dccp_send_probe);
 
 }

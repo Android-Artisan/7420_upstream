@@ -4085,7 +4085,6 @@ SiS_DisableBridge(struct SiS_Private *SiS_Pr)
 
 	}
 
-     } else {     /* ============ For 301 ================ */
 
         if(SiS_Pr->ChipType < SIS_315H) {
 #ifdef SIS300
@@ -4123,7 +4122,6 @@ SiS_DisableBridge(struct SiS_Private *SiS_Pr)
 
       }
 
-  } else {     /* ============ For LVDS =============*/
 
     if(SiS_Pr->ChipType < SIS_315H) {
 
@@ -4692,7 +4690,6 @@ SiS_EnableBridge(struct SiS_Private *SiS_Pr)
 
       }
 
-    } else {	/* ============  For 301 ================ */
 
        if(SiS_Pr->ChipType < SIS_315H) {
 	  if(SiS_CRT2IsLCD(SiS_Pr)) {
@@ -4735,7 +4732,6 @@ SiS_EnableBridge(struct SiS_Private *SiS_Pr)
 
     }
 
-  } else {   /* =================== For LVDS ================== */
 
     if(SiS_Pr->ChipType < SIS_315H) {
 
@@ -9639,7 +9635,6 @@ SiS_CheckACK(struct SiS_Private *SiS_Pr)
 /* End of I2C functions ----------------------- */
 
 
-/* =============== SiS 315/330 O.E.M. ================= */
 
 #ifdef SIS315H
 
@@ -10827,7 +10822,6 @@ SiS_FinalizeLCD(struct SiS_Private *SiS_Pr, unsigned short ModeNo, unsigned shor
 
 #endif
 
-/*  =================  SiS 300 O.E.M. ================== */
 
 #ifdef SIS300
 

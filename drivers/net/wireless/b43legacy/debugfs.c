@@ -5,6 +5,7 @@
   debugfs driver debugging code
 
   Copyright (c) 2005-2007 Michael Buesch <mb@bu3sch.de>
+  Copyright (c) 2005-2007 Michael Buesch <m@bues.ch>
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -212,6 +213,7 @@ static ssize_t b43legacy_debugfs_read(struct file *file, char __user *userbuf,
 	ssize_t uninitialized_var(ret);
 	char *buf;
 	const size_t bufsize = 1024 * 128;
+	const size_t bufsize = 1024 * 16; /* 16 KiB buffer */
 	const size_t buforder = get_order(bufsize);
 	int err = 0;
 
@@ -334,6 +336,10 @@ out_unlock:
 			.open	= b43legacy_debugfs_open,		\
 			.read	= b43legacy_debugfs_read,		\
 			.write	= b43legacy_debugfs_write,		\
+			.open	= simple_open,				\
+			.read	= b43legacy_debugfs_read,		\
+			.write	= b43legacy_debugfs_write,		\
+			.llseek = generic_file_llseek,			\
 		},						\
 		.file_struct_offset = offsetof(struct b43legacy_dfsentry, \
 					       file_##name),	\
@@ -379,6 +385,11 @@ static void b43legacy_add_dynamic_debug(struct b43legacy_wldev *dev)
 	add_dyn_dbg("debug_dmaverbose", B43legacy_DBG_DMAVERBOSE, 0);
 	add_dyn_dbg("debug_pwork_fast", B43legacy_DBG_PWORK_FAST, 0);
 	add_dyn_dbg("debug_pwork_stop", B43legacy_DBG_PWORK_STOP, 0);
+	add_dyn_dbg("debug_xmitpower", B43legacy_DBG_XMITPOWER, false);
+	add_dyn_dbg("debug_dmaoverflow", B43legacy_DBG_DMAOVERFLOW, false);
+	add_dyn_dbg("debug_dmaverbose", B43legacy_DBG_DMAVERBOSE, false);
+	add_dyn_dbg("debug_pwork_fast", B43legacy_DBG_PWORK_FAST, false);
+	add_dyn_dbg("debug_pwork_stop", B43legacy_DBG_PWORK_STOP, false);
 
 #undef add_dyn_dbg
 }

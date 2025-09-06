@@ -29,6 +29,15 @@
 
 ieee754dp ieee754dp_sub(ieee754dp x, ieee754dp y)
 {
+ *  51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA.
+ */
+
+#include "ieee754dp.h"
+
+union ieee754dp ieee754dp_sub(union ieee754dp x, union ieee754dp y)
+{
+	int s;
+
 	COMPXDP;
 	COMPYDP;
 
@@ -36,6 +45,7 @@ ieee754dp ieee754dp_sub(ieee754dp x, ieee754dp y)
 	EXPLODEYDP;
 
 	CLEARCX;
+	ieee754_clearcx();
 
 	FLUSHXDP;
 	FLUSHYDP;
@@ -44,16 +54,22 @@ ieee754dp ieee754dp_sub(ieee754dp x, ieee754dp y)
 	case CLPAIR(IEEE754_CLASS_SNAN, IEEE754_CLASS_QNAN):
 	case CLPAIR(IEEE754_CLASS_QNAN, IEEE754_CLASS_SNAN):
 	case CLPAIR(IEEE754_CLASS_SNAN, IEEE754_CLASS_SNAN):
+	case CLPAIR(IEEE754_CLASS_QNAN, IEEE754_CLASS_SNAN):
 	case CLPAIR(IEEE754_CLASS_ZERO, IEEE754_CLASS_SNAN):
 	case CLPAIR(IEEE754_CLASS_NORM, IEEE754_CLASS_SNAN):
 	case CLPAIR(IEEE754_CLASS_DNORM, IEEE754_CLASS_SNAN):
 	case CLPAIR(IEEE754_CLASS_INF, IEEE754_CLASS_SNAN):
+		return ieee754dp_nanxcpt(y);
+
+	case CLPAIR(IEEE754_CLASS_SNAN, IEEE754_CLASS_SNAN):
+	case CLPAIR(IEEE754_CLASS_SNAN, IEEE754_CLASS_QNAN):
 	case CLPAIR(IEEE754_CLASS_SNAN, IEEE754_CLASS_ZERO):
 	case CLPAIR(IEEE754_CLASS_SNAN, IEEE754_CLASS_NORM):
 	case CLPAIR(IEEE754_CLASS_SNAN, IEEE754_CLASS_DNORM):
 	case CLPAIR(IEEE754_CLASS_SNAN, IEEE754_CLASS_INF):
 		SETCX(IEEE754_INVALID_OPERATION);
 		return ieee754dp_nanxcpt(ieee754dp_indef(), "sub", x, y);
+		return ieee754dp_nanxcpt(x);
 
 	case CLPAIR(IEEE754_CLASS_ZERO, IEEE754_CLASS_QNAN):
 	case CLPAIR(IEEE754_CLASS_NORM, IEEE754_CLASS_QNAN):
@@ -77,6 +93,14 @@ ieee754dp ieee754dp_sub(ieee754dp x, ieee754dp y)
 			return x;
 		SETCX(IEEE754_INVALID_OPERATION);
 		return ieee754dp_xcpt(ieee754dp_indef(), "sub", x, y);
+	/*
+	 * Infinity handling
+	 */
+	case CLPAIR(IEEE754_CLASS_INF, IEEE754_CLASS_INF):
+		if (xs != ys)
+			return x;
+		ieee754_setcx(IEEE754_INVALID_OPERATION);
+		return ieee754dp_indef();
 
 	case CLPAIR(IEEE754_CLASS_ZERO, IEEE754_CLASS_INF):
 	case CLPAIR(IEEE754_CLASS_DNORM, IEEE754_CLASS_INF):
@@ -91,12 +115,16 @@ ieee754dp ieee754dp_sub(ieee754dp x, ieee754dp y)
 		/* Zero handling
 		 */
 
+	/*
+	 * Zero handling
+	 */
 	case CLPAIR(IEEE754_CLASS_ZERO, IEEE754_CLASS_ZERO):
 		if (xs != ys)
 			return x;
 		else
 			return ieee754dp_zero(ieee754_csr.rm ==
 					      IEEE754_RD);
+			return ieee754dp_zero(ieee754_csr.rm == FPU_CSR_RD);
 
 	case CLPAIR(IEEE754_CLASS_NORM, IEEE754_CLASS_ZERO):
 	case CLPAIR(IEEE754_CLASS_DNORM, IEEE754_CLASS_ZERO):
@@ -111,6 +139,7 @@ ieee754dp ieee754dp_sub(ieee754dp x, ieee754dp y)
 	case CLPAIR(IEEE754_CLASS_DNORM, IEEE754_CLASS_DNORM):
 		DPDNORMX;
 		/* FAAL THOROUGH */
+		/* FALL THROUGH */
 
 	case CLPAIR(IEEE754_CLASS_NORM, IEEE754_CLASS_DNORM):
 		/* normalize ym,ye */
@@ -146,6 +175,17 @@ ieee754dp ieee754dp_sub(ieee754dp x, ieee754dp y)
 		/* have to shift x fraction right to align
 		 */
 		int s = ye - xe;
+		/*
+		 * Have to shift y fraction right to align
+		 */
+		s = xe - ye;
+		ym = XDPSRS(ym, s);
+		ye += s;
+	} else if (ye > xe) {
+		/*
+		 * Have to shift x fraction right to align
+		 */
+		s = ye - xe;
 		xm = XDPSRS(xm, s);
 		xe += s;
 	}
@@ -160,6 +200,8 @@ ieee754dp ieee754dp_sub(ieee754dp x, ieee754dp y)
 		xs = xs;
 
 		if (xm >> (DP_MBITS + 1 + 3)) {	/* carry out */
+
+		if (xm >> (DP_FBITS + 1 + 3)) { /* carry out */
 			xm = XDPSRS1(xm);	/* shift preserving sticky */
 			xe++;
 		}
@@ -175,6 +217,12 @@ ieee754dp ieee754dp_sub(ieee754dp x, ieee754dp y)
 		}
 		if (xm == 0) {
 			if (ieee754_csr.rm == IEEE754_RD)
+		} else {
+			xm = ym - xm;
+			xs = ys;
+		}
+		if (xm == 0) {
+			if (ieee754_csr.rm == FPU_CSR_RD)
 				return ieee754dp_zero(1);	/* round negative inf. => sign = -1 */
 			else
 				return ieee754dp_zero(0);	/* other round modes   => sign = 1 */
@@ -183,9 +231,12 @@ ieee754dp ieee754dp_sub(ieee754dp x, ieee754dp y)
 		/* normalize to rounding precision
 		 */
 		while ((xm >> (DP_MBITS + 3)) == 0) {
+		while ((xm >> (DP_FBITS + 3)) == 0) {
 			xm <<= 1;
 			xe--;
 		}
 	}
 	DPNORMRET2(xs, xe, xm, "sub", x, y);
+
+	return ieee754dp_format(xs, xe, xm);
 }

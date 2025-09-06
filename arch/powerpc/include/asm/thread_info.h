@@ -14,11 +14,21 @@
 
 #ifdef CONFIG_PPC64
 #define THREAD_SHIFT		14
+#if defined(CONFIG_PPC64)
+#define THREAD_SHIFT		14
+#elif defined(CONFIG_PPC_256K_PAGES)
+#define THREAD_SHIFT		15
 #else
 #define THREAD_SHIFT		13
 #endif
 
 #define THREAD_SIZE		(1 << THREAD_SHIFT)
+
+#ifdef CONFIG_PPC64
+#define CURRENT_THREAD_INFO(dest, sp)	stringify_in_c(clrrdi dest, sp, THREAD_SHIFT)
+#else
+#define CURRENT_THREAD_INFO(dest, sp)	stringify_in_c(rlwinm dest, sp, 0, 0, 31-THREAD_SHIFT)
+#endif
 
 #ifndef __ASSEMBLY__
 #include <linux/cache.h>
@@ -36,6 +46,11 @@ struct thread_info {
 	int		preempt_count;		/* 0 => preemptable,
 						   <0 => BUG */
 	struct restart_block restart_block;
+	int		cpu;			/* cpu we're on */
+	int		preempt_count;		/* 0 => preemptable,
+						   <0 => BUG */
+	int		preempt_lazy_count;	 /* 0 => preemptable,
+						   <0 => BUG */
 	unsigned long	local_flags;		/* private flags for thread */
 
 	/* low level flags - has atomic operations done on it */
@@ -56,6 +71,8 @@ struct thread_info {
 	.restart_block = {			\
 		.fn = do_no_restart_syscall,	\
 	},					\
+	.cpu =		0,			\
+	.preempt_count = INIT_PREEMPT_COUNT,	\
 	.flags =	0,			\
 }
 
@@ -85,6 +102,16 @@ static inline struct thread_info *current_thread_info(void)
 	/* gcc4, at least, is smart enough to turn this into a single
 	 * rlwinm for ppc32 and clrrdi for ppc64 */
 	return (struct thread_info *)(sp & ~(THREAD_SIZE-1));
+#define THREAD_SIZE_ORDER	(THREAD_SHIFT - PAGE_SHIFT)
+
+/* how to get the thread information struct from C */
+static inline struct thread_info *current_thread_info(void)
+{
+	unsigned long val;
+
+	asm (CURRENT_THREAD_INFO(%0,1) : "=r" (val));
+
+	return (struct thread_info *)val;
 }
 
 #endif /* __ASSEMBLY__ */
@@ -97,14 +124,17 @@ static inline struct thread_info *current_thread_info(void)
 #define TIF_SYSCALL_TRACE	0	/* syscall trace active */
 #define TIF_SIGPENDING		1	/* signal pending */
 #define TIF_NEED_RESCHED	2	/* rescheduling necessary */
-#define TIF_POLLING_NRFLAG	3	/* true if poll_idle() is polling
-					   TIF_NEED_RESCHED */
+#define TIF_NEED_RESCHED_LAZY	3	/* lazy rescheduling necessary */
 #define TIF_32BIT		4	/* 32 bit binary */
 #define TIF_PERFMON_WORK	5	/* work for pfm_handle_work() */
 #define TIF_PERFMON_CTXSW	6	/* perfmon needs ctxsw calls */
 #define TIF_SYSCALL_AUDIT	7	/* syscall auditing active */
 #define TIF_SINGLESTEP		8	/* singlestepping active */
 #define TIF_MEMDIE		9
+#define TIF_RESTORE_TM		5	/* need to restore TM FP/VEC/VSX */
+#define TIF_SYSCALL_AUDIT	7	/* syscall auditing active */
+#define TIF_SINGLESTEP		8	/* singlestepping active */
+#define TIF_NOHZ		9	/* in adaptive nohz mode */
 #define TIF_SECCOMP		10	/* secure computing */
 #define TIF_RESTOREALL		11	/* Restore all regs (implies NOERROR) */
 #define TIF_NOERROR		12	/* Force successful syscall return */
@@ -112,6 +142,16 @@ static inline struct thread_info *current_thread_info(void)
 #define TIF_FREEZE		14	/* Freezing for suspend */
 #define TIF_RUNLATCH		15	/* Is the runlatch enabled? */
 #define TIF_ABI_PENDING		16	/* 32/64 bit switch needed */
+#define TIF_UPROBE		14	/* breakpointed or single-stepping */
+#define TIF_SYSCALL_TRACEPOINT	15	/* syscall tracepoint instrumentation */
+#define TIF_EMULATE_STACK_STORE	16	/* Is an instruction emulation
+						for stack store? */
+#define TIF_MEMDIE		17	/* is terminating due to OOM killer */
+#if defined(CONFIG_PPC64)
+#define TIF_ELF2ABI		18	/* function descriptors must die! */
+#endif
+#define TIF_POLLING_NRFLAG	19	/* true if poll_idle() is polling
+					   TIF_NEED_RESCHED */
 
 /* as above, but as bit values */
 #define _TIF_SYSCALL_TRACE	(1<<TIF_SYSCALL_TRACE)
@@ -121,6 +161,7 @@ static inline struct thread_info *current_thread_info(void)
 #define _TIF_32BIT		(1<<TIF_32BIT)
 #define _TIF_PERFMON_WORK	(1<<TIF_PERFMON_WORK)
 #define _TIF_PERFMON_CTXSW	(1<<TIF_PERFMON_CTXSW)
+#define _TIF_RESTORE_TM		(1<<TIF_RESTORE_TM)
 #define _TIF_SYSCALL_AUDIT	(1<<TIF_SYSCALL_AUDIT)
 #define _TIF_SINGLESTEP		(1<<TIF_SINGLESTEP)
 #define _TIF_SECCOMP		(1<<TIF_SECCOMP)
@@ -134,17 +175,34 @@ static inline struct thread_info *current_thread_info(void)
 
 #define _TIF_USER_WORK_MASK	(_TIF_SIGPENDING | _TIF_NEED_RESCHED | \
 				 _TIF_NOTIFY_RESUME)
+#define _TIF_UPROBE		(1<<TIF_UPROBE)
+#define _TIF_SYSCALL_TRACEPOINT	(1<<TIF_SYSCALL_TRACEPOINT)
+#define _TIF_EMULATE_STACK_STORE	(1<<TIF_EMULATE_STACK_STORE)
+#define _TIF_NOHZ		(1<<TIF_NOHZ)
+#define _TIF_NEED_RESCHED_LAZY	(1<<TIF_NEED_RESCHED_LAZY)
+#define _TIF_SYSCALL_DOTRACE	(_TIF_SYSCALL_TRACE | _TIF_SYSCALL_AUDIT | \
+				 _TIF_SECCOMP | _TIF_SYSCALL_TRACEPOINT | \
+				 _TIF_NOHZ)
+
+#define _TIF_USER_WORK_MASK	(_TIF_SIGPENDING | _TIF_NEED_RESCHED | \
+				 _TIF_NOTIFY_RESUME | _TIF_UPROBE | \
+				 _TIF_RESTORE_TM | _TIF_NEED_RESCHED_LAZY)
 #define _TIF_PERSYSCALL_MASK	(_TIF_RESTOREALL|_TIF_NOERROR)
+#define _TIF_NEED_RESCHED_MASK	(_TIF_NEED_RESCHED | _TIF_NEED_RESCHED_LAZY)
 
 /* Bits in local_flags */
 /* Don't move TLF_NAPPING without adjusting the code in entry_32.S */
 #define TLF_NAPPING		0	/* idle thread enabled NAP mode */
 #define TLF_SLEEPING		1	/* suspend code enabled SLEEP mode */
 #define TLF_RESTORE_SIGMASK	2	/* Restore signal mask in do_signal */
+#define TLF_LAZY_MMU		3	/* tlb_batch is active */
+#define TLF_RUNLATCH		4	/* Is the runlatch enabled? */
 
 #define _TLF_NAPPING		(1 << TLF_NAPPING)
 #define _TLF_SLEEPING		(1 << TLF_SLEEPING)
 #define _TLF_RESTORE_SIGMASK	(1 << TLF_RESTORE_SIGMASK)
+#define _TLF_LAZY_MMU		(1 << TLF_LAZY_MMU)
+#define _TLF_RUNLATCH		(1 << TLF_RUNLATCH)
 
 #ifndef __ASSEMBLY__
 #define HAVE_SET_RESTORE_SIGMASK	1
@@ -154,6 +212,43 @@ static inline void set_restore_sigmask(void)
 	ti->local_flags |= _TLF_RESTORE_SIGMASK;
 	set_bit(TIF_SIGPENDING, &ti->flags);
 }
+	WARN_ON(!test_bit(TIF_SIGPENDING, &ti->flags));
+}
+static inline void clear_restore_sigmask(void)
+{
+	current_thread_info()->local_flags &= ~_TLF_RESTORE_SIGMASK;
+}
+static inline bool test_restore_sigmask(void)
+{
+	return current_thread_info()->local_flags & _TLF_RESTORE_SIGMASK;
+}
+static inline bool test_and_clear_restore_sigmask(void)
+{
+	struct thread_info *ti = current_thread_info();
+	if (!(ti->local_flags & _TLF_RESTORE_SIGMASK))
+		return false;
+	ti->local_flags &= ~_TLF_RESTORE_SIGMASK;
+	return true;
+}
+
+static inline bool test_thread_local_flags(unsigned int flags)
+{
+	struct thread_info *ti = current_thread_info();
+	return (ti->local_flags & flags) != 0;
+}
+
+#ifdef CONFIG_PPC64
+#define is_32bit_task()	(test_thread_flag(TIF_32BIT))
+#else
+#define is_32bit_task()	(1)
+#endif
+
+#if defined(CONFIG_PPC64)
+#define is_elf2_task() (test_thread_flag(TIF_ELF2ABI))
+#else
+#define is_elf2_task() (0)
+#endif
+
 #endif	/* !__ASSEMBLY__ */
 
 #endif /* __KERNEL__ */

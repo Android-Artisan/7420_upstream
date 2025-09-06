@@ -21,6 +21,7 @@
  what led to this part of the usx2y module: 
  It provides the alsa kernel half of the usx2y-alsa-jack driver pair.
  The pair uses a hardware dependant alsa-device for mmaped pcm transport.
+ The pair uses a hardware dependent alsa-device for mmaped pcm transport.
  Advantage achieved:
          The usb_hc moves pcm data from/into memory via DMA.
          That memory is mmaped by jack's usx2y driver.
@@ -39,6 +40,9 @@
  
  This is a first "proof of concept" implementation.
  Later, funcionalities should migrate to more apropriate places:
+
+ This is a first "proof of concept" implementation.
+ Later, functionalities should migrate to more appropriate places:
  Userland:
  - The jackd could mmap its float-pcm buffers directly from alsa-lib.
  - alsa-lib could provide power of 2 period sized shaping combined with int/float
@@ -54,6 +58,10 @@
 #include "usbusx2yaudio.c"
 
 #if defined(USX2Y_NRPACKS_VARIABLE) || (!defined(USX2Y_NRPACKS_VARIABLE) &&  USX2Y_NRPACKS == 1)
+#include <linux/gfp.h>
+#include "usbusx2yaudio.c"
+
+#if defined(USX2Y_NRPACKS_VARIABLE) || USX2Y_NRPACKS == 1
 
 #include <sound/hwdep.h>
 
@@ -74,6 +82,7 @@ static int usX2Y_usbpcm_urb_capt_retire(struct snd_usX2Y_substream *subs)
 	for (i = 0; i < nr_of_packs(); i++) {
 		if (urb->iso_frame_desc[i].status) { /* active? hmm, skip this */
 			snd_printk(KERN_ERR "activ frame status %i. Most propably some hardware problem.\n", urb->iso_frame_desc[i].status);
+			snd_printk(KERN_ERR "active frame status %i. Most probably some hardware problem.\n", urb->iso_frame_desc[i].status);
 			return urb->iso_frame_desc[i].status;
 		}
 		lens += urb->iso_frame_desc[i].actual_length / usX2Y->stride;
@@ -235,6 +244,7 @@ static void i_usX2Y_usbpcm_urb_complete(struct urb *urb)
 	if (unlikely(atomic_read(&subs->state) < state_PREPARED)) {
 		snd_printdd("hcd_frame=%i ep=%i%s status=%i start_frame=%i\n",
 			    usb_get_current_frame_number(usX2Y->chip.dev),
+			    usb_get_current_frame_number(usX2Y->dev),
 			    subs->endpoint, usb_pipein(urb->pipe) ? "in" : "out",
 			    urb->status, urb->start_frame);
 		return;
@@ -250,6 +260,8 @@ static void i_usX2Y_usbpcm_urb_complete(struct urb *urb)
 		return;
 	}
 
+
+	subs->completed_urb = urb;
 	capsubs = usX2Y->subs[SNDRV_PCM_STREAM_CAPTURE];
 	capsubs2 = usX2Y->subs[SNDRV_PCM_STREAM_CAPTURE + 2];
 	playbacksubs = usX2Y->subs[SNDRV_PCM_STREAM_PLAYBACK];
@@ -319,6 +331,7 @@ static int usX2Y_usbpcm_urbs_allocate(struct snd_usX2Y_substream *subs)
 	unsigned int pipe;
 	int is_playback = subs == subs->usX2Y->subs[SNDRV_PCM_STREAM_PLAYBACK];
 	struct usb_device *dev = subs->usX2Y->chip.dev;
+	struct usb_device *dev = subs->usX2Y->dev;
 
 	pipe = is_playback ? usb_sndisocpipe(dev, subs->endpoint) :
 			usb_rcvisocpipe(dev, subs->endpoint);
@@ -363,6 +376,7 @@ static int snd_usX2Y_usbpcm_hw_free(struct snd_pcm_substream *substream)
 	struct snd_usX2Y_substream *subs = runtime->private_data,
 		*cap_subs2 = subs->usX2Y->subs[SNDRV_PCM_STREAM_CAPTURE + 2];
 	mutex_lock(&subs->usX2Y->prepare_mutex);
+	mutex_lock(&subs->usX2Y->pcm_mutex);
 	snd_printdd("snd_usX2Y_usbpcm_hw_free(%p)\n", substream);
 
 	if (SNDRV_PCM_STREAM_PLAYBACK == substream->stream) {
@@ -392,6 +406,7 @@ static int snd_usX2Y_usbpcm_hw_free(struct snd_pcm_substream *substream)
 		}
 	}
 	mutex_unlock(&subs->usX2Y->prepare_mutex);
+	mutex_unlock(&subs->usX2Y->pcm_mutex);
 	return snd_pcm_lib_free_pages(substream);
 }
 
@@ -443,6 +458,7 @@ static int usX2Y_usbpcm_urbs_start(struct snd_usX2Y_substream *subs)
 						atomic_set(&subs->state, state_STARTING3);
 					urb->dev = usX2Y->chip.dev;
 					urb->transfer_flags = URB_ISO_ASAP;
+					urb->dev = usX2Y->dev;
 					for (pack = 0; pack < nr_of_packs(); pack++) {
 						urb->iso_frame_desc[pack].offset = subs->maxpacksize * (pack + u * nr_of_packs());
 						urb->iso_frame_desc[pack].length = subs->maxpacksize;
@@ -499,6 +515,7 @@ static int snd_usX2Y_usbpcm_prepare(struct snd_pcm_substream *substream)
 	}
 
 	mutex_lock(&usX2Y->prepare_mutex);
+	mutex_lock(&usX2Y->pcm_mutex);
 	usX2Y_subs_prepare(subs);
 // Start hardware streams
 // SyncStream first....
@@ -540,6 +557,7 @@ static int snd_usX2Y_usbpcm_prepare(struct snd_pcm_substream *substream)
 
  up_prepare_mutex:
 	mutex_unlock(&usX2Y->prepare_mutex);
+	mutex_unlock(&usX2Y->pcm_mutex);
 	return err;
 }
 
@@ -658,6 +676,30 @@ static int snd_usX2Y_hwdep_pcm_open(struct snd_hwdep *hw, struct file *file)
 	if (0 == err)
 		usX2Y(card)->chip_status |= USX2Y_STAT_CHIP_MMAP_PCM_URBS;
 	usX2Y_pcms_unlock(card);
+static int usX2Y_pcms_busy_check(struct snd_card *card)
+{
+	struct usX2Ydev	*dev = usX2Y(card);
+	int i;
+
+	for (i = 0; i < dev->pcm_devs * 2; i++) {
+		struct snd_usX2Y_substream *subs = dev->subs[i];
+		if (subs && subs->pcm_substream &&
+		    SUBSTREAM_BUSY(subs->pcm_substream))
+			return -EBUSY;
+	}
+	return 0;
+}
+
+static int snd_usX2Y_hwdep_pcm_open(struct snd_hwdep *hw, struct file *file)
+{
+	struct snd_card *card = hw->card;
+	int err;
+
+	mutex_lock(&usX2Y(card)->pcm_mutex);
+	err = usX2Y_pcms_busy_check(card);
+	if (!err)
+		usX2Y(card)->chip_status |= USX2Y_STAT_CHIP_MMAP_PCM_URBS;
+	mutex_unlock(&usX2Y(card)->pcm_mutex);
 	return err;
 }
 
@@ -669,6 +711,13 @@ static int snd_usX2Y_hwdep_pcm_release(struct snd_hwdep *hw, struct file *file)
 	if (0 == err)
 		usX2Y(hw->card)->chip_status &= ~USX2Y_STAT_CHIP_MMAP_PCM_URBS;
 	usX2Y_pcms_unlock(card);
+	int err;
+
+	mutex_lock(&usX2Y(card)->pcm_mutex);
+	err = usX2Y_pcms_busy_check(card);
+	if (!err)
+		usX2Y(hw->card)->chip_status &= ~USX2Y_STAT_CHIP_MMAP_PCM_URBS;
+	mutex_unlock(&usX2Y(card)->pcm_mutex);
 	return err;
 }
 
@@ -698,6 +747,7 @@ static int snd_usX2Y_hwdep_pcm_vm_fault(struct vm_area_struct *area,
 
 
 static struct vm_operations_struct snd_usX2Y_hwdep_pcm_vm_ops = {
+static const struct vm_operations_struct snd_usX2Y_hwdep_pcm_vm_ops = {
 	.open = snd_usX2Y_hwdep_pcm_vm_open,
 	.close = snd_usX2Y_hwdep_pcm_vm_close,
 	.fault = snd_usX2Y_hwdep_pcm_vm_fault,
@@ -723,6 +773,7 @@ static int snd_usX2Y_hwdep_pcm_mmap(struct snd_hwdep * hw, struct file *filp, st
 	}
 	area->vm_ops = &snd_usX2Y_hwdep_pcm_vm_ops;
 	area->vm_flags |= VM_RESERVED | VM_DONTEXPAND;
+	area->vm_flags |= VM_DONTEXPAND | VM_DONTDUMP;
 	area->vm_private_data = hw->private_data;
 	return 0;
 }
@@ -742,6 +793,7 @@ int usX2Y_hwdep_pcm_new(struct snd_card *card)
 	struct snd_hwdep *hw;
 	struct snd_pcm *pcm;
 	struct usb_device *dev = usX2Y(card)->chip.dev;
+	struct usb_device *dev = usX2Y(card)->dev;
 	if (1 != nr_of_packs())
 		return 0;
 

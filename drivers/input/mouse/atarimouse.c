@@ -79,6 +79,8 @@ static void atamouse_interrupt(char *buf)
 	/* only relative events get here */
 	dx =  buf[1];
 	dy = -buf[2];
+	dx = buf[1];
+	dy = buf[2];
 
 	input_report_rel(atamouse_dev, REL_X, dx);
 	input_report_rel(atamouse_dev, REL_Y, dy);
@@ -86,6 +88,9 @@ static void atamouse_interrupt(char *buf)
 	input_report_key(atamouse_dev, BTN_LEFT,   buttons & 0x1);
 	input_report_key(atamouse_dev, BTN_MIDDLE, buttons & 0x2);
 	input_report_key(atamouse_dev, BTN_RIGHT,  buttons & 0x4);
+	input_report_key(atamouse_dev, BTN_LEFT,   buttons & 0x4);
+	input_report_key(atamouse_dev, BTN_MIDDLE, buttons & 0x2);
+	input_report_key(atamouse_dev, BTN_RIGHT,  buttons & 0x1);
 
 	input_sync(atamouse_dev);
 
@@ -109,6 +114,7 @@ static void atamouse_close(struct input_dev *dev)
 {
 	ikbd_mouse_disable();
 	atari_mouse_interrupt_hook = NULL;
+	atari_input_mouse_interrupt_hook = NULL;
 }
 
 static int __init atamouse_init(void)
@@ -120,6 +126,9 @@ static int __init atamouse_init(void)
 
 	if (!atari_keyb_init())
 		return -ENODEV;
+	error = atari_keyb_init();
+	if (error)
+		return error;
 
 	atamouse_dev = input_allocate_device();
 	if (!atamouse_dev)

@@ -99,6 +99,7 @@ struct exec_domain {
 	struct module		*module;	/* module context of the ed. */
 	struct exec_domain	*next;		/* linked list (internal) */
 };
+#include <uapi/linux/personality.h>
 
 /*
  * Return the base personality without flags.
@@ -113,5 +114,9 @@ struct exec_domain {
 	((current->personality == (pers)) ? 0 : __set_personality(pers))
 
 #endif /* __KERNEL__ */
+/*
+ * Change personality of the currently running process.
+ */
+#define set_personality(pers)	(current->personality = (pers))
 
 #endif /* _LINUX_PERSONALITY_H */

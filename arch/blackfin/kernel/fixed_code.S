@@ -12,6 +12,19 @@
 #include <asm/entry.h>
 
 .text
+ *
+ * Copyright 2007-2008 Analog Devices Inc.
+ *
+ * Licensed under the GPL-2 or later.
+ */
+
+#include <linux/linkage.h>
+#include <linux/init.h>
+#include <linux/unistd.h>
+#include <asm/entry.h>
+
+__INIT
+
 ENTRY(_fixed_code_start)
 
 .align 16
@@ -144,3 +157,5 @@ ENTRY(_safe_user_instruction)
 ENDPROC(_safe_user_instruction)
 
 ENTRY(_fixed_code_end)
+
+__FINIT

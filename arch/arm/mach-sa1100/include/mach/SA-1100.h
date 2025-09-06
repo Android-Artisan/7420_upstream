@@ -838,6 +838,14 @@
 #define OSSR   	__REG(0x90000014	)  /* OS timer Status Reg. */
 #define OWER   	__REG(0x90000018	)  /* OS timer Watch-dog Enable Reg. */
 #define OIER   	__REG(0x9000001C	)  /* OS timer Interrupt Enable Reg. */
+#define OSMR0  		io_p2v(0x90000000)  /* OS timer Match Reg. 0 */
+#define OSMR1  		io_p2v(0x90000004)  /* OS timer Match Reg. 1 */
+#define OSMR2  		io_p2v(0x90000008)  /* OS timer Match Reg. 2 */
+#define OSMR3  		io_p2v(0x9000000c)  /* OS timer Match Reg. 3 */
+#define OSCR   		io_p2v(0x90000010)  /* OS timer Counter Reg. */
+#define OSSR   		io_p2v(0x90000014)  /* OS timer Status Reg. */
+#define OWER   		io_p2v(0x90000018)  /* OS timer Watch-dog Enable Reg. */
+#define OIER  	 	io_p2v(0x9000001C)  /* OS timer Interrupt Enable Reg. */
 
 #define OSSR_M(Nb)	        	/* Match detected [0..3]           */ \
                 	(0x00000001 << (Nb))
@@ -1808,6 +1816,9 @@
 #define DBT_TC  	Fld (13, 0)	/* Transfer Count                  */
 #define DBTA_TCA	DBT_TC  	/* Transfer Count buffer A         */
 #define DBTB_TCB	DBT_TC  	/* Transfer Count buffer B         */
+ */
+#define DMA_SIZE	(6 * 0x20)
+#define DMA_PHYS	0xb0000000
 
 
 /*

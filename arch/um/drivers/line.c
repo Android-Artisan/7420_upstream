@@ -10,6 +10,15 @@
 #include "irq_user.h"
 #include "kern_util.h"
 #include "os.h"
+#include <linux/irqreturn.h>
+#include <linux/kd.h>
+#include <linux/sched.h>
+#include <linux/slab.h>
+#include "chan.h"
+#include <irq_kern.h>
+#include <irq_user.h>
+#include <kern_util.h>
+#include <os.h>
 
 #define LINE_BUFSIZE 4096
 
@@ -31,6 +40,13 @@ static void line_timer_cb(struct work_struct *work)
 	if (!line->throttled)
 		chan_interrupt(&line->chan_list, &line->task, line->tty,
 			       line->driver->read_irq);
+}
+
+
+	if (line)
+		chan_interrupt(line, irq);
+
+	return IRQ_HANDLED;
 }
 
 /*
@@ -145,6 +161,7 @@ static int flush_buffer(struct line *line)
 		count = line->buffer + LINE_BUFSIZE - line->head;
 
 		n = write_chan(&line->chan_list, line->head, count,
+		n = write_chan(line->chan_out, line->head, count,
 			       line->driver->write_irq);
 		if (n < 0)
 			return n;
@@ -162,6 +179,7 @@ static int flush_buffer(struct line *line)
 
 	count = line->tail - line->head;
 	n = write_chan(&line->chan_list, line->head, count,
+	n = write_chan(line->chan_out, line->head, count,
 		       line->driver->write_irq);
 
 	if (n < 0)
@@ -179,6 +197,9 @@ void line_flush_buffer(struct tty_struct *tty)
 
 	spin_lock_irqsave(&line->lock, flags);
 	err = flush_buffer(line);
+
+	spin_lock_irqsave(&line->lock, flags);
+	flush_buffer(line);
 	spin_unlock_irqrestore(&line->lock, flags);
 }
 
@@ -207,6 +228,7 @@ int line_write(struct tty_struct *tty, const unsigned char *buf, int len)
 		ret = buffer_data(line, buf, len);
 	else {
 		n = write_chan(&line->chan_list, buf, len,
+		n = write_chan(line->chan_out, buf, len,
 			       line->driver->write_irq);
 		if (n < 0) {
 			ret = n;
@@ -317,6 +339,7 @@ void line_throttle(struct tty_struct *tty)
 	struct line *line = tty->driver_data;
 
 	deactivate_chan(&line->chan_list, line->driver->read_irq);
+	deactivate_chan(line->chan_in, line->driver->read_irq);
 	line->throttled = 1;
 }
 
@@ -327,6 +350,7 @@ void line_unthrottle(struct tty_struct *tty)
 	line->throttled = 0;
 	chan_interrupt(&line->chan_list, &line->task, tty,
 		       line->driver->read_irq);
+	chan_interrupt(line, line->driver->read_irq);
 
 	/*
 	 * Maybe there is enough stuff pending that calling the interrupt
@@ -335,6 +359,7 @@ void line_unthrottle(struct tty_struct *tty)
 	 */
 	if (!line->throttled)
 		reactivate_chan(&line->chan_list, line->driver->read_irq);
+		reactivate_chan(line->chan_in, line->driver->read_irq);
 }
 
 static irqreturn_t line_write_interrupt(int irq, void *data)
@@ -347,13 +372,19 @@ static irqreturn_t line_write_interrupt(int irq, void *data)
 	/*
 	 * Interrupts are disabled here because we registered the interrupt with
 	 * IRQF_DISABLED (see line_setup_irq).
+	int err;
+
+	/*
+	 * Interrupts are disabled here because genirq keep irqs disabled when
+	 * calling the action handler.
 	 */
 
 	spin_lock(&line->lock);
 	err = flush_buffer(line);
 	if (err == 0) {
+		spin_unlock(&line->lock);
 		return IRQ_NONE;
-	} else if (err < 0) {
+	} else if ((err < 0) && (err != -EAGAIN)) {
 		line->head = line->buffer;
 		line->tail = line->buffer;
 	}
@@ -363,6 +394,8 @@ static irqreturn_t line_write_interrupt(int irq, void *data)
 		return IRQ_NONE;
 
 	tty_wakeup(tty);
+	tty_port_tty_wakeup(&line->port);
+
 	return IRQ_HANDLED;
 }
 
@@ -375,6 +408,12 @@ int line_setup_irq(int fd, int input, int output, struct line *line, void *data)
 		err = um_request_irq(driver->read_irq, fd, IRQ_READ,
 				       line_interrupt, flags,
 				       driver->read_irq_name, data);
+	int err = 0;
+
+	if (input)
+		err = um_request_irq(driver->read_irq, fd, IRQ_READ,
+				     line_interrupt, IRQF_SHARED,
+				     driver->read_irq_name, data);
 	if (err)
 		return err;
 	if (output)
@@ -439,6 +478,29 @@ int line_open(struct line *lines, struct tty_struct *tty)
 out_unlock:
 	spin_unlock(&line->count_lock);
 	return err;
+				     line_write_interrupt, IRQF_SHARED,
+				     driver->write_irq_name, data);
+	return err;
+}
+
+static int line_activate(struct tty_port *port, struct tty_struct *tty)
+{
+	int ret;
+	struct line *line = tty->driver_data;
+
+	ret = enable_chan(line);
+	if (ret)
+		return ret;
+
+	if (!line->sigio) {
+		chan_enable_winch(line->chan_out, port);
+		line->sigio = 1;
+	}
+
+	chan_window_size(line, &tty->winsize.ws_row,
+		&tty->winsize.ws_col);
+
+	return 0;
 }
 
 static void unregister_winch(struct tty_struct *tty);
@@ -469,6 +531,11 @@ void line_close(struct tty_struct *tty, struct file * filp)
 	line->tty = NULL;
 	tty->driver_data = NULL;
 
+static void line_destruct(struct tty_port *port)
+{
+	struct tty_struct *tty = tty_port_tty_get(port);
+	struct line *line = tty->driver_data;
+
 	if (line->sigio) {
 		unregister_winch(tty);
 		line->sigio = 0;
@@ -478,6 +545,46 @@ void line_close(struct tty_struct *tty, struct file * filp)
 
 out_unlock:
 	spin_unlock(&line->count_lock);
+}
+
+static const struct tty_port_operations line_port_ops = {
+	.activate = line_activate,
+	.destruct = line_destruct,
+};
+
+int line_open(struct tty_struct *tty, struct file *filp)
+{
+	struct line *line = tty->driver_data;
+
+	return tty_port_open(&line->port, tty, filp);
+}
+
+int line_install(struct tty_driver *driver, struct tty_struct *tty,
+		 struct line *line)
+{
+	int ret;
+
+	ret = tty_standard_install(driver, tty);
+	if (ret)
+		return ret;
+
+	tty->driver_data = line;
+
+	return 0;
+}
+
+void line_close(struct tty_struct *tty, struct file * filp)
+{
+	struct line *line = tty->driver_data;
+
+	tty_port_close(&line->port, tty, filp);
+}
+
+void line_hangup(struct tty_struct *tty)
+{
+	struct line *line = tty->driver_data;
+
+	tty_port_hangup(&line->port);
 }
 
 void close_lines(struct line *lines, int nlines)
@@ -497,6 +604,17 @@ static int setup_one_line(struct line *lines, int n, char *init, int init_prio,
 	spin_lock(&line->count_lock);
 
 	if (line->tty != NULL) {
+		close_chan(&lines[i]);
+}
+
+int setup_one_line(struct line *lines, int n, char *init,
+		   const struct chan_opts *opts, char **error_out)
+{
+	struct line *line = &lines[n];
+	struct tty_driver *driver = line->driver->driver;
+	int err = -EINVAL;
+
+	if (line->port.count) {
 		*error_out = "Device is already open";
 		goto out;
 	}
@@ -513,6 +631,45 @@ static int setup_one_line(struct line *lines, int n, char *init, int init_prio,
 	err = 0;
 out:
 	spin_unlock(&line->count_lock);
+	if (!strcmp(init, "none")) {
+		if (line->valid) {
+			line->valid = 0;
+			kfree(line->init_str);
+			tty_unregister_device(driver, n);
+			parse_chan_pair(NULL, line, n, opts, error_out);
+			err = 0;
+		}
+		*error_out = "configured as 'none'";
+	} else {
+		char *new = kstrdup(init, GFP_KERNEL);
+		if (!new) {
+			*error_out = "Failed to allocate memory";
+			return -ENOMEM;
+		}
+		if (line->valid) {
+			tty_unregister_device(driver, n);
+			kfree(line->init_str);
+		}
+		line->init_str = new;
+		line->valid = 1;
+		err = parse_chan_pair(new, line, n, opts, error_out);
+		if (!err) {
+			struct device *d = tty_port_register_device(&line->port,
+					driver, n, NULL);
+			if (IS_ERR(d)) {
+				*error_out = "Failed to register device";
+				err = PTR_ERR(d);
+				parse_chan_pair(NULL, line, n, opts, error_out);
+			}
+		}
+		if (err) {
+			*error_out = "failed to parse channel pair";
+			line->init_str = NULL;
+			line->valid = 0;
+			kfree(new);
+		}
+	}
+out:
 	return err;
 }
 
@@ -528,6 +685,10 @@ int line_setup(struct line *lines, unsigned int num, char *init,
 {
 	int i, n, err;
 	char *end;
+int line_setup(char **conf, unsigned int num, char **def,
+	       char *init, char *name)
+{
+	char *error;
 
 	if (*init == '=') {
 		/*
@@ -564,6 +725,27 @@ int line_setup(struct line *lines, unsigned int num, char *init,
 		}
 	}
 	return n == -1 ? num : n;
+		*def = init + 1;
+	} else {
+		char *end;
+		unsigned n = simple_strtoul(init, &end, 0);
+
+		if (*end != '=') {
+			error = "Couldn't parse device number";
+			goto out;
+		}
+		if (n >= num) {
+			error = "Device number out of range";
+			goto out;
+		}
+		conf[n] = end + 1;
+	}
+	return 0;
+
+out:
+	printk(KERN_ERR "Failed to set up %s with "
+	       "configuration string \"%s\" : %s\n", name, init, error);
+	return -EINVAL;
 }
 
 int line_config(struct line *lines, unsigned int num, char *str,
@@ -571,6 +753,7 @@ int line_config(struct line *lines, unsigned int num, char *str,
 {
 	struct line *line;
 	char *new;
+	char *end;
 	int n;
 
 	if (*str == '=') {
@@ -589,6 +772,17 @@ int line_config(struct line *lines, unsigned int num, char *str,
 
 	line = &lines[n];
 	return parse_chan_pair(line->init_str, line, n, opts, error_out);
+	n = simple_strtoul(str, &end, 0);
+	if (*end++ != '=') {
+		*error_out = "Couldn't parse device number";
+		return -EINVAL;
+	}
+	if (n >= num) {
+		*error_out = "Device number out of range";
+		return -EINVAL;
+	}
+
+	return setup_one_line(lines, n, end, opts, error_out);
 }
 
 int line_get_config(char *name, struct line *lines, unsigned int num, char *str,
@@ -618,6 +812,17 @@ int line_get_config(char *name, struct line *lines, unsigned int num, char *str,
 		CONFIG_CHUNK(str, size, n, line->init_str, 1);
 	else n = chan_config_string(&line->chan_list, str, size, error_out);
 	spin_unlock(&line->count_lock);
+	if (!line->valid)
+		CONFIG_CHUNK(str, size, n, "none", 1);
+	else {
+		struct tty_struct *tty = tty_port_tty_get(&line->port);
+		if (tty == NULL) {
+			CONFIG_CHUNK(str, size, n, line->init_str, 1);
+		} else {
+			n = chan_config_string(line, str, size, error_out);
+			tty_kref_put(tty);
+		}
+	}
 
 	return n;
 }
@@ -658,6 +863,23 @@ struct tty_driver *register_lines(struct line_driver *line_driver,
 
 	if (!driver)
 		return NULL;
+	if (n >= num) {
+		*error_out = "Device number out of range";
+		return -EINVAL;
+	}
+	return setup_one_line(lines, n, "none", NULL, error_out);
+}
+
+int register_lines(struct line_driver *line_driver,
+		   const struct tty_operations *ops,
+		   struct line *lines, int nlines)
+{
+	struct tty_driver *driver = alloc_tty_driver(nlines);
+	int err;
+	int i;
+
+	if (!driver)
+		return -ENOMEM;
 
 	driver->driver_name = line_driver->name;
 	driver->name = line_driver->device_name;
@@ -683,6 +905,31 @@ struct tty_driver *register_lines(struct line_driver *line_driver,
 
 	mconsole_register_dev(&line_driver->mc);
 	return driver;
+	driver->flags = TTY_DRIVER_REAL_RAW | TTY_DRIVER_DYNAMIC_DEV;
+	driver->init_termios = tty_std_termios;
+	
+	for (i = 0; i < nlines; i++) {
+		tty_port_init(&lines[i].port);
+		lines[i].port.ops = &line_port_ops;
+		spin_lock_init(&lines[i].lock);
+		lines[i].driver = line_driver;
+		INIT_LIST_HEAD(&lines[i].chan_list);
+	}
+	tty_set_operations(driver, ops);
+
+	err = tty_register_driver(driver);
+	if (err) {
+		printk(KERN_ERR "register_lines : can't register %s driver\n",
+		       line_driver->name);
+		put_tty_driver(driver);
+		for (i = 0; i < nlines; i++)
+			tty_port_destroy(&lines[i].port);
+		return err;
+	}
+
+	line_driver->driver = driver;
+	mconsole_register_dev(&line_driver->mc);
+	return 0;
 }
 
 static DEFINE_SPINLOCK(winch_handler_lock);
@@ -737,6 +984,33 @@ static void free_winch(struct winch *winch, int free_irq_ok)
 	kfree(winch);
 }
 
+	struct tty_port *port;
+	unsigned long stack;
+	struct work_struct work;
+};
+
+static void __free_winch(struct work_struct *work)
+{
+	struct winch *winch = container_of(work, struct winch, work);
+	um_free_irq(WINCH_IRQ, winch);
+
+	if (winch->pid != -1)
+		os_kill_process(winch->pid, 1);
+	if (winch->stack != 0)
+		free_stack(winch->stack, 0);
+	kfree(winch);
+}
+
+static void free_winch(struct winch *winch)
+{
+	int fd = winch->fd;
+	winch->fd = -1;
+	if (fd != -1)
+		os_close_file(fd);
+	list_del(&winch->list);
+	__free_winch(&winch->work);
+}
+
 static irqreturn_t winch_interrupt(int irq, void *data)
 {
 	struct winch *winch = data;
@@ -749,11 +1023,25 @@ static irqreturn_t winch_interrupt(int irq, void *data)
 		err = generic_read(winch->fd, &c, NULL);
 		if (err < 0) {
 			if (err != -EAGAIN) {
+	int fd = winch->fd;
+	int err;
+	char c;
+	struct pid *pgrp;
+
+	if (fd != -1) {
+		err = generic_read(fd, &c, NULL);
+		if (err < 0) {
+			if (err != -EAGAIN) {
+				winch->fd = -1;
+				list_del(&winch->list);
+				os_close_file(fd);
 				printk(KERN_ERR "winch_interrupt : "
 				       "read failed, errno = %d\n", -err);
 				printk(KERN_ERR "fd %d is losing SIGWINCH "
 				       "support\n", winch->tty_fd);
 				free_winch(winch, 0);
+				INIT_WORK(&winch->work, __free_winch);
+				schedule_work(&winch->work);
 				return IRQ_HANDLED;
 			}
 			goto out;
@@ -767,6 +1055,18 @@ static irqreturn_t winch_interrupt(int irq, void *data)
 					 &tty->winsize.ws_col);
 			kill_pgrp(tty->pgrp, SIGWINCH, 1);
 		}
+	tty = tty_port_tty_get(winch->port);
+	if (tty != NULL) {
+		line = tty->driver_data;
+		if (line != NULL) {
+			chan_window_size(line, &tty->winsize.ws_row,
+					 &tty->winsize.ws_col);
+			pgrp = tty_get_pgrp(tty);
+			if (pgrp)
+				kill_pgrp(pgrp, SIGWINCH, 1);
+			put_pid(pgrp);
+		}
+		tty_kref_put(tty);
 	}
  out:
 	if (winch->fd != -1)
@@ -775,6 +1075,7 @@ static irqreturn_t winch_interrupt(int irq, void *data)
 }
 
 void register_winch_irq(int fd, int tty_fd, int pid, struct tty_struct *tty,
+void register_winch_irq(int fd, int tty_fd, int pid, struct tty_port *port,
 			unsigned long stack)
 {
 	struct winch *winch;
@@ -785,8 +1086,7 @@ void register_winch_irq(int fd, int tty_fd, int pid, struct tty_struct *tty,
 		goto cleanup;
 	}
 
-	*winch = ((struct winch) { .list  	= LIST_HEAD_INIT(winch->list),
-				   .fd  	= fd,
+	*winch = ((struct winch) { .fd  	= fd,
 				   .tty_fd 	= tty_fd,
 				   .pid  	= pid,
 				   .tty 	= tty,
@@ -795,14 +1095,22 @@ void register_winch_irq(int fd, int tty_fd, int pid, struct tty_struct *tty,
 	if (um_request_irq(WINCH_IRQ, fd, IRQ_READ, winch_interrupt,
 			   IRQF_DISABLED | IRQF_SHARED | IRQF_SAMPLE_RANDOM,
 			   "winch", winch) < 0) {
-		printk(KERN_ERR "register_winch_irq - failed to register "
-		       "IRQ\n");
-		goto out_free;
-	}
+				   .port 	= port,
+				   .stack	= stack });
 
 	spin_lock(&winch_handler_lock);
 	list_add(&winch->list, &winch_handlers);
 	spin_unlock(&winch_handler_lock);
+
+	if (um_request_irq(WINCH_IRQ, fd, IRQ_READ, winch_interrupt,
+			   IRQF_SHARED, "winch", winch) < 0) {
+		printk(KERN_ERR "register_winch_irq - failed to register "
+		       "IRQ\n");
+		spin_lock(&winch_handler_lock);
+		list_del(&winch->list);
+		spin_unlock(&winch_handler_lock);
+		goto out_free;
+	}
 
 	return;
 
@@ -828,6 +1136,20 @@ static void unregister_winch(struct tty_struct *tty)
 			free_winch(winch, 1);
 			break;
 		}
+	struct list_head *ele, *next;
+	struct winch *winch;
+	struct tty_struct *wtty;
+
+	spin_lock(&winch_handler_lock);
+
+	list_for_each_safe(ele, next, &winch_handlers) {
+		winch = list_entry(ele, struct winch, list);
+		wtty = tty_port_tty_get(winch->port);
+		if (wtty == tty) {
+			free_winch(winch);
+			break;
+		}
+		tty_kref_put(wtty);
 	}
 	spin_unlock(&winch_handler_lock);
 }
@@ -842,6 +1164,7 @@ static void winch_cleanup(void)
 	list_for_each_safe(ele, next, &winch_handlers) {
 		winch = list_entry(ele, struct winch, list);
 		free_winch(winch, 1);
+		free_winch(winch);
 	}
 
 	spin_unlock(&winch_handler_lock);

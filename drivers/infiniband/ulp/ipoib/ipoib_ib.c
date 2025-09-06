@@ -37,6 +37,10 @@
 #include <linux/dma-mapping.h>
 
 #include <rdma/ib_cache.h>
+#include <linux/moduleparam.h>
+#include <linux/dma-mapping.h>
+#include <linux/slab.h>
+
 #include <linux/ip.h>
 #include <linux/tcp.h>
 
@@ -60,6 +64,11 @@ struct ipoib_ah *ipoib_create_ah(struct net_device *dev,
 	ah = kmalloc(sizeof *ah, GFP_KERNEL);
 	if (!ah)
 		return NULL;
+	struct ib_ah *vah;
+
+	ah = kmalloc(sizeof *ah, GFP_KERNEL);
+	if (!ah)
+		return ERR_PTR(-ENOMEM);
 
 	ah->dev       = dev;
 	ah->last_send = 0;
@@ -71,6 +80,14 @@ struct ipoib_ah *ipoib_create_ah(struct net_device *dev,
 		ah = NULL;
 	} else
 		ipoib_dbg(netdev_priv(dev), "Created ah %p\n", ah->ah);
+	vah = ib_create_ah(pd, attr);
+	if (IS_ERR(vah)) {
+		kfree(ah);
+		ah = (struct ipoib_ah *)vah;
+	} else {
+		ah->ah = vah;
+		ipoib_dbg(netdev_priv(dev), "Created ah %p\n", ah->ah);
+	}
 
 	return ah;
 }
@@ -123,6 +140,9 @@ static void ipoib_ud_skb_put_frags(struct ipoib_dev_priv *priv,
 	} else
 		skb_put(skb, length);
 
+	ib_dma_unmap_single(priv->ca, mapping[0],
+			    IPOIB_UD_BUF_SIZE(priv->max_ib_mtu),
+			    DMA_FROM_DEVICE);
 }
 
 static int ipoib_ib_post_receive(struct net_device *dev, int id)
@@ -160,15 +180,17 @@ static struct sk_buff *ipoib_alloc_rx_skb(struct net_device *dev, int id)
 		buf_size = IPOIB_UD_BUF_SIZE(priv->max_ib_mtu);
 
 	skb = dev_alloc_skb(buf_size + 4);
+	buf_size = IPOIB_UD_BUF_SIZE(priv->max_ib_mtu);
+
+	skb = dev_alloc_skb(buf_size + IPOIB_HARD_LEN);
 	if (unlikely(!skb))
 		return NULL;
 
 	/*
-	 * IB will leave a 40 byte gap for a GRH and IPoIB adds a 4 byte
-	 * header.  So we need 4 more bytes to get to 48 and align the
-	 * IP header to a multiple of 16.
+	 * the IP header will be at IPOIP_HARD_LEN + IB_GRH_BYTES, that is
+	 * 64 bytes aligned
 	 */
-	skb_reserve(skb, 4);
+	skb_reserve(skb, sizeof(struct ipoib_pseudo_header));
 
 	mapping = priv->rx_ring[id].mapping;
 	mapping[0] = ib_dma_map_single(priv->ca, skb->data, buf_size,
@@ -193,6 +215,8 @@ static struct sk_buff *ipoib_alloc_rx_skb(struct net_device *dev, int id)
 
 partial_error:
 	ib_dma_unmap_single(priv->ca, mapping[0], buf_size, DMA_FROM_DEVICE);
+	priv->rx_ring[id].skb = skb;
+	return skb;
 error:
 	dev_kfree_skb_any(skb);
 	return NULL;
@@ -223,6 +247,7 @@ static void ipoib_ib_handle_rx_wc(struct net_device *dev, struct ib_wc *wc)
 	unsigned int wr_id = wc->wr_id & ~IPOIB_OP_RECV;
 	struct sk_buff *skb;
 	u64 mapping[IPOIB_UD_RX_SG];
+	union ib_gid *dgid;
 
 	ipoib_dbg_data(priv, "recv completion: id %d, status: %d\n",
 		       wr_id, wc->status);
@@ -271,13 +296,26 @@ static void ipoib_ib_handle_rx_wc(struct net_device *dev, struct ib_wc *wc)
 	ipoib_ud_dma_unmap_rx(priv, mapping);
 	ipoib_ud_skb_put_frags(priv, skb, wc->byte_len);
 
+	skb_put(skb, wc->byte_len);
+
+	/* First byte of dgid signals multicast when 0xff */
+	dgid = &((struct ib_grh *)skb->data)->dgid;
+
+	if (!(wc->wc_flags & IB_WC_GRH) || dgid->raw[0] != 0xff)
+		skb->pkt_type = PACKET_HOST;
+	else if (memcmp(dgid, dev->broadcast + 4, sizeof(union ib_gid)) == 0)
+		skb->pkt_type = PACKET_BROADCAST;
+	else
+		skb->pkt_type = PACKET_MULTICAST;
+
 	skb_pull(skb, IB_GRH_BYTES);
 
 	skb->protocol = ((struct ipoib_header *) skb->data)->proto;
-	skb_reset_mac_header(skb);
-	skb_pull(skb, IPOIB_ENCAP_LEN);
+	skb_add_pseudo_hdr(skb);
 
 	dev->last_rx = jiffies;
+	skb->truesize = SKB_TRUESIZE(skb->len);
+
 	++dev->stats.rx_packets;
 	dev->stats.rx_bytes += skb->len;
 
@@ -292,6 +330,11 @@ static void ipoib_ib_handle_rx_wc(struct net_device *dev, struct ib_wc *wc)
 		lro_receive_skb(&priv->lro.lro_mgr, skb, NULL);
 	else
 		netif_receive_skb(skb);
+	if ((dev->features & NETIF_F_RXCSUM) &&
+			likely(wc->wc_flags & IB_WC_IP_CSUM_OK))
+		skb->ip_summed = CHECKSUM_UNNECESSARY;
+
+	napi_gro_receive(&priv->napi, skb);
 
 repost:
 	if (unlikely(ipoib_ib_post_receive(dev, wr_id)))
@@ -301,6 +344,7 @@ repost:
 
 static int ipoib_dma_map_tx(struct ib_device *ca,
 			    struct ipoib_tx_buf *tx_req)
+int ipoib_dma_map_tx(struct ib_device *ca, struct ipoib_tx_buf *tx_req)
 {
 	struct sk_buff *skb = tx_req->skb;
 	u64 *mapping = tx_req->mapping;
@@ -321,6 +365,10 @@ static int ipoib_dma_map_tx(struct ib_device *ca,
 		skb_frag_t *frag = &skb_shinfo(skb)->frags[i];
 		mapping[i + off] = ib_dma_map_page(ca, frag->page,
 						 frag->page_offset, frag->size,
+		const skb_frag_t *frag = &skb_shinfo(skb)->frags[i];
+		mapping[i + off] = ib_dma_map_page(ca,
+						 skb_frag_page(frag),
+						 frag->page_offset, skb_frag_size(frag),
 						 DMA_TO_DEVICE);
 		if (unlikely(ib_dma_mapping_error(ca, mapping[i + off])))
 			goto partial_error;
@@ -331,6 +379,9 @@ partial_error:
 	for (; i > 0; --i) {
 		skb_frag_t *frag = &skb_shinfo(skb)->frags[i - 1];
 		ib_dma_unmap_page(ca, mapping[i - !off], frag->size, DMA_TO_DEVICE);
+		const skb_frag_t *frag = &skb_shinfo(skb)->frags[i - 1];
+
+		ib_dma_unmap_page(ca, mapping[i - !off], skb_frag_size(frag), DMA_TO_DEVICE);
 	}
 
 	if (off)
@@ -341,6 +392,8 @@ partial_error:
 
 static void ipoib_dma_unmap_tx(struct ib_device *ca,
 			       struct ipoib_tx_buf *tx_req)
+void ipoib_dma_unmap_tx(struct ipoib_dev_priv *priv,
+			struct ipoib_tx_buf *tx_req)
 {
 	struct sk_buff *skb = tx_req->skb;
 	u64 *mapping = tx_req->mapping;
@@ -349,6 +402,8 @@ static void ipoib_dma_unmap_tx(struct ib_device *ca,
 
 	if (skb_headlen(skb)) {
 		ib_dma_unmap_single(ca, mapping[0], skb_headlen(skb), DMA_TO_DEVICE);
+		ib_dma_unmap_single(priv->ca, mapping[0], skb_headlen(skb),
+				    DMA_TO_DEVICE);
 		off = 1;
 	} else
 		off = 0;
@@ -358,6 +413,58 @@ static void ipoib_dma_unmap_tx(struct ib_device *ca,
 		ib_dma_unmap_page(ca, mapping[i + off], frag->size,
 				  DMA_TO_DEVICE);
 	}
+}
+
+		const skb_frag_t *frag = &skb_shinfo(skb)->frags[i];
+
+		ib_dma_unmap_page(priv->ca, mapping[i + off],
+				  skb_frag_size(frag), DMA_TO_DEVICE);
+	}
+}
+
+/*
+ * As the result of a completion error the QP Can be transferred to SQE states.
+ * The function checks if the (send)QP is in SQE state and
+ * moves it back to RTS state, that in order to have it functional again.
+ */
+static void ipoib_qp_state_validate_work(struct work_struct *work)
+{
+	struct ipoib_qp_state_validate *qp_work =
+		container_of(work, struct ipoib_qp_state_validate, work);
+
+	struct ipoib_dev_priv *priv = qp_work->priv;
+	struct ib_qp_attr qp_attr;
+	struct ib_qp_init_attr query_init_attr;
+	int ret;
+
+	ret = ib_query_qp(priv->qp, &qp_attr, IB_QP_STATE, &query_init_attr);
+	if (ret) {
+		ipoib_warn(priv, "%s: Failed to query QP ret: %d\n",
+			   __func__, ret);
+		goto free_res;
+	}
+	pr_info("%s: QP: 0x%x is in state: %d\n",
+		__func__, priv->qp->qp_num, qp_attr.qp_state);
+
+	/* currently support only in SQE->RTS transition*/
+	if (qp_attr.qp_state == IB_QPS_SQE) {
+		qp_attr.qp_state = IB_QPS_RTS;
+
+		ret = ib_modify_qp(priv->qp, &qp_attr, IB_QP_STATE);
+		if (ret) {
+			pr_warn("failed(%d) modify QP:0x%x SQE->RTS\n",
+				ret, priv->qp->qp_num);
+			goto free_res;
+		}
+		pr_info("%s: QP: 0x%x moved from IB_QPS_SQE to IB_QPS_RTS\n",
+			__func__, priv->qp->qp_num);
+	} else {
+		pr_warn("QP (%d) will stay in state: %d\n",
+			priv->qp->qp_num, qp_attr.qp_state);
+	}
+
+free_res:
+	kfree(qp_work);
 }
 
 static void ipoib_ib_handle_tx_wc(struct net_device *dev, struct ib_wc *wc)
@@ -378,6 +485,7 @@ static void ipoib_ib_handle_tx_wc(struct net_device *dev, struct ib_wc *wc)
 	tx_req = &priv->tx_ring[wr_id];
 
 	ipoib_dma_unmap_tx(priv->ca, tx_req);
+	ipoib_dma_unmap_tx(priv, tx_req);
 
 	++dev->stats.tx_packets;
 	dev->stats.tx_bytes += tx_req->skb->len;
@@ -395,6 +503,22 @@ static void ipoib_ib_handle_tx_wc(struct net_device *dev, struct ib_wc *wc)
 		ipoib_warn(priv, "failed send event "
 			   "(status=%d, wrid=%d vend_err %x)\n",
 			   wc->status, wr_id, wc->vendor_err);
+	    wc->status != IB_WC_WR_FLUSH_ERR) {
+		struct ipoib_qp_state_validate *qp_work;
+		ipoib_warn(priv, "failed send event "
+			   "(status=%d, wrid=%d vend_err %x)\n",
+			   wc->status, wr_id, wc->vendor_err);
+		qp_work = kzalloc(sizeof(*qp_work), GFP_ATOMIC);
+		if (!qp_work) {
+			ipoib_warn(priv, "%s Failed alloc ipoib_qp_state_validate for qp: 0x%x\n",
+				   __func__, priv->qp->qp_num);
+			return;
+		}
+
+		INIT_WORK(&qp_work->work, ipoib_qp_state_validate_work);
+		qp_work->priv = priv;
+		queue_work(priv->wq, &qp_work->work);
+	}
 }
 
 static int poll_tx(struct ipoib_dev_priv *priv)
@@ -451,6 +575,11 @@ poll_more:
 					      IB_CQ_NEXT_COMP |
 					      IB_CQ_REPORT_MISSED_EVENTS)) &&
 		    netif_rx_reschedule(dev, napi))
+		napi_complete(napi);
+		if (unlikely(ib_req_notify_cq(priv->recv_cq,
+					      IB_CQ_NEXT_COMP |
+					      IB_CQ_REPORT_MISSED_EVENTS)) &&
+		    napi_reschedule(napi))
 			goto poll_more;
 	}
 
@@ -463,6 +592,7 @@ void ipoib_ib_completion(struct ib_cq *cq, void *dev_ptr)
 	struct ipoib_dev_priv *priv = netdev_priv(dev);
 
 	netif_rx_schedule(dev, &priv->napi);
+	napi_schedule(&priv->napi);
 }
 
 static void drain_tx_cq(struct net_device *dev)
@@ -471,6 +601,8 @@ static void drain_tx_cq(struct net_device *dev)
 	unsigned long flags;
 
 	spin_lock_irqsave(&priv->tx_lock, flags);
+
+	netif_tx_lock(dev);
 	while (poll_tx(priv))
 		; /* nothing */
 
@@ -478,11 +610,15 @@ static void drain_tx_cq(struct net_device *dev)
 		mod_timer(&priv->poll_timer, jiffies + 1);
 
 	spin_unlock_irqrestore(&priv->tx_lock, flags);
+	netif_tx_unlock(dev);
 }
 
 void ipoib_send_comp_handler(struct ib_cq *cq, void *dev_ptr)
 {
 	drain_tx_cq((struct net_device *)dev_ptr);
+	struct ipoib_dev_priv *priv = netdev_priv(dev_ptr);
+
+	mod_timer(&priv->poll_timer, jiffies);
 }
 
 static inline int post_send(struct ipoib_dev_priv *priv,
@@ -523,6 +659,23 @@ static inline int post_send(struct ipoib_dev_priv *priv,
 		priv->tx_wr.opcode	 = IB_WR_SEND;
 
 	return ib_post_send(priv->qp, &priv->tx_wr, &bad_wr);
+	struct sk_buff *skb = tx_req->skb;
+
+	ipoib_build_sge(priv, tx_req);
+
+	priv->tx_wr.wr.wr_id	= wr_id;
+	priv->tx_wr.remote_qpn	= qpn;
+	priv->tx_wr.ah		= address;
+
+	if (head) {
+		priv->tx_wr.mss		= skb_shinfo(skb)->gso_size;
+		priv->tx_wr.header	= head;
+		priv->tx_wr.hlen	= hlen;
+		priv->tx_wr.wr.opcode	= IB_WR_LSO;
+	} else
+		priv->tx_wr.wr.opcode	= IB_WR_SEND;
+
+	return ib_post_send(priv->qp, &priv->tx_wr.wr, &bad_wr);
 }
 
 void ipoib_send(struct net_device *dev, struct sk_buff *skb,
@@ -531,6 +684,7 @@ void ipoib_send(struct net_device *dev, struct sk_buff *skb,
 	struct ipoib_dev_priv *priv = netdev_priv(dev);
 	struct ipoib_tx_buf *tx_req;
 	int hlen;
+	int hlen, rc;
 	void *phead;
 
 	if (skb_is_gso(skb)) {
@@ -578,6 +732,9 @@ void ipoib_send(struct net_device *dev, struct sk_buff *skb,
 		priv->tx_wr.send_flags |= IB_SEND_IP_CSUM;
 	else
 		priv->tx_wr.send_flags &= ~IB_SEND_IP_CSUM;
+		priv->tx_wr.wr.send_flags |= IB_SEND_IP_CSUM;
+	else
+		priv->tx_wr.wr.send_flags &= ~IB_SEND_IP_CSUM;
 
 	if (++priv->tx_outstanding == ipoib_sendq_size) {
 		ipoib_dbg(priv, "TX ring full, stopping kernel net queue\n");
@@ -592,6 +749,16 @@ void ipoib_send(struct net_device *dev, struct sk_buff *skb,
 		++dev->stats.tx_errors;
 		--priv->tx_outstanding;
 		ipoib_dma_unmap_tx(priv->ca, tx_req);
+	skb_orphan(skb);
+	skb_dst_drop(skb);
+
+	rc = post_send(priv, priv->tx_head & (ipoib_sendq_size - 1),
+		       address->ah, qpn, tx_req, phead, hlen);
+	if (unlikely(rc)) {
+		ipoib_warn(priv, "post_send failed, error %d\n", rc);
+		++dev->stats.tx_errors;
+		--priv->tx_outstanding;
+		ipoib_dma_unmap_tx(priv, tx_req);
 		dev_kfree_skb_any(skb);
 		if (netif_queue_stopped(dev))
 			netif_wake_queue(dev);
@@ -617,6 +784,11 @@ static void __ipoib_reap_ah(struct net_device *dev)
 
 	spin_lock_irq(&priv->tx_lock);
 	spin_lock(&priv->lock);
+	unsigned long flags;
+
+	netif_tx_lock_bh(dev);
+	spin_lock_irqsave(&priv->lock, flags);
+
 	list_for_each_entry_safe(ah, tah, &priv->dead_ahs, list)
 		if ((int) priv->tx_tail - (int) ah->last_send >= 0) {
 			list_del(&ah->list);
@@ -625,6 +797,9 @@ static void __ipoib_reap_ah(struct net_device *dev)
 		}
 	spin_unlock(&priv->lock);
 	spin_unlock_irq(&priv->tx_lock);
+
+	spin_unlock_irqrestore(&priv->lock, flags);
+	netif_tx_unlock_bh(dev);
 }
 
 void ipoib_reap_ah(struct work_struct *work)
@@ -638,6 +813,27 @@ void ipoib_reap_ah(struct work_struct *work)
 	if (!test_bit(IPOIB_STOP_REAPER, &priv->flags))
 		queue_delayed_work(ipoib_workqueue, &priv->ah_reap_task,
 				   round_jiffies_relative(HZ));
+}
+
+		queue_delayed_work(priv->wq, &priv->ah_reap_task,
+				   round_jiffies_relative(HZ));
+}
+
+static void ipoib_flush_ah(struct net_device *dev)
+{
+	struct ipoib_dev_priv *priv = netdev_priv(dev);
+
+	cancel_delayed_work(&priv->ah_reap_task);
+	flush_workqueue(priv->wq);
+	ipoib_reap_ah(&priv->ah_reap_task.work);
+}
+
+static void ipoib_stop_ah(struct net_device *dev)
+{
+	struct ipoib_dev_priv *priv = netdev_priv(dev);
+
+	set_bit(IPOIB_STOP_REAPER, &priv->flags);
+	ipoib_flush_ah(dev);
 }
 
 static void ipoib_ib_tx_timer_func(unsigned long ctx)
@@ -656,6 +852,13 @@ int ipoib_ib_dev_open(struct net_device *dev)
 		return -1;
 	}
 	set_bit(IPOIB_PKEY_ASSIGNED, &priv->flags);
+	ipoib_pkey_dev_check_presence(dev);
+
+	if (!test_bit(IPOIB_PKEY_ASSIGNED, &priv->flags)) {
+		ipoib_warn(priv, "P_Key 0x%04x is %s\n", priv->pkey,
+			   (!(priv->pkey & 0x7fff) ? "Invalid" : "not found"));
+		return -1;
+	}
 
 	ret = ipoib_init_qp(dev);
 	if (ret) {
@@ -668,6 +871,7 @@ int ipoib_ib_dev_open(struct net_device *dev)
 		ipoib_warn(priv, "ipoib_ib_post_receives returned %d\n", ret);
 		ipoib_ib_dev_stop(dev, 1);
 		return -1;
+		goto dev_stop;
 	}
 
 	ret = ipoib_cm_dev_open(dev);
@@ -696,6 +900,31 @@ static void ipoib_pkey_dev_check_presence(struct net_device *dev)
 	u16 pkey_index = 0;
 
 	if (ib_find_pkey(priv->ca, priv->port, priv->pkey, &pkey_index))
+		goto dev_stop;
+	}
+
+	clear_bit(IPOIB_STOP_REAPER, &priv->flags);
+	queue_delayed_work(priv->wq, &priv->ah_reap_task,
+			   round_jiffies_relative(HZ));
+
+	if (!test_and_set_bit(IPOIB_FLAG_INITIALIZED, &priv->flags))
+		napi_enable(&priv->napi);
+
+	return 0;
+dev_stop:
+	if (!test_and_set_bit(IPOIB_FLAG_INITIALIZED, &priv->flags))
+		napi_enable(&priv->napi);
+	ipoib_ib_dev_stop(dev);
+	return -1;
+}
+
+void ipoib_pkey_dev_check_presence(struct net_device *dev)
+{
+	struct ipoib_dev_priv *priv = netdev_priv(dev);
+
+	if (!(priv->pkey & 0x7fff) ||
+	    ib_find_pkey(priv->ca, priv->port, priv->pkey,
+			 &priv->pkey_index))
 		clear_bit(IPOIB_PKEY_ASSIGNED, &priv->flags);
 	else
 		set_bit(IPOIB_PKEY_ASSIGNED, &priv->flags);
@@ -718,6 +947,7 @@ int ipoib_ib_dev_up(struct net_device *dev)
 }
 
 int ipoib_ib_dev_down(struct net_device *dev, int flush)
+int ipoib_ib_dev_down(struct net_device *dev)
 {
 	struct ipoib_dev_priv *priv = netdev_priv(dev);
 
@@ -737,6 +967,7 @@ int ipoib_ib_dev_down(struct net_device *dev, int flush)
 	}
 
 	ipoib_mcast_stop_thread(dev, flush);
+	ipoib_mcast_stop_thread(dev);
 	ipoib_mcast_dev_flush(dev);
 
 	ipoib_flush_paths(dev);
@@ -761,6 +992,14 @@ void ipoib_drain_cq(struct net_device *dev)
 {
 	struct ipoib_dev_priv *priv = netdev_priv(dev);
 	int i, n;
+
+	/*
+	 * We call completion handling routines that expect to be
+	 * called from the BH-disabled NAPI poll context, so disable
+	 * BHs here too.
+	 */
+	local_bh_disable();
+
 	do {
 		n = ib_poll_cq(priv->recv_cq, IPOIB_NUM_WC, priv->ibwc);
 		for (i = 0; i < n; ++i) {
@@ -787,6 +1026,11 @@ void ipoib_drain_cq(struct net_device *dev)
 }
 
 int ipoib_ib_dev_stop(struct net_device *dev, int flush)
+
+	local_bh_enable();
+}
+
+int ipoib_ib_dev_stop(struct net_device *dev)
 {
 	struct ipoib_dev_priv *priv = netdev_priv(dev);
 	struct ib_qp_attr qp_attr;
@@ -795,6 +1039,8 @@ int ipoib_ib_dev_stop(struct net_device *dev, int flush)
 	int i;
 
 	clear_bit(IPOIB_FLAG_INITIALIZED, &priv->flags);
+	if (test_and_clear_bit(IPOIB_FLAG_INITIALIZED, &priv->flags))
+		napi_disable(&priv->napi);
 
 	ipoib_cm_dev_stop(dev);
 
@@ -822,6 +1068,7 @@ int ipoib_ib_dev_stop(struct net_device *dev, int flush)
 				tx_req = &priv->tx_ring[priv->tx_tail &
 							(ipoib_sendq_size - 1)];
 				ipoib_dma_unmap_tx(priv->ca, tx_req);
+				ipoib_dma_unmap_tx(priv, tx_req);
 				dev_kfree_skb_any(tx_req->skb);
 				++priv->tx_tail;
 				--priv->tx_outstanding;
@@ -873,6 +1120,7 @@ timeout:
 
 		msleep(1);
 	}
+	ipoib_flush_ah(dev);
 
 	ib_req_notify_cq(priv->recv_cq, IB_CQ_NEXT_COMP);
 
@@ -892,6 +1140,9 @@ int ipoib_ib_dev_init(struct net_device *dev, struct ib_device *ca, int port)
 		return -ENODEV;
 	}
 
+	setup_timer(&priv->poll_timer, ipoib_ib_tx_timer_func,
+		    (unsigned long) dev);
+
 	if (dev->flags & IFF_UP) {
 		if (ipoib_ib_dev_open(dev)) {
 			ipoib_transport_dev_cleanup(dev);
@@ -910,6 +1161,64 @@ static void __ipoib_ib_dev_flush(struct ipoib_dev_priv *priv,
 	u16 new_index;
 
 	mutex_lock(&priv->vlan_mutex);
+/*
+ * Takes whatever value which is in pkey index 0 and updates priv->pkey
+ * returns 0 if the pkey value was changed.
+ */
+static inline int update_parent_pkey(struct ipoib_dev_priv *priv)
+{
+	int result;
+	u16 prev_pkey;
+
+	prev_pkey = priv->pkey;
+	result = ib_query_pkey(priv->ca, priv->port, 0, &priv->pkey);
+	if (result) {
+		ipoib_warn(priv, "ib_query_pkey port %d failed (ret = %d)\n",
+			   priv->port, result);
+		return result;
+	}
+
+	priv->pkey |= 0x8000;
+
+	if (prev_pkey != priv->pkey) {
+		ipoib_dbg(priv, "pkey changed from 0x%x to 0x%x\n",
+			  prev_pkey, priv->pkey);
+		/*
+		 * Update the pkey in the broadcast address, while making sure to set
+		 * the full membership bit, so that we join the right broadcast group.
+		 */
+		priv->dev->broadcast[8] = priv->pkey >> 8;
+		priv->dev->broadcast[9] = priv->pkey & 0xff;
+		return 0;
+	}
+
+	return 1;
+}
+/*
+ * returns 0 if pkey value was found in a different slot.
+ */
+static inline int update_child_pkey(struct ipoib_dev_priv *priv)
+{
+	u16 old_index = priv->pkey_index;
+
+	priv->pkey_index = 0;
+	ipoib_pkey_dev_check_presence(priv->dev);
+
+	if (test_bit(IPOIB_PKEY_ASSIGNED, &priv->flags) &&
+	    (old_index == priv->pkey_index))
+		return 1;
+	return 0;
+}
+
+static void __ipoib_ib_dev_flush(struct ipoib_dev_priv *priv,
+				enum ipoib_flush_level level,
+				int nesting)
+{
+	struct ipoib_dev_priv *cpriv;
+	struct net_device *dev = priv->dev;
+	int result;
+
+	down_read_nested(&priv->vlan_rwsem, nesting);
 
 	/*
 	 * Flush any child interfaces too -- they might be up even if
@@ -921,11 +1230,24 @@ static void __ipoib_ib_dev_flush(struct ipoib_dev_priv *priv,
 	mutex_unlock(&priv->vlan_mutex);
 
 	if (!test_bit(IPOIB_FLAG_INITIALIZED, &priv->flags)) {
+		__ipoib_ib_dev_flush(cpriv, level, nesting + 1);
+
+	up_read(&priv->vlan_rwsem);
+
+	if (!test_bit(IPOIB_FLAG_INITIALIZED, &priv->flags) &&
+	    level != IPOIB_FLUSH_HEAVY) {
 		ipoib_dbg(priv, "Not flushing - IPOIB_FLAG_INITIALIZED not set.\n");
 		return;
 	}
 
 	if (!test_bit(IPOIB_FLAG_ADMIN_UP, &priv->flags)) {
+		/* interface is down. update pkey and leave. */
+		if (level == IPOIB_FLUSH_HEAVY) {
+			if (!test_bit(IPOIB_FLAG_SUBINTERFACE, &priv->flags))
+				update_parent_pkey(priv);
+			else
+				update_child_pkey(priv);
+		}
 		ipoib_dbg(priv, "Not flushing - IPOIB_FLAG_ADMIN_UP not set.\n");
 		return;
 	}
@@ -946,10 +1268,36 @@ static void __ipoib_ib_dev_flush(struct ipoib_dev_priv *priv,
 			return;
 		}
 		priv->pkey_index = new_index;
+		/* child devices chase their origin pkey value, while non-child
+		 * (parent) devices should always takes what present in pkey index 0
+		 */
+		if (test_bit(IPOIB_FLAG_SUBINTERFACE, &priv->flags)) {
+			result = update_child_pkey(priv);
+			if (result) {
+				/* restart QP only if P_Key index is changed */
+				ipoib_dbg(priv, "Not flushing - P_Key index not changed.\n");
+				return;
+			}
+
+		} else {
+			result = update_parent_pkey(priv);
+			/* restart QP only if P_Key value changed */
+			if (result) {
+				ipoib_dbg(priv, "Not flushing - P_Key value not changed.\n");
+				return;
+			}
+		}
 	}
 
 	if (level == IPOIB_FLUSH_LIGHT) {
+		int oper_up;
 		ipoib_mark_paths_invalid(dev);
+		/* Set IPoIB operation as down to prevent races between:
+		 * the flush flow which leaves MCG and on the fly joins
+		 * which can happen during that time. mcast restart task
+		 * should deal with join requests we missed.
+		 */
+		oper_up = test_and_clear_bit(IPOIB_FLAG_OPER_UP, &priv->flags);
 		ipoib_mcast_dev_flush(dev);
 	}
 
@@ -959,6 +1307,23 @@ static void __ipoib_ib_dev_flush(struct ipoib_dev_priv *priv,
 	if (level == IPOIB_FLUSH_HEAVY) {
 		ipoib_ib_dev_stop(dev, 0);
 		ipoib_ib_dev_open(dev);
+		if (oper_up)
+			set_bit(IPOIB_FLAG_OPER_UP, &priv->flags);
+		ipoib_flush_ah(dev);
+	}
+
+	if (level >= IPOIB_FLUSH_NORMAL)
+		ipoib_ib_dev_down(dev);
+
+	if (level == IPOIB_FLUSH_HEAVY) {
+		if (test_bit(IPOIB_FLAG_INITIALIZED, &priv->flags))
+			ipoib_ib_dev_stop(dev);
+
+		if (ipoib_ib_dev_open(dev))
+			return;
+
+		if (netif_queue_stopped(dev))
+			netif_start_queue(dev);
 	}
 
 	/*
@@ -978,6 +1343,7 @@ void ipoib_ib_dev_flush_light(struct work_struct *work)
 		container_of(work, struct ipoib_dev_priv, flush_light);
 
 	__ipoib_ib_dev_flush(priv, IPOIB_FLUSH_LIGHT);
+	__ipoib_ib_dev_flush(priv, IPOIB_FLUSH_LIGHT, 0);
 }
 
 void ipoib_ib_dev_flush_normal(struct work_struct *work)
@@ -986,6 +1352,7 @@ void ipoib_ib_dev_flush_normal(struct work_struct *work)
 		container_of(work, struct ipoib_dev_priv, flush_normal);
 
 	__ipoib_ib_dev_flush(priv, IPOIB_FLUSH_NORMAL);
+	__ipoib_ib_dev_flush(priv, IPOIB_FLUSH_NORMAL, 0);
 }
 
 void ipoib_ib_dev_flush_heavy(struct work_struct *work)
@@ -994,6 +1361,9 @@ void ipoib_ib_dev_flush_heavy(struct work_struct *work)
 		container_of(work, struct ipoib_dev_priv, flush_heavy);
 
 	__ipoib_ib_dev_flush(priv, IPOIB_FLUSH_HEAVY);
+	rtnl_lock();
+	__ipoib_ib_dev_flush(priv, IPOIB_FLUSH_HEAVY, 0);
+	rtnl_unlock();
 }
 
 void ipoib_ib_dev_cleanup(struct net_device *dev)
@@ -1059,3 +1429,24 @@ int ipoib_pkey_dev_delay_open(struct net_device *dev)
 
 	return 0;
 }
+	/*
+	 * We must make sure there are no more (path) completions
+	 * that may wish to touch priv fields that are no longer valid
+	 */
+	ipoib_flush_paths(dev);
+
+	ipoib_mcast_stop_thread(dev);
+	ipoib_mcast_dev_flush(dev);
+
+	/*
+	 * All of our ah references aren't free until after
+	 * ipoib_mcast_dev_flush(), ipoib_flush_paths, and
+	 * the neighbor garbage collection is stopped and reaped.
+	 * That should all be done now, so make a final ah flush.
+	 */
+	ipoib_stop_ah(dev);
+
+	ipoib_transport_dev_cleanup(dev);
+}
+
+

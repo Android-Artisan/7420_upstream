@@ -8,6 +8,9 @@
 #include <linux/tty_flip.h>
 #include "chan_kern.h"
 #include "os.h"
+#include "chan.h"
+#include <os.h>
+#include <irq_kern.h>
 
 #ifdef CONFIG_NOCONFIG_CHAN
 static void *not_configged_init(char *str, int device,
@@ -152,6 +155,18 @@ void chan_enable_winch(struct list_head *chans, struct tty_struct *tty)
 			return;
 		}
 	}
+void chan_enable_winch(struct chan *chan, struct tty_port *port)
+{
+	if (chan && chan->primary && chan->ops->winch)
+		register_winch(chan->fd, port);
+}
+
+static void line_timer_cb(struct work_struct *work)
+{
+	struct line *line = container_of(work, struct line, task.work);
+
+	if (!line->throttled)
+		chan_interrupt(line, line->driver->read_irq);
 }
 
 int enable_chan(struct line *line)
@@ -159,6 +174,8 @@ int enable_chan(struct line *line)
 	struct list_head *ele;
 	struct chan *chan;
 	int err;
+
+	INIT_DELAYED_WORK(&line->task, line_timer_cb);
 
 	list_for_each(ele, &line->chan_list) {
 		chan = list_entry(ele, struct chan, list);
@@ -184,6 +201,7 @@ int enable_chan(struct line *line)
 
  out_close:
 	close_chan(&line->chan_list, 0);
+	close_chan(line);
 	return err;
 }
 
@@ -214,6 +232,10 @@ void free_irqs(void)
 			free_irq(chan->line->driver->read_irq, chan);
 		if (chan->output)
 			free_irq(chan->line->driver->write_irq, chan);
+		if (chan->input && chan->enabled)
+			um_free_irq(chan->line->driver->read_irq, chan);
+		if (chan->output && chan->enabled)
+			um_free_irq(chan->line->driver->write_irq, chan);
 		chan->enabled = 0;
 	}
 }
@@ -235,6 +257,10 @@ static void close_one_chan(struct chan *chan, int delay_free_irq)
 			free_irq(chan->line->driver->read_irq, chan);
 		if (chan->output)
 			free_irq(chan->line->driver->write_irq, chan);
+		if (chan->input && chan->enabled)
+			um_free_irq(chan->line->driver->read_irq, chan);
+		if (chan->output && chan->enabled)
+			um_free_irq(chan->line->driver->write_irq, chan);
 		chan->enabled = 0;
 	}
 	if (chan->ops->close != NULL)
@@ -245,6 +271,7 @@ static void close_one_chan(struct chan *chan, int delay_free_irq)
 }
 
 void close_chan(struct list_head *chans, int delay_free_irq)
+void close_chan(struct line *line)
 {
 	struct chan *chan;
 
@@ -305,6 +332,36 @@ int write_chan(struct list_head *chans, const char *buf, int len,
 			if ((ret == -EAGAIN) || ((ret >= 0) && (ret < len)))
 				reactivate_fd(chan->fd, write_irq);
 		}
+	list_for_each_entry_reverse(chan, &line->chan_list, list) {
+		close_one_chan(chan, 0);
+	}
+}
+
+void deactivate_chan(struct chan *chan, int irq)
+{
+	if (chan && chan->enabled)
+		deactivate_fd(chan->fd, irq);
+}
+
+void reactivate_chan(struct chan *chan, int irq)
+{
+	if (chan && chan->enabled)
+		reactivate_fd(chan->fd, irq);
+}
+
+int write_chan(struct chan *chan, const char *buf, int len,
+	       int write_irq)
+{
+	int n, ret = 0;
+
+	if (len == 0 || !chan || !chan->ops->write)
+		return 0;
+
+	n = chan->ops->write(chan->fd, buf, len, chan->data);
+	if (chan->primary) {
+		ret = n;
+		if ((ret == -EAGAIN) || ((ret >= 0) && (ret < len)))
+			reactivate_fd(chan->fd, write_irq);
 	}
 	return ret;
 }
@@ -324,6 +381,16 @@ int console_write_chan(struct list_head *chans, const char *buf, int len)
 		if (chan->primary)
 			ret = n;
 	}
+int console_write_chan(struct chan *chan, const char *buf, int len)
+{
+	int n, ret = 0;
+
+	if (!chan || !chan->ops->console_write)
+		return 0;
+
+	n = chan->ops->console_write(chan->fd, buf, len);
+	if (chan->primary)
+		ret = n;
 	return ret;
 }
 
@@ -354,6 +421,24 @@ int chan_window_size(struct list_head *chans, unsigned short *rows_out,
 			return chan->ops->window_size(chan->fd, chan->data,
 						      rows_out, cols_out);
 		}
+int chan_window_size(struct line *line, unsigned short *rows_out,
+		      unsigned short *cols_out)
+{
+	struct chan *chan;
+
+	chan = line->chan_in;
+	if (chan && chan->primary) {
+		if (chan->ops->window_size == NULL)
+			return 0;
+		return chan->ops->window_size(chan->fd, chan->data,
+					      rows_out, cols_out);
+	}
+	chan = line->chan_out;
+	if (chan && chan->primary) {
+		if (chan->ops->window_size == NULL)
+			return 0;
+		return chan->ops->window_size(chan->fd, chan->data,
+					      rows_out, cols_out);
 	}
 	return 0;
 }
@@ -363,6 +448,11 @@ static void free_one_chan(struct chan *chan, int delay_free_irq)
 	list_del(&chan->list);
 
 	close_one_chan(chan, delay_free_irq);
+static void free_one_chan(struct chan *chan)
+{
+	list_del(&chan->list);
+
+	close_one_chan(chan, 0);
 
 	if (chan->ops->free != NULL)
 		(*chan->ops->free)(chan->data);
@@ -373,6 +463,7 @@ static void free_one_chan(struct chan *chan, int delay_free_irq)
 }
 
 static void free_chan(struct list_head *chans, int delay_free_irq)
+static void free_chan(struct list_head *chans)
 {
 	struct list_head *ele, *next;
 	struct chan *chan;
@@ -380,6 +471,7 @@ static void free_chan(struct list_head *chans, int delay_free_irq)
 	list_for_each_safe(ele, next, chans) {
 		chan = list_entry(ele, struct chan, list);
 		free_one_chan(chan, delay_free_irq);
+		free_one_chan(chan);
 	}
 }
 
@@ -444,6 +536,15 @@ int chan_config_string(struct list_head *chans, char *str, int size,
 		if (chan->output)
 			out = chan;
 	}
+int chan_config_string(struct line *line, char *str, int size,
+		       char **error_out)
+{
+	struct chan *in = line->chan_in, *out = line->chan_out;
+
+	if (in && !in->primary)
+		in = NULL;
+	if (out && !out->primary)
+		out = NULL;
 
 	return chan_pair_config_string(in, out, str, size, error_out);
 }
@@ -552,6 +653,18 @@ int parse_chan_pair(char *str, struct line *line, int device,
 		INIT_LIST_HEAD(chans);
 	}
 
+	struct chan *new;
+	char *in, *out;
+
+	if (!list_empty(chans)) {
+		line->chan_in = line->chan_out = NULL;
+		free_chan(chans);
+		INIT_LIST_HEAD(chans);
+	}
+
+	if (!str)
+		return 0;
+
 	out = strchr(str, ',');
 	if (out != NULL) {
 		in = str;
@@ -563,6 +676,7 @@ int parse_chan_pair(char *str, struct line *line, int device,
 
 		new->input = 1;
 		list_add(&new->list, chans);
+		line->chan_in = new;
 
 		new = parse_chan(line, out, device, opts, error_out);
 		if (new == NULL)
@@ -570,6 +684,7 @@ int parse_chan_pair(char *str, struct line *line, int device,
 
 		list_add(&new->list, chans);
 		new->output = 1;
+		line->chan_out = new;
 	}
 	else {
 		new = parse_chan(line, str, device, opts, error_out);
@@ -579,6 +694,7 @@ int parse_chan_pair(char *str, struct line *line, int device,
 		list_add(&new->list, chans);
 		new->input = 1;
 		new->output = 1;
+		line->chan_in = line->chan_out = new;
 	}
 	return 0;
 }
@@ -620,4 +736,38 @@ void chan_interrupt(struct list_head *chans, struct delayed_work *task,
  out:
 	if (tty)
 		tty_flip_buffer_push(tty);
+void chan_interrupt(struct line *line, int irq)
+{
+	struct tty_port *port = &line->port;
+	struct chan *chan = line->chan_in;
+	int err;
+	char c;
+
+	if (!chan || !chan->ops->read)
+		goto out;
+
+	do {
+		if (!tty_buffer_request_room(port, 1)) {
+			schedule_delayed_work(&line->task, 1);
+			goto out;
+		}
+		err = chan->ops->read(chan->fd, &c, chan->data);
+		if (err > 0)
+			tty_insert_flip_char(port, c, TTY_NORMAL);
+	} while (err > 0);
+
+	if (err == 0)
+		reactivate_fd(chan->fd, irq);
+	if (err == -EIO) {
+		if (chan->primary) {
+			tty_port_tty_hangup(&line->port, false);
+			if (line->chan_out != chan)
+				close_one_chan(line->chan_out, 1);
+		}
+		close_one_chan(chan, 1);
+		if (chan->primary)
+			return;
+	}
+ out:
+	tty_flip_buffer_push(port);
 }

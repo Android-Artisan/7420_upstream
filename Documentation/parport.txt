@@ -15,7 +15,6 @@ using the port).
 
 
 Parport as modules
-==================
 
 If you load the parport code as a module, say
 
@@ -41,6 +40,11 @@ KMod
 
 If you use kmod, you will find it useful to edit /etc/modprobe.conf.
 Here is an example of the lines that need to be added:
+modprobe
+--------
+
+If you use modprobe , you will find it useful to add lines as below to a
+configuration file in /etc/modprobe.d/ directory:.
 
 	alias parport_lowlevel parport_pc
 	options parport_pc io=0x378,0x278 irq=7,auto
@@ -48,6 +52,8 @@ Here is an example of the lines that need to be added:
 KMod will then automatically load parport_pc (with the options
 "io=0x378,0x278 irq=7,auto") whenever a parallel port device driver
 (such as lp) is loaded.
+modprobe will load parport_pc (with the options "io=0x378,0x278 irq=7,auto")
+whenever a parallel port device driver (such as lp) is loaded.
 
 Note that these are example lines only!  You shouldn't in general need
 to specify any options to parport_pc in order to be able to use a
@@ -69,7 +75,6 @@ The probe information is available from files in /proc/sys/dev/parport/.
 
 
 Parport linked into the kernel statically
-=========================================
 
 If you compile the parport code into the kernel, then you can use
 kernel boot parameters to get the same effect.  Add something like the
@@ -85,7 +90,6 @@ it auto-detects.
 
 
 Files in /proc
-==============
 
 If you have configured the /proc filesystem into your kernel, you will
 see a new directory entry: /proc/sys/dev/parport.  In there will be a
@@ -188,7 +192,6 @@ default/*	The defaults for spintime and timeslice. When a new
 		default timeslice.
 
 Device drivers
-==============
 
 Once the parport code is initialised, you can attach device drivers to
 specific ports.  Normally this happens automatically; if the lp driver
@@ -224,7 +227,6 @@ Also:
  * IRQ autoprobing works only for a few port types at the moment.
 
 Reporting printer problems with parport
-=======================================
 
 If you are having problems printing, please go through these steps to
 try to narrow down where the problem area is.

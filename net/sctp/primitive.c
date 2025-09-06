@@ -33,6 +33,12 @@
  *
  * Or submit a bug report through the following website:
  *    http://www.sf.net/projects/lksctp
+ * along with GNU CC; see the file COPYING.  If not, see
+ * <http://www.gnu.org/licenses/>.
+ *
+ * Please send any bug reports or fixes you make to the
+ * email address(es):
+ *    lksctp developers <linux-sctp@vger.kernel.org>
  *
  * Written or modified by:
  *    La Monte H.P. Yarroll <piggy@acm.org>
@@ -50,6 +56,7 @@
 #include <linux/socket.h>
 #include <linux/ip.h>
 #include <linux/time.h> /* For struct timeval */
+#include <linux/gfp.h>
 #include <net/sock.h>
 #include <net/sctp/sctp.h>
 #include <net/sctp/sm.h>
@@ -57,6 +64,7 @@
 #define DECLARE_PRIMITIVE(name) \
 /* This is called in the code as sctp_primitive_ ## name.  */ \
 int sctp_primitive_ ## name(struct sctp_association *asoc, \
+int sctp_primitive_ ## name(struct net *net, struct sctp_association *asoc, \
 			    void *arg) { \
 	int error = 0; \
 	sctp_event_t event_type; sctp_subtype_t subtype; \
@@ -69,6 +77,7 @@ int sctp_primitive_ ## name(struct sctp_association *asoc, \
 	ep = asoc ? asoc->ep : NULL; \
 	\
 	error = sctp_do_sm(event_type, subtype, state, ep, asoc, \
+	error = sctp_do_sm(net, event_type, subtype, state, ep, asoc,	\
 			   arg, GFP_KERNEL); \
 	return error; \
 }

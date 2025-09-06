@@ -17,7 +17,6 @@
 *		modify it under the terms of the GNU General Public License
 *		as published by the Free Software Foundation; either version
 *		2 of the License, or (at your option) any later version.
-* ============================================================================
 * Nov 24, 2000  Nenad Corbic	Updated for 2.4.X kernels
 * Nov 07, 2000  Nenad Corbic	Fixed the Mulit-Port PPP for kernels 2.2.16 and
 *  				greater.

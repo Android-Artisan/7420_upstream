@@ -40,9 +40,7 @@ static struct of_device_id mpc52xx_sram_ids[] __devinitdata = {
 struct bcom_engine *bcom_eng = NULL;
 EXPORT_SYMBOL_GPL(bcom_eng);	/* needed for inline functions */
 
-/* ======================================================================== */
 /* Public and private API                                                   */
-/* ======================================================================== */
 
 /* Private API */
 
@@ -247,9 +245,7 @@ bcom_disable(struct bcom_task *tsk)
 EXPORT_SYMBOL_GPL(bcom_disable);
 
 
-/* ======================================================================== */
 /* Engine init/cleanup                                                      */
-/* ======================================================================== */
 
 /* Function Descriptor table */
 /* this will need to be updated if Freescale changes their task code FDT */
@@ -364,9 +360,7 @@ bcom_engine_cleanup(void)
 }
 
 
-/* ======================================================================== */
 /* OF platform driver                                                       */
-/* ======================================================================== */
 
 static int __devinit
 mpc52xx_bcom_probe(struct of_device *op, const struct of_device_id *match)
@@ -509,9 +503,7 @@ static struct of_platform_driver mpc52xx_bcom_of_platform_driver = {
 };
 
 
-/* ======================================================================== */
 /* Module                                                                   */
-/* ======================================================================== */
 
 static int __init
 mpc52xx_bcom_init(void)

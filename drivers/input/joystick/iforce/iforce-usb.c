@@ -65,6 +65,7 @@ void iforce_usb_xmit(struct iforce *iforce)
 	if ( (n=usb_submit_urb(iforce->out, GFP_ATOMIC)) ) {
 		clear_bit(IFORCE_XMIT_RUNNING, iforce->xmit_flags);
 		warn("usb_submit_urb failed %d\n", n);
+		dev_warn(&iforce->intf->dev, "usb_submit_urb failed %d\n", n);
 	}
 
 	/* The IFORCE_XMIT_RUNNING bit is not cleared here. That's intended.
@@ -76,6 +77,7 @@ void iforce_usb_xmit(struct iforce *iforce)
 static void iforce_usb_irq(struct urb *urb)
 {
 	struct iforce *iforce = urb->context;
+	struct device *dev = &iforce->intf->dev;
 	int status;
 
 	switch (urb->status) {
@@ -91,6 +93,12 @@ static void iforce_usb_irq(struct urb *urb)
 		return;
 	default:
 		dbg("%s - urb has status of: %d", __func__, urb->status);
+		dev_dbg(dev, "%s - urb shutting down with status: %d\n",
+			__func__, urb->status);
+		return;
+	default:
+		dev_dbg(dev, "%s - urb has status of: %d\n",
+			__func__, urb->status);
 		goto exit;
 	}
 
@@ -102,6 +110,8 @@ exit:
 	if (status)
 		err ("%s - usb_submit_urb failed with result %d",
 		     __func__, status);
+		dev_err(dev, "%s - usb_submit_urb failed with result %d\n",
+			__func__, status);
 }
 
 static void iforce_usb_out(struct urb *urb)
@@ -110,6 +120,9 @@ static void iforce_usb_out(struct urb *urb)
 
 	if (urb->status) {
 		dbg("urb->status %d, exiting", urb->status);
+		clear_bit(IFORCE_XMIT_RUNNING, iforce->xmit_flags);
+		dev_dbg(&iforce->intf->dev, "urb->status %d, exiting\n",
+			urb->status);
 		return;
 	}
 
@@ -137,8 +150,16 @@ static int iforce_usb_probe(struct usb_interface *intf,
 
 	interface = intf->cur_altsetting;
 
+	if (interface->desc.bNumEndpoints < 2)
+		return -ENODEV;
+
 	epirq = &interface->endpoint[0].desc;
+	if (!usb_endpoint_is_int_in(epirq))
+		return -ENODEV;
+
 	epout = &interface->endpoint[1].desc;
+	if (!usb_endpoint_is_int_out(epout))
+		return -ENODEV;
 
 	if (!(iforce = kzalloc(sizeof(struct iforce) + 32, GFP_KERNEL)))
 		goto fail;
@@ -154,6 +175,7 @@ static int iforce_usb_probe(struct usb_interface *intf,
 
 	iforce->bus = IFORCE_USB;
 	iforce->usbdev = dev;
+	iforce->intf = intf;
 
 	iforce->cr.bRequestType = USB_TYPE_VENDOR | USB_DIR_IN | USB_RECIP_INTERFACE;
 	iforce->cr.wIndex = 0;
@@ -192,6 +214,13 @@ void iforce_usb_delete(struct iforce* iforce)
 	usb_kill_urb(iforce->irq);
 	usb_kill_urb(iforce->out);
 	usb_kill_urb(iforce->ctrl);
+static void iforce_usb_disconnect(struct usb_interface *intf)
+{
+	struct iforce *iforce = usb_get_intfdata(intf);
+
+	usb_set_intfdata(intf, NULL);
+
+	input_unregister_device(iforce->dev);
 
 	usb_free_urb(iforce->irq);
 	usb_free_urb(iforce->out);
@@ -213,6 +242,8 @@ static void iforce_usb_disconnect(struct usb_interface *intf)
 			kfree(iforce);
 		}
 	}
+
+	kfree(iforce);
 }
 
 static struct usb_device_id iforce_usb_ids [] = {
@@ -224,6 +255,9 @@ static struct usb_device_id iforce_usb_ids [] = {
 	{ USB_DEVICE(0x05ef, 0x8888) },		/* AVB Top Shot FFB Racing Wheel */
 	{ USB_DEVICE(0x061c, 0xc0a4) },         /* ACT LABS Force RS */
 	{ USB_DEVICE(0x06f8, 0x0001) },		/* Guillemot Race Leader Force Feedback */
+	{ USB_DEVICE(0x061c, 0xc084) },         /* ACT LABS Force RS */
+	{ USB_DEVICE(0x06f8, 0x0001) },		/* Guillemot Race Leader Force Feedback */
+	{ USB_DEVICE(0x06f8, 0x0003) },		/* Guillemot Jet Leader Force Feedback */
 	{ USB_DEVICE(0x06f8, 0x0004) },		/* Guillemot Force Feedback Racing Wheel */
 	{ USB_DEVICE(0x06f8, 0xa302) },		/* Guillemot Jet Leader 3D */
 	{ }					/* Terminating entry */

@@ -16,6 +16,9 @@
 #include <linux/rtc.h>
 #include <linux/bcd.h>
 #include <linux/delay.h>
+#ifdef CONFIG_ACPI
+#include <linux/acpi.h>
+#endif
 
 #define RTC_PIE 0x40		/* periodic interrupt enable */
 #define RTC_AIE 0x20		/* alarm interrupt enable */
@@ -46,6 +49,11 @@ static inline unsigned int get_rtc_time(struct rtc_time *time)
 {
 	unsigned char ctrl;
 	unsigned long flags;
+static inline unsigned int __get_rtc_time(struct rtc_time *time)
+{
+	unsigned char ctrl;
+	unsigned long flags;
+	unsigned char century = 0;
 
 #ifdef CONFIG_MACH_DECSTATION
 	unsigned int real_year;
@@ -79,6 +87,11 @@ static inline unsigned int get_rtc_time(struct rtc_time *time)
 #ifdef CONFIG_MACH_DECSTATION
 	real_year = CMOS_READ(RTC_DEC_YEAR);
 #endif
+#ifdef CONFIG_ACPI
+	if (acpi_gbl_FADT.header.revision >= FADT2_REVISION_ID &&
+	    acpi_gbl_FADT.century)
+		century = CMOS_READ(acpi_gbl_FADT.century);
+#endif
 	ctrl = CMOS_READ(RTC_CONTROL);
 	spin_unlock_irqrestore(&rtc_lock, flags);
 
@@ -90,11 +103,21 @@ static inline unsigned int get_rtc_time(struct rtc_time *time)
 		BCD_TO_BIN(time->tm_mday);
 		BCD_TO_BIN(time->tm_mon);
 		BCD_TO_BIN(time->tm_year);
+		time->tm_sec = bcd2bin(time->tm_sec);
+		time->tm_min = bcd2bin(time->tm_min);
+		time->tm_hour = bcd2bin(time->tm_hour);
+		time->tm_mday = bcd2bin(time->tm_mday);
+		time->tm_mon = bcd2bin(time->tm_mon);
+		time->tm_year = bcd2bin(time->tm_year);
+		century = bcd2bin(century);
 	}
 
 #ifdef CONFIG_MACH_DECSTATION
 	time->tm_year += real_year - 72;
 #endif
+
+	if (century > 20)
+		time->tm_year += (century - 19) * 100;
 
 	/*
 	 * Account for differences between how the RTC uses the values
@@ -110,6 +133,12 @@ static inline unsigned int get_rtc_time(struct rtc_time *time)
 
 /* Set the current date and time in the real time clock. */
 static inline int set_rtc_time(struct rtc_time *time)
+#ifndef get_rtc_time
+#define get_rtc_time	__get_rtc_time
+#endif
+
+/* Set the current date and time in the real time clock. */
+static inline int __set_rtc_time(struct rtc_time *time)
 {
 	unsigned long flags;
 	unsigned char mon, day, hrs, min, sec;
@@ -118,6 +147,7 @@ static inline int set_rtc_time(struct rtc_time *time)
 #ifdef CONFIG_MACH_DECSTATION
 	unsigned int real_yrs, leap_yr;
 #endif
+	unsigned char century = 0;
 
 	yrs = time->tm_year;
 	mon = time->tm_mon + 1;   /* tm_mon starts at zero */
@@ -146,6 +176,15 @@ static inline int set_rtc_time(struct rtc_time *time)
 		yrs = 73;
 	}
 #endif
+
+#ifdef CONFIG_ACPI
+	if (acpi_gbl_FADT.header.revision >= FADT2_REVISION_ID &&
+	    acpi_gbl_FADT.century) {
+		century = (yrs + 1900) / 100;
+		yrs %= 100;
+	}
+#endif
+
 	/* These limits and adjustments are independent of
 	 * whether the chip is in binary mode or not.
 	 */
@@ -165,6 +204,13 @@ static inline int set_rtc_time(struct rtc_time *time)
 		BIN_TO_BCD(day);
 		BIN_TO_BCD(mon);
 		BIN_TO_BCD(yrs);
+		sec = bin2bcd(sec);
+		min = bin2bcd(min);
+		hrs = bin2bcd(hrs);
+		day = bin2bcd(day);
+		mon = bin2bcd(mon);
+		yrs = bin2bcd(yrs);
+		century = bin2bcd(century);
 	}
 
 	save_control = CMOS_READ(RTC_CONTROL);
@@ -181,6 +227,11 @@ static inline int set_rtc_time(struct rtc_time *time)
 	CMOS_WRITE(hrs, RTC_HOURS);
 	CMOS_WRITE(min, RTC_MINUTES);
 	CMOS_WRITE(sec, RTC_SECONDS);
+#ifdef CONFIG_ACPI
+	if (acpi_gbl_FADT.header.revision >= FADT2_REVISION_ID &&
+	    acpi_gbl_FADT.century)
+		CMOS_WRITE(century, acpi_gbl_FADT.century);
+#endif
 
 	CMOS_WRITE(save_control, RTC_CONTROL);
 	CMOS_WRITE(save_freq_select, RTC_FREQ_SELECT);
@@ -189,6 +240,10 @@ static inline int set_rtc_time(struct rtc_time *time)
 
 	return 0;
 }
+
+#ifndef set_rtc_time
+#define set_rtc_time	__set_rtc_time
+#endif
 
 static inline unsigned int get_rtc_ss(void)
 {

@@ -9,6 +9,9 @@
 #include <linux/interrupt.h>
 #include <linux/types.h>
 #include <linux/pci.h>
+#include <linux/slab.h>
+#include <linux/pci.h>
+#include <linux/export.h>
 #include <asm/sn/addrs.h>
 #include <asm/sn/geo.h>
 #include <asm/sn/pcibr_provider.h>
@@ -80,6 +83,7 @@ static int sal_pcibr_error_interrupt(struct pcibus_info *soft)
 u16 sn_ioboard_to_pci_bus(struct pci_bus *pci_bus)
 {
 	s64 rc;
+	long rc;
 	u16 uninitialized_var(ioboard);		/* GCC be quiet */
 	nasid_t nasid = NASID_GET(SN_PCIBUS_BUSSOFT(pci_bus)->bs_base);
 
@@ -126,6 +130,7 @@ pcibr_bus_fixup(struct pcibus_bussoft *prom_bussoft, struct pci_controller *cont
 	 */
 
 	soft = kmalloc(sizeof(struct pcibus_info), GFP_KERNEL);
+	soft = kmemdup(prom_bussoft, sizeof(struct pcibus_info), GFP_KERNEL);
 	if (!soft) {
 		return NULL;
 	}
@@ -145,6 +150,7 @@ pcibr_bus_fixup(struct pcibus_bussoft *prom_bussoft, struct pci_controller *cont
 		printk(KERN_WARNING
 		       "pcibr cannot allocate interrupt for error handler\n");
 	}
+	irq_set_handler(SGI_PCIASIC_ERROR, handle_level_irq);
 	sn_set_err_irq_affinity(SGI_PCIASIC_ERROR);
 
 	/* 

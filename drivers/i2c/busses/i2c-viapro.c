@@ -3,6 +3,7 @@
     Philip Edelbrock <phil@netroedge.com>, Kyösti Mälkki <kmalkki@cc.hut.fi>,
     Mark D. Studebaker <mdsxyz123@yahoo.com>
     Copyright (C) 2005 - 2008  Jean Delvare <khali@linux-fr.org>
+    Copyright (C) 2005 - 2008  Jean Delvare <jdelvare@suse.de>
 
     This program is free software; you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -36,6 +37,8 @@
    VT8237S            0x3372             yes
    VT8251             0x3287             yes
    CX700              0x8324             yes
+   VX800/VX820        0x8353             yes
+   VX855/VX875        0x8409             yes
 
    Note: we assume there can only be one device, with one SMBus interface.
 */
@@ -50,6 +53,7 @@
 #include <linux/init.h>
 #include <linux/acpi.h>
 #include <asm/io.h>
+#include <linux/io.h>
 
 static struct pci_dev *vt596_pdev;
 
@@ -82,6 +86,7 @@ static unsigned short SMBHSTCFG = 0xD2;
 #define VT596_BYTE		0x04
 #define VT596_BYTE_DATA		0x08
 #define VT596_WORD_DATA		0x0C
+#define VT596_PROC_CALL		0x10
 #define VT596_BLOCK_DATA	0x14
 #define VT596_I2C_BLOCK_DATA	0x34
 
@@ -89,6 +94,7 @@ static unsigned short SMBHSTCFG = 0xD2;
 /* If force is set to anything different from 0, we forcibly enable the
    VT596. DANGEROUS! */
 static int force;
+static bool force;
 module_param(force, bool, 0);
 MODULE_PARM_DESC(force, "Forcibly enable the SMBus. DANGEROUS!");
 
@@ -166,6 +172,10 @@ static int vt596_transaction(u8 size)
 
 	/* If the SMBus is still busy, we give up */
 	if (timeout >= MAX_TIMEOUT) {
+	} while ((temp & 0x01) && (++timeout < MAX_TIMEOUT));
+
+	/* If the SMBus is still busy, we give up */
+	if (timeout == MAX_TIMEOUT) {
 		result = -ETIMEDOUT;
 		dev_err(&vt596_adapter.dev, "SMBus timeout!\n");
 	}
@@ -190,6 +200,8 @@ static int vt596_transaction(u8 size)
 		if (!((size == VT596_QUICK && !read) ||
 		      (size == VT596_BYTE && read)))
 			dev_err(&vt596_adapter.dev, "Transaction error!\n");
+		result = -ENXIO;
+		dev_dbg(&vt596_adapter.dev, "No response\n");
 	}
 
 	/* Resetting status register */
@@ -232,6 +244,12 @@ static s32 vt596_access(struct i2c_adapter *adap, u16 addr,
 		}
 		size = VT596_WORD_DATA;
 		break;
+	case I2C_SMBUS_PROC_CALL:
+		outb_p(command, SMBHSTCMD);
+		outb_p(data->word & 0xff, SMBHSTDAT0);
+		outb_p((data->word & 0xff00) >> 8, SMBHSTDAT1);
+		size = VT596_PROC_CALL;
+		break;
 	case I2C_SMBUS_I2C_BLOCK_DATA:
 		if (!(vt596_features & FEATURE_I2CBLOCK))
 			goto exit_unsupported;
@@ -262,6 +280,9 @@ static s32 vt596_access(struct i2c_adapter *adap, u16 addr,
 	if (status)
 		return status;
 
+	if (size == VT596_PROC_CALL)
+		read_write = I2C_SMBUS_READ;
+
 	if ((read_write == I2C_SMBUS_WRITE) || (size == VT596_QUICK))
 		return 0;
 
@@ -271,6 +292,7 @@ static s32 vt596_access(struct i2c_adapter *adap, u16 addr,
 		data->byte = inb_p(SMBHSTDAT0);
 		break;
 	case VT596_WORD_DATA:
+	case VT596_PROC_CALL:
 		data->word = inb_p(SMBHSTDAT0) + (inb_p(SMBHSTDAT1) << 8);
 		break;
 	case VT596_I2C_BLOCK_DATA:
@@ -296,6 +318,7 @@ static u32 vt596_func(struct i2c_adapter *adapter)
 	u32 func = I2C_FUNC_SMBUS_QUICK | I2C_FUNC_SMBUS_BYTE |
 	    I2C_FUNC_SMBUS_BYTE_DATA | I2C_FUNC_SMBUS_WORD_DATA |
 	    I2C_FUNC_SMBUS_BLOCK_DATA;
+	    I2C_SMBUS_PROC_CALL | I2C_FUNC_SMBUS_BLOCK_DATA;
 
 	if (vt596_features & FEATURE_I2CBLOCK)
 		func |= I2C_FUNC_SMBUS_I2C_BLOCK;
@@ -323,6 +346,11 @@ static int __devinit vt596_probe(struct pci_dev *pdev,
 	/* driver_data might come from user-space, so check it */
 	if (id->driver_data & 1 || id->driver_data > 0xff)
 		return -EINVAL;
+static int vt596_probe(struct pci_dev *pdev,
+		       const struct pci_device_id *id)
+{
+	unsigned char temp;
+	int error;
 
 	/* Determine the address of the SMBus areas */
 	if (force_addr) {
@@ -358,6 +386,7 @@ found:
 	error = acpi_check_region(vt596_smba, 8, vt596_driver.name);
 	if (error)
 		return error;
+		return -ENODEV;
 
 	if (!request_region(vt596_smba, 8, vt596_driver.name)) {
 		dev_err(&pdev->dev, "SMBus region 0x%x already in use!\n",
@@ -388,6 +417,7 @@ found:
 			dev_err(&pdev->dev, "SMBUS: Error: Host SMBus "
 				"controller not enabled! - upgrade BIOS or "
 				"use force=1\n");
+			error = -ENODEV;
 			goto release_region;
 		}
 	}
@@ -396,6 +426,9 @@ found:
 
 	switch (pdev->device) {
 	case PCI_DEVICE_ID_VIA_CX700:
+	case PCI_DEVICE_ID_VIA_VX800:
+	case PCI_DEVICE_ID_VIA_VX855:
+	case PCI_DEVICE_ID_VIA_VX900:
 	case PCI_DEVICE_ID_VIA_8251:
 	case PCI_DEVICE_ID_VIA_8237:
 	case PCI_DEVICE_ID_VIA_8237A:
@@ -421,6 +454,11 @@ found:
 	if (i2c_add_adapter(&vt596_adapter)) {
 		pci_dev_put(vt596_pdev);
 		vt596_pdev = NULL;
+	error = i2c_add_adapter(&vt596_adapter);
+	if (error) {
+		pci_dev_put(vt596_pdev);
+		vt596_pdev = NULL;
+		goto release_region;
 	}
 
 	/* Always return failure here.  This is to allow other drivers to bind
@@ -435,6 +473,7 @@ release_region:
 }
 
 static struct pci_device_id vt596_ids[] = {
+static const struct pci_device_id vt596_ids[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_VIA, PCI_DEVICE_ID_VIA_82C596_3),
 	  .driver_data = SMBBA1 },
 	{ PCI_DEVICE(PCI_VENDOR_ID_VIA, PCI_DEVICE_ID_VIA_82C596B_3),
@@ -458,6 +497,12 @@ static struct pci_device_id vt596_ids[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_VIA, PCI_DEVICE_ID_VIA_8251),
 	  .driver_data = SMBBA3 },
 	{ PCI_DEVICE(PCI_VENDOR_ID_VIA, PCI_DEVICE_ID_VIA_CX700),
+	  .driver_data = SMBBA3 },
+	{ PCI_DEVICE(PCI_VENDOR_ID_VIA, PCI_DEVICE_ID_VIA_VX800),
+	  .driver_data = SMBBA3 },
+	{ PCI_DEVICE(PCI_VENDOR_ID_VIA, PCI_DEVICE_ID_VIA_VX855),
+	  .driver_data = SMBBA3 },
+	{ PCI_DEVICE(PCI_VENDOR_ID_VIA, PCI_DEVICE_ID_VIA_VX900),
 	  .driver_data = SMBBA3 },
 	{ 0, }
 };
@@ -491,6 +536,7 @@ static void __exit i2c_vt596_exit(void)
 MODULE_AUTHOR("Kyosti Malkki <kmalkki@cc.hut.fi>, "
 	      "Mark D. Studebaker <mdsxyz123@yahoo.com> and "
 	      "Jean Delvare <khali@linux-fr.org>");
+	      "Jean Delvare <jdelvare@suse.de>");
 MODULE_DESCRIPTION("vt82c596 SMBus driver");
 MODULE_LICENSE("GPL");
 

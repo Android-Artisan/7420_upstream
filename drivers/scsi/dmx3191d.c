@@ -34,12 +34,18 @@
  * Defintions for the generic 5380 driver.
  */
 #define AUTOSENSE
+ * Definitions for the generic 5380 driver.
+ */
+
+#define DONT_USE_INTR
 
 #define NCR5380_read(reg)		inb(port + reg)
 #define NCR5380_write(reg, value)	outb(value, port + reg)
 
 #define NCR5380_implementation_fields	unsigned int port
 #define NCR5380_local_declare()		NCR5380_implementation_fields
+#define NCR5380_implementation_fields	/* none */
+#define NCR5380_local_declare()		unsigned int port
 #define NCR5380_setup(instance)		port = instance->io_port
 
 /*
@@ -58,6 +64,7 @@
 static struct scsi_host_template dmx3191d_driver_template = {
 	.proc_name		= DMX3191D_DRIVER_NAME,
 	.name			= "Domex DMX3191D",
+	.info			= NCR5380_info,
 	.queuecommand		= NCR5380_queue_command,
 	.eh_abort_handler	= NCR5380_abort,
 	.eh_bus_reset_handler	= NCR5380_bus_reset,
@@ -70,6 +77,8 @@ static struct scsi_host_template dmx3191d_driver_template = {
 
 static int __devinit dmx3191d_probe_one(struct pci_dev *pdev,
 		const struct pci_device_id *id)
+static int dmx3191d_probe_one(struct pci_dev *pdev,
+			      const struct pci_device_id *id)
 {
 	struct Scsi_Host *shost;
 	unsigned long io;
@@ -104,11 +113,20 @@ static int __devinit dmx3191d_probe_one(struct pci_dev *pdev,
 		shost->irq = SCSI_IRQ_NONE;
 	}
 
+
+	/* This card does not seem to raise an interrupt on pdev->irq.
+	 * Steam-powered SCSI controllers run without an IRQ anyway.
+	 */
+	shost->irq = NO_IRQ;
+
+	NCR5380_init(shost, FLAG_NO_PSEUDO_DMA | FLAG_DTC3181E);
+
 	pci_set_drvdata(pdev, shost);
 
 	error = scsi_add_host(shost, &pdev->dev);
 	if (error)
 		goto out_free_irq;
+		goto out_release_region;
 
 	scsi_scan_host(shost);
 	return 0;
@@ -124,6 +142,7 @@ static int __devinit dmx3191d_probe_one(struct pci_dev *pdev,
 }
 
 static void __devexit dmx3191d_remove_one(struct pci_dev *pdev)
+static void dmx3191d_remove_one(struct pci_dev *pdev)
 {
 	struct Scsi_Host *shost = pci_get_drvdata(pdev);
 
@@ -151,6 +170,7 @@ static struct pci_driver dmx3191d_pci_driver = {
 	.id_table	= dmx3191d_pci_tbl,
 	.probe		= dmx3191d_probe_one,
 	.remove		= __devexit_p(dmx3191d_remove_one),
+	.remove		= dmx3191d_remove_one,
 };
 
 static int __init dmx3191d_init(void)

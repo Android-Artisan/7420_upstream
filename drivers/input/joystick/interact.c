@@ -282,6 +282,14 @@ static int interact_connect(struct gameport *gameport, struct gameport_driver *d
 
 	for (i = 0; (t = interact_type[interact->type].btn[i]) >= 0; i++)
 		set_bit(t, input_dev->keybit);
+		if (i < interact_type[interact->type].b8)
+			input_set_abs_params(input_dev, t, 0, 255, 0, 0);
+		else
+			input_set_abs_params(input_dev, t, -1, 1, 0, 0);
+	}
+
+	for (i = 0; (t = interact_type[interact->type].btn[i]) >= 0; i++)
+		__set_bit(t, input_dev->keybit);
 
 	err = input_register_device(interact->dev);
 	if (err)
@@ -328,3 +336,4 @@ static void __exit interact_exit(void)
 
 module_init(interact_init);
 module_exit(interact_exit);
+module_gameport_driver(interact_drv);

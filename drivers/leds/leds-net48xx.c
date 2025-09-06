@@ -18,6 +18,10 @@
 #include <asm/io.h>
 #include <linux/nsc_gpio.h>
 #include <linux/scx200_gpio.h>
+#include <linux/io.h>
+#include <linux/nsc_gpio.h>
+#include <linux/scx200_gpio.h>
+#include <linux/module.h>
 
 #define DRVNAME "net48xx-led"
 #define NET48XX_ERROR_LED_GPIO	20
@@ -62,6 +66,12 @@ static int net48xx_led_remove(struct platform_device *pdev)
 {
 	led_classdev_unregister(&net48xx_error_led);
 	return 0;
+	.flags		= LED_CORE_SUSPENDRESUME,
+};
+
+static int net48xx_led_probe(struct platform_device *pdev)
+{
+	return devm_led_classdev_register(&pdev->dev, &net48xx_error_led);
 }
 
 static struct platform_driver net48xx_led_driver = {
@@ -72,6 +82,8 @@ static struct platform_driver net48xx_led_driver = {
 	.driver		= {
 		.name		= DRVNAME,
 		.owner		= THIS_MODULE,
+	.driver		= {
+		.name		= DRVNAME,
 	},
 };
 

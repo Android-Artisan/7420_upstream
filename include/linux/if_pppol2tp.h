@@ -3,6 +3,7 @@
  *
  * This file supplies definitions required by the PPP over L2TP driver
  * (pppol2tp.c).  All version information wrt this file is located in pppol2tp.c
+ * (l2tp_ppp.c).  All version information wrt this file is located in l2tp_ppp.c
  *
  * License:
  *		This program is free software; you can redistribute it and/or
@@ -65,5 +66,11 @@ enum {
 };
 
 
+#ifndef __LINUX_IF_PPPOL2TP_H
+#define __LINUX_IF_PPPOL2TP_H
+
+#include <linux/in.h>
+#include <linux/in6.h>
+#include <uapi/linux/if_pppol2tp.h>
 
 #endif

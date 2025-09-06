@@ -16,6 +16,7 @@
 #include <linux/init.h>
 #include <linux/delay.h>
 #include <linux/interrupt.h>
+#include <linux/slab.h>
 
 #include <pcmcia/ss.h>
 
@@ -119,6 +120,7 @@ static int omap_cf_get_status(struct pcmcia_socket *s, u_int *sp)
 		*sp = SS_READY | SS_DETECT | SS_POWERON | SS_3VCARD;
 		cf = container_of(s, struct omap_cf_socket, socket);
 		s->irq.AssignedIRQ = 0;
+		s->pcmcia_irq = 0;
 		s->pci_irq = cf->irq;
 	} else
 		*sp = 0;
@@ -224,6 +226,7 @@ static int __init omap_cf_probe(struct platform_device *pdev)
 	init_timer(&cf->timer);
 	cf->timer.function = omap_cf_timer;
 	cf->timer.data = (unsigned long) cf;
+	setup_timer(&cf->timer, omap_cf_timer, (unsigned long)cf);
 
 	cf->pdev = pdev;
 	platform_set_drvdata(pdev, cf);
@@ -350,6 +353,11 @@ static struct platform_driver omap_cf_driver = {
 	.remove		= __exit_p(omap_cf_remove),
 	.suspend	= omap_cf_suspend,
 	.resume		= omap_cf_resume,
+static struct platform_driver omap_cf_driver = {
+	.driver = {
+		.name	= (char *) driver_name,
+	},
+	.remove		= __exit_p(omap_cf_remove),
 };
 
 static int __init omap_cf_init(void)

@@ -21,6 +21,7 @@
 #include <linux/ioport.h>
 #include <linux/soundcard.h>
 #include <linux/interrupt.h>
+#include <linux/platform_device.h>
 
 #include <asm/uaccess.h>
 #include <asm/setup.h>
@@ -658,6 +659,7 @@ static int AmiStateInfo(char *buffer, size_t space)
 		       dmasound.volume_right);
 	if (len >= space) {
 		printk(KERN_ERR "dmasound_paula: overlowed state buffer alloc.\n") ;
+		printk(KERN_ERR "dmasound_paula: overflowed state buffer alloc.\n") ;
 		len = space ;
 	}
 	return len;
@@ -738,3 +740,28 @@ static void __exit dmasound_paula_cleanup(void)
 module_init(dmasound_paula_init);
 module_exit(dmasound_paula_cleanup);
 MODULE_LICENSE("GPL");
+static int __init amiga_audio_probe(struct platform_device *pdev)
+{
+	dmasound.mach = machAmiga;
+	dmasound.mach.default_hard = def_hard ;
+	dmasound.mach.default_soft = def_soft ;
+	return dmasound_init();
+}
+
+static int __exit amiga_audio_remove(struct platform_device *pdev)
+{
+	dmasound_deinit();
+	return 0;
+}
+
+static struct platform_driver amiga_audio_driver = {
+	.remove = __exit_p(amiga_audio_remove),
+	.driver   = {
+		.name	= "amiga-audio",
+	},
+};
+
+module_platform_driver_probe(amiga_audio_driver, amiga_audio_probe);
+
+MODULE_LICENSE("GPL");
+MODULE_ALIAS("platform:amiga-audio");

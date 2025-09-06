@@ -33,6 +33,15 @@
 
 #include <asm/hw_irq.h>
 
+#if defined(CONFIG_RTC_DRV_CMOS) || defined(CONFIG_RTC_DRV_CMOS_MODULE)
+/* this needs a better home */
+DEFINE_SPINLOCK(rtc_lock);
+
+#ifdef CONFIG_RTC_DRV_CMOS_MODULE
+EXPORT_SYMBOL(rtc_lock);
+#endif
+#endif  /* pc-style 'CMOS' RTC support */
+
 #ifdef CONFIG_SMP
 extern void smp_local_timer_interrupt(void);
 #endif
@@ -49,6 +58,7 @@ extern void smp_local_timer_interrupt(void);
 static unsigned long latch;
 
 static unsigned long do_gettimeoffset(void)
+static u32 m32r_gettimeoffset(void)
 {
 	unsigned long  elapsed_time = 0;  /* [us] */
 
@@ -67,6 +77,7 @@ static unsigned long do_gettimeoffset(void)
 
 	count = (latch - count) * TICK_SIZE;
 	elapsed_time = (count + latch / 2) / latch;
+	elapsed_time = DIV_ROUND_CLOSEST(count, latch);
 	/* NOTE: LATCH is equal to the "interval" value (= reload count). */
 
 #else /* CONFIG_SMP */
@@ -85,6 +96,7 @@ static unsigned long do_gettimeoffset(void)
 
 	count = (latch - count) * TICK_SIZE;
 	elapsed_time = (count + latch / 2) / latch;
+	elapsed_time = DIV_ROUND_CLOSEST(count, latch);
 	/* NOTE: LATCH is equal to the "interval" value (= reload count). */
 #endif /* CONFIG_SMP */
 #elif defined(CONFIG_CHIP_M32310)
@@ -186,6 +198,12 @@ static long last_rtc_update = 0;
 /*
  * timer_interrupt() needs to keep up the real-time clock,
  * as well as call the "do_timer()" routine every clocktick
+	return elapsed_time * 1000;
+}
+
+/*
+ * timer_interrupt() needs to keep up the real-time clock,
+ * as well as call the "xtime_update()" routine every clocktick
  */
 static irqreturn_t timer_interrupt(int irq, void *dev_id)
 {
@@ -193,6 +211,7 @@ static irqreturn_t timer_interrupt(int irq, void *dev_id)
 	profile_tick(CPU_PROFILING);
 #endif
 	do_timer(1);
+	xtime_update(1);
 
 #ifndef CONFIG_SMP
 	update_process_times(user_mode(get_irq_regs()));
@@ -235,6 +254,10 @@ static struct irqaction irq0 = {
 };
 
 void __init time_init(void)
+	.name = "MFT2",
+};
+
+void read_persistent_clock(struct timespec *ts)
 {
 	unsigned int epoch, year, mon, day, hour, min, sec;
 
@@ -258,6 +281,14 @@ void __init time_init(void)
 	xtime.tv_nsec = (INITIAL_JIFFIES % HZ) * (NSEC_PER_SEC / HZ);
 	set_normalized_timespec(&wall_to_monotonic,
 		-xtime.tv_sec, -xtime.tv_nsec);
+	ts->tv_sec = mktime(year, mon, day, hour, min, sec);
+	ts->tv_nsec = (INITIAL_JIFFIES % HZ) * (NSEC_PER_SEC / HZ);
+}
+
+
+void __init time_init(void)
+{
+	arch_gettimeoffset = m32r_gettimeoffset;
 
 #if defined(CONFIG_CHIP_M32102) || defined(CONFIG_CHIP_XNUX2) \
 	|| defined(CONFIG_CHIP_VDEC2) || defined(CONFIG_CHIP_M32700) \
@@ -272,6 +303,7 @@ void __init time_init(void)
 		bus_clock = boot_cpu_data.bus_clock;
 		divide = boot_cpu_data.timer_divide;
 		latch = (bus_clock/divide + HZ / 2) / HZ;
+		latch = DIV_ROUND_CLOSEST(bus_clock/divide, HZ);
 
 		printk("Timer start : latch = %ld\n", latch);
 

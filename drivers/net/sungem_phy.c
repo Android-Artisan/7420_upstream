@@ -34,6 +34,7 @@
 #endif
 
 #include "sungem_phy.h"
+#include <linux/sungem_phy.h>
 
 /* Link modes of the BCM5400 PHY */
 static const int phy_BCM5400_link_table[8][3] = {
@@ -48,21 +49,25 @@ static const int phy_BCM5400_link_table[8][3] = {
 };
 
 static inline int __phy_read(struct mii_phy* phy, int id, int reg)
+static inline int __sungem_phy_read(struct mii_phy* phy, int id, int reg)
 {
 	return phy->mdio_read(phy->dev, id, reg);
 }
 
 static inline void __phy_write(struct mii_phy* phy, int id, int reg, int val)
+static inline void __sungem_phy_write(struct mii_phy* phy, int id, int reg, int val)
 {
 	phy->mdio_write(phy->dev, id, reg, val);
 }
 
 static inline int phy_read(struct mii_phy* phy, int reg)
+static inline int sungem_phy_read(struct mii_phy* phy, int reg)
 {
 	return phy->mdio_read(phy->dev, phy->mii_id, reg);
 }
 
 static inline void phy_write(struct mii_phy* phy, int reg, int val)
+static inline void sungem_phy_write(struct mii_phy* phy, int reg, int val)
 {
 	phy->mdio_write(phy->dev, phy->mii_id, reg, val);
 }
@@ -81,6 +86,15 @@ static int reset_one_mii_phy(struct mii_phy* phy, int phy_id)
 
 	while (limit--) {
 		val = __phy_read(phy, phy_id, MII_BMCR);
+	val = __sungem_phy_read(phy, phy_id, MII_BMCR);
+	val &= ~(BMCR_ISOLATE | BMCR_PDOWN);
+	val |= BMCR_RESET;
+	__sungem_phy_write(phy, phy_id, MII_BMCR, val);
+
+	udelay(100);
+
+	while (--limit) {
+		val = __sungem_phy_read(phy, phy_id, MII_BMCR);
 		if ((val & BMCR_RESET) == 0)
 			break;
 		udelay(10);
@@ -89,6 +103,9 @@ static int reset_one_mii_phy(struct mii_phy* phy, int phy_id)
 		__phy_write(phy, phy_id, MII_BMCR, val & ~BMCR_ISOLATE);
 
 	return (limit <= 0);
+		__sungem_phy_write(phy, phy_id, MII_BMCR, val & ~BMCR_ISOLATE);
+
+	return limit <= 0;
 }
 
 static int bcm5201_init(struct mii_phy* phy)
@@ -100,6 +117,11 @@ static int bcm5201_init(struct mii_phy* phy)
 	phy_write(phy, MII_BCM5201_MULTIPHY, data);
 
 	phy_write(phy, MII_BCM5201_INTERRUPT, 0);
+	data = sungem_phy_read(phy, MII_BCM5201_MULTIPHY);
+	data &= ~MII_BCM5201_MULTIPHY_SUPERISOLATE;
+	sungem_phy_write(phy, MII_BCM5201_MULTIPHY, data);
+
+	sungem_phy_write(phy, MII_BCM5201_INTERRUPT, 0);
 
 	return 0;
 }
@@ -108,6 +130,8 @@ static int bcm5201_suspend(struct mii_phy* phy)
 {
 	phy_write(phy, MII_BCM5201_INTERRUPT, 0);
 	phy_write(phy, MII_BCM5201_MULTIPHY, MII_BCM5201_MULTIPHY_SUPERISOLATE);
+	sungem_phy_write(phy, MII_BCM5201_INTERRUPT, 0);
+	sungem_phy_write(phy, MII_BCM5201_MULTIPHY, MII_BCM5201_MULTIPHY_SUPERISOLATE);
 
 	return 0;
 }
@@ -130,6 +154,20 @@ static int bcm5221_init(struct mii_phy* phy)
 
 	data = phy_read(phy, MII_BCM5221_TEST);
 	phy_write(phy, MII_BCM5221_TEST,
+	data = sungem_phy_read(phy, MII_BCM5221_TEST);
+	sungem_phy_write(phy, MII_BCM5221_TEST,
+		data | MII_BCM5221_TEST_ENABLE_SHADOWS);
+
+	data = sungem_phy_read(phy, MII_BCM5221_SHDOW_AUX_STAT2);
+	sungem_phy_write(phy, MII_BCM5221_SHDOW_AUX_STAT2,
+		data | MII_BCM5221_SHDOW_AUX_STAT2_APD);
+
+	data = sungem_phy_read(phy, MII_BCM5221_SHDOW_AUX_MODE4);
+	sungem_phy_write(phy, MII_BCM5221_SHDOW_AUX_MODE4,
+		data | MII_BCM5221_SHDOW_AUX_MODE4_CLKLOPWR);
+
+	data = sungem_phy_read(phy, MII_BCM5221_TEST);
+	sungem_phy_write(phy, MII_BCM5221_TEST,
 		data & ~MII_BCM5221_TEST_ENABLE_SHADOWS);
 
 	return 0;
@@ -145,6 +183,12 @@ static int bcm5221_suspend(struct mii_phy* phy)
 
 	data = phy_read(phy, MII_BCM5221_SHDOW_AUX_MODE4);
 	phy_write(phy, MII_BCM5221_SHDOW_AUX_MODE4,
+	data = sungem_phy_read(phy, MII_BCM5221_TEST);
+	sungem_phy_write(phy, MII_BCM5221_TEST,
+		data | MII_BCM5221_TEST_ENABLE_SHADOWS);
+
+	data = sungem_phy_read(phy, MII_BCM5221_SHDOW_AUX_MODE4);
+	sungem_phy_write(phy, MII_BCM5221_SHDOW_AUX_MODE4,
 		  data | MII_BCM5221_SHDOW_AUX_MODE4_IDDQMODE);
 
 	return 0;
@@ -168,6 +212,20 @@ static int bcm5241_init(struct mii_phy* phy)
 
 	data = phy_read(phy, MII_BCM5221_TEST);
 	phy_write(phy, MII_BCM5221_TEST,
+	data = sungem_phy_read(phy, MII_BCM5221_TEST);
+	sungem_phy_write(phy, MII_BCM5221_TEST,
+		data | MII_BCM5221_TEST_ENABLE_SHADOWS);
+
+	data = sungem_phy_read(phy, MII_BCM5221_SHDOW_AUX_STAT2);
+	sungem_phy_write(phy, MII_BCM5221_SHDOW_AUX_STAT2,
+		data | MII_BCM5221_SHDOW_AUX_STAT2_APD);
+
+	data = sungem_phy_read(phy, MII_BCM5221_SHDOW_AUX_MODE4);
+	sungem_phy_write(phy, MII_BCM5221_SHDOW_AUX_MODE4,
+		data & ~MII_BCM5241_SHDOW_AUX_MODE4_STANDBYPWR);
+
+	data = sungem_phy_read(phy, MII_BCM5221_TEST);
+	sungem_phy_write(phy, MII_BCM5221_TEST,
 		data & ~MII_BCM5221_TEST_ENABLE_SHADOWS);
 
 	return 0;
@@ -183,6 +241,12 @@ static int bcm5241_suspend(struct mii_phy* phy)
 
 	data = phy_read(phy, MII_BCM5221_SHDOW_AUX_MODE4);
 	phy_write(phy, MII_BCM5221_SHDOW_AUX_MODE4,
+	data = sungem_phy_read(phy, MII_BCM5221_TEST);
+	sungem_phy_write(phy, MII_BCM5221_TEST,
+		data | MII_BCM5221_TEST_ENABLE_SHADOWS);
+
+	data = sungem_phy_read(phy, MII_BCM5221_SHDOW_AUX_MODE4);
+	sungem_phy_write(phy, MII_BCM5221_SHDOW_AUX_MODE4,
 		  data | MII_BCM5241_SHDOW_AUX_MODE4_STANDBYPWR);
 
 	return 0;
@@ -200,6 +264,13 @@ static int bcm5400_init(struct mii_phy* phy)
 	data = phy_read(phy, MII_BCM5400_GB_CONTROL);
 	data |= MII_BCM5400_GB_CONTROL_FULLDUPLEXCAP;
 	phy_write(phy, MII_BCM5400_GB_CONTROL, data);
+	data = sungem_phy_read(phy, MII_BCM5400_AUXCONTROL);
+	data |= MII_BCM5400_AUXCONTROL_PWR10BASET;
+	sungem_phy_write(phy, MII_BCM5400_AUXCONTROL, data);
+
+	data = sungem_phy_read(phy, MII_BCM5400_GB_CONTROL);
+	data |= MII_BCM5400_GB_CONTROL_FULLDUPLEXCAP;
+	sungem_phy_write(phy, MII_BCM5400_GB_CONTROL, data);
 
 	udelay(100);
 
@@ -213,6 +284,13 @@ static int bcm5400_init(struct mii_phy* phy)
 	data = phy_read(phy, MII_BCM5400_AUXCONTROL);
 	data &= ~MII_BCM5400_AUXCONTROL_PWR10BASET;
 	phy_write(phy, MII_BCM5400_AUXCONTROL, data);
+	data = __sungem_phy_read(phy, 0x1f, MII_BCM5201_MULTIPHY);
+	data |= MII_BCM5201_MULTIPHY_SERIALMODE;
+	__sungem_phy_write(phy, 0x1f, MII_BCM5201_MULTIPHY, data);
+
+	data = sungem_phy_read(phy, MII_BCM5400_AUXCONTROL);
+	data &= ~MII_BCM5400_AUXCONTROL_PWR10BASET;
+	sungem_phy_write(phy, MII_BCM5400_AUXCONTROL, data);
 
 	return 0;
 }
@@ -221,6 +299,7 @@ static int bcm5400_suspend(struct mii_phy* phy)
 {
 #if 0 /* Commented out in Darwin... someone has those dawn docs ? */
 	phy_write(phy, MII_BMCR, BMCR_PDOWN);
+	sungem_phy_write(phy, MII_BMCR, BMCR_PDOWN);
 #endif
 	return 0;
 }
@@ -231,6 +310,7 @@ static int bcm5401_init(struct mii_phy* phy)
 	int rev;
 
 	rev = phy_read(phy, MII_PHYSID2) & 0x000f;
+	rev = sungem_phy_read(phy, MII_PHYSID2) & 0x000f;
 	if (rev == 0 || rev == 3) {
 		/* Some revisions of 5401 appear to need this
 		 * initialisation sequence to disable, according
@@ -260,6 +340,23 @@ static int bcm5401_init(struct mii_phy* phy)
 	data = phy_read(phy, MII_BCM5400_GB_CONTROL);
 	data |= MII_BCM5400_GB_CONTROL_FULLDUPLEXCAP;
 	phy_write(phy, MII_BCM5400_GB_CONTROL, data);
+		sungem_phy_write(phy, 0x18, 0x0c20);
+		sungem_phy_write(phy, 0x17, 0x0012);
+		sungem_phy_write(phy, 0x15, 0x1804);
+		sungem_phy_write(phy, 0x17, 0x0013);
+		sungem_phy_write(phy, 0x15, 0x1204);
+		sungem_phy_write(phy, 0x17, 0x8006);
+		sungem_phy_write(phy, 0x15, 0x0132);
+		sungem_phy_write(phy, 0x17, 0x8006);
+		sungem_phy_write(phy, 0x15, 0x0232);
+		sungem_phy_write(phy, 0x17, 0x201f);
+		sungem_phy_write(phy, 0x15, 0x0a20);
+	}
+
+	/* Configure for gigabit full duplex */
+	data = sungem_phy_read(phy, MII_BCM5400_GB_CONTROL);
+	data |= MII_BCM5400_GB_CONTROL_FULLDUPLEXCAP;
+	sungem_phy_write(phy, MII_BCM5400_GB_CONTROL, data);
 
 	udelay(10);
 
@@ -269,6 +366,9 @@ static int bcm5401_init(struct mii_phy* phy)
 	data = __phy_read(phy, 0x1f, MII_BCM5201_MULTIPHY);
 	data |= MII_BCM5201_MULTIPHY_SERIALMODE;
 	__phy_write(phy, 0x1f, MII_BCM5201_MULTIPHY, data);
+	data = __sungem_phy_read(phy, 0x1f, MII_BCM5201_MULTIPHY);
+	data |= MII_BCM5201_MULTIPHY_SERIALMODE;
+	__sungem_phy_write(phy, 0x1f, MII_BCM5201_MULTIPHY, data);
 
 	return 0;
 }
@@ -277,6 +377,7 @@ static int bcm5401_suspend(struct mii_phy* phy)
 {
 #if 0 /* Commented out in Darwin... someone has those dawn docs ? */
 	phy_write(phy, MII_BMCR, BMCR_PDOWN);
+	sungem_phy_write(phy, MII_BMCR, BMCR_PDOWN);
 #endif
 	return 0;
 }
@@ -291,6 +392,9 @@ static int bcm5411_init(struct mii_phy* phy)
 	phy_write(phy, 0x1c, 0x8c23);
 	phy_write(phy, 0x1c, 0x8ca3);
 	phy_write(phy, 0x1c, 0x8c23);
+	sungem_phy_write(phy, 0x1c, 0x8c23);
+	sungem_phy_write(phy, 0x1c, 0x8ca3);
+	sungem_phy_write(phy, 0x1c, 0x8c23);
 
 	/* Here, Apple seems to want to reset it, do
 	 * it as well
@@ -301,6 +405,12 @@ static int bcm5411_init(struct mii_phy* phy)
 	data = phy_read(phy, MII_BCM5400_GB_CONTROL);
 	data |= MII_BCM5400_GB_CONTROL_FULLDUPLEXCAP;
 	phy_write(phy, MII_BCM5400_GB_CONTROL, data);
+	sungem_phy_write(phy, MII_BMCR, BMCR_RESET);
+	sungem_phy_write(phy, MII_BMCR, 0x1340);
+
+	data = sungem_phy_read(phy, MII_BCM5400_GB_CONTROL);
+	data |= MII_BCM5400_GB_CONTROL_FULLDUPLEXCAP;
+	sungem_phy_write(phy, MII_BCM5400_GB_CONTROL, data);
 
 	udelay(10);
 
@@ -322,6 +432,7 @@ static int genmii_setup_aneg(struct mii_phy *phy, u32 advertise)
 
 	/* Setup standard advertise */
 	adv = phy_read(phy, MII_ADVERTISE);
+	adv = sungem_phy_read(phy, MII_ADVERTISE);
 	adv &= ~(ADVERTISE_ALL | ADVERTISE_100BASE4);
 	if (advertise & ADVERTISED_10baseT_Half)
 		adv |= ADVERTISE_10HALF;
@@ -337,6 +448,12 @@ static int genmii_setup_aneg(struct mii_phy *phy, u32 advertise)
 	ctl = phy_read(phy, MII_BMCR);
 	ctl |= (BMCR_ANENABLE | BMCR_ANRESTART);
 	phy_write(phy, MII_BMCR, ctl);
+	sungem_phy_write(phy, MII_ADVERTISE, adv);
+
+	/* Start/Restart aneg */
+	ctl = sungem_phy_read(phy, MII_BMCR);
+	ctl |= (BMCR_ANENABLE | BMCR_ANRESTART);
+	sungem_phy_write(phy, MII_BMCR, ctl);
 
 	return 0;
 }
@@ -355,6 +472,11 @@ static int genmii_setup_forced(struct mii_phy *phy, int speed, int fd)
 
 	/* First reset the PHY */
 	phy_write(phy, MII_BMCR, ctl | BMCR_RESET);
+	ctl = sungem_phy_read(phy, MII_BMCR);
+	ctl &= ~(BMCR_FULLDPLX|BMCR_SPEED100|BMCR_ANENABLE);
+
+	/* First reset the PHY */
+	sungem_phy_write(phy, MII_BMCR, ctl | BMCR_RESET);
 
 	/* Select speed & duplex */
 	switch(speed) {
@@ -370,6 +492,7 @@ static int genmii_setup_forced(struct mii_phy *phy, int speed, int fd)
 	if (fd == DUPLEX_FULL)
 		ctl |= BMCR_FULLDPLX;
 	phy_write(phy, MII_BMCR, ctl);
+	sungem_phy_write(phy, MII_BMCR, ctl);
 
 	return 0;
 }
@@ -380,6 +503,8 @@ static int genmii_poll_link(struct mii_phy *phy)
 
 	(void)phy_read(phy, MII_BMSR);
 	status = phy_read(phy, MII_BMSR);
+	(void)sungem_phy_read(phy, MII_BMSR);
+	status = sungem_phy_read(phy, MII_BMSR);
 	if ((status & BMSR_LSTATUS) == 0)
 		return 0;
 	if (phy->autoneg && !(status & BMSR_ANEGCOMPLETE))
@@ -393,6 +518,7 @@ static int genmii_read_link(struct mii_phy *phy)
 
 	if (phy->autoneg) {
 		lpa = phy_read(phy, MII_LPA);
+		lpa = sungem_phy_read(phy, MII_LPA);
 
 		if (lpa & (LPA_10FULL | LPA_100FULL))
 			phy->duplex = DUPLEX_FULL;
@@ -414,6 +540,7 @@ static int genmii_read_link(struct mii_phy *phy)
 static int generic_suspend(struct mii_phy* phy)
 {
 	phy_write(phy, MII_BMCR, BMCR_PDOWN);
+	sungem_phy_write(phy, MII_BMCR, BMCR_PDOWN);
 
 	return 0;
 }
@@ -424,6 +551,7 @@ static int bcm5421_init(struct mii_phy* phy)
 	unsigned int id;
 
 	id = (phy_read(phy, MII_PHYSID1) << 16 | phy_read(phy, MII_PHYSID2));
+	id = (sungem_phy_read(phy, MII_PHYSID1) << 16 | sungem_phy_read(phy, MII_PHYSID2));
 
 	/* Revision 0 of 5421 needs some fixups */
 	if (id == 0x002060e0) {
@@ -438,12 +566,23 @@ static int bcm5421_init(struct mii_phy* phy)
 		phy_write(phy, 0x17, 0x000a);
 		data = phy_read(phy, 0x15);
 		phy_write(phy, 0x15, data | 0x0200);
+		sungem_phy_write(phy, 0x18, 0x1007);
+		data = sungem_phy_read(phy, 0x18);
+		sungem_phy_write(phy, 0x18, data | 0x0400);
+		sungem_phy_write(phy, 0x18, 0x0007);
+		data = sungem_phy_read(phy, 0x18);
+		sungem_phy_write(phy, 0x18, data | 0x0800);
+		sungem_phy_write(phy, 0x17, 0x000a);
+		data = sungem_phy_read(phy, 0x15);
+		sungem_phy_write(phy, 0x15, data | 0x0200);
 	}
 
 	/* Pick up some init code from OF for K2 version */
 	if ((id & 0xfffffff0) == 0x002062e0) {
 		phy_write(phy, 4, 0x01e1);
 		phy_write(phy, 9, 0x0300);
+		sungem_phy_write(phy, 4, 0x01e1);
+		sungem_phy_write(phy, 9, 0x0300);
 	}
 
 	/* Check if we can enable automatic low power */
@@ -453,11 +592,15 @@ static int bcm5421_init(struct mii_phy* phy)
 		int can_low_power = 1;
 		if (np == NULL || of_get_property(np, "no-autolowpower", NULL))
 			can_low_power = 0;
+		of_node_put(np);
 		if (can_low_power) {
 			/* Enable automatic low-power */
 			phy_write(phy, 0x1c, 0x9002);
 			phy_write(phy, 0x1c, 0xa821);
 			phy_write(phy, 0x1c, 0x941d);
+			sungem_phy_write(phy, 0x1c, 0x9002);
+			sungem_phy_write(phy, 0x1c, 0xa821);
+			sungem_phy_write(phy, 0x1c, 0x941d);
 		}
 	}
 #endif /* CONFIG_PPC_PMAC */
@@ -477,6 +620,7 @@ static int bcm54xx_setup_aneg(struct mii_phy *phy, u32 advertise)
 
 	/* Setup standard advertise */
 	adv = phy_read(phy, MII_ADVERTISE);
+	adv = sungem_phy_read(phy, MII_ADVERTISE);
 	adv &= ~(ADVERTISE_ALL | ADVERTISE_100BASE4);
 	if (advertise & ADVERTISED_10baseT_Half)
 		adv |= ADVERTISE_10HALF;
@@ -494,6 +638,10 @@ static int bcm54xx_setup_aneg(struct mii_phy *phy, u32 advertise)
 
 	/* Setup 1000BT advertise */
 	adv = phy_read(phy, MII_1000BASETCONTROL);
+	sungem_phy_write(phy, MII_ADVERTISE, adv);
+
+	/* Setup 1000BT advertise */
+	adv = sungem_phy_read(phy, MII_1000BASETCONTROL);
 	adv &= ~(MII_1000BASETCONTROL_FULLDUPLEXCAP|MII_1000BASETCONTROL_HALFDUPLEXCAP);
 	if (advertise & SUPPORTED_1000baseT_Half)
 		adv |= MII_1000BASETCONTROL_HALFDUPLEXCAP;
@@ -505,6 +653,12 @@ static int bcm54xx_setup_aneg(struct mii_phy *phy, u32 advertise)
 	ctl = phy_read(phy, MII_BMCR);
 	ctl |= (BMCR_ANENABLE | BMCR_ANRESTART);
 	phy_write(phy, MII_BMCR, ctl);
+	sungem_phy_write(phy, MII_1000BASETCONTROL, adv);
+
+	/* Start/Restart aneg */
+	ctl = sungem_phy_read(phy, MII_BMCR);
+	ctl |= (BMCR_ANENABLE | BMCR_ANRESTART);
+	sungem_phy_write(phy, MII_BMCR, ctl);
 
 	return 0;
 }
@@ -523,6 +677,11 @@ static int bcm54xx_setup_forced(struct mii_phy *phy, int speed, int fd)
 
 	/* First reset the PHY */
 	phy_write(phy, MII_BMCR, ctl | BMCR_RESET);
+	ctl = sungem_phy_read(phy, MII_BMCR);
+	ctl &= ~(BMCR_FULLDPLX|BMCR_SPEED100|BMCR_SPD2|BMCR_ANENABLE);
+
+	/* First reset the PHY */
+	sungem_phy_write(phy, MII_BMCR, ctl | BMCR_RESET);
 
 	/* Select speed & duplex */
 	switch(speed) {
@@ -540,6 +699,7 @@ static int bcm54xx_setup_forced(struct mii_phy *phy, int speed, int fd)
 	// XXX Should we set the sungem to GII now on 1000BT ?
 
 	phy_write(phy, MII_BMCR, ctl);
+	sungem_phy_write(phy, MII_BMCR, ctl);
 
 	return 0;
 }
@@ -551,6 +711,7 @@ static int bcm54xx_read_link(struct mii_phy *phy)
 
 	if (phy->autoneg) {
 	    	val = phy_read(phy, MII_BCM5400_AUXSTATUS);
+	    	val = sungem_phy_read(phy, MII_BCM5400_AUXSTATUS);
 		link_mode = ((val & MII_BCM5400_AUXSTATUS_LINKMODE_MASK) >>
 			     MII_BCM5400_AUXSTATUS_LINKMODE_SHIFT);
 		phy->duplex = phy_BCM5400_link_table[link_mode][0] ?
@@ -560,6 +721,7 @@ static int bcm54xx_read_link(struct mii_phy *phy)
 				(phy_BCM5400_link_table[link_mode][1] ?
 				 SPEED_100 : SPEED_10);
 		val = phy_read(phy, MII_LPA);
+		val = sungem_phy_read(phy, MII_LPA);
 		phy->pause = (phy->duplex == DUPLEX_FULL) &&
 			((val & LPA_PAUSE) != 0);
 	}
@@ -588,6 +750,19 @@ static int marvell88e1111_init(struct mii_phy* phy)
 
 		phy_write(phy, 0x1d, 0x0004);
 		phy_write(phy, 0x1e, 0x4850);
+	rev = sungem_phy_read(phy, MII_PHYSID2) & 0x000f;
+	if (rev == 0) {
+		sungem_phy_write(phy, 0x1d, 0x000a);
+		sungem_phy_write(phy, 0x1e, 0x0821);
+
+		sungem_phy_write(phy, 0x1d, 0x0006);
+		sungem_phy_write(phy, 0x1e, 0x8600);
+
+		sungem_phy_write(phy, 0x1d, 0x000b);
+		sungem_phy_write(phy, 0x1e, 0x0100);
+
+		sungem_phy_write(phy, 0x1d, 0x0004);
+		sungem_phy_write(phy, 0x1e, 0x4850);
 	}
 	return 0;
 }
@@ -602,6 +777,8 @@ static int bcm5421_poll_link(struct mii_phy* phy)
 	/* find out in what mode we are */
 	phy_write(phy, MII_NCONFIG, 0x1000);
 	phy_reg = phy_read(phy, MII_NCONFIG);
+	sungem_phy_write(phy, MII_NCONFIG, 0x1000);
+	phy_reg = sungem_phy_read(phy, MII_NCONFIG);
 
 	mode = (phy_reg & BCM5421_MODE_MASK) >> 5;
 
@@ -611,6 +788,9 @@ static int bcm5421_poll_link(struct mii_phy* phy)
 	/* try to find out wether we have a link */
 	phy_write(phy, MII_NCONFIG, 0x2000);
 	phy_reg = phy_read(phy, MII_NCONFIG);
+	/* try to find out whether we have a link */
+	sungem_phy_write(phy, MII_NCONFIG, 0x2000);
+	phy_reg = sungem_phy_read(phy, MII_NCONFIG);
 
 	if (phy_reg & 0x0020)
 		return 0;
@@ -626,6 +806,8 @@ static int bcm5421_read_link(struct mii_phy* phy)
 	/* find out in what mode we are */
 	phy_write(phy, MII_NCONFIG, 0x1000);
 	phy_reg = phy_read(phy, MII_NCONFIG);
+	sungem_phy_write(phy, MII_NCONFIG, 0x1000);
+	phy_reg = sungem_phy_read(phy, MII_NCONFIG);
 
 	mode = (phy_reg & BCM5421_MODE_MASK ) >> 5;
 
@@ -637,6 +819,9 @@ static int bcm5421_read_link(struct mii_phy* phy)
 	/* find out wether we are running half- or full duplex */
 	phy_write(phy, MII_NCONFIG, 0x2000);
 	phy_reg = phy_read(phy, MII_NCONFIG);
+	/* find out whether we are running half- or full duplex */
+	sungem_phy_write(phy, MII_NCONFIG, 0x2000);
+	phy_reg = sungem_phy_read(phy, MII_NCONFIG);
 
 	if ( (phy_reg & 0x0080) >> 7)
 		phy->duplex |=  DUPLEX_HALF;
@@ -657,6 +842,14 @@ static int bcm5421_enable_fiber(struct mii_phy* phy, int autoneg)
 		/* switch off fibre autoneg */
 		phy_write(phy, MII_NCONFIG, 0xfc01);
 		phy_write(phy, 0x0b, 0x0004);
+	sungem_phy_write(phy, MII_NCONFIG, 0x9020);
+	/* LEDs active in both modes, autosense prio = fiber */
+	sungem_phy_write(phy, MII_NCONFIG, 0x945f);
+
+	if (!autoneg) {
+		/* switch off fibre autoneg */
+		sungem_phy_write(phy, MII_NCONFIG, 0xfc01);
+		sungem_phy_write(phy, 0x0b, 0x0004);
 	}
 
 	phy->autoneg = autoneg;
@@ -675,6 +868,8 @@ static int bcm5461_poll_link(struct mii_phy* phy)
 	/* find out in what mode we are */
 	phy_write(phy, MII_NCONFIG, 0x7c00);
 	phy_reg = phy_read(phy, MII_NCONFIG);
+	sungem_phy_write(phy, MII_NCONFIG, 0x7c00);
+	phy_reg = sungem_phy_read(phy, MII_NCONFIG);
 
 	mode = (phy_reg & BCM5461_MODE_MASK ) >> 1;
 
@@ -684,6 +879,9 @@ static int bcm5461_poll_link(struct mii_phy* phy)
 	/* find out wether we have a link */
 	phy_write(phy, MII_NCONFIG, 0x7000);
 	phy_reg = phy_read(phy, MII_NCONFIG);
+	/* find out whether we have a link */
+	sungem_phy_write(phy, MII_NCONFIG, 0x7000);
+	phy_reg = sungem_phy_read(phy, MII_NCONFIG);
 
 	if (phy_reg & BCM5461_FIBER_LINK)
 		return 1;
@@ -701,6 +899,8 @@ static int bcm5461_read_link(struct mii_phy* phy)
 	/* find out in what mode we are */
 	phy_write(phy, MII_NCONFIG, 0x7c00);
 	phy_reg = phy_read(phy, MII_NCONFIG);
+	sungem_phy_write(phy, MII_NCONFIG, 0x7c00);
+	phy_reg = sungem_phy_read(phy, MII_NCONFIG);
 
 	mode = (phy_reg & BCM5461_MODE_MASK ) >> 1;
 
@@ -713,6 +913,9 @@ static int bcm5461_read_link(struct mii_phy* phy)
 	/* find out wether we are running half- or full duplex */
 	phy_write(phy, MII_NCONFIG, 0x7000);
 	phy_reg = phy_read(phy, MII_NCONFIG);
+	/* find out whether we are running half- or full duplex */
+	sungem_phy_write(phy, MII_NCONFIG, 0x7000);
+	phy_reg = sungem_phy_read(phy, MII_NCONFIG);
 
 	if (phy_reg & BCM5461_FIBER_DUPLEX)
 		phy->duplex |=  DUPLEX_FULL;
@@ -734,6 +937,15 @@ static int bcm5461_enable_fiber(struct mii_phy* phy, int autoneg)
 	} else {
 		/* enable fiber with autonegotiation */
 		phy_write(phy, MII_BMCR, 0x0140);
+	sungem_phy_write(phy, MII_NCONFIG, 0xfc0b);
+
+	if (autoneg) {
+		/* enable fiber with no autonegotiation */
+		sungem_phy_write(phy, MII_ADVERTISE, 0x01e0);
+		sungem_phy_write(phy, MII_BMCR, 0x1140);
+	} else {
+		/* enable fiber with autonegotiation */
+		sungem_phy_write(phy, MII_BMCR, 0x0140);
 	}
 
 	phy->autoneg = autoneg;
@@ -753,6 +965,7 @@ static int marvell_setup_aneg(struct mii_phy *phy, u32 advertise)
 
 	/* Setup standard advertise */
 	adv = phy_read(phy, MII_ADVERTISE);
+	adv = sungem_phy_read(phy, MII_ADVERTISE);
 	adv &= ~(ADVERTISE_ALL | ADVERTISE_100BASE4);
 	if (advertise & ADVERTISED_10baseT_Half)
 		adv |= ADVERTISE_10HALF;
@@ -767,6 +980,7 @@ static int marvell_setup_aneg(struct mii_phy *phy, u32 advertise)
 	if (advertise & ADVERTISED_Asym_Pause)
 		adv |= ADVERTISE_PAUSE_ASYM;
 	phy_write(phy, MII_ADVERTISE, adv);
+	sungem_phy_write(phy, MII_ADVERTISE, adv);
 
 	/* Setup 1000BT advertise & enable crossover detect
 	 * XXX How do we advertise 1000BT ? Darwin source is
@@ -775,6 +989,7 @@ static int marvell_setup_aneg(struct mii_phy *phy, u32 advertise)
 	 * beasts ?
 	 */
 	adv = phy_read(phy, MII_M1011_PHY_SPEC_CONTROL);
+	adv = sungem_phy_read(phy, MII_M1011_PHY_SPEC_CONTROL);
 	adv |= MII_M1011_PHY_SPEC_CONTROL_AUTO_MDIX;
 	adv &= ~(MII_1000BASETCONTROL_FULLDUPLEXCAP |
 			MII_1000BASETCONTROL_HALFDUPLEXCAP);
@@ -788,6 +1003,12 @@ static int marvell_setup_aneg(struct mii_phy *phy, u32 advertise)
 	ctl = phy_read(phy, MII_BMCR);
 	ctl |= (BMCR_ANENABLE | BMCR_ANRESTART);
 	phy_write(phy, MII_BMCR, ctl);
+	sungem_phy_write(phy, MII_1000BASETCONTROL, adv);
+
+	/* Start/Restart aneg */
+	ctl = sungem_phy_read(phy, MII_BMCR);
+	ctl |= (BMCR_ANENABLE | BMCR_ANRESTART);
+	sungem_phy_write(phy, MII_BMCR, ctl);
 
 	return 0;
 }
@@ -802,6 +1023,7 @@ static int marvell_setup_forced(struct mii_phy *phy, int speed, int fd)
 	phy->pause = 0;
 
 	ctl = phy_read(phy, MII_BMCR);
+	ctl = sungem_phy_read(phy, MII_BMCR);
 	ctl &= ~(BMCR_FULLDPLX|BMCR_SPEED100|BMCR_SPD2|BMCR_ANENABLE);
 	ctl |= BMCR_RESET;
 
@@ -825,6 +1047,7 @@ static int marvell_setup_forced(struct mii_phy *phy, int speed, int fd)
 	 * though I don't assume they are wrong ;)
 	 */
 	ctl2 = phy_read(phy, MII_M1011_PHY_SPEC_CONTROL);
+	ctl2 = sungem_phy_read(phy, MII_M1011_PHY_SPEC_CONTROL);
 	ctl2 &= ~(MII_M1011_PHY_SPEC_CONTROL_MANUAL_MDIX |
 		MII_M1011_PHY_SPEC_CONTROL_AUTO_MDIX |
 		MII_1000BASETCONTROL_FULLDUPLEXCAP |
@@ -838,6 +1061,11 @@ static int marvell_setup_forced(struct mii_phy *phy, int speed, int fd)
 	// XXX Should we set the sungem to GII now on 1000BT ?
 
 	phy_write(phy, MII_BMCR, ctl);
+	sungem_phy_write(phy, MII_1000BASETCONTROL, ctl2);
+
+	// XXX Should we set the sungem to GII now on 1000BT ?
+
+	sungem_phy_write(phy, MII_BMCR, ctl);
 
 	return 0;
 }
@@ -848,6 +1076,7 @@ static int marvell_read_link(struct mii_phy *phy)
 
 	if (phy->autoneg) {
 		status = phy_read(phy, MII_M1011_PHY_SPEC_STATUS);
+		status = sungem_phy_read(phy, MII_M1011_PHY_SPEC_STATUS);
 		if ((status & MII_M1011_PHY_SPEC_STATUS_RESOLVED) == 0)
 			return -EAGAIN;
 		if (status & MII_M1011_PHY_SPEC_STATUS_1000)
@@ -1157,6 +1386,7 @@ static struct mii_phy_def* mii_phy_table[] = {
 };
 
 int mii_phy_probe(struct mii_phy *phy, int mii_id)
+int sungem_phy_probe(struct mii_phy *phy, int mii_id)
 {
 	int rc;
 	u32 id;
@@ -1176,6 +1406,9 @@ int mii_phy_probe(struct mii_phy *phy, int mii_id)
 	/* Read ID and find matching entry */
 	id = (phy_read(phy, MII_PHYSID1) << 16 | phy_read(phy, MII_PHYSID2));
 	printk(KERN_DEBUG "PHY ID: %x, addr: %x\n", id, mii_id);
+	id = (sungem_phy_read(phy, MII_PHYSID1) << 16 | sungem_phy_read(phy, MII_PHYSID2));
+	printk(KERN_DEBUG KBUILD_MODNAME ": " "PHY ID: %x, addr: %x\n",
+	       id, mii_id);
 	for (i=0; (def = mii_phy_table[i]) != NULL; i++)
 		if ((id & def->phy_id_mask) == def->phy_id)
 			break;
@@ -1197,3 +1430,5 @@ fail:
 EXPORT_SYMBOL(mii_phy_probe);
 MODULE_LICENSE("GPL");
 
+EXPORT_SYMBOL(sungem_phy_probe);
+MODULE_LICENSE("GPL");

@@ -1,5 +1,6 @@
 /*
  * local mtrr defines.
+ * local MTRR defines.
  */
 
 #include <linux/types.h>
@@ -34,6 +35,7 @@
 typedef u8 mtrr_type;
 
 extern unsigned int mtrr_usage_table[MAX_VAR_RANGES];
+extern unsigned int mtrr_usage_table[MTRR_MAX_VAR_RANGES];
 
 struct mtrr_ops {
 	u32	vendor;
@@ -45,6 +47,7 @@ struct mtrr_ops {
 
 	void	(*get)(unsigned int reg, unsigned long *base,
 		       unsigned long *size, mtrr_type * type);
+		       unsigned long *size, mtrr_type *type);
 	int	(*get_free_region)(unsigned long base, unsigned long size,
 				   int replace_reg);
 	int	(*validate_add_page)(unsigned long base, unsigned long size,
@@ -58,6 +61,7 @@ extern int generic_validate_add_page(unsigned long base, unsigned long size,
 				     unsigned int type);
 
 extern struct mtrr_ops generic_mtrr_ops;
+extern const struct mtrr_ops generic_mtrr_ops;
 
 extern int positive_have_wrcomb(void);
 
@@ -75,6 +79,11 @@ struct mtrr_var_range {
 	u32 base_hi;
 	u32 mask_lo;
 	u32 mask_hi;
+	unsigned long	flags;
+	unsigned long	cr4val;
+	u32		deftype_lo;
+	u32		deftype_hi;
+	u32		ccr3;
 };
 
 void set_mtrr_done(struct set_mtrr_context *ctxt);
@@ -89,12 +98,20 @@ extern void set_mtrr_ops(struct mtrr_ops * ops);
 
 extern u64 size_or_mask, size_and_mask;
 extern struct mtrr_ops * mtrr_if;
+bool get_mtrr_state(void);
+void mtrr_bp_pat_init(void);
+
+extern void set_mtrr_ops(const struct mtrr_ops *ops);
+
+extern u64 size_or_mask, size_and_mask;
+extern const struct mtrr_ops *mtrr_if;
 
 #define is_cpu(vnd)	(mtrr_if && mtrr_if->vendor == X86_VENDOR_##vnd)
 #define use_intel()	(mtrr_if && mtrr_if->use_intel_if == 1)
 
 extern unsigned int num_var_ranges;
 extern u64 mtrr_tom2;
+extern struct mtrr_state_type mtrr_state;
 
 void mtrr_state_warn(void);
 const char *mtrr_attrib_to_str(int x);
@@ -104,3 +121,6 @@ void mtrr_wrmsr(unsigned, unsigned, unsigned);
 int amd_init_mtrr(void);
 int cyrix_init_mtrr(void);
 int centaur_init_mtrr(void);
+
+extern int changed_by_mtrr_cleanup;
+extern int mtrr_cleanup(unsigned address_bits);

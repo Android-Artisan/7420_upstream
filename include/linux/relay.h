@@ -15,6 +15,7 @@
 #include <linux/timer.h>
 #include <linux/wait.h>
 #include <linux/list.h>
+#include <linux/bug.h>
 #include <linux/fs.h>
 #include <linux/poll.h>
 #include <linux/kref.h>
@@ -145,6 +146,11 @@ struct rchan_callbacks
 	struct dentry *(*create_buf_file)(const char *filename,
 					  struct dentry *parent,
 					  int mode,
+	 * See Documentation/filesystems/relay.txt for more info.
+	 */
+	struct dentry *(*create_buf_file)(const char *filename,
+					  struct dentry *parent,
+					  umode_t mode,
 					  struct rchan_buf *buf,
 					  int *is_global);
 

@@ -19,6 +19,7 @@
 #include <linux/errno.h>
 #include <linux/interrupt.h>
 #include <linux/irq.h>
+#include <linux/of_irq.h>
 #include <linux/of_platform.h>
 
 #include <asm/dcr.h>
@@ -116,6 +117,7 @@ static int __init ppc4xx_l2c_probe(void)
 
 	/* Install error handler */
 	if (request_irq(irq, l2c_error_handler, IRQF_DISABLED, "L2C", 0) < 0) {
+	if (request_irq(irq, l2c_error_handler, 0, "L2C", 0) < 0) {
 		printk(KERN_ERR "Cannot install L2C error handler"
 		       ", cache is not enabled\n");
 		of_node_put(np);
@@ -175,6 +177,8 @@ static int __init ppc4xx_l2c_probe(void)
 
 	/* Check for 460EX/GT special handling */
 	if (of_device_is_compatible(np, "ibm,l2-cache-460ex"))
+	if (of_device_is_compatible(np, "ibm,l2-cache-460ex") ||
+	    of_device_is_compatible(np, "ibm,l2-cache-460gt"))
 		r |= L2C_CFG_RDBW;
 
 	mtdcr(dcrbase_l2c + DCRN_L2C0_CFG, r);
@@ -195,6 +199,31 @@ arch_initcall(ppc4xx_l2c_probe);
 void ppc4xx_reset_system(char *cmd)
 {
 	mtspr(SPRN_DBCR0, mfspr(SPRN_DBCR0) | DBCR0_RST_SYSTEM);
+ * Apply a system reset. Alternatively a board specific value may be
+ * provided via the "reset-type" property in the cpu node.
+ */
+void ppc4xx_reset_system(char *cmd)
+{
+	struct device_node *np;
+	u32 reset_type = DBCR0_RST_SYSTEM;
+	const u32 *prop;
+
+	np = of_find_node_by_type(NULL, "cpu");
+	if (np) {
+		prop = of_get_property(np, "reset-type", NULL);
+
+		/*
+		 * Check if property exists and if it is in range:
+		 * 1 - PPC4xx core reset
+		 * 2 - PPC4xx chip reset
+		 * 3 - PPC4xx system reset (default)
+		 */
+		if ((prop) && ((prop[0] >= 1) && (prop[0] <= 3)))
+			reset_type = prop[0] << 28;
+	}
+
+	mtspr(SPRN_DBCR0, mfspr(SPRN_DBCR0) | reset_type);
+
 	while (1)
 		;	/* Just in case the reset doesn't work */
 }

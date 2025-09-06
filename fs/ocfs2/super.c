@@ -43,6 +43,12 @@
 #include <linux/seq_file.h>
 
 #define MLOG_MASK_PREFIX ML_SUPER
+#include <linux/quotaops.h>
+#include <linux/cleancache.h>
+
+#define CREATE_TRACE_POINTS
+#include "ocfs2_trace.h"
+
 #include <cluster/masklog.h>
 
 #include "ocfs2.h"
@@ -51,6 +57,8 @@
 #include "ocfs1_fs_compat.h"
 
 #include "alloc.h"
+#include "aops.h"
+#include "blockcheck.h"
 #include "dlmglue.h"
 #include "export.h"
 #include "extent_map.h"
@@ -70,6 +78,18 @@
 static struct kmem_cache *ocfs2_inode_cachep = NULL;
 
 /* OCFS2 needs to schedule several differnt types of work which
+#include "xattr.h"
+#include "quota.h"
+#include "refcounttree.h"
+#include "suballoc.h"
+
+#include "buffer_head_io.h"
+
+static struct kmem_cache *ocfs2_inode_cachep;
+struct kmem_cache *ocfs2_dquot_cachep;
+struct kmem_cache *ocfs2_qf_chunk_cachep;
+
+/* OCFS2 needs to schedule several different types of work which
  * require cluster locking, disk I/O, recovery waits, etc. Since these
  * types of work tend to be heavy we avoid using the kernel events
  * workqueue and schedule on our own. */
@@ -79,6 +99,11 @@ static struct dentry *ocfs2_debugfs_root = NULL;
 
 MODULE_AUTHOR("Oracle");
 MODULE_LICENSE("GPL");
+static struct dentry *ocfs2_debugfs_root;
+
+MODULE_AUTHOR("Oracle");
+MODULE_LICENSE("GPL");
+MODULE_DESCRIPTION("OCFS2 cluster file system");
 
 struct mount_options
 {
@@ -87,6 +112,10 @@ struct mount_options
 	unsigned int	atime_quantum;
 	signed short	slot;
 	unsigned int	localalloc_opt;
+	unsigned short	slot;
+	int		localalloc_opt;
+	unsigned int	resv_level;
+	int		dir_resv_level;
 	char		cluster_stack[OCFS2_STACK_LABEL_LEN + 1];
 };
 
@@ -94,6 +123,9 @@ static int ocfs2_parse_options(struct super_block *sb, char *options,
 			       struct mount_options *mopt,
 			       int is_remount);
 static int ocfs2_show_options(struct seq_file *s, struct vfsmount *mnt);
+static int ocfs2_check_set_options(struct super_block *sb,
+				   struct mount_options *options);
+static int ocfs2_show_options(struct seq_file *s, struct dentry *root);
 static void ocfs2_put_super(struct super_block *sb);
 static int ocfs2_mount_volume(struct super_block *sb);
 static int ocfs2_remount(struct super_block *sb, int *flags, char *data);
@@ -116,6 +148,12 @@ static int ocfs2_verify_volume(struct ocfs2_dinode *di,
 static int ocfs2_initialize_super(struct super_block *sb,
 				  struct buffer_head *bh,
 				  int sector_size);
+			       u32 sectsize,
+			       struct ocfs2_blockcheck_stats *stats);
+static int ocfs2_initialize_super(struct super_block *sb,
+				  struct buffer_head *bh,
+				  int sector_size,
+				  struct ocfs2_blockcheck_stats *stats);
 static int ocfs2_get_sector(struct super_block *sb,
 			    struct buffer_head **bh,
 			    int block,
@@ -123,6 +161,16 @@ static int ocfs2_get_sector(struct super_block *sb,
 static void ocfs2_write_super(struct super_block *sb);
 static struct inode *ocfs2_alloc_inode(struct super_block *sb);
 static void ocfs2_destroy_inode(struct inode *inode);
+static struct inode *ocfs2_alloc_inode(struct super_block *sb);
+static void ocfs2_destroy_inode(struct inode *inode);
+static int ocfs2_susp_quotas(struct ocfs2_super *osb, int unsuspend);
+static int ocfs2_enable_quotas(struct ocfs2_super *osb);
+static void ocfs2_disable_quotas(struct ocfs2_super *osb);
+
+static struct dquot **ocfs2_get_dquots(struct inode *inode)
+{
+	return OCFS2_I(inode)->i_dquot;
+}
 
 static const struct super_operations ocfs2_sops = {
 	.statfs		= ocfs2_statfs,
@@ -136,6 +184,14 @@ static const struct super_operations ocfs2_sops = {
 	.put_super	= ocfs2_put_super,
 	.remount_fs	= ocfs2_remount,
 	.show_options   = ocfs2_show_options,
+	.evict_inode	= ocfs2_evict_inode,
+	.sync_fs	= ocfs2_sync_fs,
+	.put_super	= ocfs2_put_super,
+	.remount_fs	= ocfs2_remount,
+	.show_options   = ocfs2_show_options,
+	.quota_read	= ocfs2_quota_read,
+	.quota_write	= ocfs2_quota_write,
+	.get_dquots	= ocfs2_get_dquots,
 };
 
 enum {
@@ -146,6 +202,7 @@ enum {
 	Opt_nointr,
 	Opt_hb_none,
 	Opt_hb_local,
+	Opt_hb_global,
 	Opt_data_ordered,
 	Opt_data_writeback,
 	Opt_atime_quantum,
@@ -158,6 +215,23 @@ enum {
 };
 
 static match_table_t tokens = {
+	Opt_user_xattr,
+	Opt_nouser_xattr,
+	Opt_inode64,
+	Opt_acl,
+	Opt_noacl,
+	Opt_usrquota,
+	Opt_grpquota,
+	Opt_coherency_buffered,
+	Opt_coherency_full,
+	Opt_resv_level,
+	Opt_dir_resv_level,
+	Opt_journal_async_commit,
+	Opt_err_cont,
+	Opt_err,
+};
+
+static const match_table_t tokens = {
 	{Opt_barrier, "barrier=%u"},
 	{Opt_err_panic, "errors=panic"},
 	{Opt_err_ro, "errors=remount-ro"},
@@ -165,6 +239,7 @@ static match_table_t tokens = {
 	{Opt_nointr, "nointr"},
 	{Opt_hb_none, OCFS2_HB_NONE},
 	{Opt_hb_local, OCFS2_HB_LOCAL},
+	{Opt_hb_global, OCFS2_HB_GLOBAL},
 	{Opt_data_ordered, "data=ordered"},
 	{Opt_data_writeback, "data=writeback"},
 	{Opt_atime_quantum, "atime_quantum=%u"},
@@ -185,6 +260,202 @@ static void ocfs2_write_super(struct super_block *sb)
 		BUG();
 	sb->s_dirt = 0;
 }
+
+	{Opt_user_xattr, "user_xattr"},
+	{Opt_nouser_xattr, "nouser_xattr"},
+	{Opt_inode64, "inode64"},
+	{Opt_acl, "acl"},
+	{Opt_noacl, "noacl"},
+	{Opt_usrquota, "usrquota"},
+	{Opt_grpquota, "grpquota"},
+	{Opt_coherency_buffered, "coherency=buffered"},
+	{Opt_coherency_full, "coherency=full"},
+	{Opt_resv_level, "resv_level=%u"},
+	{Opt_dir_resv_level, "dir_resv_level=%u"},
+	{Opt_journal_async_commit, "journal_async_commit"},
+	{Opt_err_cont, "errors=continue"},
+	{Opt_err, NULL}
+};
+
+#ifdef CONFIG_DEBUG_FS
+static int ocfs2_osb_dump(struct ocfs2_super *osb, char *buf, int len)
+{
+	struct ocfs2_cluster_connection *cconn = osb->cconn;
+	struct ocfs2_recovery_map *rm = osb->recovery_map;
+	struct ocfs2_orphan_scan *os = &osb->osb_orphan_scan;
+	int i, out = 0;
+
+	out += snprintf(buf + out, len - out,
+			"%10s => Id: %-s  Uuid: %-s  Gen: 0x%X  Label: %-s\n",
+			"Device", osb->dev_str, osb->uuid_str,
+			osb->fs_generation, osb->vol_label);
+
+	out += snprintf(buf + out, len - out,
+			"%10s => State: %d  Flags: 0x%lX\n", "Volume",
+			atomic_read(&osb->vol_state), osb->osb_flags);
+
+	out += snprintf(buf + out, len - out,
+			"%10s => Block: %lu  Cluster: %d\n", "Sizes",
+			osb->sb->s_blocksize, osb->s_clustersize);
+
+	out += snprintf(buf + out, len - out,
+			"%10s => Compat: 0x%X  Incompat: 0x%X  "
+			"ROcompat: 0x%X\n",
+			"Features", osb->s_feature_compat,
+			osb->s_feature_incompat, osb->s_feature_ro_compat);
+
+	out += snprintf(buf + out, len - out,
+			"%10s => Opts: 0x%lX  AtimeQuanta: %u\n", "Mount",
+			osb->s_mount_opt, osb->s_atime_quantum);
+
+	if (cconn) {
+		out += snprintf(buf + out, len - out,
+				"%10s => Stack: %s  Name: %*s  "
+				"Version: %d.%d\n", "Cluster",
+				(*osb->osb_cluster_stack == '\0' ?
+				 "o2cb" : osb->osb_cluster_stack),
+				cconn->cc_namelen, cconn->cc_name,
+				cconn->cc_version.pv_major,
+				cconn->cc_version.pv_minor);
+	}
+
+	spin_lock(&osb->dc_task_lock);
+	out += snprintf(buf + out, len - out,
+			"%10s => Pid: %d  Count: %lu  WakeSeq: %lu  "
+			"WorkSeq: %lu\n", "DownCnvt",
+			(osb->dc_task ?  task_pid_nr(osb->dc_task) : -1),
+			osb->blocked_lock_count, osb->dc_wake_sequence,
+			osb->dc_work_sequence);
+	spin_unlock(&osb->dc_task_lock);
+
+	spin_lock(&osb->osb_lock);
+	out += snprintf(buf + out, len - out, "%10s => Pid: %d  Nodes:",
+			"Recovery",
+			(osb->recovery_thread_task ?
+			 task_pid_nr(osb->recovery_thread_task) : -1));
+	if (rm->rm_used == 0)
+		out += snprintf(buf + out, len - out, " None\n");
+	else {
+		for (i = 0; i < rm->rm_used; i++)
+			out += snprintf(buf + out, len - out, " %d",
+					rm->rm_entries[i]);
+		out += snprintf(buf + out, len - out, "\n");
+	}
+	spin_unlock(&osb->osb_lock);
+
+	out += snprintf(buf + out, len - out,
+			"%10s => Pid: %d  Interval: %lu\n", "Commit",
+			(osb->commit_task ? task_pid_nr(osb->commit_task) : -1),
+			osb->osb_commit_interval);
+
+	out += snprintf(buf + out, len - out,
+			"%10s => State: %d  TxnId: %lu  NumTxns: %d\n",
+			"Journal", osb->journal->j_state,
+			osb->journal->j_trans_id,
+			atomic_read(&osb->journal->j_num_trans));
+
+	out += snprintf(buf + out, len - out,
+			"%10s => GlobalAllocs: %d  LocalAllocs: %d  "
+			"SubAllocs: %d  LAWinMoves: %d  SAExtends: %d\n",
+			"Stats",
+			atomic_read(&osb->alloc_stats.bitmap_data),
+			atomic_read(&osb->alloc_stats.local_data),
+			atomic_read(&osb->alloc_stats.bg_allocs),
+			atomic_read(&osb->alloc_stats.moves),
+			atomic_read(&osb->alloc_stats.bg_extends));
+
+	out += snprintf(buf + out, len - out,
+			"%10s => State: %u  Descriptor: %llu  Size: %u bits  "
+			"Default: %u bits\n",
+			"LocalAlloc", osb->local_alloc_state,
+			(unsigned long long)osb->la_last_gd,
+			osb->local_alloc_bits, osb->local_alloc_default_bits);
+
+	spin_lock(&osb->osb_lock);
+	out += snprintf(buf + out, len - out,
+			"%10s => InodeSlot: %d  StolenInodes: %d, "
+			"MetaSlot: %d  StolenMeta: %d\n", "Steal",
+			osb->s_inode_steal_slot,
+			atomic_read(&osb->s_num_inodes_stolen),
+			osb->s_meta_steal_slot,
+			atomic_read(&osb->s_num_meta_stolen));
+	spin_unlock(&osb->osb_lock);
+
+	out += snprintf(buf + out, len - out, "OrphanScan => ");
+	out += snprintf(buf + out, len - out, "Local: %u  Global: %u ",
+			os->os_count, os->os_seqno);
+	out += snprintf(buf + out, len - out, " Last Scan: ");
+	if (atomic_read(&os->os_state) == ORPHAN_SCAN_INACTIVE)
+		out += snprintf(buf + out, len - out, "Disabled\n");
+	else
+		out += snprintf(buf + out, len - out, "%lu seconds ago\n",
+				(get_seconds() - os->os_scantime.tv_sec));
+
+	out += snprintf(buf + out, len - out, "%10s => %3s  %10s\n",
+			"Slots", "Num", "RecoGen");
+	for (i = 0; i < osb->max_slots; ++i) {
+		out += snprintf(buf + out, len - out,
+				"%10s  %c %3d  %10d\n",
+				" ",
+				(i == osb->slot_num ? '*' : ' '),
+				i, osb->slot_recovery_generations[i]);
+	}
+
+	return out;
+}
+
+static int ocfs2_osb_debug_open(struct inode *inode, struct file *file)
+{
+	struct ocfs2_super *osb = inode->i_private;
+	char *buf = NULL;
+
+	buf = kmalloc(PAGE_SIZE, GFP_KERNEL);
+	if (!buf)
+		goto bail;
+
+	i_size_write(inode, ocfs2_osb_dump(osb, buf, PAGE_SIZE));
+
+	file->private_data = buf;
+
+	return 0;
+bail:
+	return -ENOMEM;
+}
+
+static int ocfs2_debug_release(struct inode *inode, struct file *file)
+{
+	kfree(file->private_data);
+	return 0;
+}
+
+static ssize_t ocfs2_debug_read(struct file *file, char __user *buf,
+				size_t nbytes, loff_t *ppos)
+{
+	return simple_read_from_buffer(buf, nbytes, ppos, file->private_data,
+				       i_size_read(file->f_mapping->host));
+}
+#else
+static int ocfs2_osb_debug_open(struct inode *inode, struct file *file)
+{
+	return 0;
+}
+static int ocfs2_debug_release(struct inode *inode, struct file *file)
+{
+	return 0;
+}
+static ssize_t ocfs2_debug_read(struct file *file, char __user *buf,
+				size_t nbytes, loff_t *ppos)
+{
+	return 0;
+}
+#endif	/* CONFIG_DEBUG_FS */
+
+static const struct file_operations ocfs2_osb_debug_fops = {
+	.open =		ocfs2_osb_debug_open,
+	.release =	ocfs2_debug_release,
+	.read =		ocfs2_debug_read,
+	.llseek =	generic_file_llseek,
+};
 
 static int ocfs2_sync_fs(struct super_block *sb, int wait)
 {
@@ -209,8 +480,26 @@ static int ocfs2_sync_fs(struct super_block *sb, int wait)
 		if (wait)
 			log_wait_commit(OCFS2_SB(sb)->journal->j_journal,
 					target);
+	if (jbd2_journal_start_commit(OCFS2_SB(sb)->journal->j_journal,
+				      &target)) {
+		if (wait)
+			jbd2_log_wait_commit(OCFS2_SB(sb)->journal->j_journal,
+					     target);
 	}
 	return 0;
+}
+
+static int ocfs2_need_system_inode(struct ocfs2_super *osb, int ino)
+{
+	if (!OCFS2_HAS_RO_COMPAT_FEATURE(osb->sb, OCFS2_FEATURE_RO_COMPAT_USRQUOTA)
+	    && (ino == USER_QUOTA_SYSTEM_INODE
+		|| ino == LOCAL_USER_QUOTA_SYSTEM_INODE))
+		return 0;
+	if (!OCFS2_HAS_RO_COMPAT_FEATURE(osb->sb, OCFS2_FEATURE_RO_COMPAT_GRPQUOTA)
+	    && (ino == GROUP_QUOTA_SYSTEM_INODE
+		|| ino == LOCAL_GROUP_QUOTA_SYSTEM_INODE))
+		return 0;
+	return 1;
 }
 
 static int ocfs2_init_global_system_inodes(struct ocfs2_super *osb)
@@ -239,12 +528,13 @@ static int ocfs2_init_global_system_inodes(struct ocfs2_super *osb)
 
 	for (i = OCFS2_FIRST_ONLINE_SYSTEM_INODE;
 	     i <= OCFS2_LAST_GLOBAL_SYSTEM_INODE; i++) {
+		if (!ocfs2_need_system_inode(osb, i))
+			continue;
 		new = ocfs2_get_system_file_inode(osb, i, osb->slot_num);
 		if (!new) {
 			ocfs2_release_system_inodes(osb);
-			status = -EINVAL;
+			status = ocfs2_is_soft_readonly(osb) ? -EROFS : -EINVAL;
 			mlog_errno(status);
-			/* FIXME: Should ERROR_RO_FS */
 			mlog(ML_ERROR, "Unable to load system inode %d, "
 			     "possibly corrupt fs?", i);
 			goto bail;
@@ -255,6 +545,8 @@ static int ocfs2_init_global_system_inodes(struct ocfs2_super *osb)
 
 bail:
 	mlog_exit(status);
+	if (status)
+		mlog_errno(status);
 	return status;
 }
 
@@ -269,10 +561,15 @@ static int ocfs2_init_local_system_inodes(struct ocfs2_super *osb)
 	for (i = OCFS2_LAST_GLOBAL_SYSTEM_INODE + 1;
 	     i < NUM_SYSTEM_INODES;
 	     i++) {
+	for (i = OCFS2_LAST_GLOBAL_SYSTEM_INODE + 1;
+	     i < NUM_SYSTEM_INODES;
+	     i++) {
+		if (!ocfs2_need_system_inode(osb, i))
+			continue;
 		new = ocfs2_get_system_file_inode(osb, i, osb->slot_num);
 		if (!new) {
 			ocfs2_release_system_inodes(osb);
-			status = -EINVAL;
+			status = ocfs2_is_soft_readonly(osb) ? -EROFS : -EINVAL;
 			mlog(ML_ERROR, "status=%d, sysfile=%d, slot=%d\n",
 			     status, i, osb->slot_num);
 			goto bail;
@@ -283,6 +580,8 @@ static int ocfs2_init_local_system_inodes(struct ocfs2_super *osb)
 
 bail:
 	mlog_exit(status);
+	if (status)
+		mlog_errno(status);
 	return status;
 }
 
@@ -298,6 +597,11 @@ static void ocfs2_release_system_inodes(struct ocfs2_super *osb)
 		if (inode) {
 			iput(inode);
 			osb->system_inodes[i] = NULL;
+	for (i = 0; i < NUM_GLOBAL_SYSTEM_INODES; i++) {
+		inode = osb->global_system_inodes[i];
+		if (inode) {
+			iput(inode);
+			osb->global_system_inodes[i] = NULL;
 		}
 	}
 
@@ -314,6 +618,18 @@ static void ocfs2_release_system_inodes(struct ocfs2_super *osb)
 	}
 
 	mlog_exit(0);
+	if (!osb->local_system_inodes)
+		return;
+
+	for (i = 0; i < NUM_LOCAL_SYSTEM_INODES * osb->max_slots; i++) {
+		if (osb->local_system_inodes[i]) {
+			iput(osb->local_system_inodes[i]);
+			osb->local_system_inodes[i] = NULL;
+		}
+	}
+
+	kfree(osb->local_system_inodes);
+	osb->local_system_inodes = NULL;
 }
 
 /* We're allocating fs objects, use GFP_NOFS */
@@ -331,6 +647,23 @@ static struct inode *ocfs2_alloc_inode(struct super_block *sb)
 static void ocfs2_destroy_inode(struct inode *inode)
 {
 	kmem_cache_free(ocfs2_inode_cachep, OCFS2_I(inode));
+	oi->i_sync_tid = 0;
+	oi->i_datasync_tid = 0;
+	memset(&oi->i_dquot, 0, sizeof(oi->i_dquot));
+
+	jbd2_journal_init_jbd_inode(&oi->ip_jinode, &oi->vfs_inode);
+	return &oi->vfs_inode;
+}
+
+static void ocfs2_i_callback(struct rcu_head *head)
+{
+	struct inode *inode = container_of(head, struct inode, i_rcu);
+	kmem_cache_free(ocfs2_inode_cachep, OCFS2_I(inode));
+}
+
+static void ocfs2_destroy_inode(struct inode *inode)
+{
+	call_rcu(&inode->i_rcu, ocfs2_i_callback);
 }
 
 static unsigned long long ocfs2_max_file_offset(unsigned int bbits,
@@ -348,6 +681,7 @@ static unsigned long long ocfs2_max_file_offset(unsigned int bbits,
 
 #if BITS_PER_LONG == 32
 # if defined(CONFIG_LBD)
+# if defined(CONFIG_LBDAF)
 	BUILD_BUG_ON(sizeof(sector_t) != 8);
 	/*
 	 * We might be limited by page cache size.
@@ -388,12 +722,21 @@ static int ocfs2_remount(struct super_block *sb, int *flags, char *data)
 	struct ocfs2_super *osb = OCFS2_SB(sb);
 
 	if (!ocfs2_parse_options(sb, data, &parsed_options, 1)) {
+	u32 tmp;
+
+	sync_filesystem(sb);
+
+	if (!ocfs2_parse_options(sb, data, &parsed_options, 1) ||
+	    !ocfs2_check_set_options(sb, &parsed_options)) {
 		ret = -EINVAL;
 		goto out;
 	}
 
 	if ((osb->s_mount_opt & OCFS2_MOUNT_HB_LOCAL) !=
 	    (parsed_options.mount_opt & OCFS2_MOUNT_HB_LOCAL)) {
+	tmp = OCFS2_MOUNT_HB_LOCAL | OCFS2_MOUNT_HB_GLOBAL |
+		OCFS2_MOUNT_HB_NONE;
+	if ((osb->s_mount_opt & tmp) != (parsed_options.mount_opt & tmp)) {
 		ret = -EINVAL;
 		mlog(ML_ERROR, "Cannot change heartbeat mode on remount\n");
 		goto out;
@@ -408,6 +751,23 @@ static int ocfs2_remount(struct super_block *sb, int *flags, char *data)
 
 	/* We're going to/from readonly mode. */
 	if ((*flags & MS_RDONLY) != (sb->s_flags & MS_RDONLY)) {
+	/* Probably don't want this on remount; it might
+	 * mess with other nodes */
+	if (!(osb->s_mount_opt & OCFS2_MOUNT_INODE64) &&
+	    (parsed_options.mount_opt & OCFS2_MOUNT_INODE64)) {
+		ret = -EINVAL;
+		mlog(ML_ERROR, "Cannot enable inode64 on remount\n");
+		goto out;
+	}
+
+	/* We're going to/from readonly mode. */
+	if ((*flags & MS_RDONLY) != (sb->s_flags & MS_RDONLY)) {
+		/* Disable quota accounting before remounting RO */
+		if (*flags & MS_RDONLY) {
+			ret = ocfs2_susp_quotas(osb, 0);
+			if (ret < 0)
+				goto out;
+		}
 		/* Lock here so the check of HARD_RO and the potential
 		 * setting of SOFT_RO is atomic. */
 		spin_lock(&osb->osb_lock);
@@ -424,6 +784,9 @@ static int ocfs2_remount(struct super_block *sb, int *flags, char *data)
 		} else {
 			mlog(0, "Making ro filesystem writeable.\n");
 
+			sb->s_flags |= MS_RDONLY;
+			osb->osb_flags |= OCFS2_OSB_SOFT_RO;
+		} else {
 			if (osb->osb_flags & OCFS2_OSB_ERROR_FS) {
 				mlog(ML_ERROR, "Cannot remount RDWR "
 				     "filesystem due to previous errors.\n");
@@ -443,6 +806,24 @@ static int ocfs2_remount(struct super_block *sb, int *flags, char *data)
 		}
 unlock_osb:
 		spin_unlock(&osb->osb_lock);
+		trace_ocfs2_remount(sb->s_flags, osb->osb_flags, *flags);
+unlock_osb:
+		spin_unlock(&osb->osb_lock);
+		/* Enable quota accounting after remounting RW */
+		if (!ret && !(*flags & MS_RDONLY)) {
+			if (sb_any_quota_suspended(sb))
+				ret = ocfs2_susp_quotas(osb, 1);
+			else
+				ret = ocfs2_enable_quotas(osb);
+			if (ret < 0) {
+				/* Return back changes... */
+				spin_lock(&osb->osb_lock);
+				sb->s_flags |= MS_RDONLY;
+				osb->osb_flags |= OCFS2_OSB_SOFT_RO;
+				spin_unlock(&osb->osb_lock);
+				goto out;
+			}
+		}
 	}
 
 	if (!ret) {
@@ -456,6 +837,10 @@ unlock_osb:
 
 		if (!ocfs2_is_hard_readonly(osb))
 			ocfs2_set_journal_params(osb);
+
+		sb->s_flags = (sb->s_flags & ~MS_POSIXACL) |
+			((osb->s_mount_opt & OCFS2_MOUNT_POSIX_ACL) ?
+							MS_POSIXACL : 0);
 	}
 out:
 	return ret;
@@ -464,6 +849,8 @@ out:
 static int ocfs2_sb_probe(struct super_block *sb,
 			  struct buffer_head **bh,
 			  int *sector_size)
+			  int *sector_size,
+			  struct ocfs2_blockcheck_stats *stats)
 {
 	int status, tmpstat;
 	struct ocfs1_vol_disk_hdr *hdr;
@@ -474,6 +861,7 @@ static int ocfs2_sb_probe(struct super_block *sb,
 
 	/* may be > 512 */
 	*sector_size = bdev_hardsect_size(sb->s_bdev);
+	*sector_size = bdev_logical_block_size(sb->s_bdev);
 	if (*sector_size > OCFS2_MAX_BLOCKSIZE) {
 		mlog(ML_ERROR, "Hardware sector size too large: %d (max=%d)\n",
 		     *sector_size, OCFS2_MAX_BLOCKSIZE);
@@ -536,6 +924,20 @@ static int ocfs2_sb_probe(struct super_block *sb,
 		*bh = NULL;
 		if (status != -EAGAIN)
 			break;
+			break;
+		}
+		di = (struct ocfs2_dinode *) (*bh)->b_data;
+		memset(stats, 0, sizeof(struct ocfs2_blockcheck_stats));
+		spin_lock_init(&stats->b_lock);
+		tmpstat = ocfs2_verify_volume(di, *bh, blksize, stats);
+		if (tmpstat < 0) {
+			brelse(*bh);
+			*bh = NULL;
+		}
+		if (tmpstat != -EAGAIN) {
+			status = tmpstat;
+			break;
+		}
 	}
 
 bail:
@@ -546,6 +948,10 @@ static int ocfs2_verify_heartbeat(struct ocfs2_super *osb)
 {
 	if (ocfs2_mount_local(osb)) {
 		if (osb->s_mount_opt & OCFS2_MOUNT_HB_LOCAL) {
+	u32 hb_enabled = OCFS2_MOUNT_HB_LOCAL | OCFS2_MOUNT_HB_GLOBAL;
+
+	if (osb->s_mount_opt & hb_enabled) {
+		if (ocfs2_mount_local(osb)) {
 			mlog(ML_ERROR, "Cannot heartbeat on a locally "
 			     "mounted device.\n");
 			return -EINVAL;
@@ -554,6 +960,7 @@ static int ocfs2_verify_heartbeat(struct ocfs2_super *osb)
 
 	if (ocfs2_userspace_stack(osb)) {
 		if (osb->s_mount_opt & OCFS2_MOUNT_HB_LOCAL) {
+		if (ocfs2_userspace_stack(osb)) {
 			mlog(ML_ERROR, "Userspace stack expected, but "
 			     "o2cb heartbeat arguments passed to mount\n");
 			return -EINVAL;
@@ -561,6 +968,16 @@ static int ocfs2_verify_heartbeat(struct ocfs2_super *osb)
 	}
 
 	if (!(osb->s_mount_opt & OCFS2_MOUNT_HB_LOCAL)) {
+		if (((osb->s_mount_opt & OCFS2_MOUNT_HB_GLOBAL) &&
+		     !ocfs2_cluster_o2cb_global_heartbeat(osb)) ||
+		    ((osb->s_mount_opt & OCFS2_MOUNT_HB_LOCAL) &&
+		     ocfs2_cluster_o2cb_global_heartbeat(osb))) {
+			mlog(ML_ERROR, "Mismatching o2cb heartbeat modes\n");
+			return -EINVAL;
+		}
+	}
+
+	if (!(osb->s_mount_opt & hb_enabled)) {
 		if (!ocfs2_mount_local(osb) && !ocfs2_is_hard_readonly(osb) &&
 		    !ocfs2_userspace_stack(osb)) {
 			mlog(ML_ERROR, "Heartbeat has to be started to mount "
@@ -601,6 +1018,105 @@ static int ocfs2_verify_userspace_stack(struct ocfs2_super *osb,
 	return 0;
 }
 
+static int ocfs2_susp_quotas(struct ocfs2_super *osb, int unsuspend)
+{
+	int type;
+	struct super_block *sb = osb->sb;
+	unsigned int feature[OCFS2_MAXQUOTAS] = {
+					OCFS2_FEATURE_RO_COMPAT_USRQUOTA,
+					OCFS2_FEATURE_RO_COMPAT_GRPQUOTA};
+	int status = 0;
+
+	for (type = 0; type < OCFS2_MAXQUOTAS; type++) {
+		if (!OCFS2_HAS_RO_COMPAT_FEATURE(sb, feature[type]))
+			continue;
+		if (unsuspend)
+			status = dquot_resume(sb, type);
+		else {
+			struct ocfs2_mem_dqinfo *oinfo;
+
+			/* Cancel periodic syncing before suspending */
+			oinfo = sb_dqinfo(sb, type)->dqi_priv;
+			cancel_delayed_work_sync(&oinfo->dqi_sync_work);
+			status = dquot_suspend(sb, type);
+		}
+		if (status < 0)
+			break;
+	}
+	if (status < 0)
+		mlog(ML_ERROR, "Failed to suspend/unsuspend quotas on "
+		     "remount (error = %d).\n", status);
+	return status;
+}
+
+static int ocfs2_enable_quotas(struct ocfs2_super *osb)
+{
+	struct inode *inode[OCFS2_MAXQUOTAS] = { NULL, NULL };
+	struct super_block *sb = osb->sb;
+	unsigned int feature[OCFS2_MAXQUOTAS] = {
+					OCFS2_FEATURE_RO_COMPAT_USRQUOTA,
+					OCFS2_FEATURE_RO_COMPAT_GRPQUOTA};
+	unsigned int ino[OCFS2_MAXQUOTAS] = {
+					LOCAL_USER_QUOTA_SYSTEM_INODE,
+					LOCAL_GROUP_QUOTA_SYSTEM_INODE };
+	int status;
+	int type;
+
+	sb_dqopt(sb)->flags |= DQUOT_QUOTA_SYS_FILE | DQUOT_NEGATIVE_USAGE;
+	for (type = 0; type < OCFS2_MAXQUOTAS; type++) {
+		if (!OCFS2_HAS_RO_COMPAT_FEATURE(sb, feature[type]))
+			continue;
+		inode[type] = ocfs2_get_system_file_inode(osb, ino[type],
+							osb->slot_num);
+		if (!inode[type]) {
+			status = -ENOENT;
+			goto out_quota_off;
+		}
+		status = dquot_enable(inode[type], type, QFMT_OCFS2,
+				      DQUOT_USAGE_ENABLED);
+		if (status < 0)
+			goto out_quota_off;
+	}
+
+	for (type = 0; type < OCFS2_MAXQUOTAS; type++)
+		iput(inode[type]);
+	return 0;
+out_quota_off:
+	ocfs2_disable_quotas(osb);
+	for (type = 0; type < OCFS2_MAXQUOTAS; type++)
+		iput(inode[type]);
+	mlog_errno(status);
+	return status;
+}
+
+static void ocfs2_disable_quotas(struct ocfs2_super *osb)
+{
+	int type;
+	struct inode *inode;
+	struct super_block *sb = osb->sb;
+	struct ocfs2_mem_dqinfo *oinfo;
+
+	/* We mostly ignore errors in this function because there's not much
+	 * we can do when we see them */
+	for (type = 0; type < OCFS2_MAXQUOTAS; type++) {
+		if (!sb_has_quota_loaded(sb, type))
+			continue;
+		if (!sb_has_quota_suspended(sb, type)) {
+			oinfo = sb_dqinfo(sb, type)->dqi_priv;
+			cancel_delayed_work_sync(&oinfo->dqi_sync_work);
+		}
+		inode = igrab(sb->s_dquot.files[type]);
+		/* Turn off quotas. This will remove all dquot structures from
+		 * memory and so they will be automatically synced to global
+		 * quota files */
+		dquot_disable(sb, type, DQUOT_USAGE_ENABLED |
+					DQUOT_LIMITS_ENABLED);
+		if (!inode)
+			continue;
+		iput(inode);
+	}
+}
+
 static int ocfs2_fill_super(struct super_block *sb, void *data, int silent)
 {
 	struct dentry *root;
@@ -612,6 +1128,10 @@ static int ocfs2_fill_super(struct super_block *sb, void *data, int silent)
 	char nodestr[8];
 
 	mlog_entry("%p, %p, %i", sb, data, silent);
+	char nodestr[12];
+	struct ocfs2_blockcheck_stats stats;
+
+	trace_ocfs2_fill_super(sb, data, silent);
 
 	if (!ocfs2_parse_options(sb, data, &parsed_options, 0)) {
 		status = -EINVAL;
@@ -620,12 +1140,14 @@ static int ocfs2_fill_super(struct super_block *sb, void *data, int silent)
 
 	/* probe for superblock */
 	status = ocfs2_sb_probe(sb, &bh, &sector_size);
+	status = ocfs2_sb_probe(sb, &bh, &sector_size, &stats);
 	if (status < 0) {
 		mlog(ML_ERROR, "superblock probe failed!\n");
 		goto read_super_error;
 	}
 
 	status = ocfs2_initialize_super(sb, bh, sector_size);
+	status = ocfs2_initialize_super(sb, bh, sector_size, &stats);
 	osb = OCFS2_SB(sb);
 	if (status < 0) {
 		mlog_errno(status);
@@ -633,17 +1155,33 @@ static int ocfs2_fill_super(struct super_block *sb, void *data, int silent)
 	}
 	brelse(bh);
 	bh = NULL;
+
+	if (!ocfs2_check_set_options(sb, &parsed_options)) {
+		status = -EINVAL;
+		goto read_super_error;
+	}
 	osb->s_mount_opt = parsed_options.mount_opt;
 	osb->s_atime_quantum = parsed_options.atime_quantum;
 	osb->preferred_slot = parsed_options.slot;
 	osb->osb_commit_interval = parsed_options.commit_interval;
 	osb->local_alloc_size = parsed_options.localalloc_opt;
 
+	ocfs2_la_set_sizes(osb, parsed_options.localalloc_opt);
+	osb->osb_resv_level = parsed_options.resv_level;
+	osb->osb_dir_resv_level = parsed_options.resv_level;
+	if (parsed_options.dir_resv_level == -1)
+		osb->osb_dir_resv_level = parsed_options.resv_level;
+	else
+		osb->osb_dir_resv_level = parsed_options.dir_resv_level;
+
 	status = ocfs2_verify_userspace_stack(osb, &parsed_options);
 	if (status)
 		goto read_super_error;
 
 	sb->s_magic = OCFS2_SUPER_MAGIC;
+
+	sb->s_flags = (sb->s_flags & ~(MS_POSIXACL | MS_NOSEC)) |
+		((osb->s_mount_opt & OCFS2_MOUNT_POSIX_ACL) ? MS_POSIXACL : 0);
 
 	/* Hard readonly mode only if: bdev_read_only, MS_RDONLY,
 	 * heartbeat=none */
@@ -672,6 +1210,7 @@ static int ocfs2_fill_super(struct super_block *sb, void *data, int silent)
 				     "unavailable.\n");
 			else
 				mlog_errno(status);			
+				mlog_errno(status);
 			goto read_super_error;
 		}
 
@@ -680,6 +1219,9 @@ static int ocfs2_fill_super(struct super_block *sb, void *data, int silent)
 		printk(KERN_NOTICE "Readonly device detected. No cluster "
 		       "services will be utilized for this mount. Recovery "
 		       "will be skipped.\n");
+		printk(KERN_NOTICE "ocfs2: Readonly device (%s) detected. "
+		       "Cluster services will not be used for this mount. "
+		       "Recovery will be skipped.\n", osb->dev_str);
 	}
 
 	if (!ocfs2_is_hard_readonly(osb)) {
@@ -708,6 +1250,35 @@ static int ocfs2_fill_super(struct super_block *sb, void *data, int silent)
 	if (status < 0)
 		goto read_super_error;
 
+	osb->osb_ctxt = debugfs_create_file("fs_state", S_IFREG|S_IRUSR,
+					    osb->osb_debug_root,
+					    osb,
+					    &ocfs2_osb_debug_fops);
+	if (!osb->osb_ctxt) {
+		status = -EINVAL;
+		mlog_errno(status);
+		goto read_super_error;
+	}
+
+	if (ocfs2_meta_ecc(osb)) {
+		status = ocfs2_blockcheck_stats_debugfs_install(
+						&osb->osb_ecc_stats,
+						osb->osb_debug_root);
+		if (status) {
+			mlog(ML_ERROR,
+			     "Unable to create blockcheck statistics "
+			     "files\n");
+			goto read_super_error;
+		}
+	}
+
+	status = ocfs2_mount_volume(sb);
+	if (status < 0)
+		goto read_super_error;
+
+	if (osb->root_inode)
+		inode = igrab(osb->root_inode);
+
 	if (!inode) {
 		status = -EIO;
 		mlog_errno(status);
@@ -715,6 +1286,7 @@ static int ocfs2_fill_super(struct super_block *sb, void *data, int silent)
 	}
 
 	root = d_alloc_root(inode);
+	root = d_make_root(inode);
 	if (!root) {
 		status = -ENOMEM;
 		mlog_errno(status);
@@ -748,6 +1320,34 @@ read_super_error:
 
 	if (inode)
 		iput(inode);
+	/* Now we can initialize quotas because we can afford to wait
+	 * for cluster locks recovery now. That also means that truncation
+	 * log recovery can happen but that waits for proper quota setup */
+	if (!(sb->s_flags & MS_RDONLY)) {
+		status = ocfs2_enable_quotas(osb);
+		if (status < 0) {
+			/* We have to err-out specially here because
+			 * s_root is already set */
+			mlog_errno(status);
+			atomic_set(&osb->vol_state, VOLUME_DISABLED);
+			wake_up(&osb->osb_mount_event);
+			return status;
+		}
+	}
+
+	ocfs2_complete_quota_recovery(osb);
+
+	/* Now we wake up again for processes waiting for quotas */
+	atomic_set(&osb->vol_state, VOLUME_MOUNTED_QUOTAS);
+	wake_up(&osb->osb_mount_event);
+
+	/* Start this when the mount is almost sure of being successful */
+	ocfs2_orphan_scan_start(osb);
+
+	return status;
+
+read_super_error:
+	brelse(bh);
 
 	if (osb) {
 		atomic_set(&osb->vol_state, VOLUME_DISABLED);
@@ -767,6 +1367,17 @@ static int ocfs2_get_sb(struct file_system_type *fs_type,
 {
 	return get_sb_bdev(fs_type, flags, dev_name, data, ocfs2_fill_super,
 			   mnt);
+	if (status)
+		mlog_errno(status);
+	return status;
+}
+
+static struct dentry *ocfs2_mount(struct file_system_type *fs_type,
+			int flags,
+			const char *dev_name,
+			void *data)
+{
+	return mount_bdev(fs_type, flags, dev_name, data, ocfs2_fill_super);
 }
 
 static struct file_system_type ocfs2_fs_type = {
@@ -780,6 +1391,46 @@ static struct file_system_type ocfs2_fs_type = {
 	.fs_flags       = FS_REQUIRES_DEV|FS_RENAME_DOES_D_MOVE,
 	.next           = NULL
 };
+	.mount          = ocfs2_mount,
+	.kill_sb        = kill_block_super,
+	.fs_flags       = FS_REQUIRES_DEV|FS_RENAME_DOES_D_MOVE,
+	.next           = NULL
+};
+MODULE_ALIAS_FS("ocfs2");
+
+static int ocfs2_check_set_options(struct super_block *sb,
+				   struct mount_options *options)
+{
+	if (options->mount_opt & OCFS2_MOUNT_USRQUOTA &&
+	    !OCFS2_HAS_RO_COMPAT_FEATURE(sb,
+					 OCFS2_FEATURE_RO_COMPAT_USRQUOTA)) {
+		mlog(ML_ERROR, "User quotas were requested, but this "
+		     "filesystem does not have the feature enabled.\n");
+		return 0;
+	}
+	if (options->mount_opt & OCFS2_MOUNT_GRPQUOTA &&
+	    !OCFS2_HAS_RO_COMPAT_FEATURE(sb,
+					 OCFS2_FEATURE_RO_COMPAT_GRPQUOTA)) {
+		mlog(ML_ERROR, "Group quotas were requested, but this "
+		     "filesystem does not have the feature enabled.\n");
+		return 0;
+	}
+	if (options->mount_opt & OCFS2_MOUNT_POSIX_ACL &&
+	    !OCFS2_HAS_INCOMPAT_FEATURE(sb, OCFS2_FEATURE_INCOMPAT_XATTR)) {
+		mlog(ML_ERROR, "ACL support requested but extended attributes "
+		     "feature is not enabled\n");
+		return 0;
+	}
+	/* No ACL setting specified? Use XATTR feature... */
+	if (!(options->mount_opt & (OCFS2_MOUNT_POSIX_ACL |
+				    OCFS2_MOUNT_NO_POSIX_ACL))) {
+		if (OCFS2_HAS_INCOMPAT_FEATURE(sb, OCFS2_FEATURE_INCOMPAT_XATTR))
+			options->mount_opt |= OCFS2_MOUNT_POSIX_ACL;
+		else
+			options->mount_opt |= OCFS2_MOUNT_NO_POSIX_ACL;
+	}
+	return 1;
+}
 
 static int ocfs2_parse_options(struct super_block *sb,
 			       char *options,
@@ -798,6 +1449,20 @@ static int ocfs2_parse_options(struct super_block *sb,
 	mopt->slot = OCFS2_INVALID_SLOT;
 	mopt->localalloc_opt = OCFS2_DEFAULT_LOCAL_ALLOC_SIZE;
 	mopt->cluster_stack[0] = '\0';
+	int status, user_stack = 0;
+	char *p;
+	u32 tmp;
+
+	trace_ocfs2_parse_options(is_remount, options ? options : "(none)");
+
+	mopt->commit_interval = 0;
+	mopt->mount_opt = OCFS2_MOUNT_NOINTR;
+	mopt->atime_quantum = OCFS2_DEFAULT_ATIME_QUANTUM;
+	mopt->slot = OCFS2_INVALID_SLOT;
+	mopt->localalloc_opt = -1;
+	mopt->cluster_stack[0] = '\0';
+	mopt->resv_level = OCFS2_DEFAULT_RESV_LEVEL;
+	mopt->dir_resv_level = -1;
 
 	if (!options) {
 		status = 1;
@@ -818,6 +1483,10 @@ static int ocfs2_parse_options(struct super_block *sb,
 			break;
 		case Opt_hb_none:
 			mopt->mount_opt &= ~OCFS2_MOUNT_HB_LOCAL;
+			mopt->mount_opt |= OCFS2_MOUNT_HB_NONE;
+			break;
+		case Opt_hb_global:
+			mopt->mount_opt |= OCFS2_MOUNT_HB_GLOBAL;
 			break;
 		case Opt_barrier:
 			if (match_int(&args[0], &option)) {
@@ -840,12 +1509,31 @@ static int ocfs2_parse_options(struct super_block *sb,
 			break;
 		case Opt_err_ro:
 			mopt->mount_opt &= ~OCFS2_MOUNT_ERRORS_PANIC;
+			mopt->mount_opt &= ~OCFS2_MOUNT_ERRORS_CONT;
+			mopt->mount_opt &= ~OCFS2_MOUNT_ERRORS_ROFS;
+			mopt->mount_opt |= OCFS2_MOUNT_ERRORS_PANIC;
+			break;
+		case Opt_err_ro:
+			mopt->mount_opt &= ~OCFS2_MOUNT_ERRORS_CONT;
+			mopt->mount_opt &= ~OCFS2_MOUNT_ERRORS_PANIC;
+			mopt->mount_opt |= OCFS2_MOUNT_ERRORS_ROFS;
+			break;
+		case Opt_err_cont:
+			mopt->mount_opt &= ~OCFS2_MOUNT_ERRORS_ROFS;
+			mopt->mount_opt &= ~OCFS2_MOUNT_ERRORS_PANIC;
+			mopt->mount_opt |= OCFS2_MOUNT_ERRORS_CONT;
 			break;
 		case Opt_data_ordered:
 			mopt->mount_opt &= ~OCFS2_MOUNT_DATA_WRITEBACK;
 			break;
 		case Opt_data_writeback:
 			mopt->mount_opt |= OCFS2_MOUNT_DATA_WRITEBACK;
+			break;
+		case Opt_user_xattr:
+			mopt->mount_opt &= ~OCFS2_MOUNT_NOUSERXATTR;
+			break;
+		case Opt_nouser_xattr:
+			mopt->mount_opt |= OCFS2_MOUNT_NOUSERXATTR;
 			break;
 		case Opt_atime_quantum:
 			if (match_int(&args[0], &option)) {
@@ -862,7 +1550,7 @@ static int ocfs2_parse_options(struct super_block *sb,
 				goto bail;
 			}
 			if (option)
-				mopt->slot = (s16)option;
+				mopt->slot = (u16)option;
 			break;
 		case Opt_commit:
 			option = 0;
@@ -874,6 +1562,7 @@ static int ocfs2_parse_options(struct super_block *sb,
 				return 0;
 			if (option == 0)
 				option = JBD_DEFAULT_MAX_COMMIT_AGE;
+				option = JBD2_DEFAULT_MAX_COMMIT_AGE;
 			mopt->commit_interval = HZ * option;
 			break;
 		case Opt_localalloc:
@@ -883,6 +1572,7 @@ static int ocfs2_parse_options(struct super_block *sb,
 				goto bail;
 			}
 			if (option >= 0 && (option <= ocfs2_local_alloc_size(sb) * 8))
+			if (option >= 0)
 				mopt->localalloc_opt = option;
 			break;
 		case Opt_localflocks:
@@ -917,6 +1607,63 @@ static int ocfs2_parse_options(struct super_block *sb,
 			memcpy(mopt->cluster_stack, args[0].from,
 			       OCFS2_STACK_LABEL_LEN);
 			mopt->cluster_stack[OCFS2_STACK_LABEL_LEN] = '\0';
+			/*
+			 * Open code the memcmp here as we don't have
+			 * an osb to pass to
+			 * ocfs2_userspace_stack().
+			 */
+			if (memcmp(mopt->cluster_stack,
+				   OCFS2_CLASSIC_CLUSTER_STACK,
+				   OCFS2_STACK_LABEL_LEN))
+				user_stack = 1;
+			break;
+		case Opt_inode64:
+			mopt->mount_opt |= OCFS2_MOUNT_INODE64;
+			break;
+		case Opt_usrquota:
+			mopt->mount_opt |= OCFS2_MOUNT_USRQUOTA;
+			break;
+		case Opt_grpquota:
+			mopt->mount_opt |= OCFS2_MOUNT_GRPQUOTA;
+			break;
+		case Opt_coherency_buffered:
+			mopt->mount_opt |= OCFS2_MOUNT_COHERENCY_BUFFERED;
+			break;
+		case Opt_coherency_full:
+			mopt->mount_opt &= ~OCFS2_MOUNT_COHERENCY_BUFFERED;
+			break;
+		case Opt_acl:
+			mopt->mount_opt |= OCFS2_MOUNT_POSIX_ACL;
+			mopt->mount_opt &= ~OCFS2_MOUNT_NO_POSIX_ACL;
+			break;
+		case Opt_noacl:
+			mopt->mount_opt |= OCFS2_MOUNT_NO_POSIX_ACL;
+			mopt->mount_opt &= ~OCFS2_MOUNT_POSIX_ACL;
+			break;
+		case Opt_resv_level:
+			if (is_remount)
+				break;
+			if (match_int(&args[0], &option)) {
+				status = 0;
+				goto bail;
+			}
+			if (option >= OCFS2_MIN_RESV_LEVEL &&
+			    option < OCFS2_MAX_RESV_LEVEL)
+				mopt->resv_level = option;
+			break;
+		case Opt_dir_resv_level:
+			if (is_remount)
+				break;
+			if (match_int(&args[0], &option)) {
+				status = 0;
+				goto bail;
+			}
+			if (option >= OCFS2_MIN_RESV_LEVEL &&
+			    option < OCFS2_MAX_RESV_LEVEL)
+				mopt->dir_resv_level = option;
+			break;
+		case Opt_journal_async_commit:
+			mopt->mount_opt |= OCFS2_MOUNT_JOURNAL_ASYNC_COMMIT;
 			break;
 		default:
 			mlog(ML_ERROR,
@@ -943,6 +1690,38 @@ static int ocfs2_show_options(struct seq_file *s, struct vfsmount *mnt)
 		seq_printf(s, ",_netdev,heartbeat=local");
 	else
 		seq_printf(s, ",heartbeat=none");
+	if (user_stack == 0) {
+		/* Ensure only one heartbeat mode */
+		tmp = mopt->mount_opt & (OCFS2_MOUNT_HB_LOCAL |
+					 OCFS2_MOUNT_HB_GLOBAL |
+					 OCFS2_MOUNT_HB_NONE);
+		if (hweight32(tmp) != 1) {
+			mlog(ML_ERROR, "Invalid heartbeat mount options\n");
+			status = 0;
+			goto bail;
+		}
+	}
+
+	status = 1;
+
+bail:
+	return status;
+}
+
+static int ocfs2_show_options(struct seq_file *s, struct dentry *root)
+{
+	struct ocfs2_super *osb = OCFS2_SB(root->d_sb);
+	unsigned long opts = osb->s_mount_opt;
+	unsigned int local_alloc_megs;
+
+	if (opts & (OCFS2_MOUNT_HB_LOCAL | OCFS2_MOUNT_HB_GLOBAL)) {
+		seq_printf(s, ",_netdev");
+		if (opts & OCFS2_MOUNT_HB_LOCAL)
+			seq_printf(s, ",%s", OCFS2_HB_LOCAL);
+		else
+			seq_printf(s, ",%s", OCFS2_HB_GLOBAL);
+	} else
+		seq_printf(s, ",%s", OCFS2_HB_NONE);
 
 	if (opts & OCFS2_MOUNT_NOINTR)
 		seq_printf(s, ",nointr");
@@ -957,6 +1736,8 @@ static int ocfs2_show_options(struct seq_file *s, struct vfsmount *mnt)
 
 	if (opts & OCFS2_MOUNT_ERRORS_PANIC)
 		seq_printf(s, ",errors=panic");
+	else if (opts & OCFS2_MOUNT_ERRORS_CONT)
+		seq_printf(s, ",errors=continue");
 	else
 		seq_printf(s, ",errors=remount-ro");
 
@@ -965,6 +1746,7 @@ static int ocfs2_show_options(struct seq_file *s, struct vfsmount *mnt)
 
 	if (osb->s_atime_quantum != OCFS2_DEFAULT_ATIME_QUANTUM)
 		seq_printf(s, ",atime_quantum=%u", osb->s_atime_quantum);
+	seq_printf(s, ",atime_quantum=%u", osb->s_atime_quantum);
 
 	if (osb->osb_commit_interval)
 		seq_printf(s, ",commit=%u",
@@ -972,6 +1754,9 @@ static int ocfs2_show_options(struct seq_file *s, struct vfsmount *mnt)
 
 	if (osb->local_alloc_size != OCFS2_DEFAULT_LOCAL_ALLOC_SIZE)
 		seq_printf(s, ",localalloc=%d", osb->local_alloc_size);
+	local_alloc_megs = osb->local_alloc_bits >> (20 - osb->s_clustersize_bits);
+	if (local_alloc_megs != ocfs2_la_default_mb(osb))
+		seq_printf(s, ",localalloc=%d", local_alloc_megs);
 
 	if (opts & OCFS2_MOUNT_LOCALFLOCKS)
 		seq_printf(s, ",localflocks,");
@@ -979,6 +1764,39 @@ static int ocfs2_show_options(struct seq_file *s, struct vfsmount *mnt)
 	if (osb->osb_cluster_stack[0])
 		seq_printf(s, ",cluster_stack=%.*s", OCFS2_STACK_LABEL_LEN,
 			   osb->osb_cluster_stack);
+		seq_show_option_n(s, "cluster_stack", osb->osb_cluster_stack,
+				  OCFS2_STACK_LABEL_LEN);
+	if (opts & OCFS2_MOUNT_USRQUOTA)
+		seq_printf(s, ",usrquota");
+	if (opts & OCFS2_MOUNT_GRPQUOTA)
+		seq_printf(s, ",grpquota");
+
+	if (opts & OCFS2_MOUNT_COHERENCY_BUFFERED)
+		seq_printf(s, ",coherency=buffered");
+	else
+		seq_printf(s, ",coherency=full");
+
+	if (opts & OCFS2_MOUNT_NOUSERXATTR)
+		seq_printf(s, ",nouser_xattr");
+	else
+		seq_printf(s, ",user_xattr");
+
+	if (opts & OCFS2_MOUNT_INODE64)
+		seq_printf(s, ",inode64");
+
+	if (opts & OCFS2_MOUNT_POSIX_ACL)
+		seq_printf(s, ",acl");
+	else
+		seq_printf(s, ",noacl");
+
+	if (osb->osb_resv_level != OCFS2_DEFAULT_RESV_LEVEL)
+		seq_printf(s, ",resv_level=%d", osb->osb_resv_level);
+
+	if (osb->osb_dir_resv_level != osb->osb_resv_level)
+		seq_printf(s, ",dir_resv_level=%d", osb->osb_resv_level);
+
+	if (opts & OCFS2_MOUNT_JOURNAL_ASYNC_COMMIT)
+		seq_printf(s, ",journal_async_commit");
 
 	return 0;
 }
@@ -1002,17 +1820,28 @@ static int __init ocfs2_init(void)
 		mlog_errno(status);
 		goto leave;
 	}
+	status = init_ocfs2_uptodate_cache();
+	if (status < 0)
+		goto out1;
+
+	status = ocfs2_initialize_mem_caches();
+	if (status < 0)
+		goto out2;
 
 	ocfs2_wq = create_singlethread_workqueue("ocfs2_wq");
 	if (!ocfs2_wq) {
 		status = -ENOMEM;
 		goto leave;
+		goto out3;
 	}
 
 	ocfs2_debugfs_root = debugfs_create_dir("ocfs2", NULL);
 	if (!ocfs2_debugfs_root) {
 		status = -EFAULT;
 		mlog(ML_ERROR, "Unable to create ocfs2 debugfs root.\n");
+		status = -ENOMEM;
+		mlog(ML_ERROR, "Unable to create ocfs2 debugfs root.\n");
+		goto out4;
 	}
 
 	ocfs2_set_locking_protocol();
@@ -1029,6 +1858,24 @@ leave:
 		return register_filesystem(&ocfs2_fs_type);
 	} else
 		return -1;
+	status = register_quota_format(&ocfs2_quota_format);
+	if (status < 0)
+		goto out4;
+	status = register_filesystem(&ocfs2_fs_type);
+	if (!status)
+		return 0;
+
+	unregister_quota_format(&ocfs2_quota_format);
+out4:
+	destroy_workqueue(ocfs2_wq);
+	debugfs_remove(ocfs2_debugfs_root);
+out3:
+	ocfs2_free_mem_caches();
+out2:
+	exit_ocfs2_uptodate_cache();
+out1:
+	mlog_errno(status);
+	return status;
 }
 
 static void __exit ocfs2_exit(void)
@@ -1039,6 +1886,8 @@ static void __exit ocfs2_exit(void)
 		flush_workqueue(ocfs2_wq);
 		destroy_workqueue(ocfs2_wq);
 	}
+
+	unregister_quota_format(&ocfs2_quota_format);
 
 	debugfs_remove(ocfs2_debugfs_root);
 
@@ -1059,6 +1908,10 @@ static void ocfs2_put_super(struct super_block *sb)
 	ocfs2_dismount_volume(sb, 0);
 
 	mlog_exit_void();
+	trace_ocfs2_put_super(sb);
+
+	ocfs2_sync_blockdev(sb);
+	ocfs2_dismount_volume(sb, 0);
 }
 
 static int ocfs2_statfs(struct dentry *dentry, struct kstatfs *buf)
@@ -1071,6 +1924,7 @@ static int ocfs2_statfs(struct dentry *dentry, struct kstatfs *buf)
 	struct inode *inode = NULL;
 
 	mlog_entry("(%p, %p)\n", dentry->d_sb, buf);
+	trace_ocfs2_statfs(dentry->d_sb, buf);
 
 	osb = OCFS2_SB(dentry->d_sb);
 
@@ -1104,6 +1958,10 @@ static int ocfs2_statfs(struct dentry *dentry, struct kstatfs *buf)
 	buf->f_bavail = buf->f_bfree;
 	buf->f_files = numbits;
 	buf->f_ffree = freebits;
+	buf->f_fsid.val[0] = crc32_le(0, osb->uuid_str, OCFS2_VOL_UUID_LEN)
+				& 0xFFFFFFFFUL;
+	buf->f_fsid.val[1] = crc32_le(0, osb->uuid_str + OCFS2_VOL_UUID_LEN,
+				OCFS2_VOL_UUID_LEN) & 0xFFFFFFFFUL;
 
 	brelse(bh);
 
@@ -1114,6 +1972,8 @@ bail:
 		iput(inode);
 
 	mlog_exit(status);
+	if (status)
+		mlog_errno(status);
 
 	return status;
 }
@@ -1132,16 +1992,25 @@ static void ocfs2_inode_init_once(void *data)
 	oi->ip_dir_start_lookup = 0;
 
 	init_rwsem(&oi->ip_alloc_sem);
+	oi->ip_dir_start_lookup = 0;
+	mutex_init(&oi->ip_unaligned_aio);
+	init_rwsem(&oi->ip_alloc_sem);
+	init_rwsem(&oi->ip_xattr_sem);
 	mutex_init(&oi->ip_io_mutex);
 
 	oi->ip_blkno = 0ULL;
 	oi->ip_clusters = 0;
+	oi->ip_next_orphan = NULL;
+
+	ocfs2_resv_init_once(&oi->ip_la_data_resv);
 
 	ocfs2_lock_res_init_once(&oi->ip_rw_lockres);
 	ocfs2_lock_res_init_once(&oi->ip_inode_lockres);
 	ocfs2_lock_res_init_once(&oi->ip_open_lockres);
 
 	ocfs2_metadata_cache_init(&oi->vfs_inode);
+	ocfs2_metadata_cache_init(INODE_CACHE(&oi->vfs_inode),
+				  &ocfs2_inode_caching_ops);
 
 	inode_init_once(&oi->vfs_inode);
 }
@@ -1156,6 +2025,27 @@ static int ocfs2_initialize_mem_caches(void)
 				       ocfs2_inode_init_once);
 	if (!ocfs2_inode_cachep)
 		return -ENOMEM;
+	ocfs2_dquot_cachep = kmem_cache_create("ocfs2_dquot_cache",
+					sizeof(struct ocfs2_dquot),
+					0,
+					(SLAB_HWCACHE_ALIGN|SLAB_RECLAIM_ACCOUNT|
+						SLAB_MEM_SPREAD),
+					NULL);
+	ocfs2_qf_chunk_cachep = kmem_cache_create("ocfs2_qf_chunk_cache",
+					sizeof(struct ocfs2_quota_chunk),
+					0,
+					(SLAB_RECLAIM_ACCOUNT|SLAB_MEM_SPREAD),
+					NULL);
+	if (!ocfs2_inode_cachep || !ocfs2_dquot_cachep ||
+	    !ocfs2_qf_chunk_cachep) {
+		if (ocfs2_inode_cachep)
+			kmem_cache_destroy(ocfs2_inode_cachep);
+		if (ocfs2_dquot_cachep)
+			kmem_cache_destroy(ocfs2_dquot_cachep);
+		if (ocfs2_qf_chunk_cachep)
+			kmem_cache_destroy(ocfs2_qf_chunk_cachep);
+		return -ENOMEM;
+	}
 
 	return 0;
 }
@@ -1166,6 +2056,22 @@ static void ocfs2_free_mem_caches(void)
 		kmem_cache_destroy(ocfs2_inode_cachep);
 
 	ocfs2_inode_cachep = NULL;
+	/*
+	 * Make sure all delayed rcu free inodes are flushed before we
+	 * destroy cache.
+	 */
+	rcu_barrier();
+	if (ocfs2_inode_cachep)
+		kmem_cache_destroy(ocfs2_inode_cachep);
+	ocfs2_inode_cachep = NULL;
+
+	if (ocfs2_dquot_cachep)
+		kmem_cache_destroy(ocfs2_dquot_cachep);
+	ocfs2_dquot_cachep = NULL;
+
+	if (ocfs2_qf_chunk_cachep)
+		kmem_cache_destroy(ocfs2_qf_chunk_cachep);
+	ocfs2_qf_chunk_cachep = NULL;
 }
 
 static int ocfs2_get_sector(struct super_block *sb,
@@ -1182,6 +2088,8 @@ static int ocfs2_get_sector(struct super_block *sb,
 	if (!*bh) {
 		mlog_errno(-EIO);
 		return -EIO;
+		mlog_errno(-ENOMEM);
+		return -ENOMEM;
 	}
 	lock_buffer(*bh);
 	if (!buffer_dirty(*bh))
@@ -1189,6 +2097,13 @@ static int ocfs2_get_sector(struct super_block *sb,
 	unlock_buffer(*bh);
 	ll_rw_block(READ, 1, bh);
 	wait_on_buffer(*bh);
+	if (!buffer_uptodate(*bh)) {
+		mlog_errno(-EIO);
+		brelse(*bh);
+		*bh = NULL;
+		return -EIO;
+	}
+
 	return 0;
 }
 
@@ -1244,6 +2159,8 @@ static int ocfs2_mount_volume(struct super_block *sb)
 
 	if (ocfs2_mount_local(osb))
 		goto leave;
+	if (status < 0)
+		mlog_errno(status);
 
 leave:
 	if (unlock_super)
@@ -1260,10 +2177,25 @@ static void ocfs2_dismount_volume(struct super_block *sb, int mnt_err)
 	char nodestr[8];
 
 	mlog_entry("(0x%p)\n", sb);
+	char nodestr[12];
+
+	trace_ocfs2_dismount_volume(sb);
 
 	BUG_ON(!sb);
 	osb = OCFS2_SB(sb);
 	BUG_ON(!osb);
+
+	debugfs_remove(osb->osb_ctxt);
+
+	/* Orphan scan should be stopped as early as possible */
+	ocfs2_orphan_scan_stop(osb);
+
+	ocfs2_disable_quotas(osb);
+
+	/* All dquots should be freed by now */
+	WARN_ON(!llist_empty(&osb->dquot_drop_list));
+	/* Wait for worker to be done with the work structure in osb */
+	cancel_work_sync(&osb->dquot_drop_work);
 
 	ocfs2_shutdown_local_alloc(osb);
 
@@ -1275,6 +2207,8 @@ static void ocfs2_dismount_volume(struct super_block *sb, int mnt_err)
 	ocfs2_journal_shutdown(osb);
 
 	ocfs2_sync_blockdev(sb);
+
+	ocfs2_purge_refcount_trees(osb);
 
 	/* No cluster connection means we've failed during mount, so skip
 	 * all the steps which depended on that to complete. */
@@ -1301,11 +2235,14 @@ static void ocfs2_dismount_volume(struct super_block *sb, int mnt_err)
 	 * heartbeat.  Otherwise, do it.
 	 */
 	if (!mnt_err && !ocfs2_mount_local(osb) && osb->uuid_str)
+	if (!mnt_err && !ocfs2_mount_local(osb) && osb->uuid_str &&
+	    !ocfs2_is_hard_readonly(osb))
 		hangup_needed = 1;
 
 	if (osb->cconn)
 		ocfs2_dlm_shutdown(osb, hangup_needed);
 
+	ocfs2_blockcheck_stats_debugfs_remove(&osb->osb_ecc_stats);
 	debugfs_remove(osb->osb_debug_root);
 
 	if (hangup_needed)
@@ -1354,6 +2291,40 @@ static int ocfs2_setup_osb_uuid(struct ocfs2_super *osb, const unsigned char *uu
 static int ocfs2_initialize_super(struct super_block *sb,
 				  struct buffer_head *bh,
 				  int sector_size)
+/* Make sure entire volume is addressable by our journal.  Requires
+   osb_clusters_at_boot to be valid and for the journal to have been
+   initialized by ocfs2_journal_init(). */
+static int ocfs2_journal_addressable(struct ocfs2_super *osb)
+{
+	int status = 0;
+	u64 max_block =
+		ocfs2_clusters_to_blocks(osb->sb,
+					 osb->osb_clusters_at_boot) - 1;
+
+	/* 32-bit block number is always OK. */
+	if (max_block <= (u32)~0ULL)
+		goto out;
+
+	/* Volume is "huge", so see if our journal is new enough to
+	   support it. */
+	if (!(OCFS2_HAS_COMPAT_FEATURE(osb->sb,
+				       OCFS2_FEATURE_COMPAT_JBD2_SB) &&
+	      jbd2_journal_check_used_features(osb->journal->j_journal, 0, 0,
+					       JBD2_FEATURE_INCOMPAT_64BIT))) {
+		mlog(ML_ERROR, "The journal cannot address the entire volume. "
+		     "Enable the 'block64' journal option with tunefs.ocfs2");
+		status = -EFBIG;
+		goto out;
+	}
+
+ out:
+	return status;
+}
+
+static int ocfs2_initialize_super(struct super_block *sb,
+				  struct buffer_head *bh,
+				  int sector_size,
+				  struct ocfs2_blockcheck_stats *stats)
 {
 	int status;
 	int i, cbits, bbits;
@@ -1364,6 +2335,8 @@ static int ocfs2_initialize_super(struct super_block *sb,
 	struct ocfs2_super *osb;
 
 	mlog_entry_void();
+	struct ocfs2_super *osb;
+	u64 total_blocks;
 
 	osb = kzalloc(sizeof(struct ocfs2_super), GFP_KERNEL);
 	if (!osb) {
@@ -1375,12 +2348,26 @@ static int ocfs2_initialize_super(struct super_block *sb,
 	sb->s_fs_info = osb;
 	sb->s_op = &ocfs2_sops;
 	sb->s_export_op = &ocfs2_export_ops;
+	sb->s_d_op = &ocfs2_dentry_ops;
+	sb->s_export_op = &ocfs2_export_ops;
+	sb->s_qcop = &dquot_quotactl_sysfile_ops;
+	sb->dq_op = &ocfs2_quota_operations;
+	sb->s_quota_types = QTYPE_MASK_USR | QTYPE_MASK_GRP;
+	sb->s_xattr = ocfs2_xattr_handlers;
 	sb->s_time_gran = 1;
 	sb->s_flags |= MS_NOATIME;
 	/* this is needed to support O_LARGEFILE */
 	cbits = le32_to_cpu(di->id2.i_super.s_clustersize_bits);
 	bbits = le32_to_cpu(di->id2.i_super.s_blocksize_bits);
 	sb->s_maxbytes = ocfs2_max_file_offset(bbits, cbits);
+	memcpy(sb->s_uuid, di->id2.i_super.s_uuid,
+	       sizeof(di->id2.i_super.s_uuid));
+
+	osb->osb_dx_mask = (1 << (cbits - bbits)) - 1;
+
+	for (i = 0; i < 3; i++)
+		osb->osb_dx_seed[i] = le32_to_cpu(di->id2.i_super.s_dx_seed[i]);
+	osb->osb_dx_seed[3] = le32_to_cpu(di->id2.i_super.s_uuid_hash);
 
 	osb->sb = sb;
 	/* Save off for ocfs2_rw_direct */
@@ -1395,6 +2382,10 @@ static int ocfs2_initialize_super(struct super_block *sb,
 	osb->blocked_lock_count = 0;
 	spin_lock_init(&osb->osb_lock);
 	ocfs2_init_inode_steal_slot(osb);
+	spin_lock_init(&osb->osb_xattr_lock);
+	ocfs2_init_steal_slots(osb);
+
+	mutex_init(&osb->system_file_mutex);
 
 	atomic_set(&osb->alloc_stats.moves, 0);
 	atomic_set(&osb->alloc_stats.local_data, 0);
@@ -1402,10 +2393,23 @@ static int ocfs2_initialize_super(struct super_block *sb,
 	atomic_set(&osb->alloc_stats.bg_allocs, 0);
 	atomic_set(&osb->alloc_stats.bg_extends, 0);
 
+	/* Copy the blockcheck stats from the superblock probe */
+	osb->osb_ecc_stats = *stats;
+
 	ocfs2_init_node_maps(osb);
 
 	snprintf(osb->dev_str, sizeof(osb->dev_str), "%u,%u",
 		 MAJOR(osb->sb->s_dev), MINOR(osb->sb->s_dev));
+
+	osb->max_slots = le16_to_cpu(di->id2.i_super.s_max_slots);
+	if (osb->max_slots > OCFS2_MAX_SLOTS || osb->max_slots == 0) {
+		mlog(ML_ERROR, "Invalid number of node slots (%u)\n",
+		     osb->max_slots);
+		status = -EINVAL;
+		goto bail;
+	}
+
+	ocfs2_orphan_scan_init(osb);
 
 	status = ocfs2_recovery_init(osb);
 	if (status) {
@@ -1425,6 +2429,21 @@ static int ocfs2_initialize_super(struct super_block *sb,
 	osb->local_alloc_bh = NULL;
 
 	init_waitqueue_head(&osb->osb_mount_event);
+
+	osb->s_xattr_inline_size = le16_to_cpu(
+					di->id2.i_super.s_xattr_inline_size);
+
+	osb->local_alloc_state = OCFS2_LA_UNUSED;
+	osb->local_alloc_bh = NULL;
+	INIT_DELAYED_WORK(&osb->la_enable_wq, ocfs2_la_enable_worker);
+
+	init_waitqueue_head(&osb->osb_mount_event);
+
+	status = ocfs2_resmap_init(osb, &osb->osb_la_resmap);
+	if (status) {
+		mlog_errno(status);
+		goto bail;
+	}
 
 	osb->vol_label = kmalloc(OCFS2_MAX_VOL_LABEL_LEN, GFP_KERNEL);
 	if (!osb->vol_label) {
@@ -1461,6 +2480,8 @@ static int ocfs2_initialize_super(struct super_block *sb,
 		goto bail;
 	}
 
+	osb->osb_rf_lock_tree = RB_ROOT;
+
 	osb->s_feature_compat =
 		le32_to_cpu(OCFS2_RAW_SB(di)->s_feature_compat);
 	osb->s_feature_ro_compat =
@@ -1487,6 +2508,18 @@ static int ocfs2_initialize_super(struct super_block *sb,
 		       OCFS2_RAW_SB(di)->s_cluster_info.ci_stack,
 		       OCFS2_STACK_LABEL_LEN);
 		osb->osb_cluster_stack[OCFS2_STACK_LABEL_LEN] = '\0';
+	if (ocfs2_clusterinfo_valid(osb)) {
+		/*
+		 * ci_stack and ci_cluster in ocfs2_cluster_info may not be null
+		 * terminated, so make sure no overflow happens here by using
+		 * memcpy. Destination strings will always be null terminated
+		 * because osb is allocated using kzalloc.
+		 */
+		osb->osb_stackflags =
+			OCFS2_RAW_SB(di)->s_cluster_info.ci_stackflags;
+		memcpy(osb->osb_cluster_stack,
+		       OCFS2_RAW_SB(di)->s_cluster_info.ci_stack,
+		       OCFS2_STACK_LABEL_LEN);
 		if (strlen(osb->osb_cluster_stack) != OCFS2_STACK_LABEL_LEN) {
 			mlog(ML_ERROR,
 			     "couldn't mount because of an invalid "
@@ -1495,6 +2528,9 @@ static int ocfs2_initialize_super(struct super_block *sb,
 			status = -EINVAL;
 			goto bail;
 		}
+		memcpy(osb->osb_cluster_name,
+			OCFS2_RAW_SB(di)->s_cluster_info.ci_cluster,
+			OCFS2_CLUSTER_NAME_LEN);
 	} else {
 		/* The empty string is identical with classic tools that
 		 * don't know about s_cluster_info. */
@@ -1530,6 +2566,9 @@ static int ocfs2_initialize_super(struct super_block *sb,
 	INIT_WORK(&journal->j_recovery_work, ocfs2_complete_recovery);
 	journal->j_state = OCFS2_JOURNAL_FREE;
 
+	INIT_WORK(&osb->dquot_drop_work, ocfs2_drop_dquot_refs);
+	init_llist_head(&osb->dquot_drop_list);
+
 	/* get some pseudo constants for clustersize bits */
 	osb->s_clustersize_bits =
 		le32_to_cpu(di->id2.i_super.s_clustersize_bits);
@@ -1549,6 +2588,15 @@ static int ocfs2_initialize_super(struct super_block *sb,
 		mlog(ML_ERROR, "Volume might try to write to blocks beyond "
 		     "what jbd can address in 32 bits.\n");
 		status = -EINVAL;
+	total_blocks = ocfs2_clusters_to_blocks(osb->sb,
+						le32_to_cpu(di->i_clusters));
+
+	status = generic_check_addressable(osb->sb->s_blocksize_bits,
+					   total_blocks);
+	if (status) {
+		mlog(ML_ERROR, "Volume too large "
+		     "to mount safely on this system");
+		status = -EFBIG;
 		goto bail;
 	}
 
@@ -1563,6 +2611,8 @@ static int ocfs2_initialize_super(struct super_block *sb,
 
 	strncpy(osb->vol_label, di->id2.i_super.s_label, 63);
 	osb->vol_label[63] = '\0';
+	strlcpy(osb->vol_label, di->id2.i_super.s_label,
+		OCFS2_MAX_VOL_LABEL_LEN);
 	osb->root_blkno = le64_to_cpu(di->id2.i_super.s_root_blkno);
 	osb->system_dir_blkno = le64_to_cpu(di->id2.i_super.s_system_dir_blkno);
 	osb->first_cluster_group_blkno =
@@ -1573,6 +2623,11 @@ static int ocfs2_initialize_super(struct super_block *sb,
 	mlog(0, "root_blkno=%llu, system_dir_blkno=%llu\n",
 	     (unsigned long long)osb->root_blkno,
 	     (unsigned long long)osb->system_dir_blkno);
+	osb->uuid_hash = le32_to_cpu(di->id2.i_super.s_uuid_hash);
+	trace_ocfs2_initialize_super(osb->vol_label, osb->uuid_str,
+				     (unsigned long long)osb->root_blkno,
+				     (unsigned long long)osb->system_dir_blkno,
+				     osb->s_clustersize_bits);
 
 	osb->osb_dlm_debug = ocfs2_new_dlm_debug();
 	if (!osb->osb_dlm_debug) {
@@ -1605,6 +2660,11 @@ static int ocfs2_initialize_super(struct super_block *sb,
 	iput(inode);
 
 	osb->bitmap_cpg = ocfs2_group_bitmap_size(sb) * 8;
+	osb->osb_clusters_at_boot = OCFS2_I(inode)->ip_clusters;
+	iput(inode);
+
+	osb->bitmap_cpg = ocfs2_group_bitmap_size(sb, 0,
+				 osb->s_feature_incompat) * 8;
 
 	status = ocfs2_init_slot_info(osb);
 	if (status < 0) {
@@ -1614,6 +2674,9 @@ static int ocfs2_initialize_super(struct super_block *sb,
 
 bail:
 	mlog_exit(status);
+	cleancache_init_shared_fs(sb);
+
+bail:
 	return status;
 }
 
@@ -1632,12 +2695,34 @@ static int ocfs2_verify_volume(struct ocfs2_dinode *di,
 
 	if (memcmp(di->i_signature, OCFS2_SUPER_BLOCK_SIGNATURE,
 		   strlen(OCFS2_SUPER_BLOCK_SIGNATURE)) == 0) {
+			       u32 blksz,
+			       struct ocfs2_blockcheck_stats *stats)
+{
+	int status = -EAGAIN;
+	u32 blksz_bits;
+
+	if (memcmp(di->i_signature, OCFS2_SUPER_BLOCK_SIGNATURE,
+		   strlen(OCFS2_SUPER_BLOCK_SIGNATURE)) == 0) {
+		/* We have to do a raw check of the feature here */
+		if (le32_to_cpu(di->id2.i_super.s_feature_incompat) &
+		    OCFS2_FEATURE_INCOMPAT_META_ECC) {
+			status = ocfs2_block_check_validate(bh->b_data,
+							    bh->b_size,
+							    &di->i_check,
+							    stats);
+			if (status)
+				goto out;
+		}
 		status = -EINVAL;
-		if ((1 << le32_to_cpu(di->id2.i_super.s_blocksize_bits)) != blksz) {
+		/* Acceptable block sizes are 512 bytes, 1K, 2K and 4K. */
+		blksz_bits = le32_to_cpu(di->id2.i_super.s_blocksize_bits);
+		if (blksz_bits < 9 || blksz_bits > 12) {
 			mlog(ML_ERROR, "found superblock with incorrect block "
-			     "size: found %u, should be %u\n",
-			     1 << le32_to_cpu(di->id2.i_super.s_blocksize_bits),
-			       blksz);
+			     "size bits: found %u, should be 9, 10, 11, or 12\n",
+			     blksz_bits);
+		} else if ((1 << blksz_bits) != blksz) {
+			mlog(ML_ERROR, "found superblock with incorrect block "
+			     "size: found %u, should be %u\n", 1 << blksz_bits, blksz);
 		} else if (le16_to_cpu(di->id2.i_super.s_major_rev_level) !=
 			   OCFS2_MAJOR_REV_LEVEL ||
 			   le16_to_cpu(di->id2.i_super.s_minor_rev_level) !=
@@ -1674,6 +2759,9 @@ static int ocfs2_verify_volume(struct ocfs2_dinode *di,
 	}
 
 	mlog_exit(status);
+out:
+	if (status && status != -EAGAIN)
+		mlog_errno(status);
 	return status;
 }
 
@@ -1695,6 +2783,12 @@ static int ocfs2_check_volume(struct ocfs2_super *osb)
 		goto finally;
 	}
 
+	/* Now that journal has been initialized, check to make sure
+	   entire volume is addressable. */
+	status = ocfs2_journal_addressable(osb);
+	if (status)
+		goto finally;
+
 	/* If the journal was unmounted cleanly then we don't want to
 	 * recover anything. Otherwise, journal_load will do that
 	 * dirty work for us :) */
@@ -1707,6 +2801,8 @@ static int ocfs2_check_volume(struct ocfs2_super *osb)
 	} else {
 		mlog(ML_NOTICE, "File system was not unmounted cleanly, "
 		     "recovering volume.\n");
+		printk(KERN_NOTICE "ocfs2: File system on device (%s) was not "
+		       "unmounted cleanly, recovering it.\n", osb->dev_str);
 	}
 
 	local = ocfs2_mount_local(osb);
@@ -1717,6 +2813,15 @@ static int ocfs2_check_volume(struct ocfs2_super *osb)
 		mlog(ML_ERROR, "ocfs2 journal load failed! %d\n", status);
 		goto finally;
 	}
+
+	if (osb->s_mount_opt & OCFS2_MOUNT_JOURNAL_ASYNC_COMMIT)
+		jbd2_journal_set_features(osb->journal->j_journal,
+				JBD2_FEATURE_COMPAT_CHECKSUM, 0,
+				JBD2_FEATURE_INCOMPAT_ASYNC_COMMIT);
+	else
+		jbd2_journal_clear_features(osb->journal->j_journal,
+				JBD2_FEATURE_COMPAT_CHECKSUM, 0,
+				JBD2_FEATURE_INCOMPAT_ASYNC_COMMIT);
 
 	if (dirty) {
 		/* recover my local alloc if we didn't unmount cleanly. */
@@ -1751,6 +2856,12 @@ static int ocfs2_check_volume(struct ocfs2_super *osb)
 	 * lock, and it's marked as dirty, set the bit in the recover
 	 * map and launch a recovery thread for it. */
 	status = ocfs2_mark_dead_nodes(osb);
+	if (status < 0) {
+		mlog_errno(status);
+		goto finally;
+	}
+
+	status = ocfs2_compute_replay_slots(osb);
 	if (status < 0)
 		mlog_errno(status);
 
@@ -1759,6 +2870,10 @@ finally:
 		kfree(local_alloc);
 
 	mlog_exit(status);
+	kfree(local_alloc);
+
+	if (status)
+		mlog_errno(status);
 	return status;
 }
 
@@ -1835,6 +2950,71 @@ void __ocfs2_error(struct super_block *sb,
 	       sb->s_id, function, error_buf);
 
 	ocfs2_handle_error(sb);
+	 * allocate osb->journal at the start of ocfs2_initialize_osb(),
+	 * we free it here.
+	 */
+	kfree(osb->journal);
+	kfree(osb->local_alloc_copy);
+	kfree(osb->uuid_str);
+	kfree(osb->vol_label);
+	ocfs2_put_dlm_debug(osb->osb_dlm_debug);
+	memset(osb, 0, sizeof(struct ocfs2_super));
+}
+
+/* Depending on the mount option passed, perform one of the following:
+ * Put OCFS2 into a readonly state (default)
+ * Return EIO so that only the process errs
+ * Fix the error as if fsck.ocfs2 -y
+ * panic
+ */
+static int ocfs2_handle_error(struct super_block *sb)
+{
+	struct ocfs2_super *osb = OCFS2_SB(sb);
+	int rv = 0;
+
+	ocfs2_set_osb_flag(osb, OCFS2_OSB_ERROR_FS);
+	pr_crit("On-disk corruption discovered. "
+		"Please run fsck.ocfs2 once the filesystem is unmounted.\n");
+
+	if (osb->s_mount_opt & OCFS2_MOUNT_ERRORS_PANIC) {
+		panic("OCFS2: (device %s): panic forced after error\n",
+		      sb->s_id);
+	} else if (osb->s_mount_opt & OCFS2_MOUNT_ERRORS_CONT) {
+		pr_crit("OCFS2: Returning error to the calling process.\n");
+		rv = -EIO;
+	} else { /* default option */
+		rv = -EROFS;
+		if (sb->s_flags & MS_RDONLY &&
+				(ocfs2_is_soft_readonly(osb) ||
+				 ocfs2_is_hard_readonly(osb)))
+			return rv;
+
+		pr_crit("OCFS2: File system is now read-only.\n");
+		sb->s_flags |= MS_RDONLY;
+		ocfs2_set_ro_flag(osb, 0);
+	}
+
+	return rv;
+}
+
+int __ocfs2_error(struct super_block *sb, const char *function,
+		  const char *fmt, ...)
+{
+	struct va_format vaf;
+	va_list args;
+
+	va_start(args, fmt);
+	vaf.fmt = fmt;
+	vaf.va = &args;
+
+	/* Not using mlog here because we want to show the actual
+	 * function the error came from. */
+	printk(KERN_CRIT "OCFS2: ERROR (device %s): %s: %pV",
+	       sb->s_id, function, &vaf);
+
+	va_end(args);
+
+	return ocfs2_handle_error(sb);
 }
 
 /* Handle critical errors. This is intentionally more drastic than
@@ -1852,6 +3032,21 @@ void __ocfs2_abort(struct super_block* sb,
 
 	printk(KERN_CRIT "OCFS2: abort (device %s): %s: %s\n",
 	       sb->s_id, function, error_buf);
+void __ocfs2_abort(struct super_block *sb, const char *function,
+		   const char *fmt, ...)
+{
+	struct va_format vaf;
+	va_list args;
+
+	va_start(args, fmt);
+
+	vaf.fmt = fmt;
+	vaf.va = &args;
+
+	printk(KERN_CRIT "OCFS2: abort (device %s): %s: %pV",
+	       sb->s_id, function, &vaf);
+
+	va_end(args);
 
 	/* We don't have the cluster support yet to go straight to
 	 * hard readonly in here. Until then, we want to keep
@@ -1866,6 +3061,31 @@ void __ocfs2_abort(struct super_block* sb,
 	 * here. */
 	OCFS2_SB(sb)->s_mount_opt |= OCFS2_MOUNT_ERRORS_PANIC;
 	ocfs2_handle_error(sb);
+}
+
+	if (!ocfs2_mount_local(OCFS2_SB(sb)))
+		OCFS2_SB(sb)->s_mount_opt |= OCFS2_MOUNT_ERRORS_PANIC;
+	ocfs2_handle_error(sb);
+}
+
+/*
+ * Void signal blockers, because in-kernel sigprocmask() only fails
+ * when SIG_* is wrong.
+ */
+void ocfs2_block_signals(sigset_t *oldset)
+{
+	int rc;
+	sigset_t blocked;
+
+	sigfillset(&blocked);
+	rc = sigprocmask(SIG_BLOCK, &blocked, oldset);
+	BUG_ON(rc);
+}
+
+void ocfs2_unblock_signals(sigset_t *oldset)
+{
+	int rc = sigprocmask(SIG_SETMASK, oldset, NULL);
+	BUG_ON(rc);
 }
 
 module_init(ocfs2_init);

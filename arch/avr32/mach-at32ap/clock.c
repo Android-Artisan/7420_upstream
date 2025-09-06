@@ -15,6 +15,10 @@
 #include <linux/err.h>
 #include <linux/device.h>
 #include <linux/string.h>
+#include <linux/export.h>
+#include <linux/device.h>
+#include <linux/string.h>
+#include <linux/list.h>
 
 #include <mach/chip.h>
 
@@ -31,10 +35,44 @@ struct clk *clk_get(struct device *dev, const char *id)
 
 		if (clk->dev == dev && strcmp(id, clk->name) == 0)
 			return clk;
+/* at32 clock list */
+static LIST_HEAD(at32_clock_list);
+
+static DEFINE_SPINLOCK(clk_lock);
+static DEFINE_SPINLOCK(clk_list_lock);
+
+void at32_clk_register(struct clk *clk)
+{
+	spin_lock(&clk_list_lock);
+	/* add the new item to the end of the list */
+	list_add_tail(&clk->list, &at32_clock_list);
+	spin_unlock(&clk_list_lock);
+}
+
+static struct clk *__clk_get(struct device *dev, const char *id)
+{
+	struct clk *clk;
+
+	list_for_each_entry(clk, &at32_clock_list, list) {
+		if (clk->dev == dev && strcmp(id, clk->name) == 0) {
+			return clk;
+		}
 	}
 
 	return ERR_PTR(-ENOENT);
 }
+
+struct clk *clk_get(struct device *dev, const char *id)
+{
+	struct clk *clk;
+
+	spin_lock(&clk_list_lock);
+	clk = __clk_get(dev, id);
+	spin_unlock(&clk_list_lock);
+
+	return clk;
+}
+
 EXPORT_SYMBOL(clk_get);
 
 void clk_put(struct clk *clk)
@@ -54,6 +92,9 @@ static void __clk_enable(struct clk *clk)
 int clk_enable(struct clk *clk)
 {
 	unsigned long flags;
+
+	if (!clk)
+		return 0;
 
 	spin_lock_irqsave(&clk_lock, flags);
 	__clk_enable(clk);
@@ -81,6 +122,9 @@ void clk_disable(struct clk *clk)
 {
 	unsigned long flags;
 
+	if (IS_ERR_OR_NULL(clk))
+		return;
+
 	spin_lock_irqsave(&clk_lock, flags);
 	__clk_disable(clk);
 	spin_unlock_irqrestore(&clk_lock, flags);
@@ -91,6 +135,9 @@ unsigned long clk_get_rate(struct clk *clk)
 {
 	unsigned long flags;
 	unsigned long rate;
+
+	if (!clk)
+		return 0;
 
 	spin_lock_irqsave(&clk_lock, flags);
 	rate = clk->get_rate(clk);
@@ -103,6 +150,9 @@ EXPORT_SYMBOL(clk_get_rate);
 long clk_round_rate(struct clk *clk, unsigned long rate)
 {
 	unsigned long flags, actual_rate;
+
+	if (!clk)
+		return 0;
 
 	if (!clk->set_rate)
 		return -ENOSYS;
@@ -120,6 +170,9 @@ int clk_set_rate(struct clk *clk, unsigned long rate)
 	unsigned long flags;
 	long ret;
 
+	if (!clk)
+		return 0;
+
 	if (!clk->set_rate)
 		return -ENOSYS;
 
@@ -136,6 +189,9 @@ int clk_set_parent(struct clk *clk, struct clk *parent)
 	unsigned long flags;
 	int ret;
 
+	if (!clk)
+		return 0;
+
 	if (!clk->set_parent)
 		return -ENOSYS;
 
@@ -150,6 +206,7 @@ EXPORT_SYMBOL(clk_set_parent);
 struct clk *clk_get_parent(struct clk *clk)
 {
 	return clk->parent;
+	return !clk ? NULL : clk->parent;
 }
 EXPORT_SYMBOL(clk_get_parent);
 
@@ -183,6 +240,7 @@ dump_clock(struct clk *parent, struct clkinf *r)
 
 	/* skip clocks coupled to devices that aren't registered */
 	if (parent->dev && !parent->dev->bus_id[0] && !parent->users)
+	if (parent->dev && !dev_name(parent->dev) && !parent->users)
 		return;
 
 	/* <nest spaces> name <pad to end> */
@@ -199,12 +257,15 @@ dump_clock(struct clk *parent, struct clkinf *r)
 		clk_get_rate(parent));
 	if (parent->dev)
 		seq_printf(r->s, ", for %s", parent->dev->bus_id);
+		seq_printf(r->s, ", for %s", dev_name(parent->dev));
 	seq_printf(r->s, "\n");
 
 	/* cost of this scan is small, but not linear... */
 	r->nest = nest + NEST_DELTA;
 	for (i = 3; i < at32_nr_clocks; i++) {
 		clk = at32_clock_list[i];
+
+	list_for_each_entry(clk, &at32_clock_list, list) {
 		if (clk->parent == parent)
 			dump_clock(clk, r);
 	}
@@ -215,6 +276,7 @@ static int clk_show(struct seq_file *s, void *unused)
 {
 	struct clkinf	r;
 	int		i;
+	struct clk 	*clk;
 
 	/* show all the power manager registers */
 	seq_printf(s, "MCCTRL  = %8x\n", pm_readl(MCCTRL));
@@ -242,6 +304,25 @@ static int clk_show(struct seq_file *s, void *unused)
 	dump_clock(at32_clock_list[0], &r);
 	dump_clock(at32_clock_list[1], &r);
 	dump_clock(at32_clock_list[2], &r);
+	r.s = s;
+	r.nest = 0;
+	/* protected from changes on the list while dumping */
+	spin_lock(&clk_list_lock);
+
+	/* show clock tree as derived from the three oscillators */
+	clk = __clk_get(NULL, "osc32k");
+	dump_clock(clk, &r);
+	clk_put(clk);
+
+	clk = __clk_get(NULL, "osc0");
+	dump_clock(clk, &r);
+	clk_put(clk);
+
+	clk = __clk_get(NULL, "osc1");
+	dump_clock(clk, &r);
+	clk_put(clk);
+
+	spin_unlock(&clk_list_lock);
 
 	return 0;
 }

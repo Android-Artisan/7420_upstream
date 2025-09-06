@@ -13,6 +13,27 @@
 
 #define FLOATFUNC(x)	extern int x(void *, void *, void *, void *)
 
+#include <asm/switch_to.h>
+
+#include <asm/sfp-machine.h>
+#include <math-emu/double.h>
+
+#define FLOATFUNC(x)	extern int x(void *, void *, void *, void *)
+
+/* The instructions list which may be not implemented by a hardware FPU */
+FLOATFUNC(fre);
+FLOATFUNC(frsqrtes);
+FLOATFUNC(fsqrt);
+FLOATFUNC(fsqrts);
+FLOATFUNC(mtfsf);
+FLOATFUNC(mtfsfi);
+
+#ifdef CONFIG_MATH_EMULATION_HW_UNIMPLEMENTED
+#undef FLOATFUNC(x)
+#define FLOATFUNC(x)	static inline int x(void *op1, void *op2, void *op3, \
+						 void *op4) { }
+#endif
+
 FLOATFUNC(fadd);
 FLOATFUNC(fadds);
 FLOATFUNC(fdiv);
@@ -97,6 +118,7 @@ FLOATFUNC(fsqrts);
 #define FSQRTS		0x016		/*   22 */
 #define FRES		0x018		/*   24 */
 #define FMULS		0x019		/*   25 */
+#define FRSQRTES	0x01a		/*   26 */
 #define FMSUBS		0x01c		/*   28 */
 #define FMADDS		0x01d		/*   29 */
 #define FNMSUBS		0x01e		/*   30 */
@@ -109,6 +131,7 @@ FLOATFUNC(fsqrts);
 #define FADD		0x015		/*   21 */
 #define FSQRT		0x016		/*   22 */
 #define FSEL		0x017		/*   23 */
+#define FRE		0x018		/*   24 */
 #define FMUL		0x019		/*   25 */
 #define FRSQRTE		0x01a		/*   26 */
 #define FMSUB		0x01c		/*   28 */
@@ -168,6 +191,8 @@ record_exception(struct pt_regs *regs, int eflag)
 			fpscr |= FPSCR_ZX;
 		if (eflag & EFLAG_INEXACT)
 			fpscr |= FPSCR_XX;
+		if (eflag & EFLAG_INVALID)
+			fpscr |= FPSCR_VX;
 		if (eflag & EFLAG_VXSNAN)
 			fpscr |= FPSCR_VXSNAN;
 		if (eflag & EFLAG_VXISI)
@@ -189,6 +214,7 @@ record_exception(struct pt_regs *regs, int eflag)
 	}
 
 	fpscr &= ~(FPSCR_VX);
+//	fpscr &= ~(FPSCR_VX);
 	if (fpscr & (FPSCR_VXSNAN | FPSCR_VXISI | FPSCR_VXIDI |
 		     FPSCR_VXZDZ | FPSCR_VXIMZ | FPSCR_VXVC |
 		     FPSCR_VXSOFT | FPSCR_VXSQRT | FPSCR_VXCVI))
@@ -221,6 +247,9 @@ do_mathemu(struct pt_regs *regs)
 	int type = 0;
 	int eflag, trap;
 #endif
+	int (*func)(void *, void *, void *, void *);
+	int type = 0;
+	int eflag, trap;
 
 	if (get_user(insn, (u32 *)pc))
 		return -EFAULT;
@@ -300,6 +329,10 @@ do_mathemu(struct pt_regs *regs)
 		case FSQRTS:	func = fsqrts;	type = AB;	break;
 		case FRES:	func = fres;	type = AB;	break;
 		case FMULS:	func = fmuls;	type = AC;	break;
+		case FSQRTS:	func = fsqrts;	type = XB;	break;
+		case FRES:	func = fres;	type = XB;	break;
+		case FMULS:	func = fmuls;	type = AC;	break;
+		case FRSQRTES:	func = frsqrtes;type = XB;	break;
 		case FMSUBS:	func = fmsubs;	type = ABC;	break;
 		case FMADDS:	func = fmadds;	type = ABC;	break;
 		case FNMSUBS:	func = fnmsubs;	type = ABC;	break;
@@ -319,6 +352,11 @@ do_mathemu(struct pt_regs *regs)
 			case FSEL:	func = fsel;	type = ABC;	break;
 			case FMUL:	func = fmul;	type = AC;	break;
 			case FRSQRTE:	func = frsqrte;	type = AB;	break;
+			case FSQRT:	func = fsqrt;	type = XB;	break;
+			case FRE:	func = fre;	type = XB;	break;
+			case FSEL:	func = fsel;	type = ABC;	break;
+			case FMUL:	func = fmul;	type = AC;	break;
+			case FRSQRTE:	func = frsqrte;	type = XB;	break;
 			case FMSUB:	func = fmsub;	type = ABC;	break;
 			case FMADD:	func = fmadd;	type = ABC;	break;
 			case FNMSUB:	func = fnmsub;	type = ABC;	break;
@@ -417,12 +455,18 @@ do_mathemu(struct pt_regs *regs)
 			op1 = (void *)(regs->gpr[idx] + regs->gpr[(insn >> 11) & 0x1f]);
 		}
 
+		op1 = (void *)((idx ? regs->gpr[idx] : 0)
+				+ regs->gpr[(insn >> 11) & 0x1f]);
 		break;
 
 	case XEU:
 		idx = (insn >> 16) & 0x1f;
 		op0 = (void *)&current->thread.TS_FPR((insn >> 21) & 0x1f);
 		op1 = (void *)((idx ? regs->gpr[idx] : 0)
+		if (!idx)
+			goto illegal;
+		op0 = (void *)&current->thread.TS_FPR((insn >> 21) & 0x1f);
+		op1 = (void *)(regs->gpr[idx]
 				+ regs->gpr[(insn >> 11) & 0x1f]);
 		break;
 
@@ -456,6 +500,13 @@ do_mathemu(struct pt_regs *regs)
 	default:
 		goto illegal;
 	}
+
+	/*
+	 * If we support a HW FPU, we need to ensure the FP state
+	 * is flushed into the thread_struct before attempting
+	 * emulation
+	 */
+	flush_fp_to_thread(current);
 
 	eflag = func(op0, op1, op2, op3);
 

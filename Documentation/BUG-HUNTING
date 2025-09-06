@@ -1,10 +1,8 @@
 Table of contents
-=================
 
 Last updated: 20 December 2005
 
 Contents
-========
 
 - Introduction
 - Devices not appearing
@@ -14,7 +12,6 @@ Contents
 - Fixing the bug
 
 Introduction
-============
 
 Always try the latest kernel from kernel.org and build from source. If you are
 not confident in doing that please report the bug to your distribution vendor
@@ -27,13 +24,11 @@ MAINTAINERS for who that is for the subsystem you have worked on.
 Before you submit a bug report read REPORTING-BUGS.
 
 Devices not appearing
-=====================
 
 Often this is caused by udev. Check that first before blaming it on the
 kernel.
 
 Finding patch that caused a bug
-===============================
 
 
 
@@ -144,7 +139,6 @@ because Linux snapshots will let you do this - something that you can't
 do with vendor supplied releases.
 
 Fixing the bug
-==============
 
 Nobody is going to tell you how to fix bugs. Seriously. You need to work it
 out. But below are some hints on how to use the tools.

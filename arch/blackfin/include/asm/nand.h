@@ -8,11 +8,18 @@
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
  * published by the Free Software Foundation.
+/*
+ * BF5XX - NAND flash controller platform_device info
+ *
+ * Copyright 2007-2008 Analog Devices, Inc.
+ *
+ * Licensed under the GPL-2
  */
 
 /* struct bf5xx_nand_platform
  *
  * define a interface between platfrom board specific code and
+ * define a interface between platform board specific code and
  * bf54x NFC driver.
  *
  * nr_partitions = number of partitions pointed to be partitoons (or zero)

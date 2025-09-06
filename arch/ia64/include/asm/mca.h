@@ -82,6 +82,16 @@ struct ia64_sal_os_state {
 	/* common */
 	u64			sal_ra;			/* Return address in SAL, physical */
 	u64			sal_gp;			/* GP of the SAL - physical */
+	unsigned long		os_gp;			/* GP of the os registered with the SAL, physical */
+	unsigned long		pal_proc;		/* PAL_PROC entry point, physical */
+	unsigned long		sal_proc;		/* SAL_PROC entry point, physical */
+	unsigned long		rv_rc;			/* MCA - Rendezvous state, INIT - reason code */
+	unsigned long		proc_state_param;	/* from R18 */
+	unsigned long		monarch;		/* 1 for a monarch event, 0 for a slave */
+
+	/* common */
+	unsigned long		sal_ra;			/* Return address in SAL, physical */
+	unsigned long		sal_gp;			/* GP of the SAL - physical */
 	pal_min_state_area_t	*pal_min_state;		/* from R17.  physical in asm, virtual in C */
 	/* Previous values of IA64_KR(CURRENT) and IA64_KR(CURRENT_STACK).
 	 * Note: if the MCA/INIT recovery code wants to resume to a new context
@@ -89,6 +99,8 @@ struct ia64_sal_os_state {
 	 */
 	u64			prev_IA64_KR_CURRENT;	/* previous value of IA64_KR(CURRENT) */
 	u64			prev_IA64_KR_CURRENT_STACK;
+	unsigned long		prev_IA64_KR_CURRENT;	/* previous value of IA64_KR(CURRENT) */
+	unsigned long		prev_IA64_KR_CURRENT_STACK;
 	struct task_struct	*prev_task;		/* previous task, NULL if it is not useful */
 	/* Some interrupt registers are not saved in minstate, pt_regs or
 	 * switch_stack.  Because MCA/INIT can occur when interrupts are
@@ -106,6 +118,22 @@ struct ia64_sal_os_state {
 	u64			os_status;		/* OS status to SAL, enum below */
 	u64			context;		/* 0 if return to same context
 							   1 if return to new context */
+	unsigned long		isr;
+	unsigned long		ifa;
+	unsigned long		itir;
+	unsigned long		iipa;
+	unsigned long		iim;
+	unsigned long		iha;
+
+	/* OS to SAL */
+	unsigned long		os_status;		/* OS status to SAL, enum below */
+	unsigned long		context;		/* 0 if return to same context
+							   1 if return to new context */
+
+	/* I-resources */
+	unsigned long		iip;
+	unsigned long		ipsr;
+	unsigned long		ifs;
 };
 
 enum {
@@ -138,6 +166,7 @@ extern unsigned long __per_cpu_mca[NR_CPUS];
 extern int cpe_vector;
 extern int ia64_cpe_irq;
 extern void ia64_mca_init(void);
+extern void ia64_mca_irq_init(void);
 extern void ia64_mca_cpu_init(void *);
 extern void ia64_os_mca_dispatch(void);
 extern void ia64_os_mca_dispatch_end(void);
@@ -145,12 +174,15 @@ extern void ia64_mca_ucmc_handler(struct pt_regs *, struct ia64_sal_os_state *);
 extern void ia64_init_handler(struct pt_regs *,
 			      struct switch_stack *,
 			      struct ia64_sal_os_state *);
+extern void ia64_os_init_on_kdump(void);
 extern void ia64_monarch_init_handler(void);
 extern void ia64_slave_init_handler(void);
 extern void ia64_mca_cmc_vector_setup(void);
 extern int  ia64_reg_MCA_extension(int (*fn)(void *, struct ia64_sal_os_state *));
 extern void ia64_unreg_MCA_extension(void);
 extern u64 ia64_get_rnat(u64 *);
+extern unsigned long ia64_get_rnat(unsigned long *);
+extern void ia64_set_psr_mc(void);
 extern void ia64_mca_printk(const char * fmt, ...)
 	 __attribute__ ((format (printf, 1, 2)));
 

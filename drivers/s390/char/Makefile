@@ -2,8 +2,12 @@
 # S/390 character devices
 #
 
+CFLAGS_REMOVE_sclp_early_core.o	+= $(CC_FLAGS_EXPOLINE)
+
 obj-y += ctrlchar.o keyboard.o defkeymap.o sclp.o sclp_rw.o sclp_quiesce.o \
 	 sclp_cmd.o sclp_config.o sclp_cpi_sys.o
+	 sclp_cmd.o sclp_config.o sclp_cpi_sys.o sclp_ocf.o sclp_ctl.o \
+	 sclp_early.o
 
 obj-$(CONFIG_TN3270) += raw3270.o
 obj-$(CONFIG_TN3270_CONSOLE) += con3270.o
@@ -22,6 +26,11 @@ obj-$(CONFIG_VMLOGRDR) += vmlogrdr.o
 obj-$(CONFIG_VMCP) += vmcp.o
 
 tape-$(CONFIG_S390_TAPE_BLOCK) += tape_block.o
+obj-$(CONFIG_SCLP_ASYNC) += sclp_async.o
+
+obj-$(CONFIG_VMLOGRDR) += vmlogrdr.o
+obj-$(CONFIG_VMCP) += vmcp.o
+
 tape-$(CONFIG_PROC_FS) += tape_proc.o
 tape-objs := tape_core.o tape_std.o tape_char.o $(tape-y)
 obj-$(CONFIG_S390_TAPE) += tape.o tape_class.o
@@ -33,3 +42,7 @@ obj-$(CONFIG_S390_VMUR) += vmur.o
 
 zcore_mod-objs := sclp_sdias.o zcore.o
 obj-$(CONFIG_ZFCPDUMP) += zcore_mod.o
+obj-$(CONFIG_CRASH_DUMP) += zcore_mod.o
+
+hmcdrv-objs := hmcdrv_mod.o hmcdrv_dev.o hmcdrv_ftp.o hmcdrv_cache.o diag_ftp.o sclp_ftp.o
+obj-$(CONFIG_HMC_DRV) += hmcdrv.o

@@ -12,7 +12,6 @@
 *		modify it under the terms of the GNU General Public License
 *		as published by the Free Software Foundation; either version
 *		2 of the License, or (at your option) any later version.
-* ============================================================================
 * Jun 02, 1999  Gideon Hack	Updates for Linux 2.2.X kernels.
 * Jun 29, 1997	Alan Cox	Merged with 1.0.3 vendor code
 * Jan 29, 1997	Gene Kozin	v1.0.1. Implemented /proc read routines

@@ -13,6 +13,7 @@
  */
 
 static int hpfs_hash_dentry(struct dentry *dentry, struct qstr *qstr)
+static int hpfs_hash_dentry(const struct dentry *dentry, struct qstr *qstr)
 {
 	unsigned long	 hash;
 	int		 i;
@@ -22,6 +23,8 @@ static int hpfs_hash_dentry(struct dentry *dentry, struct qstr *qstr)
 	if (l == 2) if (qstr->name[0]=='.' || qstr->name[1]=='.') goto x;
 	hpfs_adjust_length((char *)qstr->name, &l);
 	/*if (hpfs_chk_name((char *)qstr->name,&l))*/
+	hpfs_adjust_length(qstr->name, &l);
+	/*if (hpfs_chk_name(qstr->name,&l))*/
 		/*return -ENAMETOOLONG;*/
 		/*return -ENOENT;*/
 	x:
@@ -58,3 +61,28 @@ void hpfs_set_dentry_operations(struct dentry *dentry)
 {
 	dentry->d_op = &hpfs_dentry_operations;
 }
+static int hpfs_compare_dentry(const struct dentry *parent, const struct dentry *dentry,
+		unsigned int len, const char *str, const struct qstr *name)
+{
+	unsigned al = len;
+	unsigned bl = name->len;
+
+	hpfs_adjust_length(str, &al);
+	/*hpfs_adjust_length(b->name, &bl);*/
+
+	/*
+	 * 'str' is the nane of an already existing dentry, so the name
+	 * must be valid. 'name' must be validated first.
+	 */
+
+	if (hpfs_chk_name(name->name, &bl))
+		return 1;
+	if (hpfs_compare_names(parent->d_sb, str, al, name->name, bl, 0))
+		return 1;
+	return 0;
+}
+
+const struct dentry_operations hpfs_dentry_operations = {
+	.d_hash		= hpfs_hash_dentry,
+	.d_compare	= hpfs_compare_dentry,
+};

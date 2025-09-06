@@ -1,5 +1,4 @@
 Audio Pops and Clicks
-=====================
 
 Pops and clicks are unwanted audio artifacts caused by the powering up and down
 of components within the audio subsystem. This is noticeable on PCs when an
@@ -13,7 +12,6 @@ click every time a component power state is changed.
 
 
 Minimising Playback Pops and Clicks
-===================================
 
 Playback pops in portable audio subsystems cannot be completely eliminated
 currently, however future audio codec hardware will have better pop and click
@@ -30,7 +28,6 @@ a PGA (programmable gain amplifier) before being output to the speakers.
 
 
 Minimising Capture Pops and Clicks
-==================================
 
 Capture artifacts are somewhat easier to get rid as we can delay activating the
 ADC until all the pops have occurred. This follows similar power rules to
@@ -43,7 +40,6 @@ startup or shutdown.
 
 
 Zipper Noise
-============
 An unwanted zipper noise can occur within the audio playback or capture stream
 when a volume control is changed near its maximum gain value. The zipper noise
 is heard when the gain increase or decrease changes the mean audio signal

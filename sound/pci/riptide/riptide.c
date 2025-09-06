@@ -98,6 +98,9 @@
 #include <linux/device.h>
 #include <linux/firmware.h>
 #include <asm/io.h>
+#include <linux/kernel.h>
+#include <linux/module.h>
+#include <linux/io.h>
 #include <sound/core.h>
 #include <sound/info.h>
 #include <sound/control.h>
@@ -121,6 +124,7 @@ MODULE_FIRMWARE("riptide.hex");
 static int index[SNDRV_CARDS] = SNDRV_DEFAULT_IDX;
 static char *id[SNDRV_CARDS] = SNDRV_DEFAULT_STR;
 static int enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE;
+static bool enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE;
 
 #ifdef SUPPORT_JOYSTICK
 static int joystick_port[SNDRV_CARDS] = { [0 ... (SNDRV_CARDS - 1)] = 0x200 };
@@ -173,6 +177,7 @@ MODULE_PARM_DESC(opl3_port, "OPL3 port # for Riptide driver.");
 #define MAX_WRITE_RETRY  10	/* cmd interface limits */
 #define MAX_ERROR_COUNT  10
 #define CMDIF_TIMEOUT    500000
+#define CMDIF_TIMEOUT    50000
 #define RESET_TRIES      5
 
 #define READ_PORT_ULONG(p)     inl((unsigned long)&(p))
@@ -463,6 +468,7 @@ struct snd_riptide {
 	unsigned long received_irqs;
 	unsigned long handled_irqs;
 #ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 	int in_suspend;
 #endif
 };
@@ -523,6 +529,11 @@ static struct pci_device_id snd_riptide_ids[] = {
 	 .vendor = 0x127a,.device = 0x4340,
 	 .subvendor = PCI_ANY_ID,.subdevice = PCI_ANY_ID,
 	 },
+static const struct pci_device_id snd_riptide_ids[] = {
+	{ PCI_DEVICE(0x127a, 0x4310) },
+	{ PCI_DEVICE(0x127a, 0x4320) },
+	{ PCI_DEVICE(0x127a, 0x4330) },
+	{ PCI_DEVICE(0x127a, 0x4340) },
 	{0,},
 };
 
@@ -542,6 +553,11 @@ static struct pci_device_id snd_riptide_joystick_ids[] __devinitdata = {
 	{.vendor = 0x127a,.device = 0x4342,
 	 .subvendor = PCI_ANY_ID,.subdevice = PCI_ANY_ID,
 	 },
+static const struct pci_device_id snd_riptide_joystick_ids[] = {
+	{ PCI_DEVICE(0x127a, 0x4312) },
+	{ PCI_DEVICE(0x127a, 0x4322) },
+	{ PCI_DEVICE(0x127a, 0x4332) },
+	{ PCI_DEVICE(0x127a, 0x4342) },
 	{0,},
 };
 #endif
@@ -696,6 +712,12 @@ static u32 atoh(const unsigned char *in, unsigned int len)
 			sum += mult * (c - ('A' - 10));
 		else if ((c >= 'a') && (c <= 'f'))
 			sum += mult * (c - ('a' - 10));
+		int value;
+
+		c = in[len - 1];
+		value = hex_to_bin(c);
+		if (value >= 0)
+			sum += mult * value;
 		mult *= 16;
 		--len;
 	}
@@ -866,6 +888,8 @@ static int sendcmd(struct cmdif *cif, u32 flags, u32 cmd, u32 parm,
 	struct cmdport *cmdport = NULL;
 
 	snd_assert(cif, return -EINVAL);
+	if (snd_BUG_ON(!cif))
+		return -EINVAL;
 
 	hwport = cif->hwport;
 	if (cif->errcnt > MAX_ERROR_COUNT) {
@@ -889,6 +913,7 @@ static int sendcmd(struct cmdif *cif, u32 flags, u32 cmd, u32 parm,
 	while (i++ < CMDIF_TIMEOUT && !IS_READY(cif->hwport))
 		udelay(10);
 	if (i >= CMDIF_TIMEOUT) {
+	if (i > CMDIF_TIMEOUT) {
 		err = -EBUSY;
 		goto errout;
 	}
@@ -908,6 +933,10 @@ static int sendcmd(struct cmdif *cif, u32 flags, u32 cmd, u32 parm,
 				while (!IS_DATF(cmdport) &&
 				       time++ < CMDIF_TIMEOUT)
 					udelay(10);
+				       time < CMDIF_TIMEOUT) {
+					udelay(10);
+					time++;
+				}
 				if (time < CMDIF_TIMEOUT) {	/* read response */
 					ret->retlongs[0] =
 					    READ_PORT_ULONG(cmdport->data1);
@@ -960,6 +989,7 @@ setmixer(struct cmdif *cif, short num, unsigned short rval, unsigned short lval)
 	int i = 0;
 
 	snd_printdd("sent mixer %d: 0x%d 0x%d\n", num, rval, lval);
+	snd_printdd("sent mixer %d: 0x%x 0x%x\n", num, rval, lval);
 	do {
 		SEND_SDGV(cif, num, num, rval, lval);
 		SEND_RDGV(cif, num, num, &rptr);
@@ -1078,6 +1108,7 @@ setsamplerate(struct cmdif *cif, unsigned char *intdec, unsigned int rate)
 				 rptr.retwords[3] != N &&
 				 i++ < MAX_WRITE_RETRY);
 			if (i == MAX_WRITE_RETRY) {
+			if (i > MAX_WRITE_RETRY) {
 				snd_printdd("sent samplerate %d: %d failed\n",
 					    *intdec, rate);
 				return -EIO;
@@ -1099,6 +1130,7 @@ getmixer(struct cmdif *cif, short num, unsigned short *rval,
 	*rval = rptr.retwords[0];
 	*lval = rptr.retwords[1];
 	snd_printdd("got mixer %d: 0x%d 0x%d\n", num, *rval, *lval);
+	snd_printdd("got mixer %d: 0x%x 0x%x\n", num, *rval, *lval);
 	return 0;
 }
 
@@ -1172,6 +1204,10 @@ static void riptide_handleirq(unsigned long dev_id)
 static int riptide_suspend(struct pci_dev *pci, pm_message_t state)
 {
 	struct snd_card *card = pci_get_drvdata(pci);
+#ifdef CONFIG_PM_SLEEP
+static int riptide_suspend(struct device *dev)
+{
+	struct snd_card *card = dev_get_drvdata(dev);
 	struct snd_riptide *chip = card->private_data;
 
 	chip->in_suspend = 1;
@@ -1198,6 +1234,14 @@ static int riptide_resume(struct pci_dev *pci)
 		return -EIO;
 	}
 	pci_set_master(pci);
+	return 0;
+}
+
+static int riptide_resume(struct device *dev)
+{
+	struct snd_card *card = dev_get_drvdata(dev);
+	struct snd_riptide *chip = card->private_data;
+
 	snd_riptide_initialize(chip);
 	snd_ac97_resume(chip->ac97);
 	snd_power_change_state(card, SNDRV_CTL_POWER_D0);
@@ -1212,6 +1256,85 @@ static int riptide_reset(struct cmdif *cif, struct snd_riptide *chip)
 	union cmdret rptr = CMDRET_ZERO;
 	union firmware_version firmware;
 	int i, j, err, has_firmware;
+
+static SIMPLE_DEV_PM_OPS(riptide_pm, riptide_suspend, riptide_resume);
+#define RIPTIDE_PM_OPS	&riptide_pm
+#else
+#define RIPTIDE_PM_OPS	NULL
+#endif /* CONFIG_PM_SLEEP */
+
+static int try_to_load_firmware(struct cmdif *cif, struct snd_riptide *chip)
+{
+	union firmware_version firmware = { .ret = CMDRET_ZERO };
+	int i, timeout, err;
+
+	for (i = 0; i < 2; i++) {
+		WRITE_PORT_ULONG(cif->hwport->port[i].data1, 0);
+		WRITE_PORT_ULONG(cif->hwport->port[i].data2, 0);
+	}
+	SET_GRESET(cif->hwport);
+	udelay(100);
+	UNSET_GRESET(cif->hwport);
+	udelay(100);
+
+	for (timeout = 100000; --timeout; udelay(10)) {
+		if (IS_READY(cif->hwport) && !IS_GERR(cif->hwport))
+			break;
+	}
+	if (!timeout) {
+		snd_printk(KERN_ERR
+			   "Riptide: device not ready, audio status: 0x%x "
+			   "ready: %d gerr: %d\n",
+			   READ_AUDIO_STATUS(cif->hwport),
+			   IS_READY(cif->hwport), IS_GERR(cif->hwport));
+		return -EIO;
+	} else {
+		snd_printdd
+			("Riptide: audio status: 0x%x ready: %d gerr: %d\n",
+			 READ_AUDIO_STATUS(cif->hwport),
+			 IS_READY(cif->hwport), IS_GERR(cif->hwport));
+	}
+
+	SEND_GETV(cif, &firmware.ret);
+	snd_printdd("Firmware version: ASIC: %d CODEC %d AUXDSP %d PROG %d\n",
+		    firmware.firmware.ASIC, firmware.firmware.CODEC,
+		    firmware.firmware.AUXDSP, firmware.firmware.PROG);
+
+	if (!chip)
+		return 1;
+
+	for (i = 0; i < FIRMWARE_VERSIONS; i++) {
+		if (!memcmp(&firmware_versions[i], &firmware, sizeof(firmware)))
+			return 1; /* OK */
+
+	}
+
+	snd_printdd("Writing Firmware\n");
+	if (!chip->fw_entry) {
+		err = request_firmware(&chip->fw_entry, "riptide.hex",
+				       &chip->pci->dev);
+		if (err) {
+			snd_printk(KERN_ERR
+				   "Riptide: Firmware not available %d\n", err);
+			return -EIO;
+		}
+	}
+	err = loadfirmware(cif, chip->fw_entry->data, chip->fw_entry->size);
+	if (err) {
+		snd_printk(KERN_ERR
+			   "Riptide: Could not load firmware %d\n", err);
+		return err;
+	}
+
+	chip->firmware = firmware;
+
+	return 1; /* OK */
+}
+
+static int riptide_reset(struct cmdif *cif, struct snd_riptide *chip)
+{
+	union cmdret rptr = CMDRET_ZERO;
+	int err, tries;
 
 	if (!cif)
 		return -EINVAL;
@@ -1293,6 +1416,11 @@ static int riptide_reset(struct cmdif *cif, struct snd_riptide *chip)
 					   err);
 		}
 	}
+	do {
+		err = try_to_load_firmware(cif, chip);
+		if (err < 0)
+			return err;
+	} while (!err && --tries);
 
 	SEND_SACR(cif, 0, AC97_RESET);
 	SEND_RACR(cif, AC97_RESET, &rptr);
@@ -1454,6 +1582,7 @@ static int snd_riptide_trigger(struct snd_pcm_substream *substream, int cmd)
 			udelay(1);
 		} while (i != rptr.retlongs[1] && j++ < MAX_WRITE_RETRY);
 		if (j >= MAX_WRITE_RETRY)
+		if (j > MAX_WRITE_RETRY)
 			snd_printk(KERN_ERR "Riptide: Could not stop stream!");
 		break;
 	case SNDRV_PCM_TRIGGER_PAUSE_PUSH:
@@ -1491,6 +1620,8 @@ static int snd_riptide_prepare(struct snd_pcm_substream *substream)
 	snd_pcm_format_t format;
 
 	snd_assert(cif && data, return -EINVAL);
+	if (snd_BUG_ON(!cif || !data))
+		return -EINVAL;
 
 	snd_printdd("prepare id %d ch: %d f:0x%x r:%d\n", data->id,
 		    runtime->channels, runtime->format, runtime->rate);
@@ -1516,6 +1647,9 @@ static int snd_riptide_prepare(struct snd_pcm_substream *substream)
 	snd_printdd("use sgdlist at 0x%p and buffer at 0x%p\n",
 		    data->sgdlist.area, sgbuf);
 	if (data->sgdlist.area && sgbuf) {
+	snd_printdd("use sgdlist at 0x%p\n",
+		    data->sgdlist.area);
+	if (data->sgdlist.area) {
 		unsigned int i, j, size, pages, f, pt, period;
 		struct sgd *c, *p = NULL;
 
@@ -1533,6 +1667,7 @@ static int snd_riptide_prepare(struct snd_pcm_substream *substream)
 		pt = 0;
 		j = 0;
 		for (i = 0; i < pages; i++) {
+			unsigned int ofs, addr;
 			c = &data->sgdbuf[i];
 			if (p)
 				p->dwNextLink = cpu_to_le32(data->sgdlist.addr +
@@ -1542,6 +1677,9 @@ static int snd_riptide_prepare(struct snd_pcm_substream *substream)
 			c->dwNextLink = cpu_to_le32(data->sgdlist.addr);
 			c->dwSegPtrPhys =
 			    cpu_to_le32(sgbuf->table[j].addr + pt);
+			ofs = j << PAGE_SHIFT;
+			addr = snd_pcm_sgbuf_get_addr(substream, ofs) + pt;
+			c->dwSegPtrPhys = cpu_to_le32(addr);
 			pt = (pt + f) % PAGE_SIZE;
 			if (pt == 0)
 				j++;
@@ -1635,6 +1773,10 @@ static int snd_riptide_playback_open(struct snd_pcm_substream *substream)
 	chip->playback_substream[sub_num] = substream;
 	runtime->hw = snd_riptide_playback;
 	data = kzalloc(sizeof(struct pcmhw), GFP_KERNEL);
+
+	data = kzalloc(sizeof(struct pcmhw), GFP_KERNEL);
+	if (data == NULL)
+		return -ENOMEM;
 	data->paths = lbus_play_paths[sub_num];
 	data->id = play_ids[sub_num];
 	data->source = play_sources[sub_num];
@@ -1655,6 +1797,10 @@ static int snd_riptide_capture_open(struct snd_pcm_substream *substream)
 	chip->capture_substream = substream;
 	runtime->hw = snd_riptide_capture;
 	data = kzalloc(sizeof(struct pcmhw), GFP_KERNEL);
+
+	data = kzalloc(sizeof(struct pcmhw), GFP_KERNEL);
+	if (data == NULL)
+		return -ENOMEM;
 	data->paths = lbus_rec_path;
 	data->id = PADC;
 	data->source = ACLNK2PADC;
@@ -1714,6 +1860,7 @@ static struct snd_pcm_ops snd_riptide_capture_ops = {
 
 static int __devinit
 snd_riptide_pcm(struct snd_riptide *chip, int device, struct snd_pcm **rpcm)
+static int snd_riptide_pcm(struct snd_riptide *chip, int device)
 {
 	struct snd_pcm *pcm;
 	int err;
@@ -1752,6 +1899,7 @@ snd_riptide_interrupt(int irq, void *dev_id)
 		    IS_EOCIRQ(cif->hwport)) {
 			chip->handled_irqs++;
 			tasklet_hi_schedule(&chip->riptide_tq);
+			tasklet_schedule(&chip->riptide_tq);
 		}
 		if (chip->rmidi && IS_MPUIRQ(cif->hwport)) {
 			chip->handled_irqs++;
@@ -1773,6 +1921,8 @@ snd_riptide_codec_write(struct snd_ac97 *ac97, unsigned short reg,
 	int i = 0;
 
 	snd_assert(cif, return);
+	if (snd_BUG_ON(!cif))
+		return;
 
 	snd_printdd("Write AC97 reg 0x%x 0x%x\n", reg, val);
 	do {
@@ -1780,6 +1930,7 @@ snd_riptide_codec_write(struct snd_ac97 *ac97, unsigned short reg,
 		SEND_RACR(cif, reg, &rptr);
 	} while (rptr.retwords[1] != val && i++ < MAX_WRITE_RETRY);
 	if (i == MAX_WRITE_RETRY)
+	if (i > MAX_WRITE_RETRY)
 		snd_printdd("Write AC97 reg failed\n");
 }
 
@@ -1791,6 +1942,8 @@ static unsigned short snd_riptide_codec_read(struct snd_ac97 *ac97,
 	union cmdret rptr = CMDRET_ZERO;
 
 	snd_assert(cif, return 0);
+	if (snd_BUG_ON(!cif))
+		return 0;
 
 	if (SEND_RACR(cif, reg, &rptr) != 0)
 		SEND_RACR(cif, reg, &rptr);
@@ -1805,6 +1958,8 @@ static int snd_riptide_initialize(struct snd_riptide *chip)
 	int err;
 
 	snd_assert(chip, return -EINVAL);
+	if (snd_BUG_ON(!chip))
+		return -EINVAL;
 
 	cif = chip->cif;
 	if (!cif) {
@@ -1837,6 +1992,8 @@ static int snd_riptide_free(struct snd_riptide *chip)
 	struct cmdif *cif;
 
 	snd_assert(chip, return 0);
+	if (!chip)
+		return 0;
 
 	if ((cif = chip->cif)) {
 		SET_GRESET(cif->hwport);
@@ -1848,6 +2005,7 @@ static int snd_riptide_free(struct snd_riptide *chip)
 		free_irq(chip->irq, chip);
 	if (chip->fw_entry)
 		release_firmware(chip->fw_entry);
+	release_firmware(chip->fw_entry);
 	release_and_free_resource(chip->res_port);
 	kfree(chip);
 	return 0;
@@ -1861,6 +2019,7 @@ static int snd_riptide_dev_free(struct snd_device *device)
 }
 
 static int __devinit
+static int
 snd_riptide_create(struct snd_card *card, struct pci_dev *pci,
 		   struct snd_riptide **rchip)
 {
@@ -1901,6 +2060,7 @@ snd_riptide_create(struct snd_card *card, struct pci_dev *pci,
 
 	if (request_irq(pci->irq, snd_riptide_interrupt, IRQF_SHARED,
 			"RIPTIDE", chip)) {
+			KBUILD_MODNAME, chip)) {
 		snd_printk(KERN_ERR "Riptide: unable to grab IRQ %d\n",
 			   pci->irq);
 		snd_riptide_free(chip);
@@ -1992,11 +2152,15 @@ snd_riptide_proc_read(struct snd_info_entry *entry,
 	while (i--) {
 		snd_iprintf(buffer, "%x->%x ", p[i - 1], p[i]);
 		i--;
+	while (i >= 2) {
+		i -= 2;
+		snd_iprintf(buffer, "%x->%x ", p[i], p[i + 1]);
 	}
 	snd_iprintf(buffer, "\n");
 }
 
 static void __devinit snd_riptide_proc_init(struct snd_riptide *chip)
+static void snd_riptide_proc_init(struct snd_riptide *chip)
 {
 	struct snd_info_entry *entry;
 
@@ -2005,6 +2169,7 @@ static void __devinit snd_riptide_proc_init(struct snd_riptide *chip)
 }
 
 static int __devinit snd_riptide_mixer(struct snd_riptide *chip)
+static int snd_riptide_mixer(struct snd_riptide *chip)
 {
 	struct snd_ac97_bus *pbus;
 	struct snd_ac97_template ac97;
@@ -2075,11 +2240,63 @@ static void __devexit snd_riptide_joystick_remove(struct pci_dev *pci)
 			gameport_unregister_port(riptide_gameport);
 			riptide_gameport = NULL;
 		}
+
+static int
+snd_riptide_joystick_probe(struct pci_dev *pci, const struct pci_device_id *id)
+{
+	static int dev;
+	struct gameport *gameport;
+	int ret;
+
+	if (dev >= SNDRV_CARDS)
+		return -ENODEV;
+
+	if (!enable[dev]) {
+		ret = -ENOENT;
+		goto inc_dev;
+	}
+
+	if (!joystick_port[dev]) {
+		ret = 0;
+		goto inc_dev;
+	}
+
+	gameport = gameport_allocate_port();
+	if (!gameport) {
+		ret = -ENOMEM;
+		goto inc_dev;
+	}
+	if (!request_region(joystick_port[dev], 8, "Riptide gameport")) {
+		snd_printk(KERN_WARNING
+			   "Riptide: cannot grab gameport 0x%x\n",
+			   joystick_port[dev]);
+		gameport_free_port(gameport);
+		ret = -EBUSY;
+		goto inc_dev;
+	}
+
+	gameport->io = joystick_port[dev];
+	gameport_register_port(gameport);
+	pci_set_drvdata(pci, gameport);
+
+	ret = 0;
+inc_dev:
+	dev++;
+	return ret;
+}
+
+static void snd_riptide_joystick_remove(struct pci_dev *pci)
+{
+	struct gameport *gameport = pci_get_drvdata(pci);
+	if (gameport) {
+		release_region(gameport->io, 8);
+		gameport_unregister_port(gameport);
 	}
 }
 #endif
 
 static int __devinit
+static int
 snd_card_riptide_probe(struct pci_dev *pci, const struct pci_device_id *pci_id)
 {
 	static int dev;
@@ -2087,6 +2304,8 @@ snd_card_riptide_probe(struct pci_dev *pci, const struct pci_device_id *pci_id)
 	struct snd_riptide *chip;
 	unsigned short addr;
 	int err = 0;
+	unsigned short val;
+	int err;
 
 	if (dev >= SNDRV_CARDS)
 		return -ENODEV;
@@ -2144,6 +2363,58 @@ snd_card_riptide_probe(struct pci_dev *pci, const struct pci_device_id *pci_id)
 			chip->opladdr = addr;
 			if ((err =
 			     snd_opl3_hwdep_new(chip->opl3, 0, 1, NULL)) < 0)
+	err = snd_card_new(&pci->dev, index[dev], id[dev], THIS_MODULE,
+			   0, &card);
+	if (err < 0)
+		return err;
+	err = snd_riptide_create(card, pci, &chip);
+	if (err < 0)
+		goto error;
+	card->private_data = chip;
+	err = snd_riptide_pcm(chip, 0);
+	if (err < 0)
+		goto error;
+	err = snd_riptide_mixer(chip);
+	if (err < 0)
+		goto error;
+
+	val = LEGACY_ENABLE_ALL;
+	if (opl3_port[dev])
+		val |= LEGACY_ENABLE_FM;
+#ifdef SUPPORT_JOYSTICK
+	if (joystick_port[dev])
+		val |= LEGACY_ENABLE_GAMEPORT;
+#endif
+	if (mpu_port[dev])
+		val |= LEGACY_ENABLE_MPU_INT | LEGACY_ENABLE_MPU;
+	val |= (chip->irq << 4) & 0xf0;
+	pci_write_config_word(chip->pci, PCI_EXT_Legacy_Mask, val);
+	if (mpu_port[dev]) {
+		val = mpu_port[dev];
+		pci_write_config_word(chip->pci, PCI_EXT_MPU_Base, val);
+		err = snd_mpu401_uart_new(card, 0, MPU401_HW_RIPTIDE,
+					  val, MPU401_INFO_IRQ_HOOK, -1,
+					  &chip->rmidi);
+		if (err < 0)
+			snd_printk(KERN_WARNING
+				   "Riptide: Can't Allocate MPU at 0x%x\n",
+				   val);
+		else
+			chip->mpuaddr = val;
+	}
+	if (opl3_port[dev]) {
+		val = opl3_port[dev];
+		pci_write_config_word(chip->pci, PCI_EXT_FM_Base, val);
+		err = snd_opl3_create(card, val, val + 2,
+				      OPL3_HW_RIPTIDE, 0, &chip->opl3);
+		if (err < 0)
+			snd_printk(KERN_WARNING
+				   "Riptide: Can't Allocate OPL3 at 0x%x\n",
+				   val);
+		else {
+			chip->opladdr = val;
+			err = snd_opl3_hwdep_new(chip->opl3, 0, 1, NULL);
+			if (err < 0)
 				snd_printk(KERN_WARNING
 					   "Riptide: Can't Allocate OPL3-HWDEP\n");
 		}
@@ -2152,6 +2423,10 @@ snd_card_riptide_probe(struct pci_dev *pci, const struct pci_device_id *pci_id)
 	if ((addr = joystick_port[dev]) != 0) {
 		pci_write_config_word(chip->pci, PCI_EXT_Game_Base, addr);
 		chip->gameaddr = addr;
+	if (joystick_port[dev]) {
+		val = joystick_port[dev];
+		pci_write_config_word(chip->pci, PCI_EXT_Game_Base, val);
+		chip->gameaddr = val;
 	}
 #endif
 
@@ -2193,6 +2468,31 @@ static struct pci_driver driver = {
 	.suspend = riptide_suspend,
 	.resume = riptide_resume,
 #endif
+	err = snd_card_register(card);
+	if (err < 0)
+		goto error;
+	pci_set_drvdata(pci, card);
+	dev++;
+	return 0;
+
+ error:
+	snd_card_free(card);
+	return err;
+}
+
+static void snd_card_riptide_remove(struct pci_dev *pci)
+{
+	snd_card_free(pci_get_drvdata(pci));
+}
+
+static struct pci_driver driver = {
+	.name = KBUILD_MODNAME,
+	.id_table = snd_riptide_ids,
+	.probe = snd_card_riptide_probe,
+	.remove = snd_card_riptide_remove,
+	.driver = {
+		.pm = RIPTIDE_PM_OPS,
+	},
 };
 
 #ifdef SUPPORT_JOYSTICK
@@ -2201,6 +2501,10 @@ static struct pci_driver joystick_driver = {
 	.id_table = snd_riptide_joystick_ids,
 	.probe = snd_riptide_joystick_probe,
 	.remove = __devexit_p(snd_riptide_joystick_remove),
+	.name = KBUILD_MODNAME "-joystick",
+	.id_table = snd_riptide_joystick_ids,
+	.probe = snd_riptide_joystick_probe,
+	.remove = snd_riptide_joystick_remove,
 };
 #endif
 
@@ -2217,6 +2521,16 @@ static int __init alsa_card_riptide_init(void)
 		have_joystick = 1;
 #endif
 	return 0;
+	err = pci_register_driver(&driver);
+	if (err < 0)
+		return err;
+#if defined(SUPPORT_JOYSTICK)
+	err = pci_register_driver(&joystick_driver);
+	/* On failure unregister formerly registered audio driver */
+	if (err < 0)
+		pci_unregister_driver(&driver);
+#endif
+	return err;
 }
 
 static void __exit alsa_card_riptide_exit(void)
@@ -2225,6 +2539,7 @@ static void __exit alsa_card_riptide_exit(void)
 #if defined(SUPPORT_JOYSTICK)
 	if (have_joystick)
 		pci_unregister_driver(&joystick_driver);
+	pci_unregister_driver(&joystick_driver);
 #endif
 }
 

@@ -111,6 +111,10 @@ static int sun3scsi_release (struct Scsi_Host *);
 
 #define BOARD_NORMAL	0
 #define BOARD_NCR53C400	1
+ */
+
+#ifndef SUN3_SCSI_H
+#define SUN3_SCSI_H
 
 /* additional registers - mainly DMA control regs */
 /* these start at regbase + 8 -- directly after the NCR regs */
@@ -377,4 +381,5 @@ struct sun3_udc_regs {
 
 #endif /* ndef HOSTS_C */
 #endif /* SUN3_NCR5380_H */
+#endif /* SUN3_SCSI_H */
 

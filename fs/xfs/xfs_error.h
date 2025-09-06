@@ -33,6 +33,14 @@ extern void xfs_error_report(char *tag, int level, struct xfs_mount *mp,
 				char *fname, int linenum, inst_t *ra);
 extern void xfs_corruption_error(char *tag, int level, struct xfs_mount *mp,
 				void *p, char *fname, int linenum, inst_t *ra);
+struct xfs_mount;
+
+extern void xfs_error_report(const char *tag, int level, struct xfs_mount *mp,
+			const char *filename, int linenum, void *ra);
+extern void xfs_corruption_error(const char *tag, int level,
+			struct xfs_mount *mp, void *p, const char *filename,
+			int linenum, void *ra);
+extern void xfs_verifier_error(struct xfs_buf *bp);
 
 #define	XFS_ERROR_REPORT(e, lvl, mp)	\
 	xfs_error_report(e, lvl, mp, __FILE__, __LINE__, __return_address)
@@ -48,6 +56,7 @@ extern void xfs_corruption_error(char *tag, int level, struct xfs_mount *mp,
  * Macros to set EFSCORRUPTED & return/branch.
  */
 #define	XFS_WANT_CORRUPTED_GOTO(x,l)	\
+#define	XFS_WANT_CORRUPTED_GOTO(mp, x, l)	\
 	{ \
 		int fs_is_ok = (x); \
 		ASSERT(fs_is_ok); \
@@ -55,11 +64,14 @@ extern void xfs_corruption_error(char *tag, int level, struct xfs_mount *mp,
 			XFS_ERROR_REPORT("XFS_WANT_CORRUPTED_GOTO", \
 					 XFS_ERRLEVEL_LOW, NULL); \
 			error = XFS_ERROR(EFSCORRUPTED); \
+					 XFS_ERRLEVEL_LOW, mp); \
+			error = -EFSCORRUPTED; \
 			goto l; \
 		} \
 	}
 
 #define	XFS_WANT_CORRUPTED_RETURN(x)	\
+#define	XFS_WANT_CORRUPTED_RETURN(mp, x)	\
 	{ \
 		int fs_is_ok = (x); \
 		ASSERT(fs_is_ok); \
@@ -67,6 +79,8 @@ extern void xfs_corruption_error(char *tag, int level, struct xfs_mount *mp,
 			XFS_ERROR_REPORT("XFS_WANT_CORRUPTED_RETURN", \
 					 XFS_ERRLEVEL_LOW, NULL); \
 			return XFS_ERROR(EFSCORRUPTED); \
+					 XFS_ERRLEVEL_LOW, mp); \
+			return -EFSCORRUPTED; \
 		} \
 	}
 
@@ -126,6 +140,7 @@ extern void xfs_corruption_error(char *tag, int level, struct xfs_mount *mp,
 #define	XFS_RANDOM_BMAPIFORMAT				XFS_RANDOM_DEFAULT
 
 #ifdef DEBUG
+extern int xfs_error_test_active;
 extern int xfs_error_test(int, int *, char *, int, char *, unsigned long);
 
 #define	XFS_NUM_INJECT_ERROR				10
@@ -136,6 +151,12 @@ extern int xfs_error_test(int, int *, char *, int, char *, unsigned long);
 
 extern int xfs_errortag_add(int error_tag, xfs_mount_t *mp);
 extern int xfs_errortag_clearall(xfs_mount_t *mp, int loud);
+	((expr) || (xfs_error_test_active && \
+	 xfs_error_test((tag), (mp)->m_fixedfsid, "expr", __LINE__, __FILE__, \
+			(rf))))
+
+extern int xfs_errortag_add(int error_tag, struct xfs_mount *mp);
+extern int xfs_errortag_clearall(struct xfs_mount *mp, int loud);
 #else
 #define XFS_TEST_ERROR(expr, mp, tag, rf)	(expr)
 #define xfs_errortag_add(tag, mp)		(ENOSYS)
@@ -147,6 +168,8 @@ extern int xfs_errortag_clearall(xfs_mount_t *mp, int loud);
  *			a panic by setting xfs_panic_mask in a
  *			sysctl.  update xfs_max[XFS_PARAM] if
  *			more are added.
+ * XFS panic tags -- allow a call to xfs_alert_tag() be turned into
+ *			a panic by setting xfs_panic_mask in a sysctl.
  */
 #define		XFS_NO_PTAG			0
 #define		XFS_PTAG_IFLUSH			0x00000001

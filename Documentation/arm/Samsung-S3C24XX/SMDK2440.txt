@@ -1,5 +1,4 @@
 		Samsung/Meritech SMDK2440
-		=========================
 
 Introduction
 ------------
@@ -53,4 +52,5 @@ Maintainers
   and to Simtec Electronics for allowing me time to work on this.
 
 
+(c) 2004 Ben Dooks
 (c) 2004 Ben Dooks

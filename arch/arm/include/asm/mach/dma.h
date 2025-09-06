@@ -22,6 +22,13 @@ struct dma_ops {
 	int	(*residue)(dmach_t, dma_t *);		/* optional */
 	int	(*setspeed)(dmach_t, dma_t *, int);	/* optional */
 	char	*type;
+	int	(*request)(unsigned int, dma_t *);		/* optional */
+	void	(*free)(unsigned int, dma_t *);			/* optional */
+	void	(*enable)(unsigned int, dma_t *);		/* mandatory */
+	void 	(*disable)(unsigned int, dma_t *);		/* mandatory */
+	int	(*residue)(unsigned int, dma_t *);		/* optional */
+	int	(*setspeed)(unsigned int, dma_t *, int);	/* optional */
+	const char *type;
 };
 
 struct dma_struct {
@@ -35,6 +42,7 @@ struct dma_struct {
 	unsigned int	invalid:1;	/* Address/Count changed	*/
 
 	dmamode_t	dma_mode;	/* DMA mode			*/
+	unsigned int	dma_mode;	/* DMA mode			*/
 	int		speed;		/* DMA speed			*/
 
 	unsigned int	lock;		/* Device is allocated		*/
@@ -55,3 +63,15 @@ struct dma_struct {
 extern void arch_dma_init(dma_t *dma);
 
 extern void isa_init_dma(dma_t *dma);
+	const struct dma_ops *d_ops;
+};
+
+/*
+ * isa_dma_add - add an ISA-style DMA channel
+ */
+extern int isa_dma_add(unsigned int, dma_t *dma);
+
+/*
+ * Add the ISA DMA controller.  Always takes channels 0-7.
+ */
+extern void isa_init_dma(void);

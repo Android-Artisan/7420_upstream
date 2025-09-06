@@ -154,6 +154,10 @@ page_not_present:
 	mfsr	r12, SYSREG_ECR
 	mov	r11, sp
 	rcall	do_page_fault
+	call	save_full_context_ex
+	mfsr	r12, SYSREG_ECR
+	mov	r11, sp
+	call	do_page_fault
 	rjmp	ret_from_exception
 
 	.align	2
@@ -262,6 +266,20 @@ ret_from_fork:
 syscall_trace_enter:
 	pushm	r8-r12
 	rcall	syscall_trace
+	call   schedule_tail
+	mov	r12, 0
+	rjmp	syscall_return
+
+	.global ret_from_kernel_thread
+ret_from_kernel_thread:
+	call   schedule_tail
+	mov	r12, r0
+	mov	lr, r2	/* syscall_return */
+	mov	pc, r1
+
+syscall_trace_enter:
+	pushm	r8-r12
+	call	syscall_trace
 	popm	r8-r12
 	rjmp	syscall_trace_cont
 
@@ -270,6 +288,7 @@ syscall_exit_work:
 	brcc	1f
 	unmask_interrupts
 	rcall	syscall_trace
+	call	syscall_trace
 	mask_interrupts
 	ld.w	r1, r0[TI_flags]
 
@@ -277,17 +296,20 @@ syscall_exit_work:
 	brcc	2f
 	unmask_interrupts
 	rcall	schedule
+	call	schedule
 	mask_interrupts
 	ld.w	r1, r0[TI_flags]
 	rjmp	1b
 
 2:	mov	r2, _TIF_SIGPENDING | _TIF_RESTORE_SIGMASK
+2:	mov	r2, _TIF_SIGPENDING | _TIF_NOTIFY_RESUME
 	tst	r1, r2
 	breq	3f
 	unmask_interrupts
 	mov	r12, sp
 	mov	r11, r0
 	rcall	do_notify_resume
+	call	do_notify_resume
 	mask_interrupts
 	ld.w	r1, r0[TI_flags]
 	rjmp	1b
@@ -395,6 +417,7 @@ handle_critical:
 	mfsr	r12, SYSREG_ECR
 	mov	r11, sp
 	rcall	do_critical_exception
+	call	do_critical_exception
 
 	/* We should never get here... */
 bad_return:
@@ -402,12 +425,17 @@ bad_return:
 	bral	panic
 	.align	2
 1:	.asciz	"Return from critical exception!"
+	lddpc	pc, 2f
+	.align	2
+1:	.asciz	"Return from critical exception!"
+2:	.long	panic
 
 	.align	1
 do_bus_error_write:
 	sub	sp, 4
 	stmts	--sp, r0-lr
 	rcall	save_full_context_ex
+	call	save_full_context_ex
 	mov	r11, 1
 	rjmp	1f
 
@@ -419,6 +447,11 @@ do_bus_error_read:
 1:	mfsr	r12, SYSREG_BEAR
 	mov	r10, sp
 	rcall	do_bus_error
+	call	save_full_context_ex
+	mov	r11, 0
+1:	mfsr	r12, SYSREG_BEAR
+	mov	r10, sp
+	call	do_bus_error
 	rjmp	ret_from_exception
 
 	.align	1
@@ -434,6 +467,7 @@ do_nmi_ll:
 	mfsr	r12, SYSREG_ECR
 	mov	r11, sp
 	rcall	do_nmi
+	call	do_nmi
 	popm	r8-r9
 	mtsr	SYSREG_RAR_NMI, r8
 	tst	r0, r0
@@ -461,6 +495,10 @@ handle_address_fault:
 	mfsr	r12, SYSREG_ECR
 	mov	r11, sp
 	rcall	do_address_exception
+	call	save_full_context_ex
+	mfsr	r12, SYSREG_ECR
+	mov	r11, sp
+	call	do_address_exception
 	rjmp	ret_from_exception
 
 handle_protection_fault:
@@ -470,6 +508,10 @@ handle_protection_fault:
 	mfsr	r12, SYSREG_ECR
 	mov	r11, sp
 	rcall	do_page_fault
+	call	save_full_context_ex
+	mfsr	r12, SYSREG_ECR
+	mov	r11, sp
+	call	do_page_fault
 	rjmp	ret_from_exception
 
 	.align	1
@@ -480,6 +522,10 @@ do_illegal_opcode_ll:
 	mfsr	r12, SYSREG_ECR
 	mov	r11, sp
 	rcall	do_illegal_opcode
+	call	save_full_context_ex
+	mfsr	r12, SYSREG_ECR
+	mov	r11, sp
+	call	do_illegal_opcode
 	rjmp	ret_from_exception
 
 do_dtlb_modified:
@@ -518,6 +564,11 @@ do_fpe_ll:
 	mov	r12, 26
 	mov	r11, sp
 	rcall	do_fpe
+	call	save_full_context_ex
+	unmask_interrupts
+	mov	r12, 26
+	mov	r11, sp
+	call	do_fpe
 	rjmp	ret_from_exception
 
 ret_from_exception:
@@ -554,6 +605,7 @@ fault_resume_kernel:
 	bld	r4, SYSREG_GM_OFFSET
 	brcs	1f
 	rcall	preempt_schedule_irq
+	call	preempt_schedule_irq
 1:
 #endif
 
@@ -583,17 +635,20 @@ fault_exit_work:
 	brcc	1f
 	unmask_interrupts
 	rcall	schedule
+	call	schedule
 	mask_interrupts
 	ld.w	r1, r0[TI_flags]
 	rjmp	fault_exit_work
 
 1:	mov	r2, _TIF_SIGPENDING | _TIF_RESTORE_SIGMASK
+1:	mov	r2, _TIF_SIGPENDING | _TIF_NOTIFY_RESUME
 	tst	r1, r2
 	breq	2f
 	unmask_interrupts
 	mov	r12, sp
 	mov	r11, r0
 	rcall	do_notify_resume
+	call	do_notify_resume
 	mask_interrupts
 	ld.w	r1, r0[TI_flags]
 	rjmp	fault_exit_work
@@ -620,6 +675,10 @@ handle_debug:
 #endif
 	mov	r12, sp
 	rcall	do_debug
+	call	trace_hardirqs_off
+#endif
+	mov	r12, sp
+	call	do_debug
 	mov	sp, r12
 
 	lddsp	r2, sp[REG_SR]
@@ -644,6 +703,7 @@ handle_debug:
 	mtsr	SYSREG_RAR_DBG, r10
 #ifdef CONFIG_TRACE_IRQFLAGS
 	rcall	trace_hardirqs_on
+	call	trace_hardirqs_on
 1:
 #endif
 	ldmts	sp++, r0-lr
@@ -677,6 +737,7 @@ debug_resume_kernel:
 	bld	r11, SYSREG_GM_OFFSET
 	brcc	1f
 	rcall	trace_hardirqs_on
+	call	trace_hardirqs_on
 1:
 #endif
 	mfsr	r2, SYSREG_SR
@@ -748,6 +809,7 @@ irq_level\level:
 	mov	r12, \level
 
 	rcall	do_IRQ
+	call	do_IRQ
 
 	lddsp	r4, sp[REG_SR]
 	bfextu	r4, r4, SYSREG_M0_OFFSET, 3
@@ -768,6 +830,7 @@ irq_level\level:
 1:
 #ifdef CONFIG_TRACE_IRQFLAGS
 	rcall	trace_hardirqs_on
+	call	trace_hardirqs_on
 #endif
 	popm	r8-r9
 	mtsr	rar_int\level, r8
@@ -808,6 +871,7 @@ irq_level\level:
 	bld	r4, SYSREG_GM_OFFSET
 	brcs	1b
 	rcall	preempt_schedule_irq
+	call	preempt_schedule_irq
 #endif
 	rjmp	1b
 	.endm

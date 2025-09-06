@@ -44,6 +44,13 @@
 #include <linux/i2c-id.h>
 #include <linux/of_platform.h>
 #include <linux/of_i2c.h>
+#include <linux/interrupt.h>
+#include <asm/irq.h>
+#include <linux/io.h>
+#include <linux/i2c.h>
+#include <linux/of_address.h>
+#include <linux/of_irq.h>
+#include <linux/of_platform.h>
 
 #include "i2c-ibm_iic.h"
 
@@ -57,6 +64,11 @@ module_param(iic_force_poll, bool, 0);
 MODULE_PARM_DESC(iic_force_poll, "Force polling mode");
 
 static int iic_force_fast;
+static bool iic_force_poll;
+module_param(iic_force_poll, bool, 0);
+MODULE_PARM_DESC(iic_force_poll, "Force polling mode");
+
+static bool iic_force_fast;
 module_param(iic_force_fast, bool, 0);
 MODULE_PARM_DESC(iic_force_fast, "Force fast mode (400 kHz)");
 
@@ -89,6 +101,11 @@ static void dump_iic_regs(const char* header, struct ibm_iic_private* dev)
 	       KERN_DEBUG "  sts      = 0x%02x, extsts = 0x%02x\n"
 	       KERN_DEBUG "  clkdiv   = 0x%02x, xfrcnt = 0x%02x\n"
 	       KERN_DEBUG "  xtcntlss = 0x%02x, directcntl = 0x%02x\n",
+	printk(KERN_DEBUG
+	       "  cntl     = 0x%02x, mdcntl = 0x%02x\n"
+	       "  sts      = 0x%02x, extsts = 0x%02x\n"
+	       "  clkdiv   = 0x%02x, xfrcnt = 0x%02x\n"
+	       "  xtcntlss = 0x%02x, directcntl = 0x%02x\n",
 		in_8(&iic->cntl), in_8(&iic->mdcntl), in_8(&iic->sts),
 		in_8(&iic->extsts), in_8(&iic->clkdiv), in_8(&iic->xfrcnt),
 		in_8(&iic->xtcntlss), in_8(&iic->directcntl));
@@ -416,6 +433,7 @@ static int iic_wait_for_tc(struct ibm_iic_private* dev){
 		/* Interrupt mode */
 		ret = wait_event_interruptible_timeout(dev->wq,
 			!(in_8(&iic->sts) & STS_PT), dev->adap.timeout * HZ);
+			!(in_8(&iic->sts) & STS_PT), dev->adap.timeout);
 
 		if (unlikely(ret < 0))
 			DBG("%d: wait interrupted\n", dev->idx);
@@ -427,6 +445,7 @@ static int iic_wait_for_tc(struct ibm_iic_private* dev){
 	else {
 		/* Polling mode */
 		unsigned long x = jiffies + dev->adap.timeout * HZ;
+		unsigned long x = jiffies + dev->adap.timeout;
 
 		while (in_8(&iic->sts) & STS_PT){
 			if (unlikely(time_after(jiffies, x))){
@@ -495,6 +514,7 @@ static int iic_xfer_bytes(struct ibm_iic_private* dev, struct i2c_msg* pm,
 			break;
 		else if (unlikely(ret != count)){
 			DBG("%d: xfer_bytes, requested %d, transfered %d\n",
+			DBG("%d: xfer_bytes, requested %d, transferred %d\n",
 				dev->idx, count, ret);
 
 			/* If it's not a last part of xfer, abort it */
@@ -594,6 +614,7 @@ static int iic_xfer(struct i2c_adapter *adap, struct i2c_msg *msgs, int num)
 		DBG("%d: iic_xfer, bus is not free\n", dev->idx);
 
 		/* Usually it means something serious has happend.
+		/* Usually it means something serious has happened.
 		 * We *cannot* have unfinished previous transfer
 		 * so it doesn't make any sense to try to stop it.
 		 * Probably we were not able to recover from the
@@ -673,6 +694,19 @@ static int __devinit iic_request_irq(struct of_device *ofdev,
 	if (irq == NO_IRQ) {
 		dev_err(&ofdev->dev, "irq_of_parse_and_map failed\n");
 		return NO_IRQ;
+static int iic_request_irq(struct platform_device *ofdev,
+				     struct ibm_iic_private *dev)
+{
+	struct device_node *np = ofdev->dev.of_node;
+	int irq;
+
+	if (iic_force_poll)
+		return 0;
+
+	irq = irq_of_parse_and_map(np, 0);
+	if (!irq) {
+		dev_err(&ofdev->dev, "irq_of_parse_and_map failed\n");
+		return 0;
 	}
 
 	/* Disable interrupts until we finish initialization, assumes
@@ -683,6 +717,7 @@ static int __devinit iic_request_irq(struct of_device *ofdev,
 		dev_err(&ofdev->dev, "request_irq %d failed\n", irq);
 		/* Fallback to the polling mode */
 		return NO_IRQ;
+		return 0;
 	}
 
 	return irq;
@@ -695,6 +730,9 @@ static int __devinit iic_probe(struct of_device *ofdev,
 			       const struct of_device_id *match)
 {
 	struct device_node *np = ofdev->node;
+static int iic_probe(struct platform_device *ofdev)
+{
+	struct device_node *np = ofdev->dev.of_node;
 	struct ibm_iic_private *dev;
 	struct i2c_adapter *adap;
 	const u32 *freq;
@@ -707,6 +745,7 @@ static int __devinit iic_probe(struct of_device *ofdev,
 	}
 
 	dev_set_drvdata(&ofdev->dev, dev);
+	platform_set_drvdata(ofdev, dev);
 
 	dev->vaddr = of_iomap(np, 0);
 	if (dev->vaddr == NULL) {
@@ -719,6 +758,7 @@ static int __devinit iic_probe(struct of_device *ofdev,
 
 	dev->irq = iic_request_irq(ofdev, dev);
 	if (dev->irq == NO_IRQ)
+	if (!dev->irq)
 		dev_warn(&ofdev->dev, "using polling mode\n");
 
 	/* Board specific settings */
@@ -750,6 +790,12 @@ static int __devinit iic_probe(struct of_device *ofdev,
 	adap->class = I2C_CLASS_HWMON | I2C_CLASS_SPD;
 	adap->algo = &iic_algo;
 	adap->timeout = 1;
+	adap->dev.of_node = of_node_get(np);
+	strlcpy(adap->name, "IBM IIC", sizeof(adap->name));
+	i2c_set_adapdata(adap, dev);
+	adap->class = I2C_CLASS_HWMON | I2C_CLASS_SPD;
+	adap->algo = &iic_algo;
+	adap->timeout = HZ;
 
 	ret = i2c_add_adapter(adap);
 	if (ret  < 0) {
@@ -767,6 +813,7 @@ static int __devinit iic_probe(struct of_device *ofdev,
 
 error_cleanup:
 	if (dev->irq != NO_IRQ) {
+	if (dev->irq) {
 		iic_interrupt_mode(dev, 0);
 		free_irq(dev->irq, dev);
 	}
@@ -791,6 +838,13 @@ static int __devexit iic_remove(struct of_device *ofdev)
 	i2c_del_adapter(&dev->adap);
 
 	if (dev->irq != NO_IRQ) {
+static int iic_remove(struct platform_device *ofdev)
+{
+	struct ibm_iic_private *dev = platform_get_drvdata(ofdev);
+
+	i2c_del_adapter(&dev->adap);
+
+	if (dev->irq) {
 		iic_interrupt_mode(dev, 0);
 		free_irq(dev->irq, dev);
 	}
@@ -825,3 +879,15 @@ static void __exit iic_exit(void)
 
 module_init(iic_init);
 module_exit(iic_exit);
+MODULE_DEVICE_TABLE(of, ibm_iic_match);
+
+static struct platform_driver ibm_iic_driver = {
+	.driver = {
+		.name = "ibm-iic",
+		.of_match_table = ibm_iic_match,
+	},
+	.probe	= iic_probe,
+	.remove	= iic_remove,
+};
+
+module_platform_driver(ibm_iic_driver);

@@ -59,6 +59,9 @@ static void snd_cs5535audio_stop_hardware(struct cs5535audio *cs5535au)
 int snd_cs5535audio_suspend(struct pci_dev *pci, pm_message_t state)
 {
 	struct snd_card *card = pci_get_drvdata(pci);
+static int snd_cs5535audio_suspend(struct device *dev)
+{
+	struct snd_card *card = dev_get_drvdata(dev);
 	struct cs5535audio *cs5535au = card->private_data;
 	int i;
 
@@ -85,6 +88,12 @@ int snd_cs5535audio_suspend(struct pci_dev *pci, pm_message_t state)
 int snd_cs5535audio_resume(struct pci_dev *pci)
 {
 	struct snd_card *card = pci_get_drvdata(pci);
+	return 0;
+}
+
+static int snd_cs5535audio_resume(struct device *dev)
+{
+	struct snd_card *card = dev_get_drvdata(dev);
 	struct cs5535audio *cs5535au = card->private_data;
 	u32 tmp;
 	int timeout;
@@ -118,6 +127,7 @@ int snd_cs5535audio_resume(struct pci_dev *pci)
 
 	if (!timeout)
 		snd_printk(KERN_ERR "Failure getting AC Link ready\n");
+		dev_err(cs5535au->card->dev, "Failure getting AC Link ready\n");
 
 	/* set up rate regs, dma. actual initiation is done in trig */
 	for (i = 0; i < NUM_CS5535AUDIO_DMAS; i++) {
@@ -135,3 +145,4 @@ int snd_cs5535audio_resume(struct pci_dev *pci)
 	return 0;
 }
 
+SIMPLE_DEV_PM_OPS(snd_cs5535audio_pm, snd_cs5535audio_suspend, snd_cs5535audio_resume);

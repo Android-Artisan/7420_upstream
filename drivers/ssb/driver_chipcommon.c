@@ -4,6 +4,8 @@
  *
  * Copyright 2005, Broadcom Corporation
  * Copyright 2006, 2007, Michael Buesch <mb@bu3sch.de>
+ * Copyright 2006, 2007, Michael Buesch <m@bues.ch>
+ * Copyright 2012, Hauke Mehrtens <hauke@hauke-m.de>
  *
  * Licensed under the GNU/GPL. See COPYING for details.
  */
@@ -11,6 +13,9 @@
 #include <linux/ssb/ssb.h>
 #include <linux/ssb/ssb_regs.h>
 #include <linux/pci.h>
+#include <linux/export.h>
+#include <linux/pci.h>
+#include <linux/bcm47xx_wdt.h>
 
 #include "ssb_private.h"
 
@@ -65,11 +70,29 @@ void ssb_chipco_set_clockmode(struct ssb_chipcommon *cc,
 	/* chipcommon cores rev10 are a whole new ball game */
 	if (ccdev->id.revision >= 10)
 		return;
+
+	/* We support SLOW only on 6..9 */
+	if (ccdev->id.revision >= 10 && mode == SSB_CLKMODE_SLOW)
+		mode = SSB_CLKMODE_DYNAMIC;
+
+	if (cc->capabilities & SSB_CHIPCO_CAP_PMU)
+		return; /* PMU controls clockmode, separated function needed */
+	SSB_WARN_ON(ccdev->id.revision >= 20);
+
+	/* chipcommon cores prior to rev6 don't support dynamic clock control */
+	if (ccdev->id.revision < 6)
+		return;
+
+	/* ChipCommon cores rev10+ need testing */
+	if (ccdev->id.revision >= 10)
+		return;
+
 	if (!(cc->capabilities & SSB_CHIPCO_CAP_PCTL))
 		return;
 
 	switch (mode) {
 	case SSB_CLKMODE_SLOW:
+	case SSB_CLKMODE_SLOW: /* For revs 6..9 only */
 		tmp = chipco_read32(cc, SSB_CHIPCO_SLOWCLKCTL);
 		tmp |= SSB_CHIPCO_SLOWCLKCTL_FSLOW;
 		chipco_write32(cc, SSB_CHIPCO_SLOWCLKCTL, tmp);
@@ -93,6 +116,39 @@ void ssb_chipco_set_clockmode(struct ssb_chipcommon *cc,
 		/* for dynamic control, we have to release our xtal_pu "force on" */
 		if (tmp & SSB_CHIPCO_SLOWCLKCTL_ENXTAL)
 			ssb_pci_xtal(bus, SSB_GPIO_XTAL, 0);
+		if (ccdev->id.revision < 10) {
+			ssb_pci_xtal(bus, SSB_GPIO_XTAL, 1); /* Force crystal on */
+			tmp = chipco_read32(cc, SSB_CHIPCO_SLOWCLKCTL);
+			tmp &= ~SSB_CHIPCO_SLOWCLKCTL_FSLOW;
+			tmp |= SSB_CHIPCO_SLOWCLKCTL_IPLL;
+			chipco_write32(cc, SSB_CHIPCO_SLOWCLKCTL, tmp);
+		} else {
+			chipco_write32(cc, SSB_CHIPCO_SYSCLKCTL,
+				(chipco_read32(cc, SSB_CHIPCO_SYSCLKCTL) |
+				 SSB_CHIPCO_SYSCLKCTL_FORCEHT));
+			/* udelay(150); TODO: not available in early init */
+		}
+		break;
+	case SSB_CLKMODE_DYNAMIC:
+		if (ccdev->id.revision < 10) {
+			tmp = chipco_read32(cc, SSB_CHIPCO_SLOWCLKCTL);
+			tmp &= ~SSB_CHIPCO_SLOWCLKCTL_FSLOW;
+			tmp &= ~SSB_CHIPCO_SLOWCLKCTL_IPLL;
+			tmp &= ~SSB_CHIPCO_SLOWCLKCTL_ENXTAL;
+			if ((tmp & SSB_CHIPCO_SLOWCLKCTL_SRC) !=
+			    SSB_CHIPCO_SLOWCLKCTL_SRC_XTAL)
+				tmp |= SSB_CHIPCO_SLOWCLKCTL_ENXTAL;
+			chipco_write32(cc, SSB_CHIPCO_SLOWCLKCTL, tmp);
+
+			/* For dynamic control, we have to release our xtal_pu
+			 * "force on" */
+			if (tmp & SSB_CHIPCO_SLOWCLKCTL_ENXTAL)
+				ssb_pci_xtal(bus, SSB_GPIO_XTAL, 0);
+		} else {
+			chipco_write32(cc, SSB_CHIPCO_SYSCLKCTL,
+				(chipco_read32(cc, SSB_CHIPCO_SYSCLKCTL) &
+				 ~SSB_CHIPCO_SYSCLKCTL_FORCEHT));
+		}
 		break;
 	default:
 		SSB_WARN_ON(1);
@@ -222,6 +278,24 @@ static void chipco_powercontrol_init(struct ssb_chipcommon *cc)
 	}
 }
 
+/* http://bcm-v4.sipsolutions.net/802.11/PmuFastPwrupDelay */
+static u16 pmu_fast_powerup_delay(struct ssb_chipcommon *cc)
+{
+	struct ssb_bus *bus = cc->dev->bus;
+
+	switch (bus->chip_id) {
+	case 0x4312:
+	case 0x4322:
+	case 0x4328:
+		return 7000;
+	case 0x4325:
+		/* TODO: */
+	default:
+		return 15000;
+	}
+}
+
+/* http://bcm-v4.sipsolutions.net/802.11/ClkctlFastPwrupDelay */
 static void calc_fast_powerup_delay(struct ssb_chipcommon *cc)
 {
 	struct ssb_bus *bus = cc->dev->bus;
@@ -231,6 +305,12 @@ static void calc_fast_powerup_delay(struct ssb_chipcommon *cc)
 
 	if (bus->bustype != SSB_BUSTYPE_PCI)
 		return;
+
+	if (cc->capabilities & SSB_CHIPCO_CAP_PMU) {
+		cc->fast_pwrup_delay = pmu_fast_powerup_delay(cc);
+		return;
+	}
+
 	if (!(cc->capabilities & SSB_CHIPCO_CAP_PCTL))
 		return;
 
@@ -242,6 +322,69 @@ static void calc_fast_powerup_delay(struct ssb_chipcommon *cc)
 	cc->fast_pwrup_delay = tmp;
 }
 
+static u32 ssb_chipco_alp_clock(struct ssb_chipcommon *cc)
+{
+	if (cc->capabilities & SSB_CHIPCO_CAP_PMU)
+		return ssb_pmu_get_alp_clock(cc);
+
+	return 20000000;
+}
+
+static u32 ssb_chipco_watchdog_get_max_timer(struct ssb_chipcommon *cc)
+{
+	u32 nb;
+
+	if (cc->capabilities & SSB_CHIPCO_CAP_PMU) {
+		if (cc->dev->id.revision < 26)
+			nb = 16;
+		else
+			nb = (cc->dev->id.revision >= 37) ? 32 : 24;
+	} else {
+		nb = 28;
+	}
+	if (nb == 32)
+		return 0xffffffff;
+	else
+		return (1 << nb) - 1;
+}
+
+u32 ssb_chipco_watchdog_timer_set_wdt(struct bcm47xx_wdt *wdt, u32 ticks)
+{
+	struct ssb_chipcommon *cc = bcm47xx_wdt_get_drvdata(wdt);
+
+	if (cc->dev->bus->bustype != SSB_BUSTYPE_SSB)
+		return 0;
+
+	return ssb_chipco_watchdog_timer_set(cc, ticks);
+}
+
+u32 ssb_chipco_watchdog_timer_set_ms(struct bcm47xx_wdt *wdt, u32 ms)
+{
+	struct ssb_chipcommon *cc = bcm47xx_wdt_get_drvdata(wdt);
+	u32 ticks;
+
+	if (cc->dev->bus->bustype != SSB_BUSTYPE_SSB)
+		return 0;
+
+	ticks = ssb_chipco_watchdog_timer_set(cc, cc->ticks_per_ms * ms);
+	return ticks / cc->ticks_per_ms;
+}
+
+static int ssb_chipco_watchdog_ticks_per_ms(struct ssb_chipcommon *cc)
+{
+	struct ssb_bus *bus = cc->dev->bus;
+
+	if (cc->capabilities & SSB_CHIPCO_CAP_PMU) {
+			/* based on 32KHz ILP clock */
+			return 32;
+	} else {
+		if (cc->dev->id.revision < 18)
+			return ssb_clockspeed(bus) / 1000;
+		else
+			return ssb_chipco_alp_clock(cc) / 1000;
+	}
+}
+
 void ssb_chipcommon_init(struct ssb_chipcommon *cc)
 {
 	if (!cc->dev)
@@ -249,6 +392,27 @@ void ssb_chipcommon_init(struct ssb_chipcommon *cc)
 	chipco_powercontrol_init(cc);
 	ssb_chipco_set_clockmode(cc, SSB_CLKMODE_FAST);
 	calc_fast_powerup_delay(cc);
+
+	spin_lock_init(&cc->gpio_lock);
+
+	if (cc->dev->id.revision >= 11)
+		cc->status = chipco_read32(cc, SSB_CHIPCO_CHIPSTAT);
+	ssb_dbg("chipcommon status is 0x%x\n", cc->status);
+
+	if (cc->dev->id.revision >= 20) {
+		chipco_write32(cc, SSB_CHIPCO_GPIOPULLUP, 0);
+		chipco_write32(cc, SSB_CHIPCO_GPIOPULLDOWN, 0);
+	}
+
+	ssb_pmu_init(cc);
+	chipco_powercontrol_init(cc);
+	ssb_chipco_set_clockmode(cc, SSB_CLKMODE_FAST);
+	calc_fast_powerup_delay(cc);
+
+	if (cc->dev->bus->bustype == SSB_BUSTYPE_SSB) {
+		cc->ticks_per_ms = ssb_chipco_watchdog_ticks_per_ms(cc);
+		cc->max_timer_ms = ssb_chipco_watchdog_get_max_timer(cc) / cc->ticks_per_ms;
+	}
 }
 
 void ssb_chipco_suspend(struct ssb_chipcommon *cc)
@@ -351,6 +515,27 @@ void ssb_chipco_watchdog_timer_set(struct ssb_chipcommon *cc, u32 ticks)
 {
 	/* instant NMI */
 	chipco_write32(cc, SSB_CHIPCO_WATCHDOG, ticks);
+u32 ssb_chipco_watchdog_timer_set(struct ssb_chipcommon *cc, u32 ticks)
+{
+	u32 maxt;
+	enum ssb_clkmode clkmode;
+
+	maxt = ssb_chipco_watchdog_get_max_timer(cc);
+	if (cc->capabilities & SSB_CHIPCO_CAP_PMU) {
+		if (ticks == 1)
+			ticks = 2;
+		else if (ticks > maxt)
+			ticks = maxt;
+		chipco_write32(cc, SSB_CHIPCO_PMU_WATCHDOG, ticks);
+	} else {
+		clkmode = ticks ? SSB_CLKMODE_FAST : SSB_CLKMODE_DYNAMIC;
+		ssb_chipco_set_clockmode(cc, clkmode);
+		if (ticks > maxt)
+			ticks = maxt;
+		/* instant NMI */
+		chipco_write32(cc, SSB_CHIPCO_WATCHDOG, ticks);
+	}
+	return ticks;
 }
 
 void ssb_chipco_irq_mask(struct ssb_chipcommon *cc, u32 mask, u32 value)
@@ -371,11 +556,27 @@ u32 ssb_chipco_gpio_in(struct ssb_chipcommon *cc, u32 mask)
 u32 ssb_chipco_gpio_out(struct ssb_chipcommon *cc, u32 mask, u32 value)
 {
 	return chipco_write32_masked(cc, SSB_CHIPCO_GPIOOUT, mask, value);
+	unsigned long flags;
+	u32 res = 0;
+
+	spin_lock_irqsave(&cc->gpio_lock, flags);
+	res = chipco_write32_masked(cc, SSB_CHIPCO_GPIOOUT, mask, value);
+	spin_unlock_irqrestore(&cc->gpio_lock, flags);
+
+	return res;
 }
 
 u32 ssb_chipco_gpio_outen(struct ssb_chipcommon *cc, u32 mask, u32 value)
 {
 	return chipco_write32_masked(cc, SSB_CHIPCO_GPIOOUTEN, mask, value);
+	unsigned long flags;
+	u32 res = 0;
+
+	spin_lock_irqsave(&cc->gpio_lock, flags);
+	res = chipco_write32_masked(cc, SSB_CHIPCO_GPIOOUTEN, mask, value);
+	spin_unlock_irqrestore(&cc->gpio_lock, flags);
+
+	return res;
 }
 
 u32 ssb_chipco_gpio_control(struct ssb_chipcommon *cc, u32 mask, u32 value)
@@ -386,11 +587,70 @@ u32 ssb_chipco_gpio_control(struct ssb_chipcommon *cc, u32 mask, u32 value)
 u32 ssb_chipco_gpio_intmask(struct ssb_chipcommon *cc, u32 mask, u32 value)
 {
 	return chipco_write32_masked(cc, SSB_CHIPCO_GPIOIRQ, mask, value);
+	unsigned long flags;
+	u32 res = 0;
+
+	spin_lock_irqsave(&cc->gpio_lock, flags);
+	res = chipco_write32_masked(cc, SSB_CHIPCO_GPIOCTL, mask, value);
+	spin_unlock_irqrestore(&cc->gpio_lock, flags);
+
+	return res;
+}
+EXPORT_SYMBOL(ssb_chipco_gpio_control);
+
+u32 ssb_chipco_gpio_intmask(struct ssb_chipcommon *cc, u32 mask, u32 value)
+{
+	unsigned long flags;
+	u32 res = 0;
+
+	spin_lock_irqsave(&cc->gpio_lock, flags);
+	res = chipco_write32_masked(cc, SSB_CHIPCO_GPIOIRQ, mask, value);
+	spin_unlock_irqrestore(&cc->gpio_lock, flags);
+
+	return res;
 }
 
 u32 ssb_chipco_gpio_polarity(struct ssb_chipcommon *cc, u32 mask, u32 value)
 {
 	return chipco_write32_masked(cc, SSB_CHIPCO_GPIOPOL, mask, value);
+	unsigned long flags;
+	u32 res = 0;
+
+	spin_lock_irqsave(&cc->gpio_lock, flags);
+	res = chipco_write32_masked(cc, SSB_CHIPCO_GPIOPOL, mask, value);
+	spin_unlock_irqrestore(&cc->gpio_lock, flags);
+
+	return res;
+}
+
+u32 ssb_chipco_gpio_pullup(struct ssb_chipcommon *cc, u32 mask, u32 value)
+{
+	unsigned long flags;
+	u32 res = 0;
+
+	if (cc->dev->id.revision < 20)
+		return 0xffffffff;
+
+	spin_lock_irqsave(&cc->gpio_lock, flags);
+	res = chipco_write32_masked(cc, SSB_CHIPCO_GPIOPULLUP, mask, value);
+	spin_unlock_irqrestore(&cc->gpio_lock, flags);
+
+	return res;
+}
+
+u32 ssb_chipco_gpio_pulldown(struct ssb_chipcommon *cc, u32 mask, u32 value)
+{
+	unsigned long flags;
+	u32 res = 0;
+
+	if (cc->dev->id.revision < 20)
+		return 0xffffffff;
+
+	spin_lock_irqsave(&cc->gpio_lock, flags);
+	res = chipco_write32_masked(cc, SSB_CHIPCO_GPIOPULLDOWN, mask, value);
+	spin_unlock_irqrestore(&cc->gpio_lock, flags);
+
+	return res;
 }
 
 #ifdef CONFIG_SSB_SERIAL
@@ -430,6 +690,7 @@ int ssb_chipco_serial_init(struct ssb_chipcommon *cc,
 				/* FIXME: baud_base is different for devices with a PMU */
 				SSB_WARN_ON(1);
 			}
+			baud_base = ssb_chipco_alp_clock(cc);
 			div = 1;
 			if (ccrev >= 21) {
 				/* Turn off UART clock before switching clocksource. */

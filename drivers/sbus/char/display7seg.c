@@ -7,6 +7,13 @@
  *
  */
 
+/* display7seg.c - Driver implementation for the 7-segment display
+ *                 present on Sun Microsystems CP1400 and CP1500
+ *
+ * Copyright (c) 2000 Eric Brower (ebrower@usa.net)
+ */
+
+#include <linux/device.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/fs.h>
@@ -19,6 +26,13 @@
 #include <asm/atomic.h>
 #include <asm/ebus.h>			/* EBus device					*/
 #include <asm/oplib.h>			/* OpenProm Library 			*/
+#include <linux/miscdevice.h>
+#include <linux/ioport.h>		/* request_region */
+#include <linux/slab.h>
+#include <linux/mutex.h>
+#include <linux/of.h>
+#include <linux/of_device.h>
+#include <linux/atomic.h>
 #include <asm/uaccess.h>		/* put_/get_user			*/
 #include <asm/io.h>
 
@@ -31,6 +45,12 @@
 static int sol_compat = 0;		/* Solaris compatibility mode	*/
 
 #ifdef MODULE
+
+#define DRIVER_NAME	"d7s"
+#define PFX		DRIVER_NAME ": "
+
+static DEFINE_MUTEX(d7s_mutex);
+static int sol_compat = 0;		/* Solaris compatibility mode	*/
 
 /* Solaris compatibility flag -
  * The Solaris implementation omits support for several
@@ -60,6 +80,20 @@ MODULE_LICENSE("GPL");
 MODULE_SUPPORTED_DEVICE
 	("d7s");
 #endif /* ifdef MODULE */
+module_param(sol_compat, int, 0);
+MODULE_PARM_DESC(sol_compat, 
+		 "Disables documented functionality omitted from Solaris driver");
+
+MODULE_AUTHOR("Eric Brower <ebrower@usa.net>");
+MODULE_DESCRIPTION("7-Segment Display driver for Sun Microsystems CP1400/1500");
+MODULE_LICENSE("GPL");
+MODULE_SUPPORTED_DEVICE("d7s");
+
+struct d7s {
+	void __iomem	*regs;
+	bool		flipped;
+};
+struct d7s *d7s_device;
 
 /*
  * Register block address- see header for details
@@ -112,6 +146,15 @@ static int d7s_release(struct inode *inode, struct file *f)
 		(0 == d7s_obpflipped())	? 
 			writeb(regval |= D7S_FLIP,  d7s_regs): 
 			writeb(regval &= ~D7S_FLIP, d7s_regs);
+		struct d7s *p = d7s_device;
+		u8 regval = 0;
+
+		regval = readb(p->regs);
+		if (p->flipped)
+			regval |= D7S_FLIP;
+		else
+			regval &= ~D7S_FLIP;
+		writeb(regval, p->regs);
 	}
 
 	return 0;
@@ -131,6 +174,19 @@ static long d7s_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	case D7SIOCWR:
 		/* assign device register values
 		 * we mask-out D7S_FLIP if in sol_compat mode
+	struct d7s *p = d7s_device;
+	u8 regs = readb(p->regs);
+	int error = 0;
+	u8 ireg = 0;
+
+	if (D7S_MINOR != iminor(file_inode(file)))
+		return -ENODEV;
+
+	mutex_lock(&d7s_mutex);
+	switch (cmd) {
+	case D7SIOCWR:
+		/* assign device register values we mask-out D7S_FLIP
+		 * if in sol_compat mode
 		 */
 		if (get_user(ireg, (int __user *) arg)) {
 			error = -EFAULT;
@@ -141,6 +197,13 @@ static long d7s_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 				(ireg |= D7S_FLIP) : (ireg &= ~D7S_FLIP);
 		}
 		writeb(ireg, d7s_regs);
+		if (sol_compat) {
+			if (regs & D7S_FLIP)
+				ireg |= D7S_FLIP;
+			else
+				ireg &= ~D7S_FLIP;
+		}
+		writeb(ireg, p->regs);
 		break;
 
 	case D7SIOCRD:
@@ -164,6 +227,11 @@ static long d7s_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		break;
 	};
 	unlock_kernel();
+		regs ^= D7S_FLIP;
+		writeb(regs, p->regs);
+		break;
+	}
+	mutex_unlock(&d7s_mutex);
 
 	return error;
 }
@@ -221,6 +289,96 @@ ebus_done:
 	       (0 == iTmp) ? (" (FLIPPED)") : (""),
 	       edev->resource[0].start,
 	       (0 != sol_compat) ? ("in sol_compat mode") : (""));
+	.llseek = noop_llseek,
+};
+
+static struct miscdevice d7s_miscdev = {
+	.minor		= D7S_MINOR,
+	.name		= DRIVER_NAME,
+	.fops		= &d7s_fops
+};
+
+static int d7s_probe(struct platform_device *op)
+{
+	struct device_node *opts;
+	int err = -EINVAL;
+	struct d7s *p;
+	u8 regs;
+
+	if (d7s_device)
+		goto out;
+
+	p = devm_kzalloc(&op->dev, sizeof(*p), GFP_KERNEL);
+	err = -ENOMEM;
+	if (!p)
+		goto out;
+
+	p->regs = of_ioremap(&op->resource[0], 0, sizeof(u8), "d7s");
+	if (!p->regs) {
+		printk(KERN_ERR PFX "Cannot map chip registers\n");
+		goto out_free;
+	}
+
+	err = misc_register(&d7s_miscdev);
+	if (err) {
+		printk(KERN_ERR PFX "Unable to acquire miscdevice minor %i\n",
+		       D7S_MINOR);
+		goto out_iounmap;
+	}
+
+	/* OBP option "d7s-flipped?" is honored as default for the
+	 * device, and reset default when detached
+	 */
+	regs = readb(p->regs);
+	opts = of_find_node_by_path("/options");
+	if (opts &&
+	    of_get_property(opts, "d7s-flipped?", NULL))
+		p->flipped = true;
+
+	if (p->flipped)
+		regs |= D7S_FLIP;
+	else
+		regs &= ~D7S_FLIP;
+
+	writeb(regs,  p->regs);
+
+	printk(KERN_INFO PFX "7-Segment Display%s at [%s:0x%llx] %s\n",
+	       op->dev.of_node->full_name,
+	       (regs & D7S_FLIP) ? " (FLIPPED)" : "",
+	       op->resource[0].start,
+	       sol_compat ? "in sol_compat mode" : "");
+
+	dev_set_drvdata(&op->dev, p);
+	d7s_device = p;
+	err = 0;
+	of_node_put(opts);
+
+out:
+	return err;
+
+out_iounmap:
+	of_iounmap(&op->resource[0], p->regs, sizeof(u8));
+
+out_free:
+	goto out;
+}
+
+static int d7s_remove(struct platform_device *op)
+{
+	struct d7s *p = dev_get_drvdata(&op->dev);
+	u8 regs = readb(p->regs);
+
+	/* Honor OBP d7s-flipped? unless operating in solaris-compat mode */
+	if (sol_compat) {
+		if (p->flipped)
+			regs |= D7S_FLIP;
+		else
+			regs &= ~D7S_FLIP;
+		writeb(regs, p->regs);
+	}
+
+	misc_deregister(&d7s_miscdev);
+	of_iounmap(&op->resource[0], p->regs, sizeof(u8));
 
 	return 0;
 }
@@ -242,3 +400,21 @@ static void __exit d7s_cleanup(void)
 
 module_init(d7s_init);
 module_exit(d7s_cleanup);
+static const struct of_device_id d7s_match[] = {
+	{
+		.name = "display7seg",
+	},
+	{},
+};
+MODULE_DEVICE_TABLE(of, d7s_match);
+
+static struct platform_driver d7s_driver = {
+	.driver = {
+		.name = DRIVER_NAME,
+		.of_match_table = d7s_match,
+	},
+	.probe		= d7s_probe,
+	.remove		= d7s_remove,
+};
+
+module_platform_driver(d7s_driver);

@@ -414,6 +414,7 @@ typedef struct os_dat_s {
  */
 typedef struct os_aux_s {
         __be32          format_id;              /* hardware compability AUX is based on */
+        __be32          format_id;              /* hardware compatibility AUX is based on */
         char            application_sig[4];     /* driver used to write this media */
         __be32          hdwr;                   /* reserved */
         __be32          update_frame_cntr;      /* for configuration frame */
@@ -520,6 +521,7 @@ struct osst_buffer {
   int syscall_result;
   struct osst_request *last_SRpnt;
   struct st_cmdstatus cmdstat;
+  struct rq_map_data map_data;
   unsigned char *b_data;
   os_aux_t *aux;               /* onstream AUX structure at end of each block     */
   unsigned short use_sg;       /* zero or number of s/g segments for this adapter */
@@ -634,6 +636,7 @@ struct osst_request {
 	int result;
 	struct osst_tape *stp;
 	struct completion *waiting;
+	struct bio *bio;
 };
 
 /* Values of write_type */

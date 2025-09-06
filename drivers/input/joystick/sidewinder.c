@@ -772,6 +772,21 @@ static int sw_connect(struct gameport *gameport, struct gameport_driver *drv)
 
 		for (j = 0; (code = sw_btn[sw->type][j]); j++)
 			set_bit(code, input_dev->keybit);
+			int min, max, fuzz, flat;
+
+			code = sw_abs[sw->type][j];
+			min = bits == 1 ? -1 : 0;
+			max = (1 << bits) - 1;
+			fuzz = (bits >> 1) >= 2 ? 1 << ((bits >> 1) - 2) : 0;
+			flat = code == ABS_THROTTLE || bits < 5 ?
+				0 : 1 << (bits - 5);
+
+			input_set_abs_params(input_dev, code,
+					     min, max, fuzz, flat);
+		}
+
+		for (j = 0; (code = sw_btn[sw->type][j]); j++)
+			__set_bit(code, input_dev->keybit);
 
 		dbg("%s%s [%d-bit id %d data %d]\n", sw->name, comment, m, l, k);
 
@@ -829,3 +844,4 @@ static void __exit sw_exit(void)
 
 module_init(sw_init);
 module_exit(sw_exit);
+module_gameport_driver(sw_drv);

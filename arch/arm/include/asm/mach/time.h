@@ -53,5 +53,10 @@ struct timespec;
 extern int (*set_rtc)(void);
 extern void save_time_delta(struct timespec *delta, struct timespec *rtc);
 extern void restore_time_delta(struct timespec *delta, struct timespec *rtc);
+extern void timer_tick(void);
+
+typedef void (*clock_access_fn)(struct timespec64 *);
+extern int register_persistent_clock(clock_access_fn read_boot,
+				     clock_access_fn read_persistent);
 
 #endif

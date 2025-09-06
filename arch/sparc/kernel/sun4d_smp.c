@@ -1,4 +1,5 @@
 /* sun4d_smp.c: Sparc SS1000/SC2000 SMP support.
+/* Sparc SS1000/SC2000 SMP support.
  *
  * Copyright (C) 1998 Jakub Jelinek (jj@sunsite.mff.cuni.cz)
  *
@@ -61,6 +62,30 @@ extern int __smp4d_processor_id(void);
 #endif
 
 static inline unsigned long swap(volatile unsigned long *ptr, unsigned long val)
+#include <linux/clockchips.h>
+#include <linux/interrupt.h>
+#include <linux/profile.h>
+#include <linux/delay.h>
+#include <linux/sched.h>
+#include <linux/cpu.h>
+
+#include <asm/cacheflush.h>
+#include <asm/switch_to.h>
+#include <asm/tlbflush.h>
+#include <asm/timer.h>
+#include <asm/oplib.h>
+#include <asm/sbi.h>
+#include <asm/mmu.h>
+
+#include "kernel.h"
+#include "irq.h"
+
+#define IRQ_CROSS_CALL		15
+
+static volatile int smp_processors_ready;
+static int smp_highest_cpu;
+
+static inline unsigned long sun4d_swap(volatile unsigned long *ptr, unsigned long val)
 {
 	__asm__ __volatile__("swap [%1], %0\n\t" :
 			     "=&r" (val), "=&r" (ptr) :
@@ -78,6 +103,23 @@ void __init smp4d_callin(void)
 	extern spinlock_t sun4d_imsk_lock;
 	unsigned long flags;
 	
+static void smp4d_ipi_init(void);
+
+static unsigned char cpu_leds[32];
+
+static inline void show_leds(int cpuid)
+{
+	cpuid &= 0x1e;
+	__asm__ __volatile__ ("stba %0, [%1] %2" : :
+			      "r" ((cpu_leds[cpuid] << 4) | cpu_leds[cpuid+1]),
+			      "r" (ECSR_BASE(cpuid) | BB_LEDS),
+			      "i" (ASI_M_CTL));
+}
+
+void sun4d_cpu_pre_starting(void *arg)
+{
+	int cpuid = hard_smp_processor_id();
+
 	/* Show we are alive */
 	cpu_leds[cpuid] = 0x6;
 	show_leds(cpuid);
@@ -90,6 +132,16 @@ void __init smp4d_callin(void)
 
 	/*
 	 * Unblock the master CPU _only_ when the scheduler state
+}
+
+void sun4d_cpu_pre_online(void *arg)
+{
+	unsigned long flags;
+	int cpuid;
+
+	cpuid = hard_smp_processor_id();
+
+	/* Unblock the master CPU _only_ when the scheduler state
 	 * of all secondary CPUs will be up-to-date, so after
 	 * the SMP initialization the master will be just allowed
 	 * to call the scheduler code.
@@ -115,6 +167,16 @@ void __init smp4d_callin(void)
 	while(current_set[cpuid]->cpu != cpuid)
 		barrier();
 		
+	sun4d_swap((unsigned long *)&cpu_callin_map[cpuid], 1);
+	local_ops->cache_all();
+	local_ops->tlb_all();
+
+	while ((unsigned long)current_set[cpuid] < PAGE_OFFSET)
+		barrier();
+
+	while (current_set[cpuid]->cpu != cpuid)
+		barrier();
+
 	/* Fix idle thread fields. */
 	__asm__ __volatile__("ld [%0], %%g6\n\t"
 			     : : "r" (&current_set[cpuid])
@@ -123,6 +185,7 @@ void __init smp4d_callin(void)
 	cpu_leds[cpuid] = 0x9;
 	show_leds(cpuid);
 	
+
 	/* Attach to the address space of init_task. */
 	atomic_inc(&init_mm.mm_count);
 	current->active_mm = &init_mm;
@@ -133,6 +196,10 @@ void __init smp4d_callin(void)
 	local_irq_enable();	/* We don't allow PIL 14 yet */
 	
 	while (!cpu_isset(cpuid, smp_commenced_mask))
+	local_ops->cache_all();
+	local_ops->tlb_all();
+
+	while (!cpumask_test_cpu(cpuid, &smp_commenced_mask))
 		barrier();
 
 	spin_lock_irqsave(&sun4d_imsk_lock, flags);
@@ -205,6 +272,57 @@ int __cpuinit smp4d_boot_one_cpu(int i)
 
 	}
 	local_flush_cache_all();
+}
+
+/*
+ *	Cycle through the processors asking the PROM to start each one.
+ */
+void __init smp4d_boot_cpus(void)
+{
+	smp4d_ipi_init();
+	if (boot_cpu_id)
+		current_set[0] = NULL;
+	local_ops->cache_all();
+}
+
+int smp4d_boot_one_cpu(int i, struct task_struct *idle)
+{
+	unsigned long *entry = &sun4d_cpu_startup;
+	int timeout;
+	int cpu_node;
+
+	cpu_find_by_instance(i, &cpu_node, NULL);
+	current_set[i] = task_thread_info(idle);
+	/*
+	 * Initialize the contexts table
+	 * Since the call to prom_startcpu() trashes the structure,
+	 * we need to re-initialize it for each cpu
+	 */
+	smp_penguin_ctable.which_io = 0;
+	smp_penguin_ctable.phys_addr = (unsigned int) srmmu_ctx_table_phys;
+	smp_penguin_ctable.reg_size = 0;
+
+	/* whirrr, whirrr, whirrrrrrrrr... */
+	printk(KERN_INFO "Starting CPU %d at %p\n", i, entry);
+	local_ops->cache_all();
+	prom_startcpu(cpu_node,
+		      &smp_penguin_ctable, 0, (char *)entry);
+
+	printk(KERN_INFO "prom_startcpu returned :)\n");
+
+	/* wheee... it's going... */
+	for (timeout = 0; timeout < 10000; timeout++) {
+		if (cpu_callin_map[i])
+			break;
+		udelay(200);
+	}
+
+	if (!(cpu_callin_map[i])) {
+		printk(KERN_ERR "Processor %d is stuck.\n", i);
+		return -ENODEV;
+
+	}
+	local_ops->cache_all();
 	return 0;
 }
 
@@ -242,10 +360,103 @@ void __init smp4d_smp_done(void)
 	free_page((unsigned long)trapbase_cpu3);
 	totalram_pages++;
 	num_physpages++;
+	for_each_online_cpu(i) {
+		*prev = i;
+		prev = &cpu_data(i).next;
+	}
+	*prev = first;
+	local_ops->cache_all();
 
 	/* Ok, they are spinning and ready to go. */
 	smp_processors_ready = 1;
 	sun4d_distribute_irqs();
+}
+
+/* Memory structure giving interrupt handler information about IPI generated */
+struct sun4d_ipi_work {
+	int single;
+	int msk;
+	int resched;
+};
+
+static DEFINE_PER_CPU_SHARED_ALIGNED(struct sun4d_ipi_work, sun4d_ipi_work);
+
+/* Initialize IPIs on the SUN4D SMP machine */
+static void __init smp4d_ipi_init(void)
+{
+	int cpu;
+	struct sun4d_ipi_work *work;
+
+	printk(KERN_INFO "smp4d: setup IPI at IRQ %d\n", SUN4D_IPI_IRQ);
+
+	for_each_possible_cpu(cpu) {
+		work = &per_cpu(sun4d_ipi_work, cpu);
+		work->single = work->msk = work->resched = 0;
+	}
+}
+
+void sun4d_ipi_interrupt(void)
+{
+	struct sun4d_ipi_work *work = this_cpu_ptr(&sun4d_ipi_work);
+
+	if (work->single) {
+		work->single = 0;
+		smp_call_function_single_interrupt();
+	}
+	if (work->msk) {
+		work->msk = 0;
+		smp_call_function_interrupt();
+	}
+	if (work->resched) {
+		work->resched = 0;
+		smp_resched_interrupt();
+	}
+}
+
+/* +-------+-------------+-----------+------------------------------------+
+ * | bcast |  devid      |   sid     |              levels mask           |
+ * +-------+-------------+-----------+------------------------------------+
+ *  31      30         23 22       15 14                                 0
+ */
+#define IGEN_MESSAGE(bcast, devid, sid, levels) \
+	(((bcast) << 31) | ((devid) << 23) | ((sid) << 15) | (levels))
+
+static void sun4d_send_ipi(int cpu, int level)
+{
+	cc_set_igen(IGEN_MESSAGE(0, cpu << 3, 6 + ((level >> 1) & 7), 1 << (level - 1)));
+}
+
+static void sun4d_ipi_single(int cpu)
+{
+	struct sun4d_ipi_work *work = &per_cpu(sun4d_ipi_work, cpu);
+
+	/* Mark work */
+	work->single = 1;
+
+	/* Generate IRQ on the CPU */
+	sun4d_send_ipi(cpu, SUN4D_IPI_IRQ);
+}
+
+static void sun4d_ipi_mask_one(int cpu)
+{
+	struct sun4d_ipi_work *work = &per_cpu(sun4d_ipi_work, cpu);
+
+	/* Mark work */
+	work->msk = 1;
+
+	/* Generate IRQ on the CPU */
+	sun4d_send_ipi(cpu, SUN4D_IPI_IRQ);
+}
+
+static void sun4d_ipi_resched(int cpu)
+{
+	struct sun4d_ipi_work *work = &per_cpu(sun4d_ipi_work, cpu);
+
+	/* Mark work */
+	work->resched = 1;
+
+	/* Generate IRQ on the CPU (any IRQ will cause resched) */
+	sun4d_send_ipi(cpu, SUN4D_IPI_IRQ);
 }
 
 static struct smp_funcall {
@@ -267,6 +478,11 @@ static void smp4d_cross_call(smpfunc_t func, cpumask_t mask, unsigned long arg1,
 			     unsigned long arg4)
 {
 	if(smp_processors_ready) {
+static void sun4d_cross_call(smpfunc_t func, cpumask_t mask, unsigned long arg1,
+			     unsigned long arg2, unsigned long arg3,
+			     unsigned long arg4)
+{
+	if (smp_processors_ready) {
 		register int high = smp_highest_cpu;
 		unsigned long flags;
 
@@ -274,6 +490,10 @@ static void smp4d_cross_call(smpfunc_t func, cpumask_t mask, unsigned long arg1,
 
 		{
 			/* If you make changes here, make sure gcc generates proper code... */
+			/*
+			 * If you make changes here, make sure
+			 * gcc generates proper code...
+			 */
 			register smpfunc_t f asm("i0") = func;
 			register unsigned long a1 asm("i1") = arg1;
 			register unsigned long a2 asm("i2") = arg2;
@@ -297,6 +517,10 @@ static void smp4d_cross_call(smpfunc_t func, cpumask_t mask, unsigned long arg1,
 			cpus_and(mask, cpu_online_map, mask);
 			for(i = 0; i <= high; i++) {
 				if (cpu_isset(i, mask)) {
+			cpumask_clear_cpu(smp_processor_id(), &mask);
+			cpumask_and(&mask, cpu_online_mask, &mask);
+			for (i = 0; i <= high; i++) {
+				if (cpumask_test_cpu(i, &mask)) {
 					ccall_info.processors_in[i] = 0;
 					ccall_info.processors_out[i] = 0;
 					sun4d_send_ipi(i, IRQ_CROSS_CALL);
@@ -322,6 +546,19 @@ static void smp4d_cross_call(smpfunc_t func, cpumask_t mask, unsigned long arg1,
 				while(!ccall_info.processors_out[i])
 					barrier();
 			} while(++i <= high);
+				if (!cpumask_test_cpu(i, &mask))
+					continue;
+				while (!ccall_info.processors_in[i])
+					barrier();
+			} while (++i <= high);
+
+			i = 0;
+			do {
+				if (!cpumask_test_cpu(i, &mask))
+					continue;
+				while (!ccall_info.processors_out[i])
+					barrier();
+			} while (++i <= high);
 		}
 
 		spin_unlock_irqrestore(&cross_call_lock, flags);
@@ -332,6 +569,7 @@ static void smp4d_cross_call(smpfunc_t func, cpumask_t mask, unsigned long arg1,
 void smp4d_cross_call_irq(void)
 {
 	int i = hard_smp4d_processor_id();
+	int i = hard_smp_processor_id();
 
 	ccall_info.processors_in[i] = 1;
 	ccall_info.func(ccall_info.arg1, ccall_info.arg2, ccall_info.arg3,
@@ -343,11 +581,14 @@ void smp4d_percpu_timer_interrupt(struct pt_regs *regs)
 {
 	struct pt_regs *old_regs;
 	int cpu = hard_smp4d_processor_id();
+	int cpu = hard_smp_processor_id();
+	struct clock_event_device *ce;
 	static int cpu_tick[NR_CPUS];
 	static char led_mask[] = { 0xe, 0xd, 0xb, 0x7, 0xb, 0xd };
 
 	old_regs = set_irq_regs(regs);
 	bw_get_prof_limit(cpu);	
+	bw_get_prof_limit(cpu);
 	bw_clear_intr_mask(0, 1);	/* INTR_TABLE[0] & 1 is Profile IRQ */
 
 	cpu_tick[cpu]++;
@@ -399,6 +640,21 @@ void __init smp4d_blackbox_current(unsigned *addr)
 	addr[2] = 0x81282002 | rd | (rd >> 11);	/* sll reg, 2, reg */
 	addr[4] = 0x01000000;			/* nop */
 }
+	ce = &per_cpu(sparc32_clockevent, cpu);
+
+	irq_enter();
+	ce->event_handler(ce);
+	irq_exit();
+
+	set_irq_regs(old_regs);
+}
+
+static const struct sparc32_ipi_ops sun4d_ipi_ops = {
+	.cross_call = sun4d_cross_call,
+	.resched    = sun4d_ipi_resched,
+	.single     = sun4d_ipi_single,
+	.mask_one   = sun4d_ipi_mask_one,
+};
 
 void __init sun4d_init_smp(void)
 {
@@ -414,6 +670,12 @@ void __init sun4d_init_smp(void)
 	BTFIXUPSET_CALL(smp_cross_call, smp4d_cross_call, BTFIXUPCALL_NORM);
 	BTFIXUPSET_CALL(__hard_smp_processor_id, __smp4d_processor_id, BTFIXUPCALL_NORM);
 	
+
+	/* Patch ipi15 trap table */
+	t_nmi[1] = t_nmi[1] + (linux_trap_ipi15_sun4d - linux_trap_ipi15_sun4m);
+
+	sparc32_ipi_ops = &sun4d_ipi_ops;
+
 	for (i = 0; i < NR_CPUS; i++) {
 		ccall_info.processors_in[i] = 1;
 		ccall_info.processors_out[i] = 1;

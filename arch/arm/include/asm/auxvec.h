@@ -2,3 +2,4 @@
 #define __ASMARM_AUXVEC_H
 
 #endif
+#include <uapi/asm/auxvec.h>

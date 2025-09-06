@@ -39,6 +39,9 @@ extern unsigned int keymap_count;
 void (*atari_MIDI_interrupt_hook) (void);
 /* Hook for mouse driver */
 void (*atari_mouse_interrupt_hook) (char *);
+
+/* Hook for MIDI serial driver */
+void (*atari_MIDI_interrupt_hook) (void);
 /* Hook for keyboard inputdev  driver */
 void (*atari_input_keyboard_interrupt_hook) (unsigned char, char);
 /* Hook for mouse inputdev  driver */
@@ -123,6 +126,7 @@ KEYBOARD_STATE kb_state;
  * This usually causes keyboards bytes to be interpreted as mouse movements
  * and vice versa, which is very annoying. It seems better to throw away some
  * bytes (that are usually mouse bytes) than to misinterpret them. Therefor I
+ * bytes (that are usually mouse bytes) than to misinterpret them. Therefore I
  * introduced the RESYNC state for IKBD data. In this state, the bytes up to
  * one that really looks like a key event (0x04..0xf2) or the start of a mouse
  * packet (0xf8..0xfb) are thrown away, but at most 2 bytes. This at least
@@ -132,6 +136,7 @@ KEYBOARD_STATE kb_state;
  * overruns usually occur when moving the Atari mouse rapidly, they're seen as
  * mouse bytes here. If this is wrong, only a make code of the keyboard gets
  * lost, which isn't too bad. Loosing a break code would be disastrous,
+ * lost, which isn't too bad. Losing a break code would be disastrous,
  * because then the keyboard repeat strikes...
  */
 
@@ -266,6 +271,8 @@ repeat:
 				kb_state.state = KEYBOARD;
 				if (atari_mouse_interrupt_hook)
 					atari_mouse_interrupt_hook(kb_state.buf);
+				if (atari_input_mouse_interrupt_hook)
+					atari_input_mouse_interrupt_hook(kb_state.buf);
 			}
 			break;
 
@@ -567,6 +574,8 @@ static int atari_keyb_done = 0;
 
 int atari_keyb_init(void)
 {
+	int error;
+
 	if (atari_keyb_done)
 		return 0;
 
@@ -575,6 +584,10 @@ int atari_keyb_init(void)
 
 	request_irq(IRQ_MFP_ACIA, atari_keyboard_interrupt, IRQ_TYPE_SLOW,
 		    "keyboard/mouse/MIDI", atari_keyboard_interrupt);
+	error = request_irq(IRQ_MFP_ACIA, atari_keyboard_interrupt, 0,
+			    "keyboard,mouse,MIDI", atari_keyboard_interrupt);
+	if (error)
+		return error;
 
 	atari_turnoff_irq(IRQ_MFP_ACIA);
 	do {
@@ -609,6 +622,10 @@ int atari_keyb_init(void)
 
 	/* enable ACIA Interrupts */
 	mfp.active_edge &= ~0x10;
+	} while ((st_mfp.par_dt_reg & 0x10) == 0);
+
+	/* enable ACIA Interrupts */
+	st_mfp.active_edge &= ~0x10;
 	atari_turnon_irq(IRQ_MFP_ACIA);
 
 	ikbd_self_test = 1;

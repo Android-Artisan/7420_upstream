@@ -43,6 +43,11 @@ o	How can the updater tell when a grace period has completed
 	CPU-local counters, and permits general blocking within
 	RCU read-side critical sections.  These two variants of
 	RCU detect grace periods by sampling these counters.
+	counters.  These counters allow limited types of blocking within
+	RCU read-side critical sections.  SRCU also uses CPU-local
+	counters, and permits general blocking within RCU read-side
+	critical sections.  These variants of RCU detect grace periods
+	by sampling these counters.
 
 o	If I am running on a uniprocessor kernel, which can only do one
 	thing at a time, why should I wait for a grace period?
@@ -75,6 +80,8 @@ o	I hear that RCU is patented?  What is with that?
 	search for the string "Patent" in RTFP.txt to find them.
 	Of these, one was allowed to lapse by the assignee, and the
 	others have been contributed to the Linux kernel under GPL.
+	There are now also LGPL implementations of user-level RCU
+	available (http://lttng.org/?q=node/18).
 
 o	I hear that RCU needs work in order to support realtime kernels?
 
@@ -83,6 +90,10 @@ o	I hear that RCU needs work in order to support realtime kernels?
 	However, work is in progress for enabling priority boosting of
 	preempted RCU read-side critical sections.This is needed if you
 	have CPU-bound realtime threads.
+	enabled via the CONFIG_PREEMPT_RCU kernel configuration
+	parameter.  However, work is in progress for enabling priority
+	boosting of preempted RCU read-side critical sections.	This is
+	needed if you have CPU-bound realtime threads.
 
 o	Where can I find more information on RCU?
 
@@ -136,3 +147,4 @@ o	What are all these files in this directory?
 
 		Overview of how the RCU implementation works.  Along
 		the way, presents a conceptual view of RCU.
+	See 00-INDEX for the list.

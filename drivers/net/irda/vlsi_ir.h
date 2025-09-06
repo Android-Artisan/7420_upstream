@@ -21,13 +21,13 @@
  *	along with this program; if not, write to the Free Software 
  *	Foundation, Inc., 59 Temple Place, Suite 330, Boston, 
  *	MA 02111-1307 USA
+ *	along with this program; if not, see <http://www.gnu.org/licenses/>.
  *
  ********************************************************************/
 
 #ifndef IRDA_VLSI_FIR_H
 #define IRDA_VLSI_FIR_H
 
-/* ================================================================
  * compatibility stuff
  */
 
@@ -41,7 +41,6 @@
 #define PCI_CLASS_SUBCLASS_MASK		0xffff
 #endif
 
-/* ================================================================ */
 
 /* non-standard PCI registers */
 
@@ -164,7 +163,6 @@ enum vlsi_pci_irmisc {
 	IRMISC_UARTSEL_2e8	= 0x03
 };
 
-/* ================================================================ */
 
 /* registers mapped to 32 byte PCI IO space */
 
@@ -210,6 +208,7 @@ enum vlsi_pio_irintr {
 	IRINTR_ACTIVITY	= 0x40,	/* activity monitor (traffic detected) */
 	IRINTR_RPKTEN	= 0x20,	/* receive packet interrupt enable*/
 	IRINTR_RPKTINT	= 0x10,	/* rx-packet transfered from fifo to memory finished */
+	IRINTR_RPKTINT	= 0x10,	/* rx-packet transferred from fifo to memory finished */
 	IRINTR_TPKTEN	= 0x08,	/* transmit packet interrupt enable */
 	IRINTR_TPKTINT	= 0x04,	/* last bit of tx-packet+crc shifted to ir-pulser */
 	IRINTR_OE_EN	= 0x02,	/* UART rx fifo overrun error interrupt enable */
@@ -547,6 +546,9 @@ struct ring_descr_hw {
 		} __attribute__((packed)) rd_s;
 	} __attribute((packed)) rd_u;
 } __attribute__ ((packed));
+		} __packed rd_s;
+	} __packed rd_u;
+} __packed;
 
 #define rd_addr		rd_u.addr
 #define rd_status	rd_u.rd_s.status
@@ -596,6 +598,7 @@ struct ring_descr {
 static inline int rd_is_active(struct ring_descr *rd)
 {
 	return ((rd->hw->rd_status & RD_ACTIVE) != 0);
+	return (rd->hw->rd_status & RD_ACTIVE) != 0;
 }
 
 static inline void rd_activate(struct ring_descr *rd)
@@ -618,6 +621,8 @@ static inline void rd_set_addr_status(struct ring_descr *rd, dma_addr_t a, u8 s)
 
 	if ((a & ~DMA_MASK_MSTRPAGE)>>24 != MSTRPAGE_VALUE) {
 		IRDA_ERROR("%s: pci busaddr inconsistency!\n", __func__);
+		net_err_ratelimited("%s: pci busaddr inconsistency!\n",
+				    __func__);
 		dump_stack();
 		return;
 	}
@@ -726,6 +731,7 @@ typedef struct vlsi_irda_dev {
 	struct vlsi_ring	*tx_ring, *rx_ring;
 
 	struct timeval		last_rx;
+	ktime_t			last_rx;
 
 	spinlock_t		lock;
 	struct mutex		mtx;
@@ -741,6 +747,7 @@ typedef struct vlsi_irda_dev {
  * post-processing in vlsi_process_tx/rx() after it was completed
  * by the hardware. These functions either return the >=0 number
  * of transfered bytes in case of success or the negative (-)
+ * of transferred bytes in case of success or the negative (-)
  * of the or'ed error flags.
  */
 

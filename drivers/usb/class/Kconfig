@@ -7,6 +7,10 @@ comment "USB Device Class drivers"
 config USB_ACM
 	tristate "USB Modem (CDC ACM) support"
 	depends on USB
+
+config USB_ACM
+	tristate "USB Modem (CDC ACM) support"
+	depends on TTY
 	---help---
 	  This driver supports USB modems and ISDN adapters which support the
 	  Communication Device Class Abstract Control Model interface.
@@ -40,3 +44,12 @@ config USB_WDM
 	  To compile this driver as a module, choose M here: the
 	  module will be called cdc-wdm.
 
+config USB_TMC
+	tristate "USB Test and Measurement Class support"
+	help
+	  Say Y here if you want to connect a USB device that follows
+	  the USB.org specification for USB Test and Measurement devices
+	  to your computer's USB port.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called usbtmc.

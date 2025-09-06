@@ -12,6 +12,10 @@
 
 #include <linux/module.h>
 #include <linux/skbuff.h>
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+#include <linux/module.h>
+#include <linux/skbuff.h>
+#include <linux/slab.h>
 #include <linux/ip.h>
 #include <linux/udp.h>
 #include <linux/icmp.h>
@@ -26,6 +30,15 @@
 #ifdef CONFIG_BRIDGE_NETFILTER
 #include <linux/netfilter_bridge.h>
 #endif
+
+#include <linux/netfilter/x_tables.h>
+#include <linux/netfilter_ipv4/ip_tables.h>
+#include <linux/netfilter_ipv4/ipt_REJECT.h>
+#if IS_ENABLED(CONFIG_BRIDGE_NETFILTER)
+#include <linux/netfilter_bridge.h>
+#endif
+
+#include <net/netfilter/ipv4/nf_reject.h>
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Netfilter Core Team <coreteam@netfilter.org>");
@@ -169,6 +182,36 @@ reject_tg(struct sk_buff *skb, const struct net_device *in,
 		break;
 	case IPT_TCP_RESET:
 		send_reset(skb, hooknum);
+static unsigned int
+reject_tg(struct sk_buff *skb, const struct xt_action_param *par)
+{
+	const struct ipt_reject_info *reject = par->targinfo;
+	int hook = par->hooknum;
+
+	switch (reject->with) {
+	case IPT_ICMP_NET_UNREACHABLE:
+		nf_send_unreach(skb, ICMP_NET_UNREACH, hook);
+		break;
+	case IPT_ICMP_HOST_UNREACHABLE:
+		nf_send_unreach(skb, ICMP_HOST_UNREACH, hook);
+		break;
+	case IPT_ICMP_PROT_UNREACHABLE:
+		nf_send_unreach(skb, ICMP_PROT_UNREACH, hook);
+		break;
+	case IPT_ICMP_PORT_UNREACHABLE:
+		nf_send_unreach(skb, ICMP_PORT_UNREACH, hook);
+		break;
+	case IPT_ICMP_NET_PROHIBITED:
+		nf_send_unreach(skb, ICMP_NET_ANO, hook);
+		break;
+	case IPT_ICMP_HOST_PROHIBITED:
+		nf_send_unreach(skb, ICMP_HOST_ANO, hook);
+		break;
+	case IPT_ICMP_ADMIN_PROHIBITED:
+		nf_send_unreach(skb, ICMP_PKT_FILTERED, hook);
+		break;
+	case IPT_TCP_RESET:
+		nf_send_reset(par->net, skb, hook);
 	case IPT_ICMP_ECHOREPLY:
 		/* Doesn't happen. */
 		break;
@@ -197,11 +240,29 @@ reject_tg_check(const char *tablename, const void *e_void,
 		}
 	}
 	return true;
+static int reject_tg_check(const struct xt_tgchk_param *par)
+{
+	const struct ipt_reject_info *rejinfo = par->targinfo;
+	const struct ipt_entry *e = par->entryinfo;
+
+	if (rejinfo->with == IPT_ICMP_ECHOREPLY) {
+		pr_info("ECHOREPLY no longer supported.\n");
+		return -EINVAL;
+	} else if (rejinfo->with == IPT_TCP_RESET) {
+		/* Must specify that it's a TCP packet */
+		if (e->ip.proto != IPPROTO_TCP ||
+		    (e->ip.invflags & XT_INV_PROTO)) {
+			pr_info("TCP_RESET invalid for non-tcp\n");
+			return -EINVAL;
+		}
+	}
+	return 0;
 }
 
 static struct xt_target reject_tg_reg __read_mostly = {
 	.name		= "REJECT",
 	.family		= AF_INET,
+	.family		= NFPROTO_IPV4,
 	.target		= reject_tg,
 	.targetsize	= sizeof(struct ipt_reject_info),
 	.table		= "filter",

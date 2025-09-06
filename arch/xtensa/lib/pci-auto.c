@@ -243,6 +243,8 @@ int __init pciauto_bus_scan(struct pci_controller *pci_ctrl, int current_bus)
 
         pciauto_dev.bus = &pciauto_bus;
         pciauto_dev.sysdata = pci_ctrl;
+	pciauto_dev.bus = &pciauto_bus;
+	pciauto_dev.sysdata = pci_ctrl;
 	pciauto_bus.ops = pci_ctrl->ops;
 
 	/*

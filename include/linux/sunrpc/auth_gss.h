@@ -71,6 +71,7 @@ struct gss_cl_ctx {
 	spinlock_t		gc_seq_lock;
 	struct gss_ctx		*gc_gss_ctx;
 	struct xdr_netobj	gc_wire_ctx;
+	struct xdr_netobj	gc_acceptor;
 	u32			gc_win;
 	unsigned long		gc_expiry;
 	struct rcu_head		gc_rcu;
@@ -83,6 +84,10 @@ struct gss_cred {
 	struct gss_cl_ctx	*gc_ctx;
 	struct gss_upcall_msg	*gc_upcall;
 	unsigned char		gc_machine_cred : 1;
+	struct gss_cl_ctx __rcu	*gc_ctx;
+	struct gss_upcall_msg	*gc_upcall;
+	const char		*gc_principal;
+	unsigned long		gc_upcall_timestamp;
 };
 
 #endif /* __KERNEL__ */

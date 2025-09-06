@@ -19,6 +19,7 @@
 #include <linux/bitops.h>
 #include <linux/nodemask.h>
 #include <linux/pfn.h>
+#include <linux/gfp.h>
 #include <asm/types.h>
 #include <asm/processor.h>
 #include <asm/page.h>
@@ -35,6 +36,10 @@ extern char __init_begin, __init_end;
 pgd_t swapper_pg_dir[1024];
 
 DEFINE_PER_CPU(struct mmu_gather, mmu_gathers);
+
+#include <asm/sections.h>
+
+pgd_t swapper_pg_dir[1024];
 
 /*
  * Cache of MMU context last used.
@@ -62,6 +67,7 @@ void free_initrd_mem(unsigned long, unsigned long);
 
 #ifndef CONFIG_DISCONTIGMEM
 unsigned long __init zone_sizes_init(void)
+void __init zone_sizes_init(void)
 {
 	unsigned long  zones_size[MAX_NR_ZONES] = {0, };
 	unsigned long  max_dma;
@@ -92,11 +98,12 @@ unsigned long __init zone_sizes_init(void)
 }
 #else	/* CONFIG_DISCONTIGMEM */
 extern unsigned long zone_sizes_init(void);
+}
+#else	/* CONFIG_DISCONTIGMEM */
+extern void zone_sizes_init(void);
 #endif	/* CONFIG_DISCONTIGMEM */
 
-/*======================================================================*
  * paging_init() : sets up the page tables
- *======================================================================*/
 void __init paging_init(void)
 {
 #ifdef CONFIG_MMU
@@ -127,12 +134,11 @@ int __init reservedpages_count(void)
 	}
 
 	return reservedpages;
+	zone_sizes_init();
 }
 
-/*======================================================================*
  * mem_init() :
  * orig : arch/sh/mm/init.c
- *======================================================================*/
 void __init mem_init(void)
 {
 	int codesize, reservedpages, datasize, initsize;
@@ -155,6 +161,12 @@ void __init mem_init(void)
 	high_memory = (void *)__va(PFN_PHYS(MAX_LOW_PFN(0)));
 #else
 	high_memory = (void *)(memory_end & PAGE_MASK);
+#ifndef CONFIG_MMU
+	extern unsigned long memory_end;
+
+	high_memory = (void *)(memory_end & PAGE_MASK);
+#else
+	high_memory = (void *)__va(PFN_PHYS(MAX_LOW_PFN(0)));
 #endif /* CONFIG_MMU */
 
 	/* clear the zero-page */
@@ -177,12 +189,13 @@ void __init mem_init(void)
 		reservedpages << (PAGE_SHIFT-10),
 		datasize >> 10,
 		initsize >> 10);
+	set_max_mapnr(get_num_physpages());
+	free_all_bootmem();
+	mem_init_print_info(NULL);
 }
 
-/*======================================================================*
  * free_initmem() :
  * orig : arch/sh/mm/init.c
- *======================================================================*/
 void free_initmem(void)
 {
 	unsigned long addr;
@@ -196,13 +209,12 @@ void free_initmem(void)
 	}
 	printk (KERN_INFO "Freeing unused kernel memory: %dk freed\n", \
 	  (int)(&__init_end - &__init_begin) >> 10);
+	free_initmem_default(-1);
 }
 
 #ifdef CONFIG_BLK_DEV_INITRD
-/*======================================================================*
  * free_initrd_mem() :
  * orig : arch/sh/mm/init.c
- *======================================================================*/
 void free_initrd_mem(unsigned long start, unsigned long end)
 {
 	unsigned long p;
@@ -213,5 +225,6 @@ void free_initrd_mem(unsigned long start, unsigned long end)
 		totalram_pages++;
 	}
 	printk (KERN_INFO "Freeing initrd memory: %ldk freed\n", (end - start) >> 10);
+	free_reserved_area((void *)start, (void *)end, -1, "initrd");
 }
 #endif

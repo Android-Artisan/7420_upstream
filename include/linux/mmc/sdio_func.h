@@ -11,9 +11,13 @@
 
 #ifndef MMC_SDIO_FUNC_H
 #define MMC_SDIO_FUNC_H
+#ifndef LINUX_MMC_SDIO_FUNC_H
+#define LINUX_MMC_SDIO_FUNC_H
 
 #include <linux/device.h>
 #include <linux/mod_devicetable.h>
+
+#include <linux/mmc/pm.h>
 
 struct mmc_card;
 struct sdio_func;
@@ -51,7 +55,7 @@ struct sdio_func {
 	unsigned int		state;		/* function state */
 #define SDIO_STATE_PRESENT	(1<<0)		/* present in sysfs */
 
-	u8			tmpbuf[4];	/* DMA:able scratch buffer */
+	u8			*tmpbuf;	/* DMA:able scratch buffer */
 
 	unsigned		num_info;	/* number of info strings */
 	const char		**info;		/* info strings */
@@ -67,6 +71,11 @@ struct sdio_func {
 
 #define sdio_get_drvdata(f)	dev_get_drvdata(&(f)->dev)
 #define sdio_set_drvdata(f,d)	dev_set_drvdata(&(f)->dev, d)
+#define sdio_func_id(f)		(dev_name(&(f)->dev))
+
+#define sdio_get_drvdata(f)	dev_get_drvdata(&(f)->dev)
+#define sdio_set_drvdata(f,d)	dev_set_drvdata(&(f)->dev, d)
+#define dev_to_sdio_func(d)	container_of(d, struct sdio_func, dev)
 
 /*
  * SDIO function device driver
@@ -140,6 +149,9 @@ extern void sdio_writew(struct sdio_func *func, u16 b,
 extern void sdio_writel(struct sdio_func *func, u32 b,
 	unsigned int addr, int *err_ret);
 
+extern u8 sdio_writeb_readb(struct sdio_func *func, u8 write_byte,
+	unsigned int addr, int *err_ret);
+
 extern int sdio_memcpy_toio(struct sdio_func *func, unsigned int addr,
 	void *src, int count);
 extern int sdio_writesb(struct sdio_func *func, unsigned int addr,
@@ -152,3 +164,7 @@ extern void sdio_f0_writeb(struct sdio_func *func, unsigned char b,
 
 #endif
 
+extern mmc_pm_flag_t sdio_get_host_pm_caps(struct sdio_func *func);
+extern int sdio_set_host_pm_flags(struct sdio_func *func, mmc_pm_flag_t flags);
+
+#endif /* LINUX_MMC_SDIO_FUNC_H */

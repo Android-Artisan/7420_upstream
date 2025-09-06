@@ -29,6 +29,9 @@
 #include <linux/types.h>
 #include <linux/ptrace.h>
 #include <linux/percpu.h>
+#include <linux/module.h>
+#include <asm/probes.h>
+#include <asm/code-patching.h>
 
 #define  __ARCH_WANT_KPROBES_INSN_SLOT
 
@@ -79,6 +82,63 @@ typedef unsigned int kprobe_opcode_t;
 /* Use stock kprobe_lookup_name since ppc32 doesn't use function descriptors */
 #define is_trap(instr)	(IS_TW(instr) || IS_TWI(instr))
 #endif
+typedef ppc_opcode_t kprobe_opcode_t;
+#define MAX_INSN_SIZE 1
+
+#ifdef CONFIG_PPC64
+#if defined(_CALL_ELF) && _CALL_ELF == 2
+/* PPC64 ABIv2 needs local entry point */
+#define kprobe_lookup_name(name, addr)					\
+{									\
+	addr = (kprobe_opcode_t *)kallsyms_lookup_name(name);		\
+	if (addr)							\
+		addr = (kprobe_opcode_t *)ppc_function_entry(addr);	\
+}
+#else
+/*
+ * 64bit powerpc ABIv1 uses function descriptors:
+ * - Check for the dot variant of the symbol first.
+ * - If that fails, try looking up the symbol provided.
+ *
+ * This ensures we always get to the actual symbol and not the descriptor.
+ * Also handle <module:symbol> format.
+ */
+#define kprobe_lookup_name(name, addr)					\
+{									\
+	char dot_name[MODULE_NAME_LEN + 1 + KSYM_NAME_LEN];		\
+	const char *modsym;							\
+	bool dot_appended = false;					\
+	if ((modsym = strchr(name, ':')) != NULL) {			\
+		modsym++;						\
+		if (*modsym != '\0' && *modsym != '.') {		\
+			/* Convert to <module:.symbol> */		\
+			strncpy(dot_name, name, modsym - name);		\
+			dot_name[modsym - name] = '.';			\
+			dot_name[modsym - name + 1] = '\0';		\
+			strncat(dot_name, modsym,			\
+				sizeof(dot_name) - (modsym - name) - 2);\
+			dot_appended = true;				\
+		} else {						\
+			dot_name[0] = '\0';				\
+			strncat(dot_name, name, sizeof(dot_name) - 1);	\
+		}							\
+	} else if (name[0] != '.') {					\
+		dot_name[0] = '.';					\
+		dot_name[1] = '\0';					\
+		strncat(dot_name, name, KSYM_NAME_LEN - 2);		\
+		dot_appended = true;					\
+	} else {							\
+		dot_name[0] = '\0';					\
+		strncat(dot_name, name, KSYM_NAME_LEN - 1);		\
+	}								\
+	addr = (kprobe_opcode_t *)kallsyms_lookup_name(dot_name);	\
+	if (!addr && dot_appended) {					\
+		/* Let's try the original non-dot symbol lookup	*/	\
+		addr = (kprobe_opcode_t *)kallsyms_lookup_name(name);	\
+	}								\
+}
+#endif /* defined(_CALL_ELF) && _CALL_ELF == 2 */
+#endif /* CONFIG_PPC64 */
 
 #define flush_insn_slot(p)	do { } while (0)
 #define kretprobe_blacklist_size 0

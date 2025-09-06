@@ -1,5 +1,4 @@
 Intel 830M/845G/852GM/855GM/865G/915G/945G Framebuffer driver
-================================================================
 
 A. Introduction
 	This is a framebuffer driver for various Intel 8xx/9xx compatible
@@ -14,6 +13,7 @@ graphics devices.  These would include:
 	Intel 915GM
 	Intel 945G
 	Intel 945GM
+	Intel 945GME
 	Intel 965G
 	Intel 965GM
 
@@ -120,6 +120,7 @@ Using the same setup as described above, load the module like this:
 	modprobe intelfb mode=800x600-32@75 vram=8 accel=1 hwcursor=1
 
 Or just add the following to /etc/modprobe.conf
+Or just add the following to a configuration file in /etc/modprobe.d/
 
 	options intelfb mode=800x600-32@75 vram=8 accel=1 hwcursor=1
 

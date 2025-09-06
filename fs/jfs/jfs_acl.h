@@ -23,6 +23,9 @@
 int jfs_permission(struct inode *, int);
 int jfs_init_acl(tid_t, struct inode *, struct inode *);
 int jfs_setattr(struct dentry *, struct iattr *);
+struct posix_acl *jfs_get_acl(struct inode *inode, int type);
+int jfs_set_acl(struct inode *inode, struct posix_acl *acl, int type);
+int jfs_init_acl(tid_t, struct inode *, struct inode *);
 
 #else
 

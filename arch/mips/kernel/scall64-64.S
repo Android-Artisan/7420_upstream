@@ -26,6 +26,7 @@
 #endif
 
 	.align  5
+	.align	5
 NESTED(handle_sys64, PT_SIZE, sp)
 #if !defined(CONFIG_MIPS32_O32) && !defined(CONFIG_MIPS32_N32)
 	/*
@@ -55,9 +56,24 @@ NESTED(handle_sys64, PT_SIZE, sp)
 	sd	a3, PT_R26(sp)		# save a3 for syscall restarting
 
 	li	t1, _TIF_SYSCALL_TRACE | _TIF_SYSCALL_AUDIT
+
+	sd	a3, PT_R26(sp)		# save a3 for syscall restarting
+
+	li	t1, _TIF_WORK_SYSCALL_ENTRY
 	LONG_L	t0, TI_FLAGS($28)	# syscall tracing enabled?
 	and	t0, t1, t0
 	bnez	t0, syscall_trace_entry
+
+syscall_common:
+	dsubu	t2, v0, __NR_64_Linux
+	sltiu   t0, t2, __NR_64_Linux_syscalls + 1
+	beqz	t0, illegal_syscall
+
+	dsll	t0, t2, 3		# offset into table
+	dla	t2, sys_call_table
+	daddu	t0, t2, t0
+	ld	t2, (t0)		# syscall routine
+	beqz	t2, illegal_syscall
 
 	jalr	t2			# Do The Real Thing (TM)
 
@@ -84,6 +100,13 @@ n64_syscall_exit:
 
 n64_syscall_exit_work:
 	j	syscall_exit_work_partial
+	ld	t1, PT_R2(sp)		# syscall number
+	dnegu	v0			# error
+	sd	t1, PT_R0(sp)		# save it for syscall restarting
+1:	sd	v0, PT_R2(sp)		# result
+
+n64_syscall_exit:
+	j	syscall_exit_partial
 
 /* ------------------------------------------------------------------------ */
 
@@ -95,7 +118,15 @@ syscall_trace_entry:
 	jal	do_syscall_trace
 
 	move	t0, s0
+	move	s0, v0
+	move	a0, sp
+	move	a1, v0
+	jal	syscall_trace_enter
+
+	bltz	v0, 1f			# seccomp failed? Skip syscall
+
 	RESTORE_STATIC
+	ld	v0, PT_R2(sp)		# Restore syscall (maybe modified)
 	ld	a0, PT_R4(sp)		# Restore argument registers
 	ld	a1, PT_R5(sp)
 	ld	a2, PT_R6(sp)
@@ -118,6 +149,13 @@ syscall_trace_entry:
 illegal_syscall:
 	/* This also isn't a 64-bit syscall, throw an error.  */
 	li	v0, -ENOSYS			# error
+	j	syscall_common
+
+1:	j	syscall_exit
+
+illegal_syscall:
+	/* This also isn't a 64-bit syscall, throw an error.  */
+	li	v0, ENOSYS			# error
 	sd	v0, PT_R2(sp)
 	li	t0, 1				# set error flag
 	sd	t0, PT_R7(sp)
@@ -198,6 +236,9 @@ bad_alignment:
 
 	.align	3
 sys_call_table:
+	.align	3
+	.type	sys_call_table, @object
+EXPORT(sys_call_table)
 	PTR	sys_read			/* 5000 */
 	PTR	sys_write
 	PTR	sys_open
@@ -208,6 +249,7 @@ sys_call_table:
 	PTR	sys_poll
 	PTR	sys_lseek
 	PTR	old_mmap
+	PTR	sys_mips_mmap
 	PTR	sys_mprotect			/* 5010 */
 	PTR	sys_munmap
 	PTR	sys_brk
@@ -255,6 +297,8 @@ sys_call_table:
 	PTR	sys_getsockopt
 	PTR	sys_clone			/* 5055 */
 	PTR	sys_fork
+	PTR	__sys_clone			/* 5055 */
+	PTR	__sys_fork
 	PTR	sys_execve
 	PTR	sys_exit
 	PTR	sys_wait4
@@ -374,6 +418,9 @@ sys_call_table:
 	PTR	sys_nfsservctl
 	PTR	sys_ni_syscall			/* res. for getpmsg */
 	PTR	sys_ni_syscall			/* 5175  for putpmsg */
+	PTR	sys_ni_syscall			/* was nfsservctl */
+	PTR	sys_ni_syscall			/* res. for getpmsg */
+	PTR	sys_ni_syscall			/* 5175	 for putpmsg */
 	PTR	sys_ni_syscall			/* res. for afs_syscall */
 	PTR	sys_ni_syscall			/* res. for security */
 	PTR	sys_gettid
@@ -397,7 +444,7 @@ sys_call_table:
 	PTR	sys_sched_getaffinity
 	PTR	sys_cacheflush
 	PTR	sys_cachectl
-	PTR	sys_sysmips
+	PTR	__sys_sysmips
 	PTR	sys_io_setup			/* 5200 */
 	PTR	sys_io_destroy
 	PTR	sys_io_getevents
@@ -428,6 +475,8 @@ sys_call_table:
 	PTR	sys_mbind
 	PTR	sys_ni_syscall			/* sys_get_mempolicy */
 	PTR	sys_ni_syscall			/* sys_set_mempolicy */
+	PTR	sys_get_mempolicy
+	PTR	sys_set_mempolicy
 	PTR	sys_mq_open			/* 5230 */
 	PTR	sys_mq_unlink
 	PTR	sys_mq_timedsend
@@ -476,6 +525,7 @@ sys_call_table:
 	PTR	sys_utimensat			/* 5275 */
 	PTR	sys_signalfd
 	PTR	sys_ni_syscall
+	PTR	sys_ni_syscall			/* was timerfd */
 	PTR	sys_eventfd
 	PTR	sys_fallocate
 	PTR	sys_timerfd_create		/* 5280 */
@@ -487,4 +537,35 @@ sys_call_table:
 	PTR	sys_dup3
 	PTR	sys_pipe2
 	PTR	sys_inotify_init1
+	PTR	sys_preadv
+	PTR	sys_pwritev			/* 5290 */
+	PTR	sys_rt_tgsigqueueinfo
+	PTR	sys_perf_event_open
+	PTR	sys_accept4
+	PTR	sys_recvmmsg
+	PTR	sys_fanotify_init		/* 5295 */
+	PTR	sys_fanotify_mark
+	PTR	sys_prlimit64
+	PTR	sys_name_to_handle_at
+	PTR	sys_open_by_handle_at
+	PTR	sys_clock_adjtime		/* 5300 */
+	PTR	sys_syncfs
+	PTR	sys_sendmmsg
+	PTR	sys_setns
+	PTR	sys_process_vm_readv
+	PTR	sys_process_vm_writev		/* 5305 */
+	PTR	sys_kcmp
+	PTR	sys_finit_module
+	PTR	sys_getdents64
+	PTR	sys_sched_setattr
+	PTR	sys_sched_getattr		/* 5310 */
+	PTR	sys_renameat2
+	PTR	sys_seccomp
+	PTR	sys_getrandom
+	PTR	sys_memfd_create
+	PTR	sys_bpf				/* 5315 */
+	PTR	sys_execveat
+	PTR	sys_userfaultfd
+	PTR	sys_membarrier
+	PTR	sys_mlock2
 	.size	sys_call_table,.-sys_call_table

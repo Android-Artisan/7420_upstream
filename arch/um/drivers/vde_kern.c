@@ -11,6 +11,10 @@
 #include <linux/netdevice.h>
 #include "net_kern.h"
 #include "net_user.h"
+#include <linux/init.h>
+#include <linux/netdevice.h>
+#include <net_kern.h>
+#include <net_user.h>
 #include "vde.h"
 
 static void vde_init(struct net_device *dev, void *data)
@@ -20,6 +24,7 @@ static void vde_init(struct net_device *dev, void *data)
 	struct vde_data *vpri;
 
 	pri = dev->priv;
+	pri = netdev_priv(dev);
 	vpri = (struct vde_data *) pri->user;
 
 	vpri->vde_switch = init->vde_switch;

@@ -27,6 +27,8 @@
  *   Alan Hourihane <alanh-at-tungstengraphics-dot-com>
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
@@ -36,6 +38,7 @@
 #include <linux/backlight.h>
 #include <linux/lcd.h>
 #include <linux/pci.h>
+#include <linux/slab.h>
 
 /* The LVDS- and panel power controls sits on the
  * GPIO port of the ISA bridge.
@@ -109,6 +112,7 @@ static int cr_backlight_get_intensity(struct backlight_device *bd)
 }
 
 static struct backlight_ops cr_backlight_ops = {
+static const struct backlight_ops cr_backlight_ops = {
 	.get_brightness = cr_backlight_get_intensity,
 	.update_status = cr_backlight_set_intensity,
 };
@@ -170,6 +174,7 @@ static struct lcd_ops cr_lcd_ops = {
 
 static int cr_backlight_probe(struct platform_device *pdev)
 {
+	struct backlight_properties props;
 	struct backlight_device *bdp;
 	struct lcd_device *ldp;
 	struct cr_panel *crp;
@@ -179,6 +184,7 @@ static int cr_backlight_probe(struct platform_device *pdev)
 					CRVML_DEVICE_LPC, NULL);
 	if (!lpc_dev) {
 		printk("INTEL CARILLO RANCH LPC not found.\n");
+		pr_err("INTEL CARILLO RANCH LPC not found.\n");
 		return -ENODEV;
 	}
 
@@ -186,12 +192,18 @@ static int cr_backlight_probe(struct platform_device *pdev)
 	if (!(dev_en & CRVML_GPIOEN_BIT)) {
 		printk(KERN_ERR
 		       "Carillo Ranch GPIO device was not enabled.\n");
+		pr_err("Carillo Ranch GPIO device was not enabled.\n");
 		pci_dev_put(lpc_dev);
 		return -ENODEV;
 	}
 
 	bdp = backlight_device_register("cr-backlight",
 					&pdev->dev, NULL, &cr_backlight_ops);
+	memset(&props, 0, sizeof(struct backlight_properties));
+	props.type = BACKLIGHT_RAW;
+	bdp = devm_backlight_device_register(&pdev->dev, "cr-backlight",
+					&pdev->dev, NULL, &cr_backlight_ops,
+					&props);
 	if (IS_ERR(bdp)) {
 		pci_dev_put(lpc_dev);
 		return PTR_ERR(bdp);
@@ -202,6 +214,11 @@ static int cr_backlight_probe(struct platform_device *pdev)
 		backlight_device_unregister(bdp);
 		pci_dev_put(lpc_dev);
 		return PTR_ERR(bdp);
+	ldp = devm_lcd_device_register(&pdev->dev, "cr-lcd", &pdev->dev, NULL,
+					&cr_lcd_ops);
+	if (IS_ERR(ldp)) {
+		pci_dev_put(lpc_dev);
+		return PTR_ERR(ldp);
 	}
 
 	pci_read_config_dword(lpc_dev, CRVML_REG_GPIOBAR,
@@ -212,6 +229,8 @@ static int cr_backlight_probe(struct platform_device *pdev)
 	if (!crp) {
 		lcd_device_unregister(ldp);
 		backlight_device_unregister(bdp);
+	crp = devm_kzalloc(&pdev->dev, sizeof(*crp), GFP_KERNEL);
+	if (!crp) {
 		pci_dev_put(lpc_dev);
 		return -ENOMEM;
 	}
@@ -223,6 +242,7 @@ static int cr_backlight_probe(struct platform_device *pdev)
 	crp->cr_backlight_device->props.max_brightness = 0;
 	cr_backlight_set_intensity(crp->cr_backlight_device);
 
+	cr_backlight_set_intensity(crp->cr_backlight_device);
 	cr_lcd_set_power(crp->cr_lcd_device, FB_BLANK_UNBLANK);
 
 	platform_set_drvdata(pdev, crp);
@@ -233,6 +253,7 @@ static int cr_backlight_probe(struct platform_device *pdev)
 static int cr_backlight_remove(struct platform_device *pdev)
 {
 	struct cr_panel *crp = platform_get_drvdata(pdev);
+
 	crp->cr_backlight_device->props.power = FB_BLANK_POWERDOWN;
 	crp->cr_backlight_device->props.brightness = 0;
 	crp->cr_backlight_device->props.max_brightness = 0;
@@ -275,6 +296,18 @@ static int __init cr_backlight_init(void)
 	printk("Carillo Ranch Backlight Driver Initialized.\n");
 
 	return ret;
+	if (ret)
+		return ret;
+
+	crp = platform_device_register_simple("cr_backlight", -1, NULL, 0);
+	if (IS_ERR(crp)) {
+		platform_driver_unregister(&cr_backlight_driver);
+		return PTR_ERR(crp);
+	}
+
+	pr_info("Carillo Ranch Backlight Driver Initialized.\n");
+
+	return 0;
 }
 
 static void __exit cr_backlight_exit(void)

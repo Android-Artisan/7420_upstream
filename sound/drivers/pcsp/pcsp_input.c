@@ -16,6 +16,9 @@
 #include <linux/input.h>
 #include <asm/io.h>
 #include "pcsp.h"
+#include <linux/io.h>
+#include "pcsp.h"
+#include "pcsp_input.h"
 
 static void pcspkr_do_sound(unsigned int count)
 {
@@ -26,17 +29,23 @@ static void pcspkr_do_sound(unsigned int count)
 	if (count) {
 		/* enable counter 2 */
 		outb_p(inb_p(0x61) | 3, 0x61);
+	raw_spin_lock_irqsave(&i8253_lock, flags);
+
+	if (count) {
 		/* set command for counter 2, 2 byte write */
 		outb_p(0xB6, 0x43);
 		/* select desired HZ */
 		outb_p(count & 0xff, 0x42);
 		outb((count >> 8) & 0xff, 0x42);
+		/* enable counter 2 */
+		outb_p(inb_p(0x61) | 3, 0x61);
 	} else {
 		/* disable counter 2 */
 		outb(inb_p(0x61) & 0xFC, 0x61);
 	}
 
 	spin_unlock_irqrestore(&i8253_lock, flags);
+	raw_spin_unlock_irqrestore(&i8253_lock, flags);
 }
 
 void pcspkr_stop_sound(void)
@@ -78,6 +87,7 @@ static int pcspkr_input_event(struct input_dev *dev, unsigned int type,
 }
 
 int __devinit pcspkr_input_init(struct input_dev **rdev, struct device *dev)
+int pcspkr_input_init(struct input_dev **rdev, struct device *dev)
 {
 	int err;
 

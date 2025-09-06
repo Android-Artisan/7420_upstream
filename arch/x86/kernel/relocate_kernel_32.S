@@ -11,6 +11,9 @@
 #include <asm/kexec.h>
 #include <asm/processor-flags.h>
 #include <asm/pgtable.h>
+#include <asm/page_types.h>
+#include <asm/kexec.h>
+#include <asm/processor-flags.h>
 
 /*
  * Must be relocatable PIC code callable as a C function
@@ -21,6 +24,9 @@
 #define PAE_PGD_ATTR (_PAGE_PRESENT)
 
 /* control_page + KEXEC_CONTROL_CODE_MAX_SIZE
+
+/*
+ * control_page + KEXEC_CONTROL_CODE_MAX_SIZE
  * ~ control_page + PAGE_SIZE are used as data storage and stack for
  * jumping back
  */
@@ -193,6 +199,10 @@ relocate_new_kernel:
 
 	/* get physical address of control page now */
 	/* this is impossible after page table switch */
+	/*
+	 * get physical address of control page now
+	 * this is impossible after page table switch
+	 */
 	movl	PTR(PA_CONTROL_PAGE)(%ebp), %edi
 
 	/* switch to new set of page tables */
@@ -213,6 +223,13 @@ identity_mapped:
 	pushl   %edx
 
 	/* Set cr0 to a known state:
+	/* set return address to 0 if not preserving context */
+	pushl	$0
+	/* store the start address on the stack */
+	pushl   %edx
+
+	/*
+	 * Set cr0 to a known state:
 	 *  - Paging disabled
 	 *  - Alignment check disabled
 	 *  - Write protect disabled
@@ -229,6 +246,8 @@ identity_mapped:
 	testl	%ecx, %ecx
 	jz	1f
 	/* Set cr4 to a known state:
+	/*
+	 * Set cr4 to a known state:
 	 * Setting everything to zero seems safe.
 	 */
 	xorl	%eax, %eax
@@ -248,6 +267,8 @@ identity_mapped:
 	addl	$8, %esp
 
 	/* To be certain of avoiding problems with self-modifying code
+	/*
+	 * To be certain of avoiding problems with self-modifying code
 	 * I need to execute a serializing instruction here.
 	 * So I flush the TLB, it's handy, and not processor dependent.
 	 */
@@ -256,6 +277,10 @@ identity_mapped:
 
 	/* set all of the registers to known values */
 	/* leave %esp alone */
+	/*
+	 * set all of the registers to known values
+	 * leave %esp alone
+	 */
 
 	testl	%esi, %esi
 	jnz 1f
@@ -292,6 +317,7 @@ identity_mapped:
 	movl	%eax, %cr3
 	movl	%cr0, %eax
 	orl	$(1<<31), %eax
+	orl	$X86_CR0_PG, %eax
 	movl	%eax, %cr0
 	lea	PAGE_SIZE(%edi), %esp
 	movl	%edi, %eax
@@ -332,12 +358,14 @@ swap_pages:
 	addl	$4, %ebx
 1:
 	testl	$0x1,   %ecx  /* is it a destination page */
+	testb	$0x1, %cl     /* is it a destination page */
 	jz	2f
 	movl	%ecx,	%edi
 	andl	$0xfffff000, %edi
 	jmp     0b
 2:
 	testl	$0x2,	%ecx  /* is it an indirection page */
+	testb	$0x2, %cl    /* is it an indirection page */
 	jz	2f
 	movl	%ecx,	%ebx
 	andl	$0xfffff000, %ebx
@@ -348,6 +376,11 @@ swap_pages:
 	jmp     3f
 2:
 	testl   $0x8,   %ecx /* is it the source indicator */
+	testb   $0x4, %cl    /* is it the done indicator */
+	jz      2f
+	jmp     3f
+2:
+	testb   $0x8, %cl    /* is it the source indicator */
 	jz      0b	     /* Ignore it otherwise */
 	movl    %ecx,   %esi /* For every source page do a copy */
 	andl    $0xfffff000, %esi

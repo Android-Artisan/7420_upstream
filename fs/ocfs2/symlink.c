@@ -41,6 +41,8 @@
 #include <linux/utsname.h>
 
 #define MLOG_MASK_PREFIX ML_NAMEI
+#include <linux/namei.h>
+
 #include <cluster/masklog.h>
 
 #include "ocfs2.h"
@@ -174,4 +176,53 @@ const struct inode_operations ocfs2_fast_symlink_inode_operations = {
 	.follow_link	= ocfs2_follow_link,
 	.getattr	= ocfs2_getattr,
 	.setattr	= ocfs2_setattr,
+#include "xattr.h"
+
+#include "buffer_head_io.h"
+
+
+static int ocfs2_fast_symlink_readpage(struct file *unused, struct page *page)
+{
+	struct inode *inode = page->mapping->host;
+	struct buffer_head *bh = NULL;
+	int status = ocfs2_read_inode_block(inode, &bh);
+	struct ocfs2_dinode *fe;
+	const char *link;
+	void *kaddr;
+	size_t len;
+
+	if (status < 0) {
+		mlog_errno(status);
+		goto out;
+	}
+
+	fe = (struct ocfs2_dinode *) bh->b_data;
+	link = (char *) fe->id2.i_symlink;
+	/* will be less than a page size */
+	len = strnlen(link, ocfs2_fast_symlink_chars(inode->i_sb));
+	kaddr = kmap_atomic(page);
+	memcpy(kaddr, link, len + 1);
+	kunmap_atomic(kaddr);
+	SetPageUptodate(page);
+out:
+	unlock_page(page);
+	brelse(bh);
+	return status;
+}
+
+const struct address_space_operations ocfs2_fast_symlink_aops = {
+	.readpage		= ocfs2_fast_symlink_readpage,
+};
+
+const struct inode_operations ocfs2_symlink_inode_operations = {
+	.readlink	= generic_readlink,
+	.follow_link	= page_follow_link_light,
+	.put_link	= page_put_link,
+	.getattr	= ocfs2_getattr,
+	.setattr	= ocfs2_setattr,
+	.setxattr	= generic_setxattr,
+	.getxattr	= generic_getxattr,
+	.listxattr	= ocfs2_listxattr,
+	.removexattr	= generic_removexattr,
+	.fiemap		= ocfs2_fiemap,
 };

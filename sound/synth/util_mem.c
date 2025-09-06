@@ -21,6 +21,7 @@
 #include <linux/mutex.h>
 #include <linux/init.h>
 #include <linux/slab.h>
+#include <linux/module.h>
 #include <sound/core.h>
 #include <sound/util_mem.h>
 
@@ -56,6 +57,8 @@ void snd_util_memhdr_free(struct snd_util_memhdr *hdr)
 	struct list_head *p;
 
 	snd_assert(hdr != NULL, return);
+	if (!hdr)
+		return;
 	/* release all blocks */
 	while ((p = hdr->block.next) != &hdr->block) {
 		list_del(p);
@@ -76,6 +79,8 @@ __snd_util_mem_alloc(struct snd_util_memhdr *hdr, int size)
 
 	snd_assert(hdr != NULL, return NULL);
 	snd_assert(size > 0, return NULL);
+	if (snd_BUG_ON(!hdr || size <= 0))
+		return NULL;
 
 	/* word alignment */
 	units = size;
@@ -162,6 +167,8 @@ __snd_util_mem_free(struct snd_util_memhdr *hdr, struct snd_util_memblk *blk)
 int snd_util_mem_free(struct snd_util_memhdr *hdr, struct snd_util_memblk *blk)
 {
 	snd_assert(hdr && blk, return -EINVAL);
+	if (snd_BUG_ON(!hdr || !blk))
+		return -EINVAL;
 
 	mutex_lock(&hdr->block_mutex);
 	__snd_util_mem_free(hdr, blk);

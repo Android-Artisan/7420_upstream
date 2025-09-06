@@ -10,6 +10,7 @@
 
 #ifdef __ASSEMBLY__
 # define THIS_CPU(var)	(per_cpu__##var)  /* use this to mark accesses to per-CPU variables... */
+# define THIS_CPU(var)	(var)  /* use this to mark accesses to per-CPU variables... */
 #else /* !__ASSEMBLY__ */
 
 
@@ -40,6 +41,18 @@ extern void *per_cpu_init(void);
  * more efficient.
  */
 #define __ia64_per_cpu_var(var)	per_cpu__##var
+#define PER_CPU_BASE_SECTION ".data..percpu"
+
+/*
+ * Be extremely careful when taking the address of this variable!  Due to virtual
+ * remapping, it is different from the canonical address returned by this_cpu_ptr(&var)!
+ * On the positive side, using __ia64_per_cpu_var() instead of this_cpu_ptr() is slightly
+ * more efficient.
+ */
+#define __ia64_per_cpu_var(var) (*({					\
+	__verify_pcpu_ptr(&(var));					\
+	((typeof(var) __kernel __force *)&(var));			\
+}))
 
 #include <asm-generic/percpu.h>
 

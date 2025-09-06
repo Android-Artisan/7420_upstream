@@ -19,6 +19,10 @@
 #include <linux/module.h>
 #include <asm/sh_mobile_lcdc.h>
 #include <asm/migor.h>
+#include <linux/gpio.h>
+#include <video/sh_mobile_lcdc.h>
+#include <cpu/sh7722.h>
+#include <mach/migor.h>
 
 /* LCD Module is a PH240320T according to board schematics. This module
  * is made up of a 240x320 LCD hooked up to a R61505U (or HX8347-A01?)
@@ -33,6 +37,9 @@ static void reset_lcd_module(void)
 	ctrl_outb(ctrl_inb(PORT_PHDR) & ~0x04, PORT_PHDR);
 	mdelay(2);
 	ctrl_outb(ctrl_inb(PORT_PHDR) | 0x04, PORT_PHDR);
+	gpio_set_value(GPIO_PTH2, 0);
+	mdelay(2);
+	gpio_set_value(GPIO_PTH2, 1);
 	mdelay(1);
 }
 
@@ -113,6 +120,7 @@ static const unsigned short magic3_data[] = {
 
 int migor_lcd_qvga_setup(void *board_data, void *sohandle,
 			 struct sh_mobile_lcdc_sys_bus_ops *so)
+int migor_lcd_qvga_setup(void *sohandle, struct sh_mobile_lcdc_sys_bus_ops *so)
 {
 	unsigned long xres = 320;
 	unsigned long yres = 240;

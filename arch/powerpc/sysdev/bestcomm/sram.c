@@ -30,9 +30,7 @@ struct bcom_sram *bcom_sram = NULL;
 EXPORT_SYMBOL_GPL(bcom_sram);	/* needed for inline functions */
 
 
-/* ======================================================================== */
 /* Public API                                                               */
-/* ======================================================================== */
 /* DO NOT USE in interrupts, if needed in irq handler, we should use the
    _irqsave version of the spin_locks */
 

@@ -20,6 +20,11 @@ LDSCRIPT= -L$(srctree)/$(src) -Tromscript.normal
 
 HEAD_DEFINES := -D_kernel_start=0x$(KERNEL_START) \
 		-D_kernel_entry=0x$(KERNEL_ENTRY) \
+
+LDSCRIPT= -L$(srctree)/$(src) -Tromscript.normal
+
+HEAD_DEFINES := -D_kernel_start=$(VMLINUX_LOAD_ADDRESS) \
+		-D_kernel_entry=$(VMLINUX_ENTRY_ADDRESS) \
 		-D VERSION="\"$(Version)\"" \
 		-D TIMESTAMP=$(shell date +%s)
 
@@ -29,6 +34,7 @@ $(obj)/head.o: $(obj)/head.S $(KERNEL_IMAGE)
 OBJECTS = head.o kImage.o
 
 rom.sw:	$(obj)/rom.sw
+rom.sw: $(obj)/rom.sw
 rom.bin:	$(obj)/rom.bin
 
 $(obj)/rom.sw:	$(obj)/rom.bin

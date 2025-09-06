@@ -48,6 +48,11 @@ struct termio {
 /* ioctl (fd, TIOCSERGETLSR, &result) where result may be as below */
 
 #ifdef __KERNEL__
+#ifndef _S390_TERMIOS_H
+#define _S390_TERMIOS_H
+
+#include <uapi/asm/termios.h>
+
 
 /*	intr=^C		quit=^\		erase=del	kill=^U
 	eof=^D		vtime=\0	vmin=\1		sxtc=\0
@@ -63,5 +68,6 @@ struct termio {
 #include <asm-generic/termios.h>
 
 #endif	/* __KERNEL__ */
+#include <asm-generic/termios-base.h>
 
 #endif	/* _S390_TERMIOS_H */

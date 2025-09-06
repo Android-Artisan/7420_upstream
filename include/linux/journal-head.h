@@ -4,6 +4,7 @@
  * buffer_head fields for JBD
  *
  * 27 May 2001 Andrew Morton <akpm@digeo.com>
+ * 27 May 2001 Andrew Morton
  *	Created - pulled out of fs.h
  */
 
@@ -12,6 +13,8 @@
 
 typedef unsigned int		tid_t;		/* Unique transaction ID */
 typedef struct transaction_s	transaction_t;	/* Compound transaction type */
+
+
 struct buffer_head;
 
 struct journal_head {
@@ -28,6 +31,10 @@ struct journal_head {
 
 	/*
 	 * Journalling list for this buffer [jbd_lock_bh_state()]
+	 * NOTE: We *cannot* combine this with b_modified into a bitfield
+	 * as gcc would then (which the C standard allows but which is
+	 * very unuseful) make 64-bit accesses to the bitfield and clobber
+	 * b_jcount if its update races with bitfield modification.
 	 */
 	unsigned b_jlist;
 
@@ -57,6 +64,8 @@ struct journal_head {
 	 * transaction (if there is one).  Only applies to buffers on a
 	 * transaction's data or metadata journaling list.
 	 * [j_list_lock] [jbd_lock_bh_state()]
+	 * Either of these locks is enough for reading, both are needed for
+	 * changes.
 	 */
 	transaction_t *b_transaction;
 
@@ -87,6 +96,12 @@ struct journal_head {
 	 * [j_list_lock]
 	 */
 	struct journal_head *b_cpnext, *b_cpprev;
+
+	/* Trigger type */
+	struct jbd2_buffer_trigger_type *b_triggers;
+
+	/* Trigger type for the committing transaction's frozen data */
+	struct jbd2_buffer_trigger_type *b_frozen_triggers;
 };
 
 #endif		/* JOURNAL_HEAD_H_INCLUDED */

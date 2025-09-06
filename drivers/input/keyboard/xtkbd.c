@@ -181,3 +181,4 @@ static void __exit xtkbd_exit(void)
 
 module_init(xtkbd_init);
 module_exit(xtkbd_exit);
+module_serio_driver(xtkbd_drv);

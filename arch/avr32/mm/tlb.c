@@ -102,6 +102,7 @@ static void update_dtlb(unsigned long address, pte_t pte)
 
 void update_mmu_cache(struct vm_area_struct *vma,
 		      unsigned long address, pte_t pte)
+		      unsigned long address, pte_t *ptep)
 {
 	unsigned long flags;
 
@@ -111,6 +112,7 @@ void update_mmu_cache(struct vm_area_struct *vma,
 
 	local_irq_save(flags);
 	update_dtlb(address, pte);
+	update_dtlb(address, *ptep);
 	local_irq_restore(flags);
 }
 

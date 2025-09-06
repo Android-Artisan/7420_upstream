@@ -287,11 +287,9 @@ static int pccard_get_status(struct pcmcia_socket *s,
 	return CS_SUCCESS;
 } /* pccard_get_status */
 
-/*======================================================================
 
     These manage a ring buffer of events pending for one user process
 
-======================================================================*/
 
 
 static int queue_empty(user_info_t *user)
@@ -322,7 +320,6 @@ void handle_event(struct pcmcia_socket *s, event_t event)
 }
 
 
-/*======================================================================
 
     bind_request() and bind_device() are merged by now. Register_client()
     is called right at the end of bind_request(), during the driver's
@@ -343,7 +340,6 @@ void handle_event(struct pcmcia_socket *s, event_t event)
     to a socket with bind_device() -- in fact, bind_device()
     allocates the client structure that will be used.
 
-======================================================================*/
 
 static int bind_request(struct pcmcia_socket *s, bind_info_t *bind_info)
 {
@@ -603,7 +599,6 @@ out:
     return ret;
 } /* ds_open */
 
-/*====================================================================*/
 
 static int ds_release(struct inode *inode, struct file *file)
 {
@@ -635,7 +630,6 @@ out:
     return 0;
 } /* ds_release */
 
-/*====================================================================*/
 
 static ssize_t ds_read(struct file *file, char __user *buf,
 		       size_t count, loff_t *ppos)
@@ -664,7 +658,6 @@ static ssize_t ds_read(struct file *file, char __user *buf,
     return ret;
 } /* ds_read */
 
-/*====================================================================*/
 
 static ssize_t ds_write(struct file *file, const char __user *buf,
 			size_t count, loff_t *ppos)
@@ -679,7 +672,6 @@ static ssize_t ds_write(struct file *file, const char __user *buf,
     return -EIO;
 } /* ds_write */
 
-/*====================================================================*/
 
 /* No kernel lock - fine */
 static u_int ds_poll(struct file *file, poll_table *wait)
@@ -703,7 +695,6 @@ static u_int ds_poll(struct file *file, poll_table *wait)
     return 0;
 } /* ds_poll */
 
-/*====================================================================*/
 
 static int ds_ioctl(struct inode * inode, struct file * file,
 		    u_int cmd, u_long arg)
@@ -920,7 +911,6 @@ free_out:
     return err;
 } /* ds_ioctl */
 
-/*====================================================================*/
 
 static const struct file_operations ds_fops = {
 	.owner		= THIS_MODULE,

@@ -1,7 +1,6 @@
 $Id: pvr2fb.txt,v 1.1 2001/05/24 05:09:16 mrbrown Exp $
 
 What is pvr2fb?
-===============
 
 This is a driver for PowerVR 2 based graphics frame buffers, such as the
 one found in the Dreamcast.
@@ -18,7 +17,6 @@ Disadvantages:
  * Driver is largely untested on non-Dreamcast systems.
 
 Configuration
-=============
 
 You can pass kernel command line options to pvr2fb with
 `video=pvr2fb:option1,option2:value2,option3' (multiple options should be

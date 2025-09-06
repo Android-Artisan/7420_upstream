@@ -9,6 +9,7 @@
 #include <linux/list.h>
 #include <linux/device.h>
 #include <linux/module.h>
+#include <linux/mutex.h>
 #include <linux/init.h>
 #include <linux/string.h>
 #include <linux/slab.h>
@@ -20,6 +21,7 @@
 static LIST_HEAD(pnp_protocols);
 LIST_HEAD(pnp_global);
 DEFINE_SPINLOCK(pnp_lock);
+DEFINE_MUTEX(pnp_lock);
 
 /*
  * ACPI or PNPBIOS should tell us about all platform devices, so we can
@@ -41,6 +43,13 @@ void *pnp_alloc(long size)
 	return result;
 }
 
+static void pnp_remove_protocol(struct pnp_protocol *protocol)
+{
+	mutex_lock(&pnp_lock);
+	list_del(&protocol->protocol_list);
+	mutex_unlock(&pnp_lock);
+}
+
 /**
  * pnp_protocol_register - adds a pnp protocol to the pnp layer
  * @protocol: pointer to the corresponding pnp_protocol structure
@@ -51,11 +60,15 @@ int pnp_register_protocol(struct pnp_protocol *protocol)
 {
 	int nodenum;
 	struct list_head *pos;
+	struct list_head *pos;
+	int nodenum, ret;
 
 	INIT_LIST_HEAD(&protocol->devices);
 	INIT_LIST_HEAD(&protocol->cards);
 	nodenum = 0;
 	spin_lock(&pnp_lock);
+
+	mutex_lock(&pnp_lock);
 
 	/* assign the lowest unused number */
 	list_for_each(pos, &pnp_protocols) {
@@ -72,6 +85,18 @@ int pnp_register_protocol(struct pnp_protocol *protocol)
 	protocol->number = nodenum;
 	sprintf(protocol->dev.bus_id, "pnp%d", nodenum);
 	return device_register(&protocol->dev);
+	protocol->number = nodenum;
+	dev_set_name(&protocol->dev, "pnp%d", nodenum);
+
+	list_add_tail(&protocol->protocol_list, &pnp_protocols);
+
+	mutex_unlock(&pnp_lock);
+
+	ret = device_register(&protocol->dev);
+	if (ret)
+		pnp_remove_protocol(protocol);
+
+	return ret;
 }
 
 /**
@@ -83,6 +108,7 @@ void pnp_unregister_protocol(struct pnp_protocol *protocol)
 	spin_lock(&pnp_lock);
 	list_del(&protocol->protocol_list);
 	spin_unlock(&pnp_lock);
+	pnp_remove_protocol(protocol);
 	device_unregister(&protocol->dev);
 }
 
@@ -125,6 +151,8 @@ static void pnp_release_device(struct device *dmdev)
 }
 
 struct pnp_dev *pnp_alloc_dev(struct pnp_protocol *protocol, int id, char *pnpid)
+struct pnp_dev *pnp_alloc_dev(struct pnp_protocol *protocol, int id,
+			      const char *pnpid)
 {
 	struct pnp_dev *dev;
 	struct pnp_id *dev_id;
@@ -138,6 +166,7 @@ struct pnp_dev *pnp_alloc_dev(struct pnp_protocol *protocol, int id, char *pnpid
 	dev->protocol = protocol;
 	dev->number = id;
 	dev->dma_mask = DMA_24BIT_MASK;
+	dev->dma_mask = DMA_BIT_MASK(24);
 
 	dev->dev.parent = &dev->protocol->dev;
 	dev->dev.bus = &pnp_bus_type;
@@ -147,6 +176,7 @@ struct pnp_dev *pnp_alloc_dev(struct pnp_protocol *protocol, int id, char *pnpid
 
 	sprintf(dev->dev.bus_id, "%02x:%02x", dev->protocol->number,
 		dev->number);
+	dev_set_name(&dev->dev, "%02x:%02x", dev->protocol->number, dev->number);
 
 	dev_id = pnp_add_id(dev, pnpid);
 	if (!dev_id) {
@@ -154,7 +184,17 @@ struct pnp_dev *pnp_alloc_dev(struct pnp_protocol *protocol, int id, char *pnpid
 		return NULL;
 	}
 
+	dev_set_name(&dev->dev, "%02x:%02x", dev->protocol->number, dev->number);
+
 	return dev;
+}
+
+static void pnp_delist_device(struct pnp_dev *dev)
+{
+	mutex_lock(&pnp_lock);
+	list_del(&dev->global_list);
+	list_del(&dev->protocol_list);
+	mutex_unlock(&pnp_lock);
 }
 
 int __pnp_add_device(struct pnp_dev *dev)
@@ -174,6 +214,22 @@ int __pnp_add_device(struct pnp_dev *dev)
 
 	pnp_interface_attach_device(dev);
 	return 0;
+
+	mutex_lock(&pnp_lock);
+
+	list_add_tail(&dev->global_list, &pnp_global);
+	list_add_tail(&dev->protocol_list, &dev->protocol->devices);
+
+	mutex_unlock(&pnp_lock);
+
+	ret = device_register(&dev->dev);
+	if (ret)
+		pnp_delist_device(dev);
+	else if (dev->protocol->can_wakeup)
+		device_set_wakeup_capable(&dev->dev,
+				dev->protocol->can_wakeup(dev));
+
+	return ret;
 }
 
 /*
@@ -185,6 +241,9 @@ int __pnp_add_device(struct pnp_dev *dev)
 int pnp_add_device(struct pnp_dev *dev)
 {
 	int ret;
+	char buf[128];
+	int len = 0;
+	struct pnp_id *id;
 
 	if (dev->card)
 		return -EINVAL;
@@ -204,6 +263,13 @@ int pnp_add_device(struct pnp_dev *dev)
 		printk(" (%s)\n", dev->active ? "active" : "disabled");
 	}
 #endif
+	buf[0] = '\0';
+	for (id = dev->id; id; id = id->next)
+		len += scnprintf(buf + len, sizeof(buf) - len, " %s", id->id);
+
+	dev_printk(KERN_DEBUG, &dev->dev, "%s device, IDs%s (%s)\n",
+		   dev->protocol->name, buf,
+		   dev->active ? "active" : "disabled");
 	return 0;
 }
 
@@ -213,6 +279,7 @@ void __pnp_remove_device(struct pnp_dev *dev)
 	list_del(&dev->global_list);
 	list_del(&dev->protocol_list);
 	spin_unlock(&pnp_lock);
+	pnp_delist_device(dev);
 	device_unregister(&dev->dev);
 }
 
@@ -223,3 +290,9 @@ static int __init pnp_init(void)
 }
 
 subsys_initcall(pnp_init);
+
+int pnp_debug;
+
+#if defined(CONFIG_PNP_DEBUG_MESSAGES)
+module_param_named(debug, pnp_debug, int, 0644);
+#endif

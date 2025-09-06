@@ -1,5 +1,6 @@
 Documentation/networking/vortex.txt
 Andrew Morton <andrewm@uow.edu.au>
+Andrew Morton
 30 April 2000
 
 
@@ -12,6 +13,7 @@ Don is no longer the prime maintainer of this version of the driver.
 Please report problems to one or more of:
 
   Andrew Morton <akpm@osdl.org>
+  Andrew Morton
   Netdev mailing list <netdev@vger.kernel.org>
   Linux kernel mailing list <linux-kernel@vger.kernel.org>
 
@@ -64,11 +66,12 @@ This driver supports the following hardware:
 	3c920B-EMB-WNM Tornado
 
 Module parameters
-=================
 
 There are several parameters which may be provided to the driver when
 its module is loaded.  These are usually placed in /etc/modprobe.conf
 (/etc/modules.conf in 2.4).  Example:
+its module is loaded.  These are usually placed in /etc/modprobe.d/*.conf
+configuration files.  Example:
 
 options 3c59x debug=3 rx_copybreak=300
 
@@ -179,6 +182,7 @@ max_interrupt_work=N
   The driver's interrupt service routine can handle many receive and
   transmit packets in a single invocation.  It does this in a loop. 
   The value of max_interrupt_work governs how mnay times the interrupt
+  The value of max_interrupt_work governs how many times the interrupt
   service routine will loop.  The default value is 32 loops.  If this
   is exceeded the interrupt service routine gives up and generates a
   warning message "eth0: Too much work in interrupt".
@@ -365,6 +369,7 @@ steps you should take:
 
    You need to generate a report.  Typically this is an email to the
    maintainer and/or linux-net@vger.kernel.org.  The maintainer's
+   maintainer and/or netdev@vger.kernel.org.  The maintainer's
    email address will be in the driver source or in the MAINTAINERS file.
 
 - The contents of your report will vary a lot depending upon the
@@ -431,6 +436,7 @@ steps you should take:
 
          a) modprobe driver debug=7
          b) In /etc/modprobe.conf (or /etc/modules.conf for 2.4):
+         b) In /etc/modprobe.d/driver.conf:
             options driver debug=7
 
       2) Recreate the problem with the higher debug level,

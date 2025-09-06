@@ -20,6 +20,9 @@
 
 #include <linux/kernel.h>
 
+#include <linux/platform_device.h>
+
+#include <asm/firmware.h>
 #include <asm/rtc.h>
 #include <asm/lv1call.h>
 #include <asm/ps3.h>
@@ -94,3 +97,16 @@ unsigned long __init ps3_get_boot_time(void)
 {
 	return read_rtc() + ps3_os_area_get_rtc_diff();
 }
+
+static int __init ps3_rtc_init(void)
+{
+	struct platform_device *pdev;
+
+	if (!firmware_has_feature(FW_FEATURE_PS3_LV1))
+		return -ENODEV;
+
+	pdev = platform_device_register_simple("rtc-ps3", -1, NULL, 0);
+
+	return PTR_ERR_OR_ZERO(pdev);
+}
+device_initcall(ps3_rtc_init);

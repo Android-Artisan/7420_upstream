@@ -4,6 +4,7 @@
  * Personal server (Skiff) machine fixup
  */
 #include <linux/init.h>
+#include <linux/spinlock.h>
 
 #include <asm/hardware/dec21285.h>
 #include <asm/mach-types.h>
@@ -20,5 +21,10 @@ MACHINE_START(PERSONAL_SERVER, "Compaq-PersonalServer")
 	.map_io		= footbridge_map_io,
 	.init_irq	= footbridge_init_irq,
 	.timer		= &footbridge_timer,
+	.atag_offset	= 0x100,
+	.map_io		= footbridge_map_io,
+	.init_irq	= footbridge_init_irq,
+	.init_time	= footbridge_timer_init,
+	.restart	= footbridge_restart,
 MACHINE_END
 

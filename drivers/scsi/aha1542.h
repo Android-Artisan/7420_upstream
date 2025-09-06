@@ -30,6 +30,8 @@
  * *** empty log message ***
  *
  */
+#ifndef _AHA1542_H_
+#define _AHA1542_H_
 
 #include <linux/types.h>
 
@@ -59,6 +61,30 @@
 #define SRST	0x40		/* Soft Reset */
 #define IRST	0x20		/* Interrupt Reset */
 #define SCRST	0x10		/* SCSI Bus Reset */
+#define STST	BIT(7)		/* Self Test in Progress */
+#define DIAGF	BIT(6)		/* Internal Diagnostic Failure */
+#define INIT	BIT(5)		/* Mailbox Initialization Required */
+#define IDLE	BIT(4)		/* SCSI Host Adapter Idle */
+#define CDF	BIT(3)		/* Command/Data Out Port Full */
+#define DF	BIT(2)		/* Data In Port Full */
+/* BIT(1) is reserved */
+#define INVDCMD	BIT(0)		/* Invalid H A Command */
+#define STATMASK (STST | DIAGF | INIT | IDLE | CDF | DF | INVDCMD)
+
+#define INTRFLAGS(base) (STATUS(base)+2)
+#define ANYINTR	BIT(7)		/* Any Interrupt */
+#define SCRD	BIT(3)		/* SCSI Reset Detected */
+#define HACC	BIT(2)		/* HA Command Complete */
+#define MBOA	BIT(1)		/* MBO Empty */
+#define MBIF	BIT(0)		/* MBI Full */
+#define INTRMASK (ANYINTR | SCRD | HACC | MBOA | MBIF)
+
+/* WRITE */
+#define CONTROL(base) STATUS(base)
+#define HRST	BIT(7)		/* Hard Reset */
+#define SRST	BIT(6)		/* Soft Reset */
+#define IRST	BIT(5)		/* Interrupt Reset */
+#define SCRST	BIT(4)		/* SCSI Bus Reset */
 
 /* READ/WRITE */
 #define DATA(base) (STATUS(base)+1)
@@ -82,12 +108,16 @@
 struct mailbox {
   unchar status;		/* Command/Status */
   unchar ccbptr[3];		/* msb, .., lsb */
+	u8 status;	/* Command/Status */
+	u8 ccbptr[3];	/* msb, .., lsb */
 };
 
 /* This is used with scatter-gather */
 struct chain {
   unchar datalen[3];		/* Size of this part of chain */
   unchar dataptr[3];		/* Location of data */
+	u8 datalen[3];	/* Size of this part of chain */
+	u8 dataptr[3];	/* Location of data */
 };
 
 /* These belong in scsi.h also */
@@ -148,3 +178,26 @@ static int aha1542_biosparam(struct scsi_device *, struct block_device *,
 #define AHA1542_CMDLUN 1
 
 #endif
+struct ccb {		/* Command Control Block 5.3 */
+	u8 op;		/* Command Control Block Operation Code */
+	u8 idlun;	/* op=0,2:Target Id, op=1:Initiator Id */
+			/* Outbound data transfer, length is checked*/
+			/* Inbound data transfer, length is checked */
+			/* Logical Unit Number */
+	u8 cdblen;	/* SCSI Command Length */
+	u8 rsalen;	/* Request Sense Allocation Length/Disable */
+	u8 datalen[3];	/* Data Length (msb, .., lsb) */
+	u8 dataptr[3];	/* Data Pointer */
+	u8 linkptr[3];	/* Link Pointer */
+	u8 commlinkid;	/* Command Linking Identifier */
+	u8 hastat;	/* Host Adapter Status (HASTAT) */
+	u8 tarstat;	/* Target Device Status */
+	u8 reserved[2];
+	u8 cdb[MAX_CDB+MAX_SENSE];	/* SCSI Command Descriptor Block */
+					/* REQUEST SENSE */
+};
+
+#define AHA1542_REGION_SIZE 4
+#define AHA1542_MAILBOXES 8
+
+#endif /* _AHA1542_H_ */

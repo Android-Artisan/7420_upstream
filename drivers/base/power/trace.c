@@ -8,6 +8,8 @@
  */
 
 #include <linux/resume-trace.h>
+#include <linux/pm-trace.h>
+#include <linux/export.h>
 #include <linux/rtc.h>
 
 #include <asm/rtc.h>
@@ -113,6 +115,7 @@ static unsigned int read_magic_time(void)
 
 	get_rtc_time(&time);
 	printk("Time: %2d:%02d:%02d  Date: %02d/%02d/%02d\n",
+	pr_info("RTC time: %2d:%02d:%02d, date: %02d/%02d/%02d\n",
 		time.tm_hour, time.tm_min, time.tm_sec,
 		time.tm_mon + 1, time.tm_mday, time.tm_year % 100);
 	val = time.tm_year;				/* 100 years */
@@ -141,6 +144,7 @@ static unsigned int hash_string(unsigned int seed, const char *data, unsigned in
 void set_trace_device(struct device *dev)
 {
 	dev_hash_value = hash_string(DEVSEED, dev->bus_id, DEVHASH);
+	dev_hash_value = hash_string(DEVSEED, dev_name(dev), DEVHASH);
 }
 EXPORT_SYMBOL(set_trace_device);
 
@@ -154,6 +158,7 @@ EXPORT_SYMBOL(set_trace_device);
  * the match is valid).
  */
 void generate_resume_trace(const void *tracedata, unsigned int user)
+void generate_pm_trace(const void *tracedata, unsigned int user)
 {
 	unsigned short lineno = *(unsigned short *)tracedata;
 	const char *file = *(const char **)(tracedata + 2);
@@ -164,15 +169,16 @@ void generate_resume_trace(const void *tracedata, unsigned int user)
 	set_magic_time(user_hash_value, file_hash_value, dev_hash_value);
 }
 EXPORT_SYMBOL(generate_resume_trace);
+EXPORT_SYMBOL(generate_pm_trace);
 
-extern char __tracedata_start, __tracedata_end;
+extern char __tracedata_start[], __tracedata_end[];
 static int show_file_hash(unsigned int value)
 {
 	int match;
 	char *tracedata;
 
 	match = 0;
-	for (tracedata = &__tracedata_start ; tracedata < &__tracedata_end ;
+	for (tracedata = __tracedata_start ; tracedata < __tracedata_end ;
 			tracedata += 2 + sizeof(unsigned long)) {
 		unsigned short lineno = *(unsigned short *)tracedata;
 		const char *file = *(const char **)(tracedata + 2);
@@ -180,6 +186,7 @@ static int show_file_hash(unsigned int value)
 		if (hash != value)
 			continue;
 		printk("  hash matches %s:%u\n", file, lineno);
+		pr_info("  hash matches %s:%u\n", file, lineno);
 		match++;
 	}
 	return match;
@@ -193,16 +200,55 @@ static int show_dev_hash(unsigned int value)
 	while (entry != &dpm_list) {
 		struct device * dev = to_device(entry);
 		unsigned int hash = hash_string(DEVSEED, dev->bus_id, DEVHASH);
+	struct list_head *entry;
+
+	device_pm_lock();
+	entry = dpm_list.prev;
+	while (entry != &dpm_list) {
+		struct device * dev = to_device(entry);
+		unsigned int hash = hash_string(DEVSEED, dev_name(dev), DEVHASH);
 		if (hash == value) {
 			dev_info(dev, "hash matches\n");
 			match++;
 		}
 		entry = entry->prev;
 	}
+	device_pm_unlock();
 	return match;
 }
 
 static unsigned int hash_value_early_read;
+
+int show_trace_dev_match(char *buf, size_t size)
+{
+	unsigned int value = hash_value_early_read / (USERHASH * FILEHASH);
+	int ret = 0;
+	struct list_head *entry;
+
+	/*
+	 * It's possible that multiple devices will match the hash and we can't
+	 * tell which is the culprit, so it's best to output them all.
+	 */
+	device_pm_lock();
+	entry = dpm_list.prev;
+	while (size && entry != &dpm_list) {
+		struct device *dev = to_device(entry);
+		unsigned int hash = hash_string(DEVSEED, dev_name(dev),
+						DEVHASH);
+		if (hash == value) {
+			int len = snprintf(buf, size, "%s\n",
+					    dev_driver_string(dev));
+			if (len > size)
+				len = size;
+			buf += len;
+			ret += len;
+			size -= len;
+		}
+		entry = entry->prev;
+	}
+	device_pm_unlock();
+	return ret;
+}
 
 static int early_resume_init(void)
 {
@@ -222,6 +268,7 @@ static int late_resume_init(void)
 	dev = val /* % DEVHASH */;
 
 	printk("  Magic number: %d:%d:%d\n", user, file, dev);
+	pr_info("  Magic number: %d:%d:%d\n", user, file, dev);
 	show_file_hash(file);
 	show_dev_hash(dev);
 	return 0;

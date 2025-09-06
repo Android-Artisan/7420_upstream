@@ -7,6 +7,8 @@
 #include <linux/stringify.h>
 #include <asm/asm-compat.h>
 #include <asm/processor.h>
+#include <asm/ppc-opcode.h>
+#include <asm/firmware.h>
 
 #ifndef __ASSEMBLY__
 #error __FILE__ should only be used in assembler files
@@ -35,6 +37,15 @@ BEGIN_FTR_SECTION;							\
 END_FTR_SECTION_IFCLR(CPU_FTR_PURR);					\
 	ld	rb,PACA_STARTPURR(r13);					\
 	std	ra,PACA_STARTPURR(r13);					\
+#ifndef CONFIG_VIRT_CPU_ACCOUNTING_NATIVE
+#define ACCOUNT_CPU_USER_ENTRY(ra, rb)
+#define ACCOUNT_CPU_USER_EXIT(ra, rb)
+#define ACCOUNT_STOLEN_TIME
+#else
+#define ACCOUNT_CPU_USER_ENTRY(ra, rb)					\
+	MFTB(ra);			/* get timebase */		\
+	ld	rb,PACA_STARTTIME_USER(r13);				\
+	std	ra,PACA_STARTTIME(r13);					\
 	subf	rb,rb,ra;		/* subtract start value */	\
 	ld	ra,PACA_USER_TIME(r13);					\
 	add	ra,ra,rb;		/* add on to user time */	\
@@ -55,6 +66,39 @@ END_FTR_SECTION_IFCLR(CPU_FTR_PURR);					\
 	add	ra,ra,rb;		/* add on to user time */	\
 	std	ra,PACA_SYSTEM_TIME(r13);
 #endif
+
+#define ACCOUNT_CPU_USER_EXIT(ra, rb)					\
+	MFTB(ra);			/* get timebase */		\
+	ld	rb,PACA_STARTTIME(r13);					\
+	std	ra,PACA_STARTTIME_USER(r13);				\
+	subf	rb,rb,ra;		/* subtract start value */	\
+	ld	ra,PACA_SYSTEM_TIME(r13);				\
+	add	ra,ra,rb;		/* add on to system time */	\
+	std	ra,PACA_SYSTEM_TIME(r13)
+
+#ifdef CONFIG_PPC_SPLPAR
+#define ACCOUNT_STOLEN_TIME						\
+BEGIN_FW_FTR_SECTION;							\
+	beq	33f;							\
+	/* from user - see if there are any DTL entries to process */	\
+	ld	r10,PACALPPACAPTR(r13);	/* get ptr to VPA */		\
+	ld	r11,PACA_DTL_RIDX(r13);	/* get log read index */	\
+	addi	r10,r10,LPPACA_DTLIDX;					\
+	LDX_BE	r10,0,r10;		/* get log write index */	\
+	cmpd	cr1,r11,r10;						\
+	beq+	cr1,33f;						\
+	bl	accumulate_stolen_time;				\
+	ld	r12,_MSR(r1);						\
+	andi.	r10,r12,MSR_PR;		/* Restore cr0 (coming from user) */ \
+33:									\
+END_FW_FTR_SECTION_IFSET(FW_FEATURE_SPLPAR)
+
+#else  /* CONFIG_PPC_SPLPAR */
+#define ACCOUNT_STOLEN_TIME
+
+#endif /* CONFIG_PPC_SPLPAR */
+
+#endif /* CONFIG_VIRT_CPU_ACCOUNTING_NATIVE */
 
 /*
  * Macros for storing registers into and loading registers from
@@ -94,12 +138,14 @@ END_FTR_SECTION_IFCLR(CPU_FTR_PURR);					\
 #define REST_10GPRS(n, base)	REST_8GPRS(n, base); REST_2GPRS(n+8, base)
 
 #define SAVE_FPR(n, base)	stfd	n,THREAD_FPR0+8*TS_FPRWIDTH*(n)(base)
+#define SAVE_FPR(n, base)	stfd	n,8*TS_FPRWIDTH*(n)(base)
 #define SAVE_2FPRS(n, base)	SAVE_FPR(n, base); SAVE_FPR(n+1, base)
 #define SAVE_4FPRS(n, base)	SAVE_2FPRS(n, base); SAVE_2FPRS(n+2, base)
 #define SAVE_8FPRS(n, base)	SAVE_4FPRS(n, base); SAVE_4FPRS(n+4, base)
 #define SAVE_16FPRS(n, base)	SAVE_8FPRS(n, base); SAVE_8FPRS(n+8, base)
 #define SAVE_32FPRS(n, base)	SAVE_16FPRS(n, base); SAVE_16FPRS(n+16, base)
 #define REST_FPR(n, base)	lfd	n,THREAD_FPR0+8*TS_FPRWIDTH*(n)(base)
+#define REST_FPR(n, base)	lfd	n,8*TS_FPRWIDTH*(n)(base)
 #define REST_2FPRS(n, base)	REST_FPR(n, base); REST_FPR(n+1, base)
 #define REST_4FPRS(n, base)	REST_2FPRS(n, base); REST_2FPRS(n+2, base)
 #define REST_8FPRS(n, base)	REST_4FPRS(n, base); REST_4FPRS(n+4, base)
@@ -107,12 +153,14 @@ END_FTR_SECTION_IFCLR(CPU_FTR_PURR);					\
 #define REST_32FPRS(n, base)	REST_16FPRS(n, base); REST_16FPRS(n+16, base)
 
 #define SAVE_VR(n,b,base)	li b,THREAD_VR0+(16*(n));  stvx n,b,base
+#define SAVE_VR(n,b,base)	li b,16*(n);  stvx n,base,b
 #define SAVE_2VRS(n,b,base)	SAVE_VR(n,b,base); SAVE_VR(n+1,b,base)
 #define SAVE_4VRS(n,b,base)	SAVE_2VRS(n,b,base); SAVE_2VRS(n+2,b,base)
 #define SAVE_8VRS(n,b,base)	SAVE_4VRS(n,b,base); SAVE_4VRS(n+4,b,base)
 #define SAVE_16VRS(n,b,base)	SAVE_8VRS(n,b,base); SAVE_8VRS(n+8,b,base)
 #define SAVE_32VRS(n,b,base)	SAVE_16VRS(n,b,base); SAVE_16VRS(n+16,b,base)
 #define REST_VR(n,b,base)	li b,THREAD_VR0+(16*(n)); lvx n,b,base
+#define REST_VR(n,b,base)	li b,16*(n); lvx n,base,b
 #define REST_2VRS(n,b,base)	REST_VR(n,b,base); REST_VR(n+1,b,base)
 #define REST_4VRS(n,b,base)	REST_2VRS(n,b,base); REST_2VRS(n+2,b,base)
 #define REST_8VRS(n,b,base)	REST_4VRS(n,b,base); REST_4VRS(n+4,b,base)
@@ -121,12 +169,26 @@ END_FTR_SECTION_IFCLR(CPU_FTR_PURR);					\
 
 /* Save the lower 32 VSRs in the thread VSR region */
 #define SAVE_VSR(n,b,base)	li b,THREAD_VSR0+(16*(n));  STXVD2X(n,b,base)
+#ifdef __BIG_ENDIAN__
+#define STXVD2X_ROT(n,b,base)		STXVD2X(n,b,base)
+#define LXVD2X_ROT(n,b,base)		LXVD2X(n,b,base)
+#else
+#define STXVD2X_ROT(n,b,base)		XXSWAPD(n,n);		\
+					STXVD2X(n,b,base);	\
+					XXSWAPD(n,n)
+
+#define LXVD2X_ROT(n,b,base)		LXVD2X(n,b,base);	\
+					XXSWAPD(n,n)
+#endif
+/* Save the lower 32 VSRs in the thread VSR region */
+#define SAVE_VSR(n,b,base)	li b,16*(n);  STXVD2X_ROT(n,R##base,R##b)
 #define SAVE_2VSRS(n,b,base)	SAVE_VSR(n,b,base); SAVE_VSR(n+1,b,base)
 #define SAVE_4VSRS(n,b,base)	SAVE_2VSRS(n,b,base); SAVE_2VSRS(n+2,b,base)
 #define SAVE_8VSRS(n,b,base)	SAVE_4VSRS(n,b,base); SAVE_4VSRS(n+4,b,base)
 #define SAVE_16VSRS(n,b,base)	SAVE_8VSRS(n,b,base); SAVE_8VSRS(n+8,b,base)
 #define SAVE_32VSRS(n,b,base)	SAVE_16VSRS(n,b,base); SAVE_16VSRS(n+16,b,base)
 #define REST_VSR(n,b,base)	li b,THREAD_VSR0+(16*(n)); LXVD2X(n,b,base)
+#define REST_VSR(n,b,base)	li b,16*(n); LXVD2X_ROT(n,R##base,R##b)
 #define REST_2VSRS(n,b,base)	REST_VSR(n,b,base); REST_VSR(n+1,b,base)
 #define REST_4VSRS(n,b,base)	REST_2VSRS(n,b,base); REST_2VSRS(n+2,b,base)
 #define REST_8VSRS(n,b,base)	REST_4VSRS(n,b,base); REST_4VSRS(n+4,b,base)
@@ -159,6 +221,23 @@ END_FTR_SECTION_IFCLR(CPU_FTR_PURR);					\
 #define REST_16EVRS(n,s,base)	REST_8EVRS(n,s,base); REST_8EVRS(n+8,s,base)
 #define REST_32EVRS(n,s,base)	REST_16EVRS(n,s,base); REST_16EVRS(n+16,s,base)
 
+/*
+ * b = base register for addressing, o = base offset from register of 1st EVR
+ * n = first EVR, s = scratch
+ */
+#define SAVE_EVR(n,s,b,o)	evmergehi s,s,n; stw s,o+4*(n)(b)
+#define SAVE_2EVRS(n,s,b,o)	SAVE_EVR(n,s,b,o); SAVE_EVR(n+1,s,b,o)
+#define SAVE_4EVRS(n,s,b,o)	SAVE_2EVRS(n,s,b,o); SAVE_2EVRS(n+2,s,b,o)
+#define SAVE_8EVRS(n,s,b,o)	SAVE_4EVRS(n,s,b,o); SAVE_4EVRS(n+4,s,b,o)
+#define SAVE_16EVRS(n,s,b,o)	SAVE_8EVRS(n,s,b,o); SAVE_8EVRS(n+8,s,b,o)
+#define SAVE_32EVRS(n,s,b,o)	SAVE_16EVRS(n,s,b,o); SAVE_16EVRS(n+16,s,b,o)
+#define REST_EVR(n,s,b,o)	lwz s,o+4*(n)(b); evmergelo n,s,n
+#define REST_2EVRS(n,s,b,o)	REST_EVR(n,s,b,o); REST_EVR(n+1,s,b,o)
+#define REST_4EVRS(n,s,b,o)	REST_2EVRS(n,s,b,o); REST_2EVRS(n+2,s,b,o)
+#define REST_8EVRS(n,s,b,o)	REST_4EVRS(n,s,b,o); REST_4EVRS(n+4,s,b,o)
+#define REST_16EVRS(n,s,b,o)	REST_8EVRS(n,s,b,o); REST_8EVRS(n+8,s,b,o)
+#define REST_32EVRS(n,s,b,o)	REST_16EVRS(n,s,b,o); REST_16EVRS(n+16,s,b,o)
+
 /* Macros to adjust thread priority for hardware multithreading */
 #define HMT_VERY_LOW	or	31,31,31	# very low priority
 #define HMT_LOW		or	1,1,1
@@ -171,9 +250,71 @@ END_FTR_SECTION_IFCLR(CPU_FTR_PURR);					\
 #define RFCI		.long 0x4c000066	/* rfci instruction */
 #define RFDI		.long 0x4c00004e	/* rfdi instruction */
 #define RFMCI		.long 0x4c00004c	/* rfmci instruction */
+#define HMT_EXTRA_HIGH	or	7,7,7		# power7 only
+
+#ifdef CONFIG_PPC64
+#define ULONG_SIZE 	8
+#else
+#define ULONG_SIZE	4
+#endif
+#define __VCPU_GPR(n)	(VCPU_GPRS + (n * ULONG_SIZE))
+#define VCPU_GPR(n)	__VCPU_GPR(__REG_##n)
 
 #ifdef __KERNEL__
 #ifdef CONFIG_PPC64
+
+#define STACKFRAMESIZE 256
+#define __STK_REG(i)   (112 + ((i)-14)*8)
+#define STK_REG(i)     __STK_REG(__REG_##i)
+
+#if defined(_CALL_ELF) && _CALL_ELF == 2
+#define STK_GOT		24
+#define __STK_PARAM(i)	(32 + ((i)-3)*8)
+#else
+#define STK_GOT		40
+#define __STK_PARAM(i)	(48 + ((i)-3)*8)
+#endif
+#define STK_PARAM(i)	__STK_PARAM(__REG_##i)
+
+#if defined(_CALL_ELF) && _CALL_ELF == 2
+
+#define _GLOBAL(name) \
+	.section ".text"; \
+	.align 2 ; \
+	.type name,@function; \
+	.globl name; \
+name:
+
+#define _GLOBAL_TOC(name) \
+	.section ".text"; \
+	.align 2 ; \
+	.type name,@function; \
+	.globl name; \
+name: \
+0:	addis r2,r12,(.TOC.-0b)@ha; \
+	addi r2,r2,(.TOC.-0b)@l; \
+	.localentry name,.-name
+
+#define _KPROBE(name) \
+	.section ".kprobes.text","a"; \
+	.align 2 ; \
+	.type name,@function; \
+	.globl name; \
+name:
+
+#define _KPROBE_TOC(name)			\
+	.section ".kprobes.text","a";		\
+	.align 2 ;				\
+	.type name,@function;			\
+	.globl name;				\
+name:						\
+0:	addis r2,r12,(.TOC.-0b)@ha;		\
+	addi r2,r2,(.TOC.-0b)@l;		\
+	.localentry name,.-name
+
+#define DOTSYM(a)	a
+
+#else
 
 #define XGLUE(a,b) a##b
 #define GLUE(a,b) XGLUE(a,b)
@@ -205,6 +346,7 @@ name: \
 	.previous; \
 	.type GLUE(.,name),@function; \
 GLUE(.,name):
+#define _GLOBAL_TOC(name) _GLOBAL(name)
 
 #define _KPROBE(name) \
 	.section ".kprobes.text","a"; \
@@ -243,6 +385,11 @@ name: \
 	.previous; \
 	.type GLUE(.,name),@function; \
 GLUE(.,name):
+#define _KPROBE_TOC(n)	_KPROBE(n)
+
+#define DOTSYM(a)	GLUE(.,a)
+
+#endif
 
 #else /* 32-bit */
 
@@ -255,6 +402,8 @@ n:
 	.stabs __stringify(n:F-1),N_FUN,0,0,n;\
 	.globl n;	\
 n:
+
+#define _GLOBAL_TOC(name) _GLOBAL(name)
 
 #define _KPROBE(n)	\
 	.section ".kprobes.text","a";	\
@@ -269,6 +418,7 @@ n:
  *   using immediate instructions only.  Use this when it's important not
  *   to reference other data (i.e. on ppc64 when the TOC pointer is not
  *   valid).
+ *   valid) and when 'expr' is a constant or absolute address.
  *
  * LOAD_REG_ADDR(rn, name)
  *   Loads the address of label 'name' into register 'rn'.  Use this when
@@ -276,6 +426,11 @@ n:
  *   the whole address in one register (e.g. it's a structure address and
  *   you want to access various offsets within it).  On ppc32 this is
  *   identical to LOAD_REG_IMMEDIATE.
+ *
+ * LOAD_REG_ADDR_PIC(rn, name)
+ *   Loads the address of label 'name' into register 'run'. Use this when
+ *   the kernel doesn't run at the linked or relocated address. Please
+ *   note that this macro will clobber the lr register.
  *
  * LOAD_REG_ADDRBASE(rn, name)
  * ADDROFF(name)
@@ -298,6 +453,29 @@ n:
 #define LOAD_REG_ADDR(reg,name)			\
 	ld	(reg),name@got(r2)
 
+/* Be careful, this will clobber the lr register. */
+#define LOAD_REG_ADDR_PIC(reg, name)		\
+	bl	0f;				\
+0:	mflr	reg;				\
+	addis	reg,reg,(name - 0b)@ha;		\
+	addi	reg,reg,(name - 0b)@l;
+
+#ifdef __powerpc64__
+#ifdef HAVE_AS_ATHIGH
+#define __AS_ATHIGH high
+#else
+#define __AS_ATHIGH h
+#endif
+#define LOAD_REG_IMMEDIATE(reg,expr)		\
+	lis     reg,(expr)@highest;		\
+	ori     reg,reg,(expr)@higher;	\
+	rldicr  reg,reg,32,31;		\
+	oris    reg,reg,(expr)@__AS_ATHIGH;	\
+	ori     reg,reg,(expr)@l;
+
+#define LOAD_REG_ADDR(reg,name)			\
+	ld	reg,name@got(r2)
+
 #define LOAD_REG_ADDRBASE(reg,name)	LOAD_REG_ADDR(reg,name)
 #define ADDROFF(name)			0
 
@@ -313,6 +491,12 @@ n:
 #define LOAD_REG_ADDR(reg,name)		LOAD_REG_IMMEDIATE(reg, name)
 
 #define LOAD_REG_ADDRBASE(reg, name)	lis	(reg),name@ha
+	lis	reg,(expr)@ha;		\
+	addi	reg,reg,(expr)@l;
+
+#define LOAD_REG_ADDR(reg,name)		LOAD_REG_IMMEDIATE(reg, name)
+
+#define LOAD_REG_ADDRBASE(reg, name)	lis	reg,name@ha
 #define ADDROFF(name)			name@l
 
 /* offsets for stack frame layout */
@@ -344,12 +528,19 @@ END_FTR_SECTION_IFSET(CPU_FTR_601)
 #ifdef CONFIG_PPC_CELL
 #define MFTB(dest)			\
 90:	mftb  dest;			\
+#if defined(CONFIG_PPC_CELL) || defined(CONFIG_PPC_FSL_BOOK3E)
+#define MFTB(dest)			\
+90:	mfspr dest, SPRN_TBRL;		\
 BEGIN_FTR_SECTION_NESTED(96);		\
 	cmpwi dest,0;			\
 	beq-  90b;			\
 END_FTR_SECTION_NESTED(CPU_FTR_CELL_TB_BUG, CPU_FTR_CELL_TB_BUG, 96)
 #else
 #define MFTB(dest)			mftb dest
+#elif defined(CONFIG_8xx)
+#define MFTB(dest)			mftb dest
+#else
+#define MFTB(dest)			mfspr dest, SPRN_TBRL
 #endif
 
 #ifndef CONFIG_SMP
@@ -364,6 +555,33 @@ END_FTR_SECTION_IFCLR(CPU_FTR_601)
 #endif
 
 	
+#ifdef CONFIG_PPC64
+#define MTOCRF(FXM, RS)			\
+	BEGIN_FTR_SECTION_NESTED(848);	\
+	mtcrf	(FXM), RS;		\
+	FTR_SECTION_ELSE_NESTED(848);	\
+	mtocrf (FXM), RS;		\
+	ALT_FTR_SECTION_END_NESTED_IFCLR(CPU_FTR_NOEXECUTE, 848)
+
+/*
+ * PPR restore macros used in entry_64.S
+ * Used for P7 or later processors
+ */
+#define HMT_MEDIUM_LOW_HAS_PPR						\
+BEGIN_FTR_SECTION_NESTED(944)						\
+	HMT_MEDIUM_LOW;							\
+END_FTR_SECTION_NESTED(CPU_FTR_HAS_PPR,CPU_FTR_HAS_PPR,944)
+
+#define SET_DEFAULT_THREAD_PPR(ra, rb)					\
+BEGIN_FTR_SECTION_NESTED(945)						\
+	lis	ra,INIT_PPR@highest;	/* default ppr=3 */		\
+	ld	rb,PACACURRENT(r13);					\
+	sldi	ra,ra,32;	/* 11- 13 bits are used for ppr */	\
+	std	ra,TASKTHREADPPR(rb);					\
+END_FTR_SECTION_NESTED(CPU_FTR_HAS_PPR,CPU_FTR_HAS_PPR,945)
+
+#endif
+
 /*
  * This instruction is not implemented on the PPC 603 or 601; however, on
  * the 403GCX and 405GP tlbia IS defined and tlbie is not.
@@ -390,6 +608,26 @@ END_FTR_SECTION_IFCLR(CPU_FTR_601)
 
 
 #if defined(CONFIG_BOOKE)
+/* The following stops all load and store data streams associated with stream
+ * ID (ie. streams created explicitly).  The embedded and server mnemonics for
+ * dcbt are different so we use machine "power4" here explicitly.
+ */
+#define DCBT_STOP_ALL_STREAM_IDS(scratch)	\
+.machine push ;					\
+.machine "power4" ;				\
+       lis     scratch,0x60000000@h;		\
+       dcbt    r0,scratch,0b01010;		\
+.machine pop
+
+/*
+ * toreal/fromreal/tophys/tovirt macros. 32-bit BookE makes them
+ * keep the address intact to be compatible with code shared with
+ * 32-bit classic.
+ *
+ * On the other hand, I find it useful to have them behave as expected
+ * by their name (ie always do the addition) on 64-bit BookE
+ */
+#if defined(CONFIG_BOOKE) && !defined(CONFIG_PPC64)
 #define toreal(rd)
 #define fromreal(rd)
 
@@ -426,6 +664,7 @@ END_FTR_SECTION_IFCLR(CPU_FTR_601)
 
 #define tophys(rd,rs)				\
 0:	addis	rd,rs,-KERNELBASE@h;		\
+0:	addis	rd,rs,-PAGE_OFFSET@h;		\
 	.section ".vtop_fixup","aw";		\
 	.align  1;				\
 	.long   0b;				\
@@ -433,6 +672,7 @@ END_FTR_SECTION_IFCLR(CPU_FTR_601)
 
 #define tovirt(rd,rs)				\
 0:	addis	rd,rs,KERNELBASE@h;		\
+0:	addis	rd,rs,PAGE_OFFSET@h;		\
 	.section ".ptov_fixup","aw";		\
 	.align  1;				\
 	.long   0b;				\
@@ -443,6 +683,10 @@ END_FTR_SECTION_IFCLR(CPU_FTR_601)
 #define RFI		rfid
 #define MTMSRD(r)	mtmsrd	r
 
+#ifdef CONFIG_PPC_BOOK3S_64
+#define RFI		rfid
+#define MTMSRD(r)	mtmsrd	r
+#define MTMSR_EERI(reg)	mtmsrd	reg,1
 #else
 #define FIX_SRR1(ra, rb)
 #ifndef CONFIG_40x
@@ -451,6 +695,7 @@ END_FTR_SECTION_IFCLR(CPU_FTR_601)
 #define RFI		rfi; b .	/* Prevent prefetch past rfi */
 #endif
 #define MTMSRD(r)	mtmsr	r
+#define MTMSR_EERI(reg)	mtmsr	reg
 #define CLR_TOP32(r)
 #endif
 
@@ -504,6 +749,46 @@ END_FTR_SECTION_IFCLR(CPU_FTR_601)
 #define	r29	29
 #define	r30	30
 #define	r31	31
+/*
+ * General Purpose Registers (GPRs)
+ *
+ * The lower case r0-r31 should be used in preference to the upper
+ * case R0-R31 as they provide more error checking in the assembler.
+ * Use R0-31 only when really nessesary.
+ */
+
+#define	r0	%r0
+#define	r1	%r1
+#define	r2	%r2
+#define	r3	%r3
+#define	r4	%r4
+#define	r5	%r5
+#define	r6	%r6
+#define	r7	%r7
+#define	r8	%r8
+#define	r9	%r9
+#define	r10	%r10
+#define	r11	%r11
+#define	r12	%r12
+#define	r13	%r13
+#define	r14	%r14
+#define	r15	%r15
+#define	r16	%r16
+#define	r17	%r17
+#define	r18	%r18
+#define	r19	%r19
+#define	r20	%r20
+#define	r21	%r21
+#define	r22	%r22
+#define	r23	%r23
+#define	r24	%r24
+#define	r25	%r25
+#define	r26	%r26
+#define	r27	%r27
+#define	r28	%r28
+#define	r29	%r29
+#define	r30	%r30
+#define	r31	%r31
 
 
 /* Floating Point Registers (FPRs) */
@@ -642,6 +927,105 @@ END_FTR_SECTION_IFCLR(CPU_FTR_601)
 #define	vsr61	61
 #define	vsr62	62
 #define	vsr63	63
+#define	v0	0
+#define	v1	1
+#define	v2	2
+#define	v3	3
+#define	v4	4
+#define	v5	5
+#define	v6	6
+#define	v7	7
+#define	v8	8
+#define	v9	9
+#define	v10	10
+#define	v11	11
+#define	v12	12
+#define	v13	13
+#define	v14	14
+#define	v15	15
+#define	v16	16
+#define	v17	17
+#define	v18	18
+#define	v19	19
+#define	v20	20
+#define	v21	21
+#define	v22	22
+#define	v23	23
+#define	v24	24
+#define	v25	25
+#define	v26	26
+#define	v27	27
+#define	v28	28
+#define	v29	29
+#define	v30	30
+#define	v31	31
+
+/* VSX Registers (VSRs) */
+
+#define	vs0	0
+#define	vs1	1
+#define	vs2	2
+#define	vs3	3
+#define	vs4	4
+#define	vs5	5
+#define	vs6	6
+#define	vs7	7
+#define	vs8	8
+#define	vs9	9
+#define	vs10	10
+#define	vs11	11
+#define	vs12	12
+#define	vs13	13
+#define	vs14	14
+#define	vs15	15
+#define	vs16	16
+#define	vs17	17
+#define	vs18	18
+#define	vs19	19
+#define	vs20	20
+#define	vs21	21
+#define	vs22	22
+#define	vs23	23
+#define	vs24	24
+#define	vs25	25
+#define	vs26	26
+#define	vs27	27
+#define	vs28	28
+#define	vs29	29
+#define	vs30	30
+#define	vs31	31
+#define	vs32	32
+#define	vs33	33
+#define	vs34	34
+#define	vs35	35
+#define	vs36	36
+#define	vs37	37
+#define	vs38	38
+#define	vs39	39
+#define	vs40	40
+#define	vs41	41
+#define	vs42	42
+#define	vs43	43
+#define	vs44	44
+#define	vs45	45
+#define	vs46	46
+#define	vs47	47
+#define	vs48	48
+#define	vs49	49
+#define	vs50	50
+#define	vs51	51
+#define	vs52	52
+#define	vs53	53
+#define	vs54	54
+#define	vs55	55
+#define	vs56	56
+#define	vs57	57
+#define	vs58	58
+#define	vs59	59
+#define	vs60	60
+#define	vs61	61
+#define	vs62	62
+#define	vs63	63
 
 /* SPE Registers (EVPRs) */
 
@@ -685,5 +1069,47 @@ END_FTR_SECTION_IFCLR(CPU_FTR_601)
 #define N_SO	100
 
 #endif /*  __ASSEMBLY__ */
+
+/*
+ * Create an endian fixup trampoline
+ *
+ * This starts with a "tdi 0,0,0x48" instruction which is
+ * essentially a "trap never", and thus akin to a nop.
+ *
+ * The opcode for this instruction read with the wrong endian
+ * however results in a b . + 8
+ *
+ * So essentially we use that trick to execute the following
+ * trampoline in "reverse endian" if we are running with the
+ * MSR_LE bit set the "wrong" way for whatever endianness the
+ * kernel is built for.
+ */
+
+#ifdef CONFIG_PPC_BOOK3E
+#define FIXUP_ENDIAN
+#else
+#define FIXUP_ENDIAN						   \
+	tdi   0,0,0x48;	  /* Reverse endian of b . + 8		*/ \
+	b     $+36;	  /* Skip trampoline if endian is good	*/ \
+	.long 0x05009f42; /* bcl 20,31,$+4			*/ \
+	.long 0xa602487d; /* mflr r10				*/ \
+	.long 0x1c004a39; /* addi r10,r10,28			*/ \
+	.long 0xa600607d; /* mfmsr r11				*/ \
+	.long 0x01006b69; /* xori r11,r11,1			*/ \
+	.long 0xa6035a7d; /* mtsrr0 r10				*/ \
+	.long 0xa6037b7d; /* mtsrr1 r11				*/ \
+	.long 0x2400004c  /* rfid				*/
+#endif /* !CONFIG_PPC_BOOK3E */
+#endif /*  __ASSEMBLY__ */
+
+#ifdef CONFIG_PPC_FSL_BOOK3E
+#define BTB_FLUSH(reg)			\
+	lis reg,BUCSR_INIT@h;		\
+	ori reg,reg,BUCSR_INIT@l;	\
+	mtspr SPRN_BUCSR,reg;		\
+	isync;
+#else
+#define BTB_FLUSH(reg)
+#endif /* CONFIG_PPC_FSL_BOOK3E */
 
 #endif /* _ASM_POWERPC_PPC_ASM_H */

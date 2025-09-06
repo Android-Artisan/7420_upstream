@@ -72,6 +72,23 @@
 			ctcmpc_dumpit(buf, len); \
 	} while (0)
 
+/**
+ * Enum for classifying detected devices
+ */
+enum ctcm_channel_types {
+	/* Device is not a channel  */
+	ctcm_channel_type_none,
+
+	/* Device is a CTC/A */
+	ctcm_channel_type_parallel,
+
+	/* Device is a FICON channel */
+	ctcm_channel_type_ficon,
+
+	/* Device is a ESCON channel */
+	ctcm_channel_type_escon
+};
+
 /*
  * CCW commands, used in this driver.
  */
@@ -105,6 +122,10 @@
 #define WRITE			1
 
 #define CTCM_ID_SIZE		BUS_ID_SIZE+3
+#define CTCM_READ		0
+#define CTCM_WRITE		1
+
+#define CTCM_ID_SIZE		20+3
 
 struct ctcm_profile {
 	unsigned long maxmulti;
@@ -114,6 +135,7 @@ struct ctcm_profile {
 	unsigned long txlen;
 	unsigned long tx_time;
 	struct timespec send_stamp;
+	unsigned long send_stamp;
 };
 
 /*
@@ -128,6 +150,7 @@ struct channel {
 	 * CTC/A or Escon for valid channels.
 	 */
 	enum channel_types type;
+	enum ctcm_channel_types type;
 	/*
 	 * Misc. flags. See CHANNEL_FLAGS_... below
 	 */
@@ -222,6 +245,7 @@ int ctcm_add_attributes(struct device *dev);
 void ctcm_remove_attributes(struct device *dev);
 int ctcm_add_files(struct device *dev);
 void ctcm_remove_files(struct device *dev);
+extern const struct attribute_group *ctcm_attr_groups[];
 
 /*
  * Compatibility macros for busy handling

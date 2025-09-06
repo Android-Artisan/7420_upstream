@@ -38,6 +38,32 @@ extern int dn_nsp_backlog_rcv(struct sock *sk, struct sk_buff *skb);
 
 extern struct sk_buff *dn_alloc_skb(struct sock *sk, int size, gfp_t pri);
 extern struct sk_buff *dn_alloc_send_skb(struct sock *sk, size_t *size, int noblock, long timeo, int *err);
+void dn_nsp_send_data_ack(struct sock *sk);
+void dn_nsp_send_oth_ack(struct sock *sk);
+void dn_nsp_delayed_ack(struct sock *sk);
+void dn_send_conn_ack(struct sock *sk);
+void dn_send_conn_conf(struct sock *sk, gfp_t gfp);
+void dn_nsp_send_disc(struct sock *sk, unsigned char type,
+		      unsigned short reason, gfp_t gfp);
+void dn_nsp_return_disc(struct sk_buff *skb, unsigned char type,
+			unsigned short reason);
+void dn_nsp_send_link(struct sock *sk, unsigned char lsflags, char fcval);
+void dn_nsp_send_conninit(struct sock *sk, unsigned char flags);
+
+void dn_nsp_output(struct sock *sk);
+int dn_nsp_check_xmit_queue(struct sock *sk, struct sk_buff *skb,
+			    struct sk_buff_head *q, unsigned short acknum);
+void dn_nsp_queue_xmit(struct sock *sk, struct sk_buff *skb, gfp_t gfp,
+		       int oob);
+unsigned long dn_nsp_persist(struct sock *sk);
+int dn_nsp_xmit_timeout(struct sock *sk);
+
+int dn_nsp_rx(struct sk_buff *);
+int dn_nsp_backlog_rcv(struct sock *sk, struct sk_buff *skb);
+
+struct sk_buff *dn_alloc_skb(struct sock *sk, int size, gfp_t pri);
+struct sk_buff *dn_alloc_send_skb(struct sock *sk, size_t *size, int noblock,
+				  long timeo, int *err);
 
 #define NSP_REASON_OK 0		/* No error */
 #define NSP_REASON_NR 1		/* No resources */
@@ -94,6 +120,26 @@ struct nsp_data_opt_msg1
 /* Acknowledgment Message (data/other data)                             */
 struct nsp_data_ack_msg
 {
+struct nsp_data_seg_msg {
+	__u8   msgflg;
+	__le16 dstaddr;
+	__le16 srcaddr;
+} __packed;
+
+struct nsp_data_opt_msg {
+	__le16 acknum;
+	__le16 segnum;
+	__le16 lsflgs;
+} __packed;
+
+struct nsp_data_opt_msg1 {
+	__le16 acknum;
+	__le16 segnum;
+} __packed;
+
+
+/* Acknowledgment Message (data/other data)                             */
+struct nsp_data_ack_msg {
 	__u8   msgflg;
 	__le16 dstaddr;
 	__le16 srcaddr;
@@ -111,6 +157,17 @@ struct  nsp_conn_ack_msg
 /* Connect Initiate/Retransmit Initiate/Connect Confirm */
 struct  nsp_conn_init_msg
 {
+} __packed;
+
+/* Connect Acknowledgment Message */
+struct  nsp_conn_ack_msg {
+	__u8 msgflg;
+	__le16 dstaddr;
+} __packed;
+
+
+/* Connect Initiate/Retransmit Initiate/Connect Confirm */
+struct  nsp_conn_init_msg {
 	__u8   msgflg;
 #define NSP_CI      0x18            /* Connect Initiate     */
 #define NSP_RCI     0x68            /* Retrans. Conn Init   */
@@ -128,6 +185,10 @@ struct  nsp_conn_init_msg
 /* Disconnect Initiate/Disconnect Confirm */
 struct  nsp_disconn_init_msg
 {
+} __packed;
+
+/* Disconnect Initiate/Disconnect Confirm */
+struct  nsp_disconn_init_msg {
 	__u8   msgflg;
 	__le16 dstaddr;
 	__le16 srcaddr;
@@ -138,12 +199,18 @@ struct  nsp_disconn_init_msg
 
 struct  srcobj_fmt
 {
+} __packed;
+
+
+
+struct  srcobj_fmt {
 	__u8   format;
 	__u8   task;
 	__le16 grpcode;
 	__le16 usrcode;
 	__u8   dlen;
 } __attribute__((packed));
+} __packed;
 
 /*
  * A collection of functions for manipulating the sequence

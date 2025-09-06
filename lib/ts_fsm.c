@@ -8,7 +8,6 @@
  *
  * Authors:	Thomas Graf <tgraf@suug.ch>
  *
- * ==========================================================================
  *
  *   A finite state machine consists of n states (struct ts_fsm_token)
  *   representing the pattern as a finite automation. The data is read

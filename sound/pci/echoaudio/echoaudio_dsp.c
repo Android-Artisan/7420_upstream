@@ -54,6 +54,7 @@ static int wait_handshake(struct echoaudio *chip)
 	}
 
 	snd_printk(KERN_ERR "wait_handshake(): Timeout waiting for DSP\n");
+	dev_err(chip->card->dev, "wait_handshake(): Timeout waiting for DSP\n");
 	return -EBUSY;
 }
 
@@ -81,6 +82,7 @@ static int send_vector(struct echoaudio *chip, u32 command)
 	}
 
 	DE_ACT((KERN_ERR "timeout on send_vector\n"));
+	dev_err(chip->card->dev, "timeout on send_vector\n");
 	return -EBUSY;
 }
 
@@ -105,6 +107,8 @@ static int write_dsp(struct echoaudio *chip, u32 data)
 
 	chip->bad_board = TRUE;		/* Set TRUE until DSP re-loaded */
 	DE_ACT((KERN_ERR "write_dsp: Set bad_board to TRUE\n"));
+	chip->bad_board = true;		/* Set true until DSP re-loaded */
+	dev_dbg(chip->card->dev, "write_dsp: Set bad_board to true\n");
 	return -EIO;
 }
 
@@ -128,6 +132,8 @@ static int read_dsp(struct echoaudio *chip, u32 *data)
 
 	chip->bad_board = TRUE;		/* Set TRUE until DSP re-loaded */
 	DE_INIT((KERN_ERR "read_dsp: Set bad_board to TRUE\n"));
+	chip->bad_board = true;		/* Set true until DSP re-loaded */
+	dev_err(chip->card->dev, "read_dsp: Set bad_board to true\n");
 	return -EIO;
 }
 
@@ -155,6 +161,14 @@ static int read_sn(struct echoaudio *chip)
 	}
 	DE_INIT(("Read serial number %08x %08x %08x %08x %08x\n",
 		 sn[0], sn[1], sn[2], sn[3], sn[4]));
+			dev_err(chip->card->dev,
+				"Failed to read serial number\n");
+			return -EIO;
+		}
+	}
+	dev_dbg(chip->card->dev,
+		"Read serial number %08x %08x %08x %08x %08x\n",
+		 sn[0], sn[1], sn[2], sn[3], sn[4]);
 	return 0;
 }
 
@@ -165,6 +179,7 @@ static int read_sn(struct echoaudio *chip)
 static inline int check_asic_status(struct echoaudio *chip)
 {
 	chip->asic_loaded = TRUE;
+	chip->asic_loaded = true;
 	return 0;
 }
 
@@ -177,6 +192,7 @@ static inline int check_asic_status(struct echoaudio *chip)
 /* Load ASIC code - done after the DSP is loaded */
 static int load_asic_generic(struct echoaudio *chip, u32 cmd,
 			     const struct firmware *asic)
+static int load_asic_generic(struct echoaudio *chip, u32 cmd, short asic)
 {
 	const struct firmware *fw;
 	int err;
@@ -185,6 +201,9 @@ static int load_asic_generic(struct echoaudio *chip, u32 cmd,
 
 	if ((err = get_firmware(&fw, asic, chip)) < 0) {
 		snd_printk(KERN_WARNING "Firmware not found !\n");
+	err = get_firmware(&fw, chip, asic);
+	if (err < 0) {
+		dev_warn(chip->card->dev, "Firmware not found !\n");
 		return err;
 	}
 
@@ -211,6 +230,12 @@ static int load_asic_generic(struct echoaudio *chip, u32 cmd,
 la_error:
 	DE_INIT(("failed on write_dsp\n"));
 	free_firmware(fw);
+	free_firmware(fw, chip);
+	return 0;
+
+la_error:
+	dev_err(chip->card->dev, "failed on write_dsp\n");
+	free_firmware(fw, chip);
 	return -EIO;
 }
 
@@ -247,6 +272,15 @@ static int install_resident_loader(struct echoaudio *chip)
 
 	if ((i = get_firmware(&fw, &card_fw[FW_361_LOADER], chip)) < 0) {
 		snd_printk(KERN_WARNING "Firmware not found !\n");
+		dev_dbg(chip->card->dev,
+			"Resident loader already installed; status is 0x%x\n",
+			 status);
+		return 0;
+	}
+
+	i = get_firmware(&fw, chip, FW_361_LOADER);
+	if (i < 0) {
+		dev_warn(chip->card->dev, "Firmware not found !\n");
 		return i;
 	}
 
@@ -282,11 +316,15 @@ static int install_resident_loader(struct echoaudio *chip)
 	/* Write the count to the DSP */
 	if (write_dsp(chip, words)) {
 		DE_INIT(("install_resident_loader: Failed to write word count!\n"));
+		dev_err(chip->card->dev,
+			"install_resident_loader: Failed to write word count!\n");
 		goto irl_error;
 	}
 	/* Write the DSP address */
 	if (write_dsp(chip, address)) {
 		DE_INIT(("install_resident_loader: Failed to write DSP address!\n"));
+		dev_err(chip->card->dev,
+			"install_resident_loader: Failed to write DSP address!\n");
 		goto irl_error;
 	}
 	/* Write out this block of code to the DSP */
@@ -296,6 +334,8 @@ static int install_resident_loader(struct echoaudio *chip)
 		data = ((u32)code[index] << 16) + code[index + 1];
 		if (write_dsp(chip, data)) {
 			DE_INIT(("install_resident_loader: Failed to write DSP code\n"));
+			dev_err(chip->card->dev,
+				"install_resident_loader: Failed to write DSP code\n");
 			goto irl_error;
 		}
 		index += 2;
@@ -320,6 +360,16 @@ static int install_resident_loader(struct echoaudio *chip)
 
 irl_error:
 	free_firmware(fw);
+		dev_err(chip->card->dev, "Resident loader failed to set HF5\n");
+		goto irl_error;
+	}
+
+	dev_dbg(chip->card->dev, "Resident loader successfully installed\n");
+	free_firmware(fw, chip);
+	return 0;
+
+irl_error:
+	free_firmware(fw, chip);
 	return -EIO;
 }
 
@@ -340,6 +390,14 @@ static int load_dsp(struct echoaudio *chip, u16 *code)
 	chip->asic_loaded = FALSE;	/* Loading the DSP code will reset the ASIC */
 
 	DE_INIT(("load_dsp: Set bad_board to TRUE\n"));
+		dev_warn(chip->card->dev, "DSP is already loaded!\n");
+		return 0;
+	}
+	chip->bad_board = true;		/* Set true until DSP loaded */
+	chip->dsp_code = NULL;		/* Current DSP code not loaded */
+	chip->asic_loaded = false;	/* Loading the DSP code will reset the ASIC */
+
+	dev_dbg(chip->card->dev, "load_dsp: Set bad_board to true\n");
 
 	/* If this board requires a resident loader, install it. */
 #ifdef DSP_56361
@@ -350,6 +408,8 @@ static int load_dsp(struct echoaudio *chip, u16 *code)
 	/* Send software reset command */
 	if (send_vector(chip, DSP_VC_RESET) < 0) {
 		DE_INIT(("LoadDsp: send_vector DSP_VC_RESET failed, Critical Failure\n"));
+		dev_err(chip->card->dev,
+			"LoadDsp: send_vector DSP_VC_RESET failed, Critical Failure\n");
 		return -EIO;
 	}
 	/* Delay 10us */
@@ -365,6 +425,8 @@ static int load_dsp(struct echoaudio *chip, u16 *code)
 
 	if (i == 1000) {
 		DE_INIT(("load_dsp: Timeout waiting for CHI32_STATUS_REG_HF3\n"));
+		dev_err(chip->card->dev,
+			"load_dsp: Timeout waiting for CHI32_STATUS_REG_HF3\n");
 		return -EIO;
 	}
 
@@ -410,6 +472,18 @@ static int load_dsp(struct echoaudio *chip, u16 *code)
 		}
 		if (write_dsp(chip, mem_type) < 0) {
 			DE_INIT(("load_dsp: failed to write DSP memory type\n"));
+			dev_err(chip->card->dev,
+				"load_dsp: failed to write number of DSP words\n");
+			return -EIO;
+		}
+		if (write_dsp(chip, address) < 0) {
+			dev_err(chip->card->dev,
+				"load_dsp: failed to write DSP address\n");
+			return -EIO;
+		}
+		if (write_dsp(chip, mem_type) < 0) {
+			dev_err(chip->card->dev,
+				"load_dsp: failed to write DSP memory type\n");
 			return -EIO;
 		}
 		/* Code */
@@ -417,6 +491,8 @@ static int load_dsp(struct echoaudio *chip, u16 *code)
 			data = ((u32)code[index] << 16) + code[index + 1];
 			if (write_dsp(chip, data) < 0) {
 				DE_INIT(("load_dsp: failed to write DSP data\n"));
+				dev_err(chip->card->dev,
+					"load_dsp: failed to write DSP data\n");
 				return -EIO;
 			}
 		}
@@ -424,6 +500,8 @@ static int load_dsp(struct echoaudio *chip, u16 *code)
 
 	if (write_dsp(chip, 0) < 0) {	/* We're done!!! */
 		DE_INIT(("load_dsp: Failed to write final zero\n"));
+		dev_err(chip->card->dev,
+			"load_dsp: Failed to write final zero\n");
 		return -EIO;
 	}
 	udelay(10);
@@ -437,11 +515,15 @@ static int load_dsp(struct echoaudio *chip, u16 *code)
 
 			if (write_dsp(chip, DSP_FNC_SET_COMMPAGE_ADDR) < 0) {
 				DE_INIT(("load_dsp: Failed to write DSP_FNC_SET_COMMPAGE_ADDR\n"));
+				dev_err(chip->card->dev,
+					"load_dsp: Failed to write DSP_FNC_SET_COMMPAGE_ADDR\n");
 				return -EIO;
 			}
 
 			if (write_dsp(chip, chip->comm_page_phys) < 0) {
 				DE_INIT(("load_dsp: Failed to write comm page address\n"));
+				dev_err(chip->card->dev,
+					"load_dsp: Failed to write comm page address\n");
 				return -EIO;
 			}
 
@@ -451,18 +533,23 @@ static int load_dsp(struct echoaudio *chip, u16 *code)
 			get it as part of the DSP init voodoo. */
 			if (read_sn(chip) < 0) {
 				DE_INIT(("load_dsp: Failed to read serial number\n"));
+				dev_err(chip->card->dev,
+					"load_dsp: Failed to read serial number\n");
 				return -EIO;
 			}
 
 			chip->dsp_code = code;		/* Show which DSP code loaded */
 			chip->bad_board = FALSE;	/* DSP OK */
 			DE_INIT(("load_dsp: OK!\n"));
+			chip->bad_board = false;	/* DSP OK */
 			return 0;
 		}
 		udelay(100);
 	}
 
 	DE_INIT(("load_dsp: DSP load timed out waiting for HF4\n"));
+	dev_err(chip->card->dev,
+		"load_dsp: DSP load timed out waiting for HF4\n");
 	return -EIO;
 }
 
@@ -475,6 +562,8 @@ static int load_firmware(struct echoaudio *chip)
 	int box_type, err;
 
 	snd_assert(chip->dsp_code_to_load && chip->comm_page, return -EPERM);
+	if (snd_BUG_ON(!chip->comm_page))
+		return -EPERM;
 
 	/* See if the ASIC is present and working - only if the DSP is already loaded */
 	if (chip->dsp_code) {
@@ -488,6 +577,11 @@ static int load_firmware(struct echoaudio *chip)
 		return err;
 	err = load_dsp(chip, (u16 *)fw->data);
 	free_firmware(fw);
+	err = get_firmware(&fw, chip, chip->dsp_code_to_load);
+	if (err < 0)
+		return err;
+	err = load_dsp(chip, (u16 *)fw->data);
+	free_firmware(fw, chip);
 	if (err < 0)
 		return err;
 
@@ -514,6 +608,8 @@ static int set_nominal_level(struct echoaudio *chip, u16 index, char consumer)
 {
 	snd_assert(index < num_busses_out(chip) + num_busses_in(chip),
 		   return -EINVAL);
+	if (snd_BUG_ON(index >= num_busses_out(chip) + num_busses_in(chip)))
+		return -EINVAL;
 
 	/* Wait for the handshake (OK even if ASIC is not loaded) */
 	if (wait_handshake(chip))
@@ -537,6 +633,8 @@ static int set_nominal_level(struct echoaudio *chip, u16 index, char consumer)
 static int set_output_gain(struct echoaudio *chip, u16 channel, s8 gain)
 {
 	snd_assert(channel < num_busses_out(chip), return -EINVAL);
+	if (snd_BUG_ON(channel >= num_busses_out(chip)))
+		return -EINVAL;
 
 	if (wait_handshake(chip))
 		return -EIO;
@@ -556,6 +654,9 @@ static int set_monitor_gain(struct echoaudio *chip, u16 output, u16 input,
 {
 	snd_assert(output < num_busses_out(chip) &&
 		   input < num_busses_in(chip), return -EINVAL);
+	if (snd_BUG_ON(output >= num_busses_out(chip) ||
+		    input >= num_busses_in(chip)))
+		return -EINVAL;
 
 	if (wait_handshake(chip))
 		return -EIO;
@@ -656,11 +757,13 @@ static int restore_dsp_rettings(struct echoaudio *chip)
 {
 	int err;
 	DE_INIT(("restore_dsp_settings\n"));
+	int i, o, err;
 
 	if ((err = check_asic_status(chip)) < 0)
 		return err;
 
 	/* @ Gina20/Darla20 only. Should be harmless for other cards. */
+	/* Gina20/Darla20 only. Should be harmless for other cards. */
 	chip->comm_page->gd_clock_state = GD_CLOCK_UNDEF;
 	chip->comm_page->gd_spdif_status = GD_SPDIF_STATUS_UNDEF;
 	chip->comm_page->handshake = 0xffffffff;
@@ -673,6 +776,78 @@ static int restore_dsp_rettings(struct echoaudio *chip)
 			return -EIO;
 
 #ifdef ECHOCARD_HAS_EXTERNAL_CLOCK
+	/* Restore output busses */
+	for (i = 0; i < num_busses_out(chip); i++) {
+		err = set_output_gain(chip, i, chip->output_gain[i]);
+		if (err < 0)
+			return err;
+	}
+
+#ifdef ECHOCARD_HAS_VMIXER
+	for (i = 0; i < num_pipes_out(chip); i++)
+		for (o = 0; o < num_busses_out(chip); o++) {
+			err = set_vmixer_gain(chip, o, i,
+						chip->vmixer_gain[o][i]);
+			if (err < 0)
+				return err;
+		}
+	if (update_vmixer_level(chip) < 0)
+		return -EIO;
+#endif /* ECHOCARD_HAS_VMIXER */
+
+#ifdef ECHOCARD_HAS_MONITOR
+	for (o = 0; o < num_busses_out(chip); o++)
+		for (i = 0; i < num_busses_in(chip); i++) {
+			err = set_monitor_gain(chip, o, i,
+						chip->monitor_gain[o][i]);
+			if (err < 0)
+				return err;
+		}
+#endif /* ECHOCARD_HAS_MONITOR */
+
+#ifdef ECHOCARD_HAS_INPUT_GAIN
+	for (i = 0; i < num_busses_in(chip); i++) {
+		err = set_input_gain(chip, i, chip->input_gain[i]);
+		if (err < 0)
+			return err;
+	}
+#endif /* ECHOCARD_HAS_INPUT_GAIN */
+
+	err = update_output_line_level(chip);
+	if (err < 0)
+		return err;
+
+	err = update_input_line_level(chip);
+	if (err < 0)
+		return err;
+
+	err = set_sample_rate(chip, chip->sample_rate);
+	if (err < 0)
+		return err;
+
+	if (chip->meters_enabled) {
+		err = send_vector(chip, DSP_VC_METERS_ON);
+		if (err < 0)
+			return err;
+	}
+
+#ifdef ECHOCARD_HAS_DIGITAL_MODE_SWITCH
+	if (set_digital_mode(chip, chip->digital_mode) < 0)
+		return -EIO;
+#endif
+
+#ifdef ECHOCARD_HAS_DIGITAL_IO
+	if (set_professional_spdif(chip, chip->professional_spdif) < 0)
+		return -EIO;
+#endif
+
+#ifdef ECHOCARD_HAS_PHANTOM_POWER
+	if (set_phantom_power(chip, chip->phantom_power) < 0)
+		return -EIO;
+#endif
+
+#ifdef ECHOCARD_HAS_EXTERNAL_CLOCK
+	/* set_input_clock() also restores automute setting */
 	if (set_input_clock(chip, chip->input_clock) < 0)
 		return -EIO;
 #endif
@@ -699,6 +874,13 @@ static int restore_dsp_rettings(struct echoaudio *chip)
 
 	DE_INIT(("restore_dsp_rettings done\n"));
 	return send_vector(chip, DSP_VC_UPDATE_FLAGS);
+	if (wait_handshake(chip) < 0)
+		return -EIO;
+	clear_handshake(chip);
+	if (send_vector(chip, DSP_VC_UPDATE_FLAGS) < 0)
+		return -EIO;
+
+	return 0;
 }
 
 
@@ -778,6 +960,8 @@ static void set_audio_format(struct echoaudio *chip, u16 pipe_index,
 		}
 	}
 	DE_ACT(("set_audio_format[%d] = %x\n", pipe_index, dsp_format));
+	dev_dbg(chip->card->dev,
+		 "set_audio_format[%d] = %x\n", pipe_index, dsp_format);
 	chip->comm_page->audio_format[pipe_index] = cpu_to_le16(dsp_format);
 }
 
@@ -809,6 +993,7 @@ static int start_transport(struct echoaudio *chip, u32 channel_mask,
 	}
 
 	DE_ACT(("start_transport: No pipes to start!\n"));
+	dev_err(chip->card->dev, "start_transport: No pipes to start!\n");
 	return -EINVAL;
 }
 
@@ -836,6 +1021,7 @@ static int pause_transport(struct echoaudio *chip, u32 channel_mask)
 	}
 
 	DE_ACT(("pause_transport: No pipes to stop!\n"));
+	dev_warn(chip->card->dev, "pause_transport: No pipes to stop!\n");
 	return 0;
 }
 
@@ -863,6 +1049,7 @@ static int stop_transport(struct echoaudio *chip, u32 channel_mask)
 	}
 
 	DE_ACT(("stop_transport: No pipes to stop!\n"));
+	dev_warn(chip->card->dev, "stop_transport: No pipes to stop!\n");
 	return 0;
 }
 
@@ -888,6 +1075,10 @@ static int rest_in_peace(struct echoaudio *chip)
 
 #ifdef ECHOCARD_HAS_MIDI
 	enable_midi_input(chip, FALSE);
+	set_meters_on(chip, false);
+
+#ifdef ECHOCARD_HAS_MIDI
+	enable_midi_input(chip, false);
 #endif
 
 	/* Go to sleep */
@@ -908,6 +1099,8 @@ static int init_dsp_comm_page(struct echoaudio *chip)
 	/* Check if the compiler added extra padding inside the structure */
 	if (offsetof(struct comm_page, midi_output) != 0xbe0) {
 		DE_INIT(("init_dsp_comm_page() - Invalid struct comm_page structure\n"));
+		dev_err(chip->card->dev,
+			"init_dsp_comm_page() - Invalid struct comm_page structure\n");
 		return -EPERM;
 	}
 
@@ -919,6 +1112,9 @@ static int init_dsp_comm_page(struct echoaudio *chip)
 	chip->input_clock = ECHO_CLOCK_INTERNAL;
 	chip->output_clock = ECHO_CLOCK_WORD;
 	chip->asic_loaded = FALSE;
+	chip->bad_board = true;	/* Set true until DSP loaded */
+	chip->dsp_code = NULL;	/* Current DSP code not loaded */
+	chip->asic_loaded = false;
 	memset(chip->comm_page, 0, sizeof(struct comm_page));
 
 	/* Init the comm page */
@@ -929,6 +1125,11 @@ static int init_dsp_comm_page(struct echoaudio *chip)
 		__constant_cpu_to_le32(DSP_MIDI_OUT_FIFO_SIZE);
 	chip->comm_page->sample_rate = __constant_cpu_to_le32(44100);
 	chip->sample_rate = 44100;
+		cpu_to_le32(sizeof(struct comm_page));
+	chip->comm_page->handshake = 0xffffffff;
+	chip->comm_page->midi_out_free_count =
+		cpu_to_le32(DSP_MIDI_OUT_FIFO_SIZE);
+	chip->comm_page->sample_rate = cpu_to_le32(44100);
 
 	/* Set line levels so we don't blast any inputs on startup */
 	memset(chip->comm_page->monitors, ECHOGAIN_MUTED, MONITOR_ARRAY_SIZE);
@@ -983,6 +1184,20 @@ static int init_line_levels(struct echoaudio *chip)
 #endif /* ECHOCARD_HAS_INPUT_GAIN */
 
 	return 0;
+/* This function initializes the chip structure with default values, ie. all
+ * muted and internal clock source. Then it copies the settings to the DSP.
+ * This MUST be called after the DSP is up and running !
+ */
+static int init_line_levels(struct echoaudio *chip)
+{
+	memset(chip->output_gain, ECHOGAIN_MUTED, sizeof(chip->output_gain));
+	memset(chip->input_gain, ECHOGAIN_MUTED, sizeof(chip->input_gain));
+	memset(chip->monitor_gain, ECHOGAIN_MUTED, sizeof(chip->monitor_gain));
+	memset(chip->vmixer_gain, ECHOGAIN_MUTED, sizeof(chip->vmixer_gain));
+	chip->input_clock = ECHO_CLOCK_INTERNAL;
+	chip->output_clock = ECHO_CLOCK_WORD;
+	chip->sample_rate = 44100;
+	return restore_dsp_rettings(chip);
 }
 
 
@@ -1027,6 +1242,8 @@ static int allocate_pipes(struct echoaudio *chip, struct audiopipe *pipe,
 	char is_cyclic;
 
 	DE_ACT(("allocate_pipes: ch=%d int=%d\n", pipe_index, interleave));
+	dev_dbg(chip->card->dev,
+		"allocate_pipes: ch=%d int=%d\n", pipe_index, interleave);
 
 	if (chip->bad_board)
 		return -EIO;
@@ -1037,6 +1254,8 @@ static int allocate_pipes(struct echoaudio *chip, struct audiopipe *pipe,
 		channel_mask |= 1 << (pipe_index + i);
 	if (chip->pipe_alloc_mask & channel_mask) {
 		DE_ACT(("allocate_pipes: channel already open\n"));
+		dev_err(chip->card->dev,
+			"allocate_pipes: channel already open\n");
 		return -EAGAIN;
 	}
 
@@ -1067,6 +1286,10 @@ static int free_pipes(struct echoaudio *chip, struct audiopipe *pipe)
 	DE_ACT(("free_pipes: Pipe %d\n", pipe->index));
 	snd_assert(is_pipe_allocated(chip, pipe->index), return -EINVAL);
 	snd_assert(pipe->state == PIPE_STATE_STOPPED, return -EINVAL);
+	if (snd_BUG_ON(!is_pipe_allocated(chip, pipe->index)))
+		return -EINVAL;
+	if (snd_BUG_ON(pipe->state != PIPE_STATE_STOPPED))
+		return -EINVAL;
 
 	for (channel_mask = i = 0; i < pipe->interleave; i++)
 		channel_mask |= 1 << (pipe->index + i);
@@ -1105,6 +1328,7 @@ static int sglist_add_mapping(struct echoaudio *chip, struct audiopipe *pipe,
 		pipe->sglist_head++;
 	} else {
 		DE_ACT(("SGlist: too many fragments\n"));
+		dev_err(chip->card->dev, "SGlist: too many fragments\n");
 		return -ENOMEM;
 	}
 	return 0;

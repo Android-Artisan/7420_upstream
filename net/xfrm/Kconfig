@@ -9,6 +9,17 @@ config XFRM
 config XFRM_USER
 	tristate "Transformation user configuration interface"
 	depends on INET && XFRM
+       depends on NET
+
+config XFRM_ALGO
+	tristate
+	select XFRM
+	select CRYPTO
+
+config XFRM_USER
+	tristate "Transformation user configuration interface"
+	depends on INET
+	select XFRM_ALGO
 	---help---
 	  Support for Transformation(XFRM) user configuration interface
 	  like IPsec used by native Linux tools.
@@ -18,6 +29,8 @@ config XFRM_USER
 config XFRM_SUB_POLICY
 	bool "Transformation sub policy support (EXPERIMENTAL)"
 	depends on XFRM && EXPERIMENTAL
+	bool "Transformation sub policy support"
+	depends on XFRM
 	---help---
 	  Support sub policy for developers. By using sub policy with main
 	  one, two policies can be applied to the same packet at once.
@@ -28,6 +41,8 @@ config XFRM_SUB_POLICY
 config XFRM_MIGRATE
 	bool "Transformation migrate database (EXPERIMENTAL)"
 	depends on XFRM && EXPERIMENTAL
+	bool "Transformation migrate database"
+	depends on XFRM
 	---help---
 	  A feature to update locator(s) of a given IPsec security
 	  association dynamically.  This feature is required, for
@@ -39,6 +54,8 @@ config XFRM_MIGRATE
 config XFRM_STATISTICS
 	bool "Transformation statistics (EXPERIMENTAL)"
 	depends on INET && XFRM && PROC_FS && EXPERIMENTAL
+	bool "Transformation statistics"
+	depends on INET && XFRM && PROC_FS
 	---help---
 	  This statistics is not a SNMP/MIB specification but shows
 	  statistics about transformation error (or almost error) factor
@@ -49,12 +66,14 @@ config XFRM_STATISTICS
 config XFRM_IPCOMP
 	tristate
 	select XFRM
+	select XFRM_ALGO
 	select CRYPTO
 	select CRYPTO_DEFLATE
 
 config NET_KEY
 	tristate "PF_KEY sockets"
 	select XFRM
+	select XFRM_ALGO
 	---help---
 	  PF_KEYv2 socket family, compatible to KAME ones.
 	  They are required if you are going to use IPsec tools ported
@@ -65,6 +84,8 @@ config NET_KEY
 config NET_KEY_MIGRATE
 	bool "PF_KEY MIGRATE (EXPERIMENTAL)"
 	depends on NET_KEY && EXPERIMENTAL
+	bool "PF_KEY MIGRATE"
+	depends on NET_KEY
 	select XFRM_MIGRATE
 	---help---
 	  Add a PF_KEY MIGRATE message to PF_KEYv2 socket family.

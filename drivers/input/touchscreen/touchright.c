@@ -192,3 +192,4 @@ static void __exit tr_exit(void)
 
 module_init(tr_init);
 module_exit(tr_exit);
+module_serio_driver(tr_drv);

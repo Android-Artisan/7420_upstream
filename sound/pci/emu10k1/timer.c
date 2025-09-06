@@ -76,6 +76,7 @@ static struct snd_timer_hardware snd_emu10k1_timer_hw = {
 };
 
 int __devinit snd_emu10k1_timer(struct snd_emu10k1 *emu, int device)
+int snd_emu10k1_timer(struct snd_emu10k1 *emu, int device)
 {
 	struct snd_timer *timer = NULL;
 	struct snd_timer_id tid;

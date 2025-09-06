@@ -129,4 +129,5 @@ void __init idprom_init(void)
 		    idprom->id_ethaddr[0], idprom->id_ethaddr[1],
 		    idprom->id_ethaddr[2], idprom->id_ethaddr[3],
 		    idprom->id_ethaddr[4], idprom->id_ethaddr[5]);
+	printk("Ethernet address: %pM\n", idprom->id_ethaddr);
 }

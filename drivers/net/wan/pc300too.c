@@ -2,6 +2,7 @@
  * Cyclades PC300 synchronous serial card driver for Linux
  *
  * Copyright (C) 2000-2007 Krzysztof Halasa <khc@pm.waw.pl>
+ * Copyright (C) 2000-2008 Krzysztof Halasa <khc@pm.waw.pl>
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of version 2 of the GNU General Public License
@@ -12,10 +13,13 @@
  * Sources of information:
  *    Hitachi HD64572 SCA-II User's Manual
  *    Cyclades PC300 Linux driver
+ *    Original Cyclades PC300 Linux driver
  *
  * This driver currently supports only PC300/RSV (V.24/V.35) and
  * PC300/X21 cards.
  */
+
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/module.h>
 #include <linux/kernel.h>
@@ -82,6 +86,8 @@ typedef struct {
 
 typedef struct port_s {
 	struct net_device *dev;
+	struct napi_struct napi;
+	struct net_device *netdev;
 	struct card_s *card;
 	spinlock_t lock;	/* TX lock */
 	sync_serial_settings settings;
@@ -94,6 +100,7 @@ typedef struct port_s {
 	u16 txlast;
 	u8 rxs, txs, tmc;	/* SCA registers */
 	u8 phy_node;		/* physical port # - 0 or 1 */
+	u8 chan;		/* physical port # - 0 or 1 */
 }port_t;
 
 
@@ -129,6 +136,10 @@ typedef struct card_s {
 					 (&(card)->ports[port]) : (NULL))
 
 #include "hd6457x.c"
+#define get_port(card, port)	     ((port) < (card)->n_ports ? \
+					 (&(card)->ports[port]) : (NULL))
+
+#include "hd64572.c"
 
 
 static void pc300_set_iface(port_t *port)
@@ -141,6 +152,8 @@ static void pc300_set_iface(port_t *port)
 
 	sca_out(EXS_TES1, (phy_node(port) ? MSCI1_OFFSET : MSCI0_OFFSET) + EXS,
 		port_to_card(port));
+	sca_out(EXS_TES1, (port->chan ? MSCI1_OFFSET : MSCI0_OFFSET) + EXS,
+		port->card);
 	switch(port->settings.clock_type) {
 	case CLOCK_INT:
 		rxs |= CLK_BRG; /* BRG output */
@@ -176,6 +189,10 @@ static void pc300_set_iface(port_t *port)
 		else
 			writel(card->init_ctrl_value &
 			       ~PC300_CHMEDIA_MASK(port->phy_node), init_ctrl);
+			       PC300_CHMEDIA_MASK(port->chan), init_ctrl);
+		else
+			writel(card->init_ctrl_value &
+			       ~PC300_CHMEDIA_MASK(port->chan), init_ctrl);
 	}
 }
 
@@ -284,6 +301,8 @@ static void pc300_pci_remove_one(struct pci_dev *pdev)
 			struct net_device *dev = port_to_dev(&card->ports[i]);
 			unregister_hdlc_device(dev);
 		}
+		if (card->ports[i].card)
+			unregister_hdlc_device(card->ports[i].netdev);
 
 	if (card->irq)
 		free_irq(card->irq, card);
@@ -309,6 +328,23 @@ static void pc300_pci_remove_one(struct pci_dev *pdev)
 
 static int __devinit pc300_pci_init_one(struct pci_dev *pdev,
 					const struct pci_device_id *ent)
+	if (card->ports[0].netdev)
+		free_netdev(card->ports[0].netdev);
+	if (card->ports[1].netdev)
+		free_netdev(card->ports[1].netdev);
+	kfree(card);
+}
+
+static const struct net_device_ops pc300_ops = {
+	.ndo_open       = pc300_open,
+	.ndo_stop       = pc300_close,
+	.ndo_change_mtu = hdlc_change_mtu,
+	.ndo_start_xmit = hdlc_start_xmit,
+	.ndo_do_ioctl   = pc300_ioctl,
+};
+
+static int pc300_pci_init_one(struct pci_dev *pdev,
+			      const struct pci_device_id *ent)
 {
 	card_t *card;
 	u32 __iomem *p;
@@ -343,6 +379,36 @@ static int __devinit pc300_pci_init_one(struct pci_dev *pdev,
 	}
 	pci_set_drvdata(pdev, card);
 
+	if (pci_resource_len(pdev, 0) != PC300_PLX_SIZE ||
+	    pci_resource_len(pdev, 2) != PC300_SCA_SIZE ||
+	    pci_resource_len(pdev, 3) < 16384) {
+		pr_err("invalid card EEPROM parameters\n");
+		pc300_pci_remove_one(pdev);
+		return -EFAULT;
+	}
+
+	plxphys = pci_resource_start(pdev, 0) & PCI_BASE_ADDRESS_MEM_MASK;
+	card->plxbase = ioremap(plxphys, PC300_PLX_SIZE);
+
+	scaphys = pci_resource_start(pdev, 2) & PCI_BASE_ADDRESS_MEM_MASK;
+	card->scabase = ioremap(scaphys, PC300_SCA_SIZE);
+
+	ramphys = pci_resource_start(pdev, 3) & PCI_BASE_ADDRESS_MEM_MASK;
+	card->rambase = pci_ioremap_bar(pdev, 3);
+
+	if (card->plxbase == NULL ||
+	    card->scabase == NULL ||
+	    card->rambase == NULL) {
+		pr_err("ioremap() failed\n");
+		pc300_pci_remove_one(pdev);
+		return -ENOMEM;
+	}
+
+	/* PLX PCI 9050 workaround for local configuration register read bug */
+	pci_write_config_dword(pdev, PCI_BASE_ADDRESS_0, scaphys);
+	card->init_ctrl_value = readl(&((plx9050 __iomem *)card->scabase)->init_ctrl);
+	pci_write_config_dword(pdev, PCI_BASE_ADDRESS_0, plxphys);
+
 	if (pdev->device == PCI_DEVICE_ID_PC300_TE_1 ||
 	    pdev->device == PCI_DEVICE_ID_PC300_TE_2)
 		card->type = PC300_TE; /* not fully supported */
@@ -360,6 +426,8 @@ static int __devinit pc300_pci_init_one(struct pci_dev *pdev,
 	for (i = 0; i < card->n_ports; i++)
 		if (!(card->ports[i].dev = alloc_hdlcdev(&card->ports[i]))) {
 			printk(KERN_ERR "pc300: unable to allocate memory\n");
+		if (!(card->ports[i].netdev = alloc_hdlcdev(&card->ports[i]))) {
+			pr_err("unable to allocate memory\n");
 			pc300_pci_remove_one(pdev);
 			return -ENOMEM;
 		}
@@ -438,6 +506,14 @@ static int __devinit pc300_pci_init_one(struct pci_dev *pdev,
 
 	if (card->tx_ring_buffers < 1) {
 		printk(KERN_ERR "pc300: RAM test failed\n");
+	pr_info("PC300/%s, %u KB RAM at 0x%x, IRQ%u, using %u TX + %u RX packets rings\n",
+		card->type == PC300_X21 ? "X21" :
+		card->type == PC300_TE ? "TE" : "RSV",
+		ramsize / 1024, ramphys, pdev->irq,
+		card->tx_ring_buffers, card->rx_ring_buffers);
+
+	if (card->tx_ring_buffers < 1) {
+		pr_err("RAM test failed\n");
 		pc300_pci_remove_one(pdev);
 		return -EFAULT;
 	}
@@ -449,6 +525,8 @@ static int __devinit pc300_pci_init_one(struct pci_dev *pdev,
 	if (request_irq(pdev->irq, sca_intr, IRQF_SHARED, devname, card)) {
 		printk(KERN_WARNING "pc300: could not allocate IRQ%d.\n",
 		       pdev->irq);
+	if (request_irq(pdev->irq, sca_intr, IRQF_SHARED, "pc300", card)) {
+		pr_warn("could not allocate IRQ%d\n", pdev->irq);
 		pc300_pci_remove_one(pdev);
 		return -EBUSY;
 	}
@@ -466,6 +544,9 @@ static int __devinit pc300_pci_init_one(struct pci_dev *pdev,
 		struct net_device *dev = port_to_dev(port);
 		hdlc_device *hdlc = dev_to_hdlc(dev);
 		port->phy_node = i;
+		struct net_device *dev = port->netdev;
+		hdlc_device *hdlc = dev_to_hdlc(dev);
+		port->chan = i;
 
 		spin_lock_init(&port->lock);
 		dev->irq = card->irq;
@@ -475,6 +556,7 @@ static int __devinit pc300_pci_init_one(struct pci_dev *pdev,
 		dev->do_ioctl = pc300_ioctl;
 		dev->open = pc300_open;
 		dev->stop = pc300_close;
+		dev->netdev_ops = &pc300_ops;
 		hdlc->attach = sca_attach;
 		hdlc->xmit = sca_xmit;
 		port->settings.clock_type = CLOCK_EXT;
@@ -487,6 +569,9 @@ static int __devinit pc300_pci_init_one(struct pci_dev *pdev,
 		if (register_hdlc_device(dev)) {
 			printk(KERN_ERR "pc300: unable to register hdlc "
 			       "device\n");
+		sca_init_port(port);
+		if (register_hdlc_device(dev)) {
+			pr_err("unable to register hdlc device\n");
 			port->card = NULL;
 			pc300_pci_remove_one(pdev);
 			return -ENOBUFS;
@@ -495,6 +580,8 @@ static int __devinit pc300_pci_init_one(struct pci_dev *pdev,
 
 		printk(KERN_INFO "%s: PC300 node %d\n",
 		       dev->name, port->phy_node);
+
+		netdev_info(dev, "PC300 channel %d\n", port->chan);
 	}
 	return 0;
 }
@@ -502,6 +589,7 @@ static int __devinit pc300_pci_init_one(struct pci_dev *pdev,
 
 
 static struct pci_device_id pc300_pci_tbl[] __devinitdata = {
+static const struct pci_device_id pc300_pci_tbl[] = {
 	{ PCI_VENDOR_ID_CYCLADES, PCI_DEVICE_ID_PC300_RX_1, PCI_ANY_ID,
 	  PCI_ANY_ID, 0, 0, 0 },
 	{ PCI_VENDOR_ID_CYCLADES, PCI_DEVICE_ID_PC300_RX_2, PCI_ANY_ID,
@@ -533,6 +621,12 @@ static int __init pc300_init_module(void)
 	}
 	if (use_crystal_clock != 0 && use_crystal_clock != 1) {
 		printk(KERN_ERR "pc300: Invalid 'use_crystal_clock' value\n");
+	if (pci_clock_freq < 1000000 || pci_clock_freq > 80000000) {
+		pr_err("Invalid PCI clock frequency\n");
+		return -EINVAL;
+	}
+	if (use_crystal_clock != 0 && use_crystal_clock != 1) {
+		pr_err("Invalid 'use_crystal_clock' value\n");
 		return -EINVAL;
 	}
 

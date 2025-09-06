@@ -57,6 +57,10 @@ typedef struct socket_state_t {
     u_int	csc_mask;
     u_char	Vcc, Vpp;
     u_char	io_irq;
+	u_int	flags;
+	u_int	csc_mask;
+	u_char	Vcc, Vpp;
+	u_char	io_irq;
 } socket_state_t;
 
 extern socket_state_t dead_socket;
@@ -159,6 +163,22 @@ extern struct pccard_resource_ops pccard_iodyn_ops;
  */
 struct pcmcia_socket;
 
+typedef struct pccard_io_map {
+	u_char	map;
+	u_char	flags;
+	u_short	speed;
+	phys_addr_t start, stop;
+} pccard_io_map;
+
+typedef struct pccard_mem_map {
+	u_char		map;
+	u_char		flags;
+	u_short		speed;
+	phys_addr_t	static_start;
+	u_int		card_start;
+	struct resource	*res;
+} pccard_mem_map;
+
 typedef struct io_window_t {
 	u_int			InUse, Config;
 	struct resource		*res;
@@ -179,6 +199,12 @@ typedef struct window_t {
 /* Maximum number of memory windows per socket */
 #define MAX_WIN 4
 
+
+/*
+ * Socket operations.
+ */
+struct pcmcia_socket;
+struct pccard_resource_ops;
 struct config_t;
 struct pcmcia_callback;
 struct user_info_t;
@@ -188,6 +214,20 @@ struct pcmcia_socket {
 	spinlock_t			lock;
 	socket_state_t			socket;
 	u_int				state;
+struct pccard_operations {
+	int (*init)(struct pcmcia_socket *s);
+	int (*suspend)(struct pcmcia_socket *s);
+	int (*get_status)(struct pcmcia_socket *s, u_int *value);
+	int (*set_socket)(struct pcmcia_socket *s, socket_state_t *state);
+	int (*set_io_map)(struct pcmcia_socket *s, struct pccard_io_map *io);
+	int (*set_mem_map)(struct pcmcia_socket *s, struct pccard_mem_map *mem);
+};
+
+struct pcmcia_socket {
+	struct module			*owner;
+	socket_state_t			socket;
+	u_int				state;
+	u_int				suspended_state;	/* state before suspend */
 	u_short				functions;
 	u_short				lock_count;
 	pccard_mem_map			cis_mem;
@@ -201,11 +241,17 @@ struct pcmcia_socket {
 	struct list_head		cis_cache;
 	u_int				fake_cis_len;
 	char				*fake_cis;
+	io_window_t			io[MAX_IO_WIN];
+	pccard_mem_map			win[MAX_WIN];
+	struct list_head		cis_cache;
+	size_t				fake_cis_len;
+	u8				*fake_cis;
 
 	struct list_head		socket_list;
 	struct completion		socket_released;
 
  	/* deprecated */
+	/* deprecated */
 	unsigned int			sock;		/* socket number */
 
 
@@ -242,6 +288,29 @@ struct pcmcia_socket {
 	int (*power_hook)(struct pcmcia_socket *sock, int operation);
 #ifdef CONFIG_CARDBUS
 	/* allows tuning the CB bridge before loading driver for the CB card */
+	u_int				pci_irq;
+	struct pci_dev			*cb_dev;
+
+	/* socket setup is done so resources should be able to be allocated.
+	 * Only if set to 1, calls to find_{io,mem}_region are handled, and
+	 * insertio events are actually managed by the PCMCIA layer.*/
+	u8				resource_setup_done;
+
+	/* socket operations */
+	struct pccard_operations	*ops;
+	struct pccard_resource_ops	*resource_ops;
+	void				*resource_data;
+
+	/* Zoom video behaviour is so chip specific its not worth adding
+	   this to _ops */
+	void 				(*zoom_video)(struct pcmcia_socket *,
+						      int);
+
+	/* so is power hook */
+	int (*power_hook)(struct pcmcia_socket *sock, int operation);
+
+	/* allows tuning the CB bridge before loading driver for the CB card */
+#ifdef CONFIG_CARDBUS
 	void (*tune_bridge)(struct pcmcia_socket *sock, struct pci_bus *bus);
 #endif
 
@@ -252,6 +321,18 @@ struct pcmcia_socket {
 	struct completion		thread_done;
 	spinlock_t			thread_lock;	/* protects thread_events */
 	unsigned int			thread_events;
+	struct task_struct		*thread;
+	struct completion		thread_done;
+	unsigned int			thread_events;
+	unsigned int			sysfs_events;
+
+	/* For the non-trivial interaction between these locks,
+	 * see Documentation/pcmcia/locking.txt */
+	struct mutex			skt_mutex;
+	struct mutex			ops_mutex;
+
+	/* protects thread_events and sysfs_events */
+	spinlock_t			thread_lock;
 
 	/* pcmcia (16-bit) */
 	struct pcmcia_callback		*callback;
@@ -306,5 +387,66 @@ extern struct class pcmcia_socket_class;
 /* socket drivers are expected to use these callbacks in their .drv struct */
 extern int pcmcia_socket_dev_suspend(struct device *dev, pm_message_t state);
 extern int pcmcia_socket_dev_resume(struct device *dev);
+	/* The following elements refer to 16-bit PCMCIA devices inserted
+	 * into the socket */
+	struct list_head		devices_list;
+
+	/* the number of devices, used only internally and subject to
+	 * incorrectness and change */
+	u8				device_count;
+
+	/* does the PCMCIA card consist of two pseudo devices? */
+	u8				pcmcia_pfc;
+
+	/* non-zero if PCMCIA card is present */
+	atomic_t			present;
+
+	/* IRQ to be used by PCMCIA devices. May not be IRQ 0. */
+	unsigned int			pcmcia_irq;
+
+#endif /* CONFIG_PCMCIA */
+
+	/* socket device */
+	struct device			dev;
+	/* data internal to the socket driver */
+	void				*driver_data;
+	/* status of the card during resume from a system sleep state */
+	int				resume_status;
+};
+
+
+/* socket drivers must define the resource operations type they use. There
+ * are three options:
+ * - pccard_static_ops		iomem and ioport areas are assigned statically
+ * - pccard_iodyn_ops		iomem areas is assigned statically, ioport
+ *				areas dynamically
+ *				If this option is selected, use
+ *				"select PCCARD_IODYN" in Kconfig.
+ * - pccard_nonstatic_ops	iomem and ioport areas are assigned dynamically.
+ *				If this option is selected, use
+ *				"select PCCARD_NONSTATIC" in Kconfig.
+ *
+ */
+extern struct pccard_resource_ops pccard_static_ops;
+#if defined(CONFIG_PCMCIA) || defined(CONFIG_PCMCIA_MODULE)
+extern struct pccard_resource_ops pccard_iodyn_ops;
+extern struct pccard_resource_ops pccard_nonstatic_ops;
+#else
+/* If PCMCIA is not used, but only CARDBUS, these functions are not used
+ * at all. Therefore, do not use the large (240K!) rsrc_nonstatic module
+ */
+#define pccard_iodyn_ops pccard_static_ops
+#define pccard_nonstatic_ops pccard_static_ops
+#endif
+
+
+/* socket drivers use this callback in their IRQ handler */
+extern void pcmcia_parse_events(struct pcmcia_socket *socket,
+				unsigned int events);
+
+/* to register and unregister a socket */
+extern int pcmcia_register_socket(struct pcmcia_socket *socket);
+extern void pcmcia_unregister_socket(struct pcmcia_socket *socket);
+
 
 #endif /* _LINUX_SS_H */

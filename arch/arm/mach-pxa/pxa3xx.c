@@ -16,6 +16,10 @@
 #include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
+#include <linux/module.h>
+#include <linux/kernel.h>
+#include <linux/init.h>
+#include <linux/gpio-pxa.h>
 #include <linux/pm.h>
 #include <linux/platform_device.h>
 #include <linux/irq.h>
@@ -234,6 +238,35 @@ static struct clk pxa3xx_clks[] = {
 	PXA3xx_CKEN("MMCCLK", MMC1, 19500000, 0, &pxa_device_mci.dev),
 	PXA3xx_CKEN("MMCCLK", MMC2, 19500000, 0, &pxa3xx_device_mci2.dev),
 };
+#include <linux/of.h>
+#include <linux/syscore_ops.h>
+#include <linux/i2c/pxa-i2c.h>
+
+#include <asm/mach/map.h>
+#include <asm/suspend.h>
+#include <mach/hardware.h>
+#include <mach/pxa3xx-regs.h>
+#include <mach/reset.h>
+#include <linux/platform_data/usb-ohci-pxa27x.h>
+#include <mach/pm.h>
+#include <mach/dma.h>
+#include <mach/smemc.h>
+#include <mach/irqs.h>
+
+#include "generic.h"
+#include "devices.h"
+
+#define PECR_IE(n)	((1 << ((n) * 2)) << 28)
+#define PECR_IS(n)	((1 << ((n) * 2)) << 29)
+
+extern void __init pxa_dt_irq_init(int (*fn)(struct irq_data *, unsigned int));
+
+/*
+ * NAND NFC: DFI bus arbitration subset
+ */
+#define NDCR			(*(volatile u32 __iomem*)(NAND_VIRT + 0))
+#define NDCR_ND_ARB_EN		(1 << 12)
+#define NDCR_ND_ARB_CNTL	(1 << 19)
 
 #ifdef CONFIG_PM
 
@@ -312,6 +345,13 @@ static void pxa3xx_cpu_pm_suspend(void)
 
 	extern void pxa3xx_cpu_suspend(void);
 	extern void pxa3xx_cpu_resume(void);
+#ifndef CONFIG_IWMMXT
+	u64 acc0;
+
+	asm volatile("mra %Q0, %R0, acc0" : "=r" (acc0));
+#endif
+
+	extern int pxa3xx_finish_suspend(unsigned long);
 
 	/* resuming from D2 requires the HSIO2/BOOT/TPM clocks enabled */
 	CKENA |= (1 << CKEN_BOOT) | (1 << CKEN_TPM);
@@ -332,10 +372,17 @@ static void pxa3xx_cpu_pm_suspend(void)
 	*p = virt_to_phys(pxa3xx_cpu_resume);
 
 	pxa3xx_cpu_suspend();
+	*p = virt_to_phys(cpu_resume);
+
+	cpu_suspend(0, pxa3xx_finish_suspend);
 
 	*p = saved_data;
 
 	AD3ER = 0;
+
+#ifndef CONFIG_IWMMXT
+	asm volatile("mar acc0, %Q0, %R0" : "=r" (acc0));
+#endif
 }
 
 static void pxa3xx_cpu_pm_enter(suspend_state_t state)
@@ -405,6 +452,11 @@ static int pxa3xx_set_wake(unsigned int irq, unsigned int on)
 	unsigned long flags, mask = 0;
 
 	switch (irq) {
+static int pxa3xx_set_wake(struct irq_data *d, unsigned int on)
+{
+	unsigned long flags, mask = 0;
+
+	switch (d->irq) {
 	case IRQ_SSP3:
 		mask = ADXER_MFP_WSSP3;
 		break;
@@ -494,6 +546,57 @@ static inline void pxa3xx_init_pm(void) {}
 #endif
 
 void __init pxa3xx_init_irq(void)
+static void pxa_ack_ext_wakeup(struct irq_data *d)
+{
+	PECR |= PECR_IS(d->irq - IRQ_WAKEUP0);
+}
+
+static void pxa_mask_ext_wakeup(struct irq_data *d)
+{
+	pxa_mask_irq(d);
+	PECR &= ~PECR_IE(d->irq - IRQ_WAKEUP0);
+}
+
+static void pxa_unmask_ext_wakeup(struct irq_data *d)
+{
+	pxa_unmask_irq(d);
+	PECR |= PECR_IE(d->irq - IRQ_WAKEUP0);
+}
+
+static int pxa_set_ext_wakeup_type(struct irq_data *d, unsigned int flow_type)
+{
+	if (flow_type & IRQ_TYPE_EDGE_RISING)
+		PWER |= 1 << (d->irq - IRQ_WAKEUP0);
+
+	if (flow_type & IRQ_TYPE_EDGE_FALLING)
+		PWER |= 1 << (d->irq - IRQ_WAKEUP0 + 2);
+
+	return 0;
+}
+
+static struct irq_chip pxa_ext_wakeup_chip = {
+	.name		= "WAKEUP",
+	.irq_ack	= pxa_ack_ext_wakeup,
+	.irq_mask	= pxa_mask_ext_wakeup,
+	.irq_unmask	= pxa_unmask_ext_wakeup,
+	.irq_set_type	= pxa_set_ext_wakeup_type,
+};
+
+static void __init pxa_init_ext_wakeup_irq(int (*fn)(struct irq_data *,
+					   unsigned int))
+{
+	int irq;
+
+	for (irq = IRQ_WAKEUP0; irq <= IRQ_WAKEUP1; irq++) {
+		irq_set_chip_and_handler(irq, &pxa_ext_wakeup_chip,
+					 handle_edge_irq);
+		irq_clear_status_flags(irq, IRQ_NOREQUEST);
+	}
+
+	pxa_ext_wakeup_chip.irq_set_wake = fn;
+}
+
+static void __init __pxa3xx_init_irq(void)
 {
 	/* enable CP6 access */
 	u32 value;
@@ -503,6 +606,42 @@ void __init pxa3xx_init_irq(void)
 
 	pxa_init_irq(56, pxa3xx_set_wake);
 	pxa_init_gpio(128, NULL);
+	pxa_init_ext_wakeup_irq(pxa3xx_set_wake);
+}
+
+void __init pxa3xx_init_irq(void)
+{
+	__pxa3xx_init_irq();
+	pxa_init_irq(56, pxa3xx_set_wake);
+}
+
+#ifdef CONFIG_OF
+void __init pxa3xx_dt_init_irq(void)
+{
+	__pxa3xx_init_irq();
+	pxa_dt_irq_init(pxa3xx_set_wake);
+}
+#endif	/* CONFIG_OF */
+
+static struct map_desc pxa3xx_io_desc[] __initdata = {
+	{	/* Mem Ctl */
+		.virtual	= (unsigned long)SMEMC_VIRT,
+		.pfn		= __phys_to_pfn(PXA3XX_SMEMC_BASE),
+		.length		= SMEMC_SIZE,
+		.type		= MT_DEVICE
+	}, {
+		.virtual	= (unsigned long)NAND_VIRT,
+		.pfn		= __phys_to_pfn(NAND_PHYS),
+		.length		= NAND_SIZE,
+		.type		= MT_DEVICE
+	},
+};
+
+void __init pxa3xx_map_io(void)
+{
+	pxa_map_io();
+	iotable_init(ARRAY_AND_SIZE(pxa3xx_io_desc));
+	pxa3xx_get_clk_frequency_khz(1);
 }
 
 /*
@@ -519,6 +658,28 @@ static struct platform_device *devices[] __initdata = {
 	&pxa27x_device_ssp1,
 	&pxa27x_device_ssp2,
 	&pxa27x_device_ssp3,
+void __init pxa3xx_set_i2c_power_info(struct i2c_pxa_platform_data *info)
+{
+	pxa_register_device(&pxa3xx_device_i2c_power, info);
+}
+
+static struct pxa_gpio_platform_data pxa3xx_gpio_pdata = {
+	.irq_base	= PXA_GPIO_TO_IRQ(0),
+};
+
+static struct platform_device *devices[] __initdata = {
+	&pxa27x_device_udc,
+	&pxa_device_pmu,
+	&pxa_device_i2s,
+	&pxa_device_asoc_ssp1,
+	&pxa_device_asoc_ssp2,
+	&pxa_device_asoc_ssp3,
+	&pxa_device_asoc_ssp4,
+	&pxa_device_asoc_platform,
+	&pxa_device_rtc,
+	&pxa3xx_device_ssp1,
+	&pxa3xx_device_ssp2,
+	&pxa3xx_device_ssp3,
 	&pxa3xx_device_ssp4,
 	&pxa27x_device_pwm0,
 	&pxa27x_device_pwm1,
@@ -537,6 +698,9 @@ static struct sys_device pxa3xx_sysdev[] = {
 static int __init pxa3xx_init(void)
 {
 	int i, ret = 0;
+static int __init pxa3xx_init(void)
+{
+	int ret = 0;
 
 	if (cpu_is_pxa3xx()) {
 
@@ -553,6 +717,14 @@ static int __init pxa3xx_init(void)
 		clks_register(pxa3xx_clks, ARRAY_SIZE(pxa3xx_clks));
 
 		if ((ret = pxa_init_dma(32)))
+		/*
+		 * Disable DFI bus arbitration, to prevent a system bus lock if
+		 * somebody disables the NAND clock (unused clock) while this
+		 * bit remains set.
+		 */
+		NDCR = (NDCR & ~NDCR_ND_ARB_EN) | NDCR_ND_ARB_CNTL;
+
+		if ((ret = pxa_init_dma(IRQ_DMA, 32)))
 			return ret;
 
 		pxa3xx_init_pm();
@@ -564,6 +736,22 @@ static int __init pxa3xx_init(void)
 		}
 
 		ret = platform_add_devices(devices, ARRAY_SIZE(devices));
+		register_syscore_ops(&pxa_irq_syscore_ops);
+		register_syscore_ops(&pxa3xx_mfp_syscore_ops);
+
+		if (of_have_populated_dt())
+			return 0;
+
+		pxa2xx_set_dmac_info(32, 100);
+		ret = platform_add_devices(devices, ARRAY_SIZE(devices));
+		if (ret)
+			return ret;
+		if (cpu_is_pxa300() || cpu_is_pxa310() || cpu_is_pxa320()) {
+			platform_device_add_data(&pxa3xx_device_gpio,
+						 &pxa3xx_gpio_pdata,
+						 sizeof(pxa3xx_gpio_pdata));
+			ret = platform_device_register(&pxa3xx_device_gpio);
+		}
 	}
 
 	return ret;

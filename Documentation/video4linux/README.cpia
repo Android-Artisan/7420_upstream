@@ -8,7 +8,6 @@ Camera. For example the Creative WebcamII is CPiA driven.
 USAGE:
 
 General:
-========
 
 1) Make sure you have created the video devices (/dev/video*):
 
@@ -36,7 +35,6 @@ Parallel port driver for Vision CPiA based camera
 
 
 As modules:
-===========
 
 Make sure you have selected the following kernel options (you can
 select all stuff as modules):
@@ -66,7 +64,6 @@ line associates the video-device file with the driver. Of cause you
 can also load the modules once upon boot (usually done in /etc/modules).
 
 Linked into the kernel:
-=======================
 
 Make sure you have selected the following kernel options. Note that
 you cannot compile the parport-stuff as modules and the cpia-driver

@@ -11,6 +11,7 @@
  */
 
 #include <linux/module.h>
+#include <linux/slab.h>
 #include <linux/fs.h>
 #include <linux/genhd.h>
 #include <linux/kernel.h>
@@ -165,6 +166,8 @@ int scsi_partsize(unsigned char *buf, unsigned long capacity,
 		/* This is the actual _sector_ number at the end */
 		logical_end = get_unaligned(&largest->start_sect)
 		    + get_unaligned(&largest->nr_sects);
+		logical_end = get_unaligned_le32(&largest->start_sect)
+		    + get_unaligned_le32(&largest->nr_sects);
 
 		/* This is for >1023 cylinders */
 		ext_cyl = (logical_end - (end_head * end_sector + end_sector))

@@ -25,6 +25,13 @@
  * along with this program; if not, see the file COPYING, or write
  * to the Free Software Foundation, Inc.,
  * 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+ * Implementation of outs{bwl} for BlackFin processors using zero overhead loops.
+ *
+ * Copyright 2005-2009 Analog Devices Inc.
+ *                2005 BuyWays BV
+ *                      Bas Vermeulen <bas@buyways.nl>
+ *
+ * Licensed under the GPL-2.
  */
 
 #include <linux/linkage.h>
@@ -32,6 +39,8 @@
 .align 2
 
 ENTRY(_outsl)
+	CC = R2 == 0;
+	IF CC JUMP 1f;
 	P0 = R0;	/* P0 = port */
 	P1 = R1;	/* P1 = address */
 	P2 = R2;	/* P2 = count */
@@ -43,6 +52,12 @@ ENTRY(_outsl)
 ENDPROC(_outsl)
 
 ENTRY(_outsw)
+1:	RTS;
+ENDPROC(_outsl)
+
+ENTRY(_outsw)
+	CC = R2 == 0;
+	IF CC JUMP 1f;
 	P0 = R0;	/* P0 = port */
 	P1 = R1;	/* P1 = address */
 	P2 = R2;	/* P2 = count */
@@ -54,6 +69,12 @@ ENTRY(_outsw)
 ENDPROC(_outsw)
 
 ENTRY(_outsb)
+1:	RTS;
+ENDPROC(_outsw)
+
+ENTRY(_outsb)
+	CC = R2 == 0;
+	IF CC JUMP 1f;
 	P0 = R0;	/* P0 = port */
 	P1 = R1;	/* P1 = address */
 	P2 = R2;	/* P2 = count */
@@ -65,6 +86,12 @@ ENTRY(_outsb)
 ENDPROC(_outsb)
 
 ENTRY(_outsw_8)
+1:	RTS;
+ENDPROC(_outsb)
+
+ENTRY(_outsw_8)
+	CC = R2 == 0;
+	IF CC JUMP 1f;
 	P0 = R0;	/* P0 = port */
 	P1 = R1;	/* P1 = address */
 	P2 = R2;	/* P2 = count */
@@ -76,4 +103,5 @@ ENTRY(_outsw_8)
 		R0 = R0 + R1;
 .Lword8_loop_e: W[P0] = R0;
 	RTS;
+1:	RTS;
 ENDPROC(_outsw_8)

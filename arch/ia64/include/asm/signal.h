@@ -107,6 +107,11 @@
 #define SIGSTKSZ	262144	/* default stack size for sigaltstack() */
 
 #ifdef __KERNEL__
+#ifndef _ASM_IA64_SIGNAL_H
+#define _ASM_IA64_SIGNAL_H
+
+#include <uapi/asm/signal.h>
+
 
 #define _NSIG		64
 #define _NSIG_BPW	64
@@ -130,6 +135,8 @@ typedef struct sigaltstack {
 } stack_t;
 
 #ifdef __KERNEL__
+
+# ifndef __ASSEMBLY__
 
 /* Most things should be clean enough to redefine this at will, if care
    is taken to make libc match.  */
@@ -155,6 +162,8 @@ struct k_sigaction {
 #define ptrace_signal_deliver(regs, cookie) do { } while (0)
 
 #endif /* __KERNEL__ */
+
+#  include <asm/sigcontext.h>
 
 # endif /* !__ASSEMBLY__ */
 #endif /* _ASM_IA64_SIGNAL_H */

@@ -20,6 +20,7 @@
 
 #include "emu8000_local.h"
 #include <linux/init.h>
+#include <linux/slab.h>
 #include <sound/initval.h>
 #include <sound/pcm.h>
 
@@ -208,6 +209,7 @@ static void emu8k_pcm_timer_func(unsigned long data)
 	/* reprogram timer */
 	rec->timer.expires = jiffies + 1;
 	add_timer(&rec->timer);
+	mod_timer(&rec->timer, jiffies + 1);
 
 	/* update period */
 	if (rec->period_pos >= (int)rec->period_size) {
@@ -242,6 +244,7 @@ static int emu8k_pcm_open(struct snd_pcm_substream *subs)
 	init_timer(&rec->timer);
 	rec->timer.function = emu8k_pcm_timer_func;
 	rec->timer.data = (unsigned long)rec;
+	setup_timer(&rec->timer, emu8k_pcm_timer_func, (unsigned long)rec);
 
 	runtime->hw = emu8k_pcm_hw;
 	runtime->hw.buffer_bytes_max = emu->mem_size - LOOP_BLANK_SIZE * 3;
@@ -360,6 +363,7 @@ static void start_voice(struct snd_emu8k_pcm *rec, int ch)
 	if (! rec->timer_running) {
 		rec->timer.expires = jiffies + 1;
 		add_timer(&rec->timer);
+		mod_timer(&rec->timer, jiffies + 1);
 		rec->timer_running = 1;
 	}
 	spin_unlock_irqrestore(&rec->timer_lock, flags);
@@ -433,6 +437,8 @@ static int emu8k_transfer_block(struct snd_emu8000 *emu, int offset, unsigned sh
 		unsigned short sval;
 		CHECK_SCHEDULER();
 		get_user(sval, buf);
+		if (get_user(sval, buf))
+			return -EFAULT;
 		EMU8000_SMLD_WRITE(emu, sval);
 		buf++;
 		count--;
@@ -525,11 +531,15 @@ static int emu8k_pcm_copy(struct snd_pcm_substream *subs,
 		unsigned short sval;
 		CHECK_SCHEDULER();
 		get_user(sval, buf);
+		if (get_user(sval, buf))
+			return -EFAULT;
 		EMU8000_SMLD_WRITE(emu, sval);
 		buf++;
 		if (rec->voices > 1) {
 			CHECK_SCHEDULER();
 			get_user(sval, buf);
+			if (get_user(sval, buf))
+				return -EFAULT;
 			EMU8000_SMRD_WRITE(emu, sval);
 			buf++;
 		}

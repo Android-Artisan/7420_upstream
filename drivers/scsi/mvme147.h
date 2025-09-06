@@ -19,6 +19,11 @@ int mvme147_release(struct Scsi_Host *);
 
 #ifndef CAN_QUEUE
 #define CAN_QUEUE 16
+#define CMD_PER_LUN		2
+#endif
+
+#ifndef CAN_QUEUE
+#define CAN_QUEUE		16
 #endif
 
 #endif /* MVME147_H */

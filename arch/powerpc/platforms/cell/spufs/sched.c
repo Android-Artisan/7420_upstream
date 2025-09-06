@@ -27,6 +27,12 @@
 #include <linux/sched.h>
 #include <linux/kernel.h>
 #include <linux/mm.h>
+#include <linux/errno.h>
+#include <linux/sched.h>
+#include <linux/sched/rt.h>
+#include <linux/kernel.h>
+#include <linux/mm.h>
+#include <linux/slab.h>
 #include <linux/completion.h>
 #include <linux/vmalloc.h>
 #include <linux/smp.h>
@@ -47,6 +53,8 @@
 #include <asm/spu_csa.h>
 #include <asm/spu_priv1.h>
 #include "spufs.h"
+#define CREATE_TRACE_POINTS
+#include "sputrace.h"
 
 struct spu_prio_array {
 	DECLARE_BITMAP(bitmap, MAX_PRIO);
@@ -140,6 +148,7 @@ void __spu_update_sched_info(struct spu_context *ctx)
 	 * if it is timesliced or preempted.
 	 */
 	ctx->cpus_allowed = current->cpus_allowed;
+	cpumask_copy(&ctx->cpus_allowed, tsk_cpus_allowed(current));
 
 	/* Save the current cpu id for spu interrupt routing. */
 	ctx->last_ran = raw_smp_processor_id();
@@ -169,6 +178,9 @@ static int __node_allowed(struct spu_context *ctx, int node)
 		cpumask_t mask = node_to_cpumask(node);
 
 		if (cpus_intersects(mask, ctx->cpus_allowed))
+		const struct cpumask *mask = cpumask_of_node(node);
+
+		if (cpumask_intersects(mask, &ctx->cpus_allowed))
 			return 1;
 	}
 
@@ -312,6 +324,15 @@ static struct spu *aff_ref_location(struct spu_context *ctx, int mem_aff,
 	 */
 	node = cpu_to_node(raw_smp_processor_id());
 	for (n = 0; n < MAX_NUMNODES; n++, node++) {
+		/*
+		 * "available_spus" counts how many spus are not potentially
+		 * going to be used by other affinity gangs whose reference
+		 * context is already in place. Although this code seeks to
+		 * avoid having affinity gangs with a summed amount of
+		 * contexts bigger than the amount of spus in the node,
+		 * this may happen sporadically. In this case, available_spus
+		 * becomes negative, which is harmless.
+		 */
 		int available_spus;
 
 		node = (node < MAX_NUMNODES) ? node : 0;
@@ -327,6 +348,10 @@ static struct spu *aff_ref_location(struct spu_context *ctx, int mem_aff,
 					(spu->ctx->gang->contexts - 1);
 			else
 				available_spus++;
+			if (spu->ctx && spu->ctx->gang && !spu->ctx->aff_offset
+					&& spu->ctx->gang->aff_ref_spu)
+				available_spus -= spu->ctx->gang->contexts;
+			available_spus++;
 		}
 		if (available_spus < ctx->gang->contexts) {
 			mutex_unlock(&cbe_spu_info[node].list_mutex);
@@ -437,6 +462,11 @@ static void spu_unbind_context(struct spu *spu, struct spu_context *ctx)
 		atomic_dec(&cbe_spu_info[spu->node].reserved_spus);
 
 	if (ctx->gang)
+		/*
+		 * If ctx->gang->aff_sched_count is positive, SPU affinity is
+		 * being considered in this gang. Using atomic_dec_if_positive
+		 * allow us to skip an explicit check for affinity in this gang
+		 */
 		atomic_dec_if_positive(&ctx->gang->aff_sched_count);
 
 	spu_switch_notify(spu, NULL);
@@ -497,6 +527,7 @@ static void __spu_add_to_rq(struct spu_context *ctx)
 		set_bit(ctx->prio, spu_prio->bitmap);
 		if (!spu_prio->nr_waiting++)
 			__mod_timer(&spusched_timer, jiffies + SPUSCHED_TICK);
+			mod_timer(&spusched_timer, jiffies + SPUSCHED_TICK);
 	}
 }
 
@@ -833,6 +864,7 @@ static struct spu_context *grab_runnable_context(int prio, int node)
 
 		list_for_each_entry(ctx, rq, rq) {
 			/* XXX(hch): check for affinity here aswell */
+			/* XXX(hch): check for affinity here as well */
 			if (__node_allowed(ctx, node)) {
 				__spu_del_from_rq(ctx);
 				goto found;
@@ -1033,6 +1065,7 @@ void spuctx_switch_state(struct spu_context *ctx,
 
 	ktime_get_ts(&ts);
 	curtime = timespec_to_ns(&ts);
+	curtime = ktime_get_ns();
 	delta = curtime - ctx->stats.tstamp;
 
 	WARN_ON(!mutex_is_locked(&ctx->state_mutex));
@@ -1082,6 +1115,7 @@ static int show_spu_loadavg(struct seq_file *s, void *private)
 		count_active_contexts(),
 		atomic_read(&nr_spu_contexts),
 		current->nsproxy->pid_ns->last_pid);
+		task_active_pid_ns(current)->last_pid);
 	return 0;
 }
 

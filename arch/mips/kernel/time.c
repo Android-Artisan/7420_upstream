@@ -7,6 +7,8 @@
  *
  * This program is free software; you can redistribute  it and/or modify it
  * under  the terms of  the GNU General  Public License as published by the
+ * This program is free software; you can redistribute	it and/or modify it
+ * under  the terms of	the GNU General	 Public License as published by the
  * Free Software Foundation;  either version 2 of the  License, or (at your
  * option) any later version.
  */
@@ -26,7 +28,77 @@
 #include <asm/cpu-features.h>
 #include <asm/div64.h>
 #include <asm/smtc_ipi.h>
+#include <linux/export.h>
+#include <linux/cpufreq.h>
+#include <linux/delay.h>
+
+#include <asm/cpu-features.h>
+#include <asm/cpu-type.h>
+#include <asm/div64.h>
 #include <asm/time.h>
+
+#ifdef CONFIG_CPU_FREQ
+
+static DEFINE_PER_CPU(unsigned long, pcp_lpj_ref);
+static DEFINE_PER_CPU(unsigned long, pcp_lpj_ref_freq);
+static unsigned long glb_lpj_ref;
+static unsigned long glb_lpj_ref_freq;
+
+static int cpufreq_callback(struct notifier_block *nb,
+			    unsigned long val, void *data)
+{
+	int cpu;
+	struct cpufreq_freqs *freq = data;
+
+	/*
+	 * Skip lpj numbers adjustment if the CPU-freq transition is safe for
+	 * the loops delay. (Is this possible?)
+	 */
+	if (freq->flags & CPUFREQ_CONST_LOOPS)
+		return NOTIFY_OK;
+
+	/* Save the initial values of the lpjes for future scaling. */
+	if (!glb_lpj_ref) {
+		glb_lpj_ref = boot_cpu_data.udelay_val;
+		glb_lpj_ref_freq = freq->old;
+
+		for_each_online_cpu(cpu) {
+			per_cpu(pcp_lpj_ref, cpu) =
+				cpu_data[cpu].udelay_val;
+			per_cpu(pcp_lpj_ref_freq, cpu) = freq->old;
+		}
+	}
+
+	cpu = freq->cpu;
+	/*
+	 * Adjust global lpj variable and per-CPU udelay_val number in
+	 * accordance with the new CPU frequency.
+	 */
+	if ((val == CPUFREQ_PRECHANGE  && freq->old < freq->new) ||
+	    (val == CPUFREQ_POSTCHANGE && freq->old > freq->new)) {
+		loops_per_jiffy = cpufreq_scale(glb_lpj_ref,
+						glb_lpj_ref_freq,
+						freq->new);
+
+		cpu_data[cpu].udelay_val = cpufreq_scale(per_cpu(pcp_lpj_ref, cpu),
+					   per_cpu(pcp_lpj_ref_freq, cpu), freq->new);
+	}
+
+	return NOTIFY_OK;
+}
+
+static struct notifier_block cpufreq_notifier = {
+	.notifier_call  = cpufreq_callback,
+};
+
+static int __init register_cpufreq_notifier(void)
+{
+	return cpufreq_register_notifier(&cpufreq_notifier,
+					 CPUFREQ_TRANSITION_NOTIFIER);
+}
+core_initcall(register_cpufreq_notifier);
+
+#endif /* CONFIG_CPU_FREQ */
 
 /*
  * forward reference
@@ -64,6 +136,8 @@ EXPORT_SYMBOL(perf_irq);
  * 1) plat_time_init() -
  * 	a) (optional) set up RTC routines,
  *      b) (optional) calibrate and set the mips_hpt_frequency
+ *	a) (optional) set up RTC routines,
+ *	b) (optional) calibrate and set the mips_hpt_frequency
  *	    (only needed if you intended to use cpu counter as timer interrupt
  *	     source)
  * 2) calculate a couple of cached variables for later usage
@@ -109,6 +183,7 @@ void __cpuinit clockevent_set_clock(struct clock_event_device *cd,
  * definition if platform code should have its own implementation.  The hook
  * to use instead is plat_time_init.  plat_time_init does not receive the
  * irqaction pointer argument anymore.  This is because any function which
+ * irqaction pointer argument anymore.	This is because any function which
  * initializes an interrupt timer now takes care of its own request_irq rsp.
  * setup_irq calls and each clock_event_device should use its own
  * struct irqrequest.
@@ -127,6 +202,7 @@ static __init int cpu_has_mfc0_count_bug(void)
 		/*
 		 * V3.0 is documented as suffering from the mfc0 from count bug.
 		 * Afaik this is the last version of the R4000.  Later versions
+		 * Afaik this is the last version of the R4000.	 Later versions
 		 * were marketed as R4400.
 		 */
 		return 1;
@@ -136,15 +212,11 @@ static __init int cpu_has_mfc0_count_bug(void)
 	case CPU_R4400MC:
 		/*
 		 * The published errata for the R4400 upto 3.0 say the CPU
-		 * has the mfc0 from count bug.
+		 * The published errata for the R4400 up to 3.0 say the CPU
+		 * has the mfc0 from count bug.  This seems the last version
+		 * produced.
 		 */
-		if ((current_cpu_data.processor_id & 0xff) <= 0x30)
-			return 1;
-
-		/*
-		 * we assume newer revisions are ok
-		 */
-		return 0;
+		return 1;
 	}
 
 	return 0;
@@ -155,5 +227,14 @@ void __init time_init(void)
 	plat_time_init();
 
 	if (!mips_clockevent_init() || !cpu_has_mfc0_count_bug())
+	/*
+	 * The use of the R4k timer as a clock event takes precedence;
+	 * if reading the Count register might interfere with the timer
+	 * interrupt, then we don't use the timer as a clock source.
+	 * We may still use the timer as a clock source though if the
+	 * timer interrupt isn't reliable; the interference doesn't
+	 * matter then, because we don't use the interrupt.
+	 */
+	if (mips_clockevent_init() != 0 || !cpu_has_mfc0_count_bug())
 		init_mips_clocksource();
 }

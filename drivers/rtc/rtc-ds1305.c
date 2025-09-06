@@ -11,11 +11,13 @@
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/bcd.h>
+#include <linux/slab.h>
 #include <linux/rtc.h>
 #include <linux/workqueue.h>
 
 #include <linux/spi/spi.h>
 #include <linux/spi/ds1305.h>
+#include <linux/module.h>
 
 
 /*
@@ -118,6 +120,10 @@ static unsigned bcd2hour(u8 bcd)
 		return hour - 1;
 	}
 	return BCD2BIN(bcd);
+		hour += bcd2bin(bcd);
+		return hour - 1;
+	}
+	return bcd2bin(bcd);
 }
 
 static u8 hour2bcd(bool hr12, int hour)
@@ -130,6 +136,11 @@ static u8 hour2bcd(bool hr12, int hour)
 		return DS1305_HR_12 | DS1305_HR_PM | BIN2BCD(hour);
 	}
 	return BIN2BCD(hour);
+			return DS1305_HR_12 | bin2bcd(hour);
+		hour -= 12;
+		return DS1305_HR_12 | DS1305_HR_PM | bin2bcd(hour);
+	}
+	return bin2bcd(hour);
 }
 
 /*----------------------------------------------------------------------*/
@@ -148,6 +159,11 @@ static int ds1305_ioctl(struct device *dev, unsigned cmd, unsigned long arg)
 	struct ds1305	*ds1305 = dev_get_drvdata(dev);
 	u8		buf[2];
 	int		status = -ENOIOCTLCMD;
+static int ds1305_alarm_irq_enable(struct device *dev, unsigned int enabled)
+{
+	struct ds1305	*ds1305 = dev_get_drvdata(dev);
+	u8		buf[2];
+	long		err = -EINVAL;
 
 	buf[0] = DS1305_WRITE | DS1305_CONTROL;
 	buf[1] = ds1305->ctrl[0];
@@ -181,6 +197,23 @@ done:
 #else
 #define ds1305_ioctl	NULL
 #endif
+	if (enabled) {
+		if (ds1305->ctrl[0] & DS1305_AEI0)
+			goto done;
+		buf[1] |= DS1305_AEI0;
+	} else {
+		if (!(buf[1] & DS1305_AEI0))
+			goto done;
+		buf[1] &= ~DS1305_AEI0;
+	}
+	err = spi_write_then_read(ds1305->spi, buf, sizeof(buf), NULL, 0);
+	if (err >= 0)
+		ds1305->ctrl[0] = buf[1];
+done:
+	return err;
+
+}
+
 
 /*
  * Get/set of date and time is pretty normal.
@@ -198,6 +231,8 @@ static int ds1305_get_time(struct device *dev, struct rtc_time *time)
 	 */
 	status = spi_write_then_read(ds1305->spi, &addr, sizeof addr,
 			buf, sizeof buf);
+	status = spi_write_then_read(ds1305->spi, &addr, sizeof(addr),
+			buf, sizeof(buf));
 	if (status < 0)
 		return status;
 
@@ -213,6 +248,13 @@ static int ds1305_get_time(struct device *dev, struct rtc_time *time)
 	time->tm_mday = BCD2BIN(buf[DS1305_MDAY]);
 	time->tm_mon = BCD2BIN(buf[DS1305_MON]) - 1;
 	time->tm_year = BCD2BIN(buf[DS1305_YEAR]) + 100;
+	time->tm_sec = bcd2bin(buf[DS1305_SEC]);
+	time->tm_min = bcd2bin(buf[DS1305_MIN]);
+	time->tm_hour = bcd2hour(buf[DS1305_HOUR]);
+	time->tm_wday = buf[DS1305_WDAY] - 1;
+	time->tm_mday = bcd2bin(buf[DS1305_MDAY]);
+	time->tm_mon = bcd2bin(buf[DS1305_MON]) - 1;
+	time->tm_year = bcd2bin(buf[DS1305_YEAR]) + 100;
 
 	dev_vdbg(dev, "%s secs=%d, mins=%d, "
 		"hours=%d, mday=%d, mon=%d, year=%d, wday=%d\n",
@@ -246,6 +288,13 @@ static int ds1305_set_time(struct device *dev, struct rtc_time *time)
 	*bp++ = BIN2BCD(time->tm_mday);
 	*bp++ = BIN2BCD(time->tm_mon + 1);
 	*bp++ = BIN2BCD(time->tm_year - 100);
+	*bp++ = bin2bcd(time->tm_sec);
+	*bp++ = bin2bcd(time->tm_min);
+	*bp++ = hour2bcd(ds1305->hr12, time->tm_hour);
+	*bp++ = (time->tm_wday < 7) ? (time->tm_wday + 1) : 1;
+	*bp++ = bin2bcd(time->tm_mday);
+	*bp++ = bin2bcd(time->tm_mon + 1);
+	*bp++ = bin2bcd(time->tm_year - 100);
 
 	dev_dbg(dev, "%s: %02x %02x %02x, %02x %02x %02x %02x\n",
 		"write", buf[1], buf[2], buf[3],
@@ -253,6 +302,7 @@ static int ds1305_set_time(struct device *dev, struct rtc_time *time)
 
 	/* use write-then-read since dma from stack is nonportable */
 	return spi_write_then_read(ds1305->spi, buf, sizeof buf,
+	return spi_write_then_read(ds1305->spi, buf, sizeof(buf),
 			NULL, 0);
 }
 
@@ -303,6 +353,8 @@ static int ds1305_get_alarm(struct device *dev, struct rtc_wkalrm *alm)
 	addr = DS1305_CONTROL;
 	status = spi_write_then_read(spi, &addr, sizeof addr,
 			ds1305->ctrl, sizeof ds1305->ctrl);
+	status = spi_write_then_read(spi, &addr, sizeof(addr),
+			ds1305->ctrl, sizeof(ds1305->ctrl));
 	if (status < 0)
 		return status;
 
@@ -313,6 +365,8 @@ static int ds1305_get_alarm(struct device *dev, struct rtc_wkalrm *alm)
 	addr = DS1305_ALM0(DS1305_SEC);
 	status = spi_write_then_read(spi, &addr, sizeof addr,
 			buf, sizeof buf);
+	status = spi_write_then_read(spi, &addr, sizeof(addr),
+			buf, sizeof(buf));
 	if (status < 0)
 		return status;
 
@@ -331,6 +385,8 @@ static int ds1305_get_alarm(struct device *dev, struct rtc_wkalrm *alm)
 	 */
 	alm->time.tm_sec = BCD2BIN(buf[DS1305_SEC]);
 	alm->time.tm_min = BCD2BIN(buf[DS1305_MIN]);
+	alm->time.tm_sec = bcd2bin(buf[DS1305_SEC]);
+	alm->time.tm_min = bcd2bin(buf[DS1305_MIN]);
 	alm->time.tm_hour = bcd2hour(buf[DS1305_HOUR]);
 	alm->time.tm_mday = -1;
 	alm->time.tm_mon = -1;
@@ -389,6 +445,8 @@ static int ds1305_set_alarm(struct device *dev, struct rtc_wkalrm *alm)
 	buf[0] = DS1305_WRITE | DS1305_ALM0(DS1305_SEC);
 	buf[1 + DS1305_SEC] = BIN2BCD(alm->time.tm_sec);
 	buf[1 + DS1305_MIN] = BIN2BCD(alm->time.tm_min);
+	buf[1 + DS1305_SEC] = bin2bcd(alm->time.tm_sec);
+	buf[1 + DS1305_MIN] = bin2bcd(alm->time.tm_min);
 	buf[1 + DS1305_HOUR] = hour2bcd(ds1305->hr12, alm->time.tm_hour);
 	buf[1 + DS1305_WDAY] = DS1305_ALM_DISABLE;
 
@@ -397,6 +455,7 @@ static int ds1305_set_alarm(struct device *dev, struct rtc_wkalrm *alm)
 		buf[1 + DS1305_HOUR], buf[1 + DS1305_WDAY]);
 
 	status = spi_write_then_read(spi, buf, sizeof buf, NULL, 0);
+	status = spi_write_then_read(spi, buf, sizeof(buf), NULL, 0);
 	if (status < 0)
 		return status;
 
@@ -452,6 +511,9 @@ done:
 	return seq_printf(seq,
 			"trickle_charge\t: %s%s\n",
 			diodes, resistors);
+	seq_printf(seq, "trickle_charge\t: %s%s\n", diodes, resistors);
+
+	return 0;
 }
 
 #else
@@ -465,6 +527,7 @@ static const struct rtc_class_ops ds1305_ops = {
 	.read_alarm	= ds1305_get_alarm,
 	.set_alarm	= ds1305_set_alarm,
 	.proc		= ds1305_proc,
+	.alarm_irq_enable = ds1305_alarm_irq_enable,
 };
 
 static void ds1305_work(struct work_struct *work)
@@ -490,6 +553,7 @@ static void ds1305_work(struct work_struct *work)
 	buf[2] = 0;
 
 	status = spi_write_then_read(spi, buf, sizeof buf,
+	status = spi_write_then_read(spi, buf, sizeof(buf),
 			NULL, 0);
 	if (status < 0)
 		dev_dbg(&spi->dev, "clear irq --> %d\n", status);
@@ -503,6 +567,7 @@ static void ds1305_work(struct work_struct *work)
 	local_irq_disable();
 	rtc_update_irq(ds1305->rtc, 1, RTC_AF | RTC_IRQF);
 	local_irq_enable();
+	rtc_update_irq(ds1305->rtc, 1, RTC_AF | RTC_IRQF);
 }
 
 /*
@@ -545,6 +610,8 @@ static void msg_init(struct spi_message *m, struct spi_transfer *x,
 
 static ssize_t
 ds1305_nvram_read(struct kobject *kobj, struct bin_attribute *attr,
+ds1305_nvram_read(struct file *filp, struct kobject *kobj,
+		struct bin_attribute *attr,
 		char *buf, loff_t off, size_t count)
 {
 	struct spi_device	*spi;
@@ -575,6 +642,8 @@ ds1305_nvram_read(struct kobject *kobj, struct bin_attribute *attr,
 
 static ssize_t
 ds1305_nvram_write(struct kobject *kobj, struct bin_attribute *attr,
+ds1305_nvram_write(struct file *filp, struct kobject *kobj,
+		struct bin_attribute *attr,
 		char *buf, loff_t off, size_t count)
 {
 	struct spi_device	*spi;
@@ -625,6 +694,12 @@ static int __devinit ds1305_probe(struct spi_device *spi)
 	int				status;
 	u8				addr, value;
 	struct ds1305_platform_data	*pdata = spi->dev.platform_data;
+static int ds1305_probe(struct spi_device *spi)
+{
+	struct ds1305			*ds1305;
+	int				status;
+	u8				addr, value;
+	struct ds1305_platform_data	*pdata = dev_get_platdata(&spi->dev);
 	bool				write_ctrl = false;
 
 	/* Sanity check board setup data.  This may be hooked up
@@ -638,6 +713,7 @@ static int __devinit ds1305_probe(struct spi_device *spi)
 
 	/* set up driver data */
 	ds1305 = kzalloc(sizeof *ds1305, GFP_KERNEL);
+	ds1305 = devm_kzalloc(&spi->dev, sizeof(*ds1305), GFP_KERNEL);
 	if (!ds1305)
 		return -ENOMEM;
 	ds1305->spi = spi;
@@ -656,6 +732,15 @@ static int __devinit ds1305_probe(struct spi_device *spi)
 	dev_dbg(&spi->dev, "ctrl %s: %02x %02x %02x\n",
 			"read", ds1305->ctrl[0],
 			ds1305->ctrl[1], ds1305->ctrl[2]);
+	status = spi_write_then_read(spi, &addr, sizeof(addr),
+			ds1305->ctrl, sizeof(ds1305->ctrl));
+	if (status < 0) {
+		dev_dbg(&spi->dev, "can't %s, %d\n",
+				"read", status);
+		return status;
+	}
+
+	dev_dbg(&spi->dev, "ctrl %s: %3ph\n", "read", ds1305->ctrl);
 
 	/* Sanity check register values ... partially compensating for the
 	 * fact that SPI has no device handshake.  A pullup on MISO would
@@ -666,6 +751,7 @@ static int __devinit ds1305_probe(struct spi_device *spi)
 		dev_dbg(&spi->dev, "RTC chip is not present\n");
 		status = -ENODEV;
 		goto fail0;
+		return -ENODEV;
 	}
 	if (ds1305->ctrl[2] == 0)
 		dev_dbg(&spi->dev, "chip may not be present\n");
@@ -685,6 +771,11 @@ static int __devinit ds1305_probe(struct spi_device *spi)
 		dev_dbg(&spi->dev, "clear WP --> %d\n", status);
 		if (status < 0)
 			goto fail0;
+		status = spi_write_then_read(spi, buf, sizeof(buf), NULL, 0);
+
+		dev_dbg(&spi->dev, "clear WP --> %d\n", status);
+		if (status < 0)
+			return status;
 	}
 
 	/* on DS1305, maybe start oscillator; like most low power
@@ -744,6 +835,14 @@ static int __devinit ds1305_probe(struct spi_device *spi)
 		dev_dbg(&spi->dev, "ctrl %s: %02x %02x %02x\n",
 				"write", ds1305->ctrl[0],
 				ds1305->ctrl[1], ds1305->ctrl[2]);
+		status = spi_write_then_read(spi, buf, sizeof(buf), NULL, 0);
+		if (status < 0) {
+			dev_dbg(&spi->dev, "can't %s, %d\n",
+					"write", status);
+			return status;
+		}
+
+		dev_dbg(&spi->dev, "ctrl %s: %3ph\n", "write", ds1305->ctrl);
 	}
 
 	/* see if non-Linux software set up AM/PM mode */
@@ -753,6 +852,11 @@ static int __devinit ds1305_probe(struct spi_device *spi)
 	if (status < 0) {
 		dev_dbg(&spi->dev, "read HOUR --> %d\n", status);
 		goto fail0;
+	status = spi_write_then_read(spi, &addr, sizeof(addr),
+				&value, sizeof(value));
+	if (status < 0) {
+		dev_dbg(&spi->dev, "read HOUR --> %d\n", status);
+		return status;
 	}
 
 	ds1305->hr12 = (DS1305_HR_12 & value) != 0;
@@ -768,6 +872,13 @@ static int __devinit ds1305_probe(struct spi_device *spi)
 		goto fail0;
 	}
 	ds1305->rtc = rtc;
+	ds1305->rtc = devm_rtc_device_register(&spi->dev, "ds1305",
+			&ds1305_ops, THIS_MODULE);
+	if (IS_ERR(ds1305->rtc)) {
+		status = PTR_ERR(ds1305->rtc);
+		dev_dbg(&spi->dev, "register rtc --> %d\n", status);
+		return status;
+	}
 
 	/* Maybe set up alarm IRQ; be ready to handle it triggering right
 	 * away.  NOTE that we don't share this.  The signal is active low,
@@ -783,6 +894,13 @@ static int __devinit ds1305_probe(struct spi_device *spi)
 			dev_dbg(&spi->dev, "request_irq %d --> %d\n",
 					spi->irq, status);
 			goto fail1;
+		status = devm_request_irq(&spi->dev, spi->irq, ds1305_irq,
+				0, dev_name(&ds1305->rtc->dev), ds1305);
+		if (status < 0) {
+			dev_err(&spi->dev, "request_irq %d --> %d\n",
+					spi->irq, status);
+		} else {
+			device_set_wakeup_capable(&spi->dev, 1);
 		}
 	}
 
@@ -807,6 +925,15 @@ fail0:
 static int __devexit ds1305_remove(struct spi_device *spi)
 {
 	struct ds1305	*ds1305 = spi_get_drvdata(spi);
+		dev_err(&spi->dev, "register nvram --> %d\n", status);
+	}
+
+	return 0;
+}
+
+static int ds1305_remove(struct spi_device *spi)
+{
+	struct ds1305 *ds1305 = spi_get_drvdata(spi);
 
 	sysfs_remove_bin_file(&spi->dev.kobj, &nvram);
 
@@ -820,6 +947,10 @@ static int __devexit ds1305_remove(struct spi_device *spi)
 	rtc_device_unregister(ds1305->rtc);
 	spi_set_drvdata(spi, NULL);
 	kfree(ds1305);
+		devm_free_irq(&spi->dev, spi->irq, ds1305);
+		cancel_work_sync(&ds1305->work);
+	}
+
 	return 0;
 }
 
@@ -845,3 +976,13 @@ module_exit(ds1305_exit);
 
 MODULE_DESCRIPTION("RTC driver for DS1305 and DS1306 chips");
 MODULE_LICENSE("GPL");
+	.probe		= ds1305_probe,
+	.remove		= ds1305_remove,
+	/* REVISIT add suspend/resume */
+};
+
+module_spi_driver(ds1305_driver);
+
+MODULE_DESCRIPTION("RTC driver for DS1305 and DS1306 chips");
+MODULE_LICENSE("GPL");
+MODULE_ALIAS("spi:rtc-ds1305");

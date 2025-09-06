@@ -5,6 +5,7 @@
   PIO Transmission
 
   Copyright (c) 2005 Michael Buesch <mb@bu3sch.de>
+  Copyright (c) 2005 Michael Buesch <m@bues.ch>
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -29,6 +30,7 @@
 #include "xmit.h"
 
 #include <linux/delay.h>
+#include <linux/slab.h>
 
 
 static void tx_start(struct b43legacy_pioqueue *queue)
@@ -382,6 +384,7 @@ static void cancel_transfers(struct b43legacy_pioqueue *queue)
 	struct b43legacy_pio_txpacket *packet, *tmp_packet;
 
 	tasklet_disable(&queue->txtask);
+	tasklet_kill(&queue->txtask);
 
 	list_for_each_entry_safe(packet, tmp_packet, &queue->txrunning, list)
 		free_txpacket(packet, 0);
@@ -444,6 +447,7 @@ int b43legacy_pio_init(struct b43legacy_wldev *dev)
 
 	if (dev->dev->id.revision < 3)
 		dev->irq_savedstate |= B43legacy_IRQ_PIO_WORKAROUND;
+		dev->irq_mask |= B43legacy_IRQ_PIO_WORKAROUND;
 
 	b43legacydbg(dev->wl, "PIO initialized\n");
 	err = 0;
@@ -491,6 +495,7 @@ void b43legacy_pio_handle_txstatus(struct b43legacy_wldev *dev,
 	struct b43legacy_pioqueue *queue;
 	struct b43legacy_pio_txpacket *packet;
 	struct ieee80211_tx_info *info;
+	int retry_limit;
 
 	queue = parse_cookie(dev, status->cookie, &packet);
 	B43legacy_WARN_ON(!queue);
@@ -508,6 +513,37 @@ void b43legacy_pio_handle_txstatus(struct b43legacy_wldev *dev,
 	if (status->acked)
 		info->flags |= IEEE80211_TX_STAT_ACK;
 	info->status.retry_count = status->frame_count - 1;
+
+	/* preserve the confiured retry limit before clearing the status
+	 * The xmit function has overwritten the rc's value with the actual
+	 * retry limit done by the hardware */
+	retry_limit = info->status.rates[0].count;
+	ieee80211_tx_info_clear_status(info);
+
+	if (status->acked)
+		info->flags |= IEEE80211_TX_STAT_ACK;
+
+	if (status->rts_count > dev->wl->hw->conf.short_frame_max_tx_count) {
+		/*
+		 * If the short retries (RTS, not data frame) have exceeded
+		 * the limit, the hw will not have tried the selected rate,
+		 * but will have used the fallback rate instead.
+		 * Don't let the rate control count attempts for the selected
+		 * rate in this case, otherwise the statistics will be off.
+		 */
+		info->status.rates[0].count = 0;
+		info->status.rates[1].count = status->frame_count;
+	} else {
+		if (status->frame_count > retry_limit) {
+			info->status.rates[0].count = retry_limit;
+			info->status.rates[1].count = status->frame_count -
+					retry_limit;
+
+		} else {
+			info->status.rates[0].count = status->frame_count;
+			info->status.rates[1].idx = -1;
+		}
+	}
 	ieee80211_tx_status_irqsafe(dev->wl->hw, packet->skb);
 	packet->skb = NULL;
 

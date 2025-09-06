@@ -7,6 +7,7 @@
  */
 
 #include <linux/smp_lock.h>
+#include <linux/gfp.h>
 #include "isofs.h"
 
 /*
@@ -38,6 +39,11 @@ isofs_cmp(struct dentry *dentry, const char *compare, int dlen)
 	qstr.name = compare;
 	qstr.len = dlen;
 	return dentry->d_op->d_compare(dentry, &dentry->d_name, &qstr);
+	qstr.name = compare;
+	qstr.len = dlen;
+	if (likely(!dentry->d_op))
+		return dentry->d_name.len != dlen || memcmp(dentry->d_name.name, compare, dlen);
+	return dentry->d_op->d_compare(NULL, NULL, dentry->d_name.len, dentry->d_name.name, &qstr);
 }
 
 /*
@@ -116,6 +122,7 @@ isofs_find_entry(struct inode *dir, struct dentry *dentry,
 			printk(KERN_NOTICE "iso9660: Corrupted directory entry"
 			       " in block %lu of inode %lu\n", block,
 			       dir->i_ino);
+			brelse(bh);
 			return 0;
 		}
 
@@ -147,6 +154,12 @@ isofs_find_entry(struct inode *dir, struct dentry *dentry,
 			(sbi->s_showassoc =='y' ||
 				(!(de->flags[-sbi->s_high_sierra] & 4)))) {
 			match = (isofs_cmp(dentry, dpnt, dlen) == 0);
+			(!sbi->s_hide ||
+				(!(de->flags[-sbi->s_high_sierra] & 1))) &&
+			(sbi->s_showassoc ||
+				(!(de->flags[-sbi->s_high_sierra] & 4)))) {
+			if (dpnt && (dlen > 1 || dpnt[0] > 1))
+				match = (isofs_cmp(dentry, dpnt, dlen) == 0);
 		}
 		if (match) {
 			isofs_normalize_block_and_offset(de,
@@ -163,6 +176,7 @@ isofs_find_entry(struct inode *dir, struct dentry *dentry,
 }
 
 struct dentry *isofs_lookup(struct inode *dir, struct dentry *dentry, struct nameidata *nd)
+struct dentry *isofs_lookup(struct inode *dir, struct dentry *dentry, unsigned int flags)
 {
 	int found;
 	unsigned long uninitialized_var(block);
@@ -192,5 +206,7 @@ struct dentry *isofs_lookup(struct inode *dir, struct dentry *dentry, struct nam
 		}
 	}
 	unlock_kernel();
+	inode = found ? isofs_iget(dir->i_sb, block, offset) : NULL;
+
 	return d_splice_alias(inode, dentry);
 }

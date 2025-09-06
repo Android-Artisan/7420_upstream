@@ -32,11 +32,13 @@
 #include <linux/io.h>
 #include <linux/mutex.h>
 #include <linux/linux_logo.h>
+#include <linux/syscore_ops.h>
 #include <asm/spu.h>
 #include <asm/spu_priv1.h>
 #include <asm/spu_csa.h>
 #include <asm/xmon.h>
 #include <asm/prom.h>
+#include <asm/kexec.h>
 
 const struct spu_management_ops *spu_management_ops;
 EXPORT_SYMBOL_GPL(spu_management_ops);
@@ -115,6 +117,7 @@ static inline void mm_needs_global_tlbie(struct mm_struct *mm)
 
 	/* Global TLBIE broadcast required with SPEs. */
 	__cpus_setall(&mm->cpu_vm_mask, nr);
+	bitmap_fill(cpumask_bits(mm_cpumask(mm)), nr);
 }
 
 void spu_associate_mm(struct spu *spu, struct mm_struct *mm)
@@ -152,6 +155,11 @@ static inline void spu_load_slb(struct spu *spu, int slbe, struct spu_slb *slb)
 	struct spu_priv2 __iomem *priv2 = spu->priv2;
 
 	pr_debug("%s: adding SLB[%d] 0x%016lx 0x%016lx\n",
+static inline void spu_load_slb(struct spu *spu, int slbe, struct copro_slb *slb)
+{
+	struct spu_priv2 __iomem *priv2 = spu->priv2;
+
+	pr_debug("%s: adding SLB[%d] 0x%016llx 0x%016llx\n",
 			__func__, slbe, slb->vsid, slb->esid);
 
 	out_be64(&priv2->slb_index_W, slbe);
@@ -204,6 +212,12 @@ static int __spu_trap_data_seg(struct spu *spu, unsigned long ea)
 		return 1;
 	}
 	slb.vsid |= mmu_psize_defs[psize].sllp;
+	struct copro_slb slb;
+	int ret;
+
+	ret = copro_calculate_slb(spu->mm, ea, &slb);
+	if (ret)
+		return ret;
 
 	spu_load_slb(spu, spu->slb_replace, &slb);
 
@@ -217,11 +231,14 @@ static int __spu_trap_data_seg(struct spu *spu, unsigned long ea)
 }
 
 extern int hash_page(unsigned long ea, unsigned long access, unsigned long trap); //XXX
+extern int hash_page(unsigned long ea, unsigned long access,
+		     unsigned long trap, unsigned long dsisr); //XXX
 static int __spu_trap_data_map(struct spu *spu, unsigned long ea, u64 dsisr)
 {
 	int ret;
 
 	pr_debug("%s, %lx, %lx\n", __func__, dsisr, ea);
+	pr_debug("%s, %llx, %lx\n", __func__, dsisr, ea);
 
 	/*
 	 * Handle kernel space hash faults immediately. User hash
@@ -232,6 +249,7 @@ static int __spu_trap_data_map(struct spu *spu, unsigned long ea, u64 dsisr)
 
 		spin_unlock(&spu->register_lock);
 		ret = hash_page(ea, _PAGE_PRESENT, 0x300);
+		ret = hash_page(ea, _PAGE_PRESENT, 0x300, dsisr);
 		spin_lock(&spu->register_lock);
 
 		if (!ret) {
@@ -252,6 +270,7 @@ static int __spu_trap_data_map(struct spu *spu, unsigned long ea, u64 dsisr)
 }
 
 static void __spu_kernel_slb(void *addr, struct spu_slb *slb)
+static void __spu_kernel_slb(void *addr, struct copro_slb *slb)
 {
 	unsigned long ea = (unsigned long)addr;
 	u64 llp;
@@ -271,6 +290,7 @@ static void __spu_kernel_slb(void *addr, struct spu_slb *slb)
  * address @new_addr is present.
  */
 static inline int __slb_present(struct spu_slb *slbs, int nr_slbs,
+static inline int __slb_present(struct copro_slb *slbs, int nr_slbs,
 		void *new_addr)
 {
 	unsigned long ea = (unsigned long)new_addr;
@@ -296,6 +316,7 @@ void spu_setup_kernel_slbs(struct spu *spu, struct spu_lscsa *lscsa,
 		void *code, int code_size)
 {
 	struct spu_slb slbs[4];
+	struct copro_slb slbs[4];
 	int i, nr_slbs = 0;
 	/* start and end addresses of both mappings */
 	void *addrs[] = {
@@ -442,6 +463,7 @@ static int spu_request_irqs(struct spu *spu)
 		ret = request_irq(spu->irqs[0], spu_irq_class_0,
 				  IRQF_DISABLED,
 				  spu->irq_c0, spu);
+				  0, spu->irq_c0, spu);
 		if (ret)
 			goto bail0;
 	}
@@ -451,6 +473,7 @@ static int spu_request_irqs(struct spu *spu)
 		ret = request_irq(spu->irqs[1], spu_irq_class_1,
 				  IRQF_DISABLED,
 				  spu->irq_c1, spu);
+				  0, spu->irq_c1, spu);
 		if (ret)
 			goto bail1;
 	}
@@ -460,6 +483,7 @@ static int spu_request_irqs(struct spu *spu)
 		ret = request_irq(spu->irqs[2], spu_irq_class_2,
 				  IRQF_DISABLED,
 				  spu->irq_c2, spu);
+				  0, spu->irq_c2, spu);
 		if (ret)
 			goto bail2;
 	}
@@ -535,12 +559,19 @@ static struct sysdev_class spu_sysdev_class = {
 };
 
 int spu_add_sysdev_attr(struct sysdev_attribute *attr)
+static struct bus_type spu_subsys = {
+	.name = "spu",
+	.dev_name = "spu",
+};
+
+int spu_add_dev_attr(struct device_attribute *attr)
 {
 	struct spu *spu;
 
 	mutex_lock(&spu_full_list_mutex);
 	list_for_each_entry(spu, &spu_full_list, full_list)
 		sysdev_create_file(&spu->sysdev, attr);
+		device_create_file(&spu->dev, attr);
 	mutex_unlock(&spu_full_list_mutex);
 
 	return 0;
@@ -548,6 +579,9 @@ int spu_add_sysdev_attr(struct sysdev_attribute *attr)
 EXPORT_SYMBOL_GPL(spu_add_sysdev_attr);
 
 int spu_add_sysdev_attr_group(struct attribute_group *attrs)
+EXPORT_SYMBOL_GPL(spu_add_dev_attr);
+
+int spu_add_dev_attr_group(struct attribute_group *attrs)
 {
 	struct spu *spu;
 	int rc = 0;
@@ -555,6 +589,7 @@ int spu_add_sysdev_attr_group(struct attribute_group *attrs)
 	mutex_lock(&spu_full_list_mutex);
 	list_for_each_entry(spu, &spu_full_list, full_list) {
 		rc = sysfs_create_group(&spu->sysdev.kobj, attrs);
+		rc = sysfs_create_group(&spu->dev.kobj, attrs);
 
 		/* we're in trouble here, but try unwinding anyway */
 		if (rc) {
@@ -564,6 +599,7 @@ int spu_add_sysdev_attr_group(struct attribute_group *attrs)
 			list_for_each_entry_continue_reverse(spu,
 					&spu_full_list, full_list)
 				sysfs_remove_group(&spu->sysdev.kobj, attrs);
+				sysfs_remove_group(&spu->dev.kobj, attrs);
 			break;
 		}
 	}
@@ -576,6 +612,10 @@ EXPORT_SYMBOL_GPL(spu_add_sysdev_attr_group);
 
 
 void spu_remove_sysdev_attr(struct sysdev_attribute *attr)
+EXPORT_SYMBOL_GPL(spu_add_dev_attr_group);
+
+
+void spu_remove_dev_attr(struct device_attribute *attr)
 {
 	struct spu *spu;
 
@@ -587,6 +627,12 @@ void spu_remove_sysdev_attr(struct sysdev_attribute *attr)
 EXPORT_SYMBOL_GPL(spu_remove_sysdev_attr);
 
 void spu_remove_sysdev_attr_group(struct attribute_group *attrs)
+		device_remove_file(&spu->dev, attr);
+	mutex_unlock(&spu_full_list_mutex);
+}
+EXPORT_SYMBOL_GPL(spu_remove_dev_attr);
+
+void spu_remove_dev_attr_group(struct attribute_group *attrs)
 {
 	struct spu *spu;
 
@@ -604,6 +650,18 @@ static int spu_create_sysdev(struct spu *spu)
 	spu->sysdev.id = spu->number;
 	spu->sysdev.cls = &spu_sysdev_class;
 	ret = sysdev_register(&spu->sysdev);
+		sysfs_remove_group(&spu->dev.kobj, attrs);
+	mutex_unlock(&spu_full_list_mutex);
+}
+EXPORT_SYMBOL_GPL(spu_remove_dev_attr_group);
+
+static int spu_create_dev(struct spu *spu)
+{
+	int ret;
+
+	spu->dev.id = spu->number;
+	spu->dev.bus = &spu_subsys;
+	ret = device_register(&spu->dev);
 	if (ret) {
 		printk(KERN_ERR "Can't register SPU %d with sysfs\n",
 				spu->number);
@@ -611,6 +669,7 @@ static int spu_create_sysdev(struct spu *spu)
 	}
 
 	sysfs_add_device_to_node(&spu->sysdev, spu->node);
+	sysfs_add_device_to_node(&spu->dev, spu->node);
 
 	return 0;
 }
@@ -647,6 +706,7 @@ static int __init create_spu(void *data)
 		goto out_destroy;
 
 	ret = spu_create_sysdev(spu);
+	ret = spu_create_dev(spu);
 	if (ret)
 		goto out_free_irqs;
 
@@ -664,6 +724,7 @@ static int __init create_spu(void *data)
 	spu->stats.util_state = SPU_UTIL_IDLE_LOADED;
 	ktime_get_ts(&ts);
 	spu->stats.tstamp = timespec_to_ns(&ts);
+	spu->stats.tstamp = ktime_get_ns();
 
 	INIT_LIST_HEAD(&spu->aff_list);
 
@@ -698,6 +759,8 @@ static unsigned long long spu_acct_time(struct spu *spu,
 		ktime_get_ts(&ts);
 		time += timespec_to_ns(&ts) - spu->stats.tstamp;
 	}
+	if (spu->stats.util_state == state)
+		time += ktime_get_ns() - spu->stats.tstamp;
 
 	return time / NSEC_PER_MSEC;
 }
@@ -707,6 +770,10 @@ static ssize_t spu_stat_show(struct sys_device *sysdev,
 				struct sysdev_attribute *attr, char *buf)
 {
 	struct spu *spu = container_of(sysdev, struct spu, sysdev);
+static ssize_t spu_stat_show(struct device *dev,
+				struct device_attribute *attr, char *buf)
+{
+	struct spu *spu = container_of(dev, struct spu, dev);
 
 	return sprintf(buf, "%s %llu %llu %llu %llu "
 		      "%llu %llu %llu %llu %llu %llu %llu %llu\n",
@@ -726,6 +793,92 @@ static ssize_t spu_stat_show(struct sys_device *sysdev,
 }
 
 static SYSDEV_ATTR(stat, 0644, spu_stat_show, NULL);
+static DEVICE_ATTR(stat, 0444, spu_stat_show, NULL);
+
+#ifdef CONFIG_KEXEC
+
+struct crash_spu_info {
+	struct spu *spu;
+	u32 saved_spu_runcntl_RW;
+	u32 saved_spu_status_R;
+	u32 saved_spu_npc_RW;
+	u64 saved_mfc_sr1_RW;
+	u64 saved_mfc_dar;
+	u64 saved_mfc_dsisr;
+};
+
+#define CRASH_NUM_SPUS	16	/* Enough for current hardware */
+static struct crash_spu_info crash_spu_info[CRASH_NUM_SPUS];
+
+static void crash_kexec_stop_spus(void)
+{
+	struct spu *spu;
+	int i;
+	u64 tmp;
+
+	for (i = 0; i < CRASH_NUM_SPUS; i++) {
+		if (!crash_spu_info[i].spu)
+			continue;
+
+		spu = crash_spu_info[i].spu;
+
+		crash_spu_info[i].saved_spu_runcntl_RW =
+			in_be32(&spu->problem->spu_runcntl_RW);
+		crash_spu_info[i].saved_spu_status_R =
+			in_be32(&spu->problem->spu_status_R);
+		crash_spu_info[i].saved_spu_npc_RW =
+			in_be32(&spu->problem->spu_npc_RW);
+
+		crash_spu_info[i].saved_mfc_dar    = spu_mfc_dar_get(spu);
+		crash_spu_info[i].saved_mfc_dsisr  = spu_mfc_dsisr_get(spu);
+		tmp = spu_mfc_sr1_get(spu);
+		crash_spu_info[i].saved_mfc_sr1_RW = tmp;
+
+		tmp &= ~MFC_STATE1_MASTER_RUN_CONTROL_MASK;
+		spu_mfc_sr1_set(spu, tmp);
+
+		__delay(200);
+	}
+}
+
+static void crash_register_spus(struct list_head *list)
+{
+	struct spu *spu;
+	int ret;
+
+	list_for_each_entry(spu, list, full_list) {
+		if (WARN_ON(spu->number >= CRASH_NUM_SPUS))
+			continue;
+
+		crash_spu_info[spu->number].spu = spu;
+	}
+
+	ret = crash_shutdown_register(&crash_kexec_stop_spus);
+	if (ret)
+		printk(KERN_ERR "Could not register SPU crash handler");
+}
+
+#else
+static inline void crash_register_spus(struct list_head *list)
+{
+}
+#endif
+
+static void spu_shutdown(void)
+{
+	struct spu *spu;
+
+	mutex_lock(&spu_full_list_mutex);
+	list_for_each_entry(spu, &spu_full_list, full_list) {
+		spu_free_irqs(spu);
+		spu_destroy_spu(spu);
+	}
+	mutex_unlock(&spu_full_list_mutex);
+}
+
+static struct syscore_ops spu_syscore_ops = {
+	.shutdown = spu_shutdown,
+};
 
 static int __init init_spu_base(void)
 {
@@ -741,6 +894,8 @@ static int __init init_spu_base(void)
 
 	/* create sysdev class for spus */
 	ret = sysdev_class_register(&spu_sysdev_class);
+	/* create system subsystem for spus */
+	ret = subsys_system_register(&spu_subsys, NULL);
 	if (ret)
 		goto out;
 
@@ -763,12 +918,19 @@ static int __init init_spu_base(void)
 
 		fb_append_extra_logo(&logo_spe_clut224, ret);
 	}
+		goto out_unregister_subsys;
+	}
+
+	if (ret > 0)
+		fb_append_extra_logo(&logo_spe_clut224, ret);
 
 	mutex_lock(&spu_full_list_mutex);
 	xmon_register_spus(&spu_full_list);
 	crash_register_spus(&spu_full_list);
 	mutex_unlock(&spu_full_list_mutex);
 	spu_add_sysdev_attr(&attr_stat);
+	spu_add_dev_attr(&dev_attr_stat);
+	register_syscore_ops(&spu_syscore_ops);
 
 	spu_init_affinity();
 
@@ -776,6 +938,8 @@ static int __init init_spu_base(void)
 
  out_unregister_sysdev_class:
 	sysdev_class_unregister(&spu_sysdev_class);
+ out_unregister_subsys:
+	bus_unregister(&spu_subsys);
  out:
 	return ret;
 }

@@ -7,6 +7,7 @@
 # usage:
 #	 readprofile | sort -rn | perl profile2linkerlist.pl > functionlist
 #
+use strict;
 
 while (<>) {
   my $line = $_;
@@ -18,4 +19,6 @@ while (<>) {
   } else {
     print "*(.text.$1)\n";
   }
+  print "*(.text.$1)\n"
+      unless ($line =~ /unknown/) || ($line =~ /total/);
 }

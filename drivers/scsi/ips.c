@@ -138,6 +138,7 @@
 /*          - Fix sort order of 7k                                           */
 /*          - Remove 3 unused "inline" functions                             */
 /* 7.12.xx  - Use STATIC functions whereever possible                        */
+/* 7.12.xx  - Use STATIC functions wherever possible                        */
 /*          - Clean up deprecated MODULE_PARM calls                          */
 /* 7.12.05  - Remove Version Matching per IBM request                        */
 /*****************************************************************************/
@@ -233,6 +234,7 @@ static int ips_release(struct Scsi_Host *);
 static int ips_eh_abort(struct scsi_cmnd *);
 static int ips_eh_reset(struct scsi_cmnd *);
 static int ips_queue(struct scsi_cmnd *, void (*)(struct scsi_cmnd *));
+static int ips_queue(struct Scsi_Host *, struct scsi_cmnd *);
 static const char *ips_info(struct Scsi_Host *);
 static irqreturn_t do_ipsintr(int, void *);
 static int ips_hainit(ips_ha_t *);
@@ -330,6 +332,9 @@ static int ips_proc_info(struct Scsi_Host *, char *, char **, off_t, int, int);
 static int ips_host_info(ips_ha_t *, char *, off_t, int);
 static void copy_mem_info(IPS_INFOSTR *, char *, int);
 static int copy_info(IPS_INFOSTR *, char *, ...);
+static int ips_write_info(struct Scsi_Host *, char *, int);
+static int ips_show_info(struct seq_file *, struct Scsi_Host *);
+static int ips_host_info(ips_ha_t *, struct seq_file *);
 static int ips_abort_init(ips_ha_t * ha, int index);
 static int ips_init_phase2(int index);
 
@@ -368,12 +373,15 @@ static struct scsi_host_template ips_driver_template = {
 	.eh_host_reset_handler	= ips_eh_reset,
 	.proc_name		= "ips",
 	.proc_info		= ips_proc_info,
+	.show_info		= ips_show_info,
+	.write_info		= ips_write_info,
 	.slave_configure	= ips_slave_configure,
 	.bios_param		= ips_biosparam,
 	.this_id		= -1,
 	.sg_tablesize		= IPS_MAX_SG,
 	.cmd_per_lun		= 3,
 	.use_clustering		= ENABLE_CLUSTERING,
+	.no_write_same		= 1,
 };
 
 
@@ -391,12 +399,15 @@ static char ips_hot_plug_name[] = "ips";
 
 static int __devinit  ips_insert_device(struct pci_dev *pci_dev, const struct pci_device_id *ent);
 static void __devexit ips_remove_device(struct pci_dev *pci_dev);
+static int  ips_insert_device(struct pci_dev *pci_dev, const struct pci_device_id *ent);
+static void ips_remove_device(struct pci_dev *pci_dev);
 
 static struct pci_driver ips_pci_driver = {
 	.name		= ips_hot_plug_name,
 	.id_table	= ips_pci_table,
 	.probe		= ips_insert_device,
 	.remove		= __devexit_p(ips_remove_device),
+	.remove		= ips_remove_device,
 };
 
 
@@ -528,6 +539,7 @@ ips_setup(char *ips_str)
 		 */
 		for (i = 0; i < ARRAY_SIZE(options); i++) {
 			if (strnicmp
+			if (strncasecmp
 			    (key, options[i].option_name,
 			     strlen(options[i].option_name)) == 0) {
 				if (value)
@@ -1006,6 +1018,7 @@ static int __ips_eh_reset(struct scsi_cmnd *SC)
 	while ((scb = ips_removeq_scb_head(&ha->scb_activelist))) {
 		scb->scsi_cmd->result =
 		    (DID_RESET << 16) | (SUGGEST_RETRY << 24);
+		scb->scsi_cmd->result = DID_RESET << 16;
 		scb->scsi_cmd->scsi_done(scb->scsi_cmd);
 		ips_freescb(ha, scb);
 	}
@@ -1048,6 +1061,7 @@ static int ips_eh_reset(struct scsi_cmnd *SC)
 /*                                                                          */
 /****************************************************************************/
 static int ips_queue(struct scsi_cmnd *SC, void (*done) (struct scsi_cmnd *))
+static int ips_queue_lck(struct scsi_cmnd *SC, void (*done) (struct scsi_cmnd *))
 {
 	ips_ha_t *ha;
 	ips_passthru_t *pt;
@@ -1138,6 +1152,8 @@ static int ips_queue(struct scsi_cmnd *SC, void (*done) (struct scsi_cmnd *))
 	return (0);
 }
 
+static DEF_SCSI_QCMD(ips_queue)
+
 /****************************************************************************/
 /*                                                                          */
 /* Routine Name: ips_biosparam                                              */
@@ -1209,6 +1225,7 @@ ips_slave_configure(struct scsi_device * SDptr)
 		if (ha->enq->ucLogDriveCount <= 2)
 			min = ha->max_cmds - 1;
 		scsi_adjust_queue_depth(SDptr, MSG_ORDERED_TAG, min);
+		scsi_change_queue_depth(SDptr, min);
 	}
 
 	SDptr->skip_ms_page_8 = 1;
@@ -1451,6 +1468,12 @@ ips_proc_info(struct Scsi_Host *host, char *buffer, char **start, off_t offset,
 
 	METHOD_TRACE("ips_proc_info", 1);
 
+static int
+ips_write_info(struct Scsi_Host *host, char *buffer, int length)
+{
+	int i;
+	ips_ha_t *ha = NULL;
+
 	/* Find our host structure */
 	for (i = 0; i < ips_next_controller; i++) {
 		if (ips_sh[i]) {
@@ -1476,6 +1499,29 @@ ips_proc_info(struct Scsi_Host *host, char *buffer, char **start, off_t offset,
 
 		return (ret);
 	}
+	return 0;
+}
+
+static int
+ips_show_info(struct seq_file *m, struct Scsi_Host *host)
+{
+	int i;
+	ips_ha_t *ha = NULL;
+
+	/* Find our host structure */
+	for (i = 0; i < ips_next_controller; i++) {
+		if (ips_sh[i]) {
+			if (ips_sh[i] == host) {
+				ha = (ips_ha_t *) ips_sh[i]->hostdata;
+				break;
+			}
+		}
+	}
+
+	if (!ha)
+		return (-EINVAL);
+
+	return ips_host_info(ha, m);
 }
 
 /*--------------------------------------------------------------------------*/
@@ -1518,6 +1564,14 @@ static int ips_is_passthru(struct scsi_cmnd *SC)
                         return 1;
                 }
                 kunmap_atomic(buffer - sg->offset, KM_IRQ0);
+                buffer = kmap_atomic(sg_page(sg)) + sg->offset;
+                if (buffer && buffer[0] == 'C' && buffer[1] == 'O' &&
+                    buffer[2] == 'P' && buffer[3] == 'P') {
+                        kunmap_atomic(buffer - sg->offset);
+                        local_irq_restore(flags);
+                        return 1;
+                }
+                kunmap_atomic(buffer - sg->offset);
                 local_irq_restore(flags);
 	}
 	return 0;
@@ -1665,6 +1719,7 @@ ips_flash_copperhead(ips_ha_t * ha, ips_passthru_t * pt, ips_scb_t * scb)
 
 	/* Trombone is the only copperhead that can do packet flash, but only
 	 * for firmware. No one said it had to make sence. */
+	 * for firmware. No one said it had to make sense. */
 	if (IPS_IS_TROMBONE(ha) && pt->CoppCP.cmd.flashfw.type == IPS_FW_IMAGE) {
 		if (ips_usrcmd(ha, pt, scb))
 			return IPS_SUCCESS;
@@ -2071,6 +2126,34 @@ ips_host_info(ips_ha_t * ha, char *ptr, off_t offset, int len)
 	}
 
 	copy_info(&info, "\tIRQ number                        : %d\n", ha->pcidev->irq);
+ips_host_info(ips_ha_t *ha, struct seq_file *m)
+{
+	METHOD_TRACE("ips_host_info", 1);
+
+	seq_puts(m, "\nIBM ServeRAID General Information:\n\n");
+
+	if ((le32_to_cpu(ha->nvram->signature) == IPS_NVRAM_P5_SIG) &&
+	    (le16_to_cpu(ha->nvram->adapter_type) != 0))
+		seq_printf(m, "\tController Type                   : %s\n",
+			  ips_adapter_name[ha->ad_type - 1]);
+	else
+		seq_puts(m, "\tController Type                   : Unknown\n");
+
+	if (ha->io_addr)
+		seq_printf(m,
+			  "\tIO region                         : 0x%x (%d bytes)\n",
+			  ha->io_addr, ha->io_len);
+
+	if (ha->mem_addr) {
+		seq_printf(m,
+			  "\tMemory region                     : 0x%x (%d bytes)\n",
+			  ha->mem_addr, ha->mem_len);
+		seq_printf(m,
+			  "\tShared memory address             : 0x%lx\n",
+			  (unsigned long)ha->mem_ptr);
+	}
+
+	seq_printf(m, "\tIRQ number                        : %d\n", ha->pcidev->irq);
 
     /* For the Next 3 lines Check for Binary 0 at the end and don't include it if it's there. */
     /* That keeps everything happy for "text" operations on the proc file.                    */
@@ -2091,6 +2174,20 @@ ips_host_info(ips_ha_t * ha, char *ptr, off_t offset, int len)
 			          ha->nvram->bios_high[2], ha->nvram->bios_high[3],
 			          ha->nvram->bios_low[0], ha->nvram->bios_low[1],
 			          ha->nvram->bios_low[2], ha->nvram->bios_low[3]);
+		seq_printf(m,
+			  "\tBIOS Version                      : %c%c%c%c%c%c%c\n",
+			  ha->nvram->bios_high[0], ha->nvram->bios_high[1],
+			  ha->nvram->bios_high[2], ha->nvram->bios_high[3],
+			  ha->nvram->bios_low[0], ha->nvram->bios_low[1],
+			  ha->nvram->bios_low[2]);
+
+        } else {
+		seq_printf(m,
+			  "\tBIOS Version                      : %c%c%c%c%c%c%c%c\n",
+			  ha->nvram->bios_high[0], ha->nvram->bios_high[1],
+			  ha->nvram->bios_high[2], ha->nvram->bios_high[3],
+			  ha->nvram->bios_low[0], ha->nvram->bios_low[1],
+			  ha->nvram->bios_low[2], ha->nvram->bios_low[3]);
         }
 
     }
@@ -2211,6 +2308,59 @@ copy_info(IPS_INFOSTR * info, char *fmt, ...)
 	copy_mem_info(info, buf, len);
 
 	return (len);
+        seq_printf(m,
+		  "\tFirmware Version                  : %c%c%c%c%c%c%c\n",
+		  ha->enq->CodeBlkVersion[0], ha->enq->CodeBlkVersion[1],
+		  ha->enq->CodeBlkVersion[2], ha->enq->CodeBlkVersion[3],
+		  ha->enq->CodeBlkVersion[4], ha->enq->CodeBlkVersion[5],
+		  ha->enq->CodeBlkVersion[6]);
+    } else {
+	seq_printf(m,
+		  "\tFirmware Version                  : %c%c%c%c%c%c%c%c\n",
+		  ha->enq->CodeBlkVersion[0], ha->enq->CodeBlkVersion[1],
+		  ha->enq->CodeBlkVersion[2], ha->enq->CodeBlkVersion[3],
+		  ha->enq->CodeBlkVersion[4], ha->enq->CodeBlkVersion[5],
+		  ha->enq->CodeBlkVersion[6], ha->enq->CodeBlkVersion[7]);
+    }
+
+    if (ha->enq->BootBlkVersion[7] == 0) {
+        seq_printf(m,
+		  "\tBoot Block Version                : %c%c%c%c%c%c%c\n",
+		  ha->enq->BootBlkVersion[0], ha->enq->BootBlkVersion[1],
+		  ha->enq->BootBlkVersion[2], ha->enq->BootBlkVersion[3],
+		  ha->enq->BootBlkVersion[4], ha->enq->BootBlkVersion[5],
+		  ha->enq->BootBlkVersion[6]);
+    } else {
+        seq_printf(m,
+		  "\tBoot Block Version                : %c%c%c%c%c%c%c%c\n",
+		  ha->enq->BootBlkVersion[0], ha->enq->BootBlkVersion[1],
+		  ha->enq->BootBlkVersion[2], ha->enq->BootBlkVersion[3],
+		  ha->enq->BootBlkVersion[4], ha->enq->BootBlkVersion[5],
+		  ha->enq->BootBlkVersion[6], ha->enq->BootBlkVersion[7]);
+    }
+
+	seq_printf(m, "\tDriver Version                    : %s%s\n",
+		  IPS_VERSION_HIGH, IPS_VERSION_LOW);
+
+	seq_printf(m, "\tDriver Build                      : %d\n",
+		  IPS_BUILD_IDENT);
+
+	seq_printf(m, "\tMax Physical Devices              : %d\n",
+		  ha->enq->ucMaxPhysicalDevices);
+	seq_printf(m, "\tMax Active Commands               : %d\n",
+		  ha->max_cmds);
+	seq_printf(m, "\tCurrent Queued Commands           : %d\n",
+		  ha->scb_waitlist.count);
+	seq_printf(m, "\tCurrent Active Commands           : %d\n",
+		  ha->scb_activelist.count - ha->num_ioctl);
+	seq_printf(m, "\tCurrent Queued PT Commands        : %d\n",
+		  ha->copp_waitlist.count);
+	seq_printf(m, "\tCurrent Active PT Commands        : %d\n",
+		  ha->num_ioctl);
+
+	seq_putc(m, '\n');
+
+	return 0;
 }
 
 /****************************************************************************/
@@ -3575,6 +3725,7 @@ ips_send_cmd(ips_ha_t * ha, ips_scb_t * scb)
 
 		case START_STOP:
 			scb->scsi_cmd->result = DID_OK << 16;
+			break;
 
 		case TEST_UNIT_READY:
 		case INQUIRY:
@@ -3819,6 +3970,7 @@ ips_send_cmd(ips_ha_t * ha, ips_scb_t * scb)
 		scb->cmd.dcdb.enhanced_sg = 0;
 
 		TimeOut = scb->scsi_cmd->timeout_per_command;
+		TimeOut = scb->scsi_cmd->request->timeout;
 
 		if (ha->subsys->param[4] & 0x00100000) {	/* If NEW Tape DCDB is Supported */
 			if (!scb->sg_len) {
@@ -4494,6 +4646,7 @@ ips_init_scb(ips_ha_t * ha, ips_scb_t * scb)
 /*   Initialize a CCB to default values                                     */
 /*                                                                          */
 /* ASSUMED to be callled from within a lock                                 */
+/* ASSUMED to be called from within a lock                                 */
 /*                                                                          */
 /****************************************************************************/
 static ips_scb_t *
@@ -6837,6 +6990,7 @@ err_out_sh:
 /*     Remove one Adapter ( Hot Plugging )                                   */
 /*---------------------------------------------------------------------------*/
 static void __devexit
+static void
 ips_remove_device(struct pci_dev *pci_dev)
 {
 	struct Scsi_Host *sh = pci_get_drvdata(pci_dev);
@@ -6859,6 +7013,11 @@ ips_remove_device(struct pci_dev *pci_dev)
 static int __init
 ips_module_init(void)
 {
+#if !defined(__i386__) && !defined(__ia64__) && !defined(__x86_64__)
+	printk(KERN_ERR "ips: This driver has only been tested on the x86/ia64/x86_64 platforms\n");
+	add_taint(TAINT_CPU_OUT_OF_SPEC, LOCKDEP_STILL_OK);
+#endif
+
 	if (pci_register_driver(&ips_pci_driver) < 0)
 		return -ENODEV;
 	ips_driver_template.module = THIS_MODULE;
@@ -6898,6 +7057,7 @@ module_exit(ips_module_exit);
 /*     0 if Successful, else non-zero                                        */
 /*---------------------------------------------------------------------------*/
 static int __devinit
+static int
 ips_insert_device(struct pci_dev *pci_dev, const struct pci_device_id *ent)
 {
 	int index = -1;
@@ -7053,6 +7213,10 @@ ips_init_phase1(struct pci_dev *pci_dev, int *indexPtr)
 		(ha)->flags |= IPS_HA_ENH_SG;
 	} else {
 		if (pci_set_dma_mask(ha->pcidev, DMA_32BIT_MASK) != 0) {
+	    !pci_set_dma_mask(ha->pcidev, DMA_BIT_MASK(64))) {
+		(ha)->flags |= IPS_HA_ENH_SG;
+	} else {
+		if (pci_set_dma_mask(ha->pcidev, DMA_BIT_MASK(32)) != 0) {
 			printk(KERN_WARNING "Unable to set DMA Mask\n");
 			return ips_abort_init(ha, index);
 		}

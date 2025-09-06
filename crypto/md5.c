@@ -124,6 +124,15 @@ static void md5_transform(u32 *hash, u32 const *in)
 	hash[3] += d;
 }
 
+#include <crypto/internal/hash.h>
+#include <crypto/md5.h>
+#include <linux/init.h>
+#include <linux/module.h>
+#include <linux/string.h>
+#include <linux/types.h>
+#include <linux/cryptohash.h>
+#include <asm/byteorder.h>
+
 /* XXX: this stuff can be optimized */
 static inline void le32_to_cpu_array(u32 *buf, unsigned int words)
 {
@@ -142,6 +151,7 @@ static inline void cpu_to_le32_array(u32 *buf, unsigned int words)
 }
 
 static inline void md5_transform_helper(struct md5_ctx *ctx)
+static inline void md5_transform_helper(struct md5_state *ctx)
 {
 	le32_to_cpu_array(ctx->block, sizeof(ctx->block) / sizeof(u32));
 	md5_transform(ctx->hash, ctx->block);
@@ -161,6 +171,22 @@ static void md5_init(struct crypto_tfm *tfm)
 static void md5_update(struct crypto_tfm *tfm, const u8 *data, unsigned int len)
 {
 	struct md5_ctx *mctx = crypto_tfm_ctx(tfm);
+static int md5_init(struct shash_desc *desc)
+{
+	struct md5_state *mctx = shash_desc_ctx(desc);
+
+	mctx->hash[0] = MD5_H0;
+	mctx->hash[1] = MD5_H1;
+	mctx->hash[2] = MD5_H2;
+	mctx->hash[3] = MD5_H3;
+	mctx->byte_count = 0;
+
+	return 0;
+}
+
+static int md5_update(struct shash_desc *desc, const u8 *data, unsigned int len)
+{
+	struct md5_state *mctx = shash_desc_ctx(desc);
 	const u32 avail = sizeof(mctx->block) - (mctx->byte_count & 0x3f);
 
 	mctx->byte_count += len;
@@ -169,6 +195,7 @@ static void md5_update(struct crypto_tfm *tfm, const u8 *data, unsigned int len)
 		memcpy((char *)mctx->block + (sizeof(mctx->block) - avail),
 		       data, len);
 		return;
+		return 0;
 	}
 
 	memcpy((char *)mctx->block + (sizeof(mctx->block) - avail),
@@ -191,6 +218,13 @@ static void md5_update(struct crypto_tfm *tfm, const u8 *data, unsigned int len)
 static void md5_final(struct crypto_tfm *tfm, u8 *out)
 {
 	struct md5_ctx *mctx = crypto_tfm_ctx(tfm);
+
+	return 0;
+}
+
+static int md5_final(struct shash_desc *desc, u8 *out)
+{
+	struct md5_state *mctx = shash_desc_ctx(desc);
 	const unsigned int offset = mctx->byte_count & 0x3f;
 	char *p = (char *)mctx->block + offset;
 	int padding = 56 - (offset + 1);
@@ -226,16 +260,53 @@ static struct crypto_alg alg = {
 	.dia_init   	= 	md5_init,
 	.dia_update 	=	md5_update,
 	.dia_final  	=	md5_final } }
+
+	return 0;
+}
+
+static int md5_export(struct shash_desc *desc, void *out)
+{
+	struct md5_state *ctx = shash_desc_ctx(desc);
+
+	memcpy(out, ctx, sizeof(*ctx));
+	return 0;
+}
+
+static int md5_import(struct shash_desc *desc, const void *in)
+{
+	struct md5_state *ctx = shash_desc_ctx(desc);
+
+	memcpy(ctx, in, sizeof(*ctx));
+	return 0;
+}
+
+static struct shash_alg alg = {
+	.digestsize	=	MD5_DIGEST_SIZE,
+	.init		=	md5_init,
+	.update		=	md5_update,
+	.final		=	md5_final,
+	.export		=	md5_export,
+	.import		=	md5_import,
+	.descsize	=	sizeof(struct md5_state),
+	.statesize	=	sizeof(struct md5_state),
+	.base		=	{
+		.cra_name	=	"md5",
+		.cra_flags	=	CRYPTO_ALG_TYPE_SHASH,
+		.cra_blocksize	=	MD5_HMAC_BLOCK_SIZE,
+		.cra_module	=	THIS_MODULE,
+	}
 };
 
 static int __init md5_mod_init(void)
 {
 	return crypto_register_alg(&alg);
+	return crypto_register_shash(&alg);
 }
 
 static void __exit md5_mod_fini(void)
 {
 	crypto_unregister_alg(&alg);
+	crypto_unregister_shash(&alg);
 }
 
 module_init(md5_mod_init);
@@ -243,3 +314,4 @@ module_exit(md5_mod_fini);
 
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("MD5 Message Digest Algorithm");
+MODULE_ALIAS_CRYPTO("md5");

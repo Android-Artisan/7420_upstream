@@ -237,5 +237,9 @@ extern long ia64_cmpxchg_called_with_bad_pointer (void);
 #define ia64_set_rr0_to_rr4		IA64_INTRINSIC_API(set_rr0_to_rr4)
 
 #endif /* !__ASSEMBLY__ */
+#ifndef _ASM_IA64_INTRINSICS_H
+#define _ASM_IA64_INTRINSICS_H
+
+#include <uapi/asm/intrinsics.h>
 
 #endif /* _ASM_IA64_INTRINSICS_H */

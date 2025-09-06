@@ -68,11 +68,9 @@ MODULE_PARM_DESC(debug, "Debug level (0-4)");
 			printk(format, ##args); \
 	} while (0)
 
-/* =========================================================================
    Local hardware I/O functions:
 
    read/write via codec layer (registers are located in the master device)
-   ========================================================================= */
 
 /* read and write functions */
 static u8
@@ -159,11 +157,9 @@ zr36016_writei (struct zr36016 *ptr,
 			ptr->name);
 }
 
-/* =========================================================================
    Local helper function:
 
    version read
-   ========================================================================= */
 
 /* version kept in datastructure */
 static u8
@@ -173,11 +169,9 @@ zr36016_read_version (struct zr36016 *ptr)
 	return ptr->version;
 }
 
-/* =========================================================================
    Local helper function:
 
    basic test of "connectivity", writes/reads to/from PAX-Lo register
-   ========================================================================= */
 
 static int
 zr36016_basic_test (struct zr36016 *ptr)
@@ -221,11 +215,9 @@ zr36016_basic_test (struct zr36016 *ptr)
 	return 0;		/* looks good! */
 }
 
-/* =========================================================================
    Local helper function:
 
    simple loop for pushing the init datasets - NO USE --
-   ========================================================================= */
 
 #if 0
 static int zr36016_pushit (struct zr36016 *ptr,
@@ -245,11 +237,9 @@ static int zr36016_pushit (struct zr36016 *ptr,
 }
 #endif
 
-/* =========================================================================
    Basic datasets & init:
 
    //TODO//
-   ========================================================================= */
 
 // needed offset values          PAL NTSC SECAM
 static const int zr016_xoff[] = { 20, 20, 20 };
@@ -288,11 +278,9 @@ zr36016_init (struct zr36016 *ptr)
 	zr36016_write(ptr, ZR016_GOSTOP, 1);
 }
 
-/* =========================================================================
    CODEC API FUNCTIONS
 
    this functions are accessed by the master via the API structure
-   ========================================================================= */
 
 /* set compression/expansion mode and launches codec -
    this should be the last call from the master before starting processing */
@@ -400,11 +388,9 @@ zr36016_control (struct videocodec *codec,
 	return size;
 }
 
-/* =========================================================================
    Exit and unregister function:
 
    Deinitializes Zoran's JPEG processor
-   ========================================================================= */
 
 static int
 zr36016_unset (struct videocodec *codec)
@@ -426,14 +412,12 @@ zr36016_unset (struct videocodec *codec)
 	return -EFAULT;
 }
 
-/* =========================================================================
    Setup and registry function:
 
    Initializes Zoran's JPEG processor
 
    Also sets pixel size, average code size, mode (compr./decompr.)
    (the given size is determined by the processor with the video interface)
-   ========================================================================= */
 
 static int
 zr36016_setup (struct videocodec *codec)
@@ -497,9 +481,7 @@ static const struct videocodec zr36016_codec = {
 	// others are not used
 };
 
-/* =========================================================================
    HOOK IN DRIVER AS KERNEL MODULE
-   ========================================================================= */
 
 static int __init
 zr36016_init_module (void)

@@ -1,4 +1,3 @@
-/*======================================================================
 
     A driver for Future Domain-compatible PCMCIA SCSI cards
 
@@ -29,7 +28,6 @@
     the provisions above, a recipient may use your version of this
     file under either the MPL or the GPL.
     
-======================================================================*/
 
 #include <linux/module.h>
 #include <linux/init.h>
@@ -51,7 +49,6 @@
 #include <pcmcia/cistpl.h>
 #include <pcmcia/ds.h>
 
-/*====================================================================*/
 
 /* Module parameters */
 
@@ -69,7 +66,6 @@ static char *version =
 #define DEBUG(n, args...)
 #endif
 
-/*====================================================================*/
 
 typedef struct scsi_info_t {
 	struct pcmcia_device	*p_dev;
@@ -87,6 +83,7 @@ static int fdomain_probe(struct pcmcia_device *link)
 	scsi_info_t *info;
 
 	DEBUG(0, "fdomain_attach()\n");
+	dev_dbg(&link->dev, "fdomain_attach()\n");
 
 	/* Create new SCSI device */
 	info = kzalloc(sizeof(*info), GFP_KERNEL);
@@ -103,25 +100,35 @@ static int fdomain_probe(struct pcmcia_device *link)
 	link->conf.Attributes = CONF_ENABLE_IRQ;
 	link->conf.IntType = INT_MEMORY_AND_IO;
 	link->conf.Present = PRESENT_OPTION;
+	link->config_flags |= CONF_ENABLE_IRQ | CONF_AUTO_SET_IO;
+	link->config_regs = PRESENT_OPTION;
 
 	return fdomain_config(link);
 } /* fdomain_attach */
 
-/*====================================================================*/
 
 static void fdomain_detach(struct pcmcia_device *link)
 {
 	DEBUG(0, "fdomain_detach(0x%p)\n", link);
+	dev_dbg(&link->dev, "fdomain_detach\n");
 
 	fdomain_release(link);
 
 	kfree(link->priv);
 } /* fdomain_detach */
 
-/*====================================================================*/
 
 #define CS_CHECK(fn, ret) \
 do { last_fn = (fn); if ((last_ret = (ret)) != 0) goto cs_failed; } while (0)
+static int fdomain_config_check(struct pcmcia_device *p_dev, void *priv_data)
+{
+	p_dev->io_lines = 10;
+	p_dev->resource[0]->end = 0x10;
+	p_dev->resource[0]->flags &= ~IO_DATA_PATH_WIDTH;
+	p_dev->resource[0]->flags |= IO_DATA_PATH_WIDTH_AUTO;
+	return pcmcia_request_io(p_dev);
+}
+
 
 static int fdomain_config(struct pcmcia_device *link)
 {
@@ -161,6 +168,27 @@ static int fdomain_config(struct pcmcia_device *link)
 
     /* Set configuration options for the fdomain driver */
     sprintf(str, "%d,%d", link->io.BasePort1, link->irq.AssignedIRQ);
+    int ret;
+    char str[22];
+    struct Scsi_Host *host;
+
+    dev_dbg(&link->dev, "fdomain_config\n");
+
+    ret = pcmcia_loop_config(link, fdomain_config_check, NULL);
+    if (ret)
+	    goto failed;
+
+    if (!link->irq)
+	    goto failed;
+    ret = pcmcia_enable_device(link);
+    if (ret)
+	    goto failed;
+
+    /* A bad hack... */
+    release_region(link->resource[0]->start, resource_size(link->resource[0]));
+
+    /* Set configuration options for the fdomain driver */
+    sprintf(str, "%d,%d", (unsigned int) link->resource[0]->start, link->irq);
     fdomain_setup(str);
 
     host = __fdomain_16x0_detect(&fdomain_driver_template);
@@ -175,30 +203,37 @@ static int fdomain_config(struct pcmcia_device *link)
 
     sprintf(info->node.dev_name, "scsi%d", host->host_no);
     link->dev_node = &info->node;
+	goto failed;
+    }
+
+    if (scsi_add_host(host, NULL))
+	    goto failed;
+    scsi_scan_host(host);
+
     info->host = host;
 
     return 0;
 
 cs_failed:
     cs_error(link, last_fn, last_ret);
+failed:
     fdomain_release(link);
     return -ENODEV;
 } /* fdomain_config */
 
-/*====================================================================*/
 
 static void fdomain_release(struct pcmcia_device *link)
 {
 	scsi_info_t *info = link->priv;
 
 	DEBUG(0, "fdomain_release(0x%p)\n", link);
+	dev_dbg(&link->dev, "fdomain_release\n");
 
 	scsi_remove_host(info->host);
 	pcmcia_disable_device(link);
 	scsi_unregister(info->host);
 }
 
-/*====================================================================*/
 
 static int fdomain_resume(struct pcmcia_device *link)
 {
@@ -208,6 +243,7 @@ static int fdomain_resume(struct pcmcia_device *link)
 }
 
 static struct pcmcia_device_id fdomain_ids[] = {
+static const struct pcmcia_device_id fdomain_ids[] = {
 	PCMCIA_DEVICE_PROD_ID12("IBM Corp.", "SCSI PCMCIA Card", 0xe3736c88, 0x859cad20),
 	PCMCIA_DEVICE_PROD_ID1("SCSI PCMCIA Adapter Card", 0x8dacb57e),
 	PCMCIA_DEVICE_PROD_ID12(" SIMPLE TECHNOLOGY Corporation", "SCSI PCMCIA Credit Card Controller", 0x182bdafe, 0xc80d106f),
@@ -220,6 +256,7 @@ static struct pcmcia_driver fdomain_cs_driver = {
 	.drv		= {
 		.name	= "fdomain_cs",
 	},
+	.name		= "fdomain_cs",
 	.probe		= fdomain_probe,
 	.remove		= fdomain_detach,
 	.id_table       = fdomain_ids,

@@ -69,11 +69,9 @@ MODULE_PARM_DESC(debug, "Debug level (0-4)");
 			printk(format, ##args); \
 	} while (0)
 
-/* =========================================================================
    Local hardware I/O functions:
 
    read/write via codec layer (registers are located in the master device)
-   ========================================================================= */
 
 /* read and write functions */
 static u8
@@ -114,11 +112,9 @@ zr36060_write(struct zr36060 *ptr,
 			ptr->name);
 }
 
-/* =========================================================================
    Local helper function:
 
    status read
-   ========================================================================= */
 
 /* status is kept in datastructure */
 static u8
@@ -130,11 +126,9 @@ zr36060_read_status (struct zr36060 *ptr)
 	return ptr->status;
 }
 
-/* =========================================================================
    Local helper function:
 
    scale factor read
-   ========================================================================= */
 
 /* scale factor is kept in datastructure */
 static u16
@@ -148,11 +142,9 @@ zr36060_read_scalefactor (struct zr36060 *ptr)
 	return ptr->scalefact;
 }
 
-/* =========================================================================
    Local helper function:
 
    wait if codec is ready to proceed (end of processing) or time is over
-   ========================================================================= */
 
 static void
 zr36060_wait_end (struct zr36060 *ptr)
@@ -170,11 +162,9 @@ zr36060_wait_end (struct zr36060 *ptr)
 	}
 }
 
-/* =========================================================================
    Local helper function:
 
    basic test of "connectivity", writes/reads to/from memory the SOF marker
-   ========================================================================= */
 
 static int
 zr36060_basic_test (struct zr36060 *ptr)
@@ -200,11 +190,9 @@ zr36060_basic_test (struct zr36060 *ptr)
 	return 0;		/* looks good! */
 }
 
-/* =========================================================================
    Local helper function:
 
    simple loop for pushing the init datasets
-   ========================================================================= */
 
 static int
 zr36060_pushit (struct zr36060 *ptr,
@@ -223,7 +211,6 @@ zr36060_pushit (struct zr36060 *ptr,
 	return i;
 }
 
-/* =========================================================================
    Basic datasets:
 
    jpeg baseline setup data (you find it on lots places in internet, or just
@@ -232,7 +219,6 @@ zr36060_pushit (struct zr36060 *ptr,
    Could be variable, but until it's not needed it they are just fixed to save
    memory. Otherwise expand zr36060 structure with arrays, push the values to
    it and initalize from there, as e.g. the linux zr36057/60 driver does it.
-   ========================================================================= */
 
 static const char zr36060_dqt[0x86] = {
 	0xff, 0xdb,		//Marker: DQT
@@ -325,12 +311,10 @@ static const char zr36060_ta[8] = { 0, 1, 1, 0, 0, 0, 0, 0 };	//table idx's AC
 static const char zr36060_decimation_h[8] = { 2, 1, 1, 0, 0, 0, 0, 0 };
 static const char zr36060_decimation_v[8] = { 1, 1, 1, 0, 0, 0, 0, 0 };
 
-/* =========================================================================
    Local helper functions:
 
    calculation and setup of parameter-dependent JPEG baseline segments
    (needed for compression only)
-   ========================================================================= */
 
 /* ------------------------------------------------------------------------- */
 
@@ -414,14 +398,12 @@ zr36060_set_dri (struct zr36060 *ptr)
 	return zr36060_pushit(ptr, ZR060_DRI_IDX, 6, dri_data);
 }
 
-/* =========================================================================
    Setup function:
 
    Setup compression/decompression of Zoran's JPEG processor
    ( see also zoran 36060 manual )
 
    ... sorry for the spaghetti code ...
-   ========================================================================= */
 static void
 zr36060_init (struct zr36060 *ptr)
 {
@@ -568,11 +550,9 @@ zr36060_init (struct zr36060 *ptr)
 	}
 }
 
-/* =========================================================================
    CODEC API FUNCTIONS
 
    this functions are accessed by the master via the API structure
-   ========================================================================= */
 
 /* set compression/expansion mode and launches codec -
    this should be the last call from the master before starting processing */
@@ -869,11 +849,9 @@ zr36060_control (struct videocodec *codec,
 	return size;
 }
 
-/* =========================================================================
    Exit and unregister function:
 
    Deinitializes Zoran's JPEG processor
-   ========================================================================= */
 
 static int
 zr36060_unset (struct videocodec *codec)
@@ -895,14 +873,12 @@ zr36060_unset (struct videocodec *codec)
 	return -EFAULT;
 }
 
-/* =========================================================================
    Setup and registry function:
 
    Initializes Zoran's JPEG processor
 
    Also sets pixel size, average code size, mode (compr./decompr.)
    (the given size is determined by the processor with the video interface)
-   ========================================================================= */
 
 static int
 zr36060_setup (struct videocodec *codec)
@@ -980,9 +956,7 @@ static const struct videocodec zr36060_codec = {
 	// others are not used
 };
 
-/* =========================================================================
    HOOK IN DRIVER AS KERNEL MODULE
-   ========================================================================= */
 
 static int __init
 zr36060_init_module (void)

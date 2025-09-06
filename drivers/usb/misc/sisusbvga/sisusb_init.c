@@ -44,6 +44,7 @@
 #include <linux/slab.h>
 #include <linux/spinlock.h>
 #include <linux/kref.h>
+#include <linux/spinlock.h>
 
 #include "sisusb.h"
 

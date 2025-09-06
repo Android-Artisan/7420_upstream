@@ -89,6 +89,10 @@ ia64_acpi_release_global_lock (unsigned int *lock)
 #define ACPI_RELEASE_GLOBAL_LOCK(facs, Acq)				\
 	((Acq) = ia64_acpi_release_global_lock(&facs->global_lock))
 
+#include <asm/numa.h>
+
+#ifdef	CONFIG_ACPI
+extern int acpi_lapic;
 #define acpi_disabled 0	/* ACPI always enabled on IA64 */
 #define acpi_noirq 0	/* ACPI always enabled on IA64 */
 #define acpi_pci_disabled 0 /* ACPI PCI always enabled on IA64 */
@@ -103,6 +107,45 @@ int acpi_gsi_to_irq (u32 gsi, unsigned int *irq);
 /* routines for saving/restoring kernel state */
 extern int acpi_save_state_mem(void);
 extern void acpi_restore_state_mem(void);
+
+static inline bool acpi_has_cpu_in_madt(void)
+{
+	return !!acpi_lapic;
+}
+#endif
+#define acpi_processor_cstate_check(x) (x) /* no idle limits on IA64 :) */
+static inline void disable_acpi(void) { }
+
+#ifdef CONFIG_IA64_GENERIC
+const char *acpi_get_sysname (void);
+#else
+static inline const char *acpi_get_sysname (void)
+{
+# if defined (CONFIG_IA64_HP_SIM)
+	return "hpsim";
+# elif defined (CONFIG_IA64_HP_ZX1)
+	return "hpzx1";
+# elif defined (CONFIG_IA64_HP_ZX1_SWIOTLB)
+	return "hpzx1_swiotlb";
+# elif defined (CONFIG_IA64_SGI_SN2)
+	return "sn2";
+# elif defined (CONFIG_IA64_SGI_UV)
+	return "uv";
+# elif defined (CONFIG_IA64_DIG)
+	return "dig";
+# elif defined(CONFIG_IA64_DIG_VTD)
+	return "dig_vtd";
+# else
+#	error Unknown platform.  Fix acpi.c.
+# endif
+}
+#endif
+int acpi_request_vector (u32 int_type);
+int acpi_gsi_to_irq (u32 gsi, unsigned int *irq);
+
+/* Low-level suspend routine. */
+extern int acpi_suspend_lowlevel(void);
+
 extern unsigned long acpi_wakeup_address;
 
 /*
@@ -130,12 +173,23 @@ extern int __devinitdata pxm_to_nid_map[MAX_PXM_DOMAINS];
 extern int __initdata nid_to_pxm_map[MAX_NUMNODES];
 #endif
 
+extern int pxm_to_nid_map[MAX_PXM_DOMAINS];
+extern int __initdata nid_to_pxm_map[MAX_NUMNODES];
+#endif
+
+static inline bool arch_has_acpi_pdc(void) { return true; }
+static inline void arch_acpi_set_pdc_bits(u32 *buf)
+{
+	buf[2] |= ACPI_PDC_EST_CAPABILITY_SMP;
+}
+
 #define acpi_unlazy_tlb(x)
 
 #ifdef CONFIG_ACPI_NUMA
 extern cpumask_t early_cpu_possible_map;
 #define for_each_possible_early_cpu(cpu)  \
 	for_each_cpu_mask((cpu), early_cpu_possible_map)
+	for_each_cpu((cpu), &early_cpu_possible_map)
 
 static inline void per_cpu_scan_finalize(int min_cpus, int reserve_cpus)
 {
@@ -144,12 +198,14 @@ static inline void per_cpu_scan_finalize(int min_cpus, int reserve_cpus)
 	int next_nid = 0;
 
 	low_cpu = cpus_weight(early_cpu_possible_map);
+	low_cpu = cpumask_weight(&early_cpu_possible_map);
 
 	high_cpu = max(low_cpu, min_cpus);
 	high_cpu = min(high_cpu + reserve_cpus, NR_CPUS);
 
 	for (cpu = low_cpu; cpu < high_cpu; cpu++) {
 		cpu_set(cpu, early_cpu_possible_map);
+		cpumask_set_cpu(cpu, &early_cpu_possible_map);
 		if (node_cpuid[cpu].nid == NUMA_NO_NODE) {
 			node_cpuid[cpu].nid = next_nid;
 			next_nid++;

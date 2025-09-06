@@ -38,6 +38,8 @@
 #include <linux/vmalloc.h>
 #include <linux/suspend.h>
 #include <linux/lmb.h>
+#include <linux/memblock.h>
+#include <linux/gfp.h>
 #include <asm/io.h>
 #include <asm/prom.h>
 #include <asm/iommu.h>
@@ -72,11 +74,20 @@ static int dart_is_u4;
 
 #define DBG(...)
 
+#define DART_U4_BYPASS_BASE	0x8000000000ull
+
+#define DBG(...)
+
+static DEFINE_SPINLOCK(invalidate_lock);
+
 static inline void dart_tlb_invalidate_all(void)
 {
 	unsigned long l = 0;
 	unsigned int reg, inv_bit;
 	unsigned long limit;
+	unsigned long flags;
+
+	spin_lock_irqsave(&invalidate_lock, flags);
 
 	DBG("dart: flush\n");
 
@@ -109,12 +120,17 @@ retry:
 			panic("DART: TLB did not flush after waiting a long "
 			      "time. Buggy U3 ?");
 	}
+
+	spin_unlock_irqrestore(&invalidate_lock, flags);
 }
 
 static inline void dart_tlb_invalidate_one(unsigned long bus_rpn)
 {
 	unsigned int reg;
 	unsigned int l, limit;
+	unsigned long flags;
+
+	spin_lock_irqsave(&invalidate_lock, flags);
 
 	reg = DART_CNTL_U4_ENABLE | DART_CNTL_U4_IONE |
 		(bus_rpn & DART_CNTL_U4_IONE_MASK);
@@ -136,6 +152,8 @@ wait_more:
 			panic("DART: TLB did not flush after waiting a long "
 			      "time. Buggy U4 ?");
 	}
+
+	spin_unlock_irqrestore(&invalidate_lock, flags);
 }
 
 static void dart_flush(struct iommu_table *tbl)
@@ -161,11 +179,13 @@ static int dart_build(struct iommu_table *tbl, long index,
 	dp = ((unsigned int*)tbl->it_base) + index;
 
 	/* On U3, all memory is contigous, so we can move this
+	/* On U3, all memory is contiguous, so we can move this
 	 * out of the loop.
 	 */
 	l = npages;
 	while (l--) {
 		rpn = virt_to_abs(uaddr) >> DART_PAGE_SHIFT;
+		rpn = __pa(uaddr) >> DART_PAGE_SHIFT;
 
 		*(dp++) = DARTMAP_VALID | (rpn & DARTMAP_RPNMASK);
 
@@ -233,16 +253,19 @@ static int __init dart_init(struct device_node *dart_node)
 	 * prefetching into invalid pages and corrupting data
 	 */
 	tmp = lmb_alloc(DART_PAGE_SIZE, DART_PAGE_SIZE);
+	tmp = memblock_alloc(DART_PAGE_SIZE, DART_PAGE_SIZE);
 	dart_emptyval = DARTMAP_VALID | ((tmp >> DART_PAGE_SHIFT) &
 					 DARTMAP_RPNMASK);
 
 	/* Map in DART registers */
 	dart = ioremap(r.start, r.end - r.start + 1);
+	dart = ioremap(r.start, resource_size(&r));
 	if (dart == NULL)
 		panic("DART: Cannot map registers!");
 
 	/* Map in DART table */
 	dart_vbase = ioremap(virt_to_abs(dart_tablebase), dart_tablesize);
+	dart_vbase = ioremap(__pa(dart_tablebase), dart_tablesize);
 
 	/* Fill initial table */
 	for (i = 0; i < dart_tablesize/4; i++)
@@ -273,17 +296,25 @@ static int __init dart_init(struct device_node *dart_node)
 	return 0;
 }
 
+static struct iommu_table_ops iommu_dart_ops = {
+	.set = dart_build,
+	.clear = dart_free,
+	.flush = dart_flush,
+};
+
 static void iommu_table_dart_setup(void)
 {
 	iommu_table_dart.it_busno = 0;
 	iommu_table_dart.it_offset = 0;
 	/* it_size is in number of entries */
 	iommu_table_dart.it_size = dart_tablesize / sizeof(u32);
+	iommu_table_dart.it_page_shift = IOMMU_PAGE_SHIFT_4K;
 
 	/* Initialize the common IOMMU code */
 	iommu_table_dart.it_base = (unsigned long)dart_vbase;
 	iommu_table_dart.it_index = 0;
 	iommu_table_dart.it_blocksize = 1;
+	iommu_table_dart.it_ops = &iommu_dart_ops;
 	iommu_init_table(&iommu_table_dart, -1);
 
 	/* Reserve the last page of the DART to avoid possible prefetch
@@ -298,6 +329,9 @@ static void pci_dma_dev_setup_dart(struct pci_dev *dev)
 	 * things simple. Setup all PCI devices to point to this table
 	 */
 	dev->dev.archdata.dma_data = &iommu_table_dart;
+	if (dart_is_u4)
+		set_dma_offset(&dev->dev, DART_U4_BYPASS_BASE);
+	set_iommu_table_base(&dev->dev, &iommu_table_dart);
 }
 
 static void pci_dma_bus_setup_dart(struct pci_bus *bus)
@@ -316,6 +350,47 @@ static void pci_dma_bus_setup_dart(struct pci_bus *bus)
 }
 
 void __init iommu_init_early_dart(void)
+}
+
+static bool dart_device_on_pcie(struct device *dev)
+{
+	struct device_node *np = of_node_get(dev->of_node);
+
+	while(np) {
+		if (of_device_is_compatible(np, "U4-pcie") ||
+		    of_device_is_compatible(np, "u4-pcie")) {
+			of_node_put(np);
+			return true;
+		}
+		np = of_get_next_parent(np);
+	}
+	return false;
+}
+
+static int dart_dma_set_mask(struct device *dev, u64 dma_mask)
+{
+	if (!dev->dma_mask || !dma_supported(dev, dma_mask))
+		return -EIO;
+
+	/* U4 supports a DART bypass, we use it for 64-bit capable
+	 * devices to improve performances. However, that only works
+	 * for devices connected to U4 own PCIe interface, not bridged
+	 * through hypertransport. We need the device to support at
+	 * least 40 bits of addresses.
+	 */
+	if (dart_device_on_pcie(dev) && dma_mask >= DMA_BIT_MASK(40)) {
+		dev_info(dev, "Using 64-bit DMA iommu bypass\n");
+		set_dma_ops(dev, &dma_direct_ops);
+	} else {
+		dev_info(dev, "Using 32-bit DMA via iommu\n");
+		set_dma_ops(dev, &dma_iommu_ops);
+	}
+
+	*dev->dma_mask = dma_mask;
+	return 0;
+}
+
+void __init iommu_init_early_dart(struct pci_controller_ops *controller_ops)
 {
 	struct device_node *dn;
 
@@ -347,6 +422,29 @@ void __init iommu_init_early_dart(void)
 	/* If init failed, use direct iommu and null setup functions */
 	ppc_md.pci_dma_dev_setup = NULL;
 	ppc_md.pci_dma_bus_setup = NULL;
+			return;	/* use default direct_dma_ops */
+		dart_is_u4 = 1;
+	}
+
+	/* Initialize the DART HW */
+	if (dart_init(dn) != 0)
+		goto bail;
+
+	/* Setup bypass if supported */
+	if (dart_is_u4)
+		ppc_md.dma_set_mask = dart_dma_set_mask;
+
+	controller_ops->dma_dev_setup = pci_dma_dev_setup_dart;
+	controller_ops->dma_bus_setup = pci_dma_bus_setup_dart;
+
+	/* Setup pci_dma ops */
+	set_pci_dma_ops(&dma_iommu_ops);
+	return;
+
+ bail:
+	/* If init failed, use direct iommu and null setup functions */
+	controller_ops->dma_dev_setup = NULL;
+	controller_ops->dma_bus_setup = NULL;
 
 	/* Setup pci_dma ops */
 	set_pci_dma_ops(&dma_direct_ops);
@@ -408,6 +506,7 @@ void __init alloc_dart_table(void)
 		return;
 
 	if (!iommu_force_on && lmb_end_of_DRAM() <= 0x40000000ull)
+	if (!iommu_force_on && memblock_end_of_DRAM() <= 0x40000000ull)
 		return;
 
 	/* 512 pages (2MB) is max DART tablesize. */
@@ -417,6 +516,12 @@ void __init alloc_dart_table(void)
 	 */
 	dart_tablebase = (unsigned long)
 		abs_to_virt(lmb_alloc_base(1UL<<24, 1UL<<24, 0x80000000L));
+		__va(memblock_alloc_base(1UL<<24, 1UL<<24, 0x80000000L));
+	/*
+	 * The DART space is later unmapped from the kernel linear mapping and
+	 * accessing dart_tablebase during kmemleak scanning will fault.
+	 */
+	kmemleak_no_scan((void *)dart_tablebase);
 
 	printk(KERN_INFO "DART table allocated at: %lx\n", dart_tablebase);
 }

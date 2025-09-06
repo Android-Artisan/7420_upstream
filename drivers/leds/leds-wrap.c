@@ -17,6 +17,9 @@
 #include <linux/err.h>
 #include <asm/io.h>
 #include <linux/scx200_gpio.h>
+#include <linux/io.h>
+#include <linux/scx200_gpio.h>
+#include <linux/module.h>
 
 #define DRVNAME "wrap-led"
 #define WRAP_POWER_LED_GPIO	2
@@ -55,11 +58,16 @@ static void wrap_extra_led_set(struct led_classdev *led_cdev,
 static struct led_classdev wrap_power_led = {
 	.name		= "wrap::power",
 	.brightness_set	= wrap_power_led_set,
+	.name			= "wrap::power",
+	.brightness_set		= wrap_power_led_set,
+	.default_trigger	= "default-on",
+	.flags			= LED_CORE_SUSPENDRESUME,
 };
 
 static struct led_classdev wrap_error_led = {
 	.name		= "wrap::error",
 	.brightness_set	= wrap_error_led_set,
+	.flags			= LED_CORE_SUSPENDRESUME,
 };
 
 static struct led_classdev wrap_extra_led = {
@@ -88,6 +96,9 @@ static int wrap_led_resume(struct platform_device *dev)
 #define wrap_led_suspend NULL
 #define wrap_led_resume NULL
 #endif
+
+	.flags			= LED_CORE_SUSPENDRESUME,
+};
 
 static int wrap_led_probe(struct platform_device *pdev)
 {
@@ -121,6 +132,15 @@ static int wrap_led_remove(struct platform_device *pdev)
 	led_classdev_unregister(&wrap_error_led);
 	led_classdev_unregister(&wrap_extra_led);
 	return 0;
+	ret = devm_led_classdev_register(&pdev->dev, &wrap_power_led);
+	if (ret < 0)
+		return ret;
+
+	ret = devm_led_classdev_register(&pdev->dev, &wrap_error_led);
+	if (ret < 0)
+		return ret;
+
+	return  devm_led_classdev_register(&pdev->dev, &wrap_extra_led);
 }
 
 static struct platform_driver wrap_led_driver = {
@@ -131,6 +151,8 @@ static struct platform_driver wrap_led_driver = {
 	.driver		= {
 		.name		= DRVNAME,
 		.owner		= THIS_MODULE,
+	.driver		= {
+		.name		= DRVNAME,
 	},
 };
 

@@ -16,6 +16,9 @@
  * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA  02111-1307, USA.
  */
 #include <linux/clocksource.h>
+ */
+#include <linux/clocksource.h>
+#include <linux/sched_clock.h>
 
 #include <asm/addrspace.h>
 #include <asm/io.h>
@@ -38,6 +41,13 @@ static cycle_t sb1250_hpt_read(void)
 	unsigned int count;
 
 	count = G_SCD_TIMER_CNT(__raw_readq(IOADDR(A_SCD_TIMER_REGISTER(SB1250_HPT_NUM, R_SCD_TIMER_CNT))));
+static inline cycle_t sb1250_hpt_get_cycles(void)
+{
+	unsigned int count;
+	void __iomem *addr;
+
+	addr = IOADDR(A_SCD_TIMER_REGISTER(SB1250_HPT_NUM, R_SCD_TIMER_CNT));
+	count = G_SCD_TIMER_CNT(__raw_readq(addr));
 
 	return SB1250_HPT_VALUE - count;
 }
@@ -45,10 +55,23 @@ static cycle_t sb1250_hpt_read(void)
 struct clocksource bcm1250_clocksource = {
 	.name	= "bcm1250-counter-3",
 	.rating	= 200,
+static cycle_t sb1250_hpt_read(struct clocksource *cs)
+{
+	return sb1250_hpt_get_cycles();
+}
+
+struct clocksource bcm1250_clocksource = {
+	.name	= "bcm1250-counter-3",
+	.rating = 200,
 	.read	= sb1250_hpt_read,
 	.mask	= CLOCKSOURCE_MASK(23),
 	.flags	= CLOCK_SOURCE_IS_CONTINUOUS,
 };
+
+static u64 notrace sb1250_read_sched_clock(void)
+{
+	return sb1250_hpt_get_cycles();
+}
 
 void __init sb1250_clocksource_init(void)
 {
@@ -67,4 +90,7 @@ void __init sb1250_clocksource_init(void)
 
 	clocksource_set_clock(cs, V_SCD_TIMER_FREQ);
 	clocksource_register(cs);
+	clocksource_register_hz(cs, V_SCD_TIMER_FREQ);
+
+	sched_clock_register(sb1250_read_sched_clock, 23, V_SCD_TIMER_FREQ);
 }

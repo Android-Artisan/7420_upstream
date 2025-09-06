@@ -81,6 +81,7 @@ static void tcp_westwood_init(struct sock *sk)
 static inline u32 westwood_do_filter(u32 a, u32 b)
 {
 	return (((7 * a) + b) >> 3);
+	return ((7 * a) + b) >> 3;
 }
 
 static void westwood_filter(struct westwood *w, u32 delta)
@@ -222,6 +223,25 @@ static u32 tcp_westwood_bw_rttmin(const struct sock *sk)
 	return max_t(u32, (w->bw_est * w->rtt_min) / tp->mss_cache, 2);
 }
 
+
+	return max_t(u32, (w->bw_est * w->rtt_min) / tp->mss_cache, 2);
+}
+
+static void tcp_westwood_ack(struct sock *sk, u32 ack_flags)
+{
+	if (ack_flags & CA_ACK_SLOWPATH) {
+		struct westwood *w = inet_csk_ca(sk);
+
+		westwood_update_window(sk);
+		w->bk += westwood_acked_count(sk);
+
+		update_rtt_min(w);
+		return;
+	}
+
+	westwood_fast_bw(sk);
+}
+
 static void tcp_westwood_event(struct sock *sk, enum tcp_ca_event event)
 {
 	struct tcp_sock *tp = tcp_sk(sk);
@@ -237,6 +257,10 @@ static void tcp_westwood_event(struct sock *sk, enum tcp_ca_event event)
 		break;
 
 	case CA_EVENT_FRTO:
+	case CA_EVENT_COMPLETE_CWR:
+		tp->snd_cwnd = tp->snd_ssthresh = tcp_westwood_bw_rttmin(sk);
+		break;
+	case CA_EVENT_LOSS:
 		tp->snd_ssthresh = tcp_westwood_bw_rttmin(sk);
 		/* Update RTT_min when next ack arrives */
 		w->reset_rtt_min = 1;
@@ -278,6 +302,30 @@ static struct tcp_congestion_ops tcp_westwood = {
 	.cong_avoid	= tcp_reno_cong_avoid,
 	.min_cwnd	= tcp_westwood_bw_rttmin,
 	.cwnd_event	= tcp_westwood_event,
+/* Extract info for Tcp socket info provided via netlink. */
+static size_t tcp_westwood_info(struct sock *sk, u32 ext, int *attr,
+				union tcp_cc_info *info)
+{
+	const struct westwood *ca = inet_csk_ca(sk);
+
+	if (ext & (1 << (INET_DIAG_VEGASINFO - 1))) {
+		info->vegas.tcpv_enabled = 1;
+		info->vegas.tcpv_rttcnt	= 0;
+		info->vegas.tcpv_rtt	= jiffies_to_usecs(ca->rtt),
+		info->vegas.tcpv_minrtt	= jiffies_to_usecs(ca->rtt_min),
+
+		*attr = INET_DIAG_VEGASINFO;
+		return sizeof(struct tcpvegas_info);
+	}
+	return 0;
+}
+
+static struct tcp_congestion_ops tcp_westwood __read_mostly = {
+	.init		= tcp_westwood_init,
+	.ssthresh	= tcp_reno_ssthresh,
+	.cong_avoid	= tcp_reno_cong_avoid,
+	.cwnd_event	= tcp_westwood_event,
+	.in_ack_event	= tcp_westwood_ack,
 	.get_info	= tcp_westwood_info,
 	.pkts_acked	= tcp_westwood_pkts_acked,
 

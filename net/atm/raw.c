@@ -2,6 +2,7 @@
 
 /* Written 1995-2000 by Werner Almesberger, EPFL LRC/ICA */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ":%s: " fmt, __func__
 
 #include <linux/module.h>
 #include <linux/atmdev.h>
@@ -9,6 +10,7 @@
 #include <linux/kernel.h>
 #include <linux/skbuff.h>
 #include <linux/mm.h>
+#include <linux/slab.h>
 
 #include "common.h"
 #include "protocols.h"
@@ -18,6 +20,7 @@
  */
 
 static void atm_push_raw(struct atm_vcc *vcc,struct sk_buff *skb)
+static void atm_push_raw(struct atm_vcc *vcc, struct sk_buff *skb)
 {
 	if (skb) {
 		struct sock *sk = sk_atm(vcc);
@@ -34,6 +37,16 @@ static void atm_pop_raw(struct atm_vcc *vcc,struct sk_buff *skb)
 
 	pr_debug("APopR (%d) %d -= %d\n", vcc->vci,
 		atomic_read(&sk->sk_wmem_alloc), skb->truesize);
+		sk->sk_data_ready(sk);
+	}
+}
+
+static void atm_pop_raw(struct atm_vcc *vcc, struct sk_buff *skb)
+{
+	struct sock *sk = sk_atm(vcc);
+
+	pr_debug("(%d) %d -= %d\n",
+		 vcc->vci, sk_wmem_alloc_get(sk), skb->truesize);
 	atomic_sub(skb->truesize, &sk->sk_wmem_alloc);
 	dev_kfree_skb_any(skb);
 	sk->sk_write_space(sk);
@@ -41,6 +54,7 @@ static void atm_pop_raw(struct atm_vcc *vcc,struct sk_buff *skb)
 
 
 static int atm_send_aal0(struct atm_vcc *vcc,struct sk_buff *skb)
+static int atm_send_aal0(struct atm_vcc *vcc, struct sk_buff *skb)
 {
 	/*
 	 * Note that if vpi/vci are _ANY or _UNSPEC the below will
@@ -56,6 +70,15 @@ static int atm_send_aal0(struct atm_vcc *vcc,struct sk_buff *skb)
 	return vcc->dev->ops->send(vcc,skb);
 }
 
+
+	    (((u32 *)skb->data)[0] & (ATM_HDR_VPI_MASK | ATM_HDR_VCI_MASK)) !=
+	    ((vcc->vpi << ATM_HDR_VPI_SHIFT) |
+	     (vcc->vci << ATM_HDR_VCI_SHIFT))) {
+		kfree_skb(skb);
+		return -EADDRNOTAVAIL;
+	}
+	return vcc->dev->ops->send(vcc, skb);
+}
 
 int atm_init_aal0(struct atm_vcc *vcc)
 {

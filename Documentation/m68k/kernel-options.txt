@@ -1,7 +1,6 @@
 
 
 				  Command Line Options for Linux/m68k
-				  ===================================
 
 Last Update: 2 May 1999
 Linux/m68k version: 2.2.6
@@ -9,7 +8,6 @@ Author: Roman.Hodek@informatik.uni-erlangen.de (Roman Hodek)
 Update: jds@kom.auc.dk (Jes Sorensen) and faq@linux-m68k.org (Chris Lawrence)
 
 0) Introduction
-===============
 
   Often I've been asked which command line options the Linux/m68k
 kernel understands, or how the exact syntax for the ... option is, or
@@ -22,7 +20,6 @@ patches.
 
 
 1) Overview of the Kernel's Option Processing
-=============================================
 
 The kernel knows three kinds of options on its command line:
 
@@ -50,7 +47,6 @@ subdivided.
 
 
 2) General Kernel Options
-=========================
 
 2.1) root=
 ----------
@@ -128,6 +124,20 @@ SCSI CD-ROM drive, you boot from it by "root=0b00". Here, hex "0b" =
 decimal 11 is the major of SCSI CD-ROMs, and the minor 0 stands for
 the first of these. You can find out all valid major numbers by
 looking into include/linux/major.h.
+
+In addition to major and minor numbers, if the device containing your
+root partition uses a partition table format with unique partition
+identifiers, then you may use them.  For instance,
+"root=PARTUUID=00112233-4455-6677-8899-AABBCCDDEEFF".  It is also
+possible to reference another partition on the same device using a
+known partition UUID as the starting point.  For example,
+if partition 5 of the device has the UUID of
+00112233-4455-6677-8899-AABBCCDDEEFF then partition 3 may be found as
+follows:
+  PARTUUID=00112233-4455-6677-8899-AABBCCDDEEFF/PARTNROFF=-2
+
+Authoritative information can be found in
+"Documentation/kernel-parameters.txt".
 
 
 2.2) ro, rw
@@ -216,7 +226,6 @@ drive (with "root=").
 
 
 3) General Device Options (Amiga and Atari)
-===========================================
 
 3.1) ether=
 -----------
@@ -288,7 +297,6 @@ don't need to expand the sound.
 
 
 4) Options for Atari Only
-=========================
 
 4.1) video=
 -----------
@@ -655,7 +663,6 @@ earlier initialization ("ov_"-less) takes precedence. But the
 switching-off on reset still happens in this case.
 
 5) Options for Amiga Only:
-==========================
 
 5.1) video=
 -----------

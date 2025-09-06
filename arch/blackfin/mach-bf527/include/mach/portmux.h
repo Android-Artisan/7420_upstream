@@ -2,6 +2,16 @@
 #define _MACH_PORTMUX_H_
 
 #define MAX_RESOURCES 	MAX_BLACKFIN_GPIOS
+/*
+ * Copyright 2007-2009 Analog Devices Inc.
+ *
+ * Licensed under the GPL-2 or later
+ */
+
+#ifndef _MACH_PORTMUX_H_
+#define _MACH_PORTMUX_H_
+
+#define MAX_RESOURCES	MAX_BLACKFIN_GPIOS
 
 #define P_PPI0_D0	(P_DEFINED | P_IDENT(GPIO_PF0) | P_FUNCT(0))
 #define P_PPI0_D1	(P_DEFINED | P_IDENT(GPIO_PF1) | P_FUNCT(0))
@@ -68,6 +78,15 @@
 #endif
 
 #define P_HWAIT		(P_DONTCARE)
+
+#define P_CNT_CZM	(P_DEFINED | P_IDENT(GPIO_PF11) | P_FUNCT(3))
+#define P_CNT_CDG	(P_DEFINED | P_IDENT(GPIO_PF12) | P_FUNCT(3))
+#define P_CNT_CUD	(P_DEFINED | P_IDENT(GPIO_PF13) | P_FUNCT(3))
+
+#define P_HWAIT		(P_DONTCARE)
+
+#define GPIO_DEFAULT_BOOT_SPI_CS GPIO_PG1
+#define P_DEFAULT_BOOT_SPI_CS P_SPI0_SSEL1
 
 #define P_SPI0_SS	(P_DEFINED | P_IDENT(GPIO_PG1) | P_FUNCT(0))
 #define P_SPI0_SSEL1	(P_DEFINED | P_IDENT(GPIO_PG1) | P_FUNCT(2))

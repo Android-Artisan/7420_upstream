@@ -1,5 +1,6 @@
 /*
  * Copyright (C) 2007 Freescale Semiconductor, Inc. All rights reserved.
+ * Copyright (C) 2007-2010 Freescale Semiconductor, Inc. All rights reserved.
  *
  * Author:
  *   Zhang Wei <wei.zhang@freescale.com>, Jul 2007
@@ -38,6 +39,16 @@
 
 /* Special MR definition for MPC8349 */
 #define FSL_DMA_MR_EOTIE	0x00000080
+/*
+ * Bandwidth/pause control determines how many bytes a given
+ * channel is allowed to transfer before the DMA engine pauses
+ * the current channel and switches to the next channel
+ */
+#define FSL_DMA_MR_BWC         0x0A000000
+
+/* Special MR definition for MPC8349 */
+#define FSL_DMA_MR_EOTIE	0x00000080
+#define FSL_DMA_MR_PRC_RM	0x00000800
 
 #define FSL_DMA_SR_CH		0x00000020
 #define FSL_DMA_SR_PE		0x00000010
@@ -75,6 +86,10 @@
 #define FSL_DMA_DGSR_EOSI	0x02
 #define FSL_DMA_DGSR_EOLSI	0x01
 
+#define FSL_DMA_BUSWIDTHS	(BIT(DMA_SLAVE_BUSWIDTH_1_BYTE) | \
+				BIT(DMA_SLAVE_BUSWIDTH_2_BYTES) | \
+				BIT(DMA_SLAVE_BUSWIDTH_4_BYTES) | \
+				BIT(DMA_SLAVE_BUSWIDTH_8_BYTES))
 typedef u64 __bitwise v64;
 typedef u32 __bitwise v32;
 
@@ -97,6 +112,13 @@ struct fsl_desc_sw {
 struct fsl_dma_chan_regs {
 	u32 mr;	/* 0x00 - Mode Register */
 	u32 sr;	/* 0x04 - Status Register */
+	struct list_head tx_list;
+	struct dma_async_tx_descriptor async_tx;
+} __attribute__((aligned(32)));
+
+struct fsldma_chan_regs {
+	u32 mr;		/* 0x00 - Mode Register */
+	u32 sr;		/* 0x04 - Status Register */
 	u64 cdar;	/* 0x08 - Current descriptor address register */
 	u64 sar;	/* 0x10 - Source Address Register */
 	u64 dar;	/* 0x18 - Destination Address Register */
@@ -117,6 +139,19 @@ struct fsl_dma_device {
 };
 
 /* Define macros for fsl_dma_chan->feature property */
+struct fsldma_chan;
+#define FSL_DMA_MAX_CHANS_PER_DEVICE 8
+
+struct fsldma_device {
+	void __iomem *regs;	/* DGSR register base */
+	struct device *dev;
+	struct dma_device common;
+	struct fsldma_chan *chan[FSL_DMA_MAX_CHANS_PER_DEVICE];
+	u32 feature;		/* The same as DMA channels */
+	int irq;		/* Channel IRQ */
+};
+
+/* Define macros for fsldma_chan->feature property */
 #define FSL_DMA_LITTLE_ENDIAN	0x00000000
 #define FSL_DMA_BIG_ENDIAN	0x00000001
 
@@ -136,6 +171,39 @@ struct fsl_dma_chan {
 	struct dma_pool *desc_pool;	/* Descriptors pool */
 	struct device *dev;		/* Channel device */
 	struct resource reg;		/* Resource for register */
+#ifdef CONFIG_PM
+struct fsldma_chan_regs_save {
+	u32 mr;
+};
+
+enum fsldma_pm_state {
+	RUNNING = 0,
+	SUSPENDED,
+};
+#endif
+
+struct fsldma_chan {
+	char name[8];			/* Channel name */
+	struct fsldma_chan_regs __iomem *regs;
+	spinlock_t desc_lock;		/* Descriptor operation lock */
+	/*
+	 * Descriptors which are queued to run, but have not yet been
+	 * submitted to the hardware for execution
+	 */
+	struct list_head ld_pending;
+	/*
+	 * Descriptors which are currently being executed by the hardware
+	 */
+	struct list_head ld_running;
+	/*
+	 * Descriptors which have finished execution by the hardware. These
+	 * descriptors have already had their cleanup actions run. They are
+	 * waiting for the ACK bit to be set by the async_tx API.
+	 */
+	struct list_head ld_completed;	/* Link descriptors queue */
+	struct dma_chan common;		/* DMA common channel */
+	struct dma_pool *desc_pool;	/* Descriptors pool */
+	struct device *dev;		/* Channel device */
 	int irq;			/* Channel IRQ */
 	int id;				/* Raw id of this channel */
 	struct tasklet_struct tasklet;
@@ -148,6 +216,20 @@ struct fsl_dma_chan {
 };
 
 #define to_fsl_chan(chan) container_of(chan, struct fsl_dma_chan, common)
+	bool idle;			/* DMA controller is idle */
+#ifdef CONFIG_PM
+	struct fsldma_chan_regs_save regs_save;
+	enum fsldma_pm_state pm_state;
+#endif
+
+	void (*toggle_ext_pause)(struct fsldma_chan *fsl_chan, int enable);
+	void (*toggle_ext_start)(struct fsldma_chan *fsl_chan, int enable);
+	void (*set_src_loop_size)(struct fsldma_chan *fsl_chan, int size);
+	void (*set_dst_loop_size)(struct fsldma_chan *fsl_chan, int size);
+	void (*set_request_count)(struct fsldma_chan *fsl_chan, int size);
+};
+
+#define to_fsl_chan(chan) container_of(chan, struct fsldma_chan, common)
 #define to_fsl_desc(lh) container_of(lh, struct fsl_desc_sw, node)
 #define tx_to_fsl_desc(tx) container_of(tx, struct fsl_desc_sw, async_tx)
 

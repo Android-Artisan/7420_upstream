@@ -75,6 +75,7 @@ enum hcill_states_e {
 struct hcill_cmd {
 	u8 cmd;
 } __attribute__((packed));
+} __packed;
 
 struct ll_struct {
 	unsigned long rx_state;
@@ -126,6 +127,7 @@ static int ll_open(struct hci_uart *hu)
 	BT_DBG("hu %p", hu);
 
 	ll = kzalloc(sizeof(*ll), GFP_ATOMIC);
+	ll = kzalloc(sizeof(*ll), GFP_KERNEL);
 	if (!ll)
 		return -ENOMEM;
 
@@ -165,6 +167,7 @@ static int ll_close(struct hci_uart *hu)
 
 	if (ll->rx_skb)
 		kfree_skb(ll->rx_skb);
+	kfree_skb(ll->rx_skb);
 
 	hu->priv = NULL;
 
@@ -209,6 +212,7 @@ static void ll_device_want_to_wakeup(struct hci_uart *hu)
 		 * This state means that both the host and the BRF chip
 		 * have simultaneously sent a wake-up-indication packet.
 		 * Traditionaly, in this case, receiving a wake-up-indication
+		 * Traditionally, in this case, receiving a wake-up-indication
 		 * was enough and an additional wake-up-ack wasn't needed.
 		 * This has changed with the BRF6350, which does require an
 		 * explicit wake-up-ack. Other BRF versions, which do not
@@ -350,11 +354,15 @@ static int ll_enqueue(struct hci_uart *hu, struct sk_buff *skb)
 static inline int ll_check_data_len(struct ll_struct *ll, int len)
 {
 	register int room = skb_tailroom(ll->rx_skb);
+static inline int ll_check_data_len(struct hci_dev *hdev, struct ll_struct *ll, int len)
+{
+	int room = skb_tailroom(ll->rx_skb);
 
 	BT_DBG("len %d room %d", len, room);
 
 	if (!len) {
 		hci_recv_frame(ll->rx_skb);
+		hci_recv_frame(hdev, ll->rx_skb);
 	} else if (len > room) {
 		BT_ERR("Data length is too large");
 		kfree_skb(ll->rx_skb);
@@ -380,6 +388,14 @@ static int ll_recv(struct hci_uart *hu, void *data, int count)
 	struct hci_acl_hdr   *ah;
 	struct hci_sco_hdr   *sh;
 	register int len, type, dlen;
+static int ll_recv(struct hci_uart *hu, const void *data, int count)
+{
+	struct ll_struct *ll = hu->priv;
+	const char *ptr;
+	struct hci_event_hdr *eh;
+	struct hci_acl_hdr   *ah;
+	struct hci_sco_hdr   *sh;
+	int len, type, dlen;
 
 	BT_DBG("hu %p count %d rx_state %ld rx_count %ld", hu, count, ll->rx_state, ll->rx_count);
 
@@ -397,6 +413,7 @@ static int ll_recv(struct hci_uart *hu, void *data, int count)
 			case HCILL_W4_DATA:
 				BT_DBG("Complete data");
 				hci_recv_frame(ll->rx_skb);
+				hci_recv_frame(hu->hdev, ll->rx_skb);
 
 				ll->rx_state = HCILL_W4_PACKET_TYPE;
 				ll->rx_skb = NULL;
@@ -412,6 +429,15 @@ static int ll_recv(struct hci_uart *hu, void *data, int count)
 
 			case HCILL_W4_ACL_HDR:
 				ah = (struct hci_acl_hdr *) ll->rx_skb->data;
+				eh = hci_event_hdr(ll->rx_skb);
+
+				BT_DBG("Event header: evt 0x%2.2x plen %d", eh->evt, eh->plen);
+
+				ll_check_data_len(hu->hdev, ll, eh->plen);
+				continue;
+
+			case HCILL_W4_ACL_HDR:
+				ah = hci_acl_hdr(ll->rx_skb);
 				dlen = __le16_to_cpu(ah->dlen);
 
 				BT_DBG("ACL header: dlen %d", dlen);
@@ -425,6 +451,15 @@ static int ll_recv(struct hci_uart *hu, void *data, int count)
 				BT_DBG("SCO header: dlen %d", sh->dlen);
 
 				ll_check_data_len(ll, sh->dlen);
+				ll_check_data_len(hu->hdev, ll, dlen);
+				continue;
+
+			case HCILL_W4_SCO_HDR:
+				sh = hci_sco_hdr(ll->rx_skb);
+
+				BT_DBG("SCO header: dlen %d", sh->dlen);
+
+				ll_check_data_len(hu->hdev, ll, sh->dlen);
 				continue;
 			}
 		}
@@ -483,6 +518,7 @@ static int ll_recv(struct hci_uart *hu, void *data, int count)
 			ptr++; count--;
 			continue;
 		};
+		}
 
 		ptr++; count--;
 
@@ -496,6 +532,9 @@ static int ll_recv(struct hci_uart *hu, void *data, int count)
 		}
 
 		ll->rx_skb->dev = (void *) hu->hdev;
+			return -ENOMEM;
+		}
+
 		bt_cb(ll->rx_skb)->pkt_type = type;
 	}
 
@@ -510,6 +549,9 @@ static struct sk_buff *ll_dequeue(struct hci_uart *hu)
 
 static struct hci_uart_proto llp = {
 	.id		= HCI_UART_LL,
+static const struct hci_uart_proto llp = {
+	.id		= HCI_UART_LL,
+	.name		= "LL",
 	.open		= ll_open,
 	.close		= ll_close,
 	.recv		= ll_recv,
@@ -531,6 +573,12 @@ int ll_init(void)
 }
 
 int ll_deinit(void)
+int __init ll_init(void)
+{
+	return hci_uart_register_proto(&llp);
+}
+
+int __exit ll_deinit(void)
 {
 	return hci_uart_unregister_proto(&llp);
 }

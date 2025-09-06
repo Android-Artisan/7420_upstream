@@ -16,6 +16,9 @@
 #include <linux/errno.h>
 #include <linux/sched.h>
 #include <linux/slab.h>
+#include <linux/export.h>
+#include <linux/errno.h>
+#include <linux/sched.h>
 #include <linux/mm.h>
 #include <linux/sem.h>
 #include <linux/msg.h>
@@ -301,6 +304,9 @@ int kernel_execve(const char *filename, char *const argv[], char *const envp[])
 	return ret;
 }
 EXPORT_SYMBOL(kernel_execve);
+#include <linux/ipc.h>
+#include <linux/uaccess.h>
+#include <linux/slab.h>
 
 /*
  * Since loff_t is a 64 bit type we avoid a lot of ABI hassle

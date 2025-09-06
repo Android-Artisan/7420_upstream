@@ -33,6 +33,7 @@
 #include <linux/kexec.h>
 
 #include <asm/atomic.h>
+#include <linux/atomic.h>
 #include <asm/current.h>
 #include <asm/delay.h>
 #include <asm/machvec.h>
@@ -59,6 +60,8 @@ static struct local_tlb_flush_counts {
 } __attribute__((__aligned__(32))) local_tlb_flush_counts[NR_CPUS];
 
 static DEFINE_PER_CPU(unsigned short, shadow_flush_counts[NR_CPUS]) ____cacheline_aligned;
+static DEFINE_PER_CPU_SHARED_ALIGNED(unsigned short [NR_CPUS],
+				     shadow_flush_counts);
 
 #define IPI_CALL_FUNC		0
 #define IPI_CPU_STOP		1
@@ -67,6 +70,7 @@ static DEFINE_PER_CPU(unsigned short, shadow_flush_counts[NR_CPUS]) ____cachelin
 
 /* This needs to be cacheline aligned because it is written to by *other* CPUs.  */
 static DEFINE_PER_CPU_SHARED_ALIGNED(u64, ipi_operation);
+static DEFINE_PER_CPU_SHARED_ALIGNED(unsigned long, ipi_operation);
 
 extern void cpu_halt (void);
 
@@ -77,6 +81,7 @@ stop_this_cpu(void)
 	 * Remove this CPU:
 	 */
 	cpu_clear(smp_processor_id(), cpu_online_map);
+	set_cpu_online(smp_processor_id(), false);
 	max_xtp();
 	local_irq_disable();
 	cpu_halt();
@@ -171,6 +176,11 @@ send_IPI_mask(cpumask_t mask, int op)
 	unsigned int cpu;
 
 	for_each_cpu_mask(cpu, mask) {
+send_IPI_mask(const struct cpumask *mask, int op)
+{
+	unsigned int cpu;
+
+	for_each_cpu(cpu, mask) {
 			send_IPI_single(cpu, op);
 	}
 }
@@ -225,6 +235,7 @@ smp_send_reschedule (int cpu)
 {
 	platform_send_ipi(cpu, IA64_IPI_RESCHEDULE, IA64_IPI_DM_INT, 0);
 }
+EXPORT_SYMBOL_GPL(smp_send_reschedule);
 
 /*
  * Called with preemption disabled.
@@ -266,6 +277,11 @@ smp_flush_tlb_cpumask(cpumask_t xcpumask)
 
 	mb();
 	for_each_cpu_mask(cpu, cpumask) {
+	for_each_cpu(cpu, &cpumask)
+		counts[cpu] = local_tlb_flush_counts[cpu].count & 0xffff;
+
+	mb();
+	for_each_cpu(cpu, &cpumask) {
 		if (cpu == mycpu)
 			flush_mycpu = 1;
 		else
@@ -276,6 +292,7 @@ smp_flush_tlb_cpumask(cpumask_t xcpumask)
 		smp_local_flush_tlb();
 
 	for_each_cpu_mask(cpu, cpumask)
+	for_each_cpu(cpu, &cpumask)
 		while(counts[cpu] == (local_tlb_flush_counts[cpu].count & 0xffff))
 			udelay(FLUSH_DELAY);
 
@@ -291,6 +308,7 @@ smp_flush_tlb_all (void)
 void
 smp_flush_tlb_mm (struct mm_struct *mm)
 {
+	cpumask_var_t cpus;
 	preempt_disable();
 	/* this happens for the common case of a single-threaded fork():  */
 	if (likely(mm == current->active_mm && atomic_read(&mm->mm_users) == 1))
@@ -309,6 +327,19 @@ smp_flush_tlb_mm (struct mm_struct *mm)
 	 * rather trivial.
 	 */
 	on_each_cpu((void (*)(void *))local_finish_flush_tlb_mm, mm, 1);
+	if (!alloc_cpumask_var(&cpus, GFP_ATOMIC)) {
+		smp_call_function((void (*)(void *))local_finish_flush_tlb_mm,
+			mm, 1);
+	} else {
+		cpumask_copy(cpus, mm_cpumask(mm));
+		smp_call_function_many(cpus,
+			(void (*)(void *))local_finish_flush_tlb_mm, mm, 1);
+		free_cpumask_var(cpus);
+	}
+	local_irq_disable();
+	local_finish_flush_tlb_mm(mm);
+	local_irq_enable();
+	preempt_enable();
 }
 
 void arch_send_call_function_single_ipi(int cpu)
@@ -317,6 +348,7 @@ void arch_send_call_function_single_ipi(int cpu)
 }
 
 void arch_send_call_function_ipi(cpumask_t mask)
+void arch_send_call_function_ipi_mask(const struct cpumask *mask)
 {
 	send_IPI_mask(mask, IPI_CALL_FUNC);
 }

@@ -87,6 +87,8 @@ fp_err_ua1:
 	move.l	%a0,-(%sp)
 	pea	SEGV_MAPERR
 	pea	SIGSEGV
+	pea	LSEGV_MAPERR
+	pea	LSIGSEGV
 	jsr	fpemu_signal
 	add.w	#12,%sp
 	jra	ret_from_exception
@@ -98,6 +100,8 @@ fp_sendtrace060:
 	move.l	(FPS_PC,%sp),-(%sp)
 	pea	TRAP_TRACE
 	pea	SIGTRAP
+	pea	LTRAP_TRACE
+	pea	LSIGTRAP
 	jsr	fpemu_signal
 	add.w	#12,%sp
 	jra	ret_from_exception
@@ -123,16 +127,19 @@ fp_get_data_reg:
 
 fp_get_d0:
 	move.l	(PT_D0+8,%sp),%d0
+	move.l	(PT_OFF_D0+8,%sp),%d0
 	printf	PREGISTER,"{d0->%08x}",1,%d0
 	rts
 
 fp_get_d1:
 	move.l	(PT_D1+8,%sp),%d0
+	move.l	(PT_OFF_D1+8,%sp),%d0
 	printf	PREGISTER,"{d1->%08x}",1,%d0
 	rts
 
 fp_get_d2:
 	move.l	(PT_D2+8,%sp),%d0
+	move.l	(PT_OFF_D2+8,%sp),%d0
 	printf	PREGISTER,"{d2->%08x}",1,%d0
 	rts
 
@@ -174,34 +181,40 @@ fp_put_data_reg:
 fp_put_d0:
 	printf	PREGISTER,"{d0<-%08x}",1,%d0
 	move.l	%d0,(PT_D0+8,%sp)
+	move.l	%d0,(PT_OFF_D0+8,%sp)
 	rts
 
 fp_put_d1:
 	printf	PREGISTER,"{d1<-%08x}",1,%d0
 	move.l	%d0,(PT_D1+8,%sp)
+	move.l	%d0,(PT_OFF_D1+8,%sp)
 	rts
 
 fp_put_d2:
 	printf	PREGISTER,"{d2<-%08x}",1,%d0
 	move.l	%d0,(PT_D2+8,%sp)
+	move.l	%d0,(PT_OFF_D2+8,%sp)
 	rts
 
 fp_put_d3:
 	printf	PREGISTER,"{d3<-%08x}",1,%d0
 |	move.l	%d0,%d3
 	move.l	%d0,(PT_D3+8,%sp)
+	move.l	%d0,(PT_OFF_D3+8,%sp)
 	rts
 
 fp_put_d4:
 	printf	PREGISTER,"{d4<-%08x}",1,%d0
 |	move.l	%d0,%d4
 	move.l	%d0,(PT_D4+8,%sp)
+	move.l	%d0,(PT_OFF_D4+8,%sp)
 	rts
 
 fp_put_d5:
 	printf	PREGISTER,"{d5<-%08x}",1,%d0
 |	move.l	%d0,%d5
 	move.l	%d0,(PT_D5+8,%sp)
+	move.l	%d0,(PT_OFF_D5+8,%sp)
 	rts
 
 fp_put_d6:
@@ -226,16 +239,19 @@ fp_get_addr_reg:
 
 fp_get_a0:
 	move.l	(PT_A0+8,%sp),%a0
+	move.l	(PT_OFF_A0+8,%sp),%a0
 	printf	PREGISTER,"{a0->%08x}",1,%a0
 	rts
 
 fp_get_a1:
 	move.l	(PT_A1+8,%sp),%a0
+	move.l	(PT_OFF_A1+8,%sp),%a0
 	printf	PREGISTER,"{a1->%08x}",1,%a0
 	rts
 
 fp_get_a2:
 	move.l	(PT_A2+8,%sp),%a0
+	move.l	(PT_OFF_A2+8,%sp),%a0
 	printf	PREGISTER,"{a2->%08x}",1,%a0
 	rts
 
@@ -277,16 +293,19 @@ fp_put_addr_reg:
 fp_put_a0:
 	printf	PREGISTER,"{a0<-%08x}",1,%a0
 	move.l	%a0,(PT_A0+8,%sp)
+	move.l	%a0,(PT_OFF_A0+8,%sp)
 	rts
 
 fp_put_a1:
 	printf	PREGISTER,"{a1<-%08x}",1,%a0
 	move.l	%a0,(PT_A1+8,%sp)
+	move.l	%a0,(PT_OFF_A1+8,%sp)
 	rts
 
 fp_put_a2:
 	printf	PREGISTER,"{a2<-%08x}",1,%a0
 	move.l	%a0,(PT_A2+8,%sp)
+	move.l	%a0,(PT_OFF_A2+8,%sp)
 	rts
 
 fp_put_a3:

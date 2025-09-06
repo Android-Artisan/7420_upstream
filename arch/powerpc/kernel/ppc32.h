@@ -127,6 +127,7 @@ struct ucontext32 {
 	unsigned int	  	uc_flags;
 	unsigned int 	  	uc_link;
 	stack_32_t	 	uc_stack;
+	compat_stack_t	 	uc_stack;
 	int		 	uc_pad[7];
 	compat_uptr_t		uc_regs;	/* points to uc_mcontext field */
 	compat_sigset_t	 	uc_sigmask;	/* mask last for extensibility */

@@ -24,6 +24,7 @@ void ack_bad_irq(unsigned int irq)
 {
 	printk("unexpected IRQ %u\n", irq);
 }
+#include <linux/device.h>
 
 /* May be overridden by platform code */
 int __weak nmi_enable(void)

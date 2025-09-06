@@ -195,12 +195,15 @@ struct jffs2_inode_cache {
 #define INO_STATE_CLEARING	6	/* In clear_inode() */
 
 #define INO_FLAGS_XATTR_CHECKED	0x01	/* has no duplicate xattr_ref */
+#define INO_FLAGS_IS_DIR	0x02	/* is a directory */
 
 #define RAWNODE_CLASS_INODE_CACHE	0
 #define RAWNODE_CLASS_XATTR_DATUM	1
 #define RAWNODE_CLASS_XATTR_REF		2
 
 #define INOCACHE_HASHSIZE 128
+#define INOCACHE_HASHSIZE_MIN 128
+#define INOCACHE_HASHSIZE_MAX 1024
 
 #define write_ofs(c) ((c)->nextblock->offset + (c)->sector_size - (c)->nextblock->free_size)
 
@@ -232,6 +235,7 @@ struct jffs2_tmp_dnode_info
 	uint32_t data_crc;
 	uint32_t partial_crc;
 	uint16_t csize;
+	uint32_t csize;
 	uint16_t overlapped;
 };
 
@@ -249,7 +253,10 @@ struct jffs2_readinode_info
 
 struct jffs2_full_dirent
 {
-	struct jffs2_raw_node_ref *raw;
+	union {
+		struct jffs2_raw_node_ref *raw;
+		struct jffs2_inode_cache *ic; /* Just during part of build */
+	};
 	struct jffs2_full_dirent *next;
 	uint32_t version;
 	uint32_t ino; /* == zero for unlink */
@@ -317,6 +324,11 @@ static inline int jffs2_encode_dev(union jffs2_device_node *jdev, dev_t rdev)
 	} else {
 		jdev->new = cpu_to_je32(new_encode_dev(rdev));
 		return sizeof(jdev->new);
+		jdev->old_id = cpu_to_je16(old_encode_dev(rdev));
+		return sizeof(jdev->old_id);
+	} else {
+		jdev->new_id = cpu_to_je32(new_encode_dev(rdev));
+		return sizeof(jdev->new_id);
 	}
 }
 
@@ -405,6 +417,7 @@ int jffs2_write_inode_range(struct jffs2_sb_info *c, struct jffs2_inode_info *f,
 			    uint32_t offset, uint32_t writelen, uint32_t *retlen);
 int jffs2_do_create(struct jffs2_sb_info *c, struct jffs2_inode_info *dir_f, struct jffs2_inode_info *f,
 		    struct jffs2_raw_inode *ri, const char *name, int namelen);
+		    struct jffs2_raw_inode *ri, const struct qstr *qstr);
 int jffs2_do_unlink(struct jffs2_sb_info *c, struct jffs2_inode_info *dir_f, const char *name,
 		    int namelen, struct jffs2_inode_info *dead_f, uint32_t time);
 int jffs2_do_link(struct jffs2_sb_info *c, struct jffs2_inode_info *dir_f, uint32_t ino,
@@ -468,6 +481,7 @@ int jffs2_do_mount_fs(struct jffs2_sb_info *c);
 
 /* erase.c */
 void jffs2_erase_pending_blocks(struct jffs2_sb_info *c, int count);
+int jffs2_erase_pending_blocks(struct jffs2_sb_info *c, int count);
 void jffs2_free_jeb_node_refs(struct jffs2_sb_info *c, struct jffs2_eraseblock *jeb);
 
 #ifdef CONFIG_JFFS2_FS_WRITEBUFFER

@@ -263,4 +263,8 @@ struct ktermios {
 #define	TCSADRAIN	1
 #define	TCSAFLUSH	2
 
+#include <uapi/asm/termbits.h>
+
+#define VMIN     16
+#define VTIME    17
 #endif /* !(_SPARC_TERMBITS_H) */

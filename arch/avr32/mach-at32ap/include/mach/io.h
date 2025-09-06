@@ -3,6 +3,7 @@
 
 /* For "bizarre" halfword swapping */
 #include <linux/byteorder/swabb.h>
+#include <linux/swab.h>
 
 #if defined(CONFIG_AP700X_32_BIT_SMC)
 # define __swizzle_addr_b(addr)	(addr ^ 3UL)

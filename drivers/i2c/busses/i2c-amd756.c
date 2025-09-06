@@ -44,6 +44,8 @@
 #include <linux/init.h>
 #include <linux/acpi.h>
 #include <asm/io.h>
+#include <linux/acpi.h>
+#include <linux/io.h>
 
 /* AMD756 SMBus address offsets */
 #define SMB_ADDR_OFFSET		0xE0
@@ -127,6 +129,7 @@ static int amd756_transaction(struct i2c_adapter *adap)
 		         (timeout++ < MAX_TIMEOUT));
 		/* If the SMBus is still busy, we give up */
 		if (timeout >= MAX_TIMEOUT) {
+		if (timeout > MAX_TIMEOUT) {
 			dev_dbg(&adap->dev, "Busy wait timeout (%04x)\n", temp);
 			goto abort;
 		}
@@ -144,6 +147,7 @@ static int amd756_transaction(struct i2c_adapter *adap)
 
 	/* If the SMBus is still busy, we give up */
 	if (timeout >= MAX_TIMEOUT) {
+	if (timeout > MAX_TIMEOUT) {
 		dev_dbg(&adap->dev, "Completion timeout!\n");
 		goto abort;
 	}
@@ -310,6 +314,7 @@ static const char* chipname[] = {
 };
 
 static struct pci_device_id amd756_ids[] = {
+static const struct pci_device_id amd756_ids[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_AMD, PCI_DEVICE_ID_AMD_VIPER_740B),
 	  .driver_data = AMD756 },
 	{ PCI_DEVICE(PCI_VENDOR_ID_AMD, PCI_DEVICE_ID_AMD_VIPER_7413),
@@ -327,6 +332,7 @@ MODULE_DEVICE_TABLE (pci, amd756_ids);
 
 static int __devinit amd756_probe(struct pci_dev *pdev,
 				  const struct pci_device_id *id)
+static int amd756_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 {
 	int nforce = (id->driver_data == NFORCE);
 	int error;
@@ -370,6 +376,7 @@ static int __devinit amd756_probe(struct pci_dev *pdev,
 				  amd756_driver.name);
 	if (error)
 		return error;
+		return -ENODEV;
 
 	if (!request_region(amd756_ioport, SMB_IOSIZE, amd756_driver.name)) {
 		dev_err(&pdev->dev, "SMB region 0x%x already in use!\n",
@@ -386,6 +393,9 @@ static int __devinit amd756_probe(struct pci_dev *pdev,
 
 	sprintf(amd756_smbus.name, "SMBus %s adapter at %04x",
 		chipname[id->driver_data], amd756_ioport);
+	snprintf(amd756_smbus.name, sizeof(amd756_smbus.name),
+		 "SMBus %s adapter at %04x", chipname[id->driver_data],
+		 amd756_ioport);
 
 	error = i2c_add_adapter(&amd756_smbus);
 	if (error) {
@@ -402,6 +412,7 @@ static int __devinit amd756_probe(struct pci_dev *pdev,
 }
 
 static void __devexit amd756_remove(struct pci_dev *dev)
+static void amd756_remove(struct pci_dev *dev)
 {
 	i2c_del_adapter(&amd756_smbus);
 	release_region(amd756_ioport, SMB_IOSIZE);
@@ -424,6 +435,10 @@ static void __exit amd756_exit(void)
 {
 	pci_unregister_driver(&amd756_driver);
 }
+	.remove		= amd756_remove,
+};
+
+module_pci_driver(amd756_driver);
 
 MODULE_AUTHOR("Merlin Hughes <merlin@merlin.org>");
 MODULE_DESCRIPTION("AMD756/766/768/8111 and nVidia nForce SMBus driver");

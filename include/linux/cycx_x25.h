@@ -13,7 +13,6 @@
 *		modify it under the terms of the GNU General Public License
 *		as published by the Free Software Foundation; either version
 *		2 of the License, or (at your option) any later version.
-* ============================================================================
 * 2000/04/02	acme		dprintk and cycx_debug
 * 1999/01/03	acme		judicious use of data types
 * 1999/01/02	acme		#define X25_ACK_N3	0x4411

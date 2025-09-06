@@ -9,6 +9,7 @@
  * 2 of the License, or (at your option) any later version.
  */
 
+#include <linux/init.h>
 #include <linux/threads.h>
 #include <linux/linkage.h>
 #include <asm/ptrace.h>
@@ -32,6 +33,7 @@
 #define __400_LSBR	0xfe000c00
 
 	.section	.text.init,"ax"
+	__INIT
 	.balign		4
 
 ###############################################################################
@@ -228,7 +230,6 @@ __head_no_DCS3:
 #
 # Using this map:
 #	REGISTERS	ADDRESS RANGE		VIEW
-#	===============	======================	===============================
 #	IAMPR0/DAMPR0	0xC0000000-0xCFFFFFFF	Cached kernel RAM Window
 #	DAMPR11		0xE0000000-0xFFFFFFFF	Uncached I/O
 #

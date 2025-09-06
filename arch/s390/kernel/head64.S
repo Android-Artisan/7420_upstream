@@ -2,6 +2,7 @@
  * arch/s390/kernel/head64.S
  *
  * Copyright (C) IBM Corp. 1999,2006
+ * Copyright IBM Corp. 1999, 2010
  *
  *   Author(s):	Hartmut Penner <hp@de.ibm.com>
  *		Martin Schwidefsky <schwidefsky@de.ibm.com>
@@ -110,10 +111,32 @@ startup_continue:
 	lg	%r12,.Lparmaddr-.LPG1(%r13)	# pointer to parameter area
 					# move IPL device to lowcore
 	mvc	__LC_IPLDEV(4),IPL_DEVICE+4-PARMAREA(%r12)
+#include <linux/init.h>
+#include <linux/linkage.h>
+#include <asm/asm-offsets.h>
+#include <asm/thread_info.h>
+#include <asm/page.h>
+
+__HEAD
+ENTRY(startup_continue)
+	tm	__LC_STFL_FAC_LIST+5,0x80	# LPP available ?
+	jz	0f
+	xc	__LC_LPP+1(7,0),__LC_LPP+1	# clear lpp and current_pid
+	mvi	__LC_LPP,0x80			#   and set LPP_MAGIC
+	.insn	s,0xb2800000,__LC_LPP		# load program parameter
+0:	larl	%r1,sched_clock_base_cc
+	mvc	0(8,%r1),__LC_LAST_UPDATE_CLOCK
+	larl	%r13,.LPG1		# get base
+	lctlg	%c0,%c15,.Lctl-.LPG1(%r13)	# load control registers
+	lg	%r12,.Lparmaddr-.LPG1(%r13)	# pointer to parameter area
+					# move IPL device to lowcore
+	lghi	%r0,__LC_PASTE
+	stg	%r0,__LC_VDSO_PER_CPU
 #
 # Setup stack
 #
 	larl	%r15,init_thread_union
+	stg	%r15,__LC_THREAD_INFO	# cache thread info in lowcore
 	lg	%r14,__TI_task(%r15)	# cache current in lowcore
 	stg	%r14,__LC_CURRENT
 	aghi	%r15,1<<(PAGE_SHIFT+THREAD_ORDER) # init_task_union + THREAD_SIZE
@@ -130,6 +153,9 @@ startup_continue:
 	.align	16
 .Lentry:.quad	0x0000000180000000,_stext
 .Lctl:	.quad	0x04350002		# cr0: various things
+.LPG1:
+.Lentry:.quad	0x0000000180000000,_stext
+.Lctl:	.quad	0x04040000		# cr0: AFP registers & secondary space
 	.quad	0			# cr1: primary space segment table
 	.quad	.Lduct			# cr2: dispatchable unit control table
 	.quad	0			# cr3: instruction authorization
@@ -145,6 +171,7 @@ startup_continue:
 	.quad	0			# cr13: home space segment table
 	.quad	0xc0000000		# cr14: machine check handling off
 	.quad	0			# cr15: linkage stack operations
+	.quad	.Llinkage_stack		# cr15: linkage stack operations
 .Lpcmsk:.quad	0x0000000180000000
 .L4malign:.quad 0xffffffffffc00000
 .Lscan2g:.quad	0x80000000 + 0x20000 - 8	# 2GB + 128K - 8
@@ -162,6 +189,12 @@ startup_continue:
 	.align	64
 .Lduct: .long	0,0,0,0,.Lduald,0,0,0
 	.long	0,0,0,0,0,0,0,0
+.Lparmaddr:
+	.quad	PARMAREA
+	.align	64
+.Lduct: .long	0,.Laste,.Laste,0,.Lduald,0,0,0
+	.long	0,0,0,0,0,0,0,0
+.Laste:	.quad	0,0xffffffffffffffff,0,0,0,0,0,0
 	.align	128
 .Lduald:.rept	8
 	.long	0x80000000,0,0,0	# invalid access-list entries
@@ -183,6 +216,21 @@ _stext:	basr	%r13,0			# get base
 # check control registers
 	stctg	%c0,%c15,0(%r15)
 	oi	6(%r15),0x40		# enable sigp emergency signal
+.Llinkage_stack:
+	.long	0,0,0x89000000,0,0,0,0x8a000000,0
+
+ENTRY(_ehead)
+
+	.org	0x100000 - 0x11000	# head.o ends at 0x11000
+#
+# startup-code, running in absolute addressing mode
+#
+ENTRY(_stext)
+	basr	%r13,0			# get base
+.LPG3:
+# check control registers
+	stctg	%c0,%c15,0(%r15)
+	oi	6(%r15),0x60		# enable sigp emergency & external call
 	oi	4(%r15),0x10		# switch on low address proctection
 	lctlg	%c0,%c15,0(%r15)
 

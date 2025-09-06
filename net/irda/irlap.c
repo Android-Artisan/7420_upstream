@@ -26,6 +26,7 @@
  *     along with this program; if not, write to the Free Software
  *     Foundation, Inc., 59 Temple Place, Suite 330, Boston,
  *     MA 02111-1307 USA
+ *     along with this program; if not, see <http://www.gnu.org/licenses/>.
  *
  ********************************************************************/
 
@@ -64,6 +65,7 @@ static void irlap_init_qos_capabilities(struct irlap_cb *self,
 
 #ifdef CONFIG_IRDA_DEBUG
 static char *lap_reasons[] = {
+static const char *const lap_reasons[] __maybe_unused = {
 	"ERROR, NOT USED",
 	"LAP_DISC_INDICATION",
 	"LAP_NO_RESPONSE",
@@ -89,6 +91,8 @@ int __init irlap_init(void)
 	if (irlap == NULL) {
 		IRDA_ERROR("%s: can't allocate irlap hashbin!\n",
 			   __func__);
+		net_err_ratelimited("%s: can't allocate irlap hashbin!\n",
+				    __func__);
 		return -ENOMEM;
 	}
 
@@ -166,6 +170,7 @@ struct irlap_cb *irlap_open(struct net_device *dev, struct qos_info *qos,
 	irlap_apply_default_connection_parameters(self);
 
 	self->N3 = 3; /* # connections attemts to try before giving up */
+	self->N3 = 3; /* # connections attempts to try before giving up */
 
 	self->state = LAP_NDM;
 
@@ -232,6 +237,7 @@ void irlap_close(struct irlap_cb *self)
 	lap = hashbin_remove(irlap, self->saddr, NULL);
 	if (!lap) {
 		IRDA_DEBUG(1, "%s(), Didn't find myself!\n", __func__);
+		pr_debug("%s(), Didn't find myself!\n", __func__);
 		return;
 	}
 	__irlap_close(lap);
@@ -281,6 +287,7 @@ void irlap_connect_request(struct irlap_cb *self, __u32 daddr,
 			   struct qos_info *qos_user, int sniff)
 {
 	IRDA_DEBUG(3, "%s(), daddr=0x%08x\n", __func__, daddr);
+	pr_debug("%s(), daddr=0x%08x\n", __func__, daddr);
 
 	IRDA_ASSERT(self != NULL, return;);
 	IRDA_ASSERT(self->magic == LAP_MAGIC, return;);
@@ -454,11 +461,16 @@ void irlap_disconnect_request(struct irlap_cb *self)
 	case LAP_XMIT_S:        /* FALLTROUGH */
 	case LAP_CONN:          /* FALLTROUGH */
 	case LAP_RESET_WAIT:    /* FALLTROUGH */
+	case LAP_XMIT_P:        /* FALLTHROUGH */
+	case LAP_XMIT_S:        /* FALLTHROUGH */
+	case LAP_CONN:          /* FALLTHROUGH */
+	case LAP_RESET_WAIT:    /* FALLTHROUGH */
 	case LAP_RESET_CHECK:
 		irlap_do_event(self, DISCONNECT_REQUEST, NULL, NULL);
 		break;
 	default:
 		IRDA_DEBUG(2, "%s(), disconnect pending!\n", __func__);
+		pr_debug("%s(), disconnect pending!\n", __func__);
 		self->disconnect_pending = TRUE;
 		break;
 	}
@@ -473,6 +485,7 @@ void irlap_disconnect_request(struct irlap_cb *self)
 void irlap_disconnect_indication(struct irlap_cb *self, LAP_REASON reason)
 {
 	IRDA_DEBUG(1, "%s(), reason=%s\n", __func__, lap_reasons[reason]);
+	pr_debug("%s(), reason=%s\n", __func__, lap_reasons[reason]);
 
 	IRDA_ASSERT(self != NULL, return;);
 	IRDA_ASSERT(self->magic == LAP_MAGIC, return;);
@@ -488,12 +501,20 @@ void irlap_disconnect_indication(struct irlap_cb *self, LAP_REASON reason)
 	case LAP_NO_RESPONSE:	   /* FALLTROUGH */
 	case LAP_DISC_INDICATION:  /* FALLTROUGH */
 	case LAP_FOUND_NONE:       /* FALLTROUGH */
+		pr_debug("%s(), Sending reset request!\n", __func__);
+		irlap_do_event(self, RESET_REQUEST, NULL, NULL);
+		break;
+	case LAP_NO_RESPONSE:	   /* FALLTHROUGH */
+	case LAP_DISC_INDICATION:  /* FALLTHROUGH */
+	case LAP_FOUND_NONE:       /* FALLTHROUGH */
 	case LAP_MEDIA_BUSY:
 		irlmp_link_disconnect_indication(self->notify.instance, self,
 						 reason, NULL);
 		break;
 	default:
 		IRDA_ERROR("%s: Unknown reason %d\n", __func__, reason);
+		net_err_ratelimited("%s: Unknown reason %d\n",
+				    __func__, reason);
 	}
 }
 
@@ -512,6 +533,7 @@ void irlap_discovery_request(struct irlap_cb *self, discovery_t *discovery)
 	IRDA_ASSERT(discovery != NULL, return;);
 
 	IRDA_DEBUG(4, "%s(), nslots = %d\n", __func__, discovery->nslots);
+	pr_debug("%s(), nslots = %d\n", __func__, discovery->nslots);
 
 	IRDA_ASSERT((discovery->nslots == 1) || (discovery->nslots == 6) ||
 		    (discovery->nslots == 8) || (discovery->nslots == 16),
@@ -521,6 +543,8 @@ void irlap_discovery_request(struct irlap_cb *self, discovery_t *discovery)
 	if (self->state != LAP_NDM) {
 		IRDA_DEBUG(4, "%s(), discovery only possible in NDM mode\n",
 			   __func__);
+		pr_debug("%s(), discovery only possible in NDM mode\n",
+			 __func__);
 		irlap_discovery_confirm(self, NULL);
 		/* Note : in theory, if we are not in NDM, we could postpone
 		 * the discovery like we do for connection request.
@@ -544,6 +568,8 @@ void irlap_discovery_request(struct irlap_cb *self, discovery_t *discovery)
 	if (self->discovery_log == NULL) {
 		IRDA_WARNING("%s(), Unable to allocate discovery log!\n",
 			     __func__);
+		net_warn_ratelimited("%s(), Unable to allocate discovery log!\n",
+				     __func__);
 		return;
 	}
 
@@ -555,6 +581,7 @@ void irlap_discovery_request(struct irlap_cb *self, discovery_t *discovery)
 
 	/* sysctl_slot_timeout bounds are checked in irsysctl.c - Jean II */
 	self->slot_timeout = sysctl_slot_timeout * HZ / 1000;
+	self->slot_timeout = msecs_to_jiffies(sysctl_slot_timeout);
 
 	irlap_do_event(self, DISCOVERY_REQUEST, NULL, &info);
 }
@@ -631,6 +658,10 @@ void irlap_status_indication(struct irlap_cb *self, int quality_of_link)
 		break;
 	case STATUS_NOISY:
 		IRDA_MESSAGE("IrLAP, noisy link!\n");
+		net_info_ratelimited("IrLAP, no activity on link!\n");
+		break;
+	case STATUS_NOISY:
+		net_info_ratelimited("IrLAP, noisy link!\n");
 		break;
 	default:
 		break;
@@ -761,6 +792,7 @@ int irlap_validate_nr_received(struct irlap_cb *self, int nr)
 	/*  nr as expected?  */
 	if (nr == self->vs) {
 		IRDA_DEBUG(4, "%s(), expected!\n", __func__);
+		pr_debug("%s(), expected!\n", __func__);
 		return NR_EXPECTED;
 	}
 
@@ -872,6 +904,7 @@ static void irlap_change_speed(struct irlap_cb *self, __u32 speed, int now)
 	struct sk_buff *skb;
 
 	IRDA_DEBUG(0, "%s(), setting speed to %d\n", __func__, speed);
+	pr_debug("%s(), setting speed to %d\n", __func__, speed);
 
 	IRDA_ASSERT(self != NULL, return;);
 	IRDA_ASSERT(self->magic == LAP_MAGIC, return;);
@@ -915,6 +948,7 @@ static void irlap_init_qos_capabilities(struct irlap_cb *self,
 	 */
 	if (qos_user) {
 		IRDA_DEBUG(1, "%s(), Found user specified QoS!\n", __func__);
+		pr_debug("%s(), Found user specified QoS!\n", __func__);
 
 		if (qos_user->baud_rate.bits)
 			self->qos_rx.baud_rate.bits &= qos_user->baud_rate.bits;
@@ -1048,12 +1082,16 @@ void irlap_apply_connection_parameters(struct irlap_cb *self, int now)
 	 * Therefore, it must be lower or equal than our *OWN* max turn around.
 	 * Jean II */
 	self->poll_timeout = self->qos_tx.max_turn_time.value * HZ / 1000;
+	self->poll_timeout = msecs_to_jiffies(
+				self->qos_tx.max_turn_time.value);
 	/* The Final timeout applies only to the primary station.
 	 * It defines the maximum time the primary wait (mostly in RECV mode)
 	 * for an answer from the secondary station before polling it again.
 	 * Therefore, it must be greater or equal than our *PARTNER*
 	 * max turn around time - Jean II */
 	self->final_timeout = self->qos_rx.max_turn_time.value * HZ / 1000;
+	self->final_timeout = msecs_to_jiffies(
+				self->qos_rx.max_turn_time.value);
 	/* The Watchdog Bit timeout applies only to the secondary station.
 	 * It defines the maximum time the secondary wait (mostly in RECV mode)
 	 * for poll from the primary station before getting annoyed.
@@ -1088,11 +1126,13 @@ void irlap_apply_connection_parameters(struct irlap_cb *self, int now)
 		  self->qos_rx.max_turn_time.value;
 
 	IRDA_DEBUG(4, "Setting N1 = %d\n", self->N1);
+	pr_debug("Setting N1 = %d\n", self->N1);
 
 	/* Set N2 to match our own disconnect time */
 	self->N2 = self->qos_tx.link_disc_time.value * 1000 /
 		self->qos_rx.max_turn_time.value;
 	IRDA_DEBUG(4, "Setting N2 = %d\n", self->N2);
+	pr_debug("Setting N2 = %d\n", self->N2);
 }
 
 #ifdef CONFIG_PROC_FS

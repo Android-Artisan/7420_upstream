@@ -2,6 +2,7 @@
  * pata_triflex.c 	- Compaq PATA for new ATA layer
  *			  (C) 2005 Red Hat Inc
  *			  Alan Cox <alan@redhat.com>
+ *			  Alan Cox <alan@lxorguk.ukuu.org.uk>
  *
  * based upon
  *
@@ -31,6 +32,7 @@
  *
  * Documentation:
  *	Not publically available.
+ *	Not publicly available.
  */
 
 #include <linux/kernel.h>
@@ -202,6 +204,15 @@ static int triflex_init_one(struct pci_dev *dev, const struct pci_device_id *id)
 		dev_printk(KERN_DEBUG, &dev->dev, "version " DRV_VERSION "\n");
 
 	return ata_pci_sff_init_one(dev, ppi, &triflex_sht, NULL);
+		.pio_mask = ATA_PIO4,
+		.mwdma_mask = ATA_MWDMA2,
+		.port_ops = &triflex_port_ops
+	};
+	const struct ata_port_info *ppi[] = { &info, NULL };
+
+	ata_print_version_once(&dev->dev, DRV_VERSION);
+
+	return ata_pci_bmdma_init_one(dev, ppi, &triflex_sht, NULL, 0);
 }
 
 static const struct pci_device_id triflex[] = {
@@ -210,6 +221,27 @@ static const struct pci_device_id triflex[] = {
 	{ },
 };
 
+#ifdef CONFIG_PM_SLEEP
+static int triflex_ata_pci_device_suspend(struct pci_dev *pdev, pm_message_t mesg)
+{
+	struct ata_host *host = pci_get_drvdata(pdev);
+	int rc = 0;
+
+	rc = ata_host_suspend(host, mesg);
+	if (rc)
+		return rc;
+
+	/*
+	 * We must not disable or powerdown the device.
+	 * APM bios refuses to suspend if IDE is not accessible.
+	 */
+	pci_save_state(pdev);
+
+	return 0;
+}
+
+#endif
+
 static struct pci_driver triflex_pci_driver = {
 	.name 		= DRV_NAME,
 	.id_table	= triflex,
@@ -217,6 +249,8 @@ static struct pci_driver triflex_pci_driver = {
 	.remove		= ata_pci_remove_one,
 #ifdef CONFIG_PM
 	.suspend	= ata_pci_device_suspend,
+#ifdef CONFIG_PM_SLEEP
+	.suspend	= triflex_ata_pci_device_suspend,
 	.resume		= ata_pci_device_resume,
 #endif
 };
@@ -230,6 +264,7 @@ static void __exit triflex_exit(void)
 {
 	pci_unregister_driver(&triflex_pci_driver);
 }
+module_pci_driver(triflex_pci_driver);
 
 MODULE_AUTHOR("Alan Cox");
 MODULE_DESCRIPTION("low-level driver for Compaq Triflex");

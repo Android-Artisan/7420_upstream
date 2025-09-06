@@ -15,6 +15,19 @@
 #include "mem_user.h"
 #include "skas.h"
 #include "os.h"
+#include <linux/stddef.h>
+#include <linux/module.h>
+#include <linux/fs.h>
+#include <linux/ptrace.h>
+#include <linux/sched.h>
+#include <linux/slab.h>
+#include <asm/current.h>
+#include <asm/processor.h>
+#include <asm/uaccess.h>
+#include <as-layout.h>
+#include <mem_user.h>
+#include <skas.h>
+#include <os.h>
 
 void flush_thread(void)
 {
@@ -31,6 +44,8 @@ void flush_thread(void)
 		       "err = %d\n", ret);
 		force_sig(SIGKILL, current);
 	}
+	get_safe_registers(current_pt_regs()->regs.gp,
+			   current_pt_regs()->regs.fp);
 
 	__switch_mm(&current->mm->context.id);
 }
@@ -97,3 +112,11 @@ long sys_execve(char __user *file, char __user *__user *argv,
 	unlock_kernel();
 	return error;
 }
+	PT_REGS_IP(regs) = eip;
+	PT_REGS_SP(regs) = esp;
+	current->ptrace &= ~PT_DTRACE;
+#ifdef SUBARCH_EXECVE1
+	SUBARCH_EXECVE1(regs->regs);
+#endif
+}
+EXPORT_SYMBOL(start_thread);

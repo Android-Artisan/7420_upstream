@@ -17,6 +17,12 @@
 #define CHSC_SCH_ISC 7			/* CHSC subchannels */
 /* Adapter interrupts. */
 #define QDIO_AIRQ_ISC IO_SCH_ISC	/* I/O subchannel in qdio mode */
+#define EADM_SCH_ISC 4			/* EADM subchannels */
+#define CHSC_SCH_ISC 7			/* CHSC subchannels */
+/* Adapter interrupts. */
+#define QDIO_AIRQ_ISC IO_SCH_ISC	/* I/O subchannel in qdio mode */
+#define PCI_ISC 2			/* PCI I/O subchannels */
+#define AP_ISC 6			/* adjunct processor (crypto) devices */
 
 /* Functions for registration of I/O interruption subclasses */
 void isc_register(unsigned int isc);

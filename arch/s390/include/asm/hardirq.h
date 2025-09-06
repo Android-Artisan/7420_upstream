@@ -3,6 +3,8 @@
  *
  *  S390 version
  *    Copyright (C) 1999,2000 IBM Deutschland Entwicklung GmbH, IBM Corporation
+ *  S390 version
+ *    Copyright IBM Corp. 1999, 2000
  *    Author(s): Martin Schwidefsky (schwidefsky@de.ibm.com),
  *               Denis Joseph Barrow (djbarrow@de.ibm.com,barrow_dj@yahoo.com)
  *
@@ -25,6 +27,8 @@ typedef struct {
 	unsigned int __softirq_pending;
 } irq_cpustat_t;
 
+#include <asm/lowcore.h>
+
 #define local_softirq_pending() (S390_lowcore.softirq_pending)
 
 #define __ARCH_IRQ_STAT
@@ -46,6 +50,11 @@ static inline unsigned long long local_tick_disable(void)
 static inline void local_tick_enable(unsigned long long comp)
 {
 	S390_lowcore.clock_comparator = comp;
+#define __ARCH_IRQ_EXIT_IRQS_DISABLED
+
+static inline void ack_bad_irq(unsigned int irq)
+{
+	printk(KERN_CRIT "unexpected IRQ trap at vector %02x\n", irq);
 }
 
 #endif /* __ASM_HARDIRQ_H */

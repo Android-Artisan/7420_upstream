@@ -58,6 +58,10 @@ extern void * memset(void *, int, __kernel_size_t);
 extern void * memcpy(void *, const void *, __kernel_size_t);
 EXPORT_SYMBOL(memcpy);
 EXPORT_SYMBOL(memset);
+#ifdef CONFIG_ETRAX_ARCH_V32
+#undef strcmp
+EXPORT_SYMBOL(strcmp);
+#endif
 
 #ifdef CONFIG_ETRAX_FAST_TIMER
 /* Fast timer functions */
@@ -67,3 +71,5 @@ EXPORT_SYMBOL(del_fast_timer);
 EXPORT_SYMBOL(schedule_usleep);
 #endif
 EXPORT_SYMBOL(csum_partial);
+EXPORT_SYMBOL(csum_partial_copy_from_user);
+EXPORT_SYMBOL(csum_partial_copy_nocheck);

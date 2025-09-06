@@ -2,6 +2,7 @@
  * ALSA SoC I2S (McBSP) Audio Layer for TI DAVINCI processor
  *
  * Author:      Vladimir Barinov, <vbarinov@ru.mvista.com>
+ * Author:      Vladimir Barinov, <vbarinov@embeddedalley.com>
  * Copyright:   (C) 2007 MontaVista Software, Inc., <source@mvista.com>
  *
  * This program is free software; you can redistribute it and/or modify
@@ -13,5 +14,9 @@
 #define _DAVINCI_I2S_H
 
 extern struct snd_soc_dai davinci_i2s_dai;
+/* McBSP dividers */
+enum davinci_mcbsp_div {
+	DAVINCI_MCBSP_CLKGDV,              /* Sample rate generator divider */
+};
 
 #endif

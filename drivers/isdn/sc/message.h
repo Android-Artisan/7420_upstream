@@ -22,6 +22,7 @@
  * Board message macros, defines and structures
  */
  
+
 #ifndef MESSAGE_H
 #define MESSAGE_H
 
@@ -39,6 +40,9 @@
 		((mesg.type == cmRspType##tx)		\
 		&&(mesg.class == cmRspClass##cx)	\
 		&&(mesg.code == cmRsp##dx))
+	((mesg.type == cmRspType##tx)		\
+	 && (mesg.class == cmRspClass##cx)	\
+	 && (mesg.code == cmRsp##dx))
 
 /*
  * Macro to determine if a message is a firmware message
@@ -49,6 +53,11 @@
 		&&(mesg.code == ceRsp##tx##dx))
 
 /* 
+	((mesg.type == ceRspType##tx)		\
+	 && (mesg.class == ceRspClass##cx)	\
+	 && (mesg.code == ceRsp##tx##dx))
+
+/*
  * Loader Request and Response Messages
  */
 
@@ -187,6 +196,7 @@ typedef struct {
 
 
 /* 
+/*
  * Message payload template for an HWConfig message
  */
 typedef struct {

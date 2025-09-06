@@ -27,6 +27,7 @@
  *     along with this program; if not, write to the Free Software 
  *     Foundation, Inc., 59 Temple Place, Suite 330, Boston, 
  *     MA 02111-1307 USA
+ *     along with this program; if not, see <http://www.gnu.org/licenses/>.
  *     
  ********************************************************************/
 
@@ -138,6 +139,11 @@ struct dongle_reg {
  * (must not exceed 48 bytes, check with struct sk_buff) 
  */
 struct irda_skb_cb {
+ * (must not exceed 48 bytes, check with struct sk_buff)
+ * The default_qdisc_pad field is a temporary hack.
+ */
+struct irda_skb_cb {
+	unsigned int default_qdisc_pad;
 	magic_t magic;       /* Be sure that we can trust the information */
 	__u32   next_speed;  /* The Speed to be set *after* this frame */
 	__u16   mtt;         /* Minimum turn around time */
@@ -161,6 +167,7 @@ typedef struct {
         int dma, dma2;        /* DMA channel(s) used */
         int fifo_size;        /* FIFO size */
         int irqflags;         /* interrupt flags (ie, IRQF_SHARED|IRQF_DISABLED) */
+        int irqflags;         /* interrupt flags (ie, IRQF_SHARED) */
 	int direction;        /* Link direction, used by some FIR drivers */
 	int enabled;          /* Powered on? */
 	int suspended;        /* Suspended by APM */

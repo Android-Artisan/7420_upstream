@@ -285,6 +285,7 @@ static inline void restore_complete(void)
 		break;
 	default:
 		/* SPU_Status[R]=1. No additonal instructions. */
+		/* SPU_Status[R]=1. No additional instructions. */
 		break;
 	}
 	spu_sync();

@@ -38,6 +38,12 @@ ENTRY(itlb_miss)
 	nop
 #endif
 
+#if defined(CONFIG_ERRATUM_NEED_TO_RELOAD_MMUCTR)
+	mov	(MMUCTR),d2
+	mov	d2,(MMUCTR)
+#endif
+
+	and	~EPSW_NMID,epsw
 	mov	(IPTEU),d3
 	mov	(PTBR),a2
 	mov	d3,d2
@@ -60,6 +66,16 @@ ENTRY(itlb_miss)
 	and	~(xPTEL_UNUSED1|xPTEL_UNUSED2),d2
 itlb_miss_set:
 	mov	d2,(IPTEL)		# change the TLB
+#if	((_PAGE_ACCESSED & 0xffffff00) == 0)
+	bset	_PAGE_ACCESSED,(0,a2)
+#elif	((_PAGE_ACCESSED & 0xffff00ff) == 0)
+	bset	+(_PAGE_ACCESSED >> 8),(1,a2)
+#else
+#error	"_PAGE_ACCESSED value is out of range"
+#endif
+	and	~xPTEL2_UNUSED1,d2
+itlb_miss_set:
+	mov	d2,(IPTEL2)		# change the TLB
 #ifdef CONFIG_GDBSTUB
 	movm	(sp),[d2,d3,a2]
 #endif
@@ -90,6 +106,12 @@ ENTRY(dtlb_miss)
 	nop
 #endif
 
+#if defined(CONFIG_ERRATUM_NEED_TO_RELOAD_MMUCTR)
+	mov	(MMUCTR),d2
+	mov	d2,(MMUCTR)
+#endif
+
+	and	~EPSW_NMID,epsw
 	mov	(DPTEU),d3
 	mov	(PTBR),a2
 	mov	d3,d2
@@ -112,6 +134,16 @@ ENTRY(dtlb_miss)
 	and	~(xPTEL_UNUSED1|xPTEL_UNUSED2),d2
 dtlb_miss_set:
 	mov	d2,(DPTEL)		# change the TLB
+#if	((_PAGE_ACCESSED & 0xffffff00) == 0)
+	bset	_PAGE_ACCESSED,(0,a2)
+#elif	((_PAGE_ACCESSED & 0xffff00ff) == 0)
+	bset	+(_PAGE_ACCESSED >> 8),(1,a2)
+#else
+#error	"_PAGE_ACCESSED value is out of range"
+#endif
+	and	~xPTEL2_UNUSED1,d2
+dtlb_miss_set:
+	mov	d2,(DPTEL2)		# change the TLB
 #ifdef CONFIG_GDBSTUB
 	movm	(sp),[d2,d3,a2]
 #endif
@@ -133,6 +165,15 @@ ENTRY(itlb_aerror)
 	and	~EPSW_NMID,epsw
 	add	-4,sp
 	SAVE_ALL
+	add	-4,sp
+	SAVE_ALL
+
+#if defined(CONFIG_ERRATUM_NEED_TO_RELOAD_MMUCTR)
+	mov	(MMUCTR),d1
+	mov	d1,(MMUCTR)
+#endif
+
+	and	~EPSW_NMID,epsw
 	add	-4,sp				# need to pass three params
 
 	# calculate the fault code
@@ -142,6 +183,7 @@ ENTRY(itlb_aerror)
 	# determine the page address
 	mov	(IPTEU),a2
 	mov	a2,d0
+	mov	(IPTEU),d0
 	and	PAGE_MASK,d0
 	mov	d0,(12,sp)
 
@@ -149,6 +191,8 @@ ENTRY(itlb_aerror)
 	mov	d0,(IPTEL)
 
 	and	~EPSW_NMID,epsw
+	mov	d0,(IPTEL2)
+
 	or	EPSW_IE,epsw
 	mov	fp,d0
 	call	do_page_fault[],0		# do_page_fault(regs,code,addr
@@ -185,6 +229,16 @@ dtlb_pagefault:
 	mov	(sp),d1
 	SAVE_ALL
 	add	-4,sp				# need to pass three params
+	add	-4,sp
+	SAVE_ALL
+
+#if defined(CONFIG_ERRATUM_NEED_TO_RELOAD_MMUCTR)
+	mov	(MMUCTR),d1
+	mov	d1,(MMUCTR)
+#endif
+
+	add	-4,sp				# need to pass three params
+	and	~EPSW_NMID,epsw
 
 	# calculate the fault code
 	movhu	(MMUFCR_DFC),d1
@@ -199,6 +253,8 @@ dtlb_pagefault:
 	mov	d0,(DPTEL)
 
 	and	~EPSW_NMID,epsw
+	mov	d0,(DPTEL2)
+
 	or	EPSW_IE,epsw
 	mov	fp,d0
 	call	do_page_fault[],0		# do_page_fault(regs,code,addr

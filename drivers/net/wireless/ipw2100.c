@@ -2811,7 +2811,6 @@ static int __ipw2100_tx_process(struct ipw2100_priv *priv)
 	 * Quick graphic to help you visualize the following
 	 * if / else statement
 	 *
-	 * ===>|                     s---->|===============
 	 *                               e>|
 	 * | a | b | c | d | e | f | g | h | i | j | k | l
 	 *       r---->|

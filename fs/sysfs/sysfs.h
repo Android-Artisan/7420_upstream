@@ -84,6 +84,10 @@ struct sysfs_addrm_cxt {
 	struct sysfs_dirent	*removed;
 	int			cnt;
 };
+#ifndef __SYSFS_INTERNAL_H
+#define __SYSFS_INTERNAL_H
+
+#include <linux/sysfs.h>
 
 /*
  * mount.c
@@ -91,6 +95,7 @@ struct sysfs_addrm_cxt {
 extern struct sysfs_dirent sysfs_root;
 extern struct super_block *sysfs_sb;
 extern struct kmem_cache *sysfs_dir_cachep;
+extern struct kernfs_node *sysfs_root_kn;
 
 /*
  * dir.c
@@ -146,6 +151,9 @@ struct inode *sysfs_get_inode(struct sysfs_dirent *sd);
 int sysfs_setattr(struct dentry *dentry, struct iattr *iattr);
 int sysfs_hash_and_remove(struct sysfs_dirent *dir_sd, const char *name);
 int sysfs_inode_init(void);
+extern spinlock_t sysfs_symlink_target_lock;
+
+void sysfs_warn_dup(struct kernfs_node *parent, const char *name);
 
 /*
  * file.c
@@ -161,8 +169,17 @@ int sysfs_add_file_mode(struct sysfs_dirent *dir_sd,
  * bin.c
  */
 extern const struct file_operations bin_fops;
+int sysfs_add_file(struct kernfs_node *parent,
+		   const struct attribute *attr, bool is_bin);
+int sysfs_add_file_mode_ns(struct kernfs_node *parent,
+			   const struct attribute *attr, bool is_bin,
+			   umode_t amode, const void *ns);
 
 /*
  * symlink.c
  */
 extern const struct inode_operations sysfs_symlink_inode_operations;
+int sysfs_create_link_sd(struct kernfs_node *kn, struct kobject *target,
+			 const char *name);
+
+#endif	/* __SYSFS_INTERNAL_H */

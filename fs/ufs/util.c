@@ -28,6 +28,7 @@ struct ufs_buffer_head * _ubh_bread_ (struct ufs_sb_private_info * uspi,
 		return NULL;
 	ubh = (struct ufs_buffer_head *)
 		kmalloc (sizeof (struct ufs_buffer_head), GFP_KERNEL);
+	ubh = kmalloc (sizeof (struct ufs_buffer_head), GFP_NOFS);
 	if (!ubh)
 		return NULL;
 	ubh->fragment = fragment;
@@ -128,6 +129,17 @@ void ubh_wait_on_buffer (struct ufs_buffer_head * ubh)
 		return;
 	for ( i = 0; i < ubh->count; i++ )
 		wait_on_buffer (ubh->bh[i]);
+void ubh_sync_block(struct ufs_buffer_head *ubh)
+{
+	if (ubh) {
+		unsigned i;
+
+		for (i = 0; i < ubh->count; i++)
+			write_dirty_buffer(ubh->bh[i], WRITE);
+
+		for (i = 0; i < ubh->count; i++)
+			wait_on_buffer(ubh->bh[i]);
+	}
 }
 
 void ubh_bforget (struct ufs_buffer_head * ubh)

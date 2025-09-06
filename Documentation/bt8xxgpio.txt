@@ -1,11 +1,9 @@
-===============================================================
 ==  BT8XXGPIO driver                                         ==
 ==                                                           ==
 ==  A driver for a selfmade cheap BT8xx based PCI GPIO-card  ==
 ==                                                           ==
 ==  For advanced documentation, see                          ==
 ==  http://www.bu3sch.de/btgpio.php                          ==
-===============================================================
 
 
 A generic digital 24-port PCI GPIO card can be built out of an ordinary
@@ -17,9 +15,7 @@ The bt8xx chip does have 24 digital GPIO ports.
 These ports are accessible via 24 pins on the SMD chip package.
 
 
-==============================================
 ==  How to physically access the GPIO pins  ==
-==============================================
 
 The are several ways to access these pins. One might unsolder the whole chip
 and put it on a custom PCI board, or one might only unsolder each individual

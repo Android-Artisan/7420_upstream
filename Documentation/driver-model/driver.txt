@@ -18,6 +18,7 @@ struct device_driver {
         int     (*resume)       (struct device * dev);
 };
 
+See the kerneldoc for the struct device_driver.
 
 
 Allocation
@@ -209,6 +210,8 @@ struct driver_attribute {
         struct attribute        attr;
         ssize_t (*show)(struct device_driver *, char * buf, size_t count, loff_t off);
         ssize_t (*store)(struct device_driver *, const char * buf, size_t count, loff_t off);
+        ssize_t (*show)(struct device_driver *driver, char *buf);
+        ssize_t (*store)(struct device_driver *, const char * buf, size_t count);
 };
 
 Device drivers can export attributes via their sysfs directories. 
@@ -228,3 +231,5 @@ driver's directory using:
 
 int driver_create_file(struct device_driver *, struct driver_attribute *);
 void driver_remove_file(struct device_driver *, struct driver_attribute *);
+int driver_create_file(struct device_driver *, const struct driver_attribute *);
+void driver_remove_file(struct device_driver *, const struct driver_attribute *);

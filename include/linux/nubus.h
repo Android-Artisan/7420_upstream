@@ -235,6 +235,11 @@ struct nubus_dirent
 	__u32 data;	/* Actually 24bits used */
 	int mask;
 };
+#ifndef LINUX_NUBUS_H
+#define LINUX_NUBUS_H
+
+#include <asm/nubus.h>
+#include <uapi/linux/nubus.h>
 
 struct nubus_board {
 	struct nubus_board* next;
@@ -306,6 +311,13 @@ extern void nubus_proc_init(void);
 int get_nubus_list(char *buf);
 int nubus_proc_attach_device(struct nubus_dev *dev);
 int nubus_proc_detach_device(struct nubus_dev *dev);
+#ifdef CONFIG_PROC_FS
+extern void nubus_proc_init(void);
+#else
+static inline void nubus_proc_init(void) {}
+#endif
+int get_nubus_list(char *buf);
+int nubus_proc_attach_device(struct nubus_dev *dev);
 /* If we need more precision we can add some more of these */
 struct nubus_dev* nubus_find_device(unsigned short category,
 				    unsigned short type,

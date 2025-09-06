@@ -8,6 +8,8 @@
  * published by the Free Software Foundation.
  */
 
+#include <linux/err.h>
+#include <linux/string.h>
 #include <linux/types.h>
 #include <linux/errno.h>
 #include <linux/delay.h>
@@ -19,6 +21,15 @@
 #include <mach/gpio.h>
 #include <mach/mux.h>
 
+#include <linux/gpio.h>
+#include <linux/export.h>
+#include <linux/platform_data/usb-omap.h>
+
+#include <linux/usb/musb.h>
+
+#include "gpmc.h"
+
+#include "mux.h"
 
 static u8		async_cs, sync_cs;
 static unsigned		refclk_psec;
@@ -177,6 +188,80 @@ static int tusb_set_sync_mode(unsigned sysclk_ps, unsigned fclk_ps)
 
 extern unsigned long gpmc_get_fclk_period(void);
 
+static struct gpmc_settings tusb_async = {
+	.wait_on_read	= true,
+	.wait_on_write	= true,
+	.device_width	= GPMC_DEVWIDTH_16BIT,
+	.mux_add_data	= GPMC_MUX_AD,
+};
+
+static struct gpmc_settings tusb_sync = {
+	.burst_read	= true,
+	.burst_write	= true,
+	.sync_read	= true,
+	.sync_write	= true,
+	.wait_on_read	= true,
+	.wait_on_write	= true,
+	.burst_len	= GPMC_BURST_16,
+	.device_width	= GPMC_DEVWIDTH_16BIT,
+	.mux_add_data	= GPMC_MUX_AD,
+};
+
+/* NOTE:  timings are from tusb 6010 datasheet Rev 1.8, 12-Sept 2006 */
+
+static int tusb_set_async_mode(unsigned sysclk_ps)
+{
+	struct gpmc_device_timings dev_t;
+	struct gpmc_timings	t;
+	unsigned		t_acsnh_advnh = sysclk_ps + 3000;
+
+	memset(&dev_t, 0, sizeof(dev_t));
+
+	dev_t.t_ceasu = 8 * 1000;
+	dev_t.t_avdasu = t_acsnh_advnh - 7000;
+	dev_t.t_ce_avd = 1000;
+	dev_t.t_avdp_r = t_acsnh_advnh;
+	dev_t.t_oeasu = t_acsnh_advnh + 1000;
+	dev_t.t_oe = 300;
+	dev_t.t_cez_r = 7000;
+	dev_t.t_cez_w = dev_t.t_cez_r;
+	dev_t.t_avdp_w = t_acsnh_advnh;
+	dev_t.t_weasu = t_acsnh_advnh + 1000;
+	dev_t.t_wpl = 300;
+	dev_t.cyc_aavdh_we = 1;
+
+	gpmc_calc_timings(&t, &tusb_async, &dev_t);
+
+	return gpmc_cs_set_timings(async_cs, &t, &tusb_async);
+}
+
+static int tusb_set_sync_mode(unsigned sysclk_ps)
+{
+	struct gpmc_device_timings dev_t;
+	struct gpmc_timings	t;
+	unsigned		t_scsnh_advnh = sysclk_ps + 3000;
+
+	memset(&dev_t, 0, sizeof(dev_t));
+
+	dev_t.clk = 11100;
+	dev_t.t_bacc = 1000;
+	dev_t.t_ces = 1000;
+	dev_t.t_ceasu = 8 * 1000;
+	dev_t.t_avdasu = t_scsnh_advnh - 7000;
+	dev_t.t_ce_avd = 1000;
+	dev_t.t_avdp_r = t_scsnh_advnh;
+	dev_t.cyc_aavdh_oe = 3;
+	dev_t.cyc_oe = 5;
+	dev_t.t_ce_rdyz = 7000;
+	dev_t.t_avdp_w = t_scsnh_advnh;
+	dev_t.cyc_aavdh_we = 3;
+	dev_t.cyc_wpl = 6;
+
+	gpmc_calc_timings(&t, &tusb_sync, &dev_t);
+
+	return gpmc_cs_set_timings(sync_cs, &t, &tusb_sync);
+}
+
 /* tusb driver calls this when it changes the chip's clocking */
 int tusb6010_platform_retime(unsigned is_refclk)
 {
@@ -193,11 +278,13 @@ int tusb6010_platform_retime(unsigned is_refclk)
 	sysclk_ps = is_refclk ? refclk_psec : TUSB6010_OSCCLK_60;
 
 	status = tusb_set_async_mode(sysclk_ps, fclk_ps);
+	status = tusb_set_async_mode(sysclk_ps);
 	if (status < 0) {
 		printk(error, "async", status);
 		goto done;
 	}
 	status = tusb_set_sync_mode(sysclk_ps, fclk_ps);
+	status = tusb_set_sync_mode(sysclk_ps);
 	if (status < 0)
 		printk(error, "sync", status);
 done:
@@ -216,6 +303,7 @@ static struct resource tusb_resources[] = {
 		.flags	= IORESOURCE_MEM,
 	},
 	{ /* IRQ */
+		.name	= "mc",
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -224,6 +312,7 @@ static u64 tusb_dmamask = ~(u32)0;
 
 static struct platform_device tusb_device = {
 	.name		= "musb_hdrc",
+	.name		= "musb-tusb",
 	.id		= -1,
 	.dev = {
 		.dma_mask		= &tusb_dmamask,
@@ -265,6 +354,12 @@ tusb6010_setup_interface(struct musb_hdrc_platform_data *data,
 			| GPMC_CONFIG1_DEVICETYPE_NOR
 			| GPMC_CONFIG1_MUXADDDATA);
 
+	tusb_async.wait_pin = waitpin;
+	async_cs = async;
+
+	status = gpmc_cs_program_settings(async_cs, &tusb_async);
+	if (status < 0)
+		return status;
 
 	/* SYNC region, primarily for DMA */
 	status = gpmc_cs_request(sync, SZ_16M, (unsigned long *)
@@ -293,12 +388,22 @@ tusb6010_setup_interface(struct musb_hdrc_platform_data *data,
 
 	/* IRQ */
 	status = omap_request_gpio(irq);
+	tusb_sync.wait_pin = waitpin;
+	sync_cs = sync;
+
+	status = gpmc_cs_program_settings(sync_cs, &tusb_sync);
+	if (status < 0)
+		return status;
+
+	/* IRQ */
+	status = gpio_request_one(irq, GPIOF_IN, "TUSB6010 irq");
 	if (status < 0) {
 		printk(error, 3, status);
 		return status;
 	}
 	omap_set_gpio_direction(irq, 1);
 	tusb_resources[2].start = irq + IH_GPIO_BASE;
+	tusb_resources[2].start = gpio_to_irq(irq);
 
 	/* set up memory timings ... can speed them up later */
 	if (!ps_refclk) {
@@ -336,6 +441,17 @@ tusb6010_setup_interface(struct musb_hdrc_platform_data *data,
 			omap_cfg_reg(D3_242X_DMAREQ4);
 		if (dmachan & (1 << 5))
 			omap_cfg_reg(E3_242X_DMAREQ5);
+			omap_mux_init_signal("sys_ndmareq0", 0);
+		if (dmachan & (1 << 1))
+			omap_mux_init_signal("sys_ndmareq1", 0);
+		if (dmachan & (1 << 2))
+			omap_mux_init_signal("sys_ndmareq2", 0);
+		if (dmachan & (1 << 3))
+			omap_mux_init_signal("sys_ndmareq3", 0);
+		if (dmachan & (1 << 4))
+			omap_mux_init_signal("sys_ndmareq4", 0);
+		if (dmachan & (1 << 5))
+			omap_mux_init_signal("sys_ndmareq5", 0);
 	}
 
 	/* so far so good ... register the device */

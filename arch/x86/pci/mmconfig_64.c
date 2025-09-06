@@ -45,6 +45,19 @@ static char __iomem *pci_dev_base(unsigned int seg, unsigned int bus, unsigned i
 	if (!addr)
 		return NULL;
  	return addr + ((bus << 20) | (devfn << 12));
+#include <linux/rcupdate.h>
+#include <asm/e820.h>
+#include <asm/pci_x86.h>
+
+#define PREFIX "PCI: "
+
+static char __iomem *pci_dev_base(unsigned int seg, unsigned int bus, unsigned int devfn)
+{
+	struct pci_mmcfg_region *cfg = pci_mmconfig_lookup(seg, bus);
+
+	if (cfg && cfg->virt)
+		return cfg->virt + (PCI_MMCFG_BUS_OFFSET(bus) | (devfn << 12));
+	return NULL;
 }
 
 static int pci_mmcfg_read(unsigned int seg, unsigned int bus,
@@ -61,6 +74,12 @@ err:		*value = -1;
 	addr = pci_dev_base(seg, bus, devfn);
 	if (!addr)
 		goto err;
+	rcu_read_lock();
+	addr = pci_dev_base(seg, bus, devfn);
+	if (!addr) {
+		rcu_read_unlock();
+		goto err;
+	}
 
 	switch (len) {
 	case 1:
@@ -73,6 +92,7 @@ err:		*value = -1;
 		*value = mmio_config_readl(addr + reg);
 		break;
 	}
+	rcu_read_unlock();
 
 	return 0;
 }
@@ -89,6 +109,12 @@ static int pci_mmcfg_write(unsigned int seg, unsigned int bus,
 	addr = pci_dev_base(seg, bus, devfn);
 	if (!addr)
 		return -EINVAL;
+	rcu_read_lock();
+	addr = pci_dev_base(seg, bus, devfn);
+	if (!addr) {
+		rcu_read_unlock();
+		return -EINVAL;
+	}
 
 	switch (len) {
 	case 1:
@@ -101,11 +127,13 @@ static int pci_mmcfg_write(unsigned int seg, unsigned int bus,
 		mmio_config_writel(addr + reg, value);
 		break;
 	}
+	rcu_read_unlock();
 
 	return 0;
 }
 
 static struct pci_raw_ops pci_mmcfg = {
+const struct pci_raw_ops pci_mmcfg = {
 	.read =		pci_mmcfg_read,
 	.write =	pci_mmcfg_write,
 };
@@ -121,6 +149,18 @@ static void __iomem * __init mcfg_ioremap(struct acpi_mcfg_allocation *cfg)
 		printk(KERN_INFO "PCI: Using MMCONFIG at %Lx - %Lx\n",
 		       cfg->address, cfg->address + size - 1);
 	}
+static void __iomem *mcfg_ioremap(struct pci_mmcfg_region *cfg)
+{
+	void __iomem *addr;
+	u64 start, size;
+	int num_buses;
+
+	start = cfg->address + PCI_MMCFG_BUS_OFFSET(cfg->start_bus);
+	num_buses = cfg->end_bus - cfg->start_bus + 1;
+	size = PCI_MMCFG_BUS_OFFSET(num_buses);
+	addr = ioremap_nocache(start, size);
+	if (addr)
+		addr -= PCI_MMCFG_BUS_OFFSET(cfg->start_bus);
 	return addr;
 }
 
@@ -146,6 +186,16 @@ int __init pci_mmcfg_arch_init(void)
 		}
 	}
 	raw_pci_ext_ops = &pci_mmcfg;
+	struct pci_mmcfg_region *cfg;
+
+	list_for_each_entry(cfg, &pci_mmcfg_list, list)
+		if (pci_mmcfg_arch_map(cfg)) {
+			pci_mmcfg_arch_free();
+			return 0;
+		}
+
+	raw_pci_ext_ops = &pci_mmcfg;
+
 	return 1;
 }
 
@@ -166,4 +216,27 @@ void __init pci_mmcfg_arch_free(void)
 
 	kfree(pci_mmcfg_virt);
 	pci_mmcfg_virt = NULL;
+	struct pci_mmcfg_region *cfg;
+
+	list_for_each_entry(cfg, &pci_mmcfg_list, list)
+		pci_mmcfg_arch_unmap(cfg);
+}
+
+int pci_mmcfg_arch_map(struct pci_mmcfg_region *cfg)
+{
+	cfg->virt = mcfg_ioremap(cfg);
+	if (!cfg->virt) {
+		pr_err(PREFIX "can't map MMCONFIG at %pR\n", &cfg->res);
+		return -ENOMEM;
+	}
+
+	return 0;
+}
+
+void pci_mmcfg_arch_unmap(struct pci_mmcfg_region *cfg)
+{
+	if (cfg && cfg->virt) {
+		iounmap(cfg->virt + PCI_MMCFG_BUS_OFFSET(cfg->start_bus));
+		cfg->virt = NULL;
+	}
 }

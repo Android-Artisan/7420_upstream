@@ -33,6 +33,9 @@
 
 #include <linux/vmalloc.h>
 #include "drmP.h"
+#include <linux/slab.h>
+#include <drm/drmP.h>
+#include "drm_legacy.h"
 
 #define DEBUG_SCATTER 0
 
@@ -46,6 +49,7 @@ static inline void *drm_vmalloc_dma(unsigned long size)
 }
 
 void drm_sg_cleanup(struct drm_sg_mem * entry)
+static void drm_sg_cleanup(struct drm_sg_mem * entry)
 {
 	struct page *page;
 	int i;
@@ -65,6 +69,19 @@ void drm_sg_cleanup(struct drm_sg_mem * entry)
 	drm_free(entry, sizeof(*entry), DRM_MEM_SGLISTS);
 }
 
+	kfree(entry->busaddr);
+	kfree(entry->pagelist);
+	kfree(entry);
+}
+
+void drm_legacy_sg_cleanup(struct drm_device *dev)
+{
+	if (drm_core_check_feature(dev, DRIVER_SG) && dev->sg &&
+	    !drm_core_check_feature(dev, DRIVER_MODESET)) {
+		drm_sg_cleanup(dev->sg);
+		dev->sg = NULL;
+	}
+}
 #ifdef _LP64
 # define ScatterHandle(x) (unsigned int)((x >> 32) + (x & ((1L << 32) - 1)))
 #else
@@ -73,10 +90,17 @@ void drm_sg_cleanup(struct drm_sg_mem * entry)
 
 int drm_sg_alloc(struct drm_device *dev, struct drm_scatter_gather * request)
 {
+int drm_legacy_sg_alloc(struct drm_device *dev, void *data,
+			struct drm_file *file_priv)
+{
+	struct drm_scatter_gather *request = data;
 	struct drm_sg_mem *entry;
 	unsigned long pages, i, j;
 
 	DRM_DEBUG("\n");
+
+	if (drm_core_check_feature(dev, DRIVER_MODESET))
+		return -EINVAL;
 
 	if (!drm_core_check_feature(dev, DRIVER_SG))
 		return -EINVAL;
@@ -89,6 +113,10 @@ int drm_sg_alloc(struct drm_device *dev, struct drm_scatter_gather * request)
 		return -ENOMEM;
 
 	memset(entry, 0, sizeof(*entry));
+	entry = kzalloc(sizeof(*entry), GFP_KERNEL);
+	if (!entry)
+		return -ENOMEM;
+
 	pages = (request->size + PAGE_SIZE - 1) / PAGE_SIZE;
 	DRM_DEBUG("size=%ld pages=%ld\n", request->size, pages);
 
@@ -121,6 +149,24 @@ int drm_sg_alloc(struct drm_device *dev, struct drm_scatter_gather * request)
 			 entry->pages * sizeof(*entry->pagelist),
 			 DRM_MEM_PAGES);
 		drm_free(entry, sizeof(*entry), DRM_MEM_SGLISTS);
+	entry->pagelist = kcalloc(pages, sizeof(*entry->pagelist), GFP_KERNEL);
+	if (!entry->pagelist) {
+		kfree(entry);
+		return -ENOMEM;
+	}
+
+	entry->busaddr = kcalloc(pages, sizeof(*entry->busaddr), GFP_KERNEL);
+	if (!entry->busaddr) {
+		kfree(entry->pagelist);
+		kfree(entry);
+		return -ENOMEM;
+	}
+
+	entry->virtual = drm_vmalloc_dma(pages << PAGE_SHIFT);
+	if (!entry->virtual) {
+		kfree(entry->busaddr);
+		kfree(entry->pagelist);
+		kfree(entry);
 		return -ENOMEM;
 	}
 
@@ -209,6 +255,16 @@ int drm_sg_free(struct drm_device *dev, void *data,
 {
 	struct drm_scatter_gather *request = data;
 	struct drm_sg_mem *entry;
+
+
+int drm_legacy_sg_free(struct drm_device *dev, void *data,
+		       struct drm_file *file_priv)
+{
+	struct drm_scatter_gather *request = data;
+	struct drm_sg_mem *entry;
+
+	if (drm_core_check_feature(dev, DRIVER_MODESET))
+		return -EINVAL;
 
 	if (!drm_core_check_feature(dev, DRIVER_SG))
 		return -EINVAL;

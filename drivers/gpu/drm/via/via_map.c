@@ -26,12 +26,18 @@
 #include "via_drv.h"
 
 static int via_do_init_map(struct drm_device * dev, drm_via_init_t * init)
+#include <drm/drmP.h>
+#include <drm/via_drm.h>
+#include "via_drv.h"
+
+static int via_do_init_map(struct drm_device *dev, drm_via_init_t *init)
 {
 	drm_via_private_t *dev_priv = dev->dev_private;
 
 	DRM_DEBUG("\n");
 
 	dev_priv->sarea = drm_getsarea(dev);
+	dev_priv->sarea = drm_legacy_getsarea(dev);
 	if (!dev_priv->sarea) {
 		DRM_ERROR("could not find sarea!\n");
 		dev->dev_private = (void *)dev_priv;
@@ -40,6 +46,7 @@ static int via_do_init_map(struct drm_device * dev, drm_via_init_t * init)
 	}
 
 	dev_priv->fb = drm_core_findmap(dev, init->fb_offset);
+	dev_priv->fb = drm_legacy_findmap(dev, init->fb_offset);
 	if (!dev_priv->fb) {
 		DRM_ERROR("could not find framebuffer!\n");
 		dev->dev_private = (void *)dev_priv;
@@ -47,6 +54,7 @@ static int via_do_init_map(struct drm_device * dev, drm_via_init_t * init)
 		return -EINVAL;
 	}
 	dev_priv->mmio = drm_core_findmap(dev, init->mmio_offset);
+	dev_priv->mmio = drm_legacy_findmap(dev, init->mmio_offset);
 	if (!dev_priv->mmio) {
 		DRM_ERROR("could not find mmio region!\n");
 		dev->dev_private = (void *)dev_priv;
@@ -69,6 +77,7 @@ static int via_do_init_map(struct drm_device * dev, drm_via_init_t * init)
 }
 
 int via_do_cleanup_map(struct drm_device * dev)
+int via_do_cleanup_map(struct drm_device *dev)
 {
 	via_dma_cleanup(dev);
 
@@ -100,6 +109,11 @@ int via_driver_load(struct drm_device *dev, unsigned long chipset)
 	if (dev_priv == NULL)
 		return -ENOMEM;
 
+	dev_priv = kzalloc(sizeof(drm_via_private_t), GFP_KERNEL);
+	if (dev_priv == NULL)
+		return -ENOMEM;
+
+	idr_init(&dev_priv->object_idr);
 	dev->dev_private = (void *)dev_priv;
 
 	dev_priv->chipset = chipset;
@@ -109,6 +123,15 @@ int via_driver_load(struct drm_device *dev, unsigned long chipset)
 		drm_free(dev_priv, sizeof(*dev_priv), DRM_MEM_DRIVER);
 	}
 	return ret;
+	pci_set_master(dev->pdev);
+
+	ret = drm_vblank_init(dev, 1);
+	if (ret) {
+		kfree(dev_priv);
+		return ret;
+	}
+
+	return 0;
 }
 
 int via_driver_unload(struct drm_device *dev)
@@ -118,6 +141,9 @@ int via_driver_unload(struct drm_device *dev)
 	drm_sman_takedown(&dev_priv->sman);
 
 	drm_free(dev_priv, sizeof(drm_via_private_t), DRM_MEM_DRIVER);
+	idr_destroy(&dev_priv->object_idr);
+
+	kfree(dev_priv);
 
 	return 0;
 }

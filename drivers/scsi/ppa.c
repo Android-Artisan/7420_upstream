@@ -10,6 +10,7 @@
 
 #include <linux/init.h>
 #include <linux/kernel.h>
+#include <linux/slab.h>
 #include <linux/module.h>
 #include <linux/blkdev.h>
 #include <linux/parport.h>
@@ -119,6 +120,9 @@ static inline void ppa_pb_release(ppa_struct *dev)
 
 static inline int ppa_proc_write(ppa_struct *dev, char *buffer, int length)
 {
+static inline int ppa_write_info(struct Scsi_Host *host, char *buffer, int length)
+{
+	ppa_struct *dev = ppa_dev(host);
 	unsigned long x;
 
 	if ((length > 5) && (strncmp(buffer, "mode=", 5) == 0)) {
@@ -165,6 +169,17 @@ static int ppa_proc_info(struct Scsi_Host *host, char *buffer, char **start, off
 	if (len > length)
 		len = length;
 	return len;
+static int ppa_show_info(struct seq_file *m, struct Scsi_Host *host)
+{
+	ppa_struct *dev = ppa_dev(host);
+
+	seq_printf(m, "Version : %s\n", PPA_VERSION);
+	seq_printf(m, "Parport : %s\n", dev->dev->port->name);
+	seq_printf(m, "Mode    : %s\n", PPA_MODE_STRING[dev->mode]);
+#if PPA_DEBUG > 0
+	seq_printf(m, "recon_tmo : %lu\n", dev->recon_tmo);
+#endif
+	return 0;
 }
 
 static int device_check(ppa_struct *dev);
@@ -798,6 +813,7 @@ static int ppa_engine(ppa_struct *dev, struct scsi_cmnd *cmd)
 }
 
 static int ppa_queuecommand(struct scsi_cmnd *cmd,
+static int ppa_queuecommand_lck(struct scsi_cmnd *cmd,
 		void (*done) (struct scsi_cmnd *))
 {
 	ppa_struct *dev = ppa_dev(cmd->device->host);
@@ -819,6 +835,8 @@ static int ppa_queuecommand(struct scsi_cmnd *cmd,
 
 	return 0;
 }
+
+static DEF_SCSI_QCMD(ppa_queuecommand)
 
 /*
  * Apparently the disk->capacity attribute is off by 1 sector 
@@ -979,6 +997,8 @@ static struct scsi_host_template ppa_template = {
 	.module			= THIS_MODULE,
 	.proc_name		= "ppa",
 	.proc_info		= ppa_proc_info,
+	.show_info		= ppa_show_info,
+	.write_info		= ppa_write_info,
 	.name			= "Iomega VPI0 (ppa) interface",
 	.queuecommand		= ppa_queuecommand,
 	.eh_abort_handler	= ppa_abort,

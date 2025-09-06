@@ -34,6 +34,7 @@
 #include <linux/errno.h>
 #include <linux/slab.h>
 #include <linux/smp_lock.h>
+#include <linux/mutex.h>
 #include <linux/string.h>
 #include <linux/miscdevice.h>
 #include <linux/init.h>
@@ -51,6 +52,7 @@ MODULE_AUTHOR("Thomas K. Dyas (tdyas@noc.rutgers.edu) and Eddie C. Dost  (ecd@sk
 MODULE_DESCRIPTION("OPENPROM Configuration Driver");
 MODULE_LICENSE("GPL");
 MODULE_VERSION("1.0");
+MODULE_ALIAS_MISCDEV(SUN_OPENPROM_MINOR);
 
 /* Private data kept by the driver for each descriptor. */
 typedef struct openprom_private_data
@@ -60,6 +62,7 @@ typedef struct openprom_private_data
 } DATA;
 
 /* ID of the PROM node containing all of the EEPROM options. */
+static DEFINE_MUTEX(openprom_mutex);
 static struct device_node *options_node;
 
 /*
@@ -222,6 +225,7 @@ static int opromnext(void __user *argp, unsigned int cmd, struct device_node *dp
 		default:
 			break;
 		};
+		}
 	} else {
 		/* Sibling of node zero is the root node.  */
 		if (cmd != OPROMNEXT)
@@ -233,6 +237,7 @@ static int opromnext(void __user *argp, unsigned int cmd, struct device_node *dp
 	ph = 0;
 	if (dp)
 		ph = dp->node;
+		ph = dp->phandle;
 
 	data->current_node = dp;
 	*((int *) op->oprom_array) = ph;
@@ -256,6 +261,7 @@ static int oprompci2node(void __user *argp, struct device_node *dp, struct openp
 		dp = pci_device_to_OF_node(pdev);
 		data->current_node = dp;
 		*((int *)op->oprom_array) = dp->node;
+		*((int *)op->oprom_array) = dp->phandle;
 		op->oprom_size = sizeof(int);
 		err = copyout(argp, op, bufsize + sizeof(int));
 
@@ -273,6 +279,7 @@ static int oprompath2node(void __user *argp, struct device_node *dp, struct open
 	dp = of_find_node_by_path(op->oprom_array);
 	if (dp)
 		ph = dp->node;
+		ph = dp->phandle;
 	data->current_node = dp;
 	*((int *)op->oprom_array) = ph;
 	op->oprom_size = sizeof(int);
@@ -303,6 +310,12 @@ static int openprom_sunos_ioctl(struct inode * inode, struct file * file,
 {
 	DATA *data = file->private_data;
 	struct openpromio *opp;
+static long openprom_sunos_ioctl(struct file * file,
+				 unsigned int cmd, unsigned long arg,
+				 struct device_node *dp)
+{
+	DATA *data = file->private_data;
+	struct openpromio *opp = NULL;
 	int bufsize, error = 0;
 	static int cnt;
 	void __user *argp = (void __user *)arg;
@@ -314,6 +327,8 @@ static int openprom_sunos_ioctl(struct inode * inode, struct file * file,
 
 	if (bufsize < 0)
 		return bufsize;
+
+	mutex_lock(&openprom_mutex);
 
 	switch (cmd) {
 	case OPROMGETOPT:
@@ -364,6 +379,8 @@ static int openprom_sunos_ioctl(struct inode * inode, struct file * file,
 	}
 
 	kfree(opp);
+	mutex_unlock(&openprom_mutex);
+
 	return error;
 }
 
@@ -540,6 +557,7 @@ static int opiocgetnext(unsigned int cmd, void __user *argp)
 	}
 	if (dp)
 		nd = dp->node;
+		nd = dp->phandle;
 	if (copy_to_user(argp, &nd, sizeof(phandle)))
 		return -EFAULT;
 
@@ -553,6 +571,14 @@ static int openprom_bsd_ioctl(struct inode * inode, struct file * file,
 	void __user *argp = (void __user *)arg;
 	int err;
 
+static int openprom_bsd_ioctl(struct file * file,
+			      unsigned int cmd, unsigned long arg)
+{
+	DATA *data = file->private_data;
+	void __user *argp = (void __user *)arg;
+	int err;
+
+	mutex_lock(&openprom_mutex);
 	switch (cmd) {
 	case OPIOCGET:
 		err = opiocget(argp, data);
@@ -573,6 +599,10 @@ static int openprom_bsd_ioctl(struct inode * inode, struct file * file,
 			return -EFAULT;
 
 		return 0;
+		err = 0;
+		if (copy_to_user(argp, &options_node->phandle, sizeof(phandle)))
+			err = -EFAULT;
+		break;
 
 	case OPIOCGETNEXT:
 	case OPIOCGETCHILD:
@@ -583,6 +613,10 @@ static int openprom_bsd_ioctl(struct inode * inode, struct file * file,
 		return -EINVAL;
 
 	};
+		err = -EINVAL;
+		break;
+	}
+	mutex_unlock(&openprom_mutex);
 
 	return err;
 }
@@ -595,6 +629,10 @@ static int openprom_ioctl(struct inode * inode, struct file * file,
 			  unsigned int cmd, unsigned long arg)
 {
 	DATA *data = (DATA *) file->private_data;
+static long openprom_ioctl(struct file * file,
+			   unsigned int cmd, unsigned long arg)
+{
+	DATA *data = file->private_data;
 
 	switch (cmd) {
 	case OPROMGETOPT:
@@ -602,6 +640,7 @@ static int openprom_ioctl(struct inode * inode, struct file * file,
 		if ((file->f_mode & FMODE_READ) == 0)
 			return -EPERM;
 		return openprom_sunos_ioctl(inode, file, cmd, arg,
+		return openprom_sunos_ioctl(file, cmd, arg,
 					    options_node);
 
 	case OPROMSETOPT:
@@ -609,6 +648,7 @@ static int openprom_ioctl(struct inode * inode, struct file * file,
 		if ((file->f_mode & FMODE_WRITE) == 0)
 			return -EPERM;
 		return openprom_sunos_ioctl(inode, file, cmd, arg,
+		return openprom_sunos_ioctl(file, cmd, arg,
 					    options_node);
 
 	case OPROMNEXT:
@@ -618,6 +658,7 @@ static int openprom_ioctl(struct inode * inode, struct file * file,
 		if ((file->f_mode & FMODE_READ) == 0)
 			return -EPERM;
 		return openprom_sunos_ioctl(inode, file, cmd, arg,
+		return openprom_sunos_ioctl(file, cmd, arg,
 					    data->current_node);
 
 	case OPROMU2P:
@@ -630,6 +671,7 @@ static int openprom_ioctl(struct inode * inode, struct file * file,
 		if ((file->f_mode & FMODE_READ) == 0)
 			return -EPERM;
 		return openprom_sunos_ioctl(inode, file, cmd, arg, NULL);
+		return openprom_sunos_ioctl(file, cmd, arg, NULL);
 
 	case OPIOCGET:
 	case OPIOCNEXTPROP:
@@ -639,11 +681,13 @@ static int openprom_ioctl(struct inode * inode, struct file * file,
 		if ((file->f_mode & FMODE_READ) == 0)
 			return -EBADF;
 		return openprom_bsd_ioctl(inode,file,cmd,arg);
+		return openprom_bsd_ioctl(file,cmd,arg);
 
 	case OPIOCSET:
 		if ((file->f_mode & FMODE_WRITE) == 0)
 			return -EBADF;
 		return openprom_bsd_ioctl(inode,file,cmd,arg);
+		return openprom_bsd_ioctl(file,cmd,arg);
 
 	default:
 		return -EINVAL;
@@ -676,6 +720,7 @@ static long openprom_compat_ioctl(struct file *file, unsigned int cmd,
 	case OPROMPCI2NODE:
 	case OPROMPATH2NODE:
 		rval = openprom_ioctl(file->f_path.dentry->d_inode, file, cmd, arg);
+		rval = openprom_ioctl(file, cmd, arg);
 		break;
 	}
 
@@ -695,6 +740,11 @@ static int openprom_open(struct inode * inode, struct file * file)
 	data->lastnode = data->current_node;
 	file->private_data = (void *) data;
 	unlock_kernel();
+	mutex_lock(&openprom_mutex);
+	data->current_node = of_find_node_by_path("/");
+	data->lastnode = data->current_node;
+	file->private_data = (void *) data;
+	mutex_unlock(&openprom_mutex);
 
 	return 0;
 }
@@ -709,6 +759,7 @@ static const struct file_operations openprom_fops = {
 	.owner =	THIS_MODULE,
 	.llseek =	no_llseek,
 	.ioctl =	openprom_ioctl,
+	.unlocked_ioctl = openprom_ioctl,
 	.compat_ioctl =	openprom_compat_ioctl,
 	.open =		openprom_open,
 	.release =	openprom_release,

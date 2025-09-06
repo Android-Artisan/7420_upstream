@@ -84,6 +84,8 @@ struct icmphdr {
 
 #ifdef __KERNEL__
 #include <linux/skbuff.h>
+#include <linux/skbuff.h>
+#include <uapi/linux/icmp.h>
 
 static inline struct icmphdr *icmp_hdr(const struct sk_buff *skb)
 {

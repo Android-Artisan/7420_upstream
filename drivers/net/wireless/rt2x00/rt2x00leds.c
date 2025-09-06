@@ -1,5 +1,6 @@
 /*
 	Copyright (C) 2004 - 2008 rt2x00 SourceForge Project
+	Copyright (C) 2004 - 2009 Ivo van Doorn <IvDoorn@gmail.com>
 	<http://rt2x00.serialmonkey.com>
 
 	This program is free software; you can redistribute it and/or modify
@@ -16,6 +17,7 @@
 	along with this program; if not, write to the
 	Free Software Foundation, Inc.,
 	59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+	along with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
 /*
@@ -85,6 +87,21 @@ void rt2x00led_led_activity(struct rt2x00_dev *rt2x00dev, bool enabled)
 		led->led_dev.brightness_set(&led->led_dev, brightness);
 		led->led_dev.brightness = brightness;
 	}
+static void rt2x00led_led_simple(struct rt2x00_led *led, bool enabled)
+{
+	unsigned int brightness = enabled ? LED_FULL : LED_OFF;
+
+	if (!(led->flags & LED_REGISTERED))
+		return;
+
+	led->led_dev.brightness_set(&led->led_dev, brightness);
+	led->led_dev.brightness = brightness;
+}
+
+void rt2x00led_led_activity(struct rt2x00_dev *rt2x00dev, bool enabled)
+{
+	if (rt2x00dev->led_qual.type == LED_TYPE_ACTIVITY)
+		rt2x00led_led_simple(&rt2x00dev->led_qual, enabled);
 }
 
 void rt2x00leds_led_assoc(struct rt2x00_dev *rt2x00dev, bool enabled)
@@ -100,6 +117,8 @@ void rt2x00leds_led_assoc(struct rt2x00_dev *rt2x00dev, bool enabled)
 		led->led_dev.brightness_set(&led->led_dev, brightness);
 		led->led_dev.brightness = brightness;
 	}
+	if (rt2x00dev->led_assoc.type == LED_TYPE_ASSOC)
+		rt2x00led_led_simple(&rt2x00dev->led_assoc, enabled);
 }
 
 void rt2x00leds_led_radio(struct rt2x00_dev *rt2x00dev, bool enabled)
@@ -115,6 +134,8 @@ void rt2x00leds_led_radio(struct rt2x00_dev *rt2x00dev, bool enabled)
 		led->led_dev.brightness_set(&led->led_dev, brightness);
 		led->led_dev.brightness = brightness;
 	}
+	if (rt2x00dev->led_radio.type == LED_TYPE_RADIO)
+		rt2x00led_led_simple(&rt2x00dev->led_radio, enabled);
 }
 
 static int rt2x00leds_register_led(struct rt2x00_dev *rt2x00dev,
@@ -129,6 +150,11 @@ static int rt2x00leds_register_led(struct rt2x00_dev *rt2x00dev,
 	retval = led_classdev_register(device, &led->led_dev);
 	if (retval) {
 		ERROR(rt2x00dev, "Failed to register led handler.\n");
+	led->led_dev.brightness = LED_OFF;
+
+	retval = led_classdev_register(device, &led->led_dev);
+	if (retval) {
+		rt2x00_err(rt2x00dev, "Failed to register led handler\n");
 		return retval;
 	}
 
@@ -150,6 +176,15 @@ void rt2x00leds_register(struct rt2x00_dev *rt2x00dev)
 
 	if (rt2x00dev->led_radio.flags & LED_INITIALIZED) {
 		snprintf(name, sizeof(name), "%s:radio", dev_name);
+	char name[36];
+	int retval;
+	unsigned long on_period;
+	unsigned long off_period;
+	const char *phy_name = wiphy_name(rt2x00dev->hw->wiphy);
+
+	if (rt2x00dev->led_radio.flags & LED_INITIALIZED) {
+		snprintf(name, sizeof(name), "%s-%s::radio",
+			 rt2x00dev->ops->name, phy_name);
 
 		retval = rt2x00leds_register_led(rt2x00dev,
 						 &rt2x00dev->led_radio,
@@ -160,6 +195,8 @@ void rt2x00leds_register(struct rt2x00_dev *rt2x00dev)
 
 	if (rt2x00dev->led_assoc.flags & LED_INITIALIZED) {
 		snprintf(name, sizeof(name), "%s:assoc", dev_name);
+		snprintf(name, sizeof(name), "%s-%s::assoc",
+			 rt2x00dev->ops->name, phy_name);
 
 		retval = rt2x00leds_register_led(rt2x00dev,
 						 &rt2x00dev->led_assoc,
@@ -170,6 +207,8 @@ void rt2x00leds_register(struct rt2x00_dev *rt2x00dev)
 
 	if (rt2x00dev->led_qual.flags & LED_INITIALIZED) {
 		snprintf(name, sizeof(name), "%s:quality", dev_name);
+		snprintf(name, sizeof(name), "%s-%s::quality",
+			 rt2x00dev->ops->name, phy_name);
 
 		retval = rt2x00leds_register_led(rt2x00dev,
 						 &rt2x00dev->led_qual,
@@ -200,6 +239,16 @@ static void rt2x00leds_unregister_led(struct rt2x00_led *led)
 {
 	led_classdev_unregister(&led->led_dev);
 	led->led_dev.brightness_set(&led->led_dev, LED_OFF);
+
+	/*
+	 * This might look weird, but when we are unregistering while
+	 * suspended the led is already off, and since we haven't
+	 * fully resumed yet, access to the device might not be
+	 * possible yet.
+	 */
+	if (!(led->led_dev.flags & LED_SUSPENDED))
+		led->led_dev.brightness_set(&led->led_dev, LED_OFF);
+
 	led->flags &= ~LED_REGISTERED;
 }
 
@@ -221,6 +270,32 @@ void rt2x00leds_suspend(struct rt2x00_dev *rt2x00dev)
 		led_classdev_suspend(&rt2x00dev->led_assoc.led_dev);
 	if (rt2x00dev->led_radio.flags & LED_REGISTERED)
 		led_classdev_suspend(&rt2x00dev->led_radio.led_dev);
+static inline void rt2x00leds_suspend_led(struct rt2x00_led *led)
+{
+	led_classdev_suspend(&led->led_dev);
+
+	/* This shouldn't be needed, but just to be safe */
+	led->led_dev.brightness_set(&led->led_dev, LED_OFF);
+	led->led_dev.brightness = LED_OFF;
+}
+
+void rt2x00leds_suspend(struct rt2x00_dev *rt2x00dev)
+{
+	if (rt2x00dev->led_qual.flags & LED_REGISTERED)
+		rt2x00leds_suspend_led(&rt2x00dev->led_qual);
+	if (rt2x00dev->led_assoc.flags & LED_REGISTERED)
+		rt2x00leds_suspend_led(&rt2x00dev->led_assoc);
+	if (rt2x00dev->led_radio.flags & LED_REGISTERED)
+		rt2x00leds_suspend_led(&rt2x00dev->led_radio);
+}
+
+static inline void rt2x00leds_resume_led(struct rt2x00_led *led)
+{
+	led_classdev_resume(&led->led_dev);
+
+	/* Device might have enabled the LEDS during resume */
+	led->led_dev.brightness_set(&led->led_dev, LED_OFF);
+	led->led_dev.brightness = LED_OFF;
 }
 
 void rt2x00leds_resume(struct rt2x00_dev *rt2x00dev)
@@ -231,4 +306,9 @@ void rt2x00leds_resume(struct rt2x00_dev *rt2x00dev)
 		led_classdev_resume(&rt2x00dev->led_assoc.led_dev);
 	if (rt2x00dev->led_qual.flags & LED_REGISTERED)
 		led_classdev_resume(&rt2x00dev->led_qual.led_dev);
+		rt2x00leds_resume_led(&rt2x00dev->led_radio);
+	if (rt2x00dev->led_assoc.flags & LED_REGISTERED)
+		rt2x00leds_resume_led(&rt2x00dev->led_assoc);
+	if (rt2x00dev->led_qual.flags & LED_REGISTERED)
+		rt2x00leds_resume_led(&rt2x00dev->led_qual);
 }

@@ -13,6 +13,13 @@
 	.global	startup
 startup:
 	mov.l	#SRAM_START+0x8000, sp
+#include <linux/linkage.h>
+
+	.section	.text..startup,"ax"
+	.global	startup
+startup:
+	mov.l	#startup, sp
+	mov.l	er0, er4
 	mov.l	#__sbss, er0
 	mov.l	#__ebss, er1
 	sub.l	er0, er1
@@ -26,6 +33,9 @@ startup:
 	bne	1b
 	jsr	@_decompress_kernel
 	jmp	@0x400000
+	jsr	@decompress_kernel
+	mov.l	er4, er0
+	jmp	@output
 
 	.align	9
 fake_headers_as_bzImage:
@@ -45,3 +55,5 @@ fake_headers_as_bzImage:
 	.long	0x100000	; 0x100000 = default for big kernel
 	.long	0		; address of loaded ramdisk image
 	.long	0		; its size in bytes
+
+	.end

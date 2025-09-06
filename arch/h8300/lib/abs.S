@@ -13,6 +13,17 @@
 
 ;;; int abs(int n)
 SYMBOL_NAME_LABEL(abs)
+#if defined(CONFIG_CPU_H8300H)
+	.h8300h
+#endif
+#if defined(CONFIG_CPU_H8S)
+	.h8300s
+#endif
+	.text
+.global _abs
+
+;;; int abs(int n)
+_abs:
 	mov.l	er0,er0
 	bpl	1f
 	neg.l	er0

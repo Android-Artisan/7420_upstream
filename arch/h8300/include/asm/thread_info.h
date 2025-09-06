@@ -12,6 +12,16 @@
 
 #ifdef __KERNEL__
 
+#include <asm/segment.h>
+
+#ifdef __KERNEL__
+
+/*
+ * Size of kernel stack for each process. This must be a power of 2...
+ */
+#define THREAD_SIZE_ORDER	1
+#define THREAD_SIZE		8192	/* 2 pages */
+
 #ifndef __ASSEMBLY__
 
 /*
@@ -24,7 +34,10 @@ struct thread_info {
 	unsigned long	   flags;		/* low level flags */
 	int		   cpu;			/* cpu we're on */
 	int		   preempt_count;	/* 0 => preemptable, <0 => BUG */
-	struct restart_block restart_block;
+	unsigned long	   flags;		/* low level flags */
+	int		   cpu;			/* cpu we're on */
+	int		   preempt_count;	/* 0 => preemptable, <0 => BUG */
+	mm_segment_t		addr_limit;
 };
 
 /*
@@ -37,9 +50,10 @@ struct thread_info {
 	.flags =	0,			\
 	.cpu =		0,			\
 	.preempt_count = 1,			\
-	.restart_block	= {			\
-		.fn = do_no_restart_syscall,	\
-	},					\
+	.flags =	0,			\
+	.cpu =		0,			\
+	.preempt_count = INIT_PREEMPT_COUNT,	\
+	.addr_limit	= KERNEL_DS,		\
 }
 
 #define init_thread_info	(init_thread_union.thread_info)
@@ -63,6 +77,11 @@ static inline struct thread_info *current_thread_info(void)
 		: "=&r"(ti)
 		: "i" (~(THREAD_SIZE-1))
 		);
+
+	__asm__("mov.l	sp, %0\n\t"
+		"and.w	%1, %T0"
+		: "=&r"(ti)
+		: "i" (~(THREAD_SIZE-1) & 0xffff));
 	return ti;
 }
 
@@ -98,6 +117,37 @@ static inline struct thread_info *current_thread_info(void)
 #define _TIF_RESTORE_SIGMASK	(1<<TIF_RESTORE_SIGMASK)
 
 #define _TIF_WORK_MASK		0x0000FFFE	/* work to do on interrupt/exception return */
+#define TIF_SINGLESTEP		3	/* singlestepping active */
+#define TIF_MEMDIE		4	/* is terminating due to OOM killer */
+#define TIF_RESTORE_SIGMASK	5	/* restore signal mask in do_signal() */
+#define TIF_NOTIFY_RESUME	6	/* callback before returning to user */
+#define TIF_SYSCALL_AUDIT	7	/* syscall auditing active */
+#define TIF_SYSCALL_TRACEPOINT	8	/* for ftrace syscall instrumentation */
+#define TIF_POLLING_NRFLAG	9	/* true if poll_idle() is polling TIF_NEED_RESCHED */
+
+/* as above, but as bit values */
+#define _TIF_SYSCALL_TRACE	(1 << TIF_SYSCALL_TRACE)
+#define _TIF_SIGPENDING		(1 << TIF_SIGPENDING)
+#define _TIF_NEED_RESCHED	(1 << TIF_NEED_RESCHED)
+#define _TIF_NOTIFY_RESUME	(1 << TIF_NOTIFY_RESUME)
+#define _TIF_SINGLESTEP		(1 << TIF_SINGLESTEP)
+#define _TIF_SYSCALL_AUDIT	(1 << TIF_SYSCALL_AUDIT)
+#define _TIF_SYSCALL_TRACEPOINT	(1 << TIF_SYSCALL_TRACEPOINT)
+#define _TIF_POLLING_NRFLAG	(1 << TIF_POLLING_NRFLAG)
+
+/* work to do in syscall trace */
+#define _TIF_WORK_SYSCALL_MASK	(_TIF_SYSCALL_TRACE | _TIF_SINGLESTEP | \
+				 _TIF_SYSCALL_AUDIT | _TIF_SYSCALL_TRACEPOINT)
+
+/* work to do on any return to u-space */
+#define _TIF_ALLWORK_MASK	(_TIF_SYSCALL_TRACE | _TIF_SIGPENDING      | \
+				 _TIF_NEED_RESCHED  | _TIF_SYSCALL_AUDIT   | \
+				 _TIF_SINGLESTEP    | _TIF_NOTIFY_RESUME   | \
+				 _TIF_SYSCALL_TRACEPOINT)
+
+/* work to do on interrupt/exception return */
+#define _TIF_WORK_MASK		(_TIF_ALLWORK_MASK & ~(_TIF_SYSCALL_TRACE | \
+				 _TIF_SYSCALL_AUDIT | _TIF_SINGLESTEP))
 
 #endif /* __KERNEL__ */
 

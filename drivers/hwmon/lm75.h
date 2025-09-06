@@ -1,6 +1,7 @@
 /*
     lm75.h - Part of lm_sensors, Linux kernel modules for hardware
              monitoring
+	      monitoring
     Copyright (c) 2003 Mark M. Hoffman <mhoffman@lightlink.com>
 
     This program is free software; you can redistribute it and/or modify
@@ -26,10 +27,12 @@
 */
 
 #include <linux/hwmon.h>
+#include <linux/kernel.h>
 
 /* straight from the datasheet */
 #define LM75_TEMP_MIN (-55000)
 #define LM75_TEMP_MAX 125000
+#define LM75_SHUTDOWN 0x01
 
 /* TEMP: 0.001C/bit (-55C to +125C)
    REG: (0.5C/bit, two's complement) << 7 */
@@ -37,6 +40,8 @@ static inline u16 LM75_TEMP_TO_REG(long temp)
 {
 	int ntemp = SENSORS_LIMIT(temp, LM75_TEMP_MIN, LM75_TEMP_MAX);
 	ntemp += (ntemp<0 ? -250 : 250);
+	int ntemp = clamp_val(temp, LM75_TEMP_MIN, LM75_TEMP_MAX);
+	ntemp += (ntemp < 0 ? -250 : 250);
 	return (u16)((ntemp / 500) << 7);
 }
 

@@ -13,6 +13,13 @@
 #include <mach/io.h>
 #include <mach/hardware.h>
 
+
+#include <asm/assembler.h>
+
+#include <mach/hardware.h>
+
+#include "iomap.h"
+
 	.text
 
 /*
@@ -28,6 +35,17 @@ ENTRY(omap1_sram_reprogram_clock)
 	mov	r3, #IO_ADDRESS(ARM_CKCTL) & 0xff000000
 	orr	r3, r3, #IO_ADDRESS(ARM_CKCTL) & 0x00ff0000
 	orr	r3, r3, #IO_ADDRESS(ARM_CKCTL) & 0x0000ff00
+	.align	3
+ENTRY(omap1_sram_reprogram_clock)
+	stmfd	sp!, {r0 - r12, lr}		@ save registers on stack
+
+	mov	r2, #OMAP1_IO_ADDRESS(DPLL_CTL) & 0xff000000
+	orr	r2, r2, #OMAP1_IO_ADDRESS(DPLL_CTL) & 0x00ff0000
+	orr	r2, r2, #OMAP1_IO_ADDRESS(DPLL_CTL) & 0x0000ff00
+
+	mov	r3, #OMAP1_IO_ADDRESS(ARM_CKCTL) & 0xff000000
+	orr	r3, r3, #OMAP1_IO_ADDRESS(ARM_CKCTL) & 0x00ff0000
+	orr	r3, r3, #OMAP1_IO_ADDRESS(ARM_CKCTL) & 0x0000ff00
 
 	tst	r0, #1 << 4			@ want lock mode?
 	beq	newck				@ nope

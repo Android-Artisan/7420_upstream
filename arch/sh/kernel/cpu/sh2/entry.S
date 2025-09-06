@@ -229,6 +229,9 @@ ENTRY(sh_bios_handler)
 	lds.l	@r15+, pr
 	rte
 	 mov.l	@r15+,r15
+	mov.l	@r15+,r15
+	rte
+	 nop
 	.align	2
 1:	.long	gdb_vbr_vector
 #endif /* CONFIG_SH_STANDARD_BIOS */

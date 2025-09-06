@@ -22,6 +22,9 @@
 
 #include <asm/system.h>
 #include <asm/uaccess.h>
+#include <linux/slab.h>
+#include <linux/uaccess.h>
+
 #include <asm/io.h>
 
 #include <linux/inet.h>
@@ -43,6 +46,7 @@
 int nr_rx_ip(struct sk_buff *skb, struct net_device *dev)
 {
 	struct net_device_stats *stats = netdev_priv(dev);
+	struct net_device_stats *stats = &dev->stats;
 
 	if (!netif_running(dev)) {
 		stats->rx_dropped++;
@@ -98,6 +102,9 @@ static int nr_rebuild_header(struct sk_buff *skb)
 static int nr_header(struct sk_buff *skb, struct net_device *dev,
 		     unsigned short type,
 		     const void *daddr, const void *saddr, unsigned len)
+static int nr_header(struct sk_buff *skb, struct net_device *dev,
+		     unsigned short type,
+		     const void *daddr, const void *saddr, unsigned int len)
 {
 	unsigned char *buff = skb_push(skb, NR_NETWORK_LEN + NR_TRANSPORT_LEN);
 
@@ -114,7 +121,7 @@ static int nr_header(struct sk_buff *skb, struct net_device *dev,
 	buff[6] |= AX25_SSSID_SPARE;
 	buff    += AX25_ADDR_LEN;
 
-	*buff++ = sysctl_netrom_network_ttl_initialiser;
+	*buff++ = READ_ONCE(sysctl_netrom_network_ttl_initialiser);
 
 	*buff++ = NR_PROTO_IP;
 	*buff++ = NR_PROTO_IP;
@@ -173,12 +180,16 @@ static int nr_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	struct nr_private *nr = netdev_priv(dev);
 	struct net_device_stats *stats = &nr->stats;
+static netdev_tx_t nr_xmit(struct sk_buff *skb, struct net_device *dev)
+{
+	struct net_device_stats *stats = &dev->stats;
 	unsigned int len = skb->len;
 
 	if (!nr_route_frame(skb, NULL)) {
 		kfree_skb(skb);
 		stats->tx_errors++;
 		return 0;
+		return NETDEV_TX_OK;
 	}
 
 	stats->tx_packets++;
@@ -192,6 +203,7 @@ static struct net_device_stats *nr_get_stats(struct net_device *dev)
 	struct nr_private *nr = netdev_priv(dev);
 
 	return &nr->stats;
+	return NETDEV_TX_OK;
 }
 
 static const struct header_ops nr_header_ops = {
@@ -199,6 +211,14 @@ static const struct header_ops nr_header_ops = {
 	.rebuild= nr_rebuild_header,
 };
 
+};
+
+static const struct net_device_ops nr_netdev_ops = {
+	.ndo_open		= nr_open,
+	.ndo_stop		= nr_close,
+	.ndo_start_xmit		= nr_xmit,
+	.ndo_set_mac_address    = nr_set_mac_address,
+};
 
 void nr_setup(struct net_device *dev)
 {
@@ -207,6 +227,7 @@ void nr_setup(struct net_device *dev)
 	dev->open		= nr_open;
 	dev->stop		= nr_close;
 
+	dev->netdev_ops		= &nr_netdev_ops;
 	dev->header_ops		= &nr_header_ops;
 	dev->hard_header_len	= NR_NETWORK_LEN + NR_TRANSPORT_LEN;
 	dev->addr_len		= AX25_ADDR_LEN;
@@ -217,4 +238,7 @@ void nr_setup(struct net_device *dev)
 	dev->flags		= IFF_NOARP;
 
 	dev->get_stats 		= nr_get_stats;
+
+	/* New-style flags. */
+	dev->flags		= IFF_NOARP;
 }

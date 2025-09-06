@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2006 - 2008 NetEffect, Inc. All rights reserved.
+ * Copyright (c) 2006 - 2011 Intel Corporation.  All rights reserved.
  * Copyright (c) 2005 Open Grid Computing, Inc. All rights reserved.
  *
  * This software is available to you under a choice of one of two
@@ -51,6 +52,8 @@
 #include <rdma/ib_pack.h>
 #include <rdma/rdma_cm.h>
 #include <rdma/iw_cm.h>
+#include <rdma/rdma_netlink.h>
+#include <rdma/iw_portmap.h>
 
 #define NES_SEND_FIRST_WRITE
 
@@ -60,6 +63,8 @@
 
 #define DRV_NAME    "iw_nes"
 #define DRV_VERSION "1.0 KO Build " DRV_BUILD
+#define DRV_NAME    "iw_nes"
+#define DRV_VERSION "1.5.0.1"
 #define PFX         DRV_NAME ": "
 
 /*
@@ -68,6 +73,9 @@
 #ifndef PCI_VENDOR_ID_NETEFFECT	/* not in pci.ids yet */
 #define PCI_VENDOR_ID_NETEFFECT       0x1678
 #define PCI_DEVICE_ID_NETEFFECT_NE020 0x0100
+#define PCI_VENDOR_ID_NETEFFECT          0x1678
+#define PCI_DEVICE_ID_NETEFFECT_NE020    0x0100
+#define PCI_DEVICE_ID_NETEFFECT_NE020_KR 0x0110
 #endif
 
 #define NE020_REV   4
@@ -103,6 +111,7 @@
 #define NES_DRV_OPT_NO_INLINE_DATA       0x00000080
 #define NES_DRV_OPT_DISABLE_INT_MOD      0x00000100
 #define NES_DRV_OPT_DISABLE_VIRT_WQ      0x00000200
+#define NES_DRV_OPT_ENABLE_PAU           0x00000400
 
 #define NES_AEQ_EVENT_TIMEOUT         2500
 #define NES_DISCONNECT_EVENT_TIMEOUT  2000
@@ -129,6 +138,8 @@
 #define NES_DBG_IW_RX       0x00020000
 #define NES_DBG_IW_TX       0x00040000
 #define NES_DBG_SHUTDOWN    0x00080000
+#define NES_DBG_PAU         0x00100000
+#define NES_DBG_NLMSG       0x00200000
 #define NES_DBG_RSVD1       0x10000000
 #define NES_DBG_RSVD2       0x20000000
 #define NES_DBG_RSVD3       0x40000000
@@ -145,6 +156,18 @@ if (!(expr)) {                                                       \
 	printk(KERN_ERR PFX "Assertion failed! %s, %s, %s, line %d\n",  \
 		   #expr, __FILE__, __func__, __LINE__);                \
 }
+do { \
+	if (level & nes_debug_level) \
+		printk(KERN_ERR PFX "%s[%u]: " fmt, __func__, __LINE__, ##args); \
+} while (0)
+
+#define assert(expr) \
+do { \
+	if (!(expr)) { \
+		printk(KERN_ERR PFX "Assertion failed! %s, %s, %s, line %d\n", \
+			   #expr, __FILE__, __func__, __LINE__); \
+	} \
+} while (0)
 
 #define NES_EVENT_TIMEOUT   1200000
 #else
@@ -159,6 +182,7 @@ if (!(expr)) {                                                       \
 #include "nes_context.h"
 #include "nes_user.h"
 #include "nes_cm.h"
+#include "nes_mgt.h"
 
 extern int max_mtu;
 #define max_frame_len (max_mtu+ETH_HLEN)
@@ -170,6 +194,9 @@ extern unsigned int send_first;
 extern unsigned int nes_drv_opt;
 extern unsigned int nes_debug_level;
 
+extern unsigned int nes_drv_opt;
+extern unsigned int nes_debug_level;
+extern unsigned int wqm_quanta;
 extern struct list_head nes_adapter_list;
 
 extern atomic_t cm_connects;
@@ -193,12 +220,16 @@ extern u32 cm_packets_dropped;
 extern u32 cm_packets_retrans;
 extern u32 cm_listens_created;
 extern u32 cm_listens_destroyed;
+extern atomic_t cm_listens_created;
+extern atomic_t cm_listens_destroyed;
 extern u32 cm_backlog_drops;
 extern atomic_t cm_loopbacks;
 extern atomic_t cm_nodes_created;
 extern atomic_t cm_nodes_destroyed;
 extern atomic_t cm_accel_dropped_pkts;
 extern atomic_t cm_resets_recvd;
+extern atomic_t pau_qps_created;
+extern atomic_t pau_qps_destroyed;
 
 extern u32 int_mod_timer_init;
 extern u32 int_mod_cq_depth_256;
@@ -259,6 +290,7 @@ struct nes_device {
 	u16                    base_doorbell_index;
 	u16                    currcq_count;
 	u16                    deepcq_count;
+	u8                     iw_status;
 	u8                     msi_enabled;
 	u8                     netdev_count;
 	u8                     napi_isr_ran;
@@ -266,6 +298,19 @@ struct nes_device {
 	u8                     disable_tx_flow_control;
 };
 
+
+	struct delayed_work    work;
+	u8                     link_recheck;
+};
+
+/* Receive skb private area - must fit in skb->cb area */
+struct nes_rskb_cb {
+	u64                    busaddr;
+	u32                    maplen;
+	u32                    seqnum;
+	u8                     *data_start;
+	struct nes_qp          *nesqp;
+};
 
 static inline __le32 get_crc_value(struct nes_v4_quad *nes_quad)
 {
@@ -287,6 +332,8 @@ set_wqe_64bit_value(__le32 *wqe_words, u32 index, u64 value)
 {
 	wqe_words[index]     = cpu_to_le32((u32) ((unsigned long)value));
 	wqe_words[index + 1] = cpu_to_le32((u32)(upper_32_bits((unsigned long)value)));
+	wqe_words[index]     = cpu_to_le32((u32) value);
+	wqe_words[index + 1] = cpu_to_le32(upper_32_bits(value));
 }
 
 static inline void
@@ -300,6 +347,8 @@ nes_fill_init_cqp_wqe(struct nes_hw_cqp_wqe *cqp_wqe, struct nes_device *nesdev)
 {
 	set_wqe_64bit_value(cqp_wqe->wqe_words, NES_CQP_WQE_COMP_CTX_LOW_IDX,
 			(u64)((unsigned long) &nesdev->cqp));
+	cqp_wqe->wqe_words[NES_CQP_WQE_COMP_CTX_LOW_IDX]       = 0;
+	cqp_wqe->wqe_words[NES_CQP_WQE_COMP_CTX_HIGH_IDX]      = 0;
 	cqp_wqe->wqe_words[NES_CQP_WQE_COMP_SCRATCH_LOW_IDX]   = 0;
 	cqp_wqe->wqe_words[NES_CQP_WQE_COMP_SCRATCH_HIGH_IDX]  = 0;
 	cqp_wqe->wqe_words[NES_CQP_STAG_WQE_PBL_BLK_COUNT_IDX] = 0;
@@ -384,6 +433,20 @@ static inline void nes_write8(void __iomem *addr, u8 val)
 static inline int nes_alloc_resource(struct nes_adapter *nesadapter,
 		unsigned long *resource_array, u32 max_resources,
 		u32 *req_resource_num, u32 *next)
+enum nes_resource {
+	NES_RESOURCE_MW = 1,
+	NES_RESOURCE_FAST_MR,
+	NES_RESOURCE_PHYS_MR,
+	NES_RESOURCE_USER_MR,
+	NES_RESOURCE_PD,
+	NES_RESOURCE_QP,
+	NES_RESOURCE_CQ,
+	NES_RESOURCE_ARP
+};
+
+static inline int nes_alloc_resource(struct nes_adapter *nesadapter,
+		unsigned long *resource_array, u32 max_resources,
+		u32 *req_resource_num, u32 *next, enum nes_resource resource_type)
 {
 	unsigned long flags;
 	u32 resource_num;
@@ -395,6 +458,7 @@ static inline int nes_alloc_resource(struct nes_adapter *nesadapter,
 		resource_num = find_first_zero_bit(resource_array, max_resources);
 		if (resource_num >= max_resources) {
 			printk(KERN_ERR PFX "%s: No available resourcess.\n", __func__);
+			printk(KERN_ERR PFX "%s: No available resources [type=%u].\n", __func__, resource_type);
 			spin_unlock_irqrestore(&nesadapter->resource_lock, flags);
 			return -EMFILE;
 		}
@@ -503,6 +567,8 @@ void nes_nic_ce_handler(struct nes_device *, struct nes_hw_nic_cq *);
 void nes_iwarp_ce_handler(struct nes_device *, struct nes_hw_cq *);
 int nes_destroy_cqp(struct nes_device *);
 int nes_nic_cm_xmit(struct sk_buff *, struct net_device *);
+void nes_recheck_link_status(struct work_struct *work);
+void nes_terminate_timeout(unsigned long context);
 
 /* nes_nic.c */
 struct net_device *nes_netdev_init(struct nes_device *, void __iomem *);
@@ -524,6 +590,10 @@ void nes_cm_disconn_worker(void *);
 int nes_hw_modify_qp(struct nes_device *, struct nes_qp *, u32, u32);
 int nes_modify_qp(struct ib_qp *, struct ib_qp_attr *, int, struct ib_udata *);
 struct nes_ib_device *nes_init_ofa_device(struct net_device *);
+int nes_hw_modify_qp(struct nes_device *, struct nes_qp *, u32, u32, u32);
+int nes_modify_qp(struct ib_qp *, struct ib_qp_attr *, int, struct ib_udata *);
+struct nes_ib_device *nes_init_ofa_device(struct net_device *);
+void  nes_port_ibevent(struct nes_vnic *nesvnic);
 void nes_destroy_ofa_device(struct nes_ib_device *);
 int nes_register_ofa_device(struct nes_ib_device *);
 

@@ -6,6 +6,7 @@
 #include <asm/page.h>
 #include <asm-generic/vmlinux.lds.h>
 #include <asm/cache.h>
+#include <asm/thread_info.h>
 
 ENTRY(_stext)
 
@@ -58,6 +59,14 @@ SECTIONS
 		SCHED_TEXT
 		LOCK_TEXT
 		KPROBES_TEXT
+		HEAD_TEXT
+		_text = .;
+		/* careful! __ftr_alt_* sections need to be close to .text */
+		*(.text .fixup __ftr_alt_* .ref.text)
+		SCHED_TEXT
+		LOCK_TEXT
+		KPROBES_TEXT
+		IRQENTRY_TEXT
 
 #ifdef CONFIG_PPC32
 		*(.got1)
@@ -81,6 +90,61 @@ SECTIONS
 		*(__ex_table)
 		__stop___ex_table = .;
 	}
+#ifdef CONFIG_PPC64
+	. = ALIGN(8);
+	__stf_entry_barrier_fixup : AT(ADDR(__stf_entry_barrier_fixup) - LOAD_OFFSET) {
+		__start___stf_entry_barrier_fixup = .;
+		*(__stf_entry_barrier_fixup)
+		__stop___stf_entry_barrier_fixup = .;
+	}
+
+	. = ALIGN(8);
+	__uaccess_flush_fixup : AT(ADDR(__uaccess_flush_fixup) - LOAD_OFFSET) {
+		__start___uaccess_flush_fixup = .;
+		*(__uaccess_flush_fixup)
+		__stop___uaccess_flush_fixup = .;
+	}
+
+	. = ALIGN(8);
+	__entry_flush_fixup : AT(ADDR(__entry_flush_fixup) - LOAD_OFFSET) {
+		__start___entry_flush_fixup = .;
+		*(__entry_flush_fixup)
+		__stop___entry_flush_fixup = .;
+	}
+
+	. = ALIGN(8);
+	__stf_exit_barrier_fixup : AT(ADDR(__stf_exit_barrier_fixup) - LOAD_OFFSET) {
+		__start___stf_exit_barrier_fixup = .;
+		*(__stf_exit_barrier_fixup)
+		__stop___stf_exit_barrier_fixup = .;
+	}
+
+	. = ALIGN(8);
+	__rfi_flush_fixup : AT(ADDR(__rfi_flush_fixup) - LOAD_OFFSET) {
+		__start___rfi_flush_fixup = .;
+		*(__rfi_flush_fixup)
+		__stop___rfi_flush_fixup = .;
+	}
+#endif /* CONFIG_PPC64 */
+
+#ifdef CONFIG_PPC_BARRIER_NOSPEC
+	. = ALIGN(8);
+	__spec_barrier_fixup : AT(ADDR(__spec_barrier_fixup) - LOAD_OFFSET) {
+		__start___barrier_nospec_fixup = .;
+		*(__barrier_nospec_fixup)
+		__stop___barrier_nospec_fixup = .;
+	}
+#endif /* CONFIG_PPC_BARRIER_NOSPEC */
+
+#ifdef CONFIG_PPC_FSL_BOOK3E
+	. = ALIGN(8);
+	__spec_btb_flush_fixup : AT(ADDR(__spec_btb_flush_fixup) - LOAD_OFFSET) {
+		__start__btb_flush_fixup = .;
+		*(__btb_flush_fixup)
+		__stop__btb_flush_fixup = .;
+	}
+#endif
+	EXCEPTION_TABLE(0)
 
 	NOTES :kernel :notes
 
@@ -88,6 +152,9 @@ SECTIONS
 	   near PHDRS.  */
 	.dummy : AT(ADDR(.dummy) - LOAD_OFFSET) {
 		LONG(0xf177)
+		LONG(0)
+		LONG(0)
+		LONG(0)
 	} :kernel :dummy
 
 /*
@@ -101,6 +168,7 @@ SECTIONS
 		INIT_TEXT
 		_einittext = .;
 	} :kernel
+	INIT_TEXT_SECTION(PAGE_SIZE) :kernel
 
 	/* .exit.text is discarded at runtime, not link time,
 	 * to deal with references from __bug_table
@@ -143,6 +211,18 @@ SECTIONS
 		__con_initcall_end = .;
 	}
 
+	.init.setup : AT(ADDR(.init.setup) - LOAD_OFFSET) {
+		INIT_SETUP(16)
+	}
+
+	.initcall.init : AT(ADDR(.initcall.init) - LOAD_OFFSET) {
+		INIT_CALLS
+	}
+
+	.con_initcall.init : AT(ADDR(.con_initcall.init) - LOAD_OFFSET) {
+		CON_INITCALL
+	}
+
 	SECURITY_INIT
 
 	. = ALIGN(8);
@@ -150,6 +230,12 @@ SECTIONS
 		__start___ftr_fixup = .;
 		*(__ftr_fixup)
 		__stop___ftr_fixup = .;
+	}
+	. = ALIGN(8);
+	__mmu_ftr_fixup : AT(ADDR(__mmu_ftr_fixup) - LOAD_OFFSET) {
+		__start___mmu_ftr_fixup = .;
+		*(__mmu_ftr_fixup)
+		__stop___mmu_ftr_fixup = .;
 	}
 	. = ALIGN(8);
 	__lwsync_fixup : AT(ADDR(__lwsync_fixup) - LOAD_OFFSET) {
@@ -181,11 +267,46 @@ SECTIONS
 		__per_cpu_end = .;
 	}
 
+	.init.ramfs : AT(ADDR(.init.ramfs) - LOAD_OFFSET) {
+		INIT_RAM_FS
+	}
+
+	PERCPU_SECTION(L1_CACHE_BYTES)
+
 	. = ALIGN(8);
 	.machine.desc : AT(ADDR(.machine.desc) - LOAD_OFFSET) {
 		__machine_desc_start = . ;
 		*(.machine.desc)
 		__machine_desc_end = . ;
+	}
+#ifdef CONFIG_RELOCATABLE
+	. = ALIGN(8);
+	.dynsym : AT(ADDR(.dynsym) - LOAD_OFFSET)
+	{
+#ifdef CONFIG_RELOCATABLE_PPC32
+		__dynamic_symtab = .;
+#endif
+		*(.dynsym)
+	}
+	.dynstr : AT(ADDR(.dynstr) - LOAD_OFFSET) { *(.dynstr) }
+	.dynamic : AT(ADDR(.dynamic) - LOAD_OFFSET)
+	{
+		__dynamic_start = .;
+		*(.dynamic)
+	}
+	.hash : AT(ADDR(.hash) - LOAD_OFFSET) { *(.hash) }
+	.interp : AT(ADDR(.interp) - LOAD_OFFSET) { *(.interp) }
+	.rela.dyn : AT(ADDR(.rela.dyn) - LOAD_OFFSET)
+	{
+		__rela_dyn_start = .;
+		*(.rela*)
+	}
+#endif
+	/* .exit.data is discarded at runtime, not link time,
+	 * to deal with references from .exit.text
+	 */
+	.exit.data : AT(ADDR(.exit.data) - LOAD_OFFSET) {
+		EXIT_DATA
 	}
 
 	/* freed after init ends here */
@@ -213,12 +334,26 @@ SECTIONS
 		*(.branch_lt)
 	}
 
+#ifdef CONFIG_DEBUG_INFO_BTF
+	.BTF : AT(ADDR(.BTF) - LOAD_OFFSET) {
+		*(.BTF)
+	}
+#endif
+
 	.opd : AT(ADDR(.opd) - LOAD_OFFSET) {
 		*(.opd)
 	}
 
 	.got : AT(ADDR(.got) - LOAD_OFFSET) {
 		__toc_start = .;
+	. = ALIGN(256);
+	.got : AT(ADDR(.got) - LOAD_OFFSET) {
+		__toc_start = .;
+#ifndef CONFIG_RELOCATABLE
+		__prom_init_toc_start = .;
+		arch/powerpc/kernel/prom_init.o*(.toc .got)
+		__prom_init_toc_end = .;
+#endif
 		*(.got)
 		*(.toc)
 	}
@@ -250,6 +385,19 @@ SECTIONS
 	. = ALIGN(L1_CACHE_BYTES);
 	.data.read_mostly : AT(ADDR(.data.read_mostly) - LOAD_OFFSET) {
 		*(.data.read_mostly)
+	/* The initial task and kernel stack */
+	INIT_TASK_DATA_SECTION(THREAD_SIZE)
+
+	.data..page_aligned : AT(ADDR(.data..page_aligned) - LOAD_OFFSET) {
+		PAGE_ALIGNED_DATA(PAGE_SIZE)
+	}
+
+	.data..cacheline_aligned : AT(ADDR(.data..cacheline_aligned) - LOAD_OFFSET) {
+		CACHELINE_ALIGNED_DATA(L1_CACHE_BYTES)
+	}
+
+	.data..read_mostly : AT(ADDR(.data..read_mostly) - LOAD_OFFSET) {
+		READ_MOSTLY_DATA(L1_CACHE_BYTES)
 	}
 
 	. = ALIGN(PAGE_SIZE);
@@ -259,6 +407,13 @@ SECTIONS
 		. = ALIGN(PAGE_SIZE);
 		__nosave_end = .;
 	}
+
+		NOSAVE_DATA
+	}
+
+	. = ALIGN(PAGE_SIZE);
+	_edata  =  .;
+	PROVIDE32 (edata = .);
 
 /*
  * And finally the bss
@@ -272,8 +427,12 @@ SECTIONS
 		*(COMMON)
 		__bss_stop = .;
 	}
+	BSS_SECTION(0, 0, 0)
 
 	. = ALIGN(PAGE_SIZE);
 	_end = . ;
 	PROVIDE32 (end = .);
+
+	/* Sections to be discarded. */
+	DISCARDS
 }

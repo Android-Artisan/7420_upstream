@@ -419,6 +419,14 @@
 #ifdef __KERNEL__
 
 #define __ARCH_WANT_IPC_PARSE_VERSION
+#include <uapi/asm/unistd.h>
+
+/*
+ * This may need to be greater than __NR_last_syscall+1 in order to
+ * account for the padding in the syscall table
+ */
+#define __NR_syscalls  (392)
+
 #define __ARCH_WANT_STAT64
 #define __ARCH_WANT_SYS_GETHOSTNAME
 #define __ARCH_WANT_SYS_PAUSE
@@ -431,6 +439,12 @@
 
 #if !defined(CONFIG_AEABI) || defined(CONFIG_OABI_COMPAT)
 #define __ARCH_WANT_SYS_TIME
+#define __ARCH_WANT_SYS_OLD_MMAP
+#define __ARCH_WANT_SYS_OLD_SELECT
+
+#if !defined(CONFIG_AEABI) || defined(CONFIG_OABI_COMPAT)
+#define __ARCH_WANT_SYS_TIME
+#define __ARCH_WANT_SYS_IPC
 #define __ARCH_WANT_SYS_OLDUMOUNT
 #define __ARCH_WANT_SYS_ALARM
 #define __ARCH_WANT_SYS_UTIME
@@ -446,6 +460,9 @@
  * but it doesn't work on all toolchains, so we just do it by hand
  */
 #define cond_syscall(x) asm(".weak\t" #x "\n\t.set\t" #x ",sys_ni_syscall")
+#define __ARCH_WANT_SYS_FORK
+#define __ARCH_WANT_SYS_VFORK
+#define __ARCH_WANT_SYS_CLONE
 
 /*
  * Unimplemented (or alternatively implemented) syscalls
@@ -453,4 +470,7 @@
 #define __IGNORE_fadvise64_64		1
 
 #endif /* __KERNEL__ */
+#define __IGNORE_fadvise64_64
+#define __IGNORE_migrate_pages
+
 #endif /* __ASM_ARM_UNISTD_H */

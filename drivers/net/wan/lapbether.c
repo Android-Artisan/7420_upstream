@@ -20,10 +20,13 @@
  *	2000-11-14	Henner Eisen	dev_hold/put, NETDEV_GOING_DOWN support
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/errno.h>
 #include <linux/types.h>
 #include <linux/socket.h>
 #include <linux/in.h>
+#include <linux/slab.h>
 #include <linux/kernel.h>
 #include <linux/string.h>
 #include <linux/net.h>
@@ -46,6 +49,7 @@
 #include <net/x25device.h>
 
 static char bcast_addr[6] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
+static const u8 bcast_addr[6] = { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
 
 /* If this number is made larger, check that the temporary string buffer
  * in lapbeth_new_device is large enough to store the probe device name.*/
@@ -56,6 +60,8 @@ struct lapbethdev {
 	struct net_device	*ethdev;	/* link to ethernet device */
 	struct net_device	*axdev;		/* lapbeth device (lapb#) */
 	struct net_device_stats stats;		/* some statistics */
+	bool			up;
+	spinlock_t		up_lock;	/* Protects "up" */
 };
 
 static LIST_HEAD(lapbeth_devices);
@@ -103,14 +109,18 @@ static int lapbeth_rcv(struct sk_buff *skb, struct net_device *dev, struct packe
 	rcu_read_lock();
 	lapbeth = lapbeth_get_x25_dev(dev);
 	if (!lapbeth)
-		goto drop_unlock;
-	if (!netif_running(lapbeth->axdev))
+		goto drop_unlock_rcu;
+	spin_lock_bh(&lapbeth->up_lock);
+	if (!lapbeth->up)
 		goto drop_unlock;
 
 	lapbeth->stats.rx_packets++;
 
 	len = skb->data[0] + skb->data[1] * 256;
 	lapbeth->stats.rx_bytes += len;
+	len = skb->data[0] + skb->data[1] * 256;
+	dev->stats.rx_packets++;
+	dev->stats.rx_bytes += len;
 
 	skb_pull(skb, 2);	/* Remove the length bytes */
 	skb_trim(skb, len);	/* Set the length of the data */
@@ -120,11 +130,14 @@ static int lapbeth_rcv(struct sk_buff *skb, struct net_device *dev, struct packe
 		goto drop_unlock;
 	}
 out:
+	spin_unlock_bh(&lapbeth->up_lock);
 	rcu_read_unlock();
 	return 0;
 drop_unlock:
 	kfree_skb(skb);
 	goto out;
+drop_unlock_rcu:
+	rcu_read_unlock();
 drop:
 	kfree_skb(skb);
 	return 0;
@@ -144,6 +157,9 @@ static int lapbeth_data_indication(struct net_device *dev, struct sk_buff *skb)
 
 	skb->protocol = x25_type_trans(skb, dev);
 	skb->dev->last_rx = jiffies;
+	*ptr = X25_IFACE_DATA;
+
+	skb->protocol = x25_type_trans(skb, dev);
 	return netif_rx(skb);
 }
 
@@ -153,10 +169,18 @@ static int lapbeth_data_indication(struct net_device *dev, struct sk_buff *skb)
 static int lapbeth_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	int err = -ENODEV;
+static netdev_tx_t lapbeth_xmit(struct sk_buff *skb,
+				      struct net_device *dev)
+{
+	struct lapbethdev *lapbeth = netdev_priv(dev);
+	int err;
 
-	/*
-	 * Just to be *really* sure not to send anything if the interface
-	 * is down, the ethernet device may have gone.
+	spin_lock_bh(&lapbeth->up_lock);
+	if (!lapbeth->up)
+		goto drop;
+
+	/* There should be a pseudo header of 1 byte added by upper layers.
+	 * Check to make sure it is there before reading it.
 	 */
 	if (!netif_running(dev)) {
 		goto drop;
@@ -178,6 +202,23 @@ static int lapbeth_xmit(struct sk_buff *skb, struct net_device *dev)
 		/* Fall thru */
 	default:
 		goto drop_ok;
+	if (!netif_running(dev))
+	if (skb->len < 1)
+		goto drop;
+
+	switch (skb->data[0]) {
+	case X25_IFACE_DATA:
+		break;
+	case X25_IFACE_CONNECT:
+		if ((err = lapb_connect_request(dev)) != LAPB_OK)
+			pr_err("lapb_connect_request error: %d\n", err);
+		goto drop;
+	case X25_IFACE_DISCONNECT:
+		if ((err = lapb_disconnect_request(dev)) != LAPB_OK)
+			pr_err("lapb_disconnect_request err: %d\n", err);
+		/* Fall thru */
+	default:
+		goto drop;
 	}
 
 	skb_pull(skb, 1);
@@ -192,6 +233,12 @@ out:
 	return err;
 drop_ok:
 	err = 0;
+		pr_err("lapb_data_request error - %d\n", err);
+		goto drop;
+	}
+out:
+	spin_unlock_bh(&lapbeth->up_lock);
+	return NETDEV_TX_OK;
 drop:
 	kfree_skb(skb);
 	goto out;
@@ -204,8 +251,6 @@ static void lapbeth_data_transmit(struct net_device *ndev, struct sk_buff *skb)
 	struct net_device *dev;
 	int size = skb->len;
 
-	skb->protocol = htons(ETH_P_X25);
-
 	ptr = skb_push(skb, 2);
 
 	*ptr++ = size % 256;
@@ -213,8 +258,14 @@ static void lapbeth_data_transmit(struct net_device *ndev, struct sk_buff *skb)
 
 	lapbeth->stats.tx_packets++;
 	lapbeth->stats.tx_bytes += size;
+	ndev->stats.tx_packets++;
+	ndev->stats.tx_bytes += size;
 
 	skb->dev = dev = lapbeth->ethdev;
+
+	skb->protocol = htons(ETH_P_DEC);
+
+	skb_reset_network_header(skb);
 
 	dev_hard_header(skb, dev, ETH_P_DEC, bcast_addr, NULL, 0);
 
@@ -228,6 +279,7 @@ static void lapbeth_connected(struct net_device *dev, int reason)
 
 	if (!skb) {
 		printk(KERN_ERR "lapbeth: out of memory\n");
+		pr_err("out of memory\n");
 		return;
 	}
 
@@ -236,6 +288,9 @@ static void lapbeth_connected(struct net_device *dev, int reason)
 
 	skb->protocol = x25_type_trans(skb, dev);
 	skb->dev->last_rx = jiffies;
+	*ptr = X25_IFACE_CONNECT;
+
+	skb->protocol = x25_type_trans(skb, dev);
 	netif_rx(skb);
 }
 
@@ -246,6 +301,7 @@ static void lapbeth_disconnected(struct net_device *dev, int reason)
 
 	if (!skb) {
 		printk(KERN_ERR "lapbeth: out of memory\n");
+		pr_err("out of memory\n");
 		return;
 	}
 
@@ -254,6 +310,9 @@ static void lapbeth_disconnected(struct net_device *dev, int reason)
 
 	skb->protocol = x25_type_trans(skb, dev);
 	skb->dev->last_rx = jiffies;
+	*ptr = X25_IFACE_DISCONNECT;
+
+	skb->protocol = x25_type_trans(skb, dev);
 	netif_rx(skb);
 }
 
@@ -278,6 +337,7 @@ static int lapbeth_set_mac_address(struct net_device *dev, void *addr)
 
 
 static struct lapb_register_struct lapbeth_callbacks = {
+static const struct lapb_register_struct lapbeth_callbacks = {
 	.connect_confirmation    = lapbeth_connected,
 	.connect_indication      = lapbeth_connected,
 	.disconnect_confirmation = lapbeth_disconnected,
@@ -292,25 +352,34 @@ static struct lapb_register_struct lapbeth_callbacks = {
  */
 static int lapbeth_open(struct net_device *dev)
 {
+	struct lapbethdev *lapbeth = netdev_priv(dev);
 	int err;
 
 	if ((err = lapb_register(dev, &lapbeth_callbacks)) != LAPB_OK) {
 		printk(KERN_ERR "lapbeth: lapb_register error - %d\n", err);
+		pr_err("lapb_register error: %d\n", err);
 		return -ENODEV;
 	}
 
-	netif_start_queue(dev);
+	spin_lock_bh(&lapbeth->up_lock);
+	lapbeth->up = true;
+	spin_unlock_bh(&lapbeth->up_lock);
+
 	return 0;
 }
 
 static int lapbeth_close(struct net_device *dev)
 {
+	struct lapbethdev *lapbeth = netdev_priv(dev);
 	int err;
 
-	netif_stop_queue(dev);
+	spin_lock_bh(&lapbeth->up_lock);
+	lapbeth->up = false;
+	spin_unlock_bh(&lapbeth->up_lock);
 
 	if ((err = lapb_unregister(dev)) != LAPB_OK)
 		printk(KERN_ERR "lapbeth: lapb_unregister error - %d\n", err);
+		pr_err("lapb_unregister error: %d\n", err);
 
 	return 0;
 }
@@ -325,8 +394,19 @@ static void lapbeth_setup(struct net_device *dev)
 	dev->destructor	     = free_netdev;
 	dev->set_mac_address = lapbeth_set_mac_address;
 	dev->get_stats	     = lapbeth_get_stats;
+static const struct net_device_ops lapbeth_netdev_ops = {
+	.ndo_open	     = lapbeth_open,
+	.ndo_stop	     = lapbeth_close,
+	.ndo_start_xmit	     = lapbeth_xmit,
+	.ndo_set_mac_address = lapbeth_set_mac_address,
+};
+
+static void lapbeth_setup(struct net_device *dev)
+{
+	dev->netdev_ops	     = &lapbeth_netdev_ops;
+	dev->destructor	     = free_netdev;
 	dev->type            = ARPHRD_X25;
-	dev->hard_header_len = 3;
+	dev->hard_header_len = 0;
 	dev->mtu             = 1000;
 	dev->addr_len        = 0;
 }
@@ -344,8 +424,23 @@ static int lapbeth_new_device(struct net_device *dev)
 
 	ndev = alloc_netdev(sizeof(*lapbeth), "lapb%d", 
 			   lapbeth_setup);
+	if (dev->type != ARPHRD_ETHER)
+		return -EINVAL;
+
+	ndev = alloc_netdev(sizeof(*lapbeth), "lapb%d", NET_NAME_UNKNOWN,
+			    lapbeth_setup);
 	if (!ndev)
 		goto out;
+
+	/* When transmitting data:
+	 * first this driver removes a pseudo header of 1 byte,
+	 * then the lapb module prepends an LAPB header of at most 3 bytes,
+	 * then this driver prepends a length field of 2 bytes,
+	 * then the underlying Ethernet device prepends its own header.
+	 */
+	ndev->needed_headroom = -1 + 3 + 2 + dev->hard_header_len
+					   + dev->needed_headroom;
+	ndev->needed_tailroom = dev->needed_tailroom;
 
 	lapbeth = netdev_priv(ndev);
 	lapbeth->axdev = ndev;
@@ -356,6 +451,8 @@ static int lapbeth_new_device(struct net_device *dev)
 	rc = dev_alloc_name(ndev, ndev->name);
 	if (rc < 0) 
 		goto fail;
+	lapbeth->up = false;
+	spin_lock_init(&lapbeth->up_lock);
 
 	rc = -EIO;
 	if (register_netdevice(ndev))
@@ -392,11 +489,12 @@ static int lapbeth_device_event(struct notifier_block *this,
 {
 	struct lapbethdev *lapbeth;
 	struct net_device *dev = ptr;
+	struct net_device *dev = netdev_notifier_info_to_dev(ptr);
 
 	if (dev_net(dev) != &init_net)
 		return NOTIFY_DONE;
 
-	if (!dev_is_ethdev(dev))
+	if (!dev_is_ethdev(dev) && !lapbeth_get_x25_dev(dev))
 		return NOTIFY_DONE;
 
 	switch (event) {
@@ -426,6 +524,8 @@ static int lapbeth_device_event(struct notifier_block *this,
 
 static struct packet_type lapbeth_packet_type = {
 	.type = __constant_htons(ETH_P_DEC),
+static struct packet_type lapbeth_packet_type __read_mostly = {
+	.type = cpu_to_be16(ETH_P_DEC),
 	.func = lapbeth_rcv,
 };
 
@@ -434,6 +534,8 @@ static struct notifier_block lapbeth_dev_notifier = {
 };
 
 static char banner[] __initdata = KERN_INFO "LAPB Ethernet driver version 0.02\n";
+static const char banner[] __initconst =
+	KERN_INFO "LAPB Ethernet driver version 0.02\n";
 
 static int __init lapbeth_init_driver(void)
 {

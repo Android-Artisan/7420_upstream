@@ -11,6 +11,7 @@
  * Based on net/netfilter/xt_tcpudp.c
  *
  */
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 #include <linux/types.h>
 #include <linux/module.h>
 #include <net/ip.h>
@@ -56,6 +57,22 @@ mh_mt6(const struct sk_buff *skb, const struct net_device *in,
 		   can't.  Hence, no choice but to drop. */
 		duprintf("Dropping evil MH tinygram.\n");
 		*hotdrop = true;
+static bool mh_mt6(const struct sk_buff *skb, struct xt_action_param *par)
+{
+	struct ip6_mh _mh;
+	const struct ip6_mh *mh;
+	const struct ip6t_mh *mhinfo = par->matchinfo;
+
+	/* Must not be a fragment. */
+	if (par->fragoff != 0)
+		return false;
+
+	mh = skb_header_pointer(skb, par->thoff, sizeof(_mh), &_mh);
+	if (mh == NULL) {
+		/* We've been asked to examine this packet, and we
+		   can't.  Hence, no choice but to drop. */
+		pr_debug("Dropping evil MH tinygram.\n");
+		par->hotdrop = true;
 		return false;
 	}
 
@@ -63,6 +80,9 @@ mh_mt6(const struct sk_buff *skb, const struct net_device *in,
 		duprintf("Dropping invalid MH Payload Proto: %u\n",
 			 mh->ip6mh_proto);
 		*hotdrop = true;
+		pr_debug("Dropping invalid MH Payload Proto: %u\n",
+			 mh->ip6mh_proto);
+		par->hotdrop = true;
 		return false;
 	}
 
@@ -80,11 +100,18 @@ mh_mt6_check(const char *tablename, const void *entry,
 
 	/* Must specify no unknown invflags */
 	return !(mhinfo->invflags & ~IP6T_MH_INV_MASK);
+static int mh_mt6_check(const struct xt_mtchk_param *par)
+{
+	const struct ip6t_mh *mhinfo = par->matchinfo;
+
+	/* Must specify no unknown invflags */
+	return (mhinfo->invflags & ~IP6T_MH_INV_MASK) ? -EINVAL : 0;
 }
 
 static struct xt_match mh_mt6_reg __read_mostly = {
 	.name		= "mh",
 	.family		= AF_INET6,
+	.family		= NFPROTO_IPV6,
 	.checkentry	= mh_mt6_check,
 	.match		= mh_mt6,
 	.matchsize	= sizeof(struct ip6t_mh),

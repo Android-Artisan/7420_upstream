@@ -1,5 +1,6 @@
 /*
  * fhc.h: Structures for central/fhc pseudo driver on Sunfire/Starfire/Wildfire.
+/* fhc.h: FHC and Clock board register definitions.
  *
  * Copyright (C) 1997, 1999 David S. Miller (davem@redhat.com)
  */
@@ -44,6 +45,7 @@ struct linux_central {
 /* Firehose controller register offsets */
 struct fhc_regs {
 	unsigned long			pregs;	/* FHC internal regs */
+/* Firehose controller register offsets */
 #define FHC_PREGS_ID	0x00UL	/* FHC ID */
 #define  FHC_ID_VERS		0xf0000000 /* Version of this FHC		*/
 #define  FHC_ID_PARTID		0x0ffff000 /* Part ID code (0x0f9f == FHC)	*/
@@ -117,5 +119,14 @@ struct linux_fhc {
 	struct linux_prom_ranges	fhc_ranges[PROMREG_MAX];
 	int				num_fhc_ranges;
 };
+#define FHC_IREG_IGN	0x00UL	/* This FHC's IGN */
+#define FHC_FFREGS_IMAP	0x00UL	/* FHC Fanfail IMAP */
+#define FHC_FFREGS_ICLR	0x10UL	/* FHC Fanfail ICLR */
+#define FHC_SREGS_IMAP	0x00UL	/* FHC System IMAP */
+#define FHC_SREGS_ICLR	0x10UL	/* FHC System ICLR */
+#define FHC_UREGS_IMAP	0x00UL	/* FHC Uart IMAP */
+#define FHC_UREGS_ICLR	0x10UL	/* FHC Uart ICLR */
+#define FHC_TREGS_IMAP	0x00UL	/* FHC TOD IMAP */
+#define FHC_TREGS_ICLR	0x10UL	/* FHC TOD ICLR */
 
 #endif /* !(_SPARC64_FHC_H) */

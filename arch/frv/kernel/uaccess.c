@@ -25,6 +25,7 @@ long strncpy_from_user(char *dst, const char __user *src, long count)
 
 	if (count < 0)
 		BUG();
+	BUG_ON(count < 0);
 
 	p = dst;
 
@@ -78,6 +79,7 @@ long strnlen_user(const char __user *src, long count)
 
 	if (count < 0)
 		BUG();
+	BUG_ON(count < 0);
 
 #ifndef CONFIG_MMU
 	if ((unsigned long) src < memory_start)

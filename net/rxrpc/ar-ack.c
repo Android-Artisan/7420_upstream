@@ -13,6 +13,7 @@
 #include <linux/circ_buf.h>
 #include <linux/net.h>
 #include <linux/skbuff.h>
+#include <linux/slab.h>
 #include <linux/udp.h>
 #include <net/sock.h>
 #include <net/af_rxrpc.h>
@@ -24,6 +25,61 @@ static const char *rxrpc_acks[] = {
 	"---", "REQ", "DUP", "OOS", "WIN", "MEM", "PNG", "PNR", "DLY", "IDL",
 	"-?-"
 };
+/*
+ * How long to wait before scheduling ACK generation after seeing a
+ * packet with RXRPC_REQUEST_ACK set (in jiffies).
+ */
+unsigned rxrpc_requested_ack_delay = 1;
+
+/*
+ * How long to wait before scheduling an ACK with subtype DELAY (in jiffies).
+ *
+ * We use this when we've received new data packets.  If those packets aren't
+ * all consumed within this time we will send a DELAY ACK if an ACK was not
+ * requested to let the sender know it doesn't need to resend.
+ */
+unsigned rxrpc_soft_ack_delay = 1 * HZ;
+
+/*
+ * How long to wait before scheduling an ACK with subtype IDLE (in jiffies).
+ *
+ * We use this when we've consumed some previously soft-ACK'd packets when
+ * further packets aren't immediately received to decide when to send an IDLE
+ * ACK let the other end know that it can free up its Tx buffer space.
+ */
+unsigned rxrpc_idle_ack_delay = 0.5 * HZ;
+
+/*
+ * Receive window size in packets.  This indicates the maximum number of
+ * unconsumed received packets we're willing to retain in memory.  Once this
+ * limit is hit, we should generate an EXCEEDS_WINDOW ACK and discard further
+ * packets.
+ */
+unsigned rxrpc_rx_window_size = 32;
+
+/*
+ * Maximum Rx MTU size.  This indicates to the sender the size of jumbo packet
+ * made by gluing normal packets together that we're willing to handle.
+ */
+unsigned rxrpc_rx_mtu = 5692;
+
+/*
+ * The maximum number of fragments in a received jumbo packet that we tell the
+ * sender that we're willing to handle.
+ */
+unsigned rxrpc_rx_jumbo_max = 4;
+
+static const char *rxrpc_acks(u8 reason)
+{
+	static const char *const str[] = {
+		"---", "REQ", "DUP", "OOS", "WIN", "MEM", "PNG", "PNR", "DLY",
+		"IDL", "-?-"
+	};
+
+	if (reason >= ARRAY_SIZE(str))
+		reason = ARRAY_SIZE(str) - 1;
+	return str[reason];
+}
 
 static const s8 rxrpc_ack_priority[] = {
 	[0]				= 0,
@@ -41,6 +97,7 @@ static const s8 rxrpc_ack_priority[] = {
  * propose an ACK be sent
  */
 void __rxrpc_propose_ACK(struct rxrpc_call *call, uint8_t ack_reason,
+void __rxrpc_propose_ACK(struct rxrpc_call *call, u8 ack_reason,
 			 __be32 serial, bool immediate)
 {
 	unsigned long expiry;
@@ -50,6 +107,7 @@ void __rxrpc_propose_ACK(struct rxrpc_call *call, uint8_t ack_reason,
 
 	_enter("{%d},%s,%%%x,%u",
 	       call->debug_id, rxrpc_acks[ack_reason], ntohl(serial),
+	       call->debug_id, rxrpc_acks(ack_reason), ntohl(serial),
 	       immediate);
 
 	if (prior < rxrpc_ack_priority[call->ackr_reason]) {
@@ -77,11 +135,14 @@ void __rxrpc_propose_ACK(struct rxrpc_call *call, uint8_t ack_reason,
 		call->ack_timer.expires = jiffies + rxrpc_ack_timeout * HZ;
 		add_timer(&call->ack_timer);
 		return;
+		expiry = rxrpc_soft_ack_delay;
+		goto run_timer;
 
 	case RXRPC_ACK_IDLE:
 		if (!immediate) {
 			_debug("run defer timer");
 			expiry = 1;
+			expiry = rxrpc_idle_ack_delay;
 			goto run_timer;
 		}
 		goto cancel_timer;
@@ -92,6 +153,11 @@ void __rxrpc_propose_ACK(struct rxrpc_call *call, uint8_t ack_reason,
 		if (!immediate || serial == cpu_to_be32(1)) {
 			_debug("run defer timer");
 			expiry = rxrpc_ack_defer;
+		expiry = rxrpc_requested_ack_delay;
+		if (!expiry)
+			goto cancel_timer;
+		if (!immediate || serial == cpu_to_be32(1)) {
+			_debug("run defer timer");
 			goto run_timer;
 		}
 
@@ -121,6 +187,7 @@ cancel_timer:
  * propose an ACK be sent, locking the call structure
  */
 void rxrpc_propose_ACK(struct rxrpc_call *call, uint8_t ack_reason,
+void rxrpc_propose_ACK(struct rxrpc_call *call, u8 ack_reason,
 		       __be32 serial, bool immediate)
 {
 	s8 prior = rxrpc_ack_priority[ack_reason];
@@ -170,6 +237,8 @@ static void rxrpc_resend(struct rxrpc_call *call)
 	struct sk_buff *txb;
 	unsigned long *p_txb, resend_at;
 	int loop, stop;
+	bool stop;
+	int loop;
 	u8 resend;
 
 	_enter("{%d,%d,%d,%d},",
@@ -178,6 +247,7 @@ static void rxrpc_resend(struct rxrpc_call *call)
 	       CIRC_CNT(call->acks_head, call->acks_tail, call->acks_winsz));
 
 	stop = 0;
+	stop = false;
 	resend = 0;
 	resend_at = 0;
 
@@ -195,6 +265,7 @@ static void rxrpc_resend(struct rxrpc_call *call)
 
 		if (sp->need_resend) {
 			sp->need_resend = 0;
+			sp->need_resend = false;
 
 			/* each Tx packet has a new serial number */
 			sp->hdr.serial =
@@ -211,11 +282,17 @@ static void rxrpc_resend(struct rxrpc_call *call)
 			} else {
 				sp->resend_at =
 					jiffies + rxrpc_resend_timeout * HZ;
+				stop = true;
+				sp->resend_at = jiffies + 3;
+			} else {
+				sp->resend_at =
+					jiffies + rxrpc_resend_timeout;
 			}
 		}
 
 		if (time_after_eq(jiffies + 1, sp->resend_at)) {
 			sp->need_resend = 1;
+			sp->need_resend = true;
 			resend |= 1;
 		} else if (resend & 2) {
 			if (time_before(sp->resend_at, resend_at))
@@ -244,6 +321,9 @@ static void rxrpc_resend_timer(struct rxrpc_call *call)
 	_enter("%d,%d,%d",
 	       call->acks_tail, call->acks_unacked, call->acks_head);
 
+	if (call->state >= RXRPC_CALL_COMPLETE)
+		return;
+
 	resend = 0;
 	resend_at = 0;
 
@@ -262,6 +342,7 @@ static void rxrpc_resend_timer(struct rxrpc_call *call)
 			;
 		} else if (time_after_eq(jiffies + 1, sp->resend_at)) {
 			sp->need_resend = 1;
+			sp->need_resend = true;
 			resend |= 1;
 		} else if (resend & 2) {
 			if (time_before(sp->resend_at, resend_at))
@@ -315,6 +396,11 @@ static int rxrpc_process_soft_ACKs(struct rxrpc_call *call,
 			break;
 		case RXRPC_ACK_TYPE_NACK:
 			sp->need_resend = 1;
+			sp->need_resend = false;
+			*p_txb |= 1;
+			break;
+		case RXRPC_ACK_TYPE_NACK:
+			sp->need_resend = true;
 			*p_txb &= ~1;
 			resend = 1;
 			break;
@@ -341,12 +427,14 @@ static int rxrpc_process_soft_ACKs(struct rxrpc_call *call,
 		if (*p_txb & 1) {
 			/* packet must have been discarded */
 			sp->need_resend = 1;
+			sp->need_resend = true;
 			*p_txb &= ~1;
 			resend |= 1;
 		} else if (sp->need_resend) {
 			;
 		} else if (time_after_eq(jiffies + 1, sp->resend_at)) {
 			sp->need_resend = 1;
+			sp->need_resend = true;
 			resend |= 1;
 		} else if (resend & 2) {
 			if (time_before(sp->resend_at, resend_at))
@@ -521,6 +609,7 @@ static void rxrpc_zap_tx_window(struct rxrpc_call *call)
 	struct sk_buff *skb;
 	unsigned long _skb, *acks_window;
 	uint8_t winsz = call->acks_winsz;
+	u8 winsz = call->acks_winsz;
 	int tail;
 
 	acks_window = call->acks_window;
@@ -551,6 +640,11 @@ static void rxrpc_extract_ackinfo(struct rxrpc_call *call, struct sk_buff *skb,
 	struct rxrpc_ackinfo ackinfo;
 	struct rxrpc_peer *peer;
 	unsigned mtu;
+				  unsigned int latest, int nAcks)
+{
+	struct rxrpc_ackinfo ackinfo;
+	struct rxrpc_peer *peer;
+	unsigned int mtu;
 
 	if (skb_copy_bits(skb, nAcks + 3, &ackinfo, sizeof(ackinfo)) < 0) {
 		_leave(" [no ackinfo]");
@@ -636,6 +730,7 @@ process_further:
 		       ntohl(ack.previousPacket),
 		       ntohl(ack.serial),
 		       rxrpc_acks[ack.reason],
+		       rxrpc_acks(ack.reason),
 		       ack.nAcks);
 
 		rxrpc_extract_ackinfo(call, skb, latest, ack.nAcks);
@@ -674,6 +769,10 @@ process_further:
 			     call->state == RXRPC_CALL_SERVER_AWAIT_ACK) &&
 			    hard > tx)
 				goto all_acked;
+			    hard > tx) {
+				call->acks_hard = tx;
+				goto all_acked;
+			}
 
 			smp_rmb();
 			rxrpc_rotate_tx_window(call, hard - 1);
@@ -1170,6 +1269,11 @@ send_ACK:
 	/* permit the peer to send us jumbo packets if it wants to */
 	ackinfo.rxMTU	= htonl(5692);
 	ackinfo.jumbo_max = htonl(4);
+	ackinfo.rwind	= htonl(rxrpc_rx_window_size);
+
+	/* permit the peer to send us jumbo packets if it wants to */
+	ackinfo.rxMTU	= htonl(rxrpc_rx_mtu);
+	ackinfo.jumbo_max = htonl(rxrpc_rx_jumbo_max);
 
 	hdr.serial = htonl(atomic_inc_return(&call->conn->serial));
 	_proto("Tx ACK %%%u { m=%hu f=#%u p=#%u s=%%%u r=%s n=%u }",
@@ -1179,6 +1283,7 @@ send_ACK:
 	       ntohl(ack.previousPacket),
 	       ntohl(ack.serial),
 	       rxrpc_acks[ack.reason],
+	       rxrpc_acks(ack.reason),
 	       ack.nAcks);
 
 	del_timer_sync(&call->ack_timer);

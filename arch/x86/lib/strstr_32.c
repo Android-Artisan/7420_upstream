@@ -26,6 +26,9 @@ __asm__ __volatile__(
 	:"=a" (__res), "=&c" (d0), "=&S" (d1)
 	:"0" (0), "1" (0xffffffff), "2" (cs), "g" (ct)
 	:"dx", "di");
+	: "=a" (__res), "=&c" (d0), "=&S" (d1)
+	: "0" (0), "1" (0xffffffff), "2" (cs), "g" (ct)
+	: "dx", "di");
 return __res;
 }
 

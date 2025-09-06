@@ -23,6 +23,9 @@
 #include <asm/system.h>
 #include <asm/pgtable.h>
 #include <asm/uaccess.h>
+#include <linux/uaccess.h>
+
+#include <asm/pgtable.h>
 #include <asm/gdb-stub.h>
 
 /*****************************************************************************/
@@ -35,6 +38,7 @@ asmlinkage void do_page_fault(int datammu, unsigned long esr0, unsigned long ear
 	struct vm_area_struct *vma;
 	struct mm_struct *mm;
 	unsigned long _pme, lrai, lrad, fixup;
+	unsigned long flags = 0;
 	siginfo_t info;
 	pgd_t *pge;
 	pud_t *pue;
@@ -81,6 +85,12 @@ asmlinkage void do_page_fault(int datammu, unsigned long esr0, unsigned long ear
 	 */
 	if (in_atomic() || !mm)
 		goto no_context;
+
+	if (faulthandler_disabled() || !mm)
+		goto no_context;
+
+	if (user_mode(__frame))
+		flags |= FAULT_FLAG_USER;
 
 	down_read(&mm->mmap_sem);
 
@@ -142,6 +152,7 @@ asmlinkage void do_page_fault(int datammu, unsigned long esr0, unsigned long ear
 		if (!(vma->vm_flags & VM_WRITE))
 			goto bad_area;
 		write = 1;
+		flags |= FAULT_FLAG_WRITE;
 		break;
 
 		 /* handle read from protected page */
@@ -167,6 +178,12 @@ asmlinkage void do_page_fault(int datammu, unsigned long esr0, unsigned long ear
 	if (unlikely(fault & VM_FAULT_ERROR)) {
 		if (fault & VM_FAULT_OOM)
 			goto out_of_memory;
+	fault = handle_mm_fault(mm, vma, ear0, flags);
+	if (unlikely(fault & VM_FAULT_ERROR)) {
+		if (fault & VM_FAULT_OOM)
+			goto out_of_memory;
+		else if (fault & VM_FAULT_SIGSEGV)
+			goto bad_area;
 		else if (fault & VM_FAULT_SIGBUS)
 			goto do_sigbus;
 		BUG();
@@ -261,6 +278,10 @@ asmlinkage void do_page_fault(int datammu, unsigned long esr0, unsigned long ear
 	if (user_mode(__frame))
 		do_group_exit(SIGKILL);
 	goto no_context;
+	if (!user_mode(__frame))
+		goto no_context;
+	pagefault_out_of_memory();
+	return;
 
  do_sigbus:
 	up_read(&mm->mmap_sem);

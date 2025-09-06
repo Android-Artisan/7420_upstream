@@ -33,6 +33,11 @@ befs_bread_iaddr(struct super_block *sb, befs_inode_addr iaddr)
 	befs_debug(sb, "---> Enter befs_read_iaddr() "
 		   "[%u, %hu, %hu]",
 		   iaddr.allocation_group, iaddr.start, iaddr.len);
+	struct befs_sb_info *befs_sb = BEFS_SB(sb);
+
+	befs_debug(sb, "---> Enter %s "
+		   "[%u, %hu, %hu]", __func__, iaddr.allocation_group,
+		   iaddr.start, iaddr.len);
 
 	if (iaddr.allocation_group > befs_sb->num_ags) {
 		befs_error(sb, "BEFS: Invalid allocation group %u, max is %u",
@@ -43,6 +48,7 @@ befs_bread_iaddr(struct super_block *sb, befs_inode_addr iaddr)
 	block = iaddr2blockno(sb, &iaddr);
 
 	befs_debug(sb, "befs_read_iaddr: offset = %lu", block);
+	befs_debug(sb, "%s: offset = %lu", __func__, (unsigned long)block);
 
 	bh = sb_bread(sb, block);
 
@@ -56,6 +62,16 @@ befs_bread_iaddr(struct super_block *sb, befs_inode_addr iaddr)
 
       error:
 	befs_debug(sb, "<--- befs_read_iaddr() ERROR");
+		befs_error(sb, "Failed to read block %lu",
+			   (unsigned long)block);
+		goto error;
+	}
+
+	befs_debug(sb, "<--- %s", __func__);
+	return bh;
+
+      error:
+	befs_debug(sb, "<--- %s ERROR", __func__);
 	return NULL;
 }
 
@@ -65,6 +81,7 @@ befs_bread(struct super_block *sb, befs_blocknr_t block)
 	struct buffer_head *bh = NULL;
 
 	befs_debug(sb, "---> Enter befs_read() %Lu", block);
+	befs_debug(sb, "---> Enter %s %lu", __func__, (unsigned long)block);
 
 	bh = sb_bread(sb, block);
 
@@ -74,10 +91,17 @@ befs_bread(struct super_block *sb, befs_blocknr_t block)
 	}
 
 	befs_debug(sb, "<--- befs_read()");
+		befs_error(sb, "Failed to read block %lu",
+			   (unsigned long)block);
+		goto error;
+	}
+
+	befs_debug(sb, "<--- %s", __func__);
 
 	return bh;
 
       error:
 	befs_debug(sb, "<--- befs_read() ERROR");
+	befs_debug(sb, "<--- %s ERROR", __func__);
 	return NULL;
 }

@@ -49,6 +49,17 @@ void ack_bad_irq(unsigned int irq)
 }
 
 #ifdef CONFIG_DEBUG_STACKOVERFLOW
+#include <linux/uaccess.h>
+#include <linux/percpu.h>
+#include <linux/mm.h>
+
+#include <asm/apic.h>
+#include <asm/nospec-branch.h>
+
+#ifdef CONFIG_DEBUG_STACKOVERFLOW
+
+int sysctl_panic_on_stackoverflow __read_mostly;
+
 /* Debugging check for stack overflow: is there less than 1KB free? */
 static int check_stack_overflow(void)
 {
@@ -64,6 +75,8 @@ static void print_stack_overflow(void)
 {
 	printk(KERN_WARNING "low stack detected by irq handler\n");
 	dump_stack();
+	if (sysctl_panic_on_stackoverflow)
+		panic("low stack detected by irq handler - check messages\n");
 }
 
 #else
@@ -85,15 +98,17 @@ static union irq_ctx *softirq_ctx[NR_CPUS] __read_mostly;
 
 static char softirq_stack[NR_CPUS * THREAD_SIZE] __page_aligned_bss;
 static char hardirq_stack[NR_CPUS * THREAD_SIZE] __page_aligned_bss;
+DEFINE_PER_CPU(struct irq_stack *, hardirq_stack);
+DEFINE_PER_CPU(struct irq_stack *, softirq_stack);
 
 static void call_on_stack(void *func, void *stack)
 {
 	asm volatile("xchgl	%%ebx,%%esp	\n"
-		     "call	*%%edi		\n"
+		     CALL_NOSPEC
 		     "movl	%%ebx,%%esp	\n"
 		     : "=b" (stack)
 		     : "0" (stack),
-		       "D"(func)
+		       [thunk_target] "D"(func)
 		     : "memory", "cc", "edx", "ecx", "eax");
 }
 
@@ -105,6 +120,18 @@ execute_on_irq_stack(int overflow, struct irq_desc *desc, int irq)
 
 	curctx = (union irq_ctx *) current_thread_info();
 	irqctx = hardirq_ctx[smp_processor_id()];
+static inline void *current_stack(void)
+{
+	return (void *)(current_stack_pointer & ~(THREAD_SIZE - 1));
+}
+
+static inline int execute_on_irq_stack(int overflow, struct irq_desc *desc)
+{
+	struct irq_stack *curstk, *irqstk;
+	u32 *isp, *prev_esp, arg1;
+
+	curstk = (struct irq_stack *) current_stack();
+	irqstk = __this_cpu_read(hardirq_stack);
 
 	/*
 	 * this is where we switch to the IRQ stack. However, if we are
@@ -127,16 +154,26 @@ execute_on_irq_stack(int overflow, struct irq_desc *desc, int irq)
 	irqctx->tinfo.preempt_count =
 		(irqctx->tinfo.preempt_count & ~SOFTIRQ_MASK) |
 		(curctx->tinfo.preempt_count & SOFTIRQ_MASK);
+	if (unlikely(curstk == irqstk))
+		return 0;
+
+	isp = (u32 *) ((char *)irqstk + sizeof(*irqstk));
+
+	/* Save the next esp at the bottom of the stack */
+	prev_esp = (u32 *)irqstk;
+	*prev_esp = current_stack_pointer;
 
 	if (unlikely(overflow))
 		call_on_stack(print_stack_overflow, isp);
 
 	asm volatile("xchgl	%%ebx,%%esp	\n"
-		     "call	*%%edi		\n"
+		     CALL_NOSPEC
 		     "movl	%%ebx,%%esp	\n"
 		     : "=a" (arg1), "=d" (arg2), "=b" (isp)
 		     :  "0" (irq),   "1" (desc),  "2" (isp),
-			"D" (desc->handle_irq)
+		     : "=a" (arg1), "=b" (isp)
+		     :  "0" (desc),   "1" (isp),
+			[thunk_target] "D" (desc->handle_irq)
 		     : "memory", "cc", "ecx");
 	return 1;
 }
@@ -429,3 +466,60 @@ void fixup_irqs(cpumask_t map)
 }
 #endif
 
+void irq_ctx_init(int cpu)
+{
+	struct irq_stack *irqstk;
+
+	if (per_cpu(hardirq_stack, cpu))
+		return;
+
+	irqstk = page_address(alloc_pages_node(cpu_to_node(cpu),
+					       THREADINFO_GFP,
+					       THREAD_SIZE_ORDER));
+	per_cpu(hardirq_stack, cpu) = irqstk;
+
+	irqstk = page_address(alloc_pages_node(cpu_to_node(cpu),
+					       THREADINFO_GFP,
+					       THREAD_SIZE_ORDER));
+	per_cpu(softirq_stack, cpu) = irqstk;
+
+	printk(KERN_DEBUG "CPU %u irqstacks, hard=%p soft=%p\n",
+	       cpu, per_cpu(hardirq_stack, cpu),  per_cpu(softirq_stack, cpu));
+}
+
+#ifndef CONFIG_PREEMPT_RT_FULL
+void do_softirq_own_stack(void)
+{
+	struct thread_info *curstk;
+	struct irq_stack *irqstk;
+	u32 *isp, *prev_esp;
+
+	curstk = current_stack();
+	irqstk = __this_cpu_read(softirq_stack);
+
+	/* build the stack frame on the softirq stack */
+	isp = (u32 *) ((char *)irqstk + sizeof(*irqstk));
+
+	/* Push the previous esp onto the stack */
+	prev_esp = (u32 *)irqstk;
+	*prev_esp = current_stack_pointer;
+
+	call_on_stack(__do_softirq, isp);
+}
+#endif
+
+bool handle_irq(struct irq_desc *desc, struct pt_regs *regs)
+{
+	int overflow = check_stack_overflow();
+
+	if (IS_ERR_OR_NULL(desc))
+		return false;
+
+	if (user_mode(regs) || !execute_on_irq_stack(overflow, desc)) {
+		if (unlikely(overflow))
+			print_stack_overflow();
+		generic_handle_irq_desc(desc);
+	}
+
+	return true;
+}

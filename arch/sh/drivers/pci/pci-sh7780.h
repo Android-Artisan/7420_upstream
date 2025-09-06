@@ -23,6 +23,9 @@
 #define	SH7780_PCI_VCR0		0xFE000000
 #define	SH7780_PCI_VCR1		0xFE000004
 #define	SH7780_PCI_VCR2		0xFE000008
+/* SH7780 Control Registers */
+#define	PCIECR			0xFE000008
+#define PCIECR_ENBL		0x01
 
 /* SH7780 Specific Values */
 #define SH7780_PCI_CONFIG_BASE	0xFD000000	/* Config space base addr */
@@ -72,6 +75,9 @@
 #define SH7780_PCILSR1		0x108		/* PCI Local Space Register1 */
 #define SH7780_PCILAR0		0x10C		/* PCI Local Address Register1 */
 #define SH7780_PCILAR1		0x110		/* PCI Local Address Register1 */
+#define SH7780_PCIREG_BASE	0xFE040000	/* PCI regs base address */
+
+/* SH7780 PCI Config Registers */
 #define SH7780_PCIIR		0x114		/* PCI Interrupt Register */
 #define SH7780_PCIIMR		0x118		/* PCI Interrupt Mask Register */
 #define SH7780_PCIAIR		0x11C		/* Error Address Register */
@@ -87,6 +93,8 @@
 #define SH7780_PCIMBMR0		0x1E4
 #define SH7780_PCIMBR2		0x1F0
 #define SH7780_PCIMBMR2		0x1F4
+#define SH7780_PCIMBR(x)	(0x1E0 + ((x) * 8))
+#define SH7780_PCIMBMR(x)	(0x1E4 + ((x) * 8))
 #define SH7780_PCIIOBR		0x1F8
 #define SH7780_PCIIOBMR		0x1FC
 #define SH7780_PCICSCR0		0x210		/* Cache Snoop1 Cnt. Register */

@@ -1,6 +1,7 @@
 config EMBEDDED6xx
 	bool "Embedded 6xx/7xx/7xxx-based boards"
 	depends on PPC32 && BROKEN_ON_SMP && PPC_MULTIPLATFORM
+	depends on 6xx && BROKEN_ON_SMP
 
 config LINKSTATION
 	bool "Linkstation / Kurobox(HG) from Buffalo"
@@ -69,6 +70,19 @@ config PPC_C2K
 	  This option enables support for the GE Fanuc C2K board (formerly
 	  an SBS board).
 
+config MVME5100
+	bool "Motorola/Emerson MVME5100"
+	depends on EMBEDDED6xx
+	select MPIC
+	select PCI
+	select PPC_INDIRECT_PCI
+	select PPC_I8259
+	select PPC_NATIVE
+	select PPC_UDBG_16550
+	help
+	  This option enables support for the Motorola (now Emerson) MVME5100
+	  board.
+
 config TSI108_BRIDGE
 	bool
 	select PCI
@@ -90,3 +104,34 @@ config MPC10X_OPENPIC
 config MPC10X_STORE_GATHERING
 	bool "Enable MPC10x store gathering"
 	depends on MPC10X_BRIDGE
+config GAMECUBE_COMMON
+	bool
+
+config USBGECKO_UDBG
+	bool "USB Gecko udbg console for the Nintendo GameCube/Wii"
+	depends on GAMECUBE_COMMON
+	help
+	  If you say yes to this option, support will be included for the
+	  USB Gecko adapter as an udbg console.
+	  The USB Gecko is a EXI to USB Serial converter that can be plugged
+	  into a memcard slot in the Nintendo GameCube/Wii.
+
+	  This driver bypasses the EXI layer completely.
+
+	  If in doubt, say N here.
+
+config GAMECUBE
+	bool "Nintendo-GameCube"
+	depends on EMBEDDED6xx
+	select GAMECUBE_COMMON
+	help
+	  Select GAMECUBE if configuring for the Nintendo GameCube.
+	  More information at: <http://gc-linux.sourceforge.net/>
+
+config WII
+	bool "Nintendo-Wii"
+	depends on EMBEDDED6xx
+	select GAMECUBE_COMMON
+	help
+	  Select WII if configuring for the Nintendo Wii.
+	  More information at: <http://gc-linux.sourceforge.net/>

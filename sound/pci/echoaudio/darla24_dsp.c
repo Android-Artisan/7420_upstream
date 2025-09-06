@@ -38,6 +38,12 @@ static int init_hw(struct echoaudio *chip, u16 device_id, u16 subdevice_id)
 
 	if ((err = init_dsp_comm_page(chip))) {
 		DE_INIT(("init_hw - could not initialize DSP comm page\n"));
+	if (snd_BUG_ON((subdevice_id & 0xfff0) != DARLA24))
+		return -ENODEV;
+
+	if ((err = init_dsp_comm_page(chip))) {
+		dev_err(chip->card->dev,
+			"init_hw: could not initialize DSP comm page\n");
 		return err;
 	}
 
@@ -48,6 +54,11 @@ static int init_hw(struct echoaudio *chip, u16 device_id, u16 subdevice_id)
 	/* Since this card has no ASIC, mark it as loaded so everything
 	   works OK */
 	chip->asic_loaded = TRUE;
+	chip->bad_board = true;
+	chip->dsp_code_to_load = FW_DARLA24_DSP;
+	/* Since this card has no ASIC, mark it as loaded so everything
+	   works OK */
+	chip->asic_loaded = true;
 	chip->input_clock_types = ECHO_CLOCK_BIT_INTERNAL |
 		ECHO_CLOCK_BIT_ESYNC;
 
@@ -59,7 +70,16 @@ static int init_hw(struct echoaudio *chip, u16 device_id, u16 subdevice_id)
 		return err;
 
 	DE_INIT(("init_hw done\n"));
+	chip->bad_board = false;
+
 	return err;
+}
+
+
+
+static int set_mixer_defaults(struct echoaudio *chip)
+{
+	return init_line_levels(chip);
 }
 
 
@@ -125,6 +145,9 @@ static int set_sample_rate(struct echoaudio *chip, u32 rate)
 	default:
 		DE_ACT(("set_sample_rate: Error, invalid sample rate %d\n",
 			rate));
+		dev_err(chip->card->dev,
+			"set_sample_rate: Error, invalid sample rate %d\n",
+			rate);
 		return -EINVAL;
 	}
 
@@ -132,6 +155,8 @@ static int set_sample_rate(struct echoaudio *chip, u32 rate)
 		return -EIO;
 
 	DE_ACT(("set_sample_rate: %d clock %d\n", rate, clock));
+	dev_dbg(chip->card->dev,
+		"set_sample_rate: %d clock %d\n", rate, clock);
 	chip->sample_rate = rate;
 
 	/* Override the sample rate if this card is set to Echo sync. */
@@ -150,6 +175,9 @@ static int set_input_clock(struct echoaudio *chip, u16 clock)
 {
 	snd_assert(clock == ECHO_CLOCK_INTERNAL ||
 		   clock == ECHO_CLOCK_ESYNC, return -EINVAL);
+	if (snd_BUG_ON(clock != ECHO_CLOCK_INTERNAL &&
+		       clock != ECHO_CLOCK_ESYNC))
+		return -EINVAL;
 	chip->input_clock = clock;
 	return set_sample_rate(chip, chip->sample_rate);
 }

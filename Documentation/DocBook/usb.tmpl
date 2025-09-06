@@ -154,6 +154,7 @@
 	<listitem><para>The Linux USB API supports synchronous calls for
 	control and bulk messages.
 	It also supports asynchnous calls for all kinds of data transfer,
+	It also supports asynchronous calls for all kinds of data transfer,
 	using request structures called "URBs" (USB Request Blocks).
 	</para></listitem>
 
@@ -594,6 +595,7 @@ for (;;) {
 	    which supports a limited RPC style RPC access.
 	    Devices are configured
 	    by khubd (in the kernel) setting a device-wide
+	    by hub_wq (in the kernel) setting a device-wide
 	    <emphasis>configuration</emphasis> that affects things
 	    like power consumption and basic functionality.
 	    The endpoints are part of USB <emphasis>interfaces</emphasis>,
@@ -691,6 +693,7 @@ usbdev_ioctl (int fd, int ifno, unsigned request, void *param)
 		    This request lets kernel drivers talk to user mode code
 		    through filesystem operations even when they don't create
 		    a charactor or block special device.
+		    a character or block special device.
 		    It's also been used to do things like ask devices what
 		    device special file should be used.
 		    Two pre-defined ioctls are used

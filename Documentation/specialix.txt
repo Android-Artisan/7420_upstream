@@ -48,7 +48,6 @@ kernel sources?  And the manual of one of the boards in your computer?
 
 
 Addresses and interrupts
-========================
 
 Address dip switch settings:
 The dip switch sets bits 2-9 of the IO address. 
@@ -136,7 +135,6 @@ also forced to IRQ11....
 
 
 Baud rates
-==========
 
 The rev 1.2 and below boards use a CL-CD1864. These chips can only 
 do 64kbit. The rev 1.3 and newer boards use a CL-CD1865. These chips
@@ -178,7 +176,6 @@ and more such restrictions....)
 
 
 Cables for the Specialix IO8+
-=============================
 
 The pinout of the connectors on the IO8+ is:
 
@@ -268,7 +265,6 @@ The pinout of the connectors on the IO8+ is:
    
  
 Hardware handshaking issues.
-============================
 
 The driver can be told to operate in two different ways. The default
 behaviour is specialix.sx_rtscts = 0 where the pin behaves as DTR when
@@ -287,7 +283,6 @@ for this.
 
 
 Ports and devices
-=================
 
 Port 0 is the one furthest from the card-edge connector.
 

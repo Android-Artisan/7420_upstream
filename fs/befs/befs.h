@@ -22,6 +22,9 @@ typedef u64 befs_blocknr_t;
 typedef struct befs_mount_options {
 	gid_t gid;
 	uid_t uid;
+struct befs_mount_options {
+	kgid_t gid;
+	kuid_t uid;
 	int use_gid;
 	int use_uid;
 	int debug;
@@ -29,6 +32,9 @@ typedef struct befs_mount_options {
 } befs_mount_options;
 
 typedef struct befs_sb_info {
+};
+
+struct befs_sb_info {
 	u32 magic1;
 	u32 block_size;
 	u32 block_shift;
@@ -58,6 +64,11 @@ typedef struct befs_sb_info {
 } befs_sb_info;
 
 typedef struct befs_inode_info {
+	struct befs_mount_options mount_opts;
+	struct nls_table *nls;
+};
+
+struct befs_inode_info {
 	u32 i_flags;
 	u32 i_type;
 
@@ -73,6 +84,7 @@ typedef struct befs_inode_info {
 	struct inode vfs_inode;
 
 } befs_inode_info;
+};
 
 enum befs_err {
 	BEFS_OK,
@@ -90,6 +102,11 @@ enum befs_err {
 /* debug.c */
 void befs_error(const struct super_block *sb, const char *fmt, ...);
 void befs_warning(const struct super_block *sb, const char *fmt, ...);
+__printf(2, 3)
+void befs_error(const struct super_block *sb, const char *fmt, ...);
+__printf(2, 3)
+void befs_warning(const struct super_block *sb, const char *fmt, ...);
+__printf(2, 3)
 void befs_debug(const struct super_block *sb, const char *fmt, ...);
 
 void befs_dump_super_block(const struct super_block *sb, befs_super_block *);
@@ -112,6 +129,16 @@ static inline befs_inode_info *
 BEFS_I(const struct inode *inode)
 {
 	return list_entry(inode, struct befs_inode_info, vfs_inode);
+static inline struct befs_sb_info *
+BEFS_SB(const struct super_block *super)
+{
+	return (struct befs_sb_info *) super->s_fs_info;
+}
+
+static inline struct befs_inode_info *
+BEFS_I(const struct inode *inode)
+{
+	return container_of(inode, struct befs_inode_info, vfs_inode);
 }
 
 static inline befs_blocknr_t

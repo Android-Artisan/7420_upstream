@@ -12,15 +12,19 @@
  * typical timeout for packet command
  */
 #define ATAPI_WAIT_PC		(60 * HZ)
+#define IDECD_DEBUG_LOG		0
+
+#if IDECD_DEBUG_LOG
+#define ide_debug_log(lvl, fmt, args...) __ide_debug_log(lvl, fmt, ## args)
+#else
+#define ide_debug_log(lvl, fmt, args...) do {} while (0)
+#endif
+
 #define ATAPI_WAIT_WRITE_BUSY	(10 * HZ)
 
 /************************************************************************/
 
-#define SECTOR_BITS 		9
-#ifndef SECTOR_SIZE
-#define SECTOR_SIZE		(1 << SECTOR_BITS)
-#endif
-#define SECTORS_PER_FRAME	(CD_FRAMESIZE >> SECTOR_BITS)
+#define SECTORS_PER_FRAME	(CD_FRAMESIZE >> SECTOR_SHIFT)
 #define SECTOR_BUFFER_SIZE	(CD_FRAMESIZE * 32)
 
 /* Capabilities Page size including 8 bytes of Mode Page Header */
@@ -33,6 +37,10 @@ struct atapi_msf {
 	byte minute;
 	byte second;
 	byte frame;
+	u8 reserved;
+	u8 minute;
+	u8 second;
+	u8 frame;
 };
 
 /* Space to hold the disk TOC. */
@@ -56,6 +64,23 @@ struct atapi_toc_entry {
 #endif
 	byte track;
 	byte reserved2;
+	u8 first_track;
+	u8 last_track;
+};
+
+struct atapi_toc_entry {
+	u8 reserved1;
+#if defined(__BIG_ENDIAN_BITFIELD)
+	u8 adr     : 4;
+	u8 control : 4;
+#elif defined(__LITTLE_ENDIAN_BITFIELD)
+	u8 control : 4;
+	u8 adr     : 4;
+#else
+#error "Please fix <asm/byteorder.h>"
+#endif
+	u8 track;
+	u8 reserved2;
 	union {
 		unsigned lba;
 		struct atapi_msf msf;
@@ -77,6 +102,10 @@ struct cdrom_info {
 	ide_driver_t	*driver;
 	struct gendisk	*disk;
 	struct kref	kref;
+	ide_drive_t		*drive;
+	struct ide_driver	*driver;
+	struct gendisk		*disk;
+	struct device		dev;
 
 	/* Buffer for table of contents.  NULL if we haven't allocated
 	   a TOC buffer for this device yet. */
@@ -117,6 +146,8 @@ int ide_cdrom_open_real(struct cdrom_device_info *, int);
 void ide_cdrom_release_real(struct cdrom_device_info *);
 int ide_cdrom_drive_status(struct cdrom_device_info *, int);
 int ide_cdrom_check_media_change_real(struct cdrom_device_info *, int);
+unsigned int ide_cdrom_check_events_real(struct cdrom_device_info *,
+					 unsigned int clearing, int slot_nr);
 int ide_cdrom_tray_move(struct cdrom_device_info *, int);
 int ide_cdrom_lock_door(struct cdrom_device_info *, int);
 int ide_cdrom_select_speed(struct cdrom_device_info *, int);

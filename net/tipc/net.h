@@ -3,6 +3,8 @@
  *
  * Copyright (c) 1995-2006, Ericsson AB
  * Copyright (c) 2005, Wind River Systems
+ * Copyright (c) 1995-2006, 2014, Ericsson AB
+ * Copyright (c) 2005, 2010-2011, Wind River Systems
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -60,5 +62,13 @@ u32 tipc_net_select_router(u32 addr, u32 ref);
 
 int tipc_net_start(u32 addr);
 void tipc_net_stop(void);
+#include <net/genetlink.h>
+
+int tipc_net_start(struct net *net, u32 addr);
+
+void tipc_net_stop(struct net *net);
+
+int tipc_nl_net_dump(struct sk_buff *skb, struct netlink_callback *cb);
+int tipc_nl_net_set(struct sk_buff *skb, struct genl_info *info);
 
 #endif

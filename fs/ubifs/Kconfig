@@ -23,6 +23,7 @@ config UBIFS_FS_ADVANCED_COMPR
 	help
 	  This option allows to explicitly choose which compressions, if any,
 	  are enabled in UBIFS. Removing compressors means inbility to read
+	  are enabled in UBIFS. Removing compressors means inability to read
 	  existing file systems.
 
 	  If unsure, say 'N'.
@@ -33,6 +34,7 @@ config UBIFS_FS_LZO
 	default y
 	help
 	   LZO compressor is generally faster then zlib but compresses worse.
+	   LZO compressor is generally faster than zlib but compresses worse.
 	   Say 'Y' if unsure.
 
 config UBIFS_FS_ZLIB
@@ -70,3 +72,19 @@ config UBIFS_FS_DEBUG_CHKS
 	  internal data structures during operation. However, UBIFS performance
 	  is dramatically slower when this option is selected especially if the
 	  file system is large.
+	  Zlib compresses better than LZO but it is slower. Say 'Y' if unsure.
+
+config UBIFS_ATIME_SUPPORT
+	bool "Access time support" if UBIFS_FS
+	depends on UBIFS_FS
+	default n
+	help
+	  Originally UBIFS did not support atime, because it looked like a bad idea due
+	  increased flash wear. This option adds atime support and it is disabled by default
+	  to preserve the old behavior. If you enable this option, UBIFS starts updating atime,
+	  which means that file-system read operations will cause writes (inode atime
+	  updates). This may affect file-system performance and increase flash device wear,
+	  so be careful. How often atime is updated depends on the selected strategy:
+	  strictatime is the "heavy", relatime is "lighter", etc.
+
+	  If unsure, say 'N'

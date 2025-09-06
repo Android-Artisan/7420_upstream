@@ -118,6 +118,7 @@ static void maceps2_close(struct serio *dev)
 
 
 static struct serio * __devinit maceps2_allocate_port(int idx)
+static struct serio *maceps2_allocate_port(int idx)
 {
 	struct serio *serio;
 
@@ -137,6 +138,7 @@ static struct serio * __devinit maceps2_allocate_port(int idx)
 }
 
 static int __devinit maceps2_probe(struct platform_device *dev)
+static int maceps2_probe(struct platform_device *dev)
 {
 	maceps2_port[0] = maceps2_allocate_port(0);
 	maceps2_port[1] = maceps2_allocate_port(1);
@@ -153,6 +155,7 @@ static int __devinit maceps2_probe(struct platform_device *dev)
 }
 
 static int __devexit maceps2_remove(struct platform_device *dev)
+static int maceps2_remove(struct platform_device *dev)
 {
 	serio_unregister_port(maceps2_port[0]);
 	serio_unregister_port(maceps2_port[1]);
@@ -167,6 +170,9 @@ static struct platform_driver maceps2_driver = {
 	},
 	.probe		= maceps2_probe,
 	.remove		= __devexit_p(maceps2_remove),
+	},
+	.probe		= maceps2_probe,
+	.remove		= maceps2_remove,
 };
 
 static int __init maceps2_init(void)

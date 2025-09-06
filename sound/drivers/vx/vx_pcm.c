@@ -235,6 +235,7 @@ static int vx_set_format(struct vx_core *chip, struct vx_pipe *pipe,
 		snd_BUG();
 		return -EINVAL;
         };
+	}
 
 	return vx_set_stream_format(chip, pipe, header);
 }
@@ -280,6 +281,7 @@ static int vx_get_pipe_state(struct vx_core *chip, struct vx_pipe *pipe, int *st
 	vx_init_rmh(&rmh, CMD_PIPE_STATE);
 	vx_set_pipe_cmd_params(&rmh, pipe->is_capture, pipe->number, 0);
 	err = vx_send_msg_nolock(chip, &rmh); /* no lock needed for trigger */ 
+	err = vx_send_msg(chip, &rmh);
 	if (! err)
 		*state = (rmh.Stat[0] & (1 << pipe->number)) ? 1 : 0;
 	return err;
@@ -331,6 +333,7 @@ static int vx_pipe_can_start(struct vx_core *chip, struct vx_pipe *pipe)
 	rmh.Cmd[0] |= 1;
 
 	err = vx_send_msg_nolock(chip, &rmh); /* no lock needed for trigger */ 
+	err = vx_send_msg(chip, &rmh);
 	if (! err) {
 		if (rmh.Stat[0])
 			err = 1;
@@ -351,6 +354,7 @@ static int vx_conf_pipe(struct vx_core *chip, struct vx_pipe *pipe)
 		rmh.Cmd[0] |= COMMAND_RECORD_MASK;
 	rmh.Cmd[1] = 1 << pipe->number;
 	return vx_send_msg_nolock(chip, &rmh); /* no lock needed for trigger */
+	return vx_send_msg(chip, &rmh);
 }
 
 /*
@@ -362,6 +366,7 @@ static int vx_send_irqa(struct vx_core *chip)
 
 	vx_init_rmh(&rmh, CMD_SEND_IRQA);
 	return vx_send_msg_nolock(chip, &rmh); /* no lock needed for trigger */ 
+	return vx_send_msg(chip, &rmh);
 }
 
 
@@ -440,6 +445,7 @@ static int vx_stop_pipe(struct vx_core *chip, struct vx_pipe *pipe)
 	vx_init_rmh(&rmh, CMD_STOP_PIPE);
 	vx_set_pipe_cmd_params(&rmh, pipe->is_capture, pipe->number, 0);
 	return vx_send_msg_nolock(chip, &rmh); /* no lock needed for trigger */ 
+	return vx_send_msg(chip, &rmh);
 }
 
 
@@ -528,6 +534,7 @@ static int vx_start_stream(struct vx_core *chip, struct vx_pipe *pipe)
 	vx_set_stream_cmd_params(&rmh, pipe->is_capture, pipe->number);
 	vx_set_differed_time(chip, &rmh, pipe);
 	return vx_send_msg_nolock(chip, &rmh); /* no lock needed for trigger */ 
+	return vx_send_msg(chip, &rmh);
 }
 
 
@@ -543,6 +550,7 @@ static int vx_stop_stream(struct vx_core *chip, struct vx_pipe *pipe)
 	vx_init_rmh(&rmh, CMD_STOP_STREAM);
 	vx_set_stream_cmd_params(&rmh, pipe->is_capture, pipe->number);
 	return vx_send_msg_nolock(chip, &rmh); /* no lock needed for trigger */ 
+	return vx_send_msg(chip, &rmh);
 }
 
 
@@ -588,6 +596,8 @@ static int vx_pcm_playback_open(struct snd_pcm_substream *subs)
 
 	audio = subs->pcm->device * 2;
 	snd_assert(audio < chip->audio_outs, return -EINVAL);
+	if (snd_BUG_ON(audio >= chip->audio_outs))
+		return -EINVAL;
 	
 	/* playback pipe may have been already allocated for monitoring */
 	pipe = chip->playback_pipes[audio];
@@ -696,11 +706,13 @@ static int vx_pcm_playback_transfer_chunk(struct vx_core *chip,
 	 * is called from either trigger callback or irq handler
 	 */
 	spin_lock(&chip->lock); 
+	mutex_lock(&chip->lock);
 	vx_pseudo_dma_write(chip, runtime, pipe, size);
 	err = vx_notify_end_of_buffer(chip, pipe);
 	/* disconnect the host, SIZE_HBUF command always switches to the stream mode */
 	vx_send_rih_nolock(chip, IRQ_CONNECT_STREAM_NEXT);
 	spin_unlock(&chip->lock);
+	mutex_unlock(&chip->lock);
 	return err;
 }
 
@@ -823,6 +835,17 @@ static int vx_pcm_trigger(struct snd_pcm_substream *subs, int cmd)
 		 * issued surely after the trigger is completed.
 		 */ 
 		tasklet_hi_schedule(&pipe->start_tq);
+		err = vx_start_stream(chip, pipe);
+		if (err < 0) {
+			pr_debug("vx: cannot start stream\n");
+			return err;
+		}
+		err = vx_toggle_pipe(chip, pipe, 1);
+		if (err < 0) {
+			pr_debug("vx: cannot start pipe\n");
+			vx_stop_stream(chip, pipe);
+			return err;
+		}
 		chip->pcm_running++;
 		pipe->running = 1;
 		break;
@@ -865,6 +888,8 @@ static int vx_pcm_hw_params(struct snd_pcm_substream *subs,
 				     struct snd_pcm_hw_params *hw_params)
 {
 	return snd_pcm_alloc_vmalloc_buffer(subs, params_buffer_bytes(hw_params));
+	return snd_pcm_lib_alloc_vmalloc_32_buffer
+					(subs, params_buffer_bytes(hw_params));
 }
 
 /*
@@ -873,6 +898,7 @@ static int vx_pcm_hw_params(struct snd_pcm_substream *subs,
 static int vx_pcm_hw_free(struct snd_pcm_substream *subs)
 {
 	return snd_pcm_free_vmalloc_buffer(subs);
+	return snd_pcm_lib_free_vmalloc_buffer(subs);
 }
 
 /*
@@ -953,6 +979,8 @@ static struct snd_pcm_ops vx_pcm_playback_ops = {
 	.trigger =	vx_pcm_trigger,
 	.pointer =	vx_pcm_playback_pointer,
 	.page =		snd_pcm_get_vmalloc_page,
+	.page =		snd_pcm_lib_get_vmalloc_page,
+	.mmap =		snd_pcm_lib_mmap_vmalloc,
 };
 
 
@@ -997,6 +1025,8 @@ static int vx_pcm_capture_open(struct snd_pcm_substream *subs)
 
 	audio = subs->pcm->device * 2;
 	snd_assert(audio < chip->audio_ins, return -EINVAL);
+	if (snd_BUG_ON(audio >= chip->audio_ins))
+		return -EINVAL;
 	err = vx_alloc_pipe(chip, 1, audio, 2, &pipe);
 	if (err < 0)
 		return err;
@@ -1084,7 +1114,7 @@ static void vx_pcm_capture_update(struct vx_core *chip, struct snd_pcm_substream
 	int size, space, count;
 	struct snd_pcm_runtime *runtime = subs->runtime;
 
-	if (! pipe->prepared || (chip->chip_status & VX_STAT_IS_STALE))
+	if (!pipe->running || (chip->chip_status & VX_STAT_IS_STALE))
 		return;
 
 	size = runtime->buffer_size - snd_pcm_capture_avail(runtime);
@@ -1117,8 +1147,10 @@ static void vx_pcm_capture_update(struct vx_core *chip, struct snd_pcm_substream
 		/* ok, let's accelerate! */
 		int align = pipe->align * 3;
 		space = (count / align) * align;
-		vx_pseudo_dma_read(chip, runtime, pipe, space);
-		count -= space;
+		if (space > 0) {
+			vx_pseudo_dma_read(chip, runtime, pipe, space);
+			count -= space;
+		}
 	}
 	/* read the rest of bytes */
 	while (count > 0) {
@@ -1129,6 +1161,7 @@ static void vx_pcm_capture_update(struct vx_core *chip, struct snd_pcm_substream
 	}
 	/* disconnect the host, SIZE_HBUF command always switches to the stream mode */
 	vx_send_rih_nolock(chip, IRQ_CONNECT_STREAM_NEXT);
+	vx_send_rih(chip, IRQ_CONNECT_STREAM_NEXT);
 	/* read the last pending 6 bytes */
 	count = DMA_READ_ALIGN;
 	while (count > 0) {
@@ -1146,6 +1179,7 @@ static void vx_pcm_capture_update(struct vx_core *chip, struct snd_pcm_substream
  _error:
 	/* disconnect the host, SIZE_HBUF command always switches to the stream mode */
 	vx_send_rih_nolock(chip, IRQ_CONNECT_STREAM_NEXT);
+	vx_send_rih(chip, IRQ_CONNECT_STREAM_NEXT);
 	return;
 }
 
@@ -1172,6 +1206,8 @@ static struct snd_pcm_ops vx_pcm_capture_ops = {
 	.trigger =	vx_pcm_trigger,
 	.pointer =	vx_pcm_capture_pointer,
 	.page =		snd_pcm_get_vmalloc_page,
+	.page =		snd_pcm_lib_get_vmalloc_page,
+	.mmap =		snd_pcm_lib_mmap_vmalloc,
 };
 
 
@@ -1215,6 +1251,8 @@ void vx_pcm_update_intr(struct vx_core *chip, unsigned int events)
 			if (capture)
 				continue;
 			snd_assert(p >= 0 && (unsigned int)p < chip->audio_outs,);
+			if (snd_BUG_ON(p < 0 || p >= chip->audio_outs))
+				continue;
 			pipe = chip->playback_pipes[p];
 			if (pipe && pipe->substream) {
 				vx_pcm_playback_update(chip, pipe->substream, pipe);
@@ -1234,6 +1272,7 @@ void vx_pcm_update_intr(struct vx_core *chip, unsigned int events)
 
 /*
  * vx_init_audio_io - check the availabe audio i/o and allocate pipe arrays
+ * vx_init_audio_io - check the available audio i/o and allocate pipe arrays
  */
 static int vx_init_audio_io(struct vx_core *chip)
 {
@@ -1319,6 +1358,7 @@ int snd_vx_pcm_new(struct vx_core *chip)
 		pcm->private_data = chip;
 		pcm->private_free = snd_vx_pcm_free;
 		pcm->info_flags = 0;
+		pcm->nonatomic = true;
 		strcpy(pcm->name, chip->card->shortname);
 		chip->pcm[i] = pcm;
 	}

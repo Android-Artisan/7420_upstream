@@ -4,6 +4,8 @@
  *  Copyright (C) 2001-2003 MontaVista Software Inc.
  *    Author: Yoichi Yuasa <yyuasa@mvista.com or source@mvista.com>
  *  Copyright (C) 2004-2005  Yoichi Yuasa <yoichi_yuasa@tripeaks.co.jp>
+ *    Author: Yoichi Yuasa <source@mvista.com>
+ *  Copyright (C) 2004-2005  Yoichi Yuasa <yuasa@linux-mips.org>
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -22,6 +24,7 @@
 /*
  * Changes:
  *  MontaVista Software Inc. <yyuasa@mvista.com> or <source@mvista.com>
+ *  MontaVista Software Inc. <source@mvista.com>
  *  - New creation, NEC VR4122 and VR4131 are supported.
  */
 #include <linux/pci.h>
@@ -34,6 +37,7 @@
 
 static inline int set_pci_configuration_address(unsigned char number,
                                                 unsigned int devfn, int where)
+						unsigned int devfn, int where)
 {
 	if (number == 0) {
 		/*
@@ -60,6 +64,7 @@ static inline int set_pci_configuration_address(unsigned char number,
 
 static int pci_config_read(struct pci_bus *bus, unsigned int devfn, int where,
                            int size, uint32_t *val)
+			   int size, uint32_t *val)
 {
 	uint32_t data;
 
@@ -88,6 +93,7 @@ static int pci_config_read(struct pci_bus *bus, unsigned int devfn, int where,
 
 static int pci_config_write(struct pci_bus *bus, unsigned int devfn, int where,
                             int size, uint32_t val)
+			    int size, uint32_t val)
 {
 	uint32_t data;
 	int shift;

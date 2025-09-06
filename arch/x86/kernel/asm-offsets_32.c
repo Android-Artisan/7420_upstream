@@ -20,9 +20,19 @@
 #include <asm/elf.h>
 
 #include <xen/interface/xen.h>
+#ifndef __LINUX_KBUILD_H
+# error "Please do not build this file directly, build asm-offsets.c instead"
+#endif
+
+#include <asm/ucontext.h>
 
 #include <linux/lguest.h>
 #include "../../../drivers/lguest/lg.h"
+
+#define __SYSCALL_I386(nr, sym, compat) [nr] = 1,
+static char syscalls[] = {
+#include <asm/syscalls_32.h>
+};
 
 /* workaround for a warning with -Wmissing-prototypes */
 void foo(void);
@@ -45,6 +55,7 @@ void foo(void)
 	OFFSET(CPUINFO_x86_model, cpuinfo_x86, x86_model);
 	OFFSET(CPUINFO_x86_mask, cpuinfo_x86, x86_mask);
 	OFFSET(CPUINFO_hard_math, cpuinfo_x86, hard_math);
+	OFFSET(CPUINFO_x86_stepping, cpuinfo_x86, x86_stepping);
 	OFFSET(CPUINFO_cpuid_level, cpuinfo_x86, cpuid_level);
 	OFFSET(CPUINFO_x86_capability, cpuinfo_x86, x86_capability);
 	OFFSET(CPUINFO_x86_vendor_id, cpuinfo_x86, x86_vendor_id);
@@ -75,6 +86,7 @@ void foo(void)
 	OFFSET(PT_DS,  pt_regs, ds);
 	OFFSET(PT_ES,  pt_regs, es);
 	OFFSET(PT_FS,  pt_regs, fs);
+	OFFSET(PT_GS,  pt_regs, gs);
 	OFFSET(PT_ORIG_EAX, pt_regs, orig_ax);
 	OFFSET(PT_EIP, pt_regs, ip);
 	OFFSET(PT_CS,  pt_regs, cs);
@@ -120,11 +132,18 @@ void foo(void)
 	OFFSET(XEN_vcpu_info_mask, vcpu_info, evtchn_upcall_mask);
 	OFFSET(XEN_vcpu_info_pending, vcpu_info, evtchn_upcall_pending);
 #endif
+	OFFSET(saved_context_gdt_desc, saved_context, gdt_desc);
+	BLANK();
+
+	/* Offset from the sysenter stack to tss.sp0 */
+	DEFINE(TSS_sysenter_sp0, offsetof(struct tss_struct, x86_tss.sp0) -
+	       offsetofend(struct tss_struct, SYSENTER_stack));
 
 #if defined(CONFIG_LGUEST) || defined(CONFIG_LGUEST_GUEST) || defined(CONFIG_LGUEST_MODULE)
 	BLANK();
 	OFFSET(LGUEST_DATA_irq_enabled, lguest_data, irq_enabled);
 	OFFSET(LGUEST_DATA_pgdir, lguest_data, pgdir);
+	OFFSET(LGUEST_DATA_irq_pending, lguest_data, irq_pending);
 
 	BLANK();
 	OFFSET(LGUEST_PAGES_host_gdt_desc, lguest_pages, state.host_gdt_desc);
@@ -144,4 +163,7 @@ void foo(void)
 	OFFSET(BP_loadflags, boot_params, hdr.loadflags);
 	OFFSET(BP_hardware_subarch, boot_params, hdr.hardware_subarch);
 	OFFSET(BP_version, boot_params, hdr.version);
+	BLANK();
+	DEFINE(__NR_syscall_max, sizeof(syscalls) - 1);
+	DEFINE(NR_syscalls, sizeof(syscalls));
 }

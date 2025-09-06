@@ -7,6 +7,7 @@
  * published by the Free Software Foundation.
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 #include <linux/module.h>
 #include <linux/skbuff.h>
 #include <linux/ip.h>
@@ -30,6 +31,7 @@ spi_match(u_int32_t min, u_int32_t max, u_int32_t spi, bool invert)
 	bool r;
 
 	pr_debug("ah spi_match:%c 0x%x <= 0x%x <= 0x%x",
+	pr_debug("spi_match:%c 0x%x <= 0x%x <= 0x%x\n",
 		 invert ? '!' : ' ', min, spi, max);
 	r = (spi >= min && spi <= max) ^ invert;
 	pr_debug(" result %s\n", r ? "PASS" : "FAILED");
@@ -52,12 +54,26 @@ ah_mt6(const struct sk_buff *skb, const struct net_device *in,
 	if (err < 0) {
 		if (err != -ENOENT)
 			*hotdrop = true;
+static bool ah_mt6(const struct sk_buff *skb, struct xt_action_param *par)
+{
+	struct ip_auth_hdr _ah;
+	const struct ip_auth_hdr *ah;
+	const struct ip6t_ah *ahinfo = par->matchinfo;
+	unsigned int ptr = 0;
+	unsigned int hdrlen = 0;
+	int err;
+
+	err = ipv6_find_hdr(skb, &ptr, NEXTHDR_AUTH, NULL, NULL);
+	if (err < 0) {
+		if (err != -ENOENT)
+			par->hotdrop = true;
 		return false;
 	}
 
 	ah = skb_header_pointer(skb, ptr, sizeof(_ah), &_ah);
 	if (ah == NULL) {
 		*hotdrop = true;
+		par->hotdrop = true;
 		return false;
 	}
 
@@ -106,11 +122,31 @@ ah_mt6_check(const char *tablename, const void *entry,
 		return false;
 	}
 	return true;
+	return (ah != NULL) &&
+		spi_match(ahinfo->spis[0], ahinfo->spis[1],
+			  ntohl(ah->spi),
+			  !!(ahinfo->invflags & IP6T_AH_INV_SPI)) &&
+		(!ahinfo->hdrlen ||
+		 (ahinfo->hdrlen == hdrlen) ^
+		 !!(ahinfo->invflags & IP6T_AH_INV_LEN)) &&
+		!(ahinfo->hdrres && ah->reserved);
+}
+
+static int ah_mt6_check(const struct xt_mtchk_param *par)
+{
+	const struct ip6t_ah *ahinfo = par->matchinfo;
+
+	if (ahinfo->invflags & ~IP6T_AH_INV_MASK) {
+		pr_debug("unknown flags %X\n", ahinfo->invflags);
+		return -EINVAL;
+	}
+	return 0;
 }
 
 static struct xt_match ah_mt6_reg __read_mostly = {
 	.name		= "ah",
 	.family		= AF_INET6,
+	.family		= NFPROTO_IPV6,
 	.match		= ah_mt6,
 	.matchsize	= sizeof(struct ip6t_ah),
 	.checkentry	= ah_mt6_check,

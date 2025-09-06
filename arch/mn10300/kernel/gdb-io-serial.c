@@ -23,6 +23,11 @@
 #include <asm/exceptions.h>
 #include <asm/serial-regs.h>
 #include <asm/unit/serial.h>
+#include <asm/gdb-stub.h>
+#include <asm/exceptions.h>
+#include <asm/serial-regs.h>
+#include <unit/serial.h>
+#include <asm/smp.h>
 
 /*
  * initialise the GDB stub
@@ -50,6 +55,28 @@ void gdbstub_io_init(void)
 
 	XIRQxICR(GDBPORT_SERIAL_IRQ) &= ~GxICR_REQUEST;
 	XIRQxICR(GDBPORT_SERIAL_IRQ) = GxICR_ENABLE | GxICR_LEVEL_0;
+#if   CONFIG_GDBSTUB_IRQ_LEVEL == 0
+	IVAR0 = EXCEP_IRQ_LEVEL0;
+#elif CONFIG_GDBSTUB_IRQ_LEVEL == 1
+	IVAR1 = EXCEP_IRQ_LEVEL1;
+#elif CONFIG_GDBSTUB_IRQ_LEVEL == 2
+	IVAR2 = EXCEP_IRQ_LEVEL2;
+#elif CONFIG_GDBSTUB_IRQ_LEVEL == 3
+	IVAR3 = EXCEP_IRQ_LEVEL3;
+#elif CONFIG_GDBSTUB_IRQ_LEVEL == 4
+	IVAR4 = EXCEP_IRQ_LEVEL4;
+#elif CONFIG_GDBSTUB_IRQ_LEVEL == 5
+	IVAR5 = EXCEP_IRQ_LEVEL5;
+#else
+#error "Unknown irq level for gdbstub."
+#endif
+
+	set_intr_stub(NUM2EXCEP_IRQ_LEVEL(CONFIG_GDBSTUB_IRQ_LEVEL),
+		gdbstub_io_rx_handler);
+
+	XIRQxICR(GDBPORT_SERIAL_IRQ) &= ~GxICR_REQUEST;
+	XIRQxICR(GDBPORT_SERIAL_IRQ) =
+		GxICR_ENABLE | NUM2GxICR_LEVEL(CONFIG_GDBSTUB_IRQ_LEVEL);
 	tmp = XIRQxICR(GDBPORT_SERIAL_IRQ);
 
 	GDBPORT_SERIAL_IER = UART_IER_RDI | UART_IER_RLSI;
@@ -61,6 +88,8 @@ void gdbstub_io_init(void)
 		:
 		: "i"(~EPSW_IM), "i"(EPSW_IE | EPSW_IM_1)
 		);
+	arch_local_change_intr_mask_level(
+		NUM2EPSW_IM(CONFIG_GDBSTUB_IRQ_LEVEL + 1));
 }
 
 /*
@@ -87,6 +116,9 @@ int gdbstub_io_rx_char(unsigned char *_ch, int nonblock)
 {
 	unsigned ix;
 	u8 ch, st;
+#if defined(CONFIG_MN10300_WD_TIMER)
+	int cpu;
+#endif
 
 	*_ch = 0xff;
 
@@ -99,17 +131,22 @@ int gdbstub_io_rx_char(unsigned char *_ch, int nonblock)
  try_again:
 	/* pull chars out of the buffer */
 	ix = gdbstub_rx_outp;
+	barrier();
 	if (ix == gdbstub_rx_inp) {
 		if (nonblock)
 			return -EAGAIN;
 #ifdef CONFIG_MN10300_WD_TIMER
 		watchdog_alert_counter = 0;
 #endif /* CONFIG_MN10300_WD_TIMER */
+	for (cpu = 0; cpu < NR_CPUS; cpu++)
+		watchdog_alert_counter[cpu] = 0;
+#endif
 		goto try_again;
 	}
 
 	ch = gdbstub_rx_buffer[ix++];
 	st = gdbstub_rx_buffer[ix++];
+	barrier();
 	gdbstub_rx_outp = ix & 0x00000fff;
 
 	if (st & UART_LSR_BI) {

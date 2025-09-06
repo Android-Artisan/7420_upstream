@@ -17,6 +17,9 @@ static inline unsigned long xchg_u32(volatile u32 *m, unsigned long val)
 		: "=&r" (retval),
 		  "+r"  (m)
 		: "r"   (val)
+		  "+r"  (m),
+		  "+r"  (val)		/* inhibit r15 overloading */
+		:
 		: "memory", "r0", "r1");
 
 	return retval;
@@ -38,6 +41,9 @@ static inline unsigned long xchg_u8(volatile u8 *m, unsigned long val)
 		: "=&r" (retval),
 		  "+r"  (m)
 		: "r"   (val)
+		  "+r"  (m),
+		  "+r"  (val)		/* inhibit r15 overloading */
+		:
 		: "memory" , "r0", "r1");
 
 	return retval;
@@ -62,6 +68,14 @@ static inline unsigned long __cmpxchg_u32(volatile int *m, unsigned long old,
 		: "=&r" (retval),
 		  "+r"  (m)
 		: "r"   (new)
+		"   mov.l  @%3,   %0      \n\t" /* load  old value */
+		"   cmp/eq  %0,   %1      \n\t"
+		"   bf            1f      \n\t" /* if not equal */
+		"   mov.l   %2,   @%3     \n\t" /* store new value */
+		"1: mov     r1,   r15     \n\t" /* LOGOUT */
+		: "=&r" (retval),
+		  "+r"  (old), "+r"  (new) /* old or new can be r15 */
+		:  "r"  (m)
 		: "memory" , "r0", "r1", "t");
 
 	return retval;

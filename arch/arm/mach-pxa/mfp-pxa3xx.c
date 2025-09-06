@@ -197,6 +197,12 @@ void __init pxa3xx_init_mfp(void)
 		mfp_table[i].config = -1;
 }
 
+#include <linux/syscore_ops.h>
+
+#include <mach/hardware.h>
+#include <mach/mfp-pxa3xx.h>
+#include <mach/pxa3xx-regs.h>
+
 #ifdef CONFIG_PM
 /*
  * Configure the MFPs appropriately for suspend/resume.
@@ -224,6 +230,15 @@ static int pxa3xx_mfp_resume(struct sys_device *d)
 		struct pxa3xx_mfp_pin *p = &mfp_table[pin];
 		__mfp_config_run(p);
 	}
+static int pxa3xx_mfp_suspend(void)
+{
+	mfp_config_lpm();
+	return 0;
+}
+
+static void pxa3xx_mfp_resume(void)
+{
+	mfp_config_run();
 
 	/* clear RDH bit when MFP settings are restored
 	 *
@@ -253,3 +268,7 @@ static int __init mfp_init_devicefs(void)
 	return 0;
 }
 postcore_initcall(mfp_init_devicefs);
+struct syscore_ops pxa3xx_mfp_syscore_ops = {
+	.suspend	= pxa3xx_mfp_suspend,
+	.resume		= pxa3xx_mfp_resume,
+};

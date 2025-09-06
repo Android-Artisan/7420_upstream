@@ -32,6 +32,7 @@
 
 #include <linux/string.h>
 #include <linux/slab.h>
+#include <linux/gfp.h>
 
 #include "mthca_dev.h"
 #include "mthca_cmd.h"
@@ -83,6 +84,9 @@ static int find_mgm(struct mthca_dev *dev,
 	if (status) {
 		mthca_err(dev, "MGID_HASH returned status %02x\n", status);
 		err = -EINVAL;
+	err = mthca_MGID_HASH(dev, mailbox, hash);
+	if (err) {
+		mthca_err(dev, "MGID_HASH failed (%d)\n", err);
 		goto out;
 	}
 
@@ -98,6 +102,7 @@ static int find_mgm(struct mthca_dev *dev,
 			  be16_to_cpu(((__be16 *) gid)[6]),
 			  be16_to_cpu(((__be16 *) gid)[7]),
 			  *hash);
+		mthca_dbg(dev, "Hash for %pI6 is %04x\n", gid, *hash);
 
 	*index = *hash;
 	*prev  = -1;
@@ -109,6 +114,9 @@ static int find_mgm(struct mthca_dev *dev,
 		if (status) {
 			mthca_err(dev, "READ_MGM returned status %02x\n", status);
 			err = -EINVAL;
+		err = mthca_READ_MGM(dev, *index, mgm_mailbox);
+		if (err) {
+			mthca_err(dev, "READ_MGM failed (%d)\n", err);
 			goto out;
 		}
 
@@ -176,6 +184,9 @@ int mthca_multicast_attach(struct ib_qp *ibqp, union ib_gid *gid, u16 lid)
 		if (status) {
 			mthca_err(dev, "READ_MGM returned status %02x\n", status);
 			err = -EINVAL;
+		err = mthca_READ_MGM(dev, index, mailbox);
+		if (err) {
+			mthca_err(dev, "READ_MGM failed (%d)\n", err);
 			goto out;
 		}
 		memset(mgm, 0, sizeof *mgm);
@@ -204,6 +215,9 @@ int mthca_multicast_attach(struct ib_qp *ibqp, union ib_gid *gid, u16 lid)
 		goto out;
 	if (status) {
 		mthca_err(dev, "WRITE_MGM returned status %02x\n", status);
+	err = mthca_WRITE_MGM(dev, index, mailbox);
+	if (err) {
+		mthca_err(dev, "WRITE_MGM failed %d\n", err);
 		err = -EINVAL;
 		goto out;
 	}
@@ -217,6 +231,9 @@ int mthca_multicast_attach(struct ib_qp *ibqp, union ib_gid *gid, u16 lid)
 	if (status) {
 		mthca_err(dev, "READ_MGM returned status %02x\n", status);
 		err = -EINVAL;
+	err = mthca_READ_MGM(dev, prev, mailbox);
+	if (err) {
+		mthca_err(dev, "READ_MGM failed %d\n", err);
 		goto out;
 	}
 
@@ -229,6 +246,9 @@ int mthca_multicast_attach(struct ib_qp *ibqp, union ib_gid *gid, u16 lid)
 		mthca_err(dev, "WRITE_MGM returned status %02x\n", status);
 		err = -EINVAL;
 	}
+	err = mthca_WRITE_MGM(dev, prev, mailbox);
+	if (err)
+		mthca_err(dev, "WRITE_MGM returned %d\n", err);
 
  out:
 	if (err && link && index != -1) {
@@ -274,6 +294,7 @@ int mthca_multicast_detach(struct ib_qp *ibqp, union ib_gid *gid, u16 lid)
 			  be16_to_cpu(((__be16 *) gid->raw)[5]),
 			  be16_to_cpu(((__be16 *) gid->raw)[6]),
 			  be16_to_cpu(((__be16 *) gid->raw)[7]));
+		mthca_err(dev, "MGID %pI6 not found\n", gid->raw);
 		err = -EINVAL;
 		goto out;
 	}
@@ -300,6 +321,9 @@ int mthca_multicast_detach(struct ib_qp *ibqp, union ib_gid *gid, u16 lid)
 	if (status) {
 		mthca_err(dev, "WRITE_MGM returned status %02x\n", status);
 		err = -EINVAL;
+	err = mthca_WRITE_MGM(dev, index, mailbox);
+	if (err) {
+		mthca_err(dev, "WRITE_MGM returned %d\n", err);
 		goto out;
 	}
 
@@ -318,6 +342,9 @@ int mthca_multicast_detach(struct ib_qp *ibqp, union ib_gid *gid, u16 lid)
 				mthca_err(dev, "READ_MGM returned status %02x\n",
 					  status);
 				err = -EINVAL;
+					     mailbox);
+			if (err) {
+				mthca_err(dev, "READ_MGM returned %d\n", err);
 				goto out;
 			}
 		} else
@@ -329,6 +356,9 @@ int mthca_multicast_detach(struct ib_qp *ibqp, union ib_gid *gid, u16 lid)
 		if (status) {
 			mthca_err(dev, "WRITE_MGM returned status %02x\n", status);
 			err = -EINVAL;
+		err = mthca_WRITE_MGM(dev, index, mailbox);
+		if (err) {
+			mthca_err(dev, "WRITE_MGM returned %d\n", err);
 			goto out;
 		}
 		if (amgm_index_to_free) {
@@ -344,6 +374,9 @@ int mthca_multicast_detach(struct ib_qp *ibqp, union ib_gid *gid, u16 lid)
 		if (status) {
 			mthca_err(dev, "READ_MGM returned status %02x\n", status);
 			err = -EINVAL;
+		err = mthca_READ_MGM(dev, prev, mailbox);
+		if (err) {
+			mthca_err(dev, "READ_MGM returned %d\n", err);
 			goto out;
 		}
 
@@ -355,6 +388,9 @@ int mthca_multicast_detach(struct ib_qp *ibqp, union ib_gid *gid, u16 lid)
 		if (status) {
 			mthca_err(dev, "WRITE_MGM returned status %02x\n", status);
 			err = -EINVAL;
+		err = mthca_WRITE_MGM(dev, prev, mailbox);
+		if (err) {
+			mthca_err(dev, "WRITE_MGM returned %d\n", err);
 			goto out;
 		}
 		BUG_ON(index < dev->limits.num_mgms);

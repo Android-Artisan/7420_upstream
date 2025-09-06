@@ -291,6 +291,8 @@ snd_emux_nrpn(void *p, struct snd_midi_channel *chan,
 	port = p;
 	snd_assert(port != NULL, return);
 	snd_assert(chan != NULL, return);
+	if (snd_BUG_ON(!port || !chan))
+		return;
 
 	if (chan->control[MIDI_CTL_NONREG_PARM_NUM_MSB] == 127 &&
 	    chan->control[MIDI_CTL_NONREG_PARM_NUM_LSB] <= 26) {
@@ -362,6 +364,9 @@ int
 snd_emux_xg_control(struct snd_emux_port *port, struct snd_midi_channel *chan,
 		    int param)
 {
+	if (param >= ARRAY_SIZE(chan->control))
+		return -EINVAL;
+
 	return send_converted_effect(xg_effects, ARRAY_SIZE(xg_effects),
 				     port, chan, param,
 				     chan->control[param],
@@ -381,6 +386,8 @@ snd_emux_sysex(void *p, unsigned char *buf, int len, int parsed,
 	port = p;
 	snd_assert(port != NULL, return);
 	snd_assert(chset != NULL, return);
+	if (snd_BUG_ON(!port || !chset))
+		return;
 	emu = port->emu;
 
 	switch (parsed) {

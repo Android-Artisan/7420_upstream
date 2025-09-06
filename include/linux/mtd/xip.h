@@ -52,6 +52,7 @@
  * 	returned by xip_currtime().
  *
  * 	note 1: convertion to usec can be approximated, as long as the
+ * 	note 1: conversion to usec can be approximated, as long as the
  * 		returned value is <= the real elapsed time.
  * 	note 2: this should be able to cope with a few seconds without
  * 		overflowing.

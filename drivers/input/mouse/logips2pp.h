@@ -15,6 +15,9 @@
 int ps2pp_init(struct psmouse *psmouse, int set_properties);
 #else
 inline int ps2pp_init(struct psmouse *psmouse, int set_properties)
+int ps2pp_init(struct psmouse *psmouse, bool set_properties);
+#else
+inline int ps2pp_init(struct psmouse *psmouse, bool set_properties)
 {
 	return -ENOSYS;
 }

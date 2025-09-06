@@ -35,6 +35,7 @@
 #include <linux/delay.h>
 #include <linux/interrupt.h>
 #include <linux/keyboard.h>
+#include <linux/platform_device.h>
 
 #include <asm/amigaints.h>
 #include <asm/amigahw.h>
@@ -44,6 +45,7 @@ MODULE_AUTHOR("Vojtech Pavlik <vojtech@ucw.cz>");
 MODULE_DESCRIPTION("Amiga keyboard driver");
 MODULE_LICENSE("GPL");
 
+#ifdef CONFIG_HW_CONSOLE
 static unsigned char amikbd_keycode[0x78] __initdata = {
 	[0]	 = KEY_GRAVE,
 	[1]	 = KEY_1,
@@ -214,6 +216,13 @@ static int __init amikbd_init(void)
 
 	for (i = 0; i < MAX_NR_KEYMAPS; i++) {
 		static u_short temp_map[NR_KEYS] __initdata;
+static void __init amikbd_init_console_keymaps(void)
+{
+	/* We can spare 512 bytes on stack for temp_map in init path. */
+	unsigned short temp_map[NR_KEYS];
+	int i, j;
+
+	for (i = 0; i < MAX_NR_KEYMAPS; i++) {
 		if (!key_maps[i])
 			continue;
 		memset(temp_map, 0, sizeof(temp_map));
@@ -256,3 +265,111 @@ static void __exit amikbd_exit(void)
 
 module_init(amikbd_init);
 module_exit(amikbd_exit);
+}
+#else /* !CONFIG_HW_CONSOLE */
+static inline void amikbd_init_console_keymaps(void) {}
+#endif /* !CONFIG_HW_CONSOLE */
+
+static const char *amikbd_messages[8] = {
+	[0] = KERN_ALERT "amikbd: Ctrl-Amiga-Amiga reset warning!!\n",
+	[1] = KERN_WARNING "amikbd: keyboard lost sync\n",
+	[2] = KERN_WARNING "amikbd: keyboard buffer overflow\n",
+	[3] = KERN_WARNING "amikbd: keyboard controller failure\n",
+	[4] = KERN_ERR "amikbd: keyboard selftest failure\n",
+	[5] = KERN_INFO "amikbd: initiate power-up key stream\n",
+	[6] = KERN_INFO "amikbd: terminate power-up key stream\n",
+	[7] = KERN_WARNING "amikbd: keyboard interrupt\n"
+};
+
+static irqreturn_t amikbd_interrupt(int irq, void *data)
+{
+	struct input_dev *dev = data;
+	unsigned char scancode, down;
+
+	scancode = ~ciaa.sdr;		/* get and invert scancode (keyboard is active low) */
+	ciaa.cra |= 0x40;		/* switch SP pin to output for handshake */
+	udelay(85);			/* wait until 85 us have expired */
+	ciaa.cra &= ~0x40;		/* switch CIA serial port to input mode */
+
+	down = !(scancode & 1);		/* lowest bit is release bit */
+	scancode >>= 1;
+
+	if (scancode < 0x78) {		/* scancodes < 0x78 are keys */
+		if (scancode == 98) {	/* CapsLock is a toggle switch key on Amiga */
+			input_report_key(dev, scancode, 1);
+			input_report_key(dev, scancode, 0);
+		} else {
+			input_report_key(dev, scancode, down);
+		}
+
+		input_sync(dev);
+	} else				/* scancodes >= 0x78 are error codes */
+		printk(amikbd_messages[scancode - 0x78]);
+
+	return IRQ_HANDLED;
+}
+
+static int __init amikbd_probe(struct platform_device *pdev)
+{
+	struct input_dev *dev;
+	int i, err;
+
+	dev = input_allocate_device();
+	if (!dev) {
+		dev_err(&pdev->dev, "Not enough memory for input device\n");
+		return -ENOMEM;
+	}
+
+	dev->name = pdev->name;
+	dev->phys = "amikbd/input0";
+	dev->id.bustype = BUS_AMIGA;
+	dev->id.vendor = 0x0001;
+	dev->id.product = 0x0001;
+	dev->id.version = 0x0100;
+	dev->dev.parent = &pdev->dev;
+
+	dev->evbit[0] = BIT_MASK(EV_KEY) | BIT_MASK(EV_REP);
+
+	for (i = 0; i < 0x78; i++)
+		set_bit(i, dev->keybit);
+
+	amikbd_init_console_keymaps();
+
+	ciaa.cra &= ~0x41;	 /* serial data in, turn off TA */
+	err = request_irq(IRQ_AMIGA_CIAA_SP, amikbd_interrupt, 0, "amikbd",
+			  dev);
+	if (err)
+		goto fail2;
+
+	err = input_register_device(dev);
+	if (err)
+		goto fail3;
+
+	platform_set_drvdata(pdev, dev);
+
+	return 0;
+
+ fail3:	free_irq(IRQ_AMIGA_CIAA_SP, dev);
+ fail2:	input_free_device(dev);
+	return err;
+}
+
+static int __exit amikbd_remove(struct platform_device *pdev)
+{
+	struct input_dev *dev = platform_get_drvdata(pdev);
+
+	free_irq(IRQ_AMIGA_CIAA_SP, dev);
+	input_unregister_device(dev);
+	return 0;
+}
+
+static struct platform_driver amikbd_driver = {
+	.remove = __exit_p(amikbd_remove),
+	.driver   = {
+		.name	= "amiga-keyboard",
+	},
+};
+
+module_platform_driver_probe(amikbd_driver, amikbd_probe);
+
+MODULE_ALIAS("platform:amiga-keyboard");

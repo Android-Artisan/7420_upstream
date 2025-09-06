@@ -44,6 +44,7 @@ static struct mISDN_dsp_element dsp_hwec_p = {
 	.process_tx = NULL,
 	.process_rx = NULL,
 	.num_args = sizeof(args) / sizeof(struct mISDN_dsp_element_arg),
+	.num_args = ARRAY_SIZE(args),
 	.args = args,
 };
 struct mISDN_dsp_element *dsp_hwec = &dsp_hwec_p;
@@ -57,6 +58,7 @@ void dsp_hwec_enable(struct dsp *dsp, const char *arg)
 	if (!dsp) {
 		printk(KERN_ERR "%s: failed to enable hwec: dsp is NULL\n",
 			__func__);
+		       __func__);
 		return;
 	}
 
@@ -94,12 +96,14 @@ void dsp_hwec_enable(struct dsp *dsp, const char *arg)
 _do:
 	printk(KERN_DEBUG "%s: enabling hwec with deftaps=%d\n",
 		__func__, deftaps);
+	       __func__, deftaps);
 	memset(&cq, 0, sizeof(cq));
 	cq.op = MISDN_CTRL_HFC_ECHOCAN_ON;
 	cq.p1 = deftaps;
 	if (!dsp->ch.peer->ctrl(&dsp->ch, CONTROL_CHANNEL, &cq)) {
 		printk(KERN_DEBUG "%s: CONTROL_CHANNEL failed\n",
 			__func__);
+		       __func__);
 		return;
 	}
 }
@@ -111,6 +115,7 @@ void dsp_hwec_disable(struct dsp *dsp)
 	if (!dsp) {
 		printk(KERN_ERR "%s: failed to disable hwec: dsp is NULL\n",
 			__func__);
+		       __func__);
 		return;
 	}
 
@@ -120,6 +125,7 @@ void dsp_hwec_disable(struct dsp *dsp)
 	if (!dsp->ch.peer->ctrl(&dsp->ch, CONTROL_CHANNEL, &cq)) {
 		printk(KERN_DEBUG "%s: CONTROL_CHANNEL failed\n",
 			__func__);
+		       __func__);
 		return;
 	}
 }

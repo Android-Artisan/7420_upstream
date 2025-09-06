@@ -81,6 +81,11 @@
 /* HFC-S USB register access by Control-URSs */
 #define write_usb(a,b,c)usb_control_msg((a)->dev,(a)->ctrl_out_pipe,0,0x40,(c),(b),NULL,0,HFC_CTRL_TIMEOUT)
 #define read_usb(a,b,c) usb_control_msg((a)->dev,(a)->ctrl_in_pipe,1,0xC0,0,(b),(c),1,HFC_CTRL_TIMEOUT)
+#define BITLINE_INF	(-64 * 8)
+
+/* HFC-S USB register access by Control-URSs */
+#define write_usb(a, b, c) usb_control_msg((a)->dev, (a)->ctrl_out_pipe, 0, 0x40, (c), (b), NULL, 0, HFC_CTRL_TIMEOUT)
+#define read_usb(a, b, c) usb_control_msg((a)->dev, (a)->ctrl_in_pipe, 1, 0xC0, 0, (b), (c), 1, HFC_CTRL_TIMEOUT)
 #define HFC_CTRL_BUFSIZE 32
 
 /* entry and size of output/input control buffer */
@@ -127,6 +132,7 @@ static struct hfcusb_symbolic_list urb_errlist[] = {
 
 /*
  * device dependant information to support different
+ * device dependent information to support different
  * ISDN Ta's using the HFC-S USB chip
  */
 
@@ -202,6 +208,8 @@ typedef struct {
 
 #define LED_NORMAL   	0	// LEDs are normal
 #define LED_INVERTED 	1	// LEDs are inverted
+#define LED_NORMAL	0	// LEDs are normal
+#define LED_INVERTED	1	// LEDs are inverted
 
 
 #endif	// __HFC_USB_H__

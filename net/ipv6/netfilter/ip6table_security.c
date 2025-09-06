@@ -17,6 +17,7 @@
  */
 #include <linux/module.h>
 #include <linux/netfilter_ipv6/ip6_tables.h>
+#include <linux/slab.h>
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("James Morris <jmorris <at> redhat.com>");
@@ -131,11 +132,40 @@ static int __net_init ip6table_security_net_init(struct net *net)
 		return PTR_ERR(net->ipv6.ip6table_security);
 
 	return 0;
+static const struct xt_table security_table = {
+	.name		= "security",
+	.valid_hooks	= SECURITY_VALID_HOOKS,
+	.me		= THIS_MODULE,
+	.af		= NFPROTO_IPV6,
+	.priority	= NF_IP6_PRI_SECURITY,
+};
+
+static unsigned int
+ip6table_security_hook(void *priv, struct sk_buff *skb,
+		       const struct nf_hook_state *state)
+{
+	return ip6t_do_table(skb, state, state->net->ipv6.ip6table_security);
+}
+
+static struct nf_hook_ops *sectbl_ops __read_mostly;
+
+static int __net_init ip6table_security_net_init(struct net *net)
+{
+	struct ip6t_replace *repl;
+
+	repl = ip6t_alloc_initial_table(&security_table);
+	if (repl == NULL)
+		return -ENOMEM;
+	net->ipv6.ip6table_security =
+		ip6t_register_table(net, &security_table, repl);
+	kfree(repl);
+	return PTR_ERR_OR_ZERO(net->ipv6.ip6table_security);
 }
 
 static void __net_exit ip6table_security_net_exit(struct net *net)
 {
 	ip6t_unregister_table(net->ipv6.ip6table_security);
+	ip6t_unregister_table(net, net->ipv6.ip6table_security);
 }
 
 static struct pernet_operations ip6table_security_net_ops = {
@@ -154,6 +184,11 @@ static int __init ip6table_security_init(void)
 	ret = nf_register_hooks(ip6t_ops, ARRAY_SIZE(ip6t_ops));
 	if (ret < 0)
 		goto cleanup_table;
+	sectbl_ops = xt_hook_link(&security_table, ip6table_security_hook);
+	if (IS_ERR(sectbl_ops)) {
+		ret = PTR_ERR(sectbl_ops);
+		goto cleanup_table;
+	}
 
 	return ret;
 
@@ -165,6 +200,7 @@ cleanup_table:
 static void __exit ip6table_security_fini(void)
 {
 	nf_unregister_hooks(ip6t_ops, ARRAY_SIZE(ip6t_ops));
+	xt_hook_unlink(&security_table, sectbl_ops);
 	unregister_pernet_subsys(&ip6table_security_net_ops);
 }
 

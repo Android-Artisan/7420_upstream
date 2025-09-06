@@ -921,9 +921,7 @@ void fb_edid_to_monspecs(unsigned char *edid, struct fb_monspecs *specs)
 	specs->version = edid[EDID_STRUCT_VERSION];
 	specs->revision = edid[EDID_STRUCT_REVISION];
 
-	DPRINTK("========================================\n");
 	DPRINTK("Display Information (EDID)\n");
-	DPRINTK("========================================\n");
 	DPRINTK("   EDID Version %d.%d\n", (int) specs->version,
 	       (int) specs->revision);
 
@@ -963,7 +961,6 @@ void fb_edid_to_monspecs(unsigned char *edid, struct fb_monspecs *specs)
 	if (!found)
 		specs->misc &= ~FB_MISC_1ST_DETAIL;
 
-	DPRINTK("========================================\n");
 }
 
 /*

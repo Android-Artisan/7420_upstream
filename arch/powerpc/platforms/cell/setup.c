@@ -20,6 +20,8 @@
 #include <linux/stddef.h>
 #include <linux/unistd.h>
 #include <linux/slab.h>
+#include <linux/export.h>
+#include <linux/unistd.h>
 #include <linux/user.h>
 #include <linux/reboot.h>
 #include <linux/init.h>
@@ -58,6 +60,12 @@
 #include "pervasive.h"
 #include "ras.h"
 #include "io-workarounds.h"
+#include <asm/io-workarounds.h>
+
+#include "cell.h"
+#include "interrupt.h"
+#include "pervasive.h"
+#include "ras.h"
 
 #ifdef DEBUG
 #define DBG(fmt...) udbg_printf(fmt)
@@ -119,6 +127,7 @@ static void cell_fixup_pcie_rootcomplex(struct pci_dev *dev)
 DECLARE_PCI_FIXUP_HEADER(PCI_ANY_ID, PCI_ANY_ID, cell_fixup_pcie_rootcomplex);
 
 static int __devinit cell_setup_phb(struct pci_controller *phb)
+static int cell_setup_phb(struct pci_controller *phb)
 {
 	const char *model;
 	struct device_node *np;
@@ -126,6 +135,8 @@ static int __devinit cell_setup_phb(struct pci_controller *phb)
 	int rc = rtas_setup_phb(phb);
 	if (rc)
 		return rc;
+
+	phb->controller_ops = cell_pci_controller_ops;
 
 	np = phb->dn;
 	model = of_get_property(np, "model", NULL);
@@ -143,6 +154,21 @@ static int __devinit cell_setup_phb(struct pci_controller *phb)
 	return 0;
 }
 
+	return 0;
+}
+
+static const struct of_device_id cell_bus_ids[] __initconst = {
+	{ .type = "soc", },
+	{ .compatible = "soc", },
+	{ .type = "spider", },
+	{ .type = "axon", },
+	{ .type = "plb5", },
+	{ .type = "plb4", },
+	{ .type = "opb", },
+	{ .type = "ebc", },
+	{},
+};
+
 static int __init cell_publish_devices(void)
 {
 	struct device_node *root = of_find_node_by_path("/");
@@ -151,6 +177,7 @@ static int __init cell_publish_devices(void)
 
 	/* Publish OF platform devices for southbridge IOs */
 	of_platform_bus_probe(NULL, NULL, NULL);
+	of_platform_bus_probe(NULL, cell_bus_ids, NULL);
 
 	/* On spider based blades, we need to manually create the OF
 	 * platform devices for the PCI host bridges
@@ -213,6 +240,11 @@ static void __init mpic_init_IRQ(void)
 		       dn->full_name, virq);
 		set_irq_data(virq, mpic);
 		set_irq_chained_handler(virq, cell_mpic_cascade);
+		mpic = mpic_alloc(dn, 0, MPIC_SECONDARY | MPIC_NO_RESET,
+				0, 0, " MPIC     ");
+		if (mpic == NULL)
+			continue;
+		mpic_init(mpic);
 	}
 }
 
@@ -270,6 +302,7 @@ static int __init cell_probe(void)
 		return 0;
 
 	hpte_init_native();
+	pm_power_off = rtas_power_off;
 
 	return 1;
 }
@@ -295,3 +328,6 @@ define_machine(cell) {
 	.machine_crash_shutdown	= default_machine_crash_shutdown,
 #endif
 };
+};
+
+struct pci_controller_ops cell_pci_controller_ops;

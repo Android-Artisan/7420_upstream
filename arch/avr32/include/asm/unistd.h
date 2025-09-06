@@ -302,6 +302,9 @@
 
 #ifdef __KERNEL__
 #define NR_syscalls		282
+#include <uapi/asm/unistd.h>
+
+#define NR_syscalls		321
 
 /* Old stuff */
 #define __IGNORE_uselib
@@ -341,5 +344,8 @@
 #define cond_syscall(x) asm(".weak\t" #x "\n\t.set\t" #x ",sys_ni_syscall");
 
 #endif /* __KERNEL__ */
+#define __ARCH_WANT_SYS_FORK
+#define __ARCH_WANT_SYS_VFORK
+#define __ARCH_WANT_SYS_CLONE
 
 #endif /* __ASM_AVR32_UNISTD_H */

@@ -26,6 +26,10 @@
 #ifdef __KERNEL__
 #include <linux/ioctl.h>
 #include <linux/types.h>
+#ifndef __SOUND_ASOUND_H
+#define __SOUND_ASOUND_H
+
+#include <linux/ioctl.h>
 #include <linux/time.h>
 #include <asm/byteorder.h>
 
@@ -922,4 +926,5 @@ enum {
 	SNDRV_IOCTL_WRITEV = _IOW('K', 0x01, struct snd_xferv),
 };
 
+#include <uapi/sound/asound.h>
 #endif /* __SOUND_ASOUND_H */

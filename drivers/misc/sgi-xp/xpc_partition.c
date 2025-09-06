@@ -18,6 +18,9 @@
 #include <linux/device.h>
 #include <linux/hardirq.h>
 #include "xpc.h"
+#include <linux/slab.h>
+#include "xpc.h"
+#include <asm/uv/uv_hub.h>
 
 /* XPC is exiting flag */
 int xpc_exiting;
@@ -68,8 +71,11 @@ xpc_get_rsvd_page_pa(int nasid)
 	unsigned long rp_pa = nasid;	/* seed with nasid */
 	size_t len = 0;
 	size_t buf_len = 0;
-	void *buf = buf;
+	void *buf = NULL;
 	void *buf_base = NULL;
+	enum xp_retval (*get_partition_rsvd_page_pa)
+		(void *, u64 *, unsigned long *, size_t *) =
+		xpc_arch_ops.get_partition_rsvd_page_pa;
 
 	while (1) {
 
@@ -81,6 +87,7 @@ xpc_get_rsvd_page_pa(int nasid)
 		 */
 		ret = xpc_get_partition_rsvd_page_pa(buf, &cookie, &rp_pa,
 						     &len);
+		ret = get_partition_rsvd_page_pa(buf, &cookie, &rp_pa, &len);
 
 		dev_dbg(xpc_part, "SAL returned with ret=%d, cookie=0x%016lx, "
 			"address=0x%016lx, len=0x%016lx\n", ret,
@@ -92,6 +99,12 @@ xpc_get_rsvd_page_pa(int nasid)
 		/* !!! L1_CACHE_ALIGN() is only a sn2-bte_copy requirement */
 		if (L1_CACHE_ALIGN(len) > buf_len) {
 			kfree(buf_base);
+		if (is_shub())
+			len = L1_CACHE_ALIGN(len);
+
+		if (len > buf_len) {
+			if (buf_base != NULL)
+				kfree(buf_base);
 			buf_len = L1_CACHE_ALIGN(len);
 			buf = xpc_kmalloc_cacheline_aligned(buf_len, GFP_KERNEL,
 							    &buf_base);
@@ -104,6 +117,7 @@ xpc_get_rsvd_page_pa(int nasid)
 		}
 
 		ret = xp_remote_memcpy(xp_pa(buf), rp_pa, buf_len);
+		ret = xp_remote_memcpy(xp_pa(buf), rp_pa, len);
 		if (ret != xpSuccess) {
 			dev_dbg(xpc_part, "xp_remote_memcpy failed %d\n", ret);
 			break;
@@ -142,6 +156,7 @@ xpc_setup_rsvd_page(void)
 		return -ESRCH;
 	}
 	rp = (struct xpc_rsvd_page *)__va(rp_pa);
+	rp = (struct xpc_rsvd_page *)__va(xp_socket_pa(rp_pa));
 
 	if (rp->SAL_version < 3) {
 		/* SAL_versions < 3 had a SAL_partid defined as a u8 */
@@ -173,6 +188,7 @@ xpc_setup_rsvd_page(void)
 	xpc_mach_nasids = XPC_RP_MACH_NASIDS(rp);
 
 	ret = xpc_setup_rsvd_page_sn(rp);
+	ret = xpc_arch_ops.setup_rsvd_page(rp);
 	if (ret != 0)
 		return ret;
 
@@ -265,6 +281,7 @@ xpc_partition_disengaged(struct xpc_partition *part)
 	int disengaged;
 
 	disengaged = !xpc_partition_engaged(partid);
+	disengaged = !xpc_arch_ops.partition_engaged(partid);
 	if (part->disengage_timeout) {
 		if (!disengaged) {
 			if (time_is_after_jiffies(part->disengage_timeout)) {
@@ -281,6 +298,7 @@ xpc_partition_disengaged(struct xpc_partition *part)
 				 "partition %d timed out\n", partid);
 			xpc_disengage_timedout = 1;
 			xpc_assume_partition_disengaged(partid);
+			xpc_arch_ops.assume_partition_disengaged(partid);
 			disengaged = 1;
 		}
 		part->disengage_timeout = 0;
@@ -295,6 +313,7 @@ xpc_partition_disengaged(struct xpc_partition *part)
 			xpc_wakeup_channel_mgr(part);
 
 		xpc_cancel_partition_deactivation_request(part);
+		xpc_arch_ops.cancel_partition_deactivation_request(part);
 	}
 	return disengaged;
 }
@@ -340,6 +359,7 @@ xpc_deactivate_partition(const int line, struct xpc_partition *part,
 		if (reason == xpReactivating) {
 			/* we interrupt ourselves to reactivate partition */
 			xpc_request_partition_reactivation(part);
+			xpc_arch_ops.request_partition_reactivation(part);
 		}
 		return;
 	}
@@ -359,6 +379,7 @@ xpc_deactivate_partition(const int line, struct xpc_partition *part,
 
 	/* ask remote partition to deactivate with regard to us */
 	xpc_request_partition_deactivation(part);
+	xpc_arch_ops.request_partition_deactivation(part);
 
 	/* set a timelimit on the disengage phase of the deactivation request */
 	part->disengage_timeout = jiffies + (xpc_disengage_timelimit * HZ);
@@ -443,6 +464,23 @@ xpc_discovery(void)
 		max_regions *= 2;
 		region_size = 16;
 		DBUG_ON(!is_shub2());
+	region_size = xp_region_size;
+
+	if (is_uv())
+		max_regions = 256;
+	else {
+		max_regions = 64;
+
+		switch (region_size) {
+		case 128:
+			max_regions *= 2;
+		case 64:
+			max_regions *= 2;
+		case 32:
+			max_regions *= 2;
+			region_size = 16;
+			DBUG_ON(!is_shub2());
+		}
 	}
 
 	for (region = 0; region < max_regions; region++) {
@@ -497,6 +535,7 @@ xpc_discovery(void)
 			}
 
 			xpc_request_partition_activation(remote_rp,
+			xpc_arch_ops.request_partition_activation(remote_rp,
 							 remote_rp_pa, nasid);
 		}
 	}

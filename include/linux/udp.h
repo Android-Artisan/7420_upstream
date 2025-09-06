@@ -39,6 +39,10 @@ struct udphdr {
 #include <net/inet_sock.h>
 #include <linux/skbuff.h>
 #include <net/netns/hash.h>
+#include <net/inet_sock.h>
+#include <linux/skbuff.h>
+#include <net/netns/hash.h>
+#include <uapi/linux/udp.h>
 
 static inline struct udphdr *udp_hdr(const struct sk_buff *skb)
 {
@@ -50,6 +54,16 @@ static inline struct udphdr *udp_hdr(const struct sk_buff *skb)
 static inline int udp_hashfn(struct net *net, const unsigned num)
 {
 	return (num + net_hash_mix(net)) & (UDP_HTABLE_SIZE - 1);
+static inline struct udphdr *inner_udp_hdr(const struct sk_buff *skb)
+{
+	return (struct udphdr *)skb_inner_transport_header(skb);
+}
+
+#define UDP_HTABLE_SIZE_MIN		(CONFIG_BASE_SMALL ? 128 : 256)
+
+static inline u32 udp_hashfn(const struct net *net, u32 num, u32 mask)
+{
+	return (num + net_hash_mix(net)) & mask;
 }
 
 struct udp_sock {
@@ -58,6 +72,14 @@ struct udp_sock {
 	int		 pending;	/* Any pending frames ? */
 	unsigned int	 corkflag;	/* Cork is required */
   	__u16		 encap_type;	/* Is this an Encapsulation socket? */
+#define udp_port_hash		inet.sk.__sk_common.skc_u16hashes[0]
+#define udp_portaddr_hash	inet.sk.__sk_common.skc_u16hashes[1]
+#define udp_portaddr_node	inet.sk.__sk_common.skc_portaddr_node
+	int		 pending;	/* Any pending frames ? */
+	unsigned int	 corkflag;	/* Cork is required */
+	__u8		 encap_type;	/* Is this an Encapsulation socket? */
+	unsigned char	 no_check6_tx:1,/* Send zero UDP6 checksums on TX? */
+			 no_check6_rx:1;/* Allow zero UDP6 checksums on RX? */
 	/*
 	 * Following member retains the information to create a UDP header
 	 * when the socket is uncorked.
@@ -78,6 +100,7 @@ struct udp_sock {
 	 * For encapsulation sockets.
 	 */
 	int (*encap_rcv)(struct sock *sk, struct sk_buff *skb);
+	void (*encap_destroy)(struct sock *sk);
 };
 
 static inline struct udp_sock *udp_sk(const struct sock *sk)
@@ -88,5 +111,33 @@ static inline struct udp_sock *udp_sk(const struct sock *sk)
 #define IS_UDPLITE(__sk) (udp_sk(__sk)->pcflag)
 
 #endif
+
+static inline void udp_set_no_check6_tx(struct sock *sk, bool val)
+{
+	udp_sk(sk)->no_check6_tx = val;
+}
+
+static inline void udp_set_no_check6_rx(struct sock *sk, bool val)
+{
+	udp_sk(sk)->no_check6_rx = val;
+}
+
+static inline bool udp_get_no_check6_tx(struct sock *sk)
+{
+	return udp_sk(sk)->no_check6_tx;
+}
+
+static inline bool udp_get_no_check6_rx(struct sock *sk)
+{
+	return udp_sk(sk)->no_check6_rx;
+}
+
+#define udp_portaddr_for_each_entry(__sk, node, list) \
+	hlist_nulls_for_each_entry(__sk, node, list, __sk_common.skc_portaddr_node)
+
+#define udp_portaddr_for_each_entry_rcu(__sk, node, list) \
+	hlist_nulls_for_each_entry_rcu(__sk, node, list, __sk_common.skc_portaddr_node)
+
+#define IS_UDPLITE(__sk) (udp_sk(__sk)->pcflag)
 
 #endif	/* _LINUX_UDP_H */

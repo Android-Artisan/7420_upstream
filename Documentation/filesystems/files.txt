@@ -77,12 +77,14 @@ the fdtable structure -
    of the fd (fget()/fget_light()) are lock-free, it is possible
    that look-up may race with the last put() operation on the
    file structure. This is avoided using atomic_inc_not_zero()
+   file structure. This is avoided using atomic_long_inc_not_zero()
    on ->f_count :
 
 	rcu_read_lock();
 	file = fcheck_files(files, fd);
 	if (file) {
 		if (atomic_inc_not_zero(&file->f_count))
+		if (atomic_long_inc_not_zero(&file->f_count))
 			*fput_needed = 1;
 		else
 		/* Didn't get the reference, someone's freed */
@@ -93,6 +95,7 @@ the fdtable structure -
 	return file;
 
    atomic_inc_not_zero() detects if refcounts is already zero or
+   atomic_long_inc_not_zero() detects if refcounts is already zero or
    goes to zero during increment. If it does, we fail
    fget()/fget_light().
 
@@ -115,6 +118,8 @@ the fdtable structure -
 		fdt = files_fdtable(files);
 		FD_SET(fd, fdt->open_fds);
 		FD_CLR(fd, fdt->close_on_exec);
+		__set_open_fd(fd, fdt);
+		__clear_close_on_exec(fd, fdt);
 		spin_unlock(&files->file_lock);
 	.....
 

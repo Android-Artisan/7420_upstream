@@ -373,6 +373,9 @@ static int __init Q40IrqInit(void)
 	/* Register interrupt handler. */
 	request_irq(Q40_IRQ_SAMPLE, Q40StereoInterrupt, 0,
 		    "DMA sound", Q40Interrupt);
+	if (request_irq(Q40_IRQ_SAMPLE, Q40StereoInterrupt, 0,
+		    "DMA sound", Q40Interrupt))
+		return 0;
 
 	return(1);
 }
@@ -401,6 +404,7 @@ static void Q40PlayNextFrame(int index)
 	u_char *start;
 	u_long size;
 	u_char speed;
+	int error;
 
 	/* used by Q40Play() if all doubts whether there really is something
 	 * to be played are already wiped out.
@@ -424,6 +428,13 @@ static void Q40PlayNextFrame(int index)
 	  else
 	        request_irq(Q40_IRQ_SAMPLE, Q40MonoInterrupt, 0,
 		    "Q40 sound", Q40Interrupt);
+		error = request_irq(Q40_IRQ_SAMPLE, Q40StereoInterrupt, 0,
+				    "Q40 sound", Q40Interrupt);
+	  else
+		error = request_irq(Q40_IRQ_SAMPLE, Q40MonoInterrupt, 0,
+				    "Q40 sound", Q40Interrupt);
+	if (error && printk_ratelimit())
+		pr_err("Couldn't register sound interrupt\n");
 
 	master_outb( speed, SAMPLE_RATE_REG);
 	master_outb( 1,SAMPLE_CLEAR_REG);

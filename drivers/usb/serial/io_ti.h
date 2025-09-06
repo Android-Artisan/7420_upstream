@@ -1,4 +1,5 @@
 /*****************************************************************************  
+/*****************************************************************************
  *
  *	Copyright (C) 1997-2002 Inside Out Networks, Inc.
  *
@@ -26,6 +27,10 @@
 #define UMPMEM_BASE_UART1		0xFFA0  /* UMP UART1 base address          */
 #define UMPMEM_BASE_UART2		0xFFB0  /* UMP UART2 base address          */
 #define UMPMEM_OFFS_UART_LSR		0x05    /* UMP UART LSR register offset    */
+/* UART Defines */
+#define UMPMEM_BASE_UART1		0xFFA0	/* UMP UART1 base address */
+#define UMPMEM_BASE_UART2		0xFFB0	/* UMP UART2 base address */
+#define UMPMEM_OFFS_UART_LSR		0x05	/* UMP UART LSR register offset */
 
 /* Bits per character */
 #define UMP_UART_CHAR5BITS		0x00
@@ -55,6 +60,7 @@
 #define UMP_UART_LSR_TX_MASK		0x20
 
 #define UMP_UART_LSR_DATA_MASK		( LSR_PAR_ERR | LSR_FRM_ERR | LSR_BREAK )
+#define UMP_UART_LSR_DATA_MASK		(LSR_PAR_ERR | LSR_FRM_ERR | LSR_BREAK)
 
 /* Port Settings Constants) */
 #define UMP_MASK_UART_FLAGS_RTS_FLOW		0x0001
@@ -123,6 +129,57 @@
 	/* Read-write group */
 #define	UMPC_MEMORY_READ   		0x92
 #define	UMPC_MEMORY_WRITE  		0x93
+/* Address of Port 0 */
+#define UMPM_UART1_PORT				0x03
+
+/* Commands */
+#define	UMPC_SET_CONFIG			0x05
+#define	UMPC_OPEN_PORT			0x06
+#define	UMPC_CLOSE_PORT			0x07
+#define	UMPC_START_PORT			0x08
+#define	UMPC_STOP_PORT			0x09
+#define	UMPC_TEST_PORT			0x0A
+#define	UMPC_PURGE_PORT			0x0B
+
+/* Force the Firmware to complete the current Read */
+#define	UMPC_COMPLETE_READ		0x80
+/* Force UMP back into BOOT Mode */
+#define	UMPC_HARDWARE_RESET		0x81
+/*
+ * Copy current download image to type 0xf2 record in 16k I2C
+ * firmware will change 0xff record to type 2 record when complete
+ */
+#define	UMPC_COPY_DNLD_TO_I2C		0x82
+
+/*
+ * Special function register commands
+ * wIndex is register address
+ * wValue is MSB/LSB mask/data
+ */
+#define	UMPC_WRITE_SFR			0x83	/* Write SFR Register */
+
+/* wIndex is register address */
+#define	UMPC_READ_SFR			0x84	/* Read SRF Register */
+
+/* Set or Clear DTR (wValue bit 0 Set/Clear)	wIndex ModuleID (port) */
+#define	UMPC_SET_CLR_DTR		0x85
+
+/* Set or Clear RTS (wValue bit 0 Set/Clear)	wIndex ModuleID (port) */
+#define	UMPC_SET_CLR_RTS		0x86
+
+/* Set or Clear LOOPBACK (wValue bit 0 Set/Clear) wIndex ModuleID (port) */
+#define	UMPC_SET_CLR_LOOPBACK		0x87
+
+/* Set or Clear BREAK (wValue bit 0 Set/Clear)	wIndex ModuleID (port) */
+#define	UMPC_SET_CLR_BREAK		0x88
+
+/* Read MSR wIndex ModuleID (port) */
+#define	UMPC_READ_MSR			0x89
+
+/* Toolkit commands */
+/* Read-write group */
+#define	UMPC_MEMORY_READ		0x92
+#define	UMPC_MEMORY_WRITE		0x93
 
 /*
  *	UMP DMA Definitions
@@ -132,6 +189,7 @@
 
 struct out_endpoint_desc_block
 {
+struct out_endpoint_desc_block {
 	__u8 Configuration;
 	__u8 XBufAddr;
 	__u8 XByteCount;
@@ -149,6 +207,8 @@ struct out_endpoint_desc_block
  */
 struct ump_uart_config		/* UART settings                    */
 {
+/* UART settings */
+struct ump_uart_config {
 	__u16 wBaudRate;	/* Baud rate                        */
 	__u16 wFlags;		/* Bitmap mask of flags             */
 	__u8 bDataBits;		/* 5..8 - data bits per character   */
@@ -167,12 +227,14 @@ struct ump_uart_config		/* UART settings                    */
  */
 struct ump_interrupt			/* Interrupt packet structure       */
 {
+/* Interrupt packet structure */
+struct ump_interrupt {
 	__u8 bICode;			/* Interrupt code (interrupt num)   */
 	__u8 bIInfo;			/* Interrupt information            */
 }  __attribute__((packed));
 
 
-#define TIUMP_GET_PORT_FROM_CODE(c)	(((c) >> 4) - 3)
+#define TIUMP_GET_PORT_FROM_CODE(c)	(((c) >> 6) & 0x01)
 #define TIUMP_GET_FUNC_FROM_CODE(c)	((c) & 0x0f)
 #define TIUMP_INTERRUPT_CODE_LSR	0x03
 #define TIUMP_INTERRUPT_CODE_MSR	0x04

@@ -68,6 +68,12 @@ EXPORT_SYMBOL(memcpy);
 EXPORT_SYMBOL(__udelay);
 EXPORT_SYMBOL(__ndelay);
 EXPORT_SYMBOL(__const_udelay);
+EXPORT_SYMBOL(memset);
+EXPORT_SYMBOL(__udelay);
+EXPORT_SYMBOL(__ndelay);
+EXPORT_SYMBOL(__const_udelay);
+EXPORT_SYMBOL(strlen);
+EXPORT_SYMBOL(strcpy);
 
 /* Ugh.  These come in from libgcc.a at link time. */
 #define DECLARE_EXPORT(name) extern void name(void);EXPORT_SYMBOL(name)
@@ -75,5 +81,7 @@ EXPORT_SYMBOL(__const_udelay);
 DECLARE_EXPORT(__sdivsi3);
 DECLARE_EXPORT(__sdivsi3_2);
 DECLARE_EXPORT(__muldi3);
+DECLARE_EXPORT(__sdivsi3_1);
+DECLARE_EXPORT(__sdivsi3_2);
 DECLARE_EXPORT(__udivsi3);
 DECLARE_EXPORT(__div_table);

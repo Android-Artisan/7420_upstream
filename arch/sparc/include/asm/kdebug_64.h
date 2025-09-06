@@ -4,6 +4,7 @@
 struct pt_regs;
 
 extern void bad_trap(struct pt_regs *, long);
+void bad_trap(struct pt_regs *, long);
 
 /* Grossly misnamed. */
 enum die_val {
@@ -14,6 +15,8 @@ enum die_val {
 	DIE_TRAP,
 	DIE_TRAP_TL1,
 	DIE_CALL,
+	DIE_NMI,
+	DIE_NMIWATCHDOG,
 };
 
 #endif

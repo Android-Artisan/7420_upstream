@@ -59,6 +59,7 @@ struct inode *efs_iget(struct super_block *super, unsigned long ino)
 
 	inode = iget_locked(super, ino);
 	if (IS_ERR(inode))
+	if (!inode)
 		return ERR_PTR(-ENOMEM);
 	if (!(inode->i_state & I_NEW))
 		return inode;
@@ -91,6 +92,7 @@ struct inode *efs_iget(struct super_block *super, unsigned long ino)
 	bh = sb_bread(inode->i_sb, block);
 	if (!bh) {
 		printk(KERN_WARNING "EFS: bread() failed at block %d\n", block);
+		pr_warn("%s() failed at block %d\n", __func__, block);
 		goto read_inode_error;
 	}
 
@@ -100,6 +102,9 @@ struct inode *efs_iget(struct super_block *super, unsigned long ino)
 	inode->i_nlink = be16_to_cpu(efs_inode->di_nlink);
 	inode->i_uid   = (uid_t)be16_to_cpu(efs_inode->di_uid);
 	inode->i_gid   = (gid_t)be16_to_cpu(efs_inode->di_gid);
+	set_nlink(inode, be16_to_cpu(efs_inode->di_nlink));
+	i_uid_write(inode, (uid_t)be16_to_cpu(efs_inode->di_uid));
+	i_gid_write(inode, (gid_t)be16_to_cpu(efs_inode->di_gid));
 	inode->i_size  = be32_to_cpu(efs_inode->di_size);
 	inode->i_atime.tv_sec = be32_to_cpu(efs_inode->di_atime);
 	inode->i_mtime.tv_sec = be32_to_cpu(efs_inode->di_mtime);
@@ -132,6 +137,8 @@ struct inode *efs_iget(struct super_block *super, unsigned long ino)
 		extent_copy(&(efs_inode->di_u.di_extents[i]), &(in->extents[i]));
 		if (i < in->numextents && in->extents[i].cooked.ex_magic != 0) {
 			printk(KERN_WARNING "EFS: extent %d has bad magic number in inode %lu\n", i, inode->i_ino);
+			pr_warn("extent %d has bad magic number in inode %lu\n",
+				i, inode->i_ino);
 			brelse(bh);
 			goto read_inode_error;
 		}
@@ -144,6 +151,8 @@ struct inode *efs_iget(struct super_block *super, unsigned long ino)
 		inode->i_ino, in->numextents, inode->i_mode);
 #endif
 
+	pr_debug("efs_iget(): inode %lu, extents %d, mode %o\n",
+		 inode->i_ino, in->numextents, inode->i_mode);
 	switch (inode->i_mode & S_IFMT) {
 		case S_IFDIR: 
 			inode->i_op = &efs_dir_inode_operations; 
@@ -164,6 +173,7 @@ struct inode *efs_iget(struct super_block *super, unsigned long ino)
 			break;
 		default:
 			printk(KERN_WARNING "EFS: unsupported inode mode %o\n", inode->i_mode);
+			pr_warn("unsupported inode mode %o\n", inode->i_mode);
 			goto read_inode_error;
 			break;
 	}
@@ -173,6 +183,7 @@ struct inode *efs_iget(struct super_block *super, unsigned long ino)
         
 read_inode_error:
 	printk(KERN_WARNING "EFS: failed to read inode %lu\n", inode->i_ino);
+	pr_warn("failed to read inode %lu\n", inode->i_ino);
 	iget_failed(inode);
 	return ERR_PTR(-EIO);
 }
@@ -218,6 +229,7 @@ efs_block_t efs_map_block(struct inode *inode, efs_block_t block) {
 		/* if we only have one extent then nothing can be found */
 		if (in->numextents == 1) {
 			printk(KERN_ERR "EFS: map_block() failed to map (1 extent)\n");
+			pr_err("%s() failed to map (1 extent)\n", __func__);
 			return 0;
 		}
 
@@ -242,6 +254,12 @@ efs_block_t efs_map_block(struct inode *inode, efs_block_t block) {
 #ifdef DEBUG
 	printk(KERN_DEBUG "EFS: map_block(): indirect search for logical block %u\n", block);
 #endif
+		pr_err("%s() failed to map block %u (dir)\n", __func__, block);
+		return 0;
+	}
+
+	pr_debug("%s(): indirect search for logical block %u\n",
+		 __func__, block);
 	direxts = in->extents[0].cooked.ex_offset;
 	indexts = in->numextents;
 
@@ -264,6 +282,8 @@ efs_block_t efs_map_block(struct inode *inode, efs_block_t block) {
 		if (dirext == direxts) {
 			/* should never happen */
 			printk(KERN_ERR "EFS: couldn't find direct extent for indirect extent %d (block %u)\n", cur, block);
+			pr_err("couldn't find direct extent for indirect extent %d (block %u)\n",
+			       cur, block);
 			if (bh) brelse(bh);
 			return 0;
 		}
@@ -286,6 +306,12 @@ efs_block_t efs_map_block(struct inode *inode, efs_block_t block) {
 #ifdef DEBUG
 			printk(KERN_DEBUG "EFS: map_block(): read indirect extent block %d\n", iblock);
 #endif
+				pr_err("%s() failed at block %d\n",
+				       __func__, iblock);
+				return 0;
+			}
+			pr_debug("%s(): read indirect extent block %d\n",
+				 __func__, iblock);
 			first = 0;
 			lastblock = iblock;
 		}
@@ -296,6 +322,8 @@ efs_block_t efs_map_block(struct inode *inode, efs_block_t block) {
 
 		if (ext.cooked.ex_magic != 0) {
 			printk(KERN_ERR "EFS: extent %d has bad magic number in block %d\n", cur, iblock);
+			pr_err("extent %d has bad magic number in block %d\n",
+			       cur, iblock);
 			if (bh) brelse(bh);
 			return 0;
 		}
@@ -308,6 +336,7 @@ efs_block_t efs_map_block(struct inode *inode, efs_block_t block) {
 	}
 	if (bh) brelse(bh);
 	printk(KERN_ERR "EFS: map_block() failed to map block %u (indir)\n", block);
+	pr_err("%s() failed to map block %u (indir)\n", __func__, block);
 	return 0;
 }  
 

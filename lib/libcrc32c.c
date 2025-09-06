@@ -195,3 +195,48 @@ crc32c_be(u32 crc, unsigned char const *p, size_t len)
  * A small unit test suite is implemented as part of the crypto suite.
  * Select CRYPTO_CRC32C and use the tcrypt module to run the tests.
  */
+
+#include <crypto/hash.h>
+#include <linux/err.h>
+#include <linux/init.h>
+#include <linux/kernel.h>
+#include <linux/module.h>
+
+static struct crypto_shash *tfm;
+
+u32 crc32c(u32 crc, const void *address, unsigned int length)
+{
+	SHASH_DESC_ON_STACK(shash, tfm);
+	u32 *ctx = (u32 *)shash_desc_ctx(shash);
+	int err;
+
+	shash->tfm = tfm;
+	shash->flags = 0;
+	*ctx = crc;
+
+	err = crypto_shash_update(shash, address, length);
+	BUG_ON(err);
+
+	return *ctx;
+}
+
+EXPORT_SYMBOL(crc32c);
+
+static int __init libcrc32c_mod_init(void)
+{
+	tfm = crypto_alloc_shash("crc32c", 0, 0);
+	return PTR_ERR_OR_ZERO(tfm);
+}
+
+static void __exit libcrc32c_mod_fini(void)
+{
+	crypto_free_shash(tfm);
+}
+
+module_init(libcrc32c_mod_init);
+module_exit(libcrc32c_mod_fini);
+
+MODULE_AUTHOR("Clay Haapala <chaapala@cisco.com>");
+MODULE_DESCRIPTION("CRC32c (Castagnoli) calculations");
+MODULE_LICENSE("GPL");
+MODULE_SOFTDEP("pre: crc32c");

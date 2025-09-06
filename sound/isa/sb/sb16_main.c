@@ -37,6 +37,11 @@
 #include <asm/dma.h>
 #include <linux/init.h>
 #include <linux/time.h>
+#include <linux/io.h>
+#include <asm/dma.h>
+#include <linux/init.h>
+#include <linux/time.h>
+#include <linux/module.h>
 #include <sound/core.h>
 #include <sound/sb.h>
 #include <sound/sb16_csp.h>
@@ -670,6 +675,8 @@ static int snd_sb16_set_dma_mode(struct snd_sb *chip, int what)
 {
 	if (chip->dma8 < 0 || chip->dma16 < 0) {
 		snd_assert(what == 0, return -EINVAL);
+		if (snd_BUG_ON(what))
+			return -EINVAL;
 		return 0;
 	}
 	if (what == 0) {
@@ -711,6 +718,11 @@ static int snd_sb16_dma_control_info(struct snd_kcontrol *kcontrol, struct snd_c
 		uinfo->value.enumerated.item = 2;
 	strcpy(uinfo->value.enumerated.name, texts[uinfo->value.enumerated.item]);
 	return 0;
+	static const char * const texts[3] = {
+		"Auto", "Playback", "Capture"
+	};
+
+	return snd_ctl_enum_info(uinfo, 1, 3, texts);
 }
 
 static int snd_sb16_dma_control_get(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_value *ucontrol)
@@ -865,6 +877,7 @@ static struct snd_pcm_ops snd_sb16_capture_ops = {
 };
 
 int snd_sb16dsp_pcm(struct snd_sb * chip, int device, struct snd_pcm ** rpcm)
+int snd_sb16dsp_pcm(struct snd_sb *chip, int device)
 {
 	struct snd_card *card = chip->card;
 	struct snd_pcm *pcm;
@@ -877,6 +890,7 @@ int snd_sb16dsp_pcm(struct snd_sb * chip, int device, struct snd_pcm ** rpcm)
 	sprintf(pcm->name, "DSP v%i.%i", chip->version >> 8, chip->version & 0xff);
 	pcm->info_flags = SNDRV_PCM_INFO_JOINT_DUPLEX;
 	pcm->private_data = chip;
+	chip->pcm = pcm;
 
 	snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_PLAYBACK, &snd_sb16_playback_ops);
 	snd_pcm_set_ops(pcm, SNDRV_PCM_STREAM_CAPTURE, &snd_sb16_capture_ops);

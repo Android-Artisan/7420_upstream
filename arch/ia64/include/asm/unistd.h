@@ -313,6 +313,14 @@
 
 
 #define NR_syscalls			295 /* length of syscall table */
+#ifndef _ASM_IA64_UNISTD_H
+#define _ASM_IA64_UNISTD_H
+
+#include <uapi/asm/unistd.h>
+
+
+
+#define NR_syscalls			323 /* length of syscall table */
 
 /*
  * The following defines stop scripts/checksyscalls.sh from complaining about
@@ -342,6 +350,7 @@
 # define __ARCH_WANT_COMPAT_SYS_RT_SIGSUSPEND
 # define __ARCH_WANT_COMPAT_SYS_TIME
 #endif
+#define __IGNORE_umount2	/* umount() */
 
 #if !defined(__ASSEMBLY__) && !defined(ASSEMBLER)
 
@@ -381,4 +390,7 @@ asmlinkage long sys_rt_sigaction(int sig,
 
 #endif /* !__ASSEMBLY__ */
 #endif /* __KERNEL__ */
+asmlinkage long sys_ia64_pipe(void);
+
+#endif /* !__ASSEMBLY__ */
 #endif /* _ASM_IA64_UNISTD_H */

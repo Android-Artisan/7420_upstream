@@ -208,6 +208,12 @@ struct sis_memreq {
 #ifdef __KERNEL__
 
 #include <linux/pci.h>
+#ifndef _LINUX_SISFB_H_
+#define _LINUX_SISFB_H_
+
+
+#include <linux/pci.h>
+#include <uapi/video/sisfb.h>
 
 #define	UNKNOWN_VGA  0
 #define	SIS_300_VGA  1

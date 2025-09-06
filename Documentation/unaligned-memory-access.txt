@@ -1,5 +1,4 @@
 UNALIGNED MEMORY ACCESSES
-=========================
 
 Linux runs on a wide variety of architectures which have varying behaviour
 when it comes to memory access. This document presents some details about
@@ -8,7 +7,6 @@ and how to write such code!
 
 
 The definition of an unaligned access
-=====================================
 
 Unaligned memory accesses occur when you try to read N bytes of data starting
 from an address that is not evenly divisible by N (i.e. addr % N != 0).
@@ -25,7 +23,6 @@ dealing with types such as u16, u32 and u64.
 
 
 Natural alignment
-=================
 
 The rule mentioned above forms what we refer to as natural alignment:
 When accessing N bytes of memory, the base memory address must be evenly
@@ -41,7 +38,6 @@ to achieve full portability.
 
 
 Why unaligned access is bad
-===========================
 
 The effects of performing an unaligned memory access vary from architecture
 to architecture. It would be easy to write a whole document on the differences
@@ -65,7 +61,6 @@ platforms and will cause performance problems on others.
 
 
 Code that does not cause unaligned access
-=========================================
 
 At first, the concepts above may seem a little hard to relate to actual
 coding practice. After all, you don't have a great deal of control over
@@ -134,7 +129,6 @@ structure padding is of importance.
 
 
 Code that causes unaligned access
-=================================
 
 With the above in mind, let's move onto a real life example of a function
 that can cause an unaligned memory access. The following function adapted
@@ -155,6 +149,34 @@ access.)
 
 Despite the potential unaligned access problems with the above function, it
 is included in the kernel anyway but is understood to only work on
+that can cause an unaligned memory access. The following function taken
+from include/linux/etherdevice.h is an optimized routine to compare two
+ethernet MAC addresses for equality.
+
+bool ether_addr_equal(const u8 *addr1, const u8 *addr2)
+{
+#ifdef CONFIG_HAVE_EFFICIENT_UNALIGNED_ACCESS
+	u32 fold = ((*(const u32 *)addr1) ^ (*(const u32 *)addr2)) |
+		   ((*(const u16 *)(addr1 + 4)) ^ (*(const u16 *)(addr2 + 4)));
+
+	return fold == 0;
+#else
+	const u16 *a = (const u16 *)addr1;
+	const u16 *b = (const u16 *)addr2;
+	return ((a[0] ^ b[0]) | (a[1] ^ b[1]) | (a[2] ^ b[2])) != 0;
+#endif
+}
+
+In the above function, when the hardware has efficient unaligned access
+capability, there is no issue with this code.  But when the hardware isn't
+able to access memory on arbitrary boundaries, the reference to a[0] causes
+2 bytes (16 bits) to be read from memory starting at address addr1.
+
+Think about what would happen if addr1 was an odd address such as 0x10003.
+(Hint: it'd be an unaligned access.)
+
+Despite the potential unaligned access problems with the above function, it
+is included in the kernel anyway but is understood to only work normally on
 16-bit-aligned addresses. It is up to the caller to ensure this alignment or
 not use this function at all. This alignment-unsafe function is still useful
 as it is a decent optimization for the cases when you can ensure alignment,
@@ -179,7 +201,6 @@ problems involve:
 
 
 Avoiding unaligned accesses
-===========================
 
 The easiest way to avoid unaligned access is to use the get_unaligned() and
 put_unaligned() macros provided by the <asm/unaligned.h> header file.
@@ -220,7 +241,6 @@ Due to the byte-wise nature of this operation, unaligned accesses are avoided.
 
 
 Alignment vs. Networking
-========================
 
 On architectures that require aligned loads, networking requires that the IP
 header is aligned on a four-byte boundary to optimise the IP stack. For

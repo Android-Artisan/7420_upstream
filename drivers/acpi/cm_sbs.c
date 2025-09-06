@@ -31,6 +31,8 @@
 #include <acpi/actypes.h>
 #include <acpi/acutils.h>
 
+#define PREFIX "ACPI: "
+
 ACPI_MODULE_NAME("cm_sbs");
 #define ACPI_AC_CLASS		"ac_adapter"
 #define ACPI_BATTERY_CLASS	"battery"
@@ -54,6 +56,8 @@ struct proc_dir_entry *acpi_lock_ac_dir(void)
 	} else {
 		ACPI_DEBUG_PRINT((ACPI_DB_ERROR,
 				  "Cannot create %s\n", ACPI_AC_CLASS));
+		printk(KERN_ERR PREFIX
+				  "Cannot create %s\n", ACPI_AC_CLASS);
 	}
 	mutex_unlock(&cm_sbs_mutex);
 	return acpi_ac_dir;
@@ -85,6 +89,8 @@ struct proc_dir_entry *acpi_lock_battery_dir(void)
 	} else {
 		ACPI_DEBUG_PRINT((ACPI_DB_ERROR,
 				  "Cannot create %s\n", ACPI_BATTERY_CLASS));
+		printk(KERN_ERR PREFIX
+				  "Cannot create %s\n", ACPI_BATTERY_CLASS);
 	}
 	mutex_unlock(&cm_sbs_mutex);
 	return acpi_battery_dir;

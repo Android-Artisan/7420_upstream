@@ -182,3 +182,4 @@ static void __exit skbd_exit(void)
 
 module_init(skbd_init);
 module_exit(skbd_exit);
+module_serio_driver(skbd_drv);

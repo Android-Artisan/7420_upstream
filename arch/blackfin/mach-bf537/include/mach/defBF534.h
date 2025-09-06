@@ -26,6 +26,9 @@
  * along with this program; see the file COPYING.
  * If not, write to the Free Software Foundation,
  * 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+ * Copyright 2005-2010 Analog Devices Inc.
+ *
+ * Licensed under the Clear BSD license or the GPL-2 (or later)
  */
 
 #ifndef _DEF_BF534_H
@@ -223,6 +226,8 @@
 /* Alternate deprecated register names (below) provided for backwards code compatibility */
 #define DMA_TCPER			0xFFC00B0C	/* Traffic Control Periods Register			*/
 #define DMA_TCCNT			0xFFC00B10	/* Traffic Control Current Counts Register	*/
+#define DMAC_TC_PER			0xFFC00B0C	/* Traffic Control Periods Register			*/
+#define DMAC_TC_CNT			0xFFC00B10	/* Traffic Control Current Counts Register	*/
 
 /* DMA Controller (0xFFC00C00 - 0xFFC00FFF)															*/
 #define DMA0_NEXT_DESC_PTR		0xFFC00C00	/* DMA Channel 0 Next Descriptor Pointer Register               */
@@ -474,6 +479,22 @@
 #define TWI_XMT_DATA16		0xFFC01484	/* FIFO Transmit Data Double Byte Register      */
 #define TWI_RCV_DATA8		0xFFC01488	/* FIFO Receive Data Single Byte Register       */
 #define TWI_RCV_DATA16		0xFFC0148C	/* FIFO Receive Data Double Byte Register       */
+#define TWI0_CLKDIV			0xFFC01400	/* Serial Clock Divider Register                        */
+#define TWI0_CONTROL			0xFFC01404	/* TWI Control Register                                         */
+#define TWI0_SLAVE_CTL		0xFFC01408	/* Slave Mode Control Register                          */
+#define TWI0_SLAVE_STAT		0xFFC0140C	/* Slave Mode Status Register                           */
+#define TWI0_SLAVE_ADDR		0xFFC01410	/* Slave Mode Address Register                          */
+#define TWI0_MASTER_CTL		0xFFC01414	/* Master Mode Control Register                         */
+#define TWI0_MASTER_STAT		0xFFC01418	/* Master Mode Status Register                          */
+#define TWI0_MASTER_ADDR		0xFFC0141C	/* Master Mode Address Register                         */
+#define TWI0_INT_STAT		0xFFC01420	/* TWI Interrupt Status Register                        */
+#define TWI0_INT_MASK		0xFFC01424	/* TWI Master Interrupt Mask Register           */
+#define TWI0_FIFO_CTL		0xFFC01428	/* FIFO Control Register                                        */
+#define TWI0_FIFO_STAT		0xFFC0142C	/* FIFO Status Register                                         */
+#define TWI0_XMT_DATA8		0xFFC01480	/* FIFO Transmit Data Single Byte Register      */
+#define TWI0_XMT_DATA16		0xFFC01484	/* FIFO Transmit Data Double Byte Register      */
+#define TWI0_RCV_DATA8		0xFFC01488	/* FIFO Receive Data Single Byte Register       */
+#define TWI0_RCV_DATA16		0xFFC0148C	/* FIFO Receive Data Double Byte Register       */
 
 /* General Purpose I/O Port G (0xFFC01500 - 0xFFC015FF)												*/
 #define PORTGIO					0xFFC01500	/* Port G I/O Pin State Specify Register                                */
@@ -959,6 +980,7 @@
 #define HMDMA0_ECINIT		0xFFC03304	/* HMDMA0 Initial Edge Count Register                           */
 #define HMDMA0_BCINIT		0xFFC03308	/* HMDMA0 Initial Block Count Register                          */
 #define HMDMA0_ECURGENT		0xFFC0330C	/* HMDMA0 Urgent Edge Count Threshhold Register         */
+#define HMDMA0_ECURGENT		0xFFC0330C	/* HMDMA0 Urgent Edge Count Threshold Register         */
 #define HMDMA0_ECOVERFLOW	0xFFC03310	/* HMDMA0 Edge Count Overflow Interrupt Register        */
 #define HMDMA0_ECOUNT		0xFFC03314	/* HMDMA0 Current Edge Count Register                           */
 #define HMDMA0_BCOUNT		0xFFC03318	/* HMDMA0 Current Block Count Register                          */
@@ -967,6 +989,7 @@
 #define HMDMA1_ECINIT		0xFFC03344	/* HMDMA1 Initial Edge Count Register                           */
 #define HMDMA1_BCINIT		0xFFC03348	/* HMDMA1 Initial Block Count Register                          */
 #define HMDMA1_ECURGENT		0xFFC0334C	/* HMDMA1 Urgent Edge Count Threshhold Register         */
+#define HMDMA1_ECURGENT		0xFFC0334C	/* HMDMA1 Urgent Edge Count Threshold Register         */
 #define HMDMA1_ECOVERFLOW	0xFFC03350	/* HMDMA1 Edge Count Overflow Interrupt Register        */
 #define HMDMA1_ECOUNT		0xFFC03354	/* HMDMA1 Current Edge Count Register                           */
 #define HMDMA1_BCOUNT		0xFFC03358	/* HMDMA1 Current Block Count Register                          */

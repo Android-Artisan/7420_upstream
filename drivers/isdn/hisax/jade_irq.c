@@ -5,6 +5,7 @@
  * Author       Roland Klabunde
  * Copyright    by Roland Klabunde   <R.Klabunde@Berkom.de>
  * 
+ *
  * This software may be used and distributed according to the terms
  * of the GNU General Public License, incorporated herein by reference.
  *
@@ -21,6 +22,14 @@ waitforCEC(struct IsdnCardState *cs, int jade, int reg)
   	}
   	if (!to)
   		printk(KERN_WARNING "HiSax: waitforCEC (jade) timeout\n");
+	int to = 50;
+	int mask = (reg == jade_HDLC_XCMD ? jadeSTAR_XCEC : jadeSTAR_RCEC);
+	while ((READJADE(cs, jade, jade_HDLC_STAR) & mask) && to) {
+		udelay(1);
+		to--;
+	}
+	if (!to)
+		printk(KERN_WARNING "HiSax: waitforCEC (jade) timeout\n");
 }
 
 
@@ -28,6 +37,7 @@ static inline void
 waitforXFW(struct IsdnCardState *cs, int jade)
 {
   	/* Does not work on older jade versions, don't care */
+	/* Does not work on older jade versions, don't care */
 }
 
 static inline void
@@ -66,6 +76,7 @@ jade_empty_fifo(struct BCState *bcs, int count)
 			     bcs->hw.hscx.hscx ? 'B' : 'A', count);
 		QuickHex(t, ptr, count);
 		debugl1(cs, bcs->blog);
+		debugl1(cs, "%s", bcs->blog);
 	}
 }
 
@@ -99,6 +110,7 @@ jade_fill_fifo(struct BCState *bcs)
 	bcs->hw.hscx.count += count;
 	WRITEJADEFIFO(cs, bcs->hw.hscx.hscx, ptr, count);
 	WriteJADECMDR(cs, bcs->hw.hscx.hscx, jade_HDLC_XCMD, more ? jadeXCMD_XF : (jadeXCMD_XF|jadeXCMD_XME));
+	WriteJADECMDR(cs, bcs->hw.hscx.hscx, jade_HDLC_XCMD, more ? jadeXCMD_XF : (jadeXCMD_XF | jadeXCMD_XME));
 	if (cs->debug & L1_DEB_HSCX_FIFO) {
 		char *t = bcs->blog;
 
@@ -106,6 +118,7 @@ jade_fill_fifo(struct BCState *bcs)
 			     bcs->hw.hscx.hscx ? 'B' : 'A', count);
 		QuickHex(t, ptr, count);
 		debugl1(cs, bcs->blog);
+		debugl1(cs, "%s", bcs->blog);
 	}
 }
 
@@ -120,6 +133,7 @@ jade_interrupt(struct IsdnCardState *cs, u_char val, u_char jade)
 	int count;
 	int i_jade = (int) jade; /* To satisfy the compiler */
 	
+
 	if (!test_bit(BC_FLG_INIT, &bcs->Flag))
 		return;
 
@@ -135,6 +149,13 @@ jade_interrupt(struct IsdnCardState *cs, u_char val, u_char jade)
 			if (!(r & 0x20))
 				if (cs->debug & L1_DEB_WARN)
 					debugl1(cs, "JADE %c CRC error", 'A'+jade);
+					debugl1(cs, "JADE %s invalid frame", (jade ? "B" : "A"));
+			if ((r & 0x40) && bcs->mode)
+				if (cs->debug & L1_DEB_WARN)
+					debugl1(cs, "JADE %c RDO mode=%d", 'A' + jade, bcs->mode);
+			if (!(r & 0x20))
+				if (cs->debug & L1_DEB_WARN)
+					debugl1(cs, "JADE %c CRC error", 'A' + jade);
 			WriteJADECMDR(cs, jade, jade_HDLC_RCMD, jadeRCMD_RMC);
 		} else {
 			count = READJADE(cs, i_jade, jade_HDLC_RBCL) & 0x1F;
@@ -146,6 +167,7 @@ jade_interrupt(struct IsdnCardState *cs, u_char val, u_char jade)
 					debugl1(cs, "HX Frame %d", count);
 				if (!(skb = dev_alloc_skb(count)))
 					printk(KERN_WARNING "JADE %s receive out of memory\n", (jade ? "B":"A"));
+					printk(KERN_WARNING "JADE %s receive out of memory\n", (jade ? "B" : "A"));
 				else {
 					memcpy(skb_put(skb, count), bcs->hw.hscx.rcvbuf, count);
 					skb_queue_tail(&bcs->rqueue, skb);
@@ -177,6 +199,8 @@ jade_interrupt(struct IsdnCardState *cs, u_char val, u_char jade)
 			} else {
 				if (test_bit(FLG_LLI_L1WAKEUP,&bcs->st->lli.flag) &&
 					(PACKET_NOACK != bcs->tx_skb->pkt_type)) {
+				if (test_bit(FLG_LLI_L1WAKEUP, &bcs->st->lli.flag) &&
+				    (PACKET_NOACK != bcs->tx_skb->pkt_type)) {
 					u_long	flags;
 					spin_lock_irqsave(&bcs->aclock, flags);
 					bcs->ackcnt += bcs->hw.hscx.count;
@@ -205,6 +229,7 @@ jade_int_main(struct IsdnCardState *cs, u_char val, int jade)
 	struct BCState *bcs;
 	bcs = cs->bcs + jade;
 	
+
 	if (val & jadeISR_RFO) {
 		/* handled with RDO */
 		val &= ~jadeISR_RFO;
@@ -220,6 +245,10 @@ jade_int_main(struct IsdnCardState *cs, u_char val, int jade)
 			 */
 			if (bcs->tx_skb) {
 			   	skb_push(bcs->tx_skb, bcs->hw.hscx.count);
+			 * restart transmitting the whole frame.
+			 */
+			if (bcs->tx_skb) {
+				skb_push(bcs->tx_skb, bcs->hw.hscx.count);
 				bcs->tx_cnt += bcs->hw.hscx.count;
 				bcs->hw.hscx.count = 0;
 			}
@@ -231,6 +260,12 @@ jade_int_main(struct IsdnCardState *cs, u_char val, int jade)
 	if (val & (jadeISR_RME|jadeISR_RPF|jadeISR_XPR)) {
 		if (cs->debug & L1_DEB_HSCX)
 			debugl1(cs, "JADE %c interrupt %x", 'A'+jade, val);
+				debugl1(cs, "JADE %c EXIR %x Lost TX", 'A' + jade, val);
+		}
+	}
+	if (val & (jadeISR_RME | jadeISR_RPF | jadeISR_XPR)) {
+		if (cs->debug & L1_DEB_HSCX)
+			debugl1(cs, "JADE %c interrupt %x", 'A' + jade, val);
 		jade_interrupt(cs, val, jade);
 	}
 }

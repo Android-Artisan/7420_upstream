@@ -13,6 +13,7 @@
  * 19991203 - Fernando Carvalho - takion@superbofh.org
  * Hacked to compile with egcs and run with current version of isdn modules
 */
+ */
 
 /*
  *        Based on documentation provided by Inesc:
@@ -27,6 +28,7 @@
 #include <linux/string.h>
 #include <linux/kernel.h>
 #include <linux/types.h>
+#include <linux/sched.h>
 #include <linux/slab.h>
 #include <linux/interrupt.h>
 #include <linux/workqueue.h>
@@ -77,6 +79,7 @@ pcbit_l2_write(struct pcbit_dev *dev, ulong msg, ushort refnum,
 {
 	struct frame_buf *frame,
 	*ptr;
+		*ptr;
 	unsigned long flags;
 
 	if (dev->l2_state != L2_RUNNING && dev->l2_state != L2_LOADING) {
@@ -86,6 +89,7 @@ pcbit_l2_write(struct pcbit_dev *dev, ulong msg, ushort refnum,
 	if ((frame = kmalloc(sizeof(struct frame_buf),
 						  GFP_ATOMIC)) == NULL) {
 		printk(KERN_WARNING "pcbit_2_write: kmalloc failed\n");
+			     GFP_ATOMIC)) == NULL) {
 		dev_kfree_skb(skb);
 		return -1;
 	}
@@ -147,6 +151,7 @@ pcbit_transmit(struct pcbit_dev *dev)
 	int free;
 	int count,
 	 cp_len;
+		cp_len;
 	unsigned long flags;
 	unsigned short tt;
 
@@ -177,6 +182,7 @@ pcbit_transmit(struct pcbit_dev *dev)
 			/* Type 0 frame */
 
 			ulong 	msg;
+			ulong	msg;
 
 			if (frame->skb)
 				flen = FRAME_HDR_LEN + PREHDR_LEN + frame->skb->len;
@@ -270,6 +276,7 @@ pcbit_transmit(struct pcbit_dev *dev)
 #ifdef DEBUG
 		printk(KERN_DEBUG "unacked %d free %d write_queue %s\n",
 		     unacked, dev->free, dev->write_queue ? "not empty" :
+		       unacked, dev->free, dev->write_queue ? "not empty" :
 		       "empty");
 #endif
 	}
@@ -302,6 +309,8 @@ pcbit_deliver(struct work_struct *work)
 
 		frame->refnum = *((ushort *) frame->skb->data + 4);
 		frame->msg = *((ulong *) & msg);
+		frame->refnum = *((ushort *)frame->skb->data + 4);
+		frame->msg = *((ulong *)&msg);
 
 		skb_pull(frame->skb, 6);
 
@@ -326,6 +335,7 @@ pcbit_receive(struct pcbit_dev *dev)
 	unsigned short tt;
 	u_char cpu,
 	 proc;
+		proc;
 	struct frame_buf *frame = NULL;
 	unsigned long flags;
 	u_char type1;
@@ -349,6 +359,7 @@ pcbit_receive(struct pcbit_dev *dev)
 			/* discard previous queued frame */
 			if (dev->read_frame->skb)
 				kfree_skb(dev->read_frame->skb);
+			kfree_skb(dev->read_frame->skb);
 			kfree(dev->read_frame);
 			dev->read_frame = NULL;
 		}
@@ -382,6 +393,10 @@ pcbit_receive(struct pcbit_dev *dev)
 		   * I don't know if they are an error or not...
 		   * But they are very frequent
 		   * Not documented
+		 * 0 sized packet
+		 * I don't know if they are an error or not...
+		 * But they are very frequent
+		 * Not documented
 		 */
 
 		if (frame->hdr_len == 0) {
@@ -501,6 +516,8 @@ pcbit_irq_handler(int interrupt, void *devptr)
 	u_char info,
 	 ack_seq,
 	 read_seq;
+		ack_seq,
+		read_seq;
 
 	dev = (struct pcbit_dev *) devptr;
 
@@ -510,6 +527,7 @@ pcbit_irq_handler(int interrupt, void *devptr)
 	}
 	if (dev->interrupt) {
 		printk(KERN_DEBUG "pcbit: reentering interrupt hander\n");
+		printk(KERN_DEBUG "pcbit: reentering interrupt handler\n");
 		return IRQ_HANDLED;
 	}
 	dev->interrupt = 1;
@@ -603,6 +621,7 @@ pcbit_l2_err_recover(unsigned long data)
 	if (dev->read_frame) {
 		if (dev->read_frame->skb)
 			kfree_skb(dev->read_frame->skb);
+		kfree_skb(dev->read_frame->skb);
 		kfree(dev->read_frame);
 		dev->read_frame = NULL;
 	}
@@ -668,6 +687,7 @@ pcbit_recv_ack(struct pcbit_dev *dev, unsigned char ack)
 {
 	int i,
 	 count;
+		count;
 	int unacked;
 
 	unacked = (dev->send_seq + (8 - dev->unack_seq)) & 0x07;
@@ -680,12 +700,14 @@ pcbit_recv_ack(struct pcbit_dev *dev, unsigned char ack)
 			if (ack <= dev->unack_seq || ack > dev->send_seq) {
 				printk(KERN_DEBUG
 				     "layer 2 ack unacceptable - dev %d",
+				       "layer 2 ack unacceptable - dev %d",
 				       dev->id);
 
 				pcbit_l2_error(dev);
 			} else if (ack > dev->send_seq && ack <= dev->unack_seq) {
 				printk(KERN_DEBUG
 				     "layer 2 ack unacceptable - dev %d",
+				       "layer 2 ack unacceptable - dev %d",
 				       dev->id);
 				pcbit_l2_error(dev);
 			}

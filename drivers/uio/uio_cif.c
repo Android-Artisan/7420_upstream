@@ -2,6 +2,7 @@
  * UIO Hilscher CIF card driver
  *
  * (C) 2007 Hans J. Koch <hjk@linutronix.de>
+ * (C) 2007 Hans J. Koch <hjk@hansjkoch.de>
  * Original code (C) 2005 Benedikt Spranger <b.spranger@linutronix.de>
  *
  * Licensed under GPL version 2 only.
@@ -11,6 +12,7 @@
 #include <linux/device.h>
 #include <linux/module.h>
 #include <linux/pci.h>
+#include <linux/slab.h>
 #include <linux/uio_driver.h>
 
 #include <asm/io.h>
@@ -40,6 +42,7 @@ static irqreturn_t hilscher_handler(int irq, struct uio_info *dev_info)
 }
 
 static int __devinit hilscher_pci_probe(struct pci_dev *dev,
+static int hilscher_pci_probe(struct pci_dev *dev,
 					const struct pci_device_id *id)
 {
 	struct uio_info *info;
@@ -59,6 +62,7 @@ static int __devinit hilscher_pci_probe(struct pci_dev *dev,
 		goto out_release;
 	info->mem[0].internal_addr = ioremap(pci_resource_start(dev, 0),
 					     pci_resource_len(dev, 0));
+	info->mem[0].internal_addr = pci_ioremap_bar(dev, 0);
 	if (!info->mem[0].internal_addr)
 		goto out_release;
 
@@ -80,6 +84,7 @@ static int __devinit hilscher_pci_probe(struct pci_dev *dev,
 	info->version = "0.0.1";
 	info->irq = dev->irq;
 	info->irq_flags = IRQF_DISABLED | IRQF_SHARED;
+	info->irq_flags = IRQF_SHARED;
 	info->handler = hilscher_handler;
 
 	if (uio_register_device(&dev->dev, info))
@@ -113,6 +118,7 @@ static void hilscher_pci_remove(struct pci_dev *dev)
 }
 
 static struct pci_device_id hilscher_pci_ids[] __devinitdata = {
+static struct pci_device_id hilscher_pci_ids[] = {
 	{
 		.vendor =	PCI_VENDOR_ID_PLX,
 		.device =	PCI_DEVICE_ID_PLX_9030,
@@ -148,5 +154,7 @@ static void __exit hilscher_exit_module(void)
 module_init(hilscher_init_module);
 module_exit(hilscher_exit_module);
 
+module_pci_driver(hilscher_pci_driver);
+MODULE_DEVICE_TABLE(pci, hilscher_pci_ids);
 MODULE_LICENSE("GPL v2");
 MODULE_AUTHOR("Hans J. Koch, Benedikt Spranger");

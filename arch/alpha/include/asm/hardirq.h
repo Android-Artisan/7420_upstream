@@ -26,5 +26,9 @@ void ack_bad_irq(unsigned int irq);
 #if (1 << HARDIRQ_BITS) < 16
 #error HARDIRQ_BITS is too low!
 #endif
+void ack_bad_irq(unsigned int irq);
+#define ack_bad_irq ack_bad_irq
+
+#include <asm-generic/hardirq.h>
 
 #endif /* _ALPHA_HARDIRQ_H */

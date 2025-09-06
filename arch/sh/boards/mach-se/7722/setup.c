@@ -2,6 +2,7 @@
  * linux/arch/sh/boards/se/7722/setup.c
  *
  * Copyright (C) 2007 Nobuhiro Iwamatsu
+ * Copyright (C) 2012 Paul Mundt
  *
  * Hitachi UL SolutionEngine 7722 Support.
  *
@@ -33,6 +34,23 @@ static struct resource heartbeat_resources[] = {
 		.end    = PA_LED,
 		.flags  = IORESOURCE_MEM,
 	},
+#include <linux/input/sh_keysc.h>
+#include <linux/irqdomain.h>
+#include <linux/smc91x.h>
+#include <linux/sh_intc.h>
+#include <mach-se/mach/se7722.h>
+#include <mach-se/mach/mrshpc.h>
+#include <asm/machvec.h>
+#include <asm/clock.h>
+#include <asm/io.h>
+#include <asm/heartbeat.h>
+#include <cpu/sh7722.h>
+
+/* Heartbeat */
+static struct resource heartbeat_resource = {
+	.start  = PA_LED,
+	.end    = PA_LED,
+	.flags  = IORESOURCE_MEM | IORESOURCE_MEM_16BIT,
 };
 
 static struct platform_device heartbeat_device = {
@@ -43,6 +61,8 @@ static struct platform_device heartbeat_device = {
 	},
 	.num_resources  = ARRAY_SIZE(heartbeat_resources),
 	.resource       = heartbeat_resources,
+	.num_resources  = 1,
+	.resource       = &heartbeat_resource,
 };
 
 /* SMC91x */
@@ -60,6 +80,7 @@ static struct resource smc91x_eth_resources[] = {
 	[1] = {
 		.start  = SMC_IRQ,
 		.end    = SMC_IRQ,
+		/* Filled in later */
 		.flags  = IORESOURCE_IRQ,
 	},
 };
@@ -90,6 +111,7 @@ static struct resource cf_ide_resources[] = {
 	[2] = {
 		.start  = MRSHPC_IRQ0,
 		.end    = MRSHPC_IRQ0,
+		/* Filled in later */
 		.flags  = IORESOURCE_IRQ,
 	},
 };
@@ -124,12 +146,14 @@ static struct resource sh_keysc_resources[] = {
 	},
 	[1] = {
 		.start  = 79,
+		.start  = evt2irq(0xbe0),
 		.flags  = IORESOURCE_IRQ,
 	},
 };
 
 static struct platform_device sh_keysc_device = {
 	.name           = "sh_keysc",
+	.id             = 0, /* "keysc0" clock */
 	.num_resources  = ARRAY_SIZE(sh_keysc_resources),
 	.resource       = sh_keysc_resources,
 	.dev	= {
@@ -150,6 +174,16 @@ static int __init se7722_devices_setup(void)
 
 	return platform_add_devices(se7722_devices,
 		ARRAY_SIZE(se7722_devices));
+	mrshpc_setup_windows();
+
+	/* Wire-up dynamic vectors */
+	cf_ide_resources[2].start = cf_ide_resources[2].end =
+		irq_find_mapping(se7722_irq_domain, SE7722_FPGA_IRQ_MRSHPC0);
+
+	smc91x_eth_resources[1].start = smc91x_eth_resources[1].end =
+		irq_find_mapping(se7722_irq_domain, SE7722_FPGA_IRQ_SMC);
+
+	return platform_add_devices(se7722_devices, ARRAY_SIZE(se7722_devices));
 }
 device_initcall(se7722_devices_setup);
 
@@ -181,6 +215,32 @@ static void __init se7722_setup(char **cmdline_p)
 	ctrl_outw(0x0000, PORT_PZCR);
 	ctrl_outw(ctrl_inw(PORT_HIZCRA) & ~0x4000, PORT_HIZCRA);
 	ctrl_outw(ctrl_inw(PORT_HIZCRC) & ~0xc000, PORT_HIZCRC);
+	__raw_writew(0x010D, FPGA_OUT);    /* FPGA */
+
+	__raw_writew(0x0000, PORT_PECR);   /* PORT E 1 = IRQ5 ,E 0 = BS */
+	__raw_writew(0x1000, PORT_PJCR);   /* PORT J 1 = IRQ1,J 0 =IRQ0 */
+
+	/* LCDC I/O */
+	__raw_writew(0x0020, PORT_PSELD);
+
+	/* SIOF1*/
+	__raw_writew(0x0003, PORT_PSELB);
+	__raw_writew(0xe000, PORT_PSELC);
+	__raw_writew(0x0000, PORT_PKCR);
+
+	/* LCDC */
+	__raw_writew(0x4020, PORT_PHCR);
+	__raw_writew(0x0000, PORT_PLCR);
+	__raw_writew(0x0000, PORT_PMCR);
+	__raw_writew(0x0002, PORT_PRCR);
+	__raw_writew(0x0000, PORT_PXCR);   /* LCDC,CS6A */
+
+	/* KEYSC */
+	__raw_writew(0x0A10, PORT_PSELA); /* BS,SHHID2 */
+	__raw_writew(0x0000, PORT_PYCR);
+	__raw_writew(0x0000, PORT_PZCR);
+	__raw_writew(__raw_readw(PORT_HIZCRA) & ~0x4000, PORT_HIZCRA);
+	__raw_writew(__raw_readw(PORT_HIZCRC) & ~0xc000, PORT_HIZCRC);
 }
 
 /*

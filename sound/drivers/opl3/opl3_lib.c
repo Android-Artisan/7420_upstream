@@ -26,6 +26,9 @@
 #include <sound/opl3.h>
 #include <asm/io.h>
 #include <linux/delay.h>
+#include <linux/io.h>
+#include <linux/delay.h>
+#include <linux/module.h>
 #include <linux/init.h>
 #include <linux/slab.h>
 #include <linux/ioport.h>
@@ -140,6 +143,8 @@ static int snd_opl3_detect(struct snd_opl3 * opl3)
 		 * by the OPL4 driver; so we can assume OPL3 here.
 		 */
 		snd_assert(opl3->r_port != 0, return -ENODEV);
+		if (snd_BUG_ON(!opl3->r_port))
+			return -ENODEV;
 		opl3->hardware = OPL3_HW_OPL3;
 	}
 	return 0;
@@ -302,6 +307,7 @@ void snd_opl3_interrupt(struct snd_hwdep * hw)
 	status = inb(opl3->l_port);
 #if 0
 	snd_printk("AdLib IRQ status = 0x%x\n", status);
+	snd_printk(KERN_DEBUG "AdLib IRQ status = 0x%x\n", status);
 #endif
 	if (!(status & 0x80))
 		return;
@@ -325,6 +331,8 @@ EXPORT_SYMBOL(snd_opl3_interrupt);
 static int snd_opl3_free(struct snd_opl3 *opl3)
 {
 	snd_assert(opl3 != NULL, return -ENXIO);
+	if (snd_BUG_ON(!opl3))
+		return -ENXIO;
 	if (opl3->private_free)
 		opl3->private_free(opl3);
 	snd_opl3_clear_patches(opl3);
@@ -502,6 +510,8 @@ int snd_opl3_hwdep_new(struct snd_opl3 * opl3,
 		hw->oss_type = SNDRV_OSS_DEVICE_TYPE_DMFM;
 		sprintf(hw->oss_dev, "dmfm%i", card->number);
 	}
+	if (device == 0)
+		hw->oss_type = SNDRV_OSS_DEVICE_TYPE_DMFM;
 #endif
 	strcpy(hw->name, hw->id);
 	switch (opl3->hardware & OPL3_HW_MASK) {

@@ -23,6 +23,7 @@
 #include <asm/assembler.h>
 #include <asm/asm-offsets.h>
 #include <asm/elf.h>
+#include <asm/hwcap.h>
 #include <mach/hardware.h>
 #include <asm/pgtable-hwdef.h>
 #include <asm/pgtable.h>
@@ -35,6 +36,7 @@
 #define DCACHELINESIZE	32
 
 	__INIT
+	.section .text
 
 /*
  * cpu_sa1100_proc_init()
@@ -46,6 +48,7 @@ ENTRY(cpu_sa1100_proc_init)
 	mov	pc, lr
 
 	.previous
+	ret	lr
 
 /*
  * cpu_sa1100_proc_fin()
@@ -65,6 +68,7 @@ ENTRY(cpu_sa1100_proc_fin)
 	bic	r0, r0, #0x000e			@ ............wca.
 	mcr	p15, 0, r0, c1, c0, 0		@ disable caches
 	ldmfd	sp!, {pc}
+	ret	lr
 
 /*
  * cpu_sa1100_reset(loc)
@@ -76,6 +80,7 @@ ENTRY(cpu_sa1100_proc_fin)
  * loc: location to jump to for soft reset
  */
 	.align	5
+	.pushsection	.idmap.text, "ax"
 ENTRY(cpu_sa1100_reset)
 	mov	ip, #0
 	mcr	p15, 0, ip, c7, c7, 0		@ invalidate I,D caches
@@ -88,6 +93,9 @@ ENTRY(cpu_sa1100_reset)
 	bic	ip, ip, #0x1100			@ ...i...s........
 	mcr	p15, 0, ip, c1, c0, 0		@ ctrl register
 	mov	pc, r0
+	ret	r0
+ENDPROC(cpu_sa1100_reset)
+	.popsection
 
 /*
  * cpu_sa1100_do_idle(type)
@@ -117,8 +125,8 @@ ENTRY(cpu_sa1100_do_idle)
 	mov	r0, r0				@ safety
 	mcr	p15, 0, r0, c15, c1, 2		@ enable clock switching
 	mov	pc, lr
+	ret	lr
 
-/* ================================= CACHE ================================ */
 
 /*
  * cpu_sa1100_dcache_clean_area(addr,sz)
@@ -135,8 +143,8 @@ ENTRY(cpu_sa1100_dcache_clean_area)
 	subs	r1, r1, #DCACHELINESIZE
 	bhi	1b
 	mov	pc, lr
+	ret	lr
 
-/* =============================== PageTable ============================== */
 
 /*
  * cpu_sa1100_switch_mm(pgd)
@@ -156,6 +164,7 @@ ENTRY(cpu_sa1100_switch_mm)
 	ldr	pc, [sp], #4
 #else
 	mov	pc, lr
+	ret	lr
 #endif
 
 /*
@@ -184,6 +193,7 @@ ENTRY(cpu_sa1100_set_pte_ext)
 	movne	r2, #0
 
 	str	r2, [r0]			@ hardware version
+	armv3_set_pte_ext wc_disable=0
 	mov	r0, r0
 	mcr	p15, 0, r0, c7, c10, 1		@ clean D entry
 	mcr	p15, 0, r0, c7, c10, 4		@ drain WB
@@ -191,6 +201,35 @@ ENTRY(cpu_sa1100_set_pte_ext)
 	mov	pc, lr
 
 	__INIT
+	ret	lr
+
+.globl	cpu_sa1100_suspend_size
+.equ	cpu_sa1100_suspend_size, 4 * 3
+#ifdef CONFIG_ARM_CPU_SUSPEND
+ENTRY(cpu_sa1100_do_suspend)
+	stmfd	sp!, {r4 - r6, lr}
+	mrc	p15, 0, r4, c3, c0, 0		@ domain ID
+	mrc	p15, 0, r5, c13, c0, 0		@ PID
+	mrc	p15, 0, r6, c1, c0, 0		@ control reg
+	stmia	r0, {r4 - r6}			@ store cp regs
+	ldmfd	sp!, {r4 - r6, pc}
+ENDPROC(cpu_sa1100_do_suspend)
+
+ENTRY(cpu_sa1100_do_resume)
+	ldmia	r0, {r4 - r6}			@ load cp regs
+	mov	ip, #0
+	mcr	p15, 0, ip, c8, c7, 0		@ flush I+D TLBs
+	mcr	p15, 0, ip, c7, c7, 0		@ flush I&D cache
+	mcr	p15, 0, ip, c9, c0, 0		@ invalidate RB
+	mcr	p15, 0, ip, c9, c0, 5		@ allow user space to use RB
+
+	mcr	p15, 0, r4, c3, c0, 0		@ domain ID
+	mcr	p15, 0, r1, c2, c0, 0		@ translation table base addr
+	mcr	p15, 0, r5, c13, c0, 0		@ PID
+	mov	r0, r6				@ control register
+	b	cpu_resume_mmu
+ENDPROC(cpu_sa1100_do_resume)
+#endif
 
 	.type	__sa1100_setup, #function
 __sa1100_setup:
@@ -206,6 +245,7 @@ __sa1100_setup:
 	bic	r0, r0, r5
 	orr	r0, r0, r6
 	mov	pc, lr
+	ret	lr
 	.size	__sa1100_setup, . - __sa1100_setup
 
 	/*
@@ -271,6 +311,28 @@ cpu_sa1110_name:
 __sa1100_proc_info:
 	.long	0x4401a110
 	.long	0xfffffff0
+ * SA1100 and SA1110 share the same function calls
+ */
+
+	@ define struct processor (see <asm/proc-fns.h> and proc-macros.S)
+	define_processor_functions sa1100, dabort=v4_early_abort, pabort=legacy_pabort, suspend=1
+
+	.section ".rodata"
+
+	string	cpu_arch_name, "armv4"
+	string	cpu_elf_name, "v4"
+	string	cpu_sa1100_name, "StrongARM-1100"
+	string	cpu_sa1110_name, "StrongARM-1110"
+
+	.align
+
+	.section ".proc.info.init", "a"
+
+.macro sa1100_proc_info name:req, cpu_val:req, cpu_mask:req, cpu_name:req
+	.type	__\name\()_proc_info,#object
+__\name\()_proc_info:
+	.long	\cpu_val
+	.long	\cpu_mask
 	.long   PMD_TYPE_SECT | \
 		PMD_SECT_BUFFERABLE | \
 		PMD_SECT_CACHEABLE | \
@@ -284,6 +346,11 @@ __sa1100_proc_info:
 	.long	cpu_elf_name
 	.long	HWCAP_SWP | HWCAP_HALF | HWCAP_26BIT | HWCAP_FAST_MULT
 	.long	cpu_sa1100_name
+	initfn	__sa1100_setup, __\name\()_proc_info
+	.long	cpu_arch_name
+	.long	cpu_elf_name
+	.long	HWCAP_SWP | HWCAP_HALF | HWCAP_26BIT | HWCAP_FAST_MULT
+	.long	\cpu_name
 	.long	sa1100_processor_functions
 	.long	v4wb_tlb_fns
 	.long	v4_mc_user_fns
@@ -312,3 +379,8 @@ __sa1110_proc_info:
 	.long	v4_mc_user_fns
 	.long	v4wb_cache_fns
 	.size	__sa1110_proc_info, . - __sa1110_proc_info
+	.size	__\name\()_proc_info, . - __\name\()_proc_info
+.endm
+
+	sa1100_proc_info sa1100, 0x4401a110, 0xfffffff0, cpu_sa1100_name
+	sa1100_proc_info sa1110, 0x6901b110, 0xfffffff0, cpu_sa1110_name

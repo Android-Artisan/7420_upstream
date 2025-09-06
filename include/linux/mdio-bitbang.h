@@ -4,6 +4,8 @@
 #include <linux/phy.h>
 #include <linux/module.h>
 
+struct module;
+
 struct mdiobb_ctrl;
 
 struct mdiobb_ops {
@@ -31,6 +33,8 @@ struct mdiobb_ops {
 
 struct mdiobb_ctrl {
 	const struct mdiobb_ops *ops;
+	/* reset callback */
+	int (*reset)(struct mii_bus *bus);
 };
 
 /* The returned bus is not yet registered with the phy layer. */

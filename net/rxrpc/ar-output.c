@@ -12,6 +12,10 @@
 #include <linux/net.h>
 #include <linux/skbuff.h>
 #include <linux/circ_buf.h>
+#include <linux/gfp.h>
+#include <linux/skbuff.h>
+#include <linux/circ_buf.h>
+#include <linux/export.h>
 #include <net/sock.h>
 #include <net/af_rxrpc.h>
 #include "ar-internal.h"
@@ -20,6 +24,12 @@ int rxrpc_resend_timeout = 4;
 
 static int rxrpc_send_data(struct kiocb *iocb,
 			   struct rxrpc_sock *rx,
+/*
+ * Time till packet resend (in jiffies).
+ */
+unsigned rxrpc_resend_timeout = 4 * HZ;
+
+static int rxrpc_send_data(struct rxrpc_sock *rx,
 			   struct rxrpc_call *call,
 			   struct msghdr *msg, size_t len);
 
@@ -41,6 +51,7 @@ static int rxrpc_sendmsg_cmsg(struct rxrpc_sock *rx, struct msghdr *msg,
 		return -EINVAL;
 
 	for (cmsg = CMSG_FIRSTHDR(msg); cmsg; cmsg = CMSG_NXTHDR(msg, cmsg)) {
+	for_each_cmsghdr(cmsg, msg) {
 		if (!CMSG_OK(msg, cmsg))
 			return -EINVAL;
 
@@ -127,6 +138,8 @@ static void rxrpc_send_abort(struct rxrpc_call *call, u32 abort_code)
 int rxrpc_client_sendmsg(struct kiocb *iocb, struct rxrpc_sock *rx,
 			 struct rxrpc_transport *trans, struct msghdr *msg,
 			 size_t len)
+int rxrpc_client_sendmsg(struct rxrpc_sock *rx, struct rxrpc_transport *trans,
+			 struct msghdr *msg, size_t len)
 {
 	struct rxrpc_conn_bundle *bundle;
 	enum rxrpc_command cmd;
@@ -156,6 +169,12 @@ int rxrpc_client_sendmsg(struct kiocb *iocb, struct rxrpc_sock *rx,
 		}
 		key = rx->key;
 		if (key && !rx->key->payload.data)
+			DECLARE_SOCKADDR(struct sockaddr_rxrpc *, srx,
+					 msg->msg_name);
+			service_id = htons(srx->srx_service);
+		}
+		key = rx->key;
+		if (key && !rx->key->payload.data[0])
 			key = NULL;
 		bundle = rxrpc_get_bundle(rx, trans, key, service_id,
 					  GFP_KERNEL);
@@ -187,6 +206,7 @@ int rxrpc_client_sendmsg(struct kiocb *iocb, struct rxrpc_sock *rx,
 		ret = -EPROTO;
 	} else {
 		ret = rxrpc_send_data(iocb, rx, call, msg, len);
+		ret = rxrpc_send_data(rx, call, msg, len);
 	}
 
 	rxrpc_put_call(call);
@@ -231,6 +251,7 @@ int rxrpc_kernel_send_data(struct rxrpc_call *call, struct msghdr *msg,
 		set_fs(KERNEL_DS);
 		ret = rxrpc_send_data(NULL, call->socket, call, msg, len);
 		set_fs(oldfs);
+		ret = rxrpc_send_data(call->socket, call, msg, len);
 	}
 
 	release_sock(&call->socket->sk);
@@ -241,6 +262,7 @@ int rxrpc_kernel_send_data(struct rxrpc_call *call, struct msghdr *msg,
 EXPORT_SYMBOL(rxrpc_kernel_send_data);
 
 /*
+/**
  * rxrpc_kernel_abort_call - Allow a kernel service to abort a call
  * @call: The call to be aborted
  * @abort_code: The abort code to stick into the ABORT packet
@@ -271,6 +293,7 @@ EXPORT_SYMBOL(rxrpc_kernel_abort_call);
  */
 int rxrpc_server_sendmsg(struct kiocb *iocb, struct rxrpc_sock *rx,
 			 struct msghdr *msg, size_t len)
+int rxrpc_server_sendmsg(struct rxrpc_sock *rx, struct msghdr *msg, size_t len)
 {
 	enum rxrpc_command cmd;
 	struct rxrpc_call *call;
@@ -312,6 +335,7 @@ int rxrpc_server_sendmsg(struct kiocb *iocb, struct rxrpc_sock *rx,
 		}
 
 		ret = rxrpc_send_data(iocb, rx, call, msg, len);
+		ret = rxrpc_send_data(rx, call, msg, len);
 		break;
 
 	case RXRPC_CMD_SEND_ABORT:
@@ -486,6 +510,8 @@ static void rxrpc_queue_packet(struct rxrpc_call *call, struct sk_buff *skb,
 
 	sp->need_resend = 0;
 	sp->resend_at = jiffies + rxrpc_resend_timeout * HZ;
+	sp->need_resend = false;
+	sp->resend_at = jiffies + rxrpc_resend_timeout;
 	if (!test_and_set_bit(RXRPC_CALL_RUN_RTIMER, &call->flags)) {
 		_debug("run timer");
 		call->resend_timer.expires = sp->resend_at;
@@ -507,6 +533,7 @@ static void rxrpc_queue_packet(struct rxrpc_call *call, struct sk_buff *skb,
 	if (ret < 0) {
 		_debug("need instant resend %d", ret);
 		sp->need_resend = 1;
+		sp->need_resend = true;
 		rxrpc_instant_resend(call);
 	}
 
@@ -520,6 +547,7 @@ static void rxrpc_queue_packet(struct rxrpc_call *call, struct sk_buff *skb,
  */
 static int rxrpc_send_data(struct kiocb *iocb,
 			   struct rxrpc_sock *rx,
+static int rxrpc_send_data(struct rxrpc_sock *rx,
 			   struct rxrpc_call *call,
 			   struct msghdr *msg, size_t len)
 {
@@ -533,13 +561,19 @@ static int rxrpc_send_data(struct kiocb *iocb,
 	int ret, ioc, segment, copied;
 
 	_enter(",,,{%zu},%zu", msg->msg_iovlen, len);
+	struct sk_buff *skb;
+	struct sock *sk = &rx->sk;
+	long timeo;
+	bool more;
+	int ret, copied;
 
 	timeo = sock_sndtimeo(sk, msg->msg_flags & MSG_DONTWAIT);
 
 	/* this should be in poll */
 	clear_bit(SOCK_ASYNC_NOSPACE, &sk->sk_socket->flags);
+	sk_clear_bit(SOCKWQ_ASYNC_NOSPACE, sk);
 
-	if (sk->sk_err || (sk->sk_shutdown & SEND_SHUTDOWN))
+	if (sk->sk_shutdown & SEND_SHUTDOWN)
 		return -EPIPE;
 
 	iov = msg->msg_iov;
@@ -584,6 +618,8 @@ static int rxrpc_send_data(struct kiocb *iocb,
 			chunk = max;
 			if (chunk > len && !more)
 				chunk = len;
+			if (chunk > msg_data_left(msg) && !more)
+				chunk = msg_data_left(msg);
 
 			space = chunk + call->conn->size_align;
 			space &= ~(call->conn->size_align - 1UL);
@@ -654,6 +690,22 @@ static int rxrpc_send_data(struct kiocb *iocb,
 		if (len == 0) {
 			segment = 0;
 			ioc = 0;
+		if (msg_data_left(msg) > 0) {
+			int copy = skb_tailroom(skb);
+			ASSERTCMP(copy, >, 0);
+			if (copy > msg_data_left(msg))
+				copy = msg_data_left(msg);
+			if (copy > sp->remain)
+				copy = sp->remain;
+
+			_debug("add");
+			ret = skb_add_data(skb, &msg->msg_iter, copy);
+			_debug("added");
+			if (ret < 0)
+				goto efault;
+			sp->remain -= copy;
+			skb->mark += copy;
+			copied += copy;
 		}
 
 		/* check for the far side aborting the call or a network error
@@ -664,6 +716,10 @@ static int rxrpc_send_data(struct kiocb *iocb,
 		/* add the packet to the send queue if it's now full */
 		if (sp->remain <= 0 || (segment == 0 && !more)) {
 			struct rxrpc_connection *conn = call->conn;
+		if (sp->remain <= 0 ||
+		    (msg_data_left(msg) == 0 && !more)) {
+			struct rxrpc_connection *conn = call->conn;
+			uint32_t seq;
 			size_t pad;
 
 			/* pad out if we're using security */
@@ -681,6 +737,12 @@ static int rxrpc_send_data(struct kiocb *iocb,
 			sp->hdr.callNumber = call->call_id;
 			sp->hdr.seq =
 				htonl(atomic_inc_return(&call->sequence));
+			seq = atomic_inc_return(&call->sequence);
+
+			sp->hdr.epoch = conn->epoch;
+			sp->hdr.cid = call->cid;
+			sp->hdr.callNumber = call->call_id;
+			sp->hdr.seq = htonl(seq);
 			sp->hdr.serial =
 				htonl(atomic_inc_return(&conn->serial));
 			sp->hdr.type = RXRPC_PACKET_TYPE_DATA;
@@ -691,10 +753,13 @@ static int rxrpc_send_data(struct kiocb *iocb,
 
 			sp->hdr.flags = conn->out_clientflag;
 			if (len == 0 && !more)
+			if (msg_data_left(msg) == 0 && !more)
 				sp->hdr.flags |= RXRPC_LAST_PACKET;
 			else if (CIRC_SPACE(call->acks_head, call->acks_tail,
 					    call->acks_winsz) > 1)
 				sp->hdr.flags |= RXRPC_MORE_PACKETS;
+			if (more && seq & 1)
+				sp->hdr.flags |= RXRPC_REQUEST_ACK;
 
 			ret = rxrpc_secure_packet(
 				call, skb, skb->mark,
@@ -709,6 +774,10 @@ static int rxrpc_send_data(struct kiocb *iocb,
 		}
 
 	} while (segment > 0);
+			rxrpc_queue_packet(call, skb, !msg_data_left(msg) && !more);
+			skb = NULL;
+		}
+	} while (msg_data_left(msg) > 0);
 
 success:
 	ret = copied;

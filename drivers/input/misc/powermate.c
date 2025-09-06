@@ -66,6 +66,8 @@ struct powermate_device {
 	struct usb_ctrlrequest *configcr;
 	dma_addr_t configcr_dma;
 	struct usb_device *udev;
+	struct usb_device *udev;
+	struct usb_interface *intf;
 	struct input_dev *input;
 	spinlock_t lock;
 	int static_brightness;
@@ -86,6 +88,7 @@ static void powermate_config_complete(struct urb *urb);
 static void powermate_irq(struct urb *urb)
 {
 	struct powermate_device *pm = urb->context;
+	struct device *dev = &pm->intf->dev;
 	int retval;
 
 	switch (urb->status) {
@@ -100,6 +103,12 @@ static void powermate_irq(struct urb *urb)
 		return;
 	default:
 		dbg("%s - nonzero urb status received: %d", __func__, urb->status);
+		dev_dbg(dev, "%s - urb shutting down with status: %d\n",
+			__func__, urb->status);
+		return;
+	default:
+		dev_dbg(dev, "%s - nonzero urb status received: %d\n",
+			__func__, urb->status);
 		goto exit;
 	}
 
@@ -113,6 +122,8 @@ exit:
 	if (retval)
 		err ("%s - usb_submit_urb failed with result %d",
 		     __func__, retval);
+		dev_err(dev, "%s - usb_submit_urb failed with result: %d\n",
+			__func__, retval);
 }
 
 /* Decide if we need to issue a control message and do so. Must be called with pm->lock taken */
@@ -285,6 +296,14 @@ static int powermate_alloc_buffers(struct usb_device *udev, struct powermate_dev
 					GFP_ATOMIC, &pm->configcr_dma);
 	if (!pm->configcr)
 		return -1;
+	pm->data = usb_alloc_coherent(udev, POWERMATE_PAYLOAD_SIZE_MAX,
+				      GFP_ATOMIC, &pm->data_dma);
+	if (!pm->data)
+		return -1;
+
+	pm->configcr = kmalloc(sizeof(*(pm->configcr)), GFP_KERNEL);
+	if (!pm->configcr)
+		return -ENOMEM;
 
 	return 0;
 }
@@ -295,6 +314,9 @@ static void powermate_free_buffers(struct usb_device *udev, struct powermate_dev
 			pm->data, pm->data_dma);
 	usb_buffer_free(udev, sizeof(*(pm->configcr)),
 			pm->configcr, pm->configcr_dma);
+	usb_free_coherent(udev, POWERMATE_PAYLOAD_SIZE_MAX,
+			  pm->data, pm->data_dma);
+	kfree(pm->configcr);
 }
 
 /* Called whenever a USB device matching one in our supported devices table is connected */
@@ -309,6 +331,9 @@ static int powermate_probe(struct usb_interface *intf, const struct usb_device_i
 	int error = -ENOMEM;
 
 	interface = intf->cur_altsetting;
+	if (interface->desc.bNumEndpoints < 1)
+		return -EINVAL;
+
 	endpoint = &interface->endpoint[0].desc;
 	if (!usb_endpoint_is_int_in(endpoint))
 		return -EIO;
@@ -339,6 +364,11 @@ static int powermate_probe(struct usb_interface *intf, const struct usb_device_i
 
 	usb_make_path(udev, pm->phys, sizeof(pm->phys));
 	strlcpy(pm->phys, "/input0", sizeof(pm->phys));
+	pm->intf = intf;
+	pm->input = input_dev;
+
+	usb_make_path(udev, pm->phys, sizeof(pm->phys));
+	strlcat(pm->phys, "/input0", sizeof(pm->phys));
 
 	spin_lock_init(&pm->lock);
 
@@ -422,6 +452,7 @@ static void powermate_disconnect(struct usb_interface *intf)
 		pm->requires_update = 0;
 		usb_kill_urb(pm->irq);
 		input_unregister_device(pm->input);
+		usb_kill_urb(pm->config);
 		usb_free_urb(pm->irq);
 		usb_free_urb(pm->config);
 		powermate_free_buffers(interface_to_usbdev(intf), pm);
@@ -458,6 +489,7 @@ static void __exit powermate_cleanup(void)
 
 module_init(powermate_init);
 module_exit(powermate_cleanup);
+module_usb_driver(powermate_driver);
 
 MODULE_AUTHOR( "William R Sowerbutts" );
 MODULE_DESCRIPTION( "Griffin Technology, Inc PowerMate driver" );

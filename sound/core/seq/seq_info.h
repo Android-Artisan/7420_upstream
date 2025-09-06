@@ -30,6 +30,7 @@ void snd_seq_info_queues_read(struct snd_info_entry *entry, struct snd_info_buff
 
 
 #ifdef CONFIG_PROC_FS
+#ifdef CONFIG_SND_PROC_FS
 int snd_seq_info_init( void );
 int snd_seq_info_done( void );
 #else

@@ -115,6 +115,7 @@ int mthca_reset(struct mthca_dev *mdev)
 
 	hca_pcix_cap = pci_find_capability(mdev->pdev, PCI_CAP_ID_PCIX);
 	hca_pcie_cap = pci_find_capability(mdev->pdev, PCI_CAP_ID_EXP);
+	hca_pcie_cap = pci_pcie_cap(mdev->pdev);
 
 	if (bridge) {
 		bridge_header = kmalloc(256, GFP_KERNEL);
@@ -244,6 +245,8 @@ good:
 		devctl = hca_header[(hca_pcie_cap + PCI_EXP_DEVCTL) / 4];
 		if (pci_write_config_word(mdev->pdev, hca_pcie_cap + PCI_EXP_DEVCTL,
 					   devctl)) {
+		if (pcie_capability_write_word(mdev->pdev, PCI_EXP_DEVCTL,
+					       devctl)) {
 			err = -ENODEV;
 			mthca_err(mdev, "Couldn't restore HCA PCI Express "
 				  "Device Control register, aborting.\n");
@@ -252,6 +255,8 @@ good:
 		linkctl = hca_header[(hca_pcie_cap + PCI_EXP_LNKCTL) / 4];
 		if (pci_write_config_word(mdev->pdev, hca_pcie_cap + PCI_EXP_LNKCTL,
 					   linkctl)) {
+		if (pcie_capability_write_word(mdev->pdev, PCI_EXP_LNKCTL,
+					       linkctl)) {
 			err = -ENODEV;
 			mthca_err(mdev, "Couldn't restore HCA PCI Express "
 				  "Link control register, aborting.\n");

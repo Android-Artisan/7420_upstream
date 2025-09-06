@@ -70,6 +70,11 @@
 #include <linux/delay.h>
 #include <linux/mutex.h>
 #include <linux/seq_file.h>
+#include <linux/export.h>
+#include <linux/delay.h>
+#include <linux/mutex.h>
+#include <linux/seq_file.h>
+#include <linux/slab.h>
 #include "jfs_incore.h"
 #include "jfs_filsys.h"
 #include "jfs_metapage.h"
@@ -166,6 +171,7 @@ do {						\
  */
 static LIST_HEAD(jfs_external_logs);
 static struct jfs_log *dummy_log = NULL;
+static struct jfs_log *dummy_log;
 static DEFINE_MUTEX(jfs_log_mutex);
 
 /*
@@ -1018,6 +1024,9 @@ static int lmLogSync(struct jfs_log * log, int hard_sync)
 		 * mark log vaild for recovery.
 		 * if crashed during invalid state, log state
 		 * implies invald log, forcing fsck().
+		 * mark log valid for recovery.
+		 * if crashed during invalid state, log state
+		 * implies invalid log, forcing fsck().
 		 */
 		/* mark log state log wrap in log superblock */
 		/* log->state = LOGWRAP; */
@@ -1059,6 +1068,8 @@ static int lmLogSync(struct jfs_log * log, int hard_sync)
 void jfs_syncpt(struct jfs_log *log, int hard_sync)
 {	LOG_LOCK(log);
 	lmLogSync(log, hard_sync);
+	if (!test_bit(log_QUIESCE, &log->flag))
+		lmLogSync(log, hard_sync);
 	LOG_UNLOCK(log);
 }
 
@@ -1131,6 +1142,13 @@ int lmLogOpen(struct super_block *sb)
 		goto close;
 	}
 
+	bdev = blkdev_get_by_dev(sbi->logdev, FMODE_READ|FMODE_WRITE|FMODE_EXCL,
+				 log);
+	if (IS_ERR(bdev)) {
+		rc = PTR_ERR(bdev);
+		goto free;
+	}
+
 	log->bdev = bdev;
 	memcpy(log->uuid, sbi->loguuid, sizeof(log->uuid));
 
@@ -1139,6 +1157,7 @@ int lmLogOpen(struct super_block *sb)
 	 */
 	if ((rc = lmLogInit(log)))
 		goto unclaim;
+		goto close;
 
 	list_add(&log->journal_list, &jfs_external_logs);
 
@@ -1169,6 +1188,8 @@ journal_found:
 
       close:		/* close external log device */
 	blkdev_put(bdev);
+      close:		/* close external log device */
+	blkdev_put(bdev, FMODE_READ|FMODE_WRITE|FMODE_EXCL);
 
       free:		/* free log descriptor */
 	mutex_unlock(&jfs_log_mutex);
@@ -1344,6 +1365,7 @@ int lmLogInit(struct jfs_log * log)
 		} else {
 			if (memcmp(logsuper->uuid, log->uuid, 16)) {
 				jfs_warn("wrong uuid on JFS log device");
+				rc = -EINVAL;
 				goto errout20;
 			}
 			log->size = le32_to_cpu(logsuper->size);
@@ -1515,6 +1537,7 @@ int lmLogClose(struct super_block *sb)
 
 	bd_release(bdev);
 	blkdev_put(bdev);
+	blkdev_put(bdev, FMODE_READ|FMODE_WRITE|FMODE_EXCL);
 
 	kfree(log);
 
@@ -2017,6 +2040,21 @@ static int lbmRead(struct jfs_log * log, int pn, struct lbuf ** bpp)
 	bio->bi_end_io = lbmIODone;
 	bio->bi_private = bp;
 	submit_bio(READ_SYNC, bio);
+	bio->bi_iter.bi_sector = bp->l_blkno << (log->l2bsize - 9);
+	bio->bi_bdev = log->bdev;
+
+	bio_add_page(bio, bp->l_page, LOGPSIZE, bp->l_offset);
+	BUG_ON(bio->bi_iter.bi_size != LOGPSIZE);
+
+	bio->bi_end_io = lbmIODone;
+	bio->bi_private = bp;
+	/*check if journaling to disk has been disabled*/
+	if (log->no_integrity) {
+		bio->bi_iter.bi_size = 0;
+		lbmIODone(bio);
+	} else {
+		submit_bio(READ_SYNC, bio);
+	}
 
 	wait_event(bp->l_ioevent, (bp->l_flag != lbmREAD));
 
@@ -2154,6 +2192,11 @@ static void lbmStartIO(struct lbuf * bp)
 	bio->bi_vcnt = 1;
 	bio->bi_idx = 0;
 	bio->bi_size = LOGPSIZE;
+	bio->bi_iter.bi_sector = bp->l_blkno << (log->l2bsize - 9);
+	bio->bi_bdev = log->bdev;
+
+	bio_add_page(bio, bp->l_page, LOGPSIZE, bp->l_offset);
+	BUG_ON(bio->bi_iter.bi_size != LOGPSIZE);
 
 	bio->bi_end_io = lbmIODone;
 	bio->bi_private = bp;
@@ -2162,6 +2205,8 @@ static void lbmStartIO(struct lbuf * bp)
 	if (log->no_integrity) {
 		bio->bi_size = 0;
 		lbmIODone(bio, 0);
+		bio->bi_iter.bi_size = 0;
+		lbmIODone(bio);
 	} else {
 		submit_bio(WRITE_SYNC, bio);
 		INCREMENT(lmStat.submitted);
@@ -2200,6 +2245,7 @@ static int lbmIOWait(struct lbuf * bp, int flag)
  * executed at INTIODONE level
  */
 static void lbmIODone(struct bio *bio, int error)
+static void lbmIODone(struct bio *bio)
 {
 	struct lbuf *bp = bio->bi_private;
 	struct lbuf *nextbp, *tail;
@@ -2216,6 +2262,7 @@ static void lbmIODone(struct bio *bio, int error)
 	bp->l_flag |= lbmDONE;
 
 	if (!test_bit(BIO_UPTODATE, &bio->bi_flags)) {
+	if (bio->bi_error) {
 		bp->l_flag |= lbmERROR;
 
 		jfs_err("lbmIODone: I/O error in JFS log");
@@ -2357,6 +2404,7 @@ int jfsIOWait(void *arg)
 		if (freezing(current)) {
 			spin_unlock_irq(&log_redrive_lock);
 			refrigerator();
+			try_to_freeze();
 		} else {
 			set_current_state(TASK_INTERRUPTIBLE);
 			spin_unlock_irq(&log_redrive_lock);
@@ -2508,7 +2556,6 @@ static int jfs_lmstats_proc_show(struct seq_file *m, void *v)
 {
 	seq_printf(m,
 		       "JFS Logmgr stats\n"
-		       "================\n"
 		       "commits = %d\n"
 		       "writes submitted = %d\n"
 		       "writes completed = %d\n"

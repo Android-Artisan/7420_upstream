@@ -18,6 +18,7 @@
 
 /* Display a 16.16 fixed point value */
 #define FIX32TOPRINT(f)	((f) >> 16),((((f) & 0xffff) * 1000) >> 16)
+#define FIX32TOPRINT(f)	(((s32)(f)) >> 16),(((((s32)(f)) & 0xffff) * 1000) >> 16)
 
 /*
  * Control objects
@@ -41,6 +42,13 @@ struct wf_control {
 	int			type;
 	struct kref		ref;
 	struct device_attribute	attr;
+	struct list_head		link;
+	const struct wf_control_ops	*ops;
+	const char			*name;
+	int				type;
+	struct kref			ref;
+	struct device_attribute		attr;
+	void				*priv;
 };
 
 #define WF_CONTROL_TYPE_GENERIC		0
@@ -57,6 +65,9 @@ struct wf_control {
 extern int wf_register_control(struct wf_control *ct);
 extern void wf_unregister_control(struct wf_control *ct);
 extern struct wf_control * wf_find_control(const char *name);
+ */
+extern int wf_register_control(struct wf_control *ct);
+extern void wf_unregister_control(struct wf_control *ct);
 extern int wf_get_control(struct wf_control *ct);
 extern void wf_put_control(struct wf_control *ct);
 
@@ -70,6 +81,26 @@ static inline int wf_control_set_min(struct wf_control *ct)
 {
 	s32 vmin = ct->ops->get_min(ct);
 	return ct->ops->set_value(ct, vmin);
+}
+
+static inline int wf_control_set(struct wf_control *ct, s32 val)
+{
+	return ct->ops->set_value(ct, val);
+}
+
+static inline int wf_control_get(struct wf_control *ct, s32 *val)
+{
+	return ct->ops->get_value(ct, val);
+}
+
+static inline s32 wf_control_get_min(struct wf_control *ct)
+{
+	return ct->ops->get_min(ct);
+}
+
+static inline s32 wf_control_get_max(struct wf_control *ct)
+{
+	return ct->ops->get_max(ct);
 }
 
 /*
@@ -90,6 +121,12 @@ struct wf_sensor {
 	char			*name;
 	struct kref		ref;
 	struct device_attribute	attr;
+	struct list_head		link;
+	const struct wf_sensor_ops	*ops;
+	const char			*name;
+	struct kref			ref;
+	struct device_attribute		attr;
+	void				*priv;
 };
 
 /* Same lifetime rules as controls */
@@ -98,6 +135,14 @@ extern void wf_unregister_sensor(struct wf_sensor *sr);
 extern struct wf_sensor * wf_find_sensor(const char *name);
 extern int wf_get_sensor(struct wf_sensor *sr);
 extern void wf_put_sensor(struct wf_sensor *sr);
+
+extern int wf_get_sensor(struct wf_sensor *sr);
+extern void wf_put_sensor(struct wf_sensor *sr);
+
+static inline int wf_sensor_get(struct wf_sensor *sr, s32 *val)
+{
+	return sr->ops->get_value(sr, val);
+}
 
 /* For use by clients. Note that we are a bit racy here since
  * notifier_block doesn't have a module owner field. I may fix

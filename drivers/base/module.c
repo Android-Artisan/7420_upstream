@@ -7,6 +7,7 @@
 #include <linux/device.h>
 #include <linux/module.h>
 #include <linux/errno.h>
+#include <linux/slab.h>
 #include <linux/string.h>
 #include "base.h"
 
@@ -20,15 +21,21 @@ static char *make_driver_name(struct device_driver *drv)
 		return NULL;
 
 	sprintf(driver_name, "%s:%s", drv->bus->name, drv->name);
+	driver_name = kasprintf(GFP_KERNEL, "%s:%s", drv->bus->name, drv->name);
+	if (!driver_name)
+		return NULL;
+
 	return driver_name;
 }
 
 static void module_create_drivers_dir(struct module_kobject *mk)
 {
-	if (!mk || mk->drivers_dir)
-		return;
+	static DEFINE_MUTEX(drivers_dir_mutex);
 
-	mk->drivers_dir = kobject_create_and_add("drivers", &mk->kobj);
+	mutex_lock(&drivers_dir_mutex);
+	if (mk && !mk->drivers_dir)
+		mk->drivers_dir = kobject_create_and_add("drivers", &mk->kobj);
+	mutex_unlock(&drivers_dir_mutex);
 }
 
 void module_add_driver(struct module *mod, struct device_driver *drv)

@@ -115,6 +115,7 @@ static inline void zero_trun_node_unused(struct ubifs_trun_node *trun)
 static int reserve_space(struct ubifs_info *c, int jhead, int len)
 {
 	int err = 0, err1, retries = 0, avail, lnum, offs, free, squeeze;
+	int err = 0, err1, retries = 0, avail, lnum, offs, squeeze;
 	struct ubifs_wbuf *wbuf = &c->jheads[jhead].wbuf;
 
 	/*
@@ -122,11 +123,13 @@ static int reserve_space(struct ubifs_info *c, int jhead, int len)
 	 * better to try to allocate space at the ends of eraseblocks. This is
 	 * what the squeeze parameter does.
 	 */
+	ubifs_assert(!c->ro_media && !c->ro_mount);
 	squeeze = (jhead == BASEHD);
 again:
 	mutex_lock_nested(&wbuf->io_mutex, wbuf->jhead);
 
 	if (c->ro_media) {
+	if (c->ro_error) {
 		err = -EROFS;
 		goto out_unlock;
 	}
@@ -149,6 +152,9 @@ again:
 		/* A new bud was successfully allocated and added to the log */
 		goto out;
 	}
+	lnum = ubifs_find_free_space(c, len, &offs, squeeze);
+	if (lnum >= 0)
+		goto out;
 
 	err = lnum;
 	if (err != -ENOSPC)
@@ -160,6 +166,7 @@ again:
 	 * GC also takes it.
 	 */
 	dbg_jnl("no free space  jhead %d, run GC", jhead);
+	dbg_jnl("no free space in jhead %s, run GC", dbg_jhead(jhead));
 	mutex_unlock(&wbuf->io_mutex);
 
 	lnum = ubifs_garbage_collect(c, 0);
@@ -175,6 +182,8 @@ again:
 		 * again.
 		 */
 		dbg_jnl("GC couldn't make a free LEB for jhead %d", jhead);
+		dbg_jnl("GC couldn't make a free LEB for jhead %s",
+			dbg_jhead(jhead));
 		if (retries++ < 2) {
 			dbg_jnl("retry (%d)", retries);
 			goto again;
@@ -186,12 +195,14 @@ again:
 
 	mutex_lock_nested(&wbuf->io_mutex, wbuf->jhead);
 	dbg_jnl("got LEB %d for jhead %d", lnum, jhead);
+	dbg_jnl("got LEB %d for jhead %s", lnum, dbg_jhead(jhead));
 	avail = c->leb_size - wbuf->offs - wbuf->used;
 
 	if (wbuf->lnum != -1 && avail >= len) {
 		/*
 		 * Someone else has switched the journal head and we have
 		 * enough space now. This happens when more then one process is
+		 * enough space now. This happens when more than one process is
 		 * trying to write to the same journal head at the same time.
 		 */
 		dbg_jnl("return LEB %d back, already have LEB %d:%d",
@@ -209,6 +220,24 @@ again:
 
 out:
 	err = ubifs_wbuf_seek_nolock(wbuf, lnum, offs, UBI_SHORTTERM);
+	offs = 0;
+
+out:
+	/*
+	 * Make sure we synchronize the write-buffer before we add the new bud
+	 * to the log. Otherwise we may have a power cut after the log
+	 * reference node for the last bud (@lnum) is written but before the
+	 * write-buffer data are written to the next-to-last bud
+	 * (@wbuf->lnum). And the effect would be that the recovery would see
+	 * that there is corruption in the next-to-last bud.
+	 */
+	err = ubifs_wbuf_sync_nolock(wbuf);
+	if (err)
+		goto out_return;
+	err = ubifs_add_bud_to_log(c, jhead, lnum, offs);
+	if (err)
+		goto out_return;
+	err = ubifs_wbuf_seek_nolock(wbuf, lnum, offs);
 	if (err)
 		goto out_unlock;
 
@@ -257,6 +286,8 @@ static int write_node(struct ubifs_info *c, int jhead, void *node, int len,
 	*offs = c->jheads[jhead].wbuf.offs + c->jheads[jhead].wbuf.used;
 
 	dbg_jnl("jhead %d, LEB %d:%d, len %d", jhead, *lnum, *offs, len);
+	dbg_jnl("jhead %s, LEB %d:%d, len %d",
+		dbg_jhead(jhead), *lnum, *offs, len);
 	ubifs_prepare_node(c, node, len, 0);
 
 	return ubifs_wbuf_write_nolock(wbuf, node, len);
@@ -287,6 +318,8 @@ static int write_head(struct ubifs_info *c, int jhead, void *buf, int len,
 	*lnum = c->jheads[jhead].wbuf.lnum;
 	*offs = c->jheads[jhead].wbuf.offs + c->jheads[jhead].wbuf.used;
 	dbg_jnl("jhead %d, LEB %d:%d, len %d", jhead, *lnum, *offs, len);
+	dbg_jnl("jhead %s, LEB %d:%d, len %d",
+		dbg_jhead(jhead), *lnum, *offs, len);
 
 	err = ubifs_wbuf_write_nolock(wbuf, buf, len);
 	if (err)
@@ -360,6 +393,11 @@ again:
 		goto out;
 	} else if (cmt_retries > 32)
 		ubifs_warn("too many space allocation re-tries (%d)",
+		ubifs_err(c, "stuck in space allocation");
+		err = -ENOSPC;
+		goto out;
+	} else if (cmt_retries > 32)
+		ubifs_warn(c, "too many space allocation re-tries (%d)",
 			   cmt_retries);
 
 	dbg_jnl("-EAGAIN, commit and retry (retried %d times)",
@@ -373,6 +411,7 @@ again:
 
 out:
 	ubifs_err("cannot reserve %d bytes in jhead %d, error %d",
+	ubifs_err(c, "cannot reserve %d bytes in jhead %d, error %d",
 		  len, jhead, err);
 	if (err == -ENOSPC) {
 		/* This are some budgeting problems, print useful information */
@@ -382,6 +421,9 @@ out:
 		dbg_dump_budg(c);
 		spin_unlock(&c->space_lock);
 		dbg_dump_lprops(c);
+		dump_stack();
+		ubifs_dump_budg(c, &c->bi);
+		ubifs_dump_lprops(c);
 		cmt_retries = dbg_check_lprops(c);
 		up_write(&c->commit_sem);
 	}
@@ -465,6 +507,8 @@ static void pack_inode(struct ubifs_info *c, struct ubifs_ino_node *ino,
 	ino->mtime_nsec = cpu_to_le32(inode->i_mtime.tv_nsec);
 	ino->uid   = cpu_to_le32(inode->i_uid);
 	ino->gid   = cpu_to_le32(inode->i_gid);
+	ino->uid   = cpu_to_le32(i_uid_read(inode));
+	ino->gid   = cpu_to_le32(i_gid_read(inode));
 	ino->mode  = cpu_to_le32(inode->i_mode);
 	ino->flags = cpu_to_le32(ui->flags);
 	ino->size  = cpu_to_le64(ui->ui_size);
@@ -541,6 +585,7 @@ int ubifs_jnl_update(struct ubifs_info *c, const struct inode *dir,
 	int last_reference = !!(deletion && inode->i_nlink == 0);
 	struct ubifs_inode *ui = ubifs_inode(inode);
 	struct ubifs_inode *dir_ui = ubifs_inode(dir);
+	struct ubifs_inode *host_ui = ubifs_inode(dir);
 	struct ubifs_dent_node *dent;
 	struct ubifs_ino_node *ino;
 	union ubifs_key dent_key, ino_key;
@@ -549,6 +594,7 @@ int ubifs_jnl_update(struct ubifs_info *c, const struct inode *dir,
 		inode->i_ino, nm->len, nm->name, ui->data_len, dir->i_ino);
 	ubifs_assert(dir_ui->data_len == 0);
 	ubifs_assert(mutex_is_locked(&dir_ui->ui_mutex));
+	ubifs_assert(mutex_is_locked(&host_ui->ui_mutex));
 
 	dlen = UBIFS_DENT_NODE_SZ + nm->len + 1;
 	ilen = UBIFS_INO_NODE_SZ;
@@ -567,6 +613,11 @@ int ubifs_jnl_update(struct ubifs_info *c, const struct inode *dir,
 	aligned_dlen = ALIGN(dlen, 8);
 	aligned_ilen = ALIGN(ilen, 8);
 	len = aligned_dlen + aligned_ilen + UBIFS_INO_NODE_SZ;
+
+	len = aligned_dlen + aligned_ilen + UBIFS_INO_NODE_SZ;
+	/* Make sure to also account for extended attributes */
+	len += host_ui->data_len;
+
 	dent = kmalloc(len, GFP_NOFS);
 	if (!dent)
 		return -ENOMEM;
@@ -644,6 +695,8 @@ int ubifs_jnl_update(struct ubifs_info *c, const struct inode *dir,
 	ino_key_init(c, &ino_key, dir->i_ino);
 	ino_offs += aligned_ilen;
 	err = ubifs_tnc_add(c, &ino_key, lnum, ino_offs, UBIFS_INO_NODE_SZ);
+	err = ubifs_tnc_add(c, &ino_key, lnum, ino_offs,
+			    UBIFS_INO_NODE_SZ + host_ui->data_len);
 	if (err)
 		goto out_ro;
 
@@ -651,8 +704,14 @@ int ubifs_jnl_update(struct ubifs_info *c, const struct inode *dir,
 	spin_lock(&ui->ui_lock);
 	ui->synced_i_size = ui->ui_size;
 	spin_unlock(&ui->ui_lock);
+	if (xent) {
+		spin_lock(&host_ui->ui_lock);
+		host_ui->synced_i_size = host_ui->ui_size;
+		spin_unlock(&host_ui->ui_lock);
+	}
 	mark_inode_clean(c, ui);
 	mark_inode_clean(c, dir_ui);
+	mark_inode_clean(c, host_ui);
 	return 0;
 
 out_finish:
@@ -663,6 +722,7 @@ out_free:
 
 out_release:
 	release_head(c, BASEHD);
+	kfree(dent);
 out_ro:
 	ubifs_ro_mode(c, err);
 	if (last_reference)
@@ -697,6 +757,26 @@ int ubifs_jnl_write_data(struct ubifs_info *c, const struct inode *inode,
 	data = kmalloc(dlen, GFP_NOFS);
 	if (!data)
 		return -ENOMEM;
+	int dlen = COMPRESSED_DATA_NODE_BUF_SZ, allocated = 1;
+	struct ubifs_inode *ui = ubifs_inode(inode);
+
+	dbg_jnlk(key, "ino %lu, blk %u, len %d, key ",
+		(unsigned long)key_inum(c, key), key_block(c, key), len);
+	ubifs_assert(len <= UBIFS_BLOCK_SIZE);
+
+	data = kmalloc(dlen, GFP_NOFS | __GFP_NOWARN);
+	if (!data) {
+		/*
+		 * Fall-back to the write reserve buffer. Note, we might be
+		 * currently on the memory reclaim path, when the kernel is
+		 * trying to free some memory by writing out dirty pages. The
+		 * write reserve buffer helps us to guarantee that we are
+		 * always able to write the data.
+		 */
+		allocated = 0;
+		mutex_lock(&c->write_reserve_mutex);
+		data = c->write_reserve_buf;
+	}
 
 	data->ch.node_type = UBIFS_DATA_NODE;
 	key_write(c, key, &data->key);
@@ -704,6 +784,7 @@ int ubifs_jnl_write_data(struct ubifs_info *c, const struct inode *inode,
 	zero_data_node_unused(data);
 
 	if (!(ui->flags && UBIFS_COMPR_FL))
+	if (!(ui->flags & UBIFS_COMPR_FL))
 		/* Compression is disabled for this inode */
 		compr_type = UBIFS_COMPR_NONE;
 	else
@@ -711,6 +792,7 @@ int ubifs_jnl_write_data(struct ubifs_info *c, const struct inode *inode,
 
 	out_len = dlen - UBIFS_DATA_NODE_SZ;
 	ubifs_compress(buf, len, &data->data, &out_len, &compr_type);
+	ubifs_compress(c, buf, len, &data->data, &out_len, &compr_type);
 	ubifs_assert(out_len <= UBIFS_BLOCK_SIZE);
 
 	dlen = UBIFS_DATA_NODE_SZ + out_len;
@@ -733,6 +815,10 @@ int ubifs_jnl_write_data(struct ubifs_info *c, const struct inode *inode,
 
 	finish_reservation(c);
 	kfree(data);
+	if (!allocated)
+		mutex_unlock(&c->write_reserve_mutex);
+	else
+		kfree(data);
 	return 0;
 
 out_release:
@@ -742,6 +828,10 @@ out_ro:
 	finish_reservation(c);
 out_free:
 	kfree(data);
+	if (!allocated)
+		mutex_unlock(&c->write_reserve_mutex);
+	else
+		kfree(data);
 	return err;
 }
 
@@ -905,6 +995,8 @@ int ubifs_jnl_rename(struct ubifs_info *c, const struct inode *old_dir,
 	int err, dlen1, dlen2, ilen, lnum, offs, len;
 	const struct inode *old_inode = old_dentry->d_inode;
 	const struct inode *new_inode = new_dentry->d_inode;
+	const struct inode *old_inode = d_inode(old_dentry);
+	const struct inode *new_inode = d_inode(new_dentry);
 	int aligned_dlen1, aligned_dlen2, plen = UBIFS_INO_NODE_SZ;
 	int last_reference = !!(new_inode && new_inode->i_nlink == 0);
 	int move = (old_dir != new_dir);
@@ -914,6 +1006,8 @@ int ubifs_jnl_rename(struct ubifs_info *c, const struct inode *old_dir,
 		old_dentry->d_name.len, old_dentry->d_name.name,
 		old_dir->i_ino, new_dentry->d_name.len,
 		new_dentry->d_name.name, new_dir->i_ino);
+	dbg_jnl("dent '%pd' in dir ino %lu to dent '%pd' in dir ino %lu",
+		old_dentry, old_dir->i_ino, new_dentry, new_dir->i_ino);
 	ubifs_assert(ubifs_inode(old_dir)->data_len == 0);
 	ubifs_assert(ubifs_inode(new_dir)->data_len == 0);
 	ubifs_assert(mutex_is_locked(&ubifs_inode(old_dir)->ui_mutex));
@@ -1076,6 +1170,8 @@ out_free:
  * the inode has to be re-compressed and re-written.
  */
 static int recomp_data_node(struct ubifs_data_node *dn, int *new_len)
+static int recomp_data_node(const struct ubifs_info *c,
+			    struct ubifs_data_node *dn, int *new_len)
 {
 	void *buf;
 	int err, len, compr_type, out_len;
@@ -1092,6 +1188,11 @@ static int recomp_data_node(struct ubifs_data_node *dn, int *new_len)
 		goto out;
 
 	ubifs_compress(buf, *new_len, &dn->data, &out_len, &compr_type);
+	err = ubifs_decompress(c, &dn->data, len, buf, &out_len, compr_type);
+	if (err)
+		goto out;
+
+	ubifs_compress(c, buf, *new_len, &dn->data, &out_len, &compr_type);
 	ubifs_assert(out_len <= UBIFS_BLOCK_SIZE);
 	dn->compr_type = cpu_to_le16(compr_type);
 	dn->size = cpu_to_le32(*new_len);
@@ -1129,6 +1230,8 @@ int ubifs_jnl_truncate(struct ubifs_info *c, const struct inode *inode,
 	unsigned int blk;
 
 	dbg_jnl("ino %lu, size %lld -> %lld", inum, old_size, new_size);
+	dbg_jnl("ino %lu, size %lld -> %lld",
+		(unsigned long)inum, old_size, new_size);
 	ubifs_assert(!ui->data_len);
 	ubifs_assert(S_ISREG(inode->i_mode));
 	ubifs_assert(mutex_is_locked(&ui->ui_mutex));
@@ -1153,19 +1256,30 @@ int ubifs_jnl_truncate(struct ubifs_info *c, const struct inode *inode,
 		blk = new_size >> UBIFS_BLOCK_SHIFT;
 		data_key_init(c, &key, inum, blk);
 		dbg_jnl("last block key %s", DBGKEY(&key));
+		dbg_jnlk(&key, "last block key ");
 		err = ubifs_tnc_lookup(c, &key, dn);
 		if (err == -ENOENT)
 			dlen = 0; /* Not found (so it is a hole) */
 		else if (err)
 			goto out_free;
 		else {
-			if (le32_to_cpu(dn->size) <= dlen)
+			int dn_len = le32_to_cpu(dn->size);
+
+			if (dn_len <= 0 || dn_len > UBIFS_BLOCK_SIZE) {
+				ubifs_err(c, "bad data node (block %u, inode %lu)",
+					  blk, inode->i_ino);
+				ubifs_dump_node(c, dn);
+				goto out_free;
+			}
+
+			if (dn_len <= dlen)
 				dlen = 0; /* Nothing to do */
 			else {
 				int compr_type = le16_to_cpu(dn->compr_type);
 
 				if (compr_type != UBIFS_COMPR_NONE) {
 					err = recomp_data_node(dn, &dlen);
+					err = recomp_data_node(c, dn, &dlen);
 					if (err)
 						goto out_free;
 				} else {
@@ -1219,6 +1333,7 @@ int ubifs_jnl_truncate(struct ubifs_info *c, const struct inode *inode,
 
 	bit = old_size & (UBIFS_BLOCK_SIZE - 1);
 	blk = (old_size >> UBIFS_BLOCK_SHIFT) - (bit ? 0: 1);
+	blk = (old_size >> UBIFS_BLOCK_SHIFT) - (bit ? 0 : 1);
 	data_key_init(c, &to_key, inum, blk);
 
 	err = ubifs_tnc_remove_range(c, &key, &to_key);
@@ -1365,6 +1480,7 @@ out_ro:
  *
  * This function writes the updated version of an extended attribute inode and
  * the host inode tho the journal (to the base head). The host inode is written
+ * the host inode to the journal (to the base head). The host inode is written
  * after the extended attribute inode in order to guarantee that the extended
  * attribute will be flushed when the inode is synchronized by 'fsync()' and
  * consequently, the write-buffer is synchronized. This function returns zero

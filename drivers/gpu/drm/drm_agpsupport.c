@@ -35,6 +35,12 @@
 #include <linux/module.h>
 
 #if __OS_HAS_AGP
+#include <drm/drmP.h>
+#include <linux/module.h>
+#include <linux/slab.h>
+#include "drm_legacy.h"
+
+#include <asm/agp.h>
 
 /**
  * Get AGP information.
@@ -51,6 +57,7 @@
 int drm_agp_info(struct drm_device *dev, struct drm_agp_info *info)
 {
 	DRM_AGP_KERN *kern;
+	struct agp_kern_info *kern;
 
 	if (!dev->agp || !dev->agp->acquired)
 		return -EINVAL;
@@ -191,11 +198,13 @@ int drm_agp_enable_ioctl(struct drm_device *dev, void *data,
  *
  * Verifies the AGP device is present and has been acquired, allocates the
  * memory via alloc_agp() and creates a drm_agp_mem entry for it.
+ * memory via agp_allocate_memory() and creates a drm_agp_mem entry for it.
  */
 int drm_agp_alloc(struct drm_device *dev, struct drm_agp_buffer *request)
 {
 	struct drm_agp_mem *entry;
 	DRM_AGP_MEM *memory;
+	struct agp_memory *memory;
 	unsigned long pages;
 	u32 type;
 
@@ -210,6 +219,13 @@ int drm_agp_alloc(struct drm_device *dev, struct drm_agp_buffer *request)
 	type = (u32) request->type;
 	if (!(memory = drm_alloc_agp(dev, pages, type))) {
 		drm_free(entry, sizeof(*entry), DRM_MEM_AGPLISTS);
+	if (!(entry = kzalloc(sizeof(*entry), GFP_KERNEL)))
+		return -ENOMEM;
+
+	pages = (request->size + PAGE_SIZE - 1) / PAGE_SIZE;
+	type = (u32) request->type;
+	if (!(memory = agp_allocate_memory(dev->agp->bridge, pages, type))) {
+		kfree(entry);
 		return -ENOMEM;
 	}
 
@@ -368,6 +384,7 @@ int drm_agp_free(struct drm_device *dev, struct drm_agp_buffer *request)
 
 	drm_free_agp(entry->memory, entry->pages);
 	drm_free(entry, sizeof(*entry), DRM_MEM_AGPLISTS);
+	kfree(entry);
 	return 0;
 }
 EXPORT_SYMBOL(drm_agp_free);
@@ -390,6 +407,9 @@ int drm_agp_free_ioctl(struct drm_device *dev, void *data,
  * Gets the drm_agp_t structure which is made available by the agpgart module
  * via the inter_module_* functions. Creates and initializes a drm_agp_head
  * structure.
+ *
+ * Note that final cleanup of the kmalloced structure is directly done in
+ * drm_pci_agp_destroy.
  */
 struct drm_agp_head *drm_agp_init(struct drm_device *dev)
 {
@@ -402,6 +422,12 @@ struct drm_agp_head *drm_agp_init(struct drm_device *dev)
 	if (!head->bridge) {
 		if (!(head->bridge = agp_backend_acquire(dev->pdev))) {
 			drm_free(head, sizeof(*head), DRM_MEM_AGPLISTS);
+	if (!(head = kzalloc(sizeof(*head), GFP_KERNEL)))
+		return NULL;
+	head->bridge = agp_find_bridge(dev->pdev);
+	if (!head->bridge) {
+		if (!(head->bridge = agp_backend_acquire(dev->pdev))) {
+			kfree(head);
 			return NULL;
 		}
 		agp_copy_info(head->bridge, &head->agp_info);
@@ -411,6 +437,7 @@ struct drm_agp_head *drm_agp_init(struct drm_device *dev)
 	}
 	if (head->agp_info.chipset == NOT_SUPPORTED) {
 		drm_free(head, sizeof(*head), DRM_MEM_AGPLISTS);
+		kfree(head);
 		return NULL;
 	}
 	INIT_LIST_HEAD(&head->memory);
@@ -453,3 +480,81 @@ int drm_agp_unbind_memory(DRM_AGP_MEM * handle)
 }
 
 #endif				/* __OS_HAS_AGP */
+/**
+ * drm_agp_clear - Clear AGP resource list
+ * @dev: DRM device
+ *
+ * Iterate over all AGP resources and remove them. But keep the AGP head
+ * intact so it can still be used. It is safe to call this if AGP is disabled or
+ * was already removed.
+ *
+ * If DRIVER_MODESET is active, nothing is done to protect the modesetting
+ * resources from getting destroyed. Drivers are responsible of cleaning them up
+ * during device shutdown.
+ */
+void drm_agp_clear(struct drm_device *dev)
+{
+	struct drm_agp_mem *entry, *tempe;
+
+	if (!dev->agp)
+		return;
+	if (drm_core_check_feature(dev, DRIVER_MODESET))
+		return;
+
+	list_for_each_entry_safe(entry, tempe, &dev->agp->memory, head) {
+		if (entry->bound)
+			drm_unbind_agp(entry->memory);
+		drm_free_agp(entry->memory, entry->pages);
+		kfree(entry);
+	}
+	INIT_LIST_HEAD(&dev->agp->memory);
+
+	if (dev->agp->acquired)
+		drm_agp_release(dev);
+
+	dev->agp->acquired = 0;
+	dev->agp->enabled = 0;
+}
+
+/**
+ * Binds a collection of pages into AGP memory at the given offset, returning
+ * the AGP memory structure containing them.
+ *
+ * No reference is held on the pages during this time -- it is up to the
+ * caller to handle that.
+ */
+struct agp_memory *
+drm_agp_bind_pages(struct drm_device *dev,
+		   struct page **pages,
+		   unsigned long num_pages,
+		   uint32_t gtt_offset,
+		   u32 type)
+{
+	struct agp_memory *mem;
+	int ret, i;
+
+	DRM_DEBUG("\n");
+
+	mem = agp_allocate_memory(dev->agp->bridge, num_pages,
+				      type);
+	if (mem == NULL) {
+		DRM_ERROR("Failed to allocate memory for %ld pages\n",
+			  num_pages);
+		return NULL;
+	}
+
+	for (i = 0; i < num_pages; i++)
+		mem->pages[i] = pages[i];
+	mem->page_count = num_pages;
+
+	mem->is_flushed = true;
+	ret = agp_bind_memory(mem, gtt_offset / PAGE_SIZE);
+	if (ret != 0) {
+		DRM_ERROR("Failed to bind AGP memory: %d\n", ret);
+		agp_free_memory(mem);
+		return NULL;
+	}
+
+	return mem;
+}
+EXPORT_SYMBOL(drm_agp_bind_pages);

@@ -36,6 +36,7 @@ ENTRY(strlen)
 	tst	r1,r1
 	bt	8f
 	add	#1,r2	
+	add	#1,r2
 
 1:
 	mov	#0,r3

@@ -3,6 +3,7 @@
 #ifdef __KERNEL__
 
 #include <asm/asm-compat.h>
+
 /*
  * Define an illegal instr to trap on the bug.
  * We don't use 0 because that marks the end of a function
@@ -14,6 +15,7 @@
 #ifdef CONFIG_BUG
 
 #ifdef __ASSEMBLY__
+#include <asm/asm-offsets.h>
 #ifdef CONFIG_DEBUG_BUGVERBOSE
 .macro EMIT_BUG_ENTRY addr,file,line,flags
 	 .section __bug_table,"a"
@@ -27,6 +29,7 @@
 .endm
 #else
  .macro EMIT_BUG_ENTRY addr,file,line,flags
+.macro EMIT_BUG_ENTRY addr,file,line,flags
 	 .section __bug_table,"a"
 5001:	 PPC_LONG \addr
 	 .short \flags
@@ -67,6 +70,7 @@
 		: : "i" (__FILE__), "i" (__LINE__),		\
 		    "i" (0), "i"  (sizeof(struct bug_entry)));	\
 	for(;;) ;						\
+	unreachable();						\
 } while (0)
 
 #define BUG_ON(x) do {						\
@@ -84,11 +88,13 @@
 } while (0)
 
 #define __WARN() do {						\
+#define __WARN_TAINT(taint) do {				\
 	__asm__ __volatile__(					\
 		"1:	twi 31,0,0\n"				\
 		_EMIT_BUG_ENTRY					\
 		: : "i" (__FILE__), "i" (__LINE__),		\
 		  "i" (BUGFLAG_WARNING),			\
+		  "i" (BUGFLAG_TAINT(taint)),			\
 		  "i" (sizeof(struct bug_entry)));		\
 } while (0)
 
@@ -103,6 +109,7 @@
 		_EMIT_BUG_ENTRY					\
 		: : "i" (__FILE__), "i" (__LINE__),		\
 		  "i" (BUGFLAG_WARNING),			\
+		  "i" (BUGFLAG_TAINT(TAINT_WARN)),		\
 		  "i" (sizeof(struct bug_entry)),		\
 		  "r" (__ret_warn_on));				\
 	}							\
@@ -113,9 +120,26 @@
 #define HAVE_ARCH_BUG_ON
 #define HAVE_ARCH_WARN_ON
 #endif /* __ASSEMBLY __ */
+#else
+#ifdef __ASSEMBLY__
+.macro EMIT_BUG_ENTRY addr,file,line,flags
+.endm
+#else /* !__ASSEMBLY__ */
+#define _EMIT_BUG_ENTRY
+#endif
 #endif /* CONFIG_BUG */
 
 #include <asm-generic/bug.h>
+
+#ifndef __ASSEMBLY__
+
+struct pt_regs;
+extern int do_page_fault(struct pt_regs *, unsigned long, unsigned long);
+extern void bad_page_fault(struct pt_regs *, unsigned long, int);
+extern void _exception(int, struct pt_regs *, int, unsigned long);
+extern void die(const char *, struct pt_regs *, long);
+
+#endif /* !__ASSEMBLY__ */
 
 #endif /* __KERNEL__ */
 #endif /* _ASM_POWERPC_BUG_H */

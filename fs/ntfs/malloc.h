@@ -48,6 +48,7 @@ static inline void *__ntfs_malloc(unsigned long size, gfp_t gfp_mask)
 		/* return (void *)__get_free_page(gfp_mask); */
 	}
 	if (likely(size >> PAGE_SHIFT < num_physpages))
+	if (likely((size >> PAGE_SHIFT) < totalram_pages))
 		return __vmalloc(size, gfp_mask, PAGE_KERNEL);
 	return NULL;
 }
@@ -91,6 +92,7 @@ static inline void ntfs_free(void *addr)
 		return;
 	}
 	vfree(addr);
+	kvfree(addr);
 }
 
 #endif /* _LINUX_NTFS_MALLOC_H */

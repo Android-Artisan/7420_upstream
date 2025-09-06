@@ -4,12 +4,16 @@
  *  zcrypt 2.1.0
  *
  *  Copyright (C)  2001, 2006 IBM Corporation
+ *  zcrypt 2.1.0
+ *
+ *  Copyright IBM Corp. 2001, 2012
  *  Author(s): Robert Burroughs
  *	       Eric Rossman (edrossma@us.ibm.com)
  *
  *  Hotplug & misc device support: Jochen Roehrig (roehrig@de.ibm.com)
  *  Major cleanup & driver split: Martin Schwidefsky <schwidefsky@de.ibm.com>
  *				  Ralph Wuerthner <rwuerthn@de.ibm.com>
+ *  MSGTYPE restruct:		  Holger Dengler <hd@linux.vnet.ibm.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -31,12 +35,15 @@
 #include <linux/err.h>
 #include <linux/delay.h>
 #include <asm/atomic.h>
+#include <linux/slab.h>
+#include <linux/atomic.h>
 #include <asm/uaccess.h>
 
 #include "ap_bus.h"
 #include "zcrypt_api.h"
 #include "zcrypt_error.h"
 #include "zcrypt_pcicc.h"
+#include "zcrypt_msgtype6.h"
 #include "zcrypt_pcixcc.h"
 #include "zcrypt_cca_key.h"
 
@@ -47,6 +54,13 @@
 #define PCIXCC_MCL2_SPEED_RATING	7870	/* FIXME: needs finetuning */
 #define PCIXCC_MCL3_SPEED_RATING	7870
 #define CEX2C_SPEED_RATING		8540
+#define CEX3C_MIN_MOD_SIZE	PCIXCC_MIN_MOD_SIZE
+#define CEX3C_MAX_MOD_SIZE	512	/* 4096 bits	*/
+
+#define PCIXCC_MCL2_SPEED_RATING	7870
+#define PCIXCC_MCL3_SPEED_RATING	7870
+#define CEX2C_SPEED_RATING		7000
+#define CEX3C_SPEED_RATING		6500
 
 #define PCIXCC_MAX_ICA_MESSAGE_SIZE 0x77c  /* max size type6 v2 crt message */
 #define PCIXCC_MAX_ICA_RESPONSE_SIZE 0x77c /* max size type86 v2 reply	    */
@@ -88,6 +102,18 @@ static int zcrypt_pcixcc_probe(struct ap_device *ap_dev);
 static void zcrypt_pcixcc_remove(struct ap_device *ap_dev);
 static void zcrypt_pcixcc_receive(struct ap_device *, struct ap_message *,
 				 struct ap_message *);
+	{ AP_DEVICE(AP_DEVICE_TYPE_CEX3C) },
+	{ /* end of list */ },
+};
+
+MODULE_DEVICE_TABLE(ap, zcrypt_pcixcc_ids);
+MODULE_AUTHOR("IBM Corporation");
+MODULE_DESCRIPTION("PCIXCC Cryptographic Coprocessor device driver, " \
+		   "Copyright IBM Corp. 2001, 2012");
+MODULE_LICENSE("GPL");
+
+static int zcrypt_pcixcc_probe(struct ap_device *ap_dev);
+static void zcrypt_pcixcc_remove(struct ap_device *ap_dev);
 
 static struct ap_driver zcrypt_pcixcc_driver = {
 	.probe = zcrypt_pcixcc_probe,
@@ -927,6 +953,7 @@ static int zcrypt_pcixcc_mcl(struct ap_device *ap_dev)
 	/* Wait for the test message to complete. */
 	for (i = 0; i < 6; i++) {
 		mdelay(300);
+		msleep(300);
 		rc = ap_recv(ap_dev->qid, &psmid, reply, 4096);
 		if (rc == 0 && psmid == 0x0102030405060708ULL)
 			break;
@@ -966,6 +993,7 @@ static int zcrypt_pcixcc_rng_supported(struct ap_device *ap_dev)
 	} __attribute__((packed)) *reply;
 	int rc, i;
 
+	ap_init_message(&ap_msg);
 	ap_msg.message = (void *) get_zeroed_page(GFP_KERNEL);
 	if (!ap_msg.message)
 		return -ENOMEM;
@@ -1013,11 +1041,16 @@ static int zcrypt_pcixcc_probe(struct ap_device *ap_dev)
 	int rc;
 
 	zdev = zcrypt_device_alloc(PCIXCC_MAX_RESPONSE_SIZE);
+	int rc = 0;
+
+	zdev = zcrypt_device_alloc(PCIXCC_MAX_XCRB_MESSAGE_SIZE);
 	if (!zdev)
 		return -ENOMEM;
 	zdev->ap_dev = ap_dev;
 	zdev->online = 1;
 	if (ap_dev->device_type == AP_DEVICE_TYPE_PCIXCC) {
+	switch (ap_dev->device_type) {
+	case AP_DEVICE_TYPE_PCIXCC:
 		rc = zcrypt_pcixcc_mcl(ap_dev);
 		if (rc < 0) {
 			zcrypt_device_free(zdev);
@@ -1029,6 +1062,7 @@ static int zcrypt_pcixcc_probe(struct ap_device *ap_dev)
 			zdev->speed_rating = PCIXCC_MCL2_SPEED_RATING;
 			zdev->min_mod_size = PCIXCC_MIN_MOD_SIZE_OLD;
 			zdev->max_mod_size = PCIXCC_MAX_MOD_SIZE;
+			zdev->max_exp_bit_length = PCIXCC_MAX_MOD_SIZE;
 		} else {
 			zdev->type_string = "PCIXCC_MCL3";
 			zdev->speed_rating = PCIXCC_MCL3_SPEED_RATING;
@@ -1036,12 +1070,30 @@ static int zcrypt_pcixcc_probe(struct ap_device *ap_dev)
 			zdev->max_mod_size = PCIXCC_MAX_MOD_SIZE;
 		}
 	} else {
+			zdev->max_exp_bit_length = PCIXCC_MAX_MOD_SIZE;
+		}
+		break;
+	case AP_DEVICE_TYPE_CEX2C:
 		zdev->user_space_type = ZCRYPT_CEX2C;
 		zdev->type_string = "CEX2C";
 		zdev->speed_rating = CEX2C_SPEED_RATING;
 		zdev->min_mod_size = PCIXCC_MIN_MOD_SIZE;
 		zdev->max_mod_size = PCIXCC_MAX_MOD_SIZE;
 	}
+		zdev->max_exp_bit_length = PCIXCC_MAX_MOD_SIZE;
+		break;
+	case AP_DEVICE_TYPE_CEX3C:
+		zdev->user_space_type = ZCRYPT_CEX3C;
+		zdev->type_string = "CEX3C";
+		zdev->speed_rating = CEX3C_SPEED_RATING;
+		zdev->min_mod_size = CEX3C_MIN_MOD_SIZE;
+		zdev->max_mod_size = CEX3C_MAX_MOD_SIZE;
+		zdev->max_exp_bit_length = CEX3C_MAX_MOD_SIZE;
+		break;
+	default:
+		goto out_free;
+	}
+
 	rc = zcrypt_pcixcc_rng_supported(ap_dev);
 	if (rc < 0) {
 		zcrypt_device_free(zdev);
@@ -1051,6 +1103,11 @@ static int zcrypt_pcixcc_probe(struct ap_device *ap_dev)
 		zdev->ops = &zcrypt_pcixcc_with_rng_ops;
 	else
 		zdev->ops = &zcrypt_pcixcc_ops;
+		zdev->ops = zcrypt_msgtype_request(MSGTYPE06_NAME,
+						   MSGTYPE06_VARIANT_DEFAULT);
+	else
+		zdev->ops = zcrypt_msgtype_request(MSGTYPE06_NAME,
+						   MSGTYPE06_VARIANT_NORNG);
 	ap_dev->reply = &zdev->reply;
 	ap_dev->private = zdev;
 	rc = zcrypt_device_register(zdev);
@@ -1060,6 +1117,7 @@ static int zcrypt_pcixcc_probe(struct ap_device *ap_dev)
 
  out_free:
 	ap_dev->private = NULL;
+	zcrypt_msgtype_release(zdev->ops);
 	zcrypt_device_free(zdev);
 	return rc;
 }
@@ -1073,6 +1131,10 @@ static void zcrypt_pcixcc_remove(struct ap_device *ap_dev)
 	struct zcrypt_device *zdev = ap_dev->private;
 
 	zcrypt_device_unregister(zdev);
+	struct zcrypt_ops *zops = zdev->ops;
+
+	zcrypt_device_unregister(zdev);
+	zcrypt_msgtype_release(zops);
 }
 
 int __init zcrypt_pcixcc_init(void)
@@ -1089,3 +1151,5 @@ void zcrypt_pcixcc_exit(void)
 module_init(zcrypt_pcixcc_init);
 module_exit(zcrypt_pcixcc_exit);
 #endif
+module_init(zcrypt_pcixcc_init);
+module_exit(zcrypt_pcixcc_exit);

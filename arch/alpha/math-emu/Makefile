@@ -3,6 +3,7 @@
 #
 
 EXTRA_CFLAGS := -w
+ccflags-y := -w
 
 obj-$(CONFIG_MATHEMU) += math-emu.o
 

@@ -9,6 +9,7 @@
 #define __SOUNDBUS_H
 
 #include <asm/of_device.h>
+#include <linux/of_device.h>
 #include <sound/pcm.h>
 #include <linux/list.h>
 
@@ -142,6 +143,7 @@ struct soundbus_dev {
 
 	/* the of device it represents */
 	struct of_device ofdev;
+	struct platform_device ofdev;
 
 	/* what modules go by */
 	char modalias[32];
@@ -200,5 +202,6 @@ extern int soundbus_register_driver(struct soundbus_driver *drv);
 extern void soundbus_unregister_driver(struct soundbus_driver *drv);
 
 extern struct device_attribute soundbus_dev_attrs[];
+extern struct attribute *soundbus_dev_attrs[];
 
 #endif /* __SOUNDBUS_H */

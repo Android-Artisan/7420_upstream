@@ -27,6 +27,7 @@
 
 #include <asm/system.h>
 #include <asm/atomic.h>
+#include <linux/atomic.h>
 #include <asm/time.h>
 #include <asm/io.h>
 #include <asm/machdep.h>
@@ -42,11 +43,14 @@
 static struct of_device_id __initdata mpc834x_itx_ids[] = {
 	{ .compatible = "fsl,pq2pro-localbus", },
 	{ .compatible = "simple-bus", },
+static const struct of_device_id mpc834x_itx_ids[] __initconst = {
+	{ .compatible = "fsl,pq2pro-localbus", },
 	{},
 };
 
 static int __init mpc834x_itx_declare_of_platform_devices(void)
 {
+	mpc83xx_declare_of_platform_devices();
 	return of_platform_bus_probe(NULL, mpc834x_itx_ids, NULL);
 }
 machine_device_initcall(mpc834x_itx, mpc834x_itx_declare_of_platform_devices);
@@ -69,6 +73,10 @@ static void __init mpc834x_itx_setup_arch(void)
 	for_each_compatible_node(np, "pci", "fsl,mpc8349-pci")
 		mpc83xx_add_bridge(np);
 #endif
+	if (ppc_md.progress)
+		ppc_md.progress("mpc834x_itx_setup_arch()", 0);
+
+	mpc83xx_setup_pci();
 
 	mpc834x_usb_cfg();
 }
@@ -104,6 +112,7 @@ define_machine(mpc834x_itx) {
 	.probe			= mpc834x_itx_probe,
 	.setup_arch		= mpc834x_itx_setup_arch,
 	.init_IRQ		= mpc834x_itx_init_IRQ,
+	.init_IRQ		= mpc83xx_ipic_init_IRQ,
 	.get_irq		= ipic_get_irq,
 	.restart		= mpc83xx_restart,
 	.time_init		= mpc83xx_time_init,

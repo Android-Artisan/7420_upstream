@@ -4,12 +4,23 @@
  *
  * For documentation on the OPCODES, MESSAGES, and SENSE values,
  * please consult the SCSI standard.
+ * the SCSI initiator code.
  */
 #ifndef _SCSI_SCSI_H
 #define _SCSI_SCSI_H
 
 #include <linux/types.h>
 #include <scsi/scsi_cmnd.h>
+#include <linux/scatterlist.h>
+#include <linux/kernel.h>
+#include <scsi/scsi_common.h>
+#include <scsi/scsi_proto.h>
+
+struct scsi_cmnd;
+
+enum scsi_timeouts {
+	SCSI_DEFAULT_EH_TIMEOUT		= 10 * HZ,
+};
 
 /*
  * The maximum number of SG segments that we will put inside a
@@ -25,10 +36,17 @@
  * is totally arbitrary, a setting of 2048 will get you at least 8mb ios.
  */
 #ifdef ARCH_HAS_SG_CHAIN
+#ifdef CONFIG_ARCH_HAS_SG_CHAIN
 #define SCSI_MAX_SG_CHAIN_SEGMENTS	2048
 #else
 #define SCSI_MAX_SG_CHAIN_SEGMENTS	SCSI_MAX_SG_SEGMENTS
 #endif
+
+/*
+ * DIX-capable adapters effectively support infinite chaining for the
+ * protection information scatterlist
+ */
+#define SCSI_MAX_PROT_SG_SEGMENTS	0xFFFF
 
 /*
  * Special value for scanning to specify scanning or rescanning of all
@@ -180,6 +198,15 @@ scsi_command_size(const unsigned char *cmnd)
 #define SAM_STAT_TASK_SET_FULL   0x28
 #define SAM_STAT_ACA_ACTIVE      0x30
 #define SAM_STAT_TASK_ABORTED    0x40
+#ifdef CONFIG_ACPI
+struct acpi_bus_type;
+
+extern int
+scsi_register_acpi_bus_type(struct acpi_bus_type *bus);
+
+extern void
+scsi_unregister_acpi_bus_type(struct acpi_bus_type *bus);
+#endif
 
 /** scsi_status_is_good - check the status return.
  *
@@ -317,6 +344,7 @@ struct scsi_lun {
 #define SCSI_W_LUN_TARGET_LOG_PAGE (SCSI_W_LUN_BASE + 3)
 
 static inline int scsi_is_wlun(unsigned int lun)
+static inline int scsi_is_wlun(u64 lun)
 {
 	return (lun & 0xff00) == SCSI_W_LUN_BASE;
 }
@@ -381,6 +409,17 @@ static inline int scsi_is_wlun(unsigned int lun)
 #define DID_IMM_RETRY   0x0c	/* Retry without decrementing retry count  */
 #define DID_REQUEUE	0x0d	/* Requeue command (no immediate retry) also
 				 * without decrementing the retry count	   */
+#define DID_TRANSPORT_DISRUPTED 0x0e /* Transport error disrupted execution
+				      * and the driver blocked the port to
+				      * recover the link. Transport class will
+				      * retry or fail IO */
+#define DID_TRANSPORT_FAILFAST	0x0f /* Transport class fastfailed the io */
+#define DID_TARGET_FAILURE 0x10 /* Permanent target failure, do not retry on
+				 * other paths */
+#define DID_NEXUS_FAILURE 0x11  /* Permanent nexus failure, retry on other
+				 * paths might yield different results */
+#define DID_ALLOC_FAILURE 0x12  /* Space allocation on the device failed */
+#define DID_MEDIUM_ERROR  0x13  /* Medium error */
 #define DRIVER_OK       0x00	/* Driver status                           */
 
 /*
@@ -419,6 +458,7 @@ static inline int scsi_is_wlun(unsigned int lun)
 #define ADD_TO_MLQUEUE  0x2006
 #define TIMEOUT_ERROR   0x2007
 #define SCSI_RETURN_NOT_HANDLED   0x2008
+#define FAST_IO_FAIL	0x2009
 
 /*
  * Midlevel queue return values.
@@ -426,6 +466,7 @@ static inline int scsi_is_wlun(unsigned int lun)
 #define SCSI_MLQUEUE_HOST_BUSY   0x1055
 #define SCSI_MLQUEUE_DEVICE_BUSY 0x1056
 #define SCSI_MLQUEUE_EH_RETRY    0x1057
+#define SCSI_MLQUEUE_TARGET_BUSY 0x1058
 
 /*
  *  Use these to separate status msg and our bytes
@@ -462,6 +503,10 @@ static inline void set_driver_byte(struct scsi_cmnd *cmd, char status)
 #define sense_class(sense)  (((sense) >> 4) & 0x7)
 #define sense_error(sense)  ((sense) & 0xf)
 #define sense_valid(sense)  ((sense) & 0x80);
+
+#define sense_class(sense)  (((sense) >> 4) & 0x7)
+#define sense_error(sense)  ((sense) & 0xf)
+#define sense_valid(sense)  ((sense) & 0x80)
 
 /*
  * default timeouts

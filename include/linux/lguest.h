@@ -1,5 +1,9 @@
 /* Things the lguest guest needs to know.  Note: like all lguest interfaces,
  * this is subject to wild and random change between versions. */
+/*
+ * Things the lguest guest needs to know.  Note: like all lguest interfaces,
+ * this is subject to wild and random change between versions.
+ */
 #ifndef _LINUX_LGUEST_H
 #define _LINUX_LGUEST_H
 
@@ -18,6 +22,16 @@ struct lguest_data
 {
 	/* 512 == enabled (same as eflags in normal hardware).  The Guest
 	 * changes interrupts so often that a hypercall is too slow. */
+/*G:031
+ * The second method of communicating with the Host is to via "struct
+ * lguest_data".  Once the Guest's initialization hypercall tells the Host where
+ * this is, the Guest and Host both publish information in it.
+:*/
+struct lguest_data {
+	/*
+	 * 512 == enabled (same as eflags in normal hardware).  The Guest
+	 * changes interrupts so often that a hypercall is too slow.
+	 */
 	unsigned int irq_enabled;
 	/* Fine-grained interrupt disabling by the Guest */
 	DECLARE_BITMAP(blocked_interrupts, LGUEST_IRQS);
@@ -25,6 +39,11 @@ struct lguest_data
 	/* The Host writes the virtual address of the last page fault here,
 	 * which saves the Guest a hypercall.  CR2 is the native register where
 	 * this address would normally be found. */
+	/*
+	 * The Host writes the virtual address of the last page fault here,
+	 * which saves the Guest a hypercall.  CR2 is the native register where
+	 * this address would normally be found.
+	 */
 	unsigned long cr2;
 
 	/* Wallclock time set by the Host. */
@@ -33,6 +52,17 @@ struct lguest_data
 	/* Async hypercall ring.  Instead of directly making hypercalls, we can
 	 * place them in here for processing the next time the Host wants.
 	 * This batching can be quite efficient. */
+	/*
+	 * Interrupt pending set by the Host.  The Guest should do a hypercall
+	 * if it re-enables interrupts and sees this set (to X86_EFLAGS_IF).
+	 */
+	int irq_pending;
+
+	/*
+	 * Async hypercall ring.  Instead of directly making hypercalls, we can
+	 * place them in here for processing the next time the Host wants.
+	 * This batching can be quite efficient.
+	 */
 
 	/* 0xFF == done (set by Host), 0 == pending (set by Guest). */
 	u8 hcall_status[LHCALL_RING_SIZE];
@@ -50,6 +80,10 @@ struct lguest_data
 /* Fields initialized by the Guest at boot: */
 	/* Instruction range to suppress interrupts even if enabled */
 	unsigned long noirq_start, noirq_end;
+
+/* Fields initialized by the Guest at boot: */
+	/* Instruction to suppress interrupts even if enabled */
+	unsigned long noirq_iret;
 	/* Address above which page tables are all identical. */
 	unsigned long kernel_address;
 	/* The vector to try to use for system calls (0x40 or 0x80). */

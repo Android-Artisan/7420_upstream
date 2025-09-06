@@ -50,6 +50,8 @@ config SUN_VIDEOPIX
 config TADPOLE_TS102_UCTRL
 	tristate "Tadpole TS102 Microcontroller support (EXPERIMENTAL)"
 	depends on EXPERIMENTAL && SPARC32
+config TADPOLE_TS102_UCTRL
+	tristate "Tadpole TS102 Microcontroller support"
 	help
 	  Say Y here to directly support the TS102 Microcontroller interface
 	  on the Tadpole Sparcbook 3.  This device handles power-management
@@ -59,6 +61,8 @@ config TADPOLE_TS102_UCTRL
 config SUN_JSFLASH
 	tristate "JavaStation OS Flash SIMM (EXPERIMENTAL)"
 	depends on EXPERIMENTAL && SPARC32
+	tristate "JavaStation OS Flash SIMM"
+	depends on SPARC32
 	help
 	  If you say Y here, you will be able to boot from your JavaStation's
 	  Flash memory.

@@ -57,12 +57,25 @@ ext2_acl_from_disk(const void *value, size_t size)
 				break;
 
 			case ACL_USER:
+				break;
+
+			case ACL_USER:
+				value = (char *)value + sizeof(ext2_acl_entry);
+				if ((char *)value > end)
+					goto fail;
+				acl->a_entries[n].e_uid =
+					make_kuid(&init_user_ns,
+						  le32_to_cpu(entry->e_id));
+				break;
 			case ACL_GROUP:
 				value = (char *)value + sizeof(ext2_acl_entry);
 				if ((char *)value > end)
 					goto fail;
 				acl->a_entries[n].e_id =
 					le32_to_cpu(entry->e_id);
+				acl->a_entries[n].e_gid =
+					make_kgid(&init_user_ns,
+						  le32_to_cpu(entry->e_id));
 				break;
 
 			default:
@@ -104,6 +117,19 @@ ext2_acl_to_disk(const struct posix_acl *acl, size_t *size)
 			case ACL_GROUP:
 				entry->e_id =
 					cpu_to_le32(acl->a_entries[n].e_id);
+		const struct posix_acl_entry *acl_e = &acl->a_entries[n];
+		ext2_acl_entry *entry = (ext2_acl_entry *)e;
+		entry->e_tag  = cpu_to_le16(acl_e->e_tag);
+		entry->e_perm = cpu_to_le16(acl_e->e_perm);
+		switch(acl_e->e_tag) {
+			case ACL_USER:
+				entry->e_id = cpu_to_le32(
+					from_kuid(&init_user_ns, acl_e->e_uid));
+				e += sizeof(ext2_acl_entry);
+				break;
+			case ACL_GROUP:
+				entry->e_id = cpu_to_le32(
+					from_kgid(&init_user_ns, acl_e->e_gid));
 				e += sizeof(ext2_acl_entry);
 				break;
 
@@ -156,6 +182,12 @@ static struct posix_acl *
 ext2_get_acl(struct inode *inode, int type)
 {
 	struct ext2_inode_info *ei = EXT2_I(inode);
+/*
+ * inode->i_mutex: don't care
+ */
+struct posix_acl *
+ext2_get_acl(struct inode *inode, int type)
+{
 	int name_index;
 	char *value = NULL;
 	struct posix_acl *acl;
@@ -181,6 +213,15 @@ ext2_get_acl(struct inode *inode, int type)
 
 		default:
 			return ERR_PTR(-EINVAL);
+	switch (type) {
+	case ACL_TYPE_ACCESS:
+		name_index = EXT2_XATTR_INDEX_POSIX_ACL_ACCESS;
+		break;
+	case ACL_TYPE_DEFAULT:
+		name_index = EXT2_XATTR_INDEX_POSIX_ACL_DEFAULT;
+		break;
+	default:
+		BUG();
 	}
 	retval = ext2_xattr_get(inode, name_index, "", NULL, 0);
 	if (retval > 0) {
@@ -208,6 +249,9 @@ ext2_get_acl(struct inode *inode, int type)
 				break;
 		}
 	}
+	if (!IS_ERR(acl))
+		set_cached_acl(inode, type, acl);
+
 	return acl;
 }
 
@@ -218,6 +262,11 @@ static int
 ext2_set_acl(struct inode *inode, int type, struct posix_acl *acl)
 {
 	struct ext2_inode_info *ei = EXT2_I(inode);
+int
+ext2_set_acl(struct inode *inode, struct posix_acl *acl, int type)
+static int
+__ext2_set_acl(struct inode *inode, struct posix_acl *acl, int type)
+{
 	int name_index;
 	void *value = NULL;
 	size_t size = 0;
@@ -238,10 +287,13 @@ ext2_set_acl(struct inode *inode, int type, struct posix_acl *acl)
 					return error;
 				else {
 					inode->i_mode = mode;
-					mark_inode_dirty(inode);
-					if (error == 0)
-						acl = NULL;
-				}
+				error = posix_acl_equiv_mode(acl, &inode->i_mode);
+				if (error < 0)
+				error = posix_acl_update_mode(inode, &inode->i_mode, &acl);
+				if (error)
+					return error;
+				inode->i_ctime = CURRENT_TIME_SEC;
+				mark_inode_dirty(inode);
 			}
 			break;
 
@@ -297,6 +349,29 @@ int
 ext2_permission(struct inode *inode, int mask)
 {
 	return generic_permission(inode, mask, ext2_check_acl);
+}
+
+	if (!error)
+		set_cached_acl(inode, type, acl);
+	return error;
+}
+
+/*
+ * inode->i_mutex: down
+ */
+int
+ext2_set_acl(struct inode *inode, struct posix_acl *acl, int type)
+{
+	int error;
+
+	if (type == ACL_TYPE_ACCESS && acl) {
+		error = posix_acl_update_mode(inode, &inode->i_mode, &acl);
+		if (error)
+			return error;
+		inode->i_ctime = CURRENT_TIME_SEC;
+		mark_inode_dirty(inode);
+	}
+	return __ext2_set_acl(inode, acl, type);
 }
 
 /*
@@ -517,3 +592,21 @@ struct xattr_handler ext2_xattr_acl_default_handler = {
 	.get	= ext2_xattr_get_acl_default,
 	.set	= ext2_xattr_set_acl_default,
 };
+	struct posix_acl *default_acl, *acl;
+	int error;
+
+	error = posix_acl_create(dir, &inode->i_mode, &default_acl, &acl);
+	if (error)
+		return error;
+
+	if (default_acl) {
+		error = __ext2_set_acl(inode, default_acl, ACL_TYPE_DEFAULT);
+		posix_acl_release(default_acl);
+	}
+	if (acl) {
+		if (!error)
+			error = __ext2_set_acl(inode, acl, ACL_TYPE_ACCESS);
+		posix_acl_release(acl);
+	}
+	return error;
+}

@@ -35,6 +35,8 @@ static union sh_fpu_union init_fpuregs = {
 };
 
 void save_fpu(struct task_struct *tsk, struct pt_regs *regs)
+
+void save_fpu(struct task_struct *tsk)
 {
 	asm volatile("fst.p     %0, (0*8), fp0\n\t"
 		     "fst.p     %0, (1*8), fp2\n\t"
@@ -78,6 +80,11 @@ void save_fpu(struct task_struct *tsk, struct pt_regs *regs)
 
 static inline void
 fpload(struct sh_fpu_hard_struct *fpregs)
+		: "r" (&tsk->thread.xstate->hardfpu)
+		: "memory");
+}
+
+void restore_fpu(struct task_struct *tsk)
 {
 	asm volatile("fld.p     %0, (0*8), fp0\n\t"
 		     "fld.p     %0, (1*8), fp2\n\t"
@@ -126,6 +133,11 @@ void fpinit(struct sh_fpu_hard_struct *fpregs)
 
 asmlinkage void
 do_fpu_error(unsigned long ex, struct pt_regs *regs)
+		: "r" (&tsk->thread.xstate->hardfpu)
+		: "memory");
+}
+
+asmlinkage void do_fpu_error(unsigned long ex, struct pt_regs *regs)
 {
 	struct task_struct *tsk = current;
 
@@ -164,4 +176,6 @@ do_fpu_state_restore(unsigned long ex, struct pt_regs *regs)
                 set_used_math();
         }
 	disable_fpu();
+}
+	force_sig(SIGFPE, tsk);
 }

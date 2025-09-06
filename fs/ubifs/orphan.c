@@ -47,6 +47,7 @@
  * zero, the inode number is added to the rb-tree. It is removed from the tree
  * when the inode is deleted.  Any new orphans that are in the orphan tree when
  * the commit is run, are written to the orphan area in 1 or more orph nodes.
+ * the commit is run, are written to the orphan area in 1 or more orphan nodes.
  * If the orphan area is full, it is consolidated to make space.  There is
  * always enough space because validation prevents the user from creating more
  * than the maximum number of orphans allowed.
@@ -57,6 +58,7 @@ static int dbg_check_orphans(struct ubifs_info *c);
 #else
 #define dbg_check_orphans(c) 0
 #endif
+static int dbg_check_orphans(struct ubifs_info *c);
 
 /**
  * ubifs_add_orphan - add an orphan.
@@ -93,6 +95,7 @@ int ubifs_add_orphan(struct ubifs_info *c, ino_t inum)
 			p = &(*p)->rb_right;
 		else {
 			dbg_err("orphaned twice");
+			ubifs_err(c, "orphaned twice");
 			spin_unlock(&c->orphan_lock);
 			kfree(orphan);
 			return 0;
@@ -106,6 +109,7 @@ int ubifs_add_orphan(struct ubifs_info *c, ino_t inum)
 	list_add_tail(&orphan->new_list, &c->orph_new);
 	spin_unlock(&c->orphan_lock);
 	dbg_gen("ino %lu", inum);
+	dbg_gen("ino %lu", (unsigned long)inum);
 	return 0;
 }
 
@@ -140,6 +144,19 @@ void ubifs_delete_orphan(struct ubifs_info *c, ino_t inum)
 				c->orph_dnext = o;
 				spin_unlock(&c->orphan_lock);
 				dbg_gen("delete later ino %lu", inum);
+			if (o->del) {
+				spin_unlock(&c->orphan_lock);
+				dbg_gen("deleted twice ino %lu",
+					(unsigned long)inum);
+				return;
+			}
+			if (o->cmt) {
+				o->del = 1;
+				o->dnext = c->orph_dnext;
+				c->orph_dnext = o;
+				spin_unlock(&c->orphan_lock);
+				dbg_gen("delete later ino %lu",
+					(unsigned long)inum);
 				return;
 			}
 			rb_erase(p, &c->orph_tree);
@@ -152,12 +169,15 @@ void ubifs_delete_orphan(struct ubifs_info *c, ino_t inum)
 			spin_unlock(&c->orphan_lock);
 			kfree(o);
 			dbg_gen("inum %lu", inum);
+			dbg_gen("inum %lu", (unsigned long)inum);
 			return;
 		}
 	}
 	spin_unlock(&c->orphan_lock);
 	dbg_err("missing orphan ino %lu", inum);
 	dbg_dump_stack();
+	ubifs_err(c, "missing orphan ino %lu", (unsigned long)inum);
+	dump_stack();
 }
 
 /**
@@ -179,6 +199,13 @@ int ubifs_orphan_start_commit(struct ubifs_info *c)
 		last = &orphan->cnext;
 	}
 	*last = orphan->cnext;
+		ubifs_assert(!orphan->cmt);
+		orphan->new = 0;
+		orphan->cmt = 1;
+		*last = orphan;
+		last = &orphan->cnext;
+	}
+	*last = NULL;
 	c->cmt_orphans = c->new_orphans;
 	c->new_orphans = 0;
 	dbg_cmt("%d orphans to commit", c->cmt_orphans);
@@ -230,6 +257,7 @@ static int tot_avail_orphs(struct ubifs_info *c)
 
 /**
  * do_write_orph_node - write a node
+ * do_write_orph_node - write a node to the orphan head.
  * @c: UBIFS file-system description object
  * @len: length of node
  * @atomic: write atomically
@@ -248,6 +276,7 @@ static int do_write_orph_node(struct ubifs_info *c, int len, int atomic)
 		len = ALIGN(len, c->min_io_size);
 		err = ubifs_leb_change(c, c->ohead_lnum, c->orph_buf, len,
 				       UBI_SHORTTERM);
+		err = ubifs_leb_change(c, c->ohead_lnum, c->orph_buf, len);
 	} else {
 		if (c->ohead_offs == 0) {
 			/* Ensure LEB has been unmapped */
@@ -257,6 +286,7 @@ static int do_write_orph_node(struct ubifs_info *c, int len, int atomic)
 		}
 		err = ubifs_write_node(c, c->orph_buf, len, c->ohead_lnum,
 				       c->ohead_offs, UBI_SHORTTERM);
+				       c->ohead_offs);
 	}
 	return err;
 }
@@ -267,6 +297,11 @@ static int do_write_orph_node(struct ubifs_info *c, int len, int atomic)
  * @atomic: write atomically
  *
  * This function builds an orph node from the cnext list and writes it to the
+ * write_orph_node - write an orphan node.
+ * @c: UBIFS file-system description object
+ * @atomic: write atomically
+ *
+ * This function builds an orphan node from the cnext list and writes it to the
  * orphan head. On success, %0 is returned, otherwise a negative error code
  * is returned.
  */
@@ -288,6 +323,7 @@ static int write_orph_node(struct ubifs_info *c, int atomic)
 			 * never happen.
 			 */
 			ubifs_err("out of space in orphan area");
+			ubifs_err(c, "out of space in orphan area");
 			return -EINVAL;
 		}
 	}
@@ -303,6 +339,9 @@ static int write_orph_node(struct ubifs_info *c, int atomic)
 	for (i = 0; i < cnt; i++) {
 		orphan = cnext;
 		orph->inos[i] = cpu_to_le64(orphan->inum);
+		ubifs_assert(orphan->cmt);
+		orph->inos[i] = cpu_to_le64(orphan->inum);
+		orphan->cmt = 0;
 		cnext = orphan->cnext;
 		orphan->cnext = NULL;
 	}
@@ -329,6 +368,11 @@ static int write_orph_node(struct ubifs_info *c, int atomic)
  * @atomic: write atomically
  *
  * This function writes orph nodes for all the orphans to commit. On success,
+ * write_orph_nodes - write orphan nodes until there are no more to commit.
+ * @c: UBIFS file-system description object
+ * @atomic: write atomically
+ *
+ * This function writes orphan nodes for all the orphans to commit. On success,
  * %0 is returned, otherwise a negative error code is returned.
  */
 static int write_orph_nodes(struct ubifs_info *c, int atomic)
@@ -381,11 +425,13 @@ static int consolidate(struct ubifs_info *c)
 		list_for_each_entry(orphan, &c->orph_list, list) {
 			if (orphan->new)
 				continue;
+			orphan->cmt = 1;
 			*last = orphan;
 			last = &orphan->cnext;
 			cnt += 1;
 		}
 		*last = orphan->cnext;
+		*last = NULL;
 		ubifs_assert(cnt == c->tot_orphans - c->new_orphans);
 		c->cmt_orphans = cnt;
 		c->ohead_lnum = c->orph_first;
@@ -396,6 +442,7 @@ static int consolidate(struct ubifs_info *c)
 		 * never happen.
 		 */
 		ubifs_err("out of space in orphan area");
+		ubifs_err(c, "out of space in orphan area");
 		err = -EINVAL;
 	}
 	spin_unlock(&c->orphan_lock);
@@ -449,6 +496,11 @@ static void erase_deleted(struct ubifs_info *c)
 		list_del(&orphan->list);
 		c->tot_orphans -= 1;
 		dbg_gen("deleting orphan ino %lu", orphan->inum);
+		ubifs_assert(orphan->del);
+		rb_erase(&orphan->rb, &c->orph_tree);
+		list_del(&orphan->list);
+		c->tot_orphans -= 1;
+		dbg_gen("deleting orphan ino %lu", (unsigned long)orphan->inum);
 		kfree(orphan);
 	}
 	c->orph_dnext = NULL;
@@ -477,6 +529,7 @@ int ubifs_orphan_end_commit(struct ubifs_info *c)
 
 /**
  * clear_orphans - erase all LEBs used for orphans.
+ * ubifs_clear_orphans - erase all LEBs used for orphans.
  * @c: UBIFS file-system description object
  *
  * If recovery is not required, then the orphans from the previous session
@@ -484,6 +537,7 @@ int ubifs_orphan_end_commit(struct ubifs_info *c)
  * orphans, and un-maps them.
  */
 static int clear_orphans(struct ubifs_info *c)
+int ubifs_clear_orphans(struct ubifs_info *c)
 {
 	int lnum, err;
 
@@ -538,6 +592,11 @@ static int insert_dead_orphan(struct ubifs_info *c, ino_t inum)
 	c->orph_dnext = orphan;
 	dbg_mnt("ino %lu, new %d, tot %d",
 		inum, c->new_orphans, c->tot_orphans);
+	orphan->del = 1;
+	orphan->dnext = c->orph_dnext;
+	c->orph_dnext = orphan;
+	dbg_mnt("ino %lu, new %d, tot %d", (unsigned long)inum,
+		c->new_orphans, c->tot_orphans);
 	return 0;
 }
 
@@ -548,6 +607,9 @@ static int insert_dead_orphan(struct ubifs_info *c, ino_t inum)
  * @last_cmt_no: cmt_no of last orph node read is passed and returned here
  * @outofdate: whether the LEB is out of date is returned here
  * @last_flagged: whether the end orph node is encountered
+ * @last_cmt_no: cmt_no of last orphan node read is passed and returned here
+ * @outofdate: whether the LEB is out of date is returned here
+ * @last_flagged: whether the end orphan node is encountered
  *
  * This function is a helper to the 'kill_orphans()' function. It goes through
  * every orphan node in a LEB and for every inode number recorded, removes
@@ -568,6 +630,9 @@ static int do_kill_orphans(struct ubifs_info *c, struct ubifs_scan_leb *sleb,
 			ubifs_err("invalid node type %d in orphan area at "
 				  "%d:%d", snod->type, sleb->lnum, snod->offs);
 			dbg_dump_node(c, snod->node);
+			ubifs_err(c, "invalid node type %d in orphan area at %d:%d",
+				  snod->type, sleb->lnum, snod->offs);
+			ubifs_dump_node(c, snod->node);
 			return -EINVAL;
 		}
 
@@ -580,6 +645,8 @@ static int do_kill_orphans(struct ubifs_info *c, struct ubifs_scan_leb *sleb,
 		 * of a failed commit. If there are several failed commits in a
 		 * row, the commit number written on orph nodes will continue to
 		 * increase (because the commit number is adjusted here) even
+		 * row, the commit number written on orphan nodes will continue
+		 * to increase (because the commit number is adjusted here) even
 		 * though the commit number on the master node stays the same
 		 * because the master node has not been re-written.
 		 */
@@ -596,6 +663,14 @@ static int do_kill_orphans(struct ubifs_info *c, struct ubifs_scan_leb *sleb,
 					  "orphan node at %d:%d",
 					  cmt_no, sleb->lnum, snod->offs);
 				dbg_dump_node(c, snod->node);
+			 * The last orphan node had a higher commit number and
+			 * was flagged as the last written for that commit
+			 * number. That makes this orphan node, out of date.
+			 */
+			if (!first) {
+				ubifs_err(c, "out of order commit number %llu in orphan node at %d:%d",
+					  cmt_no, sleb->lnum, snod->offs);
+				ubifs_dump_node(c, snod->node);
 				return -EINVAL;
 			}
 			dbg_rcvry("out of date LEB %d", sleb->lnum);
@@ -610,6 +685,8 @@ static int do_kill_orphans(struct ubifs_info *c, struct ubifs_scan_leb *sleb,
 		for (i = 0; i < n; i++) {
 			inum = le64_to_cpu(orph->inos[i]);
 			dbg_rcvry("deleting orphaned inode %lu", inum);
+			dbg_rcvry("deleting orphaned inode %lu",
+				  (unsigned long)inum);
 			err = ubifs_tnc_remove_ino(c, inum);
 			if (err)
 				return err;
@@ -659,6 +736,10 @@ static int kill_orphans(struct ubifs_info *c)
 	 * through. In addition, the last orph node written for each commit is
 	 * marked (top bit of orph->cmt_no is set to 1). It is possible that
 	 * there are orph nodes from the next commit (i.e. the commit did not
+	 * but may contain out of date orphan nodes if the unmap didn't go
+	 * through. In addition, the last orphan node written for each commit is
+	 * marked (top bit of orph->cmt_no is set to 1). It is possible that
+	 * there are orphan nodes from the next commit (i.e. the commit did not
 	 * complete successfully). In that case, no orphans will have been lost
 	 * due to the way that orphans are written, and any orphans added will
 	 * be valid orphans anyway and so can be deleted.
@@ -670,6 +751,11 @@ static int kill_orphans(struct ubifs_info *c)
 		sleb = ubifs_scan(c, lnum, 0, c->sbuf);
 		if (IS_ERR(sleb)) {
 			sleb = ubifs_recover_leb(c, lnum, 0, c->sbuf, 0);
+		sleb = ubifs_scan(c, lnum, 0, c->sbuf, 1);
+		if (IS_ERR(sleb)) {
+			if (PTR_ERR(sleb) == -EUCLEAN)
+				sleb = ubifs_recover_leb(c, lnum, 0,
+							 c->sbuf, -1);
 			if (IS_ERR(sleb)) {
 				err = PTR_ERR(sleb);
 				break;
@@ -716,11 +802,15 @@ int ubifs_mount_orphans(struct ubifs_info *c, int unclean, int read_only)
 		err = kill_orphans(c);
 	else if (!read_only)
 		err = clear_orphans(c);
+		err = ubifs_clear_orphans(c);
 
 	return err;
 }
 
 #ifdef CONFIG_UBIFS_FS_DEBUG
+/*
+ * Everything below is related to debugging.
+ */
 
 struct check_orphan {
 	struct rb_node rb;
@@ -827,6 +917,10 @@ static void dbg_free_check_tree(struct rb_root *root)
 		}
 		kfree(o);
 	}
+	struct check_orphan *o, *n;
+
+	rbtree_postorder_for_each_entry_safe(o, n, root, rb)
+		kfree(o);
 }
 
 static int dbg_orphan_check(struct ubifs_info *c, struct ubifs_zbranch *zbr,
@@ -842,11 +936,14 @@ static int dbg_orphan_check(struct ubifs_info *c, struct ubifs_zbranch *zbr,
 		if (key_type(c, &zbr->key) != UBIFS_INO_KEY)
 			ubifs_err("found orphan node ino %lu, type %d", inum,
 				  key_type(c, &zbr->key));
+			ubifs_err(c, "found orphan node ino %lu, type %d",
+				  (unsigned long)inum, key_type(c, &zbr->key));
 		ci->last_ino = inum;
 		ci->tot_inos += 1;
 		err = ubifs_tnc_read_node(c, zbr, ci->node);
 		if (err) {
 			ubifs_err("node read failed, error %d", err);
+			ubifs_err(c, "node read failed, error %d", err);
 			return err;
 		}
 		if (ci->node->nlink == 0)
@@ -854,6 +951,8 @@ static int dbg_orphan_check(struct ubifs_info *c, struct ubifs_zbranch *zbr,
 			if (!dbg_find_check_orphan(&ci->root, inum) &&
 			    !dbg_find_orphan(c, inum)) {
 				ubifs_err("missing orphan, ino %lu", inum);
+				ubifs_err(c, "missing orphan, ino %lu",
+					  (unsigned long)inum);
 				ci->missing += 1;
 			}
 	}
@@ -887,6 +986,7 @@ static int dbg_read_orphans(struct check_info *ci, struct ubifs_scan_leb *sleb)
 static int dbg_scan_orphans(struct ubifs_info *c, struct check_info *ci)
 {
 	int lnum, err = 0;
+	void *buf;
 
 	/* Check no-orphans flag and skip this if no orphans */
 	if (c->no_orphs)
@@ -896,6 +996,16 @@ static int dbg_scan_orphans(struct ubifs_info *c, struct check_info *ci)
 		struct ubifs_scan_leb *sleb;
 
 		sleb = ubifs_scan(c, lnum, 0, c->dbg_buf);
+	buf = __vmalloc(c->leb_size, GFP_NOFS, PAGE_KERNEL);
+	if (!buf) {
+		ubifs_err(c, "cannot allocate memory to check orphans");
+		return 0;
+	}
+
+	for (lnum = c->orph_first; lnum <= c->orph_last; lnum++) {
+		struct ubifs_scan_leb *sleb;
+
+		sleb = ubifs_scan(c, lnum, 0, buf, 0);
 		if (IS_ERR(sleb)) {
 			err = PTR_ERR(sleb);
 			break;
@@ -907,6 +1017,7 @@ static int dbg_scan_orphans(struct ubifs_info *c, struct check_info *ci)
 			break;
 	}
 
+	vfree(buf);
 	return err;
 }
 
@@ -916,6 +1027,7 @@ static int dbg_check_orphans(struct ubifs_info *c)
 	int err;
 
 	if (!(ubifs_chk_flags & UBIFS_CHK_ORPH))
+	if (!dbg_is_chk_orph(c))
 		return 0;
 
 	ci.last_ino = 0;
@@ -926,6 +1038,7 @@ static int dbg_check_orphans(struct ubifs_info *c)
 	ci.node = kmalloc(UBIFS_MAX_INO_NODE_SZ, GFP_NOFS);
 	if (!ci.node) {
 		ubifs_err("out of memory");
+		ubifs_err(c, "out of memory");
 		return -ENOMEM;
 	}
 
@@ -936,11 +1049,13 @@ static int dbg_check_orphans(struct ubifs_info *c)
 	err = dbg_walk_index(c, &dbg_orphan_check, NULL, &ci);
 	if (err) {
 		ubifs_err("cannot scan TNC, error %d", err);
+		ubifs_err(c, "cannot scan TNC, error %d", err);
 		goto out;
 	}
 
 	if (ci.missing) {
 		ubifs_err("%lu missing orphan(s)", ci.missing);
+		ubifs_err(c, "%lu missing orphan(s)", ci.missing);
 		err = -EINVAL;
 		goto out;
 	}

@@ -1,6 +1,7 @@
 #include <linux/ptrace.h>
 #include <linux/sched.h>
 #include <linux/module.h>
+#include <linux/export.h>
 #include <asm/syscall.h>
 
 static int collect_syscall(struct task_struct *target, long *callno,

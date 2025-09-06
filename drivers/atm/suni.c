@@ -25,6 +25,10 @@
 #include <asm/param.h>
 #include <asm/uaccess.h>
 #include <asm/atomic.h>
+#include <linux/slab.h>
+#include <asm/param.h>
+#include <asm/uaccess.h>
+#include <linux/atomic.h>
 
 #include "suni.h"
 
@@ -292,6 +296,9 @@ static void poll_los(struct atm_dev *dev)
 {
 	dev->signal = GET(RSOP_SIS) & SUNI_RSOP_SIS_LOSV ? ATM_PHY_SIG_LOST :
 	  ATM_PHY_SIG_FOUND;
+	atm_dev_signal_change(dev,
+		GET(RSOP_SIS) & SUNI_RSOP_SIS_LOSV ?
+		ATM_PHY_SIG_LOST : ATM_PHY_SIG_FOUND);
 }
 
 

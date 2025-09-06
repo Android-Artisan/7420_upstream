@@ -73,6 +73,11 @@
 static DEFINE_SPINLOCK(pdc_lock);
 static unsigned long pdc_result[32] __attribute__ ((aligned (8)));
 static unsigned long pdc_result2[32] __attribute__ ((aligned (8)));
+#include <asm/processor.h>	/* for boot_cpu_data */
+
+static DEFINE_SPINLOCK(pdc_lock);
+extern unsigned long pdc_result[NUM_PDC_RESULT];
+extern unsigned long pdc_result2[NUM_PDC_RESULT];
 
 #ifdef CONFIG_64BIT
 #define WIDE_FIRMWARE 0x1
@@ -120,10 +125,10 @@ static unsigned long f_extend(unsigned long address)
 #ifdef CONFIG_64BIT
 	if(unlikely(parisc_narrow_firmware)) {
 		if((address & 0xff000000) == 0xf0000000)
-			return 0xf0f0f0f000000000UL | (u32)address;
+			return (0xfffffff0UL << 32) | (u32)address;
 
 		if((address & 0xf0000000) == 0xf0000000)
-			return 0xffffffff00000000UL | (u32)address;
+			return (0xffffffffUL << 32) | (u32)address;
 	}
 #endif
 	return address;
@@ -170,6 +175,42 @@ void __init set_firmware_width(void)
         spin_unlock_irqrestore(&pdc_lock, flags);
 #endif
 }
+#ifdef CONFIG_64BIT
+void set_firmware_width_unlocked(void)
+{
+	int ret;
+
+	ret = mem_pdc_call(PDC_MODEL, PDC_MODEL_CAPABILITIES,
+		__pa(pdc_result), 0);
+	convert_to_wide(pdc_result);
+	if (pdc_result[0] != NARROW_FIRMWARE)
+		parisc_narrow_firmware = 0;
+}
+	
+/**
+ * set_firmware_width - Determine if the firmware is wide or narrow.
+ * 
+ * This function must be called before any pdc_* function that uses the
+ * convert_to_wide function.
+ */
+void set_firmware_width(void)
+{
+	unsigned long flags;
+	spin_lock_irqsave(&pdc_lock, flags);
+	set_firmware_width_unlocked();
+	spin_unlock_irqrestore(&pdc_lock, flags);
+}
+#else
+void set_firmware_width_unlocked(void)
+{
+	return;
+}
+
+void set_firmware_width(void)
+{
+	return;
+}
+#endif /*CONFIG_64BIT*/
 
 /**
  * pdc_emergency_unlock - Unlock the linux pdc lock
@@ -288,6 +329,20 @@ int pdc_chassis_warn(unsigned long *warn)
 	return retval;
 }
 
+int pdc_coproc_cfg_unlocked(struct pdc_coproc_cfg *pdc_coproc_info)
+{
+	int ret;
+
+	ret = mem_pdc_call(PDC_COPROC, PDC_COPROC_CFG, __pa(pdc_result));
+	convert_to_wide(pdc_result);
+	pdc_coproc_info->ccr_functional = pdc_result[0];
+	pdc_coproc_info->ccr_present = pdc_result[1];
+	pdc_coproc_info->revision = pdc_result[17];
+	pdc_coproc_info->model = pdc_result[18];
+
+	return ret;
+}
+
 /**
  * pdc_coproc_cfg - To identify coprocessors attached to the processor.
  * @pdc_coproc_info: Return buffer address.
@@ -310,6 +365,16 @@ int __init pdc_coproc_cfg(struct pdc_coproc_cfg *pdc_coproc_info)
         spin_unlock_irqrestore(&pdc_lock, flags);
 
         return retval;
+int pdc_coproc_cfg(struct pdc_coproc_cfg *pdc_coproc_info)
+{
+	int ret;
+	unsigned long flags;
+
+	spin_lock_irqsave(&pdc_lock, flags);
+	ret = pdc_coproc_cfg_unlocked(pdc_coproc_info);
+	spin_unlock_irqrestore(&pdc_lock, flags);
+
+	return ret;
 }
 
 /**
@@ -505,6 +570,11 @@ int pdc_model_capabilities(unsigned long *capabilities)
         retval = mem_pdc_call(PDC_MODEL, PDC_MODEL_CAPABILITIES, __pa(pdc_result), 0);
         convert_to_wide(pdc_result);
         *capabilities = pdc_result[0];
+        if (retval == PDC_OK) {
+                *capabilities = pdc_result[0];
+        } else {
+                *capabilities = PDC_MODEL_OS32;
+        }
         spin_unlock_irqrestore(&pdc_lock, flags);
 
         return retval;
@@ -1101,6 +1171,11 @@ int pdc_iodc_print(const unsigned char *str, unsigned count)
 	unsigned long flags;
 
 	for (i = 0; i < count && i < 79;) {
+	unsigned int i;
+	unsigned int i, found = 0;
+	unsigned long flags;
+
+	for (i = 0; i < count;) {
 		switch(str[i]) {
 		case '\n':
 			iodc_dbuf[i+0] = '\r';
@@ -1119,6 +1194,11 @@ int pdc_iodc_print(const unsigned char *str, unsigned count)
 		default:
 			iodc_dbuf[i] = str[i];
 			i++, posx++;
+			found = 1;
+			goto print;
+		default:
+			iodc_dbuf[i] = str[i];
+			i++;
 			break;
 		}
 	}
@@ -1140,7 +1220,7 @@ print:
                     __pa(iodc_retbuf), 0, __pa(iodc_dbuf), i, 0);
         spin_unlock_irqrestore(&pdc_lock, flags);
 
-	return i;
+	return i - found;
 }
 
 /**

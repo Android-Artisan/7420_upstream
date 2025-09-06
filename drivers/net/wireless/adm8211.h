@@ -81,6 +81,7 @@ struct adm8211_csr {
 	__le32 FPSR;		/* 0x108 */
 	__le32 FFER;		/* 0x10C */
 } __attribute__ ((packed));
+} __packed;
 
 /* CSR0 - PAR (PCI Address Register) */
 #define ADM8211_PAR_MWIE	(1 << 24)
@@ -267,6 +268,7 @@ do {								\
 #define ADM8211_SYNCTL_CAL	(1 << 27)
 #define ADM8211_SYNCTL_SELCAL	(1 << 26)
 #define ADM8211_SYNCTL_RFtype	((1 << 24) || (1 << 23) || (1 << 22))
+#define ADM8211_SYNCTL_RFtype	((1 << 24) | (1 << 23) | (1 << 22))
 #define ADM8211_SYNCTL_RFMD	(1 << 22)
 #define ADM8211_SYNCTL_GENERAL	(0x7 << 22)
 /* SYNCTL 21:0 Data (Si4126: 18-bit data, 4-bit address) */
@@ -485,6 +487,7 @@ struct adm8211_tx_hdr {
 	u16 reserved_1;
 	u32 reserved_2;
 } __attribute__ ((packed));
+} __packed;
 
 
 #define RX_COPY_BREAK 128
@@ -532,6 +535,7 @@ struct adm8211_eeprom {
 	__le16	checksum;		/* 0x7E */
 	u8	cis_data[0];		/* 0x80, 384 bytes */
 } __attribute__ ((packed));
+} __packed;
 
 struct adm8211_priv {
 	struct pci_dev *pdev;

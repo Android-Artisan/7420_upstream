@@ -9,6 +9,11 @@
 #include <linux/string.h>
 #include "net_kern.h"
 #include "net_user.h"
+#include <linux/init.h>
+#include <linux/netdevice.h>
+#include <linux/string.h>
+#include <net_kern.h>
+#include <net_user.h>
 #include "slirp.h"
 
 struct slirp_init {
@@ -23,6 +28,7 @@ void slirp_init(struct net_device *dev, void *data)
 	int i;
 
 	private = dev->priv;
+	private = netdev_priv(dev);
 	spri = (struct slirp_data *) private->user;
 
 	spri->argw = init->argw;

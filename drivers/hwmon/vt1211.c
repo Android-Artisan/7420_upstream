@@ -21,6 +21,8 @@
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/slab.h>
@@ -33,6 +35,8 @@
 #include <linux/mutex.h>
 #include <linux/ioport.h>
 #include <asm/io.h>
+#include <linux/acpi.h>
+#include <linux/io.h>
 
 static int uch_config = -1;
 module_param(uch_config, int, 0);
@@ -162,11 +166,30 @@ struct vt1211_data {
    according to some measurements that I took on an EPIA M10000.
    temp3-7 are thermistor based so the driver returns the voltage measured at
    the pin (range 0V - 2.2V). */
+/*
+ * in5 (ix = 5) is special. It's the internal 3.3V so it's scaled in the
+ * driver according to the VT1211 BIOS porting guide
+ */
+#define IN_FROM_REG(ix, reg)	((reg) < 3 ? 0 : (ix) == 5 ? \
+				 (((reg) - 3) * 15882 + 479) / 958 : \
+				 (((reg) - 3) * 10000 + 479) / 958)
+#define IN_TO_REG(ix, val)	(clamp_val((ix) == 5 ? \
+				 ((val) * 958 + 7941) / 15882 + 3 : \
+				 ((val) * 958 + 5000) / 10000 + 3, 0, 255))
+
+/*
+ * temp1 (ix = 0) is an intel thermal diode which is scaled in user space.
+ * temp2 (ix = 1) is the internal temp diode so it's scaled in the driver
+ * according to some measurements that I took on an EPIA M10000.
+ * temp3-7 are thermistor based so the driver returns the voltage measured at
+ * the pin (range 0V - 2.2V).
+ */
 #define TEMP_FROM_REG(ix, reg)	((ix) == 0 ? (reg) * 1000 : \
 				 (ix) == 1 ? (reg) < 51 ? 0 : \
 				 ((reg) - 51) * 1000 : \
 				 ((253 - (reg)) * 2200 + 105) / 210)
 #define TEMP_TO_REG(ix, val)	SENSORS_LIMIT( \
+#define TEMP_TO_REG(ix, val)	clamp_val( \
 				 ((ix) == 0 ? ((val) + 500) / 1000 : \
 				  (ix) == 1 ? ((val) + 500) / 1000 + 51 : \
 				  253 - ((val) * 210 + 1100) / 2200), 0, 255)
@@ -177,6 +200,7 @@ struct vt1211_data {
 				 1310720 / (reg) / DIV_FROM_REG(div))
 #define RPM_TO_REG(val, div)	((val) == 0 ? 255 : \
 				 SENSORS_LIMIT((1310720 / (val) / \
+				 clamp_val((1310720 / (val) / \
 				 DIV_FROM_REG(div)), 1, 254))
 
 /* ---------------------------------------------------------------------
@@ -185,6 +209,10 @@ struct vt1211_data {
 
 /* Configuration index port registers
  * The vt1211 can live at 2 different addresses so we need to probe both */
+/*
+ * Configuration index port registers
+ * The vt1211 can live at 2 different addresses so we need to probe both
+ */
 #define SIO_REG_CIP1		0x2e
 #define SIO_REG_CIP2		0x4e
 
@@ -217,15 +245,21 @@ static inline void superio_select(int sio_cip, int ldn)
 	outb(ldn, sio_cip + 1);
 }
 
-static inline void superio_enter(int sio_cip)
+static inline int superio_enter(int sio_cip)
 {
+	if (!request_muxed_region(sio_cip, 2, DRVNAME))
+		return -EBUSY;
+
 	outb(0x87, sio_cip);
 	outb(0x87, sio_cip);
+
+	return 0;
 }
 
 static inline void superio_exit(int sio_cip)
 {
 	outb(0xaa, sio_cip);
+	release_region(sio_cip, 2);
 }
 
 /* ---------------------------------------------------------------------
@@ -375,6 +409,12 @@ static ssize_t set_in(struct device *dev, struct device_attribute *attr,
 	int ix = sensor_attr_2->index;
 	int fn = sensor_attr_2->nr;
 	long val = simple_strtol(buf, NULL, 10);
+	long val;
+	int err;
+
+	err = kstrtol(buf, 10, &val);
+	if (err)
+		return err;
 
 	mutex_lock(&data->update_lock);
 	switch (fn) {
@@ -444,6 +484,12 @@ static ssize_t set_temp(struct device *dev, struct device_attribute *attr,
 	int ix = sensor_attr_2->index;
 	int fn = sensor_attr_2->nr;
 	long val = simple_strtol(buf, NULL, 10);
+	long val;
+	int err;
+
+	err = kstrtol(buf, 10, &val);
+	if (err)
+		return err;
 
 	mutex_lock(&data->update_lock);
 	switch (fn) {
@@ -516,6 +562,13 @@ static ssize_t set_fan(struct device *dev, struct device_attribute *attr,
 	int fn = sensor_attr_2->nr;
 	long val = simple_strtol(buf, NULL, 10);
 	int reg;
+	int reg;
+	unsigned long val;
+	int err;
+
+	err = kstrtoul(buf, 10, &val);
+	if (err)
+		return err;
 
 	mutex_lock(&data->update_lock);
 
@@ -543,6 +596,24 @@ static ssize_t set_fan(struct device *dev, struct device_attribute *attr,
 					 "supported. Choose one of 1, 2, "
 					 "4, or 8.\n", val);
 				goto EXIT;
+		case 1:
+			data->fan_div[ix] = 0;
+			break;
+		case 2:
+			data->fan_div[ix] = 1;
+			break;
+		case 4:
+			data->fan_div[ix] = 2;
+			break;
+		case 8:
+			data->fan_div[ix] = 3;
+			break;
+		default:
+			count = -EINVAL;
+			dev_warn(dev,
+				 "fan div value %ld not supported. Choose one of 1, 2, 4, or 8.\n",
+				 val);
+			goto EXIT;
 		}
 		vt1211_write8(data, VT1211_REG_FAN_DIV,
 			      ((data->fan_div[1] << 6) |
@@ -609,6 +680,13 @@ static ssize_t set_pwm(struct device *dev, struct device_attribute *attr,
 	int fn = sensor_attr_2->nr;
 	long val = simple_strtol(buf, NULL, 10);
 	int tmp, reg;
+	int tmp, reg;
+	unsigned long val;
+	int err;
+
+	err = kstrtoul(buf, 10, &val);
+	if (err)
+		return err;
 
 	mutex_lock(&data->update_lock);
 
@@ -630,6 +708,12 @@ static ssize_t set_pwm(struct device *dev, struct device_attribute *attr,
 			if ((data->pwm_ctl[ix ^ 1] & 1) == 0) {
 				data->fan_ctl &= 0xe;
 			}
+			/*
+			 * disable SmartGuardian if both PWM outputs are
+			 * disabled
+			 */
+			if ((data->pwm_ctl[ix ^ 1] & 1) == 0)
+				data->fan_ctl &= 0xe;
 			break;
 		case 2:
 			data->pwm_ctl[ix] |= 8;
@@ -639,6 +723,9 @@ static ssize_t set_pwm(struct device *dev, struct device_attribute *attr,
 			count = -EINVAL;
 			dev_warn(dev, "pwm mode %ld not supported. "
 				 "Choose one of 0 or 2.\n", val);
+			dev_warn(dev,
+				 "pwm mode %ld not supported. Choose one of 0 or 2.\n",
+				 val);
 			goto EXIT;
 		}
 		vt1211_write8(data, VT1211_REG_PWM_CTL,
@@ -656,6 +743,11 @@ static ssize_t set_pwm(struct device *dev, struct device_attribute *attr,
 		for (val >>= 1; val > 0; val >>= 1) {
 			tmp++;
 		}
+		val = 135000 / clamp_val(val, 135000 >> 7, 135000);
+		/* calculate tmp = log2(val) */
+		tmp = 0;
+		for (val >>= 1; val > 0; val >>= 1)
+			tmp++;
 		/* sync the data cache */
 		reg = vt1211_read8(data, VT1211_REG_PWM_CLK);
 		data->pwm_clk = (reg & 0xf8) | tmp;
@@ -666,6 +758,11 @@ static ssize_t set_pwm(struct device *dev, struct device_attribute *attr,
 			count = -EINVAL;
 			dev_warn(dev, "temp channel %ld not supported. "
 				 "Choose a value between 1 and 7.\n", val);
+		if (val < 1 || val > 7) {
+			count = -EINVAL;
+			dev_warn(dev,
+				 "temp channel %ld not supported. Choose a value between 1 and 7.\n",
+				 val);
 			goto EXIT;
 		}
 		if (!ISTEMP(val - 1, data->uch_config)) {
@@ -740,6 +837,14 @@ static ssize_t set_pwm_auto_point_temp(struct device *dev,
 	int ap = sensor_attr_2->nr;
 	long val = simple_strtol(buf, NULL, 10);
 	int reg;
+	int reg;
+	long val;
+	int err;
+
+	err = kstrtol(buf, 10, &val);
+	if (err)
+		return err;
+
 
 	mutex_lock(&data->update_lock);
 
@@ -772,6 +877,7 @@ static ssize_t set_pwm_auto_point_temp(struct device *dev,
  * 1  2  : pwm2 high speed duty cycle (pwm_auto_pwm[1][2])
  * 1  3  : pwm2 full speed            (pwm_auto_pwm[1][3], hard-wired to 255)
 */
+ */
 
 static ssize_t show_pwm_auto_point_pwm(struct device *dev,
 				       struct device_attribute *attr,
@@ -805,6 +911,15 @@ static ssize_t set_pwm_auto_point_pwm(struct device *dev,
 
 	mutex_lock(&data->update_lock);
 	data->pwm_auto_pwm[ix][ap] = val;
+	unsigned long val;
+	int err;
+
+	err = kstrtoul(buf, 10, &val);
+	if (err)
+		return err;
+
+	mutex_lock(&data->update_lock);
+	data->pwm_auto_pwm[ix][ap] = clamp_val(val, 0, 255);
 	vt1211_write8(data, VT1211_REG_PWM_AUTO_PWM(ix, ap),
 		      data->pwm_auto_pwm[ix][ap]);
 	mutex_unlock(&data->update_lock);
@@ -829,6 +944,15 @@ static ssize_t set_vrm(struct device *dev, struct device_attribute *attr,
 {
 	struct vt1211_data *data = dev_get_drvdata(dev);
 	long val = simple_strtol(buf, NULL, 10);
+	unsigned long val;
+	int err;
+
+	err = kstrtoul(buf, 10, &val);
+	if (err)
+		return err;
+
+	if (val > 255)
+		return -EINVAL;
 
 	data->vrm = val;
 
@@ -969,6 +1093,99 @@ static struct sensor_device_attribute_2 vt1211_sysfs_temp_alarm[] = {
 	SENSOR_ATTR_TEMP_ALARM(5),
 	SENSOR_ATTR_TEMP_ALARM(6),
 	SENSOR_ATTR_TEMP_ALARM(7),
+#define SENSOR_ATTR_IN(ix) \
+{	SENSOR_ATTR_2(in##ix##_input, S_IRUGO, \
+		show_in, NULL, SHOW_IN_INPUT, ix), \
+	SENSOR_ATTR_2(in##ix##_min, S_IRUGO | S_IWUSR, \
+		show_in, set_in, SHOW_SET_IN_MIN, ix), \
+	SENSOR_ATTR_2(in##ix##_max, S_IRUGO | S_IWUSR, \
+		show_in, set_in, SHOW_SET_IN_MAX, ix), \
+	SENSOR_ATTR_2(in##ix##_alarm, S_IRUGO, \
+		show_in, NULL, SHOW_IN_ALARM, ix) \
+}
+
+static struct sensor_device_attribute_2 vt1211_sysfs_in[][4] = {
+	SENSOR_ATTR_IN(0),
+	SENSOR_ATTR_IN(1),
+	SENSOR_ATTR_IN(2),
+	SENSOR_ATTR_IN(3),
+	SENSOR_ATTR_IN(4),
+	SENSOR_ATTR_IN(5)
+};
+
+#define IN_UNIT_ATTRS(X)			\
+{	&vt1211_sysfs_in[X][0].dev_attr.attr,	\
+	&vt1211_sysfs_in[X][1].dev_attr.attr,	\
+	&vt1211_sysfs_in[X][2].dev_attr.attr,	\
+	&vt1211_sysfs_in[X][3].dev_attr.attr,	\
+	NULL					\
+}
+
+static struct attribute *vt1211_in_attr[][5] = {
+	IN_UNIT_ATTRS(0),
+	IN_UNIT_ATTRS(1),
+	IN_UNIT_ATTRS(2),
+	IN_UNIT_ATTRS(3),
+	IN_UNIT_ATTRS(4),
+	IN_UNIT_ATTRS(5)
+};
+
+static const struct attribute_group vt1211_in_attr_group[] = {
+	{ .attrs = vt1211_in_attr[0] },
+	{ .attrs = vt1211_in_attr[1] },
+	{ .attrs = vt1211_in_attr[2] },
+	{ .attrs = vt1211_in_attr[3] },
+	{ .attrs = vt1211_in_attr[4] },
+	{ .attrs = vt1211_in_attr[5] }
+};
+
+#define SENSOR_ATTR_TEMP(ix) \
+{	SENSOR_ATTR_2(temp##ix##_input, S_IRUGO, \
+		show_temp, NULL, SHOW_TEMP_INPUT, ix-1), \
+	SENSOR_ATTR_2(temp##ix##_max, S_IRUGO | S_IWUSR, \
+		show_temp, set_temp, SHOW_SET_TEMP_MAX, ix-1), \
+	SENSOR_ATTR_2(temp##ix##_max_hyst, S_IRUGO | S_IWUSR, \
+		show_temp, set_temp, SHOW_SET_TEMP_MAX_HYST, ix-1), \
+	SENSOR_ATTR_2(temp##ix##_alarm, S_IRUGO, \
+		show_temp, NULL, SHOW_TEMP_ALARM, ix-1) \
+}
+
+static struct sensor_device_attribute_2 vt1211_sysfs_temp[][4] = {
+	SENSOR_ATTR_TEMP(1),
+	SENSOR_ATTR_TEMP(2),
+	SENSOR_ATTR_TEMP(3),
+	SENSOR_ATTR_TEMP(4),
+	SENSOR_ATTR_TEMP(5),
+	SENSOR_ATTR_TEMP(6),
+	SENSOR_ATTR_TEMP(7),
+};
+
+#define TEMP_UNIT_ATTRS(X)			\
+{	&vt1211_sysfs_temp[X][0].dev_attr.attr,	\
+	&vt1211_sysfs_temp[X][1].dev_attr.attr,	\
+	&vt1211_sysfs_temp[X][2].dev_attr.attr,	\
+	&vt1211_sysfs_temp[X][3].dev_attr.attr,	\
+	NULL					\
+}
+
+static struct attribute *vt1211_temp_attr[][5] = {
+	TEMP_UNIT_ATTRS(0),
+	TEMP_UNIT_ATTRS(1),
+	TEMP_UNIT_ATTRS(2),
+	TEMP_UNIT_ATTRS(3),
+	TEMP_UNIT_ATTRS(4),
+	TEMP_UNIT_ATTRS(5),
+	TEMP_UNIT_ATTRS(6)
+};
+
+static const struct attribute_group vt1211_temp_attr_group[] = {
+	{ .attrs = vt1211_temp_attr[0] },
+	{ .attrs = vt1211_temp_attr[1] },
+	{ .attrs = vt1211_temp_attr[2] },
+	{ .attrs = vt1211_temp_attr[3] },
+	{ .attrs = vt1211_temp_attr[4] },
+	{ .attrs = vt1211_temp_attr[5] },
+	{ .attrs = vt1211_temp_attr[6] }
 };
 
 #define SENSOR_ATTR_FAN(ix) \
@@ -1054,6 +1271,7 @@ static struct device_attribute vt1211_sysfs_misc[] = {
  * --------------------------------------------------------------------- */
 
 static void __devinit vt1211_init_device(struct vt1211_data *data)
+static void vt1211_init_device(struct vt1211_data *data)
 {
 	/* set VRM */
 	data->vrm = vid_which_vrm();
@@ -1067,6 +1285,8 @@ static void __devinit vt1211_init_device(struct vt1211_data *data)
 	}
 
 	/* Initialize the interrupt mode (if request at module load time).
+	/*
+	 * Initialize the interrupt mode (if request at module load time).
 	 * The VT1211 implements 3 different modes for clearing interrupts:
 	 * 0: Clear INT when status register is read. Regenerate INT as long
 	 *    as temp stays above hysteresis limit.
@@ -1077,6 +1297,8 @@ static void __devinit vt1211_init_device(struct vt1211_data *data)
 	 *
 	 * The driver only allows to force mode 0 since that's the only one
 	 * that makes sense for 'sensors' */
+	 * that makes sense for 'sensors'
+	 */
 	if (int_mode == 0) {
 		vt1211_write8(data, VT1211_REG_TEMP1_CONFIG, 0);
 		vt1211_write8(data, VT1211_REG_TEMP2_CONFIG, 0);
@@ -1112,6 +1334,12 @@ static void vt1211_remove_sysfs(struct platform_device *pdev)
 		device_remove_file(dev,
 			&vt1211_sysfs_temp_alarm[i].dev_attr);
 	}
+	for (i = 0; i < ARRAY_SIZE(vt1211_in_attr_group); i++)
+		sysfs_remove_group(&dev->kobj, &vt1211_in_attr_group[i]);
+
+	for (i = 0; i < ARRAY_SIZE(vt1211_temp_attr_group); i++)
+		sysfs_remove_group(&dev->kobj, &vt1211_temp_attr_group[i]);
+
 	for (i = 0; i < ARRAY_SIZE(vt1211_sysfs_fan_pwm); i++) {
 		device_remove_file(dev,
 			&vt1211_sysfs_fan_pwm[i].dev_attr);
@@ -1122,6 +1350,11 @@ static void vt1211_remove_sysfs(struct platform_device *pdev)
 }
 
 static int __devinit vt1211_probe(struct platform_device *pdev)
+	for (i = 0; i < ARRAY_SIZE(vt1211_sysfs_misc); i++)
+		device_remove_file(dev, &vt1211_sysfs_misc[i]);
+}
+
+static int vt1211_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
 	struct vt1211_data *data;
@@ -1140,6 +1373,16 @@ static int __devinit vt1211_probe(struct platform_device *pdev)
 		dev_err(dev, "Failed to request region 0x%lx-0x%lx\n",
 			(unsigned long)res->start, (unsigned long)res->end);
 		goto EXIT_KFREE;
+	data = devm_kzalloc(dev, sizeof(struct vt1211_data), GFP_KERNEL);
+	if (!data)
+		return -ENOMEM;
+
+	res = platform_get_resource(pdev, IORESOURCE_IO, 0);
+	if (!devm_request_region(dev, res->start, resource_size(res),
+				 DRVNAME)) {
+		dev_err(dev, "Failed to request region 0x%lx-0x%lx\n",
+			(unsigned long)res->start, (unsigned long)res->end);
+		return -EBUSY;
 	}
 	data->addr = res->start;
 	data->name = DRVNAME;
@@ -1177,6 +1420,20 @@ static int __devinit vt1211_probe(struct platform_device *pdev)
 				&vt1211_sysfs_temp_alarm[i].dev_attr))) {
 				goto EXIT_DEV_REMOVE;
 			}
+	for (i = 0; i < ARRAY_SIZE(vt1211_in_attr_group); i++) {
+		if (ISVOLT(i, data->uch_config)) {
+			err = sysfs_create_group(&dev->kobj,
+						 &vt1211_in_attr_group[i]);
+			if (err)
+				goto EXIT_DEV_REMOVE;
+		}
+	}
+	for (i = 0; i < ARRAY_SIZE(vt1211_temp_attr_group); i++) {
+		if (ISTEMP(i, data->uch_config)) {
+			err = sysfs_create_group(&dev->kobj,
+						 &vt1211_temp_attr_group[i]);
+			if (err)
+				goto EXIT_DEV_REMOVE;
 		}
 	}
 	for (i = 0; i < ARRAY_SIZE(vt1211_sysfs_fan_pwm); i++) {
@@ -1185,6 +1442,8 @@ static int __devinit vt1211_probe(struct platform_device *pdev)
 		if (err) {
 			goto EXIT_DEV_REMOVE;
 		}
+		if (err)
+			goto EXIT_DEV_REMOVE;
 	}
 	for (i = 0; i < ARRAY_SIZE(vt1211_sysfs_misc); i++) {
 		err = device_create_file(dev,
@@ -1192,6 +1451,8 @@ static int __devinit vt1211_probe(struct platform_device *pdev)
 		if (err) {
 			goto EXIT_DEV_REMOVE;
 		}
+		if (err)
+			goto EXIT_DEV_REMOVE;
 	}
 
 	/* Register device */
@@ -1228,6 +1489,15 @@ static int __devexit vt1211_remove(struct platform_device *pdev)
 
 	res = platform_get_resource(pdev, IORESOURCE_IO, 0);
 	release_region(res->start, res->end - res->start + 1);
+	return err;
+}
+
+static int vt1211_remove(struct platform_device *pdev)
+{
+	struct vt1211_data *data = platform_get_drvdata(pdev);
+
+	hwmon_device_unregister(data->hwmon_dev);
+	vt1211_remove_sysfs(pdev);
 
 	return 0;
 }
@@ -1239,6 +1509,10 @@ static struct platform_driver vt1211_driver = {
 	},
 	.probe  = vt1211_probe,
 	.remove = __devexit_p(vt1211_remove),
+		.name  = DRVNAME,
+	},
+	.probe  = vt1211_probe,
+	.remove = vt1211_remove,
 };
 
 static int __init vt1211_device_add(unsigned short address)
@@ -1255,6 +1529,7 @@ static int __init vt1211_device_add(unsigned short address)
 		err = -ENOMEM;
 		printk(KERN_ERR DRVNAME ": Device allocation failed (%d)\n",
 		       err);
+		pr_err("Device allocation failed (%d)\n", err);
 		goto EXIT;
 	}
 
@@ -1263,6 +1538,13 @@ static int __init vt1211_device_add(unsigned short address)
 	if (err) {
 		printk(KERN_ERR DRVNAME ": Device resource addition failed "
 		       "(%d)\n", err);
+	err = acpi_check_resource_conflict(&res);
+	if (err)
+		goto EXIT_DEV_PUT;
+
+	err = platform_device_add_resources(pdev, &res, 1);
+	if (err) {
+		pr_err("Device resource addition failed (%d)\n", err);
 		goto EXIT_DEV_PUT;
 	}
 
@@ -1270,6 +1552,7 @@ static int __init vt1211_device_add(unsigned short address)
 	if (err) {
 		printk(KERN_ERR DRVNAME ": Device addition failed (%d)\n",
 		       err);
+		pr_err("Device addition failed (%d)\n", err);
 		goto EXIT_DEV_PUT;
 	}
 
@@ -1283,21 +1566,27 @@ EXIT:
 
 static int __init vt1211_find(int sio_cip, unsigned short *address)
 {
-	int err = -ENODEV;
+	int err;
 	int devid;
 
-	superio_enter(sio_cip);
+	err = superio_enter(sio_cip);
+	if (err)
+		return err;
 
+	err = -ENODEV;
 	devid = force_id ? force_id : superio_inb(sio_cip, SIO_VT1211_DEVID);
 	if (devid != SIO_VT1211_ID) {
 		goto EXIT;
 	}
+	if (devid != SIO_VT1211_ID)
+		goto EXIT;
 
 	superio_select(sio_cip, SIO_VT1211_LDN_HWMON);
 
 	if ((superio_inb(sio_cip, SIO_VT1211_ACTIVE) & 1) == 0) {
 		printk(KERN_WARNING DRVNAME ": HW monitor is disabled, "
 		       "skipping\n");
+		pr_warn("HW monitor is disabled, skipping\n");
 		goto EXIT;
 	}
 
@@ -1306,6 +1595,7 @@ static int __init vt1211_find(int sio_cip, unsigned short *address)
 	if (*address == 0) {
 		printk(KERN_WARNING DRVNAME ": Base address is not set, "
 		       "skipping\n");
+		pr_warn("Base address is not set, skipping\n");
 		goto EXIT;
 	}
 
@@ -1313,6 +1603,8 @@ static int __init vt1211_find(int sio_cip, unsigned short *address)
 	printk(KERN_INFO DRVNAME ": Found VT1211 chip at 0x%04x, "
 	       "revision %u\n", *address,
 	       superio_inb(sio_cip, SIO_VT1211_DEVREV));
+	pr_info("Found VT1211 chip at 0x%04x, revision %u\n",
+		*address, superio_inb(sio_cip, SIO_VT1211_DEVREV));
 
 EXIT:
 	superio_exit(sio_cip);
@@ -1327,6 +1619,11 @@ static int __init vt1211_init(void)
 	if ((err = vt1211_find(SIO_REG_CIP1, &address)) &&
 	    (err = vt1211_find(SIO_REG_CIP2, &address))) {
 		goto EXIT;
+	err = vt1211_find(SIO_REG_CIP1, &address);
+	if (err) {
+		err = vt1211_find(SIO_REG_CIP2, &address);
+		if (err)
+			goto EXIT;
 	}
 
 	if ((uch_config < -1) || (uch_config > 31)) {
@@ -1334,6 +1631,9 @@ static int __init vt1211_init(void)
 		printk(KERN_WARNING DRVNAME ": Invalid UCH configuration %d. "
 		       "Choose a value between 0 and 31.\n", uch_config);
 	  goto EXIT;
+		pr_warn("Invalid UCH configuration %d. Choose a value between 0 and 31.\n",
+			uch_config);
+		goto EXIT;
 	}
 
 	if ((int_mode < -1) || (int_mode > 0)) {
@@ -1353,6 +1653,19 @@ static int __init vt1211_init(void)
 	if (err) {
 		goto EXIT_DRV_UNREGISTER;
 	}
+		pr_warn("Invalid interrupt mode %d. Only mode 0 is supported.\n",
+			int_mode);
+		goto EXIT;
+	}
+
+	err = platform_driver_register(&vt1211_driver);
+	if (err)
+		goto EXIT;
+
+	/* Sets global pdev as a side effect */
+	err = vt1211_device_add(address);
+	if (err)
+		goto EXIT_DRV_UNREGISTER;
 
 	return 0;
 

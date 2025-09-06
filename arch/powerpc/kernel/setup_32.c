@@ -17,6 +17,7 @@
 #include <linux/cpu.h>
 #include <linux/console.h>
 #include <linux/lmb.h>
+#include <linux/memblock.h>
 
 #include <asm/io.h>
 #include <asm/prom.h>
@@ -40,6 +41,9 @@
 #include <asm/udbg.h>
 
 #include "setup.h"
+#include <asm/mmu_context.h>
+#include <asm/epapr_hcalls.h>
+#include <asm/code-patching.h>
 
 #define DBG(fmt...)
 
@@ -48,6 +52,10 @@ extern void bootx_init(unsigned long r4, unsigned long phys);
 int boot_cpuid;
 EXPORT_SYMBOL_GPL(boot_cpuid);
 int boot_cpuid_phys;
+int boot_cpuid_phys;
+EXPORT_SYMBOL_GPL(boot_cpuid_phys);
+
+int smp_hw_index[NR_CPUS];
 
 unsigned long ISA_DMA_THRESHOLD;
 unsigned int DMA_MODE_READ;
@@ -97,9 +105,15 @@ notrace unsigned long __init early_init(unsigned long dt_ptr)
 			  PTRRELOC(&__start___ftr_fixup),
 			  PTRRELOC(&__stop___ftr_fixup));
 
+	do_feature_fixups(spec->mmu_features,
+			  PTRRELOC(&__start___mmu_ftr_fixup),
+			  PTRRELOC(&__stop___mmu_ftr_fixup));
+
 	do_lwsync_fixups(spec->cpu_features,
 			 PTRRELOC(&__start___lwsync_fixup),
 			 PTRRELOC(&__stop___lwsync_fixup));
+
+	do_final_fixups();
 
 	return KERNELBASE + offset;
 }
@@ -120,6 +134,29 @@ notrace void __init machine_init(unsigned long dt_ptr, unsigned long phys)
 	early_init_devtree(__va(dt_ptr));
 
 	probe_machine();
+
+extern unsigned int memset_nocache_branch; /* Insn to be replaced by NOP */
+
+notrace void __init machine_init(u64 dt_ptr)
+{
+	lockdep_init();
+
+	/* Enable early debugging if any specified (see udbg.h) */
+	udbg_early_init();
+
+	patch_instruction((unsigned int *)&memcpy, PPC_INST_NOP);
+	patch_instruction(&memset_nocache_branch, PPC_INST_NOP);
+
+	/* Do some early initialization based on the flat device tree */
+	early_init_devtree(__va(dt_ptr));
+
+	epapr_paravirt_early_init();
+
+	early_init_mmu();
+
+	probe_machine();
+
+	setup_kdump_trampoline();
 
 #ifdef CONFIG_6xx
 	if (cpu_has_feature(CPU_FTR_CAN_DOZE) ||
@@ -200,6 +237,14 @@ void nvram_write_byte(unsigned char val, int addr)
 }
 EXPORT_SYMBOL(nvram_write_byte);
 
+ssize_t nvram_get_size(void)
+{
+	if (ppc_md.nvram_size)
+		return ppc_md.nvram_size();
+	return -1;
+}
+EXPORT_SYMBOL(nvram_get_size);
+
 void nvram_sync(void)
 {
 	if (ppc_md.nvram_sync)
@@ -215,6 +260,8 @@ int __init ppc_init(void)
 {
 	int cpu;
 
+int __init ppc_init(void)
+{
 	/* clear the progress line */
 	if (ppc_md.progress)
 		ppc_md.progress("             ", 0xffff);
@@ -252,6 +299,14 @@ static void __init irqstack_early_init(void)
 #else
 #define irqstack_early_init()
 #endif
+	 * as the memblock is limited to lowmem by default */
+	for_each_possible_cpu(i) {
+		softirq_ctx[i] = (struct thread_info *)
+			__va(memblock_alloc(THREAD_SIZE, THREAD_SIZE));
+		hardirq_ctx[i] = (struct thread_info *)
+			__va(memblock_alloc(THREAD_SIZE, THREAD_SIZE));
+	}
+}
 
 #if defined(CONFIG_BOOKE) || defined(CONFIG_40x)
 static void __init exc_lvl_early_init(void)
@@ -268,6 +323,24 @@ static void __init exc_lvl_early_init(void)
 			__va(lmb_alloc(THREAD_SIZE, THREAD_SIZE));
 		mcheckirq_ctx[i] = (struct thread_info *)
 			__va(lmb_alloc(THREAD_SIZE, THREAD_SIZE));
+	unsigned int i, hw_cpu;
+
+	/* interrupt stacks must be in lowmem, we get that for free on ppc32
+	 * as the memblock is limited to lowmem by MEMBLOCK_REAL_LIMIT */
+	for_each_possible_cpu(i) {
+#ifdef CONFIG_SMP
+		hw_cpu = get_hard_smp_processor_id(i);
+#else
+		hw_cpu = 0;
+#endif
+
+		critirq_ctx[hw_cpu] = (struct thread_info *)
+			__va(memblock_alloc(THREAD_SIZE, THREAD_SIZE));
+#ifdef CONFIG_BOOKE
+		dbgirq_ctx[hw_cpu] = (struct thread_info *)
+			__va(memblock_alloc(THREAD_SIZE, THREAD_SIZE));
+		mcheckirq_ctx[hw_cpu] = (struct thread_info *)
+			__va(memblock_alloc(THREAD_SIZE, THREAD_SIZE));
 #endif
 	}
 }
@@ -279,6 +352,7 @@ static void __init exc_lvl_early_init(void)
 void __init setup_arch(char **cmdline_p)
 {
 	*cmdline_p = cmd_line;
+	*cmdline_p = boot_command_line;
 
 	/* so udelay does something sensible, assume <= 1000 bogomips */
 	loops_per_jiffy = 500000000 / HZ;
@@ -327,6 +401,8 @@ void __init setup_arch(char **cmdline_p)
 	/* set up the bootmem stuff with available memory */
 	do_init_bootmem();
 	if ( ppc_md.progress ) ppc_md.progress("setup_arch: bootmem", 0x3eab);
+	initmem_init();
+	if ( ppc_md.progress ) ppc_md.progress("setup_arch: initmem", 0x3eab);
 
 #ifdef CONFIG_DUMMY_CONSOLE
 	conswitchp = &dummy_con;
@@ -336,5 +412,11 @@ void __init setup_arch(char **cmdline_p)
 		ppc_md.setup_arch();
 	if ( ppc_md.progress ) ppc_md.progress("arch: exit", 0x3eab);
 
+	setup_barrier_nospec();
+	setup_spectre_v2();
+
 	paging_init();
+
+	/* Initialize the MMU context management stuff */
+	mmu_context_init();
 }

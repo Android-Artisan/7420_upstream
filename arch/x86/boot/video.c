@@ -2,6 +2,7 @@
  *
  *   Copyright (C) 1991, 1992 Linus Torvalds
  *   Copyright 2007 rPath, Inc. - All Rights Reserved
+ *   Copyright 2009 Intel Corporation; author H. Peter Anvin
  *
  *   This file is part of the Linux kernel, and is made available under
  *   the terms of the GNU General Public License version 2.
@@ -11,6 +12,8 @@
 /*
  * Select video mode
  */
+
+#include <uapi/asm/boot.h>
 
 #include "boot.h"
 #include "video.h"
@@ -29,6 +32,24 @@ static void store_cursor_position(void)
 
 	boot_params.screen_info.orig_x = curpos;
 	boot_params.screen_info.orig_y = curpos >> 8;
+static u16 video_segment;
+
+static void store_cursor_position(void)
+{
+	struct biosregs ireg, oreg;
+
+	initregs(&ireg);
+	ireg.ah = 0x03;
+	intcall(0x10, &ireg, &oreg);
+
+	boot_params.screen_info.orig_x = oreg.dl;
+	boot_params.screen_info.orig_y = oreg.dh;
+
+	if (oreg.ch & 0x20)
+		boot_params.screen_info.flags |= VIDEO_FLAGS_NOCURSOR;
+
+	if ((oreg.ch & 0x1f) > (oreg.cl & 0x1f))
+		boot_params.screen_info.flags |= VIDEO_FLAGS_NOCURSOR;
 }
 
 static void store_video_mode(void)
@@ -45,6 +66,17 @@ static void store_video_mode(void)
 	/* Not all BIOSes are clean with respect to the top bit */
 	boot_params.screen_info.orig_video_mode = ax & 0x7f;
 	boot_params.screen_info.orig_video_page = page >> 8;
+	struct biosregs ireg, oreg;
+
+	/* N.B.: the saving of the video page here is a bit silly,
+	   since we pretty much assume page 0 everywhere. */
+	initregs(&ireg);
+	ireg.ah = 0x0f;
+	intcall(0x10, &ireg, &oreg);
+
+	/* Not all BIOSes are clean with respect to the top bit */
+	boot_params.screen_info.orig_video_mode = oreg.al & 0x7f;
+	boot_params.screen_info.orig_video_page = oreg.bh;
 }
 
 /*
@@ -227,6 +259,8 @@ static unsigned int mode_menu(void)
 #ifdef CONFIG_VIDEO_RETAIN
 /* Save screen content to the heap */
 struct saved_screen {
+/* Save screen content to the heap */
+static struct saved_screen {
 	int x, y;
 	int curx, cury;
 	u16 *data;
@@ -258,6 +292,7 @@ static void restore_screen(void)
 	addr_t dst = 0;
 	u16 *src = saved.data;
 	u16 ax, bx, dx;
+	struct biosregs ireg;
 
 	if (graphic_mode)
 		return;		/* Can't restore onto a graphic mode */
@@ -307,6 +342,19 @@ static void restore_screen(void)
 #define save_screen()		((void)0)
 #define restore_screen()	((void)0)
 #endif
+	if (saved.curx >= xs)
+		saved.curx = xs-1;
+	if (saved.cury >= ys)
+		saved.cury = ys-1;
+
+	initregs(&ireg);
+	ireg.ah = 0x02;		/* Set cursor position */
+	ireg.dh = saved.cury;
+	ireg.dl = saved.curx;
+	intcall(0x10, &ireg, NULL);
+
+	store_cursor_position();
+}
 
 void set_video(void)
 {

@@ -25,9 +25,7 @@ struct xfs_mount;
 struct xfs_trans;
 struct zone;
 
-/*========================================================================
  * Directory Structure when greater than XFS_LBSIZE(mp) bytes.
- *========================================================================*/
 
 /*
  * This structure is common to both leaf nodes and non-leaf nodes in the Btree.
@@ -94,9 +92,7 @@ typedef struct xfs_da_node_entry xfs_da_node_entry_t;
 				((1 << (mp)->m_dircook_elog) - 1))))
 
 
-/*========================================================================
  * Btree searching and modification structure definitions.
- *========================================================================*/
 
 /*
  * Search comparison results
@@ -227,9 +223,7 @@ struct xfs_nameops {
 
 
 #ifdef __KERNEL__
-/*========================================================================
  * Function prototypes for the kernel.
- *========================================================================*/
 
 /*
  * Routines used for growing the Btree.

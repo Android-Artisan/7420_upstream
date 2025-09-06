@@ -1,6 +1,4 @@
-			 ============================
 			 KERNEL KEY RETENTION SERVICE
-			 ============================
 
 This service allows cryptographic keys, authentication tokens, cross-domain
 user mappings, and similar to be cached in the kernel for the use of
@@ -29,9 +27,7 @@ This document has the following sections:
 	- Key access filesystem
 
 
-============
 KEY OVERVIEW
-============
 
 In this context, keys represent units of cryptographic data, authentication
 tokens, keyrings, etc.. These are represented in the kernel by struct key.
@@ -114,9 +110,7 @@ Each key has a number of attributes:
      (*) Dead. The key's type was unregistered, and so the key is now useless.
 
 
-====================
 KEY SERVICE OVERVIEW
-====================
 
 The key service provides a number of features besides keys:
 
@@ -192,9 +186,7 @@ The key service provides a number of features besides keys:
      viewed and manipulated.
 
 
-======================
 KEY ACCESS PERMISSIONS
-======================
 
 Keys have an owner user ID, a group access ID, and a permissions mask. The mask
 has up to eight bits each for possessor, user, group and other access. Only
@@ -234,9 +226,7 @@ For changing the ownership, group ID or permissions mask, being the owner of
 the key or having the sysadmin capability is sufficient.
 
 
-===============
 SELINUX SUPPORT
-===============
 
 The security class "key" has been added to SELinux so that mandatory access
 controls can be applied to keys created within various contexts.  This support
@@ -267,9 +257,7 @@ their associated thread, and both session and process keyrings are handled
 similarly.
 
 
-================
 NEW PROCFS FILES
-================
 
 Two files have been added to procfs by which an administrator can find out
 about the status of the key service:
@@ -351,9 +339,7 @@ Root may alter these by writing each new limit as a decimal number string to
 the appropriate file.
 
 
-===============================
 USERSPACE SYSTEM CALL INTERFACE
-===============================
 
 Userspace can manipulate keys directly through three new syscalls: add_key,
 request_key and keyctl. The latter provides a number of functions for
@@ -365,7 +351,6 @@ values available for referring to special keys and keyrings that relate to the
 process making the call:
 
 	CONSTANT			VALUE	KEY REFERENCED
-	==============================	======	===========================
 	KEY_SPEC_THREAD_KEYRING		-1	thread-specific keyring
 	KEY_SPEC_PROCESS_KEYRING	-2	process-specific keyring
 	KEY_SPEC_SESSION_KEYRING	-3	session-specific keyring
@@ -675,7 +660,6 @@ The keyctl syscall functions are:
      attached for this thread. reqkey_defl should be one of these constants:
 
 	CONSTANT				VALUE	NEW DEFAULT KEYRING
-	======================================	======	=======================
 	KEY_REQKEY_DEFL_NO_CHANGE		-1	No change
 	KEY_REQKEY_DEFL_DEFAULT			0	Default[1]
 	KEY_REQKEY_DEFL_THREAD_KEYRING		1	Thread keyring
@@ -754,9 +738,7 @@ The keyctl syscall functions are:
      successful.
 
 
-===============
 KERNEL SERVICES
-===============
 
 The kernel services for key management are fairly simple to deal with. They can
 be broken down into two areas: keys and key types.
@@ -956,9 +938,7 @@ with keyring_search().  Note that it is not possible to use request_key() to
 search a specific keyring, so using keyrings in this way is of limited utility.
 
 
-===================================
 NOTES ON ACCESSING PAYLOAD CONTENTS
-===================================
 
 The simplest payload is just a number in key->payload.value. In this case,
 there's no need to indulge in RCU or locking when accessing the payload.
@@ -1004,9 +984,7 @@ data:
      payload just dereferenced if the key's semaphore is not held.
 
 
-===================
 DEFINING A KEY TYPE
-===================
 
 A kernel service may want to define its own key type. For instance, an AFS
 filesystem might want to define a Kerberos 5 ticket key type. To do this, it
@@ -1183,9 +1161,7 @@ The structure has a number of fields, some of which are mandatory:
      	 The authorisation key.
 
 
-============================
 REQUEST-KEY CALLBACK SERVICE
-============================
 
 To create a new key, the kernel will attempt to execute the following command
 line:

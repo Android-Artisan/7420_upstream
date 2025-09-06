@@ -2,6 +2,7 @@
 
 #include <asm-generic/vmlinux.lds.h>
 #include <asm/page.h>
+#include <asm/thread_info.h>
 
 OUTPUT_FORMAT("elf32-m68k", "elf32-m68k", "elf32-m68k")
 OUTPUT_ARCH(m68k)
@@ -13,6 +14,7 @@ SECTIONS
   _text = .;			/* Text and read-only data */
   .text : {
 	*(.text.head)
+	HEAD_TEXT
 	TEXT_TEXT
 	SCHED_TEXT
 	LOCK_TEXT
@@ -33,6 +35,12 @@ SECTIONS
 	} :data
   /* End of data goes *here* so that freeing init code works properly. */
   _edata = .;
+  EXCEPTION_TABLE(16) :data
+  _sdata = .;			/* Start of rw data section */
+  RW_DATA_SECTION(16, PAGE_SIZE, THREAD_SIZE) :data
+  /* End of data goes *here* so that freeing init code works properly. */
+  _edata = .;
+  NOTES
 
   /* will be freed after init */
   . = ALIGN(PAGE_SIZE);	/* Init code and data */
@@ -55,6 +63,8 @@ __init_begin = .;
 	__con_initcall_start = .;
 	.con_initcall.init : { *(.con_initcall.init) }
 	__con_initcall_end = .;
+	INIT_TEXT_SECTION(PAGE_SIZE)
+	INIT_DATA_SECTION(16)
 	.m68k_fixup : {
 		__start_fixup = .;
 		*(.m68k_fixup)
@@ -95,4 +105,15 @@ __init_begin = .;
 	*(.note)
   }
 
+	. = ALIGN(PAGE_SIZE);
+	__init_end = .;
+
+  BSS_SECTION(0, 0, 0)
+
+  _end = . ;
+
+  STABS_DEBUG
+
+  /* Sections to be discarded */
+  DISCARDS
 }

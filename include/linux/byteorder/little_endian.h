@@ -105,4 +105,7 @@ static inline __u16 __be16_to_cpup(const __be16 *p)
 #include <linux/byteorder/generic.h>
 #endif
 
+#include <uapi/linux/byteorder/little_endian.h>
+
+#include <linux/byteorder/generic.h>
 #endif /* _LINUX_BYTEORDER_LITTLE_ENDIAN_H */

@@ -15,6 +15,7 @@
 #include <linux/kallsyms.h>
 #include <linux/kernel.h>
 #include <linux/mm.h>
+#include <linux/slab.h>
 #include <linux/module.h>
 #include <linux/notifier.h>
 #include <linux/personality.h>
@@ -28,6 +29,8 @@
 #include <linux/delay.h>
 #include <linux/kdebug.h>
 #include <linux/utsname.h>
+#include <linux/tracehook.h>
+#include <linux/rcupdate.h>
 
 #include <asm/cpu.h>
 #include <asm/delay.h>
@@ -38,6 +41,7 @@
 #include <asm/pgalloc.h>
 #include <asm/processor.h>
 #include <asm/sal.h>
+#include <asm/switch_to.h>
 #include <asm/tlbflush.h>
 #include <asm/uaccess.h>
 #include <asm/unwind.h>
@@ -59,6 +63,10 @@ unsigned long idle_halt;
 EXPORT_SYMBOL(idle_halt);
 unsigned long idle_nomwait;
 EXPORT_SYMBOL(idle_nomwait);
+unsigned long boot_option_idle_override = IDLE_NO_OVERRIDE;
+EXPORT_SYMBOL(boot_option_idle_override);
+void (*pm_power_off) (void);
+EXPORT_SYMBOL(pm_power_off);
 
 void
 ia64_do_show_stack (struct unw_frame_info *info, void *arg)
@@ -111,6 +119,8 @@ show_regs (struct pt_regs *regs)
 	print_modules();
 	printk("\nPid: %d, CPU %d, comm: %20s\n", task_pid_nr(current),
 			smp_processor_id(), current->comm);
+	printk("\n");
+	show_regs_print_info(KERN_DEFAULT);
 	printk("psr : %016lx ifs : %016lx ip  : [<%016lx>]    %s (%s)\n",
 	       regs->cr_ipsr, regs->cr_ifs, ip, print_tainted(),
 	       init_utsname()->release);
@@ -175,6 +185,13 @@ void tsk_clear_notify_resume(struct task_struct *tsk)
  * do_notify_resume_user():
  *	Called from notify_resume_user at entry.S, with interrupts disabled.
  */
+/* local support for deprecated console_print */
+void
+console_print(const char *s)
+{
+	printk(KERN_EMERG "%s", s);
+}
+
 void
 do_notify_resume_user(sigset_t *unused, struct sigscratch *scr, long in_syscall)
 {
@@ -203,6 +220,11 @@ do_notify_resume_user(sigset_t *unused, struct sigscratch *scr, long in_syscall)
 		ia64_do_signal(scr, in_syscall);
 	}
 
+	if (test_and_clear_thread_flag(TIF_NOTIFY_RESUME)) {
+		local_irq_enable();	/* force interrupt enable */
+		tracehook_notify_resume(&scr->pt);
+	}
+
 	/* copy user rbs to kernel rbs */
 	if (unlikely(test_thread_flag(TIF_RESTORE_RSE))) {
 		local_irq_enable();	/* force interrupt enable */
@@ -218,6 +240,9 @@ static int can_do_pal_halt = 1;
 static int __init nohalt_setup(char * str)
 {
 	pal_halt = can_do_pal_halt = 0;
+static int __init nohalt_setup(char * str)
+{
+	cpu_idle_poll_ctrl(true);
 	return 1;
 }
 __setup("nohalt", nohalt_setup);
@@ -256,6 +281,10 @@ static inline void play_dead(void)
 
 	/* Ack it */
 	__get_cpu_var(cpu_state) = CPU_DEAD;
+	unsigned int this_cpu = smp_processor_id();
+
+	/* Ack it */
+	__this_cpu_write(cpu_state, CPU_DEAD);
 
 	max_xtp();
 	local_irq_disable();
@@ -339,6 +368,29 @@ cpu_idle (void)
 		if (cpu_is_offline(cpu))
 			play_dead();
 	}
+void arch_cpu_idle_dead(void)
+{
+	play_dead();
+}
+
+void arch_cpu_idle(void)
+{
+	void (*mark_idle)(int) = ia64_mark_idle;
+
+#ifdef CONFIG_SMP
+	min_xtp();
+#endif
+	rmb();
+	if (mark_idle)
+		(*mark_idle)(1);
+
+	safe_halt();
+
+	if (mark_idle)
+		(*mark_idle)(0);
+#ifdef CONFIG_SMP
+	normal_xtp();
+#endif
 }
 
 void
@@ -364,6 +416,10 @@ ia64_save_extra (struct task_struct *task)
 	if (IS_IA32_PROCESS(task_pt_regs(task)))
 		ia32_save_state(task);
 #endif
+	info = __this_cpu_read(pfm_syst_info);
+	if (info & PFM_CPUINFO_SYST_WIDE)
+		pfm_syst_wide_update_task(task, info, 0);
+#endif
 }
 
 void
@@ -388,6 +444,10 @@ ia64_load_extra (struct task_struct *task)
 #ifdef CONFIG_IA32_SUPPORT
 	if (IS_IA32_PROCESS(task_pt_regs(task)))
 		ia32_load_state(task);
+#endif
+	info = __this_cpu_read(pfm_syst_info);
+	if (info & PFM_CPUINFO_SYST_WIDE) 
+		pfm_syst_wide_update_task(task, info, 1);
 #endif
 }
 
@@ -482,6 +542,22 @@ copy_thread (int nr, unsigned long clone_flags,
 		child_stack->b0 = (unsigned long) &ia32_ret_from_clone;
 	else
 		child_stack->b0 = (unsigned long) &ia64_ret_from_clone;
+copy_thread(unsigned long clone_flags,
+	     unsigned long user_stack_base, unsigned long user_stack_size,
+	     struct task_struct *p)
+{
+	extern char ia64_ret_from_clone;
+	struct switch_stack *child_stack, *stack;
+	unsigned long rbs, child_rbs, rbs_size;
+	struct pt_regs *child_ptregs;
+	struct pt_regs *regs = current_pt_regs();
+	int retval = 0;
+
+	child_ptregs = (struct pt_regs *) ((unsigned long) p + IA64_STK_OFFSET) - 1;
+	child_stack = (struct switch_stack *) child_ptregs - 1;
+
+	rbs = (unsigned long) current + IA64_RBS_OFFSET;
+	child_rbs = (unsigned long) p + IA64_RBS_OFFSET;
 
 	/* copy parts of thread_struct: */
 	p->thread.ksp = (unsigned long) child_stack - 16;
@@ -532,6 +608,65 @@ copy_thread (int nr, unsigned long clone_flags,
 								clone_flags);
 	}
 #endif
+
+	ia64_drop_fpu(p);	/* don't pick up stale state from a CPU's fph */
+
+	if (unlikely(p->flags & PF_KTHREAD)) {
+		if (unlikely(!user_stack_base)) {
+			/* fork_idle() called us */
+			return 0;
+		}
+		memset(child_stack, 0, sizeof(*child_ptregs) + sizeof(*child_stack));
+		child_stack->r4 = user_stack_base;	/* payload */
+		child_stack->r5 = user_stack_size;	/* argument */
+		/*
+		 * Preserve PSR bits, except for bits 32-34 and 37-45,
+		 * which we can't read.
+		 */
+		child_ptregs->cr_ipsr = ia64_getreg(_IA64_REG_PSR) | IA64_PSR_BN;
+		/* mark as valid, empty frame */
+		child_ptregs->cr_ifs = 1UL << 63;
+		child_stack->ar_fpsr = child_ptregs->ar_fpsr
+			= ia64_getreg(_IA64_REG_AR_FPSR);
+		child_stack->pr = (1 << PRED_KERNEL_STACK);
+		child_stack->ar_bspstore = child_rbs;
+		child_stack->b0 = (unsigned long) &ia64_ret_from_clone;
+
+		/* stop some PSR bits from being inherited.
+		 * the psr.up/psr.pp bits must be cleared on fork but inherited on execve()
+		 * therefore we must specify them explicitly here and not include them in
+		 * IA64_PSR_BITS_TO_CLEAR.
+		 */
+		child_ptregs->cr_ipsr = ((child_ptregs->cr_ipsr | IA64_PSR_BITS_TO_SET)
+				 & ~(IA64_PSR_BITS_TO_CLEAR | IA64_PSR_PP | IA64_PSR_UP));
+
+		return 0;
+	}
+	stack = ((struct switch_stack *) regs) - 1;
+	/* copy parent's switch_stack & pt_regs to child: */
+	memcpy(child_stack, stack, sizeof(*child_ptregs) + sizeof(*child_stack));
+
+	/* copy the parent's register backing store to the child: */
+	rbs_size = stack->ar_bspstore - rbs;
+	memcpy((void *) child_rbs, (void *) rbs, rbs_size);
+	if (clone_flags & CLONE_SETTLS)
+		child_ptregs->r13 = regs->r16;	/* see sys_clone2() in entry.S */
+	if (user_stack_base) {
+		child_ptregs->r12 = user_stack_base + user_stack_size - 16;
+		child_ptregs->ar_bspstore = user_stack_base;
+		child_ptregs->ar_rnat = 0;
+		child_ptregs->loadrs = 0;
+	}
+	child_stack->ar_bspstore = child_rbs + rbs_size;
+	child_stack->b0 = (unsigned long) &ia64_ret_from_clone;
+
+	/* stop some PSR bits from being inherited.
+	 * the psr.up/psr.pp bits must be cleared on fork but inherited on execve()
+	 * therefore we must specify them explicitly here and not include them in
+	 * IA64_PSR_BITS_TO_CLEAR.
+	 */
+	child_ptregs->cr_ipsr = ((child_ptregs->cr_ipsr | IA64_PSR_BITS_TO_SET)
+				 & ~(IA64_PSR_BITS_TO_CLEAR | IA64_PSR_PP | IA64_PSR_UP));
 
 #ifdef CONFIG_PERFMON
 	if (current->thread.pfm_context)
@@ -832,6 +967,7 @@ machine_restart (char *restart_cmd)
 {
 	(void) notify_die(DIE_MACHINE_RESTART, restart_cmd, NULL, 0, 0, 0);
 	(*efi.reset_system)(EFI_RESET_WARM, 0, 0, NULL);
+	efi_reboot(REBOOT_WARM, NULL);
 }
 
 void

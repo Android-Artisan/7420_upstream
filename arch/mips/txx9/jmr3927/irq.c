@@ -32,6 +32,7 @@
 #include <linux/init.h>
 #include <linux/types.h>
 #include <linux/interrupt.h>
+#include <linux/irq.h>
 
 #include <asm/io.h>
 #include <asm/mipsregs.h>
@@ -50,6 +51,10 @@ static void mask_irq_ioc(unsigned int irq)
 {
 	/* 0: mask */
 	unsigned int irq_nr = irq - JMR3927_IRQ_IOC;
+static void mask_irq_ioc(struct irq_data *d)
+{
+	/* 0: mask */
+	unsigned int irq_nr = d->irq - JMR3927_IRQ_IOC;
 	unsigned char imask = jmr3927_ioc_reg_in(JMR3927_IOC_INTM_ADDR);
 	unsigned int bit = 1 << irq_nr;
 	jmr3927_ioc_reg_out(imask & ~bit, JMR3927_IOC_INTM_ADDR);
@@ -60,6 +65,10 @@ static void unmask_irq_ioc(unsigned int irq)
 {
 	/* 0: mask */
 	unsigned int irq_nr = irq - JMR3927_IRQ_IOC;
+static void unmask_irq_ioc(struct irq_data *d)
+{
+	/* 0: mask */
+	unsigned int irq_nr = d->irq - JMR3927_IRQ_IOC;
 	unsigned char imask = jmr3927_ioc_reg_in(JMR3927_IOC_INTM_ADDR);
 	unsigned int bit = 1 << irq_nr;
 	jmr3927_ioc_reg_out(imask | bit, JMR3927_IOC_INTM_ADDR);
@@ -98,6 +107,8 @@ static struct irq_chip jmr3927_irq_ioc = {
 	.mask = mask_irq_ioc,
 	.mask_ack = mask_irq_ioc,
 	.unmask = unmask_irq_ioc,
+	.irq_mask = mask_irq_ioc,
+	.irq_unmask = unmask_irq_ioc,
 };
 
 void __init jmr3927_irq_setup(void)
@@ -125,4 +136,9 @@ void __init jmr3927_irq_setup(void)
 
 	/* setup IOC interrupt 1 (PCI, MODEM) */
 	set_irq_chained_handler(JMR3927_IRQ_IOCINT, handle_simple_irq);
+		irq_set_chip_and_handler(i, &jmr3927_irq_ioc,
+					 handle_level_irq);
+
+	/* setup IOC interrupt 1 (PCI, MODEM) */
+	irq_set_chained_handler(JMR3927_IRQ_IOCINT, handle_simple_irq);
 }

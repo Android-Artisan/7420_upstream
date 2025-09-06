@@ -6,6 +6,7 @@
  * Copyright history from vga16fb.c:
  *	Copyright 1999 Ben Pfaff and Petr Vandrovec
  *	Based on VGA info at http://www.goodnet.com/~tinara/FreeVGA/home.htm
+ *	Based on VGA info at http://www.osdever.net/FreeVGA/home.htm 
  *	Based on VESA framebuffer (c) 1998 Gerd Knorr
  *
  * This file is subject to the terms and conditions of the GNU General
@@ -42,6 +43,8 @@
 #define writeb		z_writeb
 #define writew		z_writew
 #endif
+#include <linux/io.h>
+#include <asm/vga.h>
 #include <asm/byteorder.h>
 
 

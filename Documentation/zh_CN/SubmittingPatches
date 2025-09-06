@@ -101,6 +101,7 @@ http://www.zip.com.au/~akpm/linux/patches/
 将改动拆分，逻辑类似的放到同一个补丁文件里。
 
 例如，如果你的改动里同时有bug修正和性能优化，那么把这些改动才分到两个或
+例如，如果你的改动里同时有bug修正和性能优化，那么把这些改动拆分到两个或
 者更多的补丁文件中。如果你的改动包含对API的修改，并且修改了驱动程序来适
 应这些新的API，那么把这些修改分成两个补丁。
 
@@ -147,6 +148,7 @@ Majordomo lists of VGER.KERNEL.ORG at:
 
 如果改动影响了用户空间和内核之间的接口，请给 MAN-PAGES 的维护者（列在
 MAITAINERS 文件里的）发送一个手册页（man-pages）补丁，或者至少通知一下改
+MAINTAINERS 文件里的）发送一个手册页（man-pages）补丁，或者至少通知一下改
 变，让一些信息有途径进入手册页。
 
 即使在第四步的时候，维护者没有作出回应，也要确认在修改他们的代码的时候
@@ -167,6 +169,7 @@ MAITAINERS 文件里的）发送一个手册页（man-pages）补丁，或者至
   任何文件的作者/维护者对该文件的改动（例如 patch monkey 在重传模式下）
 
 URL: <http://www.kernel.org/pub/linux/kernel/people/bunk/trivial/>
+EMAIL: trivial@kernel.org
 
 (译注，关于“琐碎补丁”的一些说明：因为原文的这一部分写得比较简单，所以不得不
 违例写一下译注。"trivial"这个英文单词的本意是“琐碎的，不重要的。”但是在这里
@@ -202,7 +205,6 @@ Content-Type: text/plain; charset=us-ascii; format=flowed
 
 要修正这个问题，只需要将你的 mozilla 的 defaults/pref/mailnews.js 文件
 里的
-pref("mailnews.send_plaintext_flowed", false); // RFC 2646=======
 修改成
 pref("mailnews.display.disable_format_flowed_support", true);
 就可以了。
@@ -231,6 +233,7 @@ pref("mailnews.display.disable_format_flowed_support", true);
 
 Linus不给出任何评论就“丢弃”你的补丁是常见的事情。在系统中这样的事情很
 平常。如果他没有接受你的补丁，也许是由于以下原本：
+平常。如果他没有接受你的补丁，也许是由于以下原因：
 * 你的补丁不能在最新版本的内核上干净的打上。
 * 你的补丁在 linux-kernel 邮件列表中没有得到充分的讨论。
 * 风格问题（参照第2小节）
@@ -395,6 +398,7 @@ Static inline 函数相比宏来说，是好得多的选择。Static inline 函�
 
 Andrew Morton, "The perfect patch" (tpp).
   <http://www.zip.com.au/~akpm/linux/patches/stuff/tpp.txt>
+  <http://www.ozlabs.org/~akpm/stuff/tpp.txt>
 
 Jeff Garzik, "Linux kernel patch submission format".
   <http://linux.yyz.us/patch-format.html>
@@ -407,6 +411,7 @@ Greg Kroah-Hartman, "How to piss off a kernel subsystem maintainer".
 
 NO!!!! No more huge patch bombs to linux-kernel@vger.kernel.org people!
   <http://marc.theaimsgroup.com/?l=linux-kernel&m=112112749912944&w=2>
+  <https://lkml.org/lkml/2005/7/11/336>
 
 Kernel Documentation/CodingStyle:
   <http://sosdg.org/~coywolf/lxr/source/Documentation/CodingStyle>

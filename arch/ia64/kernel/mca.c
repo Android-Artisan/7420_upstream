@@ -85,6 +85,7 @@
 #include <linux/cpumask.h>
 #include <linux/kdebug.h>
 #include <linux/cpu.h>
+#include <linux/gfp.h>
 
 #include <asm/delay.h>
 #include <asm/machvec.h>
@@ -218,6 +219,7 @@ void ia64_mca_printk(const char *fmt, ...)
 	if (oops_in_progress) {
 		/* mlogbuf was abandoned, use printk directly instead. */
 		printk(temp_buf);
+		printk("%s", temp_buf);
 	} else {
 		spin_lock(&mlogbuf_wlock);
 		for (p = temp_buf; *p; p++) {
@@ -269,6 +271,7 @@ void ia64_mlogbuf_dump(void)
 		*p = '\0';
 		if (temp_buf[0])
 			printk(temp_buf);
+			printk("%s", temp_buf);
 		mlogbuf_start = index;
 
 		mlogbuf_timestamp = 0;
@@ -581,6 +584,8 @@ out:
 	/* Get the CPE error record and log it */
 	ia64_mca_log_sal_error_record(SAL_INFO_TYPE_CPE);
 
+	local_irq_disable();
+
 	return IRQ_HANDLED;
 }
 
@@ -630,6 +635,7 @@ ia64_mca_register_cpev (int cpev)
  *	None
  */
 void __cpuinit
+void
 ia64_mca_cmc_vector_setup (void)
 {
 	cmcv_reg_t	cmcv;
@@ -851,6 +857,7 @@ EXPORT_SYMBOL(ia64_unreg_MCA_extension);
 
 static inline void
 copy_reg(const u64 *fr, u64 fnat, u64 *tr, u64 *tnat)
+copy_reg(const u64 *fr, u64 fnat, unsigned long *tr, unsigned long *tnat)
 {
 	u64 fslot, tslot, nat;
 	*tr = *fr;
@@ -887,6 +894,65 @@ ia64_mca_modify_comm(const struct task_struct *previous_current)
 	memcpy(current->comm, comm, sizeof(current->comm));
 }
 
+static void
+finish_pt_regs(struct pt_regs *regs, struct ia64_sal_os_state *sos,
+		unsigned long *nat)
+{
+	const pal_min_state_area_t *ms = sos->pal_min_state;
+	const u64 *bank;
+
+	/* If ipsr.ic then use pmsa_{iip,ipsr,ifs}, else use
+	 * pmsa_{xip,xpsr,xfs}
+	 */
+	if (ia64_psr(regs)->ic) {
+		regs->cr_iip = ms->pmsa_iip;
+		regs->cr_ipsr = ms->pmsa_ipsr;
+		regs->cr_ifs = ms->pmsa_ifs;
+	} else {
+		regs->cr_iip = ms->pmsa_xip;
+		regs->cr_ipsr = ms->pmsa_xpsr;
+		regs->cr_ifs = ms->pmsa_xfs;
+
+		sos->iip = ms->pmsa_iip;
+		sos->ipsr = ms->pmsa_ipsr;
+		sos->ifs = ms->pmsa_ifs;
+	}
+	regs->pr = ms->pmsa_pr;
+	regs->b0 = ms->pmsa_br0;
+	regs->ar_rsc = ms->pmsa_rsc;
+	copy_reg(&ms->pmsa_gr[1-1], ms->pmsa_nat_bits, &regs->r1, nat);
+	copy_reg(&ms->pmsa_gr[2-1], ms->pmsa_nat_bits, &regs->r2, nat);
+	copy_reg(&ms->pmsa_gr[3-1], ms->pmsa_nat_bits, &regs->r3, nat);
+	copy_reg(&ms->pmsa_gr[8-1], ms->pmsa_nat_bits, &regs->r8, nat);
+	copy_reg(&ms->pmsa_gr[9-1], ms->pmsa_nat_bits, &regs->r9, nat);
+	copy_reg(&ms->pmsa_gr[10-1], ms->pmsa_nat_bits, &regs->r10, nat);
+	copy_reg(&ms->pmsa_gr[11-1], ms->pmsa_nat_bits, &regs->r11, nat);
+	copy_reg(&ms->pmsa_gr[12-1], ms->pmsa_nat_bits, &regs->r12, nat);
+	copy_reg(&ms->pmsa_gr[13-1], ms->pmsa_nat_bits, &regs->r13, nat);
+	copy_reg(&ms->pmsa_gr[14-1], ms->pmsa_nat_bits, &regs->r14, nat);
+	copy_reg(&ms->pmsa_gr[15-1], ms->pmsa_nat_bits, &regs->r15, nat);
+	if (ia64_psr(regs)->bn)
+		bank = ms->pmsa_bank1_gr;
+	else
+		bank = ms->pmsa_bank0_gr;
+	copy_reg(&bank[16-16], ms->pmsa_nat_bits, &regs->r16, nat);
+	copy_reg(&bank[17-16], ms->pmsa_nat_bits, &regs->r17, nat);
+	copy_reg(&bank[18-16], ms->pmsa_nat_bits, &regs->r18, nat);
+	copy_reg(&bank[19-16], ms->pmsa_nat_bits, &regs->r19, nat);
+	copy_reg(&bank[20-16], ms->pmsa_nat_bits, &regs->r20, nat);
+	copy_reg(&bank[21-16], ms->pmsa_nat_bits, &regs->r21, nat);
+	copy_reg(&bank[22-16], ms->pmsa_nat_bits, &regs->r22, nat);
+	copy_reg(&bank[23-16], ms->pmsa_nat_bits, &regs->r23, nat);
+	copy_reg(&bank[24-16], ms->pmsa_nat_bits, &regs->r24, nat);
+	copy_reg(&bank[25-16], ms->pmsa_nat_bits, &regs->r25, nat);
+	copy_reg(&bank[26-16], ms->pmsa_nat_bits, &regs->r26, nat);
+	copy_reg(&bank[27-16], ms->pmsa_nat_bits, &regs->r27, nat);
+	copy_reg(&bank[28-16], ms->pmsa_nat_bits, &regs->r28, nat);
+	copy_reg(&bank[29-16], ms->pmsa_nat_bits, &regs->r29, nat);
+	copy_reg(&bank[30-16], ms->pmsa_nat_bits, &regs->r30, nat);
+	copy_reg(&bank[31-16], ms->pmsa_nat_bits, &regs->r31, nat);
+}
+
 /* On entry to this routine, we are running on the per cpu stack, see
  * mca_asm.h.  The original stack has not been touched by this event.  Some of
  * the original stack's registers will be in the RBS on this stack.  This stack
@@ -917,6 +983,9 @@ ia64_mca_modify_original_stack(struct pt_regs *regs,
 	u64 *old_bspstore, *old_bsp;
 	u64 *new_bspstore, *new_bsp;
 	u64 old_unat, old_rnat, new_rnat, nat;
+	unsigned long *old_bspstore, *old_bsp;
+	unsigned long *new_bspstore, *new_bsp;
+	unsigned long old_unat, old_rnat, new_rnat, nat;
 	u64 slots, loadrs = regs->loadrs;
 	u64 r12 = ms->pmsa_gr[12-1], r13 = ms->pmsa_gr[13-1];
 	u64 ar_bspstore = regs->ar_bspstore;
@@ -972,6 +1041,10 @@ ia64_mca_modify_original_stack(struct pt_regs *regs,
 	old_bsp = (u64 *)ar_bsp;
 	slots = ia64_rse_num_regs(old_bspstore, old_bsp);
 	new_bspstore = (u64 *)((u64)current + IA64_RBS_OFFSET);
+	old_bspstore = (unsigned long *)ar_bspstore;
+	old_bsp = (unsigned long *)ar_bsp;
+	slots = ia64_rse_num_regs(old_bspstore, old_bsp);
+	new_bspstore = (unsigned long *)((u64)current + IA64_RBS_OFFSET);
 	new_bsp = ia64_rse_skip_regs(new_bspstore, slots);
 	regs->loadrs = (new_bsp - new_bspstore) * 8 << 16;
 
@@ -1072,6 +1145,9 @@ ia64_mca_modify_original_stack(struct pt_regs *regs,
 	copy_reg(&bank[29-16], ms->pmsa_nat_bits, &old_regs->r29, &old_unat);
 	copy_reg(&bank[30-16], ms->pmsa_nat_bits, &old_regs->r30, &old_unat);
 	copy_reg(&bank[31-16], ms->pmsa_nat_bits, &old_regs->r31, &old_unat);
+	old_regs->loadrs = loadrs;
+	old_unat = old_regs->ar_unat;
+	finish_pt_regs(old_regs, sos, &old_unat);
 
 	/* Next stack a struct switch_stack.  mca_asm.S built a partial
 	 * switch_stack, copy it and fill in the blanks using pt_regs and
@@ -1141,6 +1217,10 @@ ia64_mca_modify_original_stack(struct pt_regs *regs,
 no_mod:
 	printk(KERN_INFO "cpu %d, %s %s, original stack not modified\n",
 			smp_processor_id(), type, msg);
+	mprintk(KERN_INFO "cpu %d, %s %s, original stack not modified\n",
+			smp_processor_id(), type, msg);
+	old_unat = regs->ar_unat;
+	finish_pt_regs(regs, sos, &old_unat);
 	return previous_current;
 }
 
@@ -1213,6 +1293,12 @@ static void mca_insert_tr(u64 iord)
 	psr = ia64_clear_ic();
 	for (i = IA64_TR_ALLOC_BASE; i < IA64_TR_ALLOC_MAX; i++) {
 		p = &__per_cpu_idtrs[cpu][iord-1][i];
+	if (!ia64_idtrs[cpu])
+		return;
+
+	psr = ia64_clear_ic();
+	for (i = IA64_TR_ALLOC_BASE; i < IA64_TR_ALLOC_MAX; i++) {
+		p = ia64_idtrs[cpu] + (iord - 1) * IA64_TR_ALLOC_MAX;
 		if (p->pte & 0x1) {
 			old_rr = ia64_get_rr(p->ifa);
 			if (old_rr != p->rr) {
@@ -1274,6 +1360,7 @@ ia64_mca_handler(struct pt_regs *regs, struct switch_stack *sw,
 		sos->monarch = 1;
 	} else {
 		cpu_set(cpu, mca_cpu);
+		cpumask_set_cpu(cpu, &mca_cpu);
 		sos->monarch = 0;
 	}
 	mprintk(KERN_INFO "Entered OS MCA handler. PSP=%lx cpu=%d "
@@ -1297,6 +1384,7 @@ ia64_mca_handler(struct pt_regs *regs, struct switch_stack *sw,
 		ia64_mca_wakeup_all();
 	} else {
 		while (cpu_isset(cpu, mca_cpu))
+		while (cpumask_test_cpu(cpu, &mca_cpu))
 			cpu_relax();	/* spin until monarch wakes us */
 	}
 
@@ -1322,6 +1410,7 @@ ia64_mca_handler(struct pt_regs *regs, struct switch_stack *sw,
 	}
 
 	if (__get_cpu_var(ia64_mca_tr_reload)) {
+	if (__this_cpu_read(ia64_mca_tr_reload)) {
 		mca_insert_tr(0x1); /*Reload dynamic itrs*/
 		mca_insert_tr(0x2); /*Reload dynamic itrs*/
 	}
@@ -1338,6 +1427,9 @@ ia64_mca_handler(struct pt_regs *regs, struct switch_stack *sw,
 			if (cpu_isset(i, mca_cpu)) {
 				monarch_cpu = i;
 				cpu_clear(i, mca_cpu);	/* wake next cpu */
+			if (cpumask_test_cpu(i, &mca_cpu)) {
+				monarch_cpu = i;
+				cpumask_clear_cpu(i, &mca_cpu);	/* wake next cpu */
 				while (monarch_cpu != -1)
 					cpu_relax();	/* spin until last cpu leaves */
 				set_curr_task(cpu, previous_current);
@@ -1426,6 +1518,8 @@ out:
 	/* Get the CMC error record and log it */
 	ia64_mca_log_sal_error_record(SAL_INFO_TYPE_CMC);
 
+	local_irq_disable();
+
 	return IRQ_HANDLED;
 }
 
@@ -1459,6 +1553,9 @@ ia64_mca_cmc_int_caller(int cmc_irq, void *arg)
 	for (++cpuid ; cpuid < NR_CPUS && !cpu_online(cpuid) ; cpuid++);
 
 	if (cpuid < NR_CPUS) {
+	cpuid = cpumask_next(cpuid+1, cpu_online_mask);
+
+	if (cpuid < nr_cpu_ids) {
 		platform_send_ipi(cpuid, IA64_CMCP_VECTOR, IA64_IPI_DM_INT, 0);
 	} else {
 		/* If no log record, switch out of polling mode */
@@ -1493,6 +1590,8 @@ ia64_mca_cmc_poll (unsigned long dummy)
 {
 	/* Trigger a CMC interrupt cascade  */
 	platform_send_ipi(first_cpu(cpu_online_map), IA64_CMCP_VECTOR, IA64_IPI_DM_INT, 0);
+	platform_send_ipi(cpumask_first(cpu_online_mask), IA64_CMCP_VECTOR,
+							IA64_IPI_DM_INT, 0);
 }
 
 /*
@@ -1526,6 +1625,7 @@ ia64_mca_cpe_int_caller(int cpe_irq, void *arg)
 	ia64_mca_cpe_int_handler(cpe_irq, arg);
 
 	for (++cpuid ; cpuid < NR_CPUS && !cpu_online(cpuid) ; cpuid++);
+	cpuid = cpumask_next(cpuid+1, cpu_online_mask);
 
 	if (cpuid < NR_CPUS) {
 		platform_send_ipi(cpuid, IA64_CPEP_VECTOR, IA64_IPI_DM_INT, 0);
@@ -1569,6 +1669,8 @@ ia64_mca_cpe_poll (unsigned long dummy)
 {
 	/* Trigger a CPE interrupt cascade  */
 	platform_send_ipi(first_cpu(cpu_online_map), IA64_CPEP_VECTOR, IA64_IPI_DM_INT, 0);
+	platform_send_ipi(cpumask_first(cpu_online_mask), IA64_CPEP_VECTOR,
+							IA64_IPI_DM_INT, 0);
 }
 
 #endif /* CONFIG_ACPI */
@@ -1685,11 +1787,26 @@ ia64_init_handler(struct pt_regs *regs, struct switch_stack *sw,
 		while (monarch_cpu == -1)
 		       cpu_relax();	/* spin until monarch enters */
 
+#ifdef CONFIG_KEXEC
+		while (monarch_cpu == -1 && !atomic_read(&kdump_in_progress))
+			udelay(1000);
+#else
+		while (monarch_cpu == -1)
+			cpu_relax();	/* spin until monarch enters */
+#endif
+
 		NOTIFY_INIT(DIE_INIT_SLAVE_ENTER, regs, (long)&nd, 1);
 		NOTIFY_INIT(DIE_INIT_SLAVE_PROCESS, regs, (long)&nd, 1);
 
 		while (monarch_cpu != -1)
 		       cpu_relax();	/* spin until monarch leaves */
+#ifdef CONFIG_KEXEC
+		while (monarch_cpu != -1 && !atomic_read(&kdump_in_progress))
+			udelay(1000);
+#else
+		while (monarch_cpu != -1)
+			cpu_relax();	/* spin until monarch leaves */
+#endif
 
 		NOTIFY_INIT(DIE_INIT_SLAVE_LEAVE, regs, (long)&nd, 1);
 
@@ -1780,6 +1897,7 @@ static struct irqaction mca_cpep_irqaction = {
  */
 
 static void __cpuinit
+static void
 format_mca_init_stack(void *mca_data, unsigned long offset,
 		const char *type, int cpu)
 {
@@ -1794,6 +1912,7 @@ format_mca_init_stack(void *mca_data, unsigned long offset,
 	p->stack = ti;
 	p->state = TASK_UNINTERRUPTIBLE;
 	cpu_set(cpu, p->cpus_allowed);
+	cpumask_set_cpu(cpu, &p->cpus_allowed);
 	INIT_LIST_HEAD(&p->tasks);
 	p->parent = p->real_parent = p->group_leader = p;
 	INIT_LIST_HEAD(&p->children);
@@ -1810,6 +1929,7 @@ static void * __init_refok mca_bootmem(void)
 
 /* Do per-CPU MCA-related initialization.  */
 void __cpuinit
+void
 ia64_mca_cpu_init(void *cpu_data)
 {
 	void *pal_vaddr;
@@ -1831,6 +1951,9 @@ ia64_mca_cpu_init(void *cpu_data)
 		} else
 			data = page_address(alloc_pages_node(numa_node_id(),
 					GFP_KERNEL, get_order(sz)));
+			data = (void *)__get_free_pages(GFP_KERNEL,
+			data = (void *)__get_free_pages(GFP_ATOMIC,
+							get_order(sz));
 		if (!data)
 			panic("Could not allocate MCA memory for cpu %d\n",
 					cpu);
@@ -1840,6 +1963,7 @@ ia64_mca_cpu_init(void *cpu_data)
 	format_mca_init_stack(data, offsetof(struct ia64_mca_cpu, init_stack),
 		"INIT", cpu);
 	__get_cpu_var(ia64_mca_data) = __per_cpu_mca[cpu] = __pa(data);
+	__this_cpu_write(ia64_mca_data, (__per_cpu_mca[cpu] = __pa(data)));
 
 	/*
 	 * Stash away a copy of the PTE needed to map the per-CPU page.
@@ -1847,6 +1971,8 @@ ia64_mca_cpu_init(void *cpu_data)
 	 */
 	__get_cpu_var(ia64_mca_per_cpu_pte) =
 		pte_val(mk_pte_phys(__pa(cpu_data), PAGE_KERNEL));
+	__this_cpu_write(ia64_mca_per_cpu_pte,
+		pte_val(mk_pte_phys(__pa(cpu_data), PAGE_KERNEL)));
 
 	/*
 	 * Also, stash away a copy of the PAL address and the PTE
@@ -1862,6 +1988,13 @@ ia64_mca_cpu_init(void *cpu_data)
 }
 
 static void __cpuinit ia64_mca_cmc_vector_adjust(void *dummy)
+	__this_cpu_write(ia64_mca_pal_base,
+		GRANULEROUNDDOWN((unsigned long) pal_vaddr));
+	__this_cpu_write(ia64_mca_pal_pte, pte_val(mk_pte_phys(__pa(pal_vaddr),
+							      PAGE_KERNEL)));
+}
+
+static void ia64_mca_cmc_vector_adjust(void *dummy)
 {
 	unsigned long flags;
 
@@ -1872,6 +2005,7 @@ static void __cpuinit ia64_mca_cmc_vector_adjust(void *dummy)
 }
 
 static int __cpuinit mca_cpu_callback(struct notifier_block *nfb,
+static int mca_cpu_callback(struct notifier_block *nfb,
 				      unsigned long action,
 				      void *hcpu)
 {
@@ -1888,6 +2022,7 @@ static int __cpuinit mca_cpu_callback(struct notifier_block *nfb,
 }
 
 static struct notifier_block mca_cpu_notifier __cpuinitdata = {
+static struct notifier_block mca_cpu_notifier = {
 	.notifier_call = mca_cpu_callback
 };
 
@@ -1921,6 +2056,9 @@ ia64_mca_init(void)
 	s64 rc;
 	struct ia64_sal_retval isrv;
 	u64 timeout = IA64_MCA_RENDEZ_TIMEOUT;	/* platform specific */
+	long rc;
+	struct ia64_sal_retval isrv;
+	unsigned long timeout = IA64_MCA_RENDEZ_TIMEOUT; /* platform specific */
 	static struct notifier_block default_init_monarch_nb = {
 		.notifier_call = default_monarch_init_process,
 		.priority = 0/* we need to notified last */
@@ -2026,6 +2164,29 @@ ia64_mca_init(void)
 
 	IA64_MCA_DEBUG("%s: registered OS INIT handler with SAL\n", __func__);
 
+	/* Initialize the areas set aside by the OS to buffer the
+	 * platform/processor error states for MCA/INIT/CMC
+	 * handling.
+	 */
+	ia64_log_init(SAL_INFO_TYPE_MCA);
+	ia64_log_init(SAL_INFO_TYPE_INIT);
+	ia64_log_init(SAL_INFO_TYPE_CMC);
+	ia64_log_init(SAL_INFO_TYPE_CPE);
+
+	mca_init = 1;
+	printk(KERN_INFO "MCA related initialization done\n");
+}
+
+
+/*
+ * These pieces cannot be done in ia64_mca_init() because it is called before
+ * early_irq_init() which would wipe out our percpu irq registrations. But we
+ * cannot leave them until ia64_mca_late_init() because by then all the other
+ * processors have been brought online and have set their own CMC vectors to
+ * point at a non-existant action. Called from arch_early_irq_init().
+ */
+void __init ia64_mca_irq_init(void)
+{
 	/*
 	 *  Configure the CMCI/P vector and handler. Interrupts for CMC are
 	 *  per-processor, so AP CMC interrupts are setup in smp_callin() (smpboot.c).
@@ -2079,6 +2240,7 @@ ia64_mca_late_init(void)
 	/* Setup the CMCI/P vector and handler */
 	init_timer(&cmc_poll_timer);
 	cmc_poll_timer.function = ia64_mca_cmc_poll;
+	setup_timer(&cmc_poll_timer, ia64_mca_cmc_poll, 0UL);
 
 	/* Unmask/enable the vector */
 	cmc_polling_enabled = 0;
@@ -2094,6 +2256,9 @@ ia64_mca_late_init(void)
 
 	{
 		irq_desc_t *desc;
+	setup_timer(&cpe_poll_timer, ia64_mca_cpe_poll, 0UL);
+
+	{
 		unsigned int irq;
 
 		if (cpe_vector >= 0) {
@@ -2103,6 +2268,7 @@ ia64_mca_late_init(void)
 				cpe_poll_enabled = 0;
 				desc = irq_desc + irq;
 				desc->status |= IRQ_PER_CPU;
+				irq_set_status_flags(irq, IRQ_PER_CPU);
 				setup_irq(irq, &mca_cpe_irqaction);
 				ia64_cpe_irq = irq;
 				ia64_mca_register_cpev(cpe_vector);

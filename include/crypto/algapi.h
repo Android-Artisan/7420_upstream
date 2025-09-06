@@ -16,6 +16,10 @@
 #include <linux/list.h>
 #include <linux/kernel.h>
 
+#include <linux/skbuff.h>
+
+struct crypto_aead;
+struct crypto_instance;
 struct module;
 struct rtattr;
 struct seq_file;
@@ -25,6 +29,18 @@ struct crypto_type {
 	int (*init)(struct crypto_tfm *tfm, u32 type, u32 mask);
 	void (*exit)(struct crypto_tfm *tfm);
 	void (*show)(struct seq_file *m, struct crypto_alg *alg);
+	unsigned int (*extsize)(struct crypto_alg *alg);
+	int (*init)(struct crypto_tfm *tfm, u32 type, u32 mask);
+	int (*init_tfm)(struct crypto_tfm *tfm);
+	void (*show)(struct seq_file *m, struct crypto_alg *alg);
+	int (*report)(struct sk_buff *skb, struct crypto_alg *alg);
+	struct crypto_alg *(*lookup)(const char *name, u32 type, u32 mask);
+	void (*free)(struct crypto_instance *inst);
+
+	unsigned int type;
+	unsigned int maskclear;
+	unsigned int maskset;
+	unsigned int tfmsize;
 };
 
 struct crypto_instance {
@@ -43,6 +59,7 @@ struct crypto_template {
 
 	struct crypto_instance *(*alloc)(struct rtattr **tb);
 	void (*free)(struct crypto_instance *inst);
+	int (*create)(struct crypto_template *tmpl, struct rtattr **tb);
 
 	char name[CRYPTO_MAX_ALG_NAME];
 };
@@ -51,6 +68,7 @@ struct crypto_spawn {
 	struct list_head list;
 	struct crypto_alg *alg;
 	struct crypto_instance *inst;
+	const struct crypto_type *frontend;
 	u32 mask;
 };
 
@@ -98,6 +116,33 @@ extern const struct crypto_type crypto_ablkcipher_type;
 extern const struct crypto_type crypto_aead_type;
 extern const struct crypto_type crypto_blkcipher_type;
 extern const struct crypto_type crypto_hash_type;
+	unsigned int ivsize;
+
+	int flags;
+	unsigned int walk_blocksize;
+	unsigned int cipher_blocksize;
+	unsigned int alignmask;
+};
+
+struct ablkcipher_walk {
+	struct {
+		struct page *page;
+		unsigned int offset;
+	} src, dst;
+
+	struct scatter_walk	in;
+	unsigned int		nbytes;
+	struct scatter_walk	out;
+	unsigned int		total;
+	struct list_head	buffers;
+	u8			*iv_buffer;
+	u8			*iv;
+	int			flags;
+	unsigned int		blocksize;
+};
+
+extern const struct crypto_type crypto_ablkcipher_type;
+extern const struct crypto_type crypto_blkcipher_type;
 
 void crypto_mod_put(struct crypto_alg *alg);
 
@@ -110,6 +155,22 @@ int crypto_init_spawn(struct crypto_spawn *spawn, struct crypto_alg *alg,
 void crypto_drop_spawn(struct crypto_spawn *spawn);
 struct crypto_tfm *crypto_spawn_tfm(struct crypto_spawn *spawn, u32 type,
 				    u32 mask);
+int crypto_register_instance(struct crypto_template *tmpl,
+			     struct crypto_instance *inst);
+int crypto_unregister_instance(struct crypto_instance *inst);
+
+int crypto_init_spawn(struct crypto_spawn *spawn, struct crypto_alg *alg,
+		      struct crypto_instance *inst, u32 mask);
+int crypto_init_spawn2(struct crypto_spawn *spawn, struct crypto_alg *alg,
+		       struct crypto_instance *inst,
+		       const struct crypto_type *frontend);
+int crypto_grab_spawn(struct crypto_spawn *spawn, const char *name,
+		      u32 type, u32 mask);
+
+void crypto_drop_spawn(struct crypto_spawn *spawn);
+struct crypto_tfm *crypto_spawn_tfm(struct crypto_spawn *spawn, u32 type,
+				    u32 mask);
+void *crypto_spawn_tfm2(struct crypto_spawn *spawn);
 
 static inline void crypto_set_spawn(struct crypto_spawn *spawn,
 				    struct crypto_instance *inst)
@@ -122,6 +183,19 @@ int crypto_check_attr_type(struct rtattr **tb, u32 type);
 const char *crypto_attr_alg_name(struct rtattr *rta);
 struct crypto_alg *crypto_attr_alg(struct rtattr *rta, u32 type, u32 mask);
 int crypto_attr_u32(struct rtattr *rta, u32 *num);
+struct crypto_alg *crypto_attr_alg2(struct rtattr *rta,
+				    const struct crypto_type *frontend,
+				    u32 type, u32 mask);
+
+static inline struct crypto_alg *crypto_attr_alg(struct rtattr *rta,
+						 u32 type, u32 mask)
+{
+	return crypto_attr_alg2(rta, NULL, type, mask);
+}
+
+int crypto_attr_u32(struct rtattr *rta, u32 *num);
+void *crypto_alloc_instance2(const char *name, struct crypto_alg *alg,
+			     unsigned int head);
 struct crypto_instance *crypto_alloc_instance(const char *name,
 					      struct crypto_alg *alg);
 
@@ -153,6 +227,21 @@ static inline void *crypto_tfm_ctx_aligned(struct crypto_tfm *tfm)
 	if (align <= crypto_tfm_ctx_alignment())
 		align = 1;
 	return (void *)ALIGN(addr, align);
+int blkcipher_aead_walk_virt_block(struct blkcipher_desc *desc,
+				   struct blkcipher_walk *walk,
+				   struct crypto_aead *tfm,
+				   unsigned int blocksize);
+
+int ablkcipher_walk_done(struct ablkcipher_request *req,
+			 struct ablkcipher_walk *walk, int err);
+int ablkcipher_walk_phys(struct ablkcipher_request *req,
+			 struct ablkcipher_walk *walk);
+void __ablkcipher_walk_complete(struct ablkcipher_walk *walk);
+
+static inline void *crypto_tfm_ctx_aligned(struct crypto_tfm *tfm)
+{
+	return PTR_ALIGN(crypto_tfm_ctx(tfm),
+			 crypto_tfm_alg_alignmask(tfm) + 1);
 }
 
 static inline struct crypto_instance *crypto_tfm_alg_instance(
@@ -239,6 +328,11 @@ static inline struct crypto_hash *crypto_spawn_hash(struct crypto_spawn *spawn)
 	return __crypto_hash_cast(crypto_spawn_tfm(spawn, type, mask));
 }
 
+static inline void *crypto_hash_ctx(struct crypto_hash *tfm)
+{
+	return crypto_tfm_ctx(&tfm->base);
+}
+
 static inline void *crypto_hash_ctx_aligned(struct crypto_hash *tfm)
 {
 	return crypto_tfm_ctx_aligned(&tfm->base);
@@ -252,6 +346,23 @@ static inline void blkcipher_walk_init(struct blkcipher_walk *walk,
 	walk->in.sg = src;
 	walk->out.sg = dst;
 	walk->total = nbytes;
+}
+
+static inline void ablkcipher_walk_init(struct ablkcipher_walk *walk,
+					struct scatterlist *dst,
+					struct scatterlist *src,
+					unsigned int nbytes)
+{
+	walk->in.sg = src;
+	walk->out.sg = dst;
+	walk->total = nbytes;
+	INIT_LIST_HEAD(&walk->buffers);
+}
+
+static inline void ablkcipher_walk_complete(struct ablkcipher_walk *walk)
+{
+	if (unlikely(!list_empty(&walk->buffers)))
+		__ablkcipher_walk_complete(walk);
 }
 
 static inline struct crypto_async_request *crypto_get_backlog(
@@ -316,3 +427,27 @@ static inline int crypto_requires_sync(u32 type, u32 mask)
 
 #endif	/* _CRYPTO_ALGAPI_H */
 
+noinline unsigned long __crypto_memneq(const void *a, const void *b, size_t size);
+
+/**
+ * crypto_memneq - Compare two areas of memory without leaking
+ *		   timing information.
+ *
+ * @a: One area of memory
+ * @b: Another area of memory
+ * @size: The size of the area.
+ *
+ * Returns 0 when data is equal, 1 otherwise.
+ */
+static inline int crypto_memneq(const void *a, const void *b, size_t size)
+{
+	return __crypto_memneq(a, b, size) != 0UL ? 1 : 0;
+}
+
+static inline void crypto_yield(u32 flags)
+{
+	if (flags & CRYPTO_TFM_REQ_MAY_SLEEP)
+		cond_resched();
+}
+
+#endif	/* _CRYPTO_ALGAPI_H */

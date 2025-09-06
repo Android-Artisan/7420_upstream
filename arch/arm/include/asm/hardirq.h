@@ -8,6 +8,13 @@
 typedef struct {
 	unsigned int __softirq_pending;
 	unsigned int local_timer_irqs;
+#define NR_IPI	8
+
+typedef struct {
+	unsigned int __softirq_pending;
+#ifdef CONFIG_SMP
+	unsigned int ipi_irqs[NR_IPI];
+#endif
 } ____cacheline_aligned irq_cpustat_t;
 
 #include <linux/irq_cpustat.h>	/* Standard mappings for irq_cpustat_t above */
@@ -26,6 +33,16 @@ typedef struct {
 #if (1 << HARDIRQ_BITS) < NR_IRQS
 # error HARDIRQ_BITS is too low!
 #endif
+#define __inc_irq_stat(cpu, member)	__IRQ_STAT(cpu, member)++
+#define __get_irq_stat(cpu, member)	__IRQ_STAT(cpu, member)
+
+#ifdef CONFIG_SMP
+u64 smp_irq_stat_cpu(unsigned int cpu);
+#else
+#define smp_irq_stat_cpu(cpu)	0
+#endif
+
+#define arch_irq_stat_cpu	smp_irq_stat_cpu
 
 #define __ARCH_IRQ_EXIT_IRQS_DISABLED	1
 

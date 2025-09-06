@@ -43,6 +43,7 @@
 #define IRDA_TRANS 0x20    /* Asynchronous transparency modifier */       
 
 /* States for receving a frame in async mode */
+/* States for receiving a frame in async mode */
 enum {
 	OUTSIDE_FRAME, 
 	BEGIN_FRAME, 

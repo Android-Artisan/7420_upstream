@@ -206,6 +206,7 @@
 #define VERSATILE_DMAC_BASE            0x10130000	/* DMA controller */
 #define VERSATILE_VIC_BASE             0x10140000	/* Vectored interrupt controller */
 #define VERSATILE_PERIPH_BASE          0x10150000    /* off-chip peripherals alias from */
+#define VERSATILE_PERIPH_BASE          0x10150000	/* off-chip peripherals alias from */
                                                 /* 0x10000000 - 0x100FFFFF */
 #define VERSATILE_AHBM_BASE            0x101D0000	/* AHB monitor */
 #define VERSATILE_SCTL_BASE            0x101E0000	/* System controller */
@@ -214,6 +215,7 @@
 #define VERSATILE_TIMER2_3_BASE        0x101E3000	/* Timer 2 and 3 */
 #define VERSATILE_GPIO0_BASE           0x101E4000	/* GPIO port 0 */
 #define VERSATILE_GPIO1_BASE           0x101E5000    /* GPIO port 1 */
+#define VERSATILE_GPIO1_BASE           0x101E5000	/* GPIO port 1 */
 #define VERSATILE_GPIO2_BASE           0x101E6000	/* GPIO port 2 */
 #define VERSATILE_GPIO3_BASE           0x101E7000	/* GPIO port 3 */
 #define VERSATILE_RTC_BASE             0x101E8000	/* Real Time Clock */
@@ -231,12 +233,14 @@
 /* PCI space */
 #define VERSATILE_PCI_BASE             0x41000000	/* PCI Interface */
 #define VERSATILE_PCI_CFG_BASE	       0x42000000
+#define VERSATILE_PCI_IO_BASE          0x43000000
 #define VERSATILE_PCI_MEM_BASE0        0x44000000
 #define VERSATILE_PCI_MEM_BASE1        0x50000000
 #define VERSATILE_PCI_MEM_BASE2        0x60000000
 /* Sizes of above maps */
 #define VERSATILE_PCI_BASE_SIZE	       0x01000000
 #define VERSATILE_PCI_CFG_BASE_SIZE    0x02000000
+#define VERSATILE_PCI_IO_BASE_SIZE     0x01000000
 #define VERSATILE_PCI_MEM_BASE0_SIZE   0x0c000000	/* 32Mb */
 #define VERSATILE_PCI_MEM_BASE1_SIZE   0x10000000	/* 256Mb */
 #define VERSATILE_PCI_MEM_BASE2_SIZE   0x10000000	/* 256Mb */

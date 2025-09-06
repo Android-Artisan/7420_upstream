@@ -263,7 +263,6 @@ extern int dev_fsm_len;
  * MPC Group Station FSM States
 
 State Name		When In This State
-======================	=======================================
 MPCG_STATE_RESET	Initial State When Driver Loaded
 			We receive and send NOTHING
 
@@ -275,7 +274,6 @@ MPCG_STATE_READY	XID exchanges for at least 1 write and
 			Group is ready for data transfer.
 
 States from ctc_mpc_alloc_channel
-==============================================================
 MPCG_STATE_XID2INITW	Awaiting XID2(0) Initiation
 			      ATTN from other side will start
 			      XID negotiations.
@@ -300,7 +298,6 @@ MPCG_STATE_READY	      Ready for Data Transfer.
 
 
 States from ctc_mpc_establish_connectivity call
-==============================================================
 MPCG_STATE_XID0IOWAIT	Initiating XID2(0) negotiations.
 			      X-side protocol only.
 			      ATTN-BUSY from other side will convert

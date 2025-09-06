@@ -38,6 +38,19 @@
  * be incorporated into the next SCTP release.
  */
 
+ * along with GNU CC; see the file COPYING.  If not, see
+ * <http://www.gnu.org/licenses/>.
+ *
+ * Please send any bug reports or fixes you make to the
+ * email address(es):
+ *    lksctp developers <linux-sctp@vger.kernel.org>
+ *
+ * Written or modified by:
+ *    Jon Grimm             <jgrimm@us.ibm.com>
+ */
+
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/kernel.h>
 #include <net/sctp/sctp.h>
 
@@ -89,6 +102,13 @@ static int sctp_objcnt_seq_show(struct seq_file *seq, void *v)
 	seq_printf(seq, "%s: %d%n", sctp_dbg_objcnt[i].label,
 				atomic_read(sctp_dbg_objcnt[i].counter), &len);
 	seq_printf(seq, "%*s\n", 127 - len, "");
+	int i;
+
+	i = (int)*(loff_t *)v;
+	seq_setwidth(seq, 127);
+	seq_printf(seq, "%s: %d", sctp_dbg_objcnt[i].label,
+				atomic_read(sctp_dbg_objcnt[i].counter));
+	seq_pad(seq, '\n');
 	return 0;
 }
 
@@ -102,6 +122,7 @@ static void sctp_objcnt_seq_stop(struct seq_file *seq, void *v)
 }
 
 static void * sctp_objcnt_seq_next(struct seq_file *seq, void *v, loff_t *pos)
+static void *sctp_objcnt_seq_next(struct seq_file *seq, void *v, loff_t *pos)
 {
 	++*pos;
 	return (*pos >= ARRAY_SIZE(sctp_dbg_objcnt)) ? NULL : (void *)pos;
@@ -128,6 +149,7 @@ static const struct file_operations sctp_objcnt_ops = {
 
 /* Initialize the objcount in the proc filesystem.  */
 void sctp_dbg_objcnt_init(void)
+void sctp_dbg_objcnt_init(struct net *net)
 {
 	struct proc_dir_entry *ent;
 
@@ -142,6 +164,15 @@ void sctp_dbg_objcnt_init(void)
 void sctp_dbg_objcnt_exit(void)
 {
 	remove_proc_entry("sctp_dbg_objcnt", proc_net_sctp);
+			  net->sctp.proc_net_sctp, &sctp_objcnt_ops);
+	if (!ent)
+		pr_warn("sctp_dbg_objcnt: Unable to create /proc entry.\n");
+}
+
+/* Cleanup the objcount entry in the proc filesystem.  */
+void sctp_dbg_objcnt_exit(struct net *net)
+{
+	remove_proc_entry("sctp_dbg_objcnt", net->sctp.proc_net_sctp);
 }
 
 

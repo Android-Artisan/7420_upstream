@@ -11,7 +11,6 @@
 *		modify it under the terms of the GNU General Public License
 *		as published by the Free Software Foundation; either version
 *		2 of the License, or (at your option) any later version.
-* ============================================================================
 * 1999/10/23	acme		cycxhw_t cleanup
 * 1999/01/03	acme		more judicious use of data types...
 *				uclong, ucchar, etc deleted, the u8, u16, u32

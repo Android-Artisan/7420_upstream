@@ -18,6 +18,21 @@ SYMBOL_NAME_LABEL(memcpy)
 	bne	1f
 	rts	
 1:	
+#if defined(CONFIG_CPU_H8300H)
+	.h8300h
+#endif
+#if defined(CONFIG_CPU_H8S)
+	.h8300s
+#endif
+	.text
+.global memcpy
+
+;;; void *memcpy(void *to, void *from, size_t n)
+memcpy:
+	mov.l	er2,er2
+	bne	1f
+	rts
+1:
 	;; address check
 	bld	#0,r0l
 	bxor	#0,r1l
@@ -34,6 +49,7 @@ SYMBOL_NAME_LABEL(memcpy)
 	dec.l	#1,er2
 	beq	3f
 1:	
+1:
 	;; n < sizeof(unsigned long) check
 	sub.l	er4,er4
 	adds	#4,er4		; loop count check value
@@ -41,6 +57,7 @@ SYMBOL_NAME_LABEL(memcpy)
 	blo	2f
 	;; unsigned long copy
 1:	
+1:
 	mov.l	@er1,er3
 	mov.l	er3,@er0
 	adds	#4,er0
@@ -53,6 +70,12 @@ SYMBOL_NAME_LABEL(memcpy)
 	mov.l	er2,er2
 	beq	3f
 1:	
+	bcc	1b
+	;; rest
+2:
+	mov.l	er2,er2
+	beq	3f
+1:
 	mov.b	@er1,r3l
 	mov.b	r3l,@er0
 	adds	#1,er1
@@ -66,6 +89,7 @@ SYMBOL_NAME_LABEL(memcpy)
 
 	;; odd <- even / even <- odd
 4:	
+4:
 	mov.l	er4,er3
 	mov.l	er2,er4
 	mov.l	er5,er2
@@ -82,3 +106,5 @@ SYMBOL_NAME_LABEL(memcpy)
 	mov.l	er2,er5
 	mov.l	er3,er4
 	rts
+
+	.end

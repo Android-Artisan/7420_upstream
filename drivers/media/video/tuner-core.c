@@ -328,7 +328,6 @@ static void tuner_i2c_address_check(struct tuner *t)
 	    ((t->i2c->addr <= 0x64)) && (t->i2c->addr >= 0x61))
 		return;
 
-	tuner_warn("====================== WARNING! ======================\n");
 	tuner_warn("Support for tuners in i2c address range 0x64 thru 0x6f\n");
 	tuner_warn("will soon be dropped. This message indicates that your\n");
 	tuner_warn("hardware has a %s tuner at i2c address 0x%02x.\n",
@@ -339,7 +338,6 @@ static void tuner_i2c_address_check(struct tuner *t)
 	tuner_warn("Please use subject line: \"obsolete tuner i2c address.\"\n");
 	tuner_warn("driver: %s, addr: 0x%02x, type: %d (%s)\n",
 		   t->i2c->adapter->name, t->i2c->addr, t->type, t->name);
-	tuner_warn("====================== WARNING! ======================\n");
 }
 
 static struct xc5000_config xc5000_cfg;

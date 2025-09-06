@@ -21,6 +21,7 @@
 #include <asm/sysreg.h>
 
 int __devinit read_current_timer(unsigned long *timer_value)
+int read_current_timer(unsigned long *timer_value)
 {
 	*timer_value = sysreg_read(COUNT);
 	return 0;

@@ -28,6 +28,8 @@
 #include <linux/of_platform.h>
 
 #include <asm/system.h>
+#include <linux/module.h>
+
 #include <asm/time.h>
 #include <asm/machdep.h>
 #include <asm/prom.h>
@@ -174,11 +176,15 @@ static void __init holly_init_IRQ(void)
 			MPIC_SPV_EOI | MPIC_NO_PTHROU_DIS | MPIC_REGSET_TSI108,
 			24,
 			NR_IRQS-4, /* num_sources used */
+	mpic = mpic_alloc(NULL, 0, MPIC_BIG_ENDIAN |
+			MPIC_SPV_EOI | MPIC_NO_PTHROU_DIS | MPIC_REGSET_TSI108,
+			24, 0,
 			"Tsi108_PIC");
 
 	BUG_ON(mpic == NULL);
 
 	mpic_assign_isu(mpic, 0, mpic_paddr + 0x100);
+	mpic_assign_isu(mpic, 0, mpic->paddr + 0x100);
 
 	mpic_init(mpic);
 
@@ -204,6 +210,11 @@ static void __init holly_init_IRQ(void)
 	/* Configure MPIC outputs to CPU0 */
 	tsi108_write_reg(TSI108_MPIC_OFFSET + 0x30c, 0);
 	of_node_put(tsi_pic);
+	irq_set_handler_data(cascade_pci_irq, mpic);
+	irq_set_chained_handler(cascade_pci_irq, tsi108_irq_cascade);
+#endif
+	/* Configure MPIC outputs to CPU0 */
+	tsi108_write_reg(TSI108_MPIC_OFFSET + 0x30c, 0);
 }
 
 void holly_show_cpuinfo(struct seq_file *m)

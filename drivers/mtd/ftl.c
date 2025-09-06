@@ -5,7 +5,6 @@
  *
  * Based on:
  */
-/*======================================================================
 
     A Flash Translation Layer memory card driver
 
@@ -27,6 +26,7 @@
     The initial developer of the original code is David A. Hinds
     <dahinds@users.sourceforge.net>.  Portions created by David A. Hinds
     are Copyright (C) 1999 David A. Hinds.  All Rights Reserved.
+    are Copyright © 1999 David A. Hinds.  All Rights Reserved.
 
     Alternatively, the contents of this file may be used under the
     terms of the GNU General Public License version 2 (the "GPL"), in
@@ -52,8 +52,8 @@
     Use of the FTL format for non-PCMCIA applications may be an
     infringement of these patents.  For additional information,
     contact M-Systems (http://www.m-sys.com) directly.
+    contact M-Systems directly. M-Systems since acquired by Sandisk. 
 
-======================================================================*/
 #include <linux/mtd/blktrans.h>
 #include <linux/module.h>
 #include <linux/mtd/mtd.h>
@@ -74,13 +74,11 @@
 
 #include <linux/mtd/ftl.h>
 
-/*====================================================================*/
 
 /* Parameters that can be set with 'insmod' */
 static int shuffle_freq = 50;
 module_param(shuffle_freq, int, 0);
 
-/*====================================================================*/
 
 /* Major device # for FTL device */
 #ifndef FTL_MAJOR
@@ -88,7 +86,6 @@ module_param(shuffle_freq, int, 0);
 #endif
 
 
-/*====================================================================*/
 
 /* Maximum number of separate memory devices we'll allow */
 #define MAX_DEV		4
@@ -128,6 +125,24 @@ typedef struct partition_t {
     u_int32_t		*bam_cache;
     u_int16_t		DataUnits;
     u_int32_t		BlocksPerUnit;
+    uint32_t		state;
+    uint32_t		*VirtualBlockMap;
+    uint32_t		FreeTotal;
+    struct eun_info_t {
+	uint32_t		Offset;
+	uint32_t		EraseCount;
+	uint32_t		Free;
+	uint32_t		Deleted;
+    } *EUNInfo;
+    struct xfer_info_t {
+	uint32_t		Offset;
+	uint32_t		EraseCount;
+	uint16_t		state;
+    } *XferInfo;
+    uint16_t		bam_index;
+    uint32_t		*bam_cache;
+    uint16_t		DataUnits;
+    uint32_t		BlocksPerUnit;
     erase_unit_header_t	header;
 } partition_t;
 
@@ -141,19 +156,16 @@ typedef struct partition_t {
 #define XFER_PREPARED	0x03
 #define XFER_FAILED	0x04
 
-/*====================================================================*/
 
 
 static void ftl_erase_callback(struct erase_info *done);
 
 
-/*======================================================================
 
     Scan_header() checks to see if a memory region contains an FTL
     partition.  build_maps() reads all the erase unit headers, builds
     the erase unit map, and then builds the virtual page map.
 
-======================================================================*/
 
 static int scan_header(partition_t *part)
 {
@@ -170,6 +182,8 @@ static int scan_header(partition_t *part)
 
 	err = part->mbd.mtd->read(part->mbd.mtd, offset, sizeof(header), &ret,
 			      (unsigned char *)&header);
+	err = mtd_read(part->mbd.mtd, offset, sizeof(header), &ret,
+                       (unsigned char *)&header);
 
 	if (err)
 	    return err;
@@ -201,6 +215,8 @@ static int build_maps(partition_t *part)
     erase_unit_header_t header;
     u_int16_t xvalid, xtrans, i;
     u_int blocks, j;
+    uint16_t xvalid, xtrans, i;
+    unsigned blocks, j;
     int hdr_ok, ret = -1;
     ssize_t retval;
     loff_t offset;
@@ -226,6 +242,8 @@ static int build_maps(partition_t *part)
 		      << part->header.EraseUnitSize);
 	ret = part->mbd.mtd->read(part->mbd.mtd, offset, sizeof(header), &retval,
 			      (unsigned char *)&header);
+	ret = mtd_read(part->mbd.mtd, offset, sizeof(header), &retval,
+                       (unsigned char *)&header);
 
 	if (ret)
 	    goto out_XferInfo;
@@ -277,6 +295,14 @@ static int build_maps(partition_t *part)
     part->BlocksPerUnit = (1 << header.EraseUnitSize) >> header.BlockSize;
 
     part->bam_cache = kmalloc(part->BlocksPerUnit * sizeof(u_int32_t),
+    part->VirtualBlockMap = vmalloc(blocks * sizeof(uint32_t));
+    if (!part->VirtualBlockMap)
+	    goto out_XferInfo;
+
+    memset(part->VirtualBlockMap, 0xff, blocks * sizeof(uint32_t));
+    part->BlocksPerUnit = (1 << header.EraseUnitSize) >> header.BlockSize;
+
+    part->bam_cache = kmalloc(part->BlocksPerUnit * sizeof(uint32_t),
 			      GFP_KERNEL);
     if (!part->bam_cache)
 	    goto out_VirtualBlockMap;
@@ -292,6 +318,9 @@ static int build_maps(partition_t *part)
 	ret = part->mbd.mtd->read(part->mbd.mtd, offset,
 			      part->BlocksPerUnit * sizeof(u_int32_t), &retval,
 			      (unsigned char *)part->bam_cache);
+	ret = mtd_read(part->mbd.mtd, offset,
+                       part->BlocksPerUnit * sizeof(uint32_t), &retval,
+                       (unsigned char *)part->bam_cache);
 
 	if (ret)
 		goto out_bam_cache;
@@ -324,15 +353,14 @@ out:
     return ret;
 } /* build_maps */
 
-/*======================================================================
 
     Erase_xfer() schedules an asynchronous erase operation for a
     transfer unit.
 
-======================================================================*/
 
 static int erase_xfer(partition_t *part,
 		      u_int16_t xfernum)
+		      uint16_t xfernum)
 {
     int ret;
     struct xfer_info_t *xfer;
@@ -340,6 +368,7 @@ static int erase_xfer(partition_t *part,
 
     xfer = &part->XferInfo[xfernum];
     DEBUG(1, "ftl_cs: erasing xfer unit at 0x%x\n", xfer->Offset);
+    pr_debug("ftl_cs: erasing xfer unit at 0x%x\n", xfer->Offset);
     xfer->state = XFER_ERASING;
 
     /* Is there a free erase slot? Always in MTD. */
@@ -356,6 +385,7 @@ static int erase_xfer(partition_t *part,
     erase->priv = (u_long)part;
 
     ret = part->mbd.mtd->erase(part->mbd.mtd, erase);
+    ret = mtd_erase(part->mbd.mtd, erase);
 
     if (!ret)
 	    xfer->EraseCount++;
@@ -365,12 +395,10 @@ static int erase_xfer(partition_t *part,
     return ret;
 } /* erase_xfer */
 
-/*======================================================================
 
     Prepare_xfer() takes a freshly erased transfer unit and gives
     it an appropriate header.
 
-======================================================================*/
 
 static void ftl_erase_callback(struct erase_info *erase)
 {
@@ -409,6 +437,7 @@ static int prepare_xfer(partition_t *part, int i)
     struct xfer_info_t *xfer;
     int nbam, ret;
     u_int32_t ctl;
+    uint32_t ctl;
     ssize_t retlen;
     loff_t offset;
 
@@ -416,6 +445,7 @@ static int prepare_xfer(partition_t *part, int i)
     xfer->state = XFER_FAILED;
 
     DEBUG(1, "ftl_cs: preparing xfer unit at 0x%x\n", xfer->Offset);
+    pr_debug("ftl_cs: preparing xfer unit at 0x%x\n", xfer->Offset);
 
     /* Write the transfer unit header */
     header = part->header;
@@ -424,6 +454,8 @@ static int prepare_xfer(partition_t *part, int i)
 
     ret = part->mbd.mtd->write(part->mbd.mtd, xfer->Offset, sizeof(header),
 			   &retlen, (u_char *)&header);
+    ret = mtd_write(part->mbd.mtd, xfer->Offset, sizeof(header), &retlen,
+                    (u_char *)&header);
 
     if (ret) {
 	return ret;
@@ -431,6 +463,7 @@ static int prepare_xfer(partition_t *part, int i)
 
     /* Write the BAM stub */
     nbam = (part->BlocksPerUnit * sizeof(u_int32_t) +
+    nbam = (part->BlocksPerUnit * sizeof(uint32_t) +
 	    le32_to_cpu(part->header.BAMOffset) + SECTOR_SIZE - 1) / SECTOR_SIZE;
 
     offset = xfer->Offset + le32_to_cpu(part->header.BAMOffset);
@@ -440,6 +473,10 @@ static int prepare_xfer(partition_t *part, int i)
 
 	ret = part->mbd.mtd->write(part->mbd.mtd, offset, sizeof(u_int32_t),
 			       &retlen, (u_char *)&ctl);
+    for (i = 0; i < nbam; i++, offset += sizeof(uint32_t)) {
+
+	ret = mtd_write(part->mbd.mtd, offset, sizeof(uint32_t), &retlen,
+                        (u_char *)&ctl);
 
 	if (ret)
 	    return ret;
@@ -449,7 +486,6 @@ static int prepare_xfer(partition_t *part, int i)
 
 } /* prepare_xfer */
 
-/*======================================================================
 
     Copy_erase_unit() takes a full erase block and a transfer unit,
     copies everything to the transfer unit, then swaps the block
@@ -459,10 +495,11 @@ static int prepare_xfer(partition_t *part, int i)
     target unit, so the virtual block map does not need to be
     updated.
 
-======================================================================*/
 
 static int copy_erase_unit(partition_t *part, u_int16_t srcunit,
 			   u_int16_t xferunit)
+static int copy_erase_unit(partition_t *part, uint16_t srcunit,
+			   uint16_t xferunit)
 {
     u_char buf[SECTOR_SIZE];
     struct eun_info_t *eun;
@@ -477,6 +514,16 @@ static int copy_erase_unit(partition_t *part, u_int16_t srcunit,
     eun = &part->EUNInfo[srcunit];
     xfer = &part->XferInfo[xferunit];
     DEBUG(2, "ftl_cs: copying block 0x%x to 0x%x\n",
+    uint32_t src, dest, free, i;
+    uint16_t unit;
+    int ret;
+    ssize_t retlen;
+    loff_t offset;
+    uint16_t srcunitswap = cpu_to_le16(srcunit);
+
+    eun = &part->EUNInfo[srcunit];
+    xfer = &part->XferInfo[xferunit];
+    pr_debug("ftl_cs: copying block 0x%x to 0x%x\n",
 	  eun->Offset, xfer->Offset);
 
 
@@ -488,6 +535,9 @@ static int copy_erase_unit(partition_t *part, u_int16_t srcunit,
 	ret = part->mbd.mtd->read(part->mbd.mtd, offset,
 			      part->BlocksPerUnit * sizeof(u_int32_t),
 			      &retlen, (u_char *) (part->bam_cache));
+	ret = mtd_read(part->mbd.mtd, offset,
+                       part->BlocksPerUnit * sizeof(uint32_t), &retlen,
+                       (u_char *)(part->bam_cache));
 
 	/* mark the cache bad, in case we get an error later */
 	part->bam_index = 0xffff;
@@ -505,6 +555,8 @@ static int copy_erase_unit(partition_t *part, u_int16_t srcunit,
 
     ret = part->mbd.mtd->write(part->mbd.mtd, offset, sizeof(u_int16_t),
 			   &retlen, (u_char *) &unit);
+    ret = mtd_write(part->mbd.mtd, offset, sizeof(uint16_t), &retlen,
+                    (u_char *)&unit);
 
     if (ret) {
 	printk( KERN_WARNING "ftl: Failed to write back to BAM cache in copy_erase_unit()!\n");
@@ -525,6 +577,8 @@ static int copy_erase_unit(partition_t *part, u_int16_t srcunit,
 	case BLOCK_REPLACEMENT:
 	    ret = part->mbd.mtd->read(part->mbd.mtd, src, SECTOR_SIZE,
                         &retlen, (u_char *) buf);
+	    ret = mtd_read(part->mbd.mtd, src, SECTOR_SIZE, &retlen,
+                           (u_char *)buf);
 	    if (ret) {
 		printk(KERN_WARNING "ftl: Error reading old xfer unit in copy_erase_unit\n");
 		return ret;
@@ -533,6 +587,8 @@ static int copy_erase_unit(partition_t *part, u_int16_t srcunit,
 
 	    ret = part->mbd.mtd->write(part->mbd.mtd, dest, SECTOR_SIZE,
                         &retlen, (u_char *) buf);
+	    ret = mtd_write(part->mbd.mtd, dest, SECTOR_SIZE, &retlen,
+                            (u_char *)buf);
 	    if (ret)  {
 		printk(KERN_WARNING "ftl: Error writing new xfer unit in copy_erase_unit\n");
 		return ret;
@@ -553,6 +609,11 @@ static int copy_erase_unit(partition_t *part, u_int16_t srcunit,
     ret = part->mbd.mtd->write(part->mbd.mtd, xfer->Offset + le32_to_cpu(part->header.BAMOffset),
                     part->BlocksPerUnit * sizeof(int32_t), &retlen,
 		    (u_char *)part->bam_cache);
+    ret = mtd_write(part->mbd.mtd,
+                    xfer->Offset + le32_to_cpu(part->header.BAMOffset),
+                    part->BlocksPerUnit * sizeof(int32_t),
+                    &retlen,
+                    (u_char *)part->bam_cache);
     if (ret) {
 	printk( KERN_WARNING "ftl: Error writing BAM in copy_erase_unit\n");
 	return ret;
@@ -562,6 +623,8 @@ static int copy_erase_unit(partition_t *part, u_int16_t srcunit,
     /* All clear? Then update the LogicalEUN again */
     ret = part->mbd.mtd->write(part->mbd.mtd, xfer->Offset + 20, sizeof(u_int16_t),
 			   &retlen, (u_char *)&srcunitswap);
+    ret = mtd_write(part->mbd.mtd, xfer->Offset + 20, sizeof(uint16_t),
+                    &retlen, (u_char *)&srcunitswap);
 
     if (ret) {
 	printk(KERN_WARNING "ftl: Error writing new LogicalEUN in copy_erase_unit\n");
@@ -587,7 +650,6 @@ static int copy_erase_unit(partition_t *part, u_int16_t srcunit,
     return 0;
 } /* copy_erase_unit */
 
-/*======================================================================
 
     reclaim_block() picks a full erase unit and a transfer unit and
     then calls copy_erase_unit() to copy one to the other.  Then, it
@@ -599,9 +661,9 @@ static int copy_erase_unit(partition_t *part, u_int16_t srcunit,
     the most deleted blocks.  But with a small probability, pick the
     oldest data unit instead.  This means that we generally postpone
     the next reclaimation as long as possible, but shuffle static
+    the next reclamation as long as possible, but shuffle static
     stuff around a bit for wear leveling.
 
-======================================================================*/
 
 static int reclaim_block(partition_t *part)
 {
@@ -611,6 +673,12 @@ static int reclaim_block(partition_t *part)
 
     DEBUG(0, "ftl_cs: reclaiming space...\n");
     DEBUG(3, "NumTransferUnits == %x\n", part->header.NumTransferUnits);
+    uint16_t i, eun, xfer;
+    uint32_t best;
+    int queued, ret;
+
+    pr_debug("ftl_cs: reclaiming space...\n");
+    pr_debug("NumTransferUnits == %x\n", part->header.NumTransferUnits);
     /* Pick the least erased transfer unit */
     best = 0xffffffff; xfer = 0xffff;
     do {
@@ -619,21 +687,25 @@ static int reclaim_block(partition_t *part)
 	    int n=0;
 	    if (part->XferInfo[i].state == XFER_UNKNOWN) {
 		DEBUG(3,"XferInfo[%d].state == XFER_UNKNOWN\n",i);
+		pr_debug("XferInfo[%d].state == XFER_UNKNOWN\n",i);
 		n=1;
 		erase_xfer(part, i);
 	    }
 	    if (part->XferInfo[i].state == XFER_ERASING) {
 		DEBUG(3,"XferInfo[%d].state == XFER_ERASING\n",i);
+		pr_debug("XferInfo[%d].state == XFER_ERASING\n",i);
 		n=1;
 		queued = 1;
 	    }
 	    else if (part->XferInfo[i].state == XFER_ERASED) {
 		DEBUG(3,"XferInfo[%d].state == XFER_ERASED\n",i);
+		pr_debug("XferInfo[%d].state == XFER_ERASED\n",i);
 		n=1;
 		prepare_xfer(part, i);
 	    }
 	    if (part->XferInfo[i].state == XFER_PREPARED) {
 		DEBUG(3,"XferInfo[%d].state == XFER_PREPARED\n",i);
+		pr_debug("XferInfo[%d].state == XFER_PREPARED\n",i);
 		n=1;
 		if (part->XferInfo[i].EraseCount <= best) {
 		    best = part->XferInfo[i].EraseCount;
@@ -642,6 +714,7 @@ static int reclaim_block(partition_t *part)
 	    }
 		if (!n)
 		    DEBUG(3,"XferInfo[%d].state == %x\n",i, part->XferInfo[i].state);
+		    pr_debug("XferInfo[%d].state == %x\n",i, part->XferInfo[i].state);
 
 	}
 	if (xfer == 0xffff) {
@@ -650,6 +723,9 @@ static int reclaim_block(partition_t *part)
 		      "unit to be prepared...\n");
 		if (part->mbd.mtd->sync)
 			part->mbd.mtd->sync(part->mbd.mtd);
+		pr_debug("ftl_cs: waiting for transfer "
+		      "unit to be prepared...\n");
+		mtd_sync(part->mbd.mtd);
 	    } else {
 		static int ne = 0;
 		if (++ne < 5)
@@ -657,6 +733,7 @@ static int reclaim_block(partition_t *part)
 			   "suitable transfer units!\n");
 		else
 		    DEBUG(1, "ftl_cs: reclaim failed: no "
+		    pr_debug("ftl_cs: reclaim failed: no "
 			  "suitable transfer units!\n");
 
 		return -EIO;
@@ -667,6 +744,7 @@ static int reclaim_block(partition_t *part)
     eun = 0;
     if ((jiffies % shuffle_freq) == 0) {
 	DEBUG(1, "ftl_cs: recycling freshest block...\n");
+	pr_debug("ftl_cs: recycling freshest block...\n");
 	best = 0xffffffff;
 	for (i = 0; i < part->DataUnits; i++)
 	    if (part->EUNInfo[i].EraseCount <= best) {
@@ -687,6 +765,7 @@ static int reclaim_block(partition_t *part)
 		       "no free blocks!\n");
 	    else
 		DEBUG(1,"ftl_cs: reclaim failed: "
+		pr_debug("ftl_cs: reclaim failed: "
 		       "no free blocks!\n");
 
 	    return -EIO;
@@ -700,7 +779,6 @@ static int reclaim_block(partition_t *part)
     return ret;
 } /* reclaim_block */
 
-/*======================================================================
 
     Find_free() searches for a free block.  If necessary, it updates
     the BAM cache for the erase unit containing the free block.  It
@@ -708,7 +786,6 @@ static int reclaim_block(partition_t *part)
     cached unit.  If there are no free blocks, it returns 0 -- this
     is never a valid data block because it contains the header.
 
-======================================================================*/
 
 #ifdef PSYCHO_DEBUG
 static void dump_lists(partition_t *part)
@@ -727,6 +804,10 @@ static u_int32_t find_free(partition_t *part)
 {
     u_int16_t stop, eun;
     u_int32_t blk;
+static uint32_t find_free(partition_t *part)
+{
+    uint16_t stop, eun;
+    uint32_t blk;
     size_t retlen;
     int ret;
 
@@ -751,6 +832,11 @@ static u_int32_t find_free(partition_t *part)
 		       part->EUNInfo[eun].Offset + le32_to_cpu(part->header.BAMOffset),
 		       part->BlocksPerUnit * sizeof(u_int32_t),
 		       &retlen, (u_char *) (part->bam_cache));
+	ret = mtd_read(part->mbd.mtd,
+                       part->EUNInfo[eun].Offset + le32_to_cpu(part->header.BAMOffset),
+                       part->BlocksPerUnit * sizeof(uint32_t),
+                       &retlen,
+                       (u_char *)(part->bam_cache));
 
 	if (ret) {
 	    printk(KERN_WARNING"ftl: Error reading BAM in find_free\n");
@@ -772,26 +858,27 @@ static u_int32_t find_free(partition_t *part)
 	return 0;
     }
     DEBUG(2, "ftl_cs: found free block at %d in %d\n", blk, eun);
+    pr_debug("ftl_cs: found free block at %d in %d\n", blk, eun);
     return blk;
 
 } /* find_free */
 
 
-/*======================================================================
 
     Read a series of sectors from an FTL partition.
 
-======================================================================*/
 
 static int ftl_read(partition_t *part, caddr_t buffer,
 		    u_long sector, u_long nblocks)
 {
     u_int32_t log_addr, bsize;
+    uint32_t log_addr, bsize;
     u_long i;
     int ret;
     size_t offset, retlen;
 
     DEBUG(2, "ftl_cs: ftl_read(0x%p, 0x%lx, %ld)\n",
+    pr_debug("ftl_cs: ftl_read(0x%p, 0x%lx, %ld)\n",
 	  part, sector, nblocks);
     if (!(part->state & FTL_FORMATTED)) {
 	printk(KERN_NOTICE "ftl_cs: bad partition\n");
@@ -812,6 +899,8 @@ static int ftl_read(partition_t *part, caddr_t buffer,
 			  + (log_addr % bsize));
 	    ret = part->mbd.mtd->read(part->mbd.mtd, offset, SECTOR_SIZE,
 			   &retlen, (u_char *) buffer);
+	    ret = mtd_read(part->mbd.mtd, offset, SECTOR_SIZE, &retlen,
+                           (u_char *)buffer);
 
 	    if (ret) {
 		printk(KERN_WARNING "Error reading MTD device in ftl_read()\n");
@@ -823,11 +912,9 @@ static int ftl_read(partition_t *part, caddr_t buffer,
     return 0;
 } /* ftl_read */
 
-/*======================================================================
 
     Write a series of sectors to an FTL partition
 
-======================================================================*/
 
 static int set_bam_entry(partition_t *part, u_int32_t log_addr,
 			 u_int32_t virt_addr)
@@ -841,6 +928,18 @@ static int set_bam_entry(partition_t *part, u_int32_t log_addr,
     size_t retlen, offset;
 
     DEBUG(2, "ftl_cs: set_bam_entry(0x%p, 0x%x, 0x%x)\n",
+static int set_bam_entry(partition_t *part, uint32_t log_addr,
+			 uint32_t virt_addr)
+{
+    uint32_t bsize, blk, le_virt_addr;
+#ifdef PSYCHO_DEBUG
+    uint32_t old_addr;
+#endif
+    uint16_t eun;
+    int ret;
+    size_t retlen, offset;
+
+    pr_debug("ftl_cs: set_bam_entry(0x%p, 0x%x, 0x%x)\n",
 	  part, log_addr, virt_addr);
     bsize = 1 << part->header.EraseUnitSize;
     eun = log_addr / bsize;
@@ -851,6 +950,12 @@ static int set_bam_entry(partition_t *part, u_int32_t log_addr,
 #ifdef PSYCHO_DEBUG
     ret = part->mbd.mtd->read(part->mbd.mtd, offset, sizeof(u_int32_t),
                         &retlen, (u_char *)&old_addr);
+    offset = (part->EUNInfo[eun].Offset + blk * sizeof(uint32_t) +
+		  le32_to_cpu(part->header.BAMOffset));
+
+#ifdef PSYCHO_DEBUG
+    ret = mtd_read(part->mbd.mtd, offset, sizeof(uint32_t), &retlen,
+                   (u_char *)&old_addr);
     if (ret) {
 	printk(KERN_WARNING"ftl: Error reading old_addr in set_bam_entry: %d\n",ret);
 	return ret;
@@ -888,6 +993,8 @@ static int set_bam_entry(partition_t *part, u_int32_t log_addr,
     }
     ret = part->mbd.mtd->write(part->mbd.mtd, offset, sizeof(u_int32_t),
                             &retlen, (u_char *)&le_virt_addr);
+    ret = mtd_write(part->mbd.mtd, offset, sizeof(uint32_t), &retlen,
+                    (u_char *)&le_virt_addr);
 
     if (ret) {
 	printk(KERN_NOTICE "ftl_cs: set_bam_entry() failed!\n");
@@ -901,11 +1008,13 @@ static int ftl_write(partition_t *part, caddr_t buffer,
 		     u_long sector, u_long nblocks)
 {
     u_int32_t bsize, log_addr, virt_addr, old_addr, blk;
+    uint32_t bsize, log_addr, virt_addr, old_addr, blk;
     u_long i;
     int ret;
     size_t retlen, offset;
 
     DEBUG(2, "ftl_cs: ftl_write(0x%p, %ld, %ld)\n",
+    pr_debug("ftl_cs: ftl_write(0x%p, %ld, %ld)\n",
 	  part, sector, nblocks);
     if (!(part->state & FTL_FORMATTED)) {
 	printk(KERN_NOTICE "ftl_cs: bad partition\n");
@@ -948,6 +1057,7 @@ static int ftl_write(partition_t *part, caddr_t buffer,
 		      blk * SECTOR_SIZE);
 	ret = part->mbd.mtd->write(part->mbd.mtd, offset, SECTOR_SIZE, &retlen,
                                      buffer);
+	ret = mtd_write(part->mbd.mtd, offset, SECTOR_SIZE, &retlen, buffer);
 
 	if (ret) {
 	    printk(KERN_NOTICE "ftl_cs: block write failed!\n");
@@ -1005,7 +1115,29 @@ static int ftl_writesect(struct mtd_blktrans_dev *dev,
 	return ftl_write((void *)dev, buf, block, 1);
 }
 
-/*====================================================================*/
+static int ftl_discardsect(struct mtd_blktrans_dev *dev,
+			   unsigned long sector, unsigned nr_sects)
+{
+	partition_t *part = (void *)dev;
+	uint32_t bsize = 1 << part->header.EraseUnitSize;
+
+	pr_debug("FTL erase sector %ld for %d sectors\n",
+	      sector, nr_sects);
+
+	while (nr_sects) {
+		uint32_t old_addr = part->VirtualBlockMap[sector];
+		if (old_addr != 0xffffffff) {
+			part->VirtualBlockMap[sector] = 0xffffffff;
+			part->EUNInfo[old_addr/bsize].Deleted++;
+			if (set_bam_entry(part, old_addr, 0))
+				return -EIO;
+		}
+		nr_sects--;
+		sector++;
+	}
+
+	return 0;
+}
 
 static void ftl_freepart(partition_t *part)
 {
@@ -1069,6 +1201,7 @@ static struct mtd_blktrans_ops ftl_tr = {
 	.blksize 	= SECTOR_SIZE,
 	.readsect	= ftl_readsect,
 	.writesect	= ftl_writesect,
+	.discard	= ftl_discardsect,
 	.getgeo		= ftl_getgeo,
 	.add_mtd	= ftl_add_mtd,
 	.remove_dev	= ftl_remove_dev,
@@ -1076,6 +1209,7 @@ static struct mtd_blktrans_ops ftl_tr = {
 };
 
 static int init_ftl(void)
+static int __init init_ftl(void)
 {
 	return register_mtd_blktrans(&ftl_tr);
 }

@@ -19,6 +19,7 @@
 #include <asm/dbdma.h>
 
 #include "i2sbus-interface.h"
+#include "interface.h"
 #include "../soundbus.h"
 
 struct i2sbus_control {

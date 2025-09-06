@@ -29,6 +29,7 @@
 #include <linux/mount.h>
 #include <linux/pagemap.h>
 #include <linux/init.h>
+#include <linux/slab.h>
 
 #include <linux/configfs.h>
 #include "configfs_internal.h"
@@ -38,6 +39,7 @@
 
 struct vfsmount * configfs_mount = NULL;
 struct super_block * configfs_sb = NULL;
+static struct vfsmount *configfs_mount = NULL;
 struct kmem_cache *configfs_dir_cachep;
 static int configfs_mnt_count = 0;
 
@@ -82,6 +84,11 @@ static int configfs_fill_super(struct super_block *sb, void *data, int silent)
 				   &configfs_root);
 	if (inode) {
 		inode->i_op = &configfs_dir_inode_operations;
+
+	inode = configfs_new_inode(S_IFDIR | S_IRWXU | S_IRUGO | S_IXUGO,
+				   &configfs_root, sb);
+	if (inode) {
+		inode->i_op = &configfs_root_inode_operations;
 		inode->i_fop = &configfs_dir_operations;
 		/* directory inodes start off with i_nlink == 2 (for "." entry) */
 		inc_nlink(inode);
@@ -94,6 +101,13 @@ static int configfs_fill_super(struct super_block *sb, void *data, int silent)
 	if (!root) {
 		pr_debug("%s: could not get root dentry!\n",__func__);
 		iput(inode);
+		pr_debug("could not get root inode\n");
+		return -ENOMEM;
+	}
+
+	root = d_make_root(inode);
+	if (!root) {
+		pr_debug("%s: could not get root dentry!\n",__func__);
 		return -ENOMEM;
 	}
 	config_group_init(&configfs_root_group);
@@ -107,6 +121,14 @@ static int configfs_get_sb(struct file_system_type *fs_type,
 	int flags, const char *dev_name, void *data, struct vfsmount *mnt)
 {
 	return get_sb_single(fs_type, flags, data, configfs_fill_super, mnt);
+	sb->s_d_op = &configfs_dentry_ops; /* the rest get that */
+	return 0;
+}
+
+static struct dentry *configfs_do_mount(struct file_system_type *fs_type,
+	int flags, const char *dev_name, void *data)
+{
+	return mount_single(fs_type, flags, data, configfs_fill_super);
 }
 
 static struct file_system_type configfs_fs_type = {
@@ -120,6 +142,16 @@ int configfs_pin_fs(void)
 {
 	return simple_pin_fs(&configfs_fs_type, &configfs_mount,
 			     &configfs_mnt_count);
+	.mount		= configfs_do_mount,
+	.kill_sb	= kill_litter_super,
+};
+MODULE_ALIAS_FS("configfs");
+
+struct dentry *configfs_pin_fs(void)
+{
+	int err = simple_pin_fs(&configfs_fs_type, &configfs_mount,
+			     &configfs_mnt_count);
+	return err ? ERR_PTR(err) : configfs_mount->mnt_root;
 }
 
 void configfs_release_fs(void)
@@ -163,6 +195,21 @@ static int __init configfs_init(void)
 		kmem_cache_destroy(configfs_dir_cachep);
 		configfs_dir_cachep = NULL;
 	}
+	err = sysfs_create_mount_point(kernel_kobj, "config");
+	if (err)
+		goto out2;
+
+	err = register_filesystem(&configfs_fs_type);
+	if (err)
+		goto out3;
+
+	return 0;
+out3:
+	pr_err("Unable to register filesystem!\n");
+	sysfs_remove_mount_point(kernel_kobj, "config");
+out2:
+	kmem_cache_destroy(configfs_dir_cachep);
+	configfs_dir_cachep = NULL;
 out:
 	return err;
 }
@@ -174,6 +221,9 @@ static void __exit configfs_exit(void)
 	kmem_cache_destroy(configfs_dir_cachep);
 	configfs_dir_cachep = NULL;
 	configfs_inode_exit();
+	sysfs_remove_mount_point(kernel_kobj, "config");
+	kmem_cache_destroy(configfs_dir_cachep);
+	configfs_dir_cachep = NULL;
 }
 
 MODULE_AUTHOR("Oracle");
@@ -182,4 +232,5 @@ MODULE_VERSION("0.0.2");
 MODULE_DESCRIPTION("Simple RAM filesystem for user driven kernel subsystem configuration.");
 
 module_init(configfs_init);
+core_initcall(configfs_init);
 module_exit(configfs_exit);

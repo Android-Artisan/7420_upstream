@@ -20,6 +20,7 @@
 #include <linux/slab.h>
 #include <linux/i2c-gpio.h>
 
+#include <linux/i2c-gpio.h>
 #include <asm/types.h>
 #include <asm/setup.h>
 #include <asm/memory.h>
@@ -28,6 +29,9 @@
 #include <asm/irq.h>
 #include <asm/mach/arch.h>
 #include <asm/mach/flash.h>
+
+#define AVILA_SDA_PIN	7
+#define AVILA_SCL_PIN	6
 
 static struct flash_platform_data avila_flash_data = {
 	.map_name	= "cfi_probe",
@@ -170,6 +174,16 @@ MACHINE_START(AVILA, "Gateworks Avila Network Platform")
 	.timer		= &ixp4xx_timer,
 	.boot_params	= 0x0100,
 	.init_machine	= avila_init,
+	.map_io		= ixp4xx_map_io,
+	.init_early	= ixp4xx_init_early,
+	.init_irq	= ixp4xx_init_irq,
+	.init_time	= ixp4xx_timer_init,
+	.atag_offset	= 0x100,
+	.init_machine	= avila_init,
+#if defined(CONFIG_PCI)
+	.dma_zone_size	= SZ_64M,
+#endif
+	.restart	= ixp4xx_restart,
 MACHINE_END
 
  /*
@@ -187,6 +201,16 @@ MACHINE_START(LOFT, "Giant Shoulder Inc Loft board")
 	.timer		= &ixp4xx_timer,
 	.boot_params	= 0x0100,
 	.init_machine	= avila_init,
+	.map_io		= ixp4xx_map_io,
+	.init_early	= ixp4xx_init_early,
+	.init_irq	= ixp4xx_init_irq,
+	.init_time	= ixp4xx_timer_init,
+	.atag_offset	= 0x100,
+	.init_machine	= avila_init,
+#if defined(CONFIG_PCI)
+	.dma_zone_size	= SZ_64M,
+#endif
+	.restart	= ixp4xx_restart,
 MACHINE_END
 #endif
 

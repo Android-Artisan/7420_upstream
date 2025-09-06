@@ -48,6 +48,8 @@ svc_authenticate(struct svc_rqst *rqstp, __be32 *authp)
 	spin_lock(&authtab_lock);
 	if (flavor >= RPC_AUTH_MAXFLAVOR || !(aops = authtab[flavor])
 			|| !try_module_get(aops->owner)) {
+	if (flavor >= RPC_AUTH_MAXFLAVOR || !(aops = authtab[flavor]) ||
+	    !try_module_get(aops->owner)) {
 		spin_unlock(&authtab_lock);
 		*authp = rpc_autherr_badcred;
 		return SVC_DENIED;
@@ -58,12 +60,19 @@ svc_authenticate(struct svc_rqst *rqstp, __be32 *authp)
 	return aops->accept(rqstp, authp);
 }
 EXPORT_SYMBOL(svc_authenticate);
+	rqstp->rq_auth_slack = 0;
+
+	rqstp->rq_authop = aops;
+	return aops->accept(rqstp, authp);
+}
+EXPORT_SYMBOL_GPL(svc_authenticate);
 
 int svc_set_client(struct svc_rqst *rqstp)
 {
 	return rqstp->rq_authop->set_client(rqstp);
 }
 EXPORT_SYMBOL(svc_set_client);
+EXPORT_SYMBOL_GPL(svc_set_client);
 
 /* A request, which was authenticated, has now executed.
  * Time to finalise the credentials and verifier
@@ -96,6 +105,7 @@ svc_auth_register(rpc_authflavor_t flavor, struct auth_ops *aops)
 	return rv;
 }
 EXPORT_SYMBOL(svc_auth_register);
+EXPORT_SYMBOL_GPL(svc_auth_register);
 
 void
 svc_auth_unregister(rpc_authflavor_t flavor)
@@ -106,6 +116,7 @@ svc_auth_unregister(rpc_authflavor_t flavor)
 	spin_unlock(&authtab_lock);
 }
 EXPORT_SYMBOL(svc_auth_unregister);
+EXPORT_SYMBOL_GPL(svc_auth_unregister);
 
 /**************************************************
  * 'auth_domains' are stored in a hash table indexed by name.
@@ -133,6 +144,7 @@ void auth_domain_put(struct auth_domain *dom)
 	}
 }
 EXPORT_SYMBOL(auth_domain_put);
+EXPORT_SYMBOL_GPL(auth_domain_put);
 
 struct auth_domain *
 auth_domain_lookup(char *name, struct auth_domain *new)
@@ -146,6 +158,7 @@ auth_domain_lookup(char *name, struct auth_domain *new)
 	spin_lock(&auth_domain_lock);
 
 	hlist_for_each_entry(hp, np, head, hash) {
+	hlist_for_each_entry(hp, head, hash) {
 		if (strcmp(hp->name, name)==0) {
 			kref_get(&hp->ref);
 			spin_unlock(&auth_domain_lock);
@@ -158,9 +171,11 @@ auth_domain_lookup(char *name, struct auth_domain *new)
 	return new;
 }
 EXPORT_SYMBOL(auth_domain_lookup);
+EXPORT_SYMBOL_GPL(auth_domain_lookup);
 
 struct auth_domain *auth_domain_find(char *name)
 {
 	return auth_domain_lookup(name, NULL);
 }
 EXPORT_SYMBOL(auth_domain_find);
+EXPORT_SYMBOL_GPL(auth_domain_find);

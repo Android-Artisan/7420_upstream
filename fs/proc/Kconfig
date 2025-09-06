@@ -1,5 +1,6 @@
 config PROC_FS
 	bool "/proc file system support" if EMBEDDED
+	bool "/proc file system support" if EXPERT
 	default y
 	help
 	  This is a virtual file system providing information about the status
@@ -35,12 +36,21 @@ config PROC_KCORE
 config PROC_VMCORE
         bool "/proc/vmcore support (EXPERIMENTAL)"
         depends on PROC_FS && CRASH_DUMP
+	help
+	  Provides a virtual ELF core file of the live kernel.  This can
+	  be read with gdb and other ELF tools.  No modifications can be
+	  made using this mechanism.
+
+config PROC_VMCORE
+	bool "/proc/vmcore support"
+	depends on PROC_FS && CRASH_DUMP
 	default y
         help
         Exports the dump image of crashed kernel in ELF format.
 
 config PROC_SYSCTL
 	bool "Sysctl support (/proc/sys)" if EMBEDDED
+	bool "Sysctl support (/proc/sys)" if EXPERT
 	depends on PROC_FS
 	select SYSCTL
 	default y
@@ -57,3 +67,23 @@ config PROC_SYSCTL
 	  As it is generally a good thing, you should say Y here unless
 	  building a kernel for install/rescue disks or your system is very
 	  limited in memory.
+
+config PROC_PAGE_MONITOR
+ 	default y
+	depends on PROC_FS && MMU
+	bool "Enable /proc page monitoring" if EXPERT
+ 	help
+	  Various /proc files exist to monitor process memory utilization:
+	  /proc/pid/smaps, /proc/pid/clear_refs, /proc/pid/pagemap,
+	  /proc/kpagecount, and /proc/kpageflags. Disabling these
+          interfaces will reduce the size of the kernel by approximately 4kb.
+
+config PROC_CHILDREN
+	bool "Include /proc/<pid>/task/<tid>/children file"
+	default n
+	help
+	  Provides a fast way to retrieve first level children pids of a task. See
+	  <file:Documentation/filesystems/proc.txt> for more information.
+
+	  Say Y if you are running any user-space software which takes benefit from
+	  this interface. For example, rkt is such a piece of software.

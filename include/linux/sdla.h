@@ -117,6 +117,11 @@ struct sdla_dlci_conf {
 void sdla(void *cfg_info, char *dev, struct frad_conf *conf, int quiet);
 
 #else
+#ifndef SDLA_H
+#define SDLA_H
+
+#include <uapi/linux/sdla.h>
+
 
 /* important Z80 window addresses */
 #define SDLA_CONTROL_WND		0xE000

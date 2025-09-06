@@ -13,12 +13,19 @@
 #include <linux/quicklist.h>
 
 #include <asm/system.h>
+#include <linux/pagemap.h>
+#include <linux/spinlock.h>
+#include <linux/module.h>
+
 #include <asm/pgtable.h>
 #include <asm/pgalloc.h>
 #include <asm/fixmap.h>
 #include <asm/e820.h>
 #include <asm/tlb.h>
 #include <asm/tlbflush.h>
+#include <asm/io.h>
+
+unsigned int __VMALLOC_RESERVE = 128 << 20;
 
 /*
  * Associate a virtual page frame with a given physical page frame 
@@ -49,6 +56,7 @@ void set_pte_vaddr(unsigned long vaddr, pte_t pteval)
 	pte = pte_offset_kernel(pmd, vaddr);
 	if (pte_val(pteval))
 		set_pte_present(&init_mm, vaddr, pte, pteval);
+		set_pte_at(&init_mm, vaddr, pte, pteval);
 	else
 		pte_clear(&init_mm, vaddr, pte);
 
@@ -113,6 +121,9 @@ void __init reserve_top_address(unsigned long reserve)
 	__VMALLOC_RESERVE += reserve;
 }
 
+unsigned long __FIXADDR_TOP = 0xfffff000;
+EXPORT_SYMBOL(__FIXADDR_TOP);
+
 /*
  * vmalloc=size forces the vmalloc area to be exactly 'size'
  * bytes. This can be used to increase (or decrease) the
@@ -124,6 +135,8 @@ static int __init parse_vmalloc(char *arg)
 		return -EINVAL;
 
 	__VMALLOC_RESERVE = memparse(arg, &arg);
+	/* Add VMALLOC_OFFSET to the parsed value due to vm area guard hole*/
+	__VMALLOC_RESERVE = memparse(arg, &arg) + VMALLOC_OFFSET;
 	return 0;
 }
 early_param("vmalloc", parse_vmalloc);
@@ -142,6 +155,7 @@ static int __init parse_reservetop(char *arg)
 
 	address = memparse(arg, &arg);
 	reserve_top_address(address);
+	early_ioremap_init();
 	return 0;
 }
 early_param("reservetop", parse_reservetop);

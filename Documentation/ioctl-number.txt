@@ -60,7 +60,6 @@ This table lists ioctls visible from user land for Linux/i386.  It contains
 most drivers up to 2.3.14, but I know I am missing some.
 
 Code	Seq#	Include File		Comments
-========================================================
 0x00	00-1F	linux/fs.h		conflict!
 0x00	00-1F	scsi/scsi_ioctl.h	conflict!
 0x00	00-1F	linux/fb.h		conflict!

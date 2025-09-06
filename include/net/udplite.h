@@ -12,6 +12,7 @@
 
 extern struct proto 		udplite_prot;
 extern struct hlist_head 	udplite_hash[UDP_HTABLE_SIZE];
+extern struct udp_table		udplite_table;
 
 /*
  *	Checksum computation is all in software, hence simpler getfrag.
@@ -20,6 +21,8 @@ static __inline__ int udplite_getfrag(void *from, char *to, int  offset,
 				      int len, int odd, struct sk_buff *skb)
 {
 	return memcpy_fromiovecend(to, (struct iovec *) from, offset, len);
+	struct msghdr *msg = from;
+	return copy_from_iter(to, len, &msg->msg_iter) != len ? -EFAULT : 0;
 }
 
 /* Designate sk as UDP-Lite socket */
@@ -41,6 +44,7 @@ static inline int udplite_checksum_init(struct sk_buff *skb, struct udphdr *uh)
          * with a zero checksum field are illegal.                            */
 	if (uh->check == 0) {
 		LIMIT_NETDEBUG(KERN_DEBUG "UDPLITE: zeroed checksum field\n");
+		net_dbg_ratelimited("UDPLite: zeroed checksum field\n");
 		return 1;
 	}
 
@@ -54,6 +58,8 @@ static inline int udplite_checksum_init(struct sk_buff *skb, struct udphdr *uh)
 		 */
 		LIMIT_NETDEBUG(KERN_DEBUG "UDPLITE: bad csum coverage %d/%d\n",
 			       cscov, skb->len);
+		net_dbg_ratelimited("UDPLite: bad csum coverage %d/%d\n",
+				    cscov, skb->len);
 		return 1;
 
 	} else if (cscov < skb->len) {
@@ -61,6 +67,7 @@ static inline int udplite_checksum_init(struct sk_buff *skb, struct udphdr *uh)
 		UDP_SKB_CB(skb)->cscov = cscov;
 		if (skb->ip_summed == CHECKSUM_COMPLETE)
 			skb->ip_summed = CHECKSUM_NONE;
+		skb->csum_valid = 0;
         }
 
 	return 0;
@@ -101,6 +108,35 @@ static inline __wsum udplite_csum_outgoing(struct sock *sk, struct sk_buff *skb)
 	int cscov = udplite_sender_cscov(udp_sk(sk), udp_hdr(skb));
 	__wsum csum = 0;
 
+/* Slow-path computation of checksum. Socket is locked. */
+static inline __wsum udplite_csum_outgoing(struct sock *sk, struct sk_buff *skb)
+{
+	const struct udp_sock *up = udp_sk(skb->sk);
+	int cscov = up->len;
+	__wsum csum = 0;
+
+	if (up->pcflag & UDPLITE_SEND_CC) {
+		/*
+		 * Sender has set `partial coverage' option on UDP-Lite socket.
+		 * The special case "up->pcslen == 0" signifies full coverage.
+		 */
+		if (up->pcslen < up->len) {
+			if (0 < up->pcslen)
+				cscov = up->pcslen;
+			udp_hdr(skb)->len = htons(up->pcslen);
+		}
+		/*
+		 * NOTE: Causes for the error case  `up->pcslen > up->len':
+		 *        (i)  Application error (will not be penalized).
+		 *       (ii)  Payload too big for send buffer: data is split
+		 *             into several packets, each with its own header.
+		 *             In this case (e.g. last segment), coverage may
+		 *             exceed packet length.
+		 *       Since packets with coverage length > packet length are
+		 *       illegal, we fall back to the defaults here.
+		 */
+	}
+
 	skb->ip_summed = CHECKSUM_NONE;     /* no HW support for checksumming */
 
 	skb_queue_walk(&sk->sk_write_queue, skb) {
@@ -118,4 +154,24 @@ static inline __wsum udplite_csum_outgoing(struct sock *sk, struct sk_buff *skb)
 extern void	udplite4_register(void);
 extern int 	udplite_get_port(struct sock *sk, unsigned short snum,
 			int (*scmp)(const struct sock *, const struct sock *));
+/* Fast-path computation of checksum. Socket may not be locked. */
+static inline __wsum udplite_csum(struct sk_buff *skb)
+{
+	const struct udp_sock *up = udp_sk(skb->sk);
+	const int off = skb_transport_offset(skb);
+	int len = skb->len - off;
+
+	if ((up->pcflag & UDPLITE_SEND_CC) && up->pcslen < len) {
+		if (0 < up->pcslen)
+			len = up->pcslen;
+		udp_hdr(skb)->len = htons(up->pcslen);
+	}
+	skb->ip_summed = CHECKSUM_NONE;     /* no HW support for checksumming */
+
+	return skb_checksum(skb, off, len, 0);
+}
+
+void udplite4_register(void);
+int udplite_get_port(struct sock *sk, unsigned short snum,
+		     int (*scmp)(const struct sock *, const struct sock *));
 #endif	/* _UDPLITE_H */

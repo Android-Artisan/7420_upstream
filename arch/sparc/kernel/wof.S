@@ -166,6 +166,8 @@ spwin_fromuser:
 	.globl	spwin_mmu_patchme
 spwin_mmu_patchme:	b	spwin_sun4c_stackchk
 				 andcc	%sp, 0x7, %g0
+	b	spwin_srmmu_stackchk
+	 andcc	%sp, 0x7, %g0
 
 spwin_good_ustack:
 	/* LOCATION: Window to be saved */
@@ -405,6 +407,14 @@ spwin_srmmu_stackchk:
 	lda	[%g0] ASI_M_MMUREGS, %glob_tmp		! read MMU control
 	or	%glob_tmp, 0x2, %glob_tmp		! or in no_fault bit
 	sta	%glob_tmp, [%g0] ASI_M_MMUREGS		! set it
+LEON_PI(lda	[%glob_tmp] ASI_LEON_MMUREGS, %g0)	! eat SFSR
+SUN_PI_(lda	[%glob_tmp] ASI_M_MMUREGS, %g0)		! eat SFSR
+
+LEON_PI(lda	[%g0] ASI_LEON_MMUREGS, %glob_tmp)	! read MMU control
+SUN_PI_(lda	[%g0] ASI_M_MMUREGS, %glob_tmp)		! read MMU control
+	or	%glob_tmp, 0x2, %glob_tmp		! or in no_fault bit
+LEON_PI(sta	%glob_tmp, [%g0] ASI_LEON_MMUREGS)	! set it
+SUN_PI_(sta	%glob_tmp, [%g0] ASI_M_MMUREGS)		! set it
 
 	/* Dump the registers and cross fingers. */
 	STORE_WINDOW(sp)
@@ -418,6 +428,16 @@ spwin_srmmu_stackchk:
 
 	mov	AC_M_SFSR, %glob_tmp
 	lda	[%glob_tmp] ASI_M_MMUREGS, %glob_tmp
+LEON_PI(sta	%glob_tmp, [%g0] ASI_LEON_MMUREGS)
+SUN_PI_(sta	%glob_tmp, [%g0] ASI_M_MMUREGS)
+
+	mov	AC_M_SFAR, %glob_tmp
+LEON_PI(lda	[%glob_tmp] ASI_LEON_MMUREGS, %g0)
+SUN_PI_(lda	[%glob_tmp] ASI_M_MMUREGS, %g0)
+
+	mov	AC_M_SFSR, %glob_tmp
+LEON_PI(lda	[%glob_tmp] ASI_LEON_MMUREGS, %glob_tmp)
+SUN_PI_(lda	[%glob_tmp] ASI_M_MMUREGS, %glob_tmp)
 	andcc	%glob_tmp, 0x2, %g0			! did we fault?
 	be,a	spwin_finish_up + 0x4			! cool beans, success
 	 restore %g0, %g0, %g0

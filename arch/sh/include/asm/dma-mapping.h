@@ -26,6 +26,17 @@ void *dma_alloc_coherent(struct device *dev, size_t size,
 
 void dma_free_coherent(struct device *dev, size_t size,
 		       void *vaddr, dma_addr_t dma_handle);
+extern struct dma_map_ops *dma_ops;
+extern void no_iommu_init(void);
+
+static inline struct dma_map_ops *get_dma_ops(struct device *dev)
+{
+	return dma_ops;
+}
+
+#define DMA_ERROR_CODE 0
+
+#include <asm-generic/dma-mapping-common.h>
 
 void dma_cache_sync(struct device *dev, void *vaddr, size_t size,
 		    enum dma_data_direction dir);
@@ -189,5 +200,12 @@ dma_release_declared_memory(struct device *dev);
 extern void *
 dma_mark_declared_memory_occupied(struct device *dev,
 				  dma_addr_t device_addr, size_t size);
+/* arch/sh/mm/consistent.c */
+extern void *dma_generic_alloc_coherent(struct device *dev, size_t size,
+					dma_addr_t *dma_addr, gfp_t flag,
+					struct dma_attrs *attrs);
+extern void dma_generic_free_coherent(struct device *dev, size_t size,
+				      void *vaddr, dma_addr_t dma_handle,
+				      struct dma_attrs *attrs);
 
 #endif /* __ASM_SH_DMA_MAPPING_H */

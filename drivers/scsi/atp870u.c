@@ -3,6 +3,8 @@
  *  2.1.x update (C) 1998  Krzysztof G. Baranowski
  *  2.5.x update (C) 2002  Red Hat <alan@redhat.com>
  *  2.6.x update (C) 2004  Red Hat <alan@redhat.com>
+ *  2.5.x update (C) 2002  Red Hat
+ *  2.6.x update (C) 2004  Red Hat
  *
  * Marcelo Tosatti <marcelo@conectiva.com.br> : SMP fixes
  *
@@ -30,6 +32,7 @@
 #include <linux/blkdev.h>
 #include <linux/dma-mapping.h>
 #include <asm/system.h>
+#include <linux/slab.h>
 #include <asm/io.h>
 
 #include <scsi/scsi.h>
@@ -605,6 +608,7 @@ handled:
  *	Queue a command to the ATP queue. Called with the host lock held.
  */
 static int atp870u_queuecommand(struct scsi_cmnd * req_p, 
+static int atp870u_queuecommand_lck(struct scsi_cmnd *req_p,
 			 void (*done) (struct scsi_cmnd *))
 {
 	unsigned char c;
@@ -692,6 +696,8 @@ static int atp870u_queuecommand(struct scsi_cmnd * req_p,
 #endif	
 	return 0;
 }
+
+static DEF_SCSI_QCMD(atp870u_queuecommand)
 
 /**
  *	send_s870	-	send a command to the controller
@@ -1172,6 +1178,16 @@ wait_io1:
 	outb(2, 0x80);
 TCM_SYNC:
 	udelay(0x800);
+	/*
+	 * The funny division into multiple delays is to accomodate
+	 * arches like ARM where udelay() multiplies its argument by
+	 * a large number to initialize a loop counter.  To avoid
+	 * overflow, the maximum supported udelay is 2000 microseconds.
+	 *
+	 * XXX it would be more polite to find a way to use msleep()
+	 */
+	mdelay(2);
+	udelay(48);
 	if ((inb(tmport) & 0x80) == 0x00) {	/* bsy ? */
 		outw(0, tmport--);
 		outb(0, tmport);
@@ -1226,6 +1242,7 @@ TCM_5:			/* isolation complete..  */
 	i = 15;
 	j = mbuf[0];
 	if ((j & 0x20) != 0) {	/* bit5=1:ID upto 7      */
+	if ((j & 0x20) != 0) {	/* bit5=1:ID up to 7      */
 		i = 7;
 	}
 	if ((j & 0x06) == 0) {	/* IDvalid?             */
@@ -2569,6 +2586,7 @@ static int atp870u_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		goto err_eio;
 
         if (!pci_set_dma_mask(pdev, DMA_32BIT_MASK)) {
+        if (!pci_set_dma_mask(pdev, DMA_BIT_MASK(32))) {
                 printk(KERN_INFO "atp870u: use 32bit DMA mask.\n");
         } else {
                 printk(KERN_ERR "atp870u: DMA mask required but not available.\n");
@@ -2581,6 +2599,7 @@ static int atp870u_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	 */
 	if (ent->device == PCI_DEVICE_ID_ARTOP_AEC7610) {
 		error = pci_read_config_byte(pdev, PCI_CLASS_REVISION, &atpdev->chip_ver);
+		atpdev->chip_ver = pdev->revision;
 		if (atpdev->chip_ver < 2)
 			goto err_eio;
 	}
@@ -2600,6 +2619,7 @@ static int atp870u_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 
 	if ((ent->device == ATP880_DEVID1)||(ent->device == ATP880_DEVID2)) {
 		error = pci_read_config_byte(pdev, PCI_CLASS_REVISION, &atpdev->chip_ver);
+		atpdev->chip_ver = pdev->revision;
 		pci_write_config_byte(pdev, PCI_LATENCY_TIMER, 0x80);//JCC082803
 
 		host_id = inb(base_io + 0x39);
@@ -3120,6 +3140,13 @@ static int atp870u_proc_info(struct Scsi_Host *HBAptr, char *buffer,
 		len = length;	/* Ending slop */
 	}
 	return (len);
+static int atp870u_show_info(struct seq_file *m, struct Scsi_Host *HBAptr)
+{
+	seq_puts(m, "ACARD AEC-671X Driver Version: 2.6+ac\n\n"
+		"Adapter Configuration:\n");
+	seq_printf(m, "               Base IO: %#.4lx\n", HBAptr->io_port);
+	seq_printf(m, "                   IRQ: %d\n", HBAptr->irq);
+	return 0;
 }
 
 
@@ -3167,6 +3194,7 @@ static struct scsi_host_template atp870u_template = {
      .name              	= "atp870u"		/* name */,
      .proc_name			= "atp870u",
      .proc_info			= atp870u_proc_info,
+     .show_info			= atp870u_show_info,
      .info              	= atp870u_info		/* info */,
      .queuecommand      	= atp870u_queuecommand	/* queuecommand */,
      .eh_abort_handler  	= atp870u_abort		/* abort */,
@@ -3200,6 +3228,7 @@ static struct pci_driver atp870u_driver = {
 	.name		= "atp870u",
 	.probe		= atp870u_probe,
 	.remove		= __devexit_p(atp870u_remove),
+	.remove		= atp870u_remove,
 };
 
 static int __init atp870u_init(void)

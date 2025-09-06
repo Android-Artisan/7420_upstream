@@ -18,6 +18,8 @@
 #include <linux/interrupt.h>
 #include <linux/list.h>
 #include <linux/init.h>
+#include <linux/io.h>
+#include <linux/spinlock.h>
 
 #include <asm/mach/irq.h>
 
@@ -30,6 +32,13 @@
 static void isa_mask_pic_lo_irq(unsigned int irq)
 {
 	unsigned int mask = 1 << (irq & 7);
+#include <asm/mach-types.h>
+
+#include "common.h"
+
+static void isa_mask_pic_lo_irq(struct irq_data *d)
+{
+	unsigned int mask = 1 << (d->irq & 7);
 
 	outb(inb(PIC_MASK_LO) | mask, PIC_MASK_LO);
 }
@@ -37,6 +46,9 @@ static void isa_mask_pic_lo_irq(unsigned int irq)
 static void isa_ack_pic_lo_irq(unsigned int irq)
 {
 	unsigned int mask = 1 << (irq & 7);
+static void isa_ack_pic_lo_irq(struct irq_data *d)
+{
+	unsigned int mask = 1 << (d->irq & 7);
 
 	outb(inb(PIC_MASK_LO) | mask, PIC_MASK_LO);
 	outb(0x20, PIC_LO);
@@ -45,6 +57,9 @@ static void isa_ack_pic_lo_irq(unsigned int irq)
 static void isa_unmask_pic_lo_irq(unsigned int irq)
 {
 	unsigned int mask = 1 << (irq & 7);
+static void isa_unmask_pic_lo_irq(struct irq_data *d)
+{
+	unsigned int mask = 1 << (d->irq & 7);
 
 	outb(inb(PIC_MASK_LO) & ~mask, PIC_MASK_LO);
 }
@@ -58,6 +73,14 @@ static struct irq_chip isa_lo_chip = {
 static void isa_mask_pic_hi_irq(unsigned int irq)
 {
 	unsigned int mask = 1 << (irq & 7);
+	.irq_ack	= isa_ack_pic_lo_irq,
+	.irq_mask	= isa_mask_pic_lo_irq,
+	.irq_unmask	= isa_unmask_pic_lo_irq,
+};
+
+static void isa_mask_pic_hi_irq(struct irq_data *d)
+{
+	unsigned int mask = 1 << (d->irq & 7);
 
 	outb(inb(PIC_MASK_HI) | mask, PIC_MASK_HI);
 }
@@ -65,6 +88,9 @@ static void isa_mask_pic_hi_irq(unsigned int irq)
 static void isa_ack_pic_hi_irq(unsigned int irq)
 {
 	unsigned int mask = 1 << (irq & 7);
+static void isa_ack_pic_hi_irq(struct irq_data *d)
+{
+	unsigned int mask = 1 << (d->irq & 7);
 
 	outb(inb(PIC_MASK_HI) | mask, PIC_MASK_HI);
 	outb(0x62, PIC_LO);
@@ -74,6 +100,9 @@ static void isa_ack_pic_hi_irq(unsigned int irq)
 static void isa_unmask_pic_hi_irq(unsigned int irq)
 {
 	unsigned int mask = 1 << (irq & 7);
+static void isa_unmask_pic_hi_irq(struct irq_data *d)
+{
+	unsigned int mask = 1 << (d->irq & 7);
 
 	outb(inb(PIC_MASK_HI) & ~mask, PIC_MASK_HI);
 }
@@ -86,6 +115,12 @@ static struct irq_chip isa_hi_chip = {
 
 static void
 isa_irq_handler(unsigned int irq, struct irq_desc *desc)
+	.irq_ack	= isa_ack_pic_hi_irq,
+	.irq_mask	= isa_mask_pic_hi_irq,
+	.irq_unmask	= isa_unmask_pic_hi_irq,
+};
+
+static void isa_irq_handler(struct irq_desc *desc)
 {
 	unsigned int isa_irq = *(unsigned char *)PCIIACK_BASE;
 
@@ -96,6 +131,11 @@ isa_irq_handler(unsigned int irq, struct irq_desc *desc)
 
 	desc = irq_desc + isa_irq;
 	desc_handle_irq(isa_irq, desc);
+		do_bad_IRQ(desc);
+		return;
+	}
+
+	generic_handle_irq(isa_irq);
 }
 
 static struct irqaction irq_cascade = {
@@ -158,6 +198,15 @@ void __init isa_init_irq(unsigned int host_irq)
 			set_irq_chip(irq, &isa_hi_chip);
 			set_irq_handler(irq, handle_level_irq);
 			set_irq_flags(irq, IRQF_VALID | IRQF_PROBE);
+			irq_set_chip_and_handler(irq, &isa_lo_chip,
+						 handle_level_irq);
+			irq_clear_status_flags(irq, IRQ_NOREQUEST | IRQ_NOPROBE);
+		}
+
+		for (irq = _ISA_IRQ(8); irq < _ISA_IRQ(16); irq++) {
+			irq_set_chip_and_handler(irq, &isa_hi_chip,
+						 handle_level_irq);
+			irq_clear_status_flags(irq, IRQ_NOREQUEST | IRQ_NOPROBE);
 		}
 
 		request_resource(&ioport_resource, &pic1_resource);
@@ -165,6 +214,7 @@ void __init isa_init_irq(unsigned int host_irq)
 		setup_irq(IRQ_ISA_CASCADE, &irq_cascade);
 
 		set_irq_chained_handler(host_irq, isa_irq_handler);
+		irq_set_chained_handler(host_irq, isa_irq_handler);
 
 		/*
 		 * On the NetWinder, don't automatically
@@ -175,6 +225,8 @@ void __init isa_init_irq(unsigned int host_irq)
 		if (machine_is_netwinder())
 			set_irq_flags(_ISA_IRQ(11), IRQF_VALID |
 				      IRQF_PROBE | IRQF_NOAUTOEN);
+			irq_modify_status(_ISA_IRQ(11),
+				IRQ_NOREQUEST | IRQ_NOPROBE, IRQ_NOAUTOEN);
 	}
 }
 

@@ -35,6 +35,7 @@
 static unsigned char prefix_codes[] = {
 	0xF0, 0xF2, 0xF3, 0x2E, 0x36, 0x3E, 0x26, 0x64,
 	0x65, 0x2E, 0x3E, 0x66, 0x67
+	0x65, 0x66, 0x67
 };
 /* IA32 Manual 3, 3-432*/
 static unsigned int reg_rop[] = {
@@ -50,6 +51,16 @@ static unsigned int rw32[] = {
 static unsigned int mw8[] = { 0x88, 0x8A, 0xC6, 0xB60F, 0xBE0F };
 static unsigned int mw16[] = { 0xB70F, 0xBF0F };
 static unsigned int mw32[] = { 0x89, 0x8B, 0xC7 };
+static unsigned int reg_wop[] = { 0x88, 0x89, 0xAA, 0xAB };
+static unsigned int imm_wop[] = { 0xC6, 0xC7 };
+/* IA32 Manual 3, 3-432*/
+static unsigned int rw8[] = { 0x88, 0x8A, 0xC6, 0xAA };
+static unsigned int rw32[] = {
+	0x89, 0x8B, 0xC7, 0xB60F, 0xB70F, 0xBE0F, 0xBF0F, 0xAB
+};
+static unsigned int mw8[] = { 0x88, 0x8A, 0xC6, 0xB60F, 0xBE0F, 0xAA };
+static unsigned int mw16[] = { 0xB70F, 0xBF0F };
+static unsigned int mw32[] = { 0x89, 0x8B, 0xC7, 0xAB };
 static unsigned int mw64[] = {};
 #else /* not __i386__ */
 static unsigned char prefix_codes[] = {
@@ -71,6 +82,14 @@ static unsigned int rw32[] = {
 };
 /* 8 bit only */
 static unsigned int mw8[] = { 0xC6, 0x88, 0x8A, 0xB60F, 0xBE0F };
+static unsigned int reg_wop[] = { 0x88, 0x89, 0xAA, 0xAB };
+static unsigned int imm_wop[] = { 0xC6, 0xC7 };
+static unsigned int rw8[] = { 0xC6, 0x88, 0x8A, 0xAA };
+static unsigned int rw32[] = {
+	0xC7, 0x89, 0x8B, 0xB60F, 0xB70F, 0xBE0F, 0xBF0F, 0xAB
+};
+/* 8 bit only */
+static unsigned int mw8[] = { 0xC6, 0x88, 0x8A, 0xB60F, 0xBE0F, 0xAA };
 /* 16 bit only */
 static unsigned int mw16[] = { 0xB70F, 0xBF0F };
 /* 16 or 32 bit */
@@ -87,6 +106,24 @@ static int skip_prefix(unsigned char *addr, int *shorted, int *enlarged,
 	*shorted = 0;
 	*enlarged = 0;
 	*rexr = 0;
+static unsigned int mw64[] = { 0x89, 0x8B, 0xAB };
+#endif /* not __i386__ */
+
+struct prefix_bits {
+	unsigned shorted:1;
+	unsigned enlarged:1;
+	unsigned rexr:1;
+	unsigned rex:1;
+};
+
+static int skip_prefix(unsigned char *addr, struct prefix_bits *prf)
+{
+	int i;
+	unsigned char *p = addr;
+	prf->shorted = 0;
+	prf->enlarged = 0;
+	prf->rexr = 0;
+	prf->rex = 0;
 
 restart:
 	for (i = 0; i < ARRAY_SIZE(prefix_codes); i++) {
@@ -98,6 +135,14 @@ restart:
 				*enlarged = 1;
 			if ((*p & 0xf4) == 0x44)
 				*rexr = 1;
+				prf->shorted = 1;
+#ifdef __amd64__
+			if ((*p & 0xf8) == 0x48)
+				prf->enlarged = 1;
+			if ((*p & 0xf4) == 0x44)
+				prf->rexr = 1;
+			if ((*p & 0xf0) == 0x40)
+				prf->rex = 1;
 #endif
 			p++;
 			goto restart;
@@ -136,11 +181,13 @@ enum reason_type get_ins_type(unsigned long ins_addr)
 	unsigned int opcode;
 	unsigned char *p;
 	int shorted, enlarged, rexr;
+	struct prefix_bits prf;
 	int i;
 	enum reason_type rv = OTHERS;
 
 	p = (unsigned char *)ins_addr;
 	p += skip_prefix(p, &shorted, &enlarged, &rexr);
+	p += skip_prefix(p, &prf);
 	p += get_opcode(p, &opcode);
 
 	CHECK_OP_TYPE(opcode, reg_rop, REG_READ);
@@ -160,6 +207,11 @@ static unsigned int get_ins_reg_width(unsigned long ins_addr)
 
 	p = (unsigned char *)ins_addr;
 	p += skip_prefix(p, &shorted, &enlarged, &rexr);
+	struct prefix_bits prf;
+	int i;
+
+	p = (unsigned char *)ins_addr;
+	p += skip_prefix(p, &prf);
 	p += get_opcode(p, &opcode);
 
 	for (i = 0; i < ARRAY_SIZE(rw8); i++)
@@ -169,6 +221,7 @@ static unsigned int get_ins_reg_width(unsigned long ins_addr)
 	for (i = 0; i < ARRAY_SIZE(rw32); i++)
 		if (rw32[i] == opcode)
 			return (shorted ? 2 : (enlarged ? 8 : 4));
+			return prf.shorted ? 2 : (prf.enlarged ? 8 : 4);
 
 	printk(KERN_ERR "mmiotrace: Unknown opcode 0x%02x\n", opcode);
 	return 0;
@@ -182,6 +235,11 @@ unsigned int get_ins_mem_width(unsigned long ins_addr)
 
 	p = (unsigned char *)ins_addr;
 	p += skip_prefix(p, &shorted, &enlarged, &rexr);
+	struct prefix_bits prf;
+	int i;
+
+	p = (unsigned char *)ins_addr;
+	p += skip_prefix(p, &prf);
 	p += get_opcode(p, &opcode);
 
 	for (i = 0; i < ARRAY_SIZE(mw8); i++)
@@ -199,6 +257,11 @@ unsigned int get_ins_mem_width(unsigned long ins_addr)
 	for (i = 0; i < ARRAY_SIZE(mw64); i++)
 		if (mw64[i] == opcode)
 			return shorted ? 2 : (enlarged ? 8 : 4);
+			return prf.shorted ? 2 : 4;
+
+	for (i = 0; i < ARRAY_SIZE(mw64); i++)
+		if (mw64[i] == opcode)
+			return prf.shorted ? 2 : (prf.enlarged ? 8 : 4);
 
 	printk(KERN_ERR "mmiotrace: Unknown opcode 0x%02x\n", opcode);
 	return 0;
@@ -239,6 +302,7 @@ enum {
 };
 
 static unsigned char *get_reg_w8(int no, struct pt_regs *regs)
+static unsigned char *get_reg_w8(int no, int rex, struct pt_regs *regs)
 {
 	unsigned char *rv = NULL;
 
@@ -297,6 +361,55 @@ static unsigned char *get_reg_w8(int no, struct pt_regs *regs)
 		printk(KERN_ERR "mmiotrace: Error reg no# %d\n", no);
 		break;
 	}
+		break;
+	}
+
+	if (rv)
+		return rv;
+
+	if (rex) {
+		/*
+		 * If REX prefix exists, access low bytes of SI etc.
+		 * instead of AH etc.
+		 */
+		switch (no) {
+		case arg_SI:
+			rv = (unsigned char *)&regs->si;
+			break;
+		case arg_DI:
+			rv = (unsigned char *)&regs->di;
+			break;
+		case arg_BP:
+			rv = (unsigned char *)&regs->bp;
+			break;
+		case arg_SP:
+			rv = (unsigned char *)&regs->sp;
+			break;
+		default:
+			break;
+		}
+	} else {
+		switch (no) {
+		case arg_AH:
+			rv = 1 + (unsigned char *)&regs->ax;
+			break;
+		case arg_BH:
+			rv = 1 + (unsigned char *)&regs->bx;
+			break;
+		case arg_CH:
+			rv = 1 + (unsigned char *)&regs->cx;
+			break;
+		case arg_DH:
+			rv = 1 + (unsigned char *)&regs->dx;
+			break;
+		default:
+			break;
+		}
+	}
+
+	if (!rv)
+		printk(KERN_ERR "mmiotrace: Error reg no# %d\n", no);
+
 	return rv;
 }
 
@@ -385,6 +498,21 @@ unsigned long get_ins_reg_val(unsigned long ins_addr, struct pt_regs *regs)
 			rv = REG_WRITE;
 			goto do_work;
 		}
+	int reg;
+	unsigned char *p;
+	struct prefix_bits prf;
+	int i;
+
+	p = (unsigned char *)ins_addr;
+	p += skip_prefix(p, &prf);
+	p += get_opcode(p, &opcode);
+	for (i = 0; i < ARRAY_SIZE(reg_rop); i++)
+		if (reg_rop[i] == opcode)
+			goto do_work;
+
+	for (i = 0; i < ARRAY_SIZE(reg_wop); i++)
+		if (reg_wop[i] == opcode)
+			goto do_work;
 
 	printk(KERN_ERR "mmiotrace: Not a register instruction, opcode "
 							"0x%02x\n", opcode);
@@ -396,6 +524,16 @@ do_work:
 	switch (get_ins_reg_width(ins_addr)) {
 	case 1:
 		return *get_reg_w8(reg, regs);
+	/* for STOS, source register is fixed */
+	if (opcode == 0xAA || opcode == 0xAB) {
+		reg = arg_AX;
+	} else {
+		unsigned char mod_rm = *p;
+		reg = ((mod_rm >> 3) & 0x7) | (prf.rexr << 3);
+	}
+	switch (get_ins_reg_width(ins_addr)) {
+	case 1:
+		return *get_reg_w8(reg, prf.rex, regs);
 
 	case 2:
 		return *(unsigned short *)get_reg_w32(reg, regs);
@@ -433,6 +571,15 @@ unsigned long get_ins_imm_val(unsigned long ins_addr)
 			rv = IMM_WRITE;
 			goto do_work;
 		}
+	struct prefix_bits prf;
+	int i;
+
+	p = (unsigned char *)ins_addr;
+	p += skip_prefix(p, &prf);
+	p += get_opcode(p, &opcode);
+	for (i = 0; i < ARRAY_SIZE(imm_wop); i++)
+		if (imm_wop[i] == opcode)
+			goto do_work;
 
 	printk(KERN_ERR "mmiotrace: Not an immediate instruction, opcode "
 							"0x%02x\n", opcode);

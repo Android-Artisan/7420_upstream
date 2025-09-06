@@ -146,6 +146,9 @@ static unsigned int eisa_irq_level __read_mostly; /* default to edge triggered *
 /* called by free irq */
 static void eisa_disable_irq(unsigned int irq)
 {
+static void eisa_mask_irq(struct irq_data *d)
+{
+	unsigned int irq = d->irq;
 	unsigned long flags;
 
 	EISA_DBG("disable irq %d\n", irq);
@@ -166,6 +169,9 @@ static void eisa_disable_irq(unsigned int irq)
 /* called by request irq */
 static void eisa_enable_irq(unsigned int irq)
 {
+static void eisa_unmask_irq(struct irq_data *d)
+{
+	unsigned int irq = d->irq;
 	unsigned long flags;
 	EISA_DBG("enable irq %d\n", irq);
 		
@@ -196,6 +202,10 @@ static struct hw_interrupt_type eisa_interrupt_type = {
 	.disable =	eisa_disable_irq,
 	.ack =		no_ack_irq,
 	.end =		no_end_irq,
+static struct irq_chip eisa_interrupt_type = {
+	.name		=	"EISA",
+	.irq_unmask	=	eisa_unmask_irq,
+	.irq_mask	=	eisa_mask_irq,
 };
 
 static irqreturn_t eisa_irq(int wax_irq, void *intr_dev)
@@ -234,6 +244,7 @@ static irqreturn_t eisa_irq(int wax_irq, void *intr_dev)
 	spin_unlock_irqrestore(&eisa_irq_lock, flags);
 
 	__do_IRQ(irq);
+	generic_handle_irq(irq);
    
 	spin_lock_irqsave(&eisa_irq_lock, flags);
 	/* unmask */
@@ -315,6 +326,7 @@ static int __init eisa_probe(struct parisc_device *dev)
 
 	printk(KERN_INFO "%s EISA Adapter found at 0x%08lx\n", 
 		name, dev->hpa.start);
+		name, (unsigned long)dev->hpa.start);
 
 	eisa_dev.hba.dev = dev;
 	eisa_dev.hba.iommu = ccio_get_iommu(dev);
@@ -350,6 +362,10 @@ static int __init eisa_probe(struct parisc_device *dev)
 	
 	for (i = 0; i < 16; i++) {
 		irq_desc[i].chip = &eisa_interrupt_type;
+	setup_irq(2, &irq2_action);
+	for (i = 0; i < 16; i++) {
+		irq_set_chip_and_handler(i, &eisa_interrupt_type,
+					 handle_simple_irq);
 	}
 	
 	EISA_bus = 1;
@@ -374,6 +390,7 @@ static int __init eisa_probe(struct parisc_device *dev)
 		/* FIXME : Don't enumerate the bus twice. */
 		eisa_dev.root.dev = &dev->dev;
 		dev->dev.driver_data = &eisa_dev.root;
+		dev_set_drvdata(&dev->dev, &eisa_dev.root);
 		eisa_dev.root.bus_base_addr = 0;
 		eisa_dev.root.res = &eisa_dev.hba.io_space;
 		eisa_dev.root.slots = result;

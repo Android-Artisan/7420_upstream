@@ -29,6 +29,7 @@
 #include <linux/i2c-algo-bit.h>
 #include <linux/init.h>
 #include <asm/io.h>
+#include <linux/io.h>
 #include <asm/hydra.h>
 
 
@@ -107,6 +108,10 @@ static struct i2c_adapter hydra_adap = {
 };
 
 static struct pci_device_id hydra_ids[] = {
+	.algo_data	= &hydra_bit_data,
+};
+
+static const struct pci_device_id hydra_ids[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_APPLE, PCI_DEVICE_ID_APPLE_HYDRA) },
 	{ 0, }
 };
@@ -114,6 +119,7 @@ static struct pci_device_id hydra_ids[] = {
 MODULE_DEVICE_TABLE (pci, hydra_ids);
 
 static int __devinit hydra_probe(struct pci_dev *dev,
+static int hydra_probe(struct pci_dev *dev,
 				 const struct pci_device_id *id)
 {
 	unsigned long base = pci_resource_start(dev, 0);
@@ -124,6 +130,7 @@ static int __devinit hydra_probe(struct pci_dev *dev,
 		return -EBUSY;
 
 	hydra_bit_data.data = ioremap(base, pci_resource_len(dev, 0));
+	hydra_bit_data.data = pci_ioremap_bar(dev, 0);
 	if (hydra_bit_data.data == NULL) {
 		release_mem_region(base+offsetof(struct Hydra, CachePD), 4);
 		return -ENODEV;
@@ -141,6 +148,7 @@ static int __devinit hydra_probe(struct pci_dev *dev,
 }
 
 static void __devexit hydra_remove(struct pci_dev *dev)
+static void hydra_remove(struct pci_dev *dev)
 {
 	pdregw(hydra_bit_data.data, 0);		/* clear SCLK_OE and SDAT_OE */
 	i2c_del_adapter(&hydra_adap);
@@ -169,6 +177,10 @@ static void __exit i2c_hydra_exit(void)
 }
 
 
+	.remove		= hydra_remove,
+};
+
+module_pci_driver(hydra_driver);
 
 MODULE_AUTHOR("Geert Uytterhoeven <geert@linux-m68k.org>");
 MODULE_DESCRIPTION("i2c for Apple Hydra Mac I/O");

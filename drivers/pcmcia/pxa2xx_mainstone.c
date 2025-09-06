@@ -26,6 +26,10 @@
 #include <asm/irq.h>
 
 #include <mach/pxa-regs.h>
+#include <asm/mach-types.h>
+#include <asm/irq.h>
+
+#include <mach/pxa2xx-regs.h>
 #include <mach/mainstone.h>
 
 #include "soc_common.h"
@@ -52,6 +56,20 @@ static int mst_pcmcia_hw_init(struct soc_pcmcia_socket *skt)
 static void mst_pcmcia_hw_shutdown(struct soc_pcmcia_socket *skt)
 {
 	soc_pcmcia_free_irqs(skt, irqs, ARRAY_SIZE(irqs));
+	if (skt->nr == 0) {
+		skt->socket.pci_irq = MAINSTONE_S0_IRQ;
+		skt->stat[SOC_STAT_CD].irq = MAINSTONE_S0_CD_IRQ;
+		skt->stat[SOC_STAT_CD].name = "PCMCIA0 CD";
+		skt->stat[SOC_STAT_BVD1].irq = MAINSTONE_S0_STSCHG_IRQ;
+		skt->stat[SOC_STAT_BVD1].name = "PCMCIA0 STSCHG";
+	} else {
+		skt->socket.pci_irq = MAINSTONE_S1_IRQ;
+		skt->stat[SOC_STAT_CD].irq = MAINSTONE_S1_CD_IRQ;
+		skt->stat[SOC_STAT_CD].name = "PCMCIA1 CD";
+		skt->stat[SOC_STAT_BVD1].irq = MAINSTONE_S1_STSCHG_IRQ;
+		skt->stat[SOC_STAT_BVD1].name = "PCMCIA1 STSCHG";
+	}
+	return 0;
 }
 
 static unsigned long mst_pcmcia_status[2];
@@ -145,6 +163,11 @@ static struct pcmcia_low_level mst_pcmcia_ops __initdata = {
 	.configure_socket	= mst_pcmcia_configure_socket,
 	.socket_init		= mst_pcmcia_socket_init,
 	.socket_suspend		= mst_pcmcia_socket_suspend,
+static struct pcmcia_low_level mst_pcmcia_ops __initdata = {
+	.owner			= THIS_MODULE,
+	.hw_init		= mst_pcmcia_hw_init,
+	.socket_state		= mst_pcmcia_socket_state,
+	.configure_socket	= mst_pcmcia_configure_socket,
 	.nr			= 2,
 };
 

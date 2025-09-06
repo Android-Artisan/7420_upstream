@@ -18,6 +18,7 @@
 #include <linux/sockios.h>
 #include <linux/net.h>
 #include <linux/spinlock.h>
+#include <linux/slab.h>
 #include <net/ax25.h>
 #include <linux/inet.h>
 #include <linux/netdevice.h>
@@ -36,6 +37,8 @@
 #include <linux/stat.h>
 #include <linux/netfilter.h>
 #include <linux/sysctl.h>
+#include <linux/sysctl.h>
+#include <linux/export.h>
 #include <net/ip.h>
 #include <net/arp.h>
 
@@ -58,6 +61,13 @@ ax25_uid_assoc *ax25_findbyuid(uid_t uid)
 	read_lock(&ax25_uid_lock);
 	ax25_uid_for_each(ax25_uid, node, &ax25_uid_list) {
 		if (ax25_uid->uid == uid) {
+ax25_uid_assoc *ax25_findbyuid(kuid_t uid)
+{
+	ax25_uid_assoc *ax25_uid, *res = NULL;
+
+	read_lock(&ax25_uid_lock);
+	ax25_uid_for_each(ax25_uid, &ax25_uid_list) {
+		if (uid_eq(ax25_uid->uid, uid)) {
 			ax25_uid_hold(ax25_uid);
 			res = ax25_uid;
 			break;
@@ -84,6 +94,9 @@ int ax25_uid_ioctl(int cmd, struct sockaddr_ax25 *sax)
 		ax25_uid_for_each(ax25_uid, node, &ax25_uid_list) {
 			if (ax25cmp(&sax->sax25_call, &ax25_uid->call) == 0) {
 				res = ax25_uid->uid;
+		ax25_uid_for_each(ax25_uid, &ax25_uid_list) {
+			if (ax25cmp(&sax->sax25_call, &ax25_uid->call) == 0) {
+				res = from_kuid_munged(current_user_ns(), ax25_uid->uid);
 				break;
 			}
 		}
@@ -95,6 +108,14 @@ int ax25_uid_ioctl(int cmd, struct sockaddr_ax25 *sax)
 		if (!capable(CAP_NET_ADMIN))
 			return -EPERM;
 		user = ax25_findbyuid(sax->sax25_uid);
+	{
+		kuid_t sax25_kuid;
+		if (!capable(CAP_NET_ADMIN))
+			return -EPERM;
+		sax25_kuid = make_kuid(current_user_ns(), sax->sax25_uid);
+		if (!uid_valid(sax25_kuid))
+			return -EINVAL;
+		user = ax25_findbyuid(sax25_kuid);
 		if (user) {
 			ax25_uid_put(user);
 			return -EEXIST;
@@ -106,6 +127,7 @@ int ax25_uid_ioctl(int cmd, struct sockaddr_ax25 *sax)
 
 		atomic_set(&ax25_uid->refcount, 1);
 		ax25_uid->uid  = sax->sax25_uid;
+		ax25_uid->uid  = sax25_kuid;
 		ax25_uid->call = sax->sax25_call;
 
 		write_lock(&ax25_uid_lock);
@@ -114,6 +136,7 @@ int ax25_uid_ioctl(int cmd, struct sockaddr_ax25 *sax)
 
 		return 0;
 
+	}
 	case SIOCAX25DELUID:
 		if (!capable(CAP_NET_ADMIN))
 			return -EPERM;
@@ -121,6 +144,7 @@ int ax25_uid_ioctl(int cmd, struct sockaddr_ax25 *sax)
 		ax25_uid = NULL;
 		write_lock(&ax25_uid_lock);
 		ax25_uid_for_each(ax25_uid, node, &ax25_uid_list) {
+		ax25_uid_for_each(ax25_uid, &ax25_uid_list) {
 			if (ax25cmp(&sax->sax25_call, &ax25_uid->call) == 0)
 				break;
 		}
@@ -157,6 +181,8 @@ static void *ax25_uid_seq_start(struct seq_file *seq, loff_t *pos)
 		++i;
 	}
 	return NULL;
+	read_lock(&ax25_uid_lock);
+	return seq_hlist_start_head(&ax25_uid_list, *pos);
 }
 
 static void *ax25_uid_seq_next(struct seq_file *seq, void *v, loff_t *pos)
@@ -165,6 +191,7 @@ static void *ax25_uid_seq_next(struct seq_file *seq, void *v, loff_t *pos)
 
 	return hlist_entry(((ax25_uid_assoc *)v)->uid_node.next,
 			   ax25_uid_assoc, uid_node);
+	return seq_hlist_next(v, &ax25_uid_list, pos);
 }
 
 static void ax25_uid_seq_stop(struct seq_file *seq, void *v)
@@ -183,6 +210,12 @@ static int ax25_uid_seq_show(struct seq_file *seq, void *v)
 		struct ax25_uid_assoc *pt = v;
 
 		seq_printf(seq, "%6d %s\n", pt->uid, ax2asc(buf, &pt->call));
+		struct ax25_uid_assoc *pt;
+
+		pt = hlist_entry(v, struct ax25_uid_assoc, uid_node);
+		seq_printf(seq, "%6d %s\n",
+			from_kuid_munged(seq_user_ns(seq), pt->uid),
+			ax2asc(buf, &pt->call));
 	}
 	return 0;
 }
@@ -220,6 +253,10 @@ void __exit ax25_uid_free(void)
 	write_lock(&ax25_uid_lock);
 again:
 	ax25_uid_for_each(ax25_uid, node, &ax25_uid_list) {
+
+	write_lock(&ax25_uid_lock);
+again:
+	ax25_uid_for_each(ax25_uid, &ax25_uid_list) {
 		hlist_del_init(&ax25_uid->uid_node);
 		ax25_uid_put(ax25_uid);
 		goto again;

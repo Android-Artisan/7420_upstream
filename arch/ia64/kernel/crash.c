@@ -23,6 +23,7 @@
 int kdump_status[NR_CPUS];
 static atomic_t kdump_cpu_frozen;
 atomic_t kdump_in_progress;
+static int kdump_freeze_monarch;
 static int kdump_on_init = 1;
 static int kdump_on_fatal_mca = 1;
 
@@ -112,6 +113,38 @@ machine_crash_shutdown(struct pt_regs *pt)
 	/* not all cpu response to IPI, send INIT to freeze them */
 	if (kdump_wait_cpu_freeze() && kdump_on_init) 	{
 		kdump_smp_send_init();
+	/*
+	 * If kdump_on_init is set and an INIT is asserted here, kdump will
+	 * be started again via INIT monarch.
+	 */
+	local_irq_disable();
+	ia64_set_psr_mc();	/* mask MCA/INIT */
+	if (atomic_inc_return(&kdump_in_progress) != 1)
+		unw_init_running(kdump_cpu_freeze, NULL);
+
+	/*
+	 * Now this cpu is ready for kdump.
+	 * Stop all others by IPI or INIT.  They could receive INIT from
+	 * outside and might be INIT monarch, but only thing they have to
+	 * do is falling into kdump_cpu_freeze().
+	 *
+	 * If an INIT is asserted here:
+	 * - All receivers might be slaves, since some of cpus could already
+	 *   be frozen and INIT might be masked on monarch.  In this case,
+	 *   all slaves will be frozen soon since kdump_in_progress will let
+	 *   them into DIE_INIT_SLAVE_LEAVE.
+	 * - One might be a monarch, but INIT rendezvous will fail since
+	 *   at least this cpu already have INIT masked so it never join
+	 *   to the rendezvous.  In this case, all slaves and monarch will
+	 *   be frozen soon with no wait since the INIT rendezvous is skipped
+	 *   by kdump_in_progress.
+	 */
+	kdump_smp_send_stop();
+	/* not all cpu response to IPI, send INIT to freeze them */
+	if (kdump_wait_cpu_freeze()) {
+		kdump_smp_send_init();
+		/* wait again, don't go ahead if possible */
+		kdump_wait_cpu_freeze();
 	}
 #endif
 }
@@ -129,6 +162,7 @@ void
 kdump_cpu_freeze(struct unw_frame_info *info, void *arg)
 {
 	int cpuid;
+
 	local_irq_disable();
 	cpuid = smp_processor_id();
 	crash_save_this_cpu();
@@ -140,6 +174,12 @@ kdump_cpu_freeze(struct unw_frame_info *info, void *arg)
 	if (cpuid != 0)
 		ia64_jump_to_sal(&sal_boot_rendez_state[cpuid]);
 #endif
+
+	ia64_set_psr_mc();	/* mask MCA/INIT and stop reentrance */
+
+	atomic_inc(&kdump_cpu_frozen);
+	kdump_status[cpuid] = 1;
+	mb();
 	for (;;)
 		cpu_relax();
 }
@@ -149,6 +189,20 @@ kdump_init_notifier(struct notifier_block *self, unsigned long val, void *data)
 {
 	struct ia64_mca_notify_die *nd;
 	struct die_args *args = data;
+
+	if (atomic_read(&kdump_in_progress)) {
+		switch (val) {
+		case DIE_INIT_MONARCH_LEAVE:
+			if (!kdump_freeze_monarch)
+				break;
+			/* fall through */
+		case DIE_INIT_SLAVE_LEAVE:
+		case DIE_INIT_MONARCH_ENTER:
+		case DIE_MCA_RENDZVOUS_LEAVE:
+			unw_init_running(kdump_cpu_freeze, NULL);
+			break;
+		}
+	}
 
 	if (!kdump_on_init && !kdump_on_fatal_mca)
 		return NOTIFY_DONE;
@@ -165,6 +219,7 @@ kdump_init_notifier(struct notifier_block *self, unsigned long val, void *data)
 	    val != DIE_INIT_SLAVE_LEAVE &&
 	    val != DIE_INIT_MONARCH_PROCESS &&
 	    val != DIE_MCA_RENDZVOUS_LEAVE &&
+	    val != DIE_INIT_MONARCH_PROCESS &&
 	    val != DIE_MCA_MONARCH_LEAVE)
 		return NOTIFY_DONE;
 
@@ -199,6 +254,26 @@ kdump_init_notifier(struct notifier_block *self, unsigned long val, void *data)
 			atomic_set(&kdump_in_progress, 1);
 			*(nd->monarch_cpu) = -1;
 			machine_kdump_on_init();
+
+	switch (val) {
+	case DIE_INIT_MONARCH_PROCESS:
+		/* Reason code 1 means machine check rendezvous*/
+		if (kdump_on_init && (nd->sos->rv_rc != 1)) {
+			if (atomic_inc_return(&kdump_in_progress) != 1)
+				kdump_freeze_monarch = 1;
+		}
+		break;
+	case DIE_INIT_MONARCH_LEAVE:
+		/* Reason code 1 means machine check rendezvous*/
+		if (kdump_on_init && (nd->sos->rv_rc != 1))
+			machine_kdump_on_init();
+		break;
+	case DIE_MCA_MONARCH_LEAVE:
+		/* *(nd->data) indicate if MCA is recoverable */
+		if (kdump_on_fatal_mca && !(*(nd->data))) {
+			if (atomic_inc_return(&kdump_in_progress) == 1)
+				machine_kdump_on_init();
+			/* We got fatal MCA while kdump!? No way!! */
 		}
 		break;
 	}
@@ -209,6 +284,8 @@ kdump_init_notifier(struct notifier_block *self, unsigned long val, void *data)
 static ctl_table kdump_ctl_table[] = {
 	{
 		.ctl_name = CTL_UNNUMBERED,
+static struct ctl_table kdump_ctl_table[] = {
+	{
 		.procname = "kdump_on_init",
 		.data = &kdump_on_init,
 		.maxlen = sizeof(int),
@@ -217,6 +294,9 @@ static ctl_table kdump_ctl_table[] = {
 	},
 	{
 		.ctl_name = CTL_UNNUMBERED,
+		.proc_handler = proc_dointvec,
+	},
+	{
 		.procname = "kdump_on_fatal_mca",
 		.data = &kdump_on_fatal_mca,
 		.maxlen = sizeof(int),
@@ -229,11 +309,19 @@ static ctl_table kdump_ctl_table[] = {
 static ctl_table sys_table[] = {
 	{
 	  .ctl_name = CTL_KERN,
+		.proc_handler = proc_dointvec,
+	},
+	{ }
+};
+
+static struct ctl_table sys_table[] = {
+	{
 	  .procname = "kernel",
 	  .mode = 0555,
 	  .child = kdump_ctl_table,
 	},
 	{ .ctl_name = 0 }
+	{ }
 };
 #endif
 

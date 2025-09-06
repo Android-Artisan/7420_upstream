@@ -230,6 +230,8 @@ static int dma;
 #include <linux/bitops.h>
 
 #include <asm/system.h>
+#include <linux/gfp.h>
+
 #include <asm/dma.h>
 #include <asm/io.h>
 
@@ -657,6 +659,9 @@ static int do_write(struct net_device *dev, void *cbuf, int cbuflen,
 		qels[i].cbuf = (unsigned char *) cbuf;
 		qels[i].cbuflen = cbuflen;
 		qels[i].dbuf = (unsigned char *) dbuf;
+		qels[i].cbuf = cbuf;
+		qels[i].cbuflen = cbuflen;
+		qels[i].dbuf = dbuf;
 		qels[i].dbuflen = dbuflen;
 		qels[i].QWrite = 1;
 		qels[i].mailbox = i;  /* this should be initted rather */
@@ -681,6 +686,9 @@ static int do_read(struct net_device *dev, void *cbuf, int cbuflen,
 		qels[i].cbuf = (unsigned char *) cbuf;
 		qels[i].cbuflen = cbuflen;
 		qels[i].dbuf = (unsigned char *) dbuf;
+		qels[i].cbuf = cbuf;
+		qels[i].cbuflen = cbuflen;
+		qels[i].dbuf = dbuf;
 		qels[i].dbuflen = dbuflen;
 		qels[i].QWrite = 0;
 		qels[i].mailbox = i;  /* this should be initted rather */
@@ -700,6 +708,7 @@ static struct timer_list ltpc_timer;
 
 static int ltpc_xmit(struct sk_buff *skb, struct net_device *dev);
 static struct net_device_stats *ltpc_get_stats(struct net_device *dev);
+static netdev_tx_t ltpc_xmit(struct sk_buff *skb, struct net_device *dev);
 
 static int read_30 ( struct net_device *dev)
 {
@@ -732,6 +741,7 @@ static int sendup_buffer (struct net_device *dev)
 	if (ltc->command != LT_RCVLAP) {
 		printk("unknown command 0x%02x from ltpc card\n",ltc->command);
 		return(-1);
+		return -1;
 	}
 	dnode = ltc->dnode;
 	snode = ltc->snode;
@@ -784,6 +794,11 @@ static int sendup_buffer (struct net_device *dev)
 	/* toss it onwards */
 	netif_rx(skb);
 	dev->last_rx = jiffies;
+	dev->stats.rx_packets++;
+	dev->stats.rx_bytes += skb->len;
+
+	/* toss it onwards */
+	netif_rx(skb);
 	return 0;
 }
 
@@ -824,6 +839,8 @@ static int ltpc_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 	struct sockaddr_at *sa = (struct sockaddr_at *) &ifr->ifr_addr;
 	/* we'll keep the localtalk node address in dev->pa_addr */
 	struct atalk_addr *aa = &((struct ltpc_private *)dev->priv)->my_addr;
+	struct ltpc_private *ltpc_priv = netdev_priv(dev);
+	struct atalk_addr *aa = &ltpc_priv->my_addr;
 	struct lt_init c;
 	int ltflags;
 
@@ -899,6 +916,7 @@ static void ltpc_poll(unsigned long l)
 /* DDP to LLAP translation */
 
 static int ltpc_xmit(struct sk_buff *skb, struct net_device *dev)
+static netdev_tx_t ltpc_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	/* in kernel 1.3.xx, on entry skb->data points to ddp header,
 	 * and skb->len is the length of the ddp data + ddp header
@@ -945,6 +963,11 @@ static struct net_device_stats *ltpc_get_stats(struct net_device *dev)
 {
 	struct net_device_stats *stats = &((struct ltpc_private *) dev->priv)->stats;
 	return stats;
+	dev->stats.tx_packets++;
+	dev->stats.tx_bytes += skb->len;
+
+	dev_kfree_skb(skb);
+	return NETDEV_TX_OK;
 }
 
 /* initialization stuff */
@@ -1023,6 +1046,12 @@ static int __init ltpc_probe_dma(int base, int dma)
 
 	return (want & 2) ? 3 : 1;
 }
+
+static const struct net_device_ops ltpc_netdev = {
+	.ndo_start_xmit		= ltpc_xmit,
+	.ndo_do_ioctl		= ltpc_ioctl,
+	.ndo_set_rx_mode	= set_multicast_list,
+};
 
 struct net_device * __init ltpc_probe(void)
 {
@@ -1139,6 +1168,7 @@ struct net_device * __init ltpc_probe(void)
 
 	dev->set_multicast_list = &set_multicast_list;
 	dev->mc_list = NULL;
+	dev->netdev_ops = &ltpc_netdev;
 	dev->base_addr = io;
 	dev->irq = irq;
 	dev->dma = dma;
@@ -1172,6 +1202,7 @@ struct net_device * __init ltpc_probe(void)
 
 	/* grab it and don't let go :-) */
 	if (irq && request_irq( irq, &ltpc_interrupt, 0, "ltpc", dev) >= 0)
+	if (irq && request_irq( irq, ltpc_interrupt, 0, "ltpc", dev) >= 0)
 	{
 		(void) inb_p(io+7);  /* enable interrupts from board */
 		(void) inb_p(io+7);  /* and reset irq line */
@@ -1234,6 +1265,7 @@ static int __init ltpc_setup(char *str)
 			dma = ints[3];
 		}
 		/* ignore any other paramters */
+		/* ignore any other parameters */
 	}
 	return 1;
 }
@@ -1262,6 +1294,7 @@ static int __init ltpc_module_init(void)
 	if (IS_ERR(dev_ltpc))
 		return PTR_ERR(dev_ltpc);
 	return 0;
+	return PTR_ERR_OR_ZERO(dev_ltpc);
 }
 module_init(ltpc_module_init);
 #endif

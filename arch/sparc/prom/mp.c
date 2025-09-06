@@ -114,6 +114,7 @@ prom_restartcpu(int cpunode)
 		ret = (*(romvec->v3_cpuresume))(cpunode);
 		break;
 	};
+	}
 	restore_current();
 	spin_unlock_irqrestore(&prom_lock, flags);
 

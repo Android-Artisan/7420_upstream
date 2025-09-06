@@ -49,6 +49,7 @@ static int m68kspkr_event(struct input_dev *dev, unsigned int type, unsigned int
 }
 
 static int __devinit m68kspkr_probe(struct platform_device *dev)
+static int m68kspkr_probe(struct platform_device *dev)
 {
 	struct input_dev *input_dev;
 	int err;
@@ -81,6 +82,7 @@ static int __devinit m68kspkr_probe(struct platform_device *dev)
 }
 
 static int __devexit m68kspkr_remove(struct platform_device *dev)
+static int m68kspkr_remove(struct platform_device *dev)
 {
 	struct input_dev *input_dev = platform_get_drvdata(dev);
 
@@ -105,6 +107,9 @@ static struct platform_driver m68kspkr_platform_driver = {
 	},
 	.probe		= m68kspkr_probe,
 	.remove		= __devexit_p(m68kspkr_remove),
+	},
+	.probe		= m68kspkr_probe,
+	.remove		= m68kspkr_remove,
 	.shutdown	= m68kspkr_shutdown,
 };
 

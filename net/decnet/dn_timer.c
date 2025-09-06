@@ -23,6 +23,8 @@
 #include <linux/spinlock.h>
 #include <net/sock.h>
 #include <asm/atomic.h>
+#include <linux/atomic.h>
+#include <linux/jiffies.h>
 #include <net/flow.h>
 #include <net/dn.h>
 
@@ -41,11 +43,14 @@ void dn_start_slow_timer(struct sock *sk)
 	sk->sk_timer.data	= (unsigned long)sk;
 
 	add_timer(&sk->sk_timer);
+	setup_timer(&sk->sk_timer, dn_slow_timer, (unsigned long)sk);
+	sk_reset_timer(sk, &sk->sk_timer, jiffies + SLOW_INTERVAL);
 }
 
 void dn_stop_slow_timer(struct sock *sk)
 {
 	del_timer(&sk->sk_timer);
+	sk_stop_timer(sk, &sk->sk_timer);
 }
 
 static void dn_slow_timer(unsigned long arg)
@@ -59,6 +64,10 @@ static void dn_slow_timer(unsigned long arg)
 	if (sock_owned_by_user(sk)) {
 		sk->sk_timer.expires = jiffies + HZ / 10;
 		add_timer(&sk->sk_timer);
+	bh_lock_sock(sk);
+
+	if (sock_owned_by_user(sk)) {
+		sk_reset_timer(sk, &sk->sk_timer, jiffies + HZ / 10);
 		goto out;
 	}
 
@@ -103,6 +112,11 @@ static void dn_slow_timer(unsigned long arg)
 	sk->sk_timer.expires = jiffies + SLOW_INTERVAL;
 
 	add_timer(&sk->sk_timer);
+		if (time_after_eq(jiffies, scp->stamp + scp->keepalive))
+			scp->keepalive_fxn(sk);
+	}
+
+	sk_reset_timer(sk, &sk->sk_timer, jiffies + SLOW_INTERVAL);
 out:
 	bh_unlock_sock(sk);
 	sock_put(sk);

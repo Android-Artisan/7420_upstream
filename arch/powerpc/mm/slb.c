@@ -3,6 +3,7 @@
  *
  * Copyright (C) 2004 David Gibson <dwg@au.ibm.com>, IBM
  * Based on earlier code writteh by:
+ * Based on earlier code written by:
  * Dave Engebretsen and Mike Corrigan {engebret|mikejc}@us.ibm.com
  *    Copyright (c) 2001 Dave Engebretsen
  * Copyright (C) 2002 Anton Blanchard <anton@au.ibm.com>, IBM
@@ -32,6 +33,15 @@
 #else
 #define DBG pr_debug
 #endif
+#include <linux/compiler.h>
+#include <asm/udbg.h>
+#include <asm/code-patching.h>
+
+enum slb_index {
+	LINEAR_INDEX	= 0, /* Kernel linear map  (0xc000000000000000) */
+	VMALLOC_INDEX	= 1, /* Kernel virtual map (0xd000000000000000) */
+	KSTACK_INDEX	= 2, /* Kernel stack map */
+};
 
 extern void slb_allocate_realmode(unsigned long ea);
 extern void slb_allocate_user(unsigned long ea);
@@ -56,6 +66,11 @@ static inline unsigned long mk_esid_data(unsigned long ea, int ssize,
 #define slb_vsid_shift(ssize)	\
 	((ssize) == MMU_SEGSIZE_256M? SLB_VSID_SHIFT: SLB_VSID_SHIFT_1T)
 
+					 enum slb_index index)
+{
+	return (ea & slb_esid_mask(ssize)) | SLB_ESID_V | index;
+}
+
 static inline unsigned long mk_vsid_data(unsigned long ea, int ssize,
 					 unsigned long flags)
 {
@@ -67,6 +82,10 @@ static inline void slb_shadow_update(unsigned long ea, int ssize,
 				     unsigned long flags,
 				     unsigned long entry)
 {
+				     enum slb_index index)
+{
+	struct slb_shadow *p = get_slb_shadow();
+
 	/*
 	 * Clear the ESID first so the entry is not valid while we are
 	 * updating it.  No write barriers are needed here, provided
@@ -80,11 +99,23 @@ static inline void slb_shadow_update(unsigned long ea, int ssize,
 static inline void slb_shadow_clear(unsigned long entry)
 {
 	get_slb_shadow()->save_area[entry].esid = 0;
+	p->save_area[index].esid = 0;
+	p->save_area[index].vsid = cpu_to_be64(mk_vsid_data(ea, ssize, flags));
+	p->save_area[index].esid = cpu_to_be64(mk_esid_data(ea, ssize, index));
+	WRITE_ONCE(p->save_area[index].esid, 0);
+	WRITE_ONCE(p->save_area[index].vsid, cpu_to_be64(mk_vsid_data(ea, ssize, flags)));
+	WRITE_ONCE(p->save_area[index].esid, cpu_to_be64(mk_esid_data(ea, ssize, index)));
+}
+
+static inline void slb_shadow_clear(enum slb_index index)
+{
+	WRITE_ONCE(get_slb_shadow()->save_area[index].esid, 0);
 }
 
 static inline void create_shadowed_slbe(unsigned long ea, int ssize,
 					unsigned long flags,
 					unsigned long entry)
+					enum slb_index index)
 {
 	/*
 	 * Updating the shadow buffer before writing the SLB ensures
@@ -108,6 +139,21 @@ void slb_flush_and_rebolt(void)
 
 	WARN_ON(!irqs_disabled());
 
+	slb_shadow_update(ea, ssize, flags, index);
+
+	asm volatile("slbmte  %0,%1" :
+		     : "r" (mk_vsid_data(ea, ssize, flags)),
+		       "r" (mk_esid_data(ea, ssize, index))
+		     : "memory" );
+}
+
+static void __slb_flush_and_rebolt(void)
+{
+	/* If you change this make sure you change SLB_NUM_BOLTED
+	 * and PR KVM appropriately too. */
+	unsigned long linear_llp, vmalloc_llp, lflags, vflags;
+	unsigned long ksp_esid_data, ksp_vsid_data;
+
 	linear_llp = mmu_psize_defs[mmu_linear_psize].sllp;
 	vmalloc_llp = mmu_psize_defs[mmu_vmalloc_psize].sllp;
 	lflags = SLB_VSID_KERNEL | linear_llp;
@@ -130,6 +176,18 @@ void slb_flush_and_rebolt(void)
 	 */
 	hard_irq_disable();
 
+	ksp_esid_data = mk_esid_data(get_paca()->kstack, mmu_kernel_ssize, KSTACK_INDEX);
+	if ((ksp_esid_data & ~0xfffffffUL) <= PAGE_OFFSET) {
+		ksp_esid_data &= ~SLB_ESID_V;
+		ksp_vsid_data = 0;
+		slb_shadow_clear(KSTACK_INDEX);
+	} else {
+		/* Update stack entry; others don't change */
+		slb_shadow_update(get_paca()->kstack, mmu_kernel_ssize, lflags, KSTACK_INDEX);
+		ksp_vsid_data =
+			be64_to_cpu(get_slb_shadow()->save_area[KSTACK_INDEX].vsid);
+	}
+
 	/* We need to do this all in asm, so we're sure we don't touch
 	 * the stack between the slbia and rebolting it. */
 	asm volatile("isync\n"
@@ -146,12 +204,28 @@ void slb_flush_and_rebolt(void)
 		     : "memory");
 }
 
+void slb_flush_and_rebolt(void)
+{
+
+	WARN_ON(!irqs_disabled());
+
+	/*
+	 * We can't take a PMU exception in the following code, so hard
+	 * disable interrupts.
+	 */
+	hard_irq_disable();
+
+	__slb_flush_and_rebolt();
+	get_paca()->slb_cache_ptr = 0;
+}
+
 void slb_vmalloc_update(void)
 {
 	unsigned long vflags;
 
 	vflags = SLB_VSID_KERNEL | mmu_psize_defs[mmu_vmalloc_psize].sllp;
 	slb_shadow_update(VMALLOC_START, mmu_kernel_ssize, vflags, 1);
+	slb_shadow_update(VMALLOC_START, mmu_kernel_ssize, vflags, VMALLOC_INDEX);
 	slb_flush_and_rebolt();
 }
 
@@ -167,6 +241,7 @@ static inline int esids_match(unsigned long addr1, unsigned long addr2)
 
 	/* System is not 1T segment size capable. */
 	if (!cpu_has_feature(CPU_FTR_1T_SEGMENT))
+	if (!mmu_has_feature(MMU_FTR_1T_SEGMENT))
 		return (GET_ESID(addr1) == GET_ESID(addr2));
 
 	esid_1t_count = (((addr1 >> SID_SHIFT_1T) != 0) +
@@ -194,6 +269,21 @@ void switch_slb(struct task_struct *tsk, struct mm_struct *mm)
 	unsigned long unmapped_base;
 
 	if (!cpu_has_feature(CPU_FTR_NO_SLBIE_B) &&
+	unsigned long offset;
+	unsigned long slbie_data = 0;
+	unsigned long pc = KSTK_EIP(tsk);
+	unsigned long stack = KSTK_ESP(tsk);
+	unsigned long exec_base;
+
+	/*
+	 * We need interrupts hard-disabled here, not just soft-disabled,
+	 * so that a PMU interrupt can't occur, which might try to access
+	 * user memory (to get a stack trace) and possible cause an SLB miss
+	 * which would update the slb_cache/slb_cache_ptr fields in the PACA.
+	 */
+	hard_irq_disable();
+	offset = get_paca()->slb_cache_ptr;
+	if (!mmu_has_feature(MMU_FTR_NO_SLBIE_B) &&
 	    offset <= SLB_CACHE_ENTRIES) {
 		int i;
 		asm volatile("isync" : : : "memory");
@@ -208,6 +298,7 @@ void switch_slb(struct task_struct *tsk, struct mm_struct *mm)
 		asm volatile("isync" : : : "memory");
 	} else {
 		slb_flush_and_rebolt();
+		__slb_flush_and_rebolt();
 	}
 
 	/* Workaround POWER5 < DD2.1 issue */
@@ -242,6 +333,23 @@ void switch_slb(struct task_struct *tsk, struct mm_struct *mm)
 	if (is_kernel_addr(unmapped_base))
 		return;
 	slb_allocate(unmapped_base);
+	 * Almost all 32 and 64bit PowerPC executables are linked at
+	 * 0x10000000 so it makes sense to preload this segment.
+	 */
+	exec_base = 0x10000000;
+
+	if (is_kernel_addr(pc) || is_kernel_addr(stack) ||
+	    is_kernel_addr(exec_base))
+		return;
+
+	slb_allocate(pc);
+
+	if (!esids_match(pc, stack))
+		slb_allocate(stack);
+
+	if (!esids_match(pc, exec_base) &&
+	    !esids_match(stack, exec_base))
+		slb_allocate(exec_base);
 }
 
 static inline void patch_slb_encoding(unsigned int *insn_addr,
@@ -253,6 +361,36 @@ static inline void patch_slb_encoding(unsigned int *insn_addr,
 	*insn_addr |= immed;
 	flush_icache_range((unsigned long)insn_addr, 4+
 			   (unsigned long)insn_addr);
+
+	/*
+	 * This function patches either an li or a cmpldi instruction with
+	 * a new immediate value. This relies on the fact that both li
+	 * (which is actually addi) and cmpldi both take a 16-bit immediate
+	 * value, and it is situated in the same location in the instruction,
+	 * ie. bits 16-31 (Big endian bit order) or the lower 16 bits.
+	 * The signedness of the immediate operand differs between the two
+	 * instructions however this code is only ever patching a small value,
+	 * much less than 1 << 15, so we can get away with it.
+	 * To patch the value we read the existing instruction, clear the
+	 * immediate value, and or in our new value, then write the instruction
+	 * back.
+	 */
+	unsigned int insn = (*insn_addr & 0xffff0000) | immed;
+	patch_instruction(insn_addr, insn);
+}
+
+extern u32 slb_miss_kernel_load_linear[];
+extern u32 slb_miss_kernel_load_io[];
+extern u32 slb_compare_rr_to_size[];
+extern u32 slb_miss_kernel_load_vmemmap[];
+
+void slb_set_size(u16 size)
+{
+	if (mmu_slb_size == size)
+		return;
+
+	mmu_slb_size = size;
+	patch_slb_encoding(slb_compare_rr_to_size, mmu_slb_size);
 }
 
 void slb_initialize(void)
@@ -265,6 +403,7 @@ void slb_initialize(void)
 	extern unsigned int *slb_compare_rr_to_size;
 #ifdef CONFIG_SPARSEMEM_VMEMMAP
 	extern unsigned int *slb_miss_kernel_load_vmemmap;
+#ifdef CONFIG_SPARSEMEM_VMEMMAP
 	unsigned long vmemmap_llp;
 #endif
 
@@ -287,15 +426,18 @@ void slb_initialize(void)
 
 		DBG("SLB: linear  LLP = %04lx\n", linear_llp);
 		DBG("SLB: io      LLP = %04lx\n", io_llp);
+		pr_devel("SLB: linear  LLP = %04lx\n", linear_llp);
+		pr_devel("SLB: io      LLP = %04lx\n", io_llp);
 
 #ifdef CONFIG_SPARSEMEM_VMEMMAP
 		patch_slb_encoding(slb_miss_kernel_load_vmemmap,
 				   SLB_VSID_KERNEL | vmemmap_llp);
 		DBG("SLB: vmemmap LLP = %04lx\n", vmemmap_llp);
+		pr_devel("SLB: vmemmap LLP = %04lx\n", vmemmap_llp);
 #endif
 	}
 
-	get_paca()->stab_rr = SLB_NUM_BOLTED;
+	get_paca()->stab_rr = SLB_NUM_BOLTED - 1;
 
 	/* On iSeries the bolted entries have already been set up by
 	 * the hypervisor from the lparMap data in head.S */
@@ -312,6 +454,15 @@ void slb_initialize(void)
 	create_shadowed_slbe(PAGE_OFFSET, mmu_kernel_ssize, lflags, 0);
 
 	create_shadowed_slbe(VMALLOC_START, mmu_kernel_ssize, vflags, 1);
+	lflags = SLB_VSID_KERNEL | linear_llp;
+	vflags = SLB_VSID_KERNEL | vmalloc_llp;
+
+	/* Invalidate the entire SLB (even entry 0) & all the ERATS */
+	asm volatile("isync":::"memory");
+	asm volatile("slbmte  %0,%0"::"r" (0) : "memory");
+	asm volatile("isync; slbia; isync":::"memory");
+	create_shadowed_slbe(PAGE_OFFSET, mmu_kernel_ssize, lflags, LINEAR_INDEX);
+	create_shadowed_slbe(VMALLOC_START, mmu_kernel_ssize, vflags, VMALLOC_INDEX);
 
 	/* For the boot cpu, we're running on the stack in init_thread_union,
 	 * which is in the first segment of the linear mapping, and also
@@ -323,6 +474,11 @@ void slb_initialize(void)
 	    (get_paca()->kstack & slb_esid_mask(mmu_kernel_ssize)) > PAGE_OFFSET)
 		create_shadowed_slbe(get_paca()->kstack,
 				     mmu_kernel_ssize, lflags, 2);
+	slb_shadow_clear(KSTACK_INDEX);
+	if (raw_smp_processor_id() != boot_cpuid &&
+	    (get_paca()->kstack & slb_esid_mask(mmu_kernel_ssize)) > PAGE_OFFSET)
+		create_shadowed_slbe(get_paca()->kstack,
+				     mmu_kernel_ssize, lflags, KSTACK_INDEX);
 
 	asm volatile("isync":::"memory");
 }

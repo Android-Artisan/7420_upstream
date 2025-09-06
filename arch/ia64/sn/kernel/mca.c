@@ -144,3 +144,4 @@ static int __init sn_salinfo_init(void)
 }
 
 module_init(sn_salinfo_init)
+device_initcall(sn_salinfo_init);

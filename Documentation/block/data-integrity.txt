@@ -51,6 +51,7 @@ scatter-gather lists.
 
 The controller will interleave the buffers on write and split them on
 read.  This means that the Linux can DMA the data buffers to and from
+read.  This means that Linux can DMA the data buffers to and from
 host memory without changes to the page cache.
 
 Also, the 16-bit CRC checksum mandated by both the SCSI and SATA specs
@@ -67,6 +68,7 @@ software RAID5).
 The IP checksum is weaker than the CRC in terms of detecting bit
 errors.  However, the strength is really in the separation of the data
 buffers and the integrity metadata.  These two distinct buffers much
+buffers and the integrity metadata.  These two distinct buffers must
 match up for an I/O to complete.
 
 The separation of the data and integrity metadata buffers as well as
@@ -134,6 +136,11 @@ to a struct bip which contains the bio integrity payload.  Essentially
 a bip is a trimmed down struct bio which holds a bio_vec containing
 the integrity metadata and the required housekeeping information (bvec
 pool, vector count, etc.)
+CONFIG_BLK_DEV_INTEGRITY is enabled.  bio_integrity(bio) returns a
+pointer to a struct bip which contains the bio integrity payload.
+Essentially a bip is a trimmed down struct bio which holds a bio_vec
+containing the integrity metadata and the required housekeeping
+information (bvec pool, vector count, etc.)
 
 A kernel subsystem can enable data integrity protection on a bio by
 calling bio_integrity_alloc(bio).  This will allocate and attach the
@@ -247,6 +254,7 @@ will require extra work due to the application tag.
 
 
 6.3 PASSING EXISTING INTEGRITY METADATA
+5.3 PASSING EXISTING INTEGRITY METADATA
 
     Filesystems that either generate their own integrity metadata or
     are capable of transferring IMD from user space can use the
@@ -284,6 +292,7 @@ will require extra work due to the application tag.
 
 
 6.4 REGISTERING A BLOCK DEVICE AS CAPABLE OF EXCHANGING INTEGRITY
+5.4 REGISTERING A BLOCK DEVICE AS CAPABLE OF EXCHANGING INTEGRITY
     METADATA
 
     To enable integrity exchange on a block device the gendisk must be

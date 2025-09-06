@@ -48,6 +48,13 @@ static inline __attribute__((format(printf, 1, 2)))
 void no_printk(const char *fmt, ...)
 {
 }
+#include <unit/timex.h>
+#include "mn10300-serial.h"
+
+#ifdef CONFIG_SMP
+#undef  GxICR
+#define GxICR(X) CROSS_GxICR(X, 0)
+#endif /* CONFIG_SMP */
 
 #define kenter(FMT, ...) \
 	printk(KERN_DEBUG "-->%s(" FMT ")\n", __func__, ##__VA_ARGS__)
@@ -61,6 +68,11 @@ void no_printk(const char *fmt, ...)
 	printk(KERN_DEBUG "### MNSERIAL " FMT " ###\n", ##__VA_ARGS__)
 #define _proto(FMT, ...) \
 	no_printk(KERN_DEBUG "### MNSERIAL " FMT " ###\n", ##__VA_ARGS__)
+
+#ifndef CODMSB
+/* c_cflag bit meaning */
+#define CODMSB	004000000000	/* change Transfer bit-order */
+#endif
 
 #define NR_UARTS 3
 
@@ -114,6 +126,10 @@ static int mn10300_serial_request_port(struct uart_port *);
 static void mn10300_serial_config_port(struct uart_port *, int);
 static int mn10300_serial_verify_port(struct uart_port *,
 					struct serial_struct *);
+#ifdef CONFIG_CONSOLE_POLL
+static void mn10300_serial_poll_put_char(struct uart_port *, unsigned char);
+static int mn10300_serial_poll_get_char(struct uart_port *);
+#endif
 
 static const struct uart_ops mn10300_serial_ops = {
 	.tx_empty	= mn10300_serial_tx_empty,
@@ -133,6 +149,10 @@ static const struct uart_ops mn10300_serial_ops = {
 	.request_port	= mn10300_serial_request_port,
 	.config_port	= mn10300_serial_config_port,
 	.verify_port	= mn10300_serial_verify_port,
+#ifdef CONFIG_CONSOLE_POLL
+	.poll_put_char	= mn10300_serial_poll_put_char,
+	.poll_get_char	= mn10300_serial_poll_get_char,
+#endif
 };
 
 static irqreturn_t mn10300_serial_interrupt(int irq, void *dev_id);
@@ -165,6 +185,14 @@ struct mn10300_serial_port mn10300_serial_port_sif0 = {
 	.tx_name	= "ttySM0/Tx",
 #ifdef CONFIG_MN10300_TTYSM0_TIMER8
 	.tm_name	= "ttySM0/Timer8",
+	._status	= (volatile u8 *)&SC0STR,
+	._intr		= &SC0ICR,
+	._rxb		= &SC0RXB,
+	._txb		= &SC0TXB,
+	.rx_name	= "ttySM0:Rx",
+	.tx_name	= "ttySM0:Tx",
+#if defined(CONFIG_MN10300_TTYSM0_TIMER8)
+	.tm_name	= "ttySM0:Timer8",
 	._tmxmd		= &TM8MD,
 	._tmxbr		= &TM8BR,
 	._tmicr		= &TM8ICR,
@@ -177,6 +205,22 @@ struct mn10300_serial_port mn10300_serial_port_sif0 = {
 	._tmicr		= &TM2ICR,
 	.tm_irq		= TM2IRQ,
 	.div_timer	= MNSCx_DIV_TIMER_8BIT,
+#elif defined(CONFIG_MN10300_TTYSM0_TIMER0)
+	.tm_name	= "ttySM0:Timer0",
+	._tmxmd		= &TM0MD,
+	._tmxbr		= (volatile u16 *)&TM0BR,
+	._tmicr		= &TM0ICR,
+	.tm_irq		= TM0IRQ,
+	.div_timer	= MNSCx_DIV_TIMER_8BIT,
+#elif defined(CONFIG_MN10300_TTYSM0_TIMER2)
+	.tm_name	= "ttySM0:Timer2",
+	._tmxmd		= &TM2MD,
+	._tmxbr		= (volatile u16 *)&TM2BR,
+	._tmicr		= &TM2ICR,
+	.tm_irq		= TM2IRQ,
+	.div_timer	= MNSCx_DIV_TIMER_8BIT,
+#else
+#error "Unknown config for ttySM0"
 #endif
 	.rx_irq		= SC0RXIRQ,
 	.tx_irq		= SC0TXIRQ,
@@ -218,6 +262,14 @@ struct mn10300_serial_port mn10300_serial_port_sif1 = {
 	.tx_name	= "ttySM1/Tx",
 #ifdef CONFIG_MN10300_TTYSM1_TIMER9
 	.tm_name	= "ttySM1/Timer9",
+	._status	= (volatile u8 *)&SC1STR,
+	._intr		= &SC1ICR,
+	._rxb		= &SC1RXB,
+	._txb		= &SC1TXB,
+	.rx_name	= "ttySM1:Rx",
+	.tx_name	= "ttySM1:Tx",
+#if defined(CONFIG_MN10300_TTYSM1_TIMER9)
+	.tm_name	= "ttySM1:Timer9",
 	._tmxmd		= &TM9MD,
 	._tmxbr		= &TM9BR,
 	._tmicr		= &TM9ICR,
@@ -230,6 +282,22 @@ struct mn10300_serial_port mn10300_serial_port_sif1 = {
 	._tmicr		= &TM3ICR,
 	.tm_irq		= TM3IRQ,
 	.div_timer	= MNSCx_DIV_TIMER_8BIT,
+#elif defined(CONFIG_MN10300_TTYSM1_TIMER3)
+	.tm_name	= "ttySM1:Timer3",
+	._tmxmd		= &TM3MD,
+	._tmxbr		= (volatile u16 *)&TM3BR,
+	._tmicr		= &TM3ICR,
+	.tm_irq		= TM3IRQ,
+	.div_timer	= MNSCx_DIV_TIMER_8BIT,
+#elif defined(CONFIG_MN10300_TTYSM1_TIMER12)
+	.tm_name	= "ttySM1/Timer12",
+	._tmxmd		= &TM12MD,
+	._tmxbr		= &TM12BR,
+	._tmicr		= &TM12ICR,
+	.tm_irq		= TM12IRQ,
+	.div_timer	= MNSCx_DIV_TIMER_16BIT,
+#else
+#error "Unknown config for ttySM1"
 #endif
 	.rx_irq		= SC1RXIRQ,
 	.tx_irq		= SC1TXIRQ,
@@ -274,11 +342,45 @@ struct mn10300_serial_port mn10300_serial_port_sif2 = {
 	._intr		= &SC2ICR,
 	._rxb		= &SC2RXB,
 	._txb		= &SC2TXB,
+	._iobase	= &SC2CTR,
+	._control	= &SC2CTR,
+	._status	= (volatile u8 *)&SC2STR,
+	._intr		= &SC2ICR,
+	._rxb		= &SC2RXB,
+	._txb		= &SC2TXB,
+	.rx_name	= "ttySM2:Rx",
+	.tx_name	= "ttySM2:Tx",
+#if defined(CONFIG_MN10300_TTYSM2_TIMER10)
+	.tm_name	= "ttySM2/Timer10",
 	._tmxmd		= &TM10MD,
 	._tmxbr		= &TM10BR,
 	._tmicr		= &TM10ICR,
 	.tm_irq		= TM10IRQ,
 	.div_timer	= MNSCx_DIV_TIMER_16BIT,
+#elif defined(CONFIG_MN10300_TTYSM2_TIMER9)
+	.tm_name	= "ttySM2/Timer9",
+	._tmxmd		= &TM9MD,
+	._tmxbr		= &TM9BR,
+	._tmicr		= &TM9ICR,
+	.tm_irq		= TM9IRQ,
+	.div_timer	= MNSCx_DIV_TIMER_16BIT,
+#elif defined(CONFIG_MN10300_TTYSM2_TIMER1)
+	.tm_name	= "ttySM2/Timer1",
+	._tmxmd		= &TM1MD,
+	._tmxbr		= (volatile u16 *)&TM1BR,
+	._tmicr		= &TM1ICR,
+	.tm_irq		= TM1IRQ,
+	.div_timer	= MNSCx_DIV_TIMER_8BIT,
+#elif defined(CONFIG_MN10300_TTYSM2_TIMER3)
+	.tm_name	= "ttySM2/Timer3",
+	._tmxmd		= &TM3MD,
+	._tmxbr		= (volatile u16 *)&TM3BR,
+	._tmicr		= &TM3ICR,
+	.tm_irq		= TM3IRQ,
+	.div_timer	= MNSCx_DIV_TIMER_8BIT,
+#else
+#error "Unknown config for ttySM2"
+#endif
 	.rx_irq		= SC2RXIRQ,
 	.tx_irq		= SC2TXIRQ,
 	.rx_icr		= &GxICR(SC2RXIRQ),
@@ -333,6 +435,21 @@ static void mn10300_serial_mask_ack(unsigned int irq)
 }
 
 static void mn10300_serial_nop(unsigned int irq)
+	unsigned long flags;
+	u16 tmp;
+
+	flags = arch_local_cli_save();
+	GxICR(irq) = GxICR_LEVEL_6;
+	tmp = GxICR(irq); /* flush write buffer */
+	arch_local_irq_restore(flags);
+}
+
+static void mn10300_serial_chip_mask_ack(struct irq_data *d)
+{
+	mn10300_serial_mask_ack(d->irq);
+}
+
+static void mn10300_serial_nop(struct irq_data *d)
 {
 }
 
@@ -345,6 +462,40 @@ static struct irq_chip mn10300_serial_pic = {
 	.end		= mn10300_serial_nop,
 };
 
+	.irq_ack	= mn10300_serial_chip_mask_ack,
+	.irq_mask	= mn10300_serial_chip_mask_ack,
+	.irq_mask_ack	= mn10300_serial_chip_mask_ack,
+	.irq_unmask	= mn10300_serial_nop,
+};
+
+static void mn10300_serial_low_mask(struct irq_data *d)
+{
+	unsigned long flags;
+	u16 tmp;
+
+	flags = arch_local_cli_save();
+	GxICR(d->irq) = NUM2GxICR_LEVEL(CONFIG_MN10300_SERIAL_IRQ_LEVEL);
+	tmp = GxICR(d->irq); /* flush write buffer */
+	arch_local_irq_restore(flags);
+}
+
+static void mn10300_serial_low_unmask(struct irq_data *d)
+{
+	unsigned long flags;
+	u16 tmp;
+
+	flags = arch_local_cli_save();
+	GxICR(d->irq) =
+		NUM2GxICR_LEVEL(CONFIG_MN10300_SERIAL_IRQ_LEVEL) | GxICR_ENABLE;
+	tmp = GxICR(d->irq); /* flush write buffer */
+	arch_local_irq_restore(flags);
+}
+
+static struct irq_chip mn10300_serial_low_pic = {
+	.name		= "mnserial-low",
+	.irq_mask	= mn10300_serial_low_mask,
+	.irq_unmask	= mn10300_serial_low_unmask,
+};
 
 /*
  * serial virtual DMA interrupt jump table
@@ -356,12 +507,53 @@ static void mn10300_serial_dis_tx_intr(struct mn10300_serial_port *port)
 	u16 x;
 	*port->tx_icr = GxICR_LEVEL_1 | GxICR_DETECT;
 	x = *port->tx_icr;
+	int retries = 100;
+	u16 x;
+
+	/* nothing to do if irq isn't set up */
+	if (!mn10300_serial_int_tbl[port->tx_irq].port)
+		return;
+
+	port->tx_flags |= MNSCx_TX_STOP;
+	mb();
+
+	/*
+	 * Here we wait for the irq to be disabled. Either it already is
+	 * disabled or we wait some number of retries for the VDMA handler
+	 * to disable it. The retries give the VDMA handler enough time to
+	 * run to completion if it was already in progress. If the VDMA IRQ
+	 * is enabled but the handler is not yet running when arrive here,
+	 * the STOP flag will prevent the handler from conflicting with the
+	 * driver code following this loop.
+	 */
+	while ((*port->tx_icr & GxICR_ENABLE) && retries-- > 0)
+		;
+	if (retries <= 0) {
+		*port->tx_icr =
+			NUM2GxICR_LEVEL(CONFIG_MN10300_SERIAL_IRQ_LEVEL);
+		x = *port->tx_icr;
+	}
 }
 
 static void mn10300_serial_en_tx_intr(struct mn10300_serial_port *port)
 {
 	u16 x;
 	*port->tx_icr = GxICR_LEVEL_1 | GxICR_ENABLE;
+
+	/* nothing to do if irq isn't set up */
+	if (!mn10300_serial_int_tbl[port->tx_irq].port)
+		return;
+
+	/* stop vdma irq if not already stopped */
+	if (!(port->tx_flags & MNSCx_TX_STOP))
+		mn10300_serial_dis_tx_intr(port);
+
+	port->tx_flags &= ~MNSCx_TX_STOP;
+	mb();
+
+	*port->tx_icr =
+		NUM2GxICR_LEVEL(CONFIG_MN10300_SERIAL_IRQ_LEVEL) |
+		GxICR_ENABLE | GxICR_REQUEST | GxICR_DETECT;
 	x = *port->tx_icr;
 }
 
@@ -370,6 +562,13 @@ static void mn10300_serial_dis_rx_intr(struct mn10300_serial_port *port)
 	u16 x;
 	*port->rx_icr = GxICR_LEVEL_1 | GxICR_DETECT;
 	x = *port->rx_icr;
+	unsigned long flags;
+	u16 x;
+
+	flags = arch_local_cli_save();
+	*port->rx_icr = NUM2GxICR_LEVEL(CONFIG_MN10300_SERIAL_IRQ_LEVEL);
+	x = *port->rx_icr;
+	arch_local_irq_restore(flags);
 }
 
 /*
@@ -381,6 +580,8 @@ static int mask_test_and_clear(volatile u8 *ptr, u8 mask)
 	asm volatile("	bclr	%1,(%2)		\n"
 		     "	mov	epsw,%0		\n"
 		     : "=d"(epsw) : "d"(mask), "a"(ptr));
+		     : "=d"(epsw) : "d"(mask), "a"(ptr)
+		     : "cc", "memory");
 	return !(epsw & EPSW_FLAG_Z);
 }
 
@@ -392,6 +593,7 @@ static void mn10300_serial_receive_interrupt(struct mn10300_serial_port *port)
 {
 	struct uart_icount *icount = &port->uart.icount;
 	struct tty_struct *tty = port->uart.info->port.tty;
+	struct tty_port *tport = &port->uart.state->port;
 	unsigned ix;
 	int count;
 	u8 st, ch, push, status, overrun;
@@ -405,6 +607,10 @@ static void mn10300_serial_receive_interrupt(struct mn10300_serial_port *port)
 	if (count == 0) {
 		if (!tty->low_latency)
 			tty_flip_buffer_push(tty);
+	count = tty_buffer_request_room(tport, count);
+	if (count == 0) {
+		if (!tport->low_latency)
+			tty_flip_buffer_push(tport);
 		return;
 	}
 
@@ -420,6 +626,17 @@ try_again:
 	ch = port->rx_buffer[ix++];
 	st = port->rx_buffer[ix++];
 	smp_rmb();
+	ix = ACCESS_ONCE(port->rx_outp);
+	if (CIRC_CNT(port->rx_inp, ix, MNSC_BUFFER_SIZE) == 0) {
+		if (push && !tport->low_latency)
+			tty_flip_buffer_push(tport);
+		return;
+	}
+
+	smp_read_barrier_depends();
+	ch = port->rx_buffer[ix++];
+	st = port->rx_buffer[ix++];
+	smp_mb();
 	port->rx_outp = ix & (MNSC_BUFFER_SIZE - 1);
 	port->uart.icount.rx++;
 
@@ -533,6 +750,7 @@ insert:
 			flag = TTY_NORMAL;
 
 		tty_insert_flip_char(tty, ch, flag);
+		tty_insert_flip_char(tport, ch, flag);
 	}
 
 	/* overrun is special, since it's reported immediately, and doesn't
@@ -545,6 +763,12 @@ insert:
 	if (count <= 0) {
 		if (!tty->low_latency)
 			tty_flip_buffer_push(tty);
+		tty_insert_flip_char(tport, 0, TTY_OVERRUN);
+
+	count--;
+	if (count <= 0) {
+		if (!tport->low_latency)
+			tty_flip_buffer_push(tport);
 		return;
 	}
 
@@ -571,6 +795,16 @@ static void mn10300_serial_transmit_interrupt(struct mn10300_serial_port *port)
 		mn10300_serial_dis_tx_intr(port);
 
 	if (uart_circ_chars_pending(&port->uart.info->xmit) < WAKEUP_CHARS)
+	if (!port->uart.state || !port->uart.state->port.tty) {
+		mn10300_serial_dis_tx_intr(port);
+		return;
+	}
+
+	if (uart_tx_stopped(&port->uart) ||
+	    uart_circ_empty(&port->uart.state->xmit))
+		mn10300_serial_dis_tx_intr(port);
+
+	if (uart_circ_chars_pending(&port->uart.state->xmit) < WAKEUP_CHARS)
 		uart_write_wakeup(&port->uart);
 }
 
@@ -592,6 +826,7 @@ static void mn10300_serial_cts_changed(struct mn10300_serial_port *port, u8 st)
 
 	uart_handle_cts_change(&port->uart, st & SC2STR_CTS);
 	wake_up_interruptible(&port->uart.info->delta_msr_wait);
+	wake_up_interruptible(&port->uart.state->port.delta_msr_wait);
 }
 
 /*
@@ -650,6 +885,7 @@ static void mn10300_serial_set_mctrl(struct uart_port *_port,
 				     unsigned int mctrl)
 {
 	struct mn10300_serial_port *port =
+	struct mn10300_serial_port *port __attribute__ ((unused)) =
 		container_of(_port, struct mn10300_serial_port, uart);
 
 	_enter("%s,%x", port->name, mctrl);
@@ -719,6 +955,21 @@ static void mn10300_serial_start_tx(struct uart_port *_port)
 
 	*port->tx_icr = x;
 	x = *port->tx_icr;
+	_enter("%s{%lu}",
+	       port->name,
+	       CIRC_CNT(&port->uart.state->xmit.head,
+			&port->uart.state->xmit.tail,
+			UART_XMIT_SIZE));
+
+	/* kick the virtual DMA controller */
+	mn10300_serial_en_tx_intr(port);
+
+	_debug("CTR=%04hx ICR=%02hx STR=%04x TMD=%02hx TBR=%04hx ICR=%04hx",
+	       *port->_control, *port->_intr, *port->_status,
+	       *port->_tmxmd,
+	       (port->div_timer == MNSCx_DIV_TIMER_8BIT) ?
+	           *(volatile u8 *)port->_tmxbr : *port->_tmxbr,
+	       *port->tx_icr);
 }
 
 /*
@@ -728,6 +979,7 @@ static void mn10300_serial_send_xchar(struct uart_port *_port, char ch)
 {
 	struct mn10300_serial_port *port =
 		container_of(_port, struct mn10300_serial_port, uart);
+	unsigned long flags;
 
 	_enter("%s,%02x", port->name, ch);
 
@@ -735,6 +987,11 @@ static void mn10300_serial_send_xchar(struct uart_port *_port, char ch)
 		port->tx_xchar = ch;
 		if (ch)
 			mn10300_serial_en_tx_intr(port);
+		if (ch) {
+			spin_lock_irqsave(&port->uart.lock, flags);
+			mn10300_serial_en_tx_intr(port);
+			spin_unlock_irqrestore(&port->uart.lock, flags);
+		}
 	}
 }
 
@@ -807,6 +1064,21 @@ static void mn10300_serial_break_ctl(struct uart_port *_port, int ctl)
 		*port->_control &= ~SC01CTR_BKE;
 		mn10300_serial_en_tx_intr(port);
 	}
+	unsigned long flags;
+
+	_enter("%s,%d", port->name, ctl);
+
+	spin_lock_irqsave(&port->uart.lock, flags);
+	if (ctl) {
+		/* tell the virtual DMA handler to assert BREAK */
+		port->tx_flags |= MNSCx_TX_BREAK;
+		mn10300_serial_en_tx_intr(port);
+	} else {
+		port->tx_flags &= ~MNSCx_TX_BREAK;
+		*port->_control &= ~SC01CTR_BKE;
+		mn10300_serial_en_tx_intr(port);
+	}
+	spin_unlock_irqrestore(&port->uart.lock, flags);
 }
 
 /*
@@ -829,6 +1101,7 @@ static int mn10300_serial_startup(struct uart_port *_port)
 		return -ENOMEM;
 
 	port->rx_inp = port->rx_outp = 0;
+	port->tx_flags = 0;
 
 	/* finally, enable the device */
 	*port->_intr = SC01ICR_TI;
@@ -855,6 +1128,23 @@ static int mn10300_serial_startup(struct uart_port *_port)
 
 	if (request_irq(port->tm_irq, mn10300_serial_interrupt,
 			IRQF_DISABLED, port->tm_name, port) < 0)
+	irq_set_chip(port->rx_irq, &mn10300_serial_low_pic);
+	irq_set_chip(port->tx_irq, &mn10300_serial_low_pic);
+	irq_set_chip(port->tm_irq, &mn10300_serial_pic);
+
+	if (request_irq(port->rx_irq, mn10300_serial_interrupt,
+			IRQF_NOBALANCING,
+			port->rx_name, port) < 0)
+		goto error;
+
+	if (request_irq(port->tx_irq, mn10300_serial_interrupt,
+			IRQF_NOBALANCING,
+			port->tx_name, port) < 0)
+		goto error2;
+
+	if (request_irq(port->tm_irq, mn10300_serial_interrupt,
+			IRQF_NOBALANCING,
+			port->tm_name, port) < 0)
 		goto error3;
 	mn10300_serial_mask_ack(port->tm_irq);
 
@@ -875,6 +1165,8 @@ error:
  */
 static void mn10300_serial_shutdown(struct uart_port *_port)
 {
+	unsigned long flags;
+	u16 x;
 	struct mn10300_serial_port *port =
 		container_of(_port, struct mn10300_serial_port, uart);
 
@@ -882,6 +1174,15 @@ static void mn10300_serial_shutdown(struct uart_port *_port)
 
 	/* disable the serial port and its baud rate timer */
 	port->tx_break = 0;
+	spin_lock_irqsave(&_port->lock, flags);
+	mn10300_serial_dis_tx_intr(port);
+
+	*port->rx_icr = NUM2GxICR_LEVEL(CONFIG_MN10300_SERIAL_IRQ_LEVEL);
+	x = *port->rx_icr;
+	port->tx_flags = 0;
+	spin_unlock_irqrestore(&_port->lock, flags);
+
+	/* disable the serial port and its baud rate timer */
 	*port->_control &= ~(SC01CTR_TXE | SC01CTR_RXE | SC01CTR_BKE);
 	*port->_tmxmd = 0;
 
@@ -898,6 +1199,8 @@ static void mn10300_serial_shutdown(struct uart_port *_port)
 
 	*port->rx_icr = GxICR_LEVEL_1;
 	*port->tx_icr = GxICR_LEVEL_1;
+	mn10300_serial_int_tbl[port->tx_irq].port = NULL;
+	mn10300_serial_int_tbl[port->rx_irq].port = NULL;
 }
 
 /*
@@ -951,6 +1254,66 @@ static void mn10300_serial_change_speed(struct mn10300_serial_port *port,
 						 *   == SC2CTR_CK_TM10UFLOW) */
 	else if (div_timer == MNSCx_DIV_TIMER_8BIT)
 		scxctr |= SC0CTR_CK_TM2UFLOW_8;
+	switch (port->uart.line) {
+#ifdef CONFIG_MN10300_TTYSM0
+	case 0: /* ttySM0 */
+#if   defined(CONFIG_MN10300_TTYSM0_TIMER8)
+		scxctr |= SC0CTR_CK_TM8UFLOW_8;
+#elif defined(CONFIG_MN10300_TTYSM0_TIMER0)
+		scxctr |= SC0CTR_CK_TM0UFLOW_8;
+#elif defined(CONFIG_MN10300_TTYSM0_TIMER2)
+		scxctr |= SC0CTR_CK_TM2UFLOW_8;
+#else
+#error "Unknown config for ttySM0"
+#endif
+		break;
+#endif /* CONFIG_MN10300_TTYSM0 */
+
+#ifdef CONFIG_MN10300_TTYSM1
+	case 1: /* ttySM1 */
+#if defined(CONFIG_AM33_2) || defined(CONFIG_AM33_3)
+#if   defined(CONFIG_MN10300_TTYSM1_TIMER9)
+		scxctr |= SC1CTR_CK_TM9UFLOW_8;
+#elif defined(CONFIG_MN10300_TTYSM1_TIMER3)
+		scxctr |= SC1CTR_CK_TM3UFLOW_8;
+#else
+#error "Unknown config for ttySM1"
+#endif
+#else /* CONFIG_AM33_2 || CONFIG_AM33_3 */
+#if defined(CONFIG_MN10300_TTYSM1_TIMER12)
+		scxctr |= SC1CTR_CK_TM12UFLOW_8;
+#else
+#error "Unknown config for ttySM1"
+#endif
+#endif /* CONFIG_AM33_2 || CONFIG_AM33_3 */
+		break;
+#endif /* CONFIG_MN10300_TTYSM1 */
+
+#ifdef CONFIG_MN10300_TTYSM2
+	case 2: /* ttySM2 */
+#if defined(CONFIG_AM33_2)
+#if   defined(CONFIG_MN10300_TTYSM2_TIMER10)
+		scxctr |= SC2CTR_CK_TM10UFLOW;
+#else
+#error "Unknown config for ttySM2"
+#endif
+#else /* CONFIG_AM33_2 */
+#if   defined(CONFIG_MN10300_TTYSM2_TIMER9)
+		scxctr |= SC2CTR_CK_TM9UFLOW_8;
+#elif defined(CONFIG_MN10300_TTYSM2_TIMER1)
+		scxctr |= SC2CTR_CK_TM1UFLOW_8;
+#elif defined(CONFIG_MN10300_TTYSM2_TIMER3)
+		scxctr |= SC2CTR_CK_TM3UFLOW_8;
+#else
+#error "Unknown config for ttySM2"
+#endif
+#endif /* CONFIG_AM33_2 */
+		break;
+#endif /* CONFIG_MN10300_TTYSM2 */
+
+	default:
+		break;
+	}
 
 try_alternative:
 	baud = uart_get_baud_rate(&port->uart, new, old, 0,
@@ -1169,6 +1532,8 @@ timer_okay:
 		port->uart.ignore_status_mask |= (1 << TTY_NORMAL);
 
 	scxctr |= *port->_control & (SC01CTR_TXE | SC01CTR_RXE | SC01CTR_BKE);
+	scxctr |= SC01CTR_TXE | SC01CTR_RXE;
+	scxctr |= *port->_control & SC01CTR_BKE;
 	*port->_control = scxctr;
 
 	spin_unlock_irqrestore(&port->uart.lock, flags);
@@ -1194,6 +1559,12 @@ static void mn10300_serial_set_termios(struct uart_port *_port,
 		ctr &= ~SC2CTR_TWE;
 		*port->_control = ctr;
 	}
+
+	/* change Transfer bit-order (LSB/MSB) */
+	if (new->c_cflag & CODMSB)
+		*port->_control |= SC01CTR_OD_MSBFIRST; /* MSB MODE */
+	else
+		*port->_control &= ~SC01CTR_OD_MSBFIRST; /* LSB MODE */
 }
 
 /*
@@ -1306,6 +1677,16 @@ static int __init mn10300_serial_init(void)
 #endif
 
 	set_intr_stub(EXCEP_IRQ_LEVEL1, mn10300_serial_vdma_interrupt);
+#if defined(CONFIG_MN10300_TTYSM2) && defined(CONFIG_AM33_2)
+	{
+		int tmp;
+		SC2TIM = 8; /* make the baud base of timer 2 IOCLK/8 */
+		tmp = SC2TIM;
+	}
+#endif
+
+	set_intr_stub(NUM2EXCEP_IRQ_LEVEL(CONFIG_MN10300_SERIAL_IRQ_LEVEL),
+		mn10300_serial_vdma_interrupt);
 
 	ret = uart_register_driver(&mn10300_serial_driver);
 	if (!ret) {
@@ -1368,6 +1749,24 @@ static void mn10300_serial_console_write(struct console *co,
 	txicr = *port->tx_icr;
 	*port->tx_icr = GxICR_LEVEL_1;
 	tmp = *port->tx_icr;
+	u16 scxctr;
+	u8 tmxmd;
+	unsigned long flags;
+	int locked = 1;
+
+	port = mn10300_serial_ports[co->index];
+
+	local_irq_save(flags);
+	if (port->uart.sysrq) {
+		/* mn10300_serial_interrupt() already took the lock */
+		locked = 0;
+	} else if (oops_in_progress) {
+		locked = spin_trylock(&port->uart.lock);
+	} else
+		spin_lock(&port->uart.lock);
+
+	/* firstly hijack the serial port from the "virtual DMA" controller */
+	mn10300_serial_dis_tx_intr(port);
 
 	/* the transmitter may be disabled */
 	scxctr = *port->_control;
@@ -1404,11 +1803,13 @@ static void mn10300_serial_console_write(struct console *co,
 		while (*port->_status & SC01STR_TBF)
 			continue;
 		*(u8 *) port->_txb = ch;
+		*port->_txb = ch;
 
 		if (ch == 0x0a) {
 			while (*port->_status & SC01STR_TBF)
 				continue;
 			*(u8 *) port->_txb = 0xd;
+			*port->_txb = 0xd;
 		}
 	}
 
@@ -1423,6 +1824,11 @@ static void mn10300_serial_console_write(struct console *co,
 
 	*port->tx_icr = txicr;
 	tmp = *port->tx_icr;
+	mn10300_serial_en_tx_intr(port);
+
+	if (locked)
+		spin_unlock(&port->uart.lock);
+	local_irq_restore(flags);
 }
 
 /*
@@ -1477,3 +1883,81 @@ static int __init mn10300_serial_console_init(void)
 
 console_initcall(mn10300_serial_console_init);
 #endif
+
+#ifdef CONFIG_CONSOLE_POLL
+/*
+ * Polled character reception for the kernel debugger
+ */
+static int mn10300_serial_poll_get_char(struct uart_port *_port)
+{
+	struct mn10300_serial_port *port =
+		container_of(_port, struct mn10300_serial_port, uart);
+	unsigned ix;
+	u8 st, ch;
+
+	_enter("%s", port->name);
+
+	if (mn10300_serial_int_tbl[port->rx_irq].port != NULL) {
+		do {
+			/* pull chars out of the hat */
+			ix = ACCESS_ONCE(port->rx_outp);
+			if (CIRC_CNT(port->rx_inp, ix, MNSC_BUFFER_SIZE) == 0)
+				return NO_POLL_CHAR;
+
+			smp_read_barrier_depends();
+			ch = port->rx_buffer[ix++];
+			st = port->rx_buffer[ix++];
+			smp_mb();
+			port->rx_outp = ix & (MNSC_BUFFER_SIZE - 1);
+
+		} while (st & (SC01STR_FEF | SC01STR_PEF | SC01STR_OEF));
+	} else {
+		do {
+			st = *port->_status;
+			if (st & (SC01STR_FEF | SC01STR_PEF | SC01STR_OEF))
+				continue;
+		} while (!(st & SC01STR_RBF));
+
+		ch = *port->_rxb;
+	}
+
+	return ch;
+}
+
+
+/*
+ * Polled character transmission for the kernel debugger
+ */
+static void mn10300_serial_poll_put_char(struct uart_port *_port,
+					 unsigned char ch)
+{
+	struct mn10300_serial_port *port =
+		container_of(_port, struct mn10300_serial_port, uart);
+	u8 intr, tmp;
+
+	/* wait for the transmitter to finish anything it might be doing (and
+	 * this includes the virtual DMA handler, so it might take a while) */
+	while (*port->_status & (SC01STR_TBF | SC01STR_TXF))
+		continue;
+
+	/* disable the Tx ready interrupt */
+	intr = *port->_intr;
+	*port->_intr = intr & ~SC01ICR_TI;
+	tmp = *port->_intr;
+
+	if (ch == 0x0a) {
+		*port->_txb = 0x0d;
+		while (*port->_status & SC01STR_TBF)
+			continue;
+	}
+
+	*port->_txb = ch;
+	while (*port->_status & SC01STR_TBF)
+		continue;
+
+	/* restore the Tx interrupt flag */
+	*port->_intr = intr;
+	tmp = *port->_intr;
+}
+
+#endif /* CONFIG_CONSOLE_POLL */

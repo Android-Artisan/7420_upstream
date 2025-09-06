@@ -4,6 +4,7 @@
  * for more details.
  *
  * Copyright (c) 2008 Silicon Graphics, Inc.  All Rights Reserved.
+ * Copyright (c) 2008-2009 Silicon Graphics, Inc.  All Rights Reserved.
  */
 
 /*
@@ -14,6 +15,7 @@
  */
 
 #include <linux/delay.h>
+#include <linux/slab.h>
 #include <asm/uncached.h>
 #include <asm/sn/mspec.h>
 #include <asm/sn/sn_sal.h>
@@ -61,9 +63,16 @@ static struct xpc_vars_part_sn2 *xpc_vars_part_sn2;
 
 static int
 xpc_setup_partitions_sn_sn2(void)
+xpc_setup_partitions_sn2(void)
 {
 	/* nothing needs to be done */
 	return 0;
+}
+
+static void
+xpc_teardown_partitions_sn2(void)
+{
+	/* nothing needs to be done */
 }
 
 /* SH_IPI_ACCESS shub register value on startup */
@@ -274,6 +283,7 @@ xpc_check_for_sent_chctl_flags_sn2(struct xpc_partition *part)
 
 	dev_dbg(xpc_chan, "received notify IRQ from partid=%d, chctl.all_flags="
 		"0x%lx\n", XPC_PARTID(part), chctl.all_flags);
+		"0x%llx\n", XPC_PARTID(part), chctl.all_flags);
 
 	xpc_wakeup_channel_mgr(part);
 }
@@ -425,6 +435,13 @@ xpc_send_chctl_openreply_sn2(struct xpc_channel *ch, unsigned long *irq_flags)
 }
 
 static void
+xpc_send_chctl_opencomplete_sn2(struct xpc_channel *ch,
+				unsigned long *irq_flags)
+{
+	XPC_SEND_NOTIFY_IRQ_SN2(ch, XPC_CHCTL_OPENCOMPLETE, irq_flags);
+}
+
+static void
 xpc_send_chctl_msgrequest_sn2(struct xpc_channel *ch)
 {
 	XPC_SEND_NOTIFY_IRQ_SN2(ch, XPC_CHCTL_MSGREQUEST, NULL);
@@ -437,10 +454,12 @@ xpc_send_chctl_local_msgrequest_sn2(struct xpc_channel *ch)
 }
 
 static void
+static enum xp_retval
 xpc_save_remote_msgqueue_pa_sn2(struct xpc_channel *ch,
 				unsigned long msgqueue_pa)
 {
 	ch->sn.sn2.remote_msgqueue_pa = msgqueue_pa;
+	return xpSuccess;
 }
 
 /*
@@ -555,6 +574,7 @@ xpc_allow_amo_ops_sn2(struct amo *amos_page)
 {
 	u64 nasid_array = 0;
 	int ret;
+	enum xp_retval ret = xpSuccess;
 
 	/*
 	 * On SHUB 1.1, we cannot call sn_change_memprotect() since the BIST
@@ -569,6 +589,10 @@ xpc_allow_amo_ops_sn2(struct amo *amos_page)
 			return xpSalError;
 	}
 	return xpSuccess;
+	if (!enable_shub_wars_1_1())
+		ret = xp_expand_memprotect(ia64_tpa((u64)amos_page), PAGE_SIZE);
+
+	return ret;
 }
 
 /*
@@ -607,6 +631,8 @@ xpc_get_partition_rsvd_page_pa_sn2(void *buf, u64 *cookie, unsigned long *rp_pa,
 	enum xp_retval ret;
 
 	status = sn_partition_reserved_page_pa((u64)buf, cookie, rp_pa, len);
+	status = sn_partition_reserved_page_pa((u64)buf, cookie,
+			(u64 *)rp_pa, (u64 *)len);
 	if (status == SALRET_OK)
 		ret = xpSuccess;
 	else if (status == SALRET_MORE_PASSES)
@@ -620,6 +646,7 @@ xpc_get_partition_rsvd_page_pa_sn2(void *buf, u64 *cookie, unsigned long *rp_pa,
 
 static int
 xpc_setup_rsvd_page_sn_sn2(struct xpc_rsvd_page *rp)
+xpc_setup_rsvd_page_sn2(struct xpc_rsvd_page *rp)
 {
 	struct amo *amos_page;
 	int i;
@@ -628,6 +655,7 @@ xpc_setup_rsvd_page_sn_sn2(struct xpc_rsvd_page *rp)
 	xpc_vars_sn2 = XPC_RP_VARS(rp);
 
 	rp->sn.vars_pa = xp_pa(xpc_vars_sn2);
+	rp->sn.sn2.vars_pa = xp_pa(xpc_vars_sn2);
 
 	/* vars_part array follows immediately after vars */
 	xpc_vars_part_sn2 = (struct xpc_vars_part_sn2 *)((u8 *)XPC_RP_VARS(rp) +
@@ -691,6 +719,33 @@ xpc_setup_rsvd_page_sn_sn2(struct xpc_rsvd_page *rp)
 	return 0;
 }
 
+static int
+xpc_hb_allowed_sn2(short partid, void *heartbeating_to_mask)
+{
+	return test_bit(partid, heartbeating_to_mask);
+}
+
+static void
+xpc_allow_hb_sn2(short partid)
+{
+	DBUG_ON(xpc_vars_sn2 == NULL);
+	set_bit(partid, xpc_vars_sn2->heartbeating_to_mask);
+}
+
+static void
+xpc_disallow_hb_sn2(short partid)
+{
+	DBUG_ON(xpc_vars_sn2 == NULL);
+	clear_bit(partid, xpc_vars_sn2->heartbeating_to_mask);
+}
+
+static void
+xpc_disallow_all_hbs_sn2(void)
+{
+	DBUG_ON(xpc_vars_sn2 == NULL);
+	bitmap_zero(xpc_vars_sn2->heartbeating_to_mask, xp_max_npartitions);
+}
+
 static void
 xpc_increment_heartbeat_sn2(void)
 {
@@ -744,6 +799,8 @@ xpc_get_remote_heartbeat_sn2(struct xpc_partition *part)
 
 	dev_dbg(xpc_part, "partid=%d, heartbeat=%ld, last_heartbeat=%ld, "
 		"heartbeat_offline=%ld, HB_mask[0]=0x%lx\n", XPC_PARTID(part),
+	dev_dbg(xpc_part, "partid=%d, heartbeat=%lld, last_heartbeat=%lld, "
+		"heartbeat_offline=%lld, HB_mask[0]=0x%lx\n", XPC_PARTID(part),
 		remote_vars->heartbeat, part->last_heartbeat,
 		remote_vars->heartbeat_offline,
 		remote_vars->heartbeating_to_mask[0]);
@@ -752,6 +809,9 @@ xpc_get_remote_heartbeat_sn2(struct xpc_partition *part)
 	    remote_vars->heartbeat_offline == 0) ||
 	    !xpc_hb_allowed(sn_partition_id,
 			    &remote_vars->heartbeating_to_mask)) {
+	    !remote_vars->heartbeat_offline) ||
+	    !xpc_hb_allowed_sn2(sn_partition_id,
+				remote_vars->heartbeating_to_mask)) {
 		ret = xpNoHeartbeat;
 	} else {
 		part->last_heartbeat = remote_vars->heartbeat;
@@ -906,6 +966,8 @@ xpc_update_partition_info_sn2(struct xpc_partition *part, u8 remote_rp_version,
 
 	part->last_heartbeat = remote_vars->heartbeat;
 	dev_dbg(xpc_part, "  last_heartbeat = 0x%016lx\n",
+	part->last_heartbeat = remote_vars->heartbeat - 1;
+	dev_dbg(xpc_part, "  last_heartbeat = 0x%016llx\n",
 		part->last_heartbeat);
 
 	part_sn2->remote_vars_part_pa = remote_vars->vars_part_pa;
@@ -971,6 +1033,7 @@ xpc_identify_activate_IRQ_req_sn2(int nasid)
 	}
 
 	remote_vars_pa = remote_rp->sn.vars_pa;
+	remote_vars_pa = remote_rp->sn.sn2.vars_pa;
 	remote_rp_version = remote_rp->version;
 	remote_rp_ts_jiffies = remote_rp->ts_jiffies;
 
@@ -995,6 +1058,8 @@ xpc_identify_activate_IRQ_req_sn2(int nasid)
 
 	dev_dbg(xpc_part, "partid for nasid %d is %d; IRQs = %d; HB = "
 		"%ld:0x%lx\n", (int)nasid, (int)partid, part->activate_IRQ_rcvd,
+		"%lld:0x%lx\n", (int)nasid, (int)partid,
+		part->activate_IRQ_rcvd,
 		remote_vars->heartbeat, remote_vars->heartbeating_to_mask[0]);
 
 	if (xpc_partition_disengaged(part) &&
@@ -1095,6 +1160,7 @@ xpc_identify_activate_IRQ_sender_sn2(void)
 			n_IRQs_detected++;
 			nasid = (l * BITS_PER_LONG + b) * 2;
 			dev_dbg(xpc_part, "interrupt from nasid %ld\n", nasid);
+			dev_dbg(xpc_part, "interrupt from nasid %lld\n", nasid);
 			xpc_identify_activate_IRQ_req_sn2(nasid);
 
 			b = find_next_bit(&nasid_mask_long, BITS_PER_LONG,
@@ -1130,6 +1196,7 @@ xpc_process_activate_IRQ_rcvd_sn2(void)
  */
 static enum xp_retval
 xpc_setup_ch_structures_sn_sn2(struct xpc_partition *part)
+xpc_setup_ch_structures_sn2(struct xpc_partition *part)
 {
 	struct xpc_partition_sn2 *part_sn2 = &part->sn.sn2;
 	struct xpc_channel_sn2 *ch_sn2;
@@ -1252,6 +1319,7 @@ out_1:
  */
 static void
 xpc_teardown_ch_structures_sn_sn2(struct xpc_partition *part)
+xpc_teardown_ch_structures_sn2(struct xpc_partition *part)
 {
 	struct xpc_partition_sn2 *part_sn2 = &part->sn.sn2;
 	short partid = XPC_PARTID(part);
@@ -1354,6 +1422,7 @@ xpc_pull_remote_vars_part_sn2(struct xpc_partition *part)
 		if (pulled_entry->magic != 0) {
 			dev_dbg(xpc_chan, "partition %d's XPC vars_part for "
 				"partition %d has bad magic value (=0x%lx)\n",
+				"partition %d has bad magic value (=0x%llx)\n",
 				partid, sn_partition_id, pulled_entry->magic);
 			return xpBadMagic;
 		}
@@ -1698,6 +1767,7 @@ xpc_notify_senders_sn2(struct xpc_channel *ch, enum xp_retval reason, s64 put)
 		if (notify->func != NULL) {
 			dev_dbg(xpc_chan, "notify->func() called, notify=0x%p "
 				"msg_number=%ld partid=%d channel=%d\n",
+				"msg_number=%lld partid=%d channel=%d\n",
 				(void *)notify, get, ch->partid, ch->number);
 
 			notify->func(reason, ch->partid, ch->number,
@@ -1705,6 +1775,7 @@ xpc_notify_senders_sn2(struct xpc_channel *ch, enum xp_retval reason, s64 put)
 
 			dev_dbg(xpc_chan, "notify->func() returned, notify=0x%p"
 				" msg_number=%ld partid=%d channel=%d\n",
+				" msg_number=%lld partid=%d channel=%d\n",
 				(void *)notify, get, ch->partid, ch->number);
 		}
 	}
@@ -1731,6 +1802,7 @@ xpc_clear_local_msgqueue_flags_sn2(struct xpc_channel *ch)
 		msg = (struct xpc_msg_sn2 *)((u64)ch_sn2->local_msgqueue +
 					     (get % ch->local_nentries) *
 					     ch->entry_size);
+		DBUG_ON(!(msg->flags & XPC_M_SN2_READY));
 		msg->flags = 0;
 	} while (++get < ch_sn2->remote_GP.get);
 }
@@ -1750,6 +1822,20 @@ xpc_clear_remote_msgqueue_flags_sn2(struct xpc_channel *ch)
 		msg = (struct xpc_msg_sn2 *)((u64)ch_sn2->remote_msgqueue +
 					     (put % ch->remote_nentries) *
 					     ch->entry_size);
+	s64 put, remote_nentries = ch->remote_nentries;
+
+	/* flags are zeroed when the buffer is allocated */
+	if (ch_sn2->remote_GP.put < remote_nentries)
+		return;
+
+	put = max(ch_sn2->w_remote_GP.put, remote_nentries);
+	do {
+		msg = (struct xpc_msg_sn2 *)((u64)ch_sn2->remote_msgqueue +
+					     (put % remote_nentries) *
+					     ch->entry_size);
+		DBUG_ON(!(msg->flags & XPC_M_SN2_READY));
+		DBUG_ON(!(msg->flags & XPC_M_SN2_DONE));
+		DBUG_ON(msg->number != put - remote_nentries);
 		msg->flags = 0;
 	} while (++put < ch_sn2->remote_GP.put);
 }
@@ -1818,6 +1904,7 @@ xpc_process_msg_chctl_flags_sn2(struct xpc_partition *part, int ch_number)
 		ch_sn2->w_remote_GP.get = ch_sn2->remote_GP.get;
 
 		dev_dbg(xpc_chan, "w_remote_GP.get changed to %ld, partid=%d, "
+		dev_dbg(xpc_chan, "w_remote_GP.get changed to %lld, partid=%d, "
 			"channel=%d\n", ch_sn2->w_remote_GP.get, ch->partid,
 			ch->number);
 
@@ -1844,6 +1931,10 @@ xpc_process_msg_chctl_flags_sn2(struct xpc_partition *part, int ch_number)
 		ch_sn2->w_remote_GP.put = ch_sn2->remote_GP.put;
 
 		dev_dbg(xpc_chan, "w_remote_GP.put changed to %ld, partid=%d, "
+		smp_wmb(); /* ensure flags have been cleared before bte_copy */
+		ch_sn2->w_remote_GP.put = ch_sn2->remote_GP.put;
+
+		dev_dbg(xpc_chan, "w_remote_GP.put changed to %lld, partid=%d, "
 			"channel=%d\n", ch_sn2->w_remote_GP.put, ch->partid,
 			ch->number);
 
@@ -1902,6 +1993,7 @@ xpc_pull_remote_msg_sn2(struct xpc_channel *ch, s64 get)
 
 			dev_dbg(xpc_chan, "failed to pull %d msgs starting with"
 				" msg %ld from partition %d, channel=%d, "
+				" msg %lld from partition %d, channel=%d, "
 				"ret=%d\n", nmsgs, ch_sn2->next_msg_to_pull,
 				ch->partid, ch->number, ret);
 
@@ -1940,6 +2032,7 @@ xpc_get_deliverable_payload_sn2(struct xpc_channel *ch)
 
 		get = ch_sn2->w_local_GP.get;
 		rmb();	/* guarantee that .get loads before .put */
+		smp_rmb();	/* guarantee that .get loads before .put */
 		if (get == ch_sn2->w_remote_GP.put)
 			break;
 
@@ -1954,6 +2047,7 @@ xpc_get_deliverable_payload_sn2(struct xpc_channel *ch)
 			/* we got the entry referenced by get */
 
 			dev_dbg(xpc_chan, "w_local_GP.get changed to %ld, "
+			dev_dbg(xpc_chan, "w_local_GP.get changed to %lld, "
 				"partid=%d, channel=%d\n", get + 1,
 				ch->partid, ch->number);
 
@@ -1966,6 +2060,13 @@ xpc_get_deliverable_payload_sn2(struct xpc_channel *ch)
 			DBUG_ON(msg != NULL && !(msg->flags & XPC_M_SN2_READY));
 
 			payload = &msg->payload;
+			if (msg != NULL) {
+				DBUG_ON(msg->number != get);
+				DBUG_ON(msg->flags & XPC_M_SN2_DONE);
+				DBUG_ON(!(msg->flags & XPC_M_SN2_READY));
+
+				payload = &msg->payload;
+			}
 			break;
 		}
 
@@ -2019,6 +2120,7 @@ xpc_send_msgs_sn2(struct xpc_channel *ch, s64 initial_put)
 		/* we just set the new value of local_GP->put */
 
 		dev_dbg(xpc_chan, "local_GP->put changed to %ld, partid=%d, "
+		dev_dbg(xpc_chan, "local_GP->put changed to %lld, partid=%d, "
 			"channel=%d\n", put, ch->partid, ch->number);
 
 		send_msgrequest = 1;
@@ -2059,6 +2161,7 @@ xpc_allocate_msg_sn2(struct xpc_channel *ch, u32 flags,
 
 		put = ch_sn2->w_local_GP.put;
 		rmb();	/* guarantee that .put loads before .get */
+		smp_rmb();	/* guarantee that .put loads before .get */
 		if (put - ch_sn2->w_remote_GP.get < ch->local_nentries) {
 
 			/* There are available message entries. We need to try
@@ -2105,6 +2208,8 @@ xpc_allocate_msg_sn2(struct xpc_channel *ch, u32 flags,
 
 	dev_dbg(xpc_chan, "w_local_GP.put changed to %ld; msg=0x%p, "
 		"msg_number=%ld, partid=%d, channel=%d\n", put + 1,
+	dev_dbg(xpc_chan, "w_local_GP.put changed to %lld; msg=0x%p, "
+		"msg_number=%lld, partid=%d, channel=%d\n", put + 1,
 		(void *)msg, msg->number, ch->partid, ch->number);
 
 	*address_of_msg = msg;
@@ -2192,6 +2297,7 @@ xpc_send_payload_sn2(struct xpc_channel *ch, u32 flags, void *payload,
 	 * load of local_GP->put.
 	 */
 	mb();
+	smp_mb();
 
 	/* see if the message is next in line to be sent, if so send it */
 
@@ -2253,6 +2359,7 @@ xpc_acknowledge_msgs_sn2(struct xpc_channel *ch, s64 initial_get, u8 msg_flags)
 		/* we just set the new value of local_GP->get */
 
 		dev_dbg(xpc_chan, "local_GP->get changed to %ld, partid=%d, "
+		dev_dbg(xpc_chan, "local_GP->get changed to %lld, partid=%d, "
 			"channel=%d\n", get, ch->partid, ch->number);
 
 		send_msgrequest = (msg_flags & XPC_M_SN2_INTERRUPT);
@@ -2284,6 +2391,12 @@ xpc_received_payload_sn2(struct xpc_channel *ch, void *payload)
 
 	DBUG_ON((((u64)msg - (u64)ch->remote_msgqueue) / ch->entry_size) !=
 		msg_number % ch->remote_nentries);
+	dev_dbg(xpc_chan, "msg=0x%p, msg_number=%lld, partid=%d, channel=%d\n",
+		(void *)msg, msg_number, ch->partid, ch->number);
+
+	DBUG_ON((((u64)msg - (u64)ch->sn.sn2.remote_msgqueue) / ch->entry_size) !=
+		msg_number % ch->remote_nentries);
+	DBUG_ON(!(msg->flags & XPC_M_SN2_READY));
 	DBUG_ON(msg->flags & XPC_M_SN2_DONE);
 
 	msg->flags |= XPC_M_SN2_DONE;
@@ -2293,6 +2406,7 @@ xpc_received_payload_sn2(struct xpc_channel *ch, void *payload)
 	 * load of local_GP->get.
 	 */
 	mb();
+	smp_mb();
 
 	/*
 	 * See if this message is next in line to be acknowledged as having
@@ -2302,6 +2416,63 @@ xpc_received_payload_sn2(struct xpc_channel *ch, void *payload)
 	if (get == msg_number)
 		xpc_acknowledge_msgs_sn2(ch, get, msg->flags);
 }
+
+static struct xpc_arch_operations xpc_arch_ops_sn2 = {
+	.setup_partitions = xpc_setup_partitions_sn2,
+	.teardown_partitions = xpc_teardown_partitions_sn2,
+	.process_activate_IRQ_rcvd = xpc_process_activate_IRQ_rcvd_sn2,
+	.get_partition_rsvd_page_pa = xpc_get_partition_rsvd_page_pa_sn2,
+	.setup_rsvd_page = xpc_setup_rsvd_page_sn2,
+
+	.allow_hb = xpc_allow_hb_sn2,
+	.disallow_hb = xpc_disallow_hb_sn2,
+	.disallow_all_hbs = xpc_disallow_all_hbs_sn2,
+	.increment_heartbeat = xpc_increment_heartbeat_sn2,
+	.offline_heartbeat = xpc_offline_heartbeat_sn2,
+	.online_heartbeat = xpc_online_heartbeat_sn2,
+	.heartbeat_init = xpc_heartbeat_init_sn2,
+	.heartbeat_exit = xpc_heartbeat_exit_sn2,
+	.get_remote_heartbeat = xpc_get_remote_heartbeat_sn2,
+
+	.request_partition_activation =
+		xpc_request_partition_activation_sn2,
+	.request_partition_reactivation =
+		xpc_request_partition_reactivation_sn2,
+	.request_partition_deactivation =
+		xpc_request_partition_deactivation_sn2,
+	.cancel_partition_deactivation_request =
+		xpc_cancel_partition_deactivation_request_sn2,
+
+	.setup_ch_structures = xpc_setup_ch_structures_sn2,
+	.teardown_ch_structures = xpc_teardown_ch_structures_sn2,
+
+	.make_first_contact = xpc_make_first_contact_sn2,
+
+	.get_chctl_all_flags = xpc_get_chctl_all_flags_sn2,
+	.send_chctl_closerequest = xpc_send_chctl_closerequest_sn2,
+	.send_chctl_closereply = xpc_send_chctl_closereply_sn2,
+	.send_chctl_openrequest = xpc_send_chctl_openrequest_sn2,
+	.send_chctl_openreply = xpc_send_chctl_openreply_sn2,
+	.send_chctl_opencomplete = xpc_send_chctl_opencomplete_sn2,
+	.process_msg_chctl_flags = xpc_process_msg_chctl_flags_sn2,
+
+	.save_remote_msgqueue_pa = xpc_save_remote_msgqueue_pa_sn2,
+
+	.setup_msg_structures = xpc_setup_msg_structures_sn2,
+	.teardown_msg_structures = xpc_teardown_msg_structures_sn2,
+
+	.indicate_partition_engaged = xpc_indicate_partition_engaged_sn2,
+	.indicate_partition_disengaged = xpc_indicate_partition_disengaged_sn2,
+	.partition_engaged = xpc_partition_engaged_sn2,
+	.any_partition_engaged = xpc_any_partition_engaged_sn2,
+	.assume_partition_disengaged = xpc_assume_partition_disengaged_sn2,
+
+	.n_of_deliverable_payloads = xpc_n_of_deliverable_payloads_sn2,
+	.send_payload = xpc_send_payload_sn2,
+	.get_deliverable_payload = xpc_get_deliverable_payload_sn2,
+	.received_payload = xpc_received_payload_sn2,
+	.notify_senders_of_disconnect = xpc_notify_senders_of_disconnect_sn2,
+};
 
 int
 xpc_init_sn2(void)
@@ -2357,6 +2528,7 @@ xpc_init_sn2(void)
 
 	xpc_send_payload = xpc_send_payload_sn2;
 	xpc_received_payload = xpc_received_payload_sn2;
+	xpc_arch_ops = xpc_arch_ops_sn2;
 
 	if (offsetof(struct xpc_msg_sn2, payload) > XPC_MSG_HDR_MAX_SIZE) {
 		dev_err(xpc_part, "header portion of struct xpc_msg_sn2 is "

@@ -84,6 +84,7 @@
   <para>
       Because each different protocol causes a new driver to be created, I have
       written a generic USB driver skeleton, modeled after the pci-skeleton.c
+      written a generic USB driver skeleton, modelled after the pci-skeleton.c
       file in the kernel source tree upon which many PCI network drivers have
       been based. This USB skeleton can be found at drivers/usb/usb-skeleton.c
       in the kernel source tree. In this article I will walk through the basics
@@ -343,6 +344,7 @@ static inline void skel_delete (struct usb_skel *dev)
     kfree (dev->bulk_in_buffer);
     if (dev->bulk_out_buffer != NULL)
         usb_buffer_free (dev->udev, dev->bulk_out_size,
+        usb_free_coherent (dev->udev, dev->bulk_out_size,
             dev->bulk_out_buffer,
             dev->write_urb->transfer_dma);
     usb_free_urb (dev->write_urb);

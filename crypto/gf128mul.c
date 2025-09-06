@@ -5,6 +5,7 @@
  *
  * Based on Dr Brian Gladman's (GPL'd) work published at
  * http://fp.gladman.plus.com/cryptography_technology/index.htm
+ * http://gladman.plushost.co.uk/oldsite/cryptography_technology/index.php
  * See the original copyright notice below.
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -90,6 +91,7 @@
 
 /*	Given the value i in 0..255 as the byte overflow when a field element
     in GHASH is multipled by x^8, this function will return the values that
+    in GHASH is multiplied by x^8, this function will return the values that
     are generated in the lo 16-bit word of the field value by applying the
     modular polynomial. The values lo_byte and hi_byte are returned via the
     macro xp_fun(lo_byte, hi_byte) so that the values can be assembled into
@@ -183,6 +185,7 @@ void gf128mul_lle(be128 *r, const be128 *b)
 		gf128mul_x_lle(&p[i + 1], &p[i]);
 
 	memset(r, 0, sizeof(r));
+	memset(r, 0, sizeof(*r));
 	for (i = 0;;) {
 		u8 ch = ((u8 *)b)[15 - i];
 
@@ -221,6 +224,7 @@ void gf128mul_bbe(be128 *r, const be128 *b)
 		gf128mul_x_bbe(&p[i + 1], &p[i]);
 
 	memset(r, 0, sizeof(r));
+	memset(r, 0, sizeof(*r));
 	for (i = 0;;) {
 		u8 ch = ((u8 *)b)[i];
 

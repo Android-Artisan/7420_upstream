@@ -25,12 +25,14 @@ struct Sun_Machine_Models {
  *  7    4 3    0
  *
  * The ARCH field determines the architecture line (sun4, sun4c, etc).
+ * The ARCH field determines the architecture line (sun4m, etc).
  * The MACH field determines the machine make within that architecture.
  */
 
 #define SM_ARCH_MASK  0xf0
 #define SM_SUN4       0x20
 #define SM_SUN4C      0x50
+#define  M_LEON       0x30
 #define SM_SUN4M      0x70
 #define SM_SUN4M_OBP  0x80
 
@@ -49,6 +51,9 @@ struct Sun_Machine_Models {
 #define SM_4C_SS2     0x05    /* Sun4c SparcStation 2   - Sun 4/75  */
 #define SM_4C_ELC     0x06    /* Sun4c SparcStation ELC - Sun 4/25  */
 #define SM_4C_IPX     0x07    /* Sun4c SparcStation IPX - Sun 4/50  */
+
+/* Leon machines */
+#define M_LEON3_SOC   0x02    /* Leon3 SoC */
 
 /* Sun4m machines, these predate the OpenBoot.  These values only mean
  * something if the value in the ARCH field is SM_SUN4M, if it is

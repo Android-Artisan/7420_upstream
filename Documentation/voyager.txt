@@ -1,5 +1,4 @@
 Running Linux on the Voyager Architecture
-=========================================
 
 For full details and current project status, see
 

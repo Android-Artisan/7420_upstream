@@ -21,6 +21,8 @@
  * the Free Software Foundation, 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
+#include <linux/slab.h>
+#include <linux/module.h>
 #include <scsi/scsi.h>
 #include <scsi/scsi_dbg.h>
 #include <scsi/scsi_eh.h>
@@ -47,6 +49,13 @@ static inline struct hp_sw_dh_data *get_hp_sw_data(struct scsi_device *sdev)
 	BUG_ON(scsi_dh_data == NULL);
 	return ((struct hp_sw_dh_data *) scsi_dh_data->buf);
 }
+	int retry_cnt;
+	struct scsi_device *sdev;
+	activate_complete	callback_fn;
+	void			*callback_data;
+};
+
+static int hp_sw_start_stop(struct hp_sw_dh_data *);
 
 /*
  * tur_done - Handle TEST UNIT READY return status
@@ -115,6 +124,15 @@ static int hp_sw_tur(struct scsi_device *sdev, struct hp_sw_dh_data *h)
 	req->cmd_flags |= REQ_FAILFAST;
 	req->cmd_len = COMMAND_SIZE(TEST_UNIT_READY);
 	memset(req->cmd, 0, MAX_COMMAND_SIZE);
+retry:
+	req = blk_get_request(sdev->request_queue, WRITE, GFP_NOIO);
+	if (IS_ERR(req))
+		return SCSI_DH_RES_TEMP_UNAVAIL;
+
+	blk_rq_set_block_pc(req);
+	req->cmd_flags |= REQ_FAILFAST_DEV | REQ_FAILFAST_TRANSPORT |
+			  REQ_FAILFAST_DRIVER;
+	req->cmd_len = COMMAND_SIZE(TEST_UNIT_READY);
 	req->cmd[0] = TEST_UNIT_READY;
 	req->timeout = HP_SW_TIMEOUT;
 	req->sense = h->sense;
@@ -138,6 +156,10 @@ retry:
 	}
 	if (ret == SCSI_DH_IMM_RETRY)
 		goto retry;
+	if (ret == SCSI_DH_IMM_RETRY) {
+		blk_put_request(req);
+		goto retry;
+	}
 	if (ret == SCSI_DH_DEV_OFFLINED) {
 		h->path_state = HP_SW_PATH_PASSIVE;
 		ret = SCSI_DH_OK;
@@ -189,6 +211,43 @@ static int start_done(struct scsi_device *sdev, unsigned char *sense)
 	return rc;
 }
 
+static void start_stop_endio(struct request *req, int error)
+{
+	struct hp_sw_dh_data *h = req->end_io_data;
+	unsigned err = SCSI_DH_OK;
+
+	if (error || host_byte(req->errors) != DID_OK ||
+			msg_byte(req->errors) != COMMAND_COMPLETE) {
+		sdev_printk(KERN_WARNING, h->sdev,
+			    "%s: sending start_stop_unit failed with %x\n",
+			    HP_SW_NAME, req->errors);
+		err = SCSI_DH_IO;
+		goto done;
+	}
+
+	if (req->sense_len > 0) {
+		err = start_done(h->sdev, h->sense);
+		if (err == SCSI_DH_RETRY) {
+			err = SCSI_DH_IO;
+			if (--h->retry_cnt) {
+				blk_put_request(req);
+				err = hp_sw_start_stop(h);
+				if (err == SCSI_DH_OK)
+					return;
+			}
+		}
+	}
+done:
+	req->end_io_data = NULL;
+	__blk_put_request(req->q, req);
+	if (h->callback_fn) {
+		h->callback_fn(h->callback_data, err);
+		h->callback_fn = h->callback_data = NULL;
+	}
+	return;
+
+}
+
 /*
  * hp_sw_start_stop - Send START STOP UNIT command
  * @sdev: sdev command should be sent to
@@ -208,6 +267,18 @@ static int hp_sw_start_stop(struct scsi_device *sdev, struct hp_sw_dh_data *h)
 	req->cmd_flags |= REQ_FAILFAST;
 	req->cmd_len = COMMAND_SIZE(START_STOP);
 	memset(req->cmd, 0, MAX_COMMAND_SIZE);
+static int hp_sw_start_stop(struct hp_sw_dh_data *h)
+{
+	struct request *req;
+
+	req = blk_get_request(h->sdev->request_queue, WRITE, GFP_ATOMIC);
+	if (IS_ERR(req))
+		return SCSI_DH_RES_TEMP_UNAVAIL;
+
+	blk_rq_set_block_pc(req);
+	req->cmd_flags |= REQ_FAILFAST_DEV | REQ_FAILFAST_TRANSPORT |
+			  REQ_FAILFAST_DRIVER;
+	req->cmd_len = COMMAND_SIZE(START_STOP);
 	req->cmd[0] = START_STOP;
 	req->cmd[4] = 1;	/* Start spin cycle */
 	req->timeout = HP_SW_TIMEOUT;
@@ -239,11 +310,16 @@ retry:
 	blk_put_request(req);
 
 	return ret;
+	req->end_io_data = h;
+
+	blk_execute_rq_nowait(req->q, NULL, req, 1, start_stop_endio);
+	return SCSI_DH_OK;
 }
 
 static int hp_sw_prep_fn(struct scsi_device *sdev, struct request *req)
 {
 	struct hp_sw_dh_data *h = get_hp_sw_data(sdev);
+	struct hp_sw_dh_data *h = sdev->handler_data;
 	int ret = BLKPREP_OK;
 
 	if (h->path_state != HP_SW_PATH_ACTIVE) {
@@ -268,6 +344,11 @@ static int hp_sw_activate(struct scsi_device *sdev)
 {
 	int ret = SCSI_DH_OK;
 	struct hp_sw_dh_data *h = get_hp_sw_data(sdev);
+static int hp_sw_activate(struct scsi_device *sdev,
+				activate_complete fn, void *data)
+{
+	int ret = SCSI_DH_OK;
+	struct hp_sw_dh_data *h = sdev->handler_data;
 
 	ret = hp_sw_tur(sdev, h);
 
@@ -322,6 +403,31 @@ static int hp_sw_bus_attach(struct scsi_device *sdev)
 	h = (struct hp_sw_dh_data *) scsi_dh_data->buf;
 	h->path_state = HP_SW_PATH_UNINITIALIZED;
 	h->retries = HP_SW_RETRIES;
+		h->retry_cnt = h->retries;
+		h->callback_fn = fn;
+		h->callback_data = data;
+		ret = hp_sw_start_stop(h);
+		if (ret == SCSI_DH_OK)
+			return 0;
+		h->callback_fn = h->callback_data = NULL;
+	}
+
+	if (fn)
+		fn(data, ret);
+	return 0;
+}
+
+static int hp_sw_bus_attach(struct scsi_device *sdev)
+{
+	struct hp_sw_dh_data *h;
+	int ret;
+
+	h = kzalloc(sizeof(*h), GFP_KERNEL);
+	if (!h)
+		return -ENOMEM;
+	h->path_state = HP_SW_PATH_UNINITIALIZED;
+	h->retries = HP_SW_RETRIES;
+	h->sdev = sdev;
 
 	ret = hp_sw_tur(sdev, h);
 	if (ret != SCSI_DH_OK || h->path_state == HP_SW_PATH_UNINITIALIZED)
@@ -344,6 +450,10 @@ failed:
 	kfree(scsi_dh_data);
 	sdev_printk(KERN_ERR, sdev, "%s: not attached\n",
 		    HP_SW_NAME);
+	sdev->handler_data = h;
+	return 0;
+failed:
+	kfree(h);
 	return -EINVAL;
 }
 
@@ -362,6 +472,19 @@ static void hp_sw_bus_detach( struct scsi_device *sdev )
 
 	kfree(scsi_dh_data);
 }
+
+	kfree(sdev->handler_data);
+	sdev->handler_data = NULL;
+}
+
+static struct scsi_device_handler hp_sw_dh = {
+	.name		= HP_SW_NAME,
+	.module		= THIS_MODULE,
+	.attach		= hp_sw_bus_attach,
+	.detach		= hp_sw_bus_detach,
+	.activate	= hp_sw_activate,
+	.prep_fn	= hp_sw_prep_fn,
+};
 
 static int __init hp_sw_init(void)
 {

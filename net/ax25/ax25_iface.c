@@ -17,6 +17,7 @@
 #include <linux/string.h>
 #include <linux/sockios.h>
 #include <linux/net.h>
+#include <linux/slab.h>
 #include <net/ax25.h>
 #include <linux/inet.h>
 #include <linux/netdevice.h>
@@ -70,6 +71,16 @@ void ax25_protocol_release(unsigned int pid)
 		protocol_list = protocol->next;
 		write_unlock_bh(&protocol_list_lock);
 		return;
+	struct ax25_protocol *protocol;
+
+	write_lock_bh(&protocol_list_lock);
+	protocol = protocol_list;
+	if (protocol == NULL)
+		goto out;
+
+	if (protocol->pid == pid) {
+		protocol_list = protocol->next;
+		goto out;
 	}
 
 	while (protocol != NULL && protocol->next != NULL) {
@@ -78,10 +89,13 @@ void ax25_protocol_release(unsigned int pid)
 			protocol->next = protocol->next->next;
 			write_unlock_bh(&protocol_list_lock);
 			return;
+			protocol->next = protocol->next->next;
+			goto out;
 		}
 
 		protocol = protocol->next;
 	}
+out:
 	write_unlock_bh(&protocol_list_lock);
 }
 
@@ -201,6 +215,9 @@ void ax25_link_failed(ax25_cb *ax25, int reason)
 
 	spin_lock_bh(&linkfail_lock);
 	hlist_for_each_entry(lf, node, &ax25_linkfail_list, lf_node)
+
+	spin_lock_bh(&linkfail_lock);
+	hlist_for_each_entry(lf, &ax25_linkfail_list, lf_node)
 		lf->func(ax25, reason);
 	spin_unlock_bh(&linkfail_lock);
 }

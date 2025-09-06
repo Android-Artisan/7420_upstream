@@ -8,7 +8,6 @@ Takashi Iwai <tiwai@suse.de>
 
 
 General
-=======
 
 The snd-hda-codec module supports the generic access function for the
 High Definition (HD) audio codecs.  It's designed to be independent
@@ -21,7 +20,6 @@ controller.
 
 
 Initialization of Bus Instance
-==============================
 
 The card driver has to create struct hda_bus at first.  The template
 struct should be filled and passed to the constructor:
@@ -81,7 +79,6 @@ error during creation.
 
 
 Creation of Codec Instance
-==========================
 
 Each codec chip on the board is then created on the BUS instance.
 To create a codec instance, call snd_hda_codec_new().
@@ -106,7 +103,6 @@ initialization sequence is called when the controls are built later.
 
 
 Codec Access
-============
 
 To access codec, use snd_hda_codec_read() and snd_hda_codec_write().
 snd_hda_param_read() is for reading parameters.
@@ -127,7 +123,6 @@ later.
 
 
 (Mixer) Controls
-================
 
 To create mixer controls of all codecs, call
 snd_hda_build_controls().  It then builds the mixers and does
@@ -135,7 +130,6 @@ initialization stuff on each codec.
 
 
 PCM Stuff
-=========
 
 snd_hda_build_pcms() gives the necessary information to create PCM
 streams.  When it's called, each codec belonging to the bus stores 
@@ -205,7 +199,6 @@ occurred.
 
 
 Proc Files
-==========
 
 Each codec dumps the widget node information in
 /proc/asound/card*/codec#* file.  This information would be really
@@ -214,7 +207,6 @@ bug report.
 
 
 Power Management
-================
 
 It's simple:
 Call snd_hda_suspend() in the PM suspend callback.
@@ -222,7 +214,6 @@ Call snd_hda_resume() in the PM resume callback.
 
 
 Codec Preset (Patch)
-====================
 
 To set up and handle the codec functionality fully, each codec may
 have a codec preset (patch).  It's defined in struct hda_codec_preset:
@@ -285,7 +276,6 @@ Each entry can be NULL if not necessary to be called.
 
 
 Generic Parser
-==============
 
 When the device doesn't match with any given presets, the widgets are
 parsed via th generic parser (hda_generic.c).  Its support is
@@ -293,14 +283,12 @@ limited: no multi-channel support, for example.
 
 
 Digital I/O
-===========
 
 Call snd_hda_create_spdif_out_ctls() from the patch to create controls
 related with SPDIF out.
 
 
 Helper Functions
-================
 
 snd_hda_get_codec_name() stores the codec name on the given string.
 

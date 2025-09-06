@@ -20,6 +20,7 @@ typedef u8 ia64_vector;
 #else
 typedef u16 ia64_vector;
 #endif
+typedef u8 ia64_vector;
 
 /*
  * 0 special
@@ -60,6 +61,13 @@ extern int ia64_first_device_vector;
 extern int ia64_last_device_vector;
 
 #define IA64_DEF_FIRST_DEVICE_VECTOR	0x30
+#if defined(CONFIG_SMP) && (defined(CONFIG_IA64_GENERIC) || defined (CONFIG_IA64_DIG))
+/* Reserve the lower priority vector than device vectors for "move IRQ" IPI */
+#define IA64_IRQ_MOVE_VECTOR		0x30	/* "move IRQ" IPI */
+#define IA64_DEF_FIRST_DEVICE_VECTOR	0x31
+#else
+#define IA64_DEF_FIRST_DEVICE_VECTOR	0x30
+#endif
 #define IA64_DEF_LAST_DEVICE_VECTOR	0xe7
 #define IA64_FIRST_DEVICE_VECTOR	ia64_first_device_vector
 #define IA64_LAST_DEVICE_VECTOR		ia64_last_device_vector
@@ -111,6 +119,8 @@ extern struct hw_interrupt_type irq_type_ia64_lsapic;	/* CPU-internal interrupt 
 #ifdef CONFIG_PARAVIRT_GUEST
 #include <asm/paravirt.h>
 #else
+extern struct irq_chip irq_type_ia64_lsapic;	/* CPU-internal interrupt controller */
+
 #define ia64_register_ipi	ia64_native_register_ipi
 #define assign_irq_vector	ia64_native_assign_irq_vector
 #define free_irq_vector		ia64_native_free_irq_vector
@@ -158,6 +168,7 @@ static inline unsigned int
 __ia64_local_vector_to_irq (ia64_vector vec)
 {
 	return __get_cpu_var(vector_irq)[vec];
+	return __this_cpu_read(vector_irq[vec]);
 }
 #endif
 

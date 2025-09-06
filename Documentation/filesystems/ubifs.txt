@@ -1,5 +1,4 @@
 Introduction
-=============
 
 UBIFS file-system stands for UBI File System. UBI stands for "Unsorted
 Block Images". UBIFS is a flash file system, which means it is designed
@@ -75,7 +74,6 @@ changed to use UBI2
 
 
 Mount options
-=============
 
 (*) == default.
 
@@ -86,10 +84,21 @@ norm_unmount (*)	commit on unmount; the journal is committed
 fast_unmount		do not commit on unmount; this option makes
 			unmount faster, but the next mount slower
 			because of the need to replay the journal.
+bulk_read		read more in one go to take advantage of flash
+			media that read faster sequentially
+no_bulk_read (*)	do not bulk-read
+no_chk_data_crc (*)	skip checking of CRCs on data nodes in order to
+			improve read performance. Use this option only
+			if the flash media is highly reliable. The effect
+			of this option is that corruption of the contents
+			of a file can go unnoticed.
+chk_data_crc		do not skip checking CRCs on data nodes
+compr=none              override default compressor and set it to "none"
+compr=lzo               override default compressor and set it to "lzo"
+compr=zlib              override default compressor and set it to "zlib"
 
 
 Quick usage instructions
-========================
 
 The UBI volume to mount is specified using "ubiX_Y" or "ubiX:NAME" syntax,
 where "X" is UBI device number, "Y" is UBI volume number, and "NAME" is
@@ -108,7 +117,6 @@ ubi.mtd=0 root=ubi0:rootfs rootfstype=ubifs
 
 
 Module Parameters for Debugging
-===============================
 
 When UBIFS has been compiled with debugging enabled, there are 3 module
 parameters that are available to control aspects of testing and debugging.
@@ -157,7 +165,6 @@ messages.
 
 
 References
-==========
 
 UBIFS documentation and FAQ/HOWTO at the MTD web site:
 http://www.linux-mtd.infradead.org/doc/ubifs.html

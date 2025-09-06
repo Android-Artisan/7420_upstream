@@ -7,6 +7,7 @@
  * a per-packet basis.
  *
  * Author: Paul Moore <paul.moore@hp.com>
+ * Author: Paul Moore <paul@paul-moore.com>
  *
  */
 
@@ -26,6 +27,8 @@
 
 #ifndef _SELINUX_NETNODE_H
 #define _SELINUX_NETNODE_H
+
+void sel_netnode_flush(void);
 
 int sel_netnode_sid(void *addr, u16 family, u32 *sid);
 

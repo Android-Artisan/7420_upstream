@@ -30,6 +30,7 @@ _GLOBAL(mpc6xx_enter_standby)
 	mtlr	r5
 
 	rlwinm	r5, r1, 0, 0, 31-THREAD_SHIFT
+	CURRENT_THREAD_INFO(r5, r1)
 	lwz	r6, TI_LOCAL_FLAGS(r5)
 	ori	r6, r6, _TLF_SLEEPING
 	stw	r6, TI_LOCAL_FLAGS(r5)

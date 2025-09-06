@@ -29,6 +29,10 @@
 #include <linux/blkdev.h>
 #include <linux/delay.h>
 #include <linux/device.h>
+#include <linux/blkdev.h>
+#include <linux/delay.h>
+#include <linux/device.h>
+#include <linux/ktime.h>
 #include <scsi/scsi.h>
 #include <scsi/scsi_host.h>
 #include <scsi/scsi_cmnd.h>
@@ -63,6 +67,9 @@ enum {
 };
 
 static int pdc2027x_init_one(struct pci_dev *pdev, const struct pci_device_id *ent);
+#ifdef CONFIG_PM_SLEEP
+static int pdc2027x_reinit_one(struct pci_dev *pdev);
+#endif
 static int pdc2027x_prereset(struct ata_link *link, unsigned long deadline);
 static void pdc2027x_set_piomode(struct ata_port *ap, struct ata_device *adev);
 static void pdc2027x_set_dmamode(struct ata_port *ap, struct ata_device *adev);
@@ -126,6 +133,10 @@ static struct pci_driver pdc2027x_pci_driver = {
 	.id_table		= pdc2027x_pci_tbl,
 	.probe			= pdc2027x_init_one,
 	.remove			= ata_pci_remove_one,
+#ifdef CONFIG_PM_SLEEP
+	.suspend		= ata_pci_device_suspend,
+	.resume			= pdc2027x_reinit_one,
+#endif
 };
 
 static struct scsi_host_template pdc2027x_sht = {
@@ -155,6 +166,10 @@ static struct ata_port_info pdc2027x_port_info[] = {
 		.pio_mask	= 0x1f, /* pio0-4 */
 		.mwdma_mask	= 0x07, /* mwdma0-2 */
 		.udma_mask	= ATA_UDMA5, /* udma0-5 */
+		.flags		= ATA_FLAG_SLAVE_POSS,
+		.pio_mask	= ATA_PIO4,
+		.mwdma_mask	= ATA_MWDMA2,
+		.udma_mask	= ATA_UDMA5,
 		.port_ops	= &pdc2027x_pata100_ops,
 	},
 	/* PDC_UDMA_133 */
@@ -164,6 +179,10 @@ static struct ata_port_info pdc2027x_port_info[] = {
 		.pio_mask	= 0x1f, /* pio0-4 */
 		.mwdma_mask	= 0x07, /* mwdma0-2 */
 		.udma_mask	= ATA_UDMA6, /* udma0-6 */
+		.flags		= ATA_FLAG_SLAVE_POSS,
+		.pio_mask	= ATA_PIO4,
+		.mwdma_mask	= ATA_MWDMA2,
+		.udma_mask	= ATA_UDMA6,
 		.port_ops	= &pdc2027x_pata133_ops,
 	},
 };
@@ -266,6 +285,7 @@ static unsigned long pdc2027x_mode_filter(struct ata_device *adev, unsigned long
 
 	if (adev->class != ATA_DEV_ATA || adev->devno == 0 || pair == NULL)
 		return ata_bmdma_mode_filter(adev, mask);
+		return mask;
 
 	/* Check for slave of a Maxtor at UDMA6 */
 	ata_id_c_string(pair->id, model_num, ATA_ID_PROD,
@@ -275,6 +295,7 @@ static unsigned long pdc2027x_mode_filter(struct ata_device *adev, unsigned long
 		mask &= ~ (1 << (6 + ATA_SHIFT_UDMA));
 
 	return ata_bmdma_mode_filter(adev, mask);
+	return mask;
 }
 
 /**
@@ -423,6 +444,20 @@ static int pdc2027x_set_mode(struct ata_link *link, struct ata_device **r_failed
 			} else {
 				pdc2027x_set_dmamode(ap, dev);
 			}
+	ata_for_each_dev(dev, link, ENABLED) {
+		pdc2027x_set_piomode(ap, dev);
+
+		/*
+		 * Enable prefetch if the device support PIO only.
+		 */
+		if (dev->xfer_shift == ATA_SHIFT_PIO) {
+			u32 ctcr1 = ioread32(dev_mmio(ap, dev, PDC_CTCR1));
+			ctcr1 |= (1 << 25);
+			iowrite32(ctcr1, dev_mmio(ap, dev, PDC_CTCR1));
+
+			PDPRINTK("Turn on prefetch\n");
+		} else {
+			pdc2027x_set_dmamode(ap, dev);
 		}
 	}
 	return 0;
@@ -607,6 +642,7 @@ static long pdc_detect_pll_input_clock(struct ata_host *host)
 	u32 scr;
 	long start_count, end_count;
 	struct timeval start_time, end_time;
+	ktime_t start_time, end_time;
 	long pll_clock, usec_elapsed;
 
 	/* Start the test mode */
@@ -618,6 +654,7 @@ static long pdc_detect_pll_input_clock(struct ata_host *host)
 	/* Read current counter value */
 	start_count = pdc_read_counter(host);
 	do_gettimeofday(&start_time);
+	start_time = ktime_get();
 
 	/* Let the counter run for 100 ms. */
 	mdelay(100);
@@ -625,6 +662,7 @@ static long pdc_detect_pll_input_clock(struct ata_host *host)
 	/* Read the counter values again */
 	end_count = pdc_read_counter(host);
 	do_gettimeofday(&end_time);
+	end_time = ktime_get();
 
 	/* Stop the test mode */
 	scr = ioread32(mmio_base + PDC_SYS_CTL);
@@ -635,6 +673,7 @@ static long pdc_detect_pll_input_clock(struct ata_host *host)
 	/* calculate the input clock in Hz */
 	usec_elapsed = (end_time.tv_sec - start_time.tv_sec) * 1000000 +
 		(end_time.tv_usec - start_time.tv_usec);
+	usec_elapsed = (long) ktime_us_delta(end_time, start_time);
 
 	pll_clock = ((start_count - end_count) & 0x3fffffff) / 100 *
 		(100000000 / usec_elapsed);
@@ -663,6 +702,7 @@ static int pdc_hardware_init(struct ata_host *host, unsigned int board_idx)
 	pll_clock = pdc_detect_pll_input_clock(host);
 
 	dev_printk(KERN_INFO, host->dev, "PLL input clock %ld kHz\n", pll_clock/1000);
+	dev_info(host->dev, "PLL input clock %ld kHz\n", pll_clock/1000);
 
 	/* Adjust PLL control register */
 	pdc_adjust_pll(host, pll_clock, board_idx);
@@ -705,6 +745,9 @@ static void pdc_ata_setup_port(struct ata_ioports *port, void __iomem *base)
 static int __devinit pdc2027x_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 {
 	static int printed_version;
+static int pdc2027x_init_one(struct pci_dev *pdev,
+			     const struct pci_device_id *ent)
+{
 	static const unsigned long cmd_offset[] = { 0x17c0, 0x15c0 };
 	static const unsigned long bmdma_offset[] = { 0x1000, 0x1008 };
 	unsigned int board_idx = (unsigned int) ent->driver_data;
@@ -716,6 +759,7 @@ static int __devinit pdc2027x_init_one(struct pci_dev *pdev, const struct pci_de
 
 	if (!printed_version++)
 		dev_printk(KERN_DEBUG, &pdev->dev, "version " DRV_VERSION "\n");
+	ata_print_version_once(&pdev->dev, DRV_VERSION);
 
 	/* alloc host */
 	host = ata_host_alloc_pinfo(&pdev->dev, ppi, 2);
@@ -737,6 +781,11 @@ static int __devinit pdc2027x_init_one(struct pci_dev *pdev, const struct pci_de
 		return rc;
 
 	rc = pci_set_consistent_dma_mask(pdev, ATA_DMA_MASK);
+	rc = dma_set_mask(&pdev->dev, ATA_DMA_MASK);
+	if (rc)
+		return rc;
+
+	rc = dma_set_coherent_mask(&pdev->dev, ATA_DMA_MASK);
 	if (rc)
 		return rc;
 
@@ -781,3 +830,33 @@ static void __exit pdc2027x_exit(void)
 
 module_init(pdc2027x_init);
 module_exit(pdc2027x_exit);
+	return ata_host_activate(host, pdev->irq, ata_bmdma_interrupt,
+				 IRQF_SHARED, &pdc2027x_sht);
+}
+
+#ifdef CONFIG_PM_SLEEP
+static int pdc2027x_reinit_one(struct pci_dev *pdev)
+{
+	struct ata_host *host = pci_get_drvdata(pdev);
+	unsigned int board_idx;
+	int rc;
+
+	rc = ata_pci_device_do_resume(pdev);
+	if (rc)
+		return rc;
+
+	if (pdev->device == PCI_DEVICE_ID_PROMISE_20268 ||
+	    pdev->device == PCI_DEVICE_ID_PROMISE_20270)
+		board_idx = PDC_UDMA_100;
+	else
+		board_idx = PDC_UDMA_133;
+
+	if (pdc_hardware_init(host, board_idx))
+		return -EIO;
+
+	ata_host_resume(host);
+	return 0;
+}
+#endif
+
+module_pci_driver(pdc2027x_pci_driver);

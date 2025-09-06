@@ -15,6 +15,7 @@
 #include <asm/page.h>
 #include <asm/processor.h>	/* For TASK_SIZE */
 #include <asm/machvec.h>
+#include <asm/setup.h>
 
 struct mm_struct;
 struct vm_area_struct;
@@ -45,6 +46,7 @@ struct vm_area_struct;
 #define PTRS_PER_PGD	(1UL << (PAGE_SHIFT-3))
 #define USER_PTRS_PER_PGD	(TASK_SIZE / PGDIR_SIZE)
 #define FIRST_USER_ADDRESS	0
+#define FIRST_USER_ADDRESS	0UL
 
 /* Number of pointers that fit on a page:  this will go away. */
 #define PTRS_PER_PAGE	(1UL << (PAGE_SHIFT-3))
@@ -321,6 +323,7 @@ extern inline pte_t * pte_offset_kernel(pmd_t * dir, unsigned long address)
 #define pte_offset_map_nested(dir,addr)	pte_offset_kernel((dir),(addr))
 #define pte_unmap(pte)			do { } while (0)
 #define pte_unmap_nested(pte)		do { } while (0)
+#define pte_unmap(pte)			do { } while (0)
 
 extern pgd_t swapper_pg_dir[1024];
 
@@ -330,6 +333,7 @@ extern pgd_t swapper_pg_dir[1024];
  */
 extern inline void update_mmu_cache(struct vm_area_struct * vma,
 	unsigned long address, pte_t pte)
+	unsigned long address, pte_t *ptep)
 {
 }
 

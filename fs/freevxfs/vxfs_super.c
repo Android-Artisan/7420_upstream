@@ -61,6 +61,7 @@ static int		vxfs_remount(struct super_block *, int *, char *);
 
 static const struct super_operations vxfs_super_ops = {
 	.clear_inode =		vxfs_clear_inode,
+	.evict_inode =		vxfs_evict_inode,
 	.put_super =		vxfs_put_super,
 	.statfs =		vxfs_statfs,
 	.remount_fs =		vxfs_remount,
@@ -125,12 +126,14 @@ vxfs_statfs(struct dentry *dentry, struct kstatfs *bufp)
 
 static int vxfs_remount(struct super_block *sb, int *flags, char *data)
 {
+	sync_filesystem(sb);
 	*flags |= MS_RDONLY;
 	return 0;
 }
 
 /**
  * vxfs_read_super - read superblock into memory and initalize filesystem
+ * vxfs_read_super - read superblock into memory and initialize filesystem
  * @sbp:		VFS superblock (to fill)
  * @dp:			fs private mount data
  * @silent:		do not complain loudly when sth is wrong
@@ -144,6 +147,7 @@ static int vxfs_remount(struct super_block *sb, int *flags, char *data)
  *
  * Locking:
  *   We are under the bkl and @sbp->s_lock.
+ *   We are under @sbp->s_lock.
  */
 static int vxfs_fill_super(struct super_block *sbp, void *dp, int silent)
 {
@@ -227,6 +231,8 @@ static int vxfs_fill_super(struct super_block *sbp, void *dp, int silent)
 	sbp->s_root = d_alloc_root(root);
 	if (!sbp->s_root) {
 		iput(root);
+	sbp->s_root = d_make_root(root);
+	if (!sbp->s_root) {
 		printk(KERN_WARNING "vxfs: unable to get root dentry.\n");
 		goto out_free_ilist;
 	}
@@ -251,6 +257,10 @@ static int vxfs_get_sb(struct file_system_type *fs_type,
 {
 	return get_sb_bdev(fs_type, flags, dev_name, data, vxfs_fill_super,
 			   mnt);
+static struct dentry *vxfs_mount(struct file_system_type *fs_type,
+	int flags, const char *dev_name, void *data)
+{
+	return mount_bdev(fs_type, flags, dev_name, data, vxfs_fill_super);
 }
 
 static struct file_system_type vxfs_fs_type = {
@@ -260,6 +270,12 @@ static struct file_system_type vxfs_fs_type = {
 	.kill_sb	= kill_block_super,
 	.fs_flags	= FS_REQUIRES_DEV,
 };
+	.mount		= vxfs_mount,
+	.kill_sb	= kill_block_super,
+	.fs_flags	= FS_REQUIRES_DEV,
+};
+MODULE_ALIAS_FS("vxfs"); /* makes mount -t vxfs autoload the module */
+MODULE_ALIAS("vxfs");
 
 static int __init
 vxfs_init(void)
@@ -281,6 +297,11 @@ static void __exit
 vxfs_cleanup(void)
 {
 	unregister_filesystem(&vxfs_fs_type);
+	/*
+	 * Make sure all delayed rcu free inodes are flushed before we
+	 * destroy cache.
+	 */
+	rcu_barrier();
 	kmem_cache_destroy(vxfs_inode_cachep);
 }
 

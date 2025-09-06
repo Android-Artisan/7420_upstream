@@ -55,6 +55,15 @@ echo_can_disable_detector_init(struct ec_disable_detector_state *det)
 		(int32_t) (-0.5104039*32768.0),
 		(int32_t) (0.1567596*32768.0),
 		(int32_t) (1.0000000*32768.0));
+	/* Elliptic notch */
+	/* This is actually centred at 2095Hz, but gets the balance we want, due
+	   to the asymmetric walls of the notch */
+	biquad2_init(&det->notch,
+		     (int32_t)(-0.7600000 * 32768.0),
+		     (int32_t)(-0.1183852 * 32768.0),
+		     (int32_t)(-0.5104039 * 32768.0),
+		     (int32_t)(0.1567596 * 32768.0),
+		     (int32_t)(1.0000000 * 32768.0));
 
 	det->channel_level = 0;
 	det->notch_level = 0;
@@ -68,6 +77,7 @@ echo_can_disable_detector_init(struct ec_disable_detector_state *det)
 static inline int
 echo_can_disable_detector_update(struct ec_disable_detector_state *det,
 int16_t amp)
+				 int16_t amp)
 {
 	int16_t notched;
 
@@ -92,6 +102,16 @@ int16_t amp)
 					det->good_cycles++;
 					if (det->good_cycles > 2)
 					det->hit = TRUE;
+		   Is it mostly at 2100Hz? */
+		if (det->notch_level * 6 < det->channel_level) {
+			/* The notch says yes, so we have the tone. */
+			if (!det->tone_present) {
+				/* Do we get a kick every 450+-25ms? */
+				if (det->tone_cycle_duration >= 425 * 8
+				    && det->tone_cycle_duration <= 475 * 8) {
+					det->good_cycles++;
+					if (det->good_cycles > 2)
+						det->hit = TRUE;
 				}
 				det->tone_cycle_duration = 0;
 			}

@@ -1,18 +1,21 @@
 Regulator Consumer Driver Interface
-===================================
 
 This text describes the regulator interface for consumer device drivers.
 Please see overview.txt for a description of the terms used in this text.
 
 
 1. Consumer Regulator Access (static & dynamic drivers)
-=======================================================
 
 A consumer driver can get access to it's supply regulator by calling :-
 
 regulator = regulator_get(dev, "Vcc");
 
 The consumer passes in it's struct device pointer and power supply ID. The core
+A consumer driver can get access to its supply regulator by calling :-
+
+regulator = regulator_get(dev, "Vcc");
+
+The consumer passes in its struct device pointer and power supply ID. The core
 then finds the correct regulator by consulting a machine specific lookup table.
 If the lookup is successful then this call will return a pointer to the struct
 regulator that supplies this consumer.
@@ -32,9 +35,9 @@ usually be called in your device drivers probe() and remove() respectively.
 
 
 2. Regulator Output Enable & Disable (static & dynamic drivers)
-====================================================================
 
 A consumer can enable it's power supply by calling:-
+A consumer can enable its power supply by calling:-
 
 int regulator_enable(regulator);
 
@@ -50,6 +53,7 @@ This will return > zero when the regulator is enabled.
 
 
 A consumer can disable it's supply when no longer needed by calling :-
+A consumer can disable its supply when no longer needed by calling :-
 
 int regulator_disable(regulator);
 
@@ -65,7 +69,6 @@ consumers will be powered off.
 
 
 3. Regulator Voltage Control & Status (dynamic drivers)
-======================================================
 
 Some consumer drivers need to be able to dynamically change their supply
 voltage to match system operating points. e.g. CPUfreq drivers can scale
@@ -95,7 +98,6 @@ determine the regulator physical output voltage.
 
 
 4. Regulator Current Limit Control & Status (dynamic drivers)
-===========================================================
 
 Some consumer drivers need to be able to dynamically change their supply
 current limit to match system operating points. e.g. LCD backlight driver can
@@ -105,6 +107,7 @@ to set the limit to 500mA when supplying power.
 Consumers can control their supply current limit by calling :-
 
 int regulator_set_current_limit(regulator, min_uV, max_uV);
+int regulator_set_current_limit(regulator, min_uA, max_uA);
 
 Where min_uA and max_uA are the minimum and maximum acceptable current limit in
 microamps.
@@ -124,7 +127,6 @@ load.
 
 
 5. Regulator Operating Mode Control & Status (dynamic drivers)
-=============================================================
 
 Some consumers can further save system power by changing the operating mode of
 their supply regulator to be more efficient when the consumers operating state
@@ -145,6 +147,15 @@ to best match the current operating load.
 
 The load_uA value can be determined from the consumers datasheet. e.g.most
 datasheets have tables showing the max current consumed in certain situations.
+int regulator_set_load(struct regulator *regulator, int load_uA);
+
+This will cause the core to recalculate the total load on the regulator (based
+on all its consumers) and change operating mode (if necessary and permitted)
+to best match the current operating load.
+
+The load_uA value can be determined from the consumer's datasheet. e.g. most
+datasheets have tables showing the maximum current consumed in certain
+situations.
 
 Most consumers will use indirect operating mode control since they have no
 knowledge of the regulator or whether the regulator is shared with other
@@ -164,7 +175,6 @@ are not sharing the regulator with other consumers.
 
 
 6. Regulator Events
-===================
 Regulators can notify consumers of external events. Events could be received by
 consumers under regulator stress or failure conditions.
 
@@ -174,9 +184,46 @@ int regulator_register_notifier(struct regulator *regulator,
 			      struct notifier_block *nb);
 
 Consumers can uregister interest by calling :-
+Consumers can unregister interest by calling :-
 
 int regulator_unregister_notifier(struct regulator *regulator,
 				struct notifier_block *nb);
 
 Regulators use the kernel notifier framework to send event to thier interested
 consumers.
+Regulators use the kernel notifier framework to send event to their interested
+consumers.
+
+7. Regulator Direct Register Access
+Some kinds of power management hardware or firmware are designed such that
+they need to do low-level hardware access to regulators, with no involvement
+from the kernel. Examples of such devices are:
+
+- clocksource with a voltage-controlled oscillator and control logic to change
+  the supply voltage over I2C to achieve a desired output clock rate
+- thermal management firmware that can issue an arbitrary I2C transaction to
+  perform system poweroff during overtemperature conditions
+
+To set up such a device/firmware, various parameters like I2C address of the
+regulator, addresses of various regulator registers etc. need to be configured
+to it. The regulator framework provides the following helpers for querying
+these details.
+
+Bus-specific details, like I2C addresses or transfer rates are handled by the
+regmap framework. To get the regulator's regmap (if supported), use :-
+
+struct regmap *regulator_get_regmap(struct regulator *regulator);
+
+To obtain the hardware register offset and bitmask for the regulator's voltage
+selector register, use :-
+
+int regulator_get_hardware_vsel_register(struct regulator *regulator,
+					 unsigned *vsel_reg,
+					 unsigned *vsel_mask);
+
+To convert a regulator framework voltage selector code (used by
+regulator_list_voltage) to a hardware-specific voltage selector that can be
+directly written to the voltage selector register, use :-
+
+int regulator_list_hardware_vsel(struct regulator *regulator,
+				 unsigned selector);

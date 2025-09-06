@@ -20,6 +20,15 @@
 #include <linux/audit.h>
 #include <asm/uaccess.h>
 
+#include <linux/evm.h>
+#include <linux/syscalls.h>
+#include <linux/export.h>
+#include <linux/fsnotify.h>
+#include <linux/audit.h>
+#include <linux/vmalloc.h>
+#include <linux/posix_acl_xattr.h>
+
+#include <asm/uaccess.h>
 
 /*
  * Check permissions for extended attribute access.  This is a bit complicated
@@ -60,11 +69,74 @@ xattr_permission(struct inode *inode, const char *name, int mask)
 			return -EPERM;
 		if (S_ISDIR(inode->i_mode) && (inode->i_mode & S_ISVTX) &&
 		    (mask & MAY_WRITE) && !is_owner_or_cap(inode))
+	 * The trusted.* namespace can only be accessed by privileged users.
+	 */
+	if (!strncmp(name, XATTR_TRUSTED_PREFIX, XATTR_TRUSTED_PREFIX_LEN)) {
+		if (!capable(CAP_SYS_ADMIN))
+			return (mask & MAY_WRITE) ? -EPERM : -ENODATA;
+		return 0;
+	}
+
+	/*
+	 * In the user.* namespace, only regular files and directories can have
+	 * extended attributes. For sticky directories, only the owner and
+	 * privileged users can write attributes.
+	 */
+	if (!strncmp(name, XATTR_USER_PREFIX, XATTR_USER_PREFIX_LEN)) {
+		if (!S_ISREG(inode->i_mode) && !S_ISDIR(inode->i_mode))
+			return (mask & MAY_WRITE) ? -EPERM : -ENODATA;
+		if (S_ISDIR(inode->i_mode) && (inode->i_mode & S_ISVTX) &&
+		    (mask & MAY_WRITE) && !inode_owner_or_capable(inode))
 			return -EPERM;
 	}
 
 	return inode_permission(inode, mask);
 }
+
+/**
+ *  __vfs_setxattr_noperm - perform setxattr operation without performing
+ *  permission checks.
+ *
+ *  @dentry - object to perform setxattr on
+ *  @name - xattr name to set
+ *  @value - value to set @name to
+ *  @size - size of @value
+ *  @flags - flags to pass into filesystem operations
+ *
+ *  returns the result of the internal setxattr or setsecurity operations.
+ *
+ *  This function requires the caller to lock the inode's i_mutex before it
+ *  is executed. It also assumes that the caller will make the appropriate
+ *  permission checks.
+ */
+int __vfs_setxattr_noperm(struct dentry *dentry, const char *name,
+		const void *value, size_t size, int flags)
+{
+	struct inode *inode = dentry->d_inode;
+	int error = -EOPNOTSUPP;
+	int issec = !strncmp(name, XATTR_SECURITY_PREFIX,
+				   XATTR_SECURITY_PREFIX_LEN);
+
+	if (issec)
+		inode->i_flags &= ~S_NOSEC;
+	if (inode->i_op->setxattr) {
+		error = inode->i_op->setxattr(dentry, name, value, size, flags);
+		if (!error) {
+			fsnotify_xattr(dentry);
+			security_inode_post_setxattr(dentry, name, value,
+						     size, flags);
+		}
+	} else if (issec) {
+		const char *suffix = name + XATTR_SECURITY_PREFIX_LEN;
+		error = security_inode_setsecurity(inode, suffix, value,
+						   size, flags);
+		if (!error)
+			fsnotify_xattr(dentry);
+	}
+
+	return error;
+}
+
 
 int
 vfs_setxattr(struct dentry *dentry, const char *name, const void *value,
@@ -97,6 +169,9 @@ vfs_setxattr(struct dentry *dentry, const char *name, const void *value,
 		if (!error)
 			fsnotify_xattr(dentry);
 	}
+
+	error = __vfs_setxattr_noperm(dentry, name, value, size, flags);
+
 out:
 	mutex_unlock(&inode->i_mutex);
 	return error;
@@ -124,11 +199,69 @@ xattr_getsecurity(struct inode *inode, const char *name, void *value,
 	}
 	memcpy(value, buffer, len);
 out:
-	security_release_secctx(buffer, len);
+	kfree(buffer);
 out_noalloc:
 	return len;
 }
 EXPORT_SYMBOL_GPL(xattr_getsecurity);
+
+/*
+ * vfs_getxattr_alloc - allocate memory, if necessary, before calling getxattr
+ *
+ * Allocate memory, if not already allocated, or re-allocate correct size,
+ * before retrieving the extended attribute.
+ *
+ * Returns the result of alloc, if failed, or the getxattr operation.
+ */
+ssize_t
+vfs_getxattr_alloc(struct dentry *dentry, const char *name, char **xattr_value,
+		   size_t xattr_size, gfp_t flags)
+{
+	struct inode *inode = dentry->d_inode;
+	char *value = *xattr_value;
+	int error;
+
+	error = xattr_permission(inode, name, MAY_READ);
+	if (error)
+		return error;
+
+	if (!inode->i_op->getxattr)
+		return -EOPNOTSUPP;
+
+	error = inode->i_op->getxattr(dentry, name, NULL, 0);
+	if (error < 0)
+		return error;
+
+	if (!value || (error > xattr_size)) {
+		value = krealloc(*xattr_value, error + 1, flags);
+		if (!value)
+			return -ENOMEM;
+		memset(value, 0, error + 1);
+	}
+
+	error = inode->i_op->getxattr(dentry, name, value, error);
+	*xattr_value = value;
+	return error;
+}
+
+/* Compare an extended attribute value with the given value */
+int vfs_xattr_cmp(struct dentry *dentry, const char *xattr_name,
+		  const char *value, size_t size, gfp_t flags)
+{
+	char *xattr_value = NULL;
+	int rc;
+
+	rc = vfs_getxattr_alloc(dentry, xattr_name, &xattr_value, 0, flags);
+	if (rc < 0)
+		return rc;
+
+	if ((rc != size) || (memcmp(xattr_value, value, rc) != 0))
+		rc = -EINVAL;
+	else
+		rc = 0;
+	kfree(xattr_value);
+	return rc;
+}
 
 ssize_t
 vfs_getxattr(struct dentry *dentry, const char *name, void *value, size_t size)
@@ -176,6 +309,7 @@ vfs_listxattr(struct dentry *d, char *list, size_t size)
 		return error;
 	error = -EOPNOTSUPP;
 	if (d->d_inode->i_op && d->d_inode->i_op->listxattr) {
+	if (d->d_inode->i_op->listxattr) {
 		error = d->d_inode->i_op->listxattr(d, list, size);
 	} else {
 		error = security_inode_listsecurity(d->d_inode, list, size);
@@ -209,6 +343,20 @@ vfs_removexattr(struct dentry *dentry, const char *name)
 
 	if (!error)
 		fsnotify_xattr(dentry);
+	mutex_lock(&inode->i_mutex);
+	error = security_inode_removexattr(dentry, name);
+	if (error)
+		goto out;
+
+	error = inode->i_op->removexattr(dentry, name);
+
+	if (!error) {
+		fsnotify_xattr(dentry);
+		evm_inode_post_removexattr(dentry, name);
+	}
+
+out:
+	mutex_unlock(&inode->i_mutex);
 	return error;
 }
 EXPORT_SYMBOL_GPL(vfs_removexattr);
@@ -223,6 +371,7 @@ setxattr(struct dentry *d, const char __user *name, const void __user *value,
 {
 	int error;
 	void *kvalue = NULL;
+	void *vvalue = NULL;	/* If non-NULL, we used vmalloc() */
 	char kname[XATTR_NAME_MAX + 1];
 
 	if (flags & ~(XATTR_CREATE|XATTR_REPLACE))
@@ -259,6 +408,39 @@ sys_setxattr(const char __user *pathname, const char __user *name,
 	int error;
 
 	error = user_path(pathname, &path);
+		kvalue = kmalloc(size, GFP_KERNEL | __GFP_NOWARN);
+		if (!kvalue) {
+			vvalue = vmalloc(size);
+			if (!vvalue)
+				return -ENOMEM;
+			kvalue = vvalue;
+		}
+		if (copy_from_user(kvalue, value, size)) {
+			error = -EFAULT;
+			goto out;
+		}
+		if ((strcmp(kname, XATTR_NAME_POSIX_ACL_ACCESS) == 0) ||
+		    (strcmp(kname, XATTR_NAME_POSIX_ACL_DEFAULT) == 0))
+			posix_acl_fix_xattr_from_user(kvalue, size);
+	}
+
+	error = vfs_setxattr(d, kname, kvalue, size, flags);
+out:
+	if (vvalue)
+		vfree(vvalue);
+	else
+		kfree(kvalue);
+	return error;
+}
+
+static int path_setxattr(const char __user *pathname,
+			 const char __user *name, const void __user *value,
+			 size_t size, int flags, unsigned int lookup_flags)
+{
+	struct path path;
+	int error;
+retry:
+	error = user_path_at(AT_FDCWD, pathname, lookup_flags, &path);
 	if (error)
 		return error;
 	error = mnt_want_write(path.mnt);
@@ -308,6 +490,42 @@ sys_fsetxattr(int fd, const char __user *name, const void __user *value,
 		mnt_drop_write(f->f_path.mnt);
 	}
 	fput(f);
+	if (retry_estale(error, lookup_flags)) {
+		lookup_flags |= LOOKUP_REVAL;
+		goto retry;
+	}
+	return error;
+}
+
+SYSCALL_DEFINE5(setxattr, const char __user *, pathname,
+		const char __user *, name, const void __user *, value,
+		size_t, size, int, flags)
+{
+	return path_setxattr(pathname, name, value, size, flags, LOOKUP_FOLLOW);
+}
+
+SYSCALL_DEFINE5(lsetxattr, const char __user *, pathname,
+		const char __user *, name, const void __user *, value,
+		size_t, size, int, flags)
+{
+	return path_setxattr(pathname, name, value, size, flags, 0);
+}
+
+SYSCALL_DEFINE5(fsetxattr, int, fd, const char __user *, name,
+		const void __user *,value, size_t, size, int, flags)
+{
+	struct fd f = fdget(fd);
+	int error = -EBADF;
+
+	if (!f.file)
+		return error;
+	audit_file(f.file);
+	error = mnt_want_write_file(f.file);
+	if (!error) {
+		error = setxattr(f.file->f_path.dentry, name, value, size, flags);
+		mnt_drop_write_file(f.file);
+	}
+	fdput(f);
 	return error;
 }
 
@@ -320,6 +538,7 @@ getxattr(struct dentry *d, const char __user *name, void __user *value,
 {
 	ssize_t error;
 	void *kvalue = NULL;
+	void *vvalue = NULL;
 	char kname[XATTR_NAME_MAX + 1];
 
 	error = strncpy_from_user(kname, name, sizeof(kname));
@@ -334,10 +553,20 @@ getxattr(struct dentry *d, const char __user *name, void __user *value,
 		kvalue = kzalloc(size, GFP_KERNEL);
 		if (!kvalue)
 			return -ENOMEM;
+		kvalue = kzalloc(size, GFP_KERNEL | __GFP_NOWARN);
+		if (!kvalue) {
+			vvalue = vzalloc(size);
+			if (!vvalue)
+				return -ENOMEM;
+			kvalue = vvalue;
+		}
 	}
 
 	error = vfs_getxattr(d, kname, kvalue, size);
 	if (error > 0) {
+		if ((strcmp(kname, XATTR_NAME_POSIX_ACL_ACCESS) == 0) ||
+		    (strcmp(kname, XATTR_NAME_POSIX_ACL_DEFAULT) == 0))
+			posix_acl_fix_xattr_to_user(kvalue, error);
 		if (size && copy_to_user(value, kvalue, error))
 			error = -EFAULT;
 	} else if (error == -ERANGE && size >= XATTR_SIZE_MAX) {
@@ -357,6 +586,21 @@ sys_getxattr(const char __user *pathname, const char __user *name,
 	ssize_t error;
 
 	error = user_path(pathname, &path);
+	if (vvalue)
+		vfree(vvalue);
+	else
+		kfree(kvalue);
+	return error;
+}
+
+static ssize_t path_getxattr(const char __user *pathname,
+			     const char __user *name, void __user *value,
+			     size_t size, unsigned int lookup_flags)
+{
+	struct path path;
+	ssize_t error;
+retry:
+	error = user_path_at(AT_FDCWD, pathname, lookup_flags, &path);
 	if (error)
 		return error;
 	error = getxattr(path.dentry, name, value, size);
@@ -391,6 +635,36 @@ sys_fgetxattr(int fd, const char __user *name, void __user *value, size_t size)
 	audit_inode(NULL, f->f_path.dentry);
 	error = getxattr(f->f_path.dentry, name, value, size);
 	fput(f);
+	if (retry_estale(error, lookup_flags)) {
+		lookup_flags |= LOOKUP_REVAL;
+		goto retry;
+	}
+	return error;
+}
+
+SYSCALL_DEFINE4(getxattr, const char __user *, pathname,
+		const char __user *, name, void __user *, value, size_t, size)
+{
+	return path_getxattr(pathname, name, value, size, LOOKUP_FOLLOW);
+}
+
+SYSCALL_DEFINE4(lgetxattr, const char __user *, pathname,
+		const char __user *, name, void __user *, value, size_t, size)
+{
+	return path_getxattr(pathname, name, value, size, 0);
+}
+
+SYSCALL_DEFINE4(fgetxattr, int, fd, const char __user *, name,
+		void __user *, value, size_t, size)
+{
+	struct fd f = fdget(fd);
+	ssize_t error = -EBADF;
+
+	if (!f.file)
+		return error;
+	audit_file(f.file);
+	error = getxattr(f.file->f_path.dentry, name, value, size);
+	fdput(f);
 	return error;
 }
 
@@ -402,6 +676,7 @@ listxattr(struct dentry *d, char __user *list, size_t size)
 {
 	ssize_t error;
 	char *klist = NULL;
+	char *vlist = NULL;	/* If non-NULL, we used vmalloc() */
 
 	if (size) {
 		if (size > XATTR_LIST_MAX)
@@ -409,6 +684,13 @@ listxattr(struct dentry *d, char __user *list, size_t size)
 		klist = kmalloc(size, GFP_KERNEL);
 		if (!klist)
 			return -ENOMEM;
+		klist = kmalloc(size, __GFP_NOWARN | GFP_KERNEL);
+		if (!klist) {
+			vlist = vmalloc(size);
+			if (!vlist)
+				return -ENOMEM;
+			klist = vlist;
+		}
 	}
 
 	error = vfs_listxattr(d, klist, size);
@@ -431,6 +713,20 @@ sys_listxattr(const char __user *pathname, char __user *list, size_t size)
 	ssize_t error;
 
 	error = user_path(pathname, &path);
+	if (vlist)
+		vfree(vlist);
+	else
+		kfree(klist);
+	return error;
+}
+
+static ssize_t path_listxattr(const char __user *pathname, char __user *list,
+			      size_t size, unsigned int lookup_flags)
+{
+	struct path path;
+	ssize_t error;
+retry:
+	error = user_path_at(AT_FDCWD, pathname, lookup_flags, &path);
 	if (error)
 		return error;
 	error = listxattr(path.dentry, list, size);
@@ -464,6 +760,35 @@ sys_flistxattr(int fd, char __user *list, size_t size)
 	audit_inode(NULL, f->f_path.dentry);
 	error = listxattr(f->f_path.dentry, list, size);
 	fput(f);
+	if (retry_estale(error, lookup_flags)) {
+		lookup_flags |= LOOKUP_REVAL;
+		goto retry;
+	}
+	return error;
+}
+
+SYSCALL_DEFINE3(listxattr, const char __user *, pathname, char __user *, list,
+		size_t, size)
+{
+	return path_listxattr(pathname, list, size, LOOKUP_FOLLOW);
+}
+
+SYSCALL_DEFINE3(llistxattr, const char __user *, pathname, char __user *, list,
+		size_t, size)
+{
+	return path_listxattr(pathname, list, size, 0);
+}
+
+SYSCALL_DEFINE3(flistxattr, int, fd, char __user *, list, size_t, size)
+{
+	struct fd f = fdget(fd);
+	ssize_t error = -EBADF;
+
+	if (!f.file)
+		return error;
+	audit_file(f.file);
+	error = listxattr(f.file->f_path.dentry, list, size);
+	fdput(f);
 	return error;
 }
 
@@ -492,6 +817,13 @@ sys_removexattr(const char __user *pathname, const char __user *name)
 	int error;
 
 	error = user_path(pathname, &path);
+static int path_removexattr(const char __user *pathname,
+			    const char __user *name, unsigned int lookup_flags)
+{
+	struct path path;
+	int error;
+retry:
+	error = user_path_at(AT_FDCWD, pathname, lookup_flags, &path);
 	if (error)
 		return error;
 	error = mnt_want_write(path.mnt);
@@ -539,6 +871,39 @@ sys_fremovexattr(int fd, const char __user *name)
 		mnt_drop_write(f->f_path.mnt);
 	}
 	fput(f);
+	if (retry_estale(error, lookup_flags)) {
+		lookup_flags |= LOOKUP_REVAL;
+		goto retry;
+	}
+	return error;
+}
+
+SYSCALL_DEFINE2(removexattr, const char __user *, pathname,
+		const char __user *, name)
+{
+	return path_removexattr(pathname, name, LOOKUP_FOLLOW);
+}
+
+SYSCALL_DEFINE2(lremovexattr, const char __user *, pathname,
+		const char __user *, name)
+{
+	return path_removexattr(pathname, name, 0);
+}
+
+SYSCALL_DEFINE2(fremovexattr, int, fd, const char __user *, name)
+{
+	struct fd f = fdget(fd);
+	int error = -EBADF;
+
+	if (!f.file)
+		return error;
+	audit_file(f.file);
+	error = mnt_want_write_file(f.file);
+	if (!error) {
+		error = removexattr(f.file->f_path.dentry, name);
+		mnt_drop_write_file(f.file);
+	}
+	fdput(f);
 	return error;
 }
 
@@ -574,6 +939,10 @@ static struct xattr_handler *
 xattr_resolve_name(struct xattr_handler **handlers, const char **name)
 {
 	struct xattr_handler *handler;
+static const struct xattr_handler *
+xattr_resolve_name(const struct xattr_handler **handlers, const char **name)
+{
+	const struct xattr_handler *handler;
 
 	if (!*name)
 		return NULL;
@@ -601,6 +970,12 @@ generic_getxattr(struct dentry *dentry, const char *name, void *buffer, size_t s
 	if (!handler)
 		return -EOPNOTSUPP;
 	return handler->get(inode, name, buffer, size);
+	const struct xattr_handler *handler;
+
+	handler = xattr_resolve_name(dentry->d_sb->s_xattr, &name);
+	if (!handler)
+		return -EOPNOTSUPP;
+	return handler->get(handler, dentry, name, buffer, size);
 }
 
 /*
@@ -617,11 +992,25 @@ generic_listxattr(struct dentry *dentry, char *buffer, size_t buffer_size)
 	if (!buffer) {
 		for_each_xattr_handler(handlers, handler)
 			size += handler->list(inode, NULL, 0, NULL, 0);
+	const struct xattr_handler *handler, **handlers = dentry->d_sb->s_xattr;
+	unsigned int size = 0;
+
+	if (!buffer) {
+		for_each_xattr_handler(handlers, handler) {
+			if (!handler->list)
+				continue;
+			size += handler->list(handler, dentry, NULL, 0,
+					      NULL, 0);
+		}
 	} else {
 		char *buf = buffer;
 
 		for_each_xattr_handler(handlers, handler) {
 			size = handler->list(inode, buf, buffer_size, NULL, 0);
+			if (!handler->list)
+				continue;
+			size = handler->list(handler, dentry, buf, buffer_size,
+					     NULL, 0);
 			if (size > buffer_size)
 				return -ERANGE;
 			buf += size;
@@ -647,6 +1036,14 @@ generic_setxattr(struct dentry *dentry, const char *name, const void *value, siz
 	if (!handler)
 		return -EOPNOTSUPP;
 	return handler->set(inode, name, value, size, flags);
+	const struct xattr_handler *handler;
+
+	if (size == 0)
+		value = "";  /* empty EA, do not remove */
+	handler = xattr_resolve_name(dentry->d_sb->s_xattr, &name);
+	if (!handler)
+		return -EOPNOTSUPP;
+	return handler->set(handler, dentry, name, value, size, flags);
 }
 
 /*
@@ -663,9 +1060,219 @@ generic_removexattr(struct dentry *dentry, const char *name)
 	if (!handler)
 		return -EOPNOTSUPP;
 	return handler->set(inode, name, NULL, 0, XATTR_REPLACE);
+	const struct xattr_handler *handler;
+
+	handler = xattr_resolve_name(dentry->d_sb->s_xattr, &name);
+	if (!handler)
+		return -EOPNOTSUPP;
+	return handler->set(handler, dentry, name, NULL, 0, XATTR_REPLACE);
 }
 
 EXPORT_SYMBOL(generic_getxattr);
 EXPORT_SYMBOL(generic_listxattr);
 EXPORT_SYMBOL(generic_setxattr);
 EXPORT_SYMBOL(generic_removexattr);
+
+/**
+ * xattr_full_name  -  Compute full attribute name from suffix
+ *
+ * @handler:	handler of the xattr_handler operation
+ * @name:	name passed to the xattr_handler operation
+ *
+ * The get and set xattr handler operations are called with the remainder of
+ * the attribute name after skipping the handler's prefix: for example, "foo"
+ * is passed to the get operation of a handler with prefix "user." to get
+ * attribute "user.foo".  The full name is still "there" in the name though.
+ *
+ * Note: the list xattr handler operation when called from the vfs is passed a
+ * NULL name; some file systems use this operation internally, with varying
+ * semantics.
+ */
+const char *xattr_full_name(const struct xattr_handler *handler,
+			    const char *name)
+{
+	size_t prefix_len = strlen(handler->prefix);
+
+	return name - prefix_len;
+}
+EXPORT_SYMBOL(xattr_full_name);
+
+/*
+ * Allocate new xattr and copy in the value; but leave the name to callers.
+ */
+struct simple_xattr *simple_xattr_alloc(const void *value, size_t size)
+{
+	struct simple_xattr *new_xattr;
+	size_t len;
+
+	/* wrap around? */
+	len = sizeof(*new_xattr) + size;
+	if (len < sizeof(*new_xattr))
+		return NULL;
+
+	new_xattr = kmalloc(len, GFP_KERNEL);
+	if (!new_xattr)
+		return NULL;
+
+	new_xattr->size = size;
+	memcpy(new_xattr->value, value, size);
+	return new_xattr;
+}
+
+/*
+ * xattr GET operation for in-memory/pseudo filesystems
+ */
+int simple_xattr_get(struct simple_xattrs *xattrs, const char *name,
+		     void *buffer, size_t size)
+{
+	struct simple_xattr *xattr;
+	int ret = -ENODATA;
+
+	spin_lock(&xattrs->lock);
+	list_for_each_entry(xattr, &xattrs->head, list) {
+		if (strcmp(name, xattr->name))
+			continue;
+
+		ret = xattr->size;
+		if (buffer) {
+			if (size < xattr->size)
+				ret = -ERANGE;
+			else
+				memcpy(buffer, xattr->value, xattr->size);
+		}
+		break;
+	}
+	spin_unlock(&xattrs->lock);
+	return ret;
+}
+
+static int __simple_xattr_set(struct simple_xattrs *xattrs, const char *name,
+			      const void *value, size_t size, int flags)
+{
+	struct simple_xattr *xattr;
+	struct simple_xattr *new_xattr = NULL;
+	int err = 0;
+
+	/* value == NULL means remove */
+	if (value) {
+		new_xattr = simple_xattr_alloc(value, size);
+		if (!new_xattr)
+			return -ENOMEM;
+
+		new_xattr->name = kstrdup(name, GFP_KERNEL);
+		if (!new_xattr->name) {
+			kfree(new_xattr);
+			return -ENOMEM;
+		}
+	}
+
+	spin_lock(&xattrs->lock);
+	list_for_each_entry(xattr, &xattrs->head, list) {
+		if (!strcmp(name, xattr->name)) {
+			if (flags & XATTR_CREATE) {
+				xattr = new_xattr;
+				err = -EEXIST;
+			} else if (new_xattr) {
+				list_replace(&xattr->list, &new_xattr->list);
+			} else {
+				list_del(&xattr->list);
+			}
+			goto out;
+		}
+	}
+	if (flags & XATTR_REPLACE) {
+		xattr = new_xattr;
+		err = -ENODATA;
+	} else {
+		list_add(&new_xattr->list, &xattrs->head);
+		xattr = NULL;
+	}
+out:
+	spin_unlock(&xattrs->lock);
+	if (xattr) {
+		kfree(xattr->name);
+		kfree(xattr);
+	}
+	return err;
+
+}
+
+/**
+ * simple_xattr_set - xattr SET operation for in-memory/pseudo filesystems
+ * @xattrs: target simple_xattr list
+ * @name: name of the new extended attribute
+ * @value: value of the new xattr. If %NULL, will remove the attribute
+ * @size: size of the new xattr
+ * @flags: %XATTR_{CREATE|REPLACE}
+ *
+ * %XATTR_CREATE is set, the xattr shouldn't exist already; otherwise fails
+ * with -EEXIST.  If %XATTR_REPLACE is set, the xattr should exist;
+ * otherwise, fails with -ENODATA.
+ *
+ * Returns 0 on success, -errno on failure.
+ */
+int simple_xattr_set(struct simple_xattrs *xattrs, const char *name,
+		     const void *value, size_t size, int flags)
+{
+	if (size == 0)
+		value = ""; /* empty EA, do not remove */
+	return __simple_xattr_set(xattrs, name, value, size, flags);
+}
+
+/*
+ * xattr REMOVE operation for in-memory/pseudo filesystems
+ */
+int simple_xattr_remove(struct simple_xattrs *xattrs, const char *name)
+{
+	return __simple_xattr_set(xattrs, name, NULL, 0, XATTR_REPLACE);
+}
+
+static bool xattr_is_trusted(const char *name)
+{
+	return !strncmp(name, XATTR_TRUSTED_PREFIX, XATTR_TRUSTED_PREFIX_LEN);
+}
+
+/*
+ * xattr LIST operation for in-memory/pseudo filesystems
+ */
+ssize_t simple_xattr_list(struct simple_xattrs *xattrs, char *buffer,
+			  size_t size)
+{
+	bool trusted = ns_capable_noaudit(&init_user_ns, CAP_SYS_ADMIN);
+	struct simple_xattr *xattr;
+	size_t used = 0;
+
+	spin_lock(&xattrs->lock);
+	list_for_each_entry(xattr, &xattrs->head, list) {
+		size_t len;
+
+		/* skip "trusted." attributes for unprivileged callers */
+		if (!trusted && xattr_is_trusted(xattr->name))
+			continue;
+
+		len = strlen(xattr->name) + 1;
+		used += len;
+		if (buffer) {
+			if (size < used) {
+				used = -ERANGE;
+				break;
+			}
+			memcpy(buffer, xattr->name, len);
+			buffer += len;
+		}
+	}
+	spin_unlock(&xattrs->lock);
+
+	return used;
+}
+
+/*
+ * Adds an extended attribute to the list
+ */
+void simple_xattr_list_add(struct simple_xattrs *xattrs,
+			   struct simple_xattr *new_xattr)
+{
+	spin_lock(&xattrs->lock);
+	list_add(&new_xattr->list, &xattrs->head);
+	spin_unlock(&xattrs->lock);
+}

@@ -44,5 +44,9 @@ extern void usb_stor_report_bus_reset(struct us_data *us);
 
 extern unsigned char usb_stor_sense_invalidCDB[18];
 extern struct scsi_host_template usb_stor_host_template;
+extern void usb_stor_host_template_init(struct scsi_host_template *sht,
+					const char *name, struct module *owner);
+
+extern unsigned char usb_stor_sense_invalidCDB[18];
 
 #endif

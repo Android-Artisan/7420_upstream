@@ -1,5 +1,4 @@
             Information about PowerPC Sound support
-=====================================================================
 
 Please mail me (Cort Dougan, cort@fsmlabs.com) if you have questions,
 comments or corrections.

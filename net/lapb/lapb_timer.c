@@ -14,6 +14,8 @@
  *	LAPB 002	Jonathan Naylor	New timer architecture.
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/errno.h>
 #include <linux/types.h>
 #include <linux/socket.h>
@@ -109,6 +111,7 @@ static void lapb_t1timer_expiry(unsigned long param)
 #if LAPB_DEBUG > 0
 				printk(KERN_DEBUG "lapb: (%p) S1 -> S0\n", lapb->dev);
 #endif
+				lapb_dbg(0, "(%p) S1 -> S0\n", lapb->dev);
 				return;
 			} else {
 				lapb->n2count++;
@@ -121,6 +124,12 @@ static void lapb_t1timer_expiry(unsigned long param)
 #if LAPB_DEBUG > 1
 					printk(KERN_DEBUG "lapb: (%p) S1 TX SABM(1)\n", lapb->dev);
 #endif
+					lapb_dbg(1, "(%p) S1 TX SABME(1)\n",
+						 lapb->dev);
+					lapb_send_control(lapb, LAPB_SABME, LAPB_POLLON, LAPB_COMMAND);
+				} else {
+					lapb_dbg(1, "(%p) S1 TX SABM(1)\n",
+						 lapb->dev);
 					lapb_send_control(lapb, LAPB_SABM, LAPB_POLLON, LAPB_COMMAND);
 				}
 			}
@@ -143,6 +152,11 @@ static void lapb_t1timer_expiry(unsigned long param)
 #if LAPB_DEBUG > 1
 				printk(KERN_DEBUG "lapb: (%p) S2 TX DISC(1)\n", lapb->dev);
 #endif
+				lapb_dbg(0, "(%p) S2 -> S0\n", lapb->dev);
+				return;
+			} else {
+				lapb->n2count++;
+				lapb_dbg(1, "(%p) S2 TX DISC(1)\n", lapb->dev);
 				lapb_send_control(lapb, LAPB_DISC, LAPB_POLLON, LAPB_COMMAND);
 			}
 			break;
@@ -159,10 +173,12 @@ static void lapb_t1timer_expiry(unsigned long param)
 #if LAPB_DEBUG > 0
 				printk(KERN_DEBUG "lapb: (%p) S3 -> S0\n", lapb->dev);
 #endif
+				lapb_dbg(0, "(%p) S3 -> S0\n", lapb->dev);
 				return;
 			} else {
 				lapb->n2count++;
 				lapb_requeue_frames(lapb);
+				lapb_kick(lapb);
 			}
 			break;
 
@@ -177,6 +193,7 @@ static void lapb_t1timer_expiry(unsigned long param)
 #if LAPB_DEBUG > 0
 				printk(KERN_DEBUG "lapb: (%p) S4 -> S0\n", lapb->dev);
 #endif
+				lapb_dbg(0, "(%p) S4 -> S0\n", lapb->dev);
 				return;
 			} else {
 				lapb->n2count++;

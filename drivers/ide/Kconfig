@@ -90,8 +90,44 @@ comment "Please see Documentation/ide/ide.txt for help/info on IDE drives"
 
 config IDE_TIMINGS
 	bool
+	bool
+
+menuconfig IDE
+	tristate "ATA/ATAPI/MFM/RLL support (DEPRECATED)"
+	depends on HAVE_IDE
+	depends on BLOCK
+	---help---
+	  If you say Y here, your kernel will be able to manage ATA/(E)IDE and
+	  ATAPI units. The most common cases are IDE hard drives and ATAPI
+	  CD-ROM drives.
+
+	  This subsystem is currently in maintenance mode with only bug fix
+	  changes applied. Users of ATA hardware are encouraged to migrate to
+	  the newer ATA subsystem ("Serial ATA (prod) and Parallel ATA
+	  (experimental) drivers") which is more actively maintained.
+
+	  To compile this driver as a module, choose M here: the
+	  module will be called ide-core.
+
+	  For further information, please read <file:Documentation/ide/ide.txt>.
+
+	  If unsure, say N.
+
+if IDE
+
+comment "Please see Documentation/ide/ide.txt for help/info on IDE drives"
+
+config IDE_XFER_MODE
+	bool
+
+config IDE_TIMINGS
+	bool
+	select IDE_XFER_MODE
 
 config IDE_ATAPI
+	bool
+
+config IDE_LEGACY
 	bool
 
 config BLK_DEV_IDE_SATA
@@ -153,6 +189,39 @@ config IDEDISK_MULTI_MODE
 	  hda: set_multmode: error=0x04 { DriveStatusError }
 
 	  If in doubt, say N.
+config IDE_GD
+	tristate "generic ATA/ATAPI disk support"
+	default y
+	help
+	  Support for ATA/ATAPI disks (including ATAPI floppy drives).
+
+	  To compile this driver as a module, choose M here.
+	  The module will be called ide-gd_mod.
+
+	  If unsure, say Y.
+
+config IDE_GD_ATA
+	bool "ATA disk support"
+	depends on IDE_GD
+	default y
+	help
+	  This will include support for ATA hard disks.
+
+	  If unsure, say Y.
+
+config IDE_GD_ATAPI
+	bool "ATAPI floppy support"
+	depends on IDE_GD
+	select IDE_ATAPI
+	help
+	  This will include support for ATAPI floppy drives
+	  (i.e. Iomega ZIP or MKE LS-120).
+
+	  For information about jumper settings and the question
+	  of when a ZIP drive uses a partition table, see
+	  <http://www.win.tue.nl/~aeb/linux/zip/zip-1.html>.
+
+	  If unsure, say N.
 
 config BLK_DEV_IDECS
 	tristate "PCMCIA IDE support"
@@ -170,6 +239,7 @@ config BLK_DEV_DELKIN
 
 config BLK_DEV_IDECD
 	tristate "Include IDE/ATAPI CDROM support"
+	select IDE_ATAPI
 	---help---
 	  If you have a CD-ROM drive using the ATAPI protocol, say Y. ATAPI is
 	  a newer protocol used by IDE CD-ROM and TAPE drives, similar to the
@@ -188,6 +258,7 @@ config BLK_DEV_IDECD
 
 config BLK_DEV_IDECD_VERBOSE_ERRORS
 	bool "Verbose error logging for IDE/ATAPI CDROM driver" if EMBEDDED
+	bool "Verbose error logging for IDE/ATAPI CDROM driver" if EXPERT
 	depends on BLK_DEV_IDECD
 	default y
 	help
@@ -291,6 +362,8 @@ comment "IDE chipset support/bugfixes"
 config IDE_GENERIC
 	tristate "generic/default IDE chipset support"
 	depends on ALPHA || X86 || IA64 || M32R || MIPS
+	depends on ALPHA || X86 || IA64 || M32R || MIPS || ARCH_RPC
+	default ARM && ARCH_RPC
 	help
 	  This is the generic IDE driver.  This driver attaches to the
 	  fixed legacy ports (e.g. on PCs 0x1f0/0x170, 0x1e8/0x168 and
@@ -372,6 +445,7 @@ config BLK_DEV_IDEPCI
 config IDEPCI_PCIBUS_ORDER
 	bool "Probe IDE PCI devices in the PCI bus order (DEPRECATED)"
 	depends on BLK_DEV_IDE=y && BLK_DEV_IDEPCI
+	depends on IDE=y && BLK_DEV_IDEPCI
 	default y
 	help
 	  Probe IDE PCI devices in the order in which they appear on the
@@ -388,6 +462,7 @@ config IDEPCI_PCIBUS_ORDER
 config BLK_DEV_OFFBOARD
 	bool "Boot off-board chipsets first support (DEPRECATED)"
 	depends on BLK_DEV_IDEPCI && (BLK_DEV_AEC62XX || BLK_DEV_GENERIC || BLK_DEV_HPT34X || BLK_DEV_HPT366 || BLK_DEV_PDC202XX_NEW || BLK_DEV_PDC202XX_OLD || BLK_DEV_TC86C001)
+	depends on BLK_DEV_IDEPCI && (BLK_DEV_AEC62XX || BLK_DEV_GENERIC || BLK_DEV_HPT366 || BLK_DEV_PDC202XX_NEW || BLK_DEV_PDC202XX_OLD || BLK_DEV_TC86C001)
 	help
 	  Normally, IDE controllers built into the motherboard (on-board
 	  controllers) are assigned to ide0 and ide1 while those on add-in PCI
@@ -420,6 +495,11 @@ config BLK_DEV_OPTI621
 	help
 	  This is a driver for the OPTi 82C621 EIDE controller.
 	  Please read the comments at the top of <file:drivers/ide/pci/opti621.c>.
+	tristate "OPTi 82C621 chipset enhanced support"
+	select BLK_DEV_IDEPCI
+	help
+	  This is a driver for the OPTi 82C621 EIDE controller.
+	  Please read the comments at the top of <file:drivers/ide/opti621.c>.
 
 config BLK_DEV_RZ1000
 	tristate "RZ1000 chipset bugfix/support"
@@ -458,6 +538,7 @@ config BLK_DEV_ALI15X3
 
 	  Please read the comments at the top of
 	  <file:drivers/ide/pci/alim15x3.c>.
+	  <file:drivers/ide/alim15x3.c>.
 
 	  If unsure, say N.
 
@@ -510,6 +591,7 @@ config BLK_DEV_CY82C693
 config BLK_DEV_CS5520
 	tristate "Cyrix CS5510/20 MediaGX chipset support (VERY EXPERIMENTAL)"
 	depends on EXPERIMENTAL
+	depends on X86_32 || COMPILE_TEST
 	select BLK_DEV_IDEDMA_PCI
 	help
 	  Include support for PIO tuning and virtual DMA on the Cyrix MediaGX
@@ -520,6 +602,7 @@ config BLK_DEV_CS5520
 
 config BLK_DEV_CS5530
 	tristate "Cyrix/National Semiconductor CS5530 MediaGX chipset support"
+	depends on X86_32 || COMPILE_TEST
 	select BLK_DEV_IDEDMA_PCI
 	help
 	  Include support for UDMA on the Cyrix MediaGX 5530 chipset. This
@@ -530,6 +613,7 @@ config BLK_DEV_CS5530
 config BLK_DEV_CS5535
 	tristate "AMD CS5535 chipset support"
 	depends on X86 && !X86_64
+	depends on X86_32
 	select BLK_DEV_IDEDMA_PCI
 	help
 	  Include support for UDMA on the NSC/AMD CS5535 companion chipset.
@@ -556,6 +640,13 @@ config HPT34X_AUTODMA
 	  This is a dangerous thing to attempt currently! Please read the
 	  comments at the top of <file:drivers/ide/pci/hpt34x.c>.  If you say Y
 	  here, then say Y to "Use DMA by default when available" as well.
+config BLK_DEV_CS5536
+	tristate "CS5536 chipset support"
+	depends on X86_32
+	select BLK_DEV_IDEDMA_PCI
+	help
+	  This option enables support for the AMD CS5536
+	  companion chip used with the Geode LX processor family.
 
 	  If unsure, say N.
 
@@ -592,6 +683,7 @@ config BLK_DEV_JMICRON
 
 config BLK_DEV_SC1200
 	tristate "National SCx200 chipset support"
+	depends on X86_32 || COMPILE_TEST
 	select BLK_DEV_IDEDMA_PCI
 	help
 	  This driver adds support for the on-board IDE controller on the
@@ -604,6 +696,13 @@ config BLK_DEV_PIIX
 	  This driver adds explicit support for Intel PIIX and ICH chips.
 	  This allows the kernel to change PIO, DMA and UDMA speeds and to
 	  configure the chip to optimum performance.
+
+config BLK_DEV_IT8172
+	tristate "IT8172 IDE support"
+	select BLK_DEV_IDEDMA_PCI
+	help
+	  This driver adds support for the IDE controller on the
+	  IT8172 System Controller.
 
 config BLK_DEV_IT8213
 	tristate "IT8213 IDE support"
@@ -626,6 +725,7 @@ config BLK_DEV_NS87415
 	  (used mainly on SPARC64 and PA-RISC machines).
 
 	  Please read the comments at the top of <file:drivers/ide/pci/ns87415.c>.
+	  Please read the comments at the top of <file:drivers/ide/ns87415.c>.
 
 config BLK_DEV_PDC202XX_OLD
 	tristate "PROMISE PDC202{46|62|65|67} support"
@@ -645,6 +745,7 @@ config BLK_DEV_PDC202XX_OLD
 
 	  Please read the comments at the top of
 	  <file:drivers/ide/pci/pdc202xx_old.c>.
+	  <file:drivers/ide/pdc202xx_old.c>.
 
 	  If unsure, say N.
 
@@ -691,6 +792,7 @@ config BLK_DEV_SIS5513
 	  SiS745, SiS750
 
 	  Please read the comments at the top of <file:drivers/ide/pci/sis5513.c>.
+	  Please read the comments at the top of <file:drivers/ide/sis5513.c>.
 
 config BLK_DEV_SL82C105
 	tristate "Winbond SL82c105 support"
@@ -714,6 +816,7 @@ config BLK_DEV_SLC90E66
 
 	  Please read the comments at the top of
 	  <file:drivers/ide/pci/slc90e66.c>.
+	  <file:drivers/ide/slc90e66.c>.
 
 config BLK_DEV_TRM290
 	tristate "Tekram TRM290 chipset support"
@@ -723,6 +826,7 @@ config BLK_DEV_TRM290
 	  using the Tekram TRM290 PCI IDE chip. Volunteers are
 	  needed for further tweaking and development.
 	  Please read the comments at the top of <file:drivers/ide/pci/trm290.c>.
+	  Please read the comments at the top of <file:drivers/ide/trm290.c>.
 
 config BLK_DEV_VIA82CXXX
 	tristate "VIA82CXXX chipset support"
@@ -754,6 +858,14 @@ config BLK_DEV_IDE_PMAC
 	tristate "PowerMac on-board IDE support"
 	depends on PPC_PMAC && IDE=y && BLK_DEV_IDE=y
 	select IDE_TIMINGS
+endif
+
+# TODO: BLK_DEV_IDEDMA_PCI -> BLK_DEV_IDEDMA_SFF
+config BLK_DEV_IDE_PMAC
+	tristate "PowerMac on-board IDE support"
+	depends on PPC_PMAC
+	select IDE_TIMINGS
+	select BLK_DEV_IDEDMA_PCI
 	help
 	  This driver provides support for the on-board IDE controller on
 	  most of the recent Apple Power Macintoshes and PowerBooks.
@@ -787,6 +899,14 @@ choice
        prompt "IDE Mode for AMD Alchemy Au1200"
        default CONFIG_BLK_DEV_IDE_AU1XXX_PIO_DBDMA
        depends on SOC_AU1200 && BLK_DEV_IDE_AU1XXX
+config BLK_DEV_IDE_AU1XXX
+       bool "IDE for AMD Alchemy Au1200"
+       depends on MIPS_ALCHEMY
+       select IDE_XFER_MODE
+choice
+       prompt "IDE Mode for AMD Alchemy Au1200"
+       default BLK_DEV_IDE_AU1XXX_PIO_DBDMA
+       depends on BLK_DEV_IDE_AU1XXX
 
 config BLK_DEV_IDE_AU1XXX_PIO_DBDMA
        bool "PIO+DbDMA IDE for AMD Alchemy Au1200"
@@ -805,6 +925,18 @@ config IDE_ARM
 	tristate "ARM IDE support"
 	depends on ARM && (ARCH_CLPS7500 || ARCH_RPC || ARCH_SHARK)
 	default y
+       depends on BLK_DEV_IDE_AU1XXX
+endchoice
+
+config BLK_DEV_IDE_TX4938
+	tristate "TX4938 internal IDE support"
+	depends on SOC_TX4938
+	select IDE_TIMINGS
+
+config BLK_DEV_IDE_TX4939
+	tristate "TX4939 internal IDE support"
+	depends on SOC_TX4939
+	select BLK_DEV_IDEDMA_SFF
 
 config BLK_DEV_IDE_ICSIDE
 	tristate "ICS IDE interface support"
@@ -869,6 +1001,24 @@ config BLK_DEV_IDEDOUBLER
 config BLK_DEV_BUDDHA
 	tristate "Buddha/Catweasel/X-Surf IDE interface support (EXPERIMENTAL)"
 	depends on ZORRO && EXPERIMENTAL
+
+	  It also provides support for the so-called `IDE doublers' (made
+	  by various manufacturers, e.g. Eyetech) that can be connected to
+	  the on-board IDE interface of some Amiga models. Using such an IDE
+	  doubler, you can connect up to four instead of two IDE devices to
+	  the Amiga's on-board IDE interface. The feature is enabled at kernel
+	  runtime using the "gayle.doubler" kernel boot parameter.
+
+	  Say Y if you have an Amiga with a Gayle IDE interface and want to use
+	  IDE devices (hard disks, CD-ROM drives, etc.) that are connected to
+	  it.
+
+	  Note that you also have to enable Zorro bus support if you want to
+	  use Gayle IDE interfaces on the Zorro expansion bus.
+
+config BLK_DEV_BUDDHA
+	tristate "Buddha/Catweasel/X-Surf IDE interface support"
+	depends on ZORRO
 	help
 	  This is the IDE driver for the IDE interfaces on the Buddha, Catweasel
 	  and X-Surf expansion boards.  It supports up to two interfaces on the
@@ -935,6 +1085,7 @@ config BLK_DEV_4DRIVES
 config BLK_DEV_ALI14XX
 	tristate "ALI M14xx support"
 	select IDE_TIMINGS
+	select IDE_LEGACY
 	help
 	  This driver is enabled at runtime using the "ali14xx.probe" kernel
 	  boot parameter.  It enables support for the secondary IDE interface
@@ -945,22 +1096,31 @@ config BLK_DEV_ALI14XX
 
 config BLK_DEV_DTC2278
 	tristate "DTC-2278 support"
+	  <file:drivers/ide/ali14xx.c> for more info.
+
+config BLK_DEV_DTC2278
+	tristate "DTC-2278 support"
+	select IDE_XFER_MODE
+	select IDE_LEGACY
 	help
 	  This driver is enabled at runtime using the "dtc2278.probe" kernel
 	  boot parameter. It enables support for the secondary IDE interface
 	  of the DTC-2278 card, and permits faster I/O speeds to be set as
 	  well. See the <file:Documentation/ide/ide.txt> and
 	  <file:drivers/ide/legacy/dtc2278.c> files for more info.
+	  <file:drivers/ide/dtc2278.c> files for more info.
 
 config BLK_DEV_HT6560B
 	tristate "Holtek HT6560B support"
 	select IDE_TIMINGS
+	select IDE_LEGACY
 	help
 	  This driver is enabled at runtime using the "ht6560b.probe" kernel
 	  boot parameter. It enables support for the secondary IDE interface
 	  of the Holtek card, and permits faster I/O speeds to be set as well.
 	  See the <file:Documentation/ide/ide.txt> and
 	  <file:drivers/ide/legacy/ht6560b.c> files for more info.
+	  <file:drivers/ide/ht6560b.c> files for more info.
 
 config BLK_DEV_QD65XX
 	tristate "QDI QD65xx support"
@@ -969,16 +1129,24 @@ config BLK_DEV_QD65XX
 	  This driver is enabled at runtime using the "qd65xx.probe" kernel
 	  boot parameter.  It permits faster I/O speeds to be set.  See the
 	  <file:Documentation/ide/ide.txt> and <file:drivers/ide/legacy/qd65xx.c>
+	select IDE_LEGACY
+	help
+	  This driver is enabled at runtime using the "qd65xx.probe" kernel
+	  boot parameter.  It permits faster I/O speeds to be set.  See the
+	  <file:Documentation/ide/ide.txt> and <file:drivers/ide/qd65xx.c>
 	  for more info.
 
 config BLK_DEV_UMC8672
 	tristate "UMC-8672 support"
+	select IDE_XFER_MODE
+	select IDE_LEGACY
 	help
 	  This driver is enabled at runtime using the "umc8672.probe" kernel
 	  boot parameter. It enables support for the secondary IDE interface
 	  of the UMC-8672, and permits faster I/O speeds to be set as well.
 	  See the files <file:Documentation/ide/ide.txt> and
 	  <file:drivers/ide/legacy/umc8672.c> for more info.
+	  <file:drivers/ide/umc8672.c> for more info.
 
 endif
 
@@ -987,5 +1155,8 @@ config BLK_DEV_IDEDMA
 		 BLK_DEV_IDEDMA_ICS || BLK_DEV_IDE_AU1XXX_MDMA2_DBDMA
 
 endif
+	def_bool BLK_DEV_IDEDMA_SFF || \
+		 BLK_DEV_IDEDMA_ICS || BLK_DEV_IDE_AU1XXX_MDMA2_DBDMA
+	select IDE_XFER_MODE
 
 endif # IDE

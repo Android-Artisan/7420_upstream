@@ -33,6 +33,26 @@
 
 #define ACPI_BUS_COMPONENT		0x00010000
 #define ACPI_SYSTEM_COMPONENT		0x02000000
+#define ACPI_MAX_STRING			80
+
+/*
+ * Please update drivers/acpi/debug.c and Documentation/acpi/debug.txt
+ * if you add to this list.
+ */
+#define ACPI_BUS_COMPONENT		0x00010000
+#define ACPI_AC_COMPONENT		0x00020000
+#define ACPI_BATTERY_COMPONENT		0x00040000
+#define ACPI_BUTTON_COMPONENT		0x00080000
+#define ACPI_SBS_COMPONENT		0x00100000
+#define ACPI_FAN_COMPONENT		0x00200000
+#define ACPI_PCI_COMPONENT		0x00400000
+#define ACPI_POWER_COMPONENT		0x00800000
+#define ACPI_CONTAINER_COMPONENT	0x01000000
+#define ACPI_SYSTEM_COMPONENT		0x02000000
+#define ACPI_THERMAL_COMPONENT		0x04000000
+#define ACPI_MEMORY_DEVICE_COMPONENT	0x08000000
+#define ACPI_VIDEO_COMPONENT		0x10000000
+#define ACPI_PROCESSOR_COMPONENT	0x20000000
 
 /*
  * _HID definitions
@@ -42,6 +62,7 @@
 
 #define ACPI_POWER_HID			"LNXPOWER"
 #define ACPI_PROCESSOR_HID		"ACPI0007"
+#define ACPI_PROCESSOR_OBJECT_HID	"LNXCPU"
 #define ACPI_SYSTEM_HID			"LNXSYSTM"
 #define ACPI_THERMAL_HID		"LNXTHERM"
 #define ACPI_BUTTON_HID_POWERF		"LNXPWRBN"
@@ -49,6 +70,18 @@
 #define ACPI_VIDEO_HID			"LNXVIDEO"
 #define ACPI_BAY_HID			"LNXIOBAY"
 #define ACPI_DOCK_HID			"LNXDOCK"
+/* Quirk for broken IBM BIOSes */
+#define ACPI_SMBUS_IBM_HID		"SMBUSIBM"
+
+/*
+ * For fixed hardware buttons, we fabricate acpi_devices with HID
+ * ACPI_BUTTON_HID_POWERF or ACPI_BUTTON_HID_SLEEPF.  Fixed hardware
+ * signals only an event; it doesn't supply a notification value.
+ * To allow drivers to treat notifications from fixed hardware the
+ * same as those from real devices, we turn the events into this
+ * notification value.
+ */
+#define ACPI_FIXED_HARDWARE_EVENT	0x100
 
 /* --------------------------------------------------------------------------
                                        PCI
@@ -100,6 +133,16 @@ int acpi_power_transition(struct acpi_device *device, int state);
    -------------------------------------------------------------------------- */
 #ifdef CONFIG_ACPI_EC
 int acpi_ec_ecdt_probe(void);
+struct pci_dev *acpi_get_pci_dev(acpi_handle);
+
+/* Arch-defined function to add a bus to the system */
+
+struct pci_bus *pci_acpi_scan_root(struct acpi_pci_root *root);
+
+#ifdef CONFIG_X86
+void pci_acpi_crs_quirks(void);
+#else
+static inline void pci_acpi_crs_quirks(void) { }
 #endif
 
 /* --------------------------------------------------------------------------
@@ -150,5 +193,17 @@ static inline void unregister_hotplug_dock_device(acpi_handle handle)
                                   Suspend/Resume
   -------------------------------------------------------------------------- */
 extern int acpi_sleep_init(void);
+/*--------------------------------------------------------------------------
+                                  Dock Station
+  -------------------------------------------------------------------------- */
+
+#ifdef CONFIG_ACPI_DOCK
+extern int is_dock_device(struct acpi_device *adev);
+#else
+static inline int is_dock_device(struct acpi_device *adev)
+{
+	return 0;
+}
+#endif /* CONFIG_ACPI_DOCK */
 
 #endif /*__ACPI_DRIVERS_H__*/

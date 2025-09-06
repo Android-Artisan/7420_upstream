@@ -10,6 +10,8 @@
 
 #include <asm/machvec.h>
 #include <asm/dma.h>
+#include <asm/perf_event.h>
+#include <asm/mce.h>
 
 #include "proto.h"
 #include "irq_impl.h"
@@ -43,6 +45,14 @@ do_entInt(unsigned long type, unsigned long vector,
 	  unsigned long la_ptr, struct pt_regs *regs)
 {
 	struct pt_regs *old_regs;
+
+	/*
+	 * Disable interrupts during IRQ handling.
+	 * Note that there is no matching local_irq_enable() due to
+	 * severe problems with RTI at IPL0 and some MILO PALcode
+	 * (namely LX164).
+	 */
+	local_irq_disable();
 	switch (type) {
 	case 0:
 #ifdef CONFIG_SMP
@@ -72,6 +82,7 @@ do_entInt(unsigned long type, unsigned long vector,
 #else
 		handle_irq(RTC_IRQ);
 #endif
+		handle_irq(RTC_IRQ);
 		set_irq_regs(old_regs);
 		return;
 	case 2:
@@ -242,6 +253,16 @@ init_rtc_irq(void)
 {
 	irq_desc[RTC_IRQ].status = IRQ_DISABLED;
 	irq_desc[RTC_IRQ].chip = &rtc_irq_type;
+struct irqaction timer_irqaction = {
+	.handler	= rtc_timer_interrupt,
+	.name		= "timer",
+};
+
+void __init
+init_rtc_irq(void)
+{
+	irq_set_chip_and_handler_name(RTC_IRQ, &dummy_irq_chip,
+				      handle_percpu_irq, "RTC");
 	setup_irq(RTC_IRQ, &timer_irqaction);
 }
 

@@ -32,6 +32,14 @@
 #include <asm/smp.h>
 #include <asm/proc/proc.h>
 #include <asm/busctl-regs.h>
+#include <linux/cpu.h>
+#include <asm/processor.h>
+#include <linux/console.h>
+#include <asm/uaccess.h>
+#include <asm/setup.h>
+#include <asm/io.h>
+#include <asm/smp.h>
+#include <proc/proc.h>
 #include <asm/fpu.h>
 #include <asm/sections.h>
 
@@ -40,6 +48,7 @@ struct mn10300_cpuinfo boot_cpu_data;
 /* For PCI or other memory-mapped resources */
 unsigned long pci_mem_start = 0x18000000;
 
+static char __initdata cmd_line[COMMAND_LINE_SIZE];
 char redboot_command_line[COMMAND_LINE_SIZE] =
 	"console=ttyS0,115200 root=/dev/mtdblock3 rw";
 
@@ -70,6 +79,13 @@ static const char *const mn10300_cputypes[] = {
 	"am33v1",
 	"am33v2",
 	"am34v1",
+#define mn10300_known_cpus 5
+static const char *const mn10300_cputypes[] = {
+	"am33-1",
+	"am33-2",
+	"am34-1",
+	"am33-3",
+	"am34-2",
 	"unknown"
 };
 
@@ -104,6 +120,12 @@ static void __init parse_mem_cmdline(char **cmdline_p)
 
 	*to = '\0';
 	*cmdline_p = redboot_command_line;
+ * Pick out the memory size.  We look for mem=size,
+ * where size is "size[KkMm]"
+ */
+static int __init early_mem(char *p)
+{
+	memory_size = memparse(p, &p);
 
 	if (memory_size == 0)
 		panic("Memory size not known\n");
@@ -113,6 +135,9 @@ static void __init parse_mem_cmdline(char **cmdline_p)
 	if (memory_end > phys_memory_end)
 		memory_end = phys_memory_end;
 }
+	return 0;
+}
+early_param("mem", early_mem);
 
 /*
  * architecture specific setup
@@ -125,6 +150,21 @@ void __init setup_arch(char **cmdline_p)
 	cpu_init();
 	unit_setup();
 	parse_mem_cmdline(cmdline_p);
+	smp_init_cpus();
+
+	/* save unparsed command line copy for /proc/cmdline */
+	strlcpy(boot_command_line, redboot_command_line, COMMAND_LINE_SIZE);
+
+	/* populate cmd_line too for later use, preserving boot_command_line */
+	strlcpy(cmd_line, boot_command_line, COMMAND_LINE_SIZE);
+	*cmdline_p = cmd_line;
+
+	parse_early_param();
+
+	memory_end = (unsigned long) CONFIG_KERNEL_RAM_BASE_ADDRESS +
+		memory_size;
+	if (memory_end > phys_memory_end)
+		memory_end = phys_memory_end;
 
 	init_mm.start_code = (unsigned long)&_text;
 	init_mm.end_code = (unsigned long) &_etext;
@@ -162,6 +202,7 @@ void __init setup_arch(char **cmdline_p)
 	if (CONFIG_INTERRUPT_VECTOR_BASE >= CONFIG_KERNEL_RAM_BASE_ADDRESS &&
 	    CONFIG_INTERRUPT_VECTOR_BASE < memory_end)
 		reserve_bootmem(CONFIG_INTERRUPT_VECTOR_BASE, 1,
+		reserve_bootmem(CONFIG_INTERRUPT_VECTOR_BASE, PAGE_SIZE,
 				BOOTMEM_DEFAULT);
 
 	reserve_bootmem(PAGE_ALIGN(PFN_PHYS(free_pfn)), bootmap_size,
@@ -227,6 +268,30 @@ void __init cpu_init(void)
 #endif
 }
 
+	printk(KERN_INFO "Panasonic %s, rev %ld\n",
+	       mn10300_cputypes[type],
+	       (cpurev & CPUREV_REVISION) >> CPUREV_REVISION_S);
+
+	get_mem_info(&phys_memory_base, &memory_size);
+	phys_memory_end = phys_memory_base + memory_size;
+
+	fpu_init_state();
+}
+
+static struct cpu cpu_devices[NR_CPUS];
+
+static int __init topology_init(void)
+{
+	int i;
+
+	for_each_present_cpu(i)
+		register_cpu(&cpu_devices[i], i);
+
+	return 0;
+}
+
+subsys_initcall(topology_init);
+
 /*
  * Get CPU information for use by the procfs.
  */
@@ -235,6 +300,21 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 	unsigned long cpurev = CPUREV, type, icachesz, dcachesz;
 
 	type = (CPUREV & CPUREV_TYPE) >> CPUREV_TYPE_S;
+#ifdef CONFIG_SMP
+	struct mn10300_cpuinfo *c = v;
+	unsigned long cpu_id = c - cpu_data;
+	unsigned long cpurev = c->type, type, icachesz, dcachesz;
+#else  /* CONFIG_SMP */
+	unsigned long cpu_id = 0;
+	unsigned long cpurev = CPUREV, type, icachesz, dcachesz;
+#endif /* CONFIG_SMP */
+
+#ifdef CONFIG_SMP
+	if (!cpu_online(cpu_id))
+		return 0;
+#endif
+
+	type = (cpurev & CPUREV_TYPE) >> CPUREV_TYPE_S;
 	if (type > mn10300_known_cpus)
 		type = mn10300_known_cpus;
 
@@ -251,11 +331,14 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 	seq_printf(m,
 		   "processor  : 0\n"
 		   "vendor_id  : Matsushita\n"
+		   "processor  : %ld\n"
+		   "vendor_id  : " PROCESSOR_VENDOR_NAME "\n"
 		   "cpu core   : %s\n"
 		   "cpu rev    : %lu\n"
 		   "model name : " PROCESSOR_MODEL_NAME		"\n"
 		   "icache size: %lu\n"
 		   "dcache size: %lu\n",
+		   cpu_id,
 		   mn10300_cputypes[type],
 		   (cpurev & CPUREV_REVISION) >> CPUREV_REVISION_S,
 		   icachesz,
@@ -269,6 +352,13 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 		   (MN10300_IOCLK / 10000) % 100,
 		   loops_per_jiffy / (500000 / HZ),
 		   (loops_per_jiffy / (5000 / HZ)) % 100
+#ifdef CONFIG_SMP
+		   c->loops_per_jiffy / (500000 / HZ),
+		   (c->loops_per_jiffy / (5000 / HZ)) % 100
+#else  /* CONFIG_SMP */
+		   loops_per_jiffy / (500000 / HZ),
+		   (loops_per_jiffy / (5000 / HZ)) % 100
+#endif /* CONFIG_SMP */
 		   );
 
 	return 0;
@@ -290,6 +380,7 @@ static void c_stop(struct seq_file *m, void *v)
 }
 
 struct seq_operations cpuinfo_op = {
+const struct seq_operations cpuinfo_op = {
 	.start	= c_start,
 	.next	= c_next,
 	.stop	= c_stop,

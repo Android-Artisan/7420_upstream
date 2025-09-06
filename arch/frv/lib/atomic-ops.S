@@ -168,6 +168,10 @@ __cmpxchg_32:
 	corcc		gr29,gr29,gr0		,cc3,#1
 	beq		icc3,#0,0b
 1:
+	bnelr		icc0,#0
+	cst.p		gr10,@(gr11,gr0)	,cc3,#1
+	corcc		gr29,gr29,gr0		,cc3,#1
+	beq		icc3,#0,0b
 	bralr
 
 	.size		__cmpxchg_32, .-__cmpxchg_32

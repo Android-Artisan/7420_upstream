@@ -11,7 +11,6 @@
  *
  *
  * PowerMac12,1
- * ============
  *
  *
  * The algorithm used is the PID control algorithm, used the same way
@@ -277,6 +276,7 @@ static const char *loop_names[N_LOOPS] = {
 
 static unsigned int pm121_failure_state;
 static int pm121_readjust, pm121_skipping;
+static bool pm121_overtemp;
 static s32 average_power;
 
 struct pm121_correction {
@@ -483,6 +483,7 @@ static s32 pm121_correct(s32 new_setpoint,
 	new_min = (new_min >> 16) + min;
 
 	return max(new_setpoint, max(new_min, 0));
+	return max3(new_setpoint, new_min, 0);
 }
 
 static s32 pm121_connect(unsigned int control_id, s32 setpoint)
@@ -557,6 +558,18 @@ static void pm121_create_sys_fans(int loop_id)
 	pid_param.itarget	= param->itarget;
 	pid_param.min		= control->ops->get_min(control);
 	pid_param.max		= control->ops->get_max(control);
+	if(control)
+	{
+		pid_param.min		= control->ops->get_min(control);
+		pid_param.max		= control->ops->get_max(control);
+	} else {
+		/*
+		 * This is probably not the right!?
+		 * Perhaps goto fail  if control == NULL  above?
+		 */
+		pid_param.min		= 0;
+		pid_param.max		= 0;
+	}
 
 	wf_pid_init(&pm121_sys_state[loop_id]->pid, &pid_param);
 
@@ -572,6 +585,7 @@ static void pm121_create_sys_fans(int loop_id)
 	printk(KERN_WARNING "pm121: failed to set up %s loop "
 	       "setting \"%s\" to max speed.\n",
 	       loop_names[loop_id], control->name);
+	       loop_names[loop_id], control ? control->name : "uninitialized value");
 
 	if (control)
 		wf_control_set_max(control);
@@ -848,6 +862,7 @@ static void pm121_tick(void)
 	if (new_failure & FAILURE_OVERTEMP) {
 		wf_set_overtemp();
 		pm121_skipping = 2;
+		pm121_overtemp = true;
 	}
 
 	/* We only clear the overtemp condition if overtemp is cleared
@@ -858,6 +873,10 @@ static void pm121_tick(void)
 	 */
 	if (new_failure == 0 && last_failure & FAILURE_OVERTEMP)
 		wf_clear_overtemp();
+	if (!pm121_failure_state && pm121_overtemp) {
+		wf_clear_overtemp();
+		pm121_overtemp = false;
+	}
 }
 
 
@@ -989,6 +1008,7 @@ static int pm121_probe(struct platform_device *ddev)
 }
 
 static int __devexit pm121_remove(struct platform_device *ddev)
+static int pm121_remove(struct platform_device *ddev)
 {
 	wf_unregister_client(&pm121_events);
 	return 0;
@@ -997,6 +1017,7 @@ static int __devexit pm121_remove(struct platform_device *ddev)
 static struct platform_driver pm121_driver = {
 	.probe = pm121_probe,
 	.remove = __devexit_p(pm121_remove),
+	.remove = pm121_remove,
 	.driver = {
 		.name = "windfarm",
 		.bus = &platform_bus_type,
@@ -1009,6 +1030,7 @@ static int __init pm121_init(void)
 	int rc = -ENODEV;
 
 	if (machine_is_compatible("PowerMac12,1"))
+	if (of_machine_is_compatible("PowerMac12,1"))
 		rc = pm121_init_pm();
 
 	if (rc == 0) {

@@ -5,12 +5,10 @@
  *                       Hansjoerg Lipp <hjlipp@web.de>,
  *                       Tilman Schmidt <tilman@imap.cc>.
  *
- * =====================================================================
  *	This program is free software; you can redistribute it and/or
  *	modify it under the terms of the GNU General Public License as
  *	published by the Free Software Foundation; either version 2 of
  *	the License, or (at your option) any later version.
- * =====================================================================
  */
 
 #include "gigaset.h"
@@ -40,6 +38,10 @@ static ssize_t set_cidmode(struct device *dev, struct device_attribute *attr,
 
 	if (mutex_lock_interruptible(&cs->mutex))
 		return -ERESTARTSYS; // FIXME -EINTR?
+		return -EINVAL;
+
+	if (mutex_lock_interruptible(&cs->mutex))
+		return -ERESTARTSYS;
 
 	cs->waiting = 1;
 	if (!gigaset_add_event(cs, &cs->at_state, EV_PROC_CIDMODE,
@@ -60,6 +62,7 @@ static ssize_t set_cidmode(struct device *dev, struct device_attribute *attr,
 }
 
 static DEVICE_ATTR(cidmode, S_IRUGO|S_IWUSR, show_cidmode, set_cidmode);
+static DEVICE_ATTR(cidmode, S_IRUGO | S_IWUSR, show_cidmode, set_cidmode);
 
 /* free sysfs for device */
 void gigaset_free_dev_sysfs(struct cardstate *cs)
@@ -80,4 +83,5 @@ void gigaset_init_dev_sysfs(struct cardstate *cs)
 	gig_dbg(DEBUG_INIT, "setting up sysfs");
 	if (device_create_file(cs->tty_dev, &dev_attr_cidmode))
 		dev_err(cs->dev, "could not create sysfs attribute\n");
+		pr_err("could not create sysfs attribute\n");
 }

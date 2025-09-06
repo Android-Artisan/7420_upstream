@@ -5,6 +5,7 @@
  */
 
 #include <asm/system.h>
+#include <asm/pal.h>
 
 	.set noreorder
 	.globl	__start

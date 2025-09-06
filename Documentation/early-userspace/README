@@ -1,5 +1,4 @@
 Early userspace support
-=======================
 
 Last update: 2004-12-20 tlh
 
@@ -72,6 +71,7 @@ gen_initramfs_list.sh.  If a directory is specified as an argument then
 the contents are scanned, uid/gid translation is performed, and
 usr/gen_init_cpio file directives are output.  If a directory is
 specified as an arugemnt to scripts/gen_initramfs_list.sh then the
+specified as an argument to scripts/gen_initramfs_list.sh then the
 contents of the file are simply copied to the output.  All of the output
 directives from directory scanning and file contents copying are
 processed by usr/gen_init_cpio.
@@ -79,12 +79,12 @@ processed by usr/gen_init_cpio.
 See also 'scripts/gen_initramfs_list.sh -h'.
 
 Where's this all leading?
-=========================
 
 The klibc distribution contains some of the necessary software to make
 early userspace useful.  The klibc distribution is currently
 maintained separately from the kernel, but this may change early in
 the 2.7 era (it missed the boat for 2.5).
+maintained separately from the kernel.
 
 You can obtain somewhat infrequent snapshots of klibc from
 ftp://ftp.kernel.org/pub/linux/libs/klibc/
@@ -123,7 +123,6 @@ For questions and help, you can sign up for the early userspace
 mailing list at http://www.zytor.com/mailman/listinfo/klibc
 
 How does it work?
-=================
 
 The kernel has currently 3 ways to mount the root filesystem:
 

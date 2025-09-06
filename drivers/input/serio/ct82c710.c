@@ -35,6 +35,7 @@
 #include <linux/errno.h>
 #include <linux/err.h>
 #include <linux/platform_device.h>
+#include <linux/slab.h>
 
 #include <asm/io.h>
 
@@ -113,6 +114,11 @@ static int ct82c710_open(struct serio *serio)
 
 	if (request_irq(CT82C710_IRQ, ct82c710_interrupt, 0, "ct82c710", NULL))
 		return -1;
+	int err;
+
+	err = request_irq(CT82C710_IRQ, ct82c710_interrupt, 0, "ct82c710", NULL);
+	if (err)
+		return err;
 
 	status = inb_p(CT82C710_STATUS);
 
@@ -131,6 +137,7 @@ static int ct82c710_open(struct serio *serio)
 		outb_p(status, CT82C710_STATUS);
 		free_irq(CT82C710_IRQ, NULL);
 		return -1;
+		return -EBUSY;
 	}
 
 	return 0;
@@ -173,6 +180,7 @@ static int __init ct82c710_detect(void)
 }
 
 static int __devinit ct82c710_probe(struct platform_device *dev)
+static int ct82c710_probe(struct platform_device *dev)
 {
 	ct82c710_port = kzalloc(sizeof(struct serio), GFP_KERNEL);
 	if (!ct82c710_port)
@@ -194,6 +202,13 @@ static int __devinit ct82c710_probe(struct platform_device *dev)
 }
 
 static int __devexit ct82c710_remove(struct platform_device *dev)
+	printk(KERN_INFO "serio: C&T 82c710 mouse port at %#llx irq %d\n",
+		(unsigned long long)CT82C710_DATA, CT82C710_IRQ);
+
+	return 0;
+}
+
+static int ct82c710_remove(struct platform_device *dev)
 {
 	serio_unregister_port(ct82c710_port);
 
@@ -207,6 +222,9 @@ static struct platform_driver ct82c710_driver = {
 	},
 	.probe		= ct82c710_probe,
 	.remove		= __devexit_p(ct82c710_remove),
+	},
+	.probe		= ct82c710_probe,
+	.remove		= ct82c710_remove,
 };
 
 

@@ -2,6 +2,10 @@
 #define _LINUX_TYPES_H
 
 #ifdef	__KERNEL__
+#define __EXPORTED_HEADERS__
+#include <uapi/linux/types.h>
+
+#ifndef __ASSEMBLY__
 
 #define DECLARE_BITMAP(name,bits) \
 	unsigned long name[BITS_TO_LONGS(bits)]
@@ -20,6 +24,8 @@ typedef __kernel_dev_t		dev_t;
 typedef __kernel_ino_t		ino_t;
 typedef __kernel_mode_t		mode_t;
 typedef __kernel_nlink_t	nlink_t;
+typedef unsigned short		umode_t;
+typedef __u32			nlink_t;
 typedef __kernel_off_t		off_t;
 typedef __kernel_pid_t		pid_t;
 typedef __kernel_daddr_t	daddr_t;
@@ -40,6 +46,7 @@ typedef __kernel_gid16_t        gid16_t;
 typedef unsigned long		uintptr_t;
 
 #ifdef CONFIG_UID16
+#ifdef CONFIG_HAVE_UID16
 /* This is defined by include/asm-{arch}/posix_types.h */
 typedef __kernel_old_uid_t	old_uid_t;
 typedef __kernel_old_gid_t	old_gid_t;
@@ -148,6 +155,14 @@ typedef unsigned long sector_t;
 #ifdef CONFIG_LSF
 typedef u64 blkcnt_t;
 #else
+ *
+ * blkcnt_t is the type of the inode's block count.
+ */
+#ifdef CONFIG_LBDAF
+typedef u64 sector_t;
+typedef u64 blkcnt_t;
+#else
+typedef unsigned long sector_t;
 typedef unsigned long blkcnt_t;
 #endif
 
@@ -197,6 +212,65 @@ typedef u64 resource_size_t;
 typedef u32 resource_size_t;
 #endif
 
+ * The type of an index into the pagecache.
+ */
+#define pgoff_t unsigned long
+
+/*
+ * A dma_addr_t can hold any valid DMA address, i.e., any address returned
+ * by the DMA API.
+ *
+ * If the DMA API only uses 32-bit addresses, dma_addr_t need only be 32
+ * bits wide.  Bus addresses, e.g., PCI BARs, may be wider than 32 bits,
+ * but drivers do memory-mapped I/O to ioremapped kernel virtual addresses,
+ * so they don't care about the size of the actual bus addresses.
+ */
+#ifdef CONFIG_ARCH_DMA_ADDR_T_64BIT
+typedef u64 dma_addr_t;
+#else
+typedef u32 dma_addr_t;
+#endif
+
+typedef unsigned __bitwise__ gfp_t;
+typedef unsigned __bitwise__ fmode_t;
+typedef unsigned __bitwise__ oom_flags_t;
+
+#ifdef CONFIG_PHYS_ADDR_T_64BIT
+typedef u64 phys_addr_t;
+#else
+typedef u32 phys_addr_t;
+#endif
+
+typedef phys_addr_t resource_size_t;
+
+/*
+ * This type is the placeholder for a hardware interrupt number. It has to be
+ * big enough to enclose whatever representation is used by a given platform.
+ */
+typedef unsigned long irq_hw_number_t;
+
+typedef struct {
+	int counter;
+} atomic_t;
+
+#ifdef CONFIG_64BIT
+typedef struct {
+	long counter;
+} atomic64_t;
+#endif
+
+struct list_head {
+	struct list_head *next, *prev;
+};
+
+struct hlist_head {
+	struct hlist_node *first;
+};
+
+struct hlist_node {
+	struct hlist_node *next, **pprev;
+};
+
 struct ustat {
 	__kernel_daddr_t	f_tfree;
 	__kernel_ino_t		f_tinode;
@@ -206,4 +280,36 @@ struct ustat {
 
 #endif	/* __KERNEL__ */
 
+/**
+ * struct callback_head - callback structure for use with RCU and task_work
+ * @next: next update requests in a list
+ * @func: actual update function to call after the grace period.
+ *
+ * The struct is aligned to size of pointer. On most architectures it happens
+ * naturally due ABI requirements, but some architectures (like CRIS) have
+ * weird ABI and we need to ask it explicitly.
+ *
+ * The alignment is required to guarantee that bits 0 and 1 of @next will be
+ * clear under normal conditions -- as long as we use call_rcu(),
+ * call_rcu_bh(), call_rcu_sched(), or call_srcu() to queue callback.
+ *
+ * This guarantee is important for few reasons:
+ *  - future call_rcu_lazy() will make use of lower bits in the pointer;
+ *  - the structure shares storage spacer in struct page with @compound_head,
+ *    which encode PageTail() in bit 0. The guarantee is needed to avoid
+ *    false-positive PageTail().
+ */
+struct callback_head {
+	struct callback_head *next;
+	void (*func)(struct callback_head *head);
+} __attribute__((aligned(sizeof(void *))));
+#define rcu_head callback_head
+
+typedef void (*rcu_callback_t)(struct rcu_head *head);
+typedef void (*call_rcu_func_t)(struct rcu_head *head, rcu_callback_t func);
+
+/* clocksource cycle base type */
+typedef u64 cycle_t;
+
+#endif /*  __ASSEMBLY__ */
 #endif /* _LINUX_TYPES_H */

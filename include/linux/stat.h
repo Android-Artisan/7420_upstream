@@ -47,6 +47,10 @@
 #endif
 
 #ifdef __KERNEL__
+
+#include <asm/stat.h>
+#include <uapi/linux/stat.h>
+
 #define S_IRWXUGO	(S_IRWXU|S_IRWXG|S_IRWXO)
 #define S_IALLUGO	(S_ISUID|S_ISGID|S_ISVTX|S_IRWXUGO)
 #define S_IRUGO		(S_IRUSR|S_IRGRP|S_IROTH)
@@ -58,6 +62,7 @@
 
 #include <linux/types.h>
 #include <linux/time.h>
+#include <linux/uidgid.h>
 
 struct kstat {
 	u64		ino;
@@ -66,6 +71,8 @@ struct kstat {
 	unsigned int	nlink;
 	uid_t		uid;
 	gid_t		gid;
+	kuid_t		uid;
+	kgid_t		gid;
 	dev_t		rdev;
 	loff_t		size;
 	struct timespec  atime;

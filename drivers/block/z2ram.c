@@ -33,6 +33,8 @@
 #include <linux/module.h>
 #include <linux/blkdev.h>
 #include <linux/bitops.h>
+#include <linux/mutex.h>
+#include <linux/slab.h>
 
 #include <asm/setup.h>
 #include <asm/amigahw.h>
@@ -55,6 +57,7 @@ extern struct mem_info m68k_memory[NUM_MEMINFO];
 
 #define Z2RAM_CHUNK1024       ( Z2RAM_CHUNKSIZE >> 10 )
 
+static DEFINE_MUTEX(z2ram_mutex);
 static u_long *z2ram_map    = NULL;
 static u_long z2ram_size    = 0;
 static int z2_count         = 0;
@@ -79,10 +82,26 @@ static void do_z2_request(struct request_queue *q)
 				req->sector, req->current_nr_sectors);
 			end_request(req, 0);
 			continue;
+
+	req = blk_fetch_request(q);
+	while (req) {
+		unsigned long start = blk_rq_pos(req) << 9;
+		unsigned long len  = blk_rq_cur_bytes(req);
+		int err = 0;
+
+		if (start + len > z2ram_size) {
+			pr_err(DEVICE_NAME ": bad access: block=%llu, "
+			       "count=%u\n",
+			       (unsigned long long)blk_rq_pos(req),
+			       blk_rq_cur_sectors(req));
+			err = -EIO;
+			goto done;
 		}
 		while (len) {
 			unsigned long addr = start & Z2RAM_CHUNKMASK;
 			unsigned long size = Z2RAM_CHUNKSIZE - addr;
+			void *buffer = bio_data(req->bio);
+
 			if (len < size)
 				size = len;
 			addr += z2ram_map[ start >> Z2RAM_CHUNKSHIFT ];
@@ -94,6 +113,15 @@ static void do_z2_request(struct request_queue *q)
 			len -= size;
 		}
 		end_request(req, 1);
+				memcpy(buffer, (char *)addr, size);
+			else
+				memcpy((char *)addr, buffer, size);
+			start += size;
+			len -= size;
+		}
+	done:
+		if (!__blk_end_request_cur(req, err))
+			req = blk_fetch_request(q);
 	}
 }
 
@@ -109,6 +137,8 @@ get_z2ram( void )
 	    z2_count++;
 	    z2ram_map[ z2ram_size++ ] = 
 		ZTWO_VADDR( Z2RAM_START ) + ( i << Z2RAM_CHUNKSHIFT );
+	    z2ram_map[z2ram_size++] = (unsigned long)ZTWO_VADDR(Z2RAM_START) +
+				      (i << Z2RAM_CHUNKSHIFT);
 	    clear_bit( i, zorro_unused_z2ram );
 	}
     }
@@ -139,6 +169,7 @@ get_chipram( void )
 
 static int
 z2_open( struct inode *inode, struct file *filp )
+static int z2_open(struct block_device *bdev, fmode_t mode)
 {
     int device;
     int max_z2_map = ( Z2RAM_SIZE / Z2RAM_CHUNKSIZE ) *
@@ -149,6 +180,9 @@ z2_open( struct inode *inode, struct file *filp )
 
     device = iminor(inode);
 
+    device = MINOR(bdev->bd_dev);
+
+    mutex_lock(&z2ram_mutex);
     if ( current_device != -1 && current_device != device )
     {
 	rc = -EBUSY;
@@ -290,6 +324,7 @@ z2_open( struct inode *inode, struct file *filp )
 	set_capacity(z2ram_gendisk, z2ram_size >> 9);
     }
 
+    mutex_unlock(&z2ram_mutex);
     return 0;
 
 err_out_kfree:
@@ -312,6 +347,25 @@ z2_release( struct inode *inode, struct file *filp )
 }
 
 static struct block_device_operations z2_fops =
+    mutex_unlock(&z2ram_mutex);
+    return rc;
+}
+
+static void
+z2_release(struct gendisk *disk, fmode_t mode)
+{
+    mutex_lock(&z2ram_mutex);
+    if ( current_device == -1 ) {
+    	mutex_unlock(&z2ram_mutex);
+    	return;
+    }
+    mutex_unlock(&z2ram_mutex);
+    /*
+     * FIXME: unmap memory
+     */
+}
+
+static const struct block_device_operations z2_fops =
 {
 	.owner		= THIS_MODULE,
 	.open		= z2_open,
@@ -371,6 +425,7 @@ static void __exit z2_exit(void)
 {
     int i, j;
     blk_unregister_region(MKDEV(Z2RAM_MAJOR, 0), 256);
+    blk_unregister_region(MKDEV(Z2RAM_MAJOR, 0), Z2MINOR_COUNT);
     unregister_blkdev(Z2RAM_MAJOR, DEVICE_NAME);
     del_gendisk(z2ram_gendisk);
     put_disk(z2ram_gendisk);

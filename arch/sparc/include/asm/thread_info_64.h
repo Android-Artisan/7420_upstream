@@ -20,6 +20,12 @@
 #define TI_FLAG_CURRENT_DS_SHIFT	32
 #define TI_FLAG_BYTE_FPDEPTH		4
 #define TI_FLAG_FPDEPTH_SHIFT		24
+#define TI_FLAG_BYTE_NOERROR		2
+#define TI_FLAG_BYTE_NOERROR_SHIFT	40
+#define TI_FLAG_BYTE_FPDEPTH		3
+#define TI_FLAG_FPDEPTH_SHIFT		32
+#define TI_FLAG_BYTE_CWP		4
+#define TI_FLAG_CWP_SHIFT		24
 #define TI_FLAG_BYTE_WSAVED		5
 #define TI_FLAG_WSAVED_SHIFT		16
 
@@ -48,6 +54,9 @@ struct thread_info {
 	int			preempt_count;	/* 0 => preemptable, <0 => BUG */
 	__u8			new_child;
 	__u8			syscall_noerror;
+	int			preempt_count;	/* 0 => preemptable, <0 => BUG */
+	__u8			new_child;
+	__u8			current_ds;
 	__u16			cpu;
 
 	unsigned long		*utraps;
@@ -69,6 +78,11 @@ struct thread_info {
 	unsigned int		kern_una_insn;
 
 	unsigned long		fpregs[0] __attribute__ ((aligned(64)));
+	struct pt_regs		*kern_una_regs;
+	unsigned int		kern_una_insn;
+
+	unsigned long		fpregs[(7 * 256) / sizeof(unsigned long)]
+		__attribute__ ((aligned(64)));
 };
 
 #endif /* !(__ASSEMBLY__) */
@@ -82,6 +96,9 @@ struct thread_info {
 #define TI_CURRENT_DS	(TI_FLAGS + TI_FLAG_BYTE_CURRENT_DS)
 #define TI_FPDEPTH	(TI_FLAGS + TI_FLAG_BYTE_FPDEPTH)
 #define TI_WSAVED	(TI_FLAGS + TI_FLAG_BYTE_WSAVED)
+#define TI_FPDEPTH	(TI_FLAGS + TI_FLAG_BYTE_FPDEPTH)
+#define TI_WSAVED	(TI_FLAGS + TI_FLAG_BYTE_WSAVED)
+#define TI_SYS_NOERROR	(TI_FLAGS + TI_FLAG_BYTE_NOERROR)
 #define TI_FPSAVED	0x00000010
 #define TI_KSP		0x00000018
 #define TI_FAULT_ADDR	0x00000020
@@ -105,6 +122,18 @@ struct thread_info {
 #define TI_KUNA_REGS	0x000004c0
 #define TI_KUNA_INSN	0x000004c8
 #define TI_FPREGS	0x00000500
+#define TI_PRE_COUNT	0x00000030
+#define TI_NEW_CHILD	0x00000034
+#define TI_CURRENT_DS	0x00000035
+#define TI_CPU		0x00000036
+#define TI_UTRAPS	0x00000038
+#define TI_REG_WINDOW	0x00000040
+#define TI_RWIN_SPTRS	0x000003c0
+#define TI_GSR		0x000003f8
+#define TI_XFSR		0x00000430
+#define TI_KUNA_REGS	0x00000468
+#define TI_KUNA_INSN	0x00000470
+#define TI_FPREGS	0x00000480
 
 /* We embed this in the uppermost byte of thread_info->flags */
 #define FAULT_CODE_WRITE	0x01	/* Write access, implies D-TLB	   */
@@ -112,6 +141,7 @@ struct thread_info {
 #define FAULT_CODE_ITLB		0x04	/* Miss happened in I-TLB	   */
 #define FAULT_CODE_WINFIXUP	0x08	/* Miss happened during spill/fill */
 #define FAULT_CODE_BLKCOMMIT	0x10	/* Use blk-commit ASI in copy_page */
+#define	FAULT_CODE_BAD_RA	0x20	/* Bad RA for sun4v		   */
 
 #if PAGE_SHIFT == 13
 #define THREAD_SIZE (2*PAGE_SIZE)
@@ -127,6 +157,8 @@ struct thread_info {
  * macros/functions for gaining access to the thread information structure
  *
  * preempt_count needs to be 1 initially, until the scheduler is functional.
+/*
+ * macros/functions for gaining access to the thread information structure
  */
 #ifndef __ASSEMBLY__
 
@@ -139,6 +171,8 @@ struct thread_info {
 	.restart_block	= {				\
 		.fn	=	do_no_restart_syscall,	\
 	},						\
+	.current_ds	=	ASI_P,			\
+	.preempt_count	=	INIT_PREEMPT_COUNT,	\
 }
 
 #define init_thread_info	(init_thread_union.thread_info)
@@ -176,6 +210,11 @@ register struct thread_info *current_thread_info_reg asm("g6");
 #define free_thread_info(ti) \
 	free_pages((unsigned long)(ti),__THREAD_INFO_ORDER)
 
+#define THREAD_SIZE_ORDER	1
+#else /* PAGE_SHIFT == 13 */
+#define THREAD_SIZE_ORDER	0
+#endif /* PAGE_SHIFT == 13 */
+
 #define __thread_flag_byte_ptr(ti)	\
 	((unsigned char *)(&((ti)->flags)))
 #define __cur_thread_flag_byte_ptr	__thread_flag_byte_ptr(current_thread_info())
@@ -188,6 +227,8 @@ register struct thread_info *current_thread_info_reg asm("g6");
 #define set_thread_cwp(val)		(__cur_thread_flag_byte_ptr[TI_FLAG_BYTE_CWP] = (val))
 #define get_thread_current_ds()		(__cur_thread_flag_byte_ptr[TI_FLAG_BYTE_CURRENT_DS])
 #define set_thread_current_ds(val)	(__cur_thread_flag_byte_ptr[TI_FLAG_BYTE_CURRENT_DS] = (val))
+#define get_thread_noerror()		(__cur_thread_flag_byte_ptr[TI_FLAG_BYTE_NOERROR])
+#define set_thread_noerror(val)		(__cur_thread_flag_byte_ptr[TI_FLAG_BYTE_NOERROR] = (val))
 #define get_thread_fpdepth()		(__cur_thread_flag_byte_ptr[TI_FLAG_BYTE_FPDEPTH])
 #define set_thread_fpdepth(val)		(__cur_thread_flag_byte_ptr[TI_FLAG_BYTE_FPDEPTH] = (val))
 #define get_thread_wsaved()		(__cur_thread_flag_byte_ptr[TI_FLAG_BYTE_WSAVED])
@@ -202,6 +243,7 @@ register struct thread_info *current_thread_info_reg asm("g6");
  * On trap return we need to test several values:
  *
  * user:	need_resched, notify_resume, sigpending, wsaved, perfctr
+ * user:	need_resched, notify_resume, sigpending, wsaved
  * kernel:	fpdepth
  *
  * So to check for work in the kernel case we simply load the fpdepth
@@ -230,12 +272,22 @@ register struct thread_info *current_thread_info_reg asm("g6");
 #define TIF_SECCOMP		9	/* secure computing */
 #define TIF_SYSCALL_AUDIT	10	/* syscall auditing active */
 /* flag bit 11 is available */
+/* flag bit 4 is available */
+#define TIF_UNALIGNED		5	/* allowed to do unaligned accesses */
+/* flag bit 6 is available */
+#define TIF_32BIT		7	/* 32-bit binary */
+#define TIF_NOHZ		8	/* in adaptive nohz mode */
+#define TIF_SECCOMP		9	/* secure computing */
+#define TIF_SYSCALL_AUDIT	10	/* syscall auditing active */
+#define TIF_SYSCALL_TRACEPOINT	11	/* syscall tracepoint instrumentation */
 /* NOTE: Thread flags >= 12 should be ones we have no interest
  *       in using in assembly, else we can't use the mask as
  *       an immediate value in instructions such as andcc.
  */
 #define TIF_ABI_PENDING		12
 #define TIF_MEMDIE		13
+/* flag bit 12 is available */
+#define TIF_MEMDIE		13	/* is terminating due to OOM killer */
 #define TIF_POLLING_NRFLAG	14
 
 #define _TIF_SYSCALL_TRACE	(1<<TIF_SYSCALL_TRACE)
@@ -248,12 +300,23 @@ register struct thread_info *current_thread_info_reg asm("g6");
 #define _TIF_SECCOMP		(1<<TIF_SECCOMP)
 #define _TIF_SYSCALL_AUDIT	(1<<TIF_SYSCALL_AUDIT)
 #define _TIF_ABI_PENDING	(1<<TIF_ABI_PENDING)
+#define _TIF_UNALIGNED		(1<<TIF_UNALIGNED)
+#define _TIF_32BIT		(1<<TIF_32BIT)
+#define _TIF_NOHZ		(1<<TIF_NOHZ)
+#define _TIF_SECCOMP		(1<<TIF_SECCOMP)
+#define _TIF_SYSCALL_AUDIT	(1<<TIF_SYSCALL_AUDIT)
+#define _TIF_SYSCALL_TRACEPOINT	(1<<TIF_SYSCALL_TRACEPOINT)
 #define _TIF_POLLING_NRFLAG	(1<<TIF_POLLING_NRFLAG)
 
 #define _TIF_USER_WORK_MASK	((0xff << TI_FLAG_WSAVED_SHIFT) | \
 				 _TIF_DO_NOTIFY_RESUME_MASK | \
 				 _TIF_NEED_RESCHED | _TIF_PERFCTR)
 #define _TIF_DO_NOTIFY_RESUME_MASK	(_TIF_NOTIFY_RESUME | _TIF_SIGPENDING)
+
+				 _TIF_NEED_RESCHED)
+#define _TIF_DO_NOTIFY_RESUME_MASK	(_TIF_NOTIFY_RESUME | _TIF_SIGPENDING)
+
+#define is_32bit_task()	(test_thread_flag(TIF_32BIT))
 
 /*
  * Thread-synchronous status.
@@ -274,6 +337,30 @@ static inline void set_restore_sigmask(void)
 	ti->status |= TS_RESTORE_SIGMASK;
 	set_bit(TIF_SIGPENDING, &ti->flags);
 }
+	WARN_ON(!test_bit(TIF_SIGPENDING, &ti->flags));
+}
+static inline void clear_restore_sigmask(void)
+{
+	current_thread_info()->status &= ~TS_RESTORE_SIGMASK;
+}
+static inline bool test_restore_sigmask(void)
+{
+	return current_thread_info()->status & TS_RESTORE_SIGMASK;
+}
+static inline bool test_and_clear_restore_sigmask(void)
+{
+	struct thread_info *ti = current_thread_info();
+	if (!(ti->status & TS_RESTORE_SIGMASK))
+		return false;
+	ti->status &= ~TS_RESTORE_SIGMASK;
+	return true;
+}
+
+#define thread32_stack_is_64bit(__SP) (((__SP) & 0x1) != 0)
+#define test_thread_64bit_stack(__SP) \
+	((test_thread_flag(TIF_32BIT) && !thread32_stack_is_64bit(__SP)) ? \
+	 false : true)
+
 #endif	/* !__ASSEMBLY__ */
 
 #endif /* __KERNEL__ */

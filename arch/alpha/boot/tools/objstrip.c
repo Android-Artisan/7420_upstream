@@ -27,6 +27,9 @@
 #include <linux/param.h>
 #ifdef __ELF__
 # include <linux/elf.h>
+# define elfhdr elf64_hdr
+# define elf_phdr elf64_phdr
+# define elf_check_arch(x) ((x)->e_machine == EM_ALPHA)
 #endif
 
 /* bootfile size must be multiple of BLOCK_SIZE: */
@@ -36,6 +39,7 @@ const char * prog_name;
 
 
 void
+static void
 usage (void)
 {
     fprintf(stderr,
@@ -94,6 +98,7 @@ main (int argc, char *argv[])
     if (i < argc) {
 	ofd = open(argv[i++], O_WRONLY | O_CREAT | O_TRUNC, 0666);
 	if (fd == -1) {
+	if (ofd == -1) {
 	    perror("open");
 	    exit(1);
 	}

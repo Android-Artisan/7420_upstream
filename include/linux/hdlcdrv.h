@@ -103,10 +103,14 @@ struct hdlcdrv_ioctl {
 /* -------------------------------------------------------------------- */
 
 #ifdef __KERNEL__
+#ifndef _HDLCDRV_H
+#define _HDLCDRV_H
+
 
 #include <linux/netdevice.h>
 #include <linux/if.h>
 #include <linux/spinlock.h>
+#include <uapi/linux/hdlcdrv.h>
 
 #define HDLCDRV_MAGIC      0x5ac6e778
 #define HDLCDRV_HDLCBUFFER  32 /* should be a power of 2 for speed reasons */
@@ -216,6 +220,7 @@ struct hdlcdrv_state {
 	struct hdlcdrv_hdlctx {
 		struct hdlcdrv_hdlcbuffer hbuf;
 		long in_hdlc_tx;
+		unsigned long in_hdlc_tx;
 		/*
 		 * 0 = send flags
 		 * 1 = send txtail (flags)
@@ -376,3 +381,4 @@ void hdlcdrv_unregister(struct net_device *dev);
 #endif /* _HDLCDRV_H */
 
 /* -------------------------------------------------------------------- */
+#endif /* _HDLCDRV_H */

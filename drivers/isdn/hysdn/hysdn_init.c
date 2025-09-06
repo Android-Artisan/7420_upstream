@@ -78,6 +78,8 @@ hysdn_getrev(const char *revision)
 
 static int __devinit hysdn_pci_init_one(struct pci_dev *akt_pcidev,
 					const struct pci_device_id *ent)
+static int hysdn_pci_init_one(struct pci_dev *akt_pcidev,
+			      const struct pci_device_id *ent)
 {
 	hysdn_card *card;
 	int rc;
@@ -130,6 +132,7 @@ err_out:
 }
 
 static void __devexit hysdn_pci_remove_one(struct pci_dev *akt_pcidev)
+static void hysdn_pci_remove_one(struct pci_dev *akt_pcidev)
 {
 	hysdn_card *card = pci_get_drvdata(akt_pcidev);
 
@@ -168,6 +171,7 @@ static struct pci_driver hysdn_pci_driver = {
 	.id_table	= hysdn_pci_tbl,
 	.probe		= hysdn_pci_init_one,
 	.remove		= __devexit_p(hysdn_pci_remove_one),
+	.remove		= hysdn_pci_remove_one,
 };
 
 static int hysdn_have_procfs;
@@ -182,6 +186,9 @@ hysdn_init(void)
 	printk(KERN_NOTICE "HYSDN: module Rev: %s loaded\n", hysdn_getrev(tmp));
 	strcpy(tmp, hysdn_net_revision);
 	printk(KERN_NOTICE "HYSDN: network interface Rev: %s \n", hysdn_getrev(tmp));
+	int rc;
+
+	printk(KERN_NOTICE "HYSDN: module loaded\n");
 
 	rc = pci_register_driver(&hysdn_pci_driver);
 	if (rc)
@@ -195,6 +202,8 @@ hysdn_init(void)
 #ifdef CONFIG_HYSDN_CAPI
 	if(cardmax > 0) {
 		if(hycapi_init()) {
+	if (cardmax > 0) {
+		if (hycapi_init()) {
 			printk(KERN_ERR "HYCAPI: init failed\n");
 
 			if (hysdn_have_procfs)

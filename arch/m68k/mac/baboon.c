@@ -14,6 +14,8 @@
 
 #include <asm/traps.h>
 #include <asm/bootinfo.h>
+#include <linux/irq.h>
+
 #include <asm/macintosh.h>
 #include <asm/macints.h>
 #include <asm/mac_baboon.h>
@@ -51,6 +53,7 @@ void __init baboon_init(void)
  */
 
 static irqreturn_t baboon_irq(int irq, void *dev_id)
+static void baboon_irq(struct irq_desc *desc)
 {
 	int irq_bit, irq_num;
 	unsigned char events;
@@ -63,6 +66,9 @@ static irqreturn_t baboon_irq(int irq, void *dev_id)
 
 	if (!(events = baboon->mb_ifr & 0x07))
 		return IRQ_NONE;
+	events = baboon->mb_ifr & 0x07;
+	if (!events)
+		return;
 
 	irq_num = IRQ_BABOON_0;
 	irq_bit = 1;
@@ -70,6 +76,7 @@ static irqreturn_t baboon_irq(int irq, void *dev_id)
 	        if (events & irq_bit) {
 			baboon->mb_ifr &= ~irq_bit;
 			m68k_handle_int(irq_num);
+			generic_handle_irq(irq_num);
 		}
 		irq_bit <<= 1;
 		irq_num++;
@@ -118,4 +125,32 @@ int baboon_irq_pending(int irq)
 	int irq_idx	= IRQ_IDX(irq);
 
 	return baboon->mb_ifr & (1 << irq_idx);
+	irq_set_chained_handler(IRQ_NUBUS_C, baboon_irq);
+}
+
+/*
+ * The means for masking individual Baboon interrupts remains a mystery.
+ * However, since we only use the IDE IRQ, we can just enable/disable all
+ * Baboon interrupts. If/when we handle more than one Baboon IRQ, we must
+ * either figure out how to mask them individually or else implement the
+ * same workaround that's used for NuBus slots (see nubus_disabled and
+ * via_nubus_irq_shutdown).
+ */
+
+void baboon_irq_enable(int irq)
+{
+#ifdef DEBUG_IRQUSE
+	printk("baboon_irq_enable(%d)\n", irq);
+#endif
+
+	mac_irq_enable(irq_get_irq_data(IRQ_NUBUS_C));
+}
+
+void baboon_irq_disable(int irq)
+{
+#ifdef DEBUG_IRQUSE
+	printk("baboon_irq_disable(%d)\n", irq);
+#endif
+
+	mac_irq_disable(irq_get_irq_data(IRQ_NUBUS_C));
 }

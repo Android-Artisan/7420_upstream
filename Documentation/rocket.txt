@@ -142,7 +142,6 @@ RocketPort and RocketPort RA SW1 Settings:
 
 DIP Switches                             DIP Switches
 7    8                                   6    5
-===================                      ===================
 On   On   UNUSED, MUST BE ON.            On   On   First Card    <==== Default
                                          On   Off  Second Card
                                          Off  On   Third Card
@@ -150,7 +149,6 @@ On   On   UNUSED, MUST BE ON.            On   On   First Card    <==== Default
 
 DIP Switches         I/O Address Range
 4    3    2    1     Used by the First Card
-=====================================
 On   Off  On   Off   100-143
 On   Off  Off  On    140-183
 On   Off  Off  Off   180-1C3       <==== Default

@@ -264,6 +264,7 @@ typedef enum opcode {
 
 
 /* virtual path / virtual channel identifers */
+/* virtual path / virtual channel identifiers */
 
 typedef struct vpvc {
     BITFIELD3(
@@ -781,6 +782,9 @@ typedef struct fore200e_sba_regs {
     volatile u32 __iomem *hcr;    /* address of host control register              */
     volatile u32 __iomem *bsr;    /* address of burst transfer size register       */
     volatile u32 __iomem *isr;    /* address of interrupt level selection register */
+    u32 __iomem *hcr;    /* address of host control register              */
+    u32 __iomem *bsr;    /* address of burst transfer size register       */
+    u32 __iomem *isr;    /* address of interrupt level selection register */
 } fore200e_sba_regs_t;
 
 
@@ -928,6 +932,7 @@ typedef struct fore200e_vcc {
 #define PCA200E_PCI_LATENCY      0x40    /* maximum slave latenty            */
 #define PCA200E_PCI_MASTER_CTRL  0x41    /* master control                   */
 #define PCA200E_PCI_THRESHOLD    0x42    /* burst / continous req threshold  */
+#define PCA200E_PCI_THRESHOLD    0x42    /* burst / continuous req threshold  */
 
 /* PBI master control register */
 

@@ -509,6 +509,7 @@ void show_regs(struct pt_regs *regs)
 	int loop;
 
 	printk("\n");
+	show_regs_print_info(KERN_DEFAULT);
 
 	printk("Frame: @%08lx [%s]\n",
 	       (unsigned long) regs,
@@ -537,10 +538,10 @@ void die_if_kernel(const char *str, ...)
 
 	va_start(va, str);
 	vsprintf(buffer, str, va);
+	vsnprintf(buffer, sizeof(buffer), str, va);
 	va_end(va);
 
 	console_verbose();
-	printk("\n===================================\n");
 	printk("%s\n", buffer);
 	show_backtrace(__frame, 0);
 

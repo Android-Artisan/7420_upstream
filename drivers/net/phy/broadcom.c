@@ -105,6 +105,18 @@
 #define PHY_BCM_FLAGS_INTF_SGMII	0x00000010
 #define PHY_BCM_FLAGS_MODE_1000BX	0x00000002
 #define PHY_BCM_FLAGS_MODE_COPPER	0x00000001
+#include "bcm-phy-lib.h"
+#include <linux/delay.h>
+#include <linux/module.h>
+#include <linux/phy.h>
+#include <linux/brcmphy.h>
+
+
+#define BRCM_PHY_MODEL(phydev) \
+	((phydev)->drv->phy_id & (phydev)->drv->phy_id_mask)
+
+#define BRCM_PHY_REV(phydev) \
+	((phydev)->drv->phy_id & ~((phydev)->drv->phy_id_mask))
 
 MODULE_DESCRIPTION("Broadcom PHY driver");
 MODULE_AUTHOR("Maciej W. Rozycki");
@@ -160,6 +172,149 @@ static int bcm54xx_exp_write(struct phy_device *phydev,
 	phy_write(phydev, MII_BCM54XX_EXP_SEL, regnum);
 
 	return ret;
+static int bcm54xx_auxctl_write(struct phy_device *phydev, u16 regnum, u16 val)
+{
+	return phy_write(phydev, MII_BCM54XX_AUX_CTL, regnum | val);
+}
+
+/* Needs SMDSP clock enabled via bcm54xx_phydsp_config() */
+static int bcm50610_a0_workaround(struct phy_device *phydev)
+{
+	int err;
+
+	err = bcm_phy_write_exp(phydev, MII_BCM54XX_EXP_AADJ1CH0,
+				MII_BCM54XX_EXP_AADJ1CH0_SWP_ABCD_OEN |
+				MII_BCM54XX_EXP_AADJ1CH0_SWSEL_THPF);
+	if (err < 0)
+		return err;
+
+	err = bcm_phy_write_exp(phydev, MII_BCM54XX_EXP_AADJ1CH3,
+				MII_BCM54XX_EXP_AADJ1CH3_ADCCKADJ);
+	if (err < 0)
+		return err;
+
+	err = bcm_phy_write_exp(phydev, MII_BCM54XX_EXP_EXP75,
+				MII_BCM54XX_EXP_EXP75_VDACCTRL);
+	if (err < 0)
+		return err;
+
+	err = bcm_phy_write_exp(phydev, MII_BCM54XX_EXP_EXP96,
+				MII_BCM54XX_EXP_EXP96_MYST);
+	if (err < 0)
+		return err;
+
+	err = bcm_phy_write_exp(phydev, MII_BCM54XX_EXP_EXP97,
+				MII_BCM54XX_EXP_EXP97_MYST);
+
+	return err;
+}
+
+static int bcm54xx_phydsp_config(struct phy_device *phydev)
+{
+	int err, err2;
+
+	/* Enable the SMDSP clock */
+	err = bcm54xx_auxctl_write(phydev,
+				   MII_BCM54XX_AUXCTL_SHDWSEL_AUXCTL,
+				   MII_BCM54XX_AUXCTL_ACTL_SMDSP_ENA |
+				   MII_BCM54XX_AUXCTL_ACTL_TX_6DB);
+	if (err < 0)
+		return err;
+
+	if (BRCM_PHY_MODEL(phydev) == PHY_ID_BCM50610 ||
+	    BRCM_PHY_MODEL(phydev) == PHY_ID_BCM50610M) {
+		/* Clear bit 9 to fix a phy interop issue. */
+		err = bcm_phy_write_exp(phydev, MII_BCM54XX_EXP_EXP08,
+					MII_BCM54XX_EXP_EXP08_RJCT_2MHZ);
+		if (err < 0)
+			goto error;
+
+		if (phydev->drv->phy_id == PHY_ID_BCM50610) {
+			err = bcm50610_a0_workaround(phydev);
+			if (err < 0)
+				goto error;
+		}
+	}
+
+	if (BRCM_PHY_MODEL(phydev) == PHY_ID_BCM57780) {
+		int val;
+
+		val = bcm_phy_read_exp(phydev, MII_BCM54XX_EXP_EXP75);
+		if (val < 0)
+			goto error;
+
+		val |= MII_BCM54XX_EXP_EXP75_CM_OSC;
+		err = bcm_phy_write_exp(phydev, MII_BCM54XX_EXP_EXP75, val);
+	}
+
+error:
+	/* Disable the SMDSP clock */
+	err2 = bcm54xx_auxctl_write(phydev,
+				    MII_BCM54XX_AUXCTL_SHDWSEL_AUXCTL,
+				    MII_BCM54XX_AUXCTL_ACTL_TX_6DB);
+
+	/* Return the first error reported. */
+	return err ? err : err2;
+}
+
+static void bcm54xx_adjust_rxrefclk(struct phy_device *phydev)
+{
+	u32 orig;
+	int val;
+	bool clk125en = true;
+
+	/* Abort if we are using an untested phy. */
+	if (BRCM_PHY_MODEL(phydev) != PHY_ID_BCM57780 &&
+	    BRCM_PHY_MODEL(phydev) != PHY_ID_BCM50610 &&
+	    BRCM_PHY_MODEL(phydev) != PHY_ID_BCM50610M)
+		return;
+
+	val = bcm_phy_read_shadow(phydev, BCM54XX_SHD_SCR3);
+	if (val < 0)
+		return;
+
+	orig = val;
+
+	if ((BRCM_PHY_MODEL(phydev) == PHY_ID_BCM50610 ||
+	     BRCM_PHY_MODEL(phydev) == PHY_ID_BCM50610M) &&
+	    BRCM_PHY_REV(phydev) >= 0x3) {
+		/*
+		 * Here, bit 0 _disables_ CLK125 when set.
+		 * This bit is set by default.
+		 */
+		clk125en = false;
+	} else {
+		if (phydev->dev_flags & PHY_BRCM_RX_REFCLK_UNUSED) {
+			/* Here, bit 0 _enables_ CLK125 when set */
+			val &= ~BCM54XX_SHD_SCR3_DEF_CLK125;
+			clk125en = false;
+		}
+	}
+
+	if (!clk125en || (phydev->dev_flags & PHY_BRCM_AUTO_PWRDWN_ENABLE))
+		val &= ~BCM54XX_SHD_SCR3_DLLAPD_DIS;
+	else
+		val |= BCM54XX_SHD_SCR3_DLLAPD_DIS;
+
+	if (phydev->dev_flags & PHY_BRCM_DIS_TXCRXC_NOENRGY)
+		val |= BCM54XX_SHD_SCR3_TRDDAPD;
+
+	if (orig != val)
+		bcm_phy_write_shadow(phydev, BCM54XX_SHD_SCR3, val);
+
+	val = bcm_phy_read_shadow(phydev, BCM54XX_SHD_APD);
+	if (val < 0)
+		return;
+
+	orig = val;
+
+	if (!clk125en || (phydev->dev_flags & PHY_BRCM_AUTO_PWRDWN_ENABLE))
+		val |= BCM54XX_SHD_APD_EN;
+	else
+		val &= ~BCM54XX_SHD_APD_EN;
+
+	if (orig != val)
+		bcm_phy_write_shadow(phydev, BCM54XX_SHD_APD, val);
 }
 
 static int bcm54xx_config_init(struct phy_device *phydev)
@@ -183,6 +338,19 @@ static int bcm54xx_config_init(struct phy_device *phydev)
 	err = phy_write(phydev, MII_BCM54XX_IMR, reg);
 	if (err < 0)
 		return err;
+
+	if ((BRCM_PHY_MODEL(phydev) == PHY_ID_BCM50610 ||
+	     BRCM_PHY_MODEL(phydev) == PHY_ID_BCM50610M) &&
+	    (phydev->dev_flags & PHY_BRCM_CLEAR_RGMII_MODE))
+		bcm_phy_write_shadow(phydev, BCM54XX_SHD_RGMII_MODE, 0);
+
+	if ((phydev->dev_flags & PHY_BRCM_RX_REFCLK_UNUSED) ||
+	    (phydev->dev_flags & PHY_BRCM_DIS_TXCRXC_NOENRGY) ||
+	    (phydev->dev_flags & PHY_BRCM_AUTO_PWRDWN_ENABLE))
+		bcm54xx_adjust_rxrefclk(phydev);
+
+	bcm54xx_phydsp_config(phydev);
+
 	return 0;
 }
 
@@ -198,6 +366,8 @@ static int bcm5482_config_init(struct phy_device *phydev)
 		 */
 		reg = bcm54xx_shadow_read(phydev, BCM5482_SHD_SSD);
 		bcm54xx_shadow_write(phydev, BCM5482_SHD_SSD,
+		reg = bcm_phy_read_shadow(phydev, BCM5482_SHD_SSD);
+		bcm_phy_write_shadow(phydev, BCM5482_SHD_SSD,
 				     reg |
 				     BCM5482_SHD_SSD_LEDM |
 				     BCM5482_SHD_SSD_EN);
@@ -210,6 +380,15 @@ static int bcm5482_config_init(struct phy_device *phydev)
 				  reg |
 				  BCM5482_SSD_SGMII_SLAVE_EN |
 				  BCM5482_SSD_SGMII_SLAVE_AD);
+		reg = BCM5482_SSD_SGMII_SLAVE | MII_BCM54XX_EXP_SEL_SSD;
+		err = bcm_phy_read_exp(phydev, reg);
+		if (err < 0)
+			return err;
+		err = bcm_phy_write_exp(phydev, reg, err |
+					BCM5482_SSD_SGMII_SLAVE_EN |
+					BCM5482_SSD_SGMII_SLAVE_AD);
+		if (err < 0)
+			return err;
 
 		/*
 		 * Disable secondary SerDes powerdown
@@ -217,12 +396,22 @@ static int bcm5482_config_init(struct phy_device *phydev)
 		reg = bcm54xx_exp_read(phydev, 1, BCM5482_SSD_1000BX_CTL);
 		bcm54xx_exp_write(phydev, 1, BCM5482_SSD_1000BX_CTL,
 				  reg & ~BCM5482_SSD_1000BX_CTL_PWRDOWN);
+		reg = BCM5482_SSD_1000BX_CTL | MII_BCM54XX_EXP_SEL_SSD;
+		err = bcm_phy_read_exp(phydev, reg);
+		if (err < 0)
+			return err;
+		err = bcm_phy_write_exp(phydev, reg,
+					err & ~BCM5482_SSD_1000BX_CTL_PWRDOWN);
+		if (err < 0)
+			return err;
 
 		/*
 		 * Select 1000BASE-X register set (primary SerDes)
 		 */
 		reg = bcm54xx_shadow_read(phydev, BCM5482_SHD_MODE);
 		bcm54xx_shadow_write(phydev, BCM5482_SHD_MODE,
+		reg = bcm_phy_read_shadow(phydev, BCM5482_SHD_MODE);
+		bcm_phy_write_shadow(phydev, BCM5482_SHD_MODE,
 				     reg | BCM5482_SHD_MODE_1000BX);
 
 		/*
@@ -230,6 +419,7 @@ static int bcm5482_config_init(struct phy_device *phydev)
 		 * (Use LED1 as secondary SerDes ACTIVITY LED)
 		 */
 		bcm54xx_shadow_write(phydev, BCM5482_SHD_LEDS1,
+		bcm_phy_write_shadow(phydev, BCM5482_SHD_LEDS1,
 			BCM5482_SHD_LEDS1_LED1(BCM_LED_SRC_ACTIVITYLED) |
 			BCM5482_SHD_LEDS1_LED3(BCM_LED_SRC_LINKSPD2));
 
@@ -311,6 +501,7 @@ static int bcm5481_config_aneg(struct phy_device *phydev)
 		 * There is no BCM5481 specification available, so down
 		 * here is everything we know about "register 0x18". This
 		 * at least helps BCM5481 to successfuly receive packets
+		 * at least helps BCM5481 to successfully receive packets
 		 * on MPC8360E-RDK board. Peter Barada <peterb@logicpd.com>
 		 * says: "This sets delay between the RXD and RXC signals
 		 * instead of using trace lengths to achieve timing".
@@ -336,6 +527,143 @@ static struct phy_driver bcm5411_driver = {
 	.phy_id_mask	= 0xfffffff0,
 	.name		= "Broadcom BCM5411",
 	.features	= PHY_GBIT_FEATURES,
+static int brcm_phy_setbits(struct phy_device *phydev, int reg, int set)
+{
+	int val;
+
+	val = phy_read(phydev, reg);
+	if (val < 0)
+		return val;
+
+	return phy_write(phydev, reg, val | set);
+}
+
+static int brcm_fet_config_init(struct phy_device *phydev)
+{
+	int reg, err, err2, brcmtest;
+
+	/* Reset the PHY to bring it to a known state. */
+	err = phy_write(phydev, MII_BMCR, BMCR_RESET);
+	if (err < 0)
+		return err;
+
+	/* The datasheet indicates the PHY needs up to 1us to complete a reset,
+	 * build some slack here.
+	 */
+	usleep_range(1000, 2000);
+
+	/* The PHY requires 65 MDC clock cycles to complete a write operation
+	 * and turnaround the line properly.
+	 *
+	 * We ignore -EIO here as the MDIO controller (e.g.: mdio-bcm-unimac)
+	 * may flag the lack of turn-around as a read failure. This is
+	 * particularly true with this combination since the MDIO controller
+	 * only used 64 MDC cycles. This is not a critical failure in this
+	 * specific case and it has no functional impact otherwise, so we let
+	 * that one go through. If there is a genuine bus error, the next read
+	 * of MII_BRCM_FET_INTREG will error out.
+	 */
+	err = phy_read(phydev, MII_BMCR);
+	if (err < 0 && err != -EIO)
+		return err;
+
+	reg = phy_read(phydev, MII_BRCM_FET_INTREG);
+	if (reg < 0)
+		return reg;
+
+	/* Unmask events we are interested in and mask interrupts globally. */
+	reg = MII_BRCM_FET_IR_DUPLEX_EN |
+	      MII_BRCM_FET_IR_SPEED_EN |
+	      MII_BRCM_FET_IR_LINK_EN |
+	      MII_BRCM_FET_IR_ENABLE |
+	      MII_BRCM_FET_IR_MASK;
+
+	err = phy_write(phydev, MII_BRCM_FET_INTREG, reg);
+	if (err < 0)
+		return err;
+
+	/* Enable shadow register access */
+	brcmtest = phy_read(phydev, MII_BRCM_FET_BRCMTEST);
+	if (brcmtest < 0)
+		return brcmtest;
+
+	reg = brcmtest | MII_BRCM_FET_BT_SRE;
+
+	err = phy_write(phydev, MII_BRCM_FET_BRCMTEST, reg);
+	if (err < 0)
+		return err;
+
+	/* Set the LED mode */
+	reg = phy_read(phydev, MII_BRCM_FET_SHDW_AUXMODE4);
+	if (reg < 0) {
+		err = reg;
+		goto done;
+	}
+
+	reg &= ~MII_BRCM_FET_SHDW_AM4_LED_MASK;
+	reg |= MII_BRCM_FET_SHDW_AM4_LED_MODE1;
+
+	err = phy_write(phydev, MII_BRCM_FET_SHDW_AUXMODE4, reg);
+	if (err < 0)
+		goto done;
+
+	/* Enable auto MDIX */
+	err = brcm_phy_setbits(phydev, MII_BRCM_FET_SHDW_MISCCTRL,
+				       MII_BRCM_FET_SHDW_MC_FAME);
+	if (err < 0)
+		goto done;
+
+	if (phydev->dev_flags & PHY_BRCM_AUTO_PWRDWN_ENABLE) {
+		/* Enable auto power down */
+		err = brcm_phy_setbits(phydev, MII_BRCM_FET_SHDW_AUXSTAT2,
+					       MII_BRCM_FET_SHDW_AS2_APDE);
+	}
+
+done:
+	/* Disable shadow register access */
+	err2 = phy_write(phydev, MII_BRCM_FET_BRCMTEST, brcmtest);
+	if (!err)
+		err = err2;
+
+	return err;
+}
+
+static int brcm_fet_ack_interrupt(struct phy_device *phydev)
+{
+	int reg;
+
+	/* Clear pending interrupts.  */
+	reg = phy_read(phydev, MII_BRCM_FET_INTREG);
+	if (reg < 0)
+		return reg;
+
+	return 0;
+}
+
+static int brcm_fet_config_intr(struct phy_device *phydev)
+{
+	int reg, err;
+
+	reg = phy_read(phydev, MII_BRCM_FET_INTREG);
+	if (reg < 0)
+		return reg;
+
+	if (phydev->interrupts == PHY_INTERRUPT_ENABLED)
+		reg &= ~MII_BRCM_FET_IR_MASK;
+	else
+		reg |= MII_BRCM_FET_IR_MASK;
+
+	err = phy_write(phydev, MII_BRCM_FET_INTREG, reg);
+	return err;
+}
+
+static struct phy_driver broadcom_drivers[] = {
+{
+	.phy_id		= PHY_ID_BCM5411,
+	.phy_id_mask	= 0xfffffff0,
+	.name		= "Broadcom BCM5411",
+	.features	= PHY_GBIT_FEATURES |
+			  SUPPORTED_Pause | SUPPORTED_Asym_Pause,
 	.flags		= PHY_HAS_MAGICANEG | PHY_HAS_INTERRUPT,
 	.config_init	= bcm54xx_config_init,
 	.config_aneg	= genphy_config_aneg,
@@ -350,6 +678,15 @@ static struct phy_driver bcm5421_driver = {
 	.phy_id_mask	= 0xfffffff0,
 	.name		= "Broadcom BCM5421",
 	.features	= PHY_GBIT_FEATURES,
+	.ack_interrupt	= bcm_phy_ack_intr,
+	.config_intr	= bcm_phy_config_intr,
+	.driver		= { .owner = THIS_MODULE },
+}, {
+	.phy_id		= PHY_ID_BCM5421,
+	.phy_id_mask	= 0xfffffff0,
+	.name		= "Broadcom BCM5421",
+	.features	= PHY_GBIT_FEATURES |
+			  SUPPORTED_Pause | SUPPORTED_Asym_Pause,
 	.flags		= PHY_HAS_MAGICANEG | PHY_HAS_INTERRUPT,
 	.config_init	= bcm54xx_config_init,
 	.config_aneg	= genphy_config_aneg,
@@ -364,6 +701,15 @@ static struct phy_driver bcm5461_driver = {
 	.phy_id_mask	= 0xfffffff0,
 	.name		= "Broadcom BCM5461",
 	.features	= PHY_GBIT_FEATURES,
+	.ack_interrupt	= bcm_phy_ack_intr,
+	.config_intr	= bcm_phy_config_intr,
+	.driver		= { .owner = THIS_MODULE },
+}, {
+	.phy_id		= PHY_ID_BCM5461,
+	.phy_id_mask	= 0xfffffff0,
+	.name		= "Broadcom BCM5461",
+	.features	= PHY_GBIT_FEATURES |
+			  SUPPORTED_Pause | SUPPORTED_Asym_Pause,
 	.flags		= PHY_HAS_MAGICANEG | PHY_HAS_INTERRUPT,
 	.config_init	= bcm54xx_config_init,
 	.config_aneg	= genphy_config_aneg,
@@ -378,6 +724,28 @@ static struct phy_driver bcm5464_driver = {
 	.phy_id_mask	= 0xfffffff0,
 	.name		= "Broadcom BCM5464",
 	.features	= PHY_GBIT_FEATURES,
+	.ack_interrupt	= bcm_phy_ack_intr,
+	.config_intr	= bcm_phy_config_intr,
+	.driver		= { .owner = THIS_MODULE },
+}, {
+	.phy_id		= PHY_ID_BCM54616S,
+	.phy_id_mask	= 0xfffffff0,
+	.name		= "Broadcom BCM54616S",
+	.features	= PHY_GBIT_FEATURES |
+			  SUPPORTED_Pause | SUPPORTED_Asym_Pause,
+	.flags		= PHY_HAS_MAGICANEG | PHY_HAS_INTERRUPT,
+	.config_init	= bcm54xx_config_init,
+	.config_aneg	= genphy_config_aneg,
+	.read_status	= genphy_read_status,
+	.ack_interrupt	= bcm_phy_ack_intr,
+	.config_intr	= bcm_phy_config_intr,
+	.driver		= { .owner = THIS_MODULE },
+}, {
+	.phy_id		= PHY_ID_BCM5464,
+	.phy_id_mask	= 0xfffffff0,
+	.name		= "Broadcom BCM5464",
+	.features	= PHY_GBIT_FEATURES |
+			  SUPPORTED_Pause | SUPPORTED_Asym_Pause,
 	.flags		= PHY_HAS_MAGICANEG | PHY_HAS_INTERRUPT,
 	.config_init	= bcm54xx_config_init,
 	.config_aneg	= genphy_config_aneg,
@@ -392,6 +760,15 @@ static struct phy_driver bcm5481_driver = {
 	.phy_id_mask	= 0xfffffff0,
 	.name		= "Broadcom BCM5481",
 	.features	= PHY_GBIT_FEATURES,
+	.ack_interrupt	= bcm_phy_ack_intr,
+	.config_intr	= bcm_phy_config_intr,
+	.driver		= { .owner = THIS_MODULE },
+}, {
+	.phy_id		= PHY_ID_BCM5481,
+	.phy_id_mask	= 0xfffffff0,
+	.name		= "Broadcom BCM5481",
+	.features	= PHY_GBIT_FEATURES |
+			  SUPPORTED_Pause | SUPPORTED_Asym_Pause,
 	.flags		= PHY_HAS_MAGICANEG | PHY_HAS_INTERRUPT,
 	.config_init	= bcm54xx_config_init,
 	.config_aneg	= bcm5481_config_aneg,
@@ -406,6 +783,15 @@ static struct phy_driver bcm5482_driver = {
 	.phy_id_mask	= 0xfffffff0,
 	.name		= "Broadcom BCM5482",
 	.features	= PHY_GBIT_FEATURES,
+	.ack_interrupt	= bcm_phy_ack_intr,
+	.config_intr	= bcm_phy_config_intr,
+	.driver		= { .owner = THIS_MODULE },
+}, {
+	.phy_id		= PHY_ID_BCM5482,
+	.phy_id_mask	= 0xfffffff0,
+	.name		= "Broadcom BCM5482",
+	.features	= PHY_GBIT_FEATURES |
+			  SUPPORTED_Pause | SUPPORTED_Asym_Pause,
 	.flags		= PHY_HAS_MAGICANEG | PHY_HAS_INTERRUPT,
 	.config_init	= bcm5482_config_init,
 	.config_aneg	= genphy_config_aneg,
@@ -465,3 +851,92 @@ static void __exit broadcom_exit(void)
 
 module_init(broadcom_init);
 module_exit(broadcom_exit);
+	.ack_interrupt	= bcm_phy_ack_intr,
+	.config_intr	= bcm_phy_config_intr,
+	.driver		= { .owner = THIS_MODULE },
+}, {
+	.phy_id		= PHY_ID_BCM50610,
+	.phy_id_mask	= 0xfffffff0,
+	.name		= "Broadcom BCM50610",
+	.features	= PHY_GBIT_FEATURES |
+			  SUPPORTED_Pause | SUPPORTED_Asym_Pause,
+	.flags		= PHY_HAS_MAGICANEG | PHY_HAS_INTERRUPT,
+	.config_init	= bcm54xx_config_init,
+	.config_aneg	= genphy_config_aneg,
+	.read_status	= genphy_read_status,
+	.ack_interrupt	= bcm_phy_ack_intr,
+	.config_intr	= bcm_phy_config_intr,
+	.driver		= { .owner = THIS_MODULE },
+}, {
+	.phy_id		= PHY_ID_BCM50610M,
+	.phy_id_mask	= 0xfffffff0,
+	.name		= "Broadcom BCM50610M",
+	.features	= PHY_GBIT_FEATURES |
+			  SUPPORTED_Pause | SUPPORTED_Asym_Pause,
+	.flags		= PHY_HAS_MAGICANEG | PHY_HAS_INTERRUPT,
+	.config_init	= bcm54xx_config_init,
+	.config_aneg	= genphy_config_aneg,
+	.read_status	= genphy_read_status,
+	.ack_interrupt	= bcm_phy_ack_intr,
+	.config_intr	= bcm_phy_config_intr,
+	.driver		= { .owner = THIS_MODULE },
+}, {
+	.phy_id		= PHY_ID_BCM57780,
+	.phy_id_mask	= 0xfffffff0,
+	.name		= "Broadcom BCM57780",
+	.features	= PHY_GBIT_FEATURES |
+			  SUPPORTED_Pause | SUPPORTED_Asym_Pause,
+	.flags		= PHY_HAS_MAGICANEG | PHY_HAS_INTERRUPT,
+	.config_init	= bcm54xx_config_init,
+	.config_aneg	= genphy_config_aneg,
+	.read_status	= genphy_read_status,
+	.ack_interrupt	= bcm_phy_ack_intr,
+	.config_intr	= bcm_phy_config_intr,
+	.driver		= { .owner = THIS_MODULE },
+}, {
+	.phy_id		= PHY_ID_BCMAC131,
+	.phy_id_mask	= 0xfffffff0,
+	.name		= "Broadcom BCMAC131",
+	.features	= PHY_BASIC_FEATURES |
+			  SUPPORTED_Pause | SUPPORTED_Asym_Pause,
+	.flags		= PHY_HAS_MAGICANEG | PHY_HAS_INTERRUPT,
+	.config_init	= brcm_fet_config_init,
+	.config_aneg	= genphy_config_aneg,
+	.read_status	= genphy_read_status,
+	.ack_interrupt	= brcm_fet_ack_interrupt,
+	.config_intr	= brcm_fet_config_intr,
+	.driver		= { .owner = THIS_MODULE },
+}, {
+	.phy_id		= PHY_ID_BCM5241,
+	.phy_id_mask	= 0xfffffff0,
+	.name		= "Broadcom BCM5241",
+	.features	= PHY_BASIC_FEATURES |
+			  SUPPORTED_Pause | SUPPORTED_Asym_Pause,
+	.flags		= PHY_HAS_MAGICANEG | PHY_HAS_INTERRUPT,
+	.config_init	= brcm_fet_config_init,
+	.config_aneg	= genphy_config_aneg,
+	.read_status	= genphy_read_status,
+	.ack_interrupt	= brcm_fet_ack_interrupt,
+	.config_intr	= brcm_fet_config_intr,
+	.driver		= { .owner = THIS_MODULE },
+} };
+
+module_phy_driver(broadcom_drivers);
+
+static struct mdio_device_id __maybe_unused broadcom_tbl[] = {
+	{ PHY_ID_BCM5411, 0xfffffff0 },
+	{ PHY_ID_BCM5421, 0xfffffff0 },
+	{ PHY_ID_BCM5461, 0xfffffff0 },
+	{ PHY_ID_BCM54616S, 0xfffffff0 },
+	{ PHY_ID_BCM5464, 0xfffffff0 },
+	{ PHY_ID_BCM5481, 0xfffffff0 },
+	{ PHY_ID_BCM5482, 0xfffffff0 },
+	{ PHY_ID_BCM50610, 0xfffffff0 },
+	{ PHY_ID_BCM50610M, 0xfffffff0 },
+	{ PHY_ID_BCM57780, 0xfffffff0 },
+	{ PHY_ID_BCMAC131, 0xfffffff0 },
+	{ PHY_ID_BCM5241, 0xfffffff0 },
+	{ }
+};
+
+MODULE_DEVICE_TABLE(mdio, broadcom_tbl);

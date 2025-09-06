@@ -4,6 +4,8 @@
 
 #include "sfp-machine.h"
 #include "double.h"
+#include <asm/sfp-machine.h>
+#include <math-emu/double.h>
 
 int
 lfd(void *frD, void *ea)

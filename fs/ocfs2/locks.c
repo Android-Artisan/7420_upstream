@@ -26,12 +26,15 @@
 #include <linux/fs.h>
 
 #define MLOG_MASK_PREFIX ML_INODE
+#include <linux/fcntl.h>
+
 #include <cluster/masklog.h>
 
 #include "ocfs2.h"
 
 #include "dlmglue.h"
 #include "file.h"
+#include "inode.h"
 #include "locks.h"
 
 static int ocfs2_do_flock(struct file *file, struct inode *inode,
@@ -67,6 +70,11 @@ static int ocfs2_do_flock(struct file *file, struct inode *inode,
 
 		flock_lock_file_wait(file,
 				     &(struct file_lock){.fl_type = F_UNLCK});
+		locks_lock_file_wait(file,
+				&(struct file_lock) {
+					.fl_type = F_UNLCK,
+					.fl_flags = FL_FLOCK
+				});
 
 		ocfs2_file_unlock(file);
 	}
@@ -81,6 +89,9 @@ static int ocfs2_do_flock(struct file *file, struct inode *inode,
 	}
 
 	ret = flock_lock_file_wait(file, fl);
+	ret = locks_lock_file_wait(file, fl);
+	if (ret)
+		ocfs2_file_unlock(file);
 
 out:
 	mutex_unlock(&fp->fp_mutex);
@@ -96,6 +107,7 @@ static int ocfs2_do_funlock(struct file *file, int cmd, struct file_lock *fl)
 	mutex_lock(&fp->fp_mutex);
 	ocfs2_file_unlock(file);
 	ret = flock_lock_file_wait(file, fl);
+	ret = locks_lock_file_wait(file, fl);
 	mutex_unlock(&fp->fp_mutex);
 
 	return ret;
@@ -117,9 +129,23 @@ int ocfs2_flock(struct file *file, int cmd, struct file_lock *fl)
 	if ((osb->s_mount_opt & OCFS2_MOUNT_LOCALFLOCKS) ||
 	    ocfs2_mount_local(osb))
 		return flock_lock_file_wait(file, fl);
+		return locks_lock_file_wait(file, fl);
 
 	if (fl->fl_type == F_UNLCK)
 		return ocfs2_do_funlock(file, cmd, fl);
 	else
 		return ocfs2_do_flock(file, inode, cmd, fl);
+}
+
+int ocfs2_lock(struct file *file, int cmd, struct file_lock *fl)
+{
+	struct inode *inode = file->f_mapping->host;
+	struct ocfs2_super *osb = OCFS2_SB(inode->i_sb);
+
+	if (!(fl->fl_flags & FL_POSIX))
+		return -ENOLCK;
+	if (__mandatory_lock(inode) && fl->fl_type != F_UNLCK)
+		return -ENOLCK;
+
+	return ocfs2_plock(osb->cconn, OCFS2_I(inode)->ip_blkno, file, cmd, fl);
 }

@@ -37,6 +37,8 @@ int irda_register_dongle(struct dongle_driver *new)
 
 	IRDA_DEBUG(0, "%s : registering dongle \"%s\" (%d).\n",
 		   __func__, new->driver_name, new->type);
+	pr_debug("%s : registering dongle \"%s\" (%d).\n",
+		 __func__, new->driver_name, new->type);
 
 	mutex_lock(&dongle_list_lock);
 	list_for_each(entry, &dongle_list) {
@@ -70,6 +72,7 @@ int sirdev_get_dongle(struct sir_dev *dev, IRDA_DONGLE type)
 #ifdef CONFIG_KMOD
 	request_module("irda-dongle-%d", type);
 #endif
+	request_module("irda-dongle-%d", type);
 
 	if (dev->dongle_drv != NULL)
 		return -EBUSY;

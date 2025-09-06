@@ -42,4 +42,11 @@ int pci_fixup_pcic(void)
 	pci_write_reg(((SH7780_PCI_IO_SIZE-1) & (7<<18)), SH7780_PCIIOBMR);
 
 	return 0;
+#include <linux/io.h>
+#include <linux/sh_intc.h>
+#include "pci-sh4.h"
+
+int __init pcibios_map_platform_irq(const struct pci_dev *pdev, u8 slot, u8 pin)
+{
+	return evt2irq(0xa20) + slot;
 }

@@ -30,6 +30,9 @@
 #include <asm/io.h>
 #include <asm/smp.h>
 #include <asm/system.h>
+#include <linux/atomic.h>
+#include <asm/io.h>
+#include <asm/smp.h>
 #include <asm/uaccess.h>
 #include <asm/pgalloc.h>
 #include <asm/delay.h>
@@ -90,6 +93,10 @@ int show_interrupts(struct seq_file *p, void *v)
 		seq_printf(p, "Err: %10u\n", atomic_read(&irq_err_count));
 	}
 
+int arch_show_interrupts(struct seq_file *p, int prec)
+{
+	seq_printf(p, "%*s: ", prec, "ERR");
+	seq_printf(p, "%10u\n", atomic_read(&irq_err_count));
 	return 0;
 }
 
@@ -122,6 +129,27 @@ static void frv_cpupic_unmask(unsigned int irqlevel)
 static void frv_cpupic_end(unsigned int irqlevel)
 {
 	__clr_MASK(irqlevel);
+static void frv_cpupic_ack(struct irq_data *d)
+{
+	__clr_RC(d->irq);
+	__clr_IRL();
+}
+
+static void frv_cpupic_mask(struct irq_data *d)
+{
+	__set_MASK(d->irq);
+}
+
+static void frv_cpupic_mask_ack(struct irq_data *d)
+{
+	__set_MASK(d->irq);
+	__clr_RC(d->irq);
+	__clr_IRL();
+}
+
+static void frv_cpupic_unmask(struct irq_data *d)
+{
+	__clr_MASK(d->irq);
 }
 
 static struct irq_chip frv_cpu_pic = {
@@ -131,6 +159,10 @@ static struct irq_chip frv_cpu_pic = {
 	.mask_ack	= frv_cpupic_mask_ack,
 	.unmask		= frv_cpupic_unmask,
 	.end		= frv_cpupic_end,
+	.irq_ack	= frv_cpupic_ack,
+	.irq_mask	= frv_cpupic_mask,
+	.irq_mask_ack	= frv_cpupic_mask_ack,
+	.irq_unmask	= frv_cpupic_unmask,
 };
 
 /*
@@ -166,6 +198,10 @@ void __init init_IRQ(void)
 					 handle_level_irq);
 
 	set_irq_handler(IRQ_CPU_TIMER0, handle_edge_irq);
+		irq_set_chip_and_handler(level, &frv_cpu_pic,
+					 handle_level_irq);
+
+	irq_set_handler(IRQ_CPU_TIMER0, handle_edge_irq);
 
 	/* set the trigger levels for internal interrupt sources
 	 * - timers all falling-edge

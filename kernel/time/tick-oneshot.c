@@ -70,6 +70,25 @@ int tick_program_event(ktime_t expires, int force)
 	struct clock_event_device *dev = __get_cpu_var(tick_cpu_device).evtdev;
 
 	return tick_dev_program_event(dev, expires, force);
+	struct clock_event_device *dev = __this_cpu_read(tick_cpu_device.evtdev);
+
+	if (unlikely(expires.tv64 == KTIME_MAX)) {
+		/*
+		 * We don't need the clock event device any more, stop it.
+		 */
+		clockevents_switch_state(dev, CLOCK_EVT_STATE_ONESHOT_STOPPED);
+		return 0;
+	}
+
+	if (unlikely(clockevent_state_oneshot_stopped(dev))) {
+		/*
+		 * We need the clock event again, configure it in ONESHOT mode
+		 * before using it.
+		 */
+		clockevents_switch_state(dev, CLOCK_EVT_STATE_ONESHOT);
+	}
+
+	return clockevents_program_event(dev, expires, force);
 }
 
 /**
@@ -82,6 +101,10 @@ void tick_resume_oneshot(void)
 
 	clockevents_set_mode(dev, CLOCK_EVT_MODE_ONESHOT);
 	tick_program_event(ktime_get(), 1);
+	struct clock_event_device *dev = __this_cpu_read(tick_cpu_device.evtdev);
+
+	clockevents_switch_state(dev, CLOCK_EVT_STATE_ONESHOT);
+	clockevents_program_event(dev, ktime_get(), true);
 }
 
 /**
@@ -94,6 +117,8 @@ void tick_setup_oneshot(struct clock_event_device *newdev,
 	newdev->event_handler = handler;
 	clockevents_set_mode(newdev, CLOCK_EVT_MODE_ONESHOT);
 	tick_dev_program_event(newdev, next_event, 1);
+	clockevents_switch_state(newdev, CLOCK_EVT_STATE_ONESHOT);
+	clockevents_program_event(newdev, next_event, true);
 }
 
 /**
@@ -102,6 +127,7 @@ void tick_setup_oneshot(struct clock_event_device *newdev,
 int tick_switch_to_oneshot(void (*handler)(struct clock_event_device *))
 {
 	struct tick_device *td = &__get_cpu_var(tick_cpu_device);
+	struct tick_device *td = this_cpu_ptr(&tick_cpu_device);
 	struct clock_event_device *dev = td->evtdev;
 
 	if (!dev || !(dev->features & CLOCK_EVT_FEAT_ONESHOT) ||
@@ -124,8 +150,26 @@ int tick_switch_to_oneshot(void (*handler)(struct clock_event_device *))
 	td->mode = TICKDEV_MODE_ONESHOT;
 	dev->event_handler = handler;
 	clockevents_set_mode(dev, CLOCK_EVT_MODE_ONESHOT);
+	clockevents_switch_state(dev, CLOCK_EVT_STATE_ONESHOT);
 	tick_broadcast_switch_to_oneshot();
 	return 0;
+}
+
+/**
+ * tick_check_oneshot_mode - check whether the system is in oneshot mode
+ *
+ * returns 1 when either nohz or highres are enabled. otherwise 0.
+ */
+int tick_oneshot_mode_active(void)
+{
+	unsigned long flags;
+	int ret;
+
+	local_irq_save(flags);
+	ret = __this_cpu_read(tick_cpu_device.mode) == TICKDEV_MODE_ONESHOT;
+	local_irq_restore(flags);
+
+	return ret;
 }
 
 #ifdef CONFIG_HIGH_RES_TIMERS

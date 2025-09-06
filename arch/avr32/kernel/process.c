@@ -10,6 +10,9 @@
 #include <linux/kallsyms.h>
 #include <linux/fs.h>
 #include <linux/ptrace.h>
+#include <linux/pm.h>
+#include <linux/ptrace.h>
+#include <linux/slab.h>
 #include <linux/reboot.h>
 #include <linux/tick.h>
 #include <linux/uaccess.h>
@@ -21,6 +24,11 @@
 #include <mach/pm.h>
 
 void (*pm_power_off)(void) = NULL;
+#include <asm/syscalls.h>
+
+#include <mach/pm.h>
+
+void (*pm_power_off)(void);
 EXPORT_SYMBOL(pm_power_off);
 
 /*
@@ -39,6 +47,9 @@ void cpu_idle(void)
 		schedule();
 		preempt_disable();
 	}
+void arch_cpu_idle(void)
+{
+	cpu_enter_idle();
 }
 
 void machine_halt(void)
@@ -267,6 +278,8 @@ void show_regs_log_lvl(struct pt_regs *regs, const char *log_lvl)
 	unsigned long lr = regs->lr;
 	unsigned long mode = (regs->sr & MODE_MASK) >> MODE_SHIFT;
 
+	show_regs_print_info(log_lvl);
+
 	if (!user_mode(regs)) {
 		sp = (unsigned long)regs + FRAME_SIZE_FULL;
 
@@ -349,6 +362,32 @@ int copy_thread(int nr, unsigned long clone_flags, unsigned long usp,
 	p->thread.cpu_context.sr = MODE_SUPERVISOR | SR_GM;
 	p->thread.cpu_context.ksp = (unsigned long)childregs;
 	p->thread.cpu_context.pc = (unsigned long)ret_from_fork;
+asmlinkage void ret_from_kernel_thread(void);
+asmlinkage void syscall_return(void);
+
+int copy_thread(unsigned long clone_flags, unsigned long usp,
+		unsigned long arg,
+		struct task_struct *p)
+{
+	struct pt_regs *childregs = task_pt_regs(p);
+
+	if (unlikely(p->flags & PF_KTHREAD)) {
+		memset(childregs, 0, sizeof(struct pt_regs));
+		p->thread.cpu_context.r0 = arg;
+		p->thread.cpu_context.r1 = usp; /* fn */
+		p->thread.cpu_context.r2 = (unsigned long)syscall_return;
+		p->thread.cpu_context.pc = (unsigned long)ret_from_kernel_thread;
+		childregs->sr = MODE_SUPERVISOR;
+	} else {
+		*childregs = *current_pt_regs();
+		if (usp)
+			childregs->sp = usp;
+		childregs->r12 = 0; /* Set return value for child */
+		p->thread.cpu_context.pc = (unsigned long)ret_from_fork;
+	}
+
+	p->thread.cpu_context.sr = MODE_SUPERVISOR | SR_GM;
+	p->thread.cpu_context.ksp = (unsigned long)childregs;
 
 	clear_tsk_thread_flag(p, TIF_DEBUG);
 	if ((clone_flags & CLONE_PTRACE) && test_thread_flag(TIF_DEBUG))
@@ -433,6 +472,7 @@ unsigned long get_wchan(struct task_struct *p)
 		 * determine the frame size automatically at build
 		 * time by doing this:
 		 *   - compile sched.c
+		 *   - compile sched/core.c
 		 *   - disassemble the resulting sched.o
 		 *   - look for 'sub sp,??' shortly after '<schedule>:'
 		 */

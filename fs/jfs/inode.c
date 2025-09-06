@@ -22,6 +22,8 @@
 #include <linux/buffer_head.h>
 #include <linux/pagemap.h>
 #include <linux/quotaops.h>
+#include <linux/uio.h>
+#include <linux/writeback.h>
 #include "jfs_incore.h"
 #include "jfs_inode.h"
 #include "jfs_filsys.h"
@@ -61,6 +63,15 @@ struct inode *jfs_iget(struct super_block *sb, unsigned long ino)
 			inode->i_mapping->a_ops = &jfs_aops;
 		} else
 			inode->i_op = &jfs_symlink_inode_operations;
+		} else {
+			inode->i_op = &jfs_fast_symlink_inode_operations;
+			inode->i_link = JFS_IP(inode)->i_inline;
+			/*
+			 * The inline data should be null-terminated, but
+			 * don't let on-disk corruption crash the kernel
+			 */
+			inode->i_link[inode->i_size] = '\0';
+		}
 	} else {
 		inode->i_op = &jfs_file_inode_operations;
 		init_special_inode(inode, inode->i_mode, inode->i_rdev);
@@ -117,6 +128,11 @@ int jfs_commit_inode(struct inode *inode, int wait)
 int jfs_write_inode(struct inode *inode, int wait)
 {
 	if (test_cflag(COMMIT_Nolink, inode))
+int jfs_write_inode(struct inode *inode, struct writeback_control *wbc)
+{
+	int wait = wbc->sync_mode == WB_SYNC_ALL;
+
+	if (inode->i_nlink == 0)
 		return 0;
 	/*
 	 * If COMMIT_DIRTY is not set, the inode isn't really dirty.
@@ -128,6 +144,11 @@ int jfs_write_inode(struct inode *inode, int wait)
 		jfs_flush_journal(JFS_SBI(inode->i_sb)->log, wait);
 		return 0;
 	 }
+	if (!test_cflag(COMMIT_Dirty, inode)) {
+		/* Make sure committed changes hit the disk */
+		jfs_flush_journal(JFS_SBI(inode->i_sb)->log, wait);
+		return 0;
+	}
 
 	if (jfs_commit_inode(inode, wait)) {
 		jfs_err("jfs_write_inode: jfs_commit_inode failed!");
@@ -161,6 +182,37 @@ void jfs_delete_inode(struct inode *inode)
 }
 
 void jfs_dirty_inode(struct inode *inode)
+void jfs_evict_inode(struct inode *inode)
+{
+	jfs_info("In jfs_evict_inode, inode = 0x%p", inode);
+
+	if (!inode->i_nlink && !is_bad_inode(inode)) {
+		dquot_initialize(inode);
+
+		if (JFS_IP(inode)->fileset == FILESYSTEM_I) {
+			struct inode *ipimap = JFS_SBI(inode->i_sb)->ipimap;
+			truncate_inode_pages_final(&inode->i_data);
+
+			if (test_cflag(COMMIT_Freewmap, inode))
+				jfs_free_zero_link(inode);
+
+			if (ipimap && JFS_IP(ipimap)->i_imap)
+				diFree(inode);
+
+			/*
+			 * Free the inode from the quota allocation.
+			 */
+			dquot_initialize(inode);
+			dquot_free_inode(inode);
+		}
+	} else {
+		truncate_inode_pages_final(&inode->i_data);
+	}
+	clear_inode(inode);
+	dquot_drop(inode);
+}
+
+void jfs_dirty_inode(struct inode *inode, int flags)
 {
 	static int noisy = 5;
 
@@ -287,12 +339,30 @@ static int jfs_readpages(struct file *file, struct address_space *mapping,
 	return mpage_readpages(mapping, pages, nr_pages, jfs_get_block);
 }
 
+static void jfs_write_failed(struct address_space *mapping, loff_t to)
+{
+	struct inode *inode = mapping->host;
+
+	if (to > inode->i_size) {
+		truncate_pagecache(inode, inode->i_size);
+		jfs_truncate(inode);
+	}
+}
+
 static int jfs_write_begin(struct file *file, struct address_space *mapping,
 				loff_t pos, unsigned len, unsigned flags,
 				struct page **pagep, void **fsdata)
 {
 	return nobh_write_begin(file, mapping, pos, len, flags, pagep, fsdata,
 				jfs_get_block);
+	int ret;
+
+	ret = nobh_write_begin(mapping, pos, len, flags, pagep, fsdata,
+				jfs_get_block);
+	if (unlikely(ret))
+		jfs_write_failed(mapping, pos + len);
+
+	return ret;
 }
 
 static sector_t jfs_bmap(struct address_space *mapping, sector_t block)
@@ -308,6 +378,30 @@ static ssize_t jfs_direct_IO(int rw, struct kiocb *iocb,
 
 	return blockdev_direct_IO(rw, iocb, inode, inode->i_sb->s_bdev, iov,
 				offset, nr_segs, jfs_get_block, NULL);
+static ssize_t jfs_direct_IO(struct kiocb *iocb, struct iov_iter *iter,
+			     loff_t offset)
+{
+	struct file *file = iocb->ki_filp;
+	struct address_space *mapping = file->f_mapping;
+	struct inode *inode = file->f_mapping->host;
+	size_t count = iov_iter_count(iter);
+	ssize_t ret;
+
+	ret = blockdev_direct_IO(iocb, inode, iter, offset, jfs_get_block);
+
+	/*
+	 * In case of error extending write may have instantiated a few
+	 * blocks outside i_size. Trim these off again.
+	 */
+	if (unlikely(iov_iter_rw(iter) == WRITE && ret < 0)) {
+		loff_t isize = i_size_read(inode);
+		loff_t end = offset + count;
+
+		if (end > isize)
+			jfs_write_failed(mapping, end);
+	}
+
+	return ret;
 }
 
 const struct address_space_operations jfs_aops = {

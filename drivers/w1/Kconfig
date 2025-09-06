@@ -9,6 +9,7 @@ menuconfig W1
 
 	  This W1 support can also be built as a module.  If so, the module
 	  will be called wire.ko.
+	  will be called wire.
 
 if W1
 
@@ -17,6 +18,7 @@ config W1_CON
 	bool "Userspace communication over connector"
 	default y
 	--- help ---
+	---help---
 	  This allows to communicate with userspace using connector. For more
 	  information see <file:Documentation/connector/connector.txt>.
 	  There are three types of messages between w1 core and userspace:

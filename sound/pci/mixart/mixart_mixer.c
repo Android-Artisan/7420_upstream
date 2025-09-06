@@ -330,6 +330,9 @@ static int mixart_update_analog_audio_level(struct snd_mixart* chip, int is_capt
 	err = snd_mixart_send_msg(chip->mgr, &request, sizeof(resp), &resp);
 	if((err<0) || (resp.error_code)) {
 		snd_printk(KERN_DEBUG "error MSG_PHYSICALIO_SET_LEVEL card(%d) is_capture(%d) error_code(%x)\n", chip->chip_idx, is_capture, resp.error_code);
+		dev_dbg(chip->card->dev,
+			"error MSG_PHYSICALIO_SET_LEVEL card(%d) is_capture(%d) error_code(%x)\n",
+			chip->chip_idx, is_capture, resp.error_code);
 		return -EINVAL;
 	}
 	return 0;
@@ -763,6 +766,9 @@ int mixart_update_playback_stream_level(struct snd_mixart* chip, int is_aes, int
 	err = snd_mixart_send_msg(chip->mgr, &request, sizeof(status), &status);
 	if((err<0) || status) {
 		snd_printk(KERN_DEBUG "error MSG_STREAM_SET_OUT_STREAM_LEVEL card(%d) status(%x)\n", chip->chip_idx, status);
+		dev_dbg(chip->card->dev,
+			"error MSG_STREAM_SET_OUT_STREAM_LEVEL card(%d) status(%x)\n",
+			chip->chip_idx, status);
 		return -EINVAL;
 	}
 	return 0;
@@ -806,6 +812,9 @@ int mixart_update_capture_stream_level(struct snd_mixart* chip, int is_aes)
 	err = snd_mixart_send_msg(chip->mgr, &request, sizeof(status), &status);
 	if((err<0) || status) {
 		snd_printk(KERN_DEBUG "error MSG_STREAM_SET_IN_AUDIO_LEVEL card(%d) status(%x)\n", chip->chip_idx, status);
+		dev_dbg(chip->card->dev,
+			"error MSG_STREAM_SET_IN_AUDIO_LEVEL card(%d) status(%x)\n",
+			chip->chip_idx, status);
 		return -EINVAL;
 	}
 	return 0;
@@ -838,6 +847,7 @@ static int mixart_pcm_vol_get(struct snd_kcontrol *kcontrol, struct snd_ctl_elem
 		else		stored_volume = chip->digital_capture_volume[0];	/* analog capture */
 	} else {
 		snd_assert ( idx < MIXART_PLAYBACK_STREAMS ); 
+		snd_BUG_ON(idx >= MIXART_PLAYBACK_STREAMS);
 		if(is_aes)	stored_volume = chip->digital_playback_volume[MIXART_PLAYBACK_STREAMS + idx]; /* AES playback */
 		else		stored_volume = chip->digital_playback_volume[idx];	/* analog playback */
 	}
@@ -864,6 +874,7 @@ static int mixart_pcm_vol_put(struct snd_kcontrol *kcontrol, struct snd_ctl_elem
 			stored_volume = chip->digital_capture_volume[0];
 	} else {
 		snd_assert ( idx < MIXART_PLAYBACK_STREAMS ); 
+		snd_BUG_ON(idx >= MIXART_PLAYBACK_STREAMS);
 		if (is_aes)	/* AES playback */
 			stored_volume = chip->digital_playback_volume[MIXART_PLAYBACK_STREAMS + idx];
 		else		/* analog playback */
@@ -910,6 +921,7 @@ static int mixart_pcm_sw_get(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_
 	struct snd_mixart *chip = snd_kcontrol_chip(kcontrol);
 	int idx = snd_ctl_get_ioffidx(kcontrol, &ucontrol->id); /* index */
 	snd_assert ( idx < MIXART_PLAYBACK_STREAMS ); 
+	snd_BUG_ON(idx >= MIXART_PLAYBACK_STREAMS);
 	mutex_lock(&chip->mgr->mixer_mutex);
 	if(kcontrol->private_value & MIXART_VOL_AES_MASK)	/* AES playback */
 		idx += MIXART_PLAYBACK_STREAMS;
@@ -927,6 +939,7 @@ static int mixart_pcm_sw_put(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_
 	int idx = snd_ctl_get_ioffidx(kcontrol, &ucontrol->id); /* index */
 	int i, j;
 	snd_assert ( idx < MIXART_PLAYBACK_STREAMS ); 
+	snd_BUG_ON(idx >= MIXART_PLAYBACK_STREAMS);
 	mutex_lock(&chip->mgr->mixer_mutex);
 	j = idx;
 	if (is_aes)
@@ -978,6 +991,9 @@ static int mixart_update_monitoring(struct snd_mixart* chip, int channel)
 	err = snd_mixart_send_msg(chip->mgr, &request, sizeof(resp), &resp);
 	if((err<0) || resp) {
 		snd_printk(KERN_DEBUG "error MSG_CONNECTOR_SET_OUT_AUDIO_LEVEL card(%d) resp(%x)\n", chip->chip_idx, resp);
+		dev_dbg(chip->card->dev,
+			"error MSG_CONNECTOR_SET_OUT_AUDIO_LEVEL card(%d) resp(%x)\n",
+			chip->chip_idx, resp);
 		return -EINVAL;
 	}
 	return 0;

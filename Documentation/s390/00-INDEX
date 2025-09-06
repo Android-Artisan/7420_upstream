@@ -23,4 +23,9 @@ s390dbf.txt
 TAPE
 	- information on the driver for channel-attached tapes.
 zfcpdump
+qeth.txt
+	- HiperSockets Bridge Port Support.
+s390dbf.txt
+	- information on using the s390 debug feature.
+zfcpdump.txt
 	- information on the s390 SCSI dump tool.

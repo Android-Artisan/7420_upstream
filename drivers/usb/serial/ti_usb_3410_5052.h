@@ -28,11 +28,38 @@
 /* Vendor and product ids */
 #define TI_VENDOR_ID			0x0451
 #define TI_3410_PRODUCT_ID		0x3410
+#define IBM_VENDOR_ID			0x04b3
+#define TI_3410_PRODUCT_ID		0x3410
+#define IBM_4543_PRODUCT_ID		0x4543
+#define IBM_454B_PRODUCT_ID		0x454b
+#define IBM_454C_PRODUCT_ID		0x454c
 #define TI_3410_EZ430_ID		0xF430  /* TI ez430 development tool */
 #define TI_5052_BOOT_PRODUCT_ID		0x5052	/* no EEPROM, no firmware */
 #define TI_5152_BOOT_PRODUCT_ID		0x5152	/* no EEPROM, no firmware */
 #define TI_5052_EEPROM_PRODUCT_ID	0x505A	/* EEPROM, no firmware */
 #define TI_5052_FIRMWARE_PRODUCT_ID	0x505F	/* firmware is running */
+#define FRI2_PRODUCT_ID			0x5053  /* Fish River Island II */
+
+/* Multi-Tech vendor and product ids */
+#define MTS_VENDOR_ID			0x06E0
+#define MTS_GSM_NO_FW_PRODUCT_ID	0xF108
+#define MTS_CDMA_NO_FW_PRODUCT_ID	0xF109
+#define MTS_CDMA_PRODUCT_ID		0xF110
+#define MTS_GSM_PRODUCT_ID		0xF111
+#define MTS_EDGE_PRODUCT_ID		0xF112
+#define MTS_MT9234MU_PRODUCT_ID		0xF114
+#define MTS_MT9234ZBA_PRODUCT_ID	0xF115
+#define MTS_MT9234ZBAOLD_PRODUCT_ID	0x0319
+
+/* Abbott Diabetics vendor and product ids */
+#define ABBOTT_VENDOR_ID		0x1a61
+#define ABBOTT_STEREO_PLUG_ID		0x3410
+#define ABBOTT_PRODUCT_ID		ABBOTT_STEREO_PLUG_ID
+#define ABBOTT_STRIP_PORT_ID		0x3420
+
+/* Honeywell vendor and product IDs */
+#define HONEYWELL_VENDOR_ID		0x10ac
+#define HONEYWELL_HGI80_PRODUCT_ID	0x0102  /* Honeywell HGI80 */
 
 /* Commands */
 #define TI_GET_VERSION			0x01
@@ -201,7 +228,7 @@ struct ti_interrupt {
 } __attribute__((packed));
 
 /* Interrupt codes */
-#define TI_GET_PORT_FROM_CODE(c)	(((c) >> 4) - 3)
+#define TI_GET_PORT_FROM_CODE(c)	(((c) >> 6) & 0x01)
 #define TI_GET_FUNC_FROM_CODE(c)	((c) & 0x0f)
 #define TI_CODE_HARDWARE_ERROR		0xFF
 #define TI_CODE_DATA_ERROR		0x03

@@ -54,6 +54,35 @@
 	US_FLAG(BULK_IGNORE_TAG,0x00004000)			\
 		/* Ignore tag mismatch in bulk operations */
 
+		/* Ignore tag mismatch in bulk operations */    \
+	US_FLAG(SANE_SENSE,     0x00008000)			\
+		/* Sane Sense (> 18 bytes) */			\
+	US_FLAG(CAPACITY_OK,	0x00010000)			\
+		/* READ CAPACITY response is correct */		\
+	US_FLAG(BAD_SENSE,	0x00020000)			\
+		/* Bad Sense (never more than 18 bytes) */	\
+	US_FLAG(NO_READ_DISC_INFO,	0x00040000)		\
+		/* cannot handle READ_DISC_INFO */		\
+	US_FLAG(NO_READ_CAPACITY_16,	0x00080000)		\
+		/* cannot handle READ_CAPACITY_16 */		\
+	US_FLAG(INITIAL_READ10,	0x00100000)			\
+		/* Initial READ(10) (and others) must be retried */	\
+	US_FLAG(WRITE_CACHE,	0x00200000)			\
+		/* Write Cache status is not available */	\
+	US_FLAG(NEEDS_CAP16,	0x00400000)			\
+		/* cannot handle READ_CAPACITY_10 */		\
+	US_FLAG(IGNORE_UAS,	0x00800000)			\
+		/* Device advertises UAS but it is broken */	\
+	US_FLAG(BROKEN_FUA,	0x01000000)			\
+		/* Cannot handle FUA in WRITE or READ CDBs */	\
+	US_FLAG(NO_ATA_1X,	0x02000000)			\
+		/* Cannot handle ATA_12 or ATA_16 CDBs */	\
+	US_FLAG(NO_REPORT_OPCODES,	0x04000000)		\
+		/* Cannot handle MI_REPORT_SUPPORTED_OPERATION_CODES */	\
+	US_FLAG(MAX_SECTORS_240,	0x08000000)		\
+		/* Sets max_sectors to 240 */			\
+	US_FLAG(NO_REPORT_LUNS,	0x10000000)			\
+		/* Cannot handle REPORT_LUNS */			\
 
 #define US_FLAG(name, value)	US_FL_##name = value ,
 enum { US_DO_ALL_FLAGS };
@@ -135,5 +164,9 @@ extern int usb_usual_check_type(const struct usb_device_id *, int type);
 #define usb_usual_clear_present(t)	do { } while(0)
 #define usb_usual_check_type(id, t)	(0)
 #endif /* CONFIG_USB_LIBUSUAL */
+#include <linux/usb/storage.h>
+
+extern int usb_usual_ignore_device(struct usb_interface *intf);
+extern struct usb_device_id usb_storage_usb_ids[];
 
 #endif /* __LINUX_USB_USUAL_H */

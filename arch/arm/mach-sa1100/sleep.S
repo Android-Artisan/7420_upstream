@@ -66,6 +66,35 @@ ENTRY(sa1100_cpu_suspend)
         ldr     r1, [r0]
         orr     r1, r1, #MDREFR_K1DB2
         str     r1, [r0]
+		.text
+/*
+ * sa1100_finish_suspend()
+ *
+ * Causes sa11x0 to enter sleep state
+ *
+ * Must be aligned to a cacheline.
+ */
+	.balign	32
+ENTRY(sa1100_finish_suspend)
+	@ disable clock switching
+	mcr	p15, 0, r1, c15, c2, 2
+
+	ldr	r6, =MDREFR
+	ldr	r4, [r6]
+	orr     r4, r4, #MDREFR_K1DB2
+	ldr	r5, =PPCR
+
+	@ Pre-load __loop_udelay into the I-cache
+	mov	r0, #1
+	bl	__loop_udelay
+	mov	r0, r0
+
+	@ The following must all exist in a single cache line to
+	@ avoid accessing memory until this sequence is complete,
+	@ otherwise we occasionally hang.
+
+	@ Adjust memory timing before lowering CPU clock
+	str     r4, [r6]
 
 	@ delay 90us and set CPU PLL to lowest speed
 	@ fixes resume problem on high speed SA1110
@@ -76,6 +105,11 @@ ENTRY(sa1100_cpu_suspend)
 	str	r1, [r0]
 	mov	r0, #90
 	bl	__udelay
+	bl	__loop_udelay
+	mov	r1, #0
+	str	r1, [r5]
+	mov	r0, #90
+	bl	__loop_udelay
 
 	/*
 	 * SA1110 SDRAM controller workaround.  register values:
@@ -130,6 +164,34 @@ ENTRY(sa1100_cpu_suspend)
         ldr     r12, =PMCR
 
         mov     r13, #PMCR_SF
+	ldr	r3, [r0]
+	bic	r3, r3, #FMsk(MSC_RT)
+	bic	r3, r3, #FMsk(MSC_RT)<<16
+
+	ldr	r4, [r1]
+	bic	r4, r4, #FMsk(MSC_RT)
+	bic	r4, r4, #FMsk(MSC_RT)<<16
+
+	ldr	r5, [r2]
+	bic	r5, r5, #FMsk(MSC_RT)
+	bic	r5, r5, #FMsk(MSC_RT)<<16
+
+	ldr	r7, [r6]
+	bic	r7, r7, #0x0000FF00
+	bic	r7, r7, #0x000000F0
+	orr	r8, r7, #MDREFR_SLFRSH
+
+	ldr	r9, =MDCNFG
+	ldr	r10, [r9]
+	bic	r10, r10, #(MDCNFG_DE0+MDCNFG_DE1)
+	bic	r10, r10, #(MDCNFG_DE2+MDCNFG_DE3)
+
+	bic	r11, r8, #MDREFR_SLFRSH
+	bic	r11, r11, #MDREFR_E1PIN
+
+	ldr	r12, =PMCR
+
+	mov	r13, #PMCR_SF
 
 	b	sa1110_sdram_controller_fix
 

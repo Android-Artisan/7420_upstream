@@ -13,6 +13,7 @@
 #include <linux/syscalls.h>
 
 #include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
 struct compat_mq_attr {
 	compat_long_t mq_flags;      /* message queue flags		     */
@@ -49,10 +50,16 @@ static inline int put_compat_mq_attr(const struct mq_attr *attr,
 asmlinkage long compat_sys_mq_open(const char __user *u_name,
 			int oflag, compat_mode_t mode,
 			struct compat_mq_attr __user *u_attr)
+COMPAT_SYSCALL_DEFINE4(mq_open, const char __user *, u_name,
+		       int, oflag, compat_mode_t, mode,
+		       struct compat_mq_attr __user *, u_attr)
 {
 	void __user *p = NULL;
 	if (u_attr && oflag & O_CREAT) {
 		struct mq_attr attr;
+
+		memset(&attr, 0, sizeof(attr));
+
 		p = compat_alloc_user_space(sizeof(attr));
 		if (get_compat_mq_attr(&attr, u_attr) ||
 		    copy_to_user(p, &attr, sizeof(attr)))
@@ -83,6 +90,14 @@ asmlinkage long compat_sys_mq_timedsend(mqd_t mqdes,
 	struct timespec __user *u_ts;
 
 	if (compat_prepare_timeout(&u_ts, u_abs_timeout))
+COMPAT_SYSCALL_DEFINE5(mq_timedsend, mqd_t, mqdes,
+		       const char __user *, u_msg_ptr,
+		       compat_size_t, msg_len, unsigned int, msg_prio,
+		       const struct compat_timespec __user *, u_abs_timeout)
+{
+	struct timespec __user *u_ts;
+
+	if (compat_convert_timespec(&u_ts, u_abs_timeout))
 		return -EFAULT;
 
 	return sys_mq_timedsend(mqdes, u_msg_ptr, msg_len,
@@ -96,6 +111,14 @@ asmlinkage ssize_t compat_sys_mq_timedreceive(mqd_t mqdes,
 {
 	struct timespec __user *u_ts;
 	if (compat_prepare_timeout(&u_ts, u_abs_timeout))
+COMPAT_SYSCALL_DEFINE5(mq_timedreceive, mqd_t, mqdes,
+		       char __user *, u_msg_ptr,
+		       compat_size_t, msg_len, unsigned int __user *, u_msg_prio,
+		       const struct compat_timespec __user *, u_abs_timeout)
+{
+	struct timespec __user *u_ts;
+
+	if (compat_convert_timespec(&u_ts, u_abs_timeout))
 		return -EFAULT;
 
 	return sys_mq_timedreceive(mqdes, u_msg_ptr, msg_len,
@@ -104,6 +127,8 @@ asmlinkage ssize_t compat_sys_mq_timedreceive(mqd_t mqdes,
 
 asmlinkage long compat_sys_mq_notify(mqd_t mqdes,
 			const struct compat_sigevent __user *u_notification)
+COMPAT_SYSCALL_DEFINE2(mq_notify, mqd_t, mqdes,
+		       const struct compat_sigevent __user *, u_notification)
 {
 	struct sigevent __user *p = NULL;
 	if (u_notification) {
@@ -122,10 +147,15 @@ asmlinkage long compat_sys_mq_notify(mqd_t mqdes,
 asmlinkage long compat_sys_mq_getsetattr(mqd_t mqdes,
 			const struct compat_mq_attr __user *u_mqstat,
 			struct compat_mq_attr __user *u_omqstat)
+COMPAT_SYSCALL_DEFINE3(mq_getsetattr, mqd_t, mqdes,
+		       const struct compat_mq_attr __user *, u_mqstat,
+		       struct compat_mq_attr __user *, u_omqstat)
 {
 	struct mq_attr mqstat;
 	struct mq_attr __user *p = compat_alloc_user_space(2 * sizeof(*p));
 	long ret;
+
+	memset(&mqstat, 0, sizeof(mqstat));
 
 	if (u_mqstat) {
 		if (get_compat_mq_attr(&mqstat, u_mqstat) ||

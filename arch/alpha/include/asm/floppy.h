@@ -28,6 +28,8 @@
 #define fd_request_irq()        request_irq(FLOPPY_IRQ, floppy_interrupt,\
 					    IRQF_DISABLED, "floppy", NULL)
 #define fd_free_irq()           free_irq(FLOPPY_IRQ, NULL);
+					    0, "floppy", NULL)
+#define fd_free_irq()           free_irq(FLOPPY_IRQ, NULL)
 
 #ifdef CONFIG_PCI
 

@@ -22,6 +22,7 @@
 #include <linux/slab.h>
 #include <linux/kobject.h>
 #include <linux/dm-ioctl.h>
+#include <linux/export.h>
 
 #include "dm.h"
 #include "dm-uevent.h"
@@ -147,6 +148,13 @@ void dm_send_uevents(struct list_head *events, struct kobject *kobj)
 					  event->uuid)) {
 			DMERR("%s: dm_copy_name_and_uuid() failed",
 			      __func__);
+		 * When a device is being removed this copy fails and we
+		 * discard these unsent events.
+		 */
+		if (dm_copy_name_and_uuid(event->md, event->name,
+					  event->uuid)) {
+			DMINFO("%s: skipping sending uevent for lost device",
+			       __func__);
 			goto uevent_free;
 		}
 
@@ -189,6 +197,7 @@ void dm_path_uevent(enum dm_uevent_type event_type, struct dm_target *ti,
 	if (event_type >= ARRAY_SIZE(_dm_uevent_type_names)) {
 		DMERR("%s: Invalid event_type %d", __func__, event_type);
 		goto out;
+		return;
 	}
 
 	event = dm_build_path_uevent(md, ti,
@@ -202,6 +211,9 @@ void dm_path_uevent(enum dm_uevent_type event_type, struct dm_target *ti,
 
 out:
 	dm_put(md);
+		return;
+
+	dm_uevent_add(md, &event->elist);
 }
 EXPORT_SYMBOL_GPL(dm_path_uevent);
 

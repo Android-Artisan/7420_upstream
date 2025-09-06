@@ -11,6 +11,9 @@
  *
  * Copyright (C) 1996 David S. Miller (dm@engr.sgi.com)
  */
+ * Copyright (C) 1996 David S. Miller (davem@davemloft.net)
+ */
+#include <linux/bug.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/types.h>
@@ -100,6 +103,7 @@ void __init prom_identify_arch(void)
 #ifdef CONFIG_SGI_IP27
 		/* IP27 PROM misbehaves, seems to not implement ARC
 		   GetChild().  So we just assume it's an IP27.  */
+		   GetChild().	So we just assume it's an IP27.	 */
 		iname = "SGI-IP27";
 #else
 		iname = "Unknown";

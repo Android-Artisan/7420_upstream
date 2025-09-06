@@ -25,6 +25,11 @@
  * along with this program; if not, see the file COPYING, or write
  * to the Free Software Foundation, Inc.,
  * 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+ * Set up the interrupt priorities
+ *
+ * Copyright 2007-2008 Analog Devices Inc.
+ *
+ * Licensed under the GPL-2 or later.
  */
 
 #include <linux/module.h>
@@ -77,6 +82,14 @@ void __init program_IAR(void)
 			((CONFIG_IRQ_TMR5 - 7) << IRQ_TMR5_POS) |
 			((CONFIG_IRQ_TMR6 - 7) << IRQ_TMR6_POS) |
 			((CONFIG_IRQ_TMR7 - 7) << IRQ_TMR7_POS));
+	bfin_write_SIC_IAR4(((CONFIG_IRQ_TIMER0 - 7) << IRQ_TIMER0_POS) |
+			((CONFIG_IRQ_TIMER1 - 7) << IRQ_TIMER1_POS) |
+			((CONFIG_IRQ_TIMER2 - 7) << IRQ_TIMER2_POS) |
+			((CONFIG_IRQ_TIMER3 - 7) << IRQ_TIMER3_POS) |
+			((CONFIG_IRQ_TIMER4 - 7) << IRQ_TIMER4_POS) |
+			((CONFIG_IRQ_TIMER5 - 7) << IRQ_TIMER5_POS) |
+			((CONFIG_IRQ_TIMER6 - 7) << IRQ_TIMER6_POS) |
+			((CONFIG_IRQ_TIMER7 - 7) << IRQ_TIMER7_POS));
 
 	bfin_write_SIC_IAR5(((CONFIG_IRQ_PORTG_INTA - 7) << IRQ_PORTG_INTA_POS) |
 			((CONFIG_IRQ_PORTG_INTB - 7) << IRQ_PORTG_INTB_POS) |

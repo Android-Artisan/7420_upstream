@@ -28,6 +28,9 @@
 #include <asm/m32r.h>
 #include <asm/system.h>
 #include <asm/uaccess.h>
+#include <linux/uaccess.h>
+
+#include <asm/m32r.h>
 #include <asm/hardirq.h>
 #include <asm/mmu_context.h>
 #include <asm/tlbflush.h>
@@ -48,9 +51,7 @@ unsigned int tlb_entry_d_dat[NR_CPUS];
 
 extern void init_tlb(void);
 
-/*======================================================================*
  * do_page_fault()
- *======================================================================*
  * This routine handles page faults.  It determines the address,
  * and the problem, and then passes it off to one of the appropriate
  * routines.
@@ -66,7 +67,6 @@ extern void init_tlb(void);
  *  bit 1 == 0 means read, 1 means write
  *  bit 2 == 0 means kernel, 1 means user-mode
  *  bit 3 == 0 means data, 1 means instruction
- *======================================================================*/
 #define ACE_PROTECTION		1
 #define ACE_WRITE		2
 #define ACE_USERMODE		4
@@ -80,6 +80,7 @@ asmlinkage void do_page_fault(struct pt_regs *regs, unsigned long error_code,
 	struct vm_area_struct * vma;
 	unsigned long page, addr;
 	int write;
+	unsigned long flags = 0;
 	int fault;
 	siginfo_t info;
 
@@ -121,6 +122,18 @@ asmlinkage void do_page_fault(struct pt_regs *regs, unsigned long error_code,
 	/* When running in the kernel we expect faults to occur only to
 	 * addresses in user space.  All other faults represent errors in the
 	 * kernel and should generate an OOPS.  Unfortunatly, in the case of an
+	 * If we're in an interrupt or have no user context or have pagefaults
+	 * disabled then we must not take the fault.
+	 */
+	if (faulthandler_disabled() || !mm)
+		goto bad_area_nosemaphore;
+
+	if (error_code & ACE_USERMODE)
+		flags |= FAULT_FLAG_USER;
+
+	/* When running in the kernel we expect faults to occur only to
+	 * addresses in user space.  All other faults represent errors in the
+	 * kernel and should generate an OOPS.  Unfortunately, in the case of an
 	 * erroneous fault occurring in a code path which already holds mmap_sem
 	 * we will deadlock attempting to validate the fault against the
 	 * address space.  Luckily the kernel only validly references user
@@ -129,6 +142,7 @@ asmlinkage void do_page_fault(struct pt_regs *regs, unsigned long error_code,
 	 *
 	 * As the vast majority of faults will be valid we will only perform
 	 * the source reference check when there is a possibilty of a deadlock.
+	 * the source reference check when there is a possibility of a deadlock.
 	 * Attempt to lock the address space, if we cannot we then validate the
 	 * source.  If this is invalid we can skip the address space check,
 	 * thus avoiding the deadlock.
@@ -175,6 +189,7 @@ good_area:
 			if (!(vma->vm_flags & VM_WRITE))
 				goto bad_area;
 			write++;
+			flags |= FAULT_FLAG_WRITE;
 			break;
 		case ACE_PROTECTION:	/* read, present */
 		case 0:		/* read, not present */
@@ -200,6 +215,12 @@ survive:
 	if (unlikely(fault & VM_FAULT_ERROR)) {
 		if (fault & VM_FAULT_OOM)
 			goto out_of_memory;
+	fault = handle_mm_fault(mm, vma, addr, flags);
+	if (unlikely(fault & VM_FAULT_ERROR)) {
+		if (fault & VM_FAULT_OOM)
+			goto out_of_memory;
+		else if (fault & VM_FAULT_SIGSEGV)
+			goto bad_area;
 		else if (fault & VM_FAULT_SIGBUS)
 			goto do_sigbus;
 		BUG();
@@ -280,6 +301,10 @@ out_of_memory:
 	if (error_code & ACE_USERMODE)
 		do_group_exit(SIGKILL);
 	goto no_context;
+	if (!(error_code & ACE_USERMODE))
+		goto no_context;
+	pagefault_out_of_memory();
+	return;
 
 do_sigbus:
 	up_read(&mm->mmap_sem);
@@ -337,19 +362,19 @@ vmalloc_fault:
 		addr = (address & PAGE_MASK);
 		set_thread_fault_code(error_code);
 		update_mmu_cache(NULL, addr, *pte_k);
+		update_mmu_cache(NULL, addr, pte_k);
 		set_thread_fault_code(0);
 		return;
 	}
 }
 
-/*======================================================================*
  * update_mmu_cache()
- *======================================================================*/
 #define TLB_MASK	(NR_TLB_ENTRIES - 1)
 #define ITLB_END	(unsigned long *)(ITLB_BASE + (NR_TLB_ENTRIES * 8))
 #define DTLB_END	(unsigned long *)(DTLB_BASE + (NR_TLB_ENTRIES * 8))
 void update_mmu_cache(struct vm_area_struct *vma, unsigned long vaddr,
 	pte_t pte)
+	pte_t *ptep)
 {
 	volatile unsigned long *entry1, *entry2;
 	unsigned long pte_data, flags;
@@ -366,6 +391,7 @@ void update_mmu_cache(struct vm_area_struct *vma, unsigned long vaddr,
 	vaddr = (vaddr & PAGE_MASK) | get_asid();
 
 	pte_data = pte_val(pte);
+	pte_data = pte_val(*ptep);
 
 #ifdef CONFIG_CHIP_OPSP
 	entry1 = (unsigned long *)ITLB_BASE;
@@ -455,9 +481,7 @@ notfound:
 	goto found;
 }
 
-/*======================================================================*
  * flush_tlb_page() : flushes one page
- *======================================================================*/
 void local_flush_tlb_page(struct vm_area_struct *vma, unsigned long page)
 {
 	if (vma->vm_mm && mm_context(vma->vm_mm) != NO_CONTEXT) {
@@ -471,9 +495,7 @@ void local_flush_tlb_page(struct vm_area_struct *vma, unsigned long page)
 	}
 }
 
-/*======================================================================*
  * flush_tlb_range() : flushes a range of pages
- *======================================================================*/
 void local_flush_tlb_range(struct vm_area_struct *vma, unsigned long start,
 	unsigned long end)
 {
@@ -509,9 +531,7 @@ void local_flush_tlb_range(struct vm_area_struct *vma, unsigned long start,
 	}
 }
 
-/*======================================================================*
  * flush_tlb_mm() : flushes the specified mm context TLB's
- *======================================================================*/
 void local_flush_tlb_mm(struct mm_struct *mm)
 {
 	/* Invalidate all TLB of this process. */
@@ -527,9 +547,7 @@ void local_flush_tlb_mm(struct mm_struct *mm)
 	}
 }
 
-/*======================================================================*
  * flush_tlb_all() : flushes all processes TLBs
- *======================================================================*/
 void local_flush_tlb_all(void)
 {
 	unsigned long flags;
@@ -539,9 +557,7 @@ void local_flush_tlb_all(void)
 	local_irq_restore(flags);
 }
 
-/*======================================================================*
  * init_mmu()
- *======================================================================*/
 void __init init_mmu(void)
 {
 	tlb_entry_i = 0;

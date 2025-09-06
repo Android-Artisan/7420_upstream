@@ -34,6 +34,12 @@
  *
  * Or submit a bug report through the following website:
  *    http://www.sf.net/projects/lksctp
+ * along with GNU CC; see the file COPYING.  If not, see
+ * <http://www.gnu.org/licenses/>.
+ *
+ * Please send any bug reports or fixes you make to the
+ * email addresses:
+ *    lksctp developers <linux-sctp@vger.kernel.org>
  *
  * Written or modified by:
  *   Jon Grimm             <jgrimm@us.ibm.com>
@@ -73,6 +79,7 @@ void sctp_ulpq_renege(struct sctp_ulpq *, struct sctp_chunk *, gfp_t);
 
 /* Perform partial delivery. */
 void sctp_ulpq_partial_delivery(struct sctp_ulpq *, struct sctp_chunk *, gfp_t);
+void sctp_ulpq_partial_delivery(struct sctp_ulpq *, gfp_t);
 
 /* Abort the partial delivery. */
 void sctp_ulpq_abort_pd(struct sctp_ulpq *, gfp_t);

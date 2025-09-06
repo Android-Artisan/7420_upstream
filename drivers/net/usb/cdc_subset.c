@@ -15,6 +15,7 @@
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * along with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <linux/module.h>
@@ -89,6 +90,24 @@ static int always_connected (struct usbnet *dev)
 
 static const struct driver_info	ali_m5632_info = {
 	.description =	"ALi M5632",
+static void m5632_recover(struct usbnet *dev)
+{
+	struct usb_device	*udev = dev->udev;
+	struct usb_interface	*intf = dev->intf;
+	int r;
+
+	r = usb_lock_device_for_reset(udev, intf);
+	if (r < 0)
+		return;
+
+	usb_reset_device(udev);
+	usb_unlock_device(udev);
+}
+
+static const struct driver_info	ali_m5632_info = {
+	.description =	"ALi M5632",
+	.flags       = FLAG_POINTTOPOINT,
+	.recover     = m5632_recover,
 };
 
 #endif
@@ -110,6 +129,7 @@ static const struct driver_info	ali_m5632_info = {
 
 static const struct driver_info	an2720_info = {
 	.description =	"AnchorChips/Cypress 2720",
+	.flags       = FLAG_POINTTOPOINT,
 	// no reset available!
 	// no check_connect available!
 
@@ -132,6 +152,7 @@ static const struct driver_info	an2720_info = {
 
 static const struct driver_info	belkin_info = {
 	.description =	"Belkin, eTEK, or compatible",
+	.flags       = FLAG_POINTTOPOINT,
 };
 
 #endif	/* CONFIG_USB_BELKIN */
@@ -157,6 +178,7 @@ static const struct driver_info	belkin_info = {
 static const struct driver_info	epson2888_info = {
 	.description =	"Epson USB Device",
 	.check_connect = always_connected,
+	.flags = FLAG_POINTTOPOINT,
 
 	.in = 4, .out = 3,
 };
@@ -173,6 +195,7 @@ static const struct driver_info	epson2888_info = {
 #define HAVE_HARDWARE
 static const struct driver_info kc2190_info = {
 	.description =  "KC Technology KC-190",
+	.flags = FLAG_POINTTOPOINT,
 };
 #endif /* CONFIG_USB_KC2190 */
 
@@ -200,16 +223,19 @@ static const struct driver_info kc2190_info = {
 static const struct driver_info	linuxdev_info = {
 	.description =	"Linux Device",
 	.check_connect = always_connected,
+	.flags = FLAG_POINTTOPOINT,
 };
 
 static const struct driver_info	yopy_info = {
 	.description =	"Yopy",
 	.check_connect = always_connected,
+	.flags = FLAG_POINTTOPOINT,
 };
 
 static const struct driver_info	blob_info = {
 	.description =	"Boot Loader OBject",
 	.check_connect = always_connected,
+	.flags = FLAG_POINTTOPOINT,
 };
 
 #endif	/* CONFIG_USB_ARMLINUX */
@@ -310,6 +336,10 @@ static const struct usb_device_id	products [] = {
 	// Linux Ethernet/RNDIS gadget on pxa210/25x/26x, second config
 	// e.g. Gumstix, current OpenZaurus, ...
 	USB_DEVICE_VER (0x0525, 0xa4a2, 0x0203, 0x0203),
+	// Linux Ethernet/RNDIS gadget, mostly on PXA, second config
+	// e.g. Gumstix, current OpenZaurus, ... or anything else
+	// that just enables this gadget option.
+	USB_DEVICE (0x0525, 0xa4a2),
 	.driver_info =	(unsigned long) &linuxdev_info,
 },
 #endif
@@ -319,6 +349,15 @@ static const struct usb_device_id	products [] = {
 MODULE_DEVICE_TABLE(usb, products);
 
 /*-------------------------------------------------------------------------*/
+static int dummy_prereset(struct usb_interface *intf)
+{
+        return 0;
+}
+
+static int dummy_postreset(struct usb_interface *intf)
+{
+        return 0;
+}
 
 static struct usb_driver cdc_subset_driver = {
 	.name =		"cdc_subset",
@@ -340,6 +379,14 @@ static void __exit cdc_subset_exit(void)
 	usb_deregister(&cdc_subset_driver);
 }
 module_exit(cdc_subset_exit);
+	.pre_reset =	dummy_prereset,
+	.post_reset =	dummy_postreset,
+	.disconnect =	usbnet_disconnect,
+	.id_table =	products,
+	.disable_hub_initiated_lpm = 1,
+};
+
+module_usb_driver(cdc_subset_driver);
 
 MODULE_AUTHOR("David Brownell");
 MODULE_DESCRIPTION("Simple 'CDC Subset' USB networking links");

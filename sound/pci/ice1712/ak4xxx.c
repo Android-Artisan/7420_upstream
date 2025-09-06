@@ -25,6 +25,12 @@
 #include <linux/delay.h>
 #include <linux/interrupt.h>
 #include <linux/init.h>
+#include <linux/io.h>
+#include <linux/delay.h>
+#include <linux/interrupt.h>
+#include <linux/slab.h>
+#include <linux/init.h>
+#include <linux/module.h>
 #include <sound/core.h>
 #include <sound/initval.h>
 #include "ice1712.h"
@@ -60,6 +66,8 @@ static void snd_ice1712_akm4xxx_write(struct snd_akm4xxx *ak, int chip,
 	struct snd_ice1712 *ice = ak->private_data[0];
 
 	snd_assert(chip >= 0 && chip < 4, return);
+	if (snd_BUG_ON(chip < 0 || chip >= 4))
+		return;
 
 	tmp = snd_ice1712_gpio_read(ice);
 	tmp |= priv->add_flags;

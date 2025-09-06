@@ -7,6 +7,9 @@ void __iomem *divasa_remap_pci_bar(diva_os_xdi_adapter_t *a,
 			   int id,
 			   unsigned long bar,
 			   unsigned long area_length);
+				   int id,
+				   unsigned long bar,
+				   unsigned long area_length);
 void divasa_unmap_pci_bar(void __iomem *bar);
 unsigned long divasa_get_pci_irq(unsigned char bus,
 				 unsigned char func, void *pci_dev_handle);

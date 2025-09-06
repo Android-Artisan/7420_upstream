@@ -41,6 +41,7 @@ static struct aper_size_info_fixed alpha_core_agp_sizes[] =
 };
 
 struct vm_operations_struct alpha_core_agp_vm_ops = {
+static const struct vm_operations_struct alpha_core_agp_vm_ops = {
 	.fault = alpha_core_agp_vm_fault,
 };
 
@@ -144,6 +145,9 @@ struct agp_bridge_driver alpha_core_agp_driver = {
 	.free_by_type		= agp_generic_free_by_type,
 	.agp_alloc_page		= agp_generic_alloc_page,
 	.agp_destroy_page	= agp_generic_destroy_page,
+	.agp_alloc_pages	= agp_generic_alloc_pages,
+	.agp_destroy_page	= agp_generic_destroy_page,
+	.agp_destroy_pages	= agp_generic_destroy_pages,
 	.agp_type_to_mask_type  = agp_generic_type_to_mask_type,
 };
 
@@ -173,6 +177,7 @@ alpha_core_agp_setup(void)
 	 * Build a fake pci_dev struct
 	 */
 	pdev = alloc_pci_dev();
+	pdev = pci_alloc_dev(NULL);
 	if (!pdev)
 		return -ENOMEM;
 	pdev->vendor = 0xffff;

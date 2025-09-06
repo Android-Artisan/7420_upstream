@@ -41,6 +41,12 @@
 #include <acpi/acpi_drivers.h>
 
 #define ACPI_PROCESSOR_COMPONENT        0x01000000
+#include <linux/acpi.h>
+#include <acpi/processor.h>
+#include <asm/uaccess.h>
+
+#define PREFIX "ACPI: "
+
 #define ACPI_PROCESSOR_CLASS            "processor"
 #define _COMPONENT              ACPI_PROCESSOR_COMPONENT
 ACPI_MODULE_NAME("processor_thermal");
@@ -100,6 +106,27 @@ static int acpi_processor_apply_limit(struct acpi_processor *pr)
 static DEFINE_PER_CPU(unsigned int, cpufreq_thermal_reduction_pctg);
 static unsigned int acpi_thermal_cpufreq_is_init = 0;
 
+#define reduction_pctg(cpu) \
+	per_cpu(cpufreq_thermal_reduction_pctg, phys_package_first_cpu(cpu))
+
+/*
+ * Emulate "per package data" using per cpu data (which should really be
+ * provided elsewhere)
+ *
+ * Note we can lose a CPU on cpu hotunplug, in this case we forget the state
+ * temporarily. Fortunately that's not a big issue here (I hope)
+ */
+static int phys_package_first_cpu(int cpu)
+{
+	int i;
+	int id = topology_physical_package_id(cpu);
+
+	for_each_online_cpu(i)
+		if (topology_physical_package_id(i) == id)
+			return i;
+	return 0;
+}
+
 static int cpu_has_cpufreq(unsigned int cpu)
 {
 	struct cpufreq_policy policy;
@@ -150,6 +177,7 @@ static int acpi_thermal_cpufreq_notifier(struct notifier_block *nb,
 	max_freq = (
 	    policy->cpuinfo.max_freq *
 	    (100 - per_cpu(cpufreq_thermal_reduction_pctg, policy->cpu) * 20)
+	    (100 - reduction_pctg(policy->cpu) * 20)
 	) / 100;
 
 	cpufreq_verify_within_limits(policy, 0, max_freq);
@@ -176,6 +204,7 @@ static int cpufreq_get_cur_state(unsigned int cpu)
 		return 0;
 
 	return per_cpu(cpufreq_thermal_reduction_pctg, cpu);
+	return reduction_pctg(cpu);
 }
 
 static int cpufreq_set_cur_state(unsigned int cpu, int state)
@@ -185,6 +214,23 @@ static int cpufreq_set_cur_state(unsigned int cpu, int state)
 
 	per_cpu(cpufreq_thermal_reduction_pctg, cpu) = state;
 	cpufreq_update_policy(cpu);
+	int i;
+
+	if (!cpu_has_cpufreq(cpu))
+		return 0;
+
+	reduction_pctg(cpu) = state;
+
+	/*
+	 * Update all the CPUs in the same package because they all
+	 * contribute to the temperature and often share the same
+	 * frequency.
+	 */
+	for_each_online_cpu(i) {
+		if (topology_physical_package_id(i) ==
+		    topology_physical_package_id(cpu))
+			cpufreq_update_policy(i);
+	}
 	return 0;
 }
 
@@ -359,6 +405,9 @@ int acpi_processor_get_limit_info(struct acpi_processor *pr)
 }
 
 /* thermal coolign device callbacks */
+#endif
+
+/* thermal cooling device callbacks */
 static int acpi_processor_max_state(struct acpi_processor *pr)
 {
 	int max_state = 0;
@@ -366,6 +415,7 @@ static int acpi_processor_max_state(struct acpi_processor *pr)
 	/*
 	 * There exists four states according to
 	 * cpufreq_thermal_reduction_ptg. 0, 1, 2, 3
+	 * cpufreq_thermal_reduction_pctg. 0, 1, 2, 3
 	 */
 	max_state += cpufreq_get_max_state(pr->id);
 	if (pr->flags.throttling)
@@ -411,6 +461,57 @@ processor_set_cur_state(struct thermal_cooling_device *cdev, unsigned int state)
 	int max_pstate;
 
 	if (!device || !pr)
+processor_get_max_state(struct thermal_cooling_device *cdev,
+			unsigned long *state)
+{
+	struct acpi_device *device = cdev->devdata;
+	struct acpi_processor *pr;
+
+	if (!device)
+		return -EINVAL;
+
+	pr = acpi_driver_data(device);
+	if (!pr)
+		return -EINVAL;
+
+	*state = acpi_processor_max_state(pr);
+	return 0;
+}
+
+static int
+processor_get_cur_state(struct thermal_cooling_device *cdev,
+			unsigned long *cur_state)
+{
+	struct acpi_device *device = cdev->devdata;
+	struct acpi_processor *pr;
+
+	if (!device)
+		return -EINVAL;
+
+	pr = acpi_driver_data(device);
+	if (!pr)
+		return -EINVAL;
+
+	*cur_state = cpufreq_get_cur_state(pr->id);
+	if (pr->flags.throttling)
+		*cur_state += pr->throttling.state;
+	return 0;
+}
+
+static int
+processor_set_cur_state(struct thermal_cooling_device *cdev,
+			unsigned long state)
+{
+	struct acpi_device *device = cdev->devdata;
+	struct acpi_processor *pr;
+	int result = 0;
+	int max_pstate;
+
+	if (!device)
+		return -EINVAL;
+
+	pr = acpi_driver_data(device);
+	if (!pr)
 		return -EINVAL;
 
 	max_pstate = cpufreq_get_max_state(pr->id);
@@ -421,16 +522,19 @@ processor_set_cur_state(struct thermal_cooling_device *cdev, unsigned int state)
 	if (state <= max_pstate) {
 		if (pr->flags.throttling && pr->throttling.state)
 			result = acpi_processor_set_throttling(pr, 0);
+			result = acpi_processor_set_throttling(pr, 0, false);
 		cpufreq_set_cur_state(pr->id, state);
 	} else {
 		cpufreq_set_cur_state(pr->id, max_pstate);
 		result = acpi_processor_set_throttling(pr,
 				state - max_pstate);
+				state - max_pstate, false);
 	}
 	return result;
 }
 
 struct thermal_cooling_device_ops processor_cooling_ops = {
+const struct thermal_cooling_device_ops processor_cooling_ops = {
 	.get_max_state = processor_get_max_state,
 	.get_cur_state = processor_get_cur_state,
 	.set_cur_state = processor_set_cur_state,

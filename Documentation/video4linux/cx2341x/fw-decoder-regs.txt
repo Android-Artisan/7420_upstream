@@ -1,5 +1,4 @@
 PVR350 Video decoder registers 0x02002800 -> 0x02002B00
-=======================================================
 
 This list has been worked out through trial and error. There will be mistakes
 and omissions. Some registers have no obvious effect so it's hard to say what

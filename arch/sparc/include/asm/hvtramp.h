@@ -20,6 +20,7 @@ struct hvtramp_descr {
 };
 
 extern void hv_cpu_startup(unsigned long hvdescr_pa);
+void hv_cpu_startup(unsigned long hvdescr_pa);
 
 #endif
 

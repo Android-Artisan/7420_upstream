@@ -58,6 +58,9 @@
  *
  * USLEEP - enable support for devices that don't disconnect.  Untested.
  *
+ */
+
+/*
  * The card is detected and initialized in one of several ways : 
  * 1.  Autoprobe (default) - since the board is memory mapped, 
  *     a BIOS signature is scanned for to locate the registers.
@@ -153,6 +156,7 @@ static struct signature {
 
 #define NO_SIGNATURES ARRAY_SIZE(signatures)
 
+#ifndef MODULE
 /*
  * Function : t128_setup(char *str, int *ints)
  *
@@ -166,6 +170,13 @@ static struct signature {
 void __init t128_setup(char *str, int *ints){
     static int commandline_current = 0;
     int i;
+static int __init t128_setup(char *str)
+{
+    static int commandline_current = 0;
+    int i;
+    int ints[10];
+
+    get_options(str, ARRAY_SIZE(ints), ints);
     if (ints[0] != 2) 
 	printk("t128_setup : usage t128=address,irq\n");
     else 
@@ -181,6 +192,12 @@ void __init t128_setup(char *str, int *ints){
 	}
 }
 
+    return 1;
+}
+
+__setup("t128=", t128_setup);
+#endif
+
 /* 
  * Function : int t128_detect(struct scsi_host_template * tpnt)
  *
@@ -195,6 +212,8 @@ void __init t128_setup(char *str, int *ints){
  */
 
 int __init t128_detect(struct scsi_host_template * tpnt){
+static int __init t128_detect(struct scsi_host_template *tpnt)
+{
     static int current_override = 0, current_base = 0;
     struct Scsi_Host *instance;
     unsigned long base;
@@ -267,6 +286,19 @@ found:
 	    } 
 
 	if (instance->irq == SCSI_IRQ_NONE) {
+	/* Compatibility with documented NCR5380 kernel parameters */
+	if (instance->irq == 255)
+		instance->irq = NO_IRQ;
+
+	if (instance->irq != NO_IRQ)
+	    if (request_irq(instance->irq, t128_intr, 0, "t128",
+			    instance)) {
+		printk("scsi%d : IRQ%d not free, interrupts disabled\n", 
+		    instance->host_no, instance->irq);
+		instance->irq = NO_IRQ;
+	    } 
+
+	if (instance->irq == NO_IRQ) {
 	    printk("scsi%d : interrupts not enabled. for better interactive performance,\n", instance->host_no);
 	    printk("scsi%d : please jumper the board for a free IRQ.\n", instance->host_no);
 	}
@@ -296,6 +328,7 @@ static int t128_release(struct Scsi_Host *shost)
 	NCR5380_local_declare();
 	NCR5380_setup(shost);
 	if (shost->irq)
+	if (shost->irq != NO_IRQ)
 		free_irq(shost->irq, shost);
 	NCR5380_exit(shost);
 	if (shost->io_port && shost->n_io_port)
@@ -327,6 +360,8 @@ static int t128_release(struct Scsi_Host *shost)
 
 int t128_biosparam(struct scsi_device *sdev, struct block_device *bdev,
 		sector_t capacity, int * ip)
+static int t128_biosparam(struct scsi_device *sdev, struct block_device *bdev,
+                          sector_t capacity, int *ip)
 {
   ip[0] = 64;
   ip[1] = 32;
@@ -434,6 +469,10 @@ static struct scsi_host_template driver_template = {
 	.name           = "Trantor T128/T128F/T228",
 	.detect         = t128_detect,
 	.release        = t128_release,
+	.proc_name      = "t128",
+	.show_info      = t128_show_info,
+	.write_info     = t128_write_info,
+	.info           = t128_info,
 	.queuecommand   = t128_queue_command,
 	.eh_abort_handler = t128_abort,
 	.eh_bus_reset_handler    = t128_bus_reset,

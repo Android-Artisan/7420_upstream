@@ -9,12 +9,14 @@
 
 
 # KBUILD_CFLAGS used when building rest of boot (takes effect recursively)
-KBUILD_CFLAGS	+= -fno-builtin -Iarch/$(ARCH)/boot/include
-HOSTFLAGS	+= -Iarch/$(ARCH)/boot/include
+KBUILD_CFLAGS	+= -fno-builtin
 
 BIG_ENDIAN	:= $(shell echo -e __XTENSA_EB__ | $(CC) -E - | grep -v "\#")
 
 export EXTRA_CFLAGS
+BIG_ENDIAN	:= $(shell echo __XTENSA_EB__ | $(CC) -E - | grep -v "\#")
+
+export ccflags-y
 export BIG_ENDIAN
 
 subdir-y	:= lib
@@ -26,8 +28,23 @@ bootdir-$(CONFIG_XTENSA_PLATFORM_XT2000) += boot-redboot boot-elf
 
 
 zImage zImage.initrd Image Image.initrd: $(bootdir-y)
+bootdir-$(CONFIG_XTENSA_PLATFORM_XT2000) += boot-redboot boot-elf boot-uboot
+bootdir-$(CONFIG_XTENSA_PLATFORM_XTFPGA) += boot-redboot boot-elf boot-uboot
+
+zImage Image: $(bootdir-y)
 
 $(bootdir-y): $(addprefix $(obj)/,$(subdir-y)) \
 	      $(addprefix $(obj)/,$(host-progs))
 	$(Q)$(MAKE) $(build)=$(obj)/$@ $(MAKECMDGOALS)
 
+OBJCOPYFLAGS = --strip-all -R .comment -R .notes -O binary
+
+vmlinux.bin: vmlinux FORCE
+	$(call if_changed,objcopy)
+
+vmlinux.bin.gz: vmlinux.bin FORCE
+	$(call if_changed,gzip)
+
+boot-elf: vmlinux.bin
+boot-redboot: vmlinux.bin.gz
+boot-uboot: vmlinux.bin.gz

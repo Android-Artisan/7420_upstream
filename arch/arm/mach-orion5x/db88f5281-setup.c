@@ -10,6 +10,7 @@
  * warranty of any kind, whether express or implied.
  */
 
+#include <linux/gpio.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/platform_device.h>
@@ -26,6 +27,10 @@
 #include <asm/mach/pci.h>
 #include <mach/orion5x.h>
 #include <plat/orion_nand.h>
+#include <asm/mach/arch.h>
+#include <asm/mach/pci.h>
+#include <mach/orion5x.h>
+#include <linux/platform_data/mtd-orion_nand.h>
 #include "common.h"
 #include "mpp.h"
 
@@ -204,6 +209,7 @@ __initcall(db88f5281_7seg_init);
  ****************************************************************************/
 
 void __init db88f5281_pci_preinit(void)
+static void __init db88f5281_pci_preinit(void)
 {
 	int pin;
 
@@ -216,6 +222,9 @@ void __init db88f5281_pci_preinit(void)
 			set_irq_type(gpio_to_irq(pin), IRQ_TYPE_LEVEL_LOW);
 		} else {
 			printk(KERN_ERR "db88f5281_pci_preinit faield to "
+			irq_set_irq_type(gpio_to_irq(pin), IRQ_TYPE_LEVEL_LOW);
+		} else {
+			printk(KERN_ERR "db88f5281_pci_preinit failed to "
 					"set_irq_type pin %d\n", pin);
 			gpio_free(pin);
 		}
@@ -229,6 +238,9 @@ void __init db88f5281_pci_preinit(void)
 			set_irq_type(gpio_to_irq(pin), IRQ_TYPE_LEVEL_LOW);
 		} else {
 			printk(KERN_ERR "db88f5281_pci_preinit faield "
+			irq_set_irq_type(gpio_to_irq(pin), IRQ_TYPE_LEVEL_LOW);
+		} else {
+			printk(KERN_ERR "db88f5281_pci_preinit failed "
 					"to set_irq_type pin %d\n", pin);
 			gpio_free(pin);
 		}
@@ -238,6 +250,8 @@ void __init db88f5281_pci_preinit(void)
 }
 
 static int __init db88f5281_pci_map_irq(struct pci_dev *dev, u8 slot, u8 pin)
+static int __init db88f5281_pci_map_irq(const struct pci_dev *dev, u8 slot,
+	u8 pin)
 {
 	int irq;
 
@@ -286,6 +300,7 @@ subsys_initcall(db88f5281_pci_init);
  ****************************************************************************/
 static struct mv643xx_eth_platform_data db88f5281_eth_data = {
 	.phy_addr	= 8,
+	.phy_addr	= MV643XX_ETH_PHY_ADDR(8),
 };
 
 /*****************************************************************************
@@ -320,6 +335,28 @@ static struct orion5x_mpp_mode db88f5281_mpp_modes[] __initdata = {
 	{ 18, MPP_UART },		/* UART1_CTSn */
 	{ 19, MPP_UART },		/* UART1_RTSn */
 	{ -1 },
+static unsigned int db88f5281_mpp_modes[] __initdata = {
+	MPP0_GPIO,		/* USB Over Current */
+	MPP1_GPIO,		/* USB Vbat input */
+	MPP2_PCI_ARB,		/* PCI_REQn[2] */
+	MPP3_PCI_ARB,		/* PCI_GNTn[2] */
+	MPP4_PCI_ARB,		/* PCI_REQn[3] */
+	MPP5_PCI_ARB,		/* PCI_GNTn[3] */
+	MPP6_GPIO,		/* JP0, CON17.2 */
+	MPP7_GPIO,		/* JP1, CON17.1 */
+	MPP8_GPIO,		/* JP2, CON11.2 */
+	MPP9_GPIO,		/* JP3, CON11.3 */
+	MPP10_GPIO,		/* RTC int */
+	MPP11_GPIO,		/* Baud Rate Generator */
+	MPP12_GPIO,		/* PCI int 1 */
+	MPP13_GPIO,		/* PCI int 2 */
+	MPP14_NAND,		/* NAND_REn[2] */
+	MPP15_NAND,		/* NAND_WEn[2] */
+	MPP16_UART,		/* UART1_RX */
+	MPP17_UART,		/* UART1_TX */
+	MPP18_UART,		/* UART1_CTSn */
+	MPP19_UART,		/* UART1_RTSn */
+	0,
 };
 
 static void __init db88f5281_init(void)
@@ -351,6 +388,27 @@ static void __init db88f5281_init(void)
 	platform_device_register(&db88f5281_nor_flash);
 
 	orion5x_setup_dev2_win(DB88F5281_NAND_BASE, DB88F5281_NAND_SIZE);
+	mvebu_mbus_add_window_by_id(ORION_MBUS_DEVBUS_BOOT_TARGET,
+				    ORION_MBUS_DEVBUS_BOOT_ATTR,
+				    DB88F5281_NOR_BOOT_BASE,
+				    DB88F5281_NOR_BOOT_SIZE);
+	platform_device_register(&db88f5281_boot_flash);
+
+	mvebu_mbus_add_window_by_id(ORION_MBUS_DEVBUS_TARGET(0),
+				    ORION_MBUS_DEVBUS_ATTR(0),
+				    DB88F5281_7SEG_BASE,
+				    DB88F5281_7SEG_SIZE);
+
+	mvebu_mbus_add_window_by_id(ORION_MBUS_DEVBUS_TARGET(1),
+				    ORION_MBUS_DEVBUS_ATTR(1),
+				    DB88F5281_NOR_BASE,
+				    DB88F5281_NOR_SIZE);
+	platform_device_register(&db88f5281_nor_flash);
+
+	mvebu_mbus_add_window_by_id(ORION_MBUS_DEVBUS_TARGET(2),
+				    ORION_MBUS_DEVBUS_ATTR(2),
+				    DB88F5281_NAND_BASE,
+				    DB88F5281_NAND_SIZE);
 	platform_device_register(&db88f5281_nand_flash);
 
 	i2c_register_board_info(0, &db88f5281_i2c_rtc, 1);
@@ -365,4 +423,11 @@ MACHINE_START(DB88F5281, "Marvell Orion-2 Development Board")
 	.map_io		= orion5x_map_io,
 	.init_irq	= orion5x_init_irq,
 	.timer		= &orion5x_timer,
+	.atag_offset	= 0x100,
+	.init_machine	= db88f5281_init,
+	.map_io		= orion5x_map_io,
+	.init_early	= orion5x_init_early,
+	.init_irq	= orion5x_init_irq,
+	.init_time	= orion5x_timer_init,
+	.restart	= orion5x_restart,
 MACHINE_END

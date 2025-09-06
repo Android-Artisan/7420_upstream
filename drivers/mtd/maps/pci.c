@@ -57,6 +57,9 @@ static map_word mtd_pci_read16(struct map_info *_map, unsigned long ofs)
 	return val;
 }
 #endif
+	return val;
+}
+
 static map_word mtd_pci_read32(struct map_info *_map, unsigned long ofs)
 {
 	struct map_pci_info *map = (struct map_pci_info *)_map;
@@ -91,6 +94,12 @@ static void mtd_pci_write32(struct map_info *_map, map_word val, unsigned long o
 {
 	struct map_pci_info *map = (struct map_pci_info *)_map;
 //	printk("write32: %08lx <= %08x\n", ofs, val.x[0]);
+	writeb(val.x[0], map->base + map->translate(map, ofs));
+}
+
+static void mtd_pci_write32(struct map_info *_map, map_word val, unsigned long ofs)
+{
+	struct map_pci_info *map = (struct map_pci_info *)_map;
 	writel(val.x[0], map->base + map->translate(map, ofs));
 }
 
@@ -212,6 +221,8 @@ intel_dc21285_init(struct pci_dev *dev, struct map_pci_info *map)
 			pci_write_config_dword(dev, PCI_ROM_ADDRESS, val);
 			printk("%s: enabling expansion ROM\n", pci_name(dev));
 		}
+		pci_enable_rom(dev);
+		printk("%s: enabling expansion ROM\n", pci_name(dev));
 	}
 
 	if (!len || !base)
@@ -244,6 +255,7 @@ intel_dc21285_exit(struct pci_dev *dev, struct map_pci_info *map)
 	pci_read_config_dword(dev, PCI_ROM_ADDRESS, &val);
 	val &= ~PCI_ROM_ADDRESS_ENABLE;
 	pci_write_config_dword(dev, PCI_ROM_ADDRESS, val);
+	pci_disable_rom(dev);
 }
 
 static unsigned long
@@ -289,6 +301,7 @@ static struct pci_device_id mtd_pci_ids[] = {
 
 static int __devinit
 mtd_pci_probe(struct pci_dev *dev, const struct pci_device_id *id)
+static int mtd_pci_probe(struct pci_dev *dev, const struct pci_device_id *id)
 {
 	struct mtd_pci_info *info = (struct mtd_pci_info *)id->driver_data;
 	struct map_pci_info *map = NULL;
@@ -320,12 +333,14 @@ mtd_pci_probe(struct pci_dev *dev, const struct pci_device_id *id)
 
 	/* tsk - do_map_probe should take const char * */
 	mtd = do_map_probe((char *)info->map_name, &map->map);
+	mtd = do_map_probe(info->map_name, &map->map);
 	err = -ENODEV;
 	if (!mtd)
 		goto release;
 
 	mtd->owner = THIS_MODULE;
 	add_mtd_device(mtd);
+	mtd_device_register(mtd, NULL, 0);
 
 	pci_set_drvdata(dev, mtd);
 
@@ -344,11 +359,13 @@ out:
 
 static void __devexit
 mtd_pci_remove(struct pci_dev *dev)
+static void mtd_pci_remove(struct pci_dev *dev)
 {
 	struct mtd_info *mtd = pci_get_drvdata(dev);
 	struct map_pci_info *map = mtd->priv;
 
 	del_mtd_device(mtd);
+	mtd_device_unregister(mtd);
 	map_destroy(mtd);
 	map->exit(dev, map);
 	kfree(map);
@@ -376,6 +393,11 @@ static void __exit mtd_pci_maps_exit(void)
 
 module_init(mtd_pci_maps_init);
 module_exit(mtd_pci_maps_exit);
+	.remove =	mtd_pci_remove,
+	.id_table =	mtd_pci_ids,
+};
+
+module_pci_driver(mtd_pci_driver);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Russell King <rmk@arm.linux.org.uk>");

@@ -152,6 +152,7 @@ static int shrink_tnc(struct ubifs_info *c, int nr, int age, int *contention)
  *
  * This function walks the list of mounted UBIFS file-systems and frees clean
  * znodes which are older then @age, until at least @nr znodes are freed.
+ * znodes which are older than @age, until at least @nr znodes are freed.
  * Returns the number of freed znodes.
  */
 static int shrink_tnc_trees(int nr, int age, int *contention)
@@ -208,6 +209,7 @@ static int shrink_tnc_trees(int nr, int age, int *contention)
 		 */
 		list_del(&c->infos_list);
 		list_add_tail(&c->infos_list, &ubifs_infos);
+		list_move_tail(&c->infos_list, &ubifs_infos);
 		mutex_unlock(&c->umount_mutex);
 		if (freed >= nr)
 			break;
@@ -252,6 +254,7 @@ static int kick_a_thread(void)
 
 			if (!dirty_zn_cnt || c->cmt_state == COMMIT_BROKEN ||
 			    c->ro_media) {
+			    c->ro_mount || c->ro_error) {
 				mutex_unlock(&c->umount_mutex);
 				continue;
 			}
@@ -265,6 +268,7 @@ static int kick_a_thread(void)
 			if (i == 1) {
 				list_del(&c->infos_list);
 				list_add_tail(&c->infos_list, &ubifs_infos);
+				list_move_tail(&c->infos_list, &ubifs_infos);
 				spin_unlock(&ubifs_infos_lock);
 
 				ubifs_request_bg_commit(c);
@@ -286,6 +290,25 @@ int ubifs_shrinker(int nr, gfp_t gfp_mask)
 
 	if (nr == 0)
 		return clean_zn_cnt;
+unsigned long ubifs_shrink_count(struct shrinker *shrink,
+				 struct shrink_control *sc)
+{
+	long clean_zn_cnt = atomic_long_read(&ubifs_clean_zn_cnt);
+
+	/*
+	 * Due to the way UBIFS updates the clean znode counter it may
+	 * temporarily be negative.
+	 */
+	return clean_zn_cnt >= 0 ? clean_zn_cnt : 1;
+}
+
+unsigned long ubifs_shrink_scan(struct shrinker *shrink,
+				struct shrink_control *sc)
+{
+	unsigned long nr = sc->nr_to_scan;
+	int contention = 0;
+	unsigned long freed;
+	long clean_zn_cnt = atomic_long_read(&ubifs_clean_zn_cnt);
 
 	if (!clean_zn_cnt) {
 		/*
@@ -318,5 +341,10 @@ int ubifs_shrinker(int nr, gfp_t gfp_mask)
 
 out:
 	dbg_tnc("%d znodes were freed, requested %d", freed, nr);
+		return SHRINK_STOP;
+	}
+
+out:
+	dbg_tnc("%lu znodes were freed, requested %lu", freed, nr);
 	return freed;
 }

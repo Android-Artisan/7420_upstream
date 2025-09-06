@@ -1,6 +1,4 @@
-			 ===========================
 			 FUJITSU FR-V LINUX FEATURES
-			 ===========================
 
 This kernel port has a number of features of which the user should be aware:
 
@@ -251,7 +249,6 @@ This kernel port has a number of features of which the user should be aware:
      two modes available:
 
 	NAME	MEANING
-	=====	==========================================
 	wthru	Data cache is in Write-Through mode
 	wback	Data cache is in Write-Back/Copy-Back mode
 

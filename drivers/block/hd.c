@@ -43,6 +43,12 @@
 
 #define REALLY_SLOW_IO
 #include <asm/system.h>
+#include <linux/ata.h>
+#include <linux/hdreg.h>
+
+#define HD_IRQ 14
+
+#define REALLY_SLOW_IO
 #include <asm/io.h>
 #include <asm/uaccess.h>
 
@@ -99,6 +105,7 @@ static struct request_queue *hd_queue;
 #define MAJOR_NR HD_MAJOR
 #define QUEUE (hd_queue)
 #define CURRENT elv_next_request(hd_queue)
+static struct request *hd_req;
 
 #define TIMEOUT_VALUE	(6*HZ)
 #define	HD_DELAY	0
@@ -157,6 +164,7 @@ else \
 #if (HD_DELAY > 0)
 
 #include <asm/i8253.h>
+#include <linux/i8253.h>
 
 unsigned long last_req;
 
@@ -166,11 +174,13 @@ unsigned long read_timer(void)
 	int i;
 
 	spin_lock_irqsave(&i8253_lock, flags);
+	raw_spin_lock_irqsave(&i8253_lock, flags);
 	t = jiffies * 11932;
 	outb_p(0, 0x43);
 	i = inb_p(0x40);
 	i |= inb(0x40) << 8;
 	spin_unlock_irqrestore(&i8253_lock, flags);
+	raw_spin_unlock_irqrestore(&i8253_lock, flags);
 	return(t - i);
 }
 #endif
@@ -197,6 +207,24 @@ static void dump_status(const char *msg, unsigned int stat)
 	char *name = "hd?";
 	if (CURRENT)
 		name = CURRENT->rq_disk->disk_name;
+static bool hd_end_request(int err, unsigned int bytes)
+{
+	if (__blk_end_request(hd_req, err, bytes))
+		return true;
+	hd_req = NULL;
+	return false;
+}
+
+static bool hd_end_request_cur(int err)
+{
+	return hd_end_request(err, blk_rq_cur_bytes(hd_req));
+}
+
+static void dump_status(const char *msg, unsigned int stat)
+{
+	char *name = "hd?";
+	if (hd_req)
+		name = hd_req->rq_disk->disk_name;
 
 #ifdef VERBOSE_ERRORS
 	printk("%s: %s: status=0x%02x { ", name, msg, stat & 0xff);
@@ -226,6 +254,8 @@ static void dump_status(const char *msg, unsigned int stat)
 				inb(HD_CURRENT) & 0xf, inb(HD_SECTOR));
 			if (CURRENT)
 				printk(", sector=%ld", CURRENT->sector);
+			if (hd_req)
+				printk(", sector=%ld", blk_rq_pos(hd_req));
 		}
 		printk("\n");
 	}
@@ -371,6 +401,7 @@ repeat:
 		disk->special_op = disk->recalibrate = 1;
 		hd_out(disk, disk->sect, disk->sect, disk->head-1,
 			disk->cyl, WIN_SPECIFY, &reset_hd);
+			disk->cyl, ATA_CMD_INIT_DEV_PARAMS, &reset_hd);
 		if (reset)
 			goto repeat;
 	} else
@@ -408,6 +439,12 @@ static void bad_rw_intr(void)
 		struct hd_i_struct *disk = req->rq_disk->private_data;
 		if (++req->errors >= MAX_ERRORS || (hd_error & BBD_ERR)) {
 			end_request(req, 0);
+	struct request *req = hd_req;
+
+	if (req != NULL) {
+		struct hd_i_struct *disk = req->rq_disk->private_data;
+		if (++req->errors >= MAX_ERRORS || (hd_error & BBD_ERR)) {
+			hd_end_request_cur(-EIO);
 			disk->special_op = disk->recalibrate = 1;
 		} else if (req->errors % RESET_FREQ == 0)
 			reset = 1;
@@ -468,6 +505,20 @@ ok_to_read:
 		SET_HANDLER(&read_intr);
 		return;
 	}
+
+ok_to_read:
+	req = hd_req;
+	insw(HD_DATA, bio_data(req->bio), 256);
+#ifdef DEBUG
+	printk("%s: read: sector %ld, remaining = %u, buffer=%p\n",
+	       req->rq_disk->disk_name, blk_rq_pos(req) + 1,
+	       blk_rq_sectors(req) - 1, bio_data(req->bio)+512);
+#endif
+	if (hd_end_request(0, 512)) {
+		SET_HANDLER(&read_intr);
+		return;
+	}
+
 	(void) inb_p(HD_STATUS);
 #if (HD_DELAY > 0)
 	last_req = read_timer();
@@ -475,11 +526,13 @@ ok_to_read:
 	if (elv_next_request(QUEUE))
 		hd_request();
 	return;
+	hd_request();
 }
 
 static void write_intr(void)
 {
 	struct request *req = CURRENT;
+	struct request *req = hd_req;
 	int i;
 	int retries = 100000;
 
@@ -490,6 +543,7 @@ static void write_intr(void)
 		if (!OK_STATUS(i))
 			break;
 		if ((req->nr_sectors <= 1) || (i & DRQ_STAT))
+		if ((blk_rq_sectors(req) <= 1) || (i & DRQ_STAT))
 			goto ok_to_write;
 	} while (--retries > 0);
 	dump_status("write_intr", i);
@@ -514,6 +568,18 @@ ok_to_write:
 		hd_request();
 	}
 	return;
+
+ok_to_write:
+	if (hd_end_request(0, 512)) {
+		SET_HANDLER(&write_intr);
+		outsw(HD_DATA, bio_data(req->bio), 256);
+		return;
+	}
+
+#if (HD_DELAY > 0)
+	last_req = read_timer();
+#endif
+	hd_request();
 }
 
 static void recal_intr(void)
@@ -552,6 +618,21 @@ static void hd_times_out(unsigned long dummy)
 	local_irq_disable();
 	hd_request();
 	enable_irq(HD_IRQ);
+	if (!hd_req)
+		return;
+
+	spin_lock_irq(hd_queue->queue_lock);
+	reset = 1;
+	name = hd_req->rq_disk->disk_name;
+	printk("%s: timeout\n", name);
+	if (++hd_req->errors >= MAX_ERRORS) {
+#ifdef DEBUG
+		printk("%s: too many errors\n", name);
+#endif
+		hd_end_request_cur(-EIO);
+	}
+	hd_request();
+	spin_unlock_irq(hd_queue->queue_lock);
 }
 
 static int do_special_op(struct hd_i_struct *disk, struct request *req)
@@ -559,11 +640,13 @@ static int do_special_op(struct hd_i_struct *disk, struct request *req)
 	if (disk->recalibrate) {
 		disk->recalibrate = 0;
 		hd_out(disk, disk->sect, 0, 0, 0, WIN_RESTORE, &recal_intr);
+		hd_out(disk, disk->sect, 0, 0, 0, ATA_CMD_RESTORE, &recal_intr);
 		return reset;
 	}
 	if (disk->head > 16) {
 		printk("%s: cannot handle device with more than 16 heads - giving up\n", req->rq_disk->disk_name);
 		end_request(req, 0);
+		hd_end_request_cur(-EIO);
 	}
 	disk->special_op = 0;
 	return 1;
@@ -599,17 +682,31 @@ repeat:
 
 	if (reset) {
 		local_irq_disable();
+
+	if (!hd_req) {
+		hd_req = blk_fetch_request(hd_queue);
+		if (!hd_req) {
+			do_hd = NULL;
+			return;
+		}
+	}
+	req = hd_req;
+
+	if (reset) {
 		reset_hd();
 		return;
 	}
 	disk = req->rq_disk->private_data;
 	block = req->sector;
 	nsect = req->nr_sectors;
+	block = blk_rq_pos(req);
+	nsect = blk_rq_sectors(req);
 	if (block >= get_capacity(req->rq_disk) ||
 	    ((block+nsect) > get_capacity(req->rq_disk))) {
 		printk("%s: bad access: block=%d, count=%d\n",
 			req->rq_disk->disk_name, block, nsect);
 		end_request(req, 0);
+		hd_end_request_cur(-EIO);
 		goto repeat;
 	}
 
@@ -632,12 +729,19 @@ repeat:
 		switch (rq_data_dir(req)) {
 		case READ:
 			hd_out(disk, nsect, sec, head, cyl, WIN_READ,
+		cyl, head, sec, nsect, bio_data(req->bio));
+#endif
+	if (req->cmd_type == REQ_TYPE_FS) {
+		switch (rq_data_dir(req)) {
+		case READ:
+			hd_out(disk, nsect, sec, head, cyl, ATA_CMD_PIO_READ,
 				&read_intr);
 			if (reset)
 				goto repeat;
 			break;
 		case WRITE:
 			hd_out(disk, nsect, sec, head, cyl, WIN_WRITE,
+			hd_out(disk, nsect, sec, head, cyl, ATA_CMD_PIO_WRITE,
 				&write_intr);
 			if (reset)
 				goto repeat;
@@ -650,6 +754,11 @@ repeat:
 		default:
 			printk("unknown hd-command\n");
 			end_request(req, 0);
+			outsw(HD_DATA, bio_data(req->bio), 256);
+			break;
+		default:
+			printk("unknown hd-command\n");
+			hd_end_request_cur(-EIO);
 			break;
 		}
 	}
@@ -660,6 +769,7 @@ static void do_hd_request(struct request_queue *q)
 	disable_irq(HD_IRQ);
 	hd_request();
 	enable_irq(HD_IRQ);
+	hd_request();
 }
 
 static int hd_getgeo(struct block_device *bdev, struct hd_geometry *geo)
@@ -680,6 +790,8 @@ static int hd_getgeo(struct block_device *bdev, struct hd_geometry *geo)
 static irqreturn_t hd_interrupt(int irq, void *dev_id)
 {
 	void (*handler)(void) = do_hd;
+
+	spin_lock(hd_queue->queue_lock);
 
 	do_hd = NULL;
 	del_timer(&device_timer);
@@ -704,11 +816,22 @@ static struct block_device_operations hd_fops = {
  * safe.
  */
 
+
+	spin_unlock(hd_queue->queue_lock);
+
+	return IRQ_HANDLED;
+}
+
+static const struct block_device_operations hd_fops = {
+	.getgeo =	hd_getgeo,
+};
+
 static int __init hd_init(void)
 {
 	int drive;
 
 	if (register_blkdev(MAJOR_NR, "hd"))
+	if (register_blkdev(HD_MAJOR, "hd"))
 		return -1;
 
 	hd_queue = blk_init_queue(do_hd_request, &hd_lock);
@@ -721,6 +844,14 @@ static int __init hd_init(void)
 	init_timer(&device_timer);
 	device_timer.function = hd_times_out;
 	blk_queue_hardsect_size(hd_queue, 512);
+		unregister_blkdev(HD_MAJOR, "hd");
+		return -ENOMEM;
+	}
+
+	blk_queue_max_hw_sectors(hd_queue, 255);
+	init_timer(&device_timer);
+	device_timer.function = hd_times_out;
+	blk_queue_logical_block_size(hd_queue, 512);
 
 	if (!NR_HD) {
 		/*
@@ -733,6 +864,7 @@ static int __init hd_init(void)
 		 * since this assumes that this is a primary or secondary
 		 * drive, and if we're using this legacy driver, it's
 		 * probably an auxilliary controller added to recover
+		 * probably an auxiliary controller added to recover
 		 * legacy data off an ST-506 drive.  Either way, it's
 		 * definitely safest to have the user explicitly specify
 		 * the information.
@@ -748,6 +880,7 @@ static int __init hd_init(void)
 		if (!disk)
 			goto Enomem;
 		disk->major = MAJOR_NR;
+		disk->major = HD_MAJOR;
 		disk->first_minor = drive << 6;
 		disk->fops = &hd_fops;
 		sprintf(disk->disk_name, "hd%c", 'a'+drive);
@@ -762,6 +895,7 @@ static int __init hd_init(void)
 	}
 
 	if (request_irq(HD_IRQ, hd_interrupt, IRQF_DISABLED, "hd", NULL)) {
+	if (request_irq(HD_IRQ, hd_interrupt, 0, "hd", NULL)) {
 		printk("hd: unable to get IRQ%d for the hard disk driver\n",
 			HD_IRQ);
 		goto out1;
@@ -792,6 +926,7 @@ out1:
 out:
 	del_timer(&device_timer);
 	unregister_blkdev(MAJOR_NR, "hd");
+	unregister_blkdev(HD_MAJOR, "hd");
 	blk_cleanup_queue(hd_queue);
 	return -1;
 Enomem:

@@ -7,6 +7,8 @@
  *	SoftDog	0.05:	A Software Watchdog Device
  *
  *	(c) Copyright 1996 Alan Cox <alan@redhat.com>, All Rights Reserved.
+ *	(c) Copyright 1996 Alan Cox <alan@lxorguk.ukuu.org.uk>,
+ *						All Rights Reserved.
  *
  *	This program is free software; you can redistribute it and/or
  *	modify it under the terms of the GNU General Public License
@@ -14,6 +16,8 @@
  *	2 of the License, or (at your option) any later version.
  *
  */
+
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/module.h>
 #include <linux/moduleparam.h>
@@ -31,6 +35,7 @@
 #include <mach/hardware.h>
 
 #include <asm/mach-types.h>
+#include <asm/system_info.h>
 #include <asm/hardware/dec21285.h>
 
 /*
@@ -49,6 +54,7 @@ static unsigned long timer_alive;
 static void watchdog_fire(int irq, void *dev_id)
 {
 	printk(KERN_CRIT "Watchdog: Would Reboot.\n");
+	pr_crit("Would Reboot\n");
 	*CSR_TIMER4_CNTL = 0;
 	*CSR_TIMER4_CLR = 0;
 }
@@ -138,6 +144,8 @@ static long watchdog_ioctl(struct file *file, unsigned int cmd,
 	unsigned int new_margin;
 	int __user *int_arg = (int __user *)arg;
 	int ret = -ENOTTY;
+	int __user *int_arg = (int __user *)arg;
+	int new_margin, ret = -ENOTTY;
 
 	switch (cmd) {
 	case WDIOC_GETSUPPORT:
@@ -211,6 +219,11 @@ static int __init footbridge_watchdog_init(void)
 	if (machine_is_cats())
 		printk(KERN_WARNING
 		  "Warning: Watchdog reset may not work on this machine.\n");
+	pr_info("Footbridge Watchdog Timer: 0.01, timer margin: %d sec\n",
+		soft_margin);
+
+	if (machine_is_cats())
+		pr_warn("Warning: Watchdog reset may not work on this machine\n");
 	return 0;
 }
 

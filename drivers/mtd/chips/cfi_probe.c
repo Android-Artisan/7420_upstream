@@ -46,6 +46,7 @@ do { \
 do { \
 	cfi_send_gen_cmd(0xF0, 0, base, map, cfi, cfi->device_type, NULL); \
 	cfi_send_gen_cmd(0xFF, 0, base, map, cfi, cfi->device_type, NULL); \
+	cfi_qry_mode_off(base, map, cfi);		\
 	xip_allowed(base, map); \
 } while (0)
 
@@ -55,6 +56,7 @@ do { \
 	cfi_send_gen_cmd(0xF0, 0, base, map, cfi, cfi->device_type, NULL); \
 	cfi_send_gen_cmd(0xFF, 0, base, map, cfi, cfi->device_type, NULL); \
 	cfi_send_gen_cmd(0x98, 0x55, base, map, cfi, cfi->device_type, NULL); \
+	cfi_qry_mode_on(base, map, cfi); \
 } while (0)
 
 #else
@@ -121,6 +123,7 @@ static int __xipram cfi_probe_chip(struct map_info *map, __u32 base,
 	cfi_send_gen_cmd(0x98, 0x55, base, map, cfi, cfi->device_type, NULL);
 
 	if (!qry_present(map,base,cfi)) {
+	if (!cfi_qry_mode_on(base, map, cfi)) {
 		xip_enable(base, map, cfi);
 		return 0;
 	}
@@ -149,6 +152,13 @@ static int __xipram cfi_probe_chip(struct map_info *map, __u32 base,
 
 			/* If the QRY marker goes away, it's an alias */
 			if (!qry_present(map, start, cfi)) {
+		if (cfi_qry_present(map, start, cfi)) {
+			/* Eep. This chip also had the QRY marker.
+			 * Is it an alias for the new one? */
+			cfi_qry_mode_off(start, map, cfi);
+
+			/* If the QRY marker goes away, it's an alias */
+			if (!cfi_qry_present(map, start, cfi)) {
 				xip_allowed(base, map);
 				printk(KERN_DEBUG "%s: Found an alias at 0x%x for the chip at 0x%lx\n",
 				       map->name, base, start);
@@ -162,6 +172,9 @@ static int __xipram cfi_probe_chip(struct map_info *map, __u32 base,
 			cfi_send_gen_cmd(0xFF, 0, start, map, cfi, cfi->device_type, NULL);
 
 			if (qry_present(map, base, cfi)) {
+			cfi_qry_mode_off(base, map, cfi);
+
+			if (cfi_qry_present(map, base, cfi)) {
 				xip_allowed(base, map);
 				printk(KERN_DEBUG "%s: Found an alias at 0x%x for the chip at 0x%lx\n",
 				       map->name, base, start);
@@ -178,6 +191,7 @@ static int __xipram cfi_probe_chip(struct map_info *map, __u32 base,
 	/* Put it back into Read Mode */
 	cfi_send_gen_cmd(0xF0, 0, base, map, cfi, cfi->device_type, NULL);
 	cfi_send_gen_cmd(0xFF, 0, base, map, cfi, cfi->device_type, NULL);
+	cfi_qry_mode_off(base, map, cfi);
 	xip_allowed(base, map);
 
 	printk(KERN_INFO "%s: Found %d x%d devices at 0x%x in %d-bit bank\n",
@@ -194,6 +208,7 @@ static int __xipram cfi_chip_setup(struct map_info *map,
 	__u32 base = 0;
 	int num_erase_regions = cfi_read_query(map, base + (0x10 + 28)*ofs_factor);
 	int i;
+	int addr_unlock1 = 0x555, addr_unlock2 = 0x2AA;
 
 	xip_enable(base, map, cfi);
 #ifdef DEBUG_CFI
@@ -207,10 +222,14 @@ static int __xipram cfi_chip_setup(struct map_info *map,
 		printk(KERN_WARNING "%s: kmalloc failed for CFI ident structure\n", map->name);
 		return 0;
 	}
+	if (!cfi->cfiq)
+		return 0;
 
 	memset(cfi->cfiq,0,sizeof(struct cfi_ident));
 
 	cfi->cfi_mode = CFI_MODE_CFI;
+
+	cfi->sector_erase_cmd = CMD(0x30);
 
 	/* Read the CFI info structure */
 	xip_disable_qry(base, map, cfi);
@@ -269,6 +288,38 @@ static int __xipram cfi_chip_setup(struct map_info *map,
 	printk(KERN_INFO "%s: Found %d x%d devices at 0x%x in %d-bit bank\n",
 	       map->name, cfi->interleave, cfi->device_type*8, base,
 	       map->bankwidth*8);
+	if (cfi->cfiq->P_ID == P_ID_SST_OLD) {
+		addr_unlock1 = 0x5555;
+		addr_unlock2 = 0x2AAA;
+	}
+
+	/*
+	 * Note we put the device back into Read Mode BEFORE going into Auto
+	 * Select Mode, as some devices support nesting of modes, others
+	 * don't. This way should always work.
+	 * On cmdset 0001 the writes of 0xaa and 0x55 are not needed, and
+	 * so should be treated as nops or illegal (and so put the device
+	 * back into Read Mode, which is a nop in this case).
+	 */
+	cfi_send_gen_cmd(0xf0,     0, base, map, cfi, cfi->device_type, NULL);
+	cfi_send_gen_cmd(0xaa, addr_unlock1, base, map, cfi, cfi->device_type, NULL);
+	cfi_send_gen_cmd(0x55, addr_unlock2, base, map, cfi, cfi->device_type, NULL);
+	cfi_send_gen_cmd(0x90, addr_unlock1, base, map, cfi, cfi->device_type, NULL);
+	cfi->mfr = cfi_read_query16(map, base);
+	cfi->id = cfi_read_query16(map, base + ofs_factor);
+
+	/* Get AMD/Spansion extended JEDEC ID */
+	if (cfi->mfr == CFI_MFR_AMD && (cfi->id & 0xff) == 0x7e)
+		cfi->id = cfi_read_query(map, base + 0xe * ofs_factor) << 8 |
+			  cfi_read_query(map, base + 0xf * ofs_factor);
+
+	/* Put it back into Read Mode */
+	cfi_qry_mode_off(base, map, cfi);
+	xip_allowed(base, map);
+
+	printk(KERN_INFO "%s: Found %d x%d devices at 0x%x in %d-bit bank. Manufacturer ID %#08x Chip ID %#08x\n",
+	       map->name, cfi->interleave, cfi->device_type*8, base,
+	       map->bankwidth*8, cfi->mfr, cfi->id);
 
 	return 1;
 }
@@ -306,6 +357,9 @@ static char *vendorname(__u16 vendor)
 
 	case P_ID_SST_PAGE:
 		return "SST Page Write";
+
+	case P_ID_SST_OLD:
+		return "SST 39VF160x/39VF320x";
 
 	case P_ID_INTEL_PERFORMANCE:
 		return "Intel Performance Code";

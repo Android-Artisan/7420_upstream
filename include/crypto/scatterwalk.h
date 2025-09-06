@@ -66,6 +66,19 @@ static inline struct scatterlist *scatterwalk_sg_next(struct scatterlist *sg)
 		return NULL;
 
 	return (++sg)->length ? sg : (void *)sg_page(sg);
+static inline void scatterwalk_crypto_chain(struct scatterlist *head,
+					    struct scatterlist *sg,
+					    int chain, int num)
+{
+	if (chain) {
+		head->length += sg->length;
+		sg = sg_next(sg);
+	}
+
+	if (sg)
+		sg_chain(head, num, sg);
+	else
+		sg_mark_end(head);
 }
 
 static inline unsigned long scatterwalk_samebuf(struct scatter_walk *walk_in,
@@ -109,15 +122,25 @@ static inline struct page *scatterwalk_page(struct scatter_walk *walk)
 static inline void scatterwalk_unmap(void *vaddr, int out)
 {
 	crypto_kunmap(vaddr, out);
+static inline void scatterwalk_unmap(void *vaddr)
+{
+	kunmap_atomic(vaddr);
 }
 
 void scatterwalk_start(struct scatter_walk *walk, struct scatterlist *sg);
 void scatterwalk_copychunks(void *buf, struct scatter_walk *walk,
 			    size_t nbytes, int out);
 void *scatterwalk_map(struct scatter_walk *walk, int out);
+void *scatterwalk_map(struct scatter_walk *walk);
 void scatterwalk_done(struct scatter_walk *walk, int out, int more);
 
 void scatterwalk_map_and_copy(void *buf, struct scatterlist *sg,
 			      unsigned int start, unsigned int nbytes, int out);
+
+int scatterwalk_bytes_sglen(struct scatterlist *sg, int num_bytes);
+
+struct scatterlist *scatterwalk_ffwd(struct scatterlist dst[2],
+				     struct scatterlist *src,
+				     unsigned int len);
 
 #endif  /* _CRYPTO_SCATTERWALK_H */

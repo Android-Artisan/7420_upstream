@@ -15,6 +15,10 @@
 #include <linux/smp_lock.h>
 #include <linux/buffer_head.h>
 #include <linux/vfs.h>
+#include <linux/buffer_head.h>
+#include <linux/vfs.h>
+#include <linux/writeback.h>
+#include <linux/uio.h>
 #include <asm/uaccess.h>
 #include "bfs.h"
 
@@ -41,6 +45,7 @@ struct inode *bfs_iget(struct super_block *sb, unsigned long ino)
 
 	inode = iget_locked(sb, ino);
 	if (IS_ERR(inode))
+	if (!inode)
 		return ERR_PTR(-ENOMEM);
 	if (!(inode->i_state & I_NEW))
 		return inode;
@@ -79,6 +84,9 @@ struct inode *bfs_iget(struct super_block *sb, unsigned long ino)
 	inode->i_uid =  le32_to_cpu(di->i_uid);
 	inode->i_gid =  le32_to_cpu(di->i_gid);
 	inode->i_nlink =  le32_to_cpu(di->i_nlink);
+	i_uid_write(inode, le32_to_cpu(di->i_uid));
+	i_gid_write(inode,  le32_to_cpu(di->i_gid));
+	set_nlink(inode, le32_to_cpu(di->i_nlink));
 	inode->i_size = BFS_FILESIZE(di);
 	inode->i_blocks = BFS_FILEBLOCKS(di);
 	inode->i_atime.tv_sec =  le32_to_cpu(di->i_atime);
@@ -99,6 +107,27 @@ error:
 
 static int bfs_write_inode(struct inode *inode, int unused)
 {
+static struct bfs_inode *find_inode(struct super_block *sb, u16 ino, struct buffer_head **p)
+{
+	if ((ino < BFS_ROOT_INO) || (ino > BFS_SB(sb)->si_lasti)) {
+		printf("Bad inode number %s:%08x\n", sb->s_id, ino);
+		return ERR_PTR(-EIO);
+	}
+
+	ino -= BFS_ROOT_INO;
+
+	*p = sb_bread(sb, 1 + ino / BFS_INODES_PER_BLOCK);
+	if (!*p) {
+		printf("Unable to read inode %s:%08x\n", sb->s_id, ino);
+		return ERR_PTR(-EIO);
+	}
+
+	return (struct bfs_inode *)(*p)->b_data +  ino % BFS_INODES_PER_BLOCK;
+}
+
+static int bfs_write_inode(struct inode *inode, struct writeback_control *wbc)
+{
+	struct bfs_sb_info *info = BFS_SB(inode->i_sb);
 	unsigned int ino = (u16)inode->i_ino;
         unsigned long i_sblock;
 	struct bfs_inode *di;
@@ -125,6 +154,15 @@ static int bfs_write_inode(struct inode *inode, int unused)
 
 	off = (ino - BFS_ROOT_INO) % BFS_INODES_PER_BLOCK;
 	di = (struct bfs_inode *)bh->b_data + off;
+	int err = 0;
+
+        dprintf("ino=%08x\n", ino);
+
+	di = find_inode(inode->i_sb, ino, &bh);
+	if (IS_ERR(di))
+		return PTR_ERR(di);
+
+	mutex_lock(&info->bfs_lock);
 
 	if (ino == BFS_ROOT_INO)
 		di->i_vtype = cpu_to_le32(BFS_VDIR);
@@ -135,6 +173,8 @@ static int bfs_write_inode(struct inode *inode, int unused)
 	di->i_mode = cpu_to_le32(inode->i_mode);
 	di->i_uid = cpu_to_le32(inode->i_uid);
 	di->i_gid = cpu_to_le32(inode->i_gid);
+	di->i_uid = cpu_to_le32(i_uid_read(inode));
+	di->i_gid = cpu_to_le32(i_gid_read(inode));
 	di->i_nlink = cpu_to_le32(inode->i_nlink);
 	di->i_atime = cpu_to_le32(inode->i_atime.tv_sec);
 	di->i_mtime = cpu_to_le32(inode->i_mtime.tv_sec);
@@ -151,6 +191,17 @@ static int bfs_write_inode(struct inode *inode, int unused)
 }
 
 static void bfs_delete_inode(struct inode *inode)
+	if (wbc->sync_mode == WB_SYNC_ALL) {
+		sync_dirty_buffer(bh);
+		if (buffer_req(bh) && !buffer_uptodate(bh))
+			err = -EIO;
+	}
+	brelse(bh);
+	mutex_unlock(&info->bfs_lock);
+	return err;
+}
+
+static void bfs_evict_inode(struct inode *inode)
 {
 	unsigned long ino = inode->i_ino;
 	struct bfs_inode *di;
@@ -185,6 +236,20 @@ static void bfs_delete_inode(struct inode *inode)
 	off = (ino - BFS_ROOT_INO) % BFS_INODES_PER_BLOCK;
 	di = (struct bfs_inode *)bh->b_data + off;
 	memset((void *)di, 0, sizeof(struct bfs_inode));
+	truncate_inode_pages_final(&inode->i_data);
+	invalidate_inode_buffers(inode);
+	clear_inode(inode);
+
+	if (inode->i_nlink)
+		return;
+
+	di = find_inode(s, inode->i_ino, &bh);
+	if (IS_ERR(di))
+		return;
+
+	mutex_lock(&info->bfs_lock);
+	/* clear on-disk inode */
+	memset(di, 0, sizeof(struct bfs_inode));
 	mark_buffer_dirty(bh);
 	brelse(bh);
 
@@ -194,6 +259,7 @@ static void bfs_delete_inode(struct inode *inode)
 		info->si_freei++;
 		clear_bit(ino, info->si_imap);
 		dump_imap("delete_inode", s);
+		bfs_dump_imap("delete_inode", s);
         }
 
 	/*
@@ -207,6 +273,9 @@ static void bfs_delete_inode(struct inode *inode)
 	}
 	mutex_unlock(&info->bfs_lock);
 	clear_inode(inode);
+	if (info->si_lf_eblk == bi->i_eblock)
+		info->si_lf_eblk = bi->i_sblock - 1;
+	mutex_unlock(&info->bfs_lock);
 }
 
 static void bfs_put_super(struct super_block *s)
@@ -214,6 +283,9 @@ static void bfs_put_super(struct super_block *s)
 	struct bfs_sb_info *info = BFS_SB(s);
 
 	brelse(info->si_sbh);
+	if (!info)
+		return;
+
 	mutex_destroy(&info->bfs_lock);
 	kfree(info->si_imap);
 	kfree(info);
@@ -262,6 +334,15 @@ static struct inode *bfs_alloc_inode(struct super_block *sb)
 static void bfs_destroy_inode(struct inode *inode)
 {
 	kmem_cache_free(bfs_inode_cachep, BFS_I(inode));
+static void bfs_i_callback(struct rcu_head *head)
+{
+	struct inode *inode = container_of(head, struct inode, i_rcu);
+	kmem_cache_free(bfs_inode_cachep, BFS_I(inode));
+}
+
+static void bfs_destroy_inode(struct inode *inode)
+{
+	call_rcu(&inode->i_rcu, bfs_i_callback);
 }
 
 static void init_once(void *foo)
@@ -272,6 +353,7 @@ static void init_once(void *foo)
 }
 
 static int init_inodecache(void)
+static int __init init_inodecache(void)
 {
 	bfs_inode_cachep = kmem_cache_create("bfs_inode_cache",
 					     sizeof(struct bfs_inode_info),
@@ -285,6 +367,11 @@ static int init_inodecache(void)
 
 static void destroy_inodecache(void)
 {
+	/*
+	 * Make sure all delayed rcu free inodes are flushed before we
+	 * destroy cache.
+	 */
+	rcu_barrier();
 	kmem_cache_destroy(bfs_inode_cachep);
 }
 
@@ -299,6 +386,12 @@ static const struct super_operations bfs_sops = {
 };
 
 void dump_imap(const char *prefix, struct super_block *s)
+	.evict_inode	= bfs_evict_inode,
+	.put_super	= bfs_put_super,
+	.statfs		= bfs_statfs,
+};
+
+void bfs_dump_imap(const char *prefix, struct super_block *s)
 {
 #ifdef DEBUG
 	int i;
@@ -322,15 +415,19 @@ void dump_imap(const char *prefix, struct super_block *s)
 static int bfs_fill_super(struct super_block *s, void *data, int silent)
 {
 	struct buffer_head *bh;
+	struct buffer_head *bh, *sbh;
 	struct bfs_super_block *bfs_sb;
 	struct inode *inode;
 	unsigned i, imap_len;
 	struct bfs_sb_info *info;
 	long ret = -EINVAL;
+	int ret = -EINVAL;
+	unsigned long i_sblock, i_eblock, i_eoff, s_size;
 
 	info = kzalloc(sizeof(*info), GFP_KERNEL);
 	if (!info)
 		return -ENOMEM;
+	mutex_init(&info->bfs_lock);
 	s->s_fs_info = info;
 
 	sb_set_blocksize(s, BFS_BSIZE);
@@ -339,17 +436,29 @@ static int bfs_fill_super(struct super_block *s, void *data, int silent)
 	if(!bh)
 		goto out;
 	bfs_sb = (struct bfs_super_block *)bh->b_data;
+	sbh = sb_bread(s, 0);
+	if (!sbh)
+		goto out;
+	bfs_sb = (struct bfs_super_block *)sbh->b_data;
 	if (le32_to_cpu(bfs_sb->s_magic) != BFS_MAGIC) {
 		if (!silent)
 			printf("No BFS filesystem on %s (magic=%08x)\n", 
 				s->s_id,  le32_to_cpu(bfs_sb->s_magic));
 		goto out;
+		goto out1;
 	}
 	if (BFS_UNCLEAN(bfs_sb, s) && !silent)
 		printf("%s is unclean, continuing\n", s->s_id);
 
 	s->s_magic = BFS_MAGIC;
 	info->si_sbh = bh;
+
+	if (le32_to_cpu(bfs_sb->s_start) > le32_to_cpu(bfs_sb->s_end) ||
+	    le32_to_cpu(bfs_sb->s_start) < BFS_BSIZE) {
+		printf("Superblock is corrupted\n");
+		goto out1;
+	}
+
 	info->si_lasti = (le32_to_cpu(bfs_sb->s_start) - BFS_BSIZE) /
 					sizeof(struct bfs_inode)
 					+ BFS_ROOT_INO - 1;
@@ -357,6 +466,11 @@ static int bfs_fill_super(struct super_block *s, void *data, int silent)
 	info->si_imap = kzalloc(imap_len, GFP_KERNEL);
 	if (!info->si_imap)
 		goto out;
+	info->si_imap = kzalloc(imap_len, GFP_KERNEL | __GFP_NOWARN);
+	if (!info->si_imap) {
+		printf("Cannot allocate %u bytes\n", imap_len);
+		goto out1;
+	}
 	for (i = 0; i < BFS_ROOT_INO; i++)
 		set_bit(i, info->si_imap);
 
@@ -373,6 +487,12 @@ static int bfs_fill_super(struct super_block *s, void *data, int silent)
 		ret = -ENOMEM;
 		kfree(info->si_imap);
 		goto out;
+		goto out2;
+	}
+	s->s_root = d_make_root(inode);
+	if (!s->s_root) {
+		ret = -ENOMEM;
+		goto out2;
 	}
 
 	info->si_blocks = (le32_to_cpu(bfs_sb->s_end) + 1) >> BFS_BSIZE_BITS;
@@ -380,6 +500,16 @@ static int bfs_fill_super(struct super_block *s, void *data, int silent)
 			- le32_to_cpu(bfs_sb->s_start)) >> BFS_BSIZE_BITS;
 	info->si_freei = 0;
 	info->si_lf_eblk = 0;
+
+	/* can we read the last block? */
+	bh = sb_bread(s, info->si_blocks - 1);
+	if (!bh) {
+		printf("Last block not available: %lu\n", info->si_blocks - 1);
+		ret = -EIO;
+		goto out3;
+	}
+	brelse(bh);
+
 	bh = NULL;
 	for (i = BFS_ROOT_INO; i <= info->si_lasti; i++) {
 		struct bfs_inode *di;
@@ -396,6 +526,26 @@ static int bfs_fill_super(struct super_block *s, void *data, int silent)
 			continue;
 
 		di = (struct bfs_inode *)bh->b_data + off;
+
+		/* test if filesystem is not corrupted */
+
+		i_eoff = le32_to_cpu(di->i_eoffset);
+		i_sblock = le32_to_cpu(di->i_sblock);
+		i_eblock = le32_to_cpu(di->i_eblock);
+		s_size = le32_to_cpu(bfs_sb->s_end);
+
+		if (i_sblock > info->si_blocks ||
+			i_eblock > info->si_blocks ||
+			i_sblock > i_eblock ||
+			i_eoff > s_size ||
+			i_sblock * BFS_BSIZE > i_eoff) {
+
+			printf("Inode 0x%08x corrupted\n", i);
+
+			brelse(bh);
+			ret = -EIO;
+			goto out3;
+		}
 
 		if (!di->i_ino) {
 			info->si_freei++;
@@ -419,6 +569,19 @@ static int bfs_fill_super(struct super_block *s, void *data, int silent)
 
 out:
 	brelse(bh);
+	brelse(sbh);
+	bfs_dump_imap("read_super", s);
+	return 0;
+
+out3:
+	dput(s->s_root);
+	s->s_root = NULL;
+out2:
+	kfree(info->si_imap);
+out1:
+	brelse(sbh);
+out:
+	mutex_destroy(&info->bfs_lock);
 	kfree(info);
 	s->s_fs_info = NULL;
 	return ret;
@@ -428,6 +591,10 @@ static int bfs_get_sb(struct file_system_type *fs_type,
 	int flags, const char *dev_name, void *data, struct vfsmount *mnt)
 {
 	return get_sb_bdev(fs_type, flags, dev_name, data, bfs_fill_super, mnt);
+static struct dentry *bfs_mount(struct file_system_type *fs_type,
+	int flags, const char *dev_name, void *data)
+{
+	return mount_bdev(fs_type, flags, dev_name, data, bfs_fill_super);
 }
 
 static struct file_system_type bfs_fs_type = {
@@ -437,6 +604,11 @@ static struct file_system_type bfs_fs_type = {
 	.kill_sb	= kill_block_super,
 	.fs_flags	= FS_REQUIRES_DEV,
 };
+	.mount		= bfs_mount,
+	.kill_sb	= kill_block_super,
+	.fs_flags	= FS_REQUIRES_DEV,
+};
+MODULE_ALIAS_FS("bfs");
 
 static int __init init_bfs_fs(void)
 {

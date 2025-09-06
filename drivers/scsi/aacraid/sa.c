@@ -1,11 +1,14 @@
 /*
  *	Adaptec AAC series RAID controller driver
  *	(c) Copyright 2001 Red Hat Inc.	<alan@redhat.com>
+ *	(c) Copyright 2001 Red Hat Inc.
  *
  * based on the old aacraid driver that is..
  * Adaptec aacraid device driver for Linux.
  *
  * Copyright (c) 2000-2007 Adaptec, Inc. (aacraid@adaptec.com)
+ * Copyright (c) 2000-2010 Adaptec, Inc.
+ *               2010 PMC-Sierra, Inc. (aacraid@pmc-sierra.com)
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -306,6 +309,7 @@ static int aac_sa_ioremap(struct aac_dev * dev, u32 size)
 		return 0;
 	}
 	dev->base = dev->regs.sa = ioremap(dev->scsi_host_ptr->base, size);
+	dev->base = dev->regs.sa = ioremap(dev->base_start, size);
 	return (dev->base == NULL) ? -1 : 0;
 }
 
@@ -372,6 +376,7 @@ int aac_sa_init(struct aac_dev *dev)
 	dev->a_ops.adapter_sync_cmd = sa_sync_cmd;
 	dev->a_ops.adapter_check_health = aac_sa_check_health;
 	dev->a_ops.adapter_restart = aac_sa_restart_adapter;
+	dev->a_ops.adapter_start = aac_sa_start_adapter;
 	dev->a_ops.adapter_intr = aac_sa_intr;
 	dev->a_ops.adapter_deliver = aac_rx_deliver_producer;
 	dev->a_ops.adapter_ioremap = aac_sa_ioremap;
@@ -388,10 +393,17 @@ int aac_sa_init(struct aac_dev *dev)
 	if (request_irq(dev->pdev->irq, dev->a_ops.adapter_intr,
 			IRQF_SHARED|IRQF_DISABLED,
 			"aacraid", (void *)dev ) < 0) {
+	dev->sync_mode = 0;	/* sync. mode not supported */
+	if (request_irq(dev->pdev->irq, dev->a_ops.adapter_intr,
+			IRQF_SHARED, "aacraid", (void *)dev) < 0) {
 		printk(KERN_WARNING "%s%d: Interrupt unavailable.\n",
 			name, instance);
 		goto error_iounmap;
 	}
+	dev->dbg_base = dev->base_start;
+	dev->dbg_base_mapped = dev->base;
+	dev->dbg_size = dev->base_size;
+
 	aac_adapter_enable_int(dev);
 
 	/*

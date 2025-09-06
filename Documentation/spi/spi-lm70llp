@@ -1,5 +1,4 @@
 spi_lm70llp :  LM70-LLP parport-to-SPI adapter
-==============================================
 
 Supported board/chip:
   * National Semiconductor LM70 LLP evaluation board
@@ -13,9 +12,19 @@ Description
 This driver provides glue code connecting a National Semiconductor LM70 LLP
 temperature sensor evaluation board to the kernel's SPI core subsystem.
 
+This is a SPI master controller driver. It can be used in conjunction with
+(layered under) the LM70 logical driver (a "SPI protocol driver").
 In effect, this driver turns the parallel port interface on the eval board
 into a SPI bus with a single device, which will be driven by the generic
 LM70 driver (drivers/hwmon/lm70.c).
+
+
+Hardware Interfacing
+--------------------
+The schematic for this particular board (the LM70EVAL-LLP) is
+available (on page 4) here:
+
+  http://www.national.com/appinfo/tempsensors/files/LM70LLPEVALmanual.pdf
 
 The hardware interfacing on the LM70 LLP eval board is as follows:
 
@@ -37,6 +46,7 @@ The hardware interfacing on the LM70 LLP eval board is as follows:
 Note that since the LM70 uses a "3-wire" variant of SPI, the SI/SO pin
 is connected to both pin D7 (as Master Out) and Select (as Master In)
 using an arrangment that lets either the parport or the LM70 pull the
+using an arrangement that lets either the parport or the LM70 pull the
 pin low.  This can't be shared with true SPI devices, but other 3-wire
 devices might share the same SI/SO pin.
 

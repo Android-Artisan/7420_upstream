@@ -2,6 +2,7 @@
  *  pmu.c, Power Management Unit routines for NEC VR4100 series.
  *
  *  Copyright (C) 2003-2007  Yoichi Yuasa <yoichi_yuasa@tripeaks.co.jp>
+ *  Copyright (C) 2003-2007  Yoichi Yuasa <yuasa@linux-mips.org>
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -31,6 +32,10 @@
 #include <asm/processor.h>
 #include <asm/reboot.h>
 #include <asm/system.h>
+#include <asm/idle.h>
+#include <asm/io.h>
+#include <asm/processor.h>
+#include <asm/reboot.h>
 
 #define PMU_TYPE1_BASE	0x0b0000a0UL
 #define PMU_TYPE1_SIZE	0x0eUL
@@ -76,6 +81,7 @@ static inline void software_reset(void)
 		flush_cache_all();
 		write_c0_wired(0);
 		__asm__("jr     %0"::"r"(0xbfc00000));
+		__asm__("jr	%0"::"r"(0xbfc00000));
 		break;
 	}
 }

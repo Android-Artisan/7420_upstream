@@ -24,6 +24,12 @@
 
 #include <asm/io.h>
 #include <mach/hardware.h>
+#include <linux/slab.h>
+#include <linux/io.h>
+#include <linux/export.h>
+
+#include <mach/hardware.h>
+#include <mach/irqs.h>
 #include <mach/netx-regs.h>
 
 #include <mach/xc.h>
@@ -96,6 +102,10 @@ static int xc_patch(struct xc *x, void *patch, int count)
 {
 	unsigned int val, adr;
 	unsigned int *data = patch;
+static int xc_patch(struct xc *x, const void *patch, int count)
+{
+	unsigned int val, adr;
+	const unsigned int *data = patch;
 
 	int i;
 	for (i = 0; i < count; i++) {
@@ -118,6 +128,7 @@ int xc_request_firmware(struct xc *x)
 	unsigned int size;
 	int i;
 	void *src;
+	const void *src;
 	unsigned long dst;
 
 	sprintf(name, "xc%d.bin", x->no);
@@ -134,6 +145,7 @@ int xc_request_firmware(struct xc *x)
 		if (head->magic == 0x5874654e) {
 			dev_err(x->dev,
 			    "firmware magic is 'XteN'. Endianess problems?\n");
+			    "firmware magic is 'XteN'. Endianness problems?\n");
 			ret = -ENODEV;
 			goto exit_release_firmware;
 		}

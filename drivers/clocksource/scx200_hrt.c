@@ -44,6 +44,7 @@ MODULE_PARM_DESC(ppm, "+-adjust to actual XO freq (ppm)");
 #define HRT_FREQ   1000000
 
 static cycle_t read_hrt(void)
+static cycle_t read_hrt(struct clocksource *cs)
 {
 	/* Read the timer value */
 	return (cycle_t) inl(scx200_cb_base + SCx200_TIMER_OFFSET);
@@ -63,6 +64,7 @@ static struct clocksource cs_hrt = {
 
 static int __init init_hrt_clocksource(void)
 {
+	u32 freq;
 	/* Make sure scx200 has initialized the configuration block */
 	if (!scx200_cb_present())
 		return -ENODEV;
@@ -72,6 +74,7 @@ static int __init init_hrt_clocksource(void)
 			    SCx200_TIMER_SIZE,
 			    "NatSemi SCx200 High-Resolution Timer")) {
 		printk(KERN_WARNING NAME ": unable to lock timer region\n");
+		pr_warn("unable to lock timer region\n");
 		return -ENODEV;
 	}
 
@@ -92,6 +95,13 @@ static int __init init_hrt_clocksource(void)
 		mhz27 ? "27":"1", ppm);
 
 	return clocksource_register(&cs_hrt);
+	freq = (HRT_FREQ + ppm);
+	if (mhz27)
+		freq *= 27;
+
+	pr_info("enabling scx200 high-res timer (%s MHz +%d ppm)\n", mhz27 ? "27":"1", ppm);
+
+	return clocksource_register_hz(&cs_hrt, freq);
 }
 
 module_init(init_hrt_clocksource);

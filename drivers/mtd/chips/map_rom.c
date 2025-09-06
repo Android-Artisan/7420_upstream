@@ -14,17 +14,32 @@
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/map.h>
 #include <linux/mtd/compatmac.h>
+#include <linux/of.h>
+#include <linux/mtd/mtd.h>
+#include <linux/mtd/map.h>
 
 static int maprom_read (struct mtd_info *, loff_t, size_t, size_t *, u_char *);
 static int maprom_write (struct mtd_info *, loff_t, size_t, size_t *, const u_char *);
 static void maprom_nop (struct mtd_info *);
 static struct mtd_info *map_rom_probe(struct map_info *map);
+static int maprom_erase (struct mtd_info *mtd, struct erase_info *info);
+static unsigned long maprom_unmapped_area(struct mtd_info *, unsigned long,
+					  unsigned long, unsigned long);
 
 static struct mtd_chip_driver maprom_chipdrv = {
 	.probe	= map_rom_probe,
 	.name	= "map_rom",
 	.module	= THIS_MODULE
 };
+
+static unsigned int default_erasesize(struct map_info *map)
+{
+	const __be32 *erase_size = NULL;
+
+	erase_size = of_get_property(map->device_node, "erase-size", NULL);
+
+	return !erase_size ? map->size : be32_to_cpu(*erase_size);
+}
 
 static struct mtd_info *map_rom_probe(struct map_info *map)
 {
@@ -45,11 +60,34 @@ static struct mtd_info *map_rom_probe(struct map_info *map)
 	mtd->flags = MTD_CAP_ROM;
 	mtd->erasesize = map->size;
 	mtd->writesize = 1;
+	mtd->_get_unmapped_area = maprom_unmapped_area;
+	mtd->_read = maprom_read;
+	mtd->_write = maprom_write;
+	mtd->_sync = maprom_nop;
+	mtd->_erase = maprom_erase;
+	mtd->flags = MTD_CAP_ROM;
+	mtd->erasesize = default_erasesize(map);
+	mtd->writesize = 1;
+	mtd->writebufsize = 1;
 
 	__module_get(THIS_MODULE);
 	return mtd;
 }
 
+
+/*
+ * Allow NOMMU mmap() to directly map the device (if not NULL)
+ * - return the address to which the offset maps
+ * - return -ENOSYS to indicate refusal to do the mapping
+ */
+static unsigned long maprom_unmapped_area(struct mtd_info *mtd,
+					  unsigned long len,
+					  unsigned long offset,
+					  unsigned long flags)
+{
+	struct map_info *map = mtd->priv;
+	return (unsigned long) map->virt + offset;
+}
 
 static int maprom_read (struct mtd_info *mtd, loff_t from, size_t len, size_t *retlen, u_char *buf)
 {
@@ -69,6 +107,13 @@ static int maprom_write (struct mtd_info *mtd, loff_t to, size_t len, size_t *re
 {
 	printk(KERN_NOTICE "maprom_write called\n");
 	return -EIO;
+	return -EROFS;
+}
+
+static int maprom_erase (struct mtd_info *mtd, struct erase_info *info)
+{
+	/* We do our best 8) */
+	return -EROFS;
 }
 
 static int __init map_rom_init(void)

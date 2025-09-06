@@ -35,7 +35,6 @@
  * data in PIO mode */
 #define USE_FAST_PIO 1
 
-/* ============= End of user configurable parameters ============= */
 
 #include <linux/module.h>
 
@@ -55,7 +54,6 @@
 #include "scsi.h"
 #include <scsi/scsi_host.h>
 
-/* ============================================================= */
 
 #define WATCHDOG 5000000
 
@@ -175,7 +173,6 @@ static void calc_port_addr(void);
 static int irq_probe(void);
 #endif
 
-/* ================================================================= */
 
 #if USE_BIOS
 static void *bios_base;
@@ -204,7 +201,6 @@ static int fast_pio = USE_FAST_PIO;
 static Scsi_Cmnd *current_SC;
 static char info_msg[256];
 
-/* ================================================================= */
 
 /* possible BIOS locations */
 #if USE_BIOS
@@ -240,7 +236,6 @@ struct signature {
 #define SIGNATURE_COUNT ARRAY_SIZE(signatures)
 #endif				/* USE_BIOS */
 
-/* ============================================================ */
 
 /* Control Register Set 0 */
 static int TC_LSB;		/* transfer counter lsb         */
@@ -280,7 +275,6 @@ static int CONFIG5;		/* Configuration 5 register (r/w) */
 				/*static int SIGNATURE;*//* Signature Register (r) */
 				/*static int CONFIG6;*//* Configuration 6 register (r) */
 
-/* ============================================================== */
 
 #if USE_DMA
 static __inline__ int NCR53c406a_dma_setup(unsigned char *ptr, unsigned int count, unsigned char mode)
@@ -596,6 +590,7 @@ static int NCR53c406a_release(struct Scsi_Host *shost)
 	if (shost->irq)
 		free_irq(shost->irq, NULL);
 #ifdef USE_DMA
+#if USE_DMA
 	if (shost->dma_channel != 0xff)
 		free_dma(shost->dma_channel);
 #endif
@@ -694,11 +689,13 @@ static void wait_intr(void)
 #endif
 
 static int NCR53c406a_queue(Scsi_Cmnd * SCpnt, void (*done) (Scsi_Cmnd *))
+static int NCR53c406a_queue_lck(Scsi_Cmnd * SCpnt, void (*done) (Scsi_Cmnd *))
 {
 	int i;
 
 	VDEB(printk("NCR53c406a_queue called\n"));
 	DEB(printk("cmd=%02x, cmd_len=%02x, target=%02x, lun=%02x, bufflen=%d\n", SCpnt->cmnd[0], SCpnt->cmd_len, SCpnt->target, SCpnt->lun, scsi_bufflen(SCpnt)));
+        DEB(printk("cmd=%02x, cmd_len=%02x, target=%02x, lun=%02x, bufflen=%d\n", SCpnt->cmnd[0], SCpnt->cmd_len, SCpnt->device->target, (u8)SCpnt->device->lun, scsi_bufflen(SCpnt)));
 
 #if 0
 	VDEB(for (i = 0; i < SCpnt->cmd_len; i++)
@@ -725,6 +722,8 @@ static int NCR53c406a_queue(Scsi_Cmnd * SCpnt, void (*done) (Scsi_Cmnd *))
 	rtrc(1);
 	return 0;
 }
+
+static DEF_SCSI_QCMD(NCR53c406a_queue)
 
 static int NCR53c406a_host_reset(Scsi_Cmnd * SCpnt)
 {

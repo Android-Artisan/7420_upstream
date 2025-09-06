@@ -50,6 +50,36 @@ struct inet6_ifaddr
 	__u16			scope;
 
 	struct timer_list	timer;
+enum {
+	INET6_IFADDR_STATE_PREDAD,
+	INET6_IFADDR_STATE_DAD,
+	INET6_IFADDR_STATE_POSTDAD,
+	INET6_IFADDR_STATE_ERRDAD,
+	INET6_IFADDR_STATE_DEAD,
+};
+
+struct inet6_ifaddr {
+	struct in6_addr		addr;
+	__u32			prefix_len;
+
+	/* In seconds, relative to tstamp. Expiry is at tstamp + HZ * lft. */
+	__u32			valid_lft;
+	__u32			prefered_lft;
+	atomic_t		refcnt;
+	spinlock_t		lock;
+
+	int			state;
+
+	__u32			flags;
+	__u8			dad_probes;
+	__u8			stable_privacy_retry;
+
+	__u16			scope;
+
+	unsigned long		cstamp;	/* created timestamp */
+	unsigned long		tstamp; /* updated timestamp */
+
+	struct delayed_work	dad_work;
 
 	struct inet6_dev	*idev;
 	struct rt6_info		*rt;
@@ -68,6 +98,20 @@ struct inet6_ifaddr
 
 struct ip6_sf_socklist
 {
+	struct hlist_node	addr_lst;
+	struct list_head	if_list;
+
+	struct list_head	tmp_list;
+	struct inet6_ifaddr	*ifpub;
+	int			regen_count;
+
+	bool			tokenized;
+
+	struct rcu_head		rcu;
+	struct in6_addr		peer_addr;
+};
+
+struct ip6_sf_socklist {
 	unsigned int		sl_max;
 	unsigned int		sl_count;
 	struct in6_addr		sl_addr[0];
@@ -90,6 +134,17 @@ struct ipv6_mc_socklist
 
 struct ip6_sf_list
 {
+struct ipv6_mc_socklist {
+	struct in6_addr		addr;
+	int			ifindex;
+	struct ipv6_mc_socklist __rcu *next;
+	rwlock_t		sflock;
+	unsigned int		sfmode;		/* MCAST_{INCLUDE,EXCLUDE} */
+	struct ip6_sf_socklist	*sflist;
+	struct rcu_head		rcu;
+};
+
+struct ip6_sf_list {
 	struct ip6_sf_list	*sf_next;
 	struct in6_addr		sf_addr;
 	unsigned long		sf_count[2];	/* include/exclude counts */
@@ -106,6 +161,7 @@ struct ip6_sf_list
 
 struct ifmcaddr6
 {
+struct ifmcaddr6 {
 	struct in6_addr		mca_addr;
 	struct inet6_dev	*idev;
 	struct ifmcaddr6	*next;
@@ -116,6 +172,7 @@ struct ifmcaddr6
 	unsigned long		mca_sfcount[2];
 	struct timer_list	mca_timer;
 	unsigned		mca_flags;
+	unsigned int		mca_flags;
 	int			mca_users;
 	atomic_t		mca_refcnt;
 	spinlock_t		mca_lock;
@@ -127,6 +184,7 @@ struct ifmcaddr6
 
 struct ipv6_ac_socklist
 {
+struct ipv6_ac_socklist {
 	struct in6_addr		acl_addr;
 	int			acl_ifindex;
 	struct ipv6_ac_socklist *acl_next;
@@ -134,6 +192,7 @@ struct ipv6_ac_socklist
 
 struct ifacaddr6
 {
+struct ifacaddr6 {
 	struct in6_addr		aca_addr;
 	struct inet6_dev	*aca_idev;
 	struct rt6_info		*aca_rt;
@@ -172,6 +231,32 @@ struct inet6_dev
 	unsigned long		mc_maxdelay;
 	struct timer_list	mc_gq_timer;	/* general query timer */
 	struct timer_list	mc_ifc_timer;	/* interface change timer */
+	DEFINE_SNMP_STAT_ATOMIC(struct icmpv6_mib_device, icmpv6dev);
+	DEFINE_SNMP_STAT_ATOMIC(struct icmpv6msg_mib_device, icmpv6msgdev);
+};
+
+struct inet6_dev {
+	struct net_device	*dev;
+
+	struct list_head	addr_list;
+
+	struct ifmcaddr6	*mc_list;
+	struct ifmcaddr6	*mc_tomb;
+	spinlock_t		mc_lock;
+
+	unsigned char		mc_qrv;		/* Query Robustness Variable */
+	unsigned char		mc_gq_running;
+	unsigned char		mc_ifc_count;
+	unsigned char		mc_dad_count;
+
+	unsigned long		mc_v1_seen;	/* Max time we stay in MLDv1 mode */
+	unsigned long		mc_qi;		/* Query Interval */
+	unsigned long		mc_qri;		/* Query Response Interval */
+	unsigned long		mc_maxdelay;
+
+	struct timer_list	mc_gq_timer;	/* general query timer */
+	struct timer_list	mc_ifc_timer;	/* interface change timer */
+	struct timer_list	mc_dad_timer;	/* dad complete mc timer */
 
 	struct ifacaddr6	*ac_list;
 	rwlock_t		lock;
@@ -189,11 +274,26 @@ struct inet6_dev
 	struct inet6_dev	*next;
 	struct ipv6_devconf	cnf;
 	struct ipv6_devstat	stats;
+	u8			rndid[8];
+	struct timer_list	regen_timer;
+	struct list_head	tempaddr_list;
+
+	struct in6_addr		token;
+
+	struct neigh_parms	*nd_parms;
+	struct ipv6_devconf	cnf;
+	struct ipv6_devstat	stats;
+
+	struct timer_list	rs_timer;
+	__u8			rs_probes;
+
+	__u8			addr_gen_mode;
 	unsigned long		tstamp; /* ipv6InterfaceTable update timestamp */
 	struct rcu_head		rcu;
 };
 
 static inline void ipv6_eth_mc_map(struct in6_addr *addr, char *buf)
+static inline void ipv6_eth_mc_map(const struct in6_addr *addr, char *buf)
 {
 	/*
 	 *	+-------+-------+-------+-------+-------+-------+
@@ -284,4 +384,20 @@ static inline void ipv6_ib_mc_map(const struct in6_addr *addr,
 	memcpy(buf + 10, addr->s6_addr + 6, 10);
 }
 #endif
+
+static inline int ipv6_ipgre_mc_map(const struct in6_addr *addr,
+				    const unsigned char *broadcast, char *buf)
+{
+	if ((broadcast[0] | broadcast[1] | broadcast[2] | broadcast[3]) != 0) {
+		memcpy(buf, broadcast, 4);
+	} else {
+		/* v4mapped? */
+		if ((addr->s6_addr32[0] | addr->s6_addr32[1] |
+		     (addr->s6_addr32[2] ^ htonl(0x0000ffff))) != 0)
+			return -EINVAL;
+		memcpy(buf, &addr->s6_addr32[3], 4);
+	}
+	return 0;
+}
+
 #endif

@@ -155,7 +155,10 @@ struct dino_device
 };
 
 /* Looks nice and keeps the compiler happy */
-#define DINO_DEV(d) ((struct dino_device *) d)
+#define DINO_DEV(d) ({				\
+	void *__pdata = d;			\
+	BUG_ON(!__pdata);			\
+	(struct dino_device *)__pdata; })
 
 
 /*
@@ -176,6 +179,7 @@ static int dino_cfg_read(struct pci_bus *bus, unsigned int devfn, int where,
 {
 	struct dino_device *d = DINO_DEV(parisc_walk_tree(bus->bridge));
 	u32 local_bus = (bus->parent == NULL) ? 0 : bus->secondary;
+	u32 local_bus = (bus->parent == NULL) ? 0 : bus->busn_res.start;
 	u32 v = DINO_CFG_TOK(local_bus, devfn, where & ~3);
 	void __iomem *base_addr = d->hba.base_addr;
 	unsigned long flags;
@@ -211,6 +215,7 @@ static int dino_cfg_write(struct pci_bus *bus, unsigned int devfn, int where,
 {
 	struct dino_device *d = DINO_DEV(parisc_walk_tree(bus->bridge));
 	u32 local_bus = (bus->parent == NULL) ? 0 : bus->secondary;
+	u32 local_bus = (bus->parent == NULL) ? 0 : bus->busn_res.start;
 	u32 v = DINO_CFG_TOK(local_bus, devfn, where & ~3);
 	void __iomem *base_addr = d->hba.base_addr;
 	unsigned long flags;
@@ -288,6 +293,7 @@ DINO_PORT_OUT(w, 16, 2)
 DINO_PORT_OUT(l, 32, 0)
 
 struct pci_port_ops dino_port_ops = {
+static struct pci_port_ops dino_port_ops = {
 	.inb	= dino_in8,
 	.inw	= dino_in16,
 	.inl	= dino_in32,
@@ -302,6 +308,12 @@ static void dino_disable_irq(unsigned int irq)
 	int local_irq = gsc_find_local_irq(irq, dino_dev->global_irq, DINO_LOCAL_IRQS);
 
 	DBG(KERN_WARNING "%s(0x%p, %d)\n", __func__, dino_dev, irq);
+static void dino_mask_irq(struct irq_data *d)
+{
+	struct dino_device *dino_dev = irq_data_get_irq_chip_data(d);
+	int local_irq = gsc_find_local_irq(d->irq, dino_dev->global_irq, DINO_LOCAL_IRQS);
+
+	DBG(KERN_WARNING "%s(0x%p, %d)\n", __func__, dino_dev, d->irq);
 
 	/* Clear the matching bit in the IMR register */
 	dino_dev->imr &= ~(DINO_MASK_IRQ(local_irq));
@@ -315,6 +327,13 @@ static void dino_enable_irq(unsigned int irq)
 	u32 tmp;
 
 	DBG(KERN_WARNING "%s(0x%p, %d)\n", __func__, dino_dev, irq);
+static void dino_unmask_irq(struct irq_data *d)
+{
+	struct dino_device *dino_dev = irq_data_get_irq_chip_data(d);
+	int local_irq = gsc_find_local_irq(d->irq, dino_dev->global_irq, DINO_LOCAL_IRQS);
+	u32 tmp;
+
+	DBG(KERN_WARNING "%s(0x%p, %d)\n", __func__, dino_dev, d->irq);
 
 	/*
 	** clear pending IRQ bits
@@ -359,6 +378,10 @@ static struct hw_interrupt_type dino_interrupt_type = {
 	.disable	= dino_disable_irq,
 	.ack		= no_ack_irq,
 	.end		= no_end_irq,
+static struct irq_chip dino_interrupt_type = {
+	.name		= "GSC-PCI",
+	.irq_unmask	= dino_unmask_irq,
+	.irq_mask	= dino_mask_irq,
 };
 
 
@@ -390,6 +413,7 @@ ilr_again:
 		DBG(KERN_DEBUG "%s(%d, %p) mask 0x%x\n",
 			__func__, irq, intr_dev, mask);
 		__do_IRQ(irq);
+		generic_handle_irq(irq);
 		mask &= ~(1 << local_irq);
 	} while (mask);
 
@@ -442,6 +466,7 @@ static void dino_choose_irq(struct parisc_device *dev, void *ctrl)
  * (the irqs are off-by-one, not sure yet if this is a cirrus, dino-hardware or dino-driver problem...)
  */
 static void __devinit quirk_cirrus_cardbus(struct pci_dev *dev)
+static void quirk_cirrus_cardbus(struct pci_dev *dev)
 {
 	u8 new_irq = dev->irq - 1;
 	printk(KERN_INFO "PCI: Cirrus Cardbus IRQ fixup for %s, from %d to %d\n",
@@ -450,6 +475,30 @@ static void __devinit quirk_cirrus_cardbus(struct pci_dev *dev)
 }
 DECLARE_PCI_FIXUP_ENABLE(PCI_VENDOR_ID_CIRRUS, PCI_DEVICE_ID_CIRRUS_6832, quirk_cirrus_cardbus );
 
+#ifdef CONFIG_TULIP
+/* Check if PCI device is behind a Card-mode Dino. */
+static int pci_dev_is_behind_card_dino(struct pci_dev *dev)
+{
+	struct dino_device *dino_dev;
+
+	dino_dev = DINO_DEV(parisc_walk_tree(dev->bus->bridge));
+	return is_card_dino(&dino_dev->hba.dev->id);
+}
+
+static void pci_fixup_tulip(struct pci_dev *dev)
+{
+	if (!pci_dev_is_behind_card_dino(dev))
+		return;
+	if (!(pci_resource_flags(dev, 1) & IORESOURCE_MEM))
+		return;
+	pr_warn("%s: HP HSC-PCI Cards with card-mode Dino not yet supported.\n",
+		pci_name(dev));
+	/* Disable this card by zeroing the PCI resources */
+	memset(&dev->resource[0], 0, sizeof(dev->resource[0]));
+	memset(&dev->resource[1], 0, sizeof(dev->resource[1]));
+}
+DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_DEC, PCI_ANY_ID, pci_fixup_tulip);
+#endif /* CONFIG_TULIP */
 
 static void __init
 dino_bios_init(void)
@@ -478,6 +527,7 @@ dino_card_setup(struct pci_bus *bus, void __iomem *base_addr)
 	res->flags = IORESOURCE_MEM;
 	size = scnprintf(name, sizeof(name), "Dino LMMIO (%s)", 
 			 bus->bridge->bus_id);
+			 dev_name(bus->bridge));
 	res->name = kmalloc(size+1, GFP_KERNEL);
 	if(res->name)
 		strcpy((char *)res->name, name);
@@ -496,6 +546,12 @@ dino_card_setup(struct pci_bus *bus, void __iomem *base_addr)
 		list_for_each_safe(ln, tmp_ln, &bus->devices) {
 			struct pci_dev *dev = pci_dev_b(ln);
 
+		struct pci_dev *dev, *tmp;
+
+		printk(KERN_ERR "Dino: cannot attach bus %s\n",
+		       dev_name(bus->bridge));
+		/* kill the bus, we can't do anything with it */
+		list_for_each_entry_safe(dev, tmp, &bus->devices, bus_list) {
 			list_del(&dev->bus_list);
 		}
 			
@@ -546,6 +602,7 @@ dino_card_fixup(struct pci_dev *dev)
 	*/
 	dino_cfg_read(dev->bus, dev->devfn, PCI_INTERRUPT_PIN, 1, &irq_pin); 
 	dev->irq = (irq_pin + PCI_SLOT(dev->devfn) - 1) % 4 ;
+	dev->irq = pci_swizzle_interrupt_pin(dev, irq_pin) - 1;
 
 	/* Shouldn't really need to do this but it's in case someone tries
 	** to bypass PCI services and look at the card themselves.
@@ -567,6 +624,11 @@ dino_fixup_bus(struct pci_bus *bus)
 
 	DBG(KERN_WARNING "%s(0x%p) bus %d platform_data 0x%p\n",
 	    __func__, bus, bus->secondary,
+        struct pci_dev *dev;
+        struct dino_device *dino_dev = DINO_DEV(parisc_walk_tree(bus->bridge));
+
+	DBG(KERN_WARNING "%s(0x%p) bus %d platform_data 0x%p\n",
+	    __func__, bus, bus->busn_res.start,
 	    bus->bridge->platform_data);
 
 	/* Firmware doesn't set up card-mode dino, so we have to */
@@ -586,6 +648,7 @@ dino_fixup_bus(struct pci_bus *bus)
 		}
 
 	} else if(bus->self) {
+	} else if (bus->parent) {
 		int i;
 
 		pci_read_bridge_bases(bus);
@@ -617,6 +680,13 @@ dino_fixup_bus(struct pci_bus *bus)
 			    bus->self->dev.bus_id, i,
 			    bus->self->resource[i].start,
 			    bus->self->resource[i].end);
+			DBG("DEBUG %s assigning %d [%pR]\n",
+			    dev_name(&bus->self->dev), i,
+			    &bus->self->resource[i]);
+			WARN_ON(pci_assign_resource(bus->self, i));
+			DBG("DEBUG %s after assign %d [%pR]\n",
+			    dev_name(&bus->self->dev), i,
+			    &bus->self->resource[i]);
 		}
 	}
 
@@ -625,6 +695,7 @@ dino_fixup_bus(struct pci_bus *bus)
 		int i;
 
 		dev = pci_dev_b(ln);
+	list_for_each_entry(dev, &bus->devices, bus_list) {
 		if (is_card_dino(&dino_dev->hba.dev->id))
 			dino_card_fixup(dev);
 
@@ -671,6 +742,7 @@ dino_fixup_bus(struct pci_bus *bus)
 			dino_cfg_read(dev->bus, dev->devfn, 
 				      PCI_INTERRUPT_PIN, 1, &irq_pin);
 			irq_pin = (irq_pin + PCI_SLOT(dev->devfn) - 1) % 4 ;
+			irq_pin = pci_swizzle_interrupt_pin(dev, irq_pin) - 1;
 			printk(KERN_WARNING "Device %s has undefined IRQ, "
 					"setting to %d\n", pci_name(dev), irq_pin);
 			dino_cfg_write(dev->bus, dev->devfn, 
@@ -689,6 +761,7 @@ dino_fixup_bus(struct pci_bus *bus)
 
 
 struct pci_bios_ops dino_bios_ops = {
+static struct pci_bios_ops dino_bios_ops = {
 	.init		= dino_bios_init,
 	.fixup_bus	= dino_fixup_bus
 };
@@ -818,6 +891,8 @@ dino_bridge_init(struct dino_device *dino_dev, const char *name)
 		result = ccio_request_resource(dino_dev->hba.dev, &res[i]);
 		if (result < 0) {
 			printk(KERN_ERR "%s: failed to claim PCI Bus address space %d (0x%lx-0x%lx)!\n", name, i, res[i].start, res[i].end);
+			printk(KERN_ERR "%s: failed to claim PCI Bus address "
+			       "space %d (%pR)!\n", name, i, &res[i]);
 			return result;
 		}
 	}
@@ -898,6 +973,8 @@ static int __init dino_common_init(struct parisc_device *dev,
 		printk(KERN_ERR "%s: request I/O Port region failed "
 		       "0x%lx/%lx (hpa 0x%p)\n",
 		       name, res->start, res->end, dino_dev->hba.base_addr);
+		       name, (unsigned long)res->start, (unsigned long)res->end,
+		       dino_dev->hba.base_addr);
 		return 1;
 	}
 
@@ -936,6 +1013,10 @@ static int __init dino_probe(struct parisc_device *dev)
 	int is_cujo = 0;
 	struct pci_bus *bus;
 	unsigned long hpa = dev->hpa.start;
+	LIST_HEAD(resources);
+	struct pci_bus *bus;
+	unsigned long hpa = dev->hpa.start;
+	int max;
 
 	name = "Dino";
 	if (is_card_dino(&dev->id)) {
@@ -958,6 +1039,7 @@ static int __init dino_probe(struct parisc_device *dev)
 
 	if (!request_mem_region(hpa, PAGE_SIZE, name)) {
 		printk(KERN_ERR "DINO: Hey! Someone took my MMIO space (0x%ld)!\n",
+		printk(KERN_ERR "DINO: Hey! Someone took my MMIO space (0x%lx)!\n",
 			hpa);
 		return 1;
 	}
@@ -995,7 +1077,7 @@ static int __init dino_probe(struct parisc_device *dev)
 
 	dino_dev->hba.dev = dev;
 	dino_dev->hba.base_addr = ioremap_nocache(hpa, 4096);
-	dino_dev->hba.lmmio_space_offset = 0;	/* CPU addrs == bus addrs */
+	dino_dev->hba.lmmio_space_offset = PCI_F_EXTEND;
 	spin_lock_init(&dino_dev->dinosaur_pen);
 	dino_dev->hba.iommu = ccio_get_iommu(dev);
 
@@ -1010,6 +1092,21 @@ static int __init dino_probe(struct parisc_device *dev)
 
 	dev->dev.platform_data = dino_dev;
 
+	pci_add_resource_offset(&resources, &dino_dev->hba.io_space,
+				HBA_PORT_BASE(dino_dev->hba.hba_num));
+	if (dino_dev->hba.lmmio_space.flags)
+		pci_add_resource_offset(&resources, &dino_dev->hba.lmmio_space,
+					dino_dev->hba.lmmio_space_offset);
+	if (dino_dev->hba.elmmio_space.flags)
+		pci_add_resource_offset(&resources, &dino_dev->hba.elmmio_space,
+					dino_dev->hba.lmmio_space_offset);
+	if (dino_dev->hba.gmmio_space.flags)
+		pci_add_resource(&resources, &dino_dev->hba.gmmio_space);
+
+	dino_dev->hba.bus_num.start = dino_current_bus;
+	dino_dev->hba.bus_num.end = 255;
+	dino_dev->hba.bus_num.flags = IORESOURCE_BUS;
+	pci_add_resource(&resources, &dino_dev->hba.bus_num);
 	/*
 	** It's not used to avoid chicken/egg problems
 	** with configuration accessor functions.
@@ -1029,6 +1126,26 @@ static int __init dino_probe(struct parisc_device *dev)
 		dino_current_bus++;
 	}
 	dino_dev->hba.hba_bus = bus;
+	dino_dev->hba.hba_bus = bus = pci_create_root_bus(&dev->dev,
+			 dino_current_bus, &dino_cfg_ops, NULL, &resources);
+	if (!bus) {
+		printk(KERN_ERR "ERROR: failed to scan PCI bus on %s (duplicate bus number %d?)\n",
+		       dev_name(&dev->dev), dino_current_bus);
+		pci_free_resource_list(&resources);
+		/* increment the bus number in case of duplicates */
+		dino_current_bus++;
+		return 0;
+	}
+
+	max = pci_scan_child_bus(bus);
+	pci_bus_update_busn_res_end(bus, max);
+
+	/* This code *depends* on scanning being single threaded
+	 * if it isn't, this global bus number count will fail
+	 */
+	dino_current_bus = max + 1;
+	pci_bus_assign_resources(bus);
+	pci_bus_add_devices(bus);
 	return 0;
 }
 

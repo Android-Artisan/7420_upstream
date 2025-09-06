@@ -30,6 +30,9 @@
 #include <pcmcia/cs_types.h>
 #include <pcmcia/ss.h>
 #include <pcmcia/cs.h>
+#include <asm/irq.h>
+
+#include <pcmcia/ss.h>
 #include <pcmcia/cistpl.h>
 #include <pcmcia/cisreg.h>
 #include <pcmcia/ds.h>
@@ -97,6 +100,9 @@ static ssize_t pccard_store_insert(struct device *dev, struct device_attribute *
 	ret = pcmcia_insert_card(s);
 
 	return ret ? ret : count;
+	pcmcia_parse_uevents(s, PCMCIA_UEVENT_INSERT);
+
+	return count;
 }
 static DEVICE_ATTR(card_insert, 0200, NULL, pccard_store_insert);
 
@@ -115,6 +121,8 @@ static ssize_t pccard_store_card_pm_state(struct device *dev,
 {
 	ssize_t ret = -EINVAL;
 	struct pcmcia_socket *s = to_socket(dev);
+	struct pcmcia_socket *s = to_socket(dev);
+	ssize_t ret = count;
 
 	if (!count)
 		return -EINVAL;
@@ -125,6 +133,16 @@ static ssize_t pccard_store_card_pm_state(struct device *dev,
 		ret = pcmcia_resume_card(s);
 
 	return ret ? -ENODEV : count;
+	if (!strncmp(buf, "off", 3))
+		pcmcia_parse_uevents(s, PCMCIA_UEVENT_SUSPEND);
+	else {
+		if (!strncmp(buf, "on", 2))
+			pcmcia_parse_uevents(s, PCMCIA_UEVENT_RESUME);
+		else
+			ret = -EINVAL;
+	}
+
+	return ret;
 }
 static DEVICE_ATTR(card_pm_state, 0644, pccard_show_card_pm_state, pccard_store_card_pm_state);
 
@@ -141,6 +159,9 @@ static ssize_t pccard_store_eject(struct device *dev,
 	ret = pcmcia_eject_card(s);
 
 	return ret ? ret : count;
+	pcmcia_parse_uevents(s, PCMCIA_UEVENT_EJECT);
+
+	return count;
 }
 static DEVICE_ATTR(card_eject, 0200, NULL, pccard_store_eject);
 
@@ -168,6 +189,12 @@ static ssize_t pccard_store_irq_mask(struct device *dev,
 
 	if (ret == 1) {
 		s->irq_mask &= mask;
+	ret = sscanf(buf, "0x%x\n", &mask);
+
+	if (ret == 1) {
+		mutex_lock(&s->ops_mutex);
+		s->irq_mask &= mask;
+		mutex_unlock(&s->ops_mutex);
 		ret = 0;
 	}
 
@@ -208,6 +235,12 @@ static ssize_t pccard_store_resource(struct device *dev,
 		}
 	}
 	mutex_unlock(&s->skt_mutex);
+	mutex_lock(&s->ops_mutex);
+	if (!s->resource_setup_done)
+		s->resource_setup_done = 1;
+	mutex_unlock(&s->ops_mutex);
+
+	pcmcia_parse_uevents(s, PCMCIA_UEVENT_REQUERY);
 
 	return count;
 }
@@ -389,6 +422,9 @@ int pccard_sysfs_add_socket(struct device *dev)
 			sysfs_remove_group(&dev->kobj, &socket_attrs);
 	}
 	return ret;
+int pccard_sysfs_add_socket(struct device *dev)
+{
+	return sysfs_create_group(&dev->kobj, &socket_attrs);
 }
 
 void pccard_sysfs_remove_socket(struct device *dev)

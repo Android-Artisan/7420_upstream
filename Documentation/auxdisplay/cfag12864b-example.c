@@ -63,6 +63,7 @@ unsigned char cfag12864b_buffer[CFAG12864B_SIZE];
  * Unable to mmap: return = -2
  */
 int cfag12864b_init(char *path)
+static int cfag12864b_init(char *path)
 {
 	cfag12864b_fd = open(path, O_RDWR);
 	if (cfag12864b_fd == -1)
@@ -82,6 +83,7 @@ int cfag12864b_init(char *path)
  * exit a cfag12864b framebuffer device
  */
 void cfag12864b_exit(void)
+static void cfag12864b_exit(void)
 {
 	munmap(cfag12864b_mem, CFAG12864B_SIZE);
 	close(cfag12864b_fd);
@@ -91,6 +93,7 @@ void cfag12864b_exit(void)
  * set (x, y) pixel
  */
 void cfag12864b_set(unsigned char x, unsigned char y)
+static void cfag12864b_set(unsigned char x, unsigned char y)
 {
 	if (CFAG12864B_CHECK(x, y))
 		cfag12864b_buffer[CFAG12864B_ADDRESS(x, y)] |=
@@ -101,6 +104,7 @@ void cfag12864b_set(unsigned char x, unsigned char y)
  * unset (x, y) pixel
  */
 void cfag12864b_unset(unsigned char x, unsigned char y)
+static void cfag12864b_unset(unsigned char x, unsigned char y)
 {
 	if (CFAG12864B_CHECK(x, y))
 		cfag12864b_buffer[CFAG12864B_ADDRESS(x, y)] &=
@@ -114,6 +118,7 @@ void cfag12864b_unset(unsigned char x, unsigned char y)
  * Pixel on:  return = 1
  */
 unsigned char cfag12864b_isset(unsigned char x, unsigned char y)
+static unsigned char cfag12864b_isset(unsigned char x, unsigned char y)
 {
 	if (CFAG12864B_CHECK(x, y))
 		if (cfag12864b_buffer[CFAG12864B_ADDRESS(x, y)] &
@@ -127,6 +132,7 @@ unsigned char cfag12864b_isset(unsigned char x, unsigned char y)
  * not (x, y) pixel
  */
 void cfag12864b_not(unsigned char x, unsigned char y)
+static void cfag12864b_not(unsigned char x, unsigned char y)
 {
 	if (cfag12864b_isset(x, y))
 		cfag12864b_unset(x, y);
@@ -138,6 +144,7 @@ void cfag12864b_not(unsigned char x, unsigned char y)
  * fill (set all pixels)
  */
 void cfag12864b_fill(void)
+static void cfag12864b_fill(void)
 {
 	unsigned short i;
 
@@ -149,6 +156,7 @@ void cfag12864b_fill(void)
  * clear (unset all pixels)
  */
 void cfag12864b_clear(void)
+static void cfag12864b_clear(void)
 {
 	unsigned short i;
 
@@ -163,6 +171,7 @@ void cfag12864b_clear(void)
  * Pixel on:  src[i] > 0
  */
 void cfag12864b_format(unsigned char * matrix)
+static void cfag12864b_format(unsigned char * matrix)
 {
 	unsigned char i, j, n;
 
@@ -183,6 +192,7 @@ void cfag12864b_format(unsigned char * matrix)
  * blit buffer to lcd
  */
 void cfag12864b_blit(void)
+static void cfag12864b_blit(void)
 {
 	memcpy(cfag12864b_mem, cfag12864b_buffer, CFAG12864B_SIZE);
 }
@@ -199,6 +209,10 @@ void cfag12864b_blit(void)
 #define EXAMPLES	6
 
 void example(unsigned char n)
+
+#define EXAMPLES	6
+
+static void example(unsigned char n)
 {
 	unsigned short i, j;
 	unsigned char matrix[CFAG12864B_WIDTH * CFAG12864B_HEIGHT];

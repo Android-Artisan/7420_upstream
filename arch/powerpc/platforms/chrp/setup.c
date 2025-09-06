@@ -18,6 +18,7 @@
 #include <linux/slab.h>
 #include <linux/user.h>
 #include <linux/a.out.h>
+#include <linux/user.h>
 #include <linux/tty.h>
 #include <linux/major.h>
 #include <linux/interrupt.h>
@@ -25,6 +26,7 @@
 #include <linux/init.h>
 #include <linux/pci.h>
 #include <linux/utsrelease.h>
+#include <generated/utsrelease.h>
 #include <linux/adb.h>
 #include <linux/module.h>
 #include <linux/delay.h>
@@ -256,11 +258,13 @@ static void briq_restart(char *cmd)
  * the the built-in serial node. Instead, a /failsafe node is created.
  */
 static void chrp_init_early(void)
+static __init void chrp_init_early(void)
 {
 	struct device_node *node;
 	const char *property;
 
 	if (strstr(cmd_line, "console="))
+	if (strstr(boot_command_line, "console="))
 		return;
 	/* find the boot console from /chosen/stdout */
 	if (!of_chosen)
@@ -384,6 +388,15 @@ static void chrp_8259_cascade(unsigned int irq, struct irq_desc *desc)
 	if (cascade_irq != NO_IRQ)
 		generic_handle_irq(cascade_irq);
 	desc->chip->eoi(irq);
+static void chrp_8259_cascade(struct irq_desc *desc)
+{
+	struct irq_chip *chip = irq_desc_get_chip(desc);
+	unsigned int cascade_irq = i8259_irq();
+
+	if (cascade_irq != NO_IRQ)
+		generic_handle_irq(cascade_irq);
+
+	chip->irq_eoi(&desc->irq_data);
 }
 
 /*
@@ -449,6 +462,8 @@ static void __init chrp_find_openpic(void)
 
 	chrp_mpic = mpic_alloc(np, opaddr, MPIC_PRIMARY,
 			       isu_size, 0, " MPIC    ");
+	chrp_mpic = mpic_alloc(np, opaddr, MPIC_NO_RESET,
+			isu_size, 0, " MPIC    ");
 	if (chrp_mpic == NULL) {
 		printk(KERN_ERR "Failed to allocate MPIC structure\n");
 		goto bail;
@@ -531,6 +546,7 @@ static void __init chrp_find_8259(void)
 			printk(KERN_ERR "i8259: failed to map cascade irq\n");
 		else
 			set_irq_chained_handler(cascade_irq,
+			irq_set_chained_handler(cascade_irq,
 						chrp_8259_cascade);
 	}
 }
@@ -626,6 +642,8 @@ static int __init chrp_probe(void)
 {
  	char *dtype = of_get_flat_dt_prop(of_get_flat_dt_root(),
  					  "device_type", NULL);
+	const char *dtype = of_get_flat_dt_prop(of_get_flat_dt_root(),
+						"device_type", NULL);
  	if (dtype == NULL)
  		return 0;
  	if (strcmp(dtype, "chrp"))
@@ -634,6 +652,8 @@ static int __init chrp_probe(void)
 	ISA_DMA_THRESHOLD = ~0L;
 	DMA_MODE_READ = 0x44;
 	DMA_MODE_WRITE = 0x48;
+
+	pm_power_off = rtas_power_off;
 
 	return 1;
 }

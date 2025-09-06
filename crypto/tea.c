@@ -220,6 +220,7 @@ static void xeta_decrypt(struct crypto_tfm *tfm, u8 *dst, const u8 *src)
 }
 
 static struct crypto_alg tea_alg = {
+static struct crypto_alg tea_algs[3] = { {
 	.cra_name		=	"tea",
 	.cra_flags		=	CRYPTO_ALG_TYPE_CIPHER,
 	.cra_blocksize		=	TEA_BLOCK_SIZE,
@@ -236,6 +237,7 @@ static struct crypto_alg tea_alg = {
 };
 
 static struct crypto_alg xtea_alg = {
+}, {
 	.cra_name		=	"xtea",
 	.cra_flags		=	CRYPTO_ALG_TYPE_CIPHER,
 	.cra_blocksize		=	XTEA_BLOCK_SIZE,
@@ -252,6 +254,7 @@ static struct crypto_alg xtea_alg = {
 };
 
 static struct crypto_alg xeta_alg = {
+}, {
 	.cra_name		=	"xeta",
 	.cra_flags		=	CRYPTO_ALG_TYPE_CIPHER,
 	.cra_blocksize		=	XTEA_BLOCK_SIZE,
@@ -290,6 +293,11 @@ static int __init tea_mod_init(void)
 
 out:	
 	return ret;
+} };
+
+static int __init tea_mod_init(void)
+{
+	return crypto_register_algs(tea_algs, ARRAY_SIZE(tea_algs));
 }
 
 static void __exit tea_mod_fini(void)
@@ -301,6 +309,12 @@ static void __exit tea_mod_fini(void)
 
 MODULE_ALIAS("xtea");
 MODULE_ALIAS("xeta");
+	crypto_unregister_algs(tea_algs, ARRAY_SIZE(tea_algs));
+}
+
+MODULE_ALIAS_CRYPTO("tea");
+MODULE_ALIAS_CRYPTO("xtea");
+MODULE_ALIAS_CRYPTO("xeta");
 
 module_init(tea_mod_init);
 module_exit(tea_mod_fini);

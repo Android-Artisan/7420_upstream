@@ -34,6 +34,7 @@
 #include "opl4_local.h"
 #include <linux/delay.h>
 #include <asm/io.h>
+#include <linux/io.h>
 #include <sound/asoundef.h>
 
 /* GM2 controllers */
@@ -468,6 +469,7 @@ static struct opl4_voice *snd_opl4_get_voice(struct snd_opl4 *opl4)
 		return list_entry(opl4->off_voices.next, struct opl4_voice, list);
 	/* then get the oldest key-on voice */
 	snd_assert(!list_empty(&opl4->on_voices), );
+	snd_BUG_ON(list_empty(&opl4->on_voices));
 	return list_entry(opl4->on_voices.next, struct opl4_voice, list);
 }
 
@@ -506,6 +508,7 @@ void snd_opl4_note_on(void *private_data, int note, int vel, struct snd_midi_cha
 		voice[i] = snd_opl4_get_voice(opl4);
 		list_del(&voice[i]->list);
 		list_add_tail(&voice[i]->list, &opl4->on_voices);
+		list_move_tail(&voice[i]->list, &opl4->on_voices);
 		voice[i]->chan = chan;
 		voice[i]->note = note;
 		voice[i]->velocity = vel & 0x7f;
@@ -557,6 +560,7 @@ static void snd_opl4_voice_off(struct snd_opl4 *opl4, struct opl4_voice *voice)
 {
 	list_del(&voice->list);
 	list_add_tail(&voice->list, &opl4->off_voices);
+	list_move_tail(&voice->list, &opl4->off_voices);
 
 	voice->reg_misc &= ~OPL4_KEY_ON_BIT;
 	snd_opl4_write(opl4, OPL4_REG_MISC + voice->number, voice->reg_misc);
@@ -573,6 +577,7 @@ static void snd_opl4_terminate_voice(struct snd_opl4 *opl4, struct opl4_voice *v
 {
 	list_del(&voice->list);
 	list_add_tail(&voice->list, &opl4->off_voices);
+	list_move_tail(&voice->list, &opl4->off_voices);
 
 	voice->reg_misc = (voice->reg_misc & ~OPL4_KEY_ON_BIT) | OPL4_DAMP_BIT;
 	snd_opl4_write(opl4, OPL4_REG_MISC + voice->number, voice->reg_misc);

@@ -14,6 +14,8 @@
 
 #include <linux/kernel.h>
 #include <linux/init.h>
+#include <linux/gfp.h>
+#include <linux/kernel.h>
 #include <linux/tty.h>
 #include <linux/tty_flip.h>
 #include <linux/module.h>
@@ -24,6 +26,9 @@ static int debug;
 
 static struct usb_device_id id_table [] = {
 	{ USB_DEVICE(0x0a99, 0x0001) },	/* Talon Technology device */
+static const struct usb_device_id id_table[] = {
+	{ USB_DEVICE(0x0a99, 0x0001) },	/* Talon Technology device */
+	{ USB_DEVICE(0x0df7, 0x0900) },	/* Mobile Action i-gotU */
 	{ },
 };
 MODULE_DEVICE_TABLE(usb, id_table);
@@ -69,6 +74,20 @@ static void navman_read_int_callback(struct urb *urb)
 		tty_buffer_request_room(tty, urb->actual_length);
 		tty_insert_flip_string(tty, data, urb->actual_length);
 		tty_flip_buffer_push(tty);
+		dev_dbg(&port->dev, "%s - urb shutting down with status: %d\n",
+			__func__, status);
+		return;
+	default:
+		dev_dbg(&port->dev, "%s - nonzero urb status received: %d\n",
+			__func__, status);
+		goto exit;
+	}
+
+	usb_serial_debug_data(&port->dev, __func__, urb->actual_length, data);
+
+	if (urb->actual_length) {
+		tty_insert_flip_string(&port->port, data, urb->actual_length);
+		tty_flip_buffer_push(&port->port);
 	}
 
 exit:
@@ -88,6 +107,13 @@ static int navman_open(struct tty_struct *tty,
 
 	if (port->interrupt_in_urb) {
 		dbg("%s - adding interrupt input for treo", __func__);
+static int navman_open(struct tty_struct *tty, struct usb_serial_port *port)
+{
+	int result = 0;
+
+	if (port->interrupt_in_urb) {
+		dev_dbg(&port->dev, "%s - adding interrupt input for treo\n",
+			__func__);
 		result = usb_submit_urb(port->interrupt_in_urb, GFP_KERNEL);
 		if (result)
 			dev_err(&port->dev,
@@ -102,6 +128,8 @@ static void navman_close(struct tty_struct *tty,
 {
 	dbg("%s - port %d", __func__, port->number);
 
+static void navman_close(struct usb_serial_port *port)
+{
 	usb_kill_urb(port->interrupt_in_urb);
 }
 
@@ -155,3 +183,10 @@ MODULE_LICENSE("GPL");
 
 module_param(debug, bool, S_IRUGO | S_IWUSR);
 MODULE_PARM_DESC(debug, "Debug enabled or not");
+static struct usb_serial_driver * const serial_drivers[] = {
+	&navman_device, NULL
+};
+
+module_usb_serial_driver(serial_drivers, id_table);
+
+MODULE_LICENSE("GPL");

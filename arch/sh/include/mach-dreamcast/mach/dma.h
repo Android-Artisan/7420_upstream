@@ -14,6 +14,7 @@
 #define ONCHIP_NR_DMA_CHANNELS	4
 #define G2_NR_DMA_CHANNELS	4
 #define PVR2_NR_DMA_CHANNELS	1
+#define G2_NR_DMA_CHANNELS	4
 
 /* Channels for cascading */
 #define PVR2_CASCADE_CHAN	2

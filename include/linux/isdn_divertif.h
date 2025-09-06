@@ -27,6 +27,12 @@
 #ifdef __KERNEL__
 #include <linux/isdnif.h>
 #include <linux/types.h>
+#ifndef _LINUX_ISDN_DIVERTIF_H
+#define _LINUX_ISDN_DIVERTIF_H
+
+#include <linux/isdnif.h>
+#include <linux/types.h>
+#include <uapi/linux/isdn_divertif.h>
 
 /***************************************************************/
 /* structure exchanging data between isdn hl and divert module */
@@ -45,3 +51,4 @@ typedef struct
 /*********************/
 extern int DIVERT_REG_NAME(isdn_divert_if *);
 #endif
+#endif /* _LINUX_ISDN_DIVERTIF_H */

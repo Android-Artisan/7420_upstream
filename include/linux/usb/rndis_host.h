@@ -20,6 +20,8 @@
 #ifndef	__LINUX_USB_RNDIS_HOST_H
 #define	__LINUX_USB_RNDIS_HOST_H
 
+#include <linux/rndis.h>
+
 /*
  * CONTROL uses CDC "encapsulated commands" with funky notifications.
  *  - control-out:  SEND_ENCAPSULATED
@@ -38,6 +40,10 @@ struct rndis_msg_hdr {
 	__le32	request_id;
 	__le32	status;
 	// ... and more
+	/* followed by data that varies between messages */
+	__le32	request_id;
+	__le32	status;
+	/* ... and more */
 } __attribute__ ((packed));
 
 /* MS-Windows uses this strange size, but RNDIS spec says 1024 minimum */
@@ -114,12 +120,35 @@ struct rndis_init {		/* OUT */
 	__le32	msg_len;			// 24
 	__le32	request_id;
 	__le32	major_version;			// of rndis (1.0)
+struct rndis_data_hdr {
+	__le32	msg_type;		/* RNDIS_MSG_PACKET */
+	__le32	msg_len;		/* rndis_data_hdr + data_len + pad */
+	__le32	data_offset;		/* 36 -- right after header */
+	__le32	data_len;		/* ... real packet size */
+
+	__le32	oob_data_offset;	/* zero */
+	__le32	oob_data_len;		/* zero */
+	__le32	num_oob;		/* zero */
+	__le32	packet_data_offset;	/* zero */
+
+	__le32	packet_data_len;	/* zero */
+	__le32	vc_handle;		/* zero */
+	__le32	reserved;		/* zero */
+} __attribute__ ((packed));
+
+struct rndis_init {		/* OUT */
+	/* header and: */
+	__le32	msg_type;			/* RNDIS_MSG_INIT */
+	__le32	msg_len;			/* 24 */
+	__le32	request_id;
+	__le32	major_version;			/* of rndis (1.0) */
 	__le32	minor_version;
 	__le32	max_transfer_size;
 } __attribute__ ((packed));
 
 struct rndis_init_c {		/* IN */
 	// header and:
+	/* header and: */
 	__le32	msg_type;			/* RNDIS_MSG_INIT_C */
 	__le32	msg_len;
 	__le32	request_id;
@@ -137,6 +166,19 @@ struct rndis_init_c {		/* IN */
 
 struct rndis_halt {		/* OUT (no reply) */
 	// header and:
+	__le32	major_version;			/* of rndis (1.0) */
+	__le32	minor_version;
+	__le32	device_flags;
+	__le32	medium;				/* zero == 802.3 */
+	__le32	max_packets_per_message;
+	__le32	max_transfer_size;
+	__le32	packet_alignment;		/* max 7; (1<<n) bytes */
+	__le32	af_list_offset;			/* zero */
+	__le32	af_list_size;			/* zero */
+} __attribute__ ((packed));
+
+struct rndis_halt {		/* OUT (no reply) */
+	/* header and: */
 	__le32	msg_type;			/* RNDIS_MSG_HALT */
 	__le32	msg_len;
 	__le32	request_id;
@@ -144,6 +186,7 @@ struct rndis_halt {		/* OUT (no reply) */
 
 struct rndis_query {		/* OUT */
 	// header and:
+	/* header and: */
 	__le32	msg_type;			/* RNDIS_MSG_QUERY */
 	__le32	msg_len;
 	__le32	request_id;
@@ -155,6 +198,11 @@ struct rndis_query {		/* OUT */
 
 struct rndis_query_c {		/* IN */
 	// header and:
+/*?*/	__le32	handle;				/* zero */
+} __attribute__ ((packed));
+
+struct rndis_query_c {		/* IN */
+	/* header and: */
 	__le32	msg_type;			/* RNDIS_MSG_QUERY_C */
 	__le32	msg_len;
 	__le32	request_id;
@@ -165,6 +213,7 @@ struct rndis_query_c {		/* IN */
 
 struct rndis_set {		/* OUT */
 	// header and:
+	/* header and: */
 	__le32	msg_type;			/* RNDIS_MSG_SET */
 	__le32	msg_len;
 	__le32	request_id;
@@ -176,6 +225,11 @@ struct rndis_set {		/* OUT */
 
 struct rndis_set_c {		/* IN */
 	// header and:
+/*?*/	__le32	handle;				/* zero */
+} __attribute__ ((packed));
+
+struct rndis_set_c {		/* IN */
+	/* header and: */
 	__le32	msg_type;			/* RNDIS_MSG_SET_C */
 	__le32	msg_len;
 	__le32	request_id;
@@ -184,6 +238,7 @@ struct rndis_set_c {		/* IN */
 
 struct rndis_reset {		/* IN */
 	// header and:
+	/* header and: */
 	__le32	msg_type;			/* RNDIS_MSG_RESET */
 	__le32	msg_len;
 	__le32	reserved;
@@ -191,6 +246,7 @@ struct rndis_reset {		/* IN */
 
 struct rndis_reset_c {		/* OUT */
 	// header and:
+	/* header and: */
 	__le32	msg_type;			/* RNDIS_MSG_RESET_C */
 	__le32	msg_len;
 	__le32	status;
@@ -199,6 +255,7 @@ struct rndis_reset_c {		/* OUT */
 
 struct rndis_indicate {		/* IN (unrequested) */
 	// header and:
+	/* header and: */
 	__le32	msg_type;			/* RNDIS_MSG_INDICATE */
 	__le32	msg_len;
 	__le32	status;
@@ -211,6 +268,7 @@ struct rndis_indicate {		/* IN (unrequested) */
 
 struct rndis_keepalive {	/* OUT (optionally IN) */
 	// header and:
+	/* header and: */
 	__le32	msg_type;			/* RNDIS_MSG_KEEPALIVE */
 	__le32	msg_len;
 	__le32	request_id;
@@ -218,6 +276,7 @@ struct rndis_keepalive {	/* OUT (optionally IN) */
 
 struct rndis_keepalive_c {	/* IN (optionally OUT) */
 	// header and:
+	/* header and: */
 	__le32	msg_type;			/* RNDIS_MSG_KEEPALIVE_C */
 	__le32	msg_len;
 	__le32	request_id;
@@ -258,6 +317,8 @@ struct rndis_keepalive_c {	/* IN (optionally OUT) */
 #define FLAG_RNDIS_PHYM_NOT_WIRELESS	0x0001
 #define FLAG_RNDIS_PHYM_WIRELESS	0x0002
 
+/* Flags for driver_info::data */
+#define RNDIS_DRIVER_DATA_POLL_STATUS	1	/* poll status before control */
 
 extern void rndis_status(struct usbnet *dev, struct urb *urb);
 extern int

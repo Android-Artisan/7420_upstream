@@ -109,6 +109,11 @@ static void shutdown_intc_irq(unsigned int irq)
 
 static void enable_intc_irq(unsigned int irq)
 {
+static int irlm;		/* IRL mode */
+
+static void enable_intc_irq(struct irq_data *data)
+{
+	unsigned int irq = data->irq;
 	unsigned long reg;
 	unsigned long bitmask;
 
@@ -128,6 +133,12 @@ static void enable_intc_irq(unsigned int irq)
 
 static void disable_intc_irq(unsigned int irq)
 {
+	__raw_writel(bitmask, reg);
+}
+
+static void disable_intc_irq(struct irq_data *data)
+{
+	unsigned int irq = data->irq;
 	unsigned long reg;
 	unsigned long bitmask;
 
@@ -182,6 +193,15 @@ int intc_irq_describe(char* p, int irq)
 }
 #endif
 
+	__raw_writel(bitmask, reg);
+}
+
+static struct irq_chip intc_irq_type = {
+	.name = "INTC",
+	.irq_enable = enable_intc_irq,
+	.irq_disable = disable_intc_irq,
+};
+
 void __init plat_irq_setup(void)
 {
 	unsigned long long __dummy0, __dummy1=~0x00000000100000f0;
@@ -189,6 +209,7 @@ void __init plat_irq_setup(void)
 	int i;
 
 	intc_virt = onchip_remap(INTC_BASE, 1024, "INTC");
+	intc_virt = (unsigned long)ioremap_nocache(INTC_BASE, 1024);
 	if (!intc_virt) {
 		panic("Unable to remap INTC\n");
 	}
@@ -205,6 +226,15 @@ void __init plat_irq_setup(void)
 
 	for (reg = INTC_INTPRI_0, i = 0; i < INTC_INTPRI_PREGS; i++, reg += 8)
 		ctrl_outl( NO_PRIORITY, reg);
+		irq_set_chip_and_handler(i, &intc_irq_type, handle_level_irq);
+
+
+	/* Disable all interrupts and set all priorities to 0 to avoid trouble */
+	__raw_writel(-1, INTC_INTDSB_0);
+	__raw_writel(-1, INTC_INTDSB_1);
+
+	for (reg = INTC_INTPRI_0, i = 0; i < INTC_INTPRI_PREGS; i++, reg += 8)
+		__raw_writel( NO_PRIORITY, reg);
 
 
 #ifdef CONFIG_SH_CAYMAN
@@ -230,6 +260,7 @@ void __init plat_irq_setup(void)
 			i = IRQ_IRL0;
 		}
 		ctrl_outl(INTC_ICR_IRLM, reg);
+		__raw_writel(INTC_ICR_IRLM, reg);
 
 		/* Set interrupt priorities according to platform description */
 		for (data = 0, reg = INTC_INTPRI_0; i < NR_INTC_IRQS; i++) {
@@ -238,6 +269,7 @@ void __init plat_irq_setup(void)
 			if ((i % INTC_INTPRI_PPREG) == (INTC_INTPRI_PPREG - 1)) {
 				/* Upon the 7th, set Priority Register */
 				ctrl_outl(data, reg);
+				__raw_writel(data, reg);
 				data = 0;
 				reg += 8;
 			}

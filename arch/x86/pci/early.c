@@ -3,6 +3,7 @@
 #include <asm/pci-direct.h>
 #include <asm/io.h>
 #include "pci.h"
+#include <asm/pci_x86.h>
 
 /* Direct PCI access. This is used for PCI accesses in early boot before
    the PCI subsystem works. */
@@ -74,6 +75,12 @@ void early_dump_pci_device(u8 bus, u8 slot, u8 func)
 	for (i = 0; i < 256; i += 4) {
 		if (!(i & 0x0f))
 			printk("\n%04x:",i);
+	printk(KERN_INFO "pci 0000:%02x:%02x.%d config space:",
+	       bus, slot, func);
+
+	for (i = 0; i < 256; i += 4) {
+		if (!(i & 0x0f))
+			printk("\n  %02x:",i);
 
 		val = read_pci_config(bus, slot, func, i);
 		for (j = 0; j < 4; j++) {
@@ -108,6 +115,21 @@ void early_dump_pci_devices(void)
 							       PCI_HEADER_TYPE);
 				if (!(type & 0x80))
 					break;
+
+				class = read_pci_config(bus, slot, func,
+							PCI_CLASS_REVISION);
+				if (class == 0xffffffff)
+					continue;
+
+				early_dump_pci_device(bus, slot, func);
+
+				if (func == 0) {
+					type = read_pci_config_byte(bus, slot,
+								    func,
+							       PCI_HEADER_TYPE);
+					if (!(type & 0x80))
+						break;
+				}
 			}
 		}
 	}

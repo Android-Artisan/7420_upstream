@@ -31,6 +31,13 @@
 #include <linux/initrd.h>
 #include <linux/pagemap.h>
 #include <linux/lmb.h>
+#include <linux/highmem.h>
+#include <linux/initrd.h>
+#include <linux/pagemap.h>
+#include <linux/memblock.h>
+#include <linux/gfp.h>
+#include <linux/slab.h>
+#include <linux/hugetlb.h>
 
 #include <asm/pgalloc.h>
 #include <asm/prom.h>
@@ -44,6 +51,7 @@
 #include <asm/tlb.h>
 #include <asm/sections.h>
 #include <asm/system.h>
+#include <asm/hugetlb.h>
 
 #include "mmu_decl.h"
 
@@ -51,6 +59,9 @@
 /* The ammount of lowmem must be within 0xF0000000 - KERNELBASE. */
 #if (CONFIG_LOWMEM_SIZE > (0xF0000000 - KERNELBASE))
 #error "You must adjust CONFIG_LOWMEM_SIZE or CONFIG_START_KERNEL"
+/* The amount of lowmem must be within 0xF0000000 - KERNELBASE. */
+#if (CONFIG_LOWMEM_SIZE > (0xF0000000 - PAGE_OFFSET))
+#error "You must adjust CONFIG_LOWMEM_SIZE or CONFIG_KERNEL_START"
 #endif
 #endif
 #define MAX_LOW_MEM	CONFIG_LOWMEM_SIZE
@@ -64,6 +75,13 @@ phys_addr_t memstart_addr = (phys_addr_t)~0ull;
 EXPORT_SYMBOL(memstart_addr);
 phys_addr_t kernstart_addr;
 EXPORT_SYMBOL(kernstart_addr);
+
+#ifdef CONFIG_RELOCATABLE_PPC32
+/* Used in __va()/__pa() */
+long long virt_phys_offset;
+EXPORT_SYMBOL(virt_phys_offset);
+#endif
+
 phys_addr_t lowmem_end_addr;
 
 int boot_mapsize;
@@ -85,6 +103,11 @@ extern struct task_struct *current_set[NR_CPUS];
 int __map_without_bats;
 int __map_without_ltlbs;
 
+/*
+ * This tells the system to allow ioremapping memory marked as reserved.
+ */
+int __allow_ioremap_reserved;
+
 /* max amount of low RAM to map in */
 unsigned long __max_low_memory = MAX_LOW_MEM;
 
@@ -105,6 +128,16 @@ void MMU_setup(void)
 	}
 
 	if (strstr(cmd_line, "noltlbs")) {
+ * Check for command-line options that affect what MMU_init will do.
+ */
+void __init MMU_setup(void)
+{
+	/* Check for nobats option (used in mapin_ram). */
+	if (strstr(boot_command_line, "nobats")) {
+		__map_without_bats = 1;
+	}
+
+	if (strstr(boot_command_line, "noltlbs")) {
 		__map_without_ltlbs = 1;
 	}
 #ifdef CONFIG_DEBUG_PAGEALLOC
@@ -140,6 +173,25 @@ void __init MMU_init(void)
 	}
 
 	total_lowmem = total_memory = lmb_end_of_DRAM() - memstart_addr;
+	/* parse args from command line */
+	MMU_setup();
+
+	/*
+	 * Reserve gigantic pages for hugetlb.  This MUST occur before
+	 * lowmem_end_addr is initialized below.
+	 */
+	reserve_hugetlb_gpages();
+
+	if (memblock.memory.cnt > 1) {
+#ifndef CONFIG_WII
+		memblock_enforce_memory_limit(memblock.memory.regions[0].size);
+		printk(KERN_WARNING "Only using first contiguous memory region");
+#else
+		wii_memory_fixups();
+#endif
+	}
+
+	total_lowmem = total_memory = memblock_end_of_DRAM() - memstart_addr;
 	lowmem_end_addr = memstart_addr + total_lowmem;
 
 #ifdef CONFIG_FSL_BOOKE
@@ -156,6 +208,7 @@ void __init MMU_init(void)
 		total_memory = total_lowmem;
 		lmb_enforce_memory_limit(lowmem_end_addr);
 		lmb_analyze();
+		memblock_enforce_memory_limit(total_lowmem);
 #endif /* CONFIG_HIGHMEM */
 	}
 
@@ -175,6 +228,8 @@ void __init MMU_init(void)
 	ioremap_base = 0xfe000000UL;	/* for now, could be 0xfffff000 */
 #endif /* CONFIG_HIGHMEM */
 	ioremap_bot = ioremap_base;
+	/* Initialize early top-down ioremap allocator */
+	ioremap_bot = IOREMAP_TOP;
 
 	/* Map in I/O resources */
 	if (ppc_md.progress)
@@ -288,3 +343,26 @@ static int __init setup_kcore(void)
 }
 module_init(setup_kcore);
 #endif
+
+	/* Shortly after that, the entire linear mapping will be available */
+	memblock_set_current_limit(lowmem_end_addr);
+}
+
+#ifdef CONFIG_8xx /* No 8xx specific .c file to put that in ... */
+void setup_initial_memory_limit(phys_addr_t first_memblock_base,
+				phys_addr_t first_memblock_size)
+{
+	/* We don't currently support the first MEMBLOCK not mapping 0
+	 * physical on those processors
+	 */
+	BUG_ON(first_memblock_base != 0);
+
+#ifdef CONFIG_PIN_TLB
+	/* 8xx can only access 24MB at the moment */
+	memblock_set_current_limit(min_t(u64, first_memblock_size, 0x01800000));
+#else
+	/* 8xx can only access 8MB at the moment */
+	memblock_set_current_limit(min_t(u64, first_memblock_size, 0x00800000));
+#endif
+}
+#endif /* CONFIG_8xx */

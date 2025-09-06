@@ -1,5 +1,6 @@
 
 menu "Character Devices"
+menu "UML Character Devices"
 
 config STDERR_CONSOLE
 	bool "stderr console"
@@ -201,6 +202,10 @@ config UML_SOUND
 
 config SOUND
 	tristate
+	default UML_SOUND
+
+config SOUND_OSS_CORE
+	bool
 	default UML_SOUND
 
 config HOSTAUDIO

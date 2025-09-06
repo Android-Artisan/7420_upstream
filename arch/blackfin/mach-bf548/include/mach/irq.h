@@ -27,6 +27,9 @@
  * along with this program; see the file copying.
  * if not, write to the free software foundation,
  * 59 temple place - suite 330, boston, ma 02111-1307, usa.
+ * Copyright 2007-2009 Analog Devices Inc.
+ *
+ * Licensed under the GPL-2 or later.
  */
 
 #ifndef _BF548_IRQ_H_
@@ -64,6 +67,9 @@ Events         (highest priority)  EMU         0
 #define IRQ_CORETMR		6	/* Core timer */
 
 #define BFIN_IRQ(x)		((x) + 7)
+#include <mach-common/irq.h>
+
+#define NR_PERI_INTS		(3 * 32)
 
 #define IRQ_PLL_WAKEUP		BFIN_IRQ(0)	/* PLL Wakeup Interrupt */
 #define IRQ_DMAC0_ERROR		BFIN_IRQ(1)	/* DMAC0 Status Interrupt */
@@ -106,6 +112,9 @@ Events         (highest priority)  EMU         0
 #define IRQ_UART3_RX		BFIN_IRQ(35)	/* UART3 RX (DMA20) Interrupt */
 #define IRQ_SPORT3_TX		BFIN_IRQ(36)	/* SPORT3 TX (DMA21) Interrupt */
 #define IRQ_UART3_TX		BFIN_IRQ(36)	/* UART3 TX (DMA21) Interrupt */
+#define IRQ_SPORT2_TX		BFIN_IRQ(34)	/* SPORT2 TX (DMA19) Interrupt */
+#define IRQ_SPORT3_RX		BFIN_IRQ(35)	/* SPORT3 RX (DMA20) Interrupt */
+#define IRQ_SPORT3_TX		BFIN_IRQ(36)	/* SPORT3 TX (DMA21) Interrupt */
 #define IRQ_EPPI1		BFIN_IRQ(37)	/* EPP1 (DMA13) Interrupt */
 #define IRQ_EPPI2		BFIN_IRQ(38)	/* EPP2 (DMA14) Interrupt */
 #define IRQ_SPI1		BFIN_IRQ(39)	/* SPI1 (DMA5) Interrupt */
@@ -125,6 +134,8 @@ Events         (highest priority)  EMU         0
 #define IRQ_MXVR_PKT		BFIN_IRQ(53)	/* MXVR Packet Interrupt */
 #define IRQ_EPP1_ERROR		BFIN_IRQ(54)	/* EPPI1 Error Interrupt */
 #define IRQ_EPP2_ERROR		BFIN_IRQ(55)	/* EPPI2 Error Interrupt */
+#define IRQ_EPPI1_ERROR		BFIN_IRQ(54)	/* EPPI1 Error Interrupt */
+#define IRQ_EPPI2_ERROR		BFIN_IRQ(55)	/* EPPI2 Error Interrupt */
 #define IRQ_UART3_ERROR		BFIN_IRQ(56)	/* UART3 Status (Error) Interrupt */
 #define IRQ_HOST_ERROR		BFIN_IRQ(57)	/* HOST Status (Error) Interrupt */
 #define IRQ_PIXC_ERROR		BFIN_IRQ(59)	/* PIXC Status (Error) Interrupt */
@@ -159,6 +170,7 @@ Events         (highest priority)  EMU         0
 #define IRQ_PINT3		BFIN_IRQ(95)	/* PINT3 Interrupt */
 
 #define SYS_IRQS        	IRQ_PINT3
+#define SYS_IRQS		IRQ_PINT3
 
 #define BFIN_PA_IRQ(x)		((x) + SYS_IRQS + 1)
 #define IRQ_PA0			BFIN_PA_IRQ(0)
@@ -382,6 +394,37 @@ Events         (highest priority)  EMU         0
 #define IVG14           14
 #define IVG15           15
 
+#define GPIO_IRQ_BASE		IRQ_PA0
+
+#define NR_MACH_IRQS		(IRQ_PJ15 + 1)
+
+/* For compatibility reasons with existing code */
+
+#define IRQ_DMAC0_ERR		IRQ_DMAC0_ERROR
+#define IRQ_EPPI0_ERR		IRQ_EPPI0_ERROR
+#define IRQ_SPORT0_ERR		IRQ_SPORT0_ERROR
+#define IRQ_SPORT1_ERR		IRQ_SPORT1_ERROR
+#define IRQ_SPI0_ERR		IRQ_SPI0_ERROR
+#define IRQ_UART0_ERR		IRQ_UART0_ERROR
+#define IRQ_DMAC1_ERR		IRQ_DMAC1_ERROR
+#define IRQ_SPORT2_ERR		IRQ_SPORT2_ERROR
+#define IRQ_SPORT3_ERR		IRQ_SPORT3_ERROR
+#define IRQ_SPI1_ERR		IRQ_SPI1_ERROR
+#define IRQ_SPI2_ERR		IRQ_SPI2_ERROR
+#define IRQ_UART1_ERR		IRQ_UART1_ERROR
+#define IRQ_UART2_ERR		IRQ_UART2_ERROR
+#define IRQ_CAN0_ERR		IRQ_CAN0_ERROR
+#define IRQ_MXVR_ERR		IRQ_MXVR_ERROR
+#define IRQ_EPPI1_ERR		IRQ_EPPI1_ERROR
+#define IRQ_EPPI2_ERR		IRQ_EPPI2_ERROR
+#define IRQ_UART3_ERR		IRQ_UART3_ERROR
+#define IRQ_HOST_ERR		IRQ_HOST_ERROR
+#define IRQ_PIXC_ERR		IRQ_PIXC_ERROR
+#define IRQ_NFC_ERR		IRQ_NFC_ERROR
+#define IRQ_ATAPI_ERR		IRQ_ATAPI_ERROR
+#define IRQ_CAN1_ERR		IRQ_CAN1_ERROR
+#define IRQ_HS_DMA_ERR		IRQ_HS_DMA_ERROR
+
 /* IAR0 BIT FIELDS */
 #define IRQ_PLL_WAKEUP_POS	0
 #define IRQ_DMAC0_ERR_POS	4
@@ -499,3 +542,26 @@ Events         (highest priority)  EMU         0
 #define IRQ_PINT3_POS		28
 
 #endif /* _BF548_IRQ_H_ */
+#ifndef __ASSEMBLY__
+#include <linux/types.h>
+
+/*
+ * gpio pint registers layout
+ */
+struct bfin_pint_regs {
+	u32 mask_set;
+	u32 mask_clear;
+	u32 request;
+	u32 assign;
+	u32 edge_set;
+	u32 edge_clear;
+	u32 invert_set;
+	u32 invert_clear;
+	u32 pinstate;
+	u32 latch;
+	u32 __pad0[2];
+};
+
+#endif
+
+#endif

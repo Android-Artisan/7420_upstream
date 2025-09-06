@@ -5,6 +5,7 @@
  *
  *	With more than a little help from;
  *	- Alan Cox <Alan.Cox@linux.org> 
+ *	- Alan Cox <alan@lxorguk.ukuu.org.uk>
  *
  *      Derived from:
  *      - skeleton.c: A network driver outline for linux.
@@ -121,6 +122,7 @@ static int irq = 5;		/* Default IRQ */
  *              Dayna DL2000/DaynaTalk PC (Half Length), COPS LT-95, 
  *		Farallon PhoneNET PC III, Farallon PhoneNET PC II
  *	Other cards possibly supported mode unkown though:
+ *	Other cards possibly supported mode unknown though:
  *		Dayna DL2000 (Full length), COPS LT/M (Micro-Channel)
  *
  *	Cards NOT supported by this driver but supported by the ltpc.c
@@ -198,6 +200,11 @@ static void set_multicast_list (struct net_device *dev);
 static int  cops_ioctl (struct net_device *dev, struct ifreq *rq, int cmd);
 static int  cops_close (struct net_device *dev);
 static struct net_device_stats *cops_get_stats (struct net_device *dev);
+static netdev_tx_t  cops_send_packet (struct sk_buff *skb,
+					    struct net_device *dev);
+static void set_multicast_list (struct net_device *dev);
+static int  cops_ioctl (struct net_device *dev, struct ifreq *rq, int cmd);
+static int  cops_close (struct net_device *dev);
 
 static void cleanup_card(struct net_device *dev)
 {
@@ -260,6 +267,15 @@ out:
 	return ERR_PTR(err);
 }
 
+static const struct net_device_ops cops_netdev_ops = {
+	.ndo_open               = cops_open,
+        .ndo_stop               = cops_close,
+	.ndo_start_xmit   	= cops_send_packet,
+	.ndo_tx_timeout		= cops_timeout,
+        .ndo_do_ioctl           = cops_ioctl,
+	.ndo_set_rx_mode	= set_multicast_list,
+};
+
 /*
  *      This is the real probe routine. Linux has a history of friendly device
  *      probes on the ISA bus. A good device probes avoids doing writes, and
@@ -318,14 +334,15 @@ static int __init cops_probe1(struct net_device *dev, int ioaddr)
 			break;
 	}
 
+	dev->base_addr = ioaddr;
+
 	/* Reserve any actual interrupt. */
 	if (dev->irq) {
 		retval = request_irq(dev->irq, &cops_interrupt, 0, dev->name, dev);
+		retval = request_irq(dev->irq, cops_interrupt, 0, dev->name, dev);
 		if (retval)
 			goto err_out;
 	}
-
-	dev->base_addr = ioaddr;
 
         lp = netdev_priv(dev);
         spin_lock_init(&lp->lock);
@@ -343,6 +360,9 @@ static int __init cops_probe1(struct net_device *dev, int ioaddr)
         dev->do_ioctl           = cops_ioctl;
 	dev->set_multicast_list = set_multicast_list;
         dev->mc_list            = NULL;
+	dev->netdev_ops 	= &cops_netdev_ops;
+	dev->watchdog_timeo	= HZ * 2;
+
 
 	/* Tell the user where the card is and what mode we're in. */
 	if(board==DAYNA)
@@ -798,6 +818,7 @@ static void cops_rx(struct net_device *dev)
                 printk(KERN_WARNING "%s: Memory squeeze, dropping packet.\n",
 			dev->name);
                 lp->stats.rx_dropped++;
+                dev->stats.rx_dropped++;
                 while(pkt_len--)        /* Discard packet */
                         inb(ioaddr);
                 spin_unlock_irqrestore(&lp->lock, flags);
@@ -820,6 +841,7 @@ static void cops_rx(struct net_device *dev)
 		printk(KERN_WARNING "%s: Bad packet length of %d bytes.\n", 
 			dev->name, pkt_len);
                 lp->stats.tx_errors++;
+                dev->stats.tx_errors++;
                 dev_kfree_skb_any(skb);
                 return;
         }
@@ -837,6 +859,7 @@ static void cops_rx(struct net_device *dev)
         {
                 printk(KERN_WARNING "%s: Bad packet type %d.\n", dev->name, rsp_type);
                 lp->stats.tx_errors++;
+                dev->stats.tx_errors++;
                 dev_kfree_skb_any(skb);
                 return;
         }
@@ -852,6 +875,11 @@ static void cops_rx(struct net_device *dev)
         /* Send packet to a higher place. */
         netif_rx(skb);
 	dev->last_rx = jiffies;
+        dev->stats.rx_packets++;
+        dev->stats.rx_bytes += skb->len;
+
+        /* Send packet to a higher place. */
+        netif_rx(skb);
 }
 
 static void cops_timeout(struct net_device *dev)
@@ -860,6 +888,7 @@ static void cops_timeout(struct net_device *dev)
         int ioaddr = dev->base_addr;
 
 	lp->stats.tx_errors++;
+	dev->stats.tx_errors++;
         if(lp->board==TANGENT)
         {
 		if((inb(ioaddr+TANG_CARD_STATUS)&TANG_TX_READY)==0)
@@ -868,6 +897,7 @@ static void cops_timeout(struct net_device *dev)
 	printk(KERN_WARNING "%s: Transmit timed out.\n", dev->name);
 	cops_jumpstart(dev);	/* Restart the card. */
 	dev->trans_start = jiffies;
+	dev->trans_start = jiffies; /* prevent tx timeout */
 	netif_wake_queue(dev);
 }
 
@@ -877,6 +907,8 @@ static void cops_timeout(struct net_device *dev)
  */
 
 static int cops_send_packet(struct sk_buff *skb, struct net_device *dev)
+static netdev_tx_t cops_send_packet(struct sk_buff *skb,
+					  struct net_device *dev)
 {
         struct cops_local *lp = netdev_priv(dev);
         int ioaddr = dev->base_addr;
@@ -922,6 +954,10 @@ static int cops_send_packet(struct sk_buff *skb, struct net_device *dev)
 	dev->trans_start = jiffies;
 	dev_kfree_skb (skb);
         return 0;
+	dev->stats.tx_packets++;
+	dev->stats.tx_bytes += skb->len;
+	dev_kfree_skb (skb);
+	return NETDEV_TX_OK;
 }
 
 /*
@@ -943,6 +979,7 @@ static int cops_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
         struct cops_local *lp = netdev_priv(dev);
         struct sockaddr_at *sa = (struct sockaddr_at *)&ifr->ifr_addr;
         struct atalk_addr *aa = (struct atalk_addr *)&lp->node_addr;
+        struct atalk_addr *aa = &lp->node_addr;
 
         switch(cmd)
         {
@@ -1014,6 +1051,7 @@ static int __init cops_module_init(void)
 	if (IS_ERR(cops_dev))
 		return PTR_ERR(cops_dev);
         return 0;
+	return PTR_ERR_OR_ZERO(cops_dev);
 }
 
 static void __exit cops_module_exit(void)

@@ -8,6 +8,15 @@
 #include <linux/module.h>
 #include <linux/spinlock.h>
 #include <linux/vmalloc.h>
+#include <linux/slab.h>
+#include <linux/mmzone.h>
+#include <linux/bootmem.h>
+#include <linux/compiler.h>
+#include <linux/highmem.h>
+#include <linux/export.h>
+#include <linux/spinlock.h>
+#include <linux/vmalloc.h>
+
 #include "internal.h"
 #include <asm/dma.h>
 #include <asm/pgalloc.h>
@@ -40,6 +49,7 @@ static u16 section_to_node_table[NR_MEM_SECTIONS] __cacheline_aligned;
 #endif
 
 int page_to_nid(struct page *page)
+int page_to_nid(const struct page *page)
 {
 	return section_to_node_table[page_to_section(page)];
 }
@@ -69,6 +79,14 @@ static struct mem_section noinline __init_refok *sparse_index_alloc(int nid)
 
 	if (section)
 		memset(section, 0, array_size);
+	if (slab_is_available()) {
+		if (node_state(nid, N_HIGH_MEMORY))
+			section = kzalloc_node(array_size, GFP_KERNEL, nid);
+		else
+			section = kzalloc(array_size, GFP_KERNEL);
+	} else {
+		section = memblock_virt_alloc_node(array_size, nid);
+	}
 
 	return section;
 }
@@ -79,6 +97,8 @@ static int __meminit sparse_index_init(unsigned long section_nr, int nid)
 	unsigned long root = SECTION_NR_TO_ROOT(section_nr);
 	struct mem_section *section;
 	int ret = 0;
+	unsigned long root = SECTION_NR_TO_ROOT(section_nr);
+	struct mem_section *section;
 
 	if (mem_section[root])
 		return -EEXIST;
@@ -101,6 +121,10 @@ static int __meminit sparse_index_init(unsigned long section_nr, int nid)
 out:
 	spin_unlock(&index_init_lock);
 	return ret;
+
+	mem_section[root] = section;
+
+	return 0;
 }
 #else /* !SPARSEMEM_EXTREME */
 static inline int sparse_index_init(unsigned long section_nr, int nid)
@@ -127,6 +151,8 @@ int __section_nr(struct mem_section* ms)
 		if ((ms >= root) && (ms < (root + SECTIONS_PER_ROOT)))
 		     break;
 	}
+
+	VM_BUG_ON(root_nr == NR_SECTION_ROOTS);
 
 	return (root_nr * SECTIONS_PER_ROOT) + (ms - root);
 }
@@ -167,6 +193,7 @@ void __meminit mminit_validate_memmodel_limits(unsigned long *start_pfn,
 	}
 
 	if (*end_pfn > max_sparsemem_pfn) {
+	} else if (*end_pfn > max_sparsemem_pfn) {
 		mminit_dprintk(MMINIT_WARNING, "pfnvalidation",
 			"End of range %lu -> %lu exceeds SPARSEMEM max %lu\n",
 			*start_pfn, *end_pfn, max_sparsemem_pfn);
@@ -278,6 +305,16 @@ sparse_early_usemap_alloc_pgdat_section(struct pglist_data *pgdat)
 	 * A page may contain usemaps for other sections preventing the
 	 * page being freed and making a section unremovable while
 	 * other sections referencing the usemap retmain active. Similarly,
+sparse_early_usemaps_alloc_pgdat_section(struct pglist_data *pgdat,
+					 unsigned long size)
+{
+	unsigned long goal, limit;
+	unsigned long *p;
+	int nid;
+	/*
+	 * A page may contain usemaps for other sections preventing the
+	 * page being freed and making a section unremovable while
+	 * other sections referencing the usemap remain active. Similarly,
 	 * a pgdat can prevent a section being removed. If section A
 	 * contains a pgdat and section B contains the usemap, both
 	 * sections become inter-dependent. This allocates usemaps
@@ -286,6 +323,18 @@ sparse_early_usemap_alloc_pgdat_section(struct pglist_data *pgdat)
 	 */
 	section_nr = pfn_to_section_nr(__pa(pgdat) >> PAGE_SHIFT);
 	return alloc_bootmem_section(usemap_size(), section_nr);
+	goal = __pa(pgdat) & (PAGE_SECTION_MASK << PAGE_SHIFT);
+	limit = goal + (1UL << PA_SECTION_SHIFT);
+	nid = early_pfn_to_nid(goal >> PAGE_SHIFT);
+again:
+	p = memblock_virt_alloc_try_nid_nopanic(size,
+						SMP_CACHE_BYTES, goal, limit,
+						nid);
+	if (!p && limit) {
+		limit = 0;
+		goto again;
+	}
+	return p;
 }
 
 static void __init check_usemap_section_nr(int nid, unsigned long *usemap)
@@ -331,6 +380,10 @@ static unsigned long * __init
 sparse_early_usemap_alloc_pgdat_section(struct pglist_data *pgdat)
 {
 	return NULL;
+sparse_early_usemaps_alloc_pgdat_section(struct pglist_data *pgdat,
+					 unsigned long size)
+{
+	return memblock_virt_alloc_node_nopanic(size, pgdat->node_id);
 }
 
 static void __init check_usemap_section_nr(int nid, unsigned long *usemap)
@@ -359,12 +412,37 @@ static unsigned long *__init sparse_early_usemap_alloc(unsigned long pnum)
 
 	printk(KERN_WARNING "%s: allocation failed\n", __func__);
 	return NULL;
+static void __init sparse_early_usemaps_alloc_node(void *data,
+				 unsigned long pnum_begin,
+				 unsigned long pnum_end,
+				 unsigned long usemap_count, int nodeid)
+{
+	void *usemap;
+	unsigned long pnum;
+	unsigned long **usemap_map = (unsigned long **)data;
+	int size = usemap_size();
+
+	usemap = sparse_early_usemaps_alloc_pgdat_section(NODE_DATA(nodeid),
+							  size * usemap_count);
+	if (!usemap) {
+		printk(KERN_WARNING "%s: allocation failed\n", __func__);
+		return;
+	}
+
+	for (pnum = pnum_begin; pnum < pnum_end; pnum++) {
+		if (!present_section_nr(pnum))
+			continue;
+		usemap_map[pnum] = usemap;
+		usemap += size;
+		check_usemap_section_nr(nodeid, usemap_map[pnum]);
+	}
 }
 
 #ifndef CONFIG_SPARSEMEM_VMEMMAP
 struct page __init *sparse_mem_map_populate(unsigned long pnum, int nid)
 {
 	struct page *map;
+	unsigned long size;
 
 	map = alloc_remap(nid, sizeof(struct page) * PAGES_PER_SECTION);
 	if (map)
@@ -376,6 +454,74 @@ struct page __init *sparse_mem_map_populate(unsigned long pnum, int nid)
 }
 #endif /* !CONFIG_SPARSEMEM_VMEMMAP */
 
+	size = PAGE_ALIGN(sizeof(struct page) * PAGES_PER_SECTION);
+	map = memblock_virt_alloc_try_nid(size,
+					  PAGE_SIZE, __pa(MAX_DMA_ADDRESS),
+					  BOOTMEM_ALLOC_ACCESSIBLE, nid);
+	return map;
+}
+void __init sparse_mem_maps_populate_node(struct page **map_map,
+					  unsigned long pnum_begin,
+					  unsigned long pnum_end,
+					  unsigned long map_count, int nodeid)
+{
+	void *map;
+	unsigned long pnum;
+	unsigned long size = sizeof(struct page) * PAGES_PER_SECTION;
+
+	map = alloc_remap(nodeid, size * map_count);
+	if (map) {
+		for (pnum = pnum_begin; pnum < pnum_end; pnum++) {
+			if (!present_section_nr(pnum))
+				continue;
+			map_map[pnum] = map;
+			map += size;
+		}
+		return;
+	}
+
+	size = PAGE_ALIGN(size);
+	map = memblock_virt_alloc_try_nid(size * map_count,
+					  PAGE_SIZE, __pa(MAX_DMA_ADDRESS),
+					  BOOTMEM_ALLOC_ACCESSIBLE, nodeid);
+	if (map) {
+		for (pnum = pnum_begin; pnum < pnum_end; pnum++) {
+			if (!present_section_nr(pnum))
+				continue;
+			map_map[pnum] = map;
+			map += size;
+		}
+		return;
+	}
+
+	/* fallback */
+	for (pnum = pnum_begin; pnum < pnum_end; pnum++) {
+		struct mem_section *ms;
+
+		if (!present_section_nr(pnum))
+			continue;
+		map_map[pnum] = sparse_mem_map_populate(pnum, nodeid);
+		if (map_map[pnum])
+			continue;
+		ms = __nr_to_section(pnum);
+		printk(KERN_ERR "%s: sparsemem memory map backing failed "
+			"some memory will not be available.\n", __func__);
+		ms->section_mem_map = 0;
+	}
+}
+#endif /* !CONFIG_SPARSEMEM_VMEMMAP */
+
+#ifdef CONFIG_SPARSEMEM_ALLOC_MEM_MAP_TOGETHER
+static void __init sparse_early_mem_maps_alloc_node(void *data,
+				 unsigned long pnum_begin,
+				 unsigned long pnum_end,
+				 unsigned long map_count, int nodeid)
+{
+	struct page **map_map = (struct page **)data;
+	sparse_mem_maps_populate_node(map_map, pnum_begin, pnum_end,
+					 map_count, nodeid);
+}
+#else
 static struct page __init *sparse_early_mem_map_alloc(unsigned long pnum)
 {
 	struct page *map;
@@ -395,6 +541,61 @@ static struct page __init *sparse_early_mem_map_alloc(unsigned long pnum)
 void __attribute__((weak)) __meminit vmemmap_populate_print_last(void)
 {
 }
+#endif
+
+void __weak __meminit vmemmap_populate_print_last(void)
+{
+}
+
+/**
+ *  alloc_usemap_and_memmap - memory alloction for pageblock flags and vmemmap
+ *  @map: usemap_map for pageblock flags or mmap_map for vmemmap
+ */
+static void __init alloc_usemap_and_memmap(void (*alloc_func)
+					(void *, unsigned long, unsigned long,
+					unsigned long, int), void *data)
+{
+	unsigned long pnum;
+	unsigned long map_count;
+	int nodeid_begin = 0;
+	unsigned long pnum_begin = 0;
+
+	for (pnum = 0; pnum < NR_MEM_SECTIONS; pnum++) {
+		struct mem_section *ms;
+
+		if (!present_section_nr(pnum))
+			continue;
+		ms = __nr_to_section(pnum);
+		nodeid_begin = sparse_early_nid(ms);
+		pnum_begin = pnum;
+		break;
+	}
+	map_count = 1;
+	for (pnum = pnum_begin + 1; pnum < NR_MEM_SECTIONS; pnum++) {
+		struct mem_section *ms;
+		int nodeid;
+
+		if (!present_section_nr(pnum))
+			continue;
+		ms = __nr_to_section(pnum);
+		nodeid = sparse_early_nid(ms);
+		if (nodeid == nodeid_begin) {
+			map_count++;
+			continue;
+		}
+		/* ok, we need to take cake of from pnum_begin to pnum - 1*/
+		alloc_func(data, pnum_begin, pnum,
+						map_count, nodeid_begin);
+		/* new start, update count etc*/
+		nodeid_begin = nodeid;
+		pnum_begin = pnum;
+		map_count = 1;
+	}
+	/* ok, last chunk */
+	alloc_func(data, pnum_begin, NR_MEM_SECTIONS,
+						map_count, nodeid_begin);
+}
+
 /*
  * Allocate the accumulated non-linear sections, allocate a mem_map
  * for each and record the physical to section mapping.
@@ -406,6 +607,16 @@ void __init sparse_init(void)
 	unsigned long *usemap;
 	unsigned long **usemap_map;
 	int size;
+#ifdef CONFIG_SPARSEMEM_ALLOC_MEM_MAP_TOGETHER
+	int size2;
+	struct page **map_map;
+#endif
+
+	/* see include/linux/mmzone.h 'struct mem_section' definition */
+	BUILD_BUG_ON(!is_power_of_2(sizeof(struct mem_section)));
+
+	/* Setup pageblock_order for HUGETLB_PAGE_SIZE_VARIABLE */
+	set_pageblock_order();
 
 	/*
 	 * map is using big page (aka 2M in x86 64 bit)
@@ -414,6 +625,7 @@ void __init sparse_init(void)
 	 * make next 2M slip to one more 2M later.
 	 * then in big system, the memory will have a lot of holes...
 	 * here try to allocate 2M pages continously.
+	 * here try to allocate 2M pages continuously.
 	 *
 	 * powerpc need to call sparse_init_one_section right after each
 	 * sparse_early_mem_map_alloc, so allocate usemap_map at first.
@@ -428,6 +640,20 @@ void __init sparse_init(void)
 			continue;
 		usemap_map[pnum] = sparse_early_usemap_alloc(pnum);
 	}
+	usemap_map = memblock_virt_alloc(size, 0);
+	if (!usemap_map)
+		panic("can not allocate usemap_map\n");
+	alloc_usemap_and_memmap(sparse_early_usemaps_alloc_node,
+							(void *)usemap_map);
+
+#ifdef CONFIG_SPARSEMEM_ALLOC_MEM_MAP_TOGETHER
+	size2 = sizeof(struct page *) * NR_MEM_SECTIONS;
+	map_map = memblock_virt_alloc(size2, 0);
+	if (!map_map)
+		panic("can not allocate map_map\n");
+	alloc_usemap_and_memmap(sparse_early_mem_maps_alloc_node,
+							(void *)map_map);
+#endif
 
 	for (pnum = 0; pnum < NR_MEM_SECTIONS; pnum++) {
 		if (!present_section_nr(pnum))
@@ -438,6 +664,11 @@ void __init sparse_init(void)
 			continue;
 
 		map = sparse_early_mem_map_alloc(pnum);
+#ifdef CONFIG_SPARSEMEM_ALLOC_MEM_MAP_TOGETHER
+		map = map_map[pnum];
+#else
+		map = sparse_early_mem_map_alloc(pnum);
+#endif
 		if (!map)
 			continue;
 
@@ -448,12 +679,17 @@ void __init sparse_init(void)
 	vmemmap_populate_print_last();
 
 	free_bootmem(__pa(usemap_map), size);
+#ifdef CONFIG_SPARSEMEM_ALLOC_MEM_MAP_TOGETHER
+	memblock_free_early(__pa(map_map), size2);
+#endif
+	memblock_free_early(__pa(usemap_map), size);
 }
 
 #ifdef CONFIG_MEMORY_HOTPLUG
 #ifdef CONFIG_SPARSEMEM_VMEMMAP
 static inline struct page *kmalloc_section_memmap(unsigned long pnum, int nid,
 						 unsigned long nr_pages)
+static inline struct page *kmalloc_section_memmap(unsigned long pnum, int nid)
 {
 	/* This will make the necessary allocations eventually. */
 	return sparse_mem_map_populate(pnum, nid);
@@ -470,6 +706,27 @@ static struct page *__kmalloc_section_memmap(unsigned long nr_pages)
 {
 	struct page *page, *ret;
 	unsigned long memmap_size = sizeof(struct page) * nr_pages;
+static void __kfree_section_memmap(struct page *memmap)
+{
+	unsigned long start = (unsigned long)memmap;
+	unsigned long end = (unsigned long)(memmap + PAGES_PER_SECTION);
+
+	vmemmap_free(start, end);
+}
+#ifdef CONFIG_MEMORY_HOTREMOVE
+static void free_map_bootmem(struct page *memmap)
+{
+	unsigned long start = (unsigned long)memmap;
+	unsigned long end = (unsigned long)(memmap + PAGES_PER_SECTION);
+
+	vmemmap_free(start, end);
+}
+#endif /* CONFIG_MEMORY_HOTREMOVE */
+#else
+static struct page *__kmalloc_section_memmap(void)
+{
+	struct page *page, *ret;
+	unsigned long memmap_size = sizeof(struct page) * PAGES_PER_SECTION;
 
 	page = alloc_pages(GFP_KERNEL|__GFP_NOWARN, get_order(memmap_size));
 	if (page)
@@ -495,6 +752,12 @@ static inline struct page *kmalloc_section_memmap(unsigned long pnum, int nid,
 }
 
 static void __kfree_section_memmap(struct page *memmap, unsigned long nr_pages)
+static inline struct page *kmalloc_section_memmap(unsigned long pnum, int nid)
+{
+	return __kmalloc_section_memmap();
+}
+
+static void __kfree_section_memmap(struct page *memmap)
 {
 	if (is_vmalloc_addr(memmap))
 		vfree(memmap);
@@ -510,6 +773,21 @@ static void free_map_bootmem(struct page *page, unsigned long nr_pages)
 
 	for (i = 0; i < nr_pages; i++, page++) {
 		magic = atomic_read(&page->_mapcount);
+			   get_order(sizeof(struct page) * PAGES_PER_SECTION));
+}
+
+#ifdef CONFIG_MEMORY_HOTREMOVE
+static void free_map_bootmem(struct page *memmap)
+{
+	unsigned long maps_section_nr, removing_section_nr, i;
+	unsigned long magic, nr_pages;
+	struct page *page = virt_to_page(memmap);
+
+	nr_pages = PAGE_ALIGN(PAGES_PER_SECTION * sizeof(struct page))
+		>> PAGE_SHIFT;
+
+	for (i = 0; i < nr_pages; i++, page++) {
+		magic = (unsigned long) page->lru.next;
 
 		BUG_ON(magic == NODE_INFO);
 
@@ -565,6 +843,9 @@ static void free_section_usemap(struct page *memmap, unsigned long *usemap)
 	}
 }
 
+#endif /* CONFIG_MEMORY_HOTREMOVE */
+#endif /* CONFIG_SPARSEMEM_VMEMMAP */
+
 /*
  * returns the number of sections whose mem_maps were properly
  * set.  If this is <=0, then that means that the passed-in
@@ -572,6 +853,7 @@ static void free_section_usemap(struct page *memmap, unsigned long *usemap)
  */
 int sparse_add_one_section(struct zone *zone, unsigned long start_pfn,
 			   int nr_pages)
+int __meminit sparse_add_one_section(struct zone *zone, unsigned long start_pfn)
 {
 	unsigned long section_nr = pfn_to_section_nr(start_pfn);
 	struct pglist_data *pgdat = zone->zone_pgdat;
@@ -589,11 +871,13 @@ int sparse_add_one_section(struct zone *zone, unsigned long start_pfn,
 	if (ret < 0 && ret != -EEXIST)
 		return ret;
 	memmap = kmalloc_section_memmap(section_nr, pgdat->node_id, nr_pages);
+	memmap = kmalloc_section_memmap(section_nr, pgdat->node_id);
 	if (!memmap)
 		return -ENOMEM;
 	usemap = __kmalloc_section_usemap();
 	if (!usemap) {
 		__kfree_section_memmap(memmap, nr_pages);
+		__kfree_section_memmap(memmap);
 		return -ENOMEM;
 	}
 
@@ -605,6 +889,8 @@ int sparse_add_one_section(struct zone *zone, unsigned long start_pfn,
 		goto out;
 	}
 
+	memset(memmap, 0, sizeof(struct page) * PAGES_PER_SECTION);
+
 	ms->section_mem_map |= SECTION_MARKED_PRESENT;
 
 	ret = sparse_init_one_section(ms, section_nr, memmap, usemap);
@@ -614,6 +900,7 @@ out:
 	if (ret <= 0) {
 		kfree(usemap);
 		__kfree_section_memmap(memmap, nr_pages);
+		__kfree_section_memmap(memmap);
 	}
 	return ret;
 }
@@ -623,6 +910,62 @@ void sparse_remove_one_section(struct zone *zone, struct mem_section *ms)
 	struct page *memmap = NULL;
 	unsigned long *usemap = NULL;
 
+#ifdef CONFIG_MEMORY_HOTREMOVE
+#ifdef CONFIG_MEMORY_FAILURE
+static void clear_hwpoisoned_pages(struct page *memmap, int nr_pages)
+{
+	int i;
+
+	if (!memmap)
+		return;
+
+	for (i = 0; i < PAGES_PER_SECTION; i++) {
+		if (PageHWPoison(&memmap[i])) {
+			atomic_long_sub(1, &num_poisoned_pages);
+			ClearPageHWPoison(&memmap[i]);
+		}
+	}
+}
+#else
+static inline void clear_hwpoisoned_pages(struct page *memmap, int nr_pages)
+{
+}
+#endif
+
+static void free_section_usemap(struct page *memmap, unsigned long *usemap)
+{
+	struct page *usemap_page;
+
+	if (!usemap)
+		return;
+
+	usemap_page = virt_to_page(usemap);
+	/*
+	 * Check to see if allocation came from hot-plug-add
+	 */
+	if (PageSlab(usemap_page) || PageCompound(usemap_page)) {
+		kfree(usemap);
+		if (memmap)
+			__kfree_section_memmap(memmap);
+		return;
+	}
+
+	/*
+	 * The usemap came from bootmem. This is packed with other usemaps
+	 * on the section which has pgdat at boot time. Just keep it as is now.
+	 */
+
+	if (memmap)
+		free_map_bootmem(memmap);
+}
+
+void sparse_remove_one_section(struct zone *zone, struct mem_section *ms)
+{
+	struct page *memmap = NULL;
+	unsigned long *usemap = NULL, flags;
+	struct pglist_data *pgdat = zone->zone_pgdat;
+
+	pgdat_resize_lock(pgdat, &flags);
 	if (ms->section_mem_map) {
 		usemap = ms->pageblock_flags;
 		memmap = sparse_decode_mem_map(ms->section_mem_map,
@@ -634,3 +977,10 @@ void sparse_remove_one_section(struct zone *zone, struct mem_section *ms)
 	free_section_usemap(memmap, usemap);
 }
 #endif
+	pgdat_resize_unlock(pgdat, &flags);
+
+	clear_hwpoisoned_pages(memmap, PAGES_PER_SECTION);
+	free_section_usemap(memmap, usemap);
+}
+#endif /* CONFIG_MEMORY_HOTREMOVE */
+#endif /* CONFIG_MEMORY_HOTPLUG */

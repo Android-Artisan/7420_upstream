@@ -12,11 +12,13 @@
 
 #include <linux/linkage.h>
 #include <asm/assembler.h>
+#include <asm/unwind.h>
 
 /*
  * Prototype:
  *
  *	size_t __copy_to_user(void *to, const void *from, size_t n)
+ *	size_t arm_copy_to_user(void *to, const void *from, size_t n)
  *
  * Purpose:
  *
@@ -35,6 +37,15 @@
 
 	.macro ldr1w ptr reg abort
 	ldr \reg, [\ptr], #4
+#define LDR1W_SHIFT	0
+#ifndef CONFIG_THUMB2_KERNEL
+#define STR1W_SHIFT	0
+#else
+#define STR1W_SHIFT	1
+#endif
+
+	.macro ldr1w ptr reg abort
+	W(ldr) \reg, [\ptr], #4
 	.endm
 
 	.macro ldr4w ptr reg1 reg2 reg3 reg4 abort
@@ -54,6 +65,7 @@
 	.section __ex_table, "a"
 	.long 100b, \abort
 	.previous
+	strusr	\reg, \ptr, 4, abort=\abort
 	.endm
 
 	.macro str8w ptr reg1 reg2 reg3 reg4 reg5 reg6 reg7 reg8 abort
@@ -72,11 +84,16 @@
 	.section __ex_table, "a"
 	.long 100b, \abort
 	.previous
+	strusr	\reg, \ptr, 1, \cond, abort=\abort
 	.endm
 
 	.macro enter reg1 reg2
 	mov	r3, #0
 	stmdb	sp!, {r0, r2, r3, \reg1, \reg2}
+	.endm
+
+	.macro usave reg1 reg2
+	UNWIND(	.save {r0, r2, r3, \reg1, \reg2}	)
 	.endm
 
 	.macro exit reg1 reg2
@@ -91,6 +108,15 @@ ENTRY(__copy_to_user)
 #include "copy_template.S"
 
 	.section .fixup,"ax"
+ENTRY(__copy_to_user_std)
+WEAK(arm_copy_to_user)
+
+#include "copy_template.S"
+
+ENDPROC(arm_copy_to_user)
+ENDPROC(__copy_to_user_std)
+
+	.pushsection .text.fixup,"ax"
 	.align 0
 	copy_abort_preamble
 	ldmfd	sp!, {r1, r2, r3}
@@ -98,4 +124,5 @@ ENTRY(__copy_to_user)
 	rsb	r0, r0, r2
 	copy_abort_end
 	.previous
+	.popsection
 

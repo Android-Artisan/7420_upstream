@@ -63,6 +63,9 @@
 #define MFPR_PULL_LOW		(MFPR_PULL_SEL | MFPR_PULLDOWN_EN)
 #define MFPR_PULL_BOTH		(MFPR_PULL_LOW | MFPR_PULLUP_EN)
 #define MFPR_PULL_HIGH		(MFPR_PULL_SEL | MFPR_PULLUP_EN)
+#include <plat/mfp.h>
+
+#define MFPR_BASE	(0x40e10000)
 
 /* PXA3xx common MFP configurations - processor specific ones defined
  * in mfp-pxa300.h and mfp-pxa320.h
@@ -249,4 +252,21 @@ void pxa3xx_mfp_config(unsigned long *mfp_cfgs, int num);
  */
 void __init pxa3xx_mfp_init_addr(struct pxa3xx_mfp_addr_map *);
 void __init pxa3xx_init_mfp(void);
+/* NOTE: usage of these two functions is not recommended,
+ * use pxa3xx_mfp_config() instead.
+ */
+static inline unsigned long pxa3xx_mfp_read(int mfp)
+{
+	return mfp_read(mfp);
+}
+
+static inline void pxa3xx_mfp_write(int mfp, unsigned long val)
+{
+	mfp_write(mfp, val);
+}
+
+static inline void pxa3xx_mfp_config(unsigned long *mfp_cfg, int num)
+{
+	mfp_config(mfp_cfg, num);
+}
 #endif /* __ASM_ARCH_MFP_PXA3XX_H */

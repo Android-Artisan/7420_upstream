@@ -27,6 +27,10 @@
 #else
 #define DUMMY_COLUMNS	80
 #define DUMMY_ROWS	25
+#else
+/* set by Kconfig. Use 80x25 for 640x480 and 160x64 for 1280x1024 */
+#define DUMMY_COLUMNS	CONFIG_DUMMY_CONSOLE_COLUMNS
+#define DUMMY_ROWS	CONFIG_DUMMY_CONSOLE_ROWS
 #endif
 
 static const char *dummycon_startup(void)
@@ -71,9 +75,9 @@ const struct consw dummy_con = {
     .con_switch =	DUMMY,
     .con_blank =	DUMMY,
     .con_font_set =	DUMMY,
-    .con_font_get =	DUMMY,
     .con_font_default =	DUMMY,
     .con_font_copy =	DUMMY,
     .con_set_palette =	DUMMY,
     .con_scrolldelta =	DUMMY,
 };
+EXPORT_SYMBOL_GPL(dummy_con);

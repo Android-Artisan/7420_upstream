@@ -21,6 +21,7 @@
 #include <linux/mm.h>
 #include <linux/module.h>
 #include <linux/bio.h>
+#include <linux/slab.h>
 #include <linux/init.h>
 #include <linux/buffer_head.h>
 #include <linux/mempool.h>
@@ -199,6 +200,19 @@ static void init_once(void *foo)
 static inline struct metapage *alloc_metapage(gfp_t gfp_mask)
 {
 	return mempool_alloc(metapage_mempool, gfp_mask);
+static inline struct metapage *alloc_metapage(gfp_t gfp_mask)
+{
+	struct metapage *mp = mempool_alloc(metapage_mempool, gfp_mask);
+
+	if (mp) {
+		mp->lid = 0;
+		mp->lsn = 0;
+		mp->data = NULL;
+		mp->clsn = 0;
+		mp->log = NULL;
+		init_waitqueue_head(&mp->wait);
+	}
+	return mp;
 }
 
 static inline void free_metapage(struct metapage *mp)
@@ -216,6 +230,7 @@ int __init metapage_init(void)
 	 */
 	metapage_cache = kmem_cache_create("jfs_mp", sizeof(struct metapage),
 					   0, 0, init_once);
+					   0, 0, NULL);
 	if (metapage_cache == NULL)
 		return -ENOMEM;
 
@@ -287,6 +302,11 @@ static void metapage_read_end_io(struct bio *bio, int err)
 	struct page *page = bio->bi_private;
 
 	if (!test_bit(BIO_UPTODATE, &bio->bi_flags)) {
+static void metapage_read_end_io(struct bio *bio)
+{
+	struct page *page = bio->bi_private;
+
+	if (bio->bi_error) {
 		printk(KERN_ERR "metapage_read_end_io: I/O error\n");
 		SetPageError(page);
 	}
@@ -338,12 +358,14 @@ static void last_write_complete(struct page *page)
 }
 
 static void metapage_write_end_io(struct bio *bio, int err)
+static void metapage_write_end_io(struct bio *bio)
 {
 	struct page *page = bio->bi_private;
 
 	BUG_ON(!PagePrivate(page));
 
 	if (! test_bit(BIO_UPTODATE, &bio->bi_flags)) {
+	if (bio->bi_error) {
 		printk(KERN_ERR "metapage_write_end_io: I/O error\n");
 		SetPageError(page);
 	}
@@ -369,6 +391,7 @@ static int metapage_writepage(struct page *page, struct writeback_control *wbc)
 	unsigned long bio_bytes = 0;
 	unsigned long bio_offset = 0;
 	int offset;
+	int bad_blocks = 0;
 
 	page_start = (sector_t)page->index <<
 		     (PAGE_CACHE_SHIFT - inode->i_blkbits);
@@ -394,6 +417,7 @@ static int metapage_writepage(struct page *page, struct writeback_control *wbc)
 		}
 
 		clear_bit(META_dirty, &mp->flag);
+		set_bit(META_io, &mp->flag);
 		block_offset = offset >> inode->i_blkbits;
 		lblock = page_start + block_offset;
 		if (bio) {
@@ -415,6 +439,7 @@ static int metapage_writepage(struct page *page, struct writeback_control *wbc)
 			 */
 			inc_io(page);
 			if (!bio->bi_size)
+			if (!bio->bi_iter.bi_size)
 				goto dump_bio;
 			submit_bio(WRITE, bio);
 			nr_underway++;
@@ -430,11 +455,20 @@ static int metapage_writepage(struct page *page, struct writeback_control *wbc)
 			continue;
 		}
 		set_bit(META_io, &mp->flag);
+			printk(KERN_ERR "JFS: metapage_get_blocks failed\n");
+			/*
+			 * We already called inc_io(), but can't cancel it
+			 * with dec_io() until we're done with the page
+			 */
+			bad_blocks++;
+			continue;
+		}
 		len = min(xlen, (int)JFS_SBI(inode->i_sb)->nbperpage);
 
 		bio = bio_alloc(GFP_NOFS, 1);
 		bio->bi_bdev = inode->i_sb->s_bdev;
 		bio->bi_sector = pblock << (inode->i_blkbits - 9);
+		bio->bi_iter.bi_sector = pblock << (inode->i_blkbits - 9);
 		bio->bi_end_io = metapage_write_end_io;
 		bio->bi_private = page;
 
@@ -449,6 +483,7 @@ static int metapage_writepage(struct page *page, struct writeback_control *wbc)
 		if (bio_add_page(bio, page, bio_bytes, bio_offset) < bio_bytes)
 				goto add_failed;
 		if (!bio->bi_size)
+		if (!bio->bi_iter.bi_size)
 			goto dump_bio;
 
 		submit_bio(WRITE, bio);
@@ -458,6 +493,9 @@ static int metapage_writepage(struct page *page, struct writeback_control *wbc)
 		redirty_page_for_writepage(wbc, page);
 
 	unlock_page(page);
+
+	if (bad_blocks)
+		goto err_out;
 
 	if (nr_underway == 0)
 		end_page_writeback(page);
@@ -475,6 +513,9 @@ skip:
 	unlock_page(page);
 	dec_io(page, last_write_complete);
 
+err_out:
+	while (bad_blocks--)
+		dec_io(page, last_write_complete);
 	return -EIO;
 }
 
@@ -509,6 +550,8 @@ static int metapage_readpage(struct file *fp, struct page *page)
 			bio = bio_alloc(GFP_NOFS, 1);
 			bio->bi_bdev = inode->i_sb->s_bdev;
 			bio->bi_sector = pblock << (inode->i_blkbits - 9);
+			bio->bi_iter.bi_sector =
+				pblock << (inode->i_blkbits - 9);
 			bio->bi_end_io = metapage_read_end_io;
 			bio->bi_private = page;
 			len = xlen << inode->i_blkbits;
@@ -565,6 +608,10 @@ static int metapage_releasepage(struct page *page, gfp_t gfp_mask)
 static void metapage_invalidatepage(struct page *page, unsigned long offset)
 {
 	BUG_ON(offset);
+static void metapage_invalidatepage(struct page *page, unsigned int offset,
+				    unsigned int length)
+{
+	BUG_ON(offset || length < PAGE_CACHE_SIZE);
 
 	BUG_ON(PageWriteback(page));
 
@@ -639,6 +686,7 @@ struct metapage *__get_metapage(struct inode *inode, unsigned long lblock,
 		if (mp->logical_size != size) {
 			jfs_error(inode->i_sb,
 				  "__get_metapage: mp->logical_size != size");
+				  "get_mp->logical_size != size\n");
 			jfs_err("logical_size = %d, size = %d",
 				mp->logical_size, size);
 			dump_stack();
@@ -651,6 +699,7 @@ struct metapage *__get_metapage(struct inode *inode, unsigned long lblock,
 				jfs_error(inode->i_sb,
 					  "__get_metapage: using a "
 					  "discarded metapage");
+					  "using a discarded metapage\n");
 				discard_metapage(mp);
 				goto unlock;
 			}
@@ -810,7 +859,6 @@ static int jfs_mpstat_proc_show(struct seq_file *m, void *v)
 {
 	seq_printf(m,
 		       "JFS Metapage statistics\n"
-		       "=======================\n"
 		       "page allocations = %d\n"
 		       "page frees = %d\n"
 		       "lock waits = %d\n",

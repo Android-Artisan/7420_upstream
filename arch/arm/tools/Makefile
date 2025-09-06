@@ -6,5 +6,7 @@
 
 include/asm-arm/mach-types.h: $(src)/gen-mach-types $(src)/mach-types
 	@echo '  Generating $@'
+include/generated/mach-types.h: $(src)/gen-mach-types $(src)/mach-types
+	@$(kecho) '  Generating $@'
 	@mkdir -p $(dir $@)
 	$(Q)$(AWK) -f $^ > $@ || { rm -f $@; /bin/false; }

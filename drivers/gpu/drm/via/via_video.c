@@ -30,6 +30,11 @@
 #include "via_drv.h"
 
 void via_init_futex(drm_via_private_t * dev_priv)
+#include <drm/drmP.h>
+#include <drm/via_drm.h>
+#include "via_drv.h"
+
+void via_init_futex(drm_via_private_t *dev_priv)
 {
 	unsigned int i;
 
@@ -37,6 +42,7 @@ void via_init_futex(drm_via_private_t * dev_priv)
 
 	for (i = 0; i < VIA_NR_XVMC_LOCKS; ++i) {
 		DRM_INIT_WAITQUEUE(&(dev_priv->decoder_queue[i]));
+		init_waitqueue_head(&(dev_priv->decoder_queue[i]));
 		XVMCLOCKPTR(dev_priv->sarea_priv, i)->lock = 0;
 	}
 }
@@ -46,6 +52,11 @@ void via_cleanup_futex(drm_via_private_t * dev_priv)
 }
 
 void via_release_futex(drm_via_private_t * dev_priv, int context)
+void via_cleanup_futex(drm_via_private_t *dev_priv)
+{
+}
+
+void via_release_futex(drm_via_private_t *dev_priv, int context)
 {
 	unsigned int i;
 	volatile int *lock;
@@ -59,6 +70,7 @@ void via_release_futex(drm_via_private_t * dev_priv, int context)
 			if (_DRM_LOCK_IS_HELD(*lock)
 			    && (*lock & _DRM_LOCK_CONT)) {
 				DRM_WAKEUP(&(dev_priv->decoder_queue[i]));
+				wake_up(&(dev_priv->decoder_queue[i]));
 			}
 			*lock = 0;
 		}
@@ -76,6 +88,7 @@ int via_decoder_futex(struct drm_device *dev, void *data, struct drm_file *file_
 	DRM_DEBUG("\n");
 
 	if (fx->lock > VIA_NR_XVMC_LOCKS)
+	if (fx->lock >= VIA_NR_XVMC_LOCKS)
 		return -EFAULT;
 
 	lock = (volatile int *)XVMCLOCKPTR(sAPriv, fx->lock);
@@ -87,6 +100,10 @@ int via_decoder_futex(struct drm_device *dev, void *data, struct drm_file *file_
 		return ret;
 	case VIA_FUTEX_WAKE:
 		DRM_WAKEUP(&(dev_priv->decoder_queue[fx->lock]));
+			    (fx->ms / 10) * (HZ / 100), *lock != fx->val);
+		return ret;
+	case VIA_FUTEX_WAKE:
+		wake_up(&(dev_priv->decoder_queue[fx->lock]));
 		return 0;
 	}
 	return 0;

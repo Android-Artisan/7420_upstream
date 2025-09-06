@@ -1,7 +1,6 @@
 This document describes how to upload the cx2341x firmware to the card.
 
 How to find
-===========
 
 See the web pages of the various projects that uses this chip for information
 on how to obtain the firmware.
@@ -14,7 +13,6 @@ The firmware stored in a Windows driver can be detected as follows:
 - The 2nd 32-bit word of both images is 0xaa55bb66
 
 How to load
-===========
 
 - Issue the FWapi command to stop the encoder if it is running. Wait for the
   command to complete.

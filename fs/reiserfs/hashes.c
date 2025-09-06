@@ -8,6 +8,7 @@
  *
  * Jeremy Fitzhardinge <jeremy@zip.com.au> 1998
  * 
+ *
  * Jeremy has agreed to the contents of reiserfs/README. -Hans
  * Yura's function is added (04/07/2000)
  */
@@ -20,6 +21,8 @@
 
 #include <linux/kernel.h>
 #include <linux/reiserfs_fs.h>
+#include <linux/kernel.h>
+#include "reiserfs.h"
 #include <asm/types.h>
 
 #define DELTA 0x9E3779B9
@@ -57,6 +60,7 @@ u32 keyed_hash(const signed char *msg, int len)
 	int i;
 
 	//      assert(len >= 0 && len < 256);
+	/*      assert(len >= 0 && len < 256); */
 
 	pad = (u32) len | ((u32) len << 8);
 	pad |= pad << 16;
@@ -130,6 +134,10 @@ u32 keyed_hash(const signed char *msg, int len)
 /* What follows in this file is copyright 2000 by Hans Reiser, and the
  * licensing of what follows is governed by reiserfs/README */
 
+/*
+ * What follows in this file is copyright 2000 by Hans Reiser, and the
+ * licensing of what follows is governed by reiserfs/README
+ */
 u32 yura_hash(const signed char *msg, int len)
 {
 	int j, pow;

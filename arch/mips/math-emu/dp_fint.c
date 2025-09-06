@@ -28,12 +28,19 @@
 #include "ieee754dp.h"
 
 ieee754dp ieee754dp_fint(int x)
+ *  51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA.
+ */
+
+#include "ieee754dp.h"
+
+union ieee754dp ieee754dp_fint(int x)
 {
 	u64 xm;
 	int xe;
 	int xs;
 
 	CLEARCX;
+	ieee754_clearcx();
 
 	if (x == 0)
 		return ieee754dp_zero(0);
@@ -56,6 +63,9 @@ ieee754dp ieee754dp_fint(int x)
 	/* normalize - result can never be inexact or overflow */
 	xe = DP_MBITS;
 	while ((xm >> DP_MBITS) == 0) {
+	/* normalize - result can never be inexact or overflow */
+	xe = DP_FBITS;
+	while ((xm >> DP_FBITS) == 0) {
 		xm <<= 1;
 		xe--;
 	}

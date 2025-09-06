@@ -220,6 +220,10 @@ char *capi_info2str(u16 reason)
 }
 #endif
 
+#include <linux/slab.h>
+
+/* from CAPI2.0 DDK AVM Berlin GmbH */
+
 typedef struct {
 	int typ;
 	size_t off;
@@ -330,6 +334,102 @@ static _cdef cdef[] =
  {_CWORD, offsetof(_cmsg, Reject)},
     /*2f */ 
  {_CSTRUCT, offsetof(_cmsg, Useruserdata)}
+	/*00 */
+	{_CEND},
+	/*01 */
+	{_CEND},
+	/*02 */
+	{_CEND},
+	/*03 */
+	{_CDWORD, offsetof(_cmsg, adr.adrController)},
+	/*04 */
+	{_CMSTRUCT, offsetof(_cmsg, AdditionalInfo)},
+	/*05 */
+	{_CSTRUCT, offsetof(_cmsg, B1configuration)},
+	/*06 */
+	{_CWORD, offsetof(_cmsg, B1protocol)},
+	/*07 */
+	{_CSTRUCT, offsetof(_cmsg, B2configuration)},
+	/*08 */
+	{_CWORD, offsetof(_cmsg, B2protocol)},
+	/*09 */
+	{_CSTRUCT, offsetof(_cmsg, B3configuration)},
+	/*0a */
+	{_CWORD, offsetof(_cmsg, B3protocol)},
+	/*0b */
+	{_CSTRUCT, offsetof(_cmsg, BC)},
+	/*0c */
+	{_CSTRUCT, offsetof(_cmsg, BChannelinformation)},
+	/*0d */
+	{_CMSTRUCT, offsetof(_cmsg, BProtocol)},
+	/*0e */
+	{_CSTRUCT, offsetof(_cmsg, CalledPartyNumber)},
+	/*0f */
+	{_CSTRUCT, offsetof(_cmsg, CalledPartySubaddress)},
+	/*10 */
+	{_CSTRUCT, offsetof(_cmsg, CallingPartyNumber)},
+	/*11 */
+	{_CSTRUCT, offsetof(_cmsg, CallingPartySubaddress)},
+	/*12 */
+	{_CDWORD, offsetof(_cmsg, CIPmask)},
+	/*13 */
+	{_CDWORD, offsetof(_cmsg, CIPmask2)},
+	/*14 */
+	{_CWORD, offsetof(_cmsg, CIPValue)},
+	/*15 */
+	{_CDWORD, offsetof(_cmsg, Class)},
+	/*16 */
+	{_CSTRUCT, offsetof(_cmsg, ConnectedNumber)},
+	/*17 */
+	{_CSTRUCT, offsetof(_cmsg, ConnectedSubaddress)},
+	/*18 */
+	{_CDWORD, offsetof(_cmsg, Data)},
+	/*19 */
+	{_CWORD, offsetof(_cmsg, DataHandle)},
+	/*1a */
+	{_CWORD, offsetof(_cmsg, DataLength)},
+	/*1b */
+	{_CSTRUCT, offsetof(_cmsg, FacilityConfirmationParameter)},
+	/*1c */
+	{_CSTRUCT, offsetof(_cmsg, Facilitydataarray)},
+	/*1d */
+	{_CSTRUCT, offsetof(_cmsg, FacilityIndicationParameter)},
+	/*1e */
+	{_CSTRUCT, offsetof(_cmsg, FacilityRequestParameter)},
+	/*1f */
+	{_CWORD, offsetof(_cmsg, FacilitySelector)},
+	/*20 */
+	{_CWORD, offsetof(_cmsg, Flags)},
+	/*21 */
+	{_CDWORD, offsetof(_cmsg, Function)},
+	/*22 */
+	{_CSTRUCT, offsetof(_cmsg, HLC)},
+	/*23 */
+	{_CWORD, offsetof(_cmsg, Info)},
+	/*24 */
+	{_CSTRUCT, offsetof(_cmsg, InfoElement)},
+	/*25 */
+	{_CDWORD, offsetof(_cmsg, InfoMask)},
+	/*26 */
+	{_CWORD, offsetof(_cmsg, InfoNumber)},
+	/*27 */
+	{_CSTRUCT, offsetof(_cmsg, Keypadfacility)},
+	/*28 */
+	{_CSTRUCT, offsetof(_cmsg, LLC)},
+	/*29 */
+	{_CSTRUCT, offsetof(_cmsg, ManuData)},
+	/*2a */
+	{_CDWORD, offsetof(_cmsg, ManuID)},
+	/*2b */
+	{_CSTRUCT, offsetof(_cmsg, NCPI)},
+	/*2c */
+	{_CWORD, offsetof(_cmsg, Reason)},
+	/*2d */
+	{_CWORD, offsetof(_cmsg, Reason_B3)},
+	/*2e */
+	{_CWORD, offsetof(_cmsg, Reject)},
+	/*2f */
+	{_CSTRUCT, offsetof(_cmsg, Useruserdata)}
 };
 
 static unsigned char *cpars[] =
@@ -382,6 +482,54 @@ static unsigned char *cpars[] =
     /* RESET_B3_RESP */ [0x46] = "\x03\x01",
     /* CONNECT_B3_T90_ACTIVE_RESP */ [0x47] = "\x03\x01",
     /* MANUFACTURER_RESP */ [0x4e] = "\x03\x2a\x15\x21\x29\x01",
+	/* ALERT_REQ */ [0x01] = "\x03\x04\x0c\x27\x2f\x1c\x01\x01",
+	/* CONNECT_REQ */ [0x02] = "\x03\x14\x0e\x10\x0f\x11\x0d\x06\x08\x0a\x05\x07\x09\x01\x0b\x28\x22\x04\x0c\x27\x2f\x1c\x01\x01",
+	/* DISCONNECT_REQ */ [0x04] = "\x03\x04\x0c\x27\x2f\x1c\x01\x01",
+	/* LISTEN_REQ */ [0x05] = "\x03\x25\x12\x13\x10\x11\x01",
+	/* INFO_REQ */ [0x08] = "\x03\x0e\x04\x0c\x27\x2f\x1c\x01\x01",
+	/* FACILITY_REQ */ [0x09] = "\x03\x1f\x1e\x01",
+	/* SELECT_B_PROTOCOL_REQ */ [0x0a] = "\x03\x0d\x06\x08\x0a\x05\x07\x09\x01\x01",
+	/* CONNECT_B3_REQ */ [0x0b] = "\x03\x2b\x01",
+	/* DISCONNECT_B3_REQ */ [0x0d] = "\x03\x2b\x01",
+	/* DATA_B3_REQ */ [0x0f] = "\x03\x18\x1a\x19\x20\x01",
+	/* RESET_B3_REQ */ [0x10] = "\x03\x2b\x01",
+	/* ALERT_CONF */ [0x13] = "\x03\x23\x01",
+	/* CONNECT_CONF */ [0x14] = "\x03\x23\x01",
+	/* DISCONNECT_CONF */ [0x16] = "\x03\x23\x01",
+	/* LISTEN_CONF */ [0x17] = "\x03\x23\x01",
+	/* MANUFACTURER_REQ */ [0x18] = "\x03\x2a\x15\x21\x29\x01",
+	/* INFO_CONF */ [0x1a] = "\x03\x23\x01",
+	/* FACILITY_CONF */ [0x1b] = "\x03\x23\x1f\x1b\x01",
+	/* SELECT_B_PROTOCOL_CONF */ [0x1c] = "\x03\x23\x01",
+	/* CONNECT_B3_CONF */ [0x1d] = "\x03\x23\x01",
+	/* DISCONNECT_B3_CONF */ [0x1f] = "\x03\x23\x01",
+	/* DATA_B3_CONF */ [0x21] = "\x03\x19\x23\x01",
+	/* RESET_B3_CONF */ [0x22] = "\x03\x23\x01",
+	/* CONNECT_IND */ [0x26] = "\x03\x14\x0e\x10\x0f\x11\x0b\x28\x22\x04\x0c\x27\x2f\x1c\x01\x01",
+	/* CONNECT_ACTIVE_IND */ [0x27] = "\x03\x16\x17\x28\x01",
+	/* DISCONNECT_IND */ [0x28] = "\x03\x2c\x01",
+	/* MANUFACTURER_CONF */ [0x2a] = "\x03\x2a\x15\x21\x29\x01",
+	/* INFO_IND */ [0x2c] = "\x03\x26\x24\x01",
+	/* FACILITY_IND */ [0x2d] = "\x03\x1f\x1d\x01",
+	/* CONNECT_B3_IND */ [0x2f] = "\x03\x2b\x01",
+	/* CONNECT_B3_ACTIVE_IND */ [0x30] = "\x03\x2b\x01",
+	/* DISCONNECT_B3_IND */ [0x31] = "\x03\x2d\x2b\x01",
+	/* DATA_B3_IND */ [0x33] = "\x03\x18\x1a\x19\x20\x01",
+	/* RESET_B3_IND */ [0x34] = "\x03\x2b\x01",
+	/* CONNECT_B3_T90_ACTIVE_IND */ [0x35] = "\x03\x2b\x01",
+	/* CONNECT_RESP */ [0x38] = "\x03\x2e\x0d\x06\x08\x0a\x05\x07\x09\x01\x16\x17\x28\x04\x0c\x27\x2f\x1c\x01\x01",
+	/* CONNECT_ACTIVE_RESP */ [0x39] = "\x03\x01",
+	/* DISCONNECT_RESP */ [0x3a] = "\x03\x01",
+	/* MANUFACTURER_IND */ [0x3c] = "\x03\x2a\x15\x21\x29\x01",
+	/* INFO_RESP */ [0x3e] = "\x03\x01",
+	/* FACILITY_RESP */ [0x3f] = "\x03\x1f\x01",
+	/* CONNECT_B3_RESP */ [0x41] = "\x03\x2e\x2b\x01",
+	/* CONNECT_B3_ACTIVE_RESP */ [0x42] = "\x03\x01",
+	/* DISCONNECT_B3_RESP */ [0x43] = "\x03\x01",
+	/* DATA_B3_RESP */ [0x45] = "\x03\x19\x01",
+	/* RESET_B3_RESP */ [0x46] = "\x03\x01",
+	/* CONNECT_B3_T90_ACTIVE_RESP */ [0x47] = "\x03\x01",
+	/* MANUFACTURER_RESP */ [0x4e] = "\x03\x2a\x15\x21\x29\x01",
 };
 
 /*-------------------------------------------------------*/
@@ -407,6 +555,26 @@ static unsigned command_2_index(unsigned c, unsigned sc)
 	else if (c == 0x41)
 		c = 0x9 + 0x1;
 	else if (c == 0xff)
+#define byteTLcpy(x, y)         *(u8 *)(x) = *(u8 *)(y);
+#define wordTLcpy(x, y)         *(u16 *)(x) = *(u16 *)(y);
+#define dwordTLcpy(x, y)        memcpy(x, y, 4);
+#define structTLcpy(x, y, l)    memcpy(x, y, l)
+#define structTLcpyovl(x, y, l) memmove(x, y, l)
+
+#define byteTRcpy(x, y)         *(u8 *)(y) = *(u8 *)(x);
+#define wordTRcpy(x, y)         *(u16 *)(y) = *(u16 *)(x);
+#define dwordTRcpy(x, y)        memcpy(y, x, 4);
+#define structTRcpy(x, y, l)    memcpy(y, x, l)
+#define structTRcpyovl(x, y, l) memmove(y, x, l)
+
+/*-------------------------------------------------------*/
+static unsigned command_2_index(u8 c, u8 sc)
+{
+	if (c & 0x80)
+		c = 0x9 + (c & 0x0f);
+	else if (c == 0x41)
+		c = 0x9 + 0x1;
+	if (c > 0x18)
 		c = 0x00;
 	return (sc & 3) * (0x9 + 0x9) + c;
 }
@@ -416,6 +584,24 @@ static unsigned command_2_index(unsigned c, unsigned sc)
 #define OFF (((u8 *)cmsg)+cdef[cmsg->par[cmsg->p]].off)
 
 static void jumpcstruct(_cmsg * cmsg)
+/**
+ * capi_cmd2par() - find parameter string for CAPI 2.0 command/subcommand
+ * @cmd:	command number
+ * @subcmd:	subcommand number
+ *
+ * Return value: static string, NULL if command/subcommand unknown
+ */
+
+static unsigned char *capi_cmd2par(u8 cmd, u8 subcmd)
+{
+	return cpars[command_2_index(cmd, subcmd)];
+}
+
+/*-------------------------------------------------------*/
+#define TYP (cdef[cmsg->par[cmsg->p]].typ)
+#define OFF (((u8 *)cmsg) + cdef[cmsg->par[cmsg->p]].off)
+
+static void jumpcstruct(_cmsg *cmsg)
 {
 	unsigned layer;
 	for (cmsg->p++, layer = 1; layer;) {
@@ -433,6 +619,7 @@ static void jumpcstruct(_cmsg * cmsg)
 }
 /*-------------------------------------------------------*/
 static void pars_2_message(_cmsg * cmsg)
+static void pars_2_message(_cmsg *cmsg)
 {
 
 	for (; TYP != _CEND; cmsg->p++) {
@@ -492,11 +679,23 @@ static void pars_2_message(_cmsg * cmsg)
 
 /*-------------------------------------------------------*/
 unsigned capi_cmsg2message(_cmsg * cmsg, u8 * msg)
+/**
+ * capi_cmsg2message() - assemble CAPI 2.0 message from _cmsg structure
+ * @cmsg:	_cmsg structure
+ * @msg:	buffer for assembled message
+ *
+ * Return value: 0 for success
+ */
+
+unsigned capi_cmsg2message(_cmsg *cmsg, u8 *msg)
 {
 	cmsg->m = msg;
 	cmsg->l = 8;
 	cmsg->p = 0;
 	cmsg->par = cpars[command_2_index(cmsg->Command, cmsg->Subcommand)];
+	cmsg->par = capi_cmd2par(cmsg->Command, cmsg->Subcommand);
+	if (!cmsg->par)
+		return 1;	/* invalid command/subcommand */
 
 	pars_2_message(cmsg);
 
@@ -511,6 +710,7 @@ unsigned capi_cmsg2message(_cmsg * cmsg, u8 * msg)
 
 /*-------------------------------------------------------*/
 static void message_2_pars(_cmsg * cmsg)
+static void message_2_pars(_cmsg *cmsg)
 {
 	for (; TYP != _CEND; cmsg->p++) {
 
@@ -555,6 +755,15 @@ static void message_2_pars(_cmsg * cmsg)
 
 /*-------------------------------------------------------*/
 unsigned capi_message2cmsg(_cmsg * cmsg, u8 * msg)
+/**
+ * capi_message2cmsg() - disassemble CAPI 2.0 message into _cmsg structure
+ * @cmsg:	_cmsg structure
+ * @msg:	buffer for assembled message
+ *
+ * Return value: 0 for success
+ */
+
+unsigned capi_message2cmsg(_cmsg *cmsg, u8 *msg)
 {
 	memset(cmsg, 0, sizeof(_cmsg));
 	cmsg->m = msg;
@@ -563,6 +772,9 @@ unsigned capi_message2cmsg(_cmsg * cmsg, u8 * msg)
 	byteTRcpy(cmsg->m + 4, &cmsg->Command);
 	byteTRcpy(cmsg->m + 5, &cmsg->Subcommand);
 	cmsg->par = cpars[command_2_index(cmsg->Command, cmsg->Subcommand)];
+	cmsg->par = capi_cmd2par(cmsg->Command, cmsg->Subcommand);
+	if (!cmsg->par)
+		return 1;	/* invalid command/subcommand */
 
 	message_2_pars(cmsg);
 
@@ -575,6 +787,19 @@ unsigned capi_message2cmsg(_cmsg * cmsg, u8 * msg)
 
 /*-------------------------------------------------------*/
 unsigned capi_cmsg_header(_cmsg * cmsg, u16 _ApplId,
+/**
+ * capi_cmsg_header() - initialize header part of _cmsg structure
+ * @cmsg:	_cmsg structure
+ * @_ApplId:	ApplID field value
+ * @_Command:	Command field value
+ * @_Subcommand:	Subcommand field value
+ * @_Messagenumber:	Message Number field value
+ * @_Controller:	Controller/PLCI/NCCI field value
+ *
+ * Return value: 0 for success
+ */
+
+unsigned capi_cmsg_header(_cmsg *cmsg, u16 _ApplId,
 			  u8 _Command, u8 _Subcommand,
 			  u16 _Messagenumber, u32 _Controller)
 {
@@ -644,6 +869,22 @@ static char *mnames[] =
 char *capi_cmd2str(u8 cmd, u8 subcmd)
 {
 	return mnames[command_2_index(cmd, subcmd)];
+/**
+ * capi_cmd2str() - convert CAPI 2.0 command/subcommand number to name
+ * @cmd:	command number
+ * @subcmd:	subcommand number
+ *
+ * Return value: static string
+ */
+
+char *capi_cmd2str(u8 cmd, u8 subcmd)
+{
+	char *result;
+
+	result = mnames[command_2_index(cmd, subcmd)];
+	if (result == NULL)
+		result = "INVALID_COMMAND";
+	return result;
 }
 
 
@@ -703,6 +944,54 @@ static char *pnames[] =
     /*2d */ "Reason_B3",
     /*2e */ "Reject",
     /*2f */ "Useruserdata"
+	/*00 */ NULL,
+	/*01 */ NULL,
+	/*02 */ NULL,
+	/*03 */ "Controller/PLCI/NCCI",
+	/*04 */ "AdditionalInfo",
+	/*05 */ "B1configuration",
+	/*06 */ "B1protocol",
+	/*07 */ "B2configuration",
+	/*08 */ "B2protocol",
+	/*09 */ "B3configuration",
+	/*0a */ "B3protocol",
+	/*0b */ "BC",
+	/*0c */ "BChannelinformation",
+	/*0d */ "BProtocol",
+	/*0e */ "CalledPartyNumber",
+	/*0f */ "CalledPartySubaddress",
+	/*10 */ "CallingPartyNumber",
+	/*11 */ "CallingPartySubaddress",
+	/*12 */ "CIPmask",
+	/*13 */ "CIPmask2",
+	/*14 */ "CIPValue",
+	/*15 */ "Class",
+	/*16 */ "ConnectedNumber",
+	/*17 */ "ConnectedSubaddress",
+	/*18 */ "Data32",
+	/*19 */ "DataHandle",
+	/*1a */ "DataLength",
+	/*1b */ "FacilityConfirmationParameter",
+	/*1c */ "Facilitydataarray",
+	/*1d */ "FacilityIndicationParameter",
+	/*1e */ "FacilityRequestParameter",
+	/*1f */ "FacilitySelector",
+	/*20 */ "Flags",
+	/*21 */ "Function",
+	/*22 */ "HLC",
+	/*23 */ "Info",
+	/*24 */ "InfoElement",
+	/*25 */ "InfoMask",
+	/*26 */ "InfoNumber",
+	/*27 */ "Keypadfacility",
+	/*28 */ "LLC",
+	/*29 */ "ManuData",
+	/*2a */ "ManuID",
+	/*2b */ "NCPI",
+	/*2c */ "Reason",
+	/*2d */ "Reason_B3",
+	/*2e */ "Reject",
+	/*2f */ "Useruserdata"
 };
 
 
@@ -714,6 +1003,10 @@ static _cdebbuf *bufprint(_cdebbuf *cdb, char *fmt,...)
 {
 	va_list f;
 	size_t n,r;
+static _cdebbuf *bufprint(_cdebbuf *cdb, char *fmt, ...)
+{
+	va_list f;
+	size_t n, r;
 
 	if (!cdb)
 		return NULL;
@@ -750,6 +1043,7 @@ static _cdebbuf *bufprint(_cdebbuf *cdb, char *fmt,...)
 }
 
 static _cdebbuf *printstructlen(_cdebbuf *cdb, u8 * m, unsigned len)
+static _cdebbuf *printstructlen(_cdebbuf *cdb, u8 *m, unsigned len)
 {
 	unsigned hex = 0;
 
@@ -774,6 +1068,7 @@ static _cdebbuf *printstructlen(_cdebbuf *cdb, u8 * m, unsigned len)
 }
 
 static _cdebbuf *printstruct(_cdebbuf *cdb, u8 * m)
+static _cdebbuf *printstruct(_cdebbuf *cdb, u8 *m)
 {
 	unsigned len;
 
@@ -793,6 +1088,9 @@ static _cdebbuf *printstruct(_cdebbuf *cdb, u8 * m)
 
 static _cdebbuf *protocol_message_2_pars(_cdebbuf *cdb, _cmsg *cmsg, int level)
 {
+	if (!cmsg->par)
+		return NULL;	/* invalid command/subcommand */
+
 	for (; TYP != _CEND; cmsg->p++) {
 		int slen = 29 + 3 - level;
 		int i;
@@ -879,6 +1177,11 @@ init:
 	return cdb;
 }
 
+/**
+ * cdebbuf_free() - free CAPI debug buffer
+ * @cdb:	buffer to free
+ */
+
 void cdebbuf_free(_cdebbuf *cdb)
 {
 	if (likely(cdb == g_debbuf)) {
@@ -892,6 +1195,17 @@ void cdebbuf_free(_cdebbuf *cdb)
 
 
 _cdebbuf *capi_message2str(u8 * msg)
+/**
+ * capi_message2str() - format CAPI 2.0 message for printing
+ * @msg:	CAPI 2.0 message
+ *
+ * Allocates a CAPI debug buffer and fills it with a printable representation
+ * of the CAPI 2.0 message in @msg.
+ * Return value: allocated debug buffer, NULL on error
+ * The returned buffer should be freed by a call to cdebbuf_free() after use.
+ */
+
+_cdebbuf *capi_message2str(u8 *msg)
 {
 	_cdebbuf *cdb;
 	_cmsg	*cmsg;
@@ -919,6 +1233,13 @@ _cdebbuf *capi_message2str(u8 * msg)
 		 ((unsigned short *) msg)[1],
 		 ((unsigned short *) msg)[3],
 		 ((unsigned short *) msg)[0]);
+	cmsg->par = capi_cmd2par(cmsg->Command, cmsg->Subcommand);
+
+	cdb = bufprint(cdb, "%-26s ID=%03d #0x%04x LEN=%04d\n",
+		       capi_cmd2str(cmsg->Command, cmsg->Subcommand),
+		       ((unsigned short *) msg)[1],
+		       ((unsigned short *) msg)[3],
+		       ((unsigned short *) msg)[0]);
 
 	cdb = protocol_message_2_pars(cdb, cmsg, 1);
 	if (unlikely(cmsg != g_cmsg))
@@ -930,6 +1251,23 @@ _cdebbuf *capi_cmsg2str(_cmsg * cmsg)
 {
 	_cdebbuf *cdb;
 
+/**
+ * capi_cmsg2str() - format _cmsg structure for printing
+ * @cmsg:	_cmsg structure
+ *
+ * Allocates a CAPI debug buffer and fills it with a printable representation
+ * of the CAPI 2.0 message stored in @cmsg by a previous call to
+ * capi_cmsg2message() or capi_message2cmsg().
+ * Return value: allocated debug buffer, NULL on error
+ * The returned buffer should be freed by a call to cdebbuf_free() after use.
+ */
+
+_cdebbuf *capi_cmsg2str(_cmsg *cmsg)
+{
+	_cdebbuf *cdb;
+
+	if (!cmsg->m)
+		return NULL;	/* no message */
 	cdb = cdebbuf_alloc();
 	if (!cdb)
 		return NULL;
@@ -940,6 +1278,10 @@ _cdebbuf *capi_cmsg2str(_cmsg * cmsg)
 		 ((u16 *) cmsg->m)[1],
 		 ((u16 *) cmsg->m)[3],
 		 ((u16 *) cmsg->m)[0]);
+		       capi_cmd2str(cmsg->Command, cmsg->Subcommand),
+		       ((u16 *) cmsg->m)[1],
+		       ((u16 *) cmsg->m)[3],
+		       ((u16 *) cmsg->m)[0]);
 	cdb = protocol_message_2_pars(cdb, cmsg, 1);
 	return cdb;
 }
@@ -947,6 +1289,7 @@ _cdebbuf *capi_cmsg2str(_cmsg * cmsg)
 int __init cdebug_init(void)
 {
 	g_cmsg= kmalloc(sizeof(_cmsg), GFP_KERNEL);
+	g_cmsg = kmalloc(sizeof(_cmsg), GFP_KERNEL);
 	if (!g_cmsg)
 		return -ENOMEM;
 	g_debbuf = kmalloc(sizeof(_cdebbuf), GFP_KERNEL);
@@ -959,6 +1302,7 @@ int __init cdebug_init(void)
 		kfree(g_cmsg);
 		kfree(g_debbuf);
 		return -ENOMEM;;
+		return -ENOMEM;
 	}
 	g_debbuf->size = CDEBUG_GSIZE;
 	g_debbuf->buf[0] = 0;
@@ -980,11 +1324,13 @@ void __exit cdebug_exit(void)
 static _cdebbuf g_debbuf = {"CONFIG_CAPI_TRACE not enabled", NULL, 0, 0};
 
 _cdebbuf *capi_message2str(u8 * msg)
+_cdebbuf *capi_message2str(u8 *msg)
 {
 	return &g_debbuf;
 }
 
 _cdebbuf *capi_cmsg2str(_cmsg * cmsg)
+_cdebbuf *capi_cmsg2str(_cmsg *cmsg)
 {
 	return &g_debbuf;
 }

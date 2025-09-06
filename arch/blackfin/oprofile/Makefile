@@ -12,3 +12,4 @@ DRIVER_OBJS := $(addprefix ../../../drivers/oprofile/, \
 
 oprofile-y := $(DRIVER_OBJS) common.o
 oprofile-$(CONFIG_HARDWARE_PM) += op_model_bf533.o
+oprofile-y := $(DRIVER_OBJS) bfin_oprofile.o

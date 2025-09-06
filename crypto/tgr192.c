@@ -21,12 +21,15 @@
  * (at your option) any later version.
  *
  */
+#include <crypto/internal/hash.h>
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/mm.h>
 #include <asm/byteorder.h>
 #include <linux/crypto.h>
 #include <linux/types.h>
+#include <asm/byteorder.h>
+#include <asm/unaligned.h>
 
 #define TGR192_DIGEST_SIZE 24
 #define TGR160_DIGEST_SIZE 20
@@ -468,10 +471,9 @@ static void tgr192_transform(struct tgr192_ctx *tctx, const u8 * data)
 	u64 a, b, c, aa, bb, cc;
 	u64 x[8];
 	int i;
-	const __le64 *ptr = (const __le64 *)data;
 
 	for (i = 0; i < 8; i++)
-		x[i] = le64_to_cpu(ptr[i]);
+		x[i] = get_unaligned_le64(data + i * sizeof(__le64));
 
 	/* save */
 	a = aa = tctx->a;
@@ -498,12 +500,17 @@ static void tgr192_transform(struct tgr192_ctx *tctx, const u8 * data)
 static void tgr192_init(struct crypto_tfm *tfm)
 {
 	struct tgr192_ctx *tctx = crypto_tfm_ctx(tfm);
+static int tgr192_init(struct shash_desc *desc)
+{
+	struct tgr192_ctx *tctx = shash_desc_ctx(desc);
 
 	tctx->a = 0x0123456789abcdefULL;
 	tctx->b = 0xfedcba9876543210ULL;
 	tctx->c = 0xf096a5b4c3b2e187ULL;
 	tctx->nblocks = 0;
 	tctx->count = 0;
+
+	return 0;
 }
 
 
@@ -513,6 +520,10 @@ static void tgr192_update(struct crypto_tfm *tfm, const u8 *inbuf,
 			  unsigned int len)
 {
 	struct tgr192_ctx *tctx = crypto_tfm_ctx(tfm);
+static int tgr192_update(struct shash_desc *desc, const u8 *inbuf,
+			  unsigned int len)
+{
+	struct tgr192_ctx *tctx = shash_desc_ctx(desc);
 
 	if (tctx->count == 64) {	/* flush the buffer */
 		tgr192_transform(tctx, tctx->hash);
@@ -521,6 +532,7 @@ static void tgr192_update(struct crypto_tfm *tfm, const u8 *inbuf,
 	}
 	if (!inbuf) {
 		return;
+		return 0;
 	}
 	if (tctx->count) {
 		for (; len && tctx->count < 64; len--) {
@@ -529,6 +541,9 @@ static void tgr192_update(struct crypto_tfm *tfm, const u8 *inbuf,
 		tgr192_update(tfm, NULL, 0);
 		if (!len) {
 			return;
+		tgr192_update(desc, NULL, 0);
+		if (!len) {
+			return 0;
 		}
 
 	}
@@ -543,6 +558,8 @@ static void tgr192_update(struct crypto_tfm *tfm, const u8 *inbuf,
 	for (; len && tctx->count < 64; len--) {
 		tctx->hash[tctx->count++] = *inbuf++;
 	}
+
+	return 0;
 }
 
 
@@ -551,12 +568,16 @@ static void tgr192_update(struct crypto_tfm *tfm, const u8 *inbuf,
 static void tgr192_final(struct crypto_tfm *tfm, u8 * out)
 {
 	struct tgr192_ctx *tctx = crypto_tfm_ctx(tfm);
+static int tgr192_final(struct shash_desc *desc, u8 * out)
+{
+	struct tgr192_ctx *tctx = shash_desc_ctx(desc);
 	__be64 *dst = (__be64 *)out;
 	__be64 *be64p;
 	__le32 *le32p;
 	u32 t, msb, lsb;
 
 	tgr192_update(tfm, NULL, 0); /* flush */ ;
+	tgr192_update(desc, NULL, 0); /* flush */ ;
 
 	msb = 0;
 	t = tctx->nblocks;
@@ -585,6 +606,7 @@ static void tgr192_final(struct crypto_tfm *tfm, u8 * out)
 			tctx->hash[tctx->count++] = 0;
 		}
 		tgr192_update(tfm, NULL, 0); /* flush */ ;
+		tgr192_update(desc, NULL, 0); /* flush */ ;
 		memset(tctx->hash, 0, 56);    /* fill next block with zeroes */
 	}
 	/* append the 64 bit count */
@@ -686,6 +708,73 @@ static int __init tgr192_mod_init(void)
 	}
       out:
 	return ret;
+
+	return 0;
+}
+
+static int tgr160_final(struct shash_desc *desc, u8 * out)
+{
+	u8 D[64];
+
+	tgr192_final(desc, D);
+	memcpy(out, D, TGR160_DIGEST_SIZE);
+	memzero_explicit(D, TGR192_DIGEST_SIZE);
+
+	return 0;
+}
+
+static int tgr128_final(struct shash_desc *desc, u8 * out)
+{
+	u8 D[64];
+
+	tgr192_final(desc, D);
+	memcpy(out, D, TGR128_DIGEST_SIZE);
+	memzero_explicit(D, TGR192_DIGEST_SIZE);
+
+	return 0;
+}
+
+static struct shash_alg tgr_algs[3] = { {
+	.digestsize	=	TGR192_DIGEST_SIZE,
+	.init		=	tgr192_init,
+	.update		=	tgr192_update,
+	.final		=	tgr192_final,
+	.descsize	=	sizeof(struct tgr192_ctx),
+	.base		=	{
+		.cra_name	=	"tgr192",
+		.cra_flags	=	CRYPTO_ALG_TYPE_SHASH,
+		.cra_blocksize	=	TGR192_BLOCK_SIZE,
+		.cra_module	=	THIS_MODULE,
+	}
+}, {
+	.digestsize	=	TGR160_DIGEST_SIZE,
+	.init		=	tgr192_init,
+	.update		=	tgr192_update,
+	.final		=	tgr160_final,
+	.descsize	=	sizeof(struct tgr192_ctx),
+	.base		=	{
+		.cra_name	=	"tgr160",
+		.cra_flags	=	CRYPTO_ALG_TYPE_SHASH,
+		.cra_blocksize	=	TGR192_BLOCK_SIZE,
+		.cra_module	=	THIS_MODULE,
+	}
+}, {
+	.digestsize	=	TGR128_DIGEST_SIZE,
+	.init		=	tgr192_init,
+	.update		=	tgr192_update,
+	.final		=	tgr128_final,
+	.descsize	=	sizeof(struct tgr192_ctx),
+	.base		=	{
+		.cra_name	=	"tgr128",
+		.cra_flags	=	CRYPTO_ALG_TYPE_SHASH,
+		.cra_blocksize	=	TGR192_BLOCK_SIZE,
+		.cra_module	=	THIS_MODULE,
+	}
+} };
+
+static int __init tgr192_mod_init(void)
+{
+	return crypto_register_shashes(tgr_algs, ARRAY_SIZE(tgr_algs));
 }
 
 static void __exit tgr192_mod_fini(void)
@@ -697,6 +786,12 @@ static void __exit tgr192_mod_fini(void)
 
 MODULE_ALIAS("tgr160");
 MODULE_ALIAS("tgr128");
+	crypto_unregister_shashes(tgr_algs, ARRAY_SIZE(tgr_algs));
+}
+
+MODULE_ALIAS_CRYPTO("tgr192");
+MODULE_ALIAS_CRYPTO("tgr160");
+MODULE_ALIAS_CRYPTO("tgr128");
 
 module_init(tgr192_mod_init);
 module_exit(tgr192_mod_fini);

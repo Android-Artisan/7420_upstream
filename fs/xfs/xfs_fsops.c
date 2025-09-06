@@ -37,6 +37,20 @@
 #include "xfs_inode_item.h"
 #include "xfs_btree.h"
 #include "xfs_error.h"
+#include "xfs_shared.h"
+#include "xfs_format.h"
+#include "xfs_log_format.h"
+#include "xfs_trans_resv.h"
+#include "xfs_sb.h"
+#include "xfs_mount.h"
+#include "xfs_da_format.h"
+#include "xfs_da_btree.h"
+#include "xfs_inode.h"
+#include "xfs_trans.h"
+#include "xfs_inode_item.h"
+#include "xfs_error.h"
+#include "xfs_btree.h"
+#include "xfs_alloc_btree.h"
 #include "xfs_alloc.h"
 #include "xfs_ialloc.h"
 #include "xfs_fsops.h"
@@ -44,6 +58,8 @@
 #include "xfs_trans_space.h"
 #include "xfs_rtalloc.h"
 #include "xfs_rw.h"
+#include "xfs_trace.h"
+#include "xfs_log.h"
 #include "xfs_filestream.h"
 
 /*
@@ -56,6 +72,9 @@ xfs_fs_geometry(
 	xfs_fsop_geom_t		*geo,
 	int			new_version)
 {
+
+	memset(geo, 0, sizeof(*geo));
+
 	geo->blocksize = mp->m_sb.sb_blocksize;
 	geo->rtextsize = mp->m_sb.sb_rextsize;
 	geo->agblocks = mp->m_sb.sb_agblocks;
@@ -81,6 +100,10 @@ xfs_fs_geometry(
 				XFS_FSOP_GEOM_FLAGS_ATTR : 0) |
 			(xfs_sb_version_hasnlink(&mp->m_sb) ?
 				XFS_FSOP_GEOM_FLAGS_NLINK : 0) |
+		geo->flags = XFS_FSOP_GEOM_FLAGS_NLINK |
+			     XFS_FSOP_GEOM_FLAGS_DIRV2 |
+			(xfs_sb_version_hasattr(&mp->m_sb) ?
+				XFS_FSOP_GEOM_FLAGS_ATTR : 0) |
 			(xfs_sb_version_hasquota(&mp->m_sb) ?
 				XFS_FSOP_GEOM_FLAGS_QUOTA : 0) |
 			(xfs_sb_version_hasalign(&mp->m_sb) ?
@@ -93,6 +116,8 @@ xfs_fs_geometry(
 				XFS_FSOP_GEOM_FLAGS_EXTFLG : 0) |
 			(xfs_sb_version_hasdirv2(&mp->m_sb) ?
 				XFS_FSOP_GEOM_FLAGS_DIRV2 : 0) |
+			(xfs_sb_version_hasextflgbit(&mp->m_sb) ?
+				XFS_FSOP_GEOM_FLAGS_EXTFLG : 0) |
 			(xfs_sb_version_hassector(&mp->m_sb) ?
 				XFS_FSOP_GEOM_FLAGS_SECTOR : 0) |
 			(xfs_sb_version_hasasciici(&mp->m_sb) ?
@@ -105,6 +130,21 @@ xfs_fs_geometry(
 				mp->m_sb.sb_logsectsize : BBSIZE;
 		geo->rtsectsize = mp->m_sb.sb_blocksize;
 		geo->dirblocksize = mp->m_dirblksize;
+				XFS_FSOP_GEOM_FLAGS_ATTR2 : 0) |
+			(xfs_sb_version_hasprojid32bit(&mp->m_sb) ?
+				XFS_FSOP_GEOM_FLAGS_PROJID32 : 0) |
+			(xfs_sb_version_hascrc(&mp->m_sb) ?
+				XFS_FSOP_GEOM_FLAGS_V5SB : 0) |
+			(xfs_sb_version_hasftype(&mp->m_sb) ?
+				XFS_FSOP_GEOM_FLAGS_FTYPE : 0) |
+			(xfs_sb_version_hasfinobt(&mp->m_sb) ?
+				XFS_FSOP_GEOM_FLAGS_FINOBT : 0) |
+			(xfs_sb_version_hassparseinodes(&mp->m_sb) ?
+				XFS_FSOP_GEOM_FLAGS_SPINODES : 0);
+		geo->logsectsize = xfs_sb_version_hassector(&mp->m_sb) ?
+				mp->m_sb.sb_logsectsize : BBSIZE;
+		geo->rtsectsize = mp->m_sb.sb_blocksize;
+		geo->dirblocksize = mp->m_dir_geo->blksize;
 	}
 	if (new_version >= 4) {
 		geo->flags |=
@@ -115,12 +155,35 @@ xfs_fs_geometry(
 	return 0;
 }
 
+static struct xfs_buf *
+xfs_growfs_get_hdr_buf(
+	struct xfs_mount	*mp,
+	xfs_daddr_t		blkno,
+	size_t			numblks,
+	int			flags,
+	const struct xfs_buf_ops *ops)
+{
+	struct xfs_buf		*bp;
+
+	bp = xfs_buf_get_uncached(mp->m_ddev_targp, numblks, flags);
+	if (!bp)
+		return NULL;
+
+	xfs_buf_zero(bp, 0, BBTOB(bp->b_length));
+	bp->b_bn = blkno;
+	bp->b_maps[0].bm_bn = blkno;
+	bp->b_ops = ops;
+
+	return bp;
+}
+
 static int
 xfs_growfs_data_private(
 	xfs_mount_t		*mp,		/* mount point for filesystem */
 	xfs_growfs_data_t	*in)		/* growfs data input struct */
 {
 	xfs_agf_t		*agf;
+	struct xfs_agfl		*agfl;
 	xfs_agi_t		*agi;
 	xfs_agnumber_t		agno;
 	xfs_extlen_t		agsize;
@@ -131,6 +194,10 @@ xfs_growfs_data_private(
 	int			bucket;
 	int			dpct;
 	int			error;
+	xfs_buf_t		*bp;
+	int			bucket;
+	int			dpct;
+	int			error, saved_error = 0;
 	xfs_agnumber_t		nagcount;
 	xfs_agnumber_t		nagimax = 0;
 	xfs_rfsblock_t		nb, nb_mod;
@@ -153,6 +220,15 @@ xfs_growfs_data_private(
 	if (error)
 		return error;
 	ASSERT(bp);
+		return -EINVAL;
+	if ((error = xfs_sb_validate_fsb_count(&mp->m_sb, nb)))
+		return error;
+	dpct = pct - mp->m_sb.sb_imax_pct;
+	error = xfs_buf_read_uncached(mp->m_ddev_targp,
+				XFS_FSB_TO_BB(mp, nb) - XFS_FSS_TO_BB(mp, 1),
+				XFS_FSS_TO_BB(mp, 1), 0, &bp, NULL);
+	if (error)
+		return error;
 	xfs_buf_relse(bp);
 
 	new = nb;	/* use new as a temporary here */
@@ -197,6 +273,51 @@ xfs_growfs_data_private(
 				  XFS_FSS_TO_BB(mp, 1), 0);
 		agf = XFS_BUF_TO_AGF(bp);
 		memset(agf, 0, mp->m_sb.sb_sectsize);
+		nb = (xfs_rfsblock_t)nagcount * mp->m_sb.sb_agblocks;
+		if (nb < mp->m_sb.sb_dblocks)
+			return -EINVAL;
+	}
+	new = nb - mp->m_sb.sb_dblocks;
+	oagcount = mp->m_sb.sb_agcount;
+
+	/* allocate the new per-ag structures */
+	if (nagcount > oagcount) {
+		error = xfs_initialize_perag(mp, nagcount, &nagimax);
+		if (error)
+			return error;
+	}
+
+	tp = xfs_trans_alloc(mp, XFS_TRANS_GROWFS);
+	tp->t_flags |= XFS_TRANS_RESERVE;
+	error = xfs_trans_reserve(tp, &M_RES(mp)->tr_growdata,
+				  XFS_GROWFS_SPACE_RES(mp), 0);
+	if (error) {
+		xfs_trans_cancel(tp);
+		return error;
+	}
+
+	/*
+	 * Write new AG headers to disk. Non-transactional, but written
+	 * synchronously so they are completed prior to the growfs transaction
+	 * being logged.
+	 */
+	nfree = 0;
+	for (agno = nagcount - 1; agno >= oagcount; agno--, new -= agsize) {
+		__be32	*agfl_bno;
+
+		/*
+		 * AG freespace header block
+		 */
+		bp = xfs_growfs_get_hdr_buf(mp,
+				XFS_AG_DADDR(mp, agno, XFS_AGF_DADDR(mp)),
+				XFS_FSS_TO_BB(mp, 1), 0,
+				&xfs_agf_buf_ops);
+		if (!bp) {
+			error = -ENOMEM;
+			goto error0;
+		}
+
+		agf = XFS_BUF_TO_AGF(bp);
 		agf->agf_magicnum = cpu_to_be32(XFS_AGF_MAGIC);
 		agf->agf_versionnum = cpu_to_be32(XFS_AGF_VERSION);
 		agf->agf_seqno = cpu_to_be32(agno);
@@ -211,8 +332,8 @@ xfs_growfs_data_private(
 		agf->agf_roots[XFS_BTNUM_CNTi] = cpu_to_be32(XFS_CNT_BLOCK(mp));
 		agf->agf_levels[XFS_BTNUM_BNOi] = cpu_to_be32(1);
 		agf->agf_levels[XFS_BTNUM_CNTi] = cpu_to_be32(1);
-		agf->agf_flfirst = 0;
-		agf->agf_fllast = cpu_to_be32(XFS_AGFL_SIZE(mp) - 1);
+		agf->agf_flfirst = cpu_to_be32(1);
+		agf->agf_fllast = 0;
 		agf->agf_flcount = 0;
 		tmpsize = agsize - XFS_PREALLOC_BLOCKS(mp);
 		agf->agf_freeblks = cpu_to_be32(tmpsize);
@@ -229,6 +350,55 @@ xfs_growfs_data_private(
 				  XFS_FSS_TO_BB(mp, 1), 0);
 		agi = XFS_BUF_TO_AGI(bp);
 		memset(agi, 0, mp->m_sb.sb_sectsize);
+		if (xfs_sb_version_hascrc(&mp->m_sb))
+			uuid_copy(&agf->agf_uuid, &mp->m_sb.sb_meta_uuid);
+
+		error = xfs_bwrite(bp);
+		xfs_buf_relse(bp);
+		if (error)
+			goto error0;
+
+		/*
+		 * AG freelist header block
+		 */
+		bp = xfs_growfs_get_hdr_buf(mp,
+				XFS_AG_DADDR(mp, agno, XFS_AGFL_DADDR(mp)),
+				XFS_FSS_TO_BB(mp, 1), 0,
+				&xfs_agfl_buf_ops);
+		if (!bp) {
+			error = -ENOMEM;
+			goto error0;
+		}
+
+		agfl = XFS_BUF_TO_AGFL(bp);
+		if (xfs_sb_version_hascrc(&mp->m_sb)) {
+			agfl->agfl_magicnum = cpu_to_be32(XFS_AGFL_MAGIC);
+			agfl->agfl_seqno = cpu_to_be32(agno);
+			uuid_copy(&agfl->agfl_uuid, &mp->m_sb.sb_meta_uuid);
+		}
+
+		agfl_bno = XFS_BUF_TO_AGFL_BNO(mp, bp);
+		for (bucket = 0; bucket < XFS_AGFL_SIZE(mp); bucket++)
+			agfl_bno[bucket] = cpu_to_be32(NULLAGBLOCK);
+
+		error = xfs_bwrite(bp);
+		xfs_buf_relse(bp);
+		if (error)
+			goto error0;
+
+		/*
+		 * AG inode header block
+		 */
+		bp = xfs_growfs_get_hdr_buf(mp,
+				XFS_AG_DADDR(mp, agno, XFS_AGI_DADDR(mp)),
+				XFS_FSS_TO_BB(mp, 1), 0,
+				&xfs_agi_buf_ops);
+		if (!bp) {
+			error = -ENOMEM;
+			goto error0;
+		}
+
+		agi = XFS_BUF_TO_AGI(bp);
 		agi->agi_magicnum = cpu_to_be32(XFS_AGI_MAGIC);
 		agi->agi_versionnum = cpu_to_be32(XFS_AGI_VERSION);
 		agi->agi_seqno = cpu_to_be32(agno);
@@ -280,6 +450,70 @@ xfs_growfs_data_private(
 		block->bb_leftsib = cpu_to_be32(NULLAGBLOCK);
 		block->bb_rightsib = cpu_to_be32(NULLAGBLOCK);
 		arec = XFS_BTREE_REC_ADDR(xfs_alloc, block, 1);
+		if (xfs_sb_version_hascrc(&mp->m_sb))
+			uuid_copy(&agi->agi_uuid, &mp->m_sb.sb_meta_uuid);
+		if (xfs_sb_version_hasfinobt(&mp->m_sb)) {
+			agi->agi_free_root = cpu_to_be32(XFS_FIBT_BLOCK(mp));
+			agi->agi_free_level = cpu_to_be32(1);
+		}
+		for (bucket = 0; bucket < XFS_AGI_UNLINKED_BUCKETS; bucket++)
+			agi->agi_unlinked[bucket] = cpu_to_be32(NULLAGINO);
+
+		error = xfs_bwrite(bp);
+		xfs_buf_relse(bp);
+		if (error)
+			goto error0;
+
+		/*
+		 * BNO btree root block
+		 */
+		bp = xfs_growfs_get_hdr_buf(mp,
+				XFS_AGB_TO_DADDR(mp, agno, XFS_BNO_BLOCK(mp)),
+				BTOBB(mp->m_sb.sb_blocksize), 0,
+				&xfs_allocbt_buf_ops);
+
+		if (!bp) {
+			error = -ENOMEM;
+			goto error0;
+		}
+
+		if (xfs_sb_version_hascrc(&mp->m_sb))
+			xfs_btree_init_block(mp, bp, XFS_ABTB_CRC_MAGIC, 0, 1,
+						agno, XFS_BTREE_CRC_BLOCKS);
+		else
+			xfs_btree_init_block(mp, bp, XFS_ABTB_MAGIC, 0, 1,
+						agno, 0);
+
+		arec = XFS_ALLOC_REC_ADDR(mp, XFS_BUF_TO_BLOCK(bp), 1);
+		arec->ar_startblock = cpu_to_be32(XFS_PREALLOC_BLOCKS(mp));
+		arec->ar_blockcount = cpu_to_be32(
+			agsize - be32_to_cpu(arec->ar_startblock));
+
+		error = xfs_bwrite(bp);
+		xfs_buf_relse(bp);
+		if (error)
+			goto error0;
+
+		/*
+		 * CNT btree root block
+		 */
+		bp = xfs_growfs_get_hdr_buf(mp,
+				XFS_AGB_TO_DADDR(mp, agno, XFS_CNT_BLOCK(mp)),
+				BTOBB(mp->m_sb.sb_blocksize), 0,
+				&xfs_allocbt_buf_ops);
+		if (!bp) {
+			error = -ENOMEM;
+			goto error0;
+		}
+
+		if (xfs_sb_version_hascrc(&mp->m_sb))
+			xfs_btree_init_block(mp, bp, XFS_ABTC_CRC_MAGIC, 0, 1,
+						agno, XFS_BTREE_CRC_BLOCKS);
+		else
+			xfs_btree_init_block(mp, bp, XFS_ABTC_MAGIC, 0, 1,
+						agno, 0);
+
+		arec = XFS_ALLOC_REC_ADDR(mp, XFS_BUF_TO_BLOCK(bp), 1);
 		arec->ar_startblock = cpu_to_be32(XFS_PREALLOC_BLOCKS(mp));
 		arec->ar_blockcount = cpu_to_be32(
 			agsize - be32_to_cpu(arec->ar_startblock));
@@ -305,6 +539,63 @@ xfs_growfs_data_private(
 		if (error) {
 			goto error0;
 		}
+
+		error = xfs_bwrite(bp);
+		xfs_buf_relse(bp);
+		if (error)
+			goto error0;
+
+		/*
+		 * INO btree root block
+		 */
+		bp = xfs_growfs_get_hdr_buf(mp,
+				XFS_AGB_TO_DADDR(mp, agno, XFS_IBT_BLOCK(mp)),
+				BTOBB(mp->m_sb.sb_blocksize), 0,
+				&xfs_inobt_buf_ops);
+		if (!bp) {
+			error = -ENOMEM;
+			goto error0;
+		}
+
+		if (xfs_sb_version_hascrc(&mp->m_sb))
+			xfs_btree_init_block(mp, bp, XFS_IBT_CRC_MAGIC, 0, 0,
+						agno, XFS_BTREE_CRC_BLOCKS);
+		else
+			xfs_btree_init_block(mp, bp, XFS_IBT_MAGIC, 0, 0,
+						agno, 0);
+
+		error = xfs_bwrite(bp);
+		xfs_buf_relse(bp);
+		if (error)
+			goto error0;
+
+		/*
+		 * FINO btree root block
+		 */
+		if (xfs_sb_version_hasfinobt(&mp->m_sb)) {
+			bp = xfs_growfs_get_hdr_buf(mp,
+				XFS_AGB_TO_DADDR(mp, agno, XFS_FIBT_BLOCK(mp)),
+				BTOBB(mp->m_sb.sb_blocksize), 0,
+				&xfs_inobt_buf_ops);
+			if (!bp) {
+				error = -ENOMEM;
+				goto error0;
+			}
+
+			if (xfs_sb_version_hascrc(&mp->m_sb))
+				xfs_btree_init_block(mp, bp, XFS_FIBT_CRC_MAGIC,
+						     0, 0, agno,
+						     XFS_BTREE_CRC_BLOCKS);
+			else
+				xfs_btree_init_block(mp, bp, XFS_FIBT_MAGIC, 0,
+						     0, agno, 0);
+
+			error = xfs_bwrite(bp);
+			xfs_buf_relse(bp);
+			if (error)
+				goto error0;
+		}
+
 	}
 	xfs_trans_agblocks_delta(tp, nfree);
 	/*
@@ -336,6 +627,7 @@ xfs_growfs_data_private(
 		be32_add_cpu(&agf->agf_length, new);
 		ASSERT(be32_to_cpu(agf->agf_length) ==
 		       be32_to_cpu(agi->agi_length));
+
 		xfs_alloc_log_agf(tp, bp, XFS_AGF_LENGTH);
 		/*
 		 * Free the new space.
@@ -346,6 +638,12 @@ xfs_growfs_data_private(
 			goto error0;
 		}
 	}
+
+	/*
+	 * Update changed superblock fields transactionally. These are not
+	 * seen by the rest of the world until the transaction commit applies
+	 * them atomically to the superblock.
+	 */
 	if (nagcount > oagcount)
 		xfs_trans_mod_sb(tp, XFS_TRANS_SB_AGCOUNT, nagcount - oagcount);
 	if (nb > mp->m_sb.sb_dblocks)
@@ -359,6 +657,11 @@ xfs_growfs_data_private(
 	if (error) {
 		return error;
 	}
+	xfs_trans_set_sync(tp);
+	error = xfs_trans_commit(tp);
+	if (error)
+		return error;
+
 	/* New allocation groups fully initialized, so update mount struct */
 	if (nagimax)
 		mp->m_maxagi = nagimax;
@@ -397,6 +700,62 @@ xfs_growfs_data_private(
 
  error0:
 	xfs_trans_cancel(tp, XFS_TRANS_ABORT);
+	xfs_set_low_space_thresholds(mp);
+
+	/* update secondary superblocks. */
+	for (agno = 1; agno < nagcount; agno++) {
+		error = 0;
+		/*
+		 * new secondary superblocks need to be zeroed, not read from
+		 * disk as the contents of the new area we are growing into is
+		 * completely unknown.
+		 */
+		if (agno < oagcount) {
+			error = xfs_trans_read_buf(mp, NULL, mp->m_ddev_targp,
+				  XFS_AGB_TO_DADDR(mp, agno, XFS_SB_BLOCK(mp)),
+				  XFS_FSS_TO_BB(mp, 1), 0, &bp,
+				  &xfs_sb_buf_ops);
+		} else {
+			bp = xfs_trans_get_buf(NULL, mp->m_ddev_targp,
+				  XFS_AGB_TO_DADDR(mp, agno, XFS_SB_BLOCK(mp)),
+				  XFS_FSS_TO_BB(mp, 1), 0);
+			if (bp) {
+				bp->b_ops = &xfs_sb_buf_ops;
+				xfs_buf_zero(bp, 0, BBTOB(bp->b_length));
+			} else
+				error = -ENOMEM;
+		}
+
+		/*
+		 * If we get an error reading or writing alternate superblocks,
+		 * continue.  xfs_repair chooses the "best" superblock based
+		 * on most matches; if we break early, we'll leave more
+		 * superblocks un-updated than updated, and xfs_repair may
+		 * pick them over the properly-updated primary.
+		 */
+		if (error) {
+			xfs_warn(mp,
+		"error %d reading secondary superblock for ag %d",
+				error, agno);
+			saved_error = error;
+			continue;
+		}
+		xfs_sb_to_disk(XFS_BUF_TO_SBP(bp), &mp->m_sb);
+
+		error = xfs_bwrite(bp);
+		xfs_buf_relse(bp);
+		if (error) {
+			xfs_warn(mp,
+		"write error %d updating secondary superblock for ag %d",
+				error, agno);
+			saved_error = error;
+			continue;
+		}
+	}
+	return saved_error ? saved_error : error;
+
+ error0:
+	xfs_trans_cancel(tp);
 	return error;
 }
 
@@ -413,6 +772,10 @@ xfs_growfs_log_private(
 	if (nb == mp->m_sb.sb_logblocks &&
 	    in->isint == (mp->m_sb.sb_logstart != 0))
 		return XFS_ERROR(EINVAL);
+		return -EINVAL;
+	if (nb == mp->m_sb.sb_logblocks &&
+	    in->isint == (mp->m_sb.sb_logstart != 0))
+		return -EINVAL;
 	/*
 	 * Moving the log is hard, need new interfaces to sync
 	 * the log first, hold off all activity while moving it.
@@ -420,6 +783,7 @@ xfs_growfs_log_private(
 	 * or transform internal to external log or vice versa.
 	 */
 	return XFS_ERROR(ENOSYS);
+	return -ENOSYS;
 }
 
 /*
@@ -438,6 +802,18 @@ xfs_growfs_data(
 	if (!mutex_trylock(&mp->m_growlock))
 		return XFS_ERROR(EWOULDBLOCK);
 	error = xfs_growfs_data_private(mp, in);
+
+	if (!capable(CAP_SYS_ADMIN))
+		return -EPERM;
+	if (!mutex_trylock(&mp->m_growlock))
+		return -EWOULDBLOCK;
+	error = xfs_growfs_data_private(mp, in);
+	/*
+	 * Increment the generation unconditionally, the error could be from
+	 * updating the secondary superblocks, in which case the new size
+	 * is live already.
+	 */
+	mp->m_generation++;
 	mutex_unlock(&mp->m_growlock);
 	return error;
 }
@@ -450,6 +826,11 @@ xfs_growfs_log(
 	int error;
 	if (!mutex_trylock(&mp->m_growlock))
 		return XFS_ERROR(EWOULDBLOCK);
+
+	if (!capable(CAP_SYS_ADMIN))
+		return -EPERM;
+	if (!mutex_trylock(&mp->m_growlock))
+		return -EWOULDBLOCK;
 	error = xfs_growfs_log_private(mp, in);
 	mutex_unlock(&mp->m_growlock);
 	return error;
@@ -470,6 +851,13 @@ xfs_fs_counts(
 	cnt->freertx = mp->m_sb.sb_frextents;
 	cnt->freeino = mp->m_sb.sb_ifree;
 	cnt->allocino = mp->m_sb.sb_icount;
+	cnt->allocino = percpu_counter_read_positive(&mp->m_icount);
+	cnt->freeino = percpu_counter_read_positive(&mp->m_ifree);
+	cnt->freedata = percpu_counter_read_positive(&mp->m_fdblocks) -
+							XFS_ALLOC_SET_ASIDE(mp);
+
+	spin_lock(&mp->m_sb_lock);
+	cnt->freertx = mp->m_sb.sb_frextents;
 	spin_unlock(&mp->m_sb_lock);
 	return 0;
 }
@@ -502,6 +890,7 @@ xfs_reserve_blocks(
 	if (inval == (__uint64_t *)NULL) {
 		if (!outval)
 			return EINVAL;
+			return -EINVAL;
 		outval->resblks = mp->m_resblks;
 		outval->resblks_avail = mp->m_resblks_avail;
 		return 0;
@@ -527,6 +916,9 @@ xfs_reserve_blocks(
 retry:
 	spin_lock(&mp->m_sb_lock);
 	xfs_icsb_sync_counters_locked(mp, 0);
+	 */
+retry:
+	spin_lock(&mp->m_sb_lock);
 
 	/*
 	 * If our previous reservation was larger than the current value,
@@ -544,6 +936,8 @@ retry:
 		__int64_t	free;
 
 		free =  mp->m_sb.sb_fdblocks - XFS_ALLOC_SET_ASIDE(mp);
+		free = percpu_counter_sum(&mp->m_fdblocks) -
+							XFS_ALLOC_SET_ASIDE(mp);
 		if (!free)
 			goto out; /* ENOSPC and fdblks_delta = 0 */
 
@@ -571,6 +965,7 @@ out:
 		/*
 		 * If we are putting blocks back here, m_resblks_avail is
 		 * already at it's max so this will put it in the free pool.
+		 * already at its max so this will put it in the free pool.
 		 *
 		 * If we need space, we'll either succeed in getting it
 		 * from the free block count or we'll get an enospc. If
@@ -584,6 +979,8 @@ out:
 		int error;
 		error = xfs_mod_incore_sb(mp, XFS_SBS_FDBLOCKS, fdblks_delta, 0);
 		if (error == ENOSPC)
+		error = xfs_mod_fdblocks(mp, fdblks_delta, 0);
+		if (error == -ENOSPC)
 			goto retry;
 	}
 	return 0;
@@ -639,7 +1036,68 @@ xfs_fs_goingdown(
 		break;
 	default:
 		return XFS_ERROR(EINVAL);
+		return -EINVAL;
 	}
 
 	return 0;
+}
+
+/*
+ * Force a shutdown of the filesystem instantly while keeping the filesystem
+ * consistent. We don't do an unmount here; just shutdown the shop, make sure
+ * that absolutely nothing persistent happens to this filesystem after this
+ * point.
+ */
+void
+xfs_do_force_shutdown(
+	xfs_mount_t	*mp,
+	int		flags,
+	char		*fname,
+	int		lnnum)
+{
+	int		logerror;
+
+	logerror = flags & SHUTDOWN_LOG_IO_ERROR;
+
+	if (!(flags & SHUTDOWN_FORCE_UMOUNT)) {
+		xfs_notice(mp,
+	"%s(0x%x) called from line %d of file %s.  Return address = 0x%p",
+			__func__, flags, lnnum, fname, __return_address);
+	}
+	/*
+	 * No need to duplicate efforts.
+	 */
+	if (XFS_FORCED_SHUTDOWN(mp) && !logerror)
+		return;
+
+	/*
+	 * This flags XFS_MOUNT_FS_SHUTDOWN, makes sure that we don't
+	 * queue up anybody new on the log reservations, and wakes up
+	 * everybody who's sleeping on log reservations to tell them
+	 * the bad news.
+	 */
+	if (xfs_log_force_umount(mp, logerror))
+		return;
+
+	if (flags & SHUTDOWN_CORRUPT_INCORE) {
+		xfs_alert_tag(mp, XFS_PTAG_SHUTDOWN_CORRUPT,
+    "Corruption of in-memory data detected.  Shutting down filesystem");
+		if (XFS_ERRLEVEL_HIGH <= xfs_error_level)
+			xfs_stack_trace();
+	} else if (!(flags & SHUTDOWN_FORCE_UMOUNT)) {
+		if (logerror) {
+			xfs_alert_tag(mp, XFS_PTAG_SHUTDOWN_LOGERROR,
+		"Log I/O Error Detected.  Shutting down filesystem");
+		} else if (flags & SHUTDOWN_DEVICE_REQ) {
+			xfs_alert_tag(mp, XFS_PTAG_SHUTDOWN_IOERROR,
+		"All device paths lost.  Shutting down filesystem");
+		} else if (!(flags & SHUTDOWN_REMOTE_REQ)) {
+			xfs_alert_tag(mp, XFS_PTAG_SHUTDOWN_IOERROR,
+		"I/O Error Detected. Shutting down filesystem");
+		}
+	}
+	if (!(flags & SHUTDOWN_FORCE_UMOUNT)) {
+		xfs_alert(mp,
+	"Please umount the filesystem and rectify the problem(s)");
+	}
 }

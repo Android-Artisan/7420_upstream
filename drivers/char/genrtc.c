@@ -43,6 +43,7 @@
 #define RTC_VERSION	"1.07"
 
 #include <linux/module.h>
+#include <linux/sched.h>
 #include <linux/errno.h>
 #include <linux/miscdevice.h>
 #include <linux/fcntl.h>
@@ -56,6 +57,11 @@
 
 #include <asm/uaccess.h>
 #include <asm/system.h>
+#include <linux/seq_file.h>
+#include <linux/mutex.h>
+#include <linux/workqueue.h>
+
+#include <asm/uaccess.h>
 #include <asm/rtc.h>
 
 /*
@@ -65,6 +71,7 @@
  *	ioctls.
  */
 
+static DEFINE_MUTEX(gen_rtc_mutex);
 static DECLARE_WAIT_QUEUE_HEAD(gen_rtc_wait);
 
 /*
@@ -262,6 +269,7 @@ static inline int gen_set_rtc_irq_bit(unsigned char bit)
 }
 
 static int gen_rtc_ioctl(struct inode *inode, struct file *file,
+static int gen_rtc_ioctl(struct file *file,
 			 unsigned int cmd, unsigned long arg)
 {
 	struct rtc_time wtime;
@@ -331,6 +339,18 @@ static int gen_rtc_ioctl(struct inode *inode, struct file *file,
 	return -EINVAL;
 }
 
+static long gen_rtc_unlocked_ioctl(struct file *file, unsigned int cmd,
+				   unsigned long arg)
+{
+	int ret;
+
+	mutex_lock(&gen_rtc_mutex);
+	ret = gen_rtc_ioctl(file, cmd, arg);
+	mutex_unlock(&gen_rtc_mutex);
+
+	return ret;
+}
+
 /*
  *	We enforce only one user at a time here with the open/close.
  *	Also clear the previous interrupt data on an open, and clean
@@ -342,6 +362,9 @@ static int gen_rtc_open(struct inode *inode, struct file *file)
 	lock_kernel();
 	if (gen_rtc_status & RTC_IS_OPEN) {
 		unlock_kernel();
+	mutex_lock(&gen_rtc_mutex);
+	if (gen_rtc_status & RTC_IS_OPEN) {
+		mutex_unlock(&gen_rtc_mutex);
 		return -EBUSY;
 	}
 
@@ -349,6 +372,7 @@ static int gen_rtc_open(struct inode *inode, struct file *file)
 	gen_rtc_irq_data = 0;
 	irq_active = 0;
 	unlock_kernel();
+	mutex_unlock(&gen_rtc_mutex);
 
 	return 0;
 }
@@ -376,6 +400,8 @@ static int gen_rtc_release(struct inode *inode, struct file *file)
 static int gen_rtc_proc_output(char *buf)
 {
 	char *p;
+static int gen_rtc_proc_show(struct seq_file *m, void *v)
+{
 	struct rtc_time tm;
 	unsigned int flags;
 	struct rtc_pll_info pll;
@@ -385,6 +411,9 @@ static int gen_rtc_proc_output(char *buf)
 	flags = get_rtc_time(&tm);
 
 	p += sprintf(p,
+	flags = get_rtc_time(&tm);
+
+	seq_printf(m,
 		     "rtc_time\t: %02d:%02d:%02d\n"
 		     "rtc_date\t: %04d-%02d-%02d\n"
 		     "rtc_epoch\t: %04u\n",
@@ -410,6 +439,23 @@ static int gen_rtc_proc_output(char *buf)
 		p += sprintf(p, "**\n");
 
 	p += sprintf(p,
+	seq_puts(m, "alarm\t\t: ");
+	if (tm.tm_hour <= 24)
+		seq_printf(m, "%02d:", tm.tm_hour);
+	else
+		seq_puts(m, "**:");
+
+	if (tm.tm_min <= 59)
+		seq_printf(m, "%02d:", tm.tm_min);
+	else
+		seq_puts(m, "**:");
+
+	if (tm.tm_sec <= 59)
+		seq_printf(m, "%02d\n", tm.tm_sec);
+	else
+		seq_puts(m, "**\n");
+
+	seq_printf(m,
 		     "DST_enable\t: %s\n"
 		     "BCD\t\t: %s\n"
 		     "24hr\t\t: %s\n"
@@ -430,6 +476,7 @@ static int gen_rtc_proc_output(char *buf)
 		     (flags & RTC_BATT_BAD) ? "bad" : "okay");
 	if (!get_rtc_pll(&pll))
 	    p += sprintf(p,
+	    seq_printf(m,
 			 "PLL adjustment\t: %d\n"
 			 "PLL max +ve adjustment\t: %d\n"
 			 "PLL max -ve adjustment\t: %d\n"
@@ -457,11 +504,27 @@ static int gen_rtc_read_proc(char *page, char **start, off_t off,
 	return len;
 }
 
+	return 0;
+}
+
+static int gen_rtc_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, gen_rtc_proc_show, NULL);
+}
+
+static const struct file_operations gen_rtc_proc_fops = {
+	.open		= gen_rtc_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
 static int __init gen_rtc_proc_init(void)
 {
 	struct proc_dir_entry *r;
 
 	r = create_proc_read_entry("driver/rtc", 0, NULL, gen_rtc_read_proc, NULL);
+	r = proc_create("driver/rtc", 0, NULL, &gen_rtc_proc_fops);
 	if (!r)
 		return -ENOMEM;
 	return 0;
@@ -484,6 +547,10 @@ static const struct file_operations gen_rtc_fops = {
 	.ioctl		= gen_rtc_ioctl,
 	.open		= gen_rtc_open,
 	.release	= gen_rtc_release,
+	.unlocked_ioctl	= gen_rtc_unlocked_ioctl,
+	.open		= gen_rtc_open,
+	.release	= gen_rtc_release,
+	.llseek		= noop_llseek,
 };
 
 static struct miscdevice rtc_gen_dev =

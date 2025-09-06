@@ -911,6 +911,12 @@ struct mode_page_header {
 #include <linux/fs.h>		/* not really needed, later.. */
 #include <linux/device.h>
 #include <linux/list.h>
+#ifndef	_LINUX_CDROM_H
+#define	_LINUX_CDROM_H
+
+#include <linux/fs.h>		/* not really needed, later.. */
+#include <linux/list.h>
+#include <uapi/linux/cdrom.h>
 
 struct packet_command
 {
@@ -945,11 +951,15 @@ struct cdrom_device_info {
 /* device-related storage */
 	unsigned int options	: 30;	/* options flags */
 	unsigned mc_flags	: 2;	/* media change buffer flags */
+	unsigned int vfs_events;	/* cached events for vfs path */
+	unsigned int ioctl_events;	/* cached events for ioctl path */
     	int use_count;                  /* number of times device opened */
     	char name[20];                  /* name of the device type */
 /* per-device flags */
         __u8 sanyo_slot		: 2;	/* Sanyo 3 CD changer support */
         __u8 reserved		: 6;	/* not used yet */
+        __u8 keeplocked		: 1;	/* CDROM_LOCKDOOR status */
+        __u8 reserved		: 5;	/* not used yet */
 	int cdda_method;		/* see flags */
 	__u8 last_sense;
 	__u8 media_written;		/* dirty flag, DVD+RW bookkeeping */
@@ -964,6 +974,8 @@ struct cdrom_device_ops {
 	int (*open) (struct cdrom_device_info *, int);
 	void (*release) (struct cdrom_device_info *);
 	int (*drive_status) (struct cdrom_device_info *, int);
+	unsigned int (*check_events) (struct cdrom_device_info *cdi,
+				      unsigned int clearing, int slot);
 	int (*media_changed) (struct cdrom_device_info *, int);
 	int (*tray_move) (struct cdrom_device_info *, int);
 	int (*lock_door) (struct cdrom_device_info *, int);
@@ -992,6 +1004,13 @@ extern int cdrom_open(struct cdrom_device_info *cdi, struct inode *ip,
 extern int cdrom_release(struct cdrom_device_info *cdi, struct file *fp);
 extern int cdrom_ioctl(struct file *file, struct cdrom_device_info *cdi,
 		struct inode *ip, unsigned int cmd, unsigned long arg);
+extern int cdrom_open(struct cdrom_device_info *cdi, struct block_device *bdev,
+			fmode_t mode);
+extern void cdrom_release(struct cdrom_device_info *cdi, fmode_t mode);
+extern int cdrom_ioctl(struct cdrom_device_info *cdi, struct block_device *bdev,
+		       fmode_t mode, unsigned int cmd, unsigned long arg);
+extern unsigned int cdrom_check_events(struct cdrom_device_info *cdi,
+				       unsigned int clearing);
 extern int cdrom_media_changed(struct cdrom_device_info *);
 
 extern int register_cdrom(struct cdrom_device_info *cdi);

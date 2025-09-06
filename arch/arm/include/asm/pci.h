@@ -24,6 +24,26 @@ static inline void pcibios_penalize_isa_irq(int irq, int active)
 {
 	/* We don't do dynamic PCI IRQ allocation */
 }
+#include <asm-generic/pci-bridge.h>
+
+#include <asm/mach/pci.h> /* for pci_sys_data */
+
+extern unsigned long pcibios_min_io;
+#define PCIBIOS_MIN_IO pcibios_min_io
+extern unsigned long pcibios_min_mem;
+#define PCIBIOS_MIN_MEM pcibios_min_mem
+
+static inline int pcibios_assign_all_busses(void)
+{
+	return pci_has_flag(PCI_REASSIGN_ALL_RSRC);
+}
+
+#ifdef CONFIG_PCI_DOMAINS
+static inline int pci_proc_domain(struct pci_bus *bus)
+{
+	return pci_domain_nr(bus);
+}
+#endif /* CONFIG_PCI_DOMAINS */
 
 /*
  * The PCI address space does equal the physical memory address space.
@@ -84,6 +104,9 @@ pcibios_select_root(struct pci_dev *pdev, struct resource *res)
 static inline int pci_get_legacy_ide_irq(struct pci_dev *dev, int channel)
 {
 	return 0;
+static inline int pci_get_legacy_ide_irq(struct pci_dev *dev, int channel)
+{
+	return channel ? 15 : 14;
 }
 
 #endif /* __KERNEL__ */

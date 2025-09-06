@@ -62,6 +62,10 @@ static void do_msg(int fd, int len)
 	xfer[0].len = 1;
 
 	xfer[1].rx_buf = (__u64) buf;
+	xfer[0].tx_buf = (unsigned long)buf;
+	xfer[0].len = 1;
+
+	xfer[1].rx_buf = (unsigned long) buf;
 	xfer[1].len = len;
 
 	status = ioctl(fd, SPI_IOC_MESSAGE(2), xfer);
@@ -82,6 +86,10 @@ static void dumpstat(const char *name, int fd)
 	__u32	speed;
 
 	if (ioctl(fd, SPI_IOC_RD_MODE, &mode) < 0) {
+	__u8	lsb, bits;
+	__u32	mode, speed;
+
+	if (ioctl(fd, SPI_IOC_RD_MODE32, &mode) < 0) {
 		perror("SPI rd_mode");
 		return;
 	}
@@ -99,6 +107,7 @@ static void dumpstat(const char *name, int fd)
 	}
 
 	printf("%s: spi mode %d, %d bits %sper word, %d Hz max\n",
+	printf("%s: spi mode 0x%x, %d bits %sper word, %d Hz max\n",
 		name, mode, bits, lsb ? "(lsb first) " : "", speed);
 }
 

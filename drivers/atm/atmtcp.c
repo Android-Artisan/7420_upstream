@@ -11,6 +11,9 @@
 #include <linux/init.h>
 #include <asm/uaccess.h>
 #include <asm/atomic.h>
+#include <linux/slab.h>
+#include <asm/uaccess.h>
+#include <linux/atomic.h>
 
 
 extern int atm_init_aal5(struct atm_vcc *vcc); /* "raw" AAL5 transport */
@@ -68,6 +71,7 @@ static int atmtcp_send_control(struct atm_vcc *vcc,int type,
 	old_test = test_bit(flag,&vcc->flags);
 	out_vcc->push(out_vcc,skb);
 	add_wait_queue(sk_atm(vcc)->sk_sleep, &wait);
+	add_wait_queue(sk_sleep(sk_atm(vcc)), &wait);
 	while (test_bit(flag,&vcc->flags) == old_test) {
 		mb();
 		out_vcc = PRIV(vcc->dev) ? PRIV(vcc->dev)->vcc : NULL;
@@ -80,6 +84,7 @@ static int atmtcp_send_control(struct atm_vcc *vcc,int type,
 	}
 	set_current_state(TASK_RUNNING);
 	remove_wait_queue(sk_atm(vcc)->sk_sleep, &wait);
+	remove_wait_queue(sk_sleep(sk_atm(vcc)), &wait);
 	return error;
 }
 
@@ -105,6 +110,7 @@ static int atmtcp_recv_control(const struct atmtcp_control *msg)
 		return -EINVAL;
 	}
 	wake_up(sk_atm(vcc)->sk_sleep);
+	wake_up(sk_sleep(sk_atm(vcc)));
 	return 0;
 }
 
@@ -171,6 +177,7 @@ static int atmtcp_v_ioctl(struct atm_dev *dev,unsigned int cmd,void __user *arg)
 		struct hlist_head *head = &vcc_hash[i];
 
 		sk_for_each(s, node, head) {
+		sk_for_each(s, head) {
 			vcc = atm_sk(s);
 			if (vcc->dev != dev)
 				continue;
@@ -269,6 +276,7 @@ static struct atm_vcc *find_vcc(struct atm_dev *dev, short vpi, int vci)
         head = &vcc_hash[vci & (VCC_HTABLE_SIZE -1)];
 
         sk_for_each(s, node, head) {
+	sk_for_each(s, head) {
                 vcc = atm_sk(s);
                 if (vcc->dev == dev &&
                     vcc->vci == vci && vcc->vpi == vpi &&
@@ -300,6 +308,7 @@ static int atmtcp_c_send(struct atm_vcc *vcc,struct sk_buff *skb)
 	out_vcc = find_vcc(dev, ntohs(hdr->vpi), ntohs(hdr->vci));
 	read_unlock(&vcc_sklist_lock);
 	if (!out_vcc) {
+		result = -EUNATCH;
 		atomic_inc(&vcc->stats->tx_err);
 		goto done;
 	}
@@ -366,6 +375,7 @@ static int atmtcp_create(int itf,int persist,struct atm_dev **result)
 		return -ENOMEM;
 
 	dev = atm_dev_register(DEV_LABEL,&atmtcp_v_dev_ops,itf,NULL);
+	dev = atm_dev_register(DEV_LABEL,NULL,&atmtcp_v_dev_ops,itf,NULL);
 	if (!dev) {
 		kfree(dev_data);
 		return itf == -1 ? -ENOMEM : -EBUSY;
@@ -392,6 +402,10 @@ static int atmtcp_attach(struct atm_vcc *vcc,int itf)
 			return -EMEDIUMTYPE;
 		}
 		if (PRIV(dev)->vcc) return -EBUSY;
+		if (PRIV(dev)->vcc) {
+			atm_dev_put(dev);
+			return -EBUSY;
+		}
 	}
 	else {
 		int error;
@@ -429,9 +443,15 @@ static int atmtcp_remove_persistent(int itf)
 		return -EMEDIUMTYPE;
 	}
 	dev_data = PRIV(dev);
-	if (!dev_data->persist) return 0;
+	if (!dev_data->persist) {
+		atm_dev_put(dev);
+		return 0;
+	}
 	dev_data->persist = 0;
-	if (PRIV(dev)->vcc) return 0;
+	if (PRIV(dev)->vcc) {
+		atm_dev_put(dev);
+		return 0;
+	}
 	kfree(dev_data);
 	atm_dev_put(dev);
 	atm_dev_deregister(dev);

@@ -100,11 +100,15 @@ EXPORT_SYMBOL(iowrite32be);
  * Note the "__raw" accesses, since we don't want to
  * convert to CPU byte order. We write in "IO byte
  * order" (we also don't have IO barriers).
+ * Note the "__mem" accesses, since we want to convert
+ * to CPU byte order if the host bus happens to not match the
+ * endianness of PCI/ISA (see mach-generic/mangle-port.h).
  */
 static inline void mmio_insb(void __iomem *addr, u8 *dst, int count)
 {
 	while (--count >= 0) {
 		u8 data = __raw_readb(addr);
+		u8 data = __mem_readb(addr);
 		*dst = data;
 		dst++;
 	}
@@ -114,6 +118,7 @@ static inline void mmio_insw(void __iomem *addr, u16 *dst, int count)
 {
 	while (--count >= 0) {
 		u16 data = __raw_readw(addr);
+		u16 data = __mem_readw(addr);
 		*dst = data;
 		dst++;
 	}
@@ -123,6 +128,7 @@ static inline void mmio_insl(void __iomem *addr, u32 *dst, int count)
 {
 	while (--count >= 0) {
 		u32 data = __raw_readl(addr);
+		u32 data = __mem_readl(addr);
 		*dst = data;
 		dst++;
 	}
@@ -132,6 +138,7 @@ static inline void mmio_outsb(void __iomem *addr, const u8 *src, int count)
 {
 	while (--count >= 0) {
 		__raw_writeb(*src, addr);
+		__mem_writeb(*src, addr);
 		src++;
 	}
 }
@@ -140,6 +147,7 @@ static inline void mmio_outsw(void __iomem *addr, const u16 *src, int count)
 {
 	while (--count >= 0) {
 		__raw_writew(*src, addr);
+		__mem_writew(*src, addr);
 		src++;
 	}
 }
@@ -148,6 +156,7 @@ static inline void mmio_outsl(void __iomem *addr, const u32 *src, int count)
 {
 	while (--count >= 0) {
 		__raw_writel(*src, addr);
+		__mem_writel(*src, addr);
 		src++;
 	}
 }

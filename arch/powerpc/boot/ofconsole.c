@@ -19,6 +19,7 @@
 #include "of.h"
 
 static void *of_stdout_handle;
+static unsigned int of_stdout_handle;
 
 static int of_console_open(void)
 {
@@ -29,6 +30,10 @@ static int of_console_open(void)
 			   sizeof(of_stdout_handle))
 		== sizeof(of_stdout_handle)))
 		return 0;
+		== sizeof(of_stdout_handle))) {
+		of_stdout_handle = be32_to_cpu(of_stdout_handle);
+		return 0;
+	}
 
 	return -1;
 }

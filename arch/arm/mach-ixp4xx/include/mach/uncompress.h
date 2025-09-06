@@ -20,6 +20,7 @@
 #define TX_DONE (UART_LSR_TEMT|UART_LSR_THRE)
 
 static volatile u32* uart_base;
+volatile u32* uart_base;
 
 static inline void putc(int c)
 {
@@ -42,6 +43,8 @@ static __inline__ void __arch_decomp_setup(unsigned long arch_id)
 	 */
 	if (machine_is_adi_coyote() || machine_is_gtwx5715() ||
 			 machine_is_gateway7001() || machine_is_wg302v2())
+	    machine_is_gateway7001() || machine_is_wg302v2() ||
+	    machine_is_devixp() || machine_is_miccpt() || machine_is_mic256())
 		uart_base = (volatile u32*) IXP4XX_UART2_BASE_PHYS;
 	else
 		uart_base = (volatile u32*) IXP4XX_UART1_BASE_PHYS;

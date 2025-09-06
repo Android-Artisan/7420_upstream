@@ -25,6 +25,7 @@
 #include <linux/types.h>
 #include <linux/errno.h>
 #include <linux/kernel.h>
+#include <linux/slab.h>
 #include <linux/init.h>
 #include <linux/spinlock.h>
 #include <linux/kthread.h>
@@ -72,6 +73,7 @@ static inline void wf_notify(int event, void *param)
 }
 
 int wf_critical_overtemp(void)
+static int wf_critical_overtemp(void)
 {
 	static char * critical_overtemp_path = "/sbin/critical_overtemp";
 	char *argv[] = { critical_overtemp_path, NULL };
@@ -163,6 +165,7 @@ static ssize_t wf_show_control(struct device *dev,
 			       struct device_attribute *attr, char *buf)
 {
 	struct wf_control *ctrl = container_of(attr, struct wf_control, attr);
+	const char *typestr;
 	s32 val = 0;
 	int err;
 
@@ -170,6 +173,22 @@ static ssize_t wf_show_control(struct device *dev,
 	if (err < 0)
 		return err;
 	return sprintf(buf, "%d\n", val);
+	if (err < 0) {
+		if (err == -EFAULT)
+			return sprintf(buf, "<HW FAULT>\n");
+		return err;
+	}
+	switch(ctrl->type) {
+	case WF_CONTROL_RPM_FAN:
+		typestr = " RPM";
+		break;
+	case WF_CONTROL_PWM_FAN:
+		typestr = " %";
+		break;
+	default:
+		typestr = "";
+	}
+	return sprintf(buf, "%d%s\n", val, typestr);
 }
 
 /* This is really only for debugging... */
@@ -209,6 +228,7 @@ int wf_register_control(struct wf_control *new_ct)
 	kref_init(&new_ct->ref);
 	list_add(&new_ct->link, &wf_controls);
 
+	sysfs_attr_init(&new_ct->attr.attr);
 	new_ct->attr.attr.name = new_ct->name;
 	new_ct->attr.attr.mode = 0644;
 	new_ct->attr.show = wf_show_control;
@@ -321,6 +341,7 @@ int wf_register_sensor(struct wf_sensor *new_sr)
 	kref_init(&new_sr->ref);
 	list_add(&new_sr->link, &wf_sensors);
 
+	sysfs_attr_init(&new_sr->attr.attr);
 	new_sr->attr.attr.name = new_sr->name;
 	new_sr->attr.attr.mode = 0444;
 	new_sr->attr.show = wf_show_sensor;
@@ -419,6 +440,7 @@ int wf_unregister_client(struct notifier_block *nb)
 	mutex_lock(&wf_lock);
 	blocking_notifier_chain_unregister(&wf_client_list, nb);
 	wf_client_count++;
+	wf_client_count--;
 	if (wf_client_count == 0)
 		wf_stop_thread();
 	mutex_unlock(&wf_lock);

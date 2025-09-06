@@ -5,6 +5,7 @@
  * Copyright 2003, 2004, 2005, 2006, 2007, 2008 Wolfson Microelectronics PLC.
  * Author: Liam Girdwood
  *         liam.girdwood@wolfsonmicro.com or linux@wolfsonmicro.com
+ * Author: Liam Girdwood <lrg@slimlogic.co.uk>
  * Parts Copyright : Ian Molton <spyro@f2s.com>
  *                   Andrew Zabolotny <zap@homelink.ru>
  *                   Russell King <rmk@arm.linux.org.uk>
@@ -49,6 +50,7 @@
 #include <linux/wm97xx.h>
 #include <linux/uaccess.h>
 #include <linux/io.h>
+#include <linux/slab.h>
 
 #define TS_NAME			"wm97xx"
 #define WM_CORE_VERSION		"1.00"
@@ -75,6 +77,11 @@ module_param_array(abs_x, int, NULL, 0);
 MODULE_PARM_DESC(abs_x, "Touchscreen absolute X min, max, fuzz");
 
 static int abs_y[3] = {320, 3750, 40};
+static int abs_x[3] = {150, 4000, 5};
+module_param_array(abs_x, int, NULL, 0);
+MODULE_PARM_DESC(abs_x, "Touchscreen absolute X min, max, fuzz");
+
+static int abs_y[3] = {200, 4000, 40};
 module_param_array(abs_y, int, NULL, 0);
 MODULE_PARM_DESC(abs_y, "Touchscreen absolute Y min, max, fuzz");
 
@@ -125,6 +132,8 @@ int wm97xx_read_aux_adc(struct wm97xx *wm, u16 adcsel)
 {
 	int power_adc = 0, auxval;
 	u16 power = 0;
+	int rc = 0;
+	int timeout = 0;
 
 	/* get codec */
 	mutex_lock(&wm->codec_mutex);
@@ -145,6 +154,9 @@ int wm97xx_read_aux_adc(struct wm97xx *wm, u16 adcsel)
 	wm->pen_probably_down = 1;
 	wm->codec->poll_sample(wm, adcsel, &auxval);
 
+	while (rc != RC_VALID && timeout++ < 5)
+		rc = wm->codec->poll_sample(wm, adcsel, &auxval);
+
 	if (power_adc)
 		wm97xx_reg_write(wm, AC97_EXTENDED_MID, power | 0x8000);
 
@@ -154,6 +166,15 @@ int wm97xx_read_aux_adc(struct wm97xx *wm, u16 adcsel)
 
 	mutex_unlock(&wm->codec_mutex);
 	return auxval & 0xfff;
+	if (timeout >= 5) {
+		dev_err(wm->dev,
+			"timeout reading auxadc %d, disabling digitiser\n",
+			adcsel);
+		wm->codec->dig_enable(wm, false);
+	}
+
+	mutex_unlock(&wm->codec_mutex);
+	return (rc == RC_VALID ? auxval & 0xfff : -EBUSY);
 }
 EXPORT_SYMBOL_GPL(wm97xx_read_aux_adc);
 
@@ -201,11 +222,13 @@ void wm97xx_set_gpio(struct wm97xx *wm, u32 gpio,
 	reg = wm97xx_reg_read(wm, AC97_GPIO_STATUS);
 
 	if (status & WM97XX_GPIO_HIGH)
+	if (status == WM97XX_GPIO_HIGH)
 		reg |= gpio;
 	else
 		reg &= ~gpio;
 
 	if (wm->id == WM9712_ID2)
+	if (wm->id == WM9712_ID2 && wm->variant != WM97xx_WM1613)
 		wm97xx_reg_write(wm, AC97_GPIO_STATUS, reg << 1);
 	else
 		wm97xx_reg_write(wm, AC97_GPIO_STATUS, reg);
@@ -309,6 +332,7 @@ static void wm97xx_pen_irq_worker(struct work_struct *work)
 		}
 
 		if (wm->id == WM9712_ID2)
+		if (wm->id == WM9712_ID2 && wm->variant != WM97xx_WM1613)
 			wm97xx_reg_write(wm, AC97_GPIO_STATUS, (status &
 						~WM97XX_GPIO_13) << 1);
 		else
@@ -325,6 +349,7 @@ static void wm97xx_pen_irq_worker(struct work_struct *work)
 	if (!wm->mach_ops->acc_enabled || wm->mach_ops->acc_pen_down) {
 		if (wm->pen_is_down && !pen_was_down) {
 			/* Data is not availiable immediately on pen down */
+			/* Data is not available immediately on pen down */
 			queue_delayed_work(wm->ts_workq, &wm->ts_reader, 1);
 		}
 
@@ -344,6 +369,7 @@ static void wm97xx_pen_irq_worker(struct work_struct *work)
  *
  * We have to disable the codec interrupt in the handler because it
  * can take upto 1ms to clear the interrupt source. We schedule a task
+ * can take up to 1ms to clear the interrupt source. We schedule a task
  * in a work queue to do the actual interaction with the chip.  The
  * interrupt is then enabled again in the slow handler when the source
  * has been cleared.
@@ -373,6 +399,7 @@ static int wm97xx_init_pen_irq(struct wm97xx *wm)
 
 	if (request_irq(wm->pen_irq, wm97xx_pen_interrupt,
 			IRQF_SHARED | IRQF_SAMPLE_RANDOM,
+	if (request_irq(wm->pen_irq, wm97xx_pen_interrupt, IRQF_SHARED,
 			"wm97xx-pen", wm)) {
 		dev_err(wm->dev,
 			"Failed to register pen down interrupt, polling");
@@ -410,6 +437,7 @@ static int wm97xx_read_samples(struct wm97xx *wm)
 			wm->pen_is_down = 0;
 			dev_dbg(wm->dev, "pen up\n");
 			input_report_abs(wm->input_dev, ABS_PRESSURE, 0);
+			input_report_key(wm->input_dev, BTN_TOUCH, 0);
 			input_sync(wm->input_dev);
 		} else if (!(rc & RC_AGAIN)) {
 			/* We need high frequency updates only while
@@ -434,6 +462,20 @@ static int wm97xx_read_samples(struct wm97xx *wm)
 		input_report_abs(wm->input_dev, ABS_X, data.x & 0xfff);
 		input_report_abs(wm->input_dev, ABS_Y, data.y & 0xfff);
 		input_report_abs(wm->input_dev, ABS_PRESSURE, data.p & 0xfff);
+
+		if (abs_x[0] > (data.x & 0xfff) ||
+		    abs_x[1] < (data.x & 0xfff) ||
+		    abs_y[0] > (data.y & 0xfff) ||
+		    abs_y[1] < (data.y & 0xfff)) {
+			dev_dbg(wm->dev, "Measurement out of range, dropping it\n");
+			rc = RC_AGAIN;
+			goto out;
+		}
+
+		input_report_abs(wm->input_dev, ABS_X, data.x & 0xfff);
+		input_report_abs(wm->input_dev, ABS_Y, data.y & 0xfff);
+		input_report_abs(wm->input_dev, ABS_PRESSURE, data.p & 0xfff);
+		input_report_key(wm->input_dev, BTN_TOUCH, 1);
 		input_sync(wm->input_dev);
 		wm->pen_is_down = 1;
 		wm->ts_reader_interval = wm->ts_reader_min_interval;
@@ -443,6 +485,7 @@ static int wm97xx_read_samples(struct wm97xx *wm)
 		wm->ts_reader_interval = wm->ts_reader_min_interval;
 	}
 
+out:
 	mutex_unlock(&wm->codec_mutex);
 	return rc;
 }
@@ -561,6 +604,7 @@ static void wm97xx_ts_input_close(struct input_dev *idev)
 static int wm97xx_probe(struct device *dev)
 {
 	struct wm97xx *wm;
+	struct wm97xx_pdata *pdata = dev_get_platdata(dev);
 	int ret = 0, id = 0;
 
 	wm = kzalloc(sizeof(struct wm97xx), GFP_KERNEL);
@@ -570,6 +614,7 @@ static int wm97xx_probe(struct device *dev)
 
 	wm->dev = dev;
 	dev->driver_data = wm;
+	dev_set_drvdata(dev, wm);
 	wm->ac97 = to_ac97_t(dev);
 
 	/* check that we have a supported codec */
@@ -581,6 +626,8 @@ static int wm97xx_probe(struct device *dev)
 	}
 
 	wm->id = wm97xx_reg_read(wm, AC97_VENDOR_ID2);
+
+	wm->variant = WM97xx_GENERIC;
 
 	dev_info(wm->dev, "detected a wm97%02x codec\n", wm->id & 0xff);
 
@@ -633,6 +680,11 @@ static int wm97xx_probe(struct device *dev)
 	set_bit(ABS_X, wm->input_dev->absbit);
 	set_bit(ABS_Y, wm->input_dev->absbit);
 	set_bit(ABS_PRESSURE, wm->input_dev->absbit);
+
+	__set_bit(EV_ABS, wm->input_dev->evbit);
+	__set_bit(EV_KEY, wm->input_dev->evbit);
+	__set_bit(BTN_TOUCH, wm->input_dev->keybit);
+
 	input_set_abs_params(wm->input_dev, ABS_X, abs_x[0], abs_x[1],
 			     abs_x[2], 0);
 	input_set_abs_params(wm->input_dev, ABS_Y, abs_y[0], abs_y[1],
@@ -641,6 +693,10 @@ static int wm97xx_probe(struct device *dev)
 			     abs_p[2], 0);
 	input_set_drvdata(wm->input_dev, wm);
 	wm->input_dev->dev.parent = dev;
+
+	input_set_drvdata(wm->input_dev, wm);
+	wm->input_dev->dev.parent = dev;
+
 	ret = input_register_device(wm->input_dev);
 	if (ret < 0)
 		goto dev_alloc_err;
@@ -653,6 +709,7 @@ static int wm97xx_probe(struct device *dev)
 	}
 	platform_set_drvdata(wm->battery_dev, wm);
 	wm->battery_dev->dev.parent = dev;
+	wm->battery_dev->dev.platform_data = pdata;
 	ret = platform_device_add(wm->battery_dev);
 	if (ret < 0)
 		goto batt_reg_err;
@@ -666,6 +723,7 @@ static int wm97xx_probe(struct device *dev)
 	}
 	platform_set_drvdata(wm->touch_dev, wm);
 	wm->touch_dev->dev.parent = dev;
+	wm->touch_dev->dev.platform_data = pdata;
 	ret = platform_device_add(wm->touch_dev);
 	if (ret < 0)
 		goto touch_reg_err;
@@ -677,6 +735,7 @@ static int wm97xx_probe(struct device *dev)
  touch_err:
 	platform_device_unregister(wm->battery_dev);
 	wm->battery_dev = NULL;
+	platform_device_del(wm->battery_dev);
  batt_reg_err:
 	platform_device_put(wm->battery_dev);
  batt_err:
@@ -704,6 +763,7 @@ static int wm97xx_remove(struct device *dev)
 
 #ifdef CONFIG_PM
 static int wm97xx_suspend(struct device *dev, pm_message_t state)
+static int __maybe_unused wm97xx_suspend(struct device *dev)
 {
 	struct wm97xx *wm = dev_get_drvdata(dev);
 	u16 reg;
@@ -736,6 +796,7 @@ static int wm97xx_suspend(struct device *dev, pm_message_t state)
 }
 
 static int wm97xx_resume(struct device *dev)
+static int __maybe_unused wm97xx_resume(struct device *dev)
 {
 	struct wm97xx *wm = dev_get_drvdata(dev);
 
@@ -773,6 +834,7 @@ static int wm97xx_resume(struct device *dev)
 #define wm97xx_suspend		NULL
 #define wm97xx_resume		NULL
 #endif
+static SIMPLE_DEV_PM_OPS(wm97xx_pm_ops, wm97xx_suspend, wm97xx_resume);
 
 /*
  * Machine specific operations
@@ -808,6 +870,7 @@ static struct device_driver wm97xx_driver = {
 	.remove =	wm97xx_remove,
 	.suspend =	wm97xx_suspend,
 	.resume =	wm97xx_resume,
+	.pm =		&wm97xx_pm_ops,
 };
 
 static int __init wm97xx_init(void)
@@ -825,5 +888,6 @@ module_exit(wm97xx_exit);
 
 /* Module information */
 MODULE_AUTHOR("Liam Girdwood <liam.girdwood@wolfsonmicro.com>");
+MODULE_AUTHOR("Liam Girdwood <lrg@slimlogic.co.uk>");
 MODULE_DESCRIPTION("WM97xx Core - Touch Screen / AUX ADC / GPIO Driver");
 MODULE_LICENSE("GPL");

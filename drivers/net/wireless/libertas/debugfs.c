@@ -11,6 +11,18 @@
 #include "host.h"
 #include "debugfs.h"
 #include "cmd.h"
+#include <linux/dcache.h>
+#include <linux/debugfs.h>
+#include <linux/delay.h>
+#include <linux/hardirq.h>
+#include <linux/mm.h>
+#include <linux/string.h>
+#include <linux/slab.h>
+#include <linux/export.h>
+
+#include "decl.h"
+#include "cmd.h"
+#include "debugfs.h"
 
 static struct dentry *lbs_dir;
 static char *szStates[] = {
@@ -44,6 +56,8 @@ static ssize_t lbs_dev_info(struct file *file, char __user *userbuf,
 	unsigned long addr = get_zeroed_page(GFP_KERNEL);
 	char *buf = (char *)addr;
 	ssize_t res;
+	if (!buf)
+		return -ENOMEM;
 
 	pos += snprintf(buf+pos, len-pos, "state = %s\n",
 				szStates[priv->connect_status]);
@@ -109,6 +123,8 @@ static ssize_t lbs_sleepparams_write(struct file *file,
 	int p1, p2, p3, p4, p5, p6;
 	unsigned long addr = get_zeroed_page(GFP_KERNEL);
 	char *buf = (char *)addr;
+	if (!buf)
+		return -ENOMEM;
 
 	buf_size = min(count, len - 1);
 	if (copy_from_user(buf, user_buf, buf_size)) {
@@ -147,6 +163,8 @@ static ssize_t lbs_sleepparams_read(struct file *file, char __user *userbuf,
 	struct sleep_params sp;
 	unsigned long addr = get_zeroed_page(GFP_KERNEL);
 	char *buf = (char *)addr;
+	if (!buf)
+		return -ENOMEM;
 
 	ret = lbs_cmd_802_11_sleep_params(priv, CMD_ACT_GET, &sp);
 	if (ret)
@@ -160,6 +178,71 @@ static ssize_t lbs_sleepparams_read(struct file *file, char __user *userbuf,
 	ret = simple_read_from_buffer(userbuf, count, ppos, buf, pos);
 
 out_unlock:
+	free_page(addr);
+	return ret;
+}
+
+static ssize_t lbs_host_sleep_write(struct file *file,
+				const char __user *user_buf, size_t count,
+				loff_t *ppos)
+{
+	struct lbs_private *priv = file->private_data;
+	ssize_t buf_size, ret;
+	int host_sleep;
+	unsigned long addr = get_zeroed_page(GFP_KERNEL);
+	char *buf = (char *)addr;
+	if (!buf)
+		return -ENOMEM;
+
+	buf_size = min(count, len - 1);
+	if (copy_from_user(buf, user_buf, buf_size)) {
+		ret = -EFAULT;
+		goto out_unlock;
+	}
+	ret = sscanf(buf, "%d", &host_sleep);
+	if (ret != 1) {
+		ret = -EINVAL;
+		goto out_unlock;
+	}
+
+	if (host_sleep == 0)
+		ret = lbs_set_host_sleep(priv, 0);
+	else if (host_sleep == 1) {
+		if (priv->wol_criteria == EHS_REMOVE_WAKEUP) {
+			netdev_info(priv->dev,
+				    "wake parameters not configured\n");
+			ret = -EINVAL;
+			goto out_unlock;
+		}
+		ret = lbs_set_host_sleep(priv, 1);
+	} else {
+		netdev_err(priv->dev, "invalid option\n");
+		ret = -EINVAL;
+	}
+
+	if (!ret)
+		ret = count;
+
+out_unlock:
+	free_page(addr);
+	return ret;
+}
+
+static ssize_t lbs_host_sleep_read(struct file *file, char __user *userbuf,
+				  size_t count, loff_t *ppos)
+{
+	struct lbs_private *priv = file->private_data;
+	ssize_t ret;
+	size_t pos = 0;
+	unsigned long addr = get_zeroed_page(GFP_KERNEL);
+	char *buf = (char *)addr;
+	if (!buf)
+		return -ENOMEM;
+
+	pos += snprintf(buf, len, "%d\n", priv->is_host_sleep_activated);
+
+	ret = simple_read_from_buffer(userbuf, count, ppos, buf, pos);
+
 	free_page(addr);
 	return ret;
 }
@@ -183,11 +266,13 @@ out_unlock:
 static void *lbs_tlv_find(uint16_t tlv_type, const uint8_t *tlv, uint16_t size)
 {
 	struct mrvlietypesheader *tlv_h;
+	struct mrvl_ie_header *tlv_h;
 	uint16_t length;
 	ssize_t pos = 0;
 
 	while (pos < size) {
 		tlv_h = (struct mrvlietypesheader *) tlv;
+		tlv_h = (struct mrvl_ie_header *) tlv;
 		if (!tlv_h->len)
 			return NULL;
 		if (tlv_h->type == cpu_to_le16(tlv_type))
@@ -206,6 +291,7 @@ static ssize_t lbs_threshold_read(uint16_t tlv_type, uint16_t event_mask,
 {
 	struct cmd_ds_802_11_subscribe_event *subscribed;
 	struct mrvlietypes_thresholds *got;
+	struct mrvl_ie_thresholds *got;
 	struct lbs_private *priv = file->private_data;
 	ssize_t ret = 0;
 	size_t pos = 0;
@@ -259,6 +345,7 @@ static ssize_t lbs_threshold_write(uint16_t tlv_type, uint16_t event_mask,
 {
 	struct cmd_ds_802_11_subscribe_event *events;
 	struct mrvlietypes_thresholds *tlv;
+	struct mrvl_ie_thresholds *tlv;
 	struct lbs_private *priv = file->private_data;
 	ssize_t buf_size;
 	int value, freq, new_mask;
@@ -444,6 +531,18 @@ static ssize_t lbs_rdmac_read(struct file *file, char __user *userbuf,
 				priv->mac_offset, priv->offsetvalue.value);
 
 	ret = simple_read_from_buffer(userbuf, count, ppos, buf, pos);
+	u32 val = 0;
+
+	if (!buf)
+		return -ENOMEM;
+
+	ret = lbs_get_reg(priv, CMD_MAC_REG_ACCESS, priv->mac_offset, &val);
+	mdelay(10);
+	if (!ret) {
+		pos = snprintf(buf, len, "MAC[0x%x] = 0x%08x\n",
+				priv->mac_offset, val);
+		ret = simple_read_from_buffer(userbuf, count, ppos, buf, pos);
+	}
 	free_page(addr);
 	return ret;
 }
@@ -456,6 +555,8 @@ static ssize_t lbs_rdmac_write(struct file *file,
 	ssize_t res, buf_size;
 	unsigned long addr = get_zeroed_page(GFP_KERNEL);
 	char *buf = (char *)addr;
+	if (!buf)
+		return -ENOMEM;
 
 	buf_size = min(count, len - 1);
 	if (copy_from_user(buf, userbuf, buf_size)) {
@@ -463,6 +564,7 @@ static ssize_t lbs_rdmac_write(struct file *file,
 		goto out_unlock;
 	}
 	priv->mac_offset = simple_strtoul((char *)buf, NULL, 16);
+	priv->mac_offset = simple_strtoul(buf, NULL, 16);
 	res = count;
 out_unlock:
 	free_page(addr);
@@ -480,6 +582,10 @@ static ssize_t lbs_wrmac_write(struct file *file,
 	struct lbs_offset_value offval;
 	unsigned long addr = get_zeroed_page(GFP_KERNEL);
 	char *buf = (char *)addr;
+	unsigned long addr = get_zeroed_page(GFP_KERNEL);
+	char *buf = (char *)addr;
+	if (!buf)
+		return -ENOMEM;
 
 	buf_size = min(count, len - 1);
 	if (copy_from_user(buf, userbuf, buf_size)) {
@@ -500,6 +606,11 @@ static ssize_t lbs_wrmac_write(struct file *file,
 	mdelay(10);
 
 	res = count;
+	res = lbs_set_reg(priv, CMD_MAC_REG_ACCESS, offset, value);
+	mdelay(10);
+
+	if (!res)
+		res = count;
 out_unlock:
 	free_page(addr);
 	return res;
@@ -526,6 +637,18 @@ static ssize_t lbs_rdbbp_read(struct file *file, char __user *userbuf,
 				priv->bbp_offset, priv->offsetvalue.value);
 
 	ret = simple_read_from_buffer(userbuf, count, ppos, buf, pos);
+	u32 val;
+
+	if (!buf)
+		return -ENOMEM;
+
+	ret = lbs_get_reg(priv, CMD_BBP_REG_ACCESS, priv->bbp_offset, &val);
+	mdelay(10);
+	if (!ret) {
+		pos = snprintf(buf, len, "BBP[0x%x] = 0x%08x\n",
+				priv->bbp_offset, val);
+		ret = simple_read_from_buffer(userbuf, count, ppos, buf, pos);
+	}
 	free_page(addr);
 
 	return ret;
@@ -539,6 +662,8 @@ static ssize_t lbs_rdbbp_write(struct file *file,
 	ssize_t res, buf_size;
 	unsigned long addr = get_zeroed_page(GFP_KERNEL);
 	char *buf = (char *)addr;
+	if (!buf)
+		return -ENOMEM;
 
 	buf_size = min(count, len - 1);
 	if (copy_from_user(buf, userbuf, buf_size)) {
@@ -546,6 +671,7 @@ static ssize_t lbs_rdbbp_write(struct file *file,
 		goto out_unlock;
 	}
 	priv->bbp_offset = simple_strtoul((char *)buf, NULL, 16);
+	priv->bbp_offset = simple_strtoul(buf, NULL, 16);
 	res = count;
 out_unlock:
 	free_page(addr);
@@ -563,6 +689,10 @@ static ssize_t lbs_wrbbp_write(struct file *file,
 	struct lbs_offset_value offval;
 	unsigned long addr = get_zeroed_page(GFP_KERNEL);
 	char *buf = (char *)addr;
+	unsigned long addr = get_zeroed_page(GFP_KERNEL);
+	char *buf = (char *)addr;
+	if (!buf)
+		return -ENOMEM;
 
 	buf_size = min(count, len - 1);
 	if (copy_from_user(buf, userbuf, buf_size)) {
@@ -583,6 +713,11 @@ static ssize_t lbs_wrbbp_write(struct file *file,
 	mdelay(10);
 
 	res = count;
+	res = lbs_set_reg(priv, CMD_BBP_REG_ACCESS, offset, value);
+	mdelay(10);
+
+	if (!res)
+		res = count;
 out_unlock:
 	free_page(addr);
 	return res;
@@ -609,6 +744,18 @@ static ssize_t lbs_rdrf_read(struct file *file, char __user *userbuf,
 				priv->rf_offset, priv->offsetvalue.value);
 
 	ret = simple_read_from_buffer(userbuf, count, ppos, buf, pos);
+	u32 val;
+
+	if (!buf)
+		return -ENOMEM;
+
+	ret = lbs_get_reg(priv, CMD_RF_REG_ACCESS, priv->rf_offset, &val);
+	mdelay(10);
+	if (!ret) {
+		pos = snprintf(buf, len, "RF[0x%x] = 0x%08x\n",
+				priv->rf_offset, val);
+		ret = simple_read_from_buffer(userbuf, count, ppos, buf, pos);
+	}
 	free_page(addr);
 
 	return ret;
@@ -622,6 +769,8 @@ static ssize_t lbs_rdrf_write(struct file *file,
 	ssize_t res, buf_size;
 	unsigned long addr = get_zeroed_page(GFP_KERNEL);
 	char *buf = (char *)addr;
+	if (!buf)
+		return -ENOMEM;
 
 	buf_size = min(count, len - 1);
 	if (copy_from_user(buf, userbuf, buf_size)) {
@@ -629,6 +778,7 @@ static ssize_t lbs_rdrf_write(struct file *file,
 		goto out_unlock;
 	}
 	priv->rf_offset = simple_strtoul((char *)buf, NULL, 16);
+	priv->rf_offset = simple_strtoul(buf, NULL, 16);
 	res = count;
 out_unlock:
 	free_page(addr);
@@ -646,6 +796,10 @@ static ssize_t lbs_wrrf_write(struct file *file,
 	struct lbs_offset_value offval;
 	unsigned long addr = get_zeroed_page(GFP_KERNEL);
 	char *buf = (char *)addr;
+	unsigned long addr = get_zeroed_page(GFP_KERNEL);
+	char *buf = (char *)addr;
+	if (!buf)
+		return -ENOMEM;
 
 	buf_size = min(count, len - 1);
 	if (copy_from_user(buf, userbuf, buf_size)) {
@@ -666,6 +820,11 @@ static ssize_t lbs_wrrf_write(struct file *file,
 	mdelay(10);
 
 	res = count;
+	res = lbs_set_reg(priv, CMD_RF_REG_ACCESS, offset, value);
+	mdelay(10);
+
+	if (!res)
+		res = count;
 out_unlock:
 	free_page(addr);
 	return res;
@@ -693,6 +852,27 @@ static struct lbs_debugfs_files debugfs_files[] = {
 };
 
 static struct lbs_debugfs_files debugfs_events_files[] = {
+	.open = simple_open, \
+	.read = (fread), \
+	.write = (fwrite), \
+	.llseek = generic_file_llseek, \
+}
+
+struct lbs_debugfs_files {
+	const char *name;
+	umode_t perm;
+	struct file_operations fops;
+};
+
+static const struct lbs_debugfs_files debugfs_files[] = {
+	{ "info", 0444, FOPS(lbs_dev_info, write_file_dummy), },
+	{ "sleepparams", 0644, FOPS(lbs_sleepparams_read,
+				lbs_sleepparams_write), },
+	{ "hostsleep", 0644, FOPS(lbs_host_sleep_read,
+				lbs_host_sleep_write), },
+};
+
+static const struct lbs_debugfs_files debugfs_events_files[] = {
 	{"low_rssi", 0644, FOPS(lbs_lowrssi_read,
 				lbs_lowrssi_write), },
 	{"low_snr", 0644, FOPS(lbs_lowsnr_read,
@@ -708,6 +888,7 @@ static struct lbs_debugfs_files debugfs_events_files[] = {
 };
 
 static struct lbs_debugfs_files debugfs_regs_files[] = {
+static const struct lbs_debugfs_files debugfs_regs_files[] = {
 	{"rdmac", 0644, FOPS(lbs_rdmac_read, lbs_rdmac_write), },
 	{"wrmac", 0600, FOPS(NULL, lbs_wrmac_write), },
 	{"rdbbp", 0644, FOPS(lbs_rdbbp_read, lbs_rdbbp_write), },
@@ -729,12 +910,14 @@ void lbs_debugfs_remove(void)
 	if (lbs_dir)
 		 debugfs_remove(lbs_dir);
 	return;
+	debugfs_remove(lbs_dir);
 }
 
 void lbs_debugfs_init_one(struct lbs_private *priv, struct net_device *dev)
 {
 	int i;
 	struct lbs_debugfs_files *files;
+	const struct lbs_debugfs_files *files;
 	if (!lbs_dir)
 		goto exit;
 
@@ -840,6 +1023,14 @@ static int num_of_items = ARRAY_SIZE(items);
  *  @param eof     end of file flag
  *  @param data    data to output
  *  @return 	   number of output data
+ * lbs_debugfs_read - proc read function
+ *
+ * @file:	file to read
+ * @userbuf:	pointer to buffer
+ * @count:	number of bytes to read
+ * @ppos:	read data starting position
+ *
+ * returns:	amount of data read or negative error code
  */
 static ssize_t lbs_debugfs_read(struct file *file, char __user *userbuf,
 			size_t count, loff_t *ppos)
@@ -856,6 +1047,12 @@ static ssize_t lbs_debugfs_read(struct file *file, char __user *userbuf,
 	p = buf;
 
 	d = (struct debug_data *)file->private_data;
+	if (!buf)
+		return -ENOMEM;
+
+	p = buf;
+
+	d = file->private_data;
 
 	for (i = 0; i < num_of_items; i++) {
 		if (d[i].size == 1)
@@ -884,6 +1081,14 @@ static ssize_t lbs_debugfs_read(struct file *file, char __user *userbuf,
  *  @param cnt     data number to write
  *  @param data    data to write
  *  @return 	   number of data
+ * lbs_debugfs_write - proc write function
+ *
+ * @f:		file pointer
+ * @buf:	pointer to data buffer
+ * @cnt:	data number to write
+ * @ppos:	file position
+ *
+ * returns:	amount of data written
  */
 static ssize_t lbs_debugfs_write(struct file *f, const char __user *buf,
 			    size_t cnt, loff_t *ppos)
@@ -897,6 +1102,12 @@ static ssize_t lbs_debugfs_write(struct file *f, const char __user *buf,
 	struct debug_data *d = (struct debug_data *)f->private_data;
 
 	pdata = kmalloc(cnt, GFP_KERNEL);
+	struct debug_data *d = f->private_data;
+
+	if (cnt == 0)
+		return 0;
+
+	pdata = kmalloc(cnt + 1, GFP_KERNEL);
 	if (pdata == NULL)
 		return 0;
 
@@ -905,6 +1116,7 @@ static ssize_t lbs_debugfs_write(struct file *f, const char __user *buf,
 		kfree(pdata);
 		return 0;
 	}
+	pdata[cnt] = '\0';
 
 	p0 = pdata;
 	for (i = 0; i < num_of_items; i++) {
@@ -950,6 +1162,20 @@ static struct file_operations lbs_debug_fops = {
  *  @param priv	   pointer struct lbs_private
  *  @param dev     pointer net_device
  *  @return 	   N/A
+static const struct file_operations lbs_debug_fops = {
+	.owner = THIS_MODULE,
+	.open = simple_open,
+	.write = lbs_debugfs_write,
+	.read = lbs_debugfs_read,
+	.llseek = default_llseek,
+};
+
+/**
+ * lbs_debug_init - create debug proc file
+ *
+ * @priv:	pointer to &struct lbs_private
+ *
+ * returns:	N/A
  */
 static void lbs_debug_init(struct lbs_private *priv)
 {

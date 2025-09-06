@@ -1,5 +1,30 @@
 #ifndef DCA_H
 #define DCA_H
+/*
+ * Copyright(c) 2007 - 2009 Intel Corporation. All rights reserved.
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the Free
+ * Software Foundation; either version 2 of the License, or (at your option)
+ * any later version.
+ *
+ * This program is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+ * more details.
+ *
+ * You should have received a copy of the GNU General Public License along with
+ * this program; if not, write to the Free Software Foundation, Inc., 59
+ * Temple Place - Suite 330, Boston, MA  02111-1307, USA.
+ *
+ * The full GNU General Public License is included in this distribution in the
+ * file called COPYING.
+ */
+#ifndef DCA_H
+#define DCA_H
+
+#include <linux/pci.h>
+
 /* DCA Provider API */
 
 /* DCA Notifier Interface */
@@ -16,6 +41,12 @@ struct dca_provider {
 	int			 id;
 };
 
+struct dca_domain {
+	struct list_head	node;
+	struct list_head	dca_providers;
+	struct pci_bus		*pci_rc;
+};
+
 struct dca_ops {
 	int	(*add_requester)    (struct dca_provider *, struct device *);
 	int	(*remove_requester) (struct dca_provider *, struct device *);
@@ -28,6 +59,7 @@ struct dca_provider *alloc_dca_provider(struct dca_ops *ops, int priv_size);
 void free_dca_provider(struct dca_provider *dca);
 int register_dca_provider(struct dca_provider *dca, struct device *dev);
 void unregister_dca_provider(struct dca_provider *dca);
+void unregister_dca_provider(struct dca_provider *dca, struct device *dev);
 
 static inline void *dca_priv(struct dca_provider *dca)
 {

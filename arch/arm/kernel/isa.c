@@ -22,6 +22,12 @@ static unsigned int isa_membase, isa_portbase, isa_portshift;
 static ctl_table ctl_isa_vars[4] = {
 	{
 		.ctl_name	= BUS_ISA_MEM_BASE,
+#include <linux/io.h>
+
+static unsigned int isa_membase, isa_portbase, isa_portshift;
+
+static struct ctl_table ctl_isa_vars[4] = {
+	{
 		.procname	= "membase",
 		.data		= &isa_membase, 
 		.maxlen		= sizeof(isa_membase),
@@ -29,6 +35,8 @@ static ctl_table ctl_isa_vars[4] = {
 		.proc_handler	= &proc_dointvec,
 	}, {
 		.ctl_name	= BUS_ISA_PORT_BASE,
+		.proc_handler	= proc_dointvec,
+	}, {
 		.procname	= "portbase",
 		.data		= &isa_portbase, 
 		.maxlen		= sizeof(isa_portbase),
@@ -36,12 +44,16 @@ static ctl_table ctl_isa_vars[4] = {
 		.proc_handler	= &proc_dointvec,
 	}, {
 		.ctl_name	= BUS_ISA_PORT_SHIFT,
+		.proc_handler	= proc_dointvec,
+	}, {
 		.procname	= "portshift",
 		.data		= &isa_portshift, 
 		.maxlen		= sizeof(isa_portshift),
 		.mode		= 0444,
 		.proc_handler	= &proc_dointvec,
 	}, {0}
+		.proc_handler	= proc_dointvec,
+	}, {}
 };
 
 static struct ctl_table_header *isa_sysctl_header;
@@ -62,6 +74,20 @@ static ctl_table ctl_bus[2] = {
 		.mode		= 0555,
 		.child		= ctl_isa,
 	}, {0}
+static struct ctl_table ctl_isa[2] = {
+	{
+		.procname	= "isa",
+		.mode		= 0555,
+		.child		= ctl_isa_vars,
+	}, {}
+};
+
+static struct ctl_table ctl_bus[2] = {
+	{
+		.procname	= "bus",
+		.mode		= 0555,
+		.child		= ctl_isa,
+	}, {}
 };
 
 void __init

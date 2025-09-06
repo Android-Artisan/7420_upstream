@@ -61,6 +61,7 @@
 
 	bcsr@f8000000 {
 		device_type = "board-control";
+		compatible = "fsl,mpc8323mds-bcsr";
 		reg = <0xf8000000 0x8000>;
 	};
 
@@ -77,6 +78,13 @@
 			device_type = "watchdog";
 			compatible = "mpc83xx_wdt";
 			reg = <0x200 0x100>;
+		};
+
+		pmc: power@b00 {
+			compatible = "fsl,mpc8323-pmc", "fsl,mpc8349-pmc";
+			reg = <0xb00 0x100 0xa00 0x100>;
+			interrupts = <80 0x8>;
+			interrupt-parent = <&ipic>;
 		};
 
 		i2c@3000 {
@@ -99,6 +107,7 @@
 			cell-index = <0>;
 			device_type = "serial";
 			compatible = "ns16550";
+			compatible = "fsl,ns16550", "ns16550";
 			reg = <0x4500 0x100>;
 			clock-frequency = <0>;
 			interrupts = <9 0x8>;
@@ -109,6 +118,7 @@
 			cell-index = <1>;
 			device_type = "serial";
 			compatible = "ns16550";
+			compatible = "fsl,ns16550", "ns16550";
 			reg = <0x4600 0x100>;
 			clock-frequency = <0>;
 			interrupts = <10 0x8>;
@@ -127,24 +137,28 @@
 			dma-channel@0 {
 				compatible = "fsl,mpc8323-dma-channel", "fsl,elo-dma-channel";
 				reg = <0 0x80>;
+				cell-index = <0>;
 				interrupt-parent = <&ipic>;
 				interrupts = <71 8>;
 			};
 			dma-channel@80 {
 				compatible = "fsl,mpc8323-dma-channel", "fsl,elo-dma-channel";
 				reg = <0x80 0x80>;
+				cell-index = <1>;
 				interrupt-parent = <&ipic>;
 				interrupts = <71 8>;
 			};
 			dma-channel@100 {
 				compatible = "fsl,mpc8323-dma-channel", "fsl,elo-dma-channel";
 				reg = <0x100 0x80>;
+				cell-index = <2>;
 				interrupt-parent = <&ipic>;
 				interrupts = <71 8>;
 			};
 			dma-channel@180 {
 				compatible = "fsl,mpc8323-dma-channel", "fsl,elo-dma-channel";
 				reg = <0x180 0x28>;
+				cell-index = <3>;
 				interrupt-parent = <&ipic>;
 				interrupts = <71 8>;
 			};
@@ -159,6 +173,7 @@
 			fsl,channel-fifo-len = <24>;
 			fsl,exec-units-mask = <0x4c>;
 			fsl,descriptor-types-mask = <0x0122003f>;
+			sleep = <&pmc 0x03000000>;
 		};
 
 		ipic: pic@700 {
@@ -245,6 +260,8 @@
 		reg = <0xe0100000 0x480>;
 		brg-frequency = <0>;
 		bus-frequency = <198000000>;
+		fsl,qe-num-riscs = <1>;
+		fsl,qe-num-snums = <28>;
 
 		muram@10000 {
 			#address-cells = <1>;
@@ -422,5 +439,10 @@
 		reg = <0xe0008500 0x100>;
 		compatible = "fsl,mpc8349-pci";
 		device_type = "pci";
+		reg = <0xe0008500 0x100		/* internal registers */
+		       0xe0008300 0x8>;		/* config space access registers */
+		compatible = "fsl,mpc8349-pci";
+		device_type = "pci";
+		sleep = <&pmc 0x00010000>;
 	};
 };

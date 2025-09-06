@@ -78,4 +78,8 @@ extern struct screen_info screen_info;
 #define ORIG_VIDEO_POINTS       (screen_info.orig_video_points)
 #endif /* __KERNEL__ */
 
+#include <uapi/linux/screen_info.h>
+
+extern struct screen_info screen_info;
+
 #endif /* _SCREEN_INFO_H */

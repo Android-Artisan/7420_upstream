@@ -4,6 +4,10 @@
  *
  *  S390 version
  *    Copyright (C) 1999 IBM Deutschland Entwicklung GmbH, IBM Corporation
+ *    interface to the SCLP-read/write driver
+ *
+ *  S390 version
+ *    Copyright IBM Corp. 1999
  *    Author(s): Martin Peschke <mpeschke@de.ibm.com>
  *		 Martin Schwidefsky <schwidefsky@de.ibm.com>
  */

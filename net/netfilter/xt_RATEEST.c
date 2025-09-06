@@ -11,6 +11,7 @@
 #include <linux/jhash.h>
 #include <linux/rtnetlink.h>
 #include <linux/random.h>
+#include <linux/slab.h>
 #include <net/gen_stats.h>
 #include <net/netlink.h>
 
@@ -23,6 +24,7 @@ static DEFINE_MUTEX(xt_rateest_mutex);
 #define RATEEST_HSIZE	16
 static struct hlist_head rateest_hash[RATEEST_HSIZE] __read_mostly;
 static unsigned int jhash_rnd __read_mostly;
+static bool rnd_inited __read_mostly;
 
 static unsigned int xt_rateest_hash(const char *name)
 {
@@ -38,7 +40,7 @@ static void xt_rateest_hash_insert(struct xt_rateest *est)
 	hlist_add_head(&est->list, &rateest_hash[h]);
 }
 
-struct xt_rateest *xt_rateest_lookup(const char *name)
+static struct xt_rateest *__xt_rateest_lookup(const char *name)
 {
 	struct xt_rateest *est;
 	struct hlist_node *n;
@@ -47,14 +49,24 @@ struct xt_rateest *xt_rateest_lookup(const char *name)
 	h = xt_rateest_hash(name);
 	mutex_lock(&xt_rateest_mutex);
 	hlist_for_each_entry(est, n, &rateest_hash[h], list) {
+	hlist_for_each_entry(est, &rateest_hash[h], list) {
 		if (strcmp(est->name, name) == 0) {
 			est->refcnt++;
-			mutex_unlock(&xt_rateest_mutex);
 			return est;
 		}
 	}
-	mutex_unlock(&xt_rateest_mutex);
+
 	return NULL;
+}
+
+struct xt_rateest *xt_rateest_lookup(const char *name)
+{
+	struct xt_rateest *est;
+
+	mutex_lock(&xt_rateest_mutex);
+	est = __xt_rateest_lookup(name);
+	mutex_unlock(&xt_rateest_mutex);
+	return est;
 }
 EXPORT_SYMBOL_GPL(xt_rateest_lookup);
 
@@ -65,6 +77,11 @@ void xt_rateest_put(struct xt_rateest *est)
 		hlist_del(&est->list);
 		gen_kill_estimator(&est->bstats, &est->rstats);
 		kfree(est);
+		/*
+		 * gen_estimator est_timer() might access est->lock or bstats,
+		 * wait a RCU grace period before freeing 'est'
+		 */
+		kfree_rcu(est, rcu);
 	}
 	mutex_unlock(&xt_rateest_mutex);
 }
@@ -80,6 +97,10 @@ xt_rateest_tg(struct sk_buff *skb,
 {
 	const struct xt_rateest_target_info *info = targinfo;
 	struct gnet_stats_basic *stats = &info->est->bstats;
+xt_rateest_tg(struct sk_buff *skb, const struct xt_action_param *par)
+{
+	const struct xt_rateest_target_info *info = par->targinfo;
+	struct gnet_stats_basic_packed *stats = &info->est->bstats;
 
 	spin_lock_bh(&info->est->lock);
 	stats->bytes += skb->len;
@@ -97,14 +118,28 @@ xt_rateest_tg_checkentry(const char *tablename,
 			 unsigned int hook_mask)
 {
 	struct xt_rateest_target_info *info = targinfo;
+static int xt_rateest_tg_checkentry(const struct xt_tgchk_param *par)
+{
+	struct xt_rateest_target_info *info = par->targinfo;
 	struct xt_rateest *est;
 	struct {
 		struct nlattr		opt;
 		struct gnet_estimator	est;
 	} cfg;
+	int ret;
 
-	est = xt_rateest_lookup(info->name);
+	if (strnlen(info->name, sizeof(est->name)) >= sizeof(est->name))
+		return -ENAMETOOLONG;
+
+	if (unlikely(!rnd_inited)) {
+		get_random_bytes(&jhash_rnd, sizeof(jhash_rnd));
+		rnd_inited = true;
+	}
+
+	mutex_lock(&xt_rateest_mutex);
+	est = __xt_rateest_lookup(info->name);
 	if (est) {
+		mutex_unlock(&xt_rateest_mutex);
 		/*
 		 * If estimator parameters are specified, they must match the
 		 * existing estimator.
@@ -119,6 +154,13 @@ xt_rateest_tg_checkentry(const char *tablename,
 		return true;
 	}
 
+			return -EINVAL;
+		}
+		info->est = est;
+		return 0;
+	}
+
+	ret = -ENOMEM;
 	est = kzalloc(sizeof(*est), GFP_KERNEL);
 	if (!est)
 		goto err1;
@@ -136,12 +178,17 @@ xt_rateest_tg_checkentry(const char *tablename,
 
 	if (gen_new_estimator(&est->bstats, &est->rstats, &est->lock,
 			      &cfg.opt) < 0)
+	ret = gen_new_estimator(&est->bstats, NULL, &est->rstats,
+				&est->lock, &cfg.opt);
+	if (ret < 0)
 		goto err2;
 
 	info->est = est;
 	xt_rateest_hash_insert(est);
 
 	return true;
+	mutex_unlock(&xt_rateest_mutex);
+	return 0;
 
 err2:
 	kfree(est);
@@ -153,6 +200,13 @@ static void xt_rateest_tg_destroy(const struct xt_target *target,
 				  void *targinfo)
 {
 	struct xt_rateest_target_info *info = targinfo;
+	mutex_unlock(&xt_rateest_mutex);
+	return ret;
+}
+
+static void xt_rateest_tg_destroy(const struct xt_tgdtor_param *par)
+{
+	struct xt_rateest_target_info *info = par->targinfo;
 
 	xt_rateest_put(info->est);
 }
@@ -176,6 +230,15 @@ static struct xt_target xt_rateest_target[] __read_mostly = {
 		.targetsize	= sizeof(struct xt_rateest_target_info),
 		.me		= THIS_MODULE,
 	},
+static struct xt_target xt_rateest_tg_reg __read_mostly = {
+	.name       = "RATEEST",
+	.revision   = 0,
+	.family     = NFPROTO_UNSPEC,
+	.target     = xt_rateest_tg,
+	.checkentry = xt_rateest_tg_checkentry,
+	.destroy    = xt_rateest_tg_destroy,
+	.targetsize = sizeof(struct xt_rateest_target_info),
+	.me         = THIS_MODULE,
 };
 
 static int __init xt_rateest_tg_init(void)
@@ -188,11 +251,13 @@ static int __init xt_rateest_tg_init(void)
 	get_random_bytes(&jhash_rnd, sizeof(jhash_rnd));
 	return xt_register_targets(xt_rateest_target,
 				   ARRAY_SIZE(xt_rateest_target));
+	return xt_register_target(&xt_rateest_tg_reg);
 }
 
 static void __exit xt_rateest_tg_fini(void)
 {
 	xt_unregister_targets(xt_rateest_target, ARRAY_SIZE(xt_rateest_target));
+	xt_unregister_target(&xt_rateest_tg_reg);
 }
 
 

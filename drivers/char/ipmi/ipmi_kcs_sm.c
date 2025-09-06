@@ -120,6 +120,8 @@ enum kcs_states {
 /* Timeouts in microseconds. */
 #define IBF_RETRY_TIMEOUT 1000000
 #define OBF_RETRY_TIMEOUT 1000000
+#define IBF_RETRY_TIMEOUT (5*USEC_PER_SEC)
+#define OBF_RETRY_TIMEOUT (5*USEC_PER_SEC)
 #define MAX_ERROR_RETRIES 10
 #define ERROR0_OBF_WAIT_JIFFIES (2*HZ)
 
@@ -253,6 +255,9 @@ static inline int check_obf(struct si_sm_data *kcs, unsigned char status,
 		if (kcs->obf_timeout < 0) {
 		    start_error_recovery(kcs, "OBF not ready in time");
 		    return 1;
+			kcs->obf_timeout = OBF_RETRY_TIMEOUT;
+			start_error_recovery(kcs, "OBF not ready in time");
+			return 1;
 		}
 		return 0;
 	}
@@ -371,6 +376,7 @@ static enum si_sm_result kcs_event(struct si_sm_data *kcs, long time)
 
 	case KCS_START_OP:
 		if (state != KCS_IDLE) {
+		if (state != KCS_IDLE_STATE) {
 			start_error_recovery(kcs,
 					     "State machine not idle at start");
 			break;
@@ -540,6 +546,7 @@ static void kcs_cleanup(struct si_sm_data *kcs)
 }
 
 struct si_sm_handlers kcs_smi_handlers = {
+const struct si_sm_handlers kcs_smi_handlers = {
 	.init_data         = init_kcs_data,
 	.start_transaction = start_kcs_transaction,
 	.get_result        = get_kcs_result,

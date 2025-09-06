@@ -37,6 +37,8 @@ UTS_SYSNAME = -DUTS_SYSNAME=\"uClinux\"
 endif
 
 ARCHMODFLAGS	+= -G0 -mlong-calls
+KBUILD_AFLAGS_MODULE += -G0 -mlong-calls
+KBUILD_CFLAGS_MODULE += -G0 -mlong-calls
 
 ifdef CONFIG_GPREL_DATA_8
 KBUILD_CFLAGS	+= -G8
@@ -74,6 +76,9 @@ else
 KBUILD_CFLAGS	+= -mcpu=fr400
 KBUILD_AFLAGS	+= -mcpu=fr400
 ASFLAGS		+= -mcpu=fr400
+else
+KBUILD_CFLAGS	+= -mcpu=fr400
+KBUILD_AFLAGS	+= -mcpu=fr400
 endif
 endif
 
@@ -95,6 +100,8 @@ endif
 
 head-y		:= arch/frv/kernel/head.o arch/frv/kernel/init_task.o
 
+head-y		:= arch/frv/kernel/head.o
+
 core-y		+= arch/frv/kernel/ arch/frv/mm/
 libs-y		+= arch/frv/lib/
 
@@ -113,3 +120,5 @@ archclean:
 
 archdep: scripts/mkdep symlinks
 	$(Q)$(MAKE) $(build)=arch/frv/boot dep
+archclean:
+	$(Q)$(MAKE) $(clean)=arch/frv/boot

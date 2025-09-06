@@ -89,6 +89,8 @@ struct exec
    (sizeof(struct exec) + (x).fh.f_nscns*SCNHSZ + SCNROUND - 1) & ~(SCNROUND - 1))
 
 #ifdef __KERNEL__
+#include <uapi/asm/a.out.h>
+
 
 /* Assume that start addresses below 4G belong to a TASO application.
    Unfortunately, there is no proper bit in the exec header to check.
@@ -99,4 +101,7 @@ struct exec
 			   ? ADDR_LIMIT_32BIT : 0) | PER_OSF4))
 
 #endif /* __KERNEL__ */
+	set_personality (((BFPM->taso || EX.ah.entry < 0x100000000L \
+			   ? ADDR_LIMIT_32BIT : 0) | PER_OSF4))
+
 #endif /* __A_OUT_GNU_H__ */

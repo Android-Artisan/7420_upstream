@@ -127,6 +127,76 @@ void gfs2_meta_sync(struct gfs2_glock *gl)
 	if (error)
 		gfs2_io_error(gl->gl_sbd);
 }
+#include "trace_gfs2.h"
+
+static int gfs2_aspace_writepage(struct page *page, struct writeback_control *wbc)
+{
+	struct buffer_head *bh, *head;
+	int nr_underway = 0;
+	int write_op = REQ_META | REQ_PRIO |
+		(wbc->sync_mode == WB_SYNC_ALL ? WRITE_SYNC : WRITE);
+
+	BUG_ON(!PageLocked(page));
+	BUG_ON(!page_has_buffers(page));
+
+	head = page_buffers(page);
+	bh = head;
+
+	do {
+		if (!buffer_mapped(bh))
+			continue;
+		/*
+		 * If it's a fully non-blocking write attempt and we cannot
+		 * lock the buffer then redirty the page.  Note that this can
+		 * potentially cause a busy-wait loop from flusher thread and kswapd
+		 * activity, but those code paths have their own higher-level
+		 * throttling.
+		 */
+		if (wbc->sync_mode != WB_SYNC_NONE) {
+			lock_buffer(bh);
+		} else if (!trylock_buffer(bh)) {
+			redirty_page_for_writepage(wbc, page);
+			continue;
+		}
+		if (test_clear_buffer_dirty(bh)) {
+			mark_buffer_async_write(bh);
+		} else {
+			unlock_buffer(bh);
+		}
+	} while ((bh = bh->b_this_page) != head);
+
+	/*
+	 * The page and its buffers are protected by PageWriteback(), so we can
+	 * drop the bh refcounts early.
+	 */
+	BUG_ON(PageWriteback(page));
+	set_page_writeback(page);
+
+	do {
+		struct buffer_head *next = bh->b_this_page;
+		if (buffer_async_write(bh)) {
+			submit_bh(write_op, bh);
+			nr_underway++;
+		}
+		bh = next;
+	} while (bh != head);
+	unlock_page(page);
+
+	if (nr_underway == 0)
+		end_page_writeback(page);
+
+	return 0;
+}
+
+const struct address_space_operations gfs2_meta_aops = {
+	.writepage = gfs2_aspace_writepage,
+	.releasepage = gfs2_releasepage,
+};
+
+const struct address_space_operations gfs2_rgrp_aops = {
+	.writepage = gfs2_aspace_writepage,
+	.releasepage = gfs2_releasepage,
+};
 
 /**
  * gfs2_getbuf - Get a buffer with a given address space
@@ -141,11 +211,16 @@ struct buffer_head *gfs2_getbuf(struct gfs2_glock *gl, u64 blkno, int create)
 {
 	struct address_space *mapping = gl->gl_aspace->i_mapping;
 	struct gfs2_sbd *sdp = gl->gl_sbd;
+	struct address_space *mapping = gfs2_glock2aspace(gl);
+	struct gfs2_sbd *sdp = gl->gl_name.ln_sbd;
 	struct page *page;
 	struct buffer_head *bh;
 	unsigned int shift;
 	unsigned long index;
 	unsigned int bufnum;
+
+	if (mapping == NULL)
+		mapping = &sdp->sd_aspace;
 
 	shift = PAGE_CACHE_SHIFT - sdp->sd_sb.sb_bsize_shift;
 	index = blkno >> shift;             /* convert block to page */
@@ -160,6 +235,8 @@ struct buffer_head *gfs2_getbuf(struct gfs2_glock *gl, u64 blkno, int create)
 		}
 	} else {
 		page = find_lock_page(mapping, index);
+		page = find_get_page_flags(mapping, index,
+						FGP_LOCK|FGP_ACCESSED);
 		if (!page)
 			return NULL;
 	}
@@ -233,6 +310,35 @@ int gfs2_meta_read(struct gfs2_glock *gl, u64 blkno, int flags,
 				return error;
 			}
 		}
+	struct gfs2_sbd *sdp = gl->gl_name.ln_sbd;
+	struct buffer_head *bh;
+
+	if (unlikely(test_bit(SDF_SHUTDOWN, &sdp->sd_flags))) {
+		*bhp = NULL;
+		return -EIO;
+	}
+
+	*bhp = bh = gfs2_getbuf(gl, blkno, CREATE);
+
+	lock_buffer(bh);
+	if (buffer_uptodate(bh)) {
+		unlock_buffer(bh);
+		return 0;
+	}
+	bh->b_end_io = end_buffer_read_sync;
+	get_bh(bh);
+	submit_bh(READ_SYNC | REQ_META | REQ_PRIO, bh);
+	if (!(flags & DIO_WAIT))
+		return 0;
+
+	wait_on_buffer(bh);
+	if (unlikely(!buffer_uptodate(bh))) {
+		struct gfs2_trans *tr = current->journal_info;
+		if (tr && tr->tr_touched)
+			gfs2_io_error_bh(sdp, bh);
+		brelse(bh);
+		*bhp = NULL;
+		return -EIO;
 	}
 
 	return 0;
@@ -327,6 +433,34 @@ void gfs2_remove_from_journal(struct buffer_head *bh, struct gfs2_trans *tr, int
 			bd->bd_blkno = bh->b_blocknr;
 			gfs2_trans_add_revoke(sdp, bd);
 		}
+void gfs2_remove_from_journal(struct buffer_head *bh, struct gfs2_trans *tr, int meta)
+{
+	struct address_space *mapping = bh->b_page->mapping;
+	struct gfs2_sbd *sdp = gfs2_mapping2sbd(mapping);
+	struct gfs2_bufdata *bd = bh->b_private;
+	int was_pinned = 0;
+
+	if (test_clear_buffer_pinned(bh)) {
+		trace_gfs2_pin(bd, 0);
+		atomic_dec(&sdp->sd_log_pinned);
+		list_del_init(&bd->bd_list);
+		if (meta)
+			tr->tr_num_buf_rm++;
+		else
+			tr->tr_num_databuf_rm++;
+		tr->tr_touched = 1;
+		was_pinned = 1;
+		brelse(bh);
+	}
+	if (bd) {
+		spin_lock(&sdp->sd_ail_lock);
+		if (bd->bd_tr) {
+			gfs2_trans_add_revoke(sdp, bd);
+		} else if (was_pinned) {
+			bh->b_private = NULL;
+			kmem_cache_free(gfs2_bufdata_cachep, bd);
+		}
+		spin_unlock(&sdp->sd_ail_lock);
 	}
 	clear_buffer_dirty(bh);
 	clear_buffer_uptodate(bh);
@@ -374,6 +508,7 @@ void gfs2_meta_wipe(struct gfs2_inode *ip, u64 bstart, u32 blen)
 
 int gfs2_meta_indirect_buffer(struct gfs2_inode *ip, int height, u64 num,
 			      int new, struct buffer_head **bhp)
+			      struct buffer_head **bhp)
 {
 	struct gfs2_sbd *sdp = GFS2_SB(&ip->i_inode);
 	struct gfs2_glock *gl = ip->i_gl;
@@ -393,6 +528,12 @@ int gfs2_meta_indirect_buffer(struct gfs2_inode *ip, int height, u64 num,
 			brelse(bh);
 			ret = -EIO;
 		}
+	u32 mtype = height ? GFS2_METATYPE_IN : GFS2_METATYPE_DI;
+
+	ret = gfs2_meta_read(gl, num, DIO_WAIT, &bh);
+	if (ret == 0 && gfs2_metatype_check(sdp, bh, mtype)) {
+		brelse(bh);
+		ret = -EIO;
 	}
 	*bhp = bh;
 	return ret;
@@ -410,6 +551,7 @@ int gfs2_meta_indirect_buffer(struct gfs2_inode *ip, int height, u64 num,
 struct buffer_head *gfs2_meta_ra(struct gfs2_glock *gl, u64 dblock, u32 extlen)
 {
 	struct gfs2_sbd *sdp = gl->gl_sbd;
+	struct gfs2_sbd *sdp = gl->gl_name.ln_sbd;
 	struct buffer_head *first_bh, *bh;
 	u32 max_ra = gfs2_tune_get(sdp, gt_max_readahead) >>
 			  sdp->sd_sb.sb_bsize_shift;
@@ -427,6 +569,7 @@ struct buffer_head *gfs2_meta_ra(struct gfs2_glock *gl, u64 dblock, u32 extlen)
 		goto out;
 	if (!buffer_locked(first_bh))
 		ll_rw_block(READ_META, 1, &first_bh);
+		ll_rw_block(READ_SYNC | REQ_META, 1, &first_bh);
 
 	dblock++;
 	extlen--;
@@ -436,6 +579,7 @@ struct buffer_head *gfs2_meta_ra(struct gfs2_glock *gl, u64 dblock, u32 extlen)
 
 		if (!buffer_uptodate(bh) && !buffer_locked(bh))
 			ll_rw_block(READA, 1, &bh);
+			ll_rw_block(READA | REQ_META, 1, &bh);
 		brelse(bh);
 		dblock++;
 		extlen--;

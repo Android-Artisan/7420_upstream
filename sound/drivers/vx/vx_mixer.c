@@ -35,6 +35,8 @@ static void vx_write_codec_reg(struct vx_core *chip, int codec, unsigned int dat
 	unsigned long flags;
 
 	snd_assert(chip->ops->write_codec, return);
+	if (snd_BUG_ON(!chip->ops->write_codec))
+		return;
 
 	if (chip->chip_status & VX_STAT_IS_STALE)
 		return;
@@ -42,6 +44,9 @@ static void vx_write_codec_reg(struct vx_core *chip, int codec, unsigned int dat
 	spin_lock_irqsave(&chip->lock, flags);
 	chip->ops->write_codec(chip, codec, data);
 	spin_unlock_irqrestore(&chip->lock, flags);
+	mutex_lock(&chip->lock);
+	chip->ops->write_codec(chip, codec, data);
+	mutex_unlock(&chip->lock);
 }
 
 /*
@@ -185,6 +190,12 @@ static void vx_change_audio_source(struct vx_core *chip, int src)
 	spin_lock_irqsave(&chip->lock, flags);
 	chip->ops->change_audio_source(chip, src);
 	spin_unlock_irqrestore(&chip->lock, flags);
+	if (chip->chip_status & VX_STAT_IS_STALE)
+		return;
+
+	mutex_lock(&chip->lock);
+	chip->ops->change_audio_source(chip, src);
+	mutex_unlock(&chip->lock);
 }
 
 
@@ -478,6 +489,10 @@ static int vx_audio_src_info(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_
 		"Digital", "Line", "Mic"
 	};
 	static char *texts_vx2[2] = {
+	static const char * const texts_mic[3] = {
+		"Digital", "Line", "Mic"
+	};
+	static const char * const texts_vx2[2] = {
 		"Digital", "Analog"
 	};
 	struct vx_core *chip = snd_kcontrol_chip(kcontrol);
@@ -498,6 +513,10 @@ static int vx_audio_src_info(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_
 		       texts_vx2[uinfo->value.enumerated.item]);
 	}
 	return 0;
+	if (chip->type >= VX_TYPE_VXPOCKET)
+		return snd_ctl_enum_info(uinfo, 1, 3, texts_mic);
+	else
+		return snd_ctl_enum_info(uinfo, 1, 2, texts_vx2);
 }
 
 static int vx_audio_src_get(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_value *ucontrol)
@@ -554,6 +573,11 @@ static int vx_clock_mode_info(struct snd_kcontrol *kcontrol, struct snd_ctl_elem
 	strcpy(uinfo->value.enumerated.name,
 	       texts[uinfo->value.enumerated.item]);
 	return 0;
+	static const char * const texts[3] = {
+		"Auto", "Internal", "External"
+	};
+
+	return snd_ctl_enum_info(uinfo, 1, 3, texts);
 }
 
 static int vx_clock_mode_get(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_value *ucontrol)

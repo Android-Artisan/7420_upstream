@@ -20,6 +20,16 @@
 #include <mach/mfp-pxa930.h>
 
 static struct pxa3xx_mfp_addr_map pxa930_mfp_addr_map[] __initdata = {
+#include <linux/dma-mapping.h>
+#include <linux/irq.h>
+#include <linux/gpio-pxa.h>
+#include <linux/platform_device.h>
+
+#include <mach/pxa930.h>
+
+#include "devices.h"
+
+static struct mfp_addr_map pxa930_mfp_addr_map[] __initdata = {
 
 	MFP_ADDR(GPIO0, 0x02e0),
 	MFP_ADDR(GPIO1, 0x02dc),
@@ -183,6 +193,40 @@ static int __init pxa930_init(void)
 		pxa3xx_init_mfp();
 		pxa3xx_mfp_init_addr(pxa930_mfp_addr_map);
 	}
+
+static struct mfp_addr_map pxa935_mfp_addr_map[] __initdata = {
+	MFP_ADDR(GPIO159, 0x0524),
+	MFP_ADDR(GPIO163, 0x0534),
+	MFP_ADDR(GPIO167, 0x0544),
+	MFP_ADDR(GPIO168, 0x0548),
+	MFP_ADDR(GPIO169, 0x054c),
+	MFP_ADDR(GPIO170, 0x0550),
+	MFP_ADDR(GPIO171, 0x0554),
+	MFP_ADDR(GPIO172, 0x0558),
+	MFP_ADDR(GPIO173, 0x055c),
+
+	MFP_ADDR_END,
+};
+
+static struct pxa_gpio_platform_data pxa93x_gpio_pdata = {
+	.irq_base	= PXA_GPIO_TO_IRQ(0),
+};
+
+static int __init pxa930_init(void)
+{
+	int ret = 0;
+
+	if (cpu_is_pxa93x()) {
+		mfp_init_base(io_p2v(MFPR_BASE));
+		mfp_init_addr(pxa930_mfp_addr_map);
+		platform_device_add_data(&pxa93x_device_gpio,
+					 &pxa93x_gpio_pdata,
+					 sizeof(pxa93x_gpio_pdata));
+		ret = platform_device_register(&pxa93x_device_gpio);
+	}
+
+	if (cpu_is_pxa935())
+		mfp_init_addr(pxa935_mfp_addr_map);
 
 	return 0;
 }

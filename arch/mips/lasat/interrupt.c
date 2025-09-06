@@ -41,6 +41,17 @@ void disable_lasat_irq(unsigned int irq_nr)
 void enable_lasat_irq(unsigned int irq_nr)
 {
 	irq_nr -= LASAT_IRQ_BASE;
+void disable_lasat_irq(struct irq_data *d)
+{
+	unsigned int irq_nr = d->irq - LASAT_IRQ_BASE;
+
+	*lasat_int_mask &= ~(1 << irq_nr) << lasat_int_mask_shift;
+}
+
+void enable_lasat_irq(struct irq_data *d)
+{
+	unsigned int irq_nr = d->irq - LASAT_IRQ_BASE;
+
 	*lasat_int_mask |= (1 << irq_nr) << lasat_int_mask_shift;
 }
 
@@ -50,6 +61,8 @@ static struct irq_chip lasat_irq_type = {
 	.mask = disable_lasat_irq,
 	.mask_ack = disable_lasat_irq,
 	.unmask = enable_lasat_irq,
+	.irq_mask = disable_lasat_irq,
+	.irq_unmask = enable_lasat_irq,
 };
 
 static inline int ls1bit32(unsigned int x)
@@ -106,6 +119,8 @@ static struct irqaction cascade = {
 	.handler	= no_action,
 	.mask		= CPU_MASK_NONE,
 	.name		= "cascade",
+	.name		= "cascade",
+	.flags		= IRQF_NO_THREAD,
 };
 
 void __init arch_init_irq(void)
@@ -130,6 +145,7 @@ void __init arch_init_irq(void)
 
 	for (i = LASAT_IRQ_BASE; i <= LASAT_IRQ_END; i++)
 		set_irq_chip_and_handler(i, &lasat_irq_type, handle_level_irq);
+		irq_set_chip_and_handler(i, &lasat_irq_type, handle_level_irq);
 
 	setup_irq(LASAT_CASCADE_IRQ, &cascade);
 }

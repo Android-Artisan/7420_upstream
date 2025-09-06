@@ -11,6 +11,8 @@
 #include <asm/mmu_context.h>
 #include <asm/arch/hwregs/asm/mmu_defs_asm.h>
 #include <asm/arch/hwregs/supp_reg.h>
+#include <arch/hwregs/asm/mmu_defs_asm.h>
+#include <arch/hwregs/supp_reg.h>
 
 #define UPDATE_TLB_SEL_IDX(val)					\
 do {								\
@@ -190,6 +192,11 @@ switch_mm(struct mm_struct *prev, struct mm_struct *next,
 
 		/*
 		 * Remember the pgd for the fault handlers. Keep a seperate
+		cpumask_set_cpu(cpu, mm_cpumask(next));
+		spin_unlock(&mmu_context_lock);
+
+		/*
+		 * Remember the pgd for the fault handlers. Keep a separate
 		 * copy of it because current and active_mm might be invalid
 		 * at points where * there's still a need to derefer the pgd.
 		 */

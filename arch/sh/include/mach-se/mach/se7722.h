@@ -13,6 +13,7 @@
  * for more details.
  *
  */
+#include <linux/sh_intc.h>
 #include <asm/addrspace.h>
 
 /* Box specific addresses.  */
@@ -32,6 +33,7 @@
 #define PA_PERIPHERAL	0xB0000000
 
 #define PA_PCIC         PA_PERIPHERAL   		/* MR-SHPC-01 PCMCIA */
+#define PA_PCIC         PA_PERIPHERAL		/* MR-SHPC-01 PCMCIA */
 #define PA_MRSHPC       (PA_PERIPHERAL + 0x003fffe0)    /* MR-SHPC-01 PCMCIA controller */
 #define PA_MRSHPC_MW1   (PA_PERIPHERAL + 0x00400000)    /* MR-SHPC-01 memory window base */
 #define PA_MRSHPC_MW2   (PA_PERIPHERAL + 0x00500000)    /* MR-SHPC-01 attribute window base */
@@ -52,6 +54,7 @@
 
 #define PA_LED		(PA_PERIPHERAL + 0x00800000)	/* 8bit LED */
 #define PA_FPGA		(PA_PERIPHERAL + 0x01800000) 	/* FPGA base address */
+#define PA_FPGA		(PA_PERIPHERAL + 0x01800000)	/* FPGA base address */
 
 #define PA_LAN		(PA_AREA6_IO + 0)		/* SMC LAN91C111 */
 /* GPIO */
@@ -85,6 +88,8 @@
 #define IRQ01_MASK      0xb1800008
 
 /* Bits in IRQ01_* registers */
+#define IRQ0_IRQ        evt2irq(0x600)
+#define IRQ1_IRQ        evt2irq(0x620)
 
 #define SE7722_FPGA_IRQ_USB	0 /* IRQ0 */
 #define SE7722_FPGA_IRQ_SMC	1 /* IRQ0 */
@@ -104,6 +109,13 @@
 #define USB_IRQ		(SE7722_FPGA_IRQ_BASE + SE7722_FPGA_IRQ_USB)
 
 /* arch/sh/boards/se/7722/irq.c */
+#define SE7722_FPGA_IRQ_NR	6
+
+struct irq_domain;
+
+/* arch/sh/boards/se/7722/irq.c */
+extern struct irq_domain *se7722_irq_domain;
+
 void init_se7722_IRQ(void);
 
 #define __IO_PREFIX		se7722

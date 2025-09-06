@@ -14,6 +14,7 @@ extern ia64_mv_dma_sync_single_for_cpu		hwsw_sync_single_for_cpu;
 extern ia64_mv_dma_sync_sg_for_cpu		hwsw_sync_sg_for_cpu;
 extern ia64_mv_dma_sync_single_for_device	hwsw_sync_single_for_device;
 extern ia64_mv_dma_sync_sg_for_device		hwsw_sync_sg_for_device;
+extern ia64_mv_dma_get_ops			hwsw_dma_get_ops;
 
 /*
  * This stuff has dual use!
@@ -38,5 +39,9 @@ extern ia64_mv_dma_sync_sg_for_device		hwsw_sync_sg_for_device;
 #define platform_dma_sync_sg_for_cpu		hwsw_sync_sg_for_cpu
 #define platform_dma_sync_single_for_device	hwsw_sync_single_for_device
 #define platform_dma_sync_sg_for_device		hwsw_sync_sg_for_device
+#define ia64_platform_name			"hpzx1_swiotlb"
+#define platform_setup				dig_setup
+#define platform_dma_init			machvec_noop
+#define platform_dma_get_ops			hwsw_dma_get_ops
 
 #endif /* _ASM_IA64_MACHVEC_HPZX1_SWIOTLB_h */

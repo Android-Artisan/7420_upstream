@@ -9,6 +9,7 @@
  *
  * Modified:
  *               Copyright 2007 Analog Devices Inc.
+ *               Copyright 2007-2008 Analog Devices Inc.
  *
  * Bugs:         Enter bugs at http://blackfin.uclinux.org/
  *
@@ -34,6 +35,10 @@
 #include <linux/fs.h>
 #include <linux/interrupt.h>
 #include <linux/irq.h>
+#include <linux/fs.h>
+#include <linux/interrupt.h>
+#include <linux/irq.h>
+#include <linux/slab.h>
 #include <linux/sched.h>
 #include <linux/pm.h>
 #include <linux/sysctl.h>
@@ -81,6 +86,9 @@ struct bf54x_kpad {
 	unsigned short *keycode;
 	struct timer_list timer;
 	unsigned int keyup_test_jiffies;
+	unsigned short kpad_msel;
+	unsigned short kpad_prescale;
+	unsigned short kpad_ctl;
 };
 
 static inline int bfin_kpad_find_key(struct bf54x_kpad *bf54x_kpad,
@@ -160,6 +168,7 @@ static irqreturn_t bfin_kpad_isr(int irq, void *dev_id)
 
 	if (bfin_kpad_get_keypressed(bf54x_kpad)) {
 		disable_irq(bf54x_kpad->irq);
+		disable_irq_nosync(bf54x_kpad->irq);
 		bf54x_kpad->lastkey = key;
 		mod_timer(&bf54x_kpad->timer,
 			  jiffies + bf54x_kpad->keyup_test_jiffies);
@@ -177,18 +186,24 @@ static int __devinit bfin_kpad_probe(struct platform_device *pdev)
 {
 	struct bf54x_kpad *bf54x_kpad;
 	struct bfin_kpad_platform_data *pdata = pdev->dev.platform_data;
+static int bfin_kpad_probe(struct platform_device *pdev)
+{
+	struct bf54x_kpad *bf54x_kpad;
+	struct bfin_kpad_platform_data *pdata = dev_get_platdata(&pdev->dev);
 	struct input_dev *input;
 	int i, error;
 
 	if (!pdata->rows || !pdata->cols || !pdata->keymap) {
 		printk(KERN_ERR DRV_NAME
 			": No rows, cols or keymap from pdata\n");
+		dev_err(&pdev->dev, "no rows, cols or keymap from pdata\n");
 		return -EINVAL;
 	}
 
 	if (!pdata->keymapsize ||
 	    pdata->keymapsize > (pdata->rows * pdata->cols)) {
 		printk(KERN_ERR DRV_NAME ": Invalid keymapsize\n");
+		dev_err(&pdev->dev, "invalid keymapsize\n");
 		return -EINVAL;
 	}
 
@@ -210,6 +225,10 @@ static int __devinit bfin_kpad_probe(struct platform_device *pdev)
 	    !pdata->coldrive_time || !pdata->coldrive_time > MAX_MULT) {
 		printk(KERN_ERR DRV_NAME
 			": Invalid Debounce/Columdrive Time from pdata\n");
+	if (!pdata->debounce_time || pdata->debounce_time > MAX_MULT ||
+	    !pdata->coldrive_time || pdata->coldrive_time > MAX_MULT) {
+		dev_warn(&pdev->dev,
+			"invalid platform debounce/columndrive time\n");
 		bfin_write_KPAD_MSEL(0xFF0);	/* Default MSEL	*/
 	} else {
 		bfin_write_KPAD_MSEL(
@@ -230,6 +249,7 @@ static int __devinit bfin_kpad_probe(struct platform_device *pdev)
 				    DRV_NAME)) {
 		printk(KERN_ERR DRV_NAME
 			": Requesting Peripherals failed\n");
+		dev_err(&pdev->dev, "requesting peripherals failed\n");
 		error = -EFAULT;
 		goto out0;
 	}
@@ -238,6 +258,7 @@ static int __devinit bfin_kpad_probe(struct platform_device *pdev)
 				    DRV_NAME)) {
 		printk(KERN_ERR DRV_NAME
 			": Requesting Peripherals failed\n");
+		dev_err(&pdev->dev, "requesting peripherals failed\n");
 		error = -EFAULT;
 		goto out1;
 	}
@@ -254,6 +275,10 @@ static int __devinit bfin_kpad_probe(struct platform_device *pdev)
 		printk(KERN_ERR DRV_NAME
 			": unable to claim irq %d; error %d\n",
 			bf54x_kpad->irq, error);
+				0, DRV_NAME, pdev);
+	if (error) {
+		dev_err(&pdev->dev, "unable to claim irq %d\n",
+			bf54x_kpad->irq);
 		goto out2;
 	}
 
@@ -290,12 +315,15 @@ static int __devinit bfin_kpad_probe(struct platform_device *pdev)
 
 	for (i = 0; i < input->keycodemax; i++)
 		__set_bit(bf54x_kpad->keycode[i] & KEY_MAX, input->keybit);
+		if (bf54x_kpad->keycode[i] <= KEY_MAX)
+			__set_bit(bf54x_kpad->keycode[i], input->keybit);
 	__clear_bit(KEY_RESERVED, input->keybit);
 
 	error = input_register_device(input);
 	if (error) {
 		printk(KERN_ERR DRV_NAME
 			": Unable to register input device (%d)\n", error);
+		dev_err(&pdev->dev, "unable to register input device\n");
 		goto out4;
 	}
 
@@ -338,6 +366,9 @@ out:
 static int __devexit bfin_kpad_remove(struct platform_device *pdev)
 {
 	struct bfin_kpad_platform_data *pdata = pdev->dev.platform_data;
+static int bfin_kpad_remove(struct platform_device *pdev)
+{
+	struct bfin_kpad_platform_data *pdata = dev_get_platdata(&pdev->dev);
 	struct bf54x_kpad *bf54x_kpad = platform_get_drvdata(pdev);
 
 	del_timer_sync(&bf54x_kpad->timer);
@@ -360,6 +391,10 @@ static int bfin_kpad_suspend(struct platform_device *pdev, pm_message_t state)
 {
 	struct bf54x_kpad *bf54x_kpad = platform_get_drvdata(pdev);
 
+	bf54x_kpad->kpad_msel = bfin_read_KPAD_MSEL();
+	bf54x_kpad->kpad_prescale = bfin_read_KPAD_PRESCALE();
+	bf54x_kpad->kpad_ctl = bfin_read_KPAD_CTL();
+
 	if (device_may_wakeup(&pdev->dev))
 		enable_irq_wake(bf54x_kpad->irq);
 
@@ -369,6 +404,10 @@ static int bfin_kpad_suspend(struct platform_device *pdev, pm_message_t state)
 static int bfin_kpad_resume(struct platform_device *pdev)
 {
 	struct bf54x_kpad *bf54x_kpad = platform_get_drvdata(pdev);
+
+	bfin_write_KPAD_MSEL(bf54x_kpad->kpad_msel);
+	bfin_write_KPAD_PRESCALE(bf54x_kpad->kpad_prescale);
+	bfin_write_KPAD_CTL(bf54x_kpad->kpad_ctl);
 
 	if (device_may_wakeup(&pdev->dev))
 		disable_irq_wake(bf54x_kpad->irq);
@@ -403,6 +442,16 @@ static void __exit bfin_kpad_exit(void)
 
 module_init(bfin_kpad_init);
 module_exit(bfin_kpad_exit);
+static struct platform_driver bfin_kpad_device_driver = {
+	.driver		= {
+		.name	= DRV_NAME,
+	},
+	.probe		= bfin_kpad_probe,
+	.remove		= bfin_kpad_remove,
+	.suspend	= bfin_kpad_suspend,
+	.resume		= bfin_kpad_resume,
+};
+module_platform_driver(bfin_kpad_device_driver);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Michael Hennerich <hennerich@blackfin.uclinux.org>");

@@ -19,12 +19,18 @@
 
 #include <linux/poll.h>
 #include <linux/vmalloc.h>
+#include <linux/slab.h>
 #include <linux/timer.h>
 #include <linux/miscdevice.h>
 #include <linux/module.h>
 #include <linux/mISDNif.h>
 
 static int	*debug;
+#include <linux/mutex.h>
+#include "core.h"
+
+static DEFINE_MUTEX(mISDN_mutex);
+static u_int	*debug;
 
 
 struct mISDNtimerdev {
@@ -62,12 +68,14 @@ mISDN_open(struct inode *ino, struct file *filep)
 	filep->private_data = dev;
 	__module_get(THIS_MODULE);
 	return 0;
+	return nonseekable_open(ino, filep);
 }
 
 static int
 mISDN_close(struct inode *ino, struct file *filep)
 {
 	struct mISDNtimerdev	*dev = filep->private_data;
+	struct list_head	*list = &dev->pending;
 	struct mISDNtimer	*timer, *next;
 
 	if (*debug & DEBUG_TIMER)
@@ -76,6 +84,19 @@ mISDN_close(struct inode *ino, struct file *filep)
 		del_timer(&timer->tl);
 		kfree(timer);
 	}
+
+	spin_lock_irq(&dev->lock);
+	while (!list_empty(list)) {
+		timer = list_first_entry(list, struct mISDNtimer, list);
+		spin_unlock_irq(&dev->lock);
+		del_timer_sync(&timer->tl);
+		spin_lock_irq(&dev->lock);
+		/* it might have been moved to ->expired */
+		list_del(&timer->list);
+		kfree(timer);
+	}
+	spin_unlock_irq(&dev->lock);
+
 	list_for_each_entry_safe(timer, next, &dev->expired, list) {
 		kfree(timer);
 	}
@@ -90,6 +111,11 @@ mISDN_read(struct file *filep, char *buf, size_t count, loff_t *off)
 	struct mISDNtimerdev	*dev = filep->private_data;
 	struct mISDNtimer	*timer;
 	u_long	flags;
+mISDN_read(struct file *filep, char __user *buf, size_t count, loff_t *off)
+{
+	struct mISDNtimerdev	*dev = filep->private_data;
+	struct list_head *list = &dev->expired;
+	struct mISDNtimer	*timer;
 	int	ret = 0;
 
 	if (*debug & DEBUG_TIMER)
@@ -116,10 +142,35 @@ mISDN_read(struct file *filep, char *buf, size_t count, loff_t *off)
 		list_del(&timer->list);
 		spin_unlock_irqrestore(&dev->lock, flags);
 		if (put_user(timer->id, (int *)buf))
+		       filep, buf, (int)count, off);
+
+	if (count < sizeof(int))
+		return -ENOSPC;
+
+	spin_lock_irq(&dev->lock);
+	while (list_empty(list) && (dev->work == 0)) {
+		spin_unlock_irq(&dev->lock);
+		if (filep->f_flags & O_NONBLOCK)
+			return -EAGAIN;
+		wait_event_interruptible(dev->wait, (dev->work ||
+						     !list_empty(list)));
+		if (signal_pending(current))
+			return -ERESTARTSYS;
+		spin_lock_irq(&dev->lock);
+	}
+	if (dev->work)
+		dev->work = 0;
+	if (!list_empty(list)) {
+		timer = list_first_entry(list, struct mISDNtimer, list);
+		list_del(&timer->list);
+		spin_unlock_irq(&dev->lock);
+		if (put_user(timer->id, (int __user *)buf))
 			ret = -EFAULT;
 		else
 			ret = sizeof(int);
 		kfree(timer);
+	} else {
+		spin_unlock_irq(&dev->lock);
 	}
 	return ret;
 }
@@ -152,6 +203,7 @@ mISDN_poll(struct file *filep, poll_table *wait)
 		if (*debug & DEBUG_TIMER)
 			printk(KERN_DEBUG "%s work(%d) empty(%d)\n", __func__,
 				dev->work, list_empty(&dev->expired));
+			       dev->work, list_empty(&dev->expired));
 	}
 	return mask;
 }
@@ -164,8 +216,16 @@ dev_expire_timer(struct mISDNtimer *timer)
 	spin_lock_irqsave(&timer->dev->lock, flags);
 	list_del(&timer->list);
 	list_add_tail(&timer->list, &timer->dev->expired);
-	spin_unlock_irqrestore(&timer->dev->lock, flags);
+dev_expire_timer(unsigned long data)
+{
+	struct mISDNtimer *timer = (void *)data;
+	u_long			flags;
+
+	spin_lock_irqsave(&timer->dev->lock, flags);
+	if (timer->id >= 0)
+		list_move_tail(&timer->list, &timer->dev->expired);
 	wake_up_interruptible(&timer->dev->wait);
+	spin_unlock_irqrestore(&timer->dev->lock, flags);
 }
 
 static int
@@ -173,6 +233,7 @@ misdn_add_timer(struct mISDNtimerdev *dev, int timeout)
 {
 	int 			id;
 	u_long			flags;
+	int			id;
 	struct mISDNtimer	*timer;
 
 	if (!timeout) {
@@ -196,6 +257,16 @@ misdn_add_timer(struct mISDNtimerdev *dev, int timeout)
 		timer->tl.expires = jiffies + ((HZ * (u_long)timeout) / 1000);
 		add_timer(&timer->tl);
 		id = timer->id;
+		timer->dev = dev;
+		setup_timer(&timer->tl, dev_expire_timer, (long)timer);
+		spin_lock_irq(&dev->lock);
+		id = timer->id = dev->next_id++;
+		if (dev->next_id < 0)
+			dev->next_id = 1;
+		list_add_tail(&timer->list, &dev->pending);
+		timer->tl.expires = jiffies + ((HZ * (u_long)timeout) / 1000);
+		add_timer(&timer->tl);
+		spin_unlock_irq(&dev->lock);
 	}
 	return id;
 }
@@ -225,6 +296,25 @@ unlock:
 static int
 mISDN_ioctl(struct inode *inode, struct file *filep, unsigned int cmd,
     unsigned long arg)
+	struct mISDNtimer	*timer;
+
+	spin_lock_irq(&dev->lock);
+	list_for_each_entry(timer, &dev->pending, list) {
+		if (timer->id == id) {
+			list_del_init(&timer->list);
+			timer->id = -1;
+			spin_unlock_irq(&dev->lock);
+			del_timer_sync(&timer->tl);
+			kfree(timer);
+			return id;
+		}
+	}
+	spin_unlock_irq(&dev->lock);
+	return 0;
+}
+
+static long
+mISDN_ioctl(struct file *filep, unsigned int cmd, unsigned long arg)
 {
 	struct mISDNtimerdev	*dev = filep->private_data;
 	int			id, tout, ret = 0;
@@ -233,6 +323,8 @@ mISDN_ioctl(struct inode *inode, struct file *filep, unsigned int cmd,
 	if (*debug & DEBUG_TIMER)
 		printk(KERN_DEBUG "%s(%p, %x, %lx)\n", __func__,
 		    filep, cmd, arg);
+		       filep, cmd, arg);
+	mutex_lock(&mISDN_mutex);
 	switch (cmd) {
 	case IMADDTIMER:
 		if (get_user(tout, (int __user *)arg)) {
@@ -243,6 +335,7 @@ mISDN_ioctl(struct inode *inode, struct file *filep, unsigned int cmd,
 		if (*debug & DEBUG_TIMER)
 			printk(KERN_DEBUG "%s add %d id %d\n", __func__,
 			    tout, id);
+			       tout, id);
 		if (id < 0) {
 			ret = id;
 			break;
@@ -275,6 +368,18 @@ static struct file_operations mISDN_fops = {
 	.ioctl		= mISDN_ioctl,
 	.open		= mISDN_open,
 	.release	= mISDN_close,
+	mutex_unlock(&mISDN_mutex);
+	return ret;
+}
+
+static const struct file_operations mISDN_fops = {
+	.owner		= THIS_MODULE,
+	.read		= mISDN_read,
+	.poll		= mISDN_poll,
+	.unlocked_ioctl	= mISDN_ioctl,
+	.open		= mISDN_open,
+	.release	= mISDN_close,
+	.llseek		= no_llseek,
 };
 
 static struct miscdevice mISDNtimer = {
@@ -285,6 +390,7 @@ static struct miscdevice mISDNtimer = {
 
 int
 mISDN_inittimer(int *deb)
+mISDN_inittimer(u_int *deb)
 {
 	int	err;
 

@@ -253,3 +253,4 @@ static void __exit spaceorb_exit(void)
 
 module_init(spaceorb_init);
 module_exit(spaceorb_exit);
+module_serio_driver(spaceorb_drv);

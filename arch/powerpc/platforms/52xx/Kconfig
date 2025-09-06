@@ -2,6 +2,8 @@ config PPC_MPC52xx
 	bool "52xx-based boards"
 	depends on PPC_MULTIPLATFORM && PPC32
 	select PPC_CLOCK
+	depends on 6xx
+	select COMMON_CLK
 	select PPC_PCI_CHOICE
 
 config PPC_MPC5200_SIMPLE
@@ -22,6 +24,13 @@ config PPC_MPC5200_SIMPLE
 
 	  Boards that are compatible with this generic platform support
 	  are: 'tqc,tqm5200', 'promess,motionpro', 'schindler,cm5200'.
+	  are:
+	     intercontrol,digsy-mtc
+	     phytec,pcm030
+	     phytec,pcm032
+	     promess,motionpro
+	     schindler,cm5200
+	     tqc,tqm5200
 
 config PPC_EFIKA
 	bool "bPlan Efika 5k2. MPC5200B based computer"
@@ -32,6 +41,11 @@ config PPC_EFIKA
 
 config PPC_LITE5200
 	bool "Freescale Lite5200 Eval Board"
+	depends on PPC_MPC52xx
+	select DEFAULT_UIMAGE
+
+config PPC_MEDIA5200
+	bool "Freescale Media5200 Eval Board"
 	depends on PPC_MPC52xx
 	select DEFAULT_UIMAGE
 
@@ -51,3 +65,7 @@ config PPC_MPC5200_GPIO
 	select GENERIC_GPIO
 	help
 	  Enable gpiolib support for mpc5200 based boards
+config PPC_MPC5200_LPBFIFO
+	tristate "MPC5200 LocalPlus bus FIFO driver"
+	depends on PPC_MPC52xx && PPC_BESTCOMM
+	select PPC_BESTCOMM_GEN_BD

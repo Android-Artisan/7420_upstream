@@ -1,6 +1,7 @@
 /* n2-drv.c: Niagara-2 RNG driver.
  *
  * Copyright (C) 2008 David S. Miller <davem@davemloft.net>
+ * Copyright (C) 2008, 2011 David S. Miller <davem@davemloft.net>
  */
 
 #include <linux/kernel.h>
@@ -26,6 +27,10 @@
 #define DRV_MODULE_RELDATE	"May 15, 2008"
 
 static char version[] __devinitdata =
+#define DRV_MODULE_VERSION	"0.2"
+#define DRV_MODULE_RELDATE	"July 27, 2011"
+
+static char version[] =
 	DRV_MODULE_NAME ".c:v" DRV_MODULE_VERSION " (" DRV_MODULE_RELDATE ")\n";
 
 MODULE_AUTHOR("David S. Miller (davem@davemloft.net)");
@@ -72,6 +77,7 @@ MODULE_VERSION(DRV_MODULE_VERSION);
  *
  * The RNG_CTL_VCO value of each noise cell must be programmed
  * seperately.  This is why 4 control register values must be provided
+ * separately.  This is why 4 control register values must be provided
  * to the hypervisor.  During a write, the hypervisor writes them all,
  * one at a time, to the actual RNG_CTL register.  The first three
  * values are used to setup the desired RNG_CTL_VCO for each entropy
@@ -483,6 +489,7 @@ static void n2rng_dump_test_buffer(struct n2rng *np)
 
 	for (i = 0; i < SELFTEST_BUFFER_WORDS; i++)
 		dev_err(&np->op->dev, "Test buffer slot %d [0x%016lx]\n",
+		dev_err(&np->op->dev, "Test buffer slot %d [0x%016llx]\n",
 			i, np->test_buffer[i]);
 }
 
@@ -612,6 +619,7 @@ static void n2rng_work(struct work_struct *work)
 }
 
 static void __devinit n2rng_driver_version(void)
+static void n2rng_driver_version(void)
 {
 	static int n2rng_version_printed;
 
@@ -629,6 +637,21 @@ static int __devinit n2rng_probe(struct of_device *op,
 	n2rng_driver_version();
 
 	np = kzalloc(sizeof(*np), GFP_KERNEL);
+static const struct of_device_id n2rng_match[];
+static int n2rng_probe(struct platform_device *op)
+{
+	const struct of_device_id *match;
+	int multi_capable;
+	int err = -ENOMEM;
+	struct n2rng *np;
+
+	match = of_match_device(n2rng_match, &op->dev);
+	if (!match)
+		return -EINVAL;
+	multi_capable = (match->data != NULL);
+
+	n2rng_driver_version();
+	np = devm_kzalloc(&op->dev, sizeof(*np), GFP_KERNEL);
 	if (!np)
 		goto out;
 	np->op = op;
@@ -637,6 +660,8 @@ static int __devinit n2rng_probe(struct of_device *op,
 
 	if (victoria_falls)
 		np->flags |= N2RNG_FLAG_VF;
+	if (multi_capable)
+		np->flags |= N2RNG_FLAG_MULTI;
 
 	err = -ENODEV;
 	np->hvapi_major = 2;
@@ -661,6 +686,18 @@ static int __devinit n2rng_probe(struct of_device *op,
 			goto out_hvapi_unregister;
 		}
 		np->num_units = of_getintprop_default(op->node,
+			goto out;
+		}
+	}
+
+	if (np->flags & N2RNG_FLAG_MULTI) {
+		if (np->hvapi_major < 2) {
+			dev_err(&op->dev, "multi-unit-capable RNG requires "
+				"HVAPI major version 2 or later, got %lu\n",
+				np->hvapi_major);
+			goto out_hvapi_unregister;
+		}
+		np->num_units = of_getintprop_default(op->dev.of_node,
 						      "rng-#units", 0);
 		if (!np->num_units) {
 			dev_err(&op->dev, "VF RNG lacks rng-#units property\n");
@@ -674,6 +711,9 @@ static int __devinit n2rng_probe(struct of_device *op,
 
 	np->units = kzalloc(sizeof(struct n2rng_unit) * np->num_units,
 			    GFP_KERNEL);
+	np->units = devm_kzalloc(&op->dev,
+				 sizeof(struct n2rng_unit) * np->num_units,
+				 GFP_KERNEL);
 	err = -ENOMEM;
 	if (!np->units)
 		goto out_hvapi_unregister;
@@ -685,6 +725,11 @@ static int __devinit n2rng_probe(struct of_device *op,
 	dev_info(&op->dev, "Found %s RNG, units: %d\n",
 		 ((np->flags & N2RNG_FLAG_VF) ?
 		  "Victoria Falls" : "Niagara2"),
+		goto out_hvapi_unregister;
+
+	dev_info(&op->dev, "Found %s RNG, units: %d\n",
+		 ((np->flags & N2RNG_FLAG_MULTI) ?
+		  "multi-unit-capable" : "single-unit"),
 		 np->num_units);
 
 	np->hwrng.name = "n2rng";
@@ -696,6 +741,9 @@ static int __devinit n2rng_probe(struct of_device *op,
 		goto out_free_units;
 
 	dev_set_drvdata(&op->dev, np);
+		goto out_hvapi_unregister;
+
+	platform_set_drvdata(op, np);
 
 	schedule_delayed_work(&np->work, 0);
 
@@ -710,6 +758,9 @@ out_hvapi_unregister:
 
 out_free:
 	kfree(np);
+out_hvapi_unregister:
+	sun4v_hvapi_unregister(HV_GRP_RNG);
+
 out:
 	return err;
 }
@@ -717,6 +768,9 @@ out:
 static int __devexit n2rng_remove(struct of_device *op)
 {
 	struct n2rng *np = dev_get_drvdata(&op->dev);
+static int n2rng_remove(struct platform_device *op)
+{
+	struct n2rng *np = platform_get_drvdata(op);
 
 	np->flags |= N2RNG_FLAG_SHUTDOWN;
 
@@ -737,6 +791,10 @@ static int __devexit n2rng_remove(struct of_device *op)
 }
 
 static struct of_device_id n2rng_match[] = {
+	return 0;
+}
+
+static const struct of_device_id n2rng_match[] = {
 	{
 		.name		= "random-number-generator",
 		.compatible	= "SUNW,n2-rng",
@@ -744,6 +802,11 @@ static struct of_device_id n2rng_match[] = {
 	{
 		.name		= "random-number-generator",
 		.compatible	= "SUNW,vf-rng",
+		.data		= (void *) 1,
+	},
+	{
+		.name		= "random-number-generator",
+		.compatible	= "SUNW,kt-rng",
 		.data		= (void *) 1,
 	},
 	{},
@@ -769,3 +832,13 @@ static void __exit n2rng_exit(void)
 
 module_init(n2rng_init);
 module_exit(n2rng_exit);
+static struct platform_driver n2rng_driver = {
+	.driver = {
+		.name = "n2rng",
+		.of_match_table = n2rng_match,
+	},
+	.probe		= n2rng_probe,
+	.remove		= n2rng_remove,
+};
+
+module_platform_driver(n2rng_driver);

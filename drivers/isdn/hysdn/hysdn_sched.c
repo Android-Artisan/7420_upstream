@@ -56,6 +56,33 @@ hysdn_sched_rx(hysdn_card *card, unsigned char *buf, unsigned short len,
 		default:
 			printk(KERN_INFO "irq message channel %d len %d unhandled \n", chan, len);
 			break;
+	       unsigned short chan)
+{
+
+	switch (chan) {
+	case CHAN_NDIS_DATA:
+		if (hynet_enable & (1 << card->myid)) {
+			/* give packet to network handler */
+			hysdn_rx_netpkt(card, buf, len);
+		}
+		break;
+
+	case CHAN_ERRLOG:
+		hysdn_card_errlog(card, (tErrLogEntry *) buf, len);
+		if (card->err_log_state == ERRLOG_STATE_ON)
+			card->err_log_state = ERRLOG_STATE_START;	/* start new fetch */
+		break;
+#ifdef CONFIG_HYSDN_CAPI
+	case CHAN_CAPI:
+/* give packet to CAPI handler */
+		if (hycapi_enable & (1 << card->myid)) {
+			hycapi_rx_capipkt(card, buf, len);
+		}
+		break;
+#endif /* CONFIG_HYSDN_CAPI */
+	default:
+		printk(KERN_INFO "irq message channel %d len %d unhandled \n", chan, len);
+		break;
 
 	}			/* switch rx channel */
 
@@ -74,6 +101,8 @@ int
 hysdn_sched_tx(hysdn_card *card, unsigned char *buf,
 		unsigned short volatile *len, unsigned short volatile *chan,
 		unsigned short maxlen)
+	       unsigned short volatile *len, unsigned short volatile *chan,
+	       unsigned short maxlen)
 {
 	struct sk_buff *skb;
 
@@ -111,6 +140,8 @@ hysdn_sched_tx(hysdn_card *card, unsigned char *buf,
 	/* now handle network interface packets */
 	if ((hynet_enable & (1 << card->myid)) && 
 	    (skb = hysdn_tx_netget(card)) != NULL) 
+	if ((hynet_enable & (1 << card->myid)) &&
+	    (skb = hysdn_tx_netget(card)) != NULL)
 	{
 		if (skb->len <= maxlen) {
 			/* copy the packet to the buffer */
@@ -125,6 +156,8 @@ hysdn_sched_tx(hysdn_card *card, unsigned char *buf,
 #ifdef CONFIG_HYSDN_CAPI
 	if( ((hycapi_enable & (1 << card->myid))) && 
 	    ((skb = hycapi_tx_capiget(card)) != NULL) )
+	if (((hycapi_enable & (1 << card->myid))) &&
+	    ((skb = hycapi_tx_capiget(card)) != NULL))
 	{
 		if (skb->len <= maxlen) {
 			skb_copy_from_linear_data(skb, buf, skb->len);
@@ -144,6 +177,7 @@ hysdn_sched_tx(hysdn_card *card, unsigned char *buf,
 /* negative error code.                                                      */
 /* The function works with timeouts perhaps not giving the greatest speed    */
 /* sending the line, but this should be meaningless beacuse only some lines  */
+/* sending the line, but this should be meaningless because only some lines  */
 /* are to be sent and this happens very seldom.                              */
 /*****************************************************************************/
 int

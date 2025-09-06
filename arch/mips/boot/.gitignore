@@ -2,3 +2,9 @@ mkboot
 elf2ecoff
 zImage
 zImage.tmp
+vmlinux.*
+zImage
+zImage.tmp
+calc_vmlinuz_load_addr
+uImage
+*.dtb

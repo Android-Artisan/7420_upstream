@@ -3,6 +3,7 @@
  * ARCS PROM firmware.
  *
  * Copyright (C) 1996 David S. Miller (dm@engr.sgi.com)
+ * Copyright (C) 1996 David S. Miller (davem@davemloft.net)
  */
 #include <linux/init.h>
 #include <asm/sgialib.h>

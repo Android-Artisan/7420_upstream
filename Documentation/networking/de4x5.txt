@@ -42,7 +42,6 @@
     measurement. Their error is +/-20k on a quiet (private) network and also
     depend on what load the CPU has.
 
-    =========================================================================
 
     The ability to load this  driver as a loadable  module has been included
     and used extensively  during the driver development  (to save those long

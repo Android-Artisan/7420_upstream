@@ -58,6 +58,7 @@
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
+#include <linux/slab.h>
 #include <linux/timer.h>
 #include <linux/list.h>
 
@@ -73,7 +74,7 @@ EXPORT_SYMBOL(hil_mlc_unregister);
 static LIST_HEAD(hil_mlcs);
 static DEFINE_RWLOCK(hil_mlcs_lock);
 static struct timer_list	hil_mlcs_kicker;
-static int			hil_mlcs_probe;
+static int			hil_mlcs_probe, hil_mlc_stop;
 
 static void hil_mlcs_process(unsigned long unused);
 static DECLARE_TASKLET_DISABLED(hil_mlcs_tasklet, hil_mlcs_process, 0);
@@ -692,6 +693,12 @@ static int hilse_donode(hil_mlc *mlc)
 			hilse_setup_input(mlc, node + 1);
 
 	out2:
+		if (!mlc->istarted) {
+			/* Prepare to receive input */
+			if ((node + 1)->act & HILSE_IN)
+				hilse_setup_input(mlc, node + 1);
+		}
+
 		write_unlock_irqrestore(&mlc->lock, flags);
 
 		if (down_trylock(&mlc->osem)) {
@@ -704,9 +711,13 @@ static int hilse_donode(hil_mlc *mlc)
 		if (!mlc->ostarted) {
 			mlc->ostarted = 1;
 			mlc->opacket = pack;
-			mlc->out(mlc);
+			rc = mlc->out(mlc);
 			nextidx = HILSEN_DOZE;
 			write_unlock_irqrestore(&mlc->lock, flags);
+			if (rc) {
+				hil_mlc_stop = 1;
+				return 1;
+			}
 			break;
 		}
 		mlc->ostarted = 0;
@@ -717,8 +728,13 @@ static int hilse_donode(hil_mlc *mlc)
 
 	case HILSE_CTS:
 		write_lock_irqsave(&mlc->lock, flags);
-		nextidx = mlc->cts(mlc) ? node->bad : node->good;
+		rc = mlc->cts(mlc);
+		nextidx = rc ? node->bad : node->good;
 		write_unlock_irqrestore(&mlc->lock, flags);
+		if (rc) {
+			hil_mlc_stop = 1;
+			return 1;
+		}
 		break;
 
 	default:
@@ -786,6 +802,12 @@ static void hil_mlcs_process(unsigned long unused)
 
 static void hil_mlcs_timer(unsigned long data)
 {
+	if (hil_mlc_stop) {
+		/* could not send packet - stop immediately. */
+		pr_warn(PREFIX "HIL seems stuck - Disabling HIL MLC.\n");
+		return;
+	}
+
 	hil_mlcs_probe = 1;
 	tasklet_schedule(&hil_mlcs_tasklet);
 	/* Re-insert the periodic task. */
@@ -917,12 +939,16 @@ int hil_mlc_register(hil_mlc *mlc)
 	init_MUTEX(&mlc->osem);
 
 	init_MUTEX(&mlc->isem);
+	sema_init(&mlc->osem, 1);
+
+	sema_init(&mlc->isem, 1);
 	mlc->icount = -1;
 	mlc->imatch = 0;
 
 	mlc->opercnt = 0;
 
 	init_MUTEX_LOCKED(&(mlc->csem));
+	sema_init(&(mlc->csem), 0);
 
 	hil_mlc_clear_di_scratch(mlc);
 	hil_mlc_clear_di_map(mlc, 0);
@@ -934,6 +960,15 @@ int hil_mlc_register(hil_mlc *mlc)
 		snprintf(mlc_serio->name, sizeof(mlc_serio->name)-1, "HIL_SERIO%d", i);
 		snprintf(mlc_serio->phys, sizeof(mlc_serio->phys)-1, "HIL%d", i);
 		mlc_serio->id			= hil_mlc_serio_id;
+		if (!mlc->serio[i]) {
+			for (; i >= 0; i--)
+				kfree(mlc->serio[i]);
+			return -ENOMEM;
+		}
+		snprintf(mlc_serio->name, sizeof(mlc_serio->name)-1, "HIL_SERIO%d", i);
+		snprintf(mlc_serio->phys, sizeof(mlc_serio->phys)-1, "HIL%d", i);
+		mlc_serio->id			= hil_mlc_serio_id;
+		mlc_serio->id.id		= i; /* HIL port no. */
 		mlc_serio->write		= hil_mlc_serio_write;
 		mlc_serio->open			= hil_mlc_serio_open;
 		mlc_serio->close		= hil_mlc_serio_close;
@@ -996,6 +1031,8 @@ static int __init hil_mlc_init(void)
 	hil_mlcs_kicker.expires = jiffies + HZ;
 	hil_mlcs_kicker.function = &hil_mlcs_timer;
 	add_timer(&hil_mlcs_kicker);
+	setup_timer(&hil_mlcs_kicker, &hil_mlcs_timer, 0);
+	mod_timer(&hil_mlcs_kicker, jiffies + HZ);
 
 	tasklet_enable(&hil_mlcs_tasklet);
 
@@ -1007,6 +1044,7 @@ static void __exit hil_mlc_exit(void)
 	del_timer(&hil_mlcs_kicker);
 
 	tasklet_disable(&hil_mlcs_tasklet);
+	del_timer_sync(&hil_mlcs_kicker);
 	tasklet_kill(&hil_mlcs_tasklet);
 }
 

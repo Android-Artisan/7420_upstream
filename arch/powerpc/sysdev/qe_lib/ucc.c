@@ -4,6 +4,7 @@
  * QE UCC API Set - UCC specific routines implementations.
  *
  * Copyright (C) 2006 Freescale Semicondutor, Inc. All rights reserved.
+ * Copyright (C) 2006 Freescale Semiconductor, Inc. All rights reserved.
  *
  * Authors: 	Shlomi Gridish <gridish@freescale.com>
  * 		Li Yang <leoli@freescale.com>
@@ -19,6 +20,10 @@
 #include <linux/slab.h>
 #include <linux/stddef.h>
 #include <linux/module.h>
+#include <linux/errno.h>
+#include <linux/stddef.h>
+#include <linux/spinlock.h>
+#include <linux/export.h>
 
 #include <asm/irq.h>
 #include <asm/io.h>

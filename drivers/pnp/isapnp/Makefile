@@ -9,3 +9,7 @@ obj-y := core.o compat.o $(isapnp-proc-y)
 ifeq ($(CONFIG_PNP_DEBUG),y)
 EXTRA_CFLAGS += -DDEBUG
 endif
+obj-y			+= pnp.o
+pnp-y			:= core.o compat.o
+
+pnp-$(CONFIG_PROC_FS)	+= proc.o

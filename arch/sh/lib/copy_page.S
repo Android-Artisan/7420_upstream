@@ -31,6 +31,9 @@ ENTRY(copy_page)
 	mov	r5,r11
 	mov	r5,r8
 	mov.l	.Lpsz,r0
+	mov	#(PAGE_SIZE >> 10), r0
+	shll8	r0
+	shll2	r0
 	add	r0,r8
 	!
 1:	mov.l	@r11+,r0
@@ -79,6 +82,11 @@ ENTRY(copy_page)
 	9999: __VA_ARGS__ ;		\
 	.section __ex_table, "a";	\
 	.long 9999b, 6000f	;	\
+	.previous
+#define EX_NO_POP(...)			\
+	9999: __VA_ARGS__ ;		\
+	.section __ex_table, "a";	\
+	.long 9999b, 6005f	;	\
 	.previous
 ENTRY(__copy_user)
 	! Check if small number of bytes
@@ -142,6 +150,9 @@ EX(	mov.b	r1,@r4		)
 EX(	mov.b	@r5+,r0		)
 	dt	r6
 EX(	mov.b	r0,@r4		)
+EX_NO_POP(	mov.b	@r5+,r0		)
+	dt	r6
+EX_NO_POP(	mov.b	r0,@r4		)
 	bf/s	2b
 	 add	#1,r4
 
@@ -151,6 +162,7 @@ EX(	mov.b	r0,@r4		)
 # Exception handler:
 .section .fixup, "ax"
 6000:
+6005:
 	mov.l	8000f,r1
 	mov	r3,r0
 	jmp	@r1

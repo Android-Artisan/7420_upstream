@@ -87,6 +87,12 @@
 #include <linux/delay.h>
 
 #include <asm/io.h>
+#include <linux/pnp.h>
+#include <linux/isapnp.h>
+#include <linux/module.h>
+#include <linux/delay.h>
+#include <linux/io.h>
+
 #include <asm/dma.h>
 #include <sound/core.h>
 #include <sound/control.h>
@@ -122,6 +128,9 @@ struct snd_es18xx {
 	unsigned int dma2_shift;
 
 	struct snd_card *card;
+	unsigned int dma1_shift;
+	unsigned int dma2_shift;
+
 	struct snd_pcm *pcm;
 	struct snd_pcm_substream *playback_a_substream;
 	struct snd_pcm_substream *capture_a_substream;
@@ -144,6 +153,9 @@ struct snd_es18xx {
 
 struct snd_audiodrive {
 	struct snd_es18xx *chip;
+#ifdef CONFIG_PM
+	unsigned char pm_reg;
+#endif
 #ifdef CONFIG_PNP
 	struct pnp_dev *dev;
 	struct pnp_dev *devc;
@@ -167,6 +179,7 @@ struct snd_audiodrive {
 #define ES18XX_I2S	0x0200	/* I2S mixer control */
 #define ES18XX_MUTEREC	0x0400	/* Record source can be muted */
 #define ES18XX_CONTROL	0x0800	/* Has control ports */
+#define ES18XX_GPO_2BIT	0x1000	/* GPO0,1 controlled by PM port */
 
 /* Power Management */
 #define ES18XX_PM	0x07
@@ -534,6 +547,7 @@ static int snd_es18xx_playback1_trigger(struct snd_es18xx *chip,
 #ifdef AVOID_POPS
 		/* Avoid pops */
                 udelay(100000);
+		mdelay(100);
 		if (chip->caps & ES18XX_PCM2)
 			/* Restore Audio 2 volume */
 			snd_es18xx_mixer_write(chip, 0x7C, chip->audio2_vol);
@@ -551,6 +565,7 @@ static int snd_es18xx_playback1_trigger(struct snd_es18xx *chip,
                 snd_es18xx_mixer_write(chip, 0x78, 0x00);
 #ifdef AVOID_POPS
                 udelay(25000);
+		mdelay(25);
 		if (chip->caps & ES18XX_PCM2)
 			/* Set Audio 2 volume to 0 */
 			snd_es18xx_mixer_write(chip, 0x7C, 0);
@@ -612,6 +627,7 @@ static int snd_es18xx_capture_prepare(struct snd_pcm_substream *substream)
 
 #ifdef AVOID_POPS
 	udelay(100000);
+	mdelay(100);
 #endif
 
         /* Set format */
@@ -709,6 +725,7 @@ static int snd_es18xx_playback2_trigger(struct snd_es18xx *chip,
 #ifdef AVOID_POPS
 		/* Avoid pops */
                 udelay(100000);
+		mdelay(100);
                 /* Enable Audio 1 */
                 snd_es18xx_dsp_command(chip, 0xD1);
 #endif
@@ -723,6 +740,7 @@ static int snd_es18xx_playback2_trigger(struct snd_es18xx *chip,
 #ifdef AVOID_POPS
 		/* Avoid pops */
                 udelay(25000);
+		mdelay(25);
                 /* Disable Audio 1 */
                 snd_es18xx_dsp_command(chip, 0xD3);
 #endif
@@ -756,6 +774,8 @@ static int snd_es18xx_playback_trigger(struct snd_pcm_substream *substream,
 static irqreturn_t snd_es18xx_interrupt(int irq, void *dev_id)
 {
 	struct snd_es18xx *chip = dev_id;
+	struct snd_card *card = dev_id;
+	struct snd_es18xx *chip = card->private_data;
 	unsigned char status;
 
 	if (chip->caps & ES18XX_CONTROL) {
@@ -811,6 +831,16 @@ static irqreturn_t snd_es18xx_interrupt(int irq, void *dev_id)
 		if (!split) {
 			snd_ctl_notify(chip->card, SNDRV_CTL_EVENT_MASK_VALUE, &chip->master_switch->id);
 			snd_ctl_notify(chip->card, SNDRV_CTL_EVENT_MASK_VALUE, &chip->master_volume->id);
+			snd_ctl_notify(card, SNDRV_CTL_EVENT_MASK_VALUE,
+					&chip->hw_switch->id);
+			snd_ctl_notify(card, SNDRV_CTL_EVENT_MASK_VALUE,
+					&chip->hw_volume->id);
+		}
+		if (!split) {
+			snd_ctl_notify(card, SNDRV_CTL_EVENT_MASK_VALUE,
+					&chip->master_switch->id);
+			snd_ctl_notify(card, SNDRV_CTL_EVENT_MASK_VALUE,
+					&chip->master_volume->id);
 		}
 		/* ack interrupt */
 		snd_es18xx_mixer_write(chip, 0x66, 0x00);
@@ -821,17 +851,20 @@ static irqreturn_t snd_es18xx_interrupt(int irq, void *dev_id)
 static snd_pcm_uframes_t snd_es18xx_playback_pointer(struct snd_pcm_substream *substream)
 {
         struct snd_es18xx *chip = snd_pcm_substream_chip(substream);
+	unsigned int size = snd_pcm_lib_buffer_bytes(substream);
 	int pos;
 
 	if (substream->number == 0 && (chip->caps & ES18XX_PCM2)) {
 		if (!(chip->active & DAC2))
 			return 0;
 		pos = snd_dma_pointer(chip->dma2, chip->dma2_size);
+		pos = snd_dma_pointer(chip->dma2, size);
 		return pos >> chip->dma2_shift;
 	} else {
 		if (!(chip->active & DAC1))
 			return 0;
 		pos = snd_dma_pointer(chip->dma1, chip->dma1_size);
+		pos = snd_dma_pointer(chip->dma1, size);
 		return pos >> chip->dma1_shift;
 	}
 }
@@ -839,11 +872,13 @@ static snd_pcm_uframes_t snd_es18xx_playback_pointer(struct snd_pcm_substream *s
 static snd_pcm_uframes_t snd_es18xx_capture_pointer(struct snd_pcm_substream *substream)
 {
         struct snd_es18xx *chip = snd_pcm_substream_chip(substream);
+	unsigned int size = snd_pcm_lib_buffer_bytes(substream);
 	int pos;
 
         if (!(chip->active & ADC1))
                 return 0;
 	pos = snd_dma_pointer(chip->dma1, chip->dma1_size);
+	pos = snd_dma_pointer(chip->dma1, size);
 	return pos >> chip->dma1_shift;
 }
 
@@ -981,6 +1016,10 @@ static int snd_es18xx_info_mux(struct snd_kcontrol *kcontrol, struct snd_ctl_ele
 		"Mic", "CD", "Line", "Master", "Mix"
 	};
 	static char *texts8Source[8] = {
+	static const char * const texts5Source[5] = {
+		"Mic", "CD", "Line", "Master", "Mix"
+	};
+	static const char * const texts8Source[8] = {
 		"Mic", "Mic Master", "CD", "AOUT",
 		"Mic1", "Mix", "Line", "Master"
 	};
@@ -1014,6 +1053,19 @@ static int snd_es18xx_info_mux(struct snd_kcontrol *kcontrol, struct snd_ctl_ele
 		return -EINVAL;
 	}
 	return 0;
+	switch (chip->version) {
+	case 0x1868:
+	case 0x1878:
+		return snd_ctl_enum_info(uinfo, 1, 4, texts5Source);
+	case 0x1887:
+	case 0x1888:
+		return snd_ctl_enum_info(uinfo, 1, 5, texts5Source);
+	case 0x1869: /* DS somewhat contradictory for 1869: could be be 5 or 8 */
+	case 0x1879:
+		return snd_ctl_enum_info(uinfo, 1, 8, texts8Source);
+	default:
+		return -EINVAL;
+	}
 }
 
 static int snd_es18xx_get_mux(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_value *ucontrol)
@@ -1153,6 +1205,14 @@ static int snd_es18xx_reg_read(struct snd_es18xx *chip, unsigned char reg)
   .info = snd_es18xx_info_single, \
   .get = snd_es18xx_get_single, .put = snd_es18xx_put_single, \
   .private_value = reg | (shift << 8) | (mask << 16) | (invert << 24) }
+#define ES18XX_SINGLE(xname, xindex, reg, shift, mask, flags) \
+{ .iface = SNDRV_CTL_ELEM_IFACE_MIXER, .name = xname, .index = xindex, \
+  .info = snd_es18xx_info_single, \
+  .get = snd_es18xx_get_single, .put = snd_es18xx_put_single, \
+  .private_value = reg | (shift << 8) | (mask << 16) | (flags << 24) }
+
+#define ES18XX_FL_INVERT	(1 << 0)
+#define ES18XX_FL_PMPORT	(1 << 1)
 
 static int snd_es18xx_info_single(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_info *uinfo)
 {
@@ -1175,6 +1235,14 @@ static int snd_es18xx_get_single(struct snd_kcontrol *kcontrol, struct snd_ctl_e
 	int val;
 	
 	val = snd_es18xx_reg_read(chip, reg);
+	int invert = (kcontrol->private_value >> 24) & ES18XX_FL_INVERT;
+	int pm_port = (kcontrol->private_value >> 24) & ES18XX_FL_PMPORT;
+	int val;
+
+	if (pm_port)
+		val = inb(chip->port + ES18XX_PM);
+	else
+		val = snd_es18xx_reg_read(chip, reg);
 	ucontrol->value.integer.value[0] = (val >> shift) & mask;
 	if (invert)
 		ucontrol->value.integer.value[0] = mask - ucontrol->value.integer.value[0];
@@ -1188,6 +1256,8 @@ static int snd_es18xx_put_single(struct snd_kcontrol *kcontrol, struct snd_ctl_e
 	int shift = (kcontrol->private_value >> 8) & 0xff;
 	int mask = (kcontrol->private_value >> 16) & 0xff;
 	int invert = (kcontrol->private_value >> 24) & 0xff;
+	int invert = (kcontrol->private_value >> 24) & ES18XX_FL_INVERT;
+	int pm_port = (kcontrol->private_value >> 24) & ES18XX_FL_PMPORT;
 	unsigned char val;
 	
 	val = (ucontrol->value.integer.value[0] & mask);
@@ -1195,6 +1265,15 @@ static int snd_es18xx_put_single(struct snd_kcontrol *kcontrol, struct snd_ctl_e
 		val = mask - val;
 	mask <<= shift;
 	val <<= shift;
+	if (pm_port) {
+		unsigned char cur = inb(chip->port + ES18XX_PM);
+
+		if ((cur & mask) == val)
+			return 0;
+		outb((cur & ~mask) | val, chip->port + ES18XX_PM);
+		return 1;
+	}
+
 	return snd_es18xx_reg_bits(chip, reg, mask, val) != val;
 }
 
@@ -1317,6 +1396,10 @@ static struct snd_kcontrol_new snd_es18xx_opt_speaker =
 
 static struct snd_kcontrol_new snd_es18xx_opt_1869[] = {
 ES18XX_SINGLE("Capture Switch", 0, 0x1c, 4, 1, 1),
+	ES18XX_SINGLE("Beep Playback Volume", 0, 0x3c, 0, 7, 0);
+
+static struct snd_kcontrol_new snd_es18xx_opt_1869[] = {
+ES18XX_SINGLE("Capture Switch", 0, 0x1c, 4, 1, ES18XX_FL_INVERT),
 ES18XX_SINGLE("Video Playback Switch", 0, 0x7f, 0, 1, 0),
 ES18XX_DOUBLE("Mono Playback Volume", 0, 0x6d, 0x6d, 4, 0, 15, 0),
 ES18XX_DOUBLE("Mono Capture Volume", 0, 0x6f, 0x6f, 4, 0, 15, 0)
@@ -1388,6 +1471,22 @@ static int __devinit snd_es18xx_config_read(struct snd_es18xx *chip, unsigned ch
 
 static void __devinit snd_es18xx_config_write(struct snd_es18xx *chip, 
 					      unsigned char reg, unsigned char data)
+static struct snd_kcontrol_new snd_es18xx_opt_gpo_2bit[] = {
+ES18XX_SINGLE("GPO0 Switch", 0, ES18XX_PM, 0, 1, ES18XX_FL_PMPORT),
+ES18XX_SINGLE("GPO1 Switch", 0, ES18XX_PM, 1, 1, ES18XX_FL_PMPORT),
+};
+
+static int snd_es18xx_config_read(struct snd_es18xx *chip, unsigned char reg)
+{
+	int data;
+
+	outb(reg, chip->ctrl_port);
+	data = inb(chip->ctrl_port + 1);
+	return data;
+}
+
+static void snd_es18xx_config_write(struct snd_es18xx *chip,
+				    unsigned char reg, unsigned char data)
 {
 	/* No need for spinlocks, this function is used only in
 	   otherwise protected init code */
@@ -1399,6 +1498,9 @@ static void __devinit snd_es18xx_config_write(struct snd_es18xx *chip,
 }
 
 static int __devinit snd_es18xx_initialize(struct snd_es18xx *chip)
+static int snd_es18xx_initialize(struct snd_es18xx *chip,
+				 unsigned long mpu_port,
+				 unsigned long fm_port)
 {
 	int mask = 0;
 
@@ -1421,6 +1523,15 @@ static int __devinit snd_es18xx_initialize(struct snd_es18xx *chip)
 			/* MPU-401 I/O */
 			snd_es18xx_config_write(chip, 0x64, chip->mpu_port >> 8);
 			snd_es18xx_config_write(chip, 0x65, chip->mpu_port & 0xff);
+		if (fm_port > 0 && fm_port != SNDRV_AUTO_PORT) {
+			/* FM I/O */
+			snd_es18xx_config_write(chip, 0x62, fm_port >> 8);
+			snd_es18xx_config_write(chip, 0x63, fm_port & 0xff);
+		}
+		if (mpu_port > 0 && mpu_port != SNDRV_AUTO_PORT) {
+			/* MPU-401 I/O */
+			snd_es18xx_config_write(chip, 0x64, mpu_port >> 8);
+			snd_es18xx_config_write(chip, 0x65, mpu_port & 0xff);
 			/* MPU-401 IRQ */
 			snd_es18xx_config_write(chip, 0x28, chip->irq);
 		}
@@ -1512,6 +1623,12 @@ static int __devinit snd_es18xx_initialize(struct snd_es18xx *chip)
 			   Joystick enabled
 			   FM enabled */
 			snd_es18xx_mixer_write(chip, 0x40, 0x43 | (chip->mpu_port & 0xf0) >> 1);
+		if (mpu_port > 0 && mpu_port != SNDRV_AUTO_PORT) {
+			/* MPU401 share irq with audio
+			   Joystick enabled
+			   FM enabled */
+			snd_es18xx_mixer_write(chip, 0x40,
+					       0x43 | (mpu_port & 0xf0) >> 1);
 		}
 		snd_es18xx_mixer_write(chip, 0x7f, ((irqmask + 1) << 1) | 0x01);
 	}
@@ -1561,6 +1678,7 @@ static int __devinit snd_es18xx_initialize(struct snd_es18xx *chip)
 }
 
 static int __devinit snd_es18xx_identify(struct snd_es18xx *chip)
+static int snd_es18xx_identify(struct snd_es18xx *chip)
 {
 	int hi,lo;
 
@@ -1630,6 +1748,9 @@ static int __devinit snd_es18xx_identify(struct snd_es18xx *chip)
 }
 
 static int __devinit snd_es18xx_probe(struct snd_es18xx *chip)
+static int snd_es18xx_probe(struct snd_es18xx *chip,
+			    unsigned long mpu_port,
+			    unsigned long fm_port)
 {
 	if (snd_es18xx_identify(chip) < 0) {
 		snd_printk(KERN_ERR PFX "[0x%lx] ESS chip not found\n", chip->port);
@@ -1642,6 +1763,10 @@ static int __devinit snd_es18xx_probe(struct snd_es18xx *chip)
 		break;
 	case 0x1869:
 		chip->caps = ES18XX_PCM2 | ES18XX_SPATIALIZER | ES18XX_RECMIX | ES18XX_NEW_RATE | ES18XX_AUXB | ES18XX_MONO | ES18XX_MUTEREC | ES18XX_CONTROL | ES18XX_HWV;
+		chip->caps = ES18XX_DUPLEX_MONO | ES18XX_DUPLEX_SAME | ES18XX_CONTROL | ES18XX_GPO_2BIT;
+		break;
+	case 0x1869:
+		chip->caps = ES18XX_PCM2 | ES18XX_SPATIALIZER | ES18XX_RECMIX | ES18XX_NEW_RATE | ES18XX_AUXB | ES18XX_MONO | ES18XX_MUTEREC | ES18XX_CONTROL | ES18XX_HWV | ES18XX_GPO_2BIT;
 		break;
 	case 0x1878:
 		chip->caps = ES18XX_DUPLEX_MONO | ES18XX_DUPLEX_SAME | ES18XX_I2S | ES18XX_CONTROL;
@@ -1654,6 +1779,8 @@ static int __devinit snd_es18xx_probe(struct snd_es18xx *chip)
 		break;
 	case 0x1888:
 		chip->caps = ES18XX_PCM2 | ES18XX_RECMIX | ES18XX_AUXB | ES18XX_DUPLEX_SAME;
+	case 0x1888:
+		chip->caps = ES18XX_PCM2 | ES18XX_RECMIX | ES18XX_AUXB | ES18XX_DUPLEX_SAME | ES18XX_GPO_2BIT;
 		break;
 	default:
 		snd_printk(KERN_ERR "[0x%lx] unsupported chip ES%x\n",
@@ -1667,6 +1794,7 @@ static int __devinit snd_es18xx_probe(struct snd_es18xx *chip)
 		chip->caps &= ~(ES18XX_PCM2 | ES18XX_DUPLEX_SAME);
 
         return snd_es18xx_initialize(chip);
+	return snd_es18xx_initialize(chip, mpu_port, fm_port);
 }
 
 static struct snd_pcm_ops snd_es18xx_playback_ops = {
@@ -1693,6 +1821,9 @@ static struct snd_pcm_ops snd_es18xx_capture_ops = {
 
 static int __devinit snd_es18xx_pcm(struct snd_es18xx *chip, int device, struct snd_pcm ** rpcm)
 {
+static int snd_es18xx_pcm(struct snd_card *card, int device)
+{
+	struct snd_es18xx *chip = card->private_data;
         struct snd_pcm *pcm;
 	char str[16];
 	int err;
@@ -1704,6 +1835,11 @@ static int __devinit snd_es18xx_pcm(struct snd_es18xx *chip, int device, struct 
 		err = snd_pcm_new(chip->card, str, device, 2, 1, &pcm);
 	else
 		err = snd_pcm_new(chip->card, str, device, 1, 1, &pcm);
+	sprintf(str, "ES%x", chip->version);
+	if (chip->caps & ES18XX_PCM2)
+		err = snd_pcm_new(card, str, device, 2, 1, &pcm);
+	else
+		err = snd_pcm_new(card, str, device, 1, 1, &pcm);
         if (err < 0)
                 return err;
 
@@ -1738,6 +1874,9 @@ static int snd_es18xx_suspend(struct snd_card *card, pm_message_t state)
 	struct snd_es18xx *chip = acard->chip;
 
 	snd_power_change_state(chip->card, SNDRV_CTL_POWER_D3hot);
+	struct snd_es18xx *chip = card->private_data;
+
+	snd_power_change_state(card, SNDRV_CTL_POWER_D3hot);
 
 	snd_pcm_suspend_all(chip->pcm);
 
@@ -1754,22 +1893,29 @@ static int snd_es18xx_resume(struct snd_card *card)
 {
 	struct snd_audiodrive *acard = card->private_data;
 	struct snd_es18xx *chip = acard->chip;
+	struct snd_es18xx *chip = card->private_data;
 
 	/* restore PM register, we won't wake till (not 0x07) i/o activity though */
 	snd_es18xx_write(chip, ES18XX_PM, chip->pm_reg ^= ES18XX_PM_FM);
 
 	snd_power_change_state(chip->card, SNDRV_CTL_POWER_D0);
+	snd_power_change_state(card, SNDRV_CTL_POWER_D0);
 	return 0;
 }
 #endif /* CONFIG_PM */
 
 static int snd_es18xx_free(struct snd_es18xx *chip)
 {
+static int snd_es18xx_free(struct snd_card *card)
+{
+	struct snd_es18xx *chip = card->private_data;
+
 	release_and_free_resource(chip->res_port);
 	release_and_free_resource(chip->res_ctrl_port);
 	release_and_free_resource(chip->res_mpu_port);
 	if (chip->irq >= 0)
 		free_irq(chip->irq, (void *) chip);
+		free_irq(chip->irq, (void *) card);
 	if (chip->dma1 >= 0) {
 		disable_dma(chip->dma1);
 		free_dma(chip->dma1);
@@ -1796,6 +1942,16 @@ static int __devinit snd_es18xx_new_device(struct snd_card *card,
 					   struct snd_es18xx ** rchip)
 {
         struct snd_es18xx *chip;
+	return snd_es18xx_free(device->card);
+}
+
+static int snd_es18xx_new_device(struct snd_card *card,
+				 unsigned long port,
+				 unsigned long mpu_port,
+				 unsigned long fm_port,
+				 int irq, int dma1, int dma2)
+{
+	struct snd_es18xx *chip = card->private_data;
 	static struct snd_device_ops ops = {
 		.dev_free =	snd_es18xx_dev_free,
         };
@@ -1812,6 +1968,9 @@ static int __devinit snd_es18xx_new_device(struct snd_card *card,
         chip->port = port;
         chip->mpu_port = mpu_port;
         chip->fm_port = fm_port;
+	spin_lock_init(&chip->reg_lock);
+ 	spin_lock_init(&chip->mixer_lock);
+        chip->port = port;
         chip->irq = -1;
         chip->dma1 = -1;
         chip->dma2 = -1;
@@ -1820,12 +1979,18 @@ static int __devinit snd_es18xx_new_device(struct snd_card *card,
 
 	if ((chip->res_port = request_region(port, 16, "ES18xx")) == NULL) {
 		snd_es18xx_free(chip);
+	chip->res_port = request_region(port, 16, "ES18xx");
+	if (chip->res_port == NULL) {
+		snd_es18xx_free(card);
 		snd_printk(KERN_ERR PFX "unable to grap ports 0x%lx-0x%lx\n", port, port + 16 - 1);
 		return -EBUSY;
 	}
 
 	if (request_irq(irq, snd_es18xx_interrupt, IRQF_DISABLED, "ES18xx", (void *) chip)) {
 		snd_es18xx_free(chip);
+	if (request_irq(irq, snd_es18xx_interrupt, 0, "ES18xx",
+			(void *) card)) {
+		snd_es18xx_free(card);
 		snd_printk(KERN_ERR PFX "unable to grap IRQ %d\n", irq);
 		return -EBUSY;
 	}
@@ -1833,6 +1998,7 @@ static int __devinit snd_es18xx_new_device(struct snd_card *card,
 
 	if (request_dma(dma1, "ES18xx DMA 1")) {
 		snd_es18xx_free(chip);
+		snd_es18xx_free(card);
 		snd_printk(KERN_ERR PFX "unable to grap DMA1 %d\n", dma1);
 		return -EBUSY;
 	}
@@ -1840,6 +2006,7 @@ static int __devinit snd_es18xx_new_device(struct snd_card *card,
 
 	if (dma2 != dma1 && request_dma(dma2, "ES18xx DMA 2")) {
 		snd_es18xx_free(chip);
+		snd_es18xx_free(card);
 		snd_printk(KERN_ERR PFX "unable to grap DMA2 %d\n", dma2);
 		return -EBUSY;
 	}
@@ -1864,6 +2031,24 @@ static int __devinit snd_es18xx_mixer(struct snd_es18xx *chip)
 	unsigned int idx;
 
 	card = chip->card;
+
+	if (snd_es18xx_probe(chip, mpu_port, fm_port) < 0) {
+		snd_es18xx_free(card);
+		return -ENODEV;
+	}
+	err = snd_device_new(card, SNDRV_DEV_LOWLEVEL, chip, &ops);
+	if (err < 0) {
+		snd_es18xx_free(card);
+		return err;
+	}
+        return 0;
+}
+
+static int snd_es18xx_mixer(struct snd_card *card)
+{
+	struct snd_es18xx *chip = card->private_data;
+	int err;
+	unsigned int idx;
 
 	strcpy(card->mixername, chip->pcm->name);
 
@@ -1964,6 +2149,15 @@ static int __devinit snd_es18xx_mixer(struct snd_es18xx *chip)
 				return err;
 		}
 	}
+	if (chip->caps & ES18XX_GPO_2BIT) {
+		for (idx = 0; idx < ARRAY_SIZE(snd_es18xx_opt_gpo_2bit); idx++) {
+			err = snd_ctl_add(card,
+					  snd_ctl_new1(&snd_es18xx_opt_gpo_2bit[idx],
+						       chip));
+			if (err < 0)
+				return err;
+		}
+	}
 	return 0;
 }
        
@@ -1987,6 +2181,9 @@ static char *id[SNDRV_CARDS] = SNDRV_DEFAULT_STR;	/* ID for this card */
 static int enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE_ISAPNP; /* Enable this card */
 #ifdef CONFIG_PNP
 static int isapnp[SNDRV_CARDS] = {[0 ... (SNDRV_CARDS - 1)] = 1};
+static bool enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE_ISAPNP; /* Enable this card */
+#ifdef CONFIG_PNP
+static bool isapnp[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE_ISAPNP;
 #endif
 static long port[SNDRV_CARDS] = SNDRV_DEFAULT_PORT;	/* 0x220,0x240,0x260,0x280 */
 #ifndef CONFIG_PNP
@@ -2037,6 +2234,7 @@ MODULE_DEVICE_TABLE(pnp, snd_audiodrive_pnpbiosids);
 
 /* PnP main device initialization */
 static int __devinit snd_audiodrive_pnp_init_main(int dev, struct pnp_dev *pdev)
+static int snd_audiodrive_pnp_init_main(int dev, struct pnp_dev *pdev)
 {
 	if (pnp_activate_dev(pdev) < 0) {
 		snd_printk(KERN_ERR PFX "PnP configure failure (out of resources?)\n");
@@ -2068,6 +2266,11 @@ static int __devinit snd_audiodrive_pnp(int dev, struct snd_audiodrive *acard,
 {
 	acard->dev = pdev;
 	if (snd_audiodrive_pnp_init_main(dev, acard->dev) < 0)
+static int snd_audiodrive_pnp(int dev, struct snd_es18xx *chip,
+			      struct pnp_dev *pdev)
+{
+	chip->dev = pdev;
+	if (snd_audiodrive_pnp_init_main(dev, chip->dev) < 0)
 		return -EBUSY;
 	return 0;
 }
@@ -2107,12 +2310,28 @@ static int __devinit snd_audiodrive_pnpc(int dev, struct snd_audiodrive *acard,
 
 	/* Control port initialization */
 	if (pnp_activate_dev(acard->devc) < 0) {
+static int snd_audiodrive_pnpc(int dev, struct snd_es18xx *chip,
+			       struct pnp_card_link *card,
+			       const struct pnp_card_device_id *id)
+{
+	chip->dev = pnp_request_card_device(card, id->devs[0].id, NULL);
+	if (chip->dev == NULL)
+		return -EBUSY;
+
+	chip->devc = pnp_request_card_device(card, id->devs[1].id, NULL);
+	if (chip->devc == NULL)
+		return -EBUSY;
+
+	/* Control port initialization */
+	if (pnp_activate_dev(chip->devc) < 0) {
 		snd_printk(KERN_ERR PFX "PnP control configure failure (out of resources?)\n");
 		return -EAGAIN;
 	}
 	snd_printdd("pnp: port=0x%llx\n",
 			(unsigned long long)pnp_port_start(acard->devc, 0));
 	if (snd_audiodrive_pnp_init_main(dev, acard->dev) < 0)
+			(unsigned long long)pnp_port_start(chip->devc, 0));
+	if (snd_audiodrive_pnp_init_main(dev, chip->dev) < 0)
 		return -EBUSY;
 
 	return 0;
@@ -2146,6 +2365,24 @@ static int __devinit snd_audiodrive_probe(struct snd_card *card, int dev)
 					 &chip)) < 0)
 		return err;
 	acard->chip = chip;
+static int snd_es18xx_card_new(struct device *pdev, int dev,
+			       struct snd_card **cardp)
+{
+	return snd_card_new(pdev, index[dev], id[dev], THIS_MODULE,
+			    sizeof(struct snd_es18xx), cardp);
+}
+
+static int snd_audiodrive_probe(struct snd_card *card, int dev)
+{
+	struct snd_es18xx *chip = card->private_data;
+	struct snd_opl3 *opl3;
+	int err;
+
+	err = snd_es18xx_new_device(card,
+				    port[dev], mpu_port[dev], fm_port[dev],
+				    irq[dev], dma1[dev], dma2[dev]);
+	if (err < 0)
+		return err;
 
 	sprintf(card->driver, "ES%x", chip->version);
 	
@@ -2172,6 +2409,23 @@ static int __devinit snd_audiodrive_probe(struct snd_card *card, int dev)
 			snd_printk(KERN_WARNING PFX "opl3 not detected at 0x%lx\n", chip->fm_port);
 		} else {
 			if ((err = snd_opl3_hwdep_new(opl3, 0, 1, NULL)) < 0)
+	err = snd_es18xx_pcm(card, 0);
+	if (err < 0)
+		return err;
+
+	err = snd_es18xx_mixer(card);
+	if (err < 0)
+		return err;
+
+	if (fm_port[dev] > 0 && fm_port[dev] != SNDRV_AUTO_PORT) {
+		if (snd_opl3_create(card, fm_port[dev], fm_port[dev] + 2,
+				    OPL3_HW_OPL3, 0, &opl3) < 0) {
+			snd_printk(KERN_WARNING PFX
+				   "opl3 not detected at 0x%lx\n",
+				   fm_port[dev]);
+		} else {
+			err = snd_opl3_hwdep_new(opl3, 0, 1, NULL);
+			if (err < 0)
 				return err;
 		}
 	}
@@ -2181,6 +2435,10 @@ static int __devinit snd_audiodrive_probe(struct snd_card *card, int dev)
 					       chip->mpu_port, 0,
 					       irq[dev], 0,
 					       &chip->rmidi)) < 0)
+		err = snd_mpu401_uart_new(card, 0, MPU401_HW_ES18XX,
+					  mpu_port[dev], MPU401_INFO_IRQ_HOOK,
+					  -1, &chip->rmidi);
+		if (err < 0)
 			return err;
 	}
 
@@ -2188,11 +2446,13 @@ static int __devinit snd_audiodrive_probe(struct snd_card *card, int dev)
 }
 
 static int __devinit snd_es18xx_isa_match(struct device *pdev, unsigned int dev)
+static int snd_es18xx_isa_match(struct device *pdev, unsigned int dev)
 {
 	return enable[dev] && !is_isapnp_selected(dev);
 }
 
 static int __devinit snd_es18xx_isa_probe1(int dev, struct device *devptr)
+static int snd_es18xx_isa_probe1(int dev, struct device *devptr)
 {
 	struct snd_card *card;
 	int err;
@@ -2201,6 +2461,9 @@ static int __devinit snd_es18xx_isa_probe1(int dev, struct device *devptr)
 	if (! card)
 		return -ENOMEM;
 	snd_card_set_dev(card, devptr);
+	err = snd_es18xx_card_new(devptr, dev, &card);
+	if (err < 0)
+		return err;
 	if ((err = snd_audiodrive_probe(card, dev)) < 0) {
 		snd_card_free(card);
 		return err;
@@ -2210,6 +2473,7 @@ static int __devinit snd_es18xx_isa_probe1(int dev, struct device *devptr)
 }
 
 static int __devinit snd_es18xx_isa_probe(struct device *pdev, unsigned int dev)
+static int snd_es18xx_isa_probe(struct device *pdev, unsigned int dev)
 {
 	int err;
 	static int possible_irqs[] = {5, 9, 10, 7, 11, 12, -1};
@@ -2254,6 +2518,10 @@ static int __devexit snd_es18xx_isa_remove(struct device *devptr,
 {
 	snd_card_free(dev_get_drvdata(devptr));
 	dev_set_drvdata(devptr, NULL);
+static int snd_es18xx_isa_remove(struct device *devptr,
+				 unsigned int dev)
+{
+	snd_card_free(dev_get_drvdata(devptr));
 	return 0;
 }
 
@@ -2276,6 +2544,7 @@ static struct isa_driver snd_es18xx_isa_driver = {
 	.match		= snd_es18xx_isa_match,
 	.probe		= snd_es18xx_isa_probe,
 	.remove		= __devexit_p(snd_es18xx_isa_remove),
+	.remove		= snd_es18xx_isa_remove,
 #ifdef CONFIG_PM
 	.suspend	= snd_es18xx_isa_suspend,
 	.resume		= snd_es18xx_isa_resume,
@@ -2289,6 +2558,8 @@ static struct isa_driver snd_es18xx_isa_driver = {
 #ifdef CONFIG_PNP
 static int __devinit snd_audiodrive_pnp_detect(struct pnp_dev *pdev,
 					    const struct pnp_device_id *id)
+static int snd_audiodrive_pnp_detect(struct pnp_dev *pdev,
+				     const struct pnp_device_id *id)
 {
 	static int dev;
 	int err;
@@ -2306,6 +2577,9 @@ static int __devinit snd_audiodrive_pnp_detect(struct pnp_dev *pdev,
 	card = snd_es18xx_card_new(dev);
 	if (! card)
 		return -ENOMEM;
+	err = snd_es18xx_card_new(&pdev->dev, dev, &card);
+	if (err < 0)
+		return err;
 	if ((err = snd_audiodrive_pnp(dev, card->private_data, pdev)) < 0) {
 		snd_card_free(card);
 		return err;
@@ -2324,6 +2598,9 @@ static void __devexit snd_audiodrive_pnp_remove(struct pnp_dev * pdev)
 {
 	snd_card_free(pnp_get_drvdata(pdev));
 	pnp_set_drvdata(pdev, NULL);
+static void snd_audiodrive_pnp_remove(struct pnp_dev *pdev)
+{
+	snd_card_free(pnp_get_drvdata(pdev));
 }
 
 #ifdef CONFIG_PM
@@ -2342,6 +2619,7 @@ static struct pnp_driver es18xx_pnp_driver = {
 	.id_table = snd_audiodrive_pnpbiosids,
 	.probe = snd_audiodrive_pnp_detect,
 	.remove = __devexit_p(snd_audiodrive_pnp_remove),
+	.remove = snd_audiodrive_pnp_remove,
 #ifdef CONFIG_PM
 	.suspend = snd_audiodrive_pnp_suspend,
 	.resume = snd_audiodrive_pnp_resume,
@@ -2350,6 +2628,8 @@ static struct pnp_driver es18xx_pnp_driver = {
 
 static int __devinit snd_audiodrive_pnpc_detect(struct pnp_card_link *pcard,
 					       const struct pnp_card_device_id *pid)
+static int snd_audiodrive_pnpc_detect(struct pnp_card_link *pcard,
+				      const struct pnp_card_device_id *pid)
 {
 	static int dev;
 	struct snd_card *card;
@@ -2365,6 +2645,9 @@ static int __devinit snd_audiodrive_pnpc_detect(struct pnp_card_link *pcard,
 	card = snd_es18xx_card_new(dev);
 	if (! card)
 		return -ENOMEM;
+	res = snd_es18xx_card_new(&pcard->card->dev, dev, &card);
+	if (res < 0)
+		return res;
 
 	if ((res = snd_audiodrive_pnpc(dev, card->private_data, pcard, pid)) < 0) {
 		snd_card_free(card);
@@ -2382,6 +2665,7 @@ static int __devinit snd_audiodrive_pnpc_detect(struct pnp_card_link *pcard,
 }
 
 static void __devexit snd_audiodrive_pnpc_remove(struct pnp_card_link * pcard)
+static void snd_audiodrive_pnpc_remove(struct pnp_card_link *pcard)
 {
 	snd_card_free(pnp_get_card_drvdata(pcard));
 	pnp_set_card_drvdata(pcard, NULL);
@@ -2406,6 +2690,7 @@ static struct pnp_card_driver es18xx_pnpc_driver = {
 	.id_table = snd_audiodrive_pnpids,
 	.probe = snd_audiodrive_pnpc_detect,
 	.remove = __devexit_p(snd_audiodrive_pnpc_remove),
+	.remove = snd_audiodrive_pnpc_remove,
 #ifdef CONFIG_PM
 	.suspend	= snd_audiodrive_pnpc_suspend,
 	.resume		= snd_audiodrive_pnpc_resume,

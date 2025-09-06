@@ -87,11 +87,23 @@ int ipoib_vlan_add(struct net_device *pdev, unsigned short pkey)
 		goto err;
 	}
 
+int __ipoib_vlan_add(struct ipoib_dev_priv *ppriv, struct ipoib_dev_priv *priv,
+		     u16 pkey, int type)
+{
+	int result;
+
 	priv->max_ib_mtu = ppriv->max_ib_mtu;
 	/* MTU will be reset when mcast join happens */
 	priv->dev->mtu   = IPOIB_UD_MTU(priv->max_ib_mtu);
 	priv->mcast_mtu  = priv->admin_mtu = priv->dev->mtu;
 	set_bit(IPOIB_FLAG_SUBINTERFACE, &priv->flags);
+
+	priv->parent = ppriv->dev;
+	set_bit(IPOIB_FLAG_SUBINTERFACE, &priv->flags);
+
+	result = ipoib_set_dev_features(priv, ppriv->ca);
+	if (result)
+		goto err;
 
 	priv->pkey = pkey;
 
@@ -108,6 +120,10 @@ int ipoib_vlan_add(struct net_device *pdev, unsigned short pkey)
 	}
 
 	result = register_netdev(priv->dev);
+		goto err;
+	}
+
+	result = register_netdevice(priv->dev);
 	if (result) {
 		ipoib_warn(priv, "failed to initialize; error %i", result);
 		goto register_failed;
@@ -136,6 +152,29 @@ int ipoib_vlan_add(struct net_device *pdev, unsigned short pkey)
 sysfs_failed:
 	ipoib_delete_debug_files(priv->dev);
 	unregister_netdev(priv->dev);
+	ipoib_create_debug_files(priv->dev);
+
+	/* RTNL childs don't need proprietary sysfs entries */
+	if (type == IPOIB_LEGACY_CHILD) {
+		if (ipoib_cm_add_mode_attr(priv->dev))
+			goto sysfs_failed;
+		if (ipoib_add_pkey_attr(priv->dev))
+			goto sysfs_failed;
+		if (ipoib_add_umcast_attr(priv->dev))
+			goto sysfs_failed;
+
+		if (device_create_file(&priv->dev->dev, &dev_attr_parent))
+			goto sysfs_failed;
+	}
+
+	priv->child_type  = type;
+	list_add_tail(&priv->list, &ppriv->child_intfs);
+
+	return 0;
+
+sysfs_failed:
+	result = -ENOMEM;
+	unregister_netdevice(priv->dev);
 
 register_failed:
 	ipoib_dev_cleanup(priv->dev);
@@ -152,6 +191,16 @@ int ipoib_vlan_delete(struct net_device *pdev, unsigned short pkey)
 {
 	struct ipoib_dev_priv *ppriv, *priv, *tpriv;
 	int ret = -ENOENT;
+err:
+	return result;
+}
+
+int ipoib_vlan_add(struct net_device *pdev, unsigned short pkey)
+{
+	struct ipoib_dev_priv *ppriv, *priv;
+	char intf_name[IFNAMSIZ];
+	struct ipoib_dev_priv *tpriv;
+	int result;
 
 	if (!capable(CAP_NET_ADMIN))
 		return -EPERM;
@@ -173,4 +222,83 @@ int ipoib_vlan_delete(struct net_device *pdev, unsigned short pkey)
 	mutex_unlock(&ppriv->vlan_mutex);
 
 	return ret;
+	snprintf(intf_name, sizeof intf_name, "%s.%04x",
+		 ppriv->dev->name, pkey);
+	priv = ipoib_intf_alloc(intf_name);
+	if (!priv)
+		return -ENOMEM;
+
+	if (!rtnl_trylock())
+		return restart_syscall();
+
+	down_write(&ppriv->vlan_rwsem);
+
+	/*
+	 * First ensure this isn't a duplicate. We check the parent device and
+	 * then all of the legacy child interfaces to make sure the Pkey
+	 * doesn't match.
+	 */
+	if (ppriv->pkey == pkey) {
+		result = -ENOTUNIQ;
+		goto out;
+	}
+
+	list_for_each_entry(tpriv, &ppriv->child_intfs, list) {
+		if (tpriv->pkey == pkey &&
+		    tpriv->child_type == IPOIB_LEGACY_CHILD) {
+			result = -ENOTUNIQ;
+			goto out;
+		}
+	}
+
+	result = __ipoib_vlan_add(ppriv, priv, pkey, IPOIB_LEGACY_CHILD);
+
+out:
+	up_write(&ppriv->vlan_rwsem);
+
+	rtnl_unlock();
+
+	if (result)
+		free_netdev(priv->dev);
+
+	return result;
+}
+
+int ipoib_vlan_delete(struct net_device *pdev, unsigned short pkey)
+{
+	struct ipoib_dev_priv *ppriv, *priv, *tpriv;
+	struct net_device *dev = NULL;
+
+	if (!capable(CAP_NET_ADMIN))
+		return -EPERM;
+
+	ppriv = netdev_priv(pdev);
+
+	if (!rtnl_trylock())
+		return restart_syscall();
+
+	down_write(&ppriv->vlan_rwsem);
+	list_for_each_entry_safe(priv, tpriv, &ppriv->child_intfs, list) {
+		if (priv->pkey == pkey &&
+		    priv->child_type == IPOIB_LEGACY_CHILD) {
+			list_del(&priv->list);
+			dev = priv->dev;
+			break;
+		}
+	}
+	up_write(&ppriv->vlan_rwsem);
+
+	if (dev) {
+		ipoib_dbg(ppriv, "delete child vlan %s\n", dev->name);
+		unregister_netdevice(dev);
+	}
+
+	rtnl_unlock();
+
+	if (dev) {
+		free_netdev(dev);
+		return 0;
+	}
+
+	return -ENODEV;
 }

@@ -7,6 +7,7 @@
  * Copyright (C) 1996 Mike Shaver (shaver@zeroknowledge.com)
  */
 #include <linux/mm.h>
+#include <linux/slab.h>
 #include <linux/sysctl.h>
 #include <linux/spinlock.h>
 #include <net/ax25.h>
@@ -45,6 +46,16 @@ static const ctl_table ax25_param_table[] = {
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec_minmax,
 		.strategy	= &sysctl_intvec,
+#ifdef CONFIG_AX25_DAMA_SLAVE
+static int min_ds_timeout[1],		max_ds_timeout[] = {65535000};
+#endif
+
+static const struct ctl_table ax25_param_table[] = {
+	{
+		.procname	= "ip_default_mode",
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &min_ipdefmode,
 		.extra2		= &max_ipdefmode
 	},
@@ -55,6 +66,10 @@ static const ctl_table ax25_param_table[] = {
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec_minmax,
 		.strategy	= &sysctl_intvec,
+		.procname	= "ax25_default_mode",
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &min_axdefmode,
 		.extra2		= &max_axdefmode
 	},
@@ -65,6 +80,10 @@ static const ctl_table ax25_param_table[] = {
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec_minmax,
 		.strategy	= &sysctl_intvec,
+		.procname	= "backoff_type",
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &min_backoff,
 		.extra2		= &max_backoff
 	},
@@ -75,6 +94,10 @@ static const ctl_table ax25_param_table[] = {
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec_minmax,
 		.strategy	= &sysctl_intvec,
+		.procname	= "connect_mode",
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &min_conmode,
 		.extra2		= &max_conmode
 	},
@@ -85,6 +108,10 @@ static const ctl_table ax25_param_table[] = {
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec_minmax,
 		.strategy	= &sysctl_intvec,
+		.procname	= "standard_window_size",
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &min_window,
 		.extra2		= &max_window
 	},
@@ -95,6 +122,10 @@ static const ctl_table ax25_param_table[] = {
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec_minmax,
 		.strategy	= &sysctl_intvec,
+		.procname	= "extended_window_size",
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &min_ewindow,
 		.extra2		= &max_ewindow
 	},
@@ -105,6 +136,10 @@ static const ctl_table ax25_param_table[] = {
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec_minmax,
 		.strategy	= &sysctl_intvec,
+		.procname	= "t1_timeout",
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &min_t1,
 		.extra2		= &max_t1
 	},
@@ -115,6 +150,10 @@ static const ctl_table ax25_param_table[] = {
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec_minmax,
 		.strategy	= &sysctl_intvec,
+		.procname	= "t2_timeout",
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &min_t2,
 		.extra2		= &max_t2
 	},
@@ -125,6 +164,10 @@ static const ctl_table ax25_param_table[] = {
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec_minmax,
 		.strategy	= &sysctl_intvec,
+		.procname	= "t3_timeout",
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &min_t3,
 		.extra2		= &max_t3
 	},
@@ -135,6 +178,10 @@ static const ctl_table ax25_param_table[] = {
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec_minmax,
 		.strategy	= &sysctl_intvec,
+		.procname	= "idle_timeout",
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &min_idle,
 		.extra2		= &max_idle
 	},
@@ -145,6 +192,10 @@ static const ctl_table ax25_param_table[] = {
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec_minmax,
 		.strategy	= &sysctl_intvec,
+		.procname	= "maximum_retry_count",
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &min_n2,
 		.extra2		= &max_n2
 	},
@@ -155,6 +206,10 @@ static const ctl_table ax25_param_table[] = {
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec_minmax,
 		.strategy	= &sysctl_intvec,
+		.procname	= "maximum_packet_length",
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &min_paclen,
 		.extra2		= &max_paclen
 	},
@@ -165,6 +220,10 @@ static const ctl_table ax25_param_table[] = {
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec_minmax,
 		.strategy	= &sysctl_intvec,
+		.procname	= "protocol",
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &min_proto,
 		.extra2		= &max_proto
 	},
@@ -176,6 +235,10 @@ static const ctl_table ax25_param_table[] = {
 		.mode		= 0644,
 		.proc_handler	= &proc_dointvec_minmax,
 		.strategy	= &sysctl_intvec,
+		.procname	= "dama_slave_timeout",
+		.maxlen		= sizeof(int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= &min_ds_timeout,
 		.extra2		= &max_ds_timeout
 	},
@@ -234,4 +297,40 @@ void ax25_unregister_sysctl(void)
 	for (p = ax25_table; p->ctl_name; p++)
 		kfree(p->child);
 	kfree(ax25_table);
+	{ }	/* that's all, folks! */
+};
+
+int ax25_register_dev_sysctl(ax25_dev *ax25_dev)
+{
+	char path[sizeof("net/ax25/") + IFNAMSIZ];
+	int k;
+	struct ctl_table *table;
+
+	table = kmemdup(ax25_param_table, sizeof(ax25_param_table), GFP_KERNEL);
+	if (!table)
+		return -ENOMEM;
+
+	for (k = 0; k < AX25_MAX_VALUES; k++)
+		table[k].data = &ax25_dev->values[k];
+
+	snprintf(path, sizeof(path), "net/ax25/%s", ax25_dev->dev->name);
+	ax25_dev->sysheader = register_net_sysctl(&init_net, path, table);
+	if (!ax25_dev->sysheader) {
+		kfree(table);
+		return -ENOMEM;
+	}
+	return 0;
+}
+
+void ax25_unregister_dev_sysctl(ax25_dev *ax25_dev)
+{
+	struct ctl_table_header *header = ax25_dev->sysheader;
+	struct ctl_table *table;
+
+	if (header) {
+		ax25_dev->sysheader = NULL;
+		table = header->ctl_table_arg;
+		unregister_net_sysctl_table(header);
+		kfree(table);
+	}
 }

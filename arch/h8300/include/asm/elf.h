@@ -1,5 +1,7 @@
 #ifndef __ASMH8300_ELF_H
 #define __ASMH8300_ELF_H
+#ifndef __ASM_H8300_ELF_H
+#define __ASM_H8300_ELF_H
 
 /*
  * ELF register definitions..
@@ -35,6 +37,15 @@ typedef unsigned long elf_fpregset_t;
 #define ELF_PLAT_INIT(_r)	_r->er1 = 0
 
 #define USE_ELF_CORE_DUMP
+#if defined(CONFIG_CPU_H8300H)
+#define ELF_CORE_EFLAGS 0x810000
+#endif
+#if defined(CONFIG_CPU_H8S)
+#define ELF_CORE_EFLAGS 0x820000
+#endif
+
+#define ELF_PLAT_INIT(_r) do { (_r)->er1 = 0; } while (0)
+
 #define ELF_EXEC_PAGESIZE	4096
 
 /* This is the location that an ET_DYN program is loaded if exec'ed.  Typical

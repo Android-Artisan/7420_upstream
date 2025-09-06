@@ -8,11 +8,13 @@
 typedef struct TransportAddress_ipAddress {	/* SEQUENCE */
 	int options;		/* No use */
 	unsigned ip;
+	unsigned int ip;
 } TransportAddress_ipAddress;
 
 typedef struct TransportAddress_ip6Address {	/* SEQUENCE */
 	int options;		/* No use */
 	unsigned ip;
+	unsigned int ip;
 } TransportAddress_ip6Address;
 
 typedef struct TransportAddress {	/* CHOICE */
@@ -97,11 +99,13 @@ typedef struct DataType {	/* CHOICE */
 typedef struct UnicastAddress_iPAddress {	/* SEQUENCE */
 	int options;		/* No use */
 	unsigned network;
+	unsigned int network;
 } UnicastAddress_iPAddress;
 
 typedef struct UnicastAddress_iP6Address {	/* SEQUENCE */
 	int options;		/* No use */
 	unsigned network;
+	unsigned int network;
 } UnicastAddress_iP6Address;
 
 typedef struct UnicastAddress {	/* CHOICE */
@@ -699,6 +703,7 @@ typedef struct RegistrationRequest {	/* SEQUENCE */
 	RegistrationRequest_callSignalAddress callSignalAddress;
 	RegistrationRequest_rasAddress rasAddress;
 	unsigned timeToLive;
+	unsigned int timeToLive;
 } RegistrationRequest;
 
 typedef struct RegistrationConfirm_callSignalAddress {	/* SEQUENCE OF */
@@ -731,6 +736,7 @@ typedef struct RegistrationConfirm {	/* SEQUENCE */
 	} options;
 	RegistrationConfirm_callSignalAddress callSignalAddress;
 	unsigned timeToLive;
+	unsigned int timeToLive;
 } RegistrationConfirm;
 
 typedef struct UnregistrationRequest_callSignalAddress {	/* SEQUENCE OF */

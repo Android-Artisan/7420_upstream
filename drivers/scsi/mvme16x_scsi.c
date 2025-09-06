@@ -12,6 +12,7 @@
 #include <linux/platform_device.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
+#include <linux/slab.h>
 #include <asm/mvme16xhw.h>
 #include <scsi/scsi_host.h>
 #include <scsi/scsi_device.h>
@@ -35,6 +36,7 @@ static struct platform_device *mvme16x_scsi_device;
 
 static __devinit int
 mvme16x_probe(struct device *dev)
+static int mvme16x_probe(struct platform_device *dev)
 {
 	struct Scsi_Host * host = NULL;
 	struct NCR_700_Host_Parameters *hostdata;
@@ -65,6 +67,8 @@ mvme16x_probe(struct device *dev)
 
 	/* and register the chip */
 	host = NCR_700_detect(&mvme16x_scsi_driver_template, hostdata, dev);
+	host = NCR_700_detect(&mvme16x_scsi_driver_template, hostdata,
+			      &dev->dev);
 	if (!host) {
 		printk(KERN_ERR "mvme16x-scsi: No host detected; "
 				"board configuration problem?\n");
@@ -89,6 +93,7 @@ mvme16x_probe(struct device *dev)
 	}
 
 	dev_set_drvdata(dev, host);
+	platform_set_drvdata(dev, host);
 	scsi_scan_host(host);
 
 	return 0;
@@ -105,6 +110,9 @@ static __devexit int
 mvme16x_device_remove(struct device *dev)
 {
 	struct Scsi_Host *host = dev_get_drvdata(dev);
+static int mvme16x_device_remove(struct platform_device *dev)
+{
+	struct Scsi_Host *host = platform_get_drvdata(dev);
 	struct NCR_700_Host_Parameters *hostdata = shost_priv(host);
 
 	/* Disable scsi chip ints */
@@ -128,6 +136,12 @@ static struct device_driver mvme16x_scsi_driver = {
 	.bus	= &platform_bus_type,
 	.probe	= mvme16x_probe,
 	.remove	= __devexit_p(mvme16x_device_remove),
+static struct platform_driver mvme16x_scsi_driver = {
+	.driver = {
+		.name           = "mvme16x-scsi",
+	},
+	.probe          = mvme16x_probe,
+	.remove         = mvme16x_device_remove,
 };
 
 static int __init mvme16x_scsi_init(void)
@@ -135,6 +149,7 @@ static int __init mvme16x_scsi_init(void)
 	int err;
 
 	err = driver_register(&mvme16x_scsi_driver);
+	err = platform_driver_register(&mvme16x_scsi_driver);
 	if (err)
 		return err;
 
@@ -142,6 +157,7 @@ static int __init mvme16x_scsi_init(void)
 							      -1, NULL, 0);
 	if (IS_ERR(mvme16x_scsi_device)) {
 		driver_unregister(&mvme16x_scsi_driver);
+		platform_driver_unregister(&mvme16x_scsi_driver);
 		return PTR_ERR(mvme16x_scsi_device);
 	}
 
@@ -152,6 +168,7 @@ static void __exit mvme16x_scsi_exit(void)
 {
 	platform_device_unregister(mvme16x_scsi_device);
 	driver_unregister(&mvme16x_scsi_driver);
+	platform_driver_unregister(&mvme16x_scsi_driver);
 }
 
 module_init(mvme16x_scsi_init);

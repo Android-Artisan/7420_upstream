@@ -38,6 +38,7 @@ static void printstat_val(struct seq_file *s, atomic_long_t *v, char *id)
 
 	if (val)
 		seq_printf(s, "%16lu %s\n", val, id);
+	seq_printf(s, "%16lu %s\n", val, id);
 }
 
 static int statistics_show(struct seq_file *s, void *p)
@@ -47,6 +48,8 @@ static int statistics_show(struct seq_file *s, void *p)
 	printstat(s, gts_alloc);
 	printstat(s, gts_free);
 	printstat(s, vdata_double_alloc);
+	printstat(s, gms_alloc);
+	printstat(s, gms_free);
 	printstat(s, gts_double_allocate);
 	printstat(s, assign_context);
 	printstat(s, assign_context_failed);
@@ -57,6 +60,14 @@ static int statistics_show(struct seq_file *s, void *p)
 	printstat(s, steal_context_failed);
 	printstat(s, nopfn);
 	printstat(s, break_cow);
+	printstat(s, load_user_context);
+	printstat(s, load_kernel_context);
+	printstat(s, lock_kernel_context);
+	printstat(s, unlock_kernel_context);
+	printstat(s, steal_user_context);
+	printstat(s, steal_kernel_context);
+	printstat(s, steal_context_failed);
+	printstat(s, nopfn);
 	printstat(s, asid_new);
 	printstat(s, asid_next);
 	printstat(s, asid_wrap);
@@ -64,6 +75,11 @@ static int statistics_show(struct seq_file *s, void *p)
 	printstat(s, intr);
 	printstat(s, call_os);
 	printstat(s, call_os_check_for_bug);
+	printstat(s, intr_cbr);
+	printstat(s, intr_tfh);
+	printstat(s, intr_spurious);
+	printstat(s, intr_mm_lock_failed);
+	printstat(s, call_os);
 	printstat(s, call_os_wait_queue);
 	printstat(s, user_flush_tlb);
 	printstat(s, user_unload_context);
@@ -76,6 +92,11 @@ static int statistics_show(struct seq_file *s, void *p)
 	printstat(s, migrated_nopfn_retarget);
 	printstat(s, migrated_nopfn_unload);
 	printstat(s, tlb_dropin);
+	printstat(s, set_context_option);
+	printstat(s, check_context_retarget_intr);
+	printstat(s, check_context_unload);
+	printstat(s, tlb_dropin);
+	printstat(s, tlb_preload_page);
 	printstat(s, tlb_dropin_fail_no_asid);
 	printstat(s, tlb_dropin_fail_upm);
 	printstat(s, tlb_dropin_fail_invalid);
@@ -85,11 +106,16 @@ static int statistics_show(struct seq_file *s, void *p)
 	printstat(s, mmu_invalidate_range);
 	printstat(s, mmu_invalidate_page);
 	printstat(s, mmu_clear_flush_young);
+	printstat(s, tlb_dropin_fail_no_exception);
+	printstat(s, tfh_stale_on_fault);
+	printstat(s, mmu_invalidate_range);
+	printstat(s, mmu_invalidate_page);
 	printstat(s, flush_tlb);
 	printstat(s, flush_tlb_gru);
 	printstat(s, flush_tlb_gru_tgh);
 	printstat(s, flush_tlb_gru_zero_asid);
 	printstat(s, copy_gpa);
+	printstat(s, read_gpa);
 	printstat(s, mesq_receive);
 	printstat(s, mesq_receive_none);
 	printstat(s, mesq_send);
@@ -110,6 +136,7 @@ static int statistics_show(struct seq_file *s, void *p)
 	printstat(s, mesq_noop_qlimit_reached);
 	printstat(s, mesq_noop_amo_nacked);
 	printstat(s, mesq_noop_put_nacked);
+	printstat(s, mesq_noop_page_overflow);
 	return 0;
 }
 
@@ -122,6 +149,35 @@ static ssize_t statistics_write(struct file *file, const char __user *userbuf,
 
 static int options_show(struct seq_file *s, void *p)
 {
+static int mcs_statistics_show(struct seq_file *s, void *p)
+{
+	int op;
+	unsigned long total, count, max;
+	static char *id[] = {"cch_allocate", "cch_start", "cch_interrupt",
+		"cch_interrupt_sync", "cch_deallocate", "tfh_write_only",
+		"tfh_write_restart", "tgh_invalidate"};
+
+	seq_printf(s, "%-20s%12s%12s%12s\n", "#id", "count", "aver-clks", "max-clks");
+	for (op = 0; op < mcsop_last; op++) {
+		count = atomic_long_read(&mcs_op_statistics[op].count);
+		total = atomic_long_read(&mcs_op_statistics[op].total);
+		max = mcs_op_statistics[op].max;
+		seq_printf(s, "%-20s%12ld%12ld%12ld\n", id[op], count,
+			   count ? total / count : 0, max);
+	}
+	return 0;
+}
+
+static ssize_t mcs_statistics_write(struct file *file,
+			const char __user *userbuf, size_t count, loff_t *data)
+{
+	memset(mcs_op_statistics, 0, sizeof(mcs_op_statistics));
+	return count;
+}
+
+static int options_show(struct seq_file *s, void *p)
+{
+	seq_printf(s, "#bitmask: 1=trace, 2=statistics\n");
 	seq_printf(s, "0x%lx\n", gru_options);
 	return 0;
 }
@@ -137,6 +193,11 @@ static ssize_t options_write(struct file *file, const char __user *userbuf,
 		return -EFAULT;
 	if (!strict_strtoul(buf, 10, &val))
 		gru_options = val;
+	int ret;
+
+	ret = kstrtoul_from_user(userbuf, count, 0, &gru_options);
+	if (ret)
+		return ret;
 
 	return count;
 }
@@ -152,6 +213,8 @@ static int cch_seq_show(struct seq_file *file, void *data)
 	if (gid == 0)
 		seq_printf(file, "#%5s%5s%6s%9s%6s%8s%8s\n", "gid", "bid",
 			   "ctx#", "pid", "cbrs", "dsbytes", "mode");
+		seq_printf(file, "#%5s%5s%6s%7s%9s%6s%8s%8s\n", "gid", "bid",
+			   "ctx#", "asid", "pid", "cbrs", "dsbytes", "mode");
 	if (gru)
 		for (i = 0; i < GRU_NUM_CCH; i++) {
 			ts = gru->gs_gts[i];
@@ -160,6 +223,10 @@ static int cch_seq_show(struct seq_file *file, void *data)
 			seq_printf(file, " %5d%5d%6d%9d%6d%8d%8s\n",
 				   gru->gs_gid, gru->gs_blade_id, i,
 				   ts->ts_tgid_owner,
+			seq_printf(file, " %5d%5d%6d%7d%9d%6d%8d%8s\n",
+				   gru->gs_gid, gru->gs_blade_id, i,
+				   is_kernel_context(ts) ? 0 : ts->ts_gms->ms_asids[gid].mt_asid,
+				   is_kernel_context(ts) ? 0 : ts->ts_tgid_owner,
 				   ts->ts_cbr_au_count * GRU_CBR_AU_SIZE,
 				   ts->ts_cbr_au_count * GRU_DSR_AU_BYTES,
 				   mode[ts->ts_user_options &
@@ -200,6 +267,7 @@ static void seq_stop(struct seq_file *file, void *data)
 static void *seq_start(struct seq_file *file, loff_t *gid)
 {
 	if (*gid < GRU_MAX_GRUS)
+	if (*gid < gru_max_gids)
 		return gid;
 	return NULL;
 }
@@ -208,6 +276,7 @@ static void *seq_next(struct seq_file *file, void *data, loff_t *gid)
 {
 	(*gid)++;
 	if (*gid < GRU_MAX_GRUS)
+	if (*gid < gru_max_gids)
 		return gid;
 	return NULL;
 }
@@ -231,6 +300,11 @@ static int statistics_open(struct inode *inode, struct file *file)
 	return single_open(file, statistics_show, NULL);
 }
 
+static int mcs_statistics_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, mcs_statistics_show, NULL);
+}
+
 static int options_open(struct inode *inode, struct file *file)
 {
 	return single_open(file, options_show, NULL);
@@ -251,6 +325,14 @@ static const struct file_operations statistics_fops = {
 	.open 		= statistics_open,
 	.read 		= seq_read,
 	.write 		= statistics_write,
+	.llseek 	= seq_lseek,
+	.release 	= single_release,
+};
+
+static const struct file_operations mcs_statistics_fops = {
+	.open 		= mcs_statistics_open,
+	.read 		= seq_read,
+	.write 		= mcs_statistics_write,
 	.llseek 	= seq_lseek,
 	.release 	= single_release,
 };
@@ -279,10 +361,12 @@ static const struct file_operations gru_fops = {
 static struct proc_entry {
 	char *name;
 	int mode;
+	umode_t mode;
 	const struct file_operations *fops;
 	struct proc_dir_entry *entry;
 } proc_files[] = {
 	{"statistics", 0644, &statistics_fops},
+	{"mcs_statistics", 0644, &mcs_statistics_fops},
 	{"debug_options", 0644, &options_fops},
 	{"cch_status", 0444, &cch_fops},
 	{"gru_status", 0444, &gru_fops},
@@ -298,6 +382,9 @@ static int create_proc_file(struct proc_entry *p)
 	if (!p->entry)
 		return -1;
 	p->entry->proc_fops = p->fops;
+	p->entry = proc_create(p->name, p->mode, proc_gru, p->fops);
+	if (!p->entry)
+		return -1;
 	return 0;
 }
 
@@ -310,6 +397,7 @@ static void delete_proc_files(void)
 			if (p->entry)
 				remove_proc_entry(p->name, proc_gru);
 		remove_proc_entry("gru", NULL);
+		proc_remove(proc_gru);
 	}
 }
 

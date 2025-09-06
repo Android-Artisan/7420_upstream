@@ -14,6 +14,7 @@
 
 #include <linux/syscalls.h>
 #include <linux/module.h>
+#include <linux/export.h>
 #include <linux/slab.h>
 #include <linux/list.h>
 #include <linux/mount.h>
@@ -25,6 +26,7 @@
 #include <linux/dcookies.h>
 #include <linux/mutex.h>
 #include <linux/path.h>
+#include <linux/compat.h>
 #include <asm/uaccess.h>
 
 /* The dcookies are allocated from a kmem_cache and
@@ -97,6 +99,15 @@ static struct dcookie_struct *alloc_dcookie(struct path *path)
 		return NULL;
 
 	path->dentry->d_cookie = dcs;
+	struct dentry *d;
+	if (!dcs)
+		return NULL;
+
+	d = path->dentry;
+	spin_lock(&d->d_lock);
+	d->d_flags |= DCACHE_COOKIE;
+	spin_unlock(&d->d_lock);
+
 	dcs->path = *path;
 	path_get(path);
 	hash_dcookie(dcs);
@@ -127,6 +138,14 @@ int get_dcookie(struct path *path, unsigned long *cookie)
 	if (!dcs) {
 		err = -ENOMEM;
 		goto out;
+	if (path->dentry->d_flags & DCACHE_COOKIE) {
+		dcs = find_dcookie((unsigned long)path->dentry);
+	} else {
+		dcs = alloc_dcookie(path);
+		if (!dcs) {
+			err = -ENOMEM;
+			goto out;
+		}
 	}
 
 	*cookie = dcookie_value(dcs);
@@ -141,6 +160,7 @@ out:
  * to retrieve the path.
  */
 asmlinkage long sys_lookup_dcookie(u64 cookie64, char __user * buf, size_t len)
+SYSCALL_DEFINE3(lookup_dcookie, u64, cookie64, char __user *, buf, size_t, len)
 {
 	unsigned long cookie = (unsigned long)cookie64;
 	int err = -EINVAL;
@@ -173,6 +193,8 @@ asmlinkage long sys_lookup_dcookie(u64 cookie64, char __user * buf, size_t len)
 	/* FIXME: (deleted) ? */
 	path = d_path(&dcs->path, kbuf, PAGE_SIZE);
 
+	mutex_unlock(&dcookie_mutex);
+
 	if (IS_ERR(path)) {
 		err = PTR_ERR(path);
 		goto out_free;
@@ -189,11 +211,22 @@ asmlinkage long sys_lookup_dcookie(u64 cookie64, char __user * buf, size_t len)
 
 out_free:
 	kfree(kbuf);
+	return err;
 out:
 	mutex_unlock(&dcookie_mutex);
 	return err;
 }
 
+#ifdef CONFIG_COMPAT
+COMPAT_SYSCALL_DEFINE4(lookup_dcookie, u32, w0, u32, w1, char __user *, buf, compat_size_t, len)
+{
+#ifdef __BIG_ENDIAN
+	return sys_lookup_dcookie(((u64)w0 << 32) | w1, buf, len);
+#else
+	return sys_lookup_dcookie(((u64)w1 << 32) | w0, buf, len);
+#endif
+}
+#endif
 
 static int dcookie_init(void)
 {
@@ -252,6 +285,12 @@ out_kmem:
 static void free_dcookie(struct dcookie_struct * dcs)
 {
 	dcs->path.dentry->d_cookie = NULL;
+	struct dentry *d = dcs->path.dentry;
+
+	spin_lock(&d->d_lock);
+	d->d_flags &= ~DCACHE_COOKIE;
+	spin_unlock(&d->d_lock);
+
 	path_put(&dcs->path);
 	kmem_cache_free(dcookie_cache, dcs);
 }

@@ -6,6 +6,10 @@
 #include "hwdep.h"
 #include "rawmidi.h"
 #include "wavefront.h"  /* generic OSS/ALSA/user-level wavefront header */
+#include <sound/mpu401.h>
+#include <sound/hwdep.h>
+#include <sound/rawmidi.h>
+#include <sound/wavefront.h>  /* generic OSS/ALSA/user-level wavefront header */
 
 /* MIDI interface */
 

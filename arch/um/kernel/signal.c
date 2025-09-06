@@ -12,6 +12,8 @@
 #include "frame_kern.h"
 #include "kern_util.h"
 #include "sigcontext.h"
+#include <frame_kern.h>
+#include <kern_util.h>
 
 EXPORT_SYMBOL(block_signals);
 EXPORT_SYMBOL(unblock_signals);
@@ -32,6 +34,18 @@ static int handle_signal(struct pt_regs *regs, unsigned long signr,
 
 	/* Always make any pending restarted system calls return -EINTR */
 	current_thread_info()->restart_block.fn = do_no_restart_syscall;
+/*
+ * OK, we're invoking a handler
+ */
+static void handle_signal(struct ksignal *ksig, struct pt_regs *regs)
+{
+	sigset_t *oldset = sigmask_to_save();
+	int singlestep = 0;
+	unsigned long sp;
+	int err;
+
+	if ((current->ptrace & PT_DTRACE) && (current->ptrace & PT_PTRACED))
+		singlestep = 1;
 
 	/* Did we come from a system call? */
 	if (PT_REGS_SYSCALL_NR(regs) >= 0) {
@@ -44,6 +58,7 @@ static int handle_signal(struct pt_regs *regs, unsigned long signr,
 
 		case -ERESTARTSYS:
 			if (!(ka->sa.sa_flags & SA_RESTART)) {
+			if (!(ksig->ka.sa.sa_flags & SA_RESTART)) {
 				PT_REGS_SYSCALL_RET(regs) = -EINTR;
 				break;
 			}
@@ -111,6 +126,28 @@ static int kern_do_signal(struct pt_regs *regs)
 				clear_thread_flag(TIF_RESTORE_SIGMASK);
 			break;
 		}
+	if ((ksig->ka.sa.sa_flags & SA_ONSTACK) && (sas_ss_flags(sp) == 0))
+		sp = current->sas_ss_sp + current->sas_ss_size;
+
+#ifdef CONFIG_ARCH_HAS_SC_SIGNALS
+	if (!(ksig->ka.sa.sa_flags & SA_SIGINFO))
+		err = setup_signal_stack_sc(sp, ksig, regs, oldset);
+	else
+#endif
+		err = setup_signal_stack_si(sp, ksig, regs, oldset);
+
+	signal_setup_done(err, ksig, singlestep);
+}
+
+void do_signal(struct pt_regs *regs)
+{
+	struct ksignal ksig;
+	int handled_sig = 0;
+
+	if (get_signal(&ksig)) {
+		handled_sig = 1;
+		/* Whee!  Actually deliver the signal.  */
+		handle_signal(&ksig, regs);
 	}
 
 	/* Did we come from a system call? */
@@ -179,4 +216,6 @@ long sys_sigsuspend(int history0, int history1, old_sigset_t mask)
 long sys_sigaltstack(const stack_t __user *uss, stack_t __user *uoss)
 {
 	return do_sigaltstack(uss, uoss, PT_REGS_SP(&current->thread.regs));
+	if (!handled_sig)
+		restore_saved_sigmask();
 }

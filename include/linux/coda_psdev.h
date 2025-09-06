@@ -5,6 +5,9 @@
 
 #define CODA_PSDEV_MAJOR 67
 #define MAX_CODADEVS  5	   /* how many do we allow */
+#include <linux/backing-dev.h>
+#include <linux/mutex.h>
+#include <uapi/linux/coda_psdev.h>
 
 struct kstatfs;
 
@@ -16,8 +19,21 @@ struct venus_comm {
 	struct list_head    vc_processing;
 	int                 vc_inuse;
 	struct super_block *vc_sb;
+	struct backing_dev_info bdi;
+	struct mutex	    vc_mutex;
 };
 
+/* messages between coda filesystem in kernel and Venus */
+struct upc_req {
+	struct list_head	uc_chain;
+	caddr_t			uc_data;
+	u_short			uc_flags;
+	u_short			uc_inSize;  /* Size is at most 5000 bytes */
+	u_short			uc_outSize;
+	u_short			uc_opcode;  /* copied from data to save lookup */
+	int			uc_unique;
+	wait_queue_head_t	uc_sleep;   /* process' wait queue */
+};
 
 static inline struct venus_comm *coda_vcp(struct super_block *sb)
 {
@@ -35,6 +51,7 @@ int venus_lookup(struct super_block *sb, struct CodaFid *fid,
 		 struct CodaFid *resfid);
 int venus_close(struct super_block *sb, struct CodaFid *fid, int flags,
 		vuid_t uid);
+		kuid_t uid);
 int venus_open(struct super_block *sb, struct CodaFid *fid, int flags,
 	       struct file **f);
 int venus_mkdir(struct super_block *sb, struct CodaFid *dirfid, 
@@ -82,6 +99,10 @@ struct upc_req {
 #define REQ_WRITE  0x4
 #define REQ_ABORT  0x8
 
+
+int coda_downcall(struct venus_comm *vcp, int opcode, union outputArgs *out);
+int venus_fsync(struct super_block *sb, struct CodaFid *fid);
+int venus_statfs(struct dentry *dentry, struct kstatfs *sfs);
 
 /*
  * Statistics

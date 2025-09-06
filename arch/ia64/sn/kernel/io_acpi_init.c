@@ -14,6 +14,8 @@
 #include "xtalk/hubdev.h"
 #include <linux/acpi.h>
 #include <acpi/acnamesp.h>
+#include <linux/slab.h>
+#include <linux/export.h>
 
 
 /*
@@ -42,6 +44,7 @@ struct sn_pcidev_match {
  * Perform the early IO init in PROM.
  */
 static s64
+static long
 sal_ioif_init(u64 *result)
 {
 	struct ia64_sal_retval isrv = {0,0,0,0};
@@ -64,6 +67,7 @@ static acpi_status __init
 sn_acpi_hubdev_init(acpi_handle handle, u32 depth, void *context, void **ret)
 {
 	struct acpi_buffer buffer = { ACPI_ALLOCATE_BUFFER, NULL };
+	struct acpi_buffer name_buffer = { ACPI_ALLOCATE_BUFFER, NULL };
 	u64 addr;
 	struct hubdev_info *hubdev;
 	struct hubdev_info *hubdev_ptr;
@@ -82,6 +86,12 @@ sn_acpi_hubdev_init(acpi_handle handle, u32 depth, void *context, void **ret)
 		       "(0x%x) failed for: ", status);
 		acpi_ns_print_node_pathname(handle, NULL);
 		printk("\n");
+		acpi_get_name(handle, ACPI_FULL_PATHNAME, &name_buffer);
+		printk(KERN_ERR
+		       "sn_acpi_hubdev_init: acpi_get_vendor_resource() "
+		       "(0x%x) failed for: %s\n", status,
+			(char *)name_buffer.pointer);
+		kfree(name_buffer.pointer);
 		return AE_OK;		/* Continue walking namespace */
 	}
 
@@ -94,6 +104,12 @@ sn_acpi_hubdev_init(acpi_handle handle, u32 depth, void *context, void **ret)
 		        vendor->byte_length);
 		acpi_ns_print_node_pathname(handle, NULL);
 		printk("\n");
+		acpi_get_name(handle, ACPI_FULL_PATHNAME, &name_buffer);
+		printk(KERN_ERR
+		       "sn_acpi_hubdev_init: Invalid vendor data length: "
+		       "%d for: %s\n",
+			vendor->byte_length, (char *)name_buffer.pointer);
+		kfree(name_buffer.pointer);
 		goto exit;
 	}
 
@@ -120,6 +136,7 @@ sn_get_bussoft_ptr(struct pci_bus *bus)
 {
 	u64 addr;
 	struct acpi_buffer buffer = { ACPI_ALLOCATE_BUFFER, NULL };
+	struct acpi_buffer name_buffer = { ACPI_ALLOCATE_BUFFER, NULL };
 	acpi_handle handle;
 	struct pcibus_bussoft *prom_bussoft_ptr;
 	struct acpi_resource *resource;
@@ -136,6 +153,15 @@ sn_get_bussoft_ptr(struct pci_bus *bus)
 		       __func__, status);
 		acpi_ns_print_node_pathname(handle, NULL);
 		printk("\n");
+	handle = acpi_device_handle(PCI_CONTROLLER(bus)->companion);
+	status = acpi_get_vendor_resource(handle, METHOD_NAME__CRS,
+					  &sn_uuid, &buffer);
+	if (ACPI_FAILURE(status)) {
+		acpi_get_name(handle, ACPI_FULL_PATHNAME, &name_buffer);
+		printk(KERN_ERR "%s: "
+		       "acpi_get_vendor_resource() failed (0x%x) for: %s\n",
+		       __func__, status, (char *)name_buffer.pointer);
+		kfree(name_buffer.pointer);
 		return NULL;
 	}
 	resource = buffer.pointer;
@@ -168,6 +194,7 @@ sn_extract_device_info(acpi_handle handle, struct pcidev_info **pcidev_info,
 {
 	u64 addr;
 	struct acpi_buffer buffer = { ACPI_ALLOCATE_BUFFER, NULL };
+	struct acpi_buffer name_buffer = { ACPI_ALLOCATE_BUFFER, NULL };
 	struct sn_irq_info *irq_info, *irq_info_prom;
 	struct pcidev_info *pcidev_ptr, *pcidev_prom_ptr;
 	struct acpi_resource *resource;
@@ -187,6 +214,11 @@ sn_extract_device_info(acpi_handle handle, struct pcidev_info **pcidev_info,
 		        __func__, status);
 		acpi_ns_print_node_pathname(handle, NULL);
 		printk("\n");
+		acpi_get_name(handle, ACPI_FULL_PATHNAME, &name_buffer);
+		printk(KERN_ERR
+		       "%s: acpi_get_vendor_resource() failed (0x%x) for: %s\n",
+			__func__, status, (char *)name_buffer.pointer);
+		kfree(name_buffer.pointer);
 		return 1;
 	}
 
@@ -199,6 +231,12 @@ sn_extract_device_info(acpi_handle handle, struct pcidev_info **pcidev_info,
 		        __func__, vendor->byte_length);
 		acpi_ns_print_node_pathname(handle, NULL);
 		printk("\n");
+		acpi_get_name(handle, ACPI_FULL_PATHNAME, &name_buffer);
+		printk(KERN_ERR
+		       "%s: Invalid vendor data length: %d for: %s\n",
+			 __func__, vendor->byte_length,
+			(char *)name_buffer.pointer);
+		kfree(name_buffer.pointer);
 		ret = 1;
 		goto exit;
 	}
@@ -233,12 +271,16 @@ static unsigned int
 get_host_devfn(acpi_handle device_handle, acpi_handle rootbus_handle)
 {
 	unsigned long adr;
+	unsigned long long adr;
 	acpi_handle child;
 	unsigned int devfn;
 	int function;
 	acpi_handle parent;
 	int slot;
 	acpi_status status;
+	struct acpi_buffer name_buffer = { ACPI_ALLOCATE_BUFFER, NULL };
+
+	acpi_get_name(device_handle, ACPI_FULL_PATHNAME, &name_buffer);
 
 	/*
 	 * Do an upward search to find the root bus device, and
@@ -252,6 +294,8 @@ get_host_devfn(acpi_handle device_handle, acpi_handle rootbus_handle)
 			       "(0x%x) for: ", __func__, status);
 			acpi_ns_print_node_pathname(child, NULL);
 			printk("\n");
+			       "(0x%x) for: %s\n", __func__, status,
+				(char *)name_buffer.pointer);
 			panic("%s: Unable to find host devfn\n", __func__);
 		}
 		if (parent == rootbus_handle)
@@ -263,6 +307,8 @@ get_host_devfn(acpi_handle device_handle, acpi_handle rootbus_handle)
 		       __func__);
 		acpi_ns_print_node_pathname(device_handle, NULL);
 		printk("\n");
+		printk(KERN_ERR "%s: Unable to find root bus for: %s\n",
+		       __func__, (char *)name_buffer.pointer);
 		BUG();
 	}
 
@@ -274,6 +320,13 @@ get_host_devfn(acpi_handle device_handle, acpi_handle rootbus_handle)
 		printk("\n");
 		panic("%s: Unable to find host devfn\n", __func__);
 	}
+
+		printk(KERN_ERR "%s: Unable to get _ADR (0x%x) for: %s\n",
+		       __func__, status, (char *)name_buffer.pointer);
+		panic("%s: Unable to find host devfn\n", __func__);
+	}
+
+	kfree(name_buffer.pointer);
 
 	slot = (adr >> 16) & 0xffff;
 	function = adr & 0xffff;
@@ -294,12 +347,15 @@ find_matching_device(acpi_handle handle, u32 lvl, void *context, void **rv)
 {
 	unsigned long bbn = -1;
 	unsigned long adr;
+	unsigned long long bbn = -1;
+	unsigned long long adr;
 	acpi_handle parent = NULL;
 	acpi_status status;
 	unsigned int devfn;
 	int function;
 	int slot;
 	struct sn_pcidev_match *info = context;
+	struct acpi_buffer name_buffer = { ACPI_ALLOCATE_BUFFER, NULL };
 
         status = acpi_evaluate_integer(handle, METHOD_NAME__ADR, NULL,
                                        &adr);
@@ -311,6 +367,11 @@ find_matching_device(acpi_handle handle, u32 lvl, void *context, void **rv)
 					__func__, status);
 			acpi_ns_print_node_pathname(handle, NULL);
 			printk("\n");
+			acpi_get_name(handle, ACPI_FULL_PATHNAME, &name_buffer);
+			printk(KERN_ERR
+			       "%s: acpi_get_parent() failed (0x%x) for: %s\n",
+				__func__, status, (char *)name_buffer.pointer);
+			kfree(name_buffer.pointer);
 			return AE_OK;
 		}
 		status = acpi_evaluate_integer(parent, METHOD_NAME__BBN,
@@ -321,6 +382,11 @@ find_matching_device(acpi_handle handle, u32 lvl, void *context, void **rv)
 					__func__);
 			acpi_ns_print_node_pathname(handle, NULL);
 			printk("\n");
+			acpi_get_name(handle, ACPI_FULL_PATHNAME, &name_buffer);
+			printk(KERN_ERR
+			  "%s: Failed to find _BBN in parent of: %s\n",
+					__func__, (char *)name_buffer.pointer);
+			kfree(name_buffer.pointer);
 			return AE_OK;
 		}
 
@@ -352,6 +418,11 @@ sn_acpi_get_pcidev_info(struct pci_dev *dev, struct pcidev_info **pcidev_info,
 	acpi_status status;
 
 	rootbus_handle = PCI_CONTROLLER(dev)->acpi_handle;
+	unsigned long long segment;
+	acpi_status status;
+	struct acpi_buffer name_buffer = { ACPI_ALLOCATE_BUFFER, NULL };
+
+	rootbus_handle = acpi_device_handle(PCI_CONTROLLER(dev)->companion);
         status = acpi_evaluate_integer(rootbus_handle, METHOD_NAME__SEG, NULL,
                                        &segment);
         if (ACPI_SUCCESS(status)) {
@@ -368,6 +439,20 @@ sn_acpi_get_pcidev_info(struct pci_dev *dev, struct pcidev_info **pcidev_info,
 		       __func__);
 		acpi_ns_print_node_pathname(rootbus_handle, NULL);
 		printk("\n");
+			acpi_get_name(rootbus_handle, ACPI_FULL_PATHNAME,
+				&name_buffer);
+			printk(KERN_ERR
+			       "%s: Segment number mismatch, 0x%llx vs 0x%x for: %s\n",
+			       __func__, segment, pci_domain_nr(dev),
+			       (char *)name_buffer.pointer);
+			kfree(name_buffer.pointer);
+			return 1;
+		}
+	} else {
+		acpi_get_name(rootbus_handle, ACPI_FULL_PATHNAME, &name_buffer);
+		printk(KERN_ERR "%s: Unable to get __SEG from: %s\n",
+		       __func__, (char *)name_buffer.pointer);
+		kfree(name_buffer.pointer);
 		return 1;
 	}
 
@@ -382,6 +467,7 @@ sn_acpi_get_pcidev_info(struct pci_dev *dev, struct pcidev_info **pcidev_info,
 
 	acpi_walk_namespace(ACPI_TYPE_DEVICE, rootbus_handle, ACPI_UINT32_MAX,
 			    find_matching_device, &pcidev_match, NULL);
+			    find_matching_device, NULL, &pcidev_match, NULL);
 
 	if (!pcidev_match.handle) {
 		printk(KERN_ERR
@@ -435,6 +521,7 @@ sn_acpi_slot_fixup(struct pci_dev *dev)
 		addr = ioremap(pcidev_info->pdi_pio_mapped_addr[PCI_ROM_RESOURCE],
 			       size);
 		image_size = pci_get_rom_size(addr, size);
+		image_size = pci_get_rom_size(dev, addr, size);
 		dev->resource[PCI_ROM_RESOURCE].start = (unsigned long) addr;
 		dev->resource[PCI_ROM_RESOURCE].end =
 					(unsigned long) addr + image_size - 1;
@@ -484,6 +571,7 @@ sn_io_acpi_init(void)
 {
 	u64 result;
 	s64 status;
+	long status;
 
 	/* SN Altix does not follow the IOSAPIC IRQ routing model */
 	acpi_irq_model = ACPI_IRQ_MODEL_PLATFORM;

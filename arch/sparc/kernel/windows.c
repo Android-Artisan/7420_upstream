@@ -13,6 +13,12 @@
 
 #include <asm/uaccess.h>
 
+
+#include <asm/cacheflush.h>
+#include <asm/uaccess.h>
+
+#include "kernel.h"
+
 /* Do save's until all user register windows are out of the cpu. */
 void flush_user_windows(void)
 {
@@ -43,6 +49,7 @@ static inline void shift_window_buffer(int first_win, int last_win, struct threa
 	for(i = first_win; i < last_win; i++) {
 		tp->rwbuf_stkptrs[i] = tp->rwbuf_stkptrs[i+1];
 		memcpy(&tp->reg_window[i], &tp->reg_window[i+1], sizeof(struct reg_window));
+		memcpy(&tp->reg_window[i], &tp->reg_window[i+1], sizeof(struct reg_window32));
 	}
 }
 
@@ -71,6 +78,7 @@ void synchronize_user_stack(void)
 		/* Ok, let it rip. */
 		if (copy_to_user((char __user *) sp, &tp->reg_window[window],
 				 sizeof(struct reg_window)))
+				 sizeof(struct reg_window32)))
 			continue;
 
 		shift_window_buffer(window, tp->w_saved - 1, tp);
@@ -124,4 +132,8 @@ void try_to_clear_window_buffer(struct pt_regs *regs, int who)
 	}
 	tp->w_saved = 0;
 	unlock_kernel();
+				 sizeof(struct reg_window32)))
+			do_exit(SIGILL);
+	}
+	tp->w_saved = 0;
 }

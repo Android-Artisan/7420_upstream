@@ -106,6 +106,27 @@ void machine_power_off(void)
 	if (pm_power_off)
 		pm_power_off();
 }
+ *		     Copyright (C) 2002 - 2008  Paul Mundt
+ *
+ * This file is subject to the terms and conditions of the GNU General Public
+ * License.  See the file "COPYING" in the main directory of this archive
+ * for more details.
+ */
+#include <linux/module.h>
+#include <linux/mm.h>
+#include <linux/slab.h>
+#include <linux/elfcore.h>
+#include <linux/kallsyms.h>
+#include <linux/fs.h>
+#include <linux/ftrace.h>
+#include <linux/hw_breakpoint.h>
+#include <linux/prefetch.h>
+#include <linux/stackprotector.h>
+#include <asm/uaccess.h>
+#include <asm/mmu_context.h>
+#include <asm/fpu.h>
+#include <asm/syscalls.h>
+#include <asm/switch_to.h>
 
 void show_regs(struct pt_regs * regs)
 {
@@ -120,6 +141,18 @@ void show_regs(struct pt_regs * regs)
 	printk("                  ");
 #endif
 	printk("%s\n", print_tainted());
+	show_regs_print_info(KERN_DEFAULT);
+
+	print_symbol("PC is at %s\n", instruction_pointer(regs));
+	print_symbol("PR is at %s\n", regs->pr);
+
+	printk("PC  : %08lx SP  : %08lx SR  : %08lx ",
+	       regs->pc, regs->regs[15], regs->sr);
+#ifdef CONFIG_MMU
+	printk("TEA : %08x\n", __raw_readl(MMU_TEA));
+#else
+	printk("\n");
+#endif
 
 	printk("R0  : %08lx R1  : %08lx R2  : %08lx R3  : %08lx\n",
 	       regs->regs[0],regs->regs[1],
@@ -174,6 +207,20 @@ int kernel_thread(int (*fn)(void *), void * arg, unsigned long flags)
 	return do_fork(flags | CLONE_VM | CLONE_UNTRACED, 0,
 		       &regs, 0, NULL, NULL);
 }
+	show_code(regs);
+}
+
+void start_thread(struct pt_regs *regs, unsigned long new_pc,
+		  unsigned long new_sp)
+{
+	regs->pr = 0;
+	regs->sr = SR_FD;
+	regs->pc = new_pc;
+	regs->regs[15] = new_sp;
+
+	free_thread_xstate(current);
+}
+EXPORT_SYMBOL(start_thread);
 
 /*
  * Free current thread data structures etc..
@@ -190,6 +237,11 @@ void flush_thread(void)
 {
 #if defined(CONFIG_SH_FPU)
 	struct task_struct *tsk = current;
+	struct task_struct *tsk = current;
+
+	flush_ptrace_hw_breakpoint(tsk);
+
+#if defined(CONFIG_SH_FPU)
 	/* Forget lazy FPU state */
 	clear_fpu(tsk, task_pt_regs(tsk));
 	clear_used_math();
@@ -214,6 +266,10 @@ int dump_fpu(struct pt_regs *regs, elf_fpregset_t *fpu)
 		unlazy_fpu(tsk, regs);
 		memcpy(fpu, &tsk->thread.fpu.hard, sizeof(*fpu));
 	}
+	if (fpvalid)
+		fpvalid = !fpregs_get(tsk, NULL, 0,
+				      sizeof(struct user_fpu_struct),
+				      fpu, NULL);
 #endif
 
 	return fpvalid;
@@ -245,6 +301,52 @@ int copy_thread(int nr, unsigned long clone_flags, unsigned long usp,
 		childregs->regs[15] = (unsigned long)childregs;
 		ti->addr_limit = KERNEL_DS;
 	}
+EXPORT_SYMBOL(dump_fpu);
+
+asmlinkage void ret_from_fork(void);
+asmlinkage void ret_from_kernel_thread(void);
+
+int copy_thread(unsigned long clone_flags, unsigned long usp,
+		unsigned long arg, struct task_struct *p)
+{
+	struct thread_info *ti = task_thread_info(p);
+	struct pt_regs *childregs;
+
+#if defined(CONFIG_SH_DSP)
+	struct task_struct *tsk = current;
+
+	if (is_dsp_enabled(tsk)) {
+		/* We can use the __save_dsp or just copy the struct:
+		 * __save_dsp(p);
+		 * p->thread.dsp_status.status |= SR_DSP
+		 */
+		p->thread.dsp_status = tsk->thread.dsp_status;
+	}
+#endif
+
+	memset(p->thread.ptrace_bps, 0, sizeof(p->thread.ptrace_bps));
+
+	childregs = task_pt_regs(p);
+	p->thread.sp = (unsigned long) childregs;
+	if (unlikely(p->flags & PF_KTHREAD)) {
+		memset(childregs, 0, sizeof(struct pt_regs));
+		p->thread.pc = (unsigned long) ret_from_kernel_thread;
+		childregs->regs[4] = arg;
+		childregs->regs[5] = usp;
+		childregs->sr = SR_MD;
+#if defined(CONFIG_SH_FPU)
+		childregs->sr |= SR_FD;
+#endif
+		ti->addr_limit = KERNEL_DS;
+		ti->status &= ~TS_USEDFPU;
+		p->thread.fpu_counter = 0;
+		return 0;
+	}
+	*childregs = *current_pt_regs();
+
+	if (usp)
+		childregs->regs[15] = usp;
+	ti->addr_limit = USER_DS;
 
 	if (clone_flags & CLONE_SETTLS)
 		childregs->gbr = childregs->regs[0];
@@ -300,6 +402,10 @@ static void ubc_set_tracing(int asid, unsigned long pc)
 #endif	/* CONFIG_CPU_SH4A */
 }
 
+	p->thread.pc = (unsigned long) ret_from_fork;
+	return 0;
+}
+
 /*
  *	switch_to(x,y) should switch tasks from x to y.
  *
@@ -310,6 +416,21 @@ struct task_struct *__switch_to(struct task_struct *prev,
 #if defined(CONFIG_SH_FPU)
 	unlazy_fpu(prev, task_pt_regs(prev));
 #endif
+
+__notrace_funcgraph struct task_struct *
+__switch_to(struct task_struct *prev, struct task_struct *next)
+{
+	struct thread_struct *next_t = &next->thread;
+
+#if defined(CONFIG_CC_STACKPROTECTOR) && !defined(CONFIG_SMP)
+	__stack_chk_guard = next->stack_canary;
+#endif
+
+	unlazy_fpu(prev, task_pt_regs(prev));
+
+	/* we're going to use this soon, after a few expensive things */
+	if (next->thread.fpu_counter > 5)
+		prefetch(next_t->xstate);
 
 #ifdef CONFIG_MMU
 	/*
@@ -339,6 +460,13 @@ struct task_struct *__switch_to(struct task_struct *prev,
 		ctrl_outw(0, UBC_BBRB);
 #endif
 	}
+	/*
+	 * If the task has used fpu the last 5 timeslices, just do a full
+	 * restore of the math state immediately to avoid the trap; the
+	 * chances of needing FPU soon are obviously high now
+	 */
+	if (next->thread.fpu_counter > 5)
+		__fpu_state_restore();
 
 	return prev;
 }

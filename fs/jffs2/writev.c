@@ -55,6 +55,7 @@ int jffs2_flash_direct_writev(struct jffs2_sb_info *c, const struct kvec *vecs,
 	else {
 		return mtd_fake_writev(c->mtd, vecs, count, to, retlen);
 	}
+	return mtd_writev(c->mtd, vecs, count, to, retlen);
 }
 
 int jffs2_flash_direct_write(struct jffs2_sb_info *c, loff_t ofs, size_t len,
@@ -62,6 +63,7 @@ int jffs2_flash_direct_write(struct jffs2_sb_info *c, loff_t ofs, size_t len,
 {
 	int ret;
 	ret = c->mtd->write(c->mtd, ofs, len, retlen, buf);
+	ret = mtd_write(c->mtd, ofs, len, retlen, buf);
 
 	if (jffs2_sum_active()) {
 		struct kvec vecs[1];

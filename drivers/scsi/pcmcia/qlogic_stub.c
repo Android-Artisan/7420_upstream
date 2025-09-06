@@ -1,4 +1,3 @@
-/*======================================================================
 
     A driver for the Qlogic SCSI card
 
@@ -29,7 +28,6 @@
     the provisions above, a recipient may use your version of this
     file under either the MPL or the GPL.
     
-======================================================================*/
 
 #include <linux/module.h>
 #include <linux/init.h>
@@ -87,7 +85,6 @@ static struct scsi_host_template qlogicfas_driver_template = {
 	.use_clustering		= DISABLE_CLUSTERING,
 };
 
-/*====================================================================*/
 
 typedef struct scsi_info_t {
 	struct pcmcia_device	*p_dev;
@@ -160,6 +157,7 @@ static int qlogic_probe(struct pcmcia_device *link)
 	scsi_info_t *info;
 
 	DEBUG(0, "qlogic_attach()\n");
+	dev_dbg(&link->dev, "qlogic_attach()\n");
 
 	/* Create new SCSI device */
 	info = kzalloc(sizeof(*info), GFP_KERNEL);
@@ -175,25 +173,37 @@ static int qlogic_probe(struct pcmcia_device *link)
 	link->conf.Attributes = CONF_ENABLE_IRQ;
 	link->conf.IntType = INT_MEMORY_AND_IO;
 	link->conf.Present = PRESENT_OPTION;
+	link->config_flags |= CONF_ENABLE_IRQ | CONF_AUTO_SET_IO;
+	link->config_regs = PRESENT_OPTION;
 
 	return qlogic_config(link);
 }				/* qlogic_attach */
 
-/*====================================================================*/
 
 static void qlogic_detach(struct pcmcia_device *link)
 {
 	DEBUG(0, "qlogic_detach(0x%p)\n", link);
+	dev_dbg(&link->dev, "qlogic_detach\n");
 
 	qlogic_release(link);
 	kfree(link->priv);
 
 }				/* qlogic_detach */
 
-/*====================================================================*/
 
 #define CS_CHECK(fn, ret) \
 do { last_fn = (fn); if ((last_ret = (ret)) != 0) goto cs_failed; } while (0)
+static int qlogic_config_check(struct pcmcia_device *p_dev, void *priv_data)
+{
+	p_dev->io_lines = 10;
+	p_dev->resource[0]->flags &= ~IO_DATA_PATH_WIDTH;
+	p_dev->resource[0]->flags |= IO_DATA_PATH_WIDTH_AUTO;
+
+	if (p_dev->resource[0]->start == 0)
+		return -ENODEV;
+
+	return pcmcia_request_io(p_dev);
+}
 
 static int qlogic_config(struct pcmcia_device * link)
 {
@@ -255,6 +265,42 @@ static int qlogic_config(struct pcmcia_device * link)
 
 	sprintf(info->node.dev_name, "scsi%d", host->host_no);
 	link->dev_node = &info->node;
+	int ret;
+	struct Scsi_Host *host;
+
+	dev_dbg(&link->dev, "qlogic_config\n");
+
+	ret = pcmcia_loop_config(link, qlogic_config_check, NULL);
+	if (ret)
+		goto failed;
+
+	if (!link->irq)
+		goto failed;
+
+	ret = pcmcia_enable_device(link);
+	if (ret)
+		goto failed;
+
+	if ((info->manf_id == MANFID_MACNICA) || (info->manf_id == MANFID_PIONEER) || (info->manf_id == 0x0098)) {
+		/* set ATAcmd */
+		outb(0xb4, link->resource[0]->start + 0xd);
+		outb(0x24, link->resource[0]->start + 0x9);
+		outb(0x04, link->resource[0]->start + 0xd);
+	}
+
+	/* The KXL-810AN has a bigger IO port window */
+	if (resource_size(link->resource[0]) == 32)
+		host = qlogic_detect(&qlogicfas_driver_template, link,
+			link->resource[0]->start + 16, link->irq);
+	else
+		host = qlogic_detect(&qlogicfas_driver_template, link,
+			link->resource[0]->start, link->irq);
+	
+	if (!host) {
+		printk(KERN_INFO "%s: no SCSI devices found\n", qlogic_name);
+		goto failed;
+	}
+
 	info->host = host;
 
 	return 0;
@@ -264,9 +310,11 @@ cs_failed:
 	pcmcia_disable_device(link);
 	return -ENODEV;
 
+failed:
+	pcmcia_disable_device(link);
+	return -ENODEV;
 }				/* qlogic_config */
 
-/*====================================================================*/
 
 static void qlogic_release(struct pcmcia_device *link)
 {
@@ -277,12 +325,16 @@ static void qlogic_release(struct pcmcia_device *link)
 	scsi_remove_host(info->host);
 
 	free_irq(link->irq.AssignedIRQ, info->host);
+	dev_dbg(&link->dev, "qlogic_release\n");
+
+	scsi_remove_host(info->host);
+
+	free_irq(link->irq, info->host);
 	pcmcia_disable_device(link);
 
 	scsi_host_put(info->host);
 }
 
-/*====================================================================*/
 
 static int qlogic_resume(struct pcmcia_device *link)
 {
@@ -295,6 +347,13 @@ static int qlogic_resume(struct pcmcia_device *link)
 		outb(0x80, link->io.BasePort1 + 0xd);
 		outb(0x24, link->io.BasePort1 + 0x9);
 		outb(0x04, link->io.BasePort1 + 0xd);
+	pcmcia_enable_device(link);
+	if ((info->manf_id == MANFID_MACNICA) ||
+	    (info->manf_id == MANFID_PIONEER) ||
+	    (info->manf_id == 0x0098)) {
+		outb(0x80, link->resource[0]->start + 0xd);
+		outb(0x24, link->resource[0]->start + 0x9);
+		outb(0x04, link->resource[0]->start + 0xd);
 	}
 	/* Ugggglllyyyy!!! */
 	qlogicfas408_bus_reset(NULL);
@@ -303,6 +362,7 @@ static int qlogic_resume(struct pcmcia_device *link)
 }
 
 static struct pcmcia_device_id qlogic_ids[] = {
+static const struct pcmcia_device_id qlogic_ids[] = {
 	PCMCIA_DEVICE_PROD_ID12("EIger Labs", "PCMCIA-to-SCSI Adapter", 0x88395fa7, 0x33b7a5e6),
 	PCMCIA_DEVICE_PROD_ID12("EPSON", "SCSI-2 PC Card SC200", 0xd361772f, 0x299d1751),
 	PCMCIA_DEVICE_PROD_ID12("MACNICA", "MIRACLE SCSI-II mPS110", 0x20841b68, 0xab3c3b6d),
@@ -329,6 +389,7 @@ static struct pcmcia_driver qlogic_cs_driver = {
 	.drv		= {
 	.name		= "qlogic_cs",
 	},
+	.name		= "qlogic_cs",
 	.probe		= qlogic_probe,
 	.remove		= qlogic_detach,
 	.id_table       = qlogic_ids,

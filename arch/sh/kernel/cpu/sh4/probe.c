@@ -16,6 +16,7 @@
 #include <asm/cache.h>
 
 int __init detect_cpu_and_cache_system(void)
+void cpu_probe(void)
 {
 	unsigned long pvr, prr, cvr;
 	unsigned long size;
@@ -31,6 +32,9 @@ int __init detect_cpu_and_cache_system(void)
 	pvr = (ctrl_inl(CCN_PVR) >> 8) & 0xffffff;
 	prr = (ctrl_inl(CCN_PRR) >> 4) & 0xff;
 	cvr = (ctrl_inl(CCN_CVR));
+	pvr = (__raw_readl(CCN_PVR) >> 8) & 0xffffff;
+	prr = (__raw_readl(CCN_PRR) >> 4) & 0xff;
+	cvr = (__raw_readl(CCN_CVR));
 
 	/*
 	 * Setup some sane SH-4 defaults for the icache
@@ -66,6 +70,26 @@ int __init detect_cpu_and_cache_system(void)
 
 	/* FPU detection works for everyone */
 	if ((cvr & 0x20000000) == 1)
+		boot_cpu_data.family = CPU_FAMILY_SH4A;
+
+		if ((cvr & 0x10000000) == 0) {
+			boot_cpu_data.flags |= CPU_HAS_DSP;
+			boot_cpu_data.family = CPU_FAMILY_SH4AL_DSP;
+		}
+
+		boot_cpu_data.flags |= CPU_HAS_LLSC | CPU_HAS_PERF_COUNTER;
+		boot_cpu_data.cut_major = pvr & 0x7f;
+
+		boot_cpu_data.icache.ways = 4;
+		boot_cpu_data.dcache.ways = 4;
+	} else {
+		/* And some SH-4 defaults.. */
+		boot_cpu_data.flags |= CPU_HAS_PTEA | CPU_HAS_FPU;
+		boot_cpu_data.family = CPU_FAMILY_SH4;
+	}
+
+	/* FPU detection works for almost everyone */
+	if ((cvr & 0x20000000))
 		boot_cpu_data.flags |= CPU_HAS_FPU;
 
 	/* Mask off the upper chip ID */
@@ -89,6 +113,16 @@ int __init detect_cpu_and_cache_system(void)
 	case 0x1100:
 		boot_cpu_data.type = CPU_SH7751;
 		boot_cpu_data.flags |= CPU_HAS_FPU;
+		boot_cpu_data.flags |= CPU_HAS_P2_FLUSH_BUG |
+				       CPU_HAS_PERF_COUNTER;
+		break;
+	case 0x206:
+		boot_cpu_data.type = CPU_SH7750S;
+		boot_cpu_data.flags |= CPU_HAS_P2_FLUSH_BUG |
+				       CPU_HAS_PERF_COUNTER;
+		break;
+	case 0x1100:
+		boot_cpu_data.type = CPU_SH7751;
 		break;
 	case 0x2001:
 	case 0x2004:
@@ -134,11 +168,19 @@ int __init detect_cpu_and_cache_system(void)
 		boot_cpu_data.dcache.ways = 4;
 		boot_cpu_data.flags |= CPU_HAS_LLSC;
 
+		break;
+	case 0x4004:
+	case 0x4005:
+		boot_cpu_data.type = CPU_SH7786;
+		boot_cpu_data.flags |= CPU_HAS_PTEAEX | CPU_HAS_L2_CACHE;
+		break;
+	case 0x3008:
 		switch (prr) {
 		case 0x50:
 		case 0x51:
 			boot_cpu_data.type = CPU_SH7723;
 			boot_cpu_data.flags |= CPU_HAS_FPU | CPU_HAS_L2_CACHE;
+			boot_cpu_data.flags |= CPU_HAS_L2_CACHE;
 			break;
 		case 0x70:
 			boot_cpu_data.type = CPU_SH7366;
@@ -159,6 +201,33 @@ int __init detect_cpu_and_cache_system(void)
 		break;
 	case 0x700:
 		boot_cpu_data.type = CPU_SH4_501;
+	case 0x300b:
+		switch (prr) {
+		case 0x20:
+			boot_cpu_data.type = CPU_SH7724;
+			boot_cpu_data.flags |= CPU_HAS_L2_CACHE;
+			break;
+		case 0x10:
+		case 0x11:
+			boot_cpu_data.type = CPU_SH7757;
+			break;
+		case 0xd0:
+		case 0x40: /* yon-ten-go */
+			boot_cpu_data.type = CPU_SH7372;
+			break;
+		case 0xE0: /* 0x4E0 */
+			boot_cpu_data.type = CPU_SH7734; /* SH7733/SH7734 */
+			break;
+
+		}
+		break;
+	case 0x4000:	/* 1st cut */
+	case 0x4001:	/* 2nd cut */
+		boot_cpu_data.type = CPU_SHX3;
+		break;
+	case 0x700:
+		boot_cpu_data.type = CPU_SH4_501;
+		boot_cpu_data.flags &= ~CPU_HAS_FPU;
 		boot_cpu_data.icache.ways = 2;
 		boot_cpu_data.dcache.ways = 2;
 		break;
@@ -200,6 +269,9 @@ int __init detect_cpu_and_cache_system(void)
 #ifdef CONFIG_CPU_HAS_PTEA
 	boot_cpu_data.flags |= CPU_HAS_PTEA;
 #endif
+
+		break;
+	}
 
 	/*
 	 * On anything that's not a direct-mapped cache, look to the CVR
@@ -260,4 +332,47 @@ int __init detect_cpu_and_cache_system(void)
 	}
 
 	return 0;
+	 * SH-4A's have an optional PIPT L2.
+	 */
+	if (boot_cpu_data.flags & CPU_HAS_L2_CACHE) {
+		/*
+		 * Verify that it really has something hooked up, this
+		 * is the safety net for CPUs that have optional L2
+		 * support yet do not implement it.
+		 */
+		if ((cvr & 0xf) == 0)
+			boot_cpu_data.flags &= ~CPU_HAS_L2_CACHE;
+		else {
+			/*
+			 * Silicon and specifications have clearly never
+			 * met..
+			 */
+			cvr ^= 0xf;
+
+			/*
+			 * Size calculation is much more sensible
+			 * than it is for the L1.
+			 *
+			 * Sizes are 128KB, 256KB, 512KB, and 1MB.
+			 */
+			size = (cvr & 0xf) << 17;
+
+			boot_cpu_data.scache.way_incr		= (1 << 16);
+			boot_cpu_data.scache.entry_shift	= 5;
+			boot_cpu_data.scache.ways		= 4;
+			boot_cpu_data.scache.linesz		= L1_CACHE_BYTES;
+
+			boot_cpu_data.scache.entry_mask	=
+				(boot_cpu_data.scache.way_incr -
+				 boot_cpu_data.scache.linesz);
+
+			boot_cpu_data.scache.sets	= size /
+				(boot_cpu_data.scache.linesz *
+				 boot_cpu_data.scache.ways);
+
+			boot_cpu_data.scache.way_size	=
+				(boot_cpu_data.scache.sets *
+				 boot_cpu_data.scache.linesz);
+		}
+	}
 }

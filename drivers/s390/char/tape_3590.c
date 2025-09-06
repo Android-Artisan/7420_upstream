@@ -3,21 +3,32 @@
  *    tape device discipline for 3590 tapes.
  *
  *    Copyright IBM Corp. 2001,2006
+ *    tape device discipline for 3590 tapes.
+ *
+ *    Copyright IBM Corp. 2001, 2009
  *    Author(s): Stefan Bader <shbader@de.ibm.com>
  *		 Michael Holzheu <holzheu@de.ibm.com>
  *		 Martin Schwidefsky <schwidefsky@de.ibm.com>
  */
 
 #include <linux/module.h>
+#define KMSG_COMPONENT "tape_3590"
+#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
+
+#include <linux/module.h>
+#include <linux/slab.h>
 #include <linux/init.h>
 #include <linux/bio.h>
 #include <asm/ebcdic.h>
 
 #define TAPE_DBF_AREA	tape_3590_dbf
+#define BUFSIZE 512	/* size of buffers for dynamic generated messages */
 
 #include "tape.h"
 #include "tape_std.h"
 #include "tape_3590.h"
+
+static struct workqueue_struct *tape_3590_wq;
 
 /*
  * Pointer to debug area.
@@ -27,6 +38,7 @@ EXPORT_SYMBOL(TAPE_DBF_AREA);
 
 /*******************************************************************
  * Error Recovery fuctions:
+ * Error Recovery functions:
  * - Read Opposite:		 implemented
  * - Read Device (buffered) log: BRA
  * - Read Library log:		 BRA
@@ -136,6 +148,7 @@ static void int_to_ext_kekl(struct tape3592_kekl *in,
 	memcpy(out->label, in->label, sizeof(in->label));
 	EBCASC(out->label, sizeof(in->label));
 	strstrip(out->label);
+	strim(out->label);
 }
 
 static void int_to_ext_kekl_pair(struct tape3592_kekl_pair *in,
@@ -325,6 +338,7 @@ out:
  * Enable encryption
  */
 static int tape_3592_enable_crypt(struct tape_device *device)
+static struct tape_request *__tape_3592_enable_crypt(struct tape_device *device)
 {
 	struct tape_request *request;
 	char *data;
@@ -335,6 +349,10 @@ static int tape_3592_enable_crypt(struct tape_device *device)
 	request = tape_alloc_request(2, 72);
 	if (IS_ERR(request))
 		return PTR_ERR(request);
+		return ERR_PTR(-ENOSYS);
+	request = tape_alloc_request(2, 72);
+	if (IS_ERR(request))
+		return request;
 	data = request->cpdata;
 	memset(data,0,72);
 
@@ -356,6 +374,32 @@ static int tape_3592_enable_crypt(struct tape_device *device)
  * Disable encryption
  */
 static int tape_3592_disable_crypt(struct tape_device *device)
+	return request;
+}
+
+static int tape_3592_enable_crypt(struct tape_device *device)
+{
+	struct tape_request *request;
+
+	request = __tape_3592_enable_crypt(device);
+	if (IS_ERR(request))
+		return PTR_ERR(request);
+	return tape_do_io_free(device, request);
+}
+
+static void tape_3592_enable_crypt_async(struct tape_device *device)
+{
+	struct tape_request *request;
+
+	request = __tape_3592_enable_crypt(device);
+	if (!IS_ERR(request))
+		tape_do_io_async_free(device, request);
+}
+
+/*
+ * Disable encryption
+ */
+static struct tape_request *__tape_3592_disable_crypt(struct tape_device *device)
 {
 	struct tape_request *request;
 	char *data;
@@ -366,6 +410,10 @@ static int tape_3592_disable_crypt(struct tape_device *device)
 	request = tape_alloc_request(2, 72);
 	if (IS_ERR(request))
 		return PTR_ERR(request);
+		return ERR_PTR(-ENOSYS);
+	request = tape_alloc_request(2, 72);
+	if (IS_ERR(request))
+		return request;
 	data = request->cpdata;
 	memset(data,0,72);
 
@@ -379,6 +427,28 @@ static int tape_3592_disable_crypt(struct tape_device *device)
 	tape_ccw_end(request->cpaddr + 1, MODE_SET_CB, 36, data + 36);
 
 	return tape_do_io_free(device, request);
+}
+
+	return request;
+}
+
+static int tape_3592_disable_crypt(struct tape_device *device)
+{
+	struct tape_request *request;
+
+	request = __tape_3592_disable_crypt(device);
+	if (IS_ERR(request))
+		return PTR_ERR(request);
+	return tape_do_io_free(device, request);
+}
+
+static void tape_3592_disable_crypt_async(struct tape_device *device)
+{
+	struct tape_request *request;
+
+	request = __tape_3592_disable_crypt(device);
+	if (!IS_ERR(request))
+		tape_do_io_async_free(device, request);
 }
 
 /*
@@ -454,6 +524,7 @@ tape_3590_ioctl(struct tape_device *device, unsigned int cmd, unsigned long arg)
  */
 static int
 tape_3590_sense_medium(struct tape_device *device)
+static int tape_3590_sense_medium(struct tape_device *device)
 {
 	struct tape_request *request;
 
@@ -463,6 +534,18 @@ tape_3590_sense_medium(struct tape_device *device)
 	request->op = TO_MSEN;
 	tape_ccw_end(request->cpaddr, MEDIUM_SENSE, 128, request->cpdata);
 	return tape_do_io_free(device, request);
+}
+
+static void tape_3590_sense_medium_async(struct tape_device *device)
+{
+	struct tape_request *request;
+
+	request = tape_alloc_request(1, 128);
+	if (IS_ERR(request))
+		return;
+	request->op = TO_MSEN;
+	tape_ccw_end(request->cpaddr, MEDIUM_SENSE, 128, request->cpdata);
+	tape_do_io_async_free(device, request);
 }
 
 /*
@@ -543,6 +626,7 @@ tape_3590_read_opposite(struct tape_device *device,
  */
 static int
 tape_3590_read_attmsg(struct tape_device *device)
+static void tape_3590_read_attmsg_async(struct tape_device *device)
 {
 	struct tape_request *request;
 	char *buf;
@@ -550,6 +634,7 @@ tape_3590_read_attmsg(struct tape_device *device)
 	request = tape_alloc_request(3, 4096);
 	if (IS_ERR(request))
 		return PTR_ERR(request);
+		return;
 	request->op = TO_READ_ATTMSG;
 	buf = request->cpdata;
 	buf[0] = PREP_RD_SS_DATA;
@@ -558,11 +643,15 @@ tape_3590_read_attmsg(struct tape_device *device)
 	tape_ccw_cc(request->cpaddr + 1, READ_SS_DATA, 4096 - 12, buf + 12);
 	tape_ccw_end(request->cpaddr + 2, NOP, 0, NULL);
 	return tape_do_io_free(device, request);
+	tape_do_io_async_free(device, request);
 }
 
 /*
  * These functions are used to schedule follow-up actions from within an
  * interrupt context (like unsolicited interrupts).
+ * Note: the work handler is called by the system work queue. The tape
+ * commands started by the handler need to be asynchrounous, otherwise
+ * a deadlock can occur e.g. in case of a deferred cc=1 (see __tape_do_irq).
  */
 struct work_handler_data {
 	struct tape_device *device;
@@ -588,6 +677,16 @@ tape_3590_work_handler(struct work_struct *work)
 		break;
 	case TO_CRYPT_OFF:
 		tape_3592_disable_crypt(p->device);
+		tape_3590_sense_medium_async(p->device);
+		break;
+	case TO_READ_ATTMSG:
+		tape_3590_read_attmsg_async(p->device);
+		break;
+	case TO_CRYPT_ON:
+		tape_3592_enable_crypt_async(p->device);
+		break;
+	case TO_CRYPT_OFF:
+		tape_3592_disable_crypt_async(p->device);
 		break;
 	default:
 		DBF_EVENT(3, "T3590: work handler undefined for "
@@ -701,6 +800,13 @@ tape_3590_check_locate(struct tape_device *device, struct tape_request *request)
 }
 #endif
 
+	p->device = tape_get_device(device);
+	p->op = op;
+
+	queue_work(tape_3590_wq, &p->work);
+	return 0;
+}
+
 static void tape_3590_med_state_set(struct tape_device *device,
 				    struct tape_3590_med_sense *sense)
 {
@@ -727,6 +833,7 @@ static void tape_3590_med_state_set(struct tape_device *device,
 	c_info->medium_status |= TAPE390_MEDIUM_LOADED_MASK;
 	if (sense->flags & MSENSE_CRYPT_MASK) {
 		PRINT_INFO("Medium is encrypted (%04x)\n", sense->flags);
+		DBF_EVENT(6, "Medium is encrypted (%04x)\n", sense->flags);
 		c_info->medium_status |= TAPE390_MEDIUM_ENCRYPTED_MASK;
 	} else	{
 		DBF_EVENT(6, "Medium is not encrypted %04x\n", sense->flags);
@@ -745,6 +852,8 @@ tape_3590_done(struct tape_device *device, struct tape_request *request)
 
 	DBF_EVENT(6, "%s done\n", tape_op_verbose[request->op]);
 	disc_data = device->discdata;
+
+	DBF_EVENT(6, "%s done\n", tape_op_verbose[request->op]);
 
 	switch (request->op) {
 	case TO_BSB:
@@ -797,17 +906,20 @@ tape_3590_done(struct tape_device *device, struct tape_request *request)
 
 /*
  * This fuction is called, when error recovery was successfull
+ * This function is called, when error recovery was successful
  */
 static inline int
 tape_3590_erp_succeded(struct tape_device *device, struct tape_request *request)
 {
 	DBF_EVENT(3, "Error Recovery successfull for %s\n",
+	DBF_EVENT(3, "Error Recovery successful for %s\n",
 		  tape_op_verbose[request->op]);
 	return tape_3590_done(device, request);
 }
 
 /*
  * This fuction is called, when error recovery was not successfull
+ * This function is called, when error recovery was not successful
  */
 static inline int
 tape_3590_erp_failed(struct tape_device *device, struct tape_request *request,
@@ -849,6 +961,7 @@ tape_3590_unsolicited_irq(struct tape_device *device, struct irb *irb)
 		DBF_EVENT(3, "unsol.irq! dev end: %08x\n", device->cdev_id);
 		PRINT_WARN("Unsolicited IRQ (Device End) caught.\n");
 		tape_dump_sense(device, NULL, irb);
+		tape_dump_sense_dbf(device, NULL, irb);
 	}
 	/* check medium state */
 	tape_3590_schedule_work(device, TO_MSEN);
@@ -911,6 +1024,8 @@ tape_3590_erp_swap(struct tape_device *device, struct tape_request *request,
 	 * should probably be done in user space!
 	 */
 	PRINT_WARN("(%s): Swap Tape Device!\n", device->cdev->dev.bus_id);
+	dev_warn (&device->cdev->dev, "The tape medium must be loaded into a "
+		"different tape unit\n");
 	return tape_3590_erp_basic(device, request, irb, -EIO);
 }
 
@@ -998,6 +1113,13 @@ static void
 tape_3590_print_mim_msg_f0(struct tape_device *device, struct irb *irb)
 {
 	struct tape_3590_sense *sense;
+	char *exception, *service;
+
+	exception = kmalloc(BUFSIZE, GFP_ATOMIC);
+	service = kmalloc(BUFSIZE, GFP_ATOMIC);
+
+	if (!exception || !service)
+		goto out_nomem;
 
 	sense = (struct tape_3590_sense *) irb->ecw;
 	/* Exception Message */
@@ -1026,6 +1148,29 @@ tape_3590_print_mim_msg_f0(struct tape_device *device, struct irb *irb)
 	default:
 		PRINT_WARN("(%s): MIM ExMsg: 0x%02x\n",
 			   device->cdev->dev.bus_id, sense->fmt.f70.emc);
+		snprintf(exception, BUFSIZE, "Data degraded");
+		break;
+	case 0x03:
+		snprintf(exception, BUFSIZE, "Data degraded in partion %i",
+			sense->fmt.f70.mp);
+		break;
+	case 0x04:
+		snprintf(exception, BUFSIZE, "Medium degraded");
+		break;
+	case 0x05:
+		snprintf(exception, BUFSIZE, "Medium degraded in partition %i",
+			sense->fmt.f70.mp);
+		break;
+	case 0x06:
+		snprintf(exception, BUFSIZE, "Block 0 Error");
+		break;
+	case 0x07:
+		snprintf(exception, BUFSIZE, "Medium Exception 0x%02x",
+			sense->fmt.f70.md);
+		break;
+	default:
+		snprintf(exception, BUFSIZE, "0x%02x",
+			sense->fmt.f70.emc);
 		break;
 	}
 	/* Service Message */
@@ -1039,6 +1184,21 @@ tape_3590_print_mim_msg_f0(struct tape_device *device, struct irb *irb)
 			   device->cdev->dev.bus_id, sense->fmt.f70.smc);
 		break;
 	}
+		snprintf(service, BUFSIZE, "Reference Media maintenance "
+			"procedure %i", sense->fmt.f70.md);
+		break;
+	default:
+		snprintf(service, BUFSIZE, "0x%02x",
+			sense->fmt.f70.smc);
+		break;
+	}
+
+	dev_warn (&device->cdev->dev, "Tape media information: exception %s, "
+		"service %s\n", exception, service);
+
+out_nomem:
+	kfree(exception);
+	kfree(service);
 }
 
 /*
@@ -1048,6 +1208,13 @@ static void
 tape_3590_print_io_sim_msg_f1(struct tape_device *device, struct irb *irb)
 {
 	struct tape_3590_sense *sense;
+	char *exception, *service;
+
+	exception = kmalloc(BUFSIZE, GFP_ATOMIC);
+	service = kmalloc(BUFSIZE, GFP_ATOMIC);
+
+	if (!exception || !service)
+		goto out_nomem;
 
 	sense = (struct tape_3590_sense *) irb->ecw;
 	/* Exception Message */
@@ -1083,6 +1250,35 @@ tape_3590_print_io_sim_msg_f1(struct tape_device *device, struct irb *irb)
 	default:
 		PRINT_WARN("(%s): SIM ExMsg: 0x%02x\n",
 			   device->cdev->dev.bus_id, sense->fmt.f71.emc);
+		snprintf(exception, BUFSIZE, "Effect of failure is unknown");
+		break;
+	case 0x02:
+		snprintf(exception, BUFSIZE, "CU Exception - no performance "
+			"impact");
+		break;
+	case 0x03:
+		snprintf(exception, BUFSIZE, "CU Exception on channel "
+			"interface 0x%02x", sense->fmt.f71.md[0]);
+		break;
+	case 0x04:
+		snprintf(exception, BUFSIZE, "CU Exception on device path "
+			"0x%02x", sense->fmt.f71.md[0]);
+		break;
+	case 0x05:
+		snprintf(exception, BUFSIZE, "CU Exception on library path "
+			"0x%02x", sense->fmt.f71.md[0]);
+		break;
+	case 0x06:
+		snprintf(exception, BUFSIZE, "CU Exception on node 0x%02x",
+			sense->fmt.f71.md[0]);
+		break;
+	case 0x07:
+		snprintf(exception, BUFSIZE, "CU Exception on partition "
+			"0x%02x", sense->fmt.f71.md[0]);
+		break;
+	default:
+		snprintf(exception, BUFSIZE, "0x%02x",
+			sense->fmt.f71.emc);
 	}
 	/* Service Message */
 	switch (sense->fmt.f71.smc) {
@@ -1150,6 +1346,63 @@ tape_3590_print_io_sim_msg_f1(struct tape_device *device, struct irb *irb)
 		PRINT_WARN("(%s): SIM ServiceMsg: 0x%02x\n",
 			   device->cdev->dev.bus_id, sense->fmt.f71.smc);
 	}
+		snprintf(service, BUFSIZE, "Repair impact is unknown");
+		break;
+	case 0x02:
+		snprintf(service, BUFSIZE, "Repair will not impact cu "
+			"performance");
+		break;
+	case 0x03:
+		if (sense->fmt.f71.mdf == 0)
+			snprintf(service, BUFSIZE, "Repair will disable node "
+				"0x%x on CU", sense->fmt.f71.md[1]);
+		else
+			snprintf(service, BUFSIZE, "Repair will disable "
+				"nodes (0x%x-0x%x) on CU", sense->fmt.f71.md[1],
+				sense->fmt.f71.md[2]);
+		break;
+	case 0x04:
+		if (sense->fmt.f71.mdf == 0)
+			snprintf(service, BUFSIZE, "Repair will disable "
+				"channel path 0x%x on CU",
+				sense->fmt.f71.md[1]);
+		else
+			snprintf(service, BUFSIZE, "Repair will disable channel"
+				" paths (0x%x-0x%x) on CU",
+				sense->fmt.f71.md[1], sense->fmt.f71.md[2]);
+		break;
+	case 0x05:
+		if (sense->fmt.f71.mdf == 0)
+			snprintf(service, BUFSIZE, "Repair will disable device"
+				" path 0x%x on CU", sense->fmt.f71.md[1]);
+		else
+			snprintf(service, BUFSIZE, "Repair will disable device"
+				" paths (0x%x-0x%x) on CU",
+				sense->fmt.f71.md[1], sense->fmt.f71.md[2]);
+		break;
+	case 0x06:
+		if (sense->fmt.f71.mdf == 0)
+			snprintf(service, BUFSIZE, "Repair will disable "
+				"library path 0x%x on CU",
+				sense->fmt.f71.md[1]);
+		else
+			snprintf(service, BUFSIZE, "Repair will disable "
+				"library paths (0x%x-0x%x) on CU",
+				sense->fmt.f71.md[1], sense->fmt.f71.md[2]);
+		break;
+	case 0x07:
+		snprintf(service, BUFSIZE, "Repair will disable access to CU");
+		break;
+	default:
+		snprintf(service, BUFSIZE, "0x%02x",
+			sense->fmt.f71.smc);
+	}
+
+	dev_warn (&device->cdev->dev, "I/O subsystem information: exception"
+		" %s, service %s\n", exception, service);
+out_nomem:
+	kfree(exception);
+	kfree(service);
 }
 
 /*
@@ -1159,6 +1412,13 @@ static void
 tape_3590_print_dev_sim_msg_f2(struct tape_device *device, struct irb *irb)
 {
 	struct tape_3590_sense *sense;
+	char *exception, *service;
+
+	exception = kmalloc(BUFSIZE, GFP_ATOMIC);
+	service = kmalloc(BUFSIZE, GFP_ATOMIC);
+
+	if (!exception || !service)
+		goto out_nomem;
 
 	sense = (struct tape_3590_sense *) irb->ecw;
 	/* Exception Message */
@@ -1194,6 +1454,33 @@ tape_3590_print_dev_sim_msg_f2(struct tape_device *device, struct irb *irb)
 	default:
 		PRINT_WARN("(%s): DSIM ExMsg: 0x%02x\n",
 			   device->cdev->dev.bus_id, sense->fmt.f71.emc);
+		snprintf(exception, BUFSIZE, "Effect of failure is unknown");
+		break;
+	case 0x02:
+		snprintf(exception, BUFSIZE, "DV Exception - no performance"
+			" impact");
+		break;
+	case 0x03:
+		snprintf(exception, BUFSIZE, "DV Exception on channel "
+			"interface 0x%02x", sense->fmt.f71.md[0]);
+		break;
+	case 0x04:
+		snprintf(exception, BUFSIZE, "DV Exception on loader 0x%02x",
+			sense->fmt.f71.md[0]);
+		break;
+	case 0x05:
+		snprintf(exception, BUFSIZE, "DV Exception on message display"
+			" 0x%02x", sense->fmt.f71.md[0]);
+		break;
+	case 0x06:
+		snprintf(exception, BUFSIZE, "DV Exception in tape path");
+		break;
+	case 0x07:
+		snprintf(exception, BUFSIZE, "DV Exception in drive");
+		break;
+	default:
+		snprintf(exception, BUFSIZE, "0x%02x",
+			sense->fmt.f71.emc);
 	}
 	/* Service Message */
 	switch (sense->fmt.f71.smc) {
@@ -1264,6 +1551,66 @@ tape_3590_print_dev_sim_msg_f2(struct tape_device *device, struct irb *irb)
 		PRINT_WARN("(%s): DSIM ServiceMsg: 0x%02x\n",
 			   device->cdev->dev.bus_id, sense->fmt.f71.smc);
 	}
+		snprintf(service, BUFSIZE, "Repair impact is unknown");
+		break;
+	case 0x02:
+		snprintf(service, BUFSIZE, "Repair will not impact device "
+			"performance");
+		break;
+	case 0x03:
+		if (sense->fmt.f71.mdf == 0)
+			snprintf(service, BUFSIZE, "Repair will disable "
+				"channel path 0x%x on DV",
+				sense->fmt.f71.md[1]);
+		else
+			snprintf(service, BUFSIZE, "Repair will disable "
+				"channel path (0x%x-0x%x) on DV",
+				sense->fmt.f71.md[1], sense->fmt.f71.md[2]);
+		break;
+	case 0x04:
+		if (sense->fmt.f71.mdf == 0)
+			snprintf(service, BUFSIZE, "Repair will disable "
+				"interface 0x%x on DV", sense->fmt.f71.md[1]);
+		else
+			snprintf(service, BUFSIZE, "Repair will disable "
+				"interfaces (0x%x-0x%x) on DV",
+				sense->fmt.f71.md[1], sense->fmt.f71.md[2]);
+		break;
+	case 0x05:
+		if (sense->fmt.f71.mdf == 0)
+			snprintf(service, BUFSIZE, "Repair will disable loader"
+				" 0x%x on DV", sense->fmt.f71.md[1]);
+		else
+			snprintf(service, BUFSIZE, "Repair will disable loader"
+				" (0x%x-0x%x) on DV",
+				sense->fmt.f71.md[1], sense->fmt.f71.md[2]);
+		break;
+	case 0x07:
+		snprintf(service, BUFSIZE, "Repair will disable access to DV");
+		break;
+	case 0x08:
+		if (sense->fmt.f71.mdf == 0)
+			snprintf(service, BUFSIZE, "Repair will disable "
+				"message display 0x%x on DV",
+				sense->fmt.f71.md[1]);
+		else
+			snprintf(service, BUFSIZE, "Repair will disable "
+				"message displays (0x%x-0x%x) on DV",
+				 sense->fmt.f71.md[1], sense->fmt.f71.md[2]);
+		break;
+	case 0x09:
+		snprintf(service, BUFSIZE, "Clean DV");
+		break;
+	default:
+		snprintf(service, BUFSIZE, "0x%02x",
+			sense->fmt.f71.smc);
+	}
+
+	dev_warn (&device->cdev->dev, "Device subsystem information: exception"
+		" %s, service %s\n", exception, service);
+out_nomem:
+	kfree(exception);
+	kfree(service);
 }
 
 /*
@@ -1285,6 +1632,13 @@ tape_3590_print_era_msg(struct tape_device *device, struct irb *irb)
 			PRINT_WARN("(%s): Message Code 0x%x\n",
 				   device->cdev->dev.bus_id, sense->mc);
 		}
+			dev_warn (&device->cdev->dev, "The tape unit has "
+				"issued sense message %s\n",
+				tape_3590_msg[sense->mc]);
+		else
+			dev_warn (&device->cdev->dev, "The tape unit has "
+				"issued an unknown sense message code 0x%x\n",
+				sense->mc);
 		return;
 	}
 	if (sense->mc == 0xf0) {
@@ -1295,6 +1649,11 @@ tape_3590_print_era_msg(struct tape_device *device, struct irb *irb)
 			   sense->fmt.f70.emc, sense->fmt.f70.smc,
 			   sense->fmt.f70.refcode, sense->fmt.f70.mid,
 			   sense->fmt.f70.fid);
+		dev_warn (&device->cdev->dev, "MIM SEV=%i, MC=%02x, ES=%x/%x, "
+			"RC=%02x-%04x-%02x\n", sense->fmt.f70.sev, sense->mc,
+			sense->fmt.f70.emc, sense->fmt.f70.smc,
+			sense->fmt.f70.refcode, sense->fmt.f70.mid,
+			sense->fmt.f70.fid);
 		tape_3590_print_mim_msg_f0(device, irb);
 		return;
 	}
@@ -1307,6 +1666,12 @@ tape_3590_print_era_msg(struct tape_device *device, struct irb *irb)
 			   sense->mc, sense->fmt.f71.emc,
 			   sense->fmt.f71.smc, sense->fmt.f71.refcode1,
 			   sense->fmt.f71.refcode2, sense->fmt.f71.refcode3);
+		dev_warn (&device->cdev->dev, "IOSIM SEV=%i, DEVTYPE=3590/%02x,"
+			" MC=%02x, ES=%x/%x, REF=0x%04x-0x%04x-0x%04x\n",
+			sense->fmt.f71.sev, device->cdev->id.dev_model,
+			sense->mc, sense->fmt.f71.emc, sense->fmt.f71.smc,
+			sense->fmt.f71.refcode1, sense->fmt.f71.refcode2,
+			sense->fmt.f71.refcode3);
 		tape_3590_print_io_sim_msg_f1(device, irb);
 		return;
 	}
@@ -1319,6 +1684,12 @@ tape_3590_print_era_msg(struct tape_device *device, struct irb *irb)
 			   sense->mc, sense->fmt.f71.emc,
 			   sense->fmt.f71.smc, sense->fmt.f71.refcode1,
 			   sense->fmt.f71.refcode2, sense->fmt.f71.refcode3);
+		dev_warn (&device->cdev->dev, "DEVSIM SEV=%i, DEVTYPE=3590/%02x"
+			", MC=%02x, ES=%x/%x, REF=0x%04x-0x%04x-0x%04x\n",
+			sense->fmt.f71.sev, device->cdev->id.dev_model,
+			sense->mc, sense->fmt.f71.emc, sense->fmt.f71.smc,
+			sense->fmt.f71.refcode1, sense->fmt.f71.refcode2,
+			sense->fmt.f71.refcode3);
 		tape_3590_print_dev_sim_msg_f2(device, irb);
 		return;
 	}
@@ -1328,6 +1699,8 @@ tape_3590_print_era_msg(struct tape_device *device, struct irb *irb)
 	}
 	PRINT_WARN("(%s): Device Message(%x)\n",
 		   device->cdev->dev.bus_id, sense->mc);
+	dev_warn (&device->cdev->dev, "The tape unit has issued an unknown "
+		"sense message code %x\n", sense->mc);
 }
 
 static int tape_3590_crypt_error(struct tape_device *device,
@@ -1343,6 +1716,12 @@ static int tape_3590_crypt_error(struct tape_device *device,
 	cu_rc = sense[0];
 	drv_rc = *((u32*) &sense[5]) & 0xffffff;
 	ekm_rc1 = sense[9];
+	u8 cu_rc;
+	u16 ekm_rc2;
+	char *sense;
+
+	sense = ((struct tape_3590_sense *) irb->ecw)->fmt.data;
+	cu_rc = sense[0];
 	ekm_rc2 = *((u16*) &sense[10]);
 	if ((cu_rc == 0) && (ekm_rc2 == 0xee31))
 		/* key not defined on EKM */
@@ -1354,6 +1733,8 @@ static int tape_3590_crypt_error(struct tape_device *device,
 	PRINT_ERR("(%s): Unable to get encryption key from EKM\n", bus_id);
 	PRINT_ERR("(%s): CU=%02X DRIVE=%06X EKM=%02X:%04X\n", bus_id, cu_rc,
 		drv_rc, ekm_rc1, ekm_rc2);
+	dev_err (&device->cdev->dev, "The tape unit failed to obtain the "
+		"encryption key from EKM\n");
 
 	return tape_3590_erp_basic(device, request, irb, -ENOKEY);
 }
@@ -1499,6 +1880,13 @@ tape_3590_unit_check(struct tape_device *device, struct tape_request *request,
 			   "tape device\n", device->cdev->dev.bus_id);
 		PRINT_WARN("(%s): To solve the problem unload the current "
 			   "cartridge!\n", device->cdev->dev.bus_id);
+		return tape_3590_erp_basic(device, request, irb, -EMEDIUMTYPE);
+
+	case 0x8011:
+		return tape_3590_erp_basic(device, request, irb, -EPERM);
+	case 0x8013:
+		dev_warn (&device->cdev->dev, "A different host has privileged"
+			" access to the tape unit\n");
 		return tape_3590_erp_basic(device, request, irb, -EPERM);
 	default:
 		return tape_3590_erp_basic(device, request, irb, -EIO);
@@ -1539,6 +1927,7 @@ tape_3590_irq(struct tape_device *device, struct tape_request *request,
 
 	if (irb->scsw.cmd.dstat & DEV_STAT_CHN_END) {
 		DBF_EVENT(2, "cannel end\n");
+		DBF_EVENT(2, "channel end\n");
 		return TAPE_IO_PENDING;
 	}
 
@@ -1551,6 +1940,7 @@ tape_3590_irq(struct tape_device *device, struct tape_request *request,
 	PRINT_ERR("Unexpected interrupt.\n");
 	PRINT_ERR("Current op is: %s", tape_op_verbose[request->op]);
 	tape_dump_sense(device, request, irb);
+	tape_dump_sense_dbf(device, request, irb);
 	return TAPE_IO_STOP;
 }
 
@@ -1633,6 +2023,7 @@ static void
 tape_3590_cleanup_device(struct tape_device *device)
 {
 	flush_scheduled_work();
+	flush_workqueue(tape_3590_wq);
 	tape_std_unassign(device);
 
 	kfree(device->discdata);
@@ -1724,6 +2115,22 @@ static struct ccw_driver tape_3590_driver = {
 	.remove = tape_generic_remove,
 	.set_offline = tape_3590_offline,
 	.set_online = tape_3590_online,
+	return tape_generic_online(dev_get_drvdata(&cdev->dev),
+				   &tape_discipline_3590);
+}
+
+static struct ccw_driver tape_3590_driver = {
+	.driver = {
+		.name = "tape_3590",
+		.owner = THIS_MODULE,
+	},
+	.ids = tape_3590_ids,
+	.probe = tape_generic_probe,
+	.remove = tape_generic_remove,
+	.set_offline = tape_generic_offline,
+	.set_online = tape_3590_online,
+	.freeze = tape_generic_pm_suspend,
+	.int_class = IRQIO_TAP,
 };
 
 /*
@@ -1746,6 +2153,17 @@ tape_3590_init(void)
 	if (rc)
 		DBF_EVENT(3, "3590 init failed\n");
 	else
+
+	tape_3590_wq = alloc_workqueue("tape_3590", 0, 0);
+	if (!tape_3590_wq)
+		return -ENOMEM;
+
+	/* Register driver for 3590 tapes. */
+	rc = ccw_driver_register(&tape_3590_driver);
+	if (rc) {
+		destroy_workqueue(tape_3590_wq);
+		DBF_EVENT(3, "3590 init failed\n");
+	} else
 		DBF_EVENT(3, "3590 registered\n");
 	return rc;
 }
@@ -1755,6 +2173,7 @@ tape_3590_exit(void)
 {
 	ccw_driver_unregister(&tape_3590_driver);
 
+	destroy_workqueue(tape_3590_wq);
 	debug_unregister(TAPE_DBF_AREA);
 }
 

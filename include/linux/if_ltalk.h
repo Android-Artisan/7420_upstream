@@ -10,3 +10,7 @@ extern struct net_device *alloc_ltalkdev(int sizeof_priv);
 #endif
 
 #endif
+#include <uapi/linux/if_ltalk.h>
+
+extern struct net_device *alloc_ltalkdev(int sizeof_priv);
+#endif

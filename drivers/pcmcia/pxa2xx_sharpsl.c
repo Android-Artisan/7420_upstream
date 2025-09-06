@@ -67,6 +67,12 @@ static int sharpsl_pcmcia_hw_init(struct soc_pcmcia_socket *skt)
 	}
 
 	skt->irq = SCOOP_DEV[skt->nr].irq;
+	if (SCOOP_DEV[skt->nr].cd_irq >= 0) {
+		skt->stat[SOC_STAT_CD].irq = SCOOP_DEV[skt->nr].cd_irq;
+		skt->stat[SOC_STAT_CD].name = SCOOP_DEV[skt->nr].cd_irq_str;
+	}
+
+	skt->socket.pci_irq = SCOOP_DEV[skt->nr].irq;
 
 	return 0;
 }
@@ -226,6 +232,9 @@ static struct pcmcia_low_level sharpsl_pcmcia_ops __initdata = {
 	.owner                  = THIS_MODULE,
 	.hw_init                = sharpsl_pcmcia_hw_init,
 	.hw_shutdown            = sharpsl_pcmcia_hw_shutdown,
+static struct pcmcia_low_level sharpsl_pcmcia_ops = {
+	.owner                  = THIS_MODULE,
+	.hw_init                = sharpsl_pcmcia_hw_init,
 	.socket_state           = sharpsl_pcmcia_socket_state,
 	.configure_socket       = sharpsl_pcmcia_configure_socket,
 	.socket_init            = sharpsl_pcmcia_socket_init,
@@ -238,6 +247,7 @@ static struct pcmcia_low_level sharpsl_pcmcia_ops __initdata = {
 #include "sa11xx_base.h"
 
 int __init pcmcia_collie_init(struct device *dev)
+int pcmcia_collie_init(struct device *dev)
 {
        int ret = -ENODEV;
 
@@ -254,6 +264,9 @@ static struct platform_device *sharpsl_pcmcia_device;
 static int __init sharpsl_pcmcia_init(void)
 {
 	int ret;
+
+	if (!platform_scoop_config)
+		return -ENODEV;
 
 	sharpsl_pcmcia_ops.nr = platform_scoop_config->num_devs;
 	sharpsl_pcmcia_device = platform_device_alloc("pxa2xx-pcmcia", -1);

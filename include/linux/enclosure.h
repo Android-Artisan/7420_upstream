@@ -30,6 +30,11 @@
 enum enclosure_component_type {
 	ENCLOSURE_COMPONENT_DEVICE = 0x01,
 	ENCLOSURE_COMPONENT_ARRAY_DEVICE = 0x17,
+	ENCLOSURE_COMPONENT_CONTROLLER_ELECTRONICS = 0x07,
+	ENCLOSURE_COMPONENT_SCSI_TARGET_PORT = 0x14,
+	ENCLOSURE_COMPONENT_SCSI_INITIATOR_PORT = 0x15,
+	ENCLOSURE_COMPONENT_ARRAY_DEVICE = 0x17,
+	ENCLOSURE_COMPONENT_SAS_EXPANDER = 0x18,
 };
 
 /* ses-2 common element status */
@@ -42,6 +47,8 @@ enum enclosure_status {
 	ENCLOSURE_STATUS_NOT_INSTALLED,
 	ENCLOSURE_STATUS_UNKNOWN,
 	ENCLOSURE_STATUS_UNAVAILABLE,
+	/* last element for counting purposes */
+	ENCLOSURE_STATUS_MAX
 };
 
 /* SFF-8485 activity light settings */
@@ -77,6 +84,12 @@ struct enclosure_component_callbacks {
 	int (*set_locate)(struct enclosure_device *,
 			  struct enclosure_component *,
 			  enum enclosure_component_setting);
+	void (*get_power_status)(struct enclosure_device *,
+				 struct enclosure_component *);
+	int (*set_power_status)(struct enclosure_device *,
+				struct enclosure_component *,
+				int);
+	int (*show_id)(struct enclosure_device *, char *buf);
 };
 
 
@@ -90,6 +103,9 @@ struct enclosure_component {
 	int active;
 	int locate;
 	enum enclosure_status status;
+	int slot;
+	enum enclosure_status status;
+	int power_status;
 };
 
 struct enclosure_device {
@@ -124,6 +140,14 @@ int enclosure_add_device(struct enclosure_device *enclosure, int component,
 			 struct device *dev);
 int enclosure_remove_device(struct enclosure_device *enclosure, int component);
 struct enclosure_device *enclosure_find(struct device *dev);
+enclosure_component_alloc(struct enclosure_device *, unsigned int,
+			  enum enclosure_component_type, const char *);
+int enclosure_component_register(struct enclosure_component *);
+int enclosure_add_device(struct enclosure_device *enclosure, int component,
+			 struct device *dev);
+int enclosure_remove_device(struct enclosure_device *, struct device *);
+struct enclosure_device *enclosure_find(struct device *dev,
+					struct enclosure_device *start);
 int enclosure_for_each_device(int (*fn)(struct enclosure_device *, void *),
 			      void *data);
 

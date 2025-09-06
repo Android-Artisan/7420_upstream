@@ -3,12 +3,19 @@
 #
 # Copyright (C) 1999  Kaz Kojima
 # Copyright (C) 2002, 2003, 2004  Paul Mundt
+# Copyright (C) 2002 - 2008  Paul Mundt
 # Copyright (C) 2002  M. R. Brown
 #
 # This file is subject to the terms and conditions of the GNU General Public
 # License.  See the file "COPYING" in the main directory of this archive
 # for more details.
 #
+ifneq ($(SUBARCH),$(ARCH))
+  ifeq ($(CROSS_COMPILE),)
+    CROSS_COMPILE := $(call cc-cross-prefix, $(UTS_MACHINE)-linux-  $(UTS_MACHINE)-linux-gnu-  $(UTS_MACHINE)-unknown-linux-gnu-)
+  endif
+endif
+
 isa-y					:= any
 isa-$(CONFIG_SH_DSP)			:= sh
 isa-$(CONFIG_CPU_SH2)			:= sh2
@@ -31,6 +38,16 @@ isa-y			:= $(isa-y)-up
 cflags-$(CONFIG_CPU_SH2)		:= $(call cc-option,-m2,)
 cflags-$(CONFIG_CPU_SH2A)		+= $(call cc-option,-m2a,) \
 					   $(call cc-option,-m2a-nofpu,)
+
+ifeq ($(CONFIG_SUPERH32),y)
+isa-$(CONFIG_SH_DSP)			:= $(isa-y)-dsp
+isa-y					:= $(isa-y)-up
+endif
+
+cflags-$(CONFIG_CPU_SH2)		:= $(call cc-option,-m2,)
+cflags-$(CONFIG_CPU_SH2A)		+= $(call cc-option,-m2a,) \
+					   $(call cc-option,-m2a-nofpu,) \
+					   $(call cc-option,-m4-nofpu,)
 cflags-$(CONFIG_CPU_SH3)		:= $(call cc-option,-m3,)
 cflags-$(CONFIG_CPU_SH4)		:= $(call cc-option,-m4,) \
 	$(call cc-option,-mno-implicit-fp,-m4-nofpu)
@@ -43,6 +60,24 @@ cflags-$(CONFIG_CPU_LITTLE_ENDIAN)	+= -ml
 
 cflags-y	+= $(call cc-option,-mno-fdpic)
 
+cflags-$(CONFIG_CPU_SH4AL_DSP)		+= $(call cc-option,-m4al,)
+cflags-$(CONFIG_CPU_SH5)		:= $(call cc-option,-m5-32media-nofpu,)
+
+ifeq ($(cflags-y),)
+#
+# In the case where we are stuck with a compiler that has been uselessly
+# restricted to a particular ISA, a favourite default of newer GCCs when
+# extensive multilib targets are not provided, ensure we get the best fit
+# regarding FP generation. This is intentionally stupid (albeit many
+# orders of magnitude less than GCC's default behaviour), as anything
+# with a large number of multilib targets better have been built
+# correctly for the target in mind.
+#
+cflags-y	+= $(shell $(CC) $(KBUILD_CFLAGS) -print-multi-lib | \
+		     grep nofpu | sed q | sed -e 's/^/-/;s/;.*$$//')
+# At this point, anything goes.
+isaflags-y	:= $(call as-option,-Wa$(comma)-isa=any,)
+else
 #
 # -Wa,-isa= tuning implies -Wa,-dsp for the versions of binutils that
 # support it, while -Wa,-dsp by itself limits the range of usable opcodes
@@ -61,6 +96,14 @@ cflags-y	+= $(isaflags-y) -ffreestanding
 cflags-$(CONFIG_MORE_COMPILE_OPTIONS)	+= \
 	$(shell echo $(CONFIG_COMPILE_OPTIONS) | sed -e 's/"//g')
 
+endif
+
+cflags-$(CONFIG_CPU_BIG_ENDIAN)		+= -mb
+cflags-$(CONFIG_CPU_LITTLE_ENDIAN)	+= -ml
+
+cflags-y	+= $(call cc-option,-mno-fdpic)
+cflags-y	+= $(isaflags-y) -ffreestanding
+
 OBJCOPYFLAGS	:= -O binary -R .note -R .note.gnu.build-id -R .comment \
 		   -R .stab -R .stabstr -S
 
@@ -69,6 +112,18 @@ defaultimage-$(CONFIG_SUPERH32)	:= zImage
 
 # Set some sensible Kbuild defaults
 KBUILD_DEFCONFIG	:= shx3_defconfig
+defaultimage-$(CONFIG_SUPERH32)			:= zImage
+defaultimage-$(CONFIG_SH_SH7785LCR)		:= uImage
+defaultimage-$(CONFIG_SH_RSK)			:= uImage
+defaultimage-$(CONFIG_SH_URQUELL)		:= uImage
+defaultimage-$(CONFIG_SH_MIGOR)			:= uImage
+defaultimage-$(CONFIG_SH_AP325RXA)		:= uImage
+defaultimage-$(CONFIG_SH_SH7757LCR)		:= uImage
+defaultimage-$(CONFIG_SH_7724_SOLUTION_ENGINE)	:= uImage
+defaultimage-$(CONFIG_SH_7206_SOLUTION_ENGINE)	:= vmlinux
+defaultimage-$(CONFIG_SH_7619_SOLUTION_ENGINE)	:= vmlinux
+
+# Set some sensible Kbuild defaults
 KBUILD_IMAGE		:= $(defaultimage-y)
 
 #
@@ -94,6 +149,32 @@ endif
 head-y			:= arch/sh/kernel/init_task.o
 head-$(CONFIG_SUPERH32)	+= arch/sh/kernel/head_32.o
 head-$(CONFIG_SUPERH64)	+= arch/sh/kernel/head_64.o
+UTS_MACHINE		:= sh
+BITS			:= 32
+LDFLAGS_vmlinux		+= -e _stext
+KBUILD_DEFCONFIG	:= shx3_defconfig
+else
+UTS_MACHINE		:= sh64
+BITS			:= 64
+LDFLAGS_vmlinux		+= --defsym phys_stext=_stext-$(CONFIG_PAGE_OFFSET) \
+			   --defsym phys_stext_shmedia=phys_stext+1 \
+			   -e phys_stext_shmedia
+KBUILD_DEFCONFIG	:= cayman_defconfig
+endif
+
+ifdef CONFIG_CPU_LITTLE_ENDIAN
+ld-bfd			:= elf32-$(UTS_MACHINE)-linux
+LDFLAGS_vmlinux		+= --defsym jiffies=jiffies_64 --oformat $(ld-bfd)
+LDFLAGS			+= -EL
+else
+ld-bfd			:= elf32-$(UTS_MACHINE)big-linux
+LDFLAGS_vmlinux		+= --defsym jiffies=jiffies_64+4 --oformat $(ld-bfd)
+LDFLAGS			+= -EB
+endif
+
+export ld-bfd BITS
+
+head-y	:= arch/sh/kernel/head_$(BITS).o
 
 core-y				+= arch/sh/kernel/ arch/sh/mm/ arch/sh/boards/
 core-$(CONFIG_SH_FPU_EMU)	+= arch/sh/math-emu/
@@ -110,6 +191,14 @@ machdir-$(CONFIG_SH_EDOSK7705)			+= mach-edosk7705
 machdir-$(CONFIG_SH_HIGHLANDER)			+= mach-highlander
 machdir-$(CONFIG_SH_MIGOR)			+= mach-migor
 machdir-$(CONFIG_SH_SDK7780)			+= mach-sdk7780
+machdir-$(CONFIG_SH_RTS7751R2D)			+= mach-r2d
+machdir-$(CONFIG_SH_HIGHLANDER)			+= mach-highlander
+machdir-$(CONFIG_SH_MIGOR)			+= mach-migor
+machdir-$(CONFIG_SH_AP325RXA)			+= mach-ap325rxa
+machdir-$(CONFIG_SH_KFR2R09)			+= mach-kfr2r09
+machdir-$(CONFIG_SH_ECOVEC)			+= mach-ecovec24
+machdir-$(CONFIG_SH_SDK7780)			+= mach-sdk7780
+machdir-$(CONFIG_SH_SDK7786)			+= mach-sdk7786
 machdir-$(CONFIG_SH_X3PROTO)			+= mach-x3proto
 machdir-$(CONFIG_SH_SH7763RDP)			+= mach-sh7763rdp
 machdir-$(CONFIG_SH_SH4202_MICRODEV)		+= mach-microdev
@@ -117,11 +206,17 @@ machdir-$(CONFIG_SH_LANDISK)			+= mach-landisk
 machdir-$(CONFIG_SH_TITAN)			+= mach-titan
 machdir-$(CONFIG_SH_LBOX_RE2)			+= mach-lboxre2
 machdir-$(CONFIG_SH_CAYMAN)			+= mach-cayman
+machdir-$(CONFIG_SH_LBOX_RE2)			+= mach-lboxre2
+machdir-$(CONFIG_SH_CAYMAN)			+= mach-cayman
+machdir-$(CONFIG_SH_RSK)			+= mach-rsk
 
 ifneq ($(machdir-y),)
 core-y	+= $(addprefix arch/sh/boards/, \
 	     $(filter-out ., $(patsubst %,%/,$(machdir-y))))
 endif
+
+# Common machine type headers. Not part of the arch/sh/boards/ hierarchy.
+machdir-y	+= mach-common
 
 # Companion chips
 core-$(CONFIG_HD6446X_SERIES)	+= arch/sh/cchips/hd6446x/
@@ -139,6 +234,7 @@ core-$(CONFIG_HD6446X_SERIES)	+= arch/sh/cchips/hd6446x/
 cpuincdir-$(CONFIG_CPU_SH2A)	+= cpu-sh2a
 cpuincdir-$(CONFIG_CPU_SH2)	+= cpu-sh2
 cpuincdir-$(CONFIG_CPU_SH3)	+= cpu-sh3
+cpuincdir-$(CONFIG_CPU_SH4A)	+= cpu-sh4a
 cpuincdir-$(CONFIG_CPU_SH4)	+= cpu-sh4
 cpuincdir-$(CONFIG_CPU_SH5)	+= cpu-sh5
 cpuincdir-y			+= cpu-common	# Must be last
@@ -169,6 +265,25 @@ maketools:  include/linux/version.h FORCE
 all: $(KBUILD_IMAGE)
 
 zImage uImage uImage.srec vmlinux.srec: vmlinux
+ifeq ($(CONFIG_MCOUNT),y)
+  KBUILD_CFLAGS += -pg
+endif
+
+ifeq ($(CONFIG_DWARF_UNWINDER),y)
+  KBUILD_CFLAGS += -fasynchronous-unwind-tables
+endif
+
+libs-$(CONFIG_SUPERH32)		:= arch/sh/lib/	$(libs-y)
+libs-$(CONFIG_SUPERH64)		:= arch/sh/lib64/ $(libs-y)
+
+BOOT_TARGETS = uImage uImage.bz2 uImage.gz uImage.lzma uImage.xz uImage.lzo \
+	       uImage.srec uImage.bin zImage vmlinux.bin vmlinux.srec \
+	       romImage
+PHONY += $(BOOT_TARGETS)
+
+all: $(KBUILD_IMAGE)
+
+$(BOOT_TARGETS): vmlinux
 	$(Q)$(MAKE) $(build)=$(boot) $(boot)/$@
 
 compressed: zImage
@@ -216,3 +331,24 @@ arch/sh/lib64/syscalltab.h: arch/sh/kernel/syscalls_64.S
 
 CLEAN_FILES += arch/sh/lib64/syscalltab.h \
 	       include/asm-sh/machtypes.h
+archprepare:
+	$(Q)$(MAKE) $(build)=arch/sh/tools include/generated/machtypes.h
+
+archclean:
+	$(Q)$(MAKE) $(clean)=$(boot)
+	$(Q)$(MAKE) $(clean)=arch/sh/kernel/vsyscall
+
+define archhelp
+	@echo '  zImage 	           - Compressed kernel image'
+	@echo '  romImage	           - Compressed ROM image, if supported'
+	@echo '  vmlinux.srec	           - Create an ELF S-record'
+	@echo '  vmlinux.bin	           - Create an uncompressed binary image'
+	@echo '* uImage  	           - Alias to bootable U-Boot image'
+	@echo '  uImage.srec	           - Create an S-record for U-Boot'
+	@echo '  uImage.bin	           - Kernel-only image for U-Boot (bin)'
+	@echo '* uImage.gz	           - Kernel-only image for U-Boot (gzip)'
+	@echo '  uImage.bz2	           - Kernel-only image for U-Boot (bzip2)'
+	@echo '  uImage.lzma	           - Kernel-only image for U-Boot (lzma)'
+	@echo '  uImage.xz	           - Kernel-only image for U-Boot (xz)'
+	@echo '  uImage.lzo	           - Kernel-only image for U-Boot (lzo)'
+endef

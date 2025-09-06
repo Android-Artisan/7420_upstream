@@ -15,6 +15,7 @@
 typedef unsigned short umode_t;
 
 #endif /* __ASSEMBLY__ */
+#include <uapi/asm/types.h>
 
 /*
  * These aren't exported outside the kernel to avoid name space clashes
@@ -33,5 +34,8 @@ typedef u32 dma_addr_t;
 
 #endif /* __KERNEL__ */
 
+
+
+#define BITS_PER_LONG 32
 
 #endif /* __ASM_AVR32_TYPES_H */

@@ -69,6 +69,11 @@ titan_update_irq_hw(unsigned long mask)
 	volatile unsigned long *dim0, *dim1, *dim2, *dim3;
 	unsigned long mask0, mask1, mask2, mask3, dummy;
 
+	cpumask_t cpm;
+	volatile unsigned long *dim0, *dim1, *dim2, *dim3;
+	unsigned long mask0, mask1, mask2, mask3, dummy;
+
+	cpumask_copy(&cpm, cpu_present_mask);
 	mask &= ~isa_enable;
 	mask0 = mask & titan_cpu_irq_affinity[0];
 	mask1 = mask & titan_cpu_irq_affinity[1];
@@ -88,6 +93,10 @@ titan_update_irq_hw(unsigned long mask)
 	if (!cpu_isset(1, cpm)) dim1 = &dummy;
 	if (!cpu_isset(2, cpm)) dim2 = &dummy;
 	if (!cpu_isset(3, cpm)) dim3 = &dummy;
+	if (!cpumask_test_cpu(0, &cpm)) dim0 = &dummy;
+	if (!cpumask_test_cpu(1, &cpm)) dim1 = &dummy;
+	if (!cpumask_test_cpu(2, &cpm)) dim2 = &dummy;
+	if (!cpumask_test_cpu(3, &cpm)) dim3 = &dummy;
 
 	*dim0 = mask0;
 	*dim1 = mask1;
@@ -114,6 +123,9 @@ titan_update_irq_hw(unsigned long mask)
 static inline void
 titan_enable_irq(unsigned int irq)
 {
+titan_enable_irq(struct irq_data *d)
+{
+	unsigned int irq = d->irq;
 	spin_lock(&titan_irq_lock);
 	titan_cached_irq_mask |= 1UL << (irq - 16);
 	titan_update_irq_hw(titan_cached_irq_mask);
@@ -123,6 +135,9 @@ titan_enable_irq(unsigned int irq)
 static inline void
 titan_disable_irq(unsigned int irq)
 {
+titan_disable_irq(struct irq_data *d)
+{
+	unsigned int irq = d->irq;
 	spin_lock(&titan_irq_lock);
 	titan_cached_irq_mask &= ~(1UL << (irq - 16));
 	titan_update_irq_hw(titan_cached_irq_mask);
@@ -150,6 +165,7 @@ titan_cpu_set_irq_affinity(unsigned int irq, cpumask_t affinity)
 
 	for (cpu = 0; cpu < 4; cpu++) {
 		if (cpu_isset(cpu, affinity))
+		if (cpumask_test_cpu(cpu, &affinity))
 			titan_cpu_irq_affinity[cpu] |= 1UL << irq;
 		else
 			titan_cpu_irq_affinity[cpu] &= ~(1UL << irq);
@@ -164,12 +180,24 @@ titan_set_irq_affinity(unsigned int irq, cpumask_t affinity)
 	titan_cpu_set_irq_affinity(irq - 16, affinity);
 	titan_update_irq_hw(titan_cached_irq_mask);
 	spin_unlock(&titan_irq_lock);
+static int
+titan_set_irq_affinity(struct irq_data *d, const struct cpumask *affinity,
+		       bool force)
+{ 
+	unsigned int irq = d->irq;
+	spin_lock(&titan_irq_lock);
+	titan_cpu_set_irq_affinity(irq - 16, *affinity);
+	titan_update_irq_hw(titan_cached_irq_mask);
+	spin_unlock(&titan_irq_lock);
+
+	return 0;
 }
 
 static void
 titan_device_interrupt(unsigned long vector)
 {
 	printk("titan_device_interrupt: NOT IMPLEMENTED YET!! \n");
+	printk("titan_device_interrupt: NOT IMPLEMENTED YET!!\n");
 }
 
 static void 
@@ -201,6 +229,21 @@ static struct hw_interrupt_type titan_irq_type = {
        .ack            = titan_disable_irq,
        .end            = titan_end_irq,
        .set_affinity   = titan_set_irq_affinity,
+init_titan_irqs(struct irq_chip * ops, int imin, int imax)
+{
+	long i;
+	for (i = imin; i <= imax; ++i) {
+		irq_set_chip_and_handler(i, ops, handle_level_irq);
+		irq_set_status_flags(i, IRQ_LEVEL);
+	}
+}
+
+static struct irq_chip titan_irq_type = {
+       .name			= "TITAN",
+       .irq_unmask		= titan_enable_irq,
+       .irq_mask		= titan_disable_irq,
+       .irq_mask_ack		= titan_disable_irq,
+       .irq_set_affinity	= titan_set_irq_affinity,
 };
 
 static irqreturn_t
@@ -300,6 +343,15 @@ titan_late_init(void)
 	titan_request_irq(60+16, titan_intr_nop, IRQF_DISABLED,
 		    "PChip 0 C_Error", NULL);
 	titan_request_irq(59+16, titan_intr_nop, IRQF_DISABLED,
+	titan_request_irq(63+16, titan_intr_nop, 0,
+		    "CChip Error", NULL);
+	titan_request_irq(62+16, titan_intr_nop, 0,
+		    "PChip 0 H_Error", NULL);
+	titan_request_irq(61+16, titan_intr_nop, 0,
+		    "PChip 1 H_Error", NULL);
+	titan_request_irq(60+16, titan_intr_nop, 0,
+		    "PChip 0 C_Error", NULL);
+	titan_request_irq(59+16, titan_intr_nop, 0,
 		    "PChip 1 C_Error", NULL);
 
 	/* 
@@ -316,6 +368,8 @@ titan_late_init(void)
 
 static int __devinit
 titan_map_irq(struct pci_dev *dev, u8 slot, u8 pin)
+static int
+titan_map_irq(const struct pci_dev *dev, u8 slot, u8 pin)
 {
 	u8 intline;
 	int irq;
@@ -342,6 +396,8 @@ titan_init_pci(void)
  	titan_late_init();
  
 	pci_probe_only = 1;
+	/* Indicate that we trust the console to configure things properly */
+	pci_set_flags(PCI_PROBE_ONLY);
 	common_init_pci();
 	SMC669_Init(0);
 	locate_and_init_vga(NULL);
@@ -361,6 +417,9 @@ privateer_init_pci(void)
 	titan_request_irq(53+16, titan_intr_nop, IRQF_DISABLED,
 		    "NMI", NULL);
 	titan_request_irq(50+16, titan_intr_nop, IRQF_DISABLED,
+	titan_request_irq(53+16, titan_intr_nop, 0,
+		    "NMI", NULL);
+	titan_request_irq(50+16, titan_intr_nop, 0,
 		    "Temperature Warning", NULL);
 
 	/*

@@ -2,6 +2,7 @@
 
 #include <linux/kernel.h>
 #include <linux/init.h>
+#include <linux/module.h>
 
 #include <net/bluetooth/bluetooth.h>
 #include <net/bluetooth/hci_core.h>
@@ -16,6 +17,7 @@ EXPORT_SYMBOL_GPL(bt_class);
 
 static struct workqueue_struct *btaddconn;
 static struct workqueue_struct *btdelconn;
+static struct class *bt_class;
 
 static inline char *link_typetostr(int type)
 {
@@ -26,6 +28,8 @@ static inline char *link_typetostr(int type)
 		return "SCO";
 	case ESCO_LINK:
 		return "eSCO";
+	case LE_LINK:
+		return "LE";
 	default:
 		return "UNKNOWN";
 	}
@@ -62,6 +66,25 @@ struct device_attribute link_attr_##_name = __ATTR(_name,_mode,_show,_store)
 static LINK_ATTR(type, S_IRUGO, show_link_type, NULL);
 static LINK_ATTR(address, S_IRUGO, show_link_address, NULL);
 static LINK_ATTR(features, S_IRUGO, show_link_features, NULL);
+static ssize_t show_link_type(struct device *dev,
+			      struct device_attribute *attr, char *buf)
+{
+	struct hci_conn *conn = to_hci_conn(dev);
+	return sprintf(buf, "%s\n", link_typetostr(conn->type));
+}
+
+static ssize_t show_link_address(struct device *dev,
+				 struct device_attribute *attr, char *buf)
+{
+	struct hci_conn *conn = to_hci_conn(dev);
+	return sprintf(buf, "%pMR\n", &conn->dst);
+}
+
+#define LINK_ATTR(_name, _mode, _show, _store) \
+struct device_attribute link_attr_##_name = __ATTR(_name, _mode, _show, _store)
+
+static LINK_ATTR(type, S_IRUGO, show_link_type, NULL);
+static LINK_ATTR(address, S_IRUGO, show_link_address, NULL);
 
 static struct attribute *bt_link_attrs[] = {
 	&link_attr_type.attr,
@@ -83,6 +106,15 @@ static void bt_link_release(struct device *dev)
 {
 	void *data = dev_get_drvdata(dev);
 	kfree(data);
+	NULL
+};
+
+ATTRIBUTE_GROUPS(bt_link);
+
+static void bt_link_release(struct device *dev)
+{
+	struct hci_conn *conn = to_hci_conn(dev);
+	kfree(conn);
 }
 
 static struct device_type bt_link = {
@@ -104,6 +136,17 @@ static void add_conn(struct work_struct *work)
 }
 
 void hci_conn_add_sysfs(struct hci_conn *conn)
+/*
+ * The rfcomm tty device will possibly retain even when conn
+ * is down, and sysfs doesn't support move zombie device,
+ * so we should move the device before conn device is destroyed.
+ */
+static int __match_tty(struct device *dev, void *data)
+{
+	return !strncmp(dev_name(dev), "rfcomm", 6);
+}
+
+void hci_conn_init_sysfs(struct hci_conn *conn)
 {
 	struct hci_dev *hdev = conn->hdev;
 
@@ -140,6 +183,35 @@ static void del_conn(struct work_struct *work)
 	struct hci_conn *conn = container_of(work, struct hci_conn, work);
 	struct hci_dev *hdev = conn->hdev;
 
+	device_initialize(&conn->dev);
+}
+
+void hci_conn_add_sysfs(struct hci_conn *conn)
+{
+	struct hci_dev *hdev = conn->hdev;
+
+	BT_DBG("conn %p", conn);
+
+	if (device_is_registered(&conn->dev))
+		return;
+
+	dev_set_name(&conn->dev, "%s:%d", hdev->name, conn->handle);
+
+	if (device_add(&conn->dev) < 0) {
+		BT_ERR("Failed to register connection device");
+		return;
+	}
+
+	hci_dev_hold(hdev);
+}
+
+void hci_conn_del_sysfs(struct hci_conn *conn)
+{
+	struct hci_dev *hdev = conn->hdev;
+
+	if (!device_is_registered(&conn->dev))
+		return;
+
 	while (1) {
 		struct device *dev;
 
@@ -147,6 +219,7 @@ static void del_conn(struct work_struct *work)
 		if (!dev)
 			break;
 		device_move(dev, NULL);
+		device_move(dev, NULL, DPM_ORDER_DEV_LAST);
 		put_device(dev);
 	}
 
@@ -184,6 +257,17 @@ static inline char *host_typetostr(int type)
 		return "PCI";
 	case HCI_SDIO:
 		return "SDIO";
+
+	hci_dev_put(hdev);
+}
+
+static inline char *host_typetostr(int type)
+{
+	switch (type) {
+	case HCI_BREDR:
+		return "BR/EDR";
+	case HCI_AMP:
+		return "AMP";
 	default:
 		return "UNKNOWN";
 	}
@@ -354,6 +438,32 @@ static ssize_t store_sniff_min_interval(struct device *dev, struct device_attrib
 	hdev->sniff_min_interval = val;
 
 	return count;
+static ssize_t show_type(struct device *dev,
+			 struct device_attribute *attr, char *buf)
+{
+	struct hci_dev *hdev = to_hci_dev(dev);
+	return sprintf(buf, "%s\n", host_typetostr(hdev->dev_type));
+}
+
+static ssize_t show_name(struct device *dev,
+			 struct device_attribute *attr, char *buf)
+{
+	struct hci_dev *hdev = to_hci_dev(dev);
+	char name[HCI_MAX_NAME_LENGTH + 1];
+	int i;
+
+	for (i = 0; i < HCI_MAX_NAME_LENGTH; i++)
+		name[i] = hdev->dev_name[i];
+
+	name[HCI_MAX_NAME_LENGTH] = '\0';
+	return sprintf(buf, "%s\n", name);
+}
+
+static ssize_t show_address(struct device *dev,
+			    struct device_attribute *attr, char *buf)
+{
+	struct hci_dev *hdev = to_hci_dev(dev);
+	return sprintf(buf, "%pMR\n", &hdev->bdaddr);
 }
 
 static DEVICE_ATTR(type, S_IRUGO, show_type, NULL);
@@ -372,6 +482,7 @@ static DEVICE_ATTR(sniff_max_interval, S_IRUGO | S_IWUSR,
 				show_sniff_max_interval, store_sniff_max_interval);
 static DEVICE_ATTR(sniff_min_interval, S_IRUGO | S_IWUSR,
 				show_sniff_min_interval, store_sniff_min_interval);
+static DEVICE_ATTR(address, S_IRUGO, show_address, NULL);
 
 static struct attribute *bt_host_attrs[] = {
 	&dev_attr_type.attr,
@@ -402,6 +513,20 @@ static void bt_host_release(struct device *dev)
 {
 	void *data = dev_get_drvdata(dev);
 	kfree(data);
+	&dev_attr_address.attr,
+	NULL
+};
+
+ATTRIBUTE_GROUPS(bt_host);
+
+static void bt_host_release(struct device *dev)
+{
+	struct hci_dev *hdev = to_hci_dev(dev);
+
+	if (hci_dev_test_flag(hdev, HCI_UNREGISTER))
+		hci_cleanup_dev(hdev);
+	kfree(hdev);
+	module_put(THIS_MODULE);
 }
 
 static struct device_type bt_host = {
@@ -437,6 +562,15 @@ void hci_unregister_sysfs(struct hci_dev *hdev)
 	BT_DBG("%p name %s type %d", hdev, hdev->name, hdev->type);
 
 	device_del(&hdev->dev);
+void hci_init_sysfs(struct hci_dev *hdev)
+{
+	struct device *dev = &hdev->dev;
+
+	dev->type = &bt_host;
+	dev->class = bt_class;
+
+	__module_get(THIS_MODULE);
+	device_initialize(dev);
 }
 
 int __init bt_sysfs_init(void)
@@ -459,6 +593,9 @@ int __init bt_sysfs_init(void)
 	}
 
 	return 0;
+	bt_class = class_create(THIS_MODULE, "bluetooth");
+
+	return PTR_ERR_OR_ZERO(bt_class);
 }
 
 void bt_sysfs_cleanup(void)

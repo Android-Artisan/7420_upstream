@@ -66,6 +66,8 @@ int iforce_send_packet(struct iforce *iforce, u16 cmd, unsigned char* data)
 
 	if (CIRC_SPACE(head, tail, XMIT_SIZE) < n+2) {
 		warn("not enough space in xmit buffer to send new packet");
+		dev_warn(&iforce->dev->dev,
+			 "not enough space in xmit buffer to send new packet\n");
 		spin_unlock_irqrestore(&iforce->xmit_lock, flags);
 		return -1;
 	}
@@ -149,6 +151,7 @@ static int mark_core_as_ready(struct iforce *iforce, unsigned short addr)
 		}
 	}
 	warn("unused effect %04x updated !!!", addr);
+	dev_warn(&iforce->dev->dev, "unused effect %04x updated !!!\n", addr);
 	return -1;
 }
 
@@ -160,6 +163,8 @@ void iforce_process_packet(struct iforce *iforce, u16 cmd, unsigned char *data)
 
 	if (being_used)
 		warn("re-entrant call to iforce_process %d", being_used);
+		dev_warn(&iforce->dev->dev,
+			 "re-entrant call to iforce_process %d\n", being_used);
 	being_used++;
 
 #ifdef CONFIG_JOYSTICK_IFORCE_232
@@ -256,6 +261,8 @@ int iforce_get_id_packet(struct iforce *iforce, char *packet)
 		status = usb_submit_urb(iforce->ctrl, GFP_ATOMIC);
 		if (status) {
 			err("usb_submit_urb failed %d", status);
+			dev_err(&iforce->intf->dev,
+				"usb_submit_urb failed %d\n", status);
 			return -1;
 		}
 
@@ -264,11 +271,15 @@ int iforce_get_id_packet(struct iforce *iforce, char *packet)
 
 		if (iforce->ctrl->status) {
 			dbg("iforce->ctrl->status = %d", iforce->ctrl->status);
+			dev_dbg(&iforce->intf->dev,
+				"iforce->ctrl->status = %d\n",
+				iforce->ctrl->status);
 			usb_unlink_urb(iforce->ctrl);
 			return -1;
 		}
 #else
 		dbg("iforce_get_id_packet: iforce->bus = USB!");
+		printk(KERN_DEBUG "iforce_get_id_packet: iforce->bus = USB!\n");
 #endif
 		}
 		break;
@@ -288,11 +299,16 @@ int iforce_get_id_packet(struct iforce *iforce, char *packet)
 		}
 #else
 		err("iforce_get_id_packet: iforce->bus = SERIO!");
+		dev_err(&iforce->dev->dev,
+			"iforce_get_id_packet: iforce->bus = SERIO!\n");
 #endif
 		break;
 
 	default:
 		err("iforce_get_id_packet: iforce->bus = %d", iforce->bus);
+		dev_err(&iforce->dev->dev,
+			"iforce_get_id_packet: iforce->bus = %d\n",
+			iforce->bus);
 		break;
 	}
 

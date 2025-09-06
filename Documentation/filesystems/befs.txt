@@ -3,7 +3,6 @@ BeOS filesystem for Linux
 Document last updated: Dec 6, 2001
 
 WARNING
-=======
 Make sure you understand that this is alpha software.  This means that the
 implementation is neither complete nor well-tested. 
 
@@ -30,20 +29,21 @@ respond to the address given above...
 Current maintainer: Sergey S. Kostyliov <rathamahata@php4.ru>
 
 WHAT IS THIS DRIVER?
-==================
 This module implements the native filesystem of BeOS <http://www.be.com/>
+This filesystem doesn't have a maintainer.
+
+WHAT IS THIS DRIVER?
+This module implements the native filesystem of BeOS http://www.beincorporated.com/ 
 for the linux 2.4.1 and later kernels. Currently it is a read-only
 implementation.
 
 Which is it, BFS or BEFS?
-================
 Be, Inc said, "BeOS Filesystem is officially called BFS, not BeFS". 
 But Unixware Boot Filesystem is called bfs, too. And they are already in
 the kernel. Because of this naming conflict, on Linux the BeOS
 filesystem is called befs.
 
 HOW TO INSTALL
-==============
 step 1.  Install the BeFS  patch into the source code tree of linux.
 
 Apply the patchfile to your kernel source tree.
@@ -62,6 +62,7 @@ step 2.  Configuration & make kernel
 The linux kernel has many compile-time options. Most of them are beyond the
 scope of this document. I suggest the Kernel-HOWTO document as a good general
 reference on this topic. <http://www.linux.com/howto/Kernel-HOWTO.html>
+reference on this topic. http://www.linuxdocs.org/HOWTOs/Kernel-HOWTO-4.html 
 
 However, to use the BeFS module, you must enable it at configure time.
 
@@ -83,33 +84,28 @@ See the kernel howto <http://www.linux.com/howto/Kernel-HOWTO.html> for
 instructions on this critical step.
 
 USING BFS
-=========
 To use the BeOS filesystem, use filesystem type 'befs'.
 
 ex)
     mount -t befs /dev/fd0 /beos
 
 MOUNT OPTIONS
-=============
 uid=nnn        All files in the partition will be owned by user id nnn.
 gid=nnn	       All files in the partition will be in group nnn.
 iocharset=xxx  Use xxx as the name of the NLS translation table.
 debug          The driver will output debugging information to the syslog.
 
 HOW TO GET LASTEST VERSION
-==========================
 
 The latest version is currently available at:
 <http://befs-driver.sourceforge.net/>
 
 ANY KNOWN BUGS?
-===========
 As of Jan 20, 2002:
 	
 	None
 
 SPECIAL THANKS
-==============
 Dominic Giampalo ... Writing "Practical file system design with Be filesystem"
 Hiroyuki Yamada  ... Testing LinuxPPC.
 

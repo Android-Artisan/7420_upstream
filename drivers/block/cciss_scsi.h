@@ -43,6 +43,20 @@
 Note, cmd_per_lun could give us some trouble, so I'm setting it very low.
 Likewise, SCSI_CCISS_CAN_QUEUE is set very conservatively.
 
+		/* the scsi id of the adapter... */
+#define SELF_SCSI_ID 15
+		/* 15 is somewhat arbitrary, since the scsi-2 bus
+		   that's presented by the driver to the OS is
+		   fabricated.  The "real" scsi-3 bus the
+		   hardware presents is fabricated too.
+		   The actual, honest-to-goodness physical
+		   bus that the devices are attached to is not
+		   addressible natively, and may in fact turn
+		   out to be not scsi at all. */
+
+
+/* 
+
 If the upper scsi layer tries to track how many commands we have 
 outstanding, it will be operating under the misapprehension that it is
 the only one sending us requests.  We also have the block interface,
@@ -66,6 +80,10 @@ struct cciss_scsi_dev_t {
 	int devtype;
 	int bus, target, lun;		/* as presented to the OS */
 	unsigned char scsi3addr[8];	/* as presented to the HW */
+	unsigned char device_id[16];	/* from inquiry pg. 0x83 */
+	unsigned char vendor[8];	/* bytes 8-15 of inquiry data */
+	unsigned char model[16];	/* bytes 16-31 of inquiry data */
+	unsigned char revision[4];	/* bytes 32-35 of inquiry data */
 };
 
 struct cciss_scsi_hba_t {

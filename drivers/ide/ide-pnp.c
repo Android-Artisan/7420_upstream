@@ -17,6 +17,7 @@
 #include <linux/init.h>
 #include <linux/pnp.h>
 #include <linux/ide.h>
+#include <linux/module.h>
 
 #define DRV_NAME "ide-pnp"
 
@@ -27,12 +28,18 @@ static struct pnp_device_id idepnp_devices[] = {
 	{.id = ""}
 };
 
+static const struct ide_port_info ide_pnp_port_info = {
+	.host_flags		= IDE_HFLAG_NO_DMA,
+	.chipset		= ide_generic,
+};
+
 static int idepnp_probe(struct pnp_dev *dev, const struct pnp_device_id *dev_id)
 {
 	struct ide_host *host;
 	unsigned long base, ctl;
 	int rc;
 	hw_regs_t hw, *hws[] = { &hw, NULL, NULL, NULL };
+	struct ide_hw hw, *hws[] = { &hw };
 
 	printk(KERN_INFO DRV_NAME ": generic PnP IDE interface\n");
 
@@ -61,6 +68,8 @@ static int idepnp_probe(struct pnp_dev *dev, const struct pnp_device_id *dev_id)
 	hw.chipset = ide_generic;
 
 	rc = ide_host_add(NULL, hws, &host);
+
+	rc = ide_host_add(&ide_pnp_port_info, hws, 1, &host);
 	if (rc)
 		goto out;
 
@@ -104,4 +113,5 @@ static void __exit pnpide_exit(void)
 module_init(pnpide_init);
 module_exit(pnpide_exit);
 
+module_pnp_driver(idepnp_driver);
 MODULE_LICENSE("GPL");

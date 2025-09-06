@@ -1,6 +1,7 @@
 /*
  * KLSI KL5KUSB105 chip RS232 converter driver
  *
+ *   Copyright (C) 2010 Johan Hovold <jhovold@gmail.com>
  *   Copyright (C) 2001 Utz-Uwe Haus <haus@uuhaus.de>
  *
  *   This program is free software; you can redistribute it and/or modify
@@ -48,6 +49,8 @@
 #include <linux/kernel.h>
 #include <linux/errno.h>
 #include <linux/init.h>
+#include <linux/kernel.h>
+#include <linux/errno.h>
 #include <linux/slab.h>
 #include <linux/tty.h>
 #include <linux/tty_driver.h>
@@ -66,6 +69,7 @@ static int debug;
  */
 #define DRIVER_VERSION "v0.3a"
 #define DRIVER_AUTHOR "Utz-Uwe Haus <haus@uuhaus.de>"
+#define DRIVER_AUTHOR "Utz-Uwe Haus <haus@uuhaus.de>, Johan Hovold <jhovold@gmail.com>"
 #define DRIVER_DESC "KLSI KL5KUSB105 chipset USB->Serial Converter driver"
 
 
@@ -91,11 +95,22 @@ static void klsi_105_unthrottle(struct tty_struct *tty);
 static int  klsi_105_tiocmget(struct tty_struct *tty, struct file *file);
 static int  klsi_105_tiocmset(struct tty_struct *tty, struct file *file,
 			unsigned int set, unsigned int clear);
+static int klsi_105_port_probe(struct usb_serial_port *port);
+static int klsi_105_port_remove(struct usb_serial_port *port);
+static int  klsi_105_open(struct tty_struct *tty, struct usb_serial_port *port);
+static void klsi_105_close(struct usb_serial_port *port);
+static void klsi_105_set_termios(struct tty_struct *tty,
+			struct usb_serial_port *port, struct ktermios *old);
+static int  klsi_105_tiocmget(struct tty_struct *tty);
+static void klsi_105_process_read_urb(struct urb *urb);
+static int klsi_105_prepare_write_buffer(struct usb_serial_port *port,
+						void *dest, size_t size);
 
 /*
  * All of the device info needed for the KLSI converters.
  */
 static struct usb_device_id id_table [] = {
+static const struct usb_device_id id_table[] = {
 	{ USB_DEVICE(PALMCONNECT_VID, PALMCONNECT_PID) },
 	{ USB_DEVICE(KLSI_VID, KLSI_KL5KUSB105D_PID) },
 	{ }		/* Terminating entry */
@@ -135,6 +150,25 @@ static struct usb_serial_driver kl5kusb105d_device = {
 	.shutdown =	     klsi_105_shutdown,
 	.throttle =	     klsi_105_throttle,
 	.unthrottle =	     klsi_105_unthrottle,
+	.description =		"KL5KUSB105D / PalmConnect",
+	.id_table =		id_table,
+	.num_ports =		1,
+	.bulk_out_size =	64,
+	.open =			klsi_105_open,
+	.close =		klsi_105_close,
+	.set_termios =		klsi_105_set_termios,
+	/*.break_ctl =		klsi_105_break_ctl,*/
+	.tiocmget =		klsi_105_tiocmget,
+	.port_probe =		klsi_105_port_probe,
+	.port_remove =		klsi_105_port_remove,
+	.throttle =		usb_serial_generic_throttle,
+	.unthrottle =		usb_serial_generic_unthrottle,
+	.process_read_urb =	klsi_105_process_read_urb,
+	.prepare_write_buffer =	klsi_105_prepare_write_buffer,
+};
+
+static struct usb_serial_driver * const serial_drivers[] = {
+	&kl5kusb105d_device, NULL
 };
 
 struct klsi_105_port_settings {
@@ -157,6 +191,7 @@ struct klsi_105_private {
 	spinlock_t			lock;
 	unsigned long			bytes_in;
 	unsigned long			bytes_out;
+	spinlock_t			lock;
 };
 
 
@@ -190,6 +225,14 @@ static int klsi_105_chg_port_settings(struct usb_serial_port *port,
 	    settings->unknown1, settings->unknown2);
 	return rc;
 } /* klsi_105_chg_port_settings */
+		dev_err(&port->dev,
+			"Change port settings failed (error = %d)\n", rc);
+	dev_info(&port->serial->dev->dev,
+		 "%d byte block, baudrate %x, databits %d, u1 %d, u2 %d\n",
+		 settings->pktlen, settings->baudrate, settings->databits,
+		 settings->unknown1, settings->unknown2);
+	return rc;
+}
 
 /* translate a 16-bit status value from the device to linux's TIO bits */
 static unsigned long klsi_105_status2linestate(const __u16 status)
@@ -202,6 +245,7 @@ static unsigned long klsi_105_status2linestate(const __u16 status)
 
 	return res;
 }
+
 /*
  * Read line control via vendor command and return result through
  * *line_state_p
@@ -216,6 +260,17 @@ static int klsi_105_get_line_state(struct usb_serial_port *port,
 	__u16 status;
 
 	info("%s - sending SIO Poll request", __func__);
+	u8 *status_buf;
+	__u16 status;
+
+	dev_info(&port->serial->dev->dev, "sending SIO Poll request\n");
+
+	status_buf = kmalloc(KLSI_STATUSBUF_LEN, GFP_KERNEL);
+	if (!status_buf)
+		return -ENOMEM;
+
+	status_buf[0] = 0xff;
+	status_buf[1] = 0xff;
 	rc = usb_control_msg(port->serial->dev,
 			     usb_rcvctrlpipe(port->serial->dev, 0),
 			     KL5KUSB105A_SIO_POLL,
@@ -235,6 +290,23 @@ static int klsi_105_get_line_state(struct usb_serial_port *port,
 
 		*line_state_p = klsi_105_status2linestate(status);
 	}
+		dev_err(&port->dev, "Reading line status failed (error = %d)\n",
+			rc);
+	else {
+	if (rc != KLSI_STATUSBUF_LEN) {
+		dev_err(&port->dev, "reading line status failed: %d\n", rc);
+		if (rc >= 0)
+			rc = -EIO;
+	} else {
+		status = get_unaligned_le16(status_buf);
+
+		dev_info(&port->serial->dev->dev, "read status %x %x\n",
+			 status_buf[0], status_buf[1]);
+
+		*line_state_p = klsi_105_status2linestate(status);
+	}
+
+	kfree(status_buf);
 	return rc;
 }
 
@@ -354,6 +426,43 @@ static void klsi_105_shutdown(struct usb_serial *serial)
 
 static int  klsi_105_open(struct tty_struct *tty,
 			struct usb_serial_port *port, struct file *filp)
+static int klsi_105_port_probe(struct usb_serial_port *port)
+{
+	struct klsi_105_private *priv;
+
+	priv = kmalloc(sizeof(*priv), GFP_KERNEL);
+	if (!priv)
+		return -ENOMEM;
+
+	/* set initial values for control structures */
+	priv->cfg.pktlen    = 5;
+	priv->cfg.baudrate  = kl5kusb105a_sio_b9600;
+	priv->cfg.databits  = kl5kusb105a_dtb_8;
+	priv->cfg.unknown1  = 0;
+	priv->cfg.unknown2  = 1;
+
+	priv->line_state    = 0;
+
+	spin_lock_init(&priv->lock);
+
+	/* priv->termios is left uninitialized until port opening */
+
+	usb_set_serial_port_data(port, priv);
+
+	return 0;
+}
+
+static int klsi_105_port_remove(struct usb_serial_port *port)
+{
+	struct klsi_105_private *priv;
+
+	priv = usb_get_serial_port_data(port);
+	kfree(priv);
+
+	return 0;
+}
+
+static int  klsi_105_open(struct tty_struct *tty, struct usb_serial_port *port)
 {
 	struct klsi_105_private *priv = usb_get_serial_port_data(port);
 	int retval = 0;
@@ -368,6 +477,9 @@ static int  klsi_105_open(struct tty_struct *tty,
 	/* force low_latency on so that our tty_push actually forces
 	 * the data through
 	 * tty->low_latency = 1; */
+
+	struct klsi_105_port_settings *cfg;
+	unsigned long flags;
 
 	/* Do a defined restart:
 	 * Set up sane default baud rate and send the 'READ_ON'
@@ -410,9 +522,38 @@ static int  klsi_105_open(struct tty_struct *tty,
 	rc = usb_submit_urb(port->read_urb, GFP_KERNEL);
 	if (rc) {
 		err("%s - failed submitting read urb, error %d", __func__, rc);
-		retval = rc;
-		goto exit;
-	}
+	cfg = kmalloc(sizeof(*cfg), GFP_KERNEL);
+	if (!cfg)
+		return -ENOMEM;
+
+	cfg->pktlen   = 5;
+	cfg->baudrate = kl5kusb105a_sio_b9600;
+	cfg->databits = kl5kusb105a_dtb_8;
+	cfg->unknown1 = 0;
+	cfg->unknown2 = 1;
+	klsi_105_chg_port_settings(port, cfg);
+
+	/* set up termios structure */
+	spin_lock_irqsave(&priv->lock, flags);
+	priv->termios.c_iflag = tty->termios.c_iflag;
+	priv->termios.c_oflag = tty->termios.c_oflag;
+	priv->termios.c_cflag = tty->termios.c_cflag;
+	priv->termios.c_lflag = tty->termios.c_lflag;
+	for (i = 0; i < NCCS; i++)
+		priv->termios.c_cc[i] = tty->termios.c_cc[i];
+	priv->cfg.pktlen   = cfg->pktlen;
+	priv->cfg.baudrate = cfg->baudrate;
+	priv->cfg.databits = cfg->databits;
+	priv->cfg.unknown1 = cfg->unknown1;
+	priv->cfg.unknown2 = cfg->unknown2;
+	spin_unlock_irqrestore(&priv->lock, flags);
+
+	kfree(cfg);
+
+	/* READ_ON and urb submission */
+	rc = usb_serial_generic_open(tty, port);
+	if (rc)
+		return rc;
 
 	rc = usb_control_msg(port->serial->dev,
 			     usb_sndctrlpipe(port->serial->dev, 0),
@@ -428,6 +569,11 @@ static int  klsi_105_open(struct tty_struct *tty,
 		retval = rc;
 	} else
 		dbg("%s - enabled reading", __func__);
+		dev_err(&port->dev, "Enabling read failed (error = %d)\n", rc);
+		retval = rc;
+		goto err_generic_close;
+	} else
+		dev_dbg(&port->dev, "%s - enabled reading\n", __func__);
 
 	rc = klsi_105_get_line_state(port, &line_state);
 	if (rc >= 0) {
@@ -435,9 +581,13 @@ static int  klsi_105_open(struct tty_struct *tty,
 		priv->line_state = line_state;
 		spin_unlock_irqrestore(&priv->lock, flags);
 		dbg("%s - read line state 0x%lx", __func__, line_state);
+		dev_dbg(&port->dev, "%s - read line state 0x%lx\n", __func__, line_state);
 		retval = 0;
 	} else
+	if (rc < 0) {
 		retval = rc;
+		goto err_disable_read;
+	}
 
 exit:
 	return retval;
@@ -479,6 +629,48 @@ static void klsi_105_close(struct tty_struct *tty,
 					priv->bytes_in, priv->bytes_out);
 } /* klsi_105_close */
 
+	spin_lock_irqsave(&priv->lock, flags);
+	priv->line_state = line_state;
+	spin_unlock_irqrestore(&priv->lock, flags);
+	dev_dbg(&port->dev, "%s - read line state 0x%lx\n", __func__,
+			line_state);
+
+	return 0;
+
+err_disable_read:
+	usb_control_msg(port->serial->dev,
+			     usb_sndctrlpipe(port->serial->dev, 0),
+			     KL5KUSB105A_SIO_CONFIGURE,
+			     USB_TYPE_VENDOR | USB_DIR_OUT,
+			     KL5KUSB105A_SIO_CONFIGURE_READ_OFF,
+			     0, /* index */
+			     NULL, 0,
+			     KLSI_TIMEOUT);
+err_generic_close:
+	usb_serial_generic_close(port);
+
+	return retval;
+}
+
+static void klsi_105_close(struct usb_serial_port *port)
+{
+	int rc;
+
+	/* send READ_OFF */
+	rc = usb_control_msg(port->serial->dev,
+			     usb_sndctrlpipe(port->serial->dev, 0),
+			     KL5KUSB105A_SIO_CONFIGURE,
+			     USB_TYPE_VENDOR | USB_DIR_OUT,
+			     KL5KUSB105A_SIO_CONFIGURE_READ_OFF,
+			     0, /* index */
+			     NULL, 0,
+			     KLSI_TIMEOUT);
+	if (rc < 0)
+		dev_err(&port->dev, "failed to disable read: %d\n", rc);
+
+	/* shutdown our bulk reads and writes */
+	usb_serial_generic_close(port);
+}
 
 /* We need to write a complete 64-byte data block and encode the
  * number actually sent in the first double-byte, LSB-order. That
@@ -697,6 +889,46 @@ static void klsi_105_read_bulk_callback(struct urb *urb)
 							__func__, rc);
 } /* klsi_105_read_bulk_callback */
 
+#define KLSI_HDR_LEN		2
+static int klsi_105_prepare_write_buffer(struct usb_serial_port *port,
+						void *dest, size_t size)
+{
+	unsigned char *buf = dest;
+	int count;
+
+	count = kfifo_out_locked(&port->write_fifo, buf + KLSI_HDR_LEN, size,
+								&port->lock);
+	put_unaligned_le16(count, buf);
+
+	return count + KLSI_HDR_LEN;
+}
+
+/* The data received is preceded by a length double-byte in LSB-first order.
+ */
+static void klsi_105_process_read_urb(struct urb *urb)
+{
+	struct usb_serial_port *port = urb->context;
+	unsigned char *data = urb->transfer_buffer;
+	unsigned len;
+
+	/* empty urbs seem to happen, we ignore them */
+	if (!urb->actual_length)
+		return;
+
+	if (urb->actual_length <= KLSI_HDR_LEN) {
+		dev_dbg(&port->dev, "%s - malformed packet\n", __func__);
+		return;
+	}
+
+	len = get_unaligned_le16(data);
+	if (len > urb->actual_length - KLSI_HDR_LEN) {
+		dev_dbg(&port->dev, "%s - packet length mismatch\n", __func__);
+		len = urb->actual_length - KLSI_HDR_LEN;
+	}
+
+	tty_insert_flip_string(&port->port, data + KLSI_HDR_LEN, len);
+	tty_flip_buffer_push(&port->port);
+}
 
 static void klsi_105_set_termios(struct tty_struct *tty,
 				 struct usb_serial_port *port,
@@ -711,6 +943,19 @@ static void klsi_105_set_termios(struct tty_struct *tty,
 	unsigned long flags;
 	speed_t baud;
 
+	struct device *dev = &port->dev;
+	unsigned int iflag = tty->termios.c_iflag;
+	unsigned int old_iflag = old_termios->c_iflag;
+	unsigned int cflag = tty->termios.c_cflag;
+	unsigned int old_cflag = old_termios->c_cflag;
+	struct klsi_105_port_settings *cfg;
+	unsigned long flags;
+	speed_t baud;
+
+	cfg = kmalloc(sizeof(*cfg), GFP_KERNEL);
+	if (!cfg)
+		return;
+
 	/* lock while we are modifying the settings */
 	spin_lock_irqsave(&priv->lock, flags);
 
@@ -723,6 +968,7 @@ static void klsi_105_set_termios(struct tty_struct *tty,
 		/* reassert DTR and (maybe) RTS on transition from B0 */
 		if ((old_cflag & CBAUD) == B0) {
 			dbg("%s: baud was B0", __func__);
+			dev_dbg(dev, "%s: baud was B0\n", __func__);
 #if 0
 			priv->control_state |= TIOCM_DTR;
 			/* don't set RTS if using hardware flow control */
@@ -763,11 +1009,14 @@ static void klsi_105_set_termios(struct tty_struct *tty,
 		dbg("KLSI USB->Serial converter:"
 		    " unsupported baudrate request, using default of 9600");
 			priv->cfg.baudrate = kl5kusb105a_sio_b9600;
+		dev_dbg(dev, "unsupported baudrate, using 9600\n");
+		priv->cfg.baudrate = kl5kusb105a_sio_b9600;
 		baud = 9600;
 		break;
 	}
 	if ((cflag & CBAUD) == B0) {
 		dbg("%s: baud is B0", __func__);
+		dev_dbg(dev, "%s: baud is B0\n", __func__);
 		/* Drop RTS and DTR */
 		/* maybe this should be simulated by sending read
 		 * disable and read enable messages?
@@ -791,6 +1040,13 @@ static void klsi_105_set_termios(struct tty_struct *tty,
 			dbg("%s - 6 bits/byte not supported", __func__);
 			spin_unlock_irqrestore(&priv->lock, flags);
 			return ;
+			dev_dbg(dev, "%s - 5 bits/byte not supported\n", __func__);
+			spin_unlock_irqrestore(&priv->lock, flags);
+			goto err;
+		case CS6:
+			dev_dbg(dev, "%s - 6 bits/byte not supported\n", __func__);
+			spin_unlock_irqrestore(&priv->lock, flags);
+			goto err;
 		case CS7:
 			priv->cfg.databits = kl5kusb105a_dtb_7;
 			break;
@@ -799,6 +1055,7 @@ static void klsi_105_set_termios(struct tty_struct *tty,
 			break;
 		default:
 			err("CSIZE was not CS5-CS8, using default of 8");
+			dev_err(dev, "CSIZE was not CS5-CS8, using default of 8\n");
 			priv->cfg.databits = kl5kusb105a_dtb_8;
 			break;
 		}
@@ -811,6 +1068,7 @@ static void klsi_105_set_termios(struct tty_struct *tty,
 	    || (cflag & CSTOPB) != (old_cflag & CSTOPB)) {
 		/* Not currently supported */
 		tty->termios->c_cflag &= ~(PARENB|PARODD|CSTOPB);
+		tty->termios.c_cflag &= ~(PARENB|PARODD|CSTOPB);
 #if 0
 		priv->last_lcr = 0;
 
@@ -838,6 +1096,7 @@ static void klsi_105_set_termios(struct tty_struct *tty,
 	    ||  (cflag & CRTSCTS) != (old_cflag & CRTSCTS)) {
 		/* Not currently supported */
 		tty->termios->c_cflag &= ~CRTSCTS;
+		tty->termios.c_cflag &= ~CRTSCTS;
 		/* Drop DTR/RTS if no flow control otherwise assert */
 #if 0
 		if ((iflag & IXOFF) || (iflag & IXON) || (cflag & CRTSCTS))
@@ -855,6 +1114,14 @@ static void klsi_105_set_termios(struct tty_struct *tty,
 	klsi_105_chg_port_settings(port, &cfg);
 } /* klsi_105_set_termios */
 
+	memcpy(cfg, &priv->cfg, sizeof(*cfg));
+	spin_unlock_irqrestore(&priv->lock, flags);
+
+	/* now commit changes to device */
+	klsi_105_chg_port_settings(port, cfg);
+err:
+	kfree(cfg);
+}
 
 #if 0
 static void mct_u232_break_ctl(struct tty_struct *tty, int break_state)
@@ -867,6 +1134,9 @@ static void mct_u232_break_ctl(struct tty_struct *tty, int break_state)
 
 	dbg("%sstate=%d", __func__, break_state);
 
+	dev_dbg(&port->dev, "%s - state=%d\n", __func__, break_state);
+
+	/* LOCKING */
 	if (break_state)
 		lcr |= MCT_U232_SET_BREAK;
 
@@ -875,6 +1145,10 @@ static void mct_u232_break_ctl(struct tty_struct *tty, int break_state)
 #endif
 
 static int klsi_105_tiocmget(struct tty_struct *tty, struct file *file)
+}
+#endif
+
+static int klsi_105_tiocmget(struct tty_struct *tty)
 {
 	struct usb_serial_port *port = tty->driver_data;
 	struct klsi_105_private *priv = usb_get_serial_port_data(port);
@@ -886,6 +1160,11 @@ static int klsi_105_tiocmget(struct tty_struct *tty, struct file *file)
 	rc = klsi_105_get_line_state(port, &line_state);
 	if (rc < 0) {
 		err("Reading line control failed (error = %d)", rc);
+
+	rc = klsi_105_get_line_state(port, &line_state);
+	if (rc < 0) {
+		dev_err(&port->dev,
+			"Reading line control failed (error = %d)\n", rc);
 		/* better return value? EAGAIN? */
 		return rc;
 	}
@@ -977,6 +1256,11 @@ static void __exit klsi_105_exit(void)
 
 module_init(klsi_105_init);
 module_exit(klsi_105_exit);
+	dev_dbg(&port->dev, "%s - read line state 0x%lx\n", __func__, line_state);
+	return (int)line_state;
+}
+
+module_usb_serial_driver(serial_drivers, id_table);
 
 MODULE_AUTHOR(DRIVER_AUTHOR);
 MODULE_DESCRIPTION(DRIVER_DESC);

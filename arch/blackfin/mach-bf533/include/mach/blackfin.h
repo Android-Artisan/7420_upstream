@@ -26,6 +26,9 @@
  * along with this program; see the file COPYING.
  * If not, write to the Free Software Foundation,
  * 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+ * Copyright 2005-2010 Analog Devices Inc.
+ *
+ * Licensed under the GPL-2 or later.
  */
 
 #ifndef _MACH_BLACKFIN_H_
@@ -58,3 +61,14 @@
 #define OFFSET_GCTL             0x24	/* Global Control Register              */
 
 #endif				/* _MACH_BLACKFIN_H_ */
+#include "anomaly.h"
+
+#include <asm/def_LPBlackfin.h>
+#include "defBF532.h"
+
+#ifndef __ASSEMBLY__
+# include <asm/cdef_LPBlackfin.h>
+# include "cdefBF532.h"
+#endif
+
+#endif

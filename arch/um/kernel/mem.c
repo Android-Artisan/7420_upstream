@@ -20,6 +20,24 @@
 
 /* allocated in paging_init, zeroed in mem_init, and unchanged thereafter */
 unsigned long *empty_zero_page = NULL;
+#include <linux/module.h>
+#include <linux/bootmem.h>
+#include <linux/highmem.h>
+#include <linux/mm.h>
+#include <linux/swap.h>
+#include <linux/slab.h>
+#include <asm/fixmap.h>
+#include <asm/page.h>
+#include <as-layout.h>
+#include <init.h>
+#include <kern.h>
+#include <kern_util.h>
+#include <mem_user.h>
+#include <os.h>
+
+/* allocated in paging_init, zeroed in mem_init, and unchanged thereafter */
+unsigned long *empty_zero_page = NULL;
+EXPORT_SYMBOL(empty_zero_page);
 /* allocated in paging_init and unchanged thereafter */
 static unsigned long *empty_bad_page = NULL;
 
@@ -83,6 +101,11 @@ void __init mem_init(void)
 #ifdef CONFIG_HIGHMEM
 	setup_highmem(end_iomem, highmem);
 #endif
+	free_all_bootmem();
+	max_low_pfn = totalram_pages;
+	max_pfn = totalram_pages;
+	mem_init_print_info(NULL);
+	kmalloc_ok = 1;
 }
 
 /*
@@ -261,6 +284,7 @@ void free_initrd_mem(unsigned long start, unsigned long end)
 		free_page(start);
 		totalram_pages++;
 	}
+	free_reserved_area((void *)start, (void *)end, -1, "initrd");
 }
 #endif
 
@@ -299,6 +323,12 @@ pgtable_t pte_alloc_one(struct mm_struct *mm, unsigned long address)
 	pte = alloc_page(GFP_KERNEL|__GFP_REPEAT|__GFP_ZERO);
 	if (pte)
 		pgtable_page_ctor(pte);
+	if (!pte)
+		return NULL;
+	if (!pgtable_page_ctor(pte)) {
+		__free_page(pte);
+		return NULL;
+	}
 	return pte;
 }
 

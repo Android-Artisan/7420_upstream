@@ -40,6 +40,12 @@ static void sas_phye_loss_of_signal(struct work_struct *work)
 			&phy->phy_events_pending);
 	phy->error = 0;
 	sas_deform_port(phy);
+	struct asd_sas_event *ev = to_asd_sas_event(work);
+	struct asd_sas_phy *phy = ev->phy;
+
+	clear_bit(PHYE_LOSS_OF_SIGNAL, &phy->phy_events_pending);
+	phy->error = 0;
+	sas_deform_port(phy, 1);
 }
 
 static void sas_phye_oob_done(struct work_struct *work)
@@ -50,6 +56,10 @@ static void sas_phye_oob_done(struct work_struct *work)
 
 	sas_begin_event(PHYE_OOB_DONE, &phy->ha->event_lock,
 			&phy->phy_events_pending);
+	struct asd_sas_event *ev = to_asd_sas_event(work);
+	struct asd_sas_phy *phy = ev->phy;
+
+	clear_bit(PHYE_OOB_DONE, &phy->phy_events_pending);
 	phy->error = 0;
 }
 
@@ -57,6 +67,7 @@ static void sas_phye_oob_error(struct work_struct *work)
 {
 	struct asd_sas_event *ev =
 		container_of(work, struct asd_sas_event, work);
+	struct asd_sas_event *ev = to_asd_sas_event(work);
 	struct asd_sas_phy *phy = ev->phy;
 	struct sas_ha_struct *sas_ha = phy->ha;
 	struct asd_sas_port *port = phy->port;
@@ -67,6 +78,9 @@ static void sas_phye_oob_error(struct work_struct *work)
 			&phy->phy_events_pending);
 
 	sas_deform_port(phy);
+	clear_bit(PHYE_OOB_ERROR, &phy->phy_events_pending);
+
+	sas_deform_port(phy, 1);
 
 	if (!port && phy->enabled && i->dft->lldd_control_phy) {
 		phy->error++;
@@ -90,6 +104,7 @@ static void sas_phye_spinup_hold(struct work_struct *work)
 {
 	struct asd_sas_event *ev =
 		container_of(work, struct asd_sas_event, work);
+	struct asd_sas_event *ev = to_asd_sas_event(work);
 	struct asd_sas_phy *phy = ev->phy;
 	struct sas_ha_struct *sas_ha = phy->ha;
 	struct sas_internal *i =
@@ -97,10 +112,30 @@ static void sas_phye_spinup_hold(struct work_struct *work)
 
 	sas_begin_event(PHYE_SPINUP_HOLD, &phy->ha->event_lock,
 			&phy->phy_events_pending);
+	clear_bit(PHYE_SPINUP_HOLD, &phy->phy_events_pending);
 
 	phy->error = 0;
 	i->dft->lldd_control_phy(phy, PHY_FUNC_RELEASE_SPINUP_HOLD, NULL);
 }
+
+static void sas_phye_resume_timeout(struct work_struct *work)
+{
+	struct asd_sas_event *ev = to_asd_sas_event(work);
+	struct asd_sas_phy *phy = ev->phy;
+
+	clear_bit(PHYE_RESUME_TIMEOUT, &phy->phy_events_pending);
+
+	/* phew, lldd got the phy back in the nick of time */
+	if (!phy->suspended) {
+		dev_info(&phy->phy->dev, "resume timeout cancelled\n");
+		return;
+	}
+
+	phy->error = 0;
+	phy->suspended = 0;
+	sas_deform_port(phy, 1);
+}
+
 
 /* ---------- Phy class registration ---------- */
 
@@ -113,6 +148,8 @@ int sas_register_phys(struct sas_ha_struct *sas_ha)
 		[PHYE_OOB_DONE] = sas_phye_oob_done,
 		[PHYE_OOB_ERROR] = sas_phye_oob_error,
 		[PHYE_SPINUP_HOLD] = sas_phye_spinup_hold,
+		[PHYE_RESUME_TIMEOUT] = sas_phye_resume_timeout,
+
 	};
 
 	static const work_func_t sas_port_event_fns[PORT_NUM_EVENTS] = {
@@ -133,12 +170,14 @@ int sas_register_phys(struct sas_ha_struct *sas_ha)
 		for (k = 0; k < PORT_NUM_EVENTS; k++) {
 			INIT_WORK(&phy->port_events[k].work,
 				  sas_port_event_fns[k]);
+			INIT_SAS_WORK(&phy->port_events[k].work, sas_port_event_fns[k]);
 			phy->port_events[k].phy = phy;
 		}
 
 		for (k = 0; k < PHY_NUM_EVENTS; k++) {
 			INIT_WORK(&phy->phy_events[k].work,
 				  sas_phy_event_fns[k]);
+			INIT_SAS_WORK(&phy->phy_events[k].work, sas_phy_event_fns[k]);
 			phy->phy_events[k].phy = phy;
 		}
 
@@ -150,6 +189,7 @@ int sas_register_phys(struct sas_ha_struct *sas_ha)
 
 		phy->phy = sas_phy_alloc(&sas_ha->core.shost->shost_gendev,
 					 i);
+		phy->phy = sas_phy_alloc(&sas_ha->core.shost->shost_gendev, i);
 		if (!phy->phy)
 			return -ENOMEM;
 

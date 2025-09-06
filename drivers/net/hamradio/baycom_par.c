@@ -103,6 +103,7 @@
 static const char bc_drvname[] = "baycom_par";
 static const char bc_drvinfo[] = KERN_INFO "baycom_par: (C) 1996-2000 Thomas Sailer, HB9JNX/AE4WA\n"
 KERN_INFO "baycom_par: version 0.9 compiled " __TIME__ " " __DATE__ "\n";
+"baycom_par: version 0.9\n";
 
 /* --------------------------------------------------------------------- */
 
@@ -177,7 +178,6 @@ static void __inline__ baycom_int_freq(struct baycom_state *bc)
 
 /* --------------------------------------------------------------------- */
 /*
- * ===================== PAR96 specific routines =========================
  */
 
 #define PAR96_DESCRAM_TAP1 0x20000
@@ -379,7 +379,6 @@ static int par96_close(struct net_device *dev)
 
 /* --------------------------------------------------------------------- */
 /*
- * ===================== hdlcdrv driver interface =========================
  */
 
 static int baycom_ioctl(struct net_device *dev, struct ifreq *ifr,
@@ -478,6 +477,7 @@ static int baycom_ioctl(struct net_device *dev, struct ifreq *ifr,
  * command line settable parameters
  */
 static const char *mode[NR_PORTS] = { "picpar", };
+static char *mode[NR_PORTS] = { "picpar", };
 static int iobase[NR_PORTS] = { 0x378, };
 
 module_param_array(mode, charp, NULL, 0);

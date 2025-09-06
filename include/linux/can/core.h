@@ -14,6 +14,10 @@
 
 #ifndef CAN_CORE_H
 #define CAN_CORE_H
+ */
+
+#ifndef _CAN_CORE_H
+#define _CAN_CORE_H
 
 #include <linux/can.h>
 #include <linux/skbuff.h>
@@ -23,6 +27,10 @@
 
 /* increment this number each time you change some user-space interface */
 #define CAN_ABI_VERSION "8"
+#define CAN_VERSION "20120528"
+
+/* increment this number each time you change some user-space interface */
+#define CAN_ABI_VERSION "9"
 
 #define CAN_VERSION_STRING "rev " CAN_VERSION " abi " CAN_ABI_VERSION
 
@@ -42,17 +50,22 @@ struct can_proto {
 	int              capability;
 	struct proto_ops *ops;
 	struct proto     *prot;
+	int type;
+	int protocol;
+	const struct proto_ops *ops;
+	struct proto *prot;
 };
 
 /* function prototypes for the CAN networklayer core (af_can.c) */
 
 extern int  can_proto_register(struct can_proto *cp);
 extern void can_proto_unregister(struct can_proto *cp);
+extern int  can_proto_register(const struct can_proto *cp);
+extern void can_proto_unregister(const struct can_proto *cp);
 
-extern int  can_rx_register(struct net_device *dev, canid_t can_id,
-			    canid_t mask,
-			    void (*func)(struct sk_buff *, void *),
-			    void *data, char *ident);
+int can_rx_register(struct net_device *dev, canid_t can_id, canid_t mask,
+		    void (*func)(struct sk_buff *, void *),
+		    void *data, char *ident, struct sock *sk);
 
 extern void can_rx_unregister(struct net_device *dev, canid_t can_id,
 			      canid_t mask,
@@ -62,3 +75,6 @@ extern void can_rx_unregister(struct net_device *dev, canid_t can_id,
 extern int can_send(struct sk_buff *skb, int loop);
 
 #endif /* CAN_CORE_H */
+extern int can_ioctl(struct socket *sock, unsigned int cmd, unsigned long arg);
+
+#endif /* !_CAN_CORE_H */

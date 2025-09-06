@@ -7,6 +7,7 @@
  *	(This device doesn't support CardBus. it is supporting only 16bit PC Card.)
  *
  * Copyright 2002,2003 Yoichi Yuasa <yoichi_yuasa@tripeaks.co.jp>
+ * Copyright 2002,2003 Yoichi Yuasa <yuasa@linux-mips.org>
  *
  *  This program is free software; you can redistribute it and/or modify it
  *  under the terms of the GNU General Public License as published by the
@@ -42,6 +43,7 @@
 
 MODULE_DESCRIPTION("NEC VRC4173 CARDU driver for Socket Services");
 MODULE_AUTHOR("Yoichi Yuasa <yoichi_yuasa@tripeaks.co.jp>");
+MODULE_AUTHOR("Yoichi Yuasa <yuasa@linux-mips.org>");
 MODULE_LICENSE("GPL");
 
 static int vrc4173_cardu_slots;
@@ -457,11 +459,13 @@ static void cardu_interrupt(int irq, void *dev_id)
 }
 
 static int __devinit vrc4173_cardu_probe(struct pci_dev *dev,
+static int vrc4173_cardu_probe(struct pci_dev *dev,
                                          const struct pci_device_id *ent)
 {
 	vrc4173_socket_t *socket;
 	unsigned long start, len, flags;
 	int slot, err;
+	int slot, err, ret;
 
 	slot = vrc4173_cardu_slots++;
 	socket = &cardu_sockets[slot];
@@ -490,6 +494,34 @@ static int __devinit vrc4173_cardu_probe(struct pci_dev *dev,
 	socket->base = ioremap(start, len);
 	if (socket->base == NULL)
 		return -ENODEV;
+	if (start == 0) {
+		ret = -ENODEV;
+		goto disable;
+	}
+
+	len = pci_resource_len(dev, 0);
+	if (len == 0) {
+		ret = -ENODEV;
+		goto disable;
+	}
+
+	flags = pci_resource_flags(dev, 0);
+	if ((flags & IORESOURCE_MEM) == 0) {
+		ret = -EBUSY;
+		goto disable;
+	}
+
+	err = pci_request_regions(dev, socket->name);
+	if (err < 0) {
+		ret = err;
+		goto disable;
+	}
+
+	socket->base = ioremap(start, len);
+	if (socket->base == NULL) {
+		ret = -ENODEV;
+		goto release;
+	}
 
 	socket->dev = dev;
 
@@ -506,6 +538,13 @@ static int __devinit vrc4173_cardu_probe(struct pci_dev *dev,
 		iounmap(socket->base);
 		socket->base = NULL;
 		return -EBUSY;
+		ret =  -ENOMEM;
+		goto unmap;
+	}
+
+	if (request_irq(dev->irq, cardu_interrupt, IRQF_SHARED, socket->name, socket) < 0) {
+		ret = -EBUSY;
+		goto unregister;
 	}
 
 	printk(KERN_INFO "%s at %#08lx, IRQ %d\n", socket->name, start, dev->irq);
@@ -514,6 +553,21 @@ static int __devinit vrc4173_cardu_probe(struct pci_dev *dev,
 }
 
 static int __devinit vrc4173_cardu_setup(char *options)
+
+unregister:
+	pcmcia_unregister_socket(socket->pcmcia_socket);
+	socket->pcmcia_socket = NULL;
+unmap:
+	iounmap(socket->base);
+	socket->base = NULL;
+release:
+	pci_release_regions(dev);
+disable:
+	pci_disable_device(dev);
+	return ret;
+}
+
+static int vrc4173_cardu_setup(char *options)
 {
 	if (options == NULL || *options == '\0')
 		return 1;
@@ -548,6 +602,8 @@ static struct pci_device_id vrc4173_cardu_id_table[] __devinitdata = {
 		.device		= PCI_DEVICE_ID_NEC_NAPCCARD,
 		.subvendor	= PCI_ANY_ID,
 		.subdevice	= PCI_ANY_ID, },
+static const struct pci_device_id vrc4173_cardu_id_table[] = {
+	{ PCI_DEVICE(PCI_VENDOR_ID_NEC, PCI_DEVICE_ID_NEC_NAPCCARD) },
         {0, }
 };
 
@@ -558,6 +614,7 @@ static struct pci_driver vrc4173_cardu_driver = {
 };
 
 static int __devinit vrc4173_cardu_init(void)
+static int vrc4173_cardu_init(void)
 {
 	vrc4173_cardu_slots = 0;
 
@@ -565,6 +622,7 @@ static int __devinit vrc4173_cardu_init(void)
 }
 
 static void __devexit vrc4173_cardu_exit(void)
+static void vrc4173_cardu_exit(void)
 {
 	pci_unregister_driver(&vrc4173_cardu_driver);
 }

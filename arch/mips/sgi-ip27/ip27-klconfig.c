@@ -49,6 +49,7 @@ klinfo_t *find_first_component(lboard_t *brd, unsigned char struct_type)
 }
 
 lboard_t * find_lboard(lboard_t *start, unsigned char brd_type)
+lboard_t *find_lboard(lboard_t *start, unsigned char brd_type)
 {
 	/* Search all boards stored on this node. */
 	while (start) {
@@ -61,6 +62,7 @@ lboard_t * find_lboard(lboard_t *start, unsigned char brd_type)
 }
 
 lboard_t * find_lboard_class(lboard_t *start, unsigned char brd_type)
+lboard_t *find_lboard_class(lboard_t *start, unsigned char brd_type)
 {
 	/* Search all boards stored on this node. */
 	while (start) {
@@ -79,6 +81,7 @@ cnodeid_t get_cpu_cnode(cpuid_t cpu)
 }
 
 klcpu_t * nasid_slice_to_cpuinfo(nasid_t nasid, int slice)
+klcpu_t *nasid_slice_to_cpuinfo(nasid_t nasid, int slice)
 {
 	lboard_t *brd;
 	klcpu_t *acpu;
@@ -98,6 +101,7 @@ klcpu_t * nasid_slice_to_cpuinfo(nasid_t nasid, int slice)
 }
 
 klcpu_t * sn_get_cpuinfo(cpuid_t cpu)
+klcpu_t *sn_get_cpuinfo(cpuid_t cpu)
 {
 	nasid_t nasid;
 	int slice;

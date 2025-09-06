@@ -420,6 +420,7 @@
 #include <linux/init.h>
 #include <linux/ctype.h>
 #include <linux/spinlock.h>
+#include <linux/slab.h>
 #include <asm/dma.h>
 #include <asm/irq.h>
 
@@ -433,6 +434,7 @@
 static int u14_34f_detect(struct scsi_host_template *);
 static int u14_34f_release(struct Scsi_Host *);
 static int u14_34f_queuecommand(struct scsi_cmnd *, void (*done)(struct scsi_cmnd *));
+static int u14_34f_queuecommand(struct Scsi_Host *, struct scsi_cmnd *);
 static int u14_34f_eh_abort(struct scsi_cmnd *);
 static int u14_34f_eh_host_reset(struct scsi_cmnd *);
 static int u14_34f_bios_param(struct scsi_device *, struct block_device *,
@@ -705,16 +707,27 @@ static int u14_34f_slave_configure(struct scsi_device *dev) {
          }
       else {
          scsi_adjust_queue_depth(dev, 0, tqd);
+         scsi_change_queue_depth(dev, tqd);
+         tag_suffix = ", simple tags";
+         }
+      else if (tag_mode == TAG_ORDERED) {
+         scsi_change_queue_depth(dev, tqd);
+         tag_suffix = ", ordered tags";
+         }
+      else {
+         scsi_change_queue_depth(dev, tqd);
          tag_suffix = ", no tags";
          }
 
    else if (TLDEV(dev->type) && linked_comm) {
       scsi_adjust_queue_depth(dev, 0, tqd);
+      scsi_change_queue_depth(dev, tqd);
       tag_suffix = ", untagged";
       }
 
    else {
       scsi_adjust_queue_depth(dev, 0, utqd);
+      scsi_change_queue_depth(dev, utqd);
       tag_suffix = "";
       }
 
@@ -874,6 +887,7 @@ static int port_detect \
    /* Board detected, allocate its IRQ */
    if (request_irq(irq, do_interrupt_handler,
              IRQF_DISABLED | ((subversion == ESA) ? IRQF_SHARED : 0),
+             (subversion == ESA) ? IRQF_SHARED : 0,
              driver_name, (void *) &sha[j])) {
       printk("%s: unable to allocate IRQ %u, detaching.\n", name, irq);
       goto freelock;
@@ -1007,6 +1021,7 @@ static int port_detect \
 
    if (sh[j]->max_id > 8 || sh[j]->max_lun > 8)
       printk("%s: wide SCSI support enabled, max_id %u, max_lun %u.\n",
+      printk("%s: wide SCSI support enabled, max_id %u, max_lun %llu.\n",
              BN(j), sh[j]->max_id, sh[j]->max_lun);
 
    for (i = 0; i <= sh[j]->max_channel; i++)
@@ -1071,6 +1086,7 @@ static int option_setup(char *str) {
    int i = 1;
 
    while (cur && isdigit(*cur) && i <= MAX_INT_PARAM) {
+   while (cur && isdigit(*cur) && i < MAX_INT_PARAM) {
       ints[i++] = simple_strtoul(cur, NULL, 0);
 
       if ((cur = strchr(cur, ',')) != NULL) cur++;
@@ -1112,6 +1128,8 @@ static int u14_34f_detect(struct scsi_host_template *tpnt) {
 static void map_dma(unsigned int i, unsigned int j) {
    unsigned int data_len = 0;
    unsigned int k, count, pci_dir;
+   unsigned int k, pci_dir;
+   int count;
    struct scatterlist *sg;
    struct mscp *cpp;
    struct scsi_cmnd *SCpnt;
@@ -1247,6 +1265,7 @@ static void scsi_to_dev_dir(unsigned int i, unsigned int j) {
 }
 
 static int u14_34f_queuecommand(struct scsi_cmnd *SCpnt, void (*done)(struct scsi_cmnd *)) {
+static int u14_34f_queuecommand_lck(struct scsi_cmnd *SCpnt, void (*done)(struct scsi_cmnd *)) {
    unsigned int i, j, k;
    struct mscp *cpp;
 
@@ -1256,6 +1275,8 @@ static int u14_34f_queuecommand(struct scsi_cmnd *SCpnt, void (*done)(struct scs
    if (SCpnt->host_scribble)
       panic("%s: qcomm, pid %ld, SCpnt %p already active.\n",
             BN(j), SCpnt->serial_number, SCpnt);
+      panic("%s: qcomm, SCpnt %p already active.\n",
+            BN(j), SCpnt);
 
    /* i is the mailbox number, look for the first free mailbox
       starting from last_cp_used */
@@ -1287,11 +1308,15 @@ static int u14_34f_queuecommand(struct scsi_cmnd *SCpnt, void (*done)(struct scs
    if (do_trace) printk("%s: qcomm, mbox %d, target %d.%d:%d, pid %ld.\n",
                         BN(j), i, SCpnt->device->channel, SCpnt->device->id,
                         SCpnt->device->lun, SCpnt->serial_number);
+   if (do_trace) printk("%s: qcomm, mbox %d, target %d.%d:%u.\n",
+                        BN(j), i, SCpnt->device->channel, SCpnt->device->id,
+                        (u8)SCpnt->device->lun);
 
    cpp->opcode = OP_SCSI;
    cpp->channel = SCpnt->device->channel;
    cpp->target = SCpnt->device->id;
    cpp->lun = SCpnt->device->lun;
+   cpp->lun = (u8)SCpnt->device->lun;
    cpp->SCpnt = SCpnt;
    cpp->cdb_len = SCpnt->cmd_len;
    memcpy(cpp->cdb, SCpnt->cmnd, SCpnt->cmd_len);
@@ -1306,6 +1331,7 @@ static int u14_34f_queuecommand(struct scsi_cmnd *SCpnt, void (*done)(struct scs
                                      && TLDEV(SCpnt->device->type)) {
       HD(j)->cp_stat[i] = READY;
       flush_dev(SCpnt->device, SCpnt->request->sector, j, FALSE);
+      flush_dev(SCpnt->device, blk_rq_pos(SCpnt->request), j, FALSE);
       return 0;
       }
 
@@ -1314,6 +1340,7 @@ static int u14_34f_queuecommand(struct scsi_cmnd *SCpnt, void (*done)(struct scs
       SCpnt->host_scribble = NULL;
       scmd_printk(KERN_INFO, SCpnt,
       		"qcomm, pid %ld, adapter busy.\n", SCpnt->serial_number);
+      		"qcomm, adapter busy.\n");
       return 1;
       }
 
@@ -1327,6 +1354,8 @@ static int u14_34f_queuecommand(struct scsi_cmnd *SCpnt, void (*done)(struct scs
    return 0;
 }
 
+static DEF_SCSI_QCMD(u14_34f_queuecommand)
+
 static int u14_34f_eh_abort(struct scsi_cmnd *SCarg) {
    unsigned int i, j;
 
@@ -1335,12 +1364,14 @@ static int u14_34f_eh_abort(struct scsi_cmnd *SCarg) {
    if (SCarg->host_scribble == NULL) {
       scmd_printk(KERN_INFO, SCarg, "abort, pid %ld inactive.\n",
              SCarg->serial_number);
+      scmd_printk(KERN_INFO, SCarg, "abort, command inactive.\n");
       return SUCCESS;
       }
 
    i = *(unsigned int *)SCarg->host_scribble;
    scmd_printk(KERN_INFO, SCarg, "abort, mbox %d, pid %ld.\n",
 	       i, SCarg->serial_number);
+   scmd_printk(KERN_INFO, SCarg, "abort, mbox %d.\n", i);
 
    if (i >= sh[j]->can_queue)
       panic("%s: abort, invalid SCarg->host_scribble.\n", BN(j));
@@ -1385,6 +1416,7 @@ static int u14_34f_eh_abort(struct scsi_cmnd *SCarg) {
       HD(j)->cp_stat[i] = FREE;
       printk("%s, abort, mbox %d ready, DID_ABORT, pid %ld done.\n",
              BN(j), i, SCarg->serial_number);
+      printk("%s, abort, mbox %d ready, DID_ABORT, done.\n", BN(j), i);
       SCarg->scsi_done(SCarg);
       return SUCCESS;
       }
@@ -1400,11 +1432,13 @@ static int u14_34f_eh_host_reset(struct scsi_cmnd *SCarg) {
 
    j = ((struct hostdata *) SCarg->device->host->hostdata)->board_number;
    scmd_printk(KERN_INFO, SCarg, "reset, enter, pid %ld.\n", SCarg->serial_number);
+   scmd_printk(KERN_INFO, SCarg, "reset, enter.\n");
 
    spin_lock_irq(sh[j]->host_lock);
 
    if (SCarg->host_scribble == NULL)
       printk("%s: reset, pid %ld inactive.\n", BN(j), SCarg->serial_number);
+      printk("%s: reset, inactive.\n", BN(j));
 
    if (HD(j)->in_reset) {
       printk("%s: reset, exit, already in reset.\n", BN(j));
@@ -1443,12 +1477,14 @@ static int u14_34f_eh_host_reset(struct scsi_cmnd *SCarg) {
          HD(j)->cp_stat[i] = ABORTING;
          printk("%s: reset, mbox %d aborting, pid %ld.\n",
                 BN(j), i, SCpnt->serial_number);
+         printk("%s: reset, mbox %d aborting.\n", BN(j), i);
          }
 
       else {
          HD(j)->cp_stat[i] = IN_RESET;
          printk("%s: reset, mbox %d in reset, pid %ld.\n",
                 BN(j), i, SCpnt->serial_number);
+         printk("%s: reset, mbox %d in reset.\n", BN(j), i);
          }
 
       if (SCpnt->host_scribble == NULL)
@@ -1498,6 +1534,7 @@ static int u14_34f_eh_host_reset(struct scsi_cmnd *SCarg) {
 
          printk("%s, reset, mbox %d locked, DID_RESET, pid %ld done.\n",
                 BN(j), i, SCpnt->serial_number);
+         printk("%s, reset, mbox %d locked, DID_RESET, done.\n", BN(j), i);
          }
 
       else if (HD(j)->cp_stat[i] == ABORTING) {
@@ -1511,6 +1548,7 @@ static int u14_34f_eh_host_reset(struct scsi_cmnd *SCarg) {
 
          printk("%s, reset, mbox %d aborting, DID_RESET, pid %ld done.\n",
                 BN(j), i, SCpnt->serial_number);
+         printk("%s, reset, mbox %d aborting, DID_RESET, done.\n", BN(j), i);
          }
 
       else
@@ -1525,6 +1563,7 @@ static int u14_34f_eh_host_reset(struct scsi_cmnd *SCarg) {
    do_trace = FALSE;
 
    if (arg_done) printk("%s: reset, exit, pid %ld done.\n", BN(j), SCarg->serial_number);
+   if (arg_done) printk("%s: reset, exit, done.\n", BN(j));
    else          printk("%s: reset, exit.\n", BN(j));
 
    spin_unlock_irq(sh[j]->host_lock);
@@ -1614,6 +1653,13 @@ static int reorder(unsigned int j, unsigned long cursec,
 
       sl[n] = SCpnt->request->sector;
       ioseek += SCpnt->request->nr_sectors;
+      if (blk_rq_pos(SCpnt->request) < minsec)
+	 minsec = blk_rq_pos(SCpnt->request);
+      if (blk_rq_pos(SCpnt->request) > maxsec)
+	 maxsec = blk_rq_pos(SCpnt->request);
+
+      sl[n] = blk_rq_pos(SCpnt->request);
+      ioseek += blk_rq_sectors(SCpnt->request);
 
       if (!n) continue;
 
@@ -1642,6 +1688,7 @@ static int reorder(unsigned int j, unsigned long cursec,
    if (!input_only) for (n = 0; n < n_ready; n++) {
       k = il[n]; cpp = &HD(j)->cp[k]; SCpnt = cpp->SCpnt;
       ll[n] = SCpnt->request->nr_sectors; pl[n] = SCpnt->serial_number;
+      ll[n] = blk_rq_sectors(SCpnt->request); pl[n] = SCpnt->serial_number;
 
       if (!n) continue;
 
@@ -1671,6 +1718,12 @@ static int reorder(unsigned int j, unsigned long cursec,
                 SCpnt->lun, SCpnt->serial_number, k, flushcount, n_ready,
                 SCpnt->request->sector, SCpnt->request->nr_sectors, cursec,
                 YESNO(s), YESNO(r), YESNO(rev), YESNO(input_only),
+         printk("%s %d.%d:%llu mb %d fc %d nr %d sec %ld ns %u"\
+                " cur %ld s:%c r:%c rev:%c in:%c ov:%c xd %d.\n",
+                (ihdlr ? "ihdlr" : "qcomm"), SCpnt->channel, SCpnt->target,
+                (u8)SCpnt->lun, k, flushcount, n_ready,
+                blk_rq_pos(SCpnt->request), blk_rq_sectors(SCpnt->request),
+		cursec, YESNO(s), YESNO(r), YESNO(rev), YESNO(input_only),
                 YESNO(overlap), cpp->xdir);
          }
 #endif
@@ -1706,6 +1759,9 @@ static void flush_dev(struct scsi_device *dev, unsigned long cursec, unsigned in
 	 	"%s, pid %ld, mbox %d, adapter"
                 " busy, will abort.\n", (ihdlr ? "ihdlr" : "qcomm"),
                 SCpnt->serial_number, k);
+	 	"%s, mbox %d, adapter"
+                " busy, will abort.\n", (ihdlr ? "ihdlr" : "qcomm"),
+                k);
          HD(j)->cp_stat[k] = ABORTING;
          continue;
          }
@@ -1793,12 +1849,19 @@ static irqreturn_t ihdlr(unsigned int j)
    if (*(unsigned int *)SCpnt->host_scribble != i)
       panic("%s: ihdlr, mbox %d, pid %ld, index mismatch %d.\n",
             BN(j), i, SCpnt->serial_number, *(unsigned int *)SCpnt->host_scribble);
+      panic("%s: ihdlr, mbox %d, SCpnt %p garbled.\n", BN(j), i,
+            SCpnt);
+
+   if (*(unsigned int *)SCpnt->host_scribble != i)
+      panic("%s: ihdlr, mbox %d, index mismatch %d.\n",
+            BN(j), i, *(unsigned int *)SCpnt->host_scribble);
 
    sync_dma(i, j);
 
    if (linked_comm && SCpnt->device->queue_depth > 2
                                      && TLDEV(SCpnt->device->type))
       flush_dev(SCpnt->device, SCpnt->request->sector, j, TRUE);
+      flush_dev(SCpnt->device, blk_rq_pos(SCpnt->request), j, TRUE);
 
    tstatus = status_byte(spp->target_status);
 
@@ -1837,6 +1900,8 @@ static irqreturn_t ihdlr(unsigned int j)
             scmd_printk(KERN_INFO, SCpnt,
 	    	"ihdlr, pid %ld, target_status 0x%x, sense key 0x%x.\n",
                    SCpnt->serial_number, spp->target_status,
+	    	"ihdlr, target_status 0x%x, sense key 0x%x.\n",
+                   spp->target_status,
                    SCpnt->sense_buffer[2]);
 
          HD(j)->target_to[scmd_id(SCpnt)][scmd_channel(SCpnt)] = 0;
@@ -1909,6 +1974,8 @@ static irqreturn_t ihdlr(unsigned int j)
       scmd_printk(KERN_INFO, SCpnt, "ihdlr, mbox %2d, err 0x%x:%x,"\
              " pid %ld, reg 0x%x, count %d.\n",
              i, spp->adapter_status, spp->target_status, SCpnt->serial_number,
+             " reg 0x%x, count %d.\n",
+             i, spp->adapter_status, spp->target_status,
              reg, HD(j)->iocount);
 
    unmap_dma(i, j);

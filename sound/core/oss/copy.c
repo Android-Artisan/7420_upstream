@@ -33,6 +33,8 @@ static snd_pcm_sframes_t copy_transfer(struct snd_pcm_plugin *plugin,
 	unsigned int nchannels;
 
 	snd_assert(plugin != NULL && src_channels != NULL && dst_channels != NULL, return -ENXIO);
+	if (snd_BUG_ON(!plugin || !src_channels || !dst_channels))
+		return -ENXIO;
 	if (frames == 0)
 		return 0;
 	nchannels = plugin->src_format.channels;
@@ -43,6 +45,12 @@ static snd_pcm_sframes_t copy_transfer(struct snd_pcm_plugin *plugin,
 		snd_assert(dst_channels->area.first % 8 == 0 &&
 			   dst_channels->area.step % 8 == 0,
 			   return -ENXIO);
+		if (snd_BUG_ON(src_channels->area.first % 8 ||
+			       src_channels->area.step % 8))
+			return -ENXIO;
+		if (snd_BUG_ON(dst_channels->area.first % 8 ||
+			       dst_channels->area.step % 8))
+			return -ENXIO;
 		if (!src_channels->enabled) {
 			if (dst_channels->wanted)
 				snd_pcm_area_silence(&dst_channels->area, 0, frames, plugin->dst_format.format);
@@ -75,6 +83,20 @@ int snd_pcm_plugin_build_copy(struct snd_pcm_substream *plug,
 
 	width = snd_pcm_format_physical_width(src_format->format);
 	snd_assert(width > 0, return -ENXIO);
+	if (snd_BUG_ON(!r_plugin))
+		return -ENXIO;
+	*r_plugin = NULL;
+
+	if (snd_BUG_ON(src_format->format != dst_format->format))
+		return -ENXIO;
+	if (snd_BUG_ON(src_format->rate != dst_format->rate))
+		return -ENXIO;
+	if (snd_BUG_ON(src_format->channels != dst_format->channels))
+		return -ENXIO;
+
+	width = snd_pcm_format_physical_width(src_format->format);
+	if (snd_BUG_ON(width <= 0))
+		return -ENXIO;
 
 	err = snd_pcm_plugin_build(plug, "copy", src_format, dst_format,
 				   0, &plugin);

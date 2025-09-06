@@ -5,6 +5,7 @@
  * Author       Petr Novak
  * Copyright    by Petr Novak        <petr.novak@i.cz>
  * 
+ *
  * This software may be used and distributed according to the terms
  * of the GNU General Public License, incorporated herein by reference.
  *
@@ -23,6 +24,11 @@
 
 #define WRITEW6692BFIFO(cs,bchan,ptr,count) \
 	outsb(cs->hw.w6692.iobase+W_B_XFIFO+(bchan?0x40:0),ptr,count)
+#define READW6692BFIFO(cs, bchan, ptr, count)				\
+	insb(cs->hw.w6692.iobase + W_B_RFIFO + (bchan ? 0x40 : 0), ptr, count)
+
+#define WRITEW6692BFIFO(cs, bchan, ptr, count)				\
+	outsb(cs->hw.w6692.iobase + W_B_XFIFO + (bchan ? 0x40 : 0), ptr, count)
 
 /* Specifications of W6692 registers */
 

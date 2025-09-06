@@ -20,6 +20,7 @@
 #include <linux/slab.h>
 #include <linux/interrupt.h>
 #include <linux/moduleparam.h>
+#include <linux/module.h>
 #include <linux/dma-mapping.h>
 #include <sound/initval.h>
 
@@ -27,6 +28,7 @@
 static int index[SNDRV_CARDS] = SNDRV_DEFAULT_IDX;
 static char *id[SNDRV_CARDS] = SNDRV_DEFAULT_STR;
 static int enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE_PNP;
+static bool enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE_PNP;
 static int pcifix[SNDRV_CARDS] = {[0 ... (SNDRV_CARDS - 1)] = 255 };
 
 module_param_array(index, int, NULL, 0444);
@@ -53,6 +55,10 @@ static void vortex_fix_latency(struct pci_dev *vortex)
 	} else {
 		printk(KERN_WARNING CARD_NAME
 				": could not set vortex latency: pci error 0x%x\n", rc);
+			dev_info(&vortex->dev, "vortex latency is 0xff\n");
+	} else {
+		dev_warn(&vortex->dev,
+			 "could not set vortex latency: pci error 0x%x\n", rc);
 	}
 }
 
@@ -79,6 +85,14 @@ static void vortex_fix_agp_bridge(struct pci_dev *via)
 }
 
 static void __devinit snd_vortex_workaround(struct pci_dev *vortex, int fix)
+		dev_info(&via->dev, "bridge config is 0x%x\n", value | 0x10);
+	} else {
+		dev_warn(&via->dev,
+			 "could not set vortex latency: pci error 0x%x\n", rc);
+	}
+}
+
+static void snd_vortex_workaround(struct pci_dev *vortex, int fix)
 {
 	struct pci_dev *via = NULL;
 
@@ -98,6 +112,8 @@ static void __devinit snd_vortex_workaround(struct pci_dev *vortex, int fix)
 		}
 		if (via) {
 			printk(KERN_INFO CARD_NAME ": Activating latency workaround...\n");
+			dev_info(&vortex->dev,
+				 "Activating latency workaround...\n");
 			vortex_fix_latency(vortex);
 			vortex_fix_agp_bridge(via);
 		}
@@ -138,6 +154,7 @@ static int snd_vortex_dev_free(struct snd_device *device)
 // chip-specific constructor
 // (see "Management of Cards and Components")
 static int __devinit
+static int
 snd_vortex_create(struct snd_card *card, struct pci_dev *pci, vortex_t ** rchip)
 {
 	vortex_t *chip;
@@ -154,6 +171,9 @@ snd_vortex_create(struct snd_card *card, struct pci_dev *pci, vortex_t ** rchip)
 	if (pci_set_dma_mask(pci, DMA_32BIT_MASK) < 0 ||
 	    pci_set_consistent_dma_mask(pci, DMA_32BIT_MASK) < 0) {
 		printk(KERN_ERR "error to set DMA mask\n");
+	if (dma_set_mask(&pci->dev, DMA_BIT_MASK(32)) < 0 ||
+	    dma_set_coherent_mask(&pci->dev, DMA_BIT_MASK(32)) < 0) {
+		dev_err(card->dev, "error to set DMA mask\n");
 		pci_disable_device(pci);
 		return -ENXIO;
 	}
@@ -184,6 +204,9 @@ snd_vortex_create(struct snd_card *card, struct pci_dev *pci, vortex_t ** rchip)
 	                             pci_resource_len(pci, 0));
 	if (!chip->mmio) {
 		printk(KERN_ERR "MMIO area remap failed.\n");
+	chip->mmio = pci_ioremap_bar(pci, 0);
+	if (!chip->mmio) {
+		dev_err(card->dev, "MMIO area remap failed.\n");
 		err = -ENOMEM;
 		goto ioremap_out;
 	}
@@ -193,6 +216,7 @@ snd_vortex_create(struct snd_card *card, struct pci_dev *pci, vortex_t ** rchip)
 	 * interrupts that we do not handle properly and make a mess of things */
 	if ((err = vortex_core_init(chip)) != 0) {
 		printk(KERN_ERR "hw core init failed\n");
+		dev_err(card->dev, "hw core init failed\n");
 		goto core_out;
 	}
 
@@ -200,6 +224,9 @@ snd_vortex_create(struct snd_card *card, struct pci_dev *pci, vortex_t ** rchip)
 	                       IRQF_SHARED, CARD_NAME_SHORT,
 	                       chip)) != 0) {
 		printk(KERN_ERR "cannot grab irq\n");
+			       IRQF_SHARED, KBUILD_MODNAME,
+	                       chip)) != 0) {
+		dev_err(card->dev, "cannot grab irq\n");
 		goto irq_out;
 	}
 	chip->irq = pci->irq;
@@ -236,6 +263,7 @@ snd_vortex_create(struct snd_card *card, struct pci_dev *pci, vortex_t ** rchip)
 
 // constructor -- see "Constructor" sub-section
 static int __devinit
+static int
 snd_vortex_probe(struct pci_dev *pci, const struct pci_device_id *pci_id)
 {
 	static int dev;
@@ -254,6 +282,10 @@ snd_vortex_probe(struct pci_dev *pci, const struct pci_device_id *pci_id)
 	card = snd_card_new(index[dev], id[dev], THIS_MODULE, 0);
 	if (card == NULL)
 		return -ENOMEM;
+	err = snd_card_new(&pci->dev, index[dev], id[dev], THIS_MODULE,
+			   0, &card);
+	if (err < 0)
+		return err;
 
 	// (3)
 	if ((err = snd_vortex_create(card, pci, &chip)) < 0) {
@@ -271,6 +303,14 @@ snd_vortex_probe(struct pci_dev *pci, const struct pci_device_id *pci_id)
 	// (4) Alloc components.
 	// ADB pcm.
 	if ((err = snd_vortex_new_pcm(chip, VORTEX_PCM_ADB, NR_ADB)) < 0) {
+	err = snd_vortex_mixer(chip);
+	if (err < 0) {
+		snd_card_free(card);
+		return err;
+	}
+	// ADB pcm.
+	err = snd_vortex_new_pcm(chip, VORTEX_PCM_ADB, NR_PCM);
+	if (err < 0) {
 		snd_card_free(card);
 		return err;
 	}
@@ -317,6 +357,7 @@ snd_vortex_probe(struct pci_dev *pci, const struct pci_device_id *pci_id)
 			       sizeof(snd_vortex_synth_arg_t), &wave) < 0
 	    || wave == NULL) {
 		snd_printk(KERN_ERR "Can't initialize Aureal wavetable synth\n");
+		dev_err(card->dev, "Can't initialize Aureal wavetable synth\n");
 	} else {
 		snd_vortex_synth_arg_t *arg;
 
@@ -348,6 +389,11 @@ snd_vortex_probe(struct pci_dev *pci, const struct pci_device_id *pci_id)
 		       chip->rev);
 		printk(KERN_ALERT
 		       "vortex: Please email the results of 'lspci -vv' to openvortex-dev@nongnu.org.\n");
+		dev_alert(card->dev,
+			  "The revision (%x) of your card has not been seen before.\n",
+		       chip->rev);
+		dev_alert(card->dev,
+			  "Please email the results of 'lspci -vv' to openvortex-dev@nongnu.org.\n");
 		snd_card_free(card);
 		err = -ENODEV;
 		return err;
@@ -396,3 +442,17 @@ static void __exit alsa_card_vortex_exit(void)
 
 module_init(alsa_card_vortex_init)
 module_exit(alsa_card_vortex_exit)
+static void snd_vortex_remove(struct pci_dev *pci)
+{
+	snd_card_free(pci_get_drvdata(pci));
+}
+
+// pci_driver definition
+static struct pci_driver vortex_driver = {
+	.name = KBUILD_MODNAME,
+	.id_table = snd_vortex_ids,
+	.probe = snd_vortex_probe,
+	.remove = snd_vortex_remove,
+};
+
+module_pci_driver(vortex_driver);

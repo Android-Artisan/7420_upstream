@@ -54,6 +54,9 @@
 #define PIT_BASE		0xfc000000
 #define SOFT_BASE		0xfd000000
 
+#define ISAMEM_BASE		0xe0000000
+#define ISAIO_BASE		0xf0000000
+
 /*
  * RAM definitions
  */

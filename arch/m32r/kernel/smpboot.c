@@ -40,6 +40,7 @@
  */
 
 #include <linux/module.h>
+#include <linux/cpu.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/mm.h>
@@ -120,6 +121,8 @@ static void init_ipi_lock(void);
 static void do_boot_cpu(int);
 int __cpu_up(unsigned int);
 void smp_cpus_done(unsigned int);
+static void init_ipi_lock(void);
+static void do_boot_cpu(int);
 
 int start_secondary(void *);
 static void smp_callin(void);
@@ -143,6 +146,13 @@ void __devinit smp_prepare_boot_cpu(void)
 	cpu_set(0, cpu_online_map);	/* BSP's cpu_id == 0 */
 	cpu_set(0, cpu_callout_map);
 	cpu_set(0, cpu_callin_map);
+void smp_prepare_boot_cpu(void)
+{
+	bsp_phys_id = hard_smp_processor_id();
+	physid_set(bsp_phys_id, phys_cpu_present_map);
+	set_cpu_online(0, true);	/* BSP's cpu_id == 0 */
+	cpumask_set_cpu(0, &cpu_callout_map);
+	cpumask_set_cpu(0, &cpu_callin_map);
 
 	/*
 	 * Initialize the logical to physical CPU number mapping
@@ -152,7 +162,6 @@ void __devinit smp_prepare_boot_cpu(void)
 	current_thread_info()->cpu = 0;
 }
 
-/*==========================================================================*
  * Name:         smp_prepare_cpus (old smp_boot_cpus)
  *
  * Description:  This routine boot up APs.
@@ -168,7 +177,6 @@ void __devinit smp_prepare_boot_cpu(void)
  * ---------- --- --------------------------------------------------------
  * 2003-06-24 hy  modify for linux-2.5.69
  *
- *==========================================================================*/
 void __init smp_prepare_cpus(unsigned int max_cpus)
 {
 	int phys_id;
@@ -184,6 +192,7 @@ void __init smp_prepare_cpus(unsigned int max_cpus)
 		physid_set(phys_id, phys_cpu_present_map);
 #ifndef CONFIG_HOTPLUG_CPU
 	cpu_present_map = cpu_possible_map;
+	init_cpu_present(cpu_possible_mask);
 #endif
 
 	show_mp_info(nr_cpu);
@@ -219,6 +228,7 @@ void __init smp_prepare_cpus(unsigned int max_cpus)
 			continue;
 
 		if ((max_cpus >= 0) && (max_cpus <= cpucount + 1))
+		if (max_cpus <= cpucount + 1)
 			continue;
 
 		do_boot_cpu(phys_id);
@@ -248,7 +258,6 @@ static void __init init_ipi_lock(void)
 		spin_lock_init(&ipi_lock[ipi]);
 }
 
-/*==========================================================================*
  * Name:         do_boot_cpu
  *
  * Description:  This routine boot up one AP.
@@ -264,7 +273,6 @@ static void __init init_ipi_lock(void)
  * ---------- --- --------------------------------------------------------
  * 2003-06-24 hy  modify for linux-2.5.69
  *
- *==========================================================================*/
 static void __init do_boot_cpu(int phys_id)
 {
 	struct task_struct *idle;
@@ -303,6 +311,10 @@ static void __init do_boot_cpu(int phys_id)
 
 	/* Send Startup IPI */
 	send_IPI_mask_phys(cpumask_of_cpu(phys_id), CPU_BOOT_IPI, 0);
+	cpumask_set_cpu(phys_id, &cpu_bootout_map);
+
+	/* Send Startup IPI */
+	send_IPI_mask_phys(cpumask_of(phys_id), CPU_BOOT_IPI, 0);
 
 	Dprintk("Waiting for send to finish...\n");
 	timeout = 0;
@@ -312,6 +324,7 @@ static void __init do_boot_cpu(int phys_id)
 		Dprintk("+");
 		udelay(1000);
 		send_status = !cpu_isset(phys_id, cpu_bootin_map);
+		send_status = !cpumask_test_cpu(phys_id, &cpu_bootin_map);
 	} while (send_status && (timeout++ < 100));
 
 	Dprintk("After Startup.\n");
@@ -322,6 +335,7 @@ static void __init do_boot_cpu(int phys_id)
 		 */
 		Dprintk("Before Callout %d.\n", cpu_id);
 		cpu_set(cpu_id, cpu_callout_map);
+		cpumask_set_cpu(cpu_id, &cpu_callout_map);
 		Dprintk("After Callout %d.\n", cpu_id);
 
 		/*
@@ -329,11 +343,13 @@ static void __init do_boot_cpu(int phys_id)
 		 */
 		for (timeout = 0; timeout < 5000; timeout++) {
 			if (cpu_isset(cpu_id, cpu_callin_map))
+			if (cpumask_test_cpu(cpu_id, &cpu_callin_map))
 				break;	/* It has booted */
 			udelay(1000);
 		}
 
 		if (cpu_isset(cpu_id, cpu_callin_map)) {
+		if (cpumask_test_cpu(cpu_id, &cpu_callin_map)) {
 			/* number CPUs logically, starting from 1 (BSP is 0) */
 			Dprintk("OK.\n");
 		} else {
@@ -348,6 +364,9 @@ static void __init do_boot_cpu(int phys_id)
 		cpu_clear(cpu_id, cpu_callout_map);
 		cpu_clear(cpu_id, cpu_callin_map);
 		cpu_clear(cpu_id, cpu_initialized);
+		cpumask_clear_cpu(cpu_id, &cpu_callout_map);
+		cpumask_clear_cpu(cpu_id, &cpu_callin_map);
+		cpumask_clear_cpu(cpu_id, &cpu_initialized);
 		cpucount--;
 	}
 }
@@ -357,6 +376,11 @@ int __cpuinit __cpu_up(unsigned int cpu_id)
 	int timeout;
 
 	cpu_set(cpu_id, smp_commenced_mask);
+int __cpu_up(unsigned int cpu_id, struct task_struct *tidle)
+{
+	int timeout;
+
+	cpumask_set_cpu(cpu_id, &smp_commenced_mask);
 
 	/*
 	 * Wait 5s total for a response
@@ -367,6 +391,11 @@ int __cpuinit __cpu_up(unsigned int cpu_id)
 		udelay(1000);
 	}
 	if (!cpu_isset(cpu_id, cpu_online_map))
+		if (cpu_online(cpu_id))
+			break;
+		udelay(1000);
+	}
+	if (!cpu_online(cpu_id))
 		BUG();
 
 	return 0;
@@ -386,6 +415,14 @@ void __init smp_cpus_done(unsigned int max_cpus)
 		BUG();
 
 	for (cpu_id = 0 ; cpu_id < num_online_cpus() ; cpu_id++)
+		if (cpumask_equal(&cpu_callin_map, cpu_online_mask))
+			break;
+		udelay(1000);
+	}
+	if (!cpumask_equal(&cpu_callin_map, cpu_online_mask))
+		BUG();
+
+	for_each_online_cpu(cpu_id)
 		show_cpu_info(cpu_id);
 
 	/*
@@ -394,6 +431,7 @@ void __init smp_cpus_done(unsigned int max_cpus)
 	Dprintk("Before bogomips.\n");
 	if (cpucount) {
 		for_each_cpu_mask(cpu_id, cpu_online_map)
+		for_each_cpu(cpu_id,cpu_online_mask)
 			bogosum += cpu_data[cpu_id].loops_per_jiffy;
 
 		printk(KERN_INFO "Total of %d processors activated " \
@@ -408,7 +446,6 @@ void __init smp_cpus_done(unsigned int max_cpus)
 /* Activate a secondary processor Routines                                   */
 /*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*/
 
-/*==========================================================================*
  * Name:         start_secondary
  *
  * Description:  This routine activate a secondary processor.
@@ -424,13 +461,13 @@ void __init smp_cpus_done(unsigned int max_cpus)
  * ---------- --- --------------------------------------------------------
  * 2003-06-24 hy  modify for linux-2.5.69
  *
- *==========================================================================*/
 int __init start_secondary(void *unused)
 {
 	cpu_init();
 	preempt_disable();
 	smp_callin();
 	while (!cpu_isset(smp_processor_id(), smp_commenced_mask))
+	while (!cpumask_test_cpu(smp_processor_id(), &smp_commenced_mask))
 		cpu_relax();
 
 	smp_online();
@@ -442,10 +479,10 @@ int __init start_secondary(void *unused)
 	local_flush_tlb_all();
 
 	cpu_idle();
+	cpu_startup_entry(CPUHP_ONLINE);
 	return 0;
 }
 
-/*==========================================================================*
  * Name:         smp_callin
  *
  * Description:  This routine activate a secondary processor.
@@ -461,7 +498,6 @@ int __init start_secondary(void *unused)
  * ---------- --- --------------------------------------------------------
  * 2003-06-24 hy  modify for linux-2.5.69
  *
- *==========================================================================*/
 static void __init smp_callin(void)
 {
 	int phys_id = hard_smp_processor_id();
@@ -469,6 +505,7 @@ static void __init smp_callin(void)
 	unsigned long timeout;
 
 	if (cpu_isset(cpu_id, cpu_callin_map)) {
+	if (cpumask_test_cpu(cpu_id, &cpu_callin_map)) {
 		printk("huh, phys CPU#%d, CPU#%d already present??\n",
 			phys_id, cpu_id);
 		BUG();
@@ -480,6 +517,7 @@ static void __init smp_callin(void)
 	while (time_before(jiffies, timeout)) {
 		/* Has the boot CPU finished it's STARTUP sequence ? */
 		if (cpu_isset(cpu_id, cpu_callout_map))
+		if (cpumask_test_cpu(cpu_id, &cpu_callout_map))
 			break;
 		cpu_relax();
 	}
@@ -492,11 +530,14 @@ static void __init smp_callin(void)
 
 	/* Allow the master to continue. */
 	cpu_set(cpu_id, cpu_callin_map);
+	cpumask_set_cpu(cpu_id, &cpu_callin_map);
 }
 
 static void __init smp_online(void)
 {
 	int cpu_id = smp_processor_id();
+
+	notify_cpu_starting(cpu_id);
 
 	local_irq_enable();
 
@@ -507,6 +548,7 @@ static void __init smp_online(void)
  	smp_store_cpu_info(cpu_id);
 
 	cpu_set(cpu_id, cpu_online_map);
+	set_cpu_online(cpu_id, true);
 }
 
 /*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*=*/
@@ -596,6 +638,7 @@ int setup_profiling_timer(unsigned int multiplier)
 	 * accordingly.
 	 */
 	for (i = 0; i < NR_CPUS; ++i)
+	for_each_possible_cpu(i)
 		per_cpu(prof_multiplier, i) = multiplier;
 
 	return 0;

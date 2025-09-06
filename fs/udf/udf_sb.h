@@ -2,6 +2,7 @@
 #define __LINUX_UDF_SB_H
 
 #include <linux/mutex.h>
+#include <linux/bitops.h>
 
 /* Since UDF 2.01 is ISO 13346 based... */
 #define UDF_SUPER_MAGIC			0x15013346
@@ -30,6 +31,7 @@
 #define UDF_FLAG_GID_SET	16
 #define UDF_FLAG_SESSION_SET	17
 #define UDF_FLAG_LASTBLOCK_SET	18
+#define UDF_FLAG_BLOCKSIZE_SET	19
 
 #define UDF_PART_FLAG_UNALLOC_BITMAP	0x0001
 #define UDF_PART_FLAG_UNALLOC_TABLE	0x0002
@@ -50,6 +52,15 @@
 
 #pragma pack(1) /* XXX(hch): Why?  This file just defines in-core structures */
 
+#define UDF_INVALID_MODE		((umode_t)-1)
+
+#pragma pack(1) /* XXX(hch): Why?  This file just defines in-core structures */
+
+#define MF_DUPLICATE_MD		0x01
+#define MF_MIRROR_FE_LOADED	0x02
+
+#define EFSCORRUPTED EUCLEAN
+
 struct udf_meta_data {
 	__u32	s_meta_file_loc;
 	__u32	s_mirror_file_loc;
@@ -57,6 +68,7 @@ struct udf_meta_data {
 	__u32	s_alloc_unit_size;
 	__u16	s_align_unit_size;
 	__u8 	s_dup_md_flag;
+	int	s_flags;
 	struct inode *s_metadata_fe;
 	struct inode *s_mirror_fe;
 	struct inode *s_bitmap_fe;
@@ -77,6 +89,9 @@ struct udf_bitmap {
 	__u32			s_extPosition;
 	__u16			s_nr_groups;
 	struct buffer_head 	**s_block_bitmap;
+	__u32			s_extPosition;
+	int			s_nr_groups;
+	struct buffer_head 	*s_block_bitmap[0];
 };
 
 struct udf_part_map {
@@ -115,6 +130,7 @@ struct udf_sb_info {
 	/* Sector headers */
 	__s32			s_session;
 	__u32			s_anchor[3];
+	__u32			s_anchor;
 	__u32			s_last_block;
 
 	struct buffer_head	*s_lvid_bh;
@@ -123,6 +139,13 @@ struct udf_sb_info {
 	mode_t			s_umask;
 	gid_t			s_gid;
 	uid_t			s_uid;
+	umode_t			s_umask;
+	kgid_t			s_gid;
+	kuid_t			s_uid;
+	umode_t			s_fmode;
+	umode_t			s_dmode;
+	/* Lock protecting consistency of above permission settings */
+	rwlock_t		s_cred_lock;
 
 	/* Root Info */
 	struct timespec		s_record_time;
@@ -135,6 +158,7 @@ struct udf_sb_info {
 
 	/* Miscellaneous flags */
 	__u32			s_flags;
+	unsigned long		s_flags;
 
 	/* Encoding info */
 	struct nls_table	*s_nls_map;
@@ -143,6 +167,8 @@ struct udf_sb_info {
 	struct inode		*s_vat_inode;
 
 	struct mutex		s_alloc_mutex;
+	/* Protected by s_alloc_mutex */
+	unsigned int		s_lvid_dirty;
 };
 
 static inline struct udf_sb_info *UDF_SB(struct super_block *sb)
@@ -157,5 +183,23 @@ int udf_compute_nr_groups(struct super_block *sb, u32 partition);
 #define UDF_QUERY_FLAG(X,Y)			( UDF_SB(X)->s_flags & ( 1 << (Y) ) )
 #define UDF_SET_FLAG(X,Y)			( UDF_SB(X)->s_flags |= ( 1 << (Y) ) )
 #define UDF_CLEAR_FLAG(X,Y)			( UDF_SB(X)->s_flags &= ~( 1 << (Y) ) )
+struct logicalVolIntegrityDescImpUse *udf_sb_lvidiu(struct super_block *sb);
+
+int udf_compute_nr_groups(struct super_block *sb, u32 partition);
+
+static inline int UDF_QUERY_FLAG(struct super_block *sb, int flag)
+{
+	return test_bit(flag, &UDF_SB(sb)->s_flags);
+}
+
+static inline void UDF_SET_FLAG(struct super_block *sb, int flag)
+{
+	set_bit(flag, &UDF_SB(sb)->s_flags);
+}
+
+static inline void UDF_CLEAR_FLAG(struct super_block *sb, int flag)
+{
+	clear_bit(flag, &UDF_SB(sb)->s_flags);
+}
 
 #endif /* __LINUX_UDF_SB_H */

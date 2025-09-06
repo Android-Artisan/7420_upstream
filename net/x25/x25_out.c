@@ -22,6 +22,7 @@
  *					needed cleaned seq-number fields.
  */
 
+#include <linux/slab.h>
 #include <linux/socket.h>
 #include <linux/kernel.h>
 #include <linux/string.h>
@@ -69,6 +70,11 @@ int x25_output(struct sock *sk, struct sk_buff *skb)
 		while (skb->len > 0) {
 			if ((skbn = sock_alloc_send_skb(sk, frontlen + max_len,
 							noblock, &err)) == NULL){
+			release_sock(sk);
+			skbn = sock_alloc_send_skb(sk, frontlen + max_len,
+						   noblock, &err);
+			lock_sock(sk);
+			if (!skbn) {
 				if (err == -EWOULDBLOCK && noblock){
 					kfree_skb(skb);
 					return sent;
@@ -149,6 +155,9 @@ void x25_kick(struct sock *sk)
 	 */
 	if (!x25->intflag && skb_peek(&x25->interrupt_out_queue) != NULL) {
 		x25->intflag = 1;
+	if (skb_peek(&x25->interrupt_out_queue) != NULL &&
+		!test_and_set_bit(X25_INTERRUPT_FLAG, &x25->flags)) {
+
 		skb = skb_dequeue(&x25->interrupt_out_queue);
 		x25_transmit_link(skb, x25->neighbour);
 	}

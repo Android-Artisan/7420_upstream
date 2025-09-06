@@ -5,6 +5,7 @@
   SYSFS support routines
 
   Copyright (c) 2006 Michael Buesch <mb@bu3sch.de>
+  Copyright (c) 2006 Michael Buesch <m@bues.ch>
 
   This program is free software; you can redistribute it and/or modify
   it under the terms of the GNU General Public License as published by
@@ -43,6 +44,7 @@ static int get_integer(const char *buf, size_t count)
 	if (count == 0)
 		goto out;
 	count = min(count, (size_t)10);
+	count = min_t(size_t, count, 10);
 	memcpy(tmp, buf, count);
 	ret = simple_strtol(tmp, NULL, 10);
 out:

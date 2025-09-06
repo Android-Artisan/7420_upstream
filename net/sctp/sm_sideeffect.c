@@ -32,6 +32,12 @@
  *
  * Or submit a bug report through the following website:
  *    http://www.sf.net/projects/lksctp
+ * along with GNU CC; see the file COPYING.  If not, see
+ * <http://www.gnu.org/licenses/>.
+ *
+ * Please send any bug reports or fixes you make to the
+ * email address(es):
+ *    lksctp developers <linux-sctp@vger.kernel.org>
  *
  * Written or modified by:
  *    La Monte H.P. Yarroll <piggy@acm.org>
@@ -47,10 +53,15 @@
  * be incorporated into the next SCTP release.
  */
 
+ */
+
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/skbuff.h>
 #include <linux/types.h>
 #include <linux/socket.h>
 #include <linux/ip.h>
+#include <linux/gfp.h>
 #include <net/sock.h>
 #include <net/sctp/sctp.h>
 #include <net/sctp/sm.h>
@@ -73,6 +84,8 @@ static int sctp_side_effects(sctp_event_t event_type, sctp_subtype_t subtype,
 			     sctp_cmd_seq_t *commands,
 			     gfp_t gfp);
 
+static void sctp_cmd_hb_timer_update(sctp_cmd_seq_t *cmds,
+				     struct sctp_transport *t);
 /********************************************************************
  * Helper functions
  ********************************************************************/
@@ -219,6 +232,7 @@ static int sctp_gen_sack(struct sctp_association *asoc, int force,
 	} else {
 		if (asoc->a_rwnd > asoc->rwnd)
 			asoc->a_rwnd = asoc->rwnd;
+		asoc->a_rwnd = asoc->rwnd;
 		sack = sctp_make_sack(asoc);
 		if (!sack)
 			goto nomem;
@@ -253,6 +267,14 @@ void sctp_generate_t3_rtx_event(unsigned long peer)
 	sctp_bh_lock_sock(asoc->base.sk);
 	if (sock_owned_by_user(asoc->base.sk)) {
 		SCTP_DEBUG_PRINTK("%s:Sock is busy.\n", __func__);
+	struct sock *sk = asoc->base.sk;
+	struct net *net = sock_net(sk);
+
+	/* Check whether a task is in the sock.  */
+
+	bh_lock_sock(sk);
+	if (sock_owned_by_user(sk)) {
+		pr_debug("%s: sock is busy\n", __func__);
 
 		/* Try again later.  */
 		if (!mod_timer(&transport->T3_rtx_timer, jiffies + (HZ/20)))
@@ -268,6 +290,7 @@ void sctp_generate_t3_rtx_event(unsigned long peer)
 
 	/* Run through the state machine.  */
 	error = sctp_do_sm(SCTP_EVENT_T_TIMEOUT,
+	error = sctp_do_sm(net, SCTP_EVENT_T_TIMEOUT,
 			   SCTP_ST_TIMEOUT(SCTP_EVENT_TIMEOUT_T3_RTX),
 			   asoc->state,
 			   asoc->ep, asoc,
@@ -278,6 +301,10 @@ void sctp_generate_t3_rtx_event(unsigned long peer)
 
 out_unlock:
 	sctp_bh_unlock_sock(asoc->base.sk);
+		sk->sk_err = -error;
+
+out_unlock:
+	bh_unlock_sock(sk);
 	sctp_transport_put(transport);
 }
 
@@ -294,6 +321,14 @@ static void sctp_generate_timeout_event(struct sctp_association *asoc,
 		SCTP_DEBUG_PRINTK("%s:Sock is busy: timer %d\n",
 				  __func__,
 				  timeout_type);
+	struct sock *sk = asoc->base.sk;
+	struct net *net = sock_net(sk);
+	int error = 0;
+
+	bh_lock_sock(sk);
+	if (sock_owned_by_user(sk)) {
+		pr_debug("%s: sock is busy: timer %d\n", __func__,
+			 timeout_type);
 
 		/* Try again later.  */
 		if (!mod_timer(&asoc->timers[timeout_type], jiffies + (HZ/20)))
@@ -309,6 +344,7 @@ static void sctp_generate_timeout_event(struct sctp_association *asoc,
 
 	/* Run through the state machine.  */
 	error = sctp_do_sm(SCTP_EVENT_T_TIMEOUT,
+	error = sctp_do_sm(net, SCTP_EVENT_T_TIMEOUT,
 			   SCTP_ST_TIMEOUT(timeout_type),
 			   asoc->state, asoc->ep, asoc,
 			   (void *)timeout_type, GFP_ATOMIC);
@@ -318,6 +354,10 @@ static void sctp_generate_timeout_event(struct sctp_association *asoc,
 
 out_unlock:
 	sctp_bh_unlock_sock(asoc->base.sk);
+		sk->sk_err = -error;
+
+out_unlock:
+	bh_unlock_sock(sk);
 	sctp_association_put(asoc);
 }
 
@@ -371,6 +411,12 @@ void sctp_generate_heartbeat_event(unsigned long data)
 	sctp_bh_lock_sock(asoc->base.sk);
 	if (sock_owned_by_user(asoc->base.sk)) {
 		SCTP_DEBUG_PRINTK("%s:Sock is busy.\n", __func__);
+	struct sock *sk = asoc->base.sk;
+	struct net *net = sock_net(sk);
+
+	bh_lock_sock(sk);
+	if (sock_owned_by_user(sk)) {
+		pr_debug("%s: sock is busy\n", __func__);
 
 		/* Try again later.  */
 		if (!mod_timer(&transport->hb_timer, jiffies + (HZ/20)))
@@ -385,6 +431,7 @@ void sctp_generate_heartbeat_event(unsigned long data)
 		goto out_unlock;
 
 	error = sctp_do_sm(SCTP_EVENT_T_TIMEOUT,
+	error = sctp_do_sm(net, SCTP_EVENT_T_TIMEOUT,
 			   SCTP_ST_TIMEOUT(SCTP_EVENT_TIMEOUT_HEARTBEAT),
 			   asoc->state, asoc->ep, asoc,
 			   transport, GFP_ATOMIC);
@@ -396,6 +443,51 @@ out_unlock:
 	sctp_bh_unlock_sock(asoc->base.sk);
 	sctp_transport_put(transport);
 }
+
+	if (error)
+		sk->sk_err = -error;
+
+out_unlock:
+	bh_unlock_sock(sk);
+	sctp_transport_put(transport);
+}
+
+/* Handle the timeout of the ICMP protocol unreachable timer.  Trigger
+ * the correct state machine transition that will close the association.
+ */
+void sctp_generate_proto_unreach_event(unsigned long data)
+{
+	struct sctp_transport *transport = (struct sctp_transport *) data;
+	struct sctp_association *asoc = transport->asoc;
+	struct sock *sk = asoc->base.sk;
+	struct net *net = sock_net(sk);
+
+	bh_lock_sock(sk);
+	if (sock_owned_by_user(sk)) {
+		pr_debug("%s: sock is busy\n", __func__);
+
+		/* Try again later.  */
+		if (!mod_timer(&transport->proto_unreach_timer,
+				jiffies + (HZ/20)))
+			sctp_transport_hold(transport);
+		goto out_unlock;
+	}
+
+	/* Is this structure just waiting around for us to actually
+	 * get destroyed?
+	 */
+	if (asoc->base.dead)
+		goto out_unlock;
+
+	sctp_do_sm(net, SCTP_EVENT_T_OTHER,
+		   SCTP_ST_OTHER(SCTP_EVENT_ICMP_PROTO_UNREACH),
+		   asoc->state, asoc->ep, asoc, transport, GFP_ATOMIC);
+
+out_unlock:
+	bh_unlock_sock(sk);
+	sctp_transport_put(transport);
+}
+
 
 /* Inject a SACK Timeout event into the state machine.  */
 static void sctp_generate_sack_event(unsigned long data)
@@ -435,6 +527,10 @@ sctp_timer_event_t *sctp_timer_events[SCTP_NUM_TIMEOUT_TYPES] = {
  */
 static void sctp_do_8_2_transport_strike(struct sctp_association *asoc,
 					 struct sctp_transport *transport)
+static void sctp_do_8_2_transport_strike(sctp_cmd_seq_t *commands,
+					 struct sctp_association *asoc,
+					 struct sctp_transport *transport,
+					 int is_hb)
 {
 	/* The check for association's overall error counter exceeding the
 	 * threshold is done in the state function.
@@ -452,6 +548,46 @@ static void sctp_do_8_2_transport_strike(struct sctp_association *asoc,
 					 asoc,
 					 (&transport->ipaddr),
 					 ntohs(transport->ipaddr.v4.sin_port));
+	/* We are here due to a timer expiration.  If the timer was
+	 * not a HEARTBEAT, then normal error tracking is done.
+	 * If the timer was a heartbeat, we only increment error counts
+	 * when we already have an outstanding HEARTBEAT that has not
+	 * been acknowledged.
+	 * Additionally, some tranport states inhibit error increments.
+	 */
+	if (!is_hb) {
+		asoc->overall_error_count++;
+		if (transport->state != SCTP_INACTIVE)
+			transport->error_count++;
+	 } else if (transport->hb_sent) {
+		if (transport->state != SCTP_UNCONFIRMED)
+			asoc->overall_error_count++;
+		if (transport->state != SCTP_INACTIVE)
+			transport->error_count++;
+	}
+
+	/* If the transport error count is greater than the pf_retrans
+	 * threshold, and less than pathmaxrtx, and if the current state
+	 * is SCTP_ACTIVE, then mark this transport as Partially Failed,
+	 * see SCTP Quick Failover Draft, section 5.1
+	 */
+	if ((transport->state == SCTP_ACTIVE) &&
+	   (transport->error_count < transport->pathmaxrxt) &&
+	   (transport->error_count > transport->pf_retrans)) {
+
+		sctp_assoc_control_transport(asoc, transport,
+					     SCTP_TRANSPORT_PF,
+					     0);
+
+		/* Update the hb timer to resend a heartbeat every rto */
+		sctp_cmd_hb_timer_update(commands, transport);
+	}
+
+	if (transport->state != SCTP_INACTIVE &&
+	    (transport->error_count > transport->pathmaxrxt)) {
+		pr_debug("%s: association:%p transport addr:%pISpc failed\n",
+			 __func__, asoc, &transport->ipaddr.sa);
+
 		sctp_assoc_control_transport(asoc, transport,
 					     SCTP_TRANSPORT_DOWN,
 					     SCTP_FAILED_THRESHOLD);
@@ -464,6 +600,15 @@ static void sctp_do_8_2_transport_strike(struct sctp_association *asoc,
 	 */
 	transport->last_rto = transport->rto;
 	transport->rto = min((transport->rto * 2), transport->asoc->rto_max);
+	 *
+	 * Special Case:  the first HB doesn't trigger exponential backoff.
+	 * The first unacknowledged HB triggers it.  We do this with a flag
+	 * that indicates that we have an outstanding HB.
+	 */
+	if (!is_hb || transport->hb_sent) {
+		transport->rto = min((transport->rto * 2), transport->asoc->rto_max);
+		sctp_max_rto(asoc, transport);
+	}
 }
 
 /* Worker routine to handle INIT command failure.  */
@@ -474,6 +619,11 @@ static void sctp_cmd_init_failed(sctp_cmd_seq_t *commands,
 	struct sctp_ulpevent *event;
 
 	event = sctp_ulpevent_make_assoc_change(asoc,0, SCTP_CANT_STR_ASSOC,
+				 unsigned int error)
+{
+	struct sctp_ulpevent *event;
+
+	event = sctp_ulpevent_make_assoc_change(asoc, 0, SCTP_CANT_STR_ASSOC,
 						(__u16)error, 0, 0, NULL,
 						GFP_ATOMIC);
 
@@ -499,6 +649,10 @@ static void sctp_cmd_assoc_failed(sctp_cmd_seq_t *commands,
 {
 	struct sctp_ulpevent *event;
 
+				  unsigned int error)
+{
+	struct sctp_ulpevent *event;
+	struct sctp_chunk *abort;
 	/* Cancel any partial delivery in progress. */
 	sctp_ulpq_abort_pd(&asoc->ulpq, GFP_ATOMIC);
 
@@ -513,6 +667,13 @@ static void sctp_cmd_assoc_failed(sctp_cmd_seq_t *commands,
 	if (event)
 		sctp_add_cmd_sf(commands, SCTP_CMD_EVENT_ULP,
 				SCTP_ULPEVENT(event));
+
+	if (asoc->overall_error_count >= asoc->max_retrans) {
+		abort = sctp_make_violation_max_retrans(asoc, chunk);
+		if (abort)
+			sctp_add_cmd_sf(commands, SCTP_CMD_REPLY,
+					SCTP_CHUNK(abort));
+	}
 
 	sctp_add_cmd_sf(commands, SCTP_CMD_NEW_STATE,
 			SCTP_STATE(SCTP_STATE_CLOSED));
@@ -542,6 +703,7 @@ static int sctp_cmd_process_init(sctp_cmd_seq_t *commands,
 	 */
 	if (!sctp_process_init(asoc, chunk->chunk_hdr->type,
 			       sctp_source(chunk), peer_init, gfp))
+	if (!sctp_process_init(asoc, chunk, sctp_source(chunk), peer_init, gfp))
 		error = -ENOMEM;
 	else
 		error = 0;
@@ -592,6 +754,8 @@ static void sctp_cmd_t3_rtx_timers_stop(sctp_cmd_seq_t *cmds,
 		    del_timer(&t->T3_rtx_timer)) {
 			sctp_transport_put(t);
 		}
+		if (del_timer(&t->T3_rtx_timer))
+			sctp_transport_put(t);
 	}
 }
 
@@ -612,6 +776,7 @@ static void sctp_cmd_transport_on(sctp_cmd_seq_t *cmds,
 				  struct sctp_chunk *chunk)
 {
 	sctp_sender_hb_info_t *hbinfo;
+	int was_unconfirmed = 0;
 
 	/* 8.3 Upon the receipt of the HEARTBEAT ACK, the sender of the
 	 * HEARTBEAT should clear the error counter of the destination
@@ -620,6 +785,24 @@ static void sctp_cmd_transport_on(sctp_cmd_seq_t *cmds,
 	 */
 	t->error_count = 0;
 	t->asoc->overall_error_count = 0;
+	 */
+	t->error_count = 0;
+
+	/*
+	 * Although RFC4960 specifies that the overall error count must
+	 * be cleared when a HEARTBEAT ACK is received, we make an
+	 * exception while in SHUTDOWN PENDING. If the peer keeps its
+	 * window shut forever, we may never be able to transmit our
+	 * outstanding data and rely on the retransmission limit be reached
+	 * to shutdown the association.
+	 */
+	if (t->asoc->state < SCTP_STATE_SHUTDOWN_PENDING)
+		t->asoc->overall_error_count = 0;
+
+	/* Clear the hb_sent flag to signal that we had a good
+	 * acknowledgement.
+	 */
+	t->hb_sent = 0;
 
 	/* Mark the destination transport address as active if it is not so
 	 * marked.
@@ -627,6 +810,21 @@ static void sctp_cmd_transport_on(sctp_cmd_seq_t *cmds,
 	if ((t->state == SCTP_INACTIVE) || (t->state == SCTP_UNCONFIRMED))
 		sctp_assoc_control_transport(asoc, t, SCTP_TRANSPORT_UP,
 					     SCTP_HEARTBEAT_SUCCESS);
+	if ((t->state == SCTP_INACTIVE) || (t->state == SCTP_UNCONFIRMED)) {
+		was_unconfirmed = 1;
+		sctp_assoc_control_transport(asoc, t, SCTP_TRANSPORT_UP,
+					     SCTP_HEARTBEAT_SUCCESS);
+	}
+
+	if (t->state == SCTP_PF)
+		sctp_assoc_control_transport(asoc, t, SCTP_TRANSPORT_UP,
+					     SCTP_HEARTBEAT_SUCCESS);
+
+	/* HB-ACK was received for a the proper HB.  Consider this
+	 * forward progress.
+	 */
+	if (t->dst)
+		dst_confirm(t->dst);
 
 	/* The receiver of the HEARTBEAT ACK should also perform an
 	 * RTT measurement for that destination transport address
@@ -659,6 +857,11 @@ static void sctp_cmd_transport_reset(sctp_cmd_seq_t *cmds,
 	sctp_do_8_2_transport_strike(asoc, t);
 }
 
+	if (was_unconfirmed && asoc->peer.transport_count == 1)
+		sctp_transport_immediate_rtx(t);
+}
+
+
 /* Helper function to process the process SACK command.  */
 static int sctp_cmd_process_sack(sctp_cmd_seq_t *cmds,
 				 struct sctp_association *asoc,
@@ -669,6 +872,15 @@ static int sctp_cmd_process_sack(sctp_cmd_seq_t *cmds,
 	if (sctp_outq_sack(&asoc->outqueue, sackh)) {
 		/* There are no more TSNs awaiting SACK.  */
 		err = sctp_do_sm(SCTP_EVENT_T_OTHER,
+				 struct sctp_chunk *chunk)
+{
+	int err = 0;
+
+	if (sctp_outq_sack(&asoc->outqueue, chunk)) {
+		struct net *net = sock_net(asoc->base.sk);
+
+		/* There are no more TSNs awaiting SACK.  */
+		err = sctp_do_sm(net, SCTP_EVENT_T_OTHER,
 				 SCTP_ST_OTHER(SCTP_EVENT_NO_PENDING_TSN),
 				 asoc->state, asoc->ep, asoc, NULL,
 				 GFP_ATOMIC);
@@ -690,6 +902,15 @@ static void sctp_cmd_setup_t2(sctp_cmd_seq_t *cmds,
 	asoc->shutdown_last_sent_to = t;
 	asoc->timeouts[SCTP_EVENT_TIMEOUT_T2_SHUTDOWN] = t->rto;
 	chunk->transport = t;
+	if (chunk->transport)
+		t = chunk->transport;
+	else {
+		t = sctp_assoc_choose_alter_transport(asoc,
+					      asoc->shutdown_last_sent_to);
+		chunk->transport = t;
+	}
+	asoc->shutdown_last_sent_to = t;
+	asoc->timeouts[SCTP_EVENT_TIMEOUT_T2_SHUTDOWN] = t->rto;
 }
 
 /* Helper function to change the state of an association. */
@@ -707,6 +928,11 @@ static void sctp_cmd_new_state(sctp_cmd_seq_t *cmds,
 	if (sctp_style(sk, TCP)) {
 		/* Change the sk->sk_state of a TCP-style socket that has
 		 * sucessfully completed a connect() call.
+	pr_debug("%s: asoc:%p[%s]\n", __func__, asoc, sctp_state_tbl[state]);
+
+	if (sctp_style(sk, TCP)) {
+		/* Change the sk->sk_state of a TCP-style socket that has
+		 * successfully completed a connect() call.
 		 */
 		if (sctp_state(asoc, ESTABLISHED) && sctp_sstate(sk, CLOSED))
 			sk->sk_state = SCTP_SS_ESTABLISHED;
@@ -778,6 +1004,7 @@ static void sctp_cmd_setup_t4(sctp_cmd_seq_t *cmds,
 	struct sctp_transport *t;
 
 	t = asoc->peer.active_path;
+	t = sctp_assoc_choose_alter_transport(asoc, chunk->transport);
 	asoc->timeouts[SCTP_EVENT_TIMEOUT_T4_RTO] = t->rto;
 	chunk->transport = t;
 }
@@ -817,6 +1044,48 @@ static void sctp_cmd_process_operr(sctp_cmd_seq_t *cmds,
 	}
 	default:
 		break;
+	struct sctp_errhdr *err_hdr;
+	struct sctp_ulpevent *ev;
+
+	while (chunk->chunk_end > chunk->skb->data) {
+		err_hdr = (struct sctp_errhdr *)(chunk->skb->data);
+
+		ev = sctp_ulpevent_make_remote_error(asoc, chunk, 0,
+						     GFP_ATOMIC);
+		if (!ev)
+			return;
+
+		sctp_ulpq_tail_event(&asoc->ulpq, ev);
+
+		switch (err_hdr->cause) {
+		case SCTP_ERROR_UNKNOWN_CHUNK:
+		{
+			sctp_chunkhdr_t *unk_chunk_hdr;
+
+			unk_chunk_hdr = (sctp_chunkhdr_t *)err_hdr->variable;
+			switch (unk_chunk_hdr->type) {
+			/* ADDIP 4.1 A9) If the peer responds to an ASCONF with
+			 * an ERROR chunk reporting that it did not recognized
+			 * the ASCONF chunk type, the sender of the ASCONF MUST
+			 * NOT send any further ASCONF chunks and MUST stop its
+			 * T-4 timer.
+			 */
+			case SCTP_CID_ASCONF:
+				if (asoc->peer.asconf_capable == 0)
+					break;
+
+				asoc->peer.asconf_capable = 0;
+				sctp_add_cmd_sf(cmds, SCTP_CMD_TIMER_STOP,
+					SCTP_TO(SCTP_EVENT_TIMEOUT_T4_RTO));
+				break;
+			default:
+				break;
+			}
+			break;
+		}
+		default:
+			break;
+		}
 	}
 }
 
@@ -851,6 +1120,9 @@ static void sctp_cmd_del_non_primary(struct sctp_association *asoc)
 	}
 
 	return;
+			sctp_assoc_rm_peer(asoc, t);
+		}
+	}
 }
 
 /* Helper function to set sk_err on a 1-1 style socket. */
@@ -889,6 +1161,77 @@ static void sctp_cmd_adaptation_ind(sctp_cmd_seq_t *commands,
 		sctp_ulpq_tail_event(&asoc->ulpq, ev);
 }
 
+
+static void sctp_cmd_t1_timer_update(struct sctp_association *asoc,
+				    sctp_event_timeout_t timer,
+				    char *name)
+{
+	struct sctp_transport *t;
+
+	t = asoc->init_last_sent_to;
+	asoc->init_err_counter++;
+
+	if (t->init_sent_count > (asoc->init_cycle + 1)) {
+		asoc->timeouts[timer] *= 2;
+		if (asoc->timeouts[timer] > asoc->max_init_timeo) {
+			asoc->timeouts[timer] = asoc->max_init_timeo;
+		}
+		asoc->init_cycle++;
+
+		pr_debug("%s: T1[%s] timeout adjustment init_err_counter:%d"
+			 " cycle:%d timeout:%ld\n", __func__, name,
+			 asoc->init_err_counter, asoc->init_cycle,
+			 asoc->timeouts[timer]);
+	}
+
+}
+
+/* Send the whole message, chunk by chunk, to the outqueue.
+ * This way the whole message is queued up and bundling if
+ * encouraged for small fragments.
+ */
+static int sctp_cmd_send_msg(struct sctp_association *asoc,
+				struct sctp_datamsg *msg)
+{
+	struct sctp_chunk *chunk;
+	int error = 0;
+
+	list_for_each_entry(chunk, &msg->chunks, frag_list) {
+		error = sctp_outq_tail(&asoc->outqueue, chunk);
+		if (error)
+			break;
+	}
+
+	return error;
+}
+
+
+/* Sent the next ASCONF packet currently stored in the association.
+ * This happens after the ASCONF_ACK was succeffully processed.
+ */
+static void sctp_cmd_send_asconf(struct sctp_association *asoc)
+{
+	struct net *net = sock_net(asoc->base.sk);
+
+	/* Send the next asconf chunk from the addip chunk
+	 * queue.
+	 */
+	if (!list_empty(&asoc->addip_chunk_list)) {
+		struct list_head *entry = asoc->addip_chunk_list.next;
+		struct sctp_chunk *asconf = list_entry(entry,
+						struct sctp_chunk, list);
+		list_del_init(entry);
+
+		/* Hold the chunk until an ASCONF_ACK is received. */
+		sctp_chunk_hold(asconf);
+		if (sctp_primitive_ASCONF(net, asoc, asconf))
+			sctp_chunk_free(asconf);
+		else
+			asoc->addip_last_asconf = asconf;
+	}
+}
+
+
 /* These three macros allow us to pull the debugging code out of the
  * main flow of sctp_do_sm() to keep attention focused on the real
  * functionality there.
@@ -910,6 +1253,19 @@ static void sctp_cmd_adaptation_ind(sctp_cmd_seq_t *commands,
 			  error, asoc, \
 			  sctp_state_tbl[(asoc && sctp_id2assoc(ep->base.sk, \
 			  sctp_assoc2id(asoc)))?asoc->state:SCTP_STATE_CLOSED])
+#define debug_pre_sfn() \
+	pr_debug("%s[pre-fn]: ep:%p, %s, %s, asoc:%p[%s], %s\n", __func__, \
+		 ep, sctp_evttype_tbl[event_type], (*debug_fn)(subtype),   \
+		 asoc, sctp_state_tbl[state], state_fn->name)
+
+#define debug_post_sfn() \
+	pr_debug("%s[post-fn]: asoc:%p, status:%s\n", __func__, asoc, \
+		 sctp_status_tbl[status])
+
+#define debug_post_sfx() \
+	pr_debug("%s[post-sfx]: error:%d, asoc:%p[%s]\n", __func__, error, \
+		 asoc, sctp_state_tbl[(asoc && sctp_id2assoc(ep->base.sk, \
+		 sctp_assoc2id(asoc))) ? asoc->state : SCTP_STATE_CLOSED])
 
 /*
  * This is the master state machine processing function.
@@ -918,6 +1274,7 @@ static void sctp_cmd_adaptation_ind(sctp_cmd_seq_t *commands,
  * good place to start.
  */
 int sctp_do_sm(sctp_event_t event_type, sctp_subtype_t subtype,
+int sctp_do_sm(struct net *net, sctp_event_t event_type, sctp_subtype_t subtype,
 	       sctp_state_t state,
 	       struct sctp_endpoint *ep,
 	       struct sctp_association *asoc,
@@ -945,11 +1302,19 @@ int sctp_do_sm(sctp_event_t event_type, sctp_subtype_t subtype,
 	DEBUG_PRE;
 	status = (*state_fn->fn)(ep, asoc, subtype, event_arg, &commands);
 	DEBUG_POST;
+	state_fn = sctp_sm_lookup_event(net, event_type, state, subtype);
+
+	sctp_init_cmd_seq(&commands);
+
+	debug_pre_sfn();
+	status = state_fn->fn(net, ep, asoc, subtype, event_arg, &commands);
+	debug_post_sfn();
 
 	error = sctp_side_effects(event_type, subtype, state,
 				  ep, asoc, event_arg, status,
 				  &commands, gfp);
 	DEBUG_POST_SFX;
+	debug_post_sfx();
 
 	return error;
 }
@@ -988,6 +1353,9 @@ static int sctp_side_effects(sctp_event_t event_type, sctp_subtype_t subtype,
 		SCTP_DEBUG_PRINTK("Ignored sctp protocol event - state %d, "
 				  "event_type %d, event_id %d\n",
 				  state, event_type, subtype.chunk);
+		pr_debug("%s: ignored sctp protocol event - state:%d, "
+			 "event_type:%d, event_id:%d\n", __func__, state,
+			 event_type, subtype.chunk);
 		break;
 
 	case SCTP_DISPOSITION_NOMEM:
@@ -1027,6 +1395,17 @@ static int sctp_side_effects(sctp_event_t event_type, sctp_subtype_t subtype,
 	case SCTP_DISPOSITION_BUG:
 		printk(KERN_ERR "sctp bug in state %d, "
 		       "event_type %d, event_id %d\n",
+		net_err_ratelimited("protocol violation state %d chunkid %d\n",
+				    state, subtype.chunk);
+		break;
+
+	case SCTP_DISPOSITION_NOT_IMPL:
+		pr_warn("unimplemented feature in state %d, event_type %d, event_id %d\n",
+			state, event_type, subtype.chunk);
+		break;
+
+	case SCTP_DISPOSITION_BUG:
+		pr_err("bug in state %d, event_type %d, event_id %d\n",
 		       state, event_type, subtype.chunk);
 		BUG();
 		break;
@@ -1034,8 +1413,12 @@ static int sctp_side_effects(sctp_event_t event_type, sctp_subtype_t subtype,
 	default:
 		printk(KERN_ERR "sctp impossible disposition %d "
 		       "in state %d, event_type %d, event_id %d\n",
+		pr_err("impossible disposition %d in state %d, event_type %d, event_id %d\n",
 		       status, state, event_type, subtype.chunk);
-		BUG();
+		error = status;
+		if (error >= 0)
+			error = -EINVAL;
+		WARN_ON_ONCE(1);
 		break;
 	}
 
@@ -1072,6 +1455,7 @@ static int sctp_cmd_interpreter(sctp_event_t event_type,
 
 	if (SCTP_EVENT_T_TIMEOUT != event_type)
 		chunk = (struct sctp_chunk *) event_arg;
+		chunk = event_arg;
 
 	/* Note:  This whole file is a huge candidate for rework.
 	 * For example, each command could either have its own handler, so
@@ -1094,12 +1478,17 @@ static int sctp_cmd_interpreter(sctp_event_t event_type,
 			}
 			asoc = cmd->obj.ptr;
 			/* Register with the endpoint.  */
+
+			/* Register with the endpoint.  */
+			asoc = cmd->obj.asoc;
+			BUG_ON(asoc->peer.primary_path == NULL);
 			sctp_endpoint_add_asoc(ep, asoc);
 			sctp_hash_established(asoc);
 			break;
 
 		case SCTP_CMD_UPDATE_ASSOC:
 		       sctp_assoc_update(asoc, cmd->obj.ptr);
+		       sctp_assoc_update(asoc, cmd->obj.asoc);
 		       break;
 
 		case SCTP_CMD_PURGE_OUTQUEUE:
@@ -1124,6 +1513,8 @@ static int sctp_cmd_interpreter(sctp_event_t event_type,
 		case SCTP_CMD_REPORT_TSN:
 			/* Record the arrival of a TSN.  */
 			sctp_tsnmap_mark(&asoc->peer.tsn_map, cmd->obj.u32);
+			error = sctp_tsnmap_mark(&asoc->peer.tsn_map,
+						 cmd->obj.u32, NULL);
 			break;
 
 		case SCTP_CMD_REPORT_FWDTSN:
@@ -1139,6 +1530,7 @@ static int sctp_cmd_interpreter(sctp_event_t event_type,
 
 		case SCTP_CMD_PROCESS_FWDTSN:
 			sctp_cmd_process_fwdtsn(&asoc->ulpq, cmd->obj.ptr);
+			sctp_cmd_process_fwdtsn(&asoc->ulpq, cmd->obj.chunk);
 			break;
 
 		case SCTP_CMD_GEN_SACK:
@@ -1155,14 +1547,17 @@ static int sctp_cmd_interpreter(sctp_event_t event_type,
 			/* Process an inbound SACK.  */
 			error = sctp_cmd_process_sack(commands, asoc,
 						      cmd->obj.ptr);
+						      cmd->obj.chunk);
 			break;
 
 		case SCTP_CMD_GEN_INIT_ACK:
 			/* Generate an INIT ACK chunk.  */
 			new_obj = sctp_make_init_ack(asoc, chunk, GFP_ATOMIC,
 						     0);
-			if (!new_obj)
-				goto nomem;
+			if (!new_obj) {
+				error = -ENOMEM;
+				break;
+			}
 
 			sctp_add_cmd_sf(commands, SCTP_CMD_REPLY,
 					SCTP_CHUNK(new_obj));
@@ -1176,6 +1571,7 @@ static int sctp_cmd_interpreter(sctp_event_t event_type,
 			 */
 			error = sctp_cmd_process_init(commands, asoc, chunk,
 						      cmd->obj.ptr, gfp);
+						      cmd->obj.init, gfp);
 			break;
 
 		case SCTP_CMD_GEN_COOKIE_ECHO:
@@ -1184,7 +1580,10 @@ static int sctp_cmd_interpreter(sctp_event_t event_type,
 			if (!new_obj) {
 				if (cmd->obj.ptr)
 					sctp_chunk_free(cmd->obj.ptr);
-				goto nomem;
+				if (cmd->obj.chunk)
+					sctp_chunk_free(cmd->obj.chunk);
+				error = -ENOMEM;
+				break;
 			}
 			sctp_add_cmd_sf(commands, SCTP_CMD_REPLY,
 					SCTP_CHUNK(new_obj));
@@ -1195,6 +1594,14 @@ static int sctp_cmd_interpreter(sctp_event_t event_type,
 			if (cmd->obj.ptr)
 				sctp_add_cmd_sf(commands, SCTP_CMD_REPLY,
 						SCTP_CHUNK(cmd->obj.ptr));
+			if (cmd->obj.chunk)
+				sctp_add_cmd_sf(commands, SCTP_CMD_REPLY,
+						SCTP_CHUNK(cmd->obj.chunk));
+
+			if (new_obj->transport) {
+				new_obj->transport->init_sent_count++;
+				asoc->init_last_sent_to = new_obj->transport;
+			}
 
 			/* FIXME - Eventually come up with a cleaner way to
 			 * enabling COOKIE-ECHO + DATA bundling during
@@ -1226,8 +1633,10 @@ static int sctp_cmd_interpreter(sctp_event_t event_type,
 
 			/* Generate a SHUTDOWN chunk.  */
 			new_obj = sctp_make_shutdown(asoc, chunk);
-			if (!new_obj)
-				goto nomem;
+			if (!new_obj) {
+				error = -ENOMEM;
+				break;
+			}
 			sctp_add_cmd_sf(commands, SCTP_CMD_REPLY,
 					SCTP_CHUNK(new_obj));
 			break;
@@ -1238,6 +1647,10 @@ static int sctp_cmd_interpreter(sctp_event_t event_type,
 					  "chunk_up:", cmd->obj.ptr,
 					  "ulpq:", &asoc->ulpq);
 			sctp_ulpq_tail_data(&asoc->ulpq, cmd->obj.ptr,
+			pr_debug("%s: sm_sideff: chunk_up:%p, ulpq:%p\n",
+				 __func__, cmd->obj.chunk, &asoc->ulpq);
+
+			sctp_ulpq_tail_data(&asoc->ulpq, cmd->obj.chunk,
 					    GFP_ATOMIC);
 			break;
 
@@ -1247,6 +1660,10 @@ static int sctp_cmd_interpreter(sctp_event_t event_type,
 					  "event_up:",cmd->obj.ptr,
 					  "ulpq:",&asoc->ulpq);
 			sctp_ulpq_tail_event(&asoc->ulpq, cmd->obj.ptr);
+			pr_debug("%s: sm_sideff: event_up:%p, ulpq:%p\n",
+				 __func__, cmd->obj.ulpevent, &asoc->ulpq);
+
+			sctp_ulpq_tail_event(&asoc->ulpq, cmd->obj.ulpevent);
 			break;
 
 		case SCTP_CMD_REPLY:
@@ -1257,11 +1674,13 @@ static int sctp_cmd_interpreter(sctp_event_t event_type,
 			}
 			/* Send a chunk to our peer.  */
 			error = sctp_outq_tail(&asoc->outqueue, cmd->obj.ptr);
+			error = sctp_outq_tail(&asoc->outqueue, cmd->obj.chunk);
 			break;
 
 		case SCTP_CMD_SEND_PKT:
 			/* Send a full packet to our peer.  */
 			packet = cmd->obj.ptr;
+			packet = cmd->obj.packet;
 			sctp_packet_transmit(packet);
 			sctp_ootb_pkt_free(packet);
 			break;
@@ -1307,6 +1726,16 @@ static int sctp_cmd_interpreter(sctp_event_t event_type,
 			sctp_cmd_setup_t2(commands, asoc, cmd->obj.ptr);
 			break;
 
+			sctp_cmd_setup_t2(commands, asoc, cmd->obj.chunk);
+			break;
+
+		case SCTP_CMD_TIMER_START_ONCE:
+			timer = &asoc->timers[cmd->obj.to];
+
+			if (timer_pending(timer))
+				break;
+			/* fall through */
+
 		case SCTP_CMD_TIMER_START:
 			timer = &asoc->timers[cmd->obj.to];
 			timeout = asoc->timeouts[cmd->obj.to];
@@ -1327,6 +1756,7 @@ static int sctp_cmd_interpreter(sctp_event_t event_type,
 		case SCTP_CMD_TIMER_STOP:
 			timer = &asoc->timers[cmd->obj.to];
 			if (timer_pending(timer) && del_timer(timer))
+			if (del_timer(timer))
 				sctp_association_put(asoc);
 			break;
 
@@ -1336,6 +1766,14 @@ static int sctp_cmd_interpreter(sctp_event_t event_type,
 			asoc->init_last_sent_to = t;
 			chunk->transport = t;
 			t->init_sent_count++;
+			chunk = cmd->obj.chunk;
+			t = sctp_assoc_choose_alter_transport(asoc,
+						asoc->init_last_sent_to);
+			asoc->init_last_sent_to = t;
+			chunk->transport = t;
+			t->init_sent_count++;
+			/* Set the new transport as primary */
+			sctp_assoc_set_primary(asoc, t);
 			break;
 
 		case SCTP_CMD_INIT_RESTART:
@@ -1365,6 +1803,9 @@ static int sctp_cmd_interpreter(sctp_event_t event_type,
 					asoc->init_cycle,
 					asoc->timeouts[SCTP_EVENT_TIMEOUT_T1_INIT]);
 			}
+			sctp_cmd_t1_timer_update(asoc,
+						SCTP_EVENT_TIMEOUT_T1_INIT,
+						"INIT");
 
 			sctp_add_cmd_sf(commands, SCTP_CMD_TIMER_RESTART,
 					SCTP_TO(SCTP_EVENT_TIMEOUT_T1_INIT));
@@ -1391,6 +1832,9 @@ static int sctp_cmd_interpreter(sctp_event_t event_type,
 				" timeout: %ld\n",
 				asoc->init_err_counter,
 				asoc->timeouts[SCTP_EVENT_TIMEOUT_T1_COOKIE]);
+			sctp_cmd_t1_timer_update(asoc,
+						SCTP_EVENT_TIMEOUT_T1_COOKIE,
+						"COOKIE");
 
 			/* If we've sent any data bundled with
 			 * COOKIE-ECHO we need to resend.
@@ -1422,6 +1866,10 @@ static int sctp_cmd_interpreter(sctp_event_t event_type,
 		case SCTP_CMD_INIT_COUNTER_RESET:
 			asoc->init_err_counter = 0;
 			asoc->init_cycle = 0;
+			list_for_each_entry(t, &asoc->peer.transport_addr_list,
+					    transports) {
+				t->init_sent_count = 0;
+			}
 			break;
 
 		case SCTP_CMD_REPORT_DUP:
@@ -1431,6 +1879,7 @@ static int sctp_cmd_interpreter(sctp_event_t event_type,
 
 		case SCTP_CMD_REPORT_BAD_TAG:
 			SCTP_DEBUG_PRINTK("vtag mismatch!\n");
+			pr_debug("%s: vtag mismatch!\n", __func__);
 			break;
 
 		case SCTP_CMD_STRIKE:
@@ -1441,6 +1890,20 @@ static int sctp_cmd_interpreter(sctp_event_t event_type,
 		case SCTP_CMD_TRANSPORT_RESET:
 			t = cmd->obj.transport;
 			sctp_cmd_transport_reset(commands, asoc, t);
+			sctp_do_8_2_transport_strike(commands, asoc,
+						    cmd->obj.transport, 0);
+			break;
+
+		case SCTP_CMD_TRANSPORT_IDLE:
+			t = cmd->obj.transport;
+			sctp_transport_lower_cwnd(t, SCTP_LOWER_CWND_INACTIVE);
+			break;
+
+		case SCTP_CMD_TRANSPORT_HB_SENT:
+			t = cmd->obj.transport;
+			sctp_do_8_2_transport_strike(commands, asoc,
+						     t, 1);
+			t->hb_sent = 1;
 			break;
 
 		case SCTP_CMD_TRANSPORT_ON:
@@ -1473,6 +1936,13 @@ static int sctp_cmd_interpreter(sctp_event_t event_type,
 			sackh.num_dup_tsns = 0;
 			sctp_add_cmd_sf(commands, SCTP_CMD_PROCESS_SACK,
 					SCTP_SACKH(&sackh));
+			sackh.a_rwnd = asoc->peer.rwnd +
+					asoc->outqueue.outstanding_bytes;
+			sackh.num_gap_ack_blocks = 0;
+			sackh.num_dup_tsns = 0;
+			chunk->subh.sack_hdr = &sackh;
+			sctp_add_cmd_sf(commands, SCTP_CMD_PROCESS_SACK,
+					SCTP_CHUNK(chunk));
 			break;
 
 		case SCTP_CMD_DISCARD_PACKET:
@@ -1499,11 +1969,17 @@ static int sctp_cmd_interpreter(sctp_event_t event_type,
 
 		case SCTP_CMD_RENEGE:
 			sctp_ulpq_renege(&asoc->ulpq, cmd->obj.ptr,
+			sctp_ulpq_partial_delivery(&asoc->ulpq, GFP_ATOMIC);
+			break;
+
+		case SCTP_CMD_RENEGE:
+			sctp_ulpq_renege(&asoc->ulpq, cmd->obj.chunk,
 					 GFP_ATOMIC);
 			break;
 
 		case SCTP_CMD_SETUP_T4:
 			sctp_cmd_setup_t4(commands, asoc, cmd->obj.ptr);
+			sctp_cmd_setup_t4(commands, asoc, cmd->obj.chunk);
 			break;
 
 		case SCTP_CMD_PROCESS_OPERR:
@@ -1547,14 +2023,41 @@ static int sctp_cmd_interpreter(sctp_event_t event_type,
 		default:
 			printk(KERN_WARNING "Impossible command: %u, %p\n",
 			       cmd->verb, cmd->obj.ptr);
+		case SCTP_CMD_SEND_MSG:
+			if (!asoc->outqueue.cork) {
+				sctp_outq_cork(&asoc->outqueue);
+				local_cork = 1;
+			}
+			error = sctp_cmd_send_msg(asoc, cmd->obj.msg);
+			break;
+		case SCTP_CMD_SEND_NEXT_ASCONF:
+			sctp_cmd_send_asconf(asoc);
+			break;
+		case SCTP_CMD_PURGE_ASCONF_QUEUE:
+			sctp_asconf_queue_teardown(asoc);
+			break;
+
+		case SCTP_CMD_SET_ASOC:
+			asoc = cmd->obj.asoc;
+			break;
+
+		default:
+			pr_warn("Impossible command: %u\n",
+				cmd->verb);
 			break;
 		}
 
-		if (error)
+		if (error) {
+			cmd = sctp_next_cmd(commands);
+			while (cmd) {
+				if (cmd->verb == SCTP_CMD_REPLY)
+					sctp_chunk_free(cmd->obj.chunk);
+				cmd = sctp_next_cmd(commands);
+			}
 			break;
+		}
 	}
 
-out:
 	/* If this is in response to a received chunk, wait until
 	 * we are done with the packet to open the queue so that we don't
 	 * send multiple packets in response to a single request.
@@ -1564,9 +2067,9 @@ out:
 			sctp_outq_uncork(&asoc->outqueue);
 	} else if (local_cork)
 			sctp_outq_uncork(&asoc->outqueue);
+			error = sctp_outq_uncork(&asoc->outqueue);
+	} else if (local_cork)
+		error = sctp_outq_uncork(&asoc->outqueue);
 	return error;
-nomem:
-	error = -ENOMEM;
-	goto out;
 }
 

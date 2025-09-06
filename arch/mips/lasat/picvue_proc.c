@@ -4,12 +4,14 @@
  * Brian Murphy <brian.murphy@eicon.com>
  *
  */
+#include <linux/bug.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/errno.h>
 
 #include <linux/proc_fs.h>
+#include <linux/seq_file.h>
 #include <linux/interrupt.h>
 
 #include <linux/timer.h>
@@ -44,6 +46,9 @@ static int pvc_proc_read_line(char *page, char **start,
 {
 	char *origpage = page;
 	int lineno = *(int *)data;
+static int pvc_line_proc_show(struct seq_file *m, void *v)
+{
+	int lineno = *(int *)m->private;
 
 	if (lineno < 0 || lineno > PVC_NLINES) {
 		printk(KERN_WARNING "proc_read_line: invalid lineno %d\n", lineno);
@@ -78,6 +83,37 @@ static int pvc_proc_write_line(struct file *file, const char *buffer,
 	mutex_lock(&pvc_mutex);
 	strncpy(pvc_lines[lineno], buffer, count);
 	pvc_lines[lineno][count] = '\0';
+	seq_printf(m, "%s\n", pvc_lines[lineno]);
+	mutex_unlock(&pvc_mutex);
+
+	return 0;
+}
+
+static int pvc_line_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, pvc_line_proc_show, PDE_DATA(inode));
+}
+
+static ssize_t pvc_line_proc_write(struct file *file, const char __user *buf,
+				   size_t count, loff_t *pos)
+{
+	int lineno = *(int *)PDE_DATA(file_inode(file));
+	char kbuf[PVC_LINELEN];
+	size_t len;
+
+	BUG_ON(lineno < 0 || lineno > PVC_NLINES);
+
+	len = min(count, sizeof(kbuf) - 1);
+	if (copy_from_user(kbuf, buf, len))
+		return -EFAULT;
+	kbuf[len] = '\0';
+
+	if (len > 0 && kbuf[len - 1] == '\n')
+		len--;
+
+	mutex_lock(&pvc_mutex);
+	strncpy(pvc_lines[lineno], kbuf, len);
+	pvc_lines[lineno][len] = '\0';
 	mutex_unlock(&pvc_mutex);
 
 	tasklet_schedule(&pvc_display_tasklet);
@@ -90,6 +126,31 @@ static int pvc_proc_write_scroll(struct file *file, const char *buffer,
 {
 	int origcount = count;
 	int cmd = simple_strtol(buffer, NULL, 10);
+	return count;
+}
+
+static const struct file_operations pvc_line_proc_fops = {
+	.owner		= THIS_MODULE,
+	.open		= pvc_line_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+	.write		= pvc_line_proc_write,
+};
+
+static ssize_t pvc_scroll_proc_write(struct file *file, const char __user *buf,
+				     size_t count, loff_t *pos)
+{
+	char kbuf[42];
+	size_t len;
+	int cmd;
+
+	len = min(count, sizeof(kbuf) - 1);
+	if (copy_from_user(kbuf, buf, len))
+		return -EFAULT;
+	kbuf[len] = '\0';
+
+	cmd = simple_strtol(kbuf, NULL, 10);
 
 	mutex_lock(&pvc_mutex);
 	if (scroll_interval != 0)
@@ -126,6 +187,31 @@ static int pvc_proc_read_scroll(char *page, char **start,
 	return page - origpage;
 }
 
+	return count;
+}
+
+static int pvc_scroll_proc_show(struct seq_file *m, void *v)
+{
+	mutex_lock(&pvc_mutex);
+	seq_printf(m, "%d\n", scroll_dir * scroll_interval);
+	mutex_unlock(&pvc_mutex);
+
+	return 0;
+}
+
+static int pvc_scroll_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, pvc_scroll_proc_show, NULL);
+}
+
+static const struct file_operations pvc_scroll_proc_fops = {
+	.owner		= THIS_MODULE,
+	.open		= pvc_scroll_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+	.write		= pvc_scroll_proc_write,
+};
 
 void pvc_proc_timerfunc(unsigned long data)
 {
@@ -147,6 +233,7 @@ static void pvc_proc_cleanup(void)
 	remove_proc_entry(DISPLAY_DIR_NAME, NULL);
 
 	del_timer(&timer);
+	del_timer_sync(&timer);
 }
 
 static int __init pvc_proc_init(void)
@@ -178,6 +265,16 @@ static int __init pvc_proc_init(void)
 
 	proc_entry->write_proc = pvc_proc_write_scroll;
 	proc_entry->read_proc = pvc_proc_read_scroll;
+
+		proc_entry = proc_create_data(pvc_linename[i], 0644, pvc_display_dir,
+					&pvc_line_proc_fops, &pvc_linedata[i]);
+		if (proc_entry == NULL)
+			goto error;
+	}
+	proc_entry = proc_create("scroll", 0644, pvc_display_dir,
+				 &pvc_scroll_proc_fops);
+	if (proc_entry == NULL)
+		goto error;
 
 	init_timer(&timer);
 	timer.function = pvc_proc_timerfunc;

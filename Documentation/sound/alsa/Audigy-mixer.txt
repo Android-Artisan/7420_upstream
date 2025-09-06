@@ -1,6 +1,5 @@
 
 		Sound Blaster Audigy mixer / default DSP code
-		===========================================
 
 This is based on SB-Live-mixer.txt.
 

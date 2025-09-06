@@ -11,6 +11,8 @@
 			__u8 raw[size];		\
 		} __attribute__((__packed__));	\
 	} __attribute__((__packed__))
+		} __packed;	\
+	} __packed
 
 /* struct b43legacy_plcp_hdr4 */
 _b43legacy_declare_plcp_hdr(4);
@@ -40,6 +42,7 @@ struct b43legacy_txhdr_fw3 {
 	__u8 rts_frame[18];			/* The RTS frame (if used) */
 	struct b43legacy_plcp_hdr6 plcp;
 } __attribute__((__packed__));
+} __packed;
 
 /* MAC TX control */
 #define B43legacy_TX4_MAC_KEYIDX	0x0FF00000 /* Security key index */
@@ -68,6 +71,9 @@ struct b43legacy_txhdr_fw3 {
 
 /* PHY TX control word */
 #define B43legacy_TX4_PHY_OFDM		0x0001 /* Data frame rate type */
+#define B43legacy_TX4_PHY_ENC		0x0003 /* Data frame encoding */
+#define B43legacy_TX4_PHY_ENC_CCK	0x0000 /* CCK */
+#define B43legacy_TX4_PHY_ENC_OFDM	0x0001 /* Data frame rate type */
 #define B43legacy_TX4_PHY_SHORTPRMBL	0x0010 /* Use short preamble */
 #define B43legacy_TX4_PHY_ANT		0x03C0 /* Antenna selection */
 #define  B43legacy_TX4_PHY_ANT0		0x0000 /* Use antenna 0 */
@@ -81,6 +87,7 @@ int b43legacy_generate_txhdr(struct b43legacy_wldev *dev,
 			      const unsigned char *fragment_data,
 			      unsigned int fragment_len,
 			      const struct ieee80211_tx_info *info,
+			      struct ieee80211_tx_info *info,
 			      u16 cookie);
 
 
@@ -122,6 +129,7 @@ struct b43legacy_hwtxstatus {
 	u8 phy_stat;
 	PAD_BYTES(1);
 } __attribute__((__packed__));
+} __packed;
 
 
 /* Receive header for v3 firmware. */
@@ -137,6 +145,7 @@ struct b43legacy_rxhdr_fw3 {
 	__le16 mac_time;
 	__le16 channel;
 } __attribute__((__packed__));
+} __packed;
 
 
 /* PHY RX Status 0 */

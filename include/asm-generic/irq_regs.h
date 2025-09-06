@@ -23,6 +23,7 @@ DECLARE_PER_CPU(struct pt_regs *, __irq_regs);
 static inline struct pt_regs *get_irq_regs(void)
 {
 	return __get_cpu_var(__irq_regs);
+	return __this_cpu_read(__irq_regs);
 }
 
 static inline struct pt_regs *set_irq_regs(struct pt_regs *new_regs)
@@ -31,6 +32,10 @@ static inline struct pt_regs *set_irq_regs(struct pt_regs *new_regs)
 
 	old_regs = *pp_regs;
 	*pp_regs = new_regs;
+	struct pt_regs *old_regs;
+
+	old_regs = __this_cpu_read(__irq_regs);
+	__this_cpu_write(__irq_regs, new_regs);
 	return old_regs;
 }
 

@@ -11,6 +11,7 @@
 
 #include <linux/mm.h>
 #include <linux/proc_fs.h>
+#include <linux/kcore.h>
 #include <linux/user.h>
 #include <linux/capability.h>
 #include <linux/elf.h>
@@ -20,6 +21,20 @@
 #include <linux/init.h>
 #include <asm/uaccess.h>
 #include <asm/io.h>
+#include <linux/notifier.h>
+#include <linux/vmalloc.h>
+#include <linux/highmem.h>
+#include <linux/printk.h>
+#include <linux/bootmem.h>
+#include <linux/init.h>
+#include <linux/slab.h>
+#include <asm/uaccess.h>
+#include <asm/io.h>
+#include <linux/list.h>
+#include <linux/ioport.h>
+#include <linux/memory.h>
+#include <asm/sections.h>
+#include "internal.h"
 
 #define CORE_STR "CORE"
 
@@ -38,6 +53,8 @@ const struct file_operations proc_kcore_operations = {
 	.read		= read_kcore,
 	.open		= open_kcore,
 };
+static struct proc_dir_entry *proc_root_kcore;
+
 
 #ifndef kc_vaddr_to_offset
 #define	kc_vaddr_to_offset(v) ((v) - PAGE_OFFSET)
@@ -67,6 +84,19 @@ kclist_add(struct kcore_list *new, void *addr, size_t size)
 	write_lock(&kclist_lock);
 	new->next = kclist;
 	kclist = new;
+static LIST_HEAD(kclist_head);
+static DEFINE_RWLOCK(kclist_lock);
+static int kcore_need_update = 1;
+
+void
+kclist_add(struct kcore_list *new, void *addr, size_t size, int type)
+{
+	new->addr = (unsigned long)addr;
+	new->size = size;
+	new->type = type;
+
+	write_lock(&kclist_lock);
+	list_add_tail(&new->list, &kclist_head);
 	write_unlock(&kclist_lock);
 }
 
@@ -79,6 +109,7 @@ static size_t get_kcore_size(int *nphdr, size_t *elf_buflen)
 	size = 0;
 
 	for (m=kclist; m; m=m->next) {
+	list_for_each_entry(m, &kclist_head, list) {
 		try = kc_vaddr_to_offset((size_t)m->addr + m->size);
 		if (try > size)
 			size = try;
@@ -91,10 +122,183 @@ static size_t get_kcore_size(int *nphdr, size_t *elf_buflen)
 			roundup(sizeof(struct elf_prstatus), 4) +
 			roundup(sizeof(struct elf_prpsinfo), 4) +
 			roundup(sizeof(struct task_struct), 4);
+			roundup(arch_task_struct_size, 4);
 	*elf_buflen = PAGE_ALIGN(*elf_buflen);
 	return size + *elf_buflen;
 }
 
+static void free_kclist_ents(struct list_head *head)
+{
+	struct kcore_list *tmp, *pos;
+
+	list_for_each_entry_safe(pos, tmp, head, list) {
+		list_del(&pos->list);
+		kfree(pos);
+	}
+}
+/*
+ * Replace all KCORE_RAM/KCORE_VMEMMAP information with passed list.
+ */
+static void __kcore_update_ram(struct list_head *list)
+{
+	int nphdr;
+	size_t size;
+	struct kcore_list *tmp, *pos;
+	LIST_HEAD(garbage);
+
+	write_lock(&kclist_lock);
+	if (kcore_need_update) {
+		list_for_each_entry_safe(pos, tmp, &kclist_head, list) {
+			if (pos->type == KCORE_RAM
+				|| pos->type == KCORE_VMEMMAP)
+				list_move(&pos->list, &garbage);
+		}
+		list_splice_tail(list, &kclist_head);
+	} else
+		list_splice(list, &garbage);
+	kcore_need_update = 0;
+	proc_root_kcore->size = get_kcore_size(&nphdr, &size);
+	write_unlock(&kclist_lock);
+
+	free_kclist_ents(&garbage);
+}
+
+
+#ifdef CONFIG_HIGHMEM
+/*
+ * If no highmem, we can assume [0...max_low_pfn) continuous range of memory
+ * because memory hole is not as big as !HIGHMEM case.
+ * (HIGHMEM is special because part of memory is _invisible_ from the kernel.)
+ */
+static int kcore_update_ram(void)
+{
+	LIST_HEAD(head);
+	struct kcore_list *ent;
+	int ret = 0;
+
+	ent = kmalloc(sizeof(*ent), GFP_KERNEL);
+	if (!ent)
+		return -ENOMEM;
+	ent->addr = (unsigned long)__va(0);
+	ent->size = max_low_pfn << PAGE_SHIFT;
+	ent->type = KCORE_RAM;
+	list_add(&ent->list, &head);
+	__kcore_update_ram(&head);
+	return ret;
+}
+
+#else /* !CONFIG_HIGHMEM */
+
+#ifdef CONFIG_SPARSEMEM_VMEMMAP
+/* calculate vmemmap's address from given system ram pfn and register it */
+static int
+get_sparsemem_vmemmap_info(struct kcore_list *ent, struct list_head *head)
+{
+	unsigned long pfn = __pa(ent->addr) >> PAGE_SHIFT;
+	unsigned long nr_pages = ent->size >> PAGE_SHIFT;
+	unsigned long start, end;
+	struct kcore_list *vmm, *tmp;
+
+
+	start = ((unsigned long)pfn_to_page(pfn)) & PAGE_MASK;
+	end = ((unsigned long)pfn_to_page(pfn + nr_pages)) - 1;
+	end = PAGE_ALIGN(end);
+	/* overlap check (because we have to align page */
+	list_for_each_entry(tmp, head, list) {
+		if (tmp->type != KCORE_VMEMMAP)
+			continue;
+		if (start < tmp->addr + tmp->size)
+			if (end > tmp->addr)
+				end = tmp->addr;
+	}
+	if (start < end) {
+		vmm = kmalloc(sizeof(*vmm), GFP_KERNEL);
+		if (!vmm)
+			return 0;
+		vmm->addr = start;
+		vmm->size = end - start;
+		vmm->type = KCORE_VMEMMAP;
+		list_add_tail(&vmm->list, head);
+	}
+	return 1;
+
+}
+#else
+static int
+get_sparsemem_vmemmap_info(struct kcore_list *ent, struct list_head *head)
+{
+	return 1;
+}
+
+#endif
+
+static int
+kclist_add_private(unsigned long pfn, unsigned long nr_pages, void *arg)
+{
+	struct list_head *head = (struct list_head *)arg;
+	struct kcore_list *ent;
+
+	ent = kmalloc(sizeof(*ent), GFP_KERNEL);
+	if (!ent)
+		return -ENOMEM;
+	ent->addr = (unsigned long)__va((pfn << PAGE_SHIFT));
+	ent->size = nr_pages << PAGE_SHIFT;
+
+	/* Sanity check: Can happen in 32bit arch...maybe */
+	if (ent->addr < (unsigned long) __va(0))
+		goto free_out;
+
+	/* cut not-mapped area. ....from ppc-32 code. */
+	if (ULONG_MAX - ent->addr < ent->size)
+		ent->size = ULONG_MAX - ent->addr;
+
+	/* cut when vmalloc() area is higher than direct-map area */
+	if (VMALLOC_START > (unsigned long)__va(0)) {
+		if (ent->addr > VMALLOC_START)
+			goto free_out;
+		if (VMALLOC_START - ent->addr < ent->size)
+			ent->size = VMALLOC_START - ent->addr;
+	}
+
+	ent->type = KCORE_RAM;
+	list_add_tail(&ent->list, head);
+
+	if (!get_sparsemem_vmemmap_info(ent, head)) {
+		list_del(&ent->list);
+		goto free_out;
+	}
+
+	return 0;
+free_out:
+	kfree(ent);
+	return 1;
+}
+
+static int kcore_update_ram(void)
+{
+	int nid, ret;
+	unsigned long end_pfn;
+	LIST_HEAD(head);
+
+	/* Not inialized....update now */
+	/* find out "max pfn" */
+	end_pfn = 0;
+	for_each_node_state(nid, N_MEMORY) {
+		unsigned long node_end;
+		node_end = node_end_pfn(nid);
+		if (end_pfn < node_end)
+			end_pfn = node_end;
+	}
+	/* scan 0 to max_pfn */
+	ret = walk_system_ram_range(0, end_pfn, &head, kclist_add_private);
+	if (ret) {
+		free_kclist_ents(&head);
+		return -ENOMEM;
+	}
+	__kcore_update_ram(&head);
+	return ret;
+}
+#endif /* CONFIG_HIGHMEM */
 
 /*****************************************************************************/
 /*
@@ -191,6 +395,7 @@ static void elf_kcore_store_hdr(char *bufp, int nphdr, int dataoff)
 
 	/* setup ELF PT_LOAD program header for every area */
 	for (m=kclist; m; m=m->next) {
+	list_for_each_entry(m, &kclist_head, list) {
 		phdr = (struct elf_phdr *) bufp;
 		bufp += sizeof(struct elf_phdr);
 		offset += sizeof(struct elf_phdr);
@@ -234,6 +439,7 @@ static void elf_kcore_store_hdr(char *bufp, int nphdr, int dataoff)
 
 	strcpy(prpsinfo.pr_fname, "vmlinux");
 	strncpy(prpsinfo.pr_psargs, saved_command_line, ELF_PRARGSZ);
+	strlcpy(prpsinfo.pr_psargs, saved_command_line, sizeof(prpsinfo.pr_psargs));
 
 	nhdr->p_filesz	+= notesize(&notes[1]);
 	bufp = storenote(&notes[1], bufp);
@@ -242,6 +448,7 @@ static void elf_kcore_store_hdr(char *bufp, int nphdr, int dataoff)
 	notes[2].name	= CORE_STR;
 	notes[2].type	= NT_TASKSTRUCT;
 	notes[2].datasz	= sizeof(struct task_struct);
+	notes[2].datasz	= arch_task_struct_size;
 	notes[2].data	= current;
 
 	nhdr->p_filesz	+= notesize(&notes[2]);
@@ -264,6 +471,8 @@ read_kcore(struct file *file, char __user *buffer, size_t buflen, loff_t *fpos)
 
 	read_lock(&kclist_lock);
 	proc_root_kcore->size = size = get_kcore_size(&nphdr, &elf_buflen);
+	size = get_kcore_size(&nphdr, &elf_buflen);
+
 	if (buflen == 0 || *fpos >= size) {
 		read_unlock(&kclist_lock);
 		return 0;
@@ -316,6 +525,7 @@ read_kcore(struct file *file, char __user *buffer, size_t buflen, loff_t *fpos)
 
 		read_lock(&kclist_lock);
 		for (m=kclist; m; m=m->next) {
+		list_for_each_entry(m, &kclist_head, list) {
 			if (start >= m->addr && start < (m->addr+m->size))
 				break;
 		}
@@ -329,6 +539,11 @@ read_kcore(struct file *file, char __user *buffer, size_t buflen, loff_t *fpos)
 			struct vm_struct *m;
 			unsigned long curstart = start;
 			unsigned long cursize = tsz;
+		if (&m->list == &kclist_head) {
+			if (clear_user(buffer, tsz))
+				return -EFAULT;
+		} else if (is_vmalloc_or_module_addr((void *)start)) {
+			char * elf_buf;
 
 			elf_buf = kzalloc(tsz, GFP_KERNEL);
 			if (!elf_buf)
@@ -363,6 +578,8 @@ read_kcore(struct file *file, char __user *buffer, size_t buflen, loff_t *fpos)
 					(char *)vmstart, vmsize);
 			}
 			read_unlock(&vmlist_lock);
+			vread(elf_buf, (char *)start, tsz);
+			/* we have to zero-fill user buffer even if no read */
 			if (copy_to_user(buffer, elf_buf, tsz)) {
 				kfree(elf_buf);
 				return -EFAULT;
@@ -375,6 +592,7 @@ read_kcore(struct file *file, char __user *buffer, size_t buflen, loff_t *fpos)
 				n = copy_to_user(buffer, (char *)start, tsz);
 				/*
 				 * We cannot distingush between fault on source
+				 * We cannot distinguish between fault on source
 				 * and fault on destination. When this happens
 				 * we clear too and hope it will trigger the
 				 * EFAULT again.
@@ -399,3 +617,102 @@ read_kcore(struct file *file, char __user *buffer, size_t buflen, loff_t *fpos)
 
 	return acc;
 }
+
+
+static int open_kcore(struct inode *inode, struct file *filp)
+{
+	if (!capable(CAP_SYS_RAWIO))
+		return -EPERM;
+	if (kcore_need_update)
+		kcore_update_ram();
+	if (i_size_read(inode) != proc_root_kcore->size) {
+		mutex_lock(&inode->i_mutex);
+		i_size_write(inode, proc_root_kcore->size);
+		mutex_unlock(&inode->i_mutex);
+	}
+	return 0;
+}
+
+
+static const struct file_operations proc_kcore_operations = {
+	.read		= read_kcore,
+	.open		= open_kcore,
+	.llseek		= default_llseek,
+};
+
+/* just remember that we have to update kcore */
+static int __meminit kcore_callback(struct notifier_block *self,
+				    unsigned long action, void *arg)
+{
+	switch (action) {
+	case MEM_ONLINE:
+	case MEM_OFFLINE:
+		write_lock(&kclist_lock);
+		kcore_need_update = 1;
+		write_unlock(&kclist_lock);
+	}
+	return NOTIFY_OK;
+}
+
+static struct notifier_block kcore_callback_nb __meminitdata = {
+	.notifier_call = kcore_callback,
+	.priority = 0,
+};
+
+static struct kcore_list kcore_vmalloc;
+
+#ifdef CONFIG_ARCH_PROC_KCORE_TEXT
+static struct kcore_list kcore_text;
+/*
+ * If defined, special segment is used for mapping kernel text instead of
+ * direct-map area. We need to create special TEXT section.
+ */
+static void __init proc_kcore_text_init(void)
+{
+	kclist_add(&kcore_text, _text, _end - _text, KCORE_TEXT);
+}
+#else
+static void __init proc_kcore_text_init(void)
+{
+}
+#endif
+
+#if defined(CONFIG_MODULES) && defined(MODULES_VADDR)
+/*
+ * MODULES_VADDR has no intersection with VMALLOC_ADDR.
+ */
+struct kcore_list kcore_modules;
+static void __init add_modules_range(void)
+{
+	if (MODULES_VADDR != VMALLOC_START && MODULES_END != VMALLOC_END) {
+		kclist_add(&kcore_modules, (void *)MODULES_VADDR,
+			MODULES_END - MODULES_VADDR, KCORE_VMALLOC);
+	}
+}
+#else
+static void __init add_modules_range(void)
+{
+}
+#endif
+
+static int __init proc_kcore_init(void)
+{
+	proc_root_kcore = proc_create("kcore", S_IRUSR, NULL,
+				      &proc_kcore_operations);
+	if (!proc_root_kcore) {
+		pr_err("couldn't create /proc/kcore\n");
+		return 0; /* Always returns 0. */
+	}
+	/* Store text area if it's special */
+	proc_kcore_text_init();
+	/* Store vmalloc area */
+	kclist_add(&kcore_vmalloc, (void *)VMALLOC_START,
+		VMALLOC_END - VMALLOC_START, KCORE_VMALLOC);
+	add_modules_range();
+	/* Store direct-map area from physical memory map */
+	kcore_update_ram();
+	register_hotmemory_notifier(&kcore_callback_nb);
+
+	return 0;
+}
+fs_initcall(proc_kcore_init);

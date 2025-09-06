@@ -6,6 +6,18 @@ config FRV
 	bool
 	default y
 	select HAVE_IDE
+	select HAVE_ARCH_TRACEHOOK
+	select HAVE_PERF_EVENTS
+	select HAVE_UID16
+	select VIRT_TO_BUS
+	select GENERIC_IRQ_SHOW
+	select HAVE_DEBUG_BUGVERBOSE
+	select ARCH_HAVE_NMI_SAFE_CMPXCHG
+	select GENERIC_CPU_DEVICES
+	select ARCH_WANT_IPC_PARSE_VERSION
+	select OLD_SIGSUSPEND3
+	select OLD_SIGACTION
+	select HAVE_DEBUG_STACKOVERFLOW
 
 config ZONE_DMA
 	bool
@@ -65,6 +77,10 @@ config HZ
 mainmenu "Fujitsu FR-V Kernel Configuration"
 
 source "init/Kconfig"
+
+source "init/Kconfig"
+
+source "kernel/Kconfig.freezer"
 
 
 menu "Fujitsu FR-V system setup"
@@ -331,6 +347,7 @@ config PCI
 	bool "Use PCI"
 	depends on MB93090_MB00
 	default y
+	select GENERIC_PCI_IOMAP
 	help
 	  Some FR-V systems (such as the MB93090-MB00 VDK) have PCI
 	  onboard. If you have one of these boards and you wish to use the PCI

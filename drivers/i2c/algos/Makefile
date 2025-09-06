@@ -10,3 +10,5 @@ obj-$(CONFIG_I2C_ALGO_SGI)	+= i2c-algo-sgi.o
 ifeq ($(CONFIG_I2C_DEBUG_ALGO),y)
 EXTRA_CFLAGS += -DDEBUG
 endif
+
+ccflags-$(CONFIG_I2C_DEBUG_ALGO) := -DDEBUG

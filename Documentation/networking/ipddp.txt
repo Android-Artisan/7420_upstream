@@ -21,7 +21,6 @@ kernel AppleTalk layer and drivers are available.
 Each mode requires its own user space software.
 
 Compiling AppleTalk-IP Decapsulation/Encapsulation
-=================================================
 
 AppleTalk-IP decapsulation needs to be compiled into your kernel. You
 will need to turn on AppleTalk-IP driver support. Then you will need to
@@ -34,7 +33,6 @@ ipddp_mode=1 for AppleTalk-IP encapsulation and ipddp_mode=2 for
 AppleTalk-IP to IP decapsulation.
 
 Basic instructions for user space tools
-=======================================
 
 To enable AppleTalk-IP decapsulation/encapsulation you will need the 
 proper tools. You can get the tools for decapsulation from

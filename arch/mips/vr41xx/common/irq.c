@@ -2,6 +2,7 @@
  *  Interrupt handing routines for NEC VR4100 series.
  *
  *  Copyright (C) 2005-2007  Yoichi Yuasa <yoichi_yuasa@tripeaks.co.jp>
+ *  Copyright (C) 2005-2007  Yoichi Yuasa <yuasa@linux-mips.org>
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -22,6 +23,9 @@
 
 #include <asm/irq_cpu.h>
 #include <asm/system.h>
+#include <linux/irq.h>
+
+#include <asm/irq_cpu.h>
 #include <asm/vr41xx/irq.h>
 
 typedef struct irq_cascade {
@@ -34,6 +38,8 @@ static struct irqaction cascade_irqaction = {
 	.handler	= no_action,
 	.mask		= CPU_MASK_NONE,
 	.name		= "cascade",
+	.name		= "cascade",
+	.flags		= IRQF_NO_THREAD,
 };
 
 int cascade_irq(unsigned int irq, int (*get_irq)(unsigned int))
@@ -79,6 +85,16 @@ static void irq_dispatch(unsigned int irq)
 		else {
 			desc->chip->mask(source_irq);
 			desc->chip->ack(source_irq);
+		struct irq_desc *desc = irq_to_desc(irq);
+		struct irq_data *idata = irq_desc_get_irq_data(desc);
+		struct irq_chip *chip = irq_desc_get_chip(desc);
+		int ret;
+
+		if (chip->irq_mask_ack)
+			chip->irq_mask_ack(idata);
+		else {
+			chip->irq_mask(idata);
+			chip->irq_ack(idata);
 		}
 		ret = cascade->get_irq(irq);
 		irq = ret;
@@ -88,6 +104,8 @@ static void irq_dispatch(unsigned int irq)
 			irq_dispatch(irq);
 		if (!(desc->status & IRQ_DISABLED) && desc->chip->unmask)
 			desc->chip->unmask(source_irq);
+		if (!irqd_irq_disabled(idata) && chip->irq_unmask)
+			chip->irq_unmask(idata);
 	} else
 		do_IRQ(irq);
 }

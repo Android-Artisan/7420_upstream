@@ -30,6 +30,9 @@ struct context {
 	struct mls_range range;
 	char *str;	/* string representation if context cannot be mapped. */
 	u32 len;        /* length of string in bytes */
+	u32 len;        /* length of string in bytes */
+	struct mls_range range;
+	char *str;	/* string representation if context cannot be mapped. */
 };
 
 static inline void mls_context_init(struct context *c)
@@ -85,6 +88,28 @@ static inline int mls_context_cmp(struct context *c1, struct context *c2)
 	if (!selinux_mls_enabled)
 		return 1;
 
+/*
+ * Sets both levels in the MLS range of 'dst' to the high level of 'src'.
+ */
+static inline int mls_context_cpy_high(struct context *dst, struct context *src)
+{
+	int rc;
+
+	dst->range.level[0].sens = src->range.level[1].sens;
+	rc = ebitmap_cpy(&dst->range.level[0].cat, &src->range.level[1].cat);
+	if (rc)
+		goto out;
+
+	dst->range.level[1].sens = src->range.level[1].sens;
+	rc = ebitmap_cpy(&dst->range.level[1].cat, &src->range.level[1].cat);
+	if (rc)
+		ebitmap_destroy(&dst->range.level[0].cat);
+out:
+	return rc;
+}
+
+static inline int mls_context_cmp(struct context *c1, struct context *c2)
+{
 	return ((c1->range.level[0].sens == c2->range.level[0].sens) &&
 		ebitmap_cmp(&c1->range.level[0].cat, &c2->range.level[0].cat) &&
 		(c1->range.level[1].sens == c2->range.level[1].sens) &&

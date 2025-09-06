@@ -4,6 +4,11 @@
  * 
  * Copyright 1999 by Carsten Paeth <calle@calle.de>
  * 
+ *
+ * Module for AVM B1 ISA-card.
+ *
+ * Copyright 1999 by Carsten Paeth <calle@calle.de>
+ *
  * This software may be used and distributed according to the terms
  * of the GNU General Public License, incorporated herein by reference.
  *
@@ -81,6 +86,7 @@ static int b1isa_probe(struct pci_dev *pdev)
 	sprintf(card->name, "b1isa-%x", card->port);
 
 	if (   card->port != 0x150 && card->port != 0x250
+	if (card->port != 0x150 && card->port != 0x250
 	    && card->port != 0x300 && card->port != 0x340) {
 		printk(KERN_WARNING "b1isa: invalid port 0x%x.\n", card->port);
 		retval = -EINVAL;
@@ -122,6 +128,7 @@ static int b1isa_probe(struct pci_dev *pdev)
 	cinfo->capi_ctrl.reset_ctr     = b1_reset_ctr;
 	cinfo->capi_ctrl.procinfo      = b1isa_procinfo;
 	cinfo->capi_ctrl.ctr_read_proc = b1ctl_read_proc;
+	cinfo->capi_ctrl.proc_fops = &b1ctl_proc_fops;
 	strcpy(cinfo->capi_ctrl.name, card->name);
 
 	retval = attach_capi_ctr(&cinfo->capi_ctrl);
@@ -143,6 +150,13 @@ static int b1isa_probe(struct pci_dev *pdev)
  err_free:
 	b1_free_card(card);
  err:
+err_free_irq:
+	free_irq(card->irq, card);
+err_release_region:
+	release_region(card->port, AVMB1_PORTLEN);
+err_free:
+	b1_free_card(card);
+err:
 	return retval;
 }
 
@@ -207,6 +221,7 @@ static int __init b1isa_init(void)
 		strlcpy(rev, p + 2, 32);
 		if ((p = strchr(rev, '$')) != NULL && p > rev)
 		   *(p-1) = 0;
+			*(p - 1) = 0;
 	} else
 		strcpy(rev, "1.0");
 
@@ -237,6 +252,8 @@ static void __exit b1isa_exit(void)
 			break;
 
 		b1isa_remove(&isa_dev[i]);
+		if (isa_dev[i].resource[0].start)
+			b1isa_remove(&isa_dev[i]);
 	}
 	unregister_capi_driver(&capi_driver_b1isa);
 }

@@ -1,4 +1,3 @@
-# ==========================================================================
 # Building binaries on the host system
 # Binaries are used during the compilation of the kernel, for example
 # to preprocess a data file.
@@ -35,6 +34,8 @@ __hostprogs := $(sort $(hostprogs-y) $(hostprogs-m))
 # C code
 # Executables compiled from a single .c file
 host-csingle	:= $(foreach m,$(__hostprogs),$(if $($(m)-objs),,$(m)))
+host-csingle	:= $(foreach m,$(__hostprogs), \
+			$(if $($(m)-objs)$($(m)-cxxobjs),,$(m)))
 
 # C executables linked based on several .o files
 host-cmulti	:= $(foreach m,$(__hostprogs),\
@@ -45,6 +46,7 @@ host-cobjs	:= $(sort $(foreach m,$(__hostprogs),$($(m)-objs)))
 
 # C++ code
 # C++ executables compiled from at least on .cc file
+# C++ executables compiled from at least one .cc file
 # and zero or more .c files
 host-cxxmulti	:= $(foreach m,$(__hostprogs),$(if $($(m)-cxxobjs),$(m)))
 
@@ -71,6 +73,10 @@ host-objdirs += $(foreach f,$(host-cmulti),                  \
 host-objdirs += $(foreach f,$(host-cxxmulti),                  \
                     $(foreach m,$($(f)-cxxobjs),                \
                         $(if $(dir $(m)),$(dir $(m)))))
+# output directory for programs/.o files
+# hostprogs-y := tools/build may have been specified.
+# Retrieve also directory of .o files from prog-objs or prog-cxxobjs notation
+host-objdirs := $(dir $(__hostprogs) $(host-cobjs) $(host-cxxobjs))
 
 host-objdirs := $(strip $(sort $(filter-out ./,$(host-objdirs))))
 
@@ -125,6 +131,9 @@ quiet_cmd_host-cmulti	= HOSTLD  $@
 			  $(HOST_LOADLIBES) $(HOSTLOADLIBES_$(@F))
 $(host-cmulti): $(obj)/%: $(host-cobjs) $(host-cshlib) FORCE
 	$(call if_changed,host-cmulti)
+$(host-cmulti): FORCE
+	$(call if_changed,host-cmulti)
+$(call multi_depend, $(host-cmulti), , -objs)
 
 # Create .o file from a single .c file
 # host-cobjs -> .o
@@ -142,6 +151,9 @@ quiet_cmd_host-cxxmulti	= HOSTLD  $@
 			  $(HOST_LOADLIBES) $(HOSTLOADLIBES_$(@F))
 $(host-cxxmulti): $(obj)/%: $(host-cobjs) $(host-cxxobjs) $(host-cshlib) FORCE
 	$(call if_changed,host-cxxmulti)
+$(host-cxxmulti): FORCE
+	$(call if_changed,host-cxxmulti)
+$(call multi_depend, $(host-cxxmulti), , -objs -cxxobjs)
 
 # Create .o file from a single .cc (C++) file
 quiet_cmd_host-cxxobjs	= HOSTCXX $@
@@ -168,3 +180,5 @@ $(host-cshlib): $(obj)/%: $(host-cshobjs) FORCE
 targets += $(host-csingle)  $(host-cmulti) $(host-cobjs)\
 	   $(host-cxxmulti) $(host-cxxobjs) $(host-cshlib) $(host-cshobjs) 
 
+targets += $(host-csingle)  $(host-cmulti) $(host-cobjs)\
+	   $(host-cxxmulti) $(host-cxxobjs)

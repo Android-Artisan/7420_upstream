@@ -88,11 +88,24 @@ int hfs_cat_create(u32 cnid, struct inode *dir, struct qstr *str, struct inode *
 	int err;
 
 	dprint(DBG_CAT_MOD, "create_cat: %s,%u(%d)\n", str->name, cnid, inode->i_nlink);
+	hfs_dbg(CAT_MOD, "create_cat: %s,%u(%d)\n",
+		str->name, cnid, inode->i_nlink);
 	if (dir->i_size >= HFS_MAX_VALENCE)
 		return -ENOSPC;
 
 	sb = dir->i_sb;
 	hfs_find_init(HFS_SB(sb)->cat_tree, &fd);
+	err = hfs_find_init(HFS_SB(sb)->cat_tree, &fd);
+	if (err)
+		return err;
+
+	/*
+	 * Fail early and avoid ENOSPC during the btree operations. We may
+	 * have to split the root node at most once.
+	 */
+	err = hfs_bmap_reserve(fd.tree, 2 * fd.tree->depth);
+	if (err)
+		goto err2;
 
 	hfs_cat_build_key(sb, fd.search_key, cnid, NULL);
 	entry_size = hfs_cat_build_thread(sb, &entry, S_ISDIR(inode->i_mode) ?
@@ -167,6 +180,16 @@ int hfs_cat_keycmp(const btree_key *key1, const btree_key *key2)
 				    key2->cat.CName.name, key2->cat.CName.len);
 
 	return retval;
+	__be32 k1p, k2p;
+
+	k1p = key1->cat.ParID;
+	k2p = key2->cat.ParID;
+
+	if (k1p != k2p)
+		return be32_to_cpu(k1p) < be32_to_cpu(k2p) ? -1 : 1;
+
+	return hfs_strcmp(key1->cat.CName.name, key1->cat.CName.len,
+			  key2->cat.CName.name, key2->cat.CName.len);
 }
 
 /* Try to get a catalog entry for given catalog id */
@@ -185,11 +208,16 @@ int hfs_cat_find_brec(struct super_block *sb, u32 cnid,
 	type = rec.type;
 	if (type != HFS_CDR_THD && type != HFS_CDR_FTH) {
 		printk(KERN_ERR "hfs: found bad thread record in catalog\n");
+		pr_err("found bad thread record in catalog\n");
 		return -EIO;
 	}
 
 	fd->search_key->cat.ParID = rec.thread.ParID;
 	len = fd->search_key->cat.CName.len = rec.thread.CName.len;
+	if (len > HFS_NAMELEN) {
+		pr_err("bad catalog namelength\n");
+		return -EIO;
+	}
 	memcpy(fd->search_key->cat.CName.name, rec.thread.CName.name, len);
 	return hfs_brec_find(fd);
 }
@@ -211,6 +239,11 @@ int hfs_cat_delete(u32 cnid, struct inode *dir, struct qstr *str)
 	dprint(DBG_CAT_MOD, "delete_cat: %s,%u\n", str ? str->name : NULL, cnid);
 	sb = dir->i_sb;
 	hfs_find_init(HFS_SB(sb)->cat_tree, &fd);
+	hfs_dbg(CAT_MOD, "delete_cat: %s,%u\n", str ? str->name : NULL, cnid);
+	sb = dir->i_sb;
+	res = hfs_find_init(HFS_SB(sb)->cat_tree, &fd);
+	if (res)
+		return res;
 
 	hfs_cat_build_key(sb, fd.search_key, dir->i_ino, str);
 	res = hfs_brec_find(&fd);
@@ -278,13 +311,32 @@ int hfs_cat_move(u32 cnid, struct inode *src_dir, struct qstr *src_name,
 		dst_dir->i_ino, dst_name->name);
 	sb = src_dir->i_sb;
 	hfs_find_init(HFS_SB(sb)->cat_tree, &src_fd);
+	hfs_dbg(CAT_MOD, "rename_cat: %u - %lu,%s - %lu,%s\n",
+		cnid, src_dir->i_ino, src_name->name,
+		dst_dir->i_ino, dst_name->name);
+	sb = src_dir->i_sb;
+	err = hfs_find_init(HFS_SB(sb)->cat_tree, &src_fd);
+	if (err)
+		return err;
 	dst_fd = src_fd;
+
+	/*
+	 * Fail early and avoid ENOSPC during the btree operations. We may
+	 * have to split the root node at most once.
+	 */
+	err = hfs_bmap_reserve(src_fd.tree, 2 * src_fd.tree->depth);
+	if (err)
+		goto out;
 
 	/* find the old dir entry and read the data */
 	hfs_cat_build_key(sb, src_fd.search_key, src_dir->i_ino, src_name);
 	err = hfs_brec_find(&src_fd);
 	if (err)
 		goto out;
+	if (src_fd.entrylength > sizeof(entry) || src_fd.entrylength < 0) {
+		err = -EIO;
+		goto out;
+	}
 
 	hfs_bnode_read(src_fd.bnode, &entry, src_fd.entryoffset,
 			    src_fd.entrylength);

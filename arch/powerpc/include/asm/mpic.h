@@ -5,6 +5,8 @@
 #include <linux/irq.h>
 #include <linux/sysdev.h>
 #include <asm/dcr.h>
+#include <asm/dcr.h>
+#include <asm/msi_bitmap.h>
 
 /*
  * Global registers
@@ -21,6 +23,14 @@
 #define MPIC_GREG_FEATURE_1		0x00010
 #define MPIC_GREG_GLOBAL_CONF_0		0x00020
 #define		MPIC_GREG_GCONF_RESET			0x80000000
+/* On the FSL mpic implementations the Mode field is expand to be
+ * 2 bits wide:
+ *	0b00 = pass through (interrupts routed to IRQ0)
+ *	0b01 = Mixed mode
+ *	0b10 = reserved
+ *	0b11 = External proxy / coreint
+ */
+#define		MPIC_GREG_GCONF_COREINT			0x60000000
 #define		MPIC_GREG_GCONF_8259_PTHROU_DIS		0x20000000
 #define		MPIC_GREG_GCONF_NO_BIAS			0x10000000
 #define		MPIC_GREG_GCONF_BASE_MASK		0x000fffff
@@ -55,6 +65,7 @@
  */
 #define MPIC_TIMER_BASE			0x01100
 #define MPIC_TIMER_STRIDE		0x40
+#define MPIC_TIMER_GROUP_STRIDE		0x1000
 
 #define MPIC_TIMER_CURRENT_CNT		0x00000
 #define MPIC_TIMER_BASE_CNT		0x00010
@@ -102,9 +113,15 @@
 #define 	MPIC_VECPRI_SENSE_MASK			0x00400000
 #define MPIC_IRQ_DESTINATION		0x00010
 
+#define MPIC_FSL_BRR1			0x00000
+#define 	MPIC_FSL_BRR1_VER			0x0000ffff
+
 #define MPIC_MAX_IRQ_SOURCES	2048
 #define MPIC_MAX_CPUS		32
 #define MPIC_MAX_ISU		32
+
+#define MPIC_MAX_ERR      32
+#define MPIC_FSL_ERR_INT  16
 
 /*
  * Tsi108 implementation of MPIC has many differences from the original one
@@ -245,6 +262,11 @@ struct mpic
 {
 	/* The remapper for this MPIC */
 	struct irq_host		*irqhost;
+	/* The OpenFirmware dt node for this MPIC */
+	struct device_node *node;
+
+	/* The remapper for this MPIC */
+	struct irq_domain	*irqhost;
 
 	/* The "linux" controller struct */
 	struct irq_chip		hc_irq;
@@ -254,6 +276,8 @@ struct mpic
 #ifdef CONFIG_SMP
 	struct irq_chip		hc_ipi;
 #endif
+	struct irq_chip		hc_tm;
+	struct irq_chip		hc_err;
 	const char		*name;
 	/* Flags */
 	unsigned int		flags;
@@ -273,6 +297,14 @@ struct mpic
 	/* vector numbers used for internal sources (ipi/timers) */
 	unsigned int		ipi_vecs[4];
 	unsigned int		timer_vecs[4];
+	/* Number of sources */
+	unsigned int		num_sources;
+
+	/* vector numbers used for internal sources (ipi/timers) */
+	unsigned int		ipi_vecs[4];
+	unsigned int		timer_vecs[8];
+	/* vector numbers used for FSL MPIC error interrupts */
+	unsigned int		err_int_vecs[MPIC_MAX_ERR];
 
 	/* Spurious vector to program into unused sources */
 	unsigned int		spurious_vec;
@@ -281,16 +313,25 @@ struct mpic
 	/* The fixup table */
 	struct mpic_irq_fixup	*fixups;
 	spinlock_t		fixup_lock;
+	raw_spinlock_t	fixup_lock;
 #endif
 
 	/* Register access method */
 	enum mpic_reg_type	reg_type;
 
 	/* The various ioremap'ed bases */
+	/* The physical base address of the MPIC */
+	phys_addr_t paddr;
+
+	/* The various ioremap'ed bases */
+	struct mpic_reg_bank	thiscpuregs;
 	struct mpic_reg_bank	gregs;
 	struct mpic_reg_bank	tmregs;
 	struct mpic_reg_bank	cpuregs[MPIC_MAX_CPUS];
 	struct mpic_reg_bank	isus[MPIC_MAX_ISU];
+
+	/* ioremap'ed base for error interrupt registers */
+	u32 __iomem	*err_regs;
 
 	/* Protected sources */
 	unsigned long		*protected;
@@ -303,6 +344,7 @@ struct mpic
 #ifdef CONFIG_PCI_MSI
 	spinlock_t		bitmap_lock;
 	unsigned long		*hwirq_bitmap;
+	struct msi_bitmap	msi_bitmap;
 #endif
 
 #ifdef CONFIG_MPIC_BROKEN_REGREAD
@@ -319,6 +361,8 @@ struct mpic
 #endif
 };
 
+extern struct bus_type mpic_subsys;
+
 /*
  * MPIC flags (passed to mpic_alloc)
  *
@@ -332,6 +376,11 @@ struct mpic
  * registers only
  */
 #define MPIC_PRIMARY			0x00000001
+/*
+ * This is a secondary ("chained") controller; it only uses the CPU0
+ * registers.  Primary controllers have IPIs and affinity control.
+ */
+#define MPIC_SECONDARY			0x00000001
 
 /* Set this for a big-endian MPIC */
 #define MPIC_BIG_ENDIAN			0x00000002
@@ -355,6 +404,19 @@ struct mpic
 #define MPIC_NO_BIAS			0x00000400
 /* Ignore NIRQS as reported by FRR */
 #define MPIC_BROKEN_FRR_NIRQS		0x00000800
+/* Destination only supports a single CPU at a time */
+#define MPIC_SINGLE_DEST_CPU		0x00001000
+/* Enable CoreInt delivery of interrupts */
+#define MPIC_ENABLE_COREINT		0x00002000
+/* Do not reset the MPIC during initialization */
+#define MPIC_NO_RESET			0x00004000
+/* Freescale MPIC (compatible includes "fsl,mpic") */
+#define MPIC_FSL			0x00008000
+/* Freescale MPIC supports EIMR (error interrupt mask register).
+ * This flag is set for MPIC version >= 4.1 (version determined
+ * from the BRR1 register).
+*/
+#define MPIC_FSL_HAS_EIMR		0x00010000
 
 /* MPIC HW modification ID */
 #define MPIC_REGSET_MASK		0xf0000000
@@ -363,6 +425,16 @@ struct mpic
 
 #define	MPIC_REGSET_STANDARD		MPIC_REGSET(0)	/* Original MPIC */
 #define	MPIC_REGSET_TSI108		MPIC_REGSET(1)	/* Tsi108/109 PIC */
+
+/* Get the version of primary MPIC */
+#ifdef CONFIG_MPIC
+extern u32 fsl_mpic_primary_get_version(void);
+#else
+static inline u32 fsl_mpic_primary_get_version(void)
+{
+	return 0;
+}
+#endif
 
 /* Allocate the controller structure and setup the linux irq descs
  * for the range if interrupts passed in. No HW initialization is
@@ -463,6 +535,11 @@ extern void mpic_unmask_irq(unsigned int irq);
 extern void mpic_mask_irq(unsigned int irq);
 /* EOI a specific virq */
 extern void mpic_end_irq(unsigned int irq);
+extern void mpic_unmask_irq(struct irq_data *d);
+/* Mask a specific virq */
+extern void mpic_mask_irq(struct irq_data *d);
+/* EOI a specific virq */
+extern void mpic_end_irq(struct irq_data *d);
 
 /* Fetch interrupt from a given mpic */
 extern unsigned int mpic_get_one_irq(struct mpic *mpic);
@@ -476,6 +553,11 @@ void mpic_set_clk_ratio(struct mpic *mpic, u32 clock_ratio);
 
 /* Enable/Disable EPIC serial interrupt mode */
 void mpic_set_serial_int(struct mpic *mpic, int enable);
+
+/* This one gets from the primary mpic via CoreInt*/
+extern unsigned int mpic_get_coreint_irq(void);
+/* Fetch Machine Check interrupt from primary mpic */
+extern unsigned int mpic_get_mcirq(void);
 
 #endif /* __KERNEL__ */
 #endif	/* _ASM_POWERPC_MPIC_H */

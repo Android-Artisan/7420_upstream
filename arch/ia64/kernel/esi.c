@@ -66,6 +66,7 @@ static int __init esi_init (void)
 
 	if (!esi)
 		return -ENODEV;;
+		return -ENODEV;
 
 	systab = __va(esi);
 
@@ -85,6 +86,7 @@ static int __init esi_init (void)
 			break;
 		      default:
 			printk(KERN_WARNING "Unkown table type %d found in "
+			printk(KERN_WARNING "Unknown table type %d found in "
 			       "ESI table, ignoring rest of table\n", *p);
 			return -ENODEV;
 		}

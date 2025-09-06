@@ -10,3 +10,7 @@ obj-$(CONFIG_TC)		+= tc.o
 obj-$(CONFIG_CPU_HAS_WB)	+= wbflush.o
 
 EXTRA_CFLAGS += -Werror
+		   kn02-irq.o kn02xa-berr.o platform.o reset.o setup.o time.o
+
+obj-$(CONFIG_TC)		+= tc.o
+obj-$(CONFIG_CPU_HAS_WB)	+= wbflush.o

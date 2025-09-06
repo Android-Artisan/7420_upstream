@@ -27,6 +27,13 @@
  * along with this program; if not, see the file COPYING, or write
  * to the Free Software Foundation, Inc.,
  * 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+ * Copyright 2004-2009 Analog Devices Inc.
+ *           2007-2008 HV Sistemas S.L.
+ *                      Javier Herrero <jherrero@hvsistemas.es>
+ *                2005 National ICT Australia (NICTA)
+ *                      Aidan Williams <aidan@nicta.com.au>
+ *
+ * Licensed under the GPL-2 or later.
  */
 
 #include <linux/device.h>
@@ -36,6 +43,7 @@
 #include <linux/spi/spi.h>
 #include <linux/spi/flash.h>
 #if defined(CONFIG_USB_ISP1362_HCD) || defined(CONFIG_USB_ISP1362_HCD_MODULE)
+#if IS_ENABLED(CONFIG_USB_ISP1362_HCD)
 #include <linux/usb/isp1362.h>
 #endif
 #include <linux/irq.h>
@@ -51,6 +59,7 @@
 const char bfin_board_name[] = "HV Sistemas H8606";
 
 #if defined(CONFIG_RTC_DRV_BFIN) || defined(CONFIG_RTC_DRV_BFIN_MODULE)
+#if IS_ENABLED(CONFIG_RTC_DRV_BFIN)
 static struct platform_device rtc_device = {
 	.name = "rtc-bfin",
 	.id   = -1,
@@ -70,12 +79,24 @@ static struct resource dm9000_resources[] = {
 	[1] = {
 		.start	= 0x20300000 + 4,
 		.end	= 0x20300000 + 5,
+#if IS_ENABLED(CONFIG_DM9000)
+static struct resource dm9000_resources[] = {
+	[0] = {
+		.start	= 0x20300000,
+		.end	= 0x20300002,
+		.flags	= IORESOURCE_MEM,
+	},
+	[1] = {
+		.start	= 0x20300004,
+		.end	= 0x20300006,
 		.flags	= IORESOURCE_MEM,
 	},
 	[2] = {
 		.start	= IRQ_PF10,
 		.end	= IRQ_PF10,
 		.flags	= (IORESOURCE_IRQ | IORESOURCE_IRQ_HIGHEDGE),
+		.flags	= (IORESOURCE_IRQ | IORESOURCE_IRQ_HIGHEDGE |
+		           IORESOURCE_IRQ_SHAREABLE),
 	},
 };
 
@@ -88,6 +109,15 @@ static struct platform_device dm9000_device = {
 #endif
 
 #if defined(CONFIG_SMC91X) || defined(CONFIG_SMC91X_MODULE)
+#if IS_ENABLED(CONFIG_SMC91X)
+#include <linux/smc91x.h>
+
+static struct smc91x_platdata smc91x_info = {
+	.flags = SMC91X_USE_16BIT | SMC91X_NOWAIT,
+	.leda = RPC_LED_100_10,
+	.ledb = RPC_LED_TX_RX,
+};
+
 static struct resource smc91x_resources[] = {
 	{
 		.name = "smc91x-regs",
@@ -114,6 +144,13 @@ static struct platform_device smc91x_device = {
 #endif
 
 #if defined(CONFIG_USB_NET2272) || defined(CONFIG_USB_NET2272_MODULE)
+	.dev	= {
+		.platform_data	= &smc91x_info,
+	},
+};
+#endif
+
+#if IS_ENABLED(CONFIG_USB_NET2272)
 static struct resource net2272_bfin_resources[] = {
 	{
 		.start = 0x20300000,
@@ -152,6 +189,28 @@ static struct mtd_partition bfin_spi_flash_partitions[] = {
 		.name = "file system(spi)",
 		.size = 0x6a0000,
 		.offset = 0x00160000,
+#if IS_ENABLED(CONFIG_SPI_BFIN5XX)
+/* all SPI peripherals info goes here */
+
+#if IS_ENABLED(CONFIG_MTD_M25P80)
+static struct mtd_partition bfin_spi_flash_partitions[] = {
+	{
+		.name = "bootloader (spi)",
+		.size = 0x40000,
+		.offset = 0,
+		.mask_flags = MTD_CAP_ROM
+	}, {
+		.name = "fpga (spi)",
+		.size =   0x30000,
+		.offset = 0x40000
+	}, {
+		.name = "linux kernel (spi)",
+		.size =   0x150000,
+		.offset =  0x70000
+	}, {
+		.name = "jffs2 root file system (spi)",
+		.size =   0x640000,
+		.offset = 0x1c0000,
 	}
 };
 
@@ -199,6 +258,7 @@ static struct bfin5xx_spi_chip spi_si3xxx_chip_info = {
  * SPI_BAUD, not the real baudrate */
 static struct spi_board_info bfin_spi_board_info[] __initdata = {
 #if defined(CONFIG_MTD_M25P80) || defined(CONFIG_MTD_M25P80_MODULE)
+#if IS_ENABLED(CONFIG_MTD_M25P80)
 	{
 		/* the modalias must be the same as spi device driver name */
 		.modalias = "m25p80", /* Name of spi_driver for this device */
@@ -250,6 +310,15 @@ static struct spi_board_info bfin_spi_board_info[] __initdata = {
 		.controller_data = &spi_si3xxx_chip_info,
 	},
 #endif
+#if IS_ENABLED(CONFIG_SND_BF5XX_SOC_AD183X)
+	{
+		.modalias = "ad183x",
+		.max_speed_hz = 16,
+		.bus_num = 1,
+		.chip_select = 4,
+	},
+#endif
+
 };
 
 /* SPI (0) */
@@ -262,6 +331,11 @@ static struct resource bfin_spi0_resource[] = {
 	[1] = {
 		.start = CH_SPI,
 		.end   = CH_SPI,
+		.flags = IORESOURCE_DMA,
+	},
+	[2] = {
+		.start = IRQ_SPI,
+		.end   = IRQ_SPI,
 		.flags = IORESOURCE_IRQ,
 	}
 };
@@ -311,6 +385,60 @@ static struct platform_device bfin_uart_device = {
 #if defined(CONFIG_BFIN_SIR) || defined(CONFIG_BFIN_SIR_MODULE)
 static struct resource bfin_sir_resources[] = {
 #ifdef CONFIG_BFIN_SIR0
+#if IS_ENABLED(CONFIG_SERIAL_BFIN)
+#ifdef CONFIG_SERIAL_BFIN_UART0
+static struct resource bfin_uart0_resources[] = {
+	{
+		.start = BFIN_UART_THR,
+		.end = BFIN_UART_GCTL+2,
+		.flags = IORESOURCE_MEM,
+	},
+	{
+		.start = IRQ_UART0_TX,
+		.end = IRQ_UART0_TX,
+		.flags = IORESOURCE_IRQ,
+	},
+	{
+		.start = IRQ_UART0_RX,
+		.end = IRQ_UART0_RX,
+		.flags = IORESOURCE_IRQ,
+	},
+	{
+		.start = IRQ_UART0_ERROR,
+		.end = IRQ_UART0_ERROR,
+		.flags = IORESOURCE_IRQ,
+	},
+	{
+		.start = CH_UART0_TX,
+		.end = CH_UART0_TX,
+		.flags = IORESOURCE_DMA,
+	},
+	{
+		.start = CH_UART0_RX,
+		.end = CH_UART0_RX,
+		.flags = IORESOURCE_DMA,
+	},
+};
+
+static unsigned short bfin_uart0_peripherals[] = {
+	P_UART0_TX, P_UART0_RX, 0
+};
+
+static struct platform_device bfin_uart0_device = {
+	.name = "bfin-uart",
+	.id = 0,
+	.num_resources = ARRAY_SIZE(bfin_uart0_resources),
+	.resource = bfin_uart0_resources,
+	.dev = {
+		.platform_data = &bfin_uart0_peripherals, /* Passed to driver */
+	},
+};
+#endif
+#endif
+
+#if IS_ENABLED(CONFIG_BFIN_SIR)
+#ifdef CONFIG_BFIN_SIR0
+static struct resource bfin_sir0_resources[] = {
 	{
 		.start = 0xFFC00400,
 		.end = 0xFFC004FF,
@@ -328,6 +456,28 @@ static struct platform_device bfin_sir_device = {
 #endif
 
 #if defined(CONFIG_SERIAL_8250) || defined(CONFIG_SERIAL_8250_MODULE)
+	{
+		.start = IRQ_UART0_RX,
+		.end = IRQ_UART0_RX+1,
+		.flags = IORESOURCE_IRQ,
+	},
+	{
+		.start = CH_UART0_RX,
+		.end = CH_UART0_RX+1,
+		.flags = IORESOURCE_DMA,
+	},
+};
+
+static struct platform_device bfin_sir0_device = {
+	.name = "bfin_sir",
+	.id = 0,
+	.num_resources = ARRAY_SIZE(bfin_sir0_resources),
+	.resource = bfin_sir0_resources,
+};
+#endif
+#endif
+
+#if IS_ENABLED(CONFIG_SERIAL_8250)
 
 #include <linux/serial_8250.h>
 #include <linux/serial.h>
@@ -343,6 +493,10 @@ static struct plat_serial8250_port serial8250_platform_data [] = {
 		.membase = 0x20200000,
 		.mapbase = 0x20200000,
 		.irq = IRQ_PF8,
+		.membase = (void *)0x20200000,
+		.mapbase = 0x20200000,
+		.irq = IRQ_PF8,
+		.irqflags = IRQF_TRIGGER_HIGH,
 		.flags = UPF_BOOT_AUTOCONF | UART_CONFIG_TYPE,
 		.iotype = UPIO_MEM,
 		.regshift = 1,
@@ -351,6 +505,10 @@ static struct plat_serial8250_port serial8250_platform_data [] = {
 		.membase = 0x20200010,
 		.mapbase = 0x20200010,
 		.irq = IRQ_PF8,
+		.membase = (void *)0x20200010,
+		.mapbase = 0x20200010,
+		.irq = IRQ_PF8,
+		.irqflags = IRQF_TRIGGER_HIGH,
 		.flags = UPF_BOOT_AUTOCONF | UART_CONFIG_TYPE,
 		.iotype = UPIO_MEM,
 		.regshift = 1,
@@ -370,6 +528,7 @@ static struct platform_device serial8250_device = {
 #endif
 
 #if defined(CONFIG_KEYBOARD_OPENCORES) || defined(CONFIG_KEYBOARD_OPENCORES_MODULE)
+#if IS_ENABLED(CONFIG_KEYBOARD_OPENCORES)
 
 /*
  * Configuration for one OpenCores keyboard controller in FPGA at address 0x20200030,
@@ -431,6 +590,43 @@ static struct platform_device *h8606_devices[] __initdata = {
 #endif
 
 #if defined(CONFIG_KEYBOARD_OPENCORES) || defined(CONFIG_KEYBOARD_OPENCORES_MODULE)
+#if IS_ENABLED(CONFIG_RTC_DRV_BFIN)
+	&rtc_device,
+#endif
+
+#if IS_ENABLED(CONFIG_DM9000)
+	&dm9000_device,
+#endif
+
+#if IS_ENABLED(CONFIG_SMC91X)
+	&smc91x_device,
+#endif
+
+#if IS_ENABLED(CONFIG_USB_NET2272)
+	&net2272_bfin_device,
+#endif
+
+#if IS_ENABLED(CONFIG_SPI_BFIN5XX)
+	&bfin_spi0_device,
+#endif
+
+#if IS_ENABLED(CONFIG_SERIAL_BFIN)
+#ifdef CONFIG_SERIAL_BFIN_UART0
+	&bfin_uart0_device,
+#endif
+#endif
+
+#if IS_ENABLED(CONFIG_SERIAL_8250)
+	&serial8250_device,
+#endif
+
+#if IS_ENABLED(CONFIG_BFIN_SIR)
+#ifdef CONFIG_BFIN_SIR0
+	&bfin_sir0_device,
+#endif
+#endif
+
+#if IS_ENABLED(CONFIG_KEYBOARD_OPENCORES)
 	&opencores_kbd_device,
 #endif
 };
@@ -441,9 +637,25 @@ static int __init H8606_init(void)
 	printk(KERN_INFO "%s(): registering device resources\n", __func__);
 	platform_add_devices(h8606_devices, ARRAY_SIZE(h8606_devices));
 #if defined(CONFIG_SPI_BFIN) || defined(CONFIG_SPI_BFIN_MODULE)
+#if IS_ENABLED(CONFIG_SPI_BFIN5XX)
 	spi_register_board_info(bfin_spi_board_info, ARRAY_SIZE(bfin_spi_board_info));
 #endif
 	return 0;
 }
 
 arch_initcall(H8606_init);
+
+static struct platform_device *H8606_early_devices[] __initdata = {
+#if defined(CONFIG_SERIAL_BFIN_CONSOLE) || defined(CONFIG_EARLY_PRINTK)
+#ifdef CONFIG_SERIAL_BFIN_UART0
+	&bfin_uart0_device,
+#endif
+#endif
+};
+
+void __init native_machine_early_platform_add_devices(void)
+{
+	printk(KERN_INFO "register early platform devices\n");
+	early_platform_add_devices(H8606_early_devices,
+		ARRAY_SIZE(H8606_early_devices));
+}

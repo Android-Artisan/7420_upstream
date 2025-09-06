@@ -18,6 +18,7 @@
  *----------------------------------------------------------------------------
  *
  * MCA card detection code by Trent McNair.
+ * MCA card detection code by Trent McNair. (now deleted)
  * Fixes to not explicitly nul bss data from Xavier Bestel.
  * Some multiboard fixes from Rolf Eike Beer.
  * Auto probing of EISA config space from Trevor Hemsley.
@@ -27,6 +28,7 @@
  */
 
 #include <linux/module.h>
+#include <linux/slab.h>
 
 #include <linux/blkdev.h>
 #include <linux/device.h>
@@ -43,6 +45,7 @@
 
 
 /* Must be enough for both EISA and MCA */
+/* Must be enough for EISA */
 #define MAX_SLOTS 8
 static __u8 __initdata id_array[MAX_SLOTS] = { [0 ... MAX_SLOTS-1] = 7 };
 
@@ -89,6 +92,7 @@ __setup("sim710=", param_setup);
 
 static struct scsi_host_template sim710_driver_template = {
 	.name			= "LSI (Symbios) 710 MCA/EISA",
+	.name			= "LSI (Symbios) 710 EISA",
 	.proc_name		= "sim710",
 	.this_id		= 7,
 	.module			= THIS_MODULE,
@@ -97,12 +101,16 @@ static struct scsi_host_template sim710_driver_template = {
 static __devinit int
 sim710_probe_common(struct device *dev, unsigned long base_addr,
 		    int irq, int clock, int differential, int scsi_id)
+static int sim710_probe_common(struct device *dev, unsigned long base_addr,
+			       int irq, int clock, int differential,
+			       int scsi_id)
 {
 	struct Scsi_Host * host = NULL;
 	struct NCR_700_Host_Parameters *hostdata =
 		kzalloc(sizeof(struct NCR_700_Host_Parameters),	GFP_KERNEL);
 
 	printk(KERN_NOTICE "sim710: %s\n", dev->bus_id);
+	printk(KERN_NOTICE "sim710: %s\n", dev_name(dev));
 	printk(KERN_NOTICE "sim710: irq = %d, clock = %d, base = 0x%lx, scsi_id = %d\n",
 	       irq, clock, base_addr, scsi_id);
 
@@ -155,6 +163,7 @@ sim710_probe_common(struct device *dev, unsigned long base_addr,
 
 static __devexit int
 sim710_device_remove(struct device *dev)
+static int sim710_device_remove(struct device *dev)
 {
 	struct Scsi_Host *host = dev_get_drvdata(dev);
 	struct NCR_700_Host_Parameters *hostdata =
@@ -285,8 +294,7 @@ static struct eisa_device_id sim710_eisa_ids[] = {
 };
 MODULE_DEVICE_TABLE(eisa, sim710_eisa_ids);
 
-static __init int
-sim710_eisa_probe(struct device *dev)
+static int sim710_eisa_probe(struct device *dev)
 {
 	struct eisa_device *edev = to_eisa_device(dev);
 	unsigned long io_addr = edev->base_addr;
@@ -306,6 +314,7 @@ sim710_eisa_probe(struct device *dev)
 
 		if(scsi_id > 7 || (val & ~(1<<scsi_id)) != 0) {
 			printk(KERN_ERR "sim710.c, EISA card %s has incorrect scsi_id, setting to 7\n", dev->bus_id);
+			printk(KERN_ERR "sim710.c, EISA card %s has incorrect scsi_id, setting to 7\n", dev_name(dev));
 			scsi_id = 7;
 		}
 	} else {
@@ -330,6 +339,7 @@ static struct eisa_driver sim710_eisa_driver = {
 		.name		= "sim710",
 		.probe		= sim710_eisa_probe,
 		.remove		= __devexit_p(sim710_device_remove),
+		.remove		= sim710_device_remove,
 	},
 };
 #endif /* CONFIG_EISA */

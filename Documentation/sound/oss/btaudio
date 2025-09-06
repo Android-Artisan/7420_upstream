@@ -25,11 +25,11 @@ you want to do is just watching TV...
 
 
 Driver Status
-=============
 
 Still somewhat experimental.  The driver should work stable, i.e. it
 should'nt crash your box.  It might not work as expected, have bugs,
 not being fully OSS API compilant, ...
+not being fully OSS API compliant, ...
 
 Latest versions are available from http://bytesex.org/bttv/, the
 driver is in the bttv tarball.  Kernel patches might be available too,
@@ -40,7 +40,6 @@ devices, one for each mode.  They can not be used at the same time.
 
 
 Digital audio mode
-==================
 
 The chip gives you 16 bit stereo sound.  The sample rate depends on
 the external source which feeds the bt878 with digital sound via I2S
@@ -56,7 +55,6 @@ rate.  It is also possible that you get no sound at all.
 
 
 analog mode (A/D)
-=================
 
 You can tell the driver to use this mode with the insmod option "analog=1".
 The chip has three analog inputs.  Consequently you'll get a mixer device
@@ -73,7 +71,6 @@ by the mixer device).  Others get a useable signal on line1.
 
 
 some examples
-=============
 
 * read audio data from btaudio (dsp2), send to es1730 (dsp,dsp1):
   $ sox -w -r 32000 -t ossdsp /dev/dsp2 -t ossdsp /dev/dsp

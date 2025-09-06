@@ -177,6 +177,8 @@ struct rx_pool {
 	struct sk_buff		**last;
 	unsigned int		len;
 	unsigned int		count;
+	struct sk_buff_head	queue;
+	unsigned int		len;
 };
 
 struct aal1 {
@@ -575,6 +577,7 @@ struct idt77252_dev
 #define SAR_STAT_TMROF      0x00000800 /* Timer overflow                  */
 #define SAR_STAT_PHYI       0x00000400 /* PHY device Interrupt flag       */
 #define SAR_STAT_CMDBZ      0x00000200 /* ABR SAR Comand Busy Flag        */
+#define SAR_STAT_CMDBZ      0x00000200 /* ABR SAR Command Busy Flag       */
 #define SAR_STAT_FBQ3A      0x00000100 /* Free Buffer Queue 3 Attention   */
 #define SAR_STAT_FBQ2A      0x00000080 /* Free Buffer Queue 2 Attention   */
 #define SAR_STAT_RSQF       0x00000040 /* Receive Status Queue full       */
@@ -769,6 +772,7 @@ struct idt77252_dev
 #define SAR_RCTE_EFCI          0x00000800  /* EFCI Congestion flag           */
 #define SAR_RCTE_CLP           0x00000400  /* Cell Loss Priority flag        */
 #define SAR_RCTE_CRC           0x00000200  /* Recieved CRC Error             */
+#define SAR_RCTE_CRC           0x00000200  /* Received CRC Error             */
 #define SAR_RCTE_CELLCNT_MASK  0x000001FF  /* cell Count                     */
 
 #define SAR_RCTE_AAL0          0x00000000  /* AAL types for ALL field        */

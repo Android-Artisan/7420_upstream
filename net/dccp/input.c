@@ -12,6 +12,7 @@
 
 #include <linux/dccp.h>
 #include <linux/skbuff.h>
+#include <linux/slab.h>
 
 #include <net/sock.h>
 
@@ -28,6 +29,7 @@ static void dccp_enqueue_skb(struct sock *sk, struct sk_buff *skb)
 	__skb_queue_tail(&sk->sk_receive_queue, skb);
 	skb_set_owner_r(skb, sk);
 	sk->sk_data_ready(sk, 0);
+	sk->sk_data_ready(sk);
 }
 
 static void dccp_fin(struct sock *sk, struct sk_buff *skb)
@@ -126,6 +128,9 @@ static int dccp_rcv_closereq(struct sock *sk, struct sk_buff *skb)
 static u8 dccp_reset_code_convert(const u8 code)
 {
 	const u8 error_code[] = {
+static u16 dccp_reset_code_convert(const u8 code)
+{
+	const u16 error_code[] = {
 	[DCCP_RESET_CODE_CLOSED]	     = 0,	/* normal termination */
 	[DCCP_RESET_CODE_UNSPECIFIED]	     = 0,	/* nothing known */
 	[DCCP_RESET_CODE_ABORTED]	     = ECONNRESET,
@@ -148,6 +153,7 @@ static u8 dccp_reset_code_convert(const u8 code)
 static void dccp_rcv_reset(struct sock *sk, struct sk_buff *skb)
 {
 	u8 err = dccp_reset_code_convert(dccp_hdr_reset(skb)->dccph_reset_code);
+	u16 err = dccp_reset_code_convert(dccp_hdr_reset(skb)->dccph_reset_code);
 
 	sk->sk_err = err;
 
@@ -166,6 +172,15 @@ static void dccp_event_ack_recv(struct sock *sk, struct sk_buff *skb)
 	if (dccp_msk(sk)->dccpms_send_ack_vector)
 		dccp_ackvec_check_rcv_ackno(dp->dccps_hc_rx_ackvec, sk,
 					    DCCP_SKB_CB(skb)->dccpd_ack_seq);
+static void dccp_handle_ackvec_processing(struct sock *sk, struct sk_buff *skb)
+{
+	struct dccp_ackvec *av = dccp_sk(sk)->dccps_hc_rx_ackvec;
+
+	if (av == NULL)
+		return;
+	if (DCCP_SKB_CB(skb)->dccpd_ack_seq != DCCP_PKT_WITHOUT_ACK_SEQ)
+		dccp_ackvec_clear_state(av, DCCP_SKB_CB(skb)->dccpd_ack_seq);
+	dccp_ackvec_input(av, skb);
 }
 
 static void dccp_deliver_input_to_ccids(struct sock *sk, struct sk_buff *skb)
@@ -239,6 +254,8 @@ static int dccp_check_seqno(struct sock *sk, struct sk_buff *skb)
 
 		if (dh->dccph_type != DCCP_PKT_SYNC &&
 		    (ackno != DCCP_PKT_WITHOUT_ACK_SEQ))
+		    ackno != DCCP_PKT_WITHOUT_ACK_SEQ &&
+		    after48(ackno, dp->dccps_gar))
 			dp->dccps_gar = ackno;
 	} else {
 		unsigned long now = jiffies;
@@ -259,6 +276,9 @@ static int dccp_check_seqno(struct sock *sk, struct sk_buff *skb)
 			return 0;
 
 		DCCP_WARN("DCCP: Step 6 failed for %s packet, "
+			return -1;
+
+		DCCP_WARN("Step 6 failed for %s packet, "
 			  "(LSWL(%llu) <= P.seqno(%llu) <= S.SWH(%llu)) and "
 			  "(P.ackno %s or LAWL(%llu) <= P.ackno(%llu) <= S.AWH(%llu), "
 			  "sending SYNC...\n",  dccp_packet_name(dh->dccph_type),
@@ -282,6 +302,7 @@ static int dccp_check_seqno(struct sock *sk, struct sk_buff *skb)
 
 static int __dccp_rcv_established(struct sock *sk, struct sk_buff *skb,
 				  const struct dccp_hdr *dh, const unsigned len)
+				  const struct dccp_hdr *dh, const unsigned int len)
 {
 	struct dccp_sock *dp = dccp_sk(sk);
 
@@ -366,6 +387,8 @@ int dccp_rcv_established(struct sock *sk, struct sk_buff *skb,
 {
 	struct dccp_sock *dp = dccp_sk(sk);
 
+			 const struct dccp_hdr *dh, const unsigned int len)
+{
 	if (dccp_check_seqno(sk, skb))
 		goto discard;
 
@@ -380,6 +403,9 @@ int dccp_rcv_established(struct sock *sk, struct sk_buff *skb,
 			    DCCP_SKB_CB(skb)->dccpd_seq,
 			    DCCP_ACKVEC_STATE_RECEIVED))
 		goto discard;
+		return 1;
+
+	dccp_handle_ackvec_processing(sk, skb);
 	dccp_deliver_input_to_ccids(sk, skb);
 
 	return __dccp_rcv_established(sk, skb, dh, len);
@@ -394,6 +420,7 @@ static int dccp_rcv_request_sent_state_process(struct sock *sk,
 					       struct sk_buff *skb,
 					       const struct dccp_hdr *dh,
 					       const unsigned len)
+					       const unsigned int len)
 {
 	/*
 	 *  Step 4: Prepare sequence numbers in REQUEST
@@ -415,6 +442,7 @@ static int dccp_rcv_request_sent_state_process(struct sock *sk,
 			       dp->dccps_awl, dp->dccps_awh)) {
 			dccp_pr_debug("invalid ackno: S.AWL=%llu, "
 				      "P.ackno=%llu, S.AWH=%llu \n",
+				      "P.ackno=%llu, S.AWH=%llu\n",
 				      (unsigned long long)dp->dccps_awl,
 			   (unsigned long long)DCCP_SKB_CB(skb)->dccpd_ack_seq,
 				      (unsigned long long)dp->dccps_awh);
@@ -425,6 +453,15 @@ static int dccp_rcv_request_sent_state_process(struct sock *sk,
 			goto out_invalid_packet;
 
 		/* Obtain usec RTT sample from SYN exchange (used by CCID 3) */
+		/*
+		 * If option processing (Step 8) failed, return 1 here so that
+		 * dccp_v4_do_rcv() sends a Reset. The Reset code depends on
+		 * the option type and is set in dccp_parse_options().
+		 */
+		if (dccp_parse_options(sk, NULL, skb))
+			return 1;
+
+		/* Obtain usec RTT sample from SYN exchange (used by TFRC). */
 		if (likely(dp->dccps_options_received.dccpor_timestamp_echo))
 			dp->dccps_syn_rtt = dccp_sample_rtt(sk, 10 * (tstamp -
 			    dp->dccps_options_received.dccpor_timestamp_echo));
@@ -455,6 +492,14 @@ static int dccp_rcv_request_sent_state_process(struct sock *sk,
 		 */
 		dccp_set_seqno(&dp->dccps_swl,
 			       max48(dp->dccps_swl, dp->dccps_isr));
+		/*
+		 * Set ISR, GSR from packet. ISS was set in dccp_v{4,6}_connect
+		 * and GSS in dccp_transmit_skb(). Setting AWL/AWH and SWL/SWH
+		 * is done as part of activating the feature values below, since
+		 * these settings depend on the local/remote Sequence Window
+		 * features, which were undefined or not confirmed until now.
+		 */
+		dp->dccps_gsr = dp->dccps_isr = DCCP_SKB_CB(skb)->dccpd_seq;
 
 		dccp_sync_mss(sk, icsk->icsk_pmtu_cookie);
 
@@ -474,6 +519,15 @@ static int dccp_rcv_request_sent_state_process(struct sock *sk,
 		 *	      three-way handshake * /
 		 */
 		dccp_set_state(sk, DCCP_PARTOPEN);
+
+		/*
+		 * If feature negotiation was successful, activate features now;
+		 * an activation failure means that this host could not activate
+		 * one ore more features (e.g. insufficient memory), which would
+		 * leave at least one feature in an undefined state.
+		 */
+		if (dccp_feat_activate_values(sk, &dp->dccps_featneg))
+			goto unable_to_proceed;
 
 		/* Make sure socket is routed, for correct metrics. */
 		icsk->icsk_af_ops->rebuild_header(sk);
@@ -509,6 +563,16 @@ out_invalid_packet:
 	/* dccp_v4_do_rcv will send a reset */
 	DCCP_SKB_CB(skb)->dccpd_reset_code = DCCP_RESET_CODE_PACKET_ERROR;
 	return 1;
+
+unable_to_proceed:
+	DCCP_SKB_CB(skb)->dccpd_reset_code = DCCP_RESET_CODE_ABORTED;
+	/*
+	 * We mark this socket as no longer usable, so that the loop in
+	 * dccp_sendmsg() terminates and the application gets notified.
+	 */
+	dccp_set_state(sk, DCCP_CLOSED);
+	sk->sk_err = ECOMM;
+	return 1;
 }
 
 static int dccp_rcv_respond_partopen_state_process(struct sock *sk,
@@ -516,6 +580,10 @@ static int dccp_rcv_respond_partopen_state_process(struct sock *sk,
 						   const struct dccp_hdr *dh,
 						   const unsigned len)
 {
+						   const unsigned int len)
+{
+	struct dccp_sock *dp = dccp_sk(sk);
+	u32 sample = dp->dccps_options_received.dccpor_timestamp_echo;
 	int queued = 0;
 
 	switch (dh->dccph_type) {
@@ -529,6 +597,7 @@ static int dccp_rcv_respond_partopen_state_process(struct sock *sk,
 	case DCCP_PKT_ACK:
 		/*
 		 * FIXME: we should be reseting the PARTOPEN (DELACK) timer
+		 * FIXME: we should be resetting the PARTOPEN (DELACK) timer
 		 * here but only if we haven't used the DELACK timer for
 		 * something else, like sending a delayed ack for a TIMESTAMP
 		 * echo, etc, for now were not clearing it, sending an extra
@@ -541,6 +610,14 @@ static int dccp_rcv_respond_partopen_state_process(struct sock *sk,
 			inet_csk_clear_xmit_timer(sk, ICSK_TIME_DACK);
 
 		dccp_sk(sk)->dccps_osr = DCCP_SKB_CB(skb)->dccpd_seq;
+		/* Obtain usec RTT sample from SYN exchange (used by TFRC). */
+		if (likely(sample)) {
+			long delta = dccp_timestamp() - sample;
+
+			dp->dccps_syn_rtt = dccp_sample_rtt(sk, 10 * delta);
+		}
+
+		dp->dccps_osr = DCCP_SKB_CB(skb)->dccpd_seq;
 		dccp_set_state(sk, DCCP_OPEN);
 
 		if (dh->dccph_type == DCCP_PKT_DATAACK ||
@@ -557,6 +634,7 @@ static int dccp_rcv_respond_partopen_state_process(struct sock *sk,
 
 int dccp_rcv_state_process(struct sock *sk, struct sk_buff *skb,
 			   struct dccp_hdr *dh, unsigned len)
+			   struct dccp_hdr *dh, unsigned int len)
 {
 	struct dccp_sock *dp = dccp_sk(sk);
 	struct dccp_skb_cb *dcb = DCCP_SKB_CB(skb);
@@ -593,6 +671,8 @@ int dccp_rcv_state_process(struct sock *sk, struct sk_buff *skb,
 
 			/* FIXME: do congestion control initialization */
 			goto discard;
+			consume_skb(skb);
+			return 0;
 		}
 		if (dh->dccph_type == DCCP_PKT_RESET)
 			goto discard;
@@ -623,6 +703,36 @@ int dccp_rcv_state_process(struct sock *sk, struct sk_buff *skb,
 
 		dccp_deliver_input_to_ccids(sk, skb);
 	}
+
+	} else if (sk->sk_state == DCCP_CLOSED) {
+		dcb->dccpd_reset_code = DCCP_RESET_CODE_NO_CONNECTION;
+		return 1;
+	}
+
+	/* Step 6: Check sequence numbers (omitted in LISTEN/REQUEST state) */
+	if (sk->sk_state != DCCP_REQUESTING && dccp_check_seqno(sk, skb))
+		goto discard;
+
+	/*
+	 *   Step 7: Check for unexpected packet types
+	 *      If (S.is_server and P.type == Response)
+	 *	    or (S.is_client and P.type == Request)
+	 *	    or (S.state == RESPOND and P.type == Data),
+	 *	  Send Sync packet acknowledging P.seqno
+	 *	  Drop packet and return
+	 */
+	if ((dp->dccps_role != DCCP_ROLE_CLIENT &&
+	     dh->dccph_type == DCCP_PKT_RESPONSE) ||
+	    (dp->dccps_role == DCCP_ROLE_CLIENT &&
+	     dh->dccph_type == DCCP_PKT_REQUEST) ||
+	    (sk->sk_state == DCCP_RESPOND && dh->dccph_type == DCCP_PKT_DATA)) {
+		dccp_send_sync(sk, dcb->dccpd_seq, DCCP_PKT_SYNC);
+		goto discard;
+	}
+
+	/*  Step 8: Process options */
+	if (dccp_parse_options(sk, NULL, skb))
+		return 1;
 
 	/*
 	 *  Step 9: Process Reset
@@ -656,6 +766,15 @@ int dccp_rcv_state_process(struct sock *sk, struct sk_buff *skb,
 			return 0;
 		goto discard;
 	} else if (dh->dccph_type == DCCP_PKT_CLOSE) {
+	 */
+	if (dh->dccph_type == DCCP_PKT_RESET) {
+		dccp_rcv_reset(sk, skb);
+		return 0;
+	} else if (dh->dccph_type == DCCP_PKT_CLOSEREQ) {	/* Step 13 */
+		if (dccp_rcv_closereq(sk, skb))
+			return 0;
+		goto discard;
+	} else if (dh->dccph_type == DCCP_PKT_CLOSE) {		/* Step 14 */
 		if (dccp_rcv_close(sk, skb))
 			return 0;
 		goto discard;
@@ -669,6 +788,7 @@ int dccp_rcv_state_process(struct sock *sk, struct sk_buff *skb,
 	case DCCP_REQUESTING:
 		/* FIXME: do congestion control initialization */
 
+	case DCCP_REQUESTING:
 		queued = dccp_rcv_request_sent_state_process(sk, skb, dh, len);
 		if (queued >= 0)
 			return queued;
@@ -678,6 +798,12 @@ int dccp_rcv_state_process(struct sock *sk, struct sk_buff *skb,
 
 	case DCCP_RESPOND:
 	case DCCP_PARTOPEN:
+	case DCCP_PARTOPEN:
+		/* Step 8: if using Ack Vectors, mark packet acknowledgeable */
+		dccp_handle_ackvec_processing(sk, skb);
+		dccp_deliver_input_to_ccids(sk, skb);
+		/* fall through */
+	case DCCP_RESPOND:
 		queued = dccp_rcv_respond_partopen_state_process(sk, skb,
 								 dh, len);
 		break;
@@ -708,6 +834,7 @@ EXPORT_SYMBOL_GPL(dccp_rcv_state_process);
 /**
  *  dccp_sample_rtt  -  Validate and finalise computation of RTT sample
  *  @delta:	number of microseconds between packet and acknowledgment
+ *
  *  The routine is kept generic to work in different contexts. It should be
  *  called immediately when the ACK used for the RTT sample arrives.
  */

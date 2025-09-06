@@ -17,6 +17,7 @@
 #include <linux/kernel.h>
 #include <linux/tty.h>
 #include <linux/delay.h>
+#include <linux/platform_data/sa11x0-serial.h>
 #include <linux/platform_device.h>
 #include <linux/ioport.h>
 #include <linux/mtd/mtd.h>
@@ -26,12 +27,17 @@
 #include <mach/hardware.h>
 #include <asm/hardware/sa1111.h>
 #include <asm/irq.h>
+#include <asm/hardware/sa1111.h>
+#include <asm/page.h>
 #include <asm/mach-types.h>
 #include <asm/setup.h>
 #include <asm/mach/arch.h>
 #include <asm/mach/flash.h>
 #include <asm/mach/map.h>
 #include <asm/mach/serial_sa1100.h>
+
+#include <mach/hardware.h>
+#include <mach/irqs.h>
 
 #include "generic.h"
 
@@ -46,6 +52,7 @@
 /* memory space (line 52 of HP's doc) */
 #define SA1111REGSTART	0x40000000
 #define SA1111REGLEN	0x00001fff
+#define SA1111REGLEN	0x00002000
 #define EPSONREGSTART	0x48000000
 #define EPSONREGLEN	0x00100000
 #define EPSONFBSTART	0x48200000
@@ -183,6 +190,8 @@ static struct resource s1d13xxxfb_resources[] = {
 		.end	= EPSONREGSTART + EPSONREGLEN,
 		.flags	= IORESOURCE_MEM,
 	}
+	[0] = DEFINE_RES_MEM(EPSONFBSTART, EPSONFBLEN),
+	[1] = DEFINE_RES_MEM(EPSONREGSTART, EPSONREGLEN),
 };
 
 static struct platform_device s1d13xxxfb_device = {
@@ -206,6 +215,12 @@ static struct resource sa1111_resources[] = {
 		.end		= IRQ_GPIO1,
 		.flags		= IORESOURCE_IRQ,
 	},
+	[0] = DEFINE_RES_MEM(SA1111REGSTART, SA1111REGLEN),
+	[1] = DEFINE_RES_IRQ(IRQ_GPIO1),
+};
+
+static struct sa1111_platform_data sa1111_info = {
+	.disable_devs	= SA1111_DEVID_PS2_MSE,
 };
 
 static u64 sa1111_dmamask = 0xffffffffUL;
@@ -216,6 +231,7 @@ static struct platform_device sa1111_device = {
 	.dev		= {
 		.dma_mask = &sa1111_dmamask,
 		.coherent_dma_mask = 0xffffffff,
+		.platform_data = &sa1111_info,
 	},
 	.num_resources	= ARRAY_SIZE(sa1111_resources),
 	.resource	= sa1111_resources,
@@ -232,6 +248,22 @@ static struct platform_device *devices[] __initdata = {
 	&jornada_ssp_device,
 #endif
 	&s1d13xxxfb_device,
+static struct platform_device jornada_kbd_device = {
+	.name		= "jornada720_kbd",
+	.id		= -1,
+};
+
+static struct platform_device jornada_ts_device = {
+	.name		= "jornada_ts",
+	.id		= -1,
+};
+
+static struct platform_device *devices[] __initdata = {
+	&sa1111_device,
+	&jornada_ssp_device,
+	&s1d13xxxfb_device,
+	&jornada_kbd_device,
+	&jornada_ts_device,
 };
 
 static int __init jornada720_init(void)
@@ -345,6 +377,12 @@ static struct resource jornada720_flash_resource = {
 static void __init jornada720_mach_init(void)
 {
 	sa11x0_set_flash_data(&jornada720_flash_data, &jornada720_flash_resource, 1);
+static struct resource jornada720_flash_resource =
+	DEFINE_RES_MEM(SA1100_CS0_PHYS, SZ_32M);
+
+static void __init jornada720_mach_init(void)
+{
+	sa11x0_register_mtd(&jornada720_flash_data, &jornada720_flash_resource, 1);
 }
 
 MACHINE_START(JORNADA720, "HP Jornada 720")
@@ -356,4 +394,15 @@ MACHINE_START(JORNADA720, "HP Jornada 720")
 	.init_irq	= sa1100_init_irq,
 	.timer		= &sa1100_timer,
 	.init_machine	= jornada720_mach_init,
+	.atag_offset	= 0x100,
+	.map_io		= jornada720_map_io,
+	.nr_irqs	= SA1100_NR_IRQS,
+	.init_irq	= sa1100_init_irq,
+	.init_time	= sa1100_timer_init,
+	.init_machine	= jornada720_mach_init,
+	.init_late	= sa11x0_init_late,
+#ifdef CONFIG_SA1111
+	.dma_zone_size	= SZ_1M,
+#endif
+	.restart	= sa11x0_restart,
 MACHINE_END

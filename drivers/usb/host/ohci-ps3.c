@@ -31,6 +31,7 @@ static int ps3_ohci_hc_reset(struct usb_hcd *hcd)
 }
 
 static int __devinit ps3_ohci_hc_start(struct usb_hcd *hcd)
+static int ps3_ohci_hc_start(struct usb_hcd *hcd)
 {
 	int result;
 	struct ohci_hcd *ohci = hcd_to_ohci(hcd);
@@ -46,6 +47,8 @@ static int __devinit ps3_ohci_hc_start(struct usb_hcd *hcd)
 
 	if (result < 0) {
 		err("can't start %s", hcd->self.bus_name);
+		dev_err(hcd->self.controller, "can't start %s\n",
+			hcd->self.bus_name);
 		ohci_stop(hcd);
 	}
 
@@ -81,6 +84,7 @@ static int ps3_ohci_probe(struct ps3_system_bus_device *dev)
 	struct usb_hcd *hcd;
 	unsigned int virq;
 	static u64 dummy_mask = DMA_32BIT_MASK;
+	static u64 dummy_mask = DMA_BIT_MASK(32);
 
 	if (usb_disabled()) {
 		result = -ENODEV;
@@ -165,6 +169,9 @@ static int ps3_ohci_probe(struct ps3_system_bus_device *dev)
 	ps3_system_bus_set_driver_data(dev, hcd);
 
 	result = usb_add_hcd(hcd, virq, IRQF_DISABLED);
+	ps3_system_bus_set_drvdata(dev, hcd);
+
+	result = usb_add_hcd(hcd, virq, 0);
 
 	if (result) {
 		dev_dbg(&dev->core, "%s:%d: usb_add_hcd failed (%d)\n",
@@ -172,6 +179,7 @@ static int ps3_ohci_probe(struct ps3_system_bus_device *dev)
 		goto fail_add_hcd;
 	}
 
+	device_wakeup_enable(hcd->self.controller);
 	return result;
 
 fail_add_hcd:
@@ -197,6 +205,10 @@ static int ps3_ohci_remove (struct ps3_system_bus_device *dev)
 	unsigned int tmp;
 	struct usb_hcd *hcd =
 		(struct usb_hcd *)ps3_system_bus_get_driver_data(dev);
+static int ps3_ohci_remove(struct ps3_system_bus_device *dev)
+{
+	unsigned int tmp;
+	struct usb_hcd *hcd = ps3_system_bus_get_drvdata(dev);
 
 	BUG_ON(!hcd);
 
@@ -208,6 +220,10 @@ static int ps3_ohci_remove (struct ps3_system_bus_device *dev)
 	usb_remove_hcd(hcd);
 
 	ps3_system_bus_set_driver_data(dev, NULL);
+	ohci_shutdown(hcd);
+	usb_remove_hcd(hcd);
+
+	ps3_system_bus_set_drvdata(dev, NULL);
 
 	BUG_ON(!hcd->regs);
 	iounmap(hcd->regs);
@@ -225,6 +241,7 @@ static int ps3_ohci_remove (struct ps3_system_bus_device *dev)
 }
 
 static int ps3_ohci_driver_register(struct ps3_system_bus_driver *drv)
+static int __init ps3_ohci_driver_register(struct ps3_system_bus_driver *drv)
 {
 	return firmware_has_feature(FW_FEATURE_PS3_LV1)
 		? ps3_system_bus_driver_register(drv)

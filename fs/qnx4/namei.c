@@ -22,6 +22,8 @@
 #include <linux/errno.h>
 #include <linux/smp_lock.h>
 #include <linux/buffer_head.h>
+#include <linux/buffer_head.h>
+#include "qnx4.h"
 
 
 /*
@@ -38,6 +40,7 @@ static int qnx4_match(int len, const char *name,
 
 	if (bh == NULL) {
 		printk("qnx4: matching unassigned buffer !\n");
+		printk(KERN_WARNING "qnx4: matching unassigned buffer !\n");
 		return 0;
 	}
 	de = (struct qnx4_inode_entry *) (bh->b_data + *offset);
@@ -81,6 +84,9 @@ static struct buffer_head *qnx4_find_entry(int len, struct inode *dir,
 	while (blkofs * QNX4_BLOCK_SIZE + offset < dir->i_size) {
 		if (!bh) {
 			bh = qnx4_bread(dir, blkofs, 0);
+			block = qnx4_block_map(dir, blkofs);
+			if (block)
+				bh = sb_bread(dir->i_sb, block);
 			if (!bh) {
 				blkofs++;
 				continue;
@@ -107,6 +113,7 @@ static struct buffer_head *qnx4_find_entry(int len, struct inode *dir,
 }
 
 struct dentry * qnx4_lookup(struct inode *dir, struct dentry *dentry, struct nameidata *nd)
+struct dentry * qnx4_lookup(struct inode *dir, struct dentry *dentry, unsigned int flags)
 {
 	int ino;
 	struct qnx4_inode_entry *de;
@@ -132,6 +139,7 @@ struct dentry * qnx4_lookup(struct inode *dir, struct dentry *dentry, struct nam
 	if (IS_ERR(foundinode)) {
 		unlock_kernel();
 		QNX4DEBUG(("qnx4: lookup->iget -> error %ld\n",
+		QNX4DEBUG((KERN_ERR "qnx4: lookup->iget -> error %ld\n",
 			   PTR_ERR(foundinode)));
 		return ERR_CAST(foundinode);
 	}

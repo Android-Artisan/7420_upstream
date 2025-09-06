@@ -123,6 +123,11 @@ typedef struct siginfo {
 
 #ifdef __KERNEL__
 #include <linux/string.h>
+#ifndef _ASM_IA64_SIGINFO_H
+#define _ASM_IA64_SIGINFO_H
+
+#include <linux/string.h>
+#include <uapi/asm/siginfo.h>
 
 static inline void
 copy_siginfo (siginfo_t *to, siginfo_t *from)

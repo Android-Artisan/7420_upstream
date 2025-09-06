@@ -3,6 +3,7 @@ README for MIPS AU1XXX IDE driver - Released 2005-07-15
 ABOUT
 -----
 This file describes the 'drivers/ide/mips/au1xxx-ide.c', related files and the
+This file describes the 'drivers/ide/au1xxx-ide.c', related files and the
 services they provide.
 
 If you are short in patience and just want to know how to add your hard disc to
@@ -40,12 +41,15 @@ Note: for more information, please refer "AMD Alchemy Au1200/Au1550 IDE
 
 
 FILES, CONFIGS AND COMPATABILITY
+FILES, CONFIGS AND COMPATIBILITY
 --------------------------------
 
 Two files are introduced:
 
   a) 'include/asm-mips/mach-au1x00/au1xxx_ide.h'
      containes : struct _auide_hwif
+  a) 'arch/mips/include/asm/mach-au1x00/au1xxx_ide.h'
+     contains : struct _auide_hwif
                  timing parameters for PIO mode 0/1/2/3/4
                  timing parameters for MWDMA 0/1/2
 
@@ -53,6 +57,7 @@ Two files are introduced:
      contains the functionality of the AU1XXX IDE driver
 
 Four configs variables are introduced:
+Following extra configs variables are introduced:
 
   CONFIG_BLK_DEV_IDE_AU1XXX_PIO_DBDMA    - enable the PIO+DBDMA mode
   CONFIG_BLK_DEV_IDE_AU1XXX_MDMA2_DBDMA  - enable the MWDMA mode

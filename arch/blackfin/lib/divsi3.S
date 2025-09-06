@@ -5,6 +5,11 @@
  *
  * Created:
  * Description:  16 / 32 bit signed division.
+ * Copyright 2004-2009 Analog Devices Inc.
+ *
+ * Licensed under the Clear BSD license or the GPL-2 (or later)
+ *
+ * 16 / 32 bit signed division.
  *                 Special cases :
  *                      1)  If(numerator == 0)
  *                             return 0

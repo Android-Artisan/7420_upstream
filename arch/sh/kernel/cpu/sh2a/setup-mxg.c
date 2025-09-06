@@ -2,6 +2,7 @@
  * Renesas MX-G (R8A03022BG) Setup
  *
  *  Copyright (C) 2008  Paul Mundt
+ *  Copyright (C) 2008, 2009  Paul Mundt
  *
  * This file is subject to the terms and conditions of the GNU General Public
  * License.  See the file "COPYING" in the main directory of this archive
@@ -11,6 +12,7 @@
 #include <linux/init.h>
 #include <linux/serial.h>
 #include <linux/serial_sci.h>
+#include <linux/sh_timer.h>
 
 enum {
 	UNUSED = 0,
@@ -37,6 +39,15 @@ enum {
 	/* interrupt groups */
 	PINT, SCIF0, SCIF1,
 	MTU2_GROUP1, MTU2_GROUP2, MTU2_GROUP3, MTU2_GROUP4, MTU2_GROUP5
+	SINT8, SINT7, SINT6, SINT5, SINT4, SINT3, SINT2, SINT1,
+
+	SCIF0, SCIF1,
+
+	MTU2_GROUP1, MTU2_GROUP2, MTU2_GROUP3, MTU2_GROUP4, MTU2_GROUP5,
+	MTU2_TGI3B, MTU2_TGI3C,
+
+	/* interrupt groups */
+	PINT,
 };
 
 static struct intc_vect vectors[] __initdata = {
@@ -74,6 +85,21 @@ static struct intc_vect vectors[] __initdata = {
 
 	INTC_IRQ(MTU2_TGI2B, 240), INTC_IRQ(MTU2_TCI2V, 241),
 	INTC_IRQ(MTU2_TCI2U, 242), INTC_IRQ(MTU2_TGI3A, 243),
+	INTC_IRQ(SCIF0, 220), INTC_IRQ(SCIF0, 221),
+	INTC_IRQ(SCIF0, 222), INTC_IRQ(SCIF0, 223),
+	INTC_IRQ(SCIF1, 224), INTC_IRQ(SCIF1, 225),
+	INTC_IRQ(SCIF1, 226), INTC_IRQ(SCIF1, 227),
+
+	INTC_IRQ(MTU2_GROUP1, 228), INTC_IRQ(MTU2_GROUP1, 229),
+	INTC_IRQ(MTU2_GROUP1, 230), INTC_IRQ(MTU2_GROUP1, 231),
+	INTC_IRQ(MTU2_GROUP1, 232), INTC_IRQ(MTU2_GROUP1, 233),
+
+	INTC_IRQ(MTU2_GROUP2, 234), INTC_IRQ(MTU2_GROUP2, 235),
+	INTC_IRQ(MTU2_GROUP2, 236), INTC_IRQ(MTU2_GROUP2, 237),
+	INTC_IRQ(MTU2_GROUP2, 238), INTC_IRQ(MTU2_GROUP2, 239),
+
+	INTC_IRQ(MTU2_GROUP3, 240), INTC_IRQ(MTU2_GROUP3, 241),
+	INTC_IRQ(MTU2_GROUP3, 242), INTC_IRQ(MTU2_GROUP3, 243),
 
 	INTC_IRQ(MTU2_TGI3B, 244),
 	INTC_IRQ(MTU2_TGI3C, 245),
@@ -84,6 +110,12 @@ static struct intc_vect vectors[] __initdata = {
 
 	INTC_IRQ(MTU2_TCI4V, 252), INTC_IRQ(MTU2_TGI5U, 253),
 	INTC_IRQ(MTU2_TGI5V, 254), INTC_IRQ(MTU2_TGI5W, 255),
+	INTC_IRQ(MTU2_GROUP4, 246), INTC_IRQ(MTU2_GROUP4, 247),
+	INTC_IRQ(MTU2_GROUP4, 248), INTC_IRQ(MTU2_GROUP4, 249),
+	INTC_IRQ(MTU2_GROUP4, 250), INTC_IRQ(MTU2_GROUP4, 251),
+
+	INTC_IRQ(MTU2_GROUP5, 252), INTC_IRQ(MTU2_GROUP5, 253),
+	INTC_IRQ(MTU2_GROUP5, 254), INTC_IRQ(MTU2_GROUP5, 255),
 };
 
 static struct intc_group groups[] __initdata = {
@@ -148,11 +180,45 @@ static struct platform_device sci_device = {
 	.id		= -1,
 	.dev		= {
 		.platform_data	= sci_platform_data,
+static struct resource mtu2_resources[] = {
+	DEFINE_RES_MEM(0xff801000, 0x400),
+	DEFINE_RES_IRQ_NAMED(228, "tgi0a"),
+	DEFINE_RES_IRQ_NAMED(234, "tgi1a"),
+	DEFINE_RES_IRQ_NAMED(240, "tgi2a"),
+};
+
+static struct platform_device mtu2_device = {
+	.name		= "sh-mtu2",
+	.id		= -1,
+	.resource	= mtu2_resources,
+	.num_resources	= ARRAY_SIZE(mtu2_resources),
+};
+
+static struct plat_sci_port scif0_platform_data = {
+	.flags		= UPF_BOOT_AUTOCONF,
+	.scscr		= SCSCR_RE | SCSCR_TE | SCSCR_REIE,
+	.type		= PORT_SCIF,
+};
+
+static struct resource scif0_resources[] = {
+	DEFINE_RES_MEM(0xff804000, 0x100),
+	DEFINE_RES_IRQ(220),
+};
+
+static struct platform_device scif0_device = {
+	.name		= "sh-sci",
+	.id		= 0,
+	.resource	= scif0_resources,
+	.num_resources	= ARRAY_SIZE(scif0_resources),
+	.dev		= {
+		.platform_data	= &scif0_platform_data,
 	},
 };
 
 static struct platform_device *mxg_devices[] __initdata = {
 	&sci_device,
+	&scif0_device,
+	&mtu2_device,
 };
 
 static int __init mxg_devices_setup(void)
@@ -161,8 +227,20 @@ static int __init mxg_devices_setup(void)
 				    ARRAY_SIZE(mxg_devices));
 }
 __initcall(mxg_devices_setup);
+arch_initcall(mxg_devices_setup);
 
 void __init plat_irq_setup(void)
 {
 	register_intc_controller(&intc_desc);
+}
+
+static struct platform_device *mxg_early_devices[] __initdata = {
+	&scif0_device,
+	&mtu2_device,
+};
+
+void __init plat_early_device_setup(void)
+{
+	early_platform_add_devices(mxg_early_devices,
+				   ARRAY_SIZE(mxg_early_devices));
 }

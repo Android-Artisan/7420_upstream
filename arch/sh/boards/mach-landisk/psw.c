@@ -26,6 +26,7 @@ static irqreturn_t psw_irq_handler(int irq, void *arg)
 	int ret = 0;
 
 	sw_value = (0x0ff & (~ctrl_inb(PA_STATUS)));
+	sw_value = (0x0ff & (~__raw_readb(PA_STATUS)));
 
 	/* Nothing to do if there's no state change */
 	if (psw->state) {
@@ -43,6 +44,7 @@ static irqreturn_t psw_irq_handler(int irq, void *arg)
 out:
 	/* Clear the switch IRQs */
 	ctrl_outb(0x00, PA_PWRINT_CLR);
+	__raw_writeb(0x00, PA_PWRINT_CLR);
 
 	return IRQ_RETVAL(ret);
 }
@@ -141,3 +143,4 @@ static int __init psw_init(void)
 	return platform_add_devices(psw_devices, ARRAY_SIZE(psw_devices));
 }
 module_init(psw_init);
+device_initcall(psw_init);

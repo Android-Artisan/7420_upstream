@@ -1,5 +1,4 @@
 (C)Copyright 1998-2000 SysKonnect,
-===========================================================================
 
 skfp.txt created 11-May-2000
 
@@ -16,12 +15,10 @@ This file contains
 (7) FUNCTION OF THE ADAPTER LEDS
 (8) HISTORY
 
-===========================================================================
 
 
 
 (1) OVERVIEW
-============
 
 This README explains how to use the driver 'skfp' for Linux with your
 network adapter.
@@ -41,7 +38,6 @@ Chapter 6: History of development.
 
 
 (2) SUPPORTED ADAPTERS
-======================
 
 The network driver 'skfp' supports the following network adapters:
 SysKonnect adapters:
@@ -65,10 +61,10 @@ Compaq adapters (not tested):
 
 
 (3) GENERAL INFORMATION
-=======================
 
 From v2.01 on, the driver is integrated in the linux kernel sources.
 Therefor, the installation is the same as for any other adapter
+Therefore, the installation is the same as for any other adapter
 supported by the kernel.
 Refer to the manual of your distribution about the installation
 of network adapters.
@@ -77,7 +73,6 @@ Makes my life much easier :-)
 
 
 (4) TROUBLESHOOTING
-===================
 
 If you run into problems during installation, check those items:
 
@@ -120,7 +115,6 @@ please ensure that the following information is available:
 
 
 (5) FUNCTION OF THE ADAPTER LEDS
-================================
 
         The functionality of the LED's on the FDDI network adapters was
         changed in SMT version v2.82. With this new SMT version, the yellow
@@ -141,7 +135,6 @@ please ensure that the following information is available:
 
 
 (6) HISTORY
-===========
 
 v2.06 (20000511) (In-Kernel version)
     New features:

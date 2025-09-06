@@ -49,6 +49,7 @@ paddr_to_nid(unsigned long paddr)
 
 	return (i < num_node_memblks) ? node_memblk[i].nid : (num_node_memblks ? -1 : 0);
 }
+EXPORT_SYMBOL(paddr_to_nid);
 
 #if defined(CONFIG_SPARSEMEM) && defined(CONFIG_NUMA)
 /*
@@ -62,6 +63,14 @@ int early_pfn_to_nid(unsigned long pfn)
 {
 	int i, section = pfn >> PFN_SECTION_SHIFT, ssec, esec;
 
+int __meminit __early_pfn_to_nid(unsigned long pfn,
+					struct mminit_pfnnid_cache *state)
+{
+	int i, section = pfn >> PFN_SECTION_SHIFT, ssec, esec;
+
+	if (section >= state->last_start && section < state->last_end)
+		return state->last_nid;
+
 	for (i = 0; i < num_node_memblks; i++) {
 		ssec = node_memblk[i].start_paddr >> PA_SECTION_SHIFT;
 		esec = (node_memblk[i].start_paddr + node_memblk[i].size +
@@ -71,6 +80,20 @@ int early_pfn_to_nid(unsigned long pfn)
 	}
 
 	return 0;
+		if (section >= ssec && section < esec) {
+			state->last_start = ssec;
+			state->last_end = esec;
+			state->last_nid = node_memblk[i].nid;
+			return node_memblk[i].nid;
+		}
+	}
+
+	return -1;
+}
+
+void numa_clear_node(int cpu)
+{
+	unmap_cpu_from_node(cpu, NUMA_NO_NODE);
 }
 
 #ifdef CONFIG_MEMORY_HOTPLUG

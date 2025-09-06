@@ -34,6 +34,11 @@ typedef unsigned long long __u64;
 #endif /* __ASSEMBLY__ */
 
 #ifdef __KERNEL__
+#ifndef _ASM_GENERIC_INT_LL64_H
+#define _ASM_GENERIC_INT_LL64_H
+
+#include <uapi/asm-generic/int-ll64.h>
+
 
 #ifndef __ASSEMBLY__
 

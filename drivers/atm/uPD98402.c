@@ -11,6 +11,9 @@
 #include <linux/init.h>
 #include <asm/uaccess.h>
 #include <asm/atomic.h>
+#include <linux/slab.h>
+#include <asm/uaccess.h>
+#include <linux/atomic.h>
 
 #include "uPD98402.h"
 
@@ -209,7 +212,7 @@ static void uPD98402_int(struct atm_dev *dev)
 static int uPD98402_start(struct atm_dev *dev)
 {
 	DPRINTK("phy_start\n");
-	if (!(dev->dev_data = kmalloc(sizeof(struct uPD98402_priv),GFP_KERNEL)))
+	if (!(dev->phy_data = kmalloc(sizeof(struct uPD98402_priv),GFP_KERNEL)))
 		return -ENOMEM;
 	spin_lock_init(&PRIV(dev)->lock);
 	memset(&PRIV(dev)->sonet_stats,0,sizeof(struct k_sonet_stats));

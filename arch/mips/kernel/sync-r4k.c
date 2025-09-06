@@ -2,6 +2,7 @@
  * Count register synchronisation.
  *
  * All CPUs will have their count registers synchronised to the CPU0 expirelo
+ * All CPUs will have their count registers synchronised to the CPU0 next time
  * value. This can cause a small timewarp for CPU0. All other CPU's should
  * not have done anything significant (but they may have had interrupts
  * enabled briefly - prom_smp_finish() should not be responsible for enabling
@@ -28,6 +29,26 @@ static atomic_t __initdata count_count_stop = ATOMIC_INIT(0);
 #define NR_LOOPS 5
 
 void __init synchronise_count_master(void)
+ */
+
+#include <linux/kernel.h>
+#include <linux/irqflags.h>
+#include <linux/cpumask.h>
+
+#include <asm/r4k-timer.h>
+#include <linux/atomic.h>
+#include <asm/barrier.h>
+#include <asm/mipsregs.h>
+
+static atomic_t count_start_flag = ATOMIC_INIT(0);
+static atomic_t count_count_start = ATOMIC_INIT(0);
+static atomic_t count_count_stop = ATOMIC_INIT(0);
+static atomic_t count_reference = ATOMIC_INIT(0);
+
+#define COUNTON 100
+#define NR_LOOPS 5
+
+void synchronise_count_master(int cpu)
 {
 	int i;
 	unsigned long flags;
@@ -45,6 +66,8 @@ void __init synchronise_count_master(void)
 	pr_info("Checking COUNT synchronization across %u CPUs: ",
 		num_online_cpus());
 
+	printk(KERN_INFO "Synchronize counters for CPU %u: ", cpu);
+
 	local_irq_save(flags);
 
 	/*
@@ -55,6 +78,12 @@ void __init synchronise_count_master(void)
 
 	/* Count will be initialised to expirelo for all CPU's */
 	initcount = expirelo;
+	atomic_set(&count_reference, read_c0_count());
+	atomic_set(&count_start_flag, cpu);
+	smp_wmb();
+
+	/* Count will be initialised to current timer for all CPU's */
+	initcount = read_c0_count();
 
 	/*
 	 * We loop a few times to get a primed instruction cache,
@@ -71,6 +100,9 @@ void __init synchronise_count_master(void)
 	for (i = 0; i < NR_LOOPS; i++) {
 		/* slaves loop on '!= ncpus' */
 		while (atomic_read(&count_count_start) != nslaves)
+	for (i = 0; i < NR_LOOPS; i++) {
+		/* slaves loop on '!= 2' */
+		while (atomic_read(&count_count_start) != 1)
 			mb();
 		atomic_set(&count_count_stop, 0);
 		smp_wmb();
@@ -88,6 +120,7 @@ void __init synchronise_count_master(void)
 		 * Wait for all slaves to leave the synchronization point:
 		 */
 		while (atomic_read(&count_count_stop) != nslaves)
+		while (atomic_read(&count_count_stop) != 1)
 			mb();
 		atomic_set(&count_count_start, 0);
 		smp_wmb();
@@ -95,6 +128,7 @@ void __init synchronise_count_master(void)
 	}
 	/* Arrange for an interrupt in a short while */
 	write_c0_compare(read_c0_count() + COUNTON);
+	atomic_set(&count_start_flag, 0);
 
 	local_irq_restore(flags);
 
@@ -122,6 +156,10 @@ void __init synchronise_count_slave(void)
 #endif
 
 	local_irq_save(flags);
+void synchronise_count_slave(int cpu)
+{
+	int i;
+	unsigned int initcount;
 
 	/*
 	 * Not every cpu is online at the time this gets called,
@@ -138,6 +176,15 @@ void __init synchronise_count_slave(void)
 	for (i = 0; i < NR_LOOPS; i++) {
 		atomic_inc(&count_count_start);
 		while (atomic_read(&count_count_start) != ncpus)
+	while (atomic_read(&count_start_flag) != cpu)
+		mb();
+
+	/* Count will be initialised to next expire for all CPU's */
+	initcount = atomic_read(&count_reference);
+
+	for (i = 0; i < NR_LOOPS; i++) {
+		atomic_inc(&count_count_start);
+		while (atomic_read(&count_count_start) != 2)
 			mb();
 
 		/*
@@ -148,6 +195,7 @@ void __init synchronise_count_slave(void)
 
 		atomic_inc(&count_count_stop);
 		while (atomic_read(&count_count_stop) != ncpus)
+		while (atomic_read(&count_count_stop) != 2)
 			mb();
 	}
 	/* Arrange for an interrupt in a short while */
@@ -157,3 +205,5 @@ void __init synchronise_count_slave(void)
 }
 #undef NR_LOOPS
 #endif
+}
+#undef NR_LOOPS

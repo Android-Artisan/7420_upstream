@@ -61,6 +61,7 @@
 #include <linux/kernel.h>
 #include <linux/string.h>
 #include <linux/net.h>
+#include <linux/slab.h>
 #include <net/ax25.h>
 #include <linux/inet.h>
 #include <linux/netdevice.h>
@@ -88,21 +89,22 @@
 #include <linux/bpqether.h>
 
 static char banner[] __initdata = KERN_INFO "AX.25: bpqether driver version 004\n";
-
-static char bcast_addr[6]={0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
-
-static char bpq_eth_addr[6];
+static const char banner[] __initconst = KERN_INFO \
+	"AX.25: bpqether driver version 004\n";
 
 static int bpq_rcv(struct sk_buff *, struct net_device *, struct packet_type *, struct net_device *);
 static int bpq_device_event(struct notifier_block *, unsigned long, void *);
 
 static struct packet_type bpq_packet_type = {
 	.type	= __constant_htons(ETH_P_BPQ),
+static struct packet_type bpq_packet_type __read_mostly = {
+	.type	= cpu_to_be16(ETH_P_BPQ),
 	.func	= bpq_rcv,
 };
 
 static struct notifier_block bpq_dev_notifier = {
 	.notifier_call =bpq_device_event,
+	.notifier_call = bpq_device_event,
 };
 
 
@@ -171,6 +173,7 @@ static inline int dev_is_ethdev(struct net_device *dev)
 			dev->type == ARPHRD_ETHER
 			&& strncmp(dev->name, "dummy", 5)
 	);
+	return dev->type == ARPHRD_ETHER && strncmp(dev->name, "dummy", 5);
 }
 
 /* ------------------------------------------------------------------------ */
@@ -187,6 +190,7 @@ static int bpq_rcv(struct sk_buff *skb, struct net_device *dev, struct packet_ty
 	struct bpqdev *bpq;
 
 	if (dev_net(dev) != &init_net)
+	if (!net_eq(dev_net(dev), &init_net))
 		goto drop;
 
 	if ((skb = skb_share_check(skb, GFP_ATOMIC)) == NULL)
@@ -212,6 +216,7 @@ static int bpq_rcv(struct sk_buff *skb, struct net_device *dev, struct packet_ty
 
 	if (!(bpq->acpt_addr[0] & 0x01) &&
 	    memcmp(eth->h_source, bpq->acpt_addr, ETH_ALEN))
+	    !ether_addr_equal(eth->h_source, bpq->acpt_addr))
 		goto drop_unlock;
 
 	if (skb_cow(skb, sizeof(struct ethhdr)))
@@ -224,6 +229,8 @@ static int bpq_rcv(struct sk_buff *skb, struct net_device *dev, struct packet_ty
 
 	bpq->stats.rx_packets++;
 	bpq->stats.rx_bytes += len;
+	dev->stats.rx_packets++;
+	dev->stats.rx_bytes += len;
 
 	ptr = skb_push(skb, 1);
 	*ptr = 0;
@@ -254,6 +261,16 @@ static int bpq_xmit(struct sk_buff *skb, struct net_device *dev)
 	unsigned char *ptr;
 	struct bpqdev *bpq;
 	int size;
+
+static netdev_tx_t bpq_xmit(struct sk_buff *skb, struct net_device *dev)
+{
+	unsigned char *ptr;
+	struct bpqdev *bpq;
+	struct net_device *orig_dev;
+	int size;
+
+	if (skb->protocol == htons(ETH_P_IP))
+		return ax25_ip_xmit(skb);
 
 	/*
 	 * Just to be *really* sure not to send anything if the interface
@@ -286,6 +303,26 @@ static int bpq_xmit(struct sk_buff *skb, struct net_device *dev)
 	}
 
 	ptr = skb_push(skb, 2);
+		return NETDEV_TX_OK;
+	}
+
+	skb_pull(skb, 1);			/* Drop KISS byte */
+	size = skb->len;
+
+	/*
+	 * We're about to mess with the skb which may still shared with the
+	 * generic networking code so unshare and ensure it's got enough
+	 * space for the BPQ headers.
+	 */
+	if (skb_cow(skb, AX25_BPQ_HEADER_LEN)) {
+		if (net_ratelimit())
+			pr_err("bpqether: out of memory\n");
+		kfree_skb(skb);
+
+		return NETDEV_TX_OK;
+	}
+
+	ptr = skb_push(skb, 2);			/* Make space for length */
 
 	*ptr++ = (size + 5) % 256;
 	*ptr++ = (size + 5) / 256;
@@ -296,6 +333,11 @@ static int bpq_xmit(struct sk_buff *skb, struct net_device *dev)
 		bpq->stats.tx_dropped++;
 		kfree_skb(skb);
 		return -ENODEV;
+	orig_dev = dev;
+	if ((dev = bpq_get_ether_dev(dev)) == NULL) {
+		orig_dev->stats.tx_dropped++;
+		kfree_skb(skb);
+		return NETDEV_TX_OK;
 	}
 
 	skb->protocol = ax25_type_trans(skb, dev);
@@ -317,6 +359,12 @@ static struct net_device_stats *bpq_get_stats(struct net_device *dev)
 	struct bpqdev *bpq = netdev_priv(dev);
 
 	return &bpq->stats;
+	dev->stats.tx_packets++;
+	dev->stats.tx_bytes+=skb->len;
+  
+	dev_queue_xmit(skb);
+	netif_wake_queue(dev);
+	return NETDEV_TX_OK;
 }
 
 /*
@@ -397,6 +445,7 @@ static int bpq_close(struct net_device *dev)
  *	Proc filesystem
  */
 static void *bpq_seq_start(struct seq_file *seq, loff_t *pos)
+	__acquires(RCU)
 {
 	int i = 1;
 	struct bpqdev *bpqdev;
@@ -416,6 +465,7 @@ static void *bpq_seq_start(struct seq_file *seq, loff_t *pos)
 static void *bpq_seq_next(struct seq_file *seq, void *v, loff_t *pos)
 {
 	struct list_head *p;
+	struct bpqdev *bpqdev = v;
 
 	++*pos;
 
@@ -423,12 +473,16 @@ static void *bpq_seq_next(struct seq_file *seq, void *v, loff_t *pos)
 		p = rcu_dereference(bpq_devices.next);
 	else
 		p = rcu_dereference(((struct bpqdev *)v)->bpq_list.next);
+		p = rcu_dereference(list_next_rcu(&bpq_devices));
+	else
+		p = rcu_dereference(list_next_rcu(&bpqdev->bpq_list));
 
 	return (p == &bpq_devices) ? NULL 
 		: list_entry(p, struct bpqdev, bpq_list);
 }
 
 static void bpq_seq_stop(struct seq_file *seq, void *v)
+	__releases(RCU)
 {
 	rcu_read_unlock();
 }
@@ -447,16 +501,22 @@ static int bpq_seq_show(struct seq_file *seq, void *v)
 			bpqdev->axdev->name, bpqdev->ethdev->name,
 			print_mac(mac, bpqdev->dest_addr));
 
+		seq_printf(seq, "%-5s %-10s %pM  ",
+			bpqdev->axdev->name, bpqdev->ethdev->name,
+			bpqdev->dest_addr);
+
 		if (is_multicast_ether_addr(bpqdev->acpt_addr))
 			seq_printf(seq, "*\n");
 		else
 			seq_printf(seq, "%s\n", print_mac(mac, bpqdev->acpt_addr));
+			seq_printf(seq, "%pM\n", bpqdev->acpt_addr);
 
 	}
 	return 0;
 }
 
 static struct seq_operations bpq_seqops = {
+static const struct seq_operations bpq_seqops = {
 	.start = bpq_seq_start,
 	.next = bpq_seq_next,
 	.stop = bpq_seq_stop,
@@ -489,12 +549,24 @@ static void bpq_setup(struct net_device *dev)
 	dev->set_mac_address = bpq_set_mac_address;
 	dev->get_stats	     = bpq_get_stats;
 	dev->do_ioctl	     = bpq_ioctl;
+static const struct net_device_ops bpq_netdev_ops = {
+	.ndo_open	     = bpq_open,
+	.ndo_stop	     = bpq_close,
+	.ndo_start_xmit	     = bpq_xmit,
+	.ndo_set_mac_address = bpq_set_mac_address,
+	.ndo_do_ioctl	     = bpq_ioctl,
+};
+
+static void bpq_setup(struct net_device *dev)
+{
+	dev->netdev_ops	     = &bpq_netdev_ops;
 	dev->destructor	     = free_netdev;
 
 	memcpy(dev->broadcast, &ax25_bcast, AX25_ADDR_LEN);
 	memcpy(dev->dev_addr,  &ax25_defaddr, AX25_ADDR_LEN);
 
 	dev->flags      = 0;
+	dev->features	= NETIF_F_LLTX;	/* Allow recursion */
 
 #if defined(CONFIG_AX25) || defined(CONFIG_AX25_MODULE)
 	dev->header_ops      = &ax25_header_ops;
@@ -518,6 +590,8 @@ static int bpq_new_device(struct net_device *edev)
 
 	ndev = alloc_netdev(sizeof(struct bpqdev), "bpq%d",
 			   bpq_setup);
+	ndev = alloc_netdev(sizeof(struct bpqdev), "bpq%d", NET_NAME_UNKNOWN,
+			    bpq_setup);
 	if (!ndev)
 		return -ENOMEM;
 
@@ -527,8 +601,8 @@ static int bpq_new_device(struct net_device *edev)
 	bpq->ethdev = edev;
 	bpq->axdev = ndev;
 
-	memcpy(bpq->dest_addr, bcast_addr, sizeof(bpq_eth_addr));
-	memcpy(bpq->acpt_addr, bcast_addr, sizeof(bpq_eth_addr));
+	eth_broadcast_addr(bpq->dest_addr);
+	eth_broadcast_addr(bpq->acpt_addr);
 
 	err = dev_alloc_name(ndev, ndev->name);
 	if (err < 0) 
@@ -568,9 +642,15 @@ static int bpq_device_event(struct notifier_block *this,unsigned long event, voi
 	struct net_device *dev = (struct net_device *)ptr;
 
 	if (dev_net(dev) != &init_net)
+static int bpq_device_event(struct notifier_block *this,
+			    unsigned long event, void *ptr)
+{
+	struct net_device *dev = netdev_notifier_info_to_dev(ptr);
+
+	if (!net_eq(dev_net(dev), &init_net))
 		return NOTIFY_DONE;
 
-	if (!dev_is_ethdev(dev))
+	if (!dev_is_ethdev(dev) && !bpq_get_ax25_dev(dev))
 		return NOTIFY_DONE;
 
 	switch (event) {
@@ -606,6 +686,8 @@ static int __init bpq_init_driver(void)
 {
 #ifdef CONFIG_PROC_FS
 	if (!proc_net_fops_create(&init_net, "bpqether", S_IRUGO, &bpq_info_fops)) {
+	if (!proc_create("bpqether", S_IRUGO, init_net.proc_net,
+			 &bpq_info_fops)) {
 		printk(KERN_ERR
 			"bpq: cannot create /proc/net/bpqether entry.\n");
 		return -ENOENT;
@@ -630,6 +712,7 @@ static void __exit bpq_cleanup_driver(void)
 	unregister_netdevice_notifier(&bpq_dev_notifier);
 
 	proc_net_remove(&init_net, "bpqether");
+	remove_proc_entry("bpqether", init_net.proc_net);
 
 	rtnl_lock();
 	while (!list_empty(&bpq_devices)) {

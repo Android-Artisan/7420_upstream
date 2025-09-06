@@ -4,17 +4,25 @@
  *
  *  S390 and zSeries version
  *    Copyright IBM Corp. 2001,2006
+ *    character device frontend for tape device driver
+ *
+ *  S390 and zSeries version
+ *    Copyright IBM Corp. 2001, 2006
  *    Author(s): Carsten Otte <cotte@de.ibm.com>
  *		 Michael Holzheu <holzheu@de.ibm.com>
  *		 Tuan Ngo-Anh <ngoanh@de.ibm.com>
  *		 Martin Schwidefsky <schwidefsky@de.ibm.com>
  */
 
+#define KMSG_COMPONENT "tape"
+#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
+
 #include <linux/module.h>
 #include <linux/types.h>
 #include <linux/proc_fs.h>
 #include <linux/mtio.h>
 #include <linux/smp_lock.h>
+#include <linux/compat.h>
 
 #include <asm/uaccess.h>
 
@@ -39,6 +47,10 @@ static int tapechar_ioctl(struct inode *, struct file *, unsigned int,
 			  unsigned long);
 static long tapechar_compat_ioctl(struct file *, unsigned int,
 			  unsigned long);
+static long tapechar_ioctl(struct file *, unsigned int, unsigned long);
+#ifdef CONFIG_COMPAT
+static long tapechar_compat_ioctl(struct file *, unsigned int, unsigned long);
+#endif
 
 static const struct file_operations tape_fops =
 {
@@ -49,6 +61,13 @@ static const struct file_operations tape_fops =
 	.compat_ioctl = tapechar_compat_ioctl,
 	.open = tapechar_open,
 	.release = tapechar_release,
+	.unlocked_ioctl = tapechar_ioctl,
+#ifdef CONFIG_COMPAT
+	.compat_ioctl = tapechar_compat_ioctl,
+#endif
+	.open = tapechar_open,
+	.release = tapechar_release,
+	.llseek = no_llseek,
 };
 
 static int tapechar_major = TAPECHAR_MAJOR;
@@ -138,6 +157,7 @@ tapechar_read(struct file *filp, char __user *data, size_t count, loff_t *ppos)
 	 * If the tape isn't terminated yet, do it now. And since we then
 	 * are at the end of the tape there wouldn't be anything to read
 	 * anyways. So we return immediatly.
+	 * anyways. So we return immediately.
 	 */
 	if(device->required_tapemarks) {
 		return tape_std_terminate_write(device);
@@ -310,6 +330,26 @@ tapechar_open (struct inode *inode, struct file *filp)
 
 out:
 	unlock_kernel();
+		imajor(file_inode(filp)),
+		iminor(file_inode(filp)));
+
+	if (imajor(file_inode(filp)) != tapechar_major)
+		return -ENODEV;
+
+	minor = iminor(file_inode(filp));
+	device = tape_find_device(minor / TAPE_MINORS_PER_DEV);
+	if (IS_ERR(device)) {
+		DBF_EVENT(3, "TCHAR:open: tape_find_device() failed\n");
+		return PTR_ERR(device);
+	}
+
+	rc = tape_open(device);
+	if (rc == 0) {
+		filp->private_data = device;
+		nonseekable_open(inode, filp);
+	} else
+		tape_put_device(device);
+
 	return rc;
 }
 
@@ -347,6 +387,8 @@ tapechar_release(struct inode *inode, struct file *filp)
 	}
 	tape_release(device);
 	filp->private_data = tape_put_device(device);
+	filp->private_data = NULL;
+	tape_put_device(device);
 
 	return 0;
 }
@@ -364,6 +406,11 @@ tapechar_ioctl(struct inode *inp, struct file *filp,
 	DBF_EVENT(6, "TCHAR:ioct\n");
 
 	device = (struct tape_device *) filp->private_data;
+
+__tapechar_ioctl(struct tape_device *device,
+		 unsigned int no, unsigned long data)
+{
+	int rc;
 
 	if (no == MTIOCTOP) {
 		struct mtop op;
@@ -427,6 +474,9 @@ tapechar_ioctl(struct inode *inp, struct file *filp,
 		get.mt_type = MT_ISUNKNOWN;
 		get.mt_resid = 0 /* device->devstat.rescnt */;
 		get.mt_dsreg = device->tape_state;
+		get.mt_dsreg =
+			((device->char_data.block_size << MT_ST_BLKSIZE_SHIFT)
+			 & MT_ST_BLKSIZE_MASK);
 		/* FIXME: mt_gstat, mt_erreg, mt_fileno */
 		get.mt_gstat = 0;
 		get.mt_erreg = 0;
@@ -457,6 +507,22 @@ tapechar_ioctl(struct inode *inp, struct file *filp,
 }
 
 static long
+tapechar_ioctl(struct file *filp, unsigned int no, unsigned long data)
+{
+	struct tape_device *device;
+	long rc;
+
+	DBF_EVENT(6, "TCHAR:ioct\n");
+
+	device = (struct tape_device *) filp->private_data;
+	mutex_lock(&device->mutex);
+	rc = __tapechar_ioctl(device, no, data);
+	mutex_unlock(&device->mutex);
+	return rc;
+}
+
+#ifdef CONFIG_COMPAT
+static long
 tapechar_compat_ioctl(struct file *filp, unsigned int no, unsigned long data)
 {
 	struct tape_device *device = filp->private_data;
@@ -466,12 +532,24 @@ tapechar_compat_ioctl(struct file *filp, unsigned int no, unsigned long data)
 		lock_kernel();
 		rval = device->discipline->ioctl_fn(device, no, data);
 		unlock_kernel();
+	unsigned long argp;
+
+	/* The 'arg' argument of any ioctl function may only be used for
+	 * pointers because of the compat pointer conversion.
+	 * Consider this when adding new ioctls.
+	 */
+	argp = (unsigned long) compat_ptr(data);
+	if (device->discipline->ioctl_fn) {
+		mutex_lock(&device->mutex);
+		rval = device->discipline->ioctl_fn(device, no, argp);
+		mutex_unlock(&device->mutex);
 		if (rval == -EINVAL)
 			rval = -ENOIOCTLCMD;
 	}
 
 	return rval;
 }
+#endif /* CONFIG_COMPAT */
 
 /*
  * Initialize character device frontend.

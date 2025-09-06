@@ -1,5 +1,6 @@
 /*
  * Aic94xx SAS/SATA driver hardware registers defintions.
+ * Aic94xx SAS/SATA driver hardware registers definitions.
  *
  * Copyright (C) 2004 Adaptec, Inc.  All rights reserved.
  * Copyright (C) 2004 David Chaw <david_chaw@adaptec.com>
@@ -1690,6 +1691,7 @@
 
 /*
  * HST_PCIX2 Registers, Addresss Range: (0x00-0xFC)
+ * HST_PCIX2 Registers, Address Range: (0x00-0xFC)
  */
 #define PCIX_REG_BASE_ADR		0xB8040000
 
@@ -1803,6 +1805,7 @@
 
 /*
  * EXSI Registers, Addresss Range: (0x00-0xFC)
+ * EXSI Registers, Address Range: (0x00-0xFC)
  */
 #define EXSI_REG_BASE_ADR		REG_BASE_ADDR_EXSI
 
@@ -2135,6 +2138,7 @@
 * link sequencer. The sequencer has to use LSEQ registers
 * LmSCRPAGE and LmMnSCRPAGE to access the scratch memory. A flat
 * mapping of the scratch memory is avaliable for software
+* mapping of the scratch memory is available for software
 * convenience and to prevent corruption while the sequencer is
 * running. This memory is mapped onto addresses 800h - 9FFh.
 *

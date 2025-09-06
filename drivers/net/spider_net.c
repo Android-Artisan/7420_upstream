@@ -1892,7 +1892,6 @@ spider_net_download_firmware(struct spider_net_card *card,
  * to download the firmware is performed before the release.
  *
  * Firmware format
- * ===============
  * spider_fw.bin is expected to be a file containing 6*1024*4 bytes, 4k being
  * the program for each sequencer. Use the command
  *    tail -q -n +2 Seq_code1_0x088.txt Seq_code2_0x090.txt              \

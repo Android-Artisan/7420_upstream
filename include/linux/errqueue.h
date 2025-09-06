@@ -33,6 +33,19 @@ struct sock_exterr_skb
 	union {
 		struct inet_skb_parm	h4;
 #if defined(CONFIG_IPV6) || defined (CONFIG_IPV6_MODULE)
+
+#include <net/ip.h>
+#if IS_ENABLED(CONFIG_IPV6)
+#include <linux/ipv6.h>
+#endif
+#include <uapi/linux/errqueue.h>
+
+#define SKB_EXT_ERR(skb) ((struct sock_exterr_skb *) ((skb)->cb))
+
+struct sock_exterr_skb {
+	union {
+		struct inet_skb_parm	h4;
+#if IS_ENABLED(CONFIG_IPV6)
 		struct inet6_skb_parm	h6;
 #endif
 	} header;

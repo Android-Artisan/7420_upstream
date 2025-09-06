@@ -121,6 +121,8 @@ struct afs_file_status {
 	u32			author;		/* author ID */
 	u32			owner;		/* owner ID */
 	u32			group;		/* group ID */
+	kuid_t			owner;		/* owner ID */
+	kgid_t			group;		/* group ID */
 	afs_access_t		caller_access;	/* access rights for authenticated caller */
 	afs_access_t		anon_access;	/* access rights for unauthenticated caller */
 	umode_t			mode;		/* UNIX mode */

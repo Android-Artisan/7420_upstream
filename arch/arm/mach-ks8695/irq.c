@@ -28,6 +28,11 @@
 #include <mach/hardware.h>
 #include <asm/irq.h>
 #include <asm/io.h>
+#include <linux/device.h>
+#include <linux/io.h>
+
+#include <mach/hardware.h>
+#include <asm/irq.h>
 
 #include <asm/mach/irq.h>
 
@@ -35,21 +40,25 @@
 #include <mach/regs-gpio.h>
 
 static void ks8695_irq_mask(unsigned int irqno)
+static void ks8695_irq_mask(struct irq_data *d)
 {
 	unsigned long inten;
 
 	inten = __raw_readl(KS8695_IRQ_VA + KS8695_INTEN);
 	inten &= ~(1 << irqno);
+	inten &= ~(1 << d->irq);
 
 	__raw_writel(inten, KS8695_IRQ_VA + KS8695_INTEN);
 }
 
 static void ks8695_irq_unmask(unsigned int irqno)
+static void ks8695_irq_unmask(struct irq_data *d)
 {
 	unsigned long inten;
 
 	inten = __raw_readl(KS8695_IRQ_VA + KS8695_INTEN);
 	inten |= (1 << irqno);
+	inten |= (1 << d->irq);
 
 	__raw_writel(inten, KS8695_IRQ_VA + KS8695_INTEN);
 }
@@ -57,6 +66,9 @@ static void ks8695_irq_unmask(unsigned int irqno)
 static void ks8695_irq_ack(unsigned int irqno)
 {
 	__raw_writel((1 << irqno), KS8695_IRQ_VA + KS8695_INTST);
+static void ks8695_irq_ack(struct irq_data *d)
+{
+	__raw_writel((1 << d->irq), KS8695_IRQ_VA + KS8695_INTST);
 }
 
 
@@ -65,6 +77,7 @@ static struct irq_chip ks8695_irq_edge_chip;
 
 
 static int ks8695_irq_set_type(unsigned int irqno, unsigned int type)
+static int ks8695_irq_set_type(struct irq_data *d, unsigned int type)
 {
 	unsigned long ctrl, mode;
 	unsigned short level_triggered = 0;
@@ -94,6 +107,7 @@ static int ks8695_irq_set_type(unsigned int irqno, unsigned int type)
 	}
 
 	switch (irqno) {
+	switch (d->irq) {
 		case KS8695_IRQ_EXTERN0:
 			ctrl &= ~IOPC_IOEINT0TM;
 			ctrl |= IOPC_IOEINT0_MODE(mode);
@@ -121,6 +135,12 @@ static int ks8695_irq_set_type(unsigned int irqno, unsigned int type)
 	else {
 		set_irq_chip(irqno, &ks8695_irq_edge_chip);
 		set_irq_handler(irqno, handle_edge_irq);
+		irq_set_chip_and_handler(d->irq, &ks8695_irq_level_chip,
+					 handle_level_irq);
+	}
+	else {
+		irq_set_chip_and_handler(d->irq, &ks8695_irq_edge_chip,
+					 handle_edge_irq);
 	}
 
 	__raw_writel(ctrl, KS8695_GPIO_VA + KS8695_IOPC);
@@ -139,6 +159,17 @@ static struct irq_chip ks8695_irq_edge_chip = {
 	.mask		= ks8695_irq_mask,
 	.unmask		= ks8695_irq_unmask,
 	.set_type	= ks8695_irq_set_type,
+	.irq_ack	= ks8695_irq_mask,
+	.irq_mask	= ks8695_irq_mask,
+	.irq_unmask	= ks8695_irq_unmask,
+	.irq_set_type	= ks8695_irq_set_type,
+};
+
+static struct irq_chip ks8695_irq_edge_chip = {
+	.irq_ack	= ks8695_irq_ack,
+	.irq_mask	= ks8695_irq_mask,
+	.irq_unmask	= ks8695_irq_unmask,
+	.irq_set_type	= ks8695_irq_set_type,
 };
 
 void __init ks8695_init_irq(void)
@@ -160,6 +191,9 @@ void __init ks8695_init_irq(void)
 			case KS8695_IRQ_COMM_RX:
 				set_irq_chip(irq, &ks8695_irq_level_chip);
 				set_irq_handler(irq, handle_level_irq);
+				irq_set_chip_and_handler(irq,
+							 &ks8695_irq_level_chip,
+							 handle_level_irq);
 				break;
 
 			/* Edge-triggered interrupts */
@@ -170,5 +204,13 @@ void __init ks8695_init_irq(void)
 		}
 
 		set_irq_flags(irq, IRQF_VALID);
+				/* clear pending bit */
+				ks8695_irq_ack(irq_get_irq_data(irq));
+				irq_set_chip_and_handler(irq,
+							 &ks8695_irq_edge_chip,
+							 handle_edge_irq);
+		}
+
+		irq_clear_status_flags(irq, IRQ_NOREQUEST);
 	}
 }

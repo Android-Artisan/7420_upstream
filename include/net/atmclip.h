@@ -59,4 +59,12 @@ struct clip_priv {
 extern struct neigh_table *clip_tbl_hook;
 #endif
 
+#define PRIV(dev) ((struct clip_priv *) netdev_priv(dev))
+
+struct clip_priv {
+	int number;			/* for convenience ... */
+	spinlock_t xoff_lock;		/* ensures that pop is atomic (SMP) */
+	struct net_device *next;	/* next CLIP interface */
+};
+
 #endif

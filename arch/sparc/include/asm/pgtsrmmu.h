@@ -101,6 +101,13 @@
 #define SRMMU_SWP_TYPE_SHIFT	SRMMU_PTE_FILE_SHIFT
 #define SRMMU_SWP_OFF_MASK	0x7ffff
 #define SRMMU_SWP_OFF_SHIFT	(SRMMU_PTE_FILE_SHIFT + 5)
+ * The bottom 7 bits are reserved for protection and status bits, especially
+ * PRESENT.
+ */
+#define SRMMU_SWP_TYPE_MASK	0x1f
+#define SRMMU_SWP_TYPE_SHIFT	7
+#define SRMMU_SWP_OFF_MASK	0xfffff
+#define SRMMU_SWP_OFF_SHIFT	(SRMMU_SWP_TYPE_SHIFT + 5)
 
 /* Some day I will implement true fine grained access bits for
  * user pages because the SRMMU gives us the capabilities to
@@ -139,6 +146,7 @@
 	 restore %g0, %g0, %g0;
 
 #ifndef __ASSEMBLY__
+extern unsigned long last_valid_pfn;
 
 /* This makes sense. Honest it does - Anton */
 /* XXX Yes but it's ugly as sin.  FIXME. -KMW */
@@ -220,6 +228,13 @@ static inline unsigned int srmmu_get_faddr(void)
 			     "r" (SRMMU_FAULT_ADDR), "i" (ASI_M_MMUREGS));
 	return retval;
 }
+unsigned int srmmu_get_mmureg(void);
+void srmmu_set_mmureg(unsigned long regval);
+void srmmu_set_ctable_ptr(unsigned long paddr);
+void srmmu_set_context(int context);
+int srmmu_get_context(void);
+unsigned int srmmu_get_fstatus(void);
+unsigned int srmmu_get_faddr(void);
 
 /* This is guaranteed on all SRMMU's. */
 static inline void srmmu_flush_whole_tlb(void)

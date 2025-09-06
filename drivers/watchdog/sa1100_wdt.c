@@ -3,6 +3,8 @@
  *
  *      (c) Copyright 2000 Oleg Drokin <green@crimea.edu>
  *          Based on SoftDog driver by Alan Cox <alan@redhat.com>
+ *	(c) Copyright 2000 Oleg Drokin <green@crimea.edu>
+ *	    Based on SoftDog driver by Alan Cox <alan@lxorguk.ukuu.org.uk>
  *
  *	This program is free software; you can redistribute it and/or
  *	modify it under the terms of the GNU General Public License
@@ -17,6 +19,11 @@
  *
  *      27/11/2000 Initial release
  */
+ *	27/11/2000 Initial release
+ */
+
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/types.h>
@@ -30,6 +37,13 @@
 
 #ifdef CONFIG_ARCH_PXA
 #include <mach/pxa-regs.h>
+#include <linux/io.h>
+#include <linux/bitops.h>
+#include <linux/uaccess.h>
+#include <linux/timex.h>
+
+#ifdef CONFIG_ARCH_PXA
+#include <mach/regs-ost.h>
 #endif
 
 #include <mach/reset.h>
@@ -39,6 +53,9 @@
 
 static unsigned long sa1100wdt_users;
 static int pre_margin;
+static unsigned long oscr_freq;
+static unsigned long sa1100wdt_users;
+static unsigned int pre_margin;
 static int boot_status;
 
 /*
@@ -54,6 +71,10 @@ static int sa1100dog_open(struct inode *inode, struct file *file)
 	OSSR = OSSR_M3;
 	OWER = OWER_WME;
 	OIER |= OIER_E3;
+	writel_relaxed(readl_relaxed(OSCR) + pre_margin, OSMR3);
+	writel_relaxed(OSSR_M3, OSSR);
+	writel_relaxed(OWER_WME, OWER);
+	writel_relaxed(readl_relaxed(OIER) | OIER_E3, OIER);
 	return nonseekable_open(inode, file);
 }
 
@@ -67,6 +88,7 @@ static int sa1100dog_open(struct inode *inode, struct file *file)
 static int sa1100dog_release(struct inode *inode, struct file *file)
 {
 	printk(KERN_CRIT "WATCHDOG: Device closed - timer will not stop\n");
+	pr_crit("Device closed - timer will not stop\n");
 	clear_bit(1, &sa1100wdt_users);
 	return 0;
 }
@@ -77,6 +99,7 @@ static ssize_t sa1100dog_write(struct file *file, const char __user *data,
 	if (len)
 		/* Refresh OSMR3 timer. */
 		OSMR3 = OSCR + pre_margin;
+		writel_relaxed(readl_relaxed(OSCR) + pre_margin, OSMR3);
 	return len;
 }
 
@@ -84,6 +107,7 @@ static const struct watchdog_info ident = {
 	.options	= WDIOF_CARDRESET | WDIOF_SETTIMEOUT
 				| WDIOF_KEEPALIVEPING,
 	.identity	= "SA1100/PXA255 Watchdog",
+	.firmware_version	= 1,
 };
 
 static long sa1100dog_ioctl(struct file *file, unsigned int cmd,
@@ -110,6 +134,7 @@ static long sa1100dog_ioctl(struct file *file, unsigned int cmd,
 
 	case WDIOC_KEEPALIVE:
 		OSMR3 = OSCR + pre_margin;
+		writel_relaxed(readl_relaxed(OSCR) + pre_margin, OSMR3);
 		ret = 0;
 		break;
 
@@ -119,6 +144,7 @@ static long sa1100dog_ioctl(struct file *file, unsigned int cmd,
 			break;
 
 		if (time <= 0 || time > 255) {
+		if (time <= 0 || (oscr_freq * (long long)time >= 0xffffffff)) {
 			ret = -EINVAL;
 			break;
 		}
@@ -129,6 +155,12 @@ static long sa1100dog_ioctl(struct file *file, unsigned int cmd,
 
 	case WDIOC_GETTIMEOUT:
 		ret = put_user(pre_margin / OSCR_FREQ, p);
+		pre_margin = oscr_freq * time;
+		writel_relaxed(readl_relaxed(OSCR) + pre_margin, OSMR3);
+		/*fall through*/
+
+	case WDIOC_GETTIMEOUT:
+		ret = put_user(pre_margin / oscr_freq, p);
 		break;
 	}
 	return ret;
@@ -155,6 +187,8 @@ static int __init sa1100dog_init(void)
 {
 	int ret;
 
+	oscr_freq = get_clock_tick_rate();
+
 	/*
 	 * Read the reset status, and save it for later.  If
 	 * we suspend, RCSR will be cleared, and the watchdog
@@ -169,6 +203,12 @@ static int __init sa1100dog_init(void)
 		printk(KERN_INFO
 			"SA1100/PXA2xx Watchdog Timer: timer margin %d sec\n",
 						margin);
+	pre_margin = oscr_freq * margin;
+
+	ret = misc_register(&sa1100dog_miscdev);
+	if (ret == 0)
+		pr_info("SA1100/PXA2xx Watchdog Timer: timer margin %d sec\n",
+			margin);
 	return ret;
 }
 

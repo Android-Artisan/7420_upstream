@@ -13,6 +13,14 @@
 #include <linux/interrupt.h>
 #include <asm/uaccess.h>
 #include <asm/mmx.h>
+#include <asm/asm.h>
+
+#ifdef CONFIG_X86_INTEL_USERCOPY
+/*
+ * Alignment at which movsl is preferred for bulk memory copies.
+ */
+struct movsl_mask movsl_mask __read_mostly;
+#endif
 
 static inline int __movsl_is_ok(unsigned long a1, unsigned long a2, unsigned long n)
 {
@@ -125,6 +133,13 @@ do {									\
 		"	movl %2,%0\n"					\
 		"1:	rep; stosb\n"					\
 		"2:\n"							\
+	might_fault();							\
+	__asm__ __volatile__(						\
+		ASM_STAC "\n"						\
+		"0:	rep; stosl\n"					\
+		"	movl %2,%0\n"					\
+		"1:	rep; stosb\n"					\
+		"2: " ASM_CLAC "\n"					\
 		".section .fixup,\"ax\"\n"				\
 		"3:	lea 0(%2,%0,4),%0\n"				\
 		"	jmp 2b\n"					\
@@ -149,6 +164,7 @@ unsigned long
 clear_user(void __user *to, unsigned long n)
 {
 	might_sleep();
+	might_fault();
 	if (access_ok(VERIFY_WRITE, to, n))
 		__do_clear_user(to, n);
 	return n;
@@ -320,6 +336,44 @@ __copy_user_intel(void __user *to, const void *from, unsigned long size)
 		       "       .long 37b,100b\n"
 		       "       .long 99b,101b\n"
 		       ".previous"
+		       _ASM_EXTABLE(1b,100b)
+		       _ASM_EXTABLE(2b,100b)
+		       _ASM_EXTABLE(3b,100b)
+		       _ASM_EXTABLE(4b,100b)
+		       _ASM_EXTABLE(5b,100b)
+		       _ASM_EXTABLE(6b,100b)
+		       _ASM_EXTABLE(7b,100b)
+		       _ASM_EXTABLE(8b,100b)
+		       _ASM_EXTABLE(9b,100b)
+		       _ASM_EXTABLE(10b,100b)
+		       _ASM_EXTABLE(11b,100b)
+		       _ASM_EXTABLE(12b,100b)
+		       _ASM_EXTABLE(13b,100b)
+		       _ASM_EXTABLE(14b,100b)
+		       _ASM_EXTABLE(15b,100b)
+		       _ASM_EXTABLE(16b,100b)
+		       _ASM_EXTABLE(17b,100b)
+		       _ASM_EXTABLE(18b,100b)
+		       _ASM_EXTABLE(19b,100b)
+		       _ASM_EXTABLE(20b,100b)
+		       _ASM_EXTABLE(21b,100b)
+		       _ASM_EXTABLE(22b,100b)
+		       _ASM_EXTABLE(23b,100b)
+		       _ASM_EXTABLE(24b,100b)
+		       _ASM_EXTABLE(25b,100b)
+		       _ASM_EXTABLE(26b,100b)
+		       _ASM_EXTABLE(27b,100b)
+		       _ASM_EXTABLE(28b,100b)
+		       _ASM_EXTABLE(29b,100b)
+		       _ASM_EXTABLE(30b,100b)
+		       _ASM_EXTABLE(31b,100b)
+		       _ASM_EXTABLE(32b,100b)
+		       _ASM_EXTABLE(33b,100b)
+		       _ASM_EXTABLE(34b,100b)
+		       _ASM_EXTABLE(35b,100b)
+		       _ASM_EXTABLE(36b,100b)
+		       _ASM_EXTABLE(37b,100b)
+		       _ASM_EXTABLE(99b,101b)
 		       : "=&c"(size), "=&D" (d0), "=&S" (d1)
 		       :  "1"(to), "2"(from), "0"(size)
 		       : "eax", "edx", "memory");
@@ -415,6 +469,26 @@ __copy_user_zeroing_intel(void *to, const void __user *from, unsigned long size)
 		       "	.long 6b,9b\n"
 		       "        .long 7b,16b\n"
 		       ".previous"
+		       _ASM_EXTABLE(0b,16b)
+		       _ASM_EXTABLE(1b,16b)
+		       _ASM_EXTABLE(2b,16b)
+		       _ASM_EXTABLE(21b,16b)
+		       _ASM_EXTABLE(3b,16b)
+		       _ASM_EXTABLE(31b,16b)
+		       _ASM_EXTABLE(4b,16b)
+		       _ASM_EXTABLE(41b,16b)
+		       _ASM_EXTABLE(10b,16b)
+		       _ASM_EXTABLE(51b,16b)
+		       _ASM_EXTABLE(11b,16b)
+		       _ASM_EXTABLE(61b,16b)
+		       _ASM_EXTABLE(12b,16b)
+		       _ASM_EXTABLE(71b,16b)
+		       _ASM_EXTABLE(13b,16b)
+		       _ASM_EXTABLE(81b,16b)
+		       _ASM_EXTABLE(14b,16b)
+		       _ASM_EXTABLE(91b,16b)
+		       _ASM_EXTABLE(6b,9b)
+		       _ASM_EXTABLE(7b,16b)
 		       : "=&c"(size), "=&D" (d0), "=&S" (d1)
 		       :  "1"(to), "2"(from), "0"(size)
 		       : "eax", "edx", "memory");
@@ -517,6 +591,26 @@ static unsigned long __copy_user_zeroing_intel_nocache(void *to,
 	       "	.long 6b,9b\n"
 	       "        .long 7b,16b\n"
 	       ".previous"
+	       _ASM_EXTABLE(0b,16b)
+	       _ASM_EXTABLE(1b,16b)
+	       _ASM_EXTABLE(2b,16b)
+	       _ASM_EXTABLE(21b,16b)
+	       _ASM_EXTABLE(3b,16b)
+	       _ASM_EXTABLE(31b,16b)
+	       _ASM_EXTABLE(4b,16b)
+	       _ASM_EXTABLE(41b,16b)
+	       _ASM_EXTABLE(10b,16b)
+	       _ASM_EXTABLE(51b,16b)
+	       _ASM_EXTABLE(11b,16b)
+	       _ASM_EXTABLE(61b,16b)
+	       _ASM_EXTABLE(12b,16b)
+	       _ASM_EXTABLE(71b,16b)
+	       _ASM_EXTABLE(13b,16b)
+	       _ASM_EXTABLE(81b,16b)
+	       _ASM_EXTABLE(14b,16b)
+	       _ASM_EXTABLE(91b,16b)
+	       _ASM_EXTABLE(6b,9b)
+	       _ASM_EXTABLE(7b,16b)
 	       : "=&c"(size), "=&D" (d0), "=&S" (d1)
 	       :  "1"(to), "2"(from), "0"(size)
 	       : "eax", "edx", "memory");
@@ -608,6 +702,26 @@ static unsigned long __copy_user_intel_nocache(void *to,
 	       "	.long 6b,9b\n"
 	       "        .long 7b,16b\n"
 	       ".previous"
+	       _ASM_EXTABLE(0b,16b)
+	       _ASM_EXTABLE(1b,16b)
+	       _ASM_EXTABLE(2b,16b)
+	       _ASM_EXTABLE(21b,16b)
+	       _ASM_EXTABLE(3b,16b)
+	       _ASM_EXTABLE(31b,16b)
+	       _ASM_EXTABLE(4b,16b)
+	       _ASM_EXTABLE(41b,16b)
+	       _ASM_EXTABLE(10b,16b)
+	       _ASM_EXTABLE(51b,16b)
+	       _ASM_EXTABLE(11b,16b)
+	       _ASM_EXTABLE(61b,16b)
+	       _ASM_EXTABLE(12b,16b)
+	       _ASM_EXTABLE(71b,16b)
+	       _ASM_EXTABLE(13b,16b)
+	       _ASM_EXTABLE(81b,16b)
+	       _ASM_EXTABLE(14b,16b)
+	       _ASM_EXTABLE(91b,16b)
+	       _ASM_EXTABLE(6b,9b)
+	       _ASM_EXTABLE(7b,16b)
 	       : "=&c"(size), "=&D" (d0), "=&S" (d1)
 	       :  "1"(to), "2"(from), "0"(size)
 	       : "eax", "edx", "memory");
@@ -660,6 +774,9 @@ do {									\
 		"	.long 0b,3b\n"					\
 		"	.long 1b,2b\n"					\
 		".previous"						\
+		_ASM_EXTABLE(4b,5b)					\
+		_ASM_EXTABLE(0b,3b)					\
+		_ASM_EXTABLE(1b,2b)					\
 		: "=&c"(size), "=&D" (__d0), "=&S" (__d1), "=r"(__d2)	\
 		: "3"(size), "0"(size), "1"(to), "2"(from)		\
 		: "memory");						\
@@ -702,6 +819,9 @@ do {									\
 		"	.long 0b,3b\n"					\
 		"	.long 1b,6b\n"					\
 		".previous"						\
+		_ASM_EXTABLE(4b,5b)					\
+		_ASM_EXTABLE(0b,3b)					\
+		_ASM_EXTABLE(1b,6b)					\
 		: "=&c"(size), "=&D" (__d0), "=&S" (__d1), "=r"(__d2)	\
 		: "3"(size), "0"(size), "1"(to), "2"(from)		\
 		: "memory");						\
@@ -767,10 +887,13 @@ survive:
 		return n;
 	}
 #endif
+	stac();
+	__uaccess_begin_nospec();
 	if (movsl_is_ok(to, from, n))
 		__copy_user(to, from, n);
 	else
 		n = __copy_user_intel(to, from, n);
+	__uaccess_end();
 	return n;
 }
 EXPORT_SYMBOL(__copy_to_user_ll);
@@ -778,10 +901,12 @@ EXPORT_SYMBOL(__copy_to_user_ll);
 unsigned long __copy_from_user_ll(void *to, const void __user *from,
 					unsigned long n)
 {
+	__uaccess_begin_nospec();
 	if (movsl_is_ok(to, from, n))
 		__copy_user_zeroing(to, from, n);
 	else
 		n = __copy_user_zeroing_intel(to, from, n);
+	__uaccess_end();
 	return n;
 }
 EXPORT_SYMBOL(__copy_from_user_ll);
@@ -789,11 +914,13 @@ EXPORT_SYMBOL(__copy_from_user_ll);
 unsigned long __copy_from_user_ll_nozero(void *to, const void __user *from,
 					 unsigned long n)
 {
+	__uaccess_begin_nospec();
 	if (movsl_is_ok(to, from, n))
 		__copy_user(to, from, n);
 	else
 		n = __copy_user_intel((void __user *)to,
 				      (const void *)from, n);
+	__uaccess_end();
 	return n;
 }
 EXPORT_SYMBOL(__copy_from_user_ll_nozero);
@@ -801,6 +928,7 @@ EXPORT_SYMBOL(__copy_from_user_ll_nozero);
 unsigned long __copy_from_user_ll_nocache(void *to, const void __user *from,
 					unsigned long n)
 {
+	__uaccess_begin_nospec();
 #ifdef CONFIG_X86_INTEL_USERCOPY
 	if (n > 64 && cpu_has_xmm2)
 		n = __copy_user_zeroing_intel_nocache(to, from, n);
@@ -809,6 +937,7 @@ unsigned long __copy_from_user_ll_nocache(void *to, const void __user *from,
 #else
 	__copy_user_zeroing(to, from, n);
 #endif
+	__uaccess_end();
 	return n;
 }
 EXPORT_SYMBOL(__copy_from_user_ll_nocache);
@@ -816,6 +945,7 @@ EXPORT_SYMBOL(__copy_from_user_ll_nocache);
 unsigned long __copy_from_user_ll_nocache_nozero(void *to, const void __user *from,
 					unsigned long n)
 {
+	__uaccess_begin_nospec();
 #ifdef CONFIG_X86_INTEL_USERCOPY
 	if (n > 64 && cpu_has_xmm2)
 		n = __copy_user_intel_nocache(to, from, n);
@@ -824,6 +954,7 @@ unsigned long __copy_from_user_ll_nocache_nozero(void *to, const void __user *fr
 #else
 	__copy_user(to, from, n);
 #endif
+	__uaccess_end();
 	return n;
 }
 EXPORT_SYMBOL(__copy_from_user_ll_nocache_nozero);
@@ -835,6 +966,8 @@ EXPORT_SYMBOL(__copy_from_user_ll_nocache_nozero);
  * @n:    Number of bytes to copy.
  *
  * Context: User context only.  This function may sleep.
+ * Context: User context only. This function may sleep if pagefaults are
+ *          enabled.
  *
  * Copy data from kernel space to user space.
  *
@@ -843,12 +976,14 @@ EXPORT_SYMBOL(__copy_from_user_ll_nocache_nozero);
  */
 unsigned long
 copy_to_user(void __user *to, const void *from, unsigned long n)
+unsigned long _copy_to_user(void __user *to, const void *from, unsigned n)
 {
 	if (access_ok(VERIFY_WRITE, to, n))
 		n = __copy_to_user(to, from, n);
 	return n;
 }
 EXPORT_SYMBOL(copy_to_user);
+EXPORT_SYMBOL(_copy_to_user);
 
 /**
  * copy_from_user: - Copy a block of data from user space.
@@ -857,6 +992,8 @@ EXPORT_SYMBOL(copy_to_user);
  * @n:    Number of bytes to copy.
  *
  * Context: User context only.  This function may sleep.
+ * Context: User context only. This function may sleep if pagefaults are
+ *          enabled.
  *
  * Copy data from user space to kernel space.
  *
@@ -868,6 +1005,7 @@ EXPORT_SYMBOL(copy_to_user);
  */
 unsigned long
 copy_from_user(void *to, const void __user *from, unsigned long n)
+unsigned long _copy_from_user(void *to, const void __user *from, unsigned n)
 {
 	if (access_ok(VERIFY_READ, from, n))
 		n = __copy_from_user(to, from, n);
@@ -876,3 +1014,4 @@ copy_from_user(void *to, const void __user *from, unsigned long n)
 	return n;
 }
 EXPORT_SYMBOL(copy_from_user);
+EXPORT_SYMBOL(_copy_from_user);

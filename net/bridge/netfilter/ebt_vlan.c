@@ -16,6 +16,7 @@
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * along with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <linux/if_ether.h>
@@ -30,6 +31,12 @@ static int debug;
 
 module_param(debug, int, 0);
 MODULE_PARM_DESC(debug, "debug=1 is turn on debug messages");
+#include <linux/netfilter/x_tables.h>
+#include <linux/netfilter_bridge/ebtables.h>
+#include <linux/netfilter_bridge/ebt_vlan.h>
+
+#define MODULE_VERS "0.6"
+
 MODULE_AUTHOR("Nick Fedchik <nick@fedchik.org.ua>");
 MODULE_DESCRIPTION("Ebtables: 802.1Q VLAN tag match");
 MODULE_LICENSE("GPL");
@@ -48,6 +55,13 @@ ebt_filter_vlan(const struct sk_buff *skb,
 	const struct ebt_vlan_info *info = data;
 	const struct vlan_hdr *fp;
 	struct vlan_hdr _frame;
+#define GET_BITMASK(_BIT_MASK_) info->bitmask & _BIT_MASK_
+#define EXIT_ON_MISMATCH(_MATCH_,_MASK_) {if (!((info->_MATCH_ == _MATCH_)^!!(info->invflags & _MASK_))) return false; }
+
+static bool
+ebt_vlan_mt(const struct sk_buff *skb, struct xt_action_param *par)
+{
+	const struct ebt_vlan_info *info = par->matchinfo;
 
 	unsigned short TCI;	/* Whole TCI, given from parsed frame */
 	unsigned short id;	/* VLAN ID, given from frame TCI */
@@ -58,6 +72,20 @@ ebt_filter_vlan(const struct sk_buff *skb,
 	fp = skb_header_pointer(skb, 0, sizeof(_frame), &_frame);
 	if (fp == NULL)
 		return EBT_NOMATCH;
+	if (skb_vlan_tag_present(skb)) {
+		TCI = skb_vlan_tag_get(skb);
+		encap = skb->protocol;
+	} else {
+		const struct vlan_hdr *fp;
+		struct vlan_hdr _frame;
+
+		fp = skb_header_pointer(skb, 0, sizeof(_frame), &_frame);
+		if (fp == NULL)
+			return false;
+
+		TCI = ntohs(fp->h_vlan_TCI);
+		encap = fp->h_vlan_encapsulated_proto;
+	}
 
 	/* Tag Control Information (TCI) consists of the following elements:
 	 * - User_priority. The user_priority field is three bits in length,
@@ -70,6 +98,8 @@ ebt_filter_vlan(const struct sk_buff *skb,
 	id = TCI & VLAN_VID_MASK;
 	prio = (TCI >> 13) & 0x7;
 	encap = fp->h_vlan_encapsulated_proto;
+	id = TCI & VLAN_VID_MASK;
+	prio = (TCI >> 13) & 0x7;
 
 	/* Checking VLAN Identifier (VID) */
 	if (GET_BITMASK(EBT_VLAN_ID))
@@ -106,6 +136,18 @@ ebt_check_vlan(const char *tablename,
 		DEBUG_MSG
 		    ("passed entry proto %2.4X is not 802.1Q (8100)\n",
 		     (unsigned short) ntohs(e->ethproto));
+	return true;
+}
+
+static int ebt_vlan_mt_check(const struct xt_mtchk_param *par)
+{
+	struct ebt_vlan_info *info = par->matchinfo;
+	const struct ebt_entry *e = par->entryinfo;
+
+	/* Is it 802.1Q frame checked? */
+	if (e->ethproto != htons(ETH_P_8021Q)) {
+		pr_debug("passed entry proto %2.4X is not 802.1Q (8100)\n",
+			 ntohs(e->ethproto));
 		return -EINVAL;
 	}
 
@@ -114,6 +156,8 @@ ebt_check_vlan(const char *tablename,
 	if (info->bitmask & ~EBT_VLAN_MASK) {
 		DEBUG_MSG("bitmask %2X is out of mask (%2X)\n",
 			  info->bitmask, EBT_VLAN_MASK);
+		pr_debug("bitmask %2X is out of mask (%2X)\n",
+			 info->bitmask, EBT_VLAN_MASK);
 		return -EINVAL;
 	}
 
@@ -121,6 +165,8 @@ ebt_check_vlan(const char *tablename,
 	if (info->invflags & ~EBT_VLAN_MASK) {
 		DEBUG_MSG("inversion flags %2X is out of mask (%2X)\n",
 			  info->invflags, EBT_VLAN_MASK);
+		pr_debug("inversion flags %2X is out of mask (%2X)\n",
+			 info->invflags, EBT_VLAN_MASK);
 		return -EINVAL;
 	}
 
@@ -136,6 +182,12 @@ ebt_check_vlan(const char *tablename,
 				DEBUG_MSG
 				    ("id %d is out of range (1-4096)\n",
 				     info->id);
+	 * if_vlan.h: VLAN_N_VID 4096. */
+	if (GET_BITMASK(EBT_VLAN_ID)) {
+		if (!!info->id) { /* if id!=0 => check vid range */
+			if (info->id > VLAN_N_VID) {
+				pr_debug("id %d is out of range (1-4096)\n",
+					 info->id);
 				return -EINVAL;
 			}
 			/* Note: This is valid VLAN-tagged frame point.
@@ -151,6 +203,8 @@ ebt_check_vlan(const char *tablename,
 		if ((unsigned char) info->prio > 7) {
 			DEBUG_MSG("prio %d is out of range (0-7)\n",
 			     info->prio);
+			pr_debug("prio %d is out of range (0-7)\n",
+				 info->prio);
 			return -EINVAL;
 		}
 	}
@@ -162,6 +216,8 @@ ebt_check_vlan(const char *tablename,
 			DEBUG_MSG
 			    ("encap frame length %d is less than minimal\n",
 			     ntohs(info->encap));
+			pr_debug("encap frame length %d is less than "
+				 "minimal\n", ntohs(info->encap));
 			return -EINVAL;
 		}
 	}
@@ -173,6 +229,13 @@ static struct ebt_match filter_vlan __read_mostly = {
 	.name		= EBT_VLAN_MATCH,
 	.match		= ebt_filter_vlan,
 	.check		= ebt_check_vlan,
+static struct xt_match ebt_vlan_mt_reg __read_mostly = {
+	.name		= "vlan",
+	.revision	= 0,
+	.family		= NFPROTO_BRIDGE,
+	.match		= ebt_vlan_mt,
+	.checkentry	= ebt_vlan_mt_check,
+	.matchsize	= sizeof(struct ebt_vlan_info),
 	.me		= THIS_MODULE,
 };
 
@@ -182,11 +245,14 @@ static int __init ebt_vlan_init(void)
 		  MODULE_VERS "\n");
 	DEBUG_MSG("module debug=%d\n", !!debug);
 	return ebt_register_match(&filter_vlan);
+	pr_debug("ebtables 802.1Q extension module v" MODULE_VERS "\n");
+	return xt_register_match(&ebt_vlan_mt_reg);
 }
 
 static void __exit ebt_vlan_fini(void)
 {
 	ebt_unregister_match(&filter_vlan);
+	xt_unregister_match(&ebt_vlan_mt_reg);
 }
 
 module_init(ebt_vlan_init);

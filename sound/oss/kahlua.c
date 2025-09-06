@@ -2,6 +2,7 @@
  *	Initialisation code for Cyrix/NatSemi VSA1 softaudio
  *
  *	(C) Copyright 2003 Red Hat Inc <alan@redhat.com>
+ *	(C) Copyright 2003 Red Hat Inc <alan@lxorguk.ukuu.org.uk>
  *
  * XpressAudio(tm) is used on the Cyrix MediaGX (now NatSemi Geode) systems.
  * The older version (VSA1) provides fairly good soundblaster emulation
@@ -31,6 +32,7 @@
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/pci.h>
+#include <linux/slab.h>
 
 #include "sound_config.h"
 
@@ -43,6 +45,7 @@
  */
 
 static u8 __devinit mixer_read(unsigned long io, u8 reg)
+static u8 mixer_read(unsigned long io, u8 reg)
 {
 	outb(reg, io + 4);
 	udelay(20);
@@ -52,6 +55,7 @@ static u8 __devinit mixer_read(unsigned long io, u8 reg)
 }
 
 static int __devinit probe_one(struct pci_dev *pdev, const struct pci_device_id *ent)
+static int probe_one(struct pci_dev *pdev, const struct pci_device_id *ent)
 {
 	struct address_info *hw_config;
 	unsigned long base;
@@ -187,6 +191,10 @@ static void __devexit remove_one(struct pci_dev *pdev)
 	struct address_info *hw_config = pci_get_drvdata(pdev);
 	sb_dsp_unload(hw_config, 0);
 	pci_set_drvdata(pdev, NULL);
+static void remove_one(struct pci_dev *pdev)
+{
+	struct address_info *hw_config = pci_get_drvdata(pdev);
+	sb_dsp_unload(hw_config, 0);
 	kfree(hw_config);
 }
 
@@ -200,6 +208,8 @@ MODULE_LICENSE("GPL");
 
 static struct pci_device_id id_tbl[] = {
 	{ PCI_VENDOR_ID_CYRIX, PCI_DEVICE_ID_CYRIX_5530_AUDIO, PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0 },
+static const struct pci_device_id id_tbl[] = {
+	{ PCI_VDEVICE(CYRIX, PCI_DEVICE_ID_CYRIX_5530_AUDIO), 0 },
 	{ }
 };
 
@@ -210,6 +220,7 @@ static struct pci_driver kahlua_driver = {
 	.id_table	= id_tbl,
 	.probe		= probe_one,
 	.remove		= __devexit_p(remove_one),
+	.remove		= remove_one,
 };
 
 
@@ -220,6 +231,7 @@ static int __init kahlua_init_module(void)
 }
 
 static void __devexit kahlua_cleanup_module(void)
+static void kahlua_cleanup_module(void)
 {
 	pci_unregister_driver(&kahlua_driver);
 }

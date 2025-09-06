@@ -21,6 +21,15 @@
 #include <linux/platform_device.h>
 #include <linux/clk.h>
 #include <linux/smc91x.h>
+#include <linux/gpio.h>
+#include <linux/spi/spi.h>
+#include <linux/spi/pxa2xx_spi.h>
+#include <linux/smc91x.h>
+#include <linux/i2c.h>
+#include <linux/leds.h>
+#include <linux/mfd/da903x.h>
+#include <linux/i2c/max732x.h>
+#include <linux/i2c/pxa-i2c.h>
 
 #include <asm/types.h>
 #include <asm/setup.h>
@@ -43,6 +52,17 @@
 #include <mach/littleton.h>
 
 #include "generic.h"
+
+#include <mach/pxa300.h>
+#include <linux/platform_data/video-pxafb.h>
+#include <linux/platform_data/mmc-pxamci.h>
+#include <linux/platform_data/keypad-pxa27x.h>
+#include <mach/littleton.h>
+#include <linux/platform_data/mtd-nand-pxa3xx.h>
+
+#include "generic.h"
+
+#define GPIO_MMC1_CARD_DETECT	mfp_to_gpio(MFP_PIN_GPIO15)
 
 /* Littleton MFP configurations */
 static mfp_cfg_t littleton_mfp_cfg[] __initdata = {
@@ -74,6 +94,8 @@ static mfp_cfg_t littleton_mfp_cfg[] __initdata = {
 	GPIO25_SSP2_SCLK,
 	GPIO17_SSP2_FRM,
 	GPIO27_SSP2_TXD,
+	GPIO27_SSP2_TXD,
+	GPIO17_GPIO,	/* SFRM as chip-select */
 
 	/* Debug Ethernet */
 	GPIO90_GPIO,
@@ -92,6 +114,21 @@ static mfp_cfg_t littleton_mfp_cfg[] __initdata = {
 	GPIO123_KP_MKOUT_2,
 	GPIO124_KP_MKOUT_3,
 	GPIO125_KP_MKOUT_4,
+
+	/* MMC1 */
+	GPIO3_MMC1_DAT0,
+	GPIO4_MMC1_DAT1,
+	GPIO5_MMC1_DAT2,
+	GPIO6_MMC1_DAT3,
+	GPIO7_MMC1_CLK,
+	GPIO8_MMC1_CMD,
+	GPIO15_GPIO, /* card detect */
+
+	/* UART3 */
+	GPIO107_UART3_CTS,
+	GPIO108_UART3_RTS,
+	GPIO109_UART3_TXD,
+	GPIO110_UART3_RXD,
 };
 
 static struct resource smc91x_resources[] = {
@@ -103,6 +140,8 @@ static struct resource smc91x_resources[] = {
 	[1] = {
 		.start	= IRQ_GPIO(mfp_to_gpio(MFP_PIN_GPIO90)),
 		.end	= IRQ_GPIO(mfp_to_gpio(MFP_PIN_GPIO90)),
+		.start	= PXA_GPIO_TO_IRQ(mfp_to_gpio(MFP_PIN_GPIO90)),
+		.end	= PXA_GPIO_TO_IRQ(mfp_to_gpio(MFP_PIN_GPIO90)),
 		.flags	= IORESOURCE_IRQ | IORESOURCE_IRQ_LOWEDGE,
 	}
 };
@@ -315,9 +354,10 @@ static struct pxafb_mach_info littleton_lcd_info = {
 	.pxafb_lcd_power	= littleton_lcd_power,
 };
 
-static void littleton_init_lcd(void)
+static void __init littleton_init_lcd(void)
 {
 	set_pxa_fb_info(&littleton_lcd_info);
+	pxa_set_fb_info(NULL, &littleton_lcd_info);
 }
 #else
 static inline void littleton_init_lcd(void) {};
@@ -325,6 +365,38 @@ static inline void littleton_init_lcd(void) {};
 
 #if defined(CONFIG_KEYBOARD_PXA27x) || defined(CONFIG_KEYBOARD_PXA27x_MODULE)
 static unsigned int littleton_matrix_key_map[] = {
+#if defined(CONFIG_SPI_PXA2XX) || defined(CONFIG_SPI_PXA2XX_MODULE)
+static struct pxa2xx_spi_master littleton_spi_info = {
+	.num_chipselect		= 1,
+};
+
+static struct pxa2xx_spi_chip littleton_tdo24m_chip = {
+	.rx_threshold	= 1,
+	.tx_threshold	= 1,
+	.gpio_cs	= LITTLETON_GPIO_LCD_CS,
+};
+
+static struct spi_board_info littleton_spi_devices[] __initdata = {
+	{
+		.modalias	= "tdo24m",
+		.max_speed_hz	= 1000000,
+		.bus_num	= 2,
+		.chip_select	= 0,
+		.controller_data= &littleton_tdo24m_chip,
+	},
+};
+
+static void __init littleton_init_spi(void)
+{
+	pxa2xx_set_spi_info(2, &littleton_spi_info);
+	spi_register_board_info(ARRAY_AND_SIZE(littleton_spi_devices));
+}
+#else
+static inline void littleton_init_spi(void) {}
+#endif
+
+#if defined(CONFIG_KEYBOARD_PXA27x) || defined(CONFIG_KEYBOARD_PXA27x_MODULE)
+static const unsigned int littleton_matrix_key_map[] = {
 	/* KEY(row, col, key_code) */
 	KEY(1, 3, KEY_0), KEY(0, 0, KEY_1), KEY(1, 0, KEY_2), KEY(2, 0, KEY_3),
 	KEY(0, 1, KEY_4), KEY(1, 1, KEY_5), KEY(2, 1, KEY_6), KEY(0, 2, KEY_7),
@@ -356,6 +428,15 @@ static struct pxa27x_keypad_platform_data littleton_keypad_info = {
 	.matrix_key_cols	= 5,
 	.matrix_key_map		= littleton_matrix_key_map,
 	.matrix_key_map_size	= ARRAY_SIZE(littleton_matrix_key_map),
+static struct matrix_keymap_data littleton_matrix_keymap_data = {
+	.keymap			= littleton_matrix_key_map,
+	.keymap_size		= ARRAY_SIZE(littleton_matrix_key_map),
+};
+
+static struct pxa27x_keypad_platform_data littleton_keypad_info = {
+	.matrix_key_rows	= 6,
+	.matrix_key_cols	= 5,
+	.matrix_keymap_data	= &littleton_matrix_keymap_data,
 
 	.enable_rotary0		= 1,
 	.rotary0_up_key		= KEY_UP,
@@ -369,6 +450,23 @@ static void __init littleton_init_keypad(void)
 }
 #else
 static inline void littleton_init_keypad(void) {}
+#endif
+
+#if defined(CONFIG_MMC_PXA) || defined(CONFIG_MMC_PXA_MODULE)
+static struct pxamci_platform_data littleton_mci_platform_data = {
+	.detect_delay_ms	= 200,
+	.ocr_mask		= MMC_VDD_32_33 | MMC_VDD_33_34,
+	.gpio_card_detect	= GPIO_MMC1_CARD_DETECT,
+	.gpio_card_ro		= -1,
+	.gpio_power		= -1,
+};
+
+static void __init littleton_init_mmc(void)
+{
+	pxa_set_mci_info(&littleton_mci_platform_data);
+}
+#else
+static inline void littleton_init_mmc(void) {}
 #endif
 
 #if defined(CONFIG_MTD_NAND_PXA3xx) || defined(CONFIG_MTD_NAND_PXA3xx_MODULE)
@@ -412,6 +510,9 @@ static struct pxa3xx_nand_platform_data littleton_nand_info = {
 	.enable_arbiter	= 1,
 	.parts		= littleton_nand_partitions,
 	.nr_parts	= ARRAY_SIZE(littleton_nand_partitions),
+	.num_cs		= 1,
+	.parts[0]	= littleton_nand_partitions,
+	.nr_parts[0]	= ARRAY_SIZE(littleton_nand_partitions),
 };
 
 static void __init littleton_init_nand(void)
@@ -422,10 +523,90 @@ static void __init littleton_init_nand(void)
 static inline void littleton_init_nand(void) {}
 #endif /* CONFIG_MTD_NAND_PXA3xx || CONFIG_MTD_NAND_PXA3xx_MODULE */
 
+#if defined(CONFIG_I2C_PXA) || defined(CONFIG_I2C_PXA_MODULE)
+static struct led_info littleton_da9034_leds[] = {
+	[0] = {
+		.name	= "littleton:keypad1",
+		.flags	= DA9034_LED_RAMP,
+	},
+	[1] = {
+		.name	= "littleton:keypad2",
+		.flags	= DA9034_LED_RAMP,
+	},
+	[2] = {
+		.name	= "littleton:vibra",
+		.flags	= 0,
+	},
+};
+
+static struct da9034_touch_pdata littleton_da9034_touch = {
+	.x_inverted     = 1,
+	.interval_ms    = 20,
+};
+
+static struct da903x_subdev_info littleton_da9034_subdevs[] = {
+	{
+		.name		= "da903x-led",
+		.id		= DA9034_ID_LED_1,
+		.platform_data	= &littleton_da9034_leds[0],
+	}, {
+		.name		= "da903x-led",
+		.id		= DA9034_ID_LED_2,
+		.platform_data	= &littleton_da9034_leds[1],
+	}, {
+		.name		= "da903x-led",
+		.id		= DA9034_ID_VIBRA,
+		.platform_data	= &littleton_da9034_leds[2],
+	}, {
+		.name		= "da903x-backlight",
+		.id		= DA9034_ID_WLED,
+	}, {
+		.name		= "da9034-touch",
+		.id		= DA9034_ID_TOUCH,
+		.platform_data	= &littleton_da9034_touch,
+	},
+};
+
+static struct da903x_platform_data littleton_da9034_info = {
+	.num_subdevs	= ARRAY_SIZE(littleton_da9034_subdevs),
+	.subdevs	= littleton_da9034_subdevs,
+};
+
+static struct max732x_platform_data littleton_max7320_info = {
+	.gpio_base	= EXT0_GPIO_BASE,
+};
+
+static struct i2c_board_info littleton_i2c_info[] = {
+	[0] = {
+		.type		= "da9034",
+		.addr		= 0x34,
+		.platform_data	= &littleton_da9034_info,
+		.irq		= PXA_GPIO_TO_IRQ(mfp_to_gpio(MFP_PIN_GPIO18)),
+	},
+	[1] = {
+		.type		= "max7320",
+		.addr		= 0x50,
+		.platform_data	= &littleton_max7320_info,
+	},
+};
+
+static void __init littleton_init_i2c(void)
+{
+	pxa_set_i2c_info(NULL);
+	i2c_register_board_info(0, ARRAY_AND_SIZE(littleton_i2c_info));
+}
+#else
+static inline void littleton_init_i2c(void) {}
+#endif /* CONFIG_I2C_PXA || CONFIG_I2C_PXA_MODULE */
+
 static void __init littleton_init(void)
 {
 	/* initialize MFP configurations */
 	pxa3xx_mfp_config(ARRAY_AND_SIZE(littleton_mfp_cfg));
+
+	pxa_set_ffuart_info(NULL);
+	pxa_set_btuart_info(NULL);
+	pxa_set_stuart_info(NULL);
 
 	/*
 	 * Note: we depend bootloader set the correct
@@ -433,6 +614,9 @@ static void __init littleton_init(void)
 	 */
 	platform_device_register(&smc91x_device);
 
+	littleton_init_spi();
+	littleton_init_i2c();
+	littleton_init_mmc();
 	littleton_init_lcd();
 	littleton_init_keypad();
 	littleton_init_nand();
@@ -446,4 +630,12 @@ MACHINE_START(LITTLETON, "Marvell Form Factor Development Platform (aka Littleto
 	.init_irq	= pxa3xx_init_irq,
 	.timer		= &pxa_timer,
 	.init_machine	= littleton_init,
+	.atag_offset	= 0x100,
+	.map_io		= pxa3xx_map_io,
+	.nr_irqs	= LITTLETON_NR_IRQS,
+	.init_irq	= pxa3xx_init_irq,
+	.handle_irq	= pxa3xx_handle_irq,
+	.init_time	= pxa_timer_init,
+	.init_machine	= littleton_init,
+	.restart	= pxa_restart,
 MACHINE_END

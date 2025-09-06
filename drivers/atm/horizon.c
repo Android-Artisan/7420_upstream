@@ -44,6 +44,13 @@
 #include <asm/system.h>
 #include <asm/io.h>
 #include <asm/atomic.h>
+#include <linux/interrupt.h>
+#include <linux/ioport.h>
+#include <linux/wait.h>
+#include <linux/slab.h>
+
+#include <asm/io.h>
+#include <linux/atomic.h>
 #include <asm/uaccess.h>
 #include <asm/string.h>
 #include <asm/byteorder.h>
@@ -175,6 +182,13 @@ static inline void __init show_version (void) {
   nrtVBR(pcr,scr,mbs)  scr bandwidth always available, upto pcr at mbs too
   UBR()
   ABR(mcr,pcr)         mcr bandwidth always available, upto pcr (depending) too
+  rtVBR(pcr,scr,mbs)   scr bandwidth always available, up to pcr at mbs too
+  
+  Non Real Time
+  
+  nrtVBR(pcr,scr,mbs)  scr bandwidth always available, up to pcr at mbs too
+  UBR()
+  ABR(mcr,pcr)         mcr bandwidth always available, up to pcr (depending) too
   
   mbs is max burst size (bucket)
   pcr and scr have associated cdvt values
@@ -636,12 +650,14 @@ static int make_rate (const hrz_dev * dev, u32 c, rounding r,
 		switch (r) {
 			case round_down:
 				pre = (br+(c<<div)-1)/(c<<div);
+				pre = DIV_ROUND_UP(br, c<<div);
 				// but p must be non-zero
 				if (!pre)
 					pre = 1;
 				break;
 			case round_nearest:
 				pre = (br+(c<<div)/2)/(c<<div);
+				pre = DIV_ROUND_CLOSEST(br, c<<div);
 				// but p must be non-zero
 				if (!pre)
 					pre = 1;
@@ -672,6 +688,10 @@ static int make_rate (const hrz_dev * dev, u32 c, rounding r,
 					break;
 				case round_nearest:
 					pre = (br+(c<<div)/2)/(c<<div);
+					pre = DIV_ROUND_UP(br, c<<div);
+					break;
+				case round_nearest:
+					pre = DIV_ROUND_CLOSEST(br, c<<div);
 					break;
 				default: /* round_up */
 					pre = br/(c<<div);
@@ -699,6 +719,7 @@ got_it:
 			*bits = (div<<CLOCK_SELECT_SHIFT) | (pre-1);
 		if (actual) {
 			*actual = (br + (pre<<div) - 1) / (pre<<div);
+			*actual = DIV_ROUND_UP(br, pre<<div);
 			PRINTD (DBG_QOS, "actual rate: %u", *actual);
 		}
 		return 0;
@@ -944,6 +965,7 @@ static void hrz_close_rx (hrz_dev * dev, u16 vc) {
 // are sure it does as you may otherwise overflow the kernel stack.
 
 // giving this fn a return value would help GCC, alledgedly
+// giving this fn a return value would help GCC, allegedly
 
 static void rx_schedule (hrz_dev * dev, int irq) {
   unsigned int rx_bytes;
@@ -1036,6 +1058,7 @@ static void rx_schedule (hrz_dev * dev, int irq) {
 	  atomic_inc(&vcc->stats->rx);
 	  __net_timestamp(skb);
 	  // end of our responsability
+	  // end of our responsibility
 	  vcc->push (vcc, skb);
 	}
       }
@@ -1648,6 +1671,8 @@ static int hrz_send (struct atm_vcc * atm_vcc, struct sk_buff * skb) {
 	d = (d<<4) | ((*s <= '9') ? (*s - '0') : (*s - 'a' + 10));
 	++s;
       }
+	for (i = 0; i < 4; ++i)
+		d = (d << 4) | hex_to_bin(*s++);
       PRINTK (KERN_INFO, "debug bitmap is now %hx", debug = d);
     }
   }
@@ -1791,6 +1816,7 @@ static void CLOCK_IT (const hrz_dev *dev, u32 ctrl)
 }
 
 static u16 __devinit read_bia (const hrz_dev * dev, u16 addr)
+static u16 read_bia(const hrz_dev *dev, u16 addr)
 {
   u32 ctrl = rd_regl (dev, CONTROL_0_REG);
   
@@ -1847,6 +1873,8 @@ static u16 __devinit read_bia (const hrz_dev * dev, u16 addr)
 /********** initialise a card **********/
 
 static int __devinit hrz_init (hrz_dev * dev) {
+static int hrz_init(hrz_dev *dev)
+{
   int onefivefive;
   
   u16 chan;
@@ -1968,6 +1996,7 @@ static int __devinit hrz_init (hrz_dev * dev) {
   // largest AAL5 frame that the user wants to receive
   wr_regw (dev, MAX_AAL5_CELL_COUNT_OFF,
 	   (max_rx_size + ATM_AAL5_TRAILER + ATM_CELL_PAYLOAD - 1) / ATM_CELL_PAYLOAD);
+	   DIV_ROUND_UP(max_rx_size + ATM_AAL5_TRAILER, ATM_CELL_PAYLOAD));
   
   // Enable receive
   wr_regw (dev, RX_CONFIG_OFF, rd_regw (dev, RX_CONFIG_OFF) | RX_ENABLE);
@@ -2591,6 +2620,7 @@ static int hrz_getsockopt (struct atm_vcc * atm_vcc, int level, int optname,
 
 static int hrz_setsockopt (struct atm_vcc * atm_vcc, int level, int optname,
 			   void *optval, int optlen) {
+			   void *optval, unsigned int optlen) {
   hrz_dev * dev = HRZ_DEV(atm_vcc->dev);
   PRINTD (DBG_FLOW|DBG_VCC, "hrz_setsockopt");
   switch (level) {
@@ -2688,6 +2718,8 @@ static const struct atmdev_ops hrz_ops = {
 };
 
 static int __devinit hrz_probe(struct pci_dev *pci_dev, const struct pci_device_id *pci_ent)
+static int hrz_probe(struct pci_dev *pci_dev,
+		     const struct pci_device_id *pci_ent)
 {
 	hrz_dev * dev;
 	int err = 0;
@@ -2706,6 +2738,7 @@ static int __devinit hrz_probe(struct pci_dev *pci_dev, const struct pci_device_
 	/* XXX DEV_LABEL is a guess */
 	if (!request_region(iobase, HRZ_IO_EXTENT, DEV_LABEL)) {
 		return -EINVAL;
+		err = -EINVAL;
 		goto out_disable;
 	}
 
@@ -2735,6 +2768,8 @@ static int __devinit hrz_probe(struct pci_dev *pci_dev, const struct pci_device_
 	       iobase, irq, membase);
 
 	dev->atm_dev = atm_dev_register(DEV_LABEL, &hrz_ops, -1, NULL);
+	dev->atm_dev = atm_dev_register(DEV_LABEL, &pci_dev->dev, &hrz_ops, -1,
+					NULL);
 	if (!(dev->atm_dev)) {
 		PRINTD(DBG_ERR, "failed to register Madge ATM adapter");
 		err = -EINVAL;
@@ -2831,7 +2866,7 @@ out:
 	return err;
 
 out_free_irq:
-	free_irq(dev->irq, dev);
+	free_irq(irq, dev);
 out_free:
 	kfree(dev);
 out_release:
@@ -2842,6 +2877,7 @@ out_disable:
 }
 
 static void __devexit hrz_remove_one(struct pci_dev *pci_dev)
+static void hrz_remove_one(struct pci_dev *pci_dev)
 {
 	hrz_dev *dev;
 
@@ -2907,6 +2943,7 @@ static struct pci_driver hrz_driver = {
 	.name =		"horizon",
 	.probe =	hrz_probe,
 	.remove =	__devexit_p(hrz_remove_one),
+	.remove =	hrz_remove_one,
 	.id_table =	hrz_pci_tbl,
 };
 

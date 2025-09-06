@@ -4,18 +4,16 @@ Author: Gerald Schaefer (geraldsc@de.ibm.com)
 
 
              Linux API for read access to z/VM Monitor Records
-             =================================================
 
 
 Description
-===========
 This item delivers a new Linux API in the form of a misc char device that is
 useable from user space and allows read access to the z/VM Monitor Records
+usable from user space and allows read access to the z/VM Monitor Records
 collected by the *MONITOR System Service of z/VM.
 
 
 User Requirements
-=================
 The z/VM guest on which you want to access this API needs to be configured in
 order to allow IUCV connections to the *MONITOR service, i.e. it needs the
 IUCV *MONITOR statement in its user entry. If the monitor DCSS to be used is
@@ -57,7 +55,6 @@ added to the parmfile.
 
 
 User Interface
-==============
 The char device is implemented as a kernel module named "monreader",
 which can be loaded via the modprobe command, or it can be compiled into the
 kernel instead. There is one optional module (or kernel) parameter, "mondcss",

@@ -36,6 +36,7 @@
  * 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
+#include <linux/gpio.h>
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/sched.h>
@@ -48,12 +49,24 @@
 #include <mach/cpu.h>
 
 #include <asm/io.h>
+#include <linux/io.h>
+
+#include <asm/irq.h>
+#include <asm/exception.h>
+#include <asm/mach/irq.h>
+
+#include "soc.h"
+
+#include <mach/hardware.h>
+
+#include "common.h"
 
 #define IRQ_BANK(irq) ((irq) >> 5)
 #define IRQ_BIT(irq)  ((irq) & 0x1f)
 
 struct omap_irq_bank {
 	unsigned long base_reg;
+	void __iomem *va;
 	unsigned long trigger_map;
 	unsigned long wake_enable;
 };
@@ -118,6 +131,36 @@ static int omap_wake_irq(unsigned int irq, unsigned int enable)
 }
 
 
+static u32 omap_l2_irq;
+static unsigned int irq_bank_count;
+static struct omap_irq_bank *irq_banks;
+static struct irq_domain *domain;
+
+static inline unsigned int irq_bank_readl(int bank, int offset)
+{
+	return readl_relaxed(irq_banks[bank].va + offset);
+}
+static inline void irq_bank_writel(unsigned long value, int bank, int offset)
+{
+	writel_relaxed(value, irq_banks[bank].va + offset);
+}
+
+static void omap_ack_irq(int irq)
+{
+	if (irq > 31)
+		writel_relaxed(0x1, irq_banks[1].va + IRQ_CONTROL_REG_OFFSET);
+
+	writel_relaxed(0x1, irq_banks[0].va + IRQ_CONTROL_REG_OFFSET);
+}
+
+static void omap_mask_ack_irq(struct irq_data *d)
+{
+	struct irq_chip_type *ct = irq_data_get_chip_type(d);
+
+	ct->chip.irq_mask(d);
+	omap_ack_irq(d->irq);
+}
+
 /*
  * Allows tuning the IRQ type and priority
  *
@@ -140,6 +183,8 @@ static void omap_irq_set_cfg(int irq, int fiq, int priority, int trigger)
 
 #ifdef CONFIG_ARCH_OMAP730
 static struct omap_irq_bank omap730_irq_banks[] = {
+#if defined (CONFIG_ARCH_OMAP730) || defined (CONFIG_ARCH_OMAP850)
+static struct omap_irq_bank omap7xx_irq_banks[] = {
 	{ .base_reg = OMAP_IH1_BASE,		.trigger_map = 0xb3f8e22f },
 	{ .base_reg = OMAP_IH2_BASE,		.trigger_map = 0xfdb9c1f2 },
 	{ .base_reg = OMAP_IH2_BASE + 0x100,	.trigger_map = 0x800040f3 },
@@ -183,6 +228,65 @@ void __init omap_init_irq(void)
 	if (cpu_is_omap730()) {
 		irq_banks = omap730_irq_banks;
 		irq_bank_count = ARRAY_SIZE(omap730_irq_banks);
+asmlinkage void __exception_irq_entry omap1_handle_irq(struct pt_regs *regs)
+{
+	void __iomem *l1 = irq_banks[0].va;
+	void __iomem *l2 = irq_banks[1].va;
+	u32 irqnr;
+
+	do {
+		irqnr = readl_relaxed(l1 + IRQ_ITR_REG_OFFSET);
+		irqnr &= ~(readl_relaxed(l1 + IRQ_MIR_REG_OFFSET) & 0xffffffff);
+		if (!irqnr)
+			break;
+
+		irqnr = readl_relaxed(l1 + IRQ_SIR_FIQ_REG_OFFSET);
+		if (irqnr)
+			goto irq;
+
+		irqnr = readl_relaxed(l1 + IRQ_SIR_IRQ_REG_OFFSET);
+		if (irqnr == omap_l2_irq) {
+			irqnr = readl_relaxed(l2 + IRQ_SIR_IRQ_REG_OFFSET);
+			if (irqnr)
+				irqnr += 32;
+		}
+irq:
+		if (irqnr)
+			handle_domain_irq(domain, irqnr, regs);
+		else
+			break;
+	} while (irqnr);
+}
+
+static __init void
+omap_alloc_gc(void __iomem *base, unsigned int irq_start, unsigned int num)
+{
+	struct irq_chip_generic *gc;
+	struct irq_chip_type *ct;
+
+	gc = irq_alloc_generic_chip("MPU", 1, irq_start, base,
+				    handle_level_irq);
+	ct = gc->chip_types;
+	ct->chip.irq_ack = omap_mask_ack_irq;
+	ct->chip.irq_mask = irq_gc_mask_set_bit;
+	ct->chip.irq_unmask = irq_gc_mask_clr_bit;
+	ct->chip.irq_set_wake = irq_gc_set_wake;
+	ct->regs.mask = IRQ_MIR_REG_OFFSET;
+	irq_setup_generic_chip(gc, IRQ_MSK(num), IRQ_GC_INIT_MASK_CACHE,
+			       IRQ_NOREQUEST | IRQ_NOPROBE, 0);
+}
+
+void __init omap1_init_irq(void)
+{
+	struct irq_chip_type *ct;
+	struct irq_data *d = NULL;
+	int i, j, irq_base;
+	unsigned long nr_irqs;
+
+#if defined(CONFIG_ARCH_OMAP730) || defined(CONFIG_ARCH_OMAP850)
+	if (cpu_is_omap7xx()) {
+		irq_banks = omap7xx_irq_banks;
+		irq_bank_count = ARRAY_SIZE(omap7xx_irq_banks);
 	}
 #endif
 #ifdef CONFIG_ARCH_OMAP15XX
@@ -204,6 +308,28 @@ void __init omap_init_irq(void)
 	printk("Total of %i interrupts in %i interrupt banks\n",
 	       irq_bank_count * 32, irq_bank_count);
 
+	for (i = 0; i < irq_bank_count; i++) {
+		irq_banks[i].va = ioremap(irq_banks[i].base_reg, 0xff);
+		if (WARN_ON(!irq_banks[i].va))
+			return;
+	}
+
+	nr_irqs = irq_bank_count * 32;
+
+	irq_base = irq_alloc_descs(-1, 0, nr_irqs, 0);
+	if (irq_base < 0) {
+		pr_warn("Couldn't allocate IRQ numbers\n");
+		irq_base = 0;
+	}
+	omap_l2_irq = cpu_is_omap7xx() ? irq_base + 1 : irq_base;
+	omap_l2_irq -= NR_IRQS_LEGACY;
+
+	domain = irq_domain_add_legacy(NULL, nr_irqs, irq_base, 0,
+				       &irq_domain_simple_ops, NULL);
+
+	pr_info("Total of %lu interrupts in %i interrupt banks\n",
+		nr_irqs, irq_bank_count);
+
 	/* Mask and clear all interrupts */
 	for (i = 0; i < irq_bank_count; i++) {
 		irq_bank_writel(~0x0, i, IRQ_MIR_REG_OFFSET);
@@ -218,6 +344,8 @@ void __init omap_init_irq(void)
 	if (cpu_is_omap730()) {
 		irq_bank_writel(0x0, 0, IRQ_GMR_REG_OFFSET);
 	}
+	if (cpu_is_omap7xx())
+		irq_bank_writel(0x0, 0, IRQ_GMR_REG_OFFSET);
 
 	/* Install the interrupt handlers for each bank */
 	for (i = 0; i < irq_bank_count; i++) {
@@ -241,4 +369,15 @@ void __init omap_init_irq(void)
 		omap_unmask_irq(INT_1510_IH2_IRQ);
 	else if (cpu_is_omap16xx())
 		omap_unmask_irq(INT_1610_IH2_IRQ);
+			irq_clear_status_flags(j, IRQ_NOREQUEST);
+		}
+		omap_alloc_gc(irq_banks[i].va, irq_base + i * 32, 32);
+	}
+
+	/* Unmask level 2 handler */
+	d = irq_get_irq_data(irq_find_mapping(domain, omap_l2_irq));
+	if (d) {
+		ct = irq_data_get_chip_type(d);
+		ct->chip.irq_unmask(d);
+	}
 }

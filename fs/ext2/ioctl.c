@@ -21,6 +21,7 @@
 long ext2_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
 	struct inode *inode = filp->f_dentry->d_inode;
+	struct inode *inode = file_inode(filp);
 	struct ext2_inode_info *ei = EXT2_I(inode);
 	unsigned int flags;
 	unsigned short rsv_window_size;
@@ -41,6 +42,11 @@ long ext2_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 			return ret;
 
 		if (!is_owner_or_cap(inode)) {
+		ret = mnt_want_write_file(filp);
+		if (ret)
+			return ret;
+
+		if (!inode_owner_or_capable(inode)) {
 			ret = -EACCES;
 			goto setflags_out;
 		}
@@ -52,6 +58,7 @@ long ext2_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 
 		if (!S_ISDIR(inode->i_mode))
 			flags &= ~EXT2_DIRSYNC_FL;
+		flags = ext2_mask_flags(inode->i_mode, flags);
 
 		mutex_lock(&inode->i_mutex);
 		/* Is it quota file? Do not allow user to mess with it */
@@ -86,6 +93,14 @@ long ext2_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		mark_inode_dirty(inode);
 setflags_out:
 		mnt_drop_write(filp->f_path.mnt);
+
+		ext2_set_inode_flags(inode);
+		inode->i_ctime = CURRENT_TIME_SEC;
+		mutex_unlock(&inode->i_mutex);
+
+		mark_inode_dirty(inode);
+setflags_out:
+		mnt_drop_write_file(filp);
 		return ret;
 	}
 	case EXT2_IOC_GETVERSION:
@@ -104,6 +119,29 @@ setflags_out:
 		}
 		mnt_drop_write(filp->f_path.mnt);
 		return ret;
+	case EXT2_IOC_SETVERSION: {
+		__u32 generation;
+
+		if (!inode_owner_or_capable(inode))
+			return -EPERM;
+		ret = mnt_want_write_file(filp);
+		if (ret)
+			return ret;
+		if (get_user(generation, (int __user *) arg)) {
+			ret = -EFAULT;
+			goto setversion_out;
+		}
+
+		mutex_lock(&inode->i_mutex);
+		inode->i_ctime = CURRENT_TIME_SEC;
+		inode->i_generation = generation;
+		mutex_unlock(&inode->i_mutex);
+
+		mark_inode_dirty(inode);
+setversion_out:
+		mnt_drop_write_file(filp);
+		return ret;
+	}
 	case EXT2_IOC_GETRSVSZ:
 		if (test_opt(inode->i_sb, RESERVATION)
 			&& S_ISREG(inode->i_mode)
@@ -118,12 +156,14 @@ setflags_out:
 			return -ENOTTY;
 
 		if (!is_owner_or_cap(inode))
+		if (!inode_owner_or_capable(inode))
 			return -EACCES;
 
 		if (get_user(rsv_window_size, (int __user *)arg))
 			return -EFAULT;
 
 		ret = mnt_want_write(filp->f_path.mnt);
+		ret = mnt_want_write_file(filp);
 		if (ret)
 			return ret;
 
@@ -148,6 +188,7 @@ setflags_out:
 		}
 		mutex_unlock(&ei->truncate_mutex);
 		mnt_drop_write(filp->f_path.mnt);
+		mnt_drop_write_file(filp);
 		return 0;
 	}
 	default:

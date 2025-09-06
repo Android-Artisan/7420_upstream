@@ -100,4 +100,9 @@ struct wm8510_setup_data {
 extern struct snd_soc_dai wm8510_dai;
 extern struct snd_soc_codec_device soc_codec_dev_wm8510;
 
+	int spi;
+	int i2c_bus;
+	unsigned short i2c_address;
+};
+
 #endif

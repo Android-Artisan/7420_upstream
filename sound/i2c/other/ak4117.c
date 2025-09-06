@@ -22,6 +22,7 @@
 
 #include <linux/slab.h>
 #include <linux/delay.h>
+#include <linux/module.h>
 #include <sound/core.h>
 #include <sound/control.h>
 #include <sound/pcm.h>
@@ -62,6 +63,7 @@ static void reg_dump(struct ak4117 *ak4117)
 static void snd_ak4117_free(struct ak4117 *chip)
 {
 	del_timer(&chip->timer);
+	del_timer_sync(&chip->timer);
 	kfree(chip);
 }
 
@@ -93,6 +95,7 @@ int snd_ak4117_create(struct snd_card *card, ak4117_read_t *read, ak4117_write_t
 	init_timer(&chip->timer);
 	chip->timer.data = (unsigned long)chip;
 	chip->timer.function = snd_ak4117_timer;
+	setup_timer(&chip->timer, snd_ak4117_timer, (unsigned long)chip);
 
 	for (reg = 0; reg < 5; reg++)
 		chip->regmap[reg] = pgm[reg];
@@ -140,6 +143,7 @@ void snd_ak4117_reinit(struct ak4117 *chip)
 	chip->init = 0;
 	chip->timer.expires = 1 + jiffies;
 	add_timer(&chip->timer);
+	mod_timer(&chip->timer, 1 + jiffies);
 }
 
 static unsigned int external_rate(unsigned char rcs1)
@@ -380,6 +384,7 @@ static struct snd_kcontrol_new snd_ak4117_iec958_controls[] = {
 {
 	.iface =	SNDRV_CTL_ELEM_IFACE_PCM,
 	.name =		"IEC958 Preample Capture Default",
+	.name =		"IEC958 Preamble Capture Default",
 	.access =	SNDRV_CTL_ELEM_ACCESS_READ | SNDRV_CTL_ELEM_ACCESS_VOLATILE,
 	.info =		snd_ak4117_spdif_pinfo,
 	.get =		snd_ak4117_spdif_pget,
@@ -432,6 +437,8 @@ int snd_ak4117_build(struct ak4117 *ak4117, struct snd_pcm_substream *cap_substr
 	int err;
 
 	snd_assert(cap_substream, return -EINVAL);
+	if (snd_BUG_ON(!cap_substream))
+		return -EINVAL;
 	ak4117->substream = cap_substream;
 	for (idx = 0; idx < AK4117_CONTROLS; idx++) {
 		kctl = snd_ctl_new1(&snd_ak4117_iec958_controls[idx], ak4117);
@@ -540,6 +547,7 @@ static void snd_ak4117_timer(unsigned long data)
 	snd_ak4117_check_rate_and_errors(chip, 0);
 	chip->timer.expires = 1 + jiffies;
 	add_timer(&chip->timer);
+	mod_timer(&chip->timer, 1 + jiffies);
 }
 
 EXPORT_SYMBOL(snd_ak4117_create);

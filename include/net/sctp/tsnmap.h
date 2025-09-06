@@ -32,6 +32,12 @@
  *
  * Or submit a bug report through the following website:
  *    http://www.sf.net/projects/lksctp
+ * along with GNU CC; see the file COPYING.  If not, see
+ * <http://www.gnu.org/licenses/>.
+ *
+ * Please send any bug reports or fixes you make to the
+ * email address(es):
+ *    lksctp developers <linux-sctp@vger.kernel.org>
  *
  * Written or modified by:
  *   Jon Grimm             <jgrimm@us.ibm.com>
@@ -72,6 +78,7 @@ struct sctp_tsnmap {
 	 * It points at one of the other ping-pong buffers.
 	 */
 	__u8 *overflow_map;
+	unsigned long *tsn_map;
 
 	/* This is the TSN at tsn_map[0].  */
 	__u32 base_tsn;
@@ -88,6 +95,9 @@ struct sctp_tsnmap {
 	 * used in the bulk of the text.
 	 */
 	__u32 cumulative_tsn_ack_point;
+
+	/* This is the highest TSN we've marked.  */
+	__u32 max_tsn_seen;
 
 	/* This is the minimum number of TSNs we can track.  This corresponds
 	 * to the size of tsn_map.   Note: the overflow_map allows us to
@@ -114,6 +124,8 @@ struct sctp_tsnmap {
 	int malloced;
 
 	__u8 raw_map[0];
+	__u16 num_dup_tsns;
+	__be32 dup_tsns[SCTP_MAX_DUP_TSNS];
 };
 
 struct sctp_tsnmap_iter {
@@ -128,6 +140,11 @@ struct sctp_tsnmap_iter {
 /* Initialize a block of memory as a tsnmap.  */
 struct sctp_tsnmap *sctp_tsnmap_init(struct sctp_tsnmap *, __u16 len,
 				     __u32 initial_tsn);
+/* Initialize a block of memory as a tsnmap.  */
+struct sctp_tsnmap *sctp_tsnmap_init(struct sctp_tsnmap *, __u16 len,
+				     __u32 initial_tsn, gfp_t gfp);
+
+void sctp_tsnmap_free(struct sctp_tsnmap *map);
 
 /* Test the tracking state of this TSN.
  * Returns:
@@ -139,6 +156,8 @@ int sctp_tsnmap_check(const struct sctp_tsnmap *, __u32 tsn);
 
 /* Mark this TSN as seen.  */
 void sctp_tsnmap_mark(struct sctp_tsnmap *, __u32 tsn);
+int sctp_tsnmap_mark(struct sctp_tsnmap *, __u32 tsn,
+		     struct sctp_transport *trans);
 
 /* Mark this TSN and all lower as seen. */
 void sctp_tsnmap_skip(struct sctp_tsnmap *map, __u32 tsn);
@@ -170,6 +189,8 @@ static inline __be32 *sctp_tsnmap_get_dups(struct sctp_tsnmap *map)
 
 /* How many gap ack blocks do we have recorded? */
 __u16 sctp_tsnmap_num_gabs(struct sctp_tsnmap *map);
+__u16 sctp_tsnmap_num_gabs(struct sctp_tsnmap *map,
+			   struct sctp_gap_ack_block *gabs);
 
 /* Refresh the count on pending data. */
 __u16 sctp_tsnmap_pending(struct sctp_tsnmap *map);
@@ -187,6 +208,10 @@ static inline int sctp_tsnmap_has_gap(const struct sctp_tsnmap *map)
 
 	has_gap = (map->cumulative_tsn_ack_point != map->max_tsn_seen);
 	return has_gap;
+/* Is there a gap in the TSN map?  */
+static inline int sctp_tsnmap_has_gap(const struct sctp_tsnmap *map)
+{
+	return map->cumulative_tsn_ack_point != map->max_tsn_seen;
 }
 
 /* Mark a duplicate TSN.  Note:  limit the storage of duplicate TSN

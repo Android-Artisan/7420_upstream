@@ -1,3 +1,5 @@
+#include <linux/prefetch.h>
+
 /**
  * iommu_fill_pdir - Insert coalesced scatter/gather chunks into the I/O Pdir.
  * @ioc: The I/O Controller.
@@ -31,6 +33,9 @@ iommu_fill_pdir(struct ioc *ioc, struct scatterlist *startsg, int nents,
 		DBG_RUN_SG(" %d : %08lx/%05x %08lx/%05x\n", nents,
 			   (unsigned long)sg_dma_address(startsg), cnt,
 			   sg_virt_addr(startsg), startsg->length
+		DBG_RUN_SG(" %d : %08lx/%05x %p/%05x\n", nents,
+			   (unsigned long)sg_dma_address(startsg), cnt,
+			   sg_virt(startsg), startsg->length
 		);
 
 
@@ -65,6 +70,7 @@ iommu_fill_pdir(struct ioc *ioc, struct scatterlist *startsg, int nents,
 		BUG_ON(pdirp == NULL);
 		
 		vaddr = sg_virt_addr(startsg);
+		vaddr = (unsigned long)sg_virt(startsg);
 		sg_dma_len(dma_sg) += startsg->length;
 		size = startsg->length + dma_offset;
 		dma_offset = 0;
@@ -103,6 +109,11 @@ iommu_coalesce_chunks(struct ioc *ioc, struct device *dev,
 	unsigned long dma_offset, dma_len; /* start/len of DMA stream */
 	unsigned int n_mappings = 0;
 	unsigned int max_seg_size = dma_get_max_seg_size(dev);
+	unsigned int max_seg_size = min(dma_get_max_seg_size(dev),
+					(unsigned)DMA_CHUNK_SIZE);
+	unsigned int max_seg_boundary = dma_get_seg_boundary(dev) + 1;
+	if (max_seg_boundary)	/* check if the addition above didn't overflow */
+		max_seg_size = min(max_seg_size, max_seg_boundary);
 
 	while (nents > 0) {
 
@@ -112,6 +123,7 @@ iommu_coalesce_chunks(struct ioc *ioc, struct device *dev,
 		contig_sg = startsg;
 		dma_len = startsg->length;
 		dma_offset = sg_virt_addr(startsg) & ~IOVP_MASK;
+		dma_offset = startsg->offset;
 
 		/* PARANOID: clear entries */
 		sg_dma_address(startsg) = 0;
@@ -130,6 +142,13 @@ iommu_coalesce_chunks(struct ioc *ioc, struct device *dev,
 			startsg++;
 			startsg_end = sg_virt_addr(startsg) + 
 				startsg->length;
+			unsigned long prev_end, sg_start;
+
+			prev_end = (unsigned long)sg_virt(startsg) +
+							startsg->length;
+
+			startsg++;
+			sg_start = (unsigned long)sg_virt(startsg);
 
 			/* PARANOID: clear entries */
 			sg_dma_address(startsg) = 0;
@@ -152,6 +171,21 @@ iommu_coalesce_chunks(struct ioc *ioc, struct device *dev,
 			** it must end on one page and begin on another
 			*/
 			if (unlikely(((prevstartsg_end | sg_virt_addr(startsg)) & ~PAGE_MASK) != 0))
+			** exceed max_seg_size if we coalesce the
+			** next entry.
+			*/   
+			if (unlikely(ALIGN(dma_len + dma_offset + startsg->length, IOVP_SIZE) >
+				     max_seg_size))
+				break;
+
+			/*
+			* Next see if we can append the next chunk (i.e.
+			* it must end on one page and begin on another, or
+			* it must start on the same address as the previous
+			* entry ended.
+			*/
+			if (unlikely((prev_end != sg_start) ||
+				((prev_end | sg_start) & ~PAGE_MASK)))
 				break;
 			
 			dma_len += startsg->length;

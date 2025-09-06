@@ -24,6 +24,7 @@ SECTIONS
 	. = CONFIG_ENTRY_ADDRESS;
 	.init		: AT(ADDR(.init) - LOAD_OFFSET) {
 		_stext = .;
+		_text = .;
 		__init_begin = .;
 			_sinittext = .;
 			*(.text.reset)
@@ -67,6 +68,14 @@ SECTIONS
 	.text		: AT(ADDR(.text) - LOAD_OFFSET) {
 		_evba = .;
 		_text = .;
+	}
+	INIT_DATA_SECTION(16)
+	. = ALIGN(PAGE_SIZE);
+	__init_end = .;
+
+	.text		: AT(ADDR(.text) - LOAD_OFFSET) {
+		_evba = .;
+		_stext = .;
 		*(.ex.text)
 		*(.irq.text)
 		KPROBES_TEXT
@@ -106,6 +115,16 @@ SECTIONS
 		*(.data.cacheline_aligned)
 
 		/* And the rest... */
+	EXCEPTION_TABLE(4)
+	RODATA
+
+	.data		: AT(ADDR(.data) - LOAD_OFFSET) {
+		_data = .;
+		_sdata = .;
+
+		INIT_TASK_DATA(THREAD_SIZE)
+		PAGE_ALIGNED_DATA(PAGE_SIZE);
+		CACHELINE_ALIGNED_DATA(L1_CACHE_BYTES)
 		*(.data.rel*)
 		DATA_DATA
 		CONSTRUCTORS
@@ -123,6 +142,10 @@ SECTIONS
 		__bss_stop = .;
 		_end = .;
 	}
+	BSS_SECTION(0, 8, 8)
+	_end = .;
+
+	DWARF_DEBUG
 
 	/* When something in the kernel is NOT compiled as a module, the module
 	 * cleanup code and data are put into these segments. Both can then be
@@ -134,4 +157,5 @@ SECTIONS
 	}
 
 	DWARF_DEBUG
+	DISCARDS
 }

@@ -20,6 +20,19 @@
 #include "kern_util.h"
 #include "mem_user.h"
 #include "os.h"
+#include <linux/sched.h>
+#include <linux/kmsg_dump.h>
+#include <asm/pgtable.h>
+#include <asm/processor.h>
+#include <asm/sections.h>
+#include <asm/setup.h>
+#include <as-layout.h>
+#include <arch.h>
+#include <init.h>
+#include <kern.h>
+#include <kern_util.h>
+#include <mem_user.h>
+#include <os.h>
 
 #define DEFAULT_COMMAND_LINE "root=98:0"
 
@@ -46,6 +59,10 @@ struct cpuinfo_um boot_cpu_data = {
 	.loops_per_jiffy	= 0,
 	.ipi_pipe		= { -1, -1 }
 };
+
+union thread_union cpu0_irqstack
+	__attribute__((__section__(".data..init_irqstack"))) =
+		{ INIT_THREAD_INFO(init_task) };
 
 unsigned long thread_saved_pc(struct task_struct *task)
 {
@@ -80,7 +97,7 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 
 static void *c_start(struct seq_file *m, loff_t *pos)
 {
-	return *pos < NR_CPUS ? cpu_data + *pos : NULL;
+	return *pos < nr_cpu_ids ? cpu_data + *pos : NULL;
 }
 
 static void *c_next(struct seq_file *m, void *v, loff_t *pos)
@@ -102,6 +119,8 @@ const struct seq_operations cpuinfo_op = {
 
 /* Set in linux_main */
 unsigned long uml_physmem;
+EXPORT_SYMBOL(uml_physmem);
+
 unsigned long uml_reserved; /* Also modified in mem_init */
 unsigned long start_vm;
 unsigned long end_vm;
@@ -228,6 +247,8 @@ static int panic_exit(struct notifier_block *self, unsigned long unused1,
 {
 	bust_spinlocks(1);
 	show_regs(&(current->thread.regs));
+	kmsg_dump(KMSG_DUMP_PANIC);
+	bust_spinlocks(1);
 	bust_spinlocks(0);
 	uml_exitcode = 1;
 	os_dump_core();
@@ -239,6 +260,16 @@ static struct notifier_block panic_exit_notifier = {
 	.next 			= NULL,
 	.priority 		= 0
 };
+
+void uml_finishsetup(void)
+{
+	atomic_notifier_chain_register(&panic_notifier_list,
+				       &panic_exit_notifier);
+
+	uml_postsetup();
+
+	new_thread_handler();
+}
 
 /* Set during early boot */
 unsigned long task_size;
@@ -309,6 +340,7 @@ int __init linux_main(int argc, char **argv)
 	}
 
 	uml_physmem = (unsigned long) &__binary_start & PAGE_MASK;
+	uml_physmem = (unsigned long) __binary_start & PAGE_MASK;
 
 	/* Reserve up to 4M after the current brk */
 	uml_reserved = ROUND_4M(brk_start) + (1 << 22);
@@ -347,6 +379,7 @@ int __init linux_main(int argc, char **argv)
 		       highmem);
 		exit(1);
 	}
+	mem_total_pages(physmem_size, iomem_size, highmem);
 
 	virtmem_size = physmem_size;
 	stack = (unsigned long) argv;

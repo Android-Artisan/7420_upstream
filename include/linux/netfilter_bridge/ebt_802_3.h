@@ -51,6 +51,8 @@ struct ebt_802_3_hdr {
 
 #ifdef __KERNEL__
 #include <linux/skbuff.h>
+#include <linux/skbuff.h>
+#include <uapi/linux/netfilter_bridge/ebt_802_3.h>
 
 static inline struct ebt_802_3_hdr *ebt_802_3_hdr(const struct sk_buff *skb)
 {

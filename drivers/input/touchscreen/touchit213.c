@@ -232,3 +232,4 @@ static void __exit touchit213_exit(void)
 
 module_init(touchit213_init);
 module_exit(touchit213_exit);
+module_serio_driver(touchit213_drv);

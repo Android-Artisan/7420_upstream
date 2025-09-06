@@ -36,6 +36,10 @@ static inline int scsi_sense_valid(struct scsi_sense_hdr *sshdr)
 }
 
 
+#include <scsi/scsi_common.h>
+struct scsi_device;
+struct Scsi_Host;
+
 extern void scsi_eh_finish_cmd(struct scsi_cmnd *scmd,
 			       struct list_head *done_q);
 extern void scsi_eh_flush_done_q(struct list_head *done_q);
@@ -48,6 +52,10 @@ extern int scsi_command_normalize_sense(struct scsi_cmnd *cmd,
 		struct scsi_sense_hdr *sshdr);
 
 static inline int scsi_sense_is_deferred(struct scsi_sense_hdr *sshdr)
+extern bool scsi_command_normalize_sense(const struct scsi_cmnd *cmd,
+					 struct scsi_sense_hdr *sshdr);
+
+static inline bool scsi_sense_is_deferred(const struct scsi_sense_hdr *sshdr)
 {
 	return ((sshdr->response_code >= 0x70) && (sshdr->response_code & 1));
 }
@@ -69,6 +77,10 @@ extern void scsi_build_sense_buffer(int desc, u8 *buf, u8 key, u8 asc, u8 ascq);
 #define SCSI_TRY_RESET_TARGET	4
 
 extern int scsi_reset_provider(struct scsi_device *, int);
+extern int scsi_get_sense_info_fld(const u8 * sense_buffer, int sb_len,
+				   u64 * info_out);
+
+extern int scsi_ioctl_reset(struct scsi_device *, int __user *);
 
 struct scsi_eh_save {
 	/* saved state */

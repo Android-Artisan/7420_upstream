@@ -49,6 +49,7 @@
 #include <linux/list.h>
 #include <linux/interrupt.h>
 #include <linux/usb.h>
+#include <linux/usb/hcd.h>
 #include <linux/workqueue.h>
 #include <linux/platform_device.h>
 #include <linux/mutex.h>
@@ -57,6 +58,7 @@
 #include <asm/system.h>
 #include <asm/byteorder.h>
 #include "../core/hcd.h"
+#include <asm/byteorder.h>
 
 	/* FIXME ohci.h is ONLY for internal use by the OHCI driver.
 	 * If you're going to try stuff like this, you need to split
@@ -75,6 +77,7 @@ MODULE_LICENSE("GPL");
 INT_MODULE_PARM(testing, 0);
 /* Some boards misreport power switching/overcurrent*/
 static int distrust_firmware = 1;
+static bool distrust_firmware = 1;
 module_param(distrust_firmware, bool, 0);
 MODULE_PARM_DESC(distrust_firmware, "true to distrust firmware power/overcurren"
 	"t setup");
@@ -576,6 +579,8 @@ static void u132_hcd_abandon_urb(struct u132 *u132, struct u132_endp *endp,
 		kfree(urbq);
 	} usb_hcd_giveback_urb(hcd, urb, status);
 	return;
+	}
+	usb_hcd_giveback_urb(hcd, urb, status);
 }
 
 static inline int edset_input(struct u132 *u132, struct u132_ring *ring,
@@ -1449,6 +1454,9 @@ static void u132_hcd_endp_work_scheduler(struct work_struct *work)
 			u8 address = u132->addr[endp->usb_addr].address;
 			struct urb *urb = endp->urb_list[ENDP_QUEUE_MASK &
 				endp->queue_next];
+			struct urb *urb = endp->urb_list[ENDP_QUEUE_MASK &
+				endp->queue_next];
+			address = u132->addr[endp->usb_addr].address;
 			endp->active = 1;
 			ring->curr_endp = endp;
 			ring->in_use = 1;
@@ -1551,6 +1559,8 @@ static int u132_periodic_reinit(struct u132 *u132)
 	if (retval)
 		return retval;
 	return 0;
+	return u132_write_pcimem(u132, periodicstart,
+	       ((9 * fi) / 10) & 0x3fff);
 }
 
 static char *hcfs2string(int state)
@@ -1816,6 +1826,9 @@ static int u132_hcd_start(struct usb_hcd *hcd)
 			(pdev->dev.platform_data))->vendor;
 		u16 device = ((struct u132_platform_data *)
 			(pdev->dev.platform_data))->device;
+			dev_get_platdata(&pdev->dev))->vendor;
+		u16 device = ((struct u132_platform_data *)
+			dev_get_platdata(&pdev->dev))->device;
 		mutex_lock(&u132->sw_lock);
 		msleep(10);
 		if (vendor == PCI_VENDOR_ID_AMD && device == 0x740c) {
@@ -2254,6 +2267,8 @@ static int u132_urb_enqueue(struct usb_hcd *hcd, struct urb *urb,
 		if (__GFP_WAIT & mem_flags) {
 			printk(KERN_ERR "invalid context for function that migh"
 				"t sleep\n");
+		if (gfpflags_allow_blocking(mem_flags)) {
+			printk(KERN_ERR "invalid context for function that might sleep\n");
 			return -EINVAL;
 		}
 	}
@@ -2573,7 +2588,7 @@ static int u132_get_frame(struct usb_hcd *hcd)
 	} else {
 		int frame = 0;
 		dev_err(&u132->platform_dev->dev, "TODO: u132_get_frame\n");
-		msleep(100);
+		mdelay(100);
 		return frame;
 	}
 }
@@ -2589,6 +2604,7 @@ static int u132_roothub_descriptor(struct u132 *u132,
 	if (retval)
 		return retval;
 	desc->bDescriptorType = 0x29;
+	desc->bDescriptorType = USB_DT_HUB;
 	desc->bPwrOn2PwrGood = (rh_a & RH_A_POTPGT) >> 24;
 	desc->bHubContrCurrent = 0;
 	desc->bNbrPorts = u132->num_ports;
@@ -2603,6 +2619,15 @@ static int u132_roothub_descriptor(struct u132 *u132,
 		temp |= 0x0010;
 	else if (rh_a & RH_A_OCPM)
 		temp |= 0x0008;
+	temp = HUB_CHAR_COMMON_LPSM | HUB_CHAR_COMMON_OCPM;
+	if (rh_a & RH_A_NPS)
+		temp |= HUB_CHAR_NO_LPSM;
+	if (rh_a & RH_A_PSM)
+		temp |= HUB_CHAR_INDV_PORT_LPSM;
+	if (rh_a & RH_A_NOCP)
+		temp |= HUB_CHAR_NO_OCPM;
+	else if (rh_a & RH_A_OCPM)
+		temp |= HUB_CHAR_INDV_PORT_OCPM;
 	desc->wHubCharacteristics = cpu_to_le16(temp);
 	retval = u132_read_pcimem(u132, roothub.b, &rh_b);
 	if (retval)
@@ -2614,6 +2639,14 @@ static int u132_roothub_descriptor(struct u132 *u132,
 		desc->bitmap[2] = 0xff;
 	} else
 		desc->bitmap[1] = 0xff;
+	memset(desc->u.hs.DeviceRemovable, 0xff,
+			sizeof(desc->u.hs.DeviceRemovable));
+	desc->u.hs.DeviceRemovable[0] = rh_b & RH_B_DR;
+	if (u132->num_ports > 7) {
+		desc->u.hs.DeviceRemovable[1] = (rh_b & RH_B_DR) >> 8;
+		desc->u.hs.DeviceRemovable[2] = 0xff;
+	} else
+		desc->u.hs.DeviceRemovable[1] = 0xff;
 	return 0;
 }
 
@@ -2726,6 +2759,13 @@ static int u132_roothub_setportfeature(struct u132 *u132, u16 wValue,
 			if (retval)
 				return retval;
 			return 0;
+			return u132_write_pcimem(u132,
+			       roothub.portstatus[port_index], RH_PS_PSS);
+		case USB_PORT_FEAT_POWER:
+			return u132_write_pcimem(u132,
+			       roothub.portstatus[port_index], RH_PS_PPS);
+		case USB_PORT_FEAT_RESET:
+			return u132_roothub_portreset(u132, port_index);
 		default:
 			return -EPIPE;
 		}
@@ -2781,6 +2821,8 @@ static int u132_roothub_clearportfeature(struct u132 *u132, u16 wValue,
 		if (retval)
 			return retval;
 		return 0;
+		return u132_write_pcimem(u132, roothub.portstatus[port_index],
+		       temp);
 	}
 }
 
@@ -2994,6 +3036,7 @@ static struct hc_driver u132_hc_driver = {
 * device and asynchronously call usb_remove_hcd()
 */
 static int __devexit u132_remove(struct platform_device *pdev)
+static int u132_remove(struct platform_device *pdev)
 {
 	struct usb_hcd *hcd = platform_get_drvdata(pdev);
 	if (hcd) {
@@ -3038,6 +3081,7 @@ static void u132_initialise(struct u132 *u132, struct platform_device *pdev)
 	int udevs = MAX_U132_UDEVS;
 	int endps = MAX_U132_ENDPS;
 	u132->board = pdev->dev.platform_data;
+	u132->board = dev_get_platdata(&pdev->dev);
 	u132->platform_dev = pdev;
 	u132->power = 0;
 	u132->reset = 0;
@@ -3089,6 +3133,9 @@ static void u132_initialise(struct u132 *u132, struct platform_device *pdev)
 }
 
 static int __devinit u132_probe(struct platform_device *pdev)
+}
+
+static int u132_probe(struct platform_device *pdev)
 {
 	struct usb_hcd *hcd;
 	int retval;
@@ -3122,6 +3169,8 @@ static int __devinit u132_probe(struct platform_device *pdev)
 	} else {
 		int retval = 0;
 		struct u132 *u132 = hcd_to_u132(hcd);
+		struct u132 *u132 = hcd_to_u132(hcd);
+		retval = 0;
 		hcd->rsrc_start = 0;
 		mutex_lock(&u132_module_lock);
 		list_add_tail(&u132->u132_list, &u132_static_list);
@@ -3137,6 +3186,7 @@ static int __devinit u132_probe(struct platform_device *pdev)
 			u132_u132_put_kref(u132);
 			return retval;
 		} else {
+			device_wakeup_enable(hcd->self.controller);
 			u132_monitor_queue_work(u132, 100);
 			return 0;
 		}
@@ -3149,6 +3199,10 @@ static int __devinit u132_probe(struct platform_device *pdev)
 * and its root hub, except that the root hub only gets direct PM calls
 * when CONFIG_USB_SUSPEND is enabled.
 */
+/*
+ * for this device there's no useful distinction between the controller
+ * and its root hub.
+ */
 static int u132_suspend(struct platform_device *pdev, pm_message_t state)
 {
 	struct usb_hcd *hcd = platform_get_drvdata(pdev);
@@ -3222,6 +3276,11 @@ static struct platform_driver u132_platform_driver = {
 	.driver = {
 		   .name = (char *)hcd_name,
 		   .owner = THIS_MODULE,
+	.remove = u132_remove,
+	.suspend = u132_suspend,
+	.resume = u132_resume,
+	.driver = {
+		   .name = hcd_name,
 		   },
 };
 static int __init u132_hcd_init(void)
@@ -3235,8 +3294,12 @@ static int __init u132_hcd_init(void)
 		return -ENODEV;
 	printk(KERN_INFO "driver %s built at %s on %s\n", hcd_name, __TIME__,
 		__DATE__);
+	printk(KERN_INFO "driver %s\n", hcd_name);
 	workqueue = create_singlethread_workqueue("u132");
 	retval = platform_driver_register(&u132_platform_driver);
+	if (retval)
+		destroy_workqueue(workqueue);
+
 	return retval;
 }
 

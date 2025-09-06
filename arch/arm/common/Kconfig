@@ -8,6 +8,7 @@ config ICST525
 	bool
 
 config ICST307
+config ICST
 	bool
 
 config SA1111
@@ -19,6 +20,11 @@ config DMABOUNCE
 
 config TIMER_ACORN
 	bool
+	select DMABOUNCE if !ARCH_PXA
+
+config DMABOUNCE
+	bool
+	select ZONE_DMA
 
 config SHARP_LOCOMO
 	bool

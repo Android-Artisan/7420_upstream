@@ -32,6 +32,7 @@ Large portions of this documentation were heavily borrowed from the guide
 written the original author of the 3c509 driver, Donald Becker. The master
 copy of that document, which contains notes on older versions of the driver,
 currently resides on Scyld web server: http://www.scyld.com/network/3c509.html.
+currently resides on Scyld web server: http://www.scyld.com/.
 
 
 (1) Special Driver Features
@@ -53,6 +54,11 @@ For example, setting two cards to 10base2/IRQ10 and AUI/IRQ11 is done by using
 the xcvr and irq module options:
 
    options 3c509 xcvr=3,1 irq=10,11
+loaded as a module, only the IRQ may be overridden. For example,
+setting two cards to IRQ10 and IRQ11 is done by using the irq module
+option:
+
+   options 3c509 irq=10,11
 
 
 (2) Full-duplex mode
@@ -77,6 +83,8 @@ operation.
 itself full-duplex capable. This is almost certainly one of two things: a full-
 duplex-capable  Ethernet switch (*not* a hub), or a full-duplex-capable NIC on
 another system that's connected directly to the 3c509B via a crossover cable.
+
+Full-duplex mode can be enabled using 'ethtool'.
  
 /////Extremely important caution concerning full-duplex mode/////
 Understand that the 3c509B's hardware's full-duplex support is much more
@@ -113,6 +121,8 @@ This insured that merely upgrading the driver from an earlier version would
 never automatically enable full-duplex mode in an existing installation;
 it must always be explicitly enabled via one of these code in order to be
 activated.
+
+The transceiver type can be changed using 'ethtool'.
   
 
 (4a) Interpretation of error messages and common problems

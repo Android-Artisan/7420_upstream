@@ -1,7 +1,6 @@
 [This file is cloned from VesaFB/matroxfb]
 
 What is aty128fb?
-=================
 
 This is a driver for a graphic framebuffer for ATI Rage128 based devices
 on Intel and PPC boxes.
@@ -21,7 +20,6 @@ Disadvantages:
 
 
 How to use it?
-==============
 
 Switching modes is done using the  video=aty128fb:<resolution>... modedb
 boot parameter or using `fbset' program.
@@ -45,7 +43,6 @@ X to fix this.
 
 
 Configuration
-=============
 
 You can pass kernel command line options to vesafb with
 `video=aty128fb:option1,option2:value2,option3' (multiple options should
@@ -61,7 +58,6 @@ cmode:x  - chooses PowerMacintosh colour mode <x>. Deprecated.
 
 
 Limitations
-===========
 
 There are known and unknown bugs, features and misfeatures.
 Currently there are following known bugs:

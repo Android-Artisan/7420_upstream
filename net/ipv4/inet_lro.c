@@ -29,6 +29,7 @@
 #include <linux/module.h>
 #include <linux/if_vlan.h>
 #include <linux/inet_lro.h>
+#include <net/checksum.h>
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Jan-Bernd Themann <themann@de.ibm.com>");
@@ -53,6 +54,8 @@ MODULE_DESCRIPTION("Large Receive Offload (ipv4 / tcp)");
 
 static int lro_tcp_ip_check(struct iphdr *iph, struct tcphdr *tcph,
 			    int len, struct net_lro_desc *lro_desc)
+static int lro_tcp_ip_check(const struct iphdr *iph, const struct tcphdr *tcph,
+			    int len, const struct net_lro_desc *lro_desc)
 {
         /* check ip header: don't aggregate padded frames */
 	if (ntohs(iph->tot_len) != len)
@@ -66,6 +69,8 @@ static int lro_tcp_ip_check(struct iphdr *iph, struct tcphdr *tcph,
 
 	if (tcph->cwr || tcph->ece || tcph->urg || !tcph->ack
 	    || tcph->rst || tcph->syn || tcph->fin)
+	if (tcph->cwr || tcph->ece || tcph->urg || !tcph->ack ||
+	    tcph->rst || tcph->syn || tcph->fin)
 		return -1;
 
 	if (INET_ECN_is_ce(ipv4_get_dsfield(iph)))
@@ -73,6 +78,8 @@ static int lro_tcp_ip_check(struct iphdr *iph, struct tcphdr *tcph,
 
 	if (tcph->doff != TCPH_LEN_WO_OPTIONS
 	    && tcph->doff != TCPH_LEN_W_TIMESTAMP)
+	if (tcph->doff != TCPH_LEN_WO_OPTIONS &&
+	    tcph->doff != TCPH_LEN_W_TIMESTAMP)
 		return -1;
 
 	/* check tcp options (only timestamp allowed) */
@@ -121,6 +128,11 @@ static void lro_update_tcp_ip_header(struct net_lro_desc *lro_desc)
 
 	tcph->check = 0;
 	tcp_hdr_csum = csum_partial((u8 *)tcph, TCP_HDR_LEN(tcph), 0);
+	csum_replace2(&iph->check, iph->tot_len, htons(lro_desc->ip_tot_len));
+	iph->tot_len = htons(lro_desc->ip_tot_len);
+
+	tcph->check = 0;
+	tcp_hdr_csum = csum_partial(tcph, TCP_HDR_LEN(tcph), 0);
 	lro_desc->data_csum = csum_add(lro_desc->data_csum, tcp_hdr_csum);
 	tcph->check = csum_tcpudp_magic(iph->saddr, iph->daddr,
 					lro_desc->ip_tot_len -
@@ -136,6 +148,7 @@ static __wsum lro_tcp_data_csum(struct iphdr *iph, struct tcphdr *tcph, int len)
 
 	tcp_csum = ~csum_unfold(tcph->check);
 	tcp_hdr_csum = csum_partial((u8 *)tcph, TCP_HDR_LEN(tcph), tcp_csum);
+	tcp_hdr_csum = csum_partial(tcph, TCP_HDR_LEN(tcph), tcp_csum);
 
 	tcp_ps_hdr_csum = csum_tcpudp_nofold(iph->saddr, iph->daddr,
 					     len + TCP_HDR_LEN(tcph),
@@ -148,6 +161,7 @@ static __wsum lro_tcp_data_csum(struct iphdr *iph, struct tcphdr *tcph, int len)
 static void lro_init_desc(struct net_lro_desc *lro_desc, struct sk_buff *skb,
 			  struct iphdr *iph, struct tcphdr *tcph,
 			  u16 vlan_tag, struct vlan_group *vgrp)
+			  struct iphdr *iph, struct tcphdr *tcph)
 {
 	int nr_frags;
 	__be32 *ptr;
@@ -266,6 +280,10 @@ static int lro_check_tcp_conn(struct net_lro_desc *lro_desc,
 	    || (lro_desc->iph->daddr != iph->daddr)
 	    || (lro_desc->tcph->source != tcph->source)
 	    || (lro_desc->tcph->dest != tcph->dest))
+	if ((lro_desc->iph->saddr != iph->saddr) ||
+	    (lro_desc->iph->daddr != iph->daddr) ||
+	    (lro_desc->tcph->source != tcph->source) ||
+	    (lro_desc->tcph->dest != tcph->dest))
 		return -1;
 	return 0;
 }
@@ -325,6 +343,10 @@ static void lro_flush(struct net_lro_mgr *lro_mgr,
 		else
 			netif_rx(lro_desc->parent);
 	}
+	if (lro_mgr->features & LRO_F_NAPI)
+		netif_receive_skb(lro_desc->parent);
+	else
+		netif_rx(lro_desc->parent);
 
 	LRO_INC_STATS(lro_mgr, flushed);
 	lro_clear_desc(lro_desc);
@@ -332,6 +354,7 @@ static void lro_flush(struct net_lro_mgr *lro_mgr,
 
 static int __lro_proc_skb(struct net_lro_mgr *lro_mgr, struct sk_buff *skb,
 			  struct vlan_group *vgrp, u16 vlan_tag, void *priv)
+			  void *priv)
 {
 	struct net_lro_desc *lro_desc;
 	struct iphdr *iph;
@@ -342,6 +365,9 @@ static int __lro_proc_skb(struct net_lro_mgr *lro_mgr, struct sk_buff *skb,
 	if (!lro_mgr->get_skb_header
 	    || lro_mgr->get_skb_header(skb, (void *)&iph, (void *)&tcph,
 				       &flags, priv))
+	if (!lro_mgr->get_skb_header ||
+	    lro_mgr->get_skb_header(skb, (void *)&iph, (void *)&tcph,
+				    &flags, priv))
 		goto out;
 
 	if (!(flags & LRO_IPV4) || !(flags & LRO_TCP))
@@ -353,6 +379,8 @@ static int __lro_proc_skb(struct net_lro_mgr *lro_mgr, struct sk_buff *skb,
 
 	if ((skb->protocol == htons(ETH_P_8021Q))
 	    && !(lro_mgr->features & LRO_F_EXTRACT_VLAN_ID))
+	if ((skb->protocol == htons(ETH_P_8021Q)) &&
+	    !(lro_mgr->features & LRO_F_EXTRACT_VLAN_ID))
 		vlan_hdr_len = VLAN_HLEN;
 
 	if (!lro_desc->active) { /* start new lro session */
@@ -361,6 +389,7 @@ static int __lro_proc_skb(struct net_lro_mgr *lro_mgr, struct sk_buff *skb,
 
 		skb->ip_summed = lro_mgr->ip_summed_aggr;
 		lro_init_desc(lro_desc, skb, iph, tcph, vlan_tag, vgrp);
+		lro_init_desc(lro_desc, skb, iph, tcph);
 		LRO_INC_STATS(lro_mgr, aggregated);
 		return 0;
 	}
@@ -515,6 +544,7 @@ void lro_receive_skb(struct net_lro_mgr *lro_mgr,
 		     void *priv)
 {
 	if (__lro_proc_skb(lro_mgr, skb, NULL, 0, priv)) {
+	if (__lro_proc_skb(lro_mgr, skb, priv)) {
 		if (lro_mgr->features & LRO_F_NAPI)
 			netif_receive_skb(skb);
 		else

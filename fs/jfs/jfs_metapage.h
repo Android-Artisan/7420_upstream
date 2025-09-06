@@ -76,6 +76,7 @@ extern void force_metapage(struct metapage *);
 
 /*
  * hold_metapage and put_metapage are used in conjuction.  The page lock
+ * hold_metapage and put_metapage are used in conjunction.  The page lock
  * is not dropped between the two, so no other threads can get or release
  * the metapage
  */

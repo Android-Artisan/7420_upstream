@@ -98,3 +98,4 @@ static int __init asb2303_mtd_init(void)
 }
 
 module_init(asb2303_mtd_init);
+device_initcall(asb2303_mtd_init);

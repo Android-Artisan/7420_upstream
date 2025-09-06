@@ -233,3 +233,4 @@ static void __exit warrior_exit(void)
 
 module_init(warrior_init);
 module_exit(warrior_exit);
+module_serio_driver(warrior_drv);

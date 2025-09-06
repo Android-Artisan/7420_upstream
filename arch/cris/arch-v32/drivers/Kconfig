@@ -4,6 +4,7 @@ config ETRAX_ETHERNET
 	bool "Ethernet support"
 	depends on ETRAX_ARCH_V32
 	select NET_ETHERNET
+	depends on ETRAX_ARCH_V32 && NETDEVICES
 	select MII
 	help
 	  This option enables the ETRAX FS built-in 10/100Mbit Ethernet
@@ -422,6 +423,9 @@ config ETRAX_AXISFLASHMAP
 	select MTD_PARTITIONS
 	select MTD_CONCAT
 	select MTD_COMPLEX_MAPPINGS
+	select MTD_BLOCK
+	select MTD_COMPLEX_MAPPINGS
+	select MTD_MTDRAM
 	help
 	  This option enables MTD mapping of flash devices.  Needed to use
 	  flash memories.  If unsure, say Y.
@@ -634,6 +638,9 @@ config ETRAX_CARDBUS
         bool "Cardbus support"
         depends on ETRAX_ARCH_V32
         select HOTPLUG
+config ETRAX_CARDBUS
+        bool "Cardbus support"
+        depends on ETRAX_ARCH_V32
         help
 	 Enabled the ETRAX Cardbus driver.
 
@@ -696,6 +703,7 @@ config ETRAX_SPI_MMC_BOARD
 config SPI_ETRAX_SSER
 	tristate
 	depends on SPI_MASTER && ETRAX_ARCH_V32 && EXPERIMENTAL
+	depends on SPI_MASTER && ETRAX_ARCH_V32
 	select SPI_BITBANG
 	help
 	  This enables using an synchronous serial (sser) port as a
@@ -705,6 +713,7 @@ config SPI_ETRAX_SSER
 config SPI_ETRAX_GPIO
 	tristate
 	depends on SPI_MASTER && ETRAX_ARCH_V32 && EXPERIMENTAL
+	depends on SPI_MASTER && ETRAX_ARCH_V32
 	select SPI_BITBANG
 	help
 	  This enables using GPIO pins port as a SPI master controller

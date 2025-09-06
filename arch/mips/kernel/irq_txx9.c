@@ -9,6 +9,14 @@
  * Author: MontaVista Software, Inc.
  *         ahennessy@mvista.com
  *         source@mvista.com
+ * Based on linux/arch/mips/jmr3927/rbhma3100/irq.c,
+ *	    linux/arch/mips/tx4927/common/tx4927_irq.c,
+ *	    linux/arch/mips/tx4938/common/irq.c
+ *
+ * Copyright 2001, 2003-2005 MontaVista Software Inc.
+ * Author: MontaVista Software, Inc.
+ *	   ahennessy@mvista.com
+ *	   source@mvista.com
  * Copyright (C) 2000-2001 Toshiba Corporation
  *
  * This file is subject to the terms and conditions of the GNU General Public
@@ -18,6 +26,7 @@
 #include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/types.h>
+#include <linux/irq.h>
 #include <asm/txx9irq.h>
 
 struct txx9_irc_reg {
@@ -67,6 +76,9 @@ static struct {
 static void txx9_irq_unmask(unsigned int irq)
 {
 	unsigned int irq_nr = irq - TXX9_IRQ_BASE;
+static void txx9_irq_unmask(struct irq_data *d)
+{
+	unsigned int irq_nr = d->irq - TXX9_IRQ_BASE;
 	u32 __iomem *ilrp = &txx9_ircptr->ilr[(irq_nr % 16 ) / 2];
 	int ofs = irq_nr / 16 * 16 + (irq_nr & 1) * 8;
 
@@ -83,6 +95,9 @@ static void txx9_irq_unmask(unsigned int irq)
 static inline void txx9_irq_mask(unsigned int irq)
 {
 	unsigned int irq_nr = irq - TXX9_IRQ_BASE;
+static inline void txx9_irq_mask(struct irq_data *d)
+{
+	unsigned int irq_nr = d->irq - TXX9_IRQ_BASE;
 	u32 __iomem *ilrp = &txx9_ircptr->ilr[(irq_nr % 16) / 2];
 	int ofs = irq_nr / 16 * 16 + (irq_nr & 1) * 8;
 
@@ -105,6 +120,11 @@ static void txx9_irq_mask_ack(unsigned int irq)
 	unsigned int irq_nr = irq - TXX9_IRQ_BASE;
 
 	txx9_irq_mask(irq);
+static void txx9_irq_mask_ack(struct irq_data *d)
+{
+	unsigned int irq_nr = d->irq - TXX9_IRQ_BASE;
+
+	txx9_irq_mask(d);
 	/* clear edge detection */
 	if (unlikely(TXx9_IRCR_EDGE(txx9irq[irq_nr].mode)))
 		__raw_writel(TXx9_IRSCR_EIClrE | irq_nr, &txx9_ircptr->scr);
@@ -113,6 +133,9 @@ static void txx9_irq_mask_ack(unsigned int irq)
 static int txx9_irq_set_type(unsigned int irq, unsigned int flow_type)
 {
 	unsigned int irq_nr = irq - TXX9_IRQ_BASE;
+static int txx9_irq_set_type(struct irq_data *d, unsigned int flow_type)
+{
+	unsigned int irq_nr = d->irq - TXX9_IRQ_BASE;
 	u32 cr;
 	u32 __iomem *crp;
 	int ofs;
@@ -124,6 +147,7 @@ static int txx9_irq_set_type(unsigned int irq, unsigned int flow_type)
 	case IRQF_TRIGGER_RISING:	mode = TXx9_IRCR_UP;	break;
 	case IRQF_TRIGGER_FALLING:	mode = TXx9_IRCR_DOWN;	break;
 	case IRQF_TRIGGER_HIGH:	mode = TXx9_IRCR_HIGH;	break;
+	case IRQF_TRIGGER_HIGH: mode = TXx9_IRCR_HIGH;	break;
 	case IRQF_TRIGGER_LOW:	mode = TXx9_IRCR_LOW;	break;
 	default:
 		return -EINVAL;
@@ -145,6 +169,11 @@ static struct irq_chip txx9_irq_chip = {
 	.mask_ack	= txx9_irq_mask_ack,
 	.unmask		= txx9_irq_unmask,
 	.set_type	= txx9_irq_set_type,
+	.irq_ack	= txx9_irq_mask_ack,
+	.irq_mask	= txx9_irq_mask,
+	.irq_mask_ack	= txx9_irq_mask_ack,
+	.irq_unmask	= txx9_irq_unmask,
+	.irq_set_type	= txx9_irq_set_type,
 };
 
 void __init txx9_irq_init(unsigned long baseaddr)
@@ -157,6 +186,8 @@ void __init txx9_irq_init(unsigned long baseaddr)
 		txx9irq[i].mode = TXx9_IRCR_LOW;
 		set_irq_chip_and_handler(TXX9_IRQ_BASE + i,
 					 &txx9_irq_chip, handle_level_irq);
+		irq_set_chip_and_handler(TXX9_IRQ_BASE + i, &txx9_irq_chip,
+					 handle_level_irq);
 	}
 
 	/* mask all IRC interrupts */

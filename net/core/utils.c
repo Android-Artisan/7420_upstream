@@ -17,6 +17,7 @@
 #include <linux/module.h>
 #include <linux/jiffies.h>
 #include <linux/kernel.h>
+#include <linux/ctype.h>
 #include <linux/inet.h>
 #include <linux/mm.h>
 #include <linux/net.h>
@@ -33,6 +34,16 @@
 
 int net_msg_warn __read_mostly = 1;
 EXPORT_SYMBOL(net_msg_warn);
+
+#include <linux/percpu.h>
+#include <linux/init.h>
+#include <linux/ratelimit.h>
+
+#include <net/sock.h>
+#include <net/net_ratelimit.h>
+
+#include <asm/byteorder.h>
+#include <asm/uaccess.h>
 
 DEFINE_RATELIMIT_STATE(net_ratelimit_state, 5 * HZ, 10);
 /*
@@ -65,6 +76,11 @@ __be32 in_aton(const char *str)
 			val = 0;
 			while (*str != '\0' && *str != '.' && *str != '\n')
 			{
+	for (i = 0; i < 4; i++)	{
+		l <<= 8;
+		if (*str != '\0') {
+			val = 0;
+			while (*str != '\0' && *str != '.' && *str != '\n') {
 				val *= 10;
 				val += *str - '0';
 				str++;
@@ -77,6 +93,8 @@ __be32 in_aton(const char *str)
 	return(htonl(l));
 }
 
+	return htonl(l);
+}
 EXPORT_SYMBOL(in_aton);
 
 #define IN6PTON_XDIGIT		0x00010000
@@ -92,6 +110,8 @@ EXPORT_SYMBOL(in_aton);
 
 static inline int xdigit2bin(char c, int delim)
 {
+	int val;
+
 	if (c == delim || c == '\0')
 		return IN6PTON_DELIM;
 	if (c == ':')
@@ -104,11 +124,28 @@ static inline int xdigit2bin(char c, int delim)
 		return (IN6PTON_XDIGIT | (c - 'a' + 10));
 	if (c >= 'A' && c <= 'F')
 		return (IN6PTON_XDIGIT | (c - 'A' + 10));
+
+	val = hex_to_bin(c);
+	if (val >= 0)
+		return val | IN6PTON_XDIGIT | (val < 10 ? IN6PTON_DIGIT : 0);
+
 	if (delim == -1)
 		return IN6PTON_DELIM;
 	return IN6PTON_UNKNOWN;
 }
 
+/**
+ * in4_pton - convert an IPv4 address from literal to binary representation
+ * @src: the start of the IPv4 address string
+ * @srclen: the length of the string, -1 means strlen(src)
+ * @dst: the binary (u8[4] array) representation of the IPv4 address
+ * @delim: the delimiter of the IPv4 address in @src, -1 means no delimiter
+ * @end: A pointer to the end of the parsed string will be placed here
+ *
+ * Return one on success, return zero when any error occurs
+ * and @end will point to the end of the parsed string.
+ *
+ */
 int in4_pton(const char *src, int srclen,
 	     u8 *dst,
 	     int delim, const char **end)
@@ -164,6 +201,20 @@ out:
 
 EXPORT_SYMBOL(in4_pton);
 
+EXPORT_SYMBOL(in4_pton);
+
+/**
+ * in6_pton - convert an IPv6 address from literal to binary representation
+ * @src: the start of the IPv6 address string
+ * @srclen: the length of the string, -1 means strlen(src)
+ * @dst: the binary (u8[16] array) representation of the IPv6 address
+ * @delim: the delimiter of the IPv6 address in @src, -1 means no delimiter
+ * @end: A pointer to the end of the parsed string will be placed here
+ *
+ * Return one on success, return zero when any error occurs
+ * and @end will point to the end of the parsed string.
+ *
+ */
 int in6_pton(const char *src, int srclen,
 	     u8 *dst,
 	     int delim, const char **end)
@@ -297,3 +348,67 @@ void inet_proto_csum_replace4(__sum16 *sum, struct sk_buff *skb,
 				csum_unfold(*sum)));
 }
 EXPORT_SYMBOL(inet_proto_csum_replace4);
+EXPORT_SYMBOL(in6_pton);
+
+void inet_proto_csum_replace4(__sum16 *sum, struct sk_buff *skb,
+			      __be32 from, __be32 to, bool pseudohdr)
+{
+	if (skb->ip_summed != CHECKSUM_PARTIAL) {
+		csum_replace4(sum, from, to);
+		if (skb->ip_summed == CHECKSUM_COMPLETE && pseudohdr)
+			skb->csum = ~csum_add(csum_sub(~(skb->csum),
+						       (__force __wsum)from),
+					      (__force __wsum)to);
+	} else if (pseudohdr)
+		*sum = ~csum_fold(csum_add(csum_sub(csum_unfold(*sum),
+						    (__force __wsum)from),
+					   (__force __wsum)to));
+}
+EXPORT_SYMBOL(inet_proto_csum_replace4);
+
+/**
+ * inet_proto_csum_replace16 - update layer 4 header checksum field
+ * @sum: Layer 4 header checksum field
+ * @skb: sk_buff for the packet
+ * @from: old IPv6 address
+ * @to: new IPv6 address
+ * @pseudohdr: True if layer 4 header checksum includes pseudoheader
+ *
+ * Update layer 4 header as per the update in IPv6 src/dst address.
+ *
+ * There is no need to update skb->csum in this function, because update in two
+ * fields a.) IPv6 src/dst address and b.) L4 header checksum cancels each other
+ * for skb->csum calculation. Whereas inet_proto_csum_replace4 function needs to
+ * update skb->csum, because update in 3 fields a.) IPv4 src/dst address,
+ * b.) IPv4 Header checksum and c.) L4 header checksum results in same diff as
+ * L4 Header checksum for skb->csum calculation.
+ */
+void inet_proto_csum_replace16(__sum16 *sum, struct sk_buff *skb,
+			       const __be32 *from, const __be32 *to,
+			       bool pseudohdr)
+{
+	__be32 diff[] = {
+		~from[0], ~from[1], ~from[2], ~from[3],
+		to[0], to[1], to[2], to[3],
+	};
+	if (skb->ip_summed != CHECKSUM_PARTIAL) {
+		*sum = csum_fold(csum_partial(diff, sizeof(diff),
+				 ~csum_unfold(*sum)));
+	} else if (pseudohdr)
+		*sum = ~csum_fold(csum_partial(diff, sizeof(diff),
+				  csum_unfold(*sum)));
+}
+EXPORT_SYMBOL(inet_proto_csum_replace16);
+
+void inet_proto_csum_replace_by_diff(__sum16 *sum, struct sk_buff *skb,
+				     __wsum diff, bool pseudohdr)
+{
+	if (skb->ip_summed != CHECKSUM_PARTIAL) {
+		*sum = csum_fold(csum_add(diff, ~csum_unfold(*sum)));
+		if (skb->ip_summed == CHECKSUM_COMPLETE && pseudohdr)
+			skb->csum = ~csum_add(diff, ~skb->csum);
+	} else if (pseudohdr) {
+		*sum = ~csum_fold(csum_add(diff, csum_unfold(*sum)));
+	}
+}
+EXPORT_SYMBOL(inet_proto_csum_replace_by_diff);

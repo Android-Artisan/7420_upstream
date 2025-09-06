@@ -31,6 +31,32 @@ struct pci_bus *__nongpreldata pci_root_bus;
 struct pci_ops *__nongpreldata pci_root_ops;
 
 /*
+struct pci_ops *__nongpreldata pci_root_ops;
+
+/*
+ * The accessible PCI window does not cover the entire CPU address space, but
+ * there are devices we want to access outside of that window, so we need to
+ * insert specific PCI bus resources instead of using the platform-level bus
+ * resources directly for the PCI root bus.
+ *
+ * These are configured and inserted by pcibios_init() and are attached to the
+ * root bus by pcibios_fixup_bus().
+ */
+static struct resource pci_ioport_resource = {
+	.name	= "PCI IO",
+	.start	= 0,
+	.end	= IO_SPACE_LIMIT,
+	.flags	= IORESOURCE_IO,
+};
+
+static struct resource pci_iomem_resource = {
+	.name	= "PCI mem",
+	.start	= 0,
+	.end	= -1,
+	.flags	= IORESOURCE_MEM,
+};
+
+/*
  * Functions for accessing PCI configuration space
  */
 
@@ -150,6 +176,8 @@ static int pci_frv_write_config(struct pci_bus *bus, unsigned int devfn, int whe
 static struct pci_ops pci_direct_frv = {
 	pci_frv_read_config,
 	pci_frv_write_config,
+	.read = pci_frv_read_config,
+	.write = pci_frv_write_config,
 };
 
 /*
@@ -247,6 +275,7 @@ static void __init pci_fixup_umc_ide(struct pci_dev *d)
 }
 
 static void __init pci_fixup_ide_bases(struct pci_dev *d)
+static void pci_fixup_ide_bases(struct pci_dev *d)
 {
 	int i;
 
@@ -266,6 +295,7 @@ static void __init pci_fixup_ide_bases(struct pci_dev *d)
 }
 
 static void __init pci_fixup_ide_trash(struct pci_dev *d)
+static void pci_fixup_ide_trash(struct pci_dev *d)
 {
 	int i;
 
@@ -279,6 +309,7 @@ static void __init pci_fixup_ide_trash(struct pci_dev *d)
 }
 
 static void __devinit  pci_fixup_latency(struct pci_dev *d)
+static void pci_fixup_latency(struct pci_dev *d)
 {
 	/*
 	 *  SiS 5597 and 5598 chipsets require latency timer set to
@@ -300,6 +331,7 @@ DECLARE_PCI_FIXUP_HEADER(PCI_ANY_ID, PCI_ANY_ID, pci_fixup_ide_bases);
  */
 
 void __init pcibios_fixup_bus(struct pci_bus *bus)
+void pcibios_fixup_bus(struct pci_bus *bus)
 {
 #if 0
 	printk("### PCIBIOS_FIXUP_BUS(%d)\n",bus->number);
@@ -311,6 +343,12 @@ void __init pcibios_fixup_bus(struct pci_bus *bus)
 		struct pci_dev *dev;
 		for (ln=bus->devices.next; ln != &bus->devices; ln=ln->next) {
 			dev = pci_dev_b(ln);
+
+	pci_read_bridge_bases(bus);
+
+	if (bus->number == 0) {
+		struct pci_dev *dev;
+		list_for_each_entry(dev, &bus->devices, bus_list) {
 			if (dev->devfn == 0) {
 				dev->resource[0].start = 0;
 				dev->resource[0].end = 0;
@@ -329,6 +367,9 @@ void __init pcibios_fixup_bus(struct pci_bus *bus)
 int __init pcibios_init(void)
 {
 	struct pci_ops *dir = NULL;
+	struct pci_bus *bus;
+	struct pci_ops *dir = NULL;
+	LIST_HEAD(resources);
 
 	if (!mb93090_mb00_detected)
 		return -ENXIO;
@@ -372,6 +413,36 @@ int __init pcibios_init(void)
 	printk("PCI DMA memory: %08lx-%08lx\n",
 	       dma_coherent_mem_start, dma_coherent_mem_end);
 
+	pci_ioport_resource.start	= (__reg_MB86943_sl_pci_io_base << 9) & 0xfffffc00;
+	pci_ioport_resource.end		= (__reg_MB86943_sl_pci_io_range << 9) | 0x3ff;
+	pci_ioport_resource.end		+= pci_ioport_resource.start;
+
+	printk("PCI IO window:  %08llx-%08llx\n",
+	       (unsigned long long) pci_ioport_resource.start,
+	       (unsigned long long) pci_ioport_resource.end);
+
+	pci_iomem_resource.start	= (__reg_MB86943_sl_pci_mem_base << 9) & 0xfffffc00;
+	pci_iomem_resource.end		= (__reg_MB86943_sl_pci_mem_range << 9) | 0x3ff;
+	pci_iomem_resource.end		+= pci_iomem_resource.start;
+
+	/* Reserve somewhere to write to flush posted writes.  This is used by
+	 * __flush_PCI_writes() from asm/io.h to force the write FIFO in the
+	 * CPU-PCI bridge to flush as this doesn't happen automatically when a
+	 * read is performed on the MB93090 development kit motherboard.
+	 */
+	pci_iomem_resource.start	+= 0x400;
+
+	printk("PCI MEM window: %08llx-%08llx\n",
+	       (unsigned long long) pci_iomem_resource.start,
+	       (unsigned long long) pci_iomem_resource.end);
+	printk("PCI DMA memory: %08lx-%08lx\n",
+	       dma_coherent_mem_start, dma_coherent_mem_end);
+
+	if (insert_resource(&iomem_resource, &pci_iomem_resource) < 0)
+		panic("Unable to insert PCI IOMEM resource\n");
+	if (insert_resource(&ioport_resource, &pci_ioport_resource) < 0)
+		panic("Unable to insert PCI IOPORT resource\n");
+
 	if (!pci_probe)
 		return -ENXIO;
 
@@ -391,6 +462,17 @@ int __init pcibios_init(void)
 	pcibios_fixup_irqs();
 	pcibios_resource_survey();
 
+	pci_add_resource(&resources, &pci_ioport_resource);
+	pci_add_resource(&resources, &pci_iomem_resource);
+	bus = pci_scan_root_bus(NULL, 0, pci_root_ops, NULL, &resources);
+
+	pcibios_irq_init();
+	pcibios_fixup_irqs();
+	pcibios_resource_survey();
+	if (!bus)
+		return 0;
+
+	pci_bus_add_devices(bus);
 	return 0;
 }
 
@@ -413,6 +495,7 @@ int pcibios_enable_device(struct pci_dev *dev, int mask)
 	int err;
 
 	if ((err = pcibios_enable_resources(dev, mask)) < 0)
+	if ((err = pci_enable_resources(dev, mask)) < 0)
 		return err;
 	if (!dev->msi_enabled)
 		pcibios_enable_irq(dev);

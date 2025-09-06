@@ -21,5 +21,6 @@ enum km_type {
 	KM_SOFTIRQ1,
 	KM_TYPE_NR
 };
+#include <asm-generic/kmap_types.h>
 
 #endif

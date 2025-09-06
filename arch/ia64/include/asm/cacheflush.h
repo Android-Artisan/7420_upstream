@@ -25,6 +25,7 @@
 #define flush_cache_vmap(start, end)		do { } while (0)
 #define flush_cache_vunmap(start, end)		do { } while (0)
 
+#define ARCH_IMPLEMENTS_FLUSH_DCACHE_PAGE 1
 #define flush_dcache_page(page)			\
 do {						\
 	clear_bit(PG_arch_1, &(page)->flags);	\
@@ -34,6 +35,8 @@ do {						\
 #define flush_dcache_mmap_unlock(mapping)	do { } while (0)
 
 extern void flush_icache_range (unsigned long start, unsigned long end);
+extern void clflush_cache_range(void *addr, int size);
+
 
 #define flush_icache_user_range(vma, page, user_addr, len)					\
 do {												\

@@ -37,6 +37,7 @@
  *	4	- SCC (slot number determined by reading RR3 on the SSC itself)
  *		  - slot 1: SCC channel A
  *		  - slot 2: SCC channel B
+ *	4	- SCC
  *
  *	5	- unused (?)
  *		  [serial errors or special conditions seem to raise level 6
@@ -61,6 +62,30 @@
  *	5	- ISM IOP (ADB?)
  *
  *	6	- unused
+ * Machines with Quadra-like VIA hardware, except PSC and PMU machines, support
+ * an alternate interrupt mapping, as used by A/UX. It spreads ethernet and
+ * sound out to their own autovector IRQs and gives VIA1 a higher priority:
+ *
+ *	1	- unused (?)
+ *
+ *	3	- on-board SONIC
+ *
+ *	5	- Apple Sound Chip (ASC)
+ *
+ *	6	- VIA1
+ *
+ * For OSS Macintoshes (IIfx only), we apply an interrupt mapping similar to
+ * the Quadra (A/UX) mapping:
+ *
+ *	1	- ISM IOP (ADB)
+ *
+ *	2	- SCSI
+ *
+ *	3	- NuBus
+ *
+ *	4	- SCC IOP
+ *
+ *	6	- VIA1
  *
  * For PSC Macintoshes (660AV, 840AV):
  *
@@ -206,6 +231,28 @@ extern int  baboon_irq_pending(int);
 static void scc_irq_enable(unsigned int);
 static void scc_irq_disable(unsigned int);
 
+ */
+
+#include <linux/types.h>
+#include <linux/kernel.h>
+#include <linux/sched.h>
+#include <linux/interrupt.h>
+#include <linux/irq.h>
+#include <linux/delay.h>
+
+#include <asm/irq.h>
+#include <asm/macintosh.h>
+#include <asm/macints.h>
+#include <asm/mac_via.h>
+#include <asm/mac_psc.h>
+#include <asm/mac_oss.h>
+#include <asm/mac_iop.h>
+#include <asm/mac_baboon.h>
+#include <asm/hwtest.h>
+#include <asm/irq_regs.h>
+
+#define SHUTUP_SONIC
+
 /*
  * console_loglevel determines NMI handler function
  */
@@ -223,6 +270,15 @@ static struct irq_controller mac_irq_controller = {
 	.lock		= __SPIN_LOCK_UNLOCKED(mac_irq_controller.lock),
 	.enable		= mac_enable_irq,
 	.disable	= mac_disable_irq,
+static unsigned int mac_irq_startup(struct irq_data *);
+static void mac_irq_shutdown(struct irq_data *);
+
+static struct irq_chip mac_irq_chip = {
+	.name		= "mac",
+	.irq_enable	= mac_irq_enable,
+	.irq_disable	= mac_irq_disable,
+	.irq_startup	= mac_irq_startup,
+	.irq_shutdown	= mac_irq_shutdown,
 };
 
 void __init mac_init_IRQ(void)
@@ -233,6 +289,7 @@ void __init mac_init_IRQ(void)
 	scc_mask = 0;
 
 	m68k_setup_irq_controller(&mac_irq_controller, IRQ_USER,
+	m68k_setup_irq_controller(&mac_irq_chip, handle_simple_irq, IRQ_USER,
 				  NUM_MAC_SOURCES - IRQ_USER);
 	/* Make sure the SONIC interrupt is cleared or things get ugly */
 #ifdef SHUTUP_SONIC
@@ -261,6 +318,9 @@ void __init mac_init_IRQ(void)
 	iop_register_interrupts();
 	request_irq(IRQ_AUTO_7, mac_nmi_handler, 0, "NMI",
 			mac_nmi_handler);
+	if (request_irq(IRQ_AUTO_7, mac_nmi_handler, 0, "NMI",
+			mac_nmi_handler))
+		pr_err("Couldn't register NMI\n");
 #ifdef DEBUG_MACINTS
 	printk("mac_init_IRQ(): Done!\n");
 #endif
@@ -271,12 +331,17 @@ void __init mac_init_IRQ(void)
  * mac_disable_irq - disable an interrupt source
  *   mac_clear_irq - clears a pending interrupt
  * mac_pending_irq - Returns the pending status of an IRQ (nonzero = pending)
+ *  mac_irq_enable - enable an interrupt source
+ * mac_irq_disable - disable an interrupt source
  *
  * These routines are just dispatchers to the VIA/OSS/PSC routines.
  */
 
 static void mac_enable_irq(unsigned int irq)
 {
+void mac_irq_enable(struct irq_data *data)
+{
+	int irq = data->irq;
 	int irq_src = IRQ_SRC(irq);
 
 	switch(irq_src) {
@@ -310,6 +375,9 @@ static void mac_enable_irq(unsigned int irq)
 
 static void mac_disable_irq(unsigned int irq)
 {
+void mac_irq_disable(struct irq_data *data)
+{
+	int irq = data->irq;
 	int irq_src = IRQ_SRC(irq);
 
 	switch(irq_src) {
@@ -393,6 +461,27 @@ int mac_irq_pending(unsigned int irq)
 	return 0;
 }
 EXPORT_SYMBOL(mac_irq_pending);
+static unsigned int mac_irq_startup(struct irq_data *data)
+{
+	int irq = data->irq;
+
+	if (IRQ_SRC(irq) == 7 && !oss_present)
+		via_nubus_irq_startup(irq);
+	else
+		mac_irq_enable(data);
+
+	return 0;
+}
+
+static void mac_irq_shutdown(struct irq_data *data)
+{
+	int irq = data->irq;
+
+	if (IRQ_SRC(irq) == 7 && !oss_present)
+		via_nubus_irq_shutdown(irq);
+	else
+		mac_irq_disable(data);
+}
 
 static int num_debug[8];
 

@@ -1,6 +1,10 @@
 /* Watchdog timer for the Geode GX/LX with the CS5535/CS5536 companion chip
  *
  * Copyright (C) 2006-2007, Advanced Micro Devices, Inc.
+/* Watchdog timer for machines with the CS5535/CS5536 companion chip
+ *
+ * Copyright (C) 2006-2007, Advanced Micro Devices, Inc.
+ * Copyright (C) 2009  Andres Salomon <dilinger@collabora.co.uk>
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -8,6 +12,7 @@
  * 2 of the License, or (at your option) any later version.
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/module.h>
 #include <linux/moduleparam.h>
@@ -20,6 +25,7 @@
 #include <linux/uaccess.h>
 
 #include <asm/geode.h>
+#include <linux/cs5535.h>
 
 #define GEODEWDT_HZ 500
 #define GEODEWDT_SCALE 6
@@ -43,6 +49,19 @@ MODULE_PARM_DESC(nowayout, "Watchdog cannot be stopped once started (default=" _
 static struct platform_device *geodewdt_platform_device;
 static unsigned long wdt_flags;
 static int wdt_timer;
+MODULE_PARM_DESC(timeout,
+	"Watchdog timeout in seconds. 1<= timeout <=131, default="
+				__MODULE_STRING(WATCHDOG_TIMEOUT) ".");
+
+static bool nowayout = WATCHDOG_NOWAYOUT;
+module_param(nowayout, bool, 0);
+MODULE_PARM_DESC(nowayout,
+	"Watchdog cannot be stopped once started (default="
+				__MODULE_STRING(WATCHDOG_NOWAYOUT) ")");
+
+static struct platform_device *geodewdt_platform_device;
+static unsigned long wdt_flags;
+static struct cs5535_mfgpt_timer *wdt_timer;
 static int safe_close;
 
 static void geodewdt_ping(void)
@@ -55,12 +74,21 @@ static void geodewdt_ping(void)
 
 	/* Enable the counter */
 	geode_mfgpt_write(wdt_timer, MFGPT_REG_SETUP, MFGPT_SETUP_CNTEN);
+	cs5535_mfgpt_write(wdt_timer, MFGPT_REG_SETUP, 0);
+
+	/* Reset the counter */
+	cs5535_mfgpt_write(wdt_timer, MFGPT_REG_COUNTER, 0);
+
+	/* Enable the counter */
+	cs5535_mfgpt_write(wdt_timer, MFGPT_REG_SETUP, MFGPT_SETUP_CNTEN);
 }
 
 static void geodewdt_disable(void)
 {
 	geode_mfgpt_write(wdt_timer, MFGPT_REG_SETUP, 0);
 	geode_mfgpt_write(wdt_timer, MFGPT_REG_COUNTER, 0);
+	cs5535_mfgpt_write(wdt_timer, MFGPT_REG_SETUP, 0);
+	cs5535_mfgpt_write(wdt_timer, MFGPT_REG_COUNTER, 0);
 }
 
 static int geodewdt_set_heartbeat(int val)
@@ -72,6 +100,10 @@ static int geodewdt_set_heartbeat(int val)
 	geode_mfgpt_write(wdt_timer, MFGPT_REG_CMP2, val * GEODEWDT_HZ);
 	geode_mfgpt_write(wdt_timer, MFGPT_REG_COUNTER, 0);
 	geode_mfgpt_write(wdt_timer, MFGPT_REG_SETUP, MFGPT_SETUP_CNTEN);
+	cs5535_mfgpt_write(wdt_timer, MFGPT_REG_SETUP, 0);
+	cs5535_mfgpt_write(wdt_timer, MFGPT_REG_CMP2, val * GEODEWDT_HZ);
+	cs5535_mfgpt_write(wdt_timer, MFGPT_REG_COUNTER, 0);
+	cs5535_mfgpt_write(wdt_timer, MFGPT_REG_SETUP, MFGPT_SETUP_CNTEN);
 
 	timeout = val;
 	return 0;
@@ -96,6 +128,7 @@ static int geodewdt_release(struct inode *inode, struct file *file)
 		module_put(THIS_MODULE);
 	} else {
 		printk(KERN_CRIT "Unexpected close - watchdog is not stopping.\n");
+		pr_crit("Unexpected close - watchdog is not stopping\n");
 		geodewdt_ping();
 
 		set_bit(WDT_FLAGS_ORPHAN, &wdt_flags);
@@ -138,6 +171,7 @@ static long geodewdt_ioctl(struct file *file, unsigned int cmd,
 	int interval;
 
 	static struct watchdog_info ident = {
+	static const struct watchdog_info ident = {
 		.options = WDIOF_SETTIMEOUT | WDIOF_KEEPALIVEPING
 		| WDIOF_MAGICCLOSE,
 		.firmware_version =     1,
@@ -233,6 +267,27 @@ static int __devinit geodewdt_probe(struct platform_device *dev)
 	/* Set up the initial timeout */
 
 	geode_mfgpt_write(wdt_timer, MFGPT_REG_CMP2,
+static int __init geodewdt_probe(struct platform_device *dev)
+{
+	int ret;
+
+	wdt_timer = cs5535_mfgpt_alloc_timer(MFGPT_TIMER_ANY, MFGPT_DOMAIN_WORKING);
+	if (!wdt_timer) {
+		pr_err("No timers were available\n");
+		return -ENODEV;
+	}
+
+	/* Set up the timer */
+
+	cs5535_mfgpt_write(wdt_timer, MFGPT_REG_SETUP,
+			  GEODEWDT_SCALE | (3 << 8));
+
+	/* Set up comparator 2 to reset when the event fires */
+	cs5535_mfgpt_toggle_event(wdt_timer, MFGPT_CMP2, MFGPT_EVENT_RESET, 1);
+
+	/* Set up the initial timeout */
+
+	cs5535_mfgpt_write(wdt_timer, MFGPT_REG_CMP2,
 		timeout * GEODEWDT_HZ);
 
 	ret = misc_register(&geodewdt_miscdev);
@@ -241,6 +296,7 @@ static int __devinit geodewdt_probe(struct platform_device *dev)
 }
 
 static int __devexit geodewdt_remove(struct platform_device *dev)
+static int geodewdt_remove(struct platform_device *dev)
 {
 	misc_deregister(&geodewdt_miscdev);
 	return 0;
@@ -257,6 +313,9 @@ static struct platform_driver geodewdt_driver = {
 	.shutdown	= geodewdt_shutdown,
 	.driver		= {
 		.owner	= THIS_MODULE,
+	.remove		= geodewdt_remove,
+	.shutdown	= geodewdt_shutdown,
+	.driver		= {
 		.name	= DRV_NAME,
 	},
 };
@@ -278,6 +337,18 @@ static int __init geodewdt_init(void)
 	return 0;
 err:
 	platform_driver_unregister(&geodewdt_driver);
+	geodewdt_platform_device = platform_device_register_simple(DRV_NAME,
+								-1, NULL, 0);
+	if (IS_ERR(geodewdt_platform_device))
+		return PTR_ERR(geodewdt_platform_device);
+
+	ret = platform_driver_probe(&geodewdt_driver, geodewdt_probe);
+	if (ret)
+		goto err;
+
+	return 0;
+err:
+	platform_device_unregister(geodewdt_platform_device);
 	return ret;
 }
 

@@ -29,6 +29,7 @@
  */
 
 #include <linux/time.h>
+#include <linux/export.h>
 #include <sound/core.h>
 #include <sound/emu10k1.h>
 
@@ -54,6 +55,10 @@ static int voice_alloc(struct snd_emu10k1 *emu, int type, int number,
 	first_voice = last_voice = 0;
 	for (i = emu->next_free_voice, j = 0; j < NUM_G ; i += number, j += number) {
 		// printk("i %d j %d next free %d!\n", i, j, emu->next_free_voice);
+		/*
+		dev_dbg(emu->card->dev, "i %d j %d next free %d!\n",
+		       i, j, emu->next_free_voice);
+		*/
 		i %= NUM_G;
 
 		/* stereo voices must be even/odd */
@@ -72,6 +77,7 @@ static int voice_alloc(struct snd_emu10k1 *emu, int type, int number,
 		}
 		if (!skip) {
 			// printk("allocated voice %d\n", i);
+			/* dev_dbg(emu->card->dev, "allocated voice %d\n", i); */
 			first_voice = i;
 			last_voice = (i + number) % NUM_G;
 			emu->next_free_voice = last_voice;
@@ -85,6 +91,10 @@ static int voice_alloc(struct snd_emu10k1 *emu, int type, int number,
 	for (i = 0; i < number; i++) {
 		voice = &emu->voices[(first_voice + i) % NUM_G];
 		// printk("voice alloc - %i, %i of %i\n", voice->number, idx-first_voice+1, number);
+		/*
+		dev_dbg(emu->card->dev, "voice alloc - %i, %i of %i\n",
+		       voice->number, idx-first_voice+1, number);
+		*/
 		voice->use = 1;
 		switch (type) {
 		case EMU10K1_PCM:
@@ -113,6 +123,10 @@ int snd_emu10k1_voice_alloc(struct snd_emu10k1 *emu, int type, int number,
 
 	snd_assert(rvoice != NULL, return -EINVAL);
 	snd_assert(number, return -EINVAL);
+	if (snd_BUG_ON(!rvoice))
+		return -EINVAL;
+	if (snd_BUG_ON(!number))
+		return -EINVAL;
 
 	spin_lock_irqsave(&emu->voice_lock, flags);
 	for (;;) {
@@ -146,6 +160,8 @@ int snd_emu10k1_voice_free(struct snd_emu10k1 *emu,
 	unsigned long flags;
 
 	snd_assert(pvoice != NULL, return -EINVAL);
+	if (snd_BUG_ON(!pvoice))
+		return -EINVAL;
 	spin_lock_irqsave(&emu->voice_lock, flags);
 	pvoice->interrupt = NULL;
 	pvoice->use = pvoice->pcm = pvoice->synth = pvoice->midi = pvoice->efx = 0;

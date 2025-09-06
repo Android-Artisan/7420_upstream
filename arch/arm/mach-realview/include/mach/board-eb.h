@@ -60,6 +60,11 @@
 #define REALVIEW_EB11MP_TWD_BASE	0x1F000700
 #define REALVIEW_EB11MP_TWD_SIZE	0x00000100
 #define REALVIEW_EB11MP_GIC_DIST_BASE	0x1F001000	/* Generic interrupt controller distributor */
+#define REALVIEW_EB11MP_PRIV_MEM_BASE	0x10100000
+#define REALVIEW_EB11MP_L220_BASE	0x10102000	/* L220 registers */
+#define REALVIEW_EB11MP_SYS_PLD_CTRL1	0xD8		/* Register offset for MPCore sysctl */
+#else
+#define REALVIEW_EB11MP_PRIV_MEM_BASE	0x1F000000
 #define REALVIEW_EB11MP_L220_BASE	0x1F002000	/* L220 registers */
 #define REALVIEW_EB11MP_SYS_PLD_CTRL1	0x74		/* Register offset for MPCore sysctl */
 #endif
@@ -168,6 +173,13 @@
 #undef MAX_GIC_NR
 #define MAX_GIC_NR		NR_GIC_EB11MP
 #endif
+#define REALVIEW_EB11MP_PRIV_MEM_SIZE	SZ_8K
+#define REALVIEW_EB11MP_PRIV_MEM_OFF(x)	(REALVIEW_EB11MP_PRIV_MEM_BASE + (x))
+
+#define REALVIEW_EB11MP_SCU_BASE	REALVIEW_EB11MP_PRIV_MEM_OFF(0)		/* SCU registers */
+#define REALVIEW_EB11MP_GIC_CPU_BASE	REALVIEW_EB11MP_PRIV_MEM_OFF(0x0100)	/* Generic interrupt controller CPU interface */
+#define REALVIEW_EB11MP_TWD_BASE	REALVIEW_EB11MP_PRIV_MEM_OFF(0x0600)
+#define REALVIEW_EB11MP_GIC_DIST_BASE	REALVIEW_EB11MP_PRIV_MEM_OFF(0x1000)	/* Generic interrupt controller distributor */
 
 /*
  * Core tile identification (REALVIEW_SYS_PROCID)
@@ -177,6 +189,7 @@
 #define REALVIEW_EB_PROC_ARM9		0x02000000
 #define REALVIEW_EB_PROC_ARM11		0x04000000
 #define REALVIEW_EB_PROC_ARM11MP	0x06000000
+#define REALVIEW_EB_PROC_A9MP		0x0C000000
 
 #define check_eb_proc(proc_type)						\
 	((readl(__io_address(REALVIEW_SYS_PROCID)) & REALVIEW_EB_PROC_MASK)	\
@@ -187,5 +200,14 @@
 #else
 #define core_tile_eb11mp()	0
 #endif
+
+#ifdef CONFIG_REALVIEW_EB_A9MP
+#define core_tile_a9mp()	check_eb_proc(REALVIEW_EB_PROC_A9MP)
+#else
+#define core_tile_a9mp()	0
+#endif
+
+#define machine_is_realview_eb_mp() \
+	(machine_is_realview_eb() && (core_tile_eb11mp() || core_tile_a9mp()))
 
 #endif	/* __ASM_ARCH_BOARD_EB_H */

@@ -28,6 +28,12 @@ int new_mm(unsigned long stack)
 
 	return fd;
 }
+#include <linux/init.h>
+#include <linux/sched.h>
+#include <as-layout.h>
+#include <kern.h>
+#include <os.h>
+#include <skas.h>
 
 extern void start_kernel(void);
 
@@ -43,6 +49,7 @@ static int __init start_kernel_proc(void *unused)
 #ifdef CONFIG_SMP
 	cpu_online_map = cpumask_of_cpu(0);
 #endif
+
 	start_kernel();
 	return 0;
 }

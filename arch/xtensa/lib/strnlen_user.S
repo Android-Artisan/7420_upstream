@@ -12,6 +12,7 @@
  */
 
 #include <asm/variant/core.h>
+#include <variant/core.h>
 
 /* Load or store instructions that may cause exceptions use the EX macro. */
 

@@ -49,6 +49,9 @@ static void frv_change_dcache_mode(unsigned long newmode)
  */
 static int procctl_frv_cachemode(ctl_table *table, int write, struct file *filp,
 				 void __user *buffer, size_t *lenp, loff_t *ppos)
+static int procctl_frv_cachemode(struct ctl_table *table, int write,
+				 void __user *buffer, size_t *lenp,
+				 loff_t *ppos)
 {
 	unsigned long hsr0;
 	char buff[8];
@@ -86,6 +89,7 @@ static int procctl_frv_cachemode(ctl_table *table, int write, struct file *filp,
 
 	/* read the state */
 	if (filp->f_pos > 0) {
+	if (*ppos > 0) {
 		*lenp = 0;
 		return 0;
 	}
@@ -112,6 +116,7 @@ static int procctl_frv_cachemode(ctl_table *table, int write, struct file *filp,
 
 	*lenp = len;
 	filp->f_pos = len;
+	*ppos = len;
 	return 0;
 
 } /* end procctl_frv_cachemode() */
@@ -123,6 +128,9 @@ static int procctl_frv_cachemode(ctl_table *table, int write, struct file *filp,
 #ifdef CONFIG_MMU
 static int procctl_frv_pin_cxnr(ctl_table *table, int write, struct file *filp,
 				void __user *buffer, size_t *lenp, loff_t *ppos)
+static int procctl_frv_pin_cxnr(struct ctl_table *table, int write,
+				void __user *buffer, size_t *lenp,
+				loff_t *ppos)
 {
 	pid_t pid;
 	char buff[16], *p;
@@ -152,6 +160,7 @@ static int procctl_frv_pin_cxnr(ctl_table *table, int write, struct file *filp,
 
 	/* read the currently pinned CXN */
 	if (filp->f_pos > 0) {
+	if (*ppos > 0) {
 		*lenp = 0;
 		return 0;
 	}
@@ -165,6 +174,7 @@ static int procctl_frv_pin_cxnr(ctl_table *table, int write, struct file *filp,
 
 	*lenp = len;
 	filp->f_pos = len;
+	*ppos = len;
 	return 0;
 
 } /* end procctl_frv_pin_cxnr() */
@@ -186,11 +196,16 @@ static struct ctl_table frv_table[] =
 #ifdef CONFIG_MMU
 	{
 		.ctl_name	= 2,
+		.proc_handler	= procctl_frv_cachemode,
+	},
+#ifdef CONFIG_MMU
+	{
 		.procname	= "pin-cxnr",
 		.data		= NULL,
 		.maxlen		= 0,
 		.mode		= 0644,
 		.proc_handler	= &procctl_frv_pin_cxnr
+		.proc_handler	= procctl_frv_pin_cxnr
 	},
 #endif
 	{}

@@ -5,6 +5,7 @@
 #include <asm/trampoline.h>
 
 extern char wakeup_code_start, wakeup_code_end;
+#include <asm/realmode.h>
 
 extern unsigned long saved_video_mode;
 extern long saved_magic;
@@ -14,3 +15,14 @@ extern char swsusp_pg_dir[PAGE_SIZE];
 
 extern unsigned long acpi_copy_wakeup_routine(unsigned long);
 extern void wakeup_long64(void);
+
+extern u8 wake_sleep_flags;
+
+extern unsigned long acpi_copy_wakeup_routine(unsigned long);
+extern void wakeup_long64(void);
+
+extern void do_suspend_lowlevel(void);
+
+extern int x86_acpi_suspend_lowlevel(void);
+
+acpi_status asmlinkage x86_acpi_enter_sleep_state(u8 state);

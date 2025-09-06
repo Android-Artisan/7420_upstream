@@ -10,6 +10,7 @@
 
 #ifndef UTS_NODENAME
 #define UTS_NODENAME "(none)"	/* set by sethostname() */
+#define UTS_NODENAME CONFIG_DEFAULT_HOSTNAME /* set by sethostname() */
 #endif
 
 #ifndef UTS_DOMAINNAME

@@ -37,12 +37,14 @@
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
+#include <linux/slab.h>
 #include <linux/device.h>
 #include <linux/err.h>
 #include <linux/sysfs.h>
 #include <linux/hwmon.h>
 #include <linux/hwmon-sysfs.h>
 #include <linux/mutex.h>
+#include <linux/mod_devicetable.h>
 #include <linux/spi/spi.h>
 
 #define DRVNAME		"adcxx"
@@ -65,6 +67,11 @@ static ssize_t adcxx_read(struct device *dev,
 	u8 rx_buf[2];
 	int status;
 	int value;
+	struct adcxx *adc = spi_get_drvdata(spi);
+	u8 tx_buf[2];
+	u8 rx_buf[2];
+	int status;
+	u32 value;
 
 	if (mutex_lock_interruptible(&adc->lock))
 		return -ERESTARTSYS;
@@ -73,6 +80,15 @@ static ssize_t adcxx_read(struct device *dev,
 					rx_buf, sizeof(rx_buf));
 	if (status < 0) {
 		dev_warn(dev, "spi_write_then_read failed with status %d\n",
+	if (adc->channels == 1) {
+		status = spi_read(spi, rx_buf, sizeof(rx_buf));
+	} else {
+		tx_buf[0] = attr->index << 3; /* other bits are don't care */
+		status = spi_write_then_read(spi, tx_buf, sizeof(tx_buf),
+						rx_buf, sizeof(rx_buf));
+	}
+	if (status < 0) {
+		dev_warn(dev, "SPI synch. transfer failed with status %d\n",
 				status);
 		goto out;
 	}
@@ -99,6 +115,7 @@ static ssize_t adcxx_show_max(struct device *dev,
 {
 	struct spi_device *spi = to_spi_device(dev);
 	struct adcxx *adc = dev_get_drvdata(&spi->dev);
+	struct adcxx *adc = spi_get_drvdata(spi);
 	u32 reference;
 
 	if (mutex_lock_interruptible(&adc->lock))
@@ -119,6 +136,10 @@ static ssize_t adcxx_set_max(struct device *dev,
 	unsigned long value;
 
 	if (strict_strtoul(buf, 10, &value))
+	struct adcxx *adc = spi_get_drvdata(spi);
+	unsigned long value;
+
+	if (kstrtoul(buf, 10, &value))
 		return -EINVAL;
 
 	if (mutex_lock_interruptible(&adc->lock))
@@ -138,6 +159,7 @@ static ssize_t adcxx_show_name(struct device *dev, struct device_attribute
 	struct adcxx *adc = dev_get_drvdata(&spi->dev);
 
 	return sprintf(buf, "adcxx%ds\n", adc->channels);
+	return sprintf(buf, "%s\n", to_spi_device(dev)->modalias);
 }
 
 static struct sensor_device_attribute ad_input[] = {
@@ -159,11 +181,15 @@ static struct sensor_device_attribute ad_input[] = {
 
 static int __devinit adcxx_probe(struct spi_device *spi, int channels)
 {
+static int adcxx_probe(struct spi_device *spi)
+{
+	int channels = spi_get_device_id(spi)->driver_data;
 	struct adcxx *adc;
 	int status;
 	int i;
 
 	adc = kzalloc(sizeof *adc, GFP_KERNEL);
+	adc = devm_kzalloc(&spi->dev, sizeof(*adc), GFP_KERNEL);
 	if (!adc)
 		return -ENOMEM;
 
@@ -175,6 +201,7 @@ static int __devinit adcxx_probe(struct spi_device *spi, int channels)
 	mutex_lock(&adc->lock);
 
 	dev_set_drvdata(&spi->dev, adc);
+	spi_set_drvdata(spi, adc);
 
 	for (i = 0; i < 3 + adc->channels; i++) {
 		status = device_create_file(&spi->dev, &ad_input[i].dev_attr);
@@ -227,6 +254,13 @@ static int __devinit adcxx8s_probe(struct spi_device *spi)
 static int __devexit adcxx_remove(struct spi_device *spi)
 {
 	struct adcxx *adc = dev_get_drvdata(&spi->dev);
+	mutex_unlock(&adc->lock);
+	return status;
+}
+
+static int adcxx_remove(struct spi_device *spi)
+{
+	struct adcxx *adc = spi_get_drvdata(spi);
 	int i;
 
 	mutex_lock(&adc->lock);
@@ -237,6 +271,7 @@ static int __devexit adcxx_remove(struct spi_device *spi)
 	dev_set_drvdata(&spi->dev, NULL);
 	mutex_unlock(&adc->lock);
 	kfree(adc);
+	mutex_unlock(&adc->lock);
 
 	return 0;
 }
@@ -318,6 +353,25 @@ static void __exit exit_adcxx(void)
 
 module_init(init_adcxx);
 module_exit(exit_adcxx);
+static const struct spi_device_id adcxx_ids[] = {
+	{ "adcxx1s", 1 },
+	{ "adcxx2s", 2 },
+	{ "adcxx4s", 4 },
+	{ "adcxx8s", 8 },
+	{ },
+};
+MODULE_DEVICE_TABLE(spi, adcxx_ids);
+
+static struct spi_driver adcxx_driver = {
+	.driver = {
+		.name	= "adcxx",
+	},
+	.id_table = adcxx_ids,
+	.probe	= adcxx_probe,
+	.remove	= adcxx_remove,
+};
+
+module_spi_driver(adcxx_driver);
 
 MODULE_AUTHOR("Marc Pignat");
 MODULE_DESCRIPTION("National Semiconductor adcxx8sxxx Linux driver");

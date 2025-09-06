@@ -1,3 +1,9 @@
+/*
+ * Copyright 2004-2009 Analog Devices Inc.
+ *
+ * Licensed under the GPL-2 or later.
+ */
+
 #ifndef _BLACKFIN_PGTABLE_H
 #define _BLACKFIN_PGTABLE_H
 
@@ -29,6 +35,7 @@ typedef pte_t *pte_addr_t;
 #define PAGE_COPY		__pgprot(0)	/* these mean nothing to NO_MM */
 #define PAGE_READONLY		__pgprot(0)	/* these mean nothing to NO_MM */
 #define PAGE_KERNEL		__pgprot(0)	/* these mean nothing to NO_MM */
+#define pgprot_noncached(prot)	(prot)
 
 extern void paging_init(void);
 
@@ -76,6 +83,8 @@ PTE_BIT_FUNC(mkyoung, |= _PAGE_ACCESSED);
 #define ZERO_PAGE(vaddr)	(virt_to_page(0))
 
 extern unsigned int kobjsize(const void *objp);
+#define ZERO_PAGE(vaddr)	virt_to_page(empty_zero_page)
+extern char empty_zero_page[];
 
 #define swapper_pg_dir ((pgd_t *) 0)
 /*
@@ -90,6 +99,12 @@ extern unsigned int kobjsize(const void *objp);
  */
 #define	VMALLOC_START	0
 #define	VMALLOC_END	0xffffffff
+
+/* provide a special get_unmapped_area for framebuffer mmaps of nommu */
+extern unsigned long get_fb_unmapped_area(struct file *filp, unsigned long,
+					  unsigned long, unsigned long,
+					  unsigned long);
+#define HAVE_ARCH_FB_UNMAPPED_AREA
 
 #include <asm-generic/pgtable.h>
 

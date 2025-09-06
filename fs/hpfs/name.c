@@ -72,6 +72,7 @@ static inline unsigned char locase(unsigned char *dir, unsigned char a)
 }
 
 int hpfs_chk_name(unsigned char *name, unsigned *len)
+int hpfs_chk_name(const unsigned char *name, unsigned *len)
 {
 	int i;
 	if (*len > 254) return -ENAMETOOLONG;
@@ -97,6 +98,21 @@ char *hpfs_translate_name(struct super_block *s, unsigned char *from,
 	if (!lc) return from;
 	if (!(to = kmalloc(len, GFP_KERNEL))) {
 		printk("HPFS: can't allocate memory for name conversion buffer\n");
+unsigned char *hpfs_translate_name(struct super_block *s, unsigned char *from,
+			  unsigned len, int lc, int lng)
+{
+	unsigned char *to;
+	int i;
+	if (hpfs_sb(s)->sb_chk >= 2) if (hpfs_is_name_long(from, len) != lng) {
+		pr_err("Long name flag mismatch - name ");
+		for (i = 0; i < len; i++)
+			pr_cont("%c", from[i]);
+		pr_cont(" misidentified as %s.\n", lng ? "short" : "long");
+		pr_err("It's nothing serious. It could happen because of bug in OS/2.\nSet checks=normal to disable this message.\n");
+	}
+	if (!lc) return from;
+	if (!(to = kmalloc(len, GFP_KERNEL))) {
+		pr_err("can't allocate memory for name conversion buffer\n");
 		return from;
 	}
 	for (i = 0; i < len; i++) to[i] = locase(hpfs_sb(s)->sb_cp_table,from[i]);
@@ -105,6 +121,9 @@ char *hpfs_translate_name(struct super_block *s, unsigned char *from,
 
 int hpfs_compare_names(struct super_block *s, unsigned char *n1, unsigned l1,
 		       unsigned char *n2, unsigned l2, int last)
+int hpfs_compare_names(struct super_block *s,
+		       const unsigned char *n1, unsigned l1,
+		       const unsigned char *n2, unsigned l2, int last)
 {
 	unsigned l = l1 < l2 ? l1 : l2;
 	unsigned i;
@@ -121,6 +140,7 @@ int hpfs_compare_names(struct super_block *s, unsigned char *n1, unsigned l1,
 }
 
 int hpfs_is_name_long(unsigned char *name, unsigned len)
+int hpfs_is_name_long(const unsigned char *name, unsigned len)
 {
 	int i,j;
 	for (i = 0; i < len && name[i] != '.'; i++)
@@ -135,6 +155,7 @@ int hpfs_is_name_long(unsigned char *name, unsigned len)
 /* OS/2 clears dots and spaces at the end of file name, so we have to */
 
 void hpfs_adjust_length(unsigned char *name, unsigned *len)
+void hpfs_adjust_length(const unsigned char *name, unsigned *len)
 {
 	if (!*len) return;
 	if (*len == 1 && name[0] == '.') return;

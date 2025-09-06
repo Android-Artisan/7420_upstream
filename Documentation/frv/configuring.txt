@@ -1,10 +1,6 @@
-		   =======================================
 		   FUJITSU FR-V LINUX KERNEL CONFIGURATION
-		   =======================================
 
-=====================
 CONFIGURATION OPTIONS
-=====================
 
 The most important setting is in the "MMU support options" tab (the first
 presented in the configuration tools available):
@@ -69,9 +65,7 @@ kernel configuration especially for debugging a kernel on this
 architecture. See the "gdbstub.txt" file for information about those.
 
 
-======================
 DEFAULT CONFIGURATIONS
-======================
 
 The kernel sources include a number of example default configurations:
 

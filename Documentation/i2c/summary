@@ -1,5 +1,4 @@
 I2C and SMBus
-=============
 
 I2C (pronounce: I squared C) is a protocol developed by Philips. It is a 
 slow two-wire protocol (variable speed, up to 400 kHz), with a high speed
@@ -22,7 +21,6 @@ implement all the common SMBus protocol semantics or messages.
 
 
 Terminology
-===========
 
 When we talk about I2C, we use the following terms:
   Bus    -> Algorithm

@@ -54,4 +54,21 @@ extern struct rxrpc_call *rxrpc_kernel_accept_call(struct socket *,
 extern int rxrpc_kernel_reject_call(struct socket *);
 
 #endif /* __KERNEL__ */
+void rxrpc_kernel_intercept_rx_messages(struct socket *, rxrpc_interceptor_t);
+struct rxrpc_call *rxrpc_kernel_begin_call(struct socket *,
+					   struct sockaddr_rxrpc *,
+					   struct key *,
+					   unsigned long,
+					   gfp_t);
+int rxrpc_kernel_send_data(struct rxrpc_call *, struct msghdr *, size_t);
+void rxrpc_kernel_abort_call(struct rxrpc_call *, u32);
+void rxrpc_kernel_end_call(struct rxrpc_call *);
+bool rxrpc_kernel_is_data_last(struct sk_buff *);
+u32 rxrpc_kernel_get_abort_code(struct sk_buff *);
+int rxrpc_kernel_get_error_number(struct sk_buff *);
+void rxrpc_kernel_data_delivered(struct sk_buff *);
+void rxrpc_kernel_free_skb(struct sk_buff *);
+struct rxrpc_call *rxrpc_kernel_accept_call(struct socket *, unsigned long);
+int rxrpc_kernel_reject_call(struct socket *);
+
 #endif /* _NET_RXRPC_H */

@@ -26,6 +26,7 @@
 */
 #include <linux/delay.h>
 #include <linux/highmem.h>
+#include <linux/module.h>
 #include <linux/pci.h>
 #include <linux/ioport.h>
 #include <linux/scatterlist.h>
@@ -82,6 +83,12 @@ static struct pcmcia_device_id pcmcia_ids[] = {
 	/* vendor and device strings followed by their crc32 hashes */
 	PCMCIA_DEVICE_PROD_ID12("RICOH", "Bay1Controller", 0xd9f522ed,
 				0xc3901202),
+static const struct pcmcia_device_id pcmcia_ids[] = {
+	/* vendor and device strings followed by their crc32 hashes */
+	PCMCIA_DEVICE_PROD_ID12("RICOH", "Bay1Controller", 0xd9f522ed,
+				0xc3901202),
+	PCMCIA_DEVICE_PROD_ID12("RICOH", "Bay Controller", 0xd9f522ed,
+				0xace80909),
 	PCMCIA_DEVICE_NULL,
 };
 
@@ -270,7 +277,6 @@ static void sdricoh_request(struct mmc_host *mmc, struct mmc_request *mrq)
 	unsigned char opcode = cmd->opcode;
 	int i;
 
-	dev_dbg(dev, "=============================\n");
 	dev_dbg(dev, "sdricoh_request opcode=%i\n", opcode);
 
 	sdricoh_writel(host, R21C_STATUS, 0x18);
@@ -348,7 +354,6 @@ static void sdricoh_request(struct mmc_host *mmc, struct mmc_request *mrq)
 	/* FIXME check busy flag */
 
 	mmc_request_done(mmc, mrq);
-	dev_dbg(dev, "=============================\n");
 }
 
 static void sdricoh_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
@@ -447,6 +452,7 @@ static int sdricoh_init_mmc(struct pci_dev *pci_dev,
 	mmc->max_blk_size = 512;
 
 	/* reset the controler */
+	/* reset the controller */
 	if (sdricoh_reset(host)) {
 		dev_dbg(dev, "could not reset\n");
 		result = -EIO;
@@ -464,6 +470,7 @@ static int sdricoh_init_mmc(struct pci_dev *pci_dev,
 err:
 	if (iobase)
 		iounmap(iobase);
+		pci_iounmap(pci_dev, iobase);
 	if (mmc)
 		mmc_free_host(mmc);
 
@@ -479,6 +486,7 @@ static int sdricoh_pcmcia_probe(struct pcmcia_device *pcmcia_dev)
 		" %s %s ...\n", pcmcia_dev->prod_id[0], pcmcia_dev->prod_id[1]);
 
 	/* search pci cardbus bridge that contains the mmc controler */
+	/* search pci cardbus bridge that contains the mmc controller */
 	/* the io region is already claimed by yenta_socket... */
 	while ((pci_dev =
 		pci_get_device(PCI_VENDOR_ID_RICOH, PCI_DEVICE_ID_RICOH_RL5C476,
@@ -518,6 +526,7 @@ static int sdricoh_pcmcia_suspend(struct pcmcia_device *link)
 	struct mmc_host *mmc = link->priv;
 	dev_dbg(&link->dev, "suspend\n");
 	mmc_suspend_host(mmc, PMSG_SUSPEND);
+	dev_dbg(&link->dev, "suspend\n");
 	return 0;
 }
 
@@ -538,6 +547,7 @@ static struct pcmcia_driver sdricoh_driver = {
 	.drv = {
 		.name = DRIVER_NAME,
 		},
+	.name = DRIVER_NAME,
 	.probe = sdricoh_pcmcia_probe,
 	.remove = sdricoh_pcmcia_detach,
 	.id_table = pcmcia_ids,
@@ -563,6 +573,7 @@ static void __exit sdricoh_drv_exit(void)
 
 module_init(sdricoh_drv_init);
 module_exit(sdricoh_drv_exit);
+module_pcmcia_driver(sdricoh_driver);
 
 module_param(switchlocked, uint, 0444);
 

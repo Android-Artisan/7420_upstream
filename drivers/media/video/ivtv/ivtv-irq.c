@@ -865,7 +865,6 @@ irqreturn_t ivtv_irq_handler(int irq, void *dev_id)
 	/* Exclude interrupts noted below from the output, otherwise the log is flooded with
 	   these messages */
 	if (combo & ~0xff6d0400)
-		IVTV_DEBUG_HI_IRQ("======= valid IRQ bits: 0x%08x ======\n", combo);
 
 	if (combo & IVTV_IRQ_DEC_DMA_COMPLETE) {
 		IVTV_DEBUG_HI_IRQ("DEC DMA COMPLETE\n");

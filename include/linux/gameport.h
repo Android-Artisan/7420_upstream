@@ -11,10 +11,17 @@
 
 #ifdef __KERNEL__
 #include <asm/io.h>
+#ifndef _GAMEPORT_H
+#define _GAMEPORT_H
+
+#include <asm/io.h>
+#include <linux/types.h>
 #include <linux/list.h>
 #include <linux/mutex.h>
 #include <linux/device.h>
 #include <linux/timer.h>
+#include <linux/slab.h>
+#include <uapi/linux/gameport.h>
 
 struct gameport {
 
@@ -55,6 +62,7 @@ struct gameport_driver {
 
 	void *private;
 	char *description;
+	const char *description;
 
 	int (*connect)(struct gameport *, struct gameport_driver *drv);
 	int (*reconnect)(struct gameport *);
@@ -63,6 +71,7 @@ struct gameport_driver {
 	struct device_driver driver;
 
 	unsigned int ignore;
+	bool ignore;
 };
 #define to_gameport_driver(d)	container_of(d, struct gameport_driver, driver)
 
@@ -81,6 +90,14 @@ void gameport_unregister_port(struct gameport *gameport);
 
 void gameport_set_phys(struct gameport *gameport, const char *fmt, ...)
 	__attribute__ ((format (printf, 2, 3)));
+/* use a define to avoid include chaining to get THIS_MODULE */
+#define gameport_register_port(gameport) \
+	__gameport_register_port(gameport, THIS_MODULE)
+
+void gameport_unregister_port(struct gameport *gameport);
+
+__printf(2, 3)
+void gameport_set_phys(struct gameport *gameport, const char *fmt, ...);
 
 #else
 
@@ -96,6 +113,8 @@ static inline void gameport_unregister_port(struct gameport *gameport)
 
 static inline void gameport_set_phys(struct gameport *gameport,
 				     const char *fmt, ...)
+static inline __printf(2, 3)
+void gameport_set_phys(struct gameport *gameport, const char *fmt, ...)
 {
 	return;
 }
@@ -172,6 +191,28 @@ void gameport_unregister_driver(struct gameport_driver *drv);
 #define GAMEPORT_ID_VENDOR_GUILLEMOT	0x000a
 
 #ifdef __KERNEL__
+int __must_check __gameport_register_driver(struct gameport_driver *drv,
+				struct module *owner, const char *mod_name);
+
+/* use a define to avoid include chaining to get THIS_MODULE & friends */
+#define gameport_register_driver(drv) \
+	__gameport_register_driver(drv, THIS_MODULE, KBUILD_MODNAME)
+
+void gameport_unregister_driver(struct gameport_driver *drv);
+
+/**
+ * module_gameport_driver() - Helper macro for registering a gameport driver
+ * @__gameport_driver: gameport_driver struct
+ *
+ * Helper macro for gameport drivers which do not do anything special in
+ * module init/exit. This eliminates a lot of boilerplate. Each module may
+ * only use this macro once, and calling it replaces module_init() and
+ * module_exit().
+ */
+#define module_gameport_driver(__gameport_driver) \
+	module_driver(__gameport_driver, gameport_register_driver, \
+		       gameport_unregister_driver)
+
 
 static inline void gameport_trigger(struct gameport *gameport)
 {

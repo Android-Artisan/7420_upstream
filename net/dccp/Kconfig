@@ -2,6 +2,8 @@ menuconfig IP_DCCP
 	tristate "The DCCP Protocol (EXPERIMENTAL)"
 	depends on INET && EXPERIMENTAL
 	select IP_DCCP_CCID2
+	tristate "The DCCP Protocol"
+	depends on INET
 	---help---
 	  Datagram Congestion Control Protocol (RFC 4340)
 
@@ -54,6 +56,9 @@ config NET_DCCPPROBE
 
 	Documentation on how to use DCCP connection probing can be found
 	at http://linux-net.osdl.org/index.php/DccpProbe
+	at:
+	
+	  http://www.linuxfoundation.org/collaborate/workgroups/networking/dccpprobe
 
 	To compile this code as a module, choose M here: the
 	module will be called dccp_probe.

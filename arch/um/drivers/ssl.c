@@ -18,6 +18,19 @@
 #include "kern.h"
 #include "init.h"
 #include "irq_user.h"
+#include <linux/fs.h>
+#include <linux/tty.h>
+#include <linux/tty_driver.h>
+#include <linux/major.h>
+#include <linux/mm.h>
+#include <linux/init.h>
+#include <linux/console.h>
+#include <asm/termbits.h>
+#include <asm/irq.h>
+#include "ssl.h"
+#include "chan.h"
+#include <init.h>
+#include <irq_user.h>
 #include "mconsole_kern.h"
 
 static const int ssl_version = 1;
@@ -75,6 +88,9 @@ static struct line_driver driver = {
  */
 static struct line serial_lines[NR_PORTS] =
 	{ [0 ... NR_PORTS - 1] = LINE_INIT(CONFIG_SSL_CHAN, &driver) };
+static char *conf[NR_PORTS];
+static char *def_conf = CONFIG_SSL_CHAN;
+static struct line serial_lines[NR_PORTS];
 
 static int ssl_config(char *str, char **error_out)
 {
@@ -128,6 +144,13 @@ void ssl_hangup(struct tty_struct *tty)
 
 static const struct tty_operations ssl_ops = {
 	.open 	 		= ssl_open,
+static int ssl_install(struct tty_driver *driver, struct tty_struct *tty)
+{
+	return line_install(driver, tty, &serial_lines[tty->index]);
+}
+
+static const struct tty_operations ssl_ops = {
+	.open 	 		= line_open,
 	.close 	 		= line_close,
 	.write 	 		= line_write,
 	.put_char 		= line_put_char,
@@ -144,6 +167,10 @@ static const struct tty_operations ssl_ops = {
 	.start 	 		= ssl_start,
 	.hangup 	 	= ssl_hangup,
 #endif
+	.throttle 		= line_throttle,
+	.unthrottle 		= line_unthrottle,
+	.install		= ssl_install,
+	.hangup			= line_hangup,
 };
 
 /* Changed by ssl_init and referenced by ssl_exit, which are both serialized
@@ -159,6 +186,7 @@ static void ssl_console_write(struct console *c, const char *string,
 
 	spin_lock_irqsave(&line->lock, flags);
 	console_write_chan(&line->chan_list, string, len);
+	console_write_chan(line->chan_out, string, len);
 	spin_unlock_irqrestore(&line->lock, flags);
 }
 
@@ -166,6 +194,7 @@ static struct tty_driver *ssl_console_device(struct console *c, int *index)
 {
 	*index = c->index;
 	return ssl_driver;
+	return driver.driver;
 }
 
 static int ssl_console_setup(struct console *co, char *options)
@@ -193,12 +222,31 @@ static int ssl_init(void)
 	       ssl_version);
 	ssl_driver = register_lines(&driver, &ssl_ops, serial_lines,
 				    ARRAY_SIZE(serial_lines));
+	int err;
+	int i;
+
+	printk(KERN_INFO "Initializing software serial port version %d\n",
+	       ssl_version);
+
+	err = register_lines(&driver, &ssl_ops, serial_lines,
+				    ARRAY_SIZE(serial_lines));
+	if (err)
+		return err;
 
 	new_title = add_xterm_umid(opts.xterm_title);
 	if (new_title != NULL)
 		opts.xterm_title = new_title;
 
 	lines_init(serial_lines, ARRAY_SIZE(serial_lines), &opts);
+	for (i = 0; i < NR_PORTS; i++) {
+		char *error;
+		char *s = conf[i];
+		if (!s)
+			s = def_conf;
+		if (setup_one_line(serial_lines, i, s, &opts, &error))
+			printk(KERN_ERR "setup_one_line failed for "
+			       "device %d : %s\n", i, error);
+	}
 
 	ssl_init_done = 1;
 	register_console(&ssl_cons);
@@ -224,6 +272,7 @@ static int ssl_chan_setup(char *str)
 		printk(KERN_ERR "Failed to set up serial line with "
 		       "configuration string \"%s\" : %s\n", str, error);
 
+	line_setup(conf, NR_PORTS, &def_conf, str, "serial line");
 	return 1;
 }
 

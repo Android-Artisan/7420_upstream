@@ -229,6 +229,9 @@ ahc_linux_pci_dev_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	if (name == NULL)
 		return (-ENOMEM);
 	strcpy(name, buf);
+	name = kstrdup(buf, GFP_ATOMIC);
+	if (name == NULL)
+		return (-ENOMEM);
 	ahc = ahc_alloc(NULL, name);
 	if (ahc == NULL)
 		return (-ENOMEM);
@@ -245,6 +248,10 @@ ahc_linux_pci_dev_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		ahc->flags |= AHC_39BIT_ADDRESSING;
 	} else {
 		if (dma_set_mask(dev, DMA_32BIT_MASK)) {
+	    && dma_get_required_mask(dev) > DMA_BIT_MASK(32)) {
+		ahc->flags |= AHC_39BIT_ADDRESSING;
+	} else {
+		if (dma_set_mask(dev, DMA_BIT_MASK(32))) {
 			ahc_free(ahc);
 			printk(KERN_WARNING "aic7xxx: No suitable DMA available.\n");
                 	return (-ENODEV);
@@ -413,6 +420,7 @@ ahc_pci_map_registers(struct ahc_softc *ahc)
 		if (ahc_pci_test_register_access(ahc) != 0) {
 
 			printf("aic7xxx: PCI Device %d:%d:%d "
+			printk("aic7xxx: PCI Device %d:%d:%d "
 			       "failed memory mapped test.  Using PIO.\n",
 			       ahc_get_pci_bus(ahc->dev_softc),
 			       ahc_get_pci_slot(ahc->dev_softc),
@@ -426,6 +434,7 @@ ahc_pci_map_registers(struct ahc_softc *ahc)
 			command |= PCIM_CMD_MEMEN;
 	} else {
 		printf("aic7xxx: PCI%d:%d:%d MEM region 0x%llx "
+		printk("aic7xxx: PCI%d:%d:%d MEM region 0x%llx "
 		       "unavailable. Cannot memory map device.\n",
 		       ahc_get_pci_bus(ahc->dev_softc),
 		       ahc_get_pci_slot(ahc->dev_softc),
@@ -445,6 +454,7 @@ ahc_pci_map_registers(struct ahc_softc *ahc)
 			command |= PCIM_CMD_PORTEN;
 		} else {
 			printf("aic7xxx: PCI%d:%d:%d IO region 0x%llx[0..255] "
+			printk("aic7xxx: PCI%d:%d:%d IO region 0x%llx[0..255] "
 			       "unavailable. Cannot map device.\n",
 			       ahc_get_pci_bus(ahc->dev_softc),
 			       ahc_get_pci_slot(ahc->dev_softc),

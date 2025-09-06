@@ -77,6 +77,7 @@ Some very frequently asked questions about linuxtv-dvb
 		DVB source
 
 	http://sourceforge.net/projects/dvbsak/
+	http://www.linuxtv.org/downloads/	
 		DVB Swiss Army Knife library and utilities
 
 	http://www.nenie.org/misc/mpsys/
@@ -107,6 +108,7 @@ Some very frequently asked questions about linuxtv-dvb
 
 	Run tcpdump on the dvb0_0 interface. This sets the interface
 	into promiscous mode so it accepts any packets from the PID
+	into promiscuous mode so it accepts any packets from the PID
 	you have configured with the dvbnet utility. Check if there
 	are any packets with the IP addr and MAC addr you have
 	configured with ifconfig.

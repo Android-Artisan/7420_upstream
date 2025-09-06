@@ -1,8 +1,6 @@
 How to get the bt8xx cards working
-==================================
 
 1) General information
-======================
 
 This class of cards has a bt878a as the PCI interface, and require the bttv driver
 for accessing the i2c bus and the gpio pins of the bt8xx chipset.
@@ -27,7 +25,6 @@ e.)"Device drivers" => "Multimedia devices" => "Digital Video Broadcasting Devic
  Then please select your card-specific frontend module.
 
 2) Loading Modules
-==================
 
 Regular case: If the bttv driver detects a bt8xx-based DVB card, all frontend and backend modules will be loaded automatically.
 Exceptions are:

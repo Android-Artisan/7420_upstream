@@ -39,6 +39,31 @@
 /* UBIFS on-flash format version */
 #define UBIFS_FORMAT_VERSION 4
 
+/*
+ * UBIFS on-flash format version. This version is increased when the on-flash
+ * format is changing. If this happens, UBIFS is will support older versions as
+ * well. But older UBIFS code will not support newer formats. Format changes
+ * will be rare and only when absolutely necessary, e.g. to fix a bug or to add
+ * a new feature.
+ *
+ * UBIFS went into mainline kernel with format version 4. The older formats
+ * were development formats.
+ */
+#define UBIFS_FORMAT_VERSION 4
+
+/*
+ * Read-only compatibility version. If the UBIFS format is changed, older UBIFS
+ * implementations will not be able to mount newer formats in read-write mode.
+ * However, depending on the change, it may be possible to mount newer formats
+ * in R/O mode. This is indicated by the R/O compatibility version which is
+ * stored in the super-block.
+ *
+ * This is needed to support boot-loaders which only need R/O mounting. With
+ * this flag it is possible to do UBIFS format changes without a need to update
+ * boot-loaders.
+ */
+#define UBIFS_RO_COMPAT_VERSION 0
+
 /* Minimum logical eraseblock size in bytes */
 #define UBIFS_MIN_LEB_SZ (15*1024)
 
@@ -50,6 +75,13 @@
  * constant.
  */
 #define UBIFS_MIN_COMPR_LEN 128
+
+/*
+ * If compressed data length is less than %UBIFS_MIN_COMPRESS_DIFF bytes
+ * shorter than uncompressed data length, UBIFS prefers to leave this data
+ * node uncompress, because it'll be read faster.
+ */
+#define UBIFS_MIN_COMPRESS_DIFF 64
 
 /* Root inode number */
 #define UBIFS_ROOT_INO 1
@@ -106,6 +138,13 @@
 
 /* The key is always at the same position in all keyed nodes */
 #define UBIFS_KEY_OFFSET offsetof(struct ubifs_ino_node, key)
+
+/* Garbage collector journal head number */
+#define UBIFS_GC_HEAD   0
+/* Base journal head number */
+#define UBIFS_BASE_HEAD 1
+/* Data journal head number */
+#define UBIFS_DATA_HEAD 2
 
 /*
  * LEB Properties Tree node types.
@@ -376,6 +415,11 @@ enum {
  */
 enum {
 	UBIFS_FLG_BIGLPT = 0x02,
+ * UBIFS_FLG_SPACE_FIXUP: first-mount "fixup" of free space within LEBs needed
+ */
+enum {
+	UBIFS_FLG_BIGLPT = 0x02,
+	UBIFS_FLG_SPACE_FIXUP = 0x04,
 };
 
 /**
@@ -400,6 +444,7 @@ struct ubifs_ch {
 	__u8 group_type;
 	__u8 padding[2];
 } __attribute__ ((packed));
+} __packed;
 
 /**
  * union ubifs_dev_desc - device node descriptor.
@@ -414,6 +459,7 @@ union ubifs_dev_desc {
 	__le32 new;
 	__le64 huge;
 } __attribute__ ((packed));
+} __packed;
 
 /**
  * struct ubifs_ino_node - inode node.
@@ -475,6 +521,7 @@ struct ubifs_ino_node {
 	__u8 padding2[26]; /* Watch 'zero_ino_node_unused()' if changing! */
 	__u8 data[];
 } __attribute__ ((packed));
+} __packed;
 
 /**
  * struct ubifs_dent_node - directory entry node.
@@ -500,6 +547,7 @@ struct ubifs_dent_node {
 	__u8 padding2[4]; /* Watch 'zero_dent_node_unused()' if changing! */
 	__u8 name[];
 } __attribute__ ((packed));
+} __packed;
 
 /**
  * struct ubifs_data_node - data node.
@@ -521,6 +569,7 @@ struct ubifs_data_node {
 	__u8 padding[2]; /* Watch 'zero_data_node_unused()' if changing! */
 	__u8 data[];
 } __attribute__ ((packed));
+} __packed;
 
 /**
  * struct ubifs_trun_node - truncation node.
@@ -541,6 +590,7 @@ struct ubifs_trun_node {
 	__le64 old_size;
 	__le64 new_size;
 } __attribute__ ((packed));
+} __packed;
 
 /**
  * struct ubifs_pad_node - padding node.
@@ -552,6 +602,7 @@ struct ubifs_pad_node {
 	struct ubifs_ch ch;
 	__le32 pad_len;
 } __attribute__ ((packed));
+} __packed;
 
 /**
  * struct ubifs_sb_node - superblock node.
@@ -580,6 +631,7 @@ struct ubifs_pad_node {
  * @padding2: reserved for future, zeroes
  * @time_gran: time granularity in nanoseconds
  * @uuid: UUID generated when the file system image was created
+ * @ro_compat_version: UBIFS R/O compatibility version
  */
 struct ubifs_sb_node {
 	struct ubifs_ch ch;
@@ -608,6 +660,9 @@ struct ubifs_sb_node {
 	__u8 uuid[16];
 	__u8 padding2[3972];
 } __attribute__ ((packed));
+	__le32 ro_compat_version;
+	__u8 padding2[3968];
+} __packed;
 
 /**
  * struct ubifs_mst_node - master node.
@@ -675,6 +730,7 @@ struct ubifs_mst_node {
 	__le32 leb_cnt;
 	__u8 padding[344];
 } __attribute__ ((packed));
+} __packed;
 
 /**
  * struct ubifs_ref_node - logical eraseblock reference node.
@@ -691,6 +747,7 @@ struct ubifs_ref_node {
 	__le32 jhead;
 	__u8 padding[28];
 } __attribute__ ((packed));
+} __packed;
 
 /**
  * struct ubifs_branch - key/reference/length branch
@@ -705,6 +762,7 @@ struct ubifs_branch {
 	__le32 len;
 	__u8 key[];
 } __attribute__ ((packed));
+} __packed;
 
 /**
  * struct ubifs_idx_node - indexing node.
@@ -719,6 +777,7 @@ struct ubifs_idx_node {
 	__le16 level;
 	__u8 branches[];
 } __attribute__ ((packed));
+} __packed;
 
 /**
  * struct ubifs_cs_node - commit start node.
@@ -729,6 +788,7 @@ struct ubifs_cs_node {
 	struct ubifs_ch ch;
 	__le64 cmt_no;
 } __attribute__ ((packed));
+} __packed;
 
 /**
  * struct ubifs_orph_node - orphan node.
@@ -741,5 +801,6 @@ struct ubifs_orph_node {
 	__le64 cmt_no;
 	__le64 inos[];
 } __attribute__ ((packed));
+} __packed;
 
 #endif /* __UBIFS_MEDIA_H__ */

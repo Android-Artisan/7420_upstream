@@ -3,6 +3,8 @@
  *
  *  S390 version
  *    Copyright (C) 2000 IBM Deutschland Entwicklung GmbH, IBM Corporation
+ *  S390 version
+ *    Copyright IBM Corp. 2000
  *    Author(s): Martin Schwidefsky (schwidefsky@de.ibm.com),
  *               Gerhard Tonn (ton@de.ibm.com)   
  *               Thomas Spatzier (tspat@de.ibm.com)
@@ -40,6 +42,13 @@
 #include <linux/nfsd/cache.h>
 #include <linux/nfsd/xdr.h>
 #include <linux/nfsd/syscall.h>
+#include <linux/smp.h>
+#include <linux/sem.h>
+#include <linux/msg.h>
+#include <linux/shm.h>
+#include <linux/uio.h>
+#include <linux/quota.h>
+#include <linux/module.h>
 #include <linux/poll.h>
 #include <linux/personality.h>
 #include <linux/stat.h>
@@ -59,6 +68,7 @@
 #include <linux/ptrace.h>
 #include <linux/fadvise.h>
 #include <linux/ipc.h>
+#include <linux/slab.h>
 
 #include <asm/types.h>
 #include <asm/uaccess.h>
@@ -104,38 +114,47 @@ long psw32_user_bits	= (PSW32_BASE_BITS | PSW32_MASK_DAT | PSW32_ASC_HOME |
 #define SET_STAT_GID(stat, gid)		(stat).st_gid = high2lowgid(gid)
 
 asmlinkage long sys32_chown16(const char __user * filename, u16 user, u16 group)
+COMPAT_SYSCALL_DEFINE3(s390_chown16, const char __user *, filename,
+		       u16, user, u16, group)
 {
 	return sys_chown(filename, low2highuid(user), low2highgid(group));
 }
 
 asmlinkage long sys32_lchown16(const char __user * filename, u16 user, u16 group)
+COMPAT_SYSCALL_DEFINE3(s390_lchown16, const char __user *,
+		       filename, u16, user, u16, group)
 {
 	return sys_lchown(filename, low2highuid(user), low2highgid(group));
 }
 
 asmlinkage long sys32_fchown16(unsigned int fd, u16 user, u16 group)
+COMPAT_SYSCALL_DEFINE3(s390_fchown16, unsigned int, fd, u16, user, u16, group)
 {
 	return sys_fchown(fd, low2highuid(user), low2highgid(group));
 }
 
 asmlinkage long sys32_setregid16(u16 rgid, u16 egid)
+COMPAT_SYSCALL_DEFINE2(s390_setregid16, u16, rgid, u16, egid)
 {
 	return sys_setregid(low2highgid(rgid), low2highgid(egid));
 }
 
 asmlinkage long sys32_setgid16(u16 gid)
+COMPAT_SYSCALL_DEFINE1(s390_setgid16, u16, gid)
 {
-	return sys_setgid((gid_t)gid);
+	return sys_setgid(low2highgid(gid));
 }
 
 asmlinkage long sys32_setreuid16(u16 ruid, u16 euid)
+COMPAT_SYSCALL_DEFINE2(s390_setreuid16, u16, ruid, u16, euid)
 {
 	return sys_setreuid(low2highuid(ruid), low2highuid(euid));
 }
 
 asmlinkage long sys32_setuid16(u16 uid)
+COMPAT_SYSCALL_DEFINE1(s390_setuid16, u16, uid)
 {
-	return sys_setuid((uid_t)uid);
+	return sys_setuid(low2highuid(uid));
 }
 
 asmlinkage long sys32_setresuid16(u16 ruid, u16 euid, u16 suid)
@@ -151,6 +170,26 @@ asmlinkage long sys32_getresuid16(u16 __user *ruid, u16 __user *euid, u16 __user
 	if (!(retval = put_user(high2lowuid(current->uid), ruid)) &&
 	    !(retval = put_user(high2lowuid(current->euid), euid)))
 		retval = put_user(high2lowuid(current->suid), suid);
+COMPAT_SYSCALL_DEFINE3(s390_setresuid16, u16, ruid, u16, euid, u16, suid)
+{
+	return sys_setresuid(low2highuid(ruid), low2highuid(euid),
+			     low2highuid(suid));
+}
+
+COMPAT_SYSCALL_DEFINE3(s390_getresuid16, u16 __user *, ruidp,
+		       u16 __user *, euidp, u16 __user *, suidp)
+{
+	const struct cred *cred = current_cred();
+	int retval;
+	u16 ruid, euid, suid;
+
+	ruid = high2lowuid(from_kuid_munged(cred->user_ns, cred->uid));
+	euid = high2lowuid(from_kuid_munged(cred->user_ns, cred->euid));
+	suid = high2lowuid(from_kuid_munged(cred->user_ns, cred->suid));
+
+	if (!(retval   = put_user(ruid, ruidp)) &&
+	    !(retval   = put_user(euid, euidp)))
+		retval = put_user(suid, suidp);
 
 	return retval;
 }
@@ -168,18 +207,40 @@ asmlinkage long sys32_getresgid16(u16 __user *rgid, u16 __user *egid, u16 __user
 	if (!(retval = put_user(high2lowgid(current->gid), rgid)) &&
 	    !(retval = put_user(high2lowgid(current->egid), egid)))
 		retval = put_user(high2lowgid(current->sgid), sgid);
+COMPAT_SYSCALL_DEFINE3(s390_setresgid16, u16, rgid, u16, egid, u16, sgid)
+{
+	return sys_setresgid(low2highgid(rgid), low2highgid(egid),
+			     low2highgid(sgid));
+}
+
+COMPAT_SYSCALL_DEFINE3(s390_getresgid16, u16 __user *, rgidp,
+		       u16 __user *, egidp, u16 __user *, sgidp)
+{
+	const struct cred *cred = current_cred();
+	int retval;
+	u16 rgid, egid, sgid;
+
+	rgid = high2lowgid(from_kgid_munged(cred->user_ns, cred->gid));
+	egid = high2lowgid(from_kgid_munged(cred->user_ns, cred->egid));
+	sgid = high2lowgid(from_kgid_munged(cred->user_ns, cred->sgid));
+
+	if (!(retval   = put_user(rgid, rgidp)) &&
+	    !(retval   = put_user(egid, egidp)))
+		retval = put_user(sgid, sgidp);
 
 	return retval;
 }
 
 asmlinkage long sys32_setfsuid16(u16 uid)
+COMPAT_SYSCALL_DEFINE1(s390_setfsuid16, u16, uid)
 {
-	return sys_setfsuid((uid_t)uid);
+	return sys_setfsuid(low2highuid(uid));
 }
 
 asmlinkage long sys32_setfsgid16(u16 gid)
+COMPAT_SYSCALL_DEFINE1(s390_setfsgid16, u16, gid)
 {
-	return sys_setfsgid((gid_t)gid);
+	return sys_setfsgid(low2highgid(gid));
 }
 
 static int groups16_to_user(u16 __user *grouplist, struct group_info *group_info)
@@ -189,6 +250,14 @@ static int groups16_to_user(u16 __user *grouplist, struct group_info *group_info
 
 	for (i = 0; i < group_info->ngroups; i++) {
 		group = (u16)GROUP_AT(group_info, i);
+	struct user_namespace *user_ns = current_user_ns();
+	int i;
+	u16 group;
+	kgid_t kgid;
+
+	for (i = 0; i < group_info->ngroups; i++) {
+		kgid = GROUP_AT(group_info, i);
+		group = (u16)from_kgid_munged(user_ns, kgid);
 		if (put_user(group, grouplist+i))
 			return -EFAULT;
 	}
@@ -200,11 +269,21 @@ static int groups16_from_user(struct group_info *group_info, u16 __user *groupli
 {
 	int i;
 	u16 group;
+	struct user_namespace *user_ns = current_user_ns();
+	int i;
+	u16 group;
+	kgid_t kgid;
 
 	for (i = 0; i < group_info->ngroups; i++) {
 		if (get_user(group, grouplist+i))
 			return  -EFAULT;
 		GROUP_AT(group_info, i) = (gid_t)group;
+
+		kgid = make_kgid(user_ns, (gid_t)group);
+		if (!gid_valid(kgid))
+			return -EINVAL;
+
+		GROUP_AT(group_info, i) = kgid;
 	}
 
 	return 0;
@@ -212,6 +291,9 @@ static int groups16_from_user(struct group_info *group_info, u16 __user *groupli
 
 asmlinkage long sys32_getgroups16(int gidsetsize, u16 __user *grouplist)
 {
+COMPAT_SYSCALL_DEFINE2(s390_getgroups16, int, gidsetsize, u16 __user *, grouplist)
+{
+	const struct cred *cred = current_cred();
 	int i;
 
 	if (gidsetsize < 0)
@@ -219,12 +301,15 @@ asmlinkage long sys32_getgroups16(int gidsetsize, u16 __user *grouplist)
 
 	get_group_info(current->group_info);
 	i = current->group_info->ngroups;
+	get_group_info(cred->group_info);
+	i = cred->group_info->ngroups;
 	if (gidsetsize) {
 		if (i > gidsetsize) {
 			i = -EINVAL;
 			goto out;
 		}
 		if (groups16_to_user(grouplist, current->group_info)) {
+		if (groups16_to_user(grouplist, cred->group_info)) {
 			i = -EFAULT;
 			goto out;
 		}
@@ -235,11 +320,17 @@ out:
 }
 
 asmlinkage long sys32_setgroups16(int gidsetsize, u16 __user *grouplist)
+	put_group_info(cred->group_info);
+	return i;
+}
+
+COMPAT_SYSCALL_DEFINE2(s390_setgroups16, int, gidsetsize, u16 __user *, grouplist)
 {
 	struct group_info *group_info;
 	int retval;
 
 	if (!capable(CAP_SETGID))
+	if (!may_setgroups())
 		return -EPERM;
 	if ((unsigned)gidsetsize > NGROUPS_MAX)
 		return -EINVAL;
@@ -253,6 +344,7 @@ asmlinkage long sys32_setgroups16(int gidsetsize, u16 __user *grouplist)
 		return retval;
 	}
 
+	groups_sort(group_info);
 	retval = set_current_groups(group_info);
 	put_group_info(group_info);
 
@@ -732,6 +824,67 @@ asmlinkage long sys32_sysctl(struct __sysctl_args32 __user *args)
 }
 #endif
 
+COMPAT_SYSCALL_DEFINE0(s390_getuid16)
+{
+	return high2lowuid(from_kuid_munged(current_user_ns(), current_uid()));
+}
+
+COMPAT_SYSCALL_DEFINE0(s390_geteuid16)
+{
+	return high2lowuid(from_kuid_munged(current_user_ns(), current_euid()));
+}
+
+COMPAT_SYSCALL_DEFINE0(s390_getgid16)
+{
+	return high2lowgid(from_kgid_munged(current_user_ns(), current_gid()));
+}
+
+COMPAT_SYSCALL_DEFINE0(s390_getegid16)
+{
+	return high2lowgid(from_kgid_munged(current_user_ns(), current_egid()));
+}
+
+#ifdef CONFIG_SYSVIPC
+COMPAT_SYSCALL_DEFINE5(s390_ipc, uint, call, int, first, compat_ulong_t, second,
+		compat_ulong_t, third, compat_uptr_t, ptr)
+{
+	if (call >> 16)		/* hack for backward compatibility */
+		return -EINVAL;
+	return compat_sys_ipc(call, first, second, third, ptr, third);
+}
+#endif
+
+COMPAT_SYSCALL_DEFINE3(s390_truncate64, const char __user *, path, u32, high, u32, low)
+{
+	return sys_truncate(path, (unsigned long)high << 32 | low);
+}
+
+COMPAT_SYSCALL_DEFINE3(s390_ftruncate64, unsigned int, fd, u32, high, u32, low)
+{
+	return sys_ftruncate(fd, (unsigned long)high << 32 | low);
+}
+
+COMPAT_SYSCALL_DEFINE5(s390_pread64, unsigned int, fd, char __user *, ubuf,
+		       compat_size_t, count, u32, high, u32, low)
+{
+	if ((compat_ssize_t) count < 0)
+		return -EINVAL;
+	return sys_pread64(fd, ubuf, count, (unsigned long)high << 32 | low);
+}
+
+COMPAT_SYSCALL_DEFINE5(s390_pwrite64, unsigned int, fd, const char __user *, ubuf,
+		       compat_size_t, count, u32, high, u32, low)
+{
+	if ((compat_ssize_t) count < 0)
+		return -EINVAL;
+	return sys_pwrite64(fd, ubuf, count, (unsigned long)high << 32 | low);
+}
+
+COMPAT_SYSCALL_DEFINE4(s390_readahead, int, fd, u32, high, u32, low, s32, count)
+{
+	return sys_readahead(fd, (unsigned long)high << 32 | low, count);
+}
+
 struct stat64_emu31 {
 	unsigned long long  st_dev;
 	unsigned int    __pad1;
@@ -770,6 +923,8 @@ static int cp_stat64(struct stat64_emu31 __user *ubuf, struct kstat *stat)
 	tmp.st_nlink = (unsigned int)stat->nlink;
 	tmp.st_uid = stat->uid;
 	tmp.st_gid = stat->gid;
+	tmp.st_uid = from_kuid_munged(current_user_ns(), stat->uid);
+	tmp.st_gid = from_kgid_munged(current_user_ns(), stat->gid);
 	tmp.st_rdev = huge_encode_dev(stat->rdev);
 	tmp.st_size = stat->size;
 	tmp.st_blksize = (u32)stat->blksize;
@@ -782,6 +937,7 @@ static int cp_stat64(struct stat64_emu31 __user *ubuf, struct kstat *stat)
 }
 
 asmlinkage long sys32_stat64(char __user * filename, struct stat64_emu31 __user * statbuf)
+COMPAT_SYSCALL_DEFINE2(s390_stat64, const char __user *, filename, struct stat64_emu31 __user *, statbuf)
 {
 	struct kstat stat;
 	int ret = vfs_stat(filename, &stat);
@@ -791,6 +947,7 @@ asmlinkage long sys32_stat64(char __user * filename, struct stat64_emu31 __user 
 }
 
 asmlinkage long sys32_lstat64(char __user * filename, struct stat64_emu31 __user * statbuf)
+COMPAT_SYSCALL_DEFINE2(s390_lstat64, const char __user *, filename, struct stat64_emu31 __user *, statbuf)
 {
 	struct kstat stat;
 	int ret = vfs_lstat(filename, &stat);
@@ -800,6 +957,7 @@ asmlinkage long sys32_lstat64(char __user * filename, struct stat64_emu31 __user
 }
 
 asmlinkage long sys32_fstat64(unsigned long fd, struct stat64_emu31 __user * statbuf)
+COMPAT_SYSCALL_DEFINE2(s390_fstat64, unsigned int, fd, struct stat64_emu31 __user *, statbuf)
 {
 	struct kstat stat;
 	int ret = vfs_fstat(fd, &stat);
@@ -826,6 +984,16 @@ asmlinkage long sys32_fstatat64(unsigned int dfd, char __user *filename,
 		error = cp_stat64(statbuf, &stat);
 out:
 	return error;
+COMPAT_SYSCALL_DEFINE4(s390_fstatat64, unsigned int, dfd, const char __user *, filename,
+		       struct stat64_emu31 __user *, statbuf, int, flag)
+{
+	struct kstat stat;
+	int error;
+
+	error = vfs_fstatat(dfd, filename, &stat, flag);
+	if (error)
+		return error;
+	return cp_stat64(statbuf, &stat);
 }
 
 /*
@@ -907,6 +1075,36 @@ out:
 }
 
 asmlinkage long sys32_read(unsigned int fd, char __user * buf, size_t count)
+	compat_ulong_t addr;
+	compat_ulong_t len;
+	compat_ulong_t prot;
+	compat_ulong_t flags;
+	compat_ulong_t fd;
+	compat_ulong_t offset;
+};
+
+COMPAT_SYSCALL_DEFINE1(s390_old_mmap, struct mmap_arg_struct_emu31 __user *, arg)
+{
+	struct mmap_arg_struct_emu31 a;
+
+	if (copy_from_user(&a, arg, sizeof(a)))
+		return -EFAULT;
+	if (a.offset & ~PAGE_MASK)
+		return -EINVAL;
+	return sys_mmap_pgoff(a.addr, a.len, a.prot, a.flags, a.fd,
+			      a.offset >> PAGE_SHIFT);
+}
+
+COMPAT_SYSCALL_DEFINE1(s390_mmap2, struct mmap_arg_struct_emu31 __user *, arg)
+{
+	struct mmap_arg_struct_emu31 a;
+
+	if (copy_from_user(&a, arg, sizeof(a)))
+		return -EFAULT;
+	return sys_mmap_pgoff(a.addr, a.len, a.prot, a.flags, a.fd, a.offset);
+}
+
+COMPAT_SYSCALL_DEFINE3(s390_read, unsigned int, fd, char __user *, buf, compat_size_t, count)
 {
 	if ((compat_ssize_t) count < 0)
 		return -EINVAL; 
@@ -915,6 +1113,7 @@ asmlinkage long sys32_read(unsigned int fd, char __user * buf, size_t count)
 }
 
 asmlinkage long sys32_write(unsigned int fd, char __user * buf, size_t count)
+COMPAT_SYSCALL_DEFINE3(s390_write, unsigned int, fd, const char __user *, buf, compat_size_t, count)
 {
 	if ((compat_ssize_t) count < 0)
 		return -EINVAL; 
@@ -947,12 +1146,14 @@ asmlinkage long sys32_clone(void)
 
 asmlinkage long
 sys32_fadvise64(int fd, loff_t offset, size_t len, int advise)
+COMPAT_SYSCALL_DEFINE5(s390_fadvise64, int, fd, u32, high, u32, low, compat_size_t, len, int, advise)
 {
 	if (advise == 4)
 		advise = POSIX_FADV_DONTNEED;
 	else if (advise == 5)
 		advise = POSIX_FADV_NOREUSE;
 	return sys_fadvise64(fd, offset, len, advise);
+	return sys_fadvise64(fd, (unsigned long)high << 32 | low, len, advise);
 }
 
 struct fadvise64_64_args {
@@ -964,6 +1165,7 @@ struct fadvise64_64_args {
 
 asmlinkage long
 sys32_fadvise64_64(struct fadvise64_64_args __user *args)
+COMPAT_SYSCALL_DEFINE1(s390_fadvise64_64, struct fadvise64_64_args __user *, args)
 {
 	struct fadvise64_64_args a;
 
@@ -974,4 +1176,18 @@ sys32_fadvise64_64(struct fadvise64_64_args __user *args)
 	else if (a.advice == 5)
 		a.advice = POSIX_FADV_NOREUSE;
 	return sys_fadvise64_64(a.fd, a.offset, a.len, a.advice);
+}
+
+COMPAT_SYSCALL_DEFINE6(s390_sync_file_range, int, fd, u32, offhigh, u32, offlow,
+		       u32, nhigh, u32, nlow, unsigned int, flags)
+{
+	return sys_sync_file_range(fd, ((loff_t)offhigh << 32) + offlow,
+				   ((u64)nhigh << 32) + nlow, flags);
+}
+
+COMPAT_SYSCALL_DEFINE6(s390_fallocate, int, fd, int, mode, u32, offhigh, u32, offlow,
+		       u32, lenhigh, u32, lenlow)
+{
+	return sys_fallocate(fd, mode, ((loff_t)offhigh << 32) + offlow,
+			     ((u64)lenhigh << 32) + lenlow);
 }

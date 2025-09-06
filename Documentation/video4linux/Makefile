@@ -6,3 +6,4 @@ hostprogs-y := v4lgrab
 
 # Tell kbuild to always build the programs
 always := $(hostprogs-y)
+obj-$(CONFIG_VIDEO_PCI_SKELETON) := v4l2-pci-skeleton.o

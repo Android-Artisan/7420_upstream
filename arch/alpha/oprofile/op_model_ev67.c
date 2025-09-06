@@ -13,6 +13,8 @@
 #include <linux/smp.h>
 #include <asm/ptrace.h>
 #include <asm/system.h>
+#include <linux/smp.h>
+#include <asm/ptrace.h>
 
 #include "op_impl.h"
 
@@ -193,6 +195,7 @@ ev67_handle_interrupt(unsigned long which, struct pt_regs *regs,
 		case TRAP_INVALID2:
 		case TRAP_INVALID3:
 			/* Pipeline redirection ocurred. PMPC points
+			/* Pipeline redirection occurred. PMPC points
 			   to PALcode. Recognize ITB miss by PALcode
 			   offset address, and get actual PC from
 			   EXC_ADDR.  */

@@ -1,5 +1,4 @@
 README on the Compact Flash for Card Engines
-============================================
 
 There are three challenges in supporting the CF interface of the Card
 Engines.  First, every IO operation must be followed with IO to

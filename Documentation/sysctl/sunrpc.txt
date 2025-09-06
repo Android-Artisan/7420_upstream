@@ -3,7 +3,6 @@ Documentation for /proc/sys/sunrpc/*	kernel version 2.2.10
 
 For general info and legal blurb, please look in README.
 
-==============================================================
 
 This file contains the documentation for the sysctl files in
 /proc/sys/sunrpc and is valid for Linux kernel version 2.2.

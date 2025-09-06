@@ -1,6 +1,5 @@
 
 IPF Machine Check (MC) error inject tool
-========================================
 
 IPF Machine Check (MC) error inject tool is used to inject MC
 errors from Linux. The tool is a test bed for IPF MC work flow including
@@ -883,6 +882,7 @@ int err_inj()
 			k = cpu%64;
 			j = cpu/64;
 			mask[j]=1<<k;
+			mask[j] = 1UL << k;
 
 			if (sched_setaffinity(0, MASK_SIZE*8, mask)==-1) {
 				perror("Error sched_setaffinity:");

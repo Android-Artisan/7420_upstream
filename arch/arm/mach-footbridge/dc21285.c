@@ -20,6 +20,10 @@
 #include <asm/io.h>
 #include <asm/irq.h>
 #include <asm/system.h>
+#include <linux/io.h>
+#include <linux/spinlock.h>
+
+#include <asm/irq.h>
 #include <asm/mach/pci.h>
 #include <asm/hardware/dec21285.h>
 
@@ -69,15 +73,15 @@ dc21285_read_config(struct pci_bus *bus, unsigned int devfn, int where,
 	if (addr)
 		switch (size) {
 		case 1:
-			asm("ldrb	%0, [%1, %2]"
+			asm volatile("ldrb	%0, [%1, %2]"
 				: "=r" (v) : "r" (addr), "r" (where) : "cc");
 			break;
 		case 2:
-			asm("ldrh	%0, [%1, %2]"
+			asm volatile("ldrh	%0, [%1, %2]"
 				: "=r" (v) : "r" (addr), "r" (where) : "cc");
 			break;
 		case 4:
-			asm("ldr	%0, [%1, %2]"
+			asm volatile("ldr	%0, [%1, %2]"
 				: "=r" (v) : "r" (addr), "r" (where) : "cc");
 			break;
 		}
@@ -103,17 +107,17 @@ dc21285_write_config(struct pci_bus *bus, unsigned int devfn, int where,
 	if (addr)
 		switch (size) {
 		case 1:
-			asm("strb	%0, [%1, %2]"
+			asm volatile("strb	%0, [%1, %2]"
 				: : "r" (value), "r" (addr), "r" (where)
 				: "cc");
 			break;
 		case 2:
-			asm("strh	%0, [%1, %2]"
+			asm volatile("strh	%0, [%1, %2]"
 				: : "r" (value), "r" (addr), "r" (where)
 				: "cc");
 			break;
 		case 4:
-			asm("str	%0, [%1, %2]"
+			asm volatile("str	%0, [%1, %2]"
 				: : "r" (value), "r" (addr), "r" (where)
 				: "cc");
 			break;
@@ -129,6 +133,7 @@ dc21285_write_config(struct pci_bus *bus, unsigned int devfn, int where,
 }
 
 static struct pci_ops dc21285_ops = {
+struct pci_ops dc21285_ops = {
 	.read	= dc21285_read_config,
 	.write	= dc21285_write_config,
 };
@@ -285,6 +290,16 @@ struct pci_bus * __init dc21285_scan_bus(int nr, struct pci_sys_data *sys)
 {
 	return pci_scan_bus(0, &dc21285_ops, sys);
 }
+	sys->mem_offset  = DC21285_PCI_MEM;
+
+	pci_add_resource_offset(&sys->resources, &res[0], sys->mem_offset);
+	pci_add_resource_offset(&sys->resources, &res[1], sys->mem_offset);
+
+	return 1;
+}
+
+#define dc21285_request_irq(_a, _b, _c, _d, _e) \
+	WARN_ON(request_irq(_a, _b, _c, _d, _e) < 0)
 
 void __init dc21285_preinit(void)
 {
@@ -295,6 +310,12 @@ void __init dc21285_preinit(void)
 	for (mem_mask = 0x00100000; mem_mask < 0x10000000; mem_mask <<= 1)
 		if (mem_mask >= mem_size)
 			break;		
+	pcibios_min_mem = 0x81000000;
+
+	mem_size = (unsigned int)high_memory - PAGE_OFFSET;
+	for (mem_mask = 0x00100000; mem_mask < 0x10000000; mem_mask <<= 1)
+		if (mem_mask >= mem_size)
+			break;
 
 	/*
 	 * These registers need to be set up whether we're the
@@ -354,6 +375,18 @@ void __init dc21285_preinit(void)
 		allocate_resource(&ioport_resource, &csrio, 128,
 				  0xff00, 0xffff, 128, NULL, NULL);
 
+	dc21285_request_irq(IRQ_PCI_SERR, dc21285_serr_irq, 0,
+			    "PCI system error", &serr_timer);
+	dc21285_request_irq(IRQ_PCI_PERR, dc21285_parity_irq, 0,
+			    "PCI parity error", &perr_timer);
+	dc21285_request_irq(IRQ_PCI_ABORT, dc21285_abort_irq, 0,
+			    "PCI abort", NULL);
+	dc21285_request_irq(IRQ_DISCARD_TIMER, dc21285_discard_irq, 0,
+			    "Discard timer", NULL);
+	dc21285_request_irq(IRQ_PCI_DPERR, dc21285_dparity_irq, 0,
+			    "PCI data parity", NULL);
+
+	if (cfn_mode) {
 		/*
 		 * Map our SDRAM at a known address in PCI space, just in case
 		 * the firmware had other ideas.  Using a nonzero base is
@@ -362,6 +395,7 @@ void __init dc21285_preinit(void)
 		 */
 		*CSR_PCICSRBASE       = 0xf4000000;
 		*CSR_PCICSRIOBASE     = csrio.start;
+		*CSR_PCICSRIOBASE     = 0;
 		*CSR_PCISDRAMBASE     = __virt_to_bus(PAGE_OFFSET);
 		*CSR_PCIROMBASE       = 0;
 		*CSR_PCICMD = PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER |

@@ -22,6 +22,11 @@
 #define PAGE_MASK    (~(PAGE_SIZE-1))
 
 #include <asm/btfixup.h>
+#include <linux/const.h>
+
+#define PAGE_SHIFT   12
+#define PAGE_SIZE    (_AC(1, UL) << PAGE_SHIFT)
+#define PAGE_MASK    (~(PAGE_SIZE-1))
 
 #ifndef __ASSEMBLY__
 
@@ -127,6 +132,7 @@ extern unsigned long sparc_unmapped_base;
 BTFIXUPDEF_SETHI(sparc_unmapped_base)
 
 #define TASK_UNMAPPED_BASE	BTFIXUP_SETHI(sparc_unmapped_base)
+#define TASK_UNMAPPED_BASE	0x50000000
 
 #else /* !(__ASSEMBLY__) */
 
@@ -147,6 +153,7 @@ extern unsigned long pfn_base;
 
 #define ARCH_PFN_OFFSET		(pfn_base)
 #define virt_to_page(kaddr)	(mem_map + ((((unsigned long)(kaddr)-PAGE_OFFSET)>>PAGE_SHIFT)))
+#define virt_to_page(kaddr)	pfn_to_page(__pa(kaddr) >> PAGE_SHIFT)
 
 #define pfn_valid(pfn)		(((pfn) >= (pfn_base)) && (((pfn)-(pfn_base)) < max_mapnr))
 #define virt_addr_valid(kaddr)	((((unsigned long)(kaddr)-PAGE_OFFSET)>>PAGE_SHIFT) < max_mapnr)
@@ -156,5 +163,6 @@ extern unsigned long pfn_base;
 
 #include <asm-generic/memory_model.h>
 #include <asm-generic/page.h>
+#include <asm-generic/getorder.h>
 
 #endif /* _SPARC_PAGE_H */

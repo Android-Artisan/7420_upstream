@@ -15,6 +15,118 @@
 #include "hfsplus_fs.h"
 #include "hfsplus_raw.h"
 
+/*
+ * Initial source code of clump size calculation is gotten
+ * from http://opensource.apple.com/tarballs/diskdev_cmds/
+ */
+#define CLUMP_ENTRIES	15
+
+static short clumptbl[CLUMP_ENTRIES * 3] = {
+/*
+ *	    Volume	Attributes	 Catalog	 Extents
+ *	     Size	Clump (MB)	Clump (MB)	Clump (MB)
+ */
+	/*   1GB */	  4,		  4,		 4,
+	/*   2GB */	  6,		  6,		 4,
+	/*   4GB */	  8,		  8,		 4,
+	/*   8GB */	 11,		 11,		 5,
+	/*
+	 * For volumes 16GB and larger, we want to make sure that a full OS
+	 * install won't require fragmentation of the Catalog or Attributes
+	 * B-trees.  We do this by making the clump sizes sufficiently large,
+	 * and by leaving a gap after the B-trees for them to grow into.
+	 *
+	 * For SnowLeopard 10A298, a FullNetInstall with all packages selected
+	 * results in:
+	 * Catalog B-tree Header
+	 *	nodeSize:          8192
+	 *	totalNodes:       31616
+	 *	freeNodes:         1978
+	 * (used = 231.55 MB)
+	 * Attributes B-tree Header
+	 *	nodeSize:          8192
+	 *	totalNodes:       63232
+	 *	freeNodes:          958
+	 * (used = 486.52 MB)
+	 *
+	 * We also want Time Machine backup volumes to have a sufficiently
+	 * large clump size to reduce fragmentation.
+	 *
+	 * The series of numbers for Catalog and Attribute form a geometric
+	 * series. For Catalog (16GB to 512GB), each term is 8**(1/5) times
+	 * the previous term.  For Attributes (16GB to 512GB), each term is
+	 * 4**(1/5) times the previous term.  For 1TB to 16TB, each term is
+	 * 2**(1/5) times the previous term.
+	 */
+	/*  16GB */	 64,		 32,		 5,
+	/*  32GB */	 84,		 49,		 6,
+	/*  64GB */	111,		 74,		 7,
+	/* 128GB */	147,		111,		 8,
+	/* 256GB */	194,		169,		 9,
+	/* 512GB */	256,		256,		11,
+	/*   1TB */	294,		294,		14,
+	/*   2TB */	338,		338,		16,
+	/*   4TB */	388,		388,		20,
+	/*   8TB */	446,		446,		25,
+	/*  16TB */	512,		512,		32
+};
+
+u32 hfsplus_calc_btree_clump_size(u32 block_size, u32 node_size,
+					u64 sectors, int file_id)
+{
+	u32 mod = max(node_size, block_size);
+	u32 clump_size;
+	int column;
+	int i;
+
+	/* Figure out which column of the above table to use for this file. */
+	switch (file_id) {
+	case HFSPLUS_ATTR_CNID:
+		column = 0;
+		break;
+	case HFSPLUS_CAT_CNID:
+		column = 1;
+		break;
+	default:
+		column = 2;
+		break;
+	}
+
+	/*
+	 * The default clump size is 0.8% of the volume size. And
+	 * it must also be a multiple of the node and block size.
+	 */
+	if (sectors < 0x200000) {
+		clump_size = sectors << 2;	/*  0.8 %  */
+		if (clump_size < (8 * node_size))
+			clump_size = 8 * node_size;
+	} else {
+		/* turn exponent into table index... */
+		for (i = 0, sectors = sectors >> 22;
+		     sectors && (i < CLUMP_ENTRIES - 1);
+		     ++i, sectors = sectors >> 1) {
+			/* empty body */
+		}
+
+		clump_size = clumptbl[column + (i) * 3] * 1024 * 1024;
+	}
+
+	/*
+	 * Round the clump size to a multiple of node and block size.
+	 * NOTE: This rounds down.
+	 */
+	clump_size /= mod;
+	clump_size *= mod;
+
+	/*
+	 * Rounding down could have rounded down to 0 if the block size was
+	 * greater than the clump size.  If so, just use one block or node.
+	 */
+	if (clump_size == 0)
+		clump_size = mod;
+
+	return clump_size;
+}
 
 /* Get a reference to a B*Tree and do some initial checks */
 struct hfs_btree *hfs_btree_open(struct super_block *sb, u32 id)
@@ -31,6 +143,7 @@ struct hfs_btree *hfs_btree_open(struct super_block *sb, u32 id)
 		return NULL;
 
 	init_MUTEX(&tree->tree_lock);
+	mutex_init(&tree->tree_lock);
 	spin_lock_init(&tree->hash_lock);
 	tree->sb = sb;
 	tree->cnid = id;
@@ -46,6 +159,19 @@ struct hfs_btree *hfs_btree_open(struct super_block *sb, u32 id)
 
 	/* Load the header */
 	head = (struct hfs_btree_header_rec *)(kmap(page) + sizeof(struct hfs_bnode_desc));
+	if (!HFSPLUS_I(tree->inode)->first_blocks) {
+		pr_err("invalid btree extent records (0 size)\n");
+		goto free_inode;
+	}
+
+	mapping = tree->inode->i_mapping;
+	page = read_mapping_page(mapping, 0, NULL);
+	if (IS_ERR(page))
+		goto free_inode;
+
+	/* Load the header */
+	head = (struct hfs_btree_header_rec *)(kmap(page) +
+		sizeof(struct hfs_bnode_desc));
 	tree->root = be32_to_cpu(head->root);
 	tree->leaf_count = be32_to_cpu(head->leaf_count);
 	tree->leaf_head = be32_to_cpu(head->leaf_head);
@@ -62,6 +188,33 @@ struct hfs_btree *hfs_btree_open(struct super_block *sb, u32 id)
 		tree->keycmp = hfsplus_ext_cmp_key;
 	} else if (id == HFSPLUS_CAT_CNID) {
 		if ((HFSPLUS_SB(sb).flags & HFSPLUS_SB_HFSX) &&
+	/* Verify the tree and set the correct compare function */
+	switch (id) {
+	case HFSPLUS_EXT_CNID:
+		if (tree->max_key_len != HFSPLUS_EXT_KEYLEN - sizeof(u16)) {
+			pr_err("invalid extent max_key_len %d\n",
+				tree->max_key_len);
+			goto fail_page;
+		}
+		if (tree->attributes & HFS_TREE_VARIDXKEYS) {
+			pr_err("invalid extent btree flag\n");
+			goto fail_page;
+		}
+
+		tree->keycmp = hfsplus_ext_cmp_key;
+		break;
+	case HFSPLUS_CAT_CNID:
+		if (tree->max_key_len != HFSPLUS_CAT_KEYLEN - sizeof(u16)) {
+			pr_err("invalid catalog max_key_len %d\n",
+				tree->max_key_len);
+			goto fail_page;
+		}
+		if (!(tree->attributes & HFS_TREE_VARIDXKEYS)) {
+			pr_err("invalid catalog btree flag\n");
+			goto fail_page;
+		}
+
+		if (test_bit(HFSPLUS_SB_HFSX, &HFSPLUS_SB(sb)->flags) &&
 		    (head->key_type == HFSPLUS_KEY_BINARY))
 			tree->keycmp = hfsplus_cat_bin_cmp_key;
 		else {
@@ -70,6 +223,24 @@ struct hfs_btree *hfs_btree_open(struct super_block *sb, u32 id)
 		}
 	} else {
 		printk(KERN_ERR "hfs: unknown B*Tree requested\n");
+			set_bit(HFSPLUS_SB_CASEFOLD, &HFSPLUS_SB(sb)->flags);
+		}
+		break;
+	case HFSPLUS_ATTR_CNID:
+		if (tree->max_key_len != HFSPLUS_ATTR_KEYLEN - sizeof(u16)) {
+			pr_err("invalid attributes max_key_len %d\n",
+				tree->max_key_len);
+			goto fail_page;
+		}
+		tree->keycmp = hfsplus_attr_bin_cmp_key;
+		break;
+	default:
+		pr_err("unknown B*Tree requested\n");
+		goto fail_page;
+	}
+
+	if (!(tree->attributes & HFS_TREE_BIGKEYS)) {
+		pr_err("invalid btree flag\n");
 		goto fail_page;
 	}
 
@@ -82,6 +253,12 @@ struct hfs_btree *hfs_btree_open(struct super_block *sb, u32 id)
 
 	tree->pages_per_bnode = (tree->node_size + PAGE_CACHE_SIZE - 1) >> PAGE_CACHE_SHIFT;
 
+	tree->node_size_shift = ffs(size) - 1;
+
+	tree->pages_per_bnode =
+		(tree->node_size + PAGE_CACHE_SIZE - 1) >>
+		PAGE_CACHE_SHIFT;
+
 	kunmap(page);
 	page_cache_release(page);
 	return tree;
@@ -91,6 +268,11 @@ struct hfs_btree *hfs_btree_open(struct super_block *sb, u32 id)
 	page_cache_release(page);
  free_tree:
 	iput(tree->inode);
+	page_cache_release(page);
+ free_inode:
+	tree->inode->i_mapping->a_ops = &hfsplus_aops;
+	iput(tree->inode);
+ free_tree:
 	kfree(tree);
 	return NULL;
 }
@@ -110,6 +292,10 @@ void hfs_btree_close(struct hfs_btree *tree)
 			if (atomic_read(&node->refcnt))
 				printk(KERN_CRIT "hfs: node %d:%d still has %d user(s)!\n",
 					node->tree->cnid, node->this, atomic_read(&node->refcnt));
+				pr_crit("node %d:%d "
+						"still has %d user(s)!\n",
+					node->tree->cnid, node->this,
+					atomic_read(&node->refcnt));
 			hfs_bnode_free(node);
 			tree->node_hash_cnt--;
 		}
@@ -119,6 +305,7 @@ void hfs_btree_close(struct hfs_btree *tree)
 }
 
 void hfs_btree_write(struct hfs_btree *tree)
+int hfs_btree_write(struct hfs_btree *tree)
 {
 	struct hfs_btree_header_rec *head;
 	struct hfs_bnode *node;
@@ -131,6 +318,11 @@ void hfs_btree_write(struct hfs_btree *tree)
 	/* Load the header */
 	page = node->page[0];
 	head = (struct hfs_btree_header_rec *)(kmap(page) + sizeof(struct hfs_bnode_desc));
+		return -EIO;
+	/* Load the header */
+	page = node->page[0];
+	head = (struct hfs_btree_header_rec *)(kmap(page) +
+		sizeof(struct hfs_bnode_desc));
 
 	head->root = cpu_to_be32(tree->root);
 	head->leaf_count = cpu_to_be32(tree->leaf_count);
@@ -144,6 +336,7 @@ void hfs_btree_write(struct hfs_btree *tree)
 	kunmap(page);
 	set_page_dirty(page);
 	hfs_bnode_put(node);
+	return 0;
 }
 
 static struct hfs_bnode *hfs_bmap_new_bmap(struct hfs_bnode *prev, u32 idx)
@@ -179,6 +372,34 @@ static struct hfs_bnode *hfs_bmap_new_bmap(struct hfs_bnode *prev, u32 idx)
 	return node;
 }
 
+/* Make sure @tree has enough space for the @rsvd_nodes */
+int hfs_bmap_reserve(struct hfs_btree *tree, int rsvd_nodes)
+{
+	struct inode *inode = tree->inode;
+	struct hfsplus_inode_info *hip = HFSPLUS_I(inode);
+	u32 count;
+	int res;
+
+	if (rsvd_nodes <= 0)
+		return 0;
+
+	while (tree->free_nodes < rsvd_nodes) {
+		res = hfsplus_file_extend(inode, hfs_bnode_need_zeroout(tree));
+		if (res)
+			return res;
+		hip->phys_size = inode->i_size =
+			(loff_t)hip->alloc_blocks <<
+				HFSPLUS_SB(tree->sb)->alloc_blksz_shift;
+		hip->fs_blocks =
+			hip->alloc_blocks << HFSPLUS_SB(tree->sb)->fs_shift;
+		inode_set_bytes(inode, inode->i_size);
+		count = inode->i_size >> tree->node_size_shift;
+		tree->free_nodes += count - tree->node_count;
+		tree->node_count = count;
+	}
+	return 0;
+}
+
 struct hfs_bnode *hfs_bmap_alloc(struct hfs_btree *tree)
 {
 	struct hfs_bnode *node, *next_node;
@@ -188,7 +409,7 @@ struct hfs_bnode *hfs_bmap_alloc(struct hfs_btree *tree)
 	u16 off16;
 	u16 len;
 	u8 *data, byte, m;
-	int i;
+	int i, res;
 
 	while (!tree->free_nodes) {
 		struct inode *inode = tree->inode;
@@ -203,11 +424,26 @@ struct hfs_bnode *hfs_bmap_alloc(struct hfs_btree *tree)
 				HFSPLUS_SB(tree->sb).alloc_blksz_shift;
 		HFSPLUS_I(inode).fs_blocks = HFSPLUS_I(inode).alloc_blocks <<
 					     HFSPLUS_SB(tree->sb).fs_shift;
+		struct hfsplus_inode_info *hip = HFSPLUS_I(inode);
+		u32 count;
+		int res;
+
+		res = hfsplus_file_extend(inode, hfs_bnode_need_zeroout(tree));
+		if (res)
+			return ERR_PTR(res);
+		hip->phys_size = inode->i_size =
+			(loff_t)hip->alloc_blocks <<
+				HFSPLUS_SB(tree->sb)->alloc_blksz_shift;
+		hip->fs_blocks =
+			hip->alloc_blocks << HFSPLUS_SB(tree->sb)->fs_shift;
 		inode_set_bytes(inode, inode->i_size);
 		count = inode->i_size >> tree->node_size_shift;
 		tree->free_nodes = count - tree->node_count;
 		tree->node_count = count;
 	}
+	res = hfs_bmap_reserve(tree, 1);
+	if (res)
+		return ERR_PTR(res);
 
 	nidx = 0;
 	node = hfs_bnode_find(tree, nidx);
@@ -236,6 +472,8 @@ struct hfs_bnode *hfs_bmap_alloc(struct hfs_btree *tree)
 						mark_inode_dirty(tree->inode);
 						hfs_bnode_put(node);
 						return hfs_bnode_create(tree, idx);
+						return hfs_bnode_create(tree,
+							idx);
 					}
 				}
 			}
@@ -251,6 +489,7 @@ struct hfs_bnode *hfs_bmap_alloc(struct hfs_btree *tree)
 		nidx = node->next;
 		if (!nidx) {
 			printk(KERN_DEBUG "hfs: create new bmap node...\n");
+			hfs_dbg(BNODE_MOD, "create new bmap node\n");
 			next_node = hfs_bmap_new_bmap(node, idx);
 		} else
 			next_node = hfs_bnode_find(tree, nidx);
@@ -277,6 +516,7 @@ void hfs_bmap_free(struct hfs_bnode *node)
 	u8 *data, byte, m;
 
 	dprint(DBG_BNODE_MOD, "btree_free_node: %u\n", node->this);
+	hfs_dbg(BNODE_MOD, "btree_free_node: %u\n", node->this);
 	BUG_ON(!node->this);
 	tree = node->tree;
 	nidx = node->this;
@@ -289,18 +529,25 @@ void hfs_bmap_free(struct hfs_bnode *node)
 
 		nidx -= len * 8;
 		i = node->next;
-		hfs_bnode_put(node);
 		if (!i) {
 			/* panic */;
 			printk(KERN_CRIT "hfs: unable to free bnode %u. bmap not found!\n", node->this);
+			pr_crit("unable to free bnode %u. "
+					"bmap not found!\n",
+				node->this);
+			hfs_bnode_put(node);
 			return;
 		}
+		hfs_bnode_put(node);
 		node = hfs_bnode_find(tree, i);
 		if (IS_ERR(node))
 			return;
 		if (node->type != HFS_NODE_MAP) {
 			/* panic */;
 			printk(KERN_CRIT "hfs: invalid bmap found! (%u,%d)\n", node->this, node->type);
+			pr_crit("invalid bmap found! "
+					"(%u,%d)\n",
+				node->this, node->type);
 			hfs_bnode_put(node);
 			return;
 		}
@@ -314,6 +561,9 @@ void hfs_bmap_free(struct hfs_bnode *node)
 	byte = data[off];
 	if (!(byte & m)) {
 		printk(KERN_CRIT "hfs: trying to free free bnode %u(%d)\n", node->this, node->type);
+		pr_crit("trying to free free bnode "
+				"%u(%d)\n",
+			node->this, node->type);
 		kunmap(page);
 		hfs_bnode_put(node);
 		return;

@@ -151,9 +151,21 @@ static struct {
 	{ SAS_LINK_RATE_1_5_GBPS,	"1.5 Gbit" },
 	{ SAS_LINK_RATE_3_0_GBPS,	"3.0 Gbit" },
 	{ SAS_LINK_RATE_6_0_GBPS,	"6.0 Gbit" },
+	{ SAS_LINK_RATE_12_0_GBPS,	"12.0 Gbit" },
 };
 sas_bitfield_name_search(linkspeed, sas_linkspeed_names)
 sas_bitfield_name_set(linkspeed, sas_linkspeed_names)
+
+static struct sas_end_device *sas_sdev_to_rdev(struct scsi_device *sdev)
+{
+	struct sas_rphy *rphy = target_to_rphy(sdev->sdev_target);
+	struct sas_end_device *rdev;
+
+	BUG_ON(rphy->identify.device_type != SAS_END_DEVICE);
+
+	rdev = rphy_to_end_device(rphy);
+	return rdev;
+}
 
 static void sas_smp_request(struct request_queue *q, struct Scsi_Host *shost,
 			    struct sas_rphy *rphy)
@@ -169,6 +181,7 @@ static void sas_smp_request(struct request_queue *q, struct Scsi_Host *shost,
 
 		blkdev_dequeue_request(req);
 
+	while ((req = blk_fetch_request(q)) != NULL) {
 		spin_unlock_irq(q->queue_lock);
 
 		handler = to_sas_internal(shost->transportt)->f->smp_handler;
@@ -178,6 +191,9 @@ static void sas_smp_request(struct request_queue *q, struct Scsi_Host *shost,
 		spin_lock_irq(q->queue_lock);
 
 		req->end_io(req, ret);
+		blk_end_request_all(req, ret);
+
+		spin_lock_irq(q->queue_lock);
 	}
 }
 
@@ -208,6 +224,7 @@ static int sas_bsg_initialize(struct Scsi_Host *shost, struct sas_rphy *rphy)
 	int error;
 	struct device *dev;
 	char namebuf[BUS_ID_SIZE];
+	char namebuf[20];
 	const char *name;
 	void (*release)(struct device *);
 
@@ -220,6 +237,7 @@ static int sas_bsg_initialize(struct Scsi_Host *shost, struct sas_rphy *rphy)
 		q = blk_init_queue(sas_non_host_smp_request, NULL);
 		dev = &rphy->dev;
 		name = dev->bus_id;
+		name = dev_name(dev);
 		release = NULL;
 	} else {
 		q = blk_init_queue(sas_host_smp_request, NULL);
@@ -360,6 +378,85 @@ void sas_remove_host(struct Scsi_Host *shost)
 }
 EXPORT_SYMBOL(sas_remove_host);
 
+/**
+ * sas_tlr_supported - checking TLR bit in vpd 0x90
+ * @sdev: scsi device struct
+ *
+ * Check Transport Layer Retries are supported or not.
+ * If vpd page 0x90 is present, TRL is supported.
+ *
+ */
+unsigned int
+sas_tlr_supported(struct scsi_device *sdev)
+{
+	const int vpd_len = 32;
+	struct sas_end_device *rdev = sas_sdev_to_rdev(sdev);
+	char *buffer = kzalloc(vpd_len, GFP_KERNEL);
+	int ret = 0;
+
+	if (scsi_get_vpd_page(sdev, 0x90, buffer, vpd_len))
+		goto out;
+
+	/*
+	 * Magic numbers: the VPD Protocol page (0x90)
+	 * has a 4 byte header and then one entry per device port
+	 * the TLR bit is at offset 8 on each port entry
+	 * if we take the first port, that's at total offset 12
+	 */
+	ret = buffer[12] & 0x01;
+
+ out:
+	kfree(buffer);
+	rdev->tlr_supported = ret;
+	return ret;
+
+}
+EXPORT_SYMBOL_GPL(sas_tlr_supported);
+
+/**
+ * sas_disable_tlr - setting TLR flags
+ * @sdev: scsi device struct
+ *
+ * Seting tlr_enabled flag to 0.
+ *
+ */
+void
+sas_disable_tlr(struct scsi_device *sdev)
+{
+	struct sas_end_device *rdev = sas_sdev_to_rdev(sdev);
+
+	rdev->tlr_enabled = 0;
+}
+EXPORT_SYMBOL_GPL(sas_disable_tlr);
+
+/**
+ * sas_enable_tlr - setting TLR flags
+ * @sdev: scsi device struct
+ *
+ * Seting tlr_enabled flag 1.
+ *
+ */
+void sas_enable_tlr(struct scsi_device *sdev)
+{
+	unsigned int tlr_supported = 0;
+	tlr_supported  = sas_tlr_supported(sdev);
+
+	if (tlr_supported) {
+		struct sas_end_device *rdev = sas_sdev_to_rdev(sdev);
+
+		rdev->tlr_enabled = 1;
+	}
+
+	return;
+}
+EXPORT_SYMBOL_GPL(sas_enable_tlr);
+
+unsigned int sas_is_tlr_enabled(struct scsi_device *sdev)
+{
+	struct sas_end_device *rdev = sas_sdev_to_rdev(sdev);
+	return rdev->tlr_enabled;
+}
+EXPORT_SYMBOL_GPL(sas_is_tlr_enabled);
 
 /*
  * SAS Phy attributes
@@ -531,6 +628,7 @@ do_sas_phy_reset(struct device *dev, size_t count, int hard_reset)
 	error = i->f->phy_reset(phy, hard_reset);
 	if (error)
 		return error;
+	phy->enabled = 1;
 	return count;
 };
 
@@ -571,6 +669,21 @@ sas_phy_linkerror_attr(phy_reset_problem_count);
 
 static DECLARE_TRANSPORT_CLASS(sas_phy_class,
 		"sas_phy", NULL, NULL, NULL);
+static int sas_phy_setup(struct transport_container *tc, struct device *dev,
+			 struct device *cdev)
+{
+	struct sas_phy *phy = dev_to_phy(dev);
+	struct Scsi_Host *shost = dev_to_shost(phy->dev.parent);
+	struct sas_internal *i = to_sas_internal(shost->transportt);
+
+	if (i->f->phy_setup)
+		i->f->phy_setup(phy);
+
+	return 0;
+}
+
+static DECLARE_TRANSPORT_CLASS(sas_phy_class,
+		"sas_phy", sas_phy_setup, NULL, NULL);
 
 static int sas_phy_match(struct attribute_container *cont, struct device *dev)
 {
@@ -595,6 +708,11 @@ static void sas_phy_release(struct device *dev)
 {
 	struct sas_phy *phy = dev_to_phy(dev);
 
+	struct Scsi_Host *shost = dev_to_shost(phy->dev.parent);
+	struct sas_internal *i = to_sas_internal(shost->transportt);
+
+	if (i->f->phy_release)
+		i->f->phy_release(phy);
 	put_device(dev->parent);
 	kfree(phy);
 }
@@ -633,6 +751,10 @@ struct sas_phy *sas_phy_alloc(struct device *parent, int number)
 			rphy->scsi_target_id, number);
 	} else
 		sprintf(phy->dev.bus_id, "phy-%d:%d", shost->host_no, number);
+		dev_set_name(&phy->dev, "phy-%d:%d:%d", shost->host_no,
+			rphy->scsi_target_id, number);
+	} else
+		dev_set_name(&phy->dev, "phy-%d:%d", shost->host_no, number);
 
 	transport_setup_device(&phy->dev);
 
@@ -669,6 +791,7 @@ EXPORT_SYMBOL(sas_phy_add);
  * Note:
  *   This function must only be called on a PHY that has not
  *   sucessfully been added using sas_phy_add().
+ *   successfully been added using sas_phy_add().
  */
 void sas_phy_free(struct sas_phy *phy)
 {
@@ -771,6 +894,7 @@ static void sas_port_create_link(struct sas_port *port,
 
 	res = sysfs_create_link(&port->dev.kobj, &phy->dev.kobj,
 				phy->dev.bus_id);
+				dev_name(&phy->dev));
 	if (res)
 		goto err;
 	res = sysfs_create_link(&phy->dev.kobj, &port->dev.kobj, "port");
@@ -786,6 +910,7 @@ static void sas_port_delete_link(struct sas_port *port,
 				 struct sas_phy *phy)
 {
 	sysfs_remove_link(&port->dev.kobj, phy->dev.bus_id);
+	sysfs_remove_link(&port->dev.kobj, dev_name(&phy->dev));
 	sysfs_remove_link(&phy->dev.kobj, "port");
 }
 
@@ -826,6 +951,11 @@ struct sas_port *sas_port_alloc(struct device *parent, int port_id)
 	} else
 		sprintf(port->dev.bus_id, "port-%d:%d", shost->host_no,
 			port->port_identifier);
+		dev_set_name(&port->dev, "port-%d:%d:%d", shost->host_no,
+			     rphy->scsi_target_id, port->port_identifier);
+	} else
+		dev_set_name(&port->dev, "port-%d:%d", shost->host_no,
+			     port->port_identifier);
 
 	transport_setup_device(&port->dev);
 
@@ -899,6 +1029,7 @@ EXPORT_SYMBOL(sas_port_add);
  * Note:
  *   This function must only be called on a PORT that has not
  *   sucessfully been added using sas_port_add().
+ *   successfully been added using sas_port_add().
  */
 void sas_port_free(struct sas_port *port)
 {
@@ -936,6 +1067,7 @@ void sas_port_delete(struct sas_port *port)
 		struct device *parent = port->dev.parent;
 
 		sysfs_remove_link(&port->dev.kobj, parent->bus_id);
+		sysfs_remove_link(&port->dev.kobj, dev_name(parent));
 		port->is_backlink = 0;
 	}
 
@@ -958,6 +1090,29 @@ int scsi_is_sas_port(const struct device *dev)
 	return dev->release == sas_port_release;
 }
 EXPORT_SYMBOL(scsi_is_sas_port);
+
+/**
+ * sas_port_get_phy - try to take a reference on a port member
+ * @port: port to check
+ */
+struct sas_phy *sas_port_get_phy(struct sas_port *port)
+{
+	struct sas_phy *phy;
+
+	mutex_lock(&port->phy_list_mutex);
+	if (list_empty(&port->phy_list))
+		phy = NULL;
+	else {
+		struct list_head *ent = port->phy_list.next;
+
+		phy = list_entry(ent, typeof(*phy), port_siblings);
+		get_device(&phy->dev);
+	}
+	mutex_unlock(&port->phy_list_mutex);
+
+	return phy;
+}
+EXPORT_SYMBOL(sas_port_get_phy);
 
 /**
  * sas_port_add_phy - add another phy to a port to form a wide port
@@ -985,6 +1140,8 @@ void sas_port_add_phy(struct sas_port *port, struct sas_phy *phy)
 		 * part of a different port */
 		if (unlikely(tmp != phy)) {
 			dev_printk(KERN_ERR, &port->dev, "trying to add phy %s fails: it's already part of another port\n", phy->dev.bus_id);
+			dev_printk(KERN_ERR, &port->dev, "trying to add phy %s fails: it's already part of another port\n",
+				   dev_name(&phy->dev));
 			BUG();
 		}
 	} else {
@@ -1024,6 +1181,7 @@ void sas_port_mark_backlink(struct sas_port *port)
 	port->is_backlink = 1;
 	res = sysfs_create_link(&port->dev.kobj, &parent->kobj,
 				parent->bus_id);
+				dev_name(parent));
 	if (res)
 		goto err;
 	return;
@@ -1156,6 +1314,10 @@ int sas_read_port_mode_page(struct scsi_device *sdev)
 
 	rdev = rphy_to_end_device(rphy);
 
+	struct sas_end_device *rdev = sas_sdev_to_rdev(sdev);
+	struct scsi_mode_data mode_data;
+	int res, error;
+
 	if (!buffer)
 		return -ENOMEM;
 
@@ -1207,6 +1369,10 @@ sas_end_dev_simple_attr(ready_led_meaning, ready_led_meaning, "%d\n", int);
 sas_end_dev_simple_attr(I_T_nexus_loss_timeout, I_T_nexus_loss_timeout,
 			"%d\n", int);
 sas_end_dev_simple_attr(initiator_response_timeout, initiator_response_timeout,
+			"%d\n", int);
+sas_end_dev_simple_attr(tlr_supported, tlr_supported,
+			"%d\n", int);
+sas_end_dev_simple_attr(tlr_enabled, tlr_enabled,
 			"%d\n", int);
 
 static DECLARE_TRANSPORT_CLASS(sas_expander_class,
@@ -1372,6 +1538,12 @@ struct sas_rphy *sas_end_device_alloc(struct sas_port *parent)
 	} else
 		sprintf(rdev->rphy.dev.bus_id, "end_device-%d:%d",
 			shost->host_no, parent->port_identifier);
+		dev_set_name(&rdev->rphy.dev, "end_device-%d:%d:%d",
+			     shost->host_no, rphy->scsi_target_id,
+			     parent->port_identifier);
+	} else
+		dev_set_name(&rdev->rphy.dev, "end_device-%d:%d",
+			     shost->host_no, parent->port_identifier);
 	rdev->rphy.identify.device_type = SAS_END_DEVICE;
 	sas_rphy_initialize(&rdev->rphy);
 	transport_setup_device(&rdev->rphy.dev);
@@ -1413,6 +1585,8 @@ struct sas_rphy *sas_expander_alloc(struct sas_port *parent,
 	mutex_unlock(&sas_host->lock);
 	sprintf(rdev->rphy.dev.bus_id, "expander-%d:%d",
 		shost->host_no, rdev->rphy.scsi_target_id);
+	dev_set_name(&rdev->rphy.dev, "expander-%d:%d",
+		     shost->host_no, rdev->rphy.scsi_target_id);
 	rdev->rphy.identify.device_type = type;
 	sas_rphy_initialize(&rdev->rphy);
 	transport_setup_device(&rdev->rphy.dev);
@@ -1446,6 +1620,7 @@ int sas_rphy_add(struct sas_rphy *rphy)
 	transport_configure_device(&rphy->dev);
 	if (sas_bsg_initialize(shost, rphy))
 		printk("fail to a bsg device %s\n", rphy->dev.bus_id);
+		printk("fail to a bsg device %s\n", dev_name(&rphy->dev));
 
 
 	mutex_lock(&sas_host->lock);
@@ -1462,6 +1637,14 @@ int sas_rphy_add(struct sas_rphy *rphy)
 	    rphy->scsi_target_id != -1) {
 		scsi_scan_target(&rphy->dev, 0,
 				rphy->scsi_target_id, SCAN_WILD_CARD, 0);
+		int lun;
+
+		if (identify->target_port_protocols & SAS_PROTOCOL_SSP)
+			lun = SCAN_WILD_CARD;
+		else
+			lun = 0;
+
+		scsi_scan_target(&rphy->dev, 0, rphy->scsi_target_id, lun, 0);
 	}
 
 	return 0;
@@ -1477,6 +1660,7 @@ EXPORT_SYMBOL(sas_rphy_add);
  * Note:
  *   This function must only be called on a remote
  *   PHY that has not sucessfully been added using
+ *   PHY that has not successfully been added using
  *   sas_rphy_add() (or has been sas_rphy_remove()'d)
  */
 void sas_rphy_free(struct sas_rphy *rphy)
@@ -1512,6 +1696,20 @@ sas_rphy_delete(struct sas_rphy *rphy)
 EXPORT_SYMBOL(sas_rphy_delete);
 
 /**
+ * sas_rphy_unlink  -  unlink SAS remote PHY
+ * @rphy:	SAS remote phy to unlink from its parent port
+ *
+ * Removes port reference to an rphy
+ */
+void sas_rphy_unlink(struct sas_rphy *rphy)
+{
+	struct sas_port *parent = dev_to_sas_port(rphy->dev.parent);
+
+	parent->rphy = NULL;
+}
+EXPORT_SYMBOL(sas_rphy_unlink);
+
+/**
  * sas_rphy_remove  -  remove SAS remote PHY
  * @rphy:	SAS remote phy to remove
  *
@@ -1539,6 +1737,10 @@ sas_rphy_remove(struct sas_rphy *rphy)
 	device_del(dev);
 
 	parent->rphy = NULL;
+	sas_rphy_unlink(rphy);
+	sas_bsg_remove(NULL, rphy);
+	transport_remove_device(dev);
+	device_del(dev);
 }
 EXPORT_SYMBOL(sas_rphy_remove);
 
@@ -1563,6 +1765,7 @@ EXPORT_SYMBOL(scsi_is_sas_rphy);
 
 static int sas_user_scan(struct Scsi_Host *shost, uint channel,
 		uint id, uint lun)
+		uint id, u64 lun)
 {
 	struct sas_host_attrs *sas_host = to_sas_host_attrs(shost);
 	struct sas_rphy *rphy;
@@ -1737,6 +1940,8 @@ sas_attach_transport(struct sas_function_template *ft)
 	SETUP_END_DEV_ATTRIBUTE(end_dev_ready_led_meaning);
 	SETUP_END_DEV_ATTRIBUTE(end_dev_I_T_nexus_loss_timeout);
 	SETUP_END_DEV_ATTRIBUTE(end_dev_initiator_response_timeout);
+	SETUP_END_DEV_ATTRIBUTE(end_dev_tlr_supported);
+	SETUP_END_DEV_ATTRIBUTE(end_dev_tlr_enabled);
 	i->end_dev_attrs[count] = NULL;
 
 	count = 0;

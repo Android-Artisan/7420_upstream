@@ -661,7 +661,6 @@ static void s2255_fillbuff(struct s2255_dev *dev, struct s2255_buffer *buf,
 		frm->ulState = 0;
 		dprintk(4, "freeing buffer\n");
 	} else {
-		printk(KERN_ERR "s2255: =======no frame\n");
 		return;
 
 	}

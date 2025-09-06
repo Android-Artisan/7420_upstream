@@ -14,6 +14,95 @@
 #include <linux/uio_driver.h>
 #include <asm/clock.h>
 
+#include <linux/sh_timer.h>
+#include <linux/sh_intc.h>
+#include <asm/clock.h>
+
+/* Serial */
+static struct plat_sci_port scif0_platform_data = {
+	.flags          = UPF_BOOT_AUTOCONF,
+	.scscr		= SCSCR_RE | SCSCR_TE | SCSCR_CKE1,
+	.type           = PORT_SCIF,
+};
+
+static struct resource scif0_resources[] = {
+	DEFINE_RES_MEM(0xffe00000, 0x100),
+	DEFINE_RES_IRQ(evt2irq(0xc00)),
+};
+
+static struct platform_device scif0_device = {
+	.name		= "sh-sci",
+	.id		= 0,
+	.resource	= scif0_resources,
+	.num_resources	= ARRAY_SIZE(scif0_resources),
+	.dev		= {
+		.platform_data	= &scif0_platform_data,
+	},
+};
+
+static struct plat_sci_port scif1_platform_data = {
+	.flags          = UPF_BOOT_AUTOCONF,
+	.scscr		= SCSCR_RE | SCSCR_TE | SCSCR_CKE1,
+	.type           = PORT_SCIF,
+};
+
+static struct resource scif1_resources[] = {
+	DEFINE_RES_MEM(0xffe10000, 0x100),
+	DEFINE_RES_IRQ(evt2irq(0xc20)),
+};
+
+static struct platform_device scif1_device = {
+	.name		= "sh-sci",
+	.id		= 1,
+	.resource	= scif1_resources,
+	.num_resources	= ARRAY_SIZE(scif1_resources),
+	.dev		= {
+		.platform_data	= &scif1_platform_data,
+	},
+};
+
+static struct plat_sci_port scif2_platform_data = {
+	.flags          = UPF_BOOT_AUTOCONF,
+	.scscr		= SCSCR_RE | SCSCR_TE | SCSCR_CKE1,
+	.type           = PORT_SCIF,
+};
+
+static struct resource scif2_resources[] = {
+	DEFINE_RES_MEM(0xffe20000, 0x100),
+	DEFINE_RES_IRQ(evt2irq(0xc40)),
+};
+
+static struct platform_device scif2_device = {
+	.name		= "sh-sci",
+	.id		= 2,
+	.resource	= scif2_resources,
+	.num_resources	= ARRAY_SIZE(scif2_resources),
+	.dev		= {
+		.platform_data	= &scif2_platform_data,
+	},
+};
+
+static struct plat_sci_port scif3_platform_data = {
+	.flags          = UPF_BOOT_AUTOCONF,
+	.scscr		= SCSCR_RE | SCSCR_TE | SCSCR_CKE1,
+	.type           = PORT_SCIF,
+};
+
+static struct resource scif3_resources[] = {
+	DEFINE_RES_MEM(0xffe30000, 0x100),
+	DEFINE_RES_IRQ(evt2irq(0xc60)),
+};
+
+static struct platform_device scif3_device = {
+	.name		= "sh-sci",
+	.id		= 3,
+	.resource	= scif3_resources,
+	.num_resources	= ARRAY_SIZE(scif3_resources),
+	.dev		= {
+		.platform_data	= &scif3_platform_data,
+	},
+};
+
 static struct resource iic0_resources[] = {
 	[0] = {
 		.name	= "IIC0",
@@ -24,12 +113,15 @@ static struct resource iic0_resources[] = {
 	[1] = {
 		.start  = 96,
 		.end    = 99,
+		.start  = evt2irq(0xe00),
+		.end    = evt2irq(0xe60),
 		.flags  = IORESOURCE_IRQ,
        },
 };
 
 static struct platform_device iic0_device = {
 	.name           = "i2c-sh_mobile",
+	.id             = 0, /* "i2c0" clock */
 	.num_resources  = ARRAY_SIZE(iic0_resources),
 	.resource       = iic0_resources,
 };
@@ -44,12 +136,15 @@ static struct resource iic1_resources[] = {
 	[1] = {
 		.start  = 44,
 		.end    = 47,
+		.start  = evt2irq(0x780),
+		.end    = evt2irq(0x7e0),
 		.flags  = IORESOURCE_IRQ,
        },
 };
 
 static struct platform_device iic1_device = {
 	.name           = "i2c-sh_mobile",
+	.id             = 1, /* "i2c1" clock */
 	.num_resources  = ARRAY_SIZE(iic1_resources),
 	.resource       = iic1_resources,
 };
@@ -58,6 +153,7 @@ static struct uio_info vpu_platform_data = {
 	.name = "VPU4",
 	.version = "0",
 	.irq = 60,
+	.irq = evt2irq(0x980),
 };
 
 static struct resource vpu_resources[] = {
@@ -86,6 +182,7 @@ static struct uio_info veu_platform_data = {
 	.name = "VEU",
 	.version = "0",
 	.irq = 54,
+	.irq = evt2irq(0x8c0),
 };
 
 static struct resource veu_resources[] = {
@@ -135,6 +232,86 @@ static struct platform_device *sh7343_devices[] __initdata = {
 	&sci_device,
 	&vpu_device,
 	&veu_device,
+static struct uio_info jpu_platform_data = {
+	.name = "JPU",
+	.version = "0",
+	.irq = evt2irq(0x560),
+};
+
+static struct resource jpu_resources[] = {
+	[0] = {
+		.name	= "JPU",
+		.start	= 0xfea00000,
+		.end	= 0xfea102d3,
+		.flags	= IORESOURCE_MEM,
+	},
+	[1] = {
+		/* place holder for contiguous memory */
+	},
+};
+
+static struct platform_device jpu_device = {
+	.name		= "uio_pdrv_genirq",
+	.id		= 2,
+	.dev = {
+		.platform_data	= &jpu_platform_data,
+	},
+	.resource	= jpu_resources,
+	.num_resources	= ARRAY_SIZE(jpu_resources),
+};
+
+static struct sh_timer_config cmt_platform_data = {
+	.channels_mask = 0x20,
+};
+
+static struct resource cmt_resources[] = {
+	DEFINE_RES_MEM(0x044a0000, 0x70),
+	DEFINE_RES_IRQ(evt2irq(0xf00)),
+};
+
+static struct platform_device cmt_device = {
+	.name		= "sh-cmt-32",
+	.id		= 0,
+	.dev = {
+		.platform_data	= &cmt_platform_data,
+	},
+	.resource	= cmt_resources,
+	.num_resources	= ARRAY_SIZE(cmt_resources),
+};
+
+static struct sh_timer_config tmu0_platform_data = {
+	.channels_mask = 7,
+};
+
+static struct resource tmu0_resources[] = {
+	DEFINE_RES_MEM(0xffd80000, 0x2c),
+	DEFINE_RES_IRQ(evt2irq(0x400)),
+	DEFINE_RES_IRQ(evt2irq(0x420)),
+	DEFINE_RES_IRQ(evt2irq(0x440)),
+};
+
+static struct platform_device tmu0_device = {
+	.name		= "sh-tmu",
+	.id		= 0,
+	.dev = {
+		.platform_data	= &tmu0_platform_data,
+	},
+	.resource	= tmu0_resources,
+	.num_resources	= ARRAY_SIZE(tmu0_resources),
+};
+
+static struct platform_device *sh7343_devices[] __initdata = {
+	&scif0_device,
+	&scif1_device,
+	&scif2_device,
+	&scif3_device,
+	&cmt_device,
+	&tmu0_device,
+	&iic0_device,
+	&iic1_device,
+	&vpu_device,
+	&veu_device,
+	&jpu_device,
 };
 
 static int __init sh7343_devices_setup(void)
@@ -154,6 +331,9 @@ static int __init sh7343_devices_setup(void)
 
 	platform_resource_setup_memory(&vpu_device, "vpu", 1 << 20);
 	platform_resource_setup_memory(&veu_device, "veu", 2 << 20);
+	platform_resource_setup_memory(&vpu_device, "vpu", 1 << 20);
+	platform_resource_setup_memory(&veu_device, "veu", 2 << 20);
+	platform_resource_setup_memory(&jpu_device, "jpu", 2 << 20);
 
 	return platform_add_devices(sh7343_devices,
 				    ARRAY_SIZE(sh7343_devices));
@@ -162,6 +342,27 @@ __initcall(sh7343_devices_setup);
 
 enum {
 	UNUSED = 0,
+arch_initcall(sh7343_devices_setup);
+
+static struct platform_device *sh7343_early_devices[] __initdata = {
+	&scif0_device,
+	&scif1_device,
+	&scif2_device,
+	&scif3_device,
+	&cmt_device,
+	&tmu0_device,
+};
+
+void __init plat_early_device_setup(void)
+{
+	early_platform_add_devices(sh7343_early_devices,
+				   ARRAY_SIZE(sh7343_early_devices));
+}
+
+enum {
+	UNUSED = 0,
+	ENABLED,
+	DISABLED,
 
 	/* interrupt sources */
 	IRQ0, IRQ1, IRQ2, IRQ3, IRQ4, IRQ5, IRQ6, IRQ7,
@@ -172,6 +373,7 @@ enum {
 	DMAC4, DMAC5, DMAC_DADERR,
 	KEYSC,
 	SCIF, SCIF1, SCIF2, SCIF3, SCIF4,
+	SCIF, SCIF1, SCIF2, SCIF3,
 	SIOF0, SIOF1, SIO,
 	FLCTL_FLSTEI, FLCTL_FLENDI, FLCTL_FLTREQ0I, FLCTL_FLTREQ1I,
 	I2C0_ALI, I2C0_TACKI, I2C0_WAITI, I2C0_DTEI,
@@ -180,12 +382,14 @@ enum {
 	IRDA,
 	SDHI0, SDHI1, SDHI2, SDHI3,
 	CMT, TSIF, SIU,
+	IRDA, SDHI, CMT, TSIF, SIU,
 	TMU0, TMU1, TMU2,
 	JPU, LCDC,
 
 	/* interrupt groups */
 
 	DMAC0123, VIOVOU, MMC, DMAC45, FLCTL, I2C0, I2C1, SIM, SDHI, USB,
+	DMAC0123, VIOVOU, MMC, DMAC45, FLCTL, I2C0, I2C1, SIM, USB,
 };
 
 static struct intc_vect vectors[] __initdata = {
@@ -216,6 +420,8 @@ static struct intc_vect vectors[] __initdata = {
 	INTC_VECT(I2C0_WAITI, 0xe40), INTC_VECT(I2C0_DTEI, 0xe60),
 	INTC_VECT(SDHI0, 0xe80), INTC_VECT(SDHI1, 0xea0),
 	INTC_VECT(SDHI2, 0xec0), INTC_VECT(SDHI3, 0xee0),
+	INTC_VECT(SDHI, 0xe80), INTC_VECT(SDHI, 0xea0),
+	INTC_VECT(SDHI, 0xec0), INTC_VECT(SDHI, 0xee0),
 	INTC_VECT(CMT, 0xf00), INTC_VECT(TSIF, 0xf20),
 	INTC_VECT(SIU, 0xf80),
 	INTC_VECT(TMU0, 0x400), INTC_VECT(TMU1, 0x420),
@@ -255,6 +461,7 @@ static struct intc_mask_reg mask_registers[] __initdata = {
 	    FLCTL_FLTREQ1I, FLCTL_FLTREQ0I, FLCTL_FLENDI, FLCTL_FLSTEI } },
 	{ 0xa40800a0, 0xa40800e0, 8, /* IMR8 / IMCR8 */
 	  { SDHI3, SDHI2, SDHI1, SDHI0, 0, 0, 0, SIU } },
+	  { DISABLED, ENABLED, ENABLED, ENABLED, 0, 0, 0, SIU } },
 	{ 0xa40800a4, 0xa40800e4, 8, /* IMR9 / IMCR9 */
 	  { 0, 0, 0, CMT, 0, USBI1, USBI0 } },
 	{ 0xa40800a8, 0xa40800e8, 8, /* IMR10 / IMCR10 */
@@ -293,6 +500,13 @@ static struct intc_mask_reg ack_registers[] __initdata = {
 static DECLARE_INTC_DESC_ACK(intc_desc, "sh7343", vectors, groups,
 			     mask_registers, prio_registers, sense_registers,
 			     ack_registers);
+static struct intc_desc intc_desc __initdata = {
+	.name = "sh7343",
+	.force_enable = ENABLED,
+	.force_disable = DISABLED,
+	.hw = INTC_HW_DESC(vectors, groups, mask_registers,
+			   prio_registers, sense_registers, ack_registers),
+};
 
 void __init plat_irq_setup(void)
 {

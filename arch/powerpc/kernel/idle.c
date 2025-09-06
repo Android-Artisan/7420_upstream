@@ -38,11 +38,18 @@
 #else
 #define cpu_should_die()	0
 #endif
+#include <asm/runlatch.h>
+#include <asm/smp.h>
+
+
+unsigned long cpuidle_disable = IDLE_NO_OVERRIDE;
+EXPORT_SYMBOL(cpuidle_disable);
 
 static int __init powersave_off(char *arg)
 {
 	ppc_md.power_save = NULL;
-	return 0;
+	cpuidle_disable = IDLE_POWERSAVE_OFF;
+	return 1;
 }
 __setup("powersave=off", powersave_off);
 
@@ -95,6 +102,38 @@ void cpu_idle(void)
 		schedule();
 		preempt_disable();
 	}
+#ifdef CONFIG_HOTPLUG_CPU
+void arch_cpu_idle_dead(void)
+{
+	sched_preempt_enable_no_resched();
+	cpu_die();
+}
+#endif
+
+void arch_cpu_idle(void)
+{
+	ppc64_runlatch_off();
+
+	if (ppc_md.power_save) {
+		ppc_md.power_save();
+		/*
+		 * Some power_save functions return with
+		 * interrupts enabled, some don't.
+		 */
+		if (irqs_disabled())
+			local_irq_enable();
+	} else {
+		local_irq_enable();
+		/*
+		 * Go into low thread priority and possibly
+		 * low power mode.
+		 */
+		HMT_low();
+		HMT_very_low();
+	}
+
+	HMT_medium();
+	ppc64_runlatch_on();
 }
 
 int powersave_nap;
@@ -106,6 +145,8 @@ int powersave_nap;
 static ctl_table powersave_nap_ctl_table[]={
 	{
 		.ctl_name	= KERN_PPC_POWERSAVE_NAP,
+static struct ctl_table powersave_nap_ctl_table[] = {
+	{
 		.procname	= "powersave-nap",
 		.data		= &powersave_nap,
 		.maxlen		= sizeof(int),
@@ -117,6 +158,12 @@ static ctl_table powersave_nap_ctl_table[]={
 static ctl_table powersave_nap_sysctl_root[] = {
 	{
 		.ctl_name	= CTL_KERN,
+		.proc_handler	= proc_dointvec,
+	},
+	{}
+};
+static struct ctl_table powersave_nap_sysctl_root[] = {
+	{
 		.procname	= "kernel",
 		.mode		= 0555,
 		.child		= powersave_nap_ctl_table,

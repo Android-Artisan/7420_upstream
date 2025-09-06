@@ -31,6 +31,10 @@
 #include <linux/mm.h>
 #include <linux/vmalloc.h>
 #include <linux/of_platform.h>
+#include <linux/of_address.h>
+#include <linux/of_irq.h>
+#include <linux/of_platform.h>
+#include <linux/slab.h>
 
 #include <pcmcia/ss.h>
 
@@ -48,11 +52,17 @@ struct electra_cf_socket {
 	void __iomem *		mem_base;
 	unsigned long		mem_size;
 	void __iomem *		io_virt;
+	struct platform_device	*ofdev;
+	unsigned long		mem_phys;
+	void __iomem		*mem_base;
+	unsigned long		mem_size;
+	void __iomem		*io_virt;
 	unsigned int		io_base;
 	unsigned int		io_size;
 	u_int			irq;
 	struct resource		iomem;
 	void __iomem *		gpio_base;
+	void __iomem		*gpio_base;
 	int			gpio_detect;
 	int			gpio_vsense;
 	int			gpio_3v;
@@ -185,6 +195,10 @@ static int __devinit electra_cf_probe(struct of_device *ofdev,
 {
 	struct device *device = &ofdev->dev;
 	struct device_node *np = ofdev->node;
+static int electra_cf_probe(struct platform_device *ofdev)
+{
+	struct device *device = &ofdev->dev;
+	struct device_node *np = ofdev->dev.of_node;
 	struct electra_cf_socket   *cf;
 	struct resource mem, io;
 	int status;
@@ -201,6 +215,7 @@ static int __devinit electra_cf_probe(struct of_device *ofdev,
 		return -EINVAL;
 
 	cf = kzalloc(sizeof *cf, GFP_KERNEL);
+	cf = kzalloc(sizeof(*cf), GFP_KERNEL);
 	if (!cf)
 		return -ENOMEM;
 
@@ -216,6 +231,15 @@ static int __devinit electra_cf_probe(struct of_device *ofdev,
 	area = __get_vm_area(cf->io_size, 0, PHB_IO_BASE, PHB_IO_END);
 	if (area == NULL)
 		return -ENOMEM;
+	cf->mem_size = PAGE_ALIGN(resource_size(&mem));
+	cf->mem_base = ioremap(cf->mem_phys, cf->mem_size);
+	cf->io_size = PAGE_ALIGN(resource_size(&io));
+
+	area = __get_vm_area(cf->io_size, 0, PHB_IO_BASE, PHB_IO_END);
+	if (area == NULL) {
+		status = -ENOMEM;
+		goto fail1;
+	}
 
 	cf->io_virt = (void __iomem *)(area->addr);
 
@@ -298,6 +322,7 @@ static int __devinit electra_cf_probe(struct of_device *ofdev,
 	}
 
 	dev_info(device, "at mem 0x%lx io 0x%lx irq %d\n",
+	dev_info(device, "at mem 0x%lx io 0x%llx irq %d\n",
 		 cf->mem_phys, io.start, cf->irq);
 
 	cf->active = 1;
@@ -319,12 +344,15 @@ fail1:
 	if (cf->gpio_base)
 		iounmap(cf->gpio_base);
 	device_init_wakeup(&ofdev->dev, 0);
+	if (area)
+		device_init_wakeup(&ofdev->dev, 0);
 	kfree(cf);
 	return status;
 
 }
 
 static int __devexit electra_cf_remove(struct of_device *ofdev)
+static int electra_cf_remove(struct platform_device *ofdev)
 {
 	struct device *device = &ofdev->dev;
 	struct electra_cf_socket *cf;
@@ -348,6 +376,7 @@ static int __devexit electra_cf_remove(struct of_device *ofdev)
 }
 
 static struct of_device_id electra_cf_match[] = {
+static const struct of_device_id electra_cf_match[] = {
 	{
 		.compatible   = "electra-cf",
 	},
@@ -358,6 +387,11 @@ MODULE_DEVICE_TABLE(of, electra_cf_match);
 static struct of_platform_driver electra_cf_driver = {
 	.name	   = (char *)driver_name,
 	.match_table    = electra_cf_match,
+static struct platform_driver electra_cf_driver = {
+	.driver = {
+		.name = driver_name,
+		.of_match_table = electra_cf_match,
+	},
 	.probe	  = electra_cf_probe,
 	.remove   = electra_cf_remove,
 };
@@ -376,4 +410,8 @@ module_exit(electra_cf_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR ("Olof Johansson <olof@lixom.net>");
+module_platform_driver(electra_cf_driver);
+
+MODULE_LICENSE("GPL");
+MODULE_AUTHOR("Olof Johansson <olof@lixom.net>");
 MODULE_DESCRIPTION("PA Semi Electra CF driver");

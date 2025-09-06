@@ -1,4 +1,5 @@
 EXTRA_CFLAGS := -Werror -Wno-sign-compare
+ccflags-y := -Werror -Wno-sign-compare
 
 obj-$(CONFIG_OPROFILE) += oprofile.o
 

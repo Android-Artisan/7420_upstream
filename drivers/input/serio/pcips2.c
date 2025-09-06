@@ -16,6 +16,7 @@
 #include <linux/input.h>
 #include <linux/pci.h>
 #include <linux/init.h>
+#include <linux/slab.h>
 #include <linux/serio.h>
 #include <linux/delay.h>
 #include <asm/io.h>
@@ -127,6 +128,7 @@ static void pcips2_close(struct serio *io)
 }
 
 static int __devinit pcips2_probe(struct pci_dev *dev, const struct pci_device_id *id)
+static int pcips2_probe(struct pci_dev *dev, const struct pci_device_id *id)
 {
 	struct pcips2_data *ps2if;
 	struct serio *serio;
@@ -154,6 +156,7 @@ static int __devinit pcips2_probe(struct pci_dev *dev, const struct pci_device_i
 	serio->close		= pcips2_close;
 	strlcpy(serio->name, pci_name(dev), sizeof(serio->name));
 	strlcpy(serio->phys, dev->dev.bus_id, sizeof(serio->phys));
+	strlcpy(serio->phys, dev_name(&dev->dev), sizeof(serio->phys));
 	serio->port_data	= ps2if;
 	serio->dev.parent	= &dev->dev;
 	ps2if->io		= serio;
@@ -176,6 +179,7 @@ static int __devinit pcips2_probe(struct pci_dev *dev, const struct pci_device_i
 }
 
 static void __devexit pcips2_remove(struct pci_dev *dev)
+static void pcips2_remove(struct pci_dev *dev)
 {
 	struct pcips2_data *ps2if = pci_get_drvdata(dev);
 
@@ -187,6 +191,7 @@ static void __devexit pcips2_remove(struct pci_dev *dev)
 }
 
 static struct pci_device_id pcips2_ids[] = {
+static const struct pci_device_id pcips2_ids[] = {
 	{
 		.vendor		= 0x14f2,	/* MOBILITY */
 		.device		= 0x0123,	/* Keyboard */
@@ -205,6 +210,7 @@ static struct pci_device_id pcips2_ids[] = {
 	},
 	{ 0, }
 };
+MODULE_DEVICE_TABLE(pci, pcips2_ids);
 
 static struct pci_driver pcips2_driver = {
 	.name			= "pcips2",
@@ -225,6 +231,10 @@ static void __exit pcips2_exit(void)
 
 module_init(pcips2_init);
 module_exit(pcips2_exit);
+	.remove			= pcips2_remove,
+};
+
+module_pci_driver(pcips2_driver);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Russell King <rmk@arm.linux.org.uk>");

@@ -114,6 +114,27 @@ config PCMCIA_RAYCS
 	tristate "Aviator/Raytheon 2.4MHz wireless support"
 	depends on PCMCIA && WLAN_80211
 	select WIRELESS_EXT
+menuconfig WLAN
+	bool "Wireless LAN"
+	depends on !S390
+	depends on NET
+	select WIRELESS
+	default y
+	---help---
+	  This section contains all the pre 802.11 and 802.11 wireless
+	  device drivers. For a complete list of drivers and documentation
+	  on them refer to the wireless wiki:
+
+	  http://wireless.kernel.org/en/users/Drivers
+
+if WLAN
+
+config PCMCIA_RAYCS
+	tristate "Aviator/Raytheon 2.4GHz wireless support"
+	depends on PCMCIA
+	select WIRELESS_EXT
+	select WEXT_SPY
+	select WEXT_PRIV
 	---help---
 	  Say Y here if you intend to attach an Aviator/Raytheon PCMCIA
 	  (PC-card) wireless Ethernet networking card to your computer.
@@ -305,6 +326,32 @@ config AIRO
 	depends on ISA_DMA_API && WLAN_80211 && (PCI || BROKEN)
 	select WIRELESS_EXT
 	select CRYPTO
+config LIBERTAS_THINFIRM
+	tristate "Marvell 8xxx Libertas WLAN driver support with thin firmware"
+	depends on MAC80211
+	select FW_LOADER
+	---help---
+	  A library for Marvell Libertas 8xxx devices using thinfirm.
+
+config LIBERTAS_THINFIRM_DEBUG
+	bool "Enable full debugging output in the Libertas thin firmware module."
+	depends on LIBERTAS_THINFIRM
+	---help---
+	  Debugging support.
+
+config LIBERTAS_THINFIRM_USB
+	tristate "Marvell Libertas 8388 USB 802.11b/g cards with thin firmware"
+	depends on LIBERTAS_THINFIRM && USB
+	---help---
+	  A driver for Marvell Libertas 8388 USB devices using thinfirm.
+
+config AIRO
+	tristate "Cisco/Aironet 34X/35X/4500/4800 ISA and PCI cards"
+	depends on CFG80211 && ISA_DMA_API && (PCI || BROKEN)
+	select WIRELESS_EXT
+	select CRYPTO
+	select WEXT_SPY
+	select WEXT_PRIV
 	---help---
 	  This is the standard Linux driver to support Cisco/Aironet ISA and
 	  PCI 802.11 wireless cards.
@@ -426,6 +473,11 @@ config ATMEL
       tristate "Atmel at76c50x chipset  802.11b support"
       depends on (PCI || PCMCIA) && WLAN_80211
       select WIRELESS_EXT
+config ATMEL
+      tristate "Atmel at76c50x chipset  802.11b support"
+      depends on CFG80211 && (PCI || PCMCIA)
+      select WIRELESS_EXT
+      select WEXT_PRIV
       select FW_LOADER
       select CRC32
        ---help---
@@ -460,6 +512,20 @@ config AIRO_CS
 	tristate "Cisco/Aironet 34X/35X/4500/4800 PCMCIA cards"
 	depends on PCMCIA && (BROKEN || !M32R) && WLAN_80211
 	select WIRELESS_EXT
+config AT76C50X_USB
+        tristate "Atmel at76c503/at76c505/at76c505a USB cards"
+        depends on MAC80211 && USB
+        select FW_LOADER
+        ---help---
+          Enable support for USB Wireless devices using Atmel at76c503,
+          at76c505 or at76c505a chips.
+
+config AIRO_CS
+	tristate "Cisco/Aironet 34X/35X/4500/4800 PCMCIA cards"
+	depends on CFG80211 && PCMCIA && (BROKEN || !M32R)
+	select WIRELESS_EXT
+	select WEXT_SPY
+	select WEXT_PRIV
 	select CRYPTO
 	select CRYPTO_AES
 	---help---
@@ -536,6 +602,40 @@ config USB_ZD1201
 	tristate "USB ZD1201 based Wireless device support"
 	depends on USB && WLAN_80211
 	select WIRELESS_EXT
+	tristate "Planet WL3501 PCMCIA cards"
+	depends on CFG80211 && PCMCIA
+	select WIRELESS_EXT
+	select WEXT_SPY
+	help
+	  A driver for WL3501 PCMCIA 802.11 wireless cards made by Planet.
+	  It has basic support for Linux wireless extensions and initial
+	  micro support for ethtool.
+
+config PRISM54
+	tristate 'Intersil Prism GT/Duette/Indigo PCI/Cardbus (DEPRECATED)'
+	depends on PCI
+	select WIRELESS_EXT
+	select WEXT_SPY
+	select WEXT_PRIV
+	select FW_LOADER
+	---help---
+	  This enables support for FullMAC PCI/Cardbus prism54 devices. This
+	  driver is now deprecated in favor for the SoftMAC driver, p54pci.
+	  p54pci supports FullMAC PCI/Cardbus devices as well.
+
+	  For more information refer to the p54 wiki:
+
+	  http://wireless.kernel.org/en/users/Drivers/p54
+
+	  Note: You need a motherboard with DMA support to use any of these cards
+
+	  When built as module you get the module prism54
+
+config USB_ZD1201
+	tristate "USB ZD1201 based Wireless device support"
+	depends on CFG80211 && USB
+	select WIRELESS_EXT
+	select WEXT_PRIV
 	select FW_LOADER
 	---help---
 	  Say Y if you want to use wireless LAN adapters based on the ZyDAS
@@ -557,6 +657,12 @@ config USB_NET_RNDIS_WLAN
 	select USB_NET_CDCETHER
 	select USB_NET_RNDIS_HOST
 	select WIRELESS_EXT
+	depends on USB
+	depends on CFG80211
+	select USB_NET_DRIVERS
+	select USB_USBNET
+	select USB_NET_CDCETHER
+	select USB_NET_RNDIS_HOST
 	---help---
 	  This is a driver for wireless RNDIS devices.
 	  These are USB based adapters found in devices such as:
@@ -656,6 +762,9 @@ config RTL8187
 config ADM8211
 	tristate "ADMtek ADM8211 support"
 	depends on MAC80211 && PCI && WLAN_80211 && EXPERIMENTAL
+config ADM8211
+	tristate "ADMtek ADM8211 support"
+	depends on MAC80211 && PCI
 	select CRC32
 	select EEPROM_93CX6
 	---help---
@@ -683,6 +792,11 @@ config ADM8211
 config MAC80211_HWSIM
 	tristate "Simulated radio testing tool for mac80211"
 	depends on MAC80211 && WLAN_80211
+source "drivers/net/wireless/realtek/rtl818x/Kconfig"
+
+config MAC80211_HWSIM
+	tristate "Simulated radio testing tool for mac80211"
+	depends on MAC80211
 	---help---
 	  This driver is a developer testing tool that can be used to test
 	  IEEE 802.11 networking stack (mac80211) functionality. This is not
@@ -704,3 +818,34 @@ source "drivers/net/wireless/zd1211rw/Kconfig"
 source "drivers/net/wireless/rt2x00/Kconfig"
 
 endmenu
+config MWL8K
+	tristate "Marvell 88W8xxx PCI/PCIe Wireless support"
+	depends on MAC80211 && PCI
+	---help---
+	  This driver supports Marvell TOPDOG 802.11 wireless cards.
+
+	  To compile this driver as a module, choose M here: the module
+	  will be called mwl8k.  If unsure, say N.
+
+source "drivers/net/wireless/ath/Kconfig"
+source "drivers/net/wireless/b43/Kconfig"
+source "drivers/net/wireless/b43legacy/Kconfig"
+source "drivers/net/wireless/brcm80211/Kconfig"
+source "drivers/net/wireless/hostap/Kconfig"
+source "drivers/net/wireless/ipw2x00/Kconfig"
+source "drivers/net/wireless/iwlwifi/Kconfig"
+source "drivers/net/wireless/iwlegacy/Kconfig"
+source "drivers/net/wireless/libertas/Kconfig"
+source "drivers/net/wireless/orinoco/Kconfig"
+source "drivers/net/wireless/p54/Kconfig"
+source "drivers/net/wireless/rt2x00/Kconfig"
+source "drivers/net/wireless/mediatek/Kconfig"
+source "drivers/net/wireless/realtek/rtlwifi/Kconfig"
+source "drivers/net/wireless/realtek/rtl8xxxu/Kconfig"
+source "drivers/net/wireless/ti/Kconfig"
+source "drivers/net/wireless/zd1211rw/Kconfig"
+source "drivers/net/wireless/mwifiex/Kconfig"
+source "drivers/net/wireless/cw1200/Kconfig"
+source "drivers/net/wireless/rsi/Kconfig"
+
+endif # WLAN

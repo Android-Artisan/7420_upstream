@@ -1,12 +1,9 @@
-================================================================
 Documentation for Kdump - The kexec-based Crash Dumping Solution
-================================================================
 
 This document includes overview, setup and installation, and analysis
 information.
 
 Overview
-========
 
 Kdump uses kexec to quickly boot to a dump-capture kernel whenever a
 dump of the system kernel's memory needs to be taken (for example, when
@@ -19,6 +16,8 @@ a remote system.
 
 Kdump and kexec are currently supported on the x86, x86_64, ppc64 and ia64
 architectures.
+Kdump and kexec are currently supported on the x86, x86_64, ppc64, ia64,
+s390x and arm architectures.
 
 When the system kernel boots, it reserves a small section of memory for
 the dump-capture kernel. This ensures that ongoing Direct Memory Access
@@ -33,6 +32,11 @@ region just before rebooting into the dump-capture kernel.
 Similarly on PPC64 machines first 32KB of physical memory is needed for
 booting regardless of where the kernel is loaded and to support 64K page
 size kexec backs up the first 64KB memory.
+
+For s390x, when kdump is triggered, the crashkernel region is exchanged
+with the region [0, crashkernel region size] and then the kdump kernel
+runs in [0, crashkernel region size]. Therefore no relocatable kernel is
+needed for s390x.
 
 All of the necessary information about the system kernel's core image is
 encoded in the ELF format, and stored in a reserved area of memory
@@ -53,10 +57,19 @@ memory," in two ways:
   you can use analysis tools such as the GNU Debugger (GDB) and the Crash
   tool to debug the dump file. This method ensures that the dump pages are
   correctly ordered.
+parameter. Optionally the size of the ELF header can also be passed
+when using the elfcorehdr=[size[KMG]@]offset[KMG] syntax.
+
+
+With the dump-capture kernel, you can access the memory image through
+/proc/vmcore. This exports the dump as an ELF-format file that you can
+write out using file copy commands such as cp or scp. Further, you can
+use analysis tools such as the GNU Debugger (GDB) and the Crash tool to
+debug the dump file. This method ensures that the dump pages are correctly
+ordered.
 
 
 Setup and Installation
-======================
 
 Install kexec-tools
 -------------------
@@ -66,6 +79,7 @@ Install kexec-tools
 2) Download the kexec-tools user-space package from the following URL:
 
 http://www.kernel.org/pub/linux/kernel/people/horms/kexec-tools/kexec-tools.tar.gz
+http://kernel.org/pub/linux/utils/kernel/kexec/kexec-tools.tar.gz
 
 This is a symlink to the latest version.
 
@@ -77,6 +91,15 @@ http://www.kernel.org/git/?p=linux/kernel/git/horms/kexec-tools.git
 
 More information about kexec-tools can be found at
 http://www.kernel.org/pub/linux/kernel/people/horms/kexec-tools/README.html
+git://git.kernel.org/pub/scm/utils/kernel/kexec/kexec-tools.git
+and
+http://www.kernel.org/pub/scm/utils/kernel/kexec/kexec-tools.git
+
+There is also a gitweb interface available at
+http://www.kernel.org/git/?p=utils/kernel/kexec/kexec-tools.git
+
+More information about kexec-tools can be found at
+http://horms.net/projects/kexec/
 
 3) Unpack the tarball with the tar command, as follows:
 
@@ -110,6 +133,9 @@ There are two possible methods of using Kdump.
    no need to build a separate dump-capture kernel. This is possible
    only with the architecutres which support a relocatable kernel. As
    of today, i386, x86_64 and ia64 architectures support relocatable kernel.
+   only with the architectures which support a relocatable kernel. As
+   of today, i386, x86_64, ppc64, ia64 and arm architectures support relocatable
+   kernel.
 
 Building a relocatable kernel is advantageous from the point of view that
 one does not have to build a second kernel for capturing the dump. But
@@ -209,12 +235,22 @@ Dump-capture kernel config options (Arch Dependent, ppc64)
 
 *  Make and install the kernel and its modules. DO NOT add this kernel
    to the boot loader configuration files.
+1) Enable "Build a kdump crash kernel" support under "Kernel" options:
+
+   CONFIG_CRASH_DUMP=y
+
+2)   Enable "Build a relocatable kernel" support
+
+   CONFIG_RELOCATABLE=y
+
+   Make and install the kernel and its modules.
 
 Dump-capture kernel config options (Arch Dependent, ia64)
 ----------------------------------------------------------
 
 - No specific options are required to create a dump-capture kernel
   for ia64, other than those specified in the arch idependent section
+  for ia64, other than those specified in the arch independent section
   above. This means that it is possible to use the system kernel
   as a dump-capture kernel if desired.
 
@@ -230,9 +266,15 @@ Dump-capture kernel config options (Arch Dependent, ia64)
   kernel will be aligned to 64Mb, so if the start address is not then
   any space below the alignment point will be wasted.
 
+Dump-capture kernel config options (Arch Dependent, arm)
+----------------------------------------------------------
+
+-   To use a relocatable kernel,
+    Enable "AUTO_ZRELADDR" support under "Boot" options:
+
+    AUTO_ZRELADDR=y
 
 Extended crashkernel syntax
-===========================
 
 While the "crashkernel=size[@offset]" syntax is sufficient for most
 configurations, sometimes it's handy to have the reserved memory dependent
@@ -243,6 +285,10 @@ been removed from the machine.
 The syntax is:
 
     crashkernel=<range1>:<size1>[,<range2>:<size2>,...][@offset]
+    range=start-[end]
+
+Please note, on arm, the offset is required.
+    crashkernel=<range1>:<size1>[,<range2>:<size2>,...]@offset
     range=start-[end]
 
     'start' is inclusive and 'end' is exclusive.
@@ -261,7 +307,6 @@ This would mean:
 
 
 Boot into System Kernel
-=======================
 
 1) Update the boot loader (such as grub, yaboot, or lilo) configuration
    files as necessary.
@@ -279,9 +324,19 @@ Boot into System Kernel
    On ia64, 256M@256M is a generous value that typically works.
    The region may be automatically placed on ia64, see the
    dump-capture kernel config option notes above.
+   If use sparse memory, the size should be rounded to GRANULE boundaries.
+
+   On s390x, typically use "crashkernel=xxM". The value of xx is dependent
+   on the memory consumption of the kdump system. In general this is not
+   dependent on the memory size of the production system.
+
+   On arm, use "crashkernel=Y@X". Note that the start address of the kernel
+   will be aligned to 128MiB (0x08000000), so if the start address is not then
+   any space below the alignment point may be overwritten by the dump-capture kernel,
+   which means it is possible that the vmcore is not that precise as expected.
+
 
 Load the Dump-capture Kernel
-============================
 
 After booting to the system kernel, dump-capture kernel needs to be
 loaded.
@@ -298,6 +353,10 @@ For ppc64:
 For ia64:
 	- Use vmlinux or vmlinuz.gz
 
+For s390x:
+	- Use image or bzImage
+For arm:
+	- Use zImage
 
 If you are using a uncompressed vmlinux image then use following command
 to load dump-capture kernel.
@@ -313,6 +372,15 @@ to load dump-capture kernel.
    --initrd=<initrd-for-dump-capture-kernel> \
    --append="root=<root-dev> <arch-specific-options>"
 
+If you are using a compressed zImage, then use following command
+to load dump-capture kernel.
+
+   kexec --type zImage -p <dump-capture-kernel-bzImage> \
+   --initrd=<initrd-for-dump-capture-kernel> \
+   --dtb=<dtb-for-dump-capture-kernel> \
+   --append="root=<root-dev> <arch-specific-options>"
+
+
 Please note, that --args-linux does not need to be specified for ia64.
 It is planned to make this a no-op on that architecture, but for now
 it should be omitted
@@ -326,6 +394,11 @@ For i386, x86_64 and ia64:
 For ppc64:
 	"1 maxcpus=1 noirqdistrib reset_devices"
 
+For s390x:
+	"1 maxcpus=1 cgroup_disable=memory"
+
+For arm:
+	"1 maxcpus=1 reset_devices"
 
 Notes on loading the dump-capture kernel:
 
@@ -351,8 +424,21 @@ Notes on loading the dump-capture kernel:
   dump. Hence generally it is useful either to build a UP dump-capture
   kernel or specify maxcpus=1 option while loading dump-capture kernel.
 
+* For s390x there are two kdump modes: If a ELF header is specified with
+  the elfcorehdr= kernel parameter, it is used by the kdump kernel as it
+  is done on all other architectures. If no elfcorehdr= kernel parameter is
+  specified, the s390x kdump kernel dynamically creates the header. The
+  second mode has the advantage that for CPU and memory hotplug, kdump has
+  not to be reloaded with kexec_load().
+
+* For s390x systems with many attached devices the "cio_ignore" kernel
+  parameter should be used for the kdump kernel in order to prevent allocation
+  of kernel memory for devices that are not relevant for kdump. The same
+  applies to systems that use SCSI/FCP devices. In that case the
+  "allow_lun_scan" zfcp module parameter should be set to zero before
+  setting FCP devices online.
+
 Kernel Panic
-============
 
 After successfully loading the dump-capture kernel as previously
 described, the system will reboot into the dump-capture kernel if a
@@ -375,7 +461,6 @@ For testing purposes, you can trigger a crash by using "ALT-SysRq-c",
 "echo c > /proc/sysrq-trigger" or write a module to force the panic.
 
 Write Out the Dump File
-=======================
 
 After the dump-capture kernel is booted, write out the dump file with
 the following command:
@@ -396,7 +481,6 @@ To see the entire memory, use the following command:
 
 
 Analysis
-========
 
 Before analyzing the dump image, you should reboot into a stable kernel.
 
@@ -427,10 +511,16 @@ To Do
    multiple kernels for crash_dump, and the same kernel as the system kernel
    can be used to capture the dump.
 
+Trigger Kdump on WARN()
+
+The kernel parameter, panic_on_warn, calls panic() in all WARN() paths.  This
+will cause a kdump to occur at the panic() call.  In cases where a user wants
+to specify this during runtime, /proc/sys/kernel/panic_on_warn can be set to 1
+to achieve the same behaviour.
 
 Contact
-=======
 
 Vivek Goyal (vgoyal@in.ibm.com)
+Vivek Goyal (vgoyal@redhat.com)
 Maneesh Soni (maneesh@in.ibm.com)
 

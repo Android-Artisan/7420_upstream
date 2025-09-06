@@ -26,6 +26,7 @@
 #include <linux/blkdev.h>
 #include <linux/seq_file.h>
 #include <linux/mutex.h>
+#include <linux/gfp.h>
 #include <asm/uaccess.h>
 
 #include <scsi/scsi.h>
@@ -81,9 +82,18 @@ static int proc_scsi_write_proc(struct file *file, const char __user *buf,
 	ssize_t ret = -ENOMEM;
 	char *page;
 	char *start;
+static ssize_t proc_scsi_host_write(struct file *file, const char __user *buf,
+                           size_t count, loff_t *ppos)
+{
+	struct Scsi_Host *shost = PDE_DATA(file_inode(file));
+	ssize_t ret = -ENOMEM;
+	char *page;
     
 	if (count > PROC_BLOCK_SIZE)
 		return -EOVERFLOW;
+
+	if (!shost->hostt->write_info)
+		return -EINVAL;
 
 	page = (char *)__get_free_page(GFP_KERNEL);
 	if (page) {
@@ -91,11 +101,32 @@ static int proc_scsi_write_proc(struct file *file, const char __user *buf,
 		if (copy_from_user(page, buf, count))
 			goto out;
 		ret = shost->hostt->proc_info(shost, page, &start, 0, count, 1);
+		ret = shost->hostt->write_info(shost, page, count);
 	}
 out:
 	free_page((unsigned long)page);
 	return ret;
 }
+
+static int proc_scsi_show(struct seq_file *m, void *v)
+{
+	struct Scsi_Host *shost = m->private;
+	return shost->hostt->show_info(m, shost);
+}
+
+static int proc_scsi_host_open(struct inode *inode, struct file *file)
+{
+	return single_open_size(file, proc_scsi_show, PDE_DATA(inode),
+				4 * PAGE_SIZE);
+}
+
+static const struct file_operations proc_scsi_fops = {
+	.open = proc_scsi_host_open,
+	.release = single_release,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.write = proc_scsi_host_write
+};
 
 /**
  * scsi_proc_hostdir_add - Create directory in /proc for a scsi host
@@ -107,6 +138,7 @@ out:
 void scsi_proc_hostdir_add(struct scsi_host_template *sht)
 {
 	if (!sht->proc_info)
+	if (!sht->show_info)
 		return;
 
 	mutex_lock(&global_host_template_mutex);
@@ -128,6 +160,7 @@ void scsi_proc_hostdir_add(struct scsi_host_template *sht)
 void scsi_proc_hostdir_rm(struct scsi_host_template *sht)
 {
 	if (!sht->proc_info)
+	if (!sht->show_info)
 		return;
 
 	mutex_lock(&global_host_template_mutex);
@@ -164,6 +197,12 @@ void scsi_proc_host_add(struct Scsi_Host *shost)
 
 	p->write_proc = proc_scsi_write_proc;
 	p->owner = sht->module;
+	p = proc_create_data(name, S_IRUGO | S_IWUSR,
+		sht->proc_dir, &proc_scsi_fops, shost);
+	if (!p)
+		printk(KERN_ERR "%s: Failed to register host %d in"
+		       "%s\n", __func__, shost->host_no,
+		       sht->proc_name);
 }
 
 /**
@@ -225,6 +264,32 @@ static int proc_print_scsidevice(struct device *dev, void *data)
 	}
 
 	seq_printf(s, "\n");
+		"Host: scsi%d Channel: %02d Id: %02d Lun: %02llu\n  Vendor: ",
+		sdev->host->host_no, sdev->channel, sdev->id, sdev->lun);
+	for (i = 0; i < 8; i++) {
+		if (sdev->vendor[i] >= 0x20)
+			seq_putc(s, sdev->vendor[i]);
+		else
+			seq_putc(s, ' ');
+	}
+
+	seq_puts(s, " Model: ");
+	for (i = 0; i < 16; i++) {
+		if (sdev->model[i] >= 0x20)
+			seq_putc(s, sdev->model[i]);
+		else
+			seq_putc(s, ' ');
+	}
+
+	seq_puts(s, " Rev: ");
+	for (i = 0; i < 4; i++) {
+		if (sdev->rev[i] >= 0x20)
+			seq_putc(s, sdev->rev[i]);
+		else
+			seq_putc(s, ' ');
+	}
+
+	seq_putc(s, '\n');
 
 	seq_printf(s, "  Type:   %s ", scsi_device_type(sdev->type));
 	seq_printf(s, "               ANSI  SCSI revision: %02x",
@@ -233,6 +298,9 @@ static int proc_print_scsidevice(struct device *dev, void *data)
 		seq_printf(s, " CCS\n");
 	else
 		seq_printf(s, "\n");
+		seq_puts(s, " CCS\n");
+	else
+		seq_putc(s, '\n');
 
 out:
 	return 0;
@@ -261,6 +329,8 @@ static int scsi_add_single_device(uint host, uint channel, uint id, uint lun)
 	shost = scsi_host_lookup(host);
 	if (IS_ERR(shost))
 		return PTR_ERR(shost);
+	if (!shost)
+		return error;
 
 	if (shost->transportt->user_scan)
 		error = shost->transportt->user_scan(shost, channel, id, lun);
@@ -289,6 +359,8 @@ static int scsi_remove_single_device(uint host, uint channel, uint id, uint lun)
 	shost = scsi_host_lookup(host);
 	if (IS_ERR(shost))
 		return PTR_ERR(shost);
+	if (!shost)
+		return error;
 	sdev = scsi_device_lookup(shost, channel, id, lun);
 	if (sdev) {
 		scsi_remove_device(sdev);
@@ -323,7 +395,7 @@ static ssize_t proc_scsi_write(struct file *file, const char __user *buf,
 			       size_t length, loff_t *ppos)
 {
 	int host, channel, id, lun;
-	char *buffer, *p;
+	char *buffer, *end, *p;
 	int err;
 
 	if (!buf || length > PAGE_SIZE)
@@ -338,10 +410,14 @@ static ssize_t proc_scsi_write(struct file *file, const char __user *buf,
 		goto out;
 
 	err = -EINVAL;
-	if (length < PAGE_SIZE)
-		buffer[length] = '\0';
-	else if (buffer[PAGE_SIZE-1])
-		goto out;
+	if (length < PAGE_SIZE) {
+		end = buffer + length;
+		*end = '\0';
+	} else {
+		end = buffer + PAGE_SIZE - 1;
+		if (*end)
+			goto out;
+	}
 
 	/*
 	 * Usage: echo "scsi add-single-device 0 1 2 3" >/proc/scsi/scsi
@@ -350,10 +426,10 @@ static ssize_t proc_scsi_write(struct file *file, const char __user *buf,
 	if (!strncmp("scsi add-single-device", buffer, 22)) {
 		p = buffer + 23;
 
-		host = simple_strtoul(p, &p, 0);
-		channel = simple_strtoul(p + 1, &p, 0);
-		id = simple_strtoul(p + 1, &p, 0);
-		lun = simple_strtoul(p + 1, &p, 0);
+		host    = (p     < end) ? simple_strtoul(p, &p, 0) : 0;
+		channel = (p + 1 < end) ? simple_strtoul(p + 1, &p, 0) : 0;
+		id      = (p + 1 < end) ? simple_strtoul(p + 1, &p, 0) : 0;
+		lun     = (p + 1 < end) ? simple_strtoul(p + 1, &p, 0) : 0;
 
 		err = scsi_add_single_device(host, channel, id, lun);
 
@@ -364,10 +440,10 @@ static ssize_t proc_scsi_write(struct file *file, const char __user *buf,
 	} else if (!strncmp("scsi remove-single-device", buffer, 25)) {
 		p = buffer + 26;
 
-		host = simple_strtoul(p, &p, 0);
-		channel = simple_strtoul(p + 1, &p, 0);
-		id = simple_strtoul(p + 1, &p, 0);
-		lun = simple_strtoul(p + 1, &p, 0);
+		host    = (p     < end) ? simple_strtoul(p, &p, 0) : 0;
+		channel = (p + 1 < end) ? simple_strtoul(p + 1, &p, 0) : 0;
+		id      = (p + 1 < end) ? simple_strtoul(p + 1, &p, 0) : 0;
+		lun     = (p + 1 < end) ? simple_strtoul(p + 1, &p, 0) : 0;
 
 		err = scsi_remove_single_device(host, channel, id, lun);
 	}
@@ -396,6 +472,59 @@ static int proc_scsi_show(struct seq_file *s, void *p)
 	return 0;
 }
 
+static int always_match(struct device *dev, void *data)
+{
+	return 1;
+}
+
+static inline struct device *next_scsi_device(struct device *start)
+{
+	struct device *next = bus_find_device(&scsi_bus_type, start, NULL,
+					      always_match);
+	put_device(start);
+	return next;
+}
+
+static void *scsi_seq_start(struct seq_file *sfile, loff_t *pos)
+{
+	struct device *dev = NULL;
+	loff_t n = *pos;
+
+	while ((dev = next_scsi_device(dev))) {
+		if (!n--)
+			break;
+		sfile->private++;
+	}
+	return dev;
+}
+
+static void *scsi_seq_next(struct seq_file *sfile, void *v, loff_t *pos)
+{
+	(*pos)++;
+	sfile->private++;
+	return next_scsi_device(v);
+}
+
+static void scsi_seq_stop(struct seq_file *sfile, void *v)
+{
+	put_device(v);
+}
+
+static int scsi_seq_show(struct seq_file *sfile, void *dev)
+{
+	if (!sfile->private)
+		seq_puts(sfile, "Attached devices:\n");
+
+	return proc_print_scsidevice(dev, sfile);
+}
+
+static const struct seq_operations scsi_seq_ops = {
+	.start	= scsi_seq_start,
+	.next	= scsi_seq_next,
+	.stop	= scsi_seq_stop,
+	.show	= scsi_seq_show
+};
+
 /**
  * proc_scsi_open - glue function
  * @inode: not used
@@ -410,6 +539,7 @@ static int proc_scsi_open(struct inode *inode, struct file *file)
 	 * harm either.
 	 */
 	return single_open(file, proc_scsi_show, NULL);
+	return seq_open(file, &scsi_seq_ops);
 }
 
 static const struct file_operations proc_scsi_operations = {
@@ -419,6 +549,7 @@ static const struct file_operations proc_scsi_operations = {
 	.write		= proc_scsi_write,
 	.llseek		= seq_lseek,
 	.release	= single_release,
+	.release	= seq_release,
 };
 
 /**

@@ -1,5 +1,4 @@
 Description of the "concap" encapsulation protocol interface
-============================================================
 
 The "concap" interface is intended to be used by network device
 drivers that need to process an encapsulation protocol. 
@@ -17,7 +16,6 @@ changed interface).
 
 
 Why is this useful?
-===================
 
 The encapsulation protocol used on top of WAN connections or permanent
 point-to-point links are frequently chosen upon bilateral agreement.
@@ -211,7 +209,6 @@ struct concap_device{
 
 
 Misc Thoughts
-=============
 
 The concept of the concap proto might help to reuse protocol code and
 reduce the complexity of certain network interface implementations.

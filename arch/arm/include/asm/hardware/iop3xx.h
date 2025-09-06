@@ -28,6 +28,9 @@
 extern void gpio_line_config(int line, int direction);
 extern int  gpio_line_get(int line);
 extern void gpio_line_set(int line, int value);
+#define IOP3XX_GPIO_LINE(x)	(x)
+
+#ifndef __ASSEMBLY__
 extern int init_atu;
 extern int iop3xx_get_init_atu(void);
 #endif
@@ -38,6 +41,7 @@ extern int iop3xx_get_init_atu(void);
  */
 #define IOP3XX_PERIPHERAL_PHYS_BASE	0xffffe000
 #define IOP3XX_PERIPHERAL_VIRT_BASE	0xfeffe000
+#define IOP3XX_PERIPHERAL_VIRT_BASE	0xfedfe000
 #define IOP3XX_PERIPHERAL_SIZE		0x00002000
 #define IOP3XX_PERIPHERAL_UPPER_PA (IOP3XX_PERIPHERAL_PHYS_BASE +\
 					IOP3XX_PERIPHERAL_SIZE - 1)
@@ -234,6 +238,27 @@ void iop3xx_map_io(void);
 void iop_init_cp6_handler(void);
 void iop_init_time(unsigned long tickrate);
 unsigned long iop_gettimeoffset(void);
+#define IOP3XX_PCI_MEM_WINDOW_SIZE	0x08000000
+
+#define IOP3XX_PCI_LOWER_IO_PA		0x90000000
+#define IOP3XX_PCI_LOWER_IO_BA		0x00000000
+
+#ifndef __ASSEMBLY__
+
+#include <linux/types.h>
+#include <linux/reboot.h>
+
+void iop3xx_map_io(void);
+void iop_init_cp6_handler(void);
+void iop_init_time(unsigned long tickrate);
+void iop3xx_restart(enum reboot_mode, const char *);
+
+static inline u32 read_tmr0(void)
+{
+	u32 val;
+	asm volatile("mrc p6, 0, %0, c0, c1, 0" : "=r" (val));
+	return val;
+}
 
 static inline void write_tmr0(u32 val)
 {
@@ -252,11 +277,21 @@ static inline u32 read_tcr0(void)
 	return val;
 }
 
+static inline void write_tcr0(u32 val)
+{
+	asm volatile("mcr p6, 0, %0, c2, c1, 0" : : "r" (val));
+}
+
 static inline u32 read_tcr1(void)
 {
 	u32 val;
 	asm volatile("mrc p6, 0, %0, c3, c1, 0" : "=r" (val));
 	return val;
+}
+
+static inline void write_tcr1(u32 val)
+{
+	asm volatile("mcr p6, 0, %0, c3, c1, 0" : : "r" (val));
 }
 
 static inline void write_trr0(u32 val)

@@ -14,6 +14,8 @@
 #include <linux/etherdevice.h>
 #include <linux/rtnetlink.h>
 #include <linux/llc.h>
+#include <linux/slab.h>
+#include <linux/module.h>
 #include <net/llc.h>
 #include <net/llc_pdu.h>
 #include <net/garp.h>
@@ -158,6 +160,9 @@ static struct garp_attr *garp_attr_lookup(const struct garp_applicant *app,
 		if (d < 0)
 			parent = parent->rb_left;
 		else if (d > 0)
+		if (d > 0)
+			parent = parent->rb_left;
+		else if (d < 0)
 			parent = parent->rb_right;
 		else
 			return attr;
@@ -166,6 +171,8 @@ static struct garp_attr *garp_attr_lookup(const struct garp_applicant *app,
 }
 
 static void garp_attr_insert(struct garp_applicant *app, struct garp_attr *new)
+static struct garp_attr *garp_attr_create(struct garp_applicant *app,
+					  const void *data, u8 len, u8 type)
 {
 	struct rb_node *parent = NULL, **p = &app->gid.rb_node;
 	struct garp_attr *attr;
@@ -189,6 +196,16 @@ static struct garp_attr *garp_attr_create(struct garp_applicant *app,
 {
 	struct garp_attr *attr;
 
+		d = garp_attr_cmp(attr, data, len, type);
+		if (d > 0)
+			p = &parent->rb_left;
+		else if (d < 0)
+			p = &parent->rb_right;
+		else {
+			/* The attribute already exists; re-use it. */
+			return attr;
+		}
+	}
 	attr = kmalloc(sizeof(*attr) + len, GFP_ATOMIC);
 	if (!attr)
 		return attr;
@@ -197,6 +214,9 @@ static struct garp_attr *garp_attr_create(struct garp_applicant *app,
 	attr->dlen  = len;
 	memcpy(attr->data, data, len);
 	garp_attr_insert(app, attr);
+
+	rb_link_node(&attr->node, parent, p);
+	rb_insert_color(&attr->node, &app->gid);
 	return attr;
 }
 
@@ -204,6 +224,19 @@ static void garp_attr_destroy(struct garp_applicant *app, struct garp_attr *attr
 {
 	rb_erase(&attr->node, &app->gid);
 	kfree(attr);
+}
+
+static void garp_attr_destroy_all(struct garp_applicant *app)
+{
+	struct rb_node *node, *next;
+	struct garp_attr *attr;
+
+	for (node = rb_first(&app->gid);
+	     next = node ? rb_next(node) : NULL, node != NULL;
+	     node = next) {
+		attr = rb_entry(node, struct garp_attr, node);
+		garp_attr_destroy(app, attr);
+	}
 }
 
 static int garp_pdu_init(struct garp_applicant *app)
@@ -347,6 +380,8 @@ int garp_request_join(const struct net_device *dev,
 {
 	struct garp_port *port = dev->garp_port;
 	struct garp_applicant *app = port->applicants[appl->type];
+	struct garp_port *port = rtnl_dereference(dev->garp_port);
+	struct garp_applicant *app = rtnl_dereference(port->applicants[appl->type]);
 	struct garp_attr *attr;
 
 	spin_lock_bh(&app->lock);
@@ -367,6 +402,8 @@ void garp_request_leave(const struct net_device *dev,
 {
 	struct garp_port *port = dev->garp_port;
 	struct garp_applicant *app = port->applicants[appl->type];
+	struct garp_port *port = rtnl_dereference(dev->garp_port);
+	struct garp_applicant *app = rtnl_dereference(port->applicants[appl->type]);
 	struct garp_attr *attr;
 
 	spin_lock_bh(&app->lock);
@@ -398,6 +435,7 @@ static void garp_join_timer_arm(struct garp_applicant *app)
 	unsigned long delay;
 
 	delay = (u64)msecs_to_jiffies(garp_join_time) * net_random() >> 32;
+	delay = (u64)msecs_to_jiffies(garp_join_time) * prandom_u32() >> 32;
 	mod_timer(&app->join_timer, jiffies + delay);
 }
 
@@ -555,6 +593,15 @@ static void garp_release_port(struct net_device *dev)
 	rcu_assign_pointer(dev->garp_port, NULL);
 	synchronize_rcu();
 	kfree(port);
+	struct garp_port *port = rtnl_dereference(dev->garp_port);
+	unsigned int i;
+
+	for (i = 0; i <= GARP_APPLICATION_MAX; i++) {
+		if (rtnl_dereference(port->applicants[i]))
+			return;
+	}
+	RCU_INIT_POINTER(dev->garp_port, NULL);
+	kfree_rcu(port, rcu);
 }
 
 int garp_init_applicant(struct net_device *dev, struct garp_application *appl)
@@ -565,6 +612,7 @@ int garp_init_applicant(struct net_device *dev, struct garp_application *appl)
 	ASSERT_RTNL();
 
 	if (!dev->garp_port) {
+	if (!rtnl_dereference(dev->garp_port)) {
 		err = garp_init_port(dev);
 		if (err < 0)
 			goto err1;
@@ -576,6 +624,7 @@ int garp_init_applicant(struct net_device *dev, struct garp_application *appl)
 		goto err2;
 
 	err = dev_mc_add(dev, appl->proto.group_address, ETH_ALEN, 0);
+	err = dev_mc_add(dev, appl->proto.group_address);
 	if (err < 0)
 		goto err3;
 
@@ -607,6 +656,12 @@ void garp_uninit_applicant(struct net_device *dev, struct garp_application *appl
 
 	rcu_assign_pointer(port->applicants[appl->type], NULL);
 	synchronize_rcu();
+	struct garp_port *port = rtnl_dereference(dev->garp_port);
+	struct garp_applicant *app = rtnl_dereference(port->applicants[appl->type]);
+
+	ASSERT_RTNL();
+
+	RCU_INIT_POINTER(port->applicants[appl->type], NULL);
 
 	/* Delete timer and generate a final TRANSMIT_PDU event to flush out
 	 * all pending messages before the applicant is gone. */
@@ -617,6 +672,17 @@ void garp_uninit_applicant(struct net_device *dev, struct garp_application *appl
 
 	dev_mc_delete(dev, appl->proto.group_address, ETH_ALEN, 0);
 	kfree(app);
+
+	spin_lock_bh(&app->lock);
+	garp_gid_event(app, GARP_EVENT_TRANSMIT_PDU);
+	garp_attr_destroy_all(app);
+	garp_pdu_queue(app);
+	spin_unlock_bh(&app->lock);
+
+	garp_queue_xmit(app);
+
+	dev_mc_del(dev, appl->proto.group_address);
+	kfree_rcu(app, rcu);
 	garp_release_port(dev);
 }
 EXPORT_SYMBOL_GPL(garp_uninit_applicant);

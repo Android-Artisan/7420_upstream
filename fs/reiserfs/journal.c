@@ -33,11 +33,46 @@
 **		     -- Note, if you call this as an immediate flush from 
 **		        from within kupdate, it will ignore the immediate flag
 */
+ * Write ahead logging implementation copyright Chris Mason 2000
+ *
+ * The background commits make this code very interrelated, and
+ * overly complex.  I need to rethink things a bit....The major players:
+ *
+ * journal_begin -- call with the number of blocks you expect to log.
+ *                  If the current transaction is too
+ *		    old, it will block until the current transaction is
+ *		    finished, and then start a new one.
+ *		    Usually, your transaction will get joined in with
+ *                  previous ones for speed.
+ *
+ * journal_join  -- same as journal_begin, but won't block on the current
+ *                  transaction regardless of age.  Don't ever call
+ *                  this.  Ever.  There are only two places it should be
+ *                  called from, and they are both inside this file.
+ *
+ * journal_mark_dirty -- adds blocks into this transaction.  clears any flags
+ *                       that might make them get sent to disk
+ *                       and then marks them BH_JDirty.  Puts the buffer head
+ *                       into the current transaction hash.
+ *
+ * journal_end -- if the current transaction is batchable, it does nothing
+ *                   otherwise, it could do an async/synchronous commit, or
+ *                   a full flush of all log and real blocks in the
+ *                   transaction.
+ *
+ * flush_old_commits -- if the current transaction is too old, it is ended and
+ *                      commit blocks are sent to disk.  Forces commit blocks
+ *                      to disk for all backgrounded commits that have been
+ *                      around too long.
+ *		     -- Note, if you call this as an immediate flush from
+ *		        from within kupdate, it will ignore the immediate flag
+ */
 
 #include <linux/time.h>
 #include <linux/semaphore.h>
 #include <linux/vmalloc.h>
 #include <linux/reiserfs_fs.h>
+#include "reiserfs.h"
 #include <linux/kernel.h>
 #include <linux/errno.h>
 #include <linux/fcntl.h>
@@ -52,6 +87,8 @@
 #include <linux/uaccess.h>
 
 #include <asm/system.h>
+#include <linux/slab.h>
+
 
 /* gets a struct reiserfs_journal_list * from a list head */
 #define JOURNAL_LIST_ENTRY(h) (list_entry((h), struct reiserfs_journal_list, \
@@ -68,6 +105,8 @@ static struct workqueue_struct *commit_wq;
 
 #define JOURNAL_TRANS_HALF 1018	/* must be correct to keep the desc and commit
 				   structs at 4k */
+/* must be correct to keep the desc and commit structs at 4k */
+#define JOURNAL_TRANS_HALF 1018
 #define BUFNR 64		/*read ahead */
 
 /* cnode stat bits.  Move these into reiserfs_fs.h */
@@ -76,6 +115,13 @@ static struct workqueue_struct *commit_wq;
 #define BLOCK_FREED_HOLDER 3	/* this block was freed during this transaction, and can't be written */
 
 #define BLOCK_NEEDS_FLUSH 4	/* used in flush_journal_list */
+/* this block was freed, and can't be written.  */
+#define BLOCK_FREED 2
+/* this block was freed during this transaction, and can't be written */
+#define BLOCK_FREED_HOLDER 3
+
+/* used in flush_journal_list */
+#define BLOCK_NEEDS_FLUSH 4
 #define BLOCK_DIRTIED 5
 
 /* journal list state bits */
@@ -91,6 +137,7 @@ static struct workqueue_struct *commit_wq;
 static int do_journal_end(struct reiserfs_transaction_handle *,
 			  struct super_block *, unsigned long nblocks,
 			  int flags);
+static int do_journal_end(struct reiserfs_transaction_handle *, int flags);
 static int flush_journal_list(struct super_block *s,
 			      struct reiserfs_journal_list *jl, int flushall);
 static int flush_commit_list(struct super_block *s,
@@ -99,6 +146,8 @@ static int can_dirty(struct reiserfs_journal_cnode *cn);
 static int journal_join(struct reiserfs_transaction_handle *th,
 			struct super_block *p_s_sb, unsigned long nblocks);
 static int release_journal_dev(struct super_block *super,
+			struct super_block *sb);
+static void release_journal_dev(struct super_block *super,
 			       struct reiserfs_journal *journal);
 static int dirty_one_transaction(struct super_block *s,
 				 struct reiserfs_journal_list *jl);
@@ -119,6 +168,19 @@ static int do_journal_begin_r(struct reiserfs_transaction_handle *th,
 static void init_journal_hash(struct super_block *p_s_sb)
 {
 	struct reiserfs_journal *journal = SB_JOURNAL(p_s_sb);
+	/* join the running transaction if at all possible */
+	JBEGIN_JOIN = 1,
+	/* called from cleanup code, ignores aborted flag */
+	JBEGIN_ABORT = 2,
+};
+
+static int do_journal_begin_r(struct reiserfs_transaction_handle *th,
+			      struct super_block *sb,
+			      unsigned long nblocks, int join);
+
+static void init_journal_hash(struct super_block *sb)
+{
+	struct reiserfs_journal *journal = SB_JOURNAL(sb);
 	memset(journal->j_hash_table, 0,
 	       JOURNAL_HASH_SIZE * sizeof(struct reiserfs_journal_cnode *));
 }
@@ -128,6 +190,11 @@ static void init_journal_hash(struct super_block *p_s_sb)
 ** make schedule happen after I've freed a block.  Look at remove_from_transaction and journal_mark_freed for
 ** more details.
 */
+ * clears BH_Dirty and sticks the buffer on the clean list.  Called because
+ * I can't allow refile_buffer to make schedule happen after I've freed a
+ * block.  Look at remove_from_transaction and journal_mark_freed for
+ * more details.
+ */
 static int reiserfs_clean_and_file_buffer(struct buffer_head *bh)
 {
 	if (bh) {
@@ -146,6 +213,8 @@ static void disable_barrier(struct super_block *s)
 
 static struct reiserfs_bitmap_node *allocate_bitmap_node(struct super_block
 							 *p_s_sb)
+static struct reiserfs_bitmap_node *allocate_bitmap_node(struct super_block
+							 *sb)
 {
 	struct reiserfs_bitmap_node *bn;
 	static int id;
@@ -155,6 +224,7 @@ static struct reiserfs_bitmap_node *allocate_bitmap_node(struct super_block
 		return NULL;
 	}
 	bn->data = kzalloc(p_s_sb->s_blocksize, GFP_NOFS);
+	bn->data = kzalloc(sb->s_blocksize, GFP_NOFS);
 	if (!bn->data) {
 		kfree(bn);
 		return NULL;
@@ -167,11 +237,15 @@ static struct reiserfs_bitmap_node *allocate_bitmap_node(struct super_block
 static struct reiserfs_bitmap_node *get_bitmap_node(struct super_block *p_s_sb)
 {
 	struct reiserfs_journal *journal = SB_JOURNAL(p_s_sb);
+static struct reiserfs_bitmap_node *get_bitmap_node(struct super_block *sb)
+{
+	struct reiserfs_journal *journal = SB_JOURNAL(sb);
 	struct reiserfs_bitmap_node *bn = NULL;
 	struct list_head *entry = journal->j_bitmap_nodes.next;
 
 	journal->j_used_bitmap_nodes++;
       repeat:
+repeat:
 
 	if (entry != &journal->j_bitmap_nodes) {
 		bn = list_entry(entry, struct reiserfs_bitmap_node, list);
@@ -181,6 +255,11 @@ static struct reiserfs_bitmap_node *get_bitmap_node(struct super_block *p_s_sb)
 		return bn;
 	}
 	bn = allocate_bitmap_node(p_s_sb);
+		memset(bn->data, 0, sb->s_blocksize);
+		journal->j_free_bitmap_nodes--;
+		return bn;
+	}
+	bn = allocate_bitmap_node(sb);
 	if (!bn) {
 		yield();
 		goto repeat;
@@ -191,6 +270,10 @@ static inline void free_bitmap_node(struct super_block *p_s_sb,
 				    struct reiserfs_bitmap_node *bn)
 {
 	struct reiserfs_journal *journal = SB_JOURNAL(p_s_sb);
+static inline void free_bitmap_node(struct super_block *sb,
+				    struct reiserfs_bitmap_node *bn)
+{
+	struct reiserfs_journal *journal = SB_JOURNAL(sb);
 	journal->j_used_bitmap_nodes--;
 	if (journal->j_free_bitmap_nodes > REISERFS_MAX_BITMAP_NODES) {
 		kfree(bn->data);
@@ -208,11 +291,20 @@ static void allocate_bitmap_nodes(struct super_block *p_s_sb)
 	struct reiserfs_bitmap_node *bn = NULL;
 	for (i = 0; i < REISERFS_MIN_BITMAP_NODES; i++) {
 		bn = allocate_bitmap_node(p_s_sb);
+static void allocate_bitmap_nodes(struct super_block *sb)
+{
+	int i;
+	struct reiserfs_journal *journal = SB_JOURNAL(sb);
+	struct reiserfs_bitmap_node *bn = NULL;
+	for (i = 0; i < REISERFS_MIN_BITMAP_NODES; i++) {
+		bn = allocate_bitmap_node(sb);
 		if (bn) {
 			list_add(&bn->list, &journal->j_bitmap_nodes);
 			journal->j_free_bitmap_nodes++;
 		} else {
 			break;	// this is ok, we'll try again when more are needed 
+			/* this is ok, we'll try again when more are needed */
+			break;
 		}
 	}
 }
@@ -226,12 +318,22 @@ static int set_bit_in_list_bitmap(struct super_block *p_s_sb,
 
 	if (!jb->bitmaps[bmap_nr]) {
 		jb->bitmaps[bmap_nr] = get_bitmap_node(p_s_sb);
+static int set_bit_in_list_bitmap(struct super_block *sb,
+				  b_blocknr_t block,
+				  struct reiserfs_list_bitmap *jb)
+{
+	unsigned int bmap_nr = block / (sb->s_blocksize << 3);
+	unsigned int bit_nr = block % (sb->s_blocksize << 3);
+
+	if (!jb->bitmaps[bmap_nr]) {
+		jb->bitmaps[bmap_nr] = get_bitmap_node(sb);
 	}
 	set_bit(bit_nr, (unsigned long *)jb->bitmaps[bmap_nr]->data);
 	return 0;
 }
 
 static void cleanup_bitmap_list(struct super_block *p_s_sb,
+static void cleanup_bitmap_list(struct super_block *sb,
 				struct reiserfs_list_bitmap *jb)
 {
 	int i;
@@ -241,6 +343,9 @@ static void cleanup_bitmap_list(struct super_block *p_s_sb,
 	for (i = 0; i < reiserfs_bmap_count(p_s_sb); i++) {
 		if (jb->bitmaps[i]) {
 			free_bitmap_node(p_s_sb, jb->bitmaps[i]);
+	for (i = 0; i < reiserfs_bmap_count(sb); i++) {
+		if (jb->bitmaps[i]) {
+			free_bitmap_node(sb, jb->bitmaps[i]);
 			jb->bitmaps[i] = NULL;
 		}
 	}
@@ -250,6 +355,9 @@ static void cleanup_bitmap_list(struct super_block *p_s_sb,
 ** only call this on FS unmount.
 */
 static int free_list_bitmaps(struct super_block *p_s_sb,
+ * only call this on FS unmount.
+ */
+static int free_list_bitmaps(struct super_block *sb,
 			     struct reiserfs_list_bitmap *jb_array)
 {
 	int i;
@@ -258,6 +366,7 @@ static int free_list_bitmaps(struct super_block *p_s_sb,
 		jb = jb_array + i;
 		jb->journal_list = NULL;
 		cleanup_bitmap_list(p_s_sb, jb);
+		cleanup_bitmap_list(sb, jb);
 		vfree(jb->bitmaps);
 		jb->bitmaps = NULL;
 	}
@@ -267,6 +376,9 @@ static int free_list_bitmaps(struct super_block *p_s_sb,
 static int free_bitmap_nodes(struct super_block *p_s_sb)
 {
 	struct reiserfs_journal *journal = SB_JOURNAL(p_s_sb);
+static int free_bitmap_nodes(struct super_block *sb)
+{
+	struct reiserfs_journal *journal = SB_JOURNAL(sb);
 	struct list_head *next = journal->j_bitmap_nodes.next;
 	struct reiserfs_bitmap_node *bn;
 
@@ -287,6 +399,10 @@ static int free_bitmap_nodes(struct super_block *p_s_sb)
 ** jb_array is the array to be filled in.
 */
 int reiserfs_allocate_list_bitmaps(struct super_block *p_s_sb,
+ * get memory for JOURNAL_NUM_BITMAPS worth of bitmaps.
+ * jb_array is the array to be filled in.
+ */
+int reiserfs_allocate_list_bitmaps(struct super_block *sb,
 				   struct reiserfs_list_bitmap *jb_array,
 				   unsigned int bmap_nr)
 {
@@ -309,6 +425,16 @@ int reiserfs_allocate_list_bitmaps(struct super_block *p_s_sb,
 	}
 	if (failed) {
 		free_list_bitmaps(p_s_sb, jb_array);
+		jb->bitmaps = vzalloc(mem);
+		if (!jb->bitmaps) {
+			reiserfs_warning(sb, "clm-2000", "unable to "
+					 "allocate bitmaps for journal lists");
+			failed = 1;
+			break;
+		}
+	}
+	if (failed) {
+		free_list_bitmaps(sb, jb_array);
 		return -1;
 	}
 	return 0;
@@ -319,11 +445,16 @@ int reiserfs_allocate_list_bitmaps(struct super_block *p_s_sb,
 ** and try again
 */
 static struct reiserfs_list_bitmap *get_list_bitmap(struct super_block *p_s_sb,
+ * find an available list bitmap.  If you can't find one, flush a commit list
+ * and try again
+ */
+static struct reiserfs_list_bitmap *get_list_bitmap(struct super_block *sb,
 						    struct reiserfs_journal_list
 						    *jl)
 {
 	int i, j;
 	struct reiserfs_journal *journal = SB_JOURNAL(p_s_sb);
+	struct reiserfs_journal *journal = SB_JOURNAL(sb);
 	struct reiserfs_list_bitmap *jb = NULL;
 
 	for (j = 0; j < (JOURNAL_NUM_BITMAPS * 3); j++) {
@@ -332,6 +463,7 @@ static struct reiserfs_list_bitmap *get_list_bitmap(struct super_block *p_s_sb,
 		jb = journal->j_list_bitmap + i;
 		if (journal->j_list_bitmap[i].journal_list) {
 			flush_commit_list(p_s_sb,
+			flush_commit_list(sb,
 					  journal->j_list_bitmap[i].
 					  journal_list, 1);
 			if (!journal->j_list_bitmap[i].journal_list) {
@@ -344,6 +476,9 @@ static struct reiserfs_list_bitmap *get_list_bitmap(struct super_block *p_s_sb,
 	if (jb->journal_list) {	/* double check to make sure if flushed correctly */
 		return NULL;
 	}
+	/* double check to make sure if flushed correctly */
+	if (jb->journal_list)
+		return NULL;
 	jb->journal_list = jl;
 	return jb;
 }
@@ -353,6 +488,11 @@ static struct reiserfs_list_bitmap *get_list_bitmap(struct super_block *p_s_sb,
 ** Uses the cnode->next and cnode->prev pointers
 ** returns NULL on failure
 */
+/*
+ * allocates a new chunk of X nodes, and links them all together as a list.
+ * Uses the cnode->next and cnode->prev pointers
+ * returns NULL on failure
+ */
 static struct reiserfs_journal_cnode *allocate_cnodes(int num_cnodes)
 {
 	struct reiserfs_journal_cnode *head;
@@ -365,6 +505,10 @@ static struct reiserfs_journal_cnode *allocate_cnodes(int num_cnodes)
 		return NULL;
 	}
 	memset(head, 0, num_cnodes * sizeof(struct reiserfs_journal_cnode));
+	head = vzalloc(num_cnodes * sizeof(struct reiserfs_journal_cnode));
+	if (!head) {
+		return NULL;
+	}
 	head[0].prev = NULL;
 	head[0].next = head + 1;
 	for (i = 1; i < num_cnodes; i++) {
@@ -384,6 +528,13 @@ static struct reiserfs_journal_cnode *get_cnode(struct super_block *p_s_sb)
 	struct reiserfs_journal *journal = SB_JOURNAL(p_s_sb);
 
 	reiserfs_check_lock_depth(p_s_sb, "get_cnode");
+/* pulls a cnode off the free list, or returns NULL on failure */
+static struct reiserfs_journal_cnode *get_cnode(struct super_block *sb)
+{
+	struct reiserfs_journal_cnode *cn;
+	struct reiserfs_journal *journal = SB_JOURNAL(sb);
+
+	reiserfs_check_lock_depth(sb, "get_cnode");
 
 	if (journal->j_cnode_free <= 0) {
 		return NULL;
@@ -411,6 +562,14 @@ static void free_cnode(struct super_block *p_s_sb,
 	struct reiserfs_journal *journal = SB_JOURNAL(p_s_sb);
 
 	reiserfs_check_lock_depth(p_s_sb, "free_cnode");
+ * returns a cnode to the free list
+ */
+static void free_cnode(struct super_block *sb,
+		       struct reiserfs_journal_cnode *cn)
+{
+	struct reiserfs_journal *journal = SB_JOURNAL(sb);
+
+	reiserfs_check_lock_depth(sb, "free_cnode");
 
 	journal->j_cnode_used--;
 	journal->j_cnode_free++;
@@ -445,6 +604,10 @@ void reiserfs_check_lock_depth(struct super_block *sb, char *caller)
 }
 
 /* return a cnode with same dev, block number and size in table, or null if not found */
+/*
+ * return a cnode with same dev, block number and size in table,
+ * or null if not found
+ */
 static inline struct reiserfs_journal_cnode *get_journal_hash_dev(struct
 								  super_block
 								  *sb,
@@ -486,6 +649,29 @@ int reiserfs_in_journal(struct super_block *p_s_sb,
 			b_blocknr_t * next_zero_bit)
 {
 	struct reiserfs_journal *journal = SB_JOURNAL(p_s_sb);
+ * this actually means 'can this block be reallocated yet?'.  If you set
+ * search_all, a block can only be allocated if it is not in the current
+ * transaction, was not freed by the current transaction, and has no chance
+ * of ever being overwritten by a replay after crashing.
+ *
+ * If you don't set search_all, a block can only be allocated if it is not
+ * in the current transaction.  Since deleting a block removes it from the
+ * current transaction, this case should never happen.  If you don't set
+ * search_all, make sure you never write the block without logging it.
+ *
+ * next_zero_bit is a suggestion about the next block to try for find_forward.
+ * when bl is rejected because it is set in a journal list bitmap, we search
+ * for the next zero bit in the bitmap that rejected bl.  Then, we return
+ * that through next_zero_bit for find_forward to try.
+ *
+ * Just because we return something in next_zero_bit does not mean we won't
+ * reject it on the next call to reiserfs_in_journal
+ */
+int reiserfs_in_journal(struct super_block *sb,
+			unsigned int bmap_nr, int bit_nr, int search_all,
+			b_blocknr_t * next_zero_bit)
+{
+	struct reiserfs_journal *journal = SB_JOURNAL(sb);
 	struct reiserfs_journal_cnode *cn;
 	struct reiserfs_list_bitmap *jb;
 	int i;
@@ -501,6 +687,16 @@ int reiserfs_in_journal(struct super_block *p_s_sb,
 	if (search_all) {
 		for (i = 0; i < JOURNAL_NUM_BITMAPS; i++) {
 			PROC_INFO_INC(p_s_sb, journal.in_journal_bitmap);
+	PROC_INFO_INC(sb, journal.in_journal);
+	/*
+	 * If we aren't doing a search_all, this is a metablock, and it
+	 * will be logged before use.  if we crash before the transaction
+	 * that freed it commits,  this transaction won't have committed
+	 * either, and the block will never be written
+	 */
+	if (search_all) {
+		for (i = 0; i < JOURNAL_NUM_BITMAPS; i++) {
+			PROC_INFO_INC(sb, journal.in_journal_bitmap);
 			jb = journal->j_list_bitmap + i;
 			if (jb->journal_list && jb->bitmaps[bmap_nr] &&
 			    test_bit(bit_nr,
@@ -511,6 +707,7 @@ int reiserfs_in_journal(struct super_block *p_s_sb,
 						       (jb->bitmaps[bmap_nr]->
 							data),
 						       p_s_sb->s_blocksize << 3,
+						       sb->s_blocksize << 3,
 						       bit_nr + 1);
 				return 1;
 			}
@@ -522,22 +719,30 @@ int reiserfs_in_journal(struct super_block *p_s_sb,
 	if (search_all
 	    && (cn =
 		get_journal_hash_dev(p_s_sb, journal->j_list_hash_table, bl))) {
+	bl = bmap_nr * (sb->s_blocksize << 3) + bit_nr;
+	/* is it in any old transactions? */
+	if (search_all
+	    && (cn =
+		get_journal_hash_dev(sb, journal->j_list_hash_table, bl))) {
 		return 1;
 	}
 
 	/* is it in the current transaction.  This should never happen */
 	if ((cn = get_journal_hash_dev(p_s_sb, journal->j_hash_table, bl))) {
+	if ((cn = get_journal_hash_dev(sb, journal->j_hash_table, bl))) {
 		BUG();
 		return 1;
 	}
 
 	PROC_INFO_INC(p_s_sb, journal.in_journal_reusable);
+	PROC_INFO_INC(sb, journal.in_journal_reusable);
 	/* safe for reuse */
 	return 0;
 }
 
 /* insert cn into table
 */
+/* insert cn into table */
 static inline void insert_journal_hash(struct reiserfs_journal_cnode **table,
 				       struct reiserfs_journal_cnode *cn)
 {
@@ -563,6 +768,17 @@ static inline void lock_journal(struct super_block *p_s_sb)
 static inline void unlock_journal(struct super_block *p_s_sb)
 {
 	mutex_unlock(&SB_JOURNAL(p_s_sb)->j_mutex);
+static inline void lock_journal(struct super_block *sb)
+{
+	PROC_INFO_INC(sb, journal.lock_journal);
+
+	reiserfs_mutex_lock_safe(&SB_JOURNAL(sb)->j_mutex, sb);
+}
+
+/* unlock the current transaction */
+static inline void unlock_journal(struct super_block *sb)
+{
+	mutex_unlock(&SB_JOURNAL(sb)->j_mutex);
 }
 
 static inline void get_journal_list(struct reiserfs_journal_list *jl)
@@ -575,6 +791,7 @@ static inline void put_journal_list(struct super_block *s,
 {
 	if (jl->j_refcount < 1) {
 		reiserfs_panic(s, "trans id %lu, refcount at %d",
+		reiserfs_panic(s, "journal-2", "trans id %u, refcount at %d",
 			       jl->j_trans_id, jl->j_refcount);
 	}
 	if (--jl->j_refcount == 0)
@@ -587,12 +804,18 @@ static inline void put_journal_list(struct super_block *s,
 ** transaction.
 */
 static void cleanup_freed_for_journal_list(struct super_block *p_s_sb,
+ * this used to be much more involved, and I'm keeping it just in case
+ * things get ugly again.  it gets called by flush_commit_list, and
+ * cleans up any data stored about blocks freed during a transaction.
+ */
+static void cleanup_freed_for_journal_list(struct super_block *sb,
 					   struct reiserfs_journal_list *jl)
 {
 
 	struct reiserfs_list_bitmap *jb = jl->j_list_bitmap;
 	if (jb) {
 		cleanup_bitmap_list(p_s_sb, jb);
+		cleanup_bitmap_list(sb, jb);
 	}
 	jl->j_list_bitmap->journal_list = NULL;
 	jl->j_list_bitmap = NULL;
@@ -600,6 +823,7 @@ static void cleanup_freed_for_journal_list(struct super_block *p_s_sb,
 
 static int journal_list_still_alive(struct super_block *s,
 				    unsigned long trans_id)
+				    unsigned int trans_id)
 {
 	struct reiserfs_journal *journal = SB_JOURNAL(s);
 	struct list_head *entry = &journal->j_journal_list;
@@ -646,6 +870,8 @@ static void reiserfs_end_buffer_io_sync(struct buffer_head *bh, int uptodate)
 	if (buffer_journaled(bh)) {
 		reiserfs_warning(NULL,
 				 "clm-2084: pinned buffer %lu:%s sent to disk",
+		reiserfs_warning(NULL, "clm-2084",
+				 "pinned buffer %lu:%s sent to disk",
 				 bh->b_blocknr, bdevname(bh->b_bdev, b));
 	}
 	if (uptodate)
@@ -753,6 +979,13 @@ static int add_to_chunk(struct buffer_chunk *chunk, struct buffer_head *bh,
 		fn(chunk);
 		if (lock)
 			spin_lock(lock);
+		if (lock) {
+			spin_unlock(lock);
+			fn(chunk);
+			spin_lock(lock);
+		} else {
+			fn(chunk);
+		}
 	}
 	return ret;
 }
@@ -811,6 +1044,12 @@ static inline int __add_jh(struct reiserfs_journal *j, struct buffer_head *bh,
 		jh = alloc_jh();
 		spin_lock(&j->j_dirty_buffers_lock);
 		/* buffer must be locked for __add_jh, should be able to have
+no_jh:
+		get_bh(bh);
+		jh = alloc_jh();
+		spin_lock(&j->j_dirty_buffers_lock);
+		/*
+		 * buffer must be locked for __add_jh, should be able to have
 		 * two adds at the same time
 		 */
 		BUG_ON(bh->b_private);
@@ -869,6 +1108,8 @@ static int write_ordered_buffers(spinlock_t * lock,
 			goto loop_next;
 		}
 		/* in theory, dirty non-uptodate buffers should never get here,
+		/*
+		 * in theory, dirty non-uptodate buffers should never get here,
 		 * but the upper layer io error paths still have a few quirks.
 		 * Handle them here as gracefully as we can
 		 */
@@ -884,6 +1125,7 @@ static int write_ordered_buffers(spinlock_t * lock,
 			unlock_buffer(bh);
 		}
 	      loop_next:
+loop_next:
 		put_bh(bh);
 		cond_resched_lock(lock);
 	}
@@ -913,6 +1155,14 @@ static int write_ordered_buffers(spinlock_t * lock,
 		 * then someone truncates the page away, nobody will ever write
 		 * the buffer. We're safe if we write the page one last time
 		 * after freeing the journal header.
+		/*
+		 * ugly interaction with invalidatepage here.
+		 * reiserfs_invalidate_page will pin any buffer that has a
+		 * valid journal head from an older transaction.  If someone
+		 * else sets our buffer dirty after we write it in the first
+		 * loop, and then someone truncates the page away, nobody
+		 * will ever write the buffer. We're safe if we write the
+		 * page one last time after freeing the journal header.
 		 */
 		if (buffer_dirty(bh) && unlikely(bh->b_page->mapping == NULL)) {
 			spin_unlock(lock);
@@ -938,6 +1188,11 @@ static int flush_older_commits(struct super_block *s,
 	unsigned long first_trans_id;
 
       find_first:
+	unsigned int trans_id = jl->j_trans_id;
+	unsigned int other_trans_id;
+	unsigned int first_trans_id;
+
+find_first:
 	/*
 	 * first we walk backwards to find the oldest uncommitted transation
 	 */
@@ -976,6 +1231,11 @@ static int flush_older_commits(struct super_block *s,
 				/* the one we just flushed is gone, this means all
 				 * older lists are also gone, so first_jl is no longer
 				 * valid either.  Go back to the beginning.
+				/*
+				 * the one we just flushed is gone, this means
+				 * all older lists are also gone, so first_jl
+				 * is no longer valid either.  Go back to the
+				 * beginning.
 				 */
 				if (!journal_list_still_alive
 				    (s, other_trans_id)) {
@@ -998,6 +1258,16 @@ static int reiserfs_async_progress_wait(struct super_block *s)
 	struct reiserfs_journal *j = SB_JOURNAL(s);
 	if (atomic_read(&j->j_async_throttle))
 		congestion_wait(WRITE, HZ / 10);
+	struct reiserfs_journal *j = SB_JOURNAL(s);
+
+	if (atomic_read(&j->j_async_throttle)) {
+		int depth;
+
+		depth = reiserfs_write_unlock_nested(s);
+		congestion_wait(BLK_RW_ASYNC, HZ / 10);
+		reiserfs_write_lock_nested(s, depth);
+	}
+
 	return 0;
 }
 
@@ -1008,6 +1278,12 @@ static int reiserfs_async_progress_wait(struct super_block *s)
 ** Before the commit block can by written, every other log block must be safely on disk
 **
 */
+ * if this journal list still has commit blocks unflushed, send them to disk.
+ *
+ * log areas must be flushed in order (transaction 2 can't commit before
+ * transaction 1) Before the commit block can by written, every other log
+ * block must be safely on disk
+ */
 static int flush_commit_list(struct super_block *s,
 			     struct reiserfs_journal_list *jl, int flushall)
 {
@@ -1019,6 +1295,11 @@ static int flush_commit_list(struct super_block *s,
 	int barrier = 0;
 	int retval = 0;
 	int write_len;
+	unsigned int trans_id = jl->j_trans_id;
+	struct reiserfs_journal *journal = SB_JOURNAL(s);
+	int retval = 0;
+	int write_len;
+	int depth;
 
 	reiserfs_check_lock_depth(s, "flush_commit_list");
 
@@ -1030,6 +1311,9 @@ static int flush_commit_list(struct super_block *s,
 
 	/* before we can put our commit blocks on disk, we have to make sure everyone older than
 	 ** us is on disk too
+	/*
+	 * before we can put our commit blocks on disk, we have to make
+	 * sure everyone older than us is on disk too
 	 */
 	BUG_ON(jl->j_len <= 0);
 	BUG_ON(trans_id == journal->j_trans_id);
@@ -1038,12 +1322,18 @@ static int flush_commit_list(struct super_block *s,
 	if (flushall) {
 		if (flush_older_commits(s, jl) == 1) {
 			/* list disappeared during flush_older_commits.  return */
+			/*
+			 * list disappeared during flush_older_commits.
+			 * return
+			 */
 			goto put_jl;
 		}
 	}
 
 	/* make sure nobody is trying to flush this one at the same time */
 	mutex_lock(&jl->j_commit_mutex);
+	reiserfs_mutex_lock_safe(&jl->j_commit_mutex, s);
+
 	if (!journal_list_still_alive(s, trans_id)) {
 		mutex_unlock(&jl->j_commit_mutex);
 		goto put_jl;
@@ -1054,6 +1344,9 @@ static int flush_commit_list(struct super_block *s,
 	if (atomic_read(&(jl->j_commit_left)) <= 0) {
 		if (flushall) {
 			atomic_set(&(jl->j_older_commits_done), 1);
+	if (atomic_read(&jl->j_commit_left) <= 0) {
+		if (flushall) {
+			atomic_set(&jl->j_older_commits_done, 1);
 		}
 		mutex_unlock(&jl->j_commit_mutex);
 		goto put_jl;
@@ -1062,11 +1355,18 @@ static int flush_commit_list(struct super_block *s,
 	if (!list_empty(&jl->j_bh_list)) {
 		int ret;
 		unlock_kernel();
+
+		/*
+		 * We might sleep in numerous places inside
+		 * write_ordered_buffers. Relax the write lock.
+		 */
+		depth = reiserfs_write_unlock_nested(s);
 		ret = write_ordered_buffers(&journal->j_dirty_buffers_lock,
 					    journal, jl, &jl->j_bh_list);
 		if (ret < 0 && retval == 0)
 			retval = ret;
 		lock_kernel();
+		reiserfs_write_lock_nested(s, depth);
 	}
 	BUG_ON(!list_empty(&jl->j_bh_list));
 	/*
@@ -1087,6 +1387,11 @@ static int flush_commit_list(struct super_block *s,
 		if (tbh) {
 			if (buffer_dirty(tbh))
 			    ll_rw_block(WRITE, 1, &tbh) ;
+			if (buffer_dirty(tbh)) {
+		            depth = reiserfs_write_unlock_nested(s);
+			    ll_rw_block(WRITE, 1, &tbh);
+			    reiserfs_write_lock_nested(s, depth);
+			}
 			put_bh(tbh) ;
 		}
 	}
@@ -1155,6 +1460,62 @@ static int flush_commit_list(struct super_block *s,
 	if (unlikely(!buffer_uptodate(jl->j_commit_bh))) {
 #ifdef CONFIG_REISERFS_CHECK
 		reiserfs_warning(s, "journal-615: buffer write failed");
+
+		depth = reiserfs_write_unlock_nested(s);
+		__wait_on_buffer(tbh);
+		reiserfs_write_lock_nested(s, depth);
+		/*
+		 * since we're using ll_rw_blk above, it might have skipped
+		 * over a locked buffer.  Double check here
+		 */
+		/* redundant, sync_dirty_buffer() checks */
+		if (buffer_dirty(tbh)) {
+			depth = reiserfs_write_unlock_nested(s);
+			sync_dirty_buffer(tbh);
+			reiserfs_write_lock_nested(s, depth);
+		}
+		if (unlikely(!buffer_uptodate(tbh))) {
+#ifdef CONFIG_REISERFS_CHECK
+			reiserfs_warning(s, "journal-601",
+					 "buffer write failed");
+#endif
+			retval = -EIO;
+		}
+		/* once for journal_find_get_block */
+		put_bh(tbh);
+		/* once due to original getblk in do_journal_end */
+		put_bh(tbh);
+		atomic_dec(&jl->j_commit_left);
+	}
+
+	BUG_ON(atomic_read(&jl->j_commit_left) != 1);
+
+	/*
+	 * If there was a write error in the journal - we can't commit
+	 * this transaction - it will be invalid and, if successful,
+	 * will just end up propagating the write error out to
+	 * the file system.
+	 */
+	if (likely(!retval && !reiserfs_is_journal_aborted (journal))) {
+		if (buffer_dirty(jl->j_commit_bh))
+			BUG();
+		mark_buffer_dirty(jl->j_commit_bh) ;
+		depth = reiserfs_write_unlock_nested(s);
+		if (reiserfs_barrier_flush(s))
+			__sync_dirty_buffer(jl->j_commit_bh, WRITE_FLUSH_FUA);
+		else
+			sync_dirty_buffer(jl->j_commit_bh);
+		reiserfs_write_lock_nested(s, depth);
+	}
+
+	/*
+	 * If there was a write error in the journal - we can't commit this
+	 * transaction - it will be invalid and, if successful, will just end
+	 * up propagating the write error out to the filesystem.
+	 */
+	if (unlikely(!buffer_uptodate(jl->j_commit_bh))) {
+#ifdef CONFIG_REISERFS_CHECK
+		reiserfs_warning(s, "journal-615", "buffer write failed");
 #endif
 		retval = -EIO;
 	}
@@ -1162,11 +1523,16 @@ static int flush_commit_list(struct super_block *s,
 	if (journal->j_last_commit_id != 0 &&
 	    (jl->j_trans_id - journal->j_last_commit_id) != 1) {
 		reiserfs_warning(s, "clm-2200: last commit %lu, current %lu",
+		reiserfs_warning(s, "clm-2200", "last commit %lu, current %lu",
 				 journal->j_last_commit_id, jl->j_trans_id);
 	}
 	journal->j_last_commit_id = jl->j_trans_id;
 
 	/* now, every commit block is on the disk.  It is safe to allow blocks freed during this transaction to be reallocated */
+	/*
+	 * now, every commit block is on the disk.  It is safe to allow
+	 * blocks freed during this transaction to be reallocated
+	 */
 	cleanup_freed_for_journal_list(s, jl);
 
 	retval = retval ? retval : journal->j_errno;
@@ -1181,6 +1547,13 @@ static int flush_commit_list(struct super_block *s,
 	}
 	mutex_unlock(&jl->j_commit_mutex);
       put_jl:
+	atomic_dec(&jl->j_commit_left);
+
+	if (flushall) {
+		atomic_set(&jl->j_older_commits_done, 1);
+	}
+	mutex_unlock(&jl->j_commit_mutex);
+put_jl:
 	put_journal_list(s, jl);
 
 	if (retval)
@@ -1194,6 +1567,9 @@ static int flush_commit_list(struct super_block *s,
 ** flush_journal_list frequently needs to find a newer transaction for a given block.  This does that, or 
 ** returns NULL if it can't find anything 
 */
+ * flush_journal_list frequently needs to find a newer transaction for a
+ * given block.  This does that, or returns NULL if it can't find anything
+ */
 static struct reiserfs_journal_list *find_newer_jl_for_cn(struct
 							  reiserfs_journal_cnode
 							  *cn)
@@ -1246,22 +1622,41 @@ static void remove_all_from_journal_list(struct super_block *p_s_sb,
 
 	/* which is better, to lock once around the whole loop, or
 	 ** to lock for each call to remove_journal_hash?
+ * once all the real blocks have been flushed, it is safe to remove them
+ * from the journal list for this transaction.  Aside from freeing the
+ * cnode, this also allows the block to be reallocated for data blocks
+ * if it had been deleted.
+ */
+static void remove_all_from_journal_list(struct super_block *sb,
+					 struct reiserfs_journal_list *jl,
+					 int debug)
+{
+	struct reiserfs_journal *journal = SB_JOURNAL(sb);
+	struct reiserfs_journal_cnode *cn, *last;
+	cn = jl->j_realblock;
+
+	/*
+	 * which is better, to lock once around the whole loop, or
+	 * to lock for each call to remove_journal_hash?
 	 */
 	while (cn) {
 		if (cn->blocknr != 0) {
 			if (debug) {
 				reiserfs_warning(p_s_sb,
+				reiserfs_warning(sb, "reiserfs-2201",
 						 "block %u, bh is %d, state %ld",
 						 cn->blocknr, cn->bh ? 1 : 0,
 						 cn->state);
 			}
 			cn->state = 0;
 			remove_journal_hash(p_s_sb, journal->j_list_hash_table,
+			remove_journal_hash(sb, journal->j_list_hash_table,
 					    jl, cn->blocknr, 1);
 		}
 		last = cn;
 		cn = cn->next;
 		free_cnode(p_s_sb, last);
+		free_cnode(sb, last);
 	}
 	jl->j_realblock = NULL;
 }
@@ -1279,6 +1674,20 @@ static int _update_journal_header_block(struct super_block *p_s_sb,
 {
 	struct reiserfs_journal_header *jh;
 	struct reiserfs_journal *journal = SB_JOURNAL(p_s_sb);
+ * if this timestamp is greater than the timestamp we wrote last to the
+ * header block, write it to the header block.  once this is done, I can
+ * safely say the log area for this transaction won't ever be replayed,
+ * and I can start releasing blocks in this transaction for reuse as data
+ * blocks.  called by flush_journal_list, before it calls
+ * remove_all_from_journal_list
+ */
+static int _update_journal_header_block(struct super_block *sb,
+					unsigned long offset,
+					unsigned int trans_id)
+{
+	struct reiserfs_journal_header *jh;
+	struct reiserfs_journal *journal = SB_JOURNAL(sb);
+	int depth;
 
 	if (reiserfs_is_journal_aborted(journal))
 		return -EIO;
@@ -1290,6 +1699,13 @@ static int _update_journal_header_block(struct super_block *p_s_sb,
 #ifdef CONFIG_REISERFS_CHECK
 				reiserfs_warning(p_s_sb,
 						 "journal-699: buffer write failed");
+			depth = reiserfs_write_unlock_nested(sb);
+			__wait_on_buffer(journal->j_header_bh);
+			reiserfs_write_lock_nested(sb, depth);
+			if (unlikely(!buffer_uptodate(journal->j_header_bh))) {
+#ifdef CONFIG_REISERFS_CHECK
+				reiserfs_warning(sb, "journal-699",
+						 "buffer write failed");
 #endif
 				return -EIO;
 			}
@@ -1321,6 +1737,18 @@ static int _update_journal_header_block(struct super_block *p_s_sb,
 		if (!buffer_uptodate(journal->j_header_bh)) {
 			reiserfs_warning(p_s_sb,
 					 "journal-837: IO error during journal replay");
+		set_buffer_dirty(journal->j_header_bh);
+		depth = reiserfs_write_unlock_nested(sb);
+
+		if (reiserfs_barrier_flush(sb))
+			__sync_dirty_buffer(journal->j_header_bh, WRITE_FLUSH_FUA);
+		else
+			sync_dirty_buffer(journal->j_header_bh);
+
+		reiserfs_write_lock_nested(sb, depth);
+		if (!buffer_uptodate(journal->j_header_bh)) {
+			reiserfs_warning(sb, "journal-837",
+					 "IO error during journal replay");
 			return -EIO;
 		}
 	}
@@ -1339,6 +1767,18 @@ static int update_journal_header_block(struct super_block *p_s_sb,
 ** can only be called from flush_journal_list
 */
 static int flush_older_journal_lists(struct super_block *p_s_sb,
+static int update_journal_header_block(struct super_block *sb,
+				       unsigned long offset,
+				       unsigned int trans_id)
+{
+	return _update_journal_header_block(sb, offset, trans_id);
+}
+
+/*
+** flush any and all journal lists older than you are
+** can only be called from flush_journal_list
+*/
+static int flush_older_journal_lists(struct super_block *sb,
 				     struct reiserfs_journal_list *jl)
 {
 	struct list_head *entry;
@@ -1350,6 +1790,14 @@ static int flush_older_journal_lists(struct super_block *p_s_sb,
 	 * protection is required.
 	 */
       restart:
+	struct reiserfs_journal *journal = SB_JOURNAL(sb);
+	unsigned int trans_id = jl->j_trans_id;
+
+	/*
+	 * we know we are the only ones flushing things, no extra race
+	 * protection is required.
+	 */
+restart:
 	entry = journal->j_journal_list.next;
 	/* Did we wrap? */
 	if (entry == &journal->j_journal_list)
@@ -1359,6 +1807,7 @@ static int flush_older_journal_lists(struct super_block *p_s_sb,
 		BUG_ON(other_jl->j_refcount <= 0);
 		/* do not flush all */
 		flush_journal_list(p_s_sb, other_jl, 0);
+		flush_journal_list(sb, other_jl, 0);
 
 		/* other_jl is now deleted from the list */
 		goto restart;
@@ -1385,6 +1834,16 @@ static void del_from_work_list(struct super_block *s,
 ** and the journal is locked.  That means it can only be called from 
 ** do_journal_end, or by journal_release
 */
+/*
+ * flush a journal list, both commit and real blocks
+ *
+ * always set flushall to 1, unless you are calling from inside
+ * flush_journal_list
+ *
+ * IMPORTANT.  This can only be called while there are no journal writers,
+ * and the journal is locked.  That means it can only be called from
+ * do_journal_end, or by journal_release
+ */
 static int flush_journal_list(struct super_block *s,
 			      struct reiserfs_journal_list *jl, int flushall)
 {
@@ -1397,6 +1856,7 @@ static int flush_journal_list(struct super_block *s,
 	unsigned long j_len_saved = jl->j_len;
 	struct reiserfs_journal *journal = SB_JOURNAL(s);
 	int err = 0;
+	int depth;
 
 	BUG_ON(j_len_saved <= 0);
 
@@ -1410,6 +1870,13 @@ static int flush_journal_list(struct super_block *s,
 	/* if flushall == 0, the lock is already held */
 	if (flushall) {
 		mutex_lock(&journal->j_flush_mutex);
+		reiserfs_warning(s, "clm-2048", "called with wcount %d",
+				 atomic_read(&journal->j_wcount));
+	}
+
+	/* if flushall == 0, the lock is already held */
+	if (flushall) {
+		reiserfs_mutex_lock_safe(&journal->j_flush_mutex, s);
 	} else if (mutex_trylock(&journal->j_flush_mutex)) {
 		BUG();
 	}
@@ -1418,6 +1885,7 @@ static int flush_journal_list(struct super_block *s,
 	if (j_len_saved > journal->j_trans_max) {
 		reiserfs_panic(s,
 			       "journal-715: flush_journal_list, length is %lu, trans id %lu\n",
+		reiserfs_panic(s, "journal-715", "length is %lu, trans id %lu",
 			       j_len_saved, jl->j_trans_id);
 		return 0;
 	}
@@ -1432,6 +1900,15 @@ static int flush_journal_list(struct super_block *s,
 
 	/* start by putting the commit list on disk.  This will also flush 
 	 ** the commit lists of any olders transactions
+	/* if all the work is already done, get out of here */
+	if (atomic_read(&jl->j_nonzerolen) <= 0 &&
+	    atomic_read(&jl->j_commit_left) <= 0) {
+		goto flush_older_and_return;
+	}
+
+	/*
+	 * start by putting the commit list on disk.  This will also flush
+	 * the commit lists of any olders transactions
 	 */
 	flush_commit_list(s, jl, 1);
 
@@ -1451,6 +1928,18 @@ static int flush_journal_list(struct super_block *s,
 	if (atomic_read(&(journal->j_wcount)) != 0) {
 		reiserfs_panic(s,
 			       "journal-844: panic journal list is flushing, wcount is not 0\n");
+	if (atomic_read(&jl->j_nonzerolen) <= 0 &&
+	    atomic_read(&jl->j_commit_left) <= 0) {
+		goto flush_older_and_return;
+	}
+
+	/*
+	 * loop through each cnode, see if we need to write it,
+	 * or wait on a more recent transaction, or just ignore it
+	 */
+	if (atomic_read(&journal->j_wcount) != 0) {
+		reiserfs_panic(s, "journal-844", "journal list is flushing, "
+			       "wcount is not 0");
 	}
 	cn = jl->j_realblock;
 	while (cn) {
@@ -1463,6 +1952,10 @@ static int flush_journal_list(struct super_block *s,
 		}
 
 		/* This transaction failed commit. Don't write out to the disk */
+		/*
+		 * This transaction failed commit.
+		 * Don't write out to the disk
+		 */
 		if (!(jl->j_state & LIST_DIRTY))
 			goto free_cnode;
 
@@ -1470,12 +1963,19 @@ static int flush_journal_list(struct super_block *s,
 		/* the order is important here.  We check pjl to make sure we
 		 ** don't clear BH_JDirty_wait if we aren't the one writing this
 		 ** block to disk
+		/*
+		 * the order is important here.  We check pjl to make sure we
+		 * don't clear BH_JDirty_wait if we aren't the one writing this
+		 * block to disk
 		 */
 		if (!pjl && cn->bh) {
 			saved_bh = cn->bh;
 
 			/* we do this to make sure nobody releases the buffer while 
 			 ** we are working with it 
+			/*
+			 * we do this to make sure nobody releases the
+			 * buffer while we are working with it
 			 */
 			get_bh(saved_bh);
 
@@ -1485,12 +1985,19 @@ static int flush_journal_list(struct super_block *s,
 				was_dirty = 1;
 			} else if (can_dirty(cn)) {
 				/* everything with !pjl && jwait should be writable */
+				/*
+				 * everything with !pjl && jwait
+				 * should be writable
+				 */
 				BUG();
 			}
 		}
 
 		/* if someone has this block in a newer transaction, just make
 		 ** sure they are committed, and don't try writing it to disk
+		/*
+		 * if someone has this block in a newer transaction, just make
+		 * sure they are committed, and don't try writing it to disk
 		 */
 		if (pjl) {
 			if (atomic_read(&pjl->j_commit_left))
@@ -1500,6 +2007,9 @@ static int flush_journal_list(struct super_block *s,
 
 		/* bh == NULL when the block got to disk on its own, OR, 
 		 ** the block got freed in a future transaction 
+		/*
+		 * bh == NULL when the block got to disk on its own, OR,
+		 * the block got freed in a future transaction
 		 */
 		if (saved_bh == NULL) {
 			goto free_cnode;
@@ -1512,6 +2022,14 @@ static int flush_journal_list(struct super_block *s,
 		if ((!was_jwait) && !buffer_locked(saved_bh)) {
 			reiserfs_warning(s,
 					 "journal-813: BAD! buffer %llu %cdirty %cjwait, "
+		/*
+		 * this should never happen.  kupdate_one_transaction has
+		 * this list locked while it works, so we should never see a
+		 * buffer here that is not marked JDirty_wait
+		 */
+		if ((!was_jwait) && !buffer_locked(saved_bh)) {
+			reiserfs_warning(s, "journal-813",
+					 "BAD! buffer %llu %cdirty %cjwait, "
 					 "not in a newer tranasction",
 					 (unsigned long long)saved_bh->
 					 b_blocknr, was_dirty ? ' ' : '!',
@@ -1519,6 +2037,10 @@ static int flush_journal_list(struct super_block *s,
 		}
 		if (was_dirty) {
 			/* we inc again because saved_bh gets decremented at free_cnode */
+			/*
+			 * we inc again because saved_bh gets decremented
+			 * at free_cnode
+			 */
 			get_bh(saved_bh);
 			set_bit(BLOCK_NEEDS_FLUSH, &cn->state);
 			lock_buffer(saved_bh);
@@ -1543,6 +2065,23 @@ static int flush_journal_list(struct super_block *s,
 			if (atomic_read(&(saved_bh->b_count)) < 0) {
 				reiserfs_warning(s,
 						 "journal-945: saved_bh->b_count < 0");
+			reiserfs_warning(s, "clm-2082",
+					 "Unable to flush buffer %llu in %s",
+					 (unsigned long long)saved_bh->
+					 b_blocknr, __func__);
+		}
+free_cnode:
+		last = cn;
+		cn = cn->next;
+		if (saved_bh) {
+			/*
+			 * we incremented this to keep others from
+			 * taking the buffer head away
+			 */
+			put_bh(saved_bh);
+			if (atomic_read(&saved_bh->b_count) < 0) {
+				reiserfs_warning(s, "journal-945",
+						 "saved_bh->b_count < 0");
 			}
 		}
 	}
@@ -1568,6 +2107,29 @@ static int flush_journal_list(struct super_block *s,
 				}
 				/* note, we must clear the JDirty_wait bit after the up to date
 				 ** check, otherwise we race against our flushpage routine
+					reiserfs_panic(s, "journal-1011",
+						       "cn->bh is NULL");
+				}
+
+				depth = reiserfs_write_unlock_nested(s);
+				__wait_on_buffer(cn->bh);
+				reiserfs_write_lock_nested(s, depth);
+
+				if (!cn->bh) {
+					reiserfs_panic(s, "journal-1012",
+						       "cn->bh is NULL");
+				}
+				if (unlikely(!buffer_uptodate(cn->bh))) {
+#ifdef CONFIG_REISERFS_CHECK
+					reiserfs_warning(s, "journal-949",
+							 "buffer write failed");
+#endif
+					err = -EIO;
+				}
+				/*
+				 * note, we must clear the JDirty_wait bit
+				 * after the up to date check, otherwise we
+				 * race against our flushpage routine
 				 */
 				BUG_ON(!test_clear_buffer_journal_dirty
 				       (cn->bh));
@@ -1591,6 +2153,13 @@ static int flush_journal_list(struct super_block *s,
 	 ** real blocks from all older transactions to disk.  This is because
 	 ** once the header block is updated, this transaction will not be
 	 ** replayed after a crash
+flush_older_and_return:
+
+	/*
+	 * before we can update the journal header block, we _must_ flush all
+	 * real blocks from all older transactions to disk.  This is because
+	 * once the header block is updated, this transaction will not be
+	 * replayed after a crash
 	 */
 	if (flushall) {
 		flush_older_journal_lists(s, jl);
@@ -1604,6 +2173,14 @@ static int flush_journal_list(struct super_block *s,
 	 ** are no allocations going on while we are flushing journal lists.  So,
 	 ** we only need to update the journal header block for the last list
 	 ** being flushed
+	/*
+	 * before we can remove everything from the hash tables for this
+	 * transaction, we must make sure it can never be replayed
+	 *
+	 * since we are only called from do_journal_end, we know for sure there
+	 * are no allocations going on while we are flushing journal lists.  So,
+	 * we only need to update the journal header block for the last list
+	 * being flushed
 	 */
 	if (!err && flushall) {
 		err =
@@ -1624,6 +2201,7 @@ static int flush_journal_list(struct super_block *s,
 	if (journal->j_last_flush_id != 0 &&
 	    (jl->j_trans_id - journal->j_last_flush_id) != 1) {
 		reiserfs_warning(s, "clm-2201: last flush %lu, current %lu",
+		reiserfs_warning(s, "clm-2201", "last flush %lu, current %lu",
 				 journal->j_last_flush_id, jl->j_trans_id);
 	}
 	journal->j_last_flush_id = jl->j_trans_id;
@@ -1633,6 +2211,12 @@ static int flush_journal_list(struct super_block *s,
 	 */
 	jl->j_len = 0;
 	atomic_set(&(jl->j_nonzerolen), 0);
+	/*
+	 * not strictly required since we are freeing the list, but it should
+	 * help find code using dead lists later on
+	 */
+	jl->j_len = 0;
+	atomic_set(&jl->j_nonzerolen, 0);
 	jl->j_start = 0;
 	jl->j_realblock = NULL;
 	jl->j_commit_bh = NULL;
@@ -1670,6 +2254,9 @@ static int test_transaction(struct super_block *s,
 	return 0;
 }
 
+	return err;
+}
+
 static int write_one_transaction(struct super_block *s,
 				 struct reiserfs_journal_list *jl,
 				 struct buffer_chunk *chunk)
@@ -1687,6 +2274,9 @@ static int write_one_transaction(struct super_block *s,
 	while (cn) {
 		/* if the blocknr == 0, this has been cleared from the hash,
 		 ** skip it
+		/*
+		 * if the blocknr == 0, this has been cleared from the hash,
+		 * skip it
 		 */
 		if (cn->blocknr == 0) {
 			goto next;
@@ -1694,6 +2284,8 @@ static int write_one_transaction(struct super_block *s,
 		if (cn->bh && can_dirty(cn) && buffer_dirty(cn->bh)) {
 			struct buffer_head *tmp_bh;
 			/* we can race against journal_mark_freed when we try
+			/*
+			 * we can race against journal_mark_freed when we try
 			 * to lock_buffer(cn->bh), so we have to inc the buffer
 			 * count, and recheck things after locking
 			 */
@@ -1713,6 +2305,7 @@ static int write_one_transaction(struct super_block *s,
 			put_bh(tmp_bh);
 		}
 	      next:
+next:
 		cn = cn->next;
 		cond_resched();
 	}
@@ -1733,12 +2326,18 @@ static int dirty_one_transaction(struct super_block *s,
 		/* look for a more recent transaction that logged this
 		 ** buffer.  Only the most recent transaction with a buffer in
 		 ** it is allowed to send that buffer to disk
+		/*
+		 * look for a more recent transaction that logged this
+		 * buffer.  Only the most recent transaction with a buffer in
+		 * it is allowed to send that buffer to disk
 		 */
 		pjl = find_newer_jl_for_cn(cn);
 		if (!pjl && cn->blocknr && cn->bh
 		    && buffer_journal_dirty(cn->bh)) {
 			BUG_ON(!can_dirty(cn));
 			/* if the buffer is prepared, it will either be logged
+			/*
+			 * if the buffer is prepared, it will either be logged
 			 * or restored.  If restored, we need to make sure
 			 * it actually gets marked dirty
 			 */
@@ -1759,23 +2358,28 @@ static int kupdate_transactions(struct super_block *s,
 				struct reiserfs_journal_list *jl,
 				struct reiserfs_journal_list **next_jl,
 				unsigned long *next_trans_id,
+				unsigned int *next_trans_id,
 				int num_blocks, int num_trans)
 {
 	int ret = 0;
 	int written = 0;
 	int transactions_flushed = 0;
 	unsigned long orig_trans_id = jl->j_trans_id;
+	unsigned int orig_trans_id = jl->j_trans_id;
 	struct buffer_chunk chunk;
 	struct list_head *entry;
 	struct reiserfs_journal *journal = SB_JOURNAL(s);
 	chunk.nr = 0;
 
 	mutex_lock(&journal->j_flush_mutex);
+	reiserfs_mutex_lock_safe(&journal->j_flush_mutex, s);
 	if (!journal_list_still_alive(s, orig_trans_id)) {
 		goto done;
 	}
 
 	/* we've got j_flush_mutex held, nobody is going to delete any
+	/*
+	 * we've got j_flush_mutex held, nobody is going to delete any
 	 * of these lists out from underneath us
 	 */
 	while ((num_trans && transactions_flushed < num_trans) ||
@@ -1810,6 +2414,7 @@ static int kupdate_transactions(struct super_block *s,
 	}
 
       done:
+done:
 	mutex_unlock(&journal->j_flush_mutex);
 	return ret;
 }
@@ -1823,6 +2428,16 @@ static int kupdate_transactions(struct super_block *s,
 ** at once, which makes everything faster since only the newest journal
 ** list updates the header block
 */
+/*
+ * for o_sync and fsync heavy applications, they tend to use
+ * all the journa list slots with tiny transactions.  These
+ * trigger lots and lots of calls to update the header block, which
+ * adds seeks and slows things down.
+ *
+ * This function tries to clear out a large chunk of the journal lists
+ * at once, which makes everything faster since only the newest journal
+ * list updates the header block
+ */
 static int flush_used_journal_lists(struct super_block *s,
 				    struct reiserfs_journal_list *jl)
 {
@@ -1834,6 +2449,7 @@ static int flush_used_journal_lists(struct super_block *s,
 	struct reiserfs_journal_list *tjl;
 	struct reiserfs_journal_list *flush_jl;
 	unsigned long trans_id;
+	unsigned int trans_id;
 	struct reiserfs_journal *journal = SB_JOURNAL(s);
 
 	flush_jl = tjl = jl;
@@ -1860,11 +2476,20 @@ static int flush_used_journal_lists(struct super_block *s,
 	/* try to find a group of blocks we can flush across all the
 	 ** transactions, but only bother if we've actually spanned
 	 ** across multiple lists
+	get_journal_list(jl);
+	get_journal_list(flush_jl);
+
+	/*
+	 * try to find a group of blocks we can flush across all the
+	 * transactions, but only bother if we've actually spanned
+	 * across multiple lists
 	 */
 	if (flush_jl != jl) {
 		ret = kupdate_transactions(s, jl, &tjl, &trans_id, len, i);
 	}
 	flush_journal_list(s, flush_jl, 1);
+	put_journal_list(s, flush_jl);
+	put_journal_list(s, jl);
 	return 0;
 }
 
@@ -1872,6 +2497,9 @@ static int flush_used_journal_lists(struct super_block *s,
 ** removes any nodes in table with name block and dev as bh.
 ** only touchs the hnext and hprev pointers.
 */
+ * removes any nodes in table with name block and dev as bh.
+ * only touchs the hnext and hprev pointers.
+ */
 void remove_journal_hash(struct super_block *sb,
 			 struct reiserfs_journal_cnode **table,
 			 struct reiserfs_journal_list *jl,
@@ -1902,6 +2530,12 @@ void remove_journal_hash(struct super_block *sb,
 			cur->state = 0;
 			if (cur->bh && cur->jlist)	/* anybody who clears the cur->bh will also dec the nonzerolen */
 				atomic_dec(&(cur->jlist->j_nonzerolen));
+			/*
+			 * anybody who clears the cur->bh will also
+			 * dec the nonzerolen
+			 */
+			if (cur->bh && cur->jlist)
+				atomic_dec(&cur->jlist->j_nonzerolen);
 			cur->bh = NULL;
 			cur->jlist = NULL;
 		}
@@ -1912,6 +2546,9 @@ void remove_journal_hash(struct super_block *sb,
 static void free_journal_ram(struct super_block *p_s_sb)
 {
 	struct reiserfs_journal *journal = SB_JOURNAL(p_s_sb);
+static void free_journal_ram(struct super_block *sb)
+{
+	struct reiserfs_journal *journal = SB_JOURNAL(sb);
 	kfree(journal->j_current_jl);
 	journal->j_num_lists--;
 
@@ -1925,6 +2562,16 @@ static void free_journal_ram(struct super_block *p_s_sb)
 	 * dev until we brelse j_header_bh
 	 */
 	release_journal_dev(p_s_sb, journal);
+	free_list_bitmaps(sb, journal->j_list_bitmap);
+	free_bitmap_nodes(sb);	/* must be after free_list_bitmaps */
+	if (journal->j_header_bh) {
+		brelse(journal->j_header_bh);
+	}
+	/*
+	 * j_header_bh is on the journal dev, make sure
+	 * not to release the journal dev until we brelse j_header_bh
+	 */
+	release_journal_dev(sb, journal);
 	vfree(journal);
 }
 
@@ -1954,6 +2601,35 @@ static int do_journal_release(struct reiserfs_transaction_handle *th,
 			journal_mark_dirty(&myth, p_s_sb,
 					   SB_BUFFER_WITH_SB(p_s_sb));
 			do_journal_end(&myth, p_s_sb, 1, FLUSH_ALL);
+ * call on unmount.  Only set error to 1 if you haven't made your way out
+ * of read_super() yet.  Any other caller must keep error at 0.
+ */
+static int do_journal_release(struct reiserfs_transaction_handle *th,
+			      struct super_block *sb, int error)
+{
+	struct reiserfs_transaction_handle myth;
+	int flushed = 0;
+	struct reiserfs_journal *journal = SB_JOURNAL(sb);
+
+	/*
+	 * we only want to flush out transactions if we were
+	 * called with error == 0
+	 */
+	if (!error && !(sb->s_flags & MS_RDONLY)) {
+		/* end the current trans */
+		BUG_ON(!th->t_trans_id);
+		do_journal_end(th, FLUSH_ALL);
+
+		/*
+		 * make sure something gets logged to force
+		 * our way into the flush code
+		 */
+		if (!journal_join(&myth, sb)) {
+			reiserfs_prepare_for_journal(sb,
+						     SB_BUFFER_WITH_SB(sb),
+						     1);
+			journal_mark_dirty(&myth, SB_BUFFER_WITH_SB(sb));
+			do_journal_end(&myth, FLUSH_ALL);
 			flushed = 1;
 		}
 	}
@@ -1981,6 +2657,34 @@ static int do_journal_release(struct reiserfs_transaction_handle *th,
 	}
 
 	free_journal_ram(p_s_sb);
+		if (!journal_join_abort(&myth, sb)) {
+			reiserfs_prepare_for_journal(sb,
+						     SB_BUFFER_WITH_SB(sb),
+						     1);
+			journal_mark_dirty(&myth, SB_BUFFER_WITH_SB(sb));
+			do_journal_end(&myth, FLUSH_ALL);
+		}
+	}
+
+
+	/*
+	 * We must release the write lock here because
+	 * the workqueue job (flush_async_commit) needs this lock
+	 */
+	reiserfs_write_unlock(sb);
+
+	/*
+	 * Cancel flushing of old commits. Note that neither of these works
+	 * will be requeued because superblock is being shutdown and doesn't
+	 * have MS_ACTIVE set.
+	 */
+	reiserfs_cancel_old_flush(sb);
+	/* wait for all commits to finish */
+	cancel_delayed_work_sync(&SB_JOURNAL(sb)->j_work);
+
+	free_journal_ram(sb);
+
+	reiserfs_write_lock(sb);
 
 	return 0;
 }
@@ -2005,12 +2709,32 @@ int journal_release_error(struct reiserfs_transaction_handle *th,
 
 /* compares description block with commit block.  returns 1 if they differ, 0 if they are the same */
 static int journal_compare_desc_commit(struct super_block *p_s_sb,
+/* * call on unmount.  flush all journal trans, release all alloc'd ram */
+int journal_release(struct reiserfs_transaction_handle *th,
+		    struct super_block *sb)
+{
+	return do_journal_release(th, sb, 0);
+}
+
+/* only call from an error condition inside reiserfs_read_super!  */
+int journal_release_error(struct reiserfs_transaction_handle *th,
+			  struct super_block *sb)
+{
+	return do_journal_release(th, sb, 1);
+}
+
+/*
+ * compares description block with commit block.
+ * returns 1 if they differ, 0 if they are the same
+ */
+static int journal_compare_desc_commit(struct super_block *sb,
 				       struct reiserfs_journal_desc *desc,
 				       struct reiserfs_journal_commit *commit)
 {
 	if (get_commit_trans_id(commit) != get_desc_trans_id(desc) ||
 	    get_commit_trans_len(commit) != get_desc_trans_len(desc) ||
 	    get_commit_trans_len(commit) > SB_JOURNAL(p_s_sb)->j_trans_max ||
+	    get_commit_trans_len(commit) > SB_JOURNAL(sb)->j_trans_max ||
 	    get_commit_trans_len(commit) <= 0) {
 		return 1;
 	}
@@ -2024,6 +2748,15 @@ static int journal_compare_desc_commit(struct super_block *p_s_sb,
 static int journal_transaction_is_valid(struct super_block *p_s_sb,
 					struct buffer_head *d_bh,
 					unsigned long *oldest_invalid_trans_id,
+/*
+ * returns 0 if it did not find a description block
+ * returns -1 if it found a corrupt commit block
+ * returns 1 if both desc and commit were valid
+ * NOTE: only called during fs mount
+ */
+static int journal_transaction_is_valid(struct super_block *sb,
+					struct buffer_head *d_bh,
+					unsigned int *oldest_invalid_trans_id,
 					unsigned long *newest_mount_id)
 {
 	struct reiserfs_journal_desc *desc;
@@ -2040,6 +2773,7 @@ static int journal_transaction_is_valid(struct super_block *p_s_sb,
 		if (oldest_invalid_trans_id && *oldest_invalid_trans_id
 		    && get_desc_trans_id(desc) > *oldest_invalid_trans_id) {
 			reiserfs_debug(p_s_sb, REISERFS_DEBUG_CODE,
+			reiserfs_debug(sb, REISERFS_DEBUG_CODE,
 				       "journal-986: transaction "
 				       "is valid returning because trans_id %d is greater than "
 				       "oldest_invalid %lu",
@@ -2050,6 +2784,7 @@ static int journal_transaction_is_valid(struct super_block *p_s_sb,
 		if (newest_mount_id
 		    && *newest_mount_id > get_desc_mount_id(desc)) {
 			reiserfs_debug(p_s_sb, REISERFS_DEBUG_CODE,
+			reiserfs_debug(sb, REISERFS_DEBUG_CODE,
 				       "journal-1087: transaction "
 				       "is valid returning because mount_id %d is less than "
 				       "newest_mount_id %lu",
@@ -2080,6 +2815,33 @@ static int journal_transaction_is_valid(struct super_block *p_s_sb,
 				       "time %d or length %d",
 				       c_bh->b_blocknr -
 				       SB_ONDISK_JOURNAL_1st_BLOCK(p_s_sb),
+		if (get_desc_trans_len(desc) > SB_JOURNAL(sb)->j_trans_max) {
+			reiserfs_warning(sb, "journal-2018",
+					 "Bad transaction length %d "
+					 "encountered, ignoring transaction",
+					 get_desc_trans_len(desc));
+			return -1;
+		}
+		offset = d_bh->b_blocknr - SB_ONDISK_JOURNAL_1st_BLOCK(sb);
+
+		/*
+		 * ok, we have a journal description block,
+		 * let's see if the transaction was valid
+		 */
+		c_bh =
+		    journal_bread(sb,
+				  SB_ONDISK_JOURNAL_1st_BLOCK(sb) +
+				  ((offset + get_desc_trans_len(desc) +
+				    1) % SB_ONDISK_JOURNAL_SIZE(sb)));
+		if (!c_bh)
+			return 0;
+		commit = (struct reiserfs_journal_commit *)c_bh->b_data;
+		if (journal_compare_desc_commit(sb, desc, commit)) {
+			reiserfs_debug(sb, REISERFS_DEBUG_CODE,
+				       "journal_transaction_is_valid, commit offset %ld had bad "
+				       "time %d or length %d",
+				       c_bh->b_blocknr -
+				       SB_ONDISK_JOURNAL_1st_BLOCK(sb),
 				       get_commit_trans_id(commit),
 				       get_commit_trans_len(commit));
 			brelse(c_bh);
@@ -2087,6 +2849,7 @@ static int journal_transaction_is_valid(struct super_block *p_s_sb,
 				*oldest_invalid_trans_id =
 				    get_desc_trans_id(desc);
 				reiserfs_debug(p_s_sb, REISERFS_DEBUG_CODE,
+				reiserfs_debug(sb, REISERFS_DEBUG_CODE,
 					       "journal-1004: "
 					       "transaction_is_valid setting oldest invalid trans_id "
 					       "to %d",
@@ -2100,6 +2863,11 @@ static int journal_transaction_is_valid(struct super_block *p_s_sb,
 			       "transaction start offset %llu, len %d id %d",
 			       d_bh->b_blocknr -
 			       SB_ONDISK_JOURNAL_1st_BLOCK(p_s_sb),
+		reiserfs_debug(sb, REISERFS_DEBUG_CODE,
+			       "journal-1006: found valid "
+			       "transaction start offset %llu, len %d id %d",
+			       d_bh->b_blocknr -
+			       SB_ONDISK_JOURNAL_1st_BLOCK(sb),
 			       get_desc_trans_len(desc),
 			       get_desc_trans_id(desc));
 		return 1;
@@ -2131,6 +2899,21 @@ static int journal_read_transaction(struct super_block *p_s_sb,
 	struct reiserfs_journal_desc *desc;
 	struct reiserfs_journal_commit *commit;
 	unsigned long trans_id = 0;
+ * given the start, and values for the oldest acceptable transactions,
+ * this either reads in a replays a transaction, or returns because the
+ * transaction is invalid, or too old.
+ * NOTE: only called during fs mount
+ */
+static int journal_read_transaction(struct super_block *sb,
+				    unsigned long cur_dblock,
+				    unsigned long oldest_start,
+				    unsigned int oldest_trans_id,
+				    unsigned long newest_mount_id)
+{
+	struct reiserfs_journal *journal = SB_JOURNAL(sb);
+	struct reiserfs_journal_desc *desc;
+	struct reiserfs_journal_commit *commit;
+	unsigned int trans_id = 0;
 	struct buffer_head *c_bh;
 	struct buffer_head *d_bh;
 	struct buffer_head **log_blocks = NULL;
@@ -2153,11 +2936,30 @@ static int journal_read_transaction(struct super_block *p_s_sb,
 			       "journal_read_trans skipping because %lu is too old",
 			       cur_dblock -
 			       SB_ONDISK_JOURNAL_1st_BLOCK(p_s_sb));
+	unsigned int trans_offset;
+	int i;
+	int trans_half;
+
+	d_bh = journal_bread(sb, cur_dblock);
+	if (!d_bh)
+		return 1;
+	desc = (struct reiserfs_journal_desc *)d_bh->b_data;
+	trans_offset = d_bh->b_blocknr - SB_ONDISK_JOURNAL_1st_BLOCK(sb);
+	reiserfs_debug(sb, REISERFS_DEBUG_CODE, "journal-1037: "
+		       "journal_read_transaction, offset %llu, len %d mount_id %d",
+		       d_bh->b_blocknr - SB_ONDISK_JOURNAL_1st_BLOCK(sb),
+		       get_desc_trans_len(desc), get_desc_mount_id(desc));
+	if (get_desc_trans_id(desc) < oldest_trans_id) {
+		reiserfs_debug(sb, REISERFS_DEBUG_CODE, "journal-1039: "
+			       "journal_read_trans skipping because %lu is too old",
+			       cur_dblock -
+			       SB_ONDISK_JOURNAL_1st_BLOCK(sb));
 		brelse(d_bh);
 		return 1;
 	}
 	if (get_desc_mount_id(desc) != newest_mount_id) {
 		reiserfs_debug(p_s_sb, REISERFS_DEBUG_CODE, "journal-1146: "
+		reiserfs_debug(sb, REISERFS_DEBUG_CODE, "journal-1146: "
 			       "journal_read_trans skipping because %d is != "
 			       "newest_mount_id %lu", get_desc_mount_id(desc),
 			       newest_mount_id);
@@ -2167,6 +2969,9 @@ static int journal_read_transaction(struct super_block *p_s_sb,
 	c_bh = journal_bread(p_s_sb, SB_ONDISK_JOURNAL_1st_BLOCK(p_s_sb) +
 			     ((trans_offset + get_desc_trans_len(desc) + 1) %
 			      SB_ONDISK_JOURNAL_SIZE(p_s_sb)));
+	c_bh = journal_bread(sb, SB_ONDISK_JOURNAL_1st_BLOCK(sb) +
+			     ((trans_offset + get_desc_trans_len(desc) + 1) %
+			      SB_ONDISK_JOURNAL_SIZE(sb)));
 	if (!c_bh) {
 		brelse(d_bh);
 		return 1;
@@ -2178,6 +2983,12 @@ static int journal_read_transaction(struct super_block *p_s_sb,
 			       "commit offset %llu had bad time %d or length %d",
 			       c_bh->b_blocknr -
 			       SB_ONDISK_JOURNAL_1st_BLOCK(p_s_sb),
+	if (journal_compare_desc_commit(sb, desc, commit)) {
+		reiserfs_debug(sb, REISERFS_DEBUG_CODE,
+			       "journal_read_transaction, "
+			       "commit offset %llu had bad time %d or length %d",
+			       c_bh->b_blocknr -
+			       SB_ONDISK_JOURNAL_1st_BLOCK(sb),
 			       get_commit_trans_id(commit),
 			       get_commit_trans_len(commit));
 		brelse(c_bh);
@@ -2186,6 +2997,20 @@ static int journal_read_transaction(struct super_block *p_s_sb,
 	}
 	trans_id = get_desc_trans_id(desc);
 	/* now we know we've got a good transaction, and it was inside the valid time ranges */
+
+	if (bdev_read_only(sb->s_bdev)) {
+		reiserfs_warning(sb, "clm-2076",
+				 "device is readonly, unable to replay log");
+		brelse(c_bh);
+		brelse(d_bh);
+		return -EROFS;
+	}
+
+	trans_id = get_desc_trans_id(desc);
+	/*
+	 * now we know we've got a good transaction, and it was
+	 * inside the valid time ranges
+	 */
 	log_blocks = kmalloc(get_desc_trans_len(desc) *
 			     sizeof(struct buffer_head *), GFP_NOFS);
 	real_blocks = kmalloc(get_desc_trans_len(desc) *
@@ -2220,6 +3045,33 @@ static int journal_read_transaction(struct super_block *p_s_sb,
 		if (real_blocks[i]->b_blocknr > SB_BLOCK_COUNT(p_s_sb)) {
 			reiserfs_warning(p_s_sb,
 					 "journal-1207: REPLAY FAILURE fsck required! Block to replay is outside of filesystem");
+		reiserfs_warning(sb, "journal-1169",
+				 "kmalloc failed, unable to mount FS");
+		return -1;
+	}
+	/* get all the buffer heads */
+	trans_half = journal_trans_half(sb->s_blocksize);
+	for (i = 0; i < get_desc_trans_len(desc); i++) {
+		log_blocks[i] =
+		    journal_getblk(sb,
+				   SB_ONDISK_JOURNAL_1st_BLOCK(sb) +
+				   (trans_offset + 1 +
+				    i) % SB_ONDISK_JOURNAL_SIZE(sb));
+		if (i < trans_half) {
+			real_blocks[i] =
+			    sb_getblk(sb,
+				      le32_to_cpu(desc->j_realblock[i]));
+		} else {
+			real_blocks[i] =
+			    sb_getblk(sb,
+				      le32_to_cpu(commit->
+						  j_realblock[i - trans_half]));
+		}
+		if (real_blocks[i]->b_blocknr > SB_BLOCK_COUNT(sb)) {
+			reiserfs_warning(sb, "journal-1207",
+					 "REPLAY FAILURE fsck required! "
+					 "Block to replay is outside of "
+					 "filesystem");
 			goto abort_replay;
 		}
 		/* make sure we don't try to replay onto log or reserved area */
@@ -2228,6 +3080,11 @@ static int journal_read_transaction(struct super_block *p_s_sb,
 			reiserfs_warning(p_s_sb,
 					 "journal-1204: REPLAY FAILURE fsck required! Trying to replay onto a log block");
 		      abort_replay:
+		    (sb, real_blocks[i]->b_blocknr)) {
+			reiserfs_warning(sb, "journal-1204",
+					 "REPLAY FAILURE fsck required! "
+					 "Trying to replay onto a log block");
+abort_replay:
 			brelse_array(log_blocks, i);
 			brelse_array(real_blocks, i);
 			brelse(c_bh);
@@ -2244,6 +3101,12 @@ static int journal_read_transaction(struct super_block *p_s_sb,
 		if (!buffer_uptodate(log_blocks[i])) {
 			reiserfs_warning(p_s_sb,
 					 "journal-1212: REPLAY FAILURE fsck required! buffer write failed");
+
+		wait_on_buffer(log_blocks[i]);
+		if (!buffer_uptodate(log_blocks[i])) {
+			reiserfs_warning(sb, "journal-1212",
+					 "REPLAY FAILURE fsck required! "
+					 "buffer write failed");
 			brelse_array(log_blocks + i,
 				     get_desc_trans_len(desc) - i);
 			brelse_array(real_blocks, get_desc_trans_len(desc));
@@ -2262,12 +3125,16 @@ static int journal_read_transaction(struct super_block *p_s_sb,
 	for (i = 0; i < get_desc_trans_len(desc); i++) {
 		set_buffer_dirty(real_blocks[i]);
 		ll_rw_block(SWRITE, 1, real_blocks + i);
+		write_dirty_buffer(real_blocks[i], WRITE);
 	}
 	for (i = 0; i < get_desc_trans_len(desc); i++) {
 		wait_on_buffer(real_blocks[i]);
 		if (!buffer_uptodate(real_blocks[i])) {
 			reiserfs_warning(p_s_sb,
 					 "journal-1226: REPLAY FAILURE, fsck required! buffer write failed");
+			reiserfs_warning(sb, "journal-1226",
+					 "REPLAY FAILURE, fsck required! "
+					 "buffer write failed");
 			brelse_array(real_blocks + i,
 				     get_desc_trans_len(desc) - i);
 			brelse(c_bh);
@@ -2288,6 +3155,18 @@ static int journal_read_transaction(struct super_block *p_s_sb,
 
 	/* init starting values for the first transaction, in case this is the last transaction to be replayed. */
 	journal->j_start = cur_dblock - SB_ONDISK_JOURNAL_1st_BLOCK(p_s_sb);
+	    SB_ONDISK_JOURNAL_1st_BLOCK(sb) +
+	    ((trans_offset + get_desc_trans_len(desc) +
+	      2) % SB_ONDISK_JOURNAL_SIZE(sb));
+	reiserfs_debug(sb, REISERFS_DEBUG_CODE,
+		       "journal-1095: setting journal " "start to offset %ld",
+		       cur_dblock - SB_ONDISK_JOURNAL_1st_BLOCK(sb));
+
+	/*
+	 * init starting values for the first transaction, in case
+	 * this is the last transaction to be replayed.
+	 */
+	journal->j_start = cur_dblock - SB_ONDISK_JOURNAL_1st_BLOCK(sb);
 	journal->j_last_flush_trans_id = trans_id;
 	journal->j_trans_id = trans_id + 1;
 	/* check for trans_id overflow */
@@ -2306,6 +3185,14 @@ static int journal_read_transaction(struct super_block *p_s_sb,
    Right now it is only used from journal code. But later we might use it
    from other places.
    Note: Do not use journal_getblk/sb_getblk functions here! */
+/*
+ * This function reads blocks starting from block and to max_block of bufsize
+ * size (but no more than BUFNR blocks at a time). This proved to improve
+ * mounting speed on self-rebuilding raid5 arrays at least.
+ * Right now it is only used from journal code. But later we might use it
+ * from other places.
+ * Note: Do not use journal_getblk/sb_getblk functions here!
+ */
 static struct buffer_head *reiserfs_breada(struct block_device *dev,
 					   b_blocknr_t block, int bufsize,
 					   b_blocknr_t max_block)
@@ -2316,7 +3203,7 @@ static struct buffer_head *reiserfs_breada(struct block_device *dev,
 	int i, j;
 
 	bh = __getblk(dev, block, bufsize);
-	if (buffer_uptodate(bh))
+	if (!bh || buffer_uptodate(bh))
 		return (bh);
 
 	if (block + BUFNR > max_block) {
@@ -2326,6 +3213,8 @@ static struct buffer_head *reiserfs_breada(struct block_device *dev,
 	j = 1;
 	for (i = 1; i < blocks; i++) {
 		bh = __getblk(dev, block + i, bufsize);
+		if (!bh)
+			break;
 		if (buffer_uptodate(bh)) {
 			brelse(bh);
 			break;
@@ -2358,6 +3247,23 @@ static int journal_read(struct super_block *p_s_sb)
 	struct reiserfs_journal_desc *desc;
 	unsigned long oldest_trans_id = 0;
 	unsigned long oldest_invalid_trans_id = 0;
+ * read and replay the log
+ * on a clean unmount, the journal header's next unflushed pointer will be
+ * to an invalid transaction.  This tests that before finding all the
+ * transactions in the log, which makes normal mount times fast.
+ *
+ * After a crash, this starts with the next unflushed transaction, and
+ * replays until it finds one too old, or invalid.
+ *
+ * On exit, it sets things up so the first transaction will work correctly.
+ * NOTE: only called during fs mount
+ */
+static int journal_read(struct super_block *sb)
+{
+	struct reiserfs_journal *journal = SB_JOURNAL(sb);
+	struct reiserfs_journal_desc *desc;
+	unsigned int oldest_trans_id = 0;
+	unsigned int oldest_invalid_trans_id = 0;
 	time_t start;
 	unsigned long oldest_start = 0;
 	unsigned long cur_dblock = 0;
@@ -2382,6 +3288,19 @@ static int journal_read(struct super_block *p_s_sb)
 	journal->j_header_bh = journal_bread(p_s_sb,
 					     SB_ONDISK_JOURNAL_1st_BLOCK(p_s_sb)
 					     + SB_ONDISK_JOURNAL_SIZE(p_s_sb));
+	cur_dblock = SB_ONDISK_JOURNAL_1st_BLOCK(sb);
+	reiserfs_info(sb, "checking transaction log (%s)\n",
+		      bdevname(journal->j_dev_bd, b));
+	start = get_seconds();
+
+	/*
+	 * step 1, read in the journal header block.  Check the transaction
+	 * it says is the first unflushed, and if that transaction is not
+	 * valid, replay is done
+	 */
+	journal->j_header_bh = journal_bread(sb,
+					     SB_ONDISK_JOURNAL_1st_BLOCK(sb)
+					     + SB_ONDISK_JOURNAL_SIZE(sb));
 	if (!journal->j_header_bh) {
 		return 1;
 	}
@@ -2395,6 +3314,14 @@ static int journal_read(struct super_block *p_s_sb)
 		oldest_trans_id = le32_to_cpu(jh->j_last_flush_trans_id) + 1;
 		newest_mount_id = le32_to_cpu(jh->j_mount_id);
 		reiserfs_debug(p_s_sb, REISERFS_DEBUG_CODE,
+	    SB_ONDISK_JOURNAL_SIZE(sb)
+	    && le32_to_cpu(jh->j_last_flush_trans_id) > 0) {
+		oldest_start =
+		    SB_ONDISK_JOURNAL_1st_BLOCK(sb) +
+		    le32_to_cpu(jh->j_first_unflushed_offset);
+		oldest_trans_id = le32_to_cpu(jh->j_last_flush_trans_id) + 1;
+		newest_mount_id = le32_to_cpu(jh->j_mount_id);
+		reiserfs_debug(sb, REISERFS_DEBUG_CODE,
 			       "journal-1153: found in "
 			       "header: first_unflushed_offset %d, last_flushed_trans_id "
 			       "%lu", le32_to_cpu(jh->j_first_unflushed_offset),
@@ -2410,6 +3337,16 @@ static int journal_read(struct super_block *p_s_sb)
 				  SB_ONDISK_JOURNAL_1st_BLOCK(p_s_sb) +
 				  le32_to_cpu(jh->j_first_unflushed_offset));
 		ret = journal_transaction_is_valid(p_s_sb, d_bh, NULL, NULL);
+		/*
+		 * now, we try to read the first unflushed offset.  If it
+		 * is not valid, there is nothing more we can do, and it
+		 * makes no sense to read through the whole log.
+		 */
+		d_bh =
+		    journal_bread(sb,
+				  SB_ONDISK_JOURNAL_1st_BLOCK(sb) +
+				  le32_to_cpu(jh->j_first_unflushed_offset));
+		ret = journal_transaction_is_valid(sb, d_bh, NULL, NULL);
 		if (!ret) {
 			continue_replay = 0;
 		}
@@ -2439,6 +3376,26 @@ static int journal_read(struct super_block *p_s_sb)
 				    SB_ONDISK_JOURNAL_SIZE(p_s_sb));
 		ret =
 		    journal_transaction_is_valid(p_s_sb, d_bh,
+	/*
+	 * ok, there are transactions that need to be replayed.  start
+	 * with the first log block, find all the valid transactions, and
+	 * pick out the oldest.
+	 */
+	while (continue_replay
+	       && cur_dblock <
+	       (SB_ONDISK_JOURNAL_1st_BLOCK(sb) +
+		SB_ONDISK_JOURNAL_SIZE(sb))) {
+		/*
+		 * Note that it is required for blocksize of primary fs
+		 * device and journal device to be the same
+		 */
+		d_bh =
+		    reiserfs_breada(journal->j_dev_bd, cur_dblock,
+				    sb->s_blocksize,
+				    SB_ONDISK_JOURNAL_1st_BLOCK(sb) +
+				    SB_ONDISK_JOURNAL_SIZE(sb));
+		ret =
+		    journal_transaction_is_valid(sb, d_bh,
 						 &oldest_invalid_trans_id,
 						 &newest_mount_id);
 		if (ret == 1) {
@@ -2448,16 +3405,19 @@ static int journal_read(struct super_block *p_s_sb)
 				oldest_start = d_bh->b_blocknr;
 				newest_mount_id = get_desc_mount_id(desc);
 				reiserfs_debug(p_s_sb, REISERFS_DEBUG_CODE,
+				reiserfs_debug(sb, REISERFS_DEBUG_CODE,
 					       "journal-1179: Setting "
 					       "oldest_start to offset %llu, trans_id %lu",
 					       oldest_start -
 					       SB_ONDISK_JOURNAL_1st_BLOCK
 					       (p_s_sb), oldest_trans_id);
+					       (sb), oldest_trans_id);
 			} else if (oldest_trans_id > get_desc_trans_id(desc)) {
 				/* one we just read was older */
 				oldest_trans_id = get_desc_trans_id(desc);
 				oldest_start = d_bh->b_blocknr;
 				reiserfs_debug(p_s_sb, REISERFS_DEBUG_CODE,
+				reiserfs_debug(sb, REISERFS_DEBUG_CODE,
 					       "journal-1180: Resetting "
 					       "oldest_start to offset %lu, trans_id %lu",
 					       oldest_start -
@@ -2467,6 +3427,11 @@ static int journal_read(struct super_block *p_s_sb)
 			if (newest_mount_id < get_desc_mount_id(desc)) {
 				newest_mount_id = get_desc_mount_id(desc);
 				reiserfs_debug(p_s_sb, REISERFS_DEBUG_CODE,
+					       (sb), oldest_trans_id);
+			}
+			if (newest_mount_id < get_desc_mount_id(desc)) {
+				newest_mount_id = get_desc_mount_id(desc);
+				reiserfs_debug(sb, REISERFS_DEBUG_CODE,
 					       "journal-1299: Setting "
 					       "newest_mount_id to %d",
 					       get_desc_mount_id(desc));
@@ -2485,6 +3450,13 @@ static int journal_read(struct super_block *p_s_sb)
 			       "journal-1206: Starting replay "
 			       "from offset %llu, trans_id %lu",
 			       cur_dblock - SB_ONDISK_JOURNAL_1st_BLOCK(p_s_sb),
+start_log_replay:
+	cur_dblock = oldest_start;
+	if (oldest_trans_id) {
+		reiserfs_debug(sb, REISERFS_DEBUG_CODE,
+			       "journal-1206: Starting replay "
+			       "from offset %llu, trans_id %lu",
+			       cur_dblock - SB_ONDISK_JOURNAL_1st_BLOCK(sb),
 			       oldest_trans_id);
 
 	}
@@ -2492,6 +3464,7 @@ static int journal_read(struct super_block *p_s_sb)
 	while (continue_replay && oldest_trans_id > 0) {
 		ret =
 		    journal_read_transaction(p_s_sb, cur_dblock, oldest_start,
+		    journal_read_transaction(sb, cur_dblock, oldest_start,
 					     oldest_trans_id, newest_mount_id);
 		if (ret < 0) {
 			return ret;
@@ -2500,6 +3473,7 @@ static int journal_read(struct super_block *p_s_sb)
 		}
 		cur_dblock =
 		    SB_ONDISK_JOURNAL_1st_BLOCK(p_s_sb) + journal->j_start;
+		    SB_ONDISK_JOURNAL_1st_BLOCK(sb) + journal->j_start;
 		replay_count++;
 		if (cur_dblock == oldest_start)
 			break;
@@ -2512,6 +3486,14 @@ static int journal_read(struct super_block *p_s_sb)
 	/* j_start does not get set correctly if we don't replay any transactions.
 	 ** if we had a valid journal_header, set j_start to the first unflushed transaction value,
 	 ** copy the trans_id from the header
+		reiserfs_debug(sb, REISERFS_DEBUG_CODE,
+			       "journal-1225: No valid " "transactions found");
+	}
+	/*
+	 * j_start does not get set correctly if we don't replay any
+	 * transactions.  if we had a valid journal_header, set j_start
+	 * to the first unflushed transaction value, copy the trans_id
+	 * from the header
 	 */
 	if (valid_journal_header && replay_count == 0) {
 		journal->j_start = le32_to_cpu(jh->j_first_unflushed_offset);
@@ -2542,6 +3524,27 @@ static int journal_read(struct super_block *p_s_sb)
 		 */
 		return -1;
 	}
+	reiserfs_debug(sb, REISERFS_DEBUG_CODE, "journal-1299: Setting "
+		       "newest_mount_id to %lu", journal->j_mount_id);
+	journal->j_first_unflushed_offset = journal->j_start;
+	if (replay_count > 0) {
+		reiserfs_info(sb,
+			      "replayed %d transactions in %lu seconds\n",
+			      replay_count, get_seconds() - start);
+	}
+	/* needed to satisfy the locking in _update_journal_header_block */
+	reiserfs_write_lock(sb);
+	if (!bdev_read_only(sb->s_bdev) &&
+	    _update_journal_header_block(sb, journal->j_start,
+					 journal->j_last_flush_trans_id)) {
+		reiserfs_write_unlock(sb);
+		/*
+		 * replay failed, caller must call free_journal_ram and abort
+		 * the mount
+		 */
+		return -1;
+	}
+	reiserfs_write_unlock(sb);
 	return 0;
 }
 
@@ -2585,6 +3588,18 @@ static int release_journal_dev(struct super_block *super,
 				 result);
 	}
 	return result;
+static void journal_list_init(struct super_block *sb)
+{
+	SB_JOURNAL(sb)->j_current_jl = alloc_journal_list(sb);
+}
+
+static void release_journal_dev(struct super_block *super,
+			       struct reiserfs_journal *journal)
+{
+	if (journal->j_dev_bd != NULL) {
+		blkdev_put(journal->j_dev_bd, journal->j_dev_mode);
+		journal->j_dev_bd = NULL;
+	}
 }
 
 static int journal_init_dev(struct super_block *super,
@@ -2594,6 +3609,7 @@ static int journal_init_dev(struct super_block *super,
 	int result;
 	dev_t jdev;
 	int blkdev_mode = FMODE_READ | FMODE_WRITE;
+	fmode_t blkdev_mode = FMODE_READ | FMODE_WRITE | FMODE_EXCL;
 	char b[BDEVNAME_SIZE];
 
 	result = 0;
@@ -2624,15 +3640,31 @@ static int journal_init_dev(struct super_block *super,
 
 			set_blocksize(journal->j_dev_bd, super->s_blocksize);
 		}
+		if (jdev == super->s_dev)
+			blkdev_mode &= ~FMODE_EXCL;
+		journal->j_dev_bd = blkdev_get_by_dev(jdev, blkdev_mode,
+						      journal);
+		journal->j_dev_mode = blkdev_mode;
+		if (IS_ERR(journal->j_dev_bd)) {
+			result = PTR_ERR(journal->j_dev_bd);
+			journal->j_dev_bd = NULL;
+			reiserfs_warning(super, "sh-458",
+					 "cannot init journal device '%s': %i",
+					 __bdevname(jdev, b), result);
+			return result;
+		} else if (jdev != super->s_dev)
+			set_blocksize(journal->j_dev_bd, super->s_blocksize);
 
 		return 0;
 	}
 
 	journal->j_dev_bd = open_bdev_excl(jdev_name, 0, journal);
+	journal->j_dev_mode = blkdev_mode;
+	journal->j_dev_bd = blkdev_get_by_path(jdev_name, blkdev_mode, journal);
 	if (IS_ERR(journal->j_dev_bd)) {
 		result = PTR_ERR(journal->j_dev_bd);
 		journal->j_dev_bd = NULL;
-		reiserfs_warning(super,
+		reiserfs_warning(super, "sh-457",
 				 "journal_init_dev: Cannot open '%s': %i",
 				 jdev_name, result);
 		return result;
@@ -2646,6 +3678,7 @@ static int journal_init_dev(struct super_block *super,
 }
 
 /**
+/*
  * When creating/tuning a file system user can assign some
  * journal params within boundaries which depend on the ratio
  * blocksize/standard_blocksize.
@@ -2676,6 +3709,22 @@ static int check_advise_trans_params(struct super_block *p_s_sb,
 		        reiserfs_warning(p_s_sb,
 				 "sh-462: bad transaction max size (%u). FSCK?",
 				 journal->j_trans_max);
+static int check_advise_trans_params(struct super_block *sb,
+				     struct reiserfs_journal *journal)
+{
+        if (journal->j_trans_max) {
+		/* Non-default journal params.  Do sanity check for them. */
+	        int ratio = 1;
+		if (sb->s_blocksize < REISERFS_STANDARD_BLKSIZE)
+		        ratio = REISERFS_STANDARD_BLKSIZE / sb->s_blocksize;
+
+		if (journal->j_trans_max > JOURNAL_TRANS_MAX_DEFAULT / ratio ||
+		    journal->j_trans_max < JOURNAL_TRANS_MIN_DEFAULT / ratio ||
+		    SB_ONDISK_JOURNAL_SIZE(sb) / journal->j_trans_max <
+		    JOURNAL_MIN_RATIO) {
+			reiserfs_warning(sb, "sh-462",
+					 "bad transaction max size (%u). "
+					 "FSCK?", journal->j_trans_max);
 			return 1;
 		}
 		if (journal->j_max_batch != (journal->j_trans_max) *
@@ -2693,6 +3742,23 @@ static int check_advise_trans_params(struct super_block *p_s_sb,
 	        if (p_s_sb->s_blocksize != REISERFS_STANDARD_BLKSIZE)
 	                reiserfs_panic(p_s_sb, "sh-464: bad blocksize (%u)",
 				       p_s_sb->s_blocksize);
+			reiserfs_warning(sb, "sh-463",
+					 "bad transaction max batch (%u). "
+					 "FSCK?", journal->j_max_batch);
+			return 1;
+		}
+	} else {
+		/*
+		 * Default journal params.
+		 * The file system was created by old version
+		 * of mkreiserfs, so some fields contain zeros,
+		 * and we need to advise proper values for them
+		 */
+		if (sb->s_blocksize != REISERFS_STANDARD_BLKSIZE) {
+			reiserfs_warning(sb, "sh-464", "bad blocksize (%u)",
+					 sb->s_blocksize);
+			return 1;
+		}
 		journal->j_trans_max = JOURNAL_TRANS_MAX_DEFAULT;
 		journal->j_max_batch = JOURNAL_MAX_BATCH_DEFAULT;
 		journal->j_max_commit_age = JOURNAL_MAX_COMMIT_AGE;
@@ -2707,6 +3773,11 @@ int journal_init(struct super_block *p_s_sb, const char *j_dev_name,
 		 int old_format, unsigned int commit_max_age)
 {
 	int num_cnodes = SB_ONDISK_JOURNAL_SIZE(p_s_sb) * 2;
+/* must be called once on fs mount.  calls journal_read for you */
+int journal_init(struct super_block *sb, const char *j_dev_name,
+		 int old_format, unsigned int commit_max_age)
+{
+	int num_cnodes = SB_ONDISK_JOURNAL_SIZE(sb) * 2;
 	struct buffer_head *bhjh;
 	struct reiserfs_super_block *rs;
 	struct reiserfs_journal_header *jh;
@@ -2721,6 +3792,14 @@ int journal_init(struct super_block *p_s_sb, const char *j_dev_name,
 		return 1;
 	}
 	memset(journal, 0, sizeof(struct reiserfs_journal));
+	int ret;
+
+	journal = SB_JOURNAL(sb) = vzalloc(sizeof(struct reiserfs_journal));
+	if (!journal) {
+		reiserfs_warning(sb, "journal-1256",
+				 "unable to get memory for journal structure");
+		return 1;
+	}
 	INIT_LIST_HEAD(&journal->j_bitmap_nodes);
 	INIT_LIST_HEAD(&journal->j_prealloc_list);
 	INIT_LIST_HEAD(&journal->j_working_list);
@@ -2771,6 +3850,67 @@ int journal_init(struct super_block *p_s_sb, const char *j_dev_name,
 	if (!bhjh) {
 		reiserfs_warning(p_s_sb,
 				 "sh-459: unable to read journal header");
+	if (reiserfs_allocate_list_bitmaps(sb, journal->j_list_bitmap,
+					   reiserfs_bmap_count(sb)))
+		goto free_and_return;
+
+	allocate_bitmap_nodes(sb);
+
+	/* reserved for journal area support */
+	SB_JOURNAL_1st_RESERVED_BLOCK(sb) = (old_format ?
+						 REISERFS_OLD_DISK_OFFSET_IN_BYTES
+						 / sb->s_blocksize +
+						 reiserfs_bmap_count(sb) +
+						 1 :
+						 REISERFS_DISK_OFFSET_IN_BYTES /
+						 sb->s_blocksize + 2);
+
+	/*
+	 * Sanity check to see is the standard journal fitting
+	 * within first bitmap (actual for small blocksizes)
+	 */
+	if (!SB_ONDISK_JOURNAL_DEVICE(sb) &&
+	    (SB_JOURNAL_1st_RESERVED_BLOCK(sb) +
+	     SB_ONDISK_JOURNAL_SIZE(sb) > sb->s_blocksize * 8)) {
+		reiserfs_warning(sb, "journal-1393",
+				 "journal does not fit for area addressed "
+				 "by first of bitmap blocks. It starts at "
+				 "%u and its size is %u. Block size %ld",
+				 SB_JOURNAL_1st_RESERVED_BLOCK(sb),
+				 SB_ONDISK_JOURNAL_SIZE(sb),
+				 sb->s_blocksize);
+		goto free_and_return;
+	}
+
+	/*
+	 * Sanity check to see if journal first block is correct.
+	 * If journal first block is invalid it can cause
+	 * zeroing important superblock members.
+	 */
+	if (!SB_ONDISK_JOURNAL_DEVICE(sb) &&
+	    SB_ONDISK_JOURNAL_1st_BLOCK(sb) < SB_JOURNAL_1st_RESERVED_BLOCK(sb)) {
+		reiserfs_warning(sb, "journal-1393",
+				 "journal 1st super block is invalid: 1st reserved block %d, but actual 1st block is %d",
+				 SB_JOURNAL_1st_RESERVED_BLOCK(sb),
+				 SB_ONDISK_JOURNAL_1st_BLOCK(sb));
+		goto free_and_return;
+	}
+
+	if (journal_init_dev(sb, journal, j_dev_name) != 0) {
+		reiserfs_warning(sb, "sh-462",
+				 "unable to initialize journal device");
+		goto free_and_return;
+	}
+
+	rs = SB_DISK_SUPER_BLOCK(sb);
+
+	/* read journal header */
+	bhjh = journal_bread(sb,
+			     SB_ONDISK_JOURNAL_1st_BLOCK(sb) +
+			     SB_ONDISK_JOURNAL_SIZE(sb));
+	if (!bhjh) {
+		reiserfs_warning(sb, "sh-459",
+				 "unable to read journal header");
 		goto free_and_return;
 	}
 	jh = (struct reiserfs_journal_header *)(bhjh->b_data);
@@ -2783,6 +3923,10 @@ int journal_init(struct super_block *p_s_sb, const char *j_dev_name,
 				 "sh-460: journal header magic %x "
 				 "(device %s) does not match to magic found in super "
 				 "block %x", jh->jh_journal.jp_journal_magic,
+		reiserfs_warning(sb, "sh-460",
+				 "journal header magic %x (device %s) does "
+				 "not match to magic found in super block %x",
+				 jh->jh_journal.jp_journal_magic,
 				 bdevname(journal->j_dev_bd, b),
 				 sb_jp_journal_magic(rs));
 		brelse(bhjh);
@@ -2796,6 +3940,7 @@ int journal_init(struct super_block *p_s_sb, const char *j_dev_name,
 	journal->j_max_trans_age = JOURNAL_MAX_TRANS_AGE;
 
 	if (check_advise_trans_params(p_s_sb, journal) != 0)
+	if (check_advise_trans_params(sb, journal) != 0)
 	        goto free_and_return;
 	journal->j_default_max_commit_age = journal->j_max_commit_age;
 
@@ -2810,6 +3955,12 @@ int journal_init(struct super_block *p_s_sb, const char *j_dev_name,
 		      bdevname(journal->j_dev_bd, b),
 		      SB_ONDISK_JOURNAL_SIZE(p_s_sb),
 		      SB_ONDISK_JOURNAL_1st_BLOCK(p_s_sb),
+	reiserfs_info(sb, "journal params: device %s, size %u, "
+		      "journal first block %u, max trans len %u, max batch %u, "
+		      "max commit age %u, max trans age %u\n",
+		      bdevname(journal->j_dev_bd, b),
+		      SB_ONDISK_JOURNAL_SIZE(sb),
+		      SB_ONDISK_JOURNAL_1st_BLOCK(sb),
 		      journal->j_trans_max,
 		      journal->j_max_batch,
 		      journal->j_max_commit_age, journal->j_max_trans_age);
@@ -2818,6 +3969,7 @@ int journal_init(struct super_block *p_s_sb, const char *j_dev_name,
 
 	journal->j_list_bitmap_index = 0;
 	journal_list_init(p_s_sb);
+	journal_list_init(sb);
 
 	memset(journal->j_list_hash_table, 0,
 	       JOURNAL_HASH_SIZE * sizeof(struct reiserfs_journal_cnode *));
@@ -2830,11 +3982,14 @@ int journal_init(struct super_block *p_s_sb, const char *j_dev_name,
 	journal->j_len_alloc = 0;
 	atomic_set(&(journal->j_wcount), 0);
 	atomic_set(&(journal->j_async_throttle), 0);
+	atomic_set(&journal->j_wcount, 0);
+	atomic_set(&journal->j_async_throttle, 0);
 	journal->j_bcount = 0;
 	journal->j_trans_start_time = 0;
 	journal->j_last = NULL;
 	journal->j_first = NULL;
 	init_waitqueue_head(&(journal->j_join_wait));
+	init_waitqueue_head(&journal->j_join_wait);
 	mutex_init(&journal->j_mutex);
 	mutex_init(&journal->j_flush_mutex);
 
@@ -2842,6 +3997,7 @@ int journal_init(struct super_block *p_s_sb, const char *j_dev_name,
 	journal->j_mount_id = 10;
 	journal->j_state = 0;
 	atomic_set(&(journal->j_jlock), 0);
+	atomic_set(&journal->j_jlock, 0);
 	journal->j_cnode_free_list = allocate_cnodes(num_cnodes);
 	journal->j_cnode_free_orig = journal->j_cnode_free_list;
 	journal->j_cnode_free = journal->j_cnode_free_list ? num_cnodes : 0;
@@ -2850,6 +4006,7 @@ int journal_init(struct super_block *p_s_sb, const char *j_dev_name,
 
 	if (journal->j_cnode_free == 0) {
         	reiserfs_warning(p_s_sb, "journal-2004: Journal cnode memory "
+		reiserfs_warning(sb, "journal-2004", "Journal cnode memory "
 		                 "allocation failed (%ld bytes). Journal is "
 		                 "too large for available memory. Usually "
 		                 "this is due to a journal that is too large.",
@@ -2879,6 +4036,35 @@ int journal_init(struct super_block *p_s_sb, const char *j_dev_name,
 	return 0;
       free_and_return:
 	free_journal_ram(p_s_sb);
+	init_journal_hash(sb);
+	jl = journal->j_current_jl;
+
+	/*
+	 * get_list_bitmap() may call flush_commit_list() which
+	 * requires the lock. Calling flush_commit_list() shouldn't happen
+	 * this early but I like to be paranoid.
+	 */
+	reiserfs_write_lock(sb);
+	jl->j_list_bitmap = get_list_bitmap(sb, jl);
+	reiserfs_write_unlock(sb);
+	if (!jl->j_list_bitmap) {
+		reiserfs_warning(sb, "journal-2005",
+				 "get_list_bitmap failed for journal list 0");
+		goto free_and_return;
+	}
+
+	ret = journal_read(sb);
+	if (ret < 0) {
+		reiserfs_warning(sb, "reiserfs-2006",
+				 "Replay Failure, unable to mount");
+		goto free_and_return;
+	}
+
+	INIT_DELAYED_WORK(&journal->j_work, flush_async_commits);
+	journal->j_work_sb = sb;
+	return 0;
+free_and_return:
+	free_journal_ram(sb);
 	return 1;
 }
 
@@ -2887,6 +4073,10 @@ int journal_init(struct super_block *p_s_sb, const char *j_dev_name,
 ** be used by delete to make sure they don't write more than can fit inside a single
 ** transaction
 */
+ * test for a polite end of the current transaction.  Used by file_write,
+ * and should be used by delete to make sure they don't write more than
+ * can fit inside a single transaction
+ */
 int journal_transaction_should_end(struct reiserfs_transaction_handle *th,
 				   int new_alloc)
 {
@@ -2899,11 +4089,13 @@ int journal_transaction_should_end(struct reiserfs_transaction_handle *th,
 	if (journal->j_must_wait > 0 ||
 	    (journal->j_len_alloc + new_alloc) >= journal->j_max_batch ||
 	    atomic_read(&(journal->j_jlock)) ||
+	    atomic_read(&journal->j_jlock) ||
 	    (now - journal->j_trans_start_time) > journal->j_max_trans_age ||
 	    journal->j_cnode_free < (journal->j_trans_max * 3)) {
 		return 1;
 	}
 	/* protected by the BKL here */
+
 	journal->j_len_alloc += new_alloc;
 	th->t_blocks_allocated += new_alloc ;
 	return 0;
@@ -2912,6 +4104,7 @@ int journal_transaction_should_end(struct reiserfs_transaction_handle *th,
 /* this must be called inside a transaction, and requires the 
 ** kernel_lock to be held
 */
+/* this must be called inside a transaction */
 void reiserfs_block_writes(struct reiserfs_transaction_handle *th)
 {
 	struct reiserfs_journal *journal = SB_JOURNAL(th->t_super);
@@ -2924,6 +4117,7 @@ void reiserfs_block_writes(struct reiserfs_transaction_handle *th)
 /* this must be called without a transaction started, and does not
 ** require BKL
 */
+/* this must be called without a transaction started */
 void reiserfs_allow_writes(struct super_block *s)
 {
 	struct reiserfs_journal *journal = SB_JOURNAL(s);
@@ -2934,6 +4128,7 @@ void reiserfs_allow_writes(struct super_block *s)
 /* this must be called without a transaction started, and does not
 ** require BKL
 */
+/* this must be called without a transaction started */
 void reiserfs_wait_on_write_block(struct super_block *s)
 {
 	struct reiserfs_journal *journal = SB_JOURNAL(s);
@@ -2956,6 +4151,11 @@ static void queue_log_writer(struct super_block *s)
 	set_current_state(TASK_UNINTERRUPTIBLE);
 	if (test_bit(J_WRITERS_QUEUED, &journal->j_state))
 		schedule();
+	if (test_bit(J_WRITERS_QUEUED, &journal->j_state)) {
+		int depth = reiserfs_write_unlock_nested(s);
+		schedule();
+		reiserfs_write_lock_nested(s, depth);
+	}
 	__set_current_state(TASK_RUNNING);
 	remove_wait_queue(&journal->j_join_wait, &wait);
 }
@@ -2968,11 +4168,18 @@ static void wake_queued_writers(struct super_block *s)
 }
 
 static void let_transaction_grow(struct super_block *sb, unsigned long trans_id)
+static void let_transaction_grow(struct super_block *sb, unsigned int trans_id)
 {
 	struct reiserfs_journal *journal = SB_JOURNAL(sb);
 	unsigned long bcount = journal->j_bcount;
 	while (1) {
 		schedule_timeout_uninterruptible(1);
+		int depth;
+
+		depth = reiserfs_write_unlock_nested(sb);
+		schedule_timeout_uninterruptible(1);
+		reiserfs_write_lock_nested(sb, depth);
+
 		journal->j_current_jl->j_state |= LIST_COMMIT_PENDING;
 		while ((atomic_read(&journal->j_wcount) > 0 ||
 			atomic_read(&journal->j_jlock)) &&
@@ -3016,6 +4223,37 @@ static int do_journal_begin_r(struct reiserfs_transaction_handle *th,
 	lock_journal(p_s_sb);
 	if (join != JBEGIN_ABORT && reiserfs_is_journal_aborted(journal)) {
 		unlock_journal(p_s_sb);
+/*
+ * join == true if you must join an existing transaction.
+ * join == false if you can deal with waiting for others to finish
+ *
+ * this will block until the transaction is joinable.  send the number of
+ * blocks you expect to use in nblocks.
+*/
+static int do_journal_begin_r(struct reiserfs_transaction_handle *th,
+			      struct super_block *sb, unsigned long nblocks,
+			      int join)
+{
+	time_t now = get_seconds();
+	unsigned int old_trans_id;
+	struct reiserfs_journal *journal = SB_JOURNAL(sb);
+	struct reiserfs_transaction_handle myth;
+	int sched_count = 0;
+	int retval;
+	int depth;
+
+	reiserfs_check_lock_depth(sb, "journal_begin");
+	BUG_ON(nblocks > journal->j_trans_max);
+
+	PROC_INFO_INC(sb, journal.journal_being);
+	/* set here for journal_join */
+	th->t_refcount = 1;
+	th->t_super = sb;
+
+relock:
+	lock_journal(sb);
+	if (join != JBEGIN_ABORT && reiserfs_is_journal_aborted(journal)) {
+		unlock_journal(sb);
 		retval = journal->j_errno;
 		goto out_fail;
 	}
@@ -3025,6 +4263,11 @@ static int do_journal_begin_r(struct reiserfs_transaction_handle *th,
 		unlock_journal(p_s_sb);
 		reiserfs_wait_on_write_block(p_s_sb);
 		PROC_INFO_INC(p_s_sb, journal.journal_relock_writers);
+		unlock_journal(sb);
+		depth = reiserfs_write_unlock_nested(sb);
+		reiserfs_wait_on_write_block(sb);
+		reiserfs_write_lock_nested(sb, depth);
+		PROC_INFO_INC(sb, journal.journal_relock_writers);
 		goto relock;
 	}
 	now = get_seconds();
@@ -3032,6 +4275,11 @@ static int do_journal_begin_r(struct reiserfs_transaction_handle *th,
 	/* if there is no room in the journal OR
 	 ** if this transaction is too old, and we weren't called joinable, wait for it to finish before beginning 
 	 ** we don't sleep if there aren't other writers
+	/*
+	 * if there is no room in the journal OR
+	 * if this transaction is too old, and we weren't called joinable,
+	 * wait for it to finish before beginning we don't sleep if there
+	 * aren't other writers
 	 */
 
 	if ((!join && journal->j_must_wait > 0) ||
@@ -3046,6 +4294,8 @@ static int do_journal_begin_r(struct reiserfs_transaction_handle *th,
 
 		old_trans_id = journal->j_trans_id;
 		unlock_journal(p_s_sb);	/* allow others to finish this transaction */
+		/* allow others to finish this transaction */
+		unlock_journal(sb);
 
 		if (!join && (journal->j_len_alloc + nblocks + 2) >=
 		    journal->j_max_batch &&
@@ -3059,6 +4309,13 @@ static int do_journal_begin_r(struct reiserfs_transaction_handle *th,
 		}
 		/* don't mess with joining the transaction if all we have to do is
 		 * wait for someone else to do a commit
+				queue_log_writer(sb);
+				goto relock;
+			}
+		}
+		/*
+		 * don't mess with joining the transaction if all we
+		 * have to do is wait for someone else to do a commit
 		 */
 		if (atomic_read(&journal->j_jlock)) {
 			while (journal->j_trans_id == old_trans_id &&
@@ -3068,6 +4325,11 @@ static int do_journal_begin_r(struct reiserfs_transaction_handle *th,
 			goto relock;
 		}
 		retval = journal_join(&myth, p_s_sb, 1);
+				queue_log_writer(sb);
+			}
+			goto relock;
+		}
+		retval = journal_join(&myth, sb);
 		if (retval)
 			goto out_fail;
 
@@ -3076,12 +4338,16 @@ static int do_journal_begin_r(struct reiserfs_transaction_handle *th,
 			retval = do_journal_end(&myth, p_s_sb, 1, 0);
 		} else {
 			retval = do_journal_end(&myth, p_s_sb, 1, COMMIT_NOW);
+			retval = do_journal_end(&myth, 0);
+		} else {
+			retval = do_journal_end(&myth, COMMIT_NOW);
 		}
 
 		if (retval)
 			goto out_fail;
 
 		PROC_INFO_INC(p_s_sb, journal.journal_relock_wcount);
+		PROC_INFO_INC(sb, journal.journal_relock_wcount);
 		goto relock;
 	}
 	/* we are the first writer, set trans_id */
@@ -3089,6 +4355,7 @@ static int do_journal_begin_r(struct reiserfs_transaction_handle *th,
 		journal->j_trans_start_time = get_seconds();
 	}
 	atomic_inc(&(journal->j_wcount));
+	atomic_inc(&journal->j_wcount);
 	journal->j_len_alloc += nblocks;
 	th->t_blocks_logged = 0;
 	th->t_blocks_allocated = nblocks;
@@ -3104,6 +4371,18 @@ static int do_journal_begin_r(struct reiserfs_transaction_handle *th,
 	 * persistent transactions there are. We need to do this so if this
 	 * call is part of a failed restart_transaction, we can free it later */
 	th->t_super = p_s_sb;
+	unlock_journal(sb);
+	INIT_LIST_HEAD(&th->t_list);
+	return 0;
+
+out_fail:
+	memset(th, 0, sizeof(*th));
+	/*
+	 * Re-set th->t_super, so we can properly keep track of how many
+	 * persistent transactions there are. We need to do this so if this
+	 * call is part of a failed restart_transaction, we can free it later
+	 */
+	th->t_super = sb;
 	return retval;
 }
 
@@ -3117,12 +4396,16 @@ struct reiserfs_transaction_handle *reiserfs_persistent_transaction(struct
 
 	/* if we're nesting into an existing transaction.  It will be
 	 ** persistent on its own
+	/*
+	 * if we're nesting into an existing transaction.  It will be
+	 * persistent on its own
 	 */
 	if (reiserfs_transaction_running(s)) {
 		th = current->journal_info;
 		th->t_refcount++;
 		BUG_ON(th->t_refcount < 2);
 		
+
 		return th;
 	}
 	th = kmalloc(sizeof(struct reiserfs_transaction_handle), GFP_NOFS);
@@ -3144,6 +4427,7 @@ int reiserfs_end_persistent_transaction(struct reiserfs_transaction_handle *th)
 	int ret = 0;
 	if (th->t_trans_id)
 		ret = journal_end(th, th->t_super, th->t_blocks_allocated);
+		ret = journal_end(th);
 	else
 		ret = -EIO;
 	if (th->t_refcount == 0) {
@@ -3181,6 +4465,35 @@ int journal_join_abort(struct reiserfs_transaction_handle *th,
 
 int journal_begin(struct reiserfs_transaction_handle *th,
 		  struct super_block *p_s_sb, unsigned long nblocks)
+			struct super_block *sb)
+{
+	struct reiserfs_transaction_handle *cur_th = current->journal_info;
+
+	/*
+	 * this keeps do_journal_end from NULLing out the
+	 * current->journal_info pointer
+	 */
+	th->t_handle_save = cur_th;
+	BUG_ON(cur_th && cur_th->t_refcount > 1);
+	return do_journal_begin_r(th, sb, 1, JBEGIN_JOIN);
+}
+
+int journal_join_abort(struct reiserfs_transaction_handle *th,
+		       struct super_block *sb)
+{
+	struct reiserfs_transaction_handle *cur_th = current->journal_info;
+
+	/*
+	 * this keeps do_journal_end from NULLing out the
+	 * current->journal_info pointer
+	 */
+	th->t_handle_save = cur_th;
+	BUG_ON(cur_th && cur_th->t_refcount > 1);
+	return do_journal_begin_r(th, sb, 1, JBEGIN_ABORT);
+}
+
+int journal_begin(struct reiserfs_transaction_handle *th,
+		  struct super_block *sb, unsigned long nblocks)
 {
 	struct reiserfs_transaction_handle *cur_th = current->journal_info;
 	int ret;
@@ -3189,6 +4502,7 @@ int journal_begin(struct reiserfs_transaction_handle *th,
 	if (cur_th) {
 		/* we are nesting into the current transaction */
 		if (cur_th->t_super == p_s_sb) {
+		if (cur_th->t_super == sb) {
 			BUG_ON(!cur_th->t_refcount);
 			cur_th->t_refcount++;
 			memcpy(th, cur_th, sizeof(*th));
@@ -3203,6 +4517,18 @@ int journal_begin(struct reiserfs_transaction_handle *th,
 			 */
 			reiserfs_warning(p_s_sb,
 					 "clm-2100: nesting info a different FS");
+				reiserfs_warning(sb, "reiserfs-2005",
+						 "BAD: refcount <= 1, but "
+						 "journal_info != 0");
+			return 0;
+		} else {
+			/*
+			 * we've ended up with a handle from a different
+			 * filesystem.  save it and restore on journal_end.
+			 * This should never really happen...
+			 */
+			reiserfs_warning(sb, "clm-2100",
+					 "nesting info a different FS");
 			th->t_handle_save = current->journal_info;
 			current->journal_info = th;
 		}
@@ -3215,6 +4541,13 @@ int journal_begin(struct reiserfs_transaction_handle *th,
 	/* I guess this boils down to being the reciprocal of clm-2100 above.
 	 * If do_journal_begin_r fails, we need to put it back, since journal_end
 	 * won't be called to do it. */
+	ret = do_journal_begin_r(th, sb, nblocks, JBEGIN_REG);
+	BUG_ON(current->journal_info != th);
+
+	/*
+	 * I guess this boils down to being the reciprocal of clm-2100 above.
+	 * If do_journal_begin_r fails, we need to put it back, since
+	 * journal_end won't be called to do it. */
 	if (ret)
 		current->journal_info = th->t_handle_save;
 	else
@@ -3236,6 +4569,20 @@ int journal_mark_dirty(struct reiserfs_transaction_handle *th,
 		       struct super_block *p_s_sb, struct buffer_head *bh)
 {
 	struct reiserfs_journal *journal = SB_JOURNAL(p_s_sb);
+ * puts bh into the current transaction.  If it was already there, reorders
+ * removes the old pointers from the hash, and puts new ones in (to make
+ * sure replay happen in the right order).
+ *
+ * if it was dirty, cleans and files onto the clean list.  I can't let it
+ * be dirty again until the transaction is committed.
+ *
+ * if j_len, is bigger than j_len_alloc, it pushes j_len_alloc to 10 + j_len.
+ */
+int journal_mark_dirty(struct reiserfs_transaction_handle *th,
+		       struct buffer_head *bh)
+{
+	struct super_block *sb = th->t_super;
+	struct reiserfs_journal *journal = SB_JOURNAL(sb);
 	struct reiserfs_journal_cnode *cn = NULL;
 	int count_already_incd = 0;
 	int prepared = 0;
@@ -3249,6 +4596,13 @@ int journal_mark_dirty(struct reiserfs_transaction_handle *th,
 	}
 
 	p_s_sb->s_dirt = 1;
+
+	PROC_INFO_INC(sb, journal.mark_dirty);
+	if (th->t_trans_id != journal->j_trans_id) {
+		reiserfs_panic(th->t_super, "journal-1577",
+			       "handle trans id %ld != current trans id %ld",
+			       th->t_trans_id, journal->j_trans_id);
+	}
 
 	prepared = test_clear_buffer_journal_prepared(bh);
 	clear_buffer_journal_restore_dirty(bh);
@@ -3264,6 +4618,18 @@ int journal_mark_dirty(struct reiserfs_transaction_handle *th,
 	 */
 	if (!prepared || buffer_dirty(bh)) {
 		reiserfs_warning(p_s_sb, "journal-1777: buffer %llu bad state "
+		PROC_INFO_INC(sb, journal.mark_dirty_already);
+		return 0;
+	}
+
+	/*
+	 * this must be turned into a panic instead of a warning.  We can't
+	 * allow a dirty or journal_dirty or locked buffer to be logged, as
+	 * some changes could get to disk too early.  NOT GOOD.
+	 */
+	if (!prepared || buffer_dirty(bh)) {
+		reiserfs_warning(sb, "journal-1777",
+				 "buffer %llu bad state "
 				 "%cPREPARED %cLOCKED %cDIRTY %cJDIRTY_WAIT",
 				 (unsigned long long)bh->b_blocknr,
 				 prepared ? ' ' : '!',
@@ -3284,12 +4650,27 @@ int journal_mark_dirty(struct reiserfs_transaction_handle *th,
 	if (journal->j_len >= journal->j_trans_max) {
 		reiserfs_panic(th->t_super,
 			       "journal-1413: journal_mark_dirty: j_len (%lu) is too big\n",
+	if (atomic_read(&journal->j_wcount) <= 0) {
+		reiserfs_warning(sb, "journal-1409",
+				 "returning because j_wcount was %d",
+				 atomic_read(&journal->j_wcount));
+		return 1;
+	}
+	/*
+	 * this error means I've screwed up, and we've overflowed
+	 * the transaction.  Nothing can be done here, except make the
+	 * FS readonly or panic.
+	 */
+	if (journal->j_len >= journal->j_trans_max) {
+		reiserfs_panic(th->t_super, "journal-1413",
+			       "j_len (%lu) is too big",
 			       journal->j_len);
 	}
 
 	if (buffer_journal_dirty(bh)) {
 		count_already_incd = 1;
 		PROC_INFO_INC(p_s_sb, journal.mark_dirty_notjournal);
+		PROC_INFO_INC(sb, journal.mark_dirty_notjournal);
 		clear_buffer_journal_dirty(bh);
 	}
 
@@ -3304,6 +4685,9 @@ int journal_mark_dirty(struct reiserfs_transaction_handle *th,
 		cn = get_cnode(p_s_sb);
 		if (!cn) {
 			reiserfs_panic(p_s_sb, "get_cnode failed!\n");
+		cn = get_cnode(sb);
+		if (!cn) {
+			reiserfs_panic(sb, "journal-4", "get_cnode failed!");
 		}
 
 		if (th->t_blocks_logged == th->t_blocks_allocated) {
@@ -3316,6 +4700,7 @@ int journal_mark_dirty(struct reiserfs_transaction_handle *th,
 		cn->bh = bh;
 		cn->blocknr = bh->b_blocknr;
 		cn->sb = p_s_sb;
+		cn->sb = sb;
 		cn->jlist = NULL;
 		insert_journal_hash(journal->j_hash_table, cn);
 		if (!count_already_incd) {
@@ -3341,6 +4726,16 @@ int journal_end(struct reiserfs_transaction_handle *th,
 	if (!current->journal_info && th->t_refcount > 1)
 		reiserfs_warning(p_s_sb, "REISER-NESTING: th NULL, refcount %d",
 				 th->t_refcount);
+	reiserfs_schedule_old_flush(sb);
+	return 0;
+}
+
+int journal_end(struct reiserfs_transaction_handle *th)
+{
+	struct super_block *sb = th->t_super;
+	if (!current->journal_info && th->t_refcount > 1)
+		reiserfs_warning(sb, "REISER-NESTING",
+				 "th NULL, refcount %d", th->t_refcount);
 
 	if (!th->t_trans_id) {
 		WARN_ON(1);
@@ -3354,6 +4749,9 @@ int journal_end(struct reiserfs_transaction_handle *th,
 
 		/* we aren't allowed to close a nested transaction on a different
 		 ** filesystem from the one in the task struct
+		/*
+		 * we aren't allowed to close a nested transaction on a
+		 * different filesystem from the one in the task struct
 		 */
 		BUG_ON(cur_th->t_super != th->t_super);
 
@@ -3375,6 +4773,19 @@ int journal_end(struct reiserfs_transaction_handle *th,
 ** returns 1 if it cleaned and relsed the buffer. 0 otherwise
 */
 static int remove_from_transaction(struct super_block *p_s_sb,
+		return do_journal_end(th, 0);
+	}
+}
+
+/*
+ * removes from the current transaction, relsing and descrementing any counters.
+ * also files the removed buffer directly onto the clean list
+ *
+ * called by journal_mark_freed when a block has been deleted
+ *
+ * returns 1 if it cleaned and relsed the buffer. 0 otherwise
+ */
+static int remove_from_transaction(struct super_block *sb,
 				   b_blocknr_t blocknr, int already_cleaned)
 {
 	struct buffer_head *bh;
@@ -3383,6 +4794,10 @@ static int remove_from_transaction(struct super_block *p_s_sb,
 	int ret = 0;
 
 	cn = get_journal_hash_dev(p_s_sb, journal->j_hash_table, blocknr);
+	struct reiserfs_journal *journal = SB_JOURNAL(sb);
+	int ret = 0;
+
+	cn = get_journal_hash_dev(sb, journal->j_hash_table, blocknr);
 	if (!cn || !cn->bh) {
 		return ret;
 	}
@@ -3401,6 +4816,7 @@ static int remove_from_transaction(struct super_block *p_s_sb,
 	}
 	if (bh)
 		remove_journal_hash(p_s_sb, journal->j_hash_table, NULL,
+		remove_journal_hash(sb, journal->j_hash_table, NULL,
 				    bh->b_blocknr, 0);
 	clear_buffer_journaled(bh);	/* don't log this one */
 
@@ -3412,12 +4828,16 @@ static int remove_from_transaction(struct super_block *p_s_sb,
 		if (atomic_read(&(bh->b_count)) < 0) {
 			reiserfs_warning(p_s_sb,
 					 "journal-1752: remove from trans, b_count < 0");
+		if (atomic_read(&bh->b_count) < 0) {
+			reiserfs_warning(sb, "journal-1752",
+					 "b_count < 0");
 		}
 		ret = 1;
 	}
 	journal->j_len--;
 	journal->j_len_alloc--;
 	free_cnode(p_s_sb, cn);
+	free_cnode(sb, cn);
 	return ret;
 }
 
@@ -3431,6 +4851,16 @@ static int remove_from_transaction(struct super_block *p_s_sb,
 ** blocks for a given transaction on disk
 **
 */
+ * for any cnode in a journal list, it can only be dirtied of all the
+ * transactions that include it are committed to disk.
+ * this checks through each transaction, and returns 1 if you are allowed
+ * to dirty, and 0 if you aren't
+ *
+ * it is called by dirty_journal_list, which is called after
+ * flush_commit_list has gotten all the log blocks for a given
+ * transaction on disk
+ *
+ */
 static int can_dirty(struct reiserfs_journal_cnode *cn)
 {
 	struct super_block *sb = cn->sb;
@@ -3441,6 +4871,10 @@ static int can_dirty(struct reiserfs_journal_cnode *cn)
 	/* first test hprev.  These are all newer than cn, so any node here
 	 ** with the same block number and dev means this node can't be sent
 	 ** to disk right now.
+	/*
+	 * first test hprev.  These are all newer than cn, so any node here
+	 * with the same block number and dev means this node can't be sent
+	 * to disk right now.
 	 */
 	while (cur && can_dirty) {
 		if (cur->jlist && cur->bh && cur->blocknr && cur->sb == sb &&
@@ -3451,11 +4885,15 @@ static int can_dirty(struct reiserfs_journal_cnode *cn)
 	}
 	/* then test hnext.  These are all older than cn.  As long as they
 	 ** are committed to the log, it is safe to write cn to disk
+	/*
+	 * then test hnext.  These are all older than cn.  As long as they
+	 * are committed to the log, it is safe to write cn to disk
 	 */
 	cur = cn->hnext;
 	while (cur && can_dirty) {
 		if (cur->jlist && cur->jlist->j_len > 0 &&
 		    atomic_read(&(cur->jlist->j_commit_left)) > 0 && cur->bh &&
+		    atomic_read(&cur->jlist->j_commit_left) > 0 && cur->bh &&
 		    cur->blocknr && cur->sb == sb && cur->blocknr == blocknr) {
 			can_dirty = 0;
 		}
@@ -3471,6 +4909,14 @@ int journal_end_sync(struct reiserfs_transaction_handle *th,
 		     struct super_block *p_s_sb, unsigned long nblocks)
 {
 	struct reiserfs_journal *journal = SB_JOURNAL(p_s_sb);
+/*
+ * syncs the commit blocks, but does not force the real buffers to disk
+ * will wait until the current transaction is done/committed before returning
+ */
+int journal_end_sync(struct reiserfs_transaction_handle *th)
+{
+	struct super_block *sb = th->t_super;
+	struct reiserfs_journal *journal = SB_JOURNAL(sb);
 
 	BUG_ON(!th->t_trans_id);
 	/* you can sync while nested, very, very bad */
@@ -3486,6 +4932,14 @@ int journal_end_sync(struct reiserfs_transaction_handle *th,
 /*
 ** writeback the pending async commits to disk
 */
+		reiserfs_prepare_for_journal(sb, SB_BUFFER_WITH_SB(sb),
+					     1);
+		journal_mark_dirty(th, SB_BUFFER_WITH_SB(sb));
+	}
+	return do_journal_end(th, COMMIT_NOW | WAIT);
+}
+
+/* writeback the pending async commits to disk */
 static void flush_async_commits(struct work_struct *work)
 {
 	struct reiserfs_journal *journal =
@@ -3495,6 +4949,11 @@ static void flush_async_commits(struct work_struct *work)
 	struct list_head *entry;
 
 	lock_kernel();
+	struct super_block *sb = journal->j_work_sb;
+	struct reiserfs_journal_list *jl;
+	struct list_head *entry;
+
+	reiserfs_write_lock(sb);
 	if (!list_empty(&journal->j_journal_list)) {
 		/* last entry is the youngest, commit it and you get everything */
 		entry = journal->j_journal_list.prev;
@@ -3523,6 +4982,31 @@ int reiserfs_flush_old_commits(struct super_block *p_s_sb)
 	}
 
 	/* check the current transaction.  If there are no writers, and it is
+		flush_commit_list(sb, jl, 1);
+	}
+	reiserfs_write_unlock(sb);
+}
+
+/*
+ * flushes any old transactions to disk
+ * ends the current transaction if it is too old
+ */
+void reiserfs_flush_old_commits(struct super_block *sb)
+{
+	time_t now;
+	struct reiserfs_transaction_handle th;
+	struct reiserfs_journal *journal = SB_JOURNAL(sb);
+
+	now = get_seconds();
+	/*
+	 * safety check so we don't flush while we are replaying the log during
+	 * mount
+	 */
+	if (list_empty(&journal->j_journal_list))
+		return;
+
+	/*
+	 * check the current transaction.  If there are no writers, and it is
 	 * too old, finish it, and force the commit blocks to disk
 	 */
 	if (atomic_read(&journal->j_wcount) <= 0 &&
@@ -3559,6 +5043,38 @@ int reiserfs_flush_old_commits(struct super_block *p_s_sb)
 static int check_journal_end(struct reiserfs_transaction_handle *th,
 			     struct super_block *p_s_sb, unsigned long nblocks,
 			     int flags)
+		if (!journal_join(&th, sb)) {
+			reiserfs_prepare_for_journal(sb,
+						     SB_BUFFER_WITH_SB(sb),
+						     1);
+			journal_mark_dirty(&th, SB_BUFFER_WITH_SB(sb));
+
+			/*
+			 * we're only being called from kreiserfsd, it makes
+			 * no sense to do an async commit so that kreiserfsd
+			 * can do it later
+			 */
+			do_journal_end(&th, COMMIT_NOW | WAIT);
+		}
+	}
+}
+
+/*
+ * returns 0 if do_journal_end should return right away, returns 1 if
+ * do_journal_end should finish the commit
+ *
+ * if the current transaction is too old, but still has writers, this will
+ * wait on j_join_wait until all the writers are done.  By the time it
+ * wakes up, the transaction it was called has already ended, so it just
+ * flushes the commit list and returns 0.
+ *
+ * Won't batch when flush or commit_now is set.  Also won't batch when
+ * others are waiting on j_join_wait.
+ *
+ * Note, we can't allow the journal_end to proceed while there are still
+ * writers in the log.
+ */
+static int check_journal_end(struct reiserfs_transaction_handle *th, int flags)
 {
 
 	time_t now;
@@ -3567,12 +5083,16 @@ static int check_journal_end(struct reiserfs_transaction_handle *th,
 	int wait_on_commit = flags & WAIT;
 	struct reiserfs_journal_list *jl;
 	struct reiserfs_journal *journal = SB_JOURNAL(p_s_sb);
+	struct super_block *sb = th->t_super;
+	struct reiserfs_journal *journal = SB_JOURNAL(sb);
 
 	BUG_ON(!th->t_trans_id);
 
 	if (th->t_trans_id != journal->j_trans_id) {
 		reiserfs_panic(th->t_super,
 			       "journal-1577: handle trans id %ld != current trans id %ld\n",
+		reiserfs_panic(th->t_super, "journal-1577",
+			       "handle trans id %ld != current trans id %ld",
 			       th->t_trans_id, journal->j_trans_id);
 	}
 
@@ -3594,6 +5114,27 @@ static int check_journal_end(struct reiserfs_transaction_handle *th,
 	 ** because the rest of journal end was already done for this transaction.
 	 */
 	if (atomic_read(&(journal->j_wcount)) > 0) {
+	/* <= 0 is allowed.  unmounting might not call begin */
+	if (atomic_read(&journal->j_wcount) > 0)
+		atomic_dec(&journal->j_wcount);
+
+	/*
+	 * BUG, deal with case where j_len is 0, but people previously
+	 * freed blocks need to be released will be dealt with by next
+	 * transaction that actually writes something, but should be taken
+	 * care of in this trans
+	 */
+	BUG_ON(journal->j_len == 0);
+
+	/*
+	 * if wcount > 0, and we are called to with flush or commit_now,
+	 * we wait on j_join_wait.  We will wake up when the last writer has
+	 * finished the transaction, and started it on its way to the disk.
+	 * Then, we flush the commit or journal list, and just return 0
+	 * because the rest of journal end was already done for this
+	 * transaction.
+	 */
+	if (atomic_read(&journal->j_wcount) > 0) {
 		if (flush || commit_now) {
 			unsigned trans_id;
 
@@ -3630,6 +5171,38 @@ static int check_journal_end(struct reiserfs_transaction_handle *th,
 			return 0;
 		}
 		unlock_journal(p_s_sb);
+			atomic_set(&journal->j_jlock, 1);
+			if (flush) {
+				journal->j_next_full_flush = 1;
+			}
+			unlock_journal(sb);
+
+			/*
+			 * sleep while the current transaction is
+			 * still j_jlocked
+			 */
+			while (journal->j_trans_id == trans_id) {
+				if (atomic_read(&journal->j_jlock)) {
+					queue_log_writer(sb);
+				} else {
+					lock_journal(sb);
+					if (journal->j_trans_id == trans_id) {
+						atomic_set(&journal->j_jlock,
+							   1);
+					}
+					unlock_journal(sb);
+				}
+			}
+			BUG_ON(journal->j_trans_id == trans_id);
+
+			if (commit_now
+			    && journal_list_still_alive(sb, trans_id)
+			    && wait_on_commit) {
+				flush_commit_list(sb, jl, 1);
+			}
+			return 0;
+		}
+		unlock_journal(sb);
 		return 0;
 	}
 
@@ -3642,6 +5215,7 @@ static int check_journal_end(struct reiserfs_transaction_handle *th,
 	/* don't batch when someone is waiting on j_join_wait */
 	/* don't batch when syncing the commit or flushing the whole trans */
 	if (!(journal->j_must_wait > 0) && !(atomic_read(&(journal->j_jlock)))
+	if (!(journal->j_must_wait > 0) && !(atomic_read(&journal->j_jlock))
 	    && !flush && !commit_now && (journal->j_len < journal->j_max_batch)
 	    && journal->j_len_alloc < journal->j_max_batch
 	    && journal->j_cnode_free > (journal->j_trans_max * 3)) {
@@ -3653,6 +5227,13 @@ static int check_journal_end(struct reiserfs_transaction_handle *th,
 	if (journal->j_start > SB_ONDISK_JOURNAL_SIZE(p_s_sb)) {
 		reiserfs_panic(p_s_sb,
 			       "journal-003: journal_end: j_start (%ld) is too high\n",
+		unlock_journal(sb);
+		return 0;
+	}
+
+	if (journal->j_start > SB_ONDISK_JOURNAL_SIZE(sb)) {
+		reiserfs_panic(sb, "journal-003",
+			       "j_start (%ld) is too high",
 			       journal->j_start);
 	}
 	return 1;
@@ -3676,6 +5257,26 @@ int journal_mark_freed(struct reiserfs_transaction_handle *th,
 		       struct super_block *p_s_sb, b_blocknr_t blocknr)
 {
 	struct reiserfs_journal *journal = SB_JOURNAL(p_s_sb);
+ * Does all the work that makes deleting blocks safe.
+ * when deleting a block mark BH_JNew, just remove it from the current
+ * transaction, clean it's buffer_head and move on.
+ *
+ * otherwise:
+ * set a bit for the block in the journal bitmap.  That will prevent it from
+ * being allocated for unformatted nodes before this transaction has finished.
+ *
+ * mark any cnodes for this block as BLOCK_FREED, and clear their bh pointers.
+ * That will prevent any old transactions with this block from trying to flush
+ * to the real location.  Since we aren't removing the cnode from the
+ * journal_list_hash, *the block can't be reallocated yet.
+ *
+ * Then remove it from the current transaction, decrementing any counters and
+ * filing it on the clean list.
+ */
+int journal_mark_freed(struct reiserfs_transaction_handle *th,
+		       struct super_block *sb, b_blocknr_t blocknr)
+{
+	struct reiserfs_journal *journal = SB_JOURNAL(sb);
 	struct reiserfs_journal_cnode *cn = NULL;
 	struct buffer_head *bh = NULL;
 	struct reiserfs_list_bitmap *jb = NULL;
@@ -3683,6 +5284,7 @@ int journal_mark_freed(struct reiserfs_transaction_handle *th,
 	BUG_ON(!th->t_trans_id);
 
 	cn = get_journal_hash_dev(p_s_sb, journal->j_hash_table, blocknr);
+	cn = get_journal_hash_dev(sb, journal->j_hash_table, blocknr);
 	if (cn && cn->bh) {
 		bh = cn->bh;
 		get_bh(bh);
@@ -3701,6 +5303,18 @@ int journal_mark_freed(struct reiserfs_transaction_handle *th,
 				       "journal-1702: journal_mark_freed, journal_list_bitmap is NULL\n");
 		}
 		set_bit_in_list_bitmap(p_s_sb, blocknr, jb);
+		cleaned = remove_from_transaction(sb, blocknr, cleaned);
+	} else {
+		/*
+		 * set the bit for this block in the journal bitmap
+		 * for this transaction
+		 */
+		jb = journal->j_current_jl->j_list_bitmap;
+		if (!jb) {
+			reiserfs_panic(sb, "journal-1702",
+				       "journal_list_bitmap is NULL");
+		}
+		set_bit_in_list_bitmap(sb, blocknr, jb);
 
 		/* Note, the entire while loop is not allowed to schedule.  */
 
@@ -3721,6 +5335,24 @@ int journal_mark_freed(struct reiserfs_transaction_handle *th,
 						/* remove_from_transaction will brelse the buffer if it was 
 						 ** in the current trans
 						 */
+		cleaned = remove_from_transaction(sb, blocknr, cleaned);
+
+		/*
+		 * find all older transactions with this block,
+		 * make sure they don't try to write it out
+		 */
+		cn = get_journal_hash_dev(sb, journal->j_list_hash_table,
+					  blocknr);
+		while (cn) {
+			if (sb == cn->sb && blocknr == cn->blocknr) {
+				set_bit(BLOCK_FREED, &cn->state);
+				if (cn->bh) {
+					/*
+					 * remove_from_transaction will brelse
+					 * the buffer if it was in the current
+					 * trans
+					 */
+					if (!cleaned) {
 						clear_buffer_journal_dirty(cn->
 									   bh);
 						clear_buffer_dirty(cn->bh);
@@ -3738,6 +5370,19 @@ int journal_mark_freed(struct reiserfs_transaction_handle *th,
 						atomic_dec(&
 							   (cn->jlist->
 							    j_nonzerolen));
+						    (&cn->bh->b_count) < 0) {
+							reiserfs_warning(sb,
+								 "journal-2138",
+								 "cn->bh->b_count < 0");
+						}
+					}
+					/*
+					 * since we are clearing the bh,
+					 * we MUST dec nonzerolen
+					 */
+					if (cn->jlist) {
+						atomic_dec(&cn->jlist->
+							   j_nonzerolen);
 					}
 					cn->bh = NULL;
 				}
@@ -3774,6 +5419,16 @@ static int __commit_trans_jl(struct inode *inode, unsigned long id,
 	if (id == journal->j_trans_id) {
 		jl = journal->j_current_jl;
 		/* try to let other writers come in and grow this transaction */
+	/*
+	 * is it from the current transaction,
+	 * or from an unknown transaction?
+	 */
+	if (id == journal->j_trans_id) {
+		jl = journal->j_current_jl;
+		/*
+		 * try to let other writers come in and
+		 * grow this transaction
+		 */
 		let_transaction_grow(sb, id);
 		if (journal->j_trans_id != id) {
 			goto flush_commit_only;
@@ -3793,6 +5448,12 @@ static int __commit_trans_jl(struct inode *inode, unsigned long id,
 		}
 
 		ret = journal_end_sync(&th, sb, 1);
+			journal_mark_dirty(&th, SB_BUFFER_WITH_SB(sb));
+			ret = journal_end(&th);
+			goto flush_commit_only;
+		}
+
+		ret = journal_end_sync(&th);
 		if (!ret)
 			ret = 1;
 
@@ -3802,6 +5463,12 @@ static int __commit_trans_jl(struct inode *inode, unsigned long id,
 		 * if we've got a larger transaction id than the oldest list
 		 */
 	      flush_commit_only:
+		/*
+		 * this gets tricky, we have to make sure the journal list in
+		 * the inode still exists.  We know the list is still around
+		 * if we've got a larger transaction id than the oldest list
+		 */
+flush_commit_only:
 		if (journal_list_still_alive(inode->i_sb, id)) {
 			/*
 			 * we only set ret to 1 when we know for sure
@@ -3825,6 +5492,11 @@ int reiserfs_commit_for_inode(struct inode *inode)
 	struct reiserfs_journal_list *jl = REISERFS_I(inode)->i_jl;
 
 	/* for the whole inode, assume unset id means it was
+	unsigned int id = REISERFS_I(inode)->i_trans_id;
+	struct reiserfs_journal_list *jl = REISERFS_I(inode)->i_jl;
+
+	/*
+	 * for the whole inode, assume unset id means it was
 	 * changed in the current transaction.  More conservative
 	 */
 	if (!id || !jl) {
@@ -3841,6 +5513,11 @@ void reiserfs_restore_prepared_buffer(struct super_block *p_s_sb,
 {
 	struct reiserfs_journal *journal = SB_JOURNAL(p_s_sb);
 	PROC_INFO_INC(p_s_sb, journal.restore_prepared);
+void reiserfs_restore_prepared_buffer(struct super_block *sb,
+				      struct buffer_head *bh)
+{
+	struct reiserfs_journal *journal = SB_JOURNAL(sb);
+	PROC_INFO_INC(sb, journal.restore_prepared);
 	if (!bh) {
 		return;
 	}
@@ -3848,12 +5525,15 @@ void reiserfs_restore_prepared_buffer(struct super_block *p_s_sb,
 	    buffer_journal_dirty(bh)) {
 		struct reiserfs_journal_cnode *cn;
 		cn = get_journal_hash_dev(p_s_sb,
+		reiserfs_write_lock(sb);
+		cn = get_journal_hash_dev(sb,
 					  journal->j_list_hash_table,
 					  bh->b_blocknr);
 		if (cn && can_dirty(cn)) {
 			set_buffer_journal_test(bh);
 			mark_buffer_dirty(bh);
 		}
+		reiserfs_write_unlock(sb);
 	}
 	clear_buffer_journal_prepared(bh);
 }
@@ -3870,6 +5550,15 @@ int reiserfs_prepare_for_journal(struct super_block *p_s_sb,
 				 struct buffer_head *bh, int wait)
 {
 	PROC_INFO_INC(p_s_sb, journal.prepare);
+ * before we can change a metadata block, we have to make sure it won't
+ * be written to disk while we are altering it.  So, we must:
+ * clean it
+ * wait on it.
+ */
+int reiserfs_prepare_for_journal(struct super_block *sb,
+				 struct buffer_head *bh, int wait)
+{
+	PROC_INFO_INC(sb, journal.prepare);
 
 	if (!trylock_buffer(bh)) {
 		if (!wait)
@@ -3921,6 +5610,20 @@ static int do_journal_end(struct reiserfs_transaction_handle *th,
 			  int flags)
 {
 	struct reiserfs_journal *journal = SB_JOURNAL(p_s_sb);
+/*
+ * long and ugly.  If flush, will not return until all commit
+ * blocks and all real buffers in the trans are on disk.
+ * If no_async, won't return until all commit blocks are on disk.
+ *
+ * keep reading, there are comments as you go along
+ *
+ * If the journal is aborted, we just clean up. Things like flushing
+ * journal lists, etc just won't happen.
+ */
+static int do_journal_end(struct reiserfs_transaction_handle *th, int flags)
+{
+	struct super_block *sb = th->t_super;
+	struct reiserfs_journal *journal = SB_JOURNAL(sb);
 	struct reiserfs_journal_cnode *cn, *next, *jl_cn;
 	struct reiserfs_journal_cnode *last_cn = NULL;
 	struct reiserfs_journal_desc *desc;
@@ -3944,6 +5647,19 @@ static int do_journal_end(struct reiserfs_transaction_handle *th,
 	/* protect flush_older_commits from doing mistakes if the
            transaction ID counter gets overflowed.  */
 	if (th->t_trans_id == ~0UL)
+	unsigned int commit_trans_id;
+	int trans_half;
+	int depth;
+
+	BUG_ON(th->t_refcount > 1);
+	BUG_ON(!th->t_trans_id);
+	BUG_ON(!th->t_super);
+
+	/*
+	 * protect flush_older_commits from doing mistakes if the
+	 * transaction ID counter gets overflowed.
+	 */
+	if (th->t_trans_id == ~0U)
 		flags |= FLUSH_ALL | COMMIT_NOW | WAIT;
 	flush = flags & FLUSH_ALL;
 	wait_on_commit = flags & WAIT;
@@ -3958,6 +5674,15 @@ static int do_journal_end(struct reiserfs_transaction_handle *th,
 	}
 
 	lock_journal(p_s_sb);
+	current->journal_info = th->t_handle_save;
+	reiserfs_check_lock_depth(sb, "journal end");
+	if (journal->j_len == 0) {
+		reiserfs_prepare_for_journal(sb, SB_BUFFER_WITH_SB(sb),
+					     1);
+		journal_mark_dirty(th, SB_BUFFER_WITH_SB(sb));
+	}
+
+	lock_journal(sb);
 	if (journal->j_next_full_flush) {
 		flags |= FLUSH_ALL;
 		flush = 1;
@@ -3974,6 +5699,15 @@ static int do_journal_end(struct reiserfs_transaction_handle *th,
 		p_s_sb->s_dirt = 1;
 		wake_queued_writers(p_s_sb);
 		reiserfs_async_progress_wait(p_s_sb);
+	/*
+	 * check_journal_end locks the journal, and unlocks if it does
+	 * not return 1 it tells us if we should continue with the
+	 * journal_end, or just return
+	 */
+	if (!check_journal_end(th, flags)) {
+		reiserfs_schedule_old_flush(sb);
+		wake_queued_writers(sb);
+		reiserfs_async_progress_wait(sb);
 		goto out;
 	}
 
@@ -3985,6 +5719,8 @@ static int do_journal_end(struct reiserfs_transaction_handle *th,
 	/*
 	 ** j must wait means we have to flush the log blocks, and the real blocks for
 	 ** this transaction
+	 * j must wait means we have to flush the log blocks, and the
+	 * real blocks for this transaction
 	 */
 	if (journal->j_must_wait > 0) {
 		flush = 1;
@@ -3996,6 +5732,16 @@ static int do_journal_end(struct reiserfs_transaction_handle *th,
 	th->t_refcount++;
 	reiserfs_discard_all_prealloc(th);	/* it should not involve new blocks into
 						 * the transaction */
+	/*
+	 * quota ops might need to nest, setup the journal_info pointer
+	 * for them and raise the refcount so that it is > 0.
+	 */
+	current->journal_info = th;
+	th->t_refcount++;
+
+	/* it should not involve new blocks into the transaction */
+	reiserfs_discard_all_prealloc(th);
+
 	th->t_refcount--;
 	current->journal_info = th->t_handle_save;
 #endif
@@ -4004,6 +5750,8 @@ static int do_journal_end(struct reiserfs_transaction_handle *th,
 	d_bh =
 	    journal_getblk(p_s_sb,
 			   SB_ONDISK_JOURNAL_1st_BLOCK(p_s_sb) +
+	    journal_getblk(sb,
+			   SB_ONDISK_JOURNAL_1st_BLOCK(sb) +
 			   journal->j_start);
 	set_buffer_uptodate(d_bh);
 	desc = (struct reiserfs_journal_desc *)(d_bh)->b_data;
@@ -4015,6 +5763,13 @@ static int do_journal_end(struct reiserfs_transaction_handle *th,
 	c_bh = journal_getblk(p_s_sb, SB_ONDISK_JOURNAL_1st_BLOCK(p_s_sb) +
 			      ((journal->j_start + journal->j_len +
 				1) % SB_ONDISK_JOURNAL_SIZE(p_s_sb)));
+	/*
+	 * setup commit block.  Don't write (keep it clean too) this one
+	 * until after everyone else is written
+	 */
+	c_bh = journal_getblk(sb, SB_ONDISK_JOURNAL_1st_BLOCK(sb) +
+			      ((journal->j_start + journal->j_len +
+				1) % SB_ONDISK_JOURNAL_SIZE(sb)));
 	commit = (struct reiserfs_journal_commit *)c_bh->b_data;
 	memset(c_bh->b_data, 0, c_bh->b_size);
 	set_commit_trans_id(commit, journal->j_trans_id);
@@ -4024,11 +5779,14 @@ static int do_journal_end(struct reiserfs_transaction_handle *th,
 	jl = journal->j_current_jl;
 
 	/* we lock the commit before doing anything because
+	/*
+	 * we lock the commit before doing anything because
 	 * we want to make sure nobody tries to run flush_commit_list until
 	 * the new transaction is fully setup, and we've already flushed the
 	 * ordered bh list
 	 */
 	mutex_lock(&jl->j_commit_mutex);
+	reiserfs_mutex_lock_safe(&jl->j_commit_mutex, sb);
 
 	/* save the transaction id in case we need to commit it later */
 	commit_trans_id = jl->j_trans_id;
@@ -4054,6 +5812,18 @@ static int do_journal_end(struct reiserfs_transaction_handle *th,
 			if (!jl_cn) {
 				reiserfs_panic(p_s_sb,
 					       "journal-1676, get_cnode returned NULL\n");
+	/*
+	 * The ENTIRE FOR LOOP MUST not cause schedule to occur.
+	 * for each real block, add it to the journal list hash,
+	 * copy into real block index array in the commit or desc block
+	 */
+	trans_half = journal_trans_half(sb->s_blocksize);
+	for (i = 0, cn = journal->j_first; cn; cn = cn->next, i++) {
+		if (buffer_journaled(cn->bh)) {
+			jl_cn = get_cnode(sb);
+			if (!jl_cn) {
+				reiserfs_panic(sb, "journal-1676",
+					       "get_cnode returned NULL");
 			}
 			if (i == 0) {
 				jl->j_realblock = jl_cn;
@@ -4071,11 +5841,21 @@ static int do_journal_end(struct reiserfs_transaction_handle *th,
 			    (p_s_sb, cn->bh->b_blocknr)) {
 				reiserfs_panic(p_s_sb,
 					       "journal-2332: Trying to log block %lu, which is a log block\n",
+			/*
+			 * make sure the block we are trying to log
+			 * is not a block of journal or reserved area
+			 */
+			if (is_block_in_log_or_reserved_area
+			    (sb, cn->bh->b_blocknr)) {
+				reiserfs_panic(sb, "journal-2332",
+					       "Trying to log block %lu, "
+					       "which is a log block",
 					       cn->bh->b_blocknr);
 			}
 			jl_cn->blocknr = cn->bh->b_blocknr;
 			jl_cn->state = 0;
 			jl_cn->sb = p_s_sb;
+			jl_cn->sb = sb;
 			jl_cn->bh = cn->bh;
 			jl_cn->jlist = jl;
 			insert_journal_hash(journal->j_list_hash_table, jl_cn);
@@ -4099,6 +5879,14 @@ static int do_journal_end(struct reiserfs_transaction_handle *th,
 	BUG_ON(journal->j_len == 0);
 
 	/* we're about to dirty all the log blocks, mark the description block
+	/*
+	 * special check in case all buffers in the journal
+	 * were marked for not logging
+	 */
+	BUG_ON(journal->j_len == 0);
+
+	/*
+	 * we're about to dirty all the log blocks, mark the description block
 	 * dirty now too.  Don't mark the commit block dirty until all the
 	 * others are on disk
 	 */
@@ -4108,6 +5896,13 @@ static int do_journal_end(struct reiserfs_transaction_handle *th,
 	cur_write_start = journal->j_start;
 	cn = journal->j_first;
 	jindex = 1;		/* start at one so we don't get the desc again */
+	/*
+	 * first data block is j_start + 1, so add one to
+	 * cur_write_start wherever you use it
+	 */
+	cur_write_start = journal->j_start;
+	cn = journal->j_first;
+	jindex = 1;	/* start at one so we don't get the desc again */
 	while (cn) {
 		clear_buffer_journal_new(cn->bh);
 		/* copy all the real blocks into log area.  dirty log blocks */
@@ -4121,6 +5916,11 @@ static int do_journal_end(struct reiserfs_transaction_handle *th,
 					   ((cur_write_start +
 					     jindex) %
 					    SB_ONDISK_JOURNAL_SIZE(p_s_sb)));
+			    journal_getblk(sb,
+					   SB_ONDISK_JOURNAL_1st_BLOCK(sb) +
+					   ((cur_write_start +
+					     jindex) %
+					    SB_ONDISK_JOURNAL_SIZE(sb)));
 			set_buffer_uptodate(tmp_bh);
 			page = cn->bh->b_page;
 			addr = kmap(page);
@@ -4150,6 +5950,28 @@ static int do_journal_end(struct reiserfs_transaction_handle *th,
 	 */
 
 	journal->j_current_jl = alloc_journal_list(p_s_sb);
+			/*
+			 * JDirty cleared sometime during transaction.
+			 * don't log this one
+			 */
+			reiserfs_warning(sb, "journal-2048",
+					 "BAD, buffer in journal hash, "
+					 "but not JDirty!");
+			brelse(cn->bh);
+		}
+		next = cn->next;
+		free_cnode(sb, cn);
+		cn = next;
+		reiserfs_cond_resched(sb);
+	}
+
+	/*
+	 * we are done with both the c_bh and d_bh, but
+	 * c_bh must be written after all other commit blocks,
+	 * so we dirty/relse c_bh in flush_commit_list, with commit_left <= 1.
+	 */
+
+	journal->j_current_jl = alloc_journal_list(sb);
 
 	/* now it is safe to insert this transaction on the main list */
 	list_add_tail(&jl->j_list, &journal->j_journal_list);
@@ -4162,6 +5984,8 @@ static int do_journal_end(struct reiserfs_transaction_handle *th,
 	    (journal->j_start + journal->j_len +
 	     2) % SB_ONDISK_JOURNAL_SIZE(p_s_sb);
 	atomic_set(&(journal->j_wcount), 0);
+	     2) % SB_ONDISK_JOURNAL_SIZE(sb);
+	atomic_set(&journal->j_wcount, 0);
 	journal->j_bcount = 0;
 	journal->j_last = NULL;
 	journal->j_first = NULL;
@@ -4192,6 +6016,26 @@ static int do_journal_end(struct reiserfs_transaction_handle *th,
 		write_ordered_buffers(&journal->j_dirty_buffers_lock,
 				      journal, jl, &jl->j_tail_bh_list);
 		lock_kernel();
+	init_journal_hash(sb);
+
+	/*
+	 * make sure reiserfs_add_jh sees the new current_jl before we
+	 * write out the tails
+	 */
+	smp_mb();
+
+	/*
+	 * tail conversion targets have to hit the disk before we end the
+	 * transaction.  Otherwise a later transaction might repack the tail
+	 * before this transaction commits, leaving the data block unflushed
+	 * and clean, if we crash before the later transaction commits, the
+	 * data block is lost.
+	 */
+	if (!list_empty(&jl->j_tail_bh_list)) {
+		depth = reiserfs_write_unlock_nested(sb);
+		write_ordered_buffers(&journal->j_dirty_buffers_lock,
+				      journal, jl, &jl->j_tail_bh_list);
+		reiserfs_write_lock_nested(sb, depth);
 	}
 	BUG_ON(!list_empty(&jl->j_tail_bh_list));
 	mutex_unlock(&jl->j_commit_mutex);
@@ -4214,6 +6058,33 @@ static int do_journal_end(struct reiserfs_transaction_handle *th,
 	 ** old flush them as well.  
 	 */
       first_jl:
+	/*
+	 * honor the flush wishes from the caller, simple commits can
+	 * be done outside the journal lock, they are done below
+	 *
+	 * if we don't flush the commit list right now, we put it into
+	 * the work queue so the people waiting on the async progress work
+	 * queue don't wait for this proc to flush journal lists and such.
+	 */
+	if (flush) {
+		flush_commit_list(sb, jl, 1);
+		flush_journal_list(sb, jl, 1);
+	} else if (!(jl->j_state & LIST_COMMIT_PENDING)) {
+		/*
+		 * Avoid queueing work when sb is being shut down. Transaction
+		 * will be flushed on journal shutdown.
+		 */
+		if (sb->s_flags & MS_ACTIVE)
+			queue_delayed_work(REISERFS_SB(sb)->commit_wq,
+					   &journal->j_work, HZ / 10);
+	}
+
+	/*
+	 * if the next transaction has any chance of wrapping, flush
+	 * transactions that might get overwritten.  If any journal lists
+	 * are very old flush them as well.
+	 */
+first_jl:
 	list_for_each_safe(entry, safe, &journal->j_journal_list) {
 		temp_jl = JOURNAL_LIST_ENTRY(entry);
 		if (journal->j_start <= temp_jl->j_start) {
@@ -4226,6 +6097,15 @@ static int do_journal_end(struct reiserfs_transaction_handle *th,
 				   SB_ONDISK_JOURNAL_SIZE(p_s_sb)) {
 				/* if we don't cross into the next transaction and we don't
 				 * wrap, there is no way we can overlap any later transactions
+				flush_used_journal_lists(sb, temp_jl);
+				goto first_jl;
+			} else if ((journal->j_start +
+				    journal->j_trans_max + 1) <
+				   SB_ONDISK_JOURNAL_SIZE(sb)) {
+				/*
+				 * if we don't cross into the next
+				 * transaction and we don't wrap, there is
+				 * no way we can overlap any later transactions
 				 * break now
 				 */
 				break;
@@ -4243,6 +6123,19 @@ static int do_journal_end(struct reiserfs_transaction_handle *th,
 				 * log, and our wrapped portion doesn't overlap anything at
 				 * the start of the log.  We can break
 				 */
+			   SB_ONDISK_JOURNAL_SIZE(sb)) {
+			if (((journal->j_start + journal->j_trans_max + 1) %
+			     SB_ONDISK_JOURNAL_SIZE(sb)) >=
+			    temp_jl->j_start) {
+				flush_used_journal_lists(sb, temp_jl);
+				goto first_jl;
+			} else {
+				/*
+				* we don't overlap anything from out start
+				* to the end of the log, and our wrapped
+				* portion doesn't overlap anything at
+				* the start of the log.  We can break
+				*/
 				break;
 			}
 		}
@@ -4276,6 +6169,35 @@ static int do_journal_end(struct reiserfs_transaction_handle *th,
 	 * call is part of a failed restart_transaction, we can free it later */
 	th->t_super = p_s_sb;
 
+	journal->j_current_jl->j_list_bitmap =
+	    get_list_bitmap(sb, journal->j_current_jl);
+
+	if (!(journal->j_current_jl->j_list_bitmap)) {
+		reiserfs_panic(sb, "journal-1996",
+			       "could not get a list bitmap");
+	}
+
+	atomic_set(&journal->j_jlock, 0);
+	unlock_journal(sb);
+	/* wake up any body waiting to join. */
+	clear_bit(J_WRITERS_QUEUED, &journal->j_state);
+	wake_up(&journal->j_join_wait);
+
+	if (!flush && wait_on_commit &&
+	    journal_list_still_alive(sb, commit_trans_id)) {
+		flush_commit_list(sb, jl, 1);
+	}
+out:
+	reiserfs_check_lock_depth(sb, "journal end2");
+
+	memset(th, 0, sizeof(*th));
+	/*
+	 * Re-set th->t_super, so we can properly keep track of how many
+	 * persistent transactions there are. We need to do this so if this
+	 * call is part of a failed restart_transaction, we can free it later
+	 */
+	th->t_super = sb;
+
 	return journal->j_errno;
 }
 
@@ -4297,6 +6219,8 @@ static void __reiserfs_journal_abort_hard(struct super_block *sb)
 }
 
 static void __reiserfs_journal_abort_soft(struct super_block *sb, int errno)
+/* Send the file system read only and refuse new transactions */
+void reiserfs_abort_journal(struct super_block *sb, int errno)
 {
 	struct reiserfs_journal *journal = SB_JOURNAL(sb);
 	if (test_bit(J_ABORTED, &journal->j_state))
@@ -4311,4 +6235,10 @@ static void __reiserfs_journal_abort_soft(struct super_block *sb, int errno)
 void reiserfs_journal_abort(struct super_block *sb, int errno)
 {
 	__reiserfs_journal_abort_soft(sb, errno);
+	sb->s_flags |= MS_RDONLY;
+	set_bit(J_ABORTED, &journal->j_state);
+
+#ifdef CONFIG_REISERFS_CHECK
+	dump_stack();
+#endif
 }

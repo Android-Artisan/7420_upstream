@@ -1,4 +1,3 @@
-/*=======================================================/
   Header file for nsp_cs.c
       By: YOKOTA Hiroshi <yokota@netlab.is.tsukuba.ac.jp>
 
@@ -8,7 +7,6 @@
     This software may be used and distributed according to the terms of
     the GNU General Public License.
 
-=========================================================*/
 
 #ifndef  __nsp_cs__
 #define  __nsp_cs__
@@ -33,9 +31,7 @@
 /***************************************************************************
  * register definitions
  ***************************************************************************/
-/*========================================================================
  * base register
- ========================================================================*/
 #define	IRQCONTROL	0x00  /* R */
 #  define IRQCONTROL_RESELECT_CLEAR     BIT(0)
 #  define IRQCONTROL_PHASE_CHANGE_CLEAR BIT(1)
@@ -70,9 +66,7 @@
 #define	FIFODATA2	0x06 /* R/W */
 #define	FIFODATA3	0x07 /* R/W */
 
-/*====================================================================
  * indexed register
- ====================================================================*/
 #define EXTBUSCTRL	0x10 /* R/W,deleted */
 
 #define CLOCKDIV	0x11 /* R/W */
@@ -188,6 +182,7 @@
 #define S_CD		BIT(2)    /* Command/Data line from SCSI bus */
 #define S_BUSY		BIT(3)    /* Busy line from SCSI bus         */
 #define S_ACK		BIT(4)    /* Acknowlege line from SCSI bus   */
+#define S_ACK		BIT(4)    /* Acknowledge line from SCSI bus  */
 #define S_REQUEST	BIT(5)    /* Request line from SCSI bus      */
 #define S_SELECT	BIT(6)	  /*                                 */
 #define S_ATN		BIT(7)	  /*                                 */
@@ -219,7 +214,6 @@
 #define BUSPHASE_DATA_OUT    ( BUSMON_DATA_OUT    & BUSMON_PHASE_MASK )
 #define BUSPHASE_STATUS      ( BUSMON_STATUS      & BUSMON_PHASE_MASK )
 
-/*====================================================================*/
 
 typedef struct scsi_info_t {
 	struct pcmcia_device	*p_dev;
@@ -302,6 +296,9 @@ static        int        nsp_proc_info  (
 					 int     inout);
 static int nsp_queuecommand(struct scsi_cmnd *SCpnt,
 			    void (* done)(struct scsi_cmnd *SCpnt));
+static        int        nsp_show_info  (struct seq_file *m,
+	                                 struct Scsi_Host *host);
+static int nsp_queuecommand(struct Scsi_Host *h, struct scsi_cmnd *SCpnt);
 
 /* Error handler */
 /*static int nsp_eh_abort       (struct scsi_cmnd *SCpnt);*/

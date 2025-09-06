@@ -82,6 +82,7 @@ config SECURITY_SELINUX_CHECKREQPROT_VALUE
 	depends on SECURITY_SELINUX
 	range 0 1
 	default 1
+	default 0
 	help
 	  This option sets the default value for the 'checkreqprot' flag
 	  that determines whether SELinux checks the protection requested
@@ -123,6 +124,7 @@ config SECURITY_SELINUX_ENABLE_SECMARK_DEFAULT
 	  wish to control.
 
 	  If you are unsure what to do here, select N.
+	  If you are unsure how to answer this question, answer 0.
 
 config SECURITY_SELINUX_POLICYDB_VERSION_MAX
 	bool "NSA SELinux maximum supported policy format version"

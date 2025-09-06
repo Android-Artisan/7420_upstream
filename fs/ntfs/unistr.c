@@ -27,7 +27,6 @@
 
 /*
  * IMPORTANT
- * =========
  *
  * All these routines assume that the Unicode characters are in little endian
  * encoding inside the strings!!!

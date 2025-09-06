@@ -1,5 +1,4 @@
 README on the SDRAM Controller for the LH7a40X
-==============================================
 
 The standard configuration for the SDRAM controller generates a sparse
 memory array.  The precise layout is determined by the SDRAM chips.  A

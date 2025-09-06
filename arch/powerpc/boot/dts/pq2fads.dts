@@ -17,6 +17,14 @@
 	#address-cells = <1>;
 	#size-cells = <1>;
 
+	aliases {
+		ethernet0 = &enet0;
+		ethernet1 = &enet1;
+		serial0 = &serial0;
+		serial1 = &serial1;
+		pci0 = &pci0;
+	};
+
 	cpus {
 		#address-cells = <1>;
 		#size-cells = <0>;
@@ -46,6 +54,7 @@
 		reg = <0xf0010100 0x60>;
 
 		ranges = <0x0 0x0 0xfe000000 0x800000
+		ranges = <0x0 0x0 0xff800000 0x800000
 		          0x1 0x0 0xf4500000 0x8000
 		          0x8 0x0 0xf8200000 0x8000>;
 
@@ -72,6 +81,7 @@
 	};
 
 	pci@f0010800 {
+	pci0: pci@f0010800 {
 		device_type = "pci";
 		reg = <0xf0010800 0x10c 0xf00101ac 0x8 0xf00101c4 0x8>;
 		compatible = "fsl,mpc8280-pci", "fsl,pq2-pci";
@@ -143,6 +153,7 @@
 			};
 
 			serial@11a00 {
+			serial0: serial@11a00 {
 				device_type = "serial";
 				compatible = "fsl,mpc8280-scc-uart",
 				             "fsl,cpm2-scc-uart";
@@ -154,6 +165,7 @@
 			};
 
 			serial@11a20 {
+			serial1: serial@11a20 {
 				device_type = "serial";
 				compatible = "fsl,mpc8280-scc-uart",
 				             "fsl,cpm2-scc-uart";
@@ -165,6 +177,7 @@
 			};
 
 			ethernet@11320 {
+			enet0: ethernet@11320 {
 				device_type = "network";
 				compatible = "fsl,mpc8280-fcc-enet",
 				             "fsl,cpm2-fcc-enet";
@@ -177,6 +190,7 @@
 			};
 
 			ethernet@11340 {
+			enet1: ethernet@11340 {
 				device_type = "network";
 				compatible = "fsl,mpc8280-fcc-enet",
 				             "fsl,cpm2-fcc-enet";

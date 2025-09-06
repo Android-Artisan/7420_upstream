@@ -31,6 +31,38 @@ if SOUND
 source "sound/oss/dmasound/Kconfig"
 
 if !M68K
+config SOUND_OSS_CORE
+	bool
+	default n
+
+config SOUND_OSS_CORE_PRECLAIM
+	bool "Preclaim OSS device numbers"
+	depends on SOUND_OSS_CORE
+	default y
+	help
+	  With this option enabled, the kernel will claim all OSS device
+	  numbers if any OSS support (native or emulation) is enabled
+	  whether the respective module is loaded or not and try to load the
+	  appropriate module using sound-slot/service-* and char-major-*
+	  module aliases when one of the device numbers is opened.  With
+	  this option disabled, kernel will only claim actually in-use
+	  device numbers and opening a missing device will generate only the
+	  standard char-major-* aliases.
+
+	  The only visible difference is use of additional module aliases
+	  and whether OSS sound devices appear multiple times in
+	  /proc/devices.  sound-slot/service-* module aliases are scheduled
+	  to be removed (ie. PRECLAIM won't be available) and this option is
+	  to make the transition easier.  This option can be overridden
+	  during boot using the kernel parameter soundcore.preclaim_oss.
+
+	  Disabling this allows alternative OSS implementations.
+
+	  If unsure, say Y.
+
+source "sound/oss/dmasound/Kconfig"
+
+if !M68K && !UML
 
 menuconfig SND
 	tristate "Advanced Linux Sound Architecture"
@@ -50,11 +82,15 @@ source "sound/isa/Kconfig"
 
 source "sound/pci/Kconfig"
 
+source "sound/hda/Kconfig"
+
 source "sound/ppc/Kconfig"
 
 source "sound/aoa/Kconfig"
 
 source "sound/arm/Kconfig"
+
+source "sound/atmel/Kconfig"
 
 source "sound/spi/Kconfig"
 
@@ -65,6 +101,8 @@ source "sound/sh/Kconfig"
 # the following will depend on the order of config.
 # here assuming USB is defined before ALSA
 source "sound/usb/Kconfig"
+
+source "sound/firewire/Kconfig"
 
 # the following will depend on the order of config.
 # here assuming PCMCIA is defined before ALSA
@@ -80,6 +118,7 @@ endif # SND
 
 menuconfig SOUND_PRIME
 	tristate "Open Sound System (DEPRECATED)"
+	select SOUND_OSS_CORE
 	help
 	  Say 'Y' or 'M' to enable Open Sound System drivers.
 

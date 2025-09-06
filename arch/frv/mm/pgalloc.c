@@ -11,6 +11,7 @@
 
 #include <linux/sched.h>
 #include <linux/slab.h>
+#include <linux/gfp.h>
 #include <linux/mm.h>
 #include <linux/highmem.h>
 #include <linux/quicklist.h>
@@ -42,6 +43,15 @@ pgtable_t pte_alloc_one(struct mm_struct *mm, unsigned long address)
 		pgtable_page_ctor(page);
 		flush_dcache_page(page);
 	}
+	if (!page)
+		return NULL;
+
+	clear_highpage(page);
+	if (!pgtable_page_ctor(page)) {
+		__free_page(page);
+		return NULL;
+	}
+	flush_dcache_page(page);
 	return page;
 }
 
@@ -78,6 +88,7 @@ void __set_pmd(pmd_t *pmdptr, unsigned long pmd)
  * could be used. The locking scheme was chosen on the basis of
  * manfred's recommendations and having no core impact whatsoever.
  * -- wli
+ * -- nyc
  */
 DEFINE_SPINLOCK(pgd_lock);
 struct page *pgd_list;
@@ -140,6 +151,7 @@ pgd_t *pgd_alloc(struct mm_struct *mm)
 		return pgd;
 
 	return pgd;
+	return quicklist_alloc(0, GFP_KERNEL, pgd_ctor);
 }
 
 void pgd_free(struct mm_struct *mm, pgd_t *pgd)

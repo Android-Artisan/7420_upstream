@@ -20,6 +20,8 @@
 
 #include "opl3_voice.h"
 #include <linux/slab.h>
+#include <linux/export.h>
+#include "opl3_voice.h"
 
 static int snd_opl3_open_seq_oss(struct snd_seq_oss_arg *arg, void *closure);
 static int snd_opl3_close_seq_oss(struct snd_seq_oss_arg *arg);
@@ -163,6 +165,8 @@ static int snd_opl3_open_seq_oss(struct snd_seq_oss_arg *arg, void *closure)
 	int err;
 
 	snd_assert(arg != NULL, return -ENXIO);
+	if (snd_BUG_ON(!arg))
+		return -ENXIO;
 
 	if ((err = snd_opl3_synth_setup(opl3)) < 0)
 		return err;
@@ -185,6 +189,8 @@ static int snd_opl3_close_seq_oss(struct snd_seq_oss_arg *arg)
 	struct snd_opl3 *opl3;
 
 	snd_assert(arg != NULL, return -ENXIO);
+	if (snd_BUG_ON(!arg))
+		return -ENXIO;
 	opl3 = arg->private_data;
 
 	snd_opl3_synth_cleanup(opl3);
@@ -207,6 +213,8 @@ static int snd_opl3_load_patch_seq_oss(struct snd_seq_oss_arg *arg, int format,
 	int err, type;
 
 	snd_assert(arg != NULL, return -ENXIO);
+	if (snd_BUG_ON(!arg))
+		return -ENXIO;
 	opl3 = arg->private_data;
 
 	if (format == FM_PATCH)
@@ -218,6 +226,7 @@ static int snd_opl3_load_patch_seq_oss(struct snd_seq_oss_arg *arg, int format,
 
 	if (count < (int)sizeof(sbi)) {
 		snd_printk("FM Error: Patch record too short\n");
+		snd_printk(KERN_ERR "FM Error: Patch record too short\n");
 		return -EINVAL;
 	}
 	if (copy_from_user(&sbi, buf, sizeof(sbi)))
@@ -225,6 +234,7 @@ static int snd_opl3_load_patch_seq_oss(struct snd_seq_oss_arg *arg, int format,
 
 	if (sbi.channel < 0 || sbi.channel >= SBFM_MAXINSTR) {
 		snd_printk("FM Error: Invalid instrument number %d\n",
+		snd_printk(KERN_ERR "FM Error: Invalid instrument number %d\n",
 			   sbi.channel);
 		return -EINVAL;
 	}
@@ -251,6 +261,14 @@ static int snd_opl3_ioctl_seq_oss(struct snd_seq_oss_arg *arg, unsigned int cmd,
 	switch (cmd) {
 		case SNDCTL_FM_LOAD_INSTR:
 			snd_printk("OPL3: Obsolete ioctl(SNDCTL_FM_LOAD_INSTR) used. Fix the program.\n");
+	if (snd_BUG_ON(!arg))
+		return -ENXIO;
+	opl3 = arg->private_data;
+	switch (cmd) {
+		case SNDCTL_FM_LOAD_INSTR:
+			snd_printk(KERN_ERR "OPL3: "
+				   "Obsolete ioctl(SNDCTL_FM_LOAD_INSTR) used. "
+				   "Fix the program.\n");
 			return -EINVAL;
 
 		case SNDCTL_SYNTH_MEMAVL:
@@ -272,6 +290,8 @@ static int snd_opl3_reset_seq_oss(struct snd_seq_oss_arg *arg)
 	struct snd_opl3 *opl3;
 
 	snd_assert(arg != NULL, return -ENXIO);
+	if (snd_BUG_ON(!arg))
+		return -ENXIO;
 	opl3 = arg->private_data;
 
 	return 0;

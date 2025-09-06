@@ -228,7 +228,7 @@ ufs_get_inode_gid(struct super_block *sb, struct ufs_inode *inode)
 	case UFS_UID_44BSD:
 		return fs32_to_cpu(sb, inode->ui_u3.ui_44.ui_gid);
 	case UFS_UID_EFT:
-		if (inode->ui_u1.oldids.ui_suid == 0xFFFF)
+		if (inode->ui_u1.oldids.ui_sgid == 0xFFFF)
 			return fs32_to_cpu(sb, inode->ui_u3.ui_sun.ui_gid);
 		/* Fall through */
 	default:
@@ -260,6 +260,7 @@ extern void ufs_set_inode_dev(struct super_block *, struct ufs_inode_info *, dev
 extern int __ufs_write_begin(struct file *file, struct address_space *mapping,
 		loff_t pos, unsigned len, unsigned flags,
 		struct page **pagep, void **fsdata);
+extern int ufs_prepare_chunk(struct page *page, loff_t pos, unsigned len);
 
 /*
  * These functions manipulate ufs buffers
@@ -273,6 +274,7 @@ extern void ubh_mark_buffer_dirty (struct ufs_buffer_head *);
 extern void ubh_mark_buffer_uptodate (struct ufs_buffer_head *, int);
 extern void ubh_ll_rw_block(int, struct ufs_buffer_head *);
 extern void ubh_wait_on_buffer (struct ufs_buffer_head *);
+extern void ubh_sync_block(struct ufs_buffer_head *);
 extern void ubh_bforget (struct ufs_buffer_head *);
 extern int  ubh_buffer_dirty (struct ufs_buffer_head *);
 #define ubh_ubhcpymem(mem,ubh,size) _ubh_ubhcpymem_(uspi,mem,ubh,size)
@@ -412,6 +414,7 @@ static inline unsigned _ubh_find_next_zero_bit_(
 		count = min_t(unsigned int, size + offset, uspi->s_bpf);
 		size -= count - offset;
 		pos = ext2_find_next_zero_bit (ubh->bh[base]->b_data, count, offset);
+		pos = find_next_zero_bit_le(ubh->bh[base]->b_data, count, offset);
 		if (pos < count || !size)
 			break;
 		base++;
@@ -476,15 +479,19 @@ static inline unsigned _ubh_find_last_zero_bit_(
 static inline int _ubh_isblockset_(struct ufs_sb_private_info * uspi,
 	struct ufs_buffer_head * ubh, unsigned begin, unsigned block)
 {
+	u8 mask;
 	switch (uspi->s_fpb) {
 	case 8:
 	    	return (*ubh_get_addr (ubh, begin + block) == 0xff);
 	case 4:
-		return (*ubh_get_addr (ubh, begin + (block >> 1)) == (0x0f << ((block & 0x01) << 2)));
+		mask = 0x0f << ((block & 0x01) << 2);
+		return (*ubh_get_addr (ubh, begin + (block >> 1)) & mask) == mask;
 	case 2:
-		return (*ubh_get_addr (ubh, begin + (block >> 2)) == (0x03 << ((block & 0x03) << 1)));
+		mask = 0x03 << ((block & 0x03) << 1);
+		return (*ubh_get_addr (ubh, begin + (block >> 2)) & mask) == mask;
 	case 1:
-		return (*ubh_get_addr (ubh, begin + (block >> 3)) == (0x01 << (block & 0x07)));
+		mask = 0x01 << (block & 0x07);
+		return (*ubh_get_addr (ubh, begin + (block >> 3)) & mask) == mask;
 	}
 	return 0;	
 }

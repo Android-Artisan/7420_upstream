@@ -178,3 +178,4 @@ static void __exit nkbd_exit(void)
 
 module_init(nkbd_init);
 module_exit(nkbd_exit);
+module_serio_driver(nkbd_drv);

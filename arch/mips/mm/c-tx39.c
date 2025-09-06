@@ -2,6 +2,7 @@
  * r2300.c: R2000 and R3000 specific mmu/cache code.
  *
  * Copyright (C) 1996 David S. Miller (dm@engr.sgi.com)
+ * Copyright (C) 1996 David S. Miller (davem@davemloft.net)
  *
  * with a lot of changes to make this thing work for R3000s
  * Tx39XX R4k style caches added. HK
@@ -11,6 +12,7 @@
 #include <linux/init.h>
 #include <linux/kernel.h>
 #include <linux/sched.h>
+#include <linux/smp.h>
 #include <linux/mm.h>
 
 #include <asm/cacheops.h>
@@ -36,6 +38,12 @@ __asm__ __volatile__( \
 	".set    push\n\t" \
 	".set    noreorder\n\t" \
 	"b       1f\n\t" \
+/* This sequence is required to ensure icache is disabled immediately */
+#define TX39_STOP_STREAMING() \
+__asm__ __volatile__( \
+	".set	 push\n\t" \
+	".set	 noreorder\n\t" \
+	"b	 1f\n\t" \
 	"nop\n\t" \
 	"1:\n\t" \
 	".set pop" \
@@ -252,6 +260,11 @@ static void tx39_flush_icache_range(unsigned long start, unsigned long end)
 	}
 }
 
+static void tx39_flush_kernel_vmap_range(unsigned long vaddr, int size)
+{
+	BUG();
+}
+
 static void tx39_dma_cache_wback_inv(unsigned long addr, unsigned long size)
 {
 	unsigned long end;
@@ -340,6 +353,7 @@ static __init void tx39_probe_cache(void)
 }
 
 void __cpuinit tx39_cache_init(void)
+void tx39_cache_init(void)
 {
 	extern void build_clear_page(void);
 	extern void build_copy_page(void);
@@ -357,6 +371,7 @@ void __cpuinit tx39_cache_init(void)
 		__flush_cache_vmap	= tx39__flush_cache_vmap;
 		__flush_cache_vunmap	= tx39__flush_cache_vunmap;
 		flush_cache_all	= tx39h_flush_icache_all;
+		flush_cache_all = tx39h_flush_icache_all;
 		__flush_cache_all	= tx39h_flush_icache_all;
 		flush_cache_mm		= (void *) tx39h_flush_icache_all;
 		flush_cache_range	= (void *) tx39h_flush_icache_all;
@@ -393,6 +408,8 @@ void __cpuinit tx39_cache_init(void)
 		flush_icache_range = tx39_flush_icache_range;
 		local_flush_icache_range = tx39_flush_icache_range;
 
+		__flush_kernel_vmap_range = tx39_flush_kernel_vmap_range;
+
 		flush_cache_sigtramp = tx39_flush_cache_sigtramp;
 		local_flush_data_cache_page = local_tx39_flush_data_cache_page;
 		flush_data_cache_page = tx39_flush_data_cache_page;
@@ -404,6 +421,8 @@ void __cpuinit tx39_cache_init(void)
 		shm_align_mask = max_t(unsigned long,
 		                       (dcache_size / current_cpu_data.dcache.ways) - 1,
 		                       PAGE_SIZE - 1);
+				       (dcache_size / current_cpu_data.dcache.ways) - 1,
+				       PAGE_SIZE - 1);
 
 		break;
 	}

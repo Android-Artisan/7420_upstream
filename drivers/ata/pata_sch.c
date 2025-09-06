@@ -66,6 +66,7 @@ static struct pci_driver sch_pci_driver = {
 	.probe			= sch_init_one,
 	.remove			= ata_pci_remove_one,
 #ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 	.suspend		= ata_pci_device_suspend,
 	.resume			= ata_pci_device_resume,
 #endif
@@ -87,6 +88,10 @@ static struct ata_port_info sch_port_info = {
 	.pio_mask	= ATA_PIO4,   /* pio0-4 */
 	.mwdma_mask	= ATA_MWDMA2, /* mwdma0-2 */
 	.udma_mask	= ATA_UDMA5,  /* udma0-5 */
+	.flags		= ATA_FLAG_SLAVE_POSS,
+	.pio_mask	= ATA_PIO4,
+	.mwdma_mask	= ATA_MWDMA2,
+	.udma_mask	= ATA_UDMA5,
 	.port_ops	= &sch_pata_ops,
 };
 
@@ -204,3 +209,13 @@ static void __exit sch_exit(void)
 
 module_init(sch_init);
 module_exit(sch_exit);
+static int sch_init_one(struct pci_dev *pdev, const struct pci_device_id *ent)
+{
+	const struct ata_port_info *ppi[] = { &sch_port_info, NULL };
+
+	ata_print_version_once(&pdev->dev, DRV_VERSION);
+
+	return ata_pci_bmdma_init_one(pdev, ppi, &sch_sht, NULL, 0);
+}
+
+module_pci_driver(sch_pci_driver);

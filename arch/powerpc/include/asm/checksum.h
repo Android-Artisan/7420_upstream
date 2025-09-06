@@ -26,6 +26,12 @@ extern __sum16 csum_tcpudp_magic(__be32 saddr, __be32 daddr,
 					__wsum sum);
 
 /*
+#ifdef CONFIG_GENERIC_CSUM
+#include <asm-generic/checksum.h>
+#else
+extern __sum16 ip_fast_csum(const void *iph, unsigned int ihl);
+
+/*
  * computes the checksum of a memory block at buff, length len,
  * and adds in "sum" (32-bit)
  *
@@ -52,12 +58,22 @@ extern __wsum csum_partial(const void *buff, int len, __wsum sum);
 extern __wsum csum_partial_copy_generic(const void *src, void *dst,
 					      int len, __wsum sum,
 					      int *src_err, int *dst_err);
+
+#ifdef __powerpc64__
+#define _HAVE_ARCH_COPY_AND_CSUM_FROM_USER
+extern __wsum csum_and_copy_from_user(const void __user *src, void *dst,
+				      int len, __wsum sum, int *err_ptr);
+#define HAVE_CSUM_COPY_USER
+extern __wsum csum_and_copy_to_user(const void *src, void __user *dst,
+				    int len, __wsum sum, int *err_ptr);
+#else
 /*
  * the same as csum_partial, but copies from src to dst while it
  * checksums.
  */
 #define csum_partial_copy_from_user(src, dst, len, sum, errp)   \
         csum_partial_copy_generic((__force const void *)(src), (dst), (len), (sum), (errp), NULL)
+#endif
 
 #define csum_partial_copy_nocheck(src, dst, len, sum)   \
         csum_partial_copy_generic((src), (dst), (len), (sum), NULL, NULL)
@@ -113,5 +129,35 @@ static inline __wsum csum_tcpudp_nofold(__be32 saddr, __be32 daddr,
 	return sum;
 #endif
 }
+
+/*
+ * computes the checksum of the TCP/UDP pseudo-header
+ * returns a 16-bit checksum, already complemented
+ */
+static inline __sum16 csum_tcpudp_magic(__be32 saddr, __be32 daddr,
+					unsigned short len,
+					unsigned short proto,
+					__wsum sum)
+{
+	return csum_fold(csum_tcpudp_nofold(saddr, daddr, len, proto, sum));
+}
+
+#define HAVE_ARCH_CSUM_ADD
+static inline __wsum csum_add(__wsum csum, __wsum addend)
+{
+#ifdef __powerpc64__
+	u64 res = (__force u64)csum;
+
+	res += (__force u64)addend;
+	return (__force __wsum)((u32)res + (res >> 32));
+#else
+	asm("addc %0,%0,%1;"
+	    "addze %0,%0;"
+	    : "+r" (csum) : "r" (addend));
+	return csum;
+#endif
+}
+
+#endif
 #endif /* __KERNEL__ */
 #endif

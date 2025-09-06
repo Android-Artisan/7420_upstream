@@ -69,6 +69,11 @@
 	 ((size) << _IOC_SIZESHIFT))
 
 #ifdef __KERNEL__
+#include <uapi/asm-generic/ioctl.h>
+
+#ifdef __CHECKER__
+#define _IOC_TYPECHECK(t) (sizeof(t))
+#else
 /* provoke compile error for invalid uses of size argument */
 extern unsigned int __invalid_size_argument_for_IOC;
 #define _IOC_TYPECHECK(t) \
@@ -101,5 +106,7 @@ extern unsigned int __invalid_size_argument_for_IOC;
 #define IOC_INOUT	((_IOC_WRITE|_IOC_READ) << _IOC_DIRSHIFT)
 #define IOCSIZE_MASK	(_IOC_SIZEMASK << _IOC_SIZESHIFT)
 #define IOCSIZE_SHIFT	(_IOC_SIZESHIFT)
+
+#endif
 
 #endif /* _ASM_GENERIC_IOCTL_H */

@@ -4,12 +4,15 @@
  * for more details.
  *
  * Copyright (C) 1996 David S. Miller (dm@engr.sgi.com)
+ * Copyright (C) 1996 David S. Miller (davem@davemloft.net)
  * Copyright (C) 1997, 1998, 1999, 2000 Ralf Baechle ralf@gnu.org
  * Carsten Langgaard, carstenl@mips.com
  * Copyright (C) 2002 MIPS Technologies, Inc.  All rights reserved.
  */
 #include <linux/init.h>
 #include <linux/sched.h>
+#include <linux/sched.h>
+#include <linux/smp.h>
 #include <linux/mm.h>
 
 #include <asm/cpu.h>
@@ -113,6 +116,7 @@ void local_flush_tlb_kernel_range(unsigned long start, unsigned long end)
 {
 	unsigned long flags;
 	int size;
+	unsigned long size, flags;
 
 	size = (end - start + (PAGE_SIZE - 1)) >> PAGE_SHIFT;
 	size = (size + 1) >> 1;
@@ -215,6 +219,7 @@ void __update_tlb(struct vm_area_struct * vma, unsigned long address, pte_t pte)
 }
 
 static void __cpuinit probe_tlb(unsigned long config)
+static void probe_tlb(unsigned long config)
 {
 	struct cpuinfo_mips *c = &current_cpu_data;
 
@@ -222,6 +227,7 @@ static void __cpuinit probe_tlb(unsigned long config)
 }
 
 void __cpuinit tlb_init(void)
+void tlb_init(void)
 {
 	unsigned int config = read_c0_config();
 	unsigned long status;

@@ -3,6 +3,7 @@
  * Copyright (C) 2007 IBM
  *
  * Author: Darrick J. Wong <djwong@us.ibm.com>
+ * Author: Darrick J. Wong <darrick.wong@oracle.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -25,6 +26,8 @@
 #include <linux/hwmon-sysfs.h>
 #include <linux/jiffies.h>
 #include <linux/mutex.h>
+#include <linux/slab.h>
+#include <linux/err.h>
 
 #define REFRESH_INTERVAL	(2 * HZ)
 #define DRVNAME			"ibmpex"
@@ -41,6 +44,7 @@
 static inline u16 extract_value(const char *data, int offset)
 {
 	return be16_to_cpup((u16 *)&data[offset]);
+	return be16_to_cpup((__be16 *)&data[offset]);
 }
 
 #define TEMP_SENSOR		1
@@ -63,6 +67,10 @@ static char const * const temp_sensor_name_templates[] = {
 	"%s%d_input",
 	"%s%d_input_lowest",
 	"%s%d_input_highest"
+static const char * const sensor_name_suffixes[] = {
+	"",
+	"_lowest",
+	"_highest"
 };
 
 static void ibmpex_msg_handler(struct ipmi_recv_msg *msg, void *user_msg_data);
@@ -163,6 +171,8 @@ static int ibmpex_ver_check(struct ibmpex_bmc_data *data)
 
 	dev_info(data->bmc_device, "Found BMC with sensor interface "
 		 "v%d.%d %d-%02d-%02d on interface %d\n",
+	dev_info(data->bmc_device,
+		 "Found BMC with sensor interface v%d.%d %d-%02d-%02d on interface %d\n",
 		 data->sensor_major,
 		 data->sensor_minor,
 		 extract_value(data->rx_msg_data, 2),
@@ -357,6 +367,13 @@ static int create_sensor(struct ibmpex_bmc_data *data, int type,
 	else if (type == POWER_SENSOR)
 		sprintf(n, power_sensor_name_templates[func], "power", counter);
 
+		sprintf(n, "temp%d_input%s",
+			counter, sensor_name_suffixes[func]);
+	else if (type == POWER_SENSOR)
+		sprintf(n, "power%d_average%s",
+			counter, sensor_name_suffixes[func]);
+
+	sysfs_attr_init(&data->sensors[sensor].attr[func].dev_attr.attr);
 	data->sensors[sensor].attr[func].dev_attr.attr.name = n;
 	data->sensors[sensor].attr[func].dev_attr.attr.mode = S_IRUGO;
 	data->sensors[sensor].attr[func].dev_attr.show = ibmpex_show_sensor;
@@ -464,6 +481,8 @@ static void ibmpex_register_bmc(int iface, struct device *dev)
 		dev_err(dev, "Insufficient memory for BMC interface.\n");
 		return;
 	}
+	if (!data)
+		return;
 
 	data->address.addr_type = IPMI_SYSTEM_INTERFACE_ADDR_TYPE;
 	data->address.channel = IPMI_BMC_CHANNEL;
@@ -477,6 +496,9 @@ static void ibmpex_register_bmc(int iface, struct device *dev)
 	if (err < 0) {
 		dev_err(dev, "Unable to register user with IPMI "
 			"interface %d\n", data->interface);
+		dev_err(dev,
+			"Unable to register user with IPMI interface %d\n",
+			data->interface);
 		goto out;
 	}
 
@@ -500,6 +522,8 @@ static void ibmpex_register_bmc(int iface, struct device *dev)
 	if (IS_ERR(data->hwmon_dev)) {
 		dev_err(data->bmc_device, "Unable to register hwmon "
 			"device for IPMI interface %d\n",
+		dev_err(data->bmc_device,
+			"Unable to register hwmon device for IPMI interface %d\n",
 			data->interface);
 		goto out_user;
 	}
@@ -518,6 +542,7 @@ static void ibmpex_register_bmc(int iface, struct device *dev)
 	return;
 
 out_register:
+	list_del(&data->list);
 	hwmon_device_unregister(data->hwmon_dev);
 out_user:
 	ipmi_destroy_user(data->user);
@@ -566,6 +591,8 @@ static void ibmpex_msg_handler(struct ipmi_recv_msg *msg, void *user_msg_data)
 	if (msg->msgid != data->tx_msgid) {
 		dev_err(data->bmc_device, "Mismatch between received msgid "
 			"(%02x) and transmitted msgid (%02x)!\n",
+		dev_err(data->bmc_device,
+			"Mismatch between received msgid (%02x) and transmitted msgid (%02x)!\n",
 			(int)msg->msgid,
 			(int)data->tx_msgid);
 		ipmi_free_recv_msg(msg);
@@ -603,8 +630,15 @@ static void __exit ibmpex_exit(void)
 }
 
 MODULE_AUTHOR("Darrick J. Wong <djwong@us.ibm.com>");
+MODULE_AUTHOR("Darrick J. Wong <darrick.wong@oracle.com>");
 MODULE_DESCRIPTION("IBM PowerExecutive power/temperature sensor driver");
 MODULE_LICENSE("GPL");
 
 module_init(ibmpex_init);
 module_exit(ibmpex_exit);
+
+MODULE_ALIAS("dmi:bvnIBM:*:pnIBMSystemx3350-*");
+MODULE_ALIAS("dmi:bvnIBM:*:pnIBMSystemx3550-*");
+MODULE_ALIAS("dmi:bvnIBM:*:pnIBMSystemx3650-*");
+MODULE_ALIAS("dmi:bvnIBM:*:pnIBMSystemx3655-*");
+MODULE_ALIAS("dmi:bvnIBM:*:pnIBMSystemx3755-*");

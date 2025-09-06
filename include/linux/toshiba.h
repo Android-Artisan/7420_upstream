@@ -35,4 +35,10 @@ typedef struct {
 
 int tosh_smm(SMMRegisters *regs);
 
+#ifndef _LINUX_TOSHIBA_H
+#define _LINUX_TOSHIBA_H
+
+#include <uapi/linux/toshiba.h>
+
+int tosh_smm(SMMRegisters *regs);
 #endif

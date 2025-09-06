@@ -53,6 +53,8 @@ static intctl_cpm2_t __iomem *cpm2_intctl;
 static struct irq_host *cpm2_pic_host;
 #define NR_MASK_WORDS   ((NR_IRQS + 31) / 32)
 static unsigned long ppc_cached_irq_mask[NR_MASK_WORDS];
+static struct irq_domain *cpm2_pic_host;
+static unsigned long ppc_cached_irq_mask[2]; /* 2 32-bit registers */
 
 static const u_char irq_to_siureg[] = {
 	1, 1, 1, 1, 1, 1, 1, 1,
@@ -82,6 +84,10 @@ static void cpm2_mask_irq(unsigned int virq)
 {
 	int	bit, word;
 	unsigned int irq_nr = virq_to_hw(virq);
+static void cpm2_mask_irq(struct irq_data *d)
+{
+	int	bit, word;
+	unsigned int irq_nr = irqd_to_hwirq(d);
 
 	bit = irq_to_siubit[irq_nr];
 	word = irq_to_siureg[irq_nr];
@@ -94,6 +100,10 @@ static void cpm2_unmask_irq(unsigned int virq)
 {
 	int	bit, word;
 	unsigned int irq_nr = virq_to_hw(virq);
+static void cpm2_unmask_irq(struct irq_data *d)
+{
+	int	bit, word;
+	unsigned int irq_nr = irqd_to_hwirq(d);
 
 	bit = irq_to_siubit[irq_nr];
 	word = irq_to_siureg[irq_nr];
@@ -106,6 +116,10 @@ static void cpm2_ack(unsigned int virq)
 {
 	int	bit, word;
 	unsigned int irq_nr = virq_to_hw(virq);
+static void cpm2_ack(struct irq_data *d)
+{
+	int	bit, word;
+	unsigned int irq_nr = irqd_to_hwirq(d);
 
 	bit = irq_to_siubit[irq_nr];
 	word = irq_to_siureg[irq_nr];
@@ -157,6 +171,53 @@ static int cpm2_set_irq_type(unsigned int virq, unsigned int flow_type)
 		desc->handle_irq = handle_level_irq;
 	} else
 		desc->handle_irq = handle_edge_irq;
+static void cpm2_end_irq(struct irq_data *d)
+{
+	int	bit, word;
+	unsigned int irq_nr = irqd_to_hwirq(d);
+
+	bit = irq_to_siubit[irq_nr];
+	word = irq_to_siureg[irq_nr];
+
+	ppc_cached_irq_mask[word] |= 1 << bit;
+	out_be32(&cpm2_intctl->ic_simrh + word, ppc_cached_irq_mask[word]);
+
+	/*
+	 * Work around large numbers of spurious IRQs on PowerPC 82xx
+	 * systems.
+	 */
+	mb();
+}
+
+static int cpm2_set_irq_type(struct irq_data *d, unsigned int flow_type)
+{
+	unsigned int src = irqd_to_hwirq(d);
+	unsigned int vold, vnew, edibit;
+
+	/* Port C interrupts are either IRQ_TYPE_EDGE_FALLING or
+	 * IRQ_TYPE_EDGE_BOTH (default).  All others are IRQ_TYPE_EDGE_FALLING
+	 * or IRQ_TYPE_LEVEL_LOW (default)
+	 */
+	if (src >= CPM2_IRQ_PORTC15 && src <= CPM2_IRQ_PORTC0) {
+		if (flow_type == IRQ_TYPE_NONE)
+			flow_type = IRQ_TYPE_EDGE_BOTH;
+
+		if (flow_type != IRQ_TYPE_EDGE_BOTH &&
+		    flow_type != IRQ_TYPE_EDGE_FALLING)
+			goto err_sense;
+	} else {
+		if (flow_type == IRQ_TYPE_NONE)
+			flow_type = IRQ_TYPE_LEVEL_LOW;
+
+		if (flow_type & (IRQ_TYPE_EDGE_RISING | IRQ_TYPE_LEVEL_HIGH))
+			goto err_sense;
+	}
+
+	irqd_set_trigger_type(d, flow_type);
+	if (flow_type & IRQ_TYPE_LEVEL_LOW)
+		irq_set_handler_locked(d, handle_level_irq);
+	else
+		irq_set_handler_locked(d, handle_edge_irq);
 
 	/* internal IRQ senses are LEVEL_LOW
 	 * EXT IRQ and Port C IRQ senses are programmable
@@ -168,6 +229,10 @@ static int cpm2_set_irq_type(unsigned int virq, unsigned int flow_type)
 			edibit = (31 - (src - CPM2_IRQ_PORTC15));
 		else
 			return (flow_type & IRQ_TYPE_LEVEL_LOW) ? 0 : -EINVAL;
+			edibit = (31 - (CPM2_IRQ_PORTC0 - src));
+		else
+			return (flow_type & IRQ_TYPE_LEVEL_LOW) ?
+				IRQ_SET_MASK_OK_NOCOPY : -EINVAL;
 
 	vold = in_be32(&cpm2_intctl->ic_siexr);
 
@@ -188,6 +253,21 @@ static struct irq_chip cpm2_pic = {
 	.ack = cpm2_ack,
 	.eoi = cpm2_end_irq,
 	.set_type = cpm2_set_irq_type,
+	return IRQ_SET_MASK_OK_NOCOPY;
+
+err_sense:
+	pr_err("CPM2 PIC: sense type 0x%x not supported\n", flow_type);
+	return -EINVAL;
+}
+
+static struct irq_chip cpm2_pic = {
+	.name = "CPM2 SIU",
+	.irq_mask = cpm2_mask_irq,
+	.irq_unmask = cpm2_unmask_irq,
+	.irq_ack = cpm2_ack,
+	.irq_eoi = cpm2_end_irq,
+	.irq_set_type = cpm2_set_irq_type,
+	.flags = IRQCHIP_EOI_IF_HANDLED,
 };
 
 unsigned int cpm2_get_irq(void)
@@ -206,6 +286,7 @@ unsigned int cpm2_get_irq(void)
 }
 
 static int cpm2_pic_host_map(struct irq_host *h, unsigned int virq,
+static int cpm2_pic_host_map(struct irq_domain *h, unsigned int virq,
 			  irq_hw_number_t hw)
 {
 	pr_debug("cpm2_pic_host_map(%d, 0x%lx)\n", virq, hw);
@@ -230,6 +311,14 @@ static int cpm2_pic_host_xlate(struct irq_host *h, struct device_node *ct,
 static struct irq_host_ops cpm2_pic_host_ops = {
 	.map = cpm2_pic_host_map,
 	.xlate = cpm2_pic_host_xlate,
+	irq_set_status_flags(virq, IRQ_LEVEL);
+	irq_set_chip_and_handler(virq, &cpm2_pic, handle_level_irq);
+	return 0;
+}
+
+static const struct irq_domain_ops cpm2_pic_host_ops = {
+	.map = cpm2_pic_host_map,
+	.xlate = irq_domain_xlate_onetwocell,
 };
 
 void cpm2_pic_init(struct device_node *node)
@@ -268,6 +357,7 @@ void cpm2_pic_init(struct device_node *node)
 	/* create a legacy host */
 	cpm2_pic_host = irq_alloc_host(node, IRQ_HOST_MAP_LINEAR,
 				       64, &cpm2_pic_host_ops, 64);
+	cpm2_pic_host = irq_domain_add_linear(node, 64, &cpm2_pic_host_ops, NULL);
 	if (cpm2_pic_host == NULL) {
 		printk(KERN_ERR "CPM2 PIC: failed to allocate irq host!\n");
 		return;

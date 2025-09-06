@@ -1,5 +1,6 @@
 /*
  * udbg for for zilog scc ports as found on Apple PowerMacs
+ * udbg for zilog scc ports as found on Apple PowerMacs
  *
  * Copyright (C) 2001-2005 PPC 64 Team, IBM Corp
  *
@@ -135,6 +136,9 @@ void udbg_scc_init(int force_scc)
 	} else if (machine_is_compatible("RackMac1,1")
 		   || machine_is_compatible("RackMac1,2")
 		   || machine_is_compatible("MacRISC4")) {
+	} else if (of_machine_is_compatible("RackMac1,1")
+		   || of_machine_is_compatible("RackMac1,2")
+		   || of_machine_is_compatible("MacRISC4")) {
 		/* Xserves and G5s default to 57600 */
 		scc_inittab[1] = 0;
 		scc_inittab[3] = 0;

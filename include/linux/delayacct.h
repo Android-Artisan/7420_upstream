@@ -19,6 +19,7 @@
 
 #include <linux/sched.h>
 #include <linux/taskstats_kern.h>
+#include <linux/slab.h>
 
 /*
  * Per-task flags relevant to delay accounting

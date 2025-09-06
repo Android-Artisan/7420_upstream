@@ -1,5 +1,4 @@
 Kernel driver pc87360
-=====================
 
 Supported chips:
   * National Semiconductor PC87360, PC87363, PC87364, PC87365 and PC87366
@@ -13,6 +12,9 @@ Supported chips:
         http://www.national.com/pf/PC/PC87366.html
 
 Authors: Jean Delvare <khali@linux-fr.org>
+    Datasheets: No longer available
+
+Authors: Jean Delvare <jdelvare@suse.de>
 
 Thanks to Sandeep Mehta, Tonko de Rooy and Daniel Ceregatti for testing.
 Thanks to Rudolf Marek for helping me investigate conversion issues.

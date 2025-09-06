@@ -72,6 +72,30 @@ static struct hw_interrupt_type mappi_irq_type =
 	.disable = disable_mappi_irq,
 	.ack = mask_and_ack_mappi,
 	.end = end_mappi_irq
+static void mask_mappi(struct irq_data *data)
+{
+	disable_mappi_irq(data->irq);
+}
+
+static void unmask_mappi(struct irq_data *data)
+{
+	enable_mappi_irq(data->irq);
+}
+
+static void shutdown_mappi(struct irq_data *data)
+{
+	unsigned long port;
+
+	port = irq2port(data->irq);
+	outl(M32R_ICUCR_ILEVEL7, port);
+}
+
+static struct irq_chip mappi_irq_type =
+{
+	.name		= "MAPPI-IRQ",
+	.irq_shutdown	= shutdown_mappi,
+	.irq_mask	= mask_mappi,
+	.irq_unmask	= unmask_mappi,
 };
 
 void __init init_IRQ(void)
@@ -89,6 +113,8 @@ void __init init_IRQ(void)
 	irq_desc[M32R_IRQ_INT0].chip = &mappi_irq_type;
 	irq_desc[M32R_IRQ_INT0].action = NULL;
 	irq_desc[M32R_IRQ_INT0].depth = 1;
+	irq_set_chip_and_handler(M32R_IRQ_INT0, &mappi_irq_type,
+				 handle_level_irq);
 	icu_data[M32R_IRQ_INT0].icucr = M32R_ICUCR_IEN|M32R_ICUCR_ISMOD11;
 	disable_mappi_irq(M32R_IRQ_INT0);
 #endif /* CONFIG_M32R_NE2000 */
@@ -98,6 +124,8 @@ void __init init_IRQ(void)
 	irq_desc[M32R_IRQ_MFT2].chip = &mappi_irq_type;
 	irq_desc[M32R_IRQ_MFT2].action = NULL;
 	irq_desc[M32R_IRQ_MFT2].depth = 1;
+	irq_set_chip_and_handler(M32R_IRQ_MFT2, &mappi_irq_type,
+				 handle_level_irq);
 	icu_data[M32R_IRQ_MFT2].icucr = M32R_ICUCR_IEN;
 	disable_mappi_irq(M32R_IRQ_MFT2);
 
@@ -107,6 +135,8 @@ void __init init_IRQ(void)
 	irq_desc[M32R_IRQ_SIO0_R].chip = &mappi_irq_type;
 	irq_desc[M32R_IRQ_SIO0_R].action = NULL;
 	irq_desc[M32R_IRQ_SIO0_R].depth = 1;
+	irq_set_chip_and_handler(M32R_IRQ_SIO0_R, &mappi_irq_type,
+				 handle_level_irq);
 	icu_data[M32R_IRQ_SIO0_R].icucr = 0;
 	disable_mappi_irq(M32R_IRQ_SIO0_R);
 
@@ -115,6 +145,8 @@ void __init init_IRQ(void)
 	irq_desc[M32R_IRQ_SIO0_S].chip = &mappi_irq_type;
 	irq_desc[M32R_IRQ_SIO0_S].action = NULL;
 	irq_desc[M32R_IRQ_SIO0_S].depth = 1;
+	irq_set_chip_and_handler(M32R_IRQ_SIO0_S, &mappi_irq_type,
+				 handle_level_irq);
 	icu_data[M32R_IRQ_SIO0_S].icucr = 0;
 	disable_mappi_irq(M32R_IRQ_SIO0_S);
 
@@ -123,6 +155,8 @@ void __init init_IRQ(void)
 	irq_desc[M32R_IRQ_SIO1_R].chip = &mappi_irq_type;
 	irq_desc[M32R_IRQ_SIO1_R].action = NULL;
 	irq_desc[M32R_IRQ_SIO1_R].depth = 1;
+	irq_set_chip_and_handler(M32R_IRQ_SIO1_R, &mappi_irq_type,
+				 handle_level_irq);
 	icu_data[M32R_IRQ_SIO1_R].icucr = 0;
 	disable_mappi_irq(M32R_IRQ_SIO1_R);
 
@@ -131,6 +165,8 @@ void __init init_IRQ(void)
 	irq_desc[M32R_IRQ_SIO1_S].chip = &mappi_irq_type;
 	irq_desc[M32R_IRQ_SIO1_S].action = NULL;
 	irq_desc[M32R_IRQ_SIO1_S].depth = 1;
+	irq_set_chip_and_handler(M32R_IRQ_SIO1_S, &mappi_irq_type,
+				 handle_level_irq);
 	icu_data[M32R_IRQ_SIO1_S].icucr = 0;
 	disable_mappi_irq(M32R_IRQ_SIO1_S);
 #endif /* CONFIG_SERIAL_M32R_SIO */
@@ -141,6 +177,8 @@ void __init init_IRQ(void)
 	irq_desc[M32R_IRQ_INT1].chip = &mappi_irq_type;
 	irq_desc[M32R_IRQ_INT1].action = NULL;
 	irq_desc[M32R_IRQ_INT1].depth = 1;
+	irq_set_chip_and_handler(M32R_IRQ_INT1, &mappi_irq_type,
+				 handle_level_irq);
 	icu_data[M32R_IRQ_INT1].icucr = M32R_ICUCR_IEN | M32R_ICUCR_ISMOD00;
 	disable_mappi_irq(M32R_IRQ_INT1);
 
@@ -149,6 +187,8 @@ void __init init_IRQ(void)
 	irq_desc[M32R_IRQ_INT2].chip = &mappi_irq_type;
 	irq_desc[M32R_IRQ_INT2].action = NULL;
 	irq_desc[M32R_IRQ_INT2].depth = 1;
+	irq_set_chip_and_handler(M32R_IRQ_INT2, &mappi_irq_type,
+				 handle_level_irq);
 	icu_data[M32R_IRQ_INT2].icucr = M32R_ICUCR_IEN | M32R_ICUCR_ISMOD00;
 	disable_mappi_irq(M32R_IRQ_INT2);
 #endif /* CONFIG_M32RPCC */

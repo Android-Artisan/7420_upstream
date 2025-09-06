@@ -20,6 +20,12 @@
 #include <linux/module.h>
 #include <linux/spinlock.h>
 #include <linux/fs_struct.h>
+#include <linux/atomic.h>
+#include <asm/pgtable.h>
+#include <asm/uaccess.h>
+#include <asm/irq.h>
+#include <linux/module.h>
+#include <linux/spinlock.h>
 #include <linux/init_task.h>
 #include <linux/sched.h>
 #include <linux/fs.h>
@@ -94,6 +100,10 @@ EXPORT_SYMBOL(enable_hlt);
  */
 void (*pm_idle)(void);
 
+#include <linux/rcupdate.h>
+
+//#define DEBUG
+
 extern void default_idle(void);
 
 void (*pm_power_off)(void);
@@ -126,6 +136,9 @@ void cpu_idle (void)
 		schedule();
 		preempt_disable();
 	}
+void arch_cpu_idle(void)
+{
+	default_idle();
 }
 
 void hard_reset_now (void);

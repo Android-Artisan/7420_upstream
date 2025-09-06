@@ -66,6 +66,14 @@ extern int jfs_init_security(tid_t, struct inode *, struct inode *);
 #else
 static inline int jfs_init_security(tid_t tid, struct inode *inode,
 				    struct inode *dir)
+extern const struct xattr_handler *jfs_xattr_handlers[];
+
+#ifdef CONFIG_JFS_SECURITY
+extern int jfs_init_security(tid_t, struct inode *, struct inode *,
+			     const struct qstr *);
+#else
+static inline int jfs_init_security(tid_t tid, struct inode *inode,
+				    struct inode *dir, const struct qstr *qstr)
 {
 	return 0;
 }

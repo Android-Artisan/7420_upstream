@@ -19,6 +19,9 @@
 #include <linux/init.h>
 #include <linux/blkdev.h>
 #include <linux/delay.h>
+#include <linux/blkdev.h>
+#include <linux/delay.h>
+#include <linux/gfp.h>
 #include <scsi/scsi_host.h>
 #include <linux/libata.h>
 
@@ -173,6 +176,29 @@ static struct ata_port_operations cmd640_port_ops = {
 	.inherits	= &ata_bmdma_port_ops,
 	/* In theory xfer_noirq is not needed once we kill the prefetcher */
 	.sff_data_xfer	= ata_sff_data_xfer_noirq,
+	return 0;
+}
+
+static bool cmd640_sff_irq_check(struct ata_port *ap)
+{
+	struct pci_dev *pdev	= to_pci_dev(ap->host->dev);
+	int irq_reg		= ap->port_no ? ARTIM23 : CFR;
+	u8  irq_stat, irq_mask	= ap->port_no ? 0x10 : 0x04;
+
+	pci_read_config_byte(pdev, irq_reg, &irq_stat);
+
+	return irq_stat & irq_mask;
+}
+
+static struct scsi_host_template cmd640_sht = {
+	ATA_PIO_SHT(DRV_NAME),
+};
+
+static struct ata_port_operations cmd640_port_ops = {
+	.inherits	= &ata_sff_port_ops,
+	/* In theory xfer_noirq is not needed once we kill the prefetcher */
+	.sff_data_xfer	= ata_sff_data_xfer_noirq,
+	.sff_irq_check	= cmd640_sff_irq_check,
 	.qc_issue	= cmd640_qc_issue,
 	.cable_detect	= ata_cable_40wire,
 	.set_piomode	= cmd640_set_piomode,
@@ -213,6 +239,7 @@ static int cmd640_init_one(struct pci_dev *pdev, const struct pci_device_id *id)
 	static const struct ata_port_info info = {
 		.flags = ATA_FLAG_SLAVE_POSS,
 		.pio_mask = 0x1f,
+		.pio_mask = ATA_PIO4,
 		.port_ops = &cmd640_port_ops
 	};
 	const struct ata_port_info *ppi[] = { &info, NULL };
@@ -231,6 +258,13 @@ static int cmd640_init_one(struct pci_dev *pdev, const struct pci_device_id *id)
 static int cmd640_reinit_one(struct pci_dev *pdev)
 {
 	struct ata_host *host = dev_get_drvdata(&pdev->dev);
+	return ata_pci_sff_init_one(pdev, ppi, &cmd640_sht, NULL, 0);
+}
+
+#ifdef CONFIG_PM_SLEEP
+static int cmd640_reinit_one(struct pci_dev *pdev)
+{
+	struct ata_host *host = pci_get_drvdata(pdev);
 	int rc;
 
 	rc = ata_pci_device_do_resume(pdev);
@@ -253,6 +287,7 @@ static struct pci_driver cmd640_pci_driver = {
 	.probe 		= cmd640_init_one,
 	.remove		= ata_pci_remove_one,
 #ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 	.suspend	= ata_pci_device_suspend,
 	.resume		= cmd640_reinit_one,
 #endif
@@ -267,6 +302,7 @@ static void __exit cmd640_exit(void)
 {
 	pci_unregister_driver(&cmd640_pci_driver);
 }
+module_pci_driver(cmd640_pci_driver);
 
 MODULE_AUTHOR("Alan Cox");
 MODULE_DESCRIPTION("low-level driver for CMD640 PATA controllers");

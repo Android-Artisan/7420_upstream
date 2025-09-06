@@ -21,6 +21,7 @@
 
 #include <linux/init.h>
 #include <linux/module.h>
+#include <linux/slab.h>
 #include <linux/spinlock.h>
 #include "sound_config.h"
 
@@ -49,12 +50,14 @@ static int v_midi_open (int dev, int mode,
 
 	if (devc == NULL)
 		return -(ENXIO);
+		return -ENXIO;
 
 	spin_lock_irqsave(&devc->lock,flags);
 	if (devc->opened)
 	{
 		spin_unlock_irqrestore(&devc->lock,flags);
 		return -(EBUSY);
+		return -EBUSY;
 	}
 	devc->opened = 1;
 	spin_unlock_irqrestore(&devc->lock,flags);

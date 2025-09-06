@@ -1,4 +1,5 @@
 /* 
+/*
  * ASCII values for a number of symbolic constants, printing functions,
  * etc.
  * Additions for SCSI 2 and Linux 2.2.x by D. Gilbert (990422)
@@ -6,6 +7,7 @@
  *   by D. Gilbert and aeb (20020609)
  * Additions for SPC-3 T10/1416-D Rev 21 22 Sept 2004, D. Gilbert 20041025
  * Update to SPC-4 T10/1713-D Rev 5a, 14 June 2006, D. Gilbert 20060702
+ * Updated to SPC-4 T10/1713-D Rev 36g, D. Gilbert 20130701
  */
 
 #include <linux/blkdev.h>
@@ -42,6 +44,31 @@ static const char * cdb_byte0_names[] = {
 	    "Reserve(6)",
 /* 17-1a */ "Release(6)", "Copy", "Erase", "Mode Sense(6)",
 /* 1b-1d */ "Start/Stop Unit", "Receive Diagnostic", "Send Diagnostic", 
+/* Commands with service actions that change the command name */
+#define THIRD_PARTY_COPY_OUT 0x83
+#define THIRD_PARTY_COPY_IN 0x84
+
+struct sa_name_list {
+	int opcode;
+	const struct value_name_pair *arr;
+	int arr_sz;
+};
+
+struct value_name_pair {
+	int value;
+	const char * name;
+};
+
+static const char * cdb_byte0_names[] = {
+/* 00-03 */ "Test Unit Ready", "Rezero Unit/Rewind", NULL, "Request Sense",
+/* 04-07 */ "Format Unit/Medium", "Read Block Limits", NULL,
+	    "Reassign Blocks",
+/* 08-0d */ "Read(6)", NULL, "Write(6)", "Seek(6)", NULL, NULL,
+/* 0e-12 */ NULL, "Read Reverse", "Write Filemarks", "Space", "Inquiry",
+/* 13-16 */ "Verify(6)", "Recover Buffered Data", "Mode Select(6)",
+	    "Reserve(6)",
+/* 17-1a */ "Release(6)", "Copy", "Erase", "Mode Sense(6)",
+/* 1b-1d */ "Start/Stop Unit", "Receive Diagnostic", "Send Diagnostic",
 /* 1e-1f */ "Prevent/Allow Medium Removal", NULL,
 /* 20-22 */  NULL, NULL, NULL,
 /* 23-28 */ "Read Format Capacities", "Set Window",
@@ -59,6 +86,16 @@ static const char * cdb_byte0_names[] = {
 /* 42-48 */ "Read sub-channel", "Read TOC/PMA/ATIP", "Read density support",
             "Play audio(10)", "Get configuration", "Play audio msf",
             "Play audio track/index",
+/* 32-34 */ "Search Low", "Set Limits", "Prefetch/Read Position",
+/* 35-37 */ "Synchronize Cache(10)", "Lock/Unlock Cache(10)",
+	    "Read Defect Data(10)",
+/* 38-3c */ "Medium Scan", "Compare", "Copy Verify", "Write Buffer",
+	    "Read Buffer",
+/* 3d-3f */ "Update Block", "Read Long(10)",  "Write Long(10)",
+/* 40-41 */ "Change Definition", "Write Same(10)",
+/* 42-48 */ "Unmap/Read sub-channel", "Read TOC/PMA/ATIP",
+	    "Read density support", "Play audio(10)", "Get configuration",
+	    "Play audio msf", "Sanitize/Play audio track/index",
 /* 49-4f */ "Play track relative(10)", "Get event status notification",
             "Pause/resume", "Log Select", "Log Sense", "Stop play/scan",
             NULL,
@@ -77,12 +114,21 @@ static const char * cdb_byte0_names[] = {
 /* 85-89 */ "ATA command pass through(16)", "Access control in",
 	    "Access control out", "Read(16)", "Memory Export Out(16)",
 /* 8a-8f */ "Write(16)", NULL, "Read attributes", "Write attributes",
+/* 78-7f */ NULL, NULL, NULL, NULL, NULL, NULL, "Extended CDB",
+	    "Variable length",
+/* 80-84 */ "Xdwrite(16)", "Rebuild(16)", "Regenerate(16)",
+	    "Third party copy out", "Third party copy in",
+/* 85-89 */ "ATA command pass through(16)", "Access control in",
+	    "Access control out", "Read(16)", "Compare and Write",
+/* 8a-8f */ "Write(16)", "ORWrite", "Read attributes", "Write attributes",
             "Write and verify(16)", "Verify(16)",
 /* 90-94 */ "Pre-fetch(16)", "Synchronize cache(16)",
             "Lock/unlock cache(16)", "Write same(16)", NULL,
 /* 95-99 */ NULL, NULL, NULL, NULL, NULL,
 /* 9a-9f */ NULL, NULL, NULL, NULL, "Service action in(16)",
             "Service action out(16)",
+/* 9a-9f */ NULL, NULL, NULL, "Service action bidirectional",
+	    "Service action in(16)", "Service action out(16)",
 /* a0-a5 */ "Report luns", "ATA command pass through(12)/Blank",
             "Security protocol in", "Maintenance in", "Maintenance out",
 	    "Move medium/play audio(12)",
@@ -108,12 +154,15 @@ struct value_name_pair {
 
 static const struct value_name_pair maint_in_arr[] = {
 	{0x5, "Report device identifier"},
+static const struct value_name_pair maint_in_arr[] = {
+	{0x5, "Report identifying information"},
 	{0xa, "Report target port groups"},
 	{0xb, "Report aliases"},
 	{0xc, "Report supported operation codes"},
 	{0xd, "Report supported task management functions"},
 	{0xe, "Report priority"},
 	{0xf, "Report timestamp"},
+	{0x10, "Management protocol in"},
 };
 #define MAINT_IN_SZ ARRAY_SIZE(maint_in_arr)
 
@@ -123,6 +172,13 @@ static const struct value_name_pair maint_out_arr[] = {
 	{0xb, "Change aliases"},
 	{0xe, "Set priority"},
 	{0xe, "Set timestamp"},
+	{0x6, "Set identifying information"},
+	{0xa, "Set target port groups"},
+	{0xb, "Change aliases"},
+	{0xc, "Remove I_T nexus"},
+	{0xe, "Set priority"},
+	{0xf, "Set timestamp"},
+	{0x10, "Management protocol out"},
 };
 #define MAINT_OUT_SZ ARRAY_SIZE(maint_out_arr)
 
@@ -139,6 +195,16 @@ static const struct value_name_pair serv_out12_arr[] = {
 static const struct value_name_pair serv_in16_arr[] = {
 	{0x10, "Read capacity(16)"},
 	{0x11, "Read long(16)"},
+static const struct value_name_pair serv_bidi_arr[] = {
+	{-1, "dummy entry"},
+};
+#define SERV_BIDI_SZ ARRAY_SIZE(serv_bidi_arr)
+
+static const struct value_name_pair serv_in16_arr[] = {
+	{0x10, "Read capacity(16)"},
+	{0x11, "Read long(16)"},
+	{0x12, "Get LBA status"},
+	{0x13, "Report referrals"},
 };
 #define SERV_IN16_SZ ARRAY_SIZE(serv_in16_arr)
 
@@ -147,6 +213,51 @@ static const struct value_name_pair serv_out16_arr[] = {
 	{0x1f, "Notify data transfer device(16)"},
 };
 #define SERV_OUT16_SZ ARRAY_SIZE(serv_out16_arr)
+
+static const struct value_name_pair pr_in_arr[] = {
+	{0x0, "Persistent reserve in, read keys"},
+	{0x1, "Persistent reserve in, read reservation"},
+	{0x2, "Persistent reserve in, report capabilities"},
+	{0x3, "Persistent reserve in, read full status"},
+};
+#define PR_IN_SZ ARRAY_SIZE(pr_in_arr)
+
+static const struct value_name_pair pr_out_arr[] = {
+	{0x0, "Persistent reserve out, register"},
+	{0x1, "Persistent reserve out, reserve"},
+	{0x2, "Persistent reserve out, release"},
+	{0x3, "Persistent reserve out, clear"},
+	{0x4, "Persistent reserve out, preempt"},
+	{0x5, "Persistent reserve out, preempt and abort"},
+	{0x6, "Persistent reserve out, register and ignore existing key"},
+	{0x7, "Persistent reserve out, register and move"},
+};
+#define PR_OUT_SZ ARRAY_SIZE(pr_out_arr)
+
+/* SPC-4 rev 34 renamed the Extended Copy opcode to Third Party Copy Out.
+   LID1 (List Identifier length: 1 byte) is the Extended Copy found in SPC-2
+   and SPC-3 */
+static const struct value_name_pair tpc_out_arr[] = {
+	{0x0, "Extended copy(LID1)"},
+	{0x1, "Extended copy(LID4)"},
+	{0x10, "Populate token"},
+	{0x11, "Write using token"},
+	{0x1c, "Copy operation abort"},
+};
+#define TPC_OUT_SZ ARRAY_SIZE(tpc_out_arr)
+
+static const struct value_name_pair tpc_in_arr[] = {
+	{0x0, "Receive copy status(LID1)"},
+	{0x1, "Receive copy data(LID1)"},
+	{0x3, "Receive copy operating parameters"},
+	{0x4, "Receive copy failure details(LID1)"},
+	{0x5, "Receive copy status(LID4)"},
+	{0x6, "Receive copy data(LID4)"},
+	{0x7, "Receive ROD token information"},
+	{0x8, "Report all ROD tokens"},
+};
+#define TPC_IN_SZ ARRAY_SIZE(tpc_in_arr)
+
 
 static const struct value_name_pair variable_length_arr[] = {
 	{0x1, "Rebuild(32)"},
@@ -192,6 +303,45 @@ static const char * get_sa_name(const struct value_name_pair * arr,
 			        int arr_sz, int service_action)
 {
 	int k;
+static struct sa_name_list sa_names_arr[] = {
+	{VARIABLE_LENGTH_CMD, variable_length_arr, VARIABLE_LENGTH_SZ},
+	{MAINTENANCE_IN, maint_in_arr, MAINT_IN_SZ},
+	{MAINTENANCE_OUT, maint_out_arr, MAINT_OUT_SZ},
+	{PERSISTENT_RESERVE_IN, pr_in_arr, PR_IN_SZ},
+	{PERSISTENT_RESERVE_OUT, pr_out_arr, PR_OUT_SZ},
+	{SERVICE_ACTION_IN_12, serv_in12_arr, SERV_IN12_SZ},
+	{SERVICE_ACTION_OUT_12, serv_out12_arr, SERV_OUT12_SZ},
+	{SERVICE_ACTION_BIDIRECTIONAL, serv_bidi_arr, SERV_BIDI_SZ},
+	{SERVICE_ACTION_IN_16, serv_in16_arr, SERV_IN16_SZ},
+	{SERVICE_ACTION_OUT_16, serv_out16_arr, SERV_OUT16_SZ},
+	{THIRD_PARTY_COPY_IN, tpc_in_arr, TPC_IN_SZ},
+	{THIRD_PARTY_COPY_OUT, tpc_out_arr, TPC_OUT_SZ},
+	{0, NULL, 0},
+};
+
+bool scsi_opcode_sa_name(int opcode, int service_action,
+			 const char **cdb_name, const char **sa_name)
+{
+	struct sa_name_list *sa_name_ptr;
+	const struct value_name_pair *arr = NULL;
+	int arr_sz, k;
+
+	*cdb_name = NULL;
+	if (opcode >= VENDOR_SPECIFIC_CDB)
+		return false;
+
+	if (opcode < ARRAY_SIZE(cdb_byte0_names))
+		*cdb_name = cdb_byte0_names[opcode];
+
+	for (sa_name_ptr = sa_names_arr; sa_name_ptr->arr; ++sa_name_ptr) {
+		if (sa_name_ptr->opcode == opcode) {
+			arr = sa_name_ptr->arr;
+			arr_sz = sa_name_ptr->arr_sz;
+			break;
+		}
+	}
+	if (!arr)
+		return false;
 
 	for (k = 0; k < arr_sz; ++k, ++arr) {
 		if (service_action == arr->value)
@@ -394,6 +544,12 @@ EXPORT_SYMBOL(scsi_print_status);
 
 #ifdef CONFIG_SCSI_CONSTANTS
 
+	if (k < arr_sz)
+		*sa_name = arr->name;
+
+	return true;
+}
+
 struct error_info {
 	unsigned short code12;	/* 0x0302 looks better than 0x03,0x02 */
 	const char * text;
@@ -403,6 +559,9 @@ struct error_info {
  * The canonical list of T10 Additional Sense Codes is available at:
  * http://www.t10.org/lists/asc-num.txt
  */
+ * http://www.t10.org/lists/asc-num.txt [most recent: 20141221]
+ */
+
 static const struct error_info additional[] =
 {
 	{0x0000, "No additional sense information"},
@@ -412,6 +571,7 @@ static const struct error_info additional[] =
 	{0x0004, "Beginning-of-partition/medium detected"},
 	{0x0005, "End-of-data detected"},
 	{0x0006, "I/O process terminated"},
+	{0x0007, "Programmable early warning detected"},
 	{0x0011, "Audio play operation in progress"},
 	{0x0012, "Audio play operation paused"},
 	{0x0013, "Audio play operation successfully completed"},
@@ -425,6 +585,10 @@ static const struct error_info additional[] =
 	{0x001B, "Set capacity operation in progress"},
 	{0x001C, "Verify operation in progress"},
 	{0x001D, "ATA pass through information available"},
+	{0x001E, "Conflicting SA creation request"},
+	{0x001F, "Logical unit transitioning to another power condition"},
+	{0x0020, "Extended copy information available"},
+	{0x0021, "Atomic command aborted due to ACA"},
 
 	{0x0100, "No index/sector signal"},
 
@@ -452,6 +616,29 @@ static const struct error_info additional[] =
 	{0x0410, "Logical unit not ready, auxiliary memory not accessible"},
 	{0x0411, "Logical unit not ready, notify (enable spinup) required"},
 	{0x0412, "Logical unit not ready, offline"},
+	{0x040D, "Logical unit not ready, structure check required"},
+	{0x040E, "Logical unit not ready, security session in progress"},
+	{0x0410, "Logical unit not ready, auxiliary memory not accessible"},
+	{0x0411, "Logical unit not ready, notify (enable spinup) required"},
+	{0x0412, "Logical unit not ready, offline"},
+	{0x0413, "Logical unit not ready, SA creation in progress"},
+	{0x0414, "Logical unit not ready, space allocation in progress"},
+	{0x0415, "Logical unit not ready, robotics disabled"},
+	{0x0416, "Logical unit not ready, configuration required"},
+	{0x0417, "Logical unit not ready, calibration required"},
+	{0x0418, "Logical unit not ready, a door is open"},
+	{0x0419, "Logical unit not ready, operating in sequential mode"},
+	{0x041A, "Logical unit not ready, start stop unit command in "
+	 "progress"},
+	{0x041B, "Logical unit not ready, sanitize in progress"},
+	{0x041C, "Logical unit not ready, additional power use not yet "
+	 "granted"},
+	{0x041D, "Logical unit not ready, configuration in progress"},
+	{0x041E, "Logical unit not ready, microcode activation required"},
+	{0x041F, "Logical unit not ready, microcode download required"},
+	{0x0420, "Logical unit not ready, logical unit reset required"},
+	{0x0421, "Logical unit not ready, hard reset required"},
+	{0x0422, "Logical unit not ready, power cycle required"},
 
 	{0x0500, "Logical unit does not respond to selection"},
 
@@ -470,6 +657,7 @@ static const struct error_info additional[] =
 	{0x0902, "Focus servo failure"},
 	{0x0903, "Spindle servo failure"},
 	{0x0904, "Head select fault"},
+	{0x0905, "Vibration induced tracking error"},
 
 	{0x0A00, "Error log overflow"},
 
@@ -479,6 +667,10 @@ static const struct error_info additional[] =
 	{0x0B03, "Warning - background self-test failed"},
 	{0x0B04, "Warning - background pre-scan detected medium error"},
 	{0x0B05, "Warning - background medium scan detected medium error"},
+	{0x0B06, "Warning - non-volatile cache now volatile"},
+	{0x0B07, "Warning - degraded power to non-volatile cache"},
+	{0x0B08, "Warning - power loss expected"},
+	{0x0B09, "Warning - device statistics notification active"},
 
 	{0x0C00, "Write error"},
 	{0x0C01, "Write error - recovered with auto reallocation"},
@@ -495,6 +687,9 @@ static const struct error_info additional[] =
 	{0x0C0C, "Write error - unexpected unsolicited data"},
 	{0x0C0D, "Write error - not enough unsolicited data"},
 	{0x0C0F, "Defects in error window"},
+	{0x0C0E, "Multiple write errors"},
+	{0x0C0F, "Defects in error window"},
+	{0x0C10, "Incomplete multiple atomic write operations"},
 
 	{0x0D00, "Error detected by third party temporary initiator"},
 	{0x0D01, "Third party device failure"},
@@ -512,6 +707,8 @@ static const struct error_info additional[] =
 	{0x1001, "Logical block guard check failed"},
 	{0x1002, "Logical block application tag check failed"},
 	{0x1003, "Logical block reference tag check failed"},
+	{0x1004, "Logical block protection error on recover buffered data"},
+	{0x1005, "Logical block protection method error"},
 
 	{0x1100, "Unrecovered read error"},
 	{0x1101, "Read retries exhausted"},
@@ -534,6 +731,7 @@ static const struct error_info additional[] =
 	{0x1112, "Auxiliary memory read error"},
 	{0x1113, "Read error - failed retransmission request"},
 	{0x1114, "Read error - lba marked bad by application client"},
+	{0x1115, "Write after sanitize required"},
 
 	{0x1200, "Address mark not found for id field"},
 
@@ -593,6 +791,7 @@ static const struct error_info additional[] =
 	{0x1C02, "Grown defect list not found"},
 
 	{0x1D00, "Miscompare during verify operation"},
+	{0x1D01, "Miscompare verify of unmapped LBA"},
 
 	{0x1E00, "Recovered id with ECC correction"},
 
@@ -610,6 +809,7 @@ static const struct error_info additional[] =
 	{0x2009, "Access denied - invalid LU identifier"},
 	{0x200A, "Access denied - invalid proxy token"},
 	{0x200B, "Access denied - ACL LUN conflict"},
+	{0x200C, "Illegal command when not in append-only mode"},
 
 	{0x2100, "Logical block address out of range"},
 	{0x2101, "Invalid element address"},
@@ -617,6 +817,26 @@ static const struct error_info additional[] =
 	{0x2103, "Invalid write crossing layer jump"},
 
 	{0x2200, "Illegal function (use 20 00, 24 00, or 26 00)"},
+
+	{0x2104, "Unaligned write command"},
+	{0x2105, "Write boundary violation"},
+	{0x2106, "Attempt to read invalid data"},
+	{0x2107, "Read boundary violation"},
+
+	{0x2200, "Illegal function (use 20 00, 24 00, or 26 00)"},
+
+	{0x2300, "Invalid token operation, cause not reportable"},
+	{0x2301, "Invalid token operation, unsupported token type"},
+	{0x2302, "Invalid token operation, remote token usage not supported"},
+	{0x2303, "Invalid token operation, remote rod token creation not "
+	 "supported"},
+	{0x2304, "Invalid token operation, token unknown"},
+	{0x2305, "Invalid token operation, token corrupt"},
+	{0x2306, "Invalid token operation, token revoked"},
+	{0x2307, "Invalid token operation, token expired"},
+	{0x2308, "Invalid token operation, token cancelled"},
+	{0x2309, "Invalid token operation, token deleted"},
+	{0x230A, "Invalid token operation, invalid token length"},
 
 	{0x2400, "Invalid field in cdb"},
 	{0x2401, "CDB decryption error"},
@@ -626,6 +846,7 @@ static const struct error_info additional[] =
 	{0x2405, "Security working key frozen"},
 	{0x2406, "Nonce not unique"},
 	{0x2407, "Nonce timestamp out of range"},
+	{0x2408, "Invalid XCDB"},
 
 	{0x2500, "Logical unit not supported"},
 
@@ -656,10 +877,13 @@ static const struct error_info additional[] =
 	{0x2704, "Persistent write protect"},
 	{0x2705, "Permanent write protect"},
 	{0x2706, "Conditional write protect"},
+	{0x2707, "Space allocation failed write protect"},
+	{0x2708, "Zone is read only"},
 
 	{0x2800, "Not ready to ready change, medium may have changed"},
 	{0x2801, "Import or export element accessed"},
 	{0x2802, "Format-layer may have changed"},
+	{0x2803, "Import/export element accessed, medium changed"},
 
 	{0x2900, "Power on, reset, or bus device reset occurred"},
 	{0x2901, "Power on occurred"},
@@ -680,11 +904,17 @@ static const struct error_info additional[] =
 	{0x2A07, "Implicit asymmetric access state transition failed"},
 	{0x2A08, "Priority changed"},
 	{0x2A09, "Capacity data has changed"},
+	{0x2A0A, "Error history I_T nexus cleared"},
+	{0x2A0B, "Error history snapshot released"},
+	{0x2A0C, "Error recovery attributes have changed"},
+	{0x2A0D, "Data encryption capabilities changed"},
 	{0x2A10, "Timestamp changed"},
 	{0x2A11, "Data encryption parameters changed by another i_t nexus"},
 	{0x2A12, "Data encryption parameters changed by vendor specific "
 		 "event"},
 	{0x2A13, "Data encryption key instance counter has changed"},
+	{0x2A14, "SA creation capabilities data has changed"},
+	{0x2A15, "Medium removal prevention preempted"},
 
 	{0x2B00, "Copy cannot execute since host cannot disconnect"},
 
@@ -700,14 +930,21 @@ static const struct error_info additional[] =
 	{0x2C09, "Previous reservation conflict status"},
 	{0x2C0A, "Partition or collection contains user objects"},
 	{0x2C0B, "Not reserved"},
+	{0x2C0C, "Orwrite generation does not match"},
+	{0x2C0D, "Reset write pointer not allowed"},
+	{0x2C0E, "Zone is offline"},
 
 	{0x2D00, "Overwrite error on update in place"},
 
 	{0x2E00, "Insufficient time for operation"},
+	{0x2E01, "Command timeout before processing"},
+	{0x2E02, "Command timeout during processing"},
+	{0x2E03, "Command timeout during processing due to error recovery"},
 
 	{0x2F00, "Commands cleared by another initiator"},
 	{0x2F01, "Commands cleared by power loss notification"},
 	{0x2F02, "Commands cleared by device server"},
+	{0x2F03, "Some commands cleared by queuing layer event"},
 
 	{0x3000, "Incompatible medium installed"},
 	{0x3001, "Cannot read medium - unknown format"},
@@ -723,10 +960,14 @@ static const struct error_info additional[] =
 	{0x300C, "WORM medium - overwrite attempted"},
 	{0x300D, "WORM medium - integrity check"},
 	{0x3010, "Medium not formatted"},
+	{0x3011, "Incompatible volume type"},
+	{0x3012, "Incompatible volume qualifier"},
+	{0x3013, "Cleaning volume expired"},
 
 	{0x3100, "Medium format corrupted"},
 	{0x3101, "Format command failed"},
 	{0x3102, "Zoned formatting failed due to spare linking"},
+	{0x3103, "Sanitize command failed"},
 
 	{0x3200, "No defect spare location available"},
 	{0x3201, "Defect list update failure"},
@@ -750,6 +991,7 @@ static const struct error_info additional[] =
 	{0x3802, "Esn - power management class event"},
 	{0x3804, "Esn - media class event"},
 	{0x3806, "Esn - device busy class event"},
+	{0x3807, "Thin Provisioning soft threshold reached"},
 
 	{0x3900, "Saving parameters not supported"},
 
@@ -782,6 +1024,12 @@ static const struct error_info additional[] =
 	{0x3B15, "Medium magazine unlocked"},
 	{0x3B16, "Mechanical positioning or changer error"},
 	{0x3B17, "Read past end of user object"},
+	{0x3B18, "Element disabled"},
+	{0x3B19, "Element enabled"},
+	{0x3B1A, "Data transfer device removed"},
+	{0x3B1B, "Data transfer device inserted"},
+	{0x3B1C, "Too many logical objects on partition to support "
+	 "operation"},
 
 	{0x3D00, "Invalid bits in identify message"},
 
@@ -812,6 +1060,8 @@ static const struct error_info additional[] =
 	{0x3F12, "iSCSI IP address added"},
 	{0x3F13, "iSCSI IP address removed"},
 	{0x3F14, "iSCSI IP address changed"},
+	{0x3F15, "Inspect referrals sense descriptors"},
+	{0x3F16, "Microcode has been changed without reset"},
 /*
  *	{0x40NN, "Ram failure"},
  *	{0x40NN, "Diagnostic failure on component nn"},
@@ -821,6 +1071,7 @@ static const struct error_info additional[] =
 	{0x4300, "Message error"},
 
 	{0x4400, "Internal target failure"},
+	{0x4401, "Persistent reservation information lost"},
 	{0x4471, "ATA device failed set features"},
 
 	{0x4500, "Select or reselect failure"},
@@ -849,6 +1100,21 @@ static const struct error_info additional[] =
 	{0x4B04, "Nak received"},
 	{0x4B05, "Data offset error"},
 	{0x4B06, "Initiator response timeout"},
+	{0x4B07, "Connection lost"},
+	{0x4B08, "Data-in buffer overflow - data buffer size"},
+	{0x4B09, "Data-in buffer overflow - data buffer descriptor area"},
+	{0x4B0A, "Data-in buffer error"},
+	{0x4B0B, "Data-out buffer overflow - data buffer size"},
+	{0x4B0C, "Data-out buffer overflow - data buffer descriptor area"},
+	{0x4B0D, "Data-out buffer error"},
+	{0x4B0E, "PCIe fabric error"},
+	{0x4B0F, "PCIe completion timeout"},
+	{0x4B10, "PCIe completer abort"},
+	{0x4B11, "PCIe poisoned tlp received"},
+	{0x4B12, "PCIe eCRC check failed"},
+	{0x4B13, "PCIe unsupported request"},
+	{0x4B14, "PCIe acs violation"},
+	{0x4B15, "PCIe tlp prefix blocked"},
 
 	{0x4C00, "Logical unit failed self-configuration"},
 /*
@@ -870,6 +1136,15 @@ static const struct error_info additional[] =
 	{0x5302, "Medium removal prevented"},
 	{0x5303, "Medium removal prevented by data transfer element"},
 	{0x5304, "Medium thread or unthread failure"},
+	{0x5305, "Volume identifier invalid"},
+	{0x5306, "Volume identifier missing"},
+	{0x5307, "Duplicate volume identifier"},
+	{0x5308, "Element status unknown"},
+	{0x5309, "Data transfer device error - load failed"},
+	{0x530a, "Data transfer device error - unload failed"},
+	{0x530b, "Data transfer device error - unload missing"},
+	{0x530c, "Data transfer device error - eject failed"},
+	{0x530d, "Data transfer device error - library communication failed"},
 
 	{0x5400, "Scsi to host system interface failure"},
 
@@ -882,6 +1157,12 @@ static const struct error_info additional[] =
 	{0x5506, "Auxiliary memory out of space"},
 	{0x5507, "Quota error"},
 	{0x5508, "Maximum number of supplemental decryption keys exceeded"},
+	{0x5509, "Medium auxiliary memory not accessible"},
+	{0x550A, "Data currently unavailable"},
+	{0x550B, "Insufficient power for operation"},
+	{0x550C, "Insufficient resources to create rod"},
+	{0x550D, "Insufficient resources to create rod token"},
+	{0x550E, "Insufficient zone resources"},
 
 	{0x5700, "Unable to recover table-of-contents"},
 
@@ -993,6 +1274,12 @@ static const struct error_info additional[] =
 	{0x5E02, "Standby condition activated by timer"},
 	{0x5E03, "Idle condition activated by command"},
 	{0x5E04, "Standby condition activated by command"},
+	{0x5E05, "Idle_b condition activated by timer"},
+	{0x5E06, "Idle_b condition activated by command"},
+	{0x5E07, "Idle_c condition activated by timer"},
+	{0x5E08, "Idle_c condition activated by command"},
+	{0x5E09, "Standby_y condition activated by timer"},
+	{0x5E0A, "Standby_y condition activated by command"},
 	{0x5E41, "Power state change to active"},
 	{0x5E42, "Power state change to idle"},
 	{0x5E43, "Power state change to standby"},
@@ -1034,6 +1321,7 @@ static const struct error_info additional[] =
 	{0x670B, "ATA device feature not enabled"},
 
 	{0x6800, "Logical unit not configured"},
+	{0x6801, "Subsidiary logical unit not configured"},
 
 	{0x6900, "Data loss on logical unit"},
 	{0x6901, "Multiple logical unit failures"},
@@ -1092,12 +1380,35 @@ static const struct error_info additional[] =
 	{0x7404, "Cryptographic integrity validation failed"},
 	{0x7405, "Error decrypting data"},
 	{0x7471, "Logical unit access not authorized"},
+	{0x7406, "Unknown signature verification key"},
+	{0x7407, "Encryption parameters not useable"},
+	{0x7408, "Digital signature validation failure"},
+	{0x7409, "Encryption mode mismatch on read"},
+	{0x740A, "Encrypted block not raw read enabled"},
+	{0x740B, "Incorrect Encryption parameters"},
+	{0x740C, "Unable to decrypt parameter list"},
+	{0x740D, "Encryption algorithm disabled"},
+	{0x7410, "SA creation parameter value invalid"},
+	{0x7411, "SA creation parameter value rejected"},
+	{0x7412, "Invalid SA usage"},
+	{0x7421, "Data Encryption configuration prevented"},
+	{0x7430, "SA creation parameter not supported"},
+	{0x7440, "Authentication failed"},
+	{0x7461, "External data encryption key manager access error"},
+	{0x7462, "External data encryption key manager error"},
+	{0x7463, "External data encryption key not found"},
+	{0x7464, "External data encryption request not authorized"},
+	{0x746E, "External data encryption control timeout"},
+	{0x746F, "External data encryption control error"},
+	{0x7471, "Logical unit access not authorized"},
+	{0x7479, "Security conflict in translated device"},
 
 	{0, NULL}
 };
 
 struct error_info2 {
 	unsigned char code1, code2_min, code2_max;
+	const char * str;
 	const char * fmt;
 };
 
@@ -1110,6 +1421,13 @@ static const struct error_info2 additional2[] =
 	{0x4D,0x00,0xff,"Tagged overlapped commands (queue tag %x)"},
 	{0x70,0x00,0xff,"Decompression exception short algorithm id of %x"},
 	{0, 0, 0, NULL}
+	{0x40, 0x00, 0x7f, "Ram failure", ""},
+	{0x40, 0x80, 0xff, "Diagnostic failure on component", ""},
+	{0x41, 0x00, 0xff, "Data path failure", ""},
+	{0x42, 0x00, 0xff, "Power-on or self-test failure", ""},
+	{0x4D, 0x00, 0xff, "Tagged overlapped commands", "task tag "},
+	{0x70, 0x00, 0xff, "Decompression exception", "short algorithm id of "},
+	{0, 0, 0, NULL, NULL}
 };
 
 /* description of the sense key values */
@@ -1135,6 +1453,14 @@ static const char * const snstext[] = {
 				  do not agree */
 };
 #endif
+	"Equal",	    /* C: A SEARCH DATA command found data equal,
+				  reserved in SPC-4 rev 36 */
+	"Volume Overflow",  /* D: Medium full with still data to be written */
+	"Miscompare",	    /* E: Source data and data on the medium
+				  do not agree */
+	"Completed",	    /* F: command completed sense data reported,
+				  may occur for successful command */
+};
 
 /* Get sense key string or NULL if not available */
 const char *
@@ -1143,6 +1469,11 @@ scsi_sense_key_string(unsigned char key) {
 	if (key <= 0xE)
 		return snstext[key];
 #endif
+	if (key <= 0xE)
+scsi_sense_key_string(unsigned char key)
+{
+	if (key < ARRAY_SIZE(snstext))
+		return snstext[key];
 	return NULL;
 }
 EXPORT_SYMBOL(scsi_sense_key_string);
@@ -1166,6 +1497,23 @@ scsi_extd_sense_format(unsigned char asc, unsigned char ascq) {
 		    additional2[i].code2_max <= ascq)
 			return additional2[i].fmt;
 #endif
+scsi_extd_sense_format(unsigned char asc, unsigned char ascq, const char **fmt)
+{
+	int i;
+	unsigned short code = ((asc << 8) | ascq);
+
+	*fmt = NULL;
+	for (i = 0; additional[i].text; i++)
+		if (additional[i].code12 == code)
+			return additional[i].text;
+	for (i = 0; additional2[i].fmt; i++) {
+		if (additional2[i].code1 == asc &&
+		    ascq >= additional2[i].code2_min &&
+		    ascq <= additional2[i].code2_max) {
+			*fmt = additional2[i].fmt;
+			return additional2[i].str;
+		}
+	}
 	return NULL;
 }
 EXPORT_SYMBOL(scsi_extd_sense_format);
@@ -1366,6 +1714,12 @@ static const char * const hostbyte_table[]={
 "DID_ABORT", "DID_PARITY", "DID_ERROR", "DID_RESET", "DID_BAD_INTR",
 "DID_PASSTHROUGH", "DID_SOFT_ERROR", "DID_IMM_RETRY", "DID_REQUEUE"};
 #define NUM_HOSTBYTE_STRS ARRAY_SIZE(hostbyte_table)
+static const char * const hostbyte_table[]={
+"DID_OK", "DID_NO_CONNECT", "DID_BUS_BUSY", "DID_TIME_OUT", "DID_BAD_TARGET",
+"DID_ABORT", "DID_PARITY", "DID_ERROR", "DID_RESET", "DID_BAD_INTR",
+"DID_PASSTHROUGH", "DID_SOFT_ERROR", "DID_IMM_RETRY", "DID_REQUEUE",
+"DID_TRANSPORT_DISRUPTED", "DID_TRANSPORT_FAILFAST", "DID_TARGET_FAILURE",
+"DID_NEXUS_FAILURE" };
 
 static const char * const driverbyte_table[]={
 "DRIVER_OK", "DRIVER_BUSY", "DRIVER_SOFT",  "DRIVER_MEDIA", "DRIVER_ERROR",
@@ -1409,3 +1763,51 @@ void scsi_print_result(struct scsi_cmnd *cmd)
 EXPORT_SYMBOL(scsi_print_result);
 
 
+
+const char *scsi_hostbyte_string(int result)
+{
+	const char *hb_string = NULL;
+	int hb = host_byte(result);
+
+	if (hb < ARRAY_SIZE(hostbyte_table))
+		hb_string = hostbyte_table[hb];
+	return hb_string;
+}
+EXPORT_SYMBOL(scsi_hostbyte_string);
+
+const char *scsi_driverbyte_string(int result)
+{
+	const char *db_string = NULL;
+	int db = driver_byte(result);
+
+	if (db < ARRAY_SIZE(driverbyte_table))
+		db_string = driverbyte_table[db];
+	return db_string;
+}
+EXPORT_SYMBOL(scsi_driverbyte_string);
+
+#define scsi_mlreturn_name(result)	{ result, #result }
+static const struct value_name_pair scsi_mlreturn_arr[] = {
+	scsi_mlreturn_name(NEEDS_RETRY),
+	scsi_mlreturn_name(SUCCESS),
+	scsi_mlreturn_name(FAILED),
+	scsi_mlreturn_name(QUEUED),
+	scsi_mlreturn_name(SOFT_ERROR),
+	scsi_mlreturn_name(ADD_TO_MLQUEUE),
+	scsi_mlreturn_name(TIMEOUT_ERROR),
+	scsi_mlreturn_name(SCSI_RETURN_NOT_HANDLED),
+	scsi_mlreturn_name(FAST_IO_FAIL)
+};
+
+const char *scsi_mlreturn_string(int result)
+{
+	const struct value_name_pair *arr = scsi_mlreturn_arr;
+	int k;
+
+	for (k = 0; k < ARRAY_SIZE(scsi_mlreturn_arr); ++k, ++arr) {
+		if (result == arr->value)
+			return arr->name;
+	}
+	return NULL;
+}
+EXPORT_SYMBOL(scsi_mlreturn_string);

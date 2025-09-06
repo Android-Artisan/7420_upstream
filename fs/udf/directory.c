@@ -76,6 +76,7 @@ struct fileIdentDesc *udf_fileident_read(struct inode *dir, loff_t *nf_pos,
 					 struct fileIdentDesc *cfi,
 					 struct extent_position *epos,
 					 kernel_lb_addr *eloc, uint32_t *elen,
+					 struct kernel_lb_addr *eloc, uint32_t *elen,
 					 sector_t *offset)
 {
 	struct fileIdentDesc *fi;
@@ -112,6 +113,7 @@ struct fileIdentDesc *udf_fileident_read(struct inode *dir, loff_t *nf_pos,
 			return NULL;
 
 		block = udf_get_lb_pblock(dir->i_sb, *eloc, *offset);
+		block = udf_get_lb_pblock(dir->i_sb, eloc, *offset);
 
 		(*offset)++;
 
@@ -132,6 +134,7 @@ struct fileIdentDesc *udf_fileident_read(struct inode *dir, loff_t *nf_pos,
 				i = (*elen >> blocksize_bits)-*offset;
 			for (num = 0; i > 0; i--) {
 				block = udf_get_lb_pblock(dir->i_sb, *eloc,
+				block = udf_get_lb_pblock(dir->i_sb, eloc,
 							  *offset + i);
 				tmp = udf_tgetblk(dir->i_sb, block);
 				if (tmp && !buffer_uptodate(tmp) &&
@@ -170,6 +173,7 @@ struct fileIdentDesc *udf_fileident_read(struct inode *dir, loff_t *nf_pos,
 			return NULL;
 
 		block = udf_get_lb_pblock(dir->i_sb, *eloc, *offset);
+		block = udf_get_lb_pblock(dir->i_sb, eloc, *offset);
 
 		(*offset)++;
 
@@ -204,6 +208,9 @@ struct fileIdentDesc *udf_fileident_read(struct inode *dir, loff_t *nf_pos,
 			       sizeof(struct fileIdentDesc));
 		}
 	}
+	/* Got last entry outside of dir size - fs is corrupted! */
+	if (*nf_pos > dir->i_size)
+		return NULL;
 	return fi;
 }
 
@@ -217,6 +224,8 @@ struct fileIdentDesc *udf_get_fileident(void *buffer, int bufsize, int *offset)
 	if ((!buffer) || (!offset)) {
 		udf_debug("invalidparms\n, buffer=%p, offset=%p\n", buffer,
 			  offset);
+		udf_debug("invalidparms, buffer=%p, offset=%p\n",
+			  buffer, offset);
 		return NULL;
 	}
 
@@ -295,6 +304,20 @@ short_ad *udf_get_fileshortad(uint8_t *ptr, int maxoffset, uint32_t *offset,
 		return NULL;
 	else {
 		sa = (short_ad *)ptr;
+struct short_ad *udf_get_fileshortad(uint8_t *ptr, int maxoffset, uint32_t *offset,
+			      int inc)
+{
+	struct short_ad *sa;
+
+	if ((!ptr) || (!offset)) {
+		pr_err("%s: invalidparms\n", __func__);
+		return NULL;
+	}
+
+	if ((*offset + sizeof(struct short_ad)) > maxoffset)
+		return NULL;
+	else {
+		sa = (struct short_ad *)ptr;
 		if (sa->extLength == 0)
 			return NULL;
 	}
@@ -317,11 +340,29 @@ long_ad *udf_get_filelongad(uint8_t *ptr, int maxoffset, uint32_t *offset, int i
 		return NULL;
 	else {
 		la = (long_ad *)ptr;
+		*offset += sizeof(struct short_ad);
+	return sa;
+}
+
+struct long_ad *udf_get_filelongad(uint8_t *ptr, int maxoffset, uint32_t *offset, int inc)
+{
+	struct long_ad *la;
+
+	if ((!ptr) || (!offset)) {
+		pr_err("%s: invalidparms\n", __func__);
+		return NULL;
+	}
+
+	if ((*offset + sizeof(struct long_ad)) > maxoffset)
+		return NULL;
+	else {
+		la = (struct long_ad *)ptr;
 		if (la->extLength == 0)
 			return NULL;
 	}
 
 	if (inc)
 		*offset += sizeof(long_ad);
+		*offset += sizeof(struct long_ad);
 	return la;
 }

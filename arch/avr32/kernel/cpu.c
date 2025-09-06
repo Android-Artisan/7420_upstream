@@ -7,6 +7,7 @@
  */
 #include <linux/init.h>
 #include <linux/sysdev.h>
+#include <linux/device.h>
 #include <linux/seq_file.h>
 #include <linux/cpu.h>
 #include <linux/module.h>
@@ -28,6 +29,8 @@ static DEFINE_PER_CPU(struct cpu, cpu_devices);
  */
 static ssize_t show_pc0event(struct sys_device *dev,
 			struct sysdev_attribute *attr, char *buf)
+static ssize_t show_pc0event(struct device *dev,
+			struct device_attribute *attr, char *buf)
 {
 	unsigned long pccr;
 
@@ -43,6 +46,17 @@ static ssize_t store_pc0event(struct sys_device *dev,
 
 	val = simple_strtoul(buf, &endp, 0);
 	if (endp == buf || val > 0x3f)
+static ssize_t store_pc0event(struct device *dev,
+			struct device_attribute *attr, const char *buf,
+			      size_t count)
+{
+	unsigned long val;
+	int ret;
+
+	ret = kstrtoul(buf, 0, &val);
+	if (ret)
+		return ret;
+	if (val > 0x3f)
 		return -EINVAL;
 	val = (val << 12) | (sysreg_read(PCCR) & 0xfffc0fff);
 	sysreg_write(PCCR, val);
@@ -50,6 +64,8 @@ static ssize_t store_pc0event(struct sys_device *dev,
 }
 static ssize_t show_pc0count(struct sys_device *dev,
 			struct sysdev_attribute *attr, char *buf)
+static ssize_t show_pc0count(struct device *dev,
+			struct device_attribute *attr, char *buf)
 {
 	unsigned long pcnt0;
 
@@ -66,6 +82,16 @@ static ssize_t store_pc0count(struct sys_device *dev,
 	val = simple_strtoul(buf, &endp, 0);
 	if (endp == buf)
 		return -EINVAL;
+static ssize_t store_pc0count(struct device *dev,
+				struct device_attribute *attr,
+				const char *buf, size_t count)
+{
+	unsigned long val;
+	int ret;
+
+	ret = kstrtoul(buf, 0, &val);
+	if (ret)
+		return ret;
 	sysreg_write(PCNT0, val);
 
 	return count;
@@ -73,6 +99,8 @@ static ssize_t store_pc0count(struct sys_device *dev,
 
 static ssize_t show_pc1event(struct sys_device *dev,
 				struct sysdev_attribute *attr, char *buf)
+static ssize_t show_pc1event(struct device *dev,
+				struct device_attribute *attr, char *buf)
 {
 	unsigned long pccr;
 
@@ -88,6 +116,17 @@ static ssize_t store_pc1event(struct sys_device *dev,
 
 	val = simple_strtoul(buf, &endp, 0);
 	if (endp == buf || val > 0x3f)
+static ssize_t store_pc1event(struct device *dev,
+			      struct device_attribute *attr, const char *buf,
+			      size_t count)
+{
+	unsigned long val;
+	int ret;
+
+	ret = kstrtoul(buf, 0, &val);
+	if (ret)
+		return ret;
+	if (val > 0x3f)
 		return -EINVAL;
 	val = (val << 18) | (sysreg_read(PCCR) & 0xff03ffff);
 	sysreg_write(PCCR, val);
@@ -95,6 +134,8 @@ static ssize_t store_pc1event(struct sys_device *dev,
 }
 static ssize_t show_pc1count(struct sys_device *dev,
 				struct sysdev_attribute *attr, char *buf)
+static ssize_t show_pc1count(struct device *dev,
+				struct device_attribute *attr, char *buf)
 {
 	unsigned long pcnt1;
 
@@ -111,6 +152,16 @@ static ssize_t store_pc1count(struct sys_device *dev,
 	val = simple_strtoul(buf, &endp, 0);
 	if (endp == buf)
 		return -EINVAL;
+static ssize_t store_pc1count(struct device *dev,
+				struct device_attribute *attr, const char *buf,
+			      size_t count)
+{
+	unsigned long val;
+	int ret;
+
+	ret = kstrtoul(buf, 0, &val);
+	if (ret)
+		return ret;
 	sysreg_write(PCNT1, val);
 
 	return count;
@@ -118,6 +169,8 @@ static ssize_t store_pc1count(struct sys_device *dev,
 
 static ssize_t show_pccycles(struct sys_device *dev,
 				struct sysdev_attribute *attr, char *buf)
+static ssize_t show_pccycles(struct device *dev,
+				struct device_attribute *attr, char *buf)
 {
 	unsigned long pccnt;
 
@@ -134,6 +187,16 @@ static ssize_t store_pccycles(struct sys_device *dev,
 	val = simple_strtoul(buf, &endp, 0);
 	if (endp == buf)
 		return -EINVAL;
+static ssize_t store_pccycles(struct device *dev,
+				struct device_attribute *attr, const char *buf,
+			      size_t count)
+{
+	unsigned long val;
+	int ret;
+
+	ret = kstrtoul(buf, 0, &val);
+	if (ret)
+		return ret;
 	sysreg_write(PCCNT, val);
 
 	return count;
@@ -141,6 +204,8 @@ static ssize_t store_pccycles(struct sys_device *dev,
 
 static ssize_t show_pcenable(struct sys_device *dev,
 			struct sysdev_attribute *attr, char *buf)
+static ssize_t show_pcenable(struct device *dev,
+			struct device_attribute *attr, char *buf)
 {
 	unsigned long pccr;
 
@@ -157,6 +222,16 @@ static ssize_t store_pcenable(struct sys_device *dev,
 	val = simple_strtoul(buf, &endp, 0);
 	if (endp == buf)
 		return -EINVAL;
+static ssize_t store_pcenable(struct device *dev,
+			      struct device_attribute *attr, const char *buf,
+			      size_t count)
+{
+	unsigned long pccr, val;
+	int ret;
+
+	ret = kstrtoul(buf, 0, &val);
+	if (ret)
+		return ret;
 	if (val)
 		val = 1;
 
@@ -173,6 +248,12 @@ static SYSDEV_ATTR(pc1event, 0600, show_pc1event, store_pc1event);
 static SYSDEV_ATTR(pc1count, 0600, show_pc1count, store_pc1count);
 static SYSDEV_ATTR(pccycles, 0600, show_pccycles, store_pccycles);
 static SYSDEV_ATTR(pcenable, 0600, show_pcenable, store_pcenable);
+static DEVICE_ATTR(pc0event, 0600, show_pc0event, store_pc0event);
+static DEVICE_ATTR(pc0count, 0600, show_pc0count, store_pc0count);
+static DEVICE_ATTR(pc1event, 0600, show_pc1event, store_pc1event);
+static DEVICE_ATTR(pc1count, 0600, show_pc1count, store_pc1count);
+static DEVICE_ATTR(pccycles, 0600, show_pccycles, store_pccycles);
+static DEVICE_ATTR(pcenable, 0600, show_pcenable, store_pcenable);
 
 #endif /* CONFIG_PERFORMANCE_COUNTERS */
 
@@ -192,6 +273,12 @@ static int __init topology_init(void)
 		sysdev_create_file(&c->sysdev, &attr_pc1count);
 		sysdev_create_file(&c->sysdev, &attr_pccycles);
 		sysdev_create_file(&c->sysdev, &attr_pcenable);
+		device_create_file(&c->dev, &dev_attr_pc0event);
+		device_create_file(&c->dev, &dev_attr_pc0count);
+		device_create_file(&c->dev, &dev_attr_pc1event);
+		device_create_file(&c->dev, &dev_attr_pc1count);
+		device_create_file(&c->dev, &dev_attr_pccycles);
+		device_create_file(&c->dev, &dev_attr_pcenable);
 #endif
 	}
 

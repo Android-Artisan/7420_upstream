@@ -15,6 +15,9 @@ target(struct sk_buff *skb,
        const void *targinfo)
 {
 	const struct arpt_mangle *mangle = targinfo;
+target(struct sk_buff *skb, const struct xt_action_param *par)
+{
+	const struct arpt_mangle *mangle = par->targinfo;
 	const struct arphdr *arp;
 	unsigned char *arpptr;
 	int pln, hln;
@@ -71,11 +74,24 @@ checkentry(const char *tablename, const void *e, const struct xt_target *target,
 	   mangle->target != ARPT_CONTINUE)
 		return false;
 	return true;
+static int checkentry(const struct xt_tgchk_param *par)
+{
+	const struct arpt_mangle *mangle = par->targinfo;
+
+	if (mangle->flags & ~ARPT_MANGLE_MASK ||
+	    !(mangle->flags & ARPT_MANGLE_MASK))
+		return -EINVAL;
+
+	if (mangle->target != NF_DROP && mangle->target != NF_ACCEPT &&
+	   mangle->target != XT_CONTINUE)
+		return -EINVAL;
+	return 0;
 }
 
 static struct xt_target arpt_mangle_reg __read_mostly = {
 	.name		= "mangle",
 	.family		= NF_ARP,
+	.family		= NFPROTO_ARP,
 	.target		= target,
 	.targetsize	= sizeof(struct arpt_mangle),
 	.checkentry	= checkentry,

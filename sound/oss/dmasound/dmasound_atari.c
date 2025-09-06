@@ -144,6 +144,7 @@ static int TTMixerIoctl(u_int cmd, u_long arg);
 static int FalconMixerIoctl(u_int cmd, u_long arg);
 static int AtaWriteSqSetup(void);
 static int AtaSqOpen(mode_t mode);
+static int AtaSqOpen(fmode_t mode);
 static int TTStateInfo(char *buffer, size_t space);
 static int FalconStateInfo(char *buffer, size_t space);
 
@@ -855,6 +856,15 @@ static int __init AtaIrqInit(void)
 		    AtaInterrupt);
 	mfp.int_en_a |= 0x20;	/* Turn interrupt on. */
 	mfp.int_mk_a |= 0x20;
+	st_mfp.tim_ct_a = 0;	/* ++roman: Stop timer before programming! */
+	st_mfp.tim_dt_a = 1;	/* Cause interrupt after first event. */
+	st_mfp.tim_ct_a = 8;	/* Turn on event counting. */
+	/* Register interrupt handler. */
+	if (request_irq(IRQ_MFP_TIMA, AtaInterrupt, 0, "DMA sound",
+			AtaInterrupt))
+		return 0;
+	st_mfp.int_en_a |= 0x20;	/* Turn interrupt on. */
+	st_mfp.int_mk_a |= 0x20;
 	return 1;
 }
 
@@ -863,6 +873,8 @@ static void AtaIrqCleanUp(void)
 {
 	mfp.tim_ct_a = 0;	/* stop timer */
 	mfp.int_en_a &= ~0x20;	/* turn interrupt off */
+	st_mfp.tim_ct_a = 0;		/* stop timer */
+	st_mfp.int_en_a &= ~0x20;	/* turn interrupt off */
 	free_irq(IRQ_MFP_TIMA, AtaInterrupt);
 }
 #endif /* MODULE */
@@ -1277,6 +1289,7 @@ static irqreturn_t AtaInterrupt(int irq, void *dummy)
 		 */
 		write_sq_ignore_int = 0;
 		return IRQ_HANDLED;
+		goto out;
 	}
 
 	if (!write_sq.active) {
@@ -1285,6 +1298,7 @@ static irqreturn_t AtaInterrupt(int irq, void *dummy)
 		 */
 		WAKE_UP(write_sq.sync_queue);
 		return IRQ_HANDLED;
+		goto out;
 	}
 
 	/* Probably ;) one frame is finished. Well, in fact it may be that a
@@ -1321,6 +1335,7 @@ static irqreturn_t AtaInterrupt(int irq, void *dummy)
 	/* We are not playing after AtaPlay(), so there
 	   is nothing to play any more. Wake up a process
 	   waiting for audio output to drain. */
+out:
 	spin_unlock(&dmasound.lock);
 	return IRQ_HANDLED;
 }
@@ -1462,6 +1477,7 @@ static int AtaWriteSqSetup(void)
 }
 
 static int AtaSqOpen(mode_t mode)
+static int AtaSqOpen(fmode_t mode)
 {
 	write_sq_ignore_int = 1;
 	return 0 ;
@@ -1524,6 +1540,7 @@ static SETTINGS def_soft = {
 } ;
 
 static MACHINE machTT = {
+static __initdata MACHINE machTT = {
 	.name		= "Atari",
 	.name2		= "TT",
 	.owner		= THIS_MODULE,
@@ -1553,6 +1570,7 @@ static MACHINE machTT = {
 };
 
 static MACHINE machFalcon = {
+static __initdata MACHINE machFalcon = {
 	.name		= "Atari",
 	.name2		= "FALCON",
 	.dma_alloc	= AtaAlloc,
@@ -1599,6 +1617,7 @@ static int __init dmasound_atari_init(void)
 	    } else
 		return -ENODEV;
 	    if ((mfp.int_en_a & mfp.int_mk_a & 0x20) == 0)
+	    if ((st_mfp.int_en_a & st_mfp.int_mk_a & 0x20) == 0)
 		return dmasound_init();
 	    else {
 		printk("DMA sound driver: Timer A interrupt already in use\n");

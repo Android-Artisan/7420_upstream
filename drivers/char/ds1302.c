@@ -25,6 +25,10 @@
 #include <linux/io.h>
 
 #include <asm/system.h>
+#include <linux/mutex.h>
+#include <linux/uaccess.h>
+#include <linux/io.h>
+
 #include <asm/rtc.h>
 #if defined(CONFIG_M32R)
 #include <asm/m32r.h>
@@ -32,6 +36,7 @@
 
 #define RTC_MAJOR_NR 121 /* local major, change later */
 
+static DEFINE_MUTEX(rtc_mutex);
 static const char ds1302_name[] = "ds1302";
 
 /* Send 8 bits. */
@@ -137,6 +142,12 @@ get_rtc_time(struct rtc_time *rtc_tm)
 	BCD_TO_BIN(rtc_tm->tm_mday);
 	BCD_TO_BIN(rtc_tm->tm_mon);
 	BCD_TO_BIN(rtc_tm->tm_year);
+	rtc_tm->tm_sec = bcd2bin(rtc_tm->tm_sec);
+	rtc_tm->tm_min = bcd2bin(rtc_tm->tm_min);
+	rtc_tm->tm_hour = bcd2bin(rtc_tm->tm_hour);
+	rtc_tm->tm_mday = bcd2bin(rtc_tm->tm_mday);
+	rtc_tm->tm_mon = bcd2bin(rtc_tm->tm_mon);
+	rtc_tm->tm_year = bcd2bin(rtc_tm->tm_year);
 
 	/*
 	 * Account for differences between how the RTC uses the values
@@ -167,6 +178,9 @@ static long rtc_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 			lock_kernel();
 			get_rtc_time(&rtc_tm);
 			unlock_kernel();
+			mutex_lock(&rtc_mutex);
+			get_rtc_time(&rtc_tm);
+			mutex_unlock(&rtc_mutex);
 			if (copy_to_user((struct rtc_time*)arg, &rtc_tm, sizeof(struct rtc_time)))
 				return -EFAULT;
 			return 0;
@@ -219,6 +233,14 @@ static long rtc_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 			BIN_TO_BCD(yrs);
 
 			lock_kernel();
+			sec = bin2bcd(sec);
+			min = bin2bcd(min);
+			hrs = bin2bcd(hrs);
+			day = bin2bcd(day);
+			mon = bin2bcd(mon);
+			yrs = bin2bcd(yrs);
+
+			mutex_lock(&rtc_mutex);
 			local_irq_save(flags);
 			CMOS_WRITE(yrs, RTC_YEAR);
 			CMOS_WRITE(mon, RTC_MONTH);
@@ -228,6 +250,7 @@ static long rtc_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 			CMOS_WRITE(sec, RTC_SECONDS);
 			local_irq_restore(flags);
 			unlock_kernel();
+			mutex_unlock(&rtc_mutex);
 
 			/* Notice that at this point, the RTC is updated but
 			 * the kernel is still running with the old time.
@@ -251,6 +274,10 @@ static long rtc_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 			tcs_val = RTC_TCR_PATTERN | (tcs_val & 0x0F);
 			ds1302_writereg(RTC_TRICKLECHARGER, tcs_val);
 			unlock_kernel();
+			mutex_lock(&rtc_mutex);
+			tcs_val = RTC_TCR_PATTERN | (tcs_val & 0x0F);
+			ds1302_writereg(RTC_TRICKLECHARGER, tcs_val);
+			mutex_unlock(&rtc_mutex);
 			return 0;
 		}
 		default:
@@ -288,6 +315,7 @@ get_rtc_status(char *buf)
 static const struct file_operations rtc_fops = {
 	.owner		= THIS_MODULE,
 	.unlocked_ioctl	= rtc_ioctl,
+	.llseek		= noop_llseek,
 };
 
 /* Probe for the chip by writing something to its RAM and try reading it back. */

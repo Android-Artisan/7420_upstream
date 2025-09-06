@@ -55,9 +55,7 @@
  * Provide the external interfaces to manage attribute lists.
  */
 
-/*========================================================================
  * Function prototypes for the kernel.
- *========================================================================*/
 
 /*
  * Internal routines when attribute list fits inside the inode.
@@ -120,9 +118,7 @@ xfs_inode_hasattr(
 	return 1;
 }
 
-/*========================================================================
  * Overall external interface routines.
- *========================================================================*/
 
 int
 xfs_attr_fetch(xfs_inode_t *ip, struct xfs_name *name,
@@ -857,9 +853,7 @@ out:
 
 
 
-/*========================================================================
  * External routines when attribute list is inside the inode
- *========================================================================*/
 
 /*
  * Add a name to the shortform attribute list structure
@@ -896,9 +890,7 @@ xfs_attr_shortform_addname(xfs_da_args_t *args)
 }
 
 
-/*========================================================================
  * External routines when attribute list is one block
- *========================================================================*/
 
 /*
  * Add a name to the leaf attribute list structure
@@ -1223,9 +1215,7 @@ xfs_attr_leaf_list(xfs_attr_list_context_t *context)
 }
 
 
-/*========================================================================
  * External routines when attribute list size > XFS_LBSIZE(mp).
- *========================================================================*/
 
 /*
  * Add a name to a Btree-format attribute list.
@@ -1968,9 +1958,7 @@ xfs_attr_node_list(xfs_attr_list_context_t *context)
 }
 
 
-/*========================================================================
  * External routines for manipulating out-of-line attribute values.
- *========================================================================*/
 
 /*
  * Read the value associated with an attribute from the out-of-line buffer

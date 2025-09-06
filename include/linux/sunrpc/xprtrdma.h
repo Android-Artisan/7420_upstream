@@ -60,6 +60,7 @@
  */
 #define RPCRDMA_MIN_SLOT_TABLE	(2U)
 #define RPCRDMA_DEF_SLOT_TABLE	(32U)
+#define RPCRDMA_DEF_SLOT_TABLE	(128U)
 #define RPCRDMA_MAX_SLOT_TABLE	(256U)
 
 #define RPCRDMA_DEF_INLINE  (1024)	/* default inline max */
@@ -72,12 +73,15 @@
 /* memory registration strategies */
 #define RPCRDMA_PERSISTENT_REGISTRATION (1)
 
+/* Memory registration strategies, by number.
+ * This is part of a kernel / user space API. Do not remove. */
 enum rpcrdma_memreg {
 	RPCRDMA_BOUNCEBUFFERS = 0,
 	RPCRDMA_REGISTER,
 	RPCRDMA_MEMWINDOWS,
 	RPCRDMA_MEMWINDOWS_ASYNC,
 	RPCRDMA_MTHCAFMR,
+	RPCRDMA_FRMR,
 	RPCRDMA_ALLPHYSICAL,
 	RPCRDMA_LAST
 };

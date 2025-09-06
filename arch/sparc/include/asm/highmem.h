@@ -34,6 +34,10 @@ extern pgprot_t kmap_prot;
 extern pte_t *pkmap_page_table;
 
 extern void kmap_init(void) __init;
+extern pgprot_t kmap_prot;
+extern pte_t *pkmap_page_table;
+
+void kmap_init(void) __init;
 
 /*
  * Right now we initialize only a single pte table. It can be extended
@@ -53,6 +57,8 @@ extern void kmap_init(void) __init;
 
 extern void *kmap_high(struct page *page);
 extern void kunmap_high(struct page *page);
+void *kmap_high(struct page *page);
+void kunmap_high(struct page *page);
 
 static inline void *kmap(struct page *page)
 {
@@ -73,6 +79,8 @@ static inline void kunmap(struct page *page)
 extern void *kmap_atomic(struct page *page, enum km_type type);
 extern void kunmap_atomic(void *kvaddr, enum km_type type);
 extern struct page *kmap_atomic_to_page(void *vaddr);
+void *kmap_atomic(struct page *page);
+void __kunmap_atomic(void *kvaddr);
 
 #define flush_cache_kmaps()	flush_cache_all()
 

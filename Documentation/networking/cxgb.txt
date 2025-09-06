@@ -7,7 +7,6 @@
                                  June 20, 2005
 
 CONTENTS
-========
  INTRODUCTION
  FEATURES
  PERFORMANCE
@@ -17,7 +16,6 @@ CONTENTS
 
 
 INTRODUCTION
-============
 
  This document describes the Linux driver for Chelsio 10Gb Ethernet Network
  Controller. This driver supports the Chelsio N210 NIC and is backward
@@ -25,7 +23,6 @@ INTRODUCTION
 
 
 FEATURES
-========
 
  Adaptive Interrupts (adaptive-rx)
  ---------------------------------
@@ -94,7 +91,6 @@ FEATURES
 
 
 PERFORMANCE
-===========
 
  The following information is provided as an example of how to change system
  parameters for "performance tuning" an what value to use. You may or may not
@@ -179,7 +175,6 @@ PERFORMANCE
 
 
 DRIVER MESSAGES
-===============
 
  The following messages are the most common messages logged by syslog. These
  may be found in /var/log/messages.
@@ -198,7 +193,6 @@ DRIVER MESSAGES
 
 
 KNOWN ISSUES
-============
 
  These issues have been identified during testing. The following information
  is provided as a workaround to the problem. In some cases, this problem is
@@ -321,13 +315,11 @@ KNOWN ISSUES
 
 
 SUPPORT
-=======
 
  If you have problems with the software or hardware, please contact our
  customer support team via email at support@chelsio.com or check our website
  at http://www.chelsio.com
 
-===============================================================================
 
  Chelsio Communications
  370 San Aleso Ave.
@@ -349,4 +341,3 @@ MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
 
  Copyright (c) 2003-2005 Chelsio Communications. All rights reserved.
 
-===============================================================================

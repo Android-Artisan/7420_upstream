@@ -73,6 +73,24 @@ poll_def_tmr(unsigned long dummy)
 				spin_unlock(&lock);
 		    }
 	  }
+	if (!opened)
+		return;
+	def_tmr.expires = (1) + jiffies;
+	add_timer(&def_tmr);
+
+	if (!tmr_running)
+		return;
+
+	spin_lock(&lock);
+	tmr_ctr++;
+	curr_ticks = ticks_offs + tmr2ticks(tmr_ctr);
+
+	if (curr_ticks >= next_event_time) {
+		next_event_time = (unsigned long) -1;
+		sequencer_timer(0);
+	}
+
+	spin_unlock(&lock);
 }
 
 static void
@@ -107,6 +125,10 @@ def_tmr_open(int dev, int mode)
 		def_tmr.expires = (1) + jiffies;
 		add_timer(&def_tmr);
 	};
+	{
+		def_tmr.expires = (1) + jiffies;
+		add_timer(&def_tmr);
+	}
 
 	return 0;
 }

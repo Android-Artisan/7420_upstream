@@ -1,5 +1,4 @@
 dm-linear
-=========
 
 Device-Mapper's "linear" target maps a linear range of the Device-Mapper
 device onto a linear range of another device.  This is the basic building
@@ -12,7 +11,6 @@ Parameters: <dev path> <offset>
 
 
 Example scripts
-===============
 [[
 #!/bin/sh
 # Create an identity mapping for a device

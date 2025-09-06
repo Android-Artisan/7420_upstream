@@ -35,6 +35,7 @@ config AGP_ALI
 	  include M1541, M1621, M1631, M1632, M1641,M1647,and M1651.
 	  For the ALi-chipset question, ALi suggests you refer to
 	  <http://www.ali.com.tw/eng/support/index.shtml>.
+	  <http://www.ali.com.tw/>.
 
 	  The M1541 chipset can do AGP 1x and 2x, but note that there is an
 	  acknowledged incompatibility with Matrox G200 cards. Due to
@@ -51,6 +52,7 @@ config AGP_ATI
 config AGP_AMD
 	tristate "AMD Irongate, 761, and 762 chipset support"
 	depends on AGP && (X86_32 || ALPHA)
+	depends on AGP && X86_32
 	help
 	  This option gives you AGP support for the GLX component of
 	  X on AMD Irongate, 761, and 762 chipsets.
@@ -59,6 +61,8 @@ config AGP_AMD64
 	tristate "AMD Opteron/Athlon64 on-CPU GART support" if !GART_IOMMU
 	depends on AGP && X86
 	default y if GART_IOMMU
+	tristate "AMD Opteron/Athlon64 on-CPU GART support"
+	depends on AGP && X86 && AMD_NB
 	help
 	  This option gives you AGP support for the GLX component of
 	  X using the on-CPU northbridge of the AMD Athlon64/Opteron CPUs.
@@ -69,6 +73,7 @@ config AGP_AMD64
 config AGP_INTEL
 	tristate "Intel 440LX/BX/GX, I8xx and E7x05 chipset support"
 	depends on AGP && X86
+	select INTEL_GTT
 	help
 	  This option gives you AGP support for the GLX component of X
 	  on Intel 440LX/BX/GX, 815, 820, 830, 840, 845, 850, 860, 875,
@@ -124,7 +129,7 @@ config AGP_HP_ZX1
 
 config AGP_PARISC
 	tristate "HP Quicksilver AGP support"
-	depends on AGP && PARISC && 64BIT
+	depends on AGP && PARISC && 64BIT && IOMMU_SBA
 	help
 	  This option gives you AGP GART support for the HP Quicksilver
 	  AGP bus adapter on HP PA-RISC machines (Ok, just on the C8000
@@ -155,4 +160,8 @@ config AGP_SGI_TIOCA
         help
           This option gives you AGP GART support for the SGI TIO chipset
           for IA64 processors.
+
+config INTEL_GTT
+	tristate
+	depends on X86 && PCI
 

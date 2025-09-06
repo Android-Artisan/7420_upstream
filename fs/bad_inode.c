@@ -10,6 +10,7 @@
 
 #include <linux/fs.h>
 #include <linux/module.h>
+#include <linux/export.h>
 #include <linux/stat.h>
 #include <linux/time.h>
 #include <linux/namei.h>
@@ -187,12 +188,20 @@ static const struct file_operations bad_file_ops =
 
 static int bad_inode_create (struct inode *dir, struct dentry *dentry,
 		int mode, struct nameidata *nd)
+static const struct file_operations bad_file_ops =
+{
+	.open		= bad_file_open,
+};
+
+static int bad_inode_create (struct inode *dir, struct dentry *dentry,
+		umode_t mode, bool excl)
 {
 	return -EIO;
 }
 
 static struct dentry *bad_inode_lookup(struct inode *dir,
 			struct dentry *dentry, struct nameidata *nd)
+			struct dentry *dentry, unsigned int flags)
 {
 	return ERR_PTR(-EIO);
 }
@@ -216,6 +225,7 @@ static int bad_inode_symlink (struct inode *dir, struct dentry *dentry,
 
 static int bad_inode_mkdir(struct inode *dir, struct dentry *dentry,
 			int mode)
+			umode_t mode)
 {
 	return -EIO;
 }
@@ -227,12 +237,16 @@ static int bad_inode_rmdir (struct inode *dir, struct dentry *dentry)
 
 static int bad_inode_mknod (struct inode *dir, struct dentry *dentry,
 			int mode, dev_t rdev)
+			umode_t mode, dev_t rdev)
 {
 	return -EIO;
 }
 
 static int bad_inode_rename (struct inode *old_dir, struct dentry *old_dentry,
 		struct inode *new_dir, struct dentry *new_dentry)
+static int bad_inode_rename2(struct inode *old_dir, struct dentry *old_dentry,
+			     struct inode *new_dir, struct dentry *new_dentry,
+			     unsigned int flags)
 {
 	return -EIO;
 }
@@ -293,6 +307,7 @@ static const struct inode_operations bad_inode_ops =
 	.rmdir		= bad_inode_rmdir,
 	.mknod		= bad_inode_mknod,
 	.rename		= bad_inode_rename,
+	.rename2	= bad_inode_rename2,
 	.readlink	= bad_inode_readlink,
 	/* follow_link must be no-op, otherwise unmounting this inode
 	   won't work */

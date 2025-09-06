@@ -46,6 +46,7 @@
 
 #include <linux/module.h>
 #include <linux/kernel.h>
+#include <linux/slab.h>
 #include <linux/init.h>
 #include <linux/errno.h>
 #include <linux/kdev_t.h>
@@ -81,6 +82,7 @@ MODULE_VERSION(my_VERSION);
  *  Other private/forward protos...
  */
 static struct scsi_cmnd * mptscsih_get_scsi_lookup(MPT_ADAPTER *ioc, int i);
+struct scsi_cmnd	*mptscsih_get_scsi_lookup(MPT_ADAPTER *ioc, int i);
 static struct scsi_cmnd * mptscsih_getclear_scsi_lookup(MPT_ADAPTER *ioc, int i);
 static void	mptscsih_set_scsi_lookup(MPT_ADAPTER *ioc, int i, struct scsi_cmnd *scmd);
 static int	SCPNT_TO_LOOKUP_IDX(MPT_ADAPTER *ioc, struct scsi_cmnd *scmd);
@@ -97,13 +99,23 @@ static int	mptscsih_tm_wait_for_completion(MPT_SCSI_HOST * hd, ulong timeout );
 
 static int	mptscsih_IssueTaskMgmt(MPT_SCSI_HOST *hd, u8 type, u8 channel, u8 id, int lun, int ctx2abort, ulong timeout);
 
+int	mptscsih_IssueTaskMgmt(MPT_SCSI_HOST *hd, u8 type, u8 channel, u8 id,
+		u64 lun, int ctx2abort, ulong timeout);
+
 int		mptscsih_ioc_reset(MPT_ADAPTER *ioc, int post_reset);
 int		mptscsih_event_process(MPT_ADAPTER *ioc, EventNotificationReply_t *pEvReply);
 
+void
+mptscsih_taskmgmt_response_code(MPT_ADAPTER *ioc, u8 response_code);
+static int	mptscsih_get_completion_code(MPT_ADAPTER *ioc,
+		MPT_FRAME_HDR *req, MPT_FRAME_HDR *reply);
 int		mptscsih_scandv_complete(MPT_ADAPTER *ioc, MPT_FRAME_HDR *mf, MPT_FRAME_HDR *r);
 static int	mptscsih_do_cmd(MPT_SCSI_HOST *hd, INTERNAL_CMD *iocmd);
 static void	mptscsih_synchronize_cache(MPT_SCSI_HOST *hd, VirtDevice *vdevice);
 
+static int
+mptscsih_taskmgmt_reply(MPT_ADAPTER *ioc, u8 type,
+				SCSITaskMgmtReply_t *pScsiTmReply);
 void 		mptscsih_remove(struct pci_dev *);
 void 		mptscsih_shutdown(struct pci_dev *);
 #ifdef CONFIG_PM
@@ -285,6 +297,10 @@ nextSGEset:
 	numSgeThisFrame = (sges_left < numSgeSlots) ? sges_left : numSgeSlots;
 
 	sgflags = MPT_SGE_FLAGS_SIMPLE_ELEMENT | MPT_SGE_FLAGS_ADDRESSING | sgdir;
+	numSgeSlots = ((frm_sz - sgeOffset) / ioc->SGE_size);
+	numSgeThisFrame = (sges_left < numSgeSlots) ? sges_left : numSgeSlots;
+
+	sgflags = MPT_SGE_FLAGS_SIMPLE_ELEMENT | sgdir;
 
 	/* Get first (num - 1) SG elements
 	 * Skip any SG entries with a length of 0
@@ -294,6 +310,8 @@ nextSGEset:
 		thisxfer = sg_dma_len(sg);
 		if (thisxfer == 0) {
 			sg = sg_next(sg); /* Get next SG element from the OS */
+			/* Get next SG element from the OS */
+			sg = sg_next(sg);
 			sg_done++;
 			continue;
 		}
@@ -304,6 +322,12 @@ nextSGEset:
 		sg = sg_next(sg);	/* Get next SG element from the OS */
 		psge += (sizeof(u32) + sizeof(dma_addr_t));
 		sgeOffset += (sizeof(u32) + sizeof(dma_addr_t));
+		ioc->add_sge(psge, sgflags | thisxfer, v2);
+
+		/* Get next SG element from the OS */
+		sg = sg_next(sg);
+		psge += ioc->SGE_size;
+		sgeOffset += ioc->SGE_size;
 		sg_done++;
 	}
 
@@ -326,6 +350,8 @@ nextSGEset:
 		psge += (sizeof(u32) + sizeof(dma_addr_t));
 		*/
 		sgeOffset += (sizeof(u32) + sizeof(dma_addr_t));
+		ioc->add_sge(psge, sgflags | thisxfer, v2);
+		sgeOffset += ioc->SGE_size;
 		sg_done++;
 
 		if (chainSge) {
@@ -335,6 +361,8 @@ nextSGEset:
 			 * Offset and Length fields.
 			 */
 			mptscsih_add_chain((char *)chainSge, 0, sgeOffset, ioc->ChainBufferDMA + chain_dma_off);
+			ioc->add_chain((char *)chainSge, 0, sgeOffset,
+				ioc->ChainBufferDMA + chain_dma_off);
 		} else {
 			/* The current buffer is the original MF
 			 * and there is no Chain buffer.
@@ -368,6 +396,7 @@ nextSGEset:
 		 */
 		if (sg_done) {
 			u32 *ptmp = (u32 *) (psge - (sizeof(u32) + sizeof(dma_addr_t)));
+			u32 *ptmp = (u32 *) (psge - ioc->SGE_size);
 			sgflags = le32_to_cpu(*ptmp);
 			sgflags |= MPT_SGE_FLAGS_LAST_ELEMENT;
 			*ptmp = cpu_to_le32(sgflags);
@@ -383,6 +412,9 @@ nextSGEset:
 			u8 nextChain = (u8) (sgeOffset >> 2);
 			sgeOffset += (sizeof(u32) + sizeof(dma_addr_t));
 			mptscsih_add_chain((char *)chainSge, nextChain, sgeOffset, ioc->ChainBufferDMA + chain_dma_off);
+			sgeOffset += ioc->SGE_size;
+			ioc->add_chain((char *)chainSge, nextChain, sgeOffset,
+					 ioc->ChainBufferDMA + chain_dma_off);
 		} else {
 			/* The original MF buffer requires a chain buffer -
 			 * set the offset.
@@ -594,12 +626,15 @@ mptscsih_info_scsiio(MPT_ADAPTER *ioc, struct scsi_cmnd *sc, SCSIIOReply_t * pSc
 	scsi_print_command(sc);
 	printk(MYIOC_s_DEBUG_FMT "\tfw_channel = %d, fw_id = %d\n",
 	    ioc->name, pScsiReply->Bus, pScsiReply->TargetID);
+	printk(MYIOC_s_DEBUG_FMT "\tfw_channel = %d, fw_id = %d, lun = %llu\n",
+	    ioc->name, pScsiReply->Bus, pScsiReply->TargetID, sc->device->lun);
 	printk(MYIOC_s_DEBUG_FMT "\trequest_len = %d, underflow = %d, "
 	    "resid = %d\n", ioc->name, scsi_bufflen(sc), sc->underflow,
 	    scsi_get_resid(sc));
 	printk(MYIOC_s_DEBUG_FMT "\ttag = %d, transfer_count = %d, "
 	    "sc->result = %08X\n", ioc->name, le16_to_cpu(pScsiReply->TaskTag),
 	    le32_to_cpu(pScsiReply->TransferCount), sc->result);
+
 	printk(MYIOC_s_DEBUG_FMT "\tiocstatus = %s (0x%04x), "
 	    "scsi_status = %s (0x%02x), scsi_state = (0x%02x)\n",
 	    ioc->name, desc, ioc_status, desc1, pScsiReply->SCSIStatus,
@@ -665,6 +700,14 @@ mptscsih_io_done(MPT_ADAPTER *ioc, MPT_FRAME_HDR *mf, MPT_FRAME_HDR *mr)
 		return 0;
 	}
 
+	/* Special case, where already freed message frame is received from
+	 * Firmware. It happens with Resetting IOC.
+	 * Return immediately. Do not care
+	 */
+	if ((req_idx != req_idx_MR) ||
+	    (le32_to_cpu(mf->u.frame.linkage.arg1) == 0xdeadbeaf))
+		return 0;
+
 	sc = mptscsih_getclear_scsi_lookup(ioc, req_idx);
 	if (sc == NULL) {
 		MPIHeader_t *hdr = (MPIHeader_t *)mf;
@@ -684,6 +727,16 @@ mptscsih_io_done(MPT_ADAPTER *ioc, MPT_FRAME_HDR *mf, MPT_FRAME_HDR *mr)
 	if ((unsigned char *)mf != sc->host_scribble) {
 		mptscsih_freeChainBuffers(ioc, req_idx);
 		return 1;
+	}
+
+	if (ioc->bus_type == SAS) {
+		VirtDevice *vdevice = sc->device->hostdata;
+
+		if (!vdevice || !vdevice->vtarget ||
+		    vdevice->vtarget->deleted) {
+			sc->result = DID_NO_CONNECT << 16;
+			goto out;
+		}
 	}
 
 	sc->host_scribble = NULL;
@@ -711,6 +764,7 @@ mptscsih_io_done(MPT_ADAPTER *ioc, MPT_FRAME_HDR *mf, MPT_FRAME_HDR *mr)
 		u32	 log_info;
 
 		status = le16_to_cpu(pScsiReply->IOCStatus) & MPI_IOCSTATUS_MASK;
+
 		scsi_state = pScsiReply->SCSIState;
 		scsi_status = pScsiReply->SCSIStatus;
 		xfer_cnt = le32_to_cpu(pScsiReply->TransferCount);
@@ -739,6 +793,7 @@ mptscsih_io_done(MPT_ADAPTER *ioc, MPT_FRAME_HDR *mf, MPT_FRAME_HDR *mr)
 		if (scsi_state & MPI_SCSI_STATE_RESPONSE_INFO_VALID &&
 		    pScsiReply->ResponseInfo) {
 			printk(MYIOC_s_NOTE_FMT "[%d:%d:%d:%d] "
+			printk(MYIOC_s_NOTE_FMT "[%d:%d:%d:%llu] "
 			"FCP_ResponseInfo=%08xh\n", ioc->name,
 			sc->device->host->host_no, sc->device->channel,
 			sc->device->id, sc->device->lun,
@@ -747,6 +802,7 @@ mptscsih_io_done(MPT_ADAPTER *ioc, MPT_FRAME_HDR *mf, MPT_FRAME_HDR *mr)
 
 		switch(status) {
 		case MPI_IOCSTATUS_BUSY:			/* 0x0002 */
+		case MPI_IOCSTATUS_INSUFFICIENT_RESOURCES:	/* 0x0006 */
 			/* CHECKME!
 			 * Maybe: DRIVER_BUSY | SUGGEST_RETRY | DID_SOFT_ERROR (retry)
 			 * But not: DID_BUS_BUSY lest one risk
@@ -791,6 +847,36 @@ mptscsih_io_done(MPT_ADAPTER *ioc, MPT_FRAME_HDR *mf, MPT_FRAME_HDR *mr)
 						sc->result = (DID_BUS_BUSY << 16);
 						break;
 					}
+				u16 ioc_status =
+				    le16_to_cpu(pScsiReply->IOCStatus);
+				if ((ioc_status &
+					MPI_IOCSTATUS_FLAG_LOG_INFO_AVAILABLE)
+					&&
+					((log_info & SAS_LOGINFO_MASK) ==
+					SAS_LOGINFO_NEXUS_LOSS)) {
+						VirtDevice *vdevice =
+						sc->device->hostdata;
+
+					    /* flag the device as being in
+					     * device removal delay so we can
+					     * notify the midlayer to hold off
+					     * on timeout eh */
+						if (vdevice && vdevice->
+							vtarget &&
+							vdevice->vtarget->
+							raidVolume)
+							printk(KERN_INFO
+							"Skipping Raid Volume"
+							"for inDMD\n");
+						else if (vdevice &&
+							vdevice->vtarget)
+							vdevice->vtarget->
+								inDMD = 1;
+
+					    sc->result =
+						    (DID_TRANSPORT_DISRUPTED
+						    << 16);
+					    break;
 				}
 			} else if (ioc->bus_type == FC) {
 				/*
@@ -818,6 +904,13 @@ mptscsih_io_done(MPT_ADAPTER *ioc, MPT_FRAME_HDR *mf, MPT_FRAME_HDR *mr)
 
 			break;
 
+		case MPI_IOCSTATUS_SCSI_EXT_TERMINATED:		/* 0x004C */
+			if (ioc->bus_type == FC)
+				sc->result = DID_ERROR << 16;
+			else
+				sc->result = DID_RESET << 16;
+			break;
+
 		case MPI_IOCSTATUS_SCSI_RESIDUAL_MISMATCH:	/* 0x0049 */
 			scsi_set_resid(sc, scsi_bufflen(sc) - xfer_cnt);
 			if((xfer_cnt==0)||(sc->underflow > xfer_cnt))
@@ -840,6 +933,37 @@ mptscsih_io_done(MPT_ADAPTER *ioc, MPT_FRAME_HDR *mf, MPT_FRAME_HDR *mr)
 				 */
 				;
 			} else {
+			if (!(scsi_state & MPI_SCSI_STATE_AUTOSENSE_VALID)) {
+
+				/*
+				 * For an Errata on LSI53C1030
+				 * When the length of request data
+				 * and transfer data are different
+				 * with result of command (READ or VERIFY),
+				 * DID_SOFT_ERROR is set.
+				 */
+				if (ioc->bus_type == SPI) {
+					if ((pScsiReq->CDB[0] == READ_6  && ((pScsiReq->CDB[1] & 0x02) == 0)) ||
+					    pScsiReq->CDB[0] == READ_10 ||
+					    pScsiReq->CDB[0] == READ_12 ||
+						(pScsiReq->CDB[0] == READ_16 &&
+						((pScsiReq->CDB[1] & 0x02) == 0)) ||
+					    pScsiReq->CDB[0] == VERIFY  ||
+					    pScsiReq->CDB[0] == VERIFY_16) {
+						if (scsi_bufflen(sc) !=
+							xfer_cnt) {
+							sc->result =
+							DID_SOFT_ERROR << 16;
+						    printk(KERN_WARNING "Errata"
+						    "on LSI53C1030 occurred."
+						    "sc->req_bufflen=0x%02x,"
+						    "xfer_cnt=0x%02x\n",
+						    scsi_bufflen(sc),
+						    xfer_cnt);
+						}
+					}
+				}
+
 				if (xfer_cnt < sc->underflow) {
 					if (scsi_status == SAM_STAT_BUSY)
 						sc->result = SAM_STAT_BUSY;
@@ -879,6 +1003,58 @@ mptscsih_io_done(MPT_ADAPTER *ioc, MPT_FRAME_HDR *mf, MPT_FRAME_HDR *mr)
 			if (scsi_state == 0) {
 				;
 			} else if (scsi_state & MPI_SCSI_STATE_AUTOSENSE_VALID) {
+			} else if (scsi_state &
+			    MPI_SCSI_STATE_AUTOSENSE_VALID) {
+
+				/*
+				 * For potential trouble on LSI53C1030.
+				 * (date:2007.xx.)
+				 * It is checked whether the length of
+				 * request data is equal to
+				 * the length of transfer and residual.
+				 * MEDIUM_ERROR is set by incorrect data.
+				 */
+				if ((ioc->bus_type == SPI) &&
+					(sc->sense_buffer[2] & 0x20)) {
+					u32	 difftransfer;
+					difftransfer =
+					sc->sense_buffer[3] << 24 |
+					sc->sense_buffer[4] << 16 |
+					sc->sense_buffer[5] << 8 |
+					sc->sense_buffer[6];
+					if (((sc->sense_buffer[3] & 0x80) ==
+						0x80) && (scsi_bufflen(sc)
+						!= xfer_cnt)) {
+						sc->sense_buffer[2] =
+						    MEDIUM_ERROR;
+						sc->sense_buffer[12] = 0xff;
+						sc->sense_buffer[13] = 0xff;
+						printk(KERN_WARNING"Errata"
+						"on LSI53C1030 occurred."
+						"sc->req_bufflen=0x%02x,"
+						"xfer_cnt=0x%02x\n" ,
+						scsi_bufflen(sc),
+						xfer_cnt);
+					}
+					if (((sc->sense_buffer[3] & 0x80)
+						!= 0x80) &&
+						(scsi_bufflen(sc) !=
+						xfer_cnt + difftransfer)) {
+						sc->sense_buffer[2] =
+							MEDIUM_ERROR;
+						sc->sense_buffer[12] = 0xff;
+						sc->sense_buffer[13] = 0xff;
+						printk(KERN_WARNING
+						"Errata on LSI53C1030 occurred"
+						"sc->req_bufflen=0x%02x,"
+						" xfer_cnt=0x%02x,"
+						"difftransfer=0x%02x\n",
+						scsi_bufflen(sc),
+						xfer_cnt,
+						difftransfer);
+					}
+				}
+
 				/*
 				 * If running against circa 200003dd 909 MPT f/w,
 				 * may get this (AUTOSENSE_VALID) for actual TASK_SET_FULL
@@ -947,6 +1123,7 @@ mptscsih_io_done(MPT_ADAPTER *ioc, MPT_FRAME_HDR *mf, MPT_FRAME_HDR *mr)
 
 	} /* end of address reply case */
 
+out:
 	/* Unmap the DMA buffers, if any. */
 	scsi_dma_unmap(sc);
 
@@ -968,6 +1145,7 @@ mptscsih_io_done(MPT_ADAPTER *ioc, MPT_FRAME_HDR *mf, MPT_FRAME_HDR *mr)
  *	Must be called while new I/Os are being queued.
  */
 static void
+void
 mptscsih_flush_running_cmds(MPT_SCSI_HOST *hd)
 {
 	MPT_ADAPTER *ioc = hd->ioc;
@@ -998,6 +1176,13 @@ mptscsih_flush_running_cmds(MPT_SCSI_HOST *hd)
 		sc->scsi_done(sc);
 	}
 }
+		dtmprintk(ioc, sdev_printk(KERN_INFO, sc->device, MYIOC_s_FMT
+		    "completing cmds: fw_channel %d, fw_id %d, sc=%p, mf = %p, "
+		    "idx=%x\n", ioc->name, channel, id, sc, mf, ii));
+		sc->scsi_done(sc);
+	}
+}
+EXPORT_SYMBOL(mptscsih_flush_running_cmds);
 
 /*
  *	mptscsih_search_running_cmds - Delete any commands associated
@@ -1056,6 +1241,11 @@ mptscsih_search_running_cmds(MPT_SCSI_HOST *hd, VirtDevice *vdevice)
 			sdev_printk(KERN_INFO, sc->device, MYIOC_s_FMT "completing cmds: fw_channel %d,"
 			   "fw_id %d, sc=%p, mf = %p, idx=%x\n", ioc->name, vdevice->vtarget->channel,
 			   vdevice->vtarget->id, sc, mf, ii);
+			dtmprintk(ioc, sdev_printk(KERN_INFO, sc->device,
+			   MYIOC_s_FMT "completing cmds: fw_channel %d, "
+			   "fw_id %d, sc=%p, mf = %p, idx=%x\n", ioc->name,
+			   vdevice->vtarget->channel, vdevice->vtarget->id,
+			   sc, mf, ii));
 			sc->scsi_done(sc);
 			spin_lock_irqsave(&ioc->scsi_lookup_lock, flags);
 		}
@@ -1094,6 +1284,7 @@ mptscsih_report_queue_full(struct scsi_cmnd *sc, SCSIIOReply_t *pScsiReply, SCSI
 	ioc = hd->ioc;
 	if (time - hd->last_queue_full > 10 * HZ) {
 		dprintk(ioc, printk(MYIOC_s_WARN_FMT "Device (%d:%d:%d) reported QUEUE_FULL!\n",
+		dprintk(ioc, printk(MYIOC_s_WARN_FMT "Device (%d:%d:%llu) reported QUEUE_FULL!\n",
 				ioc->name, 0, sc->device->id, sc->device->lun));
 		hd->last_queue_full = time;
 	}
@@ -1121,8 +1312,10 @@ mptscsih_remove(struct pci_dev *pdev)
 
 	scsi_remove_host(host);
 
-	if((hd = shost_priv(host)) == NULL)
-		return;
+	if (host == NULL)
+		hd = NULL;
+	else
+		hd = shost_priv(host);
 
 	mptscsih_shutdown(pdev);
 
@@ -1138,14 +1331,15 @@ mptscsih_remove(struct pci_dev *pdev)
 	    "Free'd ScsiLookup (%d) memory\n",
 	    ioc->name, sz1));
 
-	kfree(hd->info_kbuf);
+	if (hd)
+		kfree(hd->info_kbuf);
 
 	/* NULL the Scsi_Host pointer
 	 */
 	ioc->sh = NULL;
 
-	scsi_host_put(host);
-
+	if (host)
+		scsi_host_put(host);
 	mpt_detach(pdev);
 
 }
@@ -1223,6 +1417,13 @@ mptscsih_info(struct Scsi_Host *SChost)
 		mpt_print_ioc_summary(h->ioc, h->info_kbuf, &size, 0, 0);
 		h->info_kbuf[size-1] = '\0';
 	}
+	if (h->info_kbuf == NULL)
+		if ((h->info_kbuf = kmalloc(0x1000 /* 4Kb */, GFP_KERNEL)) == NULL)
+			return h->info_kbuf;
+	h->info_kbuf[0] = '\0';
+
+	mpt_print_ioc_summary(h->ioc, h->info_kbuf, &size, 0, 0);
+	h->info_kbuf[size-1] = '\0';
 
 	return h->info_kbuf;
 }
@@ -1322,6 +1523,17 @@ mptscsih_proc_info(struct Scsi_Host *host, char *buffer, char **start, off_t off
 	}
 
 	return size;
+int mptscsih_show_info(struct seq_file *m, struct Scsi_Host *host)
+{
+	MPT_SCSI_HOST	*hd = shost_priv(host);
+	MPT_ADAPTER	*ioc = hd->ioc;
+
+	seq_printf(m, "%s: %s, ", ioc->name, ioc->prod_name);
+	seq_printf(m, "%s%08xh, ", MPT_FW_REV_MAGIC_ID_STRING, ioc->facts.FWVersion.Word);
+	seq_printf(m, "Ports=%d, ", ioc->facts.NumberOfPorts);
+	seq_printf(m, "MaxQ=%d\n", ioc->req_depth);
+
+	return 0;
 }
 
 /*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
@@ -1341,6 +1553,7 @@ mptscsih_proc_info(struct Scsi_Host *host, char *buffer, char **start, off_t off
  */
 int
 mptscsih_qcmd(struct scsi_cmnd *SCpnt, void (*done)(struct scsi_cmnd *))
+mptscsih_qcmd(struct scsi_cmnd *SCpnt)
 {
 	MPT_SCSI_HOST		*hd;
 	MPT_FRAME_HDR		*mf;
@@ -1368,6 +1581,12 @@ mptscsih_qcmd(struct scsi_cmnd *SCpnt, void (*done)(struct scsi_cmnd *))
 			ioc->name, SCpnt));
 		return SCSI_MLQUEUE_HOST_BUSY;
 	}
+
+	dmfprintk(ioc, printk(MYIOC_s_DEBUG_FMT "qcmd: SCpnt=%p\n",
+		ioc->name, SCpnt));
+
+	if (ioc->taskmgmt_quiesce_io)
+		return SCSI_MLQUEUE_HOST_BUSY;
 
 	/*
 	 *  Put together a MPT SCSI request...
@@ -1409,6 +1628,17 @@ mptscsih_qcmd(struct scsi_cmnd *SCpnt, void (*done)(struct scsi_cmnd *))
 	} else {
 		scsictl = scsidir | MPI_SCSIIO_CONTROL_UNTAGGED;
 	}
+	if ((vdevice->vtarget->tflags & MPT_TARGET_FLAGS_Q_YES)
+	    && (SCpnt->device->tagged_supported)) {
+		scsictl = scsidir | MPI_SCSIIO_CONTROL_SIMPLEQ;
+		if (SCpnt->request && SCpnt->request->ioprio) {
+			if (((SCpnt->request->ioprio & 0x7) == 1) ||
+				!(SCpnt->request->ioprio & 0x7))
+				scsictl |= MPI_SCSIIO_CONTROL_HEADOFQ;
+		}
+	} else
+		scsictl = scsidir | MPI_SCSIIO_CONTROL_UNTAGGED;
+
 
 	/* Use the above information to set up the message frame
 	 */
@@ -1423,6 +1653,7 @@ mptscsih_qcmd(struct scsi_cmnd *SCpnt, void (*done)(struct scsi_cmnd *))
 	pScsiReq->SenseBufferLength = MPT_SENSE_BUFFER_SIZE;
 	pScsiReq->Reserved = 0;
 	pScsiReq->MsgFlags = mpt_msg_flags();
+	pScsiReq->MsgFlags = mpt_msg_flags(ioc);
 	int_to_scsilun(SCpnt->device->lun, (struct scsi_lun *)pScsiReq->LUN);
 	pScsiReq->Control = cpu_to_le32(scsictl);
 
@@ -1449,6 +1680,8 @@ mptscsih_qcmd(struct scsi_cmnd *SCpnt, void (*done)(struct scsi_cmnd *))
 	if (datalen == 0) {
 		/* Add a NULL SGE */
 		mptscsih_add_sge((char *)&pScsiReq->SGL, MPT_SGE_FLAGS_SSIMPLE_READ | 0,
+		ioc->add_sge((char *)&pScsiReq->SGL,
+			MPT_SGE_FLAGS_SSIMPLE_READ | 0,
 			(dma_addr_t) -1);
 	} else {
 		/* Add a 32 or 64 bit SGE */
@@ -1661,12 +1894,55 @@ mptscsih_TMHandler(MPT_SCSI_HOST *hd, u8 type, u8 channel, u8 id, int lun, int c
  **/
 static int
 mptscsih_IssueTaskMgmt(MPT_SCSI_HOST *hd, u8 type, u8 channel, u8 id, int lun, int ctx2abort, ulong timeout)
+int
+mptscsih_IssueTaskMgmt(MPT_SCSI_HOST *hd, u8 type, u8 channel, u8 id, u64 lun,
+	int ctx2abort, ulong timeout)
 {
 	MPT_FRAME_HDR	*mf;
 	SCSITaskMgmt_t	*pScsiTm;
 	int		 ii;
 	int		 retval;
 	MPT_ADAPTER 	*ioc = hd->ioc;
+	unsigned long	 timeleft;
+	u8		 issue_hard_reset;
+	u32		 ioc_raw_state;
+	unsigned long	 time_count;
+
+	issue_hard_reset = 0;
+	ioc_raw_state = mpt_GetIocState(ioc, 0);
+
+	if ((ioc_raw_state & MPI_IOC_STATE_MASK) != MPI_IOC_STATE_OPERATIONAL) {
+		printk(MYIOC_s_WARN_FMT
+			"TaskMgmt type=%x: IOC Not operational (0x%x)!\n",
+			ioc->name, type, ioc_raw_state);
+		printk(MYIOC_s_WARN_FMT "Issuing HardReset from %s!!\n",
+		    ioc->name, __func__);
+		if (mpt_HardResetHandler(ioc, CAN_SLEEP) < 0)
+			printk(MYIOC_s_WARN_FMT "TaskMgmt HardReset "
+			    "FAILED!!\n", ioc->name);
+		return 0;
+	}
+
+	/* DOORBELL ACTIVE check is not required if
+	*  MPI_IOCFACTS_CAPABILITY_HIGH_PRI_Q is supported.
+	*/
+
+	if (!((ioc->facts.IOCCapabilities & MPI_IOCFACTS_CAPABILITY_HIGH_PRI_Q)
+		 && (ioc->facts.MsgVersion >= MPI_VERSION_01_05)) &&
+		(ioc_raw_state & MPI_DOORBELL_ACTIVE)) {
+		printk(MYIOC_s_WARN_FMT
+			"TaskMgmt type=%x: ioc_state: "
+			"DOORBELL_ACTIVE (0x%x)!\n",
+			ioc->name, type, ioc_raw_state);
+		return FAILED;
+	}
+
+	mutex_lock(&ioc->taskmgmt_cmds.mutex);
+	if (mpt_set_taskmgmt_in_progress_flag(ioc) != 0) {
+		mf = NULL;
+		retval = FAILED;
+		goto out;
+	}
 
 	/* Return Fail to calling function if no message frames available.
 	 */
@@ -1676,6 +1952,13 @@ mptscsih_IssueTaskMgmt(MPT_SCSI_HOST *hd, u8 type, u8 channel, u8 id, int lun, i
 		return FAILED;
 	}
 	dtmprintk(ioc, printk(MYIOC_s_DEBUG_FMT "IssueTaskMgmt request @ %p\n",
+		dfailprintk(ioc, printk(MYIOC_s_ERR_FMT
+			"TaskMgmt no msg frames!!\n", ioc->name));
+		retval = FAILED;
+		mpt_clear_taskmgmt_in_progress_flag(ioc);
+		goto out;
+	}
+	dtmprintk(ioc, printk(MYIOC_s_DEBUG_FMT "TaskMgmt request (mf=%p)\n",
 			ioc->name, mf));
 
 	/* Format the Request
@@ -1704,6 +1987,14 @@ mptscsih_IssueTaskMgmt(MPT_SCSI_HOST *hd, u8 type, u8 channel, u8 id, int lun, i
 
 	DBG_DUMP_TM_REQUEST_FRAME(ioc, (u32 *)pScsiTm);
 
+	dtmprintk(ioc, printk(MYIOC_s_DEBUG_FMT "TaskMgmt: ctx2abort (0x%08x) "
+		"task_type = 0x%02X, timeout = %ld\n", ioc->name, ctx2abort,
+		type, timeout));
+
+	DBG_DUMP_TM_REQUEST_FRAME(ioc, (u32 *)pScsiTm);
+
+	INITIALIZE_MGMT_STATUS(ioc->taskmgmt_cmds.status)
+	time_count = jiffies;
 	if ((ioc->facts.IOCCapabilities & MPI_IOCFACTS_CAPABILITY_HIGH_PRI_Q) &&
 	    (ioc->facts.MsgVersion >= MPI_VERSION_01_05))
 		mpt_put_msg_frame_hi_pri(ioc->TaskCtx, ioc, mf);
@@ -1752,6 +2043,53 @@ mptscsih_IssueTaskMgmt(MPT_SCSI_HOST *hd, u8 type, u8 channel, u8 id, int lun, i
 	hd->tmState = TM_STATE_NONE;
 	return FAILED;
 }
+			dfailprintk(ioc, printk(MYIOC_s_ERR_FMT
+				"TaskMgmt handshake FAILED!(mf=%p, rc=%d) \n",
+				ioc->name, mf, retval));
+			mpt_free_msg_frame(ioc, mf);
+			mpt_clear_taskmgmt_in_progress_flag(ioc);
+			goto out;
+		}
+	}
+
+	timeleft = wait_for_completion_timeout(&ioc->taskmgmt_cmds.done,
+		timeout*HZ);
+	if (!(ioc->taskmgmt_cmds.status & MPT_MGMT_STATUS_COMMAND_GOOD)) {
+		retval = FAILED;
+		dtmprintk(ioc, printk(MYIOC_s_ERR_FMT
+		    "TaskMgmt TIMED OUT!(mf=%p)\n", ioc->name, mf));
+		mpt_clear_taskmgmt_in_progress_flag(ioc);
+		if (ioc->taskmgmt_cmds.status & MPT_MGMT_STATUS_DID_IOCRESET)
+			goto out;
+		issue_hard_reset = 1;
+		goto out;
+	}
+
+	retval = mptscsih_taskmgmt_reply(ioc, type,
+	    (SCSITaskMgmtReply_t *) ioc->taskmgmt_cmds.reply);
+
+	dtmprintk(ioc, printk(MYIOC_s_DEBUG_FMT
+	    "TaskMgmt completed (%d seconds)\n",
+	    ioc->name, jiffies_to_msecs(jiffies - time_count)/1000));
+
+ out:
+
+	CLEAR_MGMT_STATUS(ioc->taskmgmt_cmds.status)
+	if (issue_hard_reset) {
+		printk(MYIOC_s_WARN_FMT
+		       "Issuing Reset from %s!! doorbell=0x%08x\n",
+		       ioc->name, __func__, mpt_GetIocState(ioc, 0));
+		retval = (ioc->bus_type == SAS) ?
+			mpt_HardResetHandler(ioc, CAN_SLEEP) :
+			mpt_Soft_Hard_ResetHandler(ioc, CAN_SLEEP);
+		mpt_free_msg_frame(ioc, mf);
+	}
+
+	retval = (retval == 0) ? 0 : FAILED;
+	mutex_unlock(&ioc->taskmgmt_cmds.mutex);
+	return retval;
+}
+EXPORT_SYMBOL(mptscsih_IssueTaskMgmt);
 
 static int
 mptscsih_get_tm_timeout(MPT_ADAPTER *ioc)
@@ -1764,6 +2102,10 @@ mptscsih_get_tm_timeout(MPT_ADAPTER *ioc)
 	case SPI:
 	default:
 		return 2;
+		return 30;
+	case SPI:
+	default:
+		return 10;
 	}
 }
 
@@ -1811,6 +2153,7 @@ mptscsih_abort(struct scsi_cmnd * SCpnt)
 		SCpnt->result = DID_NO_CONNECT << 16;
 		SCpnt->scsi_done(SCpnt);
 		retval = 0;
+		retval = SUCCESS;
 		goto out;
 	}
 
@@ -1819,6 +2162,17 @@ mptscsih_abort(struct scsi_cmnd * SCpnt)
 	if (vdevice->vtarget->tflags & MPT_TARGET_FLAGS_RAID_COMPONENT) {
 		dtmprintk(ioc, printk(MYIOC_s_DEBUG_FMT
 		    "task abort: hidden raid component (sc=%p)\n",
+		    ioc->name, SCpnt));
+		SCpnt->result = DID_RESET << 16;
+		retval = FAILED;
+		goto out;
+	}
+
+	/* Task aborts are not supported for volumes.
+	 */
+	if (vdevice->vtarget->raidVolume) {
+		dtmprintk(ioc, printk(MYIOC_s_DEBUG_FMT
+		    "task abort: raid volume (sc=%p)\n",
 		    ioc->name, SCpnt));
 		SCpnt->result = DID_RESET << 16;
 		retval = FAILED;
@@ -1846,6 +2200,15 @@ mptscsih_abort(struct scsi_cmnd * SCpnt)
 
 	if (hd->timeouts < -1)
 		hd->timeouts++;
+		retval = SUCCESS;
+		goto out;
+	}
+
+	if (ioc->timeouts < -1)
+		ioc->timeouts++;
+
+	if (mpt_fwfault_debug)
+		mpt_halt_firmware(ioc);
 
 	/* Most important!  Set TaskMsgContext to SCpnt's MsgContext!
 	 * (the IO to be ABORT'd)
@@ -1875,6 +2238,30 @@ mptscsih_abort(struct scsi_cmnd * SCpnt)
 		return SUCCESS;
 	else
 		return FAILED;
+	retval = mptscsih_IssueTaskMgmt(hd,
+			 MPI_SCSITASKMGMT_TASKTYPE_ABORT_TASK,
+			 vdevice->vtarget->channel,
+			 vdevice->vtarget->id, vdevice->lun,
+			 ctx2abort, mptscsih_get_tm_timeout(ioc));
+
+	if (SCPNT_TO_LOOKUP_IDX(ioc, SCpnt) == scpnt_idx) {
+		dtmprintk(ioc, printk(MYIOC_s_DEBUG_FMT
+		    "task abort: command still in active list! (sc=%p)\n",
+		    ioc->name, SCpnt));
+		retval = FAILED;
+	} else {
+		dtmprintk(ioc, printk(MYIOC_s_DEBUG_FMT
+		    "task abort: command cleared from active list! (sc=%p)\n",
+		    ioc->name, SCpnt));
+		retval = SUCCESS;
+	}
+
+ out:
+	printk(MYIOC_s_INFO_FMT "task abort: %s (rv=%04x) (sc=%p)\n",
+	    ioc->name, ((retval == SUCCESS) ? "SUCCESS" : "FAILED"), retval,
+	    SCpnt);
+
+	return retval;
 }
 
 /*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
@@ -1928,6 +2315,11 @@ mptscsih_dev_reset(struct scsi_cmnd * SCpnt)
 	retval = mptscsih_TMHandler(hd, MPI_SCSITASKMGMT_TASKTYPE_TARGET_RESET,
 	    vdevice->vtarget->channel, vdevice->vtarget->id, 0, 0,
 	    mptscsih_get_tm_timeout(ioc));
+	retval = mptscsih_IssueTaskMgmt(hd,
+				MPI_SCSITASKMGMT_TASKTYPE_TARGET_RESET,
+				vdevice->vtarget->channel,
+				vdevice->vtarget->id, 0, 0,
+				mptscsih_get_tm_timeout(ioc));
 
  out:
 	printk (MYIOC_s_INFO_FMT "target reset: %s (sc=%p)\n",
@@ -1976,6 +2368,16 @@ mptscsih_bus_reset(struct scsi_cmnd * SCpnt)
 	vdevice = SCpnt->device->hostdata;
 	retval = mptscsih_TMHandler(hd, MPI_SCSITASKMGMT_TASKTYPE_RESET_BUS,
 	    vdevice->vtarget->channel, 0, 0, 0, mptscsih_get_tm_timeout(ioc));
+	if (ioc->timeouts < -1)
+		ioc->timeouts++;
+
+	vdevice = SCpnt->device->hostdata;
+	if (!vdevice || !vdevice->vtarget)
+		return SUCCESS;
+	retval = mptscsih_IssueTaskMgmt(hd,
+					MPI_SCSITASKMGMT_TASKTYPE_RESET_BUS,
+					vdevice->vtarget->channel, 0, 0, 0,
+					mptscsih_get_tm_timeout(ioc));
 
 	printk(MYIOC_s_INFO_FMT "bus reset: %s (sc=%p)\n",
 	    ioc->name, ((retval == 0) ? "SUCCESS" : "FAILED" ), SCpnt);
@@ -2001,6 +2403,9 @@ mptscsih_host_reset(struct scsi_cmnd *SCpnt)
 	MPT_SCSI_HOST *  hd;
 	int              retval;
 	MPT_ADAPTER	*ioc;
+	int              status = SUCCESS;
+	MPT_ADAPTER	*ioc;
+	int		retval;
 
 	/*  If we can't locate the host to reset, then we failed. */
 	if ((hd = shost_priv(SCpnt->device->host)) == NULL){
@@ -2008,6 +2413,9 @@ mptscsih_host_reset(struct scsi_cmnd *SCpnt)
 		    "Can't locate host! (sc=%p)\n", SCpnt);
 		return FAILED;
 	}
+
+	/* make sure we have no outstanding commands at this stage */
+	mptscsih_flush_running_cmds(hd);
 
 	ioc = hd->ioc;
 	printk(MYIOC_s_INFO_FMT "attempting host reset! (sc=%p)\n",
@@ -2026,10 +2434,66 @@ mptscsih_host_reset(struct scsi_cmnd *SCpnt)
 		hd->tmPending = 0;
 		hd->tmState = TM_STATE_NONE;
 	}
+    retval = mpt_Soft_Hard_ResetHandler(ioc, CAN_SLEEP);
+	if (retval < 0)
+		status = FAILED;
+	else
+		status = SUCCESS;
 
 	printk(MYIOC_s_INFO_FMT "host reset: %s (sc=%p)\n",
 	    ioc->name, ((retval == 0) ? "SUCCESS" : "FAILED" ), SCpnt);
 
+	return status;
+}
+
+static int
+mptscsih_taskmgmt_reply(MPT_ADAPTER *ioc, u8 type,
+	SCSITaskMgmtReply_t *pScsiTmReply)
+{
+	u16			 iocstatus;
+	u32			 termination_count;
+	int			 retval;
+
+	if (!(ioc->taskmgmt_cmds.status & MPT_MGMT_STATUS_RF_VALID)) {
+		retval = FAILED;
+		goto out;
+	}
+
+	DBG_DUMP_TM_REPLY_FRAME(ioc, (u32 *)pScsiTmReply);
+
+	iocstatus = le16_to_cpu(pScsiTmReply->IOCStatus) & MPI_IOCSTATUS_MASK;
+	termination_count = le32_to_cpu(pScsiTmReply->TerminationCount);
+
+	dtmprintk(ioc, printk(MYIOC_s_DEBUG_FMT
+	    "TaskMgmt fw_channel = %d, fw_id = %d, task_type = 0x%02X,\n"
+	    "\tiocstatus = 0x%04X, loginfo = 0x%08X, response_code = 0x%02X,\n"
+	    "\tterm_cmnds = %d\n", ioc->name, pScsiTmReply->Bus,
+	    pScsiTmReply->TargetID, type, le16_to_cpu(pScsiTmReply->IOCStatus),
+	    le32_to_cpu(pScsiTmReply->IOCLogInfo), pScsiTmReply->ResponseCode,
+	    termination_count));
+
+	if (ioc->facts.MsgVersion >= MPI_VERSION_01_05 &&
+	    pScsiTmReply->ResponseCode)
+		mptscsih_taskmgmt_response_code(ioc,
+		    pScsiTmReply->ResponseCode);
+
+	if (iocstatus == MPI_IOCSTATUS_SUCCESS) {
+		retval = 0;
+		goto out;
+	}
+
+	retval = FAILED;
+	if (type == MPI_SCSITASKMGMT_TASKTYPE_ABORT_TASK) {
+		if (termination_count == 1)
+			retval = 0;
+		goto out;
+	}
+
+	if (iocstatus == MPI_IOCSTATUS_SCSI_TASK_TERMINATED ||
+	   iocstatus == MPI_IOCSTATUS_SCSI_IOC_TERMINATED)
+		retval = 0;
+
+ out:
 	return retval;
 }
 
@@ -2096,6 +2560,7 @@ mptscsih_tm_wait_for_completion(MPT_SCSI_HOST * hd, ulong timeout )
 
 /*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
 static void
+void
 mptscsih_taskmgmt_response_code(MPT_ADAPTER *ioc, u8 response_code)
 {
 	char *desc;
@@ -2129,6 +2594,7 @@ mptscsih_taskmgmt_response_code(MPT_ADAPTER *ioc, u8 response_code)
 	printk(MYIOC_s_INFO_FMT "Response Code(0x%08x): F/W: %s\n",
 		ioc->name, response_code, desc);
 }
+EXPORT_SYMBOL(mptscsih_taskmgmt_response_code);
 
 /*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
 /**
@@ -2236,6 +2702,30 @@ mptscsih_taskmgmt_complete(MPT_ADAPTER *ioc, MPT_FRAME_HDR *mf, MPT_FRAME_HDR *m
 	spin_unlock_irqrestore(&ioc->FreeQlock, flags);
 
 	return 1;
+mptscsih_taskmgmt_complete(MPT_ADAPTER *ioc, MPT_FRAME_HDR *mf,
+	MPT_FRAME_HDR *mr)
+{
+	dtmprintk(ioc, printk(MYIOC_s_DEBUG_FMT
+		"TaskMgmt completed (mf=%p, mr=%p)\n", ioc->name, mf, mr));
+
+	ioc->taskmgmt_cmds.status |= MPT_MGMT_STATUS_COMMAND_GOOD;
+
+	if (!mr)
+		goto out;
+
+	ioc->taskmgmt_cmds.status |= MPT_MGMT_STATUS_RF_VALID;
+	memcpy(ioc->taskmgmt_cmds.reply, mr,
+	    min(MPT_DEFAULT_FRAME_SIZE, 4 * mr->u.reply.MsgLength));
+ out:
+	if (ioc->taskmgmt_cmds.status & MPT_MGMT_STATUS_PENDING) {
+		mpt_clear_taskmgmt_in_progress_flag(ioc);
+		ioc->taskmgmt_cmds.status &= ~MPT_MGMT_STATUS_PENDING;
+		complete(&ioc->taskmgmt_cmds.done);
+		if (ioc->bus_type == SAS)
+			ioc->schedule_target_reset(ioc);
+		return 1;
+	}
+	return 0;
 }
 
 /*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
@@ -2287,6 +2777,10 @@ mptscsih_is_phys_disk(MPT_ADAPTER *ioc, u8 channel, u8 id)
 	struct inactive_raid_component_info *component_info;
 	int i;
 	int rc = 0;
+	int i, j;
+	RaidPhysDiskPage1_t *phys_disk;
+	int rc = 0;
+	int num_paths;
 
 	if (!ioc->raid_data.pIocPg3)
 		goto out;
@@ -2297,6 +2791,45 @@ mptscsih_is_phys_disk(MPT_ADAPTER *ioc, u8 channel, u8 id)
 			goto out;
 		}
 	}
+
+	if (ioc->bus_type != SAS)
+		goto out;
+
+	/*
+	 * Check if dual path
+	 */
+	for (i = 0; i < ioc->raid_data.pIocPg3->NumPhysDisks; i++) {
+		num_paths = mpt_raid_phys_disk_get_num_paths(ioc,
+		    ioc->raid_data.pIocPg3->PhysDisk[i].PhysDiskNum);
+		if (num_paths < 2)
+			continue;
+		phys_disk = kzalloc(offsetof(RaidPhysDiskPage1_t, Path) +
+		   (num_paths * sizeof(RAID_PHYS_DISK1_PATH)), GFP_KERNEL);
+		if (!phys_disk)
+			continue;
+		if ((mpt_raid_phys_disk_pg1(ioc,
+		    ioc->raid_data.pIocPg3->PhysDisk[i].PhysDiskNum,
+		    phys_disk))) {
+			kfree(phys_disk);
+			continue;
+		}
+		for (j = 0; j < num_paths; j++) {
+			if ((phys_disk->Path[j].Flags &
+			    MPI_RAID_PHYSDISK1_FLAG_INVALID))
+				continue;
+			if ((phys_disk->Path[j].Flags &
+			    MPI_RAID_PHYSDISK1_FLAG_BROKEN))
+				continue;
+			if ((id == phys_disk->Path[j].PhysDiskID) &&
+			    (channel == phys_disk->Path[j].PhysDiskBus)) {
+				rc = 1;
+				kfree(phys_disk);
+				goto out;
+			}
+		}
+		kfree(phys_disk);
+	}
+
 
 	/*
 	 * Check inactive list for matching phys disks
@@ -2324,6 +2857,10 @@ mptscsih_raid_id_to_num(MPT_ADAPTER *ioc, u8 channel, u8 id)
 	struct inactive_raid_component_info *component_info;
 	int i;
 	int rc = -ENXIO;
+	int i, j;
+	RaidPhysDiskPage1_t *phys_disk;
+	int rc = -ENXIO;
+	int num_paths;
 
 	if (!ioc->raid_data.pIocPg3)
 		goto out;
@@ -2333,6 +2870,44 @@ mptscsih_raid_id_to_num(MPT_ADAPTER *ioc, u8 channel, u8 id)
 			rc = ioc->raid_data.pIocPg3->PhysDisk[i].PhysDiskNum;
 			goto out;
 		}
+	}
+
+	if (ioc->bus_type != SAS)
+		goto out;
+
+	/*
+	 * Check if dual path
+	 */
+	for (i = 0; i < ioc->raid_data.pIocPg3->NumPhysDisks; i++) {
+		num_paths = mpt_raid_phys_disk_get_num_paths(ioc,
+		    ioc->raid_data.pIocPg3->PhysDisk[i].PhysDiskNum);
+		if (num_paths < 2)
+			continue;
+		phys_disk = kzalloc(offsetof(RaidPhysDiskPage1_t, Path) +
+		   (num_paths * sizeof(RAID_PHYS_DISK1_PATH)), GFP_KERNEL);
+		if (!phys_disk)
+			continue;
+		if ((mpt_raid_phys_disk_pg1(ioc,
+		    ioc->raid_data.pIocPg3->PhysDisk[i].PhysDiskNum,
+		    phys_disk))) {
+			kfree(phys_disk);
+			continue;
+		}
+		for (j = 0; j < num_paths; j++) {
+			if ((phys_disk->Path[j].Flags &
+			    MPI_RAID_PHYSDISK1_FLAG_INVALID))
+				continue;
+			if ((phys_disk->Path[j].Flags &
+			    MPI_RAID_PHYSDISK1_FLAG_BROKEN))
+				continue;
+			if ((id == phys_disk->Path[j].PhysDiskID) &&
+			    (channel == phys_disk->Path[j].PhysDiskBus)) {
+				rc = phys_disk->PhysDiskNum;
+				kfree(phys_disk);
+				goto out;
+			}
+		}
+		kfree(phys_disk);
 	}
 
 	/*
@@ -2371,6 +2946,8 @@ mptscsih_slave_destroy(struct scsi_device *sdev)
 	starget = scsi_target(sdev);
 	vtarget = starget->hostdata;
 	vdevice = sdev->hostdata;
+	if (!vdevice)
+		return;
 
 	mptscsih_search_running_cmds(hd, vdevice);
 	vtarget->num_luns--;
@@ -2420,6 +2997,15 @@ mptscsih_change_queue_depth(struct scsi_device *sdev, int qdepth)
 
 	scsi_adjust_queue_depth(sdev, tagged, qdepth);
 	return sdev->queue_depth;
+		 max_depth = ioc->sh->can_queue;
+
+	if (!sdev->tagged_supported)
+		max_depth = 1;
+
+	if (qdepth > max_depth)
+		qdepth = max_depth;
+
+	return scsi_change_queue_depth(sdev, qdepth);
 }
 
 /*
@@ -2444,6 +3030,7 @@ mptscsih_slave_configure(struct scsi_device *sdev)
 
 	dsprintk(ioc, printk(MYIOC_s_DEBUG_FMT
 		"device @ %p, channel=%d, id=%d, lun=%d\n",
+		"device @ %p, channel=%d, id=%d, lun=%llu\n",
 		ioc->name, sdev, sdev->channel, sdev->id, sdev->lun));
 	if (ioc->bus_type == SPI)
 		dsprintk(ioc, printk(MYIOC_s_DEBUG_FMT
@@ -2468,6 +3055,12 @@ mptscsih_slave_configure(struct scsi_device *sdev)
 		"tagged %d, simple %d, ordered %d\n",
 		ioc->name,sdev->tagged_supported, sdev->simple_tags,
 		sdev->ordered_tags));
+	mptscsih_change_queue_depth(sdev, MPT_SCSI_CMD_PER_DEV_HIGH);
+	dsprintk(ioc, printk(MYIOC_s_DEBUG_FMT
+		"tagged %d, simple %d\n",
+		ioc->name,sdev->tagged_supported, sdev->simple_tags));
+
+	blk_queue_dma_alignment (sdev->request_queue, 512 - 1);
 
 	return 0;
 }
@@ -2502,7 +3095,7 @@ mptscsih_copy_sense_data(struct scsi_cmnd *sc, MPT_SCSI_HOST *hd, MPT_FRAME_HDR 
 		/* Copy the sense received into the scsi command block. */
 		req_index = le16_to_cpu(mf->u.frame.hwhdr.msgctxu.fld.req_idx);
 		sense_data = ((u8 *)ioc->sense_buf_pool + (req_index * MPT_SENSE_BUFFER_ALLOC));
-		memcpy(sc->sense_buffer, sense_data, SNS_LEN(sc));
+		memcpy(sc->sense_buffer, sense_data, MPT_SENSE_BUFFER_ALLOC);
 
 		/* Log SMART data (asc = 0x5D, non-IM case only) if required.
 		 */
@@ -2546,6 +3139,13 @@ mptscsih_copy_sense_data(struct scsi_cmnd *sc, MPT_SCSI_HOST *hd, MPT_FRAME_HDR 
  * Returns the scsi_cmd pointer
  **/
 static struct scsi_cmnd *
+ * mptscsih_get_scsi_lookup - retrieves scmd entry
+ * @ioc: Pointer to MPT_ADAPTER structure
+ * @i: index into the array
+ *
+ * Returns the scsi_cmd pointer
+ */
+struct scsi_cmnd *
 mptscsih_get_scsi_lookup(MPT_ADAPTER *ioc, int i)
 {
 	unsigned long	flags;
@@ -2566,6 +3166,15 @@ mptscsih_get_scsi_lookup(MPT_ADAPTER *ioc, int i)
  * retrieves and clears scmd entry from ScsiLookup[] array list
  *
  * Returns the scsi_cmd pointer
+EXPORT_SYMBOL(mptscsih_get_scsi_lookup);
+
+/**
+ * mptscsih_getclear_scsi_lookup -  retrieves and clears scmd entry from ScsiLookup[] array list
+ * @ioc: Pointer to MPT_ADAPTER structure
+ * @i: index into the array
+ *
+ * Returns the scsi_cmd pointer
+ *
  **/
 static struct scsi_cmnd *
 mptscsih_getclear_scsi_lookup(MPT_ADAPTER *ioc, int i)
@@ -2585,6 +3194,7 @@ mptscsih_getclear_scsi_lookup(MPT_ADAPTER *ioc, int i)
  * mptscsih_set_scsi_lookup
  *
  * writes a scmd entry into the ScsiLookup[] array list
+ * mptscsih_set_scsi_lookup - write a scmd entry into the ScsiLookup[] array list
  *
  * @ioc: Pointer to MPT_ADAPTER structure
  * @i: index into the array
@@ -2718,6 +3328,33 @@ mptscsih_ioc_reset(MPT_ADAPTER *ioc, int reset_phase)
 
 	}
 
+
+	if (ioc->sh == NULL || shost_priv(ioc->sh) == NULL)
+		return 0;
+
+	hd = shost_priv(ioc->sh);
+	switch (reset_phase) {
+	case MPT_IOC_SETUP_RESET:
+		dtmprintk(ioc, printk(MYIOC_s_DEBUG_FMT
+		    "%s: MPT_IOC_SETUP_RESET\n", ioc->name, __func__));
+		break;
+	case MPT_IOC_PRE_RESET:
+		dtmprintk(ioc, printk(MYIOC_s_DEBUG_FMT
+		    "%s: MPT_IOC_PRE_RESET\n", ioc->name, __func__));
+		mptscsih_flush_running_cmds(hd);
+		break;
+	case MPT_IOC_POST_RESET:
+		dtmprintk(ioc, printk(MYIOC_s_DEBUG_FMT
+		    "%s: MPT_IOC_POST_RESET\n", ioc->name, __func__));
+		if (ioc->internal_cmds.status & MPT_MGMT_STATUS_PENDING) {
+			ioc->internal_cmds.status |=
+				MPT_MGMT_STATUS_DID_IOCRESET;
+			complete(&ioc->internal_cmds.done);
+		}
+		break;
+	default:
+		break;
+	}
 	return 1;		/* currently means nothing really */
 }
 
@@ -2774,6 +3411,16 @@ mptscsih_event_process(MPT_ADAPTER *ioc, EventNotificationReply_t *pEvReply)
 		    ioc->name, event));
 		break;
 	}
+	u8 event = le32_to_cpu(pEvReply->Event) & 0xFF;
+
+	devtverboseprintk(ioc, printk(MYIOC_s_DEBUG_FMT
+		"MPT event (=%02Xh) routed to SCSI host driver!\n",
+		ioc->name, event));
+
+	if ((event == MPI_EVENT_IOC_BUS_RESET ||
+	    event == MPI_EVENT_EXT_BUS_RESET) &&
+	    (ioc->bus_type == SPI) && (ioc->soft_resets < -1))
+			ioc->soft_resets++;
 
 	return 1;		/* currently means nothing really */
 }
@@ -3000,6 +3647,138 @@ mptscsih_timer_expired(unsigned long data)
 }
 
 
+mptscsih_scandv_complete(MPT_ADAPTER *ioc, MPT_FRAME_HDR *req,
+				MPT_FRAME_HDR *reply)
+{
+	SCSIIORequest_t *pReq;
+	SCSIIOReply_t	*pReply;
+	u8		 cmd;
+	u16		 req_idx;
+	u8	*sense_data;
+	int		 sz;
+
+	ioc->internal_cmds.status |= MPT_MGMT_STATUS_COMMAND_GOOD;
+	ioc->internal_cmds.completion_code = MPT_SCANDV_GOOD;
+	if (!reply)
+		goto out;
+
+	pReply = (SCSIIOReply_t *) reply;
+	pReq = (SCSIIORequest_t *) req;
+	ioc->internal_cmds.completion_code =
+	    mptscsih_get_completion_code(ioc, req, reply);
+	ioc->internal_cmds.status |= MPT_MGMT_STATUS_RF_VALID;
+	memcpy(ioc->internal_cmds.reply, reply,
+	    min(MPT_DEFAULT_FRAME_SIZE, 4 * reply->u.reply.MsgLength));
+	cmd = reply->u.hdr.Function;
+	if (((cmd == MPI_FUNCTION_SCSI_IO_REQUEST) ||
+	    (cmd == MPI_FUNCTION_RAID_SCSI_IO_PASSTHROUGH)) &&
+	    (pReply->SCSIState & MPI_SCSI_STATE_AUTOSENSE_VALID)) {
+		req_idx = le16_to_cpu(req->u.frame.hwhdr.msgctxu.fld.req_idx);
+		sense_data = ((u8 *)ioc->sense_buf_pool +
+		    (req_idx * MPT_SENSE_BUFFER_ALLOC));
+		sz = min_t(int, pReq->SenseBufferLength,
+		    MPT_SENSE_BUFFER_ALLOC);
+		memcpy(ioc->internal_cmds.sense, sense_data, sz);
+	}
+ out:
+	if (!(ioc->internal_cmds.status & MPT_MGMT_STATUS_PENDING))
+		return 0;
+	ioc->internal_cmds.status &= ~MPT_MGMT_STATUS_PENDING;
+	complete(&ioc->internal_cmds.done);
+	return 1;
+}
+
+
+/**
+ *	mptscsih_get_completion_code - get completion code from MPT request
+ *	@ioc: Pointer to MPT_ADAPTER structure
+ *	@req: Pointer to original MPT request frame
+ *	@reply: Pointer to MPT reply frame (NULL if TurboReply)
+ *
+ **/
+static int
+mptscsih_get_completion_code(MPT_ADAPTER *ioc, MPT_FRAME_HDR *req,
+				MPT_FRAME_HDR *reply)
+{
+	SCSIIOReply_t	*pReply;
+	MpiRaidActionReply_t *pr;
+	u8		 scsi_status;
+	u16		 status;
+	int		 completion_code;
+
+	pReply = (SCSIIOReply_t *)reply;
+	status = le16_to_cpu(pReply->IOCStatus) & MPI_IOCSTATUS_MASK;
+	scsi_status = pReply->SCSIStatus;
+
+	devtprintk(ioc, printk(MYIOC_s_DEBUG_FMT
+	    "IOCStatus=%04xh, SCSIState=%02xh, SCSIStatus=%02xh,"
+	    "IOCLogInfo=%08xh\n", ioc->name, status, pReply->SCSIState,
+	    scsi_status, le32_to_cpu(pReply->IOCLogInfo)));
+
+	switch (status) {
+
+	case MPI_IOCSTATUS_SCSI_DEVICE_NOT_THERE:	/* 0x0043 */
+		completion_code = MPT_SCANDV_SELECTION_TIMEOUT;
+		break;
+
+	case MPI_IOCSTATUS_SCSI_IO_DATA_ERROR:		/* 0x0046 */
+	case MPI_IOCSTATUS_SCSI_TASK_TERMINATED:	/* 0x0048 */
+	case MPI_IOCSTATUS_SCSI_IOC_TERMINATED:		/* 0x004B */
+	case MPI_IOCSTATUS_SCSI_EXT_TERMINATED:		/* 0x004C */
+		completion_code = MPT_SCANDV_DID_RESET;
+		break;
+
+	case MPI_IOCSTATUS_BUSY:
+	case MPI_IOCSTATUS_INSUFFICIENT_RESOURCES:
+		completion_code = MPT_SCANDV_BUSY;
+		break;
+
+	case MPI_IOCSTATUS_SCSI_DATA_UNDERRUN:		/* 0x0045 */
+	case MPI_IOCSTATUS_SCSI_RECOVERED_ERROR:	/* 0x0040 */
+	case MPI_IOCSTATUS_SUCCESS:			/* 0x0000 */
+		if (pReply->Function == MPI_FUNCTION_CONFIG) {
+			completion_code = MPT_SCANDV_GOOD;
+		} else if (pReply->Function == MPI_FUNCTION_RAID_ACTION) {
+			pr = (MpiRaidActionReply_t *)reply;
+			if (le16_to_cpu(pr->ActionStatus) ==
+				MPI_RAID_ACTION_ASTATUS_SUCCESS)
+				completion_code = MPT_SCANDV_GOOD;
+			else
+				completion_code = MPT_SCANDV_SOME_ERROR;
+		} else if (pReply->SCSIState & MPI_SCSI_STATE_AUTOSENSE_VALID)
+			completion_code = MPT_SCANDV_SENSE;
+		else if (pReply->SCSIState & MPI_SCSI_STATE_AUTOSENSE_FAILED) {
+			if (req->u.scsireq.CDB[0] == INQUIRY)
+				completion_code = MPT_SCANDV_ISSUE_SENSE;
+			else
+				completion_code = MPT_SCANDV_DID_RESET;
+		} else if (pReply->SCSIState & MPI_SCSI_STATE_NO_SCSI_STATUS)
+			completion_code = MPT_SCANDV_DID_RESET;
+		else if (pReply->SCSIState & MPI_SCSI_STATE_TERMINATED)
+			completion_code = MPT_SCANDV_DID_RESET;
+		else if (scsi_status == MPI_SCSI_STATUS_BUSY)
+			completion_code = MPT_SCANDV_BUSY;
+		else
+			completion_code = MPT_SCANDV_GOOD;
+		break;
+
+	case MPI_IOCSTATUS_SCSI_PROTOCOL_ERROR:		/* 0x0047 */
+		if (pReply->SCSIState & MPI_SCSI_STATE_TERMINATED)
+			completion_code = MPT_SCANDV_DID_RESET;
+		else
+			completion_code = MPT_SCANDV_SOME_ERROR;
+		break;
+	default:
+		completion_code = MPT_SCANDV_SOME_ERROR;
+		break;
+
+	}	/* switch(status) */
+
+	devtprintk(ioc, printk(MYIOC_s_DEBUG_FMT
+	    "  completionCode set to %08xh\n", ioc->name, completion_code));
+	return completion_code;
+}
+
 /*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
 /**
  *	mptscsih_do_cmd - Do internal command.
@@ -3041,6 +3820,27 @@ mptscsih_do_cmd(MPT_SCSI_HOST *hd, INTERNAL_CMD *io)
 		return -EPERM;
 	}
 
+	int		 my_idx, ii, dir;
+	int		 timeout;
+	char		 cmdLen;
+	char		 CDB[]={0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
+	u8		 cmd = io->cmd;
+	MPT_ADAPTER *ioc = hd->ioc;
+	int		 ret = 0;
+	unsigned long	 timeleft;
+	unsigned long	 flags;
+
+	/* don't send internal command during diag reset */
+	spin_lock_irqsave(&ioc->taskmgmt_lock, flags);
+	if (ioc->ioc_reset_in_progress) {
+		spin_unlock_irqrestore(&ioc->taskmgmt_lock, flags);
+		dfailprintk(ioc, printk(MYIOC_s_DEBUG_FMT
+			"%s: busy with host reset\n", ioc->name, __func__));
+		return MPT_SCANDV_BUSY;
+	}
+	spin_unlock_irqrestore(&ioc->taskmgmt_lock, flags);
+
+	mutex_lock(&ioc->internal_cmds.mutex);
 
 	/* Set command specific information
 	 */
@@ -3051,12 +3851,14 @@ mptscsih_do_cmd(MPT_SCSI_HOST *hd, INTERNAL_CMD *io)
 		CDB[0] = cmd;
 		CDB[4] = io->size;
 		cmdTimeout = 10;
+		timeout = 10;
 		break;
 
 	case TEST_UNIT_READY:
 		cmdLen = 6;
 		dir = MPI_SCSIIO_CONTROL_READ;
 		cmdTimeout = 10;
+		timeout = 10;
 		break;
 
 	case START_STOP:
@@ -3065,6 +3867,7 @@ mptscsih_do_cmd(MPT_SCSI_HOST *hd, INTERNAL_CMD *io)
 		CDB[0] = cmd;
 		CDB[4] = 1;	/*Spin up the disk */
 		cmdTimeout = 15;
+		timeout = 15;
 		break;
 
 	case REQUEST_SENSE:
@@ -3073,6 +3876,7 @@ mptscsih_do_cmd(MPT_SCSI_HOST *hd, INTERNAL_CMD *io)
 		CDB[4] = io->size;
 		dir = MPI_SCSIIO_CONTROL_READ;
 		cmdTimeout = 10;
+		timeout = 10;
 		break;
 
 	case READ_BUFFER:
@@ -3092,6 +3896,7 @@ mptscsih_do_cmd(MPT_SCSI_HOST *hd, INTERNAL_CMD *io)
 		CDB[7] = (io->size >>  8) & 0xFF;
 		CDB[8] = io->size & 0xFF;
 		cmdTimeout = 10;
+		timeout = 10;
 		break;
 
 	case WRITE_BUFFER:
@@ -3107,6 +3912,7 @@ mptscsih_do_cmd(MPT_SCSI_HOST *hd, INTERNAL_CMD *io)
 		CDB[7] = (io->size >>  8) & 0xFF;
 		CDB[8] = io->size & 0xFF;
 		cmdTimeout = 10;
+		timeout = 10;
 		break;
 
 	case RESERVE:
@@ -3114,6 +3920,7 @@ mptscsih_do_cmd(MPT_SCSI_HOST *hd, INTERNAL_CMD *io)
 		dir = MPI_SCSIIO_CONTROL_READ;
 		CDB[0] = cmd;
 		cmdTimeout = 10;
+		timeout = 10;
 		break;
 
 	case RELEASE:
@@ -3121,6 +3928,7 @@ mptscsih_do_cmd(MPT_SCSI_HOST *hd, INTERNAL_CMD *io)
 		dir = MPI_SCSIIO_CONTROL_READ;
 		CDB[0] = cmd;
 		cmdTimeout = 10;
+		timeout = 10;
 		break;
 
 	case SYNCHRONIZE_CACHE:
@@ -3129,6 +3937,7 @@ mptscsih_do_cmd(MPT_SCSI_HOST *hd, INTERNAL_CMD *io)
 		CDB[0] = cmd;
 //		CDB[1] = 0x02;	/* set immediate bit */
 		cmdTimeout = 10;
+		timeout = 10;
 		break;
 
 	default:
@@ -3142,6 +3951,18 @@ mptscsih_do_cmd(MPT_SCSI_HOST *hd, INTERNAL_CMD *io)
 		dfailprintk(ioc, printk(MYIOC_s_WARN_FMT "No msg frames!\n",
 		    ioc->name));
 		return -EBUSY;
+		ret = -EFAULT;
+		goto out;
+	}
+
+	/* Get and Populate a free Frame
+	 * MsgContext set in mpt_get_msg_frame call
+	 */
+	if ((mf = mpt_get_msg_frame(ioc->InternalCtx, ioc)) == NULL) {
+		dfailprintk(ioc, printk(MYIOC_s_WARN_FMT "%s: No msg frames!\n",
+		    ioc->name, __func__));
+		ret = MPT_SCANDV_BUSY;
+		goto out;
 	}
 
 	pScsiReq = (SCSIIORequest_t *) mf;
@@ -3168,6 +3989,7 @@ mptscsih_do_cmd(MPT_SCSI_HOST *hd, INTERNAL_CMD *io)
 	pScsiReq->Reserved = 0;
 
 	pScsiReq->MsgFlags = mpt_msg_flags();
+	pScsiReq->MsgFlags = mpt_msg_flags(ioc);
 	/* MsgContext set in mpt_get_msg_fram call  */
 
 	int_to_scsilun(io->lun, (struct scsi_lun *)pScsiReq->LUN);
@@ -3184,6 +4006,11 @@ mptscsih_do_cmd(MPT_SCSI_HOST *hd, INTERNAL_CMD *io)
 	}
 
 	for (ii=0; ii < 16; ii++)
+		devtprintk(ioc, printk(MYIOC_s_DEBUG_FMT
+		    "%s: Untagged! 0x%02x\n", ioc->name, __func__, cmd));
+	}
+
+	for (ii = 0; ii < 16; ii++)
 		pScsiReq->CDB[ii] = CDB[ii];
 
 	pScsiReq->DataLength = cpu_to_le32(io->size);
@@ -3247,6 +4074,50 @@ mptscsih_do_cmd(MPT_SCSI_HOST *hd, INTERNAL_CMD *io)
 	}
 
 	return rc;
+	devtprintk(ioc, printk(MYIOC_s_DEBUG_FMT
+	    "%s: Sending Command 0x%02x for fw_channel=%d fw_id=%d lun=%llu\n",
+	    ioc->name, __func__, cmd, io->channel, io->id, io->lun));
+
+	if (dir == MPI_SCSIIO_CONTROL_READ)
+		ioc->add_sge((char *) &pScsiReq->SGL,
+		    MPT_SGE_FLAGS_SSIMPLE_READ | io->size, io->data_dma);
+	else
+		ioc->add_sge((char *) &pScsiReq->SGL,
+		    MPT_SGE_FLAGS_SSIMPLE_WRITE | io->size, io->data_dma);
+
+	INITIALIZE_MGMT_STATUS(ioc->internal_cmds.status)
+	mpt_put_msg_frame(ioc->InternalCtx, ioc, mf);
+	timeleft = wait_for_completion_timeout(&ioc->internal_cmds.done,
+	    timeout*HZ);
+	if (!(ioc->internal_cmds.status & MPT_MGMT_STATUS_COMMAND_GOOD)) {
+		ret = MPT_SCANDV_DID_RESET;
+		dfailprintk(ioc, printk(MYIOC_s_DEBUG_FMT
+		    "%s: TIMED OUT for cmd=0x%02x\n", ioc->name, __func__,
+		    cmd));
+		if (ioc->internal_cmds.status & MPT_MGMT_STATUS_DID_IOCRESET) {
+			mpt_free_msg_frame(ioc, mf);
+			goto out;
+		}
+		if (!timeleft) {
+			printk(MYIOC_s_WARN_FMT
+			       "Issuing Reset from %s!! doorbell=0x%08xh"
+			       " cmd=0x%02x\n",
+			       ioc->name, __func__, mpt_GetIocState(ioc, 0),
+			       cmd);
+			mpt_Soft_Hard_ResetHandler(ioc, CAN_SLEEP);
+			mpt_free_msg_frame(ioc, mf);
+		}
+		goto out;
+	}
+
+	ret = ioc->internal_cmds.completion_code;
+	devtprintk(ioc, printk(MYIOC_s_DEBUG_FMT "%s: success, rc=0x%02x\n",
+			ioc->name, __func__, ret));
+
+ out:
+	CLEAR_MGMT_STATUS(ioc->internal_cmds.status)
+	mutex_unlock(&ioc->internal_cmds.mutex);
+	return ret;
 }
 
 /*=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=*/
@@ -3486,6 +4357,7 @@ struct device_attribute *mptscsih_host_attrs[] = {
 	&dev_attr_debug_level,
 	NULL,
 };
+
 EXPORT_SYMBOL(mptscsih_host_attrs);
 
 EXPORT_SYMBOL(mptscsih_remove);
@@ -3495,6 +4367,7 @@ EXPORT_SYMBOL(mptscsih_suspend);
 EXPORT_SYMBOL(mptscsih_resume);
 #endif
 EXPORT_SYMBOL(mptscsih_proc_info);
+EXPORT_SYMBOL(mptscsih_show_info);
 EXPORT_SYMBOL(mptscsih_info);
 EXPORT_SYMBOL(mptscsih_qcmd);
 EXPORT_SYMBOL(mptscsih_slave_destroy);

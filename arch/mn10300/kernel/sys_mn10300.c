@@ -173,4 +173,5 @@ asmlinkage long sys_ipc(uint call, int first, int second,
 	default:
 		return -EINVAL;
 	}
+	return sys_mmap_pgoff(addr, len, prot, flags, fd, offset >> PAGE_SHIFT);
 }

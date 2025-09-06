@@ -15,6 +15,7 @@
  *
  */
 
+#include <linux/gpio.h>
 #include <linux/if_ether.h>
 #include <linux/irq.h>
 #include <linux/serial.h>
@@ -29,6 +30,17 @@
 #include <asm/mach/flash.h>
 #include <asm/io.h>
 #include <asm/gpio.h>
+#include <linux/io.h>
+#include <asm/mach-types.h>
+#include <asm/mach/arch.h>
+#include <asm/mach/flash.h>
+
+#define FSG_SDA_PIN		12
+#define FSG_SCL_PIN		13
+
+#define FSG_SB_GPIO		4	/* sync button */
+#define FSG_RB_GPIO		9	/* reset button */
+#define FSG_UB_GPIO		10	/* usb button */
 
 static struct flash_platform_data fsg_flash_data = {
 	.map_name		= "cfi_probe",
@@ -206,6 +218,7 @@ static void __init fsg_init(void)
 	if (request_irq(gpio_to_irq(FSG_RB_GPIO), &fsg_reset_handler,
 			IRQF_DISABLED | IRQF_TRIGGER_LOW,
 			"FSG reset button", NULL) < 0) {
+			IRQF_TRIGGER_LOW, "FSG reset button", NULL) < 0) {
 
 		printk(KERN_DEBUG "Reset Button IRQ %d not available\n",
 			gpio_to_irq(FSG_RB_GPIO));
@@ -214,6 +227,7 @@ static void __init fsg_init(void)
 	if (request_irq(gpio_to_irq(FSG_SB_GPIO), &fsg_power_handler,
 			IRQF_DISABLED | IRQF_TRIGGER_LOW,
 			"FSG power button", NULL) < 0) {
+			IRQF_TRIGGER_LOW, "FSG power button", NULL) < 0) {
 
 		printk(KERN_DEBUG "Power Button IRQ %d not available\n",
 			gpio_to_irq(FSG_SB_GPIO));
@@ -260,6 +274,10 @@ static void __init fsg_init(void)
 	       print_mac(mac_buf, fsg_plat_eth[0].hwaddr));
 	printk(KERN_INFO "FSG: Using MAC address %s for port 1\n",
 	       print_mac(mac_buf, fsg_plat_eth[1].hwaddr));
+	printk(KERN_INFO "FSG: Using MAC address %pM for port 0\n",
+	       fsg_plat_eth[0].hwaddr);
+	printk(KERN_INFO "FSG: Using MAC address %pM for port 1\n",
+	       fsg_plat_eth[1].hwaddr);
 
 }
 
@@ -272,5 +290,15 @@ MACHINE_START(FSG, "Freecom FSG-3")
 	.timer		= &ixp4xx_timer,
 	.boot_params	= 0x0100,
 	.init_machine	= fsg_init,
+	.map_io		= ixp4xx_map_io,
+	.init_early	= ixp4xx_init_early,
+	.init_irq	= ixp4xx_init_irq,
+	.init_time	= ixp4xx_timer_init,
+	.atag_offset	= 0x100,
+	.init_machine	= fsg_init,
+#if defined(CONFIG_PCI)
+	.dma_zone_size	= SZ_64M,
+#endif
+	.restart	= ixp4xx_restart,
 MACHINE_END
 

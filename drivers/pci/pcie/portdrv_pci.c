@@ -15,6 +15,12 @@
 #include <linux/slab.h>
 #include <linux/pcieport_if.h>
 #include <linux/aer.h>
+#include <linux/pm_runtime.h>
+#include <linux/init.h>
+#include <linux/pcieport_if.h>
+#include <linux/aer.h>
+#include <linux/dmi.h>
+#include <linux/pci-aspm.h>
 
 #include "portdrv.h"
 #include "aer/aerdrv.h"
@@ -25,6 +31,7 @@
 #define DRIVER_VERSION "v1.0"
 #define DRIVER_AUTHOR "tom.l.nguyen@intel.com"
 #define DRIVER_DESC "PCIE Port Bus Driver"
+#define DRIVER_DESC "PCIe Port Bus Driver"
 MODULE_AUTHOR(DRIVER_AUTHOR);
 MODULE_DESCRIPTION(DRIVER_DESC);
 MODULE_LICENSE("GPL");
@@ -35,6 +42,40 @@ static const char device_name[] = "pcieport-driver";
 static int pcie_portdrv_save_config(struct pci_dev *dev)
 {
 	return pci_save_state(dev);
+/* If this switch is set, PCIe port native services should not be enabled. */
+bool pcie_ports_disabled;
+
+/*
+ * If this switch is set, ACPI _OSC will be used to determine whether or not to
+ * enable PCIe port native services.
+ */
+bool pcie_ports_auto = true;
+
+static int __init pcie_port_setup(char *str)
+{
+	if (!strncmp(str, "compat", 6)) {
+		pcie_ports_disabled = true;
+	} else if (!strncmp(str, "native", 6)) {
+		pcie_ports_disabled = false;
+		pcie_ports_auto = false;
+	} else if (!strncmp(str, "auto", 4)) {
+		pcie_ports_disabled = false;
+		pcie_ports_auto = true;
+	}
+
+	return 1;
+}
+__setup("pcie_ports=", pcie_port_setup);
+
+/* global data */
+
+/**
+ * pcie_clear_root_pme_status - Clear root port PME interrupt status.
+ * @dev: PCIe root port or event collector.
+ */
+void pcie_clear_root_pme_status(struct pci_dev *dev)
+{
+	pcie_capability_set_dword(dev, PCI_EXP_RTSTA, PCI_EXP_RTSTA_PME);
 }
 
 static int pcie_portdrv_restore_config(struct pci_dev *dev)
@@ -68,6 +109,36 @@ static int pcie_portdrv_resume(struct pci_dev *dev)
 #define pcie_portdrv_suspend NULL
 #define pcie_portdrv_resume NULL
 #endif
+static int pcie_port_resume_noirq(struct device *dev)
+{
+	struct pci_dev *pdev = to_pci_dev(dev);
+
+	/*
+	 * Some BIOSes forget to clear Root PME Status bits after system wakeup
+	 * which breaks ACPI-based runtime wakeup on PCI Express, so clear those
+	 * bits now just in case (shouldn't hurt).
+	 */
+	if (pci_pcie_type(pdev) == PCI_EXP_TYPE_ROOT_PORT)
+		pcie_clear_root_pme_status(pdev);
+	return 0;
+}
+
+static const struct dev_pm_ops pcie_portdrv_pm_ops = {
+	.suspend	= pcie_port_device_suspend,
+	.resume		= pcie_port_device_resume,
+	.freeze		= pcie_port_device_suspend,
+	.thaw		= pcie_port_device_resume,
+	.poweroff	= pcie_port_device_suspend,
+	.restore	= pcie_port_device_resume,
+	.resume_noirq	= pcie_port_resume_noirq,
+};
+
+#define PCIE_PORTDRV_PM_OPS	(&pcie_portdrv_pm_ops)
+
+#else /* !PM */
+
+#define PCIE_PORTDRV_PM_OPS	NULL
+#endif /* !PM */
 
 /*
  * pcie_portdrv_probe - Probe PCI-Express port devices
@@ -110,6 +181,37 @@ static void pcie_portdrv_remove (struct pci_dev *dev)
 {
 	pcie_port_device_remove(dev);
 	kfree(pci_get_drvdata(dev));
+ * If detected invokes the pcie_port_device_register() method for
+ * this port device.
+ *
+ */
+static int pcie_portdrv_probe(struct pci_dev *dev,
+					const struct pci_device_id *id)
+{
+	int status;
+
+	if (!pci_is_pcie(dev) ||
+	    ((pci_pcie_type(dev) != PCI_EXP_TYPE_ROOT_PORT) &&
+	     (pci_pcie_type(dev) != PCI_EXP_TYPE_UPSTREAM) &&
+	     (pci_pcie_type(dev) != PCI_EXP_TYPE_DOWNSTREAM)))
+		return -ENODEV;
+
+	status = pcie_port_device_register(dev);
+	if (status)
+		return status;
+
+	pci_save_state(dev);
+	/*
+	 * D3cold may not work properly on some PCIe port, so disable
+	 * it by default.
+	 */
+	dev->d3cold_allowed = false;
+	return 0;
+}
+
+static void pcie_portdrv_remove(struct pci_dev *dev)
+{
+	pcie_port_device_remove(dev);
 }
 
 static int error_detected_iter(struct device *device, void *data)
@@ -152,6 +254,11 @@ static pci_ers_result_t pcie_portdrv_error_detected(struct pci_dev *dev,
 	retval = device_for_each_child(&dev->dev, &result_data, error_detected_iter);
 
 	return result_data.result;
+	struct aer_broadcast_data data = {error, PCI_ERS_RESULT_CAN_RECOVER};
+
+	/* get true return value from &data */
+	device_for_each_child(&dev->dev, &data, error_detected_iter);
+	return data.result;
 }
 
 static int mmio_enabled_iter(struct device *device, void *data)
@@ -186,6 +293,9 @@ static pci_ers_result_t pcie_portdrv_mmio_enabled(struct pci_dev *dev)
 
 	/* get true return value from &status */
 	retval = device_for_each_child(&dev->dev, &status, mmio_enabled_iter);
+
+	/* get true return value from &status */
+	device_for_each_child(&dev->dev, &status, mmio_enabled_iter);
 	return status;
 }
 
@@ -221,6 +331,12 @@ static pci_ers_result_t pcie_portdrv_slot_reset(struct pci_dev *dev)
 
 	/* If fatal, restore cfg space for possible link reset at upstream */
 	if (dev->error_state == pci_channel_io_frozen) {
+	pci_ers_result_t status = PCI_ERS_RESULT_RECOVERED;
+
+	/* If fatal, restore cfg space for possible link reset at upstream */
+	if (dev->error_state == pci_channel_io_frozen) {
+		dev->state_saved = true;
+		pci_restore_state(dev);
 		pcie_portdrv_restore_config(dev);
 		pci_enable_pcie_error_reporting(dev);
 	}
@@ -228,6 +344,7 @@ static pci_ers_result_t pcie_portdrv_slot_reset(struct pci_dev *dev)
 	/* get true return value from &status */
 	retval = device_for_each_child(&dev->dev, &status, slot_reset_iter);
 
+	device_for_each_child(&dev->dev, &status, slot_reset_iter);
 	return status;
 }
 
@@ -256,6 +373,7 @@ static void pcie_portdrv_err_resume(struct pci_dev *dev)
 	int retval;
 	/* nothing to do with error value, if it ever happens */
 	retval = device_for_each_child(&dev->dev, NULL, resume_iter);
+	device_for_each_child(&dev->dev, NULL, resume_iter);
 }
 
 /*
@@ -277,6 +395,15 @@ static struct pci_error_handlers pcie_portdrv_err_handler = {
 
 static struct pci_driver pcie_portdriver = {
 	.name		= (char *)device_name,
+static const struct pci_error_handlers pcie_portdrv_err_handler = {
+	.error_detected = pcie_portdrv_error_detected,
+	.mmio_enabled = pcie_portdrv_mmio_enabled,
+	.slot_reset = pcie_portdrv_slot_reset,
+	.resume = pcie_portdrv_err_resume,
+};
+
+static struct pci_driver pcie_portdriver = {
+	.name		= "pcieport",
 	.id_table	= &port_pci_ids[0],
 
 	.probe		= pcie_portdrv_probe,
@@ -286,11 +413,43 @@ static struct pci_driver pcie_portdriver = {
 	.resume		= pcie_portdrv_resume,
 
 	.err_handler 	= &pcie_portdrv_err_handler,
+	.err_handler	= &pcie_portdrv_err_handler,
+
+	.driver.pm	= PCIE_PORTDRV_PM_OPS,
+};
+
+static int __init dmi_pcie_pme_disable_msi(const struct dmi_system_id *d)
+{
+	pr_notice("%s detected: will not use MSI for PCIe PME signaling\n",
+		  d->ident);
+	pcie_pme_disable_msi();
+	return 0;
+}
+
+static struct dmi_system_id __initdata pcie_portdrv_dmi_table[] = {
+	/*
+	 * Boxes that should not use MSI for PCIe PME signaling.
+	 */
+	{
+	 .callback = dmi_pcie_pme_disable_msi,
+	 .ident = "MSI Wind U-100",
+	 .matches = {
+		     DMI_MATCH(DMI_SYS_VENDOR,
+				"MICRO-STAR INTERNATIONAL CO., LTD"),
+		     DMI_MATCH(DMI_PRODUCT_NAME, "U-100"),
+		     },
+	 },
+	 {}
 };
 
 static int __init pcie_portdrv_init(void)
 {
 	int retval;
+
+	if (pcie_ports_disabled)
+		return pci_register_driver(&pcie_portdriver);
+
+	dmi_check_system(pcie_portdrv_dmi_table);
 
 	retval = pcie_port_bus_register();
 	if (retval) {
@@ -312,3 +471,4 @@ static void __exit pcie_portdrv_exit(void)
 
 module_init(pcie_portdrv_init);
 module_exit(pcie_portdrv_exit);
+module_init(pcie_portdrv_init);

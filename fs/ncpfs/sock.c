@@ -8,6 +8,7 @@
  *
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/time.h>
 #include <linux/errno.h>
@@ -21,6 +22,7 @@
 #include <linux/mm.h>
 #include <linux/netdevice.h>
 #include <linux/signal.h>
+#include <linux/slab.h>
 #include <net/scm.h>
 #include <net/sock.h>
 #include <linux/ipx.h>
@@ -28,6 +30,7 @@
 #include <linux/file.h>
 
 #include <linux/ncp_fs.h>
+#include "ncp_fs.h"
 
 #include "ncpsign_kernel.h"
 
@@ -100,6 +103,11 @@ void ncp_tcp_data_ready(struct sock *sk, int len)
 	struct ncp_server *server = sk->sk_user_data;
 
 	server->data_ready(sk, len);
+void ncp_tcp_data_ready(struct sock *sk)
+{
+	struct ncp_server *server = sk->sk_user_data;
+
+	server->data_ready(sk);
 	schedule_work(&server->rcv.tq);
 }
 
@@ -231,6 +239,7 @@ static void __ncptcp_try_send(struct ncp_server *server)
 
 	if (result < 0) {
 		printk(KERN_ERR "ncpfs: tcp: Send failed: %d\n", result);
+		pr_err("tcp: Send failed: %d\n", result);
 		__ncp_abort_request(server, rq, result);
 		return;
 	}
@@ -332,6 +341,7 @@ static int ncp_add_request(struct ncp_server *server, struct ncp_request_reply *
 	if (!ncp_conn_valid(server)) {
 		mutex_unlock(&server->rcv.creq_mutex);
 		printk(KERN_ERR "ncpfs: tcp: Server died\n");
+		pr_err("tcp: Server died\n");
 		return -EIO;
 	}
 	ncp_req_get(req);
@@ -413,6 +423,15 @@ void ncpdgram_rcv_proc(struct work_struct *work)
 				}
 				if (buf[9] != '?') {
 					DPRINTK("bad signature (%02X) in watchdog packet\n", buf[9]);
+					ncp_dbg(1, "recv failed with %d\n", result);
+					continue;
+				}
+				if (result < 10) {
+					ncp_dbg(1, "too short (%u) watchdog packet\n", result);
+					continue;
+				}
+				if (buf[9] != '?') {
+					ncp_dbg(1, "bad signature (%02X) in watchdog packet\n", buf[9]);
 					continue;
 				}
 				buf[9] = 'Y';
@@ -448,6 +467,7 @@ void ncpdgram_rcv_proc(struct work_struct *work)
 							hdrl = sock->sk->sk_family == AF_INET ? 8 : 6;
 							if (sign_verify_reply(server, server->rxbuf + hdrl, result - hdrl, cpu_to_le32(result), server->rxbuf + result)) {
 								printk(KERN_INFO "ncpfs: Signature violation\n");
+								pr_info("Signature violation\n");
 								result = -EIO;
 							}
 						}
@@ -524,6 +544,7 @@ static int do_tcp_rcv(struct ncp_server *server, void *buffer, size_t len)
 	}
 	if (result > len) {
 		printk(KERN_ERR "ncpfs: tcp: bug in recvmsg (%u > %Zu)\n", result, len);
+		pr_err("tcp: bug in recvmsg (%u > %Zu)\n", result, len);
 		return -EIO;			
 	}
 	return result;
@@ -554,6 +575,9 @@ static int __ncptcp_rcv_proc(struct ncp_server *server)
 					printk(KERN_ERR "ncpfs: tcp: error in recvmsg: %d\n", result);
 				} else {
 					DPRINTK(KERN_ERR "ncpfs: tcp: EOF\n");
+					pr_err("tcp: error in recvmsg: %d\n", result);
+				} else {
+					ncp_dbg(1, "tcp: EOF\n");
 				}
 				return -EIO;
 			}
@@ -566,12 +590,14 @@ static int __ncptcp_rcv_proc(struct ncp_server *server)
 			case 0:
 				if (server->rcv.buf.magic != htonl(NCP_TCP_RCVD_MAGIC)) {
 					printk(KERN_ERR "ncpfs: tcp: Unexpected reply type %08X\n", ntohl(server->rcv.buf.magic));
+					pr_err("tcp: Unexpected reply type %08X\n", ntohl(server->rcv.buf.magic));
 					__ncptcp_abort(server);
 					return -EIO;
 				}
 				datalen = ntohl(server->rcv.buf.len) & 0x0FFFFFFF;
 				if (datalen < 10) {
 					printk(KERN_ERR "ncpfs: tcp: Unexpected reply len %d\n", datalen);
+					pr_err("tcp: Unexpected reply len %d\n", datalen);
 					__ncptcp_abort(server);
 					return -EIO;
 				}
@@ -579,6 +605,7 @@ static int __ncptcp_rcv_proc(struct ncp_server *server)
 				if (server->sign_active) {
 					if (datalen < 18) {
 						printk(KERN_ERR "ncpfs: tcp: Unexpected reply len %d\n", datalen);
+						pr_err("tcp: Unexpected reply len %d\n", datalen);
 						__ncptcp_abort(server);
 						return -EIO;
 					}
@@ -604,6 +631,7 @@ cont:;
 						break;
 					}					
 					DPRINTK("ncpfs: tcp: Unexpected NCP type %02X\n", type);
+					ncp_dbg(1, "tcp: Unexpected NCP type %02X\n", type);
 skipdata2:;
 					server->rcv.state = 2;
 skipdata:;
@@ -618,6 +646,11 @@ skipdata:;
 				}
 				if (datalen > req->datalen + 8) {
 					printk(KERN_ERR "ncpfs: tcp: Unexpected reply len %d (expected at most %Zd)\n", datalen, req->datalen + 8);
+					ncp_dbg(1, "Reply without appropriate request\n");
+					goto skipdata2;
+				}
+				if (datalen > req->datalen + 8) {
+					pr_err("tcp: Unexpected reply len %d (expected at most %Zd)\n", datalen, req->datalen + 8);
 					server->rcv.state = 3;
 					goto skipdata;
 				}
@@ -638,11 +671,13 @@ skipdata:;
 				if (req->tx_type != NCP_ALLOC_SLOT_REQUEST) {
 					if (((struct ncp_reply_header*)server->rxbuf)->sequence != server->sequence) {
 						printk(KERN_ERR "ncpfs: tcp: Bad sequence number\n");
+						pr_err("tcp: Bad sequence number\n");
 						__ncp_abort_request(server, req, -EIO);
 						return -EIO;
 					}
 					if ((((struct ncp_reply_header*)server->rxbuf)->conn_low | (((struct ncp_reply_header*)server->rxbuf)->conn_high << 8)) != server->connection) {
 						printk(KERN_ERR "ncpfs: tcp: Connection number mismatch\n");
+						pr_err("tcp: Connection number mismatch\n");
 						__ncp_abort_request(server, req, -EIO);
 						return -EIO;
 					}
@@ -651,6 +686,7 @@ skipdata:;
 				if (server->sign_active && req->tx_type != NCP_DEALLOC_SLOT_REQUEST) {
 					if (sign_verify_reply(server, server->rxbuf + 6, req->datalen - 6, cpu_to_be32(req->datalen + 16), &server->rcv.buf.type)) {
 						printk(KERN_ERR "ncpfs: tcp: Signature violation\n");
+						pr_err("tcp: Signature violation\n");
 						__ncp_abort_request(server, req, -EIO);
 						return -EIO;
 					}
@@ -746,6 +782,10 @@ static int ncp_do_request(struct ncp_server *server, int size,
 	}
 	if (!ncp_conn_valid(server)) {
 		printk(KERN_ERR "ncpfs: Connection invalid!\n");
+		pr_err("Server not locked!\n");
+		return -EIO;
+	}
+	if (!ncp_conn_valid(server)) {
 		return -EIO;
 	}
 	{
@@ -782,6 +822,7 @@ static int ncp_do_request(struct ncp_server *server, int size,
 	}
 
 	DDPRINTK("do_ncp_rpc_call returned %d\n", result);
+	ncp_dbg(2, "do_ncp_rpc_call returned %d\n", result);
 
 	return result;
 }
@@ -812,6 +853,7 @@ int ncp_request2(struct ncp_server *server, int function,
 	result = ncp_do_request(server, server->current_size, reply, size);
 	if (result < 0) {
 		DPRINTK("ncp_request_error: %d\n", result);
+		ncp_dbg(1, "ncp_request_error: %d\n", result);
 		goto out;
 	}
 	server->completion = reply->completion_code;
@@ -823,6 +865,7 @@ int ncp_request2(struct ncp_server *server, int function,
 
 	if (result != 0)
 		PPRINTK("ncp_request: completion code=%x\n", result);
+		ncp_vdbg("completion code=%x\n", result);
 out:
 	return result;
 }
@@ -866,6 +909,7 @@ void ncp_lock_server(struct ncp_server *server)
 	mutex_lock(&server->mutex);
 	if (server->lock)
 		printk(KERN_WARNING "ncp_lock_server: was locked!\n");
+		pr_warn("%s: was locked!\n", __func__);
 	server->lock = 1;
 }
 
@@ -873,6 +917,7 @@ void ncp_unlock_server(struct ncp_server *server)
 {
 	if (!server->lock) {
 		printk(KERN_WARNING "ncp_unlock_server: was not locked!\n");
+		pr_warn("%s: was not locked!\n", __func__);
 		return;
 	}
 	server->lock = 0;

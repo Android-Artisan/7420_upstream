@@ -139,6 +139,22 @@
 #define	GPIO_46	46
 #define	GPIO_47	47
 
+ * Copyright 2006-2009 Analog Devices Inc.
+ *
+ * Licensed under the GPL-2 or later.
+ */
+
+#ifndef __ARCH_BLACKFIN_GPIO_H__
+#define __ARCH_BLACKFIN_GPIO_H__
+
+#define gpio_bank(x)	((x) >> 4)
+#define gpio_bit(x)	(1<<((x) & 0xF))
+#define gpio_sub_n(x)	((x) & 0xF)
+
+#define GPIO_BANKSIZE	16
+#define GPIO_BANK_NUM	DIV_ROUND_UP(MAX_BLACKFIN_GPIOS, GPIO_BANKSIZE)
+
+#include <mach/gpio.h>
 
 #define PERIPHERAL_USAGE 1
 #define GPIO_USAGE 0
@@ -282,9 +298,18 @@
 #define PORT_FIO0 GPIO_0
 #define PORT_FIO1 GPIO_16
 #define PORT_FIO2 GPIO_32
+#ifndef BFIN_GPIO_PINT
+# define BFIN_GPIO_PINT 0
 #endif
 
 #ifndef __ASSEMBLY__
+
+#ifndef CONFIG_PINCTRL
+
+#include <linux/compiler.h>
+#include <asm/blackfin.h>
+#include <asm/portmux.h>
+#include <asm/irq_handler.h>
 
 /***********************************************************
 *
@@ -394,6 +419,32 @@ void bfin_gpio_pm_hibernate_suspend(void);
 int gpio_pm_wakeup_request(unsigned gpio, unsigned char type);
 void gpio_pm_wakeup_free(unsigned gpio);
 
+#ifdef BFIN_SPECIAL_GPIO_BANKS
+void bfin_special_gpio_free(unsigned gpio);
+int bfin_special_gpio_request(unsigned gpio, const char *label);
+# ifdef CONFIG_PM
+void bfin_special_gpio_pm_hibernate_restore(void);
+void bfin_special_gpio_pm_hibernate_suspend(void);
+# endif
+#endif
+
+#ifdef CONFIG_PM
+void bfin_gpio_pm_hibernate_restore(void);
+void bfin_gpio_pm_hibernate_suspend(void);
+int bfin_gpio_pm_wakeup_ctrl(unsigned gpio, unsigned ctrl);
+int bfin_gpio_pm_standby_ctrl(unsigned ctrl);
+
+static inline int bfin_pm_standby_setup(void)
+{
+	return bfin_gpio_pm_standby_ctrl(1);
+}
+
+static inline void bfin_pm_standby_restore(void)
+{
+	bfin_gpio_pm_standby_ctrl(0);
+}
+
+
 struct gpio_port_s {
 	unsigned short data;
 	unsigned short maska;
@@ -410,6 +461,8 @@ struct gpio_port_s {
 };
 #endif /*CONFIG_BF54x*/
 #endif /*CONFIG_PM*/
+#endif /*CONFIG_PM*/
+
 /***********************************************************
 *
 * FUNCTIONS: Blackfin GPIO Driver
@@ -451,6 +504,40 @@ static inline int irq_to_gpio(unsigned irq)
 	return (irq - GPIO_IRQ_BASE);
 }
 
+int bfin_gpio_irq_request(unsigned gpio, const char *label);
+void bfin_gpio_irq_free(unsigned gpio);
+void bfin_gpio_irq_prepare(unsigned gpio);
+
+static inline int irq_to_gpio(unsigned irq)
+{
+	return irq - GPIO_IRQ_BASE;
+}
+#endif /* CONFIG_PINCTRL */
+
+#include <asm/irq.h>
+#include <asm/errno.h>
+
+#include <asm-generic/gpio.h>		/* cansleep wrappers */
+
+static inline int gpio_get_value(unsigned int gpio)
+{
+	return __gpio_get_value(gpio);
+}
+
+static inline void gpio_set_value(unsigned int gpio, int value)
+{
+	__gpio_set_value(gpio, value);
+}
+
+static inline int gpio_cansleep(unsigned int gpio)
+{
+	return __gpio_cansleep(gpio);
+}
+
+static inline int gpio_to_irq(unsigned gpio)
+{
+	return __gpio_to_irq(gpio);
+}
 #endif /* __ASSEMBLY__ */
 
 #endif /* __ARCH_BLACKFIN_GPIO_H__ */

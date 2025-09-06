@@ -8,6 +8,7 @@
 
 #include <linux/kernel.h>
 #include <linux/cdrom.h>
+#include <linux/gfp.h>
 #include <linux/ide.h>
 #include <scsi/scsi.h>
 
@@ -80,6 +81,14 @@ int ide_cdrom_drive_status(struct cdrom_device_info *cdi, int slot_nr)
 
 int ide_cdrom_check_media_change_real(struct cdrom_device_info *cdi,
 				       int slot_nr)
+/*
+ * ide-cd always generates media changed event if media is missing, which
+ * makes it impossible to use for proper event reporting, so disk->events
+ * is cleared to 0 and the following function is used only to trigger
+ * revalidation and never propagated to userland.
+ */
+unsigned int ide_cdrom_check_events_real(struct cdrom_device_info *cdi,
+					 unsigned int clearing, int slot_nr)
 {
 	ide_drive_t *drive = cdi->handle;
 	int retval;
@@ -91,6 +100,11 @@ int ide_cdrom_check_media_change_real(struct cdrom_device_info *cdi,
 		return retval;
 	} else {
 		return -EINVAL;
+		retval = (drive->dev_flags & IDE_DFLAG_MEDIA_CHANGED) ? 1 : 0;
+		drive->dev_flags &= ~IDE_DFLAG_MEDIA_CHANGED;
+		return retval ? DISK_EVENT_MEDIA_CHANGE : 0;
+	} else {
+		return 0;
 	}
 }
 
@@ -137,6 +151,7 @@ int ide_cd_lockdoor(ide_drive_t *drive, int lockflag,
 
 	/* If the drive cannot lock the door, just pretend. */
 	if (drive->atapi_flags & IDE_AFLAG_NO_DOORLOCK) {
+	if ((drive->dev_flags & IDE_DFLAG_DOORLOCKING) == 0) {
 		stat = 0;
 	} else {
 		unsigned char cmd[BLK_MAX_CDB];
@@ -158,6 +173,7 @@ int ide_cd_lockdoor(ide_drive_t *drive, int lockflag,
 		printk(KERN_ERR "%s: door locking not supported\n",
 			drive->name);
 		drive->atapi_flags |= IDE_AFLAG_NO_DOORLOCK;
+		drive->dev_flags &= ~IDE_DFLAG_DOORLOCKING;
 		stat = 0;
 	}
 
@@ -298,6 +314,8 @@ int ide_cdrom_reset(struct cdrom_device_info *cdi)
 
 	rq = blk_get_request(drive->queue, READ, __GFP_WAIT);
 	rq->cmd_type = REQ_TYPE_SPECIAL;
+	rq = blk_get_request(drive->queue, READ, __GFP_RECLAIM);
+	rq->cmd_type = REQ_TYPE_DRV_PRIV;
 	rq->cmd_flags = REQ_QUIET;
 	ret = blk_execute_rq(drive->queue, cd->disk, rq, 0);
 	blk_put_request(rq);
@@ -454,6 +472,7 @@ int ide_cdrom_packet(struct cdrom_device_info *cdi,
 
 	if (cgc->data_direction == CGC_DATA_WRITE)
 		flags |= REQ_RW;
+		flags |= REQ_WRITE;
 
 	if (cgc->sense)
 		memset(cgc->sense, 0, sizeof(struct request_sense));

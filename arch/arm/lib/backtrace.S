@@ -30,6 +30,11 @@ ENTRY(c_backtrace)
 
 #if !defined(CONFIG_FRAME_POINTER) || !defined(CONFIG_PRINTK)
 		mov	pc, lr
+ENTRY(c_backtrace)
+
+#if !defined(CONFIG_FRAME_POINTER) || !defined(CONFIG_PRINTK)
+		ret	lr
+ENDPROC(c_backtrace)
 #else
 		stmfd	sp!, {r4 - r8, lr}	@ Save an extra register so we have a location...
 		movs	frame, r0		@ if frame pointer is zero
@@ -37,6 +42,9 @@ ENTRY(c_backtrace)
 
 		tst	r1, #0x10		@ 26 or 32-bit mode?
 		moveq	mask, #0xfc000003	@ mask for 26-bit
+ ARM(		moveq	mask, #0xfc000003	)
+ THUMB(		moveq	mask, #0xfc000000	)
+ THUMB(		orreq	mask, #0x03		)
 		movne	mask, #0		@ mask for 32-bit
 
 1:		stmfd	sp!, {pc}		@ calculate offset of PC stored
@@ -82,6 +90,7 @@ for_each_frame:	tst	frame, mask		@ Check for address exceptions
 		ldr	r1, [sv_pc, #-4]	@ if stmfd sp!, {args} exists,
 		ldr	r3, .Ldsi+4
 		teq	r3, r1, lsr #10
+		teq	r3, r1, lsr #11
 		ldreq	r0, [frame, #-8]	@ get sp
 		subeq	r0, r0, #4		@ point at the last arg
 		bleq	.Ldumpstm		@ dump saved registers
@@ -89,6 +98,7 @@ for_each_frame:	tst	frame, mask		@ Check for address exceptions
 1004:		ldr	r1, [sv_pc, #0]		@ if stmfd sp!, {..., fp, ip, lr, pc}
 		ldr	r3, .Ldsi		@ instruction exists,
 		teq	r3, r1, lsr #10
+		teq	r3, r1, lsr #11
 		subeq	r0, frame, #16
 		bleq	.Ldumpstm		@ dump saved registers
 
@@ -105,12 +115,16 @@ for_each_frame:	tst	frame, mask		@ Check for address exceptions
 no_frame:	ldmfd	sp!, {r4 - r8, pc}
 		
 		.section __ex_table,"a"
+ENDPROC(c_backtrace)
+		
+		.pushsection __ex_table,"a"
 		.align	3
 		.long	1001b, 1006b
 		.long	1002b, 1006b
 		.long	1003b, 1006b
 		.long	1004b, 1006b
 		.previous
+		.popsection
 
 #define instr r4
 #define reg   r5
@@ -131,6 +145,17 @@ no_frame:	ldmfd	sp!, {r4 - r8, pc}
 		movne	r1, #' '
 		ldr	r3, [stack], #-4
 		mov	r2, reg
+ ARM(		tst	instr, r3, lsl reg	)
+ THUMB(		lsl	r3, reg			)
+ THUMB(		tst	instr, r3		)
+		beq	2f
+		add	r7, r7, #1
+		teq	r7, #6
+		moveq	r7, #0
+		adr	r3, .Lcr
+		addne	r3, r3, #1		@ skip newline
+		ldr	r2, [stack], #-4
+		mov	r1, reg
 		adr	r0, .Lfp
 		bl	printk
 2:		subs	reg, reg, #1
@@ -146,5 +171,11 @@ no_frame:	ldmfd	sp!, {r4 - r8, pc}
 		.align
 .Ldsi:		.word	0xe92dd800 >> 10	@ stmfd sp!, {... fp, ip, lr, pc}
 		.word	0xe92d0000 >> 10	@ stmfd sp!, {}
+.Lfp:		.asciz	" r%d:%08x%s"
+.Lcr:		.asciz	"\n"
+.Lbad:		.asciz	"Backtrace aborted due to bad frame pointer <%p>\n"
+		.align
+.Ldsi:		.word	0xe92dd800 >> 11	@ stmfd sp!, {... fp, ip, lr, pc}
+		.word	0xe92d0000 >> 11	@ stmfd sp!, {}
 
 #endif

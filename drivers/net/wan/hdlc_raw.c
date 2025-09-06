@@ -32,6 +32,9 @@ static __be16 raw_type_trans(struct sk_buff *skb, struct net_device *dev)
 
 
 
+	return cpu_to_be16(ETH_P_IP);
+}
+
 static struct hdlc_proto proto = {
 	.type_trans	= raw_type_trans,
 	.ioctl		= raw_ioctl,

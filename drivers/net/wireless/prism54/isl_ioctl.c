@@ -23,6 +23,17 @@
 #include <linux/kernel.h>
 #include <linux/if_arp.h>
 #include <linux/pci.h>
+ *  along with this program; if not, see <http://www.gnu.org/licenses/>.
+ *
+ */
+
+#include <linux/capability.h>
+#include <linux/module.h>
+#include <linux/kernel.h>
+#include <linux/if_arp.h>
+#include <linux/slab.h>
+#include <linux/pci.h>
+#include <linux/etherdevice.h>
 
 #include <asm/uaccess.h>
 
@@ -72,6 +83,7 @@ prism54_mib_mode_helper(islpci_private *priv, u32 iw_mode)
 		printk(KERN_DEBUG
 		       "%s(): Sorry, Repeater mode and Secondary mode "
 		       "are not yet supported by this driver.\n", __FUNCTION__);
+		       "are not yet supported by this driver.\n", __func__);
 		return -EINVAL;
 	}
 
@@ -182,6 +194,7 @@ prism54_update_stats(struct work_struct *work)
 
 	/* copy this MAC to the bss */
 	memcpy(bss.address, data, 6);
+	memcpy(bss.address, data, ETH_ALEN);
 	kfree(data);
 
 	/* now ask for the corresponding bss */
@@ -334,6 +347,7 @@ prism54_set_mode(struct net_device *ndev, struct iw_request_info *info,
 		printk(KERN_DEBUG
 		       "%s: %s() You passed a non-valid init_mode.\n",
 		       priv->ndev->name, __FUNCTION__);
+		       priv->ndev->name, __func__);
 		return -EINVAL;
 	}
 
@@ -532,6 +546,7 @@ prism54_set_wap(struct net_device *ndev, struct iw_request_info *info,
 
 	/* prepare the structure for the set object */
 	memcpy(&bssid[0], awrq->sa_data, 6);
+	memcpy(&bssid[0], awrq->sa_data, ETH_ALEN);
 
 	/* set the bssid -- does this make sense when in AP mode? */
 	rvalue = mgt_set_request(priv, DOT11_OID_BSSID, 0, &bssid);
@@ -551,6 +566,7 @@ prism54_get_wap(struct net_device *ndev, struct iw_request_info *info,
 
 	rvalue = mgt_get_request(priv, DOT11_OID_BSSID, 0, NULL, &r);
 	memcpy(awrq->sa_data, r.ptr, 6);
+	memcpy(awrq->sa_data, r.ptr, ETH_ALEN);
 	awrq->sa_family = ARPHRD_ETHER;
 	kfree(r.ptr);
 
@@ -583,6 +599,7 @@ prism54_translate_bss(struct net_device *ndev, struct iw_request_info *info,
 
 	/* The first entry must be the MAC address */
 	memcpy(iwe.u.ap_addr.sa_data, bss->address, 6);
+	memcpy(iwe.u.ap_addr.sa_data, bss->address, ETH_ALEN);
 	iwe.u.ap_addr.sa_family = ARPHRD_ETHER;
 	iwe.cmd = SIOCGIWAP;
 	current_ev = iwe_stream_add_event(info, current_ev, end_buf,
@@ -645,6 +662,7 @@ prism54_translate_bss(struct net_device *ndev, struct iw_request_info *info,
 	if (wpa_ie_len > 0) {
 		iwe.cmd = IWEVGENIE;
 		iwe.u.data.length = min(wpa_ie_len, (size_t)MAX_WPA_IE_LEN);
+		iwe.u.data.length = min_t(size_t, wpa_ie_len, MAX_WPA_IE_LEN);
 		current_ev = iwe_stream_add_point(info, current_ev, end_buf,
 						  &iwe, wpa_ie);
 	}
@@ -779,6 +797,7 @@ prism54_get_essid(struct net_device *ndev, struct iw_request_info *info,
 		dwrq->length = 0;
 	}
 	essid->octets[essid->length] = '\0';
+	essid->octets[dwrq->length] = '\0';
 	memcpy(extra, essid->octets, dwrq->length);
 	kfree(essid);
 
@@ -1235,6 +1254,7 @@ prism54_set_txpower(struct net_device *ndev, struct iw_request_info *info,
 		printk(KERN_DEBUG
 		       "%s: %s() disabling radio is not yet supported.\n",
 		       priv->ndev->name, __FUNCTION__);
+		       priv->ndev->name, __func__);
 		return -ENOTSUPP;
 	} else if (vwrq->fixed)
 		/* currently only fixed value is supported */
@@ -1243,6 +1263,7 @@ prism54_set_txpower(struct net_device *ndev, struct iw_request_info *info,
 		printk(KERN_DEBUG
 		       "%s: %s() auto power will be implemented later.\n",
 		       priv->ndev->name, __FUNCTION__);
+		       priv->ndev->name, __func__);
 		return -ENOTSUPP;
 	}
 }
@@ -1503,6 +1524,7 @@ static int prism54_get_auth(struct net_device *ndev,
 			case DOT11_AUTH_BOTH:
 			case DOT11_AUTH_SK:
 				param->value = IW_AUTH_ALG_SHARED_KEY;
+				break;
 			case DOT11_AUTH_NONE:
 			default:
 				param->value = 0;
@@ -1861,6 +1883,7 @@ prism54_del_mac(struct net_device *ndev, struct iw_request_info *info,
 		return -ERESTARTSYS;
 	list_for_each_entry(entry, &acl->mac_list, _list) {
 		if (memcmp(entry->addr, addr->sa_data, ETH_ALEN) == 0) {
+		if (ether_addr_equal(entry->addr, addr->sa_data)) {
 			list_del(&entry->_list);
 			acl->size--;
 			kfree(entry);
@@ -1897,6 +1920,7 @@ prism54_get_mac(struct net_device *ndev, struct iw_request_info *info,
 }
 
 /* Setting policy also clears the MAC acl, even if we don't change the defaut
+/* Setting policy also clears the MAC acl, even if we don't change the default
  * policy
  */
 
@@ -2034,6 +2058,11 @@ format_event(islpci_private *priv, char *dest, const char *str,
 			 str,
 			 ((priv->iw_mode == IW_MODE_MASTER) ? "from" : "to"),
 			 print_mac(mac, mlme->address),
+	int n = snprintf(dest, IW_CUSTOM_MAX,
+			 "%s %s %pM %s (%2.2X)",
+			 str,
+			 ((priv->iw_mode == IW_MODE_MASTER) ? "from" : "to"),
+			 mlme->address,
 			 (error ? (mlme->code ? " : REJECTED " : " : ACCEPTED ")
 			  : ""), mlme->code);
 	BUG_ON(n > IW_CUSTOM_MAX);
@@ -2069,6 +2098,7 @@ send_simple_event(islpci_private *priv, const char *str)
 	if (!memptr)
 		return;
 	BUG_ON(n > IW_CUSTOM_MAX);
+	BUG_ON(n >= IW_CUSTOM_MAX);
 	wrqu.data.pointer = memptr;
 	wrqu.data.length = n;
 	strcpy(memptr, str);
@@ -2103,6 +2133,7 @@ struct ieee80211_beacon_phdr {
 	u16 beacon_int;
 	u16 capab_info;
 } __attribute__ ((packed));
+} __packed;
 
 #define WLAN_EID_GENERIC 0xdd
 static u8 wpa_oid[4] = { 0x00, 0x50, 0xf2, 1 };
@@ -2155,6 +2186,7 @@ prism54_wpa_bss_ie_add(islpci_private *priv, u8 *bssid,
 	} else {
 		printk(KERN_DEBUG "Failed to add BSS WPA entry for "
 		       "%s\n", print_mac(mac, bssid));
+		       "%pM\n", bssid);
 	}
 
 	/* expire old entries from WPA list */
@@ -2231,6 +2263,7 @@ prism54_process_bss_data(islpci_private *priv, u32 oid, u8 *addr,
 		if (pos + 2 + pos[1] > end) {
 			printk(KERN_DEBUG "Parsing Beacon/ProbeResp failed "
 			       "for %s\n", print_mac(mac, addr));
+			       "for %pM\n", addr);
 			return;
 		}
 		if (pos[0] == WLAN_EID_GENERIC && pos[1] >= 4 &&
@@ -2327,6 +2360,7 @@ prism54_process_trap_helper(islpci_private *priv, enum oid_num_t oid,
 	case DOT11_OID_BEACON:
 		send_formatted_event(priv,
 				     "Received a beacon from an unkown AP",
+				     "Received a beacon from an unknown AP",
 				     mlme, 0);
 		break;
 
@@ -2360,6 +2394,8 @@ prism54_process_trap_helper(islpci_private *priv, enum oid_num_t oid,
 		memcpy(&confirm->address, mlmeex->address, ETH_ALEN);
 		printk(KERN_DEBUG "Authenticate from: address:\t%s\n",
 		       print_mac(mac, mlmeex->address));
+		printk(KERN_DEBUG "Authenticate from: address:\t%pM\n",
+		       mlmeex->address);
 		confirm->id = -1; /* or mlmeex->id ? */
 		confirm->state = 0; /* not used */
 		confirm->code = 0;
@@ -2406,6 +2442,8 @@ prism54_process_trap_helper(islpci_private *priv, enum oid_num_t oid,
 		if (!wpa_ie_len) {
 			printk(KERN_DEBUG "No WPA IE found from address:\t%s\n",
 			       print_mac(mac, mlmeex->address));
+			printk(KERN_DEBUG "No WPA IE found from address:\t%pM\n",
+			       mlmeex->address);
 			kfree(confirm);
 			break;
 		}
@@ -2443,6 +2481,8 @@ prism54_process_trap_helper(islpci_private *priv, enum oid_num_t oid,
 		if (!wpa_ie_len) {
 			printk(KERN_DEBUG "No WPA IE found from address:\t%s\n",
 			       print_mac(mac, mlmeex->address));
+			printk(KERN_DEBUG "No WPA IE found from address:\t%pM\n",
+			       mlmeex->address);
 			kfree(confirm);
 			break;
 		}
@@ -2493,6 +2533,7 @@ prism54_set_mac_address(struct net_device *ndev, void *addr)
 	if (!ret)
 		memcpy(priv->ndev->dev_addr,
 		       &((struct sockaddr *) addr)->sa_data, 6);
+		       &((struct sockaddr *) addr)->sa_data, ETH_ALEN);
 
 	return ret;
 }
@@ -2819,6 +2860,7 @@ prism54_hostapd(struct net_device *ndev, struct iw_point *p)
 
        return ret;
 }
+#define PRISM54_SET_WPA			SIOCIWFIRSTPRIV+12
 
 static int
 prism54_set_wpa(struct net_device *ndev, struct iw_request_info *info,
@@ -2986,6 +3028,8 @@ prism54_set_spy(struct net_device *ndev,
 {
 	islpci_private *priv = netdev_priv(ndev);
 	u32 u, oid = OID_INL_CONFIG;
+	u32 u;
+	enum oid_num_t oid = OID_INL_CONFIG;
 
 	down_write(&priv->mib_sem);
 	mgt_get(priv, OID_INL_CONFIG, &u);

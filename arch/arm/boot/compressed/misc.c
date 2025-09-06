@@ -32,6 +32,18 @@ static void putstr(const char *ptr);
 #ifdef CONFIG_DEBUG_ICEDCC
 
 #ifdef CONFIG_CPU_V6
+#include <linux/compiler.h>	/* for inline */
+#include <linux/types.h>
+#include <linux/linkage.h>
+
+static void putstr(const char *ptr);
+extern void error(char *x);
+
+#include CONFIG_UNCOMPRESS_INCLUDE
+
+#ifdef CONFIG_DEBUG_ICEDCC
+
+#if defined(CONFIG_CPU_V6) || defined(CONFIG_CPU_V6K) || defined(CONFIG_CPU_V7)
 
 static void icedcc_putc(int ch)
 {
@@ -45,6 +57,23 @@ static void icedcc_putc(int ch)
 	} while (status & (1 << 29));
 
 	asm("mcr p14, 0, %0, c0, c5, 0" : : "r" (ch));
+}
+
+
+#elif defined(CONFIG_CPU_XSCALE)
+
+static void icedcc_putc(int ch)
+{
+	int status, i = 0x4000000;
+
+	do {
+		if (--i < 0)
+			return;
+
+		asm volatile ("mrc p14, 0, %0, c14, c0, 0" : "=r" (status));
+	} while (status & (1 << 28));
+
+	asm("mcr p14, 0, %0, c8, c0, 0" : : "r" (ch));
 }
 
 #else
@@ -241,7 +270,6 @@ static ulg free_mem_end_ptr;
 
 #include "../../../../lib/inflate.c"
 
-/* ===========================================================================
  * Fill the input buffer. This is called only when the buffer is empty
  * and at least one byte is really needed.
  */
@@ -257,7 +285,6 @@ int fill_inbuf(void)
 	return inbuf[0];
 }
 
-/* ===========================================================================
  * Write the output window window[0..outcnt-1] and update crc and bytes_out.
  * (Used for the decompressed data only.)
  */
@@ -279,12 +306,23 @@ void flush_window(void)
 	outcnt = 0;
 	putstr(".");
 }
+/*
+ * gzip declarations
+ */
+extern char input_data[];
+extern char input_data_end[];
+
+unsigned char *output_data;
+
+unsigned long free_mem_ptr;
+unsigned long free_mem_end_ptr;
 
 #ifndef arch_error
 #define arch_error(x)
 #endif
 
 static void error(char *x)
+void error(char *x)
 {
 	arch_error(x);
 
@@ -302,6 +340,36 @@ decompress_kernel(ulg output_start, ulg free_mem_ptr_p, ulg free_mem_ptr_end_p,
 		  int arch_id)
 {
 	output_data		= (uch *)output_start;	/* Points to kernel start */
+asmlinkage void __div0(void)
+{
+	error("Attempting division by 0!");
+}
+
+unsigned long __stack_chk_guard;
+
+void __stack_chk_guard_setup(void)
+{
+	__stack_chk_guard = 0x000a0dff;
+}
+
+void __stack_chk_fail(void)
+{
+	error("stack-protector: Kernel stack is corrupted\n");
+}
+
+extern int do_decompress(u8 *input, int len, u8 *output, void (*error)(char *x));
+
+
+void
+decompress_kernel(unsigned long output_start, unsigned long free_mem_ptr_p,
+		unsigned long free_mem_ptr_end_p,
+		int arch_id)
+{
+	int ret;
+
+	__stack_chk_guard_setup();
+
+	output_data		= (unsigned char *)output_start;
 	free_mem_ptr		= free_mem_ptr_p;
 	free_mem_end_ptr	= free_mem_ptr_end_p;
 	__machine_arch_type	= arch_id;
@@ -330,3 +398,11 @@ int main()
 }
 #endif
 	
+	putstr("Uncompressing Linux...");
+	ret = do_decompress(input_data, input_data_end - input_data,
+			    output_data, error);
+	if (ret)
+		error("decompressor returned an error");
+	else
+		putstr(" done, booting the kernel.\n");
+}

@@ -1,6 +1,8 @@
 #ifndef _ALPHA_MODULE_H
 #define _ALPHA_MODULE_H
 
+#include <asm-generic/module.h>
+
 struct mod_arch_specific
 {
 	unsigned int gotsecindex;

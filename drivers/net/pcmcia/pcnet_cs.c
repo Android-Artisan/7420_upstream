@@ -1,4 +1,3 @@
-/*======================================================================
 
     A PCMCIA ethernet driver for NS8390-based cards
 
@@ -26,7 +25,6 @@
     CCAE support.  Drivers merged back together, and shared-memory
     Socket EA support added, by Ken Raeburn, September 1995.
 
-======================================================================*/
 
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -79,7 +77,6 @@ static char *version =
 #define DEBUG(n, args...)
 #endif
 
-/*====================================================================*/
 
 /* Module parameters */
 
@@ -101,7 +98,6 @@ INT_MODULE_PARM(full_duplex,	0);	/* full duplex? */
 static int hw_addr[6] = { 0, /* ... */ };
 module_param_array(hw_addr, int, NULL, 0);
 
-/*====================================================================*/
 
 static void mii_phy_probe(struct net_device *dev);
 static int pcnet_config(struct pcmcia_device *link);
@@ -123,7 +119,6 @@ static void pcnet_detach(struct pcmcia_device *p_dev);
 
 static dev_info_t dev_info = "pcnet_cs";
 
-/*====================================================================*/
 
 typedef struct hw_info_t {
     u_int	offset;
@@ -233,13 +228,11 @@ static inline pcnet_dev_t *PRIV(struct net_device *dev)
 	return (pcnet_dev_t *)(p + sizeof(struct ei_device));
 }
 
-/*======================================================================
 
     pcnet_attach() creates an "instance" of the driver, allocating
     local data structures for one device.  The device is registered
     with Card Services.
 
-======================================================================*/
 
 static int pcnet_probe(struct pcmcia_device *link)
 {
@@ -267,14 +260,12 @@ static int pcnet_probe(struct pcmcia_device *link)
     return pcnet_config(link);
 } /* pcnet_attach */
 
-/*======================================================================
 
     This deletes a driver "instance".  The device is de-registered
     with Card Services.  If it has been released, all local data
     structures are freed.  Otherwise, the structures will be freed
     when the device is released.
 
-======================================================================*/
 
 static void pcnet_detach(struct pcmcia_device *link)
 {
@@ -290,12 +281,10 @@ static void pcnet_detach(struct pcmcia_device *link)
 	free_netdev(dev);
 } /* pcnet_detach */
 
-/*======================================================================
 
     This probes for a card's hardware address, for card types that
     encode this information in their CIS.
 
-======================================================================*/
 
 static hw_info_t *get_hwinfo(struct pcmcia_device *link)
 {
@@ -338,13 +327,11 @@ static hw_info_t *get_hwinfo(struct pcmcia_device *link)
     return (i < NR_INFO) ? hw_info+i : NULL;
 } /* get_hwinfo */
 
-/*======================================================================
 
     This probes for a card's hardware address by reading the PROM.
     It checks the address against a list of known types, then falls
     back to a simple NE2000 clone signature check.
 
-======================================================================*/
 
 static hw_info_t *get_prom(struct pcmcia_device *link)
 {
@@ -394,11 +381,9 @@ static hw_info_t *get_prom(struct pcmcia_device *link)
     return NULL;
 } /* get_prom */
 
-/*======================================================================
 
     For DL10019 based cards, like the Linksys EtherFast
 
-======================================================================*/
 
 static hw_info_t *get_dl10019(struct pcmcia_device *link)
 {
@@ -416,11 +401,9 @@ static hw_info_t *get_dl10019(struct pcmcia_device *link)
     return ((i == 0x91)||(i == 0x99)) ? &dl10022_info : &dl10019_info;
 }
 
-/*======================================================================
 
     For Asix AX88190 based cards
 
-======================================================================*/
 
 static hw_info_t *get_ax88190(struct pcmcia_device *link)
 {
@@ -447,13 +430,11 @@ static hw_info_t *get_ax88190(struct pcmcia_device *link)
     return NULL;
 }
 
-/*======================================================================
 
     This should be totally unnecessary... but when we can't figure
     out the hardware address any other way, we'll let the user hard
     wire it when the module is initialized.
 
-======================================================================*/
 
 static hw_info_t *get_hwired(struct pcmcia_device *link)
 {
@@ -471,13 +452,11 @@ static hw_info_t *get_hwired(struct pcmcia_device *link)
     return &default_info;
 } /* get_hwired */
 
-/*======================================================================
 
     pcnet_config() is scheduled to run after a CARD_INSERTION event
     is received, to configure the PCMCIA socket, and to make the
     ethernet device available to the system.
 
-======================================================================*/
 
 #define CS_CHECK(fn, ret) \
 do { last_fn = (fn); if ((last_ret = (ret)) != 0) goto cs_failed; } while (0)
@@ -689,13 +668,11 @@ failed:
     return -ENODEV;
 } /* pcnet_config */
 
-/*======================================================================
 
     After a card is removed, pcnet_release() will unregister the net
     device, and release the PCMCIA configuration.  If the device is
     still open, this will be postponed until it is closed.
 
-======================================================================*/
 
 static void pcnet_release(struct pcmcia_device *link)
 {
@@ -709,14 +686,12 @@ static void pcnet_release(struct pcmcia_device *link)
 	pcmcia_disable_device(link);
 }
 
-/*======================================================================
 
     The card status event handler.  Mostly, this schedules other
     stuff to run after an event is received.  A CARD_REMOVAL event
     also sets some flags to discourage the net drivers from trying
     to talk to the card any more.
 
-======================================================================*/
 
 static int pcnet_suspend(struct pcmcia_device *link)
 {
@@ -742,14 +717,12 @@ static int pcnet_resume(struct pcmcia_device *link)
 }
 
 
-/*======================================================================
 
     MII interface support for DL10019 and DL10022 based cards
 
     On the DL10019, the MII IO direction bit is 0x10; on the DL10022
     it is 0x20.  Setting both bits seems to work on both card types.
 
-======================================================================*/
 
 #define DLINK_GPIO		0x1c
 #define DLINK_DIAG		0x1d
@@ -808,11 +781,9 @@ static void mdio_write(unsigned int addr, int phy_id, int loc, int value)
     }
 }
 
-/*======================================================================
 
     EEPROM access routines for DL10019 and DL10022 based cards
 
-======================================================================*/
 
 #define EE_EEP		0x40
 #define EE_ASIC		0x10
@@ -900,7 +871,6 @@ static void write_asic(unsigned int ioaddr, int location, short asic_data)
 	outb(0, ee_addr);
 }
 
-/*====================================================================*/
 
 static void set_misc_reg(struct net_device *dev)
 {
@@ -938,7 +908,6 @@ static void set_misc_reg(struct net_device *dev)
     }
 }
 
-/*====================================================================*/
 
 static void mii_phy_probe(struct net_device *dev)
 {
@@ -996,7 +965,6 @@ static int pcnet_open(struct net_device *dev)
     return ei_open(dev);
 } /* pcnet_open */
 
-/*====================================================================*/
 
 static int pcnet_close(struct net_device *dev)
 {
@@ -1015,12 +983,10 @@ static int pcnet_close(struct net_device *dev)
     return 0;
 } /* pcnet_close */
 
-/*======================================================================
 
     Hard reset the card.  This used to pause for the same period that
     a 8390 reset command required, but that shouldn't be necessary.
 
-======================================================================*/
 
 static void pcnet_reset_8390(struct net_device *dev)
 {
@@ -1047,7 +1013,6 @@ static void pcnet_reset_8390(struct net_device *dev)
 
 } /* pcnet_reset_8390 */
 
-/*====================================================================*/
 
 static int set_config(struct net_device *dev, struct ifmap *map)
 {
@@ -1065,7 +1030,6 @@ static int set_config(struct net_device *dev, struct ifmap *map)
     return 0;
 }
 
-/*====================================================================*/
 
 static irqreturn_t ei_irq_wrapper(int irq, void *dev_id)
 {
@@ -1168,7 +1132,6 @@ reschedule:
     add_timer(&info->watchdog);
 }
 
-/*====================================================================*/
 
 static void netdev_get_drvinfo(struct net_device *dev,
 			       struct ethtool_drvinfo *info)
@@ -1180,7 +1143,6 @@ static const struct ethtool_ops netdev_ethtool_ops = {
 	.get_drvinfo		= netdev_get_drvinfo,
 };
 
-/*====================================================================*/
 
 
 static int ei_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
@@ -1203,7 +1165,6 @@ static int ei_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
     return -EOPNOTSUPP;
 }
 
-/*====================================================================*/
 
 static void dma_get_8390_hdr(struct net_device *dev,
 			     struct e8390_pkt_hdr *hdr,
@@ -1235,7 +1196,6 @@ static void dma_get_8390_hdr(struct net_device *dev,
     ei_status.dmaing &= ~0x01;
 }
 
-/*====================================================================*/
 
 static void dma_block_input(struct net_device *dev, int count,
 			    struct sk_buff *skb, int ring_offset)
@@ -1290,7 +1250,6 @@ static void dma_block_input(struct net_device *dev, int count,
     ei_status.dmaing &= ~0x01;
 } /* dma_block_input */
 
-/*====================================================================*/
 
 static void dma_block_output(struct net_device *dev, int count,
 			     const u_char *buf, const int start_page)
@@ -1376,7 +1335,6 @@ static void dma_block_output(struct net_device *dev, int count,
     ei_status.dmaing &= ~0x01;
 }
 
-/*====================================================================*/
 
 static int setup_dma_config(struct pcmcia_device *link, int start_pg,
 			    int stop_pg)
@@ -1395,7 +1353,6 @@ static int setup_dma_config(struct pcmcia_device *link, int start_pg,
     return 0;
 }
 
-/*====================================================================*/
 
 static void copyin(void *dest, void __iomem *src, int c)
 {
@@ -1433,7 +1390,6 @@ static void copyout(void __iomem *dest, const void *src, int c)
 	writew((readw(d) & 0xff00) | *(u_char *)s, d);
 }
 
-/*====================================================================*/
 
 static void shmem_get_8390_hdr(struct net_device *dev,
 			       struct e8390_pkt_hdr *hdr,
@@ -1448,7 +1404,6 @@ static void shmem_get_8390_hdr(struct net_device *dev,
     hdr->count = le16_to_cpu(hdr->count);
 }
 
-/*====================================================================*/
 
 static void shmem_block_input(struct net_device *dev, int count,
 			      struct sk_buff *skb, int ring_offset)
@@ -1469,7 +1424,6 @@ static void shmem_block_input(struct net_device *dev, int count,
     copyin(buf, base + offset, count);
 }
 
-/*====================================================================*/
 
 static void shmem_block_output(struct net_device *dev, int count,
 			       const u_char *buf, const int start_page)
@@ -1479,7 +1433,6 @@ static void shmem_block_output(struct net_device *dev, int count,
     copyout(shmem, buf, count);
 }
 
-/*====================================================================*/
 
 static int setup_shmem_window(struct pcmcia_device *link, int start_pg,
 			      int stop_pg, int cm_offset)
@@ -1548,7 +1501,6 @@ failed:
     return 1;
 }
 
-/*====================================================================*/
 
 static struct pcmcia_device_id pcnet_ids[] = {
 	PCMCIA_PFC_DEVICE_MANF_CARD(0, 0x0057, 0x0021),

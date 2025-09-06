@@ -11,6 +11,11 @@ extern struct pglist_data *node_data[];
 #define node_end_pfn(nid)	(NODE_DATA(nid)->node_start_pfn + \
 				 NODE_DATA(nid)->node_spanned_pages)
 
+#include <linux/numa.h>
+
+extern struct pglist_data *node_data[];
+#define NODE_DATA(nid)		(node_data[nid])
+
 static inline int pfn_to_nid(unsigned long pfn)
 {
 	int nid;
@@ -43,6 +48,10 @@ void __init plat_mem_setup(void);
 void __init setup_bootmem_allocator(unsigned long start_pfn);
 void __init __add_active_range(unsigned int nid, unsigned long start_pfn,
 			       unsigned long end_pfn);
+void __init __add_active_range(unsigned int nid, unsigned long start_pfn,
+			       unsigned long end_pfn);
+/* arch/sh/mm/init.c */
+void __init allocate_pgdat(unsigned int nid);
 
 #endif /* __KERNEL__ */
 #endif /* __ASM_SH_MMZONE_H */

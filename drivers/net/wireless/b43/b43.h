@@ -6,6 +6,9 @@
 #include <linux/interrupt.h>
 #include <linux/hw_random.h>
 #include <linux/ssb/ssb.h>
+#include <linux/bcma/bcma.h>
+#include <linux/ssb/ssb.h>
+#include <linux/completion.h>
 #include <net/mac80211.h>
 
 #include "debugfs.h"
@@ -18,6 +21,9 @@
 /* The unique identifier of the firmware that's officially supported by
  * this driver version. */
 #define B43_SUPPORTED_FIRMWARE_ID	"FW13"
+#include "bus.h"
+#include "lo.h"
+#include "phy_common.h"
 
 
 #ifdef CONFIG_B43_DEBUG
@@ -49,6 +55,7 @@
 #define B43_MMIO_RAM_DATA		0x134
 #define B43_MMIO_PS_STATUS		0x140
 #define B43_MMIO_RADIO_HWENABLED_HI	0x158
+#define B43_MMIO_MAC_HW_CAP		0x15C	/* MAC capabilities (corerev >= 13) */
 #define B43_MMIO_SHM_CONTROL		0x160
 #define B43_MMIO_SHM_DATA		0x164
 #define B43_MMIO_SHM_DATA_UNALIGNED	0x166
@@ -92,6 +99,8 @@
 #define B43_MMIO_PIO11_BASE4		0x300
 #define B43_MMIO_PIO11_BASE5		0x340
 
+#define B43_MMIO_RADIO24_CONTROL	0x3D8	/* core rev >= 24 only */
+#define B43_MMIO_RADIO24_DATA		0x3DA	/* core rev >= 24 only */
 #define B43_MMIO_PHY_VER		0x3E0
 #define B43_MMIO_PHY_RADIO		0x3E2
 #define B43_MMIO_PHY0			0x3E6
@@ -112,6 +121,49 @@
 #define B43_MMIO_TSF_CFP_START_LOW	0x604
 #define B43_MMIO_TSF_CFP_START_HIGH	0x606
 #define B43_MMIO_TSF_CFP_PRETBTT	0x612
+#define B43_MMIO_PSM_PHY_HDR		0x492
+#define B43_MMIO_RADIO_HWENABLED_LO	0x49A
+#define B43_MMIO_GPIO_CONTROL		0x49C
+#define B43_MMIO_GPIO_MASK		0x49E
+#define B43_MMIO_TXE0_CTL		0x500
+#define B43_MMIO_TXE0_AUX		0x502
+#define B43_MMIO_TXE0_TS_LOC		0x504
+#define B43_MMIO_TXE0_TIME_OUT		0x506
+#define B43_MMIO_TXE0_WM_0		0x508
+#define B43_MMIO_TXE0_WM_1		0x50A
+#define B43_MMIO_TXE0_PHYCTL		0x50C
+#define B43_MMIO_TXE0_STATUS		0x50E
+#define B43_MMIO_TXE0_MMPLCP0		0x510
+#define B43_MMIO_TXE0_MMPLCP1		0x512
+#define B43_MMIO_TXE0_PHYCTL1		0x514
+#define B43_MMIO_XMTFIFODEF		0x520
+#define B43_MMIO_XMTFIFO_FRAME_CNT	0x522	/* core rev>= 16 only */
+#define B43_MMIO_XMTFIFO_BYTE_CNT	0x524	/* core rev>= 16 only */
+#define B43_MMIO_XMTFIFO_HEAD		0x526	/* core rev>= 16 only */
+#define B43_MMIO_XMTFIFO_RD_PTR		0x528	/* core rev>= 16 only */
+#define B43_MMIO_XMTFIFO_WR_PTR		0x52A	/* core rev>= 16 only */
+#define B43_MMIO_XMTFIFODEF1		0x52C	/* core rev>= 16 only */
+#define B43_MMIO_XMTFIFOCMD		0x540
+#define B43_MMIO_XMTFIFOFLUSH		0x542
+#define B43_MMIO_XMTFIFOTHRESH		0x544
+#define B43_MMIO_XMTFIFORDY		0x546
+#define B43_MMIO_XMTFIFOPRIRDY		0x548
+#define B43_MMIO_XMTFIFORQPRI		0x54A
+#define B43_MMIO_XMTTPLATETXPTR		0x54C
+#define B43_MMIO_XMTTPLATEPTR		0x550
+#define B43_MMIO_SMPL_CLCT_STRPTR	0x552	/* core rev>= 22 only */
+#define B43_MMIO_SMPL_CLCT_STPPTR	0x554	/* core rev>= 22 only */
+#define B43_MMIO_SMPL_CLCT_CURPTR	0x556	/* core rev>= 22 only */
+#define B43_MMIO_XMTTPLATEDATALO	0x560
+#define B43_MMIO_XMTTPLATEDATAHI	0x562
+#define B43_MMIO_XMTSEL			0x568
+#define B43_MMIO_XMTTXCNT		0x56A
+#define B43_MMIO_XMTTXSHMADDR		0x56C
+#define B43_MMIO_TSF_CFP_START_LOW	0x604
+#define B43_MMIO_TSF_CFP_START_HIGH	0x606
+#define B43_MMIO_TSF_CFP_PRETBTT	0x612
+#define B43_MMIO_TSF_CLK_FRAC_LOW	0x62E
+#define B43_MMIO_TSF_CLK_FRAC_HIGH	0x630
 #define B43_MMIO_TSF_0			0x632	/* core rev < 3 only */
 #define B43_MMIO_TSF_1			0x634	/* core rev < 3 only */
 #define B43_MMIO_TSF_2			0x636	/* core rev < 3 only */
@@ -120,6 +172,17 @@
 #define B43_MMIO_IFSCTL			0x688 /* Interframe space control */
 #define  B43_MMIO_IFSCTL_USE_EDCF	0x0004
 #define B43_MMIO_POWERUP_DELAY		0x6A8
+#define B43_MMIO_IFSSLOT		0x684	/* Interframe slot time */
+#define B43_MMIO_IFSCTL			0x688	/* Interframe space control */
+#define B43_MMIO_IFSSTAT		0x690
+#define B43_MMIO_IFSMEDBUSYCTL		0x692
+#define B43_MMIO_IFTXDUR		0x694
+#define  B43_MMIO_IFSCTL_USE_EDCF	0x0004
+#define B43_MMIO_POWERUP_DELAY		0x6A8
+#define B43_MMIO_BTCOEX_CTL		0x6B4 /* Bluetooth Coexistence Control */
+#define B43_MMIO_BTCOEX_STAT		0x6B6 /* Bluetooth Coexistence Status */
+#define B43_MMIO_BTCOEX_TXCTL		0x6B8 /* Bluetooth Coexistence Transmit Control */
+#define B43_MMIO_WEPCTL			0x7C0
 
 /* SPROM boardflags_lo values */
 #define B43_BFL_BTCOEXIST		0x0001	/* implements Bluetooth coexistance */
@@ -138,6 +201,41 @@
 #define B43_BFL_HGPA			0x2000	/* had high gain PA */
 #define B43_BFL_BTCMOD			0x4000	/* BFL_BTCOEXIST is given in alternate GPIOs */
 #define B43_BFL_ALTIQ			0x8000	/* alternate I/Q settings */
+
+/* SPROM boardflags_hi values */
+#define B43_BFH_NOPA			0x0001	/* has no PA */
+#define B43_BFH_RSSIINV			0x0002	/* RSSI uses positive slope (not TSSI) */
+#define B43_BFH_PAREF			0x0004	/* uses the PARef LDO */
+#define B43_BFH_3TSWITCH		0x0008	/* uses a triple throw switch shared
+						 * with bluetooth */
+#define B43_BFH_PHASESHIFT		0x0010	/* can support phase shifter */
+#define B43_BFH_BUCKBOOST		0x0020	/* has buck/booster */
+#define B43_BFH_FEM_BT			0x0040	/* has FEM and switch to share antenna
+						 * with bluetooth */
+#define B43_BFH_NOCBUCK			0x0080
+#define B43_BFH_PALDO			0x0200
+#define B43_BFH_EXTLNA_5GHZ		0x1000	/* has an external LNA (5GHz mode) */
+
+/* SPROM boardflags2_lo values */
+#define B43_BFL2_RXBB_INT_REG_DIS	0x0001	/* external RX BB regulator present */
+#define B43_BFL2_APLL_WAR		0x0002	/* alternative A-band PLL settings implemented */
+#define B43_BFL2_TXPWRCTRL_EN 		0x0004	/* permits enabling TX Power Control */
+#define B43_BFL2_2X4_DIV		0x0008	/* 2x4 diversity switch */
+#define B43_BFL2_5G_PWRGAIN		0x0010	/* supports 5G band power gain */
+#define B43_BFL2_PCIEWAR_OVR		0x0020	/* overrides ASPM and Clkreq settings */
+#define B43_BFL2_CAESERS_BRD		0x0040	/* is Caesers board (unused) */
+#define B43_BFL2_BTC3WIRE		0x0080	/* used 3-wire bluetooth coexist */
+#define B43_BFL2_SKWRKFEM_BRD		0x0100	/* 4321mcm93 uses Skyworks FEM */
+#define B43_BFL2_SPUR_WAR		0x0200	/* has a workaround for clock-harmonic spurs */
+#define B43_BFL2_GPLL_WAR		0x0400	/* altenative G-band PLL settings implemented */
+#define B43_BFL2_SINGLEANT_CCK		0x1000
+#define B43_BFL2_2G_SPUR_WAR		0x2000
+
+/* SPROM boardflags2_hi values */
+#define B43_BFH2_GPLL_WAR2		0x0001
+#define B43_BFH2_IPALVLSHIFT_3P3	0x0002
+#define B43_BFH2_INTERNDET_TXIQCAL	0x0004
+#define B43_BFH2_XTALBUFOUTEN		0x0008
 
 /* GPIO register offset, in both ChipCommon and PCI core. */
 #define B43_GPIO_CONTROL		0x6c
@@ -166,6 +264,13 @@ enum {
 #define B43_SHM_SH_HOSTFLO		0x005E	/* Hostflags for ucode options (low) */
 #define B43_SHM_SH_HOSTFMI		0x0060	/* Hostflags for ucode options (middle) */
 #define B43_SHM_SH_HOSTFHI		0x0062	/* Hostflags for ucode options (high) */
+#define B43_SHM_SH_FWCAPA		0x0042	/* Firmware capabilities (Opensource firmware only) */
+#define B43_SHM_SH_PHYVER		0x0050	/* PHY version */
+#define B43_SHM_SH_PHYTYPE		0x0052	/* PHY type */
+#define B43_SHM_SH_ANTSWAP		0x005C	/* Antenna swap threshold */
+#define B43_SHM_SH_HOSTF1		0x005E	/* Hostflags 1 for ucode options */
+#define B43_SHM_SH_HOSTF2		0x0060	/* Hostflags 2 for ucode options */
+#define B43_SHM_SH_HOSTF3		0x0062	/* Hostflags 3 for ucode options */
 #define B43_SHM_SH_RFATT		0x0064	/* Current radio attenuation value */
 #define B43_SHM_SH_RADAR		0x0066	/* Radar register */
 #define B43_SHM_SH_PHYTXNOI		0x006E	/* PHY noise directly after TX (lower 8bit only) */
@@ -173,6 +278,19 @@ enum {
 #define B43_SHM_SH_CHAN			0x00A0	/* Current channel (low 8bit only) */
 #define  B43_SHM_SH_CHAN_5GHZ		0x0100	/* Bit set, if 5Ghz channel */
 #define B43_SHM_SH_BCMCFIFOID		0x0108	/* Last posted cookie to the bcast/mcast FIFO */
+#define B43_SHM_SH_HOSTF4		0x0078	/* Hostflags 4 for ucode options */
+#define B43_SHM_SH_CHAN			0x00A0	/* Current channel (low 8bit only) */
+#define  B43_SHM_SH_CHAN_5GHZ		0x0100	/* Bit set, if 5 Ghz channel */
+#define  B43_SHM_SH_CHAN_40MHZ		0x0200	/* Bit set, if 40 Mhz channel width */
+#define B43_SHM_SH_MACHW_L		0x00C0	/* Location where the ucode expects the MAC capabilities */
+#define B43_SHM_SH_MACHW_H		0x00C2	/* Location where the ucode expects the MAC capabilities */
+#define B43_SHM_SH_HOSTF5		0x00D4	/* Hostflags 5 for ucode options */
+#define B43_SHM_SH_BCMCFIFOID		0x0108	/* Last posted cookie to the bcast/mcast FIFO */
+/* TSSI information */
+#define B43_SHM_SH_TSSI_CCK		0x0058	/* TSSI for last 4 CCK frames (32bit) */
+#define B43_SHM_SH_TSSI_OFDM_A		0x0068	/* TSSI for last 4 OFDM frames (32bit) */
+#define B43_SHM_SH_TSSI_OFDM_G		0x0070	/* TSSI for last 4 OFDM frames (32bit) */
+#define  B43_TSSI_MAX			0x7F	/* Max value for one TSSI value */
 /* SHM_SHARED TX FIFO variables */
 #define B43_SHM_SH_SIZE01		0x0098	/* TX FIFO size for FIFO 0 (low) and 1 (high) */
 #define B43_SHM_SH_SIZE23		0x009A	/* TX FIFO size for FIFO 2 and 3 */
@@ -199,6 +317,9 @@ enum {
 #define B43_SHM_SH_NOSLPZNATDTIM	0x004C	/* NOSLPZNAT DTIM */
 /* SHM_SHARED beacon/AP variables */
 #define B43_SHM_SH_BTL0			0x0018	/* Beacon template length 0 */
+#define B43_SHM_SH_BT_BASE0		0x0068	/* Beacon template base 0 */
+#define B43_SHM_SH_BTL0			0x0018	/* Beacon template length 0 */
+#define B43_SHM_SH_BT_BASE1		0x0468	/* Beacon template base 1 */
 #define B43_SHM_SH_BTL1			0x001A	/* Beacon template length 1 */
 #define B43_SHM_SH_BTSFOFF		0x001C	/* Beacon TSF offset */
 #define B43_SHM_SH_TIMBPOS		0x001E	/* TIM B position in beacon */
@@ -208,6 +329,7 @@ enum {
 #define B43_SHM_SH_LFFBLIM		0x0046	/* Long frame fallback retry limit */
 #define B43_SHM_SH_BEACPHYCTL		0x0054	/* Beacon PHY TX control word (see PHY TX control) */
 #define B43_SHM_SH_EXTNPHYCTL		0x00B0	/* Extended bytes for beacon PHY control (N) */
+#define B43_SHM_SH_BCN_LI		0x00B6	/* beacon listen interval */
 /* SHM_SHARED ACK/CTS control */
 #define B43_SHM_SH_ACKCTSPHYCTL		0x0022	/* ACK/CTS PHY control word (see PHY TX control) */
 /* SHM_SHARED probe response variables */
@@ -235,6 +357,14 @@ enum {
 #define B43_SHM_SH_MAXBFRAMES		0x0080	/* Maximum number of frames in a burst */
 #define B43_SHM_SH_SPUWKUP		0x0094	/* pre-wakeup for synth PU in us */
 #define B43_SHM_SH_PRETBTT		0x0096	/* pre-TBTT in us */
+/* SHM_SHARED tx iq workarounds */
+#define B43_SHM_SH_NPHY_TXIQW0		0x0700
+#define B43_SHM_SH_NPHY_TXIQW1		0x0702
+#define B43_SHM_SH_NPHY_TXIQW2		0x0704
+#define B43_SHM_SH_NPHY_TXIQW3		0x0706
+/* SHM_SHARED tx pwr ctrl */
+#define B43_SHM_SH_NPHY_TXPWR_INDX0	0x0708
+#define B43_SHM_SH_NPHY_TXPWR_INDX1	0x070E
 
 /* SHM_SCRATCH offsets */
 #define B43_SHM_SC_MINCONT		0x0003	/* Minimum contention window */
@@ -289,6 +419,10 @@ enum {
 #define B43_HF_MLADVW		0x001000000000ULL /* N PHY ML ADV workaround (rev >= 13 only) */
 #define B43_HF_PR45960W		0x080000000000ULL /* PR 45960 workaround (rev >= 13 only) */
 
+/* Firmware capabilities field in SHM (Opensource firmware only) */
+#define B43_FWCAPA_HWCRYPTO	0x0001
+#define B43_FWCAPA_QOS		0x0002
+
 /* MacFilter offsets. */
 #define B43_MACFILTER_SELF		0x0000
 #define B43_MACFILTER_BSSID		0x0003
@@ -315,6 +449,12 @@ enum {
 #define B43_PHYTYPE_G			0x02
 #define B43_PHYTYPE_N			0x04
 #define B43_PHYTYPE_LP			0x05
+#define B43_PHYTYPE_SSLPN		0x06
+#define B43_PHYTYPE_HT			0x07
+#define B43_PHYTYPE_LCN			0x08
+#define B43_PHYTYPE_LCNXN		0x09
+#define B43_PHYTYPE_LCN40		0x0a
+#define B43_PHYTYPE_AC			0x0b
 
 /* PHYRegisters */
 #define B43_PHY_ILT_A_CTRL		0x0072
@@ -350,6 +490,7 @@ enum {
 #define B43_MACCTL_RADIOLOCK		0x00080000	/* Radio lock */
 #define B43_MACCTL_BEACPROMISC		0x00100000	/* Beacon Promiscuous */
 #define B43_MACCTL_KEEP_BADPLCP		0x00200000	/* Keep frames with bad PLCP */
+#define B43_MACCTL_PHY_LOCK		0x00200000
 #define B43_MACCTL_KEEP_CTL		0x00400000	/* Keep control frames */
 #define B43_MACCTL_KEEP_BAD		0x00800000	/* Keep bad frames (FCS) */
 #define B43_MACCTL_PROMISC		0x01000000	/* Promiscuous mode */
@@ -374,6 +515,42 @@ enum {
 #define  B43_TMSLOW_PHYCLKSPEED_40MHZ	0x00000000	/* 40 MHz PHY */
 #define  B43_TMSLOW_PHYCLKSPEED_80MHZ	0x00400000	/* 80 MHz PHY */
 #define  B43_TMSLOW_PHYCLKSPEED_160MHZ	0x00800000	/* 160 MHz PHY */
+/* B43_MMIO_PSM_PHY_HDR bits */
+#define B43_PSM_HDR_MAC_PHY_RESET	0x00000001
+#define B43_PSM_HDR_MAC_PHY_CLOCK_EN	0x00000002
+#define B43_PSM_HDR_MAC_PHY_FORCE_CLK	0x00000004
+
+/* See BCMA_CLKCTLST_EXTRESREQ and BCMA_CLKCTLST_EXTRESST */
+#define B43_BCMA_CLKCTLST_80211_PLL_REQ	0x00000100
+#define B43_BCMA_CLKCTLST_PHY_PLL_REQ	0x00000200
+#define B43_BCMA_CLKCTLST_80211_PLL_ST	0x01000000
+#define B43_BCMA_CLKCTLST_PHY_PLL_ST	0x02000000
+
+/* BCMA 802.11 core specific IO Control (BCMA_IOCTL) flags */
+#define B43_BCMA_IOCTL_PHY_CLKEN	0x00000004	/* PHY Clock Enable */
+#define B43_BCMA_IOCTL_PHY_RESET	0x00000008	/* PHY Reset */
+#define B43_BCMA_IOCTL_MACPHYCLKEN	0x00000010	/* MAC PHY Clock Control Enable */
+#define B43_BCMA_IOCTL_PLLREFSEL	0x00000020	/* PLL Frequency Reference Select */
+#define B43_BCMA_IOCTL_PHY_BW		0x000000C0	/* PHY band width and clock speed mask (N-PHY+ only?) */
+#define  B43_BCMA_IOCTL_PHY_BW_10MHZ	0x00000000	/* 10 MHz bandwidth, 40 MHz PHY */
+#define  B43_BCMA_IOCTL_PHY_BW_20MHZ	0x00000040	/* 20 MHz bandwidth, 80 MHz PHY */
+#define  B43_BCMA_IOCTL_PHY_BW_40MHZ	0x00000080	/* 40 MHz bandwidth, 160 MHz PHY */
+#define  B43_BCMA_IOCTL_PHY_BW_80MHZ	0x000000C0	/* 80 MHz bandwidth */
+#define B43_BCMA_IOCTL_DAC		0x00000300	/* Highspeed DAC mode control field */
+#define B43_BCMA_IOCTL_GMODE		0x00002000	/* G Mode Enable */
+
+/* BCMA 802.11 core specific IO status (BCMA_IOST) flags */
+#define B43_BCMA_IOST_2G_PHY		0x00000001	/* 2.4G capable phy */
+#define B43_BCMA_IOST_5G_PHY		0x00000002	/* 5G capable phy */
+#define B43_BCMA_IOST_FASTCLKA		0x00000004	/* Fast Clock Available */
+#define B43_BCMA_IOST_DUALB_PHY		0x00000008	/* Dualband phy */
+
+/* 802.11 core specific TM State Low (SSB_TMSLOW) flags */
+#define B43_TMSLOW_GMODE		0x20000000	/* G Mode Enable */
+#define B43_TMSLOW_PHY_BANDWIDTH	0x00C00000	/* PHY band width and clock speed mask (N-PHY only) */
+#define  B43_TMSLOW_PHY_BANDWIDTH_10MHZ	0x00000000	/* 10 MHz bandwidth, 40 MHz PHY */
+#define  B43_TMSLOW_PHY_BANDWIDTH_20MHZ	0x00400000	/* 20 MHz bandwidth, 80 MHz PHY */
+#define  B43_TMSLOW_PHY_BANDWIDTH_40MHZ	0x00800000	/* 40 MHz bandwidth, 160 MHz PHY */
 #define B43_TMSLOW_PLLREFSEL		0x00200000	/* PLL Frequency Reference Select (rev >= 5) */
 #define B43_TMSLOW_MACPHYCLKEN		0x00100000	/* MAC PHY Clock Control Enable (rev >= 5) */
 #define B43_TMSLOW_PHYRESET		0x00080000	/* PHY Reset */
@@ -469,6 +646,10 @@ enum {
 
 /* Max size of a security key */
 #define B43_SEC_KEYSIZE			16
+/* Max number of group keys */
+#define B43_NR_GROUP_KEYS		4
+/* Max number of pairwise keys */
+#define B43_NR_PAIRWISE_KEYS		50
 /* Security algorithms. */
 enum {
 	B43_SEC_ALGO_NONE = 0,	/* unencrypted, as of TX header. */
@@ -495,6 +676,7 @@ struct b43_fw_header {
 	 * For IV this is number-of-ivs. */
 	__be32 size;
 } __attribute__((__packed__));
+} __packed;
 
 /* Initial Value file format */
 #define B43_IV_OFFSET_MASK	0x7FFF
@@ -624,6 +806,11 @@ struct b43_phy {
 #endif /* B43_DEBUG */
 };
 
+	} data __packed;
+	} __packed data;
+} __packed;
+
+
 /* Data structures for DMA transmission, per 80211 core. */
 struct b43_dma {
 	struct b43_dmaring *tx_ring_AC_BK; /* Background */
@@ -633,6 +820,10 @@ struct b43_dma {
 	struct b43_dmaring *tx_ring_mcast; /* Multicast */
 
 	struct b43_dmaring *rx_ring;
+
+	u32 translation; /* Routing bits */
+	bool translation_in_low; /* Should translation bit go into low addr? */
+	bool parity; /* Check for parity */
 };
 
 struct b43_pio_txqueue;
@@ -672,6 +863,7 @@ struct b43_key {
 };
 
 /* SHM offsets to the QOS data structures for the 4 different queues. */
+#define B43_QOS_QUEUE_NUM	4
 #define B43_QOS_PARAMS(queue)	(B43_SHM_SH_EDCFQ + \
 				 (B43_NR_QOSPARAMS * sizeof(u16) * (queue)))
 #define B43_QOS_BACKGROUND	B43_QOS_PARAMS(0)
@@ -681,6 +873,7 @@ struct b43_key {
 
 /* QOS parameter hardware data structure offsets. */
 #define B43_NR_QOSPARAMS	22
+#define B43_NR_QOSPARAMS	16
 enum {
 	B43_QOSPARAM_TXOP = 0,
 	B43_QOSPARAM_CWMIN,
@@ -766,10 +959,49 @@ struct b43_wl {
 	struct work_struct qos_update_work;
 };
 
+struct b43_wl;
+
+/* The type of the firmware file. */
+enum b43_firmware_file_type {
+	B43_FWTYPE_PROPRIETARY,
+	B43_FWTYPE_OPENSOURCE,
+	B43_NR_FWTYPES,
+};
+
+/* Context data for fetching firmware. */
+struct b43_request_fw_context {
+	/* The device we are requesting the fw for. */
+	struct b43_wldev *dev;
+	/* a pointer to the firmware object */
+	const struct firmware *blob;
+	/* The type of firmware to request. */
+	enum b43_firmware_file_type req_type;
+	/* Error messages for each firmware type. */
+	char errors[B43_NR_FWTYPES][128];
+	/* Temporary buffer for storing the firmware name. */
+	char fwname[64];
+	/* A fatal error occurred while requesting. Firmware request
+	 * can not continue, as any other request will also fail. */
+	int fatal_failure;
+};
+
 /* In-memory representation of a cached microcode file. */
 struct b43_firmware_file {
 	const char *filename;
 	const struct firmware *data;
+	/* Type of the firmware file name. Note that this does only indicate
+	 * the type by the firmware name. NOT the file contents.
+	 * If you want to check for proprietary vs opensource, use (struct b43_firmware)->opensource
+	 * instead! The (struct b43_firmware)->opensource flag is derived from the actual firmware
+	 * binary code, not just the filename.
+	 */
+	enum b43_firmware_file_type type;
+};
+
+enum b43_firmware_hdr_format {
+	B43_FW_HDR_598,
+	B43_FW_HDR_410,
+	B43_FW_HDR_351,
 };
 
 /* Pointers to the firmware data and meta information about it. */
@@ -789,11 +1021,23 @@ struct b43_firmware {
 	u16 patch;
 
 	/* Set to true, if we are using an opensource firmware. */
+	/* Format of header used by firmware */
+	enum b43_firmware_hdr_format hdr_format;
+
+	/* Set to true, if we are using an opensource firmware.
+	 * Use this to check for proprietary vs opensource. */
 	bool opensource;
 	/* Set to true, if the core needs a PCM firmware, but
 	 * we failed to load one. This is always false for
 	 * core rev > 10, as these don't need PCM firmware. */
 	bool pcm_request_failed;
+};
+
+enum b43_band {
+	B43_BAND_2G = 0,
+	B43_BAND_5G_LO = 1,
+	B43_BAND_5G_MI = 2,
+	B43_BAND_5G_HI = 3,
 };
 
 /* Device (802.11 core) initialization status. */
@@ -820,6 +1064,12 @@ enum {
 struct b43_wldev {
 	struct ssb_device *dev;
 	struct b43_wl *wl;
+/* Data structure for one wireless device (802.11 core) */
+struct b43_wldev {
+	struct b43_bus_dev *dev;
+	struct b43_wl *wl;
+	/* a completion event structure needed if this call is asynchronous */
+	struct completion fw_load_complete;
 
 	/* The device initialization status.
 	 * Use b43_status() to query. */
@@ -832,6 +1082,13 @@ struct b43_wldev {
 	bool short_slot;	/* TRUE, if short slot timing is enabled. */
 	bool radio_hw_enable;	/* saved state of radio hardware enabled state */
 	bool suspend_in_progress;	/* TRUE, if we are in a suspend/resume cycle */
+
+	bool bad_frames_preempt;	/* Use "Bad Frames Preemption" (default off) */
+	bool dfq_valid;		/* Directed frame queue valid (IBSS PS mode, ATIM) */
+	bool radio_hw_enable;	/* saved state of radio hardware enabled state */
+	bool qos_enabled;		/* TRUE, if QoS is used. */
+	bool hwcrypto_enabled;		/* TRUE, if HW crypto acceleration is enabled. */
+	bool use_pio;			/* TRUE if next init should use PIO */
 
 	/* PHY/Radio device. */
 	struct b43_phy phy;
@@ -860,6 +1117,12 @@ struct b43_wldev {
 	u32 dma_reason[6];
 	/* saved irq enable/disable state bitfield. */
 	u32 irq_savedstate;
+	/* Reason code of the last interrupt. */
+	u32 irq_reason;
+	u32 dma_reason[6];
+	/* The currently active generic-interrupt mask. */
+	u32 irq_mask;
+
 	/* Link Quality calculation context. */
 	struct b43_noise_calculation noisecalc;
 	/* if > 0 MAC is suspended. if == 0 MAC is enabled. */
@@ -878,6 +1141,7 @@ struct b43_wldev {
 	u16 ktp;		/* Key table pointer */
 	u8 max_nr_keys;
 	struct b43_key key[58];
+	struct b43_key key[B43_NR_GROUP_KEYS * 2 + B43_NR_PAIRWISE_KEYS];
 
 	/* Firmware data */
 	struct b43_firmware fw;
@@ -889,6 +1153,93 @@ struct b43_wldev {
 #ifdef CONFIG_B43_DEBUG
 	struct b43_dfsentry *dfsentry;
 #endif
+};
+
+	unsigned int irq_count;
+	unsigned int irq_bit_count[32];
+	unsigned int tx_count;
+	unsigned int rx_count;
+#endif
+};
+
+/* Data structure for the WLAN parts (802.11 cores) of the b43 chip. */
+struct b43_wl {
+	/* Pointer to the active wireless device on this chip */
+	struct b43_wldev *current_dev;
+	/* Pointer to the ieee80211 hardware data structure */
+	struct ieee80211_hw *hw;
+
+	/* Global driver mutex. Every operation must run with this mutex locked. */
+	struct mutex mutex;
+	/* Hard-IRQ spinlock. This lock protects things used in the hard-IRQ
+	 * handler, only. This basically is just the IRQ mask register. */
+	spinlock_t hardirq_lock;
+
+	/* Set this if we call ieee80211_register_hw() and check if we call
+	 * ieee80211_unregister_hw(). */
+	bool hw_registred;
+
+	/* We can only have one operating interface (802.11 core)
+	 * at a time. General information about this interface follows.
+	 */
+
+	struct ieee80211_vif *vif;
+	/* The MAC address of the operating interface. */
+	u8 mac_addr[ETH_ALEN];
+	/* Current BSSID */
+	u8 bssid[ETH_ALEN];
+	/* Interface type. (NL80211_IFTYPE_XXX) */
+	int if_type;
+	/* Is the card operating in AP, STA or IBSS mode? */
+	bool operating;
+	/* filter flags */
+	unsigned int filter_flags;
+	/* Stats about the wireless interface */
+	struct ieee80211_low_level_stats ieee_stats;
+
+#ifdef CONFIG_B43_HWRNG
+	struct hwrng rng;
+	bool rng_initialized;
+	char rng_name[30 + 1];
+#endif /* CONFIG_B43_HWRNG */
+
+	bool radiotap_enabled;
+	bool radio_enabled;
+
+	/* The beacon we are currently using (AP or IBSS mode). */
+	struct sk_buff *current_beacon;
+	bool beacon0_uploaded;
+	bool beacon1_uploaded;
+	bool beacon_templates_virgin; /* Never wrote the templates? */
+	struct work_struct beacon_update_trigger;
+	spinlock_t beacon_lock;
+
+	/* The current QOS parameters for the 4 queues. */
+	struct b43_qos_params qos_params[B43_QOS_QUEUE_NUM];
+
+	/* Work for adjustment of the transmission power.
+	 * This is scheduled when we determine that the actual TX output
+	 * power doesn't match what we want. */
+	struct work_struct txpower_adjust_work;
+
+	/* Packet transmit work */
+	struct work_struct tx_work;
+
+	/* Queue of packets to be transmitted. */
+	struct sk_buff_head tx_queue[B43_QOS_QUEUE_NUM];
+
+	/* Flag that implement the queues stopping. */
+	bool tx_queue_stopped[B43_QOS_QUEUE_NUM];
+
+	/* firmware loading work */
+	struct work_struct firmware_load;
+
+	/* The device LEDs. */
+	struct b43_leds leds;
+
+	/* Kmalloc'ed scratch space for PIO TX/RX. Protected by wl->mutex. */
+	u8 pio_scratchspace[118] __attribute__((__aligned__(8)));
+	u8 pio_tailspace[4] __attribute__((__aligned__(8)));
 };
 
 static inline struct b43_wl *hw_to_b43_wl(struct ieee80211_hw *hw)
@@ -903,6 +1254,7 @@ static inline struct b43_wldev *dev_to_b43_wldev(struct device *dev)
 }
 
 /* Is the device operating in a specified mode (IEEE80211_IF_TYPE_XXX). */
+/* Is the device operating in a specified mode (NL80211_IFTYPE_XXX). */
 static inline int b43_is_mode(struct b43_wl *wl, int type)
 {
 	return (wl->operating && wl->if_type == type);
@@ -911,21 +1263,93 @@ static inline int b43_is_mode(struct b43_wl *wl, int type)
 static inline u16 b43_read16(struct b43_wldev *dev, u16 offset)
 {
 	return ssb_read16(dev->dev, offset);
+/**
+ * b43_current_band - Returns the currently used band.
+ * Returns one of IEEE80211_BAND_2GHZ and IEEE80211_BAND_5GHZ.
+ */
+static inline enum ieee80211_band b43_current_band(struct b43_wl *wl)
+{
+	return wl->hw->conf.chandef.chan->band;
+}
+
+static inline int b43_bus_may_powerdown(struct b43_wldev *wldev)
+{
+	return wldev->dev->bus_may_powerdown(wldev->dev);
+}
+static inline int b43_bus_powerup(struct b43_wldev *wldev, bool dynamic_pctl)
+{
+	return wldev->dev->bus_powerup(wldev->dev, dynamic_pctl);
+}
+static inline int b43_device_is_enabled(struct b43_wldev *wldev)
+{
+	return wldev->dev->device_is_enabled(wldev->dev);
+}
+static inline void b43_device_enable(struct b43_wldev *wldev,
+				     u32 core_specific_flags)
+{
+	wldev->dev->device_enable(wldev->dev, core_specific_flags);
+}
+static inline void b43_device_disable(struct b43_wldev *wldev,
+				      u32 core_specific_flags)
+{
+	wldev->dev->device_disable(wldev->dev, core_specific_flags);
+}
+
+static inline u16 b43_read16(struct b43_wldev *dev, u16 offset)
+{
+	return dev->dev->read16(dev->dev, offset);
 }
 
 static inline void b43_write16(struct b43_wldev *dev, u16 offset, u16 value)
 {
 	ssb_write16(dev->dev, offset, value);
+	dev->dev->write16(dev->dev, offset, value);
+}
+
+/* To optimize this check for flush_writes on BCM47XX_BCMA only. */
+static inline void b43_write16f(struct b43_wldev *dev, u16 offset, u16 value)
+{
+	b43_write16(dev, offset, value);
+#if defined(CONFIG_BCM47XX_BCMA)
+	if (dev->dev->flush_writes)
+		b43_read16(dev, offset);
+#endif
+}
+
+static inline void b43_maskset16(struct b43_wldev *dev, u16 offset, u16 mask,
+				 u16 set)
+{
+	b43_write16(dev, offset, (b43_read16(dev, offset) & mask) | set);
 }
 
 static inline u32 b43_read32(struct b43_wldev *dev, u16 offset)
 {
 	return ssb_read32(dev->dev, offset);
+	return dev->dev->read32(dev->dev, offset);
 }
 
 static inline void b43_write32(struct b43_wldev *dev, u16 offset, u32 value)
 {
 	ssb_write32(dev->dev, offset, value);
+	dev->dev->write32(dev->dev, offset, value);
+}
+
+static inline void b43_maskset32(struct b43_wldev *dev, u16 offset, u32 mask,
+				 u32 set)
+{
+	b43_write32(dev, offset, (b43_read32(dev, offset) & mask) | set);
+}
+
+static inline void b43_block_read(struct b43_wldev *dev, void *buffer,
+				 size_t count, u16 offset, u8 reg_width)
+{
+	dev->dev->block_read(dev->dev, buffer, count, offset, reg_width);
+}
+
+static inline void b43_block_write(struct b43_wldev *dev, const void *buffer,
+				   size_t count, u16 offset, u8 reg_width)
+{
+	dev->dev->block_write(dev->dev, buffer, count, offset, reg_width);
 }
 
 static inline bool b43_using_pio_transfers(struct b43_wldev *dev)
@@ -957,6 +1381,31 @@ void b43dbg(struct b43_wl *wl, const char *fmt, ...)
 #else /* DEBUG */
 # define b43dbg(wl, fmt...) do { /* nothing */ } while (0)
 #endif /* DEBUG */
+	return dev->__using_pio_transfers;
+}
+
+static inline void b43_wake_queue(struct b43_wldev *dev, int queue_prio)
+{
+	if (dev->qos_enabled)
+		ieee80211_wake_queue(dev->wl->hw, queue_prio);
+	else
+		ieee80211_wake_queue(dev->wl->hw, 0);
+}
+
+static inline void b43_stop_queue(struct b43_wldev *dev, int queue_prio)
+{
+	if (dev->qos_enabled)
+		ieee80211_stop_queue(dev->wl->hw, queue_prio);
+	else
+		ieee80211_stop_queue(dev->wl->hw, 0);
+}
+
+/* Message printing */
+__printf(2, 3) void b43info(struct b43_wl *wl, const char *fmt, ...);
+__printf(2, 3) void b43err(struct b43_wl *wl, const char *fmt, ...);
+__printf(2, 3) void b43warn(struct b43_wl *wl, const char *fmt, ...);
+__printf(2, 3) void b43dbg(struct b43_wl *wl, const char *fmt, ...);
+
 
 /* A WARN_ON variant that vanishes when b43 debugging is disabled.
  * This _also_ evaluates the arg with debugging disabled. */

@@ -24,7 +24,6 @@ static regType_t getConfigReg(u64 id)
 	return (reg);
 }
 
-/* ======================================================================= */
 
 static char *szTab[] = { "4k", "64k", "1M", "512M" };
 static char *protTab[] = { "----",
@@ -112,13 +111,11 @@ void print_dtlb(void)
 	int count;
 	unsigned long tlb;
 
-	printk(" ================= SH-5 D-TLBs Status ===================\n");
 	printk(HOW_TO_READ_TLB_CONTENT);
 	tlb = DTLB_BASE;
 	for (count = 0; count < MAX_TLBs; count++, tlb += TLB_STEP)
 		print_single_tlb(tlb, 0);
 	printk
-	    (" =============================================================\n");
 }
 
 void print_itlb(void)
@@ -126,16 +123,13 @@ void print_itlb(void)
 	int count;
 	unsigned long tlb;
 
-	printk(" ================= SH-5 I-TLBs Status ===================\n");
 	printk(HOW_TO_READ_TLB_CONTENT);
 	tlb = ITLB_BASE;
 	for (count = 0; count < MAX_TLBs; count++, tlb += TLB_STEP)
 		print_single_tlb(tlb, 0);
 	printk
-	    (" =============================================================\n");
 }
 
-/* ======================================================================= */
 
 #ifdef CONFIG_POOR_MANS_STRACE
 
@@ -267,7 +261,6 @@ void evt_debug_ret_from_exc(struct pt_regs *regs)
 
 #endif /* CONFIG_POOR_MANS_STRACE */
 
-/* ======================================================================= */
 
 void show_excp_regs(char *from, int trapnr, int signr, struct pt_regs *regs)
 {
@@ -381,7 +374,6 @@ void show_excp_regs(char *from, int trapnr, int signr, struct pt_regs *regs)
 	print_itlb();
 }
 
-/* ======================================================================= */
 
 /*
 ** Depending on <base> scan the MMU, Data or Instruction side

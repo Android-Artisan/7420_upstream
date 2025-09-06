@@ -13,6 +13,7 @@
 #include <asm/cachectl.h>
 #include <asm/processor.h>
 #include <asm/uaccess.h>
+#include <asm/syscalls.h>
 
 /*
  * If you attempt to flush anything more than this, you need superuser
@@ -113,6 +114,10 @@ void flush_icache_range(unsigned long start, unsigned long end)
 
 /*
  * This one is called from do_no_page(), do_swap_page() and install_page().
+EXPORT_SYMBOL(flush_icache_range);
+
+/*
+ * This one is called from __do_fault() and do_swap_page().
  */
 void flush_icache_page(struct vm_area_struct *vma, struct page *page)
 {

@@ -21,6 +21,10 @@
 #include "ext4_jbd2.h"
 #include "ext4.h"
 #include "group.h"
+#include <linux/blkdev.h>
+#include <linux/mutex.h>
+#include "ext4_jbd2.h"
+#include "ext4.h"
 
 /*
  * with AGGRESSIVE_CHECK allocator runs consistency checks over
@@ -55,6 +59,23 @@
 
 #define EXT4_MB_HISTORY_DEFAULT		(EXT4_MB_HISTORY_ALLOC | \
 					 EXT4_MB_HISTORY_PREALLOC)
+#ifdef CONFIG_EXT4_DEBUG
+extern ushort ext4_mballoc_debug;
+
+#define mb_debug(n, fmt, a...)	                                        \
+	do {								\
+		if ((n) <= ext4_mballoc_debug) {		        \
+			printk(KERN_DEBUG "(%s, %d): %s: ",		\
+			       __FILE__, __LINE__, __func__);		\
+			printk(fmt, ## a);				\
+		}							\
+	} while (0)
+#else
+#define mb_debug(n, fmt, a...)		no_printk(fmt, ## a)
+#endif
+
+#define EXT4_MB_HISTORY_ALLOC		1	/* allocation */
+#define EXT4_MB_HISTORY_PREALLOC	2	/* preallocated blocks used */
 
 /*
  * How long mballoc can look for a best extent (in found extents)
@@ -76,6 +97,10 @@
  * shown at umount. The collecting costs though!
  */
 #define MB_DEFAULT_STATS		1
+ * with 'ext4_mb_stats' allocator will collect stats that will be
+ * shown at umount. The collecting costs though!
+ */
+#define MB_DEFAULT_STATS		0
 
 /*
  * files smaller than MB_DEFAULT_STREAM_THRESHOLD are served
@@ -132,6 +157,27 @@ struct ext4_group_info {
 	(test_bit(EXT4_GROUP_INFO_NEED_INIT_BIT, &((grp)->bb_state)))
 
 
+
+struct ext4_free_data {
+	/* MUST be the first member */
+	struct ext4_journal_cb_entry	efd_jce;
+
+	/* ext4_free_data private data starts from here */
+
+	/* this links the free block information from group_info */
+	struct rb_node			efd_node;
+
+	/* group which free block extent belongs */
+	ext4_group_t			efd_group;
+
+	/* free block extent */
+	ext4_grpblk_t			efd_start_cluster;
+	ext4_grpblk_t			efd_count;
+
+	/* transaction which freed this extent */
+	tid_t				efd_tid;
+};
+
 struct ext4_prealloc_space {
 	struct list_head	pa_inode_list;
 	struct list_head	pa_group_list;
@@ -148,6 +194,9 @@ struct ext4_prealloc_space {
 	unsigned short		pa_free;	/* how many blocks are free */
 	unsigned short		pa_linear;	/* consumed in one direction
 						 * strictly, for grp prealloc */
+	ext4_grpblk_t		pa_len;		/* len of preallocated chunk */
+	ext4_grpblk_t		pa_free;	/* how many blocks are free */
+	unsigned short		pa_type;	/* pa type. inode or group */
 	spinlock_t		*pa_obj_lock;
 	struct inode		*pa_inode;	/* hack, for history only */
 };
@@ -158,6 +207,16 @@ struct ext4_free_extent {
 	ext4_grpblk_t fe_start;
 	ext4_group_t fe_group;
 	int fe_len;
+enum {
+	MB_INODE_PA = 0,
+	MB_GROUP_PA = 1
+};
+
+struct ext4_free_extent {
+	ext4_lblk_t fe_logical;
+	ext4_grpblk_t fe_start;	/* In cluster units */
+	ext4_group_t fe_group;
+	ext4_grpblk_t fe_len;	/* In cluster units */
 };
 
 /*
@@ -186,6 +245,7 @@ struct ext4_allocation_context {
 	struct ext4_free_extent ac_o_ex;
 
 	/* goal request (after normalization) */
+	/* goal request (normalized ac_o_ex) */
 	struct ext4_free_extent ac_g_ex;
 
 	/* the best found extent */
@@ -196,6 +256,9 @@ struct ext4_allocation_context {
 
 	/* number of iterations done. we have to track to limit searching */
 	unsigned long ac_ex_scanned;
+	/* copy of the best found extent taken before preallocation efforts */
+	struct ext4_free_extent ac_f_ex;
+
 	__u16 ac_groups_scanned;
 	__u16 ac_found;
 	__u16 ac_tail;
@@ -306,5 +369,11 @@ static ext4_fsblk_t ext4_grp_offs_to_block(struct super_block *sb,
 			+ fex->fe_start
 			+ le32_to_cpu(EXT4_SB(sb)->s_es->s_first_data_block);
 	return block;
+
+static inline ext4_fsblk_t ext4_grp_offs_to_block(struct super_block *sb,
+					struct ext4_free_extent *fex)
+{
+	return ext4_group_first_block_no(sb, fex->fe_group) +
+		(fex->fe_start << EXT4_SB(sb)->s_cluster_bits);
 }
 #endif

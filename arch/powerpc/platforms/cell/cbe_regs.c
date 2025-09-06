@@ -9,6 +9,7 @@
 #include <linux/percpu.h>
 #include <linux/types.h>
 #include <linux/module.h>
+#include <linux/export.h>
 #include <linux/of_device.h>
 #include <linux/of_platform.h>
 
@@ -47,6 +48,8 @@ static struct cbe_thread_map
 
 static cpumask_t cbe_local_mask[MAX_CBE] = { [0 ... MAX_CBE-1] = CPU_MASK_NONE };
 static cpumask_t cbe_first_online_cpu = CPU_MASK_NONE;
+static cpumask_t cbe_local_mask[MAX_CBE] = { [0 ... MAX_CBE-1] = {CPU_BITS_NONE} };
+static cpumask_t cbe_first_online_cpu = { CPU_BITS_NONE };
 
 static struct cbe_regs_map *cbe_find_map(struct device_node *np)
 {
@@ -160,6 +163,8 @@ EXPORT_SYMBOL_GPL(cbe_cpu_to_node);
 u32 cbe_node_to_cpu(int node)
 {
 	return find_first_bit( (unsigned long *) &cbe_local_mask[node], sizeof(cpumask_t));
+	return cpumask_first(&cbe_local_mask[node]);
+
 }
 EXPORT_SYMBOL_GPL(cbe_node_to_cpu);
 
@@ -271,6 +276,9 @@ void __init cbe_regs_init(void)
 				cpu_set(i, cbe_local_mask[cbe_id]);
 				if(thread->thread_id == 0)
 					cpu_set(i, cbe_first_online_cpu);
+				cpumask_set_cpu(i, &cbe_local_mask[cbe_id]);
+				if(thread->thread_id == 0)
+					cpumask_set_cpu(i, &cbe_first_online_cpu);
 			}
 		}
 

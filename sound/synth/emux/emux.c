@@ -24,6 +24,7 @@
 #include <sound/core.h>
 #include <sound/emux_synth.h>
 #include <linux/init.h>
+#include <linux/module.h>
 #include "emux_voice.h"
 
 MODULE_AUTHOR("Takashi Iwai");
@@ -55,6 +56,7 @@ int snd_emux_new(struct snd_emux **remu)
 	init_timer(&emu->tlist);
 	emu->tlist.function = snd_emux_timer_callback;
 	emu->tlist.data = (unsigned long)emu;
+	setup_timer(&emu->tlist, snd_emux_timer_callback, (unsigned long)emu);
 	emu->timer_active = 0;
 
 	*remu = emu;
@@ -97,12 +99,16 @@ int snd_emux_register(struct snd_emux *emu, struct snd_card *card, int index, ch
 	snd_assert(emu->max_voices > 0, return -EINVAL);
 	snd_assert(card != NULL, return -EINVAL);
 	snd_assert(name != NULL, return -EINVAL);
+	if (snd_BUG_ON(!emu->hw || emu->max_voices <= 0))
+		return -EINVAL;
+	if (snd_BUG_ON(!card || !name))
+		return -EINVAL;
 
 	emu->card = card;
 	emu->name = kstrdup(name, GFP_KERNEL);
 	emu->voices = kcalloc(emu->max_voices, sizeof(struct snd_emux_voice),
 			      GFP_KERNEL);
-	if (emu->voices == NULL)
+	if (emu->name == NULL || emu->voices == NULL)
 		return -ENOMEM;
 
 	/* create soundfont list */
@@ -132,6 +138,7 @@ int snd_emux_register(struct snd_emux *emu, struct snd_card *card, int index, ch
 #ifdef CONFIG_PROC_FS
 	snd_emux_proc_init(emu, card, index);
 #endif
+	snd_emux_proc_init(emu, card, index);
 	return 0;
 }
 
@@ -141,19 +148,15 @@ EXPORT_SYMBOL(snd_emux_register);
  */
 int snd_emux_free(struct snd_emux *emu)
 {
-	unsigned long flags;
-
 	if (! emu)
 		return -EINVAL;
 
-	spin_lock_irqsave(&emu->voice_lock, flags);
-	if (emu->timer_active)
-		del_timer(&emu->tlist);
-	spin_unlock_irqrestore(&emu->voice_lock, flags);
+	del_timer_sync(&emu->tlist);
 
 #ifdef CONFIG_PROC_FS
 	snd_emux_proc_free(emu);
 #endif
+	snd_emux_proc_free(emu);
 	snd_emux_delete_virmidi(emu);
 #ifdef CONFIG_SND_SEQUENCER_OSS
 	snd_emux_detach_seq_oss(emu);
@@ -165,6 +168,8 @@ int snd_emux_free(struct snd_emux *emu)
 	if (emu->sflist)
 		snd_sf_free(emu->sflist);
 
+	snd_emux_delete_hwdep(emu);
+	snd_sf_free(emu->sflist);
 	kfree(emu->voices);
 	kfree(emu->name);
 	kfree(emu);

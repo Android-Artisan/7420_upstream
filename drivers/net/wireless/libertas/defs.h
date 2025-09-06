@@ -2,6 +2,10 @@
   * This header file contains global constant/enum definitions,
   * global variable declaration.
   */
+/*
+ * This header file contains global constant/enum definitions,
+ * global variable declaration.
+ */
 #ifndef _LBS_DEFS_H_
 #define _LBS_DEFS_H_
 
@@ -41,6 +45,8 @@
 #define LBS_DEB_HEX	0x00200000
 #define LBS_DEB_SDIO	0x00400000
 #define LBS_DEB_SYSFS	0x00800000
+#define LBS_DEB_SPI	0x01000000
+#define LBS_DEB_CFG80211 0x02000000
 
 extern unsigned int lbs_debug;
 
@@ -80,6 +86,7 @@ do { if ((lbs_debug & (grp)) == (grp)) \
 #define lbs_deb_fw(fmt, args...)        LBS_DEB_LL(LBS_DEB_FW, " fw", fmt, ##args)
 #define lbs_deb_usb(fmt, args...)       LBS_DEB_LL(LBS_DEB_USB, " usb", fmt, ##args)
 #define lbs_deb_usbd(dev, fmt, args...) LBS_DEB_LL(LBS_DEB_USB, " usbd", "%s:" fmt, (dev)->bus_id, ##args)
+#define lbs_deb_usbd(dev, fmt, args...) LBS_DEB_LL(LBS_DEB_USB, " usbd", "%s:" fmt, dev_name(dev), ##args)
 #define lbs_deb_cs(fmt, args...)        LBS_DEB_LL(LBS_DEB_CS, " cs", fmt, ##args)
 #define lbs_deb_thread(fmt, args...)    LBS_DEB_LL(LBS_DEB_THREAD, " thread", fmt, ##args)
 #define lbs_deb_sdio(fmt, args...)      LBS_DEB_LL(LBS_DEB_SDIO, " sdio", fmt, ##args)
@@ -94,6 +101,12 @@ do { if ((lbs_debug & (grp)) == (grp)) \
 
 #ifdef DEBUG
 static inline void lbs_deb_hex(unsigned int grp, const char *prompt, u8 *buf, int len)
+#define lbs_deb_spi(fmt, args...)       LBS_DEB_LL(LBS_DEB_SPI, " spi", fmt, ##args)
+#define lbs_deb_cfg80211(fmt, args...)  LBS_DEB_LL(LBS_DEB_CFG80211, " cfg80211", fmt, ##args)
+
+#ifdef DEBUG
+static inline void lbs_deb_hex(unsigned int grp, const char *prompt,
+			       const u8 *buf, int len)
 {
 	int i = 0;
 
@@ -132,6 +145,19 @@ static inline void lbs_deb_hex(unsigned int grp, const char *prompt, u8 *buf, in
 *	802.11b can have up to  14 channels, the driver keeps the
 *	BSSID(MAC address) of each APs or Ad hoc stations it has sensed.
 */
+/* Buffer Constants */
+
+/*	The size of SQ memory PPA, DPA are 8 DWORDs, that keep the physical
+ *	addresses of TxPD buffers. Station has only 8 TxPD available, Whereas
+ *	driver has more local TxPDs. Each TxPD on the host memory is associated
+ *	with a Tx control node. The driver maintains 8 RxPD descriptors for
+ *	station firmware to store Rx packet information.
+ *
+ *	Current version of MAC has a 32x6 multicast address buffer.
+ *
+ *	802.11b can have up to  14 channels, the driver keeps the
+ *	BSSID(MAC address) of each APs or Ad hoc stations it has sensed.
+ */
 
 #define MRVDRV_MAX_MULTICAST_LIST_SIZE	32
 #define LBS_NUM_CMD_BUFFERS             10
@@ -151,6 +177,20 @@ static inline void lbs_deb_hex(unsigned int grp, const char *prompt, u8 *buf, in
 #define EHS_REMOVE_WAKEUP		0xFFFFFFFF
 
 /** Misc constants */
+/* Wake rules for Host_Sleep_CFG command */
+#define WOL_RULE_NET_TYPE_INFRA_OR_IBSS	0x00
+#define WOL_RULE_NET_TYPE_MESH		0x10
+#define WOL_RULE_ADDR_TYPE_BCAST	0x01
+#define WOL_RULE_ADDR_TYPE_MCAST	0x08
+#define WOL_RULE_ADDR_TYPE_UCAST	0x02
+#define WOL_RULE_OP_AND			0x01
+#define WOL_RULE_OP_OR			0x02
+#define WOL_RULE_OP_INVALID		0xFF
+#define WOL_RESULT_VALID_CMD		0
+#define WOL_RESULT_NOSPC_ERR		1
+#define WOL_RESULT_EEXIST_ERR		2
+
+/* Misc constants */
 /* This section defines 802.11 specific contants */
 
 #define MRVDRV_MAX_BSS_DESCRIPTS		16
@@ -173,6 +213,8 @@ static inline void lbs_deb_hex(unsigned int grp, const char *prompt, u8 *buf, in
 #define MARVELL_MESH_IE_LENGTH		9
 
 /* Values used to populate the struct mrvl_mesh_ie.  The only time you need this
+/*
+ * Values used to populate the struct mrvl_mesh_ie.  The only time you need this
  * is when enabling the mesh using CMD_MESH_CONFIG.
  */
 #define MARVELL_MESH_IE_TYPE		4
@@ -183,6 +225,7 @@ static inline void lbs_deb_hex(unsigned int grp, const char *prompt, u8 *buf, in
 #define MARVELL_MESH_CAPABILITY		0
 
 /** INT status Bit Definition*/
+/* INT status Bit Definition */
 #define MRVDRV_TX_DNLD_RDY		0x0001
 #define MRVDRV_RX_UPLD_RDY		0x0002
 #define MRVDRV_CMD_DNLD_RDY		0x0004
@@ -194,12 +237,29 @@ static inline void lbs_deb_hex(unsigned int grp, const char *prompt, u8 *buf, in
 /*	Station firmware use TxPD status field to report final Tx transmit
 *	result, Bit masks are used to present combined situations.
 */
+/* Automatic TX control default levels */
+#define POW_ADAPT_DEFAULT_P0 13
+#define POW_ADAPT_DEFAULT_P1 15
+#define POW_ADAPT_DEFAULT_P2 18
+#define TPC_DEFAULT_P0 5
+#define TPC_DEFAULT_P1 10
+#define TPC_DEFAULT_P2 13
+
+/* TxPD status */
+
+/*
+ *	Station firmware use TxPD status field to report final Tx transmit
+ *	result, Bit masks are used to present combined situations.
+ */
 
 #define MRVDRV_TxPD_POWER_MGMT_NULL_PACKET 0x01
 #define MRVDRV_TxPD_POWER_MGMT_LAST_PACKET 0x08
 
 /** Tx mesh flag */
 /* Currently we are using normal WDS flag as mesh flag.
+/* Tx mesh flag */
+/*
+ * Currently we are using normal WDS flag as mesh flag.
  * TODO: change to proper mesh flag when MAC understands it.
  */
 #define TxPD_CONTROL_WDS_FRAME (1<<17)
@@ -212,6 +272,30 @@ static inline void lbs_deb_hex(unsigned int grp, const char *prompt, u8 *buf, in
 /** RxPD status - Received packet types */
 /** Rx mesh flag */
 /* Currently we are using normal WDS flag as mesh flag.
+/* Mesh interface ID */
+#define MESH_IFACE_ID					0x0001
+/* Mesh id should be in bits 14-13-12 */
+#define MESH_IFACE_BIT_OFFSET				0x000c
+/* Mesh enable bit in FW capability */
+#define MESH_CAPINFO_ENABLE_MASK			(1<<16)
+
+/* FW definition from Marvell v4 */
+#define MRVL_FW_V4					(0x04)
+/* FW definition from Marvell v5 */
+#define MRVL_FW_V5					(0x05)
+/* FW definition from Marvell v10 */
+#define MRVL_FW_V10					(0x0a)
+/* FW major revision definition */
+#define MRVL_FW_MAJOR_REV(x)				((x)>>24)
+
+/* RxPD status */
+
+#define MRVDRV_RXPD_STATUS_OK                0x0001
+
+/* RxPD status - Received packet types */
+/* Rx mesh flag */
+/*
+ * Currently we are using normal WDS flag as mesh flag.
  * TODO: change to proper mesh flag when MAC understands it.
  */
 #define RxPD_CONTROL_WDS_FRAME (0x40)
@@ -226,6 +310,16 @@ static inline void lbs_deb_hex(unsigned int grp, const char *prompt, u8 *buf, in
 #define MRVDRV_NF_DEFAULT_SCAN_VALUE		(-96)
 
 /** RTS/FRAG related defines */
+/* RSSI-related defines */
+/*
+ *	RSSI constants are used to implement 802.11 RSSI threshold
+ *	indication. if the Rx packet signal got too weak for 5 consecutive
+ *	times, miniport driver (driver) will report this event to wrapper
+ */
+
+#define MRVDRV_NF_DEFAULT_SCAN_VALUE		(-96)
+
+/* RTS/FRAG related defines */
 #define MRVDRV_RTS_MIN_VALUE		0
 #define MRVDRV_RTS_MAX_VALUE		2347
 #define MRVDRV_FRAG_MIN_VALUE		256
@@ -243,6 +337,10 @@ static inline void lbs_deb_hex(unsigned int grp, const char *prompt, u8 *buf, in
 
 #define	CMD_F_HOSTCMD		(1 << 0)
 #define FW_CAPINFO_WPA  	(1 << 0)
+#define FW_CAPINFO_PS  		(1 << 1)
+#define FW_CAPINFO_FIRMWARE_UPGRADE	(1 << 13)
+#define FW_CAPINFO_BOOT2_UPGRADE	(1<<14)
+#define FW_CAPINFO_PERSISTENT_CONFIG	(1<<15)
 
 #define KEY_LEN_WPA_AES			16
 #define KEY_LEN_WPA_TKIP		32
@@ -282,6 +380,13 @@ extern u8 lbs_bg_rates[MAX_RATES];
 
 /** ENUM definition*/
 /** SNRNF_TYPE */
+/* Global Variable Declaration */
+extern const char lbs_driver_version[];
+extern u16 lbs_region_code_to_index[MRVDRV_MAX_REGION_CODE];
+
+
+/* ENUM definition */
+/* SNRNF_TYPE */
 enum SNRNF_TYPE {
 	TYPE_BEACON = 0,
 	TYPE_RXPD,
@@ -289,6 +394,7 @@ enum SNRNF_TYPE {
 };
 
 /** SNRNF_DATA*/
+/* SNRNF_DATA */
 enum SNRNF_DATA {
 	TYPE_NOAVG = 0,
 	TYPE_AVG,
@@ -296,6 +402,7 @@ enum SNRNF_DATA {
 };
 
 /** LBS_802_11_POWER_MODE */
+/* LBS_802_11_POWER_MODE */
 enum LBS_802_11_POWER_MODE {
 	LBS802_11POWERMODECAM,
 	LBS802_11POWERMODEMAX_PSP,
@@ -305,6 +412,11 @@ enum LBS_802_11_POWER_MODE {
 };
 
 /** PS_STATE */
+	/* not a real mode, defined as an upper bound */
+	LBS802_11POWEMODEMAX
+};
+
+/* PS_STATE */
 enum PS_STATE {
 	PS_STATE_FULL_POWER,
 	PS_STATE_AWAKE,
@@ -320,18 +432,29 @@ enum DNLD_STATE {
 };
 
 /** LBS_MEDIA_STATE */
+/* DNLD_STATE */
+enum DNLD_STATE {
+	DNLD_RES_RECEIVED,
+	DNLD_DATA_SENT,
+	DNLD_CMD_SENT,
+	DNLD_BOOTCMD_SENT,
+};
+
+/* LBS_MEDIA_STATE */
 enum LBS_MEDIA_STATE {
 	LBS_CONNECTED,
 	LBS_DISCONNECTED
 };
 
 /** LBS_802_11_PRIVACY_FILTER */
+/* LBS_802_11_PRIVACY_FILTER */
 enum LBS_802_11_PRIVACY_FILTER {
 	LBS802_11PRIVFILTERACCEPTALL,
 	LBS802_11PRIVFILTER8021XWEP
 };
 
 /** mv_ms_type */
+/* mv_ms_type */
 enum mv_ms_type {
 	MVMS_DAT = 0,
 	MVMS_CMD = 1,
@@ -361,6 +484,7 @@ enum SNMP_MIB_INDEX_e {
 };
 
 /** KEY_TYPE_ID */
+/* KEY_TYPE_ID */
 enum KEY_TYPE_ID {
 	KEY_TYPE_ID_WEP = 0,
 	KEY_TYPE_ID_TKIP,
@@ -368,6 +492,7 @@ enum KEY_TYPE_ID {
 };
 
 /** KEY_INFO_WPA (applies to both TKIP and AES/CCMP) */
+/* KEY_INFO_WPA (applies to both TKIP and AES/CCMP) */
 enum KEY_INFO_WPA {
 	KEY_INFO_WPA_MCAST = 0x01,
 	KEY_INFO_WPA_UNICAST = 0x02,

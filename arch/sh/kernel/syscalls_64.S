@@ -110,6 +110,7 @@ sys_call_table:
 	.long sys_swapon
 	.long sys_reboot
 	.long old_readdir
+	.long sys_old_readdir
 	.long old_mmap			/* 90 */
 	.long sys_munmap
 	.long sys_truncate
@@ -144,6 +145,7 @@ sys_call_table:
 	.long sys_setdomainname
 	.long sys_newuname
 	.long sys_ni_syscall	/* sys_modify_ldt */
+	.long sys_cacheflush	/* x86: sys_modify_ldt */
 	.long sys_adjtimex
 	.long sys_mprotect		/* 125 */
 	.long sys_sigprocmask
@@ -190,6 +192,7 @@ sys_call_table:
 	.long sys_ni_syscall	/* old "query_module" */
 	.long sys_poll
 	.long sys_nfsservctl
+	.long sys_ni_syscall	/* was nfsservctl */
 	.long sys_setresgid16		/* 170 */
 	.long sys_getresgid16
 	.long sys_prctl
@@ -210,6 +213,8 @@ sys_call_table:
 	.long sys_sendfile
 	.long sys_ni_syscall	/* streams1 */
 	.long sys_ni_syscall	/* streams2 */
+	.long sys_ni_syscall	/* getpmsg */
+	.long sys_ni_syscall	/* putpmsg */
 	.long sys_vfork			/* 190 */
 	.long sys_getrlimit
 	.long sys_mmap2
@@ -298,6 +303,8 @@ sys_call_table:
 	.long sys_sched_getaffinity	/* 270 */
 	.long sys_ni_syscall
 	.long sys_ni_syscall
+	.long sys_ni_syscall		/* reserved for set_thread_area */
+	.long sys_ni_syscall		/* reserved for get_thread_area */
 	.long sys_io_setup
 	.long sys_io_destroy
 	.long sys_io_getevents		/* 275 */
@@ -387,3 +394,22 @@ sys_call_table:
 	.long sys_dup3
 	.long sys_pipe2
 	.long sys_inotify_init1		/* 360 */
+	.long sys_preadv
+	.long sys_pwritev
+	.long sys_rt_tgsigqueueinfo
+	.long sys_perf_event_open
+	.long sys_recvmmsg		/* 365 */
+	.long sys_accept4
+	.long sys_fanotify_init
+	.long sys_fanotify_mark
+	.long sys_prlimit64
+	.long sys_name_to_handle_at	/* 370 */
+	.long sys_open_by_handle_at
+	.long sys_clock_adjtime
+	.long sys_syncfs
+	.long sys_sendmmsg
+	.long sys_setns			/* 375 */
+	.long sys_process_vm_readv
+	.long sys_process_vm_writev
+	.long sys_kcmp
+	.long sys_finit_module

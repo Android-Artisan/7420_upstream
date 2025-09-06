@@ -14,6 +14,7 @@
 #include <asm/uaccess.h>
 #include <asm/pgtable.h>
 #include <asm/arch/svinto.h>
+#include <arch/svinto.h>
 #include <asm/mmu_context.h>
 
 /* debug of low-level TLB reload */
@@ -82,6 +83,7 @@ handle_mmu_bus_fault(struct pt_regs *regs)
 	 */
 	local_save_flags(flags);
 	local_irq_disable();
+	local_irq_save(flags);
 	pmd = (pmd_t *)(pgd + pgd_index(address));
 	if (pmd_none(*pmd))
 		goto exit;

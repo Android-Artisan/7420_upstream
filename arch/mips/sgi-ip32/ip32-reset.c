@@ -14,6 +14,14 @@
 #include <linux/notifier.h>
 #include <linux/delay.h>
 #include <linux/ds17287rtc.h>
+#include <linux/compiler.h>
+#include <linux/init.h>
+#include <linux/kernel.h>
+#include <linux/module.h>
+#include <linux/sched.h>
+#include <linux/notifier.h>
+#include <linux/delay.h>
+#include <linux/rtc/ds1685.h>
 #include <linux/interrupt.h>
 #include <linux/pm.h>
 
@@ -80,6 +88,40 @@ static void ip32_machine_power_off(void)
 static void power_timeout(unsigned long data)
 {
 	ip32_machine_power_off();
+extern struct platform_device ip32_rtc_device;
+
+static struct timer_list power_timer, blink_timer;
+static int has_panicked, shutting_down;
+
+static __noreturn void ip32_poweroff(void *data)
+{
+	void (*poweroff_func)(struct platform_device *) =
+		symbol_get(ds1685_rtc_poweroff);
+
+#ifdef CONFIG_MODULES
+	/* If the first __symbol_get failed, our module wasn't loaded. */
+	if (!poweroff_func) {
+		request_module("rtc-ds1685");
+		poweroff_func = symbol_get(ds1685_rtc_poweroff);
+	}
+#endif
+
+	if (!poweroff_func)
+		pr_emerg("RTC not available for power-off.  Spinning forever ...\n");
+	else {
+		(*poweroff_func)((struct platform_device *)data);
+		symbol_put(ds1685_rtc_poweroff);
+	}
+
+	unreachable();
+}
+
+static void ip32_machine_restart(char *cmd) __noreturn;
+static void ip32_machine_restart(char *cmd)
+{
+	msleep(20);
+	crime->control = CRIME_CONTROL_HARD_RESET;
+	unreachable();
 }
 
 static void blink_timeout(unsigned long data)
@@ -116,6 +158,17 @@ static void debounce(unsigned long data)
 }
 
 static inline void ip32_power_button(void)
+static void ip32_machine_halt(void)
+{
+	ip32_poweroff(&ip32_rtc_device);
+}
+
+static void power_timeout(unsigned long data)
+{
+	ip32_poweroff(&ip32_rtc_device);
+}
+
+void ip32_prepare_poweroff(void)
 {
 	if (has_panicked)
 		return;
@@ -126,6 +179,12 @@ static inline void ip32_power_button(void)
 	}
 
 	shuting_down = 1;
+	if (shutting_down || kill_cad_pid(SIGINT, 1)) {
+		/* No init process or button pressed twice.  */
+		ip32_poweroff(&ip32_rtc_device);
+	}
+
+	shutting_down = 1;
 	blink_timer.data = POWERDOWN_FREQ;
 	blink_timeout(POWERDOWN_FREQ);
 
@@ -190,6 +249,7 @@ static __init int ip32_reboot_setup(void)
 	_machine_restart = ip32_machine_restart;
 	_machine_halt = ip32_machine_halt;
 	pm_power_off = ip32_machine_power_off;
+	pm_power_off = ip32_machine_halt;
 
 	init_timer(&blink_timer);
 	blink_timer.function = blink_timeout;

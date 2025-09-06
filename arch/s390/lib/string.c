@@ -4,6 +4,10 @@
  *
  *  S390 version
  *    Copyright (C) 2004 IBM Deutschland Entwicklung GmbH, IBM Corporation
+ *    Optimized string functions
+ *
+ *  S390 version
+ *    Copyright IBM Corp. 2004
  *    Author(s): Martin Schwidefsky (schwidefsky@de.ibm.com)
  */
 
@@ -100,6 +104,7 @@ size_t strlcpy(char *dest, const char *src, size_t size)
 		size_t len = (ret >= size) ? size-1 : ret;
 		dest[len] = '\0';
 		__builtin_memcpy(dest, src, len);
+		memcpy(dest, src, len);
 	}
 	return ret;
 }
@@ -119,6 +124,8 @@ char *strncpy(char *dest, const char *src, size_t n)
 	size_t len = __strnend(src, n) - src;
 	__builtin_memset(dest + len, 0, n - len);
 	__builtin_memcpy(dest, src, len);
+	memset(dest + len, 0, n - len);
+	memcpy(dest, src, len);
 	return dest;
 }
 EXPORT_SYMBOL(strncpy);
@@ -165,6 +172,7 @@ size_t strlcat(char *dest, const char *src, size_t n)
 			len = n - 1;
 		dest[len] = '\0';
 		__builtin_memcpy(dest, src, len);
+		memcpy(dest, src, len);
 	}
 	return res;
 }
@@ -188,6 +196,7 @@ char *strncat(char *dest, const char *src, size_t n)
 
 	p[len] = '\0';
 	__builtin_memcpy(p, src, len);
+	memcpy(p, src, len);
 	return dest;
 }
 EXPORT_SYMBOL(strncat);
@@ -226,14 +235,13 @@ EXPORT_SYMBOL(strcmp);
  */
 char * strrchr(const char * s, int c)
 {
-       size_t len = __strend(s) - s;
+	ssize_t len = __strend(s) - s;
 
-       if (len)
-	       do {
-		       if (s[len] == (char) c)
-			       return (char *) s + len;
-	       } while (--len > 0);
-       return NULL;
+	do {
+		if (s[len] == (char)c)
+			return (char *)s + len;
+	} while (--len >= 0);
+	return NULL;
 }
 EXPORT_SYMBOL(strrchr);
 

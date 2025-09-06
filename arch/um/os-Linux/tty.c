@@ -11,6 +11,8 @@
 #include "kern_util.h"
 #include "os.h"
 #include "user.h"
+#include <kern_util.h>
+#include <os.h>
 
 struct grantpt_info {
 	int fd;

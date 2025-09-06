@@ -19,6 +19,7 @@
 #ifdef CONFIG_MTD_PARTITIONS
 #include <linux/mtd/partitions.h>
 #endif
+#include <linux/mtd/partitions.h>
 
 #define WINDOW_ADDR0 0x00000000      /* physical properties of flash */
 #define WINDOW_SIZE0 0x00800000
@@ -35,6 +36,7 @@
 
 static struct mtd_info *impa7_mtd[NUM_FLASHBANKS];
 
+static const char * const rom_probe_types[] = { "jedec_probe", NULL };
 
 static struct map_info impa7_map[NUM_FLASHBANKS] = {
 	{
@@ -55,6 +57,10 @@ static struct map_info impa7_map[NUM_FLASHBANKS] = {
  * MTD partitioning stuff
  */
 static struct mtd_partition static_partitions[] =
+/*
+ * MTD partitioning stuff
+ */
+static struct mtd_partition partitions[] =
 {
 	{
 		.name = "FileSystem",
@@ -75,6 +81,9 @@ int __init init_impa7(void)
 	static const char *rom_probe_types[] = PROBETYPES;
 	const char **type;
 	const char *part_type = 0;
+static int __init init_impa7(void)
+{
+	const char * const *type;
 	int i;
 	static struct { u_long addr; u_long size; } pt[NUM_FLASHBANKS] = {
 	  { WINDOW_ADDR0, WINDOW_SIZE0 },
@@ -96,6 +105,7 @@ int __init init_impa7(void)
 		simple_map_init(&impa7_map[i]);
 
 		impa7_mtd[i] = 0;
+		impa7_mtd[i] = NULL;
 		type = rom_probe_types;
 		for(; !impa7_mtd[i] && *type; type++) {
 			impa7_mtd[i] = do_map_probe(*type, &impa7_map[i]);
@@ -129,6 +139,12 @@ int __init init_impa7(void)
 		}
 		else
 			iounmap((void *)impa7_map[i].virt);
+			mtd_device_parse_register(impa7_mtd[i], NULL, NULL,
+						  partitions,
+						  ARRAY_SIZE(partitions));
+		} else {
+			iounmap((void __iomem *)impa7_map[i].virt);
+		}
 	}
 	return devicesfound == 0 ? -ENXIO : 0;
 }
@@ -146,6 +162,10 @@ static void __exit cleanup_impa7(void)
 			map_destroy(impa7_mtd[i]);
 			iounmap((void *)impa7_map[i].virt);
 			impa7_map[i].virt = 0;
+			mtd_device_unregister(impa7_mtd[i]);
+			map_destroy(impa7_mtd[i]);
+			iounmap((void __iomem *)impa7_map[i].virt);
+			impa7_map[i].virt = NULL;
 		}
 	}
 }

@@ -6,6 +6,8 @@
  *
  * This program is free software; you can redistribute  it and/or modify it
  * under  the terms of  the GNU General  Public License as published by the
+ * This program is free software; you can redistribute	it and/or modify it
+ * under  the terms of	the GNU General	 Public License as published by the
  * Free Software Foundation;  either version 2 of the  License, or (at your
  * option) any later version.
  */
@@ -29,6 +31,7 @@
  */
 
 #define X1241REG_SR_BAT	0x80		/* currently on battery power */
+#define X1241REG_SR_BAT 0x80		/* currently on battery power */
 #define X1241REG_SR_RWEL 0x04		/* r/w latch is enabled, can write RTC */
 #define X1241REG_SR_WEL 0x02		/* r/w latch is unlocked, can enable r/w now */
 #define X1241REG_SR_RTCF 0x01		/* clock failed */
@@ -37,6 +40,8 @@
 #define X1241REG_BL_BP0 0x20		/* block protect 0 */
 #define X1241REG_BL_WD1	0x10
 #define X1241REG_BL_WD0	0x08
+#define X1241REG_BL_WD1 0x10
+#define X1241REG_BL_WD0 0x08
 #define X1241REG_HR_MIL 0x80		/* military time format */
 
 /*
@@ -63,6 +68,8 @@ static int xicor_read(uint8_t addr)
 {
         while (__raw_readq(SMB_CSR(R_SMB_STATUS)) & M_SMB_BUSY)
                 ;
+	while (__raw_readq(SMB_CSR(R_SMB_STATUS)) & M_SMB_BUSY)
+		;
 
 	__raw_writeq((addr >> 8) & 0x7, SMB_CSR(R_SMB_CMD));
 	__raw_writeq(addr & 0xff, SMB_CSR(R_SMB_DATA));
@@ -71,6 +78,8 @@ static int xicor_read(uint8_t addr)
 
         while (__raw_readq(SMB_CSR(R_SMB_STATUS)) & M_SMB_BUSY)
                 ;
+	while (__raw_readq(SMB_CSR(R_SMB_STATUS)) & M_SMB_BUSY)
+		;
 
 	__raw_writeq(V_SMB_ADDR(X1241_CCR_ADDRESS) | V_SMB_TT_RD1BYTE,
 		     SMB_CSR(R_SMB_START));
@@ -85,12 +94,24 @@ static int xicor_read(uint8_t addr)
         }
 
 	return (__raw_readq(SMB_CSR(R_SMB_DATA)) & 0xff);
+	while (__raw_readq(SMB_CSR(R_SMB_STATUS)) & M_SMB_BUSY)
+		;
+
+	if (__raw_readq(SMB_CSR(R_SMB_STATUS)) & M_SMB_ERROR) {
+		/* Clear error bit by writing a 1 */
+		__raw_writeq(M_SMB_ERROR, SMB_CSR(R_SMB_STATUS));
+		return -1;
+	}
+
+	return __raw_readq(SMB_CSR(R_SMB_DATA)) & 0xff;
 }
 
 static int xicor_write(uint8_t addr, int b)
 {
         while (__raw_readq(SMB_CSR(R_SMB_STATUS)) & M_SMB_BUSY)
                 ;
+	while (__raw_readq(SMB_CSR(R_SMB_STATUS)) & M_SMB_BUSY)
+		;
 
 	__raw_writeq(addr, SMB_CSR(R_SMB_CMD));
 	__raw_writeq((addr & 0xff) | ((b & 0xff) << 8), SMB_CSR(R_SMB_DATA));
@@ -105,6 +126,14 @@ static int xicor_write(uint8_t addr, int b)
                 __raw_writeq(M_SMB_ERROR, SMB_CSR(R_SMB_STATUS));
                 return -1;
         } else {
+	while (__raw_readq(SMB_CSR(R_SMB_STATUS)) & M_SMB_BUSY)
+		;
+
+	if (__raw_readq(SMB_CSR(R_SMB_STATUS)) & M_SMB_ERROR) {
+		/* Clear error bit by writing a 1 */
+		__raw_writeq(M_SMB_ERROR, SMB_CSR(R_SMB_STATUS));
+		return -1;
+	} else {
 		return 0;
 	}
 }
@@ -131,11 +160,19 @@ int xicor_set_time(unsigned long t)
 	xicor_write(X1241REG_MN, tm.tm_min);
 
 	tm.tm_mday = BIN2BCD(tm.tm_mday);
+	tm.tm_sec = bin2bcd(tm.tm_sec);
+	xicor_write(X1241REG_SC, tm.tm_sec);
+
+	tm.tm_min = bin2bcd(tm.tm_min);
+	xicor_write(X1241REG_MN, tm.tm_min);
+
+	tm.tm_mday = bin2bcd(tm.tm_mday);
 	xicor_write(X1241REG_DT, tm.tm_mday);
 
 	/* tm_mon starts from 0, *ick* */
 	tm.tm_mon ++;
 	tm.tm_mon = BIN2BCD(tm.tm_mon);
+	tm.tm_mon = bin2bcd(tm.tm_mon);
 	xicor_write(X1241REG_MO, tm.tm_mon);
 
 	/* year is split */
@@ -149,6 +186,7 @@ int xicor_set_time(unsigned long t)
 	if (tmp & X1241REG_HR_MIL) {
 		/* 24 hour format */
 		tm.tm_hour = BIN2BCD(tm.tm_hour);
+		tm.tm_hour = bin2bcd(tm.tm_hour);
 		tmp = (tmp & ~0x3f) | (tm.tm_hour & 0x3f);
 	} else {
 		/* 12 hour format, with 0x2 for pm */
@@ -158,6 +196,7 @@ int xicor_set_time(unsigned long t)
 			tm.tm_hour -= 12;
 		}
 		tm.tm_hour = BIN2BCD(tm.tm_hour);
+		tm.tm_hour = bin2bcd(tm.tm_hour);
 		tmp |= tm.tm_hour;
 	}
 	xicor_write(X1241REG_HR, tmp);
@@ -198,6 +237,13 @@ unsigned long xicor_get_time(void)
 	mon = BCD2BIN(mon);
 	year = BCD2BIN(year);
 	y2k = BCD2BIN(y2k);
+	sec = bcd2bin(sec);
+	min = bcd2bin(min);
+	hour = bcd2bin(hour);
+	day = bcd2bin(day);
+	mon = bcd2bin(mon);
+	year = bcd2bin(year);
+	y2k = bcd2bin(y2k);
 
 	year += (y2k * 100);
 
@@ -207,4 +253,5 @@ unsigned long xicor_get_time(void)
 int xicor_probe(void)
 {
 	return (xicor_read(X1241REG_SC) != -1);
+	return xicor_read(X1241REG_SC) != -1;
 }

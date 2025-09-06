@@ -15,6 +15,7 @@
 #include <asm/machtypes.h>
 
 struct device;
+#include <generated/machtypes.h>
 
 struct sh_machine_vector {
 	void (*mv_setup)(char **cmdline_p);
@@ -58,6 +59,20 @@ struct sh_machine_vector {
 
 	void __iomem *(*mv_ioport_map)(unsigned long port, unsigned int size);
 	void (*mv_ioport_unmap)(void __iomem *);
+
+	int (*mv_irq_demux)(int irq);
+	void (*mv_init_irq)(void);
+
+#ifdef CONFIG_HAS_IOPORT_MAP
+	void __iomem *(*mv_ioport_map)(unsigned long port, unsigned int size);
+	void (*mv_ioport_unmap)(void __iomem *);
+#endif
+
+	int (*mv_clk_init)(void);
+	int (*mv_mode_pins)(void);
+
+	void (*mv_mem_init)(void);
+	void (*mv_mem_reserve)(void);
 };
 
 extern struct sh_machine_vector sh_mv;

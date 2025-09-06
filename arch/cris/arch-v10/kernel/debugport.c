@@ -21,6 +21,7 @@
 #include <asm/system.h>
 #include <asm/arch/svinto.h>
 #include <asm/io.h>             /* Get SIMCOUT. */
+#include <arch/svinto.h>
 
 extern void reset_watchdog(void);
 

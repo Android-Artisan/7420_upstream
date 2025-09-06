@@ -20,6 +20,9 @@
 #include <asm/uaccess.h>
 #include "mem_user.h"
 
+#include <asm/uaccess.h>
+#include <mem_user.h>
+
 /* These are set in mmapper_init, which is called at boot time */
 static unsigned long mmapper_size;
 static unsigned long p_buf;
@@ -48,6 +51,10 @@ static ssize_t mmapper_write(struct file *file, const char __user *buf,
 
 static int mmapper_ioctl(struct inode *inode, struct file *file,
 			 unsigned int cmd, unsigned long arg)
+	return simple_write_to_buffer(v_buf, mmapper_size, ppos, buf, count);
+}
+
+static long mmapper_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
 	return -ENOIOCTLCMD;
 }
@@ -95,6 +102,11 @@ static const struct file_operations mmapper_fops = {
 	.mmap		= mmapper_mmap,
 	.open		= mmapper_open,
 	.release	= mmapper_release,
+	.unlocked_ioctl	= mmapper_ioctl,
+	.mmap		= mmapper_mmap,
+	.open		= mmapper_open,
+	.release	= mmapper_release,
+	.llseek		= default_llseek,
 };
 
 /*
@@ -117,6 +129,9 @@ static int __init mmapper_init(void)
 		printk(KERN_ERR "mmapper_init - find_iomem failed\n");
 		goto out;
 	}
+		return -ENODEV;
+	}
+	p_buf = __pa(v_buf);
 
 	err = misc_register(&mmapper_dev);
 	if (err) {
@@ -127,6 +142,8 @@ static int __init mmapper_init(void)
 
 	p_buf = __pa(v_buf);
 out:
+		return err;
+	}
 	return 0;
 }
 
@@ -140,3 +157,4 @@ module_exit(mmapper_exit);
 
 MODULE_AUTHOR("Greg Lonnon <glonnon@ridgerun.com>");
 MODULE_DESCRIPTION("DSPLinux simulator mmapper driver");
+MODULE_LICENSE("GPL");

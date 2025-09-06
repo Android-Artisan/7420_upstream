@@ -77,6 +77,7 @@ static int do_cpumask(cnodeid_t cnode, nasid_t nasid, int highest)
 			if ((acpu->cpu_info.flags & KLINFO_ENABLE) &&
 			    (tot_cpus_found != NR_CPUS)) {
 				cpu_set(cpuid, phys_cpu_present_map);
+				set_cpu_possible(cpuid, true);
 				alloc_cpupda(cpuid, tot_cpus_found);
 				cpus_found++;
 				tot_cpus_found++;
@@ -174,11 +175,21 @@ static void ip27_send_ipi_mask(cpumask_t mask, unsigned int action)
 }
 
 static void __cpuinit ip27_init_secondary(void)
+static void ip27_send_ipi_mask(const struct cpumask *mask, unsigned int action)
+{
+	unsigned int i;
+
+	for_each_cpu(i, mask)
+		ip27_send_ipi_single(i, action);
+}
+
+static void ip27_init_secondary(void)
 {
 	per_cpu_init();
 }
 
 static void __cpuinit ip27_smp_finish(void)
+static void ip27_smp_finish(void)
 {
 	extern void hub_rt_clock_event_init(void);
 
@@ -196,6 +207,12 @@ static void __init ip27_cpus_done(void)
  * struct so that current_thread_info() will work.
  */
 static void __cpuinit ip27_boot_secondary(int cpu, struct task_struct *idle)
+/*
+ * Launch a slave into smp_bootstrap().	 It doesn't take an argument, and we
+ * set sp to the kernel stack of the newly created idle process, gp to the proc
+ * struct so that current_thread_info() will work.
+ */
+static void ip27_boot_secondary(int cpu, struct task_struct *idle)
 {
 	unsigned long gp = (unsigned long)task_thread_info(idle);
 	unsigned long sp = __KSTK_TOS(idle);
@@ -222,6 +239,9 @@ static void __init ip27_smp_setup(void)
 	 * processor 0.  While we're always running on logical processor 0
 	 * this still means this is physical processor zero; it might for
 	 * example be disabled in the firwware.
+	 * processor 0.	 While we're always running on logical processor 0
+	 * this still means this is physical processor zero; it might for
+	 * example be disabled in the firmware.
 	 */
 	alloc_cpupda(0, 0);
 }

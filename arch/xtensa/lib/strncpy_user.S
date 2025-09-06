@@ -12,6 +12,7 @@
  */
 
 #include <asm/variant/core.h>
+#include <variant/core.h>
 #include <linux/errno.h>
 
 /* Load or store instructions that may cause exceptions use the EX macro. */
@@ -167,6 +168,7 @@ __strncpy_user:
 .Lz1:	# byte 1 is zero
 #ifdef __XTENSA_EB__
         extui   a9, a9, 16, 16
+	extui   a9, a9, 16, 16
 #endif /* __XTENSA_EB__ */
 	EX(s16i, a9, a11, 0, fixup_s)
 	addi	a11, a11, 1		# advance dst pointer
@@ -175,6 +177,7 @@ __strncpy_user:
 .Lz2:	# byte 2 is zero
 #ifdef __XTENSA_EB__
         extui   a9, a9, 16, 16
+	extui   a9, a9, 16, 16
 #endif /* __XTENSA_EB__ */
 	EX(s16i, a9, a11, 0, fixup_s)
 	movi	a9, 0

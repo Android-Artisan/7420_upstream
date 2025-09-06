@@ -184,6 +184,7 @@ static const struct sc520_par_table par_table[NUM_FLASH_BANKS] =
 static void sc520cdp_setup_par(void)
 {
 	volatile unsigned long __iomem *mmcr;
+	unsigned long __iomem *mmcr;
 	unsigned long mmcr_val;
 	int i, j;
 
@@ -198,6 +199,7 @@ static void sc520cdp_setup_par(void)
 
 	/*
 	** Find the PARxx registers that are reponsible for activating
+	** Find the PARxx registers that are responsible for activating
 	** ROMCS0, ROMCS1 and BOOTCS. Reprogram each of these with a
 	** new value from the table.
 	*/
@@ -208,6 +210,11 @@ static void sc520cdp_setup_par(void)
 			if((mmcr_val & SC520_PAR_TRGDEV) == par_table[i].trgdev)
 			{
 				mmcr[SC520_PAR(j)] = par_table[i].new_par;
+			mmcr_val = readl(&mmcr[SC520_PAR(j)]);
+			/* if target device field matches, reprogram the PAR */
+			if((mmcr_val & SC520_PAR_TRGDEV) == par_table[i].trgdev)
+			{
+				writel(par_table[i].new_par, &mmcr[SC520_PAR(j)]);
 				break;
 			}
 		}
@@ -270,6 +277,10 @@ static int __init init_sc520cdp(void)
 	}
 	if(devices_found == 3) /* register the third (DIL-Flash) device */
 		add_mtd_device(mymtd[2]);
+			mtd_device_register(merged_mtd, NULL, 0);
+	}
+	if(devices_found == 3) /* register the third (DIL-Flash) device */
+		mtd_device_register(mymtd[2], NULL, 0);
 	return(devices_found ? 0 : -ENXIO);
 }
 
@@ -283,6 +294,11 @@ static void __exit cleanup_sc520cdp(void)
 	}
 	if (mymtd[2])
 		del_mtd_device(mymtd[2]);
+		mtd_device_unregister(merged_mtd);
+		mtd_concat_destroy(merged_mtd);
+	}
+	if (mymtd[2])
+		mtd_device_unregister(mymtd[2]);
 
 	for (i = 0; i < NUM_FLASH_BANKS; i++) {
 		if (mymtd[i])

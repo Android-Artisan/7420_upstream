@@ -110,6 +110,7 @@ static int snd_ics_put_double(struct snd_kcontrol *kcontrol, struct snd_ctl_elem
 	int addr = kcontrol->private_value & 0xff;
 	int change;
 	unsigned char val1, val2, oval1, oval2, tmp;
+	unsigned char val1, val2, oval1, oval2;
 	
 	val1 = ucontrol->value.integer.value[0] & 127;
 	val2 = ucontrol->value.integer.value[1] & 127;
@@ -125,6 +126,8 @@ static int snd_ics_put_double(struct snd_kcontrol *kcontrol, struct snd_ctl_elem
 		val1 = val2;
 		val2 = tmp;
 	}
+	    (addr == SNDRV_ICS_GF1_DEV || addr == SNDRV_ICS_MASTER_DEV))
+		swap(val1, val2);
 	addr <<= 3;
 	outb(addr | 0, GUSP(gus, MIXCNTRLPORT));
 	outb(1, GUSP(gus, MIXDATAPORT));
@@ -164,6 +167,11 @@ int snd_gf1_new_mixer(struct snd_gus_card * gus)
 	snd_assert(gus != NULL, return -EINVAL);
 	card = gus->card;
 	snd_assert(card != NULL, return -EINVAL);
+	if (snd_BUG_ON(!gus))
+		return -EINVAL;
+	card = gus->card;
+	if (snd_BUG_ON(!card))
+		return -EINVAL;
 
 	if (gus->ics_flag)
 		snd_component_add(card, "ICS2101");

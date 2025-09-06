@@ -13,6 +13,8 @@
  */
 
 #include <linux/linkage.h>
+#include <asm/assembler.h>
+#include <asm/unwind.h>
 
 #ifdef __ARMEB__
 #define xh r0
@@ -44,6 +46,7 @@
  */
 
 ENTRY(__do_div64)
+UNWIND(.fnstart)
 
 	@ Test for easy paths first.
 	subs	ip, r4, #1
@@ -96,6 +99,7 @@ ENTRY(__do_div64)
 	cmpeq	xl, r4
 	movlo	xh, xl
 	movlo	pc, lr
+	retlo	lr
 
 	@ The division loop for lower bit positions.
 	@ Here we shift remainer bits leftwards rather than moving the
@@ -110,6 +114,7 @@ ENTRY(__do_div64)
 	movs	ip, ip, lsr #1
 	bne	4b
 	mov	pc, lr
+	ret	lr
 
 	@ The top part of remainder became zero.  If carry is set
 	@ (the 33th bit) this is a false positive so resume the loop.
@@ -117,6 +122,7 @@ ENTRY(__do_div64)
 6:	bcs	5b
 	cmp	xl, #0
 	moveq	pc, lr
+	reteq	lr
 
 	@ We still have remainer bits in the low part.  Bring them up.
 
@@ -143,6 +149,7 @@ ENTRY(__do_div64)
 	mov	xh, #1
 	bne	4b
 	mov	pc, lr
+	ret	lr
 
 8:	@ Division by a power of 2: determine what that divisor order is
 	@ then simply shift values around
@@ -181,6 +188,12 @@ ENTRY(__do_div64)
 	mov	xh, xl, lsl ip
 	mov	xh, xh, lsr ip
 	mov	pc, lr
+ ARM(	orr	yl, yl, xh, lsl ip	)
+ THUMB(	lsl	xh, xh, ip		)
+ THUMB(	orr	yl, yl, xh		)
+	mov	xh, xl, lsl ip
+	mov	xh, xh, lsr ip
+	ret	lr
 
 	@ eq -> division by 1: obvious enough...
 9:	moveq	yl, xl
@@ -188,6 +201,13 @@ ENTRY(__do_div64)
 	moveq	xh, #0
 	moveq	pc, lr
 
+	reteq	lr
+UNWIND(.fnend)
+
+UNWIND(.fnstart)
+UNWIND(.pad #4)
+UNWIND(.save {lr})
+Ldiv0_64:
 	@ Division by 0:
 	str	lr, [sp, #-8]!
 	bl	__div0
@@ -198,3 +218,5 @@ ENTRY(__do_div64)
 	mov	xh, #0
 	ldr	pc, [sp], #8
 
+UNWIND(.fnend)
+ENDPROC(__do_div64)

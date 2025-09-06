@@ -22,6 +22,8 @@
 #include <asm/system.h>
 
 #include "mcp.h"
+#include <linux/mfd/mcp.h>
+
 
 #define to_mcp(d)		container_of(d, struct mcp, attached_device)
 #define to_mcp_driver(d)	container_of(d, struct mcp_driver, drv)
@@ -96,6 +98,11 @@ void mcp_set_telecom_divisor(struct mcp *mcp, unsigned int div)
 	spin_lock_irq(&mcp->lock);
 	mcp->ops->set_telecom_divisor(mcp, div);
 	spin_unlock_irq(&mcp->lock);
+	unsigned long flags;
+
+	spin_lock_irqsave(&mcp->lock, flags);
+	mcp->ops->set_telecom_divisor(mcp, div);
+	spin_unlock_irqrestore(&mcp->lock, flags);
 }
 EXPORT_SYMBOL(mcp_set_telecom_divisor);
 
@@ -111,6 +118,11 @@ void mcp_set_audio_divisor(struct mcp *mcp, unsigned int div)
 	spin_lock_irq(&mcp->lock);
 	mcp->ops->set_audio_divisor(mcp, div);
 	spin_unlock_irq(&mcp->lock);
+	unsigned long flags;
+
+	spin_lock_irqsave(&mcp->lock, flags);
+	mcp->ops->set_audio_divisor(mcp, div);
+	spin_unlock_irqrestore(&mcp->lock, flags);
 }
 EXPORT_SYMBOL(mcp_set_audio_divisor);
 
@@ -167,6 +179,12 @@ void mcp_enable(struct mcp *mcp)
 	if (mcp->use_count++ == 0)
 		mcp->ops->enable(mcp);
 	spin_unlock_irq(&mcp->lock);
+	unsigned long flags;
+
+	spin_lock_irqsave(&mcp->lock, flags);
+	if (mcp->use_count++ == 0)
+		mcp->ops->enable(mcp);
+	spin_unlock_irqrestore(&mcp->lock, flags);
 }
 EXPORT_SYMBOL(mcp_enable);
 
@@ -203,6 +221,7 @@ struct mcp *mcp_host_alloc(struct device *parent, size_t size)
 	mcp = kzalloc(sizeof(struct mcp) + size, GFP_KERNEL);
 	if (mcp) {
 		spin_lock_init(&mcp->lock);
+		device_initialize(&mcp->attached_device);
 		mcp->attached_device.parent = parent;
 		mcp->attached_device.bus = &mcp_bus_type;
 		mcp->attached_device.dma_mask = parent->dma_mask;
@@ -224,6 +243,25 @@ void mcp_host_unregister(struct mcp *mcp)
 	device_unregister(&mcp->attached_device);
 }
 EXPORT_SYMBOL(mcp_host_unregister);
+int mcp_host_add(struct mcp *mcp, void *pdata)
+{
+	mcp->attached_device.platform_data = pdata;
+	dev_set_name(&mcp->attached_device, "mcp0");
+	return device_add(&mcp->attached_device);
+}
+EXPORT_SYMBOL(mcp_host_add);
+
+void mcp_host_del(struct mcp *mcp)
+{
+	device_del(&mcp->attached_device);
+}
+EXPORT_SYMBOL(mcp_host_del);
+
+void mcp_host_free(struct mcp *mcp)
+{
+	put_device(&mcp->attached_device);
+}
+EXPORT_SYMBOL(mcp_host_free);
 
 int mcp_driver_register(struct mcp_driver *mcpdrv)
 {

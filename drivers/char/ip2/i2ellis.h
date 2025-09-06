@@ -68,7 +68,6 @@ typedef struct _bidStat
 // Box IDs aka ARR or Async Resource Register (more than you want to know)
 //   7   6   5   4   3   2   1   0
 //   F   F   N   N   L   S   S   S
-//   =============================
 //   F   F   -  Product Family Designator
 //   =====+++++++++++++++++++++++++++++++
 //   0   0   -  Intelliport II EX / ISA-8
@@ -84,7 +83,6 @@ typedef struct _bidStat
 //                   L  -   LCD Display Module Present
 //                   0  -   No
 //                   1  -   LCD module present
-//                   =========+++++++++++++++++++++++++++++++++++++
 //                      S   S   S - Async Signals Supported Designator
 //                      0   0   0 - 8dss, Mod DCE DB25 Female
 //                      0   0   1 - 6dss, RJ-45

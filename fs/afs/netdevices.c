@@ -22,6 +22,7 @@ int afs_get_MAC_address(u8 *mac, size_t maclen)
 
 	if (maclen != ETH_ALEN)
 		BUG();
+	BUG_ON(maclen != ETH_ALEN);
 
 	rtnl_lock();
 	dev = __dev_getfirstbyhwtype(&init_net, ARPHRD_ETHER);

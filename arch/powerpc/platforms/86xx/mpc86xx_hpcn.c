@@ -28,6 +28,13 @@
 #include <asm/prom.h>
 #include <mm/mmu_decl.h>
 #include <asm/udbg.h>
+#include <asm/time.h>
+#include <asm/machdep.h>
+#include <asm/pci-bridge.h>
+#include <asm/prom.h>
+#include <mm/mmu_decl.h>
+#include <asm/udbg.h>
+#include <asm/swiotlb.h>
 
 #include <asm/mpic.h>
 
@@ -60,6 +67,8 @@ static int mpc86xx_exclude_device(struct pci_controller *hose,
 	if ((rsrc.start & 0xfffff) == 0x8000) {
 		return uli_exclude_device(hose, bus, devfn);
 	}
+	if (hose->dn == fsl_pci_primary)
+		return uli_exclude_device(hose, bus, devfn);
 
 	return PCIBIOS_SUCCESSFUL;
 }
@@ -88,6 +97,7 @@ mpc86xx_hpcn_setup_arch(void)
 
 	ppc_md.pci_exclude_device = mpc86xx_exclude_device;
 
+	ppc_md.pci_exclude_device = mpc86xx_exclude_device;
 #endif
 
 	printk("MPC86xx HPCN board from Freescale Semiconductor\n");
@@ -95,6 +105,10 @@ mpc86xx_hpcn_setup_arch(void)
 #ifdef CONFIG_SMP
 	mpc86xx_smp_init();
 #endif
+
+	fsl_pci_assign_primary();
+
+	swiotlb_detect_4g();
 }
 
 
@@ -116,6 +130,7 @@ mpc86xx_hpcn_show_cpuinfo(struct seq_file *m)
 
 	seq_printf(m, "SVR\t\t: 0x%x\n", svid);
 	seq_printf(m, "Memory\t\t: %d MB\n", memsize / (1024 * 1024));
+	seq_printf(m, "SVR\t\t: 0x%x\n", svid);
 }
 
 
@@ -158,6 +173,11 @@ mpc86xx_time_init(void)
 static __initdata struct of_device_id of_bus_ids[] = {
 	{ .compatible = "simple-bus", },
 	{ .compatible = "fsl,rapidio-delta", },
+static const struct of_device_id of_bus_ids[] __initconst = {
+	{ .compatible = "simple-bus", },
+	{ .compatible = "fsl,srio", },
+	{ .compatible = "gianfar", },
+	{ .compatible = "fsl,mpc8641-pcie", },
 	{},
 };
 
@@ -168,6 +188,8 @@ static int __init declare_of_platform_devices(void)
 	return 0;
 }
 machine_device_initcall(mpc86xx_hpcn, declare_of_platform_devices);
+machine_arch_initcall(mpc86xx_hpcn, declare_of_platform_devices);
+machine_arch_initcall(mpc86xx_hpcn, swiotlb_setup_bus_notifier);
 
 define_machine(mpc86xx_hpcn) {
 	.name			= "MPC86xx HPCN",

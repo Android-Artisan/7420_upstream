@@ -12,6 +12,7 @@
 #include <linux/irq.h>
 #include <linux/kernel.h>
 #include <linux/time.h>
+#include <linux/cpu.h>
 
 #include <asm/sysreg.h>
 
@@ -19,6 +20,9 @@
 
 
 static cycle_t read_cycle_count(void)
+static bool disable_cpu_idle_poll;
+
+static cycle_t read_cycle_count(struct clocksource *cs)
 {
 	return (cycle_t)sysreg_read(COUNT);
 }
@@ -60,6 +64,7 @@ static struct irqaction timer_irqaction = {
 	.handler	= timer_interrupt,
 	/* Oprofile uses the same irq as the timer, so allow it to be shared */
 	.flags		= IRQF_TIMER | IRQF_DISABLED | IRQF_SHARED,
+	.flags		= IRQF_TIMER | IRQF_SHARED,
 	.name		= "avr32_comparator",
 };
 
@@ -111,6 +116,53 @@ static struct clock_event_device comparator = {
 	.set_mode	= comparator_mode,
 };
 
+static int comparator_shutdown(struct clock_event_device *evdev)
+{
+	pr_debug("%s: %s\n", __func__, evdev->name);
+	sysreg_write(COMPARE, 0);
+
+	if (disable_cpu_idle_poll) {
+		disable_cpu_idle_poll = false;
+		/*
+		 * Only disable idle poll if we have forced that
+		 * in a previous call.
+		 */
+		cpu_idle_poll_ctrl(false);
+	}
+	return 0;
+}
+
+static int comparator_set_oneshot(struct clock_event_device *evdev)
+{
+	pr_debug("%s: %s\n", __func__, evdev->name);
+
+	disable_cpu_idle_poll = true;
+	/*
+	 * If we're using the COUNT and COMPARE registers we
+	 * need to force idle poll.
+	 */
+	cpu_idle_poll_ctrl(true);
+
+	return 0;
+}
+
+static struct clock_event_device comparator = {
+	.name			= "avr32_comparator",
+	.features		= CLOCK_EVT_FEAT_ONESHOT,
+	.shift			= 16,
+	.rating			= 50,
+	.set_next_event		= comparator_next_event,
+	.set_state_shutdown	= comparator_shutdown,
+	.set_state_oneshot	= comparator_set_oneshot,
+	.tick_resume		= comparator_set_oneshot,
+};
+
+void read_persistent_clock(struct timespec *ts)
+{
+	ts->tv_sec = mktime(2007, 1, 1, 0, 0, 0);
+	ts->tv_nsec = 0;
+}
+
 void __init time_init(void)
 {
 	unsigned long counter_hz;
@@ -127,6 +179,9 @@ void __init time_init(void)
 	counter.mult = clocksource_hz2mult(counter_hz, counter.shift);
 
 	ret = clocksource_register(&counter);
+	/* figure rate for counter */
+	counter_hz = clk_get_rate(boot_cpu_data.clk);
+	ret = clocksource_register_hz(&counter, counter_hz);
 	if (ret)
 		pr_debug("timer: could not register clocksource: %d\n", ret);
 
@@ -134,6 +189,7 @@ void __init time_init(void)
 	comparator.mult = div_sc(counter_hz, NSEC_PER_SEC, comparator.shift);
 	comparator.max_delta_ns = clockevent_delta2ns((u32)~0, &comparator);
 	comparator.min_delta_ns = clockevent_delta2ns(50, &comparator) + 1;
+	comparator.cpumask = cpumask_of(0);
 
 	sysreg_write(COMPARE, 0);
 	timer_irqaction.dev_id = &comparator;

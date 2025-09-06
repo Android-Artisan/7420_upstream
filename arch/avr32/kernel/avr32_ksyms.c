@@ -36,7 +36,7 @@ EXPORT_SYMBOL(copy_page);
 /*
  * Userspace access stuff.
  */
-EXPORT_SYMBOL(copy_from_user);
+EXPORT_SYMBOL(___copy_from_user);
 EXPORT_SYMBOL(copy_to_user);
 EXPORT_SYMBOL(__copy_user);
 EXPORT_SYMBOL(strncpy_from_user);
@@ -60,6 +60,8 @@ EXPORT_SYMBOL(find_first_bit);
 EXPORT_SYMBOL(find_next_bit);
 EXPORT_SYMBOL(generic_find_next_le_bit);
 EXPORT_SYMBOL(generic_find_next_zero_le_bit);
+EXPORT_SYMBOL(find_next_bit_le);
+EXPORT_SYMBOL(find_next_zero_bit_le);
 
 /* I/O primitives (lib/io-*.S) */
 EXPORT_SYMBOL(__raw_readsb);

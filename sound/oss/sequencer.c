@@ -19,6 +19,7 @@
 #include "sound_config.h"
 
 #include "midi_ctrl.h"
+#include "sleep.h"
 
 static int      sequencer_ok;
 static struct sound_timer_operations *tmr;
@@ -102,6 +103,7 @@ int sequencer_read(int dev, struct file *file, char __user *buf, int count)
 
  		interruptible_sleep_on_timeout(&midi_sleeper,
 					       pre_event_timeout);
+		oss_broken_sleep_on(&midi_sleeper, pre_event_timeout);
 		spin_lock_irqsave(&lock,flags);
 		if (!iqlen)
 		{
@@ -243,6 +245,7 @@ int sequencer_write(int dev, struct file *file, const char __user *buf, int coun
 
 			fmt = (*(short *) &event_rec[0]) & 0xffff;
 			err = synth_devs[dev]->load_patch(dev, fmt, buf, p + 4, c, 0);
+			err = synth_devs[dev]->load_patch(dev, fmt, buf + p, c, 0);
 			if (err < 0)
 				return err;
 
@@ -286,6 +289,7 @@ int sequencer_write(int dev, struct file *file, const char __user *buf, int coun
 			if (!midi_opened[event_rec[2]])
 			{
 				int mode;
+				int err, mode;
 				int dev = event_rec[2];
 
 				if (dev >= max_mididev || midi_devs[dev]==NULL)
@@ -345,6 +349,7 @@ static int seq_queue(unsigned char *note, char nonblock)
 		 * Sleep until there is enough space on the queue
 		 */
 		interruptible_sleep_on(&seq_sleeper);
+		oss_broken_sleep_on(&seq_sleeper, MAX_SCHEDULE_TIMEOUT);
 	}
 	if (qlen >= SEQ_MAX_QUEUE)
 	{
@@ -546,6 +551,9 @@ static void seq_chn_common_event(unsigned char *event_rec)
 		case MIDI_PGM_CHANGE:
 			if (seq_mode == SEQ_2)
 			{
+				if (chn > 15)
+					break;
+
 				synth_devs[dev]->chn_info[chn].pgm_num = p1;
 				if ((int) dev >= num_synths)
 					synth_devs[dev]->set_instr(dev, chn, p1);
@@ -597,6 +605,9 @@ static void seq_chn_common_event(unsigned char *event_rec)
 		case MIDI_PITCH_BEND:
 			if (seq_mode == SEQ_2)
 			{
+				if (chn > 15)
+					break;
+
 				synth_devs[dev]->chn_info[chn].bender_value = w14;
 
 				if ((int) dev < num_synths)
@@ -685,6 +696,8 @@ static int seq_timing_event(unsigned char *event_rec)
 				parm = (parm << 8 | SEQ_ECHO);
 				seq_copy_to_input((unsigned char *) &parm, 4);
 			}
+			parm = (parm << 8 | SEQ_ECHO);
+			seq_copy_to_input((unsigned char *) &parm, 4);
 			break;
 
 		default:;
@@ -1119,6 +1132,7 @@ static void seq_drain_midi_queues(void)
  		if (n)
  			interruptible_sleep_on_timeout(&seq_sleeper,
 						       HZ/10);
+			oss_broken_sleep_on(&seq_sleeper, HZ/10);
 	}
 }
 
@@ -1142,6 +1156,7 @@ void sequencer_release(int dev, struct file *file)
   			seq_sync();
  			interruptible_sleep_on_timeout(&seq_sleeper,
 						       3*HZ);
+			oss_broken_sleep_on(&seq_sleeper, 3*HZ);
  			/* Extra delay */
 		}
 	}
@@ -1197,6 +1212,7 @@ static int seq_sync(void)
 
  	if (qlen > 0)
  		interruptible_sleep_on_timeout(&seq_sleeper, HZ);
+		oss_broken_sleep_on(&seq_sleeper, HZ);
 	return qlen;
 }
 
@@ -1220,6 +1236,7 @@ static void midi_outc(int dev, unsigned char data)
 	spin_lock_irqsave(&lock,flags);
  	while (n && !midi_devs[dev]->outputc(dev, data)) {
  		interruptible_sleep_on_timeout(&seq_sleeper, HZ/25);
+		oss_broken_sleep_on(&seq_sleeper, HZ/25);
   		n--;
   	}
 	spin_unlock_irqrestore(&lock,flags);
@@ -1485,6 +1502,7 @@ int sequencer_ioctl(int dev, struct file *file, unsigned int cmd, void __user *a
 			spin_lock_irqsave(&lock,flags);
 			play_event(event_rec.arr);
 			spin_unlock_irqrestore(&lock,flags);
+			play_event(event_rec.arr);
 			return 0;
 
 		case SNDCTL_MIDI_INFO:
@@ -1650,12 +1668,14 @@ void sequencer_init(void)
 	if (sequencer_ok)
 		return;
 	queue = (unsigned char *)vmalloc(SEQ_MAX_QUEUE * EV_SZ);
+	queue = vmalloc(SEQ_MAX_QUEUE * EV_SZ);
 	if (queue == NULL)
 	{
 		printk(KERN_ERR "sequencer: Can't allocate memory for sequencer output queue\n");
 		return;
 	}
 	iqueue = (unsigned char *)vmalloc(SEQ_MAX_QUEUE * IEV_SZ);
+	iqueue = vmalloc(SEQ_MAX_QUEUE * IEV_SZ);
 	if (iqueue == NULL)
 	{
 		printk(KERN_ERR "sequencer: Can't allocate memory for sequencer input queue\n");

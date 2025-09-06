@@ -1,6 +1,5 @@
 
 Fax with isdn4linux
-===================
 
 When enabled during kernel configuration, the tty emulator
 of the ISDN subsystem is capable of the Fax Class 2 commands.

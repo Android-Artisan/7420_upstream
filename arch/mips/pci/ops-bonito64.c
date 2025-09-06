@@ -36,6 +36,14 @@
 #define CFG_SPACE_REG(offset) (void *)CKSEG1ADDR(_pcictrl_bonito_pcicfg + (offset))
 #define ID_SEL_BEGIN 10
 #endif
+
+#include <asm/mips-boards/bonito64.h>
+
+#define PCI_ACCESS_READ	 0
+#define PCI_ACCESS_WRITE 1
+
+#define CFG_SPACE_REG(offset) (void *)CKSEG1ADDR(_pcictrl_bonito_pcicfg + (offset))
+#define ID_SEL_BEGIN 10
 #define MAX_DEV_NUM (31 - ID_SEL_BEGIN)
 
 
@@ -81,6 +89,8 @@ static int bonito64_pcibios_config_access(unsigned char access_type,
 		/* Wait till done */
 		while (BONITO_PCIMSTAT & 0xF);
 #endif
+		/* Wait till done */
+		while (BONITO_PCIMSTAT & 0xF);
 	} else {
 		*data = le32_to_cpu(readl(addrp));
 	}
@@ -145,6 +155,7 @@ static int bonito64_pcibios_write(struct pci_bus *bus, unsigned int devfn,
 	else {
 		if (bonito64_pcibios_config_access(PCI_ACCESS_READ, bus, devfn,
 		                               where, &data))
+					       where, &data))
 			return -1;
 
 		if (size == 1)

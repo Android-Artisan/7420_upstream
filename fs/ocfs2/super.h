@@ -44,5 +44,25 @@ void __ocfs2_abort(struct super_block *sb,
 	__attribute__ ((format (printf, 3, 4)));
 
 #define ocfs2_abort(sb, fmt, args...) __ocfs2_abort(sb, __PRETTY_FUNCTION__, fmt, ##args)
+__printf(3, 4)
+int __ocfs2_error(struct super_block *sb, const char *function,
+		   const char *fmt, ...);
+
+#define ocfs2_error(sb, fmt, ...)					\
+	__ocfs2_error(sb, __PRETTY_FUNCTION__, fmt, ##__VA_ARGS__)
+
+__printf(3, 4)
+void __ocfs2_abort(struct super_block *sb, const char *function,
+		   const char *fmt, ...);
+
+#define ocfs2_abort(sb, fmt, ...)					\
+	__ocfs2_abort(sb, __PRETTY_FUNCTION__, fmt, ##__VA_ARGS__)
+
+/*
+ * Void signal blockers, because in-kernel sigprocmask() only fails
+ * when SIG_* is wrong.
+ */
+void ocfs2_block_signals(sigset_t *oldset);
+void ocfs2_unblock_signals(sigset_t *oldset);
 
 #endif /* OCFS2_SUPER_H */

@@ -4,6 +4,10 @@
  * Copyright 1999 by Carsten Paeth <calle@calle.de>
  * Copyright 2002 by Kai Germaschewski <kai@germaschewski.name>
  * 
+ *
+ * Copyright 1999 by Carsten Paeth <calle@calle.de>
+ * Copyright 2002 by Kai Germaschewski <kai@germaschewski.name>
+ *
  * This software may be used and distributed according to the terms
  * of the GNU General Public License, incorporated herein by reference.
  *
@@ -19,6 +23,9 @@
 #define DBG(format, arg...) do { \
 printk(KERN_DEBUG "%s: " format "\n" , __func__ , ## arg); \
 } while (0)
+#define DBG(format, arg...) do {					\
+		printk(KERN_DEBUG "%s: " format "\n" , __func__ , ## arg); \
+	} while (0)
 #else
 #define DBG(format, arg...) /* */
 #endif
@@ -34,6 +41,19 @@ extern rwlock_t capi_drivers_list_lock;
 
 extern struct capi20_appl *capi_applications[CAPI_MAXAPPL];
 extern struct capi_ctr *capi_cards[CAPI_MAXCONTR];
+	CAPI_CTR_DETACHED = 0,
+	CAPI_CTR_DETECTED = 1,
+	CAPI_CTR_LOADING  = 2,
+	CAPI_CTR_RUNNING  = 3,
+};
+
+extern struct list_head capi_drivers;
+extern struct mutex capi_drivers_lock;
+
+extern struct capi_ctr *capi_controller[CAPI_MAXCONTR];
+extern struct mutex capi_controller_lock;
+
+extern struct capi20_appl *capi_applications[CAPI_MAXAPPL];
 
 #ifdef CONFIG_PROC_FS
 

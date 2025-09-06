@@ -169,9 +169,7 @@ static int num_boards;	/* total number of adapters configured */
 #endif				// DRIVERDEBUG
 
 /*
- * =================
  * = skfp_init_one =
- * =================
  *   
  * Overview:
  *   Probes for supported FDDI PCI controllers
@@ -357,9 +355,7 @@ static void __devexit skfp_remove_one(struct pci_dev *pdev)
 }
 
 /*
- * ====================
  * = skfp_driver_init =
- * ====================
  *   
  * Overview:
  *   Initializes remaining adapter board structure information
@@ -468,9 +464,7 @@ fail:
 
 
 /*
- * =============
  * = skfp_open =
- * =============
  *   
  * Overview:
  *   Opens the adapter
@@ -529,9 +523,7 @@ static int skfp_open(struct net_device *dev)
 
 
 /*
- * ==============
  * = skfp_close =
- * ==============
  *   
  * Overview:
  *   Closes the device/module.
@@ -578,9 +570,7 @@ static int skfp_close(struct net_device *dev)
 
 
 /*
- * ==================
  * = skfp_interrupt =
- * ==================
  *   
  * Overview:
  *   Interrupt processing routine
@@ -649,9 +639,7 @@ irqreturn_t skfp_interrupt(int irq, void *dev_id)
 
 
 /*
- * ======================
  * = skfp_ctl_get_stats =
- * ======================
  *   
  * Overview:
  *   Get statistics for FDDI adapter
@@ -807,9 +795,7 @@ struct net_device_stats *skfp_ctl_get_stats(struct net_device *dev)
 
 
 /*
- * ==============================
  * = skfp_ctl_set_multicast_list =
- * ==============================
  *   
  * Overview:
  *   Enable/Disable LLC frame promiscuous mode reception
@@ -922,9 +908,7 @@ static void skfp_ctl_set_multicast_list_wo_lock(struct net_device *dev)
 
 
 /*
- * ===========================
  * = skfp_ctl_set_mac_address =
- * ===========================
  *   
  * Overview:
  *   set new mac address on adapter and update dev_addr field in device table.
@@ -958,9 +942,7 @@ static int skfp_ctl_set_mac_address(struct net_device *dev, void *addr)
 
 
 /*
- * ==============
  * = skfp_ioctl =
- * ==============
  *   
  * Overview:
  *
@@ -1014,9 +996,7 @@ static int skfp_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
 
 
 /*
- * =====================
  * = skfp_send_pkt     =
- * =====================
  *   
  * Overview:
  *   Queues a packet for transmission and try to transmit it.
@@ -1101,9 +1081,7 @@ static int skfp_send_pkt(struct sk_buff *skb, struct net_device *dev)
 
 
 /*
- * =======================
  * = send_queued_packets =
- * =======================
  *   
  * Overview:
  *   Send packets from the driver queue as long as there are some and

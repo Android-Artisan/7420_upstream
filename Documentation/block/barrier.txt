@@ -1,5 +1,4 @@
 I/O Barriers
-============
 Tejun Heo <htejun@gmail.com>, July 22 2005
 
 I/O barrier requests are used to guarantee ordering around the barrier

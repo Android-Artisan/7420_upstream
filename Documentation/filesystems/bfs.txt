@@ -1,5 +1,4 @@
 BFS FILESYSTEM FOR LINUX
-========================
 
 The BFS filesystem is used by SCO UnixWare OS for the /stand slice, which
 usually contains the kernel image and a few other files required for the

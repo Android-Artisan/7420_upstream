@@ -220,6 +220,10 @@ struct fb_clut32 {
 #define LEO_GETGAMMA	_IOR('L', 69, int) /* Not yet implemented */
 
 #ifdef __KERNEL__
+#include <uapi/asm/fbio.h>
+
+#define FBIOPUTCMAP_SPARC _IOW('F', 3, struct fbcmap)
+#define FBIOGETCMAP_SPARC _IOW('F', 4, struct fbcmap)
 /* Addresses on the fd of a cgsix that are mappable */
 #define CG6_FBC    0x70000000
 #define CG6_TEC    0x70001000

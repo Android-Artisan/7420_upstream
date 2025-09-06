@@ -9,6 +9,10 @@
 	.align	4
 	.globl	__ashldi3
 __ashldi3:
+#include <linux/linkage.h>
+
+	.text
+ENTRY(__ashldi3)
 	cmp	%o2, 0
 	be	9f
 	 mov	0x20, %g2
@@ -32,3 +36,4 @@ __ashldi3:
 9:
 	retl
 	 nop
+ENDPROC(__ashldi3)

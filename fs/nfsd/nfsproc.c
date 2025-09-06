@@ -24,6 +24,11 @@
 #include <linux/nfsd/nfsd.h>
 #include <linux/nfsd/cache.h>
 #include <linux/nfsd/xdr.h>
+#include <linux/namei.h>
+
+#include "cache.h"
+#include "xdr.h"
+#include "vfs.h"
 
 typedef struct svc_rqst	svc_rqst;
 typedef struct svc_buf	svc_buf;
@@ -44,6 +49,7 @@ nfsd_return_attrs(__be32 err, struct nfsd_attrstat *resp)
 	return nfserrno(vfs_getattr(resp->fh.fh_export->ex_path.mnt,
 				    resp->fh.fh_dentry,
 				    &resp->stat));
+	return fh_getattr(&resp->fh, &resp->stat);
 }
 static __be32
 nfsd_return_dirop(__be32 err, struct nfsd_diropres *resp)
@@ -52,6 +58,7 @@ nfsd_return_dirop(__be32 err, struct nfsd_diropres *resp)
 	return nfserrno(vfs_getattr(resp->fh.fh_export->ex_path.mnt,
 				    resp->fh.fh_dentry,
 				    &resp->stat));
+	return fh_getattr(&resp->fh, &resp->stat);
 }
 /*
  * Get a file's attributes
@@ -66,6 +73,8 @@ nfsd_proc_getattr(struct svc_rqst *rqstp, struct nfsd_fhandle  *argp,
 
 	fh_copy(&resp->fh, &argp->fh);
 	nfserr = fh_verify(rqstp, &resp->fh, 0, NFSD_MAY_NOP);
+	nfserr = fh_verify(rqstp, &resp->fh, 0,
+			NFSD_MAY_NOP | NFSD_MAY_BYPASS_GSS_ON_ROOT);
 	return nfsd_return_attrs(nfserr, resp);
 }
 
@@ -78,12 +87,63 @@ nfsd_proc_setattr(struct svc_rqst *rqstp, struct nfsd_sattrargs *argp,
 					  struct nfsd_attrstat  *resp)
 {
 	__be32 nfserr;
+	struct iattr *iap = &argp->attrs;
+	struct svc_fh *fhp;
+	__be32 nfserr;
+
 	dprintk("nfsd: SETATTR  %s, valid=%x, size=%ld\n",
 		SVCFH_fmt(&argp->fh),
 		argp->attrs.ia_valid, (long) argp->attrs.ia_size);
 
 	fh_copy(&resp->fh, &argp->fh);
 	nfserr = nfsd_setattr(rqstp, &resp->fh, &argp->attrs,0, (time_t)0);
+	fhp = fh_copy(&resp->fh, &argp->fh);
+
+	/*
+	 * NFSv2 does not differentiate between "set-[ac]time-to-now"
+	 * which only requires access, and "set-[ac]time-to-X" which
+	 * requires ownership.
+	 * So if it looks like it might be "set both to the same time which
+	 * is close to now", and if inode_change_ok fails, then we
+	 * convert to "set to now" instead of "set to explicit time"
+	 *
+	 * We only call inode_change_ok as the last test as technically
+	 * it is not an interface that we should be using.
+	 */
+#define BOTH_TIME_SET (ATTR_ATIME_SET | ATTR_MTIME_SET)
+#define	MAX_TOUCH_TIME_ERROR (30*60)
+	if ((iap->ia_valid & BOTH_TIME_SET) == BOTH_TIME_SET &&
+	    iap->ia_mtime.tv_sec == iap->ia_atime.tv_sec) {
+		/*
+		 * Looks probable.
+		 *
+		 * Now just make sure time is in the right ballpark.
+		 * Solaris, at least, doesn't seem to care what the time
+		 * request is.  We require it be within 30 minutes of now.
+		 */
+		time_t delta = iap->ia_atime.tv_sec - get_seconds();
+		struct inode *inode;
+
+		nfserr = fh_verify(rqstp, fhp, 0, NFSD_MAY_NOP);
+		if (nfserr)
+			goto done;
+		inode = d_inode(fhp->fh_dentry);
+
+		if (delta < 0)
+			delta = -delta;
+		if (delta < MAX_TOUCH_TIME_ERROR &&
+		    inode_change_ok(inode, iap) != 0) {
+			/*
+			 * Turn off ATTR_[AM]TIME_SET but leave ATTR_[AM]TIME.
+			 * This will cause notify_change to set these times
+			 * to "now"
+			 */
+			iap->ia_valid &= ~BOTH_TIME_SET;
+		}
+	}
+
+	nfserr = nfsd_setattr(rqstp, fhp, iap, 0, (time_t)0);
+done:
 	return nfsd_return_attrs(nfserr, resp);
 }
 
@@ -159,6 +219,7 @@ nfsd_proc_read(struct svc_rqst *rqstp, struct nfsd_readargs *argp,
 
 	resp->count = argp->count;
 	nfserr = nfsd_read(rqstp, fh_copy(&resp->fh, &argp->fh), NULL,
+	nfserr = nfsd_read(rqstp, fh_copy(&resp->fh, &argp->fh),
 				  argp->offset,
 			   	  rqstp->rq_vec, argp->vlen,
 				  &resp->count);
@@ -167,6 +228,7 @@ nfsd_proc_read(struct svc_rqst *rqstp, struct nfsd_readargs *argp,
 	return nfserrno(vfs_getattr(resp->fh.fh_export->ex_path.mnt,
 				    resp->fh.fh_dentry,
 				    &resp->stat));
+	return fh_getattr(&resp->fh, &resp->stat);
 }
 
 /*
@@ -179,8 +241,9 @@ nfsd_proc_write(struct svc_rqst *rqstp, struct nfsd_writeargs *argp,
 {
 	__be32	nfserr;
 	int	stable = 1;
+	unsigned long cnt = argp->len;
 
-	dprintk("nfsd: WRITE    %s %d bytes at %d\n",
+	dprintk("nfsd: WRITE    %s %u bytes at %d\n",
 		SVCFH_fmt(&argp->fh),
 		argp->len, argp->offset);
 
@@ -188,6 +251,7 @@ nfsd_proc_write(struct svc_rqst *rqstp, struct nfsd_writeargs *argp,
 				   argp->offset,
 				   rqstp->rq_vec, argp->vlen,
 				   argp->len,
+			           &cnt,
 				   &stable);
 	return nfsd_return_attrs(nfserr, resp);
 }
@@ -209,6 +273,7 @@ nfsd_proc_create(struct svc_rqst *rqstp, struct nfsd_createargs *argp,
 	struct dentry	*dchild;
 	int		type, mode;
 	__be32		nfserr;
+	int		hosterr;
 	dev_t		rdev = 0, wanted = new_decode_dev(attr->ia_size);
 
 	dprintk("nfsd: CREATE   %s %.*s\n",
@@ -227,6 +292,12 @@ nfsd_proc_create(struct svc_rqst *rqstp, struct nfsd_createargs *argp,
 	nfserr = nfserr_exist;
 	if (isdotent(argp->name, argp->len))
 		goto done;
+	hosterr = fh_want_write(dirfhp);
+	if (hosterr) {
+		nfserr = nfserrno(hosterr);
+		goto done;
+	}
+
 	fh_lock_nested(dirfhp, I_MUTEX_PARENT);
 	dchild = lookup_one_len(argp->name, dirfhp->fh_dentry, argp->len);
 	if (IS_ERR(dchild)) {
@@ -236,6 +307,7 @@ nfsd_proc_create(struct svc_rqst *rqstp, struct nfsd_createargs *argp,
 	fh_init(newfhp, NFS_FHSIZE);
 	nfserr = fh_compose(newfhp, dirfhp->fh_export, dchild, dirfhp);
 	if (!nfserr && !dchild->d_inode)
+	if (!nfserr && d_really_is_negative(dchild))
 		nfserr = nfserr_noent;
 	dput(dchild);
 	if (nfserr) {
@@ -254,6 +326,7 @@ nfsd_proc_create(struct svc_rqst *rqstp, struct nfsd_createargs *argp,
 	}
 
 	inode = newfhp->fh_dentry->d_inode;
+	inode = d_inode(newfhp->fh_dentry);
 
 	/* Unfudge the mode bits */
 	if (attr->ia_valid & ATTR_MODE) {
@@ -346,6 +419,7 @@ out_unlock:
 	/* We don't really need to unlock, as fh_put does it. */
 	fh_unlock(dirfhp);
 
+	fh_drop_write(dirfhp);
 done:
 	fh_put(dirfhp);
 	return nfsd_return_dirop(nfserr, resp);
@@ -423,6 +497,13 @@ nfsd_proc_symlink(struct svc_rqst *rqstp, struct nfsd_symlinkargs *argp,
 						 argp->tname, argp->tlen,
 				 		 &newfh, &argp->attrs);
 
+	 * Crazy hack: the request fits in a page, and already-decoded
+	 * attributes follow argp->tname, so it's safe to just write a
+	 * null to ensure it's null-terminated:
+	 */
+	argp->tname[argp->tlen] = '\0';
+	nfserr = nfsd_symlink(rqstp, &argp->ffh, argp->fname, argp->flen,
+						 argp->tname, &newfh);
 
 	fh_put(&argp->ffh);
 	fh_put(&newfh);
@@ -522,6 +603,8 @@ nfsd_proc_statfs(struct svc_rqst * rqstp, struct nfsd_fhandle   *argp,
 	dprintk("nfsd: STATFS   %s\n", SVCFH_fmt(&argp->fh));
 
 	nfserr = nfsd_statfs(rqstp, &argp->fh, &resp->stats);
+	nfserr = nfsd_statfs(rqstp, &argp->fh, &resp->stats,
+			NFSD_MAY_BYPASS_GSS_ON_ROOT);
 	fh_put(&argp->fh);
 	return nfserr;
 }
@@ -546,6 +629,8 @@ struct nfsd_void { int dummy; };
    respsize,				       	\
  }
 
+struct nfsd_void { int dummy; };
+
 #define ST 1		/* status */
 #define FH 8		/* filehandle */
 #define	AT 18		/* attributes */
@@ -569,6 +654,172 @@ static struct svc_procedure		nfsd_procedures2[18] = {
   PROC(rmdir,	 diropargs,	void,		none,		RC_REPLSTAT, ST),
   PROC(readdir,	 readdirargs,	readdirres,	none,		RC_NOCACHE, 0),
   PROC(statfs,	 fhandle,	statfsres,	none,		RC_NOCACHE, ST+5),
+	[NFSPROC_NULL] = {
+		.pc_func = (svc_procfunc) nfsd_proc_null,
+		.pc_decode = (kxdrproc_t) nfssvc_decode_void,
+		.pc_encode = (kxdrproc_t) nfssvc_encode_void,
+		.pc_argsize = sizeof(struct nfsd_void),
+		.pc_ressize = sizeof(struct nfsd_void),
+		.pc_cachetype = RC_NOCACHE,
+		.pc_xdrressize = ST,
+	},
+	[NFSPROC_GETATTR] = {
+		.pc_func = (svc_procfunc) nfsd_proc_getattr,
+		.pc_decode = (kxdrproc_t) nfssvc_decode_fhandle,
+		.pc_encode = (kxdrproc_t) nfssvc_encode_attrstat,
+		.pc_release = (kxdrproc_t) nfssvc_release_fhandle,
+		.pc_argsize = sizeof(struct nfsd_fhandle),
+		.pc_ressize = sizeof(struct nfsd_attrstat),
+		.pc_cachetype = RC_NOCACHE,
+		.pc_xdrressize = ST+AT,
+	},
+	[NFSPROC_SETATTR] = {
+		.pc_func = (svc_procfunc) nfsd_proc_setattr,
+		.pc_decode = (kxdrproc_t) nfssvc_decode_sattrargs,
+		.pc_encode = (kxdrproc_t) nfssvc_encode_attrstat,
+		.pc_release = (kxdrproc_t) nfssvc_release_fhandle,
+		.pc_argsize = sizeof(struct nfsd_sattrargs),
+		.pc_ressize = sizeof(struct nfsd_attrstat),
+		.pc_cachetype = RC_REPLBUFF,
+		.pc_xdrressize = ST+AT,
+	},
+	[NFSPROC_ROOT] = {
+		.pc_decode = (kxdrproc_t) nfssvc_decode_void,
+		.pc_encode = (kxdrproc_t) nfssvc_encode_void,
+		.pc_argsize = sizeof(struct nfsd_void),
+		.pc_ressize = sizeof(struct nfsd_void),
+		.pc_cachetype = RC_NOCACHE,
+		.pc_xdrressize = ST,
+	},
+	[NFSPROC_LOOKUP] = {
+		.pc_func = (svc_procfunc) nfsd_proc_lookup,
+		.pc_decode = (kxdrproc_t) nfssvc_decode_diropargs,
+		.pc_encode = (kxdrproc_t) nfssvc_encode_diropres,
+		.pc_release = (kxdrproc_t) nfssvc_release_fhandle,
+		.pc_argsize = sizeof(struct nfsd_diropargs),
+		.pc_ressize = sizeof(struct nfsd_diropres),
+		.pc_cachetype = RC_NOCACHE,
+		.pc_xdrressize = ST+FH+AT,
+	},
+	[NFSPROC_READLINK] = {
+		.pc_func = (svc_procfunc) nfsd_proc_readlink,
+		.pc_decode = (kxdrproc_t) nfssvc_decode_readlinkargs,
+		.pc_encode = (kxdrproc_t) nfssvc_encode_readlinkres,
+		.pc_argsize = sizeof(struct nfsd_readlinkargs),
+		.pc_ressize = sizeof(struct nfsd_readlinkres),
+		.pc_cachetype = RC_NOCACHE,
+		.pc_xdrressize = ST+1+NFS_MAXPATHLEN/4,
+	},
+	[NFSPROC_READ] = {
+		.pc_func = (svc_procfunc) nfsd_proc_read,
+		.pc_decode = (kxdrproc_t) nfssvc_decode_readargs,
+		.pc_encode = (kxdrproc_t) nfssvc_encode_readres,
+		.pc_release = (kxdrproc_t) nfssvc_release_fhandle,
+		.pc_argsize = sizeof(struct nfsd_readargs),
+		.pc_ressize = sizeof(struct nfsd_readres),
+		.pc_cachetype = RC_NOCACHE,
+		.pc_xdrressize = ST+AT+1+NFSSVC_MAXBLKSIZE_V2/4,
+	},
+	[NFSPROC_WRITECACHE] = {
+		.pc_decode = (kxdrproc_t) nfssvc_decode_void,
+		.pc_encode = (kxdrproc_t) nfssvc_encode_void,
+		.pc_argsize = sizeof(struct nfsd_void),
+		.pc_ressize = sizeof(struct nfsd_void),
+		.pc_cachetype = RC_NOCACHE,
+		.pc_xdrressize = ST,
+	},
+	[NFSPROC_WRITE] = {
+		.pc_func = (svc_procfunc) nfsd_proc_write,
+		.pc_decode = (kxdrproc_t) nfssvc_decode_writeargs,
+		.pc_encode = (kxdrproc_t) nfssvc_encode_attrstat,
+		.pc_release = (kxdrproc_t) nfssvc_release_fhandle,
+		.pc_argsize = sizeof(struct nfsd_writeargs),
+		.pc_ressize = sizeof(struct nfsd_attrstat),
+		.pc_cachetype = RC_REPLBUFF,
+		.pc_xdrressize = ST+AT,
+	},
+	[NFSPROC_CREATE] = {
+		.pc_func = (svc_procfunc) nfsd_proc_create,
+		.pc_decode = (kxdrproc_t) nfssvc_decode_createargs,
+		.pc_encode = (kxdrproc_t) nfssvc_encode_diropres,
+		.pc_release = (kxdrproc_t) nfssvc_release_fhandle,
+		.pc_argsize = sizeof(struct nfsd_createargs),
+		.pc_ressize = sizeof(struct nfsd_diropres),
+		.pc_cachetype = RC_REPLBUFF,
+		.pc_xdrressize = ST+FH+AT,
+	},
+	[NFSPROC_REMOVE] = {
+		.pc_func = (svc_procfunc) nfsd_proc_remove,
+		.pc_decode = (kxdrproc_t) nfssvc_decode_diropargs,
+		.pc_encode = (kxdrproc_t) nfssvc_encode_void,
+		.pc_argsize = sizeof(struct nfsd_diropargs),
+		.pc_ressize = sizeof(struct nfsd_void),
+		.pc_cachetype = RC_REPLSTAT,
+		.pc_xdrressize = ST,
+	},
+	[NFSPROC_RENAME] = {
+		.pc_func = (svc_procfunc) nfsd_proc_rename,
+		.pc_decode = (kxdrproc_t) nfssvc_decode_renameargs,
+		.pc_encode = (kxdrproc_t) nfssvc_encode_void,
+		.pc_argsize = sizeof(struct nfsd_renameargs),
+		.pc_ressize = sizeof(struct nfsd_void),
+		.pc_cachetype = RC_REPLSTAT,
+		.pc_xdrressize = ST,
+	},
+	[NFSPROC_LINK] = {
+		.pc_func = (svc_procfunc) nfsd_proc_link,
+		.pc_decode = (kxdrproc_t) nfssvc_decode_linkargs,
+		.pc_encode = (kxdrproc_t) nfssvc_encode_void,
+		.pc_argsize = sizeof(struct nfsd_linkargs),
+		.pc_ressize = sizeof(struct nfsd_void),
+		.pc_cachetype = RC_REPLSTAT,
+		.pc_xdrressize = ST,
+	},
+	[NFSPROC_SYMLINK] = {
+		.pc_func = (svc_procfunc) nfsd_proc_symlink,
+		.pc_decode = (kxdrproc_t) nfssvc_decode_symlinkargs,
+		.pc_encode = (kxdrproc_t) nfssvc_encode_void,
+		.pc_argsize = sizeof(struct nfsd_symlinkargs),
+		.pc_ressize = sizeof(struct nfsd_void),
+		.pc_cachetype = RC_REPLSTAT,
+		.pc_xdrressize = ST,
+	},
+	[NFSPROC_MKDIR] = {
+		.pc_func = (svc_procfunc) nfsd_proc_mkdir,
+		.pc_decode = (kxdrproc_t) nfssvc_decode_createargs,
+		.pc_encode = (kxdrproc_t) nfssvc_encode_diropres,
+		.pc_release = (kxdrproc_t) nfssvc_release_fhandle,
+		.pc_argsize = sizeof(struct nfsd_createargs),
+		.pc_ressize = sizeof(struct nfsd_diropres),
+		.pc_cachetype = RC_REPLBUFF,
+		.pc_xdrressize = ST+FH+AT,
+	},
+	[NFSPROC_RMDIR] = {
+		.pc_func = (svc_procfunc) nfsd_proc_rmdir,
+		.pc_decode = (kxdrproc_t) nfssvc_decode_diropargs,
+		.pc_encode = (kxdrproc_t) nfssvc_encode_void,
+		.pc_argsize = sizeof(struct nfsd_diropargs),
+		.pc_ressize = sizeof(struct nfsd_void),
+		.pc_cachetype = RC_REPLSTAT,
+		.pc_xdrressize = ST,
+	},
+	[NFSPROC_READDIR] = {
+		.pc_func = (svc_procfunc) nfsd_proc_readdir,
+		.pc_decode = (kxdrproc_t) nfssvc_decode_readdirargs,
+		.pc_encode = (kxdrproc_t) nfssvc_encode_readdirres,
+		.pc_argsize = sizeof(struct nfsd_readdirargs),
+		.pc_ressize = sizeof(struct nfsd_readdirres),
+		.pc_cachetype = RC_NOCACHE,
+	},
+	[NFSPROC_STATFS] = {
+		.pc_func = (svc_procfunc) nfsd_proc_statfs,
+		.pc_decode = (kxdrproc_t) nfssvc_decode_fhandle,
+		.pc_encode = (kxdrproc_t) nfssvc_encode_statfsres,
+		.pc_argsize = sizeof(struct nfsd_fhandle),
+		.pc_ressize = sizeof(struct nfsd_statfsres),
+		.pc_cachetype = RC_NOCACHE,
+		.pc_xdrressize = ST+5,
+	},
 };
 
 
@@ -595,6 +846,7 @@ nfserrno (int errno)
 		{ nfserr_noent, -ENOENT },
 		{ nfserr_io, -EIO },
 		{ nfserr_nxio, -ENXIO },
+		{ nfserr_fbig, -E2BIG },
 		{ nfserr_acces, -EACCES },
 		{ nfserr_exist, -EEXIST },
 		{ nfserr_xdev, -EXDEV },
@@ -620,6 +872,14 @@ nfserrno (int errno)
 		{ nfserr_badname, -ESRCH },
 		{ nfserr_io, -ETXTBSY },
 		{ nfserr_notsupp, -EOPNOTSUPP },
+		{ nfserr_jukebox, -EAGAIN },
+		{ nfserr_jukebox, -EWOULDBLOCK },
+		{ nfserr_jukebox, -ENOMEM },
+		{ nfserr_io, -ETXTBSY },
+		{ nfserr_notsupp, -EOPNOTSUPP },
+		{ nfserr_toosmall, -ETOOSMALL },
+		{ nfserr_serverfault, -ESERVERFAULT },
+		{ nfserr_serverfault, -ENFILE },
 	};
 	int	i;
 
@@ -628,6 +888,7 @@ nfserrno (int errno)
 			return nfs_errtbl[i].nfserr;
 	}
 	printk (KERN_INFO "nfsd: non-standard errno: %d\n", errno);
+	WARN(1, "nfsd: non-standard errno: %d\n", errno);
 	return nfserr_io;
 }
 

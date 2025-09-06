@@ -1,4 +1,5 @@
 /* elf-fdpic.h: FDPIC ELF load map
+/* FDPIC ELF load map
  *
  * Copyright (C) 2003 Red Hat, Inc. All Rights Reserved.
  * Written by David Howells (dhowells@redhat.com)
@@ -30,6 +31,7 @@ struct elf32_fdpic_loadmap {
 };
 
 #define ELF32_FDPIC_LOADMAP_VERSION	0x0000
+#include <uapi/linux/elf-fdpic.h>
 
 /*
  * binfmt binary parameters structure

@@ -22,6 +22,7 @@
 
 #include "emu8000_local.h"
 #include <linux/init.h>
+#include <linux/module.h>
 #include <sound/initval.h>
 
 MODULE_AUTHOR("Takashi Iwai, Steve Ratcliffe");
@@ -35,6 +36,9 @@ MODULE_LICENSE("GPL");
  */
 static int snd_emu8000_new_device(struct snd_seq_device *dev)
 {
+static int snd_emu8000_probe(struct device *_dev)
+{
+	struct snd_seq_device *dev = to_seq_dev(_dev);
 	struct snd_emu8000 *hw;
 	struct snd_emux *emu;
 
@@ -94,6 +98,9 @@ static int snd_emu8000_new_device(struct snd_seq_device *dev)
  */
 static int snd_emu8000_delete_device(struct snd_seq_device *dev)
 {
+static int snd_emu8000_remove(struct device *_dev)
+{
+	struct snd_seq_device *dev = to_seq_dev(_dev);
 	struct snd_emu8000 *hw;
 
 	if (dev->driver_data == NULL)
@@ -106,6 +113,8 @@ static int snd_emu8000_delete_device(struct snd_seq_device *dev)
 		snd_emux_free(hw->emu);
 	if (hw->memhdr)
 		snd_util_memhdr_free(hw->memhdr);
+	snd_emux_free(hw->emu);
+	snd_util_memhdr_free(hw->memhdr);
 	hw->emu = NULL;
 	hw->memhdr = NULL;
 	return 0;
@@ -133,3 +142,14 @@ static void __exit alsa_emu8000_exit(void)
 
 module_init(alsa_emu8000_init)
 module_exit(alsa_emu8000_exit)
+static struct snd_seq_driver emu8000_driver = {
+	.driver = {
+		.name = KBUILD_MODNAME,
+		.probe = snd_emu8000_probe,
+		.remove = snd_emu8000_remove,
+	},
+	.id = SNDRV_SEQ_DEV_ID_EMU8000,
+	.argsize = sizeof(struct snd_emu8000 *),
+};
+
+module_snd_seq_driver(emu8000_driver);

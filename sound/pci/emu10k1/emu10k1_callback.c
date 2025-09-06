@@ -18,6 +18,7 @@
  *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307 USA
  */
 
+#include <linux/export.h>
 #include "emu10k1_synth_local.h"
 #include <sound/asoundef.h>
 
@@ -84,6 +85,8 @@ snd_emu10k1_ops_setup(struct snd_emux *emux)
  * get more voice for pcm
  *
  * terminate most inactive voice and give it as a pcm voice.
+ *
+ * voice_lock is already held.
  */
 int
 snd_emu10k1_synth_get_voice(struct snd_emu10k1 *hw)
@@ -104,6 +107,10 @@ snd_emu10k1_synth_get_voice(struct snd_emu10k1 *hw)
 			vp = &emu->voices[best[i].voice];
 			if ((ch = vp->ch) < 0) {
 				//printk("synth_get_voice: ch < 0 (%d) ??", i);
+				/*
+				dev_warn(emu->card->dev,
+				       "synth_get_voice: ch < 0 (%d) ??", i);
+				*/
 				continue;
 			}
 			vp->emu->num_voices--;
@@ -114,6 +121,9 @@ snd_emu10k1_synth_get_voice(struct snd_emu10k1 *hw)
 		}
 	}
 	spin_unlock_irqrestore(&emu->voice_lock, flags);
+			return ch;
+		}
+	}
 
 	/* not found */
 	return -ENOMEM;
@@ -146,6 +156,8 @@ terminate_voice(struct snd_emux_voice *vp)
 	struct snd_emu10k1 *hw;
 	
 	snd_assert(vp, return);
+	if (snd_BUG_ON(!vp))
+		return;
 	hw = vp->hw;
 	snd_emu10k1_ptr_write(hw, DCYSUSV, vp->ch, 0x807f | DCYSUSV_CHANNELENABLE_MASK);
 	if (vp->block) {
@@ -224,6 +236,7 @@ lookup_voices(struct snd_emux *emu, struct snd_emu10k1 *hw,
 
 	for (i = 0; i < V_END; i++) {
 		best[i].time = (unsigned int)-1; /* XXX MAX_?INT really */;
+		best[i].time = (unsigned int)-1; /* XXX MAX_?INT really */
 		best[i].voice = -1;
 	}
 
@@ -326,6 +339,8 @@ start_voice(struct snd_emux_voice *vp)
 	hw = vp->hw;
 	ch = vp->ch;
 	snd_assert(ch >= 0, return -EINVAL);
+	if (snd_BUG_ON(ch < 0))
+		return -EINVAL;
 	chan = vp->chan;
 
 	emem = (struct snd_emu10k1_memblk *)vp->block;
@@ -334,6 +349,7 @@ start_voice(struct snd_emux_voice *vp)
 	emem->map_locked++;
 	if (snd_emu10k1_memblk_map(hw, emem) < 0) {
 		// printk("emu: cannot map!\n");
+		/* dev_err(hw->card->devK, "emu: cannot map!\n"); */
 		return -ENOMEM;
 	}
 	mapped_offset = snd_emu10k1_memblk_offset(emem) >> 1;
@@ -412,6 +428,7 @@ start_voice(struct snd_emux_voice *vp)
 
 	/* invalidate maps */
 	temp = (hw->silent_page.addr << 1) | MAP_PTI_MASK;
+	temp = (hw->silent_page.addr << hw->address_mode) | (hw->address_mode ? MAP_PTI_MASK1 : MAP_PTI_MASK0);
 	snd_emu10k1_ptr_write(hw, MAPA, ch, temp);
 	snd_emu10k1_ptr_write(hw, MAPB, ch, temp);
 #if 0
@@ -433,6 +450,7 @@ start_voice(struct snd_emux_voice *vp)
 
 		/* invalidate maps */
 		temp = ((unsigned int)hw->silent_page.addr << 1) | MAP_PTI_MASK;
+		temp = ((unsigned int)hw->silent_page.addr << hw_address_mode) | (hw->address_mode ? MAP_PTI_MASK1 : MAP_PTI_MASK0);
 		snd_emu10k1_ptr_write(hw, MAPA, ch, temp);
 		snd_emu10k1_ptr_write(hw, MAPB, ch, temp);
 		

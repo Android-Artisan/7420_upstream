@@ -13,6 +13,7 @@
 #include <linux/interrupt.h>
 #include <linux/amba/bus.h>
 #include <linux/io.h>
+#include <linux/slab.h>
 
 #define RTC_DR		(0)
 #define RTC_MR		(4)
@@ -114,6 +115,7 @@ static const struct rtc_class_ops pl030_ops = {
 };
 
 static int pl030_probe(struct amba_device *dev, void *id)
+static int pl030_probe(struct amba_device *dev, const struct amba_id *id)
 {
 	struct pl030_rtc *rtc;
 	int ret;
@@ -123,6 +125,7 @@ static int pl030_probe(struct amba_device *dev, void *id)
 		goto err_req;
 
 	rtc = kmalloc(sizeof(*rtc), GFP_KERNEL);
+	rtc = devm_kzalloc(&dev->dev, sizeof(*rtc), GFP_KERNEL);
 	if (!rtc) {
 		ret = -ENOMEM;
 		goto err_rtc;
@@ -132,6 +135,10 @@ static int pl030_probe(struct amba_device *dev, void *id)
 	if (!rtc->base) {
 		ret = -ENOMEM;
 		goto err_map;
+	rtc->base = ioremap(dev->res.start, resource_size(&dev->res));
+	if (!rtc->base) {
+		ret = -ENOMEM;
+		goto err_rtc;
 	}
 
 	__raw_writel(0, rtc->base + RTC_CR);
@@ -140,6 +147,7 @@ static int pl030_probe(struct amba_device *dev, void *id)
 	amba_set_drvdata(dev, rtc);
 
 	ret = request_irq(dev->irq[0], pl030_interrupt, IRQF_DISABLED,
+	ret = request_irq(dev->irq[0], pl030_interrupt, 0,
 			  "rtc-pl030", rtc);
 	if (ret)
 		goto err_irq;
@@ -190,6 +198,8 @@ static struct amba_id pl030_ids[] = {
 	{ 0, 0 },
 };
 
+MODULE_DEVICE_TABLE(amba, pl030_ids);
+
 static struct amba_driver pl030_driver = {
 	.drv		= {
 		.name	= "rtc-pl030",
@@ -211,6 +221,7 @@ static void __exit pl030_exit(void)
 
 module_init(pl030_init);
 module_exit(pl030_exit);
+module_amba_driver(pl030_driver);
 
 MODULE_AUTHOR("Russell King <rmk@arm.linux.org.uk>");
 MODULE_DESCRIPTION("ARM AMBA PL030 RTC Driver");

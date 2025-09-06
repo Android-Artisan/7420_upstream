@@ -98,6 +98,7 @@ td3	.req	lr
 #endif
 		adcnes	sum, sum, td0		@ update checksum
 		mov	pc, lr
+		ret	lr
 
 ENTRY(csum_partial)
 		stmfd	sp!, {buf, lr}
@@ -139,3 +140,4 @@ ENTRY(csum_partial)
 		tst	len, #0x1c
 		bne	4b
 		b	.Lless4
+ENDPROC(csum_partial)

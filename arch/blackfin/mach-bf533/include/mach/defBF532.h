@@ -43,6 +43,13 @@
  * 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
  */
 /* SYSTEM & MM REGISTER BIT & ADDRESS DEFINITIONS FOR ADSP-BF532 */
+/*
+ * System & MMR bit and Address definitions for ADSP-BF532
+ *
+ * Copyright 2005-2010 Analog Devices Inc.
+ *
+ * Licensed under the Clear BSD license or the GPL-2 (or later)
+ */
 
 #ifndef _DEF_BF532_H
 #define _DEF_BF532_H
@@ -226,6 +233,8 @@
 /* Alternate deprecated register names (below) provided for backwards code compatibility */
 #define DMA_TCPER 0xFFC00B0C	/* Traffic Control Periods Register */
 #define DMA_TCCNT 0xFFC00B10	/* Traffic Control Current Counts Register */
+#define DMAC_TC_PER 0xFFC00B0C	/* Traffic Control Periods Register */
+#define DMAC_TC_CNT 0xFFC00B10	/* Traffic Control Current Counts Register */
 
 /* DMA Controller (0xFFC00C00 - 0xFFC00FFF) */
 #define DMA0_CONFIG		0xFFC00C08	/* DMA Channel 0 Configuration Register */
@@ -789,6 +798,7 @@
 #define DMA_RUN_P     		3	/* DMA Running Indicator */
 
 /*DMAx_PERIPHERAL_MAP, MDMA_yy_PERIPHERAL_MAP Masks */
+/* DMAx_PERIPHERAL_MAP, MDMA_yy_PERIPHERAL_MAP Masks */
 
 #define CTYPE	            0x00000040	/* DMA Channel Type Indicator */
 #define CTYPE_P             6	/* DMA Channel Type Indicator BIT POSITION */

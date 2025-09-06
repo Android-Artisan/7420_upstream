@@ -1,5 +1,4 @@
 		Proc Files of ALSA Drivers
-		==========================
 		Takashi Iwai <tiwai@suse.de>
 
 General
@@ -103,6 +102,34 @@ card*/pcm*/xrun_debug
 
 	When this value is greater than 1, the driver will show the
 	stack trace additionally.  This may help the debugging.
+	This file appears when CONFIG_SND_DEBUG=y and
+	CONFIG_PCM_XRUN_DEBUG=y.
+	This shows the status of xrun (= buffer overrun/xrun) and
+	invalid PCM position debug/check of ALSA PCM middle layer.
+	It takes an integer value, can be changed by writing to this
+	file, such as
+
+		 # echo 5 > /proc/asound/card0/pcm0p/xrun_debug
+
+	The value consists of the following bit flags:
+	  bit 0 = Enable XRUN/jiffies debug messages
+	  bit 1 = Show stack trace at XRUN / jiffies check
+	  bit 2 = Enable additional jiffies check
+
+	When the bit 0 is set, the driver will show the messages to
+	kernel log when an xrun is detected.  The debug message is
+	shown also when the invalid H/W pointer is detected at the
+	update of periods (usually called from the interrupt
+	handler).
+
+	When the bit 1 is set, the driver will show the stack trace
+	additionally.  This may help the debugging.
+
+	Since 2.6.30, this option can enable the hwptr check using
+	jiffies.  This detects spontaneous invalid pointer callback
+	values, but can be lead to too much corrections for a (mostly
+	buggy) hardware that doesn't give smooth pointer updates.
+	This feature is enabled via the bit 2.
 
 card*/pcm*/sub*/info
 	The general information of this PCM sub-stream.
@@ -120,6 +147,10 @@ card*/pcm*/sub*/sw_params
 card*/pcm*/sub*/prealloc
 	The buffer pre-allocation information.
 
+card*/pcm*/sub*/xrun_injection
+	Triggers an XRUN to the running stream when any value is
+	written to this proc file.  Used for fault injection.
+	This entry is write-only.
 
 AC97 Codec Information
 ----------------------
@@ -152,6 +183,16 @@ HD-Audio Codecs
 card*/codec#*
 	Shows the general codec information and the attribute of each
 	widget node.
+
+card*/eld#*
+	Available for HDMI or DisplayPort interfaces.
+	Shows ELD(EDID Like Data) info retrieved from the attached HDMI sink,
+	and describes its audio capabilities and configurations.
+
+	Some ELD fields may be modified by doing `echo name hex_value > eld#*`.
+	Only do this if you are sure the HDMI sink provided value is wrong.
+	And if that makes your HDMI audio work, please report to us so that we
+	can fix it in future kernel releases.
 
 
 Sequencer Information

@@ -153,4 +153,6 @@ asmlinkage int sys_ipc (uint call, int first, int second,
 	default:
 		return -ENOSYS;
 	}
+	/* bug(?): 8Kb pages here */
+        return sys_mmap_pgoff(addr, len, prot, flags, fd, pgoff);
 }

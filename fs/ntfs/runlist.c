@@ -991,7 +991,6 @@ err_out:
  * Since lcns must be >= 0, we use negative return codes with special meaning:
  *
  * Return code		Meaning / Description
- * ==================================================
  *  LCN_HOLE		Hole / not allocated on disk.
  *  LCN_RL_NOT_MAPPED	This is part of the runlist which has not been
  *			inserted into the runlist yet.
@@ -1244,6 +1243,7 @@ err_out:
  *
  * This is used when building the mapping pairs array of a runlist to compress
  * a given logical cluster number (lcn) or a specific run length to the minumum
+ * a given logical cluster number (lcn) or a specific run length to the minimum
  * size possible.
  *
  * Return the number of bytes written on success.  On error, i.e. the

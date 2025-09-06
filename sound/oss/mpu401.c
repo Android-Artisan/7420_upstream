@@ -19,6 +19,7 @@
  */
 
 #include <linux/module.h>
+#include <linux/slab.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/spinlock.h>
@@ -315,6 +316,7 @@ static int mpu_input_scanner(struct mpu_config *devc, unsigned char midic)
 				case 0xf6:
 					/* printk( "tune_request\n"); */
 					devc->m_state = ST_INIT;
+					break;
 
 					/*
 					 *    Real time messages
@@ -666,6 +668,7 @@ retry:
 	}
 	spin_unlock_irqrestore(&devc->lock,flags);
 	return ret;
+	return 0;
 }
 
 static int mpu_cmd(int dev, int cmd, int data)
@@ -771,6 +774,7 @@ static int mpu_synth_ioctl(int dev, unsigned int cmd, void __user *arg)
 	midi_dev = synth_devs[dev]->midi_dev;
 
 	if (midi_dev < 0 || midi_dev > num_midis || midi_devs[midi_dev] == NULL)
+	if (midi_dev < 0 || midi_dev >= num_midis || midi_devs[midi_dev] == NULL)
 		return -ENXIO;
 
 	devc = &dev_conf[midi_dev];
@@ -951,6 +955,21 @@ static void mpu401_chk_version(int n, struct mpu_config *devc)
 	}
 	devc->revision = tmp;
 	spin_unlock_irqrestore(&devc->lock,flags);
+
+	devc->version = devc->revision = 0;
+
+	tmp = mpu_cmd(n, 0xAC, 0);
+	if (tmp < 0)
+		return;
+	if ((tmp & 0xf0) > 0x20)	/* Why it's larger than 2.x ??? */
+		return;
+	devc->version = tmp;
+
+	if ((tmp = mpu_cmd(n, 0xAD, 0)) < 0) {
+		devc->version = 0;
+		return;
+	}
+	devc->revision = tmp;
 }
 
 int attach_mpu401(struct address_info *hw_config, struct module *owner)
@@ -1016,6 +1035,7 @@ int attach_mpu401(struct address_info *hw_config, struct module *owner)
 		if (devc->version == 0)
 			mpu401_chk_version(m, devc);
 			spin_unlock_irqrestore(&devc->lock,flags);
+		spin_unlock_irqrestore(&devc->lock, flags);
 	}
 
 	if (devc->version != 0)
@@ -1085,6 +1105,7 @@ int attach_mpu401(struct address_info *hw_config, struct module *owner)
 		else
 			sprintf(mpu_synth_info[m].name,
 				"MPU-401 %d.%d%c Midi interface #%d",
+				"MPU-401 %d.%d%c MIDI #%d",
 				(int) (devc->version & 0xf0) >> 4,
 				devc->version & 0x0f,
 				revision_char,

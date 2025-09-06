@@ -15,6 +15,7 @@
 
 	.macro  arch_ret_to_user, tmp1, tmp2
 	.endm
+#include <mach/bridge-regs.h>
 
 	.macro  get_irqnr_preamble, base, tmp
 	ldr	\base, =MAIN_IRQ_CAUSE
@@ -28,4 +29,5 @@
 	ands	\irqstat, \irqstat, \tmp	@ clear Z flag if any
 	clzne	\irqnr,	\irqstat		@ calc irqnr
 	rsbne	\irqnr, \irqnr, #31
+	rsbne	\irqnr, \irqnr, #32
 	.endm

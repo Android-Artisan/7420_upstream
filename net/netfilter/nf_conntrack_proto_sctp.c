@@ -1,6 +1,9 @@
 /*
  * Connection tracking protocol helper module for SCTP.
  *
+ * Copyright (c) 2004 Kiran Kumar Immidi <immidi_kiran@yahoo.com>
+ * Copyright (c) 2004-2012 Patrick McHardy <kaber@trash.net>
+ *
  * SCTP is defined in RFC 2960. References to various sections in this code
  * are to this RFC.
  *
@@ -42,6 +45,8 @@ static const char *const sctp_conntrack_names[] = {
 	"SHUTDOWN_SENT",
 	"SHUTDOWN_RECD",
 	"SHUTDOWN_ACK_SENT",
+	"HEARTBEAT_SENT",
+	"HEARTBEAT_ACKED",
 };
 
 #define SECS  * HZ
@@ -54,9 +59,11 @@ static unsigned int sctp_timeouts[SCTP_CONNTRACK_MAX] __read_mostly = {
 	[SCTP_CONNTRACK_COOKIE_WAIT]		= 3 SECS,
 	[SCTP_CONNTRACK_COOKIE_ECHOED]		= 3 SECS,
 	[SCTP_CONNTRACK_ESTABLISHED]		= 5 DAYS,
-	[SCTP_CONNTRACK_SHUTDOWN_SENT]		= 300 SECS / 1000,
-	[SCTP_CONNTRACK_SHUTDOWN_RECD]		= 300 SECS / 1000,
+	[SCTP_CONNTRACK_SHUTDOWN_SENT]		= 3 SECS,
+	[SCTP_CONNTRACK_SHUTDOWN_RECD]		= 3 SECS,
 	[SCTP_CONNTRACK_SHUTDOWN_ACK_SENT]	= 3 SECS,
+	[SCTP_CONNTRACK_HEARTBEAT_SENT]		= 30 SECS,
+	[SCTP_CONNTRACK_HEARTBEAT_ACKED]	= 210 SECS,
 };
 
 #define sNO SCTP_CONNTRACK_NONE
@@ -67,6 +74,8 @@ static unsigned int sctp_timeouts[SCTP_CONNTRACK_MAX] __read_mostly = {
 #define	sSS SCTP_CONNTRACK_SHUTDOWN_SENT
 #define	sSR SCTP_CONNTRACK_SHUTDOWN_RECD
 #define	sSA SCTP_CONNTRACK_SHUTDOWN_ACK_SENT
+#define	sHS SCTP_CONNTRACK_HEARTBEAT_SENT
+#define	sHA SCTP_CONNTRACK_HEARTBEAT_ACKED
 #define	sIV SCTP_CONNTRACK_MAX
 
 /*
@@ -88,6 +97,10 @@ SHUTDOWN_ACK_SENT - We have seen a SHUTDOWN_ACK chunk in the direction opposite
 		    to that of the SHUTDOWN chunk.
 CLOSED            - We have seen a SHUTDOWN_COMPLETE chunk in the direction of
 		    the SHUTDOWN chunk. Connection is closed.
+HEARTBEAT_SENT    - We have seen a HEARTBEAT in a new flow.
+HEARTBEAT_ACKED   - We have seen a HEARTBEAT-ACK in the direction opposite to
+		    that of the HEARTBEAT chunk. Secondary connection is
+		    established.
 */
 
 /* TODO
@@ -132,6 +145,56 @@ static const u8 sctp_conntracks[2][9][SCTP_CONNTRACK_MAX] = {
 
 static bool sctp_pkt_to_tuple(const struct sk_buff *skb, unsigned int dataoff,
 			      struct nf_conntrack_tuple *tuple)
+ - Full Multi Homing support.
+*/
+
+/* SCTP conntrack state transitions */
+static const u8 sctp_conntracks[2][11][SCTP_CONNTRACK_MAX] = {
+	{
+/*	ORIGINAL	*/
+/*                  sNO, sCL, sCW, sCE, sES, sSS, sSR, sSA, sHS, sHA */
+/* init         */ {sCW, sCW, sCW, sCE, sES, sCL, sCL, sSA, sCW, sHA},
+/* init_ack     */ {sCL, sCL, sCW, sCE, sES, sSS, sSR, sSA, sCL, sHA},
+/* abort        */ {sCL, sCL, sCL, sCL, sCL, sCL, sCL, sCL, sCL, sCL},
+/* shutdown     */ {sCL, sCL, sCW, sCE, sSS, sSS, sSR, sSA, sCL, sSS},
+/* shutdown_ack */ {sSA, sCL, sCW, sCE, sES, sSA, sSA, sSA, sSA, sHA},
+/* error        */ {sCL, sCL, sCW, sCE, sES, sSS, sSR, sSA, sCL, sHA},/* Can't have Stale cookie*/
+/* cookie_echo  */ {sCL, sCL, sCE, sCE, sES, sSS, sSR, sSA, sCL, sHA},/* 5.2.4 - Big TODO */
+/* cookie_ack   */ {sCL, sCL, sCW, sCE, sES, sSS, sSR, sSA, sCL, sHA},/* Can't come in orig dir */
+/* shutdown_comp*/ {sCL, sCL, sCW, sCE, sES, sSS, sSR, sCL, sCL, sHA},
+/* heartbeat    */ {sHS, sCL, sCW, sCE, sES, sSS, sSR, sSA, sHS, sHA},
+/* heartbeat_ack*/ {sCL, sCL, sCW, sCE, sES, sSS, sSR, sSA, sHS, sHA}
+	},
+	{
+/*	REPLY	*/
+/*                  sNO, sCL, sCW, sCE, sES, sSS, sSR, sSA, sHS, sHA */
+/* init         */ {sIV, sCL, sCW, sCE, sES, sSS, sSR, sSA, sIV, sHA},/* INIT in sCL Big TODO */
+/* init_ack     */ {sIV, sCL, sCW, sCE, sES, sSS, sSR, sSA, sIV, sHA},
+/* abort        */ {sIV, sCL, sCL, sCL, sCL, sCL, sCL, sCL, sIV, sCL},
+/* shutdown     */ {sIV, sCL, sCW, sCE, sSR, sSS, sSR, sSA, sIV, sSR},
+/* shutdown_ack */ {sIV, sCL, sCW, sCE, sES, sSA, sSA, sSA, sIV, sHA},
+/* error        */ {sIV, sCL, sCW, sCL, sES, sSS, sSR, sSA, sIV, sHA},
+/* cookie_echo  */ {sIV, sCL, sCW, sCE, sES, sSS, sSR, sSA, sIV, sHA},/* Can't come in reply dir */
+/* cookie_ack   */ {sIV, sCL, sCW, sES, sES, sSS, sSR, sSA, sIV, sHA},
+/* shutdown_comp*/ {sIV, sCL, sCW, sCE, sES, sSS, sSR, sCL, sIV, sHA},
+/* heartbeat    */ {sIV, sCL, sCW, sCE, sES, sSS, sSR, sSA, sHS, sHA},
+/* heartbeat_ack*/ {sIV, sCL, sCW, sCE, sES, sSS, sSR, sSA, sHA, sHA}
+	}
+};
+
+static int sctp_net_id	__read_mostly;
+struct sctp_net {
+	struct nf_proto_net pn;
+	unsigned int timeouts[SCTP_CONNTRACK_MAX];
+};
+
+static inline struct sctp_net *sctp_pernet(struct net *net)
+{
+	return net_generic(net, sctp_net_id);
+}
+
+static bool sctp_pkt_to_tuple(const struct sk_buff *skb, unsigned int dataoff,
+			      struct net *net, struct nf_conntrack_tuple *tuple)
 {
 	const struct sctphdr *hp;
 	struct sctphdr _hdr;
@@ -173,6 +236,24 @@ static int sctp_print_conntrack(struct seq_file *s, const struct nf_conn *ct)
 	read_unlock_bh(&sctp_lock);
 
 	return seq_printf(s, "%s ", sctp_conntrack_names[state]);
+static void sctp_print_tuple(struct seq_file *s,
+			     const struct nf_conntrack_tuple *tuple)
+{
+	seq_printf(s, "sport=%hu dport=%hu ",
+		   ntohs(tuple->src.u.sctp.port),
+		   ntohs(tuple->dst.u.sctp.port));
+}
+
+/* Print out the private part of the conntrack. */
+static void sctp_print_conntrack(struct seq_file *s, struct nf_conn *ct)
+{
+	enum sctp_conntrack state;
+
+	spin_lock_bh(&ct->lock);
+	state = ct->proto.sctp.state;
+	spin_unlock_bh(&ct->lock);
+
+	seq_printf(s, "%s ", sctp_conntrack_names[state]);
 }
 
 #define for_each_sctp_chunk(skb, sch, _sch, offset, dataoff, count)	\
@@ -270,6 +351,16 @@ static int sctp_new_state(enum ip_conntrack_dir dir,
 	default:
 		/* Other chunks like DATA, SACK, HEARTBEAT and
 		its ACK do not cause a change in state */
+	case SCTP_CID_HEARTBEAT:
+		pr_debug("SCTP_CID_HEARTBEAT");
+		i = 9;
+		break;
+	case SCTP_CID_HEARTBEAT_ACK:
+		pr_debug("SCTP_CID_HEARTBEAT_ACK");
+		i = 10;
+		break;
+	default:
+		/* Other chunks like DATA or SACK do not change the state */
 		pr_debug("Unknown chunk type, Will stay in %s\n",
 			 sctp_conntrack_names[cur_state]);
 		return cur_state;
@@ -282,6 +373,11 @@ static int sctp_new_state(enum ip_conntrack_dir dir,
 	return sctp_conntracks[dir][i][cur_state];
 }
 
+static unsigned int *sctp_get_timeouts(struct net *net)
+{
+	return sctp_pernet(net)->timeouts;
+}
+
 /* Returns verdict for packet, or -NF_ACCEPT for invalid. */
 static int sctp_packet(struct nf_conn *ct,
 		       const struct sk_buff *skb,
@@ -289,6 +385,9 @@ static int sctp_packet(struct nf_conn *ct,
 		       enum ip_conntrack_info ctinfo,
 		       int pf,
 		       unsigned int hooknum)
+		       u_int8_t pf,
+		       unsigned int hooknum,
+		       unsigned int *timeouts)
 {
 	enum sctp_conntrack new_state, old_state;
 	enum ip_conntrack_dir dir = CTINFO2DIR(ctinfo);
@@ -312,6 +411,8 @@ static int sctp_packet(struct nf_conn *ct,
 	    !test_bit(SCTP_CID_COOKIE_ECHO, map) &&
 	    !test_bit(SCTP_CID_ABORT, map) &&
 	    !test_bit(SCTP_CID_SHUTDOWN_ACK, map) &&
+	    !test_bit(SCTP_CID_HEARTBEAT, map) &&
+	    !test_bit(SCTP_CID_HEARTBEAT_ACK, map) &&
 	    sh->vtag != ct->proto.sctp.vtag[dir]) {
 		pr_debug("Verification tag check failed\n");
 		goto out;
@@ -319,27 +420,46 @@ static int sctp_packet(struct nf_conn *ct,
 
 	old_state = new_state = SCTP_CONNTRACK_MAX;
 	write_lock_bh(&sctp_lock);
+	old_state = new_state = SCTP_CONNTRACK_NONE;
+	spin_lock_bh(&ct->lock);
 	for_each_sctp_chunk (skb, sch, _sch, offset, dataoff, count) {
 		/* Special cases of Verification tag check (Sec 8.5.1) */
 		if (sch->type == SCTP_CID_INIT) {
-			/* Sec 8.5.1 (A) */
+			/* (A) vtag MUST be zero */
 			if (sh->vtag != 0)
 				goto out_unlock;
 		} else if (sch->type == SCTP_CID_ABORT) {
-			/* Sec 8.5.1 (B) */
-			if (sh->vtag != ct->proto.sctp.vtag[dir] &&
-			    sh->vtag != ct->proto.sctp.vtag[!dir])
+			/* (B) vtag MUST match own vtag if T flag is unset OR
+			 * MUST match peer's vtag if T flag is set
+			 */
+			if ((!(sch->flags & SCTP_CHUNK_FLAG_T) &&
+			     sh->vtag != ct->proto.sctp.vtag[dir]) ||
+			    ((sch->flags & SCTP_CHUNK_FLAG_T) &&
+			     sh->vtag != ct->proto.sctp.vtag[!dir]))
 				goto out_unlock;
 		} else if (sch->type == SCTP_CID_SHUTDOWN_COMPLETE) {
-			/* Sec 8.5.1 (C) */
-			if (sh->vtag != ct->proto.sctp.vtag[dir] &&
-			    sh->vtag != ct->proto.sctp.vtag[!dir] &&
-			    sch->flags & SCTP_CHUNK_FLAG_T)
+			/* (C) vtag MUST match own vtag if T flag is unset OR
+			 * MUST match peer's vtag if T flag is set
+			 */
+			if ((!(sch->flags & SCTP_CHUNK_FLAG_T) &&
+			     sh->vtag != ct->proto.sctp.vtag[dir]) ||
+			    ((sch->flags & SCTP_CHUNK_FLAG_T) &&
+			     sh->vtag != ct->proto.sctp.vtag[!dir]))
 				goto out_unlock;
 		} else if (sch->type == SCTP_CID_COOKIE_ECHO) {
-			/* Sec 8.5.1 (D) */
+			/* (D) vtag must be same as init_vtag as found in INIT_ACK */
 			if (sh->vtag != ct->proto.sctp.vtag[dir])
 				goto out_unlock;
+		} else if (sch->type == SCTP_CID_HEARTBEAT ||
+			   sch->type == SCTP_CID_HEARTBEAT_ACK) {
+			if (ct->proto.sctp.vtag[dir] == 0) {
+				pr_debug("Setting vtag %x for dir %d\n",
+					 sh->vtag, dir);
+				ct->proto.sctp.vtag[dir] = sh->vtag;
+			} else if (sh->vtag != ct->proto.sctp.vtag[dir]) {
+				pr_debug("Verification tag check failed\n");
+				goto out_unlock;
+			}
 		}
 
 		old_state = ct->proto.sctp.state;
@@ -374,6 +494,11 @@ static int sctp_packet(struct nf_conn *ct,
 	write_unlock_bh(&sctp_lock);
 
 	nf_ct_refresh_acct(ct, ctinfo, skb, sctp_timeouts[new_state]);
+			nf_conntrack_event_cache(IPCT_PROTOINFO, ct);
+	}
+	spin_unlock_bh(&ct->lock);
+
+	nf_ct_refresh_acct(ct, ctinfo, skb, timeouts[new_state]);
 
 	if (old_state == SCTP_CONNTRACK_COOKIE_ECHOED &&
 	    dir == IP_CT_DIR_REPLY &&
@@ -381,12 +506,14 @@ static int sctp_packet(struct nf_conn *ct,
 		pr_debug("Setting assured bit\n");
 		set_bit(IPS_ASSURED_BIT, &ct->status);
 		nf_conntrack_event_cache(IPCT_STATUS, skb);
+		nf_conntrack_event_cache(IPCT_ASSURED, ct);
 	}
 
 	return NF_ACCEPT;
 
 out_unlock:
 	write_unlock_bh(&sctp_lock);
+	spin_unlock_bh(&ct->lock);
 out:
 	return -NF_ACCEPT;
 }
@@ -394,6 +521,7 @@ out:
 /* Called when a new connection for this protocol found. */
 static bool sctp_new(struct nf_conn *ct, const struct sk_buff *skb,
 		     unsigned int dataoff)
+		     unsigned int dataoff, unsigned int *timeouts)
 {
 	enum sctp_conntrack new_state;
 	const struct sctphdr *sh;
@@ -416,6 +544,7 @@ static bool sctp_new(struct nf_conn *ct, const struct sk_buff *skb,
 	    test_bit(SCTP_CID_COOKIE_ACK, map))
 		return false;
 
+	memset(&ct->proto.sctp, 0, sizeof(ct->proto.sctp));
 	new_state = SCTP_CONNTRACK_MAX;
 	for_each_sctp_chunk (skb, sch, _sch, offset, dataoff, count) {
 		/* Don't need lock here: this conntrack not in circulation yet */
@@ -448,6 +577,10 @@ static bool sctp_new(struct nf_conn *ct, const struct sk_buff *skb,
 				/* Sec 8.5.1 (A) */
 				return false;
 			}
+		} else if (sch->type == SCTP_CID_HEARTBEAT) {
+			pr_debug("Setting vtag %x for secondary conntrack\n",
+				 sh->vtag);
+			ct->proto.sctp.vtag[IP_CT_DIR_ORIGINAL] = sh->vtag;
 		}
 		/* If it is a shutdown ack OOTB packet, we expect a return
 		   shutdown complete, otherwise an ABORT Sec 8.4 (5) and (8) */
@@ -464,6 +597,7 @@ static bool sctp_new(struct nf_conn *ct, const struct sk_buff *skb,
 }
 
 #if defined(CONFIG_NF_CT_NETLINK) || defined(CONFIG_NF_CT_NETLINK_MODULE)
+#if IS_ENABLED(CONFIG_NF_CT_NETLINK)
 
 #include <linux/netfilter/nfnetlink.h>
 #include <linux/netfilter/nfnetlink_conntrack.h>
@@ -474,6 +608,11 @@ static int sctp_to_nlattr(struct sk_buff *skb, struct nlattr *nla,
 	struct nlattr *nest_parms;
 
 	read_lock_bh(&sctp_lock);
+			  struct nf_conn *ct)
+{
+	struct nlattr *nest_parms;
+
+	spin_lock_bh(&ct->lock);
 	nest_parms = nla_nest_start(skb, CTA_PROTOINFO_SCTP | NLA_F_NESTED);
 	if (!nest_parms)
 		goto nla_put_failure;
@@ -489,6 +628,14 @@ static int sctp_to_nlattr(struct sk_buff *skb, struct nlattr *nla,
 		     ct->proto.sctp.vtag[IP_CT_DIR_REPLY]);
 
 	read_unlock_bh(&sctp_lock);
+	if (nla_put_u8(skb, CTA_PROTOINFO_SCTP_STATE, ct->proto.sctp.state) ||
+	    nla_put_be32(skb, CTA_PROTOINFO_SCTP_VTAG_ORIGINAL,
+			 ct->proto.sctp.vtag[IP_CT_DIR_ORIGINAL]) ||
+	    nla_put_be32(skb, CTA_PROTOINFO_SCTP_VTAG_REPLY,
+			 ct->proto.sctp.vtag[IP_CT_DIR_REPLY]))
+		goto nla_put_failure;
+
+	spin_unlock_bh(&ct->lock);
 
 	nla_nest_end(skb, nest_parms);
 
@@ -496,6 +643,7 @@ static int sctp_to_nlattr(struct sk_buff *skb, struct nlattr *nla,
 
 nla_put_failure:
 	read_unlock_bh(&sctp_lock);
+	spin_unlock_bh(&ct->lock);
 	return -1;
 }
 
@@ -528,6 +676,7 @@ static int nlattr_to_sctp(struct nlattr *cda[], struct nf_conn *ct)
 		return -EINVAL;
 
 	write_lock_bh(&sctp_lock);
+	spin_lock_bh(&ct->lock);
 	ct->proto.sctp.state = nla_get_u8(tb[CTA_PROTOINFO_SCTP_STATE]);
 	ct->proto.sctp.vtag[IP_CT_DIR_ORIGINAL] =
 		nla_get_be32(tb[CTA_PROTOINFO_SCTP_VTAG_ORIGINAL]);
@@ -595,6 +744,131 @@ static struct ctl_table sctp_sysctl_table[] = {
 	{
 		.ctl_name = 0
 	}
+	spin_unlock_bh(&ct->lock);
+
+	return 0;
+}
+
+static int sctp_nlattr_size(void)
+{
+	return nla_total_size(0)	/* CTA_PROTOINFO_SCTP */
+		+ nla_policy_len(sctp_nla_policy, CTA_PROTOINFO_SCTP_MAX + 1);
+}
+#endif
+
+#if IS_ENABLED(CONFIG_NF_CT_NETLINK_TIMEOUT)
+
+#include <linux/netfilter/nfnetlink.h>
+#include <linux/netfilter/nfnetlink_cttimeout.h>
+
+static int sctp_timeout_nlattr_to_obj(struct nlattr *tb[],
+				      struct net *net, void *data)
+{
+	unsigned int *timeouts = data;
+	struct sctp_net *sn = sctp_pernet(net);
+	int i;
+
+	/* set default SCTP timeouts. */
+	for (i=0; i<SCTP_CONNTRACK_MAX; i++)
+		timeouts[i] = sn->timeouts[i];
+
+	/* there's a 1:1 mapping between attributes and protocol states. */
+	for (i=CTA_TIMEOUT_SCTP_UNSPEC+1; i<CTA_TIMEOUT_SCTP_MAX+1; i++) {
+		if (tb[i]) {
+			timeouts[i] = ntohl(nla_get_be32(tb[i])) * HZ;
+		}
+	}
+	return 0;
+}
+
+static int
+sctp_timeout_obj_to_nlattr(struct sk_buff *skb, const void *data)
+{
+        const unsigned int *timeouts = data;
+	int i;
+
+	for (i=CTA_TIMEOUT_SCTP_UNSPEC+1; i<CTA_TIMEOUT_SCTP_MAX+1; i++) {
+	        if (nla_put_be32(skb, i, htonl(timeouts[i] / HZ)))
+			goto nla_put_failure;
+	}
+        return 0;
+
+nla_put_failure:
+        return -ENOSPC;
+}
+
+static const struct nla_policy
+sctp_timeout_nla_policy[CTA_TIMEOUT_SCTP_MAX+1] = {
+	[CTA_TIMEOUT_SCTP_CLOSED]		= { .type = NLA_U32 },
+	[CTA_TIMEOUT_SCTP_COOKIE_WAIT]		= { .type = NLA_U32 },
+	[CTA_TIMEOUT_SCTP_COOKIE_ECHOED]	= { .type = NLA_U32 },
+	[CTA_TIMEOUT_SCTP_ESTABLISHED]		= { .type = NLA_U32 },
+	[CTA_TIMEOUT_SCTP_SHUTDOWN_SENT]	= { .type = NLA_U32 },
+	[CTA_TIMEOUT_SCTP_SHUTDOWN_RECD]	= { .type = NLA_U32 },
+	[CTA_TIMEOUT_SCTP_SHUTDOWN_ACK_SENT]	= { .type = NLA_U32 },
+	[CTA_TIMEOUT_SCTP_HEARTBEAT_SENT]	= { .type = NLA_U32 },
+	[CTA_TIMEOUT_SCTP_HEARTBEAT_ACKED]	= { .type = NLA_U32 },
+};
+#endif /* CONFIG_NF_CT_NETLINK_TIMEOUT */
+
+
+#ifdef CONFIG_SYSCTL
+static struct ctl_table sctp_sysctl_table[] = {
+	{
+		.procname	= "nf_conntrack_sctp_timeout_closed",
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_jiffies,
+	},
+	{
+		.procname	= "nf_conntrack_sctp_timeout_cookie_wait",
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_jiffies,
+	},
+	{
+		.procname	= "nf_conntrack_sctp_timeout_cookie_echoed",
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_jiffies,
+	},
+	{
+		.procname	= "nf_conntrack_sctp_timeout_established",
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_jiffies,
+	},
+	{
+		.procname	= "nf_conntrack_sctp_timeout_shutdown_sent",
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_jiffies,
+	},
+	{
+		.procname	= "nf_conntrack_sctp_timeout_shutdown_recd",
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_jiffies,
+	},
+	{
+		.procname	= "nf_conntrack_sctp_timeout_shutdown_ack_sent",
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_jiffies,
+	},
+	{
+		.procname	= "nf_conntrack_sctp_timeout_heartbeat_sent",
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_jiffies,
+	},
+	{
+		.procname	= "nf_conntrack_sctp_timeout_heartbeat_acked",
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_jiffies,
+	},
+	{ }
 };
 
 #ifdef CONFIG_NF_CONNTRACK_PROC_COMPAT
@@ -651,9 +925,126 @@ static struct ctl_table sctp_compat_sysctl_table[] = {
 	{
 		.ctl_name = 0
 	}
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_jiffies,
+	},
+	{
+		.procname	= "ip_conntrack_sctp_timeout_cookie_wait",
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_jiffies,
+	},
+	{
+		.procname	= "ip_conntrack_sctp_timeout_cookie_echoed",
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_jiffies,
+	},
+	{
+		.procname	= "ip_conntrack_sctp_timeout_established",
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_jiffies,
+	},
+	{
+		.procname	= "ip_conntrack_sctp_timeout_shutdown_sent",
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_jiffies,
+	},
+	{
+		.procname	= "ip_conntrack_sctp_timeout_shutdown_recd",
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_jiffies,
+	},
+	{
+		.procname	= "ip_conntrack_sctp_timeout_shutdown_ack_sent",
+		.maxlen		= sizeof(unsigned int),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_jiffies,
+	},
+	{ }
 };
 #endif /* CONFIG_NF_CONNTRACK_PROC_COMPAT */
 #endif
+
+static int sctp_kmemdup_sysctl_table(struct nf_proto_net *pn,
+				     struct sctp_net *sn)
+{
+#ifdef CONFIG_SYSCTL
+	if (pn->ctl_table)
+		return 0;
+
+	pn->ctl_table = kmemdup(sctp_sysctl_table,
+				sizeof(sctp_sysctl_table),
+				GFP_KERNEL);
+	if (!pn->ctl_table)
+		return -ENOMEM;
+
+	pn->ctl_table[0].data = &sn->timeouts[SCTP_CONNTRACK_CLOSED];
+	pn->ctl_table[1].data = &sn->timeouts[SCTP_CONNTRACK_COOKIE_WAIT];
+	pn->ctl_table[2].data = &sn->timeouts[SCTP_CONNTRACK_COOKIE_ECHOED];
+	pn->ctl_table[3].data = &sn->timeouts[SCTP_CONNTRACK_ESTABLISHED];
+	pn->ctl_table[4].data = &sn->timeouts[SCTP_CONNTRACK_SHUTDOWN_SENT];
+	pn->ctl_table[5].data = &sn->timeouts[SCTP_CONNTRACK_SHUTDOWN_RECD];
+	pn->ctl_table[6].data = &sn->timeouts[SCTP_CONNTRACK_SHUTDOWN_ACK_SENT];
+	pn->ctl_table[7].data = &sn->timeouts[SCTP_CONNTRACK_HEARTBEAT_SENT];
+	pn->ctl_table[8].data = &sn->timeouts[SCTP_CONNTRACK_HEARTBEAT_ACKED];
+#endif
+	return 0;
+}
+
+static int sctp_kmemdup_compat_sysctl_table(struct nf_proto_net *pn,
+					    struct sctp_net *sn)
+{
+#ifdef CONFIG_SYSCTL
+#ifdef CONFIG_NF_CONNTRACK_PROC_COMPAT
+	pn->ctl_compat_table = kmemdup(sctp_compat_sysctl_table,
+				       sizeof(sctp_compat_sysctl_table),
+				       GFP_KERNEL);
+	if (!pn->ctl_compat_table)
+		return -ENOMEM;
+
+	pn->ctl_compat_table[0].data = &sn->timeouts[SCTP_CONNTRACK_CLOSED];
+	pn->ctl_compat_table[1].data = &sn->timeouts[SCTP_CONNTRACK_COOKIE_WAIT];
+	pn->ctl_compat_table[2].data = &sn->timeouts[SCTP_CONNTRACK_COOKIE_ECHOED];
+	pn->ctl_compat_table[3].data = &sn->timeouts[SCTP_CONNTRACK_ESTABLISHED];
+	pn->ctl_compat_table[4].data = &sn->timeouts[SCTP_CONNTRACK_SHUTDOWN_SENT];
+	pn->ctl_compat_table[5].data = &sn->timeouts[SCTP_CONNTRACK_SHUTDOWN_RECD];
+	pn->ctl_compat_table[6].data = &sn->timeouts[SCTP_CONNTRACK_SHUTDOWN_ACK_SENT];
+#endif
+#endif
+	return 0;
+}
+
+static int sctp_init_net(struct net *net, u_int16_t proto)
+{
+	int ret;
+	struct sctp_net *sn = sctp_pernet(net);
+	struct nf_proto_net *pn = &sn->pn;
+
+	if (!pn->users) {
+		int i;
+
+		for (i = 0; i < SCTP_CONNTRACK_MAX; i++)
+			sn->timeouts[i] = sctp_timeouts[i];
+	}
+
+	if (proto == AF_INET) {
+		ret = sctp_kmemdup_compat_sysctl_table(pn, sn);
+		if (ret < 0)
+			return ret;
+
+		ret = sctp_kmemdup_sysctl_table(pn, sn);
+		if (ret < 0)
+			nf_ct_kfree_compat_sysctl_table(pn);
+	} else
+		ret = sctp_kmemdup_sysctl_table(pn, sn);
+
+	return ret;
+}
 
 static struct nf_conntrack_l4proto nf_conntrack_l4proto_sctp4 __read_mostly = {
 	.l3proto		= PF_INET,
@@ -681,6 +1072,29 @@ static struct nf_conntrack_l4proto nf_conntrack_l4proto_sctp4 __read_mostly = {
 	.ctl_compat_table	= sctp_compat_sysctl_table,
 #endif
 #endif
+	.get_timeouts		= sctp_get_timeouts,
+	.new 			= sctp_new,
+	.me 			= THIS_MODULE,
+#if IS_ENABLED(CONFIG_NF_CT_NETLINK)
+	.to_nlattr		= sctp_to_nlattr,
+	.nlattr_size		= sctp_nlattr_size,
+	.from_nlattr		= nlattr_to_sctp,
+	.tuple_to_nlattr	= nf_ct_port_tuple_to_nlattr,
+	.nlattr_tuple_size	= nf_ct_port_nlattr_tuple_size,
+	.nlattr_to_tuple	= nf_ct_port_nlattr_to_tuple,
+	.nla_policy		= nf_ct_port_nla_policy,
+#endif
+#if IS_ENABLED(CONFIG_NF_CT_NETLINK_TIMEOUT)
+	.ctnl_timeout		= {
+		.nlattr_to_obj	= sctp_timeout_nlattr_to_obj,
+		.obj_to_nlattr	= sctp_timeout_obj_to_nlattr,
+		.nlattr_max	= CTA_TIMEOUT_SCTP_MAX,
+		.obj_size	= sizeof(unsigned int) * SCTP_CONNTRACK_MAX,
+		.nla_policy	= sctp_timeout_nla_policy,
+	},
+#endif /* CONFIG_NF_CT_NETLINK_TIMEOUT */
+	.net_id			= &sctp_net_id,
+	.init_net		= sctp_init_net,
 };
 
 static struct nf_conntrack_l4proto nf_conntrack_l4proto_sctp6 __read_mostly = {
@@ -706,6 +1120,64 @@ static struct nf_conntrack_l4proto nf_conntrack_l4proto_sctp6 __read_mostly = {
 	.ctl_table_header	= &sctp_sysctl_header,
 	.ctl_table		= sctp_sysctl_table,
 #endif
+	.get_timeouts		= sctp_get_timeouts,
+	.new 			= sctp_new,
+	.me 			= THIS_MODULE,
+#if IS_ENABLED(CONFIG_NF_CT_NETLINK)
+	.to_nlattr		= sctp_to_nlattr,
+	.nlattr_size		= sctp_nlattr_size,
+	.from_nlattr		= nlattr_to_sctp,
+	.tuple_to_nlattr	= nf_ct_port_tuple_to_nlattr,
+	.nlattr_tuple_size	= nf_ct_port_nlattr_tuple_size,
+	.nlattr_to_tuple	= nf_ct_port_nlattr_to_tuple,
+	.nla_policy		= nf_ct_port_nla_policy,
+#if IS_ENABLED(CONFIG_NF_CT_NETLINK_TIMEOUT)
+	.ctnl_timeout		= {
+		.nlattr_to_obj	= sctp_timeout_nlattr_to_obj,
+		.obj_to_nlattr	= sctp_timeout_obj_to_nlattr,
+		.nlattr_max	= CTA_TIMEOUT_SCTP_MAX,
+		.obj_size	= sizeof(unsigned int) * SCTP_CONNTRACK_MAX,
+		.nla_policy	= sctp_timeout_nla_policy,
+	},
+#endif /* CONFIG_NF_CT_NETLINK_TIMEOUT */
+#endif
+	.net_id			= &sctp_net_id,
+	.init_net		= sctp_init_net,
+};
+
+static int sctp_net_init(struct net *net)
+{
+	int ret = 0;
+
+	ret = nf_ct_l4proto_pernet_register(net, &nf_conntrack_l4proto_sctp4);
+	if (ret < 0) {
+		pr_err("nf_conntrack_sctp4: pernet registration failed.\n");
+		goto out;
+	}
+	ret = nf_ct_l4proto_pernet_register(net, &nf_conntrack_l4proto_sctp6);
+	if (ret < 0) {
+		pr_err("nf_conntrack_sctp6: pernet registration failed.\n");
+		goto cleanup_sctp4;
+	}
+	return 0;
+
+cleanup_sctp4:
+	nf_ct_l4proto_pernet_unregister(net, &nf_conntrack_l4proto_sctp4);
+out:
+	return ret;
+}
+
+static void sctp_net_exit(struct net *net)
+{
+	nf_ct_l4proto_pernet_unregister(net, &nf_conntrack_l4proto_sctp6);
+	nf_ct_l4proto_pernet_unregister(net, &nf_conntrack_l4proto_sctp4);
+}
+
+static struct pernet_operations sctp_net_ops = {
+	.init = sctp_net_init,
+	.exit = sctp_net_exit,
+	.id   = &sctp_net_id,
+	.size = sizeof(struct sctp_net),
 };
 
 static int __init nf_conntrack_proto_sctp_init(void)
@@ -728,6 +1200,24 @@ static int __init nf_conntrack_proto_sctp_init(void)
  cleanup_sctp4:
 	nf_conntrack_l4proto_unregister(&nf_conntrack_l4proto_sctp4);
  out:
+	ret = register_pernet_subsys(&sctp_net_ops);
+	if (ret < 0)
+		goto out_pernet;
+
+	ret = nf_ct_l4proto_register(&nf_conntrack_l4proto_sctp4);
+	if (ret < 0)
+		goto out_sctp4;
+
+	ret = nf_ct_l4proto_register(&nf_conntrack_l4proto_sctp6);
+	if (ret < 0)
+		goto out_sctp6;
+
+	return 0;
+out_sctp6:
+	nf_ct_l4proto_unregister(&nf_conntrack_l4proto_sctp4);
+out_sctp4:
+	unregister_pernet_subsys(&sctp_net_ops);
+out_pernet:
 	return ret;
 }
 
@@ -735,6 +1225,9 @@ static void __exit nf_conntrack_proto_sctp_fini(void)
 {
 	nf_conntrack_l4proto_unregister(&nf_conntrack_l4proto_sctp6);
 	nf_conntrack_l4proto_unregister(&nf_conntrack_l4proto_sctp4);
+	nf_ct_l4proto_unregister(&nf_conntrack_l4proto_sctp6);
+	nf_ct_l4proto_unregister(&nf_conntrack_l4proto_sctp4);
+	unregister_pernet_subsys(&sctp_net_ops);
 }
 
 module_init(nf_conntrack_proto_sctp_init);

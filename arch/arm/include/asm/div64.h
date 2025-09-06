@@ -3,6 +3,8 @@
 
 #include <asm/system.h>
 #include <linux/types.h>
+#include <linux/types.h>
+#include <asm/compiler.h>
 
 /*
  * The semantics of do_div() are:
@@ -47,6 +49,7 @@
 })
 
 #if __GNUC__ < 4
+#if __GNUC__ < 4 || !defined(CONFIG_AEABI)
 
 /*
  * gcc versions earlier than 4.0 are simply too problematic for the
@@ -157,6 +160,7 @@
 		/* actual __m * __n / (__p << 64) operation.         */	\
 		if (!__c) {						\
 			asm (	"umull	%Q0, %R0, %1, %Q2\n\t"		\
+			asm (	"umull	%Q0, %R0, %Q1, %Q2\n\t"		\
 				"mov	%Q0, #0"			\
 				: "=&r" (__res)				\
 				: "r" (__m), "r" (__n)			\
@@ -166,6 +170,7 @@
 			asm (	"umlal	%Q0, %R0, %Q1, %Q2\n\t"		\
 				"mov	%Q0, #0"			\
 				: "+r" (__res)				\
+				: "+&r" (__res)				\
 				: "r" (__m), "r" (__n)			\
 				: "cc" );				\
 		} else {						\
@@ -183,6 +188,7 @@
 				"mov	%R0, #0\n\t"			\
 				"umlal	%Q0, %R0, %R1, %R2"		\
 				: "+r" (__res)				\
+				: "+&r" (__res)				\
 				: "r" (__m), "r" (__n)			\
 				: "cc" );				\
 		} else {						\
@@ -193,6 +199,7 @@
 				"adc	%R0, %R0, #0\n\t"		\
 				"umlal	%Q0, %R0, %R2, %R3"		\
 				: "+r" (__res), "+r" (__z)		\
+				: "+&r" (__res), "+&r" (__z)		\
 				: "r" (__m), "r" (__n)			\
 				: "cc" );				\
 		}							\

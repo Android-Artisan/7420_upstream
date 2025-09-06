@@ -1,6 +1,11 @@
 /*
  * l1layout.h
  * Defines a layout of L1 scratchpad memory that userspace can rely on.
+ * Defines a layout of L1 scratchpad memory that userspace can rely on.
+ *
+ * Copyright 2006-2008 Analog Devices Inc.
+ *
+ * Licensed under the GPL-2 or later.
  */
 
 #ifndef _L1LAYOUT_H_
@@ -8,6 +13,7 @@
 
 #include <asm/blackfin.h>
 
+#ifndef CONFIG_SMP
 #ifndef __ASSEMBLY__
 
 /* Data that is "mapped" into the process VM at the start of the L1 scratch
@@ -26,6 +32,11 @@ struct l1_scratch_task_info
 /* A pointer to the structure in memory.  */
 #define L1_SCRATCH_TASK_INFO ((struct l1_scratch_task_info *)L1_SCRATCH_START)
 
+#endif
+#define L1_SCRATCH_TASK_INFO ((struct l1_scratch_task_info *)\
+						get_l1_scratch_start())
+
+#endif
 #endif
 
 #endif

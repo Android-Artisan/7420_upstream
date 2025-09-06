@@ -1,10 +1,6 @@
-				 =================================
 				 FR451 MMU LINUX MEMORY MANAGEMENT
-				 =================================
 
-============
 MMU HARDWARE
-============
 
 FR451 MMU Linux puts the MMU into EDAT mode whilst running. This means that it uses both the SAT
 registers and the DAT TLB to perform address translation.
@@ -15,14 +11,11 @@ In DAT mode, there is also a TLB organised in cache format as 64 lines x 2 ways.
 16KB range of addresses, but can match a larger region.
 
 
-===========================
 MEMORY MANAGEMENT REGISTERS
-===========================
 
 Certain control registers are used by the kernel memory management routines:
 
 	REGISTERS		USAGE
-	======================	==================================================
 	IAMR0, DAMR0		Kernel image and data mappings
 	IAMR1, DAMR1		First-chance TLB lookup mapping
 	DAMR2			Page attachment for cache flush by page
@@ -35,14 +28,11 @@ Certain control registers are used by the kernel memory management routines:
 	TTBR			Page directory (PGD) pointer (physical address)
 
 
-=====================
 GENERAL MEMORY LAYOUT
-=====================
 
 The physical memory layout is as follows:
 
   PHYSICAL ADDRESS	CONTROLLER	DEVICE
-  ===================	==============	=======================================
   00000000 - BFFFFFFF	SDRAM		SDRAM area
   E0000000 - EFFFFFFF	L-BUS CS2#	VDK SLBUS/PCI window
   F0000000 - F0FFFFFF	L-BUS CS5#	MB93493 CSC area (DAV daughter board)
@@ -59,7 +49,6 @@ The physical memory layout is as follows:
 The virtual memory layout is:
 
   VIRTUAL ADDRESS    PHYSICAL	TRANSLATOR	FLAGS	SIZE	OCCUPATION
-  =================  ========	==============	=======	=======	===================================
   00004000-BFFFFFFF  various	TLB,xAMR1	D-N-??V	3GB	Userspace
   C0000000-CFFFFFFF  00000000	xAMPR0		-L-S--V	256MB	Kernel image and data
   D0000000-D7FFFFFF  various	TLB,xAMR1	D-NS??V	128MB	vmalloc area
@@ -80,9 +69,7 @@ The virtual memory layout is:
 IAMPR1 and DAMPR1 are used as an extension to the TLB.
 
 
-====================
 KMAP AND KMAP_ATOMIC
-====================
 
 To access pages in the page cache (which may not be directly accessible if highmem is available),
 the kernel calls kmap(), does the access and then calls kunmap(); or it calls kmap_atomic(), does
@@ -118,9 +105,7 @@ furthermore, a driver using kmap() may sleep before calling kunmap(), but may no
 calling kunmap_atomic() if it had previously called kmap_atomic().
 
 
-===============================
 USING MORE THAN 256MB OF MEMORY
-===============================
 
 The kernel cannot access more than 256MB of memory directly. The physical layout, however, permits
 up to 3GB of SDRAM (possibly 3.25GB) to be made available. By using CONFIG_HIGHMEM, the kernel can
@@ -132,9 +117,7 @@ see it directly. The kernel translates page references into real addresses for c
 devices.
 
 
-===================
 PAGE TABLE TOPOLOGY
-===================
 
 The page tables are arranged in 2-layer format. There is a middle layer (PMD) that would be used in
 3-layer format tables but that is folded into the top layer (PGD) and so consumes no extra memory
@@ -181,15 +164,12 @@ coverage of the cached item is greater.
 Page tables for the vmalloc area are allocated at boot time and shared between all mm_structs.
 
 
-=================
 USER SPACE LAYOUT
-=================
 
 For MMU capable Linux, the regions userspace code are allowed to access are kept entirely separate
 from those dedicated to the kernel:
 
 	VIRTUAL ADDRESS    SIZE   PURPOSE
-	=================  =====  ===================================
 	00000000-00003fff  4KB    NULL pointer access trap
 	00004000-01ffffff  ~32MB  lower mmap space (grows up)
 	02000000-021fffff  2MB    Stack space (grows down from top)
@@ -202,9 +182,7 @@ are cached by the TLB handler. The lower mmap space is filled first, and then th
 is filled.
 
 
-===============================
 GDB-STUB MMU DEBUGGING SERVICES
-===============================
 
 The gdb-stub included in this kernel provides a number of services to aid in the debugging of MMU
 related kernel services:
@@ -238,7 +216,6 @@ related kernel services:
 
 		(gdb) _amr
 		AMRx           DAMR                    IAMR
-		====   =====================   =====================
 		amr0 : L:c0000000 P:00000cb9 : L:c0000000 P:000004b9
 		amr1 : L:01070005 P:006f9203 : L:0102c005 P:006a1201
 		amr2 : L:d8d00000 P:00000000 : L:d8d00000 P:00000000

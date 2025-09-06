@@ -24,6 +24,31 @@ int pci_probe_only;
 #define PCI_ASSIGN_ALL_BUSSES	1
 
 unsigned int pci_probe = PCI_ASSIGN_ALL_BUSSES;
+ * This program is free software; you can redistribute	it and/or modify it
+ * under  the terms of	the GNU General	 Public License as published by the
+ * Free Software Foundation;  either version 2 of the  License, or (at your
+ * option) any later version.
+ *
+ * Copyright (C) 2003, 04, 11 Ralf Baechle (ralf@linux-mips.org)
+ * Copyright (C) 2011 Wind River Systems,
+ *   written by Ralf Baechle (ralf@linux-mips.org)
+ */
+#include <linux/bug.h>
+#include <linux/kernel.h>
+#include <linux/mm.h>
+#include <linux/bootmem.h>
+#include <linux/export.h>
+#include <linux/init.h>
+#include <linux/types.h>
+#include <linux/pci.h>
+#include <linux/of_address.h>
+
+#include <asm/cpu-info.h>
+
+/*
+ * If PCI_PROBE_ONLY in pci_flags is set, we don't change any PCI resource
+ * assignments.
+ */
 
 /*
  * The PCI controller list.
@@ -33,6 +58,10 @@ static struct pci_controller *hose_head, **hose_tail = &hose_head;
 
 unsigned long PCIBIOS_MIN_IO	= 0x0000;
 unsigned long PCIBIOS_MIN_MEM	= 0;
+unsigned long PCIBIOS_MIN_IO;
+unsigned long PCIBIOS_MIN_MEM;
+
+static int pci_initialized;
 
 /*
  * We need to avoid collisions with `mirrored' VGA ports
@@ -49,6 +78,8 @@ unsigned long PCIBIOS_MIN_MEM	= 0;
  */
 void
 pcibios_align_resource(void *data, struct resource *res,
+resource_size_t
+pcibios_align_resource(void *data, const struct resource *res,
 		       resource_size_t size, resource_size_t align)
 {
 	struct pci_dev *dev = data;
@@ -79,6 +110,118 @@ void __devinit register_pci_controller(struct pci_controller *hose)
 	if (request_resource(&iomem_resource, hose->mem_resource) < 0)
 		goto out;
 	if (request_resource(&ioport_resource, hose->io_resource) < 0) {
+	return start;
+}
+
+static void pcibios_scanbus(struct pci_controller *hose)
+{
+	static int next_busno;
+	static int need_domain_info;
+	LIST_HEAD(resources);
+	struct pci_bus *bus;
+
+	if (!hose->iommu)
+		PCI_DMA_BUS_IS_PHYS = 1;
+
+	if (hose->get_busno && pci_has_flag(PCI_PROBE_ONLY))
+		next_busno = (*hose->get_busno)();
+
+	pci_add_resource_offset(&resources,
+				hose->mem_resource, hose->mem_offset);
+	pci_add_resource_offset(&resources,
+				hose->io_resource, hose->io_offset);
+	pci_add_resource_offset(&resources,
+				hose->busn_resource, hose->busn_offset);
+	bus = pci_scan_root_bus(NULL, next_busno, hose->pci_ops, hose,
+				&resources);
+	hose->bus = bus;
+
+	need_domain_info = need_domain_info || hose->index;
+	hose->need_domain_info = need_domain_info;
+
+	if (!bus) {
+		pci_free_resource_list(&resources);
+		return;
+	}
+
+	next_busno = bus->busn_res.end + 1;
+	/* Don't allow 8-bit bus number overflow inside the hose -
+	   reserve some space for bridges. */
+	if (next_busno > 224) {
+		next_busno = 0;
+		need_domain_info = 1;
+	}
+
+	if (!pci_has_flag(PCI_PROBE_ONLY)) {
+		pci_bus_size_bridges(bus);
+		pci_bus_assign_resources(bus);
+	}
+	pci_bus_add_devices(bus);
+}
+
+#ifdef CONFIG_OF
+void pci_load_of_ranges(struct pci_controller *hose, struct device_node *node)
+{
+	struct of_pci_range range;
+	struct of_pci_range_parser parser;
+
+	pr_info("PCI host bridge %s ranges:\n", node->full_name);
+	hose->of_node = node;
+
+	if (of_pci_range_parser_init(&parser, node))
+		return;
+
+	for_each_of_pci_range(&parser, &range) {
+		struct resource *res = NULL;
+
+		switch (range.flags & IORESOURCE_TYPE_BITS) {
+		case IORESOURCE_IO:
+			pr_info("  IO 0x%016llx..0x%016llx\n",
+				range.cpu_addr,
+				range.cpu_addr + range.size - 1);
+			hose->io_map_base =
+				(unsigned long)ioremap(range.cpu_addr,
+						       range.size);
+			res = hose->io_resource;
+			break;
+		case IORESOURCE_MEM:
+			pr_info(" MEM 0x%016llx..0x%016llx\n",
+				range.cpu_addr,
+				range.cpu_addr + range.size - 1);
+			res = hose->mem_resource;
+			break;
+		}
+		if (res != NULL)
+			of_pci_range_to_resource(&range, node, res);
+	}
+}
+
+struct device_node *pcibios_get_phb_of_node(struct pci_bus *bus)
+{
+	struct pci_controller *hose = bus->sysdata;
+
+	return of_node_get(hose->of_node);
+}
+#endif
+
+static DEFINE_MUTEX(pci_scan_mutex);
+
+void register_pci_controller(struct pci_controller *hose)
+{
+	struct resource *parent;
+
+	parent = hose->mem_resource->parent;
+	if (!parent)
+		parent = &iomem_resource;
+
+	if (request_resource(parent, hose->mem_resource) < 0)
+		goto out;
+
+	parent = hose->io_resource->parent;
+	if (!parent)
+		parent = &ioport_resource;
+
+	if (request_resource(parent, hose->io_resource) < 0) {
 		release_resource(hose->mem_resource);
 		goto out;
 	}
@@ -88,11 +231,23 @@ void __devinit register_pci_controller(struct pci_controller *hose)
 
 	/*
 	 * Do not panic here but later - this might hapen before console init.
+	 * Do not panic here but later - this might happen before console init.
 	 */
 	if (!hose->io_map_base) {
 		printk(KERN_WARNING
 		       "registering PCI controller with io_map_base unset\n");
 	}
+
+	/*
+	 * Scan the bus if it is register after the PCI subsystem
+	 * initialization.
+	 */
+	if (pci_initialized) {
+		mutex_lock(&pci_scan_mutex);
+		pcibios_scanbus(hose);
+		mutex_unlock(&pci_scan_mutex);
+	}
+
 	return;
 
 out:
@@ -120,6 +275,24 @@ static u8 __init common_swizzle(struct pci_dev *dev, u8 *pinp)
 
 	/* The slot is the slot of the last bridge. */
 	return PCI_SLOT(dev->devfn);
+static void __init pcibios_set_cache_line_size(void)
+{
+	struct cpuinfo_mips *c = &current_cpu_data;
+	unsigned int lsize;
+
+	/*
+	 * Set PCI cacheline size to that of the highest level in the
+	 * cache hierarchy.
+	 */
+	lsize = c->dcache.linesz;
+	lsize = c->scache.linesz ? : lsize;
+	lsize = c->tcache.linesz ? : lsize;
+
+	BUG_ON(!lsize);
+
+	pci_dfl_cache_line_size = lsize >> 2;
+
+	pr_debug("PCI: pci_cache_line_size set to %d bytes\n", lsize);
 }
 
 static int __init pcibios_init(void)
@@ -156,6 +329,16 @@ static int __init pcibios_init(void)
 	if (!pci_probe_only)
 		pci_assign_unassigned_resources();
 	pci_fixup_irqs(common_swizzle, pcibios_map_irq);
+
+	pcibios_set_cache_line_size();
+
+	/* Scan all of the recorded PCI controllers.  */
+	for (hose = hose_head; hose; hose = hose->next)
+		pcibios_scanbus(hose);
+
+	pci_fixup_irqs(pci_common_swizzle, pcibios_map_irq);
+
+	pci_initialized = 1;
 
 	return 0;
 }
@@ -224,6 +407,9 @@ void pcibios_set_master(struct pci_dev *dev)
 unsigned int pcibios_assign_all_busses(void)
 {
 	return (pci_probe & PCI_ASSIGN_ALL_BUSSES) ? 1 : 0;
+unsigned int pcibios_assign_all_busses(void)
+{
+	return 1;
 }
 
 int pcibios_enable_device(struct pci_dev *dev, int mask)
@@ -331,6 +517,46 @@ EXPORT_SYMBOL(PCIBIOS_MIN_MEM);
 char * (*pcibios_plat_setup)(char *str) __devinitdata;
 
 char *__devinit pcibios_setup(char *str)
+void pcibios_fixup_bus(struct pci_bus *bus)
+{
+	struct pci_dev *dev = bus->self;
+
+	if (pci_has_flag(PCI_PROBE_ONLY) && dev &&
+	    (dev->class >> 8) == PCI_CLASS_BRIDGE_PCI) {
+		pci_read_bridge_bases(bus);
+	}
+}
+
+EXPORT_SYMBOL(PCIBIOS_MIN_IO);
+EXPORT_SYMBOL(PCIBIOS_MIN_MEM);
+
+int pci_mmap_page_range(struct pci_dev *dev, struct vm_area_struct *vma,
+			enum pci_mmap_state mmap_state, int write_combine)
+{
+	unsigned long prot;
+
+	/*
+	 * I/O space can be accessed via normal processor loads and stores on
+	 * this platform but for now we elect not to do this and portable
+	 * drivers should not do this anyway.
+	 */
+	if (mmap_state == pci_mmap_io)
+		return -EINVAL;
+
+	/*
+	 * Ignore write-combine; for now only return uncached mappings.
+	 */
+	prot = pgprot_val(vma->vm_page_prot);
+	prot = (prot & ~_CACHE_MASK) | _CACHE_UNCACHED;
+	vma->vm_page_prot = __pgprot(prot);
+
+	return remap_pfn_range(vma, vma->vm_start, vma->vm_pgoff,
+		vma->vm_end - vma->vm_start, vma->vm_page_prot);
+}
+
+char * (*pcibios_plat_setup)(char *str) __initdata;
+
+char *__init pcibios_setup(char *str)
 {
 	if (pcibios_plat_setup)
 		return pcibios_plat_setup(str);

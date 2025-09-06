@@ -96,6 +96,7 @@ static int
 
 /* Filesystem callbacks (to call us) */
 static struct file_operations irnet_device_fops =
+static const struct file_operations irnet_device_fops =
 {
 	.owner		= THIS_MODULE,
 	.read		= dev_irnet_read,
@@ -104,6 +105,8 @@ static struct file_operations irnet_device_fops =
 	.unlocked_ioctl	= dev_irnet_ioctl,
 	.open		= dev_irnet_open,
 	.release	= dev_irnet_close
+	.release	= dev_irnet_close,
+	.llseek		= noop_llseek,
   /* Also : llseek, readdir, mmap, flush, fsync, fasync, lock, readv, writev */
 };
 

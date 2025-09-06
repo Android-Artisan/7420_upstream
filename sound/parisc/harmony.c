@@ -44,6 +44,7 @@
 #include <linux/interrupt.h>
 #include <linux/spinlock.h>
 #include <linux/dma-mapping.h>
+#include <linux/io.h>
 
 #include <sound/core.h>
 #include <sound/pcm.h>
@@ -624,6 +625,9 @@ snd_harmony_pcm_init(struct snd_harmony *h)
 	struct snd_pcm *pcm;
 	int err;
 
+	if (snd_BUG_ON(!h))
+		return -EINVAL;
+
 	harmony_disable_interrupts(h);
 	
    	err = snd_pcm_new(h->card, "harmony", 0, 1, 1, &pcm);
@@ -782,6 +786,9 @@ snd_harmony_captureroute_info(struct snd_kcontrol *kc,
 	strcpy(uinfo->value.enumerated.name,
 	       texts[uinfo->value.enumerated.item]);
 	return 0;
+	static const char * const texts[2] = { "Line", "Mic" };
+
+	return snd_ctl_enum_info(uinfo, 1, 2, texts);
 }
 
 static int 
@@ -854,6 +861,7 @@ static struct snd_kcontrol_new snd_harmony_controls[] = {
 };
 
 static void __devinit
+static void
 snd_harmony_mixer_reset(struct snd_harmony *h)
 {
 	harmony_mute(h);
@@ -869,6 +877,15 @@ snd_harmony_mixer_init(struct snd_harmony *h)
 	int idx, err;
 
 	snd_assert(h != NULL, return -EINVAL);
+static int
+snd_harmony_mixer_init(struct snd_harmony *h)
+{
+	struct snd_card *card;
+	int idx, err;
+
+	if (snd_BUG_ON(!h))
+		return -EINVAL;
+	card = h->card;
 	strcpy(card->mixername, "Harmony Gain control interface");
 
 	for (idx = 0; idx < HARMONY_CONTROLS; idx++) {
@@ -899,6 +916,7 @@ snd_harmony_free(struct snd_harmony *h)
 
 	parisc_set_drvdata(h->dev, NULL);
 
+	iounmap(h->iobase);
 	kfree(h);
 	return 0;
 }
@@ -911,6 +929,7 @@ snd_harmony_dev_free(struct snd_device *dev)
 }
 
 static int __devinit
+static int
 snd_harmony_create(struct snd_card *card, 
 		   struct parisc_device *padev, 
 		   struct snd_harmony **rchip)
@@ -935,6 +954,7 @@ snd_harmony_create(struct snd_card *card,
 	if (h->iobase == NULL) {
 		printk(KERN_ERR PFX "unable to remap hpa 0x%lx\n",
 		       padev->hpa.start);
+		       (unsigned long)padev->hpa.start);
 		err = -EBUSY;
 		goto free_and_ret;
 	}
@@ -968,6 +988,7 @@ free_and_ret:
 }
 
 static int __devinit
+static int
 snd_harmony_probe(struct parisc_device *padev)
 {
 	int err;
@@ -977,6 +998,9 @@ snd_harmony_probe(struct parisc_device *padev)
 	card = snd_card_new(index, id, THIS_MODULE, 0);
 	if (card == NULL)
 		return -ENOMEM;
+	err = snd_card_new(&padev->dev, index, id, THIS_MODULE, 0, &card);
+	if (err < 0)
+		return err;
 
 	err = snd_harmony_create(card, padev, &h);
 	if (err < 0)
@@ -1012,6 +1036,10 @@ snd_harmony_remove(struct parisc_device *padev)
 {
 	snd_card_free(parisc_get_drvdata(padev));
 	parisc_set_drvdata(padev, NULL);
+static int
+snd_harmony_remove(struct parisc_device *padev)
+{
+	snd_card_free(parisc_get_drvdata(padev));
 	return 0;
 }
 

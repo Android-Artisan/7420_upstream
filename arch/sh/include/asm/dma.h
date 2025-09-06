@@ -29,6 +29,8 @@
 #else
 #  define MAX_DMA_CHANNELS	(CONFIG_NR_ONCHIP_DMA_CHANNELS)
 #endif
+#include <linux/device.h>
+#include <asm-generic/dma.h>
 
 /*
  * Read and write modes can mean drastically different things depending on the
@@ -96,6 +98,7 @@ struct dma_channel {
 	wait_queue_head_t wait_queue;
 
 	struct sys_device dev;
+	struct device dev;
 	void *priv_data;
 };
 

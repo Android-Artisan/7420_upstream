@@ -136,6 +136,7 @@ protocol on 'lock entry' insertion and removal:
 
 On insertion:
  1) set the 'list_op_pending' word to the address of the 'lock word'
+ 1) set the 'list_op_pending' word to the address of the 'lock entry'
     to be inserted,
  2) acquire the futex lock,
  3) add the lock entry, with its thread id (TID) in the bottom 29 bits
@@ -148,6 +149,11 @@ On removal:
  2) remove the lock entry for this lock from the 'head' list,
  2) release the futex lock, and
  2) clear the 'lock_op_pending' word.
+ 1) set the 'list_op_pending' word to the address of the 'lock entry'
+    to be removed,
+ 2) remove the lock entry for this lock from the 'head' list,
+ 3) release the futex lock, and
+ 4) clear the 'lock_op_pending' word.
 
 On exit, the kernel will consider the address stored in
 'list_op_pending' and the address of each 'lock word' found by walking

@@ -24,6 +24,7 @@
 #include <linux/errno.h>
 #include <linux/crypto.h>
 #include <linux/types.h>
+#include <linux/bitops.h>
 #include <crypto/algapi.h>
 #include <asm/byteorder.h>
 
@@ -100,6 +101,41 @@ static void salsa20_wordtobyte(u8 output[64], const u32 input[16])
 	}
 	for (i = 0; i < 16; ++i)
 		x[i] = PLUS(x[i],input[i]);
+		x[ 4] ^= rol32((x[ 0] + x[12]),  7);
+		x[ 8] ^= rol32((x[ 4] + x[ 0]),  9);
+		x[12] ^= rol32((x[ 8] + x[ 4]), 13);
+		x[ 0] ^= rol32((x[12] + x[ 8]), 18);
+		x[ 9] ^= rol32((x[ 5] + x[ 1]),  7);
+		x[13] ^= rol32((x[ 9] + x[ 5]),  9);
+		x[ 1] ^= rol32((x[13] + x[ 9]), 13);
+		x[ 5] ^= rol32((x[ 1] + x[13]), 18);
+		x[14] ^= rol32((x[10] + x[ 6]),  7);
+		x[ 2] ^= rol32((x[14] + x[10]),  9);
+		x[ 6] ^= rol32((x[ 2] + x[14]), 13);
+		x[10] ^= rol32((x[ 6] + x[ 2]), 18);
+		x[ 3] ^= rol32((x[15] + x[11]),  7);
+		x[ 7] ^= rol32((x[ 3] + x[15]),  9);
+		x[11] ^= rol32((x[ 7] + x[ 3]), 13);
+		x[15] ^= rol32((x[11] + x[ 7]), 18);
+		x[ 1] ^= rol32((x[ 0] + x[ 3]),  7);
+		x[ 2] ^= rol32((x[ 1] + x[ 0]),  9);
+		x[ 3] ^= rol32((x[ 2] + x[ 1]), 13);
+		x[ 0] ^= rol32((x[ 3] + x[ 2]), 18);
+		x[ 6] ^= rol32((x[ 5] + x[ 4]),  7);
+		x[ 7] ^= rol32((x[ 6] + x[ 5]),  9);
+		x[ 4] ^= rol32((x[ 7] + x[ 6]), 13);
+		x[ 5] ^= rol32((x[ 4] + x[ 7]), 18);
+		x[11] ^= rol32((x[10] + x[ 9]),  7);
+		x[ 8] ^= rol32((x[11] + x[10]),  9);
+		x[ 9] ^= rol32((x[ 8] + x[11]), 13);
+		x[10] ^= rol32((x[ 9] + x[ 8]), 18);
+		x[12] ^= rol32((x[15] + x[14]),  7);
+		x[13] ^= rol32((x[12] + x[15]),  9);
+		x[14] ^= rol32((x[13] + x[12]), 13);
+		x[15] ^= rol32((x[14] + x[13]), 18);
+	}
+	for (i = 0; i < 16; ++i)
+		x[i] += input[i];
 	for (i = 0; i < 16; ++i)
 		U32TO8_LITTLE(output + 4 * i,x[i]);
 }
@@ -153,6 +189,9 @@ static void salsa20_encrypt_bytes(struct salsa20_ctx *ctx, u8 *dst,
 		ctx->input[8] = PLUSONE(ctx->input[8]);
 		if (!ctx->input[8])
 			ctx->input[9] = PLUSONE(ctx->input[9]);
+		ctx->input[8]++;
+		if (!ctx->input[8])
+			ctx->input[9]++;
 
 		if (bytes <= 64) {
 			crypto_xor(dst, buf, bytes);
@@ -189,14 +228,7 @@ static int encrypt(struct blkcipher_desc *desc,
 	blkcipher_walk_init(&walk, dst, src, nbytes);
 	err = blkcipher_walk_virt_block(desc, &walk, 64);
 
-	salsa20_ivsetup(ctx, walk.iv);
-
-	if (likely(walk.nbytes == nbytes))
-	{
-		salsa20_encrypt_bytes(ctx, walk.dst.virt.addr,
-				      walk.src.virt.addr, nbytes);
-		return blkcipher_walk_done(desc, &walk, 0);
-	}
+	salsa20_ivsetup(ctx, desc->info);
 
 	while (walk.nbytes >= 64) {
 		salsa20_encrypt_bytes(ctx, walk.dst.virt.addr,
@@ -253,3 +285,5 @@ module_exit(salsa20_generic_mod_fini);
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION ("Salsa20 stream cipher algorithm");
 MODULE_ALIAS("salsa20");
+MODULE_ALIAS_CRYPTO("salsa20");
+MODULE_ALIAS_CRYPTO("salsa20-generic");

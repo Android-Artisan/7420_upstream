@@ -3,6 +3,7 @@
 ** This implementation is for PA-RISC platforms that do not support
 ** I/O TLBs (aka DMA address translation hardware).
 ** See Documentation/DMA-mapping.txt for interface definitions.
+** See Documentation/DMA-API-HOWTO.txt for interface definitions.
 **
 **      (c) Copyright 1999,2000 Hewlett-Packard Company
 **      (c) Copyright 2000 Grant Grundler
@@ -18,6 +19,7 @@
 */
 
 #include <linux/init.h>
+#include <linux/gfp.h>
 #include <linux/mm.h>
 #include <linux/pci.h>
 #include <linux/proc_fs.h>
@@ -26,6 +28,10 @@
 #include <linux/string.h>
 #include <linux/types.h>
 #include <linux/scatterlist.h>
+#include <linux/string.h>
+#include <linux/types.h>
+#include <linux/scatterlist.h>
+#include <linux/export.h>
 
 #include <asm/cacheflush.h>
 #include <asm/dma.h>    /* for DMA_CHUNK_SIZE */
@@ -96,6 +102,14 @@ static inline int map_pte_uncached(pte_t * pte,
 		purge_tlb_start();
 		pdtlb_kernel(orig_vaddr);
 		purge_tlb_end();
+		unsigned long flags;
+
+		if (!pte_none(*pte))
+			printk(KERN_ERR "map_pte_uncached: page already exists\n");
+		purge_tlb_start(flags);
+		set_pte(pte, __mk_pte(*paddr_ptr, PAGE_KERNEL_UNC));
+		pdtlb_kernel(orig_vaddr);
+		purge_tlb_end(flags);
 		vaddr += PAGE_SIZE;
 		orig_vaddr += PAGE_SIZE;
 		(*paddr_ptr) += PAGE_SIZE;
@@ -173,6 +187,13 @@ static inline void unmap_uncached_pte(pmd_t * pmd, unsigned long vaddr,
 		purge_tlb_start();
 		pdtlb_kernel(orig_vaddr);
 		purge_tlb_end();
+		unsigned long flags;
+		pte_t page = *pte;
+
+		pte_clear(&init_mm, vaddr, pte);
+		purge_tlb_start(flags);
+		pdtlb_kernel(orig_vaddr);
+		purge_tlb_end(flags);
 		vaddr += PAGE_SIZE;
 		orig_vaddr += PAGE_SIZE;
 		pte++;
@@ -451,6 +472,7 @@ static dma_addr_t pa11_dma_map_single(struct device *dev, void *addr, size_t siz
 		printk(KERN_ERR "pa11_dma_map_single(PCI_DMA_NONE) called by %p\n", __builtin_return_address(0));
 		BUG();
 	}
+	BUG_ON(direction == DMA_NONE);
 
 	flush_kernel_dcache_range((unsigned long) addr, size);
 	return virt_to_phys(addr);
@@ -462,6 +484,7 @@ static void pa11_dma_unmap_single(struct device *dev, dma_addr_t dma_handle, siz
 		printk(KERN_ERR "pa11_dma_unmap_single(PCI_DMA_NONE) called by %p\n", __builtin_return_address(0));
 		BUG();
 	}
+	BUG_ON(direction == DMA_NONE);
 
 	if (direction == DMA_TO_DEVICE)
 	    return;
@@ -488,6 +511,16 @@ static int pa11_dma_map_sg(struct device *dev, struct scatterlist *sglist, int n
 		sg_dma_address(sglist) = (dma_addr_t) virt_to_phys(vaddr);
 		sg_dma_len(sglist) = sglist->length;
 		flush_kernel_dcache_range(vaddr, sglist->length);
+	struct scatterlist *sg;
+
+	BUG_ON(direction == DMA_NONE);
+
+	for_each_sg(sglist, sg, nents, i) {
+		unsigned long vaddr = (unsigned long)sg_virt(sg);
+
+		sg_dma_address(sg) = (dma_addr_t) virt_to_phys(vaddr);
+		sg_dma_len(sg) = sg->length;
+		flush_kernel_dcache_range(vaddr, sg->length);
 	}
 	return nents;
 }
@@ -498,6 +531,9 @@ static void pa11_dma_unmap_sg(struct device *dev, struct scatterlist *sglist, in
 
 	if (direction == DMA_NONE)
 	    BUG();
+	struct scatterlist *sg;
+
+	BUG_ON(direction == DMA_NONE);
 
 	if (direction == DMA_TO_DEVICE)
 	    return;
@@ -506,6 +542,8 @@ static void pa11_dma_unmap_sg(struct device *dev, struct scatterlist *sglist, in
 
 	for (i = 0; i < nents; i++, sglist++ )
 		flush_kernel_dcache_range(sg_virt_addr(sglist), sglist->length);
+	for_each_sg(sglist, sg, nents, i)
+		flush_kernel_vmap_range(sg_virt(sg), sg->length);
 	return;
 }
 
@@ -513,6 +551,7 @@ static void pa11_dma_sync_single_for_cpu(struct device *dev, dma_addr_t dma_hand
 {
 	if (direction == DMA_NONE)
 	    BUG();
+	BUG_ON(direction == DMA_NONE);
 
 	flush_kernel_dcache_range((unsigned long) phys_to_virt(dma_handle) + offset, size);
 }
@@ -521,6 +560,7 @@ static void pa11_dma_sync_single_for_device(struct device *dev, dma_addr_t dma_h
 {
 	if (direction == DMA_NONE)
 	    BUG();
+	BUG_ON(direction == DMA_NONE);
 
 	flush_kernel_dcache_range((unsigned long) phys_to_virt(dma_handle) + offset, size);
 }
@@ -533,6 +573,12 @@ static void pa11_dma_sync_sg_for_cpu(struct device *dev, struct scatterlist *sgl
 
 	for (i = 0; i < nents; i++, sglist++ )
 		flush_kernel_dcache_range(sg_virt_addr(sglist), sglist->length);
+	struct scatterlist *sg;
+
+	/* once we do combining we'll need to use phys_to_virt(sg_dma_address(sglist)) */
+
+	for_each_sg(sglist, sg, nents, i)
+		flush_kernel_vmap_range(sg_virt(sg), sg->length);
 }
 
 static void pa11_dma_sync_sg_for_device(struct device *dev, struct scatterlist *sglist, int nents, enum dma_data_direction direction)
@@ -543,6 +589,12 @@ static void pa11_dma_sync_sg_for_device(struct device *dev, struct scatterlist *
 
 	for (i = 0; i < nents; i++, sglist++ )
 		flush_kernel_dcache_range(sg_virt_addr(sglist), sglist->length);
+	struct scatterlist *sg;
+
+	/* once we do combining we'll need to use phys_to_virt(sg_dma_address(sglist)) */
+
+	for_each_sg(sglist, sg, nents, i)
+		flush_kernel_vmap_range(sg_virt(sg), sg->length);
 }
 
 struct hppa_dma_ops pcxl_dma_ops = {

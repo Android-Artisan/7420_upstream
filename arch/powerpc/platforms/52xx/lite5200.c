@@ -5,6 +5,7 @@
  *
  * Copyright (C) Secret Lab Technologies Ltd. 2006. All rights reserved.
  * Copyright (C) Freescale Semicondutor, Inc. 2006. All rights reserved.
+ * Copyright 2006 Freescale Semiconductor, Inc. All rights reserved.
  *
  * Description:
  * This program is free software; you can redistribute  it and/or modify it
@@ -18,6 +19,7 @@
 #include <linux/init.h>
 #include <linux/pci.h>
 #include <linux/of.h>
+#include <linux/of_address.h>
 #include <linux/root_dev.h>
 #include <linux/initrd.h>
 #include <asm/time.h>
@@ -34,12 +36,14 @@
 
 /* mpc5200 device tree match tables */
 static struct of_device_id mpc5200_cdm_ids[] __initdata = {
+static const struct of_device_id mpc5200_cdm_ids[] __initconst = {
 	{ .compatible = "fsl,mpc5200-cdm", },
 	{ .compatible = "mpc5200-cdm", },
 	{}
 };
 
 static struct of_device_id mpc5200_gpio_ids[] __initdata = {
+static const struct of_device_id mpc5200_gpio_ids[] __initconst = {
 	{ .compatible = "fsl,mpc5200-gpio", },
 	{ .compatible = "mpc5200-gpio", },
 	{}
@@ -171,6 +175,12 @@ static void __init lite5200_setup_arch(void)
 	mpc52xx_setup_pci();
 }
 
+static const char * const board[] __initconst = {
+	"fsl,lite5200",
+	"fsl,lite5200b",
+	NULL,
+};
+
 /*
  * Called very early, MMU is off, device-tree isn't unflattened
  */
@@ -185,6 +195,7 @@ static int __init lite5200_probe(void)
 	pr_debug("%s board found\n", model ? model : "unknown");
 
 	return 1;
+	return of_flat_dt_match(of_get_flat_dt_root(), board);
 }
 
 define_machine(lite5200) {

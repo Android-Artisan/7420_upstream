@@ -97,6 +97,8 @@ struct nfs3_fh {
  
 
 #if defined(__KERNEL__)
+#include <uapi/linux/nfs3.h>
+
 
 /* Number of 32bit words in post_op_attr */
 #define NFS3_POST_OP_ATTR_WORDS		22

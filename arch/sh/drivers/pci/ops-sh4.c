@@ -2,6 +2,7 @@
  * Generic SH-4 / SH-4A PCIC operations (SH7751, SH7780).
  *
  * Copyright (C) 2002 - 2006  Paul Mundt
+ * Copyright (C) 2002 - 2009  Paul Mundt
  *
  * This file is subject to the terms and conditions of the GNU General Public
  * License v2. See the file "COPYING" in the main directory of this archive
@@ -10,6 +11,9 @@
 #include <linux/pci.h>
 #include <asm/addrspace.h>
 #include <asm/io.h>
+#include <linux/io.h>
+#include <linux/spinlock.h>
+#include <asm/addrspace.h>
 #include "pci-sh4.h"
 
 /*
@@ -19,6 +23,7 @@
 	P1SEGADDR((bus->number << 16) | (devfn << 8) | (where & ~3))
 
 static DEFINE_SPINLOCK(sh4_pci_lock);
+	(0x80000000 | (bus->number << 16) | (devfn << 8) | (where & ~3))
 
 /*
  * Functions for accessing PCI configuration space with type 1 accesses
@@ -26,6 +31,7 @@ static DEFINE_SPINLOCK(sh4_pci_lock);
 static int sh4_pci_read(struct pci_bus *bus, unsigned int devfn,
 			   int where, int size, u32 *val)
 {
+	struct pci_channel *chan = bus->sysdata;
 	unsigned long flags;
 	u32 data;
 
@@ -37,6 +43,10 @@ static int sh4_pci_read(struct pci_bus *bus, unsigned int devfn,
 	pci_write_reg(CONFIG_CMD(bus, devfn, where), SH4_PCIPAR);
 	data = pci_read_reg(SH4_PCIPDR);
 	spin_unlock_irqrestore(&sh4_pci_lock, flags);
+	raw_spin_lock_irqsave(&pci_config_lock, flags);
+	pci_write_reg(chan, CONFIG_CMD(bus, devfn, where), SH4_PCIPAR);
+	data = pci_read_reg(chan, SH4_PCIPDR);
+	raw_spin_unlock_irqrestore(&pci_config_lock, flags);
 
 	switch (size) {
 	case 1:
@@ -63,6 +73,7 @@ static int sh4_pci_read(struct pci_bus *bus, unsigned int devfn,
 static int sh4_pci_write(struct pci_bus *bus, unsigned int devfn,
 			 int where, int size, u32 val)
 {
+	struct pci_channel *chan = bus->sysdata;
 	unsigned long flags;
 	int shift;
 	u32 data;
@@ -71,6 +82,10 @@ static int sh4_pci_write(struct pci_bus *bus, unsigned int devfn,
 	pci_write_reg(CONFIG_CMD(bus, devfn, where), SH4_PCIPAR);
 	data = pci_read_reg(SH4_PCIPDR);
 	spin_unlock_irqrestore(&sh4_pci_lock, flags);
+	raw_spin_lock_irqsave(&pci_config_lock, flags);
+	pci_write_reg(chan, CONFIG_CMD(bus, devfn, where), SH4_PCIPAR);
+	data = pci_read_reg(chan, SH4_PCIPDR);
+	raw_spin_unlock_irqrestore(&pci_config_lock, flags);
 
 	switch (size) {
 	case 1:
@@ -91,6 +106,7 @@ static int sh4_pci_write(struct pci_bus *bus, unsigned int devfn,
 	}
 
 	pci_write_reg(data, SH4_PCIPDR);
+	pci_write_reg(chan, data, SH4_PCIPDR);
 
 	return PCIBIOS_SUCCESSFUL;
 }
@@ -164,6 +180,7 @@ char * __devinit pcibios_setup(char *str)
 }
 
 int __attribute__((weak)) pci_fixup_pcic(void)
+int __attribute__((weak)) pci_fixup_pcic(struct pci_channel *chan)
 {
 	/* Nothing to do. */
 	return 0;

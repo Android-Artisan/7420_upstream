@@ -32,6 +32,12 @@
  *
  * Or submit a bug report through the following website:
  *    http://www.sf.net/projects/lksctp
+ * along with GNU CC; see the file COPYING.  If not, see
+ * <http://www.gnu.org/licenses/>.
+ *
+ * Please send any bug reports or fixes you make to the
+ * email address(es):
+ *    lksctp developers <linux-sctp@vger.kernel.org>
  *
  * Written or modified by:
  *    La Monte H.P. Yarroll <piggy@acm.org>
@@ -46,6 +52,10 @@
  * be incorporated into the next SCTP release.
  */
 
+ */
+
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/skbuff.h>
 #include <net/sctp/sctp.h>
 #include <net/sctp/sm.h>
@@ -58,6 +68,8 @@ static const sctp_sm_table_entry_t
 timeout_event_table[SCTP_NUM_TIMEOUT_TYPES][SCTP_STATE_NUM_STATES];
 
 static const sctp_sm_table_entry_t *sctp_chunk_event_lookup(sctp_cid_t cid,
+static const sctp_sm_table_entry_t *sctp_chunk_event_lookup(struct net *net,
+							    sctp_cid_t cid,
 							    sctp_state_t state);
 
 
@@ -77,6 +89,22 @@ static const sctp_sm_table_entry_t bug = {
 	return &_table[event_subtype._type][(int)state];
 
 const sctp_sm_table_entry_t *sctp_sm_lookup_event(sctp_event_t event_type,
+#define DO_LOOKUP(_max, _type, _table)					\
+({									\
+	const sctp_sm_table_entry_t *rtn;				\
+									\
+	if ((event_subtype._type > (_max))) {				\
+		pr_warn("table %p possible attack: event %d exceeds max %d\n", \
+			_table, event_subtype._type, _max);		\
+		rtn = &bug;						\
+	} else								\
+		rtn = &_table[event_subtype._type][(int)state];		\
+									\
+	rtn;								\
+})
+
+const sctp_sm_table_entry_t *sctp_sm_lookup_event(struct net *net,
+						  sctp_event_t event_type,
 						  sctp_state_t state,
 						  sctp_subtype_t event_subtype)
 {
@@ -98,6 +126,16 @@ const sctp_sm_table_entry_t *sctp_sm_lookup_event(sctp_event_t event_type,
 			  primitive_event_table);
 		break;
 
+		return sctp_chunk_event_lookup(net, event_subtype.chunk, state);
+	case SCTP_EVENT_T_TIMEOUT:
+		return DO_LOOKUP(SCTP_EVENT_TIMEOUT_MAX, timeout,
+				 timeout_event_table);
+	case SCTP_EVENT_T_OTHER:
+		return DO_LOOKUP(SCTP_EVENT_OTHER_MAX, other,
+				 other_event_table);
+	case SCTP_EVENT_T_PRIMITIVE:
+		return DO_LOOKUP(SCTP_EVENT_PRIMITIVE_MAX, primitive,
+				 primitive_event_table);
 	default:
 		/* Yikes!  We got an illegal event type.  */
 		return &bug;
@@ -271,6 +309,11 @@ const sctp_sm_table_entry_t *sctp_sm_lookup_event(sctp_event_t event_type,
 	TYPE_SCTP_FUNC(sctp_sf_do_9_2_shutdown_ack), \
 	/* SCTP_STATE_SHUTDOWN_RECEIVED */ \
 	TYPE_SCTP_FUNC(sctp_sf_discard_chunk), \
+	TYPE_SCTP_FUNC(sctp_sf_do_9_2_shutdown), \
+	/* SCTP_STATE_SHUTDOWN_SENT */ \
+	TYPE_SCTP_FUNC(sctp_sf_do_9_2_shutdown_ack), \
+	/* SCTP_STATE_SHUTDOWN_RECEIVED */ \
+	TYPE_SCTP_FUNC(sctp_sf_do_9_2_shut_ctsn), \
 	/* SCTP_STATE_SHUTDOWN_ACK_SENT */ \
 	TYPE_SCTP_FUNC(sctp_sf_discard_chunk), \
 } /* TYPE_SCTP_SHUTDOWN */
@@ -699,6 +742,7 @@ chunk_event_table_unknown[SCTP_STATE_NUM_STATES] = {
 	/* SCTP_STATE_SHUTDOWN_ACK_SENT */ \
 	TYPE_SCTP_FUNC(sctp_sf_error_shutdown), \
 } /* TYPE_SCTP_PRIMITIVE_REQUESTHEARTBEAT */
+} /* TYPE_SCTP_PRIMITIVE_ASCONF */
 
 /* The primary index for this table is the primitive type.
  * The secondary index for this table is the state.
@@ -723,6 +767,7 @@ static const sctp_sm_table_entry_t primitive_event_table[SCTP_NUM_PRIMITIVE_TYPE
 	TYPE_SCTP_FUNC(sctp_sf_ignore_other), \
 	/* SCTP_STATE_ESTABLISHED */ \
 	TYPE_SCTP_FUNC(sctp_sf_ignore_other), \
+	TYPE_SCTP_FUNC(sctp_sf_do_no_pending_tsn), \
 	/* SCTP_STATE_SHUTDOWN_PENDING */ \
 	TYPE_SCTP_FUNC(sctp_sf_do_9_2_start_shutdown), \
 	/* SCTP_STATE_SHUTDOWN_SENT */ \
@@ -983,6 +1028,8 @@ static const sctp_sm_table_entry_t timeout_event_table[SCTP_NUM_TIMEOUT_TYPES][S
 };
 
 static const sctp_sm_table_entry_t *sctp_chunk_event_lookup(sctp_cid_t cid,
+static const sctp_sm_table_entry_t *sctp_chunk_event_lookup(struct net *net,
+							    sctp_cid_t cid,
 							    sctp_state_t state)
 {
 	if (state > SCTP_STATE_MAX)
@@ -992,11 +1039,13 @@ static const sctp_sm_table_entry_t *sctp_chunk_event_lookup(sctp_cid_t cid,
 		return &chunk_event_table[cid][state];
 
 	if (sctp_prsctp_enable) {
+	if (net->sctp.prsctp_enable) {
 		if (cid == SCTP_CID_FWD_TSN)
 			return &prsctp_chunk_event_table[0][state];
 	}
 
 	if (sctp_addip_enable) {
+	if (net->sctp.addip_enable) {
 		if (cid == SCTP_CID_ASCONF)
 			return &addip_chunk_event_table[0][state];
 
@@ -1005,6 +1054,7 @@ static const sctp_sm_table_entry_t *sctp_chunk_event_lookup(sctp_cid_t cid,
 	}
 
 	if (sctp_auth_enable) {
+	if (net->sctp.auth_enable) {
 		if (cid == SCTP_CID_AUTH)
 			return &auth_chunk_event_table[0][state];
 	}

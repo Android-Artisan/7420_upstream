@@ -100,6 +100,24 @@
 #else /* __s390x__ */
 #define ELF_CLASS	ELFCLASS64
 #endif /* __s390x__ */
+/* Bits present in AT_HWCAP. */
+#define HWCAP_S390_ESAN3	1
+#define HWCAP_S390_ZARCH	2
+#define HWCAP_S390_STFLE	4
+#define HWCAP_S390_MSA		8
+#define HWCAP_S390_LDISP	16
+#define HWCAP_S390_EIMM		32
+#define HWCAP_S390_DFP		64
+#define HWCAP_S390_HPAGE	128
+#define HWCAP_S390_ETF3EH	256
+#define HWCAP_S390_HIGH_GPRS	512
+#define HWCAP_S390_TE		1024
+#define HWCAP_S390_VXRS		2048
+
+/*
+ * These are used to set parameters in the core dumps.
+ */
+#define ELF_CLASS	ELFCLASS64
 #define ELF_DATA	ELFDATA2MSB
 #define ELF_ARCH	EM_S390
 
@@ -108,6 +126,8 @@
  */
 
 #include <asm/ptrace.h>
+#include <asm/compat.h>
+#include <asm/syscall.h>
 #include <asm/user.h>
 
 typedef s390_fp_regs elf_fpregset_t;
@@ -119,6 +139,12 @@ typedef s390_compat_regs compat_elf_gregset_t;
 #include <linux/sched.h>	/* for task_struct */
 #include <asm/system.h>		/* for save_access_regs */
 #include <asm/mmu_context.h>
+
+#include <asm/mmu_context.h>
+
+#include <asm/vdso.h>
+
+extern unsigned int vdso_enabled;
 
 /*
  * This is used to ensure we don't load something for the wrong architecture.
@@ -147,6 +173,18 @@ typedef s390_compat_regs compat_elf_gregset_t;
    the loader.  We need to make sure that it is out of the way of the program
    that it will "exec", and that there is sufficient room for the brk.  */
 #define ELF_ET_DYN_BASE		(STACK_TOP / 3 * 2)
+   that it will "exec", and that there is sufficient room for the brk. 64-bit
+   tasks are aligned to 4GB. */
+#define ELF_ET_DYN_BASE (is_32bit_task() ? \
+				(STACK_TOP / 3 * 2) : \
+				(STACK_TOP / 3 * 2) & ~((1UL << 32) - 1))
+/*
+ * This is the base location for PIE (ET_DYN with INTERP) loads. On
+ * 64-bit, this is raised to 4GB to leave the entire 32-bit address
+ * space open for things that want to use the area for 32-bit pointers.
+ */
+#define ELF_ET_DYN_BASE		(is_compat_task() ? 0x000400000UL : \
+						    0x100000000UL)
 
 /* This yields a mask that user programs can use to figure out what
    instruction set this CPU supports. */
@@ -192,5 +230,55 @@ do {							\
 		disable_noexec(current->mm, current);	\
 	current->mm->context.noexec == 0;		\
 })
+#ifndef CONFIG_COMPAT
+#define SET_PERSONALITY(ex) \
+do {								\
+	set_personality(PER_LINUX |				\
+		(current->personality & (~PER_MASK)));		\
+	current_thread_info()->sys_call_table = 		\
+		(unsigned long) &sys_call_table;		\
+} while (0)
+#else /* CONFIG_COMPAT */
+#define SET_PERSONALITY(ex)					\
+do {								\
+	if (personality(current->personality) != PER_LINUX32)	\
+		set_personality(PER_LINUX |			\
+			(current->personality & ~PER_MASK));	\
+	if ((ex).e_ident[EI_CLASS] == ELFCLASS32) {		\
+		set_thread_flag(TIF_31BIT);			\
+		current_thread_info()->sys_call_table =		\
+			(unsigned long)	&sys_call_table_emu;	\
+	} else {						\
+		clear_thread_flag(TIF_31BIT);			\
+		current_thread_info()->sys_call_table =		\
+			(unsigned long) &sys_call_table;	\
+	}							\
+} while (0)
+#endif /* CONFIG_COMPAT */
+
+/*
+ * Cache aliasing on the latest machines calls for a mapping granularity
+ * of 512KB. For 64-bit processes use a 512KB alignment and a randomization
+ * of up to 1GB. For 31-bit processes the virtual address space is limited,
+ * use no alignment and limit the randomization to 8MB.
+ */
+#define BRK_RND_MASK	(is_32bit_task() ? 0x7ffUL : 0x3ffffUL)
+#define MMAP_RND_MASK	(is_32bit_task() ? 0x7ffUL : 0x3ff80UL)
+#define MMAP_ALIGN_MASK	(is_32bit_task() ? 0 : 0x7fUL)
+#define STACK_RND_MASK	MMAP_RND_MASK
+
+#define ARCH_DLINFO							    \
+do {									    \
+	if (vdso_enabled)						    \
+		NEW_AUX_ENT(AT_SYSINFO_EHDR,				    \
+			    (unsigned long)current->mm->context.vdso_base); \
+} while (0)
+
+struct linux_binprm;
+
+#define ARCH_HAS_SETUP_ADDITIONAL_PAGES 1
+int arch_setup_additional_pages(struct linux_binprm *, int);
+
+void *fill_cpu_elf_notes(void *ptr, struct save_area *sa, __vector128 *vxrs);
 
 #endif

@@ -33,6 +33,17 @@ extern void change_bit(unsigned long nr, volatile unsigned long *addr);
 
 #include <asm-generic/bitops/ffz.h>
 #include <asm-generic/bitops/__ffs.h>
+#include <asm/barrier.h>
+
+int test_and_set_bit(unsigned long nr, volatile unsigned long *addr);
+int test_and_clear_bit(unsigned long nr, volatile unsigned long *addr);
+int test_and_change_bit(unsigned long nr, volatile unsigned long *addr);
+void set_bit(unsigned long nr, volatile unsigned long *addr);
+void clear_bit(unsigned long nr, volatile unsigned long *addr);
+void change_bit(unsigned long nr, volatile unsigned long *addr);
+
+#include <asm-generic/bitops/non-atomic.h>
+
 #include <asm-generic/bitops/fls.h>
 #include <asm-generic/bitops/__fls.h>
 #include <asm-generic/bitops/fls64.h>
@@ -41,6 +52,11 @@ extern void change_bit(unsigned long nr, volatile unsigned long *addr);
 
 #include <asm-generic/bitops/sched.h>
 #include <asm-generic/bitops/ffs.h>
+int ffs(int x);
+unsigned long __ffs(unsigned long);
+
+#include <asm-generic/bitops/ffz.h>
+#include <asm-generic/bitops/sched.h>
 
 /*
  * hweightN: returns the hamming weight (i.e. the number
@@ -86,6 +102,12 @@ static inline unsigned int hweight8(unsigned int w)
 #include <asm-generic/bitops/hweight.h>
 
 #endif
+unsigned long __arch_hweight64(__u64 w);
+unsigned int __arch_hweight32(unsigned int w);
+unsigned int __arch_hweight16(unsigned int w);
+unsigned int __arch_hweight8(unsigned int w);
+
+#include <asm-generic/bitops/const_hweight.h>
 #include <asm-generic/bitops/lock.h>
 #endif /* __KERNEL__ */
 
@@ -101,6 +123,9 @@ static inline unsigned int hweight8(unsigned int w)
 	test_and_clear_bit((nr) ^ 0x38,(unsigned long *)(addr))
 
 #include <asm-generic/bitops/minix.h>
+#include <asm-generic/bitops/le.h>
+
+#include <asm-generic/bitops/ext2-atomic-setbit.h>
 
 #endif /* __KERNEL__ */
 

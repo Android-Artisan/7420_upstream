@@ -27,6 +27,7 @@
  */
 
 #include <asm/io.h>
+#include <linux/io.h>
 #include <linux/time.h>
 #include <sound/core.h>
 #include <sound/sb.h>
@@ -218,6 +219,7 @@ static void snd_sb8dsp_midi_output_timer(unsigned long data)
 	spin_lock_irqsave(&chip->open_lock, flags);
 	chip->midi_timer.expires = 1 + jiffies;
 	add_timer(&chip->midi_timer);
+	mod_timer(&chip->midi_timer, 1 + jiffies);
 	spin_unlock_irqrestore(&chip->open_lock, flags);	
 	snd_sb8dsp_midi_output_write(substream);
 }
@@ -236,6 +238,10 @@ static void snd_sb8dsp_midi_output_trigger(struct snd_rawmidi_substream *substre
 			chip->midi_timer.data = (unsigned long) substream;
 			chip->midi_timer.expires = 1 + jiffies;
 			add_timer(&chip->midi_timer);
+			setup_timer(&chip->midi_timer,
+				    snd_sb8dsp_midi_output_timer,
+				    (unsigned long) substream);
+			mod_timer(&chip->midi_timer, 1 + jiffies);
 			chip->open |= SB_OPEN_MIDI_OUTPUT_TRIGGER;
 		}
 	} else {
@@ -264,6 +270,7 @@ static struct snd_rawmidi_ops snd_sb8dsp_midi_input =
 };
 
 int snd_sb8dsp_midi(struct snd_sb *chip, int device, struct snd_rawmidi ** rrawmidi)
+int snd_sb8dsp_midi(struct snd_sb *chip, int device)
 {
 	struct snd_rawmidi *rmidi;
 	int err;

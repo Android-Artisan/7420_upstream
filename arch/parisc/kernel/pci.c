@@ -1,5 +1,6 @@
 /* $Id: pci.c,v 1.6 2000/01/29 00:12:05 grundler Exp $
  *
+/*
  * This file is subject to the terms and conditions of the GNU General Public
  * License.  See the file "COPYING" in the main directory of this archive
  * for more details.
@@ -20,6 +21,9 @@
 #include <asm/io.h>
 #include <asm/system.h>
 #include <asm/cache.h>		/* for L1_CACHE_BYTES */
+#include <linux/types.h>
+
+#include <asm/io.h>
 #include <asm/superio.h>
 
 #define DEBUG_RESOURCES 0
@@ -124,6 +128,10 @@ static int __init pcibios_init(void)
 	} else {
 		printk(KERN_WARNING "pci_bios != NULL but init() is!\n");
 	}
+
+	/* Set the CLS for PCI as early as possible. */
+	pci_cache_line_size = pci_dfl_cache_line_size;
+
 	return 0;
 }
 
@@ -246,6 +254,10 @@ EXPORT_SYMBOL(pcibios_resource_to_bus);
 EXPORT_SYMBOL(pcibios_bus_to_resource);
 #endif
 
+			      (0x80 << 8) | pci_cache_line_size);
+}
+
+
 /*
  * pcibios align resources() is called every time generic PCI code
  * wants to generate a new address. The process of looking for
@@ -259,6 +271,10 @@ void pcibios_align_resource(void *data, struct resource *res,
 				resource_size_t size, resource_size_t alignment)
 {
 	resource_size_t mask, align;
+resource_size_t pcibios_align_resource(void *data, const struct resource *res,
+				resource_size_t size, resource_size_t alignment)
+{
+	resource_size_t mask, align, start = res->start;
 
 	DBG_RES("pcibios_align_resource(%s, (%p) [%lx,%lx]/%x, 0x%lx, 0x%lx)\n",
 		pci_name(((struct pci_dev *) data)),
@@ -276,6 +292,40 @@ void pcibios_align_resource(void *data, struct resource *res,
 	/* The caller updates the end field, we don't.  */
 }
 
+
+	start += mask;
+	start &= ~mask;
+
+	return start;
+}
+
+
+int pci_mmap_page_range(struct pci_dev *dev, struct vm_area_struct *vma,
+			enum pci_mmap_state mmap_state, int write_combine)
+{
+	unsigned long prot;
+
+	/*
+	 * I/O space can be accessed via normal processor loads and stores on
+	 * this platform but for now we elect not to do this and portable
+	 * drivers should not do this anyway.
+	 */
+	if (mmap_state == pci_mmap_io)
+		return -EINVAL;
+
+	if (write_combine)
+		return -EINVAL;
+
+	/*
+	 * Ignore write-combine; for now only return uncached mappings.
+	 */
+	prot = pgprot_val(vma->vm_page_prot);
+	prot |= _PAGE_NO_CACHE;
+	vma->vm_page_prot = __pgprot(prot);
+
+	return remap_pfn_range(vma, vma->vm_start, vma->vm_pgoff,
+		vma->vm_end - vma->vm_start, vma->vm_page_prot);
+}
 
 /*
  * A driver is enabling the device.  We make sure that all the appropriate

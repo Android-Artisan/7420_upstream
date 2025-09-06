@@ -14,6 +14,7 @@
 #include <net/net_namespace.h>
 #include <net/sock.h>
 #include <linux/atalk.h>
+#include <linux/export.h>
 
 
 static __inline__ struct atalk_iface *atalk_get_interface_idx(loff_t pos)
@@ -164,6 +165,11 @@ static void *atalk_seq_socket_start(struct seq_file *seq, loff_t *pos)
 
 	read_lock_bh(&atalk_sockets_lock);
 	return l ? atalk_get_socket_idx(--l) : SEQ_START_TOKEN;
+static void *atalk_seq_socket_start(struct seq_file *seq, loff_t *pos)
+	__acquires(atalk_sockets_lock)
+{
+	read_lock_bh(&atalk_sockets_lock);
+	return seq_hlist_start_head(&atalk_sockets, *pos);
 }
 
 static void *atalk_seq_socket_next(struct seq_file *seq, void *v, loff_t *pos)
@@ -178,6 +184,7 @@ static void *atalk_seq_socket_next(struct seq_file *seq, void *v, loff_t *pos)
 	i = sk_next(v);
 out:
 	return i;
+	return seq_hlist_next(v, &atalk_sockets, pos);
 }
 
 static void atalk_seq_socket_stop(struct seq_file *seq, void *v)
@@ -207,6 +214,17 @@ static int atalk_seq_socket_show(struct seq_file *seq, void *v)
 		   atomic_read(&s->sk_wmem_alloc),
 		   atomic_read(&s->sk_rmem_alloc),
 		   s->sk_state, SOCK_INODE(s->sk_socket)->i_uid);
+	s = sk_entry(v);
+	at = at_sk(s);
+
+	seq_printf(seq, "%02X   %04X:%02X:%02X  %04X:%02X:%02X  %08X:%08X "
+			"%02X %u\n",
+		   s->sk_type, ntohs(at->src_net), at->src_node, at->src_port,
+		   ntohs(at->dest_net), at->dest_node, at->dest_port,
+		   sk_wmem_alloc_get(s),
+		   sk_rmem_alloc_get(s),
+		   s->sk_state,
+		   from_kuid_munged(seq_user_ns(seq), sock_i_uid(s)));
 out:
 	return 0;
 }
@@ -316,7 +334,7 @@ out_interface:
 	goto out;
 }
 
-void __exit atalk_proc_exit(void)
+void atalk_proc_exit(void)
 {
 	remove_proc_entry("interface", atalk_proc_dir);
 	remove_proc_entry("route", atalk_proc_dir);

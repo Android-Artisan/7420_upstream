@@ -7,6 +7,8 @@
  */
 
 #include <linux/bootmem.h>
+#include <linux/export.h>
+#include <linux/slab.h>
 #include <asm/sn/types.h>
 #include <asm/sn/addrs.h>
 #include <asm/sn/sn_feature_sets.h>
@@ -138,6 +140,11 @@ static s64 sn_device_fixup_war(u64 nasid, u64 widget, int device,
 	war_list = kzalloc(DEV_PER_WIDGET * sizeof(*war_list), GFP_KERNEL);
 	if (!war_list)
 		BUG();
+	printk_once(KERN_WARNING
+		"PROM version < 4.50 -- implementing old PROM flush WAR\n");
+
+	war_list = kzalloc(DEV_PER_WIDGET * sizeof(*war_list), GFP_KERNEL);
+	BUG_ON(!war_list);
 
 	SAL_CALL_NOLOCK(isrv, SN_SAL_IOIF_GET_WIDGET_DMAFLUSH_LIST,
 			nasid, widget, __pa(war_list), 0, 0, 0 ,0);
@@ -183,6 +190,7 @@ sn_common_hubdev_init(struct hubdev_info *hubdev)
 		kzalloc(size, GFP_KERNEL);
 	if (!hubdev->hdi_flush_nasid_list.widget_p)
 		BUG();
+	BUG_ON(!hubdev->hdi_flush_nasid_list.widget_p);
 
 	for (widget = 0; widget <= HUB_WIDGET_ID_MAX; widget++) {
 		size = DEV_PER_WIDGET *
@@ -190,6 +198,7 @@ sn_common_hubdev_init(struct hubdev_info *hubdev)
 		sn_flush_device_kernel = kzalloc(size, GFP_KERNEL);
 		if (!sn_flush_device_kernel)
 			BUG();
+		BUG_ON(!sn_flush_device_kernel);
 
 		dev_entry = sn_flush_device_kernel;
 		for (device = 0; device < DEV_PER_WIDGET;
@@ -198,6 +207,7 @@ sn_common_hubdev_init(struct hubdev_info *hubdev)
 			dev_entry->common = kzalloc(size, GFP_KERNEL);
 			if (!dev_entry->common)
 				BUG();
+			BUG_ON(!dev_entry->common);
 			if (sn_prom_feature_available(PRF_DEVICE_FLUSH_LIST))
 				status = sal_get_device_dmaflush_list(
 					     hubdev->hdi_nasid, widget, device,
@@ -254,6 +264,7 @@ void sn_pci_fixup_slot(struct pci_dev *dev, struct pcidev_info *pcidev_info,
 	devfn = pcidev_info->pdi_slot_host_handle & 0xffffffff;
  	host_pci_bus = pci_find_bus(segment, bus_no);
  	host_pci_dev = pci_get_slot(host_pci_bus, devfn);
+	host_pci_dev = pci_get_domain_bus_and_slot(segment, bus_no, devfn);
 
 	pcidev_info->host_pci_dev = host_pci_dev;
 	pcidev_info->pdi_linux_pcidev = dev;
@@ -329,6 +340,7 @@ sn_common_bus_fixup(struct pci_bus *bus,
 					    GFP_KERNEL);
 	if (controller->platform_data == NULL)
 		BUG();
+	BUG_ON(controller->platform_data == NULL);
 	sn_platform_data =
 			(struct sn_platform_data *) controller->platform_data;
 	sn_platform_data->provider_soft = provider_soft;
@@ -349,6 +361,7 @@ sn_common_bus_fixup(struct pci_bus *bus,
 
 		printk(KERN_WARNING "Device ASIC=%u XID=%u PBUSNUM=%u "
 		       "L_IO=%lx L_MEM=%lx BASE=%lx\n",
+		       "L_IO=%llx L_MEM=%llx BASE=%llx\n",
 		       b->bs_asic_type, b->bs_xid, b->bs_persist_busnum,
 		       b->bs_legacy_io, b->bs_legacy_mem, b->bs_base);
 		printk(KERN_WARNING "on node %d but only %d nodes online."
@@ -446,6 +459,11 @@ void sn_generate_path(struct pci_bus *pci_bus, char *address)
 
 void __devinit
 sn_pci_fixup_bus(struct pci_bus *bus)
+			sprintf(address + strlen(address), "^%d",
+						geo_slot(geoid));
+}
+
+void sn_pci_fixup_bus(struct pci_bus *bus)
 {
 
 	if (SN_ACPI_BASE_SUPPORT())
@@ -474,6 +492,7 @@ sn_io_early_init(void)
 		struct acpi_table_header *header = NULL;
 
 		acpi_get_table_by_index(ACPI_TABLE_INDEX_DSDT, &header);
+		acpi_get_table(ACPI_SIG_DSDT, 1, &header);
 		BUG_ON(header == NULL);
 		sn_acpi_rev = header->oem_revision;
 	}
@@ -506,6 +525,7 @@ sn_io_early_init(void)
 	{
 		struct acpi_table_header *header;
 		(void)acpi_get_table_by_index(ACPI_TABLE_INDEX_DSDT, &header);
+		(void)acpi_get_table(ACPI_SIG_DSDT, 1, &header);
 		printk(KERN_INFO "ACPI  DSDT OEM Rev 0x%x\n",
 			header->oem_revision);
 	}

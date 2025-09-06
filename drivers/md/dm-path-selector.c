@@ -10,6 +10,9 @@
  */
 
 #include "dm.h"
+#include <linux/device-mapper.h>
+#include <linux/module.h>
+
 #include "dm-path-selector.h"
 
 #include <linux/slab.h>
@@ -19,6 +22,7 @@ struct ps_internal {
 
 	struct list_head list;
 	long use;
+	struct list_head list;
 };
 
 #define pst_to_psi(__pst) container_of((__pst), struct ps_internal, pst)
@@ -50,6 +54,8 @@ static struct ps_internal *get_path_selector(const char *name)
 		else
 			psi->use++;
 	}
+	if (psi && !try_module_get(psi->pst.module))
+		psi = NULL;
 	up_read(&_ps_lock);
 
 	return psi;
@@ -88,6 +94,7 @@ void dm_put_path_selector(struct path_selector_type *pst)
 
 	BUG_ON(psi->use < 0);
 
+	module_put(psi->pst.module);
 out:
 	up_read(&_ps_lock);
 }

@@ -2026,10 +2026,8 @@ static int bttv_log_status(struct file *file, void *f)
 	struct bttv_fh *fh  = f;
 	struct bttv *btv = fh->btv;
 
-	printk(KERN_INFO "bttv%d: ========  START STATUS CARD #%d  ========\n",
 			btv->c.nr, btv->c.nr);
 	bttv_call_i2c_clients(btv, VIDIOC_LOG_STATUS, NULL);
-	printk(KERN_INFO "bttv%d: ========  END STATUS CARD   #%d  ========\n",
 			btv->c.nr, btv->c.nr);
 	return 0;
 }

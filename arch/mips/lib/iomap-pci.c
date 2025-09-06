@@ -12,6 +12,8 @@
 
 static void __iomem *ioport_map_pci(struct pci_dev *dev,
                                      unsigned long port, unsigned int nr)
+void __iomem *__pci_ioport_map(struct pci_dev *dev,
+			       unsigned long port, unsigned int nr)
 {
 	struct pci_controller *ctrl = dev->bus->sysdata;
 	unsigned long base = ctrl->io_map_base;

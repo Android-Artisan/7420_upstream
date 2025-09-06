@@ -25,6 +25,7 @@
 #include <net/irda/irlan_event.h>
 
 char *irlan_state[] = {
+const char * const irlan_state[] = {
 	"IRLAN_IDLE",
 	"IRLAN_QUERY",
 	"IRLAN_CONN",
@@ -41,6 +42,7 @@ char *irlan_state[] = {
 void irlan_next_client_state(struct irlan_cb *self, IRLAN_STATE state)
 {
 	IRDA_DEBUG(2, "%s(), %s\n", __func__ , irlan_state[state]);
+	pr_debug("%s(), %s\n", __func__ , irlan_state[state]);
 
 	IRDA_ASSERT(self != NULL, return;);
 	IRDA_ASSERT(self->magic == IRLAN_MAGIC, return;);
@@ -51,6 +53,7 @@ void irlan_next_client_state(struct irlan_cb *self, IRLAN_STATE state)
 void irlan_next_provider_state(struct irlan_cb *self, IRLAN_STATE state)
 {
 	IRDA_DEBUG(2, "%s(), %s\n", __func__ , irlan_state[state]);
+	pr_debug("%s(), %s\n", __func__ , irlan_state[state]);
 
 	IRDA_ASSERT(self != NULL, return;);
 	IRDA_ASSERT(self->magic == IRLAN_MAGIC, return;);

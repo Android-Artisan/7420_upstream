@@ -20,6 +20,7 @@
 #include <linux/fs.h>
 #include <asm/uaccess.h>
  
+
 #include "oprof.h"
 #include "event_buffer.h"
 #include "oprofile_stats.h"
@@ -29,6 +30,10 @@ DEFINE_MUTEX(buffer_mutex);
 static unsigned long buffer_opened;
 static DECLARE_WAIT_QUEUE_HEAD(buffer_wait);
 static unsigned long * event_buffer;
+
+static unsigned long buffer_opened;
+static DECLARE_WAIT_QUEUE_HEAD(buffer_wait);
+static unsigned long *event_buffer;
 static unsigned long buffer_size;
 static unsigned long buffer_watershed;
 static size_t buffer_pos;
@@ -41,6 +46,23 @@ static atomic_t buffer_ready = ATOMIC_INIT(0);
  */
 void add_event_entry(unsigned long value)
 {
+/*
+ * Add an entry to the event buffer. When we get near to the end we
+ * wake up the process sleeping on the read() of the file. To protect
+ * the event_buffer this function may only be called when buffer_mutex
+ * is set.
+ */
+void add_event_entry(unsigned long value)
+{
+	/*
+	 * This shouldn't happen since all workqueues or handlers are
+	 * canceled or flushed before the event buffer is freed.
+	 */
+	if (!event_buffer) {
+		WARN_ON_ONCE(1);
+		return;
+	}
+
 	if (buffer_pos == buffer_size) {
 		atomic_inc(&oprofile_stats.event_lost_overflow);
 		return;
@@ -87,6 +109,25 @@ int alloc_event_buffer(void)
 	err = 0;
 out:
 	return err;
+
+int alloc_event_buffer(void)
+{
+	unsigned long flags;
+
+	raw_spin_lock_irqsave(&oprofilefs_lock, flags);
+	buffer_size = oprofile_buffer_size;
+	buffer_watershed = oprofile_buffer_watershed;
+	raw_spin_unlock_irqrestore(&oprofilefs_lock, flags);
+
+	if (buffer_watershed >= buffer_size)
+		return -EINVAL;
+
+	buffer_pos = 0;
+	event_buffer = vmalloc(sizeof(unsigned long) * buffer_size);
+	if (!event_buffer)
+		return -ENOMEM;
+
+	return 0;
 }
 
 
@@ -99,6 +140,15 @@ void free_event_buffer(void)
 
  
 static int event_buffer_open(struct inode * inode, struct file * file)
+	mutex_lock(&buffer_mutex);
+	vfree(event_buffer);
+	buffer_pos = 0;
+	event_buffer = NULL;
+	mutex_unlock(&buffer_mutex);
+}
+
+
+static int event_buffer_open(struct inode *inode, struct file *file)
 {
 	int err = -EPERM;
 
@@ -106,6 +156,7 @@ static int event_buffer_open(struct inode * inode, struct file * file)
 		return -EPERM;
 
 	if (test_and_set_bit(0, &buffer_opened))
+	if (test_and_set_bit_lock(0, &buffer_opened))
 		return -EBUSY;
 
 	/* Register as a user of dcookies
@@ -117,6 +168,7 @@ static int event_buffer_open(struct inode * inode, struct file * file)
 	if (!file->private_data)
 		goto out;
 		 
+
 	if ((err = oprofile_setup()))
 		goto fail;
 
@@ -126,15 +178,19 @@ static int event_buffer_open(struct inode * inode, struct file * file)
  
 	return 0;
 
+	return nonseekable_open(inode, file);
+
 fail:
 	dcookie_unregister(file->private_data);
 out:
 	clear_bit(0, &buffer_opened);
+	__clear_bit_unlock(0, &buffer_opened);
 	return err;
 }
 
 
 static int event_buffer_release(struct inode * inode, struct file * file)
+static int event_buffer_release(struct inode *inode, struct file *file)
 {
 	oprofile_stop();
 	oprofile_shutdown();
@@ -142,12 +198,15 @@ static int event_buffer_release(struct inode * inode, struct file * file)
 	buffer_pos = 0;
 	atomic_set(&buffer_ready, 0);
 	clear_bit(0, &buffer_opened);
+	__clear_bit_unlock(0, &buffer_opened);
 	return 0;
 }
 
 
 static ssize_t event_buffer_read(struct file * file, char __user * buf,
 				 size_t count, loff_t * offset)
+static ssize_t event_buffer_read(struct file *file, char __user *buf,
+				 size_t count, loff_t *offset)
 {
 	int retval = -EINVAL;
 	size_t const max = buffer_size * sizeof(unsigned long);
@@ -167,25 +226,35 @@ static ssize_t event_buffer_read(struct file * file, char __user * buf,
 
 	mutex_lock(&buffer_mutex);
 
+	/* May happen if the buffer is freed during pending reads. */
+	if (!event_buffer) {
+		retval = -EINTR;
+		goto out;
+	}
+
 	atomic_set(&buffer_ready, 0);
 
 	retval = -EFAULT;
 
 	count = buffer_pos * sizeof(unsigned long);
  
+
 	if (copy_to_user(buf, event_buffer, count))
 		goto out;
 
 	retval = count;
 	buffer_pos = 0;
  
+
 out:
 	mutex_unlock(&buffer_mutex);
 	return retval;
 }
  
+
 const struct file_operations event_buffer_fops = {
 	.open		= event_buffer_open,
 	.release	= event_buffer_release,
 	.read		= event_buffer_read,
+	.llseek		= no_llseek,
 };

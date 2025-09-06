@@ -2,7 +2,6 @@ This is a subset of the documentation. To use this driver you MUST have the
 full package from:
 
 Internet:
-=========
 
 1. ftp://ftp.ccac.rwth-aachen.de/pub/jr/z8530drv-utils_3.0-3.tar.gz
 
@@ -30,7 +29,6 @@ http://yaina.de/jreuter
 
 
 1. Initialization of the driver
-===============================
 
 To use the driver, 3 steps must be performed:
 
@@ -45,7 +43,6 @@ AX.25-HOWTO on how to emulate a KISS TNC on network device drivers.
 
 
 1.1 Loading the module
-======================
 
 (If you're going to compile the driver as a part of the kernel image,
  skip this chapter and continue with 1.2)
@@ -61,7 +58,6 @@ and don't forget to insert a call of sccinit after that. It
 will read your /etc/z8530drv.conf.
 
 1.2. /etc/z8530drv.conf
-=======================
 
 To setup all parameters you must run /sbin/sccinit from one
 of your rc.*-files. This has to be done BEFORE you can
@@ -72,7 +68,6 @@ delivered with this package. Change it to your needs.
 The file itself consists of two main sections.
 
 1.2.1 configuration of hardware parameters
-==========================================
 
 The hardware setup section defines the following parameters for each
 Z8530:
@@ -234,7 +229,6 @@ to edit scc_config.h...
 
 
 1.2.2 channel configuration
-===========================
 
 The channel definition is divided into three sub sections for each
 channel:
@@ -294,10 +288,8 @@ security holes...
     maxkey expires --- of course without sending anything (useful).
 
 2. Attachment of a channel by your AX.25 software
-=================================================
 
 2.1 Kernel AX.25
-================
 
 To set up an AX.25 device you can simply type:
 
@@ -312,7 +304,6 @@ ax25-utils and the AX.25-HOWTO to learn how to set the parameters of
 the kernel AX.25.
 
 2.2 NOS, NET and TFKISS
-=======================
 
 Since the TTY driver (aka KISS TNC emulation) is gone you need
 to emulate the old behaviour. The cost of using these programs is
@@ -346,10 +337,8 @@ Or simply use "kissbridge" coming with z8530drv-utils:
 
 
 3. Adjustment and Display of parameters
-=======================================
 
 3.1 Displaying SCC Parameters:
-==============================
 
 Once a SCC channel has been attached, the parameter settings and 
 some statistic information can be shown using the param program:
@@ -408,7 +397,6 @@ driver or the kernel AX.25.
 
 
 3.2 Setting Parameters
-======================
 
 
 The setting of parameters of the emulated KISS TNC is done in the 
@@ -596,7 +584,6 @@ softdcd:
 
 
 4. Problems 
-===========
 
 If you have tx-problems with your BayCom USCC card please check
 the manufacturer of the 8530. SGS chips have a slightly
@@ -642,7 +629,6 @@ If you cannot solve a problem, send me
 - the output of cat /proc/net/z8530
 
 4. Thor RLC100
-==============
 
 Mysteriously this board seems not to work with the driver. Anyone
 got it up-and-running?

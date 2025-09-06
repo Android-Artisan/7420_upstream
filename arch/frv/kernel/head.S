@@ -9,6 +9,7 @@
  * 2 of the License, or (at your option) any later version.
  */
 
+#include <linux/init.h>
 #include <linux/threads.h>
 #include <linux/linkage.h>
 #include <asm/thread_info.h>
@@ -28,6 +29,7 @@
 #
 ###############################################################################
 	.section	.text.head,"ax"
+	__HEAD
 	.balign		4
 
 	.globl		_boot, __head_reference
@@ -542,6 +544,7 @@ __head_end:
 
 	# provide a point for GDB to place a break
 	.section	.text.start,"ax"
+	.section	.text..start,"ax"
 	.globl		_start
 	.balign		4
 _start:

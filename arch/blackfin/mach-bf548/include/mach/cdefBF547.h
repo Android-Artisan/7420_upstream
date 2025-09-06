@@ -38,11 +38,19 @@
 #include <asm/cdef_LPBlackfin.h>
 
 /* SYSTEM & MMR ADDRESS DEFINITIONS FOR ADSP-BF548 */
+ * Copyright 2008-2010 Analog Devices Inc.
+ *
+ * Licensed under the GPL-2 or later.
+ */
+
+#ifndef _CDEF_BF547_H
+#define _CDEF_BF547_H
 
 /* include cdefBF54x_base.h for the set of #defines that are common to all ADSP-BF54x bfin_read_()rocessors */
 #include "cdefBF54x_base.h"
 
 /* The following are the #defines needed by ADSP-BF548 that are not in the common header */
+/* The following are the #defines needed by ADSP-BF547 that are not in the common header */
 
 /* Timer Registers */
 
@@ -830,3 +838,4 @@
 #define bfin_write_HMDMA1_BCOUNT(val)		bfin_write16(HMDMA1_BCOUNT, val)
 
 #endif /* _CDEF_BF548_H */
+#endif /* _CDEF_BF547_H */

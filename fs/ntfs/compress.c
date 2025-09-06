@@ -25,6 +25,7 @@
 #include <linux/buffer_head.h>
 #include <linux/blkdev.h>
 #include <linux/vmalloc.h>
+#include <linux/slab.h>
 
 #include "attrib.h"
 #include "inode.h"
@@ -58,6 +59,7 @@ typedef enum {
  * ntfs_compression_buffer - one buffer for the decompression engine
  */
 static u8 *ntfs_compression_buffer = NULL;
+static u8 *ntfs_compression_buffer;
 
 /**
  * ntfs_cb_lock - spinlock which protects ntfs_compression_buffer
@@ -501,6 +503,7 @@ int ntfs_read_compressed_block(struct page *page)
 			vol->cluster_size_bits;
 	/*
 	 * The first vcn after the last wanted vcn (minumum alignment is again
+	 * The first vcn after the last wanted vcn (minimum alignment is again
 	 * PAGE_CACHE_SIZE.
 	 */
 	VCN end_vcn = ((((s64)(index + 1UL) << PAGE_CACHE_SHIFT) + cb_size - 1)
@@ -699,6 +702,7 @@ lock_retry_remap:
 			get_bh(tbh);
 			blk_run_address_space(mapping);
 			schedule();
+			io_schedule();
 			put_bh(tbh);
 			if (unlikely(!buffer_uptodate(tbh)))
 				goto read_err;
@@ -928,6 +932,7 @@ lock_retry_remap:
 
 	ntfs_debug("Failed. Returning error code %s.", err == -EOVERFLOW ?
 			"EOVERFLOW" : (!err ? "EIO" : "unkown error"));
+			"EOVERFLOW" : (!err ? "EIO" : "unknown error"));
 	return err < 0 ? err : -EIO;
 
 read_err:

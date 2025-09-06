@@ -12,6 +12,9 @@
  *  These assume a split I/D TLB.
  */
 #include <linux/linkage.h>
+#include <linux/init.h>
+#include <linux/linkage.h>
+#include <asm/assembler.h>
 #include <asm/asm-offsets.h>
 #include <asm/page.h>
 #include <asm/tlbflush.h>
@@ -51,6 +54,30 @@ ENTRY(v7wbi_flush_user_tlb_range)
 	mcr	p15, 0, ip, c7, c5, 6		@ flush BTAC/BTB
 	dsb
 	mov	pc, lr
+	dsb	ish
+	mov	r0, r0, lsr #PAGE_SHIFT		@ align address
+	mov	r1, r1, lsr #PAGE_SHIFT
+	asid	r3, r3				@ mask ASID
+#ifdef CONFIG_ARM_ERRATA_720789
+	ALT_SMP(W(mov)	r3, #0	)
+	ALT_UP(W(nop)		)
+#endif
+	orr	r0, r3, r0, lsl #PAGE_SHIFT	@ Create initial MVA
+	mov	r1, r1, lsl #PAGE_SHIFT
+1:
+#ifdef CONFIG_ARM_ERRATA_720789
+	ALT_SMP(mcr	p15, 0, r0, c8, c3, 3)	@ TLB invalidate U MVA all ASID (shareable)
+#else
+	ALT_SMP(mcr	p15, 0, r0, c8, c3, 1)	@ TLB invalidate U MVA (shareable)
+#endif
+	ALT_UP(mcr	p15, 0, r0, c8, c7, 1)	@ TLB invalidate U MVA
+
+	add	r0, r0, #PAGE_SZ
+	cmp	r0, r1
+	blo	1b
+	dsb	ish
+	ret	lr
+ENDPROC(v7wbi_flush_user_tlb_range)
 
 /*
  *	v7wbi_flush_kern_tlb_range(start,end)
@@ -62,6 +89,7 @@ ENTRY(v7wbi_flush_user_tlb_range)
  */
 ENTRY(v7wbi_flush_kern_tlb_range)
 	dsb
+	dsb	ish
 	mov	r0, r0, lsr #PAGE_SHIFT		@ align address
 	mov	r1, r1, lsr #PAGE_SHIFT
 	mov	r0, r0, lsl #PAGE_SHIFT
@@ -86,3 +114,21 @@ ENTRY(v7wbi_tlb_fns)
 	.long	v7wbi_flush_kern_tlb_range
 	.long	v6wbi_tlb_flags
 	.size	v7wbi_tlb_fns, . - v7wbi_tlb_fns
+#ifdef CONFIG_ARM_ERRATA_720789
+	ALT_SMP(mcr	p15, 0, r0, c8, c3, 3)	@ TLB invalidate U MVA all ASID (shareable)
+#else
+	ALT_SMP(mcr	p15, 0, r0, c8, c3, 1)	@ TLB invalidate U MVA (shareable)
+#endif
+	ALT_UP(mcr	p15, 0, r0, c8, c7, 1)	@ TLB invalidate U MVA
+	add	r0, r0, #PAGE_SZ
+	cmp	r0, r1
+	blo	1b
+	dsb	ish
+	isb
+	ret	lr
+ENDPROC(v7wbi_flush_kern_tlb_range)
+
+	__INIT
+
+	/* define struct cpu_tlb_fns (see <asm/tlbflush.h> and proc-macros.S) */
+	define_tlb_functions v7wbi, v7wbi_tlb_flags_up, flags_smp=v7wbi_tlb_flags_smp

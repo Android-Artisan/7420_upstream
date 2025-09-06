@@ -16,6 +16,12 @@
 #include <hwregs/asm/mmu_defs_asm.h>
 #include <hwregs/asm/reg_map_asm.h>
 #include <asm/arch/mach/startup.inc>
+#include <arch/memmap.h>
+#include <hwregs/reg_rdwr.h>
+#include <hwregs/intr_vect.h>
+#include <hwregs/asm/mmu_defs_asm.h>
+#include <hwregs/asm/reg_map_asm.h>
+#include <mach/startup.inc>
 
 #define CRAMFS_MAGIC 0x28cd3d45
 #define JHEAD_MAGIC 0x1FF528A6
@@ -80,6 +86,16 @@ secondary_cpu_entry: /* Entry point for secondary CPUs */
 		| REG_FIELD(mmu, rw_mm_kbase_hi, base_c, 4)	\
 		| REG_FIELD(mmu, rw_mm_kbase_hi, base_b, 0xb)   \
 		| REG_FIELD(mmu, rw_mm_kbase_hi, base_a, 0xa), $r0
+
+#ifdef CONFIG_CRIS_MACH_ARTPEC3
+	move.d	REG_FIELD(mmu, rw_mm_kbase_hi, base_e, 8)	\
+		| REG_FIELD(mmu, rw_mm_kbase_hi, base_c, 4)	\
+		| REG_FIELD(mmu, rw_mm_kbase_hi, base_d, 5)     \
+		| REG_FIELD(mmu, rw_mm_kbase_hi, base_b, 0xb), $r0
+#else
+	move.d	REG_FIELD(mmu, rw_mm_kbase_hi, base_e, 8)	\
+		| REG_FIELD(mmu, rw_mm_kbase_hi, base_c, 4)	\
+		| REG_FIELD(mmu, rw_mm_kbase_hi, base_b, 0xb), $r0
 #endif
 
 	;; Temporary map of 0x40 -> 0x40 and 0x00 -> 0x00.
@@ -96,6 +112,25 @@ secondary_cpu_entry: /* Entry point for secondary CPUs */
 		| REG_STATE(mmu, rw_mm_cfg, seg_f, linear)	\
 		| REG_STATE(mmu, rw_mm_cfg, seg_e, linear)	\
 		| REG_STATE(mmu, rw_mm_cfg, seg_d, page)	\
+
+	;; ARTPEC-3:
+	;; c,d used for linear kernel mapping, up to 512 MB
+	;; e used for vmalloc
+	;; f unused, but page mapped to get page faults
+
+	;; ETRAX FS:
+	;; c used for linear kernel mapping, up to 256 MB
+	;; d used for vmalloc
+	;; e,f used for memory-mapped NOR flash
+
+#ifdef CONFIG_CRIS_MACH_ARTPEC3
+	move.d	REG_STATE(mmu, rw_mm_cfg, we, on)		\
+		| REG_STATE(mmu, rw_mm_cfg, acc, on)		\
+		| REG_STATE(mmu, rw_mm_cfg, ex, on)		\
+		| REG_STATE(mmu, rw_mm_cfg, inv, on)            \
+		| REG_STATE(mmu, rw_mm_cfg, seg_f, page)	\
+		| REG_STATE(mmu, rw_mm_cfg, seg_e, page)	\
+		| REG_STATE(mmu, rw_mm_cfg, seg_d, linear)      \
 		| REG_STATE(mmu, rw_mm_cfg, seg_c, linear)	\
 		| REG_STATE(mmu, rw_mm_cfg, seg_b, linear)	\
 		| REG_STATE(mmu, rw_mm_cfg, seg_a, page)	\
@@ -120,6 +155,7 @@ secondary_cpu_entry: /* Entry point for secondary CPUs */
 		| REG_STATE(mmu, rw_mm_cfg, seg_c, linear)	\
 		| REG_STATE(mmu, rw_mm_cfg, seg_b, linear)	\
 		| REG_STATE(mmu, rw_mm_cfg, seg_a, linear)	\
+		| REG_STATE(mmu, rw_mm_cfg, seg_a, page)	\
 		| REG_STATE(mmu, rw_mm_cfg, seg_9, page)	\
 		| REG_STATE(mmu, rw_mm_cfg, seg_8, page)	\
 		| REG_STATE(mmu, rw_mm_cfg, seg_7, page)	\
@@ -218,6 +254,14 @@ _inflash:
 	nop
 
 #include "../mach/dram_init.S"
+#if defined CONFIG_ETRAXFS
+#include "../mach-fs/dram_init.S"
+#elif defined CONFIG_CRIS_MACH_ARTPEC3
+#include "../mach-a3/dram_init.S"
+#else
+#error Only ETRAXFS and ARTPEC-3 supported!
+#endif
+
 
 _dram_initialized:
 	;; Copy the text and data section to DRAM. This depends on that the
@@ -326,6 +370,7 @@ _no_romfs_in_flash:
 #else
 	move.d	__end, $r0
 #endif
+	move.d	__bss_start, $r0
 	move.d	[$r0], $r1
 	cmp.d	CRAMFS_MAGIC, $r1 ; cramfs magic?
 	beq	2f		  ; yes, jump
@@ -473,3 +518,10 @@ swapper_pg_dir = 0xc0002000
 	.section ".init.data", "aw"
 
 #include "../mach/hw_settings.S"
+#if defined CONFIG_ETRAXFS
+#include "../mach-fs/hw_settings.S"
+#elif defined CONFIG_CRIS_MACH_ARTPEC3
+#include "../mach-a3/hw_settings.S"
+#else
+#error Only ETRAXFS and ARTPEC-3 supported!
+#endif

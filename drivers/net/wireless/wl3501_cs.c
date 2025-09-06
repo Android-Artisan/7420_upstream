@@ -49,6 +49,10 @@
 
 #include <pcmcia/cs_types.h>
 #include <pcmcia/cs.h>
+#include <net/cfg80211.h>
+
+#include <net/iw_handler.h>
+
 #include <pcmcia/cistpl.h>
 #include <pcmcia/cisreg.h>
 #include <pcmcia/ds.h>
@@ -84,6 +88,7 @@ module_param(pc_debug, int, 0);
 #define dprintk(n, format, args...)
 #endif
 
+
 #define wl3501_outb(a, b) { outb(a, b); slow_down_io(); }
 #define wl3501_outb_p(a, b) { outb_p(a, b); slow_down_io(); }
 #define wl3501_outsb(a, b, c) { outsb(a, b, c); slow_down_io(); }
@@ -116,6 +121,9 @@ static int wl3501_chan2freq[] = {
 	[5]  = 2437, [6]  = 2442, [7]  = 2447, [8]  = 2452, [9] = 2457,
 	[10] = 2462, [11] = 2467, [12] = 2472, [13] = 2477,
 };
+
+static int wl3501_config(struct pcmcia_device *link);
+static void wl3501_release(struct pcmcia_device *link);
 
 static const struct {
 	int reg_domain;
@@ -231,6 +239,7 @@ static inline void wl3501_switch_page(struct wl3501_card *this, u8 page)
 
 /*
  * Get Ethernet MAC addresss.
+ * Get Ethernet MAC address.
  *
  * WARNING: We switch to FPAGE0 and switc back again.
  *          Making sure there is no other WL function beening called by ISR.
@@ -329,6 +338,7 @@ static void wl3501_get_from_wla(struct wl3501_card *this, u16 src, void *dest,
  *   \-struct wl3501_80211_tx_hdr--/   \-------- Ethernet Frame -------/
  *
  * Return = Postion in Card
+ * Return = Position in Card
  */
 static u16 wl3501_get_tx_buffer(struct wl3501_card *this, u16 len)
 {
@@ -387,6 +397,7 @@ static void wl3501_free_tx_buffer(struct wl3501_card *this, u16 ptr)
 static int wl3501_esbq_req_test(struct wl3501_card *this)
 {
 	u8 tmp;
+	u8 tmp = 0;
 
 	wl3501_get_from_wla(this, this->esbq_req_head + 3, &tmp, sizeof(tmp));
 	return tmp & 0x80;
@@ -471,6 +482,7 @@ static int wl3501_pwr_mgmt(struct wl3501_card *this, int suspend)
 			rc = wait_event_interruptible(this->wait,
 				this->sig_pwr_mgmt_confirm.status != 255);
 			printk(KERN_INFO "%s: %s status=%d\n", __FUNCTION__,
+			printk(KERN_INFO "%s: %s status=%d\n", __func__,
 			       suspend ? "suspend" : "resume",
 			       this->sig_pwr_mgmt_confirm.status);
 			goto out;
@@ -497,6 +509,7 @@ static int wl3501_send_pkt(struct wl3501_card *this, u8 *data, u16 len)
 	struct wl3501_md_req sig = {
 		.sig_id = WL3501_SIG_MD_REQ,
 	};
+	size_t sig_addr_len = sizeof(sig.addr);
 	u8 *pdata = (char *)data;
 	int rc = -EIO;
 
@@ -512,9 +525,9 @@ static int wl3501_send_pkt(struct wl3501_card *this, u8 *data, u16 len)
 			goto out;
 		}
 		rc = 0;
-		memcpy(&sig.daddr[0], pdata, 12);
-		pktlen = len - 12;
-		pdata += 12;
+		memcpy(&sig.addr, pdata, sig_addr_len);
+		pktlen = len - sig_addr_len;
+		pdata += sig_addr_len;
 		sig.data = bf;
 		if (((*pdata) * 256 + (*(pdata + 1))) > 1500) {
 			u8 addr4[ETH_ALEN] = {
@@ -617,7 +630,7 @@ static int wl3501_mgmt_join(struct wl3501_card *this, u16 stas)
 	struct wl3501_join_req sig = {
 		.sig_id		  = WL3501_SIG_JOIN_REQ,
 		.timeout	  = 10,
-		.ds_pset = {
+		.req.ds_pset = {
 			.el = {
 				.id  = IW_MGMT_INFO_ELEMENT_DS_PARAMETER_SET,
 				.len = 1,
@@ -626,7 +639,7 @@ static int wl3501_mgmt_join(struct wl3501_card *this, u16 stas)
 		},
 	};
 
-	memcpy(&sig.beacon_period, &this->bss_set[stas].beacon_period, 72);
+	memcpy(&sig.req, &this->bss_set[stas].req, sizeof(sig.req));
 	return wl3501_esbq_exec(this, &sig, sizeof(sig));
 }
 
@@ -693,19 +706,23 @@ static void wl3501_mgmt_scan_confirm(struct wl3501_card *this, u16 addr)
 	wl3501_get_from_wla(this, addr, &sig, sizeof(sig));
 	if (sig.status == WL3501_STATUS_SUCCESS) {
 		dprintk(3, "success");
+	pr_debug("entry");
+	wl3501_get_from_wla(this, addr, &sig, sizeof(sig));
+	if (sig.status == WL3501_STATUS_SUCCESS) {
+		pr_debug("success");
 		if ((this->net_type == IW_MODE_INFRA &&
-		     (sig.cap_info & WL3501_MGMT_CAPABILITY_ESS)) ||
+		     (sig.req.cap_info & WL3501_MGMT_CAPABILITY_ESS)) ||
 		    (this->net_type == IW_MODE_ADHOC &&
-		     (sig.cap_info & WL3501_MGMT_CAPABILITY_IBSS)) ||
+		     (sig.req.cap_info & WL3501_MGMT_CAPABILITY_IBSS)) ||
 		    this->net_type == IW_MODE_AUTO) {
 			if (!this->essid.el.len)
 				matchflag = 1;
 			else if (this->essid.el.len == 3 &&
 				 !memcmp(this->essid.essid, "ANY", 3))
 				matchflag = 1;
-			else if (this->essid.el.len != sig.ssid.el.len)
+			else if (this->essid.el.len != sig.req.ssid.el.len)
 				matchflag = 0;
-			else if (memcmp(this->essid.essid, sig.ssid.essid,
+			else if (memcmp(this->essid.essid, sig.req.ssid.essid,
 					this->essid.el.len))
 				matchflag = 0;
 			else
@@ -714,20 +731,25 @@ static void wl3501_mgmt_scan_confirm(struct wl3501_card *this, u16 addr)
 				for (i = 0; i < this->bss_cnt; i++) {
 					if (!memcmp(this->bss_set[i].bssid,
 						    sig.bssid, ETH_ALEN)) {
+					if (ether_addr_equal_unaligned(this->bss_set[i].bssid, sig.bssid)) {
+					if (ether_addr_equal_unaligned(this->bss_set[i].req.bssid,
+								       sig.req.bssid)) {
 						matchflag = 0;
 						break;
 					}
 				}
 			}
 			if (matchflag && (i < 20)) {
-				memcpy(&this->bss_set[i].beacon_period,
-				       &sig.beacon_period, 73);
+				memcpy(&this->bss_set[i].req,
+				       &sig.req, sizeof(sig.req));
 				this->bss_cnt++;
 				this->rssi = sig.rssi;
+				this->bss_set[i].rssi = sig.rssi;
 			}
 		}
 	} else if (sig.status == WL3501_STATUS_TIMEOUT) {
 		dprintk(3, "timeout");
+		pr_debug("timeout");
 		this->join_sta_bss = 0;
 		for (i = this->join_sta_bss; i < this->bss_cnt; i++)
 			if (!wl3501_mgmt_join(this, i))
@@ -864,6 +886,9 @@ static void wl3501_online(struct net_device *dev)
 
 	printk(KERN_INFO "%s: Wireless LAN online. BSSID: %s\n",
 	       dev->name, print_mac(mac, this->bssid));
+
+	printk(KERN_INFO "%s: Wireless LAN online. BSSID: %pM\n",
+	       dev->name, this->bssid);
 	netif_wake_queue(dev);
 }
 
@@ -886,6 +911,7 @@ static int wl3501_mgmt_auth(struct wl3501_card *this)
 	};
 
 	dprintk(3, "entry");
+	pr_debug("entry");
 	memcpy(sig.mac_addr, this->bssid, ETH_ALEN);
 	return wl3501_esbq_exec(this, &sig, sizeof(sig));
 }
@@ -900,6 +926,7 @@ static int wl3501_mgmt_association(struct wl3501_card *this)
 	};
 
 	dprintk(3, "entry");
+	pr_debug("entry");
 	memcpy(sig.mac_addr, this->bssid, ETH_ALEN);
 	return wl3501_esbq_exec(this, &sig, sizeof(sig));
 }
@@ -910,25 +937,26 @@ static void wl3501_mgmt_join_confirm(struct net_device *dev, u16 addr)
 	struct wl3501_join_confirm sig;
 
 	dprintk(3, "entry");
+	pr_debug("entry");
 	wl3501_get_from_wla(this, addr, &sig, sizeof(sig));
 	if (sig.status == WL3501_STATUS_SUCCESS) {
 		if (this->net_type == IW_MODE_INFRA) {
 			if (this->join_sta_bss < this->bss_cnt) {
 				const int i = this->join_sta_bss;
 				memcpy(this->bssid,
-				       this->bss_set[i].bssid, ETH_ALEN);
-				this->chan = this->bss_set[i].ds_pset.chan;
+				       this->bss_set[i].req.bssid, ETH_ALEN);
+				this->chan = this->bss_set[i].req.ds_pset.chan;
 				iw_copy_mgmt_info_element(&this->keep_essid.el,
-						     &this->bss_set[i].ssid.el);
+						     &this->bss_set[i].req.ssid.el);
 				wl3501_mgmt_auth(this);
 			}
 		} else {
 			const int i = this->join_sta_bss;
 
-			memcpy(&this->bssid, &this->bss_set[i].bssid, ETH_ALEN);
-			this->chan = this->bss_set[i].ds_pset.chan;
+			memcpy(&this->bssid, &this->bss_set[i].req.bssid, ETH_ALEN);
+			this->chan = this->bss_set[i].req.ds_pset.chan;
 			iw_copy_mgmt_info_element(&this->keep_essid.el,
-						  &this->bss_set[i].ssid.el);
+						  &this->bss_set[i].req.ssid.el);
 			wl3501_online(dev);
 		}
 	} else {
@@ -969,6 +997,7 @@ static inline void wl3501_md_confirm_interrupt(struct net_device *dev,
 	struct wl3501_md_confirm sig;
 
 	dprintk(3, "entry");
+	pr_debug("entry");
 	wl3501_get_from_wla(this, addr, &sig, sizeof(sig));
 	wl3501_free_tx_buffer(this, sig.data);
 	if (netif_queue_stopped(dev))
@@ -1007,16 +1036,20 @@ static inline void wl3501_md_ind_interrupt(struct net_device *dev,
 		printk(KERN_WARNING "%s: Can't alloc a sk_buff of size %d.\n",
 		       dev->name, pkt_len);
 		this->stats.rx_dropped++;
+		dev->stats.rx_dropped++;
 	} else {
 		skb->dev = dev;
 		skb_reserve(skb, 2); /* IP headers on 16 bytes boundaries */
-		skb_copy_to_linear_data(skb, (unsigned char *)&sig.daddr, 12);
+		skb_copy_to_linear_data(skb, (unsigned char *)&sig.addr,
+					sizeof(sig.addr));
 		wl3501_receive(this, skb->data, pkt_len);
 		skb_put(skb, pkt_len);
 		skb->protocol	= eth_type_trans(skb, dev);
 		dev->last_rx	= jiffies;
 		this->stats.rx_packets++;
 		this->stats.rx_bytes += skb->len;
+		dev->stats.rx_packets++;
+		dev->stats.rx_bytes += skb->len;
 		netif_rx(skb);
 	}
 }
@@ -1025,6 +1058,7 @@ static inline void wl3501_get_confirm_interrupt(struct wl3501_card *this,
 						u16 addr, void *sig, int size)
 {
 	dprintk(3, "entry");
+	pr_debug("entry");
 	wl3501_get_from_wla(this, addr, &this->sig_get_confirm,
 			    sizeof(this->sig_get_confirm));
 	wake_up(&this->wait);
@@ -1037,6 +1071,7 @@ static inline void wl3501_start_confirm_interrupt(struct net_device *dev,
 	struct wl3501_start_confirm sig;
 
 	dprintk(3, "entry");
+	pr_debug("entry");
 	wl3501_get_from_wla(this, addr, &sig, sizeof(sig));
 	if (sig.status == WL3501_STATUS_SUCCESS)
 		netif_wake_queue(dev);
@@ -1049,6 +1084,7 @@ static inline void wl3501_assoc_confirm_interrupt(struct net_device *dev,
 	struct wl3501_assoc_confirm sig;
 
 	dprintk(3, "entry");
+	pr_debug("entry");
 	wl3501_get_from_wla(this, addr, &sig, sizeof(sig));
 
 	if (sig.status == WL3501_STATUS_SUCCESS)
@@ -1061,6 +1097,7 @@ static inline void wl3501_auth_confirm_interrupt(struct wl3501_card *this,
 	struct wl3501_auth_confirm sig;
 
 	dprintk(3, "entry");
+	pr_debug("entry");
 	wl3501_get_from_wla(this, addr, &sig, sizeof(sig));
 
 	if (sig.status == WL3501_STATUS_SUCCESS)
@@ -1077,6 +1114,7 @@ static inline void wl3501_rx_interrupt(struct net_device *dev)
 	struct wl3501_card *this = netdev_priv(dev);
 
 	dprintk(3, "entry");
+	pr_debug("entry");
 loop:
 	morepkts = 0;
 	if (!wl3501_esbq_confirm(this))
@@ -1200,6 +1238,7 @@ static int wl3501_reset_board(struct wl3501_card *this)
 		WL3501_NOPLOOP(10);
 	}
 	printk(KERN_WARNING "%s: failed to reset the board!\n", __FUNCTION__);
+	printk(KERN_WARNING "%s: failed to reset the board!\n", __func__);
 	rc = -ENODEV;
 out:
 	return rc;
@@ -1251,6 +1290,7 @@ out:
 	return rc;
 fail:
 	printk(KERN_WARNING "%s: failed!\n", __FUNCTION__);
+	printk(KERN_WARNING "%s: failed!\n", __func__);
 	goto out;
 }
 
@@ -1310,6 +1350,7 @@ static int wl3501_reset(struct net_device *dev)
 	wl3501_unblock_interrupt(this);
 	wl3501_mgmt_scan(this, 100);
 	dprintk(1, "%s: device reset", dev->name);
+	pr_debug("%s: device reset", dev->name);
 	rc = 0;
 out:
 	return rc;
@@ -1319,6 +1360,7 @@ static void wl3501_tx_timeout(struct net_device *dev)
 {
 	struct wl3501_card *this = netdev_priv(dev);
 	struct net_device_stats *stats = &this->stats;
+	struct net_device_stats *stats = &dev->stats;
 	unsigned long flags;
 	int rc;
 
@@ -1331,6 +1373,7 @@ static void wl3501_tx_timeout(struct net_device *dev)
 		       dev->name, rc);
 	else {
 		dev->trans_start = jiffies;
+		dev->trans_start = jiffies; /* prevent tx timeout */
 		netif_wake_queue(dev);
 	}
 }
@@ -1341,6 +1384,8 @@ static void wl3501_tx_timeout(struct net_device *dev)
  *		and try to sent it later
  */
 static int wl3501_hard_start_xmit(struct sk_buff *skb, struct net_device *dev)
+static netdev_tx_t wl3501_hard_start_xmit(struct sk_buff *skb,
+						struct net_device *dev)
 {
 	int enabled, rc;
 	struct wl3501_card *this = netdev_priv(dev);
@@ -1358,13 +1403,19 @@ static int wl3501_hard_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	} else {
 		++this->stats.tx_packets;
 		this->stats.tx_bytes += skb->len;
-		kfree_skb(skb);
+		++dev->stats.tx_dropped;
+		netif_stop_queue(dev);
+	} else {
+		++dev->stats.tx_packets;
+		dev->stats.tx_bytes += skb->len;
+		dev_kfree_skb_irq(skb);
 
 		if (this->tx_buffer_cnt < 2)
 			netif_stop_queue(dev);
 	}
 	spin_unlock_irqrestore(&this->lock, flags);
 	return rc;
+	return NETDEV_TX_OK;
 }
 
 static int wl3501_open(struct net_device *dev)
@@ -1383,6 +1434,7 @@ static int wl3501_open(struct net_device *dev)
 
 	/* Initial WL3501 firmware */
 	dprintk(1, "%s: Initialize WL3501 firmware...", dev->name);
+	pr_debug("%s: Initialize WL3501 firmware...", dev->name);
 	if (wl3501_init_firmware(this))
 		goto fail;
 	/* Initial device variables */
@@ -1395,6 +1447,7 @@ static int wl3501_open(struct net_device *dev)
 	wl3501_mgmt_scan(this, 100);
 	rc = 0;
 	dprintk(1, "%s: WL3501 opened", dev->name);
+	pr_debug("%s: WL3501 opened", dev->name);
 	printk(KERN_INFO "%s: Card Name: %s\n"
 			 "%s: Firmware Date: %s\n",
 			 dev->name, this->card_name,
@@ -1484,6 +1537,10 @@ static void wl3501_detach(struct pcmcia_device *link)
 		free_netdev(link->priv);
 
 	return;
+	unregister_netdev(dev);
+
+	if (link->priv)
+		free_netdev(link->priv);
 }
 
 static int wl3501_get_name(struct net_device *dev, struct iw_request_info *info,
@@ -1513,6 +1570,8 @@ static int wl3501_get_freq(struct net_device *dev, struct iw_request_info *info,
 	struct wl3501_card *this = netdev_priv(dev);
 
 	wrqu->freq.m = wl3501_chan2freq[this->chan - 1] * 100000;
+	wrqu->freq.m = 100000 *
+		ieee80211_channel_to_frequency(this->chan, IEEE80211_BAND_2GHZ);
 	wrqu->freq.e = 1;
 	return 0;
 }
@@ -1584,6 +1643,7 @@ static int wl3501_set_wap(struct net_device *dev, struct iw_request_info *info,
 	if (wrqu->ap_addr.sa_family != ARPHRD_ETHER)
 		goto out;
 	if (!memcmp(bcast, wrqu->ap_addr.sa_data, ETH_ALEN)) {
+	if (is_broadcast_ether_addr(wrqu->ap_addr.sa_data)) {
 		/* FIXME: rescan? */
 	} else
 		memcpy(this->bssid, wrqu->ap_addr.sa_data, ETH_ALEN);
@@ -1623,30 +1683,30 @@ static int wl3501_get_scan(struct net_device *dev, struct iw_request_info *info,
 	for (i = 0; i < this->bss_cnt; ++i) {
 		iwe.cmd			= SIOCGIWAP;
 		iwe.u.ap_addr.sa_family = ARPHRD_ETHER;
-		memcpy(iwe.u.ap_addr.sa_data, this->bss_set[i].bssid, ETH_ALEN);
+		memcpy(iwe.u.ap_addr.sa_data, this->bss_set[i].req.bssid, ETH_ALEN);
 		current_ev = iwe_stream_add_event(info, current_ev,
 						  extra + IW_SCAN_MAX_DATA,
 						  &iwe, IW_EV_ADDR_LEN);
 		iwe.cmd		  = SIOCGIWESSID;
 		iwe.u.data.flags  = 1;
-		iwe.u.data.length = this->bss_set[i].ssid.el.len;
+		iwe.u.data.length = this->bss_set[i].req.ssid.el.len;
 		current_ev = iwe_stream_add_point(info, current_ev,
 						  extra + IW_SCAN_MAX_DATA,
 						  &iwe,
-						  this->bss_set[i].ssid.essid);
+						  this->bss_set[i].req.ssid.essid);
 		iwe.cmd	   = SIOCGIWMODE;
-		iwe.u.mode = this->bss_set[i].bss_type;
+		iwe.u.mode = this->bss_set[i].req.bss_type;
 		current_ev = iwe_stream_add_event(info, current_ev,
 						  extra + IW_SCAN_MAX_DATA,
 						  &iwe, IW_EV_UINT_LEN);
 		iwe.cmd = SIOCGIWFREQ;
-		iwe.u.freq.m = this->bss_set[i].ds_pset.chan;
+		iwe.u.freq.m = this->bss_set[i].req.ds_pset.chan;
 		iwe.u.freq.e = 0;
 		current_ev = iwe_stream_add_event(info, current_ev,
 						  extra + IW_SCAN_MAX_DATA,
 						  &iwe, IW_EV_FREQ_LEN);
 		iwe.cmd = SIOCGIWENCODE;
-		if (this->bss_set[i].cap_info & WL3501_MGMT_CAPABILITY_PRIVACY)
+		if (this->bss_set[i].req.cap_info & WL3501_MGMT_CAPABILITY_PRIVACY)
 			iwe.u.data.flags = IW_ENCODE_ENABLED | IW_ENCODE_NOKEY;
 		else
 			iwe.u.data.flags = IW_ENCODE_DISABLED;
@@ -1838,6 +1898,7 @@ static int wl3501_get_encode(struct net_device *dev,
 	if (rc)
 		goto out;
 	tocopy = min_t(u8, len_keys, wrqu->encoding.length);
+	tocopy = min_t(u16, len_keys, wrqu->encoding.length);
 	tocopy = min_t(u8, tocopy, 100);
 	wrqu->encoding.length = tocopy;
 	memcpy(extra, keys, tocopy);
@@ -1889,6 +1950,32 @@ static const iw_handler	wl3501_handler[] = {
 	[SIOCGIWRETRY	- SIOCIWFIRST] = wl3501_get_retry,
 	[SIOCGIWENCODE	- SIOCIWFIRST] = wl3501_get_encode,
 	[SIOCGIWPOWER	- SIOCIWFIRST] = wl3501_get_power,
+	IW_HANDLER(SIOCGIWNAME, wl3501_get_name),
+	IW_HANDLER(SIOCSIWFREQ, wl3501_set_freq),
+	IW_HANDLER(SIOCGIWFREQ, wl3501_get_freq),
+	IW_HANDLER(SIOCSIWMODE, wl3501_set_mode),
+	IW_HANDLER(SIOCGIWMODE, wl3501_get_mode),
+	IW_HANDLER(SIOCGIWSENS, wl3501_get_sens),
+	IW_HANDLER(SIOCGIWRANGE, wl3501_get_range),
+	IW_HANDLER(SIOCSIWSPY, iw_handler_set_spy),
+	IW_HANDLER(SIOCGIWSPY, iw_handler_get_spy),
+	IW_HANDLER(SIOCSIWTHRSPY, iw_handler_set_thrspy),
+	IW_HANDLER(SIOCGIWTHRSPY, iw_handler_get_thrspy),
+	IW_HANDLER(SIOCSIWAP, wl3501_set_wap),
+	IW_HANDLER(SIOCGIWAP, wl3501_get_wap),
+	IW_HANDLER(SIOCSIWSCAN, wl3501_set_scan),
+	IW_HANDLER(SIOCGIWSCAN, wl3501_get_scan),
+	IW_HANDLER(SIOCSIWESSID, wl3501_set_essid),
+	IW_HANDLER(SIOCGIWESSID, wl3501_get_essid),
+	IW_HANDLER(SIOCSIWNICKN, wl3501_set_nick),
+	IW_HANDLER(SIOCGIWNICKN, wl3501_get_nick),
+	IW_HANDLER(SIOCGIWRATE, wl3501_get_rate),
+	IW_HANDLER(SIOCGIWRTS, wl3501_get_rts_threshold),
+	IW_HANDLER(SIOCGIWFRAG, wl3501_get_frag_threshold),
+	IW_HANDLER(SIOCGIWTXPOW, wl3501_get_txpow),
+	IW_HANDLER(SIOCGIWRETRY, wl3501_get_retry),
+	IW_HANDLER(SIOCGIWENCODE, wl3501_get_encode),
+	IW_HANDLER(SIOCGIWPOWER, wl3501_get_power),
 };
 
 static const struct iw_handler_def wl3501_handler_def = {
@@ -1906,10 +1993,21 @@ static const struct iw_handler_def wl3501_handler_def = {
  * The dev_link structure is initialized, but we don't actually configure the
  * card at this point -- we wait until we receive a card insertion event.
  */
+static const struct net_device_ops wl3501_netdev_ops = {
+	.ndo_open		= wl3501_open,
+	.ndo_stop		= wl3501_close,
+	.ndo_start_xmit		= wl3501_hard_start_xmit,
+	.ndo_tx_timeout		= wl3501_tx_timeout,
+	.ndo_change_mtu		= eth_change_mtu,
+	.ndo_set_mac_address 	= eth_mac_addr,
+	.ndo_validate_addr	= eth_validate_addr,
+};
+
 static int wl3501_probe(struct pcmcia_device *p_dev)
 {
 	struct net_device *dev;
 	struct wl3501_card *this;
+	int ret;
 
 	/* The io structure describes IO port mapping */
 	p_dev->io.NumPorts1	= 16;
@@ -1925,6 +2023,12 @@ static int wl3501_probe(struct pcmcia_device *p_dev)
 	p_dev->conf.Attributes	= CONF_ENABLE_IRQ;
 	p_dev->conf.IntType	= INT_MEMORY_AND_IO;
 	p_dev->conf.ConfigIndex	= 1;
+	p_dev->resource[0]->end	= 16;
+	p_dev->resource[0]->flags	= IO_DATA_PATH_WIDTH_8;
+
+	/* General socket configuration */
+	p_dev->config_flags	= CONF_ENABLE_IRQ;
+	p_dev->config_index	= 1;
 
 	dev = alloc_etherdev(sizeof(struct wl3501_card));
 	if (!dev)
@@ -1935,6 +2039,12 @@ static int wl3501_probe(struct pcmcia_device *p_dev)
 	dev->tx_timeout		= wl3501_tx_timeout;
 	dev->watchdog_timeo	= 5 * HZ;
 	dev->get_stats		= wl3501_get_stats;
+
+		return -ENOMEM;
+
+	dev->netdev_ops		= &wl3501_netdev_ops;
+	dev->watchdog_timeo	= 5 * HZ;
+
 	this = netdev_priv(dev);
 	this->wireless_data.spy_data = &this->spy_data;
 	this->p_dev = p_dev;
@@ -1943,10 +2053,19 @@ static int wl3501_probe(struct pcmcia_device *p_dev)
 	SET_ETHTOOL_OPS(dev, &ops);
 	netif_stop_queue(dev);
 	p_dev->priv = p_dev->irq.Instance = dev;
+	dev->wireless_handlers	= &wl3501_handler_def;
+	netif_stop_queue(dev);
+	p_dev->priv = dev;
 
-	return wl3501_config(p_dev);
-out_link:
-	return -ENOMEM;
+	ret = wl3501_config(p_dev);
+	if (ret)
+		goto out_free_etherdev;
+
+	return 0;
+
+out_free_etherdev:
+	free_netdev(dev);
+	return ret;
 }
 
 #define CS_CHECK(fn, ret) \
@@ -1966,10 +2085,16 @@ static int wl3501_config(struct pcmcia_device *link)
 	int i = 0, j, last_fn, last_ret;
 	struct wl3501_card *this;
 	DECLARE_MAC_BUF(mac);
+static int wl3501_config(struct pcmcia_device *link)
+{
+	struct net_device *dev = link->priv;
+	int i = 0, j, ret;
+	struct wl3501_card *this;
 
 	/* Try allocating IO ports.  This tries a few fixed addresses.  If you
 	 * want, you can also read the card's config table to pick addresses --
 	 * see the serial driver for an example. */
+	link->io_lines = 5;
 
 	for (j = 0x280; j < 0x400; j += 0x20) {
 		/* The '^0x300' is so that we probe 0x300-0x3ff first, then
@@ -1984,6 +2109,14 @@ static int wl3501_config(struct pcmcia_device *link)
 		cs_error(link, RequestIO, i);
 		goto failed;
 	}
+		link->resource[0]->start = j;
+		link->resource[1]->start = link->resource[0]->start + 0x10;
+		i = pcmcia_request_io(link);
+		if (i == 0)
+			break;
+	}
+	if (i != 0)
+		goto failed;
 
 	/* Now allocate an interrupt line. Note that this does not actually
 	 * assign a handler to the interrupt. */
@@ -1998,6 +2131,17 @@ static int wl3501_config(struct pcmcia_device *link)
 	dev->irq = link->irq.AssignedIRQ;
 	dev->base_addr = link->io.BasePort1;
 	SET_NETDEV_DEV(dev, &handle_to_dev(link));
+	ret = pcmcia_request_irq(link, wl3501_interrupt);
+	if (ret)
+		goto failed;
+
+	ret = pcmcia_enable_device(link);
+	if (ret)
+		goto failed;
+
+	dev->irq = link->irq;
+	dev->base_addr = link->resource[0]->start;
+	SET_NETDEV_DEV(dev, &link->dev);
 	if (register_netdev(dev)) {
 		printk(KERN_NOTICE "wl3501_cs: register_netdev() failed\n");
 		goto failed;
@@ -2018,6 +2162,11 @@ static int wl3501_config(struct pcmcia_device *link)
 		goto failed;
 	}
 	strcpy(this->node.dev_name, dev->name);
+		printk(KERN_WARNING "%s: Can't read MAC addr in flash ROM?\n",
+		       dev->name);
+		unregister_netdev(dev);
+		goto failed;
+	}
 
 	for (i = 0; i < 6; i++)
 		dev->dev_addr[i] = ((char *)&this->mac_addr)[i];
@@ -2027,6 +2176,9 @@ static int wl3501_config(struct pcmcia_device *link)
 	       "MAC addr in flash ROM:%s\n",
 	       dev->name, this->base_addr, (int)dev->irq,
 	       print_mac(mac, dev->dev_addr));
+	       "MAC addr in flash ROM:%pM\n",
+	       dev->name, this->base_addr, (int)dev->irq,
+	       dev->dev_addr);
 	/*
 	 * Initialize card parameters - added by jss
 	 */
@@ -2069,6 +2221,8 @@ static void wl3501_release(struct pcmcia_device *link)
 	if (link->dev_node)
 		unregister_netdev(dev);
 
+static void wl3501_release(struct pcmcia_device *link)
+{
 	pcmcia_disable_device(link);
 }
 
@@ -2098,6 +2252,7 @@ static int wl3501_resume(struct pcmcia_device *link)
 
 
 static struct pcmcia_device_id wl3501_ids[] = {
+static const struct pcmcia_device_id wl3501_ids[] = {
 	PCMCIA_DEVICE_MANF_CARD(0xd601, 0x0001),
 	PCMCIA_DEVICE_NULL
 };
@@ -2108,6 +2263,7 @@ static struct pcmcia_driver wl3501_driver = {
 	.drv		= {
 		.name	= "wl3501_cs",
 	},
+	.name		= "wl3501_cs",
 	.probe		= wl3501_probe,
 	.remove		= wl3501_detach,
 	.id_table	= wl3501_ids,
@@ -2127,6 +2283,7 @@ static void __exit wl3501_exit_module(void)
 
 module_init(wl3501_init_module);
 module_exit(wl3501_exit_module);
+module_pcmcia_driver(wl3501_driver);
 
 MODULE_AUTHOR("Fox Chen <mhchen@golf.ccl.itri.org.tw>, "
 	      "Arnaldo Carvalho de Melo <acme@conectiva.com.br>,"

@@ -247,6 +247,21 @@ typedef struct deflate_workspace {
     char overlay_memory[(1 << (MAX_MEM_LEVEL + 6)) * (sizeof(ush)+2)];
 } deflate_workspace;
 
+    Byte *window_memory;
+    Pos *prev_memory;
+    Pos *head_memory;
+    char *overlay_memory;
+} deflate_workspace;
+
+#define zlib_deflate_window_memsize(windowBits) \
+	(2 * (1 << (windowBits)) * sizeof(Byte))
+#define zlib_deflate_prev_memsize(windowBits) \
+	((1 << (windowBits)) * sizeof(Pos))
+#define zlib_deflate_head_memsize(memLevel) \
+	((1 << ((memLevel)+7)) * sizeof(Pos))
+#define zlib_deflate_overlay_memsize(memLevel) \
+	((1 << ((memLevel)+6)) * (sizeof(ush)+2))
+
 /* Output a byte on the stream.
  * IN assertion: there is enough room in pending_buf.
  */
@@ -274,7 +289,6 @@ void zlib_tr_stored_block (deflate_state *s, char *buf, ulg stored_len,
 void zlib_tr_stored_type_only (deflate_state *);
 
 
-/* ===========================================================================
  * Output a short LSB first on the stream.
  * IN assertion: there is enough room in pendingBuf.
  */
@@ -283,7 +297,6 @@ void zlib_tr_stored_type_only (deflate_state *);
     put_byte(s, (uch)((ush)(w) >> 8)); \
 }
 
-/* ===========================================================================
  * Reverse the first len bits of a code, using straightforward code (a faster
  * method would use a table)
  * IN assertion: 1 <= len <= 15
@@ -299,7 +312,6 @@ static inline unsigned bi_reverse(unsigned code, /* the value to invert */
     return res >> 1;
 }
 
-/* ===========================================================================
  * Flush the bit buffer, keeping at most 7 bits in it.
  */
 static inline void bi_flush(deflate_state *s)
@@ -315,7 +327,6 @@ static inline void bi_flush(deflate_state *s)
     }
 }
 
-/* ===========================================================================
  * Flush the bit buffer and align the output on a byte boundary
  */
 static inline void bi_windup(deflate_state *s)

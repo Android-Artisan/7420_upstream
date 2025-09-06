@@ -5,6 +5,7 @@
 #ifndef __NET_GENERIC_H__
 #define __NET_GENERIC_H__
 
+#include <linux/bug.h>
 #include <linux/rcupdate.h>
 
 /*
@@ -17,6 +18,10 @@
  * 2. call net_assign_generic() to put the private data on the struct
  *    net (most preferably this should be done in the ->init callback
  *    of the ops registered);
+ * 1. set pernet_operations->id.  After register_pernet_device you
+ *    will have the id of your private pointer.
+ * 2. set pernet_operations->size to have the code allocate and free
+ *    a private structure pointed to from struct net.
  * 3. do not change this pointer while the net is alive;
  * 4. do not try to have any private reference on the net_generic object.
  *
@@ -32,6 +37,7 @@ struct net_generic {
 };
 
 static inline void *net_generic(struct net *net, int id)
+static inline void *net_generic(const struct net *net, int id)
 {
 	struct net_generic *ng;
 	void *ptr;

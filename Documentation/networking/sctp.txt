@@ -36,3 +36,4 @@ Or contact the lksctp developers through the mailing list:
    <lksctp-developers@lists.sourceforge.net> 
 
 
+   <linux-sctp@vger.kernel.org>

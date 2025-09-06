@@ -21,6 +21,7 @@
 #include <asm/dec/machtype.h>
 
 unsigned long read_persistent_clock(void)
+void read_persistent_clock(struct timespec *ts)
 {
 	unsigned int year, mon, day, hour, min, sec, real_year;
 	unsigned long flags;
@@ -51,11 +52,19 @@ unsigned long read_persistent_clock(void)
 		day = BCD2BIN(day);
 		mon = BCD2BIN(mon);
 		year = BCD2BIN(year);
+		sec = bcd2bin(sec);
+		min = bcd2bin(min);
+		hour = bcd2bin(hour);
+		day = bcd2bin(day);
+		mon = bcd2bin(mon);
+		year = bcd2bin(year);
 	}
 
 	year += real_year - 72 + 2000;
 
 	return mktime(year, mon, day, hour, min, sec);
+	ts->tv_sec = mktime(year, mon, day, hour, min, sec);
+	ts->tv_nsec = 0;
 }
 
 /*
@@ -84,6 +93,7 @@ int rtc_mips_set_mmss(unsigned long nowtime)
 	cmos_minutes = CMOS_READ(RTC_MINUTES);
 	if (!(save_control & RTC_DM_BINARY) || RTC_ALWAYS_BCD)
 		cmos_minutes = BCD2BIN(cmos_minutes);
+		cmos_minutes = bcd2bin(cmos_minutes);
 
 	/*
 	 * since we're only adjusting minutes and seconds,
@@ -101,11 +111,14 @@ int rtc_mips_set_mmss(unsigned long nowtime)
 		if (!(save_control & RTC_DM_BINARY) || RTC_ALWAYS_BCD) {
 			real_seconds = BIN2BCD(real_seconds);
 			real_minutes = BIN2BCD(real_minutes);
+			real_seconds = bin2bcd(real_seconds);
+			real_minutes = bin2bcd(real_minutes);
 		}
 		CMOS_WRITE(real_seconds, RTC_SECONDS);
 		CMOS_WRITE(real_minutes, RTC_MINUTES);
 	} else {
 		printk(KERN_WARNING
+		printk_once(KERN_NOTICE
 		       "set_rtc_mmss: can't update from %d to %d\n",
 		       cmos_minutes, real_minutes);
 		retval = -1;
@@ -128,11 +141,19 @@ void __init plat_time_init(void)
 {
 	u32 start, end;
 	int i = HZ / 10;
+	int ioasic_clock = 0;
+	u32 start, end;
+	int i = HZ / 8;
 
 	/* Set up the rate of periodic DS1287 interrupts. */
 	ds1287_set_base_clock(HZ);
 
 	if (cpu_has_counter) {
+	/* On some I/O ASIC systems we have the I/O ASIC's counter.  */
+	if (IOASIC)
+		ioasic_clock = dec_ioasic_clocksource_init() == 0;
+	if (cpu_has_counter) {
+		ds1287_timer_state();
 		while (!ds1287_timer_state())
 			;
 
@@ -150,6 +171,24 @@ void __init plat_time_init(void)
 	} else if (IOASIC)
 		/* For pre-R4k systems we use the I/O ASIC's counter.  */
 		dec_ioasic_clocksource_init();
+		mips_hpt_frequency = (end - start) * 8;
+		printk(KERN_INFO "MIPS counter frequency %dHz\n",
+			mips_hpt_frequency);
+
+		/*
+		 * All R4k DECstations suffer from the CP0 Count erratum,
+		 * so we can't use the timer as a clock source, and a clock
+		 * event both at a time.  An accurate wall clock is more
+		 * important than a high-precision interval timer so only
+		 * use the timer as a clock source, and not a clock event
+		 * if there's no I/O ASIC counter available to serve as a
+		 * clock source.
+		 */
+		if (!ioasic_clock) {
+			init_r4k_clocksource();
+			mips_hpt_frequency = 0;
+		}
+	}
 
 	ds1287_clockevent_init(dec_interrupt[DEC_IRQ_RTC]);
 }

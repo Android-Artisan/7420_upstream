@@ -65,6 +65,8 @@ static int __init tekram_sir_init(void)
 		tekram_delay = 200;
 	IRDA_DEBUG(1, "%s - using %d ms delay\n",
 		tekram.driver_name, tekram_delay);
+	pr_debug("%s - using %d ms delay\n",
+		 tekram.driver_name, tekram_delay);
 	return irda_register_dongle(&tekram);
 }
 
@@ -180,6 +182,8 @@ static int tekram_change_speed(struct sir_dev *dev, unsigned speed)
 
 	default:
 		IRDA_ERROR("%s - undefined state %d\n", __func__, state);
+		net_err_ratelimited("%s - undefined state %d\n",
+				    __func__, state);
 		ret = -EINVAL;
 		break;
 	}

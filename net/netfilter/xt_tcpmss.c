@@ -31,6 +31,9 @@ tcpmss_mt(const struct sk_buff *skb, const struct net_device *in,
           bool *hotdrop)
 {
 	const struct xt_tcpmss_match_info *info = matchinfo;
+tcpmss_mt(const struct sk_buff *skb, struct xt_action_param *par)
+{
+	const struct xt_tcpmss_match_info *info = par->matchinfo;
 	const struct tcphdr *th;
 	struct tcphdr _tcph;
 	/* tcp.doff is only 4 bits, ie. max 15 * 4 bytes */
@@ -40,6 +43,7 @@ tcpmss_mt(const struct sk_buff *skb, const struct net_device *in,
 
 	/* If we don't have the whole header, drop packet. */
 	th = skb_header_pointer(skb, protoff, sizeof(_tcph), &_tcph);
+	th = skb_header_pointer(skb, par->thoff, sizeof(_tcph), &_tcph);
 	if (th == NULL)
 		goto dropit;
 
@@ -53,6 +57,7 @@ tcpmss_mt(const struct sk_buff *skb, const struct net_device *in,
 
 	/* Truncated options. */
 	op = skb_header_pointer(skb, protoff + sizeof(*th), optlen, _opt);
+	op = skb_header_pointer(skb, par->thoff + sizeof(*th), optlen, _opt);
 	if (op == NULL)
 		goto dropit;
 
@@ -77,6 +82,7 @@ out:
 
 dropit:
 	*hotdrop = true;
+	par->hotdrop = true;
 	return false;
 }
 
@@ -84,6 +90,7 @@ static struct xt_match tcpmss_mt_reg[] __read_mostly = {
 	{
 		.name		= "tcpmss",
 		.family		= AF_INET,
+		.family		= NFPROTO_IPV4,
 		.match		= tcpmss_mt,
 		.matchsize	= sizeof(struct xt_tcpmss_match_info),
 		.proto		= IPPROTO_TCP,
@@ -92,6 +99,7 @@ static struct xt_match tcpmss_mt_reg[] __read_mostly = {
 	{
 		.name		= "tcpmss",
 		.family		= AF_INET6,
+		.family		= NFPROTO_IPV6,
 		.match		= tcpmss_mt,
 		.matchsize	= sizeof(struct xt_tcpmss_match_info),
 		.proto		= IPPROTO_TCP,

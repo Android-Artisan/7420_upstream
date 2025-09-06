@@ -12,6 +12,10 @@
 #include <linux/init.h>
 
 #include <asm/system.h>
+#include <linux/seq_file.h>
+#include <linux/console.h>
+#include <linux/init.h>
+
 #include <asm/machdep.h>
 #include <asm/irq.h>
 #include <asm/sun3xprom.h>
@@ -41,6 +45,9 @@ static int sun3x_get_hardware_list(char *buffer)
 
 	return len;
 
+static void sun3x_get_hardware_list(struct seq_file *m)
+{
+	seq_printf(m, "PROM Revision:\t%s\n", romvec->pv_monid);
 }
 
 /*
@@ -57,6 +64,7 @@ void __init config_sun3x(void)
 	mach_init_IRQ        = sun3_init_IRQ;
 
 	mach_gettimeoffset   = sun3x_gettimeoffset;
+	arch_gettimeoffset   = sun3x_gettimeoffset;
 	mach_reset           = sun3x_reboot;
 
 	mach_hwclk           = sun3x_hwclk;

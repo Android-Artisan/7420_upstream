@@ -6,12 +6,15 @@
 #include <linux/err.h>
 #include <linux/highmem.h>
 #include <linux/mm.h>
+#include <linux/module.h>
 #include <linux/sched.h>
 #include <asm/current.h>
 #include <asm/page.h>
 #include <asm/pgtable.h>
 #include "kern_util.h"
 #include "os.h"
+#include <kern_util.h>
+#include <os.h>
 
 pte_t *virt_to_pte(struct mm_struct *mm, unsigned long addr)
 {
@@ -69,6 +72,7 @@ static int do_op_one_page(unsigned long addr, int len, int is_write,
 
 	page = pte_page(*pte);
 	addr = (unsigned long) kmap_atomic(page, KM_UML_USERCOPY) +
+	addr = (unsigned long) kmap_atomic(page) +
 		(addr & ~PAGE_MASK);
 
 	current->thread.fault_catcher = &buf;
@@ -82,6 +86,7 @@ static int do_op_one_page(unsigned long addr, int len, int is_write,
 	current->thread.fault_catcher = NULL;
 
 	kunmap_atomic(page, KM_UML_USERCOPY);
+	kunmap_atomic((void *)addr);
 
 	return n;
 }
@@ -90,6 +95,10 @@ static int buffer_op(unsigned long addr, int len, int is_write,
 		     int (*op)(unsigned long, int, void *), void *arg)
 {
 	int size, remain, n;
+static long buffer_op(unsigned long addr, int len, int is_write,
+		      int (*op)(unsigned long, int, void *), void *arg)
+{
+	long size, remain, n;
 
 	size = min(PAGE_ALIGN(addr) - addr, (unsigned long) len);
 	remain = len;
@@ -139,6 +148,7 @@ static int copy_chunk_from_user(unsigned long from, int len, void *arg)
 }
 
 int copy_from_user(void *to, const void __user *from, int n)
+long __copy_from_user(void *to, const void __user *from, unsigned long n)
 {
 	if (segment_eq(get_fs(), KERNEL_DS)) {
 		memcpy(to, (__force void*)from, n);
@@ -149,6 +159,9 @@ int copy_from_user(void *to, const void __user *from, int n)
 	       buffer_op((unsigned long) from, n, 0, copy_chunk_from_user, &to):
 	       n;
 }
+	return buffer_op((unsigned long) from, n, 0, copy_chunk_from_user, &to);
+}
+EXPORT_SYMBOL(__copy_from_user);
 
 static int copy_chunk_to_user(unsigned long to, int len, void *arg)
 {
@@ -160,6 +173,7 @@ static int copy_chunk_to_user(unsigned long to, int len, void *arg)
 }
 
 int copy_to_user(void __user *to, const void *from, int n)
+long __copy_to_user(void __user *to, const void *from, unsigned long n)
 {
 	if (segment_eq(get_fs(), KERNEL_DS)) {
 		memcpy((__force void *) to, from, n);
@@ -170,6 +184,9 @@ int copy_to_user(void __user *to, const void *from, int n)
 	       buffer_op((unsigned long) to, n, 1, copy_chunk_to_user, &from) :
 	       n;
 }
+	return buffer_op((unsigned long) to, n, 1, copy_chunk_to_user, &from);
+}
+EXPORT_SYMBOL(__copy_to_user);
 
 static int strncpy_chunk_from_user(unsigned long from, int len, void *arg)
 {
@@ -188,6 +205,9 @@ static int strncpy_chunk_from_user(unsigned long from, int len, void *arg)
 int strncpy_from_user(char *dst, const char __user *src, int count)
 {
 	int n;
+long __strncpy_from_user(char *dst, const char __user *src, long count)
+{
+	long n;
 	char *ptr = dst;
 
 	if (segment_eq(get_fs(), KERNEL_DS)) {
@@ -204,6 +224,7 @@ int strncpy_from_user(char *dst, const char __user *src, int count)
 		return -EFAULT;
 	return strnlen(dst, count);
 }
+EXPORT_SYMBOL(__strncpy_from_user);
 
 static int clear_chunk(unsigned long addr, int len, void *unused)
 {
@@ -217,6 +238,7 @@ int __clear_user(void __user *mem, int len)
 }
 
 int clear_user(void __user *mem, int len)
+unsigned long __clear_user(void __user *mem, unsigned long len)
 {
 	if (segment_eq(get_fs(), KERNEL_DS)) {
 		memset((__force void*)mem, 0, len);
@@ -226,6 +248,9 @@ int clear_user(void __user *mem, int len)
 	return access_ok(VERIFY_WRITE, mem, len) ?
 	       buffer_op((unsigned long) mem, len, 1, clear_chunk, NULL) : len;
 }
+	return buffer_op((unsigned long) mem, len, 1, clear_chunk, NULL);
+}
+EXPORT_SYMBOL(__clear_user);
 
 static int strnlen_chunk(unsigned long str, int len, void *arg)
 {
@@ -240,6 +265,7 @@ static int strnlen_chunk(unsigned long str, int len, void *arg)
 }
 
 int strnlen_user(const void __user *str, int len)
+long __strnlen_user(const void __user *str, long len)
 {
 	int count = 0, n;
 
@@ -251,3 +277,6 @@ int strnlen_user(const void __user *str, int len)
 		return count + 1;
 	return -EFAULT;
 }
+	return 0;
+}
+EXPORT_SYMBOL(__strnlen_user);

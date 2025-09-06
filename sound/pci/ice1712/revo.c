@@ -2,6 +2,7 @@
  *   ALSA driver for ICEnsemble ICE1712 (Envy24)
  *
  *   Lowlevel functions for M-Audio Revolution 7.1
+ *   Lowlevel functions for M-Audio Audiophile 192, Revolution 7.1 and 5.1
  *
  *	Copyright (c) 2003 Takashi Iwai <tiwai@suse.de>
  *
@@ -36,6 +37,7 @@
 struct revo51_spec {
 	struct snd_i2c_device *dev;
 	struct snd_pt2258 *pt2258;
+	struct ak4114 *ak4114;
 };
 
 static void revo_i2s_mclk_changed(struct snd_ice1712 *ice)
@@ -49,6 +51,7 @@ static void revo_i2s_mclk_changed(struct snd_ice1712 *ice)
 
 /*
  * change the rate of envy24HT, AK4355 and AK4381
+ * change the rate of Envy24HT, AK4355 and AK4381
  */
 static void revo_set_rate_val(struct snd_akm4xxx *ak, unsigned int rate)
 {
@@ -85,6 +88,8 @@ static void revo_set_rate_val(struct snd_akm4xxx *ak, unsigned int rate)
 	tmp |= dfs << shift;
 	// snd_akm4xxx_write(ak, 0, reg, tmp);
 	snd_akm4xxx_set(ak, 0, reg, tmp); /* the value is written in reset(0) */
+	/* snd_akm4xxx_write(ak, 0, reg, tmp); */
+	snd_akm4xxx_set(ak, 0, reg, tmp); /* value is written in reset(0) */
 	snd_akm4xxx_reset(ak, 0);
 }
 
@@ -216,6 +221,7 @@ static const struct snd_akm4xxx_dac_channel revo51_dac[] = {
 	AK_DAC("PCM Center Playback Volume", 1),
 	AK_DAC("PCM LFE Playback Volume", 1),
 	AK_DAC("PCM Rear Playback Volume", 2),
+	AK_DAC("PCM Headphone Volume", 2),
 };
 
 static const char *revo51_adc_input_names[] = {
@@ -235,6 +241,7 @@ static const struct snd_akm4xxx_adc_channel revo51_adc[] = {
 };
 
 static struct snd_akm4xxx akm_revo_front __devinitdata = {
+static struct snd_akm4xxx akm_revo_front = {
 	.type = SND_AK4381,
 	.num_dacs = 2,
 	.ops = {
@@ -244,6 +251,7 @@ static struct snd_akm4xxx akm_revo_front __devinitdata = {
 };
 
 static struct snd_ak4xxx_private akm_revo_front_priv __devinitdata = {
+static struct snd_ak4xxx_private akm_revo_front_priv = {
 	.caddr = 1,
 	.cif = 0,
 	.data_mask = VT1724_REVO_CDOUT,
@@ -256,6 +264,7 @@ static struct snd_ak4xxx_private akm_revo_front_priv __devinitdata = {
 };
 
 static struct snd_akm4xxx akm_revo_surround __devinitdata = {
+static struct snd_akm4xxx akm_revo_surround = {
 	.type = SND_AK4355,
 	.idx_offset = 1,
 	.num_dacs = 6,
@@ -266,6 +275,7 @@ static struct snd_akm4xxx akm_revo_surround __devinitdata = {
 };
 
 static struct snd_ak4xxx_private akm_revo_surround_priv __devinitdata = {
+static struct snd_ak4xxx_private akm_revo_surround_priv = {
 	.caddr = 3,
 	.cif = 0,
 	.data_mask = VT1724_REVO_CDOUT,
@@ -280,6 +290,9 @@ static struct snd_ak4xxx_private akm_revo_surround_priv __devinitdata = {
 static struct snd_akm4xxx akm_revo51 __devinitdata = {
 	.type = SND_AK4358,
 	.num_dacs = 6,
+static struct snd_akm4xxx akm_revo51 = {
+	.type = SND_AK4358,
+	.num_dacs = 8,
 	.ops = {
 		.set_rate_val = revo_set_rate_val
 	},
@@ -287,6 +300,7 @@ static struct snd_akm4xxx akm_revo51 __devinitdata = {
 };
 
 static struct snd_ak4xxx_private akm_revo51_priv __devinitdata = {
+static struct snd_ak4xxx_private akm_revo51_priv = {
 	.caddr = 2,
 	.cif = 0,
 	.data_mask = VT1724_REVO_CDOUT,
@@ -299,12 +313,14 @@ static struct snd_ak4xxx_private akm_revo51_priv __devinitdata = {
 };
 
 static struct snd_akm4xxx akm_revo51_adc __devinitdata = {
+static struct snd_akm4xxx akm_revo51_adc = {
 	.type = SND_AK5365,
 	.num_adcs = 2,
 	.adc_info = revo51_adc,
 };
 
 static struct snd_ak4xxx_private akm_revo51_adc_priv __devinitdata = {
+static struct snd_ak4xxx_private akm_revo51_adc_priv = {
 	.caddr = 2,
 	.cif = 0,
 	.data_mask = VT1724_REVO_CDOUT,
@@ -346,6 +362,7 @@ static const struct snd_akm4xxx_dac_channel ap192_dac[] = {
 };
 
 static struct snd_akm4xxx akm_ap192 __devinitdata = {
+static struct snd_akm4xxx akm_ap192 = {
 	.type = SND_AK4358,
 	.num_dacs = 2,
 	.ops = {
@@ -355,6 +372,7 @@ static struct snd_akm4xxx akm_ap192 __devinitdata = {
 };
 
 static struct snd_ak4xxx_private akm_ap192_priv __devinitdata = {
+static struct snd_ak4xxx_private akm_ap192_priv = {
 	.caddr = 2,
 	.cif = 0,
 	.data_mask = VT1724_REVO_CDOUT,
@@ -362,6 +380,9 @@ static struct snd_ak4xxx_private akm_ap192_priv __devinitdata = {
 	.cs_mask = VT1724_REVO_CS0 | VT1724_REVO_CS1,
 	.cs_addr = VT1724_REVO_CS1,
 	.cs_none = VT1724_REVO_CS0 | VT1724_REVO_CS1,
+	.cs_mask = VT1724_REVO_CS0 | VT1724_REVO_CS3,
+	.cs_addr = VT1724_REVO_CS3,
+	.cs_none = VT1724_REVO_CS0 | VT1724_REVO_CS3,
 	.add_flags = VT1724_REVO_CCLK, /* high at init */
 	.mask_flags = 0,
 };
@@ -373,6 +394,7 @@ static struct snd_ak4xxx_private akm_ap192_priv __devinitdata = {
  * CSN  (pin 35) -- GPIO7 pin 59
  */
 #define AK4114_ADDR	0x02
+#define AK4114_ADDR	0x00
 
 static void write_data(struct snd_ice1712 *ice, unsigned int gpio,
 		       unsigned int data, int idx)
@@ -427,6 +449,7 @@ static unsigned int ap192_4wire_start(struct snd_ice1712 *ice)
 	tmp |= VT1724_REVO_CCLK; /* high at init */
 	tmp |= VT1724_REVO_CS0;
 	tmp &= ~VT1724_REVO_CS1;
+	tmp &= ~VT1724_REVO_CS3;
 	snd_ice1712_gpio_write(ice, tmp);
 	udelay(1);
 	return tmp;
@@ -435,6 +458,7 @@ static unsigned int ap192_4wire_start(struct snd_ice1712 *ice)
 static void ap192_4wire_finish(struct snd_ice1712 *ice, unsigned int tmp)
 {
 	tmp |= VT1724_REVO_CS1;
+	tmp |= VT1724_REVO_CS3;
 	tmp |= VT1724_REVO_CS0;
 	snd_ice1712_gpio_write(ice, tmp);
 	udelay(1);
@@ -474,6 +498,13 @@ static int __devinit ap192_ak4114_init(struct snd_ice1712 *ice)
 		AK4114_DIF_I24I2S,
 		AK4114_TX1E,
 		AK4114_EFH_1024 | AK4114_DIT | AK4114_IPS(1),
+static int ap192_ak4114_init(struct snd_ice1712 *ice)
+{
+	static const unsigned char ak4114_init_vals[] = {
+		AK4114_RST | AK4114_PWN | AK4114_OCKS0,
+		AK4114_DIF_I24I2S,
+		AK4114_TX1E,
+		AK4114_EFH_1024 | AK4114_DIT | AK4114_IPS(0),
 		0,
 		0
 	};
@@ -482,6 +513,14 @@ static int __devinit ap192_ak4114_init(struct snd_ice1712 *ice)
 	};
 	struct ak4114 *ak;
 	int err;
+
+	int err;
+
+	struct revo51_spec *spec;
+	spec = kzalloc(sizeof(*spec), GFP_KERNEL);
+	if (!spec)
+		return -ENOMEM;
+	ice->spec = spec;
 
 	err = snd_ak4114_create(ice->card,
 				 ap192_ak4114_read,
@@ -496,6 +535,17 @@ static int __devinit ap192_ak4114_init(struct snd_ice1712 *ice)
 }
 
 static int __devinit revo_init(struct snd_ice1712 *ice)
+				 ice, &spec->ak4114);
+	if (err < 0)
+		return err;
+	/* AK4114 in Revo cannot detect external rate correctly.
+	 * No reason to stop capture stream due to incorrect checks */
+	spec->ak4114->check_flags = AK4114_CHECK_NO_RATE;
+
+	return 0;
+}
+
+static int revo_init(struct snd_ice1712 *ice)
 {
 	struct snd_akm4xxx *ak;
 	int err;
@@ -509,6 +559,7 @@ static int __devinit revo_init(struct snd_ice1712 *ice)
 		break;
 	case VT1724_SUBDEVICE_REVOLUTION51:
 		ice->num_total_dacs = 6;
+		ice->num_total_dacs = 8;
 		ice->num_total_adcs = 2;
 		break;
 	case VT1724_SUBDEVICE_AUDIOPHILE192:
@@ -534,6 +585,20 @@ static int __devinit revo_init(struct snd_ice1712 *ice)
 			return err;
 		/* unmute all codecs */
 		snd_ice1712_gpio_write_bits(ice, VT1724_REVO_MUTE, VT1724_REVO_MUTE);
+	switch (ice->eeprom.subvendor) {
+	case VT1724_SUBDEVICE_REVOLUTION71:
+		ice->akm_codecs = 2;
+		err = snd_ice1712_akm4xxx_init(ak, &akm_revo_front,
+						&akm_revo_front_priv, ice);
+		if (err < 0)
+			return err;
+		err = snd_ice1712_akm4xxx_init(ak+1, &akm_revo_surround,
+						&akm_revo_surround_priv, ice);
+		if (err < 0)
+			return err;
+		/* unmute all codecs */
+		snd_ice1712_gpio_write_bits(ice, VT1724_REVO_MUTE,
+						VT1724_REVO_MUTE);
 		break;
 	case VT1724_SUBDEVICE_REVOLUTION51:
 		ice->akm_codecs = 2;
@@ -558,6 +623,9 @@ static int __devinit revo_init(struct snd_ice1712 *ice)
 					       ice);
 		if (err < 0)
 			return err;
+		err = ap192_ak4114_init(ice);
+		if (err < 0)
+			return err;
 		
 		/* unmute all codecs */
 		snd_ice1712_gpio_write_bits(ice, VT1724_REVO_MUTE,
@@ -572,6 +640,9 @@ static int __devinit revo_init(struct snd_ice1712 *ice)
 static int __devinit revo_add_controls(struct snd_ice1712 *ice)
 {
 	struct revo51_spec *spec;
+static int revo_add_controls(struct snd_ice1712 *ice)
+{
+	struct revo51_spec *spec = ice->spec;
 	int err;
 
 	switch (ice->eeprom.subvendor) {
@@ -594,6 +665,9 @@ static int __devinit revo_add_controls(struct snd_ice1712 *ice)
 		if (err < 0)
 			return err;
 		err = ap192_ak4114_init(ice);
+		/* only capture SPDIF over AK4114 */
+		err = snd_ak4114_build(spec->ak4114, NULL,
+		   ice->pcm->streams[SNDRV_PCM_STREAM_CAPTURE].substream);
 		if (err < 0)
 			return err;
 		break;
@@ -603,6 +677,7 @@ static int __devinit revo_add_controls(struct snd_ice1712 *ice)
 
 /* entry point */
 struct snd_ice1712_card_info snd_vt1724_revo_cards[] __devinitdata = {
+struct snd_ice1712_card_info snd_vt1724_revo_cards[] = {
 	{
 		.subvendor = VT1724_SUBDEVICE_REVOLUTION71,
 		.name = "M Audio Revolution-7.1",

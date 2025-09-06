@@ -4,6 +4,9 @@
 #include <dvb_net.h>
 #include <dvb_frontend.h>
 
+#ifndef _VIDEOBUF_DVB_H_
+#define	_VIDEOBUF_DVB_H_
+
 struct videobuf_dvb {
 	/* filling that the job of the driver */
 	char                       *name;
@@ -36,3 +39,33 @@ void videobuf_dvb_unregister(struct videobuf_dvb *dvb);
  * c-basic-offset: 8
  * End:
  */
+struct videobuf_dvb_frontend {
+	struct list_head felist;
+	int id;
+	struct videobuf_dvb dvb;
+};
+
+struct videobuf_dvb_frontends {
+	struct list_head felist;
+	struct mutex lock;
+	struct dvb_adapter adapter;
+	int active_fe_id; /* Indicates which frontend in the felist is in use */
+	int gate; /* Frontend with gate control 0=!MFE,1=fe0,2=fe1 etc */
+};
+
+int videobuf_dvb_register_bus(struct videobuf_dvb_frontends *f,
+			  struct module *module,
+			  void *adapter_priv,
+			  struct device *device,
+			  short *adapter_nr,
+			  int mfe_shared);
+
+void videobuf_dvb_unregister_bus(struct videobuf_dvb_frontends *f);
+
+struct videobuf_dvb_frontend * videobuf_dvb_alloc_frontend(struct videobuf_dvb_frontends *f, int id);
+void videobuf_dvb_dealloc_frontends(struct videobuf_dvb_frontends *f);
+
+struct videobuf_dvb_frontend * videobuf_dvb_get_frontend(struct videobuf_dvb_frontends *f, int id);
+int videobuf_dvb_find_frontend(struct videobuf_dvb_frontends *f, struct dvb_frontend *p);
+
+#endif			/* _VIDEOBUF_DVB_H_ */

@@ -43,6 +43,7 @@ struct irqaction sni_isa_irq = {
 	.handler = sni_isa_irq_handler,
 	.name = "ISA",
 	.flags = IRQF_SHARED | IRQF_DISABLED
+	.flags = IRQF_SHARED
 };
 
 /*
@@ -72,11 +73,27 @@ void __init arch_init_irq(void)
 	case SNI_BRD_RM200:
 	        sni_rm200_irq_init();
 	        break;
+		sni_a20r_irq_init();
+		break;
+
+	case SNI_BRD_PCI_TOWER:
+		sni_pcit_irq_init();
+		break;
+
+	case SNI_BRD_PCI_TOWER_CPLUS:
+		sni_pcit_cplus_irq_init();
+		break;
+
+	case SNI_BRD_RM200:
+		sni_rm200_irq_init();
+		break;
 
 	case SNI_BRD_PCI_MTOWER:
 	case SNI_BRD_PCI_DESKTOP:
 	case SNI_BRD_PCI_MTOWER_CPLUS:
 	        sni_pcimt_irq_init();
 	        break;
+		sni_pcimt_irq_init();
+		break;
 	}
 }

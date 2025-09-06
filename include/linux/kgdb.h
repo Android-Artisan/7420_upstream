@@ -20,6 +20,14 @@
 #include <asm/atomic.h>
 #include <asm/kgdb.h>
 
+#include <linux/linkage.h>
+#include <linux/init.h>
+#include <linux/atomic.h>
+#ifdef CONFIG_HAVE_ARCH_KGDB
+#include <asm/kgdb.h>
+#endif
+
+#ifdef CONFIG_KGDB
 struct pt_regs;
 
 /**
@@ -58,6 +66,10 @@ extern void kgdb_post_primary_code(struct pt_regs *regs, int e_vector,
  */
 extern void kgdb_disable_hw_debug(struct pt_regs *regs);
 
+ *	This can be implemented in the architecture specific portion of kgdb.
+ */
+extern int kgdb_skipexception(int exception, struct pt_regs *regs);
+
 struct tasklet_struct;
 struct task_struct;
 struct uart_port;
@@ -66,6 +78,7 @@ struct uart_port;
  *	kgdb_breakpoint - compiled in breakpoint
  *
  *	This will be impelmented a static inline per architecture.  This
+ *	This will be implemented as a static inline per architecture.  This
  *	function is called by the kgdb core to execute an architecture
  *	specific trap to cause kgdb to enter the exception processing.
  *
@@ -73,6 +86,7 @@ struct uart_port;
 void kgdb_breakpoint(void);
 
 extern int kgdb_connected;
+extern int kgdb_io_module_registered;
 
 extern atomic_t			kgdb_setting_breakpoint;
 extern atomic_t			kgdb_cpu_doing_single_step;
@@ -86,6 +100,8 @@ enum kgdb_bptype {
 	BP_WRITE_WATCHPOINT,
 	BP_READ_WATCHPOINT,
 	BP_ACCESS_WATCHPOINT
+	BP_ACCESS_WATCHPOINT,
+	BP_POKE_BREAKPOINT,
 };
 
 enum kgdb_bpstate {
@@ -102,6 +118,19 @@ struct kgdb_bkpt {
 	enum kgdb_bpstate	state;
 };
 
+struct dbg_reg_def_t {
+	char *name;
+	int size;
+	int offset;
+};
+
+#ifndef DBG_MAX_REG_NUM
+#define DBG_MAX_REG_NUM 0
+#else
+extern struct dbg_reg_def_t dbg_reg_def[];
+extern char *dbg_get_reg(int regno, void *mem, struct pt_regs *regs);
+extern int dbg_set_reg(int regno, void *mem, struct pt_regs *regs);
+#endif
 #ifndef KGDB_MAX_BREAKPOINTS
 # define KGDB_MAX_BREAKPOINTS	1000
 #endif
@@ -191,6 +220,7 @@ kgdb_arch_handle_exception(int vector, int signo, int err_code,
  *
  *	On SMP systems, we need to get the attention of the other CPUs
  *	and get them be in a known state.  This should do what is needed
+ *	and get them into a known state.  This should do what is needed
  *	to get the other CPUs to call kgdb_wait(). Note that on some arches,
  *	the NMI approach is not used for rounding up all the CPUs. For example,
  *	in case of MIPS, smp_call_function() is used to roundup CPUs. In
@@ -207,6 +237,32 @@ extern void kgdb_roundup_cpus(unsigned long flags);
 extern int kgdb_validate_break_address(unsigned long addr);
 extern int kgdb_arch_set_breakpoint(unsigned long addr, char *saved_instr);
 extern int kgdb_arch_remove_breakpoint(unsigned long addr, char *bundle);
+/**
+ *	kgdb_arch_set_pc - Generic call back to the program counter
+ *	@regs: Current &struct pt_regs.
+ *  @pc: The new value for the program counter
+ *
+ *	This function handles updating the program counter and requires an
+ *	architecture specific implementation.
+ */
+extern void kgdb_arch_set_pc(struct pt_regs *regs, unsigned long pc);
+
+
+/* Optional functions. */
+extern int kgdb_validate_break_address(unsigned long addr);
+extern int kgdb_arch_set_breakpoint(struct kgdb_bkpt *bpt);
+extern int kgdb_arch_remove_breakpoint(struct kgdb_bkpt *bpt);
+
+/**
+ *	kgdb_arch_late - Perform any architecture specific initalization.
+ *
+ *	This function will handle the late initalization of any
+ *	architecture specific callbacks.  This is an optional function for
+ *	handling things like late initialization of hw breakpoints.  The
+ *	default implementation does nothing.
+ */
+extern void kgdb_arch_late(void);
+
 
 /**
  * struct kgdb_arch - Describe architecture specific values.
@@ -220,10 +276,13 @@ extern int kgdb_arch_remove_breakpoint(unsigned long addr, char *bundle);
  * breakpoint.
  * @remove_hw_breakpoint: Allow an architecture to specify how to remove a
  * hardware breakpoint.
+ * @disable_hw_break: Allow an architecture to specify how to disable
+ * hardware breakpoints for a single cpu.
  * @remove_all_hw_break: Allow an architecture to specify how to remove all
  * hardware breakpoints.
  * @correct_hw_break: Allow an architecture to specify how to correct the
  * hardware debug registers.
+ * @enable_nmi: Manage NMI-triggered entry to KGDB
  */
 struct kgdb_arch {
 	unsigned char		gdb_bpt_instr[BREAK_INSTR_SIZE];
@@ -235,6 +294,11 @@ struct kgdb_arch {
 	int	(*remove_hw_breakpoint)(unsigned long, int, enum kgdb_bptype);
 	void	(*remove_all_hw_break)(void);
 	void	(*correct_hw_break)(void);
+	void	(*disable_hw_break)(struct pt_regs *regs);
+	void	(*remove_all_hw_break)(void);
+	void	(*correct_hw_break)(void);
+
+	void	(*enable_nmi)(bool on);
 };
 
 /**
@@ -248,6 +312,8 @@ struct kgdb_arch {
  * the I/O driver.
  * @post_exception: Pointer to a function that will do any cleanup work
  * for the I/O driver.
+ * @is_console: 1 if the end device is a console 0 if the I/O device is
+ * not a console
  */
 struct kgdb_io {
 	const char		*name;
@@ -257,6 +323,7 @@ struct kgdb_io {
 	int			(*init) (void);
 	void			(*pre_exception) (void);
 	void			(*post_exception) (void);
+	int			is_console;
 };
 
 extern struct kgdb_arch		arch_kgdb_ops;
@@ -271,6 +338,28 @@ extern int kgdb_mem2hex(char *mem, char *buf, int count);
 extern int kgdb_hex2mem(char *buf, char *mem, int count);
 
 extern int kgdb_isremovedbreak(unsigned long addr);
+extern unsigned long kgdb_arch_pc(int exception, struct pt_regs *regs);
+
+#ifdef CONFIG_SERIAL_KGDB_NMI
+extern int kgdb_register_nmi_console(void);
+extern int kgdb_unregister_nmi_console(void);
+extern bool kgdb_nmi_poll_knock(void);
+#else
+static inline int kgdb_register_nmi_console(void) { return 0; }
+static inline int kgdb_unregister_nmi_console(void) { return 0; }
+static inline bool kgdb_nmi_poll_knock(void) { return 1; }
+#endif
+
+extern int kgdb_register_io_module(struct kgdb_io *local_kgdb_io_ops);
+extern void kgdb_unregister_io_module(struct kgdb_io *local_kgdb_io_ops);
+extern struct kgdb_io *dbg_io_ops;
+
+extern int kgdb_hex2long(char **ptr, unsigned long *long_val);
+extern char *kgdb_mem2hex(char *mem, char *buf, int count);
+extern int kgdb_hex2mem(char *buf, char *mem, int count);
+
+extern int kgdb_isremovedbreak(unsigned long addr);
+extern void kgdb_schedule_breakpoint(void);
 
 extern int
 kgdb_handle_exception(int ex_vector, int signo, int err_code,
@@ -280,4 +369,18 @@ extern int kgdb_nmicallback(int cpu, void *regs);
 extern int			kgdb_single_step;
 extern atomic_t			kgdb_active;
 
+extern int kgdb_nmicallin(int cpu, int trapnr, void *regs, int err_code,
+			  atomic_t *snd_rdy);
+extern void gdbstub_exit(int status);
+
+extern int			kgdb_single_step;
+extern atomic_t			kgdb_active;
+#define in_dbg_master() \
+	(irqs_disabled() && (smp_processor_id() == atomic_read(&kgdb_active)))
+extern bool dbg_is_early;
+extern void __init dbg_late_init(void);
+#else /* ! CONFIG_KGDB */
+#define in_dbg_master() (0)
+#define dbg_late_init()
+#endif /* ! CONFIG_KGDB */
 #endif /* _KGDB_H_ */

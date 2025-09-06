@@ -13,6 +13,8 @@
 #include "os.h"
 #include "um_malloc.h"
 #include "user.h"
+#include <os.h>
+#include <um_malloc.h>
 
 struct fd_chan {
 	int fd;

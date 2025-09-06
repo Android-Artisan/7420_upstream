@@ -16,6 +16,11 @@
 #include <net/xfrm.h>
 
 static struct snmp_mib xfrm_mib_list[] = {
+#include <linux/export.h>
+#include <net/snmp.h>
+#include <net/xfrm.h>
+
+static const struct snmp_mib xfrm_mib_list[] = {
 	SNMP_MIB_ITEM("XfrmInError", LINUX_MIB_XFRMINERROR),
 	SNMP_MIB_ITEM("XfrmInBufferError", LINUX_MIB_XFRMINBUFFERERROR),
 	SNMP_MIB_ITEM("XfrmInHdrError", LINUX_MIB_XFRMINHDRERROR),
@@ -64,6 +69,20 @@ static int xfrm_statistics_seq_show(struct seq_file *seq, void *v)
 		seq_printf(seq, "%-24s\t%lu\n", xfrm_mib_list[i].name,
 			   fold_field((void **)xfrm_statistics,
 				      xfrm_mib_list[i].entry));
+	SNMP_MIB_ITEM("XfrmFwdHdrError", LINUX_MIB_XFRMFWDHDRERROR),
+	SNMP_MIB_ITEM("XfrmOutStateInvalid", LINUX_MIB_XFRMOUTSTATEINVALID),
+	SNMP_MIB_ITEM("XfrmAcquireError", LINUX_MIB_XFRMACQUIREERROR),
+	SNMP_MIB_SENTINEL
+};
+
+static int xfrm_statistics_seq_show(struct seq_file *seq, void *v)
+{
+	struct net *net = seq->private;
+	int i;
+	for (i = 0; xfrm_mib_list[i].name; i++)
+		seq_printf(seq, "%-24s\t%lu\n", xfrm_mib_list[i].name,
+			   snmp_fold_field(net->mib.xfrm_statistics,
+					   xfrm_mib_list[i].entry));
 	return 0;
 }
 
@@ -73,6 +92,10 @@ static int xfrm_statistics_seq_open(struct inode *inode, struct file *file)
 }
 
 static struct file_operations xfrm_statistics_seq_fops = {
+	return single_open_net(inode, file, xfrm_statistics_seq_show);
+}
+
+static const struct file_operations xfrm_statistics_seq_fops = {
 	.owner	 = THIS_MODULE,
 	.open	 = xfrm_statistics_seq_open,
 	.read	 = seq_read,
@@ -94,4 +117,18 @@ int __init xfrm_proc_init(void)
  stat_fail:
 	rc = -ENOMEM;
 	goto out;
+	.release = single_release_net,
+};
+
+int __net_init xfrm_proc_init(struct net *net)
+{
+	if (!proc_create("xfrm_stat", S_IRUGO, net->proc_net,
+			 &xfrm_statistics_seq_fops))
+		return -ENOMEM;
+	return 0;
+}
+
+void xfrm_proc_fini(struct net *net)
+{
+	remove_proc_entry("xfrm_stat", net->proc_net);
 }

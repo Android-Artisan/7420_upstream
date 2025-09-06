@@ -125,6 +125,29 @@ extern void rcu_irq_exit(void);
 # define rcu_irq_enter() do { } while (0)
 # define rcu_irq_exit() do { } while (0)
 #endif /* CONFIG_PREEMPT_RCU */
+#include <linux/lockdep.h>
+#include <linux/ftrace_irq.h>
+#include <linux/vtime.h>
+#include <asm/hardirq.h>
+
+
+extern void synchronize_irq(unsigned int irq);
+extern bool synchronize_hardirq(unsigned int irq);
+
+#if defined(CONFIG_TINY_RCU)
+
+static inline void rcu_nmi_enter(void)
+{
+}
+
+static inline void rcu_nmi_exit(void)
+{
+}
+
+#else
+extern void rcu_nmi_enter(void);
+extern void rcu_nmi_exit(void);
+#endif
 
 /*
  * It is safe to do non-atomic ops on ->hardirq_context,
@@ -137,6 +160,8 @@ extern void rcu_irq_exit(void);
 		rcu_irq_enter();			\
 		account_system_vtime(current);		\
 		add_preempt_count(HARDIRQ_OFFSET);	\
+		account_irq_enter_time(current);	\
+		preempt_count_add(HARDIRQ_OFFSET);	\
 		trace_hardirq_enter();			\
 	} while (0)
 
@@ -154,6 +179,8 @@ extern void irq_enter(void);
 		account_system_vtime(current);		\
 		sub_preempt_count(HARDIRQ_OFFSET);	\
 		rcu_irq_exit();				\
+		account_irq_exit_time(current);		\
+		preempt_count_sub(HARDIRQ_OFFSET);	\
 	} while (0)
 
 /*
@@ -163,5 +190,24 @@ extern void irq_exit(void);
 
 #define nmi_enter()		do { lockdep_off(); __irq_enter(); } while (0)
 #define nmi_exit()		do { __irq_exit(); lockdep_on(); } while (0)
+#define nmi_enter()						\
+	do {							\
+		lockdep_off();					\
+		ftrace_nmi_enter();				\
+		BUG_ON(in_nmi());				\
+		preempt_count_add(NMI_OFFSET + HARDIRQ_OFFSET);	\
+		rcu_nmi_enter();				\
+		trace_hardirq_enter();				\
+	} while (0)
+
+#define nmi_exit()						\
+	do {							\
+		trace_hardirq_exit();				\
+		rcu_nmi_exit();					\
+		BUG_ON(!in_nmi());				\
+		preempt_count_sub(NMI_OFFSET + HARDIRQ_OFFSET);	\
+		ftrace_nmi_exit();				\
+		lockdep_on();					\
+	} while (0)
 
 #endif /* LINUX_HARDIRQ_H */

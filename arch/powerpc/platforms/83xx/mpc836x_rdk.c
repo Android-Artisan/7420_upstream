@@ -2,6 +2,7 @@
  * MPC8360E-RDK board file.
  *
  * Copyright (c) 2006  Freescale Semicondutor, Inc.
+ * Copyright (c) 2006  Freescale Semiconductor, Inc.
  * Copyright (c) 2007-2008  MontaVista Software, Inc.
  *
  * Author: Anton Vorontsov <avorontsov@ru.mvista.com>
@@ -78,6 +79,17 @@ static void __init mpc836x_rdk_init_IRQ(void)
 
 	qe_ic_init(np, 0, qe_ic_cascade_low_ipic, qe_ic_cascade_high_ipic);
 	of_node_put(np);
+machine_device_initcall(mpc836x_rdk, mpc83xx_declare_of_platform_devices);
+
+static void __init mpc836x_rdk_setup_arch(void)
+{
+	if (ppc_md.progress)
+		ppc_md.progress("mpc836x_rdk_setup_arch()", 0);
+
+	mpc83xx_setup_pci();
+#ifdef CONFIG_QUICC_ENGINE
+	qe_reset();
+#endif
 }
 
 /*
@@ -95,6 +107,7 @@ define_machine(mpc836x_rdk) {
 	.probe		= mpc836x_rdk_probe,
 	.setup_arch	= mpc836x_rdk_setup_arch,
 	.init_IRQ	= mpc836x_rdk_init_IRQ,
+	.init_IRQ	= mpc83xx_ipic_and_qe_init_IRQ,
 	.get_irq	= ipic_get_irq,
 	.restart	= mpc83xx_restart,
 	.time_init	= mpc83xx_time_init,

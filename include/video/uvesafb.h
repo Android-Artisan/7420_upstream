@@ -56,6 +56,8 @@ struct vbe_ib {
 } __attribute__ ((packed));
 
 #ifdef __KERNEL__
+#include <uapi/video/uvesafb.h>
+
 
 /* VBE CRTC Info Block */
 struct vbe_crtc_ib {
@@ -190,4 +192,7 @@ struct uvesafb_par {
 };
 
 #endif /* __KERNEL__ */
+	int mtrr_handle;
+};
+
 #endif /* _UVESAFB_H */

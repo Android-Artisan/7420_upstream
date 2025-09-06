@@ -22,7 +22,6 @@
  * IXP4xx Linux Memory Map:
  *
  * Phy		Size		Virt		Description
- * =========================================================================
  *
  * 0x00000000	0x10000000(max)	PAGE_OFFSET	System RAM
  *
@@ -37,6 +36,13 @@
  * 0xC4000000	0x00001000	0xffbfe000	EXP CFG
  *
  * 0xC8000000	0x00013000	0xffbeb000	On-Chip Peripherals
+ * 0xC8000000	0x00013000	0xFEF00000	On-Chip Peripherals
+ *
+ * 0xC0000000	0x00001000	0xFEF13000	PCI CFG
+ *
+ * 0xC4000000	0x00001000	0xFEF14000	EXP CFG
+ *
+ * 0x60000000	0x00004000	0xFEF15000	QMgr
  */
 
 /*
@@ -51,6 +57,17 @@
 #define IXP4XX_EXP_CFG_BASE_PHYS	(0xC4000000)
 #define IXP4XX_EXP_CFG_BASE_VIRT	(0xFFBFE000)
 #define IXP4XX_EXP_CFG_REGION_SIZE	(0x00001000)
+#define IXP4XX_QMGR_BASE_PHYS		0x60000000
+#define IXP4XX_QMGR_BASE_VIRT		IOMEM(0xFEF15000)
+#define IXP4XX_QMGR_REGION_SIZE		0x00004000
+
+/*
+ * Peripheral space, including debug UART. Must be section-aligned so that
+ * it can be used with the low-level debug code.
+ */
+#define IXP4XX_PERIPHERAL_BASE_PHYS	0xC8000000
+#define IXP4XX_PERIPHERAL_BASE_VIRT	IOMEM(0xFEF00000)
+#define IXP4XX_PERIPHERAL_REGION_SIZE	0x00013000
 
 /*
  * PCI Config registers
@@ -75,6 +92,16 @@
 #define	IXP4XX_DEBUG_UART_BASE_PHYS	(0xC8000000)
 #define	IXP4XX_DEBUG_UART_BASE_VIRT	(0xffb00000)
 #define	IXP4XX_DEBUG_UART_REGION_SIZE	(0x00001000)
+#define IXP4XX_PCI_CFG_BASE_PHYS	0xC0000000
+#define IXP4XX_PCI_CFG_BASE_VIRT	IOMEM(0xFEF13000)
+#define IXP4XX_PCI_CFG_REGION_SIZE	0x00001000
+
+/*
+ * Expansion BUS Configuration registers
+ */
+#define IXP4XX_EXP_CFG_BASE_PHYS	0xC4000000
+#define IXP4XX_EXP_CFG_BASE_VIRT	0xFEF14000
+#define IXP4XX_EXP_CFG_REGION_SIZE	0x00001000
 
 #define IXP4XX_EXP_CS0_OFFSET	0x00
 #define IXP4XX_EXP_CS1_OFFSET   0x04
@@ -93,6 +120,7 @@
  * Expansion Bus Controller registers.
  */
 #define IXP4XX_EXP_REG(x) ((volatile u32 *)(IXP4XX_EXP_CFG_BASE_VIRT+(x)))
+#define IXP4XX_EXP_REG(x) ((volatile u32 __iomem *)(IXP4XX_EXP_CFG_BASE_VIRT+(x)))
 
 #define IXP4XX_EXP_CS0      IXP4XX_EXP_REG(IXP4XX_EXP_CS0_OFFSET)
 #define IXP4XX_EXP_CS1      IXP4XX_EXP_REG(IXP4XX_EXP_CS1_OFFSET)
@@ -604,6 +632,7 @@
 #define DCMD_LENGTH	0x01fff		/* length mask (max = 8K - 1) */
 
 /* "fuse" bits of IXP_EXP_CFG2 */
+/* All IXP4xx CPUs */
 #define IXP4XX_FEATURE_RCOMP		(1 << 0)
 #define IXP4XX_FEATURE_USB_DEVICE	(1 << 1)
 #define IXP4XX_FEATURE_HASH		(1 << 2)
@@ -634,5 +663,41 @@
 				    IXP4XX_FEATURE_NPEB_ETH_1_TO_3 |	\
 				    IXP4XX_FEATURE_RSA |		\
 				    IXP4XX_FEATURE_XSCALE_MAX_FREQ)
+#define IXP4XX_FEATURE_UTOPIA_PHY_LIMIT	(3 << 16)
+#define IXP4XX_FEATURE_XSCALE_MAX_FREQ	(3 << 22)
+#define IXP42X_FEATURE_MASK		(IXP4XX_FEATURE_RCOMP            | \
+					 IXP4XX_FEATURE_USB_DEVICE       | \
+					 IXP4XX_FEATURE_HASH             | \
+					 IXP4XX_FEATURE_AES              | \
+					 IXP4XX_FEATURE_DES              | \
+					 IXP4XX_FEATURE_HDLC             | \
+					 IXP4XX_FEATURE_AAL              | \
+					 IXP4XX_FEATURE_HSS              | \
+					 IXP4XX_FEATURE_UTOPIA           | \
+					 IXP4XX_FEATURE_NPEB_ETH0        | \
+					 IXP4XX_FEATURE_NPEC_ETH         | \
+					 IXP4XX_FEATURE_RESET_NPEA       | \
+					 IXP4XX_FEATURE_RESET_NPEB       | \
+					 IXP4XX_FEATURE_RESET_NPEC       | \
+					 IXP4XX_FEATURE_PCI              | \
+					 IXP4XX_FEATURE_UTOPIA_PHY_LIMIT | \
+					 IXP4XX_FEATURE_XSCALE_MAX_FREQ)
+
+
+/* IXP43x/46x CPUs */
+#define IXP4XX_FEATURE_ECC_TIMESYNC	(1 << 15)
+#define IXP4XX_FEATURE_USB_HOST		(1 << 18)
+#define IXP4XX_FEATURE_NPEA_ETH		(1 << 19)
+#define IXP43X_FEATURE_MASK		(IXP42X_FEATURE_MASK             | \
+					 IXP4XX_FEATURE_ECC_TIMESYNC     | \
+					 IXP4XX_FEATURE_USB_HOST         | \
+					 IXP4XX_FEATURE_NPEA_ETH)
+
+/* IXP46x CPU (including IXP455) only */
+#define IXP4XX_FEATURE_NPEB_ETH_1_TO_3	(1 << 20)
+#define IXP4XX_FEATURE_RSA		(1 << 21)
+#define IXP46X_FEATURE_MASK		(IXP43X_FEATURE_MASK             | \
+					 IXP4XX_FEATURE_NPEB_ETH_1_TO_3  | \
+					 IXP4XX_FEATURE_RSA)
 
 #endif

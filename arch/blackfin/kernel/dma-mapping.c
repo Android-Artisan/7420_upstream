@@ -41,17 +41,37 @@
 
 static spinlock_t dma_page_lock;
 static unsigned int *dma_page;
+ * Dynamic DMA mapping support
+ *
+ * Copyright 2005-2009 Analog Devices Inc.
+ *
+ * Licensed under the GPL-2 or later
+ */
+
+#include <linux/types.h>
+#include <linux/gfp.h>
+#include <linux/string.h>
+#include <linux/spinlock.h>
+#include <linux/dma-mapping.h>
+#include <linux/scatterlist.h>
+#include <linux/export.h>
+#include <linux/bitmap.h>
+
+static spinlock_t dma_page_lock;
+static unsigned long *dma_page;
 static unsigned int dma_pages;
 static unsigned long dma_base;
 static unsigned long dma_size;
 static unsigned int dma_initialized;
 
 void dma_alloc_init(unsigned long start, unsigned long end)
+static void dma_alloc_init(unsigned long start, unsigned long end)
 {
 	spin_lock_init(&dma_page_lock);
 	dma_initialized = 0;
 
 	dma_page = (unsigned int *)__get_free_page(GFP_KERNEL);
+	dma_page = (unsigned long *)__get_free_page(GFP_KERNEL);
 	memset(dma_page, 0, PAGE_SIZE);
 	dma_base = PAGE_ALIGN(start);
 	dma_size = PAGE_ALIGN(end) - PAGE_ALIGN(start);
@@ -72,6 +92,7 @@ static unsigned long __alloc_dma_pages(unsigned int pages)
 {
 	unsigned long ret = 0, flags;
 	int i, count = 0;
+	unsigned long start;
 
 	if (dma_initialized == 0)
 		dma_alloc_init(_ramend - DMA_UNCACHED_REGION, _ramend);
@@ -88,6 +109,10 @@ static unsigned long __alloc_dma_pages(unsigned int pages)
 			}
 		} else
 			count = 0;
+	start = bitmap_find_next_zero_area(dma_page, dma_pages, 0, pages, 0);
+	if (start < dma_pages) {
+		ret = dma_base + (start << PAGE_SHIFT);
+		bitmap_set(dma_page, start, pages);
 	}
 	spin_unlock_irqrestore(&dma_page_lock, flags);
 	return ret;
@@ -108,11 +133,13 @@ static void __free_dma_pages(unsigned long addr, unsigned int pages)
 	for (i = page; i < page + pages; i++) {
 		dma_page[i] = 0;
 	}
+	bitmap_clear(dma_page, page, pages);
 	spin_unlock_irqrestore(&dma_page_lock, flags);
 }
 
 void *dma_alloc_coherent(struct device *dev, size_t size,
 			 dma_addr_t * dma_handle, gfp_t gfp)
+			 dma_addr_t *dma_handle, gfp_t gfp)
 {
 	void *ret;
 
@@ -166,6 +193,25 @@ dma_map_sg(struct device *dev, struct scatterlist *sg, int nents,
 		invalidate_dcache_range(sg_dma_address(sg),
 					sg_dma_address(sg) +
 					sg_dma_len(sg));
+ * Streaming DMA mappings
+ */
+void __dma_sync(dma_addr_t addr, size_t size,
+		enum dma_data_direction dir)
+{
+	__dma_sync_inline(addr, size, dir);
+}
+EXPORT_SYMBOL(__dma_sync);
+
+int
+dma_map_sg(struct device *dev, struct scatterlist *sg_list, int nents,
+	   enum dma_data_direction direction)
+{
+	struct scatterlist *sg;
+	int i;
+
+	for_each_sg(sg_list, sg, nents, i) {
+		sg->dma_address = (dma_addr_t) sg_virt(sg);
+		__dma_sync(sg_dma_address(sg), sg_dma_len(sg), direction);
 	}
 
 	return nents;
@@ -185,3 +231,15 @@ void dma_unmap_sg(struct device *dev, struct scatterlist *sg,
 	BUG_ON(direction == DMA_NONE);
 }
 EXPORT_SYMBOL(dma_unmap_sg);
+void dma_sync_sg_for_device(struct device *dev, struct scatterlist *sg_list,
+			    int nelems, enum dma_data_direction direction)
+{
+	struct scatterlist *sg;
+	int i;
+
+	for_each_sg(sg_list, sg, nelems, i) {
+		sg->dma_address = (dma_addr_t) sg_virt(sg);
+		__dma_sync(sg_dma_address(sg), sg_dma_len(sg), direction);
+	}
+}
+EXPORT_SYMBOL(dma_sync_sg_for_device);

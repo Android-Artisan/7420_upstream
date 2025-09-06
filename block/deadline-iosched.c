@@ -34,6 +34,7 @@ struct deadline_data {
 	struct rb_root sort_list[2];	
 	struct list_head fifo_list[2];
 	
+
 	/*
 	 * next in sort order. read, write or both are NULL
 	 */
@@ -54,6 +55,11 @@ struct deadline_data {
 static void deadline_move_request(struct deadline_data *, struct request *);
 
 #define RQ_RB_ROOT(dd, rq)	(&(dd)->sort_list[rq_data_dir((rq))])
+static inline struct rb_root *
+deadline_rb_root(struct deadline_data *dd, struct request *rq)
+{
+	return &dd->sort_list[rq_data_dir(rq)];
+}
 
 /*
  * get the request after `rq' in sector-sorted order
@@ -81,6 +87,9 @@ retry:
 		deadline_move_request(dd, __alias);
 		goto retry;
 	}
+	struct rb_root *root = deadline_rb_root(dd, rq);
+
+	elv_rb_add(root, rq);
 }
 
 static inline void
@@ -92,6 +101,7 @@ deadline_del_rq_rb(struct deadline_data *dd, struct request *rq)
 		dd->next_rq[data_dir] = deadline_latter_request(rq);
 
 	elv_rb_del(RQ_RB_ROOT(dd, rq), rq);
+	elv_rb_del(deadline_rb_root(dd, rq), rq);
 }
 
 /*
@@ -109,6 +119,9 @@ deadline_add_request(struct request_queue *q, struct request *rq)
 	 * set expire time (only used for reads) and add to fifo list
 	 */
 	rq_set_fifo_time(rq, jiffies + dd->fifo_expire[data_dir]);
+	 * set expire time and add to fifo list
+	 */
+	rq->fifo_time = jiffies + dd->fifo_expire[data_dir];
 	list_add_tail(&rq->queuelist, &dd->fifo_list[data_dir]);
 }
 
@@ -139,6 +152,11 @@ deadline_merge(struct request_queue *q, struct request **req, struct bio *bio)
 		__rq = elv_rb_find(&dd->sort_list[bio_data_dir(bio)], sector);
 		if (__rq) {
 			BUG_ON(sector != __rq->sector);
+		sector_t sector = bio_end_sector(bio);
+
+		__rq = elv_rb_find(&dd->sort_list[bio_data_dir(bio)], sector);
+		if (__rq) {
+			BUG_ON(sector != blk_rq_pos(__rq));
 
 			if (elv_rq_merge_ok(__rq, bio)) {
 				ret = ELEVATOR_FRONT_MERGE;
@@ -163,6 +181,7 @@ static void deadline_merged_request(struct request_queue *q,
 	 */
 	if (type == ELEVATOR_FRONT_MERGE) {
 		elv_rb_del(RQ_RB_ROOT(dd, req), req);
+		elv_rb_del(deadline_rb_root(dd, req), req);
 		deadline_add_rq_rb(dd, req);
 	}
 }
@@ -179,6 +198,9 @@ deadline_merged_requests(struct request_queue *q, struct request *req,
 		if (time_before(rq_fifo_time(next), rq_fifo_time(req))) {
 			list_move(&req->queuelist, &next->queuelist);
 			rq_set_fifo_time(req, rq_fifo_time(next));
+		if (time_before(next->fifo_time, req->fifo_time)) {
+			list_move(&req->queuelist, &next->queuelist);
+			req->fifo_time = next->fifo_time;
 		}
 	}
 
@@ -213,6 +235,7 @@ deadline_move_request(struct deadline_data *dd, struct request *rq)
 	dd->next_rq[data_dir] = deadline_latter_request(rq);
 
 	dd->last_sector = rq->sector + rq->nr_sectors;
+	dd->last_sector = rq_end_sector(rq);
 
 	/*
 	 * take it off the sort and fifo list, move
@@ -223,6 +246,7 @@ deadline_move_request(struct deadline_data *dd, struct request *rq)
 
 /*
  * deadline_check_fifo returns 0 if there are no expired reads on the fifo,
+ * deadline_check_fifo returns 0 if there are no expired requests on the fifo,
  * 1 otherwise. Requires !list_empty(&dd->fifo_list[data_dir])
  */
 static inline int deadline_check_fifo(struct deadline_data *dd, int ddir)
@@ -233,6 +257,7 @@ static inline int deadline_check_fifo(struct deadline_data *dd, int ddir)
 	 * rq is expired!
 	 */
 	if (time_after(jiffies, rq_fifo_time(rq)))
+	if (time_after_eq(jiffies, rq->fifo_time))
 		return 1;
 
 	return 0;
@@ -269,6 +294,9 @@ static int deadline_dispatch_requests(struct request_queue *q, int force)
 			/* we are still entitled to batch */
 			goto dispatch_request;
 	}
+	if (rq && dd->batching < dd->fifo_batch)
+		/* we have a next request are still entitled to batch */
+		goto dispatch_request;
 
 	/*
 	 * at this point we are not running a batch. select the appropriate
@@ -343,6 +371,7 @@ static int deadline_queue_empty(struct request_queue *q)
 }
 
 static void deadline_exit_queue(elevator_t *e)
+static void deadline_exit_queue(struct elevator_queue *e)
 {
 	struct deadline_data *dd = e->elevator_data;
 
@@ -362,6 +391,21 @@ static void *deadline_init_queue(struct request_queue *q)
 	dd = kmalloc_node(sizeof(*dd), GFP_KERNEL | __GFP_ZERO, q->node);
 	if (!dd)
 		return NULL;
+static int deadline_init_queue(struct request_queue *q, struct elevator_type *e)
+{
+	struct deadline_data *dd;
+	struct elevator_queue *eq;
+
+	eq = elevator_alloc(q, e);
+	if (!eq)
+		return -ENOMEM;
+
+	dd = kzalloc_node(sizeof(*dd), GFP_KERNEL, q->node);
+	if (!dd) {
+		kobject_put(&eq->kobj);
+		return -ENOMEM;
+	}
+	eq->elevator_data = dd;
 
 	INIT_LIST_HEAD(&dd->fifo_list[READ]);
 	INIT_LIST_HEAD(&dd->fifo_list[WRITE]);
@@ -373,6 +417,11 @@ static void *deadline_init_queue(struct request_queue *q)
 	dd->front_merges = 1;
 	dd->fifo_batch = fifo_batch;
 	return dd;
+
+	spin_lock_irq(q->queue_lock);
+	q->elevator = eq;
+	spin_unlock_irq(q->queue_lock);
+	return 0;
 }
 
 /*
@@ -396,6 +445,7 @@ deadline_var_store(int *var, const char *page, size_t count)
 
 #define SHOW_FUNCTION(__FUNC, __VAR, __CONV)				\
 static ssize_t __FUNC(elevator_t *e, char *page)			\
+static ssize_t __FUNC(struct elevator_queue *e, char *page)		\
 {									\
 	struct deadline_data *dd = e->elevator_data;			\
 	int __data = __VAR;						\
@@ -412,6 +462,7 @@ SHOW_FUNCTION(deadline_fifo_batch_show, dd->fifo_batch, 0);
 
 #define STORE_FUNCTION(__FUNC, __PTR, MIN, MAX, __CONV)			\
 static ssize_t __FUNC(elevator_t *e, const char *page, size_t count)	\
+static ssize_t __FUNC(struct elevator_queue *e, const char *page, size_t count)	\
 {									\
 	struct deadline_data *dd = e->elevator_data;			\
 	int __data;							\
@@ -470,6 +521,7 @@ static int __init deadline_init(void)
 	elv_register(&iosched_deadline);
 
 	return 0;
+	return elv_register(&iosched_deadline);
 }
 
 static void __exit deadline_exit(void)

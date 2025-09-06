@@ -7,7 +7,6 @@ Written by Gerard Roudier <groudier@free.fr>
 Updated by Matthew Wilcox <matthew@wil.cx>
 
 2004-10-09
-===============================================================================
 
 1.  Introduction
 2.  Supported chips and SCSI features
@@ -53,7 +52,6 @@ Updated by Matthew Wilcox <matthew@wil.cx>
       17.2 Symbios NVRAM layout
       17.3 Tekram  NVRAM layout
 
-===============================================================================
 
 1. Introduction
 
@@ -207,6 +205,7 @@ In order to really gain advantage of this feature, devices must have
 a reasonable cache size (No miracle is to be expected for a low-end 
 hard disk with 128 KB or less).
 Some kown old SCSI devices do not properly support tagged command queuing.
+Some known old SCSI devices do not properly support tagged command queuing.
 Generally, firmware revisions that fix this kind of problems are available 
 at respective vendor web/ftp sites.
 All I can say is that I never have had problem with tagged queuing using 
@@ -286,6 +285,7 @@ from the driver.
 7. Profiling information
 
 This driver does not provide profiling informations as did its predecessors.
+This driver does not provide profiling information as did its predecessors.
 This feature was not this useful and added complexity to the code. 
 As the driver code got more complex, I have decided to remove everything 
 that didn't seem actually useful.
@@ -688,6 +688,7 @@ Enabling serial NVRAM support enables detection of the serial NVRAM included
 on Symbios and some Symbios compatible host adaptors, and Tekram boards. The 
 serial NVRAM is used by Symbios and Tekram to hold set up parameters for the 
 host adaptor and it's attached drives.
+host adaptor and its attached drives.
 
 The Symbios NVRAM also holds data on the boot order of host adaptors in a
 system with more than one host adaptor.  This information is no longer used
@@ -1044,5 +1045,4 @@ default nvram data:
 0x0000 0x0000 0x0000 0x0000 0x0000 0x0000 0x0000 0xfbbc
 
 
-===============================================================================
 End of Linux SYM-2 driver documentation file

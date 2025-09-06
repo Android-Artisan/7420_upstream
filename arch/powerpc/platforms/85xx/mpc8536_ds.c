@@ -26,6 +26,7 @@
 #include <asm/prom.h>
 #include <asm/udbg.h>
 #include <asm/mpic.h>
+#include <asm/swiotlb.h>
 
 #include <sysdev/fsl_soc.h>
 #include <sysdev/fsl_pci.h>
@@ -55,6 +56,13 @@ void __init mpc8536_ds_pic_init(void)
 	BUG_ON(mpic == NULL);
 	of_node_put(np);
 
+#include "mpc85xx.h"
+
+void __init mpc8536_ds_pic_init(void)
+{
+	struct mpic *mpic = mpic_alloc(NULL, 0, MPIC_BIG_ENDIAN,
+			0, 256, " OpenPIC  ");
+	BUG_ON(mpic == NULL);
 	mpic_init(mpic);
 }
 
@@ -84,6 +92,12 @@ static void __init mpc8536_ds_setup_arch(void)
 	}
 
 #endif
+	if (ppc_md.progress)
+		ppc_md.progress("mpc8536_ds_setup_arch()", 0);
+
+	fsl_pci_assign_primary();
+
+	swiotlb_detect_4g();
 
 	printk("MPC8536 DS board from Freescale Semiconductor\n");
 }
@@ -100,6 +114,9 @@ static int __init mpc8536_ds_publish_devices(void)
 	return of_platform_bus_probe(NULL, mpc8536_ds_ids, NULL);
 }
 machine_device_initcall(mpc8536_ds, mpc8536_ds_publish_devices);
+machine_arch_initcall(mpc8536_ds, mpc85xx_common_publish_devices);
+
+machine_arch_initcall(mpc8536_ds, swiotlb_setup_bus_notifier);
 
 /*
  * Called very early, device-tree isn't unflattened
@@ -118,6 +135,7 @@ define_machine(mpc8536_ds) {
 	.init_IRQ		= mpc8536_ds_pic_init,
 #ifdef CONFIG_PCI
 	.pcibios_fixup_bus	= fsl_pcibios_fixup_bus,
+	.pcibios_fixup_phb      = fsl_pcibios_fixup_phb,
 #endif
 	.get_irq		= mpic_get_irq,
 	.restart		= fsl_rstcr_restart,

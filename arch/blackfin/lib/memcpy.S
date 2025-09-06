@@ -31,6 +31,15 @@
  * along with this program; if not, see the file COPYING, or write
  * to the Free Software Foundation, Inc.,
  * 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+ * internal version of memcpy(), issued by the compiler to copy blocks of
+ * data around. This is really memmove() - it has to be able to deal with
+ * possible overlaps, because that ambiguity is when the compiler gives up
+ * and calls a function. We have our own, internal version so that we get
+ * something we trust, even if the user has redefined the normal symbol.
+ *
+ * Copyright 2004-2009 Analog Devices Inc.
+ *
+ * Licensed under the Clear BSD license or the GPL-2 (or later)
  */
 
 #include <linux/linkage.h>

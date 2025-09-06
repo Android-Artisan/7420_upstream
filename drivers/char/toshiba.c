@@ -69,6 +69,7 @@
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
 
+#include <linux/mutex.h>
 #include <linux/toshiba.h>
 
 #define TOSH_MINOR_DEV 181
@@ -78,6 +79,7 @@ MODULE_AUTHOR("Jonathan Buzzard <jonathan@buzzard.org.uk>");
 MODULE_DESCRIPTION("Toshiba laptop SMM driver");
 MODULE_SUPPORTED_DEVICE("toshiba");
 
+static DEFINE_MUTEX(tosh_mutex);
 static int tosh_fn;
 module_param_named(fn, tosh_fn, int, 0);
 MODULE_PARM_DESC(fn, "User specified Fn key detection port");
@@ -89,12 +91,15 @@ static int tosh_sci;
 static int tosh_fan;
 
 static int tosh_ioctl(struct inode *, struct file *, unsigned int,
+static long tosh_ioctl(struct file *, unsigned int,
 	unsigned long);
 
 
 static const struct file_operations tosh_fops = {
 	.owner		= THIS_MODULE,
 	.ioctl		= tosh_ioctl,
+	.unlocked_ioctl	= tosh_ioctl,
+	.llseek		= noop_llseek,
 };
 
 static struct miscdevice tosh_device = {
@@ -254,6 +259,7 @@ EXPORT_SYMBOL(tosh_smm);
 
 static int tosh_ioctl(struct inode *ip, struct file *fp, unsigned int cmd,
 	unsigned long arg)
+static long tosh_ioctl(struct file *fp, unsigned int cmd, unsigned long arg)
 {
 	SMMRegisters regs;
 	SMMRegisters __user *argp = (SMMRegisters __user *)arg;
@@ -278,10 +284,16 @@ static int tosh_ioctl(struct inode *ip, struct file *fp, unsigned int cmd,
 			if (tosh_fan==1) {
 				if (((ax==0xf300) || (ax==0xf400)) && (bx==0x0004)) {
 					err = tosh_emulate_fan(&regs);
+			mutex_lock(&tosh_mutex);
+			if (tosh_fan==1) {
+				if (((ax==0xf300) || (ax==0xf400)) && (bx==0x0004)) {
+					err = tosh_emulate_fan(&regs);
+					mutex_unlock(&tosh_mutex);
 					break;
 				}
 			}
 			err = tosh_smm(&regs);
+			mutex_unlock(&tosh_mutex);
 			break;
 		default:
 			return -EINVAL;
@@ -427,6 +439,7 @@ static int tosh_probe(void)
 	unsigned char signature[7] = { 0x54,0x4f,0x53,0x48,0x49,0x42,0x41 };
 	SMMRegisters regs;
 	void __iomem *bios = ioremap_cache(0xf0000, 0x10000);
+	void __iomem *bios = ioremap(0xf0000, 0x10000);
 
 	if (!bios)
 		return -ENOMEM;

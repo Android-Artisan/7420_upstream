@@ -37,3 +37,4 @@ libsas-y +=  sas_init.o     \
 		sas_task.o
 libsas-$(CONFIG_SCSI_SAS_ATA) +=	sas_ata.o
 libsas-$(CONFIG_SCSI_SAS_HOST_SMP) +=	sas_host_smp.o
+libsas-$(CONFIG_SCSI_SAS_HOST_SMP) +=	sas_host_smp.o

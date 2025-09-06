@@ -31,6 +31,9 @@
 #include <linux/moduleparam.h>
 #include <sound/core.h>
 #include <sound/cs46xx.h>
+#include <linux/module.h>
+#include <sound/core.h>
+#include "cs46xx.h"
 #include <sound/initval.h>
 
 MODULE_AUTHOR("Jaroslav Kysela <perex@perex.cz>");
@@ -50,6 +53,10 @@ static int enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE_PNP;	/* Enable this card *
 static int external_amp[SNDRV_CARDS];
 static int thinkpad[SNDRV_CARDS];
 static int mmap_valid[SNDRV_CARDS] = {[0 ... (SNDRV_CARDS - 1)] = 1};
+static bool enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE_PNP;	/* Enable this card */
+static bool external_amp[SNDRV_CARDS];
+static bool thinkpad[SNDRV_CARDS];
+static bool mmap_valid[SNDRV_CARDS] = {[0 ... (SNDRV_CARDS - 1)] = 1};
 
 module_param_array(index, int, NULL, 0444);
 MODULE_PARM_DESC(index, "Index value for the CS46xx soundcard.");
@@ -68,6 +75,10 @@ static struct pci_device_id snd_cs46xx_ids[] = {
         { 0x1013, 0x6001, PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0, },   /* CS4280 */
         { 0x1013, 0x6003, PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0, },   /* CS4612 */
         { 0x1013, 0x6004, PCI_ANY_ID, PCI_ANY_ID, 0, 0, 0, },   /* CS4615 */
+static const struct pci_device_id snd_cs46xx_ids[] = {
+	{ PCI_VDEVICE(CIRRUS, 0x6001), 0, },   /* CS4280 */
+	{ PCI_VDEVICE(CIRRUS, 0x6003), 0, },   /* CS4612 */
+	{ PCI_VDEVICE(CIRRUS, 0x6004), 0, },   /* CS4615 */
 	{ 0, }
 };
 
@@ -75,6 +86,8 @@ MODULE_DEVICE_TABLE(pci, snd_cs46xx_ids);
 
 static int __devinit snd_card_cs46xx_probe(struct pci_dev *pci,
 					   const struct pci_device_id *pci_id)
+static int snd_card_cs46xx_probe(struct pci_dev *pci,
+				 const struct pci_device_id *pci_id)
 {
 	static int dev;
 	struct snd_card *card;
@@ -91,6 +104,10 @@ static int __devinit snd_card_cs46xx_probe(struct pci_dev *pci,
 	card = snd_card_new(index[dev], id[dev], THIS_MODULE, 0);
 	if (card == NULL)
 		return -ENOMEM;
+	err = snd_card_new(&pci->dev, index[dev], id[dev], THIS_MODULE,
+			   0, &card);
+	if (err < 0)
+		return err;
 	if ((err = snd_cs46xx_create(card, pci,
 				     external_amp[dev], thinkpad[dev],
 				     &chip)) < 0) {
@@ -100,6 +117,7 @@ static int __devinit snd_card_cs46xx_probe(struct pci_dev *pci,
 	card->private_data = chip;
 	chip->accept_valid = mmap_valid[dev];
 	if ((err = snd_cs46xx_pcm(chip, 0, NULL)) < 0) {
+	if ((err = snd_cs46xx_pcm(chip, 0)) < 0) {
 		snd_card_free(card);
 		return err;
 	}
@@ -109,6 +127,11 @@ static int __devinit snd_card_cs46xx_probe(struct pci_dev *pci,
 		return err;
 	}
 	if ((err = snd_cs46xx_pcm_iec958(chip,2,NULL)) < 0) {
+	if ((err = snd_cs46xx_pcm_rear(chip, 1)) < 0) {
+		snd_card_free(card);
+		return err;
+	}
+	if ((err = snd_cs46xx_pcm_iec958(chip, 2)) < 0) {
 		snd_card_free(card);
 		return err;
 	}
@@ -120,12 +143,14 @@ static int __devinit snd_card_cs46xx_probe(struct pci_dev *pci,
 #ifdef CONFIG_SND_CS46XX_NEW_DSP
 	if (chip->nr_ac97_codecs ==2) {
 		if ((err = snd_cs46xx_pcm_center_lfe(chip,3,NULL)) < 0) {
+		if ((err = snd_cs46xx_pcm_center_lfe(chip, 3)) < 0) {
 			snd_card_free(card);
 			return err;
 		}
 	}
 #endif
 	if ((err = snd_cs46xx_midi(chip, 0, NULL)) < 0) {
+	if ((err = snd_cs46xx_midi(chip, 0)) < 0) {
 		snd_card_free(card);
 		return err;
 	}
@@ -184,3 +209,21 @@ static void __exit alsa_card_cs46xx_exit(void)
 
 module_init(alsa_card_cs46xx_init)
 module_exit(alsa_card_cs46xx_exit)
+static void snd_card_cs46xx_remove(struct pci_dev *pci)
+{
+	snd_card_free(pci_get_drvdata(pci));
+}
+
+static struct pci_driver cs46xx_driver = {
+	.name = KBUILD_MODNAME,
+	.id_table = snd_cs46xx_ids,
+	.probe = snd_card_cs46xx_probe,
+	.remove = snd_card_cs46xx_remove,
+#ifdef CONFIG_PM_SLEEP
+	.driver = {
+		.pm = &snd_cs46xx_pm,
+	},
+#endif
+};
+
+module_pci_driver(cs46xx_driver);

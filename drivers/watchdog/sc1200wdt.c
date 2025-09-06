@@ -31,6 +31,8 @@
  *
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/miscdevice.h>
@@ -95,6 +97,8 @@ MODULE_PARM_DESC(timeout, "range is 0-255 minutes, default is 1");
 
 static int nowayout = WATCHDOG_NOWAYOUT;
 module_param(nowayout, int, 0);
+static bool nowayout = WATCHDOG_NOWAYOUT;
+module_param(nowayout, bool, 0);
 MODULE_PARM_DESC(nowayout,
 	"Watchdog cannot be stopped once started (default="
 				__MODULE_STRING(WATCHDOG_NOWAYOUT) ")");
@@ -177,6 +181,7 @@ static int sc1200wdt_open(struct inode *inode, struct file *file)
 
 	sc1200wdt_start();
 	printk(KERN_INFO PFX "Watchdog enabled, timeout = %d min(s)", timeout);
+	pr_info("Watchdog enabled, timeout = %d min(s)", timeout);
 
 	return nonseekable_open(inode, file);
 }
@@ -198,6 +203,7 @@ static long sc1200wdt_ioctl(struct file *file, unsigned int cmd,
 	switch (cmd) {
 	case WDIOC_GETSUPPORT:
 		if (copy_to_user(argp, &ident, sizeof ident))
+		if (copy_to_user(argp, &ident, sizeof(ident)))
 			return -EFAULT;
 		return 0;
 
@@ -259,6 +265,10 @@ static int sc1200wdt_release(struct inode *inode, struct file *file)
 		sc1200wdt_write_data(WDTO, timeout);
 		printk(KERN_CRIT PFX
 			"Unexpected close!, timeout = %d min(s)\n", timeout);
+		pr_info("Watchdog disabled\n");
+	} else {
+		sc1200wdt_write_data(WDTO, timeout);
+		pr_crit("Unexpected close!, timeout = %d min(s)\n", timeout);
 	}
 	clear_bit(0, &open_flag);
 	expect_close = 0;
@@ -367,6 +377,11 @@ static int scl200wdt_pnp_probe(struct pnp_dev *dev,
 
 	printk(KERN_INFO "scl200wdt: PnP device found at io port %#x/%d\n",
 								io, io_len);
+		pr_err("Unable to register IO port %#x\n", io);
+		return -EBUSY;
+	}
+
+	pr_info("PnP device found at io port %#x/%d\n", io, io_len);
 	return 0;
 }
 
@@ -393,6 +408,7 @@ static int __init sc1200wdt_init(void)
 	int ret;
 
 	printk("%s\n", banner);
+	pr_info("%s\n", SC1200_MODULE_VER);
 
 #if defined CONFIG_PNP
 	if (isapnp) {
@@ -404,6 +420,7 @@ static int __init sc1200wdt_init(void)
 
 	if (io == -1) {
 		printk(KERN_ERR PFX "io parameter must be specified\n");
+		pr_err("io parameter must be specified\n");
 		ret = -EINVAL;
 		goto out_pnp;
 	}
@@ -417,6 +434,13 @@ static int __init sc1200wdt_init(void)
 
 	if (!request_region(io, io_len, SC1200_MODULE_NAME)) {
 		printk(KERN_ERR PFX "Unable to register IO port %#x\n", io);
+	if (isapnp)
+		pnp_unregister_driver(&scl200wdt_pnp_driver);
+	isapnp = 0;
+#endif
+
+	if (!request_region(io, io_len, SC1200_MODULE_NAME)) {
+		pr_err("Unable to register IO port %#x\n", io);
 		ret = -EBUSY;
 		goto out_pnp;
 	}
@@ -429,6 +453,7 @@ static int __init sc1200wdt_init(void)
 	if (ret) {
 		printk(KERN_ERR PFX
 			"Unable to register reboot notifier err = %d\n", ret);
+		pr_err("Unable to register reboot notifier err = %d\n", ret);
 		goto out_io;
 	}
 
@@ -437,6 +462,8 @@ static int __init sc1200wdt_init(void)
 		printk(KERN_ERR PFX
 			"Unable to register miscdev on minor %d\n",
 							WATCHDOG_MINOR);
+		pr_err("Unable to register miscdev on minor %d\n",
+		       WATCHDOG_MINOR);
 		goto out_rbt;
 	}
 
@@ -480,3 +507,6 @@ MODULE_AUTHOR("Zwane Mwaikambo <zwane@commfireservices.com>");
 MODULE_DESCRIPTION("Driver for National Semiconductor PC87307/PC97307 watchdog component");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS_MISCDEV(WATCHDOG_MINOR);
+MODULE_DESCRIPTION(
+	"Driver for National Semiconductor PC87307/PC97307 watchdog component");
+MODULE_LICENSE("GPL");

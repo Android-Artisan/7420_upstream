@@ -35,6 +35,7 @@
 #include <linux/init.h>
 #include <linux/mutex.h>
 #include <linux/sched.h>
+#include <linux/semaphore.h>
 #include <linux/kthread.h>
 #include "ibmphp.h"
 
@@ -134,6 +135,8 @@ void __init ibmphp_hpc_initvars (void)
 	mutex_init(&sem_hpcaccess);
 	init_MUTEX (&semOperations);
 	init_MUTEX_LOCKED (&sem_exit);
+	sema_init(&semOperations, 1);
+	sema_init(&sem_exit, 0);
 	to_debug = 0;
 
 	debug ("%s - Exit\n", __func__);
@@ -258,6 +261,7 @@ static u8 i2c_ctrl_write (struct controller *ctlr_ptr, void __iomem *WPGBbar, u8
 	u8 rc;
 	void __iomem *wpg_addr;	// base addr + offset
 	unsigned long wpg_data;	// data to/from WPG LOHI format 
+	unsigned long wpg_data;	// data to/from WPG LOHI format
 	unsigned long ultemp;
 	unsigned long data;	// actual data HILO format
 	int i;
@@ -351,6 +355,7 @@ static u8 i2c_ctrl_write (struct controller *ctlr_ptr, void __iomem *WPGBbar, u8
 
 //------------------------------------------------------------
 //  Read from ISA type HPC 
+//  Read from ISA type HPC
 //------------------------------------------------------------
 static u8 isa_ctrl_read (struct controller *ctlr_ptr, u8 offset)
 {
@@ -372,6 +377,7 @@ static void isa_ctrl_write (struct controller *ctlr_ptr, u8 offset, u8 data)
 	u16 start_address;
 	u16 port_address;
 	
+
 	start_address = ctlr_ptr->u.isa_ctlr.io_start;
 	port_address = start_address + (u16) offset;
 	outb (data, port_address);
@@ -533,6 +539,7 @@ static u8 hpc_readcmdtoindex (u8 cmd, u8 index)
 * Return   0 or error codes
 *---------------------------------------------------------------------*/
 int ibmphp_hpc_readslot (struct slot * pslot, u8 cmd, u8 * pstatus)
+int ibmphp_hpc_readslot (struct slot *pslot, u8 cmd, u8 *pstatus)
 {
 	void __iomem *wpg_bbar = NULL;
 	struct controller *ctlr_ptr;
@@ -660,6 +667,11 @@ int ibmphp_hpc_readslot (struct slot * pslot, u8 cmd, u8 * pstatus)
 	if ((ctlr_ptr->ctlr_type == 2) || (ctlr_ptr->ctlr_type == 4))
 		iounmap (wpg_bbar);
 	
+
+	// remove physical to logical address mapping
+	if ((ctlr_ptr->ctlr_type == 2) || (ctlr_ptr->ctlr_type == 4))
+		iounmap (wpg_bbar);
+
 	free_hpc_access ();
 
 	debug_polling ("%s - Exit rc[%d]\n", __func__, rc);
@@ -672,6 +684,7 @@ int ibmphp_hpc_readslot (struct slot * pslot, u8 cmd, u8 * pstatus)
 * Action: issue a WRITE command to HPC
 *---------------------------------------------------------------------*/
 int ibmphp_hpc_writeslot (struct slot * pslot, u8 cmd)
+int ibmphp_hpc_writeslot (struct slot *pslot, u8 cmd)
 {
 	void __iomem *wpg_bbar = NULL;
 	struct controller *ctlr_ptr;
@@ -835,6 +848,7 @@ static int poll_hpc(void *data)
 
 		switch (poll_state) {
 		case POLL_LATCH_REGISTER: 
+		case POLL_LATCH_REGISTER:
 			oldlatchlow = curlatchlow;
 			ctrl_count = 0x00;
 			list_for_each (pslotlist, &ibmphp_slot_head) {
@@ -894,6 +908,10 @@ static int poll_hpc(void *data)
 			
 			down (&semOperations);
 			
+				goto out_sleep;
+
+			down (&semOperations);
+
 			if (poll_count >= POLL_LATCH_CNT) {
 				poll_count = 0;
 				poll_state = POLL_SLOTS;
@@ -904,6 +922,11 @@ static int poll_hpc(void *data)
 		/* give up the hardware semaphore */
 		up (&semOperations);
 		/* sleep for a short time just for good measure */
+		}
+		/* give up the hardware semaphore */
+		up (&semOperations);
+		/* sleep for a short time just for good measure */
+out_sleep:
 		msleep(100);
 	}
 	up (&sem_exit);
@@ -957,6 +980,7 @@ static int process_changeinstatus (struct slot *pslot, struct slot *poldslot)
 	if ((pslot->status & 0x20) != (poldslot->status & 0x20))
 		// OFF -> ON: ignore, ON -> OFF: disable slot
 		if ((poldslot->status & 0x20) && (SLOT_CONNECT (poldslot->status) == HPC_SLOT_CONNECTED) && (SLOT_PRESENT (poldslot->status))) 
+		if ((poldslot->status & 0x20) && (SLOT_CONNECT (poldslot->status) == HPC_SLOT_CONNECTED) && (SLOT_PRESENT (poldslot->status)))
 			disable = 1;
 
 	// bit 6 - HPC_SLOT_BUS_SPEED
@@ -979,6 +1003,7 @@ static int process_changeinstatus (struct slot *pslot, struct slot *poldslot)
 			}
 		}
 		// CLOSE -> OPEN 
+		// CLOSE -> OPEN
 		else if ((SLOT_PWRGD (poldslot->status) == HPC_SLOT_PWRGD_GOOD)
 			&& (SLOT_CONNECT (poldslot->status) == HPC_SLOT_CONNECTED) && (SLOT_PRESENT (poldslot->status))) {
 			disable = 1;
@@ -998,6 +1023,8 @@ static int process_changeinstatus (struct slot *pslot, struct slot *poldslot)
 	if (update || disable) {
 		ibmphp_update_slot_info (pslot);
 	}
+	if (update || disable)
+		ibmphp_update_slot_info (pslot);
 
 	debug ("%s - Exit rc[%d] disable[%x] update[%x]\n", __func__, rc, disable, update);
 
@@ -1074,6 +1101,7 @@ void __exit ibmphp_hpc_stop_poll_thread (void)
 	ibmphp_lock_operations ();
 	debug ("after locking operations \n");
 	
+
 	// wait for poll thread to exit
 	debug ("before sem_exit down \n");
 	down (&sem_exit);
@@ -1101,6 +1129,7 @@ void __exit ibmphp_hpc_stop_poll_thread (void)
 *---------------------------------------------------------------------*/
 static int hpc_wait_ctlr_notworking (int timeout, struct controller *ctlr_ptr, void __iomem *wpg_bbar,
 				    u8 * pstatus)
+				    u8 *pstatus)
 {
 	int rc = 0;
 	u8 done = 0;

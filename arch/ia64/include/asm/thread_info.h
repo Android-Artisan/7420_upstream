@@ -32,6 +32,7 @@ struct thread_info {
 	int preempt_count;		/* 0=premptable, <0=BUG; will also serve as bh-counter */
 	struct restart_block restart_block;
 #ifdef CONFIG_VIRT_CPU_ACCOUNTING
+#ifdef CONFIG_VIRT_CPU_ACCOUNTING_NATIVE
 	__u64 ac_stamp;
 	__u64 ac_leave;
 	__u64 ac_stime;
@@ -64,6 +65,21 @@ struct thread_info {
 #else
 #define current_thread_info()	((struct thread_info *) 0)
 #define alloc_thread_info(tsk)	((struct thread_info *) 0)
+	.flags		= 0,			\
+	.cpu		= 0,			\
+	.addr_limit	= KERNEL_DS,		\
+	.preempt_count	= INIT_PREEMPT_COUNT,	\
+}
+
+#ifndef ASM_OFFSETS_C
+/* how to get the thread information struct from C */
+#define current_thread_info()	((struct thread_info *) ((char *) current + IA64_TASK_SIZE))
+#define alloc_thread_info_node(tsk, node)	\
+		((struct thread_info *) ((char *) (tsk) + IA64_TASK_SIZE))
+#define task_thread_info(tsk)	((struct thread_info *) ((char *) (tsk) + IA64_TASK_SIZE))
+#else
+#define current_thread_info()	((struct thread_info *) 0)
+#define alloc_thread_info_node(tsk, node)	((struct thread_info *) 0)
 #define task_thread_info(tsk)	((struct thread_info *) 0)
 #endif
 #define free_thread_info(ti)	/* nothing */
@@ -71,6 +87,7 @@ struct thread_info {
 
 #define __HAVE_THREAD_FUNCTIONS
 #ifdef CONFIG_VIRT_CPU_ACCOUNTING
+#ifdef CONFIG_VIRT_CPU_ACCOUNTING_NATIVE
 #define setup_thread_stack(p, org)			\
 	*task_thread_info(p) = *task_thread_info(org);	\
 	task_thread_info(p)->ac_stime = 0;		\
@@ -90,6 +107,16 @@ struct thread_info {
 #define tsk_set_notify_resume(tsk) \
 	set_ti_thread_flag(task_thread_info(tsk), TIF_NOTIFY_RESUME)
 extern void tsk_clear_notify_resume(struct task_struct *tsk);
+#define alloc_task_struct_node(node)						\
+({										\
+	struct page *page = alloc_pages_node(node, GFP_KERNEL | __GFP_COMP,	\
+					     KERNEL_STACK_SIZE_ORDER);		\
+	struct task_struct *ret = page ? page_address(page) : NULL;		\
+										\
+	ret;									\
+})
+#define free_task_struct(tsk)	free_pages((unsigned long) (tsk), KERNEL_STACK_SIZE_ORDER)
+
 #endif /* !__ASSEMBLY */
 
 /*
@@ -110,6 +137,11 @@ extern void tsk_clear_notify_resume(struct task_struct *tsk);
 #define TIF_DB_DISABLED		19	/* debug trap disabled for fsyscall */
 #define TIF_FREEZE		20	/* is freezing for suspend */
 #define TIF_RESTORE_RSE		21	/* user RBS is newer than kernel RBS */
+#define TIF_MEMDIE		17	/* is terminating due to OOM killer */
+#define TIF_MCA_INIT		18	/* this task is processing MCA or INIT */
+#define TIF_DB_DISABLED		19	/* debug trap disabled for fsyscall */
+#define TIF_RESTORE_RSE		21	/* user RBS is newer than kernel RBS */
+#define TIF_POLLING_NRFLAG	22	/* idle is polling for TIF_NEED_RESCHED */
 
 #define _TIF_SYSCALL_TRACE	(1 << TIF_SYSCALL_TRACE)
 #define _TIF_SYSCALL_AUDIT	(1 << TIF_SYSCALL_AUDIT)
@@ -123,6 +155,10 @@ extern void tsk_clear_notify_resume(struct task_struct *tsk);
 #define _TIF_DB_DISABLED	(1 << TIF_DB_DISABLED)
 #define _TIF_FREEZE		(1 << TIF_FREEZE)
 #define _TIF_RESTORE_RSE	(1 << TIF_RESTORE_RSE)
+#define _TIF_MCA_INIT		(1 << TIF_MCA_INIT)
+#define _TIF_DB_DISABLED	(1 << TIF_DB_DISABLED)
+#define _TIF_RESTORE_RSE	(1 << TIF_RESTORE_RSE)
+#define _TIF_POLLING_NRFLAG	(1 << TIF_POLLING_NRFLAG)
 
 /* "work to do on user-return" bits */
 #define TIF_ALLWORK_MASK	(_TIF_SIGPENDING|_TIF_NOTIFY_RESUME|_TIF_SYSCALL_AUDIT|\
@@ -135,6 +171,8 @@ extern void tsk_clear_notify_resume(struct task_struct *tsk);
 
 #define tsk_is_polling(t) (task_thread_info(t)->status & TS_POLLING)
 
+#define TS_RESTORE_SIGMASK	2	/* restore signal mask in do_signal() */
+
 #ifndef __ASSEMBLY__
 #define HAVE_SET_RESTORE_SIGMASK	1
 static inline void set_restore_sigmask(void)
@@ -142,6 +180,23 @@ static inline void set_restore_sigmask(void)
 	struct thread_info *ti = current_thread_info();
 	ti->status |= TS_RESTORE_SIGMASK;
 	set_bit(TIF_SIGPENDING, &ti->flags);
+	WARN_ON(!test_bit(TIF_SIGPENDING, &ti->flags));
+}
+static inline void clear_restore_sigmask(void)
+{
+	current_thread_info()->status &= ~TS_RESTORE_SIGMASK;
+}
+static inline bool test_restore_sigmask(void)
+{
+	return current_thread_info()->status & TS_RESTORE_SIGMASK;
+}
+static inline bool test_and_clear_restore_sigmask(void)
+{
+	struct thread_info *ti = current_thread_info();
+	if (!(ti->status & TS_RESTORE_SIGMASK))
+		return false;
+	ti->status &= ~TS_RESTORE_SIGMASK;
+	return true;
 }
 #endif	/* !__ASSEMBLY__ */
 

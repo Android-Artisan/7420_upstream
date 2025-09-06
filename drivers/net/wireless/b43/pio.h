@@ -109,6 +109,8 @@ struct b43_pio_rxqueue {
 	/* Work to reduce latency issues on RX. */
 	struct work_struct rx_work;
 
+	u16 mmio_base;
+
 	/* Shortcut to the 802.11 core revision. This is to
 	 * avoid horrible pointer dereferencing in the fastpaths. */
 	u8 rev;

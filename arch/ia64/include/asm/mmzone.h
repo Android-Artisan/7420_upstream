@@ -35,6 +35,8 @@ static inline int pfn_to_nid(unsigned long pfn)
 extern int early_pfn_to_nid(unsigned long pfn);
 #endif
 
+}
+
 #ifdef CONFIG_IA64_DIG /* DIG systems are small */
 # define MAX_PHYSNODE_ID	8
 # define NR_NODE_MEMBLKS	(MAX_NUMNODES * 8)

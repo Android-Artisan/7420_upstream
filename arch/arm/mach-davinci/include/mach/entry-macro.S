@@ -29,4 +29,32 @@
 		.endm
 
 		.macro	irq_prio_table
+#include <mach/irqs.h>
+
+		.macro  get_irqnr_preamble, base, tmp
+		ldr \base, =davinci_intc_base
+		ldr \base, [\base]
+		.endm
+
+		.macro	get_irqnr_and_base, irqnr, irqstat, base, tmp
+#if defined(CONFIG_AINTC) && defined(CONFIG_CP_INTC)
+		ldr \tmp, =davinci_intc_type
+		ldr \tmp, [\tmp]
+		cmp \tmp, #DAVINCI_INTC_TYPE_CP_INTC
+		beq 1001f
+#endif
+#if defined(CONFIG_AINTC)
+		ldr \tmp, [\base, #0x14]
+		movs \tmp, \tmp, lsr #2
+		sub \irqnr, \tmp, #1
+		b 1002f
+#endif
+#if defined(CONFIG_CP_INTC)
+1001:		ldr \irqnr, [\base, #0x80] /* get irq number */
+		mov \tmp, \irqnr, lsr #31
+		and \irqnr, \irqnr, #0xff  /* irq is in bits 0-9 */
+		and \tmp, \tmp, #0x1
+		cmp \tmp, #0x1
+#endif
+1002:
 		.endm

@@ -71,11 +71,13 @@ _GLOBAL(hash_page_sync)
  * _PAGE_RW (0x400) if a write.
  * r9 contains the SRR1 value, from which we use the MSR_PR bit.
  * SPRG3 contains the physical address of the current task's thread.
+ * SPRG_THREAD contains the physical address of the current task's thread.
  *
  * Returns to the caller if the access is illegal or there is no
  * mapping for the address.  Otherwise it places an appropriate PTE
  * in the hash table and returns from the exception.
  * Uses r0, r3 - r8, ctr, lr.
+ * Uses r0, r3 - r8, r10, ctr, lr.
  */
 	.text
 _GLOBAL(hash_page)
@@ -99,6 +101,7 @@ _GLOBAL(hash_page)
 	lis	r0,KERNELBASE@h		/* check if kernel address */
 	cmplw	0,r4,r0
 	mfspr	r8,SPRN_SPRG3		/* current task's THREAD (phys) */
+	mfspr	r8,SPRN_SPRG_THREAD	/* current task's THREAD (phys) */
 	ori	r3,r3,_PAGE_USER|_PAGE_PRESENT /* test low addresses as user */
 	lwz	r5,PGDIR(r8)		/* virt page-table root */
 	blt+	112f			/* assume user more likely */
@@ -109,6 +112,15 @@ _GLOBAL(hash_page)
 	rlwimi	r5,r4,12,20,29		/* insert top 10 bits of address */
 	lwz	r8,0(r5)		/* get pmd entry */
 	rlwinm.	r8,r8,0,0,19		/* extract address of pte page */
+#ifndef CONFIG_PTE_64BIT
+	rlwimi	r5,r4,12,20,29		/* insert top 10 bits of address */
+	lwz	r8,0(r5)		/* get pmd entry */
+	rlwinm.	r8,r8,0,0,19		/* extract address of pte page */
+#else
+	rlwinm	r8,r4,13,19,29		/* Compute pgdir/pmd offset */
+	lwzx	r8,r8,r5		/* Get L1 entry */
+	rlwinm.	r8,r8,0,0,20		/* extract pt base address */
+#endif
 #ifdef CONFIG_SMP
 	beq-	hash_page_out		/* return if no mapping */
 #else
@@ -119,6 +131,11 @@ _GLOBAL(hash_page)
 	beqlr-
 #endif
 	rlwimi	r8,r4,22,20,29		/* insert next 10 bits of address */
+#ifndef CONFIG_PTE_64BIT
+	rlwimi	r8,r4,22,20,29		/* insert next 10 bits of address */
+#else
+	rlwimi	r8,r4,23,20,28		/* compute pte address */
+#endif
 	rlwinm	r0,r3,32-3,24,24	/* _PAGE_RW access -> _PAGE_DIRTY */
 	ori	r0,r0,_PAGE_ACCESSED|_PAGE_HASHPTE
 
@@ -130,6 +147,15 @@ _GLOBAL(hash_page)
 	 */
 retry:
 	lwarx	r6,0,r8			/* get linux-style pte */
+	 *
+	 * If PTE_64BIT is set, the low word is the flags word; use that
+	 * word for locking since it contains all the interesting bits.
+	 */
+#if (PTE_FLAGS_OFFSET != 0)
+	addi	r8,r8,PTE_FLAGS_OFFSET
+#endif
+retry:
+	lwarx	r6,0,r8			/* get linux-style pte, flag word */
 	andc.	r5,r3,r6		/* check access & ~permission */
 #ifdef CONFIG_SMP
 	bne-	hash_page_out		/* return if access not permitted */
@@ -137,6 +163,15 @@ retry:
 	bnelr-
 #endif
 	or	r5,r0,r6		/* set accessed/dirty bits */
+#ifdef CONFIG_PTE_64BIT
+#ifdef CONFIG_SMP
+	subf	r10,r6,r8		/* create false data dependency */
+	subi	r10,r10,PTE_FLAGS_OFFSET
+	lwzx	r10,r6,r10		/* Get upper PTE word */
+#else
+	lwz	r10,-PTE_FLAGS_OFFSET(r8)
+#endif /* CONFIG_SMP */
+#endif /* CONFIG_PTE_64BIT */
 	stwcx.	r5,0,r8			/* attempt to update PTE */
 	bne-	retry			/* retry if someone got there first */
 
@@ -190,6 +225,7 @@ _GLOBAL(add_hash_page)
 
 #ifdef CONFIG_SMP
 	rlwinm	r8,r1,0,0,(31-THREAD_SHIFT) /* use cpu number to make tag */
+	CURRENT_THREAD_INFO(r8, r1)	/* use cpu number to make tag */
 	lwz	r8,TI_CPU(r8)		/* to go in mmu_hash_lock */
 	oris	r8,r8,12
 #endif /* CONFIG_SMP */
@@ -206,6 +242,9 @@ _GLOBAL(add_hash_page)
 	mfmsr	r10
 	SYNC
 	rlwinm	r0,r10,0,17,15		/* clear bit 16 (MSR_EE) */
+	mfmsr	r9
+	SYNC
+	rlwinm	r0,r9,0,17,15		/* clear bit 16 (MSR_EE) */
 	rlwinm	r0,r0,0,28,26		/* clear MSR_DR */
 	mtmsr	r0
 	SYNC_601
@@ -222,6 +261,14 @@ _GLOBAL(add_hash_page)
 	stwcx.	r8,0,r9
 	beq+	12f
 11:	lwz	r0,0(r9)
+	addis	r6,r7,mmu_hash_lock@ha
+	addi	r6,r6,mmu_hash_lock@l
+10:	lwarx	r0,0,r6			/* take the mmu_hash_lock */
+	cmpi	0,r0,0
+	bne-	11f
+	stwcx.	r8,0,r6
+	beq+	12f
+11:	lwz	r0,0(r6)
 	cmpi	0,r0,0
 	beq	10b
 	b	11b
@@ -238,6 +285,24 @@ _GLOBAL(add_hash_page)
 1:	lwarx	r6,0,r8
 	andi.	r0,r6,_PAGE_HASHPTE
 	bne	9f			/* if HASHPTE already set, done */
+#ifndef CONFIG_PTE_64BIT
+	rlwimi	r8,r4,22,20,29
+#else
+	rlwimi	r8,r4,23,20,28
+	addi	r8,r8,PTE_FLAGS_OFFSET
+#endif
+1:	lwarx	r6,0,r8
+	andi.	r0,r6,_PAGE_HASHPTE
+	bne	9f			/* if HASHPTE already set, done */
+#ifdef CONFIG_PTE_64BIT
+#ifdef CONFIG_SMP
+	subf	r10,r6,r8		/* create false data dependency */
+	subi	r10,r10,PTE_FLAGS_OFFSET
+	lwzx	r10,r6,r10		/* Get upper PTE word */
+#else
+	lwz	r10,-PTE_FLAGS_OFFSET(r8)
+#endif /* CONFIG_SMP */
+#endif /* CONFIG_PTE_64BIT */
 	ori	r5,r6,_PAGE_HASHPTE
 	stwcx.	r5,0,r8
 	bne-	1b
@@ -253,6 +318,15 @@ _GLOBAL(add_hash_page)
 
 	/* reenable interrupts and DR */
 	mtmsr	r10
+	addis	r6,r7,mmu_hash_lock@ha
+	addi	r6,r6,mmu_hash_lock@l
+	eieio
+	li	r0,0
+	stw	r0,0(r6)		/* clear mmu_hash_lock */
+#endif
+
+	/* reenable interrupts and DR */
+	mtmsr	r9
 	SYNC_601
 	isync
 
@@ -268,6 +342,8 @@ _GLOBAL(add_hash_page)
  * linux PTE (before setting _PAGE_HASHPTE) and r7 contains the
  * offset to be added to addresses (0 if the MMU is on,
  * -KERNELBASE if it is off).
+ * -KERNELBASE if it is off).  r10 contains the upper half of
+ * the PTE if CONFIG_PTE_64BIT.
  * On SMP, the caller should have the mmu_hash_lock held.
  * We assume that the caller has (or will) set the _PAGE_HASHPTE
  * bit in the linux PTE in memory.  The value passed in r6 should
@@ -286,6 +362,7 @@ Hash_msk = (((1 << Hash_bits) - 1) * 64)
 
 /* defines for the PTE format for 32-bit PPCs */
 #define PTE_SIZE	8
+#define HPTE_SIZE	8
 #define PTEG_SIZE	64
 #define LG_PTEG_SIZE	6
 #define LDPTEu		lwzu
@@ -313,6 +390,16 @@ _GLOBAL(create_hpte)
 BEGIN_FTR_SECTION
 	ori	r8,r8,_PAGE_COHERENT	/* set M (coherence required) */
 END_FTR_SECTION_IFSET(CPU_FTR_NEED_COHERENT)
+	ori	r8,r8,0xe04		/* clear out reserved bits */
+	andc	r8,r5,r8		/* PP = user? (rw&dirty? 2: 3): 0 */
+BEGIN_FTR_SECTION
+	rlwinm	r8,r8,0,~_PAGE_COHERENT	/* clear M (coherence not required) */
+END_FTR_SECTION_IFCLR(CPU_FTR_NEED_COHERENT)
+#ifdef CONFIG_PTE_64BIT
+	/* Put the XPN bits into the PTE */
+	rlwimi	r8,r10,8,20,22
+	rlwimi	r8,r10,2,29,29
+#endif
 
 	/* Construct the high word of the PPC-style PTE (r5) */
 	rlwinm	r5,r3,7,1,24		/* put VSID in 0x7fffff80 bits */
@@ -344,6 +431,8 @@ _GLOBAL(hash_page_patch_A)
 	mtctr	r0
 	addi	r4,r3,-PTE_SIZE
 1:	LDPTEu	r6,PTE_SIZE(r4)		/* get next PTE */
+	addi	r4,r3,-HPTE_SIZE
+1:	LDPTEu	r6,HPTE_SIZE(r4)	/* get next PTE */
 	CMPPTE	0,r6,r5
 	bdnzf	2,1b			/* loop while ctr != 0 && !cr0.eq */
 	beq+	found_slot
@@ -356,6 +445,9 @@ _GLOBAL(hash_page_patch_B)
 	addi	r4,r4,-PTE_SIZE
 	mtctr	r0
 2:	LDPTEu	r6,PTE_SIZE(r4)
+	addi	r4,r4,-HPTE_SIZE
+	mtctr	r0
+2:	LDPTEu	r6,HPTE_SIZE(r4)
 	CMPPTE	0,r6,r5
 	bdnzf	2,2b
 	beq+	found_slot
@@ -365,6 +457,8 @@ _GLOBAL(hash_page_patch_B)
 10:	mtctr	r0
 	addi	r4,r3,-PTE_SIZE		/* search primary PTEG */
 1:	LDPTEu	r6,PTE_SIZE(r4)		/* get next PTE */
+	addi	r4,r3,-HPTE_SIZE	/* search primary PTEG */
+1:	LDPTEu	r6,HPTE_SIZE(r4)	/* get next PTE */
 	TST_V(r6)			/* test valid bit */
 	bdnzf	2,1b			/* loop while ctr != 0 && !cr0.eq */
 	beq+	found_empty
@@ -383,6 +477,9 @@ _GLOBAL(hash_page_patch_C)
 	addi	r4,r4,-PTE_SIZE
 	mtctr	r0
 2:	LDPTEu	r6,PTE_SIZE(r4)
+	addi	r4,r4,-HPTE_SIZE
+	mtctr	r0
+2:	LDPTEu	r6,HPTE_SIZE(r4)
 	TST_V(r6)
 	bdnzf	2,2b
 	beq+	found_empty
@@ -414,6 +511,11 @@ _GLOBAL(hash_page_patch_C)
 	stw	r6,next_slot@l(r4)
 	add	r4,r3,r6
 	LDPTE	r0,PTE_SIZE/2(r4)		/* get PTE second word */
+	addi	r6,r6,HPTE_SIZE			/* search for candidate */
+	andi.	r6,r6,7*HPTE_SIZE
+	stw	r6,next_slot@l(r4)
+	add	r4,r3,r6
+	LDPTE	r0,HPTE_SIZE/2(r4)		/* get PTE second word */
 	clrrwi	r0,r0,12
 	lis	r6,etext@h
 	ori	r6,r6,etext@l			/* get etext */
@@ -427,6 +529,7 @@ found_empty:
 	STPTE	r5,0(r4)
 found_slot:
 	STPTE	r8,PTE_SIZE/2(r4)
+	STPTE	r8,HPTE_SIZE/2(r4)
 
 #else /* CONFIG_SMP */
 /*
@@ -453,6 +556,7 @@ found_slot:
 	sync
 	TLBSYNC
 	STPTE	r8,PTE_SIZE/2(r4) /* put in correct RPN, WIMG, PP bits */
+	STPTE	r8,HPTE_SIZE/2(r4) /* put in correct RPN, WIMG, PP bits */
 	sync
 	SET_V(r5)
 	STPTE	r5,0(r4)	/* finally set V bit in PTE */
@@ -501,12 +605,19 @@ _GLOBAL(flush_hash_pages)
 	/* First find a PTE in the range that has _PAGE_HASHPTE set */
 	rlwimi	r5,r4,22,20,29
 1:	lwz	r0,0(r5)
+#ifndef CONFIG_PTE_64BIT
+	rlwimi	r5,r4,22,20,29
+#else
+	rlwimi	r5,r4,23,20,28
+#endif
+1:	lwz	r0,PTE_FLAGS_OFFSET(r5)
 	cmpwi	cr1,r6,1
 	andi.	r0,r0,_PAGE_HASHPTE
 	bne	2f
 	ble	cr1,19f
 	addi	r4,r4,0x1000
 	addi	r5,r5,4
+	addi	r5,r5,PTE_SIZE
 	addi	r6,r6,-1
 	b	1b
 
@@ -525,6 +636,7 @@ _GLOBAL(flush_hash_pages)
 	addis	r9,r7,mmu_hash_lock@ha
 	addi	r9,r9,mmu_hash_lock@l
 	rlwinm	r8,r1,0,0,(31-THREAD_SHIFT)
+	CURRENT_THREAD_INFO(r8, r1)
 	add	r8,r8,r7
 	lwz	r8,TI_CPU(r8)
 	oris	r8,r8,9
@@ -546,6 +658,10 @@ _GLOBAL(flush_hash_pages)
 	 * clear it (atomically) and proceed.  -- paulus.
 	 */
 33:	lwarx	r8,0,r5			/* fetch the pte */
+#if (PTE_FLAGS_OFFSET != 0)
+	addi	r5,r5,PTE_FLAGS_OFFSET
+#endif
+33:	lwarx	r8,0,r5			/* fetch the pte flags word */
 	andi.	r0,r8,_PAGE_HASHPTE
 	beq	8f			/* done if HASHPTE is already clear */
 	rlwinm	r8,r8,0,31,29		/* clear HASHPTE bit */
@@ -564,6 +680,8 @@ _GLOBAL(flush_hash_patch_A)
 	mtctr	r0
 	addi	r12,r8,-PTE_SIZE
 1:	LDPTEu	r0,PTE_SIZE(r12)	/* get next PTE */
+	addi	r12,r8,-HPTE_SIZE
+1:	LDPTEu	r0,HPTE_SIZE(r12)	/* get next PTE */
 	CMPPTE	0,r0,r11
 	bdnzf	2,1b			/* loop while ctr != 0 && !cr0.eq */
 	beq+	3f
@@ -577,6 +695,9 @@ _GLOBAL(flush_hash_patch_B)
 	addi	r12,r12,-PTE_SIZE
 	mtctr	r0
 2:	LDPTEu	r0,PTE_SIZE(r12)
+	addi	r12,r12,-HPTE_SIZE
+	mtctr	r0
+2:	LDPTEu	r0,HPTE_SIZE(r12)
 	CMPPTE	0,r0,r11
 	bdnzf	2,2b
 	xori	r11,r11,PTE_H		/* clear H again */
@@ -591,6 +712,7 @@ _GLOBAL(flush_hash_patch_B)
 8:	ble	cr1,9f			/* if all ptes checked */
 81:	addi	r6,r6,-1
 	addi	r5,r5,4			/* advance to next pte */
+	addi	r5,r5,PTE_SIZE
 	addi	r4,r4,0x1000
 	lwz	r0,0(r5)		/* check next pte */
 	cmpwi	cr1,r6,1
@@ -608,4 +730,81 @@ _GLOBAL(flush_hash_patch_B)
 19:	mtmsr	r10
 	SYNC_601
 	isync
+	blr
+
+/*
+ * Flush an entry from the TLB
+ */
+_GLOBAL(_tlbie)
+#ifdef CONFIG_SMP
+	CURRENT_THREAD_INFO(r8, r1)
+	lwz	r8,TI_CPU(r8)
+	oris	r8,r8,11
+	mfmsr	r10
+	SYNC
+	rlwinm	r0,r10,0,17,15		/* clear bit 16 (MSR_EE) */
+	rlwinm	r0,r0,0,28,26		/* clear DR */
+	mtmsr	r0
+	SYNC_601
+	isync
+	lis	r9,mmu_hash_lock@h
+	ori	r9,r9,mmu_hash_lock@l
+	tophys(r9,r9)
+10:	lwarx	r7,0,r9
+	cmpwi	0,r7,0
+	bne-	10b
+	stwcx.	r8,0,r9
+	bne-	10b
+	eieio
+	tlbie	r3
+	sync
+	TLBSYNC
+	li	r0,0
+	stw	r0,0(r9)		/* clear mmu_hash_lock */
+	mtmsr	r10
+	SYNC_601
+	isync
+#else /* CONFIG_SMP */
+	tlbie	r3
+	sync
+#endif /* CONFIG_SMP */
+	blr
+
+/*
+ * Flush the entire TLB. 603/603e only
+ */
+_GLOBAL(_tlbia)
+#if defined(CONFIG_SMP)
+	CURRENT_THREAD_INFO(r8, r1)
+	lwz	r8,TI_CPU(r8)
+	oris	r8,r8,10
+	mfmsr	r10
+	SYNC
+	rlwinm	r0,r10,0,17,15		/* clear bit 16 (MSR_EE) */
+	rlwinm	r0,r0,0,28,26		/* clear DR */
+	mtmsr	r0
+	SYNC_601
+	isync
+	lis	r9,mmu_hash_lock@h
+	ori	r9,r9,mmu_hash_lock@l
+	tophys(r9,r9)
+10:	lwarx	r7,0,r9
+	cmpwi	0,r7,0
+	bne-	10b
+	stwcx.	r8,0,r9
+	bne-	10b
+	sync
+	tlbia
+	sync
+	TLBSYNC
+	li	r0,0
+	stw	r0,0(r9)		/* clear mmu_hash_lock */
+	mtmsr	r10
+	SYNC_601
+	isync
+#else /* CONFIG_SMP */
+	sync
+	tlbia
+	sync
+#endif /* CONFIG_SMP */
 	blr

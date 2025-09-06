@@ -8,6 +8,11 @@
 #include <linux/err.h>
 #include <linux/slab.h>
 
+#include <linux/err.h>
+#include <linux/slab.h>
+
+struct module;
+
 struct ts_config;
 
 #define TS_AUTOLOAD	1 /* Automatically load textsearch modules when needed */

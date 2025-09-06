@@ -55,6 +55,7 @@
  *	    - merge the two source files
  *	    - remove internal queueing code
  * 14/06/07 Alan Cox <alan@redhat.com>
+ * 14/06/07 Alan Cox <alan@lxorguk.ukuu.org.uk>
  *	 - Grand cleanup and Linuxisation
  */
 
@@ -418,6 +419,7 @@ static u8 orc_load_firmware(struct orc_host * host)
 
 	outb(PRGMRST | DOWNLOAD, host->base + ORC_RISCCTL);	/* Reset program count 0 */
 	bios_addr -= 0x1000;	/* Reset the BIOS adddress      */
+	bios_addr -= 0x1000;	/* Reset the BIOS address */
 	for (i = 0, data32_ptr = (u8 *) & data32;	/* Check the code       */
 	     i < 0x1000;	/* Firmware code size = 4K      */
 	     i++, bios_addr++) {
@@ -493,6 +495,7 @@ static void init_alloc_map(struct orc_host * host)
  *	@host:host adapter to initialise
  *
  *	Initialise the controller and if neccessary load the firmware.
+ *	Initialise the controller and if necessary load the firmware.
  *
  *	Returns -1 if the initialisation fails.
  */
@@ -634,6 +637,7 @@ static int orc_device_reset(struct orc_host * host, struct scsi_cmnd *cmd, unsig
 	}
 
 	/* Reset device is handled by the firmare, we fill in an SCB and
+	/* Reset device is handled by the firmware, we fill in an SCB and
 	   fire it at the controller, it does the rest */
 	scb->opcode = ORC_BUSDEVRST;
 	scb->target = target;
@@ -893,6 +897,10 @@ static int inia100_build_scb(struct orc_host * host, struct orc_scb * scb, struc
 		scb->cdb_len = IMAX_CDB;
 	}
 	scb->ident = cmd->device->lun | DISC_ALLOW;
+		printk("max cdb length= %x\n", cmd->cmd_len);
+		scb->cdb_len = IMAX_CDB;
+	}
+	scb->ident = (u8)(cmd->device->lun & 0xff) | DISC_ALLOW;
 	if (cmd->device->tagged_supported) {	/* Tag Support                  */
 		scb->tag_msg = SIMPLE_QUEUE_TAG;	/* Do simple tag only   */
 	} else {
@@ -913,6 +921,7 @@ static int inia100_build_scb(struct orc_host * host, struct orc_scb * scb, struc
  */
 
 static int inia100_queue(struct scsi_cmnd * cmd, void (*done) (struct scsi_cmnd *))
+static int inia100_queue_lck(struct scsi_cmnd * cmd, void (*done) (struct scsi_cmnd *))
 {
 	struct orc_scb *scb;
 	struct orc_host *host;		/* Point to Host adapter control block */
@@ -930,6 +939,8 @@ static int inia100_queue(struct scsi_cmnd * cmd, void (*done) (struct scsi_cmnd 
 	orc_exec_scb(host, scb);	/* Start execute SCB            */
 	return 0;
 }
+
+static DEF_SCSI_QCMD(inia100_queue)
 
 /*****************************************************************************
  Function name  : inia100_abort
@@ -1083,6 +1094,11 @@ static struct scsi_host_template inia100_template = {
 
 static int __devinit inia100_probe_one(struct pci_dev *pdev,
 		const struct pci_device_id *id)
+	.use_clustering		= ENABLE_CLUSTERING,
+};
+
+static int inia100_probe_one(struct pci_dev *pdev,
+			     const struct pci_device_id *id)
 {
 	struct Scsi_Host *shost;
 	struct orc_host *host;
@@ -1095,6 +1111,7 @@ static int __devinit inia100_probe_one(struct pci_dev *pdev,
 	if (pci_enable_device(pdev))
 		goto out;
 	if (pci_set_dma_mask(pdev, DMA_32BIT_MASK)) {
+	if (pci_set_dma_mask(pdev, DMA_BIT_MASK(32))) {
 		printk(KERN_WARNING "Unable to set 32bit DMA "
 				    "on inia100 adapter, ignoring.\n");
 		goto out_disable_device;
@@ -1126,6 +1143,7 @@ static int __devinit inia100_probe_one(struct pci_dev *pdev,
 	sz = ORC_MAXQUEUE * sizeof(struct orc_scb);
 	host->scb_virt = pci_alloc_consistent(pdev, sz,
 			&host->scb_phys);
+	host->scb_virt = pci_zalloc_consistent(pdev, sz, &host->scb_phys);
 	if (!host->scb_virt) {
 		printk("inia100: SCB memory allocation error\n");
 		goto out_host_put;
@@ -1136,6 +1154,10 @@ static int __devinit inia100_probe_one(struct pci_dev *pdev,
 	sz = ORC_MAXQUEUE * sizeof(struct orc_extended_scb);
 	host->escb_virt = pci_alloc_consistent(pdev, sz,
 			&host->escb_phys);
+
+	/* Get total memory needed for ESCB */
+	sz = ORC_MAXQUEUE * sizeof(struct orc_extended_scb);
+	host->escb_virt = pci_zalloc_consistent(pdev, sz, &host->escb_phys);
 	if (!host->escb_virt) {
 		printk("inia100: ESCB memory allocation error\n");
 		goto out_free_scb_array;
@@ -1197,6 +1219,7 @@ out:
 }
 
 static void __devexit inia100_remove_one(struct pci_dev *pdev)
+static void inia100_remove_one(struct pci_dev *pdev)
 {
 	struct Scsi_Host *shost = pci_get_drvdata(pdev);
 	struct orc_host *host = (struct orc_host *)shost->hostdata;
@@ -1224,6 +1247,7 @@ static struct pci_driver inia100_pci_driver = {
 	.id_table	= inia100_pci_tbl,
 	.probe		= inia100_probe_one,
 	.remove		= __devexit_p(inia100_remove_one),
+	.remove		= inia100_remove_one,
 };
 
 static int __init inia100_init(void)

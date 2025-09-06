@@ -23,6 +23,9 @@
 #include "control.h"
 #include "pcm.h"
 #include "timer.h"
+#include <sound/control.h>
+#include <sound/pcm.h>
+#include <sound/timer.h>
 
 #define AD1816A_REG(r)			(chip->port + r)
 
@@ -147,6 +150,9 @@ struct snd_ad1816a {
 	unsigned int c_dma_size;
 
 	struct snd_timer *timer;
+#ifdef CONFIG_PM
+	unsigned short image[48];
+#endif
 };
 
 
@@ -169,5 +175,14 @@ extern int snd_ad1816a_create(struct snd_card *card, unsigned long port,
 
 extern int snd_ad1816a_pcm(struct snd_ad1816a *chip, int device, struct snd_pcm **rpcm);
 extern int snd_ad1816a_mixer(struct snd_ad1816a *chip);
+			      struct snd_ad1816a *chip);
+
+extern int snd_ad1816a_pcm(struct snd_ad1816a *chip, int device);
+extern int snd_ad1816a_mixer(struct snd_ad1816a *chip);
+extern int snd_ad1816a_timer(struct snd_ad1816a *chip, int device);
+#ifdef CONFIG_PM
+extern void snd_ad1816a_suspend(struct snd_ad1816a *chip);
+extern void snd_ad1816a_resume(struct snd_ad1816a *chip);
+#endif
 
 #endif	/* __SOUND_AD1816A_H */

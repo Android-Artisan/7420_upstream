@@ -21,6 +21,7 @@
 #include <sound/core.h>
 #include <linux/slab.h>
 #include <linux/moduleparam.h>
+#include <linux/module.h>
 #include <pcmcia/ciscode.h>
 #include <pcmcia/cisreg.h>
 #include "pdaudiocf.h"
@@ -40,6 +41,7 @@ MODULE_SUPPORTED_DEVICE("{{Sound Core," CARD_NAME "}}");
 static int index[SNDRV_CARDS] = SNDRV_DEFAULT_IDX;	/* Index 0-MAX */
 static char *id[SNDRV_CARDS] = SNDRV_DEFAULT_STR;	/* ID for this card */
 static int enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE_PNP;	/* Enable switches */
+static bool enable[SNDRV_CARDS] = SNDRV_DEFAULT_ENABLE_PNP;	/* Enable switches */
 
 module_param_array(index, int, NULL, 0444);
 MODULE_PARM_DESC(index, "Index value for " CARD_NAME " soundcard.");
@@ -61,6 +63,7 @@ static void snd_pdacf_detach(struct pcmcia_device *p_dev);
 
 static void pdacf_release(struct pcmcia_device *link)
 {
+	free_irq(link->irq, link->priv);
 	pcmcia_disable_device(link);
 }
 
@@ -92,6 +95,7 @@ static int snd_pdacf_dev_free(struct snd_device *device)
 static int snd_pdacf_probe(struct pcmcia_device *link)
 {
 	int i;
+	int i, err;
 	struct snd_pdacf *pdacf;
 	struct snd_card *card;
 	static struct snd_device_ops ops = {
@@ -129,6 +133,25 @@ static int snd_pdacf_probe(struct pcmcia_device *link)
 	}
 
 	snd_card_set_dev(card, &handle_to_dev(link));
+	err = snd_card_new(&link->dev, index[i], id[i], THIS_MODULE,
+			   0, &card);
+	if (err < 0) {
+		snd_printk(KERN_ERR "pdacf: cannot create a card instance\n");
+		return err;
+	}
+
+	pdacf = snd_pdacf_create(card);
+	if (!pdacf) {
+		snd_card_free(card);
+		return -ENOMEM;
+	}
+
+	err = snd_device_new(card, SNDRV_DEV_LOWLEVEL, pdacf, &ops);
+	if (err < 0) {
+		kfree(pdacf);
+		snd_card_free(card);
+		return err;
+	}
 
 	pdacf->index = i;
 	card_list[i] = card;
@@ -149,6 +172,12 @@ static int snd_pdacf_probe(struct pcmcia_device *link)
 	link->conf.IntType = INT_MEMORY_AND_IO;
 	link->conf.ConfigIndex = 1;
 	link->conf.Present = PRESENT_OPTION;
+	link->resource[0]->flags |= IO_DATA_PATH_WIDTH_AUTO;
+	link->resource[0]->end = 16;
+
+	link->config_flags = CONF_ENABLE_IRQ | CONF_ENABLE_PULSE_IRQ;
+	link->config_index = 1;
+	link->config_regs = PRESENT_OPTION;
 
 	return pdacf_config(link);
 }
@@ -238,6 +267,38 @@ static int pdacf_config(struct pcmcia_device *link)
 cs_failed:
 	cs_error(link, last_fn, last_ret);
 failed:
+static int pdacf_config(struct pcmcia_device *link)
+{
+	struct snd_pdacf *pdacf = link->priv;
+	int ret;
+
+	snd_printdd(KERN_DEBUG "pdacf_config called\n");
+	link->config_index = 0x5;
+	link->config_flags |= CONF_ENABLE_IRQ | CONF_ENABLE_PULSE_IRQ;
+
+	ret = pcmcia_request_io(link);
+	if (ret)
+		goto failed_preirq;
+
+	ret = request_threaded_irq(link->irq, pdacf_interrupt,
+				   pdacf_threaded_irq,
+				   IRQF_SHARED, link->devname, link->priv);
+	if (ret)
+		goto failed_preirq;
+
+	ret = pcmcia_enable_device(link);
+	if (ret)
+		goto failed;
+
+	if (snd_pdacf_assign_resources(pdacf, link->resource[0]->start,
+					link->irq) < 0)
+		goto failed;
+
+	return 0;
+
+ failed:
+	free_irq(link->irq, link->priv);
+failed_preirq:
 	pcmcia_disable_device(link);
 	return -ENODEV;
 }
@@ -252,6 +313,7 @@ static int pdacf_suspend(struct pcmcia_device *link)
 	if (chip) {
 		snd_printdd(KERN_DEBUG "snd_pdacf_suspend calling\n");
 		snd_pdacf_suspend(chip, PMSG_SUSPEND);
+		snd_pdacf_suspend(chip);
 	}
 
 	return 0;
@@ -279,6 +341,7 @@ static int pdacf_resume(struct pcmcia_device *link)
  * Module entry points
  */
 static struct pcmcia_device_id snd_pdacf_ids[] = {
+static const struct pcmcia_device_id snd_pdacf_ids[] = {
 	/* this is too general PCMCIA_DEVICE_MANF_CARD(0x015d, 0x4c45), */
 	PCMCIA_DEVICE_PROD_ID12("Core Sound","PDAudio-CF",0x396d19d2,0x71717b49),
 	PCMCIA_DEVICE_NULL
@@ -290,6 +353,7 @@ static struct pcmcia_driver pdacf_cs_driver = {
 	.drv		= {
 		.name	= "snd-pdaudiocf",
 	},
+	.name		= "snd-pdaudiocf",
 	.probe		= snd_pdacf_probe,
 	.remove		= snd_pdacf_detach,
 	.id_table	= snd_pdacf_ids,
@@ -312,3 +376,5 @@ static void __exit exit_pdacf(void)
 
 module_init(init_pdacf);
 module_exit(exit_pdacf);
+};
+module_pcmcia_driver(pdacf_cs_driver);

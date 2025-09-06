@@ -9,7 +9,6 @@
     The author may    be  reached as davies@wanton.lkg.dec.com  or   Digital
     Equipment Corporation, 550 King Street, Littleton MA 01460.
 
-    =========================================================================
 */
 
 /*

@@ -254,6 +254,8 @@ int ubifs_find_dirty_leb(struct ubifs_info *c, struct ubifs_lprops *ret_lp,
 		 */
 		if (c->min_idx_lebs >= c->lst.idx_lebs) {
 			rsvd_idx_lebs = c->min_idx_lebs -  c->lst.idx_lebs;
+		if (c->bi.min_idx_lebs >= c->lst.idx_lebs) {
+			rsvd_idx_lebs = c->bi.min_idx_lebs -  c->lst.idx_lebs;
 			exclude_index = 1;
 		}
 		spin_unlock(&c->space_lock);
@@ -277,6 +279,7 @@ int ubifs_find_dirty_leb(struct ubifs_info *c, struct ubifs_lprops *ret_lp,
 	} else {
 		spin_lock(&c->space_lock);
 		exclude_index = (c->min_idx_lebs >= c->lst.idx_lebs);
+		exclude_index = (c->bi.min_idx_lebs >= c->lst.idx_lebs);
 		spin_unlock(&c->space_lock);
 	}
 
@@ -479,6 +482,7 @@ const struct ubifs_lprops *do_find_free_space(struct ubifs_info *c,
  * @c: the UBIFS file-system description object
  * @min_space: minimum amount of required free space
  * @free: contains amount of free space in the LEB on exit
+ * @offs: contains offset of where free space starts on exit
  * @squeeze: whether to try to find space in a non-empty LEB first
  *
  * This function looks for an LEB with at least @min_space bytes of free space.
@@ -491,6 +495,7 @@ const struct ubifs_lprops *do_find_free_space(struct ubifs_info *c,
  * error codes in case of failure.
  */
 int ubifs_find_free_space(struct ubifs_info *c, int min_space, int *free,
+int ubifs_find_free_space(struct ubifs_info *c, int min_space, int *offs,
 			  int squeeze)
 {
 	const struct ubifs_lprops *lprops;
@@ -503,6 +508,8 @@ int ubifs_find_free_space(struct ubifs_info *c, int min_space, int *free,
 	spin_lock(&c->space_lock);
 	if (c->min_idx_lebs > c->lst.idx_lebs)
 		rsvd_idx_lebs = c->min_idx_lebs -  c->lst.idx_lebs;
+	if (c->bi.min_idx_lebs > c->lst.idx_lebs)
+		rsvd_idx_lebs = c->bi.min_idx_lebs -  c->lst.idx_lebs;
 	else
 		rsvd_idx_lebs = 0;
 	lebs = c->lst.empty_lebs + c->freeable_cnt + c->idx_gc_cnt -
@@ -562,6 +569,10 @@ int ubifs_find_free_space(struct ubifs_info *c, int min_space, int *free,
 	ubifs_release_lprops(c);
 
 	if (*free == c->leb_size) {
+	*offs = c->leb_size - lprops->free;
+	ubifs_release_lprops(c);
+
+	if (*offs == 0) {
 		/*
 		 * Ensure that empty LEBs have been unmapped. They may not have
 		 * been, for example, because of an unclean unmount.  Also
@@ -575,6 +586,8 @@ int ubifs_find_free_space(struct ubifs_info *c, int min_space, int *free,
 
 	dbg_find("found LEB %d, free %d", lnum, *free);
 	ubifs_assert(*free >= min_space);
+	dbg_find("found LEB %d, free %d", lnum, c->leb_size - *offs);
+	ubifs_assert(*offs <= c->leb_size - min_space);
 	return lnum;
 
 out:
@@ -683,6 +696,16 @@ int ubifs_find_free_leb_for_idx(struct ubifs_info *c)
 		if (!lprops) {
 			ubifs_assert(c->freeable_cnt == 0);
 			if (c->lst.empty_lebs - c->lst.taken_empty_lebs > 0) {
+			/*
+			 * The first condition means the following: go scan the
+			 * LPT if there are uncategorized lprops, which means
+			 * there may be freeable LEBs there (UBIFS does not
+			 * store the information about freeable LEBs in the
+			 * master node).
+			 */
+			if (c->in_a_category_cnt != c->main_lebs ||
+			    c->lst.empty_lebs - c->lst.taken_empty_lebs > 0) {
+				ubifs_assert(c->freeable_cnt == 0);
 				lprops = scan_for_leb_for_idx(c);
 				if (IS_ERR(lprops)) {
 					err = PTR_ERR(lprops);
@@ -906,6 +929,11 @@ static int get_idx_gc_leb(struct ubifs_info *c)
 	lp = ubifs_change_lp(c, lp, LPROPS_NC, LPROPS_NC,
 			     lp->flags | LPROPS_INDEX, -1);
 	if (unlikely(IS_ERR(lp)))
+	if (IS_ERR(lp))
+		return PTR_ERR(lp);
+	lp = ubifs_change_lp(c, lp, LPROPS_NC, LPROPS_NC,
+			     lp->flags | LPROPS_INDEX, -1);
+	if (IS_ERR(lp))
 		return PTR_ERR(lp);
 	dbg_find("LEB %d, dirty %d and free %d flags %#x",
 		 lp->lnum, lp->dirty, lp->free, lp->flags);
@@ -941,6 +969,8 @@ static int find_dirtiest_idx_leb(struct ubifs_info *c)
 		 lp->free, lp->flags);
 	ubifs_assert(lp->flags | LPROPS_TAKEN);
 	ubifs_assert(lp->flags | LPROPS_INDEX);
+	ubifs_assert(lp->flags & LPROPS_TAKEN);
+	ubifs_assert(lp->flags & LPROPS_INDEX);
 	return lnum;
 }
 

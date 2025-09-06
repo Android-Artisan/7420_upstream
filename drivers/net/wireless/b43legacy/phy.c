@@ -5,6 +5,7 @@
   Copyright (c) 2005 Martin Langer <martin-langer@gmx.de>,
 		     Stefano Brivio <stefano.brivio@polimi.it>
 		     Michael Buesch <mbuesch@freenet.de>
+		     Michael Buesch <m@bues.ch>
 		     Danny van Dyk <kugelfang@gentoo.org>
      Andreas Jaggi <andreas.jaggi@waterwave.ch>
   Copyright (c) 2007 Larry Finger <Larry.Finger@lwfinger.net>
@@ -31,6 +32,8 @@
 
 #include <linux/delay.h>
 #include <linux/pci.h>
+#include <linux/sched.h>
+#include <linux/slab.h>
 #include <linux/types.h>
 
 #include "b43legacy.h"
@@ -104,6 +107,7 @@ void b43legacy_phy_lock(struct b43legacy_wldev *dev)
 		b43legacy_mac_suspend(dev);
 	} else {
 		if (!b43legacy_is_mode(dev->wl, IEEE80211_IF_TYPE_AP))
+		if (!b43legacy_is_mode(dev->wl, NL80211_IFTYPE_AP))
 			b43legacy_power_saving_ctl_bits(dev, -1, 1);
 	}
 }
@@ -119,6 +123,7 @@ void b43legacy_phy_unlock(struct b43legacy_wldev *dev)
 		b43legacy_mac_enable(dev);
 	} else {
 		if (!b43legacy_is_mode(dev->wl, IEEE80211_IF_TYPE_AP))
+		if (!b43legacy_is_mode(dev->wl, NL80211_IFTYPE_AP))
 			b43legacy_power_saving_ctl_bits(dev, -1, -1);
 	}
 }
@@ -152,6 +157,7 @@ void b43legacy_phy_calibrate(struct b43legacy_wldev *dev)
 }
 
 /* intialize B PHY power control
+/* initialize B PHY power control
  * as described in http://bcm-specs.sipsolutions.net/InitPowerControl
  */
 static void b43legacy_phy_init_pctl(struct b43legacy_wldev *dev)
@@ -407,6 +413,7 @@ static void b43legacy_phy_setupg(struct b43legacy_wldev *dev)
 		if (is_bcm_board_vendor(dev) &&
 		    (dev->dev->bus->boardinfo.type == 0x0416) &&
 		    (dev->dev->bus->boardinfo.rev == 0x0017))
+		    (dev->dev->bus->sprom.board_rev == 0x0017))
 			return;
 
 		b43legacy_ilt_write(dev, 0x5001, 0x0002);
@@ -423,6 +430,7 @@ static void b43legacy_phy_setupg(struct b43legacy_wldev *dev)
 		if (is_bcm_board_vendor(dev) &&
 		    (dev->dev->bus->boardinfo.type == 0x0416) &&
 		    (dev->dev->bus->boardinfo.rev == 0x0017))
+		    (dev->dev->bus->sprom.board_rev == 0x0017))
 			return;
 
 		b43legacy_ilt_write(dev, 0x0401, 0x0002);
@@ -595,12 +603,15 @@ static void b43legacy_phy_initb5(struct b43legacy_wldev *dev)
 				    0x0035) & 0xFFC0) | 0x0064);
 		b43legacy_phy_write(dev, 0x005D, (b43legacy_phy_read(dev,
 				    0x005D) & 0xFF80) | 0x000A);
+		b43legacy_phy_write(dev, 0x5B, 0x0000);
+		b43legacy_phy_write(dev, 0x5C, 0x0000);
 	}
 
 	if (dev->bad_frames_preempt)
 		b43legacy_phy_write(dev, B43legacy_PHY_RADIO_BITFIELD,
 				    b43legacy_phy_read(dev,
 				    B43legacy_PHY_RADIO_BITFIELD) | (1 << 11));
+				    B43legacy_PHY_RADIO_BITFIELD) | (1 << 12));
 
 	if (phy->analog == 1) {
 		b43legacy_phy_write(dev, 0x0026, 0xCE00);
@@ -754,6 +765,7 @@ static void b43legacy_phy_initb6(struct b43legacy_wldev *dev)
 	}
 	if (phy->radio_rev <= 2) {
 		b43legacy_radio_write16(dev, 0x007C, 0x0020);
+		b43legacy_radio_write16(dev, 0x0050, 0x0020);
 		b43legacy_radio_write16(dev, 0x005A, 0x0070);
 		b43legacy_radio_write16(dev, 0x005B, 0x007B);
 		b43legacy_radio_write16(dev, 0x005C, 0x00B0);
@@ -772,6 +784,7 @@ static void b43legacy_phy_initb6(struct b43legacy_wldev *dev)
 	b43legacy_phy_write(dev, 0x0038, 0x0668);
 	b43legacy_radio_set_txpower_bg(dev, 0xFFFF, 0xFFFF, 0xFFFF);
 	if (phy->radio_rev <= 5)
+	if (phy->radio_rev == 4 || phy->radio_rev == 5)
 		b43legacy_phy_write(dev, 0x005D, (b43legacy_phy_read(dev,
 				    0x005D) & 0xFF80) | 0x0003);
 	if (phy->radio_rev <= 2)
@@ -1011,6 +1024,7 @@ static void b43legacy_phy_initg(struct b43legacy_wldev *dev)
 	else
 		b43legacy_phy_initb6(dev);
 	if (phy->rev >= 2 || phy->gmode)
+	if (phy->rev >= 2 && phy->gmode)
 		b43legacy_phy_inita(dev);
 
 	if (phy->rev >= 2) {
@@ -1037,6 +1051,22 @@ static void b43legacy_phy_initg(struct b43legacy_wldev *dev)
 						     0x1F00);
 		}
 		b43legacy_phy_write(dev, 0x047E, 0x0078);
+	if (phy->gmode) {
+		tmp = b43legacy_phy_read(dev, 0x0400) & 0xFF;
+		if (tmp == 3) {
+			b43legacy_phy_write(dev, 0x04C2, 0x1816);
+			b43legacy_phy_write(dev, 0x04C3, 0x8606);
+		}
+		if (tmp == 4 || tmp == 5) {
+			b43legacy_phy_write(dev, 0x04C2, 0x1816);
+			b43legacy_phy_write(dev, 0x04C3, 0x8006);
+			b43legacy_phy_write(dev, 0x04CC,
+					    (b43legacy_phy_read(dev,
+					     0x04CC) & 0x00FF) |
+					     0x1F00);
+		}
+		if (phy->rev >= 2)
+			b43legacy_phy_write(dev, 0x047E, 0x0078);
 	}
 	if (phy->radio_rev == 8) {
 		b43legacy_phy_write(dev, 0x0801, b43legacy_phy_read(dev, 0x0801)
@@ -1079,6 +1109,7 @@ static void b43legacy_phy_initg(struct b43legacy_wldev *dev)
 			b43legacy_phy_write(dev, 0x002F, 0x0202);
 	}
 	if (phy->gmode || phy->rev >= 2) {
+	if (phy->gmode) {
 		b43legacy_phy_lo_adjust(dev, 0);
 		b43legacy_phy_write(dev, 0x080F, 0x8078);
 	}
@@ -1140,7 +1171,7 @@ void b43legacy_phy_lo_b_measure(struct b43legacy_wldev *dev)
 	struct b43legacy_phy *phy = &dev->phy;
 	u16 regstack[12] = { 0 };
 	u16 mls;
-	u16 fval;
+	s16 fval;
 	int i;
 	int j;
 
@@ -1296,6 +1327,10 @@ void b43legacy_lo_write(struct b43legacy_wldev *dev,
 		       "(low: %d, high: %d, index: %lu)\n",
 		       pair->low, pair->high,
 		       (unsigned long)(pair - phy->_lo_pairs));
+		b43legacydbg(dev->wl,
+		       "WARNING: Writing invalid LOpair "
+		       "(low: %d, high: %d)\n",
+		       pair->low, pair->high);
 		dump_stack();
 	}
 #endif
@@ -1855,6 +1890,7 @@ void b43legacy_phy_xmitpower(struct b43legacy_wldev *dev)
 #define REG_MAX_PWR 20
 	max_pwr = min(REG_MAX_PWR * 4
 		      - dev->dev->bus->sprom.antenna_gain.ghz24.a0
+		      - dev->dev->bus->sprom.antenna_gain.a0
 		      - 0x6, max_pwr);
 
 	/* find the desired power in Q5.2 - power_level is in dBm

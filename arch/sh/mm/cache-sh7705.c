@@ -12,6 +12,7 @@
 #include <linux/init.h>
 #include <linux/mman.h>
 #include <linux/mm.h>
+#include <linux/fs.h>
 #include <linux/threads.h>
 #include <asm/addrspace.h>
 #include <asm/page.h>
@@ -51,6 +52,10 @@ static inline void cache_wback_all(void)
 
 			if ((data & v) == v)
 				ctrl_outl(data & ~v, addr);
+			data = __raw_readl(addr);
+
+			if ((data & v) == v)
+				__raw_writel(data & ~v, addr);
 
 		}
 
@@ -65,6 +70,14 @@ static inline void cache_wback_all(void)
  */
 void flush_icache_range(unsigned long start, unsigned long end)
 {
+static void sh7705_flush_icache_range(void *args)
+{
+	struct flusher_data *data = args;
+	unsigned long start, end;
+
+	start = data->addr1;
+	end = data->addr2;
+
 	__flush_wback_region((void *)start, end - start);
 }
 
@@ -72,6 +85,7 @@ void flush_icache_range(unsigned long start, unsigned long end)
  * Writeback&Invalidate the D-cache of the page
  */
 static void __uses_jump_to_uncached __flush_dcache_page(unsigned long phys)
+static void __flush_dcache_page(unsigned long phys)
 {
 	unsigned long ways, waysize, addrstart;
 	unsigned long flags;
@@ -112,6 +126,10 @@ static void __uses_jump_to_uncached __flush_dcache_page(unsigned long phys)
 		        if (data == phys) {
 				data &= ~(SH_CACHE_VALID | SH_CACHE_UPDATED);
 				ctrl_outl(data, addr);
+			data = __raw_readl(addr) & (0x1ffffC00 | SH_CACHE_VALID);
+		        if (data == phys) {
+				data &= ~(SH_CACHE_VALID | SH_CACHE_UPDATED);
+				__raw_writel(data, addr);
 			}
 		}
 
@@ -133,6 +151,18 @@ void flush_dcache_page(struct page *page)
 }
 
 void __uses_jump_to_uncached flush_cache_all(void)
+static void sh7705_flush_dcache_page(void *arg)
+{
+	struct page *page = arg;
+	struct address_space *mapping = page_mapping(page);
+
+	if (mapping && !mapping_mapped(mapping))
+		clear_bit(PG_dcache_clean, &page->flags);
+	else
+		__flush_dcache_page(__pa(page_address(page)));
+}
+
+static void sh7705_flush_cache_all(void *args)
 {
 	unsigned long flags;
 
@@ -182,6 +212,11 @@ void flush_cache_range(struct vm_area_struct *vma, unsigned long start,
 void flush_cache_page(struct vm_area_struct *vma, unsigned long address,
 		      unsigned long pfn)
 {
+static void sh7705_flush_cache_page(void *args)
+{
+	struct flusher_data *data = args;
+	unsigned long pfn = data->addr2;
+
 	__flush_dcache_page(pfn << PAGE_SHIFT);
 }
 
@@ -196,4 +231,20 @@ void flush_cache_page(struct vm_area_struct *vma, unsigned long address,
 void flush_icache_page(struct vm_area_struct *vma, struct page *page)
 {
 	__flush_purge_region(page_address(page), PAGE_SIZE);
+}
+static void sh7705_flush_icache_page(void *page)
+{
+	__flush_purge_region(page_address(page), PAGE_SIZE);
+}
+
+void __init sh7705_cache_init(void)
+{
+	local_flush_icache_range	= sh7705_flush_icache_range;
+	local_flush_dcache_page		= sh7705_flush_dcache_page;
+	local_flush_cache_all		= sh7705_flush_cache_all;
+	local_flush_cache_mm		= sh7705_flush_cache_all;
+	local_flush_cache_dup_mm	= sh7705_flush_cache_all;
+	local_flush_cache_range		= sh7705_flush_cache_all;
+	local_flush_cache_page		= sh7705_flush_cache_page;
+	local_flush_icache_page		= sh7705_flush_icache_page;
 }

@@ -21,6 +21,15 @@ typedef struct {
 	unsigned long	clock_tick;	/* %tick's per second */
 	unsigned long	__pad;
 	unsigned int	__pad1;
+#ifndef __ASSEMBLY__
+
+typedef struct {
+	/* Dcache line 1 */
+	unsigned int	__softirq_pending; /* must be 1st, see rtrap.S */
+	unsigned int	__nmi_count;
+	unsigned long	clock_tick;	/* %tick's per second */
+	unsigned long	__pad;
+	unsigned int	irq0_irqs;
 	unsigned int	__pad2;
 
 	/* Dcache line 2, rarely used */
@@ -31,6 +40,8 @@ typedef struct {
 	unsigned int	ecache_size;
 	unsigned int	ecache_line_size;
 	int		core_id;
+	unsigned short	sock_id;
+	unsigned short	core_id;
 	int		proc_id;
 } cpuinfo_sparc;
 
@@ -236,5 +247,10 @@ extern struct sun4v_2insn_patch_entry __sun4v_2insn_patch,
 #define LOAD_PER_CPU_BASE(DEST, THR, REG1, REG2, REG3)
 
 #endif /* !(CONFIG_SMP) */
+#define local_cpu_data()	(*this_cpu_ptr(&__cpu_data))
+
+#endif /* !(__ASSEMBLY__) */
+
+#include <asm/trap_block.h>
 
 #endif /* _SPARC64_CPUDATA_H */

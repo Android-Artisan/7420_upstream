@@ -205,6 +205,7 @@ struct irlap_cb {
 	notify_t notify; /* Callbacks to IrLMP */
 
 	int    mtt_required;  /* Minumum turnaround time required */
+	int    mtt_required;  /* Minimum turnaround time required */
 	int    xbofs_delay;   /* Nr of XBOF's used to MTT */
 	int    bofs_count;    /* Negotiated extra BOFs */
 	int    next_bofs;     /* Negotiated extra BOFs after next frame */
@@ -283,6 +284,7 @@ static inline int irlap_is_primary(struct irlap_cb *self)
 		ret = -1;
 	}
 	return(ret);
+	return ret;
 }
 
 /* Clear a pending IrLAP disconnect. - Jean II */
@@ -304,6 +306,7 @@ static inline void irlap_next_state(struct irlap_cb *self, IRLAP_STATE state)
 		return;
 
 	IRDA_DEBUG(4, "next LAP state = %s\n", irlap_state[state]);
+		pr_debug("next LAP state = %s\n", irlap_state[state]);
 	*/
 	self->state = state;
 }

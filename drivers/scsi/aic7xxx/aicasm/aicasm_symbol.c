@@ -1,5 +1,6 @@
 /*
  * Aic7xxx SCSI host adapter firmware asssembler symbol table implementation
+ * Aic7xxx SCSI host adapter firmware assembler symbol table implementation
  *
  * Copyright (c) 1997 Justin T. Gibbs.
  * Copyright (c) 2002 Adaptec Inc.
@@ -538,6 +539,9 @@ symtable_dump(FILE *ofile, FILE *dfile)
 	aic_print_file_prologue(dfile);
 	aic_print_include(dfile, stock_include_file);
 	SLIST_FOREACH(curnode, &registers, links) {
+
+		if (curnode->symbol->dont_generate_debug_code)
+			continue;
 
 		switch(curnode->symbol->type) {
 		case REGISTER:

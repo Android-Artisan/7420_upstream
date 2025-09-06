@@ -31,6 +31,7 @@
 #include <linux/errno.h>
 #include <linux/skbuff.h>
 
+#include <linux/mmc/host.h>
 #include <linux/mmc/sdio_ids.h>
 #include <linux/mmc/sdio_func.h>
 
@@ -50,6 +51,9 @@ static const struct sdio_device_id btsdio_table[] = {
 
 	/* Generic Bluetooth Type-B SDIO device */
 	{ SDIO_DEVICE_CLASS(SDIO_CLASS_BT_B) },
+
+	/* Generic Bluetooth AMP controller */
+	{ SDIO_DEVICE_CLASS(SDIO_CLASS_BT_AMP) },
 
 	{ }	/* Terminating entry */
 };
@@ -75,6 +79,7 @@ struct btsdio_data {
 #define REG_CL_INTRD 0x13	/* Interrupt Clear */
 #define REG_EN_INTRD 0x14	/* Interrupt Enable */
 #define REG_MD_STAT  0x20	/* Bluetooth Mode Status */
+#define REG_MD_SET   0x20	/* Bluetooth Mode Set */
 
 static int btsdio_tx_packet(struct btsdio_data *data, struct sk_buff *skb)
 {
@@ -91,6 +96,7 @@ static int btsdio_tx_packet(struct btsdio_data *data, struct sk_buff *skb)
 
 	err = sdio_writesb(data->func, REG_TDAT, skb->data, skb->len);
 	if (err < 0) {
+		skb_pull(skb, 4);
 		sdio_writeb(data->func, 0x01, REG_PC_WRT, NULL);
 		return err;
 	}
@@ -153,6 +159,7 @@ static int btsdio_rx_packet(struct btsdio_data *data)
 	err = sdio_readsb(data->func, skb->data, REG_RDAT, len - 4);
 	if (err < 0) {
 		kfree(skb);
+		kfree_skb(skb);
 		return err;
 	}
 
@@ -162,6 +169,9 @@ static int btsdio_rx_packet(struct btsdio_data *data)
 	bt_cb(skb)->pkt_type = hdr[3];
 
 	err = hci_recv_frame(skb);
+	bt_cb(skb)->pkt_type = hdr[3];
+
+	err = hci_recv_frame(data->hdev, skb);
 	if (err < 0)
 		return err;
 
@@ -191,6 +201,7 @@ static void btsdio_interrupt(struct sdio_func *func)
 static int btsdio_open(struct hci_dev *hdev)
 {
 	struct btsdio_data *data = hdev->driver_data;
+	struct btsdio_data *data = hci_get_drvdata(hdev);
 	int err;
 
 	BT_DBG("%s", hdev->name);
@@ -205,6 +216,11 @@ static int btsdio_open(struct hci_dev *hdev)
 		clear_bit(HCI_RUNNING, &hdev->flags);
 		goto release;
 	}
+	sdio_claim_host(data->func);
+
+	err = sdio_enable_func(data->func);
+	if (err < 0)
+		goto release;
 
 	err = sdio_claim_irq(data->func, btsdio_interrupt);
 	if (err < 0) {
@@ -215,6 +231,7 @@ static int btsdio_open(struct hci_dev *hdev)
 
 	if (data->func->class == SDIO_CLASS_BT_B)
 		sdio_writeb(data->func, 0x00, REG_MD_STAT, NULL);
+		sdio_writeb(data->func, 0x00, REG_MD_SET, NULL);
 
 	sdio_writeb(data->func, 0x01, REG_EN_INTRD, NULL);
 
@@ -233,6 +250,10 @@ static int btsdio_close(struct hci_dev *hdev)
 	if (!test_and_clear_bit(HCI_RUNNING, &hdev->flags))
 		return 0;
 
+	struct btsdio_data *data = hci_get_drvdata(hdev);
+
+	BT_DBG("%s", hdev->name);
+
 	sdio_claim_host(data->func);
 
 	sdio_writeb(data->func, 0x00, REG_EN_INTRD, NULL);
@@ -248,6 +269,7 @@ static int btsdio_close(struct hci_dev *hdev)
 static int btsdio_flush(struct hci_dev *hdev)
 {
 	struct btsdio_data *data = hdev->driver_data;
+	struct btsdio_data *data = hci_get_drvdata(hdev);
 
 	BT_DBG("%s", hdev->name);
 
@@ -265,6 +287,12 @@ static int btsdio_send_frame(struct sk_buff *skb)
 
 	if (!test_bit(HCI_RUNNING, &hdev->flags))
 		return -EBUSY;
+
+static int btsdio_send_frame(struct hci_dev *hdev, struct sk_buff *skb)
+{
+	struct btsdio_data *data = hci_get_drvdata(hdev);
+
+	BT_DBG("%s", hdev->name);
 
 	switch (bt_cb(skb)->pkt_type) {
 	case HCI_COMMAND_PKT:
@@ -315,6 +343,15 @@ static int btsdio_probe(struct sdio_func *func,
 	}
 
 	data = kzalloc(sizeof(*data), GFP_KERNEL);
+	/* BCM43341 devices soldered onto the PCB (non-removable) use an
+	 * uart connection for bluetooth, ignore the BT SDIO interface.
+	 */
+	if (func->vendor == SDIO_VENDOR_ID_BROADCOM &&
+	    func->device == SDIO_DEVICE_ID_BROADCOM_43341 &&
+	    !mmc_card_is_removable(func->card->host))
+		return -ENODEV;
+
+	data = devm_kzalloc(&func->dev, sizeof(*data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
 
@@ -332,6 +369,16 @@ static int btsdio_probe(struct sdio_func *func,
 
 	hdev->type = HCI_SDIO;
 	hdev->driver_data = data;
+	if (!hdev)
+		return -ENOMEM;
+
+	hdev->bus = HCI_SDIO;
+	hci_set_drvdata(hdev, data);
+
+	if (id->class == SDIO_CLASS_BT_AMP)
+		hdev->dev_type = HCI_AMP;
+	else
+		hdev->dev_type = HCI_BREDR;
 
 	data->hdev = hdev;
 
@@ -344,6 +391,9 @@ static int btsdio_probe(struct sdio_func *func,
 	hdev->destruct = btsdio_destruct;
 
 	hdev->owner = THIS_MODULE;
+
+	if (func->vendor == 0x0104 && func->device == 0x00c5)
+		set_bit(HCI_QUIRK_RESET_ON_CLOSE, &hdev->quirks);
 
 	err = hci_register_dev(hdev);
 	if (err < 0) {
@@ -367,6 +417,7 @@ static void btsdio_remove(struct sdio_func *func)
 	if (!data)
 		return;
 
+	cancel_work_sync(&data->work);
 	hdev = data->hdev;
 
 	sdio_set_drvdata(func, NULL);

@@ -4,6 +4,7 @@
  * is the superset of all QE devices (8360, etc.).
 
  * Copyright (C) 2006. Freescale Semicondutor, Inc. All rights reserved.
+ * Copyright (C) 2006. Freescale Semiconductor, Inc. All rights reserved.
  *
  * Authors: 	Shlomi Gridish <gridish@freescale.com>
  * 		Li Yang <leoli@freescale.com>
@@ -27,6 +28,9 @@ struct qe_iram {
 	__be32	iadd;		/* I-RAM Address Register */
 	__be32	idata;		/* I-RAM Data Register */
 	u8	res0[0x78];
+	u8	res0[0x04];
+	__be32	iready;		/* I-RAM Ready Register */
+	u8	res1[0x70];
 } __attribute__ ((packed));
 
 /* QE Interrupt Controller */
@@ -211,6 +215,7 @@ struct sir {
 
 /* USB Controller */
 struct usb_ctlr {
+struct qe_usb_ctlr {
 	u8	usb_usmod;
 	u8	usb_usadr;
 	u8	usb_uscom;
@@ -219,6 +224,7 @@ struct usb_ctlr {
 	__be16	usb_usep2;
 	__be16	usb_usep3;
 	__be16	usb_usep4;
+	__be16  usb_usep[4];
 	u8	res2[4];
 	__be16	usb_usber;
 	u8	res3[2];
@@ -233,6 +239,7 @@ struct usb_ctlr {
 
 /* MCC */
 struct mcc {
+struct qe_mcc {
 	__be32	mcce;		/* MCC event register */
 	__be32	mccm;		/* MCC mask register */
 	__be32	mccf;		/* MCC configuration register */
@@ -437,6 +444,9 @@ struct qe_immap {
 	struct mcc		mcc;		/* mcc */
 	struct qe_brg		brg;		/* brg */
 	struct usb_ctlr		usb;		/* USB */
+	struct qe_mcc		mcc;		/* mcc */
+	struct qe_brg		brg;		/* brg */
+	struct qe_usb_ctlr	usb;		/* USB */
 	struct si1		si1;		/* SI */
 	u8			res11[0x800];
 	struct sir		sir;		/* SI Routing Tables */
@@ -477,6 +487,22 @@ static inline unsigned long immrbar_virt_to_phys(void *address)
 		return (unsigned long)(address - (u32)qe_immr +
 				(u32)get_qe_base());
 	return (unsigned long)virt_to_phys(address);
+/*
+ * Returns the offset within the QE address space of the given pointer.
+ *
+ * Note that the QE does not support 36-bit physical addresses, so if
+ * get_qe_base() returns a number above 4GB, the caller will probably fail.
+ */
+static inline phys_addr_t immrbar_virt_to_phys(void *address)
+{
+	void *q = (void *)qe_immr;
+
+	/* Is it a MURAM address? */
+	if ((address >= q) && (address < (q + QE_IMMAP_SIZE)))
+		return get_qe_base() + (address - q);
+
+	/* It's an address returned by kmalloc */
+	return virt_to_phys(address);
 }
 
 #endif /* __KERNEL__ */

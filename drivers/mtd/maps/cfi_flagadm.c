@@ -34,6 +34,7 @@
 
 /* We split the flash chip up into four parts.
  * 1: bootloader firts 128k			(0x00000000 - 0x0001FFFF) size 0x020000
+ * 1: bootloader first 128k			(0x00000000 - 0x0001FFFF) size 0x020000
  * 2: kernel 640k					(0x00020000 - 0x000BFFFF) size 0x0A0000
  * 3: compressed 1536k root ramdisk	(0x000C0000 - 0x0023FFFF) size 0x180000
  * 4: writeable diskpartition (jffs)(0x00240000 - 0x003FFFFF) size 0x1C0000
@@ -56,12 +57,14 @@
 
 
 struct map_info flagadm_map = {
+static struct map_info flagadm_map = {
 		.name =		"FlagaDM flash device",
 		.size =		FLASH_SIZE,
 		.bankwidth =	2,
 };
 
 struct mtd_partition flagadm_parts[] = {
+static struct mtd_partition flagadm_parts[] = {
 	{
 		.name =		"Bootloader",
 		.offset	=	FLASH_PARTITION0_ADDR,
@@ -89,6 +92,7 @@ struct mtd_partition flagadm_parts[] = {
 static struct mtd_info *mymtd;
 
 int __init init_flagadm(void)
+static int __init init_flagadm(void)
 {
 	printk(KERN_NOTICE "FlagaDM flash device: %x at %x\n",
 			FLASH_SIZE, FLASH_PHYS_ADDR);
@@ -108,11 +112,13 @@ int __init init_flagadm(void)
 	if (mymtd) {
 		mymtd->owner = THIS_MODULE;
 		add_mtd_partitions(mymtd, flagadm_parts, PARTITION_COUNT);
+		mtd_device_register(mymtd, flagadm_parts, PARTITION_COUNT);
 		printk(KERN_NOTICE "FlagaDM flash device initialized\n");
 		return 0;
 	}
 
 	iounmap((void *)flagadm_map.virt);
+	iounmap((void __iomem *)flagadm_map.virt);
 	return -ENXIO;
 }
 
@@ -125,6 +131,12 @@ static void __exit cleanup_flagadm(void)
 	if (flagadm_map.virt) {
 		iounmap((void *)flagadm_map.virt);
 		flagadm_map.virt = 0;
+		mtd_device_unregister(mymtd);
+		map_destroy(mymtd);
+	}
+	if (flagadm_map.virt) {
+		iounmap((void __iomem *)flagadm_map.virt);
+		flagadm_map.virt = NULL;
 	}
 }
 

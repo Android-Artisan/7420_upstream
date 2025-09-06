@@ -25,6 +25,8 @@
 	(__chk_user_ptr(addr),		\
 	 __access_ok((unsigned long __force)(addr), (size)))
 
+#define user_addr_max()	(current_thread_info()->addr_limit.seg)
+
 /*
  * Uh, these should become the main single-value transfer routines ...
  * They automatically use the right size if we just have the right
@@ -59,6 +61,7 @@ struct __large_struct { unsigned long buf[100]; };
 	__chk_user_ptr(ptr);					\
 	__get_user_size(__gu_val, __gu_addr, (size), __gu_err);	\
 	(x) = (__typeof__(*(ptr)))__gu_val;			\
+	(x) = (__force __typeof__(*(ptr)))__gu_val;		\
 	__gu_err;						\
 })
 
@@ -70,6 +73,7 @@ struct __large_struct { unsigned long buf[100]; };
 	if (likely(access_ok(VERIFY_READ, __gu_addr, (size))))		\
 		__get_user_size(__gu_val, __gu_addr, (size), __gu_err);	\
 	(x) = (__typeof__(*(ptr)))__gu_val;				\
+	(x) = (__force __typeof__(*(ptr)))__gu_val;			\
 	__gu_err;							\
 })
 
@@ -99,6 +103,16 @@ struct __large_struct { unsigned long buf[100]; };
 #else
 # include "uaccess_64.h"
 #endif
+
+# include <asm/uaccess_32.h>
+#else
+# include <asm/uaccess_64.h>
+#endif
+
+extern long strncpy_from_user(char *dest, const char __user *src, long count);
+
+extern __must_check long strlen_user(const char __user *str);
+extern __must_check long strnlen_user(const char __user *str, long n);
 
 /* Generic arbitrary sized copy.  */
 /* Return the number of bytes NOT copied */
@@ -175,7 +189,10 @@ copy_from_user(void *to, const void __user *from, unsigned long n)
 	__kernel_size_t __copy_size = (__kernel_size_t) n;
 
 	if (__copy_size && __access_ok(__copy_from, __copy_size))
-		return __copy_user(to, from, __copy_size);
+		__copy_size = __copy_user(to, from, __copy_size);
+
+	if (unlikely(__copy_size))
+		memset(to + (n - __copy_size), 0, __copy_size);
 
 	return __copy_size;
 }
@@ -254,5 +271,19 @@ int fixup_exception(struct pt_regs *regs);
 unsigned long search_exception_table(unsigned long addr);
 const struct exception_table_entry *search_exception_tables(unsigned long addr);
 
+extern void *set_exception_table_vec(unsigned int vec, void *handler);
+
+static inline void *set_exception_table_evt(unsigned int evt, void *handler)
+{
+	return set_exception_table_vec(evt >> 5, handler);
+}
+
+struct mem_access {
+	unsigned long (*from)(void *dst, const void __user *src, unsigned long cnt);
+	unsigned long (*to)(void __user *dst, const void *src, unsigned long cnt);
+};
+
+int handle_unaligned_access(insn_size_t instruction, struct pt_regs *regs,
+			    struct mem_access *ma, int, unsigned long address);
 
 #endif /* __ASM_SH_UACCESS_H */

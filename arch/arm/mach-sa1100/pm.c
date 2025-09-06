@@ -16,6 +16,7 @@
  * 			Bitsy/Assabet/Freebird board
  *
  * 2001-08-29:	Nicolas Pitre <nico@cam.org>
+ * 2001-08-29:	Nicolas Pitre <nico@fluxnic.net>
  * 			Cleaned up, pushed platform dependent stuff
  * 			in the platform specific files.
  *
@@ -23,6 +24,7 @@
  * 				Storage is local on the stack now.
  */
 #include <linux/init.h>
+#include <linux/io.h>
 #include <linux/suspend.h>
 #include <linux/errno.h>
 #include <linux/time.h>
@@ -34,6 +36,10 @@
 
 extern void sa1100_cpu_suspend(void);
 extern void sa1100_cpu_resume(void);
+#include <asm/suspend.h>
+#include <asm/mach/time.h>
+
+extern int sa1100_finish_suspend(unsigned long);
 
 #define SAVE(x)		sleep_save[SLEEP_SAVE_##x] = x
 #define RESTORE(x)	x = sleep_save[SLEEP_SAVE_##x]
@@ -79,10 +85,15 @@ static int sa11x0_pm_enter(suspend_state_t state)
 	sa1100_cpu_suspend();
 
 	cpu_init();
+	PSPR = virt_to_phys(cpu_resume);
+
+	/* go zzz */
+	cpu_suspend(0, sa1100_finish_suspend);
 
 	/*
 	 * Ensure not to come back here if it wasn't intended
 	 */
+	RCSR = RCSR_SMR;
 	PSPR = 0;
 
 	/*
@@ -121,11 +132,13 @@ unsigned long sleep_phys_sp(void *sp)
 }
 
 static struct platform_suspend_ops sa11x0_pm_ops = {
+static const struct platform_suspend_ops sa11x0_pm_ops = {
 	.enter		= sa11x0_pm_enter,
 	.valid		= suspend_valid_only_mem,
 };
 
 static int __init sa11x0_pm_init(void)
+int __init sa11x0_pm_init(void)
 {
 	suspend_set_ops(&sa11x0_pm_ops);
 	return 0;

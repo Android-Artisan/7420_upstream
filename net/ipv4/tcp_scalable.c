@@ -1,6 +1,7 @@
 /* Tom Kelly's Scalable TCP
  *
  * See htt://www-lce.eng.cam.ac.uk/~ctk21/scalable/
+ * See http://www.deneholme.net/tom/scalable/
  *
  * John Heffner <jheffner@sc.edu>
  */
@@ -32,6 +33,18 @@ static void tcp_scalable_cong_avoid(struct sock *sk, u32 ack, u32 in_flight)
 			tp->snd_cwnd_cnt = 0;
 		}
 	}
+static void tcp_scalable_cong_avoid(struct sock *sk, u32 ack, u32 acked)
+{
+	struct tcp_sock *tp = tcp_sk(sk);
+
+	if (!tcp_is_cwnd_limited(sk))
+		return;
+
+	if (tcp_in_slow_start(tp))
+		tcp_slow_start(tp, acked);
+	else
+		tcp_cong_avoid_ai(tp, min(tp->snd_cwnd, TCP_SCALABLE_AI_CNT),
+				  1);
 }
 
 static u32 tcp_scalable_ssthresh(struct sock *sk)
@@ -45,6 +58,13 @@ static struct tcp_congestion_ops tcp_scalable = {
 	.ssthresh	= tcp_scalable_ssthresh,
 	.cong_avoid	= tcp_scalable_cong_avoid,
 	.min_cwnd	= tcp_reno_min_cwnd,
+
+	return max(tp->snd_cwnd - (tp->snd_cwnd>>TCP_SCALABLE_MD_SCALE), 2U);
+}
+
+static struct tcp_congestion_ops tcp_scalable __read_mostly = {
+	.ssthresh	= tcp_scalable_ssthresh,
+	.cong_avoid	= tcp_scalable_cong_avoid,
 
 	.owner		= THIS_MODULE,
 	.name		= "scalable",

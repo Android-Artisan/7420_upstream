@@ -27,6 +27,7 @@
  *     along with this program; if not, write to the Free Software 
  *     Foundation, Inc., 59 Temple Place, Suite 330, Boston, 
  *     MA 02111-1307 USA
+ *     along with this program; if not, see <http://www.gnu.org/licenses/>.
  *     
  ********************************************************************/
 
@@ -86,6 +87,7 @@ struct disc_frame {
 	__u8 caddr;          /* Connection address */
 	__u8 control;
 } IRDA_PACK;
+} __packed;
 
 struct xid_frame {
 	__u8  caddr; /* Connection address */
@@ -97,6 +99,7 @@ struct xid_frame {
 	__u8  slotnr;
 	__u8  version;
 } IRDA_PACK;
+} __packed;
 
 struct test_frame {
 	__u8 caddr;          /* Connection address */
@@ -104,6 +107,7 @@ struct test_frame {
 	__le32 saddr;         /* Source device address */
 	__le32 daddr;         /* Destination device address */
 } IRDA_PACK;
+} __packed;
 
 struct ua_frame {
 	__u8 caddr;
@@ -111,26 +115,31 @@ struct ua_frame {
 	__le32 saddr; /* Source device address */
 	__le32 daddr; /* Dest device address */
 } IRDA_PACK;
+} __packed;
 
 struct dm_frame {
 	__u8 caddr;          /* Connection address */
 	__u8 control;
 } IRDA_PACK;
+} __packed;
 
 struct rd_frame {
 	__u8 caddr;          /* Connection address */
 	__u8 control;
 } IRDA_PACK;
+} __packed;
 
 struct rr_frame {
 	__u8 caddr;          /* Connection address */
 	__u8 control;
 } IRDA_PACK;
+} __packed;
 
 struct i_frame {
 	__u8 caddr;
 	__u8 control;
 } IRDA_PACK;
+} __packed;
 
 struct snrm_frame {
 	__u8  caddr;
@@ -139,6 +148,7 @@ struct snrm_frame {
 	__le32 daddr;
 	__u8  ncaddr;
 } IRDA_PACK;
+} __packed;
 
 void irlap_queue_xmit(struct irlap_cb *self, struct sk_buff *skb);
 void irlap_send_discovery_xid_frame(struct irlap_cb *, int S, __u8 s, 
@@ -165,5 +175,7 @@ void irlap_send_ui_frame(struct irlap_cb *self, struct sk_buff *skb,
 
 extern int irlap_insert_qos_negotiation_params(struct irlap_cb *self, 
 					       struct sk_buff *skb);
+int irlap_insert_qos_negotiation_params(struct irlap_cb *self,
+					struct sk_buff *skb);
 
 #endif

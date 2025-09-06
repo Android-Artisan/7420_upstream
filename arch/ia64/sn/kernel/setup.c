@@ -36,6 +36,9 @@
 #include <asm/system.h>
 #include <asm/processor.h>
 #include <asm/vga.h>
+#include <asm/processor.h>
+#include <asm/vga.h>
+#include <asm/setup.h>
 #include <asm/sn/arch.h>
 #include <asm/sn/addrs.h>
 #include <asm/sn/pda.h>
@@ -193,6 +196,7 @@ void __init early_sn_setup(void)
 
 extern int platform_intr_list[];
 static int __cpuinitdata shub_1_1_found;
+static int shub_1_1_found;
 
 /*
  * sn_check_for_wars
@@ -201,6 +205,7 @@ static int __cpuinitdata shub_1_1_found;
  */
 
 static inline int __init is_shub_1_1(int nasid)
+static inline int is_shub_1_1(int nasid)
 {
 	unsigned long id;
 	int rev;
@@ -213,6 +218,7 @@ static inline int __init is_shub_1_1(int nasid)
 }
 
 static void __init sn_check_for_wars(void)
+static void sn_check_for_wars(void)
 {
 	int cnode;
 
@@ -242,6 +248,7 @@ static void __init sn_check_for_wars(void)
  * locate a usable VGA device due to lack of proper ACPI support.  Structures
  * could be used from drivers/firmware/pcdp.h, but it was decided that moving
  * this file to a more public location just for Altix use was undesireable.
+ * this file to a more public location just for Altix use was undesirable.
  */
 
 struct hcdp_uart_desc {
@@ -508,6 +515,7 @@ static void __init sn_init_pdas(char **cmdline_p)
 
 	/*
 	 * Allocate & initalize the nodepda for each node.
+	 * Allocate & initialize the nodepda for each node.
 	 */
 	for_each_online_node(cnode) {
 		nodepdaindr[cnode] =
@@ -526,6 +534,9 @@ static void __init sn_init_pdas(char **cmdline_p)
 		    alloc_bootmem_node(NODE_DATA(0), sizeof(nodepda_t));
 		memset(nodepdaindr[cnode], 0, sizeof(nodepda_t));
 	}
+	for (cnode = num_online_nodes(); cnode < num_cnodes; cnode++)
+		nodepdaindr[cnode] =
+		    alloc_bootmem_node(NODE_DATA(0), sizeof(nodepda_t));
 
 	/*
 	 * Now copy the array of nodepda pointers to each nodepda.
@@ -562,6 +573,7 @@ static void __init sn_init_pdas(char **cmdline_p)
  * platform_cpu_init() by the ia64 machvec code.
  */
 void __cpuinit sn_cpu_init(void)
+void sn_cpu_init(void)
 {
 	int cpuid;
 	int cpuphyid;
@@ -583,6 +595,7 @@ void __cpuinit sn_cpu_init(void)
 	}
 
 	memset(pda, 0, sizeof(pda));
+	memset(pda, 0, sizeof(*pda));
 	if (ia64_sn_get_sn_info(0, &sn_hub_info->shub2,
 				&sn_hub_info->nasid_bitmask,
 				&sn_hub_info->nasid_shift,
@@ -596,6 +609,7 @@ void __cpuinit sn_cpu_init(void)
 	 * Don't check status. The SAL call is not supported on all PROMs
 	 * but a failure is harmless.
 	 * Architechtuallly, cpu_init is always called twice on cpu 0. We
+	 * Architecturally, cpu_init is always called twice on cpu 0. We
 	 * should set cpu_number on cpu 0 once.
 	 */
 	if (cpuid == 0) {
@@ -633,6 +647,7 @@ void __cpuinit sn_cpu_init(void)
 	cnode = nasid_to_cnodeid(nasid);
 
 	sn_nodepda = nodepdaindr[cnode];
+	__this_cpu_write(__sn_nodepda, nodepdaindr[cnode]);
 
 	pda->led_address =
 	    (typeof(pda->led_address)) (LED0 + (slice << LED_CPU_SHIFT));
@@ -737,6 +752,7 @@ void __init build_cnode_tables(void)
 		klgraph_header = ia64_sn_get_klconfig_addr(nasid);
 		if (klgraph_header == NULL)
 			BUG();
+		BUG_ON(klgraph_header == NULL);
 		brd = NODE_OFFSET_TO_LBOARD(nasid, klgraph_header->ch_board_info);
 		while (brd) {
 			if (board_needs_cnode(brd->brd_type) && physical_node_map[brd->brd_nasid] < 0) {
@@ -754,6 +770,7 @@ nasid_slice_to_cpuid(int nasid, int slice)
 	long cpu;
 
 	for (cpu = 0; cpu < NR_CPUS; cpu++)
+	for (cpu = 0; cpu < nr_cpu_ids; cpu++)
 		if (cpuid_to_nasid(cpu) == nasid &&
 					cpuid_to_slice(cpu) == slice)
 			return cpu;

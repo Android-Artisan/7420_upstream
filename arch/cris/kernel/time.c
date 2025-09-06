@@ -34,6 +34,8 @@
 
 int have_rtc;  /* used to remember if we have an RTC or not */;
 
+#define D(x)
+
 #define TICK_SIZE tick
 
 extern unsigned long loops_per_jiffy; /* init/main.c */
@@ -216,6 +218,13 @@ unsigned long long sched_clock(void)
 	return (unsigned long long)jiffies * (1000000000 / HZ) +
 		get_ns_in_jiffie();
 }
+#ifndef CONFIG_GENERIC_SCHED_CLOCK
+unsigned long long sched_clock(void)
+{
+	return (unsigned long long)jiffies * (NSEC_PER_SEC / HZ) +
+		get_ns_in_jiffie();
+}
+#endif
 
 static int
 __init init_udelay(void)

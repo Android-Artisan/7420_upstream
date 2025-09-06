@@ -19,6 +19,9 @@
 #undef DEBUGDATA
 #undef DEBUGCCW
 
+#define KMSG_COMPONENT "ctcm"
+#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
+
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/kernel.h>
@@ -53,6 +56,8 @@
 #include "cu3088.h"
 #include "ctcm_mpc.h"
 #include "ctcm_main.h"
+#include "ctcm_main.h"
+#include "ctcm_mpc.h"
 #include "ctcm_fsms.h"
 
 static const struct xid2 init_xid = {
@@ -135,6 +140,7 @@ void ctcmpc_dumpit(char *buf, int len)
 	#else
 	char	addr[12];
 	#endif
+	char	addr[22];
 	char	boff[12];
 	char	bhex[82], duphex[82];
 	char	basc[40];
@@ -152,6 +158,7 @@ void ctcmpc_dumpit(char *buf, int len)
 			#else
 			sprintf(addr, "%8.8X", (__u32)rptr);
 			#endif
+			sprintf(addr, "%16.16llx", (__u64)rptr);
 
 			sprintf(boff, "%4.4X", (__u32)ct);
 			bhex[0] = '\0';
@@ -167,6 +174,7 @@ void ctcmpc_dumpit(char *buf, int len)
 		#else
 		sprintf(tbuf, "%2.2X", (__u32)*ptr);
 		#endif
+		sprintf(tbuf, "%2.2llX", (__u64)*ptr);
 
 		tbuf[2] = '\0';
 		strcat(bhex, tbuf);
@@ -391,6 +399,10 @@ int ctc_mpc_alloc_channel(int port_num, void (*callback)(int, int))
 			/* there are problems...bail out	    */
 			/* there may be a state mismatch so restart */
 			grp->port_persist = 1;
+						  grp->group_max_buflen);
+		} else {
+			/* there are problems...bail out	    */
+			/* there may be a state mismatch so restart */
 			fsm_event(grp->fsm, MPCG_EVENT_INOP, dev);
 			grp->allocchan_callback_retries = 0;
 		}
@@ -420,6 +432,8 @@ void ctc_mpc_establish_connectivity(int port_num,
 	grp = priv->mpcg;
 	rch = priv->channel[READ];
 	wch = priv->channel[WRITE];
+	rch = priv->channel[CTCM_READ];
+	wch = priv->channel[CTCM_WRITE];
 
 	CTCM_DBF_TEXT_(MPC_SETUP, CTC_DBF_INFO,
 			"%s(%s): state=%s",
@@ -540,6 +554,7 @@ void ctc_mpc_dealloc_ch(int port_num)
 	CTCM_DBF_TEXT_(MPC_SETUP, CTC_DBF_DEBUG,
 			"%s: %s: refcount = %d\n",
 			CTCM_FUNTAIL, dev->name, atomic_read(&dev->refcnt));
+			CTCM_FUNTAIL, dev->name, netdev_refcnt_read(dev));
 
 	fsm_deltimer(&priv->restart_timer);
 	grp->channels_terminating = 0;
@@ -578,6 +593,7 @@ void ctc_mpc_flow_control(int port_num, int flowc)
 				CTCM_FUNTAIL, dev->name, flowc);
 
 	rch = priv->channel[READ];
+	rch = priv->channel[CTCM_READ];
 
 	mpcg_state = fsm_getstate(grp->fsm);
 	switch (flowc) {
@@ -622,6 +638,7 @@ static void mpc_rcvd_sweep_resp(struct mpcg_info *mpcginfo)
 	struct ctcm_priv   *priv = dev->ml_priv;
 	struct mpc_group  *grp = priv->mpcg;
 	struct channel	  *ch = priv->channel[WRITE];
+	struct channel	  *ch = priv->channel[CTCM_WRITE];
 
 	CTCM_PR_DEBUG("%s: ch=0x%p id=%s\n", __func__, ch, ch->id);
 	CTCM_D3_DUMP((char *)mpcginfo->sweep, TH_SWEEP_LENGTH);
@@ -636,8 +653,6 @@ static void mpc_rcvd_sweep_resp(struct mpcg_info *mpcginfo)
 		ch->th_seq_num = 0x00;
 		ctcm_clear_busy_do(dev);
 	}
-
-	kfree(mpcginfo);
 
 	return;
 
@@ -656,6 +671,9 @@ static void ctcmpc_send_sweep_resp(struct channel *rch)
 	struct th_sweep *header;
 	struct sk_buff *sweep_skb;
 	struct channel *ch  = priv->channel[WRITE];
+	struct th_sweep *header;
+	struct sk_buff *sweep_skb;
+	struct channel *ch  = priv->channel[CTCM_WRITE];
 
 	CTCM_PR_DEBUG("%s: ch=0x%p id=%s\n", __func__, rch, rch->id);
 
@@ -675,6 +693,14 @@ static void ctcmpc_send_sweep_resp(struct channel *rch)
 		dev_kfree_skb_any(sweep_skb);
 		rc = -ENOMEM;
 				goto done;
+		goto done;
+	}
+
+	header = kmalloc(sizeof(struct th_sweep), gfp_type());
+
+	if (!header) {
+		dev_kfree_skb_any(sweep_skb);
+		goto done;
 	}
 
 	header->th.th_seg	= 0x00 ;
@@ -701,6 +727,9 @@ done:
 		ctcm_clear_busy_do(dev);
 		fsm_event(grp->fsm, MPCG_EVENT_INOP, dev);
 	}
+	grp->in_sweep = 0;
+	ctcm_clear_busy_do(dev);
+	fsm_event(grp->fsm, MPCG_EVENT_INOP, dev);
 
 	return;
 }
@@ -715,6 +744,7 @@ static void mpc_rcvd_sweep_req(struct mpcg_info *mpcginfo)
 	struct ctcm_priv  *priv = dev->ml_priv;
 	struct mpc_group  *grp  = priv->mpcg;
 	struct channel	  *ch	   = priv->channel[WRITE];
+	struct channel	  *ch	   = priv->channel[CTCM_WRITE];
 
 	if (do_debug)
 		CTCM_DBF_TEXT_(MPC_TRACE, CTC_DBF_DEBUG,
@@ -725,6 +755,8 @@ static void mpc_rcvd_sweep_req(struct mpcg_info *mpcginfo)
 		ctcm_test_and_set_busy(dev);
 		grp->sweep_req_pend_num = grp->active_channels[READ];
 		grp->sweep_rsp_pend_num = grp->active_channels[READ];
+		grp->sweep_req_pend_num = grp->active_channels[CTCM_READ];
+		grp->sweep_rsp_pend_num = grp->active_channels[CTCM_READ];
 	}
 
 	CTCM_D3_DUMP((char *)mpcginfo->sweep, TH_SWEEP_LENGTH);
@@ -909,6 +941,7 @@ void mpc_group_ready(unsigned long adev)
 
 	/* Put up a read on the channel */
 	ch = priv->channel[READ];
+	ch = priv->channel[CTCM_READ];
 	ch->pdu_seq = 0;
 	CTCM_PR_DBGDATA("ctcmpc: %s() ToDCM_pdu_seq= %08x\n" ,
 			__func__, ch->pdu_seq);
@@ -916,6 +949,7 @@ void mpc_group_ready(unsigned long adev)
 	ctcmpc_chx_rxidle(ch->fsm, CTC_EVENT_START, ch);
 	/* Put the write channel in idle state */
 	ch = priv->channel[WRITE];
+	ch = priv->channel[CTCM_WRITE];
 	if (ch->collect_len > 0) {
 		spin_lock(&ch->collect_lock);
 		ctcm_purge_skb_queue(&ch->collect_queue);
@@ -963,6 +997,8 @@ void mpc_channel_action(struct channel *ch, int direction, int action)
 		"read=%i, write=%i\n", __func__, action,
 		fsm_getstate_str(grp->fsm), grp->num_channel_paths,
 		grp->active_channels[READ], grp->active_channels[WRITE]);
+		grp->active_channels[CTCM_READ],
+		grp->active_channels[CTCM_WRITE]);
 
 	if ((action == MPC_CHANNEL_ADD) && (ch->in_mpcgroup == 0)) {
 		grp->num_channel_paths++;
@@ -1000,6 +1036,11 @@ void mpc_channel_action(struct channel *ch, int direction, int action)
 				? XID2_READ_SIDE : XID2_WRITE_SIDE);
 
 		if (CHANNEL_DIRECTION(ch->flags) == WRITE)
+		ch->xid->xid2_dlc_type =
+			((CHANNEL_DIRECTION(ch->flags) == CTCM_READ)
+				? XID2_READ_SIDE : XID2_WRITE_SIDE);
+
+		if (CHANNEL_DIRECTION(ch->flags) == CTCM_WRITE)
 			ch->xid->xid2_buf_len = 0x00;
 
 		ch->xid_skb->data = ch->xid_skb_data;
@@ -1010,6 +1051,8 @@ void mpc_channel_action(struct channel *ch, int direction, int action)
 
 		if ((grp->active_channels[READ]  > 0) &&
 		    (grp->active_channels[WRITE] > 0) &&
+		if ((grp->active_channels[CTCM_READ] > 0) &&
+		    (grp->active_channels[CTCM_WRITE] > 0) &&
 			(fsm_getstate(grp->fsm) < MPCG_STATE_XID2INITW)) {
 			fsm_newstate(grp->fsm, MPCG_STATE_XID2INITW);
 			CTCM_DBF_TEXT_(MPC_SETUP, CTC_DBF_NOTICE,
@@ -1033,6 +1076,10 @@ void mpc_channel_action(struct channel *ch, int direction, int action)
 					(grp->active_channels[WRITE] > 0))
 			|| ((grp->active_channels[WRITE] == 0) &&
 					(grp->active_channels[READ] > 0)))
+		if (((grp->active_channels[CTCM_READ] == 0) &&
+					(grp->active_channels[CTCM_WRITE] > 0))
+			|| ((grp->active_channels[CTCM_WRITE] == 0) &&
+					(grp->active_channels[CTCM_READ] > 0)))
 			fsm_event(grp->fsm, MPCG_EVENT_INOP, dev);
 	}
 done:
@@ -1041,6 +1088,8 @@ done:
 		"read=%i, write=%i\n", __func__, action,
 		fsm_getstate_str(grp->fsm), grp->num_channel_paths,
 		grp->active_channels[READ], grp->active_channels[WRITE]);
+		grp->active_channels[CTCM_READ],
+		grp->active_channels[CTCM_WRITE]);
 
 	CTCM_PR_DEBUG("exit %s: ch=0x%p id=%s\n", __func__, ch, ch->id);
 }
@@ -1195,6 +1244,7 @@ static void ctcmpc_unpack_skb(struct channel *ch, struct sk_buff *pskb)
 	} else {
 		mpcginfo = (struct mpcg_info *)
 				kmalloc(sizeof(struct mpcg_info), gfp_type());
+		mpcginfo = kmalloc(sizeof(struct mpcg_info), gfp_type());
 		if (mpcginfo == NULL)
 					goto done;
 
@@ -1223,10 +1273,10 @@ static void ctcmpc_unpack_skb(struct channel *ch, struct sk_buff *pskb)
 						CTCM_FUNTAIL, dev->name);
 			priv->stats.rx_dropped++;
 			/* mpcginfo only used for non-data transfers */
-			kfree(mpcginfo);
 			if (do_debug_data)
 				ctcmpc_dump_skb(pskb, -8);
 		}
+		kfree(mpcginfo);
 	}
 done:
 
@@ -1234,6 +1284,9 @@ done:
 	if (sendrc == NET_RX_DROP) {
 		printk(KERN_WARNING "%s %s() NETWORK BACKLOG EXCEEDED"
 		       " - PACKET DROPPED\n", dev->name, __func__);
+		dev_warn(&dev->dev,
+			"The network backlog for %s is exceeded, "
+			"package dropped\n", __func__);
 		fsm_event(grp->fsm, MPCG_EVENT_INOP, dev);
 	}
 
@@ -1374,6 +1427,8 @@ static void mpc_action_go_inop(fsm_instance *fi, int event, void *arg)
 	struct channel *wch, *rch;
 
 	BUG_ON(dev == NULL);
+	struct channel *wch;
+
 	CTCM_PR_DEBUG("Enter %s: %s\n",	__func__, dev->name);
 
 	priv  = dev->ml_priv;
@@ -1398,6 +1453,10 @@ static void mpc_action_go_inop(fsm_instance *fi, int event, void *arg)
 
 	wch = priv->channel[WRITE];
 	rch = priv->channel[READ];
+		(grp->port_persist == 0))
+		fsm_deltimer(&priv->restart_timer);
+
+	wch = priv->channel[CTCM_WRITE];
 
 	switch (grp->saved_state) {
 	case MPCG_STATE_RESET:
@@ -1437,6 +1496,7 @@ static void mpc_action_go_inop(fsm_instance *fi, int event, void *arg)
 	if (grp->send_qllc_disc == 1) {
 		grp->send_qllc_disc = 0;
 		rc = mpc_send_qllc_discontact(dev);
+		mpc_send_qllc_discontact(dev);
 	}
 
 	/* DO NOT issue DEV_EVENT_STOP directly out of this code */
@@ -1486,6 +1546,10 @@ static void mpc_action_timeout(fsm_instance *fi, int event, void *arg)
 	grp = priv->mpcg;
 	wch = priv->channel[WRITE];
 	rch = priv->channel[READ];
+	priv = dev->ml_priv;
+	grp = priv->mpcg;
+	wch = priv->channel[CTCM_WRITE];
+	rch = priv->channel[CTCM_READ];
 
 	switch (fsm_getstate(grp->fsm)) {
 	case MPCG_STATE_XID2INITW:
@@ -1591,6 +1655,7 @@ static int mpc_validate_xid(struct mpcg_info *mpcginfo)
 
 	/*the received direction should be the opposite of ours  */
 	if (((CHANNEL_DIRECTION(ch->flags) == READ) ? XID2_WRITE_SIDE :
+	if (((CHANNEL_DIRECTION(ch->flags) == CTCM_READ) ? XID2_WRITE_SIDE :
 				XID2_READ_SIDE) != xid->xid2_dlc_type) {
 		rc = 2;
 		/* XID REJECTED: r/w channel pairing mismatch */
@@ -1674,6 +1739,11 @@ static int mpc_validate_xid(struct mpcg_info *mpcginfo)
 done:
 	if (rc) {
 		ctcm_pr_info("ctcmpc	   :  %s() failed\n", __FUNCTION__);
+done:
+	if (rc) {
+		dev_warn(&dev->dev,
+			"The XID used in the MPC protocol is not valid, "
+			"rc = %d\n", rc);
 		priv->xid->xid2_flag2 = 0x40;
 		grp->saved_xid2->xid2_flag2 = 0x40;
 	}
@@ -1918,6 +1988,10 @@ static void mpc_action_doxid7(fsm_instance *fsm, int event, void *arg)
 	}
 
 	for (direction = READ; direction <= WRITE; direction++)	{
+	if (grp == NULL)
+		return;
+
+	for (direction = CTCM_READ; direction <= CTCM_WRITE; direction++) {
 		struct channel *ch = priv->channel[direction];
 		struct xid2 *thisxid = ch->xid;
 		ch->xid_skb->data = ch->xid_skb_data;
@@ -2022,7 +2096,6 @@ static void mpc_action_rcvd_xid0(fsm_instance *fsm, int event, void *arg)
 		}
 		break;
 	}
-	kfree(mpcginfo);
 
 	CTCM_PR_DEBUG("ctcmpc:%s() %s xid2:%i xid7:%i xidt_p2:%i \n",
 		__func__, ch->id, grp->outstanding_xid2,
@@ -2083,7 +2156,6 @@ static void mpc_action_rcvd_xid7(fsm_instance *fsm, int event, void *arg)
 		mpc_validate_xid(mpcginfo);
 		break;
 	}
-	kfree(mpcginfo);
 	return;
 }
 
@@ -2165,6 +2237,15 @@ static int mpc_send_qllc_discontact(struct net_device *dev)
 		/* receipt of CC03 resets anticipated sequence number on
 		      receiving side */
 		priv->channel[READ]->pdu_seq = 0x00;
+		*((__u32 *)skb_push(skb, 4)) =
+			priv->channel[CTCM_READ]->pdu_seq;
+		priv->channel[CTCM_READ]->pdu_seq++;
+		CTCM_PR_DBGDATA("ctcmpc: %s ToDCM_pdu_seq= %08x\n",
+				__func__, priv->channel[CTCM_READ]->pdu_seq);
+
+		/* receipt of CC03 resets anticipated sequence number on
+		      receiving side */
+		priv->channel[CTCM_READ]->pdu_seq = 0x00;
 		skb_reset_mac_header(skb);
 		skb->dev = dev;
 		skb->protocol = htons(ETH_P_SNAP);

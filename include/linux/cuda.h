@@ -27,6 +27,11 @@
 #define CUDA_GET_SET_IIC	0x22
 
 #ifdef __KERNEL__
+#ifndef _LINUX_CUDA_H
+#define _LINUX_CUDA_H
+
+#include <uapi/linux/cuda.h>
+
 
 extern int find_via_cuda(void);
 extern int cuda_request(struct adb_request *req,
@@ -34,3 +39,4 @@ extern int cuda_request(struct adb_request *req,
 extern void cuda_poll(void);
 
 #endif	/* __KERNEL */
+#endif /* _LINUX_CUDA_H */

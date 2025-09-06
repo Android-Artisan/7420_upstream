@@ -124,6 +124,14 @@ struct pt_regs {
 
 #include <asm/ocd.h>
 
+#include <uapi/asm/ptrace.h>
+
+#ifndef __ASSEMBLY__
+
+#include <asm/ocd.h>
+
+#define arch_has_single_step()		(1)
+
 #define arch_ptrace_attach(child)       ocd_enable(child)
 
 #define user_mode(regs)                 (((regs)->sr & MODE_MASK) == MODE_USER)
@@ -131,6 +139,7 @@ struct pt_regs {
 #define profile_pc(regs)                instruction_pointer(regs)
 
 extern void show_regs (struct pt_regs *);
+#define user_stack_pointer(regs)	((regs)->sp)
 
 static __inline__ int valid_user_regs(struct pt_regs *regs)
 {
@@ -154,4 +163,5 @@ static __inline__ int valid_user_regs(struct pt_regs *regs)
 
 #endif /* ! __ASSEMBLY__ */
 
+#endif /* ! __ASSEMBLY__ */
 #endif /* __ASM_AVR32_PTRACE_H */

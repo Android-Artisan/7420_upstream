@@ -53,6 +53,12 @@
 #ifdef __KERNEL__
 
 #include <linux/param.h>
+#ifndef __LINUX_N_R3964_H__
+#define __LINUX_N_R3964_H__
+
+
+#include <linux/param.h>
+#include <uapi/linux/n_r3964.h>
 
 /*
  * Common ascii handshake characters:
@@ -219,6 +225,9 @@ struct r3964_info {
         unsigned int  blocks_in_rx_queue;
 	  
 	
+
+	struct mutex read_lock;		/* serialize r3964_read */
+
 	struct r3964_client_info *firstClient;
 	unsigned int state;
 	unsigned int flags;

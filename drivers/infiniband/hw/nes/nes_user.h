@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2006 - 2008 NetEffect.  All rights reserved.
+ * Copyright (c) 2006 - 2011 Intel Corporation.  All rights reserved.
  * Copyright (c) 2005 Topspin Communications.  All rights reserved.
  * Copyright (c) 2005 Cisco Systems.  All rights reserved.
  * Copyright (c) 2005 Open Grid Computing, Inc. All rights reserved.
@@ -41,6 +42,8 @@
 
 #define NES_ABI_USERSPACE_VER 1
 #define NES_ABI_KERNEL_VER    1
+#define NES_ABI_USERSPACE_VER 2
+#define NES_ABI_KERNEL_VER    2
 
 /*
  * Make sure that all structs defined in this file remain laid out so
@@ -78,6 +81,7 @@ struct nes_create_cq_req {
 
 struct nes_create_qp_req {
 	__u64 user_wqe_buffers;
+	__u64 user_qp_buffer;
 };
 
 enum iwnes_memreg_type {
@@ -86,6 +90,7 @@ enum iwnes_memreg_type {
 	IWNES_MEMREG_TYPE_CQ = 0x0002,
 	IWNES_MEMREG_TYPE_MW = 0x0003,
 	IWNES_MEMREG_TYPE_FMR = 0x0004,
+	IWNES_MEMREG_TYPE_FMEM = 0x0005,
 };
 
 struct nes_mem_reg_req {

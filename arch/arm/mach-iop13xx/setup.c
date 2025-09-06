@@ -18,6 +18,10 @@
  */
 
 #include <linux/serial_8250.h>
+#include <linux/dma-mapping.h>
+#include <linux/serial_8250.h>
+#include <linux/io.h>
+#include <linux/reboot.h>
 #ifdef CONFIG_MTD_PHYSMAP
 #include <linux/mtd/physmap.h>
 #endif
@@ -26,6 +30,8 @@
 #include <asm/irq.h>
 #include <asm/io.h>
 #include <asm/hardware/iop_adma.h>
+#include <asm/hardware/iop_adma.h>
+#include <mach/irqs.h>
 
 #define IOP13XX_UART_XTAL 33334000
 #define IOP13XX_SETUP_DEBUG 0
@@ -48,6 +54,10 @@ static struct map_desc iop13xx_std_desc[] __initdata = {
 		.virtual = IOP13XX_PCIX_LOWER_IO_VA,
 		.pfn 	 = __phys_to_pfn(IOP13XX_PCIX_LOWER_IO_PA),
 		.length  = IOP13XX_PCIX_IO_WINDOW_SIZE,
+		.type	 = MT_DEVICE,
+		.virtual = (unsigned long)IOP13XX_PMMR_VIRT_MEM_BASE,
+		.pfn 	 = __phys_to_pfn(IOP13XX_PMMR_PHYS_MEM_BASE),
+		.length  = IOP13XX_PMMR_SIZE,
 		.type	 = MT_DEVICE,
 	},
 };
@@ -82,6 +92,8 @@ static struct plat_serial8250_port iop13xx_uart0_data[] = {
 	{
        .membase     = (char*)(IOP13XX_UART0_VIRT),
        .mapbase     = (IOP13XX_UART0_PHYS),
+       .membase     = IOP13XX_UART0_VIRT,
+       .mapbase     = IOP13XX_UART0_PHYS,
        .irq         = IRQ_IOP13XX_UART0,
        .uartclk     = IOP13XX_UART_XTAL,
        .regshift    = 2,
@@ -95,6 +107,8 @@ static struct plat_serial8250_port iop13xx_uart1_data[] = {
 	{
        .membase     = (char*)(IOP13XX_UART1_VIRT),
        .mapbase     = (IOP13XX_UART1_PHYS),
+       .membase     = IOP13XX_UART1_VIRT,
+       .mapbase     = IOP13XX_UART1_PHYS,
        .irq         = IRQ_IOP13XX_UART1,
        .uartclk     = IOP13XX_UART_XTAL,
        .regshift    = 2,
@@ -308,6 +322,8 @@ static struct resource iop13xx_adma_2_resources[] = {
 };
 
 static u64 iop13xx_adma_dmamask = DMA_64BIT_MASK;
+static u64 iop13xx_adma_dmamask = DMA_BIT_MASK(64);
+static u64 iop13xx_adma_dmamask = DMA_BIT_MASK(32);
 static struct iop_adma_platform_data iop13xx_adma_0_data = {
 	.hw_id = 0,
 	.pool_size = PAGE_SIZE,
@@ -332,6 +348,8 @@ static struct platform_device iop13xx_adma_0_channel = {
 	.dev = {
 		.dma_mask = &iop13xx_adma_dmamask,
 		.coherent_dma_mask = DMA_64BIT_MASK,
+		.coherent_dma_mask = DMA_BIT_MASK(64),
+		.coherent_dma_mask = DMA_BIT_MASK(32),
 		.platform_data = (void *) &iop13xx_adma_0_data,
 	},
 };
@@ -344,6 +362,8 @@ static struct platform_device iop13xx_adma_1_channel = {
 	.dev = {
 		.dma_mask = &iop13xx_adma_dmamask,
 		.coherent_dma_mask = DMA_64BIT_MASK,
+		.coherent_dma_mask = DMA_BIT_MASK(64),
+		.coherent_dma_mask = DMA_BIT_MASK(32),
 		.platform_data = (void *) &iop13xx_adma_1_data,
 	},
 };
@@ -356,6 +376,8 @@ static struct platform_device iop13xx_adma_2_channel = {
 	.dev = {
 		.dma_mask = &iop13xx_adma_dmamask,
 		.coherent_dma_mask = DMA_64BIT_MASK,
+		.coherent_dma_mask = DMA_BIT_MASK(64),
+		.coherent_dma_mask = DMA_BIT_MASK(32),
 		.platform_data = (void *) &iop13xx_adma_2_data,
 	},
 };
@@ -481,6 +503,7 @@ void __init iop13xx_platform_init(void)
 			dma_cap_set(DMA_ZERO_SUM, plat_data->cap_mask);
 			dma_cap_set(DMA_MEMSET, plat_data->cap_mask);
 			dma_cap_set(DMA_MEMCPY_CRC32C, plat_data->cap_mask);
+			dma_cap_set(DMA_XOR_VAL, plat_data->cap_mask);
 			dma_cap_set(DMA_INTERRUPT, plat_data->cap_mask);
 			break;
 		case IOP13XX_INIT_ADMA_1:
@@ -493,6 +516,7 @@ void __init iop13xx_platform_init(void)
 			dma_cap_set(DMA_ZERO_SUM, plat_data->cap_mask);
 			dma_cap_set(DMA_MEMSET, plat_data->cap_mask);
 			dma_cap_set(DMA_MEMCPY_CRC32C, plat_data->cap_mask);
+			dma_cap_set(DMA_XOR_VAL, plat_data->cap_mask);
 			dma_cap_set(DMA_INTERRUPT, plat_data->cap_mask);
 			break;
 		case IOP13XX_INIT_ADMA_2:
@@ -509,6 +533,10 @@ void __init iop13xx_platform_init(void)
 			dma_cap_set(DMA_PQ_XOR, plat_data->cap_mask);
 			dma_cap_set(DMA_PQ_UPDATE, plat_data->cap_mask);
 			dma_cap_set(DMA_PQ_ZERO_SUM, plat_data->cap_mask);
+			dma_cap_set(DMA_XOR_VAL, plat_data->cap_mask);
+			dma_cap_set(DMA_INTERRUPT, plat_data->cap_mask);
+			dma_cap_set(DMA_PQ, plat_data->cap_mask);
+			dma_cap_set(DMA_PQ_VAL, plat_data->cap_mask);
 			break;
 		}
 	}
@@ -612,3 +640,14 @@ static int __init iop13xx_init_adma_setup(char *str)
 __setup("iop13xx_init_adma", iop13xx_init_adma_setup);
 __setup("iop13xx_init_uart", iop13xx_init_uart_setup);
 __setup("iop13xx_init_i2c", iop13xx_init_i2c_setup);
+
+void iop13xx_restart(enum reboot_mode mode, const char *cmd)
+{
+	/*
+	 * Reset the internal bus (warning both cores are reset)
+	 */
+	write_wdtcr(IOP_WDTCR_EN_ARM);
+	write_wdtcr(IOP_WDTCR_EN);
+	write_wdtsr(IOP13XX_WDTSR_WRITE_EN | IOP13XX_WDTCR_IB_RESET);
+	write_wdtcr(0x1000);
+}

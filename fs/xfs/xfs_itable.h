@@ -31,6 +31,7 @@ typedef int (*bulkstat_one_pf)(struct xfs_mount	*mp,
 			       xfs_daddr_t	bno,
 			       int		*ubused,
 			       void		*dip,
+			       int		*ubused,
 			       int		*stat);
 
 /*
@@ -74,6 +75,27 @@ typedef int (*bulkstat_one_fmt_pf)(  /* used size in bytes or negative error */
 	const xfs_bstat_t	*buffer);        /* buffer to read from */
 
 int
+	size_t		statstruct_size,/* sizeof struct that we're filling */
+	char		__user *ubuffer,/* buffer with inode stats */
+	int		*done);		/* 1 if there are more stats to get */
+
+typedef int (*bulkstat_one_fmt_pf)(  /* used size in bytes or negative error */
+	void			__user *ubuffer, /* buffer to write to */
+	int			ubsize,		 /* remaining user buffer sz */
+	int			*ubused,	 /* bytes used by formatter */
+	const xfs_bstat_t	*buffer);        /* buffer to read from */
+
+int
+xfs_bulkstat_one_int(
+	xfs_mount_t		*mp,
+	xfs_ino_t		ino,
+	void			__user *buffer,
+	int			ubsize,
+	bulkstat_one_fmt_pf	formatter,
+	int			*ubused,
+	int			*stat);
+
+int
 xfs_bulkstat_one(
 	xfs_mount_t		*mp,
 	xfs_ino_t		ino,
@@ -89,6 +111,9 @@ int
 xfs_internal_inum(
 	xfs_mount_t		*mp,
 	xfs_ino_t		ino);
+
+	int			*ubused,
+	int			*stat);
 
 typedef int (*inumbers_fmt_pf)(
 	void			__user *ubuffer, /* buffer to write to */

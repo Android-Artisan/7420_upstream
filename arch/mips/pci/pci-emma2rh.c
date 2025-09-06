@@ -33,6 +33,8 @@
 
 #include <asm/emma2rh/emma2rh.h>
 
+#include <asm/emma/emma2rh.h>
+
 static struct resource pci_io_resource = {
 	.name = "pci IO space",
 	.start = EMMA2RH_PCI_IO_BASE,

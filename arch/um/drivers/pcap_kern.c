@@ -6,6 +6,9 @@
 #include "linux/init.h"
 #include <linux/netdevice.h>
 #include "net_kern.h"
+#include <linux/init.h>
+#include <linux/netdevice.h>
+#include <net_kern.h>
 #include "pcap_user.h"
 
 struct pcap_init {
@@ -22,6 +25,7 @@ void pcap_init(struct net_device *dev, void *data)
 	struct pcap_init *init = data;
 
 	pri = dev->priv;
+	pri = netdev_priv(dev);
 	ppri = (struct pcap_data *) pri->user;
 	ppri->host_if = init->host_if;
 	ppri->promisc = init->promisc;

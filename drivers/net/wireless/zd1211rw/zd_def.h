@@ -16,6 +16,7 @@
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
+ * along with this program; if not, see <http://www.gnu.org/licenses/>.
  */
 
 #ifndef _ZD_DEF_H
@@ -35,12 +36,26 @@ typedef u16 __nocast zd_addr_t;
 	  dev_printk_f(KERN_DEBUG, dev, fmt, ## args)
 #else
 #  define dev_dbg_f(dev, fmt, args...) do { (void)(dev); } while (0)
+#  define dev_dbg_f_limit(dev, fmt, args...) do { \
+	if (net_ratelimit()) \
+		dev_printk_f(KERN_DEBUG, dev, fmt, ## args); \
+} while (0)
+#  define dev_dbg_f_cond(dev, cond, fmt, args...) ({ \
+	bool __cond = !!(cond); \
+	if (unlikely(__cond)) \
+		dev_printk_f(KERN_DEBUG, dev, fmt, ## args); \
+})
+#else
+#  define dev_dbg_f(dev, fmt, args...) do { (void)(dev); } while (0)
+#  define dev_dbg_f_limit(dev, fmt, args...) do { (void)(dev); } while (0)
+#  define dev_dbg_f_cond(dev, cond, fmt, args...) do { (void)(dev); } while (0)
 #endif /* DEBUG */
 
 #ifdef DEBUG
 #  define ZD_ASSERT(x) \
 do { \
 	if (!(x)) { \
+	if (unlikely(!(x))) { \
 		pr_debug("%s:%d ASSERT %s VIOLATED!\n", \
 			__FILE__, __LINE__, __stringify(x)); \
 		dump_stack(); \

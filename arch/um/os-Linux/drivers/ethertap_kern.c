@@ -10,6 +10,7 @@
 #include <linux/netdevice.h>
 #include "etap.h"
 #include "net_kern.h"
+#include <net_kern.h>
 
 struct ethertap_init {
 	char *dev_name;
@@ -23,6 +24,7 @@ static void etap_init(struct net_device *dev, void *data)
 	struct ethertap_init *init = data;
 
 	pri = dev->priv;
+	pri = netdev_priv(dev);
 	epri = (struct ethertap_data *) pri->user;
 	epri->dev_name = init->dev_name;
 	epri->gate_addr = init->gate_addr;

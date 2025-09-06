@@ -4,6 +4,7 @@
  * Copyright 2003, 2004, 2005, 2006, 2007 Wolfson Microelectronics PLC.
  * Author: Liam Girdwood
  *         liam.girdwood@wolfsonmicro.com or linux@wolfsonmicro.com
+ * Author: Liam Girdwood <lrg@slimlogic.co.uk>
  * Parts Copyright : Ian Molton <spyro@f2s.com>
  *                   Andrew Zabolotny <zap@homelink.ru>
  *                   Russell King <rmk@arm.linux.org.uk>
@@ -43,6 +44,7 @@
 static int rpu = 8;
 module_param(rpu, int, 0);
 MODULE_PARM_DESC(rpu, "Set internal pull up resitor for pen detect.");
+MODULE_PARM_DESC(rpu, "Set internal pull up resistor for pen detect.");
 
 /*
  * Set current used for pressure measurement.
@@ -164,6 +166,7 @@ static void wm9712_phy_init(struct wm97xx *wm)
 		dig2 &= 0xffc0;
 		dig2 |= WM9712_RPU(rpu);
 		dev_dbg(wm->dev, "setting pen detect pull-up to %d Ohms",
+		dev_dbg(wm->dev, "setting pen detect pull-up to %d Ohms\n",
 			64000 / rpu);
 	}
 
@@ -171,6 +174,7 @@ static void wm9712_phy_init(struct wm97xx *wm)
 	if (five_wire) {
 		dig2 |= WM9712_45W;
 		dev_dbg(wm->dev, "setting 5-wire touchscreen mode.");
+		dev_dbg(wm->dev, "setting 5-wire touchscreen mode.\n");
 
 		if (pil) {
 			dev_warn(wm->dev, "pressure measurement is not "
@@ -187,17 +191,23 @@ static void wm9712_phy_init(struct wm97xx *wm)
 	} else if (pil)
 		dev_dbg(wm->dev,
 			"setting pressure measurement current to 200uA.");
+			"setting pressure measurement current to 400uA.\n");
+	} else if (pil)
+		dev_dbg(wm->dev,
+			"setting pressure measurement current to 200uA.\n");
 	if (!pil)
 		pressure = 0;
 
 	/* polling mode sample settling delay */
 	if (delay < 0 || delay > 15) {
 		dev_dbg(wm->dev, "supplied delay out of range.");
+		dev_dbg(wm->dev, "supplied delay out of range.\n");
 		delay = 4;
 	}
 	dig1 &= 0xff0f;
 	dig1 |= WM97XX_DELAY(delay);
 	dev_dbg(wm->dev, "setting adc sample delay to %d u Secs.",
+	dev_dbg(wm->dev, "setting adc sample delay to %d u Secs.\n",
 		delay_table[delay]);
 
 	/* mask */
@@ -258,6 +268,9 @@ static int wm9712_poll_sample(struct wm97xx *wm, int adcsel, int *sample)
 	int timeout = 5 * delay;
 
 	if (!wm->pen_probably_down) {
+	bool wants_pen = adcsel & WM97XX_PEN_DOWN;
+
+	if (wants_pen && !wm->pen_probably_down) {
 		u16 data = wm97xx_reg_read(wm, AC97_WM97XX_DIGITISER_RD);
 		if (!(data & WM97XX_PEN_DOWN))
 			return RC_PENUP;
@@ -272,6 +285,10 @@ static int wm9712_poll_sample(struct wm97xx *wm, int adcsel, int *sample)
 		wm->mach_ops->pre_sample(adcsel);
 	wm97xx_reg_write(wm, AC97_WM97XX_DIGITISER1,
 			 adcsel | WM97XX_POLL | WM97XX_DELAY(delay));
+	if (wm->mach_ops && wm->mach_ops->pre_sample)
+		wm->mach_ops->pre_sample(adcsel);
+	wm97xx_reg_write(wm, AC97_WM97XX_DIGITISER1, (adcsel & WM97XX_ADCSEL_MASK)
+				| WM97XX_POLL | WM97XX_DELAY(delay));
 
 	/* wait 3 AC97 time slots + delay for conversion */
 	poll_delay(delay);
@@ -289,6 +306,7 @@ static int wm9712_poll_sample(struct wm97xx *wm, int adcsel, int *sample)
 			wm->pen_probably_down = 0;
 		else
 			dev_dbg(wm->dev, "adc sample timeout");
+			dev_dbg(wm->dev, "adc sample timeout\n");
 		return RC_PENUP;
 	}
 
@@ -306,6 +324,20 @@ static int wm9712_poll_sample(struct wm97xx *wm, int adcsel, int *sample)
 	if (!(*sample & WM97XX_PEN_DOWN)) {
 		wm->pen_probably_down = 0;
 		return RC_PENUP;
+	if ((*sample ^ adcsel) & WM97XX_ADCSEL_MASK) {
+		dev_dbg(wm->dev, "adc wrong sample, wanted %x got %x\n",
+			adcsel & WM97XX_ADCSEL_MASK,
+			*sample & WM97XX_ADCSEL_MASK);
+		return RC_AGAIN;
+	}
+
+	if (wants_pen && !(*sample & WM97XX_PEN_DOWN)) {
+		/* Sometimes it reads a wrong value the first time. */
+		*sample = wm97xx_reg_read(wm, AC97_WM97XX_DIGITISER_RD);
+		if (!(*sample & WM97XX_PEN_DOWN)) {
+			wm->pen_probably_down = 0;
+			return RC_PENUP;
+		}
 	}
 
 	return RC_VALID;
@@ -348,6 +380,7 @@ static int wm9712_poll_coord(struct wm97xx *wm, struct wm97xx_data *data)
 			wm->pen_probably_down = 0;
 		else
 			dev_dbg(wm->dev, "adc sample timeout");
+			dev_dbg(wm->dev, "adc sample timeout\n");
 		return RC_PENUP;
 	}
 
@@ -393,11 +426,19 @@ static int wm9712_poll_touch(struct wm97xx *wm, struct wm97xx_data *data)
 			return rc;
 
 		rc = wm9712_poll_sample(wm, WM97XX_ADCSEL_Y, &data->y);
+		rc = wm9712_poll_sample(wm, WM97XX_ADCSEL_X | WM97XX_PEN_DOWN,
+					&data->x);
+		if (rc != RC_VALID)
+			return rc;
+
+		rc = wm9712_poll_sample(wm, WM97XX_ADCSEL_Y | WM97XX_PEN_DOWN,
+					&data->y);
 		if (rc != RC_VALID)
 			return rc;
 
 		if (pil && !five_wire) {
 			rc = wm9712_poll_sample(wm, WM97XX_ADCSEL_PRES,
+			rc = wm9712_poll_sample(wm, WM97XX_ADCSEL_PRES | WM97XX_PEN_DOWN,
 						&data->p);
 			if (rc != RC_VALID)
 				return rc;
@@ -421,6 +462,7 @@ static int wm9712_acc_enable(struct wm97xx *wm, int enable)
 
 	if (enable) {
 		/* continous mode */
+		/* continuous mode */
 		if (wm->mach_ops->acc_startup) {
 			ret = wm->mach_ops->acc_startup(wm);
 			if (ret < 0)
@@ -463,5 +505,6 @@ EXPORT_SYMBOL_GPL(wm9712_codec);
 
 /* Module information */
 MODULE_AUTHOR("Liam Girdwood <liam.girdwood@wolfsonmicro.com>");
+MODULE_AUTHOR("Liam Girdwood <lrg@slimlogic.co.uk>");
 MODULE_DESCRIPTION("WM9712 Touch Screen Driver");
 MODULE_LICENSE("GPL");

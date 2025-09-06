@@ -3,6 +3,7 @@
 **        O.S   : Linux
 **   FILE NAME  : arcmsr_attr.c
 **        BY    : Erich Chen
+**        BY    : Nick Cheng
 **   Description: attributes exported to sysfs and device host
 *******************************************************************************
 ** Copyright (C) 2002 - 2005, Areca Technology Corporation All rights reserved
@@ -50,6 +51,7 @@
 #include <linux/errno.h>
 #include <linux/delay.h>
 #include <linux/pci.h>
+#include <linux/circ_buf.h>
 
 #include <scsi/scsi_cmnd.h>
 #include <scsi/scsi_device.h>
@@ -60,6 +62,8 @@
 struct device_attribute *arcmsr_host_attrs[];
 
 static ssize_t arcmsr_sysfs_iop_message_read(struct kobject *kobj,
+static ssize_t arcmsr_sysfs_iop_message_read(struct file *filp,
+					     struct kobject *kobj,
 					     struct bin_attribute *bin,
 					     char *buf, loff_t off,
 					     size_t count)
@@ -69,6 +73,9 @@ static ssize_t arcmsr_sysfs_iop_message_read(struct kobject *kobj,
 	struct AdapterControlBlock *acb = (struct AdapterControlBlock *) host->hostdata;
 	uint8_t *pQbuffer,*ptmpQbuffer;
 	int32_t allxfer_len = 0;
+	uint8_t *ptmpQbuffer;
+	int32_t allxfer_len = 0;
+	unsigned long flags;
 
 	if (!capable(CAP_SYS_ADMIN))
 		return -EACCES;
@@ -106,6 +113,37 @@ static ssize_t arcmsr_sysfs_iop_message_read(struct kobject *kobj,
 }
 
 static ssize_t arcmsr_sysfs_iop_message_write(struct kobject *kobj,
+	spin_lock_irqsave(&acb->rqbuffer_lock, flags);
+	if (acb->rqbuf_getIndex != acb->rqbuf_putIndex) {
+		unsigned int tail = acb->rqbuf_getIndex;
+		unsigned int head = acb->rqbuf_putIndex;
+		unsigned int cnt_to_end = CIRC_CNT_TO_END(head, tail, ARCMSR_MAX_QBUFFER);
+
+		allxfer_len = CIRC_CNT(head, tail, ARCMSR_MAX_QBUFFER);
+		if (allxfer_len > ARCMSR_API_DATA_BUFLEN)
+			allxfer_len = ARCMSR_API_DATA_BUFLEN;
+
+		if (allxfer_len <= cnt_to_end)
+			memcpy(ptmpQbuffer, acb->rqbuffer + tail, allxfer_len);
+		else {
+			memcpy(ptmpQbuffer, acb->rqbuffer + tail, cnt_to_end);
+			memcpy(ptmpQbuffer + cnt_to_end, acb->rqbuffer, allxfer_len - cnt_to_end);
+		}
+		acb->rqbuf_getIndex = (acb->rqbuf_getIndex + allxfer_len) % ARCMSR_MAX_QBUFFER;
+	}
+	if (acb->acb_flags & ACB_F_IOPDATA_OVERFLOW) {
+		struct QBUFFER __iomem *prbuffer;
+		acb->acb_flags &= ~ACB_F_IOPDATA_OVERFLOW;
+		prbuffer = arcmsr_get_iop_rqbuffer(acb);
+		if (arcmsr_Read_iop_rqbuffer_data(acb, prbuffer) == 0)
+			acb->acb_flags |= ACB_F_IOPDATA_OVERFLOW;
+	}
+	spin_unlock_irqrestore(&acb->rqbuffer_lock, flags);
+	return allxfer_len;
+}
+
+static ssize_t arcmsr_sysfs_iop_message_write(struct file *filp,
+					      struct kobject *kobj,
 					      struct bin_attribute *bin,
 					      char *buf, loff_t off,
 					      size_t count)
@@ -119,6 +157,13 @@ static ssize_t arcmsr_sysfs_iop_message_write(struct kobject *kobj,
 	if (!capable(CAP_SYS_ADMIN))
 		return -EACCES;
 	if (count > 1032)
+	int32_t user_len, cnt2end;
+	uint8_t *pQbuffer, *ptmpuserbuffer;
+	unsigned long flags;
+
+	if (!capable(CAP_SYS_ADMIN))
+		return -EACCES;
+	if (count > ARCMSR_API_DATA_BUFLEN)
 		return -EINVAL;
 	/* do message unit write. */
 	ptmpuserbuffer = (uint8_t *)buf;
@@ -154,6 +199,36 @@ static ssize_t arcmsr_sysfs_iop_message_write(struct kobject *kobj,
 }
 
 static ssize_t arcmsr_sysfs_iop_message_clear(struct kobject *kobj,
+	spin_lock_irqsave(&acb->wqbuffer_lock, flags);
+	if (acb->wqbuf_putIndex != acb->wqbuf_getIndex) {
+		arcmsr_write_ioctldata2iop(acb);
+		spin_unlock_irqrestore(&acb->wqbuffer_lock, flags);
+		return 0;	/*need retry*/
+	} else {
+		pQbuffer = &acb->wqbuffer[acb->wqbuf_putIndex];
+		cnt2end = ARCMSR_MAX_QBUFFER - acb->wqbuf_putIndex;
+		if (user_len > cnt2end) {
+			memcpy(pQbuffer, ptmpuserbuffer, cnt2end);
+			ptmpuserbuffer += cnt2end;
+			user_len -= cnt2end;
+			acb->wqbuf_putIndex = 0;
+			pQbuffer = acb->wqbuffer;
+		}
+		memcpy(pQbuffer, ptmpuserbuffer, user_len);
+		acb->wqbuf_putIndex += user_len;
+		acb->wqbuf_putIndex %= ARCMSR_MAX_QBUFFER;
+		if (acb->acb_flags & ACB_F_MESSAGE_WQBUFFER_CLEARED) {
+			acb->acb_flags &=
+				~ACB_F_MESSAGE_WQBUFFER_CLEARED;
+			arcmsr_write_ioctldata2iop(acb);
+		}
+		spin_unlock_irqrestore(&acb->wqbuffer_lock, flags);
+		return count;
+	}
+}
+
+static ssize_t arcmsr_sysfs_iop_message_clear(struct file *filp,
+					      struct kobject *kobj,
 					      struct bin_attribute *bin,
 					      char *buf, loff_t off,
 					      size_t count)
@@ -162,6 +237,7 @@ static ssize_t arcmsr_sysfs_iop_message_clear(struct kobject *kobj,
 	struct Scsi_Host *host = class_to_shost(dev);
 	struct AdapterControlBlock *acb = (struct AdapterControlBlock *) host->hostdata;
 	uint8_t *pQbuffer;
+	unsigned long flags;
 
 	if (!capable(CAP_SYS_ADMIN))
 		return -EACCES;
@@ -170,6 +246,7 @@ static ssize_t arcmsr_sysfs_iop_message_clear(struct kobject *kobj,
 		acb->acb_flags &= ~ACB_F_IOPDATA_OVERFLOW;
 		arcmsr_iop_message_read(acb);
 	}
+	arcmsr_clear_iop2drv_rqueue_buffer(acb);
 	acb->acb_flags |=
 		(ACB_F_MESSAGE_WQBUFFER_CLEARED
 		| ACB_F_MESSAGE_RQBUFFER_CLEARED
@@ -178,6 +255,14 @@ static ssize_t arcmsr_sysfs_iop_message_clear(struct kobject *kobj,
 	acb->rqbuf_lastindex = 0;
 	acb->wqbuf_firstindex = 0;
 	acb->wqbuf_lastindex = 0;
+	spin_lock_irqsave(&acb->rqbuffer_lock, flags);
+	acb->rqbuf_getIndex = 0;
+	acb->rqbuf_putIndex = 0;
+	spin_unlock_irqrestore(&acb->rqbuffer_lock, flags);
+	spin_lock_irqsave(&acb->wqbuffer_lock, flags);
+	acb->wqbuf_getIndex = 0;
+	acb->wqbuf_putIndex = 0;
+	spin_unlock_irqrestore(&acb->wqbuffer_lock, flags);
 	pQbuffer = acb->rqbuffer;
 	memset(pQbuffer, 0, sizeof (struct QBUFFER));
 	pQbuffer = acb->wqbuffer;
@@ -192,6 +277,8 @@ static struct bin_attribute arcmsr_sysfs_message_read_attr = {
 		.owner = THIS_MODULE,
 	},
 	.size = 1032,
+	},
+	.size = ARCMSR_API_DATA_BUFLEN,
 	.read = arcmsr_sysfs_iop_message_read,
 };
 
@@ -202,6 +289,8 @@ static struct bin_attribute arcmsr_sysfs_message_write_attr = {
 		.owner = THIS_MODULE,
 	},
 	.size = 1032,
+	},
+	.size = ARCMSR_API_DATA_BUFLEN,
 	.write = arcmsr_sysfs_iop_message_write,
 };
 

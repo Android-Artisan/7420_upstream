@@ -1,4 +1,5 @@
 /* $Id: parport_ieee1284.c,v 1.4 1997/10/19 21:37:21 philip Exp $
+/*
  * IEEE-1284 implementation for parport.
  *
  * Authors: Phil Blundell <philb@gnu.org>
@@ -85,6 +86,7 @@ int parport_wait_event (struct parport *port, signed long timeout)
 	add_timer (&timer);
 	ret = down_interruptible (&port->physport->ieee1284.irq);
 	if (!del_timer (&timer) && !ret)
+	if (!del_timer_sync(&timer) && !ret)
 		/* Timed out. */
 		ret = 1;
 
@@ -356,6 +358,7 @@ int parport_negotiate (struct parport *port, int mode)
 	}
 
 	/* Go to compability forward idle mode */
+	/* Go to compatibility forward idle mode */
 	if (port->ieee1284.mode != IEEE1284_MODE_COMPAT)
 		parport_ieee1284_terminate (port);
 

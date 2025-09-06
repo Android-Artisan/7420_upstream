@@ -14,6 +14,8 @@
  *	LAPB 002	Jonathan Naylor	New timer architecture.
  */
 
+#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
+
 #include <linux/errno.h>
 #include <linux/types.h>
 #include <linux/socket.h>
@@ -28,6 +30,9 @@
 #include <net/sock.h>
 #include <asm/uaccess.h>
 #include <asm/system.h>
+#include <linux/slab.h>
+#include <net/sock.h>
+#include <asm/uaccess.h>
 #include <linux/fcntl.h>
 #include <linux/mm.h>
 #include <linux/interrupt.h>
@@ -64,6 +69,8 @@ static void lapb_send_iframe(struct lapb_cb *lapb, struct sk_buff *skb, int poll
 	printk(KERN_DEBUG "lapb: (%p) S%d TX I(%d) S%d R%d\n",
 	       lapb->dev, lapb->state, poll_bit, lapb->vs, lapb->vr);
 #endif
+	lapb_dbg(1, "(%p) S%d TX I(%d) S%d R%d\n",
+		 lapb->dev, lapb->state, poll_bit, lapb->vs, lapb->vr);
 
 	lapb_transmit_buffer(lapb, skb, LAPB_COMMAND);
 }
@@ -87,7 +94,8 @@ void lapb_kick(struct lapb_cb *lapb)
 		skb = skb_dequeue(&lapb->write_queue);
 
 		do {
-			if ((skbn = skb_clone(skb, GFP_ATOMIC)) == NULL) {
+			skbn = skb_copy(skb, GFP_ATOMIC);
+			if (!skbn) {
 				skb_queue_head(&lapb->write_queue, skb);
 				break;
 			}
@@ -153,6 +161,9 @@ void lapb_transmit_buffer(struct lapb_cb *lapb, struct sk_buff *skb, int type)
 	       lapb->dev, lapb->state,
 	       skb->data[0], skb->data[1], skb->data[2]);
 #endif
+	lapb_dbg(2, "(%p) S%d TX %02X %02X %02X\n",
+		 lapb->dev, lapb->state,
+		 skb->data[0], skb->data[1], skb->data[2]);
 
 	if (!lapb_data_transmit(lapb, skb))
 		kfree_skb(skb);
@@ -174,6 +185,10 @@ void lapb_establish_data_link(struct lapb_cb *lapb)
 		printk(KERN_DEBUG "lapb: (%p) S%d TX SABM(1)\n",
 		       lapb->dev, lapb->state);
 #endif
+		lapb_dbg(1, "(%p) S%d TX SABME(1)\n", lapb->dev, lapb->state);
+		lapb_send_control(lapb, LAPB_SABME, LAPB_POLLON, LAPB_COMMAND);
+	} else {
+		lapb_dbg(1, "(%p) S%d TX SABM(1)\n", lapb->dev, lapb->state);
 		lapb_send_control(lapb, LAPB_SABM, LAPB_POLLON, LAPB_COMMAND);
 	}
 
@@ -187,6 +202,8 @@ void lapb_enquiry_response(struct lapb_cb *lapb)
 	printk(KERN_DEBUG "lapb: (%p) S%d TX RR(1) R%d\n",
 	       lapb->dev, lapb->state, lapb->vr);
 #endif
+	lapb_dbg(1, "(%p) S%d TX RR(1) R%d\n",
+		 lapb->dev, lapb->state, lapb->vr);
 
 	lapb_send_control(lapb, LAPB_RR, LAPB_POLLON, LAPB_RESPONSE);
 
@@ -199,6 +216,8 @@ void lapb_timeout_response(struct lapb_cb *lapb)
 	printk(KERN_DEBUG "lapb: (%p) S%d TX RR(0) R%d\n",
 	       lapb->dev, lapb->state, lapb->vr);
 #endif
+	lapb_dbg(1, "(%p) S%d TX RR(0) R%d\n",
+		 lapb->dev, lapb->state, lapb->vr);
 	lapb_send_control(lapb, LAPB_RR, LAPB_POLLOFF, LAPB_RESPONSE);
 
 	lapb->condition &= ~LAPB_ACK_PENDING_CONDITION;

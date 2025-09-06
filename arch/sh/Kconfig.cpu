@@ -2,6 +2,7 @@ menu "Processor features"
 
 choice
 	prompt "Endianess selection" 
+	prompt "Endianness selection" 
 	default CPU_LITTLE_ENDIAN
 	help
 	  Some SuperH machines can be configured for either little or big
@@ -34,6 +35,7 @@ config SH_FPU_EMU
 	def_bool n
 	prompt "FPU emulation support"
 	depends on !SH_FPU && EXPERIMENTAL
+	depends on !SH_FPU
 	help
 	  Selecting this option will enable support for software FPU emulation.
 	  Most SH-3 users will want to say Y here, whereas most SH-4 users will
@@ -69,6 +71,7 @@ config SH_STORE_QUEUES
 config SPECULATIVE_EXECUTION
 	bool "Speculative subroutine return"
 	depends on CPU_SUBTYPE_SH7780 && EXPERIMENTAL
+	depends on CPU_SUBTYPE_SH7780 || CPU_SUBTYPE_SH7785 || CPU_SUBTYPE_SH7786
 	help
 	  This enables support for a speculative instruction fetch for
 	  subroutine return. There are various pitfalls associated with
@@ -102,6 +105,7 @@ config CPU_HAS_SR_RB
 	  information on SR.RB and register banking in the kernel in general.
 
 config CPU_HAS_PTEA
+config CPU_HAS_PTEAEX
 	bool
 
 config CPU_HAS_DSP

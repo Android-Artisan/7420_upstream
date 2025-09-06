@@ -43,7 +43,6 @@
  *
  *
  * Theory of operations
- * ====================
  * 
  * Clock scaling can be used to lower the power consumption of the CPU
  * core. This will give you a somewhat longer running time.

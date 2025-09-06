@@ -34,6 +34,7 @@
 #include "opl4_local.h"
 #include <linux/init.h>
 #include <linux/moduleparam.h>
+#include <linux/module.h>
 #include <sound/initval.h>
 
 MODULE_AUTHOR("Clemens Ladisch <clemens@ladisch.de>");
@@ -125,6 +126,9 @@ static void snd_opl4_seq_free_port(void *private_data)
 
 static int snd_opl4_seq_new_device(struct snd_seq_device *dev)
 {
+static int snd_opl4_seq_probe(struct device *_dev)
+{
+	struct snd_seq_device *dev = to_seq_dev(_dev);
 	struct snd_opl4 *opl4;
 	int client;
 	struct snd_seq_port_callback pcallbacks;
@@ -181,6 +185,9 @@ static int snd_opl4_seq_new_device(struct snd_seq_device *dev)
 
 static int snd_opl4_seq_delete_device(struct snd_seq_device *dev)
 {
+static int snd_opl4_seq_remove(struct device *_dev)
+{
+	struct snd_seq_device *dev = to_seq_dev(_dev);
 	struct snd_opl4 *opl4;
 
 	opl4 = *(struct snd_opl4 **)SNDRV_SEQ_DEVICE_ARGPTR(dev);
@@ -212,3 +219,14 @@ static void __exit alsa_opl4_synth_exit(void)
 
 module_init(alsa_opl4_synth_init)
 module_exit(alsa_opl4_synth_exit)
+static struct snd_seq_driver opl4_seq_driver = {
+	.driver = {
+		.name = KBUILD_MODNAME,
+		.probe = snd_opl4_seq_probe,
+		.remove = snd_opl4_seq_remove,
+	},
+	.id = SNDRV_SEQ_DEV_ID_OPL4,
+	.argsize = sizeof(struct snd_opl4 *),
+};
+
+module_snd_seq_driver(opl4_seq_driver);

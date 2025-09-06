@@ -25,6 +25,10 @@
 #include <linux/timer.h>
 #include <linux/workqueue.h>
 #include <asm/atomic.h>
+#include <linux/module.h>
+#include <linux/timer.h>
+#include <linux/workqueue.h>
+#include <linux/atomic.h>
 #include <asm/machdep.h>
 #include <asm/spu.h>
 
@@ -72,6 +76,7 @@ static void spu_gov_work(struct work_struct *work)
 
 	delay = usecs_to_jiffies(info->poll_int);
 	queue_delayed_work_on(info->policy->cpu, kspugov_wq, &info->work, delay);
+	schedule_delayed_work_on(info->policy->cpu, &info->work, delay);
 }
 
 static void spu_gov_init_work(struct spu_gov_info_struct *info)
@@ -79,6 +84,8 @@ static void spu_gov_init_work(struct spu_gov_info_struct *info)
 	int delay = usecs_to_jiffies(info->poll_int);
 	INIT_DELAYED_WORK_DEFERRABLE(&info->work, spu_gov_work);
 	queue_delayed_work_on(info->policy->cpu, kspugov_wq, &info->work, delay);
+	INIT_DEFERRABLE_WORK(&info->work, spu_gov_work);
+	schedule_delayed_work_on(info->policy->cpu, &info->work, delay);
 }
 
 static void spu_gov_cancel_work(struct spu_gov_info_struct *info)
@@ -111,6 +118,7 @@ static int spu_gov_govern(struct cpufreq_policy *policy, unsigned int event)
 
 		/* initialize spu_gov_info for all affected cpus */
 		for_each_cpu_mask(i, policy->cpus) {
+		for_each_cpu(i, policy->cpus) {
 			affected_info = &per_cpu(spu_gov_info, i);
 			affected_info->policy = policy;
 		}
@@ -128,6 +136,7 @@ static int spu_gov_govern(struct cpufreq_policy *policy, unsigned int event)
 
 		/* clean spu_gov_info for all affected cpus */
 		for_each_cpu_mask (i, policy->cpus) {
+		for_each_cpu (i, policy->cpus) {
 			info = &per_cpu(spu_gov_info, i);
 			info->policy = NULL;
 		}
@@ -166,6 +175,9 @@ static int __init spu_gov_init(void)
 		goto out;
 	}
 out:
+	ret = cpufreq_register_governor(&spu_governor);
+	if (ret)
+		printk(KERN_ERR "registration of governor failed\n");
 	return ret;
 }
 

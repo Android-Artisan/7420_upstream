@@ -3,15 +3,22 @@
  *    tape device discipline for 3480/3490 tapes.
  *
  *    Copyright (C) IBM Corp. 2001,2006
+ *    tape device discipline for 3480/3490 tapes.
+ *
+ *    Copyright IBM Corp. 2001, 2009
  *    Author(s): Carsten Otte <cotte@de.ibm.com>
  *		 Tuan Ngo-Anh <ngoanh@de.ibm.com>
  *		 Martin Schwidefsky <schwidefsky@de.ibm.com>
  */
 
+#define KMSG_COMPONENT "tape_34xx"
+#define pr_fmt(fmt) KMSG_COMPONENT ": " fmt
+
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/bio.h>
 #include <linux/workqueue.h>
+#include <linux/slab.h>
 
 #define TAPE_DBF_AREA	tape_34xx_dbf
 
@@ -68,6 +75,11 @@ tape_34xx_medium_sense(struct tape_device *device)
 	tape_ccw_end(request->cpaddr, SENSE, 32, request->cpdata);
 
 	rc = tape_do_io_interruptible(device, request);
+static void __tape_34xx_medium_sense(struct tape_request *request)
+{
+	struct tape_device *device = request->device;
+	unsigned char *sense;
+
 	if (request->rc == 0) {
 		sense = request->cpdata;
 
@@ -95,6 +107,47 @@ tape_34xx_medium_sense(struct tape_device *device)
 	return rc;
 }
 
+	} else
+		DBF_EVENT(4, "tape_34xx: medium sense failed with rc=%d\n",
+			request->rc);
+	tape_free_request(request);
+}
+
+static int tape_34xx_medium_sense(struct tape_device *device)
+{
+	struct tape_request *request;
+	int rc;
+
+	request = tape_alloc_request(1, 32);
+	if (IS_ERR(request)) {
+		DBF_EXCEPTION(6, "MSEN fail\n");
+		return PTR_ERR(request);
+	}
+
+	request->op = TO_MSEN;
+	tape_ccw_end(request->cpaddr, SENSE, 32, request->cpdata);
+	rc = tape_do_io_interruptible(device, request);
+	__tape_34xx_medium_sense(request);
+	return rc;
+}
+
+static void tape_34xx_medium_sense_async(struct tape_device *device)
+{
+	struct tape_request *request;
+
+	request = tape_alloc_request(1, 32);
+	if (IS_ERR(request)) {
+		DBF_EXCEPTION(6, "MSEN fail\n");
+		return;
+	}
+
+	request->op = TO_MSEN;
+	tape_ccw_end(request->cpaddr, SENSE, 32, request->cpdata);
+	request->callback = (void *) __tape_34xx_medium_sense;
+	request->callback_data = NULL;
+	tape_do_io_async(device, request);
+}
+
 struct tape_34xx_work {
 	struct tape_device	*device;
 	enum tape_op		 op;
@@ -107,6 +160,9 @@ struct tape_34xx_work {
  * is inserted but cannot call tape_do_io* from an interrupt context.
  * Maybe that's useful for other actions we want to start from the
  * interrupt handler.
+ * Note: the work handler is called by the system work queue. The tape
+ * commands started by the handler need to be asynchrounous, otherwise
+ * a deadlock can occur e.g. in case of a deferred cc=1 (see __tape_do_irq).
  */
 static void
 tape_34xx_work_handler(struct work_struct *work)
@@ -117,12 +173,18 @@ tape_34xx_work_handler(struct work_struct *work)
 	switch(p->op) {
 		case TO_MSEN:
 			tape_34xx_medium_sense(p->device);
+	struct tape_device *device = p->device;
+
+	switch(p->op) {
+		case TO_MSEN:
+			tape_34xx_medium_sense_async(device);
 			break;
 		default:
 			DBF_EVENT(3, "T34XX: internal error: unknown work\n");
 	}
 
 	p->device = tape_put_device(p->device);
+	tape_put_device(device);
 	kfree(p);
 }
 
@@ -137,6 +199,7 @@ tape_34xx_schedule_work(struct tape_device *device, enum tape_op op)
 	INIT_WORK(&p->work, tape_34xx_work_handler);
 
 	p->device = tape_get_device_reference(device);
+	p->device = tape_get_device(device);
 	p->op     = op;
 
 	schedule_work(&p->work);
@@ -205,6 +268,7 @@ tape_34xx_unsolicited_irq(struct tape_device *device, struct irb *irb)
 		DBF_EVENT(3, "unsol.irq! dev end: %08x\n", device->cdev_id);
 		PRINT_WARN("Unsolicited IRQ (Device End) caught.\n");
 		tape_dump_sense(device, NULL, irb);
+		tape_dump_sense_dbf(device, NULL, irb);
 	}
 	return TAPE_IO_SUCCESS;
 }
@@ -229,6 +293,7 @@ tape_34xx_erp_read_opposite(struct tape_device *device,
 	if (request->op != TO_RBA)
 		PRINT_ERR("read_opposite called with state:%s\n",
 			  tape_op_verbose[request->op]);
+
 	/*
 	 * We tried to read forward and backward, but hat no
 	 * success -> failed.
@@ -248,6 +313,9 @@ tape_34xx_erp_bug(struct tape_device *device, struct tape_request *request,
 			PRINT_WARN("Operation of tape:%s\n",
 				   tape_op_verbose[request->op]);
 		tape_dump_sense(device, request, irb);
+		dev_err(&device->cdev->dev, "An unexpected condition %d "
+			"occurred in tape error recovery\n", no);
+		tape_dump_sense_dbf(device, request, irb);
 	}
 	return tape_34xx_erp_failed(request, -EIO);
 }
@@ -264,6 +332,8 @@ tape_34xx_erp_overrun(struct tape_device *device, struct tape_request *request,
 		PRINT_WARN ("Data overrun error between control-unit "
 			    "and drive. Use a faster channel connection, "
 			    "if possible! \n");
+		dev_warn (&device->cdev->dev, "A data overrun occurred between"
+			" the control unit and tape unit\n");
 		return tape_34xx_erp_failed(request, -EIO);
 	}
 	return tape_34xx_erp_bug(device, request, irb, -1);
@@ -281,6 +351,8 @@ tape_34xx_erp_sequence(struct tape_device *device,
 		 * cu detected incorrect block-id sequence on tape.
 		 */
 		PRINT_WARN("Illegal block-id sequence found!\n");
+		dev_warn (&device->cdev->dev, "The block ID sequence on the "
+			"tape is incorrect\n");
 		return tape_34xx_erp_failed(request, -EIO);
 	}
 	/*
@@ -421,6 +493,8 @@ tape_34xx_unit_check(struct tape_device *device, struct tape_request *request,
 
 			/* data check is permanent, CU recovery has failed */
 			PRINT_WARN("Permanent read error\n");
+			dev_warn (&device->cdev->dev, "A read error occurred "
+				"that cannot be recovered\n");
 			return tape_34xx_erp_failed(request, -EIO);
 		case 0x25:
 			// a write data check occurred
@@ -434,6 +508,8 @@ tape_34xx_unit_check(struct tape_device *device, struct tape_request *request,
 
 			// data check is permanent, cu-recovery has failed
 			PRINT_WARN("Permanent write error\n");
+			dev_warn (&device->cdev->dev, "A write error on the "
+				"tape cannot be recovered\n");
 			return tape_34xx_erp_failed(request, -EIO);
 		case 0x26:
 			/* Data Check (read opposite) occurred. */
@@ -449,6 +525,18 @@ tape_34xx_unit_check(struct tape_device *device, struct tape_request *request,
 		case 0x41:
 			/* Record sequence error. */
 			PRINT_WARN("Invalid block-id sequence found.\n");
+			dev_warn (&device->cdev->dev, "Writing the ID-mark "
+				"failed\n");
+			return tape_34xx_erp_failed(request, -EIO);
+		case 0x31:
+			/* Tape void. Tried to read beyond end of device. */
+			dev_warn (&device->cdev->dev, "Reading the tape beyond"
+				" the end of the recorded area failed\n");
+			return tape_34xx_erp_failed(request, -ENOSPC);
+		case 0x41:
+			/* Record sequence error. */
+			dev_warn (&device->cdev->dev, "The tape contains an "
+				"incorrect block ID sequence\n");
 			return tape_34xx_erp_failed(request, -EIO);
 		default:
 			/* all data checks for 3480 should result in one of
@@ -492,6 +580,8 @@ tape_34xx_unit_check(struct tape_device *device, struct tape_request *request,
 		PRINT_WARN("drive adapter error, buffer error on the lower "
 			   "interface, internal path not usable, error "
 			   "during cartridge load.\n");
+		dev_warn (&device->cdev->dev, "A path equipment check occurred"
+			" for the tape device\n");
 		return tape_34xx_erp_failed(request, -EIO);
 	case 0x24:
 		/*
@@ -561,6 +651,18 @@ tape_34xx_unit_check(struct tape_device *device, struct tape_request *request,
 	case 0x32:
 		// Tension loss. We cannot recover this, it's an I/O error.
 		PRINT_WARN("The drive lost tape tension.\n");
+		dev_warn (&device->cdev->dev, "The tape unit cannot process "
+			"the tape format\n");
+		return tape_34xx_erp_failed(request, -EMEDIUMTYPE);
+	case 0x30:
+		/* The medium is write protected. */
+		dev_warn (&device->cdev->dev, "The tape medium is write-"
+			"protected\n");
+		return tape_34xx_erp_failed(request, -EACCES);
+	case 0x32:
+		// Tension loss. We cannot recover this, it's an I/O error.
+		dev_warn (&device->cdev->dev, "The tape does not have the "
+			"required tape tension\n");
 		return tape_34xx_erp_failed(request, -EIO);
 	case 0x33:
 		/*
@@ -569,6 +671,8 @@ tape_34xx_unit_check(struct tape_device *device, struct tape_request *request,
 		 */
 		PRINT_WARN("Cartridge load failure. Reload the cartridge "
 			   "and try again.\n");
+		dev_warn (&device->cdev->dev, "The tape unit failed to load"
+			" the cartridge\n");
 		tape_34xx_delete_sbid_from(device, 0);
 		return tape_34xx_erp_failed(request, -EIO);
 	case 0x34:
@@ -578,6 +682,8 @@ tape_34xx_unit_check(struct tape_device *device, struct tape_request *request,
 		 */
 		PRINT_WARN("Failure during cartridge unload. "
 			   "Please try manually.\n");
+		dev_warn (&device->cdev->dev, "Automatic unloading of the tape"
+			" cartridge failed\n");
 		if (request->op == TO_RUN)
 			return tape_34xx_erp_failed(request, -EIO);
 		return tape_34xx_erp_bug(device, request, irb, sense[3]);
@@ -591,6 +697,8 @@ tape_34xx_unit_check(struct tape_device *device, struct tape_request *request,
 		 */
 		PRINT_WARN("Equipment check! Please check the drive and "
 			   "the cartridge loader.\n");
+		dev_warn (&device->cdev->dev, "An equipment check has occurred"
+			" on the tape unit\n");
 		return tape_34xx_erp_failed(request, -EIO);
 	case 0x36:
 		if (device->cdev->id.driver_info == tape_3490)
@@ -604,6 +712,8 @@ tape_34xx_unit_check(struct tape_device *device, struct tape_request *request,
 		 * the beginning-of-tape data.
 		 */
 		PRINT_WARN("Tape length error.\n");
+		dev_warn (&device->cdev->dev, "The tape information states an"
+			" incorrect length\n");
 		return tape_34xx_erp_failed(request, -EIO);
 	case 0x38:
 		/*
@@ -626,6 +736,12 @@ tape_34xx_unit_check(struct tape_device *device, struct tape_request *request,
 	case 0x3b:
 		/* Manual rewind or unload. This causes an I/O error. */
 		PRINT_WARN("Medium was rewound or unloaded manually.\n");
+		dev_warn (&device->cdev->dev, "The tape unit is not ready\n");
+		return tape_34xx_erp_failed(request, -EIO);
+	case 0x3b:
+		/* Manual rewind or unload. This causes an I/O error. */
+		dev_warn (&device->cdev->dev, "The tape medium has been "
+			"rewound or unloaded manually\n");
 		tape_34xx_delete_sbid_from(device, 0);
 		return tape_34xx_erp_failed(request, -EIO);
 	case 0x42:
@@ -634,6 +750,8 @@ tape_34xx_unit_check(struct tape_device *device, struct tape_request *request,
 		 * performance is detected.
 		 */
 		PRINT_WARN("Subsystem is running in degraded mode.\n");
+		dev_warn (&device->cdev->dev, "The tape subsystem is running "
+			"in degraded mode\n");
 		return tape_34xx_erp_retry(request);
 	case 0x43:
 		/* Drive not ready. */
@@ -664,6 +782,8 @@ tape_34xx_unit_check(struct tape_device *device, struct tape_request *request,
 	case 0x45:
 		/* The drive is assigned to a different channel path. */
 		PRINT_WARN("The drive is assigned elsewhere.\n");
+		dev_warn (&device->cdev->dev, "The tape unit is already "
+			"assigned\n");
 		return tape_34xx_erp_failed(request, -EIO);
 	case 0x46:
 		/*
@@ -676,6 +796,12 @@ tape_34xx_unit_check(struct tape_device *device, struct tape_request *request,
 	case 0x47:
 		/* Volume fenced. CU reports volume integrity is lost. */
 		PRINT_WARN("Volume fenced. The volume integrity is lost.\n");
+		dev_warn (&device->cdev->dev, "The tape unit is not online\n");
+		return tape_34xx_erp_failed(request, -EIO);
+	case 0x47:
+		/* Volume fenced. CU reports volume integrity is lost. */
+		dev_warn (&device->cdev->dev, "The control unit has fenced "
+			"access to the tape volume\n");
 		tape_34xx_delete_sbid_from(device, 0);
 		return tape_34xx_erp_failed(request, -EIO);
 	case 0x48:
@@ -689,6 +815,13 @@ tape_34xx_unit_check(struct tape_device *device, struct tape_request *request,
 	case 0x4a:
 		/* Control unit erp failed. */
 		PRINT_WARN("The control unit I/O error recovery failed.\n");
+		dev_warn (&device->cdev->dev, "A parity error occurred on the "
+			"tape bus\n");
+		return tape_34xx_erp_failed(request, -EIO);
+	case 0x4a:
+		/* Control unit erp failed. */
+		dev_warn (&device->cdev->dev, "I/O error recovery failed on "
+			"the tape control unit\n");
 		return tape_34xx_erp_failed(request, -EIO);
 	case 0x4b:
 		/*
@@ -697,6 +830,8 @@ tape_34xx_unit_check(struct tape_device *device, struct tape_request *request,
 		 */
 		PRINT_WARN("The drive needs microprogram patches from the "
 			   "control unit, which are not available.\n");
+		dev_warn (&device->cdev->dev, "The tape unit requires a "
+			"firmware update\n");
 		return tape_34xx_erp_failed(request, -EIO);
 	case 0x4c:
 		/*
@@ -723,6 +858,8 @@ tape_34xx_unit_check(struct tape_device *device, struct tape_request *request,
 			 */
 			PRINT_WARN("Maximum block size for buffered "
 				   "mode exceeded.\n");
+			dev_warn (&device->cdev->dev, "The maximum block size"
+				" for buffered mode is exceeded\n");
 			return tape_34xx_erp_failed(request, -ENOBUFS);
 		}
 		/* This erpa is reserved for 3480. */
@@ -777,6 +914,20 @@ tape_34xx_unit_check(struct tape_device *device, struct tape_request *request,
 				   "which will be recovered.\n");
 			return tape_34xx_erp_retry(request);
 		}
+		dev_warn (&device->cdev->dev, "A channel interface error cannot be"
+			" recovered\n");
+		return tape_34xx_erp_failed(request, -EIO);
+	case 0x56:
+		/* Channel protocol error. */
+		dev_warn (&device->cdev->dev, "A channel protocol error "
+			"occurred\n");
+		return tape_34xx_erp_failed(request, -EIO);
+	case 0x57:
+		/*
+		 * 3480: Attention intercept.
+		 * 3490: Global status intercept.
+		 */
+		return tape_34xx_erp_retry(request);
 	case 0x5a:
 		/*
 		 * Tape length incompatible. The tape inserted is too long,
@@ -788,6 +939,8 @@ tape_34xx_unit_check(struct tape_device *device, struct tape_request *request,
 		PRINT_WARN("with EC-CST identification mark has been mounted "
 			"in a device that writes\n");
 		PRINT_WARN("3480 or 3480 XF format.\n");
+		dev_warn (&device->cdev->dev, "The tape unit does not support "
+			"the tape length\n");
 		return tape_34xx_erp_failed(request, -EIO);
 	case 0x5b:
 		/* Format 3480 XF incompatible */
@@ -818,6 +971,23 @@ tape_34xx_unit_check(struct tape_device *device, struct tape_request *request,
 		PRINT_WARN("The volume is recorded using an incompatible "
 			"compaction algorithm,\n");
 		PRINT_WARN("which is not supported by the device.\n");
+		dev_warn (&device->cdev->dev, "The tape unit does not support"
+			" format 3480 XF\n");
+		return tape_34xx_erp_failed(request, -EIO);
+	case 0x5c:
+		/* Format 3480-2 XF incompatible */
+		dev_warn (&device->cdev->dev, "The tape unit does not support tape "
+			"format 3480-2 XF\n");
+		return tape_34xx_erp_failed(request, -EIO);
+	case 0x5d:
+		/* Tape length violation. */
+		dev_warn (&device->cdev->dev, "The tape unit does not support"
+			" the current tape length\n");
+		return tape_34xx_erp_failed(request, -EMEDIUMTYPE);
+	case 0x5e:
+		/* Compaction algorithm incompatible. */
+		dev_warn (&device->cdev->dev, "The tape unit does not support"
+			" the compaction algorithm\n");
 		return tape_34xx_erp_failed(request, -EMEDIUMTYPE);
 
 		/* The following erpas should have been covered earlier. */
@@ -872,6 +1042,7 @@ tape_34xx_irq(struct tape_device *device, struct tape_request *request,
 	PRINT_ERR("Unexpected interrupt.\n");
 	PRINT_ERR("Current op is: %s", tape_op_verbose[request->op]);
 	tape_dump_sense(device, request, irb);
+	tape_dump_sense_dbf(device, request, irb);
 	return TAPE_IO_STOP;
 }
 
@@ -1311,6 +1482,7 @@ tape_34xx_online(struct ccw_device *cdev)
 {
 	return tape_generic_online(
 		cdev->dev.driver_data,
+		dev_get_drvdata(&cdev->dev),
 		&tape_discipline_34xx
 	);
 }
@@ -1324,11 +1496,19 @@ tape_34xx_offline(struct ccw_device *cdev)
 static struct ccw_driver tape_34xx_driver = {
 	.name = "tape_34xx",
 	.owner = THIS_MODULE,
+static struct ccw_driver tape_34xx_driver = {
+	.driver = {
+		.name = "tape_34xx",
+		.owner = THIS_MODULE,
+	},
 	.ids = tape_34xx_ids,
 	.probe = tape_generic_probe,
 	.remove = tape_generic_remove,
 	.set_online = tape_34xx_online,
 	.set_offline = tape_34xx_offline,
+	.set_offline = tape_generic_offline,
+	.freeze = tape_generic_pm_suspend,
+	.int_class = IRQIO_TAP,
 };
 
 static int

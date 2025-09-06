@@ -37,6 +37,10 @@
 #include <linux/types.h>
 #include <linux/kernel.h>
 #include "udfdecl.h"
+#include "udfdecl.h"
+
+#include <linux/types.h>
+#include <linux/kernel.h>
 
 #define EPOCH_YEAR 1970
 
@@ -86,6 +90,11 @@ extern struct timezone sys_tz;
 #define SECS_PER_DAY	(SECS_PER_HOUR * 24)
 
 struct timespec *udf_disk_stamp_to_time(struct timespec *dest, timestamp src)
+#define SECS_PER_HOUR	(60 * 60)
+#define SECS_PER_DAY	(SECS_PER_HOUR * 24)
+
+struct timespec *
+udf_disk_stamp_to_time(struct timespec *dest, struct timestamp src)
 {
 	int yday;
 	u16 typeAndTimezone = le16_to_cpu(src.typeAndTimezone);
@@ -111,12 +120,25 @@ struct timespec *udf_disk_stamp_to_time(struct timespec *dest, timestamp src)
 
 	yday = ((__mon_yday[__isleap(year)][src.month - 1]) + src.day - 1);
 	dest->tv_sec += (((yday * 24) + src.hour) * 60 + src.minute) * 60 + src.second;
-	dest->tv_nsec = 1000 * (src.centiseconds * 10000 +
+
+	/*
+	 * Sanitize nanosecond field since reportedly some filesystems are
+	 * recorded with bogus sub-second values.
+	 */
+	if (src.centiseconds < 100 && src.hundredsOfMicroseconds < 100 &&
+	    src.microseconds < 100) {
+		dest->tv_nsec = 1000 * (src.centiseconds * 10000 +
 			src.hundredsOfMicroseconds * 100 + src.microseconds);
+	} else {
+		dest->tv_nsec = 0;
+	}
+
 	return dest;
 }
 
 timestamp *udf_time_to_disk_stamp(timestamp *dest, struct timespec ts)
+struct timestamp *
+udf_time_to_disk_stamp(struct timestamp *dest, struct timespec ts)
 {
 	long int days, rem, y;
 	const unsigned short int *ip;

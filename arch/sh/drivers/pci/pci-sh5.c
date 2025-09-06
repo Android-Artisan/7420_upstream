@@ -91,27 +91,45 @@ static irqreturn_t pcish5_serr_irq(int irq, void *dev_id)
 
 int __init sh5pci_init(unsigned long memStart, unsigned long memSize)
 {
+static struct resource sh5_pci_resources[2];
+
+static struct pci_channel sh5pci_controller = {
+	.pci_ops		= &sh5_pci_ops,
+	.resources		= sh5_pci_resources,
+	.nr_resources		= ARRAY_SIZE(sh5_pci_resources),
+	.mem_offset		= 0x00000000,
+	.io_offset		= 0x00000000,
+};
+
+static int __init sh5pci_init(void)
+{
+	unsigned long memStart = __pa(memory_start);
+	unsigned long memSize = __pa(memory_end) - memStart;
 	u32 lsr0;
 	u32 uval;
 
         if (request_irq(IRQ_ERR, pcish5_err_irq,
                         IRQF_DISABLED, "PCI Error",NULL) < 0) {
+                        0, "PCI Error",NULL) < 0) {
                 printk(KERN_ERR "PCISH5: Cannot hook PCI_PERR interrupt\n");
                 return -EINVAL;
         }
 
         if (request_irq(IRQ_SERR, pcish5_serr_irq,
                         IRQF_DISABLED, "PCI SERR interrupt", NULL) < 0) {
+                        0, "PCI SERR interrupt", NULL) < 0) {
                 printk(KERN_ERR "PCISH5: Cannot hook PCI_SERR interrupt\n");
                 return -EINVAL;
         }
 
 	pcicr_virt = onchip_remap(SH5PCI_ICR_BASE, 1024, "PCICR");
+	pcicr_virt = (unsigned long)ioremap_nocache(SH5PCI_ICR_BASE, 1024);
 	if (!pcicr_virt) {
 		panic("Unable to remap PCICR\n");
 	}
 
 	PCI_IO_AREA = onchip_remap(SH5PCI_IO_BASE, 0x10000, "PCIIO");
+	PCI_IO_AREA = (unsigned long)ioremap_nocache(SH5PCI_IO_BASE, 0x10000);
 	if (!PCI_IO_AREA) {
 		panic("Unable to remap PCIIO\n");
 	}
@@ -226,3 +244,12 @@ void __devinit pcibios_fixup_bus(struct pci_bus *bus)
 		bus->resource[2]->end = bus->resource[2]->start - 1;
 	}
 }
+	sh5_pci_resources[0].start = PCI_IO_AREA;
+	sh5_pci_resources[0].end = PCI_IO_AREA + 0x10000;
+
+	sh5_pci_resources[1].start = memStart;
+	sh5_pci_resources[1].end = memStart + memSize;
+
+	return register_pci_controller(&sh5pci_controller);
+}
+arch_initcall(sh5pci_init);

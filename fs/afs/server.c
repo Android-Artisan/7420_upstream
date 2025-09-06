@@ -94,6 +94,10 @@ static struct afs_server *afs_alloc_server(struct afs_cell *cell,
 	}
 
 	_leave(" = %p{%d}", server, atomic_read(&server->usage));
+		_leave(" = %p{%d}", server, atomic_read(&server->usage));
+	} else {
+		_leave(" = NULL [nomem]");
+	}
 	return server;
 }
 
@@ -106,6 +110,7 @@ struct afs_server *afs_lookup_server(struct afs_cell *cell,
 	struct afs_server *server, *candidate;
 
 	_enter("%p,"NIPQUAD_FMT, cell, NIPQUAD(addr->s_addr));
+	_enter("%p,%pI4", cell, &addr->s_addr);
 
 	/* quick scan of the list to see if we already have the server */
 	read_lock(&cell->servers_lock);
@@ -171,6 +176,8 @@ server_in_two_cells:
 	printk(KERN_NOTICE "kAFS:"
 	       " Server "NIPQUAD_FMT" appears to be in two cells\n",
 	       NIPQUAD(*addr));
+	printk(KERN_NOTICE "kAFS: Server %pI4 appears to be in two cells\n",
+	       addr);
 	_leave(" = -EEXIST");
 	return ERR_PTR(-EEXIST);
 }
@@ -185,6 +192,7 @@ struct afs_server *afs_find_server(const struct in_addr *_addr)
 	struct in_addr addr = *_addr;
 
 	_enter(NIPQUAD_FMT, NIPQUAD(addr.s_addr));
+	_enter("%pI4", &addr.s_addr);
 
 	read_lock(&afs_servers_lock);
 
@@ -240,6 +248,9 @@ void afs_put_server(struct afs_server *server)
 		server->time_of_death = get_seconds();
 		schedule_delayed_work(&afs_server_reaper,
 				      afs_server_timeout * HZ);
+		server->time_of_death = ktime_get_real_seconds();
+		queue_delayed_work(afs_wq, &afs_server_reaper,
+				   afs_server_timeout * HZ);
 	}
 	spin_unlock(&afs_server_graveyard_lock);
 	_leave(" [dead]");
@@ -272,9 +283,9 @@ static void afs_reap_server(struct work_struct *work)
 	LIST_HEAD(corpses);
 	struct afs_server *server;
 	unsigned long delay, expiry;
-	time_t now;
+	time64_t now;
 
-	now = get_seconds();
+	now = ktime_get_real_seconds();
 	spin_lock(&afs_server_graveyard_lock);
 
 	while (!list_empty(&afs_server_graveyard)) {
@@ -290,6 +301,7 @@ static void afs_reap_server(struct work_struct *work)
 				schedule_delayed_work(&afs_server_reaper,
 						      delay);
 			}
+			mod_delayed_work(afs_wq, &afs_server_reaper, delay);
 			break;
 		}
 
@@ -324,4 +336,5 @@ void __exit afs_purge_servers(void)
 	afs_server_timeout = 0;
 	cancel_delayed_work(&afs_server_reaper);
 	schedule_delayed_work(&afs_server_reaper, 0);
+	mod_delayed_work(afs_wq, &afs_server_reaper, 0);
 }

@@ -439,6 +439,10 @@
 #define NR_SYSCALLS			479
 
 #define __ARCH_WANT_IPC_PARSE_VERSION
+#include <uapi/asm/unistd.h>
+
+#define NR_SYSCALLS			514
+
 #define __ARCH_WANT_OLD_READDIR
 #define __ARCH_WANT_STAT64
 #define __ARCH_WANT_SYS_GETHOSTNAME
@@ -461,4 +465,8 @@
 #define cond_syscall(x)  asm(".weak\t" #x "\n" #x " = sys_ni_syscall")
 
 #endif /* __KERNEL__ */
+#define __ARCH_WANT_SYS_FORK
+#define __ARCH_WANT_SYS_VFORK
+#define __ARCH_WANT_SYS_CLONE
+
 #endif /* _ALPHA_UNISTD_H */

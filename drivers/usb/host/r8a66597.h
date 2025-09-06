@@ -395,6 +395,8 @@
 #define	HUBPORT		0x0700
 #define	USBSPD		0x00C0
 #define	RTPORT		0x0001
+#include <linux/clk.h>
+#include <linux/usb/r8a66597.h>
 
 #define R8A66597_MAX_NUM_PIPE		10
 #define R8A66597_BUF_BSIZE		8
@@ -404,6 +406,7 @@
 #else
 #define R8A66597_MAX_ROOT_HUB		2
 #endif
+#define R8A66597_MAX_ROOT_HUB		2
 #define R8A66597_MAX_SAMPLING		5
 #define R8A66597_RH_POLL_TIME		10
 #define R8A66597_MAX_DMA_CHANNEL	2
@@ -482,6 +485,9 @@ struct r8a66597 {
 	spinlock_t lock;
 	unsigned long reg;
 
+	void __iomem *reg;
+	struct clk *clk;
+	struct r8a66597_platdata	*pdata;
 	struct r8a66597_device		device0;
 	struct r8a66597_root_hub	root_hub[R8A66597_MAX_ROOT_HUB];
 	struct list_head		pipe_queue[R8A66597_MAX_NUM_PIPE];
@@ -498,6 +504,13 @@ struct r8a66597 {
 
 	struct list_head child_device;
 	unsigned long child_connect_map[4];
+	unsigned int max_root_hub;
+
+	struct list_head child_device;
+	unsigned long child_connect_map[4];
+
+	unsigned bus_suspended:1;
+	unsigned irq_sense_low:1;
 };
 
 static inline struct r8a66597 *hcd_to_r8a66597(struct usb_hcd *hcd)
@@ -532,6 +545,7 @@ static inline struct urb *r8a66597_get_urb(struct r8a66597 *r8a66597,
 static inline u16 r8a66597_read(struct r8a66597 *r8a66597, unsigned long offset)
 {
 	return inw(r8a66597->reg + offset);
+	return ioread16(r8a66597->reg + offset);
 }
 
 static inline void r8a66597_read_fifo(struct r8a66597 *r8a66597,
@@ -553,6 +567,22 @@ static inline void r8a66597_read_fifo(struct r8a66597 *r8a66597,
 	len = (len + 1) / 2;
 	insw(r8a66597->reg + offset, buf, len);
 #endif
+	void __iomem *fifoaddr = r8a66597->reg + offset;
+	unsigned long count;
+
+	if (r8a66597->pdata->on_chip) {
+		count = len / 4;
+		ioread32_rep(fifoaddr, buf, count);
+
+		if (len & 0x00000003) {
+			unsigned long tmp = ioread32(fifoaddr);
+			memcpy((unsigned char *)buf + count * 4, &tmp,
+			       len & 0x03);
+		}
+	} else {
+		len = (len + 1) / 2;
+		ioread16_rep(fifoaddr, buf, len);
+	}
 }
 
 static inline void r8a66597_write(struct r8a66597 *r8a66597, u16 val,
@@ -593,6 +623,7 @@ static inline void r8a66597_write_fifo(struct r8a66597 *r8a66597,
 		outb((unsigned char)*buf, fifoaddr);
 	}
 #endif
+	iowrite16(val, r8a66597->reg + offset);
 }
 
 static inline void r8a66597_mdfy(struct r8a66597 *r8a66597,
@@ -609,6 +640,44 @@ static inline void r8a66597_mdfy(struct r8a66597 *r8a66597,
 			r8a66597_mdfy(r8a66597, 0, val, offset)
 #define r8a66597_bset(r8a66597, val, offset)	\
 			r8a66597_mdfy(r8a66597, val, 0, offset)
+
+static inline void r8a66597_write_fifo(struct r8a66597 *r8a66597,
+				       struct r8a66597_pipe *pipe, u16 *buf,
+				       int len)
+{
+	void __iomem *fifoaddr = r8a66597->reg + pipe->fifoaddr;
+	unsigned long count;
+	unsigned char *pb;
+	int i;
+
+	if (r8a66597->pdata->on_chip) {
+		count = len / 4;
+		iowrite32_rep(fifoaddr, buf, count);
+
+		if (len & 0x00000003) {
+			pb = (unsigned char *)buf + count * 4;
+			for (i = 0; i < (len & 0x00000003); i++) {
+				if (r8a66597_read(r8a66597, CFIFOSEL) & BIGEND)
+					iowrite8(pb[i], fifoaddr + i);
+				else
+					iowrite8(pb[i], fifoaddr + 3 - i);
+			}
+		}
+	} else {
+		int odd = len & 0x0001;
+
+		len = len / 2;
+		iowrite16_rep(fifoaddr, buf, len);
+		if (unlikely(odd)) {
+			buf = &buf[len];
+			if (r8a66597->pdata->wr0_shorted_to_wr1)
+				r8a66597_bclr(r8a66597, MBW_16, pipe->fifosel);
+			iowrite8((unsigned char)*buf, fifoaddr);
+			if (r8a66597->pdata->wr0_shorted_to_wr1)
+				r8a66597_bset(r8a66597, MBW_16, pipe->fifosel);
+		}
+	}
+}
 
 static inline unsigned long get_syscfg_reg(int port)
 {
@@ -656,6 +725,36 @@ static inline void r8a66597_port_power(struct r8a66597 *r8a66597, int port,
 		r8a66597_bset(r8a66597, VBOUT, dvstctr_reg);
 	else
 		r8a66597_bclr(r8a66597, VBOUT, dvstctr_reg);
+	if (r8a66597->pdata->port_power) {
+		r8a66597->pdata->port_power(port, power);
+	} else {
+		if (power)
+			r8a66597_bset(r8a66597, VBOUT, dvstctr_reg);
+		else
+			r8a66597_bclr(r8a66597, VBOUT, dvstctr_reg);
+	}
+}
+
+static inline u16 get_xtal_from_pdata(struct r8a66597_platdata *pdata)
+{
+	u16 clock = 0;
+
+	switch (pdata->xtal) {
+	case R8A66597_PLATDATA_XTAL_12MHZ:
+		clock = XTAL12;
+		break;
+	case R8A66597_PLATDATA_XTAL_24MHZ:
+		clock = XTAL24;
+		break;
+	case R8A66597_PLATDATA_XTAL_48MHZ:
+		clock = XTAL48;
+		break;
+	default:
+		printk(KERN_ERR "r8a66597: platdata clock is wrong.\n");
+		break;
+	}
+
+	return clock;
 }
 
 #define get_pipectr_addr(pipenum)	(PIPE1CTR + (pipenum - 1) * 2)

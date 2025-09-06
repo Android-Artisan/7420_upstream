@@ -26,6 +26,9 @@
  * along with this program; see the file COPYING.
  * If not, write to the Free Software Foundation,
  * 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+ * Copyright 2007-2010 Analog Devices Inc.
+ *
+ * Licensed under the Clear BSD license or the GPL-2 (or later)
  */
 
 #ifndef _DEF_BF544_H
@@ -88,11 +91,16 @@
 #define                  TWI1_SLAVE_STAT  0xffc0220c   /* TWI Slave Mode Status Register */
 #define                  TWI1_SLAVE_ADDR  0xffc02210   /* TWI Slave Mode Address Register */
 #define                 TWI1_MASTER_CTRL  0xffc02214   /* TWI Master Mode Control Register */
+#define                   TWI1_SLAVE_CTL  0xffc02208   /* TWI Slave Mode Control Register */
+#define                  TWI1_SLAVE_STAT  0xffc0220c   /* TWI Slave Mode Status Register */
+#define                  TWI1_SLAVE_ADDR  0xffc02210   /* TWI Slave Mode Address Register */
+#define                  TWI1_MASTER_CTL  0xffc02214   /* TWI Master Mode Control Register */
 #define                 TWI1_MASTER_STAT  0xffc02218   /* TWI Master Mode Status Register */
 #define                 TWI1_MASTER_ADDR  0xffc0221c   /* TWI Master Mode Address Register */
 #define                    TWI1_INT_STAT  0xffc02220   /* TWI Interrupt Status Register */
 #define                    TWI1_INT_MASK  0xffc02224   /* TWI Interrupt Mask Register */
 #define                   TWI1_FIFO_CTRL  0xffc02228   /* TWI FIFO Control Register */
+#define                    TWI1_FIFO_CTL  0xffc02228   /* TWI FIFO Control Register */
 #define                   TWI1_FIFO_STAT  0xffc0222c   /* TWI FIFO Status Register */
 #define                   TWI1_XMT_DATA8  0xffc02280   /* TWI FIFO Transmit Data Single Byte Register */
 #define                  TWI1_XMT_DATA16  0xffc02284   /* TWI FIFO Transmit Data Double Byte Register */
@@ -516,6 +524,7 @@
 #define                    HMDMA0_ECINIT  0xffc04504   /* Handshake MDMA0 Initial Edge Count Register */
 #define                    HMDMA0_BCINIT  0xffc04508   /* Handshake MDMA0 Initial Block Count Register */
 #define                  HMDMA0_ECURGENT  0xffc0450c   /* Handshake MDMA0 Urgent Edge Count Threshhold Register */
+#define                  HMDMA0_ECURGENT  0xffc0450c   /* Handshake MDMA0 Urgent Edge Count Threshold Register */
 #define                HMDMA0_ECOVERFLOW  0xffc04510   /* Handshake MDMA0 Edge Count Overflow Interrupt Register */
 #define                    HMDMA0_ECOUNT  0xffc04514   /* Handshake MDMA0 Current Edge Count Register */
 #define                    HMDMA0_BCOUNT  0xffc04518   /* Handshake MDMA0 Current Block Count Register */
@@ -526,6 +535,7 @@
 #define                    HMDMA1_ECINIT  0xffc04544   /* Handshake MDMA1 Initial Edge Count Register */
 #define                    HMDMA1_BCINIT  0xffc04548   /* Handshake MDMA1 Initial Block Count Register */
 #define                  HMDMA1_ECURGENT  0xffc0454c   /* Handshake MDMA1 Urgent Edge Count Threshhold Register */
+#define                  HMDMA1_ECURGENT  0xffc0454c   /* Handshake MDMA1 Urgent Edge Count Threshold Register */
 #define                HMDMA1_ECOVERFLOW  0xffc04550   /* Handshake MDMA1 Edge Count Overflow Interrupt Register */
 #define                    HMDMA1_ECOUNT  0xffc04554   /* Handshake MDMA1 Current Edge Count Register */
 #define                    HMDMA1_BCOUNT  0xffc04558   /* Handshake MDMA1 Current Block Count Register */

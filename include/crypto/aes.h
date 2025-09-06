@@ -27,6 +27,20 @@ extern u32 crypto_ft_tab[4][256];
 extern u32 crypto_fl_tab[4][256];
 extern u32 crypto_it_tab[4][256];
 extern u32 crypto_il_tab[4][256];
+/*
+ * Please ensure that the first two fields are 16-byte aligned
+ * relative to the start of the structure, i.e., don't move them!
+ */
+struct crypto_aes_ctx {
+	u32 key_enc[AES_MAX_KEYLENGTH_U32];
+	u32 key_dec[AES_MAX_KEYLENGTH_U32];
+	u32 key_length;
+};
+
+extern const u32 crypto_ft_tab[4][256];
+extern const u32 crypto_fl_tab[4][256];
+extern const u32 crypto_it_tab[4][256];
+extern const u32 crypto_il_tab[4][256];
 
 int crypto_aes_set_key(struct crypto_tfm *tfm, const u8 *in_key,
 		unsigned int key_len);

@@ -2,6 +2,7 @@
  * w83l785ts.c - Part of lm_sensors, Linux kernel modules for hardware
  *               monitoring
  * Copyright (C) 2003-2004  Jean Delvare <khali@linux-fr.org>
+ * Copyright (C) 2003-2009  Jean Delvare <jdelvare@suse.de>
  *
  * Inspired from the lm83 driver. The W83L785TS-S is a sensor chip made
  * by Winbond. It reports a single external temperature with a 1 deg
@@ -11,6 +12,7 @@
  *
  * Ported to Linux 2.6 by Wolfgang Ziegler <nuppla@gmx.at> and Jean Delvare
  * <khali@linux-fr.org>.
+ * <jdelvare@suse.de>.
  *
  * Thanks to James Bolt <james@evilpenguin.com> for benchmarking the read
  * error handling mechanism.
@@ -84,6 +86,7 @@ I2C_CLIENT_INSMOD_1(w83l785ts);
 static int w83l785ts_probe(struct i2c_client *client,
 			   const struct i2c_device_id *id);
 static int w83l785ts_detect(struct i2c_client *client, int kind,
+static int w83l785ts_detect(struct i2c_client *client,
 			    struct i2c_board_info *info);
 static int w83l785ts_remove(struct i2c_client *client);
 static u8 w83l785ts_read_value(struct i2c_client *client, u8 reg, u8 defval);
@@ -95,6 +98,9 @@ static struct w83l785ts_data *w83l785ts_update_device(struct device *dev);
  
 static const struct i2c_device_id w83l785ts_id[] = {
 	{ "w83l785ts", w83l785ts },
+
+static const struct i2c_device_id w83l785ts_id[] = {
+	{ "w83l785ts", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, w83l785ts_id);
@@ -109,6 +115,7 @@ static struct i2c_driver w83l785ts_driver = {
 	.id_table	= w83l785ts_id,
 	.detect		= w83l785ts_detect,
 	.address_data	= &addr_data,
+	.address_list	= normal_i2c,
 };
 
 /*
@@ -124,6 +131,7 @@ struct w83l785ts_data {
 	/* registers values */
 	s8 temp[2]; /* 0: input
 		       1: critical limit */
+	s8 temp[2]; /* 0: input, 1: critical limit */
 };
 
 /*
@@ -150,6 +158,12 @@ static int w83l785ts_detect(struct i2c_client *new_client, int kind,
 			    struct i2c_board_info *info)
 {
 	struct i2c_adapter *adapter = new_client->adapter;
+static int w83l785ts_detect(struct i2c_client *client,
+			    struct i2c_board_info *info)
+{
+	struct i2c_adapter *adapter = client->adapter;
+	u16 man_id;
+	u8 chip_id;
 
 	if (!i2c_check_functionality(adapter, I2C_FUNC_SMBUS_BYTE_DATA))
 		return -ENODEV;
@@ -200,6 +214,26 @@ static int w83l785ts_detect(struct i2c_client *new_client, int kind,
 				 "chip_id=0x%02X).\n", man_id, chip_id);
 			return -ENODEV;
 		}
+	/* detection */
+	if ((w83l785ts_read_value(client, W83L785TS_REG_CONFIG, 0) & 0x80)
+	 || (w83l785ts_read_value(client, W83L785TS_REG_TYPE, 0) & 0xFC)) {
+		dev_dbg(&adapter->dev,
+			"W83L785TS-S detection failed at 0x%02x\n",
+			client->addr);
+		return -ENODEV;
+	}
+
+	/* Identification */
+	man_id = (w83l785ts_read_value(client, W83L785TS_REG_MAN_ID1, 0) << 8)
+	       + w83l785ts_read_value(client, W83L785TS_REG_MAN_ID2, 0);
+	chip_id = w83l785ts_read_value(client, W83L785TS_REG_CHIP_ID, 0);
+
+	if (man_id != 0x5CA3		/* Winbond */
+	 || chip_id != 0x70) {		/* W83L785TS-S */
+		dev_dbg(&adapter->dev,
+			"Unsupported chip (man_id=0x%04X, chip_id=0x%02X)\n",
+			man_id, chip_id);
+		return -ENODEV;
 	}
 
 	strlcpy(info->type, "w83l785ts", I2C_NAME_SIZE);
@@ -226,6 +260,20 @@ static int w83l785ts_probe(struct i2c_client *new_client,
 	/* Default values in case the first read fails (unlikely). */
 	data->temp[1] = data->temp[0] = 0;
 
+static int w83l785ts_probe(struct i2c_client *client,
+			   const struct i2c_device_id *id)
+{
+	struct w83l785ts_data *data;
+	struct device *dev = &client->dev;
+	int err;
+
+	data = devm_kzalloc(dev, sizeof(struct w83l785ts_data), GFP_KERNEL);
+	if (!data)
+		return -ENOMEM;
+
+	i2c_set_clientdata(client, data);
+	mutex_init(&data->update_lock);
+
 	/*
 	 * Initialize the W83L785TS chip
 	 * Nothing yet, assume it is already started.
@@ -238,11 +286,17 @@ static int w83l785ts_probe(struct i2c_client *new_client,
 
 	err = device_create_file(&new_client->dev,
 				 &sensor_dev_attr_temp1_max.dev_attr);
+	err = device_create_file(dev, &sensor_dev_attr_temp1_input.dev_attr);
+	if (err)
+		return err;
+
+	err = device_create_file(dev, &sensor_dev_attr_temp1_max.dev_attr);
 	if (err)
 		goto exit_remove;
 
 	/* Register sysfs hooks */
 	data->hwmon_dev = hwmon_device_register(&new_client->dev);
+	data->hwmon_dev = hwmon_device_register(dev);
 	if (IS_ERR(data->hwmon_dev)) {
 		err = PTR_ERR(data->hwmon_dev);
 		goto exit_remove;
@@ -257,6 +311,8 @@ exit_remove:
 			   &sensor_dev_attr_temp1_max.dev_attr);
 	kfree(data);
 exit:
+	device_remove_file(dev, &sensor_dev_attr_temp1_input.dev_attr);
+	device_remove_file(dev, &sensor_dev_attr_temp1_max.dev_attr);
 	return err;
 }
 
@@ -282,6 +338,10 @@ static u8 w83l785ts_read_value(struct i2c_client *client, u8 reg, u8 defval)
 
 	/* We might be called during detection, at which point the client
 	   isn't yet fully initialized, so we can't use dev_dbg on it */
+	/*
+	 * We might be called during detection, at which point the client
+	 * isn't yet fully initialized, so we can't use dev_dbg on it
+	 */
 	if (i2c_get_clientdata(client)) {
 		dev = &client->dev;
 		prefix = "";
@@ -293,6 +353,11 @@ static u8 w83l785ts_read_value(struct i2c_client *client, u8 reg, u8 defval)
 	/* Frequent read errors have been reported on Asus boards, so we
 	 * retry on read errors. If it still fails (unlikely), return the
 	 * default value requested by the caller. */
+	/*
+	 * Frequent read errors have been reported on Asus boards, so we
+	 * retry on read errors. If it still fails (unlikely), return the
+	 * default value requested by the caller.
+	 */
 	for (i = 1; i <= MAX_RETRIES; i++) {
 		value = i2c_smbus_read_byte_data(client, reg);
 		if (value >= 0) {
@@ -348,3 +413,8 @@ MODULE_LICENSE("GPL");
 
 module_init(sensors_w83l785ts_init);
 module_exit(sensors_w83l785ts_exit);
+module_i2c_driver(w83l785ts_driver);
+
+MODULE_AUTHOR("Jean Delvare <jdelvare@suse.de>");
+MODULE_DESCRIPTION("W83L785TS-S driver");
+MODULE_LICENSE("GPL");

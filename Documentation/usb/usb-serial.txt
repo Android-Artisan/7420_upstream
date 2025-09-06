@@ -84,6 +84,7 @@ HandSpring Visor, Palm USB, and Clié USB driver
   
   There is a webpage and mailing lists for this portion of the driver at:
   http://usbvisor.sourceforge.net/
+  http://sourceforge.net/projects/usbvisor/
 
   For any questions or problems with this driver, please contact Greg
   Kroah-Hartman at greg@kroah.com
@@ -146,6 +147,7 @@ Keyspan PDA Serial Adapter
   sold in Macintosh catalogs, comes in a translucent white/green dongle).
   Fairly simple device. Firmware is homebrew.
   This driver also works for the Xircom/Entrgra single port serial adapter.
+  This driver also works for the Xircom/Entrega single port serial adapter.
 
   Current status:
    Things that work:
@@ -185,6 +187,7 @@ Keyspan USA-series Serial Adapters
   
   More information is available at:
         http://misc.nu/hugh/keyspan.html
+        http://www.carnationsoftware.com/carnation/Keyspan.html
    
   For any questions or problems with this driver, please contact Hugh
   Blemings at hugh@misc.nu
@@ -193,6 +196,10 @@ Keyspan USA-series Serial Adapters
 FTDI Single Port Serial Driver
 
   This is a single port DB-25 serial adapter.
+
+  Devices supported include:
+                -TripNav TN-200 USB GPS
+                -Navis Engineering Bureau CH-4711 USB GPS
 
   For any questions or problems with this driver, please contact Bill Ryder.
 
@@ -217,6 +224,7 @@ Cypress M8 CY4601 Family Serial Driver
     Devices supported:
 
 		-DeLorme's USB Earthmate (SiRF Star II lp arch)
+		-DeLorme's USB Earthmate GPS (SiRF Star II lp arch)
 		-Cypress HID->COM RS232 adapter
 	
 		Note: Cypress Semiconductor claims no affiliation with the
@@ -395,6 +403,10 @@ Prolific PL2303 Driver
   in it.  This includes a number of single port USB to serial
   converters and USB GPS devices.  Devices from Aten (the UC-232) and
   IO-Data work with this driver, as does the DCU-11 mobile-phone cable.
+  in it.  This includes a number of single port USB to serial converters,
+  more than 70% of USB GPS devices (in 2010), and some USB UPSes. Devices
+  from Aten (the UC-232) and IO-Data work with this driver, as does
+  the DCU-11 mobile-phone cable.
 
   For any questions or problems with this driver, please contact Greg
   Kroah-Hartman at greg@kroah.com
@@ -435,6 +447,22 @@ Winchiphead CH341 Driver
   For any questions or problems with this driver, please contact
   frank@kingswood-consulting.co.uk.
 
+Moschip MCS7720, MCS7715 driver
+
+  These chips are present in devices sold by various manufacturers, such as Syba
+  and Cables Unlimited.  There may be others.  The 7720 provides two serial
+  ports, and the 7715 provides one serial and one standard PC parallel port.
+  Support for the 7715's parallel port is enabled by a separate option, which
+  will not appear unless parallel port support is first enabled at the top-level
+  of the Device Drivers config menu.  Currently only compatibility mode is
+  supported on the parallel port (no ECP/EPP).
+
+  TODO:
+    - Implement ECP/EPP modes for the parallel port.
+    - Baud rates higher than 115200 are currently broken.
+    - Devices with a single serial port based on the Moschip MCS7703 may work
+      with this driver with a simple addition to the usb_device_id table.  I
+      don't have one of these devices, so I can't say for sure.
 
 Generic Serial driver
 
@@ -450,6 +478,14 @@ Generic Serial driver
 	insmod usbserial vendor=0x#### product=0x####
   where the #### is replaced with the hex representation of your device's
   vendor id and product id.
+
+  To enable the generic driver to recognize your device, provide
+	echo <vid> <pid> >/sys/bus/usb-serial/drivers/generic/new_id
+  where the <vid> and <pid> is replaced with the hex representation of your
+  device's vendor id and product id.
+  If the driver is compiled as a module you can also provide one id when
+  loading the module
+	insmod usbserial vendor=0x#### product=0x####
 
   This driver has been successfully used to connect to the NetChip USB
   development board, providing a way to develop USB firmware without

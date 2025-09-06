@@ -18,6 +18,10 @@
  */
 
 #include <linux/fs.h>
+#include <linux/mm.h>
+#include <linux/fs.h>
+#include <linux/posix_acl.h>
+#include <linux/quotaops.h>
 #include "jfs_incore.h"
 #include "jfs_inode.h"
 #include "jfs_dmap.h"
@@ -35,10 +39,26 @@ int jfs_fsync(struct file *file, struct dentry *dentry, int datasync)
 	    (datasync && !(inode->i_state & I_DIRTY_DATASYNC))) {
 		/* Make sure committed changes hit the disk */
 		jfs_flush_journal(JFS_SBI(inode->i_sb)->log, 1);
+int jfs_fsync(struct file *file, loff_t start, loff_t end, int datasync)
+{
+	struct inode *inode = file->f_mapping->host;
+	int rc = 0;
+
+	rc = filemap_write_and_wait_range(inode->i_mapping, start, end);
+	if (rc)
+		return rc;
+
+	mutex_lock(&inode->i_mutex);
+	if (!(inode->i_state & I_DIRTY_ALL) ||
+	    (datasync && !(inode->i_state & I_DIRTY_DATASYNC))) {
+		/* Make sure committed changes hit the disk */
+		jfs_flush_journal(JFS_SBI(inode->i_sb)->log, 1);
+		mutex_unlock(&inode->i_mutex);
 		return rc;
 	}
 
 	rc |= jfs_commit_inode(inode, 1);
+	mutex_unlock(&inode->i_mutex);
 
 	return rc ? -EIO : 0;
 }
@@ -48,6 +68,7 @@ static int jfs_open(struct inode *inode, struct file *file)
 	int rc;
 
 	if ((rc = generic_file_open(inode, file)))
+	if ((rc = dquot_file_open(inode, file)))
 		return rc;
 
 	/*
@@ -67,6 +88,9 @@ static int jfs_open(struct inode *inode, struct file *file)
 			ji->active_ag = ji->agno;
 			atomic_inc(
 			    &JFS_SBI(inode->i_sb)->bmap->db_active[ji->agno]);
+			struct jfs_sb_info *jfs_sb = JFS_SBI(inode->i_sb);
+			ji->active_ag = BLKTOAG(addressPXD(&ji->ixpxd), jfs_sb);
+			atomic_inc(&jfs_sb->bmap->db_active[ji->active_ag]);
 		}
 		spin_unlock_irq(&ji->ag_lock);
 	}
@@ -90,6 +114,48 @@ static int jfs_release(struct inode *inode, struct file *file)
 
 const struct inode_operations jfs_file_inode_operations = {
 	.truncate	= jfs_truncate,
+int jfs_setattr(struct dentry *dentry, struct iattr *iattr)
+{
+	struct inode *inode = d_inode(dentry);
+	int rc;
+
+	rc = inode_change_ok(inode, iattr);
+	if (rc)
+		return rc;
+
+	if (is_quota_modification(inode, iattr)) {
+		rc = dquot_initialize(inode);
+		if (rc)
+			return rc;
+	}
+	if ((iattr->ia_valid & ATTR_UID && !uid_eq(iattr->ia_uid, inode->i_uid)) ||
+	    (iattr->ia_valid & ATTR_GID && !gid_eq(iattr->ia_gid, inode->i_gid))) {
+		rc = dquot_transfer(inode, iattr);
+		if (rc)
+			return rc;
+	}
+
+	if ((iattr->ia_valid & ATTR_SIZE) &&
+	    iattr->ia_size != i_size_read(inode)) {
+		inode_dio_wait(inode);
+
+		rc = inode_newsize_ok(inode, iattr->ia_size);
+		if (rc)
+			return rc;
+
+		truncate_setsize(inode, iattr->ia_size);
+		jfs_truncate(inode);
+	}
+
+	setattr_copy(inode, iattr);
+	mark_inode_dirty(inode);
+
+	if (iattr->ia_valid & ATTR_MODE)
+		rc = posix_acl_chmod(inode, inode->i_mode);
+	return rc;
+}
+
+const struct inode_operations jfs_file_inode_operations = {
 	.setxattr	= jfs_setxattr,
 	.getxattr	= jfs_getxattr,
 	.listxattr	= jfs_listxattr,
@@ -97,6 +163,10 @@ const struct inode_operations jfs_file_inode_operations = {
 #ifdef CONFIG_JFS_POSIX_ACL
 	.setattr	= jfs_setattr,
 	.permission	= jfs_permission,
+	.setattr	= jfs_setattr,
+#ifdef CONFIG_JFS_POSIX_ACL
+	.get_acl	= jfs_get_acl,
+	.set_acl	= jfs_set_acl,
 #endif
 };
 
@@ -110,6 +180,11 @@ const struct file_operations jfs_file_operations = {
 	.mmap		= generic_file_mmap,
 	.splice_read	= generic_file_splice_read,
 	.splice_write	= generic_file_splice_write,
+	.read_iter	= generic_file_read_iter,
+	.write_iter	= generic_file_write_iter,
+	.mmap		= generic_file_mmap,
+	.splice_read	= generic_file_splice_read,
+	.splice_write	= iter_file_splice_write,
 	.fsync		= jfs_fsync,
 	.release	= jfs_release,
 	.unlocked_ioctl = jfs_ioctl,

@@ -43,6 +43,10 @@ typedef struct {
 #else
 #define BITS_PER_LONG 32
 #endif
+#ifndef _ASM_POWERPC_TYPES_H
+#define _ASM_POWERPC_TYPES_H
+
+#include <uapi/asm/types.h>
 
 #ifndef __ASSEMBLY__
 

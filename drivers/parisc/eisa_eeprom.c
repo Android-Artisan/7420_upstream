@@ -46,6 +46,9 @@ static loff_t eisa_eeprom_llseek(struct file *file, loff_t offset, int origin )
 		break;
 	}
 	return (offset >= 0 && offset < HPEE_MAX_LENGTH) ? (file->f_pos = offset) : -EINVAL;
+static loff_t eisa_eeprom_llseek(struct file *file, loff_t offset, int origin)
+{
+	return fixed_size_llseek(file, offset, origin, HPEE_MAX_LENGTH);
 }
 
 static ssize_t eisa_eeprom_read(struct file * file,
@@ -56,6 +59,7 @@ static ssize_t eisa_eeprom_read(struct file * file,
 	int i;
 	
 	if (*ppos >= HPEE_MAX_LENGTH)
+	if (*ppos < 0 || *ppos >= HPEE_MAX_LENGTH)
 		return 0;
 	
 	count = *ppos + count < HPEE_MAX_LENGTH ? count : HPEE_MAX_LENGTH - *ppos;
@@ -87,6 +91,9 @@ static int eisa_eeprom_open(struct inode *inode, struct file *file)
 	cycle_kernel_lock();
 
 	if (file->f_mode & 2)
+static int eisa_eeprom_open(struct inode *inode, struct file *file)
+{
+	if (file->f_mode & FMODE_WRITE)
 		return -EINVAL;
    
 	return 0;

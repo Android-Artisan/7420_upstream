@@ -18,6 +18,7 @@
  *
  */
 
+#include <linux/gpio.h>
 #include <linux/if_ether.h>
 #include <linux/irq.h>
 #include <linux/jiffies.h>
@@ -34,6 +35,25 @@
 #include <asm/mach/flash.h>
 #include <asm/io.h>
 #include <asm/gpio.h>
+#include <linux/io.h>
+#include <asm/mach-types.h>
+#include <asm/mach/arch.h>
+#include <asm/mach/flash.h>
+
+#define NAS100D_SDA_PIN		5
+#define NAS100D_SCL_PIN		6
+
+/* Buttons */
+#define NAS100D_PB_GPIO         14   /* power button */
+#define NAS100D_RB_GPIO         4    /* reset button */
+
+/* Power control */
+#define NAS100D_PO_GPIO         12   /* power off */
+
+/* LEDs */
+#define NAS100D_LED_WLAN_GPIO	0
+#define NAS100D_LED_DISK_GPIO	3
+#define NAS100D_LED_PWR_GPIO	15
 
 static struct flash_platform_data nas100d_flash_data = {
 	.map_name		= "cfi_probe",
@@ -176,6 +196,8 @@ static void nas100d_power_off(void)
 
 	/* do the deed */
 	gpio_line_set(NAS100D_PO_GPIO, IXP4XX_GPIO_HIGH);
+	/* enable the pwr cntl gpio and assert power off */
+	gpio_direction_output(NAS100D_PO_GPIO, 1);
 }
 
 /* This is used to make sure the power-button pusher is serious.  The button
@@ -213,6 +235,7 @@ static void nas100d_power_handler(unsigned long data)
 
 			/* Change the state of the power LED to "blink" */
 			gpio_line_set(NAS100D_LED_PWR_GPIO, IXP4XX_GPIO_LOW);
+			gpio_set_value(NAS100D_LED_PWR_GPIO, 0);
 		} else {
 			power_button_countdown = PBUTTON_HOLDDOWN_COUNT;
 		}
@@ -232,6 +255,35 @@ static irqreturn_t nas100d_reset_handler(int irq, void *dev_id)
 static void __init nas100d_init(void)
 {
 	DECLARE_MAC_BUF(mac_buf);
+static int __init nas100d_gpio_init(void)
+{
+	if (!machine_is_nas100d())
+		return 0;
+
+	/*
+	 * The power button on the Iomega NAS100d is on GPIO 14, but
+	 * it cannot handle interrupts on that GPIO line.  So we'll
+	 * have to poll it with a kernel timer.
+	 */
+
+	/* Request the power off GPIO */
+	gpio_request(NAS100D_PO_GPIO, "power off");
+
+	/* Make sure that the power button GPIO is set up as an input */
+	gpio_request(NAS100D_PB_GPIO, "power button");
+	gpio_direction_input(NAS100D_PB_GPIO);
+
+	/* Set the initial value for the power button IRQ handler */
+	power_button_countdown = PBUTTON_HOLDDOWN_COUNT;
+
+	mod_timer(&nas100d_power_timer, jiffies + msecs_to_jiffies(500));
+
+	return 0;
+}
+device_initcall(nas100d_gpio_init);
+
+static void __init nas100d_init(void)
+{
 	uint8_t __iomem *f;
 	int i;
 
@@ -261,6 +313,7 @@ static void __init nas100d_init(void)
 	if (request_irq(gpio_to_irq(NAS100D_RB_GPIO), &nas100d_reset_handler,
 		IRQF_DISABLED | IRQF_TRIGGER_LOW,
 		"NAS100D reset button", NULL) < 0) {
+		IRQF_TRIGGER_LOW, "NAS100D reset button", NULL) < 0) {
 
 		printk(KERN_DEBUG "Reset Button IRQ %d not available\n",
 			gpio_to_irq(NAS100D_RB_GPIO));
@@ -296,6 +349,8 @@ static void __init nas100d_init(void)
 	}
 	printk(KERN_INFO "NAS100D: Using MAC address %s for port 0\n",
 	       print_mac(mac_buf, nas100d_plat_eth[0].hwaddr));
+	printk(KERN_INFO "NAS100D: Using MAC address %pM for port 0\n",
+	       nas100d_plat_eth[0].hwaddr);
 
 }
 
@@ -308,4 +363,14 @@ MACHINE_START(NAS100D, "Iomega NAS 100d")
 	.init_irq	= ixp4xx_init_irq,
 	.timer          = &ixp4xx_timer,
 	.init_machine	= nas100d_init,
+	.atag_offset	= 0x100,
+	.map_io		= ixp4xx_map_io,
+	.init_early	= ixp4xx_init_early,
+	.init_irq	= ixp4xx_init_irq,
+	.init_time	= ixp4xx_timer_init,
+	.init_machine	= nas100d_init,
+#if defined(CONFIG_PCI)
+	.dma_zone_size	= SZ_64M,
+#endif
+	.restart	= ixp4xx_restart,
 MACHINE_END

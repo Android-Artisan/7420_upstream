@@ -2,6 +2,7 @@
 #define _CODA_INT_
 
 struct dentry;
+struct file;
 
 extern struct file_system_type coda_fs_type;
 extern unsigned long coda_timeout;
@@ -12,6 +13,8 @@ void coda_destroy_inodecache(void);
 int coda_init_inodecache(void);
 int coda_fsync(struct file *coda_file, struct dentry *coda_dentry,
 	       int datasync);
+int __init coda_init_inodecache(void);
+int coda_fsync(struct file *coda_file, loff_t start, loff_t end, int datasync);
 void coda_sysctl_init(void);
 void coda_sysctl_clean(void);
 

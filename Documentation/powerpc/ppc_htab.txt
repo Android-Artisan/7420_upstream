@@ -1,5 +1,4 @@
                  Information about /proc/ppc_htab
-=====================================================================
 
 This document and the related code was written by me (Cort Dougan), please
 email me (cort@fsmlabs.com) if you have questions, comments or corrections.

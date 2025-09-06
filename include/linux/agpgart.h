@@ -112,6 +112,12 @@ typedef struct _agp_unbind {
 #else				/* __KERNEL__ */
 #include <linux/mutex.h>
 #include <linux/agp_backend.h>
+#ifndef _AGP_H
+#define _AGP_H 1
+
+#include <linux/mutex.h>
+#include <linux/agp_backend.h>
+#include <uapi/linux/agpgart.h>
 
 #define AGPGART_MINOR 175
 

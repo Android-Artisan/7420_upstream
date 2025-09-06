@@ -13,6 +13,7 @@
 #include <linux/kernel.h>
 #include <linux/initrd.h>
 #include <linux/mtd/physmap.h>
+#include <linux/of_platform.h>
 
 #include <asm/time.h>
 #include <asm/prom.h>
@@ -53,6 +54,19 @@ static struct mtd_partition linkstation_physmap_partitions[] = {
 		.size   = 0x0f0000,
 	},
 };
+
+static const struct of_device_id of_bus_ids[] __initconst = {
+	{ .type = "soc", },
+	{ .compatible = "simple-bus", },
+	{},
+};
+
+static int __init declare_of_platform_devices(void)
+{
+	of_platform_bus_probe(NULL, of_bus_ids, NULL);
+	return 0;
+}
+machine_device_initcall(linkstation, declare_of_platform_devices);
 
 static int __init linkstation_add_bridge(struct device_node *dev)
 {
@@ -129,6 +143,18 @@ static void __init linkstation_init_IRQ(void)
 	/* ttyS0, ttyS1 */
 	mpic_assign_isu(mpic, 2, paddr + 0x11100);
 
+	mpic = mpic_alloc(NULL, 0, 0, 4, 0, " EPIC     ");
+	BUG_ON(mpic == NULL);
+
+	/* PCI IRQs */
+	mpic_assign_isu(mpic, 0, mpic->paddr + 0x10200);
+
+	/* I2C */
+	mpic_assign_isu(mpic, 1, mpic->paddr + 0x11000);
+
+	/* ttyS0, ttyS1 */
+	mpic_assign_isu(mpic, 2, mpic->paddr + 0x11100);
+
 	mpic_init(mpic);
 }
 
@@ -182,6 +208,9 @@ static int __init linkstation_probe(void)
 
 	if (!of_flat_dt_is_compatible(root, "linkstation"))
 		return 0;
+
+	pm_power_off = linkstation_power_off;
+
 	return 1;
 }
 

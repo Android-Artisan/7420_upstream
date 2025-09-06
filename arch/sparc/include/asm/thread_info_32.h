@@ -36,6 +36,8 @@ struct thread_info {
 	int			softirq_count;
 	int			hardirq_count;
 
+	u32 __unused;
+
 	/* Context switch saved kernel state. */
 	unsigned long ksp;	/* ... ksp __attribute__ ((aligned (8))); */
 	unsigned long kpc;
@@ -50,6 +52,9 @@ struct thread_info {
 	unsigned long		w_saved;
 
 	struct restart_block	restart_block;
+	struct reg_window32	reg_window[NSWINS];	/* align for ldd! */
+	unsigned long		rwbuf_stkptrs[NSWINS];
+	unsigned long		w_saved;
 };
 
 /*
@@ -68,6 +73,9 @@ struct thread_info {
 	.restart_block	= {				\
 		.fn	=	do_no_restart_syscall,	\
 	},						\
+	.flags		=	0,			\
+	.cpu		=	0,			\
+	.preempt_count	=	INIT_PREEMPT_COUNT,	\
 }
 
 #define init_thread_info	(init_thread_union.thread_info)
@@ -102,6 +110,12 @@ BTFIXUPDEF_CALL(void, free_thread_info, struct thread_info *)
  * The sun4 has 8K stack too, because it's short on memory, and 16K is a waste.
  */
 #define THREAD_SIZE		8192
+#define THREAD_SIZE_ORDER  1
+
+#endif /* __ASSEMBLY__ */
+
+/* Size of kernel stack for each process */
+#define THREAD_SIZE		(2 * PAGE_SIZE)
 
 /*
  * Offsets in thread_info structure, used in assembly code
@@ -115,6 +129,11 @@ BTFIXUPDEF_CALL(void, free_thread_info, struct thread_info *)
 #define TI_PREEMPT	0x14	/* preempt_count */
 #define TI_SOFTIRQ	0x18	/* softirq_count */
 #define TI_HARDIRQ	0x1c	/* hardirq_count */
+#define TI_FLAGS	0x08
+#define TI_CPU		0x0c
+#define TI_PREEMPT	0x10	/* preempt_count */
+#define TI_SOFTIRQ	0x14	/* softirq_count */
+#define TI_HARDIRQ	0x18	/* hardirq_count */
 #define TI_KSP		0x20	/* ksp */
 #define TI_KPC		0x24	/* kpc (ldd'ed with kpc) */
 #define TI_KPSR		0x28	/* kpsr */
@@ -139,6 +158,7 @@ BTFIXUPDEF_CALL(void, free_thread_info, struct thread_info *)
 #define TIF_POLLING_NRFLAG	9	/* true if poll_idle() is polling
 					 * TIF_NEED_RESCHED */
 #define TIF_MEMDIE		10
+#define TIF_MEMDIE		10	/* is terminating due to OOM killer */
 
 /* as above, but as bit values */
 #define _TIF_SYSCALL_TRACE	(1<<TIF_SYSCALL_TRACE)
@@ -152,6 +172,9 @@ BTFIXUPDEF_CALL(void, free_thread_info, struct thread_info *)
 #define _TIF_DO_NOTIFY_RESUME_MASK	(_TIF_NOTIFY_RESUME | \
 					 _TIF_SIGPENDING | \
 					 _TIF_RESTORE_SIGMASK)
+					 _TIF_SIGPENDING)
+
+#define is_32bit_task()	(1)
 
 #endif /* __KERNEL__ */
 

@@ -1,3 +1,9 @@
+/*
+ * Copyright 2004-2008 Analog Devices Inc.
+ *
+ * Licensed under the GPL-2 or later.
+ */
+
 #ifndef _BLACKFIN_STRING_H_
 #define _BLACKFIN_STRING_H_
 
@@ -121,6 +127,16 @@ extern inline int strncmp(const char *cs, const char *ct, size_t count)
 
 	return __res1;
 }
+extern char *strcpy(char *dest, const char *src);
+
+#define __HAVE_ARCH_STRNCPY
+extern char *strncpy(char *dest, const char *src, size_t n);
+
+#define __HAVE_ARCH_STRCMP
+extern int strcmp(const char *cs, const char *ct);
+
+#define __HAVE_ARCH_STRNCMP
+extern int strncmp(const char *cs, const char *ct, size_t count);
 
 #define __HAVE_ARCH_MEMSET
 extern void *memset(void *s, int c, size_t count);

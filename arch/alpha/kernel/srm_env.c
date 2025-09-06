@@ -7,6 +7,8 @@
  * This driver is at all a modified version of Erik Mouw's
  * Documentation/DocBook/procfs_example.c, so: thank
  * you, Erik! He can be reached via email at
+ * This driver is a modified version of Erik Mouw's example proc
+ * interface, so: thank you, Erik! He can be reached via email at
  * <J.A.K.Mouw@its.tudelft.nl>. It is based on an idea
  * provided by DEC^WCompaq^WIntel's "Jumpstart" CD. They
  * included a patch like this as well. Thanks for idea!
@@ -33,6 +35,11 @@
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/proc_fs.h>
+#include <linux/gfp.h>
+#include <linux/module.h>
+#include <linux/init.h>
+#include <linux/proc_fs.h>
+#include <linux/seq_file.h>
 #include <asm/console.h>
 #include <asm/uaccess.h>
 #include <asm/machvec.h>
@@ -115,6 +122,41 @@ srm_env_write(struct file *file, const char __user *buffer, unsigned long count,
 
 	entry = (srm_env_t *) data;
 
+
+static int srm_env_proc_show(struct seq_file *m, void *v)
+{
+	unsigned long	ret;
+	unsigned long	id = (unsigned long)m->private;
+	char		*page;
+
+	page = (char *)__get_free_page(GFP_USER);
+	if (!page)
+		return -ENOMEM;
+
+	ret = callback_getenv(id, page, PAGE_SIZE);
+
+	if ((ret >> 61) == 0) {
+		seq_write(m, page, ret);
+		ret = 0;
+	} else
+		ret = -EFAULT;
+	free_page((unsigned long)page);
+	return ret;
+}
+
+static int srm_env_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, srm_env_proc_show, PDE_DATA(inode));
+}
+
+static ssize_t srm_env_proc_write(struct file *file, const char __user *buffer,
+				  size_t count, loff_t *pos)
+{
+	int res;
+	unsigned long	id = (unsigned long)PDE_DATA(file_inode(file));
+	char		*buf = (char *) __get_free_page(GFP_USER);
+	unsigned long	ret1, ret2;
+
 	if (!buf)
 		return -ENOMEM;
 
@@ -128,6 +170,7 @@ srm_env_write(struct file *file, const char __user *buffer, unsigned long count,
 	buf[count] = '\0';
 
 	ret1 = callback_setenv(entry->id, buf, count);
+	ret1 = callback_setenv(id, buf, count);
 	if ((ret1 >> 61) == 0) {
 		do
 			ret2 = callback_save_env();
@@ -185,6 +228,14 @@ srm_env_cleanup(void)
 
 	return;
 }
+static const struct file_operations srm_env_proc_fops = {
+	.owner		= THIS_MODULE,
+	.open		= srm_env_proc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+	.write		= srm_env_proc_write,
+};
 
 static int __init
 srm_env_init(void)
@@ -219,6 +270,8 @@ srm_env_init(void)
 		goto cleanup;
 	}
 	base_dir->owner = THIS_MODULE;
+		return -ENOMEM;
+	}
 
 	/*
 	 * Create per-name subdirectory
@@ -258,6 +311,9 @@ srm_env_init(void)
 		entry->proc_entry->read_proc	= srm_env_read;
 		entry->proc_entry->write_proc	= srm_env_write;
 
+		if (!proc_create_data(entry->name, 0644, named_dir,
+			     &srm_env_proc_fops, (void *)entry->id))
+			goto cleanup;
 		entry++;
 	}
 
@@ -278,6 +334,11 @@ srm_env_init(void)
 		entry->proc_entry->owner	= THIS_MODULE;
 		entry->proc_entry->read_proc	= srm_env_read;
 		entry->proc_entry->write_proc	= srm_env_write;
+		char name[4];
+		sprintf(name, "%ld", var_num);
+		if (!proc_create_data(name, 0644, numbered_dir,
+			     &srm_env_proc_fops, (void *)var_num))
+			goto cleanup;
 	}
 
 	printk(KERN_INFO "%s: version %s loaded successfully\n", NAME,
@@ -288,6 +349,7 @@ srm_env_init(void)
 cleanup:
 	srm_env_cleanup();
 
+	remove_proc_subtree(BASE_DIR, NULL);
 	return -ENOMEM;
 }
 
@@ -298,6 +360,8 @@ srm_env_exit(void)
 	printk(KERN_INFO "%s: unloaded successfully\n", NAME);
 
 	return;
+	remove_proc_subtree(BASE_DIR, NULL);
+	printk(KERN_INFO "%s: unloaded successfully\n", NAME);
 }
 
 module_init(srm_env_init);

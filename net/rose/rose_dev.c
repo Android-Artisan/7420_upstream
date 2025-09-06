@@ -21,6 +21,8 @@
 #include <linux/if_ether.h>
 
 #include <asm/system.h>
+#include <linux/slab.h>
+
 #include <asm/io.h>
 
 #include <linux/inet.h>
@@ -40,6 +42,13 @@ static int rose_header(struct sk_buff *skb, struct net_device *dev,
 		       const void *daddr, const void *saddr, unsigned len)
 {
 	unsigned char *buff = skb_push(skb, ROSE_MIN_LEN + 2);
+
+		       const void *daddr, const void *saddr, unsigned int len)
+{
+	unsigned char *buff = skb_push(skb, ROSE_MIN_LEN + 2);
+
+	if (daddr)
+		memcpy(buff + 7, daddr, dev->addr_len);
 
 	*buff++ = ROSE_GFI | ROSE_Q_BIT;
 	*buff++ = 0x00;
@@ -100,6 +109,11 @@ static int rose_set_mac_address(struct net_device *dev, void *addr)
 
 	if (dev->flags & IFF_UP) {
 		err = rose_add_loopback_node((rose_address *)dev->dev_addr);
+	if (!memcmp(dev->dev_addr, sa->sa_data, dev->addr_len))
+		return 0;
+
+	if (dev->flags & IFF_UP) {
+		err = rose_add_loopback_node((rose_address *)sa->sa_data);
 		if (err)
 			return err;
 
@@ -147,11 +161,37 @@ static int rose_xmit(struct sk_buff *skb, struct net_device *dev)
 static struct net_device_stats *rose_get_stats(struct net_device *dev)
 {
 	return netdev_priv(dev);
+static netdev_tx_t rose_xmit(struct sk_buff *skb, struct net_device *dev)
+{
+	struct net_device_stats *stats = &dev->stats;
+	unsigned int len = skb->len;
+
+	if (!netif_running(dev)) {
+		printk(KERN_ERR "ROSE: rose_xmit - called when iface is down\n");
+		return NETDEV_TX_BUSY;
+	}
+
+	if (!rose_route_frame(skb, NULL)) {
+		dev_kfree_skb(skb);
+		stats->tx_errors++;
+		return NETDEV_TX_OK;
+	}
+
+	stats->tx_packets++;
+	stats->tx_bytes += len;
+	return NETDEV_TX_OK;
 }
 
 static const struct header_ops rose_header_ops = {
 	.create	= rose_header,
 	.rebuild= rose_rebuild_header,
+};
+
+static const struct net_device_ops rose_netdev_ops = {
+	.ndo_open		= rose_open,
+	.ndo_stop		= rose_close,
+	.ndo_start_xmit		= rose_xmit,
+	.ndo_set_mac_address    = rose_set_mac_address,
 };
 
 void rose_setup(struct net_device *dev)
@@ -160,6 +200,7 @@ void rose_setup(struct net_device *dev)
 	dev->hard_start_xmit	= rose_xmit;
 	dev->open		= rose_open;
 	dev->stop		= rose_close;
+	dev->netdev_ops		= &rose_netdev_ops;
 
 	dev->header_ops		= &rose_header_ops;
 	dev->hard_header_len	= AX25_BPQ_HEADER_LEN + AX25_MAX_HEADER_LEN + ROSE_MIN_LEN;
@@ -170,4 +211,7 @@ void rose_setup(struct net_device *dev)
 	/* New-style flags. */
 	dev->flags		= IFF_NOARP;
 	dev->get_stats = rose_get_stats;
+
+	/* New-style flags. */
+	dev->flags		= IFF_NOARP;
 }

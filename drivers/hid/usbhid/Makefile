@@ -31,6 +31,9 @@ endif
 ifeq ($(CONFIG_HID_FF),y)
 	usbhid-objs	+= hid-ff.o
 endif
+usbhid-y	:= hid-core.o hid-quirks.o
+usbhid-$(CONFIG_USB_HIDDEV)	+= hiddev.o
+usbhid-$(CONFIG_HID_PID)	+= hid-pidff.o
 
 obj-$(CONFIG_USB_HID)		+= usbhid.o
 obj-$(CONFIG_USB_KBD)		+= usbkbd.o

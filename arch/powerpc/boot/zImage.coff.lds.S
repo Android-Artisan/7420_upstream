@@ -10,6 +10,13 @@ SECTIONS
     *(.fixup)
   }
   _etext = .;
+  .text      :
+  {
+    _start = .;
+    *(.text)
+    *(.fixup)
+    _etext = .;
+  }
   . = ALIGN(4096);
   .data    :
   {
@@ -20,6 +27,7 @@ SECTIONS
     __got2_start = .;
     *(.got2)
     __got2_end = .;
+    *(.got2)
 
     _dtb_start = .;
     *(.kernel:dtb)

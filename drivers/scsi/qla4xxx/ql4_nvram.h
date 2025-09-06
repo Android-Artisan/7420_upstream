@@ -1,6 +1,7 @@
 /*
  * QLogic iSCSI HBA Driver
  * Copyright (c)  2003-2006 QLogic Corporation
+ * Copyright (c)  2003-2013 QLogic Corporation
  *
  * See LICENSE.qla4xxx for copyright and licensing details.
  */
@@ -11,6 +12,9 @@
 /*
  * AM29LV Flash definitions
  */
+/**
+ * AM29LV Flash definitions
+ **/
 #define FM93C56A_SIZE_8	 0x100
 #define FM93C56A_SIZE_16 0x80
 #define FM93C66A_SIZE_8	 0x200
@@ -20,6 +24,7 @@
 #define	 FM93C56A_START	      0x1
 
 // Commands
+/* Commands */
 #define	 FM93C56A_READ	      0x2
 #define	 FM93C56A_WEN	      0x0
 #define	 FM93C56A_WRITE	      0x1
@@ -29,6 +34,7 @@
 #define	 FM93C56A_ERASE_ALL   0x0
 
 /* Command Extentions */
+/* Command Extensions */
 #define	 FM93C56A_WEN_EXT	 0x3
 #define	 FM93C56A_WRITE_ALL_EXT	 0x1
 #define	 FM93C56A_WDS_EXT	 0x0
@@ -65,6 +71,9 @@
 /* */
 /* EEPROM format */
 /* */
+/**/
+/* EEPROM format */
+/**/
 struct bios_params {
 	uint16_t SpinUpDelay:1;
 	uint16_t BIOSDisable:1;

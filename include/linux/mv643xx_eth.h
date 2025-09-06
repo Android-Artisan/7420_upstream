@@ -6,6 +6,7 @@
 #define __LINUX_MV643XX_ETH_H
 
 #include <linux/mbus.h>
+#include <linux/if_ether.h>
 
 #define MV643XX_ETH_SHARED_NAME		"mv643xx_eth"
 #define MV643XX_ETH_NAME		"mv643xx_eth_port"
@@ -20,6 +21,22 @@ struct mv643xx_eth_shared_platform_data {
 	unsigned int		t_clk;
 };
 
+#define MV643XX_TX_CSUM_DEFAULT_LIMIT	0
+
+struct mv643xx_eth_shared_platform_data {
+	struct mbus_dram_target_info	*dram;
+	/*
+	 * Max packet size for Tx IP/Layer 4 checksum, when set to 0, default
+	 * limit of 9KiB will be used.
+	 */
+	int			tx_csum_limit;
+};
+
+#define MV643XX_ETH_PHY_ADDR_DEFAULT	0
+#define MV643XX_ETH_PHY_ADDR(x)		(0x80 | (x))
+#define MV643XX_ETH_PHY_NONE		0xff
+
+struct device_node;
 struct mv643xx_eth_platform_data {
 	/*
 	 * Pointer back to our parent instance, and our port number.
@@ -33,12 +50,15 @@ struct mv643xx_eth_platform_data {
 	struct platform_device	*shared_smi;
 	int			force_phy_addr;
 	int			phy_addr;
+	int			phy_addr;
+	struct device_node	*phy_node;
 
 	/*
 	 * Use this MAC address if it is valid, overriding the
 	 * address that is already in the hardware.
 	 */
 	u8			mac_addr[6];
+	u8			mac_addr[ETH_ALEN];
 
 	/*
 	 * If speed is 0, autonegotiation is enabled.
@@ -53,6 +73,10 @@ struct mv643xx_eth_platform_data {
 	 */
 	int			rx_queue_mask;
 	int			tx_queue_mask;
+	 * How many RX/TX queues to use.
+	 */
+	int			rx_queue_count;
+	int			tx_queue_count;
 
 	/*
 	 * Override default RX/TX queue sizes if nonzero.

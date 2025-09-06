@@ -18,6 +18,10 @@ static int autofs_get_sb(struct file_system_type *fs_type,
 	int flags, const char *dev_name, void *data, struct vfsmount *mnt)
 {
 	return get_sb_nodev(fs_type, flags, data, autofs4_fill_super, mnt);
+static struct dentry *autofs_mount(struct file_system_type *fs_type,
+	int flags, const char *dev_name, void *data)
+{
+	return mount_nodev(fs_type, flags, data, autofs4_fill_super);
 }
 
 static struct file_system_type autofs_fs_type = {
@@ -30,10 +34,27 @@ static struct file_system_type autofs_fs_type = {
 static int __init init_autofs4_fs(void)
 {
 	return register_filesystem(&autofs_fs_type);
+	.mount		= autofs_mount,
+	.kill_sb	= autofs4_kill_sb,
+};
+MODULE_ALIAS_FS("autofs");
+
+static int __init init_autofs4_fs(void)
+{
+	int err;
+
+	autofs_dev_ioctl_init();
+
+	err = register_filesystem(&autofs_fs_type);
+	if (err)
+		autofs_dev_ioctl_exit();
+
+	return err;
 }
 
 static void __exit exit_autofs4_fs(void)
 {
+	autofs_dev_ioctl_exit();
 	unregister_filesystem(&autofs_fs_type);
 }
 

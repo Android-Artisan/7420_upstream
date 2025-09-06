@@ -29,6 +29,7 @@ static ssize_t afs_proc_cells_write(struct file *file, const char __user *buf,
 				    size_t size, loff_t *_pos);
 
 static struct seq_operations afs_proc_cells_ops = {
+static const struct seq_operations afs_proc_cells_ops = {
 	.start	= afs_proc_cells_start,
 	.next	= afs_proc_cells_next,
 	.stop	= afs_proc_cells_stop,
@@ -46,6 +47,8 @@ static const struct file_operations afs_proc_cells_fops = {
 
 static int afs_proc_rootcell_open(struct inode *inode, struct file *file);
 static int afs_proc_rootcell_release(struct inode *inode, struct file *file);
+};
+
 static ssize_t afs_proc_rootcell_read(struct file *file, char __user *buf,
 				      size_t size, loff_t *_pos);
 static ssize_t afs_proc_rootcell_write(struct file *file,
@@ -64,6 +67,12 @@ static const struct file_operations afs_proc_rootcell_fops = {
 static int afs_proc_cell_volumes_open(struct inode *inode, struct file *file);
 static int afs_proc_cell_volumes_release(struct inode *inode,
 					 struct file *file);
+	.read		= afs_proc_rootcell_read,
+	.write		= afs_proc_rootcell_write,
+	.llseek		= no_llseek,
+};
+
+static int afs_proc_cell_volumes_open(struct inode *inode, struct file *file);
 static void *afs_proc_cell_volumes_start(struct seq_file *p, loff_t *pos);
 static void *afs_proc_cell_volumes_next(struct seq_file *p, void *v,
 					loff_t *pos);
@@ -71,6 +80,7 @@ static void afs_proc_cell_volumes_stop(struct seq_file *p, void *v);
 static int afs_proc_cell_volumes_show(struct seq_file *m, void *v);
 
 static struct seq_operations afs_proc_cell_volumes_ops = {
+static const struct seq_operations afs_proc_cell_volumes_ops = {
 	.start	= afs_proc_cell_volumes_start,
 	.next	= afs_proc_cell_volumes_next,
 	.stop	= afs_proc_cell_volumes_stop,
@@ -83,6 +93,7 @@ static const struct file_operations afs_proc_cell_volumes_fops = {
 	.llseek		= seq_lseek,
 	.release	= afs_proc_cell_volumes_release,
 	.owner		= THIS_MODULE,
+	.release	= seq_release,
 };
 
 static int afs_proc_cell_vlservers_open(struct inode *inode,
@@ -96,6 +107,7 @@ static void afs_proc_cell_vlservers_stop(struct seq_file *p, void *v);
 static int afs_proc_cell_vlservers_show(struct seq_file *m, void *v);
 
 static struct seq_operations afs_proc_cell_vlservers_ops = {
+static const struct seq_operations afs_proc_cell_vlservers_ops = {
 	.start	= afs_proc_cell_vlservers_start,
 	.next	= afs_proc_cell_vlservers_next,
 	.stop	= afs_proc_cell_vlservers_stop,
@@ -113,6 +125,10 @@ static const struct file_operations afs_proc_cell_vlservers_fops = {
 static int afs_proc_cell_servers_open(struct inode *inode, struct file *file);
 static int afs_proc_cell_servers_release(struct inode *inode,
 					 struct file *file);
+	.release	= seq_release,
+};
+
+static int afs_proc_cell_servers_open(struct inode *inode, struct file *file);
 static void *afs_proc_cell_servers_start(struct seq_file *p, loff_t *pos);
 static void *afs_proc_cell_servers_next(struct seq_file *p, void *v,
 					loff_t *pos);
@@ -120,6 +136,7 @@ static void afs_proc_cell_servers_stop(struct seq_file *p, void *v);
 static int afs_proc_cell_servers_show(struct seq_file *m, void *v);
 
 static struct seq_operations afs_proc_cell_servers_ops = {
+static const struct seq_operations afs_proc_cell_servers_ops = {
 	.start	= afs_proc_cell_servers_start,
 	.next	= afs_proc_cell_servers_next,
 	.stop	= afs_proc_cell_servers_stop,
@@ -132,6 +149,7 @@ static const struct file_operations afs_proc_cell_servers_fops = {
 	.llseek		= seq_lseek,
 	.release	= afs_proc_cell_servers_release,
 	.owner		= THIS_MODULE,
+	.release	= seq_release,
 };
 
 /*
@@ -156,6 +174,10 @@ int afs_proc_init(void)
 	if (!p)
 		goto error_rootcell;
 
+	if (!proc_create("cells", 0644, proc_afs, &afs_proc_cells_fops) ||
+	    !proc_create("rootcell", 0644, proc_afs, &afs_proc_rootcell_fops))
+		goto error_tree;
+
 	_leave(" = 0");
 	return 0;
 
@@ -163,6 +185,8 @@ error_rootcell:
  	remove_proc_entry("cells", proc_afs);
 error_cells:
 	remove_proc_entry("fs/afs", NULL);
+error_tree:
+	remove_proc_subtree("fs/afs", NULL);
 error_dir:
 	_leave(" = -ENOMEM");
 	return -ENOMEM;
@@ -176,6 +200,7 @@ void afs_proc_cleanup(void)
 	remove_proc_entry("rootcell", proc_afs);
 	remove_proc_entry("cells", proc_afs);
 	remove_proc_entry("fs/afs", NULL);
+	remove_proc_subtree("fs/afs", NULL);
 }
 
 /*
@@ -192,6 +217,7 @@ static int afs_proc_cells_open(struct inode *inode, struct file *file)
 
 	m = file->private_data;
 	m->private = PDE(inode)->data;
+	m->private = PDE_DATA(inode);
 
 	return 0;
 }
@@ -296,6 +322,7 @@ static ssize_t afs_proc_cells_write(struct file *file, const char __user *buf,
 		struct afs_cell *cell;
 
 		cell = afs_cell_create(name, args);
+		cell = afs_cell_create(name, strlen(name), args, false);
 		if (IS_ERR(cell)) {
 			ret = PTR_ERR(cell);
 			goto done;
@@ -410,6 +437,21 @@ int afs_proc_cell_setup(struct afs_cell *cell)
 			     &afs_proc_cell_volumes_fops, cell);
 	if (!p)
 		goto error_volumes;
+	struct proc_dir_entry *dir;
+
+	_enter("%p{%s}", cell, cell->name);
+
+	dir = proc_mkdir(cell->name, proc_afs);
+	if (!dir)
+		goto error_dir;
+
+	if (!proc_create_data("servers", 0, dir,
+			     &afs_proc_cell_servers_fops, cell) ||
+	    !proc_create_data("vlservers", 0, dir,
+			     &afs_proc_cell_vlservers_fops, cell) ||
+	    !proc_create_data("volumes", 0, dir,
+			     &afs_proc_cell_volumes_fops, cell))
+		goto error_tree;
 
 	_leave(" = 0");
 	return 0;
@@ -420,6 +462,8 @@ error_vlservers:
 	remove_proc_entry("servers", cell->proc_dir);
 error_servers:
 	remove_proc_entry(cell->name, proc_afs);
+error_tree:
+	remove_proc_subtree(cell->name, proc_afs);
 error_dir:
 	_leave(" = -ENOMEM");
 	return -ENOMEM;
@@ -436,6 +480,7 @@ void afs_proc_cell_remove(struct afs_cell *cell)
 	remove_proc_entry("vlservers", cell->proc_dir);
 	remove_proc_entry("servers", cell->proc_dir);
 	remove_proc_entry(cell->name, proc_afs);
+	remove_proc_subtree(cell->name, proc_afs);
 
 	_leave("");
 }
@@ -450,6 +495,7 @@ static int afs_proc_cell_volumes_open(struct inode *inode, struct file *file)
 	int ret;
 
 	cell = PDE(inode)->data;
+	cell = PDE_DATA(inode);
 	if (!cell)
 		return -ENOENT;
 
@@ -556,6 +602,7 @@ static int afs_proc_cell_vlservers_open(struct inode *inode, struct file *file)
 	int ret;
 
 	cell = PDE(inode)->data;
+	cell = PDE_DATA(inode);
 	if (!cell)
 		return -ENOENT;
 
@@ -647,6 +694,7 @@ static int afs_proc_cell_vlservers_show(struct seq_file *m, void *v)
 
 	/* display one cell per line on subsequent lines */
 	seq_printf(m, "%u.%u.%u.%u\n", NIPQUAD(addr->s_addr));
+	seq_printf(m, "%pI4\n", &addr->s_addr);
 	return 0;
 }
 
@@ -661,6 +709,7 @@ static int afs_proc_cell_servers_open(struct inode *inode, struct file *file)
 	int ret;
 
 	cell = PDE(inode)->data;
+	cell = PDE_DATA(inode);
 	if (!cell)
 		return -ENOENT;
 
@@ -738,6 +787,7 @@ static int afs_proc_cell_servers_show(struct seq_file *m, void *v)
 
 	/* display one cell per line on subsequent lines */
 	sprintf(ipaddr, "%u.%u.%u.%u", NIPQUAD(server->addr));
+	sprintf(ipaddr, "%pI4", &server->addr);
 	seq_printf(m, "%3d %-15.15s %5d\n",
 		   atomic_read(&server->usage), ipaddr, server->fs_state);
 

@@ -9,6 +9,7 @@
  *  Todo: - add support for the OF persistent properties
  */
 #include <linux/module.h>
+#include <linux/export.h>
 #include <linux/kernel.h>
 #include <linux/stddef.h>
 #include <linux/string.h>
@@ -81,6 +82,7 @@ static int core99_bank = 0;
 static int nvram_partitions[3];
 // XXX Turn that into a sem
 static DEFINE_SPINLOCK(nv_lock);
+static DEFINE_RAW_SPINLOCK(nv_lock);
 
 static int (*core99_write_bank)(int bank, u8* datas);
 static int (*core99_erase_bank)(int bank);
@@ -169,6 +171,10 @@ static unsigned char indirect_nvram_read_byte(int addr)
 	out_8(nvram_addr, addr >> 5);
 	val = in_8(&nvram_data[(addr & 0x1f) << 4]);
 	spin_unlock_irqrestore(&nv_lock, flags);
+	raw_spin_lock_irqsave(&nv_lock, flags);
+	out_8(nvram_addr, addr >> 5);
+	val = in_8(&nvram_data[(addr & 0x1f) << 4]);
+	raw_spin_unlock_irqrestore(&nv_lock, flags);
 
 	return val;
 }
@@ -181,6 +187,10 @@ static void indirect_nvram_write_byte(int addr, unsigned char val)
 	out_8(nvram_addr, addr >> 5);
 	out_8(&nvram_data[(addr & 0x1f) << 4], val);
 	spin_unlock_irqrestore(&nv_lock, flags);
+	raw_spin_lock_irqsave(&nv_lock, flags);
+	out_8(nvram_addr, addr >> 5);
+	out_8(&nvram_data[(addr & 0x1f) << 4], val);
+	raw_spin_unlock_irqrestore(&nv_lock, flags);
 }
 
 
@@ -281,6 +291,7 @@ static u32 core99_check(u8* datas)
 static int sm_erase_bank(int bank)
 {
 	int stat, i;
+	int stat;
 	unsigned long timeout;
 
 	u8 __iomem *base = (u8 __iomem *)nvram_data + core99_bank*NVRAM_SIZE;
@@ -307,6 +318,10 @@ static int sm_erase_bank(int bank)
 			printk(KERN_ERR "nvram: Sharp/Micron flash erase failed !\n");
 			return -ENXIO;
 		}
+	if (memchr_inv(base, 0xff, NVRAM_SIZE)) {
+		printk(KERN_ERR "nvram: Sharp/Micron flash erase failed !\n");
+		return -ENXIO;
+	}
 	return 0;
 }
 
@@ -342,12 +357,17 @@ static int sm_write_bank(int bank, u8* datas)
 			printk(KERN_ERR "nvram: Sharp/Micron flash write failed !\n");
 			return -ENXIO;
 		}
+	if (memcmp(base, datas, NVRAM_SIZE)) {
+		printk(KERN_ERR "nvram: Sharp/Micron flash write failed !\n");
+		return -ENXIO;
+	}
 	return 0;
 }
 
 static int amd_erase_bank(int bank)
 {
 	int i, stat = 0;
+	int stat = 0;
 	unsigned long timeout;
 
 	u8 __iomem *base = (u8 __iomem *)nvram_data + core99_bank*NVRAM_SIZE;
@@ -389,6 +409,11 @@ static int amd_erase_bank(int bank)
 			printk(KERN_ERR "nvram: AMD flash erase failed !\n");
 			return -ENXIO;
 		}
+
+	if (memchr_inv(base, 0xff, NVRAM_SIZE)) {
+		printk(KERN_ERR "nvram: AMD flash erase failed !\n");
+		return -ENXIO;
+	}
 	return 0;
 }
 
@@ -435,6 +460,10 @@ static int amd_write_bank(int bank, u8* datas)
 			printk(KERN_ERR "nvram: AMD flash write failed !\n");
 			return -ENXIO;
 		}
+	if (memcmp(base, datas, NVRAM_SIZE)) {
+		printk(KERN_ERR "nvram: AMD flash write failed !\n");
+		return -ENXIO;
+	}
 	return 0;
 }
 
@@ -482,6 +511,7 @@ static void core99_nvram_sync(void)
 		return;
 
 	spin_lock_irqsave(&nv_lock, flags);
+	raw_spin_lock_irqsave(&nv_lock, flags);
 	if (!memcmp(nvram_image, (u8*)nvram_data + core99_bank*NVRAM_SIZE,
 		NVRAM_SIZE))
 		goto bail;
@@ -504,6 +534,7 @@ static void core99_nvram_sync(void)
 			printk("nvram: Error writing bank %d\n", core99_bank);
  bail:
 	spin_unlock_irqrestore(&nv_lock, flags);
+	raw_spin_unlock_irqrestore(&nv_lock, flags);
 
 #ifdef DEBUG
        	mdelay(2000);
@@ -524,6 +555,7 @@ static int __init core99_nvram_setup(struct device_node *dp, unsigned long addr)
 		printk(KERN_ERR "nvram: can't allocate ram image\n");
 		return -ENOMEM;
 	}
+	nvram_image = memblock_virt_alloc(NVRAM_SIZE, 0);
 	nvram_data = ioremap(addr, NVRAM_SIZE*2);
 	nvram_naddrs = 1; /* Make sure we get the correct case */
 
@@ -585,6 +617,10 @@ int __init pmac_nvram_init(void)
 		if (of_address_to_resource(dp, 1, &r2) == 0) {
 			nvram_naddrs = 2;
 			s2 = (r2.end - r2.start) + 1;
+		s1 = resource_size(&r1);
+		if (of_address_to_resource(dp, 1, &r2) == 0) {
+			nvram_naddrs = 2;
+			s2 = resource_size(&r2);
 		}
 	}
 

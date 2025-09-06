@@ -17,6 +17,8 @@ PARAMS_PHYS	 = 0x0207c000
 INITRD_PHYS	 = 0x02180000
 INITRD_VIRT	 = 0x02180000
 
+OBJCOPYFLAGS	:=-O binary -R .note -R .note.gnu.build-id -R .comment
+
 #
 # If you don't define ZRELADDR above,
 # then it defaults to ZTEXTADDR
@@ -36,6 +38,10 @@ $(obj)/Image: vmlinux FORCE
 
 #$(obj)/Image:	$(CONFIGURE) $(SYSTEM)
 #	$(OBJCOPY) -O binary -R .note -R .comment -g -S $(SYSTEM) $@
+	$(OBJCOPY) $(OBJCOPYFLAGS) -S vmlinux $@
+
+#$(obj)/Image:	$(CONFIGURE) $(SYSTEM)
+#	$(OBJCOPY) $(OBJCOPYFLAGS) -g -S $(SYSTEM) $@
 
 bzImage: zImage
 
@@ -44,6 +50,10 @@ zImage:	$(CONFIGURE) compressed/$(LINUX)
 
 bootpImage: bootp/bootp
 	$(OBJCOPY) -O binary -R .note -R .comment -S bootp/bootp $@
+	$(OBJCOPY) $(OBJCOPYFLAGS) -S compressed/$(LINUX) $@
+
+bootpImage: bootp/bootp
+	$(OBJCOPY) $(OBJCOPYFLAGS) -S bootp/bootp $@
 
 compressed/$(LINUX): $(LINUX) dep
 	@$(MAKE) -C compressed $(LINUX)

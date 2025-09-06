@@ -63,6 +63,11 @@
   #define SH7751_PCICONF3_BIST6      0x40000000  /* Bist Executing */
   #define SH7751_PCICONF3_BIST3_0    0x0F000000  /* Bist Passed */
   #define SH7751_PCICONF3_HD7        0x00800000  /* Single Funtion device */
+#define SH7751_PCICONF3            0xC           /* PCI Config Reg 3 */
+  #define SH7751_PCICONF3_BIST7      0x80000000  /* Bist Supported */
+  #define SH7751_PCICONF3_BIST6      0x40000000  /* Bist Executing */
+  #define SH7751_PCICONF3_BIST3_0    0x0F000000  /* Bist Passed */
+  #define SH7751_PCICONF3_HD7        0x00800000  /* Single Function device */
   #define SH7751_PCICONF3_HD6_0      0x007F0000  /* Configuration Layout */
   #define SH7751_PCICONF3_LAT        0x0000FF00  /* Latency Timer */
   #define SH7751_PCICONF3_CLS        0x000000FF  /* Cache Line Size */
@@ -74,11 +79,13 @@
   #define SH7751_PCICONF5_LAP        0x00000008  /* Prefetch Enabled */
   #define SH7751_PCICONF5_LAT        0x00000006  /* Local Memory type */
   #define SH7751_PCICONF5_ASI        0x00000001  /* Address Space Type */  
+  #define SH7751_PCICONF5_ASI        0x00000001  /* Address Space Type */
 #define SH7751_PCICONF6            0x18          /* PCI Config Reg 6 */
   #define SH7751_PCICONF6_BASE       0xFFFFFFF0  /* Mem Space Base Addr */
   #define SH7751_PCICONF6_LAP        0x00000008  /* Prefetch Enabled */
   #define SH7751_PCICONF6_LAT        0x00000006  /* Local Memory type */
   #define SH7751_PCICONF6_ASI        0x00000001  /* Address Space Type */  
+  #define SH7751_PCICONF6_ASI        0x00000001  /* Address Space Type */
 /* PCICONF7 - PCICONF10 are undefined */
 #define SH7751_PCICONF11           0x2C          /* PCI Config Reg 11 */
   #define SH7751_PCICONF11_SSID      0xFFFF0000  /* Subsystem ID */

@@ -5,7 +5,9 @@
 # architecture-specific flags and dependencies.
 #
 
-LDFLAGS_bootp	:=-p --no-undefined -X \
+GCOV_PROFILE	:= n
+
+LDFLAGS_bootp	:= --no-undefined -X \
 		 --defsym initrd_phys=$(INITRD_PHYS) \
 		 --defsym params_phys=$(PARAMS_PHYS) -T
 AFLAGS_initrd.o :=-DINITRD=\"$(INITRD)\"

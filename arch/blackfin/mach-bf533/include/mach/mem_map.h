@@ -33,6 +33,18 @@
 
 #define COREMMR_BASE           0xFFE00000	 /* Core MMRs */
 #define SYSMMR_BASE            0xFFC00000	 /* System MMRs */
+ * BF533 memory map
+ *
+ * Copyright 2004-2009 Analog Devices Inc.
+ * Licensed under the GPL-2 or later.
+ */
+
+#ifndef __BFIN_MACH_MEM_MAP_H__
+#define __BFIN_MACH_MEM_MAP_H__
+
+#ifndef __BFIN_MEM_MAP_H__
+# error "do not include mach/mem_map.h directly -- use asm/mem_map.h"
+#endif
 
 /* Async Memory Banks */
 #define ASYNC_BANK3_BASE	0x20300000	 /* Async Bank 3 */
@@ -169,3 +181,4 @@
 #define L1_SCRATCH_LENGTH	0x1000
 
 #endif				/* _MEM_MAP_533_H_ */
+#endif

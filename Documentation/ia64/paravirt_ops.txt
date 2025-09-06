@@ -1,5 +1,4 @@
 Paravirt_ops on IA64
-====================
                           21 May 2008, Isaku Yamahata <yamahata@valinux.co.jp>
 
 

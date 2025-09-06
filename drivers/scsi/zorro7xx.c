@@ -13,6 +13,7 @@
 #include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/zorro.h>
+#include <linux/slab.h>
 
 #include <asm/amigahw.h>
 #include <asm/amigaints.h>
@@ -38,6 +39,7 @@ static struct zorro_driver_data {
 	unsigned long offset;
 	int absolute;	/* offset is absolute address */
 } zorro7xx_driver_data[] __devinitdata = {
+} zorro7xx_driver_data[] = {
 	{ .name = "PowerUP 603e+", .offset = 0xf40000, .absolute = 1 },
 	{ .name = "WarpEngine 40xx", .offset = 0x40000 },
 	{ .name = "A4091", .offset = 0x800000 },
@@ -46,6 +48,7 @@ static struct zorro_driver_data {
 };
 
 static struct zorro_device_id zorro7xx_zorro_tbl[] __devinitdata = {
+static struct zorro_device_id zorro7xx_zorro_tbl[] = {
 	{
 		.id = ZORRO_PROD_PHASE5_BLIZZARD_603E_PLUS,
 		.driver_data = (unsigned long)&zorro7xx_driver_data[0],
@@ -71,6 +74,10 @@ static struct zorro_device_id zorro7xx_zorro_tbl[] __devinitdata = {
 
 static int __devinit zorro7xx_init_one(struct zorro_dev *z,
 				       const struct zorro_device_id *ent)
+MODULE_DEVICE_TABLE(zorro, zorro7xx_zorro_tbl);
+
+static int zorro7xx_init_one(struct zorro_dev *z,
+			     const struct zorro_device_id *ent)
 {
 	struct Scsi_Host *host;
 	struct NCR_700_Host_Parameters *hostdata;
@@ -103,6 +110,7 @@ static int __devinit zorro7xx_init_one(struct zorro_dev *z,
 		hostdata->base = ioremap(ioaddr, zorro_resource_len(z));
 	else
 		hostdata->base = (void __iomem *)ZTWO_VADDR(ioaddr);
+		hostdata->base = ZTWO_VADDR(ioaddr);
 
 	hostdata->clock = 50;
 	hostdata->chip710 = 1;
@@ -149,6 +157,7 @@ static int __devinit zorro7xx_init_one(struct zorro_dev *z,
 }
 
 static __devexit void zorro7xx_remove_one(struct zorro_dev *z)
+static void zorro7xx_remove_one(struct zorro_dev *z)
 {
 	struct Scsi_Host *host = zorro_get_drvdata(z);
 	struct NCR_700_Host_Parameters *hostdata = shost_priv(host);
@@ -156,6 +165,8 @@ static __devexit void zorro7xx_remove_one(struct zorro_dev *z)
 	scsi_remove_host(host);
 
 	NCR_700_release(host);
+	if (host->base > 0x01000000)
+		iounmap(hostdata->base);
 	kfree(hostdata);
 	free_irq(host->irq, host);
 	zorro_release_device(z);
@@ -166,6 +177,7 @@ static struct zorro_driver zorro7xx_driver = {
 	.id_table = zorro7xx_zorro_tbl,
 	.probe	  = zorro7xx_init_one,
 	.remove	  = __devexit_p(zorro7xx_remove_one),
+	.remove	  = zorro7xx_remove_one,
 };
 
 static int __init zorro7xx_scsi_init(void)

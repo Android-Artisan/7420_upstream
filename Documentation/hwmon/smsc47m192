@@ -1,5 +1,4 @@
 Kernel driver smsc47m192
-========================
 
 Supported chips:
   * SMSC LPC47M192, LPC47M15x, LPC47M292 and LPC47M997

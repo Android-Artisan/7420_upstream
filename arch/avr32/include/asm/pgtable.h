@@ -31,6 +31,7 @@
 
 #define USER_PTRS_PER_PGD	(TASK_SIZE / PGDIR_SIZE)
 #define FIRST_USER_ADDRESS	0
+#define FIRST_USER_ADDRESS	0UL
 
 #ifndef __ASSEMBLY__
 extern pgd_t swapper_pg_dir[PTRS_PER_PGD];
@@ -326,6 +327,11 @@ static inline pte_t pte_modify(pte_t pte, pgprot_t newprot)
 struct vm_area_struct;
 extern void update_mmu_cache(struct vm_area_struct * vma,
 			     unsigned long address, pte_t pte);
+#define pte_unmap(pte)		do { } while (0)
+
+struct vm_area_struct;
+extern void update_mmu_cache(struct vm_area_struct * vma,
+			     unsigned long address, pte_t *ptep);
 
 /*
  * Encode and decode a swap entry

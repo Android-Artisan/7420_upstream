@@ -9,6 +9,7 @@
 #include <linux/errno.h>
 #include <linux/types.h>
 #include <linux/socket.h>
+#include <linux/slab.h>
 #include <linux/in.h>
 #include <linux/kernel.h>
 #include <linux/timer.h>
@@ -91,6 +92,7 @@ void ax25_dev_device_up(struct net_device *dev)
 	spin_unlock_bh(&ax25_dev_lock);
 
 	ax25_register_sysctl();
+	ax25_register_dev_sysctl(ax25_dev);
 }
 
 void ax25_dev_device_down(struct net_device *dev)
@@ -101,6 +103,7 @@ void ax25_dev_device_down(struct net_device *dev)
 		return;
 
 	ax25_unregister_sysctl();
+	ax25_unregister_dev_sysctl(ax25_dev);
 
 	spin_lock_bh(&ax25_dev_lock);
 
@@ -118,6 +121,7 @@ void ax25_dev_device_down(struct net_device *dev)
 	if ((s = ax25_dev_list) == ax25_dev) {
 		ax25_dev_list = s->next;
 		spin_unlock_bh(&ax25_dev_lock);
+		dev->ax25_ptr = NULL;
 		dev_put(dev);
 		kfree(ax25_dev);
 		ax25_register_sysctl();
@@ -128,6 +132,7 @@ void ax25_dev_device_down(struct net_device *dev)
 		if (s->next == ax25_dev) {
 			s->next = ax25_dev->next;
 			spin_unlock_bh(&ax25_dev_lock);
+			dev->ax25_ptr = NULL;
 			dev_put(dev);
 			kfree(ax25_dev);
 			ax25_register_sysctl();

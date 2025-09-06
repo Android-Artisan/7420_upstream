@@ -54,6 +54,11 @@ int usb_stor_euscsi_init(struct us_data *us)
 			0x0C, USB_RECIP_INTERFACE | USB_TYPE_VENDOR,
 			0x01, 0x0, us->iobuf, 0x1, 5*HZ);
 	US_DEBUGP("-- result is %d\n", result);
+	usb_stor_dbg(us, "Attempting to init eUSCSI bridge...\n");
+	result = usb_stor_control_msg(us, us->send_ctrl_pipe,
+			0x0C, USB_RECIP_INTERFACE | USB_TYPE_VENDOR,
+			0x01, 0x0, NULL, 0x0, 5 * HZ);
+	usb_stor_dbg(us, "-- result is %d\n", result);
 
 	return 0;
 }
@@ -69,6 +74,7 @@ int usb_stor_ucr61s2b_init(struct us_data *us)
 	static char init_string[] = "\xec\x0a\x06\x00$PCCHIPS";
 
 	US_DEBUGP("Sending UCR-61S2B initialization packet...\n");
+	usb_stor_dbg(us, "Sending UCR-61S2B initialization packet...\n");
 
 	bcb->Signature = cpu_to_le32(US_BULK_CB_SIGN);
 	bcb->Tag = 0;
@@ -88,6 +94,16 @@ int usb_stor_ucr61s2b_init(struct us_data *us)
 			US_BULK_CS_WRAP_LEN, &partial);
 
 	return (res ? -1 : 0);
+	if (res)
+		return -EIO;
+
+	usb_stor_dbg(us, "Getting status packet...\n");
+	res = usb_stor_bulk_transfer_buf(us, us->recv_bulk_pipe, bcs,
+			US_BULK_CS_WRAP_LEN, &partial);
+	if (res)
+		return -EIO;
+
+	return 0;
 }
 
 /* This places the HUAWEI E220 devices in multi-port mode */
@@ -102,4 +118,10 @@ int usb_stor_huawei_e220_init(struct us_data *us)
 				      0x01, 0x0, us->iobuf, 0x1, 1000);
 	US_DEBUGP("usb_control_msg performing result is %d\n", result);
 	return (result ? 0 : -1);
+	result = usb_stor_control_msg(us, us->send_ctrl_pipe,
+				      USB_REQ_SET_FEATURE,
+				      USB_TYPE_STANDARD | USB_RECIP_DEVICE,
+				      0x01, 0x0, NULL, 0x0, 1 * HZ);
+	usb_stor_dbg(us, "Huawei mode set result is %d\n", result);
+	return 0;
 }

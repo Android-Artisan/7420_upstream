@@ -75,6 +75,8 @@ static int fill_read_buffer(struct dentry * dentry, struct configfs_buffer * buf
 		return -ENOMEM;
 
 	count = ops->show_attribute(item,attr,buffer->page);
+	count = attr->show(item, buffer->page);
+
 	buffer->needs_read_fill = 0;
 	BUG_ON(count > (ssize_t)SIMPLE_ATTR_SIZE);
 	if (count >= 0)
@@ -174,6 +176,8 @@ flush_write_buffer(struct dentry * dentry, struct configfs_buffer * buffer, size
 	struct configfs_item_operations * ops = buffer->ops;
 
 	return ops->store_attribute(item,attr,buffer->page,count);
+
+	return attr->store(item, buffer->page, count);
 }
 
 
@@ -204,6 +208,7 @@ configfs_write_file(struct file *file, const char __user *buf, size_t count, lof
 	len = fill_write_buffer(buffer, buf, count);
 	if (len > 0)
 		len = flush_write_buffer(file->f_path.dentry, buffer, count);
+		len = flush_write_buffer(file->f_path.dentry, buffer, len);
 	if (len > 0)
 		*ppos += len;
 	mutex_unlock(&buffer->mutex);
@@ -239,6 +244,7 @@ static int check_perm(struct inode * inode, struct file * file)
 	if (file->f_mode & FMODE_WRITE) {
 
 		if (!(inode->i_mode & S_IWUGO) || !ops->store_attribute)
+		if (!(inode->i_mode & S_IWUGO) || !attr->store)
 			goto Eaccess;
 
 	}
@@ -249,6 +255,7 @@ static int check_perm(struct inode * inode, struct file * file)
 	 */
 	if (file->f_mode & FMODE_READ) {
 		if (!(inode->i_mode & S_IRUGO) || !ops->show_attribute)
+		if (!(inode->i_mode & S_IRUGO) || !attr->show)
 			goto Eaccess;
 	}
 
@@ -340,5 +347,16 @@ int configfs_create_file(struct config_item * item, const struct configfs_attrib
 
 	return configfs_add_file(item->ci_dentry, attr,
 				 CONFIGFS_ITEM_ATTR);
+	struct dentry *dir = item->ci_dentry;
+	struct configfs_dirent *parent_sd = dir->d_fsdata;
+	umode_t mode = (attr->ca_mode & S_IALLUGO) | S_IFREG;
+	int error = 0;
+
+	mutex_lock_nested(&d_inode(dir)->i_mutex, I_MUTEX_NORMAL);
+	error = configfs_make_dirent(parent_sd, NULL, (void *) attr, mode,
+				     CONFIGFS_ITEM_ATTR);
+	mutex_unlock(&d_inode(dir)->i_mutex);
+
+	return error;
 }
 

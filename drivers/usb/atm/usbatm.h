@@ -34,6 +34,7 @@
 #include <linux/stringify.h>
 #include <linux/usb.h>
 #include <linux/mutex.h>
+#include <linux/ratelimit.h>
 
 /*
 #define VERBOSE_DEBUG
@@ -58,6 +59,8 @@
 #define usb_dbg(instance, format, arg...)	\
 	do {} while (0)
 #endif
+#define usb_dbg(instance, format, arg...)	\
+	dev_dbg(&(instance)->usb_intf->dev , format , ## arg)
 
 /* FIXME: move to dev_* once ATM is driver model aware */
 #define atm_printk(level, instance, format, arg...)	\
@@ -83,6 +86,12 @@
 	do {} while (0)
 #endif
 
+#define atm_dbg(instance, format, ...)					\
+	pr_debug("ATM dev %d: " format,					\
+		 (instance)->atm_dev->number, ##__VA_ARGS__)
+#define atm_rldbg(instance, format, ...)				\
+	pr_debug_ratelimited("ATM dev %d: " format,			\
+			     (instance)->atm_dev->number, ##__VA_ARGS__)
 
 /* flags, set by mini-driver in bind() */
 
@@ -99,6 +108,7 @@ struct usbatm_data;
 *  Assuming all methods exist and succeed, they are called in this order:
 *
 *  	bind, heavy_init, atm_start, ..., atm_stop, unbind
+*	bind, heavy_init, atm_start, ..., atm_stop, unbind
 */
 
 struct usbatm_driver {
@@ -113,6 +123,14 @@ struct usbatm_driver {
 
 	/* cleanup device ... can sleep, but can't fail */
         void (*unbind) (struct usbatm_data *, struct usb_interface *);
+	int (*bind) (struct usbatm_data *, struct usb_interface *,
+		     const struct usb_device_id *id);
+
+	/* additional device initialization that is too slow to be done in probe() */
+	int (*heavy_init) (struct usbatm_data *, struct usb_interface *);
+
+	/* cleanup device ... can sleep, but can't fail */
+	void (*unbind) (struct usbatm_data *, struct usb_interface *);
 
 	/* init ATM device ... can sleep, or cause ATM initialization failure */
 	int (*atm_start) (struct usbatm_data *, struct atm_dev *);
@@ -123,6 +141,9 @@ struct usbatm_driver {
         int bulk_in;	/* bulk rx endpoint */
         int isoc_in;	/* isochronous rx endpoint */
         int bulk_out;	/* bulk tx endpoint */
+	int bulk_in;	/* bulk rx endpoint */
+	int isoc_in;	/* isochronous rx endpoint */
+	int bulk_out;	/* bulk tx endpoint */
 
 	unsigned rx_padding;
 	unsigned tx_padding;
@@ -151,6 +172,7 @@ struct usbatm_data {
 	/******************
 	*  public fields  *
         ******************/
+	******************/
 
 	/* mini driver */
 	struct usbatm_driver *driver;
@@ -169,6 +191,7 @@ struct usbatm_data {
 	/********************************
 	*  private fields - do not use  *
         ********************************/
+	********************************/
 
 	struct kref refcount;
 	struct mutex serialize;
@@ -197,5 +220,20 @@ struct usbatm_data {
 
 	struct urb *urbs[0];
 };
+
+static inline void *to_usbatm_driver_data(struct usb_interface *intf)
+{
+	struct usbatm_data *usbatm_instance;
+
+	if (intf == NULL)
+		return NULL;
+
+	usbatm_instance = usb_get_intfdata(intf);
+
+	if (usbatm_instance == NULL) /* set NULL before unbind() */
+		return NULL;
+
+	return usbatm_instance->driver_data; /* set NULL after unbind() */
+}
 
 #endif	/* _USBATM_H_ */

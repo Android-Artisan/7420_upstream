@@ -27,6 +27,7 @@
 
 #define IOP13XX_NUM_MSI_IRQS 128
 static DECLARE_BITMAP(msi_irq_in_use, IOP13XX_NUM_MSI_IRQS);
+#include <mach/irqs.h>
 
 /* IMIPR0 CP6 R8 Page 1
  */
@@ -95,6 +96,7 @@ static void (*write_imipr[])(u32) = {
 };
 
 static void iop13xx_msi_handler(unsigned int irq, struct irq_desc *desc)
+static void iop13xx_msi_handler(struct irq_desc *desc)
 {
 	int i, j;
 	unsigned long status;
@@ -112,6 +114,7 @@ static void iop13xx_msi_handler(unsigned int irq, struct irq_desc *desc)
 			(write_imipr[i])(1 << j); /* write back to clear bit */
 			desc = irq_desc + IRQ_IOP13XX_MSI_0 + j + (32*i);
 			desc_handle_irq(IRQ_IOP13XX_MSI_0 + j + (32*i),	desc);
+			generic_handle_irq(IRQ_IOP13XX_MSI_0 + j + (32*i));
 			status = (read_imipr[i])();
 		} while (status);
 	}
@@ -158,6 +161,10 @@ void arch_teardown_msi_irq(unsigned int irq)
 }
 
 static void iop13xx_msi_nop(unsigned int irq)
+	irq_set_chained_handler(IRQ_IOP13XX_INBD_MSI, iop13xx_msi_handler);
+}
+
+static void iop13xx_msi_nop(struct irq_data *d)
 {
 	return;
 }
@@ -169,17 +176,29 @@ static struct irq_chip iop13xx_msi_chip = {
 	.disable = mask_msi_irq,
 	.mask = mask_msi_irq,
 	.unmask = unmask_msi_irq,
+	.irq_ack = iop13xx_msi_nop,
+	.irq_enable = pci_msi_unmask_irq,
+	.irq_disable = pci_msi_mask_irq,
+	.irq_mask = pci_msi_mask_irq,
+	.irq_unmask = pci_msi_unmask_irq,
 };
 
 int arch_setup_msi_irq(struct pci_dev *pdev, struct msi_desc *desc)
 {
 	int id, irq = create_irq();
+	int id, irq = irq_alloc_desc_from(IRQ_IOP13XX_MSI_0, -1);
 	struct msi_msg msg;
 
 	if (irq < 0)
 		return irq;
 
 	set_irq_msi(irq, desc);
+	if (irq >= NR_IOP13XX_IRQS) {
+		irq_free_desc(irq);
+		return -ENOSPC;
+	}
+
+	irq_set_msi_desc(irq, desc);
 
 	msg.address_hi = 0x0;
 	msg.address_lo = IOP13XX_MU_MIMR_PCI;
@@ -191,4 +210,14 @@ int arch_setup_msi_irq(struct pci_dev *pdev, struct msi_desc *desc)
 	set_irq_chip_and_handler(irq, &iop13xx_msi_chip, handle_simple_irq);
 
 	return 0;
+}
+	pci_write_msi_msg(irq, &msg);
+	irq_set_chip_and_handler(irq, &iop13xx_msi_chip, handle_simple_irq);
+
+	return 0;
+}
+
+void arch_teardown_msi_irq(unsigned int irq)
+{
+	irq_free_desc(irq);
 }

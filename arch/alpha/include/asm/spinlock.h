@@ -18,12 +18,24 @@
 		do { cpu_relax(); } while ((x)->lock)
 
 static inline void __raw_spin_unlock(raw_spinlock_t * lock)
+#define arch_spin_lock_flags(lock, flags) arch_spin_lock(lock)
+#define arch_spin_is_locked(x)	((x)->lock != 0)
+#define arch_spin_unlock_wait(x) \
+		do { cpu_relax(); } while ((x)->lock)
+
+static inline int arch_spin_value_unlocked(arch_spinlock_t lock)
+{
+        return lock.lock == 0;
+}
+
+static inline void arch_spin_unlock(arch_spinlock_t * lock)
 {
 	mb();
 	lock->lock = 0;
 }
 
 static inline void __raw_spin_lock(raw_spinlock_t * lock)
+static inline void arch_spin_lock(arch_spinlock_t * lock)
 {
 	long tmp;
 
@@ -44,6 +56,7 @@ static inline void __raw_spin_lock(raw_spinlock_t * lock)
 }
 
 static inline int __raw_spin_trylock(raw_spinlock_t *lock)
+static inline int arch_spin_trylock(arch_spinlock_t *lock)
 {
 	return !test_and_set_bit(0, &lock->lock);
 }
@@ -51,16 +64,19 @@ static inline int __raw_spin_trylock(raw_spinlock_t *lock)
 /***********************************************************/
 
 static inline int __raw_read_can_lock(raw_rwlock_t *lock)
+static inline int arch_read_can_lock(arch_rwlock_t *lock)
 {
 	return (lock->lock & 1) == 0;
 }
 
 static inline int __raw_write_can_lock(raw_rwlock_t *lock)
+static inline int arch_write_can_lock(arch_rwlock_t *lock)
 {
 	return lock->lock == 0;
 }
 
 static inline void __raw_read_lock(raw_rwlock_t *lock)
+static inline void arch_read_lock(arch_rwlock_t *lock)
 {
 	long regx;
 
@@ -81,6 +97,7 @@ static inline void __raw_read_lock(raw_rwlock_t *lock)
 }
 
 static inline void __raw_write_lock(raw_rwlock_t *lock)
+static inline void arch_write_lock(arch_rwlock_t *lock)
 {
 	long regx;
 
@@ -101,6 +118,7 @@ static inline void __raw_write_lock(raw_rwlock_t *lock)
 }
 
 static inline int __raw_read_trylock(raw_rwlock_t * lock)
+static inline int arch_read_trylock(arch_rwlock_t * lock)
 {
 	long regx;
 	int success;
@@ -123,6 +141,7 @@ static inline int __raw_read_trylock(raw_rwlock_t * lock)
 }
 
 static inline int __raw_write_trylock(raw_rwlock_t * lock)
+static inline int arch_write_trylock(arch_rwlock_t * lock)
 {
 	long regx;
 	int success;
@@ -145,6 +164,7 @@ static inline int __raw_write_trylock(raw_rwlock_t * lock)
 }
 
 static inline void __raw_read_unlock(raw_rwlock_t * lock)
+static inline void arch_read_unlock(arch_rwlock_t * lock)
 {
 	long regx;
 	__asm__ __volatile__(
@@ -161,6 +181,7 @@ static inline void __raw_read_unlock(raw_rwlock_t * lock)
 }
 
 static inline void __raw_write_unlock(raw_rwlock_t * lock)
+static inline void arch_write_unlock(arch_rwlock_t * lock)
 {
 	mb();
 	lock->lock = 0;
@@ -169,5 +190,7 @@ static inline void __raw_write_unlock(raw_rwlock_t * lock)
 #define _raw_spin_relax(lock)	cpu_relax()
 #define _raw_read_relax(lock)	cpu_relax()
 #define _raw_write_relax(lock)	cpu_relax()
+#define arch_read_lock_flags(lock, flags) arch_read_lock(lock)
+#define arch_write_lock_flags(lock, flags) arch_write_lock(lock)
 
 #endif /* _ALPHA_SPINLOCK_H */

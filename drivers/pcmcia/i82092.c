@@ -20,6 +20,8 @@
 #include <pcmcia/cs.h>
 
 #include <asm/system.h>
+#include <pcmcia/ss.h>
+
 #include <asm/io.h>
 
 #include "i82092aa.h"
@@ -51,6 +53,12 @@ static int i82092aa_socket_resume (struct pci_dev *dev)
 }
 #endif
 
+static const struct pci_device_id i82092aa_pci_ids[] = {
+	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_82092AA_0) },
+	{ }
+};
+MODULE_DEVICE_TABLE(pci, i82092aa_pci_ids);
+
 static struct pci_driver i82092aa_pci_driver = {
 	.name           = "i82092aa",
 	.id_table       = i82092aa_pci_ids,
@@ -60,6 +68,7 @@ static struct pci_driver i82092aa_pci_driver = {
 	.suspend        = i82092aa_socket_suspend,
 	.resume         = i82092aa_socket_resume,
 #endif
+	.remove         = i82092aa_pci_remove,
 };
 
 
@@ -73,6 +82,7 @@ static struct pccard_operations i82092aa_operations = {
 };
 
 /* The card can do upto 4 sockets, allocate a structure for each of them */
+/* The card can do up to 4 sockets, allocate a structure for each of them */
 
 struct socket_info {
 	int	number;
@@ -92,6 +102,7 @@ static int socket_count;  /* shortcut */
 
 
 static int __devinit i82092aa_pci_probe(struct pci_dev *dev, const struct pci_device_id *id)
+static int i82092aa_pci_probe(struct pci_dev *dev, const struct pci_device_id *id)
 {
 	unsigned char configbyte;
 	int i, ret;
@@ -129,10 +140,12 @@ static int __devinit i82092aa_pci_probe(struct pci_dev *dev, const struct pci_de
 	for (i = 0;i<socket_count;i++) {
 		sockets[i].card_state = 1; /* 1 = present but empty */
 		sockets[i].io_base = pci_resource_start(dev, 0);
+		sockets[i].dev = dev;
 		sockets[i].socket.features |= SS_CAP_PCCARD;
 		sockets[i].socket.map_size = 0x1000;
 		sockets[i].socket.irq_mask = 0;
 		sockets[i].socket.pci_irq  = dev->irq;
+		sockets[i].socket.cb_dev  = dev;
 		sockets[i].socket.owner = THIS_MODULE;
 
 		sockets[i].number = i;
@@ -188,6 +201,9 @@ err_out_disable:
 static void __devexit i82092aa_pci_remove(struct pci_dev *dev)
 {
 	struct pcmcia_socket *socket = pci_get_drvdata(dev);
+static void i82092aa_pci_remove(struct pci_dev *dev)
+{
+	int i;
 
 	enter("i82092aa_pci_remove");
 	
@@ -195,6 +211,8 @@ static void __devexit i82092aa_pci_remove(struct pci_dev *dev)
 
 	if (socket)
 		pcmcia_unregister_socket(socket);
+	for (i = 0; i < socket_count; i++)
+		pcmcia_unregister_socket(&sockets[i].socket);
 
 	leave("i82092aa_pci_remove");
 }
@@ -634,6 +652,7 @@ static int i82092aa_set_mem_map(struct pcmcia_socket *socket, struct pccard_mem_
 	enter("i82092aa_set_mem_map");
 
 	pcibios_resource_to_bus(sock_info->dev, &region, mem->res);
+	pcibios_resource_to_bus(sock_info->dev->bus, &region, mem->res);
 	
 	map = mem->map;
 	if (map > 4) {

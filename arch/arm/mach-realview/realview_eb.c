@@ -36,6 +36,26 @@
 #include <asm/mach/arch.h>
 #include <asm/mach/map.h>
 #include <asm/mach/mmc.h>
+#include <linux/device.h>
+#include <linux/amba/bus.h>
+#include <linux/amba/pl061.h>
+#include <linux/amba/mmci.h>
+#include <linux/amba/pl022.h>
+#include <linux/io.h>
+#include <linux/irqchip/arm-gic.h>
+#include <linux/platform_data/clk-realview.h>
+#include <linux/reboot.h>
+
+#include <mach/hardware.h>
+#include <asm/irq.h>
+#include <asm/mach-types.h>
+#include <asm/pgtable.h>
+#include <asm/hardware/cache-l2x0.h>
+#include <asm/smp_twd.h>
+#include <asm/system_info.h>
+
+#include <asm/mach/arch.h>
+#include <asm/mach/map.h>
 #include <asm/mach/time.h>
 
 #include <mach/board-eb.h>
@@ -96,6 +116,9 @@ static struct map_desc realview_eb11mp_io_desc[] __initdata = {
 		.virtual	= IO_ADDRESS(REALVIEW_EB11MP_GIC_DIST_BASE),
 		.pfn		= __phys_to_pfn(REALVIEW_EB11MP_GIC_DIST_BASE),
 		.length		= SZ_4K,
+		.virtual	= IO_ADDRESS(REALVIEW_EB11MP_PRIV_MEM_BASE),
+		.pfn		= __phys_to_pfn(REALVIEW_EB11MP_PRIV_MEM_BASE),
+		.length		= REALVIEW_EB11MP_PRIV_MEM_SIZE,
 		.type		= MT_DEVICE,
 	}, {
 		.virtual	= IO_ADDRESS(REALVIEW_EB11MP_L220_BASE),
@@ -111,6 +134,28 @@ static void __init realview_eb_map_io(void)
 	if (core_tile_eb11mp())
 		iotable_init(realview_eb11mp_io_desc, ARRAY_SIZE(realview_eb11mp_io_desc));
 }
+
+	if (core_tile_eb11mp() || core_tile_a9mp())
+		iotable_init(realview_eb11mp_io_desc, ARRAY_SIZE(realview_eb11mp_io_desc));
+}
+
+static struct pl061_platform_data gpio0_plat_data = {
+	.gpio_base	= 0,
+};
+
+static struct pl061_platform_data gpio1_plat_data = {
+	.gpio_base	= 8,
+};
+
+static struct pl061_platform_data gpio2_plat_data = {
+	.gpio_base	= 16,
+};
+
+static struct pl022_ssp_controller ssp0_plat_data = {
+	.bus_id = 0,
+	.enable_dma = 0,
+	.num_chipselect = 1,
+};
 
 /*
  * RealView EB AMBA devices
@@ -132,6 +177,13 @@ static void __init realview_eb_map_io(void)
 #define KMI0_DMA	{ 0, 0 }
 #define KMI1_IRQ	{ IRQ_EB_KMI1, NO_IRQ }
 #define KMI1_DMA	{ 0, 0 }
+#define GPIO2_IRQ	{ IRQ_EB_GPIO2 }
+#define GPIO3_IRQ	{ IRQ_EB_GPIO3 }
+
+#define AACI_IRQ	{ IRQ_EB_AACI }
+#define MMCI0_IRQ	{ IRQ_EB_MMCI0A, IRQ_EB_MMCI0B }
+#define KMI0_IRQ	{ IRQ_EB_KMI0 }
+#define KMI1_IRQ	{ IRQ_EB_KMI1 }
 
 /*
  * These devices are connected directly to the multi-layer AHB switch
@@ -144,6 +196,10 @@ static void __init realview_eb_map_io(void)
 #define EB_CLCD_DMA	{ 0, 0 }
 #define DMAC_IRQ	{ IRQ_EB_DMA, NO_IRQ }
 #define DMAC_DMA	{ 0, 0 }
+#define EB_SMC_IRQ	{ }
+#define MPMC_IRQ	{ }
+#define EB_CLCD_IRQ	{ IRQ_EB_CLCD }
+#define DMAC_IRQ	{ IRQ_EB_DMA }
 
 /*
  * These devices are connected via the core APB bridge
@@ -158,6 +214,11 @@ static void __init realview_eb_map_io(void)
 #define GPIO1_DMA	{ 0, 0 }
 #define EB_RTC_IRQ	{ IRQ_EB_RTC, NO_IRQ }
 #define EB_RTC_DMA	{ 0, 0 }
+#define SCTL_IRQ	{ }
+#define EB_WATCHDOG_IRQ	{ IRQ_EB_WDOG }
+#define EB_GPIO0_IRQ	{ IRQ_EB_GPIO0 }
+#define GPIO1_IRQ	{ IRQ_EB_GPIO1 }
+#define EB_RTC_IRQ	{ IRQ_EB_RTC }
 
 /*
  * These devices are connected via the DMA APB bridge
@@ -197,6 +258,35 @@ AMBA_DEVICE(uart0, "dev:f1",  EB_UART0, NULL);
 AMBA_DEVICE(uart1, "dev:f2",  EB_UART1, NULL);
 AMBA_DEVICE(uart2, "dev:f3",  EB_UART2, NULL);
 AMBA_DEVICE(ssp0,  "dev:f4",  EB_SSP,   NULL);
+#define SCI_IRQ		{ IRQ_EB_SCI }
+#define EB_UART0_IRQ	{ IRQ_EB_UART0 }
+#define EB_UART1_IRQ	{ IRQ_EB_UART1 }
+#define EB_UART2_IRQ	{ IRQ_EB_UART2 }
+#define EB_UART3_IRQ	{ IRQ_EB_UART3 }
+#define EB_SSP_IRQ	{ IRQ_EB_SSP }
+
+/* FPGA Primecells */
+APB_DEVICE(aaci,  "fpga:aaci",  AACI,     NULL);
+APB_DEVICE(mmc0,  "fpga:mmc0",  MMCI0,    &realview_mmc0_plat_data);
+APB_DEVICE(kmi0,  "fpga:kmi0",  KMI0,     NULL);
+APB_DEVICE(kmi1,  "fpga:kmi1",  KMI1,     NULL);
+APB_DEVICE(uart3, "fpga:uart3", EB_UART3, NULL);
+
+/* DevChip Primecells */
+AHB_DEVICE(smc,   "dev:smc",   EB_SMC,   NULL);
+AHB_DEVICE(clcd,  "dev:clcd",  EB_CLCD,  &clcd_plat_data);
+AHB_DEVICE(dmac,  "dev:dmac",  DMAC,     NULL);
+AHB_DEVICE(sctl,  "dev:sctl",  SCTL,     NULL);
+APB_DEVICE(wdog,  "dev:wdog",  EB_WATCHDOG, NULL);
+APB_DEVICE(gpio0, "dev:gpio0", EB_GPIO0, &gpio0_plat_data);
+APB_DEVICE(gpio1, "dev:gpio1", GPIO1,    &gpio1_plat_data);
+APB_DEVICE(gpio2, "dev:gpio2", GPIO2,    &gpio2_plat_data);
+APB_DEVICE(rtc,   "dev:rtc",   EB_RTC,   NULL);
+APB_DEVICE(sci0,  "dev:sci0",  SCI,      NULL);
+APB_DEVICE(uart0, "dev:uart0", EB_UART0, NULL);
+APB_DEVICE(uart1, "dev:uart1", EB_UART1, NULL);
+APB_DEVICE(uart2, "dev:uart2", EB_UART2, NULL);
+APB_DEVICE(ssp0,  "dev:ssp0",  EB_SSP,   &ssp0_plat_data);
 
 static struct amba_device *amba_devs[] __initdata = {
 	&dmac_device,
@@ -248,6 +338,10 @@ static struct platform_device realview_eb_eth_device = {
 	.resource	= realview_eb_eth_resources,
 };
 
+		.flags		= IORESOURCE_IRQ | IORESOURCE_IRQ_HIGHEDGE,
+	},
+};
+
 /*
  * Detect and register the correct Ethernet device. RealView/EB rev D
  * platforms use the newer SMSC LAN9118 Ethernet chip
@@ -255,6 +349,7 @@ static struct platform_device realview_eb_eth_device = {
 static int eth_device_register(void)
 {
 	void __iomem *eth_addr = ioremap(REALVIEW_EB_ETH_BASE, SZ_4K);
+	const char *name = NULL;
 	u32 idrev;
 
 	if (!eth_addr)
@@ -275,6 +370,79 @@ static int eth_device_register(void)
 static void __init gic_init_irq(void)
 {
 	if (core_tile_eb11mp()) {
+	if ((idrev & 0xFFFF0000) != 0x01180000)
+		/* SMSC LAN9118 not present, use LAN91C111 instead */
+		name = "smc91x";
+
+	iounmap(eth_addr);
+	return realview_eth_register(name, realview_eb_eth_resources);
+}
+
+static struct resource realview_eb_isp1761_resources[] = {
+	[0] = {
+		.start		= REALVIEW_EB_USB_BASE,
+		.end		= REALVIEW_EB_USB_BASE + SZ_128K - 1,
+		.flags		= IORESOURCE_MEM,
+	},
+	[1] = {
+		.start		= IRQ_EB_USB,
+		.end		= IRQ_EB_USB,
+		.flags		= IORESOURCE_IRQ,
+	},
+};
+
+static struct resource pmu_resources[] = {
+	[0] = {
+		.start		= IRQ_EB11MP_PMU_CPU0,
+		.end		= IRQ_EB11MP_PMU_CPU0,
+		.flags		= IORESOURCE_IRQ,
+	},
+	[1] = {
+		.start		= IRQ_EB11MP_PMU_CPU1,
+		.end		= IRQ_EB11MP_PMU_CPU1,
+		.flags		= IORESOURCE_IRQ,
+	},
+	[2] = {
+		.start		= IRQ_EB11MP_PMU_CPU2,
+		.end		= IRQ_EB11MP_PMU_CPU2,
+		.flags		= IORESOURCE_IRQ,
+	},
+	[3] = {
+		.start		= IRQ_EB11MP_PMU_CPU3,
+		.end		= IRQ_EB11MP_PMU_CPU3,
+		.flags		= IORESOURCE_IRQ,
+	},
+};
+
+static struct platform_device pmu_device = {
+	.id			= -1,
+	.num_resources		= ARRAY_SIZE(pmu_resources),
+	.resource		= pmu_resources,
+};
+
+static struct resource char_lcd_resources[] = {
+	{
+		.start = REALVIEW_CHAR_LCD_BASE,
+		.end   = (REALVIEW_CHAR_LCD_BASE + SZ_4K - 1),
+		.flags = IORESOURCE_MEM,
+	},
+	{
+		.start	= IRQ_EB_CHARLCD,
+		.end	= IRQ_EB_CHARLCD,
+		.flags	= IORESOURCE_IRQ,
+	},
+};
+
+static struct platform_device char_lcd_device = {
+	.name		=	"arm-charlcd",
+	.id		=	-1,
+	.num_resources	=	ARRAY_SIZE(char_lcd_resources),
+	.resource	=	char_lcd_resources,
+};
+
+static void __init gic_init_irq(void)
+{
+	if (core_tile_eb11mp() || core_tile_a9mp()) {
 		unsigned int pldctrl;
 
 		/* new irq mode */
@@ -293,6 +461,13 @@ static void __init gic_init_irq(void)
 		/* board GIC, secondary */
 		gic_dist_init(1, __io_address(REALVIEW_EB_GIC_DIST_BASE), 64);
 		gic_cpu_init(1, __io_address(REALVIEW_EB_GIC_CPU_BASE));
+		gic_init(0, 29, __io_address(REALVIEW_EB11MP_GIC_DIST_BASE),
+			 __io_address(REALVIEW_EB11MP_GIC_CPU_BASE));
+
+#ifndef CONFIG_REALVIEW_EB_ARM11MP_REVB
+		/* board GIC, secondary */
+		gic_init(1, 96, __io_address(REALVIEW_EB_GIC_DIST_BASE),
+			 __io_address(REALVIEW_EB_GIC_CPU_BASE));
 		gic_cascade_irq(1, IRQ_EB11MP_EB_IRQ1);
 #endif
 	} else {
@@ -300,6 +475,8 @@ static void __init gic_init_irq(void)
 		gic_cpu_base_addr = __io_address(REALVIEW_EB_GIC_CPU_BASE);
 		gic_dist_init(0, __io_address(REALVIEW_EB_GIC_DIST_BASE), 29);
 		gic_cpu_init(0, gic_cpu_base_addr);
+		gic_init(0, 29, __io_address(REALVIEW_EB_GIC_DIST_BASE),
+			 __io_address(REALVIEW_EB_GIC_CPU_BASE));
 	}
 }
 
@@ -333,6 +510,27 @@ static void realview_eb11mp_fixup(void)
 	realview_eb_eth_resources[1].end	= IRQ_EB11MP_ETH;
 }
 
+	realview_eb_isp1761_resources[1].start	= IRQ_EB11MP_USB;
+	realview_eb_isp1761_resources[1].end	= IRQ_EB11MP_USB;
+}
+
+#ifdef CONFIG_HAVE_ARM_TWD
+static DEFINE_TWD_LOCAL_TIMER(twd_local_timer,
+			      REALVIEW_EB11MP_TWD_BASE,
+			      IRQ_LOCALTIMER);
+
+static void __init realview_eb_twd_init(void)
+{
+	if (core_tile_eb11mp() || core_tile_a9mp()) {
+		int err = twd_local_timer_register(&twd_local_timer);
+		if (err)
+			pr_err("twd_local_timer_register failed %d\n", err);
+	}
+}
+#else
+#define realview_eb_twd_init()	do { } while(0)
+#endif
+
 static void __init realview_eb_timer_init(void)
 {
 	unsigned int timer_irq;
@@ -357,6 +555,30 @@ static void __init realview_eb_timer_init(void)
 static struct sys_timer realview_eb_timer = {
 	.init		= realview_eb_timer_init,
 };
+	if (core_tile_eb11mp() || core_tile_a9mp())
+		timer_irq = IRQ_EB11MP_TIMER0_1;
+	else
+		timer_irq = IRQ_EB_TIMER0_1;
+
+	realview_clk_init(__io_address(REALVIEW_SYS_BASE), false);
+	realview_timer_init(timer_irq);
+	realview_eb_twd_init();
+}
+
+static void realview_eb_restart(enum reboot_mode mode, const char *cmd)
+{
+	void __iomem *reset_ctrl = __io_address(REALVIEW_SYS_RESETCTL);
+	void __iomem *lock_ctrl = __io_address(REALVIEW_SYS_LOCK);
+
+	/*
+	 * To reset, we hit the on-board reset register
+	 * in the system FPGA
+	 */
+	__raw_writel(REALVIEW_SYS_LOCK_VAL, lock_ctrl);
+	if (core_tile_eb11mp())
+		__raw_writel(0x0008, reset_ctrl);
+	dsb();
+}
 
 static void __init realview_eb_init(void)
 {
@@ -377,6 +599,29 @@ static void __init realview_eb_init(void)
 	realview_flash_register(&realview_eb_flash_resource, 1);
 	platform_device_register(&realview_i2c_device);
 	eth_device_register();
+	if (core_tile_eb11mp() || core_tile_a9mp()) {
+		realview_eb11mp_fixup();
+
+#ifdef CONFIG_CACHE_L2X0
+		/*
+		 * The PL220 needs to be manually configured as the hardware
+		 * doesn't report the correct sizes.
+		 * 1MB (128KB/way), 8-way associativity, event monitor and
+		 * parity enabled, ignore share bit, no force write allocate
+		 * Bits:  .... ...0 0111 1001 0000 .... .... ....
+		 */
+		l2x0_init(__io_address(REALVIEW_EB11MP_L220_BASE), 0x00790000, 0xfe000fff);
+#endif
+		pmu_device.name = core_tile_a9mp() ? "armv7-pmu" : "armv6-pmu";
+		platform_device_register(&pmu_device);
+	}
+
+	realview_flash_register(&realview_eb_flash_resource, 1);
+	platform_device_register(&realview_i2c_device);
+	platform_device_register(&char_lcd_device);
+	platform_device_register(&realview_leds_device);
+	eth_device_register();
+	realview_usb_register(realview_eb_isp1761_resources);
 
 	for (i = 0; i < ARRAY_SIZE(amba_devs); i++) {
 		struct amba_device *d = amba_devs[i];
@@ -397,4 +642,16 @@ MACHINE_START(REALVIEW_EB, "ARM-RealView EB")
 	.init_irq	= gic_init_irq,
 	.timer		= &realview_eb_timer,
 	.init_machine	= realview_eb_init,
+	.atag_offset	= 0x100,
+	.smp		= smp_ops(realview_smp_ops),
+	.fixup		= realview_fixup,
+	.map_io		= realview_eb_map_io,
+	.init_early	= realview_init_early,
+	.init_irq	= gic_init_irq,
+	.init_time	= realview_eb_timer_init,
+	.init_machine	= realview_eb_init,
+#ifdef CONFIG_ZONE_DMA
+	.dma_zone_size	= SZ_256M,
+#endif
+	.restart	= realview_eb_restart,
 MACHINE_END

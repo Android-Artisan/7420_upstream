@@ -269,6 +269,7 @@
 #else
 #define SCSI_NCR_MAX_LUN	(1)
 #endif
+#define SCSI_NCR_MAX_LUN	(16)
 
 /*
  *  IO functions definition for big/little endian CPU support.
@@ -1286,12 +1287,10 @@ do {						\
 	(data)->size = cpu_to_scr(len);		\
 } while (0)
 
-/*==========================================================
 **
 **	Structures used by the detection routine to transmit 
 **	device configuration to the attach function.
 **
-**==========================================================
 */
 struct ncr_slot {
 	u_long	base;
@@ -1305,12 +1304,10 @@ struct ncr_slot {
 	volatile struct ncr_reg	__iomem *reg;
 };
 
-/*==========================================================
 **
 **	Structure used by detection routine to save data on 
 **	each detected board for attach.
 **
-**==========================================================
 */
 struct ncr_device {
 	struct device  *dev;

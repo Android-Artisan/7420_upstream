@@ -72,7 +72,6 @@
     measurement. Their error is +/-20k on a quiet (private) network and also
     depend on what load the CPU has.
 
-    =========================================================================
     This driver  has been written substantially  from  scratch, although its
     inheritance of style and stack interface from 'ewrk3.c' and in turn from
     Donald Becker's 'lance.c' should be obvious. With the module autoload of
@@ -440,7 +439,6 @@
       0.548  30-Aug-03    Big 2.6 cleanup. Ported to PCI/EISA probing and
                            generic DMA APIs. Fixed DE425 support on Alpha.
 			   <maz@wild-wind.fr.eu.org>
-    =========================================================================
 */
 
 #include <linux/module.h>

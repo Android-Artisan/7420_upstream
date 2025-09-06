@@ -1,5 +1,4 @@
 Mounting the root filesystem via NFS (nfsroot)
-===============================================
 
 Written 1996 by Gero Kuhlmann <gero@gkminix.han.de>
 Updated 1997 by Martin Mares <mj@atrey.karlin.mff.cuni.cz>

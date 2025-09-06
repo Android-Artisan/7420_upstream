@@ -2,6 +2,9 @@
  * bbc_envctrl.c: UltraSPARC-III environment control driver.
  *
  * Copyright (C) 2001 David S. Miller (davem@redhat.com)
+/* bbc_envctrl.c: UltraSPARC-III environment control driver.
+ *
+ * Copyright (C) 2001, 2008 David S. Miller (davem@davemloft.net)
  */
 
 #include <linux/kthread.h>
@@ -10,6 +13,10 @@
 #include <linux/reboot.h>
 #include <asm/oplib.h>
 #include <asm/ebus.h>
+#include <linux/of.h>
+#include <linux/slab.h>
+#include <linux/of_device.h>
+#include <asm/oplib.h>
 
 #include "bbc_i2c.h"
 #include "max1617.h"
@@ -112,6 +119,8 @@ struct bbc_fan_control {
 };
 
 struct bbc_fan_control *all_bbc_fans;
+static LIST_HEAD(all_temps);
+static LIST_HEAD(all_fans);
 
 #define CPU_FAN_REG	0xf0
 #define SYS_FAN_REG	0xf2
@@ -196,6 +205,7 @@ static void do_envctrl_shutdown(struct bbc_cpu_temperature *tp)
 	shutting_down = 1;
 	if (orderly_poweroff(true) < 0)
 		printk(KERN_CRIT "envctrl: shutdown execution failed\n");
+	orderly_poweroff(true);
 }
 
 #define WARN_INTERVAL	(30 * HZ)
@@ -331,6 +341,7 @@ static enum fan_action prioritize_fan_action(int which_fan)
 	 * fans.
 	 */
 	for (tp = all_bbc_temps; tp; tp = tp->next) {
+	list_for_each_entry(tp, &all_temps, glob_list) {
 		if (tp->fan_todo[which_fan] == FAN_FULLBLAST) {
 			decision = FAN_FULLBLAST;
 			break;
@@ -440,6 +451,7 @@ static void fans_full_blast(void)
 	 * the fans on full blast.
 	 */
 	for (fp = all_bbc_fans; fp; fp = fp->next) {
+	list_for_each_entry(fp, &all_fans, glob_list) {
 		fp->cpu_fan_speed = FAN_SPEED_MAX;
 		fp->system_fan_speed = FAN_SPEED_MAX;
 		fp->psupply_fan_on = 1;
@@ -468,6 +480,11 @@ static int kenvctrld(void *__unused)
 			analyze_temps(tp, &last_warning_jiffies);
 		}
 		for (fp = all_bbc_fans; fp; fp = fp->next)
+		list_for_each_entry(tp, &all_temps, glob_list) {
+			get_current_temps(tp);
+			analyze_temps(tp, &last_warning_jiffies);
+		}
+		list_for_each_entry(fp, &all_fans, glob_list)
 			maybe_new_fan_speeds(fp);
 	}
 	printk(KERN_INFO "bbc_envctrl: kenvctrld exiting...\n");
@@ -478,6 +495,8 @@ static int kenvctrld(void *__unused)
 }
 
 static void attach_one_temp(struct linux_ebus_child *echild, int temp_idx)
+static void attach_one_temp(struct bbc_i2c_bus *bp, struct platform_device *op,
+			    int temp_idx)
 {
 	struct bbc_cpu_temperature *tp;
 
@@ -486,6 +505,10 @@ static void attach_one_temp(struct linux_ebus_child *echild, int temp_idx)
 		return;
 
 	tp->client = bbc_i2c_attach(echild);
+	INIT_LIST_HEAD(&tp->bp_list);
+	INIT_LIST_HEAD(&tp->glob_list);
+
+	tp->client = bbc_i2c_attach(bp, op);
 	if (!tp->client) {
 		kfree(tp);
 		return;
@@ -499,6 +522,11 @@ static void attach_one_temp(struct linux_ebus_child *echild, int temp_idx)
 		tp->next = NULL;
 		*tpp = tp;
 	}
+
+	tp->index = temp_idx;
+
+	list_add(&tp->glob_list, &all_temps);
+	list_add(&tp->bp_list, &bp->temps);
 
 	/* Tell it to convert once every 5 seconds, clear all cfg
 	 * bits.
@@ -525,6 +553,8 @@ static void attach_one_temp(struct linux_ebus_child *echild, int temp_idx)
 }
 
 static void attach_one_fan(struct linux_ebus_child *echild, int fan_idx)
+static void attach_one_fan(struct bbc_i2c_bus *bp, struct platform_device *op,
+			   int fan_idx)
 {
 	struct bbc_fan_control *fp;
 
@@ -533,6 +563,10 @@ static void attach_one_fan(struct linux_ebus_child *echild, int fan_idx)
 		return;
 
 	fp->client = bbc_i2c_attach(echild);
+	INIT_LIST_HEAD(&fp->bp_list);
+	INIT_LIST_HEAD(&fp->glob_list);
+
+	fp->client = bbc_i2c_attach(bp, op);
 	if (!fp->client) {
 		kfree(fp);
 		return;
@@ -547,6 +581,8 @@ static void attach_one_fan(struct linux_ebus_child *echild, int fan_idx)
 		fp->next = NULL;
 		*fpp = fp;
 	}
+	list_add(&fp->glob_list, &all_fans);
+	list_add(&fp->bp_list, &bp->fans);
 
 	/* The i2c device controlling the fans is write-only.
 	 * So the only way to keep track of the current power
@@ -591,6 +627,17 @@ static void destroy_one_temp(struct bbc_cpu_temperature *tp)
 	kfree(tp);
 }
 
+static void destroy_all_temps(struct bbc_i2c_bus *bp)
+{
+	struct bbc_cpu_temperature *tp, *tpos;
+
+	list_for_each_entry_safe(tp, tpos, &bp->temps, bp_list) {
+		list_del(&tp->bp_list);
+		list_del(&tp->glob_list);
+		destroy_one_temp(tp);
+	}
+}
+
 static void destroy_one_fan(struct bbc_fan_control *fp)
 {
 	bbc_i2c_detach(fp->client);
@@ -619,4 +666,50 @@ void bbc_envctrl_cleanup(void)
 		fp = next;
 	}
 	all_bbc_fans = NULL;
+static void destroy_all_fans(struct bbc_i2c_bus *bp)
+{
+	struct bbc_fan_control *fp, *fpos;
+
+	list_for_each_entry_safe(fp, fpos, &bp->fans, bp_list) {
+		list_del(&fp->bp_list);
+		list_del(&fp->glob_list);
+		destroy_one_fan(fp);
+	}
+}
+
+int bbc_envctrl_init(struct bbc_i2c_bus *bp)
+{
+	struct platform_device *op;
+	int temp_index = 0;
+	int fan_index = 0;
+	int devidx = 0;
+
+	while ((op = bbc_i2c_getdev(bp, devidx++)) != NULL) {
+		if (!strcmp(op->dev.of_node->name, "temperature"))
+			attach_one_temp(bp, op, temp_index++);
+		if (!strcmp(op->dev.of_node->name, "fan-control"))
+			attach_one_fan(bp, op, fan_index++);
+	}
+	if (temp_index != 0 && fan_index != 0) {
+		kenvctrld_task = kthread_run(kenvctrld, NULL, "kenvctrld");
+		if (IS_ERR(kenvctrld_task)) {
+			int err = PTR_ERR(kenvctrld_task);
+
+			kenvctrld_task = NULL;
+			destroy_all_temps(bp);
+			destroy_all_fans(bp);
+			return err;
+		}
+	}
+
+	return 0;
+}
+
+void bbc_envctrl_cleanup(struct bbc_i2c_bus *bp)
+{
+	if (kenvctrld_task)
+		kthread_stop(kenvctrld_task);
+
+	destroy_all_temps(bp);
+	destroy_all_fans(bp);
 }

@@ -1,10 +1,6 @@
-			   =========================
 			   MN10300 FUNCTION CALL ABI
-			   =========================
 
-=======
 GENERAL
-=======
 
 The MN10300/AM33 kernel runs in little-endian mode; big-endian mode is not
 supported.
@@ -13,9 +9,7 @@ The stack grows downwards, and should always be 32-bit aligned. There are
 separate stack pointer registers for userspace and the kernel.
 
 
-================
 ARGUMENT PASSING
-================
 
 The first two arguments (assuming up to 32-bits per argument) to a function are
 passed in the D0 and D1 registers respectively; all other arguments are passed
@@ -27,13 +21,12 @@ passed in D0:D1. If the first argument is not a 64-bit value, but the second
 is, the second will be passed entirely on the stack and D1 will be unused.
 
 Arguments smaller than 32-bits are not coelesced within a register or a stack
+Arguments smaller than 32-bits are not coalesced within a register or a stack
 word. For example, two byte-sized arguments will always be passed in separate
 registers or word-sized stack slots.
 
 
-=================
 CALLING FUNCTIONS
-=================
 
 The caller must allocate twelve bytes on the stack for the callee's use before
 it inserts a CALL instruction. The CALL instruction will write into the TOS
@@ -64,9 +57,7 @@ The caller must leave space on the stack (hence an allocation of twelve bytes)
 in which the callee may store the first two arguments.
 
 
-============
 RETURN VALUE
-============
 
 The return value is passed in D0 for an integer (or D0:D1 for a 64-bit value),
 or A0 for a pointer.
@@ -78,9 +69,7 @@ function. In this case, the callee will return the value in that piece of
 memory, and no value will be returned in D0 or A0.
 
 
-===================
 REGISTER CLOBBERING
-===================
 
 The values in certain registers may be clobbered by the callee, and other
 values must be saved:
@@ -92,9 +81,7 @@ All other non-supervisor-only registers are clobberable (such as MDR, MCRL,
 MCRH).
 
 
-=================
 SPECIAL REGISTERS
-=================
 
 Certain ordinary registers may carry special usage for the compiler:
 
@@ -102,9 +89,7 @@ Certain ordinary registers may carry special usage for the compiler:
 	E2:	TLS pointer
 
 
-==========
 KERNEL ABI
-==========
 
 The kernel may use a slightly different ABI internally.
 
@@ -129,14 +114,11 @@ The kernel may use a slightly different ABI internally.
      instead.
 
 
-===============
 SYSTEM CALL ABI
-===============
 
 System calls are called with the following convention:
 
 	REGISTER	ENTRY			EXIT
-	===============	=======================	=======================
 	D0		Syscall number		Return value
 	A0		1st syscall argument	Saved
 	D1		2nd syscall argument	Saved

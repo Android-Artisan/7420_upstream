@@ -22,6 +22,9 @@ struct exec_domain;
 struct thread_info {
 	struct task_struct	*task;		/* main task structure */
 	struct exec_domain	*exec_domain;	/* execution domain */
+
+struct thread_info {
+	struct task_struct	*task;		/* main task structure */
 	unsigned long		flags;		/* low level flags */
 	__u32			cpu;
 	__s32			preempt_count;	/* 0 => preemptable, <0 => BUG */
@@ -44,6 +47,9 @@ struct thread_info {
 	.restart_block	= {						\
 		.fn	= do_no_restart_syscall				\
 	}								\
+	.flags		= 0,						\
+	.cpu		= 0,						\
+	.preempt_count	= INIT_PREEMPT_COUNT,				\
 }
 
 #define init_thread_info	(init_thread_union.thread_info)
@@ -85,6 +91,12 @@ static inline struct thread_info *current_thread_info(void)
 #define TIF_RESTORE_SIGMASK	7	/* restore signal mask in do_signal */
 #define TIF_CPU_GOING_TO_SLEEP	8	/* CPU is entering sleep 0 mode */
 #define TIF_FREEZE		29
+#define TIF_BREAKPOINT		4	/* enter monitor mode on return */
+#define TIF_SINGLE_STEP		5	/* single step in progress */
+#define TIF_MEMDIE		6	/* is terminating due to OOM killer */
+#define TIF_RESTORE_SIGMASK	7	/* restore signal mask in do_signal */
+#define TIF_CPU_GOING_TO_SLEEP	8	/* CPU is entering sleep 0 mode */
+#define TIF_NOTIFY_RESUME	9	/* callback before returning to user */
 #define TIF_DEBUG		30	/* debugging enabled */
 #define TIF_USERSPACE		31      /* true if FS sets userspace */
 
@@ -96,6 +108,11 @@ static inline struct thread_info *current_thread_info(void)
 #define _TIF_MEMDIE		(1 << TIF_MEMDIE)
 #define _TIF_RESTORE_SIGMASK	(1 << TIF_RESTORE_SIGMASK)
 #define _TIF_CPU_GOING_TO_SLEEP (1 << TIF_CPU_GOING_TO_SLEEP)
+#define _TIF_BREAKPOINT		(1 << TIF_BREAKPOINT)
+#define _TIF_SINGLE_STEP	(1 << TIF_SINGLE_STEP)
+#define _TIF_MEMDIE		(1 << TIF_MEMDIE)
+#define _TIF_CPU_GOING_TO_SLEEP (1 << TIF_CPU_GOING_TO_SLEEP)
+#define _TIF_NOTIFY_RESUME	(1 << TIF_NOTIFY_RESUME)
 
 /* Note: The masks below must never span more than 16 bits! */
 
@@ -111,5 +128,14 @@ static inline struct thread_info *current_thread_info(void)
 #define _TIF_ALLWORK_MASK	(_TIF_WORK_MASK | (1 << TIF_SYSCALL_TRACE))
 /* work to do on return from debug mode */
 #define _TIF_DBGWORK_MASK	(_TIF_WORK_MASK & ~(1 << TIF_BREAKPOINT))
+	(_TIF_SIGPENDING			\
+	 | _TIF_NOTIFY_RESUME			\
+	 | _TIF_NEED_RESCHED			\
+	 | _TIF_BREAKPOINT)
+
+/* work to do on any return to userspace */
+#define _TIF_ALLWORK_MASK	(_TIF_WORK_MASK | _TIF_SYSCALL_TRACE)
+/* work to do on return from debug mode */
+#define _TIF_DBGWORK_MASK	(_TIF_WORK_MASK & ~_TIF_BREAKPOINT)
 
 #endif /* __ASM_AVR32_THREAD_INFO_H */

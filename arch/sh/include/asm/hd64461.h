@@ -14,17 +14,22 @@
 
 /* Area 6 - Slot 0 - memory and/or IO card */
 #define	HD64461_PCC0_BASE	(CONFIG_HD64461_IOBASE + 0x8000000)
+#define HD64461_IOBASE		0xb0000000
+#define HD64461_IO_OFFSET(x)	(HD64461_IOBASE + (x))
+#define	HD64461_PCC0_BASE	HD64461_IO_OFFSET(0x8000000)
 #define	HD64461_PCC0_ATTR	(HD64461_PCC0_BASE)				/* 0xb80000000 */
 #define	HD64461_PCC0_COMM	(HD64461_PCC0_BASE+HD64461_PCC_WINDOW)		/* 0xb90000000 */
 #define	HD64461_PCC0_IO		(HD64461_PCC0_BASE+2*HD64461_PCC_WINDOW)	/* 0xba0000000 */
 
 /* Area 5 - Slot 1 - memory card only */
 #define	HD64461_PCC1_BASE	(CONFIG_HD64461_IOBASE + 0x4000000)
+#define	HD64461_PCC1_BASE	HD64461_IO_OFFSET(0x4000000)
 #define	HD64461_PCC1_ATTR	(HD64461_PCC1_BASE)				/* 0xb4000000 */
 #define	HD64461_PCC1_COMM	(HD64461_PCC1_BASE+HD64461_PCC_WINDOW)		/* 0xb5000000 */
 
 /* Standby Control Register for HD64461 */
 #define	HD64461_STBCR			CONFIG_HD64461_IOBASE
+#define	HD64461_STBCR			HD64461_IO_OFFSET(0x00000000)
 #define	HD64461_STBCR_CKIO_STBY		0x2000
 #define	HD64461_STBCR_SAFECKE_IST	0x1000
 #define	HD64461_STBCR_SLCKE_IST		0x0800
@@ -54,6 +59,19 @@
 
 /* Controls LCD controller */
 #define	HD64461_LCDCCR		(CONFIG_HD64461_IOBASE + 0x1004)
+#define	HD64461_SYSCR		HD64461_IO_OFFSET(0x02)
+
+/* CPU Data Bus Control Register */
+#define	HD64461_SCPUCR		HD64461_IO_OFFSET(0x04)
+
+/* Base Address Register */
+#define	HD64461_LCDCBAR		HD64461_IO_OFFSET(0x1000)
+
+/* Line increment address */
+#define	HD64461_LCDCLOR		HD64461_IO_OFFSET(0x1002)
+
+/* Controls LCD controller */
+#define	HD64461_LCDCCR		HD64461_IO_OFFSET(0x1004)
 
 /* LCCDR control bits */
 #define	HD64461_LCDCCR_STBACK	0x0400	/* Standby Back */
@@ -65,6 +83,7 @@
 
 /* Controls LCD (1) */
 #define	HD64461_LDR1		(CONFIG_HD64461_IOBASE + 0x1010)
+#define	HD64461_LDR1		HD64461_IO_OFFSET(0x1010)
 #define	HD64461_LDR1_DON	0x01	/* Display On */
 #define	HD64461_LDR1_DINV	0x80	/* Display Invert */
 
@@ -88,6 +107,25 @@
 #define	HD64461_GRDOR		(CONFIG_HD64461_IOBASE + 0x1040)	/* Display Resolution Offset Register */
 #define	HD64461_GRSCR		(CONFIG_HD64461_IOBASE + 0x1042)	/* Solid Color Register */
 #define	HD64461_GRCFGR		(CONFIG_HD64461_IOBASE + 0x1044)	/* Accelerator Configuration Register */
+#define	HD64461_LDR2		HD64461_IO_OFFSET(0x1012)
+#define	HD64461_LDHNCR		HD64461_IO_OFFSET(0x1014)	/* Number of horizontal characters */
+#define	HD64461_LDHNSR		HD64461_IO_OFFSET(0x1016)	/* Specify output start position + width of CL1 */
+#define	HD64461_LDVNTR		HD64461_IO_OFFSET(0x1018)	/* Specify total vertical lines */
+#define	HD64461_LDVNDR		HD64461_IO_OFFSET(0x101a)	/* specify number of display vertical lines */
+#define	HD64461_LDVSPR		HD64461_IO_OFFSET(0x101c)	/* specify vertical synchronization pos and AC nr */
+
+/* Controls LCD (3) */
+#define	HD64461_LDR3		HD64461_IO_OFFSET(0x101e)
+
+/* Palette Registers */
+#define	HD64461_CPTWAR		HD64461_IO_OFFSET(0x1030)	/* Color Palette Write Address Register */
+#define	HD64461_CPTWDR		HD64461_IO_OFFSET(0x1032)	/* Color Palette Write Data Register */
+#define	HD64461_CPTRAR		HD64461_IO_OFFSET(0x1034)	/* Color Palette Read Address Register */
+#define	HD64461_CPTRDR		HD64461_IO_OFFSET(0x1036)	/* Color Palette Read Data Register */
+
+#define	HD64461_GRDOR		HD64461_IO_OFFSET(0x1040)	/* Display Resolution Offset Register */
+#define	HD64461_GRSCR		HD64461_IO_OFFSET(0x1042)	/* Solid Color Register */
+#define	HD64461_GRCFGR		HD64461_IO_OFFSET(0x1044)	/* Accelerator Configuration Register */
 
 #define	HD64461_GRCFGR_ACCSTATUS	0x10	/* Accelerator Status */
 #define	HD64461_GRCFGR_ACCRESET		0x08	/* Accelerator Reset */
@@ -132,6 +170,41 @@
 #define	HD64461_PCC1CSCR	(CONFIG_HD64461_IOBASE + 0x2014)	/* socket 1 card status change */
 #define	HD64461_PCC1CSCIER	(CONFIG_HD64461_IOBASE + 0x2016)	/* socket 1 card status change interrupt enable */
 #define	HD64461_PCC1SCR		(CONFIG_HD64461_IOBASE + 0x2018)	/* socket 1 software control */
+#define	HD64461_LNSARH		HD64461_IO_OFFSET(0x1046)	/* Line Start Address Register (H) */
+#define	HD64461_LNSARL		HD64461_IO_OFFSET(0x1048)	/* Line Start Address Register (L) */
+#define	HD64461_LNAXLR		HD64461_IO_OFFSET(0x104a)	/* Axis Pixel Length Register */
+#define	HD64461_LNDGR		HD64461_IO_OFFSET(0x104c)	/* Diagonal Register */
+#define	HD64461_LNAXR		HD64461_IO_OFFSET(0x104e)	/* Axial Register */
+#define	HD64461_LNERTR		HD64461_IO_OFFSET(0x1050)	/* Start Error Term Register */
+#define	HD64461_LNMDR		HD64461_IO_OFFSET(0x1052)	/* Line Mode Register */
+
+/* BitBLT Registers */
+#define	HD64461_BBTSSARH	HD64461_IO_OFFSET(0x1054)	/* Source Start Address Register (H) */
+#define	HD64461_BBTSSARL	HD64461_IO_OFFSET(0x1056)	/* Source Start Address Register (L) */
+#define	HD64461_BBTDSARH	HD64461_IO_OFFSET(0x1058)	/* Destination Start Address Register (H) */
+#define	HD64461_BBTDSARL	HD64461_IO_OFFSET(0x105a)	/* Destination Start Address Register (L) */
+#define	HD64461_BBTDWR		HD64461_IO_OFFSET(0x105c)	/* Destination Block Width Register */
+#define	HD64461_BBTDHR		HD64461_IO_OFFSET(0x105e)	/* Destination Block Height Register */
+#define	HD64461_BBTPARH		HD64461_IO_OFFSET(0x1060)	/* Pattern Start Address Register (H) */
+#define	HD64461_BBTPARL		HD64461_IO_OFFSET(0x1062)	/* Pattern Start Address Register (L) */
+#define	HD64461_BBTMARH		HD64461_IO_OFFSET(0x1064)	/* Mask Start Address Register (H) */
+#define	HD64461_BBTMARL		HD64461_IO_OFFSET(0x1066)	/* Mask Start Address Register (L) */
+#define	HD64461_BBTROPR		HD64461_IO_OFFSET(0x1068)	/* ROP Register */
+#define	HD64461_BBTMDR		HD64461_IO_OFFSET(0x106a)	/* BitBLT Mode Register */
+
+/* PC Card Controller Registers */
+/* Maps to Physical Area 6 */
+#define	HD64461_PCC0ISR		HD64461_IO_OFFSET(0x2000)	/* socket 0 interface status */
+#define	HD64461_PCC0GCR		HD64461_IO_OFFSET(0x2002)	/* socket 0 general control */
+#define	HD64461_PCC0CSCR	HD64461_IO_OFFSET(0x2004)	/* socket 0 card status change */
+#define	HD64461_PCC0CSCIER	HD64461_IO_OFFSET(0x2006)	/* socket 0 card status change interrupt enable */
+#define	HD64461_PCC0SCR		HD64461_IO_OFFSET(0x2008)	/* socket 0 software control */
+/* Maps to Physical Area 5 */
+#define	HD64461_PCC1ISR		HD64461_IO_OFFSET(0x2010)	/* socket 1 interface status */
+#define	HD64461_PCC1GCR		HD64461_IO_OFFSET(0x2012)	/* socket 1 general control */
+#define	HD64461_PCC1CSCR	HD64461_IO_OFFSET(0x2014)	/* socket 1 card status change */
+#define	HD64461_PCC1CSCIER	HD64461_IO_OFFSET(0x2016)	/* socket 1 card status change interrupt enable */
+#define	HD64461_PCC1SCR		HD64461_IO_OFFSET(0x2018)	/* socket 1 software control */
 
 /* PCC Interface Status Register */
 #define	HD64461_PCCISR_READY		0x80	/* card ready */
@@ -224,6 +297,41 @@
 /* Interrupt Request Register & Interrupt Mask Register */
 #define	HD64461_NIRR		(CONFIG_HD64461_IOBASE + 0x5000)
 #define	HD64461_NIMR		(CONFIG_HD64461_IOBASE + 0x5002)
+#define	HD64461_P0OCR		HD64461_IO_OFFSET(0x202a)
+
+/* PCC1 Output Pins Control Register */
+#define	HD64461_P1OCR		HD64461_IO_OFFSET(0x202c)
+
+/* PC Card General Control Register */
+#define	HD64461_PGCR		HD64461_IO_OFFSET(0x202e)
+
+/* Port Control Registers */
+#define	HD64461_GPACR		HD64461_IO_OFFSET(0x4000)	/* Port A - Handles IRDA/TIMER */
+#define	HD64461_GPBCR		HD64461_IO_OFFSET(0x4002)	/* Port B - Handles UART */
+#define	HD64461_GPCCR		HD64461_IO_OFFSET(0x4004)	/* Port C - Handles PCMCIA 1 */
+#define	HD64461_GPDCR		HD64461_IO_OFFSET(0x4006)	/* Port D - Handles PCMCIA 1 */
+
+/* Port Control Data Registers */
+#define	HD64461_GPADR		HD64461_IO_OFFSET(0x4010)	/* A */
+#define	HD64461_GPBDR		HD64461_IO_OFFSET(0x4012)	/* B */
+#define	HD64461_GPCDR		HD64461_IO_OFFSET(0x4014)	/* C */
+#define	HD64461_GPDDR		HD64461_IO_OFFSET(0x4016)	/* D */
+
+/* Interrupt Control Registers */
+#define	HD64461_GPAICR		HD64461_IO_OFFSET(0x4020)	/* A */
+#define	HD64461_GPBICR		HD64461_IO_OFFSET(0x4022)	/* B */
+#define	HD64461_GPCICR		HD64461_IO_OFFSET(0x4024)	/* C */
+#define	HD64461_GPDICR		HD64461_IO_OFFSET(0x4026)	/* D */
+
+/* Interrupt Status Registers */
+#define	HD64461_GPAISR		HD64461_IO_OFFSET(0x4040)	/* A */
+#define	HD64461_GPBISR		HD64461_IO_OFFSET(0x4042)	/* B */
+#define	HD64461_GPCISR		HD64461_IO_OFFSET(0x4044)	/* C */
+#define	HD64461_GPDISR		HD64461_IO_OFFSET(0x4046)	/* D */
+
+/* Interrupt Request Register & Interrupt Mask Register */
+#define	HD64461_NIRR		HD64461_IO_OFFSET(0x5000)
+#define	HD64461_NIMR		HD64461_IO_OFFSET(0x5002)
 
 #define	HD64461_IRQBASE		OFFCHIP_IRQ_BASE
 #define	OFFCHIP_IRQ_BASE	64

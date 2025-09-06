@@ -14,6 +14,10 @@
 #include <asm/arch/svinto.h>
 #include <asm/io.h>
 #include <asm/arch/io_interface_mux.h>
+#include <arch/svinto.h>
+#include <asm/io.h>
+#include <arch/io_interface_mux.h>
+#include <arch/system.h>
 
 
 #define DBG(s)

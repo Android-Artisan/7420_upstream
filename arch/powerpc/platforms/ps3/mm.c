@@ -18,15 +18,22 @@
  *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
+#include <linux/dma-mapping.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/memory_hotplug.h>
 #include <linux/lmb.h>
 
+#include <linux/export.h>
+#include <linux/memblock.h>
+#include <linux/slab.h>
+
+#include <asm/cell-regs.h>
 #include <asm/firmware.h>
 #include <asm/prom.h>
 #include <asm/udbg.h>
 #include <asm/lv1call.h>
+#include <asm/setup.h>
 
 #include "platform.h"
 
@@ -34,6 +41,7 @@
 #define DBG udbg_printf
 #else
 #define DBG pr_debug
+#define DBG pr_devel
 #endif
 
 enum {
@@ -67,9 +75,7 @@ enum {
 	HTAB_SIZE_MIN = 18U, /* CPU limit of 256KB */
 };
 
-/*============================================================================*/
 /* virtual address space routines                                             */
-/*============================================================================*/
 
 /**
  * struct mem_region - memory region structure
@@ -82,6 +88,14 @@ struct mem_region {
 	unsigned long base;
 	unsigned long size;
 	unsigned long offset;
+ * @destroy: flag if region should be destroyed upon shutdown
+ */
+
+struct mem_region {
+	u64 base;
+	u64 size;
+	unsigned long offset;
+	int destroy;
 };
 
 /**
@@ -94,6 +108,7 @@ struct mem_region {
  * Memory regions can be created and destroyed in the vas at runtime.
  * @rm: real mode (bootmem) region
  * @r1: hotplug memory region(s)
+ * @r1: highmem region(s)
  *
  * ps3 addresses
  * virt_addr: a cpu 'translated' effective address
@@ -106,6 +121,9 @@ struct map {
 	unsigned long total;
 	unsigned long vas_id;
 	unsigned long htab_size;
+	u64 total;
+	u64 vas_id;
+	u64 htab_size;
 	struct mem_region rm;
 	struct mem_region r1;
 };
@@ -121,6 +139,13 @@ static void __maybe_unused _debug_dump_map(const struct map *m,
 	DBG("%s:%d: map.r1.base   = %lxh\n", func, line, m->r1.base);
 	DBG("%s:%d: map.r1.offset = %lxh\n", func, line, m->r1.offset);
 	DBG("%s:%d: map.r1.size   = %lxh\n", func, line, m->r1.size);
+	DBG("%s:%d: map.total     = %llxh\n", func, line, m->total);
+	DBG("%s:%d: map.rm.size   = %llxh\n", func, line, m->rm.size);
+	DBG("%s:%d: map.vas_id    = %llu\n", func, line, m->vas_id);
+	DBG("%s:%d: map.htab_size = %llxh\n", func, line, m->htab_size);
+	DBG("%s:%d: map.r1.base   = %llxh\n", func, line, m->r1.base);
+	DBG("%s:%d: map.r1.offset = %lxh\n", func, line, m->r1.offset);
+	DBG("%s:%d: map.r1.size   = %llxh\n", func, line, m->r1.size);
 }
 
 static struct map map;
@@ -151,6 +176,11 @@ void __init ps3_mm_vas_create(unsigned long* htab_size)
 	unsigned long access_right;
 	unsigned long max_page_size;
 	unsigned long flags;
+	u64 start_address;
+	u64 size;
+	u64 access_right;
+	u64 max_page_size;
+	u64 flags;
 
 	result = lv1_query_logical_partition_address_region_info(0,
 		&start_address, &size, &access_right, &max_page_size,
@@ -165,6 +195,7 @@ void __init ps3_mm_vas_create(unsigned long* htab_size)
 
 	if (max_page_size < PAGE_SHIFT_16M) {
 		DBG("%s:%d: bad max_page_size %lxh\n", __func__, __LINE__,
+		DBG("%s:%d: bad max_page_size %llxh\n", __func__, __LINE__,
 			max_page_size);
 		goto fail;
 	}
@@ -209,19 +240,58 @@ void ps3_mm_vas_destroy(void)
 	int result;
 
 	DBG("%s:%d: map.vas_id    = %lu\n", __func__, __LINE__, map.vas_id);
+	DBG("%s:%d: map.vas_id    = %llu\n", __func__, __LINE__, map.vas_id);
 
 	if (map.vas_id) {
 		result = lv1_select_virtual_address_space(0);
-		BUG_ON(result);
-		result = lv1_destruct_virtual_address_space(map.vas_id);
-		BUG_ON(result);
+		result += lv1_destruct_virtual_address_space(map.vas_id);
+
+		if (result) {
+			lv1_panic(0);
+		}
+
 		map.vas_id = 0;
 	}
 }
 
-/*============================================================================*/
 /* memory hotplug routines                                                    */
-/*============================================================================*/
+static int ps3_mm_get_repository_highmem(struct mem_region *r)
+{
+	int result;
+
+	/* Assume a single highmem region. */
+
+	result = ps3_repository_read_highmem_info(0, &r->base, &r->size);
+
+	if (result)
+		goto zero_region;
+
+	if (!r->base || !r->size) {
+		result = -1;
+		goto zero_region;
+	}
+
+	r->offset = r->base - map.rm.size;
+
+	DBG("%s:%d: Found high region in repository: %llxh %llxh\n",
+	    __func__, __LINE__, r->base, r->size);
+
+	return 0;
+
+zero_region:
+	DBG("%s:%d: No high region in repository.\n", __func__, __LINE__);
+
+	r->size = r->base = r->offset = 0;
+	return result;
+}
+
+static int ps3_mm_set_repository_highmem(const struct mem_region *r)
+{
+	/* Assume a single highmem region. */
+
+	return r ? ps3_repository_write_highmem_info(0, r->base, r->size) :
+		ps3_repository_write_highmem_info(0, 0, 0);
+}
 
 /**
  * ps3_mm_region_create - create a memory region in the vas
@@ -236,6 +306,7 @@ static int ps3_mm_region_create(struct mem_region *r, unsigned long size)
 {
 	int result;
 	unsigned long muid;
+	u64 muid;
 
 	r->size = _ALIGN_DOWN(size, 1 << PAGE_SHIFT_16M);
 
@@ -244,6 +315,9 @@ static int ps3_mm_region_create(struct mem_region *r, unsigned long size)
 	DBG("%s:%d difference %lxh (%luMB)\n", __func__, __LINE__,
 		(unsigned long)(size - r->size),
 		(size - r->size) / 1024 / 1024);
+	DBG("%s:%d actual     %llxh\n", __func__, __LINE__, r->size);
+	DBG("%s:%d difference %llxh (%lluMB)\n", __func__, __LINE__,
+		size - r->size, (size - r->size) / 1024 / 1024);
 
 	if (r->size == 0) {
 		DBG("%s:%d: size == 0\n", __func__, __LINE__);
@@ -260,6 +334,7 @@ static int ps3_mm_region_create(struct mem_region *r, unsigned long size)
 		goto zero_region;
 	}
 
+	r->destroy = 1;
 	r->offset = r->base - map.rm.size;
 	return result;
 
@@ -278,9 +353,17 @@ static void ps3_mm_region_destroy(struct mem_region *r)
 	int result;
 
 	DBG("%s:%d: r->base = %lxh\n", __func__, __LINE__, r->base);
+	if (!r->destroy) {
+		return;
+	}
+
 	if (r->base) {
 		result = lv1_release_memory(r->base);
-		BUG_ON(result);
+
+		if (result) {
+			lv1_panic(0);
+		}
+
 		r->size = r->base = r->offset = 0;
 		map.total = map.rm.size;
 	}
@@ -331,9 +414,10 @@ static int __init ps3_mm_add_memory(void)
 
 core_initcall(ps3_mm_add_memory);
 
-/*============================================================================*/
+	ps3_mm_set_repository_highmem(NULL);
+}
+
 /* dma routines                                                               */
-/*============================================================================*/
 
 /**
  * dma_sb_lpar_to_bus - Translate an lpar address to ioc mapped bus address.
@@ -356,6 +440,7 @@ static void  __maybe_unused _dma_dump_region(const struct ps3_dma_region *r,
 	const char *func, int line)
 {
 	DBG("%s:%d: dev        %lu:%lu\n", func, line, r->dev->bus_id,
+	DBG("%s:%d: dev        %llu:%llu\n", func, line, r->dev->bus_id,
 		r->dev->dev_id);
 	DBG("%s:%d: page_size  %u\n", func, line, r->page_size);
 	DBG("%s:%d: bus_addr   %lxh\n", func, line, r->bus_addr);
@@ -391,6 +476,7 @@ static void _dma_dump_chunk (const struct dma_chunk* c, const char* func,
 	int line)
 {
 	DBG("%s:%d: r.dev        %lu:%lu\n", func, line,
+	DBG("%s:%d: r.dev        %llu:%llu\n", func, line,
 		c->region->dev->bus_id, c->region->dev->dev_id);
 	DBG("%s:%d: r.bus_addr   %lxh\n", func, line, c->region->bus_addr);
 	DBG("%s:%d: r.page_size  %u\n", func, line, c->region->page_size);
@@ -597,6 +683,7 @@ static int dma_ioc0_map_pages(struct ps3_dma_region *r, unsigned long phys_addr,
 	/* build ioptes for the area */
 	pages = len >> r->page_size;
 	DBG("%s: pgsize=%#x len=%#lx pages=%#x iopteflag=%#lx\n", __func__,
+	DBG("%s: pgsize=%#x len=%#lx pages=%#x iopteflag=%#llx\n", __func__,
 	    r->page_size, r->len, pages, iopte_flag);
 	for (iopage = 0; iopage < pages; iopage++) {
 		offset = (1 << r->page_size) * iopage;
@@ -609,6 +696,8 @@ static int dma_ioc0_map_pages(struct ps3_dma_region *r, unsigned long phys_addr,
 			printk(KERN_WARNING "%s:%d: lv1_map_device_dma_region "
 				"failed: %s\n", __func__, __LINE__,
 				ps3_result(result));
+			pr_warning("%s:%d: lv1_put_iopte failed: %s\n",
+				   __func__, __LINE__, ps3_result(result));
 			goto fail_map;
 		}
 		DBG("%s: pg=%d bus=%#lx, lpar=%#lx, ioid=%#x\n", __func__,
@@ -650,11 +739,15 @@ static int dma_sb_region_create(struct ps3_dma_region *r)
 	int result;
 
 	pr_info(" -> %s:%d:\n", __func__, __LINE__);
+	u64 bus_addr;
+
+	DBG(" -> %s:%d:\n", __func__, __LINE__);
 
 	BUG_ON(!r);
 
 	if (!r->dev->bus_id) {
 		pr_info("%s:%d: %lu:%lu no dma\n", __func__, __LINE__,
+		pr_info("%s:%d: %llu:%llu no dma\n", __func__, __LINE__,
 			r->dev->bus_id, r->dev->dev_id);
 		return 0;
 	}
@@ -672,6 +765,8 @@ static int dma_sb_region_create(struct ps3_dma_region *r)
 	result = lv1_allocate_device_dma_region(r->dev->bus_id, r->dev->dev_id,
 		roundup_pow_of_two(r->len), r->page_size, r->region_type,
 		&r->bus_addr);
+		&bus_addr);
+	r->bus_addr = bus_addr;
 
 	if (result) {
 		DBG("%s:%d: lv1_allocate_device_dma_region failed: %s\n",
@@ -685,6 +780,7 @@ static int dma_sb_region_create(struct ps3_dma_region *r)
 static int dma_ioc0_region_create(struct ps3_dma_region *r)
 {
 	int result;
+	u64 bus_addr;
 
 	INIT_LIST_HEAD(&r->chunk_list.head);
 	spin_lock_init(&r->chunk_list.lock);
@@ -693,6 +789,8 @@ static int dma_ioc0_region_create(struct ps3_dma_region *r)
 					 r->len,
 					 r->page_size,
 					 &r->bus_addr);
+					 &bus_addr);
+	r->bus_addr = bus_addr;
 	if (result) {
 		DBG("%s:%d: lv1_allocate_io_segment failed: %s\n",
 			__func__, __LINE__, ps3_result(result));
@@ -721,6 +819,7 @@ static int dma_sb_region_free(struct ps3_dma_region *r)
 
 	if (!r->dev->bus_id) {
 		pr_info("%s:%d: %lu:%lu no dma\n", __func__, __LINE__,
+		pr_info("%s:%d: %llu:%llu no dma\n", __func__, __LINE__,
 			r->dev->bus_id, r->dev->dev_id);
 		return 0;
 	}
@@ -778,6 +877,7 @@ static int dma_ioc0_region_free(struct ps3_dma_region *r)
 
 static int dma_sb_map_area(struct ps3_dma_region *r, unsigned long virt_addr,
 	   unsigned long len, unsigned long *bus_addr,
+	   unsigned long len, dma_addr_t *bus_addr,
 	   u64 iopte_flag)
 {
 	int result;
@@ -801,6 +901,7 @@ static int dma_sb_map_area(struct ps3_dma_region *r, unsigned long virt_addr,
 			lpar_addr);
 		DBG("%s:%d len       %lxh\n", __func__, __LINE__, len);
 		DBG("%s:%d bus_addr  %lxh (%lxh)\n", __func__, __LINE__,
+		DBG("%s:%d bus_addr  %llxh (%lxh)\n", __func__, __LINE__,
 		*bus_addr, len);
 	}
 
@@ -833,6 +934,7 @@ static int dma_sb_map_area(struct ps3_dma_region *r, unsigned long virt_addr,
 
 static int dma_ioc0_map_area(struct ps3_dma_region *r, unsigned long virt_addr,
 	     unsigned long len, unsigned long *bus_addr,
+	     unsigned long len, dma_addr_t *bus_addr,
 	     u64 iopte_flag)
 {
 	int result;
@@ -873,6 +975,7 @@ static int dma_ioc0_map_area(struct ps3_dma_region *r, unsigned long virt_addr,
 	}
 	*bus_addr = c->bus_addr + phys_addr - aligned_phys;
 	DBG("%s: va=%#lx pa=%#lx a_pa=%#lx bus=%#lx\n", __func__,
+	DBG("%s: va=%#lx pa=%#lx a_pa=%#lx bus=%#llx\n", __func__,
 	    virt_addr, phys_addr, aligned_phys, *bus_addr);
 	c->usage_count = 1;
 
@@ -890,6 +993,7 @@ static int dma_ioc0_map_area(struct ps3_dma_region *r, unsigned long virt_addr,
  */
 
 static int dma_sb_unmap_area(struct ps3_dma_region *r, unsigned long bus_addr,
+static int dma_sb_unmap_area(struct ps3_dma_region *r, dma_addr_t bus_addr,
 	unsigned long len)
 {
 	unsigned long flags;
@@ -904,6 +1008,7 @@ static int dma_sb_unmap_area(struct ps3_dma_region *r, unsigned long bus_addr,
 		unsigned long aligned_len = _ALIGN_UP(len + bus_addr
 			- aligned_bus, 1 << r->page_size);
 		DBG("%s:%d: not found: bus_addr %lxh\n",
+		DBG("%s:%d: not found: bus_addr %llxh\n",
 			__func__, __LINE__, bus_addr);
 		DBG("%s:%d: not found: len %lxh\n",
 			__func__, __LINE__, len);
@@ -927,11 +1032,13 @@ static int dma_sb_unmap_area(struct ps3_dma_region *r, unsigned long bus_addr,
 
 static int dma_ioc0_unmap_area(struct ps3_dma_region *r,
 			unsigned long bus_addr, unsigned long len)
+			dma_addr_t bus_addr, unsigned long len)
 {
 	unsigned long flags;
 	struct dma_chunk *c;
 
 	DBG("%s: start a=%#lx l=%#lx\n", __func__, bus_addr, len);
+	DBG("%s: start a=%#llx l=%#lx\n", __func__, bus_addr, len);
 	spin_lock_irqsave(&r->chunk_list.lock, flags);
 	c = dma_find_chunk(r, bus_addr, len);
 
@@ -942,6 +1049,7 @@ static int dma_ioc0_unmap_area(struct ps3_dma_region *r,
 						      - aligned_bus,
 						      1 << r->page_size);
 		DBG("%s:%d: not found: bus_addr %lxh\n",
+		DBG("%s:%d: not found: bus_addr %llxh\n",
 		    __func__, __LINE__, bus_addr);
 		DBG("%s:%d: not found: len %lxh\n",
 		    __func__, __LINE__, len);
@@ -976,6 +1084,8 @@ static int dma_sb_region_create_linear(struct ps3_dma_region *r)
 {
 	int result;
 	unsigned long virt_addr, len, tmp;
+	unsigned long virt_addr, len;
+	dma_addr_t tmp;
 
 	if (r->len > 16*1024*1024) {	/* FIXME: need proper fix */
 		/* force 16M dma pages for linear mapping */
@@ -998,6 +1108,8 @@ static int dma_sb_region_create_linear(struct ps3_dma_region *r)
 			len = r->len;
 		result = dma_sb_map_area(r, virt_addr, len, &tmp,
 			IOPTE_PP_W | IOPTE_PP_R | IOPTE_SO_RW | IOPTE_M);
+			CBE_IOPTE_PP_W | CBE_IOPTE_PP_R | CBE_IOPTE_SO_RW |
+			CBE_IOPTE_M);
 		BUG_ON(result);
 	}
 
@@ -1011,6 +1123,8 @@ static int dma_sb_region_create_linear(struct ps3_dma_region *r)
 			len -= map.rm.size - r->offset;
 		result = dma_sb_map_area(r, virt_addr, len, &tmp,
 			IOPTE_PP_W | IOPTE_PP_R | IOPTE_SO_RW | IOPTE_M);
+			CBE_IOPTE_PP_W | CBE_IOPTE_PP_R | CBE_IOPTE_SO_RW |
+			CBE_IOPTE_M);
 		BUG_ON(result);
 	}
 
@@ -1028,6 +1142,8 @@ static int dma_sb_region_free_linear(struct ps3_dma_region *r)
 {
 	int result;
 	unsigned long bus_addr, len, lpar_addr;
+	dma_addr_t bus_addr;
+	unsigned long len, lpar_addr;
 
 	if (r->offset < map.rm.size) {
 		/* Unmap (part of) 1st RAM chunk */
@@ -1073,6 +1189,7 @@ static int dma_sb_region_free_linear(struct ps3_dma_region *r)
 
 static int dma_sb_map_area_linear(struct ps3_dma_region *r,
 	unsigned long virt_addr, unsigned long len, unsigned long *bus_addr,
+	unsigned long virt_addr, unsigned long len, dma_addr_t *bus_addr,
 	u64 iopte_flag)
 {
 	unsigned long phys_addr = is_kernel_addr(virt_addr) ? __pa(virt_addr)
@@ -1092,6 +1209,7 @@ static int dma_sb_map_area_linear(struct ps3_dma_region *r,
 
 static int dma_sb_unmap_area_linear(struct ps3_dma_region *r,
 	unsigned long bus_addr, unsigned long len)
+	dma_addr_t bus_addr, unsigned long len)
 {
 	return 0;
 };
@@ -1122,6 +1240,7 @@ int ps3_dma_region_init(struct ps3_system_bus_device *dev,
 	enum ps3_dma_region_type region_type, void *addr, unsigned long len)
 {
 	unsigned long lpar_addr;
+	int result;
 
 	lpar_addr = addr ? ps3_mm_phys_to_lpar(__pa(addr)) : 0;
 
@@ -1132,6 +1251,16 @@ int ps3_dma_region_init(struct ps3_system_bus_device *dev,
 	if (r->offset >= map.rm.size)
 		r->offset -= map.r1.offset;
 	r->len = len ? len : _ALIGN_UP(map.total, 1 << r->page_size);
+
+	dev->core.dma_mask = &r->dma_mask;
+
+	result = dma_set_mask_and_coherent(&dev->core, DMA_BIT_MASK(32));
+
+	if (result < 0) {
+		dev_err(&dev->core, "%s:%d: dma_set_mask_and_coherent failed: %d\n",
+			__func__, __LINE__, result);
+		return result;
+	}
 
 	switch (dev->dev_type) {
 	case PS3_DEVICE_TYPE_SB:
@@ -1170,20 +1299,20 @@ EXPORT_SYMBOL(ps3_dma_region_free);
 
 int ps3_dma_map(struct ps3_dma_region *r, unsigned long virt_addr,
 	unsigned long len, unsigned long *bus_addr,
+	unsigned long len, dma_addr_t *bus_addr,
 	u64 iopte_flag)
 {
 	return r->region_ops->map(r, virt_addr, len, bus_addr, iopte_flag);
 }
 
 int ps3_dma_unmap(struct ps3_dma_region *r, unsigned long bus_addr,
+int ps3_dma_unmap(struct ps3_dma_region *r, dma_addr_t bus_addr,
 	unsigned long len)
 {
 	return r->region_ops->unmap(r, bus_addr, len);
 }
 
-/*============================================================================*/
 /* system startup routines                                                    */
-/*============================================================================*/
 
 /**
  * ps3_mm_init - initialize the address space state variables
@@ -1212,9 +1341,26 @@ void __init ps3_mm_init(void)
 
 	/* arrange to do this in ps3_mm_add_memory */
 	ps3_mm_region_create(&map.r1, map.total - map.rm.size);
+	/* Check if we got the highmem region from an earlier boot step */
+
+	if (ps3_mm_get_repository_highmem(&map.r1)) {
+		result = ps3_mm_region_create(&map.r1, map.total - map.rm.size);
+
+		if (!result)
+			ps3_mm_set_repository_highmem(&map.r1);
+	}
 
 	/* correct map.total for the real total amount of memory we use */
 	map.total = map.rm.size + map.r1.size;
+
+	if (!map.r1.size) {
+		DBG("%s:%d: No highmem region found\n", __func__, __LINE__);
+	} else {
+		DBG("%s:%d: Adding highmem region: %llxh %llxh\n",
+			__func__, __LINE__, map.rm.size,
+			map.total - map.rm.size);
+		memblock_add(map.rm.size, map.total - map.rm.size);
+	}
 
 	DBG(" <- %s:%d\n", __func__, __LINE__);
 }

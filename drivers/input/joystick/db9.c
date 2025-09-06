@@ -36,6 +36,7 @@
 #include <linux/parport.h>
 #include <linux/input.h>
 #include <linux/mutex.h>
+#include <linux/slab.h>
 
 MODULE_AUTHOR("Vojtech Pavlik <vojtech@ucw.cz>");
 MODULE_DESCRIPTION("Atari, Amstrad, Commodore, Amiga, Sega, etc. joystick driver");
@@ -48,6 +49,7 @@ struct db9_config {
 
 #define DB9_MAX_PORTS		3
 static struct db9_config db9_cfg[DB9_MAX_PORTS] __initdata;
+static struct db9_config db9_cfg[DB9_MAX_PORTS];
 
 module_param_array_named(dev, db9_cfg[0].args, int, &db9_cfg[0].nargs, 0);
 MODULE_PARM_DESC(dev, "Describes first attached device (<parport#>,<type>)");
@@ -105,6 +107,7 @@ struct db9 {
 	struct pardevice *pd;
 	int mode;
 	int used;
+	int parportno;
 	struct mutex mutex;
 	char phys[DB9_MAX_DEVICES][32];
 };
@@ -566,6 +569,35 @@ static struct db9 __init *db9_probe(int parport, int mode)
 		printk(KERN_ERR "db9.c: Bad device type %d\n", mode);
 		err = -EINVAL;
 		goto err_out;
+static void db9_attach(struct parport *pp)
+{
+	struct db9 *db9;
+	const struct db9_mode_data *db9_mode;
+	struct pardevice *pd;
+	struct input_dev *input_dev;
+	int i, j, port_idx;
+	int mode;
+	struct pardev_cb db9_parport_cb;
+
+	for (port_idx = 0; port_idx < DB9_MAX_PORTS; port_idx++) {
+		if (db9_cfg[port_idx].nargs == 0 ||
+		    db9_cfg[port_idx].args[DB9_ARG_PARPORT] < 0)
+			continue;
+
+		if (db9_cfg[port_idx].args[DB9_ARG_PARPORT] == pp->number)
+			break;
+	}
+
+	if (port_idx == DB9_MAX_PORTS) {
+		pr_debug("Not using parport%d.\n", pp->number);
+		return;
+	}
+
+	mode = db9_cfg[port_idx].args[DB9_ARG_MODE];
+
+	if (mode < 1 || mode >= DB9_MAX_PAD || !db9_modes[mode].n_buttons) {
+		printk(KERN_ERR "db9.c: Bad device type %d\n", mode);
+		return;
 	}
 
 	db9_mode = &db9_modes[mode];
@@ -596,10 +628,28 @@ static struct db9 __init *db9_probe(int parport, int mode)
 		err = -ENOMEM;
 		goto err_unreg_pardev;
 	}
+	if (db9_mode->bidirectional && !(pp->modes & PARPORT_MODE_TRISTATE)) {
+		printk(KERN_ERR "db9.c: specified parport is not bidirectional\n");
+		return;
+	}
+
+	memset(&db9_parport_cb, 0, sizeof(db9_parport_cb));
+	db9_parport_cb.flags = PARPORT_FLAG_EXCL;
+
+	pd = parport_register_dev_model(pp, "db9", &db9_parport_cb, port_idx);
+	if (!pd) {
+		printk(KERN_ERR "db9.c: parport busy already - lp.o loaded?\n");
+		return;
+	}
+
+	db9 = kzalloc(sizeof(struct db9), GFP_KERNEL);
+	if (!db9)
+		goto err_unreg_pardev;
 
 	mutex_init(&db9->mutex);
 	db9->pd = pd;
 	db9->mode = mode;
+	db9->parportno = pp->number;
 	init_timer(&db9->timer);
 	db9->timer.data = (long) db9;
 	db9->timer.function = db9_timer;
@@ -645,6 +695,12 @@ static struct db9 __init *db9_probe(int parport, int mode)
 
 	parport_put_port(pp);
 	return db9;
+		if (input_register_device(input_dev))
+			goto err_free_dev;
+	}
+
+	db9_base[port_idx] = db9;
+	return;
 
  err_free_dev:
 	input_free_device(db9->dev[i]);
@@ -663,12 +719,36 @@ static struct db9 __init *db9_probe(int parport, int mode)
 static void db9_remove(struct db9 *db9)
 {
 	int i;
+}
+
+static void db9_detach(struct parport *port)
+{
+	int i;
+	struct db9 *db9;
+
+	for (i = 0; i < DB9_MAX_PORTS; i++) {
+		if (db9_base[i] && db9_base[i]->parportno == port->number)
+			break;
+	}
+
+	if (i == DB9_MAX_PORTS)
+		return;
+
+	db9 = db9_base[i];
+	db9_base[i] = NULL;
 
 	for (i = 0; i < min(db9_modes[db9->mode].n_pads, DB9_MAX_DEVICES); i++)
 		input_unregister_device(db9->dev[i]);
 	parport_unregister_device(db9->pd);
 	kfree(db9);
 }
+
+static struct parport_driver db9_parport_driver = {
+	.name = "db9",
+	.match_port = db9_attach,
+	.detach = db9_detach,
+	.devmodel = true,
+};
 
 static int __init db9_init(void)
 {
@@ -691,6 +771,7 @@ static int __init db9_init(void)
 		if (IS_ERR(db9_base[i])) {
 			err = PTR_ERR(db9_base[i]);
 			break;
+			return -EINVAL;
 		}
 
 		have_dev = 1;
@@ -704,6 +785,10 @@ static int __init db9_init(void)
 	}
 
 	return have_dev ? 0 : -ENODEV;
+	if (!have_dev)
+		return -ENODEV;
+
+	return parport_register_driver(&db9_parport_driver);
 }
 
 static void __exit db9_exit(void)
@@ -713,6 +798,7 @@ static void __exit db9_exit(void)
 	for (i = 0; i < DB9_MAX_PORTS; i++)
 		if (db9_base[i])
 			db9_remove(db9_base[i]);
+	parport_unregister_driver(&db9_parport_driver);
 }
 
 module_init(db9_init);

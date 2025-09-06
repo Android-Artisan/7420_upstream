@@ -67,6 +67,22 @@
  */
 
 /*
+ * For non-inode extent blocks, ext4_extent_tail
+ * follows the array.
+ */
+
+/*
+ * This is the extent tail on-disk structure.
+ * All other extent structures are 12 bytes long.  It turns out that
+ * block_size % 12 >= 4 for at least all powers of 2 greater than 512, which
+ * covers all valid ext4 block sizes.  Therefore, this tail structure can be
+ * crammed into the end of the block without having to rebalance the tree.
+ */
+struct ext4_extent_tail {
+	__le32	et_checksum;	/* crc32c(uuid+inum+extent_block) */
+};
+
+/*
  * This is the extent on-disk structure.
  * It's used at the bottom of the tree.
  */
@@ -101,6 +117,18 @@ struct ext4_extent_header {
 };
 
 #define EXT4_EXT_MAGIC		cpu_to_le16(0xf30a)
+#define EXT4_MAX_EXTENT_DEPTH 5
+
+#define EXT4_EXTENT_TAIL_OFFSET(hdr) \
+	(sizeof(struct ext4_extent_header) + \
+	 (sizeof(struct ext4_extent) * le16_to_cpu((hdr)->eh_max)))
+
+static inline struct ext4_extent_tail *
+find_ext4_extent_tail(struct ext4_extent_header *eh)
+{
+	return (struct ext4_extent_tail *)(((void *)eh) +
+					   EXT4_EXTENT_TAIL_OFFSET(eh));
+}
 
 /*
  * Array of ext4_ext_path contains path to some extent.
@@ -110,6 +138,7 @@ struct ext4_extent_header {
 struct ext4_ext_path {
 	ext4_fsblk_t			p_block;
 	__u16				p_depth;
+	__u16				p_maxdepth;
 	struct ext4_extent		*p_ext;
 	struct ext4_extent_idx		*p_idx;
 	struct ext4_extent_header	*p_hdr;
@@ -146,6 +175,21 @@ struct ext4_ext_path {
  */
 #define EXT_INIT_MAX_LEN	(1UL << 15)
 #define EXT_UNINIT_MAX_LEN	(EXT_INIT_MAX_LEN - 1)
+ * particular extent is an initialized extent or an unwritten (i.e.
+ * preallocated).
+ * EXT_UNWRITTEN_MAX_LEN is the maximum number of blocks we can have in an
+ * unwritten extent.
+ * If ee_len is <= 0x8000, it is an initialized extent. Otherwise, it is an
+ * unwritten one. In other words, if MSB of ee_len is set, it is an
+ * unwritten extent with only one special scenario when ee_len = 0x8000.
+ * In this case we can not have an unwritten extent of zero length and
+ * thus we make it as a special case of initialized extent with 0x8000 length.
+ * This way we get better extent-to-group alignment for initialized extents.
+ * Hence, the maximum number of blocks we can have in an *initialized*
+ * extent is 2^15 (32768) and in an *unwritten* extent is 2^15-1 (32767).
+ */
+#define EXT_INIT_MAX_LEN	(1UL << 15)
+#define EXT_UNWRITTEN_MAX_LEN	(EXT_INIT_MAX_LEN - 1)
 
 
 #define EXT_FIRST_EXTENT(__hdr__) \
@@ -161,10 +205,13 @@ struct ext4_ext_path {
 	(EXT_FIRST_EXTENT((__hdr__)) + le16_to_cpu((__hdr__)->eh_entries) - 1)
 #define EXT_LAST_INDEX(__hdr__) \
 	(EXT_FIRST_INDEX((__hdr__)) + le16_to_cpu((__hdr__)->eh_entries) - 1)
-#define EXT_MAX_EXTENT(__hdr__) \
-	(EXT_FIRST_EXTENT((__hdr__)) + le16_to_cpu((__hdr__)->eh_max) - 1)
+#define EXT_MAX_EXTENT(__hdr__)	\
+	((le16_to_cpu((__hdr__)->eh_max)) ? \
+	((EXT_FIRST_EXTENT((__hdr__)) + le16_to_cpu((__hdr__)->eh_max) - 1)) \
+					: 0)
 #define EXT_MAX_INDEX(__hdr__) \
-	(EXT_FIRST_INDEX((__hdr__)) + le16_to_cpu((__hdr__)->eh_max) - 1)
+	((le16_to_cpu((__hdr__)->eh_max)) ? \
+	((EXT_FIRST_INDEX((__hdr__)) + le16_to_cpu((__hdr__)->eh_max) - 1)) : 0)
 
 static inline struct ext4_extent_header *ext_inode_hdr(struct inode *inode)
 {
@@ -195,11 +242,15 @@ ext4_ext_invalidate_cache(struct inode *inode)
 static inline void ext4_ext_mark_uninitialized(struct ext4_extent *ext)
 {
 	/* We can not have an uninitialized extent of zero length! */
+static inline void ext4_ext_mark_unwritten(struct ext4_extent *ext)
+{
+	/* We can not have an unwritten extent of zero length! */
 	BUG_ON((le16_to_cpu(ext->ee_len) & ~EXT_INIT_MAX_LEN) == 0);
 	ext->ee_len |= cpu_to_le16(EXT_INIT_MAX_LEN);
 }
 
 static inline int ext4_ext_is_uninitialized(struct ext4_extent *ext)
+static inline int ext4_ext_is_unwritten(struct ext4_extent *ext)
 {
 	/* Extent with ee_len of 0x8000 is treated as an initialized extent */
 	return (le16_to_cpu(ext->ee_len) > EXT_INIT_MAX_LEN);
@@ -231,5 +282,67 @@ extern int ext4_ext_search_left(struct inode *, struct ext4_ext_path *,
 extern int ext4_ext_search_right(struct inode *, struct ext4_ext_path *,
 						ext4_lblk_t *, ext4_fsblk_t *);
 extern void ext4_ext_drop_refs(struct ext4_ext_path *);
+static inline void ext4_ext_mark_initialized(struct ext4_extent *ext)
+{
+	ext->ee_len = cpu_to_le16(ext4_ext_get_actual_len(ext));
+}
+
+/*
+ * ext4_ext_pblock:
+ * combine low and high parts of physical block number into ext4_fsblk_t
+ */
+static inline ext4_fsblk_t ext4_ext_pblock(struct ext4_extent *ex)
+{
+	ext4_fsblk_t block;
+
+	block = le32_to_cpu(ex->ee_start_lo);
+	block |= ((ext4_fsblk_t) le16_to_cpu(ex->ee_start_hi) << 31) << 1;
+	return block;
+}
+
+/*
+ * ext4_idx_pblock:
+ * combine low and high parts of a leaf physical block number into ext4_fsblk_t
+ */
+static inline ext4_fsblk_t ext4_idx_pblock(struct ext4_extent_idx *ix)
+{
+	ext4_fsblk_t block;
+
+	block = le32_to_cpu(ix->ei_leaf_lo);
+	block |= ((ext4_fsblk_t) le16_to_cpu(ix->ei_leaf_hi) << 31) << 1;
+	return block;
+}
+
+/*
+ * ext4_ext_store_pblock:
+ * stores a large physical block number into an extent struct,
+ * breaking it into parts
+ */
+static inline void ext4_ext_store_pblock(struct ext4_extent *ex,
+					 ext4_fsblk_t pb)
+{
+	ex->ee_start_lo = cpu_to_le32((unsigned long) (pb & 0xffffffff));
+	ex->ee_start_hi = cpu_to_le16((unsigned long) ((pb >> 31) >> 1) &
+				      0xffff);
+}
+
+/*
+ * ext4_idx_store_pblock:
+ * stores a large physical block number into an index struct,
+ * breaking it into parts
+ */
+static inline void ext4_idx_store_pblock(struct ext4_extent_idx *ix,
+					 ext4_fsblk_t pb)
+{
+	ix->ei_leaf_lo = cpu_to_le32((unsigned long) (pb & 0xffffffff));
+	ix->ei_leaf_hi = cpu_to_le16((unsigned long) ((pb >> 31) >> 1) &
+				     0xffff);
+}
+
+#define ext4_ext_dirty(handle, inode, path) \
+		__ext4_ext_dirty(__func__, __LINE__, (handle), (inode), (path))
+int __ext4_ext_dirty(const char *where, unsigned int line, handle_t *handle,
+		     struct inode *inode, struct ext4_ext_path *path);
+
 #endif /* _EXT4_EXTENTS */
 

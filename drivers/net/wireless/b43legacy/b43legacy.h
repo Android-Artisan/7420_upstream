@@ -9,12 +9,15 @@
 #include <linux/netdevice.h>
 #include <linux/pci.h>
 #include <asm/atomic.h>
+#include <linux/atomic.h>
 #include <linux/io.h>
 
 #include <linux/ssb/ssb.h>
 #include <linux/ssb/ssb_driver_chipcommon.h>
 
 #include <linux/wireless.h>
+#include <linux/completion.h>
+
 #include <net/mac80211.h>
 
 #include "debugfs.h"
@@ -30,6 +33,8 @@
 #define B43legacy_IRQWAIT_MAX_RETRIES	20
 
 #define B43legacy_RX_MAX_SSI		60 /* best guess at max ssi */
+
+#define B43legacy_IRQWAIT_MAX_RETRIES	20
 
 /* MMIO offsets */
 #define B43legacy_MMIO_DMA0_REASON	0x20
@@ -60,6 +65,8 @@
 #define B43legacy_MMIO_REV3PLUS_TSF_LOW	0x180 /* core rev >= 3 only */
 #define B43legacy_MMIO_REV3PLUS_TSF_HIGH	0x184 /* core rev >= 3 only */
 
+#define B43legacy_MMIO_TSF_CFP_REP	0x188
+#define B43legacy_MMIO_TSF_CFP_START	0x18C
 /* 32-bit DMA */
 #define B43legacy_MMIO_DMA32_BASE0	0x200
 #define B43legacy_MMIO_DMA32_BASE1	0x220
@@ -145,6 +152,10 @@
 #define B43legacy_SHM_SH_PRMAXTIME	0x0074 /* Probe Response max time */
 #define B43legacy_SHM_SH_PRPHYCTL	0x0188 /* Probe Resp PHY TX control */
 /* SHM_SHARED rate tables */
+#define B43legacy_SHM_SH_OFDMDIRECT	0x0480 /* Pointer to OFDM direct map */
+#define B43legacy_SHM_SH_OFDMBASIC	0x04A0 /* Pointer to OFDM basic rate map */
+#define B43legacy_SHM_SH_CCKDIRECT	0x04C0 /* Pointer to CCK direct map */
+#define B43legacy_SHM_SH_CCKBASIC	0x04E0 /* Pointer to CCK basic rate map */
 /* SHM_SHARED microcode soft registers */
 #define B43legacy_SHM_SH_UCODEREV	0x0000 /* Microcode revision */
 #define B43legacy_SHM_SH_UCODEPATCH	0x0002 /* Microcode patchlevel */
@@ -371,6 +382,7 @@ struct b43legacy_fw_header {
 	 * For IV this is number-of-ivs. */
 	__be32 size;
 } __attribute__((__packed__));
+} __packed;
 
 /* Initial Value file format */
 #define B43legacy_IV_OFFSET_MASK	0x7FFF
@@ -382,6 +394,9 @@ struct b43legacy_iv {
 		__be32 d32;
 	} data __attribute__((__packed__));
 } __attribute__((__packed__));
+	} data __packed;
+	} __packed data;
+} __packed;
 
 #define B43legacy_PHYMODE(phytype)	(1 << (phytype))
 #define B43legacy_PHYMODE_B		B43legacy_PHYMODE	\
@@ -487,6 +502,7 @@ struct b43legacy_phy {
 	int interfmode;
 	/* Stack of saved values from the Interference Mitigation code.
 	 * Each value in the stack is layed out as follows:
+	 * Each value in the stack is laid out as follows:
 	 * bit 0-11:  offset
 	 * bit 12-15: register ID
 	 * bit 16-32: value
@@ -530,6 +546,8 @@ struct b43legacy_dma {
 
 	struct b43legacy_dmaring *rx_ring0;
 	struct b43legacy_dmaring *rx_ring3; /* only on core.rev < 5 */
+
+	u32 translation; /* Routing bits */
 };
 
 /* Data structures for PIO transmission, per 80211 core. */
@@ -563,6 +581,16 @@ struct b43legacy_key {
 
 struct b43legacy_wldev;
 
+#define B43legacy_QOS_QUEUE_NUM	4
+
+struct b43legacy_wldev;
+
+/* QOS parameters for a queue. */
+struct b43legacy_qos_params {
+	/* The QOS parameters */
+	struct ieee80211_tx_queue_params p;
+};
+
 /* Data structure for the WLAN parts (802.11 cores) of the b43legacy chip. */
 struct b43legacy_wl {
 	/* Pointer to the active wireless device on this chip */
@@ -573,6 +601,9 @@ struct b43legacy_wl {
 	spinlock_t irq_lock;		/* locks IRQ */
 	struct mutex mutex;		/* locks wireless core state */
 	spinlock_t leds_lock;		/* lock for leds */
+
+	/* firmware loading work */
+	struct work_struct firmware_load;
 
 	/* We can only have one operating interface (802.11 core)
 	 * at a time. General information about this interface follows.
@@ -598,18 +629,38 @@ struct b43legacy_wl {
 
 	/* The RF-kill button */
 	struct b43legacy_rfkill rfkill;
+#ifdef CONFIG_B43LEGACY_HWRNG
+	struct hwrng rng;
+	u8 rng_initialized;
+	char rng_name[30 + 1];
+#endif
 
 	/* List of all wireless devices on this chip */
 	struct list_head devlist;
 	u8 nr_devs;
 
 	bool radiotap_enabled;
+	bool radio_enabled;
 
 	/* The beacon we are currently using (AP or IBSS mode).
 	 * This beacon stuff is protected by the irq_lock. */
 	struct sk_buff *current_beacon;
 	bool beacon0_uploaded;
 	bool beacon1_uploaded;
+	bool beacon_templates_virgin; /* Never wrote the templates? */
+	struct work_struct beacon_update_trigger;
+	/* The current QOS parameters for the 4 queues. */
+	struct b43legacy_qos_params qos_params[B43legacy_QOS_QUEUE_NUM];
+
+	/* Packet transmit work */
+	struct work_struct tx_work;
+
+	/* Queue of packets to be transmitted. */
+	struct sk_buff_head tx_queue[B43legacy_QOS_QUEUE_NUM];
+
+	/* Flag that implement the queues stopping. */
+	bool tx_queue_stopped[B43legacy_QOS_QUEUE_NUM];
+
 };
 
 /* Pointers to the firmware data and meta information about it. */
@@ -689,6 +740,8 @@ struct b43legacy_wldev {
 	u32 dma_reason[6];
 	/* saved irq enable/disable state bitfield. */
 	u32 irq_savedstate;
+	/* The currently active generic-interrupt mask. */
+	u32 irq_mask;
 	/* Link Quality calculation context. */
 	struct b43legacy_noise_calculation noisecalc;
 	/* if > 0 MAC is suspended. if == 0 MAC is enabled. */
@@ -710,6 +763,10 @@ struct b43legacy_wldev {
 
 	/* Firmware data */
 	struct b43legacy_firmware fw;
+	const struct firmware *fwp;	/* needed to pass fw pointer */
+
+	/* completion struct for firmware loading */
+	struct completion fw_load_complete;
 
 	/* Devicelist in struct b43legacy_wl (all 802.11 cores) */
 	struct list_head list;
@@ -819,6 +876,15 @@ void b43legacywarn(struct b43legacy_wl *wl, const char *fmt, ...)
 #if B43legacy_DEBUG
 void b43legacydbg(struct b43legacy_wl *wl, const char *fmt, ...)
 		__attribute__((format(printf, 2, 3)));
+__printf(2, 3)
+void b43legacyinfo(struct b43legacy_wl *wl, const char *fmt, ...);
+__printf(2, 3)
+void b43legacyerr(struct b43legacy_wl *wl, const char *fmt, ...);
+__printf(2, 3)
+void b43legacywarn(struct b43legacy_wl *wl, const char *fmt, ...);
+#if B43legacy_DEBUG
+__printf(2, 3)
+void b43legacydbg(struct b43legacy_wl *wl, const char *fmt, ...);
 #else /* DEBUG */
 # define b43legacydbg(wl, fmt...) do { /* nothing */ } while (0)
 #endif /* DEBUG */

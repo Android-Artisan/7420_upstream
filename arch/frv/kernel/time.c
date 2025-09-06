@@ -90,6 +90,18 @@ static irqreturn_t timer_interrupt(int irq, void *dummy)
 		else
 			last_rtc_update = xtime.tv_sec - 600; /* do it again in 60 s */
 	}
+	.name = "timer",
+};
+
+/*
+ * timer_interrupt() needs to keep up the real-time clock,
+ * as well as call the "xtime_update()" routine every clocktick
+ */
+static irqreturn_t timer_interrupt(int irq, void *dummy)
+{
+	profile_tick(CPU_PROFILING);
+
+	xtime_update(1);
 
 #ifdef CONFIG_HEARTBEAT
 	static unsigned short n;
@@ -121,6 +133,8 @@ void time_divisor_init(void)
 }
 
 void time_init(void)
+
+void read_persistent_clock(struct timespec *ts)
 {
 	unsigned int year, mon, day, hour, min, sec;
 
@@ -139,6 +153,12 @@ void time_init(void)
 	xtime.tv_sec = mktime(year, mon, day, hour, min, sec);
 	xtime.tv_nsec = 0;
 
+	ts->tv_sec = mktime(year, mon, day, hour, min, sec);
+	ts->tv_nsec = 0;
+}
+
+void time_init(void)
+{
 	/* install scheduling interrupt handler */
 	setup_irq(IRQ_CPU_TIMER0, &timer_irq);
 

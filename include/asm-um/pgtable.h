@@ -114,9 +114,7 @@ extern unsigned long end_iomem;
 #define pte_present(x)	pte_get_bits(x, (_PAGE_PRESENT | _PAGE_PROTNONE))
 
 /*
- * =================================
  * Flags checking section.
- * =================================
  */
 
 static inline int pte_none(pte_t pte)
@@ -179,9 +177,7 @@ static inline int pte_special(pte_t pte)
 }
 
 /*
- * =================================
  * Flags setting section.
- * =================================
  */
 
 static inline pte_t pte_mknewprot(pte_t pte)

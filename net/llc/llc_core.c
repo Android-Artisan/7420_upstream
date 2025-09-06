@@ -24,6 +24,7 @@
 
 LIST_HEAD(llc_sap_list);
 DEFINE_RWLOCK(llc_sap_list_lock);
+static DEFINE_SPINLOCK(llc_sap_list_lock);
 
 /**
  *	llc_sap_alloc - allocates and initializes sap.
@@ -33,11 +34,15 @@ DEFINE_RWLOCK(llc_sap_list_lock);
 static struct llc_sap *llc_sap_alloc(void)
 {
 	struct llc_sap *sap = kzalloc(sizeof(*sap), GFP_ATOMIC);
+	int i;
 
 	if (sap) {
 		/* sap->laddr.mac - leave as a null, it's filled by bind */
 		sap->state = LLC_SAP_STATE_ACTIVE;
 		rwlock_init(&sap->sk_list.lock);
+		spin_lock_init(&sap->sk_lock);
+		for (i = 0; i < LLC_SK_LADDR_HASH_ENTRIES; i++)
+			INIT_HLIST_NULLS_HEAD(&sap->sk_laddr_hash[i], i);
 		atomic_set(&sap->refcnt, 1);
 	}
 	return sap;
@@ -70,6 +75,9 @@ static void llc_del_sap(struct llc_sap *sap)
 static struct llc_sap *__llc_sap_find(unsigned char sap_value)
 {
 	struct llc_sap* sap;
+static struct llc_sap *__llc_sap_find(unsigned char sap_value)
+{
+	struct llc_sap *sap;
 
 	list_for_each_entry(sap, &llc_sap_list, node)
 		if (sap->laddr.lsap == sap_value)
@@ -97,6 +105,13 @@ struct llc_sap *llc_sap_find(unsigned char sap_value)
 	if (sap)
 		llc_sap_hold(sap);
 	read_unlock_bh(&llc_sap_list_lock);
+	struct llc_sap *sap;
+
+	rcu_read_lock_bh();
+	sap = __llc_sap_find(sap_value);
+	if (!sap || !llc_sap_hold_safe(sap))
+		sap = NULL;
+	rcu_read_unlock_bh();
 	return sap;
 }
 
@@ -118,6 +133,7 @@ struct llc_sap *llc_sap_open(unsigned char lsap,
 	struct llc_sap *sap = NULL;
 
 	write_lock_bh(&llc_sap_list_lock);
+	spin_lock_bh(&llc_sap_list_lock);
 	if (__llc_sap_find(lsap)) /* SAP already exists */
 		goto out;
 	sap = llc_sap_alloc();
@@ -128,6 +144,9 @@ struct llc_sap *llc_sap_open(unsigned char lsap,
 	llc_add_sap(sap);
 out:
 	write_unlock_bh(&llc_sap_list_lock);
+	list_add_tail_rcu(&sap->node, &llc_sap_list);
+out:
+	spin_unlock_bh(&llc_sap_list_lock);
 	return sap;
 }
 
@@ -154,6 +173,17 @@ static struct packet_type llc_packet_type = {
 
 static struct packet_type llc_tr_packet_type = {
 	.type = __constant_htons(ETH_P_TR_802_2),
+	WARN_ON(sap->sk_count);
+
+	spin_lock_bh(&llc_sap_list_lock);
+	list_del_rcu(&sap->node);
+	spin_unlock_bh(&llc_sap_list_lock);
+
+	kfree_rcu(sap, rcu);
+}
+
+static struct packet_type llc_packet_type __read_mostly = {
+	.type = cpu_to_be16(ETH_P_802_2),
 	.func = llc_rcv,
 };
 
@@ -166,14 +196,12 @@ static int __init llc_init(void)
 		dev = next_net_device(dev);
 
 	dev_add_pack(&llc_packet_type);
-	dev_add_pack(&llc_tr_packet_type);
 	return 0;
 }
 
 static void __exit llc_exit(void)
 {
 	dev_remove_pack(&llc_packet_type);
-	dev_remove_pack(&llc_tr_packet_type);
 }
 
 module_init(llc_init);

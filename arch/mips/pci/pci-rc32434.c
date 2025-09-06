@@ -34,6 +34,7 @@
 #include <asm/mach-rc32434/pci.h>
 
 #define PCI_ACCESS_READ  0
+#define PCI_ACCESS_READ	 0
 #define PCI_ACCESS_WRITE 1
 
 /* define an unsigned array for the PCI registers */
@@ -87,6 +88,11 @@ extern struct pci_ops rc32434_pci_ops;
 #define PCI_IO2_START							\
 	(PCI_ADDR_START + (2 * CPUTOPCI_MEM_WIN) + CPUTOPCI_IO_WIN)
 #define PCI_IO2_END 							\
+#define PCI_IO1_END							\
+	(PCI_ADDR_START + (2 * CPUTOPCI_MEM_WIN) + CPUTOPCI_IO_WIN - 1)
+#define PCI_IO2_START							\
+	(PCI_ADDR_START + (2 * CPUTOPCI_MEM_WIN) + CPUTOPCI_IO_WIN)
+#define PCI_IO2_END							\
 	(PCI_ADDR_START + (2 * CPUTOPCI_MEM_WIN) + (2 * CPUTOPCI_IO_WIN) - 1)
 
 struct pci_controller rc32434_controller2;
@@ -119,6 +125,7 @@ static int __init rc32434_pcibridge_init(void)
 	      (pcicvalue == PCIM_H_IA_FIX) ||
 	      (pcicvalue == PCIM_H_IA_RR))) {
 		pr_err(KERN_ERR "PCI init error!!!\n");
+		pr_err("PCI init error!!!\n");
 		/* Not in Host Mode, return ERROR */
 		return -1;
 	}
@@ -205,12 +212,23 @@ static int __init rc32434_pcibridge_init(void)
 
 static int __init rc32434_pci_init(void)
 {
+	void __iomem *io_map_base;
+
 	pr_info("PCI: Initializing PCI\n");
 
 	ioport_resource.start = rc32434_res_pci_io1.start;
 	ioport_resource.end = rc32434_res_pci_io1.end;
 
 	rc32434_pcibridge_init();
+
+	io_map_base = ioremap(rc32434_res_pci_io1.start,
+			      resource_size(&rc32434_res_pci_io1));
+
+	if (!io_map_base)
+		return -ENOMEM;
+
+	rc32434_controller.io_map_base =
+		(unsigned long)io_map_base - rc32434_res_pci_io1.start;
 
 	register_pci_controller(&rc32434_controller);
 	rc32434_sync();

@@ -41,6 +41,11 @@
 #else
 #define MSR_SINGLESTEP	(MSR_SE)
 #endif
+#include <linux/slab.h>
+#include <asm/code-patching.h>
+#include <asm/cacheflush.h>
+#include <asm/sstep.h>
+#include <asm/uaccess.h>
 
 DEFINE_PER_CPU(struct kprobe *, current_kprobe) = NULL;
 DEFINE_PER_CPU(struct kprobe_ctlblk, kprobe_ctlblk);
@@ -99,6 +104,10 @@ void __kprobes arch_remove_kprobe(struct kprobe *p)
 	mutex_lock(&kprobe_mutex);
 	free_insn_slot(p->ainsn.insn, 0);
 	mutex_unlock(&kprobe_mutex);
+	if (p->ainsn.insn) {
+		free_insn_slot(p->ainsn.insn, 0);
+		p->ainsn.insn = NULL;
+	}
 }
 
 static void __kprobes prepare_singlestep(struct kprobe *p, struct pt_regs *regs)
@@ -113,6 +122,7 @@ static void __kprobes prepare_singlestep(struct kprobe *p, struct pt_regs *regs)
 	regs->msr &= ~MSR_CE;
 	mtspr(SPRN_DBCR0, mfspr(SPRN_DBCR0) | DBCR0_IC | DBCR0_IDM);
 #endif
+	enable_single_step(regs);
 
 	/*
 	 * On powerpc we should single step on the original
@@ -133,6 +143,7 @@ static void __kprobes save_previous_kprobe(struct kprobe_ctlblk *kcb)
 static void __kprobes restore_previous_kprobe(struct kprobe_ctlblk *kcb)
 {
 	__get_cpu_var(current_kprobe) = kcb->prev_kprobe.kp;
+	__this_cpu_write(current_kprobe, kcb->prev_kprobe.kp);
 	kcb->kprobe_status = kcb->prev_kprobe.status;
 	kcb->kprobe_saved_msr = kcb->prev_kprobe.saved_msr;
 }
@@ -141,6 +152,7 @@ static void __kprobes set_current_kprobe(struct kprobe *p, struct pt_regs *regs,
 				struct kprobe_ctlblk *kcb)
 {
 	__get_cpu_var(current_kprobe) = p;
+	__this_cpu_write(current_kprobe, p);
 	kcb->kprobe_saved_msr = regs->msr;
 }
 
@@ -206,6 +218,7 @@ static int __kprobes kprobe_handler(struct pt_regs *regs)
 				goto no_kprobe;
 			}
 			p = __get_cpu_var(current_kprobe);
+			p = __this_cpu_read(current_kprobe);
 			if (p->break_handler && p->break_handler(p, regs)) {
 				goto ss_probe;
 			}
@@ -307,6 +320,7 @@ static int __kprobes trampoline_probe_handler(struct kprobe *p,
 	struct kretprobe_instance *ri = NULL;
 	struct hlist_head *head, empty_rp;
 	struct hlist_node *node, *tmp;
+	struct hlist_node *tmp;
 	unsigned long flags, orig_ret_address = 0;
 	unsigned long trampoline_address =(unsigned long)&kretprobe_trampoline;
 
@@ -317,6 +331,7 @@ static int __kprobes trampoline_probe_handler(struct kprobe *p,
 	 * It is possible to have multiple instances associated with a given
 	 * task either because an multiple functions in the call path
 	 * have a return probe installed on them, and/or more then one return
+	 * have a return probe installed on them, and/or more than one return
 	 * return probe was registered for a target function.
 	 *
 	 * We can handle this because:
@@ -327,6 +342,7 @@ static int __kprobes trampoline_probe_handler(struct kprobe *p,
 	 *       kretprobe_trampoline
 	 */
 	hlist_for_each_entry_safe(ri, node, tmp, head, hlist) {
+	hlist_for_each_entry_safe(ri, tmp, head, hlist) {
 		if (ri->task != current)
 			/* another task is sharing our hash bucket */
 			continue;
@@ -354,6 +370,7 @@ static int __kprobes trampoline_probe_handler(struct kprobe *p,
 	preempt_enable_no_resched();
 
 	hlist_for_each_entry_safe(ri, node, tmp, &empty_rp, hlist) {
+	hlist_for_each_entry_safe(ri, tmp, &empty_rp, hlist) {
 		hlist_del(&ri->hlist);
 		kfree(ri);
 	}
@@ -402,6 +419,8 @@ static int __kprobes post_kprobe_handler(struct pt_regs *regs)
 	}
 
 	resume_execution(cur, regs);
+	/* Adjust nip to after the single-stepped instruction */
+	regs->nip = (unsigned long)cur->addr + 4;
 	regs->msr |= kcb->kprobe_saved_msr;
 
 	/*Restore back the original saved kprobes variables and continue. */
@@ -454,6 +473,7 @@ int __kprobes kprobe_fault_handler(struct pt_regs *regs, int trapnr)
 		/*
 		 * We increment the nmissed count for accounting,
 		 * we can also use npre/npostfault count for accouting
+		 * we can also use npre/npostfault count for accounting
 		 * these specific fault cases.
 		 */
 		kprobes_inc_nmissed_count(cur);
@@ -521,6 +541,10 @@ unsigned long arch_deref_entry_point(void *entry)
 	return ((func_descr_t *)entry)->entry;
 }
 #endif
+unsigned long arch_deref_entry_point(void *entry)
+{
+	return ppc_global_function_entry(entry);
+}
 
 int __kprobes setjmp_pre_handler(struct kprobe *p, struct pt_regs *regs)
 {
@@ -534,6 +558,21 @@ int __kprobes setjmp_pre_handler(struct kprobe *p, struct pt_regs *regs)
 #ifdef CONFIG_PPC64
 	regs->gpr[2] = (unsigned long)(((func_descr_t *)jp->entry)->toc);
 #endif
+#if defined(_CALL_ELF) && _CALL_ELF == 2
+	regs->gpr[12] = (unsigned long)jp->entry;
+#else
+	regs->gpr[2] = (unsigned long)(((func_descr_t *)jp->entry)->toc);
+#endif
+#endif
+
+	/*
+	 * jprobes use jprobe_return() which skips the normal return
+	 * path of the function, and this messes up the accounting of the
+	 * function graph tracer.
+	 *
+	 * Pause function graph tracing while performing the jprobe function.
+	 */
+	pause_graph_tracing();
 
 	return 1;
 }
@@ -557,6 +596,8 @@ int __kprobes longjmp_break_handler(struct kprobe *p, struct pt_regs *regs)
 	 * saved regs...
 	 */
 	memcpy(regs, &kcb->jprobe_saved_regs, sizeof(struct pt_regs));
+	/* It's OK to start function graph tracing again */
+	unpause_graph_tracing();
 	preempt_enable_no_resched();
 	return 1;
 }

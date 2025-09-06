@@ -20,7 +20,6 @@
 
    The author may be reached at davies@maniac.ultranet.com.
 
-   =========================================================================
    This driver has been written  substantially  from scratch, although  its
    inheritance of style and stack interface from 'depca.c' and in turn from
    Donald Becker's 'lance.c' should be obvious.
@@ -140,7 +139,6 @@
    0.48    18-Oct-02   cli/sti removal for 2.5 <vda@port.imtp.ilyichevsk.odessa.ua>
    ioctl locking, signature search cleanup <akropel1@rochester.rr.com>
 
-   =========================================================================
  */
 
 #include <linux/module.h>

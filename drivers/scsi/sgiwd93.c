@@ -4,6 +4,7 @@
  * for more details.
  *
  * Copyright (C) 1996 David S. Miller (dm@engr.sgi.com)
+ * Copyright (C) 1996 David S. Miller (davem@davemloft.net)
  * Copyright (C) 1999 Andrew R. Baker (andrewb@uab.edu)
  * Copyright (C) 2001 Florian Lohoff (flo@rfc822.org)
  * Copyright (C) 2003, 07 Ralf Baechle (ralf@linux-mips.org)
@@ -227,6 +228,7 @@ static struct scsi_host_template sgiwd93_template = {
 };
 
 static int __init sgiwd93_probe(struct platform_device *pdev)
+static int sgiwd93_probe(struct platform_device *pdev)
 {
 	struct sgiwd93_platform_data *pd = pdev->dev.platform_data;
 	unsigned char *wdregs = pd->wdregs;
@@ -298,6 +300,7 @@ out:
 }
 
 static void __exit sgiwd93_remove(struct platform_device *pdev)
+static int __exit sgiwd93_remove(struct platform_device *pdev)
 {
 	struct Scsi_Host *host = platform_get_drvdata(pdev);
 	struct ip22_hostdata *hdata = (struct ip22_hostdata *) host->hostdata;
@@ -307,6 +310,7 @@ static void __exit sgiwd93_remove(struct platform_device *pdev)
 	free_irq(pd->irq, host);
 	dma_free_noncoherent(&pdev->dev, HPC_DMA_SIZE, hdata->cpu, hdata->dma);
 	scsi_host_put(host);
+	return 0;
 }
 
 static struct platform_driver sgiwd93_driver = {
@@ -315,6 +319,9 @@ static struct platform_driver sgiwd93_driver = {
 	.driver = {
 		.name   = "sgiwd93",
 		.owner	= THIS_MODULE,
+	.remove = sgiwd93_remove,
+	.driver = {
+		.name   = "sgiwd93",
 	}
 };
 

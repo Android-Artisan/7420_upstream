@@ -11,6 +11,7 @@
 extern unsigned long va_to_phys(unsigned long address);
 extern pte_t *va_to_pte(unsigned long address);
 extern unsigned long ioremap_bot, ioremap_base;
+extern unsigned long ioremap_bot;
 
 #ifdef CONFIG_44x
 extern int icache_44x_need_flush;
@@ -107,6 +108,39 @@ extern int icache_44x_need_flush;
 /*
  * Just any arbitrary offset to the start of the vmalloc VM area: the
  * current 64MB value just means that there will be a 64MB "hole" after the
+#define FIRST_USER_ADDRESS	0UL
+
+#define pte_ERROR(e) \
+	pr_err("%s:%d: bad pte %llx.\n", __FILE__, __LINE__, \
+		(unsigned long long)pte_val(e))
+#define pgd_ERROR(e) \
+	pr_err("%s:%d: bad pgd %08lx.\n", __FILE__, __LINE__, pgd_val(e))
+
+/*
+ * This is the bottom of the PKMAP area with HIGHMEM or an arbitrary
+ * value (for now) on others, from where we can start layout kernel
+ * virtual space that goes below PKMAP and FIXMAP
+ */
+#ifdef CONFIG_HIGHMEM
+#define KVIRT_TOP	PKMAP_BASE
+#else
+#define KVIRT_TOP	(0xfe000000UL)	/* for now, could be FIXMAP_BASE ? */
+#endif
+
+/*
+ * ioremap_bot starts at that address. Early ioremaps move down from there,
+ * until mem_init() at which point this becomes the top of the vmalloc
+ * and ioremap space
+ */
+#ifdef CONFIG_NOT_COHERENT_CACHE
+#define IOREMAP_TOP	((KVIRT_TOP - CONFIG_CONSISTENT_SIZE) & PAGE_MASK)
+#else
+#define IOREMAP_TOP	KVIRT_TOP
+#endif
+
+/*
+ * Just any arbitrary offset to the start of the vmalloc VM area: the
+ * current 16MB value just means that there will be a 64MB "hole" after the
  * physical memory until the kernel virtual memory starts.  That means that
  * any out-of-bounds memory accesses will hopefully be caught.
  * The vmalloc() routines leaves a hole of 4kB between each vmalloced
@@ -518,6 +552,26 @@ extern unsigned long bad_call_to_PMD_PAGE_SIZE(void);
 #define pte_none(pte)		((pte_val(pte) & ~_PTE_NONE_MASK) == 0)
 #define pte_present(pte)	(pte_val(pte) & _PAGE_PRESENT)
 #define pte_clear(mm,addr,ptep)	do { set_pte_at((mm), (addr), (ptep), __pte(0)); } while (0)
+#include <asm/pte-40x.h>
+#elif defined(CONFIG_44x)
+#include <asm/pte-44x.h>
+#elif defined(CONFIG_FSL_BOOKE) && defined(CONFIG_PTE_64BIT)
+#include <asm/pte-book3e.h>
+#elif defined(CONFIG_FSL_BOOKE)
+#include <asm/pte-fsl-booke.h>
+#elif defined(CONFIG_8xx)
+#include <asm/pte-8xx.h>
+#else /* CONFIG_6xx */
+#include <asm/pte-hash32.h>
+#endif
+
+/* And here we include common definitions */
+#include <asm/pte-common.h>
+
+#ifndef __ASSEMBLY__
+
+#define pte_clear(mm, addr, ptep) \
+	do { pte_update(ptep, ~_PAGE_HASHPTE, 0); } while (0)
 
 #define pmd_none(pmd)		(!pmd_val(pmd))
 #define	pmd_bad(pmd)		(pmd_val(pmd) & _PMD_BAD)
@@ -581,6 +635,24 @@ extern void add_hash_page(unsigned context, unsigned long va,
  * pte_update clears and sets bit atomically, and returns
  * the old pte value.  In the 64-bit PTE case we lock around the
  * low PTE word since we expect ALL flag bits to be there
+/* Flush an entry from the TLB/hash table */
+extern void flush_hash_entry(struct mm_struct *mm, pte_t *ptep,
+			     unsigned long address);
+
+/*
+ * PTE updates. This function is called whenever an existing
+ * valid PTE is updated. This does -not- include set_pte_at()
+ * which nowadays only sets a new PTE.
+ *
+ * Depending on the type of MMU, we may need to use atomic updates
+ * and the PTE may be either 32 or 64 bit wide. In the later case,
+ * when using atomic updates, only the low part of the PTE is
+ * accessed atomically.
+ *
+ * In addition, on 44x, we also maintain a global flag indicating
+ * that an executable user mapping was modified, which is needed
+ * to properly flush the virtually tagged instruction cache of
+ * those implementations.
  */
 #ifndef CONFIG_PTE_64BIT
 static inline unsigned long pte_update(pte_t *p,
@@ -607,6 +679,7 @@ static inline unsigned long pte_update(pte_t *p,
 
 #ifdef CONFIG_44x
 	if ((old & _PAGE_USER) && (old & _PAGE_HWEXEC))
+	if ((old & _PAGE_USER) && (old & _PAGE_EXEC))
 		icache_44x_need_flush = 1;
 #endif
 	return old;
@@ -641,6 +714,7 @@ static inline unsigned long long pte_update(pte_t *p,
 
 #ifdef CONFIG_44x
 	if ((old & _PAGE_USER) && (old & _PAGE_HWEXEC))
+	if ((old & _PAGE_USER) && (old & _PAGE_EXEC))
 		icache_44x_need_flush = 1;
 #endif
 	return old;
@@ -694,6 +768,7 @@ static inline void ptep_set_wrprotect(struct mm_struct *mm, unsigned long addr,
 				      pte_t *ptep)
 {
 	pte_update(ptep, (_PAGE_RW | _PAGE_HWWRITE), 0);
+	pte_update(ptep, (_PAGE_RW | _PAGE_HWWRITE), _PAGE_RO);
 }
 static inline void huge_ptep_set_wrprotect(struct mm_struct *mm,
 					   unsigned long addr, pte_t *ptep)
@@ -730,6 +805,15 @@ extern pgprot_t phys_mem_access_prot(struct file *file, unsigned long pfn,
 				     unsigned long size, pgprot_t vma_prot);
 #define __HAVE_PHYS_MEM_ACCESS_PROT
 
+static inline void __ptep_set_access_flags(pte_t *ptep, pte_t entry)
+{
+	unsigned long set = pte_val(entry) &
+		(_PAGE_DIRTY | _PAGE_ACCESSED | _PAGE_RW | _PAGE_EXEC);
+	unsigned long clr = ~pte_val(entry) & _PAGE_RO;
+
+	pte_update(ptep, clr, set);
+}
+
 #define __HAVE_ARCH_PTE_SAME
 #define pte_same(A,B)	(((pte_val(A) ^ pte_val(B)) & ~_PAGE_HASHPTE) == 0)
 
@@ -745,6 +829,7 @@ extern pgprot_t phys_mem_access_prot(struct file *file, unsigned long pfn,
 	((unsigned long) __va(pmd_val(pmd) & PAGE_MASK))
 #define pmd_page(pmd)		\
 	(mem_map + (pmd_val(pmd) >> PAGE_SHIFT))
+	pfn_to_page(pmd_val(pmd) >> PAGE_SHIFT)
 #else
 #define pmd_page_vaddr(pmd)	\
 	((unsigned long) (pmd_val(pmd) & PAGE_MASK))
@@ -771,12 +856,16 @@ extern pgprot_t phys_mem_access_prot(struct file *file, unsigned long pfn,
 
 #define pte_unmap(pte)		kunmap_atomic(pte, KM_PTE0)
 #define pte_unmap_nested(pte)	kunmap_atomic(pte, KM_PTE1)
+	((pte_t *) kmap_atomic(pmd_page(*(dir))) + pte_index(addr))
+#define pte_unmap(pte)		kunmap_atomic(pte)
 
 /*
  * Encode and decode a swap entry.
  * Note that the bits we use in a PTE for representing a swap entry
  * must not include the _PAGE_PRESENT bit, the _PAGE_FILE bit, or the
  *_PAGE_HASHPTE bit (if used).  -- paulus
+ * must not include the _PAGE_PRESENT bit or the _PAGE_HASHPTE bit (if used).
+ *   -- paulus
  */
 #define __swp_type(entry)		((entry).val & 0x1f)
 #define __swp_offset(entry)		((entry).val >> 5)
@@ -789,10 +878,14 @@ extern pgprot_t phys_mem_access_prot(struct file *file, unsigned long pfn,
 #define pte_to_pgoff(pte)	(pte_val(pte) >> 3)
 #define pgoff_to_pte(off)	((pte_t) { ((off) << 3) | _PAGE_FILE })
 
+#ifndef CONFIG_PPC_4K_PAGES
+void pgtable_cache_init(void);
+#else
 /*
  * No page table caches to initialise
  */
 #define pgtable_cache_init()	do { } while (0)
+#endif
 
 extern int get_pteptr(struct mm_struct *mm, unsigned long addr, pte_t **ptep,
 		      pmd_t **pmdp);

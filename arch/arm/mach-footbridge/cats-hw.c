@@ -12,6 +12,10 @@
 
 #include <asm/hardware/dec21285.h>
 #include <asm/io.h>
+#include <linux/io.h>
+#include <linux/spinlock.h>
+
+#include <asm/hardware/dec21285.h>
 #include <asm/mach-types.h>
 #include <asm/setup.h>
 
@@ -81,6 +85,13 @@ fixup_cats(struct machine_desc *desc, struct tag *tags,
 	screen_info.orig_video_lines  = 25;
 	screen_info.orig_video_points = 16;
 	screen_info.orig_y = 24;
+fixup_cats(struct tag *tags, char **cmdline)
+{
+#if defined(CONFIG_VGA_CONSOLE) || defined(CONFIG_DUMMY_CONSOLE)
+	screen_info.orig_video_lines  = 25;
+	screen_info.orig_video_points = 16;
+	screen_info.orig_y = 24;
+#endif
 }
 
 MACHINE_START(CATS, "Chalice-CATS")
@@ -93,4 +104,11 @@ MACHINE_START(CATS, "Chalice-CATS")
 	.map_io		= footbridge_map_io,
 	.init_irq	= footbridge_init_irq,
 	.timer		= &isa_timer,
+	.atag_offset	= 0x100,
+	.reboot_mode	= REBOOT_SOFT,
+	.fixup		= fixup_cats,
+	.map_io		= footbridge_map_io,
+	.init_irq	= footbridge_init_irq,
+	.init_time	= isa_timer_init,
+	.restart	= footbridge_restart,
 MACHINE_END

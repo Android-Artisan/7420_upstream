@@ -25,6 +25,9 @@
 #define _VIA_DRV_H_
 
 #include "drm_sman.h"
+#include <drm/drm_mm.h>
+#include <drm/drm_legacy.h>
+
 #define DRIVER_AUTHOR	"Various"
 
 #define DRIVER_NAME		"via"
@@ -75,6 +78,7 @@ typedef struct drm_via_private {
 	struct timeval last_vblank;
 	int last_vblank_valid;
 	unsigned usec_per_vblank;
+	atomic_t vbl_received;
 	drm_via_state_t hc_state;
 	char pci_buf[VIA_PCI_BUF_SIZE];
 	const uint32_t *fire_offsets[VIA_FIRE_BUF_SIZE];
@@ -90,11 +94,21 @@ typedef struct drm_via_private {
 	struct drm_sman sman;
 	int vram_initialized;
 	int agp_initialized;
+	int vram_initialized;
+	struct drm_mm vram_mm;
+	int agp_initialized;
+	struct drm_mm agp_mm;
+	/** Mapping of userspace keys to mm objects */
+	struct idr object_idr;
 	unsigned long vram_offset;
 	unsigned long agp_offset;
 	drm_via_blitq_t blit_queues[VIA_NUM_BLIT_ENGINES];
 	uint32_t dma_diff;
 } drm_via_private_t;
+
+struct via_file_private {
+	struct list_head obj_list;
+};
 
 enum via_family {
   VIA_OTHER = 0,     /* Baseline */
@@ -111,6 +125,11 @@ enum via_family {
 #define VIA_WRITE8(reg,val)	DRM_WRITE8(VIA_BASE, reg, val)
 
 extern struct drm_ioctl_desc via_ioctls[];
+#define VIA_WRITE(reg, val)	DRM_WRITE32(VIA_BASE, reg, val)
+#define VIA_READ8(reg)		DRM_READ8(VIA_BASE, reg)
+#define VIA_WRITE8(reg, val)	DRM_WRITE8(VIA_BASE, reg, val)
+
+extern const struct drm_ioctl_desc via_ioctls[];
 extern int via_max_ioctl;
 
 extern int via_fb_init(struct drm_device *dev, void *data, struct drm_file *file_priv);
@@ -122,6 +141,8 @@ extern int via_decoder_futex(struct drm_device *dev, void *data, struct drm_file
 extern int via_wait_irq(struct drm_device *dev, void *data, struct drm_file *file_priv);
 extern int via_dma_blit_sync( struct drm_device *dev, void *data, struct drm_file *file_priv );
 extern int via_dma_blit( struct drm_device *dev, void *data, struct drm_file *file_priv );
+extern int via_dma_blit_sync(struct drm_device *dev, void *data, struct drm_file *file_priv);
+extern int via_dma_blit(struct drm_device *dev, void *data, struct drm_file *file_priv);
 
 extern int via_driver_load(struct drm_device *dev, unsigned long chipset);
 extern int via_driver_unload(struct drm_device *dev);
@@ -145,6 +166,28 @@ extern void via_cleanup_futex(drm_via_private_t * dev_priv);
 extern void via_release_futex(drm_via_private_t * dev_priv, int context);
 
 extern void via_reclaim_buffers_locked(struct drm_device *dev, struct drm_file *file_priv);
+extern int via_init_context(struct drm_device *dev, int context);
+extern int via_final_context(struct drm_device *dev, int context);
+
+extern int via_do_cleanup_map(struct drm_device *dev);
+extern u32 via_get_vblank_counter(struct drm_device *dev, unsigned int pipe);
+extern int via_enable_vblank(struct drm_device *dev, unsigned int pipe);
+extern void via_disable_vblank(struct drm_device *dev, unsigned int pipe);
+
+extern irqreturn_t via_driver_irq_handler(int irq, void *arg);
+extern void via_driver_irq_preinstall(struct drm_device *dev);
+extern int via_driver_irq_postinstall(struct drm_device *dev);
+extern void via_driver_irq_uninstall(struct drm_device *dev);
+
+extern int via_dma_cleanup(struct drm_device *dev);
+extern void via_init_command_verifier(void);
+extern int via_driver_dma_quiescent(struct drm_device *dev);
+extern void via_init_futex(drm_via_private_t *dev_priv);
+extern void via_cleanup_futex(drm_via_private_t *dev_priv);
+extern void via_release_futex(drm_via_private_t *dev_priv, int context);
+
+extern void via_reclaim_buffers_locked(struct drm_device *dev,
+				       struct drm_file *file_priv);
 extern void via_lastclose(struct drm_device *dev);
 
 extern void via_dmablit_handler(struct drm_device *dev, int engine, int from_irq);

@@ -118,16 +118,75 @@ static struct crypto_alg alg = {
 	.dia_init   	= 	sha1_init,
 	.dia_update 	=	sha1_update,
 	.dia_final  	=	sha1_final } }
+#include <crypto/internal/hash.h>
+#include <linux/init.h>
+#include <linux/module.h>
+#include <linux/mm.h>
+#include <linux/cryptohash.h>
+#include <linux/types.h>
+#include <crypto/sha.h>
+#include <crypto/sha1_base.h>
+#include <asm/byteorder.h>
+
+static void sha1_generic_block_fn(struct sha1_state *sst, u8 const *src,
+				  int blocks)
+{
+	u32 temp[SHA_WORKSPACE_WORDS];
+
+	while (blocks--) {
+		sha_transform(sst->state, src, temp);
+		src += SHA1_BLOCK_SIZE;
+	}
+	memzero_explicit(temp, sizeof(temp));
+}
+
+int crypto_sha1_update(struct shash_desc *desc, const u8 *data,
+		       unsigned int len)
+{
+	return sha1_base_do_update(desc, data, len, sha1_generic_block_fn);
+}
+EXPORT_SYMBOL(crypto_sha1_update);
+
+static int sha1_final(struct shash_desc *desc, u8 *out)
+{
+	sha1_base_do_finalize(desc, sha1_generic_block_fn);
+	return sha1_base_finish(desc, out);
+}
+
+int crypto_sha1_finup(struct shash_desc *desc, const u8 *data,
+		      unsigned int len, u8 *out)
+{
+	sha1_base_do_update(desc, data, len, sha1_generic_block_fn);
+	return sha1_final(desc, out);
+}
+EXPORT_SYMBOL(crypto_sha1_finup);
+
+static struct shash_alg alg = {
+	.digestsize	=	SHA1_DIGEST_SIZE,
+	.init		=	sha1_base_init,
+	.update		=	crypto_sha1_update,
+	.final		=	sha1_final,
+	.finup		=	crypto_sha1_finup,
+	.descsize	=	sizeof(struct sha1_state),
+	.base		=	{
+		.cra_name	=	"sha1",
+		.cra_driver_name=	"sha1-generic",
+		.cra_flags	=	CRYPTO_ALG_TYPE_SHASH,
+		.cra_blocksize	=	SHA1_BLOCK_SIZE,
+		.cra_module	=	THIS_MODULE,
+	}
 };
 
 static int __init sha1_generic_mod_init(void)
 {
 	return crypto_register_alg(&alg);
+	return crypto_register_shash(&alg);
 }
 
 static void __exit sha1_generic_mod_fini(void)
 {
 	crypto_unregister_alg(&alg);
+	crypto_unregister_shash(&alg);
 }
 
 module_init(sha1_generic_mod_init);
@@ -137,3 +196,5 @@ MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("SHA1 Secure Hash Algorithm");
 
 MODULE_ALIAS("sha1");
+MODULE_ALIAS_CRYPTO("sha1");
+MODULE_ALIAS_CRYPTO("sha1-generic");

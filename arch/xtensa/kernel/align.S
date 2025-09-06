@@ -8,6 +8,7 @@
  * this archive for more details.
  *
  * Copyright (C) 2001 - 2005 Tensilica, Inc.
+ * Copyright (C) 2014 Cadence Design Systems Inc.
  *
  * Rewritten by Chris Zankel <chris@zankel.net>
  *
@@ -149,6 +150,9 @@
  *   a3:	dispatch table
  *   depc:	a2, original value saved on stack (PT_DEPC)
  *   excsave_1:	a3
+ *   a3:	a3
+ *   depc:	a2, original value saved on stack (PT_DEPC)
+ *   excsave_1:	dispatch table
  *
  *   PT_DEPC >= VALID_DOUBLE_EXCEPTION_ADDRESS: double exception, DEPC
  *	     <  VALID_DOUBLE_EXCEPTION_ADDRESS: regular exception
@@ -179,6 +183,18 @@ ENTRY(fast_unaligned)
 
 	rsr	a0, SAR
 	rsr	a8, EXCVADDR		# load unaligned memory address
+	rsr	a0, depc
+	s32i	a0, a2, PT_AREG2
+	s32i	a3, a2, PT_AREG3
+
+	rsr	a3, excsave1
+	movi	a4, fast_unaligned_fixup
+	s32i	a4, a3, EXC_TABLE_FIXUP
+
+	/* Keep value of SAR in a0 */
+
+	rsr	a0, sar
+	rsr	a8, excvaddr		# load unaligned memory address
 
 	/* Now, identify one of the following load/store instructions.
 	 *
@@ -198,6 +214,7 @@ ENTRY(fast_unaligned)
 	/* Extract the instruction that caused the unaligned access. */
 
 	rsr	a7, EPC_1	# load exception address
+	rsr	a7, epc1	# load exception address
 	movi	a3, ~3
 	and	a3, a3, a7	# mask lower bits
 
@@ -327,6 +344,35 @@ ENTRY(fast_unaligned)
 	mov	a3, a14		;	_j 1f;	.align 8
 	mov	a3, a15		;	_j 1f;	.align 8
 
+	/* We cannot handle this exception. */
+
+	.extern _kernel_exception
+.Linvalid_instruction_load:
+.Linvalid_instruction_store:
+
+	movi	a4, 0
+	rsr	a3, excsave1
+	s32i	a4, a3, EXC_TABLE_FIXUP
+
+	/* Restore a4...a8 and SAR, set SP, and jump to default exception. */
+
+	l32i	a8, a2, PT_AREG8
+	l32i	a7, a2, PT_AREG7
+	l32i	a6, a2, PT_AREG6
+	l32i	a5, a2, PT_AREG5
+	l32i	a4, a2, PT_AREG4
+	wsr	a0, sar
+	mov	a1, a2
+
+	rsr	a0, ps
+	bbsi.l  a0, PS_UM_BIT, 2f     # jump if user mode
+
+	movi	a0, _kernel_exception
+	jx	a0
+
+2:	movi	a0, _user_exception
+	jx	a0
+
 1: 	# a7: instruction pointer, a4: instruction, a3: value
 
 	movi	a6, 0			# mask: ffffffff:00000000
@@ -377,6 +423,7 @@ ENTRY(fast_unaligned)
 
 	__ssa8r a8
 	__src_b	a7, a5, a6		# lo-mask  F..F0..0 (BE) 0..0F..F (LE)
+	__src_b	a8, a5, a6		# lo-mask  F..F0..0 (BE) 0..0F..F (LE)
 	__src_b	a6, a6, a5		# hi-mask  0..0F..F (BE) F..F0..0 (LE)
 #ifdef UNALIGNED_USER_EXCEPTION
 	l32e	a5, a4, -8
@@ -395,6 +442,18 @@ ENTRY(fast_unaligned)
 #endif
 	__sl	a5, a3
 	and	a6, a7, a6
+	and	a5, a5, a8		# mask
+	__sh	a8, a3 			# shift value
+	or	a5, a5, a8		# or with original value
+#ifdef UNALIGNED_USER_EXCEPTION
+	s32e	a5, a4, -8
+	l32e	a8, a4, -4
+#else
+	s32i	a5, a4, 0		# store
+	l32i	a8, a4, 4		# same for upper address word
+#endif
+	__sl	a5, a3
+	and	a6, a8, a6
 	or	a6, a6, a5
 #ifdef UNALIGNED_USER_EXCEPTION
 	s32e	a6, a4, -4
@@ -407,6 +466,29 @@ ENTRY(fast_unaligned)
 .Lexit:
 	movi	a4, 0
 	rsr	a3, EXCSAVE_1
+.Lexit:
+#if XCHAL_HAVE_LOOPS
+	rsr	a4, lend		# check if we reached LEND
+	bne	a7, a4, 1f
+	rsr	a4, lcount		# and LCOUNT != 0
+	beqz	a4, 1f
+	addi	a4, a4, -1		# decrement LCOUNT and set
+	rsr	a7, lbeg		# set PC to LBEGIN
+	wsr	a4, lcount
+#endif
+
+1:	wsr	a7, epc1		# skip emulated instruction
+
+	/* Update icount if we're single-stepping in userspace. */
+	rsr	a4, icountlevel
+	beqz	a4, 1f
+	bgeui	a4, LOCKLEVEL + 1, 1f
+	rsr	a4, icount
+	addi	a4, a4, 1
+	wsr	a4, icount
+1:
+	movi	a4, 0
+	rsr	a3, excsave1
 	s32i	a4, a3, EXC_TABLE_FIXUP
 
 	/* Restore working register */
@@ -421,6 +503,7 @@ ENTRY(fast_unaligned)
 	/* restore SAR and return */
 
 	wsr	a0, SAR
+	wsr	a0, sar
 	l32i	a0, a2, PT_AREG0
 	l32i	a2, a2, PT_AREG2
 	rfe
@@ -432,6 +515,12 @@ ENTRY(fast_unaligned)
 .Linvalid_instruction:
 
 	/* Restore a4...a8 and SAR, set SP, and jump to default exception. */
+ENDPROC(fast_unaligned)
+
+ENTRY(fast_unaligned_fixup)
+
+	l32i	a2, a3, EXC_TABLE_DOUBLE_SAVE
+	wsr	a3, excsave1
 
 	l32i	a8, a2, PT_AREG8
 	l32i	a7, a2, PT_AREG7
@@ -453,3 +542,28 @@ ENTRY(fast_unaligned)
 
 #endif /* XCHAL_UNALIGNED_LOAD_EXCEPTION || XCHAL_UNALIGNED_STORE_EXCEPTION */
 
+	l32i	a0, a2, PT_AREG2
+	xsr	a0, depc			# restore depc and a0
+	wsr	a0, sar
+
+	rsr	a0, exccause
+	s32i	a0, a2, PT_DEPC			# mark as a regular exception
+
+	rsr	a0, ps
+	bbsi.l  a0, PS_UM_BIT, 1f		# jump if user mode
+
+	rsr	a0, exccause
+	addx4	a0, a0, a3              	# find entry in table
+	l32i	a0, a0, EXC_TABLE_FAST_KERNEL   # load handler
+	l32i	a3, a2, PT_AREG3
+	jx	a0
+1:
+	rsr	a0, exccause
+	addx4	a0, a0, a3              	# find entry in table
+	l32i	a0, a0, EXC_TABLE_FAST_USER     # load handler
+	l32i	a3, a2, PT_AREG3
+	jx	a0
+
+ENDPROC(fast_unaligned_fixup)
+
+#endif /* XCHAL_UNALIGNED_LOAD_EXCEPTION || XCHAL_UNALIGNED_STORE_EXCEPTION */

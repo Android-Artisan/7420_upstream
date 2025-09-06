@@ -42,6 +42,8 @@
 #include <linux/kernel.h>
 #include <linux/types.h>
 #include <linux/init.h>
+#include <linux/ktime.h>
+#include <linux/types.h>
 #include <linux/time.h>
 #include <linux/skbuff.h>
 #include <linux/netdevice.h>
@@ -165,6 +167,7 @@ struct stir_cb {
         struct net_device *netdev;      /* network layer */
         struct irlap_cb   *irlap;       /* The link layer we are binded to */
         struct net_device_stats stats;	/* network statistics */
+
         struct qos_info   qos;
 	unsigned 	  speed;	/* Current speed */
 
@@ -176,6 +179,7 @@ struct stir_cb {
 
 	iobuff_t  	  rx_buff;	/* receive unwrap state machine */
 	struct timeval	  rx_time;
+	ktime_t		rx_time;
 	int		  receiving;
 	struct urb	 *rx_urb;
 };
@@ -220,6 +224,7 @@ static inline int read_reg(struct stir_cb *stir, __u16 reg,
 static inline int isfir(u32 speed)
 {
 	return (speed == 4000000);
+	return speed == 4000000;
 }
 
 /*
@@ -325,6 +330,8 @@ static void fir_eof(struct stir_cb *stir)
 
 		++stir->stats.rx_errors;
 		++stir->stats.rx_length_errors;
+		++stir->netdev->stats.rx_errors;
+		++stir->netdev->stats.rx_length_errors;
 		return;
 	}
 
@@ -333,6 +340,8 @@ static void fir_eof(struct stir_cb *stir)
 		pr_debug("crc error calc 0x%x len %d\n", fcs, len);
 		stir->stats.rx_errors++;
 		stir->stats.rx_crc_errors++;
+		stir->netdev->stats.rx_errors++;
+		stir->netdev->stats.rx_crc_errors++;
 		return;
 	}
 
@@ -341,6 +350,7 @@ static void fir_eof(struct stir_cb *stir)
 		nskb = dev_alloc_skb(len + 1);
 		if (unlikely(!nskb)) {
 			++stir->stats.rx_dropped;
+			++stir->netdev->stats.rx_dropped;
 			return;
 		}
 		skb_reserve(nskb, 1);
@@ -350,6 +360,7 @@ static void fir_eof(struct stir_cb *stir)
 		nskb = dev_alloc_skb(rx_buff->truesize);
 		if (unlikely(!nskb)) {
 			++stir->stats.rx_dropped;
+			++stir->netdev->stats.rx_dropped;
 			return;
 		}
 		skb_reserve(nskb, 1);
@@ -368,6 +379,8 @@ static void fir_eof(struct stir_cb *stir)
 
 	stir->stats.rx_packets++;
 	stir->stats.rx_bytes += len;
+	stir->netdev->stats.rx_packets++;
+	stir->netdev->stats.rx_bytes += len;
 
 	rx_buff->data = rx_buff->head;
 	rx_buff->len = 0;
@@ -438,6 +451,7 @@ static void stir_fir_chars(struct stir_cb *stir,
 			pr_debug("%s: fir frame exceeds %d\n",
 				 stir->netdev->name, rx_buff->truesize);
 			++stir->stats.rx_over_errors;
+			++stir->netdev->stats.rx_over_errors;
 			goto error_recovery;
 		}
 
@@ -449,6 +463,10 @@ static void stir_fir_chars(struct stir_cb *stir,
 
 	error_recovery:
 		++stir->stats.rx_errors;
+		++stir->netdev->stats.rx_frame_errors;
+
+	error_recovery:
+		++stir->netdev->stats.rx_errors;
 		rx_buff->state = OUTSIDE_FRAME;
 		rx_buff->in_frame = FALSE;
 	}
@@ -462,6 +480,7 @@ static void stir_sir_chars(struct stir_cb *stir,
 
 	for (i = 0; i < len; i++)
 		async_unwrap_char(stir->netdev, &stir->stats,
+		async_unwrap_char(stir->netdev, &stir->netdev->stats,
 				  &stir->rx_buff, bytes[i]);
 }
 
@@ -507,6 +526,7 @@ static int change_speed(struct stir_cb *stir, unsigned speed)
 	}
 
 	warn("%s: invalid speed %d", stir->netdev->name, speed);
+	dev_warn(&stir->netdev->dev, "invalid speed %d\n", speed);
 	return -EINVAL;
 
  found:
@@ -561,6 +581,8 @@ static int change_speed(struct stir_cb *stir, unsigned speed)
  * Called from net/core when new frame is available.
  */
 static int stir_hard_xmit(struct sk_buff *skb, struct net_device *netdev)
+static netdev_tx_t stir_hard_xmit(struct sk_buff *skb,
+					struct net_device *netdev)
 {
 	struct stir_cb *stir = netdev_priv(netdev);
 
@@ -579,6 +601,7 @@ static int stir_hard_xmit(struct sk_buff *skb, struct net_device *netdev)
 	}
 
 	return 0;
+	return NETDEV_TX_OK;
 }
 
 /*
@@ -600,6 +623,8 @@ static int fifo_txwait(struct stir_cb *stir, int space)
 		if (unlikely(err != FIFO_REGS_SIZE)) {
 			warn("%s: FIFO register read error: %d", 
 			     stir->netdev->name, err);
+			dev_warn(&stir->netdev->dev,
+				 "FIFO register read error: %d\n", err);
 
 			return err;
 		}
@@ -613,6 +638,8 @@ static int fifo_txwait(struct stir_cb *stir, int space)
 		/* is fifo receiving already, or empty */
 		if (!(status & FIFOCTL_DIR)
 		    || (status & FIFOCTL_EMPTY))
+		if (!(status & FIFOCTL_DIR) ||
+		    (status & FIFOCTL_EMPTY))
 			return 0;
 
 		if (signal_pending(current))
@@ -621,6 +648,8 @@ static int fifo_txwait(struct stir_cb *stir, int space)
 		/* shutting down? */
 		if (!netif_running(stir->netdev)
 		    || !netif_device_present(stir->netdev))
+		if (!netif_running(stir->netdev) ||
+		    !netif_device_present(stir->netdev))
 			return -ESHUTDOWN;
 
 		/* only waiting for some space */
@@ -659,6 +688,8 @@ static void turnaround_delay(const struct stir_cb *stir, long us)
 	if (now.tv_sec - stir->rx_time.tv_sec > 0)
 		us -= USEC_PER_SEC;
 	us -= now.tv_usec - stir->rx_time.tv_usec;
+	us -= ktime_us_delta(ktime_get(), stir->rx_time);
+
 	if (us < 10)
 		return;
 
@@ -693,6 +724,7 @@ static void receive_stop(struct stir_cb *stir)
 
 	if (stir->rx_buff.in_frame) 
 		stir->stats.collisions++;
+		stir->netdev->stats.collisions++;
 }
 /*
  * Wrap data in socket buffer and send it.
@@ -720,6 +752,8 @@ static void stir_send(struct stir_cb *stir, struct sk_buff *skb)
 
 	stir->stats.tx_packets++;
 	stir->stats.tx_bytes += skb->len;
+	stir->netdev->stats.tx_packets++;
+	stir->netdev->stats.tx_bytes += skb->len;
 	stir->netdev->trans_start = jiffies;
 	pr_debug("send %d (%d)\n", skb->len, wraplen);
 
@@ -727,6 +761,7 @@ static void stir_send(struct stir_cb *stir, struct sk_buff *skb)
 			 stir->io_buf, wraplen,
 			 NULL, TRANSMIT_TIMEOUT))
 		stir->stats.tx_errors++;
+		stir->netdev->stats.tx_errors++;
 }
 
 /*
@@ -750,6 +785,7 @@ static int stir_transmit_thread(void *arg)
 			write_reg(stir, REG_CTRL1, CTRL1_TXPWD|CTRL1_RXPWD);
 
 			refrigerator();
+			try_to_freeze();
 
 			if (change_speed(stir, stir->speed))
 				break;
@@ -777,6 +813,8 @@ static int stir_transmit_thread(void *arg)
 		/* nothing to send? start receiving */
 		if (!stir->receiving 
 		    && irda_device_txqueue_empty(dev)) {
+		if (!stir->receiving &&
+		    irda_device_txqueue_empty(dev)) {
 			/* Wait otherwise chip gets confused. */
 			if (fifo_txwait(stir, -1))
 				break;
@@ -785,6 +823,9 @@ static int stir_transmit_thread(void *arg)
 				if (net_ratelimit())
 					info("%s: receive usb submit failed",
 					     stir->netdev->name);
+					dev_info(&dev->dev,
+						 "%s: receive usb submit failed\n",
+						 stir->netdev->name);
 				stir->receiving = 0;
 				msleep(10);
 				continue;
@@ -825,6 +866,8 @@ static void stir_rcv_irq(struct urb *urb)
 		
 		stir->netdev->last_rx = jiffies;
 		do_gettimeofday(&stir->rx_time);
+
+		stir->rx_time = ktime_get();
 	}
 
 	/* kernel thread is stopping receiver don't resubmit */
@@ -838,6 +881,8 @@ static void stir_rcv_irq(struct urb *urb)
 	if (err) {
 		warn("%s: usb receive submit error: %d",
 			stir->netdev->name, err);
+		dev_warn(&stir->netdev->dev, "usb receive submit error: %d\n",
+			 err);
 		stir->receiving = 0;
 		wake_up_process(stir->thread);
 	}
@@ -877,6 +922,7 @@ static int stir_net_open(struct net_device *netdev)
 	skb_reserve(stir->rx_buff.skb, 1);
 	stir->rx_buff.head = stir->rx_buff.skb->data;
 	do_gettimeofday(&stir->rx_time);
+	stir->rx_time = ktime_get();
 
 	stir->rx_urb = usb_alloc_urb(0, GFP_KERNEL);
 	if (!stir->rx_urb) 
@@ -904,6 +950,7 @@ static int stir_net_open(struct net_device *netdev)
 	stir->irlap = irlap_open(netdev, &stir->qos, hwname);
 	if (!stir->irlap) {
 		err("stir4200: irlap_open failed");
+		dev_err(&stir->usbdev->dev, "irlap_open failed\n");
 		goto err_out5;
 	}
 
@@ -913,6 +960,7 @@ static int stir_net_open(struct net_device *netdev)
         if (IS_ERR(stir->thread)) {
                 err = PTR_ERR(stir->thread);
 		err("stir4200: unable to start kernel thread");
+		dev_err(&stir->usbdev->dev, "unable to start kernel thread\n");
 		goto err_out6;
 	}
 
@@ -1015,6 +1063,12 @@ static struct net_device_stats *stir_net_get_stats(struct net_device *netdev)
 	struct stir_cb *stir = netdev_priv(netdev);
 	return &stir->stats;
 }
+static const struct net_device_ops stir_netdev_ops = {
+	.ndo_open       = stir_net_open,
+	.ndo_stop       = stir_net_close,
+	.ndo_start_xmit = stir_hard_xmit,
+	.ndo_do_ioctl   = stir_net_ioctl,
+};
 
 /*
  * This routine is called by the USB subsystem for each new device
@@ -1044,6 +1098,7 @@ static int stir_probe(struct usb_interface *intf,
 	ret = usb_reset_configuration(dev);
 	if (ret != 0) {
 		err("stir4200: usb reset configuration failed");
+		dev_err(&intf->dev, "usb reset configuration failed\n");
 		goto err_out2;
 	}
 
@@ -1068,12 +1123,15 @@ static int stir_probe(struct usb_interface *intf,
 	net->stop            = stir_net_close;
 	net->get_stats	     = stir_net_get_stats;
 	net->do_ioctl        = stir_net_ioctl;
+	net->netdev_ops = &stir_netdev_ops;
 
 	ret = register_netdev(net);
 	if (ret != 0)
 		goto err_out2;
 
 	info("IrDA: Registered SigmaTel device %s", net->name);
+	dev_info(&intf->dev, "IrDA: Registered SigmaTel device %s\n",
+		 net->name);
 
 	usb_set_intfdata(intf, stir);
 
@@ -1155,3 +1213,4 @@ static void __exit stir_cleanup(void)
 	usb_deregister(&irda_driver);
 }
 module_exit(stir_cleanup);
+module_usb_driver(irda_driver);

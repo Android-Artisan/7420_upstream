@@ -41,6 +41,7 @@ struct videobuf_queue;
  * about the mmap helpers (videobuf_mmap_*):
  *
  * The mmaper function allows to map any subset of contingous buffers.
+ * The mmaper function allows to map any subset of contiguous buffers.
  * This includes one mmap() call for all buffers (which the original
  * video4linux API uses) as well as one mmap() for every single buffer
  * (which v4l2 uses).
@@ -150,10 +151,21 @@ struct videobuf_qtype_ops {
 	int (*mmap_free)	(struct videobuf_queue *q);
 	int (*mmap_mapper)	(struct videobuf_queue *q,
 				struct vm_area_struct *vma);
+	struct videobuf_buffer *(*alloc_vb)(size_t size);
+	void *(*vaddr)		(struct videobuf_buffer *buf);
+	int (*iolock)		(struct videobuf_queue *q,
+				 struct videobuf_buffer *vb,
+				 struct v4l2_framebuffer *fbuf);
+	int (*sync)		(struct videobuf_queue *q,
+				 struct videobuf_buffer *buf);
+	int (*mmap_mapper)	(struct videobuf_queue *q,
+				 struct videobuf_buffer *buf,
+				 struct vm_area_struct *vma);
 };
 
 struct videobuf_queue {
 	struct mutex               vb_lock;
+	struct mutex               *ext_lock;
 	spinlock_t                 *irqlock;
 	struct device		   *dev;
 
@@ -166,6 +178,7 @@ struct videobuf_queue {
 	enum v4l2_field            last;   /* for field=V4L2_FIELD_ALTERNATE */
 	struct videobuf_buffer     *bufs[VIDEO_MAX_FRAME];
 	struct videobuf_queue_ops  *ops;
+	const struct videobuf_queue_ops  *ops;
 	struct videobuf_qtype_ops  *int_ops;
 
 	unsigned int               streaming:1;
@@ -195,6 +208,31 @@ void *videobuf_queue_to_vmalloc (struct videobuf_queue* q,
 
 void videobuf_queue_core_init(struct videobuf_queue *q,
 			 struct videobuf_queue_ops *ops,
+static inline void videobuf_queue_lock(struct videobuf_queue *q)
+{
+	if (!q->ext_lock)
+		mutex_lock(&q->vb_lock);
+}
+
+static inline void videobuf_queue_unlock(struct videobuf_queue *q)
+{
+	if (!q->ext_lock)
+		mutex_unlock(&q->vb_lock);
+}
+
+int videobuf_waiton(struct videobuf_queue *q, struct videobuf_buffer *vb,
+		int non_blocking, int intr);
+int videobuf_iolock(struct videobuf_queue *q, struct videobuf_buffer *vb,
+		struct v4l2_framebuffer *fbuf);
+
+struct videobuf_buffer *videobuf_alloc_vb(struct videobuf_queue *q);
+
+/* Used on videobuf-dvb */
+void *videobuf_queue_to_vaddr(struct videobuf_queue *q,
+			      struct videobuf_buffer *buf);
+
+void videobuf_queue_core_init(struct videobuf_queue *q,
+			 const struct videobuf_queue_ops *ops,
 			 struct device *dev,
 			 spinlock_t *irqlock,
 			 enum v4l2_buf_type type,
@@ -202,6 +240,8 @@ void videobuf_queue_core_init(struct videobuf_queue *q,
 			 unsigned int msize,
 			 void *priv,
 			 struct videobuf_qtype_ops *int_ops);
+			 struct videobuf_qtype_ops *int_ops,
+			 struct mutex *ext_lock);
 int  videobuf_queue_is_busy(struct videobuf_queue *q);
 void videobuf_queue_cancel(struct videobuf_queue *q);
 

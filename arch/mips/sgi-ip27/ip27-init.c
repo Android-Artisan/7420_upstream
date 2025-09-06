@@ -9,6 +9,7 @@
 #include <linux/kernel.h>
 #include <linux/init.h>
 #include <linux/sched.h>
+#include <linux/smp.h>
 #include <linux/mm.h>
 #include <linux/module.h>
 #include <linux/cpumask.h>
@@ -54,12 +55,14 @@ extern void pcibr_setup(cnodeid_t);
 extern void xtalk_probe_node(cnodeid_t nid);
 
 static void __cpuinit per_hub_init(cnodeid_t cnode)
+static void per_hub_init(cnodeid_t cnode)
 {
 	struct hub_data *hub = hub_data(cnode);
 	nasid_t nasid = COMPACT_TO_NASID_NODEID(cnode);
 	int i;
 
 	cpu_set(smp_processor_id(), hub->h_cpus);
+	cpumask_set_cpu(smp_processor_id(), &hub->h_cpus);
 
 	if (test_and_set_bit(cnode, hub_init_mask))
 		return;
@@ -93,6 +96,7 @@ static void __cpuinit per_hub_init(cnodeid_t cnode)
 	/*
 	 * Some interrupts are reserved by hardware or by software convention.
 	 * Mark these as reserved right away so they won't be used accidently
+	 * Mark these as reserved right away so they won't be used accidentally
 	 * later.
 	 */
 	for (i = 0; i <= BASE_PCI_IRQ; i++) {
@@ -110,6 +114,7 @@ static void __cpuinit per_hub_init(cnodeid_t cnode)
 }
 
 void __cpuinit per_cpu_init(void)
+void per_cpu_init(void)
 {
 	int cpu = smp_processor_id();
 	int slice = LOCAL_HUB_L(PI_CPU_NUM);
@@ -151,6 +156,7 @@ get_nasid(void)
 {
 	return (nasid_t)((LOCAL_HUB_L(NI_STATUS_REV_ID) & NSRI_NODEID_MASK)
 	                 >> NSRI_NODEID_SHFT);
+			 >> NSRI_NODEID_SHFT);
 }
 
 /*

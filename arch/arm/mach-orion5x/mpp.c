@@ -17,6 +17,13 @@
 #include "mpp.h"
 
 static int is_5181l(void)
+#include <linux/io.h>
+#include <mach/hardware.h>
+#include <plat/mpp.h>
+#include "mpp.h"
+#include "common.h"
+
+static unsigned int __init orion5x_variant(void)
 {
 	u32 dev;
 	u32 rev;
@@ -160,4 +167,22 @@ void __init orion5x_mpp_conf(struct orion5x_mpp_mode *mode)
 	writel(mpp_0_7_ctrl, MPP_0_7_CTRL);
 	writel(mpp_8_15_ctrl, MPP_8_15_CTRL);
 	writel(mpp_16_19_ctrl, MPP_16_19_CTRL);
+	if (dev == MV88F5181_DEV_ID)
+		return MPP_F5181_MASK;
+
+	if (dev == MV88F5182_DEV_ID)
+		return MPP_F5182_MASK;
+
+	if (dev == MV88F5281_DEV_ID)
+		return MPP_F5281_MASK;
+
+	printk(KERN_ERR "MPP setup: unknown orion5x variant "
+	       "(dev %#x rev %#x)\n", dev, rev);
+	return 0;
+}
+
+void __init orion5x_mpp_conf(unsigned int *mpp_list)
+{
+	orion_mpp_conf(mpp_list, orion5x_variant(),
+		       MPP_MAX, ORION5X_DEV_BUS_VIRT_BASE);
 }

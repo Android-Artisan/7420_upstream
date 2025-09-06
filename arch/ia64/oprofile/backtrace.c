@@ -50,6 +50,9 @@ static __inline__ int in_old_ool_spinlock_code(unsigned long pc)
 #define in_old_ool_spinlock_code(pc)	0
 #endif
 
+	unsigned long *prev_pfs_loc;	/* state for WAR for old spinlock ool code */
+} ia64_backtrace_t;
+
 /* Returns non-zero if the PC is in the Interrupt Vector Table */
 static __inline__ int in_ivt_code(unsigned long pc)
 {
@@ -81,6 +84,7 @@ static __inline__ int next_frame(ia64_backtrace_t *bt)
 	if (bt->prev_pfs_loc && bt->regs && bt->frame.pfs_loc == bt->prev_pfs_loc)
 		bt->frame.pfs_loc = &bt->regs->ar_pfs;
 	bt->prev_pfs_loc = (in_old_ool_spinlock_code(bt->frame.ip) ? bt->frame.pfs_loc : NULL);
+	bt->prev_pfs_loc = NULL;
 
 	return unw_unwind(&bt->frame) == 0;
 }

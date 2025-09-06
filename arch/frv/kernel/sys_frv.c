@@ -194,4 +194,9 @@ asmlinkage long sys_ipc(unsigned long call,
 	default:
 		return -ENOSYS;
 	}
+	if (pgoff & ((1 << (PAGE_SHIFT - 12)) - 1))
+		return -EINVAL;
+
+	return sys_mmap_pgoff(addr, len, prot, flags, fd,
+			      pgoff >> (PAGE_SHIFT - 12));
 }

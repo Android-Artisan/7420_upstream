@@ -35,6 +35,7 @@ static int skip_atoi(const char **s)
 #define SPECIAL	64		/* 0x */
 
 #define do_div(n,base) ({ \
+#define __do_div(n, base) ({ \
 int __res; \
 __res = ((unsigned long) n) % (unsigned) base; \
 n = ((unsigned long) n) / (unsigned) base; \
@@ -56,6 +57,7 @@ static char *number(char *str, long num, int base, int size, int precision,
 	if (type & LEFT)
 		type &= ~ZEROPAD;
 	if (base < 2 || base > 36)
+	if (base < 2 || base > 16)
 		return NULL;
 	c = (type & ZEROPAD) ? '0' : ' ';
 	sign = 0;
@@ -84,6 +86,7 @@ static char *number(char *str, long num, int base, int size, int precision,
 	else
 		while (num != 0)
 			tmp[i++] = (digits[do_div(num, base)] | locase);
+			tmp[i++] = (digits[__do_div(num, base)] | locase);
 	if (i > precision)
 		precision = i;
 	size -= precision;

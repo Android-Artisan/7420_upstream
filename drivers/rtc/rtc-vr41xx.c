@@ -2,6 +2,7 @@
  *  Driver for NEC VR4100 series Real Time Clock unit.
  *
  *  Copyright (C) 2003-2008  Yoichi Yuasa <yoichi_yuasa@tripeaks.co.jp>
+ *  Copyright (C) 2003-2008  Yoichi Yuasa <yuasa@linux-mips.org>
  *
  *  This program is free software; you can redistribute it and/or modify
  *  it under the terms of the GNU General Public License as published by
@@ -20,6 +21,7 @@
 #include <linux/err.h>
 #include <linux/fs.h>
 #include <linux/init.h>
+#include <linux/io.h>
 #include <linux/ioport.h>
 #include <linux/interrupt.h>
 #include <linux/module.h>
@@ -33,6 +35,12 @@
 #include <asm/uaccess.h>
 
 MODULE_AUTHOR("Yoichi Yuasa <yoichi_yuasa@tripeaks.co.jp>");
+#include <linux/uaccess.h>
+#include <linux/log2.h>
+
+#include <asm/div64.h>
+
+MODULE_AUTHOR("Yoichi Yuasa <yuasa@linux-mips.org>");
 MODULE_DESCRIPTION("NEC VR4100 series RTC driver");
 MODULE_LICENSE("GPL v2");
 
@@ -86,6 +94,8 @@ static unsigned long periodic_count;
 static unsigned int alarm_enabled;
 static int aie_irq = -1;
 static int pie_irq = -1;
+static int aie_irq;
+static int pie_irq;
 
 static inline unsigned long read_elapsed_second(void)
 {
@@ -103,6 +113,7 @@ static inline unsigned long read_elapsed_second(void)
 		second_high = rtc1_read(ETIMEHREG);
 	} while (first_low != second_low || first_mid != second_mid ||
 	         first_high != second_high);
+		 first_high != second_high);
 
 	return (first_high << 17) | (first_mid << 1) | (first_low >> 15);
 }
@@ -154,6 +165,7 @@ static int vr41xx_rtc_set_time(struct device *dev, struct rtc_time *time)
 	epoch_sec = mktime(epoch, 1, 1, 0, 0, 0);
 	current_sec = mktime(time->tm_year + 1900, time->tm_mon + 1, time->tm_mday,
 	                     time->tm_hour, time->tm_min, time->tm_sec);
+			     time->tm_hour, time->tm_min, time->tm_sec);
 
 	write_elapsed_second(current_sec - epoch_sec);
 
@@ -186,6 +198,7 @@ static int vr41xx_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *wkalrm)
 
 	alarm_sec = mktime(time->tm_year + 1900, time->tm_mon + 1, time->tm_mday,
 	                   time->tm_hour, time->tm_min, time->tm_sec);
+			   time->tm_hour, time->tm_min, time->tm_sec);
 
 	spin_lock_irq(&rtc_lock);
 
@@ -258,6 +271,9 @@ static int vr41xx_rtc_ioctl(struct device *dev, unsigned int cmd, unsigned long 
 
 		spin_unlock_irq(&rtc_lock);
 		break;
+static int vr41xx_rtc_ioctl(struct device *dev, unsigned int cmd, unsigned long arg)
+{
+	switch (cmd) {
 	case RTC_EPOCH_READ:
 		return put_user(epoch, (unsigned long __user *)arg);
 	case RTC_EPOCH_SET:
@@ -270,6 +286,24 @@ static int vr41xx_rtc_ioctl(struct device *dev, unsigned int cmd, unsigned long 
 		return -ENOIOCTLCMD;
 	}
 
+	return 0;
+}
+
+static int vr41xx_rtc_alarm_irq_enable(struct device *dev, unsigned int enabled)
+{
+	spin_lock_irq(&rtc_lock);
+	if (enabled) {
+		if (!alarm_enabled) {
+			enable_irq(aie_irq);
+			alarm_enabled = 1;
+		}
+	} else {
+		if (alarm_enabled) {
+			disable_irq(aie_irq);
+			alarm_enabled = 0;
+		}
+	}
+	spin_unlock_irq(&rtc_lock);
 	return 0;
 }
 
@@ -313,6 +347,16 @@ static const struct rtc_class_ops vr41xx_rtc_ops = {
 };
 
 static int __devinit rtc_probe(struct platform_device *pdev)
+	.release		= vr41xx_rtc_release,
+	.ioctl			= vr41xx_rtc_ioctl,
+	.read_time		= vr41xx_rtc_read_time,
+	.set_time		= vr41xx_rtc_set_time,
+	.read_alarm		= vr41xx_rtc_read_alarm,
+	.set_alarm		= vr41xx_rtc_set_alarm,
+	.alarm_irq_enable	= vr41xx_rtc_alarm_irq_enable,
+};
+
+static int rtc_probe(struct platform_device *pdev)
 {
 	struct resource *res;
 	struct rtc_device *rtc;
@@ -326,6 +370,7 @@ static int __devinit rtc_probe(struct platform_device *pdev)
 		return -EBUSY;
 
 	rtc1_base = ioremap(res->start, res->end - res->start + 1);
+	rtc1_base = devm_ioremap(&pdev->dev, res->start, resource_size(res));
 	if (!rtc1_base)
 		return -EBUSY;
 
@@ -336,12 +381,15 @@ static int __devinit rtc_probe(struct platform_device *pdev)
 	}
 
 	rtc2_base = ioremap(res->start, res->end - res->start + 1);
+	rtc2_base = devm_ioremap(&pdev->dev, res->start, resource_size(res));
 	if (!rtc2_base) {
 		retval = -EBUSY;
 		goto err_rtc1_iounmap;
 	}
 
 	rtc = rtc_device_register(rtc_name, &pdev->dev, &vr41xx_rtc_ops, THIS_MODULE);
+	rtc = devm_rtc_device_register(&pdev->dev, rtc_name, &vr41xx_rtc_ops,
+					THIS_MODULE);
 	if (IS_ERR(rtc)) {
 		retval = PTR_ERR(rtc);
 		goto err_iounmap_all;
@@ -378,6 +426,26 @@ static int __devinit rtc_probe(struct platform_device *pdev)
 		             "rtclong1", pdev);
 	if (retval < 0)
 		goto err_free_irq;
+	if (aie_irq <= 0) {
+		retval = -EBUSY;
+		goto err_iounmap_all;
+	}
+
+	retval = devm_request_irq(&pdev->dev, aie_irq, elapsedtime_interrupt, 0,
+				"elapsed_time", pdev);
+	if (retval < 0)
+		goto err_iounmap_all;
+
+	pie_irq = platform_get_irq(pdev, 1);
+	if (pie_irq <= 0) {
+		retval = -EBUSY;
+		goto err_iounmap_all;
+	}
+
+	retval = devm_request_irq(&pdev->dev, pie_irq, rtclong1_interrupt, 0,
+				"rtclong1", pdev);
+	if (retval < 0)
+		goto err_iounmap_all;
 
 	platform_set_drvdata(pdev, rtc);
 
@@ -400,6 +468,14 @@ err_iounmap_all:
 
 err_rtc1_iounmap:
 	iounmap(rtc1_base);
+	dev_info(&pdev->dev, "Real Time Clock of NEC VR4100 series\n");
+
+	return 0;
+
+err_iounmap_all:
+	rtc2_base = NULL;
+
+err_rtc1_iounmap:
 	rtc1_base = NULL;
 
 	return retval;
@@ -449,3 +525,9 @@ static void __exit vr41xx_rtc_exit(void)
 
 module_init(vr41xx_rtc_init);
 module_exit(vr41xx_rtc_exit);
+	.driver		= {
+		.name	= rtc_name,
+	},
+};
+
+module_platform_driver(rtc_platform_driver);

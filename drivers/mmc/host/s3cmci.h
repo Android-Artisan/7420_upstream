@@ -30,6 +30,7 @@ struct s3cmci_host {
 	int			irq;
 	int			irq_cd;
 	int			dma;
+	struct dma_chan		*dma;
 
 	unsigned long		clk_rate;
 	unsigned long		clk_div;
@@ -42,6 +43,11 @@ struct s3cmci_host {
 	int			dodma;
 	int			dmatogo;
 
+	bool			irq_disabled;
+	bool			irq_enabled;
+	bool			irq_state;
+	int			sdio_irqen;
+
 	struct mmc_request	*mrq;
 	int			cmd_is_stop;
 
@@ -52,6 +58,7 @@ struct s3cmci_host {
 
 	u32			pio_sgptr;
 	u32			pio_words;
+	u32			pio_bytes;
 	u32			pio_count;
 	u32			*pio_ptr;
 #define XFER_NONE 0
@@ -67,4 +74,14 @@ struct s3cmci_host {
 
 	unsigned int		ccnt, dcnt;
 	struct tasklet_struct	pio_tasklet;
+
+#ifdef CONFIG_DEBUG_FS
+	struct dentry		*debug_root;
+	struct dentry		*debug_state;
+	struct dentry		*debug_regs;
+#endif
+
+#ifdef CONFIG_CPU_FREQ
+	struct notifier_block	freq_transition;
+#endif
 };

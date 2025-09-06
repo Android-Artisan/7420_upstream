@@ -2,6 +2,7 @@
  * Flash memory access on SA11x0 based devices
  *
  * (C) 2000 Nicolas Pitre <nico@cam.org>
+ * (C) 2000 Nicolas Pitre <nico@fluxnic.net>
  */
 #include <linux/module.h>
 #include <linux/types.h>
@@ -12,6 +13,7 @@
 #include <linux/slab.h>
 #include <linux/platform_device.h>
 #include <linux/err.h>
+#include <linux/io.h>
 
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/map.h>
@@ -123,6 +125,9 @@ static void jornada56x_set_vpp(int vpp)
  */
 #endif
 
+#include <asm/sizes.h>
+#include <asm/mach/flash.h>
+
 struct sa_subdev_info {
 	char name[16];
 	struct map_info map;
@@ -142,6 +147,27 @@ static void sa1100_set_vpp(struct map_info *map, int on)
 {
 	struct sa_subdev_info *subdev = container_of(map, struct sa_subdev_info, map);
 	subdev->plat->set_vpp(on);
+	struct mtd_info		*mtd;
+	int			num_subdev;
+	struct sa_subdev_info	subdev[0];
+};
+
+static DEFINE_SPINLOCK(sa1100_vpp_lock);
+static int sa1100_vpp_refcnt;
+static void sa1100_set_vpp(struct map_info *map, int on)
+{
+	struct sa_subdev_info *subdev = container_of(map, struct sa_subdev_info, map);
+	unsigned long flags;
+
+	spin_lock_irqsave(&sa1100_vpp_lock, flags);
+	if (on) {
+		if (++sa1100_vpp_refcnt == 1)   /* first nested 'on' */
+			subdev->plat->set_vpp(1);
+	} else {
+		if (--sa1100_vpp_refcnt == 0)   /* last nested 'off' */
+			subdev->plat->set_vpp(0);
+	}
+	spin_unlock_irqrestore(&sa1100_vpp_lock, flags);
 }
 
 static void sa1100_destroy_subdev(struct sa_subdev_info *subdev)
@@ -211,6 +237,9 @@ static int sa1100_probe_subdev(struct sa_subdev_info *subdev, struct resource *r
 
 	printk(KERN_INFO "SA1100 flash: CFI device at 0x%08lx, %dMiB, "
 		"%d-bit\n", phys, subdev->mtd->size >> 20,
+
+	printk(KERN_INFO "SA1100 flash: CFI device at 0x%08lx, %uMiB, %d-bit\n",
+		phys, (unsigned)(subdev->mtd->size >> 20),
 		subdev->map.bankwidth * 8);
 
 	return 0;
@@ -240,6 +269,11 @@ static void sa1100_destroy(struct sa_info *info, struct flash_platform_data *pla
 
 	kfree(info->parts);
 
+		mtd_device_unregister(info->mtd);
+		if (info->mtd != info->subdev[0].mtd)
+			mtd_concat_destroy(info->mtd);
+	}
+
 	for (i = info->num_subdev - 1; i >= 0; i--)
 		sa1100_destroy_subdev(&info->subdev[i]);
 	kfree(info);
@@ -250,6 +284,8 @@ static void sa1100_destroy(struct sa_info *info, struct flash_platform_data *pla
 
 static struct sa_info *__init
 sa1100_setup_mtd(struct platform_device *pdev, struct flash_platform_data *plat)
+static struct sa_info *sa1100_setup_mtd(struct platform_device *pdev,
+					struct flash_platform_data *plat)
 {
 	struct sa_info *info;
 	int nr, size, i, ret = 0;
@@ -331,7 +367,7 @@ sa1100_setup_mtd(struct platform_device *pdev, struct flash_platform_data *plat)
 
 		info->mtd = mtd_concat_create(cdev, info->num_subdev,
 					      plat->name);
-		if (info->mtd == NULL)
+		if (info->mtd == NULL) {
 			ret = -ENXIO;
 #else
 		printk(KERN_ERR "SA1100 flash: multiple devices "
@@ -339,6 +375,10 @@ sa1100_setup_mtd(struct platform_device *pdev, struct flash_platform_data *plat)
 		ret = -ENXIO;
 #endif
 	}
+			goto err;
+		}
+	}
+	info->mtd->dev.parent = &pdev->dev;
 
 	if (ret == 0)
 		return info;
@@ -358,6 +398,13 @@ static int __init sa1100_mtd_probe(struct platform_device *pdev)
 	const char *part_type = NULL;
 	struct sa_info *info;
 	int err, nr_parts = 0;
+static const char * const part_probes[] = { "cmdlinepart", "RedBoot", NULL };
+
+static int sa1100_mtd_probe(struct platform_device *pdev)
+{
+	struct flash_platform_data *plat = dev_get_platdata(&pdev->dev);
+	struct sa_info *info;
+	int err;
 
 	if (!plat)
 		return -ENODEV;
@@ -395,6 +442,8 @@ static int __init sa1100_mtd_probe(struct platform_device *pdev)
 	}
 
 	info->nr_parts = nr_parts;
+	mtd_device_parse_register(info->mtd, part_probes, NULL, plat->parts,
+				  plat->nr_parts);
 
 	platform_set_drvdata(pdev, info);
 	err = 0;
@@ -409,6 +458,11 @@ static int __exit sa1100_mtd_remove(struct platform_device *pdev)
 	struct flash_platform_data *plat = pdev->dev.platform_data;
 
 	platform_set_drvdata(pdev, NULL);
+static int sa1100_mtd_remove(struct platform_device *pdev)
+{
+	struct sa_info *info = platform_get_drvdata(pdev);
+	struct flash_platform_data *plat = dev_get_platdata(&pdev->dev);
+
 	sa1100_destroy(info, plat);
 
 	return 0;
@@ -470,8 +524,18 @@ static void __exit sa1100_mtd_exit(void)
 
 module_init(sa1100_mtd_init);
 module_exit(sa1100_mtd_exit);
+static struct platform_driver sa1100_mtd_driver = {
+	.probe		= sa1100_mtd_probe,
+	.remove		= sa1100_mtd_remove,
+	.driver		= {
+		.name	= "sa1100-mtd",
+	},
+};
+
+module_platform_driver(sa1100_mtd_driver);
 
 MODULE_AUTHOR("Nicolas Pitre");
 MODULE_DESCRIPTION("SA1100 CFI map driver");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS("platform:flash");
+MODULE_ALIAS("platform:sa1100-mtd");

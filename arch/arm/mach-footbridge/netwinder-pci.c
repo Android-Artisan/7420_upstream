@@ -18,6 +18,7 @@
  * which interrupt is routed where.
  */
 static int __init netwinder_map_irq(struct pci_dev *dev, u8 slot, u8 pin)
+static int __init netwinder_map_irq(const struct pci_dev *dev, u8 slot, u8 pin)
 {
 	switch (slot) {
 	case 0:  /* host bridge */
@@ -48,6 +49,10 @@ static struct hw_pci netwinder_pci __initdata = {
 	.nr_controllers		= 1,
 	.setup			= dc21285_setup,
 	.scan			= dc21285_scan_bus,
+	.map_irq		= netwinder_map_irq,
+	.nr_controllers		= 1,
+	.ops			= &dc21285_ops,
+	.setup			= dc21285_setup,
 	.preinit		= dc21285_preinit,
 	.postinit		= dc21285_postinit,
 };

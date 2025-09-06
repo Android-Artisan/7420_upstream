@@ -5,6 +5,7 @@
  *	Ben Dooks <ben@simtec.co.uk>
  *
  * Generic platfrom device based RAM map
+ * Generic platform device based RAM map
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -58,6 +59,7 @@ struct platram_info {
 static inline struct platram_info *to_platram_info(struct platform_device *dev)
 {
 	return (struct platram_info *)platform_get_drvdata(dev);
+	return platform_get_drvdata(dev);
 }
 
 /* platram_setrw
@@ -102,6 +104,7 @@ static int platram_remove(struct platform_device *pdev)
 		}
 #endif
 		del_mtd_device(info->mtd);
+		mtd_device_unregister(info->mtd);
 		map_destroy(info->mtd);
 	}
 
@@ -140,6 +143,7 @@ static int platram_probe(struct platform_device *pdev)
 	dev_dbg(&pdev->dev, "probe entered\n");
 
 	if (pdev->dev.platform_data == NULL) {
+	if (dev_get_platdata(&pdev->dev) == NULL) {
 		dev_err(&pdev->dev, "no platform data supplied\n");
 		err = -ENOENT;
 		goto exit_error;
@@ -150,6 +154,10 @@ static int platram_probe(struct platform_device *pdev)
 	info = kzalloc(sizeof(*info), GFP_KERNEL);
 	if (info == NULL) {
 		dev_err(&pdev->dev, "no memory for flash info\n");
+	pdata = dev_get_platdata(&pdev->dev);
+
+	info = kzalloc(sizeof(*info), GFP_KERNEL);
+	if (info == NULL) {
 		err = -ENOMEM;
 		goto exit_error;
 	}
@@ -176,6 +184,7 @@ static int platram_probe(struct platform_device *pdev)
 
 	info->map.phys = res->start;
 	info->map.size = (res->end - res->start) + 1;
+	info->map.size = resource_size(res);
 	info->map.name = pdata->mapname != NULL ?
 			(char *)pdata->mapname : (char *)pdev->name;
 	info->map.bankwidth = pdata->bankwidth;
@@ -209,6 +218,7 @@ static int platram_probe(struct platform_device *pdev)
 
 	if (pdata->map_probes) {
 		const char **map_probes = pdata->map_probes;
+		const char * const *map_probes = pdata->map_probes;
 
 		for ( ; !info->mtd && *map_probes; map_probes++)
 			info->mtd = do_map_probe(*map_probes , &info->map);
@@ -256,6 +266,28 @@ static int platram_probe(struct platform_device *pdev)
 	if (!err)
 		dev_info(&pdev->dev, "registered mtd device\n");
 
+	info->mtd->dev.parent = &pdev->dev;
+
+	platram_setrw(info, PLATRAM_RW);
+
+	/* check to see if there are any available partitions, or whether
+	 * to add this device whole */
+
+	err = mtd_device_parse_register(info->mtd, pdata->probes, NULL,
+					pdata->partitions,
+					pdata->nr_partitions);
+	if (!err)
+		dev_info(&pdev->dev, "registered mtd device\n");
+
+	if (pdata->nr_partitions) {
+		/* add the whole device. */
+		err = mtd_device_register(info->mtd, NULL, 0);
+		if (err) {
+			dev_err(&pdev->dev,
+				"failed to register the entire device\n");
+		}
+	}
+
 	return err;
 
  exit_free:
@@ -293,6 +325,10 @@ static void __exit platram_exit(void)
 
 module_init(platram_init);
 module_exit(platram_exit);
+	},
+};
+
+module_platform_driver(platram_driver);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Ben Dooks <ben@simtec.co.uk>");

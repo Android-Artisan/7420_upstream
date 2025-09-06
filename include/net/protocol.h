@@ -46,6 +46,36 @@ struct net_protocol {
 #if defined(CONFIG_IPV6) || defined (CONFIG_IPV6_MODULE)
 struct inet6_protocol 
 {
+#include <linux/skbuff.h>
+#if IS_ENABLED(CONFIG_IPV6)
+#include <linux/ipv6.h>
+#endif
+#include <linux/netdevice.h>
+
+/* This is one larger than the largest protocol value that can be
+ * found in an ipv4 or ipv6 header.  Since in both cases the protocol
+ * value is presented in a __u8, this is defined to be 256.
+ */
+#define MAX_INET_PROTOS		256
+
+/* This is used to register protocols. */
+struct net_protocol {
+	void			(*early_demux)(struct sk_buff *skb);
+	int			(*handler)(struct sk_buff *skb);
+	void			(*err_handler)(struct sk_buff *skb, u32 info);
+	unsigned int		no_policy:1,
+				netns_ok:1,
+				/* does the protocol do more stringent
+				 * icmp tag validation than simple
+				 * socket lookup?
+				 */
+				icmp_strict_tag_validation:1;
+};
+
+#if IS_ENABLED(CONFIG_IPV6)
+struct inet6_protocol {
+	void	(*early_demux)(struct sk_buff *skb);
+
 	int	(*handler)(struct sk_buff *skb);
 
 	void	(*err_handler)(struct sk_buff *skb,
@@ -57,6 +87,8 @@ struct inet6_protocol
 	struct sk_buff *(*gso_segment)(struct sk_buff *skb,
 				       int features);
 
+			       u8 type, u8 code, int offset,
+			       __be32 info);
 	unsigned int	flags;	/* INET6_PROTO_xxx */
 };
 
@@ -65,6 +97,15 @@ struct inet6_protocol
 /* This should be set for any extension header which is compatible with GSO. */
 #define INET6_PROTO_GSO_EXTHDR	0x4
 #endif
+
+#endif
+
+struct net_offload {
+	struct offload_callbacks callbacks;
+	unsigned int		 flags;	/* Flags used by IPv6 for now */
+};
+/* This should be set for any extension header which is compatible with GSO. */
+#define INET6_PROTO_GSO_EXTHDR	0x1
 
 /* This is used to register socket interfaces for IP protocols.  */
 struct inet_protosw {
@@ -106,5 +147,31 @@ extern int	inet6_del_protocol(struct inet6_protocol *prot, unsigned char num);
 extern int	inet6_register_protosw(struct inet_protosw *p);
 extern void	inet6_unregister_protosw(struct inet_protosw *p);
 #endif
+extern const struct net_protocol __rcu *inet_protos[MAX_INET_PROTOS];
+extern const struct net_offload __rcu *inet_offloads[MAX_INET_PROTOS];
+extern const struct net_offload __rcu *inet6_offloads[MAX_INET_PROTOS];
+
+#if IS_ENABLED(CONFIG_IPV6)
+extern const struct inet6_protocol __rcu *inet6_protos[MAX_INET_PROTOS];
+#endif
+
+int inet_add_protocol(const struct net_protocol *prot, unsigned char num);
+int inet_del_protocol(const struct net_protocol *prot, unsigned char num);
+int inet_add_offload(const struct net_offload *prot, unsigned char num);
+int inet_del_offload(const struct net_offload *prot, unsigned char num);
+void inet_register_protosw(struct inet_protosw *p);
+void inet_unregister_protosw(struct inet_protosw *p);
+
+int  udp_add_offload(struct udp_offload *prot);
+void udp_del_offload(struct udp_offload *prot);
+
+#if IS_ENABLED(CONFIG_IPV6)
+int inet6_add_protocol(const struct inet6_protocol *prot, unsigned char num);
+int inet6_del_protocol(const struct inet6_protocol *prot, unsigned char num);
+int inet6_register_protosw(struct inet_protosw *p);
+void inet6_unregister_protosw(struct inet_protosw *p);
+#endif
+int inet6_add_offload(const struct net_offload *prot, unsigned char num);
+int inet6_del_offload(const struct net_offload *prot, unsigned char num);
 
 #endif	/* _PROTOCOL_H */

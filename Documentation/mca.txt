@@ -1,5 +1,4 @@
 i386 Micro Channel Architecture Support
-=======================================
 
 MCA support is enabled using the CONFIG_MCA define.  A machine with a MCA
 bus will have the kernel variable MCA_bus set, assuming the BIOS feature
@@ -7,7 +6,6 @@ bits are set properly (see arch/i386/boot/setup.S for information on
 how this detection is done).
 
 Adapter Detection
-=================
 
 The ideal MCA adapter detection is done through the use of the
 Programmable Option Select registers.  Generic functions for doing
@@ -71,7 +69,6 @@ we MCA people still appreciate any ISA-style driver that will work with
 our hardware.  You take what you can get...
 
 Level-Triggered Interrupts
-==========================
 
 Because MCA uses level-triggered interrupts, a few problems arise with
 what might best be described as the ISA mindset and its effects on
@@ -89,7 +86,6 @@ IRQs are also shareable, and most MCA-specific devices should be coded
 with shared IRQs in mind.
 
 /proc/mca
-=========
 
 /proc/mca is a directory containing various files for adapters and
 other stuff.
@@ -139,7 +135,6 @@ set the name of the adapter (i.e. "PS/2 ESDI Controller") via
 mca_set_adapter_name( int slot, char* name ).
 
 MCA Device Drivers
-==================
 
 Currently, there are a number of MCA-specific device drivers.
 
@@ -197,7 +192,6 @@ The following devices work with existing drivers:
 9) Reply Sound Blaster/SCSI (SB part) (patched version)
 
 Bugs & Other Weirdness
-======================
 
 NMIs tend to occur with MCA machines because of various hardware
 weirdness, bus timeouts, and many other non-critical things.  Some basic
@@ -239,19 +233,16 @@ working properly.  The PCMCIA slots don't seem to work.  Ditto for APM.
 The serial ports work, but detection seems to be flaky.
 
 Credits
-=======
 A whole pile of people have contributed to the MCA code.  I'd include
 their names here, but I don't have a list handy.  Check the MCA Linux
 home page (URL below) for a perpetually out-of-date list.
 
-=====================================================================
 MCA Linux Home Page: http://www.dgmicro.com/mca/
 
 Christophe Beauregard
 chrisb@truespectra.com
 cpbeaure@calum.csclub.uwaterloo.ca
 
-=====================================================================
 Appendix A: Sample /proc/mca
 
 This is from my model 8595.  Slot 1 contains the standard IBM SCSI

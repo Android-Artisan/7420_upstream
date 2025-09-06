@@ -131,11 +131,16 @@ struct igmpmsg
 #ifdef __KERNEL__
 #include <linux/pim.h>
 #include <net/sock.h>
+#include <linux/in.h>
+#include <linux/pim.h>
+#include <net/sock.h>
+#include <uapi/linux/mroute.h>
 
 #ifdef CONFIG_IP_MROUTE
 static inline int ip_mroute_opt(int opt)
 {
 	return (opt >= MRT_BASE) && (opt <= MRT_BASE + 10);
+	return (opt >= MRT_BASE) && (opt <= MRT_MAX);
 }
 #else
 static inline int ip_mroute_opt(int opt)
@@ -148,11 +153,16 @@ static inline int ip_mroute_opt(int opt)
 extern int ip_mroute_setsockopt(struct sock *, int, char __user *, int);
 extern int ip_mroute_getsockopt(struct sock *, int, char __user *, int __user *);
 extern int ipmr_ioctl(struct sock *sk, int cmd, void __user *arg);
+extern int ip_mroute_setsockopt(struct sock *, int, char __user *, unsigned int);
+extern int ip_mroute_getsockopt(struct sock *, int, char __user *, int __user *);
+extern int ipmr_ioctl(struct sock *sk, int cmd, void __user *arg);
+extern int ipmr_compat_ioctl(struct sock *sk, unsigned int cmd, void __user *arg);
 extern int ip_mr_init(void);
 #else
 static inline
 int ip_mroute_setsockopt(struct sock *sock,
 			 int optname, char __user *optval, int optlen)
+			 int optname, char __user *optval, unsigned int optlen)
 {
 	return -ENOPROTOOPT;
 }
@@ -178,6 +188,7 @@ static inline int ip_mr_init(void)
 
 struct vif_device
 {
+struct vif_device {
 	struct net_device 	*dev;			/* Device we are using */
 	unsigned long	bytes_in,bytes_out;
 	unsigned long	pkt_in,pkt_out;		/* Statistics 			*/
@@ -193,6 +204,8 @@ struct vif_device
 struct mfc_cache 
 {
 	struct mfc_cache *next;			/* Next entry on cache line 	*/
+struct mfc_cache {
+	struct list_head list;
 	__be32 mfc_mcastgrp;			/* Group the entry belongs to 	*/
 	__be32 mfc_origin;			/* Source of packet 		*/
 	vifi_t mfc_parent;			/* Source interface		*/
@@ -213,6 +226,7 @@ struct mfc_cache
 			unsigned char ttls[MAXVIFS];	/* TTL thresholds		*/
 		} res;
 	} mfc_un;
+	struct rcu_head	rcu;
 };
 
 #define MFC_STATIC		1
@@ -244,4 +258,8 @@ struct rtmsg;
 extern int ipmr_get_route(struct sk_buff *skb, struct rtmsg *rtm, int nowait);
 #endif
 
+struct rtmsg;
+extern int ipmr_get_route(struct net *net, struct sk_buff *skb,
+			  __be32 saddr, __be32 daddr,
+			  struct rtmsg *rtm, int nowait, u32 portid);
 #endif

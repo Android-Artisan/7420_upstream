@@ -19,6 +19,7 @@
  */
 
 #include <linux/kernel.h>
+#include <linux/slab.h>
 
 #include <asm/uaccess.h>
 
@@ -98,7 +99,6 @@ static ulg free_mem_end_ptr;
 
 #include "../../../lib/inflate.c"
 
-/* ===========================================================================
  * Fill the input buffer. This is called only when the buffer is empty
  * and at least one byte is really needed.
  */
@@ -114,7 +114,6 @@ int fill_inbuf(void)
 	return inbuf[0];
 }
 
-/* ===========================================================================
  * Write the output window window[0..outcnt-1] and update crc and bytes_out.
  * (Used for the decompressed data only.)
  */

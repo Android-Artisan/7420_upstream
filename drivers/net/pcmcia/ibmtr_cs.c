@@ -1,4 +1,3 @@
-/*======================================================================
 
     A PCMCIA token-ring driver for IBM-based cards
 
@@ -43,7 +42,6 @@
     memory windows can be placed in High memory (meaning above
     0xFFFFF.)
 
-======================================================================*/
 
 #include <linux/kernel.h>
 #include <linux/init.h>
@@ -81,7 +79,6 @@ static char *version =
 #define DEBUG(n, args...)
 #endif
 
-/*====================================================================*/
 
 /* Parameters that can be set with 'insmod' */
 
@@ -103,14 +100,12 @@ module_param(sramsize, ulong, 0);
 module_param(ringspeed, int, 0);
 MODULE_LICENSE("GPL");
 
-/*====================================================================*/
 
 static int ibmtr_config(struct pcmcia_device *link);
 static void ibmtr_hw_setup(struct net_device *dev, u_int mmiobase);
 static void ibmtr_release(struct pcmcia_device *link);
 static void ibmtr_detach(struct pcmcia_device *p_dev);
 
-/*====================================================================*/
 
 typedef struct ibmtr_dev_t {
 	struct pcmcia_device	*p_dev;
@@ -130,13 +125,11 @@ static const struct ethtool_ops netdev_ethtool_ops = {
 	.get_drvinfo		= netdev_get_drvinfo,
 };
 
-/*======================================================================
 
     ibmtr_attach() creates an "instance" of the driver, allocating
     local data structures for one device.  The device is registered
     with Card Services.
 
-======================================================================*/
 
 static int __devinit ibmtr_attach(struct pcmcia_device *link)
 {
@@ -175,14 +168,12 @@ static int __devinit ibmtr_attach(struct pcmcia_device *link)
     return ibmtr_config(link);
 } /* ibmtr_attach */
 
-/*======================================================================
 
     This deletes a driver "instance".  The device is de-registered
     with Card Services.  If it has been released, all local data
     structures are freed.  Otherwise, the structures will be freed
     when the device is released.
 
-======================================================================*/
 
 static void ibmtr_detach(struct pcmcia_device *link)
 {
@@ -209,13 +200,11 @@ static void ibmtr_detach(struct pcmcia_device *link)
     kfree(info);
 } /* ibmtr_detach */
 
-/*======================================================================
 
     ibmtr_config() is scheduled to run after a CARD_INSERTION event
     is received, to configure the PCMCIA socket, and to make the
     token-ring device available to the system.
 
-======================================================================*/
 
 #define CS_CHECK(fn, ret) \
 do { last_fn = (fn); if ((last_ret = (ret)) != 0) goto cs_failed; } while (0)
@@ -315,13 +304,11 @@ failed:
     return -ENODEV;
 } /* ibmtr_config */
 
-/*======================================================================
 
     After a card is removed, ibmtr_release() will unregister the net
     device, and release the PCMCIA configuration.  If the device is
     still open, this will be postponed until it is closed.
 
-======================================================================*/
 
 static void ibmtr_release(struct pcmcia_device *link)
 {
@@ -363,7 +350,6 @@ static int ibmtr_resume(struct pcmcia_device *link)
 }
 
 
-/*====================================================================*/
 
 static void ibmtr_hw_setup(struct net_device *dev, u_int mmiobase)
 {

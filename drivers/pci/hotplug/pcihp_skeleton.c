@@ -53,6 +53,8 @@ static LIST_HEAD(slot_list);
 		if (debug)					\
 			printk (KERN_DEBUG "%s: " format "\n",	\
 				MY_NAME , ## arg); 		\
+			printk(KERN_DEBUG "%s: " format "\n",	\
+				MY_NAME , ## arg);		\
 	} while (0)
 #define err(format, arg...) printk(KERN_ERR "%s: " format "\n", MY_NAME , ## arg)
 #define info(format, arg...) printk(KERN_INFO "%s: " format "\n", MY_NAME , ## arg)
@@ -60,6 +62,7 @@ static LIST_HEAD(slot_list);
 
 /* local variables */
 static int debug;
+static bool debug;
 static int num_slots;
 
 #define DRIVER_VERSION	"0.3"
@@ -141,6 +144,18 @@ static int set_attention_status(struct hotplug_slot *hotplug_slot, u8 status)
 			 * Fill in code here to turn light on
 			 */
 			break;
+	case 0:
+		/*
+		 * Fill in code here to turn light off
+		 */
+		break;
+
+	case 1:
+	default:
+		/*
+		 * Fill in code here to turn light on
+		 */
+		break;
 	}
 
 	return retval;
@@ -160,6 +175,12 @@ static int hardware_test(struct hotplug_slot *hotplug_slot, u32 value)
 		case 1:
 			/* Specify another test here */
 			break;
+	case 0:
+		/* Specify a test here */
+		break;
+	case 1:
+		/* Specify another test here */
+		break;
 	}
 
 	return retval;
@@ -254,6 +275,7 @@ static int __init init_slots(void)
 	struct hotplug_slot *hotplug_slot;
 	struct hotplug_slot_info *info;
 	int retval = -ENOMEM;
+	int retval;
 	int i;
 
 	/*
@@ -273,6 +295,23 @@ static int __init init_slots(void)
 		info = kzalloc(sizeof(*info), GFP_KERNEL);
 		if (!info)
 			goto error_hpslot;
+		if (!slot) {
+			retval = -ENOMEM;
+			goto error;
+		}
+
+		hotplug_slot = kzalloc(sizeof(*hotplug_slot), GFP_KERNEL);
+		if (!hotplug_slot) {
+			retval = -ENOMEM;
+			goto error_slot;
+		}
+		slot->hotplug_slot = hotplug_slot;
+
+		info = kzalloc(sizeof(*info), GFP_KERNEL);
+		if (!info) {
+			retval = -ENOMEM;
+			goto error_hpslot;
+		}
 		hotplug_slot->info = info;
 
 		slot->number = i;
@@ -283,6 +322,7 @@ static int __init init_slots(void)
 		make_slot_name(slot);
 		hotplug_slot->ops = &skel_hotplug_slot_ops;
 		
+
 		/*
 		 * Initialize the slot info structure with some known
 		 * good values.
@@ -292,6 +332,7 @@ static int __init init_slots(void)
 		get_latch_status(hotplug_slot, &info->latch_status);
 		get_adapter_status(hotplug_slot, &info->adapter_status);
 		
+
 		dbg("registering slot %d\n", i);
 		retval = pci_hp_register(slot->hotplug_slot);
 		if (retval) {
@@ -332,6 +373,7 @@ static void __exit cleanup_slots(void)
 	}
 }
 		
+
 static int __init pcihp_skel_init(void)
 {
 	int retval;

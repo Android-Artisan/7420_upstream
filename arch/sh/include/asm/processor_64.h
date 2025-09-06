@@ -90,6 +90,7 @@ extern struct sh_cpuinfo cpu_data[];
  * space during mmap's.
  */
 #define TASK_UNMAPPED_BASE	(TASK_SIZE / 3)
+#define TASK_UNMAPPED_BASE	PAGE_ALIGN(TASK_SIZE / 3)
 
 /*
  * Bit of SR register
@@ -132,6 +133,9 @@ struct sh_fpu_hard_struct {
 /* Dummy fpu emulator  */
 struct sh_fpu_soft_struct {
 	unsigned long long fp_regs[32];
+/* Dummy fpu emulator  */
+struct sh_fpu_soft_struct {
+	unsigned long fp_regs[64];
 	unsigned int fpscr;
 	unsigned char lookahead;
 	unsigned long entry_pc;
@@ -142,12 +146,24 @@ union sh_fpu_union {
 	struct sh_fpu_hard_struct hard;
 	/* 'hard' itself only produces 32 bit alignment, yet we need
 	   to access it using 64 bit load/store as well. */
+
+union thread_xstate {
+	struct sh_fpu_hard_struct hardfpu;
+	struct sh_fpu_soft_struct softfpu;
+	/*
+	 * The structure definitions only produce 32 bit alignment, yet we need
+	 * to access them using 64 bit load/store as well.
+	 */
 	unsigned long long alignment_dummy;
 };
 
 struct thread_struct {
 	unsigned long sp;
 	unsigned long pc;
+
+	/* Various thread flags, see SH_THREAD_xxx */
+	unsigned long flags;
+
 	/* This stores the address of the pt_regs built during a context
 	   switch, or of the register save area built for a kernel mode
 	   exception.  It is used for backtracing the stack of a sleeping task
@@ -164,6 +180,17 @@ struct thread_struct {
 
 	/* floating point info */
 	union sh_fpu_union fpu;
+	union thread_xstate *xstate;
+
+	/*
+	 * fpu_counter contains the number of consecutive context switches
+	 * that the FPU is used. If this is over a threshold, the lazy fpu
+	 * saving becomes unlazy to save the trap. This is an unsigned char
+	 * so that after 256 times the counter wraps and the behavior turns
+	 * lazy again; this to deal with bursty apps that only use FPU for
+	 * a short time
+	 */
+	unsigned char fpu_counter;
 };
 
 #define INIT_MMAP \
@@ -181,6 +208,8 @@ extern  struct pt_regs fake_swapper_regs;
 	.error_code	= 0,			\
 	.address	= 0,			\
 	.fpu		= { { { 0, } }, }	\
+	.address	= 0,			\
+	.flags		= 0,			\
 }
 
 /*
@@ -195,6 +224,12 @@ extern  struct pt_regs fake_swapper_regs;
 	regs->pc |= 1;		/* Set SHmedia ! */		\
 	regs->regs[18] = 0;					\
 	regs->regs[15] = new_sp
+#define start_thread(_regs, new_pc, new_sp)			\
+	_regs->sr = SR_USER;	/* User mode. */		\
+	_regs->pc = new_pc - 4;	/* Compensate syscall exit */	\
+	_regs->pc |= 1;		/* Set SHmedia ! */		\
+	_regs->regs[18] = 0;					\
+	_regs->regs[15] = new_sp
 
 /* Forward declaration, a strange C thing */
 struct task_struct;

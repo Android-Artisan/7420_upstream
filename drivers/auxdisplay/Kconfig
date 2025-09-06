@@ -15,6 +15,7 @@ menuconfig AUXDISPLAY
 	  If you say N, all options in this submenu will be skipped and disabled.
 
 if AUXDISPLAY && PARPORT
+if AUXDISPLAY
 
 config KS0108
 	tristate "KS0108 LCD Controller"

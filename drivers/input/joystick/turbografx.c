@@ -35,6 +35,7 @@
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/mutex.h>
+#include <linux/slab.h>
 
 MODULE_AUTHOR("Vojtech Pavlik <vojtech@ucw.cz>");
 MODULE_DESCRIPTION("TurboGraFX parallel port interface driver");
@@ -49,6 +50,7 @@ struct tgfx_config {
 };
 
 static struct tgfx_config tgfx_cfg[TGFX_MAX_PORTS] __initdata;
+static struct tgfx_config tgfx_cfg[TGFX_MAX_PORTS];
 
 module_param_array_named(map, tgfx_cfg[0].args, int, &tgfx_cfg[0].nargs, 0);
 MODULE_PARM_DESC(map, "Describes first set of devices (<parport#>,<js1>,<js2>,..<js7>");
@@ -80,6 +82,7 @@ static struct tgfx {
 	char phys[TGFX_MAX_DEVICES][32];
 	int sticks;
 	int used;
+	int parportno;
 	struct mutex sem;
 } *tgfx_base[TGFX_MAX_PORTS];
 
@@ -176,6 +179,38 @@ static struct tgfx __init *tgfx_probe(int parport, int *n_buttons, int n_devs)
 		printk(KERN_ERR "turbografx.c: parport busy already - lp.o loaded?\n");
 		err = -EBUSY;
 		goto err_put_pp;
+static void tgfx_attach(struct parport *pp)
+{
+	struct tgfx *tgfx;
+	struct input_dev *input_dev;
+	struct pardevice *pd;
+	int i, j, port_idx;
+	int *n_buttons, n_devs;
+	struct pardev_cb tgfx_parport_cb;
+
+	for (port_idx = 0; port_idx < TGFX_MAX_PORTS; port_idx++) {
+		if (tgfx_cfg[port_idx].nargs == 0 ||
+		    tgfx_cfg[port_idx].args[0] < 0)
+			continue;
+		if (tgfx_cfg[port_idx].args[0] == pp->number)
+			break;
+	}
+
+	if (port_idx == TGFX_MAX_PORTS) {
+		pr_debug("Not using parport%d.\n", pp->number);
+		return;
+	}
+	n_buttons = tgfx_cfg[port_idx].args + 1;
+	n_devs = tgfx_cfg[port_idx].nargs - 1;
+
+	memset(&tgfx_parport_cb, 0, sizeof(tgfx_parport_cb));
+	tgfx_parport_cb.flags = PARPORT_FLAG_EXCL;
+
+	pd = parport_register_dev_model(pp, "turbografx", &tgfx_parport_cb,
+					port_idx);
+	if (!pd) {
+		pr_err("parport busy already - lp.o loaded?\n");
+		return;
 	}
 
 	tgfx = kzalloc(sizeof(struct tgfx), GFP_KERNEL);
@@ -187,6 +222,7 @@ static struct tgfx __init *tgfx_probe(int parport, int *n_buttons, int n_devs)
 
 	mutex_init(&tgfx->sem);
 	tgfx->pd = pd;
+	tgfx->parportno = pp->number;
 	init_timer(&tgfx->timer);
 	tgfx->timer.data = (long) tgfx;
 	tgfx->timer.function = tgfx_timer;
@@ -198,6 +234,8 @@ static struct tgfx __init *tgfx_probe(int parport, int *n_buttons, int n_devs)
 		if (n_buttons[i] > 6) {
 			printk(KERN_ERR "turbografx.c: Invalid number of buttons %d\n", n_buttons[i]);
 			err = -EINVAL;
+		if (n_buttons[i] > ARRAY_SIZE(tgfx_buttons)) {
+			printk(KERN_ERR "turbografx.c: Invalid number of buttons %d\n", n_buttons[i]);
 			goto err_unreg_devs;
 		}
 
@@ -235,6 +273,7 @@ static struct tgfx __init *tgfx_probe(int parport, int *n_buttons, int n_devs)
 
 		err = input_register_device(tgfx->dev[i]);
 		if (err)
+		if (input_register_device(tgfx->dev[i]))
 			goto err_free_dev;
 	}
 
@@ -245,6 +284,11 @@ static struct tgfx __init *tgfx_probe(int parport, int *n_buttons, int n_devs)
         }
 
 	return tgfx;
+		goto err_free_tgfx;
+        }
+
+	tgfx_base[port_idx] = tgfx;
+	return;
 
  err_free_dev:
 	input_free_device(tgfx->dev[i]);
@@ -265,6 +309,23 @@ static struct tgfx __init *tgfx_probe(int parport, int *n_buttons, int n_devs)
 static void tgfx_remove(struct tgfx *tgfx)
 {
 	int i;
+}
+
+static void tgfx_detach(struct parport *port)
+{
+	int i;
+	struct tgfx *tgfx;
+
+	for (i = 0; i < TGFX_MAX_PORTS; i++) {
+		if (tgfx_base[i] && tgfx_base[i]->parportno == port->number)
+			break;
+	}
+
+	if (i == TGFX_MAX_PORTS)
+		return;
+
+	tgfx = tgfx_base[i];
+	tgfx_base[i] = NULL;
 
 	for (i = 0; i < TGFX_MAX_DEVICES; i++)
 		if (tgfx->dev[i])
@@ -272,6 +333,13 @@ static void tgfx_remove(struct tgfx *tgfx)
 	parport_unregister_device(tgfx->pd);
 	kfree(tgfx);
 }
+
+static struct parport_driver tgfx_parport_driver = {
+	.name = "turbografx",
+	.match_port = tgfx_attach,
+	.detach = tgfx_detach,
+	.devmodel = true,
+};
 
 static int __init tgfx_init(void)
 {
@@ -295,6 +363,7 @@ static int __init tgfx_init(void)
 		if (IS_ERR(tgfx_base[i])) {
 			err = PTR_ERR(tgfx_base[i]);
 			break;
+			return -EINVAL;
 		}
 
 		have_dev = 1;
@@ -308,6 +377,10 @@ static int __init tgfx_init(void)
 	}
 
 	return have_dev ? 0 : -ENODEV;
+	if (!have_dev)
+		return -ENODEV;
+
+	return parport_register_driver(&tgfx_parport_driver);
 }
 
 static void __exit tgfx_exit(void)
@@ -317,6 +390,7 @@ static void __exit tgfx_exit(void)
 	for (i = 0; i < TGFX_MAX_PORTS; i++)
 		if (tgfx_base[i])
 			tgfx_remove(tgfx_base[i]);
+	parport_unregister_driver(&tgfx_parport_driver);
 }
 
 module_init(tgfx_init);

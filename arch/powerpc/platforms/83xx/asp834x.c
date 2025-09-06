@@ -67,6 +67,7 @@ static int __init asp8347_declare_of_platform_devices(void)
 	return 0;
 }
 machine_device_initcall(asp834x, asp8347_declare_of_platform_devices);
+machine_device_initcall(asp834x, mpc83xx_declare_of_platform_devices);
 
 /*
  * Called very early, MMU is off, device-tree isn't unflattened
@@ -82,6 +83,7 @@ define_machine(asp834x) {
 	.probe			= asp834x_probe,
 	.setup_arch		= asp834x_setup_arch,
 	.init_IRQ		= asp834x_init_IRQ,
+	.init_IRQ		= mpc83xx_ipic_init_IRQ,
 	.get_irq		= ipic_get_irq,
 	.restart		= mpc83xx_restart,
 	.time_init		= mpc83xx_time_init,

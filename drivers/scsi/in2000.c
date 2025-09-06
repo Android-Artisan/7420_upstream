@@ -108,6 +108,7 @@
  * there are lots of lurking bugs and "Stupid Places".
  *
  * Updated for Linux 2.5 by Alan Cox <alan@redhat.com>
+ * Updated for Linux 2.5 by Alan Cox <alan@lxorguk.ukuu.org.uk>
  *	- Using new_eh handler
  *	- Hopefully got all the locking right again
  *	See "FIXME" notes for items that could do with more work
@@ -335,6 +336,7 @@ static uchar calc_sync_xfer(unsigned int period, unsigned int offset)
 static void in2000_execute(struct Scsi_Host *instance);
 
 static int in2000_queuecommand(Scsi_Cmnd * cmd, void (*done) (Scsi_Cmnd *))
+static int in2000_queuecommand_lck(Scsi_Cmnd * cmd, void (*done) (Scsi_Cmnd *))
 {
 	struct Scsi_Host *instance;
 	struct IN2000_hostdata *hostdata;
@@ -344,6 +346,7 @@ static int in2000_queuecommand(Scsi_Cmnd * cmd, void (*done) (Scsi_Cmnd *))
 	hostdata = (struct IN2000_hostdata *) instance->hostdata;
 
 	DB(DB_QUEUE_COMMAND, scmd_printk(KERN_DEBUG, cmd, "Q-%02x-%ld(", cmd->cmnd[0], cmd->serial_number))
+	DB(DB_QUEUE_COMMAND, scmd_printk(KERN_DEBUG, cmd, "Q-%02x(", cmd->cmnd[0]))
 
 /* Set up a few fields in the Scsi_Cmnd structure for our own use:
  *  - host_scribble is the pointer to the next cmd in the input queue
@@ -430,6 +433,12 @@ static int in2000_queuecommand(Scsi_Cmnd * cmd, void (*done) (Scsi_Cmnd *))
 	DB(DB_QUEUE_COMMAND, printk(")Q-%ld ", cmd->serial_number))
 	    return 0;
 }
+
+	DB(DB_QUEUE_COMMAND, printk(")Q "))
+	    return 0;
+}
+
+static DEF_SCSI_QCMD(in2000_queuecommand)
 
 
 
@@ -704,6 +713,7 @@ static void in2000_execute(struct Scsi_Host *instance)
 	 */
 
 	DB(DB_EXECUTE, printk("%s%ld)EX-2 ", (cmd->SCp.phase) ? "d:" : "", cmd->serial_number))
+	DB(DB_EXECUTE, printk("%s)EX-2 ", (cmd->SCp.phase) ? "d:" : ""))
 
 }
 
@@ -1148,6 +1158,7 @@ static irqreturn_t in2000_intr(int irqnum, void *dev_id)
 	case CSR_UNEXP | PHS_COMMAND:
 	case CSR_SRV_REQ | PHS_COMMAND:
 		DB(DB_INTR, printk("CMND-%02x,%ld", cmd->cmnd[0], cmd->serial_number))
+		DB(DB_INTR, printk("CMND-%02x", cmd->cmnd[0]))
 		    transfer_pio(cmd->cmnd, cmd->cmd_len, DATA_OUT_DIR, hostdata);
 		hostdata->state = S_CONNECTED;
 		break;
@@ -1190,6 +1201,7 @@ static irqreturn_t in2000_intr(int irqnum, void *dev_id)
 
 		case COMMAND_COMPLETE:
 			DB(DB_INTR, printk("CCMP-%ld", cmd->serial_number))
+			DB(DB_INTR, printk("CCMP"))
 			    write_3393_cmd(hostdata, WD_CMD_NEGATE_ACK);
 			hostdata->state = S_PRE_CMP_DISC;
 			break;
@@ -1328,6 +1340,7 @@ static irqreturn_t in2000_intr(int irqnum, void *dev_id)
 		write_3393(hostdata, WD_SOURCE_ID, SRCID_ER);
 		if (phs == 0x60) {
 			DB(DB_INTR, printk("SX-DONE-%ld", cmd->serial_number))
+			DB(DB_INTR, printk("SX-DONE"))
 			    cmd->SCp.Message = COMMAND_COMPLETE;
 			lun = read_3393(hostdata, WD_TARGET_LUN);
 			DB(DB_INTR, printk(":%d.%d", cmd->SCp.Status, lun))
@@ -1349,6 +1362,7 @@ static irqreturn_t in2000_intr(int irqnum, void *dev_id)
 			in2000_execute(instance);
 		} else {
 			printk("%02x:%02x:%02x-%ld: Unknown SEL_XFER_DONE phase!!---", asr, sr, phs, cmd->serial_number);
+			printk("%02x:%02x:%02x: Unknown SEL_XFER_DONE phase!!---", asr, sr, phs);
 		}
 		break;
 
@@ -1416,6 +1430,7 @@ static irqreturn_t in2000_intr(int irqnum, void *dev_id)
 			return IRQ_HANDLED;
 		}
 		DB(DB_INTR, printk("UNEXP_DISC-%ld", cmd->serial_number))
+		DB(DB_INTR, printk("UNEXP_DISC"))
 		    hostdata->connected = NULL;
 		hostdata->busy[cmd->device->id] &= ~(1 << cmd->device->lun);
 		hostdata->state = S_UNCONNECTED;
@@ -1441,6 +1456,7 @@ static irqreturn_t in2000_intr(int irqnum, void *dev_id)
 
 		write_3393(hostdata, WD_SOURCE_ID, SRCID_ER);
 		DB(DB_INTR, printk("DISC-%ld", cmd->serial_number))
+		DB(DB_INTR, printk("DISC"))
 		    if (cmd == NULL) {
 			printk(" - Already disconnected! ");
 			hostdata->state = S_UNCONNECTED;
@@ -1703,6 +1719,7 @@ static int __in2000_abort(Scsi_Cmnd * cmd)
 			cmd->host_scribble = NULL;
 			cmd->result = DID_ABORT << 16;
 			printk(KERN_WARNING "scsi%d: Abort - removing command %ld from input_Q. ", instance->host_no, cmd->serial_number);
+			printk(KERN_WARNING "scsi%d: Abort - removing command from input_Q. ", instance->host_no);
 			cmd->scsi_done(cmd);
 			return SUCCESS;
 		}
@@ -1724,6 +1741,7 @@ static int __in2000_abort(Scsi_Cmnd * cmd)
 	if (hostdata->connected == cmd) {
 
 		printk(KERN_WARNING "scsi%d: Aborting connected command %ld - ", instance->host_no, cmd->serial_number);
+		printk(KERN_WARNING "scsi%d: Aborting connected command - ", instance->host_no);
 
 		printk("sending wd33c93 ABORT command - ");
 		write_3393(hostdata, WD_CONTROL, CTRL_IDI | CTRL_EDI | CTRL_POLLED);
@@ -2016,6 +2034,7 @@ static int __init in2000_detect(struct scsi_host_template * tpnt)
 		write1_io(0, IO_INTR_MASK);	/* allow all ints */
 		x = int_tab[(switches & (SW_INT0 | SW_INT1)) >> SW_INT_SHIFT];
 		if (request_irq(x, in2000_intr, IRQF_DISABLED, "in2000", instance)) {
+		if (request_irq(x, in2000_intr, 0, "in2000", instance)) {
 			printk("in2000_detect: Unable to allocate IRQ.\n");
 			detect_count--;
 			continue;
@@ -2167,6 +2186,7 @@ static int in2000_biosparam(struct scsi_device *sdev, struct block_device *bdev,
 
 
 static int in2000_proc_info(struct Scsi_Host *instance, char *buf, char **start, off_t off, int len, int in)
+static int in2000_write_info(struct Scsi_Host *instance, char *buf, int len)
 {
 
 #ifdef PROC_INTERFACE
@@ -2278,6 +2298,93 @@ static int in2000_proc_info(struct Scsi_Host *instance, char *buf, char **start,
 		while (cmd) {
 			sprintf(tbuf, " %ld-%d:%d(%02x)", cmd->serial_number, cmd->device->id, cmd->device->lun, cmd->cmnd[0]);
 			strcat(bp, tbuf);
+	struct IN2000_hostdata *hd;
+	int x, i;
+
+	hd = (struct IN2000_hostdata *) instance->hostdata;
+
+	buf[len] = '\0';
+	bp = buf;
+	if (!strncmp(bp, "debug:", 6)) {
+		bp += 6;
+		hd->args = simple_strtoul(bp, NULL, 0) & DB_MASK;
+	} else if (!strncmp(bp, "disconnect:", 11)) {
+		bp += 11;
+		x = simple_strtoul(bp, NULL, 0);
+		if (x < DIS_NEVER || x > DIS_ALWAYS)
+			x = DIS_ADAPTIVE;
+		hd->disconnect = x;
+	} else if (!strncmp(bp, "period:", 7)) {
+		bp += 7;
+		x = simple_strtoul(bp, NULL, 0);
+		hd->default_sx_per = sx_table[round_period((unsigned int) x)].period_ns;
+	} else if (!strncmp(bp, "resync:", 7)) {
+		bp += 7;
+		x = simple_strtoul(bp, NULL, 0);
+		for (i = 0; i < 7; i++)
+			if (x & (1 << i))
+				hd->sync_stat[i] = SS_UNSET;
+	} else if (!strncmp(bp, "proc:", 5)) {
+		bp += 5;
+		hd->proc = simple_strtoul(bp, NULL, 0);
+	} else if (!strncmp(bp, "level2:", 7)) {
+		bp += 7;
+		hd->level2 = simple_strtoul(bp, NULL, 0);
+	}
+#endif
+	return len;
+}
+
+static int in2000_show_info(struct seq_file *m, struct Scsi_Host *instance)
+{
+
+#ifdef PROC_INTERFACE
+	unsigned long flags;
+	struct IN2000_hostdata *hd;
+	Scsi_Cmnd *cmd;
+	int x;
+
+	hd = (struct IN2000_hostdata *) instance->hostdata;
+
+	spin_lock_irqsave(instance->host_lock, flags);
+	if (hd->proc & PR_VERSION)
+		seq_printf(m, "\nVersion %s - %s.", IN2000_VERSION, IN2000_DATE);
+
+	if (hd->proc & PR_INFO) {
+		seq_printf(m, "\ndip_switch=%02x: irq=%d io=%02x floppy=%s sync/DOS5=%s", (hd->dip_switch & 0x7f), instance->irq, hd->io_base, (hd->dip_switch & 0x40) ? "Yes" : "No", (hd->dip_switch & 0x20) ? "Yes" : "No");
+		seq_puts(m, "\nsync_xfer[] =       ");
+		for (x = 0; x < 7; x++)
+			seq_printf(m, "\t%02x", hd->sync_xfer[x]);
+		seq_puts(m, "\nsync_stat[] =       ");
+		for (x = 0; x < 7; x++)
+			seq_printf(m, "\t%02x", hd->sync_stat[x]);
+	}
+#ifdef PROC_STATISTICS
+	if (hd->proc & PR_STATISTICS) {
+		seq_puts(m, "\ncommands issued:    ");
+		for (x = 0; x < 7; x++)
+			seq_printf(m, "\t%ld", hd->cmd_cnt[x]);
+		seq_puts(m, "\ndisconnects allowed:");
+		for (x = 0; x < 7; x++)
+			seq_printf(m, "\t%ld", hd->disc_allowed_cnt[x]);
+		seq_puts(m, "\ndisconnects done:   ");
+		for (x = 0; x < 7; x++)
+			seq_printf(m, "\t%ld", hd->disc_done_cnt[x]);
+		seq_printf(m, "\ninterrupts:      \t%ld", hd->int_cnt);
+	}
+#endif
+	if (hd->proc & PR_CONNECTED) {
+		seq_puts(m, "\nconnected:     ");
+		if (hd->connected) {
+			cmd = (Scsi_Cmnd *) hd->connected;
+			seq_printf(m, " %d:%llu(%02x)", cmd->device->id, cmd->device->lun, cmd->cmnd[0]);
+		}
+	}
+	if (hd->proc & PR_INPUTQ) {
+		seq_puts(m, "\ninput_Q:       ");
+		cmd = (Scsi_Cmnd *) hd->input_Q;
+		while (cmd) {
+			seq_printf(m, " %d:%llu(%02x)", cmd->device->id, cmd->device->lun, cmd->cmnd[0]);
 			cmd = (Scsi_Cmnd *) cmd->host_scribble;
 		}
 	}
@@ -2287,6 +2394,10 @@ static int in2000_proc_info(struct Scsi_Host *instance, char *buf, char **start,
 		while (cmd) {
 			sprintf(tbuf, " %ld-%d:%d(%02x)", cmd->serial_number, cmd->device->id, cmd->device->lun, cmd->cmnd[0]);
 			strcat(bp, tbuf);
+		seq_puts(m, "\ndisconnected_Q:");
+		cmd = (Scsi_Cmnd *) hd->disconnected_Q;
+		while (cmd) {
+			seq_printf(m, " %d:%llu(%02x)", cmd->device->id, cmd->device->lun, cmd->cmnd[0]);
 			cmd = (Scsi_Cmnd *) cmd->host_scribble;
 		}
 	}
@@ -2312,6 +2423,10 @@ static int in2000_proc_info(struct Scsi_Host *instance, char *buf, char **start,
 
 #endif				/* PROC_INTERFACE */
 
+	seq_putc(m, '\n');
+	spin_unlock_irqrestore(instance->host_lock, flags);
+#endif				/* PROC_INTERFACE */
+	return 0;
 }
 
 MODULE_LICENSE("GPL");
@@ -2320,6 +2435,8 @@ MODULE_LICENSE("GPL");
 static struct scsi_host_template driver_template = {
 	.proc_name       		= "in2000",
 	.proc_info       		= in2000_proc_info,
+	.write_info       		= in2000_write_info,
+	.show_info       		= in2000_show_info,
 	.name            		= "Always IN2000",
 	.detect          		= in2000_detect, 
 	.release			= in2000_release,

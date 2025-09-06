@@ -14,6 +14,25 @@ config PPC_CELL_NATIVE
 	select IBM_NEW_EMAC_RGMII
 	select IBM_NEW_EMAC_ZMII #test only
 	select IBM_NEW_EMAC_TAH  #test only
+config PPC_CELL_COMMON
+	bool
+	select PPC_CELL
+	select PPC_DCR_MMIO
+	select PPC_INDIRECT_PIO
+	select PPC_INDIRECT_MMIO
+	select PPC_NATIVE
+	select PPC_RTAS
+	select IRQ_EDGE_EOI_HANDLER
+
+config PPC_CELL_NATIVE
+	bool
+	select PPC_CELL_COMMON
+	select MPIC
+	select PPC_IO_WORKAROUNDS
+	select IBM_EMAC_EMAC4
+	select IBM_EMAC_RGMII
+	select IBM_EMAC_ZMII #test only
+	select IBM_EMAC_TAH  #test only
 	default n
 
 config PPC_IBM_CELL_BLADE
@@ -21,6 +40,10 @@ config PPC_IBM_CELL_BLADE
 	depends on PPC_MULTIPLATFORM && PPC64
 	select PPC_CELL_NATIVE
 	select PPC_RTAS
+	depends on PPC64 && PPC_BOOK3S && CPU_BIG_ENDIAN
+	select PPC_CELL_NATIVE
+	select PPC_OF_PLATFORM_PCI
+	select PCI
 	select MMIO_NVRAM
 	select PPC_UDBG_16550
 	select UDBG_RTAS_CONSOLE
@@ -37,6 +60,15 @@ config PPC_CELLEB
 	select PPC_UDBG_BEAT
 	select USB_OHCI_BIG_ENDIAN_MMIO
 	select USB_EHCI_BIG_ENDIAN_MMIO
+config PPC_CELL_QPACE
+	bool "IBM Cell - QPACE"
+	depends on PPC64 && PPC_BOOK3S && CPU_BIG_ENDIAN
+	select PPC_CELL_COMMON
+
+config AXON_MSI
+	bool
+	depends on PPC_IBM_CELL_BLADE && PCI_MSI
+	default y
 
 menu "Cell Broadband Engine options"
 	depends on PPC_CELL
@@ -45,6 +77,7 @@ config SPU_FS
 	tristate "SPU file system"
 	default m
 	depends on PPC_CELL
+	depends on COREDUMP
 	select SPU_BASE
 	select MEMORY_HOTPLUG
 	help
@@ -77,6 +110,10 @@ config SPU_TRACE
 config SPU_BASE
 	bool
 	default n
+config SPU_BASE
+	bool
+	default n
+	select PPC_COPRO_BASE
 
 config CBE_RAS
 	bool "RAS features for bare metal Cell BE"
@@ -94,6 +131,7 @@ config PPC_IBM_CELL_RESETBUTTON
 config PPC_IBM_CELL_POWERBUTTON
 	tristate "IBM Cell Blade power button"
 	depends on PPC_IBM_CELL_BLADE && PPC_PMI && INPUT_EVDEV
+	depends on PPC_IBM_CELL_BLADE && INPUT_EVDEV
 	default y
 	help
 	  Support Powerbutton on IBM Cell blades.
@@ -122,6 +160,16 @@ config CBE_CPUFREQ_PMI
 	  to switch frequencies. Using PMI, the
 	  processor will not only be able to run at lower speed,
 	  but also at lower core voltage.
+	depends on CBE_RAS && SPU_BASE
+
+config PPC_PMI
+	tristate
+	default y
+	depends on CPU_FREQ_CBE_PMI || PPC_IBM_CELL_POWERBUTTON
+	help
+	  PMI (Platform Management Interrupt) is a way to
+	  communicate with the BMC (Baseboard Management Controller).
+	  It is used in some IBM Cell blades.
 
 config CBE_CPUFREQ_SPU_GOVERNOR
 	tristate "CBE frequency scaling based on SPU usage"
@@ -137,4 +185,5 @@ endmenu
 config OPROFILE_CELL
 	def_bool y
 	depends on PPC_CELL_NATIVE && (OPROFILE = m || OPROFILE = y)
+	depends on PPC_CELL_NATIVE && (OPROFILE = m || OPROFILE = y) && SPU_BASE
 

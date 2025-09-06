@@ -24,6 +24,10 @@ struct bus_type pcie_port_bus_type = {
 	.match 		= pcie_port_bus_match,
 	.suspend	= pcie_port_bus_suspend,
 	.resume		= pcie_port_bus_resume, 
+
+struct bus_type pcie_port_bus_type = {
+	.name		= "pci_express",
+	.match		= pcie_port_bus_match,
 };
 EXPORT_SYMBOL_GPL(pcie_port_bus_type);
 
@@ -44,6 +48,15 @@ static int pcie_port_bus_match(struct device *dev, struct device_driver *drv)
 	       (driver->id_table->port_type != PCIE_ANY_PORT &&
 		driver->id_table->port_type != pciedev->id.port_type) ||
 		driver->id_table->service_type != pciedev->id.service_type )
+
+	pciedev = to_pcie_device(dev);
+	driver = to_service_driver(drv);
+
+	if (driver->service != pciedev->service)
+		return 0;
+
+	if ((driver->port_type != PCIE_ANY_PORT) &&
+	    (driver->port_type != pci_pcie_type(pciedev->port)))
 		return 0;
 
 	return 1;
@@ -77,4 +90,12 @@ static int pcie_port_bus_resume(struct device *dev)
 	if (driver && driver->resume)
 		driver->resume(pciedev);
 	return 0;
+int pcie_port_bus_register(void)
+{
+	return bus_register(&pcie_port_bus_type);
+}
+
+void pcie_port_bus_unregister(void)
+{
+	bus_unregister(&pcie_port_bus_type);
 }

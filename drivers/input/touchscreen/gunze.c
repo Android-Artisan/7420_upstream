@@ -202,3 +202,4 @@ static void __exit gunze_exit(void)
 
 module_init(gunze_init);
 module_exit(gunze_exit);
+module_serio_driver(gunze_drv);

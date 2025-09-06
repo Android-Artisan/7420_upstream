@@ -16,5 +16,6 @@
  */
 #define __io(a)			((void __iomem *)(a))
 #define __mem_pci(a)		(a)
+#define __io(a)		__typesafe_io(a)
 
 #endif

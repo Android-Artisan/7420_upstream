@@ -1541,7 +1541,6 @@ static int vidioc_log_status(struct file *file, void *priv)
 
 	snprintf(name, sizeof(name), "%s/2", dev->name);
 	printk(KERN_INFO
-		"%s/2: ============  START LOG STATUS  ============\n",
 	       dev->name);
 	cx23885_call_i2c_clients(&dev->i2c_bus[0], VIDIOC_LOG_STATUS,
 		NULL);
@@ -1551,7 +1550,6 @@ static int vidioc_log_status(struct file *file, void *priv)
 		NULL);
 	cx2341x_log_status(&dev->mpeg_params, name);
 	printk(KERN_INFO
-		"%s/2: =============  END LOG STATUS  =============\n",
 	       dev->name);
 	return 0;
 }

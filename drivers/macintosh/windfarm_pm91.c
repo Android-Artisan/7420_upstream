@@ -14,7 +14,6 @@
  * The various control loops found in Darwin config file are:
  *
  * PowerMac9,1
- * ===========
  *
  * Has 3 control loops: CPU fans is similar to PowerMac8,1 (though it doesn't
  * try to play with other control loops fans). Drive bay is rather basic PID
@@ -77,6 +76,7 @@ static struct wf_control *cpufreq_clamp;
 
 /* Set to kick the control loop into life */
 static int wf_smu_all_controls_ok, wf_smu_all_sensors_ok, wf_smu_started;
+static bool wf_smu_overtemp;
 
 /* Failure handling.. could be nicer */
 #define FAILURE_FAN		0x01
@@ -195,6 +195,8 @@ static void wf_smu_create_cpu_fans(void)
 
 	pid_param.min = fan_cpu_main->ops->get_min(fan_cpu_main);
 	pid_param.max = fan_cpu_main->ops->get_max(fan_cpu_main);
+	pid_param.min = wf_control_get_min(fan_cpu_main);
+	pid_param.max = wf_control_get_max(fan_cpu_main);
 
 	wf_cpu_pid_init(&wf_smu_cpu_fans->pid, &pid_param);
 
@@ -228,6 +230,7 @@ static void wf_smu_cpu_fans_tick(struct wf_smu_cpu_fans_state *st)
 	st->ticks = WF_SMU_CPU_FANS_INTERVAL;
 
 	rc = sensor_cpu_temp->ops->get_value(sensor_cpu_temp, &temp);
+	rc = wf_sensor_get(sensor_cpu_temp, &temp);
 	if (rc) {
 		printk(KERN_WARNING "windfarm: CPU temp sensor error %d\n",
 		       rc);
@@ -236,6 +239,7 @@ static void wf_smu_cpu_fans_tick(struct wf_smu_cpu_fans_state *st)
 	}
 
 	rc = sensor_cpu_power->ops->get_value(sensor_cpu_power, &power);
+	rc = wf_sensor_get(sensor_cpu_power, &power);
 	if (rc) {
 		printk(KERN_WARNING "windfarm: CPU power sensor error %d\n",
 		       rc);
@@ -264,6 +268,7 @@ static void wf_smu_cpu_fans_tick(struct wf_smu_cpu_fans_state *st)
 	if (fan_cpu_main && wf_smu_failure_state == 0) {
 		rc = fan_cpu_main->ops->set_value(fan_cpu_main,
 						  st->cpu_setpoint);
+		rc = wf_control_set(fan_cpu_main, st->cpu_setpoint);
 		if (rc) {
 			printk(KERN_WARNING "windfarm: CPU main fan"
 			       " error %d\n", rc);
@@ -273,6 +278,7 @@ static void wf_smu_cpu_fans_tick(struct wf_smu_cpu_fans_state *st)
 	if (fan_cpu_second && wf_smu_failure_state == 0) {
 		rc = fan_cpu_second->ops->set_value(fan_cpu_second,
 						    st->cpu_setpoint);
+		rc = wf_control_set(fan_cpu_second, st->cpu_setpoint);
 		if (rc) {
 			printk(KERN_WARNING "windfarm: CPU second fan"
 			       " error %d\n", rc);
@@ -282,6 +288,7 @@ static void wf_smu_cpu_fans_tick(struct wf_smu_cpu_fans_state *st)
 	if (fan_cpu_third && wf_smu_failure_state == 0) {
 		rc = fan_cpu_main->ops->set_value(fan_cpu_third,
 						  st->cpu_setpoint);
+		rc = wf_control_set(fan_cpu_third, st->cpu_setpoint);
 		if (rc) {
 			printk(KERN_WARNING "windfarm: CPU third fan"
 			       " error %d\n", rc);
@@ -315,6 +322,8 @@ static void wf_smu_create_drive_fans(void)
 	param.additive = (fan_hd->type == WF_CONTROL_RPM_FAN);
 	param.min = fan_hd->ops->get_min(fan_hd);
 	param.max = fan_hd->ops->get_max(fan_hd);
+	param.min = wf_control_get_min(fan_hd);
+	param.max = wf_control_get_max(fan_hd);
 	wf_pid_init(&wf_smu_drive_fans->pid, &param);
 
 	DBG("wf: Drive Fan control initialized.\n");
@@ -340,6 +349,7 @@ static void wf_smu_drive_fans_tick(struct wf_smu_drive_fans_state *st)
 	st->ticks = st->pid.param.interval;
 
 	rc = sensor_hd_temp->ops->get_value(sensor_hd_temp, &temp);
+	rc = wf_sensor_get(sensor_hd_temp, &temp);
 	if (rc) {
 		printk(KERN_WARNING "windfarm: HD temp sensor error %d\n",
 		       rc);
@@ -363,6 +373,7 @@ static void wf_smu_drive_fans_tick(struct wf_smu_drive_fans_state *st)
  readjust:
 	if (fan_hd && wf_smu_failure_state == 0) {
 		rc = fan_hd->ops->set_value(fan_hd, st->setpoint);
+		rc = wf_control_set(fan_hd, st->setpoint);
 		if (rc) {
 			printk(KERN_WARNING "windfarm: HD fan error %d\n",
 			       rc);
@@ -396,6 +407,8 @@ static void wf_smu_create_slots_fans(void)
 	param.additive = (fan_slots->type == WF_CONTROL_RPM_FAN);
 	param.min = fan_slots->ops->get_min(fan_slots);
 	param.max = fan_slots->ops->get_max(fan_slots);
+	param.min = wf_control_get_min(fan_slots);
+	param.max = wf_control_get_max(fan_slots);
 	wf_pid_init(&wf_smu_slots_fans->pid, &param);
 
 	DBG("wf: Slots Fan control initialized.\n");
@@ -421,6 +434,7 @@ static void wf_smu_slots_fans_tick(struct wf_smu_slots_fans_state *st)
 	st->ticks = st->pid.param.interval;
 
 	rc = sensor_slots_power->ops->get_value(sensor_slots_power, &power);
+	rc = wf_sensor_get(sensor_slots_power, &power);
 	if (rc) {
 		printk(KERN_WARNING "windfarm: Slots power sensor error %d\n",
 		       rc);
@@ -446,6 +460,7 @@ static void wf_smu_slots_fans_tick(struct wf_smu_slots_fans_state *st)
  readjust:
 	if (fan_slots && wf_smu_failure_state == 0) {
 		rc = fan_slots->ops->set_value(fan_slots, st->setpoint);
+		rc = wf_control_set(fan_slots, st->setpoint);
 		if (rc) {
 			printk(KERN_WARNING "windfarm: Slots fan error %d\n",
 			       rc);
@@ -521,6 +536,7 @@ static void wf_smu_tick(void)
 	if (new_failure & FAILURE_OVERTEMP) {
 		wf_set_overtemp();
 		wf_smu_skipping = 2;
+		wf_smu_overtemp = true;
 	}
 
 	/* We only clear the overtemp condition if overtemp is cleared
@@ -531,6 +547,10 @@ static void wf_smu_tick(void)
 	 */
 	if (new_failure == 0 && last_failure & FAILURE_OVERTEMP)
 		wf_clear_overtemp();
+	if (!wf_smu_failure_state && wf_smu_overtemp) {
+		wf_clear_overtemp();
+		wf_smu_overtemp = false;
+	}
 }
 
 
@@ -647,6 +667,7 @@ static int wf_smu_probe(struct platform_device *ddev)
 }
 
 static int __devexit wf_smu_remove(struct platform_device *ddev)
+static int wf_smu_remove(struct platform_device *ddev)
 {
 	wf_unregister_client(&wf_smu_events);
 
@@ -693,6 +714,9 @@ static int __devexit wf_smu_remove(struct platform_device *ddev)
 		kfree(wf_smu_cpu_fans);
 	if (wf_smu_cpu_fans)
 		kfree(wf_smu_cpu_fans);
+	kfree(wf_smu_slots_fans);
+	kfree(wf_smu_drive_fans);
+	kfree(wf_smu_cpu_fans);
 
 	return 0;
 }
@@ -703,6 +727,9 @@ static struct platform_driver wf_smu_driver = {
 	.driver = {
 		.name = "windfarm",
 		.owner	= THIS_MODULE,
+        .remove = wf_smu_remove,
+	.driver = {
+		.name = "windfarm",
 	},
 };
 
@@ -712,6 +739,7 @@ static int __init wf_smu_init(void)
 	int rc = -ENODEV;
 
 	if (machine_is_compatible("PowerMac9,1"))
+	if (of_machine_is_compatible("PowerMac9,1"))
 		rc = wf_init_pm();
 
 	if (rc == 0) {

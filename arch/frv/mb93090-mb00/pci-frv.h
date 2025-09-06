@@ -35,6 +35,10 @@ int pcibios_enable_resources(struct pci_dev *, int);
 
 extern int __nongpreldata pcibios_last_bus;
 extern struct pci_bus *__nongpreldata pci_root_bus;
+void pcibios_resource_survey(void);
+
+/* pci-vdk.c */
+
 extern struct pci_ops *__nongpreldata pci_root_ops;
 
 /* pci-irq.c */

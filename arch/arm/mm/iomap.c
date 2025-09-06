@@ -9,6 +9,10 @@
 #include <linux/ioport.h>
 
 #include <asm/io.h>
+#include <linux/io.h>
+
+unsigned long vga_base;
+EXPORT_SYMBOL(vga_base);
 
 #ifdef __io
 void __iomem *ioport_map(unsigned long port, unsigned int nr)
@@ -44,6 +48,11 @@ void __iomem *pci_iomap(struct pci_dev *dev, int bar, unsigned long maxlen)
 	return NULL;
 }
 EXPORT_SYMBOL(pci_iomap);
+unsigned long pcibios_min_io = 0x1000;
+EXPORT_SYMBOL(pcibios_min_io);
+
+unsigned long pcibios_min_mem = 0x01000000;
+EXPORT_SYMBOL(pcibios_min_mem);
 
 void pci_iounmap(struct pci_dev *dev, void __iomem *addr)
 {

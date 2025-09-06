@@ -26,6 +26,8 @@
 #include <linux/init.h>
 #include <linux/device.h>
 #include <linux/firmware.h>
+#include <linux/module.h>
+#include <linux/io.h>
 #include <sound/core.h>
 #include <sound/pcm.h>
 #include <sound/asoundef.h>
@@ -60,6 +62,7 @@ int snd_vx_check_reg_bit(struct vx_core *chip, int reg, int mask, int bit, int t
 		"LOFREQ", "HIFREQ", "CSUER", "RUER"
 	};
 #endif
+
 	do {
 		if ((snd_vx_inb(chip, reg) & mask) == bit)
 			return 0;
@@ -118,6 +121,7 @@ static int vx_reset_chk(struct vx_core *chip)
  * returns 0 if successful, or a negative error code.
  * the error code can be VX-specific, retrieved via vx_get_error().
  * NB: call with spinlock held!
+ * NB: call with mutex held!
  */
 static int vx_transfer_end(struct vx_core *chip, int cmd)
 {
@@ -156,6 +160,7 @@ static int vx_transfer_end(struct vx_core *chip, int cmd)
  * returns 0 if successful, or a negative error code.
  * the error code can be VX-specific, retrieved via vx_get_error().
  * NB: call with spinlock held!
+ * NB: call with mutex held!
  */
 static int vx_read_status(struct vx_core *chip, struct vx_rmh *rmh)
 {
@@ -206,6 +211,8 @@ static int vx_read_status(struct vx_core *chip, struct vx_rmh *rmh)
 	if (size < 1)
 		return 0;
 	snd_assert(size <= SIZE_MAX_STATUS, return -EINVAL);
+	if (snd_BUG_ON(size >= SIZE_MAX_STATUS))
+		return -EINVAL;
 
 	for (i = 1; i <= size; i++) {
 		/* trigger an irq MESS_WRITE_NEXT */
@@ -236,6 +243,7 @@ static int vx_read_status(struct vx_core *chip, struct vx_rmh *rmh)
  * the error code can be VX-specific, retrieved via vx_get_error().
  * 
  * this function doesn't call spinlock at all.
+ * this function doesn't call mutex lock at all.
  */
 int vx_send_msg_nolock(struct vx_core *chip, struct vx_rmh *rmh)
 {
@@ -337,6 +345,7 @@ int vx_send_msg_nolock(struct vx_core *chip, struct vx_rmh *rmh)
 
 /*
  * vx_send_msg - send a DSP message with spinlock
+ * vx_send_msg - send a DSP message with mutex
  * @rmh: the rmh record to send and receive
  *
  * returns 0 if successful, or a negative error code.
@@ -350,6 +359,11 @@ int vx_send_msg(struct vx_core *chip, struct vx_rmh *rmh)
 	spin_lock_irqsave(&chip->lock, flags);
 	err = vx_send_msg_nolock(chip, rmh);
 	spin_unlock_irqrestore(&chip->lock, flags);
+	int err;
+
+	mutex_lock(&chip->lock);
+	err = vx_send_msg_nolock(chip, rmh);
+	mutex_unlock(&chip->lock);
 	return err;
 }
 
@@ -362,6 +376,7 @@ int vx_send_msg(struct vx_core *chip, struct vx_rmh *rmh)
  * the error code can be VX-specific, retrieved via vx_get_error().
  *
  * this function doesn't call spinlock at all.
+ * this function doesn't call mutex at all.
  *
  * unlike RMH, no command is sent to DSP.
  */
@@ -398,6 +413,7 @@ int vx_send_rih_nolock(struct vx_core *chip, int cmd)
 
 /*
  * vx_send_rih - send an RIH with spinlock
+ * vx_send_rih - send an RIH with mutex
  * @cmd: the command to send
  *
  * see vx_send_rih_nolock().
@@ -410,6 +426,11 @@ int vx_send_rih(struct vx_core *chip, int cmd)
 	spin_lock_irqsave(&chip->lock, flags);
 	err = vx_send_rih_nolock(chip, cmd);
 	spin_unlock_irqrestore(&chip->lock, flags);
+	int err;
+
+	mutex_lock(&chip->lock);
+	err = vx_send_rih_nolock(chip, cmd);
+	mutex_unlock(&chip->lock);
 	return err;
 }
 
@@ -417,6 +438,7 @@ int vx_send_rih(struct vx_core *chip, int cmd)
 
 /**
  * snd_vx_boot_xilinx - boot up the xilinx interface
+ * @chip: VX core instance
  * @boot: the boot record to load
  */
 int snd_vx_load_boot_image(struct vx_core *chip, const struct firmware *boot)
@@ -427,11 +449,17 @@ int snd_vx_load_boot_image(struct vx_core *chip, const struct firmware *boot)
 	/* check the length of boot image */
 	snd_assert(boot->size > 0, return -EINVAL);
 	snd_assert(boot->size % 3 == 0, return -EINVAL);
+	if (boot->size <= 0)
+		return -EINVAL;
+	if (boot->size % 3)
+		return -EINVAL;
 #if 0
 	{
 		/* more strict check */
 		unsigned int c = ((u32)boot->data[0] << 16) | ((u32)boot->data[1] << 8) | boot->data[2];
 		snd_assert(boot->size == (c + 2) * 3, return -EINVAL);
+		if (boot->size != (c + 2) * 3)
+			return -EINVAL;
 	}
 #endif
 
@@ -479,12 +507,14 @@ static int vx_test_irq_src(struct vx_core *chip, unsigned int *ret)
 
 	vx_init_rmh(&chip->irq_rmh, CMD_TEST_IT);
 	spin_lock(&chip->lock);
+	mutex_lock(&chip->lock);
 	err = vx_send_msg_nolock(chip, &chip->irq_rmh);
 	if (err < 0)
 		*ret = 0;
 	else
 		*ret = chip->irq_rmh.Stat[0];
 	spin_unlock(&chip->lock);
+	mutex_unlock(&chip->lock);
 	return err;
 }
 
@@ -502,6 +532,18 @@ static void vx_interrupt(unsigned long private_data)
 
 	if (vx_test_irq_src(chip, &events) < 0)
 		return;
+ * snd_vx_threaded_irq_handler - threaded irq handler
+ */
+irqreturn_t snd_vx_threaded_irq_handler(int irq, void *dev)
+{
+	struct vx_core *chip = dev;
+	unsigned int events;
+		
+	if (chip->chip_status & VX_STAT_IS_STALE)
+		return IRQ_HANDLED;
+
+	if (vx_test_irq_src(chip, &events) < 0)
+		return IRQ_HANDLED;
     
 #if 0
 	if (events & 0x000800)
@@ -516,6 +558,7 @@ static void vx_interrupt(unsigned long private_data)
 	if (events & FATAL_DSP_ERROR) {
 		snd_printk(KERN_ERR "vx_core: fatal DSP error!!\n");
 		return;
+		return IRQ_HANDLED;
 	}
 
 	/* The start on time code conditions are filled (ie the time code
@@ -535,6 +578,14 @@ static void vx_interrupt(unsigned long private_data)
 
 /**
  * snd_vx_irq_handler - interrupt handler
+	return IRQ_HANDLED;
+}
+EXPORT_SYMBOL(snd_vx_threaded_irq_handler);
+
+/**
+ * snd_vx_irq_handler - interrupt handler
+ * @irq: irq number
+ * @dev: VX core instance
  */
 irqreturn_t snd_vx_irq_handler(int irq, void *dev)
 {
@@ -546,6 +597,8 @@ irqreturn_t snd_vx_irq_handler(int irq, void *dev)
 	if (! vx_test_and_ack(chip))
 		tasklet_hi_schedule(&chip->tq);
 	return IRQ_HANDLED;
+		return IRQ_WAKE_THREAD;
+	return IRQ_NONE;
 }
 
 EXPORT_SYMBOL(snd_vx_irq_handler);
@@ -555,6 +608,8 @@ EXPORT_SYMBOL(snd_vx_irq_handler);
 static void vx_reset_board(struct vx_core *chip, int cold_reset)
 {
 	snd_assert(chip->ops->reset_board, return);
+	if (snd_BUG_ON(!chip->ops->reset_board))
+		return;
 
 	/* current source, later sync'ed with target */
 	chip->audio_source = VX_AUDIO_SRC_LINE;
@@ -645,6 +700,8 @@ static void vx_proc_init(struct vx_core *chip)
 
 /**
  * snd_vx_dsp_boot - load the DSP boot
+ * @chip: VX core instance
+ * @boot: firmware data
  */
 int snd_vx_dsp_boot(struct vx_core *chip, const struct firmware *boot)
 {
@@ -665,6 +722,8 @@ EXPORT_SYMBOL(snd_vx_dsp_boot);
 
 /**
  * snd_vx_dsp_load - load the DSP image
+ * @chip: VX core instance
+ * @dsp: firmware data
  */
 int snd_vx_dsp_load(struct vx_core *chip, const struct firmware *dsp)
 {
@@ -674,6 +733,8 @@ int snd_vx_dsp_load(struct vx_core *chip, const struct firmware *dsp)
 	const unsigned char *image, *cptr;
 
 	snd_assert(dsp->size % 3 == 0, return -EINVAL);
+	if (dsp->size % 3)
+		return -EINVAL;
 
 	vx_toggle_dac_mute(chip, 1);
 
@@ -683,6 +744,8 @@ int snd_vx_dsp_load(struct vx_core *chip, const struct firmware *dsp)
 		/* Wait DSP ready for a new read */
 		if ((err = vx_wait_isr_bit(chip, ISR_TX_EMPTY)) < 0) {
 			printk("dsp loading error at position %d\n", i);
+			printk(KERN_ERR
+			       "dsp loading error at position %d\n", i);
 			return err;
 		}
 		cptr = image;
@@ -718,6 +781,7 @@ EXPORT_SYMBOL(snd_vx_dsp_load);
  * suspend
  */
 int snd_vx_suspend(struct vx_core *chip, pm_message_t state)
+int snd_vx_suspend(struct vx_core *chip)
 {
 	unsigned int i;
 
@@ -763,6 +827,10 @@ EXPORT_SYMBOL(snd_vx_resume);
 /**
  * snd_vx_create - constructor for struct vx_core
  * @hw: hardware specific record
+ * @card: card instance
+ * @hw: hardware specific record
+ * @ops: VX ops pointer
+ * @extra_size: extra byte size to allocate appending to chip
  *
  * this function allocates the instance and prepare for the hardware
  * initialization.
@@ -776,6 +844,8 @@ struct vx_core *snd_vx_create(struct snd_card *card, struct snd_vx_hardware *hw,
 	struct vx_core *chip;
 
 	snd_assert(card && hw && ops, return NULL);
+	if (snd_BUG_ON(!card || !hw || !ops))
+		return NULL;
 
 	chip = kzalloc(sizeof(*chip) + extra_size, GFP_KERNEL);
 	if (! chip) {
@@ -784,6 +854,7 @@ struct vx_core *snd_vx_create(struct snd_card *card, struct snd_vx_hardware *hw,
 	}
 	spin_lock_init(&chip->lock);
 	spin_lock_init(&chip->irq_lock);
+	mutex_init(&chip->lock);
 	chip->irq = -1;
 	chip->hw = hw;
 	chip->type = hw->type;

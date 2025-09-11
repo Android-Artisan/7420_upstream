@@ -6,7 +6,7 @@ CORES=$(nproc)
 
 # Toolchain setup
 CLANG_TAR="clang-4053586.tar.gz"
-CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/4053586/clang-4053586.tar.gz"
+CLANG_URL="https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/android-8.1.0_r1/clang-4053586.tar.gz"
 CLANG_DIR=$PWD/toolchain/clang-4053586
 
 if [[ ! -d "$CLANG_DIR" ]]; then
@@ -14,7 +14,7 @@ if [[ ! -d "$CLANG_DIR" ]]; then
     mkdir -p toolchain
     curl -L "$CLANG_URL" -o "$CLANG_TAR"
     mkdir -p "$CLANG_DIR"
-    tar -xzf "$CLANG_TAR" -C "$CLANG_DIR"
+    tar -xzf "$CLANG_TAR" -C "$CLANG_DIR" --strip-components=1
     rm "$CLANG_TAR"
 fi
 
@@ -29,7 +29,7 @@ O=out
 "
 
 # Pick defconfig
-DEFCONFIG=$(basename arch/arm64/configs/defconfig 2>/dev/null)
+DEFCONFIG=$(basename arch/arm64/configs/*_defconfig 2>/dev/null)
 if [[ -z "$DEFCONFIG" ]]; then
     echo "Error: No defconfig found in arch/arm64/configs/"
     exit 1
@@ -73,7 +73,7 @@ cp build/updater-script $META_DIR/updater-script
 cp build/update-binary $META_DIR/update-binary
 
 # Step 4: make flashable zip
-ZIP_NAME="ArtisanKRNL-7420-$(date +%Y%m%d-%H%M).zip"
+ZIP_NAME="ArtisanKernel-7420-$(date +%Y%m%d-%H%M).zip"
 cd $FLASH_DIR
 zip -r9 "../../$ZIP_NAME" . -x "*.git*" -x "README.md"
 cd ../..

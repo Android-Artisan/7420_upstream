@@ -1,0 +1,26 @@
+ui_print("");
+ui_print("+----------------------------+");
+ui_print("|    Installing ArtisanKernel |");
+ui_print("|           V0.0.1           |");
+ui_print("+----------------------------+");
+ui_print("");
+
+# Flash boot image
+ui_print("Flashing BOOT partition...");
+package_extract_file("files/boot.img", "/dev/block/by-name/boot");
+
+# Flash dtbo if present
+if package_extract_file("files/dtbo.img", "/tmp/dtbo.img") == "t";
+then
+    ui_print("Flashing DTBO partition...");
+    package_extract_file("files/dtbo.img", "/dev/block/by-name/dtbo");
+endif;
+
+ui_print("");
+ui_print("+----------------------------+");
+ui_print("|    Installation Success    |");
+ui_print("+----------------------------+");
+ui_print("");
+ui_print("You may now reboot your device.");
+ui_print("");
+

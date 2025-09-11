@@ -1,0 +1,33 @@
+name: Build ArtisanKRNL 7420
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+    - name: Checkout source
+      uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          bc bison build-essential curl flex git libssl-dev \
+          zip unzip wget python3
+
+    - name: Run build.sh
+      run: |
+        chmod +x build.sh
+        ./build.sh
+
+    - name: Upload flashable zip
+      uses: actions/upload-artifact@v4
+      with:
+        name: ArtisanKernel
+        path: |
+          ArtisanKernel-*.zip

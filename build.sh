@@ -29,7 +29,7 @@ O=out
 "
 
 # Pick defconfig
-DEFCONFIG=$(basename arch/arm64/configs/*_defconfig 2>/dev/null)
+DEFCONFIG=$(basename arch/arm64/configs/defconfig 2>/dev/null)
 if [[ -z "$DEFCONFIG" ]]; then
     echo "Error: No defconfig found in arch/arm64/configs/"
     exit 1

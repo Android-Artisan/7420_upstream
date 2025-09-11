@@ -2506,3 +2506,4 @@ FORCE:
 # information in a variable se we can use it in if_changed and friends.
 # information in a variable so we can use it in if_changed and friends.
 .PHONY: $(PHONY)
+endif
